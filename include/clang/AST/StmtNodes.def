@@ -1,0 +1,74 @@
+//===-- StmtNodes.def - Metadata about Stmt AST nodes -----------*- C++ -*-===//
+//
+//                     The LLVM Compiler Infrastructure
+//
+// This file was developed by Chris Lattner and is distributed under
+// the University of Illinois Open Source License. See LICENSE.TXT for details.
+//
+//===----------------------------------------------------------------------===//
+//
+//  This file defines the AST Node info database.
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef FIRST_STMT
+#define FIRST_STMT(n)
+#define LAST_STMT(n)
+#endif
+
+#ifndef FIRST_EXPR
+#define FIRST_EXPR(n)
+#define LAST_EXPR(n)
+#endif
+
+// Normal Statements.
+FIRST_STMT(1)
+STMT( 1, NullStmt        , Stmt)
+STMT( 2, CompoundStmt    , Stmt)
+STMT( 3, CaseStmt        , Stmt)
+STMT( 4, DefaultStmt     , Stmt)
+STMT( 5, LabelStmt       , Stmt)
+STMT( 6, IfStmt          , Stmt)
+STMT( 7, SwitchStmt      , Stmt)
+STMT( 8, WhileStmt       , Stmt)
+STMT( 9, DoStmt          , Stmt)
+STMT(10, ForStmt         , Stmt)
+STMT(11, GotoStmt        , Stmt)
+STMT(12, IndirectGotoStmt, Stmt)
+STMT(13, ContinueStmt    , Stmt)
+STMT(14, BreakStmt       , Stmt)
+STMT(15, ReturnStmt      , Stmt)
+STMT(16, DeclStmt        , Stmt)
+LAST_STMT(16)
+
+FIRST_EXPR(32)
+// Expressions.
+STMT(32, Expr                 , Stmt)
+STMT(33, DeclRefExpr          , Expr)
+STMT(34, IntegerLiteral       , Expr)
+STMT(35, FloatingLiteral      , Expr)
+STMT(36, StringLiteral        , Expr)
+STMT(37, CharacterLiteral     , Expr)
+STMT(38, ParenExpr            , Expr)
+STMT(39, UnaryOperator        , Expr)
+STMT(40, SizeOfAlignOfTypeExpr, Expr)
+STMT(41, ArraySubscriptExpr   , Expr)
+STMT(42, CallExpr             , Expr)
+STMT(43, MemberExpr           , Expr)
+STMT(44, CastExpr             , Expr)
+STMT(45, BinaryOperator       , Expr)
+STMT(46, ConditionalOperator  , Expr)
+
+// GNU Extensions.
+STMT(47, AddrLabel            , Expr)
+
+// C++ Expressions.
+STMT(48, CXXCastExpr          , Expr)
+STMT(49, CXXBoolLiteralExpr   , Expr)
+LAST_EXPR(49)
+
+#undef STMT
+#undef FIRST_STMT
+#undef LAST_STMT
+#undef FIRST_EXPR
+#undef LAST_EXPR
