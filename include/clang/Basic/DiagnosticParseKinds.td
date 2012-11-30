@@ -24,7 +24,7 @@ def warn_unsupported_msasm : Warning<
 let CategoryName = "Parse Issue" in {
 
 def ext_empty_translation_unit : Extension<
-  "ISO C requires a translation unit to contain at least one declaration.">,
+  "ISO C requires a translation unit to contain at least one declaration">,
   InGroup<DiagGroup<"empty-translation-unit">>;
 def warn_cxx98_compat_top_level_semi : Warning<
   "extra ';' outside of a function is incompatible with C++98">,
@@ -225,13 +225,10 @@ def note_missing_selector_name : Note<
 def note_force_empty_selector_name : Note<
   "or insert whitespace before ':' to use %0 as parameter name "
   "and have an empty entry in the selector">;
-def note_missing_argument_name : Note<
-  "did you mean to use %0 as the selector name instead of %1">;
 def err_label_end_of_compound_statement : Error<
   "label at end of compound statement: expected statement">;
 def err_address_of_label_outside_fn : Error<
   "use of address-of-label extension outside of a function body">;
-def err_expected_string_literal : Error<"expected string literal">;
 def err_asm_operand_wide_string_literal : Error<
   "cannot use %select{unicode|wide}0 string literal in 'asm'">;
 def err_expected_selector_for_method : Error<
@@ -352,7 +349,7 @@ def warn_cxx98_compat_static_assert : Warning<
   "static_assert declarations are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
 def err_paren_after_colon_colon : Error<
-  "unexpected parentheses after '::'">;
+  "unexpected parenthesis after '::'">;
 
 /// Objective-C parser diagnostics
 def err_expected_minus_or_plus : Error<

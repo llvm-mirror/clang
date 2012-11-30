@@ -777,6 +777,7 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(TARGET_OPTIONS);
   RECORD(ORIGINAL_FILE);
   RECORD(ORIGINAL_PCH_DIR);
+  RECORD(ORIGINAL_FILE_ID);
   RECORD(INPUT_FILE_OFFSETS);
   RECORD(DIAGNOSTIC_OPTIONS);
   RECORD(FILE_SYSTEM_OPTIONS);
@@ -1030,7 +1031,7 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
         continue;
 
       Record.push_back((unsigned)(*M)->Kind); // FIXME: Stable encoding
-      // FIXME: Write import location, once it matters.
+      AddSourceLocation((*M)->ImportLoc, Record);
       // FIXME: This writes the absolute path for AST files we depend on.
       const std::string &FileName = (*M)->FileName;
       Record.push_back(FileName.size());
@@ -1179,6 +1180,10 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
     Record.push_back(SM.getMainFileID().getOpaqueValue());
     Stream.EmitRecordWithBlob(FileAbbrevCode, Record, MainFileNameStr);
   }
+
+  Record.clear();
+  Record.push_back(SM.getMainFileID().getOpaqueValue());
+  Stream.EmitRecord(ORIGINAL_FILE_ID, Record);
 
   // Original PCH directory
   if (!OutputFile.empty() && OutputFile != "-") {
@@ -1855,6 +1860,7 @@ void ASTWriter::WritePreprocessor(const Preprocessor &PP, bool IsModule) {
 
         Record.push_back(MI->isC99Varargs());
         Record.push_back(MI->isGNUVarargs());
+        Record.push_back(MI->hasCommaPasting());
         Record.push_back(MI->getNumArgs());
         for (MacroInfo::arg_iterator I = MI->arg_begin(), E = MI->arg_end();
              I != E; ++I)

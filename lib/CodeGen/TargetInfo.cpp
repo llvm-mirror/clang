@@ -173,7 +173,7 @@ static bool hasNonTrivialDestructorOrCopyConstructor(const RecordType *RT) {
   if (!RD)
     return false;
 
-  return !RD->hasTrivialDestructor() || !RD->hasTrivialCopyConstructor();
+  return !RD->hasTrivialDestructor() || RD->hasNonTrivialCopyConstructor();
 }
 
 /// isRecordWithNonTrivialDestructorOrCopyConstructor - Determine if a type is
@@ -2684,6 +2684,11 @@ class PPC64_SVR4_ABIInfo : public DefaultABIInfo {
 public:
   PPC64_SVR4_ABIInfo(CodeGen::CodeGenTypes &CGT) : DefaultABIInfo(CGT) {}
 
+  bool isPromotableTypeForABI(QualType Ty) const;
+
+  ABIArgInfo classifyReturnType(QualType RetTy) const;
+  ABIArgInfo classifyArgumentType(QualType Ty) const;
+
   // TODO: We can add more logic to computeInfo to improve performance.
   // Example: For aggregate arguments that fit in a register, we could
   // use getDirectInReg (as is done below for structs containing a single
@@ -2742,6 +2747,59 @@ public:
                                llvm::Value *Address) const;
 };
 
+}
+
+// Return true if the ABI requires Ty to be passed sign- or zero-
+// extended to 64 bits.
+bool
+PPC64_SVR4_ABIInfo::isPromotableTypeForABI(QualType Ty) const {
+  // Treat an enum type as its underlying type.
+  if (const EnumType *EnumTy = Ty->getAs<EnumType>())
+    Ty = EnumTy->getDecl()->getIntegerType();
+
+  // Promotable integer types are required to be promoted by the ABI.
+  if (Ty->isPromotableIntegerType())
+    return true;
+
+  // In addition to the usual promotable integer types, we also need to
+  // extend all 32-bit types, since the ABI requires promotion to 64 bits.
+  if (const BuiltinType *BT = Ty->getAs<BuiltinType>())
+    switch (BT->getKind()) {
+    case BuiltinType::Int:
+    case BuiltinType::UInt:
+      return true;
+    default:
+      break;
+    }
+
+  return false;
+}
+
+ABIArgInfo
+PPC64_SVR4_ABIInfo::classifyArgumentType(QualType Ty) const {
+  if (isAggregateTypeForABI(Ty)) {
+    // Records with non trivial destructors/constructors should not be passed
+    // by value.
+    if (isRecordWithNonTrivialDestructorOrCopyConstructor(Ty))
+      return ABIArgInfo::getIndirect(0, /*ByVal=*/false);
+
+    return ABIArgInfo::getIndirect(0);
+  }
+
+  return (isPromotableTypeForABI(Ty) ?
+          ABIArgInfo::getExtend() : ABIArgInfo::getDirect());
+}
+
+ABIArgInfo
+PPC64_SVR4_ABIInfo::classifyReturnType(QualType RetTy) const {
+  if (RetTy->isVoidType())
+    return ABIArgInfo::getIgnore();
+
+  if (isAggregateTypeForABI(RetTy))
+    return ABIArgInfo::getIndirect(0);
+
+  return (isPromotableTypeForABI(RetTy) ?
+          ABIArgInfo::getExtend() : ABIArgInfo::getDirect());
 }
 
 // Based on ARMABIInfo::EmitVAArg, adjusted for 64-bit machine.
@@ -3148,7 +3206,8 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty, int *VFPRegs,
       if (Base->isVectorType()) {
         // ElementSize is in number of floats.
         unsigned ElementSize = getContext().getTypeSize(Base) == 64 ? 2 : 4;
-        markAllocatedVFPs(VFPRegs, AllocatedVFP, ElementSize, Members * ElementSize);
+        markAllocatedVFPs(VFPRegs, AllocatedVFP, ElementSize,
+                          Members * ElementSize);
       } else if (Base->isSpecificBuiltinType(BuiltinType::Float))
         markAllocatedVFPs(VFPRegs, AllocatedVFP, 1, Members);
       else {
@@ -3162,9 +3221,17 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty, int *VFPRegs,
   }
 
   // Support byval for ARM.
-  if (getContext().getTypeSizeInChars(Ty) > CharUnits::fromQuantity(64) ||
-      getContext().getTypeAlign(Ty) > 64) {
-    return ABIArgInfo::getIndirect(0, /*ByVal=*/true);
+  // The ABI alignment for APCS is 4-byte and for AAPCS at least 4-byte and at
+  // most 8-byte. We realign the indirect argument if type alignment is bigger
+  // than ABI alignment.
+  uint64_t ABIAlign = 4;
+  uint64_t TyAlign = getContext().getTypeAlign(Ty) / 8;
+  if (getABIKind() == ARMABIInfo::AAPCS_VFP ||
+      getABIKind() == ARMABIInfo::AAPCS)
+    ABIAlign = std::min(std::max(TyAlign, (uint64_t)4), (uint64_t)8);
+  if (getContext().getTypeSizeInChars(Ty) > CharUnits::fromQuantity(64)) {
+    return ABIArgInfo::getIndirect(0, /*ByVal=*/true,
+           /*Realign=*/TyAlign > ABIAlign);
   }
 
   // Otherwise, pass by coercing to a structure of the appropriate size.

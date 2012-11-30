@@ -59,21 +59,22 @@ enum BlockByrefFlags {
 };
 
 enum BlockLiteralFlags {
-  BLOCK_HAS_EXTENDED_LAYOUT = (1 << 23),
   BLOCK_HAS_COPY_DISPOSE =  (1 << 25),
   BLOCK_HAS_CXX_OBJ =       (1 << 26),
   BLOCK_IS_GLOBAL =         (1 << 28),
   BLOCK_USE_STRET =         (1 << 29),
-  BLOCK_HAS_SIGNATURE  =    (1 << 30)
+  BLOCK_HAS_SIGNATURE  =    (1 << 30),
+  BLOCK_HAS_EXTENDED_LAYOUT = (1 << 31)
 };
 class BlockFlags {
   uint32_t flags;
 
-  BlockFlags(uint32_t flags) : flags(flags) {}
 public:
+  BlockFlags(uint32_t flags) : flags(flags) {}
   BlockFlags() : flags(0) {}
   BlockFlags(BlockLiteralFlags flag) : flags(flag) {}
-
+  BlockFlags(BlockByrefFlags flag) : flags(flag) {}
+  
   uint32_t getBitMask() const { return flags; }
   bool empty() const { return flags == 0; }
 
@@ -86,6 +87,9 @@ public:
   }
   friend bool operator&(BlockFlags l, BlockFlags r) {
     return (l.flags & r.flags);
+  }
+  bool operator==(BlockFlags r) {
+    return (flags == r.flags);
   }
 };
 inline BlockFlags operator|(BlockLiteralFlags l, BlockLiteralFlags r) {

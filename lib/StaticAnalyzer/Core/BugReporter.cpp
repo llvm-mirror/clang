@@ -193,7 +193,7 @@ static void removeRedundantMsgs(PathPieces &path) {
 /// that aren't needed.  Return true if afterwards the path contains
 /// "interesting stuff" which means it should be pruned from the parent path.
 bool BugReporter::RemoveUneededCalls(PathPieces &pieces, BugReport *R,
-                                     PathDiagnosticCallPiece *CallWithLoc) {
+                                     PathDiagnosticLocation *LastCallLocation) {
   bool containsSomethingInteresting = false;
   const unsigned N = pieces.size();
   
@@ -217,18 +217,25 @@ bool BugReporter::RemoveUneededCalls(PathPieces &pieces, BugReport *R,
           containsSomethingInteresting = true;
           break;
         }
+
+        if (LastCallLocation) {
+          if (!call->callEnter.asLocation().isValid())
+            call->callEnter = *LastCallLocation;
+          if (!call->callReturn.asLocation().isValid())
+            call->callReturn = *LastCallLocation;
+        }
+
         // Recursively clean out the subclass.  Keep this call around if
         // it contains any informative diagnostics.
-        PathDiagnosticCallPiece *NewCallWithLoc =
-          call->getLocation().asLocation().isValid()
-            ? call : CallWithLoc;
-        
-        if (!RemoveUneededCalls(call->path, R, NewCallWithLoc))
-          continue;
+        PathDiagnosticLocation *ThisCallLocation;
+        if (call->callEnterWithin.asLocation().isValid())
+          ThisCallLocation = &call->callEnterWithin;
+        else
+          ThisCallLocation = &call->callEnter;
 
-        if (NewCallWithLoc == CallWithLoc && CallWithLoc) {
-          call->callEnter = CallWithLoc->callEnter;
-        }
+        assert(ThisCallLocation && "Outermost call has an invalid location");
+        if (!RemoveUneededCalls(call->path, R, ThisCallLocation))
+          continue;
         
         containsSomethingInteresting = true;
         break;
@@ -1666,6 +1673,9 @@ PathDiagnosticLocation BugReport::getLocation(const SourceManager &SM) const {
       // For binary operators, return the location of the operator.
       if (const BinaryOperator *B = dyn_cast<BinaryOperator>(S))
         return PathDiagnosticLocation::createOperatorLoc(B, SM);
+
+      if (isa<PostStmtPurgeDeadSymbols>(ErrorNode->getLocation()))
+        return PathDiagnosticLocation::createEnd(S, SM, LC);
 
       return PathDiagnosticLocation::createBegin(S, SM, LC);
     }

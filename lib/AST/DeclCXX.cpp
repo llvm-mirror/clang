@@ -240,7 +240,8 @@ CXXRecordDecl::setBases(CXXBaseSpecifier const * const *Bases,
       //    -- the constructor selected to copy/move each direct base class
       //       subobject is trivial, and
       // FIXME: C++0x: We need to only consider the selected constructor
-      // instead of all of them.
+      // instead of all of them. For now, we treat a move constructor as being
+      // non-trivial if it calls anything other than a trivial move constructor.
       if (!BaseClassDecl->hasTrivialCopyConstructor())
         data().HasTrivialCopyConstructor = false;
       if (!BaseClassDecl->hasTrivialMoveConstructor())
@@ -316,13 +317,13 @@ bool CXXRecordDecl::isTriviallyCopyable() const {
   // C++0x [class]p5:
   //   A trivially copyable class is a class that:
   //   -- has no non-trivial copy constructors,
-  if (!hasTrivialCopyConstructor()) return false;
+  if (hasNonTrivialCopyConstructor()) return false;
   //   -- has no non-trivial move constructors,
-  if (!hasTrivialMoveConstructor()) return false;
+  if (hasNonTrivialMoveConstructor()) return false;
   //   -- has no non-trivial copy assignment operators,
-  if (!hasTrivialCopyAssignment()) return false;
+  if (hasNonTrivialCopyAssignment()) return false;
   //   -- has no non-trivial move assignment operators, and
-  if (!hasTrivialMoveAssignment()) return false;
+  if (hasNonTrivialMoveAssignment()) return false;
   //   -- has a trivial destructor.
   if (!hasTrivialDestructor()) return false;
 

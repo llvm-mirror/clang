@@ -58,7 +58,7 @@ Driver::Driver(StringRef ClangExecutable,
     CCCIsCPP(false),CCCEcho(false), CCCPrintBindings(false),
     CCPrintOptions(false), CCPrintHeaders(false), CCLogDiagnostics(false),
     CCGenDiagnostics(false), CCCGenericGCCName(""), CheckInputsExist(true),
-    ForcedClangUse(false), CCCUsePCH(true), SuppressMissingInputWarning(false) {
+    CCCUsePCH(true), SuppressMissingInputWarning(false) {
 
   Name = llvm::sys::path::stem(ClangExecutable);
   Dir  = llvm::sys::path::parent_path(ClangExecutable);
@@ -185,7 +185,6 @@ DerivedArgList *Driver::TranslateInputArgs(const InputArgList &Args) const {
     // some build systems. We don't try to be complete here because we don't
     // care to encourage this usage model.
     if (A->getOption().matches(options::OPT_Wp_COMMA) &&
-        A->getNumValues() == 2 &&
         (A->getValue(0) == StringRef("-MD") ||
          A->getValue(0) == StringRef("-MMD"))) {
       // Rewrite to -MD/-MMD along with -MF.
@@ -193,8 +192,9 @@ DerivedArgList *Driver::TranslateInputArgs(const InputArgList &Args) const {
         DAL->AddFlagArg(A, Opts->getOption(options::OPT_MD));
       else
         DAL->AddFlagArg(A, Opts->getOption(options::OPT_MMD));
-      DAL->AddSeparateArg(A, Opts->getOption(options::OPT_MF),
-                          A->getValue(1));
+      if (A->getNumValues() == 2)
+        DAL->AddSeparateArg(A, Opts->getOption(options::OPT_MF),
+                            A->getValue(1));
       continue;
     }
 
@@ -564,7 +564,9 @@ void Driver::PrintOptions(const ArgList &Args) const {
 
 void Driver::PrintHelp(bool ShowHidden) const {
   getOpts().PrintHelp(llvm::outs(), Name.c_str(), DriverTitle.c_str(),
-                      ShowHidden);
+                      /*Include*/0,
+                      /*Exclude*/options::NoDriverOption |
+                      (ShowHidden ? 0 : options::HelpHidden));
 }
 
 void Driver::PrintVersion(const Compilation &C, raw_ostream &OS) const {
@@ -806,7 +808,7 @@ void Driver::BuildUniversalActions(const ToolChain &TC,
   // When there is no explicit arch for this platform, make sure we still bind
   // the architecture (to the default) so that -Xarch_ is handled correctly.
   if (!Archs.size())
-    Archs.push_back(Args.MakeArgString(TC.getArchName()));
+    Archs.push_back(Args.MakeArgString(TC.getDefaultUniversalArchName()));
 
   // FIXME: We killed off some others but these aren't yet detected in a
   // functional manner. If we added information to jobs about which "auxiliary"

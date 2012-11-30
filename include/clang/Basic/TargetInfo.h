@@ -109,7 +109,7 @@ public:
   /// modify the options to canonicalize the target feature information to match
   /// what the backend expects.
   static TargetInfo* CreateTargetInfo(DiagnosticsEngine &Diags,
-                                      TargetOptions &Opts);
+                                      TargetOptions *Opts);
 
   virtual ~TargetInfo();
 
@@ -119,8 +119,8 @@ public:
     return *TargetOpts; 
   }
 
-  void setTargetOpts(TargetOptions &TargetOpts) {
-    this->TargetOpts = &TargetOpts;
+  void setTargetOpts(TargetOptions *TargetOpts) {
+    this->TargetOpts = TargetOpts;
   }
 
   ///===---- Target Data Type Query Methods -------------------------------===//
@@ -517,6 +517,10 @@ public:
   bool validateInputConstraint(ConstraintInfo *OutputConstraints,
                                unsigned NumOutputs,
                                ConstraintInfo &info) const;
+  virtual bool validateInputSize(StringRef /*Constraint*/,
+                                 unsigned /*Size*/) const {
+    return true;
+  }
   virtual bool validateConstraintModifier(StringRef /*Constraint*/,
                                           const char /*Modifier*/,
                                           unsigned /*Size*/) const {

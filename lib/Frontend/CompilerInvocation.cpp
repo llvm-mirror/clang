@@ -11,6 +11,7 @@
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/Version.h"
 #include "clang/Basic/FileManager.h"
+#include "clang/Lex/HeaderSearchOptions.h"
 #include "clang/Driver/Arg.h"
 #include "clang/Driver/ArgList.h"
 #include "clang/Driver/Options.h"
@@ -20,6 +21,7 @@
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/LangStandard.h"
 #include "clang/Serialization/ASTReader.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -444,6 +446,18 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
     }
   }
 
+  if (Arg *A = Args.getLastArg(OPT_ffp_contract)) {
+    StringRef Val = A->getValue();
+    if (Val == "fast")
+      Opts.setFPContractMode(CodeGenOptions::FPC_Fast);
+    else if (Val == "on")
+      Opts.setFPContractMode(CodeGenOptions::FPC_On);
+    else if (Val == "off")
+      Opts.setFPContractMode(CodeGenOptions::FPC_Off);
+    else
+      Diags.Report(diag::err_drv_invalid_value) << A->getAsString(Args) << Val;
+  }
+
   return Success;
 }
 
@@ -536,6 +550,7 @@ bool clang::ParseDiagnosticArgs(DiagnosticOptions &Opts, ArgList &Args,
   
   Opts.ShowSourceRanges = Args.hasArg(OPT_fdiagnostics_print_source_range_info);
   Opts.ShowParseableFixits = Args.hasArg(OPT_fdiagnostics_parseable_fixits);
+  Opts.ShowPresumedLoc = !Args.hasArg(OPT_fno_diagnostics_use_presumed_location);
   Opts.VerifyDiagnostics = Args.hasArg(OPT_verify);
   Opts.ElideType = !Args.hasArg(OPT_fno_elide_type);
   Opts.ShowTemplateTree = Args.hasArg(OPT_fdiagnostics_show_template_tree);
@@ -939,7 +954,7 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
   }
 
   const LangStandard &Std = LangStandard::getLangStandardForKind(LangStd);
-  Opts.BCPLComment = Std.hasBCPLComments();
+  Opts.LineComment = Std.hasLineComments();
   Opts.C99 = Std.isC99();
   Opts.C11 = Std.isC11();
   Opts.CPlusPlus = Std.isCPlusPlus();
@@ -1135,18 +1150,6 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
     Diags.Report(diag::err_drv_invalid_value)
       << Args.getLastArg(OPT_fvisibility)->getAsString(Args) << Vis;
 
-  if (Arg *A = Args.getLastArg(OPT_ffp_contract)) {
-    StringRef Val = A->getValue();
-    if (Val == "fast")
-      Opts.setFPContractMode(LangOptions::FPC_Fast);
-    else if (Val == "on")
-      Opts.setFPContractMode(LangOptions::FPC_On);
-    else if (Val == "off")
-      Opts.setFPContractMode(LangOptions::FPC_Off);
-    else
-      Diags.Report(diag::err_drv_invalid_value) << A->getAsString(Args) << Val;
-  }
-
   if (Args.hasArg(OPT_fvisibility_inlines_hidden))
     Opts.InlineVisibilityHidden = 1;
 
@@ -1211,7 +1214,8 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
     Args.getLastArgValue(OPT_fconstant_string_class);
   Opts.ObjCDefaultSynthProperties =
     Args.hasArg(OPT_fobjc_default_synthesize_properties);
-  Opts.CatchUndefined = Args.hasArg(OPT_fcatch_undefined_behavior);
+  Opts.EncodeExtendedBlockSig =
+    Args.hasArg(OPT_fencode_extended_block_signature);
   Opts.EmitAllDecls = Args.hasArg(OPT_femit_all_decls);
   Opts.PackStruct = Args.getLastArgIntValue(OPT_fpack_struct_EQ, 0, Diags);
   Opts.PICLevel = Args.getLastArgIntValue(OPT_pic_level, 0, Diags);
@@ -1232,8 +1236,6 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.DebuggerSupport = Args.hasArg(OPT_fdebugger_support);
   Opts.DebuggerCastResultToId = Args.hasArg(OPT_fdebugger_cast_result_to_id);
   Opts.DebuggerObjCLiteral = Args.hasArg(OPT_fdebugger_objc_literal);
-  Opts.AddressSanitizer = Args.hasArg(OPT_faddress_sanitizer);
-  Opts.ThreadSanitizer = Args.hasArg(OPT_fthread_sanitizer);
   Opts.ApplePragmaPack = Args.hasArg(OPT_fapple_pragma_pack);
   Opts.CurrentModule = Args.getLastArgValue(OPT_fmodule_name);
 
@@ -1270,6 +1272,37 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   case 0: Opts.setStackProtector(LangOptions::SSPOff); break;
   case 1: Opts.setStackProtector(LangOptions::SSPOn);  break;
   case 2: Opts.setStackProtector(LangOptions::SSPReq); break;
+  }
+
+  // Parse -fsanitize= arguments.
+  std::vector<std::string> Sanitizers = Args.getAllArgValues(OPT_fsanitize_EQ);
+  for (unsigned I = 0, N = Sanitizers.size(); I != N; ++I) {
+    // Since the Opts.Sanitize* values are bitfields, it's a little tricky to
+    // efficiently map string values to them. Perform the mapping indirectly:
+    // convert strings to enumerated values, then switch over the enum to set
+    // the right bitfield value.
+    enum Sanitizer {
+#define SANITIZER(NAME, ID) \
+      ID,
+#include "clang/Basic/Sanitizers.def"
+      Unknown
+    };
+    switch (llvm::StringSwitch<unsigned>(Sanitizers[I])
+#define SANITIZER(NAME, ID) \
+              .Case(NAME, ID)
+#include "clang/Basic/Sanitizers.def"
+              .Default(Unknown)) {
+#define SANITIZER(NAME, ID) \
+    case ID: \
+      Opts.Sanitize##ID = true; \
+      break;
+#include "clang/Basic/Sanitizers.def"
+
+    case Unknown:
+      Diags.Report(diag::err_drv_invalid_value)
+        << "-fsanitize=" << Sanitizers[I];
+      break;
+    }
   }
 }
 
@@ -1511,54 +1544,49 @@ llvm::APInt ModuleSignature::getAsInteger() const {
 }
 
 std::string CompilerInvocation::getModuleHash() const {
-  ModuleSignature Signature;
-  
+  using llvm::hash_code;
+  using llvm::hash_value;
+  using llvm::hash_combine;
+
   // Start the signature with the compiler version.
-  // FIXME: The full version string can be quite long.  Omit it from the
-  // module hash for now to avoid failures where the path name becomes too
-  // long.  An MD5 or similar checksum would work well here.
-  // Signature.add(getClangFullRepositoryVersion());
-  
+  // FIXME: We'd rather use something more cryptographically sound than
+  // CityHash, but this will do for now.
+  hash_code code = hash_value(getClangFullRepositoryVersion());
+
   // Extend the signature with the language options
 #define LANGOPT(Name, Bits, Default, Description) \
-  Signature.add(LangOpts->Name, Bits);
+   code = hash_combine(code, LangOpts->Name);
 #define ENUM_LANGOPT(Name, Type, Bits, Default, Description) \
-  Signature.add(static_cast<unsigned>(LangOpts->get##Name()), Bits);
+  code = hash_combine(code, static_cast<unsigned>(LangOpts->get##Name()));
 #define BENIGN_LANGOPT(Name, Bits, Default, Description)
 #define BENIGN_ENUM_LANGOPT(Name, Type, Bits, Default, Description)
 #include "clang/Basic/LangOptions.def"
   
-  // Extend the signature with the target triple
-  // FIXME: Add target options.
-  llvm::Triple T(TargetOpts->Triple);
-  Signature.add((unsigned)T.getArch(), 5);
-  Signature.add((unsigned)T.getVendor(), 4);
-  Signature.add((unsigned)T.getOS(), 5);
-  Signature.add((unsigned)T.getEnvironment(), 4);
+  // Extend the signature with the target options.
+  code = hash_combine(code, TargetOpts->Triple, TargetOpts->CPU,
+                      TargetOpts->ABI, TargetOpts->CXXABI,
+                      TargetOpts->LinkerVersion);
+  for (unsigned i = 0, n = TargetOpts->FeaturesAsWritten.size(); i != n; ++i)
+    code = hash_combine(code, TargetOpts->FeaturesAsWritten[i]);
 
   // Extend the signature with preprocessor options.
-  Signature.add(getPreprocessorOpts().UsePredefines, 1);
-  Signature.add(getPreprocessorOpts().DetailedRecord, 1);
-  
-  // Hash the preprocessor defines.
-  // FIXME: This is terrible. Use an MD5 sum of the preprocessor defines.
+  const PreprocessorOptions &ppOpts = getPreprocessorOpts();
+  code = hash_combine(code, ppOpts.UsePredefines, ppOpts.DetailedRecord);
+
   std::vector<StringRef> MacroDefs;
   for (std::vector<std::pair<std::string, bool/*isUndef*/> >::const_iterator 
             I = getPreprocessorOpts().Macros.begin(),
          IEnd = getPreprocessorOpts().Macros.end();
        I != IEnd; ++I) {
-    if (!I->second)
-      MacroDefs.push_back(I->first);
+    code = hash_combine(code, I->first, I->second);
   }
-  llvm::array_pod_sort(MacroDefs.begin(), MacroDefs.end());
-       
-  unsigned PPHashResult = 0;
-  for (unsigned I = 0, N = MacroDefs.size(); I != N; ++I)
-    PPHashResult = llvm::HashString(MacroDefs[I], PPHashResult);
-  Signature.add(PPHashResult, 32);
-  
-  // We've generated the signature. Treat it as one large APInt that we'll
-  // encode in base-36 and return.
-  Signature.flush();
-  return Signature.getAsInteger().toString(36, /*Signed=*/false);
+
+  // Extend the signature with the sysroot.
+  const HeaderSearchOptions &hsOpts = getHeaderSearchOpts();
+  code = hash_combine(code, hsOpts.Sysroot, hsOpts.UseBuiltinIncludes,
+                      hsOpts.UseStandardSystemIncludes,
+                      hsOpts.UseStandardCXXIncludes,
+                      hsOpts.UseLibcxx);
+
+  return llvm::APInt(64, code).toString(36, /*Signed=*/false);
 }
