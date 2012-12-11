@@ -14,18 +14,19 @@
 
 #include "ClangSACheckers.h"
 #include "InterCheckerAPI.h"
+#include "clang/AST/Attr.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SymbolManager.h"
-#include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/ImmutableMap.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include <climits>
 
@@ -498,6 +499,9 @@ static bool isFreeWhenDoneSetToZero(const ObjCMethodCall &Call) {
 
 void MallocChecker::checkPostObjCMessage(const ObjCMethodCall &Call,
                                          CheckerContext &C) const {
+  if (C.wasInlined)
+    return;
+
   // If the first selector is dataWithBytesNoCopy, assume that the memory will
   // be released with 'free' by the new object.
   // Ex:  [NSData dataWithBytesNoCopy:bytes length:10];
@@ -627,8 +631,8 @@ ProgramStateRef MallocChecker::FreeMemAux(CheckerContext &C,
 
 /// Checks if the previous call to free on the given symbol failed - if free
 /// failed, returns true. Also, returns the corresponding return value symbol.
-bool didPreviousFreeFail(ProgramStateRef State,
-                         SymbolRef Sym, SymbolRef &RetStatusSymbol) {
+static bool didPreviousFreeFail(ProgramStateRef State,
+                                SymbolRef Sym, SymbolRef &RetStatusSymbol) {
   const SymbolRef *Ret = State->get<FreeReturnValue>(Sym);
   if (Ret) {
     assert(*Ret && "We should not store the null return symbol");
@@ -1203,7 +1207,7 @@ void MallocChecker::checkPostStmt(const BlockExpr *BE,
   MemRegionManager &MemMgr = C.getSValBuilder().getRegionManager();
 
   for ( ; I != E; ++I) {
-    const VarRegion *VR = *I;
+    const VarRegion *VR = I.getCapturedRegion();
     if (VR->getSuperRegion() == R) {
       VR = MemMgr.getVarRegion(VR->getDecl(), LC);
     }

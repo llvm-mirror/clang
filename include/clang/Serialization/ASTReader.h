@@ -14,33 +14,33 @@
 #ifndef LLVM_CLANG_FRONTEND_AST_READER_H
 #define LLVM_CLANG_FRONTEND_AST_READER_H
 
-#include "clang/Serialization/ASTBitCodes.h"
-#include "clang/Serialization/ContinuousRangeMap.h"
-#include "clang/Serialization/Module.h"
-#include "clang/Serialization/ModuleManager.h"
-#include "clang/Sema/ExternalSemaSource.h"
-#include "clang/AST/DeclarationName.h"
 #include "clang/AST/DeclObjC.h"
+#include "clang/AST/DeclarationName.h"
 #include "clang/AST/TemplateBase.h"
-#include "clang/Lex/ExternalPreprocessorSource.h"
-#include "clang/Lex/HeaderSearch.h"
-#include "clang/Lex/PPMutationListener.h"
-#include "clang/Lex/PreprocessingRecord.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Lex/ExternalPreprocessorSource.h"
+#include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/PPMutationListener.h"
+#include "clang/Lex/PreprocessingRecord.h"
+#include "clang/Sema/ExternalSemaSource.h"
+#include "clang/Serialization/ASTBitCodes.h"
+#include "clang/Serialization/ContinuousRangeMap.h"
+#include "clang/Serialization/Module.h"
+#include "clang/Serialization/ModuleManager.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/Bitcode/BitstreamReader.h"
 #include "llvm/Support/DataTypes.h"
 #include <deque>
@@ -85,6 +85,7 @@ class TypeLocReader;
 struct HeaderFileInfo;
 class VersionTuple;
 class TargetOptions;
+class ASTUnresolvedSet;
 
 /// \brief Abstract interface for callback invocations by the ASTReader.
 ///
@@ -1545,6 +1546,10 @@ public:
   /// \brief Read the source location entry with index ID.
   virtual bool ReadSLocEntry(int ID);
 
+  /// \brief Retrieve the module import location and module name for the
+  /// given source manager entry ID.
+  virtual std::pair<SourceLocation, StringRef> getModuleImportLoc(int ID);
+
   /// \brief Retrieve the global submodule ID given a module and its local ID
   /// number.
   serialization::SubmoduleID 
@@ -1612,7 +1617,7 @@ public:
                            unsigned &Idx);
 
   /// \brief Read a UnresolvedSet structure.
-  void ReadUnresolvedSet(ModuleFile &F, UnresolvedSetImpl &Set,
+  void ReadUnresolvedSet(ModuleFile &F, ASTUnresolvedSet &Set,
                          const RecordData &Record, unsigned &Idx);
 
   /// \brief Read a C++ base specifier.

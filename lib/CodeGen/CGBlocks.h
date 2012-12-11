@@ -14,19 +14,18 @@
 #ifndef CLANG_CODEGEN_CGBLOCKS_H
 #define CLANG_CODEGEN_CGBLOCKS_H
 
+#include "CGBuilder.h"
+#include "CGCall.h"
+#include "CGValue.h"
+#include "CodeGenFunction.h"
 #include "CodeGenTypes.h"
-#include "clang/AST/Type.h"
-#include "llvm/Module.h"
-#include "clang/Basic/TargetInfo.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExprObjC.h"
-
-#include "CodeGenFunction.h"
-#include "CGBuilder.h"
-#include "CGCall.h"
-#include "CGValue.h"
+#include "clang/AST/Type.h"
+#include "clang/Basic/TargetInfo.h"
+#include "llvm/Module.h"
 
 namespace llvm {
   class Module;
@@ -212,6 +211,14 @@ public:
   const BlockExpr *BlockExpression;
   CharUnits BlockSize;
   CharUnits BlockAlign;
+  
+  // Offset of the gap caused by block header having a smaller
+  // alignment than the alignment of the block descriptor. This
+  // is the gap offset before the first capturued field.
+  CharUnits BlockHeaderForcedGapOffset;
+  // Gap size caused by aligning first field after block header.
+  // This could be zero if no forced alignment is required.
+  CharUnits BlockHeaderForcedGapSize;
 
   /// An instruction which dominates the full-expression that the
   /// block is inside.

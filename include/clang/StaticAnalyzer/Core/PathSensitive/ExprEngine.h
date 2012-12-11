@@ -16,15 +16,15 @@
 #ifndef LLVM_CLANG_GR_EXPRENGINE
 #define LLVM_CLANG_GR_EXPRENGINE
 
+#include "clang/AST/Expr.h"
+#include "clang/AST/Type.h"
 #include "clang/Analysis/DomainSpecific/ObjCNoReturn.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/SubEngine.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CoreEngine.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
-#include "clang/AST/Expr.h"
-#include "clang/AST/Type.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SubEngine.h"
 
 namespace clang {
 
@@ -46,6 +46,16 @@ class CallEvent;
 class SimpleCall;
 
 class ExprEngine : public SubEngine {
+public:
+  /// The modes of inlining.
+  enum InliningModes {
+    /// Do not inline any of the callees.
+    Inline_None = 0,
+    /// Inline all callees.
+    Inline_All = 0x1
+  } ;
+
+private:
   AnalysisManager &AMgr;
   
   AnalysisDeclContextManager &AnalysisDeclContexts;
@@ -64,15 +74,6 @@ class ExprEngine : public SubEngine {
   /// svalBuilder - SValBuilder object that creates SVals from expressions.
   SValBuilder &svalBuilder;
 
-  /// EntryNode - The immediate predecessor node.
-  ExplodedNode *EntryNode;
-
-  /// CleanedState - The state for EntryNode "cleaned" of all dead
-  ///  variables and symbols (as determined by a liveness analysis).
-  ProgramStateRef CleanedState;
-
-  /// currStmt - The current block-level statement.
-  const Stmt *currStmt;
   unsigned int currStmtIdx;
   const NodeBuilderContext *currBldrCtx;
   
@@ -92,10 +93,14 @@ class ExprEngine : public SubEngine {
   /// AnalysisConsumer. It can be null.
   SetOfConstDecls *VisitedCallees;
 
+  /// The flag, which specifies the mode of inlining for the engine.
+  InliningModes HowToInline;
+
 public:
   ExprEngine(AnalysisManager &mgr, bool gcEnabled,
              SetOfConstDecls *VisitedCalleesIn,
-             FunctionSummariesTy *FS);
+             FunctionSummariesTy *FS,
+             InliningModes HowToInlineIn);
 
   ~ExprEngine();
 

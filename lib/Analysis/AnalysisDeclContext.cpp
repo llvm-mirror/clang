@@ -12,24 +12,23 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/Analysis/AnalysisContext.h"
+#include "BodyFarm.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ParentMap.h"
 #include "clang/AST/StmtVisitor.h"
+#include "clang/Analysis/Analyses/CFGReachabilityAnalysis.h"
 #include "clang/Analysis/Analyses/LiveVariables.h"
 #include "clang/Analysis/Analyses/PseudoConstantAnalysis.h"
-#include "clang/Analysis/Analyses/CFGReachabilityAnalysis.h"
-#include "clang/Analysis/AnalysisContext.h"
 #include "clang/Analysis/CFG.h"
 #include "clang/Analysis/CFGStmtMap.h"
 #include "clang/Analysis/Support/BumpVector.h"
-#include "llvm/Support/SaveAndRestore.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/ErrorHandling.h"
-
-#include "BodyFarm.h"
+#include "llvm/Support/SaveAndRestore.h"
 
 using namespace clang;
 
@@ -403,9 +402,6 @@ public:
       if (!VD->hasLocalStorage()) {
         if (Visited.insert(VD))
           BEVals.push_back(VD, BC);
-      } else if (DR->refersToEnclosingLocal()) {
-        if (Visited.insert(VD) && IsTrackedDecl(VD))
-          BEVals.push_back(VD, BC);
       }
     }
   }
@@ -440,7 +436,13 @@ static DeclVec* LazyInitializeReferencedDecls(const BlockDecl *BD,
   DeclVec *BV = (DeclVec*) A.Allocate<DeclVec>();
   new (BV) DeclVec(BC, 10);
 
-  // Find the referenced variables.
+  // Go through the capture list.
+  for (BlockDecl::capture_const_iterator CI = BD->capture_begin(),
+       CE = BD->capture_end(); CI != CE; ++CI) {
+    BV->push_back(CI->getVariable(), BC);
+  }
+
+  // Find the referenced global/static variables.
   FindBlockDeclRefExprsVals F(*BV, BC);
   F.Visit(BD->getBody());
 

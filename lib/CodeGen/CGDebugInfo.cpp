@@ -12,30 +12,30 @@
 //===----------------------------------------------------------------------===//
 
 #include "CGDebugInfo.h"
-#include "CodeGenFunction.h"
-#include "CodeGenModule.h"
 #include "CGBlocks.h"
 #include "CGObjCRuntime.h"
+#include "CodeGenFunction.h"
+#include "CodeGenModule.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclFriend.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/RecordLayout.h"
-#include "clang/Basic/SourceManager.h"
 #include "clang/Basic/FileManager.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Basic/Version.h"
 #include "clang/Frontend/CodeGenOptions.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Constants.h"
+#include "llvm/DataLayout.h"
 #include "llvm/DerivedTypes.h"
 #include "llvm/Instructions.h"
 #include "llvm/Intrinsics.h"
 #include "llvm/Module.h"
-#include "llvm/ADT/StringExtras.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Dwarf.h"
 #include "llvm/Support/FileSystem.h"
-#include "llvm/DataLayout.h"
 using namespace clang;
 using namespace clang::CodeGen;
 
@@ -1473,23 +1473,19 @@ llvm::DIType CGDebugInfo::CreateType(const ObjCInterfaceType *Ty,
 
 llvm::DIType CGDebugInfo::CreateType(const VectorType *Ty, llvm::DIFile Unit) {
   llvm::DIType ElementTy = getOrCreateType(Ty->getElementType(), Unit);
-  int64_t NumElems = Ty->getNumElements();
-  int64_t LowerBound = 0;
-  if (NumElems == 0)
+  int64_t Count = Ty->getNumElements();
+  if (Count == 0)
     // If number of elements are not known then this is an unbounded array.
-    // Use Low = 1, Hi = 0 to express such arrays.
-    LowerBound = 1;
-  else
-    --NumElems;
+    // Use Count == -1 to express such arrays.
+    Count = -1;
 
-  llvm::Value *Subscript = DBuilder.getOrCreateSubrange(LowerBound, NumElems);
+  llvm::Value *Subscript = DBuilder.getOrCreateSubrange(0, Count);
   llvm::DIArray SubscriptArray = DBuilder.getOrCreateArray(Subscript);
 
   uint64_t Size = CGM.getContext().getTypeSize(Ty);
   uint64_t Align = CGM.getContext().getTypeAlign(Ty);
 
-  return
-    DBuilder.createVectorType(Size, Align, ElementTy, SubscriptArray);
+  return DBuilder.createVectorType(Size, Align, ElementTy, SubscriptArray);
 }
 
 llvm::DIType CGDebugInfo::CreateType(const ArrayType *Ty,
@@ -1523,19 +1519,19 @@ llvm::DIType CGDebugInfo::CreateType(const ArrayType *Ty,
   SmallVector<llvm::Value *, 8> Subscripts;
   QualType EltTy(Ty, 0);
   while ((Ty = dyn_cast<ArrayType>(EltTy))) {
-    int64_t UpperBound = 0;
-    int64_t LowerBound = 0;
-    if (const ConstantArrayType *CAT = dyn_cast<ConstantArrayType>(Ty)) {
-      if (CAT->getSize().getZExtValue())
-        UpperBound = CAT->getSize().getZExtValue() - 1;
-    } else
-      // This is an unbounded array. Use Low = 1, Hi = 0 to express such 
-      // arrays.
-      LowerBound = 1;
+    // If the number of elements is known, then count is that number. Otherwise,
+    // it's -1. This allows us to represent a subrange with an array of 0
+    // elements, like this:
+    //
+    //   struct foo {
+    //     int x[0];
+    //   };
+    int64_t Count = -1;         // Count == -1 is an unbounded array.
+    if (const ConstantArrayType *CAT = dyn_cast<ConstantArrayType>(Ty))
+      Count = CAT->getSize().getZExtValue();
     
     // FIXME: Verify this is right for VLAs.
-    Subscripts.push_back(DBuilder.getOrCreateSubrange(LowerBound,
-                                                      UpperBound));
+    Subscripts.push_back(DBuilder.getOrCreateSubrange(0, Count));
     EltTy = Ty->getElementType();
   }
 
@@ -2229,7 +2225,7 @@ void CGDebugInfo::EmitFunctionEnd(CGBuilderTy &Builder) {
 
 // EmitTypeForVarWithBlocksAttr - Build up structure info for the byref.  
 // See BuildByRefType.
-llvm::DIType CGDebugInfo::EmitTypeForVarWithBlocksAttr(const ValueDecl *VD,
+llvm::DIType CGDebugInfo::EmitTypeForVarWithBlocksAttr(const VarDecl *VD,
                                                        uint64_t *XOffset) {
 
   SmallVector<llvm::Value *, 5> EltTys;
@@ -2248,7 +2244,7 @@ llvm::DIType CGDebugInfo::EmitTypeForVarWithBlocksAttr(const ValueDecl *VD,
   EltTys.push_back(CreateMemberType(Unit, FType, "__flags", &FieldOffset));
   EltTys.push_back(CreateMemberType(Unit, FType, "__size", &FieldOffset));
 
-  bool HasCopyAndDispose = CGM.getContext().BlockRequiresCopying(Type);
+  bool HasCopyAndDispose = CGM.getContext().BlockRequiresCopying(Type, VD);
   if (HasCopyAndDispose) {
     FType = CGM.getContext().getPointerType(CGM.getContext().VoidTy);
     EltTys.push_back(CreateMemberType(Unit, FType, "__copy_helper",

@@ -11,15 +11,15 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CGDebugInfo.h"
-#include "CodeGenFunction.h"
-#include "CGObjCRuntime.h"
-#include "CodeGenModule.h"
 #include "CGBlocks.h"
+#include "CGDebugInfo.h"
+#include "CGObjCRuntime.h"
+#include "CodeGenFunction.h"
+#include "CodeGenModule.h"
 #include "clang/AST/DeclObjC.h"
-#include "llvm/Module.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/DataLayout.h"
+#include "llvm/Module.h"
 #include <algorithm>
 #include <cstdio>
 
@@ -428,7 +428,11 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
   // to get reproducible results.  There should probably be an
   // llvm::array_pod_stable_sort.
   std::stable_sort(layout.begin(), layout.end());
-
+  
+  // Needed for blocks layout info.
+  info.BlockHeaderForcedGapOffset = info.BlockSize;
+  info.BlockHeaderForcedGapSize = CharUnits::Zero();
+  
   CharUnits &blockSize = info.BlockSize;
   info.BlockAlign = std::max(maxFieldAlign, info.BlockAlign);
 
@@ -469,17 +473,22 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
         endAlign = getLowBit(blockSize);
 
         // ...until we get to the alignment of the maximum field.
-        if (endAlign >= maxFieldAlign)
+        if (endAlign >= maxFieldAlign) {
+          if (li == first) {
+            // No user field was appended. So, a gap was added.
+            // Save total gap size for use in block layout bit map.
+            info.BlockHeaderForcedGapSize = li->Size;
+          }
           break;
+        }
       }
-
       // Don't re-append everything we just appended.
       layout.erase(first, li);
     }
   }
 
   assert(endAlign == getLowBit(blockSize));
-
+  
   // At this point, we just have to add padding if the end align still
   // isn't aligned right.
   if (endAlign < maxFieldAlign) {
@@ -494,7 +503,6 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
 
   assert(endAlign >= maxFieldAlign);
   assert(endAlign == getLowBit(blockSize));
-
   // Slam everything else on now.  This works because they have
   // strictly decreasing alignment and we expect that size is always a
   // multiple of alignment.
@@ -897,7 +905,7 @@ RValue CodeGenFunction::EmitBlockCallExpr(const CallExpr* E,
 
   const FunctionType *FuncTy = FnType->castAs<FunctionType>();
   const CGFunctionInfo &FnInfo =
-    CGM.getTypes().arrangeFreeFunctionCall(Args, FuncTy);
+    CGM.getTypes().arrangeBlockFunctionCall(Args, FuncTy);
 
   // Cast the function pointer to the right type.
   llvm::Type *BlockFTy = CGM.getTypes().GetFunctionType(FnInfo);
@@ -1922,9 +1930,8 @@ llvm::Type *CodeGenFunction::BuildByRefType(const VarDecl *D) {
     
   // int32_t __size;
   types.push_back(Int32Ty);
-
-  bool HasCopyAndDispose =
-       (Ty->isObjCRetainableType()) || getContext().getBlockVarCopyInits(D);
+  // Note that this must match *exactly* the logic in buildByrefHelpers.
+  bool HasCopyAndDispose = getContext().BlockRequiresCopying(Ty, D);
   if (HasCopyAndDispose) {
     /// void *__copy_helper;
     types.push_back(Int8PtrTy);

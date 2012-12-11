@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsanitize=signed-integer-overflow,divide-by-zero,shift,unreachable,return,vla-bound,alignment,null,vptr,object-size,float-cast-overflow -emit-llvm %s -o - -triple x86_64-linux-gnu | FileCheck %s
+// RUN: %clang_cc1 -fsanitize=signed-integer-overflow,integer-divide-by-zero,float-divide-by-zero,shift,unreachable,return,vla-bound,alignment,null,vptr,object-size,float-cast-overflow -emit-llvm %s -o - -triple x86_64-linux-gnu | FileCheck %s
 
 // CHECK: @_Z17reference_binding
 void reference_binding(int *p) {
@@ -69,7 +69,9 @@ void member_access(S *p) {
   // CHECK-NEXT: icmp eq i64 %[[CACHEVAL]], %[[HASH]]
   // CHECK-NEXT: br i1
 
-  // CHECK: call void @__ubsan_handle_dynamic_type_cache_miss({{.*}}, i64 %{{.*}}, i64 %[[HASH]])
+  // CHECK: call void @__ubsan_handle_dynamic_type_cache_miss_abort({{.*}}, i64 %{{.*}}, i64 %[[HASH]])
+  // CHECK-NOT: unreachable
+  // CHECK: {{.*}}:
 
   // (2) Check 'p->b' is appropriately sized and aligned for a load.
 
@@ -102,7 +104,9 @@ void member_access(S *p) {
   // [...]
   // CHECK: getelementptr inbounds [128 x i64]* @__ubsan_vptr_type_cache, i32 0, i64 %
   // CHECK: br i1
-  // CHECK: call void @__ubsan_handle_dynamic_type_cache_miss({{.*}}, i64 %{{.*}}, i64 %{{.*}})
+  // CHECK: call void @__ubsan_handle_dynamic_type_cache_miss_abort({{.*}}, i64 %{{.*}}, i64 %{{.*}})
+  // CHECK-NOT: unreachable
+  // CHECK: {{.*}}:
 
   k = p->f();
 }

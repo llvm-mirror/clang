@@ -15,21 +15,21 @@
 
 #define DEBUG_TYPE "ExprEngine"
 
-#include "clang/StaticAnalyzer/Core/CheckerManager.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/ParentMap.h"
-#include "clang/AST/StmtObjC.h"
 #include "clang/AST/StmtCXX.h"
+#include "clang/AST/StmtObjC.h"
 #include "clang/Basic/Builtins.h"
-#include "clang/Basic/SourceManager.h"
 #include "clang/Basic/PrettyStackTrace.h"
-#include "llvm/Support/raw_ostream.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
+#include "clang/StaticAnalyzer/Core/CheckerManager.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/Support/raw_ostream.h"
 
 #ifndef NDEBUG
 #include "llvm/Support/GraphWriter.h"
@@ -56,7 +56,8 @@ STATISTIC(NumTimesRetriedWithoutInlining,
 
 ExprEngine::ExprEngine(AnalysisManager &mgr, bool gcEnabled,
                        SetOfConstDecls *VisitedCalleesIn,
-                       FunctionSummariesTy *FS)
+                       FunctionSummariesTy *FS,
+                       InliningModes HowToInlineIn)
   : AMgr(mgr),
     AnalysisDeclContexts(mgr.getAnalysisDeclContextManager()),
     Engine(*this, FS),
@@ -66,11 +67,11 @@ ExprEngine::ExprEngine(AnalysisManager &mgr, bool gcEnabled,
              this),
     SymMgr(StateMgr.getSymbolManager()),
     svalBuilder(StateMgr.getSValBuilder()),
-    EntryNode(NULL),
-    currStmt(NULL), currStmtIdx(0), currBldrCtx(0),
+    currStmtIdx(0), currBldrCtx(0),
     ObjCNoRet(mgr.getASTContext()),
     ObjCGCEnabled(gcEnabled), BR(mgr, *this),
-    VisitedCallees(VisitedCalleesIn)
+    VisitedCallees(VisitedCalleesIn),
+    HowToInline(HowToInlineIn)
 {
   unsigned TrimInterval = mgr.options.getGraphTrimInterval();
   if (TrimInterval != 0) {
@@ -282,7 +283,7 @@ void ExprEngine::removeDead(ExplodedNode *Pred, ExplodedNodeSet &Out,
   }
 
   NumRemoveDeadBindings++;
-  CleanedState = Pred->getState();
+  ProgramStateRef CleanedState = Pred->getState();
 
   // LC is the location context being destroyed, but SymbolReaper wants a
   // location context that is still live. (If this is the top-level stack
@@ -353,18 +354,17 @@ void ExprEngine::ProcessStmt(const CFGStmt S,
   // Reclaim any unnecessary nodes in the ExplodedGraph.
   G.reclaimRecentlyAllocatedNodes();
 
-  currStmt = S.getStmt();
+  const Stmt *currStmt = S.getStmt();
   PrettyStackTraceLoc CrashInfo(getContext().getSourceManager(),
                                 currStmt->getLocStart(),
                                 "Error evaluating statement");
 
   // Remove dead bindings and symbols.
-  EntryNode = Pred;
   ExplodedNodeSet CleanedStates;
-  if (shouldRemoveDeadBindings(AMgr, S, Pred, EntryNode->getLocationContext())){
-    removeDead(EntryNode, CleanedStates, currStmt, Pred->getLocationContext());
+  if (shouldRemoveDeadBindings(AMgr, S, Pred, Pred->getLocationContext())){
+    removeDead(Pred, CleanedStates, currStmt, Pred->getLocationContext());
   } else
-    CleanedStates.Add(EntryNode);
+    CleanedStates.Add(Pred);
 
   // Visit the statement.
   ExplodedNodeSet Dst;
@@ -378,11 +378,6 @@ void ExprEngine::ProcessStmt(const CFGStmt S,
 
   // Enqueue the new nodes onto the work list.
   Engine.enqueue(Dst, currBldrCtx->getBlock(), currStmtIdx);
-
-  // NULL out these variables to cleanup.
-  CleanedState = NULL;
-  EntryNode = NULL;
-  currStmt = 0;
 }
 
 void ExprEngine::ProcessInitializer(const CFGInitializer Init,
@@ -393,7 +388,7 @@ void ExprEngine::ProcessInitializer(const CFGInitializer Init,
                                 BMI->getSourceLocation(),
                                 "Error evaluating initializer");
 
-  // We don't set EntryNode and currStmt. And we don't clean up state.
+  // We don't clean up dead bindings here.
   const StackFrameContext *stackFrame =
                            cast<StackFrameContext>(Pred->getLocationContext());
   const CXXConstructorDecl *decl =
@@ -527,16 +522,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
   ExplodedNodeSet Dst;
   StmtNodeBuilder Bldr(Pred, DstTop, *currBldrCtx);
 
-  // Expressions to ignore.
-  if (const Expr *Ex = dyn_cast<Expr>(S))
-    S = Ex->IgnoreParens();
-  
-  // FIXME: add metadata to the CFG so that we can disable
-  //  this check when we KNOW that there is no block-level subexpression.
-  //  The motivation is that this check requires a hashtable lookup.
-
-  if (S != currStmt && Pred->getLocationContext()->getCFG()->isBlkExpr(S))
-    return;
+  assert(!isa<Expr>(S) || S == cast<Expr>(S)->IgnoreParens());
 
   switch (S->getStmtClass()) {
     // C++ and ARC stuff we don't support yet.
@@ -1263,18 +1249,21 @@ void ExprEngine::processBranch(const Stmt *Condition, const Stmt *Term,
 
     DefinedSVal V = cast<DefinedSVal>(X);
 
+    ProgramStateRef StTrue, StFalse;
+    tie(StTrue, StFalse) = PrevState->assume(V);
+
     // Process the true branch.
     if (builder.isFeasible(true)) {
-      if (ProgramStateRef state = PrevState->assume(V, true))
-        builder.generateNode(state, true, PredI);
+      if (StTrue)
+        builder.generateNode(StTrue, true, PredI);
       else
         builder.markInfeasible(true);
     }
 
     // Process the false branch.
     if (builder.isFeasible(false)) {
-      if (ProgramStateRef state = PrevState->assume(V, false))
-        builder.generateNode(state, false, PredI);
+      if (StFalse)
+        builder.generateNode(StFalse, false, PredI);
       else
         builder.markInfeasible(false);
     }
@@ -1736,20 +1725,15 @@ void ExprEngine::evalLoadCommon(ExplodedNodeSet &Dst,
     state = (*NI)->getState();
     const LocationContext *LCtx = (*NI)->getLocationContext();
 
-    if (location.isUnknown()) {
-      // This is important.  We must nuke the old binding.
-      Bldr.generateNode(NodeEx, *NI,
-                        state->BindExpr(BoundEx, LCtx, UnknownVal()),
-                        tag, ProgramPoint::PostLoadKind);
-    }
-    else {
+    SVal V = UnknownVal();
+    if (location.isValid()) {
       if (LoadTy.isNull())
         LoadTy = BoundEx->getType();
-      SVal V = state->getSVal(cast<Loc>(location), LoadTy);
-      Bldr.generateNode(NodeEx, *NI,
-                        state->bindExprAndLocation(BoundEx, LCtx, location, V),
-                        tag, ProgramPoint::PostLoadKind);
+      V = state->getSVal(cast<Loc>(location), LoadTy);
     }
+
+    Bldr.generateNode(NodeEx, *NI, state->BindExpr(BoundEx, LCtx, V), tag,
+                      ProgramPoint::PostLoadKind);
   }
 }
 
@@ -1820,15 +1804,18 @@ void ExprEngine::evalEagerlyAssumeBinOpBifurcation(ExplodedNodeSet &Dst,
       const std::pair<const ProgramPointTag *, const ProgramPointTag*> &tags =
         geteagerlyAssumeBinOpBifurcationTags();
 
+      ProgramStateRef StateTrue, StateFalse;
+      tie(StateTrue, StateFalse) = state->assume(*SEV);
+
       // First assume that the condition is true.
-      if (ProgramStateRef StateTrue = state->assume(*SEV, true)) {
+      if (StateTrue) {
         SVal Val = svalBuilder.makeIntVal(1U, Ex->getType());        
         StateTrue = StateTrue->BindExpr(Ex, Pred->getLocationContext(), Val);
         Bldr.generateNode(Ex, Pred, StateTrue, tags.first);
       }
 
       // Next, assume that the condition is false.
-      if (ProgramStateRef StateFalse = state->assume(*SEV, false)) {
+      if (StateFalse) {
         SVal Val = svalBuilder.makeIntVal(0U, Ex->getType());
         StateFalse = StateFalse->BindExpr(Ex, Pred->getLocationContext(), Val);
         Bldr.generateNode(Ex, Pred, StateFalse, tags.second);

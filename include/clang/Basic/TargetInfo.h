@@ -15,20 +15,20 @@
 #ifndef LLVM_CLANG_BASIC_TARGETINFO_H
 #define LLVM_CLANG_BASIC_TARGETINFO_H
 
+#include "clang/Basic/AddressSpaces.h"
 #include "clang/Basic/LLVM.h"
+#include "clang/Basic/Specifiers.h"
+#include "clang/Basic/TargetOptions.h"
+#include "clang/Basic/VersionTuple.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Support/DataTypes.h"
-#include "clang/Basic/AddressSpaces.h"
-#include "clang/Basic/TargetOptions.h"
-#include "clang/Basic/VersionTuple.h"
-#include "clang/Basic/Specifiers.h"
 #include <cassert>
-#include <vector>
 #include <string>
+#include <vector>
 
 namespace llvm {
 struct fltSemantics;
@@ -172,7 +172,8 @@ public:
 
 protected:
   IntType SizeType, IntMaxType, UIntMaxType, PtrDiffType, IntPtrType, WCharType,
-          WIntType, Char16Type, Char32Type, Int64Type, SigAtomicType;
+          WIntType, Char16Type, Char32Type, Int64Type, SigAtomicType,
+          ProcessIDType;
 
   /// \brief Whether Objective-C's built-in boolean type should be signed char.
   ///
@@ -213,7 +214,7 @@ public:
   IntType getChar32Type() const { return Char32Type; }
   IntType getInt64Type() const { return Int64Type; }
   IntType getSigAtomicType() const { return SigAtomicType; }
-
+  IntType getProcessIDType() const { return ProcessIDType; }
 
   /// \brief Return the width (in bits) of the specified integer type enum.
   ///
@@ -268,6 +269,9 @@ public:
   /// 'unsigned long long' for this target, in bits.
   unsigned getLongLongWidth() const { return LongLongWidth; }
   unsigned getLongLongAlign() const { return LongLongAlign; }
+
+  /// \brief Determine whether the __int128 type is supported on this target.
+  bool hasInt128Type() const { return getPointerWidth(0) >= 64; } // FIXME
 
   /// \brief Return the alignment that is suitable for storing any
   /// object with a fundamental alignment requirement.
@@ -738,13 +742,19 @@ public:
 
   bool isBigEndian() const { return BigEndian; }
 
+  enum CallingConvMethodType {
+    CCMT_Unknown,
+    CCMT_Member,
+    CCMT_NonMember
+  };
+
   /// \brief Gets the default calling convention for the given target and
   /// declaration context.
-  virtual CallingConv getDefaultCallingConv() const {
+  virtual CallingConv getDefaultCallingConv(CallingConvMethodType MT) const {
     // Not all targets will specify an explicit calling convention that we can
     // express.  This will always do the right thing, even though it's not
     // an explicit calling convention.
-    return CC_Default;
+    return CC_C;
   }
 
   enum CallingConvCheckResult {

@@ -13,16 +13,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "CIndexer.h"
-#include "CXTranslationUnit.h"
-#include "CXString.h"
+#include "CIndexDiagnostic.h"
 #include "CXCursor.h"
 #include "CXString.h"
-#include "CIndexDiagnostic.h"
-#include "clang/AST/Type.h"
+#include "CXString.h"
+#include "CXTranslationUnit.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclObjC.h"
-#include "clang/Basic/SourceManager.h"
+#include "clang/AST/Type.h"
 #include "clang/Basic/FileManager.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
@@ -32,11 +32,11 @@
 #include "llvm/Support/Atomic.h"
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/Program.h"
-#include <cstdlib>
 #include <cstdio>
+#include <cstdlib>
 
 
 #ifdef UDP_CODE_COMPLETION_LOGGER
@@ -236,7 +236,8 @@ clang_getCompletionBriefComment(CXCompletionString completion_string) {
   return createCXString(CCStr->getBriefComment(), /*DupString=*/false);
 }
 
-  
+namespace {
+
 /// \brief The CXCodeCompleteResults structure we allocate internally;
 /// the client only sees the initial CXCodeCompleteResults structure.
 struct AllocatedCXCodeCompleteResults : public CXCodeCompleteResults {
@@ -297,6 +298,8 @@ struct AllocatedCXCodeCompleteResults : public CXCodeCompleteResults {
   /// message send.
   std::string Selector;
 };
+
+} // end anonymous namespace
 
 /// \brief Tracks the number of code-completion result objects that are 
 /// currently active.

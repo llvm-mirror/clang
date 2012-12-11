@@ -17,10 +17,10 @@
 #include "CodeGenFunction.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/Frontend/CodeGenOptions.h"
-#include "llvm/Type.h"
-#include "llvm/DataLayout.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/DataLayout.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Type.h"
 using namespace clang;
 using namespace CodeGen;
 
@@ -266,9 +266,15 @@ static const Type *isSingleElementStruct(QualType T, ASTContext &Context) {
 }
 
 static bool is32Or64BitBasicType(QualType Ty, ASTContext &Context) {
+  // Treat complex types as the element type.
+  if (const ComplexType *CTy = Ty->getAs<ComplexType>())
+    Ty = CTy->getElementType();
+
+  // Check for a type which we know has a simple scalar argument-passing
+  // convention without any padding.  (We're specifically looking for 32
+  // and 64-bit integer and integer-equivalents, float, and double.)
   if (!Ty->getAs<BuiltinType>() && !Ty->hasPointerRepresentation() &&
-      !Ty->isAnyComplexType() && !Ty->isEnumeralType() &&
-      !Ty->isBlockPointerType())
+      !Ty->isEnumeralType() && !Ty->isBlockPointerType())
     return false;
 
   uint64_t Size = Context.getTypeSize(Ty);
@@ -1013,7 +1019,7 @@ void X86_32TargetCodeGenInfo::SetTargetAttributes(const Decl *D,
       // Now add the 'alignstack' attribute with a value of 16.
       llvm::AttrBuilder B;
       B.addStackAlignmentAttr(16);
-      Fn->addAttribute(llvm::AttrListPtr::FunctionIndex,
+      Fn->addAttribute(llvm::AttributeSet::FunctionIndex,
                        llvm::Attributes::get(CGM.getLLVMContext(), B));
     }
   }
@@ -1381,7 +1387,7 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
     } else if ((k == BuiltinType::Float || k == BuiltinType::Double) ||
                (k == BuiltinType::LongDouble &&
                 getContext().getTargetInfo().getTriple().getOS() ==
-                llvm::Triple::NativeClient)) {
+                llvm::Triple::NaCl)) {
       Current = SSE;
     } else if (k == BuiltinType::LongDouble) {
       Lo = X87;
@@ -1470,7 +1476,7 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
     else if (ET == getContext().DoubleTy ||
              (ET == getContext().LongDoubleTy &&
               getContext().getTargetInfo().getTriple().getOS() ==
-              llvm::Triple::NativeClient))
+              llvm::Triple::NaCl))
       Lo = Hi = SSE;
     else if (ET == getContext().LongDoubleTy)
       Current = ComplexX87;
@@ -2777,6 +2783,9 @@ PPC64_SVR4_ABIInfo::isPromotableTypeForABI(QualType Ty) const {
 
 ABIArgInfo
 PPC64_SVR4_ABIInfo::classifyArgumentType(QualType Ty) const {
+  if (Ty->isAnyComplexType())
+    return ABIArgInfo::getDirect();
+
   if (isAggregateTypeForABI(Ty)) {
     // Records with non trivial destructors/constructors should not be passed
     // by value.
@@ -3789,9 +3798,9 @@ void MSP430TargetCodeGenInfo::SetTargetAttributes(const Decl *D,
       F->addFnAttr(llvm::Attributes::NoInline);
 
       // Step 3: Emit ISR vector alias.
-      unsigned Num = attr->getNumber() + 0xffe0;
+      unsigned Num = attr->getNumber() / 2;
       new llvm::GlobalAlias(GV->getType(), llvm::Function::ExternalLinkage,
-                            "vector_" + Twine::utohexstr(Num),
+                            "__isr_" + Twine(Num),
                             GV, &M.getModule());
     }
   }
@@ -4348,7 +4357,7 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
         Kind = ARMABIInfo::AAPCS_VFP;
 
       switch (Triple.getOS()) {
-        case llvm::Triple::NativeClient:
+        case llvm::Triple::NaCl:
           return *(TheTargetCodeGenInfo =
                    new NaClARMTargetCodeGenInfo(Types, Kind));
         default:
@@ -4420,7 +4429,7 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
     case llvm::Triple::MinGW32:
     case llvm::Triple::Cygwin:
       return *(TheTargetCodeGenInfo = new WinX86_64TargetCodeGenInfo(Types));
-    case llvm::Triple::NativeClient:
+    case llvm::Triple::NaCl:
       return *(TheTargetCodeGenInfo = new NaClX86_64TargetCodeGenInfo(Types, HasAVX));
     default:
       return *(TheTargetCodeGenInfo = new X86_64TargetCodeGenInfo(Types,

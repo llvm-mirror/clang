@@ -11,16 +11,7 @@
 //  Objective-C++.
 //
 //===----------------------------------------------------------------------===//
-#include "clang/Sema/Sema.h"
-#include "clang/Sema/SemaInternal.h"
 #include "clang/Sema/Lookup.h"
-#include "clang/Sema/Overload.h"
-#include "clang/Sema/DeclSpec.h"
-#include "clang/Sema/Scope.h"
-#include "clang/Sema/ScopeInfo.h"
-#include "clang/Sema/TemplateDeduction.h"
-#include "clang/Sema/ExternalSemaSource.h"
-#include "clang/Sema/TypoCorrection.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/Decl.h"
@@ -32,8 +23,17 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/LangOptions.h"
-#include "llvm/ADT/SetVector.h"
+#include "clang/Sema/DeclSpec.h"
+#include "clang/Sema/ExternalSemaSource.h"
+#include "clang/Sema/Overload.h"
+#include "clang/Sema/Scope.h"
+#include "clang/Sema/ScopeInfo.h"
+#include "clang/Sema/Sema.h"
+#include "clang/Sema/SemaInternal.h"
+#include "clang/Sema/TemplateDeduction.h"
+#include "clang/Sema/TypoCorrection.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/TinyPtrVector.h"
@@ -528,22 +528,17 @@ static bool LookupBuiltin(Sema &S, LookupResult &R) {
 
 /// \brief Determine whether we can declare a special member function within
 /// the class at this point.
-static bool CanDeclareSpecialMemberFunction(ASTContext &Context,
-                                            const CXXRecordDecl *Class) {
+static bool CanDeclareSpecialMemberFunction(const CXXRecordDecl *Class) {
   // We need to have a definition for the class.
   if (!Class->getDefinition() || Class->isDependentContext())
     return false;
 
   // We can't be in the middle of defining the class.
-  if (const RecordType *RecordTy
-                        = Context.getTypeDeclType(Class)->getAs<RecordType>())
-    return !RecordTy->isBeingDefined();
-
-  return false;
+  return !Class->isBeingDefined();
 }
 
 void Sema::ForceDeclarationOfImplicitMembers(CXXRecordDecl *Class) {
-  if (!CanDeclareSpecialMemberFunction(Context, Class))
+  if (!CanDeclareSpecialMemberFunction(Class))
     return;
 
   // If the default constructor has not yet been declared, do so now.
@@ -551,11 +546,11 @@ void Sema::ForceDeclarationOfImplicitMembers(CXXRecordDecl *Class) {
     DeclareImplicitDefaultConstructor(Class);
 
   // If the copy constructor has not yet been declared, do so now.
-  if (!Class->hasDeclaredCopyConstructor())
+  if (Class->needsImplicitCopyConstructor())
     DeclareImplicitCopyConstructor(Class);
 
   // If the copy assignment operator has not yet been declared, do so now.
-  if (!Class->hasDeclaredCopyAssignment())
+  if (Class->needsImplicitCopyAssignment())
     DeclareImplicitCopyAssignment(Class);
 
   if (getLangOpts().CPlusPlus0x) {
@@ -569,7 +564,7 @@ void Sema::ForceDeclarationOfImplicitMembers(CXXRecordDecl *Class) {
   }
 
   // If the destructor has not yet been declared, do so now.
-  if (!Class->hasDeclaredDestructor())
+  if (Class->needsImplicitDestructor())
     DeclareImplicitDestructor(Class);
 }
 
@@ -602,12 +597,11 @@ static void DeclareImplicitMemberFunctionsWithName(Sema &S,
   switch (Name.getNameKind()) {
   case DeclarationName::CXXConstructorName:
     if (const CXXRecordDecl *Record = dyn_cast<CXXRecordDecl>(DC))
-      if (Record->getDefinition() &&
-          CanDeclareSpecialMemberFunction(S.Context, Record)) {
+      if (Record->getDefinition() && CanDeclareSpecialMemberFunction(Record)) {
         CXXRecordDecl *Class = const_cast<CXXRecordDecl *>(Record);
         if (Record->needsImplicitDefaultConstructor())
           S.DeclareImplicitDefaultConstructor(Class);
-        if (!Record->hasDeclaredCopyConstructor())
+        if (Record->needsImplicitCopyConstructor())
           S.DeclareImplicitCopyConstructor(Class);
         if (S.getLangOpts().CPlusPlus0x &&
             Record->needsImplicitMoveConstructor())
@@ -617,8 +611,8 @@ static void DeclareImplicitMemberFunctionsWithName(Sema &S,
 
   case DeclarationName::CXXDestructorName:
     if (const CXXRecordDecl *Record = dyn_cast<CXXRecordDecl>(DC))
-      if (Record->getDefinition() && !Record->hasDeclaredDestructor() &&
-          CanDeclareSpecialMemberFunction(S.Context, Record))
+      if (Record->getDefinition() && Record->needsImplicitDestructor() &&
+          CanDeclareSpecialMemberFunction(Record))
         S.DeclareImplicitDestructor(const_cast<CXXRecordDecl *>(Record));
     break;
 
@@ -627,10 +621,9 @@ static void DeclareImplicitMemberFunctionsWithName(Sema &S,
       break;
 
     if (const CXXRecordDecl *Record = dyn_cast<CXXRecordDecl>(DC)) {
-      if (Record->getDefinition() &&
-          CanDeclareSpecialMemberFunction(S.Context, Record)) {
+      if (Record->getDefinition() && CanDeclareSpecialMemberFunction(Record)) {
         CXXRecordDecl *Class = const_cast<CXXRecordDecl *>(Record);
-        if (!Record->hasDeclaredCopyAssignment())
+        if (Record->needsImplicitCopyAssignment())
           S.DeclareImplicitCopyAssignment(Class);
         if (S.getLangOpts().CPlusPlus0x &&
             Record->needsImplicitMoveAssignment())
@@ -680,9 +673,8 @@ static bool LookupDirect(Sema &S, LookupResult &R, const DeclContext *DC) {
   if (!Record->isCompleteDefinition())
     return Found;
 
-  const UnresolvedSetImpl *Unresolved = Record->getConversionFunctions();
-  for (UnresolvedSetImpl::iterator U = Unresolved->begin(),
-         UEnd = Unresolved->end(); U != UEnd; ++U) {
+  for (CXXRecordDecl::conversion_iterator U = Record->conversion_begin(),
+         UEnd = Record->conversion_end(); U != UEnd; ++U) {
     FunctionTemplateDecl *ConvTemplate = dyn_cast<FunctionTemplateDecl>(*U);
     if (!ConvTemplate)
       continue;
@@ -2233,9 +2225,9 @@ Sema::SpecialMemberOverloadResult *Sema::LookupSpecialMember(CXXRecordDecl *RD,
                                                             bool RValueThis,
                                                             bool ConstThis,
                                                             bool VolatileThis) {
-  RD = RD->getDefinition();
-  assert((RD && !RD->isBeingDefined()) &&
+  assert(CanDeclareSpecialMemberFunction(RD) &&
          "doing special member lookup into record that isn't fully complete");
+  RD = RD->getDefinition();
   if (RValueThis || ConstThis || VolatileThis)
     assert((SM == CXXCopyAssignment || SM == CXXMoveAssignment) &&
            "constructors and destructors always have unqualified lvalue this");
@@ -2265,7 +2257,7 @@ Sema::SpecialMemberOverloadResult *Sema::LookupSpecialMember(CXXRecordDecl *RD,
   SpecialMemberCache.InsertNode(Result, InsertPoint);
 
   if (SM == CXXDestructor) {
-    if (!RD->hasDeclaredDestructor())
+    if (RD->needsImplicitDestructor())
       DeclareImplicitDestructor(RD);
     CXXDestructorDecl *DD = RD->getDestructor();
     assert(DD && "record without a destructor");
@@ -2294,13 +2286,13 @@ Sema::SpecialMemberOverloadResult *Sema::LookupSpecialMember(CXXRecordDecl *RD,
   } else {
     if (SM == CXXCopyConstructor || SM == CXXMoveConstructor) {
       Name = Context.DeclarationNames.getCXXConstructorName(CanTy);
-      if (!RD->hasDeclaredCopyConstructor())
+      if (RD->needsImplicitCopyConstructor())
         DeclareImplicitCopyConstructor(RD);
       if (getLangOpts().CPlusPlus0x && RD->needsImplicitMoveConstructor())
         DeclareImplicitMoveConstructor(RD);
     } else {
       Name = Context.DeclarationNames.getCXXOperatorName(OO_Equal);
-      if (!RD->hasDeclaredCopyAssignment())
+      if (RD->needsImplicitCopyAssignment())
         DeclareImplicitCopyAssignment(RD);
       if (getLangOpts().CPlusPlus0x && RD->needsImplicitMoveAssignment())
         DeclareImplicitMoveAssignment(RD);
@@ -2451,10 +2443,10 @@ CXXConstructorDecl *Sema::LookupMovingConstructor(CXXRecordDecl *Class,
 /// \brief Look up the constructors for the given class.
 DeclContext::lookup_result Sema::LookupConstructors(CXXRecordDecl *Class) {
   // If the implicit constructors have not yet been declared, do so now.
-  if (CanDeclareSpecialMemberFunction(Context, Class)) {
+  if (CanDeclareSpecialMemberFunction(Class)) {
     if (Class->needsImplicitDefaultConstructor())
       DeclareImplicitDefaultConstructor(Class);
-    if (!Class->hasDeclaredCopyConstructor())
+    if (Class->needsImplicitCopyConstructor())
       DeclareImplicitCopyConstructor(Class);
     if (getLangOpts().CPlusPlus0x && Class->needsImplicitMoveConstructor())
       DeclareImplicitMoveConstructor(Class);

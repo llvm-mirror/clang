@@ -12,28 +12,29 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/AST/ASTContext.h"
+#include "CXXABI.h"
+#include "clang/AST/ASTMutationListener.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/CharUnits.h"
+#include "clang/AST/Comment.h"
 #include "clang/AST/CommentCommandTraits.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
-#include "clang/AST/TypeLoc.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExternalASTSource.h"
-#include "clang/AST/ASTMutationListener.h"
-#include "clang/AST/RecordLayout.h"
 #include "clang/AST/Mangle.h"
-#include "clang/AST/Comment.h"
+#include "clang/AST/RecordLayout.h"
+#include "clang/AST/TypeLoc.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/Capacity.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/Capacity.h"
-#include "CXXABI.h"
 #include <map>
 
 using namespace clang;
@@ -3534,6 +3535,12 @@ QualType ASTContext::getPointerDiffType() const {
   return getFromTargetType(Target->getPtrDiffType(0));
 }
 
+/// \brief Return the unique type for "pid_t" defined in
+/// <sys/types.h>. We need this to compute the correct type for vfork().
+QualType ASTContext::getProcessIDType() const {
+  return getFromTargetType(Target->getProcessIDType());
+}
+
 //===----------------------------------------------------------------------===//
 //                              Type Operators
 //===----------------------------------------------------------------------===//
@@ -3987,7 +3994,8 @@ ASTContext::getConstantArrayElementCount(const ConstantArrayType *CA)  const {
   uint64_t ElementCount = 1;
   do {
     ElementCount *= CA->getSize().getZExtValue();
-    CA = dyn_cast<ConstantArrayType>(CA->getElementType());
+    CA = dyn_cast_or_null<ConstantArrayType>(
+      CA->getElementType()->getAsArrayTypeUnsafe());
   } while (CA);
   return ElementCount;
 }
@@ -4355,17 +4363,45 @@ QualType ASTContext::getBlockDescriptorExtendedType() const {
   return getTagDeclType(BlockDescriptorExtendedType);
 }
 
-bool ASTContext::BlockRequiresCopying(QualType Ty) const {
-  if (Ty->isObjCRetainableType())
+/// BlockRequiresCopying - Returns true if byref variable "D" of type "Ty"
+/// requires copy/dispose. Note that this must match the logic
+/// in buildByrefHelpers.
+bool ASTContext::BlockRequiresCopying(QualType Ty,
+                                      const VarDecl *D) {
+  if (const CXXRecordDecl *record = Ty->getAsCXXRecordDecl()) {
+    const Expr *copyExpr = getBlockVarCopyInits(D);
+    if (!copyExpr && record->hasTrivialDestructor()) return false;
+    
     return true;
-  if (getLangOpts().CPlusPlus) {
-    if (const RecordType *RT = Ty->getAs<RecordType>()) {
-      CXXRecordDecl *RD = cast<CXXRecordDecl>(RT->getDecl());
-      return RD->hasConstCopyConstructor();
-      
-    }
   }
-  return false;
+  
+  if (!Ty->isObjCRetainableType()) return false;
+  
+  Qualifiers qs = Ty.getQualifiers();
+  
+  // If we have lifetime, that dominates.
+  if (Qualifiers::ObjCLifetime lifetime = qs.getObjCLifetime()) {
+    assert(getLangOpts().ObjCAutoRefCount);
+    
+    switch (lifetime) {
+      case Qualifiers::OCL_None: llvm_unreachable("impossible");
+        
+      // These are just bits as far as the runtime is concerned.
+      case Qualifiers::OCL_ExplicitNone:
+      case Qualifiers::OCL_Autoreleasing:
+        return false;
+        
+      // Tell the runtime that this is ARC __weak, called by the
+      // byref routines.
+      case Qualifiers::OCL_Weak:
+      // ARC __strong __block variables need to be retained.
+      case Qualifiers::OCL_Strong:
+        return true;
+    }
+    llvm_unreachable("fell out of lifetime switch!");
+  }
+  return (Ty->isBlockPointerType() || isObjCNSObjectType(Ty) ||
+          Ty->isObjCObjectPointerType());
 }
 
 bool ASTContext::getByrefLifetime(QualType Ty,
@@ -4389,74 +4425,6 @@ bool ASTContext::getByrefLifetime(QualType Ty,
   else
     LifeTime = Qualifiers::OCL_None;
   return true;
-}
-
-QualType
-ASTContext::BuildByRefType(StringRef DeclName, QualType Ty) const {
-  //  type = struct __Block_byref_1_X {
-  //    void *__isa;
-  //    struct __Block_byref_1_X *__forwarding;
-  //    unsigned int __flags;
-  //    unsigned int __size;
-  //    void *__copy_helper;            // as needed
-  //    void *__destroy_help            // as needed
-  //    void *__byref_variable_layout;    // Extended layout info. for byref variable as needed
-  //    int X;
-  //  } *
-
-  bool HasCopyAndDispose = BlockRequiresCopying(Ty);
-  bool HasByrefExtendedLayout;
-  Qualifiers::ObjCLifetime Lifetime;
-
-  // FIXME: Move up
-  SmallString<36> Name;
-  llvm::raw_svector_ostream(Name) << "__Block_byref_" <<
-                                  ++UniqueBlockByRefTypeID << '_' << DeclName;
-  RecordDecl *T;
-  T = CreateRecordDecl(*this, TTK_Struct, TUDecl, &Idents.get(Name.str()));
-  T->startDefinition();
-  QualType Int32Ty = IntTy;
-  assert(getIntWidth(IntTy) == 32 && "non-32bit int not supported");
-  QualType FieldTypes[] = {
-    getPointerType(VoidPtrTy),
-    getPointerType(getTagDeclType(T)),
-    Int32Ty,
-    Int32Ty,
-    getPointerType(VoidPtrTy),
-    getPointerType(VoidPtrTy),
-    getPointerType(VoidPtrTy),
-    Ty
-  };
-
-  StringRef FieldNames[] = {
-    "__isa",
-    "__forwarding",
-    "__flags",
-    "__size",
-    "__copy_helper",
-    "__destroy_helper",
-    "__byref_variable_layout",
-    DeclName,
-  };
-  bool ByrefKnownLifetime = getByrefLifetime(Ty, Lifetime, HasByrefExtendedLayout);
-  for (size_t i = 0; i < 8; ++i) {
-    if (!HasCopyAndDispose && i >=4 && i <= 5)
-      continue;
-    if ((!ByrefKnownLifetime || !HasByrefExtendedLayout) && i == 6)
-      continue;
-    FieldDecl *Field = FieldDecl::Create(*this, T, SourceLocation(),
-                                         SourceLocation(),
-                                         &Idents.get(FieldNames[i]),
-                                         FieldTypes[i], /*TInfo=*/0,
-                                         /*BitWidth=*/0, /*Mutable=*/false,
-                                         ICIS_NoInit);
-    Field->setAccess(AS_public);
-    T->addDecl(Field);
-  }
-
-  T->completeDefinition();
-
-  return getPointerType(getTagDeclType(T));
 }
 
 TypedefDecl *ASTContext::getObjCInstanceTypeDecl() {
@@ -6520,13 +6488,13 @@ QualType ASTContext::mergeFunctionTypes(QualType lhs, QualType rhs,
   if (lbaseInfo.getProducesResult() != rbaseInfo.getProducesResult())
     return QualType();
 
-  // functypes which return are preferred over those that do not.
-  if (lbaseInfo.getNoReturn() && !rbaseInfo.getNoReturn())
-    allLTypes = false;
-  else if (!lbaseInfo.getNoReturn() && rbaseInfo.getNoReturn())
-    allRTypes = false;
   // FIXME: some uses, e.g. conditional exprs, really want this to be 'both'.
   bool NoReturn = lbaseInfo.getNoReturn() || rbaseInfo.getNoReturn();
+
+  if (lbaseInfo.getNoReturn() != NoReturn)
+    allLTypes = false;
+  if (rbaseInfo.getNoReturn() != NoReturn)
+    allRTypes = false;
 
   FunctionType::ExtInfo einfo = lbaseInfo.withNoReturn(NoReturn);
 
@@ -7246,6 +7214,9 @@ static QualType DecodeTypeFromStr(const char *&Str, const ASTContext &Context,
       Error = ASTContext::GE_Missing_ucontext;
       return QualType();
     }
+    break;
+  case 'p':
+    Type = Context.getProcessIDType();
     break;
   }
 

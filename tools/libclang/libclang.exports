@@ -160,6 +160,7 @@ clang_getElementType
 clang_getEnumConstantDeclUnsignedValue
 clang_getEnumConstantDeclValue
 clang_getEnumDeclIntegerType
+clang_getFieldDeclBitWidth
 clang_getExpansionLocation
 clang_getFile
 clang_getFileName
@@ -250,6 +251,7 @@ clang_tokenize
 clang_CompilationDatabase_fromDirectory
 clang_CompilationDatabase_dispose
 clang_CompilationDatabase_getCompileCommands
+clang_CompilationDatabase_getAllCompileCommands
 clang_CompileCommands_dispose
 clang_CompileCommands_getSize
 clang_CompileCommands_getCommand

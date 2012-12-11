@@ -12,16 +12,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Lex/HeaderSearch.h"
-#include "clang/Lex/HeaderSearchOptions.h"
-#include "clang/Lex/HeaderMap.h"
-#include "clang/Lex/Lexer.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/IdentifierTable.h"
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Path.h"
+#include "clang/Lex/HeaderMap.h"
+#include "clang/Lex/HeaderSearchOptions.h"
+#include "clang/Lex/Lexer.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Capacity.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include <cstdio>
 using namespace clang;
 
@@ -749,7 +749,8 @@ bool HeaderSearch::isFileMultipleIncludeGuarded(const FileEntry *File) {
   if (ExternalSource && !HFI.Resolved)
     mergeHeaderFileInfo(HFI, ExternalSource->GetHeaderFileInfo(File));
 
-  return HFI.isPragmaOnce || HFI.ControllingMacro || HFI.ControllingMacroID;
+  return HFI.isPragmaOnce || HFI.isImport ||
+      HFI.ControllingMacro || HFI.ControllingMacroID;
 }
 
 void HeaderSearch::setHeaderFileInfoForUID(HeaderFileInfo HFI, unsigned UID) {

@@ -11,16 +11,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Basic/OperatorKinds.h"
 #include "clang/Parse/Parser.h"
+#include "RAIIObjectsForParser.h"
+#include "clang/Basic/OperatorKinds.h"
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Sema/DeclSpec.h"
-#include "clang/Sema/Scope.h"
 #include "clang/Sema/ParsedTemplate.h"
 #include "clang/Sema/PrettyDeclStackTrace.h"
+#include "clang/Sema/Scope.h"
 #include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/SmallString.h"
-#include "RAIIObjectsForParser.h"
 using namespace clang;
 
 /// ParseNamespace - We know that the current token is a namespace keyword. This
@@ -707,8 +707,7 @@ SourceLocation Parser::ParseDecltypeSpecifier(DeclSpec &DS) {
       if (SkipUntil(tok::r_paren, /*StopAtSemi=*/true, /*DontConsume=*/true)) {
         EndLoc = ConsumeParen();
       } else {
-        assert(Tok.is(tok::semi));
-        if (PP.isBacktrackEnabled()) {
+        if (PP.isBacktrackEnabled() && Tok.is(tok::semi)) {
           // Backtrack to get the location of the last token before the semi.
           PP.RevertCachedTokens(2);
           ConsumeToken(); // the semi.
@@ -1052,7 +1051,8 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
                                  SourceLocation StartLoc, DeclSpec &DS,
                                  const ParsedTemplateInfo &TemplateInfo,
                                  AccessSpecifier AS, 
-                                 bool EnteringContext, DeclSpecContext DSC) {
+                                 bool EnteringContext, DeclSpecContext DSC, 
+                                 ParsedAttributesWithRange &Attributes) {
   DeclSpec::TST TagType;
   if (TagTokKind == tok::kw_struct)
     TagType = DeclSpec::TST_struct;
@@ -1234,12 +1234,24 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
   //  - If we have 'struct foo;', then this is either a forward declaration
   //    or a friend declaration, which have to be treated differently.
   //  - Otherwise we have something like 'struct foo xyz', a reference.
+  //
+  //  We also detect these erroneous cases to provide better diagnostic for
+  //  C++11 attributes parsing.
+  //  - attributes follow class name:
+  //    struct foo [[]] {};
+  //  - attributes appear before or after 'final':
+  //    struct foo [[]] final [[]] {};
+  //
   // However, in type-specifier-seq's, things look like declarations but are
   // just references, e.g.
   //   new struct s;
   // or
   //   &T::operator struct s;
   // For these, DSC is DSC_type_specifier.
+
+  // If there are attributes after class name, parse them.
+  MaybeParseCXX0XAttributes(Attributes);
+
   Sema::TagUseKind TUK;
   if (DSC == DSC_trailing)
     TUK = Sema::TUK_Reference;
@@ -1261,6 +1273,39 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
       // Okay, this is a class definition.
       TUK = Sema::TUK_Definition;
     }
+  } else if (isCXX0XFinalKeyword() && (NextToken().is(tok::l_square) || 
+                                       NextToken().is(tok::kw_alignas) ||
+                                       NextToken().is(tok::kw__Alignas))) {
+    // We can't tell if this is a definition or reference
+    // until we skipped the 'final' and C++11 attribute specifiers.
+    TentativeParsingAction PA(*this);
+
+    // Skip the 'final' keyword.
+    ConsumeToken();
+
+    // Skip C++11 attribute specifiers.
+    while (true) {
+      if (Tok.is(tok::l_square) && NextToken().is(tok::l_square)) {
+        ConsumeBracket();
+        if (!SkipUntil(tok::r_square))
+          break;
+      } else if ((Tok.is(tok::kw_alignas) || Tok.is(tok::kw__Alignas)) &&
+                 NextToken().is(tok::l_paren)) {
+        ConsumeToken();
+        ConsumeParen();
+        if (!SkipUntil(tok::r_paren))
+          break;
+      } else {
+        break;
+      }
+    }
+
+    if (Tok.is(tok::l_brace) || Tok.is(tok::colon))
+      TUK = Sema::TUK_Definition;
+    else
+      TUK = Sema::TUK_Reference;
+
+    PA.Revert();
   } else if (DSC != DSC_type_specifier &&
              (Tok.is(tok::semi) ||
               (Tok.isAtStartOfLine() && !isValidAfterTypeSpecifier(false)))) {
@@ -1274,6 +1319,12 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
     }
   } else
     TUK = Sema::TUK_Reference;
+
+  // Forbid misplaced attributes. In cases of a reference, we pass attributes
+  // to caller to handle.
+  // FIXME: provide fix-it hints if we can.
+  if (TUK != Sema::TUK_Reference)
+    ProhibitAttributes(Attributes);
 
   // If this is an elaborated type specifier, and we delayed
   // diagnostics before, just merge them into the current pool.
@@ -1863,8 +1914,14 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
   ColonProtectionRAIIObject X(*this);
 
   ParsedAttributesWithRange attrs(AttrFactory);
+  ParsedAttributesWithRange FnAttrs(AttrFactory);
   // Optional C++0x attribute-specifier
   MaybeParseCXX0XAttributes(attrs);
+  // We need to keep these attributes for future diagnostic
+  // before they are taken over by declaration specifier.
+  FnAttrs.addAll(attrs.getList());
+  FnAttrs.Range = attrs.Range;
+
   MaybeParseMicrosoftAttributes(attrs);
 
   if (Tok.is(tok::kw_using)) {
@@ -1903,6 +1960,10 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
 
   if (Tok.is(tok::semi)) {
     ConsumeToken();
+
+    if (DS.isFriendSpecified())
+      ProhibitAttributes(FnAttrs);
+
     Decl *TheDecl =
       Actions.ParsedFreeStandingDeclSpec(getCurScope(), AS, DS, TemplateParams);
     DS.complete(TheDecl);
@@ -1971,12 +2032,21 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
       }
     }
 
+    // C++11 [dcl.attr.grammar] p4: If an attribute-specifier-seq appertains 
+    // to a friend declaration, that declaration shall be a definition.
+    if (DeclaratorInfo.isFunctionDeclarator() && 
+        DefinitionKind != FDK_Definition && DS.isFriendSpecified()) {
+      // Diagnose attributes that appear before decl specifier:
+      // [[]] friend int foo();
+      ProhibitAttributes(FnAttrs);
+    }
+
     if (DefinitionKind) {
       if (!DeclaratorInfo.isFunctionDeclarator()) {
         Diag(DeclaratorInfo.getIdentifierLoc(), diag::err_func_def_no_params);
         ConsumeBrace();
         SkipUntil(tok::r_brace, /*StopAtSemi*/false);
-        
+
         // Consume the optional ';'
         if (Tok.is(tok::semi))
           ConsumeToken();
@@ -2071,6 +2141,21 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
 
     Decl *ThisDecl = 0;
     if (DS.isFriendSpecified()) {
+      // C++11 [dcl.attr.grammar] p4: If an attribute-specifier-seq appertains 
+      // to a friend declaration, that declaration shall be a definition.
+      //
+      // Diagnose attributes appear after friend member function declarator:
+      // foo [[]] ();
+      SmallVector<SourceRange, 4> Ranges;
+      DeclaratorInfo.getCXX11AttributeRanges(Ranges);
+      if (!Ranges.empty()) {
+        for (SmallVector<SourceRange, 4>::iterator I = Ranges.begin(), 
+             E = Ranges.end(); I != E; ++I) {
+          Diag((*I).getBegin(), diag::err_attributes_not_allowed) 
+            << *I;
+        }
+      }
+
       // TODO: handle initializers, bitfields, 'delete'
       ThisDecl = Actions.ActOnFriendFunctionDecl(getCurScope(), DeclaratorInfo,
                                                  TemplateParams);
@@ -2326,6 +2411,11 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
            diag::warn_cxx98_compat_override_control_keyword :
            diag::ext_override_control_keyword) << "final";
     }
+
+    // Forbid C++11 attributes that appear here.
+    ParsedAttributesWithRange Attrs(AttrFactory);
+    MaybeParseCXX0XAttributes(Attrs);
+    ProhibitAttributes(Attrs);
   }
 
   if (Tok.is(tok::colon)) {

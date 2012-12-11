@@ -1806,8 +1806,8 @@ public:
             CC == CC_X86Pascal) ? CCCR_OK : CCCR_Warning;
   }
 
-  virtual CallingConv getDefaultCallingConv() const {
-    return CC_C;
+  virtual CallingConv getDefaultCallingConv(CallingConvMethodType MT) const {
+    return MT == CCMT_Member ? CC_X86ThisCall : CC_C;
   }
 };
 
@@ -1960,6 +1960,7 @@ void X86TargetInfo::getDefaultFeatures(llvm::StringMap<bool> &Features) const {
     setFeatureEnabled(Features, "lzcnt", true);
     setFeatureEnabled(Features, "aes", true);
     setFeatureEnabled(Features, "pclmul", true);
+    break;
   case CK_BDVER2:
     setFeatureEnabled(Features, "xop", true);
     setFeatureEnabled(Features, "lzcnt", true);
@@ -2780,6 +2781,7 @@ public:
     SizeType = UnsignedLong;
     IntPtrType = SignedLong;
     PtrDiffType = SignedLong;
+    ProcessIDType = SignedLong;
     this->UserLabelPrefix = "";
     this->TLSSupported = false;
   }
@@ -2894,8 +2896,8 @@ public:
     return TargetInfo::checkCallingConvention(CC);
   }
 
-  virtual CallingConv getDefaultCallingConv() const {
-    return CC_Default;
+  virtual CallingConv getDefaultCallingConv(CallingConvMethodType MT) const {
+    return CC_C;
   }
 
 };
@@ -3211,7 +3213,7 @@ public:
       .Cases("arm1176jz-s", "arm1176jzf-s", "6ZK")
       .Cases("arm1136jf-s", "mpcorenovfp", "mpcore", "6K")
       .Cases("arm1156t2-s", "arm1156t2f-s", "6T2")
-      .Cases("cortex-a8", "cortex-a9", "cortex-a15", "7A")
+      .Cases("cortex-a5", "cortex-a8", "cortex-a9", "cortex-a15", "7A")
       .Case("cortex-a9-mp", "7F")
       .Case("swift", "7S")
       .Cases("cortex-m3", "cortex-m4", "7M")
@@ -3362,6 +3364,9 @@ public:
   virtual bool validateConstraintModifier(StringRef Constraint,
                                           const char Modifier,
                                           unsigned Size) const {
+    bool isOutput = (Constraint[0] == '=');
+    bool isInOut = (Constraint[0] == '+');
+
     // Strip off constraint modifiers.
     while (Constraint[0] == '=' ||
            Constraint[0] == '+' ||
@@ -3373,7 +3378,8 @@ public:
     case 'r': {
       switch (Modifier) {
       default:
-        return Size == 32;
+        return isInOut || (isOutput && Size >= 32) ||
+          (!isOutput && !isInOut && Size <= 32);
       case 'q':
         // A register of size 32 cannot fit a vector type.
         return false;
@@ -4216,6 +4222,10 @@ public:
     PointerWidth = PointerAlign = 64;
     LongDoubleWidth = LongDoubleAlign = 128;
     LongDoubleFormat = &llvm::APFloat::IEEEquad;
+    if (getTriple().getOS() == llvm::Triple::FreeBSD) {
+      LongDoubleWidth = LongDoubleAlign = 64;
+      LongDoubleFormat = &llvm::APFloat::IEEEdouble;
+    }
     SuitableAlign = 128;
   }
   virtual bool setABI(const std::string &Name) {
@@ -4447,7 +4457,7 @@ static TargetInfo *AllocateTarget(const std::string &T) {
       return new BitrigTargetInfo<ARMTargetInfo>(T);
     case llvm::Triple::RTEMS:
       return new RTEMSTargetInfo<ARMTargetInfo>(T);
-    case llvm::Triple::NativeClient:
+    case llvm::Triple::NaCl:
       return new NaClTargetInfo<ARMTargetInfo>(T);
     default:
       return new ARMTargetInfo(T);
@@ -4518,7 +4528,7 @@ static TargetInfo *AllocateTarget(const std::string &T) {
 
   case llvm::Triple::le32:
     switch (os) {
-      case llvm::Triple::NativeClient:
+      case llvm::Triple::NaCl:
         return new NaClTargetInfo<PNaClTargetInfo>(T);
       default:
         return NULL;
@@ -4623,7 +4633,7 @@ static TargetInfo *AllocateTarget(const std::string &T) {
       return new HaikuX86_32TargetInfo(T);
     case llvm::Triple::RTEMS:
       return new RTEMSX86_32TargetInfo(T);
-    case llvm::Triple::NativeClient:
+    case llvm::Triple::NaCl:
       return new NaClTargetInfo<X86_32TargetInfo>(T);
     default:
       return new X86_32TargetInfo(T);
@@ -4654,7 +4664,7 @@ static TargetInfo *AllocateTarget(const std::string &T) {
       return new MinGWX86_64TargetInfo(T);
     case llvm::Triple::Win32:   // This is what Triple.h supports now.
       return new VisualStudioWindowsX86_64TargetInfo(T);
-    case llvm::Triple::NativeClient:
+    case llvm::Triple::NaCl:
       return new NaClTargetInfo<X86_64TargetInfo>(T);
     default:
       return new X86_64TargetInfo(T);
