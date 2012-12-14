@@ -8,18 +8,18 @@
 //===----------------------------------------------------------------------===//
 
 #include "Internals.h"
+#include "clang/AST/ASTConsumer.h"
+#include "clang/Basic/DiagnosticCategories.h"
 #include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Frontend/Utils.h"
-#include "clang/AST/ASTConsumer.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Sema/SemaDiagnostic.h"
-#include "clang/Basic/DiagnosticCategories.h"
-#include "clang/Lex/Preprocessor.h"
-#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/Support/MemoryBuffer.h"
 using namespace clang;
 using namespace arcmt;
 
@@ -147,54 +147,10 @@ public:
 
 } // end anonymous namespace
 
-static inline StringRef SimulatorVersionDefineName() {
-  return "__IPHONE_OS_VERSION_MIN_REQUIRED=";
-}
-
-/// \brief Parse the simulator version define:
-/// __IPHONE_OS_VERSION_MIN_REQUIRED=([0-9])([0-9][0-9])([0-9][0-9])
-// and return the grouped values as integers, e.g:
-//   __IPHONE_OS_VERSION_MIN_REQUIRED=40201
-// will return Major=4, Minor=2, Micro=1.
-static bool GetVersionFromSimulatorDefine(StringRef define,
-                                          unsigned &Major, unsigned &Minor,
-                                          unsigned &Micro) {
-  assert(define.startswith(SimulatorVersionDefineName()));
-  StringRef name, version;
-  llvm::tie(name, version) = define.split('=');
-  if (version.empty())
-    return false;
-  std::string verstr = version.str();
-  char *end;
-  unsigned num = (unsigned) strtol(verstr.c_str(), &end, 10);
-  if (*end != '\0')
-    return false;
-  Major = num / 10000;
-  num = num % 10000;
-  Minor = num / 100;
-  Micro = num % 100;
-  return true;
-}
-
 static bool HasARCRuntime(CompilerInvocation &origCI) {
   // This duplicates some functionality from Darwin::AddDeploymentTarget
   // but this function is well defined, so keep it decoupled from the driver
   // and avoid unrelated complications.
-
-  for (unsigned i = 0, e = origCI.getPreprocessorOpts().Macros.size();
-         i != e; ++i) {
-    StringRef define = origCI.getPreprocessorOpts().Macros[i].first;
-    bool isUndef = origCI.getPreprocessorOpts().Macros[i].second;
-    if (isUndef)
-      continue;
-    if (!define.startswith(SimulatorVersionDefineName()))
-      continue;
-    unsigned Major = 0, Minor = 0, Micro = 0;
-    if (GetVersionFromSimulatorDefine(define, Major, Minor, Micro) &&
-        Major < 10 && Minor < 100 && Micro < 100)
-      return Major >= 5;
-  }
-
   llvm::Triple triple(origCI.getTargetOpts().Triple);
 
   if (triple.getOS() == llvm::Triple::IOS)

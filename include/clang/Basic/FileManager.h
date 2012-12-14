@@ -18,10 +18,10 @@
 #include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/Support/Allocator.h"
 // FIXME: Enhance libsystem to support inode and other fields in stat.
 #include <sys/types.h>
@@ -103,6 +103,10 @@ public:
   bool operator<(const FileEntry &RHS) const {
     return Device < RHS.Device || (Device == RHS.Device && Inode < RHS.Inode);
   }
+
+  /// \brief Check whether the file is a named pipe (and thus can't be opened by
+  /// the native FileManager methods).
+  bool isNamedPipe() const;
 };
 
 /// \brief Implements support for file system lookup, file system caching,

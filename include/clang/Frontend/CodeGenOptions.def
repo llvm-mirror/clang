@@ -49,6 +49,8 @@ CODEGENOPT(EmitDeclMetadata  , 1, 0) ///< Emit special metadata indicating what
 CODEGENOPT(EmitGcovArcs      , 1, 0) ///< Emit coverage data files, aka. GCDA.
 CODEGENOPT(EmitGcovNotes     , 1, 0) ///< Emit coverage "notes" files, aka GCNO.
 CODEGENOPT(EmitOpenCLArgMetadata , 1, 0) ///< Emit OpenCL kernel arg metadata.
+/// \brief FP_CONTRACT mode (on/off/fast).
+ENUM_CODEGENOPT(FPContractMode, FPContractModeKind, 2, FPC_On)
 CODEGENOPT(ForbidGuardVariables , 1, 0) ///< Issue errors if C++ guard variables
                                         ///< are required.
 CODEGENOPT(FunctionSections  , 1, 0) ///< Set when -ffunction-sections is enabled.
@@ -111,9 +113,6 @@ CODEGENOPT(DebugColumnInfo, 1, 0) ///< Whether or not to use column information
 /// or 0 if unspecified.
 VALUE_CODEGENOPT(NumRegisterParameters, 32, 0)
 
-/// The run-time penalty for bounds checking, or 0 to disable.
-VALUE_CODEGENOPT(BoundsChecking, 8, 0)
-
 /// The lower bound for a buffer to be considered for stack protection.
 VALUE_CODEGENOPT(SSPBufferSize, 32, 0)
 
@@ -125,6 +124,9 @@ ENUM_CODEGENOPT(Inlining, InliningMethod, 2, NoInlining)
 
 /// The default TLS model to use.
 ENUM_CODEGENOPT(DefaultTLSModel, TLSModel, 2, GeneralDynamicTLSModel)
+
+CODEGENOPT(SanitizeRecover, 1, 0) ///< Attempt to recover from sanitizer checks
+                                  ///< by continuing execution when possible
 
 #undef CODEGENOPT
 #undef ENUM_CODEGENOPT

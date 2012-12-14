@@ -20,10 +20,10 @@
 #include "clang/Analysis/AnalysisContext.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/StoreRef.h"
-#include "llvm/Support/DataTypes.h"
-#include "llvm/ADT/FoldingSet.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/FoldingSet.h"
+#include "llvm/Support/DataTypes.h"
 
 namespace llvm {
 class BumpPtrAllocator;
@@ -580,9 +580,11 @@ public:
   ///
   /// If the statement is NULL, everything is this and parent contexts is
   /// considered live.
-  SymbolReaper(const LocationContext *ctx, const Stmt *s, SymbolManager& symmgr,
+  /// If the stack frame context is NULL, everything on stack is considered
+  /// dead.
+  SymbolReaper(const StackFrameContext *Ctx, const Stmt *s, SymbolManager& symmgr,
                StoreManager &storeMgr)
-   : LCtx(ctx->getCurrentStackFrame()), Loc(s), SymMgr(symmgr),
+   : LCtx(Ctx), Loc(s), SymMgr(symmgr),
      reapedStore(0, storeMgr) {}
 
   ~SymbolReaper() {}

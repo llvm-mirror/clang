@@ -14,33 +14,33 @@
 #ifndef LLVM_CLANG_FRONTEND_AST_READER_H
 #define LLVM_CLANG_FRONTEND_AST_READER_H
 
-#include "clang/Serialization/ASTBitCodes.h"
-#include "clang/Serialization/ContinuousRangeMap.h"
-#include "clang/Serialization/Module.h"
-#include "clang/Serialization/ModuleManager.h"
-#include "clang/Sema/ExternalSemaSource.h"
-#include "clang/AST/DeclarationName.h"
 #include "clang/AST/DeclObjC.h"
+#include "clang/AST/DeclarationName.h"
 #include "clang/AST/TemplateBase.h"
-#include "clang/Lex/ExternalPreprocessorSource.h"
-#include "clang/Lex/HeaderSearch.h"
-#include "clang/Lex/PPMutationListener.h"
-#include "clang/Lex/PreprocessingRecord.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Lex/ExternalPreprocessorSource.h"
+#include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/PPMutationListener.h"
+#include "clang/Lex/PreprocessingRecord.h"
+#include "clang/Sema/ExternalSemaSource.h"
+#include "clang/Serialization/ASTBitCodes.h"
+#include "clang/Serialization/ContinuousRangeMap.h"
+#include "clang/Serialization/Module.h"
+#include "clang/Serialization/ModuleManager.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/Bitcode/BitstreamReader.h"
 #include "llvm/Support/DataTypes.h"
 #include <deque>
@@ -85,6 +85,7 @@ class TypeLocReader;
 struct HeaderFileInfo;
 class VersionTuple;
 class TargetOptions;
+class ASTUnresolvedSet;
 
 /// \brief Abstract interface for callback invocations by the ASTReader.
 ///
@@ -895,12 +896,23 @@ private:
 
   void MaybeAddSystemRootToFilename(ModuleFile &M, std::string &Filename);
 
+  struct ImportedModule {
+    ModuleFile *Mod;
+    ModuleFile *ImportedBy;
+    SourceLocation ImportLoc;
+
+    ImportedModule(ModuleFile *Mod,
+                   ModuleFile *ImportedBy,
+                   SourceLocation ImportLoc)
+      : Mod(Mod), ImportedBy(ImportedBy), ImportLoc(ImportLoc) { }
+  };
+
   ASTReadResult ReadASTCore(StringRef FileName, ModuleKind Type,
-                            ModuleFile *ImportedBy,
-                            llvm::SmallVectorImpl<ModuleFile *> &Loaded,
+                            SourceLocation ImportLoc, ModuleFile *ImportedBy,
+                            llvm::SmallVectorImpl<ImportedModule> &Loaded,
                             unsigned ClientLoadCapabilities);
   ASTReadResult ReadControlBlock(ModuleFile &F,
-                                 llvm::SmallVectorImpl<ModuleFile *> &Loaded,
+                                 llvm::SmallVectorImpl<ImportedModule> &Loaded,
                                  unsigned ClientLoadCapabilities);
   bool ReadASTBlock(ModuleFile &F);
   bool ParseLineTable(ModuleFile &F, SmallVectorImpl<uint64_t> &Record);
@@ -1100,10 +1112,14 @@ public:
   /// \param Type The kind of AST being loaded, e.g., PCH, module, main file,
   /// or preamble.
   ///
+  /// \param ImportLoc the location where the module file will be considered as
+  /// imported from. For non-module AST types it should be invalid.
+  ///
   /// \param ClientLoadCapabilities The set of client load-failure
   /// capabilities, represented as a bitset of the enumerators of
   /// LoadFailureCapabilities.
   ASTReadResult ReadAST(const std::string &FileName, ModuleKind Type,
+                        SourceLocation ImportLoc,
                         unsigned ClientLoadCapabilities);
 
   /// \brief Make the entities in the given module and any of its (non-explicit)
@@ -1159,6 +1175,13 @@ public:
   static std::string getOriginalSourceFile(const std::string &ASTFileName,
                                            FileManager &FileMgr,
                                            DiagnosticsEngine &Diags);
+
+  /// \brief Read the control block for the named AST file.
+  ///
+  /// \returns true if an error occurred, false otherwise.
+  static bool readASTFileControlBlock(StringRef Filename,
+                                      FileManager &FileMgr,
+                                      ASTReaderListener &Listener);
 
   /// \brief Determine whether the given AST file is acceptable to load into a
   /// translation unit with the given language and target options.
@@ -1523,6 +1546,10 @@ public:
   /// \brief Read the source location entry with index ID.
   virtual bool ReadSLocEntry(int ID);
 
+  /// \brief Retrieve the module import location and module name for the
+  /// given source manager entry ID.
+  virtual std::pair<SourceLocation, StringRef> getModuleImportLoc(int ID);
+
   /// \brief Retrieve the global submodule ID given a module and its local ID
   /// number.
   serialization::SubmoduleID 
@@ -1590,7 +1617,7 @@ public:
                            unsigned &Idx);
 
   /// \brief Read a UnresolvedSet structure.
-  void ReadUnresolvedSet(ModuleFile &F, UnresolvedSetImpl &Set,
+  void ReadUnresolvedSet(ModuleFile &F, ASTUnresolvedSet &Set,
                          const RecordData &Record, unsigned &Idx);
 
   /// \brief Read a C++ base specifier.

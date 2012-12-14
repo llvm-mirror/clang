@@ -1,4 +1,4 @@
-//===--- TransRetainReleaseDealloc.cpp - Tranformations to ARC mode -------===//
+//===--- TransRetainReleaseDealloc.cpp - Transformations to ARC mode ------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -24,6 +24,7 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Sema/SemaDiagnostic.h"
+#include "llvm/ADT/StringSwitch.h"
 
 using namespace clang;
 using namespace arcmt;

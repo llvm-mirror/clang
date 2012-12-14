@@ -12,16 +12,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Lex/HeaderSearch.h"
-#include "clang/Lex/HeaderSearchOptions.h"
-#include "clang/Lex/HeaderMap.h"
-#include "clang/Lex/Lexer.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/IdentifierTable.h"
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Path.h"
+#include "clang/Lex/HeaderMap.h"
+#include "clang/Lex/HeaderSearchOptions.h"
+#include "clang/Lex/Lexer.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Capacity.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 #include <cstdio>
 using namespace clang;
 
@@ -749,7 +749,8 @@ bool HeaderSearch::isFileMultipleIncludeGuarded(const FileEntry *File) {
   if (ExternalSource && !HFI.Resolved)
     mergeHeaderFileInfo(HFI, ExternalSource->GetHeaderFileInfo(File));
 
-  return HFI.isPragmaOnce || HFI.ControllingMacro || HFI.ControllingMacroID;
+  return HFI.isPragmaOnce || HFI.isImport ||
+      HFI.ControllingMacro || HFI.ControllingMacroID;
 }
 
 void HeaderSearch::setHeaderFileInfoForUID(HeaderFileInfo HFI, unsigned UID) {
@@ -939,7 +940,33 @@ Module *HeaderSearch::loadFrameworkModule(StringRef Name,
       TopFrameworkDir = Dir;
     }
   } while (true);
-  
+
+  // Determine whether we're allowed to infer a module map.
+  bool canInfer = false;
+  if (llvm::sys::path::has_parent_path(TopFrameworkDir->getName())) {
+    // Figure out the parent path.
+    StringRef Parent = llvm::sys::path::parent_path(TopFrameworkDir->getName());
+    if (const DirectoryEntry *ParentDir = FileMgr.getDirectory(Parent)) {
+      // If there's a module map file in the parent directory, it can
+      // explicitly allow us to infer framework modules.
+      switch (loadModuleMapFile(ParentDir)) {
+        case LMM_AlreadyLoaded:
+        case LMM_NewlyLoaded: {
+          StringRef Name = llvm::sys::path::stem(TopFrameworkDir->getName());
+          canInfer = ModMap.canInferFrameworkModule(ParentDir, Name, IsSystem);
+          break;
+        }
+        case LMM_InvalidModuleMap:
+        case LMM_NoDirectory:
+          break;
+      }
+    }
+  }
+
+  // If we're not allowed to infer a module map, we're done.
+  if (!canInfer)
+    return 0;
+
   // Try to infer a module map from the top-level framework directory.
   Module *Result = ModMap.inferFrameworkModule(SubmodulePath.back(), 
                                                TopFrameworkDir,

@@ -13,12 +13,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExplodedGraph.h"
+#include "clang/AST/ParentMap.h"
+#include "clang/AST/Stmt.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
-#include "clang/AST/Stmt.h"
-#include "clang/AST/ParentMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include <vector>
@@ -104,14 +104,13 @@ bool ExplodedGraph::shouldCollect(const ExplodedNode *node) {
   // Do not collect nodes for non-consumed Stmt or Expr to ensure precise
   // diagnostic generation; specifically, so that we could anchor arrows
   // pointing to the beginning of statements (as written in code).
-  if (!isa<Expr>(ps.getStmt()))
+  const Expr *Ex = dyn_cast<Expr>(ps.getStmt());
+  if (!Ex)
     return false;
-  
-  if (const Expr *Ex = dyn_cast<Expr>(ps.getStmt())) {
-    ParentMap &PM = progPoint.getLocationContext()->getParentMap();
-    if (!PM.isConsumedExpr(Ex))
-      return false;
-  }
+
+  ParentMap &PM = progPoint.getLocationContext()->getParentMap();
+  if (!PM.isConsumedExpr(Ex))
+    return false;
   
   // Condition 9.
   const ProgramPoint SuccLoc = succ->getLocation();

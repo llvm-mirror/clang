@@ -31,10 +31,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/SemaInternal.h"
-#include "clang/Sema/ScopeInfo.h"
-#include "clang/Sema/Initialization.h"
 #include "clang/AST/ExprObjC.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Sema/Initialization.h"
+#include "clang/Sema/ScopeInfo.h"
 #include "llvm/ADT/SmallString.h"
 
 using namespace clang;
@@ -113,7 +113,7 @@ namespace {
     Expr *rebuildSpecific(ObjCPropertyRefExpr *refExpr) {
       // Fortunately, the constraint that we're rebuilding something
       // with a base limits the number of cases here.
-      assert(refExpr->getBase());
+      assert(refExpr->isObjectReceiver());
 
       if (refExpr->isExplicitProperty()) {
         return new (S.Context)
@@ -198,7 +198,14 @@ namespace {
     }
 
     /// Return true if assignments have a non-void result.
-    virtual bool assignmentsHaveResult() { return true; }
+    bool CanCaptureValueOfType(QualType ty) {
+      assert(!ty->isIncompleteType());
+      assert(!ty->isDependentType());
+
+      if (const CXXRecordDecl *ClassDecl = ty->getAsCXXRecordDecl())
+        return ClassDecl->isTriviallyCopyable();
+      return true;
+    }
 
     virtual Expr *rebuildAndCaptureObject(Expr *) = 0;
     virtual ExprResult buildGet() = 0;
@@ -380,7 +387,7 @@ PseudoOpBuilder::buildAssignmentOperation(Scope *Sc, SourceLocation opcLoc,
 
   // The result of the assignment, if not void, is the value set into
   // the l-value.
-  result = buildSet(result.take(), opcLoc, assignmentsHaveResult());
+  result = buildSet(result.take(), opcLoc, /*captureSetValueAsResult*/ true);
   if (result.isInvalid()) return ExprError();
   addSemanticExpr(result.take());
 
@@ -404,7 +411,7 @@ PseudoOpBuilder::buildIncDecOperation(Scope *Sc, SourceLocation opcLoc,
   QualType resultType = result.get()->getType();
 
   // That's the postfix result.
-  if (UnaryOperator::isPostfix(opcode) && assignmentsHaveResult()) {
+  if (UnaryOperator::isPostfix(opcode) && CanCaptureValueOfType(resultType)) {
     result = capture(result.take());
     setResultToLastSemantic();
   }
@@ -423,8 +430,7 @@ PseudoOpBuilder::buildIncDecOperation(Scope *Sc, SourceLocation opcLoc,
 
   // Store that back into the result.  The value stored is the result
   // of a prefix operation.
-  result = buildSet(result.take(), opcLoc,
-             UnaryOperator::isPrefix(opcode) && assignmentsHaveResult());
+  result = buildSet(result.take(), opcLoc, UnaryOperator::isPrefix(opcode));
   if (result.isInvalid()) return ExprError();
   addSemanticExpr(result.take());
 
@@ -696,7 +702,8 @@ ExprResult ObjCPropertyOpBuilder::buildSet(Expr *op, SourceLocation opcLoc,
     ObjCMessageExpr *msgExpr =
       cast<ObjCMessageExpr>(msg.get()->IgnoreImplicit());
     Expr *arg = msgExpr->getArg(0);
-    msgExpr->setArg(0, captureValueAsResult(arg));
+    if (CanCaptureValueOfType(arg->getType()))
+      msgExpr->setArg(0, captureValueAsResult(arg));
   }
 
   return msg;
@@ -706,10 +713,9 @@ ExprResult ObjCPropertyOpBuilder::buildSet(Expr *op, SourceLocation opcLoc,
 ExprResult ObjCPropertyOpBuilder::buildRValueOperation(Expr *op) {
   // Explicit properties always have getters, but implicit ones don't.
   // Check that before proceeding.
-  if (RefExpr->isImplicitProperty() &&
-      !RefExpr->getImplicitPropertyGetter()) {
+  if (RefExpr->isImplicitProperty() && !RefExpr->getImplicitPropertyGetter()) {
     S.Diag(RefExpr->getLocation(), diag::err_getter_not_found)
-      << RefExpr->getBase()->getType();
+        << RefExpr->getSourceRange();
     return ExprError();
   }
 
@@ -947,16 +953,15 @@ Sema::ObjCSubscriptKind
   // objective-C pointer type.
   UnresolvedSet<4> ViableConversions;
   UnresolvedSet<4> ExplicitConversions;
-  const UnresolvedSetImpl *Conversions
+  std::pair<CXXRecordDecl::conversion_iterator,
+            CXXRecordDecl::conversion_iterator> Conversions
     = cast<CXXRecordDecl>(RecordTy->getDecl())->getVisibleConversionFunctions();
   
   int NoIntegrals=0, NoObjCIdPointers=0;
   SmallVector<CXXConversionDecl *, 4> ConversionDecls;
     
-  for (UnresolvedSetImpl::iterator I = Conversions->begin(),
-       E = Conversions->end();
-       I != E;
-       ++I) {
+  for (CXXRecordDecl::conversion_iterator
+         I = Conversions.first, E = Conversions.second; I != E; ++I) {
     if (CXXConversionDecl *Conversion
         = dyn_cast<CXXConversionDecl>((*I)->getUnderlyingDecl())) {
       QualType CT = Conversion->getConversionType().getNonReferenceType();
@@ -1312,7 +1317,8 @@ ExprResult ObjCSubscriptOpBuilder::buildSet(Expr *op, SourceLocation opcLoc,
     ObjCMessageExpr *msgExpr =
       cast<ObjCMessageExpr>(msg.get()->IgnoreImplicit());
     Expr *arg = msgExpr->getArg(0);
-    msgExpr->setArg(0, captureValueAsResult(arg));
+    if (CanCaptureValueOfType(arg->getType()))
+      msgExpr->setArg(0, captureValueAsResult(arg));
   }
   
   return msg;

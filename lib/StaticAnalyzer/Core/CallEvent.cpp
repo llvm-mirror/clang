@@ -14,10 +14,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
-#include "clang/Analysis/ProgramPoint.h"
 #include "clang/AST/ParentMap.h"
+#include "clang/Analysis/ProgramPoint.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace clang;
 using namespace ento;
@@ -97,6 +99,14 @@ bool CallEvent::hasNonZeroCallbackArg() const {
   }
   
   return false;
+}
+
+bool CallEvent::isGlobalCFunction(StringRef FunctionName) const {
+  const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(getDecl());
+  if (!FD)
+    return false;
+
+  return CheckerContext::isCLibraryFunction(FD, FunctionName);
 }
 
 /// \brief Returns true if a type is a pointer-to-const or reference-to-const
@@ -221,6 +231,13 @@ SourceRange CallEvent::getArgSourceRange(unsigned Index) const {
   if (!ArgE)
     return SourceRange();
   return ArgE->getSourceRange();
+}
+
+SVal CallEvent::getReturnValue() const {
+  const Expr *E = getOriginExpr();
+  if (!E)
+    return UndefinedVal();
+  return getSVal(E);
 }
 
 void CallEvent::dump() const {
@@ -818,7 +835,35 @@ RuntimeDefinition ObjCMethodCall::getRuntimeDefinition() const {
     // Lookup the method implementation.
     if (ReceiverT)
       if (ObjCInterfaceDecl *IDecl = ReceiverT->getInterfaceDecl()) {
-        const ObjCMethodDecl *MD = IDecl->lookupPrivateMethod(Sel);
+        // Repeatedly calling lookupPrivateMethod() is expensive, especially
+        // when in many cases it returns null.  We cache the results so
+        // that repeated queries on the same ObjCIntefaceDecl and Selector
+        // don't incur the same cost.  On some test cases, we can see the
+        // same query being issued thousands of times.
+        //
+        // NOTE: This cache is essentially a "global" variable, but it
+        // only gets lazily created when we get here.  The value of the
+        // cache probably comes from it being global across ExprEngines,
+        // where the same queries may get issued.  If we are worried about
+        // concurrency, or possibly loading/unloading ASTs, etc., we may
+        // need to revisit this someday.  In terms of memory, this table
+        // stays around until clang quits, which also may be bad if we
+        // need to release memory.
+        typedef std::pair<const ObjCInterfaceDecl*, Selector>
+                PrivateMethodKey;
+        typedef llvm::DenseMap<PrivateMethodKey,
+                               llvm::Optional<const ObjCMethodDecl *> >
+                PrivateMethodCache;
+
+        static PrivateMethodCache PMC;
+        llvm::Optional<const ObjCMethodDecl *> &Val =
+          PMC[std::make_pair(IDecl, Sel)];
+
+        // Query lookupPrivateMethod() if the cache does not hit.
+        if (!Val.hasValue())
+          Val = IDecl->lookupPrivateMethod(Sel);
+
+        const ObjCMethodDecl *MD = Val.getValue();
         if (CanBeSubClassed)
           return RuntimeDefinition(MD, Receiver);
         else

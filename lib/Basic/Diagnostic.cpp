@@ -17,8 +17,8 @@
 #include "clang/Basic/PartialDiagnostic.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/CrashRecoveryContext.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cctype>
 
 using namespace clang;
@@ -97,6 +97,7 @@ bool DiagnosticsEngine::popMappings(SourceLocation Loc) {
 
 void DiagnosticsEngine::Reset() {
   ErrorOccurred = false;
+  UncompilableErrorOccurred = false;
   FatalErrorOccurred = false;
   UnrecoverableErrorOccurred = false;
   

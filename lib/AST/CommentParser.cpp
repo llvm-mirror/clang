@@ -8,9 +8,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/AST/CommentParser.h"
-#include "clang/AST/CommentSema.h"
-#include "clang/AST/CommentDiagnostic.h"
 #include "clang/AST/CommentCommandTraits.h"
+#include "clang/AST/CommentDiagnostic.h"
+#include "clang/AST/CommentSema.h"
 #include "clang/Basic/SourceManager.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -553,6 +553,14 @@ BlockContentComment *Parser::parseParagraphOrBlockCommand() {
         if (Content.size() == 0)
           return parseBlockCommand();
         break; // Block command ahead, finish this parapgaph.
+      }
+      if (Info->IsVerbatimBlockEndCommand) {
+        Diag(Tok.getLocation(),
+             diag::warn_verbatim_block_end_without_start)
+          << Info->Name
+          << SourceRange(Tok.getLocation(), Tok.getEndLocation());
+        consumeToken();
+        continue;
       }
       if (Info->IsUnknownCommand) {
         Content.push_back(S.actOnUnknownCommand(Tok.getLocation(),

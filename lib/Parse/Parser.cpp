@@ -12,15 +12,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Parse/Parser.h"
+#include "ParsePragma.h"
+#include "RAIIObjectsForParser.h"
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Sema/DeclSpec.h"
-#include "clang/Sema/Scope.h"
 #include "clang/Sema/ParsedTemplate.h"
+#include "clang/Sema/Scope.h"
 #include "llvm/Support/raw_ostream.h"
-#include "RAIIObjectsForParser.h"
-#include "ParsePragma.h"
-#include "clang/AST/DeclTemplate.h"
-#include "clang/AST/ASTConsumer.h"
 using namespace clang;
 
 
@@ -102,29 +102,6 @@ Parser::Parser(Preprocessor &pp, Sema &actions, bool skipFunctionBodies)
 
   PP.setCodeCompletionHandler(*this);
 }
-
-/// If a crash happens while the parser is active, print out a line indicating
-/// what the current token is.
-void PrettyStackTraceParserEntry::print(raw_ostream &OS) const {
-  const Token &Tok = P.getCurToken();
-  if (Tok.is(tok::eof)) {
-    OS << "<eof> parser at end of file\n";
-    return;
-  }
-
-  if (Tok.getLocation().isInvalid()) {
-    OS << "<unknown> parser at unknown location\n";
-    return;
-  }
-
-  const Preprocessor &PP = P.getPreprocessor();
-  Tok.getLocation().print(OS, PP.getSourceManager());
-  if (Tok.isAnnotation())
-    OS << ": at annotation token \n";
-  else
-    OS << ": current parser token '" << PP.getSpelling(Tok) << "'\n";
-}
-
 
 DiagnosticBuilder Parser::Diag(SourceLocation Loc, unsigned DiagID) {
   return Diags.Report(Loc, DiagID);
@@ -470,9 +447,6 @@ void Parser::Initialize() {
   EnterScope(Scope::DeclScope);
   Actions.ActOnTranslationUnitScope(getCurScope());
 
-  // Prime the lexer look-ahead.
-  ConsumeToken();
-
   // Initialization for Objective-C context sensitive keywords recognition.
   // Referenced in Parser::ParseObjCTypeQualifierList.
   if (getLangOpts().ObjC1) {
@@ -527,6 +501,11 @@ void Parser::Initialize() {
     PP.SetPoisonReason(Ident___abnormal_termination,diag::err_seh___finally_block);
     PP.SetPoisonReason(Ident_AbnormalTermination,diag::err_seh___finally_block);
   }
+
+  Actions.Initialize();
+
+  // Prime the lexer look-ahead.
+  ConsumeToken();
 }
 
 namespace {
@@ -1261,7 +1240,8 @@ Parser::ExprResult Parser::ParseAsmStringLiteral() {
       return ExprError();
     }
     default:
-      Diag(Tok, diag::err_expected_string_literal);
+      Diag(Tok, diag::err_expected_string_literal)
+        << /*Source='in...'*/0 << "'asm'";
       return ExprError();
   }
 
@@ -1938,8 +1918,8 @@ bool BalancedDelimiterTracker::diagnoseMissingClose() {
   }
   P.Diag(P.Tok, DID);
   P.Diag(LOpen, diag::note_matching) << LHSName;
-  if (P.SkipUntil(Close))
-    LClose = P.Tok.getLocation();
+  if (P.SkipUntil(Close, /*StopAtSemi*/ true, /*DontConsume*/ true))
+    LClose = P.ConsumeAnyToken();
   return true;
 }
 

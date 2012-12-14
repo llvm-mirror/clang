@@ -20,12 +20,12 @@
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemStatCache.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/system_error.h"
-#include "llvm/Config/llvm-config.h"
 #include <map>
 #include <set>
 #include <string>
@@ -36,6 +36,9 @@
 #include <sys/uio.h>
 #else
 #include <io.h>
+#ifndef S_ISFIFO
+#define S_ISFIFO(x) (0)
+#endif
 #endif
 using namespace clang;
 
@@ -55,6 +58,10 @@ FileEntry::~FileEntry() {
   // If this FileEntry owns an open file descriptor that never got used, close
   // it.
   if (FD != -1) ::close(FD);
+}
+
+bool FileEntry::isNamedPipe() const {
+  return S_ISFIFO(FileMode);
 }
 
 //===----------------------------------------------------------------------===//

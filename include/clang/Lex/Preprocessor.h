@@ -14,23 +14,23 @@
 #ifndef LLVM_CLANG_LEX_PREPROCESSOR_H
 #define LLVM_CLANG_LEX_PREPROCESSOR_H
 
-#include "clang/Lex/MacroInfo.h"
-#include "clang/Lex/Lexer.h"
-#include "clang/Lex/PTHLexer.h"
-#include "clang/Lex/PPCallbacks.h"
-#include "clang/Lex/PPMutationListener.h"
-#include "clang/Lex/TokenLexer.h"
-#include "clang/Lex/PTHManager.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/SourceLocation.h"
+#include "clang/Lex/Lexer.h"
+#include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/PPMutationListener.h"
+#include "clang/Lex/PTHLexer.h"
+#include "clang/Lex/PTHManager.h"
+#include "clang/Lex/TokenLexer.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/OwningPtr.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Allocator.h"
 #include <vector>
 
@@ -555,11 +555,8 @@ public:
   void setPredefines(const char *P) { Predefines = P; }
   void setPredefines(const std::string &P) { Predefines = P; }
 
-  /// getIdentifierInfo - Return information about the specified preprocessor
-  /// identifier token.  The version of this method that takes two character
-  /// pointers is preferred unless the identifier is already available as a
-  /// string (this avoids allocation and copying of memory to construct an
-  /// std::string).
+  /// Return information about the specified preprocessor
+  /// identifier token.
   IdentifierInfo *getIdentifierInfo(StringRef Name) const {
     return &Identifiers.get(Name);
   }
@@ -614,7 +611,7 @@ public:
 
   /// \brief Create a new preprocessing record, which will keep track of
   /// all macro expansions, macro definitions, etc.
-  void createPreprocessingRecord(bool RecordConditionalDirectives);
+  void createPreprocessingRecord();
 
   /// EnterMainSourceFile - Enter the specified FileID as the main source file,
   /// which implicitly adds the builtin defines etc.
@@ -698,6 +695,25 @@ public:
   }
 
   void LexAfterModuleImport(Token &Result);
+
+  /// \brief Lex a string literal, which may be the concatenation of multiple
+  /// string literals and may even come from macro expansion.
+  /// \returns true on success, false if a error diagnostic has been generated.
+  bool LexStringLiteral(Token &Result, std::string &String,
+                        const char *DiagnosticTag, bool AllowMacroExpansion) {
+    if (AllowMacroExpansion)
+      Lex(Result);
+    else
+      LexUnexpandedToken(Result);
+    return FinishLexStringLiteral(Result, String, DiagnosticTag,
+                                  AllowMacroExpansion);
+  }
+
+  /// \brief Complete the lexing of a string literal where the first token has
+  /// already been lexed (see LexStringLiteral).
+  bool FinishLexStringLiteral(Token &Result, std::string &String,
+                              const char *DiagnosticTag,
+                              bool AllowMacroExpansion);
 
   /// LexNonComment - Lex a token.  If it's a comment, keep lexing until we get
   /// something not a comment.  This is useful in -E -C mode where comments

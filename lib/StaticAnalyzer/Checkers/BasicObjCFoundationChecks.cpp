@@ -14,23 +14,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "ClangSACheckers.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/DeclObjC.h"
+#include "clang/AST/Expr.h"
+#include "clang/AST/ExprObjC.h"
+#include "clang/AST/StmtObjC.h"
 #include "clang/Analysis/DomainSpecific/CocoaConventions.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExplodedGraph.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/MemRegion.h"
-#include "clang/AST/DeclObjC.h"
-#include "clang/AST/Expr.h"
-#include "clang/AST/ExprObjC.h"
-#include "clang/AST/StmtObjC.h"
-#include "clang/AST/ASTContext.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace clang;
 using namespace ento;
@@ -363,15 +364,15 @@ void CFNumberCreateChecker::checkPreStmt(const CallExpr *CE,
 }
 
 //===----------------------------------------------------------------------===//
-// CFRetain/CFRelease checking for null arguments.
+// CFRetain/CFRelease/CFMakeCollectable checking for null arguments.
 //===----------------------------------------------------------------------===//
 
 namespace {
 class CFRetainReleaseChecker : public Checker< check::PreStmt<CallExpr> > {
   mutable OwningPtr<APIMisuse> BT;
-  mutable IdentifierInfo *Retain, *Release;
+  mutable IdentifierInfo *Retain, *Release, *MakeCollectable;
 public:
-  CFRetainReleaseChecker(): Retain(0), Release(0) {}
+  CFRetainReleaseChecker(): Retain(0), Release(0), MakeCollectable(0) {}
   void checkPreStmt(const CallExpr *CE, CheckerContext &C) const;
 };
 } // end anonymous namespace
@@ -392,12 +393,14 @@ void CFRetainReleaseChecker::checkPreStmt(const CallExpr *CE,
     ASTContext &Ctx = C.getASTContext();
     Retain = &Ctx.Idents.get("CFRetain");
     Release = &Ctx.Idents.get("CFRelease");
-    BT.reset(new APIMisuse("null passed to CFRetain/CFRelease"));
+    MakeCollectable = &Ctx.Idents.get("CFMakeCollectable");
+    BT.reset(
+      new APIMisuse("null passed to CFRetain/CFRelease/CFMakeCollectable"));
   }
 
-  // Check if we called CFRetain/CFRelease.
+  // Check if we called CFRetain/CFRelease/CFMakeCollectable.
   const IdentifierInfo *FuncII = FD->getIdentifier();
-  if (!(FuncII == Retain || FuncII == Release))
+  if (!(FuncII == Retain || FuncII == Release || FuncII == MakeCollectable))
     return;
 
   // FIXME: The rest of this just checks that the argument is non-null.
@@ -426,9 +429,15 @@ void CFRetainReleaseChecker::checkPreStmt(const CallExpr *CE,
     if (!N)
       return;
 
-    const char *description = (FuncII == Retain)
-                            ? "Null pointer argument in call to CFRetain"
-                            : "Null pointer argument in call to CFRelease";
+    const char *description;
+    if (FuncII == Retain)
+      description = "Null pointer argument in call to CFRetain";
+    else if (FuncII == Release)
+      description = "Null pointer argument in call to CFRelease";
+    else if (FuncII == MakeCollectable)
+      description = "Null pointer argument in call to CFMakeCollectable";
+    else
+      llvm_unreachable("impossible case");
 
     BugReport *report = new BugReport(*BT, description, N);
     report->addRange(Arg->getSourceRange());
@@ -763,7 +772,7 @@ void ObjCNonNilReturnValueChecker::checkPostObjCMessage(const ObjCMethodCall &M,
     // since 'nil' is rarely returned in practice, we should not warn when the
     // caller to the defensive constructor uses the object in contexts where
     // 'nil' is not accepted.
-    if (C.isWithinInlined() && M.getDecl() &&
+    if (!C.inTopFrame() && M.getDecl() &&
         M.getDecl()->getMethodFamily() == OMF_init &&
         M.isReceiverSelfOrSuper()) {
       State = assumeExprIsNonNull(M.getOriginExpr(), State, C);

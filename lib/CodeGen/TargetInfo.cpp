@@ -17,10 +17,10 @@
 #include "CodeGenFunction.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/Frontend/CodeGenOptions.h"
-#include "llvm/Type.h"
-#include "llvm/DataLayout.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/DataLayout.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Type.h"
 using namespace clang;
 using namespace CodeGen;
 
@@ -173,7 +173,7 @@ static bool hasNonTrivialDestructorOrCopyConstructor(const RecordType *RT) {
   if (!RD)
     return false;
 
-  return !RD->hasTrivialDestructor() || !RD->hasTrivialCopyConstructor();
+  return !RD->hasTrivialDestructor() || RD->hasNonTrivialCopyConstructor();
 }
 
 /// isRecordWithNonTrivialDestructorOrCopyConstructor - Determine if a type is
@@ -266,9 +266,15 @@ static const Type *isSingleElementStruct(QualType T, ASTContext &Context) {
 }
 
 static bool is32Or64BitBasicType(QualType Ty, ASTContext &Context) {
+  // Treat complex types as the element type.
+  if (const ComplexType *CTy = Ty->getAs<ComplexType>())
+    Ty = CTy->getElementType();
+
+  // Check for a type which we know has a simple scalar argument-passing
+  // convention without any padding.  (We're specifically looking for 32
+  // and 64-bit integer and integer-equivalents, float, and double.)
   if (!Ty->getAs<BuiltinType>() && !Ty->hasPointerRepresentation() &&
-      !Ty->isAnyComplexType() && !Ty->isEnumeralType() &&
-      !Ty->isBlockPointerType())
+      !Ty->isEnumeralType() && !Ty->isBlockPointerType())
     return false;
 
   uint64_t Size = Context.getTypeSize(Ty);
@@ -1013,7 +1019,7 @@ void X86_32TargetCodeGenInfo::SetTargetAttributes(const Decl *D,
       // Now add the 'alignstack' attribute with a value of 16.
       llvm::AttrBuilder B;
       B.addStackAlignmentAttr(16);
-      Fn->addAttribute(llvm::AttrListPtr::FunctionIndex,
+      Fn->addAttribute(llvm::AttributeSet::FunctionIndex,
                        llvm::Attributes::get(CGM.getLLVMContext(), B));
     }
   }
@@ -1381,7 +1387,7 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
     } else if ((k == BuiltinType::Float || k == BuiltinType::Double) ||
                (k == BuiltinType::LongDouble &&
                 getContext().getTargetInfo().getTriple().getOS() ==
-                llvm::Triple::NativeClient)) {
+                llvm::Triple::NaCl)) {
       Current = SSE;
     } else if (k == BuiltinType::LongDouble) {
       Lo = X87;
@@ -1470,7 +1476,7 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
     else if (ET == getContext().DoubleTy ||
              (ET == getContext().LongDoubleTy &&
               getContext().getTargetInfo().getTriple().getOS() ==
-              llvm::Triple::NativeClient))
+              llvm::Triple::NaCl))
       Lo = Hi = SSE;
     else if (ET == getContext().LongDoubleTy)
       Current = ComplexX87;
@@ -2684,6 +2690,11 @@ class PPC64_SVR4_ABIInfo : public DefaultABIInfo {
 public:
   PPC64_SVR4_ABIInfo(CodeGen::CodeGenTypes &CGT) : DefaultABIInfo(CGT) {}
 
+  bool isPromotableTypeForABI(QualType Ty) const;
+
+  ABIArgInfo classifyReturnType(QualType RetTy) const;
+  ABIArgInfo classifyArgumentType(QualType Ty) const;
+
   // TODO: We can add more logic to computeInfo to improve performance.
   // Example: For aggregate arguments that fit in a register, we could
   // use getDirectInReg (as is done below for structs containing a single
@@ -2742,6 +2753,62 @@ public:
                                llvm::Value *Address) const;
 };
 
+}
+
+// Return true if the ABI requires Ty to be passed sign- or zero-
+// extended to 64 bits.
+bool
+PPC64_SVR4_ABIInfo::isPromotableTypeForABI(QualType Ty) const {
+  // Treat an enum type as its underlying type.
+  if (const EnumType *EnumTy = Ty->getAs<EnumType>())
+    Ty = EnumTy->getDecl()->getIntegerType();
+
+  // Promotable integer types are required to be promoted by the ABI.
+  if (Ty->isPromotableIntegerType())
+    return true;
+
+  // In addition to the usual promotable integer types, we also need to
+  // extend all 32-bit types, since the ABI requires promotion to 64 bits.
+  if (const BuiltinType *BT = Ty->getAs<BuiltinType>())
+    switch (BT->getKind()) {
+    case BuiltinType::Int:
+    case BuiltinType::UInt:
+      return true;
+    default:
+      break;
+    }
+
+  return false;
+}
+
+ABIArgInfo
+PPC64_SVR4_ABIInfo::classifyArgumentType(QualType Ty) const {
+  if (Ty->isAnyComplexType())
+    return ABIArgInfo::getDirect();
+
+  if (isAggregateTypeForABI(Ty)) {
+    // Records with non trivial destructors/constructors should not be passed
+    // by value.
+    if (isRecordWithNonTrivialDestructorOrCopyConstructor(Ty))
+      return ABIArgInfo::getIndirect(0, /*ByVal=*/false);
+
+    return ABIArgInfo::getIndirect(0);
+  }
+
+  return (isPromotableTypeForABI(Ty) ?
+          ABIArgInfo::getExtend() : ABIArgInfo::getDirect());
+}
+
+ABIArgInfo
+PPC64_SVR4_ABIInfo::classifyReturnType(QualType RetTy) const {
+  if (RetTy->isVoidType())
+    return ABIArgInfo::getIgnore();
+
+  if (isAggregateTypeForABI(RetTy))
+    return ABIArgInfo::getIndirect(0);
+
+  return (isPromotableTypeForABI(RetTy) ?
+          ABIArgInfo::getExtend() : ABIArgInfo::getDirect());
 }
 
 // Based on ARMABIInfo::EmitVAArg, adjusted for 64-bit machine.
@@ -3148,7 +3215,8 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty, int *VFPRegs,
       if (Base->isVectorType()) {
         // ElementSize is in number of floats.
         unsigned ElementSize = getContext().getTypeSize(Base) == 64 ? 2 : 4;
-        markAllocatedVFPs(VFPRegs, AllocatedVFP, ElementSize, Members * ElementSize);
+        markAllocatedVFPs(VFPRegs, AllocatedVFP, ElementSize,
+                          Members * ElementSize);
       } else if (Base->isSpecificBuiltinType(BuiltinType::Float))
         markAllocatedVFPs(VFPRegs, AllocatedVFP, 1, Members);
       else {
@@ -3162,9 +3230,17 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty, int *VFPRegs,
   }
 
   // Support byval for ARM.
-  if (getContext().getTypeSizeInChars(Ty) > CharUnits::fromQuantity(64) ||
-      getContext().getTypeAlign(Ty) > 64) {
-    return ABIArgInfo::getIndirect(0, /*ByVal=*/true);
+  // The ABI alignment for APCS is 4-byte and for AAPCS at least 4-byte and at
+  // most 8-byte. We realign the indirect argument if type alignment is bigger
+  // than ABI alignment.
+  uint64_t ABIAlign = 4;
+  uint64_t TyAlign = getContext().getTypeAlign(Ty) / 8;
+  if (getABIKind() == ARMABIInfo::AAPCS_VFP ||
+      getABIKind() == ARMABIInfo::AAPCS)
+    ABIAlign = std::min(std::max(TyAlign, (uint64_t)4), (uint64_t)8);
+  if (getContext().getTypeSizeInChars(Ty) > CharUnits::fromQuantity(64)) {
+    return ABIArgInfo::getIndirect(0, /*ByVal=*/true,
+           /*Realign=*/TyAlign > ABIAlign);
   }
 
   // Otherwise, pass by coercing to a structure of the appropriate size.
@@ -3722,9 +3798,9 @@ void MSP430TargetCodeGenInfo::SetTargetAttributes(const Decl *D,
       F->addFnAttr(llvm::Attributes::NoInline);
 
       // Step 3: Emit ISR vector alias.
-      unsigned Num = attr->getNumber() + 0xffe0;
+      unsigned Num = attr->getNumber() / 2;
       new llvm::GlobalAlias(GV->getType(), llvm::Function::ExternalLinkage,
-                            "vector_" + Twine::utohexstr(Num),
+                            "__isr_" + Twine(Num),
                             GV, &M.getModule());
     }
   }
@@ -4281,7 +4357,7 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
         Kind = ARMABIInfo::AAPCS_VFP;
 
       switch (Triple.getOS()) {
-        case llvm::Triple::NativeClient:
+        case llvm::Triple::NaCl:
           return *(TheTargetCodeGenInfo =
                    new NaClARMTargetCodeGenInfo(Types, Kind));
         default:
@@ -4353,7 +4429,7 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
     case llvm::Triple::MinGW32:
     case llvm::Triple::Cygwin:
       return *(TheTargetCodeGenInfo = new WinX86_64TargetCodeGenInfo(Types));
-    case llvm::Triple::NativeClient:
+    case llvm::Triple::NaCl:
       return *(TheTargetCodeGenInfo = new NaClX86_64TargetCodeGenInfo(Types, HasAVX));
     default:
       return *(TheTargetCodeGenInfo = new X86_64TargetCodeGenInfo(Types,

@@ -12,16 +12,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/StaticAnalyzer/Core/BugReporter/PathDiagnostic.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/ExplodedGraph.h"
-#include "clang/Basic/SourceManager.h"
-#include "clang/AST/Expr.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
+#include "clang/AST/Expr.h"
 #include "clang/AST/ParentMap.h"
 #include "clang/AST/StmtCXX.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/ExplodedGraph.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace clang;
 using namespace ento;
@@ -588,6 +589,8 @@ PathDiagnosticLocation
   }
   else if (const StmtPoint *SP = dyn_cast<StmtPoint>(&P)) {
     S = SP->getStmt();
+    if (isa<PostStmtPurgeDeadSymbols>(P))
+      return PathDiagnosticLocation::createEnd(S, SMng, P.getLocationContext());
   }
   else if (const PostImplicitCall *PIE = dyn_cast<PostImplicitCall>(&P)) {
     return PathDiagnosticLocation(PIE->getLocation(), SMng);
@@ -619,12 +622,16 @@ PathDiagnosticLocation
 
   while (NI) {
     ProgramPoint P = NI->getLocation();
-    if (const StmtPoint *PS = dyn_cast<StmtPoint>(&P))
+    if (const StmtPoint *PS = dyn_cast<StmtPoint>(&P)) {
       S = PS->getStmt();
-    else if (const BlockEdge *BE = dyn_cast<BlockEdge>(&P))
-      S = BE->getSrc()->getTerminator();
-    if (S)
+      if (isa<PostStmtPurgeDeadSymbols>(P))
+        return PathDiagnosticLocation::createEnd(S, SM,
+                                                 NI->getLocationContext());
       break;
+    } else if (const BlockEdge *BE = dyn_cast<BlockEdge>(&P)) {
+      S = BE->getSrc()->getTerminator();
+      break;
+    }
     NI = NI->succ_empty() ? 0 : *(NI->succ_begin());
   }
 
@@ -790,11 +797,14 @@ PathDiagnosticCallPiece::getCallEnterEvent() const {
   StringRef msg = Out.str();
   if (msg.empty())
     return 0;
+  assert(callEnter.asLocation().isValid());
   return new PathDiagnosticEventPiece(callEnter, msg);
 }
 
 IntrusiveRefCntPtr<PathDiagnosticEventPiece>
 PathDiagnosticCallPiece::getCallEnterWithinCallerEvent() const {
+  if (!callEnterWithin.asLocation().isValid())
+    return 0;
   SmallString<256> buf;
   llvm::raw_svector_ostream Out(buf);
   if (const NamedDecl *ND = dyn_cast_or_null<NamedDecl>(Caller))
@@ -819,6 +829,7 @@ PathDiagnosticCallPiece::getCallExitEvent() const {
     Out << "Returning from '" << *ND << "'";
   else
     Out << "Returning to caller";
+  assert(callReturn.asLocation().isValid());
   return new PathDiagnosticEventPiece(callReturn, Out.str());
 }
 

@@ -18,9 +18,9 @@
 #define LLVM_CLANG_FRONTEND_PCHBITCODES_H
 
 #include "clang/AST/Type.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/Bitcode/BitCodes.h"
 #include "llvm/Support/DataTypes.h"
-#include "llvm/ADT/DenseMap.h"
 
 namespace clang {
   namespace serialization {
@@ -259,21 +259,25 @@ namespace clang {
       /// \brief The directory that the PCH was originally created in.
       ORIGINAL_PCH_DIR = 6,
 
+      /// \brief Record code for file ID of the file or buffer that was used to
+      /// generate the AST file.
+      ORIGINAL_FILE_ID = 7,
+
       /// \brief Offsets into the input-files block where input files
       /// reside.
-      INPUT_FILE_OFFSETS = 7,
+      INPUT_FILE_OFFSETS = 8,
 
       /// \brief Record code for the diagnostic options table.
-      DIAGNOSTIC_OPTIONS = 8,
+      DIAGNOSTIC_OPTIONS = 9,
 
       /// \brief Record code for the filesystem options table.
-      FILE_SYSTEM_OPTIONS = 9,
+      FILE_SYSTEM_OPTIONS = 10,
 
       /// \brief Record code for the headers search options table.
-      HEADER_SEARCH_OPTIONS = 10,
+      HEADER_SEARCH_OPTIONS = 11,
 
       /// \brief Record code for the preprocessor options table.
-      PREPROCESSOR_OPTIONS = 11
+      PREPROCESSOR_OPTIONS = 12
     };
 
     /// \brief Record types that occur within the input-files block

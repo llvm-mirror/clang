@@ -14,24 +14,24 @@
 #ifndef LLVM_CLANG_AST_TYPE_H
 #define LLVM_CLANG_AST_TYPE_H
 
+#include "clang/AST/NestedNameSpecifier.h"
+#include "clang/AST/TemplateName.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/ExceptionSpecificationType.h"
 #include "clang/Basic/IdentifierTable.h"
+#include "clang/Basic/LLVM.h"
 #include "clang/Basic/Linkage.h"
 #include "clang/Basic/PartialDiagnostic.h"
-#include "clang/Basic/Visibility.h"
 #include "clang/Basic/Specifiers.h"
-#include "clang/AST/NestedNameSpecifier.h"
-#include "clang/AST/TemplateName.h"
-#include "llvm/Support/type_traits.h"
-#include "llvm/Support/ErrorHandling.h"
+#include "clang/Basic/Visibility.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/Twine.h"
-#include "clang/Basic/LLVM.h"
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/type_traits.h"
 
 namespace clang {
   enum {
@@ -978,10 +978,6 @@ public:
   ///   An lvalue is an expression with an object type or an incomplete
   ///   type other than void.
   bool isCForbiddenLValueType() const;
-
-  /// \brief Determine whether this type has trivial copy/move-assignment
-  ///        semantics.
-  bool hasTrivialAssignment(ASTContext &Context, bool Copying) const;
 
 private:
   // These methods are implemented in a separate translation unit;

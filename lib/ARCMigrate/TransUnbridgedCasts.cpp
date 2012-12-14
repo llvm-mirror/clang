@@ -1,4 +1,4 @@
-//===--- TransUnbridgedCasts.cpp - Tranformations to ARC mode -------------===//
+//===--- TransUnbridgedCasts.cpp - Transformations to ARC mode ------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -34,9 +34,10 @@
 
 #include "Transforms.h"
 #include "Internals.h"
-#include "clang/Analysis/DomainSpecific/CocoaConventions.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/ParentMap.h"
+#include "clang/Analysis/DomainSpecific/CocoaConventions.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Sema/SemaDiagnostic.h"

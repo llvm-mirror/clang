@@ -13,20 +13,20 @@
 //===----------------------------------------------------------------------===//
 
 #include "CGCall.h"
-#include "CGCXXABI.h"
 #include "ABIInfo.h"
+#include "CGCXXABI.h"
 #include "CodeGenFunction.h"
 #include "CodeGenModule.h"
 #include "TargetInfo.h"
-#include "clang/Basic/TargetInfo.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/Attributes.h"
-#include "llvm/Support/CallSite.h"
 #include "llvm/DataLayout.h"
 #include "llvm/InlineAsm.h"
+#include "llvm/Support/CallSite.h"
 #include "llvm/Transforms/Utils/Local.h"
 using namespace clang;
 using namespace CodeGen;
@@ -316,6 +316,37 @@ CodeGenTypes::arrangeGlobalDeclaration(GlobalDecl GD) {
   return arrangeFunctionDeclaration(FD);
 }
 
+/// Arrange a call as unto a free function, except possibly with an
+/// additional number of formal parameters considered required.
+static const CGFunctionInfo &
+arrangeFreeFunctionLikeCall(CodeGenTypes &CGT,
+                            const CallArgList &args,
+                            const FunctionType *fnType,
+                            unsigned numExtraRequiredArgs) {
+  assert(args.size() >= numExtraRequiredArgs);
+
+  // In most cases, there are no optional arguments.
+  RequiredArgs required = RequiredArgs::All;
+
+  // If we have a variadic prototype, the required arguments are the
+  // extra prefix plus the arguments in the prototype.
+  if (const FunctionProtoType *proto = dyn_cast<FunctionProtoType>(fnType)) {
+    if (proto->isVariadic())
+      required = RequiredArgs(proto->getNumArgs() + numExtraRequiredArgs);
+
+  // If we don't have a prototype at all, but we're supposed to
+  // explicitly use the variadic convention for unprototyped calls,
+  // treat all of the arguments as required but preserve the nominal
+  // possibility of variadics.
+  } else if (CGT.CGM.getTargetCodeGenInfo()
+               .isNoProtoCallVariadic(args, cast<FunctionNoProtoType>(fnType))) {
+    required = RequiredArgs(args.size());
+  }
+
+  return CGT.arrangeFreeFunctionCall(fnType->getResultType(), args,
+                                     fnType->getExtInfo(), required);
+}
+
 /// Figure out the rules for calling a function with the given formal
 /// type using the given arguments.  The arguments are necessary
 /// because the function might be unprototyped, in which case it's
@@ -323,17 +354,15 @@ CodeGenTypes::arrangeGlobalDeclaration(GlobalDecl GD) {
 const CGFunctionInfo &
 CodeGenTypes::arrangeFreeFunctionCall(const CallArgList &args,
                                       const FunctionType *fnType) {
-  RequiredArgs required = RequiredArgs::All;
-  if (const FunctionProtoType *proto = dyn_cast<FunctionProtoType>(fnType)) {
-    if (proto->isVariadic())
-      required = RequiredArgs(proto->getNumArgs());
-  } else if (CGM.getTargetCodeGenInfo()
-               .isNoProtoCallVariadic(args, cast<FunctionNoProtoType>(fnType))) {
-    required = RequiredArgs(0);
-  }
+  return arrangeFreeFunctionLikeCall(*this, args, fnType, 0);
+}
 
-  return arrangeFreeFunctionCall(fnType->getResultType(), args,
-                                 fnType->getExtInfo(), required);
+/// A block function call is essentially a free-function call with an
+/// extra implicit argument.
+const CGFunctionInfo &
+CodeGenTypes::arrangeBlockFunctionCall(const CallArgList &args,
+                                       const FunctionType *fnType) {
+  return arrangeFreeFunctionLikeCall(*this, args, fnType, 1);
 }
 
 const CGFunctionInfo &
@@ -692,12 +721,13 @@ static llvm::Value *CreateCoercedLoad(llvm::Value *SrcPtr,
   // Otherwise do coercion through memory. This is stupid, but
   // simple.
   llvm::Value *Tmp = CGF.CreateTempAlloca(Ty);
-  llvm::Value *Casted =
-    CGF.Builder.CreateBitCast(Tmp, llvm::PointerType::getUnqual(SrcTy));
-  llvm::StoreInst *Store =
-    CGF.Builder.CreateStore(CGF.Builder.CreateLoad(SrcPtr), Casted);
-  // FIXME: Use better alignment / avoid requiring aligned store.
-  Store->setAlignment(1);
+  llvm::Type *I8PtrTy = CGF.Builder.getInt8PtrTy();
+  llvm::Value *Casted = CGF.Builder.CreateBitCast(Tmp, I8PtrTy);
+  llvm::Value *SrcCasted = CGF.Builder.CreateBitCast(SrcPtr, I8PtrTy);
+  // FIXME: Use better alignment.
+  CGF.Builder.CreateMemCpy(Casted, SrcCasted,
+      llvm::ConstantInt::get(CGF.IntPtrTy, SrcSize),
+      1, false);
   return CGF.Builder.CreateLoad(Tmp);
 }
 
@@ -779,12 +809,13 @@ static void CreateCoercedStore(llvm::Value *Src,
     // to that information.
     llvm::Value *Tmp = CGF.CreateTempAlloca(SrcTy);
     CGF.Builder.CreateStore(Src, Tmp);
-    llvm::Value *Casted =
-      CGF.Builder.CreateBitCast(Tmp, llvm::PointerType::getUnqual(DstTy));
-    llvm::LoadInst *Load = CGF.Builder.CreateLoad(Casted);
-    // FIXME: Use better alignment / avoid requiring aligned load.
-    Load->setAlignment(1);
-    CGF.Builder.CreateStore(Load, DstPtr, DstIsVolatile);
+    llvm::Type *I8PtrTy = CGF.Builder.getInt8PtrTy();
+    llvm::Value *Casted = CGF.Builder.CreateBitCast(Tmp, I8PtrTy);
+    llvm::Value *DstCasted = CGF.Builder.CreateBitCast(DstPtr, I8PtrTy);
+    // FIXME: Use better alignment.
+    CGF.Builder.CreateMemCpy(DstCasted, Casted,
+        llvm::ConstantInt::get(CGF.IntPtrTy, DstSize),
+        1, false);
   }
 }
 
@@ -863,8 +894,14 @@ CodeGenTypes::GetFunctionType(const CGFunctionInfo &FI) {
     break;
   }
 
-  for (CGFunctionInfo::const_arg_iterator it = FI.arg_begin(),
-         ie = FI.arg_end(); it != ie; ++it) {
+  // Add in all of the required arguments.
+  CGFunctionInfo::const_arg_iterator it = FI.arg_begin(), ie;
+  if (FI.isVariadic()) {
+    ie = it + FI.getRequiredArgs().getNumRequiredArgs();
+  } else {
+    ie = FI.arg_end();
+  }
+  for (; it != ie; ++it) {
     const ABIArgInfo &argAI = it->info;
 
     // Insert a padding type to ensure proper alignment.
@@ -1012,7 +1049,7 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
 
   if (RetAttrs.hasAttributes())
     PAL.push_back(llvm::
-                  AttributeWithIndex::get(llvm::AttrListPtr::ReturnIndex,
+                  AttributeWithIndex::get(llvm::AttributeSet::ReturnIndex,
                                          llvm::Attributes::get(getLLVMContext(),
                                                                RetAttrs)));
 
@@ -1099,7 +1136,7 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
   }
   if (FuncAttrs.hasAttributes())
     PAL.push_back(llvm::
-                  AttributeWithIndex::get(llvm::AttrListPtr::FunctionIndex,
+                  AttributeWithIndex::get(llvm::AttributeSet::FunctionIndex,
                                          llvm::Attributes::get(getLLVMContext(),
                                                                FuncAttrs)));
 }
@@ -1230,7 +1267,15 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
 
         if (isPromoted)
           V = emitArgumentDemotion(*this, Arg, V);
-        
+
+        // Because of merging of function types from multiple decls it is
+        // possible for the type of an argument to not match the corresponding
+        // type in the function type. Since we are codegening the callee
+        // in here, add a cast to the argument type.
+        llvm::Type *LTy = ConvertType(Arg->getType());
+        if (V->getType() != LTy)
+          V = Builder.CreateBitCast(V, LTy);
+
         EmitParmDecl(*Arg, V, ArgNo);
         break;
       }
@@ -1740,7 +1785,12 @@ static void emitWritebackArg(CodeGenFunction &CGF, CallArgList &args,
   // Create the temporary.
   llvm::Value *temp = CGF.CreateTempAlloca(destType->getElementType(),
                                            "icr.temp");
-
+  // Loading an l-value can introduce a cleanup if the l-value is __weak,
+  // and that cleanup will be conditional if we can't prove that the l-value
+  // isn't null, so we need to register a dominating point so that the cleanups
+  // system will make valid IR.
+  CodeGenFunction::ConditionalEvaluation condEval(CGF);
+  
   // Zero-initialize it if we're not doing a copy-initialization.
   bool shouldCopy = CRE->shouldCopy();
   if (!shouldCopy) {
@@ -1749,7 +1799,7 @@ static void emitWritebackArg(CodeGenFunction &CGF, CallArgList &args,
         cast<llvm::PointerType>(destType->getElementType()));
     CGF.Builder.CreateStore(null, temp);
   }
-
+  
   llvm::BasicBlock *contBB = 0;
 
   // If the address is *not* known to be non-null, we need to switch.
@@ -1772,6 +1822,7 @@ static void emitWritebackArg(CodeGenFunction &CGF, CallArgList &args,
       llvm::BasicBlock *copyBB = CGF.createBasicBlock("icr.copy");
       CGF.Builder.CreateCondBr(isNull, contBB, copyBB);
       CGF.EmitBlock(copyBB);
+      condEval.begin(CGF);
     }
   }
 
@@ -1788,10 +1839,12 @@ static void emitWritebackArg(CodeGenFunction &CGF, CallArgList &args,
     // Use an ordinary store, not a store-to-lvalue.
     CGF.Builder.CreateStore(src, temp);
   }
-
+  
   // Finish the control flow if we needed it.
-  if (shouldCopy && !provablyNonNull)
+  if (shouldCopy && !provablyNonNull) {
     CGF.EmitBlock(contBB);
+    condEval.end(CGF);
+  }
 
   args.addWriteback(srcAddr, srcAddrType, temp);
   args.add(RValue::get(finalArgument), CRE->getType());
@@ -2177,7 +2230,8 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
   unsigned CallingConv;
   CodeGen::AttributeListType AttributeList;
   CGM.ConstructAttributeList(CallInfo, TargetDecl, AttributeList, CallingConv);
-  llvm::AttrListPtr Attrs = llvm::AttrListPtr::get(AttributeList);
+  llvm::AttributeSet Attrs = llvm::AttributeSet::get(getLLVMContext(),
+                                                   AttributeList);
 
   llvm::BasicBlock *InvokeDest = 0;
   if (!Attrs.getFnAttributes().hasAttribute(llvm::Attributes::NoUnwind))

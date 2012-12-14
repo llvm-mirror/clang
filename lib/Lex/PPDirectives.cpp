@@ -13,15 +13,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Lex/Preprocessor.h"
-#include "clang/Lex/LiteralSupport.h"
-#include "clang/Lex/HeaderSearch.h"
-#include "clang/Lex/MacroInfo.h"
-#include "clang/Lex/LexDiagnostic.h"
-#include "clang/Lex/CodeCompletionHandler.h"
-#include "clang/Lex/ModuleLoader.h"
-#include "clang/Lex/Pragma.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Lex/CodeCompletionHandler.h"
+#include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/LexDiagnostic.h"
+#include "clang/Lex/LiteralSupport.h"
+#include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/ModuleLoader.h"
+#include "clang/Lex/Pragma.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/ErrorHandling.h"
 using namespace clang;
@@ -1483,7 +1483,7 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
     // If this was an #__include_macros directive, only make macros visible.
     Module::NameVisibilityKind Visibility 
       = (IncludeKind == 3)? Module::MacrosVisible : Module::AllVisible;
-    Module *Imported
+    ModuleLoadResult Imported
       = TheModuleLoader.loadModule(IncludeTok.getLocation(), Path, Visibility,
                                    /*IsIncludeDirective=*/true);
     assert((Imported == 0 || Imported == SuggestedModule) &&
@@ -1496,6 +1496,13 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
                                       FilenameRange, File,
                                       SearchPath, RelativePath, Imported);
       }
+      return;
+    }
+
+    // If we failed to find a submodule that we expected to find, we can
+    // continue. Otherwise, there's an error in the included file, so we
+    // don't want to include it.
+    if (!BuildingImportedModule && !Imported.isMissingExpected()) {
       return;
     }
   }
@@ -1809,8 +1816,37 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok) {
     while (Tok.isNot(tok::eod)) {
       LastTok = Tok;
 
-      if (Tok.isNot(tok::hash)) {
+      if (Tok.isNot(tok::hash) && Tok.isNot(tok::hashhash)) {
         MI->AddTokenToBody(Tok);
+
+        // Get the next token of the macro.
+        LexUnexpandedToken(Tok);
+        continue;
+      }
+
+      if (Tok.is(tok::hashhash)) {
+        
+        // If we see token pasting, check if it looks like the gcc comma
+        // pasting extension.  We'll use this information to suppress
+        // diagnostics later on.
+        
+        // Get the next token of the macro.
+        LexUnexpandedToken(Tok);
+
+        if (Tok.is(tok::eod)) {
+          MI->AddTokenToBody(LastTok);
+          break;
+        }
+
+        unsigned NumTokens = MI->getNumTokens();
+        if (NumTokens && Tok.getIdentifierInfo() == Ident__VA_ARGS__ &&
+            MI->getReplacementToken(NumTokens-1).is(tok::comma))
+          MI->setHasCommaPasting();
+
+        // Things look ok, add the '##' and param name tokens to the macro.
+        MI->AddTokenToBody(LastTok);
+        MI->AddTokenToBody(Tok);
+        LastTok = Tok;
 
         // Get the next token of the macro.
         LexUnexpandedToken(Tok);
@@ -2011,9 +2047,9 @@ void Preprocessor::HandleIfdefDirective(Token &Result, bool isIfndef,
 
   if (Callbacks) {
     if (isIfndef)
-      Callbacks->Ifndef(DirectiveTok.getLocation(), MacroNameTok);
+      Callbacks->Ifndef(DirectiveTok.getLocation(), MacroNameTok, MI);
     else
-      Callbacks->Ifdef(DirectiveTok.getLocation(), MacroNameTok);
+      Callbacks->Ifdef(DirectiveTok.getLocation(), MacroNameTok, MI);
   }
 
   // Should we include the stuff contained by this directive?

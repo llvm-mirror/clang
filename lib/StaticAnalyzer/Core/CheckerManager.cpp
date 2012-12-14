@@ -12,11 +12,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
-#include "clang/StaticAnalyzer/Core/Checker.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
-#include "clang/Analysis/ProgramPoint.h"
 #include "clang/AST/DeclBase.h"
+#include "clang/Analysis/ProgramPoint.h"
+#include "clang/StaticAnalyzer/Core/Checker.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 
 using namespace clang;
 using namespace ento;
@@ -355,8 +355,8 @@ void CheckerManager::runCheckersForEndAnalysis(ExplodedGraph &G,
 // for this callback since end of path nodes are expected to be final.
 void CheckerManager::runCheckersForEndPath(NodeBuilderContext &BC,
                                            ExplodedNodeSet &Dst,
+                                           ExplodedNode *Pred,
                                            ExprEngine &Eng) {
-  ExplodedNode *Pred = BC.Pred;
   
   // We define the builder outside of the loop bacause if at least one checkers
   // creates a sucsessor for Pred, we do not need to generate an 

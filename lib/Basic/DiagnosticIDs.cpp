@@ -17,7 +17,6 @@
 #include "clang/Basic/SourceManager.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/ErrorHandling.h"
-
 #include <map>
 using namespace clang;
 
@@ -628,6 +627,10 @@ bool DiagnosticIDs::ProcessDiag(DiagnosticsEngine &Diag) const {
   if (DiagLevel >= DiagnosticIDs::Error) {
     if (isUnrecoverable(DiagID))
       Diag.UnrecoverableErrorOccurred = true;
+
+    // Warnings which have been upgraded to errors do not prevent compilation.
+    if (isDefaultMappingAsError(DiagID))
+      Diag.UncompilableErrorOccurred = true;
 
     Diag.ErrorOccurred = true;
     if (Diag.Client->IncludeInDiagnosticCounts()) {

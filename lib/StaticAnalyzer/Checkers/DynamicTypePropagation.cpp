@@ -12,13 +12,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "ClangSACheckers.h"
+#include "clang/Basic/Builtins.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
-#include "clang/Basic/Builtins.h"
 
 using namespace clang;
 using namespace ento;
@@ -105,8 +105,7 @@ void DynamicTypePropagation::checkPostCall(const CallEvent &Call,
   if (const ObjCMethodCall *Msg = dyn_cast<ObjCMethodCall>(&Call)) {
 
     // Get the returned value if it's a region.
-    SVal Result = C.getSVal(Call.getOriginExpr());
-    const MemRegion *RetReg = Result.getAsRegion();
+    const MemRegion *RetReg = Call.getReturnValue().getAsRegion();
     if (!RetReg)
       return;
 

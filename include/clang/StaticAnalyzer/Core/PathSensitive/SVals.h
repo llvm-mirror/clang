@@ -16,8 +16,8 @@
 #define LLVM_CLANG_GR_RVALUE_H
 
 #include "clang/Basic/LLVM.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/SymbolManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState_Fwd.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SymbolManager.h"
 #include "llvm/ADT/ImmutableList.h"
 
 //==------------------------------------------------------------------------==//
@@ -234,8 +234,6 @@ protected:
 
 public:
   void dumpToStream(raw_ostream &Out) const;
-
-  Loc(const Loc& X) : DefinedSVal(X.Data, true, X.getSubKind()) {}
 
   // Implement isa<T> support.
   static inline bool classof(const SVal* V) {

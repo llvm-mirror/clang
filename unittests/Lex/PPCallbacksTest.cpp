@@ -7,6 +7,7 @@
 //
 //===--------------------------------------------------------------===//
 
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/LangOptions.h"
@@ -16,12 +17,9 @@
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/HeaderSearchOptions.h"
 #include "clang/Lex/ModuleLoader.h"
-#include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/PreprocessorOptions.h"
-
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/PathV2.h"
-
 #include "gtest/gtest.h"
 
 using namespace llvm;
@@ -32,10 +30,11 @@ namespace {
 
 // Stub out module loading.
 class VoidModuleLoader : public ModuleLoader {
-  virtual Module *loadModule(SourceLocation ImportLoc, ModuleIdPath Path,
-    Module::NameVisibilityKind Visibility,
-    bool IsInclusionDirective) {
-      return 0;
+  virtual ModuleLoadResult loadModule(SourceLocation ImportLoc, 
+                                      ModuleIdPath Path,
+                                      Module::NameVisibilityKind Visibility,
+                                      bool IsInclusionDirective) {
+    return ModuleLoadResult();
   }
 };
 
@@ -84,7 +83,7 @@ protected:
       SourceMgr(Diags, FileMgr) {
     TargetOpts = new TargetOptions();
     TargetOpts->Triple = "x86_64-apple-darwin11.1.0";
-    Target = TargetInfo::CreateTargetInfo(Diags, *TargetOpts);
+    Target = TargetInfo::CreateTargetInfo(Diags, &*TargetOpts);
   }
 
   FileSystemOptions FileMgrOpts;
@@ -222,27 +221,25 @@ TEST_F(PPCallbacksTest, ConcatenatedMacroArgument) {
   ASSERT_EQ("<angled.h>", GetSourceString(Range));
 }
 
-#pragma clang diagnostic ignored "-Wtrigraphs"
-
 TEST_F(PPCallbacksTest, TrigraphFilename) {
   const char* Source =
-    "#include \"tri??-graph.h\"\n";
+    "#include \"tri\?\?-graph.h\"\n";
 
   CharSourceRange Range =
     InclusionDirectiveFilenameRange(Source, "/tri~graph.h", false);
 
-  ASSERT_EQ("\"tri??-graph.h\"", GetSourceString(Range));
+  ASSERT_EQ("\"tri\?\?-graph.h\"", GetSourceString(Range));
 }
 
 TEST_F(PPCallbacksTest, TrigraphInMacro) {
   const char* Source =
-    "#define MACRO_TRIGRAPH \"tri??-graph.h\"\n"
+    "#define MACRO_TRIGRAPH \"tri\?\?-graph.h\"\n"
     "#include MACRO_TRIGRAPH\n";
 
   CharSourceRange Range =
     InclusionDirectiveFilenameRange(Source, "/tri~graph.h", false);
 
-  ASSERT_EQ("\"tri??-graph.h\"", GetSourceString(Range));
+  ASSERT_EQ("\"tri\?\?-graph.h\"", GetSourceString(Range));
 }
 
 } // anonoymous namespace

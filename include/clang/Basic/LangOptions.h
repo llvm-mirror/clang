@@ -15,11 +15,11 @@
 #ifndef LLVM_CLANG_LANGOPTIONS_H
 #define LLVM_CLANG_LANGOPTIONS_H
 
-#include <string>
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/ObjCRuntime.h"
 #include "clang/Basic/Visibility.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include <string>
 
 namespace clang {
 
@@ -54,12 +54,6 @@ public:
     SOB_Undefined,  // Default C standard behavior.
     SOB_Defined,    // -fwrapv
     SOB_Trapping    // -ftrapv
-  };
-
-  enum FPContractModeKind {
-    FPC_Off,        // Form fused FP ops only where result will not be affected.
-    FPC_On,         // Form fused FP ops according to FP_CONTRACT rules.
-    FPC_Fast        // Aggressively fuse FP ops (E.g. FMA).
   };
 
 public:

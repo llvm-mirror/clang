@@ -16,15 +16,15 @@
 #ifndef LLVM_CLANG_GR_EXPRENGINE
 #define LLVM_CLANG_GR_EXPRENGINE
 
+#include "clang/AST/Expr.h"
+#include "clang/AST/Type.h"
 #include "clang/Analysis/DomainSpecific/ObjCNoReturn.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/SubEngine.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CoreEngine.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
-#include "clang/AST/Expr.h"
-#include "clang/AST/Type.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SubEngine.h"
 
 namespace clang {
 
@@ -46,6 +46,16 @@ class CallEvent;
 class SimpleCall;
 
 class ExprEngine : public SubEngine {
+public:
+  /// The modes of inlining.
+  enum InliningModes {
+    /// Do not inline any of the callees.
+    Inline_None = 0,
+    /// Inline all callees.
+    Inline_All = 0x1
+  } ;
+
+private:
   AnalysisManager &AMgr;
   
   AnalysisDeclContextManager &AnalysisDeclContexts;
@@ -64,15 +74,6 @@ class ExprEngine : public SubEngine {
   /// svalBuilder - SValBuilder object that creates SVals from expressions.
   SValBuilder &svalBuilder;
 
-  /// EntryNode - The immediate predecessor node.
-  ExplodedNode *EntryNode;
-
-  /// CleanedState - The state for EntryNode "cleaned" of all dead
-  ///  variables and symbols (as determined by a liveness analysis).
-  ProgramStateRef CleanedState;
-
-  /// currStmt - The current block-level statement.
-  const Stmt *currStmt;
   unsigned int currStmtIdx;
   const NodeBuilderContext *currBldrCtx;
   
@@ -92,10 +93,14 @@ class ExprEngine : public SubEngine {
   /// AnalysisConsumer. It can be null.
   SetOfConstDecls *VisitedCallees;
 
+  /// The flag, which specifies the mode of inlining for the engine.
+  InliningModes HowToInline;
+
 public:
   ExprEngine(AnalysisManager &mgr, bool gcEnabled,
              SetOfConstDecls *VisitedCalleesIn,
-             FunctionSummariesTy *FS);
+             FunctionSummariesTy *FS,
+             InliningModes HowToInlineIn);
 
   ~ExprEngine();
 
@@ -154,22 +159,33 @@ public:
   const ExplodedGraph& getGraph() const { return G; }
 
   /// \brief Run the analyzer's garbage collection - remove dead symbols and
-  /// bindings.
+  /// bindings from the state.
   ///
-  /// \param Node - The predecessor node, from which the processing should 
-  /// start.
-  /// \param Out - The returned set of output nodes.
-  /// \param ReferenceStmt - Run garbage collection using the symbols, 
-  /// which are live before the given statement.
-  /// \param LC - The location context of the ReferenceStmt.
-  /// \param DiagnosticStmt - the statement used to associate the diagnostic 
-  /// message, if any warnings should occur while removing the dead (leaks 
-  /// are usually reported here).
-  /// \param K - In some cases it is possible to use PreStmt kind. (Do 
-  /// not use it unless you know what you are doing.) 
+  /// Checkers can participate in this process with two callbacks:
+  /// \c checkLiveSymbols and \c checkDeadSymbols. See the CheckerDocumentation
+  /// class for more information.
+  ///
+  /// \param Node The predecessor node, from which the processing should start.
+  /// \param Out The returned set of output nodes.
+  /// \param ReferenceStmt The statement which is about to be processed.
+  ///        Everything needed for this statement should be considered live.
+  ///        A null statement means that everything in child LocationContexts
+  ///        is dead.
+  /// \param LC The location context of the \p ReferenceStmt. A null location
+  ///        context means that we have reached the end of analysis and that
+  ///        all statements and local variables should be considered dead.
+  /// \param DiagnosticStmt Used as a location for any warnings that should
+  ///        occur while removing the dead (e.g. leaks). By default, the
+  ///        \p ReferenceStmt is used.
+  /// \param K Denotes whether this is a pre- or post-statement purge. This
+  ///        must only be ProgramPoint::PostStmtPurgeDeadSymbolsKind if an
+  ///        entire location context is being cleared, in which case the
+  ///        \p ReferenceStmt must either be a ReturnStmt or \c NULL. Otherwise,
+  ///        it must be ProgramPoint::PreStmtPurgeDeadSymbolsKind (the default)
+  ///        and \p ReferenceStmt must be valid (non-null).
   void removeDead(ExplodedNode *Node, ExplodedNodeSet &Out,
             const Stmt *ReferenceStmt, const LocationContext *LC,
-            const Stmt *DiagnosticStmt,
+            const Stmt *DiagnosticStmt = 0,
             ProgramPoint::Kind K = ProgramPoint::PreStmtPurgeDeadSymbolsKind);
 
   /// processCFGElement - Called by CoreEngine. Used to generate new successor
@@ -194,7 +210,8 @@ public:
 
   /// Called by CoreEngine when processing the entrance of a CFGBlock.
   virtual void processCFGBlockEntrance(const BlockEdge &L,
-                                       NodeBuilderWithSinks &nodeBuilder);
+                                       NodeBuilderWithSinks &nodeBuilder,
+                                       ExplodedNode *Pred);
   
   /// ProcessBranch - Called by CoreEngine.  Used to generate successor
   ///  nodes by processing the 'effects' of a branch condition.
@@ -215,7 +232,13 @@ public:
 
   /// ProcessEndPath - Called by CoreEngine.  Used to generate end-of-path
   ///  nodes when the control reaches the end of a function.
-  void processEndOfFunction(NodeBuilderContext& BC);
+  void processEndOfFunction(NodeBuilderContext& BC,
+                            ExplodedNode *Pred);
+
+  /// Remove dead bindings/symbols before exiting a function.
+  void removeDeadOnEndOfFunction(NodeBuilderContext& BC,
+                                 ExplodedNode *Pred,
+                                 ExplodedNodeSet &Dst);
 
   /// Generate the entry node of the callee.
   void processCallEnter(CallEnter CE, ExplodedNode *Pred);

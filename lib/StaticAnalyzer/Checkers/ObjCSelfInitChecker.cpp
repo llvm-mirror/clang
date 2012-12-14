@@ -37,13 +37,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "ClangSACheckers.h"
+#include "clang/AST/ParentMap.h"
+#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/Checker.h"
 #include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
-#include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
-#include "clang/AST/ParentMap.h"
+#include "llvm/Support/raw_ostream.h"
 
 using namespace clang;
 using namespace ento;
@@ -291,13 +292,12 @@ void ObjCSelfInitChecker::checkPostCall(const CallEvent &CE,
       // returns 'self'. So assign the flags, which were set on 'self' to the
       // return value.
       // EX: self = performMoreInitialization(self)
-      const Expr *CallExpr = CE.getOriginExpr();
-      if (CallExpr)
-        addSelfFlag(state, state->getSVal(CallExpr, C.getLocationContext()),
-                    prevFlags, C);
+      addSelfFlag(state, CE.getReturnValue(), prevFlags, C);
       return;
     }
   }
+
+  C.addTransition(state);
 }
 
 void ObjCSelfInitChecker::checkLocation(SVal location, bool isLoad,

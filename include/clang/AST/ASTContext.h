@@ -15,21 +15,21 @@
 #ifndef LLVM_CLANG_AST_ASTCONTEXT_H
 #define LLVM_CLANG_AST_ASTCONTEXT_H
 
+#include "clang/AST/CanonicalType.h"
+#include "clang/AST/CommentCommandTraits.h"
+#include "clang/AST/Decl.h"
+#include "clang/AST/LambdaMangleContext.h"
+#include "clang/AST/NestedNameSpecifier.h"
+#include "clang/AST/PrettyPrinter.h"
+#include "clang/AST/RawCommentList.h"
+#include "clang/AST/TemplateName.h"
+#include "clang/AST/Type.h"
 #include "clang/Basic/AddressSpaces.h"
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/OperatorKinds.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/VersionTuple.h"
-#include "clang/AST/Decl.h"
-#include "clang/AST/LambdaMangleContext.h"
-#include "clang/AST/NestedNameSpecifier.h"
-#include "clang/AST/PrettyPrinter.h"
-#include "clang/AST/TemplateName.h"
-#include "clang/AST/Type.h"
-#include "clang/AST/CanonicalType.h"
-#include "clang/AST/RawCommentList.h"
-#include "clang/AST/CommentCommandTraits.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
@@ -343,7 +343,10 @@ class ASTContext : public RefCountedBase<ASTContext> {
   /// \brief Mapping from each declaration context to its corresponding lambda 
   /// mangling context.
   llvm::DenseMap<const DeclContext *, LambdaMangleContext> LambdaMangleContexts;
-  
+
+  llvm::DenseMap<const DeclContext *, unsigned> UnnamedMangleContexts;
+  llvm::DenseMap<const TagDecl *, unsigned> UnnamedMangleNumbers;
+
   /// \brief Mapping that stores parameterIndex values for ParmVarDecls when
   /// that value exceeds the bitfield size of ParmVarDeclBits.ParameterIndex.
   typedef llvm::DenseMap<const VarDecl *, unsigned> ParameterIndexTable;
@@ -636,8 +639,9 @@ public:
   /// the same selector and is of the same kind (class or instance).
   /// A method in an implementation is not considered as overriding the same
   /// method in the interface or its categories.
-  void getOverriddenMethods(const NamedDecl *Method,
-                            SmallVectorImpl<const NamedDecl *> &Overridden);
+  void getOverriddenMethods(
+                        const NamedDecl *Method,
+                        SmallVectorImpl<const NamedDecl *> &Overridden) const;
   
   /// \brief Notify the AST context that a new import declaration has been
   /// parsed or implicitly created within this translation unit.
@@ -856,12 +860,17 @@ public:
     return cudaConfigureCallDecl;
   }
 
-  /// Builds the struct used for __block variables.
-  QualType BuildByRefType(StringRef DeclName, QualType Ty) const;
-
   /// Returns true iff we need copy/dispose helpers for the given type.
-  bool BlockRequiresCopying(QualType Ty) const;
-
+  bool BlockRequiresCopying(QualType Ty, const VarDecl *D);
+  
+  
+  /// Returns true, if given type has a known lifetime. HasByrefExtendedLayout is set
+  /// to false in this case. If HasByrefExtendedLayout returns true, byref variable
+  /// has extended lifetime. 
+  bool getByrefLifetime(QualType Ty,
+                        Qualifiers::ObjCLifetime &Lifetime,
+                        bool &HasByrefExtendedLayout) const;
+  
   /// \brief Return the uniqued reference to the type for an lvalue reference
   /// to the specified type.
   QualType getLValueReferenceType(QualType T, bool SpelledAsLValue = true)
@@ -1096,6 +1105,10 @@ public:
   /// \brief Return the unique type for "ptrdiff_t" (C99 7.17) defined in
   /// <stddef.h>. Pointer - pointer requires this (C99 6.5.6p9).
   QualType getPointerDiffType() const;
+
+  /// \brief Return the unique type for "pid_t" defined in
+  /// <sys/types.h>. We need this to compute the correct type for vfork().
+  QualType getProcessIDType() const;
 
   /// \brief Return the C structure type used to represent constant CFStrings.
   QualType getCFConstantStringType() const;
@@ -1988,6 +2001,9 @@ public:
   /// it is not used.
   bool DeclMustBeEmitted(const Decl *D);
 
+  void addUnnamedTag(const TagDecl *Tag);
+  int getUnnamedTagManglingNumber(const TagDecl *Tag) const;
+
   /// \brief Retrieve the lambda mangling number for a lambda expression.
   unsigned getLambdaManglingNumber(CXXMethodDecl *CallOperator);
   
@@ -2127,8 +2143,8 @@ static inline Selector GetUnarySelector(StringRef name, ASTContext& Ctx) {
 /// This placement form of operator new uses the ASTContext's allocator for
 /// obtaining memory.
 ///
-/// IMPORTANT: These are also declared in clang/AST/Attr.h! Any changes here
-/// need to also be made there.
+/// IMPORTANT: These are also declared in clang/AST/AttrIterator.h! Any changes
+/// here need to also be made there.
 ///
 /// We intentionally avoid using a nothrow specification here so that the calls
 /// to this operator will not perform a null check on the result -- the

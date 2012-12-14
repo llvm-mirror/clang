@@ -13,16 +13,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "ClangSACheckers.h"
-#include "clang/AST/DeclObjC.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/DeclObjC.h"
+#include "clang/AST/ParentMap.h"
+#include "clang/Analysis/DomainSpecific/CocoaConventions.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceManager.h"
-#include "clang/Analysis/DomainSpecific/CocoaConventions.h"
-#include "clang/AST/ParentMap.h"
-#include "clang/StaticAnalyzer/Core/Checker.h"
-#include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugType.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/PathDiagnostic.h"
+#include "clang/StaticAnalyzer/Core/Checker.h"
+#include "clang/StaticAnalyzer/Core/CheckerManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CheckerContext.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
@@ -31,8 +32,8 @@
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/ImmutableList.h"
 #include "llvm/ADT/ImmutableMap.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include <cstdarg>
 
@@ -2544,7 +2545,7 @@ public:
                                     SymbolRef sid, RefVal V,
                                     SmallVectorImpl<SymbolRef> &Leaked) const;
 
-  std::pair<ExplodedNode *, ProgramStateRef >
+  ProgramStateRef
   handleAutoreleaseCounts(ProgramStateRef state, ExplodedNode *Pred,
                           const ProgramPointTag *Tag, CheckerContext &Ctx,
                           SymbolRef Sym, RefVal V) const;
@@ -2601,7 +2602,7 @@ void RetainCountChecker::checkPostStmt(const BlockExpr *BE,
   MemRegionManager &MemMgr = C.getSValBuilder().getRegionManager();
 
   for ( ; I != E; ++I) {
-    const VarRegion *VR = *I;
+    const VarRegion *VR = I.getCapturedRegion();
     if (VR->getSuperRegion() == R) {
       VR = MemMgr.getVarRegion(VR->getDecl(), LC);
     }
@@ -2783,8 +2784,7 @@ void RetainCountChecker::processSummaryOfInlined(const RetainSummary &Summ,
   // Consult the summary for the return value.
   RetEffect RE = Summ.getRetEffect();
   if (RE.getKind() == RetEffect::NoRetHard) {
-    SymbolRef Sym = state->getSVal(CallOrMsg.getOriginExpr(),
-        C.getLocationContext()).getAsSymbol();
+    SymbolRef Sym = CallOrMsg.getReturnValue().getAsSymbol();
     if (Sym)
       state = removeRefBinding(state, Sym);
   }
@@ -2863,8 +2863,7 @@ void RetainCountChecker::checkSummary(const RetainSummary &Summ,
 
     case RetEffect::OwnedAllocatedSymbol:
     case RetEffect::OwnedSymbol: {
-      SymbolRef Sym = state->getSVal(CallOrMsg.getOriginExpr(),
-                                     C.getLocationContext()).getAsSymbol();
+      SymbolRef Sym = CallOrMsg.getReturnValue().getAsSymbol();
       if (!Sym)
         break;
 
@@ -2883,7 +2882,7 @@ void RetainCountChecker::checkSummary(const RetainSummary &Summ,
     case RetEffect::ARCNotOwnedSymbol:
     case RetEffect::NotOwnedSymbol: {
       const Expr *Ex = CallOrMsg.getOriginExpr();
-      SymbolRef Sym = state->getSVal(Ex, C.getLocationContext()).getAsSymbol();
+      SymbolRef Sym = CallOrMsg.getReturnValue().getAsSymbol();
       if (!Sym)
         break;
       assert(Ex);
@@ -3192,12 +3191,6 @@ bool RetainCountChecker::evalCall(const CallExpr *CE, CheckerContext &C) const {
 // Handle return statements.
 //===----------------------------------------------------------------------===//
 
-// Return true if the current LocationContext has no caller context.
-static bool inTopFrame(CheckerContext &C) {
-  const LocationContext *LC = C.getLocationContext();
-  return LC->getParent() == 0;  
-}
-
 void RetainCountChecker::checkPreStmt(const ReturnStmt *S,
                                       CheckerContext &C) const {
 
@@ -3206,7 +3199,7 @@ void RetainCountChecker::checkPreStmt(const ReturnStmt *S,
   // better checking even for inlined calls, and see if they match
   // with their expected semantics (e.g., the method should return a retained
   // object, etc.).
-  if (!inTopFrame(C))
+  if (!C.inTopFrame())
     return;
 
   const Expr *RetE = S->getRetValue();
@@ -3267,11 +3260,10 @@ void RetainCountChecker::checkPreStmt(const ReturnStmt *S,
   // Update the autorelease counts.
   static SimpleProgramPointTag
          AutoreleaseTag("RetainCountChecker : Autorelease");
-  llvm::tie(Pred, state) = handleAutoreleaseCounts(state, Pred, &AutoreleaseTag,
-                                                   C, Sym, X);
+  state = handleAutoreleaseCounts(state, Pred, &AutoreleaseTag, C, Sym, X);
 
   // Did we cache out?
-  if (!Pred)
+  if (!state)
     return;
 
   // Get the updated binding.
@@ -3480,8 +3472,8 @@ RetainCountChecker::checkRegionChanges(ProgramStateRef state,
 // Handle dead symbols and end-of-path.
 //===----------------------------------------------------------------------===//
 
-std::pair<ExplodedNode *, ProgramStateRef >
-RetainCountChecker::handleAutoreleaseCounts(ProgramStateRef state, 
+ProgramStateRef
+RetainCountChecker::handleAutoreleaseCounts(ProgramStateRef state,
                                             ExplodedNode *Pred,
                                             const ProgramPointTag *Tag,
                                             CheckerContext &Ctx,
@@ -3490,7 +3482,7 @@ RetainCountChecker::handleAutoreleaseCounts(ProgramStateRef state,
 
   // No autorelease counts?  Nothing to be done.
   if (!ACnt)
-    return std::make_pair(Pred, state);
+    return state;
 
   assert(!Ctx.isObjCGCEnabled() && "Autorelease counts in GC mode?");
   unsigned Cnt = V.getCount();
@@ -3511,11 +3503,7 @@ RetainCountChecker::handleAutoreleaseCounts(ProgramStateRef state,
       V.setCount(Cnt - ACnt);
       V.setAutoreleaseCount(0);
     }
-    state = setRefBinding(state, Sym, V);
-    ExplodedNode *N = Ctx.addTransition(state, Pred, Tag);
-    if (N == 0)
-      state = 0;
-    return std::make_pair(N, state);
+    return setRefBinding(state, Sym, V);
   }
 
   // Woah!  More autorelease counts then retain counts left.
@@ -3542,7 +3530,7 @@ RetainCountChecker::handleAutoreleaseCounts(ProgramStateRef state,
     Ctx.emitReport(report);
   }
 
-  return std::make_pair((ExplodedNode *)0, (ProgramStateRef )0);
+  return 0;
 }
 
 ProgramStateRef 
@@ -3567,9 +3555,6 @@ RetainCountChecker::processLeaks(ProgramStateRef state,
                                  SmallVectorImpl<SymbolRef> &Leaked,
                                  CheckerContext &Ctx,
                                  ExplodedNode *Pred) const {
-  if (Leaked.empty())
-    return Pred;
-
   // Generate an intermediate node representing the leak point.
   ExplodedNode *N = Ctx.addTransition(state, Pred);
 
@@ -3598,8 +3583,8 @@ void RetainCountChecker::checkEndPath(CheckerContext &Ctx) const {
   ExplodedNode *Pred = Ctx.getPredecessor();
 
   for (RefBindingsTy::iterator I = B.begin(), E = B.end(); I != E; ++I) {
-    llvm::tie(Pred, state) = handleAutoreleaseCounts(state, Pred, /*Tag=*/0,
-                                                     Ctx, I->first, I->second);
+    state = handleAutoreleaseCounts(state, Pred, /*Tag=*/0, Ctx,
+                                    I->first, I->second);
     if (!state)
       return;
   }
@@ -3639,6 +3624,7 @@ void RetainCountChecker::checkDeadSymbols(SymbolReaper &SymReaper,
 
   ProgramStateRef state = C.getState();
   RefBindingsTy B = state->get<RefBindings>();
+  SmallVector<SymbolRef, 10> Leaked;
 
   // Update counts from autorelease pools
   for (SymbolReaper::dead_iterator I = SymReaper.dead_begin(),
@@ -3648,20 +3634,19 @@ void RetainCountChecker::checkDeadSymbols(SymbolReaper &SymReaper,
       // Use the symbol as the tag.
       // FIXME: This might not be as unique as we would like.
       const ProgramPointTag *Tag = getDeadSymbolTag(Sym);
-      llvm::tie(Pred, state) = handleAutoreleaseCounts(state, Pred, Tag, C,
-                                                       Sym, *T);
+      state = handleAutoreleaseCounts(state, Pred, Tag, C, Sym, *T);
       if (!state)
         return;
+
+      // Fetch the new reference count from the state, and use it to handle
+      // this symbol.
+      state = handleSymbolDeath(state, *I, *getRefBinding(state, Sym), Leaked);
     }
   }
 
-  B = state->get<RefBindings>();
-  SmallVector<SymbolRef, 10> Leaked;
-
-  for (SymbolReaper::dead_iterator I = SymReaper.dead_begin(),
-       E = SymReaper.dead_end(); I != E; ++I) {
-    if (const RefVal *T = B.lookup(*I))
-      state = handleSymbolDeath(state, *I, *T, Leaked);
+  if (Leaked.empty()) {
+    C.addTransition(state);
+    return;
   }
 
   Pred = processLeaks(state, Leaked, C, Pred);
@@ -3671,10 +3656,13 @@ void RetainCountChecker::checkDeadSymbols(SymbolReaper &SymReaper,
     return;
 
   // Now generate a new node that nukes the old bindings.
+  // The only bindings left at this point are the leaked symbols.
   RefBindingsTy::Factory &F = state->get_context<RefBindings>();
+  B = state->get<RefBindings>();
 
-  for (SymbolReaper::dead_iterator I = SymReaper.dead_begin(),
-       E = SymReaper.dead_end(); I != E; ++I)
+  for (SmallVectorImpl<SymbolRef>::iterator I = Leaked.begin(),
+                                            E = Leaked.end();
+       I != E; ++I)
     B = F.remove(B, *I);
 
   state = state->set<RefBindings>(B);

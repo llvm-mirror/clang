@@ -13,24 +13,15 @@
 
 #include "clang/Serialization/ASTWriter.h"
 #include "ASTCommon.h"
-#include "clang/Sema/Sema.h"
-#include "clang/Sema/IdentifierResolver.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclContextInternals.h"
-#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/DeclFriend.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/Type.h"
 #include "clang/AST/TypeLocVisitor.h"
-#include "clang/Serialization/ASTReader.h"
-#include "clang/Lex/HeaderSearchOptions.h"
-#include "clang/Lex/MacroInfo.h"
-#include "clang/Lex/PreprocessingRecord.h"
-#include "clang/Lex/Preprocessor.h"
-#include "clang/Lex/PreprocessorOptions.h"
-#include "clang/Lex/HeaderSearch.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemStatCache.h"
 #include "clang/Basic/OnDiskHashTable.h"
@@ -40,6 +31,15 @@
 #include "clang/Basic/TargetOptions.h"
 #include "clang/Basic/Version.h"
 #include "clang/Basic/VersionTuple.h"
+#include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/HeaderSearchOptions.h"
+#include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/PreprocessingRecord.h"
+#include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/PreprocessorOptions.h"
+#include "clang/Sema/IdentifierResolver.h"
+#include "clang/Sema/Sema.h"
+#include "clang/Serialization/ASTReader.h"
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/StringExtras.h"
@@ -777,6 +777,7 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(TARGET_OPTIONS);
   RECORD(ORIGINAL_FILE);
   RECORD(ORIGINAL_PCH_DIR);
+  RECORD(ORIGINAL_FILE_ID);
   RECORD(INPUT_FILE_OFFSETS);
   RECORD(DIAGNOSTIC_OPTIONS);
   RECORD(FILE_SYSTEM_OPTIONS);
@@ -1030,7 +1031,7 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
         continue;
 
       Record.push_back((unsigned)(*M)->Kind); // FIXME: Stable encoding
-      // FIXME: Write import location, once it matters.
+      AddSourceLocation((*M)->ImportLoc, Record);
       // FIXME: This writes the absolute path for AST files we depend on.
       const std::string &FileName = (*M)->FileName;
       Record.push_back(FileName.size());
@@ -1179,6 +1180,10 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
     Record.push_back(SM.getMainFileID().getOpaqueValue());
     Stream.EmitRecordWithBlob(FileAbbrevCode, Record, MainFileNameStr);
   }
+
+  Record.clear();
+  Record.push_back(SM.getMainFileID().getOpaqueValue());
+  Stream.EmitRecord(ORIGINAL_FILE_ID, Record);
 
   // Original PCH directory
   if (!OutputFile.empty() && OutputFile != "-") {
@@ -1855,6 +1860,7 @@ void ASTWriter::WritePreprocessor(const Preprocessor &PP, bool IsModule) {
 
         Record.push_back(MI->isC99Varargs());
         Record.push_back(MI->isGNUVarargs());
+        Record.push_back(MI->hasCommaPasting());
         Record.push_back(MI->getNumArgs());
         for (MacroInfo::arg_iterator I = MI->arg_begin(), E = MI->arg_end();
              I != E; ++I)
@@ -4474,9 +4480,9 @@ ASTWriter::AddTemplateArgumentList(const TemplateArgumentList *TemplateArgs,
 
 
 void
-ASTWriter::AddUnresolvedSet(const UnresolvedSetImpl &Set, RecordDataImpl &Record) {
+ASTWriter::AddUnresolvedSet(const ASTUnresolvedSet &Set, RecordDataImpl &Record) {
   Record.push_back(Set.size());
-  for (UnresolvedSetImpl::const_iterator
+  for (ASTUnresolvedSet::const_iterator
          I = Set.begin(), E = Set.end(); I != E; ++I) {
     AddDeclRef(I.getDecl(), Record);
     Record.push_back(I.getAccess());
@@ -4568,11 +4574,7 @@ void ASTWriter::AddCXXDefinitionData(const CXXRecordDecl *D, RecordDataImpl &Rec
   struct CXXRecordDecl::DefinitionData &Data = *D->DefinitionData;
   Record.push_back(Data.IsLambda);
   Record.push_back(Data.UserDeclaredConstructor);
-  Record.push_back(Data.UserDeclaredCopyConstructor);
-  Record.push_back(Data.UserDeclaredMoveConstructor);
-  Record.push_back(Data.UserDeclaredCopyAssignment);
-  Record.push_back(Data.UserDeclaredMoveAssignment);
-  Record.push_back(Data.UserDeclaredDestructor);
+  Record.push_back(Data.UserDeclaredSpecialMembers);
   Record.push_back(Data.Aggregate);
   Record.push_back(Data.PlainOldData);
   Record.push_back(Data.Empty);
@@ -4586,25 +4588,26 @@ void ASTWriter::AddCXXDefinitionData(const CXXRecordDecl *D, RecordDataImpl &Rec
   Record.push_back(Data.HasMutableFields);
   Record.push_back(Data.HasOnlyCMembers);
   Record.push_back(Data.HasInClassInitializer);
-  Record.push_back(Data.HasTrivialDefaultConstructor);
+  Record.push_back(Data.HasUninitializedReferenceMember);
+  Record.push_back(Data.NeedOverloadResolutionForMoveConstructor);
+  Record.push_back(Data.NeedOverloadResolutionForMoveAssignment);
+  Record.push_back(Data.NeedOverloadResolutionForDestructor);
+  Record.push_back(Data.DefaultedMoveConstructorIsDeleted);
+  Record.push_back(Data.DefaultedMoveAssignmentIsDeleted);
+  Record.push_back(Data.DefaultedDestructorIsDeleted);
+  Record.push_back(Data.HasTrivialSpecialMembers);
+  Record.push_back(Data.HasIrrelevantDestructor);
   Record.push_back(Data.HasConstexprNonCopyMoveConstructor);
   Record.push_back(Data.DefaultedDefaultConstructorIsConstexpr);
   Record.push_back(Data.HasConstexprDefaultConstructor);
-  Record.push_back(Data.HasTrivialCopyConstructor);
-  Record.push_back(Data.HasTrivialMoveConstructor);
-  Record.push_back(Data.HasTrivialCopyAssignment);
-  Record.push_back(Data.HasTrivialMoveAssignment);
-  Record.push_back(Data.HasTrivialDestructor);
-  Record.push_back(Data.HasIrrelevantDestructor);
   Record.push_back(Data.HasNonLiteralTypeFieldsOrBases);
   Record.push_back(Data.ComputedVisibleConversions);
   Record.push_back(Data.UserProvidedDefaultConstructor);
-  Record.push_back(Data.DeclaredDefaultConstructor);
-  Record.push_back(Data.DeclaredCopyConstructor);
-  Record.push_back(Data.DeclaredMoveConstructor);
-  Record.push_back(Data.DeclaredCopyAssignment);
-  Record.push_back(Data.DeclaredMoveAssignment);
-  Record.push_back(Data.DeclaredDestructor);
+  Record.push_back(Data.DeclaredSpecialMembers);
+  Record.push_back(Data.ImplicitCopyConstructorHasConstParam);
+  Record.push_back(Data.ImplicitCopyAssignmentHasConstParam);
+  Record.push_back(Data.HasDeclaredCopyConstructorWithConstParam);
+  Record.push_back(Data.HasDeclaredCopyAssignmentWithConstParam);
   Record.push_back(Data.FailedImplicitMoveConstructor);
   Record.push_back(Data.FailedImplicitMoveAssignment);
   // IsLambda bit is already saved.

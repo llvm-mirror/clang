@@ -1237,8 +1237,8 @@ AST_MATCHER_P(NamedDecl, hasName, std::string, Name) {
   }
 }
 
-/// \brief Matches NamedDecl nodes whose full names partially match the
-/// given RegExp.
+/// \brief Matches NamedDecl nodes whose fully qualified names contain
+/// a substring matched by the given RegExp.
 ///
 /// Supports specifying enclosing namespaces or classes by
 /// prefixing the name with '<enclosing>::'.  Does not match typedefs
@@ -1972,6 +1972,19 @@ AST_MATCHER_P(FunctionDecl, hasAnyParameter,
     }
   }
   return false;
+}
+
+/// \brief Matches \c FunctionDecls that have a specific parameter count.
+///
+/// Given
+/// \code
+///   void f(int i) {}
+///   void g(int i, int j) {}
+/// \endcode
+/// functionDecl(parameterCountIs(2))
+///   matches g(int i, int j) {}
+AST_MATCHER_P(FunctionDecl, parameterCountIs, unsigned, N) {
+  return Node.getNumParams() == N;
 }
 
 /// \brief Matches the return type of a function declaration.

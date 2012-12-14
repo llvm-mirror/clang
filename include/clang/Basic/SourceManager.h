@@ -35,21 +35,22 @@
 #ifndef LLVM_CLANG_SOURCEMANAGER_H
 #define LLVM_CLANG_SOURCEMANAGER_H
 
-#include "clang/Basic/LLVM.h"
 #include "clang/Basic/FileManager.h"
+#include "clang/Basic/LLVM.h"
 #include "clang/Basic/SourceLocation.h"
-#include "llvm/Support/Allocator.h"
-#include "llvm/Support/DataTypes.h"
-#include "llvm/ADT/PointerIntPair.h"
-#include "llvm/ADT/PointerUnion.h"
-#include "llvm/ADT/IntrusiveRefCntPtr.h"
-#include "llvm/ADT/OwningPtr.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/OwningPtr.h"
+#include "llvm/ADT/PointerIntPair.h"
+#include "llvm/ADT/PointerUnion.h"
+#include "llvm/Support/Allocator.h"
+#include "llvm/Support/DataTypes.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include <cassert>
 #include <map>
 #include <vector>
-#include <cassert>
 
 namespace clang {
 
@@ -429,6 +430,11 @@ public:
   /// \returns true if an error occurred that prevented the source-location
   /// entry from being loaded.
   virtual bool ReadSLocEntry(int ID) = 0;
+
+  /// \brief Retrieve the module import location and name for the given ID, if
+  /// in fact it was loaded from a module (rather than, say, a precompiled
+  /// header).
+  virtual std::pair<SourceLocation, StringRef> getModuleImportLoc(int ID) = 0;
 };
 
 
@@ -507,6 +513,11 @@ public:
   }
 
 };
+
+/// \brief The stack used when building modules on demand, which is used
+/// to provide a link between the source managers of the different compiler
+/// instances.
+typedef llvm::ArrayRef<std::pair<std::string, FullSourceLoc> > ModuleBuildStack;
 
 /// \brief This class handles loading and caching of source files into memory.
 ///
@@ -645,6 +656,15 @@ class SourceManager : public RefCountedBase<SourceManager> {
 
   mutable llvm::DenseMap<FileID, MacroArgsMap *> MacroArgsCacheMap;
 
+  /// \brief The stack of modules being built, which is used to detect
+  /// cycles in the module dependency graph as modules are being built, as
+  /// well as to describe why we're rebuilding a particular module.
+  ///
+  /// There is no way to set this value from the command line. If we ever need
+  /// to do so (e.g., if on-demand module construction moves out-of-process),
+  /// we can add a cc1-level option to do so.
+  SmallVector<std::pair<std::string, FullSourceLoc>, 2> StoredModuleBuildStack;
+
   // SourceManager doesn't support copy construction.
   explicit SourceManager(const SourceManager&) LLVM_DELETED_FUNCTION;
   void operator=(const SourceManager&) LLVM_DELETED_FUNCTION;
@@ -669,14 +689,31 @@ public:
   /// (likely to change while trying to use them).
   bool userFilesAreVolatile() const { return UserFilesAreVolatile; }
 
+  /// \brief Retrieve the module build stack.
+  ModuleBuildStack getModuleBuildStack() const {
+    return StoredModuleBuildStack;
+  }
+
+  /// \brief Set the module build stack.
+  void setModuleBuildStack(ModuleBuildStack stack) {
+    StoredModuleBuildStack.clear();
+    StoredModuleBuildStack.append(stack.begin(), stack.end());
+  }
+
+  /// \brief Push an entry to the module build stack.
+  void pushModuleBuildStack(StringRef moduleName, FullSourceLoc importLoc) {
+    StoredModuleBuildStack.push_back(std::make_pair(moduleName.str(),importLoc));
+  }
+
   /// \brief Create the FileID for a memory buffer that will represent the
   /// FileID for the main source.
   ///
   /// One example of when this would be used is when the main source is read
   /// from STDIN.
-  FileID createMainFileIDForMemBuffer(const llvm::MemoryBuffer *Buffer) {
+  FileID createMainFileIDForMemBuffer(const llvm::MemoryBuffer *Buffer,
+                             SrcMgr::CharacteristicKind Kind = SrcMgr::C_User) {
     assert(MainFileID.isInvalid() && "MainFileID already set!");
-    MainFileID = createFileIDForMemBuffer(Buffer);
+    MainFileID = createFileIDForMemBuffer(Buffer, Kind);
     return MainFileID;
   }
 
@@ -733,10 +770,11 @@ public:
   /// This does no caching of the buffer and takes ownership of the
   /// MemoryBuffer, so only pass a MemoryBuffer to this once.
   FileID createFileIDForMemBuffer(const llvm::MemoryBuffer *Buffer,
+                      SrcMgr::CharacteristicKind FileCharacter = SrcMgr::C_User,
                                   int LoadedID = 0, unsigned LoadedOffset = 0,
                                  SourceLocation IncludeLoc = SourceLocation()) {
     return createFileID(createMemBufferContentCache(Buffer), IncludeLoc,
-                        SrcMgr::C_User, LoadedID, LoadedOffset);
+                        FileCharacter, LoadedID, LoadedOffset);
   }
 
   /// \brief Return a new SourceLocation that encodes the
@@ -955,6 +993,21 @@ public:
       return SourceLocation();
 
     return Entry.getFile().getIncludeLoc();
+  }
+
+  // \brief Returns the import location if the given source location is
+  // located within a module, or an invalid location if the source location
+  // is within the current translation unit.
+  std::pair<SourceLocation, StringRef>
+  getModuleImportLoc(SourceLocation Loc) const {
+    FileID FID = getFileID(Loc);
+
+    // Positive file IDs are in the current translation unit, and -1 is a
+    // placeholder.
+    if (FID.ID >= -1)
+      return std::make_pair(SourceLocation(), "");
+
+    return ExternalSLocEntries->getModuleImportLoc(FID.ID);
   }
 
   /// \brief Given a SourceLocation object \p Loc, return the expansion
@@ -1185,7 +1238,8 @@ public:
   /// presumed location cannot be calculate (e.g., because \p Loc is invalid
   /// or the file containing \p Loc has changed on disk), returns an invalid
   /// presumed location.
-  PresumedLoc getPresumedLoc(SourceLocation Loc) const;
+  PresumedLoc getPresumedLoc(SourceLocation Loc,
+                             bool UseLineDirectives = true) const;
 
   /// \brief Returns true if both SourceLocations correspond to the same file.
   bool isFromSameFile(SourceLocation Loc1, SourceLocation Loc2) const {
@@ -1419,40 +1473,13 @@ public:
     return !isLoadedFileID(FID);
   }
 
-  /// Get a presumed location suitable for displaying in a diagnostic message,
-  /// taking into account macro arguments and expansions.
-  PresumedLoc getPresumedLocForDisplay(SourceLocation Loc) const {
-    // This is a condensed form of the algorithm used by emitCaretDiagnostic to
-    // walk to the top of the macro call stack.
-    while (Loc.isMacroID()) {
-      Loc = skipToMacroArgExpansion(Loc);
-      Loc = getImmediateMacroCallerLoc(Loc);
-    }
-
-    return getPresumedLoc(Loc);
-  }
-
-  /// Look through spelling locations for a macro argument expansion, and if
-  /// found skip to it so that we can trace the argument rather than the macros
-  /// in which that argument is used. If no macro argument expansion is found,
-  /// don't skip anything and return the starting location.
-  SourceLocation skipToMacroArgExpansion(SourceLocation StartLoc) const {
-    for (SourceLocation L = StartLoc; L.isMacroID();
-         L = getImmediateSpellingLoc(L)) {
-      if (isMacroArgExpansion(L))
-        return L;
-    }
-    // Otherwise just return initial location, there's nothing to skip.
-    return StartLoc;
-  }
-
   /// Gets the location of the immediate macro caller, one level up the stack
   /// toward the initial macro typed into the source.
   SourceLocation getImmediateMacroCallerLoc(SourceLocation Loc) const {
     if (!Loc.isMacroID()) return Loc;
 
     // When we have the location of (part of) an expanded parameter, its
-    // spelling location points to the argument as typed into the macro call,
+    // spelling location points to the argument as expanded in the macro call,
     // and therefore is used to locate the macro caller.
     if (isMacroArgExpansion(Loc))
       return getImmediateSpellingLoc(Loc);
@@ -1460,22 +1487,6 @@ public:
     // Otherwise, the caller of the macro is located where this macro is
     // expanded (while the spelling is part of the macro definition).
     return getImmediateExpansionRange(Loc).first;
-  }
-
-  /// Gets the location of the immediate macro callee, one level down the stack
-  /// toward the leaf macro.
-  SourceLocation getImmediateMacroCalleeLoc(SourceLocation Loc) const {
-    if (!Loc.isMacroID()) return Loc;
-
-    // When we have the location of (part of) an expanded parameter, its
-    // expansion location points to the unexpanded parameter reference within
-    // the macro definition (or callee).
-    if (isMacroArgExpansion(Loc))
-      return getImmediateExpansionRange(Loc).first;
-
-    // Otherwise, the callee of the macro is located where this location was
-    // spelled inside the macro definition.
-    return getImmediateSpellingLoc(Loc);
   }
 
 private:

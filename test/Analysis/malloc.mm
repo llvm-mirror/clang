@@ -5,6 +5,16 @@ typedef __typeof(sizeof(int)) size_t;
 void *malloc(size_t);
 void free(void *);
 
+@interface Wrapper : NSData
+- (id)initWithBytesNoCopy:(void *)bytes length:(NSUInteger)len;
+@end
+
+@implementation Wrapper
+- (id)initWithBytesNoCopy:(void *)bytes length:(NSUInteger)len {
+  return [self initWithBytesNoCopy:bytes length:len freeWhenDone:1]; // no-warning
+}
+@end
+
 // Done with headers. Start testing.
 void testNSDatafFreeWhenDoneNoError(NSUInteger dataLength) {
   unsigned char *data = (unsigned char *)malloc(42);
@@ -19,6 +29,11 @@ void testNSDataFreeWhenDoneYES(NSUInteger dataLength) {
 void testNSDataFreeWhenDoneYES2(NSUInteger dataLength) {
   unsigned char *data = (unsigned char *)malloc(42);
   NSData *nsdata = [[NSData alloc] initWithBytesNoCopy:data length:dataLength freeWhenDone:1]; // no-warning
+}
+
+void testNSDataFreeWhenDoneYES2_with_wrapper(NSUInteger dataLength) {
+  unsigned char *data = (unsigned char *)malloc(42);
+  Wrapper *nsdata = [[Wrapper alloc] initWithBytesNoCopy:data length:dataLength]; // no-warning
 }
 
 void testNSStringFreeWhenDoneYES3(NSUInteger dataLength) {
@@ -221,4 +236,60 @@ void foo(NSPointerArray* pointerArray) {
 void noCrashOnVariableArgumentSelector() {
   NSMutableString *myString = [NSMutableString stringWithString:@"some text"];
   [myString appendFormat:@"some text = %d", 3];
+}
+
+void test12365078_check() {
+  unichar *characters = (unichar*)malloc(12);
+  NSString *string = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+  if (!string) free(characters); // no-warning
+}
+
+void test12365078_nocheck() {
+  unichar *characters = (unichar*)malloc(12);
+  NSString *string = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+}
+
+void test12365078_false_negative() {
+  unichar *characters = (unichar*)malloc(12);
+  NSString *string = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+  if (!string) {;}
+}
+
+void test12365078_no_malloc(unichar *characters) {
+  NSString *string = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+  if (!string) {free(characters);}
+}
+
+NSString *test12365078_no_malloc_returnValue(unichar *characters) {
+  NSString *string = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+  if (!string) {
+    return 0; // no-warning
+  }
+  return string;
+}
+
+void test12365078_nocheck_nomalloc(unichar *characters) {
+  NSString *string = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+  free(characters); // expected-warning {{Attempt to free non-owned memory}}
+}
+
+void test12365078_nested(unichar *characters) {
+  NSString *string = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+  if (!string) {    
+    NSString *string2 = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+    if (!string2) {    
+      NSString *string3 = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+      if (!string3) {    
+        NSString *string4 = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+        if (!string4)
+          free(characters);
+      }
+    }
+  }
+}
+
+void test12365078_check_positive() {
+  unichar *characters = (unichar*)malloc(12);
+  NSString *string = [[NSString alloc] initWithCharactersNoCopy:characters length:12 freeWhenDone:1];
+  if (string) free(characters); // expected-warning{{Attempt to free non-owned memory}}
 }

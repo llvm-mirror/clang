@@ -8,23 +8,23 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/CodeGen/CodeGenAction.h"
-#include "clang/Basic/FileManager.h"
-#include "clang/Basic/SourceManager.h"
-#include "clang/Basic/TargetInfo.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclGroup.h"
+#include "clang/Basic/FileManager.h"
+#include "clang/Basic/SourceManager.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/CodeGen/BackendUtil.h"
 #include "clang/CodeGen/ModuleBuilder.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
+#include "llvm/ADT/OwningPtr.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/LLVMContext.h"
 #include "llvm/Linker.h"
 #include "llvm/Module.h"
 #include "llvm/Pass.h"
-#include "llvm/ADT/OwningPtr.h"
-#include "llvm/ADT/SmallString.h"
-#include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/Support/IRReader.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
@@ -65,9 +65,11 @@ namespace clang {
       TargetOpts(targetopts),
       LangOpts(langopts),
       AsmOutStream(OS),
+      Context(), 
       LLVMIRGeneration("LLVM IR Generation Time"),
       Gen(CreateLLVMCodeGen(Diags, infile, compopts, C)),
-      LinkModule(LinkModule) {
+      LinkModule(LinkModule)
+    {
       llvm::TimePassesIsEnabled = TimePasses;
     }
 
@@ -379,7 +381,7 @@ void CodeGenAction::ExecuteAction() {
     // FIXME: This is stupid, IRReader shouldn't take ownership.
     llvm::MemoryBuffer *MainFileCopy =
       llvm::MemoryBuffer::getMemBufferCopy(MainFile->getBuffer(),
-                                           getCurrentFile().c_str());
+                                           getCurrentFile());
 
     llvm::SMDiagnostic Err;
     TheModule.reset(ParseIR(MainFileCopy, Err, *VMContext));

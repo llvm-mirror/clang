@@ -13,12 +13,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/IdentifierResolver.h"
-#include "clang/Sema/Scope.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Lex/ExternalPreprocessorSource.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Sema/Scope.h"
 
 using namespace clang;
 
@@ -135,7 +135,12 @@ bool IdentifierResolver::isDeclInScope(Decl *D, DeclContext *Ctx,
       // of the controlled statement.
       //
       assert(S->getParent() && "No TUScope?");
-      if (S->getParent()->getFlags() & Scope::ControlScope)
+      if (S->getParent()->getFlags() & Scope::ControlScope) {
+        S = S->getParent();
+        if (S->isDeclScope(D))
+          return true;
+      }
+      if (S->getFlags() & Scope::FnTryCatchScope)
         return S->getParent()->isDeclScope(D);
     }
     return false;

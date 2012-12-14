@@ -11,16 +11,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CGDebugInfo.h"
-#include "CodeGenFunction.h"
-#include "CGObjCRuntime.h"
-#include "CodeGenModule.h"
 #include "CGBlocks.h"
+#include "CGDebugInfo.h"
+#include "CGObjCRuntime.h"
+#include "CodeGenFunction.h"
+#include "CodeGenModule.h"
 #include "clang/AST/DeclObjC.h"
-#include "llvm/Module.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/DataLayout.h"
+#include "llvm/Module.h"
 #include <algorithm>
+#include <cstdio>
 
 using namespace clang;
 using namespace CodeGen;
@@ -217,7 +218,7 @@ static bool isSafeForCXXConstantCapture(QualType type) {
 
   // Maintain semantics for classes with non-trivial dtors or copy ctors.
   if (!record->hasTrivialDestructor()) return false;
-  if (!record->hasTrivialCopyConstructor()) return false;
+  if (record->hasNonTrivialCopyConstructor()) return false;
 
   // Otherwise, we just have to make sure there aren't any mutable
   // fields that might have changed since initialization.
@@ -427,7 +428,11 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
   // to get reproducible results.  There should probably be an
   // llvm::array_pod_stable_sort.
   std::stable_sort(layout.begin(), layout.end());
-
+  
+  // Needed for blocks layout info.
+  info.BlockHeaderForcedGapOffset = info.BlockSize;
+  info.BlockHeaderForcedGapSize = CharUnits::Zero();
+  
   CharUnits &blockSize = info.BlockSize;
   info.BlockAlign = std::max(maxFieldAlign, info.BlockAlign);
 
@@ -468,17 +473,22 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
         endAlign = getLowBit(blockSize);
 
         // ...until we get to the alignment of the maximum field.
-        if (endAlign >= maxFieldAlign)
+        if (endAlign >= maxFieldAlign) {
+          if (li == first) {
+            // No user field was appended. So, a gap was added.
+            // Save total gap size for use in block layout bit map.
+            info.BlockHeaderForcedGapSize = li->Size;
+          }
           break;
+        }
       }
-
       // Don't re-append everything we just appended.
       layout.erase(first, li);
     }
   }
 
   assert(endAlign == getLowBit(blockSize));
-
+  
   // At this point, we just have to add padding if the end align still
   // isn't aligned right.
   if (endAlign < maxFieldAlign) {
@@ -493,7 +503,6 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
 
   assert(endAlign >= maxFieldAlign);
   assert(endAlign == getLowBit(blockSize));
-
   // Slam everything else on now.  This works because they have
   // strictly decreasing alignment and we expect that size is always a
   // multiple of alignment.
@@ -896,7 +905,7 @@ RValue CodeGenFunction::EmitBlockCallExpr(const CallExpr* E,
 
   const FunctionType *FuncTy = FnType->castAs<FunctionType>();
   const CGFunctionInfo &FnInfo =
-    CGM.getTypes().arrangeFreeFunctionCall(Args, FuncTy);
+    CGM.getTypes().arrangeBlockFunctionCall(Args, FuncTy);
 
   // Cast the function pointer to the right type.
   llvm::Type *BlockFTy = CGM.getTypes().GetFunctionType(FnInfo);
@@ -1892,6 +1901,7 @@ llvm::Value *CodeGenFunction::BuildBlockByrefAddress(llvm::Value *BaseAddr,
 ///        int32_t __size;
 ///        void *__copy_helper;       // only if needed
 ///        void *__destroy_helper;    // only if needed
+///        void *__byref_variable_layout;// only if needed
 ///        char padding[X];           // only if needed
 ///        T x;
 ///      } x
@@ -1920,9 +1930,8 @@ llvm::Type *CodeGenFunction::BuildByRefType(const VarDecl *D) {
     
   // int32_t __size;
   types.push_back(Int32Ty);
-
-  bool HasCopyAndDispose =
-       (Ty->isObjCRetainableType()) || getContext().getBlockVarCopyInits(D);
+  // Note that this must match *exactly* the logic in buildByrefHelpers.
+  bool HasCopyAndDispose = getContext().BlockRequiresCopying(Ty, D);
   if (HasCopyAndDispose) {
     /// void *__copy_helper;
     types.push_back(Int8PtrTy);
@@ -1930,6 +1939,12 @@ llvm::Type *CodeGenFunction::BuildByRefType(const VarDecl *D) {
     /// void *__destroy_helper;
     types.push_back(Int8PtrTy);
   }
+  bool HasByrefExtendedLayout = false;
+  Qualifiers::ObjCLifetime Lifetime;
+  if (getContext().getByrefLifetime(Ty, Lifetime, HasByrefExtendedLayout) &&
+      HasByrefExtendedLayout)
+    /// void *__byref_variable_layout;
+    types.push_back(Int8PtrTy);
 
   bool Packed = false;
   CharUnits Align = getContext().getDeclAlign(D);
@@ -1939,9 +1954,14 @@ llvm::Type *CodeGenFunction::BuildByRefType(const VarDecl *D) {
     // The struct above has 2 32-bit integers.
     unsigned CurrentOffsetInBytes = 4 * 2;
     
-    // And either 2 or 4 pointers.
-    CurrentOffsetInBytes += (HasCopyAndDispose ? 4 : 2) *
-      CGM.getDataLayout().getTypeAllocSize(Int8PtrTy);
+    // And either 2, 3, 4 or 5 pointers.
+    unsigned noPointers = 2;
+    if (HasCopyAndDispose)
+      noPointers += 2;
+    if (HasByrefExtendedLayout)
+      noPointers += 1;
+    
+    CurrentOffsetInBytes += noPointers * CGM.getDataLayout().getTypeAllocSize(Int8PtrTy);
     
     // Align the offset.
     unsigned AlignedOffsetInBytes = 
@@ -1991,6 +2011,11 @@ void CodeGenFunction::emitByrefStructureInit(const AutoVarEmission &emission) {
   const VarDecl &D = *emission.Variable;
   QualType type = D.getType();
 
+  bool HasByrefExtendedLayout;
+  Qualifiers::ObjCLifetime ByrefLifetime;
+  bool ByRefHasLifetime =
+    getContext().getByrefLifetime(type, ByrefLifetime, HasByrefExtendedLayout);
+  
   llvm::Value *V;
 
   // Initialize the 'isa', which is just 0 or 1.
@@ -2006,9 +2031,49 @@ void CodeGenFunction::emitByrefStructureInit(const AutoVarEmission &emission) {
 
   // Blocks ABI:
   //   c) the flags field is set to either 0 if no helper functions are
-  //      needed or BLOCK_HAS_COPY_DISPOSE if they are,
+  //      needed or BLOCK_BYREF_HAS_COPY_DISPOSE if they are,
   BlockFlags flags;
-  if (helpers) flags |= BLOCK_HAS_COPY_DISPOSE;
+  if (helpers) flags |= BLOCK_BYREF_HAS_COPY_DISPOSE;
+  if (ByRefHasLifetime) {
+    if (HasByrefExtendedLayout) flags |= BLOCK_BYREF_LAYOUT_EXTENDED;
+      else switch (ByrefLifetime) {
+        case Qualifiers::OCL_Strong:
+          flags |= BLOCK_BYREF_LAYOUT_STRONG;
+          break;
+        case Qualifiers::OCL_Weak:
+          flags |= BLOCK_BYREF_LAYOUT_WEAK;
+          break;
+        case Qualifiers::OCL_ExplicitNone:
+          flags |= BLOCK_BYREF_LAYOUT_UNRETAINED;
+          break;
+        case Qualifiers::OCL_None:
+          if (!type->isObjCObjectPointerType() && !type->isBlockPointerType())
+            flags |= BLOCK_BYREF_LAYOUT_NON_OBJECT;
+          break;
+        default:
+          break;
+      }
+    if (CGM.getLangOpts().ObjCGCBitmapPrint) {
+      printf("\n Inline flag for BYREF variable layout (%d):", flags.getBitMask());
+      if (flags & BLOCK_BYREF_HAS_COPY_DISPOSE)
+        printf(" BLOCK_BYREF_HAS_COPY_DISPOSE");
+      if (flags & BLOCK_BYREF_LAYOUT_MASK) {
+        BlockFlags ThisFlag(flags.getBitMask() & BLOCK_BYREF_LAYOUT_MASK);
+        if (ThisFlag ==  BLOCK_BYREF_LAYOUT_EXTENDED)
+          printf(" BLOCK_BYREF_LAYOUT_EXTENDED");
+        if (ThisFlag ==  BLOCK_BYREF_LAYOUT_STRONG)
+          printf(" BLOCK_BYREF_LAYOUT_STRONG");
+        if (ThisFlag == BLOCK_BYREF_LAYOUT_WEAK)
+          printf(" BLOCK_BYREF_LAYOUT_WEAK");
+        if (ThisFlag == BLOCK_BYREF_LAYOUT_UNRETAINED)
+          printf(" BLOCK_BYREF_LAYOUT_UNRETAINED");
+        if (ThisFlag == BLOCK_BYREF_LAYOUT_NON_OBJECT)
+          printf(" BLOCK_BYREF_LAYOUT_NON_OBJECT");
+      }
+      printf("\n");
+    }
+  }
+  
   Builder.CreateStore(llvm::ConstantInt::get(IntTy, flags.getBitMask()),
                       Builder.CreateStructGEP(addr, 2, "byref.flags"));
 
@@ -2022,6 +2087,16 @@ void CodeGenFunction::emitByrefStructureInit(const AutoVarEmission &emission) {
 
     llvm::Value *destroy_helper = Builder.CreateStructGEP(addr, 5);
     Builder.CreateStore(helpers->DisposeHelper, destroy_helper);
+  }
+  if (ByRefHasLifetime && HasByrefExtendedLayout) {
+    llvm::Constant* ByrefLayoutInfo = CGM.getObjCRuntime().BuildByrefLayout(CGM, type);
+    llvm::Value *ByrefInfoAddr = Builder.CreateStructGEP(addr, helpers ? 6 : 4,
+                                                         "byref.layout");
+    // cast destination to pointer to source type.
+    llvm::Type *DesTy = ByrefLayoutInfo->getType();
+    DesTy = DesTy->getPointerTo();
+    llvm::Value *BC = Builder.CreatePointerCast(ByrefInfoAddr, DesTy);
+    Builder.CreateStore(ByrefLayoutInfo, BC);
   }
 }
 

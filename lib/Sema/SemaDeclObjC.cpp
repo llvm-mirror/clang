@@ -12,19 +12,19 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/SemaInternal.h"
-#include "clang/Sema/Lookup.h"
-#include "clang/Sema/ExternalSemaSource.h"
-#include "clang/Sema/Scope.h"
-#include "clang/Sema/ScopeInfo.h"
 #include "clang/AST/ASTConsumer.h"
+#include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTMutationListener.h"
+#include "clang/AST/DeclObjC.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprObjC.h"
-#include "clang/AST/ASTContext.h"
-#include "clang/AST/DeclObjC.h"
-#include "clang/AST/ASTMutationListener.h"
 #include "clang/Basic/SourceManager.h"
-#include "clang/Sema/DeclSpec.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Sema/DeclSpec.h"
+#include "clang/Sema/ExternalSemaSource.h"
+#include "clang/Sema/Lookup.h"
+#include "clang/Sema/Scope.h"
+#include "clang/Sema/ScopeInfo.h"
 #include "llvm/ADT/DenseSet.h"
 
 using namespace clang;
@@ -373,10 +373,23 @@ void Sema::ActOnStartOfObjCMethodDef(Scope *FnBodyScope, Decl *D) {
     ObjCMethodDecl *IMD = 
       IC->lookupMethod(MDecl->getSelector(), MDecl->isInstanceMethod());
     
-    if (IMD)
-      DiagnoseObjCImplementedDeprecations(*this, 
+    if (IMD) {
+      ObjCImplDecl *ImplDeclOfMethodDef = 
+        dyn_cast<ObjCImplDecl>(MDecl->getDeclContext());
+      ObjCContainerDecl *ContDeclOfMethodDecl = 
+        dyn_cast<ObjCContainerDecl>(IMD->getDeclContext());
+      ObjCImplDecl *ImplDeclOfMethodDecl = 0;
+      if (ObjCInterfaceDecl *OID = dyn_cast<ObjCInterfaceDecl>(ContDeclOfMethodDecl))
+        ImplDeclOfMethodDecl = OID->getImplementation();
+      else if (ObjCCategoryDecl *CD = dyn_cast<ObjCCategoryDecl>(ContDeclOfMethodDecl))
+        ImplDeclOfMethodDecl = CD->getImplementation();
+      // No need to issue deprecated warning if deprecated mehod in class/category
+      // is being implemented in its own implementation (no overriding is involved).
+      if (!ImplDeclOfMethodDecl || ImplDeclOfMethodDecl != ImplDeclOfMethodDef)
+        DiagnoseObjCImplementedDeprecations(*this, 
                                           dyn_cast<NamedDecl>(IMD), 
                                           MDecl->getLocation(), 0);
+    }
 
     // If this is "dealloc" or "finalize", set some bit here.
     // Then in ActOnSuperMessage() (SemaExprObjC), set it back to false.

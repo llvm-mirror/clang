@@ -8,7 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Driver/ToolChain.h"
-
+#include "clang/Basic/ObjCRuntime.h"
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Arg.h"
 #include "clang/Driver/ArgList.h"
@@ -18,7 +18,6 @@
 #include "clang/Driver/Options.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "clang/Basic/ObjCRuntime.h"
 using namespace clang::driver;
 using namespace clang;
 
@@ -31,6 +30,21 @@ ToolChain::~ToolChain() {
 
 const Driver &ToolChain::getDriver() const {
  return D;
+}
+
+std::string ToolChain::getDefaultUniversalArchName() const {
+  // In universal driver terms, the arch name accepted by -arch isn't exactly
+  // the same as the ones that appear in the triple. Roughly speaking, this is
+  // an inverse of the darwin::getArchTypeForDarwinArchName() function, but the
+  // only interesting special case is powerpc.
+  switch (Triple.getArch()) {
+  case llvm::Triple::ppc:
+    return "ppc";
+  case llvm::Triple::ppc64:
+    return "ppc64";
+  default:
+    return Triple.getArchName();
+  }
 }
 
 bool ToolChain::IsUnwindTablesDefault() const {
@@ -182,7 +196,8 @@ void ToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   // Each toolchain should provide the appropriate include flags.
 }
 
-void ToolChain::addClangTargetOptions(ArgStringList &CC1Args) const {
+void ToolChain::addClangTargetOptions(const ArgList &DriverArgs,
+                                      ArgStringList &CC1Args) const {
 }
 
 ToolChain::RuntimeLibType ToolChain::GetRuntimeLibType(

@@ -15,9 +15,8 @@
 #ifndef CLANG_DRIVER_ARG_H_
 #define CLANG_DRIVER_ARG_H_
 
-#include "clang/Driver/Option.h"
-
 #include "Util.h"
+#include "clang/Driver/Option.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <string>
@@ -72,7 +71,7 @@ namespace driver {
         const char *Value0, const char *Value1, const Arg *BaseArg = 0);
     ~Arg();
 
-    const Option getOption() const { return Opt; }
+    Option getOption() const { return Opt; }
     StringRef getSpelling() const { return Spelling; }
     unsigned getIndex() const { return Index; }
 

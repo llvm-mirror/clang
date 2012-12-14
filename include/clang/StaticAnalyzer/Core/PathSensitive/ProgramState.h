@@ -18,13 +18,13 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/ConstraintManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/DynamicTypeInfo.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/Environment.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/Store.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/SValBuilder.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState_Fwd.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/SValBuilder.h"
+#include "clang/StaticAnalyzer/Core/PathSensitive/Store.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/TaintTag.h"
-#include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/ImmutableMap.h"
+#include "llvm/ADT/PointerIntPair.h"
 
 namespace llvm {
 class APSInt;
@@ -202,12 +202,6 @@ public:
   /// state's environment.
   ProgramStateRef BindExpr(const Stmt *S, const LocationContext *LCtx,
                                SVal V, bool Invalidate = true) const;
-
-  /// Create a new state by binding the value 'V' and location 'locaton' to the
-  /// statement 'S' in the state's environment.
-  ProgramStateRef bindExprAndLocation(const Stmt *S,
-                                          const LocationContext *LCtx,
-                                          SVal location, SVal V) const;
 
   ProgramStateRef bindLoc(Loc location,
                           SVal V,

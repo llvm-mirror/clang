@@ -13,8 +13,8 @@
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Frontend/FrontendOptions.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/OwningPtr.h"
+#include "llvm/ADT/StringRef.h"
 #include <string>
 #include <vector>
 
@@ -109,7 +109,7 @@ public:
   /// @{
 
   bool isCurrentFileAST() const {
-    assert(!CurrentInput.File.empty() && "No current file!");
+    assert(!CurrentInput.isEmpty() && "No current file!");
     return CurrentASTUnit != 0;
   }
 
@@ -117,14 +117,14 @@ public:
     return CurrentInput;
   }
   
-  const std::string &getCurrentFile() const {
-    assert(!CurrentInput.File.empty() && "No current file!");
-    return CurrentInput.File;
+  const StringRef getCurrentFile() const {
+    assert(!CurrentInput.isEmpty() && "No current file!");
+    return CurrentInput.getFile();
   }
 
   InputKind getCurrentFileKind() const {
-    assert(!CurrentInput.File.empty() && "No current file!");
-    return CurrentInput.Kind;
+    assert(!CurrentInput.isEmpty() && "No current file!");
+    return CurrentInput.getKind();
   }
 
   ASTUnit &getCurrentASTUnit() const {

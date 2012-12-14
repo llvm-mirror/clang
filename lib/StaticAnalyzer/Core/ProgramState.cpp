@@ -11,10 +11,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/Analysis/CFG.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ProgramStateTrait.h"
-#include "clang/StaticAnalyzer/Core/PathSensitive/ProgramState.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/SubEngine.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/TaintManager.h"
 #include "llvm/Support/raw_ostream.h"
@@ -263,23 +263,6 @@ ProgramStateRef ProgramState::BindExpr(const Stmt *S,
   if (NewEnv == Env)
     return this;
 
-  ProgramState NewSt = *this;
-  NewSt.Env = NewEnv;
-  return getStateManager().getPersistentState(NewSt);
-}
-
-ProgramStateRef 
-ProgramState::bindExprAndLocation(const Stmt *S, const LocationContext *LCtx,
-                                  SVal location,
-                                  SVal V) const {
-  Environment NewEnv =
-    getStateManager().EnvMgr.bindExprAndLocation(Env,
-                                                 EnvironmentEntry(S, LCtx),
-                                                 location, V);
-
-  if (NewEnv == Env)
-    return this;
-  
   ProgramState NewSt = *this;
   NewSt.Env = NewEnv;
   return getStateManager().getPersistentState(NewSt);
@@ -714,9 +697,9 @@ bool ProgramState::isTainted(SymbolRef Sym, TaintTagType Kind) const {
 
 /// The GDM component containing the dynamic type info. This is a map from a
 /// symbol to its most likely type.
-REGISTER_MAP_WITH_PROGRAMSTATE(DynamicTypeMap,
-                               const MemRegion *,
-                               DynamicTypeInfo)
+REGISTER_TRAIT_WITH_PROGRAMSTATE(DynamicTypeMap,
+                                 CLANG_ENTO_PROGRAMSTATE_MAP(const MemRegion *,
+                                                             DynamicTypeInfo))
 
 DynamicTypeInfo ProgramState::getDynamicTypeInfo(const MemRegion *Reg) const {
   Reg = Reg->StripCasts();

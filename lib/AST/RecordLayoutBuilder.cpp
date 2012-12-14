@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/AST/RecordLayout.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/CXXInheritance.h"
@@ -14,13 +15,12 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/Expr.h"
-#include "clang/AST/RecordLayout.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Sema/SemaDiagnostic.h"
-#include "llvm/Support/Format.h"
 #include "llvm/ADT/SmallSet.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/CrashRecoveryContext.h"
+#include "llvm/Support/Format.h"
+#include "llvm/Support/MathExtras.h"
 
 using namespace clang;
 
@@ -2577,6 +2577,11 @@ static void PrintOffset(raw_ostream &OS,
   OS.indent(IndentLevel * 2);
 }
 
+static void PrintIndentNoOffset(raw_ostream &OS, unsigned IndentLevel) {
+  OS << "     | ";
+  OS.indent(IndentLevel * 2);
+}
+
 static void DumpCXXRecordLayout(raw_ostream &OS,
                                 const CXXRecordDecl *RD, const ASTContext &C,
                                 CharUnits Offset,
@@ -2680,11 +2685,14 @@ static void DumpCXXRecordLayout(raw_ostream &OS,
                         /*IncludeVirtualBases=*/false);
   }
 
-  OS << "  sizeof=" << Layout.getSize().getQuantity();
+  PrintIndentNoOffset(OS, IndentLevel - 1);
+  OS << "[sizeof=" << Layout.getSize().getQuantity();
   OS << ", dsize=" << Layout.getDataSize().getQuantity();
   OS << ", align=" << Layout.getAlignment().getQuantity() << '\n';
-  OS << "  nvsize=" << Layout.getNonVirtualSize().getQuantity();
-  OS << ", nvalign=" << Layout.getNonVirtualAlign().getQuantity() << '\n';
+
+  PrintIndentNoOffset(OS, IndentLevel - 1);
+  OS << " nvsize=" << Layout.getNonVirtualSize().getQuantity();
+  OS << ", nvalign=" << Layout.getNonVirtualAlign().getQuantity() << "]\n";
   OS << '\n';
 }
 

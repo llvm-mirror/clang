@@ -12,8 +12,8 @@
 #include "clang/Driver/ArgList.h"
 #include "clang/Driver/Option.h"
 #include "clang/Driver/Options.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <map>
 using namespace clang::driver;
@@ -161,10 +161,6 @@ const Option OptTable::getOption(OptSpecifier Opt) const {
     return Option(0, 0);
   assert((unsigned) (id - 1) < getNumOptions() && "Invalid ID.");
   return Option(&getInfo(id), this);
-}
-
-bool OptTable::isOptionHelpHidden(OptSpecifier id) const {
-  return getInfo(id).Flags & options::HelpHidden;
 }
 
 static bool isInput(const llvm::StringSet<> &Prefixes, StringRef Arg) {
@@ -350,7 +346,8 @@ static const char *getOptionHelpGroup(const OptTable &Opts, OptSpecifier Id) {
 }
 
 void OptTable::PrintHelp(raw_ostream &OS, const char *Name,
-                         const char *Title, bool ShowHidden) const {
+                         const char *Title, unsigned short FlagsToInclude,
+                         unsigned short FlagsToExclude) const {
   OS << "OVERVIEW: " << Title << "\n";
   OS << '\n';
   OS << "USAGE: " << Name << " [options] <inputs>\n";
@@ -369,7 +366,8 @@ void OptTable::PrintHelp(raw_ostream &OS, const char *Name,
     if (getOptionKind(Id) == Option::GroupClass)
       continue;
 
-    if (!ShowHidden && isOptionHelpHidden(Id))
+    if ((FlagsToInclude && !(getInfo(Id).Flags & FlagsToInclude)) ||
+        getInfo(Id).Flags & FlagsToExclude)
       continue;
 
     if (const char *Text = getOptionHelpText(Id)) {

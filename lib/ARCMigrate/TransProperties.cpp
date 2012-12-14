@@ -1,4 +1,4 @@
-//===--- TransProperties.cpp - Tranformations to ARC mode -----------------===//
+//===--- TransProperties.cpp - Transformations to ARC mode ----------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -32,9 +32,9 @@
 
 #include "Transforms.h"
 #include "Internals.h"
-#include "clang/Sema/SemaDiagnostic.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
+#include "clang/Sema/SemaDiagnostic.h"
 #include <map>
 
 using namespace clang;

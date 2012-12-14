@@ -9,31 +9,31 @@
 
 #include "clang/CodeGen/BackendUtil.h"
 #include "clang/Basic/Diagnostic.h"
-#include "clang/Basic/TargetOptions.h"
 #include "clang/Basic/LangOptions.h"
+#include "clang/Basic/TargetOptions.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
-#include "llvm/Module.h"
-#include "llvm/PassManager.h"
 #include "llvm/Analysis/Verifier.h"
 #include "llvm/Assembly/PrintModulePass.h"
 #include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/SchedulerRegistry.h"
+#include "llvm/DataLayout.h"
 #include "llvm/MC/SubtargetFeature.h"
+#include "llvm/Module.h"
+#include "llvm/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/DataLayout.h"
 #include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
-#include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/Scalar.h"
 using namespace clang;
 using namespace llvm;
@@ -135,6 +135,20 @@ public:
   void EmitAssembly(BackendAction Action, raw_ostream *OS);
 };
 
+// We need this wrapper to access LangOpts from extension functions that
+// we add to the PassManagerBuilder.
+class PassManagerBuilderWrapper : public PassManagerBuilder {
+public:
+  PassManagerBuilderWrapper(const CodeGenOptions &CGOpts,
+                            const LangOptions &LangOpts)
+      : PassManagerBuilder(), CGOpts(CGOpts), LangOpts(LangOpts) {}
+  const CodeGenOptions &getCGOpts() const { return CGOpts; }
+  const LangOptions &getLangOpts() const { return LangOpts; }
+private:
+  const CodeGenOptions &CGOpts;
+  const LangOptions &LangOpts;
+};
+
 }
 
 static void addObjCARCAPElimPass(const PassManagerBuilder &Builder, PassManagerBase &PM) {
@@ -152,15 +166,28 @@ static void addObjCARCOptPass(const PassManagerBuilder &Builder, PassManagerBase
     PM.add(createObjCARCOptPass());
 }
 
-static unsigned BoundsChecking;
 static void addBoundsCheckingPass(const PassManagerBuilder &Builder,
                                     PassManagerBase &PM) {
-  PM.add(createBoundsCheckingPass(BoundsChecking));
+  PM.add(createBoundsCheckingPass());
 }
 
-static void addAddressSanitizerPass(const PassManagerBuilder &Builder,
-                                    PassManagerBase &PM) {
-  PM.add(createAddressSanitizerPass());
+static void addAddressSanitizerPasses(const PassManagerBuilder &Builder,
+                                      PassManagerBase &PM) {
+  const PassManagerBuilderWrapper &BuilderWrapper =
+      static_cast<const PassManagerBuilderWrapper&>(Builder);
+  const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
+  const LangOptions &LangOpts = BuilderWrapper.getLangOpts();
+  PM.add(createAddressSanitizerFunctionPass(LangOpts.SanitizeInitOrder,
+                                            LangOpts.SanitizeUseAfterReturn,
+                                            LangOpts.SanitizeUseAfterScope,
+                                            CGOpts.SanitizerBlacklistFile));
+  PM.add(createAddressSanitizerModulePass(LangOpts.SanitizeInitOrder,
+                                          CGOpts.SanitizerBlacklistFile));
+}
+
+static void addMemorySanitizerPass(const PassManagerBuilder &Builder,
+                                   PassManagerBase &PM) {
+  PM.add(createMemorySanitizerPass());
 }
 
 static void addThreadSanitizerPass(const PassManagerBuilder &Builder,
@@ -178,8 +205,8 @@ void EmitAssemblyHelper::CreatePasses(TargetMachine *TM) {
     OptLevel = 0;
     Inlining = CodeGenOpts.NoInlining;
   }
-  
-  PassManagerBuilder PMBuilder;
+
+  PassManagerBuilderWrapper PMBuilder(CodeGenOpts, LangOpts);
   PMBuilder.OptLevel = OptLevel;
   PMBuilder.SizeLevel = CodeGenOpts.OptimizeSize;
 
@@ -197,22 +224,28 @@ void EmitAssemblyHelper::CreatePasses(TargetMachine *TM) {
                            addObjCARCOptPass);
   }
 
-  if (CodeGenOpts.BoundsChecking > 0) {
-    BoundsChecking = CodeGenOpts.BoundsChecking;
+  if (LangOpts.SanitizeBounds) {
     PMBuilder.addExtension(PassManagerBuilder::EP_ScalarOptimizerLate,
                            addBoundsCheckingPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addBoundsCheckingPass);
   }
 
-  if (LangOpts.AddressSanitizer) {
+  if (LangOpts.SanitizeAddress) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
-                           addAddressSanitizerPass);
+                           addAddressSanitizerPasses);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
-                           addAddressSanitizerPass);
+                           addAddressSanitizerPasses);
   }
 
-  if (LangOpts.ThreadSanitizer) {
+  if (LangOpts.SanitizeMemory) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
+                           addMemorySanitizerPass);
+    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                           addMemorySanitizerPass);
+  }
+
+  if (LangOpts.SanitizeThread) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addThreadSanitizerPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
@@ -261,7 +294,9 @@ void EmitAssemblyHelper::CreatePasses(TargetMachine *TM) {
   if (CodeGenOpts.EmitGcovArcs || CodeGenOpts.EmitGcovNotes) {
     MPM->add(createGCOVProfilerPass(CodeGenOpts.EmitGcovNotes,
                                     CodeGenOpts.EmitGcovArcs,
-                                    TargetTriple.isMacOSX()));
+                                    TargetTriple.isMacOSX(),
+                                    false,
+                                    CodeGenOpts.DisableRedZone));
 
     if (CodeGenOpts.getDebugInfo() == CodeGenOptions::NoDebugInfo)
       MPM->add(createStripSymbolsPass(true));
@@ -381,14 +416,14 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   }
 
   // Set FP fusion mode.
-  switch (LangOpts.getFPContractMode()) {
-  case LangOptions::FPC_Off:
+  switch (CodeGenOpts.getFPContractMode()) {
+  case CodeGenOptions::FPC_Off:
     Options.AllowFPOpFusion = llvm::FPOpFusion::Strict;
     break;
-  case LangOptions::FPC_On:
+  case CodeGenOptions::FPC_On:
     Options.AllowFPOpFusion = llvm::FPOpFusion::Standard;
     break;
-  case LangOptions::FPC_Fast:
+  case CodeGenOptions::FPC_Fast:
     Options.AllowFPOpFusion = llvm::FPOpFusion::Fast;
     break;
   }

@@ -10,10 +10,10 @@
 #ifndef CLANG_DRIVER_OPTION_H_
 #define CLANG_DRIVER_OPTION_H_
 
+#include "clang/Basic/LLVM.h"
 #include "clang/Driver/OptTable.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "clang/Basic/LLVM.h"
 
 namespace clang {
 namespace driver {
@@ -36,7 +36,8 @@ namespace options {
     NoArgumentUnused = (1 << 6),
     NoForward        = (1 << 7),
     Unsupported      = (1 << 8),
-    CC1Option        = (1 << 9)
+    CC1Option        = (1 << 9),
+    NoDriverOption   = (1 << 10)
   };
 }
 
