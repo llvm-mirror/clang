@@ -538,8 +538,15 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
 
   // If possible, check that the vptr indicates that there is a subobject of
   // type Ty at offset zero within this object.
+  //
+  // C++11 [basic.life]p5,6:
+  //   [For storage which does not refer to an object within its lifetime]
+  //   The program has undefined behavior if:
+  //    -- the [pointer or glvalue] is used to access a non-static data member
+  //       or call a non-stastic member function
   CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
-  if (getLangOpts().SanitizeVptr && TCK != TCK_ConstructorCall &&
+  if (getLangOpts().SanitizeVptr &&
+      (TCK == TCK_MemberAccess || TCK == TCK_MemberCall) &&
       RD && RD->hasDefinition() && RD->isDynamicClass()) {
     // Compute a hash of the mangled name of the type.
     //
@@ -924,23 +931,22 @@ static bool hasBooleanRepresentation(QualType Ty) {
   return false;
 }
 
-llvm::MDNode *CodeGenFunction::getRangeForLoadFromType(QualType Ty) {
+static bool getRangeForType(CodeGenFunction &CGF, QualType Ty,
+                            llvm::APInt &Min, llvm::APInt &End,
+                            bool StrictEnums) {
   const EnumType *ET = Ty->getAs<EnumType>();
-  bool IsRegularCPlusPlusEnum = (getLangOpts().CPlusPlus && ET &&
-                                 CGM.getCodeGenOpts().StrictEnums &&
-                                 !ET->getDecl()->isFixed());
+  bool IsRegularCPlusPlusEnum = CGF.getLangOpts().CPlusPlus && StrictEnums &&
+                                ET && !ET->getDecl()->isFixed();
   bool IsBool = hasBooleanRepresentation(Ty);
   if (!IsBool && !IsRegularCPlusPlusEnum)
-    return NULL;
+    return false;
 
-  llvm::APInt Min;
-  llvm::APInt End;
   if (IsBool) {
-    Min = llvm::APInt(getContext().getTypeSize(Ty), 0);
-    End = llvm::APInt(getContext().getTypeSize(Ty), 2);
+    Min = llvm::APInt(CGF.getContext().getTypeSize(Ty), 0);
+    End = llvm::APInt(CGF.getContext().getTypeSize(Ty), 2);
   } else {
     const EnumDecl *ED = ET->getDecl();
-    llvm::Type *LTy = ConvertTypeForMem(ED->getIntegerType());
+    llvm::Type *LTy = CGF.ConvertTypeForMem(ED->getIntegerType());
     unsigned Bitwidth = LTy->getScalarSizeInBits();
     unsigned NumNegativeBits = ED->getNumNegativeBits();
     unsigned NumPositiveBits = ED->getNumPositiveBits();
@@ -956,6 +962,14 @@ llvm::MDNode *CodeGenFunction::getRangeForLoadFromType(QualType Ty) {
       Min = llvm::APInt(Bitwidth, 0);
     }
   }
+  return true;
+}
+
+llvm::MDNode *CodeGenFunction::getRangeForLoadFromType(QualType Ty) {
+  llvm::APInt Min, End;
+  if (!getRangeForType(*this, Ty, Min, End,
+                       CGM.getCodeGenOpts().StrictEnums))
+    return 0;
 
   llvm::MDBuilder MDHelper(getLLVMContext());
   return MDHelper.createRange(Min, End);
@@ -987,19 +1001,14 @@ llvm::Value *CodeGenFunction::EmitLoadOfScalar(llvm::Value *Addr, bool Volatile,
                                                 "castToVec4");
       // Now load value.
       llvm::Value *LoadVal = Builder.CreateLoad(Cast, Volatile, "loadVec4");
-        
+
       // Shuffle vector to get vec3.
-      llvm::SmallVector<llvm::Constant*, 3> Mask;
-      Mask.push_back(llvm::ConstantInt::get(
-                                    llvm::Type::getInt32Ty(getLLVMContext()),
-                                            0));
-      Mask.push_back(llvm::ConstantInt::get(
-                                    llvm::Type::getInt32Ty(getLLVMContext()),
-                                            1));
-      Mask.push_back(llvm::ConstantInt::get(
-                                     llvm::Type::getInt32Ty(getLLVMContext()),
-                                            2));
-        
+      llvm::Constant *Mask[] = {
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(getLLVMContext()), 0),
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(getLLVMContext()), 1),
+        llvm::ConstantInt::get(llvm::Type::getInt32Ty(getLLVMContext()), 2)
+      };
+
       llvm::Value *MaskV = llvm::ConstantVector::get(Mask);
       V = Builder.CreateShuffleVector(LoadVal,
                                       llvm::UndefValue::get(vec4Ty),
@@ -1019,7 +1028,27 @@ llvm::Value *CodeGenFunction::EmitLoadOfScalar(llvm::Value *Addr, bool Volatile,
   if (Ty->isAtomicType())
     Load->setAtomic(llvm::SequentiallyConsistent);
 
-  if (CGM.getCodeGenOpts().OptimizationLevel > 0)
+  if ((getLangOpts().SanitizeBool && hasBooleanRepresentation(Ty)) ||
+      (getLangOpts().SanitizeEnum && Ty->getAs<EnumType>())) {
+    llvm::APInt Min, End;
+    if (getRangeForType(*this, Ty, Min, End, true)) {
+      --End;
+      llvm::Value *Check;
+      if (!Min)
+        Check = Builder.CreateICmpULE(
+          Load, llvm::ConstantInt::get(getLLVMContext(), End));
+      else {
+        llvm::Value *Upper = Builder.CreateICmpSLE(
+          Load, llvm::ConstantInt::get(getLLVMContext(), End));
+        llvm::Value *Lower = Builder.CreateICmpSGE(
+          Load, llvm::ConstantInt::get(getLLVMContext(), Min));
+        Check = Builder.CreateAnd(Upper, Lower);
+      }
+      // FIXME: Provide a SourceLocation.
+      EmitCheck(Check, "load_invalid_value", EmitCheckTypeDescriptor(Ty),
+                EmitCheckValue(Load), CRK_Recoverable);
+    }
+  } else if (CGM.getCodeGenOpts().OptimizationLevel > 0)
     if (llvm::MDNode *RangeInfo = getRangeForLoadFromType(Ty))
       Load->setMetadata(llvm::LLVMContext::MD_range, RangeInfo);
 
@@ -1951,7 +1980,15 @@ void CodeGenFunction::EmitCheck(llvm::Value *Checked, StringRef CheckName,
   llvm::BasicBlock *Cont = createBasicBlock("cont");
 
   llvm::BasicBlock *Handler = createBasicBlock("handler." + CheckName);
-  Builder.CreateCondBr(Checked, Cont, Handler);
+
+  llvm::Instruction *Branch = Builder.CreateCondBr(Checked, Cont, Handler);
+
+  // Give hint that we very much don't expect to execute the handler
+  // Value chosen to match UR_NONTAKEN_WEIGHT, see BranchProbabilityInfo.cpp
+  llvm::MDBuilder MDHelper(getLLVMContext());
+  llvm::MDNode *Node = MDHelper.createBranchWeights((1U << 20) - 1, 1);
+  Branch->setMetadata(llvm::LLVMContext::MD_prof, Node);
+
   EmitBlock(Handler);
 
   llvm::Constant *Info = llvm::ConstantStruct::getAnon(StaticArgs);

@@ -1235,9 +1235,14 @@ void ASTWriter::WriteInputFiles(SourceManager &SourceMgr, StringRef isysroot) {
     if (!Cache->OrigEntry)
       continue;
 
+    uint32_t &InputFileID = InputFileIDs[Cache->OrigEntry];
+    if (InputFileID != 0)
+      continue; // already recorded this file.
+
     // Record this entry's offset.
     InputFileOffsets.push_back(Stream.GetCurrentBitNo());
-    InputFileIDs[Cache->OrigEntry] = InputFileOffsets.size();
+
+    InputFileID = InputFileOffsets.size();
 
     Record.clear();
     Record.push_back(INPUT_FILE);
@@ -3562,6 +3567,12 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
   // Write the remaining AST contents.
   RecordData Record;
   Stream.EnterSubblock(AST_BLOCK_ID, 5);
+
+  // This is so that older clang versions, before the introduction
+  // of the control block, can read and reject the newer PCH format.
+  Record.clear();
+  Record.push_back(VERSION_MAJOR);
+  Stream.EmitRecord(METADATA_OLD_FORMAT, Record);
 
   // Create a lexical update block containing all of the declarations in the
   // translation unit that do not come from other AST files.

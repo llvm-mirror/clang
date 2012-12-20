@@ -1,7 +1,13 @@
-// RUN: %clang_cc1 -fsanitize=signed-integer-overflow,integer-divide-by-zero,float-divide-by-zero,shift,unreachable,return,vla-bound,alignment,null,vptr,object-size,float-cast-overflow -emit-llvm %s -o - -triple x86_64-linux-gnu | FileCheck %s
+// RUN: %clang_cc1 -fsanitize=signed-integer-overflow,integer-divide-by-zero,float-divide-by-zero,shift,unreachable,return,vla-bound,alignment,null,vptr,object-size,float-cast-overflow,bool,enum -emit-llvm %s -o - -triple x86_64-linux-gnu | FileCheck %s
+
+struct S {
+  double d;
+  int a, b;
+  virtual int f();
+};
 
 // CHECK: @_Z17reference_binding
-void reference_binding(int *p) {
+void reference_binding(int *p, S *q) {
   // C++ core issue 453: If an lvalue to which a reference is directly bound
   // designates neither an existing object or function of an appropriate type,
   // nor a region of storage of suitable size and alignment to contain an object
@@ -16,13 +22,11 @@ void reference_binding(int *p) {
   // CHECK-NEXT: %[[MISALIGN:.*]] = and i64 %[[PTRINT]], 3
   // CHECK-NEXT: icmp eq i64 %[[MISALIGN]], 0
   int &r = *p;
-}
 
-struct S {
-  double d;
-  int a, b;
-  virtual int f();
-};
+  // A reference is not required to refer to an object within its lifetime.
+  // CHECK-NOT: __ubsan_handle_dynamic_type_cache_miss
+  S &r2 = *q;
+}
 
 // CHECK: @_Z13member_access
 void member_access(S *p) {
@@ -135,4 +139,37 @@ int lsh_overflow(int a, int b) {
 int no_return() {
   // CHECK:      call void @__ubsan_handle_missing_return(i8* bitcast ({{.*}}* @{{.*}} to i8*)) noreturn nounwind
   // CHECK-NEXT: unreachable
+}
+
+// CHECK: @_Z9sour_bool
+bool sour_bool(bool *p) {
+  // CHECK: %[[OK:.*]] = icmp ule i8 {{.*}}, 1
+  // CHECK: br i1 %[[OK]]
+  // CHECK: call void @__ubsan_handle_load_invalid_value_abort(i8* bitcast ({{.*}}), i64 {{.*}})
+  return *p;
+}
+
+enum E1 { e1a = 0, e1b = 127 } e1;
+enum E2 { e2a = -1, e2b = 64 } e2;
+enum E3 { e3a = (1u << 31) - 1 } e3;
+
+// CHECK: @_Z14bad_enum_value
+int bad_enum_value() {
+  // CHECK: %[[E1:.*]] = icmp ule i32 {{.*}}, 127
+  // CHECK: br i1 %[[E1]]
+  // CHECK: call void @__ubsan_handle_load_invalid_value_abort(
+  int a = e1;
+
+  // CHECK: %[[E2HI:.*]] = icmp sle i32 {{.*}}, 127
+  // CHECK: %[[E2LO:.*]] = icmp sge i32 {{.*}}, -128
+  // CHECK: %[[E2:.*]] = and i1 %[[E2HI]], %[[E2LO]]
+  // CHECK: br i1 %[[E2]]
+  // CHECK: call void @__ubsan_handle_load_invalid_value_abort(
+  int b = e2;
+
+  // CHECK: %[[E3:.*]] = icmp ule i32 {{.*}}, 2147483647
+  // CHECK: br i1 %[[E3]]
+  // CHECK: call void @__ubsan_handle_load_invalid_value_abort(
+  int c = e3;
+  return a + b + c;
 }

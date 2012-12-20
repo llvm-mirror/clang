@@ -860,7 +860,7 @@ private:
 
     /// \brief Whether this member function had an associated template
     /// scope. When true, D is a template declaration.
-    /// othewise, it is a member function declaration.
+    /// otherwise, it is a member function declaration.
     bool TemplateScope;
 
     explicit LexedMethod(Parser* P, Decl *MD)
@@ -2166,6 +2166,8 @@ private:
   // C++ 14.3: Template arguments [temp.arg]
   typedef SmallVector<ParsedTemplateArgument, 16> TemplateArgList;
 
+  bool ParseGreaterThanInTemplateList(SourceLocation &RAngleLoc,
+                                      bool ConsumeLastToken);
   bool ParseTemplateIdAfterTemplateName(TemplateTy Template,
                                         SourceLocation TemplateNameLoc,
                                         const CXXScopeSpec &SS,
