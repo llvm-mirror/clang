@@ -1364,6 +1364,7 @@ CGObjCGNU::GenerateMessageSend(CodeGenFunction &CGF,
       break;
     case CodeGenOptions::Mixed:
     case CodeGenOptions::NonLegacy:
+    default:
       if (CGM.ReturnTypeUsesFPRet(ResultType)) {
         imp = CGM.CreateRuntimeFunction(llvm::FunctionType::get(IdTy, IdTy, true),
                                   "objc_msgSend_fpret");
@@ -1780,61 +1781,170 @@ void CGObjCGNU::GenerateProtocol(const ObjCProtocolDecl *PD) {
     GenerateProtocolMethodList(OptionalClassMethodNames,
             OptionalClassMethodTypes);
 
-  // Property metadata: name, attributes, isSynthesized, setter name, setter
-  // types, getter name, getter types.
-  // The isSynthesized value is always set to 0 in a protocol.  It exists to
-  // simplify the runtime library by allowing it to use the same data
-  // structures for protocol metadata everywhere.
-  llvm::StructType *PropertyMetadataTy = llvm::StructType::get(
-          PtrToInt8Ty, Int8Ty, Int8Ty, PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty,
-          PtrToInt8Ty, NULL);
   std::vector<llvm::Constant*> Properties;
   std::vector<llvm::Constant*> OptionalProperties;
+  llvm::Constant *PropertyArray = 0;
+  llvm::Constant *OptionalPropertyArray = 0;
+  ObjCRuntime R = CGM.getLangOpts().ObjCRuntime;
+  if ((R.getKind() == ObjCRuntime::GNUstep) &&
+      (R.getVersion() >= VersionTuple(1, 8))) {
+    // Property metadata: name, type encoding, getter name, setter name,
+    // ivar name, attributes as string, attributes.
+    llvm::StructType *PropertyMetadataTy = llvm::StructType::get(
+          PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty,
+          IntTy, NULL);
 
-  // Add all of the property methods need adding to the method list and to the
-  // property metadata list.
-  for (ObjCContainerDecl::prop_iterator
+    // Add all of the property methods need adding to the method list and to the
+    // property metadata list.
+    for (ObjCContainerDecl::prop_iterator
          iter = PD->prop_begin(), endIter = PD->prop_end();
-       iter != endIter ; iter++) {
-    std::vector<llvm::Constant*> Fields;
-    ObjCPropertyDecl *property = *iter;
+         iter != endIter ; iter++) {
+      std::vector<llvm::Constant*> Fields;
+      ObjCPropertyDecl *property = *iter;
 
 
-    Fields.push_back(MakePropertyEncodingString(property, PD));
+      Fields.push_back(MakeConstantString(property->getNameAsString()));
+      std::string TypeStr;
+      Context.getObjCEncodingForPropertyTypeDecl(property, TypeStr);
+      Fields.push_back(MakeConstantString(TypeStr));
+      if (ObjCMethodDecl *getter = property->getGetterMethodDecl()) {
+        // FIXME: do we really need to update InstanceMethodTypes?
+        std::string GetterStr;
+        Context.getObjCEncodingForMethodDecl(getter,GetterStr);
+        InstanceMethodTypes.push_back(MakeConstantString(GetterStr));
+        if (property->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_getter) {
+          Fields.push_back(MakeConstantString(getter->getSelector().getAsString()));
+        } else {
+          Fields.push_back(NULLPtr);
+        }
+      } else {
+        Fields.push_back(NULLPtr);
+      }
+      if (ObjCMethodDecl *setter = property->getSetterMethodDecl()) {
+        // FIXME: do we really need to update InstanceMethodTypes?
+        std::string SetterStr;
+        Context.getObjCEncodingForMethodDecl(setter,SetterStr);
+        InstanceMethodTypes.push_back(MakeConstantString(SetterStr));
+        if (property->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_setter) {
+          Fields.push_back(MakeConstantString(setter->getSelector().getAsString()));
+        } else {
+          Fields.push_back(NULLPtr);
+        }
+      } else {
+        Fields.push_back(NULLPtr);
+      }
+      Fields.push_back(NULLPtr);
+      std::string AttrsStr;
+      Context.getObjCEncodingForPropertyDecl(property, NULL, AttrsStr);
+      Fields.push_back(MakeConstantString(AttrsStr));
+      unsigned int Attrs = property->getPropertyAttributes();
+      if (property->isReadOnly()) {
+        Attrs &= ~(ObjCPropertyDecl::OBJC_PR_assign |
+                   ObjCPropertyDecl::OBJC_PR_retain |
+                   ObjCPropertyDecl::OBJC_PR_copy |
+                   ObjCPropertyDecl::OBJC_PR_weak |
+                   ObjCPropertyDecl::OBJC_PR_strong);
+      } else {
+        switch (property->getSetterKind()) {
+        case ObjCPropertyDecl::Assign:
+          Attrs &= ~(ObjCPropertyDecl::OBJC_PR_readonly |
+                     ObjCPropertyDecl::OBJC_PR_retain |
+                     ObjCPropertyDecl::OBJC_PR_copy |
+                     ObjCPropertyDecl::OBJC_PR_weak |
+                     ObjCPropertyDecl::OBJC_PR_strong);
+          break;
+        case ObjCPropertyDecl::Copy:
+          Attrs &= ~(ObjCPropertyDecl::OBJC_PR_assign |
+                     ObjCPropertyDecl::OBJC_PR_retain |
+                     ObjCPropertyDecl::OBJC_PR_readonly |
+                     ObjCPropertyDecl::OBJC_PR_weak |
+                     ObjCPropertyDecl::OBJC_PR_strong);
+          break;          
+        case ObjCPropertyDecl::Retain:
+          Attrs &= ~(ObjCPropertyDecl::OBJC_PR_assign |
+                     ObjCPropertyDecl::OBJC_PR_readonly |
+                     ObjCPropertyDecl::OBJC_PR_copy |
+                     ObjCPropertyDecl::OBJC_PR_weak);
+          break;          
+        case ObjCPropertyDecl::Weak:
+          Attrs &= ~(ObjCPropertyDecl::OBJC_PR_assign |
+                     ObjCPropertyDecl::OBJC_PR_retain |
+                     ObjCPropertyDecl::OBJC_PR_copy |
+                     ObjCPropertyDecl::OBJC_PR_readonly |
+                     ObjCPropertyDecl::OBJC_PR_strong);
+          break;          
+        }
+      }
+      Fields.push_back(llvm::ConstantInt::get(IntTy, Attrs));
+      if (property->getPropertyImplementation() == ObjCPropertyDecl::Optional) {
+        OptionalProperties.push_back(llvm::ConstantStruct::get(PropertyMetadataTy, Fields));
+      } else {
+        Properties.push_back(llvm::ConstantStruct::get(PropertyMetadataTy, Fields));
+      }
+    }
+    PropertyArray = llvm::ConstantArray::get(
+        llvm::ArrayType::get(PropertyMetadataTy, Properties.size()), Properties);
+    OptionalPropertyArray =
+        llvm::ConstantArray::get(llvm::ArrayType::get(PropertyMetadataTy,
+            OptionalProperties.size()) , OptionalProperties);
+  } else {
+    // Property metadata: name, attributes, isSynthesized, setter name, setter
+    // types, getter name, getter types.
+    // The isSynthesized value is always set to 0 in a protocol.  It exists to
+    // simplify the runtime library by allowing it to use the same data
+    // structures for protocol metadata everywhere.
+    llvm::StructType *PropertyMetadataTy = llvm::StructType::get(
+          PtrToInt8Ty, Int8Ty, Int8Ty, PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty,
+          PtrToInt8Ty, NULL);
 
-    Fields.push_back(llvm::ConstantInt::get(Int8Ty,
+    // Add all of the property methods need adding to the method list and to the
+    // property metadata list.
+    for (ObjCContainerDecl::prop_iterator
+         iter = PD->prop_begin(), endIter = PD->prop_end();
+         iter != endIter ; iter++) {
+      std::vector<llvm::Constant*> Fields;
+      ObjCPropertyDecl *property = *iter;
+
+
+      Fields.push_back(MakePropertyEncodingString(property, PD));
+
+      Fields.push_back(llvm::ConstantInt::get(Int8Ty,
                 property->getPropertyAttributes()));
-    Fields.push_back(llvm::ConstantInt::get(Int8Ty, 0));
-    if (ObjCMethodDecl *getter = property->getGetterMethodDecl()) {
-      std::string TypeStr;
-      Context.getObjCEncodingForMethodDecl(getter,TypeStr);
-      llvm::Constant *TypeEncoding = MakeConstantString(TypeStr);
-      InstanceMethodTypes.push_back(TypeEncoding);
-      Fields.push_back(MakeConstantString(getter->getSelector().getAsString()));
-      Fields.push_back(TypeEncoding);
-    } else {
-      Fields.push_back(NULLPtr);
-      Fields.push_back(NULLPtr);
+      Fields.push_back(llvm::ConstantInt::get(Int8Ty, 0));
+      if (ObjCMethodDecl *getter = property->getGetterMethodDecl()) {
+        std::string TypeStr;
+        Context.getObjCEncodingForMethodDecl(getter,TypeStr);
+        llvm::Constant *TypeEncoding = MakeConstantString(TypeStr);
+        InstanceMethodTypes.push_back(TypeEncoding);
+        Fields.push_back(MakeConstantString(getter->getSelector().getAsString()));
+        Fields.push_back(TypeEncoding);
+      } else {
+        Fields.push_back(NULLPtr);
+        Fields.push_back(NULLPtr);
+      }
+      if (ObjCMethodDecl *setter = property->getSetterMethodDecl()) {
+        std::string TypeStr;
+        Context.getObjCEncodingForMethodDecl(setter,TypeStr);
+        llvm::Constant *TypeEncoding = MakeConstantString(TypeStr);
+        InstanceMethodTypes.push_back(TypeEncoding);
+        Fields.push_back(MakeConstantString(setter->getSelector().getAsString()));
+        Fields.push_back(TypeEncoding);
+      } else {
+        Fields.push_back(NULLPtr);
+        Fields.push_back(NULLPtr);
+      }
+      if (property->getPropertyImplementation() == ObjCPropertyDecl::Optional) {
+        OptionalProperties.push_back(llvm::ConstantStruct::get(PropertyMetadataTy, Fields));
+      } else {
+        Properties.push_back(llvm::ConstantStruct::get(PropertyMetadataTy, Fields));
+      }
     }
-    if (ObjCMethodDecl *setter = property->getSetterMethodDecl()) {
-      std::string TypeStr;
-      Context.getObjCEncodingForMethodDecl(setter,TypeStr);
-      llvm::Constant *TypeEncoding = MakeConstantString(TypeStr);
-      InstanceMethodTypes.push_back(TypeEncoding);
-      Fields.push_back(MakeConstantString(setter->getSelector().getAsString()));
-      Fields.push_back(TypeEncoding);
-    } else {
-      Fields.push_back(NULLPtr);
-      Fields.push_back(NULLPtr);
-    }
-    if (property->getPropertyImplementation() == ObjCPropertyDecl::Optional) {
-      OptionalProperties.push_back(llvm::ConstantStruct::get(PropertyMetadataTy, Fields));
-    } else {
-      Properties.push_back(llvm::ConstantStruct::get(PropertyMetadataTy, Fields));
-    }
+    PropertyArray = llvm::ConstantArray::get(
+        llvm::ArrayType::get(PropertyMetadataTy, Properties.size()), Properties);
+    OptionalPropertyArray =
+        llvm::ConstantArray::get(llvm::ArrayType::get(PropertyMetadataTy,
+            OptionalProperties.size()) , OptionalProperties);
   }
-  llvm::Constant *PropertyArray = llvm::ConstantArray::get(
-      llvm::ArrayType::get(PropertyMetadataTy, Properties.size()), Properties);
   llvm::Constant* PropertyListInitFields[] =
     {llvm::ConstantInt::get(IntTy, Properties.size()), NULLPtr, PropertyArray};
 
@@ -1844,9 +1954,6 @@ void CGObjCGNU::GenerateProtocol(const ObjCProtocolDecl *PD) {
       PropertyListInit->getType(), false, llvm::GlobalValue::InternalLinkage,
       PropertyListInit, ".objc_property_list");
 
-  llvm::Constant *OptionalPropertyArray =
-      llvm::ConstantArray::get(llvm::ArrayType::get(PropertyMetadataTy,
-          OptionalProperties.size()) , OptionalProperties);
   llvm::Constant* OptionalPropertyListInitFields[] = {
       llvm::ConstantInt::get(IntTy, OptionalProperties.size()), NULLPtr,
       OptionalPropertyArray };
@@ -2034,62 +2141,174 @@ llvm::Constant *CGObjCGNU::GeneratePropertyList(const ObjCImplementationDecl *OI
         SmallVectorImpl<Selector> &InstanceMethodSels,
         SmallVectorImpl<llvm::Constant*> &InstanceMethodTypes) {
   ASTContext &Context = CGM.getContext();
-  //
-  // Property metadata: name, attributes, isSynthesized, setter name, setter
-  // types, getter name, getter types.
-  llvm::StructType *PropertyMetadataTy = llvm::StructType::get(
-          PtrToInt8Ty, Int8Ty, Int8Ty, PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty,
-          PtrToInt8Ty, NULL);
   std::vector<llvm::Constant*> Properties;
-
+  llvm::ArrayType *PropertyArrayTy = 0;
 
   // Add all of the property methods need adding to the method list and to the
   // property metadata list.
-  for (ObjCImplDecl::propimpl_iterator
-         iter = OID->propimpl_begin(), endIter = OID->propimpl_end();
-       iter != endIter ; iter++) {
-    std::vector<llvm::Constant*> Fields;
-    ObjCPropertyDecl *property = iter->getPropertyDecl();
-    ObjCPropertyImplDecl *propertyImpl = *iter;
-    bool isSynthesized = (propertyImpl->getPropertyImplementation() == 
-        ObjCPropertyImplDecl::Synthesize);
+  ObjCRuntime R = CGM.getLangOpts().ObjCRuntime;
+  if ((R.getKind() == ObjCRuntime::GNUstep) &&
+      (R.getVersion() >= VersionTuple(1, 8))) {
+    // Property metadata: name, type encoding, getter name, setter name,
+    // ivar name, attributes as string, attributes.
+    llvm::StructType *PropertyMetadataTy = llvm::StructType::get(
+          PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty,
+          IntTy, NULL);
 
-    Fields.push_back(MakePropertyEncodingString(property, OID));
-    Fields.push_back(llvm::ConstantInt::get(Int8Ty,
+    // Add all of the property methods need adding to the method list and to the
+    // property metadata list.
+    for (ObjCImplDecl::propimpl_iterator
+         iter = OID->propimpl_begin(), endIter = OID->propimpl_end();
+         iter != endIter ; iter++) {
+      std::vector<llvm::Constant*> Fields;
+      ObjCPropertyDecl *property = iter->getPropertyDecl();
+      ObjCPropertyImplDecl *propertyImpl = *iter;
+      bool isSynthesized = (propertyImpl->getPropertyImplementation() == 
+                            ObjCPropertyImplDecl::Synthesize);
+
+      Fields.push_back(MakeConstantString(property->getNameAsString()));
+      std::string TypeStr;
+      Context.getObjCEncodingForPropertyTypeDecl(property, TypeStr);
+      Fields.push_back(MakeConstantString(TypeStr));
+      if (ObjCMethodDecl *getter = property->getGetterMethodDecl()) {
+        if (isSynthesized) {
+          std::string GetterStr;
+          Context.getObjCEncodingForMethodDecl(getter,GetterStr);
+          InstanceMethodTypes.push_back(MakeConstantString(GetterStr));
+          InstanceMethodSels.push_back(getter->getSelector());
+        }
+        if (property->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_getter) {
+          Fields.push_back(MakeConstantString(getter->getSelector().getAsString()));
+        } else {
+          Fields.push_back(NULLPtr);
+        }
+      } else {
+        Fields.push_back(NULLPtr);
+      }
+      if (ObjCMethodDecl *setter = property->getSetterMethodDecl()) {
+        if (isSynthesized) {
+          std::string SetterStr;
+          Context.getObjCEncodingForMethodDecl(setter,SetterStr);
+          InstanceMethodTypes.push_back(MakeConstantString(SetterStr));
+          InstanceMethodSels.push_back(setter->getSelector());
+        }
+        if (property->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_setter) {
+          Fields.push_back(MakeConstantString(setter->getSelector().getAsString()));
+        } else {
+          Fields.push_back(NULLPtr);
+        }
+      } else {
+        Fields.push_back(NULLPtr);
+      }
+      if (propertyImpl->getPropertyImplementation()!=ObjCPropertyImplDecl::Dynamic) {
+        const ObjCIvarDecl *IID = propertyImpl->getPropertyIvarDecl();
+        Fields.push_back(MakeConstantString(IID->getNameAsString()));
+      } else {
+        Fields.push_back(NULLPtr);
+      }
+      std::string AttrsStr;
+      Context.getObjCEncodingForPropertyDecl(property, OID, AttrsStr);
+      Fields.push_back(MakeConstantString(AttrsStr));
+      unsigned int Attrs = property->getPropertyAttributes();
+      if (property->isReadOnly()) {
+        Attrs &= ~(ObjCPropertyDecl::OBJC_PR_assign |
+                   ObjCPropertyDecl::OBJC_PR_retain |
+                   ObjCPropertyDecl::OBJC_PR_copy |
+                   ObjCPropertyDecl::OBJC_PR_weak |
+                   ObjCPropertyDecl::OBJC_PR_strong);
+      } else {
+        switch (property->getSetterKind()) {
+        case ObjCPropertyDecl::Assign:
+          Attrs &= ~(ObjCPropertyDecl::OBJC_PR_readonly |
+                     ObjCPropertyDecl::OBJC_PR_retain |
+                     ObjCPropertyDecl::OBJC_PR_copy |
+                     ObjCPropertyDecl::OBJC_PR_weak |
+                     ObjCPropertyDecl::OBJC_PR_strong);
+          break;
+        case ObjCPropertyDecl::Copy:
+          Attrs &= ~(ObjCPropertyDecl::OBJC_PR_assign |
+                     ObjCPropertyDecl::OBJC_PR_retain |
+                     ObjCPropertyDecl::OBJC_PR_readonly |
+                     ObjCPropertyDecl::OBJC_PR_weak |
+                     ObjCPropertyDecl::OBJC_PR_strong);
+          break;          
+        case ObjCPropertyDecl::Retain:
+          Attrs &= ~(ObjCPropertyDecl::OBJC_PR_assign |
+                     ObjCPropertyDecl::OBJC_PR_readonly |
+                     ObjCPropertyDecl::OBJC_PR_copy |
+                     ObjCPropertyDecl::OBJC_PR_weak);
+          break;          
+        case ObjCPropertyDecl::Weak:
+          Attrs &= ~(ObjCPropertyDecl::OBJC_PR_assign |
+                     ObjCPropertyDecl::OBJC_PR_retain |
+                     ObjCPropertyDecl::OBJC_PR_copy |
+                     ObjCPropertyDecl::OBJC_PR_readonly |
+                     ObjCPropertyDecl::OBJC_PR_strong);
+          break;          
+        }
+      }
+      if (propertyImpl->getPropertyImplementation()==ObjCPropertyImplDecl::Dynamic) {
+        Attrs |= ObjCPropertyDecl::OBJC_PR_dynamic;
+      }
+      Fields.push_back(llvm::ConstantInt::get(IntTy, Attrs));
+      Properties.push_back(llvm::ConstantStruct::get(PropertyMetadataTy, Fields));
+    }
+    PropertyArrayTy =
+        llvm::ArrayType::get(PropertyMetadataTy, Properties.size());
+  } else {
+    //
+    // Property metadata: name, attributes, isSynthesized, setter name, setter
+    // types, getter name, getter types.
+    llvm::StructType *PropertyMetadataTy = llvm::StructType::get(
+          PtrToInt8Ty, Int8Ty, Int8Ty, PtrToInt8Ty, PtrToInt8Ty, PtrToInt8Ty,
+          PtrToInt8Ty, NULL);
+
+    for (ObjCImplDecl::propimpl_iterator
+         iter = OID->propimpl_begin(), endIter = OID->propimpl_end();
+         iter != endIter ; iter++) {
+      std::vector<llvm::Constant*> Fields;
+      ObjCPropertyDecl *property = iter->getPropertyDecl();
+      ObjCPropertyImplDecl *propertyImpl = *iter;
+      bool isSynthesized = (propertyImpl->getPropertyImplementation() == 
+                            ObjCPropertyImplDecl::Synthesize);
+
+      Fields.push_back(MakePropertyEncodingString(property, OID));
+      Fields.push_back(llvm::ConstantInt::get(Int8Ty,
                 property->getPropertyAttributes()));
-    Fields.push_back(llvm::ConstantInt::get(Int8Ty, isSynthesized));
-    if (ObjCMethodDecl *getter = property->getGetterMethodDecl()) {
-      std::string TypeStr;
-      Context.getObjCEncodingForMethodDecl(getter,TypeStr);
-      llvm::Constant *TypeEncoding = MakeConstantString(TypeStr);
-      if (isSynthesized) {
-        InstanceMethodTypes.push_back(TypeEncoding);
-        InstanceMethodSels.push_back(getter->getSelector());
+      Fields.push_back(llvm::ConstantInt::get(Int8Ty, isSynthesized));
+      if (ObjCMethodDecl *getter = property->getGetterMethodDecl()) {
+        std::string TypeStr;
+        Context.getObjCEncodingForMethodDecl(getter,TypeStr);
+        llvm::Constant *TypeEncoding = MakeConstantString(TypeStr);
+        if (isSynthesized) {
+          InstanceMethodTypes.push_back(TypeEncoding);
+          InstanceMethodSels.push_back(getter->getSelector());
+        }
+        Fields.push_back(MakeConstantString(getter->getSelector().getAsString()));
+        Fields.push_back(TypeEncoding);
+      } else {
+        Fields.push_back(NULLPtr);
+        Fields.push_back(NULLPtr);
       }
-      Fields.push_back(MakeConstantString(getter->getSelector().getAsString()));
-      Fields.push_back(TypeEncoding);
-    } else {
-      Fields.push_back(NULLPtr);
-      Fields.push_back(NULLPtr);
-    }
-    if (ObjCMethodDecl *setter = property->getSetterMethodDecl()) {
-      std::string TypeStr;
-      Context.getObjCEncodingForMethodDecl(setter,TypeStr);
-      llvm::Constant *TypeEncoding = MakeConstantString(TypeStr);
-      if (isSynthesized) {
-        InstanceMethodTypes.push_back(TypeEncoding);
-        InstanceMethodSels.push_back(setter->getSelector());
+      if (ObjCMethodDecl *setter = property->getSetterMethodDecl()) {
+        std::string TypeStr;
+        Context.getObjCEncodingForMethodDecl(setter,TypeStr);
+        llvm::Constant *TypeEncoding = MakeConstantString(TypeStr);
+        if (isSynthesized) {
+          InstanceMethodTypes.push_back(TypeEncoding);
+          InstanceMethodSels.push_back(setter->getSelector());
+        }
+        Fields.push_back(MakeConstantString(setter->getSelector().getAsString()));
+        Fields.push_back(TypeEncoding);
+      } else {
+        Fields.push_back(NULLPtr);
+        Fields.push_back(NULLPtr);
       }
-      Fields.push_back(MakeConstantString(setter->getSelector().getAsString()));
-      Fields.push_back(TypeEncoding);
-    } else {
-      Fields.push_back(NULLPtr);
-      Fields.push_back(NULLPtr);
+      Properties.push_back(llvm::ConstantStruct::get(PropertyMetadataTy, Fields));
     }
-    Properties.push_back(llvm::ConstantStruct::get(PropertyMetadataTy, Fields));
+    PropertyArrayTy =
+        llvm::ArrayType::get(PropertyMetadataTy, Properties.size());
   }
-  llvm::ArrayType *PropertyArrayTy =
-      llvm::ArrayType::get(PropertyMetadataTy, Properties.size());
   llvm::Constant *PropertyArray = llvm::ConstantArray::get(PropertyArrayTy,
           Properties);
   llvm::Constant* PropertyListInitFields[] =

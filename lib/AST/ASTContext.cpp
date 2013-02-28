@@ -4855,6 +4855,18 @@ void ASTContext::getObjCEncodingForPropertyDecl(const ObjCPropertyDecl *PD,
   // FIXME: OBJCGC: weak & strong
 }
 
+/// getObjCEncodingForPropertyTypeDecl - Return the encoded type for
+/// this property declaration.
+void ASTContext::getObjCEncodingForPropertyTypeDecl(const ObjCPropertyDecl *PD,
+                                                    std::string& S) const {
+  // Encode result type.
+  // GCC has some special rules regarding encoding of properties which
+  // closely resembles encoding of ivars.
+  getObjCEncodingForTypeImpl(PD->getType(), S, true, true, 0,
+                             true /* outermost type */,
+                             true /* encoding for property */);
+}
+
 /// getLegacyIntegralTypeEncoding -
 /// Another legacy compatibility encoding: 32-bit longs are encoded as
 /// 'l' or 'L' , but not always.  For typedefs, we need to use

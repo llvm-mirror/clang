@@ -1965,13 +1965,14 @@ public:
     OBJC_PR_atomic    = 0x100,
     OBJC_PR_weak      = 0x200,
     OBJC_PR_strong    = 0x400,
-    OBJC_PR_unsafe_unretained = 0x800
+    OBJC_PR_unsafe_unretained = 0x800,
+    OBJC_PR_dynamic   = 0x1000
     // Adding a property should change NumPropertyAttrsBits
   };
 
   enum {
     /// \brief Number of bits fitting all the property attributes.
-    NumPropertyAttrsBits = 12
+    NumPropertyAttrsBits = 13
   };
 
   enum SetterKind { Assign, Retain, Copy, Weak };

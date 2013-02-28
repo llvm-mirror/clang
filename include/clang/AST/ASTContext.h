@@ -1279,6 +1279,11 @@ public:
   void getObjCEncodingForPropertyDecl(const ObjCPropertyDecl *PD,
                                       const Decl *Container,
                                       std::string &S) const;
+  
+  /// getObjCEncodingForPropertyTypeDecl - Return the encoded type for
+  /// this property declaration.
+  void getObjCEncodingForPropertyTypeDecl(const ObjCPropertyDecl *PD,
+                                          std::string &S) const;
 
   bool ProtocolCompatibleWithProtocol(ObjCProtocolDecl *lProto,
                                       ObjCProtocolDecl *rProto) const;

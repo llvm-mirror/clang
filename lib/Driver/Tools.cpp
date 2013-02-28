@@ -3442,7 +3442,7 @@ ObjCRuntime Clang::AddObjCRuntimeArgs(const ArgList &args,
     // Legacy behaviour is to target the gnustep runtime if we are i
     // non-fragile mode or the GCC runtime in fragile mode.
     if (isNonFragile)
-      runtime = ObjCRuntime(ObjCRuntime::GNUstep, VersionTuple(1,6));
+      runtime = ObjCRuntime(ObjCRuntime::GNUstep, VersionTuple(1,8));
     else
       runtime = ObjCRuntime(ObjCRuntime::GCC, VersionTuple());
   }
