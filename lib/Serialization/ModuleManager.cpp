@@ -12,6 +12,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include "clang/Serialization/ModuleManager.h"
+#include "clang/Serialization/GlobalModuleIndex.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/system_error.h"
@@ -24,12 +25,14 @@ using namespace clang;
 using namespace serialization;
 
 ModuleFile *ModuleManager::lookup(StringRef Name) {
-  const FileEntry *Entry = FileMgr.getFile(Name);
+  const FileEntry *Entry = FileMgr.getFile(Name, /*openFile=*/false,
+                                           /*cacheFailure=*/false);
   return Modules[Entry];
 }
 
 llvm::MemoryBuffer *ModuleManager::lookupBuffer(StringRef Name) {
-  const FileEntry *Entry = FileMgr.getFile(Name);
+  const FileEntry *Entry = FileMgr.getFile(Name, /*openFile=*/false,
+                                           /*cacheFailure=*/false);
   return InMemoryBuffers[Entry];
 }
 
@@ -37,7 +40,8 @@ std::pair<ModuleFile *, bool>
 ModuleManager::addModule(StringRef FileName, ModuleKind Type,
                          SourceLocation ImportLoc, ModuleFile *ImportedBy,
                          unsigned Generation, std::string &ErrorStr) {
-  const FileEntry *Entry = FileMgr.getFile(FileName);
+  const FileEntry *Entry = FileMgr.getFile(FileName, /*openFile=*/false,
+                                           /*cacheFailure=*/false);
   if (!Entry && FileName != "-") {
     ErrorStr = "file not found";
     return std::make_pair(static_cast<ModuleFile*>(0), false);
@@ -49,6 +53,7 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
   if (!ModuleEntry) {
     // Allocate a new module.
     ModuleFile *New = new ModuleFile(Type, Generation);
+    New->Index = Chain.size();
     New->FileName = FileName.str();
     New->File = Entry;
     New->ImportLoc = ImportLoc;
@@ -139,79 +144,174 @@ void ModuleManager::addInMemoryBuffer(StringRef FileName,
   InMemoryBuffers[Entry] = Buffer;
 }
 
-ModuleManager::ModuleManager(FileManager &FileMgr) : FileMgr(FileMgr) { }
+void ModuleManager::updateModulesInCommonWithGlobalIndex() {
+  ModulesInCommonWithGlobalIndex.clear();
+
+  if (!GlobalIndex)
+    return;
+
+  // Collect the set of modules known to the global index.
+  SmallVector<const FileEntry *, 16> KnownModules;
+  GlobalIndex->getKnownModules(KnownModules);
+
+  // Map those modules to AST files known to the module manager.
+  for (unsigned I = 0, N = KnownModules.size(); I != N; ++I) {
+    llvm::DenseMap<const FileEntry *, ModuleFile *>::iterator Known
+      = Modules.find(KnownModules[I]);
+    if (Known == Modules.end())
+      continue;
+
+    ModulesInCommonWithGlobalIndex.push_back(Known->second);
+  }
+}
+
+ModuleManager::VisitState *ModuleManager::allocateVisitState() {
+  // Fast path: if we have a cached state, use it.
+  if (FirstVisitState) {
+    VisitState *Result = FirstVisitState;
+    FirstVisitState = FirstVisitState->NextState;
+    Result->NextState = 0;
+    return Result;
+  }
+
+  // Allocate and return a new state.
+  return new VisitState(size());
+}
+
+void ModuleManager::returnVisitState(VisitState *State) {
+  assert(State->NextState == 0 && "Visited state is in list?");
+  State->NextState = FirstVisitState;
+  FirstVisitState = State;
+}
+
+void ModuleManager::setGlobalIndex(GlobalModuleIndex *Index) {
+  GlobalIndex = Index;
+  updateModulesInCommonWithGlobalIndex();
+}
+
+ModuleManager::ModuleManager(FileManager &FileMgr)
+  : FileMgr(FileMgr), GlobalIndex(), FirstVisitState(0) { }
 
 ModuleManager::~ModuleManager() {
   for (unsigned i = 0, e = Chain.size(); i != e; ++i)
     delete Chain[e - i - 1];
+  delete FirstVisitState;
 }
 
-void ModuleManager::visit(bool (*Visitor)(ModuleFile &M, void *UserData), 
-                          void *UserData) {
-  unsigned N = size();
-  
-  // Record the number of incoming edges for each module. When we
-  // encounter a module with no incoming edges, push it into the queue
-  // to seed the queue.
-  SmallVector<ModuleFile *, 4> Queue;
-  Queue.reserve(N);
-  llvm::DenseMap<ModuleFile *, unsigned> UnusedIncomingEdges; 
-  for (ModuleIterator M = begin(), MEnd = end(); M != MEnd; ++M) {
-    if (unsigned Size = (*M)->ImportedBy.size())
-      UnusedIncomingEdges[*M] = Size;
-    else
-      Queue.push_back(*M);
+void
+ModuleManager::visit(bool (*Visitor)(ModuleFile &M, void *UserData),
+                     void *UserData,
+                     llvm::SmallPtrSet<const FileEntry *, 4> *ModuleFilesHit) {
+  // If the visitation order vector is the wrong size, recompute the order.
+  if (VisitOrder.size() != Chain.size()) {
+    unsigned N = size();
+    VisitOrder.clear();
+    VisitOrder.reserve(N);
+    
+    // Record the number of incoming edges for each module. When we
+    // encounter a module with no incoming edges, push it into the queue
+    // to seed the queue.
+    SmallVector<ModuleFile *, 4> Queue;
+    Queue.reserve(N);
+    llvm::SmallVector<unsigned, 4> UnusedIncomingEdges;
+    UnusedIncomingEdges.reserve(size());
+    for (ModuleIterator M = begin(), MEnd = end(); M != MEnd; ++M) {
+      if (unsigned Size = (*M)->ImportedBy.size())
+        UnusedIncomingEdges.push_back(Size);
+      else {
+        UnusedIncomingEdges.push_back(0);
+        Queue.push_back(*M);
+      }
+    }
+
+    // Traverse the graph, making sure to visit a module before visiting any
+    // of its dependencies.
+    unsigned QueueStart = 0;
+    while (QueueStart < Queue.size()) {
+      ModuleFile *CurrentModule = Queue[QueueStart++];
+      VisitOrder.push_back(CurrentModule);
+
+      // For any module that this module depends on, push it on the
+      // stack (if it hasn't already been marked as visited).
+      for (llvm::SetVector<ModuleFile *>::iterator
+             M = CurrentModule->Imports.begin(),
+             MEnd = CurrentModule->Imports.end();
+           M != MEnd; ++M) {
+        // Remove our current module as an impediment to visiting the
+        // module we depend on. If we were the last unvisited module
+        // that depends on this particular module, push it into the
+        // queue to be visited.
+        unsigned &NumUnusedEdges = UnusedIncomingEdges[(*M)->Index];
+        if (NumUnusedEdges && (--NumUnusedEdges == 0))
+          Queue.push_back(*M);
+      }
+    }
+
+    assert(VisitOrder.size() == N && "Visitation order is wrong?");
+
+    // We may need to update the set of modules we have in common with the
+    // global module index, since modules could have been added to the module
+    // manager since we loaded the global module index.
+    updateModulesInCommonWithGlobalIndex();
+
+    delete FirstVisitState;
+    FirstVisitState = 0;
   }
-  
-  llvm::SmallPtrSet<ModuleFile *, 4> Skipped;
-  unsigned QueueStart = 0;
-  while (QueueStart < Queue.size()) {
-    ModuleFile *CurrentModule = Queue[QueueStart++];
-    
-    // Check whether this module should be skipped.
-    if (Skipped.count(CurrentModule))
+
+  VisitState *State = allocateVisitState();
+  unsigned VisitNumber = State->NextVisitNumber++;
+
+  // If the caller has provided us with a hit-set that came from the global
+  // module index, mark every module file in common with the global module
+  // index that is *not* in that set as 'visited'.
+  if (ModuleFilesHit && !ModulesInCommonWithGlobalIndex.empty()) {
+    for (unsigned I = 0, N = ModulesInCommonWithGlobalIndex.size(); I != N; ++I)
+    {
+      ModuleFile *M = ModulesInCommonWithGlobalIndex[I];
+      if (!ModuleFilesHit->count(M->File))
+        State->VisitNumber[M->Index] = VisitNumber;
+    }
+  }
+
+  for (unsigned I = 0, N = VisitOrder.size(); I != N; ++I) {
+    ModuleFile *CurrentModule = VisitOrder[I];
+    // Should we skip this module file?
+    if (State->VisitNumber[CurrentModule->Index] == VisitNumber)
       continue;
-    
-    if (Visitor(*CurrentModule, UserData)) {
-      // The visitor has requested that cut off visitation of any
-      // module that the current module depends on. To indicate this
-      // behavior, we mark all of the reachable modules as having N
-      // incoming edges (which is impossible otherwise).
-      SmallVector<ModuleFile *, 4> Stack;
-      Stack.push_back(CurrentModule);
-      Skipped.insert(CurrentModule);
-      while (!Stack.empty()) {
-        ModuleFile *NextModule = Stack.back();
-        Stack.pop_back();
-        
-        // For any module that this module depends on, push it on the
-        // stack (if it hasn't already been marked as visited).
-        for (llvm::SetVector<ModuleFile *>::iterator 
+
+    // Visit the module.
+    assert(State->VisitNumber[CurrentModule->Index] == VisitNumber - 1);
+    State->VisitNumber[CurrentModule->Index] = VisitNumber;
+    if (!Visitor(*CurrentModule, UserData))
+      continue;
+
+    // The visitor has requested that cut off visitation of any
+    // module that the current module depends on. To indicate this
+    // behavior, we mark all of the reachable modules as having been visited.
+    ModuleFile *NextModule = CurrentModule;
+    do {
+      // For any module that this module depends on, push it on the
+      // stack (if it hasn't already been marked as visited).
+      for (llvm::SetVector<ModuleFile *>::iterator
              M = NextModule->Imports.begin(),
              MEnd = NextModule->Imports.end();
-             M != MEnd; ++M) {
-          if (Skipped.insert(*M))
-            Stack.push_back(*M);
+           M != MEnd; ++M) {
+        if (State->VisitNumber[(*M)->Index] != VisitNumber) {
+          State->Stack.push_back(*M);
+          State->VisitNumber[(*M)->Index] = VisitNumber;
         }
       }
-      continue;
-    }
-    
-    // For any module that this module depends on, push it on the
-    // stack (if it hasn't already been marked as visited).
-    for (llvm::SetVector<ModuleFile *>::iterator M = CurrentModule->Imports.begin(),
-         MEnd = CurrentModule->Imports.end();
-         M != MEnd; ++M) {
-      
-      // Remove our current module as an impediment to visiting the
-      // module we depend on. If we were the last unvisited module
-      // that depends on this particular module, push it into the
-      // queue to be visited.
-      unsigned &NumUnusedEdges = UnusedIncomingEdges[*M];
-      if (NumUnusedEdges && (--NumUnusedEdges == 0))
-        Queue.push_back(*M);
-    }
+
+      if (State->Stack.empty())
+        break;
+
+      // Pop the next module off the stack.
+      NextModule = State->Stack.back();
+      State->Stack.pop_back();
+    } while (true);
   }
+
+  returnVisitState(State);
 }
 
 /// \brief Perform a depth-first visit of the current module.
@@ -219,18 +319,19 @@ static bool visitDepthFirst(ModuleFile &M,
                             bool (*Visitor)(ModuleFile &M, bool Preorder, 
                                             void *UserData), 
                             void *UserData,
-                            llvm::SmallPtrSet<ModuleFile *, 4> &Visited) {
+                            SmallVectorImpl<bool> &Visited) {
   // Preorder visitation
   if (Visitor(M, /*Preorder=*/true, UserData))
     return true;
   
   // Visit children
   for (llvm::SetVector<ModuleFile *>::iterator IM = M.Imports.begin(),
-       IMEnd = M.Imports.end();
+                                            IMEnd = M.Imports.end();
        IM != IMEnd; ++IM) {
-    if (!Visited.insert(*IM))
+    if (Visited[(*IM)->Index])
       continue;
-    
+    Visited[(*IM)->Index] = true;
+
     if (visitDepthFirst(**IM, Visitor, UserData, Visited))
       return true;
   }  
@@ -242,11 +343,12 @@ static bool visitDepthFirst(ModuleFile &M,
 void ModuleManager::visitDepthFirst(bool (*Visitor)(ModuleFile &M, bool Preorder, 
                                                     void *UserData), 
                                     void *UserData) {
-  llvm::SmallPtrSet<ModuleFile *, 4> Visited;
+  SmallVector<bool, 16> Visited(size(), false);
   for (unsigned I = 0, N = Chain.size(); I != N; ++I) {
-    if (!Visited.insert(Chain[I]))
+    if (Visited[Chain[I]->Index])
       continue;
-    
+    Visited[Chain[I]->Index] = true;
+
     if (::visitDepthFirst(*Chain[I], Visitor, UserData, Visited))
       return;
   }

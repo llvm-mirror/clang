@@ -98,6 +98,8 @@ clang_equalLocations
 clang_equalRanges
 clang_equalTypes
 clang_executeOnThread
+clang_findIncludesInFile
+clang_findIncludesInFileWithBlock
 clang_findReferencesInFile
 clang_findReferencesInFileWithBlock
 clang_formatDiagnostic
@@ -163,8 +165,10 @@ clang_getEnumDeclIntegerType
 clang_getFieldDeclBitWidth
 clang_getExpansionLocation
 clang_getFile
+clang_getFileLocation
 clang_getFileName
 clang_getFileTime
+clang_getFileUniqueID
 clang_getFunctionTypeCallingConv
 clang_getIBOutletCollectionType
 clang_getIncludedFile
@@ -203,6 +207,7 @@ clang_getTranslationUnitCursor
 clang_getTranslationUnitSpelling
 clang_getTypeDeclaration
 clang_getTypeKindSpelling
+clang_getTypeSpelling
 clang_getTypedefDeclUnderlyingType
 clang_hashCursor
 clang_indexLoc_getCXSourceLocation

@@ -280,6 +280,14 @@ bool Declarator::isDeclarationOfFunction() const {
     case TST_unspecified:
     case TST_void:
     case TST_wchar:
+    case TST_image1d_t:
+    case TST_image1d_array_t:
+    case TST_image1d_buffer_t:
+    case TST_image2d_t:
+    case TST_image2d_array_t:
+    case TST_image3d_t:
+    case TST_sampler_t:
+    case TST_event_t:
       return false;
 
     case TST_decltype:
@@ -323,7 +331,8 @@ unsigned DeclSpec::getParsedSpecifiers() const {
   if (hasTypeSpecifier())
     Res |= PQ_TypeSpecifier;
 
-  if (FS_inline_specified || FS_virtual_specified || FS_explicit_specified)
+  if (FS_inline_specified || FS_virtual_specified || FS_explicit_specified ||
+      FS_noreturn_specified)
     Res |= PQ_FunctionSpecifier;
   return Res;
 }
@@ -414,6 +423,14 @@ const char *DeclSpec::getSpecifierName(DeclSpec::TST T) {
   case DeclSpec::TST_underlyingType: return "__underlying_type";
   case DeclSpec::TST_unknown_anytype: return "__unknown_anytype";
   case DeclSpec::TST_atomic: return "_Atomic";
+  case DeclSpec::TST_image1d_t:   return "image1d_t";
+  case DeclSpec::TST_image1d_array_t: return "image1d_array_t";
+  case DeclSpec::TST_image1d_buffer_t: return "image1d_buffer_t";
+  case DeclSpec::TST_image2d_t:   return "image2d_t";
+  case DeclSpec::TST_image2d_array_t: return "image2d_array_t";
+  case DeclSpec::TST_image3d_t:   return "image3d_t";
+  case DeclSpec::TST_sampler_t:   return "sampler_t";
+  case DeclSpec::TST_event_t:     return "event_t";
   case DeclSpec::TST_error:       return "(error)";
   }
   llvm_unreachable("Unknown typespec!");
@@ -701,27 +718,31 @@ bool DeclSpec::SetTypeQual(TQ T, SourceLocation Loc, const char *&PrevSpec,
   return false;
 }
 
-bool DeclSpec::SetFunctionSpecInline(SourceLocation Loc, const char *&PrevSpec,
-                                     unsigned &DiagID) {
+bool DeclSpec::setFunctionSpecInline(SourceLocation Loc) {
   // 'inline inline' is ok.
   FS_inline_specified = true;
   FS_inlineLoc = Loc;
   return false;
 }
 
-bool DeclSpec::SetFunctionSpecVirtual(SourceLocation Loc, const char *&PrevSpec,
-                                      unsigned &DiagID) {
+bool DeclSpec::setFunctionSpecVirtual(SourceLocation Loc) {
   // 'virtual virtual' is ok.
   FS_virtual_specified = true;
   FS_virtualLoc = Loc;
   return false;
 }
 
-bool DeclSpec::SetFunctionSpecExplicit(SourceLocation Loc, const char *&PrevSpec,
-                                       unsigned &DiagID) {
+bool DeclSpec::setFunctionSpecExplicit(SourceLocation Loc) {
   // 'explicit explicit' is ok.
   FS_explicit_specified = true;
   FS_explicitLoc = Loc;
+  return false;
+}
+
+bool DeclSpec::setFunctionSpecNoreturn(SourceLocation Loc) {
+  // '_Noreturn _Noreturn' is ok.
+  FS_noreturn_specified = true;
+  FS_noreturnLoc = Loc;
   return false;
 }
 
@@ -763,9 +784,10 @@ void DeclSpec::setProtocolQualifiers(Decl * const *Protos,
                                      SourceLocation *ProtoLocs,
                                      SourceLocation LAngleLoc) {
   if (NP == 0) return;
-  ProtocolQualifiers = new Decl*[NP];
+  Decl **ProtoQuals = new Decl*[NP];
+  memcpy(ProtoQuals, Protos, sizeof(Decl*)*NP);
+  ProtocolQualifiers = ProtoQuals;
   ProtocolLocs = new SourceLocation[NP];
-  memcpy((void*)ProtocolQualifiers, Protos, sizeof(Decl*)*NP);
   memcpy(ProtocolLocs, ProtoLocs, sizeof(SourceLocation)*NP);
   NumProtocolQualifiers = NP;
   ProtocolLAngleLoc = LAngleLoc;
@@ -919,9 +941,9 @@ void DeclSpec::Finish(DiagnosticsEngine &D, Preprocessor &PP) {
   }
   // Diagnose if we've recovered from an ill-formed 'auto' storage class
   // specifier in a pre-C++0x dialect of C++.
-  if (!PP.getLangOpts().CPlusPlus0x && TypeSpecType == TST_auto)
+  if (!PP.getLangOpts().CPlusPlus11 && TypeSpecType == TST_auto)
     Diag(D, TSTLoc, diag::ext_auto_type_specifier);
-  if (PP.getLangOpts().CPlusPlus && !PP.getLangOpts().CPlusPlus0x &&
+  if (PP.getLangOpts().CPlusPlus && !PP.getLangOpts().CPlusPlus11 &&
       StorageClassSpec == SCS_auto)
     Diag(D, StorageClassSpecLoc, diag::warn_auto_storage_class)
       << FixItHint::CreateRemoval(StorageClassSpecLoc);

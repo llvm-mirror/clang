@@ -233,6 +233,44 @@ public:
   }
 };
 
+class reverse_children {
+  llvm::SmallVector<Stmt *, 12> childrenBuf;
+  ArrayRef<Stmt*> children;
+public:
+  reverse_children(Stmt *S);
+
+  typedef ArrayRef<Stmt*>::reverse_iterator iterator;
+  iterator begin() const { return children.rbegin(); }
+  iterator end() const { return children.rend(); }
+};
+
+
+reverse_children::reverse_children(Stmt *S) {
+  if (CallExpr *CE = dyn_cast<CallExpr>(S)) {
+    children = CE->getRawSubExprs();
+    return;
+  }
+  switch (S->getStmtClass()) {
+    // Note: Fill in this switch with more cases we want to optimize.
+    case Stmt::InitListExprClass: {
+      InitListExpr *IE = cast<InitListExpr>(S);
+      children = llvm::makeArrayRef(reinterpret_cast<Stmt**>(IE->getInits()),
+                                    IE->getNumInits());
+      return;
+    }
+    default:
+      break;
+  }
+
+  // Default case for all other statements.
+  for (Stmt::child_range I = S->children(); I; ++I) {
+    childrenBuf.push_back(*I);
+  }
+
+  // This needs to be done *after* childrenBuf has been populated.
+  children = childrenBuf;
+}
+
 /// CFGBuilder - This class implements CFG construction from an AST.
 ///   The builder is stateful: an instance of the builder should be used to only
 ///   construct a single CFG.
@@ -807,7 +845,7 @@ void CFGBuilder::addAutomaticObjDtors(LocalScope::const_iterator B,
     Ty = Context->getBaseElementType(Ty);
 
     const CXXDestructorDecl *Dtor = Ty->getAsCXXRecordDecl()->getDestructor();
-    if (cast<FunctionType>(Dtor->getType())->getNoReturnAttr())
+    if (Dtor->isNoReturn())
       Block = createNoReturnBlock();
     else
       autoCreateBlock();
@@ -1166,14 +1204,19 @@ CFGBlock *CFGBuilder::VisitStmt(Stmt *S, AddStmtChoice asc) {
 }
 
 /// VisitChildren - Visit the children of a Stmt.
-CFGBlock *CFGBuilder::VisitChildren(Stmt *Terminator) {
-  CFGBlock *lastBlock = Block;
-  for (Stmt::child_range I = Terminator->children(); I; ++I)
-    if (Stmt *child = *I)
-      if (CFGBlock *b = Visit(child))
-        lastBlock = b;
+CFGBlock *CFGBuilder::VisitChildren(Stmt *S) {
+  CFGBlock *B = Block;
 
-  return lastBlock;
+  // Visit the children in their reverse order so that they appear in
+  // left-to-right (natural) order in the CFG.
+  reverse_children RChildren(S);
+  for (reverse_children::iterator I = RChildren.begin(), E = RChildren.end();
+       I != E; ++I) {
+    if (Stmt *Child = *I)
+      if (CFGBlock *R = Visit(Child))
+        B = R;
+  }
+  return B;
 }
 
 CFGBlock *CFGBuilder::VisitAddrLabelExpr(AddrLabelExpr *A,
@@ -1402,7 +1445,7 @@ CFGBlock *CFGBuilder::VisitCallExpr(CallExpr *C, AddStmtChoice asc) {
   }
 
   if (FunctionDecl *FD = C->getDirectCallee()) {
-    if (FD->hasAttr<NoReturnAttr>())
+    if (FD->isNoReturn())
       NoReturn = true;
     if (FD->hasAttr<NoThrowAttr>())
       AddEHEdge = false;
@@ -3093,19 +3136,14 @@ tryAgain:
 
 CFGBlock *CFGBuilder::VisitChildrenForTemporaryDtors(Stmt *E) {
   // When visiting children for destructors we want to visit them in reverse
-  // order. Because there's no reverse iterator for children must to reverse
-  // them in helper vector.
-  typedef SmallVector<Stmt *, 4> ChildrenVect;
-  ChildrenVect ChildrenRev;
-  for (Stmt::child_range I = E->children(); I; ++I) {
-    if (*I) ChildrenRev.push_back(*I);
-  }
-
+  // order that they will appear in the CFG.  Because the CFG is built
+  // bottom-up, this means we visit them in their natural order, which
+  // reverses them in the CFG.
   CFGBlock *B = Block;
-  for (ChildrenVect::reverse_iterator I = ChildrenRev.rbegin(),
-      L = ChildrenRev.rend(); I != L; ++I) {
-    if (CFGBlock *R = VisitForTemporaryDtors(*I))
-      B = R;
+  for (Stmt::child_range I = E->children(); I; ++I) {
+    if (Stmt *Child = *I)
+      if (CFGBlock *R = VisitForTemporaryDtors(Child))
+        B = R;
   }
   return B;
 }
@@ -3190,7 +3228,7 @@ CFGBlock *CFGBuilder::VisitCXXBindTemporaryExprForTemporaryDtors(
     // a new block for the destructor which does not have as a successor
     // anything built thus far. Control won't flow out of this block.
     const CXXDestructorDecl *Dtor = E->getTemporary()->getDestructor();
-    if (cast<FunctionType>(Dtor->getType())->getNoReturnAttr())
+    if (Dtor->isNoReturn())
       Block = createNoReturnBlock();
     else
       autoCreateBlock();
@@ -3294,13 +3332,12 @@ CFG* CFG::buildCFG(const Decl *D, Stmt *Statement, ASTContext *C,
 const CXXDestructorDecl *
 CFGImplicitDtor::getDestructorDecl(ASTContext &astContext) const {
   switch (getKind()) {
-    case CFGElement::Invalid:
     case CFGElement::Statement:
     case CFGElement::Initializer:
       llvm_unreachable("getDestructorDecl should only be used with "
                        "ImplicitDtors");
     case CFGElement::AutomaticObjectDtor: {
-      const VarDecl *var = cast<CFGAutomaticObjDtor>(this)->getVarDecl();
+      const VarDecl *var = castAs<CFGAutomaticObjDtor>().getVarDecl();
       QualType ty = var->getType();
       ty = ty.getNonReferenceType();
       while (const ArrayType *arrayType = astContext.getAsArrayType(ty)) {
@@ -3313,7 +3350,7 @@ CFGImplicitDtor::getDestructorDecl(ASTContext &astContext) const {
     }
     case CFGElement::TemporaryDtor: {
       const CXXBindTemporaryExpr *bindExpr =
-        cast<CFGTemporaryDtor>(this)->getBindTemporaryExpr();
+        castAs<CFGTemporaryDtor>().getBindTemporaryExpr();
       const CXXTemporary *temp = bindExpr->getTemporary();
       return temp->getDestructor();
     }
@@ -3327,10 +3364,8 @@ CFGImplicitDtor::getDestructorDecl(ASTContext &astContext) const {
 }
 
 bool CFGImplicitDtor::isNoReturn(ASTContext &astContext) const {
-  if (const CXXDestructorDecl *decl = getDestructorDecl(astContext)) {
-    QualType ty = decl->getType();
-    return cast<FunctionType>(ty)->getNoReturnAttr();
-  }
+  if (const CXXDestructorDecl *DD = getDestructorDecl(astContext))
+    return DD->isNoReturn();
   return false;
 }
 
@@ -3370,7 +3405,7 @@ static BlkExprMapTy* PopulateBlkExprMap(CFG& cfg) {
 
   for (CFG::iterator I=cfg.begin(), E=cfg.end(); I != E; ++I)
     for (CFGBlock::iterator BI=(*I)->begin(), EI=(*I)->end(); BI != EI; ++BI)
-      if (const CFGStmt *S = BI->getAs<CFGStmt>())
+      if (Optional<CFGStmt> S = BI->getAs<CFGStmt>())
         FindSubExprAssignments(S->getStmt(), SubExprAssignments);
 
   for (CFG::iterator I=cfg.begin(), E=cfg.end(); I != E; ++I) {
@@ -3379,7 +3414,7 @@ static BlkExprMapTy* PopulateBlkExprMap(CFG& cfg) {
     // block-level that are block-level expressions.
 
     for (CFGBlock::iterator BI=(*I)->begin(), EI=(*I)->end(); BI != EI; ++BI) {
-      const CFGStmt *CS = BI->getAs<CFGStmt>();
+      Optional<CFGStmt> CS = BI->getAs<CFGStmt>();
       if (!CS)
         continue;
       if (const Expr *Exp = dyn_cast<Expr>(CS->getStmt())) {
@@ -3495,7 +3530,7 @@ public:
       unsigned j = 1;
       for (CFGBlock::const_iterator BI = (*I)->begin(), BEnd = (*I)->end() ;
            BI != BEnd; ++BI, ++j ) {        
-        if (const CFGStmt *SE = BI->getAs<CFGStmt>()) {
+        if (Optional<CFGStmt> SE = BI->getAs<CFGStmt>()) {
           const Stmt *stmt= SE->getStmt();
           std::pair<unsigned, unsigned> P((*I)->getBlockID(), j);
           StmtMap[stmt] = P;
@@ -3685,7 +3720,7 @@ public:
 
 static void print_elem(raw_ostream &OS, StmtPrinterHelper* Helper,
                        const CFGElement &E) {
-  if (const CFGStmt *CS = E.getAs<CFGStmt>()) {
+  if (Optional<CFGStmt> CS = E.getAs<CFGStmt>()) {
     const Stmt *S = CS->getStmt();
     
     if (Helper) {
@@ -3733,7 +3768,7 @@ static void print_elem(raw_ostream &OS, StmtPrinterHelper* Helper,
     if (isa<Expr>(S))
       OS << '\n';
 
-  } else if (const CFGInitializer *IE = E.getAs<CFGInitializer>()) {
+  } else if (Optional<CFGInitializer> IE = E.getAs<CFGInitializer>()) {
     const CXXCtorInitializer *I = IE->getInitializer();
     if (I->isBaseInitializer())
       OS << I->getBaseClass()->getAsCXXRecordDecl()->getName();
@@ -3748,7 +3783,8 @@ static void print_elem(raw_ostream &OS, StmtPrinterHelper* Helper,
       OS << " (Base initializer)\n";
     else OS << " (Member initializer)\n";
 
-  } else if (const CFGAutomaticObjDtor *DE = E.getAs<CFGAutomaticObjDtor>()){
+  } else if (Optional<CFGAutomaticObjDtor> DE =
+                 E.getAs<CFGAutomaticObjDtor>()) {
     const VarDecl *VD = DE->getVarDecl();
     Helper->handleDecl(VD, OS);
 
@@ -3760,19 +3796,19 @@ static void print_elem(raw_ostream &OS, StmtPrinterHelper* Helper,
     OS << ".~" << T->getAsCXXRecordDecl()->getName().str() << "()";
     OS << " (Implicit destructor)\n";
 
-  } else if (const CFGBaseDtor *BE = E.getAs<CFGBaseDtor>()) {
+  } else if (Optional<CFGBaseDtor> BE = E.getAs<CFGBaseDtor>()) {
     const CXXBaseSpecifier *BS = BE->getBaseSpecifier();
     OS << "~" << BS->getType()->getAsCXXRecordDecl()->getName() << "()";
     OS << " (Base object destructor)\n";
 
-  } else if (const CFGMemberDtor *ME = E.getAs<CFGMemberDtor>()) {
+  } else if (Optional<CFGMemberDtor> ME = E.getAs<CFGMemberDtor>()) {
     const FieldDecl *FD = ME->getFieldDecl();
     const Type *T = FD->getType()->getBaseElementTypeUnsafe();
     OS << "this->" << FD->getName();
     OS << ".~" << T->getAsCXXRecordDecl()->getName() << "()";
     OS << " (Member object destructor)\n";
 
-  } else if (const CFGTemporaryDtor *TE = E.getAs<CFGTemporaryDtor>()) {
+  } else if (Optional<CFGTemporaryDtor> TE = E.getAs<CFGTemporaryDtor>()) {
     const CXXBindTemporaryExpr *BT = TE->getBindTemporaryExpr();
     OS << "~" << BT->getType()->getAsCXXRecordDecl()->getName() << "()";
     OS << " (Temporary object destructor)\n";
@@ -3893,7 +3929,7 @@ static void print_block(raw_ostream &OS, const CFG* cfg,
       for (CFGBlock::const_pred_iterator I = B.pred_begin(), E = B.pred_end();
            I != E; ++I, ++i) {
 
-        if (i == 8 || (i-8) == 0)
+        if (i % 10 == 8)
           OS << "\n     ";
 
         OS << " B" << (*I)->getBlockID();
@@ -3922,7 +3958,7 @@ static void print_block(raw_ostream &OS, const CFG* cfg,
       for (CFGBlock::const_succ_iterator I = B.succ_begin(), E = B.succ_end();
            I != E; ++I, ++i) {
 
-        if (i == 8 || (i-8) % 10 == 0)
+        if (i % 10 == 8)
           OS << "\n    ";
 
         if (*I)

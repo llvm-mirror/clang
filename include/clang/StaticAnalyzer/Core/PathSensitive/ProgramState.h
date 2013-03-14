@@ -170,19 +170,30 @@ public:
   // If no new state is feasible, NULL is returned.
   //
 
+  /// Assumes that the value of \p cond is zero (if \p assumption is "false")
+  /// or non-zero (if \p assumption is "true").
+  ///
+  /// This returns a new state with the added constraint on \p cond.
+  /// If no new state is feasible, NULL is returned.
   ProgramStateRef assume(DefinedOrUnknownSVal cond, bool assumption) const;
 
-  /// This method assumes both "true" and "false" for 'cond', and
-  ///  returns both corresponding states.  It's shorthand for doing
-  ///  'assume' twice.
-  std::pair<ProgramStateRef , ProgramStateRef >
+  /// Assumes both "true" and "false" for \p cond, and returns both
+  /// corresponding states (respectively).
+  ///
+  /// This is more efficient than calling assume() twice. Note that one (but not
+  /// both) of the returned states may be NULL.
+  std::pair<ProgramStateRef, ProgramStateRef>
   assume(DefinedOrUnknownSVal cond) const;
 
   ProgramStateRef assumeInBound(DefinedOrUnknownSVal idx,
                                DefinedOrUnknownSVal upperBound,
                                bool assumption,
                                QualType IndexType = QualType()) const;
-
+  
+  /// \brief Check if the given SVal is constrained to zero or is a zero
+  ///        constant.
+  ConditionTruthVal isNull(SVal V) const;
+  
   /// Utility method for getting regions.
   const VarRegion* getRegion(const VarDecl *D, const LocationContext *LC) const;
 
@@ -213,14 +224,28 @@ public:
 
   ProgramStateRef killBinding(Loc LV) const;
 
-  /// invalidateRegions - Returns the state with bindings for the given regions
-  ///  cleared from the store. The regions are provided as a continuous array
-  ///  from Begin to End. Optionally invalidates global regions as well.
+  /// \brief Returns the state with bindings for the given regions
+  ///  cleared from the store.
+  ///
+  /// Optionally invalidates global regions as well.
+  ///
+  /// \param Regions the set of regions to be invalidated.
+  /// \param E the expression that caused the invalidation.
+  /// \param BlockCount The number of times the current basic block has been
+  //         visited.
+  /// \param CausesPointerEscape the flag is set to true when
+  ///        the invalidation entails escape of a symbol (representing a
+  ///        pointer). For example, due to it being passed as an argument in a
+  ///        call.
+  /// \param IS the set of invalidated symbols.
+  /// \param Call if non-null, the invalidated regions represent parameters to
+  ///        the call and should be considered directly invalidated.
   ProgramStateRef invalidateRegions(ArrayRef<const MemRegion *> Regions,
-                               const Expr *E, unsigned BlockCount,
-                               const LocationContext *LCtx,
-                               StoreManager::InvalidatedSymbols *IS = 0,
-                               const CallEvent *Call = 0) const;
+                                    const Expr *E, unsigned BlockCount,
+                                    const LocationContext *LCtx,
+                                    bool CausesPointerEscape,
+                                    InvalidatedSymbols *IS = 0,
+                                    const CallEvent *Call = 0) const;
 
   /// enterStackFrame - Returns the state for entry to the given stack frame,
   ///  preserving the current state.
@@ -395,7 +420,8 @@ private:
   invalidateRegionsImpl(ArrayRef<const MemRegion *> Regions,
                         const Expr *E, unsigned BlockCount,
                         const LocationContext *LCtx,
-                        StoreManager::InvalidatedSymbols &IS,
+                        bool ResultsInSymbolEscape,
+                        InvalidatedSymbols &IS,
                         const CallEvent *Call) const;
 };
 
@@ -605,22 +631,24 @@ inline ProgramStateRef ProgramState::assume(DefinedOrUnknownSVal Cond,
                                       bool Assumption) const {
   if (Cond.isUnknown())
     return this;
-  
-  return getStateManager().ConstraintMgr->assume(this, cast<DefinedSVal>(Cond),
-                                                 Assumption);
+
+  return getStateManager().ConstraintMgr
+      ->assume(this, Cond.castAs<DefinedSVal>(), Assumption);
 }
   
 inline std::pair<ProgramStateRef , ProgramStateRef >
 ProgramState::assume(DefinedOrUnknownSVal Cond) const {
   if (Cond.isUnknown())
     return std::make_pair(this, this);
-  
-  return getStateManager().ConstraintMgr->assumeDual(this,
-                                                     cast<DefinedSVal>(Cond));
+
+  return getStateManager().ConstraintMgr
+      ->assumeDual(this, Cond.castAs<DefinedSVal>());
 }
 
 inline ProgramStateRef ProgramState::bindLoc(SVal LV, SVal V) const {
-  return !isa<Loc>(LV) ? this : bindLoc(cast<Loc>(LV), V);
+  if (Optional<Loc> L = LV.getAs<Loc>())
+    return bindLoc(*L, V);
+  return this;
 }
 
 inline Loc ProgramState::getLValue(const VarDecl *VD,
@@ -654,7 +682,7 @@ inline SVal ProgramState::getLValue(const IndirectFieldDecl *D,
 }
 
 inline SVal ProgramState::getLValue(QualType ElementType, SVal Idx, SVal Base) const{
-  if (NonLoc *N = dyn_cast<NonLoc>(&Idx))
+  if (Optional<NonLoc> N = Idx.getAs<NonLoc>())
     return getStateManager().StoreMgr->getLValueElement(ElementType, *N, Base);
   return UnknownVal();
 }

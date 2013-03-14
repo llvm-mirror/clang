@@ -20,7 +20,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
 #include "llvm/ExecutionEngine/JIT.h"
-#include "llvm/Module.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/Path.h"
@@ -74,14 +74,13 @@ int main(int argc, const char **argv, char * const *envp) {
 
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
   DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagClient);
-  Driver TheDriver(Path.str(), llvm::sys::getDefaultTargetTriple(),
-                   "a.out", Diags);
+  Driver TheDriver(Path.str(), llvm::sys::getProcessTriple(), "a.out", Diags);
   TheDriver.setTitle("clang interpreter");
 
   // FIXME: This is a hack to try to force the driver to do something we can
   // recognize. We need to extend the driver library to support this use model
   // (basically, exactly one input, and the operation mode is hard wired).
-  llvm::SmallVector<const char *, 16> Args(argv, argv + argc);
+  SmallVector<const char *, 16> Args(argv, argv + argc);
   Args.push_back("-fsyntax-only");
   OwningPtr<Compilation> C(TheDriver.BuildCompilation(Args));
   if (!C)
@@ -129,7 +128,7 @@ int main(int argc, const char **argv, char * const *envp) {
   Clang.setInvocation(CI.take());
 
   // Create the compilers actual diagnostics engine.
-  Clang.createDiagnostics(int(CCArgs.size()),const_cast<char**>(CCArgs.data()));
+  Clang.createDiagnostics();
   if (!Clang.hasDiagnostics())
     return 1;
 

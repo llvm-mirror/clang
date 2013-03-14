@@ -155,14 +155,9 @@ public:
   const ProgramStateRef &getState() const { return State; }
 
   template <typename T>
-  const T* getLocationAs() const LLVM_LVALUE_FUNCTION {
-    return dyn_cast<T>(&Location);
+  Optional<T> getLocationAs() const LLVM_LVALUE_FUNCTION {
+    return Location.getAs<T>();
   }
-
-#if LLVM_HAS_RVALUE_REFERENCE_THIS
-  template <typename T>
-  void getLocationAs() && LLVM_DELETED_FUNCTION;
-#endif
 
   static void Profile(llvm::FoldingSetNodeID &ID,
                       const ProgramPoint &Loc,
@@ -391,6 +386,10 @@ public:
   /// Reclaim "uninteresting" nodes created since the last time this method
   /// was called.
   void reclaimRecentlyAllocatedNodes();
+
+  /// \brief Returns true if nodes for the given expression kind are always
+  ///        kept around.
+  static bool isInterestingLValueExpr(const Expr *Ex);
 
 private:
   bool shouldCollect(const ExplodedNode *node);

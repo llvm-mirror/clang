@@ -1,10 +1,11 @@
+// XFAIL: *
 // RUN: rm -rf %t
-// RUN: %clang_cc1 -fmodules -x objective-c -emit-module -fmodule-cache-path %t -fmodule-name=macros_top %S/Inputs/module.map
-// RUN: %clang_cc1 -fmodules -x objective-c -emit-module -fmodule-cache-path %t -fmodule-name=macros_left %S/Inputs/module.map
-// RUN: %clang_cc1 -fmodules -x objective-c -emit-module -fmodule-cache-path %t -fmodule-name=macros_right %S/Inputs/module.map
-// RUN: %clang_cc1 -fmodules -x objective-c -emit-module -fmodule-cache-path %t -fmodule-name=macros %S/Inputs/module.map
-// RUN: %clang_cc1 -fmodules -x objective-c -verify -fmodule-cache-path %t %s
-// RUN: %clang_cc1 -E -fmodules -x objective-c -fmodule-cache-path %t %s | FileCheck -check-prefix CHECK-PREPROCESSED %s
+// RUN: %clang_cc1 -fmodules -x objective-c -emit-module -fmodules-cache-path=%t -fmodule-name=macros_top %S/Inputs/module.map
+// RUN: %clang_cc1 -fmodules -x objective-c -emit-module -fmodules-cache-path=%t -fmodule-name=macros_left %S/Inputs/module.map
+// RUN: %clang_cc1 -fmodules -x objective-c -emit-module -fmodules-cache-path=%t -fmodule-name=macros_right %S/Inputs/module.map
+// RUN: %clang_cc1 -fmodules -x objective-c -emit-module -fmodules-cache-path=%t -fmodule-name=macros %S/Inputs/module.map
+// RUN: %clang_cc1 -fmodules -x objective-c -verify -fmodules-cache-path=%t %s
+// RUN: %clang_cc1 -E -fmodules -x objective-c -fmodules-cache-path=%t %s | FileCheck -check-prefix CHECK-PREPROCESSED %s
 // FIXME: When we have a syntax for modules in C, use that.
 // These notes come from headers in modules, and are bogus.
 
@@ -16,7 +17,7 @@
 
 // expected-note{{other definition of 'TOP_RIGHT_REDEF'}}
 
-@__experimental_modules_import macros;
+@import macros;
 
 #ifndef INTEGER
 #  error INTEGER macro should be visible
@@ -65,7 +66,7 @@ void f() {
 #endif
 
 // Import left module (which also imports top)
-@__experimental_modules_import macros_left;
+@import macros_left;
 
 #ifndef LEFT
 #  error LEFT should be visible
@@ -91,7 +92,7 @@ void test1() {
 #define LEFT_RIGHT_DIFFERENT2 double // FIXME: expected-warning{{'LEFT_RIGHT_DIFFERENT2' macro redefined}}
 
 // Import right module (which also imports top)
-@__experimental_modules_import macros_right;
+@import macros_right;
 
 #undef LEFT_RIGHT_DIFFERENT3
 
@@ -130,7 +131,7 @@ void test3() {
 #  error TOP_RIGHT_UNDEF should still be defined
 #endif
 
-@__experimental_modules_import macros_right.undef;
+@import macros_right.undef;
 
 #ifdef TOP_RIGHT_UNDEF
 # error TOP_RIGHT_UNDEF should not be defined

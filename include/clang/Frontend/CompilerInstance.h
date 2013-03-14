@@ -112,7 +112,14 @@ class CompilerInstance : public ModuleLoader {
   /// \brief The result of the last module import.
   ///
   ModuleLoadResult LastModuleImportResult;
-  
+
+  /// \brief Whether we should (re)build the global module index once we
+  /// have finished with this translation unit.
+  bool BuildGlobalModuleIndex;
+
+  /// \brief One or more modules failed to build.
+  bool ModuleBuildFailed;
+
   /// \brief Holds information about the output file.
   ///
   /// If TempFilename is not empty we must rename it to Filename at the end.
@@ -185,6 +192,15 @@ public:
 
   /// setInvocation - Replace the current invocation.
   void setInvocation(CompilerInvocation *Value);
+
+  /// \brief Indicates whether we should (re)build the global module index.
+  bool shouldBuildGlobalModuleIndex() const;
+  
+  /// \brief Set the flag indicating whether we should (re)build the global
+  /// module index.
+  void setBuildGlobalModuleIndex(bool Build) {
+    BuildGlobalModuleIndex = Build;
+  }
 
   /// }
   /// @name Forwarding Methods
@@ -479,16 +495,11 @@ public:
   ///
   /// \param ShouldCloneClient If Client is non-NULL, specifies whether that
   /// client should be cloned.
-  void createDiagnostics(int Argc, const char* const *Argv,
-                         DiagnosticConsumer *Client = 0,
+  void createDiagnostics(DiagnosticConsumer *Client = 0,
                          bool ShouldOwnClient = true,
                          bool ShouldCloneClient = true);
 
   /// Create a DiagnosticsEngine object with a the TextDiagnosticPrinter.
-  ///
-  /// The \p Argc and \p Argv arguments are used only for logging purposes,
-  /// when the diagnostic options indicate that the compiler should output
-  /// logging information.
   ///
   /// If no diagnostic client is provided, this creates a
   /// DiagnosticConsumer that is owned by the returned diagnostic
@@ -507,8 +518,7 @@ public:
   ///
   /// \return The new object on success, or null on failure.
   static IntrusiveRefCntPtr<DiagnosticsEngine>
-  createDiagnostics(DiagnosticOptions *Opts, int Argc,
-                    const char* const *Argv,
+  createDiagnostics(DiagnosticOptions *Opts,
                     DiagnosticConsumer *Client = 0,
                     bool ShouldOwnClient = true,
                     bool ShouldCloneClient = true,
@@ -542,7 +552,8 @@ public:
                              bool DisablePCHValidation,
                              bool AllowPCHWithCompilerErrors,
                              Preprocessor &PP, ASTContext &Context,
-                             void *DeserializationListener, bool Preamble);
+                             void *DeserializationListener, bool Preamble,
+                             bool UseGlobalModuleIndex);
 
   /// Create a code completion consumer using the invocation; note that this
   /// will cause the source manager to truncate the input source file at the
@@ -649,6 +660,11 @@ public:
                                       ModuleIdPath Path,
                                       Module::NameVisibilityKind Visibility,
                                       bool IsInclusionDirective);
+
+  virtual void makeModuleVisible(Module *Mod,
+                                 Module::NameVisibilityKind Visibility,
+                                 SourceLocation ImportLoc);
+
 };
 
 } // end namespace clang

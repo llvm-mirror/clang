@@ -171,7 +171,7 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
     //   If a declaration of a function has an implicit
     //   exception-specification, other declarations of the function shall
     //   not specify an exception-specification.
-    if (getLangOpts().CPlusPlus0x &&
+    if (getLangOpts().CPlusPlus11 &&
         hasImplicitExceptionSpec(Old) != hasImplicitExceptionSpec(New)) {
       Diag(New->getLocation(), diag::ext_implicit_exception_spec_mismatch)
         << hasImplicitExceptionSpec(Old);
@@ -203,10 +203,11 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
       Old->isExternC()) {
     FunctionProtoType::ExtProtoInfo EPI = NewProto->getExtProtoInfo();
     EPI.ExceptionSpecType = EST_DynamicNone;
-    QualType NewType = Context.getFunctionType(NewProto->getResultType(),
-                                               NewProto->arg_type_begin(),
-                                               NewProto->getNumArgs(),
-                                               EPI);
+    QualType NewType =
+      Context.getFunctionType(NewProto->getResultType(),
+                              ArrayRef<QualType>(NewProto->arg_type_begin(),
+                                                 NewProto->getNumArgs()),
+                              EPI);
     New->setType(NewType);
     return false;
   }
@@ -227,10 +228,11 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
 
     // Update the type of the function with the appropriate exception
     // specification.
-    QualType NewType = Context.getFunctionType(NewProto->getResultType(),
-                                               NewProto->arg_type_begin(),
-                                               NewProto->getNumArgs(),
-                                               EPI);
+    QualType NewType =
+      Context.getFunctionType(NewProto->getResultType(),
+                              ArrayRef<QualType>(NewProto->arg_type_begin(),
+                                                 NewProto->getNumArgs()),
+                              EPI);
     New->setType(NewType);
 
     // If exceptions are disabled, suppress the warning about missing
@@ -294,8 +296,8 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
     SourceLocation FixItLoc;
     if (TypeSourceInfo *TSInfo = New->getTypeSourceInfo()) {
       TypeLoc TL = TSInfo->getTypeLoc().IgnoreParens();
-      if (const FunctionTypeLoc *FTLoc = dyn_cast<FunctionTypeLoc>(&TL))
-        FixItLoc = PP.getLocForEndOfToken(FTLoc->getLocalRangeEnd());
+      if (FunctionTypeLoc FTLoc = TL.getAs<FunctionTypeLoc>())
+        FixItLoc = PP.getLocForEndOfToken(FTLoc.getLocalRangeEnd());
     }
 
     if (FixItLoc.isInvalid())
@@ -454,7 +456,7 @@ bool Sema::CheckEquivalentExceptionSpec(const PartialDiagnostic &DiagID,
   // As a special compatibility feature, under C++0x we accept no spec and
   // throw(std::bad_alloc) as equivalent for operator new and operator new[].
   // This is because the implicit declaration changed, but old code would break.
-  if (getLangOpts().CPlusPlus0x && IsOperatorNew) {
+  if (getLangOpts().CPlusPlus11 && IsOperatorNew) {
     const FunctionProtoType *WithExceptions = 0;
     if (OldEST == EST_None && NewEST == EST_Dynamic)
       WithExceptions = New;
@@ -785,7 +787,7 @@ bool Sema::CheckExceptionSpecCompatibility(Expr *From, QualType ToType)
 
 bool Sema::CheckOverridingFunctionExceptionSpec(const CXXMethodDecl *New,
                                                 const CXXMethodDecl *Old) {
-  if (getLangOpts().CPlusPlus0x && isa<CXXDestructorDecl>(New)) {
+  if (getLangOpts().CPlusPlus11 && isa<CXXDestructorDecl>(New)) {
     // Don't check uninstantiated template destructors at all. We can only
     // synthesize correct specs after the template is instantiated.
     if (New->getParent()->isDependentType())

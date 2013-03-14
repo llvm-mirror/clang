@@ -35,6 +35,8 @@ class ProgramState;
 class ProgramStateManager;
 class ScanReachableSymbols;
 
+typedef llvm::DenseSet<SymbolRef> InvalidatedSymbols;
+
 class StoreManager {
 protected:
   SValBuilder &svalBuilder;
@@ -134,7 +136,8 @@ public:
   SVal evalDerivedToBase(SVal Derived, const CXXBasePath &CastPath);
 
   /// Evaluates a derived-to-base cast through a single level of derivation.
-  SVal evalDerivedToBase(SVal Derived, QualType DerivedPtrType);
+  SVal evalDerivedToBase(SVal Derived, QualType DerivedPtrType,
+                         bool IsVirtual);
 
   /// \brief Evaluates C++ dynamic_cast cast.
   /// The callback may result in the following 3 scenarios:
@@ -168,7 +171,6 @@ public:
   /// associated with the object is recycled.
   virtual void decrementReferenceCount(Store store) {}
 
-  typedef llvm::DenseSet<SymbolRef> InvalidatedSymbols;
   typedef SmallVector<const MemRegion *, 8> InvalidatedRegions;
 
   /// invalidateRegions - Clears out the specified regions from the store,

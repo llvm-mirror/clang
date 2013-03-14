@@ -139,7 +139,7 @@ void DiagnosticRenderer::emitDiagnostic(SourceLocation Loc,
     SmallVector<CharSourceRange, 20> MutableRanges(Ranges.begin(),
                                                    Ranges.end());
 
-    llvm::SmallVector<FixItHint, 8> MergedFixits;
+    SmallVector<FixItHint, 8> MergedFixits;
     if (!FixItHints.empty()) {
       mergeFixits(FixItHints, *SM, LangOpts, MergedFixits);
       FixItHints = MergedFixits;
@@ -153,10 +153,8 @@ void DiagnosticRenderer::emitDiagnostic(SourceLocation Loc,
 
     SourceLocation UnexpandedLoc = Loc;
 
-    // Perform the same walk as emitMacroExpansions, to find the ultimate
-    // expansion location for the diagnostic.
-    while (Loc.isMacroID())
-      Loc = SM->getImmediateMacroCallerLoc(Loc);
+    // Find the ultimate expansion location for the diagnostic.
+    Loc = SM->getFileLoc(Loc);
 
     PresumedLoc PLoc = SM->getPresumedLoc(Loc, DiagOpts->ShowPresumedLoc);
 
@@ -363,6 +361,13 @@ static void mapDiagnosticRanges(
         End = SM->getImmediateExpansionRange(End).second;
       }
       BeginFileID = SM->getFileID(Begin);
+      if (BeginFileID != SM->getFileID(End)) {
+        // FIXME: Ugly hack to stop a crash; this code is making bad
+        // assumptions and it's too complicated for me to reason
+        // about.
+        Begin = End = SourceLocation();
+        break;
+      }
     }
 
     // Return the spelling location of the beginning and end of the range.
@@ -394,7 +399,6 @@ void DiagnosticRenderer::emitCaret(SourceLocation Loc,
 /// \param Level The diagnostic level currently being emitted.
 /// \param Ranges The underlined ranges for this code snippet.
 /// \param Hints The FixIt hints active for this diagnostic.
-/// \param MacroSkipEnd The depth to stop skipping macro expansions.
 /// \param OnMacroInst The current depth of the macro expansion stack.
 void DiagnosticRenderer::emitMacroExpansions(SourceLocation Loc,
                                              DiagnosticsEngine::Level Level,

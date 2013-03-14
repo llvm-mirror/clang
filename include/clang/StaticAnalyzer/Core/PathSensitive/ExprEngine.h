@@ -44,6 +44,7 @@ namespace ento {
 class AnalysisManager;
 class CallEvent;
 class SimpleCall;
+class CXXConstructorCall;
 
 class ExprEngine : public SubEngine {
 public:
@@ -230,8 +231,8 @@ public:
   ///  nodes by processing the 'effects' of a switch statement.
   void processSwitch(SwitchNodeBuilder& builder);
 
-  /// ProcessEndPath - Called by CoreEngine.  Used to generate end-of-path
-  ///  nodes when the control reaches the end of a function.
+  /// Called by CoreEngine.  Used to generate end-of-path
+  /// nodes when the control reaches the end of a function.
   void processEndOfFunction(NodeBuilderContext& BC,
                             ExplodedNode *Pred);
 
@@ -262,7 +263,7 @@ public:
   ///  to the store. Used to update checkers that track region values.
   ProgramStateRef 
   processRegionChanges(ProgramStateRef state,
-                       const StoreManager::InvalidatedSymbols *invalidated,
+                       const InvalidatedSymbols *invalidated,
                        ArrayRef<const MemRegion *> ExplicitRegions,
                        ArrayRef<const MemRegion *> Regions,
                        const CallEvent *Call);
@@ -428,11 +429,11 @@ public:
     geteagerlyAssumeBinOpBifurcationTags();
 
   SVal evalMinus(SVal X) {
-    return X.isValid() ? svalBuilder.evalMinus(cast<NonLoc>(X)) : X;
+    return X.isValid() ? svalBuilder.evalMinus(X.castAs<NonLoc>()) : X;
   }
 
   SVal evalComplement(SVal X) {
-    return X.isValid() ? svalBuilder.evalComplement(cast<NonLoc>(X)) : X;
+    return X.isValid() ? svalBuilder.evalComplement(X.castAs<NonLoc>()) : X;
   }
 
 public:
@@ -444,7 +445,8 @@ public:
 
   SVal evalBinOp(ProgramStateRef state, BinaryOperator::Opcode op,
                  NonLoc L, SVal R, QualType T) {
-    return R.isValid() ? svalBuilder.evalBinOpNN(state,op,L, cast<NonLoc>(R), T) : R;
+    return R.isValid() ? svalBuilder.evalBinOpNN(state, op, L,
+                                                 R.castAs<NonLoc>(), T) : R;
   }
 
   SVal evalBinOp(ProgramStateRef ST, BinaryOperator::Opcode Op,
@@ -458,6 +460,18 @@ protected:
   void evalBind(ExplodedNodeSet &Dst, const Stmt *StoreE, ExplodedNode *Pred,
                 SVal location, SVal Val, bool atDeclInit = false,
                 const ProgramPoint *PP = 0);
+
+  /// Call PointerEscape callback when a value escapes as a result of bind.
+  ProgramStateRef processPointerEscapedOnBind(ProgramStateRef State,
+                                              SVal Loc, SVal Val);
+  /// Call PointerEscape callback when a value escapes as a result of
+  /// region invalidation.
+  ProgramStateRef processPointerEscapedOnInvalidateRegions(
+                            ProgramStateRef State,
+                            const InvalidatedSymbols *Invalidated,
+                            ArrayRef<const MemRegion *> ExplicitRegions,
+                            ArrayRef<const MemRegion *> Regions,
+                            const CallEvent *Call);
 
 public:
   // FIXME: 'tag' should be removed, and a LocationContext should be used
@@ -518,7 +532,10 @@ private:
   void examineStackFrames(const Decl *D, const LocationContext *LCtx,
                           bool &IsRecursive, unsigned &StackDepth);
 
-  bool shouldInlineDecl(const Decl *D, ExplodedNode *Pred);
+  /// Checks our policies and decides weither the given call should be inlined.
+  bool shouldInlineCall(const CallEvent &Call, const Decl *D,
+                        const ExplodedNode *Pred);
+
   bool inlineCall(const CallEvent &Call, const Decl *D, NodeBuilder &Bldr,
                   ExplodedNode *Pred, ProgramStateRef State);
 
@@ -534,6 +551,21 @@ private:
                      ExplodedNode *Pred);
 
   bool replayWithoutInlining(ExplodedNode *P, const LocationContext *CalleeLC);
+
+  /// Models a trivial copy or move constructor call with a simple bind.
+  void performTrivialCopy(NodeBuilder &Bldr, ExplodedNode *Pred,
+                          const CXXConstructorCall &Call);
+
+  /// If the value of the given expression is a NonLoc, copy it into a new
+  /// temporary object region, and replace the value of the expression with
+  /// that.
+  ///
+  /// If \p ResultE is provided, the new region will be bound to this expression
+  /// instead of \p E.
+  ProgramStateRef createTemporaryRegionIfNeeded(ProgramStateRef State,
+                                                const LocationContext *LC,
+                                                const Expr *E,
+                                                const Expr *ResultE = 0);
 };
 
 /// Traits for storing the call processing policy inside GDM.
@@ -543,7 +575,7 @@ private:
 struct ReplayWithoutInlining{};
 template <>
 struct ProgramStateTrait<ReplayWithoutInlining> :
-  public ProgramStatePartialTrait<void*> {
+  public ProgramStatePartialTrait<const void*> {
   static void *GDMIndex() { static int index = 0; return &index; }
 };
 

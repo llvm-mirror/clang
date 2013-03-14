@@ -476,8 +476,7 @@ TEST(DeclPrinter, TestCXXConstructorDecl8) {
     "  A() = default;"
     "};",
     constructorDecl(ofClass(hasName("A"))).bind("id"),
-    "A() noexcept = default"));
-    // Should be: "A() = default;" if we care about noexcept as written
+    "A() = default"));
 }
 
 TEST(DeclPrinter, TestCXXConstructorDecl9) {
@@ -1238,3 +1237,21 @@ TEST(DeclPrinter, TestObjCMethod1) {
     "- (int) A:(id)anObject inRange:(long)range"));
 }
 
+TEST(DeclPrinter, TestObjCProtocol1) {
+  ASSERT_TRUE(PrintedDeclObjCMatches(
+    "@protocol P1, P2;",
+    namedDecl(hasName("P1")).bind("id"),
+    "@protocol P1;\n"));
+  ASSERT_TRUE(PrintedDeclObjCMatches(
+    "@protocol P1, P2;",
+    namedDecl(hasName("P2")).bind("id"),
+    "@protocol P2;\n"));
+}
+
+TEST(DeclPrinter, TestObjCProtocol2) {
+  ASSERT_TRUE(PrintedDeclObjCMatches(
+    "@protocol P2 @end"
+    "@protocol P1<P2> @end",
+    namedDecl(hasName("P1")).bind("id"),
+    "@protocol P1<P2>\n@end"));
+}

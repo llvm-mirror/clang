@@ -41,19 +41,20 @@ enum ObjCXXARCStandardLibraryKind {
   
 /// PreprocessorOptions - This class is used for passing the various options
 /// used in preprocessor initialization to InitializePreprocessor().
-class PreprocessorOptions : public llvm::RefCountedBase<PreprocessorOptions> {
+class PreprocessorOptions : public RefCountedBase<PreprocessorOptions> {
 public:
   std::vector<std::pair<std::string, bool/*isUndef*/> > Macros;
   std::vector<std::string> Includes;
   std::vector<std::string> MacroIncludes;
 
-  unsigned UsePredefines : 1; /// Initialize the preprocessor with the compiler
-                              /// and target specific predefines.
+  /// \brief Initialize the preprocessor with the compiler and target specific
+  /// predefines.
+  unsigned UsePredefines : 1;
 
-  unsigned DetailedRecord : 1; /// Whether we should maintain a detailed
-                               /// record of all macro definitions and
-                               /// expansions.
-  
+  /// \brief Whether we should maintain a detailed record of all macro
+  /// definitions and expansions.
+  unsigned DetailedRecord : 1;
+
   /// The implicit PCH included at the start of the translation unit, or empty.
   std::string ImplicitPCHInclude;
 
@@ -118,7 +119,7 @@ public:
   ObjCXXARCStandardLibraryKind ObjCXXARCStandardLibrary;
     
   /// \brief Records the set of modules
-  class FailedModulesSet : public llvm::RefCountedBase<FailedModulesSet> {
+  class FailedModulesSet : public RefCountedBase<FailedModulesSet> {
     llvm::StringSet<> Failed;
 
   public:
@@ -137,7 +138,7 @@ public:
   /// to (re)build modules, so that once a module fails to build anywhere,
   /// other instances will see that the module has failed and won't try to
   /// build it again.
-  llvm::IntrusiveRefCntPtr<FailedModulesSet> FailedModules;
+  IntrusiveRefCntPtr<FailedModulesSet> FailedModules;
 
   typedef std::vector<std::pair<std::string, std::string> >::iterator
     remapped_file_iterator;

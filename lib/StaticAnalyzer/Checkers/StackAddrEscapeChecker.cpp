@@ -27,26 +27,26 @@ using namespace ento;
 
 namespace {
 class StackAddrEscapeChecker : public Checker< check::PreStmt<ReturnStmt>,
-                                               check::EndPath > {
+                                               check::EndFunction > {
   mutable OwningPtr<BuiltinBug> BT_stackleak;
   mutable OwningPtr<BuiltinBug> BT_returnstack;
 
 public:
   void checkPreStmt(const ReturnStmt *RS, CheckerContext &C) const;
-  void checkEndPath(CheckerContext &Ctx) const;
+  void checkEndFunction(CheckerContext &Ctx) const;
 private:
   void EmitStackError(CheckerContext &C, const MemRegion *R,
                       const Expr *RetE) const;
-  static SourceRange GenName(raw_ostream &os, const MemRegion *R,
-                             SourceManager &SM);
+  static SourceRange genName(raw_ostream &os, const MemRegion *R,
+                             ASTContext &Ctx);
 };
 }
 
-SourceRange StackAddrEscapeChecker::GenName(raw_ostream &os,
-                                          const MemRegion *R,
-                                          SourceManager &SM) {
+SourceRange StackAddrEscapeChecker::genName(raw_ostream &os, const MemRegion *R,
+                                            ASTContext &Ctx) {
     // Get the base region, stripping away fields and elements.
   R = R->getBaseRegion();
+  SourceManager &SM = Ctx.getSourceManager();
   SourceRange range;
   os << "Address of ";
   
@@ -79,8 +79,10 @@ SourceRange StackAddrEscapeChecker::GenName(raw_ostream &os,
     range = VR->getDecl()->getSourceRange();
   }
   else if (const CXXTempObjectRegion *TOR = dyn_cast<CXXTempObjectRegion>(R)) {
-    os << "stack memory associated with temporary object of type '"
-       << TOR->getValueType().getAsString() << '\'';
+    QualType Ty = TOR->getValueType().getLocalUnqualifiedType();
+    os << "stack memory associated with temporary object of type '";
+    Ty.print(os, Ctx.getPrintingPolicy());
+    os << "'";
     range = TOR->getExpr()->getSourceRange();
   }
   else {
@@ -104,7 +106,7 @@ void StackAddrEscapeChecker::EmitStackError(CheckerContext &C, const MemRegion *
   // Generate a report for this bug.
   SmallString<512> buf;
   llvm::raw_svector_ostream os(buf);
-  SourceRange range = GenName(os, R, C.getSourceManager());
+  SourceRange range = genName(os, R, C.getASTContext());
   os << " returned to caller";
   BugReport *report = new BugReport(*BT_returnstack, os.str(), N);
   report->addRange(RetE->getSourceRange());
@@ -157,7 +159,7 @@ void StackAddrEscapeChecker::checkPreStmt(const ReturnStmt *RS,
   EmitStackError(C, R, RetE);
 }
 
-void StackAddrEscapeChecker::checkEndPath(CheckerContext &Ctx) const {
+void StackAddrEscapeChecker::checkEndFunction(CheckerContext &Ctx) const {
   ProgramStateRef state = Ctx.getState();
 
   // Iterate over all bindings to global variables and see if it contains
@@ -224,8 +226,7 @@ void StackAddrEscapeChecker::checkEndPath(CheckerContext &Ctx) const {
     // Generate a report for this bug.
     SmallString<512> buf;
     llvm::raw_svector_ostream os(buf);
-    SourceRange range = GenName(os, cb.V[i].second,
-                                Ctx.getSourceManager());
+    SourceRange range = genName(os, cb.V[i].second, Ctx.getASTContext());
     os << " is still referred to by the global variable '";
     const VarRegion *VR = cast<VarRegion>(cb.V[i].first->getBaseRegion());
     os << *VR->getDecl()

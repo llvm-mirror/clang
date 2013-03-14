@@ -295,7 +295,7 @@ bool Parser::isCXXConditionDeclaration() {
     if (Tok.is(tok::equal)  ||
         Tok.is(tok::kw_asm) || Tok.is(tok::kw___attribute))
       TPR = TPResult::True();
-    else if (getLangOpts().CPlusPlus0x && Tok.is(tok::l_brace))
+    else if (getLangOpts().CPlusPlus11 && Tok.is(tok::l_brace))
       TPR = TPResult::True();
     else
       TPR = TPResult::False();
@@ -379,7 +379,7 @@ bool Parser::isCXXTypeId(TentativeCXXTypeIdContext Context, bool &isAmbiguous) {
     // ',', this is a type-id. Otherwise, it's an expression.
     } else if (Context == TypeIdAsTemplateArgument &&
                (Tok.is(tok::greater) || Tok.is(tok::comma) ||
-                (getLangOpts().CPlusPlus0x && Tok.is(tok::greatergreater)))) {
+                (getLangOpts().CPlusPlus11 && Tok.is(tok::greatergreater)))) {
       TPR = TPResult::True();
       isAmbiguous = true;
 
@@ -837,6 +837,14 @@ Parser::isExpressionOrTypeSpecifierSimple(tok::TokenKind Kind) {
   case tok::kw___vector:
   case tok::kw___pixel:
   case tok::kw__Atomic:
+  case tok::kw_image1d_t:
+  case tok::kw_image1d_array_t:
+  case tok::kw_image1d_buffer_t:
+  case tok::kw_image2d_t:
+  case tok::kw_image2d_array_t:
+  case tok::kw_image3d_t:
+  case tok::kw_sampler_t:
+  case tok::kw_event_t:
   case tok::kw___unknown_anytype:
     return TPResult::False();
 
@@ -1216,7 +1224,7 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
       if (isFollowedByParen)
         return TPResult::Ambiguous();
 
-      if (getLangOpts().CPlusPlus0x && isFollowedByBrace)
+      if (getLangOpts().CPlusPlus11 && isFollowedByBrace)
         return BracedCastResult;
       
       return TPResult::True();
@@ -1248,7 +1256,7 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
     //     enum E : int { a = 4 }; // enum
     //     enum E : int { 4 };     // bit-field
     //   };
-    if (getLangOpts().CPlusPlus0x && NextToken().is(tok::l_brace))
+    if (getLangOpts().CPlusPlus11 && NextToken().is(tok::l_brace))
       return BracedCastResult;
 
     if (isStartOfObjCClassMessageMissingOpenBracket())
@@ -1275,7 +1283,7 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
     if (isFollowedByParen)
       return TPResult::Ambiguous();
 
-    if (getLangOpts().CPlusPlus0x && isFollowedByBrace)
+    if (getLangOpts().CPlusPlus11 && isFollowedByBrace)
       return BracedCastResult;
 
     return TPResult::True();
@@ -1390,7 +1398,7 @@ bool Parser::isCXXFunctionDeclarator(bool *IsAmbiguous) {
       if (Next.is(tok::amp) || Next.is(tok::ampamp) ||
           Next.is(tok::kw_const) || Next.is(tok::kw_volatile) ||
           Next.is(tok::kw_throw) || Next.is(tok::kw_noexcept) ||
-          Next.is(tok::l_square) || isCXX0XVirtSpecifier(Next) ||
+          Next.is(tok::l_square) || isCXX11VirtSpecifier(Next) ||
           Next.is(tok::l_brace) || Next.is(tok::kw_try) ||
           Next.is(tok::equal) || Next.is(tok::arrow))
         // The next token cannot appear after a constructor-style initializer,

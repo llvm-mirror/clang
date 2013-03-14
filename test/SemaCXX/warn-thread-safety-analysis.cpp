@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsyntax-only -verify -std=c++11 -Wthread-safety -Wthread-safety-beta %s
+// RUN: %clang_cc1 -fsyntax-only -verify -std=c++11 -Wthread-safety -Wthread-safety-beta -fcxx-exceptions %s
 
 // FIXME: should also run  %clang_cc1 -fsyntax-only -verify -Wthread-safety -std=c++11 -Wc++98-compat %s
 // FIXME: should also run  %clang_cc1 -fsyntax-only -verify -Wthread-safety %s
@@ -3881,4 +3881,37 @@ private:
 };
 
 }  // namespace GuardedNonPrimitive_MemberAccess
+
+
+namespace TestThrowExpr {
+
+class Foo {
+  Mutex mu_;
+
+  bool hasError();
+
+  void test() {
+    mu_.Lock();
+    if (hasError()) {
+      throw "ugly";
+    }
+    mu_.Unlock();
+  }
+};
+
+}  // end namespace TestThrowExpr
+
+
+namespace UnevaluatedContextTest {
+
+// parse attribute expressions in an unevaluated context.
+
+static inline Mutex* getMutex1();
+static inline Mutex* getMutex2();
+
+void bar() EXCLUSIVE_LOCKS_REQUIRED(getMutex1());
+
+void bar2() EXCLUSIVE_LOCKS_REQUIRED(getMutex1(), getMutex2());
+
+}  // end namespace UnevaluatedContextTest
 

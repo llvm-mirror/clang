@@ -36,6 +36,10 @@ class VoidModuleLoader : public ModuleLoader {
                                       bool IsInclusionDirective) {
     return ModuleLoadResult();
   }
+
+  virtual void makeModuleVisible(Module *Mod,
+                                 Module::NameVisibilityKind Visibility,
+                                 SourceLocation ImportLoc) { }
 };
 
 // Stub to collect data from InclusionDirective callbacks.
@@ -106,7 +110,7 @@ protected:
       // Add header's parent path to search path.
       StringRef SearchPath = path::parent_path(HeaderPath);
       const DirectoryEntry *DE = FileMgr.getDirectory(SearchPath);
-      DirectoryLookup DL(DE, SrcMgr::C_User, true, false);
+      DirectoryLookup DL(DE, SrcMgr::C_User, false);
       HeaderInfo.AddSearchPath(DL, IsSystemHeader);
   }
 

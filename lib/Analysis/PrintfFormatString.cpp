@@ -496,11 +496,29 @@ bool PrintfSpecifier::fixType(QualType QT, const LangOptions &LangOpt,
   }
 
   // Handle size_t, ptrdiff_t, etc. that have dedicated length modifiers in C99.
-  if (isa<TypedefType>(QT) && (LangOpt.C99 || LangOpt.CPlusPlus0x))
+  if (isa<TypedefType>(QT) && (LangOpt.C99 || LangOpt.CPlusPlus11))
     namedTypeToLengthModifier(QT, LM);
 
-  // If fixing the length modifier was enough, we are done.
+  // If fixing the length modifier was enough, we might be done.
   if (hasValidLengthModifier(Ctx.getTargetInfo())) {
+    // If we're going to offer a fix anyway, make sure the sign matches.
+    switch (CS.getKind()) {
+    case ConversionSpecifier::uArg:
+    case ConversionSpecifier::UArg:
+      if (QT->isSignedIntegerType())
+        CS.setKind(clang::analyze_format_string::ConversionSpecifier::dArg);
+      break;
+    case ConversionSpecifier::dArg:
+    case ConversionSpecifier::DArg:
+    case ConversionSpecifier::iArg:
+      if (QT->isUnsignedIntegerType() && !HasPlusPrefix)
+        CS.setKind(clang::analyze_format_string::ConversionSpecifier::uArg);
+      break;
+    default:
+      // Other specifiers do not have signed/unsigned variants.
+      break;
+    }
+
     const analyze_printf::ArgType &ATR = getArgType(Ctx, IsObjCLiteral);
     if (ATR.isValid() && ATR.matchesType(Ctx, QT))
       return true;

@@ -309,7 +309,8 @@ void Sema::AddPushedVisibilityAttribute(Decl *D) {
   if (!VisContext)
     return;
 
-  if (isa<NamedDecl>(D) && cast<NamedDecl>(D)->getExplicitVisibility())
+  NamedDecl *ND = dyn_cast<NamedDecl>(D);
+  if (ND && ND->getExplicitVisibility(NamedDecl::VisibilityForValue))
     return;
 
   VisStack *Stack = static_cast<VisStack*>(VisContext);

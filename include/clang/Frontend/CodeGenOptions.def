@@ -30,6 +30,8 @@ CODEGENOPT(Name, Bits, Default)
 
 CODEGENOPT(AsmVerbose        , 1, 0) ///< -dA, -fverbose-asm.
 CODEGENOPT(ObjCAutoRefCountExceptions , 1, 0) ///< Whether ARC should be EH-safe.
+CODEGENOPT(CoverageExtraChecksum, 1, 0) ///< Whether we need a second checksum for functions in GCNO files.
+CODEGENOPT(CoverageFunctionNamesInData, 1, 0) ///< Whether we should include function names in GCDA files.
 CODEGENOPT(CUDAIsDevice      , 1, 0) ///< Set when compiling for CUDA device.
 CODEGENOPT(CXAAtExit         , 1, 1) ///< Use __cxa_atexit for calling destructors.
 CODEGENOPT(CXXCtorDtorAliases, 1, 0) ///< Emit complete ctors/dtors as linker
@@ -83,6 +85,12 @@ VALUE_CODEGENOPT(OptimizeSize, 2, 0) ///< If -Os (==1) or -Oz (==2) is specified
 CODEGENOPT(RelaxAll          , 1, 0) ///< Relax all machine code instructions.
 CODEGENOPT(RelaxedAliasing   , 1, 0) ///< Set when -fno-strict-aliasing is enabled.
 CODEGENOPT(SaveTempLabels    , 1, 0) ///< Save temporary labels.
+CODEGENOPT(SanitizeAddressZeroBaseShadow , 1, 0) ///< Map shadow memory at zero
+                                                 ///< offset in AddressSanitizer.
+CODEGENOPT(SanitizeMemoryTrackOrigins, 1, 0) ///< Enable tracking origins in
+                                             ///< MemorySanitizer
+CODEGENOPT(SanitizeUndefinedTrapOnError, 1, 0) ///< Set on
+                                               /// -fsanitize-undefined-trap-on-error
 CODEGENOPT(SimplifyLibCalls  , 1, 1) ///< Set when -fbuiltin is enabled.
 CODEGENOPT(SoftFloat         , 1, 0) ///< -soft-float.
 CODEGENOPT(StrictEnums       , 1, 0) ///< Optimize based on strict enum definition.
@@ -109,6 +117,8 @@ VALUE_CODEGENOPT(StackAlignment    , 32, 0) ///< Overrides default stack
 CODEGENOPT(DebugColumnInfo, 1, 0) ///< Whether or not to use column information
                                   ///< in debug info.
 
+CODEGENOPT(ModulesAutolink, 1, 0) ///< Whether to auto-link imported modules
+
 /// The user specified number of registers to be used for integral arguments,
 /// or 0 if unspecified.
 VALUE_CODEGENOPT(NumRegisterParameters, 32, 0)
@@ -125,7 +135,7 @@ ENUM_CODEGENOPT(Inlining, InliningMethod, 2, NoInlining)
 /// The default TLS model to use.
 ENUM_CODEGENOPT(DefaultTLSModel, TLSModel, 2, GeneralDynamicTLSModel)
 
-CODEGENOPT(SanitizeRecover, 1, 0) ///< Attempt to recover from sanitizer checks
+CODEGENOPT(SanitizeRecover, 1, 1) ///< Attempt to recover from sanitizer checks
                                   ///< by continuing execution when possible
 
 #undef CODEGENOPT

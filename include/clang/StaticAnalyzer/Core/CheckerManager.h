@@ -112,6 +112,26 @@ public:
   RET operator()() const { return Fn(Checker); } 
 };
 
+/// \brief Describes the different reasons a pointer escapes
+/// during analysis.
+enum PointerEscapeKind {
+  /// A pointer escapes due to binding its value to a location
+  /// that the analyzer cannot track.
+  PSK_EscapeOnBind,
+
+  /// The pointer has been passed to a function call directly.
+  PSK_DirectEscapeOnCall,
+
+  /// The pointer has been passed to a function indirectly.
+  /// For example, the pointer is accessible through an
+  /// argument to a function.
+  PSK_IndirectEscapeOnCall,
+
+  /// The reason for pointer escape is unknown. For example, 
+  /// a region containing this pointer is invalidated.
+  PSK_EscapeOther
+};
+
 class CheckerManager {
   const LangOptions LangOpts;
 
@@ -264,11 +284,11 @@ public:
   void runCheckersForEndAnalysis(ExplodedGraph &G, BugReporter &BR,
                                  ExprEngine &Eng);
 
-  /// \brief Run checkers for end of path.
-  void runCheckersForEndPath(NodeBuilderContext &BC,
-                             ExplodedNodeSet &Dst,
-                             ExplodedNode *Pred,
-                             ExprEngine &Eng);
+  /// \brief Run checkers on end of function.
+  void runCheckersForEndFunction(NodeBuilderContext &BC,
+                                 ExplodedNodeSet &Dst,
+                                 ExplodedNode *Pred,
+                                 ExprEngine &Eng);
 
   /// \brief Run checkers for branch condition.
   void runCheckersForBranchCondition(const Stmt *condition,
@@ -310,14 +330,32 @@ public:
   ///   by a call.
   ProgramStateRef
   runCheckersForRegionChanges(ProgramStateRef state,
-                            const StoreManager::InvalidatedSymbols *invalidated,
+                              const InvalidatedSymbols *invalidated,
                               ArrayRef<const MemRegion *> ExplicitRegions,
                               ArrayRef<const MemRegion *> Regions,
                               const CallEvent *Call);
 
+  /// \brief Run checkers when pointers escape.
+  ///
+  /// This notifies the checkers about pointer escape, which occurs whenever
+  /// the analyzer cannot track the symbol any more. For example, as a
+  /// result of assigning a pointer into a global or when it's passed to a 
+  /// function call the analyzer cannot model.
+  /// 
+  /// \param State The state at the point of escape.
+  /// \param Escaped The list of escaped symbols.
+  /// \param Call The corresponding CallEvent, if the symbols escape as 
+  ///        parameters to the given call.
+  /// \returns Checkers can modify the state by returning a new one.
+  ProgramStateRef 
+  runCheckersForPointerEscape(ProgramStateRef State,
+                              const InvalidatedSymbols &Escaped,
+                              const CallEvent *Call,
+                              PointerEscapeKind Kind);
+
   /// \brief Run checkers for handling assumptions on symbolic values.
   ProgramStateRef runCheckersForEvalAssume(ProgramStateRef state,
-                                               SVal Cond, bool Assumption);
+                                           SVal Cond, bool Assumption);
 
   /// \brief Run checkers for evaluating a call.
   ///
@@ -382,7 +420,7 @@ public:
       CheckEndAnalysisFunc;
   
   typedef CheckerFn<void (CheckerContext &)>
-      CheckEndPathFunc;
+      CheckEndFunctionFunc;
   
   typedef CheckerFn<void (const Stmt *, CheckerContext &)>
       CheckBranchConditionFunc;
@@ -393,13 +431,19 @@ public:
   typedef CheckerFn<void (ProgramStateRef,SymbolReaper &)> CheckLiveSymbolsFunc;
   
   typedef CheckerFn<ProgramStateRef (ProgramStateRef,
-                                const StoreManager::InvalidatedSymbols *symbols,
+                                const InvalidatedSymbols *symbols,
                                 ArrayRef<const MemRegion *> ExplicitRegions,
                                 ArrayRef<const MemRegion *> Regions,
                                 const CallEvent *Call)>
       CheckRegionChangesFunc;
   
   typedef CheckerFn<bool (ProgramStateRef)> WantsRegionChangeUpdateFunc;
+
+  typedef CheckerFn<ProgramStateRef (ProgramStateRef,
+                                     const InvalidatedSymbols &Escaped,
+                                     const CallEvent *Call,
+                                     PointerEscapeKind Kind)>
+      CheckPointerEscapeFunc;
   
   typedef CheckerFn<ProgramStateRef (ProgramStateRef,
                                           const SVal &cond, bool assumption)>
@@ -430,7 +474,7 @@ public:
 
   void _registerForEndAnalysis(CheckEndAnalysisFunc checkfn);
 
-  void _registerForEndPath(CheckEndPathFunc checkfn);
+  void _registerForEndFunction(CheckEndFunctionFunc checkfn);
 
   void _registerForBranchCondition(CheckBranchConditionFunc checkfn);
 
@@ -440,6 +484,8 @@ public:
 
   void _registerForRegionChanges(CheckRegionChangesFunc checkfn,
                                  WantsRegionChangeUpdateFunc wantUpdateFn);
+
+  void _registerForPointerEscape(CheckPointerEscapeFunc checkfn);
 
   void _registerForEvalAssume(EvalAssumeFunc checkfn);
 
@@ -552,7 +598,7 @@ private:
 
   std::vector<CheckEndAnalysisFunc> EndAnalysisCheckers;
 
-  std::vector<CheckEndPathFunc> EndPathCheckers;
+  std::vector<CheckEndFunctionFunc> EndFunctionCheckers;
 
   std::vector<CheckBranchConditionFunc> BranchConditionCheckers;
 
@@ -565,6 +611,8 @@ private:
     WantsRegionChangeUpdateFunc WantUpdateFn;
   };
   std::vector<RegionChangesCheckerInfo> RegionChangesCheckers;
+
+  std::vector<CheckPointerEscapeFunc> PointerEscapeCheckers;
 
   std::vector<EvalAssumeFunc> EvalAssumeCheckers;
 

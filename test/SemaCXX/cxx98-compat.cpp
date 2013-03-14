@@ -8,6 +8,8 @@ namespace std {
     initializer_list(T*, size_t);
     T *p;
     size_t n;
+    T *begin();
+    T *end();
   };
 }
 
@@ -103,6 +105,13 @@ void RangeFor() {
   int xs[] = {1, 2, 3};
   for (int &a : xs) { // expected-warning {{range-based for loop is incompatible with C++98}}
   }
+  for (auto &b : {1, 2, 3}) {
+  // expected-warning@-1 {{range-based for loop is incompatible with C++98}}
+  // expected-warning@-2 {{'auto' type specifier is incompatible with C++98}}
+  // expected-warning@-3 {{initialization of initializer_list object is incompatible with C++98}}
+  // expected-warning@-4 {{reference initialized from initializer list is incompatible with C++98}}
+  }
+  struct Agg { int a, b; } const &agg = { 1, 2 }; // expected-warning {{reference initialized from initializer list is incompatible with C++98}}
 }
 
 struct InClassInit {

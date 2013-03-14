@@ -56,19 +56,42 @@ ExplodedGraph::~ExplodedGraph() {}
 // Node reclamation.
 //===----------------------------------------------------------------------===//
 
+bool ExplodedGraph::isInterestingLValueExpr(const Expr *Ex) {
+  if (!Ex->isLValue())
+    return false;
+  return isa<DeclRefExpr>(Ex) ||
+         isa<MemberExpr>(Ex) ||
+         isa<ObjCIvarRefExpr>(Ex);
+}
+
 bool ExplodedGraph::shouldCollect(const ExplodedNode *node) {
-  // Reclaim all nodes that match *all* the following criteria:
+  // First, we only consider nodes for reclamation of the following
+  // conditions apply:
   //
   // (1) 1 predecessor (that has one successor)
   // (2) 1 successor (that has one predecessor)
+  //
+  // If a node has no successor it is on the "frontier", while a node
+  // with no predecessor is a root.
+  //
+  // After these prerequisites, we discard all "filler" nodes that
+  // are used only for intermediate processing, and are not essential
+  // for analyzer history:
+  //
+  // (a) PreStmtPurgeDeadSymbols
+  //
+  // We then discard all other nodes where *all* of the following conditions
+  // apply:
+  //
   // (3) The ProgramPoint is for a PostStmt, but not a PostStore.
   // (4) There is no 'tag' for the ProgramPoint.
   // (5) The 'store' is the same as the predecessor.
   // (6) The 'GDM' is the same as the predecessor.
   // (7) The LocationContext is the same as the predecessor.
-  // (8) The PostStmt isn't for a non-consumed Stmt or Expr.
-  // (9) The successor is not a CallExpr StmtPoint (so that we would be able to
-  //     find it when retrying a call with no inlining).
+  // (8) Expressions that are *not* lvalue expressions.
+  // (9) The PostStmt isn't for a non-consumed Stmt or Expr.
+  // (10) The successor is not a CallExpr StmtPoint (so that we would
+  //      be able to find it when retrying a call with no inlining).
   // FIXME: It may be safe to reclaim PreCall and PostCall nodes as well.
 
   // Conditions 1 and 2.
@@ -83,13 +106,18 @@ bool ExplodedGraph::shouldCollect(const ExplodedNode *node) {
   if (succ->pred_size() != 1)
     return false;
 
-  // Condition 3.
+  // Now reclaim any nodes that are (by definition) not essential to
+  // analysis history and are not consulted by any client code.
   ProgramPoint progPoint = node->getLocation();
-  if (!isa<PostStmt>(progPoint) || isa<PostStore>(progPoint))
+  if (progPoint.getAs<PreStmtPurgeDeadSymbols>())
+    return !progPoint.getTag();
+
+  // Condition 3.
+  if (!progPoint.getAs<PostStmt>() || progPoint.getAs<PostStore>())
     return false;
 
   // Condition 4.
-  PostStmt ps = cast<PostStmt>(progPoint);
+  PostStmt ps = progPoint.castAs<PostStmt>();
   if (ps.getTag())
     return false;
 
@@ -99,22 +127,29 @@ bool ExplodedGraph::shouldCollect(const ExplodedNode *node) {
   if (state->store != pred_state->store || state->GDM != pred_state->GDM ||
       progPoint.getLocationContext() != pred->getLocationContext())
     return false;
-  
-  // Condition 8.
-  // Do not collect nodes for non-consumed Stmt or Expr to ensure precise
-  // diagnostic generation; specifically, so that we could anchor arrows
-  // pointing to the beginning of statements (as written in code).
+
+  // All further checks require expressions.
   const Expr *Ex = dyn_cast<Expr>(ps.getStmt());
   if (!Ex)
     return false;
 
+  // Condition 8.
+  // Do not collect nodes for "interesting" lvalue expressions since they are
+  // used extensively for generating path diagnostics.
+  if (isInterestingLValueExpr(Ex))
+    return false;
+
+  // Condition 9.
+  // Do not collect nodes for non-consumed Stmt or Expr to ensure precise
+  // diagnostic generation; specifically, so that we could anchor arrows
+  // pointing to the beginning of statements (as written in code).
   ParentMap &PM = progPoint.getLocationContext()->getParentMap();
   if (!PM.isConsumedExpr(Ex))
     return false;
-  
-  // Condition 9.
+
+  // Condition 10.
   const ProgramPoint SuccLoc = succ->getLocation();
-  if (const StmtPoint *SP = dyn_cast<StmtPoint>(&SuccLoc))
+  if (Optional<StmtPoint> SP = SuccLoc.getAs<StmtPoint>())
     if (CallEvent::isCallStmt(SP->getStmt()))
       return false;
 

@@ -1350,8 +1350,8 @@ void LocalVariableMap::traverseCFG(CFG *CFGraph,
          BE = CurrBlock->end(); BI != BE; ++BI) {
       switch (BI->getKind()) {
         case CFGElement::Statement: {
-          const CFGStmt *CS = cast<CFGStmt>(&*BI);
-          VMapBuilder.Visit(const_cast<Stmt*>(CS->getStmt()));
+          CFGStmt CS = BI->castAs<CFGStmt>();
+          VMapBuilder.Visit(const_cast<Stmt*>(CS.getStmt()));
           break;
         }
         default:
@@ -1397,7 +1397,7 @@ static void findBlockLocations(CFG *CFGraph,
       for (CFGBlock::const_reverse_iterator BI = CurrBlock->rbegin(),
            BE = CurrBlock->rend(); BI != BE; ++BI) {
         // FIXME: Handle other CFGElement kinds.
-        if (const CFGStmt *CS = dyn_cast<CFGStmt>(&*BI)) {
+        if (Optional<CFGStmt> CS = BI->getAs<CFGStmt>()) {
           CurrBlockInfo->ExitLoc = CS->getStmt()->getLocStart();
           break;
         }
@@ -1410,7 +1410,7 @@ static void findBlockLocations(CFG *CFGraph,
       for (CFGBlock::const_iterator BI = CurrBlock->begin(),
            BE = CurrBlock->end(); BI != BE; ++BI) {
         // FIXME: Handle other CFGElement kinds.
-        if (const CFGStmt *CS = dyn_cast<CFGStmt>(&*BI)) {
+        if (Optional<CFGStmt> CS = BI->getAs<CFGStmt>()) {
           CurrBlockInfo->EntryLoc = CS->getStmt()->getLocStart();
           break;
         }
@@ -2226,6 +2226,21 @@ void ThreadSafetyAnalyzer::intersectAndWarn(FactSet &FSet1,
 }
 
 
+// Return true if block B never continues to its successors.
+inline bool neverReturns(const CFGBlock* B) {
+  if (B->hasNoReturnElement())
+    return true;
+  if (B->empty())
+    return false;
+
+  CFGElement Last = B->back();
+  if (Optional<CFGStmt> S = Last.getAs<CFGStmt>()) {
+    if (isa<CXXThrowExpr>(S->getStmt()))
+      return true;
+  }
+  return false;
+}
+
 
 /// \brief Check a function's CFG for thread-safety violations.
 ///
@@ -2343,7 +2358,7 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
     // union because the real error is probably that we forgot to unlock M on
     // all code paths.
     bool LocksetInitialized = false;
-    llvm::SmallVector<CFGBlock*, 8> SpecialBlocks;
+    SmallVector<CFGBlock *, 8> SpecialBlocks;
     for (CFGBlock::const_pred_iterator PI = CurrBlock->pred_begin(),
          PE  = CurrBlock->pred_end(); PI != PE; ++PI) {
 
@@ -2355,7 +2370,7 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
       CFGBlockInfo *PrevBlockInfo = &BlockInfo[PrevBlockID];
 
       // Ignore edges from blocks that can't return.
-      if ((*PI)->hasNoReturnElement() || !PrevBlockInfo->Reachable)
+      if (neverReturns(*PI) || !PrevBlockInfo->Reachable)
         continue;
 
       // Okay, we can reach this block from the entry.
@@ -2371,7 +2386,6 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
           continue;
         }
       }
-
 
       FactSet PrevLockset;
       getEdgeLockset(PrevLockset, PrevBlockInfo->ExitSet, *PI, CurrBlock);
@@ -2430,22 +2444,22 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
          BE = CurrBlock->end(); BI != BE; ++BI) {
       switch (BI->getKind()) {
         case CFGElement::Statement: {
-          const CFGStmt *CS = cast<CFGStmt>(&*BI);
-          LocksetBuilder.Visit(const_cast<Stmt*>(CS->getStmt()));
+          CFGStmt CS = BI->castAs<CFGStmt>();
+          LocksetBuilder.Visit(const_cast<Stmt*>(CS.getStmt()));
           break;
         }
         // Ignore BaseDtor, MemberDtor, and TemporaryDtor for now.
         case CFGElement::AutomaticObjectDtor: {
-          const CFGAutomaticObjDtor *AD = cast<CFGAutomaticObjDtor>(&*BI);
-          CXXDestructorDecl *DD = const_cast<CXXDestructorDecl*>(
-            AD->getDestructorDecl(AC.getASTContext()));
+          CFGAutomaticObjDtor AD = BI->castAs<CFGAutomaticObjDtor>();
+          CXXDestructorDecl *DD = const_cast<CXXDestructorDecl *>(
+              AD.getDestructorDecl(AC.getASTContext()));
           if (!DD->hasAttrs())
             break;
 
           // Create a dummy expression,
-          VarDecl *VD = const_cast<VarDecl*>(AD->getVarDecl());
+          VarDecl *VD = const_cast<VarDecl*>(AD.getVarDecl());
           DeclRefExpr DRE(VD, false, VD->getType(), VK_LValue,
-                          AD->getTriggerStmt()->getLocEnd());
+                          AD.getTriggerStmt()->getLocEnd());
           LocksetBuilder.handleCall(&DRE, DD);
           break;
         }

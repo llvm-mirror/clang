@@ -71,13 +71,22 @@ bool trans::isPlusOneAssign(const BinaryOperator *E) {
   if (E->getOpcode() != BO_Assign)
     return false;
 
+  return isPlusOne(E->getRHS());
+}
+
+bool trans::isPlusOne(const Expr *E) {
+  if (!E)
+    return false;
+  if (const ExprWithCleanups *EWC = dyn_cast<ExprWithCleanups>(E))
+    E = EWC->getSubExpr();
+
   if (const ObjCMessageExpr *
-        ME = dyn_cast<ObjCMessageExpr>(E->getRHS()->IgnoreParenCasts()))
+        ME = dyn_cast<ObjCMessageExpr>(E->IgnoreParenCasts()))
     if (ME->getMethodFamily() == OMF_retain)
       return true;
 
   if (const CallExpr *
-        callE = dyn_cast<CallExpr>(E->getRHS()->IgnoreParenCasts())) {
+        callE = dyn_cast<CallExpr>(E->IgnoreParenCasts())) {
     if (const FunctionDecl *FD = callE->getDirectCallee()) {
       if (FD->getAttr<CFReturnsRetainedAttr>())
         return true;
@@ -85,7 +94,7 @@ bool trans::isPlusOneAssign(const BinaryOperator *E) {
       if (FD->isGlobal() &&
           FD->getIdentifier() &&
           FD->getParent()->isTranslationUnit() &&
-          FD->getLinkage() == ExternalLinkage &&
+          FD->hasExternalLinkage() &&
           ento::cocoa::isRefType(callE->getType(), "CF",
                                  FD->getIdentifier()->getName())) {
         StringRef fname = FD->getIdentifier()->getName();
@@ -98,7 +107,7 @@ bool trans::isPlusOneAssign(const BinaryOperator *E) {
     }
   }
 
-  const ImplicitCastExpr *implCE = dyn_cast<ImplicitCastExpr>(E->getRHS());
+  const ImplicitCastExpr *implCE = dyn_cast<ImplicitCastExpr>(E);
   while (implCE && implCE->getCastKind() ==  CK_BitCast)
     implCE = dyn_cast<ImplicitCastExpr>(implCE->getSubExpr());
 
@@ -189,7 +198,7 @@ bool trans::isGlobalVar(Expr *E) {
   E = E->IgnoreParenCasts();
   if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E))
     return DRE->getDecl()->getDeclContext()->isFileContext() &&
-           DRE->getDecl()->getLinkage() == ExternalLinkage;
+           DRE->getDecl()->hasExternalLinkage();
   if (ConditionalOperator *condOp = dyn_cast<ConditionalOperator>(E))
     return isGlobalVar(condOp->getTrueExpr()) &&
            isGlobalVar(condOp->getFalseExpr());
@@ -564,6 +573,7 @@ static void traverseAST(MigrationPass &pass) {
   }
   MigrateCtx.addTraverser(new PropertyRewriteTraverser());
   MigrateCtx.addTraverser(new BlockObjCVariableTraverser());
+  MigrateCtx.addTraverser(new ProtectedScopeTraverser());
 
   MigrateCtx.traverse(pass.Ctx.getTranslationUnitDecl());
 }

@@ -60,7 +60,7 @@ public:
 
 private:
   typedef std::pair<SymbolRef, const AllocationState*> AllocationPair;
-  typedef llvm::SmallVector<AllocationPair, 2> AllocationPairVec;
+  typedef SmallVector<AllocationPair, 2> AllocationPairVec;
 
   enum APIKind {
     /// Denotes functions tracked by this checker.
@@ -99,8 +99,8 @@ private:
                                          CheckerContext &C) const;
 
   /// Find the allocation site for Sym on the path leading to the node N.
-  const Stmt *getAllocationSite(const ExplodedNode *N, SymbolRef Sym,
-                                CheckerContext &C) const;
+  const ExplodedNode *getAllocationNode(const ExplodedNode *N, SymbolRef Sym,
+                                        CheckerContext &C) const;
 
   BugReport *generateAllocatedDataNotReleasedReport(const AllocationPair &AP,
                                                     ExplodedNode *N,
@@ -217,7 +217,7 @@ static SymbolRef getAsPointeeSymbol(const Expr *Expr,
   ProgramStateRef State = C.getState();
   SVal ArgV = State->getSVal(Expr, C.getLocationContext());
 
-  if (const loc::MemRegionVal *X = dyn_cast<loc::MemRegionVal>(&ArgV)) {
+  if (Optional<loc::MemRegionVal> X = ArgV.getAs<loc::MemRegionVal>()) {
     StoreManager& SM = C.getStoreManager();
     SymbolRef sym = SM.getBinding(State->getStore(), *X).getAsLocSymbol();
     if (sym)
@@ -393,16 +393,18 @@ void MacOSKeychainAPIChecker::checkPreStmt(const CallExpr *CE,
           return;
         }
         // If kCFAllocatorNull, which does not deallocate, we still have to
-        // find the deallocator. Otherwise, assume that the user had written a
-        // custom deallocator which does the right thing.
-        if (DE->getFoundDecl()->getName() != "kCFAllocatorNull") {
-          State = State->remove<AllocatedData>(ArgSM);
-          C.addTransition(State);
+        // find the deallocator.
+        if (DE->getFoundDecl()->getName() == "kCFAllocatorNull")
           return;
-        }
       }
+      // In all other cases, assume the user supplied a correct deallocator
+      // that will free memory so stop tracking.
+      State = State->remove<AllocatedData>(ArgSM);
+      C.addTransition(State);
+      return;
     }
-    return;
+
+    llvm_unreachable("We know of no other possible APIs.");
   }
 
   // The call is deallocating a value we previously allocated, so remove it
@@ -419,7 +421,7 @@ void MacOSKeychainAPIChecker::checkPreStmt(const CallExpr *CE,
 
   // If the buffer can be null and the return status can be an error,
   // report a bad call to free.
-  if (State->assume(cast<DefinedSVal>(ArgSVal), false) &&
+  if (State->assume(ArgSVal.castAs<DefinedSVal>(), false) &&
       !definitelyDidnotReturnError(AS->Region, State, C.getSValBuilder())) {
     ExplodedNode *N = C.addTransition(State);
     if (!N)
@@ -484,8 +486,8 @@ void MacOSKeychainAPIChecker::checkPostStmt(const CallExpr *CE,
 }
 
 // TODO: This logic is the same as in Malloc checker.
-const Stmt *
-MacOSKeychainAPIChecker::getAllocationSite(const ExplodedNode *N,
+const ExplodedNode *
+MacOSKeychainAPIChecker::getAllocationNode(const ExplodedNode *N,
                                            SymbolRef Sym,
                                            CheckerContext &C) const {
   const LocationContext *LeakContext = N->getLocationContext();
@@ -503,12 +505,7 @@ MacOSKeychainAPIChecker::getAllocationSite(const ExplodedNode *N,
     N = N->pred_empty() ? NULL : *(N->pred_begin());
   }
 
-  ProgramPoint P = AllocNode->getLocation();
-  if (CallExitEnd *Exit = dyn_cast<CallExitEnd>(&P))
-    return Exit->getCalleeContext()->getCallSite();
-  if (clang::PostStmt *PS = dyn_cast<clang::PostStmt>(&P))
-    return PS->getStmt();
-  return 0;
+  return AllocNode;
 }
 
 BugReport *MacOSKeychainAPIChecker::
@@ -526,11 +523,22 @@ BugReport *MacOSKeychainAPIChecker::
   // With leaks, we want to unique them by the location where they were
   // allocated, and only report a single path.
   PathDiagnosticLocation LocUsedForUniqueing;
-  if (const Stmt *AllocStmt = getAllocationSite(N, AP.first, C))
-    LocUsedForUniqueing = PathDiagnosticLocation::createBegin(AllocStmt,
-                            C.getSourceManager(), N->getLocationContext());
+  const ExplodedNode *AllocNode = getAllocationNode(N, AP.first, C);
+  const Stmt *AllocStmt = 0;
+  ProgramPoint P = AllocNode->getLocation();
+  if (Optional<CallExitEnd> Exit = P.getAs<CallExitEnd>())
+    AllocStmt = Exit->getCalleeContext()->getCallSite();
+  else if (Optional<clang::PostStmt> PS = P.getAs<clang::PostStmt>())
+    AllocStmt = PS->getStmt();
 
-  BugReport *Report = new BugReport(*BT, os.str(), N, LocUsedForUniqueing);
+  if (AllocStmt)
+    LocUsedForUniqueing = PathDiagnosticLocation::createBegin(AllocStmt,
+                                              C.getSourceManager(),
+                                              AllocNode->getLocationContext());
+
+  BugReport *Report = new BugReport(*BT, os.str(), N, LocUsedForUniqueing,
+                                   AllocNode->getLocationContext()->getDecl());
+
   Report->addVisitor(new SecKeychainBugVisitor(AP.first));
   markInteresting(Report, AP);
   return Report;
@@ -594,8 +602,8 @@ PathDiagnosticPiece *MacOSKeychainAPIChecker::SecKeychainBugVisitor::VisitNode(
 
   // (!ASPrev && AS) ~ We started tracking symbol in node N, it must be the
   // allocation site.
-  const CallExpr *CE = cast<CallExpr>(cast<StmtPoint>(N->getLocation())
-                                                            .getStmt());
+  const CallExpr *CE =
+      cast<CallExpr>(N->getLocation().castAs<StmtPoint>().getStmt());
   const FunctionDecl *funDecl = CE->getDirectCallee();
   assert(funDecl && "We do not support indirect function calls as of now.");
   StringRef funName = funDecl->getName();

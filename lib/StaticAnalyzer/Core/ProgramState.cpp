@@ -132,7 +132,7 @@ ProgramStateRef ProgramState::bindLoc(Loc LV, SVal V, bool notifyChanges) const 
 
 ProgramStateRef ProgramState::bindDefault(SVal loc, SVal V) const {
   ProgramStateManager &Mgr = getStateManager();
-  const MemRegion *R = cast<loc::MemRegionVal>(loc).getRegion();
+  const MemRegion *R = loc.castAs<loc::MemRegionVal>().getRegion();
   const StoreRef &newStore = Mgr.StoreMgr->BindDefault(getStore(), R, V);
   ProgramStateRef new_state = makeWithStore(newStore);
   return Mgr.getOwningEngine() ? 
@@ -144,31 +144,41 @@ ProgramStateRef
 ProgramState::invalidateRegions(ArrayRef<const MemRegion *> Regions,
                                 const Expr *E, unsigned Count,
                                 const LocationContext *LCtx,
-                                StoreManager::InvalidatedSymbols *IS,
+                                bool CausedByPointerEscape,
+                                InvalidatedSymbols *IS,
                                 const CallEvent *Call) const {
   if (!IS) {
-    StoreManager::InvalidatedSymbols invalidated;
+    InvalidatedSymbols invalidated;
     return invalidateRegionsImpl(Regions, E, Count, LCtx,
+                                 CausedByPointerEscape,
                                  invalidated, Call);
   }
-  return invalidateRegionsImpl(Regions, E, Count, LCtx, *IS, Call);
+  return invalidateRegionsImpl(Regions, E, Count, LCtx, CausedByPointerEscape,
+                               *IS, Call);
 }
 
 ProgramStateRef 
 ProgramState::invalidateRegionsImpl(ArrayRef<const MemRegion *> Regions,
                                     const Expr *E, unsigned Count,
                                     const LocationContext *LCtx,
-                                    StoreManager::InvalidatedSymbols &IS,
+                                    bool CausedByPointerEscape,
+                                    InvalidatedSymbols &IS,
                                     const CallEvent *Call) const {
   ProgramStateManager &Mgr = getStateManager();
   SubEngine* Eng = Mgr.getOwningEngine();
  
-  if (Eng && Eng->wantsRegionChangeUpdate(this)) {
+  if (Eng) {
     StoreManager::InvalidatedRegions Invalidated;
     const StoreRef &newStore
       = Mgr.StoreMgr->invalidateRegions(getStore(), Regions, E, Count, LCtx, IS,
                                         Call, &Invalidated);
+
     ProgramStateRef newState = makeWithStore(newStore);
+
+    if (CausedByPointerEscape)
+      newState = Eng->processPointerEscapedOnInvalidateRegions(newState,
+                                               &IS, Regions, Invalidated, Call);
+
     return Eng->processRegionChanges(newState, &IS, Regions, Invalidated, Call);
   }
 
@@ -179,7 +189,7 @@ ProgramState::invalidateRegionsImpl(ArrayRef<const MemRegion *> Regions,
 }
 
 ProgramStateRef ProgramState::killBinding(Loc LV) const {
-  assert(!isa<loc::MemRegionVal>(LV) && "Use invalidateRegion instead.");
+  assert(!LV.getAs<loc::MemRegionVal>() && "Use invalidateRegion instead.");
 
   Store OldStore = getStore();
   const StoreRef &newStore =
@@ -243,7 +253,7 @@ SVal ProgramState::getSVal(Loc location, QualType T) const {
         //  not unsigned.
         const llvm::APSInt &NewV = getBasicVals().Convert(T, *Int);
         
-        if (isa<Loc>(V))
+        if (V.getAs<Loc>())
           return loc::ConcreteInt(NewV);
         else
           return nonloc::ConcreteInt(NewV);
@@ -291,28 +301,37 @@ ProgramStateRef ProgramState::assumeInBound(DefinedOrUnknownSVal Idx,
 
   // Adjust the index.
   SVal newIdx = svalBuilder.evalBinOpNN(this, BO_Add,
-                                        cast<NonLoc>(Idx), Min, indexTy);
+                                        Idx.castAs<NonLoc>(), Min, indexTy);
   if (newIdx.isUnknownOrUndef())
     return this;
 
   // Adjust the upper bound.
   SVal newBound =
-    svalBuilder.evalBinOpNN(this, BO_Add, cast<NonLoc>(UpperBound),
+    svalBuilder.evalBinOpNN(this, BO_Add, UpperBound.castAs<NonLoc>(),
                             Min, indexTy);
 
   if (newBound.isUnknownOrUndef())
     return this;
 
   // Build the actual comparison.
-  SVal inBound = svalBuilder.evalBinOpNN(this, BO_LT,
-                                cast<NonLoc>(newIdx), cast<NonLoc>(newBound),
-                                Ctx.IntTy);
+  SVal inBound = svalBuilder.evalBinOpNN(this, BO_LT, newIdx.castAs<NonLoc>(),
+                                         newBound.castAs<NonLoc>(), Ctx.IntTy);
   if (inBound.isUnknownOrUndef())
     return this;
 
   // Finally, let the constraint manager take care of it.
   ConstraintManager &CM = SM.getConstraintManager();
-  return CM.assume(this, cast<DefinedSVal>(inBound), Assumption);
+  return CM.assume(this, inBound.castAs<DefinedSVal>(), Assumption);
+}
+
+ConditionTruthVal ProgramState::isNull(SVal V) const {
+  if (V.isZeroConstant())
+    return true;
+
+  SymbolRef Sym = V.getAsSymbol();
+  if (!Sym)
+    return false;
+  return getStateManager().ConstraintMgr->isNull(this, Sym);
 }
 
 ProgramStateRef ProgramStateManager::getInitialState(const LocationContext *InitLoc) {
@@ -499,13 +518,22 @@ bool ScanReachableSymbols::scan(const SymExpr *sym) {
 }
 
 bool ScanReachableSymbols::scan(SVal val) {
-  if (loc::MemRegionVal *X = dyn_cast<loc::MemRegionVal>(&val))
+  if (Optional<loc::MemRegionVal> X = val.getAs<loc::MemRegionVal>())
     return scan(X->getRegion());
 
-  if (nonloc::LazyCompoundVal *X = dyn_cast<nonloc::LazyCompoundVal>(&val))
-    return scan(X->getRegion());
+  if (Optional<nonloc::LazyCompoundVal> X =
+          val.getAs<nonloc::LazyCompoundVal>()) {
+    StoreManager &StoreMgr = state->getStateManager().getStoreManager();
+    // FIXME: We don't really want to use getBaseRegion() here because pointer
+    // arithmetic doesn't apply, but scanReachableSymbols only accepts base
+    // regions right now.
+    if (!StoreMgr.scanReachableSymbols(X->getStore(),
+                                       X->getRegion()->getBaseRegion(),
+                                       *this))
+      return false;
+  }
 
-  if (nonloc::LocAsInteger *X = dyn_cast<nonloc::LocAsInteger>(&val))
+  if (Optional<nonloc::LocAsInteger> X = val.getAs<nonloc::LocAsInteger>())
     return scan(X->getLoc());
 
   if (SymbolRef Sym = val.getAsSymbol())
@@ -514,7 +542,7 @@ bool ScanReachableSymbols::scan(SVal val) {
   if (const SymExpr *Sym = val.getAsSymbolicExpression())
     return scan(Sym);
 
-  if (nonloc::CompoundVal *X = dyn_cast<nonloc::CompoundVal>(&val))
+  if (Optional<nonloc::CompoundVal> X = val.getAs<nonloc::CompoundVal>())
     return scan(*X);
 
   return true;

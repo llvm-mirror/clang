@@ -30,6 +30,7 @@ namespace tools {
 
   /// \brief Clang compiler tool.
   class LLVM_LIBRARY_VISIBILITY Clang : public Tool {
+  public:
     static const char *getBaseInputName(const ArgList &Args,
                                         const InputInfoList &Inputs);
     static const char *getBaseInputStem(const ArgList &Args,
@@ -37,7 +38,9 @@ namespace tools {
     static const char *getDependencyFileName(const ArgList &Args,
                                              const InputInfoList &Inputs);
 
+  private:
     void AddPreprocessingOptions(Compilation &C,
+                                 const JobAction &JA,
                                  const Driver &D,
                                  const ArgList &Args,
                                  ArgStringList &CmdArgs,
@@ -74,6 +77,7 @@ namespace tools {
   /// \brief Clang integrated assembler tool.
   class LLVM_LIBRARY_VISIBILITY ClangAs : public Tool {
     void AddARMTargetArgs(const ArgList &Args, ArgStringList &CmdArgs) const;
+    void AddX86TargetArgs(const ArgList &Args, ArgStringList &CmdArgs) const;
   public:
     ClangAs(const ToolChain &TC) : Tool("clang::as",
                                         "clang integrated assembler", TC) {}
@@ -275,6 +279,7 @@ namespace darwin {
                                                "dsymutil", TC) {}
 
     virtual bool hasIntegratedCPP() const { return false; }
+    virtual bool isDsymutilJob() const { return true; }
 
     virtual void ConstructJob(Compilation &C, const JobAction &JA,
                               const InputInfo &Output,
@@ -286,15 +291,15 @@ namespace darwin {
   class LLVM_LIBRARY_VISIBILITY VerifyDebug : public DarwinTool  {
   public:
     VerifyDebug(const ToolChain &TC) : DarwinTool("darwin::VerifyDebug",
-						  "dwarfdump", TC) {}
+                                                  "dwarfdump", TC) {}
 
     virtual bool hasIntegratedCPP() const { return false; }
 
     virtual void ConstructJob(Compilation &C, const JobAction &JA,
-			      const InputInfo &Output,
-			      const InputInfoList &Inputs,
-			      const ArgList &TCArgs,
-			      const char *LinkingOutput) const;
+                              const InputInfo &Output,
+                              const InputInfoList &Inputs,
+                              const ArgList &TCArgs,
+                              const char *LinkingOutput) const;
   };
 
 }

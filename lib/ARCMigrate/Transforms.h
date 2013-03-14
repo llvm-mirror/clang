@@ -135,6 +135,11 @@ public:
   virtual void traverseBody(BodyContext &BodyCtx);
 };
 
+class ProtectedScopeTraverser : public ASTTraverser {
+public:
+  virtual void traverseBody(BodyContext &BodyCtx);
+};
+
 // GC transformations
 
 class GCAttrsTraverser : public ASTTraverser {
@@ -156,6 +161,7 @@ bool canApplyWeak(ASTContext &Ctx, QualType type,
                   bool AllowOnUnknownClass = false);
 
 bool isPlusOneAssign(const BinaryOperator *E);
+bool isPlusOne(const Expr *E);
 
 /// \brief 'Loc' is the end of a statement range. This returns the location
 /// immediately after the semicolon following the statement.
