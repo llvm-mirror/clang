@@ -59,6 +59,10 @@ class VoidModuleLoader : public ModuleLoader {
                                       bool IsInclusionDirective) {
     return ModuleLoadResult();
   }
+
+  virtual void makeModuleVisible(Module *Mod,
+                                 Module::NameVisibilityKind Visibility,
+                                 SourceLocation ImportLoc) { }
 };
 
 TEST_F(LexerTest, LexAPI) {

@@ -37,9 +37,6 @@ static const Expr *ignoreTransparentExprs(const Expr *E) {
   case Stmt::SubstNonTypeTemplateParmExprClass:
     E = cast<SubstNonTypeTemplateParmExpr>(E)->getReplacement();
     break;
-  case Stmt::CXXDefaultArgExprClass:
-    E = cast<CXXDefaultArgExpr>(E)->getExpr();
-    break;
   default:
     // This is the base case: we can't look through more than we already have.
     return E;
@@ -75,7 +72,6 @@ SVal Environment::getSVal(const EnvironmentEntry &Entry,
 
   switch (S->getStmtClass()) {
   case Stmt::CXXBindTemporaryExprClass:
-  case Stmt::CXXDefaultArgExprClass:
   case Stmt::ExprWithCleanupsClass:
   case Stmt::GenericSelectionExprClass:
   case Stmt::OpaqueValueExprClass:
@@ -202,10 +198,8 @@ EnvironmentManager::removeDeadBindings(Environment Env,
       EBMapRef = EBMapRef.add(BlkExpr, X);
 
       // If the block expr's value is a memory region, then mark that region.
-      if (isa<loc::MemRegionVal>(X)) {
-        const MemRegion *R = cast<loc::MemRegionVal>(X).getRegion();
-        SymReaper.markLive(R);
-      }
+      if (Optional<loc::MemRegionVal> R = X.getAs<loc::MemRegionVal>())
+        SymReaper.markLive(R->getRegion());
 
       // Mark all symbols in the block expr's value live.
       RSScaner.scan(X);

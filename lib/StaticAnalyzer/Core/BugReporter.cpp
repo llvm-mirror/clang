@@ -44,13 +44,13 @@ void BugReporterContext::anchor() {}
 //===----------------------------------------------------------------------===//
 
 static inline const Stmt *GetStmt(const ProgramPoint &P) {
-  if (const StmtPoint* SP = dyn_cast<StmtPoint>(&P))
+  if (Optional<StmtPoint> SP = P.getAs<StmtPoint>())
     return SP->getStmt();
-  else if (const BlockEdge *BE = dyn_cast<BlockEdge>(&P))
+  if (Optional<BlockEdge> BE = P.getAs<BlockEdge>())
     return BE->getSrc()->getTerminator();
-  else if (const CallEnter *CE = dyn_cast<CallEnter>(&P))
+  if (Optional<CallEnter> CE = P.getAs<CallEnter>())
     return CE->getCallExpr();
-  else if (const CallExitEnd *CEE = dyn_cast<CallExitEnd>(&P))
+  if (Optional<CallExitEnd> CEE = P.getAs<CallExitEnd>())
     return CEE->getCalleeContext()->getCallSite();
 
   return 0;
@@ -264,16 +264,19 @@ static void adjustCallLocations(PathPieces &Pieces,
     }
 
     if (LastCallLocation) {
-      if (!Call->callEnter.asLocation().isValid())
+      if (!Call->callEnter.asLocation().isValid() ||
+          Call->getCaller()->isImplicit())
         Call->callEnter = *LastCallLocation;
-      if (!Call->callReturn.asLocation().isValid())
+      if (!Call->callReturn.asLocation().isValid() ||
+          Call->getCaller()->isImplicit())
         Call->callReturn = *LastCallLocation;
     }
 
     // Recursively clean out the subclass.  Keep this call around if
     // it contains any informative diagnostics.
     PathDiagnosticLocation *ThisCallLocation;
-    if (Call->callEnterWithin.asLocation().isValid())
+    if (Call->callEnterWithin.asLocation().isValid() &&
+        !Call->getCallee()->isImplicit())
       ThisCallLocation = &Call->callEnterWithin;
     else
       ThisCallLocation = &Call->callEnter;
@@ -306,7 +309,6 @@ public:
 class PathDiagnosticBuilder : public BugReporterContext {
   BugReport *R;
   PathDiagnosticConsumer *PDC;
-  OwningPtr<ParentMap> PM;
   NodeMapClosure NMC;
 public:
   const LocationContext *LC;
@@ -577,7 +579,7 @@ static bool GenerateMinimalPathDiagnostic(PathDiagnostic& PD,
     ProgramPoint P = N->getLocation();
 
     do {
-      if (const CallExitEnd *CE = dyn_cast<CallExitEnd>(&P)) {
+      if (Optional<CallExitEnd> CE = P.getAs<CallExitEnd>()) {
         PathDiagnosticCallPiece *C =
             PathDiagnosticCallPiece::construct(N, *CE, SMgr);
         GRBugReporter& BR = PDB.getBugReporter();
@@ -588,7 +590,7 @@ static bool GenerateMinimalPathDiagnostic(PathDiagnostic& PD,
         break;
       }
 
-      if (const CallEnter *CE = dyn_cast<CallEnter>(&P)) {
+      if (Optional<CallEnter> CE = P.getAs<CallEnter>()) {
         // Flush all locations, and pop the active path.
         bool VisitedEntireCall = PD.isWithinCall();
         PD.popActivePath();
@@ -616,7 +618,7 @@ static bool GenerateMinimalPathDiagnostic(PathDiagnostic& PD,
         break;
       }
 
-      if (const BlockEdge *BE = dyn_cast<BlockEdge>(&P)) {
+      if (Optional<BlockEdge> BE = P.getAs<BlockEdge>()) {
         const CFGBlock *Src = BE->getSrc();
         const CFGBlock *Dst = BE->getDst();
         const Stmt *T = Src->getTerminator();
@@ -1292,7 +1294,75 @@ static void reversePropagateInterestingSymbols(BugReport &R,
     }
   }
 }
-                                               
+
+//===----------------------------------------------------------------------===//
+// Functions for determining if a loop was executed 0 times.
+//===----------------------------------------------------------------------===//
+
+/// Return true if the terminator is a loop and the destination is the
+/// false branch.
+static bool isLoopJumpPastBody(const Stmt *Term, const BlockEdge *BE) {
+  switch (Term->getStmtClass()) {
+    case Stmt::ForStmtClass:
+    case Stmt::WhileStmtClass:
+      break;
+    default:
+      // Note that we intentionally do not include do..while here.
+      return false;
+  }
+
+  // Did we take the false branch?
+  const CFGBlock *Src = BE->getSrc();
+  assert(Src->succ_size() == 2);
+  return (*(Src->succ_begin()+1) == BE->getDst());
+}
+
+static bool isContainedByStmt(ParentMap &PM, const Stmt *S, const Stmt *SubS) {
+  while (SubS) {
+    if (SubS == S)
+      return true;
+    SubS = PM.getParent(SubS);
+  }
+  return false;
+}
+
+static const Stmt *getStmtBeforeCond(ParentMap &PM, const Stmt *Term,
+                                     const ExplodedNode *N) {
+  while (N) {
+    Optional<StmtPoint> SP = N->getLocation().getAs<StmtPoint>();
+    if (SP) {
+      const Stmt *S = SP->getStmt();
+      if (!isContainedByStmt(PM, Term, S))
+        return S;
+    }
+    N = GetPredecessorNode(N);
+  }
+  return 0;
+}
+
+static bool isInLoopBody(ParentMap &PM, const Stmt *S, const Stmt *Term) {
+  const Stmt *LoopBody = 0;
+  switch (Term->getStmtClass()) {
+    case Stmt::ForStmtClass: {
+      const ForStmt *FS = cast<ForStmt>(Term);
+      if (isContainedByStmt(PM, FS->getInc(), S))
+        return true;
+      LoopBody = FS->getBody();
+      break;
+    }
+    case Stmt::WhileStmtClass:
+      LoopBody = cast<WhileStmt>(Term)->getBody();
+      break;
+    default:
+      return false;
+  }
+  return isContainedByStmt(PM, LoopBody, S);
+}
+
+//===----------------------------------------------------------------------===//
+// Top-level logic for generating extensive path diagnostics.
+//===----------------------------------------------------------------------===//
+
 static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
                                             PathDiagnosticBuilder &PDB,
                                             const ExplodedNode *N,
@@ -1309,14 +1379,14 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
     ProgramPoint P = N->getLocation();
 
     do {
-      if (const PostStmt *PS = dyn_cast<PostStmt>(&P)) {
+      if (Optional<PostStmt> PS = P.getAs<PostStmt>()) {
         if (const Expr *Ex = PS->getStmtAs<Expr>())
           reversePropagateIntererstingSymbols(*PDB.getBugReport(), IE,
                                               N->getState().getPtr(), Ex,
                                               N->getLocationContext());
       }
       
-      if (const CallExitEnd *CE = dyn_cast<CallExitEnd>(&P)) {
+      if (Optional<CallExitEnd> CE = P.getAs<CallExitEnd>()) {
         const Stmt *S = CE->getCalleeContext()->getCallSite();
         if (const Expr *Ex = dyn_cast_or_null<Expr>(S)) {
             reversePropagateIntererstingSymbols(*PDB.getBugReport(), IE,
@@ -1340,7 +1410,7 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
       
       // Pop the call hierarchy if we are done walking the contents
       // of a function call.
-      if (const CallEnter *CE = dyn_cast<CallEnter>(&P)) {
+      if (Optional<CallEnter> CE = P.getAs<CallEnter>()) {
         // Add an edge to the start of the function.
         const Decl *D = CE->getCalleeContext()->getDecl();
         PathDiagnosticLocation pos =
@@ -1385,7 +1455,7 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
       PDB.LC = N->getLocationContext();
 
       // Block edges.
-      if (const BlockEdge *BE = dyn_cast<BlockEdge>(&P)) {
+      if (Optional<BlockEdge> BE = P.getAs<BlockEdge>()) {
         // Does this represent entering a call?  If so, look at propagating
         // interesting symbols across call boundaries.
         if (NextNode) {
@@ -1422,16 +1492,39 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
             EB.addEdge(BL);
           }
         }
-        
-        if (const Stmt *Term = BE->getSrc()->getTerminator())
+
+        const CFGBlock *BSrc = BE->getSrc();
+        ParentMap &PM = PDB.getParentMap();
+
+        if (const Stmt *Term = BSrc->getTerminator()) {
+          // Are we jumping past the loop body without ever executing the
+          // loop (because the condition was false)?
+          if (isLoopJumpPastBody(Term, &*BE) &&
+              !isInLoopBody(PM,
+                            getStmtBeforeCond(PM,
+                                              BSrc->getTerminatorCondition(),
+                                              N),
+                            Term)) {
+            PathDiagnosticLocation L(Term, SM, PDB.LC);
+            PathDiagnosticEventPiece *PE =
+                new PathDiagnosticEventPiece(L, "Loop body executed 0 times");
+            PE->setPrunable(true);
+
+            EB.addEdge(PE->getLocation(), true);
+            PD.getActivePath().push_front(PE);
+          }
+
+          // In any case, add the terminator as the current statement
+          // context for control edges.
           EB.addContext(Term);
+        }
 
         break;
       }
 
-      if (const BlockEntrance *BE = dyn_cast<BlockEntrance>(&P)) {
-        CFGElement First = BE->getFirstElement();
-        if (const CFGStmt *S = First.getAs<CFGStmt>()) {
+      if (Optional<BlockEntrance> BE = P.getAs<BlockEntrance>()) {
+        Optional<CFGElement> First = BE->getFirstElement();
+        if (Optional<CFGStmt> S = First ? First->getAs<CFGStmt>() : None) {
           const Stmt *stmt = S->getStmt();
           if (IsControlFlowExpr(stmt)) {
             // Add the proper context for '&&', '||', and '?'.
@@ -1527,8 +1620,9 @@ const Decl *BugReport::getDeclWithIssue() const {
 void BugReport::Profile(llvm::FoldingSetNodeID& hash) const {
   hash.AddPointer(&BT);
   hash.AddString(Description);
-  if (UniqueingLocation.isValid()) {
-    UniqueingLocation.Profile(hash);
+  PathDiagnosticLocation UL = getUniqueingLocation();
+  if (UL.isValid()) {
+    UL.Profile(hash);
   } else if (Location.isValid()) {
     Location.Profile(hash);
   } else {
@@ -1648,7 +1742,7 @@ const Stmt *BugReport::getStmt() const {
   ProgramPoint ProgP = ErrorNode->getLocation();
   const Stmt *S = NULL;
 
-  if (BlockEntrance *BE = dyn_cast<BlockEntrance>(&ProgP)) {
+  if (Optional<BlockEntrance> BE = ProgP.getAs<BlockEntrance>()) {
     CFGBlock &Exit = ProgP.getLocationContext()->getCFG()->getExit();
     if (BE->getBlock() == &Exit)
       S = GetPreviousStmt(ErrorNode);
@@ -1692,7 +1786,7 @@ PathDiagnosticLocation BugReport::getLocation(const SourceManager &SM) const {
       if (const BinaryOperator *B = dyn_cast<BinaryOperator>(S))
         return PathDiagnosticLocation::createOperatorLoc(B, SM);
 
-      if (isa<PostStmtPurgeDeadSymbols>(ErrorNode->getLocation()))
+      if (ErrorNode->getLocation().getAs<PostStmtPurgeDeadSymbols>())
         return PathDiagnosticLocation::createEnd(S, SM, LC);
 
       return PathDiagnosticLocation::createBegin(S, SM, LC);
@@ -2043,6 +2137,7 @@ bool GRBugReporter::generatePathDiagnostic(PathDiagnostic& PD,
   // Register additional node visitors.
   R->addVisitor(new NilReceiverBRVisitor());
   R->addVisitor(new ConditionBRVisitor());
+  R->addVisitor(new LikelyFalsePositiveSuppressionBRVisitor());
 
   BugReport::VisitorList visitors;
   unsigned originalReportConfigToken, finalReportConfigToken;
@@ -2063,16 +2158,17 @@ bool GRBugReporter::generatePathDiagnostic(PathDiagnostic& PD,
 
     // Generate the very last diagnostic piece - the piece is visible before 
     // the trace is expanded.
-    if (PDB.getGenerationScheme() != PathDiagnosticConsumer::None) {
-      PathDiagnosticPiece *LastPiece = 0;
-      for (BugReport::visitor_iterator I = visitors.begin(), E = visitors.end();
-           I != E; ++I) {
-        if (PathDiagnosticPiece *Piece = (*I)->getEndPath(PDB, N, *R)) {
-          assert (!LastPiece &&
-                  "There can only be one final piece in a diagnostic.");
-          LastPiece = Piece;
-        }
+    PathDiagnosticPiece *LastPiece = 0;
+    for (BugReport::visitor_iterator I = visitors.begin(), E = visitors.end();
+        I != E; ++I) {
+      if (PathDiagnosticPiece *Piece = (*I)->getEndPath(PDB, N, *R)) {
+        assert (!LastPiece &&
+            "There can only be one final piece in a diagnostic.");
+        LastPiece = Piece;
       }
+    }
+
+    if (PDB.getGenerationScheme() != PathDiagnosticConsumer::None) {
       if (!LastPiece)
         LastPiece = BugReporterVisitor::getDefaultEndPath(PDB, N, *R);
       if (LastPiece)
@@ -2119,7 +2215,8 @@ bool GRBugReporter::generatePathDiagnostic(PathDiagnostic& PD,
     // Remove messages that are basically the same.
     removeRedundantMsgs(PD.getMutablePieces());
 
-    if (R->shouldPrunePath()) {
+    if (R->shouldPrunePath() &&
+        getEngine().getAnalysisManager().options.shouldPrunePaths()) {
       bool hasSomethingInteresting = RemoveUnneededCalls(PD.getMutablePieces(),
                                                          R);
       assert(hasSomethingInteresting);
@@ -2295,7 +2392,9 @@ void BugReporter::FlushReport(BugReport *exampleReport,
                          exampleReport->getBugType().getName(),
                          exampleReport->getDescription(),
                          exampleReport->getShortDescription(/*Fallback=*/false),
-                         BT.getCategory()));
+                         BT.getCategory(),
+                         exampleReport->getUniqueingLocation(),
+                         exampleReport->getUniqueingDecl()));
 
   // Generate the full path diagnostic, using the generation scheme
   // specified by the PathDiagnosticConsumer. Note that we have to generate

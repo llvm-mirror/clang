@@ -76,6 +76,8 @@ void CallAndMessageChecker::emitBadCall(BugType *BT, CheckerContext &C,
   BugReport *R = new BugReport(*BT, BT->getName(), N);
   if (BadE) {
     R->addRange(BadE->getSourceRange());
+    if (BadE->isGLValue())
+      BadE = bugreporter::getDerefExpr(BadE);
     bugreporter::trackNullOrUndefValue(N, BadE, *R);
   }
   C.emitReport(R);
@@ -131,9 +133,9 @@ bool CallAndMessageChecker::PreVisitProcessArg(CheckerContext &C,
 
   if (!checkUninitFields)
     return false;
-  
-  if (const nonloc::LazyCompoundVal *LV =
-        dyn_cast<nonloc::LazyCompoundVal>(&V)) {
+
+  if (Optional<nonloc::LazyCompoundVal> LV =
+          V.getAs<nonloc::LazyCompoundVal>()) {
 
     class FindUninitializedField {
     public:
@@ -234,7 +236,8 @@ void CallAndMessageChecker::checkPreStmt(const CallExpr *CE,
   }
 
   ProgramStateRef StNonNull, StNull;
-  llvm::tie(StNonNull, StNull) = State->assume(cast<DefinedOrUnknownSVal>(L));
+  llvm::tie(StNonNull, StNull) =
+      State->assume(L.castAs<DefinedOrUnknownSVal>());
 
   if (StNull && !StNonNull) {
     if (!BT_call_null)
@@ -263,7 +266,8 @@ void CallAndMessageChecker::checkPreCall(const CallEvent &Call,
     }
 
     ProgramStateRef StNonNull, StNull;
-    llvm::tie(StNonNull, StNull) = State->assume(cast<DefinedOrUnknownSVal>(V));
+    llvm::tie(StNonNull, StNull) =
+        State->assume(V.castAs<DefinedOrUnknownSVal>());
 
     if (StNull && !StNonNull) {
       if (!BT_cxx_call_null)
@@ -342,7 +346,7 @@ void CallAndMessageChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
     return;
   } else {
     // Bifurcate the state into nil and non-nil ones.
-    DefinedOrUnknownSVal receiverVal = cast<DefinedOrUnknownSVal>(recVal);
+    DefinedOrUnknownSVal receiverVal = recVal.castAs<DefinedOrUnknownSVal>();
 
     ProgramStateRef state = C.getState();
     ProgramStateRef notNilState, nilState;

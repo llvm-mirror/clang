@@ -19,18 +19,16 @@
 #include "clang/AST/CanonicalType.h"
 #include "clang/AST/Type.h"
 #include "llvm/ADT/FoldingSet.h"
-#include "llvm/Value.h"
+#include "llvm/IR/Value.h"
 
 // FIXME: Restructure so we don't have to expose so much stuff.
 #include "ABIInfo.h"
 
 namespace llvm {
-  struct AttributeWithIndex;
+  class AttributeSet;
   class Function;
   class Type;
   class Value;
-
-  template<typename T, unsigned> class SmallVector;
 }
 
 namespace clang {
@@ -41,7 +39,7 @@ namespace clang {
   class VarDecl;
 
 namespace CodeGen {
-  typedef SmallVector<llvm::AttributeWithIndex, 8> AttributeListType;
+  typedef SmallVector<llvm::AttributeSet, 8> AttributeListType;
 
   struct CallArg {
     RValue RV;

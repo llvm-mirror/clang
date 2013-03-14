@@ -78,6 +78,9 @@ public:
   /// replaced.
   std::string CoverageFile;
 
+  /// The version string to put into coverage files.
+  char CoverageVersion[4];
+
   /// Enable additional debugging information.
   std::string DebugPass;
 
@@ -101,6 +104,10 @@ public:
   /// in situations where the input file name does not match the original input
   /// file, for example with -save-temps.
   std::string MainFileName;
+
+  /// The name for the split debug info file that we'll break out. This is used
+  /// in the backend for setting the name in the skeleton cu.
+  std::string SplitDwarfFile;
 
   /// The name of the relocation model to use.
   std::string RelocationModel;
@@ -130,6 +137,7 @@ public:
 #include "clang/Frontend/CodeGenOptions.def"
 
     RelocationModel = "pic";
+    memcpy(CoverageVersion, "*204", 4);
   }
 };
 

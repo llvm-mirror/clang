@@ -17,7 +17,6 @@
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
-#include "clang/AST/DeclObjC.h"
 #include "clang/AST/EvaluatedExprVisitor.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
@@ -25,11 +24,10 @@
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/StmtObjC.h"
 #include "clang/Analysis/Analyses/FormatString.h"
-#include "clang/Basic/ConvertUTF.h"
+#include "clang/Basic/CharInfo.h"
 #include "clang/Basic/TargetBuiltins.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
-#include "clang/Sema/Initialization.h"
 #include "clang/Sema/Initialization.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/ScopeInfo.h"
@@ -37,6 +35,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/raw_ostream.h"
 #include <limits>
 using namespace clang;
@@ -488,8 +487,8 @@ bool Sema::getFormatStringInfo(const FormatAttr *Format, bool IsCXXMember,
 
 /// Handles the checks for format strings, non-POD arguments to vararg
 /// functions, and NULL arguments passed to non-NULL parameters.
-void Sema::checkCall(NamedDecl *FDecl, Expr **Args,
-                     unsigned NumArgs,
+void Sema::checkCall(NamedDecl *FDecl,
+                     ArrayRef<const Expr *> Args,
                      unsigned NumProtoArgs,
                      bool IsMemberFunction,
                      SourceLocation Loc,
@@ -503,41 +502,40 @@ void Sema::checkCall(NamedDecl *FDecl, Expr **Args,
   for (specific_attr_iterator<FormatAttr>
          I = FDecl->specific_attr_begin<FormatAttr>(),
          E = FDecl->specific_attr_end<FormatAttr>(); I != E ; ++I)
-    if (CheckFormatArguments(*I, Args, NumArgs, IsMemberFunction, CallType,
-                             Loc, Range))
+    if (CheckFormatArguments(*I, Args, IsMemberFunction, CallType, Loc, Range))
         HandledFormatString = true;
 
   // Refuse POD arguments that weren't caught by the format string
   // checks above.
   if (!HandledFormatString && CallType != VariadicDoesNotApply)
-    for (unsigned ArgIdx = NumProtoArgs; ArgIdx < NumArgs; ++ArgIdx) {
+    for (unsigned ArgIdx = NumProtoArgs; ArgIdx < Args.size(); ++ArgIdx) {
       // Args[ArgIdx] can be null in malformed code.
-      if (Expr *Arg = Args[ArgIdx])
+      if (const Expr *Arg = Args[ArgIdx])
         variadicArgumentPODCheck(Arg, CallType);
     }
 
   for (specific_attr_iterator<NonNullAttr>
          I = FDecl->specific_attr_begin<NonNullAttr>(),
          E = FDecl->specific_attr_end<NonNullAttr>(); I != E; ++I)
-    CheckNonNullArguments(*I, Args, Loc);
+    CheckNonNullArguments(*I, Args.data(), Loc);
 
   // Type safety checking.
   for (specific_attr_iterator<ArgumentWithTypeTagAttr>
          i = FDecl->specific_attr_begin<ArgumentWithTypeTagAttr>(),
          e = FDecl->specific_attr_end<ArgumentWithTypeTagAttr>(); i != e; ++i) {
-    CheckArgumentWithTypeTag(*i, Args);
+    CheckArgumentWithTypeTag(*i, Args.data());
   }
 }
 
 /// CheckConstructorCall - Check a constructor call for correctness and safety
 /// properties not enforced by the C type system.
-void Sema::CheckConstructorCall(FunctionDecl *FDecl, Expr **Args,
-                                unsigned NumArgs,
+void Sema::CheckConstructorCall(FunctionDecl *FDecl,
+                                ArrayRef<const Expr *> Args,
                                 const FunctionProtoType *Proto,
                                 SourceLocation Loc) {
   VariadicCallType CallType =
     Proto->isVariadic() ? VariadicConstructor : VariadicDoesNotApply;
-  checkCall(FDecl, Args, NumArgs, Proto->getNumArgs(),
+  checkCall(FDecl, Args, Proto->getNumArgs(),
             /*IsMemberFunction=*/true, Loc, SourceRange(), CallType);
 }
 
@@ -561,7 +559,8 @@ bool Sema::CheckFunctionCall(FunctionDecl *FDecl, CallExpr *TheCall,
     ++Args;
     --NumArgs;
   }
-  checkCall(FDecl, Args, NumArgs, NumProtoArgs,
+  checkCall(FDecl, llvm::makeArrayRef<const Expr *>(Args, NumArgs),
+            NumProtoArgs,
             IsMemberFunction, TheCall->getRParenLoc(),
             TheCall->getCallee()->getSourceRange(), CallType);
 
@@ -591,7 +590,8 @@ bool Sema::CheckObjCMethodCall(ObjCMethodDecl *Method, SourceLocation lbrac,
   VariadicCallType CallType =
       Method->isVariadic() ? VariadicMethod : VariadicDoesNotApply;
 
-  checkCall(Method, Args, NumArgs, Method->param_size(),
+  checkCall(Method, llvm::makeArrayRef<const Expr *>(Args, NumArgs),
+            Method->param_size(),
             /*IsMemberFunction=*/false,
             lbrac, Method->getSourceRange(), CallType);
 
@@ -612,7 +612,9 @@ bool Sema::CheckBlockCall(NamedDecl *NDecl, CallExpr *TheCall,
       Proto && Proto->isVariadic() ? VariadicBlock : VariadicDoesNotApply ;
   unsigned NumProtoArgs = Proto ? Proto->getNumArgs() : 0;
 
-  checkCall(NDecl, TheCall->getArgs(), TheCall->getNumArgs(),
+  checkCall(NDecl,
+            llvm::makeArrayRef<const Expr *>(TheCall->getArgs(),
+                                             TheCall->getNumArgs()),
             NumProtoArgs, /*IsMemberFunction=*/false,
             TheCall->getRParenLoc(),
             TheCall->getCallee()->getSourceRange(), CallType);
@@ -1646,8 +1648,8 @@ bool Sema::SemaBuiltinLongjmp(CallExpr *TheCall) {
 // format string, we will usually need to emit a warning.
 // True string literals are then checked by CheckFormatString.
 Sema::StringLiteralCheckType
-Sema::checkFormatStringExpr(const Expr *E, Expr **Args,
-                            unsigned NumArgs, bool HasVAListArg,
+Sema::checkFormatStringExpr(const Expr *E, ArrayRef<const Expr *> Args,
+                            bool HasVAListArg,
                             unsigned format_idx, unsigned firstDataArg,
                             FormatStringType Type, VariadicCallType CallType,
                             bool inFunctionCall) {
@@ -1672,13 +1674,13 @@ Sema::checkFormatStringExpr(const Expr *E, Expr **Args,
     const AbstractConditionalOperator *C =
         cast<AbstractConditionalOperator>(E);
     StringLiteralCheckType Left =
-        checkFormatStringExpr(C->getTrueExpr(), Args, NumArgs,
+        checkFormatStringExpr(C->getTrueExpr(), Args,
                               HasVAListArg, format_idx, firstDataArg,
                               Type, CallType, inFunctionCall);
     if (Left == SLCT_NotALiteral)
       return SLCT_NotALiteral;
     StringLiteralCheckType Right =
-        checkFormatStringExpr(C->getFalseExpr(), Args, NumArgs,
+        checkFormatStringExpr(C->getFalseExpr(), Args,
                               HasVAListArg, format_idx, firstDataArg,
                               Type, CallType, inFunctionCall);
     return Left < Right ? Left : Right;
@@ -1729,7 +1731,7 @@ Sema::checkFormatStringExpr(const Expr *E, Expr **Args,
             if (InitList->isStringLiteralInit())
               Init = InitList->getInit(0)->IgnoreParenImpCasts();
           }
-          return checkFormatStringExpr(Init, Args, NumArgs,
+          return checkFormatStringExpr(Init, Args,
                                        HasVAListArg, format_idx,
                                        firstDataArg, Type, CallType,
                                        /*inFunctionCall*/false);
@@ -1787,7 +1789,7 @@ Sema::checkFormatStringExpr(const Expr *E, Expr **Args,
             --ArgIndex;
         const Expr *Arg = CE->getArg(ArgIndex - 1);
 
-        return checkFormatStringExpr(Arg, Args, NumArgs,
+        return checkFormatStringExpr(Arg, Args,
                                      HasVAListArg, format_idx, firstDataArg,
                                      Type, CallType, inFunctionCall);
       } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(ND)) {
@@ -1795,7 +1797,7 @@ Sema::checkFormatStringExpr(const Expr *E, Expr **Args,
         if (BuiltinID == Builtin::BI__builtin___CFStringMakeConstantString ||
             BuiltinID == Builtin::BI__builtin___NSStringMakeConstantString) {
           const Expr *Arg = CE->getArg(0);
-          return checkFormatStringExpr(Arg, Args, NumArgs,
+          return checkFormatStringExpr(Arg, Args,
                                        HasVAListArg, format_idx,
                                        firstDataArg, Type, CallType,
                                        inFunctionCall);
@@ -1815,7 +1817,7 @@ Sema::checkFormatStringExpr(const Expr *E, Expr **Args,
       StrE = cast<StringLiteral>(E);
 
     if (StrE) {
-      CheckFormatString(StrE, E, Args, NumArgs, HasVAListArg, format_idx,
+      CheckFormatString(StrE, E, Args, HasVAListArg, format_idx,
                         firstDataArg, Type, inFunctionCall, CallType);
       return SLCT_CheckedLiteral;
     }
@@ -1836,8 +1838,20 @@ Sema::CheckNonNullArguments(const NonNullAttr *NonNull,
                                   e = NonNull->args_end();
        i != e; ++i) {
     const Expr *ArgExpr = ExprArgs[*i];
-    if (ArgExpr->isNullPointerConstant(Context,
-                                       Expr::NPC_ValueDependentIsNotNull))
+
+    // As a special case, transparent unions initialized with zero are
+    // considered null for the purposes of the nonnull attribute.
+    if (const RecordType *UT = ArgExpr->getType()->getAsUnionType()) {
+      if (UT->getDecl()->hasAttr<TransparentUnionAttr>())
+        if (const CompoundLiteralExpr *CLE =
+            dyn_cast<CompoundLiteralExpr>(ArgExpr))
+          if (const InitListExpr *ILE =
+              dyn_cast<InitListExpr>(CLE->getInitializer()))
+            ArgExpr = ILE->getInit(0);
+    }
+
+    bool Result;
+    if (ArgExpr->EvaluateAsBooleanCondition(Result, Context) && !Result)
       Diag(CallSiteLoc, diag::warn_null_arg) << ArgExpr->getSourceRange();
   }
 }
@@ -1856,25 +1870,26 @@ Sema::FormatStringType Sema::GetFormatStringType(const FormatAttr *Format) {
 /// CheckFormatArguments - Check calls to printf and scanf (and similar
 /// functions) for correct use of format strings.
 /// Returns true if a format string has been fully checked.
-bool Sema::CheckFormatArguments(const FormatAttr *Format, Expr **Args,
-                                unsigned NumArgs, bool IsCXXMember,
+bool Sema::CheckFormatArguments(const FormatAttr *Format,
+                                ArrayRef<const Expr *> Args,
+                                bool IsCXXMember,
                                 VariadicCallType CallType,
                                 SourceLocation Loc, SourceRange Range) {
   FormatStringInfo FSI;
   if (getFormatStringInfo(Format, IsCXXMember, &FSI))
-    return CheckFormatArguments(Args, NumArgs, FSI.HasVAListArg, FSI.FormatIdx,
+    return CheckFormatArguments(Args, FSI.HasVAListArg, FSI.FormatIdx,
                                 FSI.FirstDataArg, GetFormatStringType(Format),
                                 CallType, Loc, Range);
   return false;
 }
 
-bool Sema::CheckFormatArguments(Expr **Args, unsigned NumArgs,
+bool Sema::CheckFormatArguments(ArrayRef<const Expr *> Args,
                                 bool HasVAListArg, unsigned format_idx,
                                 unsigned firstDataArg, FormatStringType Type,
                                 VariadicCallType CallType,
                                 SourceLocation Loc, SourceRange Range) {
   // CHECK: printf/scanf-like function is called with no format string.
-  if (format_idx >= NumArgs) {
+  if (format_idx >= Args.size()) {
     Diag(Loc, diag::warn_missing_format_string) << Range;
     return false;
   }
@@ -1894,7 +1909,7 @@ bool Sema::CheckFormatArguments(Expr **Args, unsigned NumArgs,
   // ObjC string uses the same format specifiers as C string, so we can use
   // the same format string checking logic for both ObjC and C strings.
   StringLiteralCheckType CT =
-      checkFormatStringExpr(OrigFormatExpr, Args, NumArgs, HasVAListArg,
+      checkFormatStringExpr(OrigFormatExpr, Args, HasVAListArg,
                             format_idx, firstDataArg, Type, CallType);
   if (CT != SLCT_NotALiteral)
     // Literal format string found, check done!
@@ -1915,7 +1930,7 @@ bool Sema::CheckFormatArguments(Expr **Args, unsigned NumArgs,
 
   // If there are no arguments specified, warn with -Wformat-security, otherwise
   // warn only with -Wformat-nonliteral.
-  if (NumArgs == format_idx+1)
+  if (Args.size() == format_idx+1)
     Diag(Args[format_idx]->getLocStart(),
          diag::warn_format_nonliteral_noargs)
       << OrigFormatExpr->getSourceRange();
@@ -1936,8 +1951,7 @@ protected:
   const unsigned NumDataArgs;
   const char *Beg; // Start of format string.
   const bool HasVAListArg;
-  const Expr * const *Args;
-  const unsigned NumArgs;
+  ArrayRef<const Expr *> Args;
   unsigned FormatIdx;
   llvm::BitVector CoveredArgs;
   bool usesPositionalArgs;
@@ -1948,13 +1962,13 @@ public:
   CheckFormatHandler(Sema &s, const StringLiteral *fexpr,
                      const Expr *origFormatExpr, unsigned firstDataArg,
                      unsigned numDataArgs, const char *beg, bool hasVAListArg,
-                     Expr **args, unsigned numArgs,
+                     ArrayRef<const Expr *> Args,
                      unsigned formatIdx, bool inFunctionCall,
                      Sema::VariadicCallType callType)
     : S(s), FExpr(fexpr), OrigFormatExpr(origFormatExpr),
       FirstDataArg(firstDataArg), NumDataArgs(numDataArgs),
       Beg(beg), HasVAListArg(hasVAListArg),
-      Args(args), NumArgs(numArgs), FormatIdx(formatIdx),
+      Args(Args), FormatIdx(formatIdx),
       usesPositionalArgs(false), atFirstArg(true),
       inFunctionCall(inFunctionCall), CallType(callType) {
         CoveredArgs.resize(numDataArgs);
@@ -2066,7 +2080,7 @@ void CheckFormatHandler::HandleInvalidLengthModifier(
   CharSourceRange LMRange = getSpecifierRange(LM.getStart(), LM.getLength());
 
   // See if we know how to fix this length modifier.
-  llvm::Optional<LengthModifier> FixedLM = FS.getCorrectedLengthModifier();
+  Optional<LengthModifier> FixedLM = FS.getCorrectedLengthModifier();
   if (FixedLM) {
     EmitFormatDiagnostic(S.PDiag(DiagID) << LM.toString() << CS.toString(),
                          getLocationOfByte(LM.getStart()),
@@ -2099,7 +2113,7 @@ void CheckFormatHandler::HandleNonStandardLengthModifier(
   CharSourceRange LMRange = getSpecifierRange(LM.getStart(), LM.getLength());
 
   // See if we know how to fix this length modifier.
-  llvm::Optional<LengthModifier> FixedLM = FS.getCorrectedLengthModifier();
+  Optional<LengthModifier> FixedLM = FS.getCorrectedLengthModifier();
   if (FixedLM) {
     EmitFormatDiagnostic(S.PDiag(diag::warn_format_non_standard)
                            << LM.toString() << 0,
@@ -2126,7 +2140,7 @@ void CheckFormatHandler::HandleNonStandardConversionSpecifier(
   using namespace analyze_format_string;
 
   // See if we know how to fix this conversion specifier.
-  llvm::Optional<ConversionSpecifier> FixedCS = CS.getStandardSpecifier();
+  Optional<ConversionSpecifier> FixedCS = CS.getStandardSpecifier();
   if (FixedCS) {
     EmitFormatDiagnostic(S.PDiag(diag::warn_format_non_standard)
                           << CS.toString() << /*conversion specifier*/1,
@@ -2346,11 +2360,11 @@ public:
                      const Expr *origFormatExpr, unsigned firstDataArg,
                      unsigned numDataArgs, bool isObjC,
                      const char *beg, bool hasVAListArg,
-                     Expr **Args, unsigned NumArgs,
+                     ArrayRef<const Expr *> Args,
                      unsigned formatIdx, bool inFunctionCall,
                      Sema::VariadicCallType CallType)
   : CheckFormatHandler(s, fexpr, origFormatExpr, firstDataArg,
-                       numDataArgs, beg, hasVAListArg, Args, NumArgs,
+                       numDataArgs, beg, hasVAListArg, Args,
                        formatIdx, inFunctionCall, CallType), ObjCContext(isObjC)
   {}
 
@@ -2906,7 +2920,7 @@ CheckPrintfHandler::checkFormatExpr(const analyze_printf::PrintfSpecifier &FS,
 
       EmitFormatDiagnostic(
         S.PDiag(DiagKind)
-          << S.getLangOpts().CPlusPlus0x
+          << S.getLangOpts().CPlusPlus11
           << ExprTy
           << CallType
           << AT.getRepresentativeTypeName(S.Context)
@@ -2935,12 +2949,12 @@ public:
   CheckScanfHandler(Sema &s, const StringLiteral *fexpr,
                     const Expr *origFormatExpr, unsigned firstDataArg,
                     unsigned numDataArgs, const char *beg, bool hasVAListArg,
-                    Expr **Args, unsigned NumArgs,
+                    ArrayRef<const Expr *> Args,
                     unsigned formatIdx, bool inFunctionCall,
                     Sema::VariadicCallType CallType)
   : CheckFormatHandler(s, fexpr, origFormatExpr, firstDataArg,
                        numDataArgs, beg, hasVAListArg,
-                       Args, NumArgs, formatIdx, inFunctionCall, CallType)
+                       Args, formatIdx, inFunctionCall, CallType)
   {}
   
   bool HandleScanfSpecifier(const analyze_scanf::ScanfSpecifier &FS,
@@ -3092,7 +3106,7 @@ bool CheckScanfHandler::HandleScanfSpecifier(
 
 void Sema::CheckFormatString(const StringLiteral *FExpr,
                              const Expr *OrigFormatExpr,
-                             Expr **Args, unsigned NumArgs,
+                             ArrayRef<const Expr *> Args,
                              bool HasVAListArg, unsigned format_idx,
                              unsigned firstDataArg, FormatStringType Type,
                              bool inFunctionCall, VariadicCallType CallType) {
@@ -3110,7 +3124,7 @@ void Sema::CheckFormatString(const StringLiteral *FExpr,
   StringRef StrRef = FExpr->getString();
   const char *Str = StrRef.data();
   unsigned StrLen = StrRef.size();
-  const unsigned numDataArgs = NumArgs - firstDataArg;
+  const unsigned numDataArgs = Args.size() - firstDataArg;
   
   // CHECK: empty format string?
   if (StrLen == 0 && numDataArgs > 0) {
@@ -3124,7 +3138,7 @@ void Sema::CheckFormatString(const StringLiteral *FExpr,
   if (Type == FST_Printf || Type == FST_NSString) {
     CheckPrintfHandler H(*this, FExpr, OrigFormatExpr, firstDataArg,
                          numDataArgs, (Type == FST_NSString),
-                         Str, HasVAListArg, Args, NumArgs, format_idx,
+                         Str, HasVAListArg, Args, format_idx,
                          inFunctionCall, CallType);
   
     if (!analyze_format_string::ParsePrintfString(H, Str, Str + StrLen,
@@ -3133,7 +3147,7 @@ void Sema::CheckFormatString(const StringLiteral *FExpr,
       H.DoneProcessing();
   } else if (Type == FST_Scanf) {
     CheckScanfHandler H(*this, FExpr, OrigFormatExpr, firstDataArg, numDataArgs,
-                        Str, HasVAListArg, Args, NumArgs, format_idx,
+                        Str, HasVAListArg, Args, format_idx,
                         inFunctionCall, CallType);
     
     if (!analyze_format_string::ParseScanfString(H, Str, Str + StrLen,
@@ -3240,7 +3254,8 @@ void Sema::CheckMemaccessArguments(const CallExpr *Call,
           if (const UnaryOperator *UnaryOp = dyn_cast<UnaryOperator>(Dest))
             if (UnaryOp->getOpcode() == UO_AddrOf)
               ActionIdx = 1; // If its an address-of operator, just remove it.
-          if (Context.getTypeSize(PointeeTy) == Context.getCharWidth())
+          if (!PointeeTy->isIncompleteType() &&
+              (Context.getTypeSize(PointeeTy) == Context.getCharWidth()))
             ActionIdx = 2; // If the pointee's size is sizeof(char),
                            // suggest an explicit length.
 
@@ -4924,7 +4939,7 @@ void CheckImplicitConversion(Sema &S, Expr *E, QualType T,
   if ((E->isNullPointerConstant(S.Context, Expr::NPC_ValueDependentIsNotNull)
            == Expr::NPCK_GNUNull) && !Target->isAnyPointerType()
       && !Target->isBlockPointerType() && !Target->isMemberPointerType()
-      && Target->isScalarType()) {
+      && Target->isScalarType() && !Target->isNullPtrType()) {
     SourceLocation Loc = E->getSourceRange().getBegin();
     if (Loc.isMacroID())
       Loc = S.SourceMgr.getImmediateExpansionRange(Loc).first;
@@ -5011,10 +5026,8 @@ void CheckImplicitConversion(Sema &S, Expr *E, QualType T,
   
   if (const EnumType *SourceEnum = Source->getAs<EnumType>())
     if (const EnumType *TargetEnum = Target->getAs<EnumType>())
-      if ((SourceEnum->getDecl()->getIdentifier() || 
-           SourceEnum->getDecl()->getTypedefNameForAnonDecl()) &&
-          (TargetEnum->getDecl()->getIdentifier() ||
-           TargetEnum->getDecl()->getTypedefNameForAnonDecl()) &&
+      if (SourceEnum->getDecl()->hasNameForLinkage() &&
+          TargetEnum->getDecl()->hasNameForLinkage() &&
           SourceEnum != TargetEnum) {
         if (S.SourceMgr.isInSystemMacro(CC))
           return;
@@ -5170,6 +5183,465 @@ void Sema::CheckImplicitConversions(Expr *E, SourceLocation CC) {
   AnalyzeImplicitConversions(*this, E, CC);
 }
 
+/// Diagnose when expression is an integer constant expression and its evaluation
+/// results in integer overflow
+void Sema::CheckForIntOverflow (Expr *E) {
+  if (const BinaryOperator *BExpr = dyn_cast<BinaryOperator>(E->IgnoreParens())) {
+    unsigned Opc = BExpr->getOpcode();
+    if (Opc != BO_Add && Opc != BO_Sub && Opc != BO_Mul)
+      return;
+    llvm::SmallVector<PartialDiagnosticAt, 4> Diags;
+    E->EvaluateForOverflow(Context, &Diags);
+  }
+}
+
+namespace {
+/// \brief Visitor for expressions which looks for unsequenced operations on the
+/// same object.
+class SequenceChecker : public EvaluatedExprVisitor<SequenceChecker> {
+  /// \brief A tree of sequenced regions within an expression. Two regions are
+  /// unsequenced if one is an ancestor or a descendent of the other. When we
+  /// finish processing an expression with sequencing, such as a comma
+  /// expression, we fold its tree nodes into its parent, since they are
+  /// unsequenced with respect to nodes we will visit later.
+  class SequenceTree {
+    struct Value {
+      explicit Value(unsigned Parent) : Parent(Parent), Merged(false) {}
+      unsigned Parent : 31;
+      bool Merged : 1;
+    };
+    llvm::SmallVector<Value, 8> Values;
+
+  public:
+    /// \brief A region within an expression which may be sequenced with respect
+    /// to some other region.
+    class Seq {
+      explicit Seq(unsigned N) : Index(N) {}
+      unsigned Index;
+      friend class SequenceTree;
+    public:
+      Seq() : Index(0) {}
+    };
+
+    SequenceTree() { Values.push_back(Value(0)); }
+    Seq root() const { return Seq(0); }
+
+    /// \brief Create a new sequence of operations, which is an unsequenced
+    /// subset of \p Parent. This sequence of operations is sequenced with
+    /// respect to other children of \p Parent.
+    Seq allocate(Seq Parent) {
+      Values.push_back(Value(Parent.Index));
+      return Seq(Values.size() - 1);
+    }
+
+    /// \brief Merge a sequence of operations into its parent.
+    void merge(Seq S) {
+      Values[S.Index].Merged = true;
+    }
+
+    /// \brief Determine whether two operations are unsequenced. This operation
+    /// is asymmetric: \p Cur should be the more recent sequence, and \p Old
+    /// should have been merged into its parent as appropriate.
+    bool isUnsequenced(Seq Cur, Seq Old) {
+      unsigned C = representative(Cur.Index);
+      unsigned Target = representative(Old.Index);
+      while (C >= Target) {
+        if (C == Target)
+          return true;
+        C = Values[C].Parent;
+      }
+      return false;
+    }
+
+  private:
+    /// \brief Pick a representative for a sequence.
+    unsigned representative(unsigned K) {
+      if (Values[K].Merged)
+        // Perform path compression as we go.
+        return Values[K].Parent = representative(Values[K].Parent);
+      return K;
+    }
+  };
+
+  /// An object for which we can track unsequenced uses.
+  typedef NamedDecl *Object;
+
+  /// Different flavors of object usage which we track. We only track the
+  /// least-sequenced usage of each kind.
+  enum UsageKind {
+    /// A read of an object. Multiple unsequenced reads are OK.
+    UK_Use,
+    /// A modification of an object which is sequenced before the value
+    /// computation of the expression, such as ++n.
+    UK_ModAsValue,
+    /// A modification of an object which is not sequenced before the value
+    /// computation of the expression, such as n++.
+    UK_ModAsSideEffect,
+
+    UK_Count = UK_ModAsSideEffect + 1
+  };
+
+  struct Usage {
+    Usage() : Use(0), Seq() {}
+    Expr *Use;
+    SequenceTree::Seq Seq;
+  };
+
+  struct UsageInfo {
+    UsageInfo() : Diagnosed(false) {}
+    Usage Uses[UK_Count];
+    /// Have we issued a diagnostic for this variable already?
+    bool Diagnosed;
+  };
+  typedef llvm::SmallDenseMap<Object, UsageInfo, 16> UsageInfoMap;
+
+  Sema &SemaRef;
+  /// Sequenced regions within the expression.
+  SequenceTree Tree;
+  /// Declaration modifications and references which we have seen.
+  UsageInfoMap UsageMap;
+  /// The region we are currently within.
+  SequenceTree::Seq Region;
+  /// Filled in with declarations which were modified as a side-effect
+  /// (that is, post-increment operations).
+  llvm::SmallVectorImpl<std::pair<Object, Usage> > *ModAsSideEffect;
+  /// Expressions to check later. We defer checking these to reduce
+  /// stack usage.
+  llvm::SmallVectorImpl<Expr*> &WorkList;
+
+  /// RAII object wrapping the visitation of a sequenced subexpression of an
+  /// expression. At the end of this process, the side-effects of the evaluation
+  /// become sequenced with respect to the value computation of the result, so
+  /// we downgrade any UK_ModAsSideEffect within the evaluation to
+  /// UK_ModAsValue.
+  struct SequencedSubexpression {
+    SequencedSubexpression(SequenceChecker &Self)
+      : Self(Self), OldModAsSideEffect(Self.ModAsSideEffect) {
+      Self.ModAsSideEffect = &ModAsSideEffect;
+    }
+    ~SequencedSubexpression() {
+      for (unsigned I = 0, E = ModAsSideEffect.size(); I != E; ++I) {
+        UsageInfo &U = Self.UsageMap[ModAsSideEffect[I].first];
+        U.Uses[UK_ModAsSideEffect] = ModAsSideEffect[I].second;
+        Self.addUsage(U, ModAsSideEffect[I].first,
+                      ModAsSideEffect[I].second.Use, UK_ModAsValue);
+      }
+      Self.ModAsSideEffect = OldModAsSideEffect;
+    }
+
+    SequenceChecker &Self;
+    llvm::SmallVector<std::pair<Object, Usage>, 4> ModAsSideEffect;
+    llvm::SmallVectorImpl<std::pair<Object, Usage> > *OldModAsSideEffect;
+  };
+
+  /// \brief Find the object which is produced by the specified expression,
+  /// if any.
+  Object getObject(Expr *E, bool Mod) const {
+    E = E->IgnoreParenCasts();
+    if (UnaryOperator *UO = dyn_cast<UnaryOperator>(E)) {
+      if (Mod && (UO->getOpcode() == UO_PreInc || UO->getOpcode() == UO_PreDec))
+        return getObject(UO->getSubExpr(), Mod);
+    } else if (BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
+      if (BO->getOpcode() == BO_Comma)
+        return getObject(BO->getRHS(), Mod);
+      if (Mod && BO->isAssignmentOp())
+        return getObject(BO->getLHS(), Mod);
+    } else if (MemberExpr *ME = dyn_cast<MemberExpr>(E)) {
+      // FIXME: Check for more interesting cases, like "x.n = ++x.n".
+      if (isa<CXXThisExpr>(ME->getBase()->IgnoreParenCasts()))
+        return ME->getMemberDecl();
+    } else if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E))
+      // FIXME: If this is a reference, map through to its value.
+      return DRE->getDecl();
+    return 0;
+  }
+
+  /// \brief Note that an object was modified or used by an expression.
+  void addUsage(UsageInfo &UI, Object O, Expr *Ref, UsageKind UK) {
+    Usage &U = UI.Uses[UK];
+    if (!U.Use || !Tree.isUnsequenced(Region, U.Seq)) {
+      if (UK == UK_ModAsSideEffect && ModAsSideEffect)
+        ModAsSideEffect->push_back(std::make_pair(O, U));
+      U.Use = Ref;
+      U.Seq = Region;
+    }
+  }
+  /// \brief Check whether a modification or use conflicts with a prior usage.
+  void checkUsage(Object O, UsageInfo &UI, Expr *Ref, UsageKind OtherKind,
+                  bool IsModMod) {
+    if (UI.Diagnosed)
+      return;
+
+    const Usage &U = UI.Uses[OtherKind];
+    if (!U.Use || !Tree.isUnsequenced(Region, U.Seq))
+      return;
+
+    Expr *Mod = U.Use;
+    Expr *ModOrUse = Ref;
+    if (OtherKind == UK_Use)
+      std::swap(Mod, ModOrUse);
+
+    SemaRef.Diag(Mod->getExprLoc(),
+                 IsModMod ? diag::warn_unsequenced_mod_mod
+                          : diag::warn_unsequenced_mod_use)
+      << O << SourceRange(ModOrUse->getExprLoc());
+    UI.Diagnosed = true;
+  }
+
+  void notePreUse(Object O, Expr *Use) {
+    UsageInfo &U = UsageMap[O];
+    // Uses conflict with other modifications.
+    checkUsage(O, U, Use, UK_ModAsValue, false);
+  }
+  void notePostUse(Object O, Expr *Use) {
+    UsageInfo &U = UsageMap[O];
+    checkUsage(O, U, Use, UK_ModAsSideEffect, false);
+    addUsage(U, O, Use, UK_Use);
+  }
+
+  void notePreMod(Object O, Expr *Mod) {
+    UsageInfo &U = UsageMap[O];
+    // Modifications conflict with other modifications and with uses.
+    checkUsage(O, U, Mod, UK_ModAsValue, true);
+    checkUsage(O, U, Mod, UK_Use, false);
+  }
+  void notePostMod(Object O, Expr *Use, UsageKind UK) {
+    UsageInfo &U = UsageMap[O];
+    checkUsage(O, U, Use, UK_ModAsSideEffect, true);
+    addUsage(U, O, Use, UK);
+  }
+
+public:
+  SequenceChecker(Sema &S, Expr *E,
+                  llvm::SmallVectorImpl<Expr*> &WorkList)
+    : EvaluatedExprVisitor<SequenceChecker>(S.Context), SemaRef(S),
+      Region(Tree.root()), ModAsSideEffect(0), WorkList(WorkList) {
+    Visit(E);
+  }
+
+  void VisitStmt(Stmt *S) {
+    // Skip all statements which aren't expressions for now.
+  }
+
+  void VisitExpr(Expr *E) {
+    // By default, just recurse to evaluated subexpressions.
+    EvaluatedExprVisitor<SequenceChecker>::VisitStmt(E);
+  }
+
+  void VisitCastExpr(CastExpr *E) {
+    Object O = Object();
+    if (E->getCastKind() == CK_LValueToRValue)
+      O = getObject(E->getSubExpr(), false);
+
+    if (O)
+      notePreUse(O, E);
+    VisitExpr(E);
+    if (O)
+      notePostUse(O, E);
+  }
+
+  void VisitBinComma(BinaryOperator *BO) {
+    // C++11 [expr.comma]p1:
+    //   Every value computation and side effect associated with the left
+    //   expression is sequenced before every value computation and side
+    //   effect associated with the right expression.
+    SequenceTree::Seq LHS = Tree.allocate(Region);
+    SequenceTree::Seq RHS = Tree.allocate(Region);
+    SequenceTree::Seq OldRegion = Region;
+
+    {
+      SequencedSubexpression SeqLHS(*this);
+      Region = LHS;
+      Visit(BO->getLHS());
+    }
+
+    Region = RHS;
+    Visit(BO->getRHS());
+
+    Region = OldRegion;
+
+    // Forget that LHS and RHS are sequenced. They are both unsequenced
+    // with respect to other stuff.
+    Tree.merge(LHS);
+    Tree.merge(RHS);
+  }
+
+  void VisitBinAssign(BinaryOperator *BO) {
+    // The modification is sequenced after the value computation of the LHS
+    // and RHS, so check it before inspecting the operands and update the
+    // map afterwards.
+    Object O = getObject(BO->getLHS(), true);
+    if (!O)
+      return VisitExpr(BO);
+
+    notePreMod(O, BO);
+
+    // C++11 [expr.ass]p7:
+    //   E1 op= E2 is equivalent to E1 = E1 op E2, except that E1 is evaluated
+    //   only once.
+    //
+    // Therefore, for a compound assignment operator, O is considered used
+    // everywhere except within the evaluation of E1 itself.
+    if (isa<CompoundAssignOperator>(BO))
+      notePreUse(O, BO);
+
+    Visit(BO->getLHS());
+
+    if (isa<CompoundAssignOperator>(BO))
+      notePostUse(O, BO);
+
+    Visit(BO->getRHS());
+
+    notePostMod(O, BO, UK_ModAsValue);
+  }
+  void VisitCompoundAssignOperator(CompoundAssignOperator *CAO) {
+    VisitBinAssign(CAO);
+  }
+
+  void VisitUnaryPreInc(UnaryOperator *UO) { VisitUnaryPreIncDec(UO); }
+  void VisitUnaryPreDec(UnaryOperator *UO) { VisitUnaryPreIncDec(UO); }
+  void VisitUnaryPreIncDec(UnaryOperator *UO) {
+    Object O = getObject(UO->getSubExpr(), true);
+    if (!O)
+      return VisitExpr(UO);
+
+    notePreMod(O, UO);
+    Visit(UO->getSubExpr());
+    notePostMod(O, UO, UK_ModAsValue);
+  }
+
+  void VisitUnaryPostInc(UnaryOperator *UO) { VisitUnaryPostIncDec(UO); }
+  void VisitUnaryPostDec(UnaryOperator *UO) { VisitUnaryPostIncDec(UO); }
+  void VisitUnaryPostIncDec(UnaryOperator *UO) {
+    Object O = getObject(UO->getSubExpr(), true);
+    if (!O)
+      return VisitExpr(UO);
+
+    notePreMod(O, UO);
+    Visit(UO->getSubExpr());
+    notePostMod(O, UO, UK_ModAsSideEffect);
+  }
+
+  /// Don't visit the RHS of '&&' or '||' if it might not be evaluated.
+  void VisitBinLOr(BinaryOperator *BO) {
+    // The side-effects of the LHS of an '&&' are sequenced before the
+    // value computation of the RHS, and hence before the value computation
+    // of the '&&' itself, unless the LHS evaluates to zero. We treat them
+    // as if they were unconditionally sequenced.
+    {
+      SequencedSubexpression Sequenced(*this);
+      Visit(BO->getLHS());
+    }
+
+    bool Result;
+    if (!BO->getLHS()->isValueDependent() &&
+        BO->getLHS()->EvaluateAsBooleanCondition(Result, SemaRef.Context)) {
+      if (!Result)
+        Visit(BO->getRHS());
+    } else {
+      // Check for unsequenced operations in the RHS, treating it as an
+      // entirely separate evaluation.
+      //
+      // FIXME: If there are operations in the RHS which are unsequenced
+      // with respect to operations outside the RHS, and those operations
+      // are unconditionally evaluated, diagnose them.
+      WorkList.push_back(BO->getRHS());
+    }
+  }
+  void VisitBinLAnd(BinaryOperator *BO) {
+    {
+      SequencedSubexpression Sequenced(*this);
+      Visit(BO->getLHS());
+    }
+
+    bool Result;
+    if (!BO->getLHS()->isValueDependent() &&
+        BO->getLHS()->EvaluateAsBooleanCondition(Result, SemaRef.Context)) {
+      if (Result)
+        Visit(BO->getRHS());
+    } else {
+      WorkList.push_back(BO->getRHS());
+    }
+  }
+
+  // Only visit the condition, unless we can be sure which subexpression will
+  // be chosen.
+  void VisitAbstractConditionalOperator(AbstractConditionalOperator *CO) {
+    SequencedSubexpression Sequenced(*this);
+    Visit(CO->getCond());
+
+    bool Result;
+    if (!CO->getCond()->isValueDependent() &&
+        CO->getCond()->EvaluateAsBooleanCondition(Result, SemaRef.Context))
+      Visit(Result ? CO->getTrueExpr() : CO->getFalseExpr());
+    else {
+      WorkList.push_back(CO->getTrueExpr());
+      WorkList.push_back(CO->getFalseExpr());
+    }
+  }
+
+  void VisitCXXConstructExpr(CXXConstructExpr *CCE) {
+    if (!CCE->isListInitialization())
+      return VisitExpr(CCE);
+
+    // In C++11, list initializations are sequenced.
+    llvm::SmallVector<SequenceTree::Seq, 32> Elts;
+    SequenceTree::Seq Parent = Region;
+    for (CXXConstructExpr::arg_iterator I = CCE->arg_begin(),
+                                        E = CCE->arg_end();
+         I != E; ++I) {
+      Region = Tree.allocate(Parent);
+      Elts.push_back(Region);
+      Visit(*I);
+    }
+
+    // Forget that the initializers are sequenced.
+    Region = Parent;
+    for (unsigned I = 0; I < Elts.size(); ++I)
+      Tree.merge(Elts[I]);
+  }
+
+  void VisitInitListExpr(InitListExpr *ILE) {
+    if (!SemaRef.getLangOpts().CPlusPlus11)
+      return VisitExpr(ILE);
+
+    // In C++11, list initializations are sequenced.
+    llvm::SmallVector<SequenceTree::Seq, 32> Elts;
+    SequenceTree::Seq Parent = Region;
+    for (unsigned I = 0; I < ILE->getNumInits(); ++I) {
+      Expr *E = ILE->getInit(I);
+      if (!E) continue;
+      Region = Tree.allocate(Parent);
+      Elts.push_back(Region);
+      Visit(E);
+    }
+
+    // Forget that the initializers are sequenced.
+    Region = Parent;
+    for (unsigned I = 0; I < Elts.size(); ++I)
+      Tree.merge(Elts[I]);
+  }
+};
+}
+
+void Sema::CheckUnsequencedOperations(Expr *E) {
+  llvm::SmallVector<Expr*, 8> WorkList;
+  WorkList.push_back(E);
+  while (!WorkList.empty()) {
+    Expr *Item = WorkList.back();
+    WorkList.pop_back();
+    SequenceChecker(*this, Item, WorkList);
+  }
+}
+
+void Sema::CheckCompletedExpr(Expr *E, SourceLocation CheckLoc,
+                              bool IsConstexpr) {
+  CheckImplicitConversions(E, CheckLoc);
+  CheckUnsequencedOperations(E);
+  if (!IsConstexpr && !E->isValueDependent())
+    CheckForIntOverflow(E);
+}
+
 void Sema::CheckBitFieldInitialization(SourceLocation InitLoc,
                                        FieldDecl *BitField,
                                        Expr *Init) {
@@ -5215,7 +5687,7 @@ bool Sema::CheckParmsForFunctionDef(ParmVarDecl **P, ParmVarDecl **PEnd,
     QualType PType = Param->getOriginalType();
     if (const ArrayType *AT = Context.getAsArrayType(PType)) {
       if (AT->getSizeModifier() == ArrayType::Star) {
-        // FIXME: This diagnosic should point the '[*]' if source-location
+        // FIXME: This diagnostic should point the '[*]' if source-location
         // information is added for it.
         Diag(Param->getLocation(), diag::err_array_star_in_function_definition);
       }
@@ -5298,16 +5770,16 @@ static bool IsTailPaddedMemberArray(Sema &S, llvm::APInt Size,
   while (TInfo) {
     TypeLoc TL = TInfo->getTypeLoc();
     // Look through typedefs.
-    const TypedefTypeLoc *TTL = dyn_cast<TypedefTypeLoc>(&TL);
-    if (TTL) {
-      const TypedefNameDecl *TDL = TTL->getTypedefNameDecl();
+    if (TypedefTypeLoc TTL = TL.getAs<TypedefTypeLoc>()) {
+      const TypedefNameDecl *TDL = TTL.getTypedefNameDecl();
       TInfo = TDL->getTypeSourceInfo();
       continue;
     }
-    ConstantArrayTypeLoc CTL = cast<ConstantArrayTypeLoc>(TL);
-    const Expr *SizeExpr = dyn_cast<IntegerLiteral>(CTL.getSizeExpr());
-    if (!SizeExpr || SizeExpr->getExprLoc().isMacroID())
-      return false;
+    if (ConstantArrayTypeLoc CTL = TL.getAs<ConstantArrayTypeLoc>()) {
+      const Expr *SizeExpr = dyn_cast<IntegerLiteral>(CTL.getSizeExpr());
+      if (!SizeExpr || SizeExpr->getExprLoc().isMacroID())
+        return false;
+    }
     break;
   }
 
@@ -5698,7 +6170,7 @@ static bool isSetterLikeSelector(Selector sel) {
     return false;
 
   if (str.empty()) return true;
-  return !islower(str.front());
+  return !isLowercase(str.front());
 }
 
 /// Check a message send to see if it's likely to cause a retain cycle.
@@ -5749,21 +6221,59 @@ void Sema::checkRetainCycles(VarDecl *Var, Expr *Init) {
     diagnoseRetainCycle(*this, Capturer, Owner);
 }
 
-bool Sema::checkUnsafeAssigns(SourceLocation Loc,
-                              QualType LHS, Expr *RHS) {
-  Qualifiers::ObjCLifetime LT = LHS.getObjCLifetime();
-  if (LT != Qualifiers::OCL_Weak && LT != Qualifiers::OCL_ExplicitNone)
+static bool checkUnsafeAssignLiteral(Sema &S, SourceLocation Loc,
+                                     Expr *RHS, bool isProperty) {
+  // Check if RHS is an Objective-C object literal, which also can get
+  // immediately zapped in a weak reference.  Note that we explicitly
+  // allow ObjCStringLiterals, since those are designed to never really die.
+  RHS = RHS->IgnoreParenImpCasts();
+
+  // This enum needs to match with the 'select' in
+  // warn_objc_arc_literal_assign (off-by-1).
+  Sema::ObjCLiteralKind Kind = S.CheckLiteralKind(RHS);
+  if (Kind == Sema::LK_String || Kind == Sema::LK_None)
     return false;
-  // strip off any implicit cast added to get to the one arc-specific
+
+  S.Diag(Loc, diag::warn_arc_literal_assign)
+    << (unsigned) Kind
+    << (isProperty ? 0 : 1)
+    << RHS->getSourceRange();
+
+  return true;
+}
+
+static bool checkUnsafeAssignObject(Sema &S, SourceLocation Loc,
+                                    Qualifiers::ObjCLifetime LT,
+                                    Expr *RHS, bool isProperty) {
+  // Strip off any implicit cast added to get to the one ARC-specific.
   while (ImplicitCastExpr *cast = dyn_cast<ImplicitCastExpr>(RHS)) {
     if (cast->getCastKind() == CK_ARCConsumeObject) {
-      Diag(Loc, diag::warn_arc_retained_assign)
-        << (LT == Qualifiers::OCL_ExplicitNone) << 1
+      S.Diag(Loc, diag::warn_arc_retained_assign)
+        << (LT == Qualifiers::OCL_ExplicitNone)
+        << (isProperty ? 0 : 1)
         << RHS->getSourceRange();
       return true;
     }
     RHS = cast->getSubExpr();
   }
+
+  if (LT == Qualifiers::OCL_Weak &&
+      checkUnsafeAssignLiteral(S, Loc, RHS, isProperty))
+    return true;
+
+  return false;
+}
+
+bool Sema::checkUnsafeAssigns(SourceLocation Loc,
+                              QualType LHS, Expr *RHS) {
+  Qualifiers::ObjCLifetime LT = LHS.getObjCLifetime();
+
+  if (LT != Qualifiers::OCL_Weak && LT != Qualifiers::OCL_ExplicitNone)
+    return false;
+
+  if (checkUnsafeAssignObject(*this, Loc, LT, RHS, false))
+    return true;
+
   return false;
 }
 
@@ -5826,14 +6336,8 @@ void Sema::checkUnsafeExprAssigns(SourceLocation Loc,
       }
     }
     else if (Attributes & ObjCPropertyDecl::OBJC_PR_weak) {
-      while (ImplicitCastExpr *cast = dyn_cast<ImplicitCastExpr>(RHS)) {
-        if (cast->getCastKind() == CK_ARCConsumeObject) {
-          Diag(Loc, diag::warn_arc_retained_assign)
-          << 0 << 0<< RHS->getSourceRange();
-          return;
-        }
-        RHS = cast->getSubExpr();
-      }
+      if (checkUnsafeAssignObject(*this, Loc, Qualifiers::OCL_Weak, RHS, true))
+        return;
     }
   }
 }

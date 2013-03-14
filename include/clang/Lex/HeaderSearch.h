@@ -134,7 +134,7 @@ class HeaderSearch {
   };
 
   /// \brief Header-search options used to initialize this header search.
-  llvm::IntrusiveRefCntPtr<HeaderSearchOptions> HSOpts;
+  IntrusiveRefCntPtr<HeaderSearchOptions> HSOpts;
 
   FileManager &FileMgr;
   /// \#include search path information.  Requests for \#include "x" search the
@@ -217,7 +217,7 @@ class HeaderSearch {
   friend class DirectoryLookup;
   
 public:
-  HeaderSearch(llvm::IntrusiveRefCntPtr<HeaderSearchOptions> HSOpts,
+  HeaderSearch(IntrusiveRefCntPtr<HeaderSearchOptions> HSOpts,
                FileManager &FM, DiagnosticsEngine &Diags,
                const LangOptions &LangOpts, const TargetInfo *Target);
   ~HeaderSearch();
@@ -363,7 +363,8 @@ public:
       StringRef Filename,
       const FileEntry *RelativeFileEnt,
       SmallVectorImpl<char> *SearchPath,
-      SmallVectorImpl<char> *RelativePath);
+      SmallVectorImpl<char> *RelativePath,
+      Module **SuggestedModule);
 
   /// \brief Look up the specified framework name in our framework cache.
   /// \returns The DirectoryEntry it is in if we know, null otherwise.
@@ -480,7 +481,7 @@ public:
   /// \brief Collect the set of all known, top-level modules.
   ///
   /// \param Modules Will be filled with the set of known, top-level modules.
-  void collectAllModules(llvm::SmallVectorImpl<Module *> &Modules);
+  void collectAllModules(SmallVectorImpl<Module *> &Modules);
                          
 private:
   /// \brief Retrieve a module with the given name, which may be part of the

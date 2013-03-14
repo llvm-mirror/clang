@@ -1046,6 +1046,8 @@ public:
   /// that is an aggregate that has no non-static non-POD data members, no
   /// reference data members, no user-defined copy assignment operator and no
   /// user-defined destructor.
+  ///
+  /// Note that this is the C++ TR1 definition of POD.
   bool isPOD() const { return data().PlainOldData; }
 
   /// \brief True if this class is C-like, without C++-specific features, e.g.
@@ -1251,7 +1253,9 @@ public:
   /// \brief If this class is an instantiation of a member class of a
   /// class template specialization, retrieves the member specialization
   /// information.
-  MemberSpecializationInfo *getMemberSpecializationInfo() const;
+  MemberSpecializationInfo *getMemberSpecializationInfo() const {
+    return TemplateOrInstantiation.dyn_cast<MemberSpecializationInfo *>();
+  }
 
   /// \brief Specify that this record is an instantiation of the
   /// member class RD.

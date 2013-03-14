@@ -7,7 +7,7 @@ This document will provide a basic walkthrough of how to write a tool using
 LibTooling.
 
 For the information on how to setup Clang Tooling for LLVM see
-`HowToSetupToolingForLLVM.html <HowToSetupToolingForLLVM.html>`_
+:doc:`HowToSetupToolingForLLVM`
 
 Introduction
 ------------
@@ -168,12 +168,15 @@ arguments:
   $ export BD=/path/to/build/llvm
   $ $BD/bin/clang-check -p $BD tools/clang/tools/clang-check/ClangCheck.cpp
 
+
+.. _libtooling_builtin_includes:
+
 Builtin includes
 ^^^^^^^^^^^^^^^^
 
 Clang tools need their builtin headers and search for them the same way Clang
 does.  Thus, the default location to look for builtin headers is in a path
-``$(dirname /path/to/tool)/../lib/clang/3.2/include`` relative to the tool
+``$(dirname /path/to/tool)/../lib/clang/3.3/include`` relative to the tool
 binary.  This works out-of-the-box for tools running from llvm's toplevel
 binary directory after building clang-headers, or if the tool is running from
 the binary directory of a clang install next to the clang binary.
@@ -184,23 +187,6 @@ with ``-v`` and look at the search paths it looks through.
 Linking
 ^^^^^^^
 
-Please note that this presents the linking requirements at the time of this
-writing.  For the most up-to-date information, look at one of the tools'
-Makefiles (for example `clang-check/Makefile
+For a list of libraries to link, look at one of the tools' Makefiles (for
+example `clang-check/Makefile
 <http://llvm.org/viewvc/llvm-project/cfe/trunk/tools/clang-check/Makefile?view=markup>`_).
-
-To link a binary using the tooling infrastructure, link in the following
-libraries:
-
-* Tooling
-* Frontend
-* Driver
-* Serialization
-* Parse
-* Sema
-* Analysis
-* Edit
-* AST
-* Lex
-* Basic
-

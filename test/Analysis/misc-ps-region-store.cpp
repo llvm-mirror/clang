@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -triple i386-apple-darwin9 -analyze -analyzer-checker=core,alpha.core -analyzer-store=region -verify -fblocks -analyzer-ipa=inlining -analyzer-opt-analyze-nested-blocks %s -fexceptions -fcxx-exceptions
-// RUN: %clang_cc1 -triple x86_64-apple-darwin9 -analyze -analyzer-checker=core,alpha.core -analyzer-store=region -verify -fblocks -analyzer-ipa=inlining -analyzer-opt-analyze-nested-blocks %s -fexceptions -fcxx-exceptions
+// RUN: %clang_cc1 -triple i386-apple-darwin9 -analyze -analyzer-checker=core,alpha.core -analyzer-store=region -verify -fblocks -analyzer-opt-analyze-nested-blocks %s -fexceptions -fcxx-exceptions
+// RUN: %clang_cc1 -triple x86_64-apple-darwin9 -analyze -analyzer-checker=core,alpha.core -analyzer-store=region -verify -fblocks -analyzer-opt-analyze-nested-blocks %s -fexceptions -fcxx-exceptions
 
 // Test basic handling of references.
 char &test1_aux();
@@ -705,3 +705,19 @@ void rdar12759044() {
    *p = 0xDEADBEEF; // no-warning
   }
 }
+
+// The analyzer currently does not model complex types.  Test that the load
+// from 'x' is not flagged as being uninitialized.
+typedef __complex__ float _ComplexT;
+void rdar12964481(_ComplexT *y) {
+   _ComplexT x;
+   __real__ x = 1.0;
+   __imag__ x = 1.0;
+   *y *= x; // no-warning
+}
+void rdar12964481_b(_ComplexT *y) {
+   _ComplexT x;
+   // Eventually this should be a warning.
+   *y *= x; // no-warning
+}
+

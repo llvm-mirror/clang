@@ -48,8 +48,6 @@ def err_fe_unable_to_interface_with_target : Error<
     "unable to interface with target machine">;
 def err_fe_unable_to_open_output : Error<
     "unable to open output file '%0': '%1'">;
-def err_fe_unable_to_open_logfile : Error<
-    "unable to open logfile file '%0': '%1'">;
 def err_fe_pth_file_has_no_source_header : Error<
     "PTH file '%0' does not designate an original source header file for -include-pth">;
 def warn_fe_macro_contains_embedded_newline : Warning<
@@ -102,19 +100,19 @@ def err_relocatable_without_isysroot : Error<
 
 def warn_unknown_warning_option : Warning<
     "unknown warning option '%0'">,
-    InGroup<DiagGroup<"unknown-warning-option"> >;
+    InGroup<UnknownWarningOption>;
 def warn_unknown_negative_warning_option : Warning<
     "unknown warning option '%0'">,
-    InGroup<DiagGroup<"unknown-warning-option"> >;
+    InGroup<UnknownWarningOption>;
 def warn_unknown_warning_option_suggest : Warning<
     "unknown warning option '%0'; did you mean '%1'?">,
-    InGroup<DiagGroup<"unknown-warning-option"> >;
+    InGroup<UnknownWarningOption>;
 def warn_unknown_negative_warning_option_suggest : Warning<
     "unknown warning option '%0'; did you mean '%1'?">,
-    InGroup<DiagGroup<"unknown-warning-option"> >;
+    InGroup<UnknownWarningOption>;
 def warn_unknown_warning_specifier : Warning<
     "unknown %0 warning specifier: '%1'">,
-    InGroup<DiagGroup<"unknown-warning-option"> >;
+    InGroup<UnknownWarningOption>;
 
 def err_unknown_analyzer_checker : Error<
     "no analyzer checkers are associated with '%0'">;

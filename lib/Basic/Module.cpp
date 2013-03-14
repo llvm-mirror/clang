@@ -56,7 +56,7 @@ static bool hasFeature(StringRef Feature, const LangOptions &LangOpts,
            .Case("altivec", LangOpts.AltiVec)
            .Case("blocks", LangOpts.Blocks)
            .Case("cplusplus", LangOpts.CPlusPlus)
-           .Case("cplusplus11", LangOpts.CPlusPlus0x)
+           .Case("cplusplus11", LangOpts.CPlusPlus11)
            .Case("objc", LangOpts.ObjC1)
            .Case("objc_arc", LangOpts.ObjCAutoRefCount)
            .Case("opencl", LangOpts.OpenCL)
@@ -103,15 +103,15 @@ const Module *Module::getTopLevelModule() const {
 }
 
 std::string Module::getFullModuleName() const {
-  llvm::SmallVector<StringRef, 2> Names;
+  SmallVector<StringRef, 2> Names;
   
   // Build up the set of module names (from innermost to outermost).
   for (const Module *M = this; M; M = M->Parent)
     Names.push_back(M->Name);
   
   std::string Result;
-  for (llvm::SmallVector<StringRef, 2>::reverse_iterator I = Names.rbegin(),
-                                                      IEnd = Names.rend(); 
+  for (SmallVector<StringRef, 2>::reverse_iterator I = Names.rbegin(),
+                                                IEnd = Names.rend();
        I != IEnd; ++I) {
     if (!Result.empty())
       Result += '.';
@@ -140,7 +140,7 @@ void Module::addRequirement(StringRef Feature, const LangOptions &LangOpts,
   if (!IsAvailable)
     return;
 
-  llvm::SmallVector<Module *, 2> Stack;
+  SmallVector<Module *, 2> Stack;
   Stack.push_back(this);
   while (!Stack.empty()) {
     Module *Current = Stack.back();
@@ -167,7 +167,7 @@ Module *Module::findSubmodule(StringRef Name) const {
   return SubModules[Pos->getValue()];
 }
 
-static void printModuleId(llvm::raw_ostream &OS, const ModuleId &Id) {
+static void printModuleId(raw_ostream &OS, const ModuleId &Id) {
   for (unsigned I = 0, N = Id.size(); I != N; ++I) {
     if (I)
       OS << ".";
@@ -175,7 +175,60 @@ static void printModuleId(llvm::raw_ostream &OS, const ModuleId &Id) {
   }
 }
 
-void Module::print(llvm::raw_ostream &OS, unsigned Indent) const {
+void Module::getExportedModules(SmallVectorImpl<Module *> &Exported) const {
+  bool AnyWildcard = false;
+  bool UnrestrictedWildcard = false;
+  SmallVector<Module *, 4> WildcardRestrictions;
+  for (unsigned I = 0, N = Exports.size(); I != N; ++I) {
+    Module *Mod = Exports[I].getPointer();
+    if (!Exports[I].getInt()) {
+      // Export a named module directly; no wildcards involved.
+      Exported.push_back(Mod);
+
+      continue;
+    }
+
+    // Wildcard export: export all of the imported modules that match
+    // the given pattern.
+    AnyWildcard = true;
+    if (UnrestrictedWildcard)
+      continue;
+
+    if (Module *Restriction = Exports[I].getPointer())
+      WildcardRestrictions.push_back(Restriction);
+    else {
+      WildcardRestrictions.clear();
+      UnrestrictedWildcard = true;
+    }
+  }
+
+  // If there were any wildcards, push any imported modules that were
+  // re-exported by the wildcard restriction.
+  if (!AnyWildcard)
+    return;
+
+  for (unsigned I = 0, N = Imports.size(); I != N; ++I) {
+    Module *Mod = Imports[I];
+    bool Acceptable = UnrestrictedWildcard;
+    if (!Acceptable) {
+      // Check whether this module meets one of the restrictions.
+      for (unsigned R = 0, NR = WildcardRestrictions.size(); R != NR; ++R) {
+        Module *Restriction = WildcardRestrictions[R];
+        if (Mod == Restriction || Mod->isSubModuleOf(Restriction)) {
+          Acceptable = true;
+          break;
+        }
+      }
+    }
+
+    if (!Acceptable)
+      continue;
+
+    Exported.push_back(Mod);
+  }
+}
+
+void Module::print(raw_ostream &OS, unsigned Indent) const {
   OS.indent(Indent);
   if (IsFramework)
     OS << "framework ";
@@ -255,6 +308,16 @@ void Module::print(llvm::raw_ostream &OS, unsigned Indent) const {
         OS << ".*";
     }
     OS << "\n";
+  }
+
+  for (unsigned I = 0, N = LinkLibraries.size(); I != N; ++I) {
+    OS.indent(Indent + 2);
+    OS << "link ";
+    if (LinkLibraries[I].IsFramework)
+      OS << "framework ";
+    OS << "\"";
+    OS.write_escaped(LinkLibraries[I].Library);
+    OS << "\"";
   }
 
   if (InferSubmodules) {

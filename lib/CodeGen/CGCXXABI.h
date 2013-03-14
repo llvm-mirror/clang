@@ -54,11 +54,20 @@ protected:
     return CGF.CXXABIThisValue;
   }
 
+  // FIXME: Every place that calls getVTT{Decl,Value} is something
+  // that needs to be abstracted properly.
   ImplicitParamDecl *&getVTTDecl(CodeGenFunction &CGF) {
-    return CGF.CXXVTTDecl;
+    return CGF.CXXStructorImplicitParamDecl;
   }
   llvm::Value *&getVTTValue(CodeGenFunction &CGF) {
-    return CGF.CXXVTTValue;
+    return CGF.CXXStructorImplicitParamValue;
+  }
+
+  ImplicitParamDecl *&getStructorImplicitParamDecl(CodeGenFunction &CGF) {
+    return CGF.CXXStructorImplicitParamDecl;
+  }
+  llvm::Value *&getStructorImplicitParamValue(CodeGenFunction &CGF) {
+    return CGF.CXXStructorImplicitParamValue;
   }
 
   /// Build a parameter variable suitable for 'this'.
@@ -176,6 +185,8 @@ public:
                                          CanQualType &ResTy,
                                SmallVectorImpl<CanQualType> &ArgTys) = 0;
 
+  virtual llvm::BasicBlock *EmitCtorCompleteObjectHandler(CodeGenFunction &CGF);
+
   /// Build the signature of the given destructor variant by adding
   /// any required parameters.  For convenience, ResTy has been
   /// initialized to 'void' and ArgTys has been initialized with the
@@ -197,6 +208,22 @@ public:
 
   /// Emit the ABI-specific prolog for the function.
   virtual void EmitInstanceFunctionProlog(CodeGenFunction &CGF) = 0;
+
+  virtual void EmitConstructorCall(CodeGenFunction &CGF,
+                                   const CXXConstructorDecl *D,
+                                   CXXCtorType Type, bool ForVirtualBase,
+                                   bool Delegating,
+                                   llvm::Value *This,
+                                   CallExpr::const_arg_iterator ArgBeg,
+                                   CallExpr::const_arg_iterator ArgEnd) = 0;
+
+  /// Emit the ABI-specific virtual destructor call.
+  virtual RValue EmitVirtualDestructorCall(CodeGenFunction &CGF,
+                                           const CXXDestructorDecl *Dtor,
+                                           CXXDtorType DtorType,
+                                           SourceLocation CallLoc,
+                                           ReturnValueSlot ReturnValue,
+                                           llvm::Value *This) = 0;
 
   virtual void EmitReturnFromThunk(CodeGenFunction &CGF,
                                    RValue RV, QualType ResultType);
@@ -294,16 +321,14 @@ public:
   /// \param addr - a pointer to pass to the destructor function.
   virtual void registerGlobalDtor(CodeGenFunction &CGF, llvm::Constant *dtor,
                                   llvm::Constant *addr);
-
-  /***************************** Virtual Tables *******************************/
-
-  /// Generates and emits the virtual tables for a class.
-  virtual void EmitVTables(const CXXRecordDecl *Class) = 0;
 };
 
-/// Creates an instance of a C++ ABI class.
-CGCXXABI *CreateARMCXXABI(CodeGenModule &CGM);
+// Create an instance of a C++ ABI class:
+
+/// Creates an Itanium-family ABI.
 CGCXXABI *CreateItaniumCXXABI(CodeGenModule &CGM);
+
+/// Creates a Microsoft-family ABI.
 CGCXXABI *CreateMicrosoftCXXABI(CodeGenModule &CGM);
 
 }

@@ -18,11 +18,11 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/Type.h"
-#include "llvm/Metadata.h"
+#include "llvm/IR/Value.h"
 
 namespace llvm {
   class Constant;
-  class Value;
+  class MDNode;
 }
 
 namespace clang {
@@ -290,7 +290,7 @@ public:
 
   /// \brief Create a new object to represent a bit-field access.
   ///
-  /// \param BaseValue - The base address of the bit-field sequence this
+  /// \param Addr - The base address of the bit-field sequence this
   /// bit-field refers to.
   /// \param Info - The information describing how to perform the bit-field
   /// access.
@@ -350,11 +350,23 @@ class AggValueSlot {
   /// evaluating an expression which constructs such an object.
   bool AliasedFlag : 1;
 
+  /// ValueOfAtomicFlag - This is set to true if the slot is the value
+  /// subobject of an object the size of an _Atomic(T).  The specific
+  /// guarantees this makes are:
+  ///   - the address is guaranteed to be a getelementptr into the
+  ///     padding struct and
+  ///   - it is okay to store something the width of an _Atomic(T)
+  ///     into the address.
+  /// Tracking this allows us to avoid some obviously unnecessary
+  /// memcpys.
+  bool ValueOfAtomicFlag : 1;
+
 public:
   enum IsAliased_t { IsNotAliased, IsAliased };
   enum IsDestructed_t { IsNotDestructed, IsDestructed };
   enum IsZeroed_t { IsNotZeroed, IsZeroed };
   enum NeedsGCBarriers_t { DoesNotNeedGCBarriers, NeedsGCBarriers };
+  enum IsValueOfAtomic_t { IsNotValueOfAtomic, IsValueOfAtomic };
 
   /// ignored - Returns an aggregate value slot indicating that the
   /// aggregate value is being ignored.
@@ -378,7 +390,9 @@ public:
                               IsDestructed_t isDestructed,
                               NeedsGCBarriers_t needsGC,
                               IsAliased_t isAliased,
-                              IsZeroed_t isZeroed = IsNotZeroed) {
+                              IsZeroed_t isZeroed = IsNotZeroed,
+                              IsValueOfAtomic_t isValueOfAtomic
+                                = IsNotValueOfAtomic) {
     AggValueSlot AV;
     AV.Addr = addr;
     AV.Alignment = align.getQuantity();
@@ -387,6 +401,7 @@ public:
     AV.ObjCGCFlag = needsGC;
     AV.ZeroedFlag = isZeroed;
     AV.AliasedFlag = isAliased;
+    AV.ValueOfAtomicFlag = isValueOfAtomic;
     return AV;
   }
 
@@ -394,9 +409,12 @@ public:
                                 IsDestructed_t isDestructed,
                                 NeedsGCBarriers_t needsGC,
                                 IsAliased_t isAliased,
-                                IsZeroed_t isZeroed = IsNotZeroed) {
+                                IsZeroed_t isZeroed = IsNotZeroed,
+                                IsValueOfAtomic_t isValueOfAtomic
+                                  = IsNotValueOfAtomic) {
     return forAddr(LV.getAddress(), LV.getAlignment(),
-                   LV.getQuals(), isDestructed, needsGC, isAliased, isZeroed);
+                   LV.getQuals(), isDestructed, needsGC, isAliased, isZeroed,
+                   isValueOfAtomic);
   }
 
   IsDestructed_t isExternallyDestructed() const {
@@ -412,6 +430,10 @@ public:
     return Quals.hasVolatile();
   }
 
+  void setVolatile(bool flag) {
+    Quals.setVolatile(flag);
+  }
+  
   Qualifiers::ObjCLifetime getObjCLifetime() const {
     return Quals.getObjCLifetime();
   }
@@ -423,6 +445,12 @@ public:
   llvm::Value *getAddr() const {
     return Addr;
   }
+
+  IsValueOfAtomic_t isValueOfAtomic() const {
+    return IsValueOfAtomic_t(ValueOfAtomicFlag);
+  }
+
+  llvm::Value *getPaddedAtomicAddr() const;
 
   bool isIgnored() const {
     return Addr == 0;

@@ -297,10 +297,6 @@ public:
     return false;
   }
 
-  virtual bool IsObjCDefaultSynthPropertiesDefault() const {
-    return true;
-  }
-
   virtual bool IsEncodeExtendedBlockSignatureDefault() const {
     return true;
   }
@@ -388,7 +384,8 @@ public:
 
   virtual bool IsIntegratedAssemblerDefault() const {
     // Default integrated assembler to on for x86.
-    return (getTriple().getArch() == llvm::Triple::x86 ||
+    return (getTriple().getArch() == llvm::Triple::aarch64 ||
+            getTriple().getArch() == llvm::Triple::x86 ||
             getTriple().getArch() == llvm::Triple::x86_64);
   }
 };
@@ -504,6 +501,11 @@ public:
   std::vector<std::string> ExtraOpts;
 
 private:
+  static bool addLibStdCXXIncludePaths(Twine Base, Twine Suffix,
+                                       Twine TargetArchDir,
+                                       Twine MultiLibSuffix,
+                                       const ArgList &DriverArgs,
+                                       ArgStringList &CC1Args);
   static bool addLibStdCXXIncludePaths(Twine Base, Twine TargetArchDir,
                                        const ArgList &DriverArgs,
                                        ArgStringList &CC1Args);
@@ -562,10 +564,6 @@ public:
 
   virtual Tool &SelectTool(const Compilation &C, const JobAction &JA,
                            const ActionList &Inputs) const;
-
-  virtual bool IsObjCDefaultSynthPropertiesDefault() const {
-    return true;
-  }
 
   virtual bool IsIntegratedAssemblerDefault() const;
   virtual bool IsUnwindTablesDefault() const;

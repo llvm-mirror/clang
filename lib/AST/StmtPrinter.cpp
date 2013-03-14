@@ -21,7 +21,9 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/PrettyPrinter.h"
 #include "clang/AST/StmtVisitor.h"
+#include "clang/Basic/CharInfo.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Format.h"
 using namespace clang;
 
 //===----------------------------------------------------------------------===//
@@ -584,10 +586,8 @@ void StmtPrinter::VisitDeclRefExpr(DeclRefExpr *Node) {
     OS << "template ";
   OS << Node->getNameInfo();
   if (Node->hasExplicitTemplateArgs())
-    OS << TemplateSpecializationType::PrintTemplateArgumentList(
-                                                    Node->getTemplateArgs(),
-                                                    Node->getNumTemplateArgs(),
-                                                    Policy);  
+    TemplateSpecializationType::PrintTemplateArgumentList(
+        OS, Node->getTemplateArgs(), Node->getNumTemplateArgs(), Policy);
 }
 
 void StmtPrinter::VisitDependentScopeDeclRefExpr(
@@ -598,10 +598,8 @@ void StmtPrinter::VisitDependentScopeDeclRefExpr(
     OS << "template ";
   OS << Node->getNameInfo();
   if (Node->hasExplicitTemplateArgs())
-    OS << TemplateSpecializationType::PrintTemplateArgumentList(
-                                                   Node->getTemplateArgs(),
-                                                   Node->getNumTemplateArgs(),
-                                                   Policy);
+    TemplateSpecializationType::PrintTemplateArgumentList(
+        OS, Node->getTemplateArgs(), Node->getNumTemplateArgs(), Policy);
 }
 
 void StmtPrinter::VisitUnresolvedLookupExpr(UnresolvedLookupExpr *Node) {
@@ -611,10 +609,8 @@ void StmtPrinter::VisitUnresolvedLookupExpr(UnresolvedLookupExpr *Node) {
     OS << "template ";
   OS << Node->getNameInfo();
   if (Node->hasExplicitTemplateArgs())
-    OS << TemplateSpecializationType::PrintTemplateArgumentList(
-                                                   Node->getTemplateArgs(),
-                                                   Node->getNumTemplateArgs(),
-                                                   Policy);
+    TemplateSpecializationType::PrintTemplateArgumentList(
+        OS, Node->getTemplateArgs(), Node->getNumTemplateArgs(), Policy);
 }
 
 void StmtPrinter::VisitObjCIvarRefExpr(ObjCIvarRefExpr *Node) {
@@ -710,15 +706,14 @@ void StmtPrinter::VisitCharacterLiteral(CharacterLiteral *Node) {
     OS << "'\\v'";
     break;
   default:
-    if (value < 256 && isprint(value)) {
+    if (value < 256 && isPrintable((unsigned char)value))
       OS << "'" << (char)value << "'";
-    } else if (value < 256) {
-      OS << "'\\x";
-      OS.write_hex(value) << "'";
-    } else {
-      // FIXME what to really do here?
-      OS << value;
-    }
+    else if (value < 256)
+      OS << "'\\x" << llvm::format("%02x", value) << "'";
+    else if (value <= 0xFFFF)
+      OS << "'\\u" << llvm::format("%04x", value) << "'";
+    else
+      OS << "'\\U" << llvm::format("%08x", value) << "'";
   }
 }
 
@@ -811,7 +806,8 @@ void StmtPrinter::VisitUnaryOperator(UnaryOperator *Node) {
 
 void StmtPrinter::VisitOffsetOfExpr(OffsetOfExpr *Node) {
   OS << "__builtin_offsetof(";
-  OS << Node->getTypeSourceInfo()->getType().getAsString(Policy) << ", ";
+  Node->getTypeSourceInfo()->getType().print(OS, Policy);
+  OS << ", ";
   bool PrintedSomething = false;
   for (unsigned i = 0, n = Node->getNumComponents(); i < n; ++i) {
     OffsetOfExpr::OffsetOfNode ON = Node->getComponent(i);
@@ -859,9 +855,11 @@ void StmtPrinter::VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *Node){
     OS << "vec_step";
     break;
   }
-  if (Node->isArgumentType())
-    OS << "(" << Node->getArgumentType().getAsString(Policy) << ")";
-  else {
+  if (Node->isArgumentType()) {
+    OS << '(';
+    Node->getArgumentType().print(OS, Policy);
+    OS << ')';
+  } else {
     OS << " ";
     PrintExpr(Node->getArgumentExpr());
   }
@@ -876,7 +874,7 @@ void StmtPrinter::VisitGenericSelectionExpr(GenericSelectionExpr *Node) {
     if (T.isNull())
       OS << "default";
     else
-      OS << T.getAsString(Policy);
+      T.print(OS, Policy);
     OS << ": ";
     PrintExpr(Node->getAssocExpr(i));
   }
@@ -929,10 +927,8 @@ void StmtPrinter::VisitMemberExpr(MemberExpr *Node) {
     OS << "template ";
   OS << Node->getMemberNameInfo();
   if (Node->hasExplicitTemplateArgs())
-    OS << TemplateSpecializationType::PrintTemplateArgumentList(
-                                                    Node->getTemplateArgs(),
-                                                    Node->getNumTemplateArgs(),
-                                                                Policy);
+    TemplateSpecializationType::PrintTemplateArgumentList(
+        OS, Node->getTemplateArgs(), Node->getNumTemplateArgs(), Policy);
 }
 void StmtPrinter::VisitObjCIsaExpr(ObjCIsaExpr *Node) {
   PrintExpr(Node->getBase());
@@ -945,11 +941,15 @@ void StmtPrinter::VisitExtVectorElementExpr(ExtVectorElementExpr *Node) {
   OS << Node->getAccessor().getName();
 }
 void StmtPrinter::VisitCStyleCastExpr(CStyleCastExpr *Node) {
-  OS << "(" << Node->getTypeAsWritten().getAsString(Policy) << ")";
+  OS << '(';
+  Node->getTypeAsWritten().print(OS, Policy);
+  OS << ')';
   PrintExpr(Node->getSubExpr());
 }
 void StmtPrinter::VisitCompoundLiteralExpr(CompoundLiteralExpr *Node) {
-  OS << "(" << Node->getType().getAsString(Policy) << ")";
+  OS << '(';
+  Node->getType().print(OS, Policy);
+  OS << ')';
   PrintExpr(Node->getInitializer());
 }
 void StmtPrinter::VisitImplicitCastExpr(ImplicitCastExpr *Node) {
@@ -1068,10 +1068,14 @@ void StmtPrinter::VisitDesignatedInitExpr(DesignatedInitExpr *Node) {
 }
 
 void StmtPrinter::VisitImplicitValueInitExpr(ImplicitValueInitExpr *Node) {
-  if (Policy.LangOpts.CPlusPlus)
-    OS << "/*implicit*/" << Node->getType().getAsString(Policy) << "()";
-  else {
-    OS << "/*implicit*/(" << Node->getType().getAsString(Policy) << ")";
+  if (Policy.LangOpts.CPlusPlus) {
+    OS << "/*implicit*/";
+    Node->getType().print(OS, Policy);
+    OS << "()";
+  } else {
+    OS << "/*implicit*/(";
+    Node->getType().print(OS, Policy);
+    OS << ')';
     if (Node->getType()->isRecordType())
       OS << "{}";
     else
@@ -1083,7 +1087,7 @@ void StmtPrinter::VisitVAArgExpr(VAArgExpr *Node) {
   OS << "__builtin_va_arg(";
   PrintExpr(Node->getSubExpr());
   OS << ", ";
-  OS << Node->getType().getAsString(Policy);
+  Node->getType().print(OS, Policy);
   OS << ")";
 }
 
@@ -1192,7 +1196,8 @@ void StmtPrinter::VisitCUDAKernelCallExpr(CUDAKernelCallExpr *Node) {
 
 void StmtPrinter::VisitCXXNamedCastExpr(CXXNamedCastExpr *Node) {
   OS << Node->getCastName() << '<';
-  OS << Node->getTypeAsWritten().getAsString(Policy) << ">(";
+  Node->getTypeAsWritten().print(OS, Policy);
+  OS << ">(";
   PrintExpr(Node->getSubExpr());
   OS << ")";
 }
@@ -1216,7 +1221,7 @@ void StmtPrinter::VisitCXXConstCastExpr(CXXConstCastExpr *Node) {
 void StmtPrinter::VisitCXXTypeidExpr(CXXTypeidExpr *Node) {
   OS << "typeid(";
   if (Node->isTypeOperand()) {
-    OS << Node->getTypeOperand().getAsString(Policy);
+    Node->getTypeOperand().print(OS, Policy);
   } else {
     PrintExpr(Node->getExprOperand());
   }
@@ -1226,7 +1231,7 @@ void StmtPrinter::VisitCXXTypeidExpr(CXXTypeidExpr *Node) {
 void StmtPrinter::VisitCXXUuidofExpr(CXXUuidofExpr *Node) {
   OS << "__uuidof(";
   if (Node->isTypeOperand()) {
-    OS << Node->getTypeOperand().getAsString(Policy);
+    Node->getTypeOperand().print(OS, Policy);
   } else {
     PrintExpr(Node->getExprOperand());
   }
@@ -1297,7 +1302,7 @@ void StmtPrinter::VisitCXXDefaultArgExpr(CXXDefaultArgExpr *Node) {
 }
 
 void StmtPrinter::VisitCXXFunctionalCastExpr(CXXFunctionalCastExpr *Node) {
-  OS << Node->getType().getAsString(Policy);
+  Node->getType().print(OS, Policy);
   OS << "(";
   PrintExpr(Node->getSubExpr());
   OS << ")";
@@ -1308,7 +1313,7 @@ void StmtPrinter::VisitCXXBindTemporaryExpr(CXXBindTemporaryExpr *Node) {
 }
 
 void StmtPrinter::VisitCXXTemporaryObjectExpr(CXXTemporaryObjectExpr *Node) {
-  OS << Node->getType().getAsString(Policy);
+  Node->getType().print(OS, Policy);
   OS << "(";
   for (CXXTemporaryObjectExpr::arg_iterator Arg = Node->arg_begin(),
                                          ArgEnd = Node->arg_end();
@@ -1378,8 +1383,7 @@ void StmtPrinter::VisitLambdaExpr(LambdaExpr *Node) {
         NeedComma = true;
       }
       std::string ParamStr = (*P)->getNameAsString();
-      (*P)->getOriginalType().getAsStringInternal(ParamStr, Policy);
-      OS << ParamStr;
+      (*P)->getOriginalType().print(OS, Policy, ParamStr);
     }
     if (Method->isVariadic()) {
       if (NeedComma)
@@ -1393,17 +1397,15 @@ void StmtPrinter::VisitLambdaExpr(LambdaExpr *Node) {
 
     const FunctionProtoType *Proto
       = Method->getType()->getAs<FunctionProtoType>();
-    {
-      std::string ExceptionSpec;
-      Proto->printExceptionSpecification(ExceptionSpec, Policy);
-      OS << ExceptionSpec;
-    }
+    Proto->printExceptionSpecification(OS, Policy);
 
     // FIXME: Attributes
 
     // Print the trailing return type if it was specified in the source.
-    if (Node->hasExplicitResultType())
-      OS << " -> " << Proto->getResultType().getAsString(Policy);
+    if (Node->hasExplicitResultType()) {
+      OS << " -> ";
+      Proto->getResultType().print(OS, Policy);
+    }
   }
 
   // Print the body.
@@ -1414,9 +1416,10 @@ void StmtPrinter::VisitLambdaExpr(LambdaExpr *Node) {
 
 void StmtPrinter::VisitCXXScalarValueInitExpr(CXXScalarValueInitExpr *Node) {
   if (TypeSourceInfo *TSInfo = Node->getTypeSourceInfo())
-    OS << TSInfo->getType().getAsString(Policy) << "()";
+    TSInfo->getType().print(OS, Policy);
   else
-    OS << Node->getType().getAsString(Policy) << "()";
+    Node->getType().print(OS, Policy);
+  OS << "()";
 }
 
 void StmtPrinter::VisitCXXNewExpr(CXXNewExpr *E) {
@@ -1440,12 +1443,11 @@ void StmtPrinter::VisitCXXNewExpr(CXXNewExpr *E) {
   std::string TypeS;
   if (Expr *Size = E->getArraySize()) {
     llvm::raw_string_ostream s(TypeS);
+    s << '[';
     Size->printPretty(s, Helper, Policy);
-    s.flush();
-    TypeS = "[" + TypeS + "]";
+    s << ']';
   }
-  E->getAllocatedType().getAsStringInternal(TypeS, Policy);
-  OS << TypeS;
+  E->getAllocatedType().print(OS, Policy, TypeS);
   if (E->isParenTypeId())
     OS << ")";
 
@@ -1478,15 +1480,16 @@ void StmtPrinter::VisitCXXPseudoDestructorExpr(CXXPseudoDestructorExpr *E) {
     E->getQualifier()->print(OS, Policy);
   OS << "~";
 
-  std::string TypeS;
   if (IdentifierInfo *II = E->getDestroyedTypeIdentifier())
     OS << II->getName();
   else
-    E->getDestroyedType().getAsStringInternal(TypeS, Policy);
-  OS << TypeS;
+    E->getDestroyedType().print(OS, Policy);
 }
 
 void StmtPrinter::VisitCXXConstructExpr(CXXConstructExpr *E) {
+  if (E->isListInitialization())
+    OS << "{ ";
+
   for (unsigned i = 0, e = E->getNumArgs(); i != e; ++i) {
     if (isa<CXXDefaultArgExpr>(E->getArg(i))) {
       // Don't print any defaulted arguments
@@ -1496,6 +1499,9 @@ void StmtPrinter::VisitCXXConstructExpr(CXXConstructExpr *E) {
     if (i) OS << ", ";
     PrintExpr(E->getArg(i));
   }
+
+  if (E->isListInitialization())
+    OS << " }";
 }
 
 void StmtPrinter::VisitExprWithCleanups(ExprWithCleanups *E) {
@@ -1506,7 +1512,7 @@ void StmtPrinter::VisitExprWithCleanups(ExprWithCleanups *E) {
 void
 StmtPrinter::VisitCXXUnresolvedConstructExpr(
                                            CXXUnresolvedConstructExpr *Node) {
-  OS << Node->getTypeAsWritten().getAsString(Policy);
+  Node->getTypeAsWritten().print(OS, Policy);
   OS << "(";
   for (CXXUnresolvedConstructExpr::arg_iterator Arg = Node->arg_begin(),
                                              ArgEnd = Node->arg_end();
@@ -1529,12 +1535,9 @@ void StmtPrinter::VisitCXXDependentScopeMemberExpr(
   if (Node->hasTemplateKeyword())
     OS << "template ";
   OS << Node->getMemberNameInfo();
-  if (Node->hasExplicitTemplateArgs()) {
-    OS << TemplateSpecializationType::PrintTemplateArgumentList(
-                                                    Node->getTemplateArgs(),
-                                                    Node->getNumTemplateArgs(),
-                                                    Policy);
-  }
+  if (Node->hasExplicitTemplateArgs())
+    TemplateSpecializationType::PrintTemplateArgumentList(
+        OS, Node->getTemplateArgs(), Node->getNumTemplateArgs(), Policy);
 }
 
 void StmtPrinter::VisitUnresolvedMemberExpr(UnresolvedMemberExpr *Node) {
@@ -1547,12 +1550,9 @@ void StmtPrinter::VisitUnresolvedMemberExpr(UnresolvedMemberExpr *Node) {
   if (Node->hasTemplateKeyword())
     OS << "template ";
   OS << Node->getMemberNameInfo();
-  if (Node->hasExplicitTemplateArgs()) {
-    OS << TemplateSpecializationType::PrintTemplateArgumentList(
-                                                    Node->getTemplateArgs(),
-                                                    Node->getNumTemplateArgs(),
-                                                    Policy);
-  }
+  if (Node->hasExplicitTemplateArgs())
+    TemplateSpecializationType::PrintTemplateArgumentList(
+        OS, Node->getTemplateArgs(), Node->getNumTemplateArgs(), Policy);
 }
 
 static const char *getTypeTraitName(UnaryTypeTrait UTT) {
@@ -1640,14 +1640,17 @@ static const char *getExpressionTraitName(ExpressionTrait ET) {
 }
 
 void StmtPrinter::VisitUnaryTypeTraitExpr(UnaryTypeTraitExpr *E) {
-  OS << getTypeTraitName(E->getTrait()) << "("
-     << E->getQueriedType().getAsString(Policy) << ")";
+  OS << getTypeTraitName(E->getTrait()) << '(';
+  E->getQueriedType().print(OS, Policy);
+  OS << ')';
 }
 
 void StmtPrinter::VisitBinaryTypeTraitExpr(BinaryTypeTraitExpr *E) {
-  OS << getTypeTraitName(E->getTrait()) << "("
-     << E->getLhsType().getAsString(Policy) << ","
-     << E->getRhsType().getAsString(Policy) << ")";
+  OS << getTypeTraitName(E->getTrait()) << '(';
+  E->getLhsType().print(OS, Policy);
+  OS << ',';
+  E->getRhsType().print(OS, Policy);
+  OS << ')';
 }
 
 void StmtPrinter::VisitTypeTraitExpr(TypeTraitExpr *E) {
@@ -1655,20 +1658,21 @@ void StmtPrinter::VisitTypeTraitExpr(TypeTraitExpr *E) {
   for (unsigned I = 0, N = E->getNumArgs(); I != N; ++I) {
     if (I > 0)
       OS << ", ";
-    OS << E->getArg(I)->getType().getAsString(Policy);
+    E->getArg(I)->getType().print(OS, Policy);
   }
   OS << ")";
 }
 
 void StmtPrinter::VisitArrayTypeTraitExpr(ArrayTypeTraitExpr *E) {
-  OS << getTypeTraitName(E->getTrait()) << "("
-     << E->getQueriedType().getAsString(Policy) << ")";
+  OS << getTypeTraitName(E->getTrait()) << '(';
+  E->getQueriedType().print(OS, Policy);
+  OS << ')';
 }
 
 void StmtPrinter::VisitExpressionTraitExpr(ExpressionTraitExpr *E) {
-    OS << getExpressionTraitName(E->getTrait()) << "(";
-    PrintExpr(E->getQueriedExpression());
-    OS << ")";
+  OS << getExpressionTraitName(E->getTrait()) << '(';
+  PrintExpr(E->getQueriedExpression());
+  OS << ')';
 }
 
 void StmtPrinter::VisitCXXNoexceptExpr(CXXNoexceptExpr *E) {
@@ -1747,7 +1751,9 @@ void StmtPrinter::VisitObjCDictionaryLiteral(ObjCDictionaryLiteral *E) {
 }
 
 void StmtPrinter::VisitObjCEncodeExpr(ObjCEncodeExpr *Node) {
-  OS << "@encode(" << Node->getEncodedType().getAsString(Policy) << ')';
+  OS << "@encode(";
+  Node->getEncodedType().print(OS, Policy);
+  OS << ')';
 }
 
 void StmtPrinter::VisitObjCSelectorExpr(ObjCSelectorExpr *Node) {
@@ -1766,7 +1772,7 @@ void StmtPrinter::VisitObjCMessageExpr(ObjCMessageExpr *Mess) {
     break;
 
   case ObjCMessageExpr::Class:
-    OS << Mess->getClassReceiver().getAsString(Policy);
+    Mess->getClassReceiver().print(OS, Policy);
     break;
 
   case ObjCMessageExpr::SuperInstance:
@@ -1807,8 +1813,9 @@ StmtPrinter::VisitObjCIndirectCopyRestoreExpr(ObjCIndirectCopyRestoreExpr *E) {
 
 void
 StmtPrinter::VisitObjCBridgedCastExpr(ObjCBridgedCastExpr *E) {
-  OS << "(" << E->getBridgeKindName() << E->getType().getAsString(Policy) 
-     << ")";
+  OS << '(' << E->getBridgeKindName();
+  E->getType().print(OS, Policy);
+  OS << ')';
   PrintExpr(E->getSubExpr());
 }
 
@@ -1822,13 +1829,11 @@ void StmtPrinter::VisitBlockExpr(BlockExpr *Node) {
     OS << "()";
   } else if (!BD->param_empty() || cast<FunctionProtoType>(AFT)->isVariadic()) {
     OS << '(';
-    std::string ParamStr;
     for (BlockDecl::param_iterator AI = BD->param_begin(),
          E = BD->param_end(); AI != E; ++AI) {
       if (AI != BD->param_begin()) OS << ", ";
-      ParamStr = (*AI)->getNameAsString();
-      (*AI)->getType().getAsStringInternal(ParamStr, Policy);
-      OS << ParamStr;
+      std::string ParamStr = (*AI)->getNameAsString();
+      (*AI)->getType().print(OS, Policy, ParamStr);
     }
 
     const FunctionProtoType *FT = cast<FunctionProtoType>(AFT);
@@ -1848,7 +1853,8 @@ void StmtPrinter::VisitOpaqueValueExpr(OpaqueValueExpr *Node) {
 void StmtPrinter::VisitAsTypeExpr(AsTypeExpr *Node) {
   OS << "__builtin_astype(";
   PrintExpr(Node->getSrcExpr());
-  OS << ", " << Node->getType().getAsString();
+  OS << ", ";
+  Node->getType().print(OS, Policy);
   OS << ")";
 }
 
@@ -1866,11 +1872,6 @@ void Stmt::printPretty(raw_ostream &OS,
                        unsigned Indentation) const {
   if (this == 0) {
     OS << "<NULL>";
-    return;
-  }
-
-  if (Policy.DumpSourceManager) {
-    dump(OS, *Policy.DumpSourceManager);
     return;
   }
 

@@ -121,7 +121,7 @@ static IMAKind ClassifyImplicitMemberAccess(Sema &SemaRef,
     return IMA_Static;
 
   bool IsCXX11UnevaluatedField = false;
-  if (SemaRef.getLangOpts().CPlusPlus0x && isField) {
+  if (SemaRef.getLangOpts().CPlusPlus11 && isField) {
     // C++11 [expr.prim.general]p12:
     //   An id-expression that denotes a non-static data member or non-static
     //   member function of a class can only be used:
@@ -1259,7 +1259,8 @@ Sema::LookupMemberExpr(LookupResult &R, ExprResult &BaseExpr,
       if (ObjCMethodDecl *MD = getCurMethodDecl()) {
         ObjCMethodFamily MF = MD->getMethodFamily();
         warn = (MF != OMF_init && MF != OMF_dealloc && 
-                MF != OMF_finalize);
+                MF != OMF_finalize &&
+                !IvarBacksCurrentMethodAccessor(IDecl, MD, IV));
       }
       if (warn)
         Diag(MemberLoc, diag::warn_direct_ivar_access) << IV->getDeclName();
@@ -1597,27 +1598,27 @@ BuildFieldReferenceExpr(Sema &S, Expr *BaseExpr, bool IsArrow,
   } else {
     QualType BaseType = BaseExpr->getType();
     if (IsArrow) BaseType = BaseType->getAs<PointerType>()->getPointeeType();
-    
+
     Qualifiers BaseQuals = BaseType.getQualifiers();
-    
+
     // GC attributes are never picked up by members.
     BaseQuals.removeObjCGCAttr();
-    
+
     // CVR attributes from the base are picked up by members,
     // except that 'mutable' members don't pick up 'const'.
     if (Field->isMutable()) BaseQuals.removeConst();
-    
+
     Qualifiers MemberQuals
     = S.Context.getCanonicalType(MemberType).getQualifiers();
-    
-    // TR 18037 does not allow fields to be declared with address spaces.
+
     assert(!MemberQuals.hasAddressSpace());
-    
+
+
     Qualifiers Combined = BaseQuals + MemberQuals;
     if (Combined != MemberQuals)
       MemberType = S.Context.getQualifiedType(MemberType, Combined);
   }
-  
+
   S.UnusedPrivateFields.remove(Field);
 
   ExprResult Base =

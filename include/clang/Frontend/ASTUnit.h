@@ -485,6 +485,9 @@ public:
 
   StringRef getMainFileName() const;
 
+  /// \brief If this ASTUnit came from an AST file, returns the filename for it.
+  StringRef getASTFileName() const;
+
   typedef std::vector<Decl *>::iterator top_level_iterator;
 
   top_level_iterator top_level_begin() {
@@ -837,6 +840,11 @@ public:
     // ASTUnit doesn't know how to load modules (not that this matters).
     return ModuleLoadResult();
   }
+
+  virtual void makeModuleVisible(Module *Mod,
+                                 Module::NameVisibilityKind Visibility,
+                                 SourceLocation ImportLoc) { }
+
 };
 
 } // namespace clang

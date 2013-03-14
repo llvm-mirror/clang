@@ -67,13 +67,15 @@ def err_drv_command_failed : Error<
   "%0 command failed with exit code %1 (use -v to see invocation)">;
 def err_drv_command_signalled : Error<
   "%0 command failed due to signal (use -v to see invocation)">;
+def err_drv_force_crash : Error<
+  "failing because environment variable '%0' is set">;
 def err_drv_invalid_mfloat_abi : Error<
   "invalid float ABI '%0'">;
 def err_drv_invalid_libcxx_deployment : Error<
   "invalid deployment target for -stdlib=libc++ (requires %0 or later)">;
 def err_drv_invalid_feature : Error<
   "invalid feature '%0' for CPU '%1'">;
-
+  
 def err_drv_I_dash_not_supported : Error<
   "'%0' not supported, please use -iquote instead">;
 def err_drv_unknown_argument : Error<"unknown argument: '%0'">;
@@ -108,19 +110,21 @@ def warn_c_kext : Warning<
   "ignoring -fapple-kext which is valid for C++ and Objective-C++ only">;
 def warn_drv_input_file_unused : Warning<
   "%0: '%1' input unused%select{ when '%3' is present|}2">,
-  InGroup<DiagGroup<"unused-command-line-argument">>;
+  InGroup<UnusedCommandLineArgument>;
 def warn_drv_input_file_unused_by_cpp : Warning<
   "%0: '%1' input unused in cpp mode">,
-  InGroup<DiagGroup<"unused-command-line-argument">>;
+  InGroup<UnusedCommandLineArgument>;
 def warn_drv_preprocessed_input_file_unused : Warning<
   "%0: previously preprocessed input%select{ unused when '%2' is present|}1">,
-  InGroup<DiagGroup<"unused-command-line-argument">>;
+  InGroup<UnusedCommandLineArgument>;
 def warn_drv_unused_argument : Warning<
   "argument unused during compilation: '%0'">,
-  InGroup<DiagGroup<"unused-command-line-argument">>;
+  InGroup<UnusedCommandLineArgument>;
 def warn_drv_empty_joined_argument : Warning<
   "joined argument expects additional value: '%0'">,
-  InGroup<DiagGroup<"unused-command-line-argument">>;
+  InGroup<UnusedCommandLineArgument>;
+def warn_drv_unused_sanitizer : Warning<"'%0' is ignored in absence of '%1'">,
+  InGroup<UnusedSanitizeArgument>;
 def warn_drv_clang_unsupported : Warning<
   "the clang compiler does not support '%0'">;
 def warn_drv_deprecated_arg : Warning<
@@ -136,6 +140,8 @@ def warn_drv_objc_gc_unsupported : Warning<
   "Objective-C garbage collection is not supported on this platform, ignoring '%0'">;
 def warn_drv_pch_not_first_include : Warning<
   "precompiled header '%0' was ignored because '%1' is not first '-include'">;
+def warn_missing_sysroot : Warning<"no such sysroot directory: '%0'">,
+  InGroup<DiagGroup<"missing-sysroot">>;
 
 def note_drv_command_failed_diag_msg : Note<
   "diagnostic msg: %0">;
@@ -144,4 +150,9 @@ def err_analyzer_config_no_value : Error<
   "analyzer-config option '%0' has a key but no value">;
 def err_analyzer_config_multiple_values : Error<
   "analyzer-config option '%0' should contain only one '='">;
+  
+def err_drv_modules_integrated_as : Error<
+  "modules can only be used with the compiler's integrated assembler">;
+def note_drv_modules_integrated_as : Note<
+  "'-no-integrated-as' cannot be used with '-fmodules'">;
 }

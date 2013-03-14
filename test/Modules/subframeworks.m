@@ -1,6 +1,6 @@
 // RUN: rm -rf %t
-// RUN: %clang_cc1 -Wauto-import -fmodule-cache-path %t -fmodules -F %S/Inputs -F %S/Inputs/DependsOnModule.framework/Frameworks %s -verify
-// RUN: %clang_cc1 -x objective-c++ -Wauto-import -fmodule-cache-path %t -fmodules -F %S/Inputs -F %S/Inputs/DependsOnModule.framework/Frameworks %s -verify
+// RUN: %clang_cc1 -Wauto-import -fmodules-cache-path=%t -fmodules -F %S/Inputs -F %S/Inputs/DependsOnModule.framework/Frameworks %s -verify
+// RUN: %clang_cc1 -x objective-c++ -Wauto-import -fmodules-cache-path=%t -fmodules -F %S/Inputs -F %S/Inputs/DependsOnModule.framework/Frameworks %s -verify
 
 @import DependsOnModule;
 
@@ -20,3 +20,10 @@ void testSubFrameworkAgain() {
 
 CXXOnly cxxonly;
 #endif
+
+@import HasSubModules;
+
+// expected-warning@1{{treating #include as an import of module 'HasSubModules.Sub.Types'}}
+#import <HasSubModules/HasSubModulesPriv.h>
+
+struct FrameworkSubStruct ss;

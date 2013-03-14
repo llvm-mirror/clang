@@ -125,8 +125,8 @@ static const StaticDiagInfoRec *GetDiagInfo(unsigned DiagID) {
 #define DIAG_START_COMMON 0 // Sentinel value.
 #define CATEGORY(NAME, PREV) \
   if (DiagID > DIAG_START_##NAME) { \
-    Offset += NUM_BUILTIN_##PREV##_DIAGNOSTICS - DIAG_START_##PREV; \
-    ID -= DIAG_START_##NAME - DIAG_START_##PREV + 1; \
+    Offset += NUM_BUILTIN_##PREV##_DIAGNOSTICS - DIAG_START_##PREV - 1; \
+    ID -= DIAG_START_##NAME - DIAG_START_##PREV; \
   }
 CATEGORY(DRIVER, COMMON)
 CATEGORY(FRONTEND, DRIVER)
@@ -143,6 +143,8 @@ CATEGORY(ANALYSIS, SEMA)
   // Avoid out of bounds reads.
   if (ID + Offset >= StaticDiagInfoSize)
     return 0;
+
+  assert(ID < StaticDiagInfoSize && Offset < StaticDiagInfoSize);
 
   const StaticDiagInfoRec *Found = &StaticDiagInfo[ID + Offset];
   // If the diag id doesn't match we found a different diag, abort. This can
@@ -279,14 +281,14 @@ namespace clang {
       /// diagnostic.
       StringRef getDescription(unsigned DiagID) const {
         assert(this && DiagID-DIAG_UPPER_LIMIT < DiagInfo.size() &&
-               "Invalid diagnosic ID");
+               "Invalid diagnostic ID");
         return DiagInfo[DiagID-DIAG_UPPER_LIMIT].second;
       }
 
       /// getLevel - Return the level of the specified custom diagnostic.
       DiagnosticIDs::Level getLevel(unsigned DiagID) const {
         assert(this && DiagID-DIAG_UPPER_LIMIT < DiagInfo.size() &&
-               "Invalid diagnosic ID");
+               "Invalid diagnostic ID");
         return DiagInfo[DiagID-DIAG_UPPER_LIMIT].first;
       }
 
@@ -323,7 +325,7 @@ DiagnosticIDs::~DiagnosticIDs() {
 }
 
 /// getCustomDiagID - Return an ID for a diagnostic with the specified message
-/// and level.  If this is the first request for this diagnosic, it is
+/// and level.  If this is the first request for this diagnostic, it is
 /// registered and created, otherwise the existing ID is returned.
 unsigned DiagnosticIDs::getCustomDiagID(Level L, StringRef Message) {
   if (CustomDiagInfo == 0)
@@ -544,9 +546,8 @@ StringRef DiagnosticIDs::getWarningOptionForDiag(unsigned DiagID) {
 }
 
 void DiagnosticIDs::getDiagnosticsInGroup(
-  const WarningOption *Group,
-  llvm::SmallVectorImpl<diag::kind> &Diags) const
-{
+    const WarningOption *Group,
+    SmallVectorImpl<diag::kind> &Diags) const {
   // Add the members of the option diagnostic set.
   if (const short *Member = Group->Members) {
     for (; *Member != -1; ++Member)
@@ -561,9 +562,8 @@ void DiagnosticIDs::getDiagnosticsInGroup(
 }
 
 bool DiagnosticIDs::getDiagnosticsInGroup(
-  StringRef Group,
-  llvm::SmallVectorImpl<diag::kind> &Diags) const
-{
+    StringRef Group,
+    SmallVectorImpl<diag::kind> &Diags) const {
   WarningOption Key = { Group.size(), Group.data(), 0, 0 };
   const WarningOption *Found =
   std::lower_bound(OptionTable, OptionTable + OptionTableSize, Key,
@@ -577,7 +577,7 @@ bool DiagnosticIDs::getDiagnosticsInGroup(
 }
 
 void DiagnosticIDs::getAllDiagnostics(
-                               llvm::SmallVectorImpl<diag::kind> &Diags) const {
+                               SmallVectorImpl<diag::kind> &Diags) const {
   for (unsigned i = 0; i != StaticDiagInfoSize; ++i)
     Diags.push_back(StaticDiagInfo[i].DiagID);
 }

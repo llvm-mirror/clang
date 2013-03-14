@@ -368,9 +368,9 @@ namespace clang {
       /// \brief Record code for the array of tentative definitions.
       TENTATIVE_DEFINITIONS = 9,
 
-      /// \brief Record code for the array of locally-scoped external
+      /// \brief Record code for the array of locally-scoped extern "C"
       /// declarations.
-      LOCALLY_SCOPED_EXTERNAL_DECLS = 10,
+      LOCALLY_SCOPED_EXTERN_C_DECLS = 10,
 
       /// \brief Record code for the table of offsets into the
       /// Objective-C method pool.
@@ -524,7 +524,11 @@ namespace clang {
 
       /// \brief Record of updates for a macro that was modified after
       /// being deserialized.
-      MACRO_UPDATES = 48
+      MACRO_UPDATES = 48,
+
+      /// \brief Record code for undefined but used functions and variables that
+      /// need a definition in this TU.
+      UNDEFINED_BUT_USED = 49
     };
 
     /// \brief Record types used within a source manager block.
@@ -603,7 +607,9 @@ namespace clang {
       SUBMODULE_REQUIRES = 8,
       /// \brief Specifies a header that has been explicitly excluded
       /// from this submodule.
-      SUBMODULE_EXCLUDED_HEADER = 9
+      SUBMODULE_EXCLUDED_HEADER = 9,
+      /// \brief Specifies a library or framework to link against.
+      SUBMODULE_LINK_LIBRARY = 10
     };
 
     /// \brief Record types used within a comments block.
@@ -701,7 +707,23 @@ namespace clang {
       /// \brief The __va_list_tag placeholder type.
       PREDEF_TYPE_VA_LIST_TAG = 36,
       /// \brief The placeholder type for builtin functions.
-      PREDEF_TYPE_BUILTIN_FN = 37
+      PREDEF_TYPE_BUILTIN_FN = 37,
+      /// \brief OpenCL 1d image type.
+      PREDEF_TYPE_IMAGE1D_ID    = 38,
+      /// \brief OpenCL 1d image array type.
+      PREDEF_TYPE_IMAGE1D_ARR_ID = 39,
+      /// \brief OpenCL 1d image buffer type.
+      PREDEF_TYPE_IMAGE1D_BUFF_ID = 40,
+      /// \brief OpenCL 2d image type.
+      PREDEF_TYPE_IMAGE2D_ID    = 41,
+      /// \brief OpenCL 2d image array type.
+      PREDEF_TYPE_IMAGE2D_ARR_ID = 42,
+      /// \brief OpenCL 3d image type.
+      PREDEF_TYPE_IMAGE3D_ID    = 43,
+      /// \brief OpenCL event type.
+      PREDEF_TYPE_EVENT_ID      = 44,
+      /// \brief OpenCL sampler type.
+      PREDEF_TYPE_SAMPLER_ID    = 45
     };
 
     /// \brief The number of predefined type IDs that are reserved for
@@ -1009,7 +1031,9 @@ namespace clang {
       /// function specialization. (Microsoft extension).
       DECL_CLASS_SCOPE_FUNCTION_SPECIALIZATION,
       /// \brief An ImportDecl recording a module import.
-      DECL_IMPORT
+      DECL_IMPORT,
+      /// \brief An EmptyDecl record.
+      DECL_EMPTY
     };
 
     /// \brief Record codes for each kind of statement or expression.

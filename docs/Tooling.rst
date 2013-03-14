@@ -1,6 +1,6 @@
-===================
-Writing Clang Tools
-===================
+=================================================
+Choosing the Right Interface for Your Application
+=================================================
 
 Clang provides infrastructure to write tools that need syntactic and semantic
 information about a program.  This document will give a short introduction of
@@ -33,7 +33,7 @@ Do not use LibClang when you...:
 Clang Plugins
 -------------
 
-`Clang Plugins <ClangPlugins.html>`_ allow you to run additional actions on the
+:doc:`Clang Plugins <ClangPlugins>` allow you to run additional actions on the
 AST as part of a compilation.  Plugins are dynamic libraries that are loaded at
 runtime by the compiler, and they're easy to integrate into your build
 environment.
@@ -60,7 +60,7 @@ Do not use Clang Plugins when you...:
 LibTooling
 ----------
 
-`LibTooling <LibTooling.html>`_ is a C++ interface aimed at writing standalone
+:doc:`LibTooling <LibTooling>` is a C++ interface aimed at writing standalone
 tools, as well as integrating into services that run clang tools.  Canonical
 examples of when to use LibTooling:
 
@@ -72,7 +72,7 @@ Use LibTooling when you...:
 * want to run tools over a single file, or a specific subset of files,
   independently of the build system
 * want full control over the Clang AST
-* want to share code with Clang Plgins
+* want to share code with Clang Plugins
 
 Do not use LibTooling when you...:
 
@@ -82,10 +82,7 @@ Do not use LibTooling when you...:
 * want high level abstractions like cursors and code completion out of the box
 * do not want to write your tools in C++
 
-Clang Tools
------------
-
-`Clang tools <ClangTools.html>`_ are a collection of specific developer tools
+:doc:`Clang tools <ClangTools>` are a collection of specific developer tools
 built on top of the LibTooling infrastructure as part of the Clang project.
 They are targeted at automating and improving core development activities of
 C/C++ developers.
@@ -94,7 +91,7 @@ Examples of tools we are building or planning as part of the Clang project:
 
 * Syntax checking (:program:`clang-check`)
 * Automatic fixing of compile errors (:program:`clang-fixit`)
-* Automatic code formatting
+* Automatic code formatting (:program:`clang-format`)
 * Migration tools for new features in new language standards
 * Core refactoring tools
 

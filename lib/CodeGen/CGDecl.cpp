@@ -22,10 +22,10 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/CodeGenOptions.h"
-#include "llvm/DataLayout.h"
-#include "llvm/GlobalVariable.h"
-#include "llvm/Intrinsics.h"
-#include "llvm/Type.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/Type.h"
 using namespace clang;
 using namespace CodeGen;
 
@@ -83,6 +83,7 @@ void CodeGenFunction::EmitDecl(const Decl &D) {
   case Decl::StaticAssert: // static_assert(X, ""); [C++0x]
   case Decl::Label:        // __label__ x;
   case Decl::Import:
+  case Decl::Empty:
     // None of these decls require codegen support.
     return;
 
@@ -107,7 +108,7 @@ void CodeGenFunction::EmitDecl(const Decl &D) {
 /// EmitVarDecl - This method handles emission of any variable declaration
 /// inside a function, including static vars etc.
 void CodeGenFunction::EmitVarDecl(const VarDecl &D) {
-  switch (D.getStorageClass()) {
+  switch (D.getStorageClassAsWritten()) {
   case SC_None:
   case SC_Auto:
   case SC_Register:
@@ -386,7 +387,9 @@ namespace {
       }
 
       CGF.EmitCXXDestructorCall(Dtor, Dtor_Complete,
-                                /*ForVirtualBase=*/false, Loc);
+                                /*ForVirtualBase=*/false,
+                                /*Delegating=*/false,
+                                Loc);
 
       if (NRVO) CGF.EmitBlock(SkipDtorBB);
     }
@@ -1112,21 +1115,33 @@ void CodeGenFunction::EmitExprAsInit(const Expr *init,
     if (capturedByInit)
       drillIntoBlockVariable(*this, lvalue, cast<VarDecl>(D));
     EmitStoreThroughLValue(rvalue, lvalue, true);
-  } else if (!hasAggregateLLVMType(type)) {
+    return;
+  }
+  switch (getEvaluationKind(type)) {
+  case TEK_Scalar:
     EmitScalarInit(init, D, lvalue, capturedByInit);
-  } else if (type->isAnyComplexType()) {
+    return;
+  case TEK_Complex: {
     ComplexPairTy complex = EmitComplexExpr(init);
     if (capturedByInit)
       drillIntoBlockVariable(*this, lvalue, cast<VarDecl>(D));
-    StoreComplexToAddr(complex, lvalue.getAddress(), lvalue.isVolatile());
-  } else {
-    // TODO: how can we delay here if D is captured by its initializer?
-    EmitAggExpr(init, AggValueSlot::forLValue(lvalue,
+    EmitStoreOfComplex(complex, lvalue, /*init*/ true);
+    return;
+  }
+  case TEK_Aggregate:
+    if (type->isAtomicType()) {
+      EmitAtomicInit(const_cast<Expr*>(init), lvalue);
+    } else {
+      // TODO: how can we delay here if D is captured by its initializer?
+      EmitAggExpr(init, AggValueSlot::forLValue(lvalue,
                                               AggValueSlot::IsDestructed,
                                          AggValueSlot::DoesNotNeedGCBarriers,
                                               AggValueSlot::IsNotAliased));
+    }
     MaybeEmitStdInitializerListCleanup(lvalue.getAddress(), init);
+    return;
   }
+  llvm_unreachable("bad evaluation kind");
 }
 
 /// Enter a destroy cleanup for the given local variable.
@@ -1240,7 +1255,18 @@ CodeGenFunction::getDestroyer(QualType::DestructionKind kind) {
   llvm_unreachable("Unknown DestructionKind");
 }
 
-/// pushDestroy - Push the standard destructor for the given type.
+/// pushEHDestroy - Push the standard destructor for the given type as
+/// an EH-only cleanup.
+void CodeGenFunction::pushEHDestroy(QualType::DestructionKind dtorKind,
+                                  llvm::Value *addr, QualType type) {
+  assert(dtorKind && "cannot push destructor for trivial type");
+  assert(needsEHCleanup(dtorKind));
+
+  pushDestroy(EHCleanup, addr, type, getDestroyer(dtorKind), true);
+}
+
+/// pushDestroy - Push the standard destructor for the given type as
+/// at least a normal cleanup.
 void CodeGenFunction::pushDestroy(QualType::DestructionKind dtorKind,
                                   llvm::Value *addr, QualType type) {
   assert(dtorKind && "cannot push destructor for trivial type");
@@ -1434,10 +1460,6 @@ namespace {
 ///
 /// \param elementType - the immediate element type of the array;
 ///   possibly still an array type
-/// \param array - a value of type elementType*
-/// \param destructionKind - the kind of destruction required
-/// \param initializedElementCount - a value of type size_t* holding
-///   the number of successfully-constructed elements
 void CodeGenFunction::pushIrregularPartialArrayCleanup(llvm::Value *arrayBegin,
                                                  llvm::Value *arrayEndPointer,
                                                        QualType elementType,
@@ -1453,10 +1475,6 @@ void CodeGenFunction::pushIrregularPartialArrayCleanup(llvm::Value *arrayBegin,
 ///
 /// \param elementType - the immediate element type of the array;
 ///   possibly still an array type
-/// \param array - a value of type elementType*
-/// \param destructionKind - the kind of destruction required
-/// \param initializedElementCount - a value of type size_t* holding
-///   the number of successfully-constructed elements
 void CodeGenFunction::pushRegularPartialArrayCleanup(llvm::Value *arrayBegin,
                                                      llvm::Value *arrayEnd,
                                                      QualType elementType,
@@ -1515,19 +1533,20 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg,
   llvm::Value *DeclPtr;
   // If this is an aggregate or variable sized value, reuse the input pointer.
   if (!Ty->isConstantSizeType() ||
-      CodeGenFunction::hasAggregateLLVMType(Ty)) {
+      !CodeGenFunction::hasScalarEvaluationKind(Ty)) {
     DeclPtr = Arg;
   } else {
     // Otherwise, create a temporary to hold the value.
     llvm::AllocaInst *Alloc = CreateTempAlloca(ConvertTypeForMem(Ty),
                                                D.getName() + ".addr");
-    Alloc->setAlignment(getContext().getDeclAlign(&D).getQuantity());
+    CharUnits Align = getContext().getDeclAlign(&D);
+    Alloc->setAlignment(Align.getQuantity());
     DeclPtr = Alloc;
 
     bool doStore = true;
 
     Qualifiers qs = Ty.getQualifiers();
-
+    LValue lv = MakeAddrLValue(DeclPtr, Ty, Align);
     if (Qualifiers::ObjCLifetime lt = qs.getObjCLifetime()) {
       // We honor __attribute__((ns_consumed)) for types with lifetime.
       // For __strong, it's handled by just skipping the initial retain;
@@ -1548,11 +1567,22 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg,
       }
 
       if (lt == Qualifiers::OCL_Strong) {
-        if (!isConsumed)
+        if (!isConsumed) {
+          if (CGM.getCodeGenOpts().OptimizationLevel == 0) {
+            // use objc_storeStrong(&dest, value) for retaining the
+            // object. But first, store a null into 'dest' because
+            // objc_storeStrong attempts to release its old value.
+            llvm::Value * Null = CGM.EmitNullConstant(D.getType());
+            EmitStoreOfScalar(Null, lv, /* isInitialization */ true);
+            EmitARCStoreStrongCall(lv.getAddress(), Arg, true);
+            doStore = false;
+          }
+          else
           // Don't use objc_retainBlock for block pointers, because we
           // don't want to Block_copy something just because we got it
           // as a parameter.
-          Arg = EmitARCRetainNonBlock(Arg);
+            Arg = EmitARCRetainNonBlock(Arg);
+        }
       } else {
         // Push the cleanup for a consumed parameter.
         if (isConsumed)
@@ -1569,11 +1599,8 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg,
     }
 
     // Store the initial value into the alloca.
-    if (doStore) {
-      LValue lv = MakeAddrLValue(DeclPtr, Ty,
-                                 getContext().getDeclAlign(&D));
+    if (doStore)
       EmitStoreOfScalar(Arg, lv, /* isInitialization */ true);
-    }
   }
 
   llvm::Value *&DMEntry = LocalDeclMap[&D];

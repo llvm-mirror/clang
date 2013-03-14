@@ -126,7 +126,7 @@ class DeadStoreObs : public LiveVariables::Observer {
   llvm::SmallPtrSet<const VarDecl*, 20> Escaped;
   OwningPtr<ReachableCode> reachableCode;
   const CFGBlock *currentBlock;
-  llvm::OwningPtr<llvm::DenseSet<const VarDecl *> > InEH;
+  OwningPtr<llvm::DenseSet<const VarDecl *> > InEH;
 
   enum DeadStoreKind { Standard, Enclosing, DeadIncrement, DeadInit };
 
@@ -419,6 +419,15 @@ class DeadStoresChecker : public Checker<check::ASTCodeBody> {
 public:
   void checkASTCodeBody(const Decl *D, AnalysisManager& mgr,
                         BugReporter &BR) const {
+
+    // Don't do anything for template instantiations.
+    // Proving that code in a template instantiation is "dead"
+    // means proving that it is dead in all instantiations.
+    // This same problem exists with -Wunreachable-code.
+    if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
+      if (FD->isTemplateInstantiation())
+        return;
+
     if (LiveVariables *L = mgr.getAnalysis<LiveVariables>(D)) {
       CFG &cfg = *mgr.getCFG(D);
       AnalysisDeclContext *AC = mgr.getAnalysisDeclContext(D);

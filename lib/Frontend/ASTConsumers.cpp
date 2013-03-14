@@ -21,7 +21,7 @@
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
-#include "llvm/Module.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
@@ -61,7 +61,7 @@ namespace {
       if (D != NULL && filterMatches(D)) {
         bool ShowColors = Out.has_colors();
         if (ShowColors)
-          Out.changeColor(llvm::raw_ostream::BLUE);
+          Out.changeColor(raw_ostream::BLUE);
         Out << (Dump ? "Dumping " : "Printing ") << getName(D) << ":\n";
         if (ShowColors)
           Out.resetColor();
@@ -104,7 +104,8 @@ namespace {
     bool shouldWalkTypesOfTypeLocs() const { return false; }
 
     virtual bool VisitNamedDecl(NamedDecl *D) {
-      Out << D->getQualifiedNameAsString() << "\n";
+      D->printQualifiedName(Out);
+      Out << '\n';
       return true;
     }
 

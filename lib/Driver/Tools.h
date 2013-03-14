@@ -40,6 +40,7 @@ namespace tools {
 
   private:
     void AddPreprocessingOptions(Compilation &C,
+                                 const JobAction &JA,
                                  const Driver &D,
                                  const ArgList &Args,
                                  ArgStringList &CmdArgs,
@@ -76,6 +77,7 @@ namespace tools {
   /// \brief Clang integrated assembler tool.
   class LLVM_LIBRARY_VISIBILITY ClangAs : public Tool {
     void AddARMTargetArgs(const ArgList &Args, ArgStringList &CmdArgs) const;
+    void AddX86TargetArgs(const ArgList &Args, ArgStringList &CmdArgs) const;
   public:
     ClangAs(const ToolChain &TC) : Tool("clang::as",
                                         "clang integrated assembler", TC) {}
@@ -277,6 +279,7 @@ namespace darwin {
                                                "dsymutil", TC) {}
 
     virtual bool hasIntegratedCPP() const { return false; }
+    virtual bool isDsymutilJob() const { return true; }
 
     virtual void ConstructJob(Compilation &C, const JobAction &JA,
                               const InputInfo &Output,

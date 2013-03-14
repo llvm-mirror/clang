@@ -38,8 +38,7 @@ class LangOptions;
 class TargetInfo;
   
 /// \brief Describes the name of a module.
-typedef llvm::SmallVector<std::pair<std::string, SourceLocation>, 2>
-  ModuleId;
+typedef SmallVector<std::pair<std::string, SourceLocation>, 2> ModuleId;
   
 /// \brief Describes a module or submodule.
 class Module {
@@ -71,10 +70,10 @@ private:
   
 public:
   /// \brief The headers that are part of this module.
-  llvm::SmallVector<const FileEntry *, 2> Headers;
+  SmallVector<const FileEntry *, 2> Headers;
 
   /// \brief The headers that are explicitly excluded from this module.
-  llvm::SmallVector<const FileEntry *, 2> ExcludedHeaders;
+  SmallVector<const FileEntry *, 2> ExcludedHeaders;
 
   /// \brief The top-level headers associated with this module.
   llvm::SmallSetVector<const FileEntry *, 2> TopHeaders;
@@ -84,7 +83,7 @@ public:
   /// If any of these features is not present, the \c IsAvailable bit
   /// will be false to indicate that this (sub)module is not
   /// available.
-  llvm::SmallVector<std::string, 2> Requires;
+  SmallVector<std::string, 2> Requires;
 
   /// \brief Whether this module is available in the current
   /// translation unit.
@@ -137,7 +136,7 @@ public:
 
   /// \brief The set of modules imported by this module, and on which this
   /// module depends.
-  llvm::SmallVector<Module *, 2> Imports;
+  SmallVector<Module *, 2> Imports;
   
   /// \brief Describes an exported module.
   ///
@@ -146,7 +145,7 @@ public:
   typedef llvm::PointerIntPair<Module *, 1, bool> ExportDecl;
   
   /// \brief The set of export declarations.
-  llvm::SmallVector<ExportDecl, 2> Exports;
+  SmallVector<ExportDecl, 2> Exports;
   
   /// \brief Describes an exported module that has not yet been resolved
   /// (perhaps because the module it refers to has not yet been loaded).
@@ -164,8 +163,29 @@ public:
   };
   
   /// \brief The set of export declarations that have yet to be resolved.
-  llvm::SmallVector<UnresolvedExportDecl, 2> UnresolvedExports;
-  
+  SmallVector<UnresolvedExportDecl, 2> UnresolvedExports;
+
+  /// \brief A library or framework to link against when an entity from this
+  /// module is used.
+  struct LinkLibrary {
+    LinkLibrary() : IsFramework(false) { }
+    LinkLibrary(const std::string &Library, bool IsFramework)
+      : Library(Library), IsFramework(IsFramework) { }
+    
+    /// \brief The library to link against.
+    ///
+    /// This will typically be a library or framework name, but can also
+    /// be an absolute path to the library or framework.
+    std::string Library;
+
+    /// \brief Whether this is a framework rather than a library.
+    bool IsFramework;
+  };
+
+  /// \brief The set of libraries or frameworks to link against when
+  /// an entity from this module is used.
+  llvm::SmallVector<LinkLibrary, 2> LinkLibraries;
+
   /// \brief Construct a top-level module.
   explicit Module(StringRef Name, SourceLocation DefinitionLoc,
                   bool IsFramework)
@@ -217,7 +237,13 @@ public:
     
     return false;
   }
-  
+
+  /// \brief Determine whether this module is a subframework of another
+  /// framework.
+  bool isSubFramework() const {
+    return IsFramework && Parent && Parent->isPartOfFramework();
+  }
+
   /// \brief Retrieve the full name of this module, including the path from
   /// its top-level module.
   std::string getFullModuleName() const;
@@ -292,14 +318,17 @@ public:
   submodule_const_iterator submodule_begin() const {return SubModules.begin();}
   submodule_iterator submodule_end()   { return SubModules.end(); }
   submodule_const_iterator submodule_end() const { return SubModules.end(); }
-  
+
+  /// \brief Returns the exported modules based on the wildcard restrictions.
+  void getExportedModules(SmallVectorImpl<Module *> &Exported) const;
+
   static StringRef getModuleInputBufferName() {
     return "<module-includes>";
   }
 
   /// \brief Print the module map for this module to the given stream. 
   ///
-  void print(llvm::raw_ostream &OS, unsigned Indent = 0) const;
+  void print(raw_ostream &OS, unsigned Indent = 0) const;
   
   /// \brief Dump the contents of this module to the given output stream.
   void dump() const;

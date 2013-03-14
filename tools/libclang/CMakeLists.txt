@@ -2,6 +2,7 @@ set(LLVM_LINK_COMPONENTS
   ${LLVM_TARGETS_TO_BUILD}
   asmparser
   support
+  bitreader
   mc
   )
 
@@ -38,6 +39,7 @@ set(SOURCES
   Indexing.cpp
   IndexingContext.cpp
   IndexingContext.h
+  SimpleFormatContext.h
   ../../include/clang-c/Index.h
   )
 
@@ -54,6 +56,7 @@ set(LIBRARIES
   clangLex
   clangTooling
   clangBasic
+  clangFormat
   )
 
 set(GENERATED_HEADERS

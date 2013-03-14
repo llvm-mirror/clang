@@ -137,6 +137,10 @@ public:
                                            /// speed up parsing in cases you do
                                            /// not need them (e.g. with code
                                            /// completion).
+  unsigned UseGlobalModuleIndex : 1;       ///< Whether we can use the
+                                           ///< global module index if available.
+  unsigned GenerateGlobalModuleIndex : 1;  ///< Whether we can generate the
+                                           ///< global module index if needed.
 
   CodeCompleteOptions CodeCompleteOpts;
 
@@ -204,20 +208,16 @@ public:
   std::string OverrideRecordLayoutsFile;
   
 public:
-  FrontendOptions() {
-    DisableFree = 0;
-    ProgramAction = frontend::ParseSyntaxOnly;
-    ActionName = "";
-    RelocatablePCH = 0;
-    ShowHelp = 0;
-    ShowStats = 0;
-    ShowTimers = 0;
-    ShowVersion = 0;
-    ARCMTAction = ARCMT_None;
-    ARCMTMigrateEmitARCErrors = 0;
-    SkipFunctionBodies = 0;
-    ObjCMTAction = ObjCMT_None;
-  }
+  FrontendOptions() :
+    DisableFree(false), RelocatablePCH(false), ShowHelp(false),
+    ShowStats(false), ShowTimers(false), ShowVersion(false),
+    FixWhatYouCan(false), FixOnlyWarnings(false), FixAndRecompile(false),
+    FixToTemporaries(false), ARCMTMigrateEmitARCErrors(false),
+    SkipFunctionBodies(false), UseGlobalModuleIndex(true),
+    GenerateGlobalModuleIndex(true),
+    ARCMTAction(ARCMT_None), ObjCMTAction(ObjCMT_None),
+    ProgramAction(frontend::ParseSyntaxOnly)
+  {}
 
   /// getInputKindForExtension - Return the appropriate input kind for a file
   /// extension. For example, "c" would return IK_C.

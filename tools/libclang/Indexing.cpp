@@ -10,6 +10,7 @@
 #include "IndexingContext.h"
 #include "CIndexDiagnostic.h"
 #include "CIndexer.h"
+#include "CLog.h"
 #include "CXCursor.h"
 #include "CXSourceLocation.h"
 #include "CXString.h"
@@ -21,10 +22,10 @@
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Frontend/Utils.h"
-#include "clang/Lex/PPCallbacks.h"
-#include "clang/Lex/Preprocessor.h"
-#include "clang/Lex/PPConditionalDirectiveRecord.h"
 #include "clang/Lex/HeaderSearch.h"
+#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/PPConditionalDirectiveRecord.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/SemaConsumer.h"
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -32,7 +33,6 @@
 #include "llvm/Support/MutexGuard.h"
 
 using namespace clang;
-using namespace cxstring;
 using namespace cxtu;
 using namespace cxindex;
 
@@ -54,7 +54,8 @@ class SessionSkipBodyData { };
 class TUSkipBodyControl {
 public:
   TUSkipBodyControl(SessionSkipBodyData &sessionData,
-                    PPConditionalDirectiveRecord &ppRec) { }
+                    PPConditionalDirectiveRecord &ppRec,
+                    Preprocessor &pp) { }
   bool isParsed(SourceLocation Loc, FileID FID, const FileEntry *FE) {
     return false;
   }
@@ -280,16 +281,17 @@ public:
   }
 
   /// MacroDefined - This hook is called whenever a macro definition is seen.
-  virtual void MacroDefined(const Token &Id, const MacroInfo *MI) {
+  virtual void MacroDefined(const Token &Id, const MacroDirective *MD) {
   }
 
   /// MacroUndefined - This hook is called whenever a macro #undef is seen.
   /// MI is released immediately following this callback.
-  virtual void MacroUndefined(const Token &MacroNameTok, const MacroInfo *MI) {
+  virtual void MacroUndefined(const Token &MacroNameTok,
+                              const MacroDirective *MD) {
   }
 
   /// MacroExpands - This is called by when a macro invocation is found.
-  virtual void MacroExpands(const Token &MacroNameTok, const MacroInfo* MI,
+  virtual void MacroExpands(const Token &MacroNameTok, const MacroDirective *MD,
                             SourceRange Range) {
   }
 
@@ -542,8 +544,6 @@ static void clang_indexSourceFile_Impl(void *UserData) {
   // Configure the diagnostics.
   IntrusiveRefCntPtr<DiagnosticsEngine>
     Diags(CompilerInstance::createDiagnostics(new DiagnosticOptions,
-                                              num_command_line_args,
-                                              command_line_args,
                                               CaptureDiag,
                                               /*ShouldOwnClient=*/true,
                                               /*ShouldCloneClient=*/false));
@@ -760,7 +760,7 @@ static void clang_indexTranslationUnit_Impl(void *UserData) {
   if (!client_index_callbacks || index_callbacks_size == 0)
     return;
 
-  CIndexer *CXXIdx = (CIndexer*)TU->CIdx;
+  CIndexer *CXXIdx = TU->CIdx;
   if (CXXIdx->isOptEnabled(CXGlobalOpt_ThreadBackgroundPriorityForIndexing))
     setThreadBackgroundPriority();
 
@@ -784,7 +784,7 @@ static void clang_indexTranslationUnit_Impl(void *UserData) {
   llvm::CrashRecoveryContextCleanupRegistrar<IndexingConsumer>
     IndexConsumerCleanup(IndexConsumer.get());
 
-  ASTUnit *Unit = static_cast<ASTUnit *>(TU->TUData);
+  ASTUnit *Unit = cxtu::getASTUnit(TU);
   if (!Unit)
     return;
 
@@ -968,6 +968,11 @@ int clang_indexSourceFile(CXIndexAction idxAction,
                           unsigned num_unsaved_files,
                           CXTranslationUnit *out_TU,
                           unsigned TU_options) {
+  LOG_FUNC_SECTION {
+    *Log << source_filename << ": ";
+    for (int i = 0; i != num_command_line_args; ++i)
+      *Log << command_line_args[i] << " ";
+  }
 
   IndexSourceFileInfo ITUI = { idxAction, client_data, index_callbacks,
                                index_callbacks_size, index_options,
@@ -1018,6 +1023,9 @@ int clang_indexTranslationUnit(CXIndexAction idxAction,
                                unsigned index_callbacks_size,
                                unsigned index_options,
                                CXTranslationUnit TU) {
+  LOG_FUNC_SECTION {
+    *Log << TU;
+  }
 
   IndexTranslationUnitInfo ITUI = { idxAction, client_data, index_callbacks,
                                     index_callbacks_size, index_options, TU,

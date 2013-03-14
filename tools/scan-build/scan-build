@@ -17,6 +17,7 @@ use warnings;
 use FindBin qw($RealBin);
 use Digest::MD5;
 use File::Basename;
+use File::Find;
 use Term::ANSIColor;
 use Term::ANSIColor qw(:constants);
 use Cwd qw/ getcwd abs_path /;
@@ -470,11 +471,24 @@ sub CalcStats {
 # Postprocess - Postprocess the results of an analysis scan.
 ##----------------------------------------------------------------------------##
 
+my @filesFound;
+my $baseDir;
+sub FileWanted { 
+    my $baseDirRegEx = quotemeta $baseDir;
+    my $file = $File::Find::name;
+    if ($file =~ /report-.*\.html$/) {
+       my $relative_file = $file;
+       $relative_file =~ s/$baseDirRegEx//g;
+       push @filesFound, $relative_file;
+    }
+}
+
 sub Postprocess {
   
   my $Dir           = shift;
   my $BaseDir       = shift;
   my $AnalyzerStats = shift;
+  my $KeepEmpty     = shift;
   
   die "No directory specified." if (!defined $Dir);
   
@@ -482,21 +496,23 @@ sub Postprocess {
     Diag("No bugs found.\n");
     return 0;
   }
-  
-  opendir(DIR, $Dir);
-  my @files = grep { /^report-.*\.html$/ } readdir(DIR);
-  closedir(DIR);
 
-  if (scalar(@files) == 0 and ! -e "$Dir/failures") {
-    Diag("Removing directory '$Dir' because it contains no reports.\n");
-    system ("rm", "-fR", $Dir);
+  $baseDir = $Dir . "/";
+  find({ wanted => \&FileWanted, follow => 0}, $Dir);
+
+  if (scalar(@filesFound) == 0 and ! -e "$Dir/failures") {
+    if (! $KeepEmpty) {
+      Diag("Removing directory '$Dir' because it contains no reports.\n");
+      system ("rm", "-fR", $Dir);
+    }
+    Diag("No bugs found.\n");
     return 0;
   }
   
   # Scan each report file and build an index.  
   my @Index;
   my @Stats;
-  foreach my $file (@files) { ScanFile(\@Index, $Dir, $file, \@Stats); }
+  foreach my $file (@filesFound) { ScanFile(\@Index, $Dir, $file, \@Stats); }
   
   # Scan the failures directory and use the information in the .info files
   # to update the common prefix directory.
@@ -598,7 +614,7 @@ print OUT <<ENDTEXT;
 </table>
 ENDTEXT
 
-  if (scalar(@files)) {
+  if (scalar(@filesFound)) {
     # Print out the summary table.
     my %Totals;
 
@@ -879,6 +895,39 @@ sub RunXcodebuild {
   if ($IgnoreErrors) {
     AddIfNotPresent($Args,"-PBXBuildsContinueAfterErrors=YES");
   }
+
+  # Detect the version of Xcode.  If Xcode 4.6 or higher, use new
+  # in situ support for analyzer interposition without needed to override
+  # the compiler.
+  open(DETECT_XCODE, "xcodebuild -version |") or
+    die "error: cannot detect version of xcodebuild\n";
+
+  my $oldBehavior = 1;
+
+  while(<DETECT_XCODE>) {
+    if (/^Xcode (.+)$/) {
+      my $ver = $1;
+      if ($ver =~ /^([0-9]+[.][0-9]+)[^0-9]?/) {
+        if ($1 >= 4.6) {
+          $oldBehavior = 0;
+          last;
+        }
+      }
+    }
+  }
+  close(DETECT_XCODE);
+  
+  if ($oldBehavior == 0) {
+    my $OutputDir = $Options->{"OUTPUT_DIR"};
+    my $CLANG = $Options->{"CLANG"};
+    push @$Args,
+        "RUN_CLANG_STATIC_ANALYZER=YES",
+        "CLANG_ANALYZER_OUTPUT=plist-html",
+        "CLANG_ANALYZER_EXEC=$CLANG",
+        "CLANG_ANALYZER_OUTPUT_DIR=$OutputDir";
+
+    return (system(@$Args) >> 8);
+  }
   
   # Default to old behavior where we insert a bogus compiler.
   SetEnv($Options);
@@ -1081,7 +1130,11 @@ ADVANCED OPTIONS:
    scan-build uses the 'clang' executable relative to itself for static
    analysis. One can override this behavior with this option by using the
    'clang' packaged with Xcode (on OS X) or from the PATH.
-  
+
+ --keep-empty
+
+   Don't remove the build results directory even if no issues were reported.
+
 CONTROLLING CHECKERS:
 
  A default group of checkers are always run unless explicitly disabled.
@@ -1248,6 +1301,7 @@ my $HtmlDir;           # Parent directory to store HTML files.
 my $IgnoreErrors = 0;  # Ignore build errors.
 my $ViewResults  = 0;  # View results when the build terminates.
 my $ExitStatusFoundBugs = 0; # Exit status reflects whether bugs were found
+my $KeepEmpty    = 0;  # Don't remove output directory even with 0 results.
 my @AnalysesToRun;
 my $StoreModel;
 my $ConstraintsModel;
@@ -1441,6 +1495,11 @@ while (@ARGV) {
 	$AnalyzerDiscoveryMethod = $1;
 	next;
   }
+  if ($arg eq "--keep-empty") {
+    shift @ARGV;
+    $KeepEmpty = 1;
+    next;
+  }
   
   DieDiag("unrecognized option '$arg'\n") if ($arg =~ /^-/);
   
@@ -1480,8 +1539,8 @@ else {
   }
   else {
     $Clang = Cwd::realpath($AnalyzerDiscoveryMethod);
-	if (! -x $Clang) {
-   	  DieDiag("Cannot find an executable clang at '$Clang'\n");
+	if (!defined $Clang or not -x $Clang) {
+   	  DieDiag("Cannot find an executable clang at '$AnalyzerDiscoveryMethod'\n");
 	}
   }
 }
@@ -1494,7 +1553,8 @@ if ($displayHelp) {
 $ClangCXX = $Clang;
 $ClangCXX =~ s/\-\d+\.\d+$//;
 $ClangCXX .= "++";
-$ClangVersion = HtmlEscape(`$Clang --version`);
+# Make sure to use "" to handle paths with spaces.
+$ClangVersion = HtmlEscape(`"$Clang" --version`);
 
 # Determine where results go.
 $CmdArgs = HtmlEscape(join(' ', map(ShellEscape($_), @ARGV)));
@@ -1563,9 +1623,9 @@ if (defined $OutputFormat) {
     Diag "Analysis run complete.\n";
     Diag "Analysis results (plist files) deposited in '$HtmlDir'\n";
   }
-  elsif ($OutputFormat =~ /html/) {
+  if ($OutputFormat =~ /html/) {
     # Postprocess the HTML directory.
-    my $NumBugs = Postprocess($HtmlDir, $BaseDir, $AnalyzerStats);
+    my $NumBugs = Postprocess($HtmlDir, $BaseDir, $AnalyzerStats, $KeepEmpty);
 
     if ($ViewResults and -r "$HtmlDir/index.html") {
       Diag "Analysis run complete.\n";

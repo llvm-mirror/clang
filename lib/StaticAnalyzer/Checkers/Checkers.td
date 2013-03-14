@@ -60,9 +60,9 @@ def CallAndMessageChecker : Checker<"CallAndMessage">,
   HelpText<"Check for logical errors for function calls and Objective-C message expressions (e.g., uninitialized arguments, null function pointers)">,
   DescFile<"CallAndMessageChecker.cpp">;
 
-def AttrNonNullChecker : Checker<"AttributeNonNull">,
-  HelpText<"Check for null pointers passed as arguments to a function whose arguments are marked with the 'nonnull' attribute">,
-  DescFile<"AttrNonNullChecker.cpp">;
+def NonNullParamChecker : Checker<"NonNullParamChecker">,
+  HelpText<"Check for null pointers passed as arguments to a function whose arguments are references or marked with the 'nonnull' attribute">,
+  DescFile<"NonNullParamChecker.cpp">;
 
 def VLASizeChecker : Checker<"VLASize">,
   HelpText<"Check for declarations of VLA of undefined or zero size">,
@@ -351,7 +351,7 @@ def MacOSKeychainAPIChecker : Checker<"SecKeychainAPI">,
   HelpText<"Check for proper uses of Secure Keychain APIs">,
   DescFile<"MacOSKeychainAPIChecker.cpp">;
 
-} // end "macosx"
+} // end "osx"
 
 let ParentPackage = Cocoa in {
 
@@ -412,8 +412,12 @@ def ObjCDeallocChecker : Checker<"Dealloc">,
   HelpText<"Warn about Objective-C classes that lack a correct implementation of -dealloc">,
   DescFile<"CheckObjCDealloc.cpp">;
 
-def IvarInvalidationChecker : Checker<"InstanceVariableInvalidation">,
+def InstanceVariableInvalidation : Checker<"InstanceVariableInvalidation">,
   HelpText<"Check that the invalidatable instance variables are invalidated in the methods annotated with objc_instance_variable_invalidator">,
+  DescFile<"IvarInvalidationChecker.cpp">;
+
+def MissingInvalidationMethod : Checker<"MissingInvalidationMethod">,
+  HelpText<"Check that the invalidation methods are present in classes that contain invalidatable instance variables">,
   DescFile<"IvarInvalidationChecker.cpp">;
 
 def DirectIvarAssignment : Checker<"DirectIvarAssignment">,
@@ -421,7 +425,7 @@ def DirectIvarAssignment : Checker<"DirectIvarAssignment">,
   DescFile<"DirectIvarAssignment.cpp">;
 
 def DirectIvarAssignmentForAnnotatedFunctions : Checker<"DirectIvarAssignmentForAnnotatedFunctions">,
-  HelpText<"Check for direct assignments to instance variables in the methods annotated with objc_no_direct_instance_variable_assignmemt">,
+  HelpText<"Check for direct assignments to instance variables in the methods annotated with objc_no_direct_instance_variable_assignment">,
   DescFile<"DirectIvarAssignment.cpp">;
 
 def ObjCSuperCallChecker : Checker<"MissingSuperCall">,

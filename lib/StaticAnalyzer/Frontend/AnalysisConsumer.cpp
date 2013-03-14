@@ -37,6 +37,7 @@
 #include "clang/StaticAnalyzer/Frontend/CheckerRegistration.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/OwningPtr.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/Path.h"
@@ -64,11 +65,13 @@ STATISTIC(MaxCFGSize, "The maximum number of basic blocks in a function.");
 // Special PathDiagnosticConsumers.
 //===----------------------------------------------------------------------===//
 
-static void createPlistHTMLDiagnosticConsumer(PathDiagnosticConsumers &C,
+static void createPlistHTMLDiagnosticConsumer(AnalyzerOptions &AnalyzerOpts,
+                                              PathDiagnosticConsumers &C,
                                               const std::string &prefix,
                                               const Preprocessor &PP) {
-  createHTMLDiagnosticConsumer(C, llvm::sys::path::parent_path(prefix), PP);
-  createPlistDiagnosticConsumer(C, prefix, PP);
+  createHTMLDiagnosticConsumer(AnalyzerOpts, C,
+                               llvm::sys::path::parent_path(prefix), PP);
+  createPlistDiagnosticConsumer(AnalyzerOpts, C, prefix, PP);
 }
 
 namespace {
@@ -188,13 +191,14 @@ public:
       switch (Opts->AnalysisDiagOpt) {
       default:
 #define ANALYSIS_DIAGNOSTICS(NAME, CMDFLAG, DESC, CREATEFN, AUTOCREATE) \
-        case PD_##NAME: CREATEFN(PathConsumers, OutDir, PP); break;
+        case PD_##NAME: CREATEFN(*Opts.getPtr(), PathConsumers, OutDir, PP);\
+        break;
 #include "clang/StaticAnalyzer/Core/Analyses.def"
       }
     } else if (Opts->AnalysisDiagOpt == PD_TEXT) {
       // Create the text client even without a specified output file since
       // it just uses diagnostic notes.
-      createTextPathDiagnosticConsumer(PathConsumers, "", PP);
+      createTextPathDiagnosticConsumer(*Opts.getPtr(), PathConsumers, "", PP);
     }
 
     // Create the analyzer component creators.
@@ -208,14 +212,15 @@ public:
 
     switch (Opts->AnalysisConstraintsOpt) {
     default:
-      llvm_unreachable("Unknown store manager.");
+      llvm_unreachable("Unknown constraint manager.");
 #define ANALYSIS_CONSTRAINTS(NAME, CMDFLAG, DESC, CREATEFN)     \
       case NAME##Model: CreateConstraintMgr = CREATEFN; break;
 #include "clang/StaticAnalyzer/Core/Analyses.def"
     }
   }
 
-  void DisplayFunction(const Decl *D, AnalysisMode Mode) {
+  void DisplayFunction(const Decl *D, AnalysisMode Mode,
+                       ExprEngine::InliningModes IMode) {
     if (!Opts->AnalyzerDisplayProgress)
       return;
 
@@ -226,8 +231,18 @@ public:
 
       if (Mode == AM_Syntax)
         llvm::errs() << " (Syntax)";
-      else if (Mode == AM_Path)
-        llvm::errs() << " (Path)";
+      else if (Mode == AM_Path) {
+        llvm::errs() << " (Path, ";
+        switch (IMode) {
+          case ExprEngine::Inline_None:
+            llvm::errs() << " Inline_None";
+            break;
+          case ExprEngine::Inline_All:
+            llvm::errs() << " Inline_All";
+            break;
+        }
+        llvm::errs() << ")";
+      }
       else
         assert(Mode == (AM_Syntax | AM_Path) && "Unexpected mode!");
 
@@ -327,6 +342,14 @@ public:
     }
     return true;
   }
+  
+  bool VisitBlockDecl(BlockDecl *BD) {
+    if (BD->hasBody()) {
+      assert(RecVisitorMode == AM_Syntax || Mgr->shouldInlineCall() == false);
+      HandleCode(BD, RecVisitorMode);
+    }
+    return true;
+  }
 
 private:
   void storeTopLevelDecls(DeclGroupRef DG);
@@ -406,61 +429,34 @@ AnalysisConsumer::getInliningModeForFunction(const Decl *D,
 }
 
 void AnalysisConsumer::HandleDeclsCallGraph(const unsigned LocalTUDeclsSize) {
-  // Otherwise, use the Callgraph to derive the order.
-  // Build the Call Graph.
-  CallGraph CG;
-
-  // Add all the top level declarations to the graph.
+  // Build the Call Graph by adding all the top level declarations to the graph.
   // Note: CallGraph can trigger deserialization of more items from a pch
   // (though HandleInterestingDecl); triggering additions to LocalTUDecls.
   // We rely on random access to add the initially processed Decls to CG.
+  CallGraph CG;
   for (unsigned i = 0 ; i < LocalTUDeclsSize ; ++i) {
     CG.addToCallGraph(LocalTUDecls[i]);
   }
 
-  // Find the top level nodes - children of root + the unreachable (parentless)
-  // nodes.
-  llvm::SmallVector<CallGraphNode*, 24> TopLevelFunctions;
-  for (CallGraph::nodes_iterator TI = CG.parentless_begin(),
-                                 TE = CG.parentless_end(); TI != TE; ++TI) {
-    TopLevelFunctions.push_back(*TI);
-    NumFunctionTopLevel++;
-  }
-  CallGraphNode *Entry = CG.getRoot();
-  for (CallGraphNode::iterator I = Entry->begin(),
-                               E = Entry->end(); I != E; ++I) {
-    TopLevelFunctions.push_back(*I);
-    NumFunctionTopLevel++;
-  }
-
-  // Make sure the nodes are sorted in order reverse of their definition in the 
-  // translation unit. This step is very important for performance. It ensures 
-  // that we analyze the root functions before the externally available 
-  // subroutines.
-  std::deque<CallGraphNode*> BFSQueue;
-  for (llvm::SmallVector<CallGraphNode*, 24>::reverse_iterator
-         TI = TopLevelFunctions.rbegin(), TE = TopLevelFunctions.rend();
-         TI != TE; ++TI)
-    BFSQueue.push_back(*TI);
-
-  // BFS over all of the functions, while skipping the ones inlined into
-  // the previously processed functions. Use external Visited set, which is
-  // also modified when we inline a function.
+  // Walk over all of the call graph nodes in topological order, so that we
+  // analyze parents before the children. Skip the functions inlined into
+  // the previously processed functions. Use external Visited set to identify
+  // inlined functions. The topological order allows the "do not reanalyze
+  // previously inlined function" performance heuristic to be triggered more
+  // often.
   SetOfConstDecls Visited;
   SetOfConstDecls VisitedAsTopLevel;
-  while(!BFSQueue.empty()) {
-    CallGraphNode *N = BFSQueue.front();
-    BFSQueue.pop_front();
+  llvm::ReversePostOrderTraversal<clang::CallGraph*> RPOT(&CG);
+  for (llvm::ReversePostOrderTraversal<clang::CallGraph*>::rpo_iterator
+         I = RPOT.begin(), E = RPOT.end(); I != E; ++I) {
+    NumFunctionTopLevel++;
 
-    // Push the children into the queue.
-    for (CallGraphNode::const_iterator CI = N->begin(),
-         CE = N->end(); CI != CE; ++CI) {
-      if (!shouldSkipFunction((*CI)->getDecl(), Visited, VisitedAsTopLevel))
-        BFSQueue.push_back(*CI);
-    }
-
+    CallGraphNode *N = *I;
     Decl *D = N->getDecl();
-    assert(D);
+    
+    // Skip the abstract root node.
+    if (!D)
+      continue;
 
     // Skip the functions which have been processed already or previously
     // inlined.
@@ -541,16 +537,6 @@ void AnalysisConsumer::HandleTranslationUnit(ASTContext &C) {
 
 }
 
-static void FindBlocks(DeclContext *D, SmallVectorImpl<Decl*> &WL) {
-  if (BlockDecl *BD = dyn_cast<BlockDecl>(D))
-    WL.push_back(BD);
-
-  for (DeclContext::decl_iterator I = D->decls_begin(), E = D->decls_end();
-       I!=E; ++I)
-    if (DeclContext *DC = dyn_cast<DeclContext>(*I))
-      FindBlocks(DC, WL);
-}
-
 static std::string getFunctionName(const Decl *D) {
   if (const ObjCMethodDecl *ID = dyn_cast<ObjCMethodDecl>(D)) {
     return ID->getSelector().getAsString();
@@ -588,40 +574,30 @@ AnalysisConsumer::getModeForDecl(Decl *D, AnalysisMode Mode) {
 void AnalysisConsumer::HandleCode(Decl *D, AnalysisMode Mode,
                                   ExprEngine::InliningModes IMode,
                                   SetOfConstDecls *VisitedCallees) {
+  if (!D->hasBody())
+    return;
   Mode = getModeForDecl(D, Mode);
   if (Mode == AM_None)
     return;
 
-  DisplayFunction(D, Mode);
+  DisplayFunction(D, Mode, IMode);
   CFG *DeclCFG = Mgr->getCFG(D);
   if (DeclCFG) {
     unsigned CFGSize = DeclCFG->size();
     MaxCFGSize = MaxCFGSize < CFGSize ? CFGSize : MaxCFGSize;
   }
 
-
   // Clear the AnalysisManager of old AnalysisDeclContexts.
   Mgr->ClearContexts();
-
-  // Dispatch on the actions.
-  SmallVector<Decl*, 10> WL;
-  WL.push_back(D);
-
-  if (D->hasBody() && Opts->AnalyzeNestedBlocks)
-    FindBlocks(cast<DeclContext>(D), WL);
-
   BugReporter BR(*Mgr);
-  for (SmallVectorImpl<Decl*>::iterator WI=WL.begin(), WE=WL.end();
-       WI != WE; ++WI)
-    if ((*WI)->hasBody()) {
-      if (Mode & AM_Syntax)
-        checkerMgr->runCheckersOnASTBody(*WI, *Mgr, BR);
-      if ((Mode & AM_Path) && checkerMgr->hasPathSensitiveCheckers()) {
-        RunPathSensitiveChecks(*WI, IMode, VisitedCallees);
-        if (IMode != ExprEngine::Inline_None)
-          NumFunctionsAnalyzed++;
-      }
-    }
+
+  if (Mode & AM_Syntax)
+    checkerMgr->runCheckersOnASTBody(D, *Mgr, BR);
+  if ((Mode & AM_Path) && checkerMgr->hasPathSensitiveCheckers()) {
+    RunPathSensitiveChecks(D, IMode, VisitedCallees);
+    if (IMode != ExprEngine::Inline_None)
+      NumFunctionsAnalyzed++;
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -651,7 +627,7 @@ void AnalysisConsumer::ActionExprEngine(Decl *D, bool ObjCGCEnabled,
 
   // Execute the worklist algorithm.
   Eng.ExecuteWorkList(Mgr->getAnalysisDeclContextManager().getStackFrame(D),
-                      Mgr->options.MaxNodes);
+                      Mgr->options.getMaxNodesPerTopLevelFunction());
 
   // Release the auditor (if any) so that it doesn't monitor the graph
   // created BugReporter.

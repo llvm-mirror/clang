@@ -177,8 +177,7 @@ public:
   /// \brief Create the initialization entity for a parameter.
   static InitializedEntity InitializeParameter(ASTContext &Context,
                                                ParmVarDecl *Parm) {
-    return InitializeParameter(Context, Parm,
-                               Parm->getType().getUnqualifiedType());
+    return InitializeParameter(Context, Parm, Parm->getType());
   }
 
   /// \brief Create the initialization entity for a parameter, but use
@@ -191,7 +190,8 @@ public:
 
     InitializedEntity Entity;
     Entity.Kind = EK_Parameter;
-    Entity.Type = Context.getVariableArrayDecayedType(Type);
+    Entity.Type =
+      Context.getVariableArrayDecayedType(Type.getUnqualifiedType());
     Entity.Parent = 0;
     Entity.Parameter
       = (static_cast<uintptr_t>(Consumed) | reinterpret_cast<uintptr_t>(Parm));
@@ -624,7 +624,11 @@ public:
     /// \brief Produce an Objective-C object pointer.
     SK_ProduceObjCObject,
     /// \brief Construct a std::initializer_list from an initializer list.
-    SK_StdInitializerList
+    SK_StdInitializerList,
+    /// \brief Initialize an OpenCL sampler from an integer.
+    SK_OCLSamplerInit,
+    /// \brief Passing zero to a function where OpenCL event_t is expected.
+    SK_OCLZeroEvent
   };
   
   /// \brief A single step in the initialization sequence.
@@ -952,6 +956,14 @@ public:
   /// \brief Add a step to construct a std::initializer_list object from an
   /// initializer list.
   void AddStdInitializerListConstructionStep(QualType T);
+
+  /// \brief Add a step to initialize an OpenCL sampler from an integer
+  /// constant.
+  void AddOCLSamplerInitStep(QualType T);
+
+  /// \brief Add a step to initialize an OpenCL event_t from a NULL
+  /// constant.
+  void AddOCLZeroEventStep(QualType T);
 
   /// \brief Add steps to unwrap a initializer list for a reference around a
   /// single element and rewrap it at the end.

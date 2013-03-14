@@ -77,10 +77,10 @@ static std::pair<const Stmt*,
     const ProgramPoint &PP = Node->getLocation();
 
     if (PP.getLocationContext()->getCurrentStackFrame() == SF) {
-      if (const StmtPoint *SP = dyn_cast<StmtPoint>(&PP)) {
+      if (Optional<StmtPoint> SP = PP.getAs<StmtPoint>()) {
         S = SP->getStmt();
         break;
-      } else if (const CallExitEnd *CEE = dyn_cast<CallExitEnd>(&PP)) {
+      } else if (Optional<CallExitEnd> CEE = PP.getAs<CallExitEnd>()) {
         S = CEE->getCalleeContext()->getCallSite();
         if (S)
           break;
@@ -88,17 +88,17 @@ static std::pair<const Stmt*,
         // If there is no statement, this is an implicitly-generated call.
         // We'll walk backwards over it and then continue the loop to find
         // an actual statement.
-        const CallEnter *CE;
+        Optional<CallEnter> CE;
         do {
           Node = Node->getFirstPred();
           CE = Node->getLocationAs<CallEnter>();
         } while (!CE || CE->getCalleeContext() != CEE->getCalleeContext());
 
         // Continue searching the graph.
-      } else if (const BlockEdge *BE = dyn_cast<BlockEdge>(&PP)) {
+      } else if (Optional<BlockEdge> BE = PP.getAs<BlockEdge>()) {
         Blk = BE->getSrc();
       }
-    } else if (const CallEnter *CE = dyn_cast<CallEnter>(&PP)) {
+    } else if (Optional<CallEnter> CE = PP.getAs<CallEnter>()) {
       // If we reached the CallEnter for this function, it has no statements.
       if (CE->getCalleeContext() == SF)
         break;
@@ -121,7 +121,7 @@ static std::pair<const Stmt*,
 static SVal adjustReturnValue(SVal V, QualType ExpectedTy, QualType ActualTy,
                               StoreManager &StoreMgr) {
   // For now, the only adjustments we handle apply only to locations.
-  if (!isa<Loc>(V))
+  if (!V.getAs<Loc>())
     return V;
 
   // If the types already match, don't do any unnecessary work.
@@ -187,6 +187,23 @@ static bool wasDifferentDeclUsedForInlining(CallEventRef<> Call,
   return RuntimeCallee->getCanonicalDecl() != StaticDecl->getCanonicalDecl();
 }
 
+/// Returns true if the CXXConstructExpr \p E was intended to construct a
+/// prvalue for the region in \p V.
+///
+/// Note that we can't just test for rvalue vs. glvalue because
+/// CXXConstructExprs embedded in DeclStmts and initializers are considered
+/// rvalues by the AST, and the analyzer would like to treat them as lvalues.
+static bool isTemporaryPRValue(const CXXConstructExpr *E, SVal V) {
+  if (E->isGLValue())
+    return false;
+
+  const MemRegion *MR = V.getAsRegion();
+  if (!MR)
+    return false;
+
+  return isa<CXXTempObjectRegion>(MR);
+}
+
 /// The call exit is simulated with a sequence of nodes, which occur between 
 /// CallExitBegin and CallExitEnd. The following operations occur between the 
 /// two program points:
@@ -247,13 +264,9 @@ void ExprEngine::processCallExit(ExplodedNode *CEBNode) {
         svalBuilder.getCXXThis(CCE->getConstructor()->getParent(), calleeCtx);
       SVal ThisV = state->getSVal(This);
 
-      // If the constructed object is a prvalue, get its bindings.
-      // Note that we have to be careful here because constructors embedded
-      // in DeclStmts are not marked as lvalues.
-      if (!CCE->isGLValue())
-        if (const MemRegion *MR = ThisV.getAsRegion())
-          if (isa<CXXTempObjectRegion>(MR))
-            ThisV = state->getSVal(cast<Loc>(ThisV));
+      // If the constructed object is a temporary prvalue, get its bindings.
+      if (isTemporaryPRValue(CCE, ThisV))
+        ThisV = state->getSVal(ThisV.castAs<Loc>());
 
       state = state->BindExpr(CCE, callerCtx, ThisV);
     }
@@ -381,71 +394,6 @@ static bool IsInStdNamespace(const FunctionDecl *FD) {
   return ND->getName() == "std";
 }
 
-// Determine if we should inline the call.
-bool ExprEngine::shouldInlineDecl(const Decl *D, ExplodedNode *Pred) {
-  AnalysisDeclContext *CalleeADC = AMgr.getAnalysisDeclContext(D);
-  const CFG *CalleeCFG = CalleeADC->getCFG();
-
-  // It is possible that the CFG cannot be constructed.
-  // Be safe, and check if the CalleeCFG is valid.
-  if (!CalleeCFG)
-    return false;
-
-  bool IsRecursive = false;
-  unsigned StackDepth = 0;
-  examineStackFrames(D, Pred->getLocationContext(), IsRecursive, StackDepth);
-  if ((StackDepth >= AMgr.options.InlineMaxStackDepth) &&
-       ((CalleeCFG->getNumBlockIDs() > AMgr.options.getAlwaysInlineSize())
-         || IsRecursive))
-    return false;
-
-  if (Engine.FunctionSummaries->hasReachedMaxBlockCount(D))
-    return false;
-
-  if (CalleeCFG->getNumBlockIDs() > AMgr.options.InlineMaxFunctionSize)
-    return false;
-
-  // Do not inline variadic calls (for now).
-  if (const BlockDecl *BD = dyn_cast<BlockDecl>(D)) {
-    if (BD->isVariadic())
-      return false;
-  }
-  else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
-    if (FD->isVariadic())
-      return false;
-  }
-
-  if (getContext().getLangOpts().CPlusPlus) {
-    if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
-      // Conditionally allow the inlining of template functions.
-      if (!AMgr.options.mayInlineTemplateFunctions())
-        if (FD->getTemplatedKind() != FunctionDecl::TK_NonTemplate)
-          return false;
-
-      // Conditionally allow the inlining of C++ standard library functions.
-      if (!AMgr.options.mayInlineCXXStandardLibrary())
-        if (getContext().getSourceManager().isInSystemHeader(FD->getLocation()))
-          if (IsInStdNamespace(FD))
-            return false;
-    }
-  }
-
-  // It is possible that the live variables analysis cannot be
-  // run.  If so, bail out.
-  if (!CalleeADC->getAnalysis<RelaxedLiveVariables>())
-    return false;
-
-  if (Engine.FunctionSummaries->getNumTimesInlined(D) >
-        AMgr.options.getMaxTimesInlineLarge() &&
-      CalleeCFG->getNumBlockIDs() > 13) {
-    NumReachedInlineCountMax++;
-    return false;
-  }
-  Engine.FunctionSummaries->bumpNumTimesInlined(D);
-
-  return true;
-}
-
 // The GDM component containing the dynamic dispatch bifurcation info. When
 // the exact type of the receiver is not known, we want to explore both paths -
 // one on which we do inline it and the other one on which we don't. This is
@@ -469,107 +417,16 @@ bool ExprEngine::inlineCall(const CallEvent &Call, const Decl *D,
 
   const LocationContext *CurLC = Pred->getLocationContext();
   const StackFrameContext *CallerSFC = CurLC->getCurrentStackFrame();
-  const LocationContext *ParentOfCallee = 0;
-
-  AnalyzerOptions &Opts = getAnalysisManager().options;
-
-  // FIXME: Refactor this check into a hypothetical CallEvent::canInline.
-  switch (Call.getKind()) {
-  case CE_Function:
-    break;
-  case CE_CXXMember:
-  case CE_CXXMemberOperator:
-    if (!Opts.mayInlineCXXMemberFunction(CIMK_MemberFunctions))
-      return false;
-    break;
-  case CE_CXXConstructor: {
-    if (!Opts.mayInlineCXXMemberFunction(CIMK_Constructors))
-      return false;
-
-    const CXXConstructorCall &Ctor = cast<CXXConstructorCall>(Call);
-
-    // FIXME: We don't handle constructors or destructors for arrays properly.
-    const MemRegion *Target = Ctor.getCXXThisVal().getAsRegion();
-    if (Target && isa<ElementRegion>(Target))
-      return false;
-
-    // FIXME: This is a hack. We don't use the correct region for a new
-    // expression, so if we inline the constructor its result will just be
-    // thrown away. This short-term hack is tracked in <rdar://problem/12180598>
-    // and the longer-term possible fix is discussed in PR12014.
-    const CXXConstructExpr *CtorExpr = Ctor.getOriginExpr();
-    if (const Stmt *Parent = CurLC->getParentMap().getParent(CtorExpr))
-      if (isa<CXXNewExpr>(Parent))
-        return false;
-
-    // Inlining constructors requires including initializers in the CFG.
-    const AnalysisDeclContext *ADC = CallerSFC->getAnalysisDeclContext();
-    assert(ADC->getCFGBuildOptions().AddInitializers && "No CFG initializers");
-    (void)ADC;
-
-    // If the destructor is trivial, it's always safe to inline the constructor.
-    if (Ctor.getDecl()->getParent()->hasTrivialDestructor())
-      break;
-    
-    // For other types, only inline constructors if destructor inlining is
-    // also enabled.
-    if (!Opts.mayInlineCXXMemberFunction(CIMK_Destructors))
-      return false;
-
-    // FIXME: This is a hack. We don't handle temporary destructors
-    // right now, so we shouldn't inline their constructors.
-    if (CtorExpr->getConstructionKind() == CXXConstructExpr::CK_Complete)
-      if (!Target || !isa<DeclRegion>(Target))
-        return false;
-
-    break;
-  }
-  case CE_CXXDestructor: {
-    if (!Opts.mayInlineCXXMemberFunction(CIMK_Destructors))
-      return false;
-
-    // Inlining destructors requires building the CFG correctly.
-    const AnalysisDeclContext *ADC = CallerSFC->getAnalysisDeclContext();
-    assert(ADC->getCFGBuildOptions().AddImplicitDtors && "No CFG destructors");
-    (void)ADC;
-
-    const CXXDestructorCall &Dtor = cast<CXXDestructorCall>(Call);
-
-    // FIXME: We don't handle constructors or destructors for arrays properly.
-    const MemRegion *Target = Dtor.getCXXThisVal().getAsRegion();
-    if (Target && isa<ElementRegion>(Target))
-      return false;
-
-    break;
-  }
-  case CE_CXXAllocator:
-    // Do not inline allocators until we model deallocators.
-    // This is unfortunate, but basically necessary for smart pointers and such.
-    return false;
-  case CE_Block: {
+  const LocationContext *ParentOfCallee = CallerSFC;
+  if (Call.getKind() == CE_Block) {
     const BlockDataRegion *BR = cast<BlockCall>(Call).getBlockRegion();
     assert(BR && "If we have the block definition we should have its region");
     AnalysisDeclContext *BlockCtx = AMgr.getAnalysisDeclContext(D);
     ParentOfCallee = BlockCtx->getBlockInvocationContext(CallerSFC,
                                                          cast<BlockDecl>(D),
                                                          BR);
-    break;
   }
-  case CE_ObjCMessage:
-    if (!Opts.mayInlineObjCMethod())
-      return false;
-    if (!(getAnalysisManager().options.IPAMode == DynamicDispatch ||
-          getAnalysisManager().options.IPAMode == DynamicDispatchBifurcate))
-      return false;
-    break;
-  }
-
-  if (!shouldInlineDecl(D, Pred))
-    return false;
   
-  if (!ParentOfCallee)
-    ParentOfCallee = CallerSFC;
-
   // This may be NULL, but that's fine.
   const Expr *CallE = Call.getOriginExpr();
 
@@ -580,6 +437,7 @@ bool ExprEngine::inlineCall(const CallEvent &Call, const Decl *D,
                              currBldrCtx->getBlock(),
                              currStmtIdx);
   
+    
   CallEnter Loc(CallE, CalleeSFC, CurLC);
 
   // Construct a new state which contains the mapping from actual to
@@ -608,11 +466,11 @@ bool ExprEngine::inlineCall(const CallEvent &Call, const Decl *D,
 
 static ProgramStateRef getInlineFailedState(ProgramStateRef State,
                                             const Stmt *CallE) {
-  void *ReplayState = State->get<ReplayWithoutInlining>();
+  const void *ReplayState = State->get<ReplayWithoutInlining>();
   if (!ReplayState)
     return 0;
 
-  assert(ReplayState == (const void*)CallE && "Backtracked to the wrong call.");
+  assert(ReplayState == CallE && "Backtracked to the wrong call.");
   (void)CallE;
 
   return State->remove<ReplayWithoutInlining>();
@@ -691,7 +549,13 @@ ProgramStateRef ExprEngine::bindReturnValue(const CallEvent &Call,
     }
     }
   } else if (const CXXConstructorCall *C = dyn_cast<CXXConstructorCall>(&Call)){
-    return State->BindExpr(E, LCtx, C->getCXXThisVal());
+    SVal ThisV = C->getCXXThisVal();
+
+    // If the constructed object is a temporary prvalue, get its bindings.
+    if (isTemporaryPRValue(cast<CXXConstructExpr>(E), ThisV))
+      ThisV = State->getSVal(ThisV.castAs<Loc>());
+
+    return State->BindExpr(E, LCtx, ThisV);
   }
 
   // Conjure a symbol if the return value is unknown.
@@ -705,12 +569,185 @@ ProgramStateRef ExprEngine::bindReturnValue(const CallEvent &Call,
 // Conservatively evaluate call by invalidating regions and binding
 // a conjured return value.
 void ExprEngine::conservativeEvalCall(const CallEvent &Call, NodeBuilder &Bldr,
-                                      ExplodedNode *Pred, ProgramStateRef State) {
+                                      ExplodedNode *Pred,
+                                      ProgramStateRef State) {
   State = Call.invalidateRegions(currBldrCtx->blockCount(), State);
   State = bindReturnValue(Call, Pred->getLocationContext(), State);
 
   // And make the result node.
   Bldr.generateNode(Call.getProgramPoint(), State, Pred);
+}
+
+static bool shouldInlineCallKind(const CallEvent &Call,
+                                 const ExplodedNode *Pred,
+                                 AnalyzerOptions &Opts) {
+  const LocationContext *CurLC = Pred->getLocationContext();
+  const StackFrameContext *CallerSFC = CurLC->getCurrentStackFrame();
+  switch (Call.getKind()) {
+  case CE_Function:
+  case CE_Block:
+    break;
+  case CE_CXXMember:
+  case CE_CXXMemberOperator:
+    if (!Opts.mayInlineCXXMemberFunction(CIMK_MemberFunctions))
+      return false;
+    break;
+  case CE_CXXConstructor: {
+    if (!Opts.mayInlineCXXMemberFunction(CIMK_Constructors))
+      return false;
+
+    const CXXConstructorCall &Ctor = cast<CXXConstructorCall>(Call);
+
+    // FIXME: We don't handle constructors or destructors for arrays properly.
+    const MemRegion *Target = Ctor.getCXXThisVal().getAsRegion();
+    if (Target && isa<ElementRegion>(Target))
+      return false;
+
+    // FIXME: This is a hack. We don't use the correct region for a new
+    // expression, so if we inline the constructor its result will just be
+    // thrown away. This short-term hack is tracked in <rdar://problem/12180598>
+    // and the longer-term possible fix is discussed in PR12014.
+    const CXXConstructExpr *CtorExpr = Ctor.getOriginExpr();
+    if (const Stmt *Parent = CurLC->getParentMap().getParent(CtorExpr))
+      if (isa<CXXNewExpr>(Parent))
+        return false;
+
+    // Inlining constructors requires including initializers in the CFG.
+    const AnalysisDeclContext *ADC = CallerSFC->getAnalysisDeclContext();
+    assert(ADC->getCFGBuildOptions().AddInitializers && "No CFG initializers");
+    (void)ADC;
+
+    // If the destructor is trivial, it's always safe to inline the constructor.
+    if (Ctor.getDecl()->getParent()->hasTrivialDestructor())
+      break;
+
+    // For other types, only inline constructors if destructor inlining is
+    // also enabled.
+    if (!Opts.mayInlineCXXMemberFunction(CIMK_Destructors))
+      return false;
+
+    // FIXME: This is a hack. We don't handle temporary destructors
+    // right now, so we shouldn't inline their constructors.
+    if (CtorExpr->getConstructionKind() == CXXConstructExpr::CK_Complete)
+      if (!Target || !isa<DeclRegion>(Target))
+        return false;
+
+    break;
+  }
+  case CE_CXXDestructor: {
+    if (!Opts.mayInlineCXXMemberFunction(CIMK_Destructors))
+      return false;
+
+    // Inlining destructors requires building the CFG correctly.
+    const AnalysisDeclContext *ADC = CallerSFC->getAnalysisDeclContext();
+    assert(ADC->getCFGBuildOptions().AddImplicitDtors && "No CFG destructors");
+    (void)ADC;
+
+    const CXXDestructorCall &Dtor = cast<CXXDestructorCall>(Call);
+
+    // FIXME: We don't handle constructors or destructors for arrays properly.
+    const MemRegion *Target = Dtor.getCXXThisVal().getAsRegion();
+    if (Target && isa<ElementRegion>(Target))
+      return false;
+
+    break;
+  }
+  case CE_CXXAllocator:
+    // Do not inline allocators until we model deallocators.
+    // This is unfortunate, but basically necessary for smart pointers and such.
+    return false;
+  case CE_ObjCMessage:
+    if (!Opts.mayInlineObjCMethod())
+      return false;
+    if (!(Opts.getIPAMode() == IPAK_DynamicDispatch ||
+          Opts.getIPAMode() == IPAK_DynamicDispatchBifurcate))
+      return false;
+    break;
+  }
+  return true;
+}
+
+bool ExprEngine::shouldInlineCall(const CallEvent &Call, const Decl *D,
+                                  const ExplodedNode *Pred) {
+  if (!D)
+    return false;
+
+  AnalysisManager &AMgr = getAnalysisManager();
+  AnalyzerOptions &Opts = AMgr.options;
+  AnalysisDeclContextManager &ADCMgr = AMgr.getAnalysisDeclContextManager();
+  AnalysisDeclContext *CalleeADC = ADCMgr.getContext(D);
+
+  // The auto-synthesized bodies are essential to inline as they are
+  // usually small and commonly used. Note: we should do this check early on to
+  // ensure we always inline these calls.
+  if (CalleeADC->isBodyAutosynthesized())
+    return true;
+
+  if (HowToInline == Inline_None)
+    return false;
+
+  // Check if we should inline a call based on its kind.
+  if (!shouldInlineCallKind(Call, Pred, Opts))
+    return false;
+
+  // It is possible that the CFG cannot be constructed.
+  // Be safe, and check if the CalleeCFG is valid.
+  const CFG *CalleeCFG = CalleeADC->getCFG();
+  if (!CalleeCFG)
+    return false;
+
+  // Do not inline if recursive or we've reached max stack frame count.
+  bool IsRecursive = false;
+  unsigned StackDepth = 0;
+  examineStackFrames(D, Pred->getLocationContext(), IsRecursive, StackDepth);
+  if ((StackDepth >= Opts.InlineMaxStackDepth) &&
+      ((CalleeCFG->getNumBlockIDs() > Opts.getAlwaysInlineSize())
+       || IsRecursive))
+    return false;
+
+  // Do not inline if it took too long to inline previously.
+  if (Engine.FunctionSummaries->hasReachedMaxBlockCount(D))
+    return false;
+
+  // Or if the function is too big.
+  if (CalleeCFG->getNumBlockIDs() > Opts.getMaxInlinableSize())
+    return false;
+
+  // Do not inline variadic calls (for now).
+  if (Call.isVariadic())
+    return false;
+
+  // Check our template policy.
+  if (getContext().getLangOpts().CPlusPlus) {
+    if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
+      // Conditionally allow the inlining of template functions.
+      if (!Opts.mayInlineTemplateFunctions())
+        if (FD->getTemplatedKind() != FunctionDecl::TK_NonTemplate)
+          return false;
+
+      // Conditionally allow the inlining of C++ standard library functions.
+      if (!Opts.mayInlineCXXStandardLibrary())
+        if (getContext().getSourceManager().isInSystemHeader(FD->getLocation()))
+          if (IsInStdNamespace(FD))
+            return false;
+    }
+  }
+
+  // It is possible that the live variables analysis cannot be
+  // run.  If so, bail out.
+  if (!CalleeADC->getAnalysis<RelaxedLiveVariables>())
+    return false;
+
+  // Do not inline large functions too many times.
+  if ((Engine.FunctionSummaries->getNumTimesInlined(D) >
+       Opts.getMaxTimesInlineLarge()) &&
+      CalleeCFG->getNumBlockIDs() > 13) {
+    NumReachedInlineCountMax++;
+    return false;
+  }
+  Engine.FunctionSummaries->bumpNumTimesInlined(D);
+
+  return true;
 }
 
 void ExprEngine::defaultEvalCall(NodeBuilder &Bldr, ExplodedNode *Pred,
@@ -719,32 +756,30 @@ void ExprEngine::defaultEvalCall(NodeBuilder &Bldr, ExplodedNode *Pred,
   ProgramStateRef State = Pred->getState();
   CallEventRef<> Call = CallTemplate.cloneWithState(State);
 
-  if (HowToInline == Inline_None) {
-    conservativeEvalCall(*Call, Bldr, Pred, State);
-    return;
-  }
   // Try to inline the call.
   // The origin expression here is just used as a kind of checksum;
   // this should still be safe even for CallEvents that don't come from exprs.
   const Expr *E = Call->getOriginExpr();
-  ProgramStateRef InlinedFailedState = getInlineFailedState(State, E);
 
+  ProgramStateRef InlinedFailedState = getInlineFailedState(State, E);
   if (InlinedFailedState) {
     // If we already tried once and failed, make sure we don't retry later.
     State = InlinedFailedState;
   } else {
     RuntimeDefinition RD = Call->getRuntimeDefinition();
     const Decl *D = RD.getDecl();
-    if (D) {
+    if (shouldInlineCall(*Call, D, Pred)) {
       if (RD.mayHaveOtherDefinitions()) {
+        AnalyzerOptions &Options = getAnalysisManager().options;
+
         // Explore with and without inlining the call.
-        if (getAnalysisManager().options.IPAMode == DynamicDispatchBifurcate) {
+        if (Options.getIPAMode() == IPAK_DynamicDispatchBifurcate) {
           BifurcateCall(RD.getDispatchRegion(), *Call, D, Bldr, Pred);
           return;
         }
 
         // Don't inline if we're not in any dynamic dispatch mode.
-        if (getAnalysisManager().options.IPAMode != DynamicDispatch) {
+        if (Options.getIPAMode() != IPAK_DynamicDispatch) {
           conservativeEvalCall(*Call, Bldr, Pred, State);
           return;
         }

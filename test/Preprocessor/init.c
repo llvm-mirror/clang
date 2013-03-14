@@ -9,14 +9,14 @@
 // BLOCKS:#define __block __attribute__((__blocks__(byref)))
 //
 // 
-// RUN: %clang_cc1 -x c++ -std=c++11 -E -dM < /dev/null | FileCheck -check-prefix CXX0X %s
+// RUN: %clang_cc1 -x c++ -std=c++11 -E -dM < /dev/null | FileCheck -check-prefix CXX11 %s
 //
-// CXX0X:#define __GNUG__
-// CXX0X:#define __GXX_EXPERIMENTAL_CXX0X__ 1
-// CXX0X:#define __GXX_RTTI 1
-// CXX0X:#define __GXX_WEAK__ 1
-// CXX0X:#define __cplusplus 201103L
-// CXX0X:#define __private_extern__ extern
+// CXX11:#define __GNUG__
+// CXX11:#define __GXX_EXPERIMENTAL_CXX0X__ 1
+// CXX11:#define __GXX_RTTI 1
+// CXX11:#define __GXX_WEAK__ 1
+// CXX11:#define __cplusplus 201103L
+// CXX11:#define __private_extern__ extern
 //
 // 
 // RUN: %clang_cc1 -x c++ -std=c++98 -E -dM < /dev/null | FileCheck -check-prefix CXX98 %s
@@ -1662,6 +1662,166 @@
 // PPC64:#define __WINT_WIDTH__ 32
 // PPC64:#define __ppc64__ 1
 // PPC64:#define __ppc__ 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu a2q -fno-signed-char < /dev/null | FileCheck -check-prefix PPCA2Q %s
+//
+// PPCA2Q:#define _ARCH_A2 1
+// PPCA2Q:#define _ARCH_A2Q 1
+// PPCA2Q:#define _ARCH_PPC 1
+// PPCA2Q:#define _ARCH_PPC64 1
+// PPCA2Q:#define _ARCH_QP 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-bgq-linux -fno-signed-char < /dev/null | FileCheck -check-prefix PPCBGQ %s
+//
+// PPCBGQ:#define __THW_BLUEGENE__ 1
+// PPCBGQ:#define __TOS_BGQ__ 1
+// PPCBGQ:#define __bg__ 1
+// PPCBGQ:#define __bgq__ 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu 630 -fno-signed-char < /dev/null | FileCheck -check-prefix PPC630 %s
+//
+// PPC630:#define _ARCH_630 1
+// PPC630:#define _ARCH_PPC 1
+// PPC630:#define _ARCH_PPC64 1
+// PPC630:#define _ARCH_PPCGR 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu pwr3 -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPWR3 %s
+//
+// PPCPWR3:#define _ARCH_PPC 1
+// PPCPWR3:#define _ARCH_PPC64 1
+// PPCPWR3:#define _ARCH_PPCGR 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu power3 -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPOWER3 %s
+//
+// PPCPOWER3:#define _ARCH_PPC 1
+// PPCPOWER3:#define _ARCH_PPC64 1
+// PPCPOWER3:#define _ARCH_PPCGR 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu pwr4 -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPWR4 %s
+//
+// PPCPWR4:#define _ARCH_PPC 1
+// PPCPWR4:#define _ARCH_PPC64 1
+// PPCPWR4:#define _ARCH_PPCGR 1
+// PPCPWR4:#define _ARCH_PPCSQ 1
+// PPCPWR4:#define _ARCH_PWR4 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu power4 -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPOWER4 %s
+//
+// PPCPOWER4:#define _ARCH_PPC 1
+// PPCPOWER4:#define _ARCH_PPC64 1
+// PPCPOWER4:#define _ARCH_PPCGR 1
+// PPCPOWER4:#define _ARCH_PPCSQ 1
+// PPCPOWER4:#define _ARCH_PWR4 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu pwr5 -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPWR5 %s
+//
+// PPCPWR5:#define _ARCH_PPC 1
+// PPCPWR5:#define _ARCH_PPC64 1
+// PPCPWR5:#define _ARCH_PPCGR 1
+// PPCPWR5:#define _ARCH_PPCSQ 1
+// PPCPWR5:#define _ARCH_PWR4 1
+// PPCPWR5:#define _ARCH_PWR5 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu power5 -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPOWER5 %s
+//
+// PPCPOWER5:#define _ARCH_PPC 1
+// PPCPOWER5:#define _ARCH_PPC64 1
+// PPCPOWER5:#define _ARCH_PPCGR 1
+// PPCPOWER5:#define _ARCH_PPCSQ 1
+// PPCPOWER5:#define _ARCH_PWR4 1
+// PPCPOWER5:#define _ARCH_PWR5 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu pwr5x -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPWR5X %s
+//
+// PPCPWR5X:#define _ARCH_PPC 1
+// PPCPWR5X:#define _ARCH_PPC64 1
+// PPCPWR5X:#define _ARCH_PPCGR 1
+// PPCPWR5X:#define _ARCH_PPCSQ 1
+// PPCPWR5X:#define _ARCH_PWR4 1
+// PPCPWR5X:#define _ARCH_PWR5 1
+// PPCPWR5X:#define _ARCH_PWR5X 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu power5x -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPOWER5X %s
+//
+// PPCPOWER5X:#define _ARCH_PPC 1
+// PPCPOWER5X:#define _ARCH_PPC64 1
+// PPCPOWER5X:#define _ARCH_PPCGR 1
+// PPCPOWER5X:#define _ARCH_PPCSQ 1
+// PPCPOWER5X:#define _ARCH_PWR4 1
+// PPCPOWER5X:#define _ARCH_PWR5 1
+// PPCPOWER5X:#define _ARCH_PWR5X 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu pwr6 -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPWR6 %s
+//
+// PPCPWR6:#define _ARCH_PPC 1
+// PPCPWR6:#define _ARCH_PPC64 1
+// PPCPWR6:#define _ARCH_PPCGR 1
+// PPCPWR6:#define _ARCH_PPCSQ 1
+// PPCPWR6:#define _ARCH_PWR4 1
+// PPCPWR6:#define _ARCH_PWR5 1
+// PPCPWR6:#define _ARCH_PWR5X 1
+// PPCPWR6:#define _ARCH_PWR6 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu power6 -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPOWER6 %s
+//
+// PPCPOWER6:#define _ARCH_PPC 1
+// PPCPOWER6:#define _ARCH_PPC64 1
+// PPCPOWER6:#define _ARCH_PPCGR 1
+// PPCPOWER6:#define _ARCH_PPCSQ 1
+// PPCPOWER6:#define _ARCH_PWR4 1
+// PPCPOWER6:#define _ARCH_PWR5 1
+// PPCPOWER6:#define _ARCH_PWR5X 1
+// PPCPOWER6:#define _ARCH_PWR6 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu pwr6x -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPWR6X %s
+//
+// PPCPWR6X:#define _ARCH_PPC 1
+// PPCPWR6X:#define _ARCH_PPC64 1
+// PPCPWR6X:#define _ARCH_PPCGR 1
+// PPCPWR6X:#define _ARCH_PPCSQ 1
+// PPCPWR6X:#define _ARCH_PWR4 1
+// PPCPWR6X:#define _ARCH_PWR5 1
+// PPCPWR6X:#define _ARCH_PWR5X 1
+// PPCPWR6X:#define _ARCH_PWR6 1
+// PPCPWR6X:#define _ARCH_PWR6X 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu power6x -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPOWER6X %s
+//
+// PPCPOWER6X:#define _ARCH_PPC 1
+// PPCPOWER6X:#define _ARCH_PPC64 1
+// PPCPOWER6X:#define _ARCH_PPCGR 1
+// PPCPOWER6X:#define _ARCH_PPCSQ 1
+// PPCPOWER6X:#define _ARCH_PWR4 1
+// PPCPOWER6X:#define _ARCH_PWR5 1
+// PPCPOWER6X:#define _ARCH_PWR5X 1
+// PPCPOWER6X:#define _ARCH_PWR6 1
+// PPCPOWER6X:#define _ARCH_PWR6X 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu pwr7 -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPWR7 %s
+//
+// PPCPWR7:#define _ARCH_PPC 1
+// PPCPWR7:#define _ARCH_PPC64 1
+// PPCPWR7:#define _ARCH_PPCGR 1
+// PPCPWR7:#define _ARCH_PPCSQ 1
+// PPCPWR7:#define _ARCH_PWR4 1
+// PPCPWR7:#define _ARCH_PWR5 1
+// PPCPWR7:#define _ARCH_PWR5X 1
+// PPCPWR7:#define _ARCH_PWR6 1
+// PPCPWR7:#define _ARCH_PWR6X 1
+// PPCPWR7:#define _ARCH_PWR7 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu power7 -fno-signed-char < /dev/null | FileCheck -check-prefix PPCPOWER7 %s
+//
+// PPCPOWER7:#define _ARCH_PPC 1
+// PPCPOWER7:#define _ARCH_PPC64 1
+// PPCPOWER7:#define _ARCH_PPCGR 1
+// PPCPOWER7:#define _ARCH_PPCSQ 1
+// PPCPOWER7:#define _ARCH_PWR4 1
+// PPCPOWER7:#define _ARCH_PWR5 1
+// PPCPOWER7:#define _ARCH_PWR5X 1
+// PPCPOWER7:#define _ARCH_PWR6 1
+// PPCPOWER7:#define _ARCH_PWR6X 1
+// PPCPOWER7:#define _ARCH_PWR7 1
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-unknown-linux-gnu -fno-signed-char < /dev/null | FileCheck -check-prefix PPC64-LINUX %s
 //

@@ -10,15 +10,15 @@ void foo() {
   // CHECK: {{.*}}:3:{{[0-9]+}}: note: expanded from macro 'M1'
 }
 
-#define A 1
-#define B A
-#define C B
+#define A(x) x
+#define B(x) A(x)
+#define C(x) B(x)
 void bar() {
-  C;
-  // CHECK: {{.*}}:17:3: warning: expression result unused
-  // CHECK: {{.*}}:15:11: note: expanded from macro 'C'
-  // CHECK: {{.*}}:14:11: note: expanded from macro 'B'
-  // CHECK: {{.*}}:13:11: note: expanded from macro 'A'
+  C(1);
+  // CHECK: {{.*}}:17:5: warning: expression result unused
+  // CHECK: {{.*}}:15:16: note: expanded from macro 'C'
+  // CHECK: {{.*}}:14:16: note: expanded from macro 'B'
+  // CHECK: {{.*}}:13:14: note: expanded from macro 'A'
 }
 
 // rdar://7597492
@@ -174,17 +174,17 @@ int y = Y;
 
 // PR14399
 void iequals(int,int,int);
-void foo_aa()
+void foo_aa(char* s)
 {
-#define /* */ BARC(c, /* */b, a, ...) (a+b+/* */c + __VA_ARGS__ +0)
-  iequals(__LINE__, BARC(4,3,2,6,8), 8);
+#define /* */ BARC(c, /* */b, a) (a + b ? c : c)
+  iequals(__LINE__, BARC(123, (456 < 345), 789), 8);
 }
-// CHECK:         {{.*}}:180:21: warning: expression result unused
-// CHECK-NEXT:      iequals(__LINE__, BARC(4,3,2,6,8), 8);
-// CHECK-NEXT: {{^                    \^~~~~~~~~~~~~~~}}
-// CHECK-NEXT:    {{.*}}:179:51: note: expanded from macro 'BARC'
-// CHECK-NEXT:    #define /* */ BARC(c, /* */b, a, ...) (a+b+/* */c + __VA_ARGS__ +0)
-// CHECK-NEXT: {{^                                       ~~~~~~~~~~ \^}}
+// CHECK:         {{.*}}:180:21: warning: operator '?:' has lower precedence than '+'
+// CHECK-NEXT:      iequals(__LINE__, BARC(123, (456 < 345), 789), 8);
+// CHECK-NEXT: {{^                    \^~~~~~~~~~~~~~~~~~~~~~~~~~~}}
+// CHECK-NEXT:    {{.*}}:179:41: note: expanded from macro 'BARC'
+// CHECK-NEXT:    #define /* */ BARC(c, /* */b, a) (a + b ? c : c)
+// CHECK-NEXT: {{^                                  ~~~~~ \^}}
 
 #define APPEND2(NUM, SUFF) -1 != NUM ## SUFF
 #define APPEND(NUM, SUFF) APPEND2(NUM, SUFF)
@@ -205,3 +205,23 @@ void foo_aa()
 // CHECK-NEXT:    {{.*}}:189:31: note: expanded from macro 'APPEND2'
 // CHECK-NEXT:    #define APPEND2(NUM, SUFF) -1 != NUM ## SUFF
 // CHECK-NEXT: {{^                           ~~ \^  ~~~~~~~~~~~}}
+
+unsigned long strlen_test(const char *s);
+#define __darwin_obsz(object) __builtin_object_size (object, 1)
+#define sprintf2(str, ...) \
+  __builtin___sprintf_chk (str, 0, __darwin_obsz(str), __VA_ARGS__)
+#define Cstrlen(a)  strlen_test(a)
+#define Csprintf    sprintf2
+void f(char* pMsgBuf, char* pKeepBuf) {
+Csprintf(pMsgBuf,"\nEnter minimum anagram length (2-%1d): ", Cstrlen(pKeepBuf));
+}
+// CHECK:         {{.*}}:216:62: warning: format specifies type 'int' but the argument has type 'unsigned long'
+// CHECK-NEXT:    Csprintf(pMsgBuf,"\nEnter minimum anagram length (2-%1d): ", Cstrlen(pKeepBuf));
+// CHECK-NEXT: {{^                                                    ~~~      \^}}
+// CHECK-NEXT: {{^                                                    %1lu}}
+// CHECK-NEXT:    {{.*}}:213:21: note: expanded from macro 'Cstrlen'
+// CHECK-NEXT:    #define Cstrlen(a)  strlen_test(a)
+// CHECK-NEXT: {{^                    \^}}
+// CHECK-NEXT:    {{.*}}:212:56: note: expanded from macro 'sprintf2'
+// CHECK-NEXT:      __builtin___sprintf_chk (str, 0, __darwin_obsz(str), __VA_ARGS__)
+// CHECK-NEXT: {{^                                                       \^}}

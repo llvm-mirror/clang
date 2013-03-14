@@ -1,9 +1,9 @@
-===========
-Clang Tools
-===========
+========
+Overview
+========
 
 Clang Tools are standalone command line (and potentially GUI) tools
-design for use by C++ developers who are already using and enjoying
+designed for use by C++ developers who are already using and enjoying
 Clang as their compiler. These tools provide developer-oriented
 functionality such as fast syntax checking, automatic formatting,
 refactoring, etc.
@@ -19,7 +19,7 @@ LLVM/Clang checkout:
 -  With Subversion:
 
    -  ``cd llvm/tools/clang/tools``
-   -  ``svn co http://llvm.org/svn/llvm-project/clang-tools-extra/trunk       extra``
+   -  ``svn co http://llvm.org/svn/llvm-project/clang-tools-extra/trunk extra``
 
 -  Or with Git:
 
@@ -67,20 +67,40 @@ Core Clang Tools
 ================
 
 The core set of Clang tools that are within the main repository are
-tools that very specifically compliment, and allow use and testing of
+tools that very specifically complement, and allow use and testing of
 *Clang* specific functionality.
 
 ``clang-check``
-~~~~~~~~~~~~~~~
+---------------
 
-This tool combines the LibTooling framework for running a Clang tool
-with the basic Clang diagnostics by syntax checking specific files in a
-fast, command line interface. It can also accept flags to re-display the
-diagnostics in different formats with different flags, suitable for use
-driving an IDE or editor. Furthermore, it can be used in fixit-mode to
-directly apply fixit-hints offered by clang.
+:doc:`ClangCheck` combines the LibTooling framework for running a
+Clang tool with the basic Clang diagnostics by syntax checking specific files
+in a fast, command line interface. It can also accept flags to re-display the
+diagnostics in different formats with different flags, suitable for use driving
+an IDE or editor. Furthermore, it can be used in fixit-mode to directly apply
+fixit-hints offered by clang. See :doc:`HowToSetupToolingForLLVM` for
+instructions on how to setup and used `clang-check`.
 
-FIXME: Link to user-oriented clang-check documentation.
+``clang-format``
+~~~~~~~~~~~~~~~~
+
+Clang-format is both a :doc:`library <LibFormat>` and a :doc:`stand-alone tool
+<ClangFormat>` with the goal of automatically reformatting C++ sources files
+according to configurable style guides.  To do so, clang-format uses Clang's
+``Lexer`` to transform an input file into a token stream and then changes all
+the whitespace around those tokens.  The goal is for clang-format to both serve
+both as a user tool (ideally with powerful IDE integrations) and part of other
+refactoring tools, e.g. to do a reformatting of all the lines changed during a
+renaming.
+
+``cpp11-migrate``
+~~~~~~~~~~~~~~~~~
+``cpp11-migrate`` migrates C++ code to use C++11 features where appropriate.
+Currently it can:
+
+* convert loops to range-based for loops;
+
+* convert null pointer constants (like ``NULL`` or ``0``) to C++11 ``nullptr``.
 
 Extra Clang Tools
 =================
@@ -89,3 +109,44 @@ As various categories of Clang Tools are added to the extra repository,
 they'll be tracked here. The focus of this documentation is on the scope
 and features of the tools for other tool developers; each tool should
 provide its own user-focused documentation.
+
+Ideas for new Tools
+===================
+
+* C++ cast conversion tool.  Will convert C-style casts (``(type) value``) to
+  appropriate C++ cast (``static_cast``, ``const_cast`` or
+  ``reinterpret_cast``).
+* Non-member ``begin()`` and ``end()`` conversion tool.  Will convert
+  ``foo.begin()`` into ``begin(foo)`` and similarly for ``end()``, where
+  ``foo`` is a standard container.  We could also detect similar patterns for
+  arrays.
+* ``tr1`` removal tool.  Will migrate source code from using TR1 library
+  features to C++11 library.  For example:
+
+  .. code-block:: c++
+
+    #include <tr1/unordered_map>
+    int main()
+    {
+        std::tr1::unordered_map <int, int> ma;
+        std::cout << ma.size () << std::endl;
+        return 0;
+    }
+
+  should be rewritten to:
+
+  .. code-block:: c++
+
+    #include <unordered_map>
+    int main()
+    {
+        std::unordered_map <int, int> ma;
+        std::cout << ma.size () << std::endl;
+        return 0;
+    }
+
+* A tool to remove ``auto``.  Will convert ``auto`` to an explicit type or add
+  comments with deduced types.  The motivation is that there are developers
+  that don't want to use ``auto`` because they are afraid that they might lose
+  control over their code.
+

@@ -11,6 +11,7 @@
 #define CLANG_DRIVER_DRIVER_H_
 
 #include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/LLVM.h"
 #include "clang/Driver/Phases.h"
 #include "clang/Driver/Types.h"
 #include "clang/Driver/Util.h"
@@ -23,9 +24,6 @@
 #include <set>
 #include <string>
 
-namespace llvm {
-  template<typename T> class ArrayRef;
-}
 namespace clang {
 namespace driver {
   class Action;
@@ -274,7 +272,7 @@ public:
   /// to just running the subprocesses, for example reporting errors, removing
   /// temporary files, etc.
   int ExecuteCompilation(const Compilation &C,
-                         const Command *&FailingCommand) const;
+     SmallVectorImpl< std::pair<int, const Command *> > &FailingCommands) const;
   
   /// generateCompilationDiagnostics - Generate diagnostics information 
   /// including preprocessed source file(s).
