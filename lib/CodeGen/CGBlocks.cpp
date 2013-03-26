@@ -1157,10 +1157,24 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
     // There might not be a capture for 'self', but if there is...
     if (blockInfo.Captures.count(self)) {
       const CGBlockInfo::Capture &capture = blockInfo.getCapture(self);
+
       llvm::Value *selfAddr = Builder.CreateStructGEP(BlockPointer,
                                                       capture.getIndex(),
                                                       "block.captured-self");
-      LocalDeclMap[self] = selfAddr;
+
+      // At -O0 we generate an explicit alloca for self to facilitate debugging.
+      if (CGM.getCodeGenOpts().OptimizationLevel == 0) {
+	llvm::Value *load = Builder.CreateLoad(selfAddr);
+
+	// Allocate a stack slot for it, so we can generate debug info for it
+	llvm::AllocaInst *alloca = CreateTempAlloca(load->getType(),
+                                                   "block.captured-self.addr");
+        unsigned align = getContext().getDeclAlign(self).getQuantity();
+        alloca->setAlignment(align);
+	Builder.CreateAlignedStore(load, alloca, align);
+        LocalDeclMap[self] = alloca;
+      } else
+        LocalDeclMap[self] = selfAddr;
     }
   }
 
@@ -1177,7 +1191,7 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
       CreateMemTemp(variable->getType(), "block.captured-const");
     alloca->setAlignment(align);
 
-    Builder.CreateStore(capture.getConstant(), alloca, align);
+    Builder.CreateAlignedStore(capture.getConstant(), alloca, align);
 
     LocalDeclMap[variable] = alloca;
   }
@@ -1547,7 +1561,7 @@ CodeGenFunction::GenerateDestroyHelperFunction(const CGBlockInfo &blockInfo) {
 
     // Destroy strong objects with a call if requested.
     } else if (useARCStrongDestroy) {
-      EmitARCDestroyStrong(srcField, /*precise*/ false);
+      EmitARCDestroyStrong(srcField, ARCImpreciseLifetime);
 
     // Otherwise we call _Block_object_dispose.  It wouldn't be too
     // hard to just emit this as a cleanup if we wanted to make sure
@@ -1656,7 +1670,7 @@ public:
   }
 
   void emitDispose(CodeGenFunction &CGF, llvm::Value *field) {
-    CGF.EmitARCDestroyStrong(field, /*precise*/ false);
+    CGF.EmitARCDestroyStrong(field, ARCImpreciseLifetime);
   }
 
   void profileImpl(llvm::FoldingSetNodeID &id) const {
@@ -1686,7 +1700,7 @@ public:
   }
 
   void emitDispose(CodeGenFunction &CGF, llvm::Value *field) {
-    CGF.EmitARCDestroyStrong(field, /*precise*/ false);
+    CGF.EmitARCDestroyStrong(field, ARCImpreciseLifetime);
   }
 
   void profileImpl(llvm::FoldingSetNodeID &id) const {

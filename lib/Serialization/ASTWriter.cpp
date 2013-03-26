@@ -1034,6 +1034,8 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
 
       Record.push_back((unsigned)(*M)->Kind); // FIXME: Stable encoding
       AddSourceLocation((*M)->ImportLoc, Record);
+      Record.push_back((*M)->File->getSize());
+      Record.push_back((*M)->File->getModificationTime());
       // FIXME: This writes the absolute path for AST files we depend on.
       const std::string &FileName = (*M)->FileName;
       Record.push_back(FileName.size());
@@ -1213,11 +1215,24 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
     Stream.EmitRecordWithBlob(AbbrevCode, Record, origDir);
   }
 
-  WriteInputFiles(Context.SourceMgr, isysroot);
+  WriteInputFiles(Context.SourceMgr,
+                  PP.getHeaderSearchInfo().getHeaderSearchOpts(),
+                  isysroot);
   Stream.ExitBlock();
 }
 
-void ASTWriter::WriteInputFiles(SourceManager &SourceMgr, StringRef isysroot) {
+namespace  {
+  /// \brief An input file.
+  struct InputFileEntry {
+    const FileEntry *File;
+    bool IsSystemFile;
+    bool BufferOverridden;
+  };
+}
+
+void ASTWriter::WriteInputFiles(SourceManager &SourceMgr,
+                                HeaderSearchOptions &HSOpts,
+                                StringRef isysroot) {
   using namespace llvm;
   Stream.EnterSubblock(INPUT_FILES_BLOCK_ID, 4);
   RecordData Record;
@@ -1234,7 +1249,7 @@ void ASTWriter::WriteInputFiles(SourceManager &SourceMgr, StringRef isysroot) {
 
   // Get all ContentCache objects for files, sorted by whether the file is a
   // system one or not. System files go at the back, users files at the front.
-  std::deque<const SrcMgr::ContentCache *> SortedFiles;
+  std::deque<InputFileEntry> SortedFiles;
   for (unsigned I = 1, N = SourceMgr.local_sloc_entry_size(); I != N; ++I) {
     // Get this source location entry.
     const SrcMgr::SLocEntry *SLoc = &SourceMgr.getLocalSLocEntry(I);
@@ -1247,20 +1262,38 @@ void ASTWriter::WriteInputFiles(SourceManager &SourceMgr, StringRef isysroot) {
     if (!Cache->OrigEntry)
       continue;
 
+    InputFileEntry Entry;
+    Entry.File = Cache->OrigEntry;
+    Entry.IsSystemFile = Cache->IsSystemFile;
+    Entry.BufferOverridden = Cache->BufferOverridden;
     if (Cache->IsSystemFile)
-      SortedFiles.push_back(Cache);
+      SortedFiles.push_back(Entry);
     else
-      SortedFiles.push_front(Cache);
+      SortedFiles.push_front(Entry);
+  }
+
+  // If we have an isysroot for a Darwin SDK, include its SDKSettings.plist in
+  // the set of (non-system) input files. This is simple heuristic for
+  // detecting whether the system headers may have changed, because it is too
+  // expensive to stat() all of the system headers.
+  FileManager &FileMgr = SourceMgr.getFileManager();
+  if (!HSOpts.Sysroot.empty() && !Chain) {
+    llvm::SmallString<128> SDKSettingsFileName(HSOpts.Sysroot);
+    llvm::sys::path::append(SDKSettingsFileName, "SDKSettings.plist");
+    if (const FileEntry *SDKSettingsFile = FileMgr.getFile(SDKSettingsFileName)) {
+      InputFileEntry Entry = { SDKSettingsFile, false, false };
+      SortedFiles.push_front(Entry);
+    }
   }
 
   unsigned UserFilesNum = 0;
   // Write out all of the input files.
   std::vector<uint32_t> InputFileOffsets;
-  for (std::deque<const SrcMgr::ContentCache *>::iterator
+  for (std::deque<InputFileEntry>::iterator
          I = SortedFiles.begin(), E = SortedFiles.end(); I != E; ++I) {
-    const SrcMgr::ContentCache *Cache = *I;
+    const InputFileEntry &Entry = *I;
 
-    uint32_t &InputFileID = InputFileIDs[Cache->OrigEntry];
+    uint32_t &InputFileID = InputFileIDs[Entry.File];
     if (InputFileID != 0)
       continue; // already recorded this file.
 
@@ -1269,7 +1302,7 @@ void ASTWriter::WriteInputFiles(SourceManager &SourceMgr, StringRef isysroot) {
 
     InputFileID = InputFileOffsets.size();
 
-    if (!Cache->IsSystemFile)
+    if (!Entry.IsSystemFile)
       ++UserFilesNum;
 
     Record.clear();
@@ -1277,19 +1310,19 @@ void ASTWriter::WriteInputFiles(SourceManager &SourceMgr, StringRef isysroot) {
     Record.push_back(InputFileOffsets.size());
 
     // Emit size/modification time for this file.
-    Record.push_back(Cache->OrigEntry->getSize());
-    Record.push_back(Cache->OrigEntry->getModificationTime());
+    Record.push_back(Entry.File->getSize());
+    Record.push_back(Entry.File->getModificationTime());
 
     // Whether this file was overridden.
-    Record.push_back(Cache->BufferOverridden);
+    Record.push_back(Entry.BufferOverridden);
 
     // Turn the file name into an absolute path, if it isn't already.
-    const char *Filename = Cache->OrigEntry->getName();
+    const char *Filename = Entry.File->getName();
     SmallString<128> FilePath(Filename);
     
     // Ask the file manager to fixup the relative path for us. This will 
     // honor the working directory.
-    SourceMgr.getFileManager().FixupRelativePath(FilePath);
+    FileMgr.FixupRelativePath(FilePath);
     
     // FIXME: This call to make_absolute shouldn't be necessary, the
     // call to FixupRelativePath should always return an absolute path.
@@ -1300,7 +1333,7 @@ void ASTWriter::WriteInputFiles(SourceManager &SourceMgr, StringRef isysroot) {
 
     Stream.EmitRecordWithBlob(IFAbbrevCode, Record, Filename);
   }  
-  
+
   Stream.ExitBlock();
 
   // Create input file offsets abbreviation.
@@ -1384,14 +1417,15 @@ namespace {
   // Trait used for the on-disk hash table of header search information.
   class HeaderFileInfoTrait {
     ASTWriter &Writer;
+    const HeaderSearch &HS;
     
     // Keep track of the framework names we've used during serialization.
     SmallVector<char, 128> FrameworkStringData;
     llvm::StringMap<unsigned> FrameworkNameOffset;
     
   public:
-    HeaderFileInfoTrait(ASTWriter &Writer)
-      : Writer(Writer) { }
+    HeaderFileInfoTrait(ASTWriter &Writer, const HeaderSearch &HS)
+      : Writer(Writer), HS(HS) { }
     
     struct key_type {
       const FileEntry *FE;
@@ -1415,6 +1449,8 @@ namespace {
       unsigned KeyLen = strlen(key.Filename) + 1 + 8 + 8;
       clang::io::Emit16(Out, KeyLen);
       unsigned DataLen = 1 + 2 + 4 + 4;
+      if (Data.isModuleHeader)
+        DataLen += 4;
       clang::io::Emit8(Out, DataLen);
       return std::make_pair(KeyLen, DataLen);
     }
@@ -1427,7 +1463,7 @@ namespace {
       Out.write(key.Filename, KeyLen);
     }
     
-    void EmitData(raw_ostream &Out, key_type_ref,
+    void EmitData(raw_ostream &Out, key_type_ref key,
                   data_type_ref Data, unsigned DataLen) {
       using namespace clang::io;
       uint64_t Start = Out.tell(); (void)Start;
@@ -1461,7 +1497,12 @@ namespace {
           Offset = Pos->second;
       }
       Emit32(Out, Offset);
-      
+
+      if (Data.isModuleHeader) {
+        Module *Mod = HS.findModuleForHeader(key.FE);
+        Emit32(Out, Writer.getExistingSubmoduleID(Mod));
+      }
+
       assert(Out.tell() - Start == DataLen && "Wrong data length");
     }
     
@@ -1480,7 +1521,7 @@ void ASTWriter::WriteHeaderSearch(const HeaderSearch &HS, StringRef isysroot) {
   if (FilesByUID.size() > HS.header_file_size())
     FilesByUID.resize(HS.header_file_size());
   
-  HeaderFileInfoTrait GeneratorTrait(*this);
+  HeaderFileInfoTrait GeneratorTrait(*this, HS);
   OnDiskChainedHashTableGenerator<HeaderFileInfoTrait> Generator;  
   SmallVector<const char *, 4> SavedStrings;
   unsigned NumHeaderSearchEntries = 0;
@@ -1754,6 +1795,22 @@ static int compareMacroDefinitions(const void *XPtr, const void *YPtr) {
   return X.first->getName().compare(Y.first->getName());
 }
 
+static bool shouldIgnoreMacro(MacroDirective *MD, bool IsModule,
+                              const Preprocessor &PP) {
+  if (MD->getInfo()->isBuiltinMacro())
+    return true;
+
+  if (IsModule) {
+    SourceLocation Loc = MD->getLocation();
+    if (Loc.isInvalid())
+      return true;
+    if (PP.getSourceManager().getFileID(Loc) == PP.getPredefinesFileID())
+      return true;
+  }
+
+  return false;
+}
+
 /// \brief Writes the block containing the serialized form of the
 /// preprocessor.
 ///
@@ -1812,6 +1869,9 @@ void ASTWriter::WritePreprocessor(const Preprocessor &PP, bool IsModule) {
 
     for (MacroDirective *MD = MacrosToEmit[I].second; MD;
          MD = MD->getPrevious()) {
+      if (shouldIgnoreMacro(MD, IsModule, PP))
+        continue;
+
       MacroID ID = getMacroRef(MD);
       if (!ID)
         continue;
@@ -2020,6 +2080,18 @@ unsigned ASTWriter::getSubmoduleID(Module *Mod) {
   return SubmoduleIDs[Mod] = NextSubmoduleID++;
 }
 
+unsigned ASTWriter::getExistingSubmoduleID(Module *Mod) const {
+  if (!Mod)
+    return 0;
+
+  llvm::DenseMap<Module *, unsigned>::const_iterator
+    Known = SubmoduleIDs.find(Mod);
+  if (Known != SubmoduleIDs.end())
+    return Known->second;
+
+  return 0;
+}
+
 /// \brief Compute the number of modules within the given tree (including the
 /// given module).
 static unsigned getNumberOfModules(Module *Mod) {
@@ -2063,6 +2135,7 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // InferSubmodules...
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // InferExplicit...
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // InferExportWild...
+  Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // ConfigMacrosExh...
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob)); // Name
   unsigned DefinitionAbbrev = Stream.EmitAbbrev(Abbrev);
 
@@ -2102,6 +2175,17 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob));     // Name
   unsigned LinkLibraryAbbrev = Stream.EmitAbbrev(Abbrev);
 
+  Abbrev = new BitCodeAbbrev();
+  Abbrev->Add(BitCodeAbbrevOp(SUBMODULE_CONFIG_MACRO));
+  Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob));    // Macro name
+  unsigned ConfigMacroAbbrev = Stream.EmitAbbrev(Abbrev);
+
+  Abbrev = new BitCodeAbbrev();
+  Abbrev->Add(BitCodeAbbrevOp(SUBMODULE_CONFLICT));
+  Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));  // Other module
+  Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob));    // Message
+  unsigned ConflictAbbrev = Stream.EmitAbbrev(Abbrev);
+
   // Write the submodule metadata block.
   RecordData Record;
   Record.push_back(getNumberOfModules(WritingModule));
@@ -2132,6 +2216,7 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
     Record.push_back(Mod->InferSubmodules);
     Record.push_back(Mod->InferExplicitSubmodules);
     Record.push_back(Mod->InferExportWildcard);
+    Record.push_back(Mod->ConfigMacrosExhaustive);
     Stream.EmitRecordWithBlob(DefinitionAbbrev, Record, Mod->Name);
     
     // Emit the requirements.
@@ -2170,11 +2255,13 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
       Stream.EmitRecordWithBlob(ExcludedHeaderAbbrev, Record, 
                                 Mod->ExcludedHeaders[I]->getName());
     }
-    for (unsigned I = 0, N = Mod->TopHeaders.size(); I != N; ++I) {
+    ArrayRef<const FileEntry *>
+      TopHeaders = Mod->getTopHeaders(PP->getFileManager());
+    for (unsigned I = 0, N = TopHeaders.size(); I != N; ++I) {
       Record.clear();
       Record.push_back(SUBMODULE_TOPHEADER);
       Stream.EmitRecordWithBlob(TopHeaderAbbrev, Record,
-                                Mod->TopHeaders[I]->getName());
+                                TopHeaders[I]->getName());
     }
 
     // Emit the imports. 
@@ -2212,6 +2299,25 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
       Record.push_back(Mod->LinkLibraries[I].IsFramework);
       Stream.EmitRecordWithBlob(LinkLibraryAbbrev, Record,
                                 Mod->LinkLibraries[I].Library);
+    }
+
+    // Emit the conflicts.
+    for (unsigned I = 0, N = Mod->Conflicts.size(); I != N; ++I) {
+      Record.clear();
+      Record.push_back(SUBMODULE_CONFLICT);
+      unsigned OtherID = getSubmoduleID(Mod->Conflicts[I].Other);
+      assert(OtherID && "Unknown submodule!");
+      Record.push_back(OtherID);
+      Stream.EmitRecordWithBlob(ConflictAbbrev, Record,
+                                Mod->Conflicts[I].Message);
+    }
+
+    // Emit the configuration macros.
+    for (unsigned I = 0, N =  Mod->ConfigMacros.size(); I != N; ++I) {
+      Record.clear();
+      Record.push_back(SUBMODULE_CONFIG_MACRO);
+      Stream.EmitRecordWithBlob(ConfigMacroAbbrev, Record,
+                                Mod->ConfigMacros[I]);
     }
 
     // Queue up the submodules of this module.
@@ -2696,7 +2802,7 @@ class ASTIdentifierTableTrait {
       return false;
 
     if (Macro || (Macro = PP.getMacroDirectiveHistory(II)))
-      return !Macro->getInfo()->isBuiltinMacro() &&
+      return !shouldIgnoreMacro(Macro, IsModule, PP) &&
              (!IsModule || Macro->isPublic());
 
     return false;
@@ -2727,6 +2833,8 @@ public:
       DataLen += 2; // 2 bytes for flags
       if (hadMacroDefinition(II, Macro)) {
         for (MacroDirective *M = Macro; M; M = M->getPrevious()) {
+          if (shouldIgnoreMacro(M, IsModule, PP))
+            continue;
           if (Writer.getMacroRef(M) != 0)
             DataLen += 4;
         }
@@ -2779,6 +2887,8 @@ public:
     if (HadMacroDefinition) {
       // Write all of the macro IDs associated with this identifier.
       for (MacroDirective *M = Macro; M; M = M->getPrevious()) {
+        if (shouldIgnoreMacro(M, IsModule, PP))
+          continue;
         if (MacroID ID = Writer.getMacroRef(M))
           clang::io::Emit32(Out, ID);
       }
@@ -3442,6 +3552,8 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
                              Module *WritingModule) {
   using namespace llvm;
 
+  bool isModule = WritingModule != 0;
+
   // Make sure that the AST reader knows to finalize itself.
   if (Chain)
     Chain->finalizeForWriting();
@@ -3507,13 +3619,15 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
   
   // Build a record containing all of the file scoped decls in this file.
   RecordData UnusedFileScopedDecls;
-  AddLazyVectorDecls(*this, SemaRef.UnusedFileScopedDecls, 
-                     UnusedFileScopedDecls);
+  if (!isModule)
+    AddLazyVectorDecls(*this, SemaRef.UnusedFileScopedDecls,
+                       UnusedFileScopedDecls);
 
   // Build a record containing all of the delegating constructors we still need
   // to resolve.
   RecordData DelegatingCtorDecls;
-  AddLazyVectorDecls(*this, SemaRef.DelegatingCtorDecls, DelegatingCtorDecls);
+  if (!isModule)
+    AddLazyVectorDecls(*this, SemaRef.DelegatingCtorDecls, DelegatingCtorDecls);
 
   // Write the set of weak, undeclared identifiers. We always write the
   // entire table, since later PCH files in a PCH chain are only interested in
@@ -3748,11 +3862,11 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
     Stream.EmitRecordWithBlob(ModuleOffsetMapAbbrev, Record,
                               Buffer.data(), Buffer.size());
   }
-  WritePreprocessor(PP, WritingModule != 0);
+  WritePreprocessor(PP, isModule);
   WriteHeaderSearch(PP.getHeaderSearchInfo(), isysroot);
   WriteSelectors(SemaRef);
   WriteReferencedSelectorsPool(SemaRef);
-  WriteIdentifierTable(PP, SemaRef.IdResolver, WritingModule != 0);
+  WriteIdentifierTable(PP, SemaRef.IdResolver, isModule);
   WriteFPPragmaOptions(SemaRef.getFPOptions());
   WriteOpenCLExtensions(SemaRef);
 

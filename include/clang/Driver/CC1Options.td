@@ -151,10 +151,12 @@ def coverage_file : Separate<["-"], "coverage-file">,
 def coverage_file_EQ : Joined<["-"], "coverage-file=">, Alias<coverage_file>;
 def coverage_cfg_checksum : Flag<["-"], "coverage-cfg-checksum">,
   HelpText<"Emit CFG checksum for functions in .gcno files.">;
-def coverage_function_names_in_data : Flag<["-"], "coverage-function-names-in-data">,
+def coverage_no_function_names_in_data : Flag<["-"], "coverage-no-function-names-in-data">,
   HelpText<"Emit function names in .gcda files.">;
 def coverage_version_EQ : Joined<["-"], "coverage-version=">,
   HelpText<"Four-byte version string for gcov files.">;
+def test_coverage : Flag<["-"], "test-coverage">,
+  HelpText<"Do not generate coverage files or remove coverage changes from IR">;
 def fuse_register_sized_bitfield_access: Flag<["-"], "fuse-register-sized-bitfield-access">,
   HelpText<"Use register sized accesses to bit-fields, when possible.">;
 def relaxed_aliasing : Flag<["-"], "relaxed-aliasing">,
@@ -238,6 +240,9 @@ def fmessage_length : Separate<["-"], "fmessage-length">, MetaVarName<"<N>">,
   HelpText<"Format message diagnostics so that they fit within N columns or fewer, when possible.">;
 def Wno_rewrite_macros : Flag<["-"], "Wno-rewrite-macros">,
   HelpText<"Silence ObjC rewriting warnings">;
+
+def fwarn_on_spellcheck : Flag<["-"], "fwarn-on-spellcheck">,
+  HelpText<"Emit warning if spell-check is initiated, for testing">;
 
 //===----------------------------------------------------------------------===//
 // Frontend Options

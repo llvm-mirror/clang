@@ -1337,7 +1337,7 @@ HeaderFileInfoTrait::ReadKey(const unsigned char *d, unsigned) {
 }
 
 HeaderFileInfoTrait::data_type 
-HeaderFileInfoTrait::ReadData(internal_key_ref, const unsigned char *d,
+HeaderFileInfoTrait::ReadData(internal_key_ref key, const unsigned char *d,
                               unsigned DataLen) {
   const unsigned char *End = d + DataLen;
   using namespace clang::io;
@@ -1358,6 +1358,21 @@ HeaderFileInfoTrait::ReadData(internal_key_ref, const unsigned char *d,
     HFI.Framework = HS->getUniqueFrameworkName(FrameworkName);
   }
   
+  if (d != End) {
+    uint32_t LocalSMID = ReadUnalignedLE32(d);
+    if (LocalSMID) {
+      // This header is part of a module. Associate it with the module to enable
+      // implicit module import.
+      SubmoduleID GlobalSMID = Reader.getGlobalSubmoduleID(M, LocalSMID);
+      Module *Mod = Reader.getSubmodule(GlobalSMID);
+      HFI.isModuleHeader = true;
+      FileManager &FileMgr = Reader.getFileManager();
+      ModuleMap &ModMap =
+          Reader.getPreprocessor().getHeaderSearchInfo().getModuleMap();
+      ModMap.addHeader(Mod, FileMgr.getFile(key.Filename), /*Excluded=*/false);
+    }
+  }
+
   assert(End == d && "Wrong data length in HeaderFileInfo deserialization");
   (void)End;
         
@@ -1601,8 +1616,10 @@ InputFile ASTReader::getInputFile(ModuleFile &F, unsigned ID, bool Complain) {
          || StoredTime != File->getModificationTime()
 #endif
          )) {
-      if (Complain)
+      if (Complain) {
         Error(diag::err_fe_pch_file_modified, Filename, F.FileName);
+      }
+
       IsOutOfDate = true;
     }
 
@@ -1759,6 +1776,8 @@ ASTReader::ReadControlBlock(ModuleFile &F,
         // location info are setup.
         SourceLocation ImportLoc =
             SourceLocation::getFromRawEncoding(Record[Idx++]);
+        off_t StoredSize = (off_t)Record[Idx++];
+        time_t StoredModTime = (time_t)Record[Idx++];
         unsigned Length = Record[Idx++];
         SmallString<128> ImportedFile(Record.begin() + Idx,
                                       Record.begin() + Idx + Length);
@@ -1766,9 +1785,11 @@ ASTReader::ReadControlBlock(ModuleFile &F,
 
         // Load the AST file.
         switch(ReadASTCore(ImportedFile, ImportedKind, ImportLoc, &F, Loaded,
+                           StoredSize, StoredModTime,
                            ClientLoadCapabilities)) {
         case Failure: return Failure;
           // If we have to ignore the dependency, we'll have to ignore this too.
+        case Missing:
         case OutOfDate: return OutOfDate;
         case VersionMismatch: return VersionMismatch;
         case ConfigurationMismatch: return ConfigurationMismatch;
@@ -2695,7 +2716,8 @@ void ASTReader::makeNamesVisible(const HiddenNames &Names) {
 
 void ASTReader::makeModuleVisible(Module *Mod, 
                                   Module::NameVisibilityKind NameVisibility,
-                                  SourceLocation ImportLoc) {
+                                  SourceLocation ImportLoc,
+                                  bool Complain) {
   llvm::SmallPtrSet<Module *, 4> Visited;
   SmallVector<Module *, 4> Stack;
   Stack.push_back(Mod);  
@@ -2743,6 +2765,20 @@ void ASTReader::makeModuleVisible(Module *Mod,
       if (Visited.insert(Exported))
         Stack.push_back(Exported);
     }
+
+    // Detect any conflicts.
+    if (Complain) {
+      assert(ImportLoc.isValid() && "Missing import location");
+      for (unsigned I = 0, N = Mod->Conflicts.size(); I != N; ++I) {
+        if (Mod->Conflicts[I].Other->NameVisibility >= NameVisibility) {
+          Diag(ImportLoc, diag::warn_module_conflict)
+            << Mod->getFullModuleName()
+            << Mod->Conflicts[I].Other->getFullModuleName()
+            << Mod->Conflicts[I].Message;
+          // FIXME: Need note where the other module was imported.
+        }
+      }
+    }
   }
 }
 
@@ -2759,7 +2795,7 @@ bool ASTReader::loadGlobalIndex() {
   StringRef ModuleCachePath
     = getPreprocessor().getHeaderSearchInfo().getModuleCachePath();
   std::pair<GlobalModuleIndex *, GlobalModuleIndex::ErrorCode> Result
-    = GlobalModuleIndex::readIndex(FileMgr, ModuleCachePath);
+    = GlobalModuleIndex::readIndex(ModuleCachePath);
   if (!Result.first)
     return true;
 
@@ -2784,13 +2820,18 @@ ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
   SmallVector<ImportedModule, 4> Loaded;
   switch(ASTReadResult ReadResult = ReadASTCore(FileName, Type, ImportLoc,
                                                 /*ImportedBy=*/0, Loaded,
+                                                0, 0,
                                                 ClientLoadCapabilities)) {
   case Failure:
+  case Missing:
   case OutOfDate:
   case VersionMismatch:
   case ConfigurationMismatch:
   case HadErrors:
-    ModuleMgr.removeModules(ModuleMgr.begin() + NumModules, ModuleMgr.end());
+    ModuleMgr.removeModules(ModuleMgr.begin() + NumModules, ModuleMgr.end(),
+                            Context.getLangOpts().Modules
+                              ? &PP.getHeaderSearchInfo().getModuleMap()
+                              : 0);
 
     // If we find that any modules are unusable, the global index is going
     // to be out-of-date. Just remove it.
@@ -2853,22 +2894,34 @@ ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
     Id->second->setOutOfDate(true);
   
   // Resolve any unresolved module exports.
-  for (unsigned I = 0, N = UnresolvedModuleImportExports.size(); I != N; ++I) {
-    UnresolvedModuleImportExport &Unresolved = UnresolvedModuleImportExports[I];
+  for (unsigned I = 0, N = UnresolvedModuleRefs.size(); I != N; ++I) {
+    UnresolvedModuleRef &Unresolved = UnresolvedModuleRefs[I];
     SubmoduleID GlobalID = getGlobalSubmoduleID(*Unresolved.File,Unresolved.ID);
     Module *ResolvedMod = getSubmodule(GlobalID);
-    
-    if (Unresolved.IsImport) {
+
+    switch (Unresolved.Kind) {
+    case UnresolvedModuleRef::Conflict:
+      if (ResolvedMod) {
+        Module::Conflict Conflict;
+        Conflict.Other = ResolvedMod;
+        Conflict.Message = Unresolved.String.str();
+        Unresolved.Mod->Conflicts.push_back(Conflict);
+      }
+      continue;
+
+    case UnresolvedModuleRef::Import:
       if (ResolvedMod)
         Unresolved.Mod->Imports.push_back(ResolvedMod);
       continue;
-    }
 
-    if (ResolvedMod || Unresolved.IsWildcard)
-      Unresolved.Mod->Exports.push_back(
-        Module::ExportDecl(ResolvedMod, Unresolved.IsWildcard));
+    case UnresolvedModuleRef::Export:
+      if (ResolvedMod || Unresolved.IsWildcard)
+        Unresolved.Mod->Exports.push_back(
+          Module::ExportDecl(ResolvedMod, Unresolved.IsWildcard));
+      continue;
+    }
   }
-  UnresolvedModuleImportExports.clear();
+  UnresolvedModuleRefs.clear();
   
   InitializeContext();
 
@@ -2908,26 +2961,53 @@ ASTReader::ReadASTCore(StringRef FileName,
                        SourceLocation ImportLoc,
                        ModuleFile *ImportedBy,
                        SmallVectorImpl<ImportedModule> &Loaded,
+                       off_t ExpectedSize, time_t ExpectedModTime,
                        unsigned ClientLoadCapabilities) {
   ModuleFile *M;
-  bool NewModule;
   std::string ErrorStr;
-  llvm::tie(M, NewModule) = ModuleMgr.addModule(FileName, Type, ImportLoc,
-                                                ImportedBy, CurrentGeneration,
-                                                ErrorStr);
+  ModuleManager::AddModuleResult AddResult
+    = ModuleMgr.addModule(FileName, Type, ImportLoc, ImportedBy,
+                          CurrentGeneration, ExpectedSize, ExpectedModTime,
+                          M, ErrorStr);
 
-  if (!M) {
-    // We couldn't load the module.
-    std::string Msg = "Unable to load module \"" + FileName.str() + "\": "
-      + ErrorStr;
-    Error(Msg);
+  switch (AddResult) {
+  case ModuleManager::AlreadyLoaded:
+    return Success;
+
+  case ModuleManager::NewlyLoaded:
+    // Load module file below.
+    break;
+
+  case ModuleManager::Missing:
+    // The module file was missing; if the client handle handle, that, return
+    // it.
+    if (ClientLoadCapabilities & ARR_Missing)
+      return Missing;
+
+    // Otherwise, return an error.
+    {
+      std::string Msg = "Unable to load module \"" + FileName.str() + "\": "
+                      + ErrorStr;
+      Error(Msg);
+    }
+    return Failure;
+
+  case ModuleManager::OutOfDate:
+    // We couldn't load the module file because it is out-of-date. If the
+    // client can handle out-of-date, return it.
+    if (ClientLoadCapabilities & ARR_OutOfDate)
+      return OutOfDate;
+
+    // Otherwise, return an error.
+    {
+      std::string Msg = "Unable to load module \"" + FileName.str() + "\": "
+                      + ErrorStr;
+      Error(Msg);
+    }
     return Failure;
   }
 
-  if (!NewModule) {
-    // We've already loaded this module.
-    return Success;
-  }
+  assert(M && "Missing module file");
 
   // FIXME: This seems rather a hack. Should CurrentDir be part of the
   // module?
@@ -2982,6 +3062,7 @@ ASTReader::ReadASTCore(StringRef FileName,
         break;
 
       case Failure: return Failure;
+      case Missing: return Missing;
       case OutOfDate: return OutOfDate;
       case VersionMismatch: return VersionMismatch;
       case ConfigurationMismatch: return ConfigurationMismatch;
@@ -3142,7 +3223,8 @@ void ASTReader::InitializeContext() {
   for (unsigned I = 0, N = ImportedModules.size(); I != N; ++I) {
     if (Module *Imported = getSubmodule(ImportedModules[I]))
       makeModuleVisible(Imported, Module::AllVisible,
-                        /*ImportLoc=*/SourceLocation());
+                        /*ImportLoc=*/SourceLocation(),
+                        /*Complain=*/false);
   }
   ImportedModules.clear();
 }
@@ -3421,7 +3503,7 @@ bool ASTReader::ReadSubmoduleBlock(ModuleFile &F) {
         return true;
       }
 
-      if (Record.size() < 7) {
+      if (Record.size() < 8) {
         Error("malformed module definition");
         return true;
       }
@@ -3435,7 +3517,8 @@ bool ASTReader::ReadSubmoduleBlock(ModuleFile &F) {
       bool InferSubmodules = Record[5];
       bool InferExplicitSubmodules = Record[6];
       bool InferExportWildcard = Record[7];
-      
+      bool ConfigMacrosExhaustive = Record[8];
+
       Module *ParentModule = 0;
       if (Parent)
         ParentModule = getSubmodule(Parent);
@@ -3452,30 +3535,38 @@ bool ASTReader::ReadSubmoduleBlock(ModuleFile &F) {
         return true;
       }
 
-      if (const FileEntry *CurFile = CurrentModule->getASTFile()) {
-        if (CurFile != F.File) {
-          if (!Diags.isDiagnosticInFlight()) {
-            Diag(diag::err_module_file_conflict)
-              << CurrentModule->getTopLevelModuleName()
-              << CurFile->getName()
-              << F.File->getName();
+      if (!ParentModule) {
+        if (const FileEntry *CurFile = CurrentModule->getASTFile()) {
+          if (CurFile != F.File) {
+            if (!Diags.isDiagnosticInFlight()) {
+              Diag(diag::err_module_file_conflict)
+                << CurrentModule->getTopLevelModuleName()
+                << CurFile->getName()
+                << F.File->getName();
+            }
+            return true;
           }
-          return true;
         }
+
+        CurrentModule->setASTFile(F.File);
       }
-      CurrentModule->setASTFile(F.File);
+      
       CurrentModule->IsFromModuleFile = true;
       CurrentModule->IsSystem = IsSystem || CurrentModule->IsSystem;
       CurrentModule->InferSubmodules = InferSubmodules;
       CurrentModule->InferExplicitSubmodules = InferExplicitSubmodules;
       CurrentModule->InferExportWildcard = InferExportWildcard;
+      CurrentModule->ConfigMacrosExhaustive = ConfigMacrosExhaustive;
       if (DeserializationListener)
         DeserializationListener->ModuleRead(GlobalID, CurrentModule);
       
       SubmodulesLoaded[GlobalIndex] = CurrentModule;
 
-      // Clear out link libraries; the module file has them.
+      // Clear out data that will be replaced by what is the module file.
       CurrentModule->LinkLibraries.clear();
+      CurrentModule->ConfigMacros.clear();
+      CurrentModule->UnresolvedConflicts.clear();
+      CurrentModule->Conflicts.clear();
       break;
     }
         
@@ -3508,13 +3599,9 @@ bool ASTReader::ReadSubmoduleBlock(ModuleFile &F) {
       if (!CurrentModule)
         break;
       
-      // FIXME: Be more lazy about this!
-      if (const FileEntry *File = PP.getFileManager().getFile(Blob)) {
-        if (std::find(CurrentModule->Headers.begin(), 
-                      CurrentModule->Headers.end(), 
-                      File) == CurrentModule->Headers.end())
-          ModMap.addHeader(CurrentModule, File, false);
-      }
+      // We lazily associate headers with their modules via the HeaderInfoTable.
+      // FIXME: Re-evaluate this section; maybe only store InputFile IDs instead
+      // of complete filenames or remove it entirely.
       break;      
     }
 
@@ -3527,13 +3614,9 @@ bool ASTReader::ReadSubmoduleBlock(ModuleFile &F) {
       if (!CurrentModule)
         break;
       
-      // FIXME: Be more lazy about this!
-      if (const FileEntry *File = PP.getFileManager().getFile(Blob)) {
-        if (std::find(CurrentModule->Headers.begin(), 
-                      CurrentModule->Headers.end(), 
-                      File) == CurrentModule->Headers.end())
-          ModMap.addHeader(CurrentModule, File, true);
-      }
+      // We lazily associate headers with their modules via the HeaderInfoTable.
+      // FIXME: Re-evaluate this section; maybe only store InputFile IDs instead
+      // of complete filenames or remove it entirely.
       break;      
     }
 
@@ -3546,9 +3629,7 @@ bool ASTReader::ReadSubmoduleBlock(ModuleFile &F) {
       if (!CurrentModule)
         break;
 
-      // FIXME: Be more lazy about this!
-      if (const FileEntry *File = PP.getFileManager().getFile(Blob))
-        CurrentModule->TopHeaders.insert(File);
+      CurrentModule->addTopHeaderFilename(Blob);
       break;
     }
 
@@ -3609,13 +3690,13 @@ bool ASTReader::ReadSubmoduleBlock(ModuleFile &F) {
         break;
       
       for (unsigned Idx = 0; Idx != Record.size(); ++Idx) {
-        UnresolvedModuleImportExport Unresolved;
+        UnresolvedModuleRef Unresolved;
         Unresolved.File = &F;
         Unresolved.Mod = CurrentModule;
         Unresolved.ID = Record[Idx];
-        Unresolved.IsImport = true;
+        Unresolved.Kind = UnresolvedModuleRef::Import;
         Unresolved.IsWildcard = false;
-        UnresolvedModuleImportExports.push_back(Unresolved);
+        UnresolvedModuleRefs.push_back(Unresolved);
       }
       break;
     }
@@ -3630,13 +3711,13 @@ bool ASTReader::ReadSubmoduleBlock(ModuleFile &F) {
         break;
       
       for (unsigned Idx = 0; Idx + 1 < Record.size(); Idx += 2) {
-        UnresolvedModuleImportExport Unresolved;
+        UnresolvedModuleRef Unresolved;
         Unresolved.File = &F;
         Unresolved.Mod = CurrentModule;
         Unresolved.ID = Record[Idx];
-        Unresolved.IsImport = false;
+        Unresolved.Kind = UnresolvedModuleRef::Export;
         Unresolved.IsWildcard = Record[Idx + 1];
-        UnresolvedModuleImportExports.push_back(Unresolved);
+        UnresolvedModuleRefs.push_back(Unresolved);
       }
       
       // Once we've loaded the set of exports, there's no reason to keep 
@@ -3670,6 +3751,38 @@ bool ASTReader::ReadSubmoduleBlock(ModuleFile &F) {
       CurrentModule->LinkLibraries.push_back(
                                          Module::LinkLibrary(Blob, Record[0]));
       break;
+
+    case SUBMODULE_CONFIG_MACRO:
+      if (First) {
+        Error("missing submodule metadata record at beginning of block");
+        return true;
+      }
+
+      if (!CurrentModule)
+        break;
+
+      CurrentModule->ConfigMacros.push_back(Blob.str());
+      break;
+
+    case SUBMODULE_CONFLICT: {
+      if (First) {
+        Error("missing submodule metadata record at beginning of block");
+        return true;
+      }
+
+      if (!CurrentModule)
+        break;
+
+      UnresolvedModuleRef Unresolved;
+      Unresolved.File = &F;
+      Unresolved.Mod = CurrentModule;
+      Unresolved.ID = Record[0];
+      Unresolved.Kind = UnresolvedModuleRef::Conflict;
+      Unresolved.IsWildcard = false;
+      Unresolved.String = Blob;
+      UnresolvedModuleRefs.push_back(Unresolved);
+      break;
+    }
     }
   }
 }

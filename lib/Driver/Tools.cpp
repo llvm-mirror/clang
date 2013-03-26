@@ -1420,30 +1420,18 @@ static bool ShouldDisableCFI(const ArgList &Args,
   if (TC.getTriple().isOSDarwin()) {
     // The native darwin assembler doesn't support cfi directives, so
     // we disable them if we think the .s file will be passed to it.
-    Default = Args.hasFlag(options::OPT_integrated_as,
-                           options::OPT_no_integrated_as,
-                           TC.IsIntegratedAssemblerDefault());
+    Default = TC.useIntegratedAs();
   }
   return !Args.hasFlag(options::OPT_fdwarf2_cfi_asm,
                        options::OPT_fno_dwarf2_cfi_asm,
                        Default);
 }
 
-static bool ShouldUseIntegratedAssembler(const ArgList &Args,
-                                         const ToolChain &TC) {
-  bool IsIADefault = TC.IsIntegratedAssemblerDefault();
-  bool UseIntegratedAs = Args.hasFlag(options::OPT_integrated_as,
-                                      options::OPT_no_integrated_as,
-                                      IsIADefault);
-  return UseIntegratedAs;
-}
-
 static bool ShouldDisableDwarfDirectory(const ArgList &Args,
                                         const ToolChain &TC) {
-  bool UseIntegratedAs = ShouldUseIntegratedAssembler(Args, TC);
   bool UseDwarfDirectory = Args.hasFlag(options::OPT_fdwarf_directory_asm,
                                         options::OPT_fno_dwarf_directory_asm,
-                                        UseIntegratedAs);
+                                        TC.useIntegratedAs());
   return !UseDwarfDirectory;
 }
 
@@ -1594,21 +1582,21 @@ static void addSanitizerRTLinkFlagsLinux(
   llvm::sys::path::append(
       LibSanitizer, "lib", "linux",
       (Twine("libclang_rt.") + Sanitizer + "-" + TC.getArchName() + ".a"));
+
   // Sanitizer runtime may need to come before -lstdc++ (or -lc++, libstdc++.a,
   // etc.) so that the linker picks custom versions of the global 'operator
   // new' and 'operator delete' symbols. We take the extreme (but simple)
   // strategy of inserting it at the front of the link command. It also
   // needs to be forced to end up in the executable, so wrap it in
   // whole-archive.
-  if (BeforeLibStdCXX) {
-    SmallVector<const char *, 3> PrefixArgs;
-    PrefixArgs.push_back("-whole-archive");
-    PrefixArgs.push_back(Args.MakeArgString(LibSanitizer));
-    PrefixArgs.push_back("-no-whole-archive");
-    CmdArgs.insert(CmdArgs.begin(), PrefixArgs.begin(), PrefixArgs.end());
-  } else {
-    CmdArgs.push_back(Args.MakeArgString(LibSanitizer));
-  }
+  SmallVector<const char *, 3> LibSanitizerArgs;
+  LibSanitizerArgs.push_back("-whole-archive");
+  LibSanitizerArgs.push_back(Args.MakeArgString(LibSanitizer));
+  LibSanitizerArgs.push_back("-no-whole-archive");
+
+  CmdArgs.insert(BeforeLibStdCXX ? CmdArgs.begin() : CmdArgs.end(),
+                 LibSanitizerArgs.begin(), LibSanitizerArgs.end());
+
   CmdArgs.push_back("-lpthread");
   CmdArgs.push_back("-ldl");
   CmdArgs.push_back("-export-dynamic");
@@ -1670,8 +1658,22 @@ static void addMsanRTLinux(const ToolChain &TC, const ArgList &Args,
 /// If UndefinedBehaviorSanitizer is enabled, add appropriate linker flags
 /// (Linux).
 static void addUbsanRTLinux(const ToolChain &TC, const ArgList &Args,
-                            ArgStringList &CmdArgs) {
+                            ArgStringList &CmdArgs, bool IsCXX,
+                            bool HasOtherSanitizerRt) {
+  if (Args.hasArg(options::OPT_shared))
+    return;
+
+  // Need a copy of sanitizer_common. This could come from another sanitizer
+  // runtime; if we're not including one, include our own copy.
+  if (!HasOtherSanitizerRt)
+    addSanitizerRTLinkFlagsLinux(TC, Args, CmdArgs, "san", true);
+
   addSanitizerRTLinkFlagsLinux(TC, Args, CmdArgs, "ubsan", false);
+
+  // Only include the bits of the runtime which need a C++ ABI library if
+  // we're linking in C++ mode.
+  if (IsCXX)
+    addSanitizerRTLinkFlagsLinux(TC, Args, CmdArgs, "ubsan_cxx", false);
 }
 
 static bool shouldUseFramePointer(const ArgList &Args,
@@ -1781,8 +1783,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   } else if (isa<PreprocessJobAction>(JA)) {
     if (Output.getType() == types::TY_Dependencies)
       CmdArgs.push_back("-Eonly");
-    else
+    else {
       CmdArgs.push_back("-E");
+      if (Args.hasArg(options::OPT_rewrite_objc) &&
+          !Args.hasArg(options::OPT_g_Group))
+        CmdArgs.push_back("-P");
+    }
   } else if (isa<AssembleJobAction>(JA)) {
     CmdArgs.push_back("-emit-obj");
 
@@ -2784,12 +2790,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-fmodules");
       HaveModules = true;
     }
-
-    if (HaveModules && !ShouldUseIntegratedAssembler(Args, getToolChain())) {
-      D.Diag(diag::err_drv_modules_integrated_as);
-      D.Diag(diag::note_drv_modules_integrated_as);
-      return;
-    }
   }
 
   // If a module path was provided, pass it along. Otherwise, use a temporary
@@ -2803,7 +2803,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     SmallString<128> DefaultModuleCache;
     llvm::sys::path::system_temp_directory(/*erasedOnReboot=*/false,
                                            DefaultModuleCache);
-    llvm::sys::path::append(DefaultModuleCache, "clang-module-cache");
+    llvm::sys::path::append(DefaultModuleCache, "org.llvm.clang");
+    llvm::sys::path::append(DefaultModuleCache, "ModuleCache");
     const char Arg[] = "-fmodules-cache-path=";
     DefaultModuleCache.insert(DefaultModuleCache.begin(),
                               Arg, Arg + strlen(Arg));
@@ -2814,8 +2815,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddAllArgs(CmdArgs, options::OPT_fmodules_ignore_macro);
 
   // -fmodules-autolink (on by default when modules is enabled) automatically
-  // links against libraries for imported modules.
-  if (HaveModules &&
+  // links against libraries for imported modules.  This requires the
+  // integrated assembler.
+  if (HaveModules && getToolChain().useIntegratedAs() &&
       Args.hasFlag(options::OPT_fmodules_autolink,
                    options::OPT_fno_modules_autolink,
                    true)) {
@@ -3644,7 +3646,7 @@ void gcc::Common::ConstructJob(Compilation &C, const JobAction &JA,
   // here.
   if (Arch == llvm::Triple::x86 || Arch == llvm::Triple::ppc)
     CmdArgs.push_back("-m32");
-  else if (Arch == llvm::Triple::x86_64 || Arch == llvm::Triple::x86_64)
+  else if (Arch == llvm::Triple::x86_64 || Arch == llvm::Triple::ppc64)
     CmdArgs.push_back("-m64");
 
   if (Output.isFilename()) {
@@ -5217,6 +5219,7 @@ void freebsd::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
     switch(getToolChain().getTriple().getEnvironment()) {
     case llvm::Triple::GNUEABI:
     case llvm::Triple::EABI:
+      CmdArgs.push_back("-meabi=5");
       break;
 
     default:
@@ -5888,7 +5891,9 @@ void linuxtools::Link::ConstructJob(Compilation &C, const JobAction &JA,
 
   // Call these before we add the C++ ABI library.
   if (Sanitize.needsUbsanRt())
-    addUbsanRTLinux(getToolChain(), Args, CmdArgs);
+    addUbsanRTLinux(getToolChain(), Args, CmdArgs, D.CCCIsCXX,
+                    Sanitize.needsAsanRt() || Sanitize.needsTsanRt() ||
+                    Sanitize.needsMsanRt());
   if (Sanitize.needsAsanRt())
     addAsanRTLinux(getToolChain(), Args, CmdArgs);
   if (Sanitize.needsTsanRt())

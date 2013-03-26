@@ -151,7 +151,8 @@ void Sema::CheckObjCMethodOverride(ObjCMethodDecl *NewMethod,
     
     if (ObjCMethodFamily Family = Overridden->getMethodFamily())
       Diag(Overridden->getLocation(), 
-           diag::note_related_result_type_overridden_family)
+           diag::note_related_result_type_family)
+        << /*overridden method*/ 0
         << Family;
     else
       Diag(Overridden->getLocation(), 
@@ -3187,7 +3188,7 @@ Decl *Sema::ActOnObjCExceptionDecl(Scope *S, Declarator &D) {
     Diag(D.getDeclSpec().getThreadSpecLoc(), diag::err_invalid_thread);
   D.getMutableDeclSpec().ClearStorageClassSpecs();
 
-  DiagnoseFunctionSpecifiers(D);
+  DiagnoseFunctionSpecifiers(D.getDeclSpec());
   
   // Check that there are no default arguments inside the type of this
   // exception object (C++ only).

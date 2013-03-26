@@ -620,8 +620,7 @@ static LinkageInfo getLVForNamespaceScopeDecl(const NamedDecl *D,
     //
     // Note that we don't want to make the variable non-external
     // because of this, but unique-external linkage suits us.
-    if (Context.getLangOpts().CPlusPlus &&
-        !Var->getDeclContext()->isExternCContext()) {
+    if (Context.getLangOpts().CPlusPlus && !isInExternCContext(Var)) {
       LinkageInfo TypeLV = Var->getType()->getLinkageAndVisibility();
       if (TypeLV.getLinkage() != ExternalLinkage)
         return LinkageInfo::uniqueExternal();
@@ -859,49 +858,14 @@ static LinkageInfo getLVForClassMember(const NamedDecl *D,
   return LV;
 }
 
-static void clearLinkageForClass(const CXXRecordDecl *record) {
-  for (CXXRecordDecl::decl_iterator
-         i = record->decls_begin(), e = record->decls_end(); i != e; ++i) {
-    Decl *child = *i;
-    if (isa<NamedDecl>(child))
-      cast<NamedDecl>(child)->ClearLinkageCache();
-  }
-}
-
 void NamedDecl::anchor() { }
 
-void NamedDecl::ClearLinkageCache() {
-  // Note that we can't skip clearing the linkage of children just
-  // because the parent doesn't have cached linkage:  we don't cache
-  // when computing linkage for parent contexts.
+bool NamedDecl::isLinkageValid() const {
+  if (!HasCachedLinkage)
+    return true;
 
-  HasCachedLinkage = 0;
-
-  // If we're changing the linkage of a class, we need to reset the
-  // linkage of child declarations, too.
-  if (const CXXRecordDecl *record = dyn_cast<CXXRecordDecl>(this))
-    clearLinkageForClass(record);
-
-  if (ClassTemplateDecl *temp = dyn_cast<ClassTemplateDecl>(this)) {
-    // Clear linkage for the template pattern.
-    CXXRecordDecl *record = temp->getTemplatedDecl();
-    record->HasCachedLinkage = 0;
-    clearLinkageForClass(record);
-
-    // We need to clear linkage for specializations, too.
-    for (ClassTemplateDecl::spec_iterator
-           i = temp->spec_begin(), e = temp->spec_end(); i != e; ++i)
-      i->ClearLinkageCache();
-  }
-
-  // Clear cached linkage for function template decls, too.
-  if (FunctionTemplateDecl *temp = dyn_cast<FunctionTemplateDecl>(this)) {
-    temp->getTemplatedDecl()->ClearLinkageCache();
-    for (FunctionTemplateDecl::spec_iterator
-           i = temp->spec_begin(), e = temp->spec_end(); i != e; ++i)
-      i->ClearLinkageCache();
-  }
-    
+  return getLVForDecl(this, LVForExplicitValue).getLinkage() ==
+    Linkage(CachedLinkage);
 }
 
 Linkage NamedDecl::getLinkage() const {
@@ -1516,8 +1480,8 @@ VarDecl *VarDecl::CreateDeserialized(ASTContext &C, unsigned ID) {
 void VarDecl::setStorageClass(StorageClass SC) {
   assert(isLegalForVariable(SC));
   if (getStorageClass() != SC)
-    ClearLinkageCache();
-  
+    assert(isLinkageValid());
+
   VarDeclBits.SClass = SC;
 }
 
@@ -1561,8 +1525,25 @@ static LanguageLinkage getLanguageLinkageTemplate(const T &D) {
   return CXXLanguageLinkage;
 }
 
+template<typename T>
+static bool isExternCTemplate(const T &D) {
+  // Since the context is ignored for class members, they can only have C++
+  // language linkage or no language linkage.
+  const DeclContext *DC = D.getDeclContext();
+  if (DC->isRecord()) {
+    assert(D.getASTContext().getLangOpts().CPlusPlus);
+    return false;
+  }
+
+  return D.getLanguageLinkage() == CLanguageLinkage;
+}
+
 LanguageLinkage VarDecl::getLanguageLinkage() const {
   return getLanguageLinkageTemplate(*this);
+}
+
+bool VarDecl::isExternC() const {
+  return isExternCTemplate(*this);
 }
 
 VarDecl *VarDecl::getCanonicalDecl() {
@@ -2078,6 +2059,10 @@ LanguageLinkage FunctionDecl::getLanguageLinkage() const {
   return getLanguageLinkageTemplate(*this);
 }
 
+bool FunctionDecl::isExternC() const {
+  return isExternCTemplate(*this);
+}
+
 bool FunctionDecl::isGlobal() const {
   if (const CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(this))
     return Method->isStatic();
@@ -2130,8 +2115,8 @@ FunctionDecl *FunctionDecl::getCanonicalDecl() {
 void FunctionDecl::setStorageClass(StorageClass SC) {
   assert(isLegalForFunction(SC));
   if (getStorageClass() != SC)
-    ClearLinkageCache();
-  
+    assert(isLinkageValid());
+
   SClass = SC;
 }
 
@@ -2865,11 +2850,11 @@ TagDecl* TagDecl::getCanonicalDecl() {
   return getFirstDeclaration();
 }
 
-void TagDecl::setTypedefNameForAnonDecl(TypedefNameDecl *TDD) { 
-  TypedefNameDeclOrQualifier = TDD; 
+void TagDecl::setTypedefNameForAnonDecl(TypedefNameDecl *TDD) {
+  TypedefNameDeclOrQualifier = TDD;
   if (TypeForDecl)
-    const_cast<Type*>(TypeForDecl)->ClearLinkageCache();
-  ClearLinkageCache();
+    assert(TypeForDecl->isLinkageValid());
+  assert(isLinkageValid());
 }
 
 void TagDecl::startDefinition() {

@@ -18,6 +18,7 @@
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
+#include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Lex/LiteralSupport.h"
@@ -44,40 +45,49 @@ ModuleMap::resolveExport(Module *Mod,
     return Module::ExportDecl(0, true);
   }
   
-  // Find the starting module.
-  Module *Context = lookupModuleUnqualified(Unresolved.Id[0].first, Mod);
-  if (!Context) {
-    if (Complain)
-      Diags->Report(Unresolved.Id[0].second, 
-                    diag::err_mmap_missing_module_unqualified)
-        << Unresolved.Id[0].first << Mod->getFullModuleName();
-    
+  // Resolve the module-id.
+  Module *Context = resolveModuleId(Unresolved.Id, Mod, Complain);
+  if (!Context)
     return Module::ExportDecl();
-  }
 
-  // Dig into the module path.
-  for (unsigned I = 1, N = Unresolved.Id.size(); I != N; ++I) {
-    Module *Sub = lookupModuleQualified(Unresolved.Id[I].first,
-                                        Context);
-    if (!Sub) {
-      if (Complain)
-        Diags->Report(Unresolved.Id[I].second, 
-                      diag::err_mmap_missing_module_qualified)
-          << Unresolved.Id[I].first << Context->getFullModuleName()
-          << SourceRange(Unresolved.Id[0].second, Unresolved.Id[I-1].second);
-      
-      return Module::ExportDecl();      
-    }
-    
-    Context = Sub;
-  }
-  
   return Module::ExportDecl(Context, Unresolved.Wildcard);
 }
 
+Module *ModuleMap::resolveModuleId(const ModuleId &Id, Module *Mod,
+                                   bool Complain) const {
+  // Find the starting module.
+  Module *Context = lookupModuleUnqualified(Id[0].first, Mod);
+  if (!Context) {
+    if (Complain)
+      Diags->Report(Id[0].second, diag::err_mmap_missing_module_unqualified)
+      << Id[0].first << Mod->getFullModuleName();
+
+    return 0;
+  }
+
+  // Dig into the module path.
+  for (unsigned I = 1, N = Id.size(); I != N; ++I) {
+    Module *Sub = lookupModuleQualified(Id[I].first, Context);
+    if (!Sub) {
+      if (Complain)
+        Diags->Report(Id[I].second, diag::err_mmap_missing_module_qualified)
+        << Id[I].first << Context->getFullModuleName()
+        << SourceRange(Id[0].second, Id[I-1].second);
+
+      return 0;
+    }
+
+    Context = Sub;
+  }
+
+  return Context;
+}
+
 ModuleMap::ModuleMap(FileManager &FileMgr, const DiagnosticConsumer &DC,
-                     const LangOptions &LangOpts, const TargetInfo *Target)
-  : LangOpts(LangOpts), Target(Target), BuiltinIncludeDir(0)
+                     const LangOptions &LangOpts, const TargetInfo *Target,
+                     HeaderSearch &HeaderInfo)
+  : LangOpts(LangOpts), Target(Target), HeaderInfo(HeaderInfo),
+    BuiltinIncludeDir(0)
 {
   IntrusiveRefCntPtr<DiagnosticIDs> DiagIDs(new DiagnosticIDs);
   Diags = IntrusiveRefCntPtr<DiagnosticsEngine>(
@@ -202,7 +212,7 @@ Module *ModuleMap::findModuleForHeader(const FileEntry *File) {
                            llvm::sys::path::stem(File->getName()), NameBuf);
         Result = findOrCreateModule(Name, Result, /*IsFramework=*/false,
                                     Explicit).first;
-        Result->TopHeaders.insert(File);
+        Result->addTopHeader(File);
         
         // If inferred submodules export everything they import, add a 
         // wildcard to the set of exports.
@@ -553,10 +563,12 @@ void ModuleMap::setUmbrellaDir(Module *Mod, const DirectoryEntry *UmbrellaDir) {
 
 void ModuleMap::addHeader(Module *Mod, const FileEntry *Header,
                           bool Excluded) {
-  if (Excluded)
+  if (Excluded) {
     Mod->ExcludedHeaders.push_back(Header);
-  else
+  } else {
     Mod->Headers.push_back(Header);
+    HeaderInfo.MarkFileModuleHeader(Header);
+  }
   Headers[Header] = KnownHeader(Mod, Excluded);
 }
 
@@ -595,6 +607,25 @@ bool ModuleMap::resolveExports(Module *Mod, bool Complain) {
       HadError = true;
   }
   Mod->UnresolvedExports.clear();
+  return HadError;
+}
+
+bool ModuleMap::resolveConflicts(Module *Mod, bool Complain) {
+  bool HadError = false;
+  for (unsigned I = 0, N = Mod->UnresolvedConflicts.size(); I != N; ++I) {
+    Module *OtherMod = resolveModuleId(Mod->UnresolvedConflicts[I].Id,
+                                       Mod, Complain);
+    if (!OtherMod) {
+      HadError = true;
+      continue;
+    }
+
+    Module::Conflict Conflict;
+    Conflict.Other = OtherMod;
+    Conflict.Message = Mod->UnresolvedConflicts[I].Message;
+    Mod->Conflicts.push_back(Conflict);
+  }
+  Mod->UnresolvedConflicts.clear();
   return HadError;
 }
 
@@ -638,6 +669,8 @@ namespace clang {
   struct MMToken {
     enum TokenKind {
       Comma,
+      ConfigMacros,
+      Conflict,
       EndOfFile,
       HeaderKeyword,
       Identifier,
@@ -682,10 +715,13 @@ namespace clang {
 
   /// \brief The set of attributes that can be attached to a module.
   struct Attributes {
-    Attributes() : IsSystem() { }
+    Attributes() : IsSystem(), IsExhaustive() { }
 
     /// \brief Whether this is a system module.
     unsigned IsSystem : 1;
+
+    /// \brief Whether this is an exhaustive set of configuration macros.
+    unsigned IsExhaustive : 1;
   };
   
 
@@ -734,6 +770,8 @@ namespace clang {
     void parseUmbrellaDirDecl(SourceLocation UmbrellaLoc);
     void parseExportDecl();
     void parseLinkDecl();
+    void parseConfigMacros();
+    void parseConflict();
     void parseInferredModuleDecl(bool Framework, bool Explicit);
     bool parseOptionalAttributes(Attributes &Attrs);
 
@@ -771,11 +809,13 @@ retry:
     Tok.StringData = LToken.getRawIdentifierData();
     Tok.StringLength = LToken.getLength();
     Tok.Kind = llvm::StringSwitch<MMToken::TokenKind>(Tok.getString())
-                 .Case("header", MMToken::HeaderKeyword)
+                 .Case("config_macros", MMToken::ConfigMacros)
+                 .Case("conflict", MMToken::Conflict)
                  .Case("exclude", MMToken::ExcludeKeyword)
                  .Case("explicit", MMToken::ExplicitKeyword)
                  .Case("export", MMToken::ExportKeyword)
                  .Case("framework", MMToken::FrameworkKeyword)
+                 .Case("header", MMToken::HeaderKeyword)
                  .Case("link", MMToken::LinkKeyword)
                  .Case("module", MMToken::ModuleKeyword)
                  .Case("requires", MMToken::RequiresKeyword)
@@ -932,7 +972,9 @@ namespace {
     /// \brief An unknown attribute.
     AT_unknown,
     /// \brief The 'system' attribute.
-    AT_system
+    AT_system,
+    /// \brief The 'exhaustive' attribute.
+    AT_exhaustive
   };
 }
 
@@ -1089,7 +1131,15 @@ void ModuleMapParser::parseModuleDecl() {
     case MMToken::RBrace:
       Done = true;
       break;
-        
+
+    case MMToken::ConfigMacros:
+      parseConfigMacros();
+      break;
+
+    case MMToken::Conflict:
+      parseConflict();
+      break;
+
     case MMToken::ExplicitKeyword:
     case MMToken::FrameworkKeyword:
     case MMToken::ModuleKeyword:
@@ -1484,6 +1534,109 @@ void ModuleMapParser::parseLinkDecl() {
                                                             IsFramework));
 }
 
+/// \brief Parse a configuration macro declaration.
+///
+///   module-declaration:
+///     'config_macros' attributes[opt] config-macro-list?
+///
+///   config-macro-list:
+///     identifier (',' identifier)?
+void ModuleMapParser::parseConfigMacros() {
+  assert(Tok.is(MMToken::ConfigMacros));
+  SourceLocation ConfigMacrosLoc = consumeToken();
+
+  // Only top-level modules can have configuration macros.
+  if (ActiveModule->Parent) {
+    Diags.Report(ConfigMacrosLoc, diag::err_mmap_config_macro_submodule);
+  }
+
+  // Parse the optional attributes.
+  Attributes Attrs;
+  parseOptionalAttributes(Attrs);
+  if (Attrs.IsExhaustive && !ActiveModule->Parent) {
+    ActiveModule->ConfigMacrosExhaustive = true;
+  }
+
+  // If we don't have an identifier, we're done.
+  if (!Tok.is(MMToken::Identifier))
+    return;
+
+  // Consume the first identifier.
+  if (!ActiveModule->Parent) {
+    ActiveModule->ConfigMacros.push_back(Tok.getString().str());
+  }
+  consumeToken();
+
+  do {
+    // If there's a comma, consume it.
+    if (!Tok.is(MMToken::Comma))
+      break;
+    consumeToken();
+
+    // We expect to see a macro name here.
+    if (!Tok.is(MMToken::Identifier)) {
+      Diags.Report(Tok.getLocation(), diag::err_mmap_expected_config_macro);
+      break;
+    }
+
+    // Consume the macro name.
+    if (!ActiveModule->Parent) {
+      ActiveModule->ConfigMacros.push_back(Tok.getString().str());
+    }
+    consumeToken();
+  } while (true);
+}
+
+/// \brief Format a module-id into a string.
+static std::string formatModuleId(const ModuleId &Id) {
+  std::string result;
+  {
+    llvm::raw_string_ostream OS(result);
+
+    for (unsigned I = 0, N = Id.size(); I != N; ++I) {
+      if (I)
+        OS << ".";
+      OS << Id[I].first;
+    }
+  }
+
+  return result;
+}
+
+/// \brief Parse a conflict declaration.
+///
+///   module-declaration:
+///     'conflict' module-id ',' string-literal
+void ModuleMapParser::parseConflict() {
+  assert(Tok.is(MMToken::Conflict));
+  SourceLocation ConflictLoc = consumeToken();
+  Module::UnresolvedConflict Conflict;
+
+  // Parse the module-id.
+  if (parseModuleId(Conflict.Id))
+    return;
+
+  // Parse the ','.
+  if (!Tok.is(MMToken::Comma)) {
+    Diags.Report(Tok.getLocation(), diag::err_mmap_expected_conflicts_comma)
+      << SourceRange(ConflictLoc);
+    return;
+  }
+  consumeToken();
+
+  // Parse the message.
+  if (!Tok.is(MMToken::StringLiteral)) {
+    Diags.Report(Tok.getLocation(), diag::err_mmap_expected_conflicts_message)
+      << formatModuleId(Conflict.Id);
+    return;
+  }
+  Conflict.Message = Tok.getString().str();
+  consumeToken();
+
+  // Add this unresolved conflict.
+  ActiveModule->UnresolvedConflicts.push_back(Conflict);
+}
+
 /// \brief Parse an inferred module declaration (wildcard modules).
 ///
 ///   module-declaration:
@@ -1663,6 +1816,7 @@ bool ModuleMapParser::parseOptionalAttributes(Attributes &Attrs) {
     // Decode the attribute name.
     AttributeKind Attribute
       = llvm::StringSwitch<AttributeKind>(Tok.getString())
+          .Case("exhaustive", AT_exhaustive)
           .Case("system", AT_system)
           .Default(AT_unknown);
     switch (Attribute) {
@@ -1673,6 +1827,10 @@ bool ModuleMapParser::parseOptionalAttributes(Attributes &Attrs) {
 
     case AT_system:
       Attrs.IsSystem = true;
+      break;
+
+    case AT_exhaustive:
+      Attrs.IsExhaustive = true;
       break;
     }
     consumeToken();
@@ -1725,6 +1883,8 @@ bool ModuleMapParser::parseModuleMapFile() {
       break;
 
     case MMToken::Comma:
+    case MMToken::ConfigMacros:
+    case MMToken::Conflict:
     case MMToken::ExcludeKeyword:
     case MMToken::ExportKeyword:
     case MMToken::HeaderKeyword:

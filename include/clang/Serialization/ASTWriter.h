@@ -48,6 +48,7 @@ class CXXCtorInitializer;
 class FileEntry;
 class FPOptions;
 class HeaderSearch;
+class HeaderSearchOptions;
 class IdentifierResolver;
 class MacroDefinition;
 class OpaqueValueExpr;
@@ -416,7 +417,9 @@ private:
   void WriteBlockInfoBlock();
   void WriteControlBlock(Preprocessor &PP, ASTContext &Context,
                          StringRef isysroot, const std::string &OutputFile);
-  void WriteInputFiles(SourceManager &SourceMgr, StringRef isysroot);
+  void WriteInputFiles(SourceManager &SourceMgr,
+                       HeaderSearchOptions &HSOpts,
+                       StringRef isysroot);
   void WriteSourceManagerBlock(SourceManager &SourceMgr,
                                const Preprocessor &PP,
                                StringRef isysroot);
@@ -640,6 +643,10 @@ public:
   /// \brief Infer the submodule ID that contains an entity at the given
   /// source location.
   serialization::SubmoduleID inferSubmoduleIDFromLocation(SourceLocation Loc);
+
+  /// \brief Retrieve a submodule ID for this module.
+  /// Returns 0 If no ID has been associated with the module.
+  unsigned getExistingSubmoduleID(Module *Mod) const;
 
   /// \brief Note that the identifier II occurs at the given offset
   /// within the identifier table.

@@ -1027,63 +1027,27 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
       FuncAttrs.addAttribute(llvm::Attribute::NoBuiltin);
   } else {
     // Attributes that should go on the function, but not the call site.
-    if (!CodeGenOpts.CodeModel.empty())
-      FuncAttrs.addAttribute("code-model", CodeGenOpts.CodeModel);
-    if (!CodeGenOpts.RelocationModel.empty())
-      FuncAttrs.addAttribute("relocation-model", CodeGenOpts.RelocationModel);
-
-    if (CodeGenOpts.FloatABI == "soft" || CodeGenOpts.FloatABI == "softfp")
-      FuncAttrs.addAttribute("float-abi", "soft");
-    else if (CodeGenOpts.FloatABI == "hard")
-      FuncAttrs.addAttribute("float-abi", "hard");
-
     if (!CodeGenOpts.DisableFPElim) {
-      /* ignore */ ;
+      FuncAttrs.addAttribute("no-frame-pointer-elim", "false");
+      FuncAttrs.addAttribute("no-frame-pointer-elim-non-leaf", "false");
     } else if (CodeGenOpts.OmitLeafFramePointer) {
-      FuncAttrs.addAttribute("no-frame-pointer-elim-non-leaf");
+      FuncAttrs.addAttribute("no-frame-pointer-elim", "false");
+      FuncAttrs.addAttribute("no-frame-pointer-elim-non-leaf", "true");
     } else {
-      FuncAttrs.addAttribute("no-frame-pointer-elim");
-      FuncAttrs.addAttribute("no-frame-pointer-elim-non-leaf");
+      FuncAttrs.addAttribute("no-frame-pointer-elim", "true");
+      FuncAttrs.addAttribute("no-frame-pointer-elim-non-leaf", "true");
     }
 
-    switch (CodeGenOpts.getFPContractMode()) {
-    case CodeGenOptions::FPC_Off:
-      FuncAttrs.addAttribute("fp-contract-model", "strict");
-      break;
-    case CodeGenOptions::FPC_On:
-      FuncAttrs.addAttribute("fp-contract-model", "standard");
-      break;
-    case CodeGenOptions::FPC_Fast:
-      FuncAttrs.addAttribute("fp-contract-model", "fast");
-      break;
-    }
-
-    if (CodeGenOpts.LessPreciseFPMAD)
-      FuncAttrs.addAttribute("less-precise-fpmad");
-    if (CodeGenOpts.NoInfsFPMath)
-      FuncAttrs.addAttribute("no-infs-fp-math");
-    if (CodeGenOpts.NoNaNsFPMath)
-      FuncAttrs.addAttribute("no-nans-fp-math");
-    if (CodeGenOpts.NoZeroInitializedInBSS)
-      FuncAttrs.addAttribute("no-zero-init-in-bss");
-    if (CodeGenOpts.UnsafeFPMath)
-      FuncAttrs.addAttribute("unsafe-fp-math");
-    if (CodeGenOpts.SoftFloat)
-      FuncAttrs.addAttribute("use-soft-float");
-    if (CodeGenOpts.StackAlignment)
-      FuncAttrs.addAttribute("stack-align-override",
-                             llvm::utostr(CodeGenOpts.StackAlignment));
-    if (CodeGenOpts.StackRealignment)
-      FuncAttrs.addAttribute("realign-stack");
-    if (CodeGenOpts.DisableTailCalls)
-      FuncAttrs.addAttribute("disable-tail-calls");
-    if (!CodeGenOpts.TrapFuncName.empty())
-      FuncAttrs.addAttribute("trap-func-name", CodeGenOpts.TrapFuncName);
-    if (LangOpts.PIELevel != 0)
-      FuncAttrs.addAttribute("pie");
-    if (CodeGenOpts.SSPBufferSize)
-      FuncAttrs.addAttribute("ssp-buffers-size",
-                             llvm::utostr(CodeGenOpts.SSPBufferSize));
+    FuncAttrs.addAttribute("less-precise-fpmad",
+                           CodeGenOpts.LessPreciseFPMAD ? "true" : "false");
+    FuncAttrs.addAttribute("no-infs-fp-math",
+                           CodeGenOpts.NoInfsFPMath ? "true" : "false");
+    FuncAttrs.addAttribute("no-nans-fp-math",
+                           CodeGenOpts.NoNaNsFPMath ? "true" : "false");
+    FuncAttrs.addAttribute("unsafe-fp-math",
+                           CodeGenOpts.UnsafeFPMath ? "true" : "false");
+    FuncAttrs.addAttribute("use-soft-float",
+                           CodeGenOpts.SoftFloat ? "true" : "false");
   }
 
   QualType RetTy = FI.getReturnType();
@@ -1650,6 +1614,18 @@ static llvm::StoreInst *findDominatingStoreToReturnValue(CodeGenFunction &CGF) {
   return store;
 }
 
+/// Check whether 'this' argument of a callsite matches 'this' of the caller.
+static bool checkThisPointer(llvm::Value *ThisArg, llvm::Value *This) {
+  if (ThisArg == This)
+    return true;
+  // Check whether ThisArg is a bitcast of This.
+  llvm::BitCastInst *Bitcast;
+  if ((Bitcast = dyn_cast<llvm::BitCastInst>(ThisArg)) &&
+      Bitcast->getOperand(0) == This)
+    return true;
+  return false;
+}
+
 void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI) {
   // Functions with no result always return void.
   if (ReturnValue == 0) {
@@ -1741,6 +1717,19 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI) {
     llvm_unreachable("Invalid ABI kind for return argument");
   }
 
+  // If this function returns 'this', the last instruction is a CallInst
+  // that returns 'this', and 'this' argument of the CallInst points to
+  // the same object as CXXThisValue, use the return value from the CallInst.
+  // We will not need to keep 'this' alive through the callsite. It also enables
+  // optimizations in the backend, such as tail call optimization.
+  if (CalleeWithThisReturn && CGM.getCXXABI().HasThisReturn(CurGD)) {
+    llvm::BasicBlock *IP = Builder.GetInsertBlock();
+    llvm::CallInst *Callsite;
+    if (!IP->empty() && (Callsite = dyn_cast<llvm::CallInst>(&IP->back())) &&
+        Callsite->getCalledFunction() == CalleeWithThisReturn &&
+        checkThisPointer(Callsite->getOperand(0), CXXThisValue))
+      RV = Builder.CreateBitCast(Callsite, RetAI.getCoerceToType());
+  }
   llvm::Instruction *Ret = RV ? Builder.CreateRet(RV) : Builder.CreateRetVoid();
   if (!RetDbgLoc.isUnknown())
     Ret->setDebugLoc(RetDbgLoc);

@@ -210,7 +210,7 @@ public:
     bool InitiallySuppressed = false;
     if (Options.shouldSuppressNullReturnPaths())
       if (Optional<Loc> RetLoc = RetVal.getAs<Loc>())
-        InitiallySuppressed = !State->assume(*RetLoc, true);
+        InitiallySuppressed = State->isNull(*RetLoc).isConstrainedTrue();
 
     BR.markInteresting(CalleeContext);
     BR.addVisitor(new ReturnVisitor(CalleeContext, InitiallySuppressed));
@@ -270,7 +270,7 @@ public:
 
     // If we can't prove the return value is 0, just mark it interesting, and
     // make sure to track it into any further inner functions.
-    if (State->assume(V.castAs<DefinedSVal>(), true)) {
+    if (!State->isNull(V).isConstrainedTrue()) {
       BR.markInteresting(V);
       ReturnVisitor::addVisitorIfNecessary(N, RetE, BR);
       return 0;
@@ -357,7 +357,7 @@ public:
         continue;
 
       // Is it possible for this argument to be non-null?
-      if (State->assume(*ArgV, true))
+      if (!State->isNull(*ArgV).isConstrainedTrue())
         continue;
 
       if (bugreporter::trackNullOrUndefValue(N, ArgE, BR, /*IsArg=*/true))
@@ -470,6 +470,11 @@ PathDiagnosticPiece *FindLastStoreBRVisitor::VisitNode(const ExplodedNode *Succ,
         IsParam = true;
       }
     }
+
+    // If this is a CXXTempObjectRegion, the Expr responsible for its creation
+    // is wrapped inside of it.
+    if (const CXXTempObjectRegion *TmpR = dyn_cast<CXXTempObjectRegion>(R))
+      InitE = TmpR->getExpr();
   }
 
   if (!StoreSite)
@@ -645,30 +650,36 @@ const char *TrackConstraintBRVisitor::getTag() {
   return "TrackConstraintBRVisitor";
 }
 
+bool TrackConstraintBRVisitor::isUnderconstrained(const ExplodedNode *N) const {
+  if (IsZeroCheck)
+    return N->getState()->isNull(Constraint).isUnderconstrained();
+  return N->getState()->assume(Constraint, !Assumption);
+}
+
 PathDiagnosticPiece *
 TrackConstraintBRVisitor::VisitNode(const ExplodedNode *N,
                                     const ExplodedNode *PrevN,
                                     BugReporterContext &BRC,
                                     BugReport &BR) {
-  if (isSatisfied)
+  if (IsSatisfied)
     return NULL;
 
   // Check if in the previous state it was feasible for this constraint
   // to *not* be true.
-  if (PrevN->getState()->assume(Constraint, !Assumption)) {
+  if (isUnderconstrained(PrevN)) {
 
-    isSatisfied = true;
+    IsSatisfied = true;
 
     // As a sanity check, make sure that the negation of the constraint
     // was infeasible in the current state.  If it is feasible, we somehow
     // missed the transition point.
-    if (N->getState()->assume(Constraint, !Assumption))
+    if (isUnderconstrained(N))
       return NULL;
 
     // We found the transition point for the constraint.  We now need to
     // pretty-print the constraint. (work-in-progress)
-    std::string sbuf;
-    llvm::raw_string_ostream os(sbuf);
+    SmallString<64> sbuf;
+    llvm::raw_svector_ostream os(sbuf);
 
     if (Constraint.getAs<Loc>()) {
       os << "Assuming pointer value is ";
@@ -695,30 +706,27 @@ TrackConstraintBRVisitor::VisitNode(const ExplodedNode *N,
 
 SuppressInlineDefensiveChecksVisitor::
 SuppressInlineDefensiveChecksVisitor(DefinedSVal Value, const ExplodedNode *N)
-  : V(Value), IsSatisfied(false), StartN(N) {
+  : V(Value), IsSatisfied(false), IsTrackingTurnedOn(false) {
 
-  assert(N->getState()->isNull(V).isConstrainedTrue() &&
-         "The visitor only tracks the cases where V is constrained to 0");
+    // Check if the visitor is disabled.
+    SubEngine *Eng = N->getState()->getStateManager().getOwningEngine();
+    assert(Eng && "Cannot file a bug report without an owning engine");
+    AnalyzerOptions &Options = Eng->getAnalysisManager().options;
+    if (!Options.shouldSuppressInlinedDefensiveChecks())
+      IsSatisfied = true;
+
+    assert(N->getState()->isNull(V).isConstrainedTrue() &&
+           "The visitor only tracks the cases where V is constrained to 0");
 }
 
 void SuppressInlineDefensiveChecksVisitor::Profile(FoldingSetNodeID &ID) const {
   static int id = 0;
   ID.AddPointer(&id);
-  ID.AddPointer(StartN);
   ID.Add(V);
 }
 
 const char *SuppressInlineDefensiveChecksVisitor::getTag() {
   return "IDCVisitor";
-}
-
-PathDiagnosticPiece *
-SuppressInlineDefensiveChecksVisitor::getEndPath(BugReporterContext &BRC,
-                                                 const ExplodedNode *N,
-                                                 BugReport &BR) {
-  if (StartN == BR.getErrorNode())
-    StartN = 0;
-  return 0;
 }
 
 PathDiagnosticPiece *
@@ -729,23 +737,19 @@ SuppressInlineDefensiveChecksVisitor::VisitNode(const ExplodedNode *Succ,
   if (IsSatisfied)
     return 0;
 
-  // Start tracking after we see node StartN.
-  if (StartN == Succ)
-    StartN = 0;
-  if (StartN)
-    return 0;
-
-  AnalyzerOptions &Options =
-    BRC.getBugReporter().getEngine().getAnalysisManager().options;
-  if (!Options.shouldSuppressInlinedDefensiveChecks())
+  // Start tracking after we see the first state in which the value is null.
+  if (!IsTrackingTurnedOn)
+    if (Succ->getState()->isNull(V).isConstrainedTrue())
+      IsTrackingTurnedOn = true;
+  if (!IsTrackingTurnedOn)
     return 0;
 
   // Check if in the previous state it was feasible for this value
   // to *not* be null.
-  if (Pred->getState()->assume(V, true)) {
+  if (!Pred->getState()->isNull(V).isConstrainedTrue()) {
     IsSatisfied = true;
 
-    assert(!Succ->getState()->assume(V, true));
+    assert(Succ->getState()->isNull(V).isConstrainedTrue());
 
     // Check if this is inlined defensive checks.
     const LocationContext *CurLC =Succ->getLocationContext();
@@ -756,16 +760,52 @@ SuppressInlineDefensiveChecksVisitor::VisitNode(const ExplodedNode *Succ,
   return 0;
 }
 
-bool bugreporter::trackNullOrUndefValue(const ExplodedNode *ErrorNode,
+static const MemRegion *getLocationRegionIfReference(const Expr *E,
+                                                     const ExplodedNode *N) {
+  if (const DeclRefExpr *DR = dyn_cast<DeclRefExpr>(E)) {
+    if (const VarDecl *VD = dyn_cast<VarDecl>(DR->getDecl())) {
+      if (!VD->getType()->isReferenceType())
+        return 0;
+      ProgramStateManager &StateMgr = N->getState()->getStateManager();
+      MemRegionManager &MRMgr = StateMgr.getRegionManager();
+      return MRMgr.getVarRegion(VD, N->getLocationContext());
+    }
+  }
+
+  // FIXME: This does not handle other kinds of null references,
+  // for example, references from FieldRegions:
+  //   struct Wrapper { int &ref; };
+  //   Wrapper w = { *(int *)0 };
+  //   w.ref = 1;
+
+  return 0;
+}
+
+bool bugreporter::trackNullOrUndefValue(const ExplodedNode *N,
                                         const Stmt *S,
                                         BugReport &report, bool IsArg) {
-  if (!S || !ErrorNode)
+  if (!S || !N)
     return false;
 
+  if (const ExprWithCleanups *EWC = dyn_cast<ExprWithCleanups>(S))
+    S = EWC->getSubExpr();
   if (const OpaqueValueExpr *OVE = dyn_cast<OpaqueValueExpr>(S))
     S = OVE->getSourceExpr();
 
-  const ExplodedNode *N = ErrorNode;
+  // Peel off the ternary operator.
+  if (const Expr *Ex = dyn_cast<Expr>(S)) {
+    Ex = Ex->IgnoreParenCasts();
+    if (const ConditionalOperator *CO = dyn_cast<ConditionalOperator>(Ex)) {
+      ProgramStateRef State = N->getState();
+      SVal CondVal = State->getSVal(CO->getCond(), N->getLocationContext());
+      if (State->isNull(CondVal).isConstrainedTrue()) {
+        S = CO->getTrueExpr();
+      } else {
+        assert(State->isNull(CondVal).isConstrainedFalse());
+        S =  CO->getFalseExpr();
+      }
+    }
+  }
 
   const Expr *Inner = 0;
   if (const Expr *Ex = dyn_cast<Expr>(S)) {
@@ -804,33 +844,37 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *ErrorNode,
   if (Inner && ExplodedGraph::isInterestingLValueExpr(Inner)) {
     const MemRegion *R = 0;
 
-    // First check if this is a DeclRefExpr for a C++ reference type.
-    // For those, we want the location of the reference.
-    if (const DeclRefExpr *DR = dyn_cast<DeclRefExpr>(Inner)) {
-      if (const VarDecl *VD = dyn_cast<VarDecl>(DR->getDecl())) {
-        if (VD->getType()->isReferenceType()) {
-          ProgramStateManager &StateMgr = state->getStateManager();
-          MemRegionManager &MRMgr = StateMgr.getRegionManager();
-          R = MRMgr.getVarRegion(VD, N->getLocationContext());
-        }
+    // Find the ExplodedNode where the lvalue (the value of 'Ex')
+    // was computed.  We need this for getting the location value.
+    const ExplodedNode *LVNode = N;
+    while (LVNode) {
+      if (Optional<PostStmt> P = LVNode->getLocation().getAs<PostStmt>()) {
+        if (P->getStmt() == Inner)
+          break;
       }
+      LVNode = LVNode->getFirstPred();
     }
-
-    // For all other cases, find the location by scouring the ExplodedGraph.
-    if (!R) {
-      // Find the ExplodedNode where the lvalue (the value of 'Ex')
-      // was computed.  We need this for getting the location value.
-      const ExplodedNode *LVNode = N;
-      while (LVNode) {
-        if (Optional<PostStmt> P = LVNode->getLocation().getAs<PostStmt>()) {
-          if (P->getStmt() == Inner)
-            break;
-        }
-        LVNode = LVNode->getFirstPred();
-      }
-      assert(LVNode && "Unable to find the lvalue node.");
-      ProgramStateRef LVState = LVNode->getState();
+    assert(LVNode && "Unable to find the lvalue node.");
+    ProgramStateRef LVState = LVNode->getState();
+    SVal LVal = LVState->getSVal(Inner, LVNode->getLocationContext());
+    
+    if (LVState->isNull(LVal).isConstrainedTrue()) {
+      // In case of C++ references, we want to differentiate between a null
+      // reference and reference to null pointer.
+      // If the LVal is null, check if we are dealing with null reference.
+      // For those, we want to track the location of the reference.
+      if (const MemRegion *RR = getLocationRegionIfReference(Inner, N))
+        R = RR;
+    } else {
       R = LVState->getSVal(Inner, LVNode->getLocationContext()).getAsRegion();
+
+      // If this is a C++ reference to a null pointer, we are tracking the
+      // pointer. In additon, we should find the store at which the reference
+      // got initialized.
+      if (const MemRegion *RR = getLocationRegionIfReference(Inner, N)) {
+        if (Optional<KnownSVal> KV = LVal.getAs<KnownSVal>())
+          report.addVisitor(new FindLastStoreBRVisitor(*KV, RR));
+      }
     }
 
     if (R) {
@@ -869,10 +913,10 @@ bool bugreporter::trackNullOrUndefValue(const ExplodedNode *ErrorNode,
         report.addVisitor(ConstraintTracker);
 
         // Add visitor, which will suppress inline defensive checks.
-        if (ErrorNode->getState()->isNull(V).isConstrainedTrue()) {
+        if (N->getState()->isNull(V).isConstrainedTrue()) {
           BugReporterVisitor *IDCSuppressor =
             new SuppressInlineDefensiveChecksVisitor(V.castAs<DefinedSVal>(),
-                                                     ErrorNode);
+                                                     N);
           report.addVisitor(IDCSuppressor);
         }
       }
@@ -938,13 +982,10 @@ PathDiagnosticPiece *NilReceiverBRVisitor::VisitNode(const ExplodedNode *N,
   const Expr *Receiver = ME->getInstanceReceiver();
   if (!Receiver)
     return 0;
+
   ProgramStateRef state = N->getState();
-  const SVal &V = state->getSVal(Receiver, N->getLocationContext());
-  Optional<DefinedOrUnknownSVal> DV = V.getAs<DefinedOrUnknownSVal>();
-  if (!DV)
-    return 0;
-  state = state->assume(*DV, true);
-  if (state)
+  SVal V = state->getSVal(Receiver, N->getLocationContext());
+  if (!state->isNull(V).isConstrainedTrue())
     return 0;
 
   // The receiver was nil, and hence the method was skipped.

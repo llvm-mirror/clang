@@ -262,9 +262,9 @@ unsigned CGDebugInfo::getLineNumber(SourceLocation Loc) {
 }
 
 /// getColumnNumber - Get column number for the location.
-unsigned CGDebugInfo::getColumnNumber(SourceLocation Loc) {
+unsigned CGDebugInfo::getColumnNumber(SourceLocation Loc, bool Force) {
   // We may not want column information at all.
-  if (!CGM.getCodeGenOpts().DebugColumnInfo)
+  if (!Force && !CGM.getCodeGenOpts().DebugColumnInfo)
     return 0;
 
   // If the location is invalid then use the current column.
@@ -1872,9 +1872,9 @@ llvm::DIType CGDebugInfo::getOrCreateType(QualType Ty, llvm::DIFile Unit) {
       TC = llvm::DIType(cast<llvm::MDNode>(it->second.first));
     else
       TC = DBuilder.createForwardDecl(llvm::dwarf::DW_TAG_structure_type,
-				      Decl->getName(), TheCU, Unit,
-				      getLineNumber(Decl->getLocation()),
-				      TheCU.getLanguage());
+                                      Decl->getName(), TheCU, Unit,
+                                      getLineNumber(Decl->getLocation()),
+                                      TheCU.getLanguage());
     // Store the forward declaration in the cache.
     ObjCInterfaceCache[TyPtr] = std::make_pair(TC, Checksum(Decl));
 
@@ -1891,7 +1891,7 @@ llvm::DIType CGDebugInfo::getOrCreateType(QualType Ty, llvm::DIFile Unit) {
 
 /// Currently the checksum merely consists of the number of ivars.
 unsigned CGDebugInfo::Checksum(const ObjCInterfaceDecl
-			       *InterfaceDecl) {
+                               *InterfaceDecl) {
   unsigned IvarNo = 0;
   for (const ObjCIvarDecl *Ivar = InterfaceDecl->all_declared_ivar_begin();
        Ivar != 0; Ivar = Ivar->getNextIvar()) ++IvarNo;
@@ -2055,7 +2055,7 @@ llvm::DIType CGDebugInfo::CreateLimitedType(const RecordType *Ty) {
                                         llvm::DIArray());
   } else
     RealDecl = DBuilder.createStructType(RDContext, RDName, DefUnit, Line,
-					 Size, Align, 0, llvm::DIType(), llvm::DIArray());
+                                         Size, Align, 0, llvm::DIType(), llvm::DIArray());
 
   RegionMap[Ty->getDecl()] = llvm::WeakVH(RealDecl);
   TypeCache[QualType(Ty, 0).getAsOpaquePtr()] = llvm::DIType(RealDecl);
@@ -2224,13 +2224,18 @@ void CGDebugInfo::EmitFunctionStart(GlobalDecl GD, QualType FnType,
       }
     }
     Name = getFunctionName(FD);
-    // Use mangled name as linkage name for c/c++ functions.
+    // Use mangled name as linkage name for C/C++ functions.
     if (FD->hasPrototype()) {
       LinkageName = CGM.getMangledName(GD);
       Flags |= llvm::DIDescriptor::FlagPrototyped;
     }
+    // No need to replicate the linkage name if it isn't different from the
+    // subprogram name, no need to have it at all unless coverage is enabled or
+    // debug is set to more than just line tables.
     if (LinkageName == Name ||
-        CGM.getCodeGenOpts().getDebugInfo() <= CodeGenOptions::DebugLineTablesOnly)
+        (!CGM.getCodeGenOpts().EmitGcovArcs &&
+         !CGM.getCodeGenOpts().EmitGcovNotes &&
+         CGM.getCodeGenOpts().getDebugInfo() <= CodeGenOptions::DebugLineTablesOnly))
       LinkageName = StringRef();
 
     if (CGM.getCodeGenOpts().getDebugInfo() >= CodeGenOptions::LimitedDebugInfo) {
@@ -2291,7 +2296,8 @@ void CGDebugInfo::EmitFunctionStart(GlobalDecl GD, QualType FnType,
 
 /// EmitLocation - Emit metadata to indicate a change in line/column
 /// information in the source file.
-void CGDebugInfo::EmitLocation(CGBuilderTy &Builder, SourceLocation Loc) {
+void CGDebugInfo::EmitLocation(CGBuilderTy &Builder, SourceLocation Loc,
+                               bool ForceColumnInfo) {
   
   // Update our current location
   setLocation(Loc);
@@ -2312,9 +2318,10 @@ void CGDebugInfo::EmitLocation(CGBuilderTy &Builder, SourceLocation Loc) {
   PrevLoc = CurLoc;
 
   llvm::MDNode *Scope = LexicalBlockStack.back();
-  Builder.SetCurrentDebugLocation(llvm::DebugLoc::get(getLineNumber(CurLoc),
-                                                      getColumnNumber(CurLoc),
-                                                      Scope));
+  Builder.SetCurrentDebugLocation(llvm::DebugLoc::get
+                                  (getLineNumber(CurLoc),
+                                   getColumnNumber(CurLoc, ForceColumnInfo),
+                                   Scope));
 }
 
 /// CreateLexicalBlock - Creates a new lexical block node and pushes it on
@@ -2678,7 +2685,8 @@ namespace {
 }
 
 void CGDebugInfo::EmitDeclareOfBlockLiteralArgVariable(const CGBlockInfo &block,
-                                                       llvm::Value *addr,
+                                                       llvm::Value *Arg,
+                                                       llvm::Value *LocalAddr,
                                                        CGBuilderTy &Builder) {
   assert(CGM.getCodeGenOpts().getDebugInfo() >= CodeGenOptions::LimitedDebugInfo);
   ASTContext &C = CGM.getContext();
@@ -2805,21 +2813,27 @@ void CGDebugInfo::EmitDeclareOfBlockLiteralArgVariable(const CGBlockInfo &block,
   // Get overall information about the block.
   unsigned flags = llvm::DIDescriptor::FlagArtificial;
   llvm::MDNode *scope = LexicalBlockStack.back();
-  StringRef name = ".block_descriptor";
 
   // Create the descriptor for the parameter.
   llvm::DIVariable debugVar =
     DBuilder.createLocalVariable(llvm::dwarf::DW_TAG_arg_variable,
                                  llvm::DIDescriptor(scope), 
-                                 name, tunit, line, type, 
+                                 Arg->getName(), tunit, line, type,
                                  CGM.getLangOpts().Optimize, flags,
-                                 cast<llvm::Argument>(addr)->getArgNo() + 1);
-    
-  // Insert an llvm.dbg.value into the current block.
-  llvm::Instruction *declare =
-    DBuilder.insertDbgValueIntrinsic(addr, 0, debugVar,
-                                     Builder.GetInsertBlock());
-  declare->setDebugLoc(llvm::DebugLoc::get(line, column, scope));
+                                 cast<llvm::Argument>(Arg)->getArgNo() + 1);
+
+  if (LocalAddr) {
+    // Insert an llvm.dbg.value into the current block.
+    llvm::Instruction *DbgVal =
+      DBuilder.insertDbgValueIntrinsic(LocalAddr, 0, debugVar,
+				       Builder.GetInsertBlock());
+    DbgVal->setDebugLoc(llvm::DebugLoc::get(line, column, scope));
+  }
+
+  // Insert an llvm.dbg.declare into the current block.
+  llvm::Instruction *DbgDecl =
+    DBuilder.insertDeclare(Arg, debugVar, Builder.GetInsertBlock());
+  DbgDecl->setDebugLoc(llvm::DebugLoc::get(line, column, scope));
 }
 
 /// getStaticDataMemberDeclaration - If D is an out-of-class definition of

@@ -146,11 +146,12 @@ public:
   void enqueueEndOfPath(ExplodedNodeSet &S);
   void GenerateCallExitNode(ExplodedNode *N);
 
-  /// ViewGraph - Visualize the ExplodedGraph created by executing the
-  ///  simulation.
+  /// Visualize the ExplodedGraph created by executing the simulation.
   void ViewGraph(bool trim = false);
 
-  void ViewGraph(ExplodedNode** Beg, ExplodedNode** End);
+  /// Visualize a trimmed ExplodedGraph that only contains paths to the given
+  /// nodes.
+  void ViewGraph(ArrayRef<const ExplodedNode*> Nodes);
 
   /// getInitialState - Return the initial state used for the root vertex
   ///  in the ExplodedGraph.
@@ -552,9 +553,10 @@ private:
 
   bool replayWithoutInlining(ExplodedNode *P, const LocationContext *CalleeLC);
 
-  /// Models a trivial copy or move constructor call with a simple bind.
+  /// Models a trivial copy or move constructor or trivial assignment operator
+  /// call with a simple bind.
   void performTrivialCopy(NodeBuilder &Bldr, ExplodedNode *Pred,
-                          const CXXConstructorCall &Call);
+                          const CallEvent &Call);
 
   /// If the value of the given expression is a NonLoc, copy it into a new
   /// temporary object region, and replace the value of the expression with
