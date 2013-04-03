@@ -1138,6 +1138,18 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
   BlockPointer = Builder.CreateBitCast(blockAddr,
                                        blockInfo.StructureType->getPointerTo(),
                                        "block");
+  // At -O0 we generate an explicit alloca for the BlockPointer, so the RA
+  // won't delete the dbg.declare intrinsics for captured variables.
+  llvm::Value *BlockPointerDbgLoc = BlockPointer;
+  if (CGM.getCodeGenOpts().OptimizationLevel == 0) {
+    // Allocate a stack slot for it, so we can point the debugger to it
+    llvm::AllocaInst *Alloca = CreateTempAlloca(BlockPointer->getType(),
+                                                "block.addr");
+    unsigned Align = getContext().getDeclAlign(&selfDecl).getQuantity();
+    Alloca->setAlignment(Align);
+    Builder.CreateAlignedStore(BlockPointer, Alloca, Align);
+    BlockPointerDbgLoc = Alloca;
+  }
 
   // If we have a C++ 'this' reference, go ahead and force it into
   // existence now.
@@ -1157,6 +1169,7 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
     // There might not be a capture for 'self', but if there is...
     if (blockInfo.Captures.count(self)) {
       const CGBlockInfo::Capture &capture = blockInfo.getCapture(self);
+
       llvm::Value *selfAddr = Builder.CreateStructGEP(BlockPointer,
                                                       capture.getIndex(),
                                                       "block.captured-self");
@@ -1177,7 +1190,7 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
       CreateMemTemp(variable->getType(), "block.captured-const");
     alloca->setAlignment(align);
 
-    Builder.CreateStore(capture.getConstant(), alloca, align);
+    Builder.CreateAlignedStore(capture.getConstant(), alloca, align);
 
     LocalDeclMap[variable] = alloca;
   }
@@ -1216,7 +1229,7 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
           continue;
         }
 
-        DI->EmitDeclareOfBlockDeclRefVariable(variable, BlockPointer,
+        DI->EmitDeclareOfBlockDeclRefVariable(variable, BlockPointerDbgLoc,
                                               Builder, blockInfo);
       }
     }
@@ -1547,7 +1560,7 @@ CodeGenFunction::GenerateDestroyHelperFunction(const CGBlockInfo &blockInfo) {
 
     // Destroy strong objects with a call if requested.
     } else if (useARCStrongDestroy) {
-      EmitARCDestroyStrong(srcField, /*precise*/ false);
+      EmitARCDestroyStrong(srcField, ARCImpreciseLifetime);
 
     // Otherwise we call _Block_object_dispose.  It wouldn't be too
     // hard to just emit this as a cleanup if we wanted to make sure
@@ -1656,7 +1669,7 @@ public:
   }
 
   void emitDispose(CodeGenFunction &CGF, llvm::Value *field) {
-    CGF.EmitARCDestroyStrong(field, /*precise*/ false);
+    CGF.EmitARCDestroyStrong(field, ARCImpreciseLifetime);
   }
 
   void profileImpl(llvm::FoldingSetNodeID &id) const {
@@ -1686,7 +1699,7 @@ public:
   }
 
   void emitDispose(CodeGenFunction &CGF, llvm::Value *field) {
-    CGF.EmitARCDestroyStrong(field, /*precise*/ false);
+    CGF.EmitARCDestroyStrong(field, ARCImpreciseLifetime);
   }
 
   void profileImpl(llvm::FoldingSetNodeID &id) const {

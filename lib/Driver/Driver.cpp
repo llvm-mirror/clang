@@ -126,6 +126,7 @@ const {
 
     // -{fsyntax-only,-analyze,emit-ast,S} only run up to the compiler.
   } else if ((PhaseArg = DAL.getLastArg(options::OPT_fsyntax_only)) ||
+             (PhaseArg = DAL.getLastArg(options::OPT_module_file_info)) ||
              (PhaseArg = DAL.getLastArg(options::OPT_rewrite_objc)) ||
              (PhaseArg = DAL.getLastArg(options::OPT_rewrite_legacy_objc)) ||
              (PhaseArg = DAL.getLastArg(options::OPT__migrate)) ||
@@ -290,6 +291,9 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
     SysRoot = A->getValue();
   if (Args->hasArg(options::OPT_nostdlib))
     UseStdLib = false;
+
+  if (const Arg *A = Args->getLastArg(options::OPT_resource_dir))
+    ResourceDir = A->getValue();
 
   // Perform the default argument translations.
   DerivedArgList *TranslatedArgs = TranslateInputArgs(*Args);
@@ -1167,6 +1171,8 @@ Action *Driver::ConstructPhaseAction(const ArgList &Args, phases::ID Phase,
       return new MigrateJobAction(Input, types::TY_Remap);
     } else if (Args.hasArg(options::OPT_emit_ast)) {
       return new CompileJobAction(Input, types::TY_AST);
+    } else if (Args.hasArg(options::OPT_module_file_info)) {
+      return new CompileJobAction(Input, types::TY_ModuleFile);
     } else if (IsUsingLTO(Args)) {
       types::ID Output =
         Args.hasArg(options::OPT_S) ? types::TY_LTO_IR : types::TY_LTO_BC;
@@ -1285,7 +1291,7 @@ void Driver::BuildJobs(Compilation &C) const {
   }
 }
 
-static const Tool &SelectToolForJob(Compilation &C, const ToolChain *TC,
+static const Tool *SelectToolForJob(Compilation &C, const ToolChain *TC,
                                     const JobAction *JA,
                                     const ActionList *&Inputs) {
   const Tool *ToolForJob = 0;
@@ -1294,23 +1300,23 @@ static const Tool &SelectToolForJob(Compilation &C, const ToolChain *TC,
   // bottom up, so what we are actually looking for is an assembler job with a
   // compiler input.
 
-  if (C.getArgs().hasFlag(options::OPT_integrated_as,
-                          options::OPT_no_integrated_as,
-                          TC->IsIntegratedAssemblerDefault()) &&
+  if (TC->useIntegratedAs() &&
       !C.getArgs().hasArg(options::OPT_save_temps) &&
       isa<AssembleJobAction>(JA) &&
       Inputs->size() == 1 && isa<CompileJobAction>(*Inputs->begin())) {
-    const Tool &Compiler = TC->SelectTool(
-      C, cast<JobAction>(**Inputs->begin()), (*Inputs)[0]->getInputs());
-    if (Compiler.hasIntegratedAssembler()) {
+    const Tool *Compiler =
+      TC->SelectTool(cast<JobAction>(**Inputs->begin()));
+    if (!Compiler)
+      return NULL;
+    if (Compiler->hasIntegratedAssembler()) {
       Inputs = &(*Inputs)[0]->getInputs();
-      ToolForJob = &Compiler;
+      ToolForJob = Compiler;
     }
   }
 
   // Otherwise use the tool for the current job.
   if (!ToolForJob)
-    ToolForJob = &TC->SelectTool(C, *JA, *Inputs);
+    ToolForJob = TC->SelectTool(*JA);
 
   // See if we should use an integrated preprocessor. We do so when we have
   // exactly one input, since this is the only use case we care about
@@ -1323,7 +1329,7 @@ static const Tool &SelectToolForJob(Compilation &C, const ToolChain *TC,
       ToolForJob->hasIntegratedCPP())
     Inputs = &(*Inputs)[0]->getInputs();
 
-  return *ToolForJob;
+  return ToolForJob;
 }
 
 void Driver::BuildJobsForAction(Compilation &C,
@@ -1365,7 +1371,9 @@ void Driver::BuildJobsForAction(Compilation &C,
   const ActionList *Inputs = &A->getInputs();
 
   const JobAction *JA = cast<JobAction>(A);
-  const Tool &T = SelectToolForJob(C, TC, JA, Inputs);
+  const Tool *T = SelectToolForJob(C, TC, JA, Inputs);
+  if (!T)
+    return;
 
   // Only use pipes when there is exactly one input.
   InputInfoList InputInfos;
@@ -1400,8 +1408,8 @@ void Driver::BuildJobsForAction(Compilation &C,
                        A->getType(), BaseInput);
 
   if (CCCPrintBindings && !CCGenDiagnostics) {
-    llvm::errs() << "# \"" << T.getToolChain().getTripleString() << '"'
-                 << " - \"" << T.getName() << "\", inputs: [";
+    llvm::errs() << "# \"" << T->getToolChain().getTripleString() << '"'
+                 << " - \"" << T->getName() << "\", inputs: [";
     for (unsigned i = 0, e = InputInfos.size(); i != e; ++i) {
       llvm::errs() << InputInfos[i].getAsString();
       if (i + 1 != e)
@@ -1409,8 +1417,8 @@ void Driver::BuildJobsForAction(Compilation &C,
     }
     llvm::errs() << "], output: " << Result.getAsString() << "\n";
   } else {
-    T.ConstructJob(C, *JA, Result, InputInfos,
-                   C.getArgsForToolChain(TC, BoundArch), LinkingOutput);
+    T->ConstructJob(C, *JA, Result, InputInfos,
+                    C.getArgsForToolChain(TC, BoundArch), LinkingOutput);
   }
 }
 
@@ -1427,7 +1435,8 @@ const char *Driver::GetNamedOutputPath(Compilation &C,
   }
 
   // Default to writing to stdout?
-  if (AtTopLevel && isa<PreprocessJobAction>(JA) && !CCGenDiagnostics)
+  if (AtTopLevel && !CCGenDiagnostics &&
+      (isa<PreprocessJobAction>(JA) || JA.getType() == types::TY_ModuleFile))
     return "-";
 
   // Output to a temporary file?
@@ -1644,6 +1653,21 @@ static llvm::Triple computeTargetTriple(StringRef DefaultTargetTriple,
     }
   }
 
+  // Handle pseudo-target flags '-EL' and '-EB'.
+  if (Arg *A = Args.getLastArg(options::OPT_EL, options::OPT_EB)) {
+    if (A->getOption().matches(options::OPT_EL)) {
+      if (Target.getArch() == llvm::Triple::mips)
+        Target.setArch(llvm::Triple::mipsel);
+      else if (Target.getArch() == llvm::Triple::mips64)
+        Target.setArch(llvm::Triple::mips64el);
+    } else {
+      if (Target.getArch() == llvm::Triple::mipsel)
+        Target.setArch(llvm::Triple::mips);
+      else if (Target.getArch() == llvm::Triple::mips64el)
+        Target.setArch(llvm::Triple::mips64);
+    }
+  }
+
   // Skip further flag support on OSes which don't support '-m32' or '-m64'.
   if (Target.getArchName() == "tce" ||
       Target.getOS() == llvm::Triple::AuroraUX ||
@@ -1687,7 +1711,7 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
           Target.getArch() == llvm::Triple::x86_64 ||
           Target.getArch() == llvm::Triple::arm ||
           Target.getArch() == llvm::Triple::thumb)
-        TC = new toolchains::DarwinClang(*this, Target);
+        TC = new toolchains::DarwinClang(*this, Target, Args);
       else
         TC = new toolchains::Darwin_Generic_GCC(*this, Target, Args);
       break;
@@ -1719,17 +1743,21 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
       TC = new toolchains::Solaris(*this, Target, Args);
       break;
     case llvm::Triple::Win32:
-      TC = new toolchains::Windows(*this, Target);
+      TC = new toolchains::Windows(*this, Target, Args);
       break;
     case llvm::Triple::MinGW32:
       // FIXME: We need a MinGW toolchain. Fallthrough for now.
     default:
       // TCE is an OSless target
       if (Target.getArchName() == "tce") {
-        TC = new toolchains::TCEToolChain(*this, Target);
+        TC = new toolchains::TCEToolChain(*this, Target, Args);
         break;
       }
-
+      // If Hexagon is configured as an OSless target
+      if (Target.getArch() == llvm::Triple::hexagon) {
+        TC = new toolchains::Hexagon_TC(*this, Target, Args);
+        break;
+      }
       TC = new toolchains::Generic_GCC(*this, Target, Args);
       break;
     }
@@ -1737,8 +1765,7 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
   return *TC;
 }
 
-bool Driver::ShouldUseClangCompiler(const Compilation &C, const JobAction &JA,
-                                    const llvm::Triple &Triple) const {
+bool Driver::ShouldUseClangCompiler(const JobAction &JA) const {
   // Check if user requested no clang, or clang doesn't understand this type (we
   // only handle single inputs for now).
   if (JA.size() != 1 ||

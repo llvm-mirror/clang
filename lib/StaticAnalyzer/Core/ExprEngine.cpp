@@ -1344,6 +1344,34 @@ void ExprEngine::processBranch(const Stmt *Condition, const Stmt *Term,
   currBldrCtx = 0;
 }
 
+/// The GDM component containing the set of global variables which have been
+/// previously initialized with explicit initializers.
+REGISTER_TRAIT_WITH_PROGRAMSTATE(InitializedGlobalsSet,
+                                 llvm::ImmutableSet<const VarDecl *>)
+
+void ExprEngine::processStaticInitializer(const DeclStmt *DS,
+                                          NodeBuilderContext &BuilderCtx,
+                                          ExplodedNode *Pred,
+                                          clang::ento::ExplodedNodeSet &Dst,
+                                          const CFGBlock *DstT,
+                                          const CFGBlock *DstF) {
+  currBldrCtx = &BuilderCtx;
+
+  const VarDecl *VD = cast<VarDecl>(DS->getSingleDecl());
+  ProgramStateRef state = Pred->getState();
+  bool initHasRun = state->contains<InitializedGlobalsSet>(VD);
+  BranchNodeBuilder builder(Pred, Dst, BuilderCtx, DstT, DstF);
+
+  if (!initHasRun) {
+    state = state->add<InitializedGlobalsSet>(VD);
+  }
+
+  builder.generateNode(state, initHasRun, Pred);
+  builder.markInfeasible(!initHasRun);
+
+  currBldrCtx = 0;
+}
+
 /// processIndirectGoto - Called by CoreEngine.  Used to generate successor
 ///  nodes by processing the 'effects' of a computed goto jump.
 void ExprEngine::processIndirectGoto(IndirectGotoNodeBuilder &builder) {
@@ -1692,12 +1720,6 @@ ProgramStateRef ExprEngine::processPointerEscapedOnBind(ProgramStateRef State,
       if (StoredVal != Val)
         escapes = (State == (State->bindLoc(*regionLoc, Val)));
     }
-    if (!escapes) {
-      // Case 4: We do not currently model what happens when a symbol is
-      // assigned to a struct field, so be conservative here and let the symbol
-      // go. TODO: This could definitely be improved upon.
-      escapes = !isa<VarRegion>(regionLoc->getRegion());
-    }
   }
 
   // If our store can represent the binding and we aren't storing to something
@@ -1720,11 +1742,12 @@ ProgramStateRef ExprEngine::processPointerEscapedOnBind(ProgramStateRef State,
 }
 
 ProgramStateRef 
-ExprEngine::processPointerEscapedOnInvalidateRegions(ProgramStateRef State,
+ExprEngine::notifyCheckersOfPointerEscape(ProgramStateRef State,
     const InvalidatedSymbols *Invalidated,
     ArrayRef<const MemRegion *> ExplicitRegions,
     ArrayRef<const MemRegion *> Regions,
-    const CallEvent *Call) {
+    const CallEvent *Call,
+    bool IsConst) {
   
   if (!Invalidated || Invalidated->empty())
     return State;
@@ -1734,7 +1757,17 @@ ExprEngine::processPointerEscapedOnInvalidateRegions(ProgramStateRef State,
                                                            *Invalidated,
                                                            0,
                                                            PSK_EscapeOther);
-    
+
+  // Note: Due to current limitations of RegionStore, we only process the top
+  // level const pointers correctly. The lower level const pointers are
+  // currently treated as non-const.
+  if (IsConst)
+    return getCheckerManager().runCheckersForPointerEscape(State,
+                                                        *Invalidated,
+                                                        Call,
+                                                        PSK_DirectEscapeOnCall,
+                                                        true);
+
   // If the symbols were invalidated by a call, we want to find out which ones 
   // were invalidated directly due to being arguments to the call.
   InvalidatedSymbols SymbolsDirectlyInvalidated;
@@ -2161,54 +2194,27 @@ struct DOTGraphTraits<ExplodedNode*> :
         break;
       }
 
-      default: {
-        if (Optional<StmtPoint> L = Loc.getAs<StmtPoint>()) {
-          const Stmt *S = L->getStmt();
-
-          Out << S->getStmtClassName() << ' ' << (const void*) S << ' ';
+      case ProgramPoint::PostInitializerKind: {
+        Out << "PostInitializer: ";
+        const CXXCtorInitializer *Init =
+          Loc.castAs<PostInitializer>().getInitializer();
+        if (const FieldDecl *FD = Init->getAnyMember())
+          Out << *FD;
+        else {
+          QualType Ty = Init->getTypeSourceInfo()->getType();
+          Ty = Ty.getLocalUnqualifiedType();
           LangOptions LO; // FIXME.
-          S->printPretty(Out, 0, PrintingPolicy(LO));
-          printLocation(Out, S->getLocStart());
-
-          if (Loc.getAs<PreStmt>())
-            Out << "\\lPreStmt\\l;";
-          else if (Loc.getAs<PostLoad>())
-            Out << "\\lPostLoad\\l;";
-          else if (Loc.getAs<PostStore>())
-            Out << "\\lPostStore\\l";
-          else if (Loc.getAs<PostLValue>())
-            Out << "\\lPostLValue\\l";
-
-#if 0
-            // FIXME: Replace with a general scheme to determine
-            // the name of the check.
-          if (GraphPrintCheckerState->isImplicitNullDeref(N))
-            Out << "\\|Implicit-Null Dereference.\\l";
-          else if (GraphPrintCheckerState->isExplicitNullDeref(N))
-            Out << "\\|Explicit-Null Dereference.\\l";
-          else if (GraphPrintCheckerState->isUndefDeref(N))
-            Out << "\\|Dereference of undefialied value.\\l";
-          else if (GraphPrintCheckerState->isUndefStore(N))
-            Out << "\\|Store to Undefined Loc.";
-          else if (GraphPrintCheckerState->isUndefResult(N))
-            Out << "\\|Result of operation is undefined.";
-          else if (GraphPrintCheckerState->isNoReturnCall(N))
-            Out << "\\|Call to function marked \"noreturn\".";
-          else if (GraphPrintCheckerState->isBadCall(N))
-            Out << "\\|Call to NULL/Undefined.";
-          else if (GraphPrintCheckerState->isUndefArg(N))
-            Out << "\\|Argument in call is undefined";
-#endif
-
-          break;
+          Ty.print(Out, LO);
         }
+        break;
+      }
 
+      case ProgramPoint::BlockEdgeKind: {
         const BlockEdge &E = Loc.castAs<BlockEdge>();
         Out << "Edge: (B" << E.getSrc()->getBlockID() << ", B"
             << E.getDst()->getBlockID()  << ')';
 
         if (const Stmt *T = E.getSrc()->getTerminator()) {
-
           SourceLocation SLoc = T->getLocStart();
 
           Out << "\\|Terminator: ";
@@ -2267,6 +2273,48 @@ struct DOTGraphTraits<ExplodedNode*> :
           Out << "\\|Control-flow based on\\lUndefined value.\\l";
         }
 #endif
+        break;
+      }
+
+      default: {
+        const Stmt *S = Loc.castAs<StmtPoint>().getStmt();
+
+        Out << S->getStmtClassName() << ' ' << (const void*) S << ' ';
+        LangOptions LO; // FIXME.
+        S->printPretty(Out, 0, PrintingPolicy(LO));
+        printLocation(Out, S->getLocStart());
+
+        if (Loc.getAs<PreStmt>())
+          Out << "\\lPreStmt\\l;";
+        else if (Loc.getAs<PostLoad>())
+          Out << "\\lPostLoad\\l;";
+        else if (Loc.getAs<PostStore>())
+          Out << "\\lPostStore\\l";
+        else if (Loc.getAs<PostLValue>())
+          Out << "\\lPostLValue\\l";
+
+#if 0
+          // FIXME: Replace with a general scheme to determine
+          // the name of the check.
+        if (GraphPrintCheckerState->isImplicitNullDeref(N))
+          Out << "\\|Implicit-Null Dereference.\\l";
+        else if (GraphPrintCheckerState->isExplicitNullDeref(N))
+          Out << "\\|Explicit-Null Dereference.\\l";
+        else if (GraphPrintCheckerState->isUndefDeref(N))
+          Out << "\\|Dereference of undefialied value.\\l";
+        else if (GraphPrintCheckerState->isUndefStore(N))
+          Out << "\\|Store to Undefined Loc.";
+        else if (GraphPrintCheckerState->isUndefResult(N))
+          Out << "\\|Result of operation is undefined.";
+        else if (GraphPrintCheckerState->isNoReturnCall(N))
+          Out << "\\|Call to function marked \"noreturn\".";
+        else if (GraphPrintCheckerState->isBadCall(N))
+          Out << "\\|Call to NULL/Undefined.";
+        else if (GraphPrintCheckerState->isUndefArg(N))
+          Out << "\\|Argument in call is undefined";
+#endif
+
+        break;
       }
     }
 
@@ -2301,7 +2349,7 @@ GetGraphNode<llvm::DenseMap<ExplodedNode*, Expr*>::iterator>
 void ExprEngine::ViewGraph(bool trim) {
 #ifndef NDEBUG
   if (trim) {
-    std::vector<ExplodedNode*> Src;
+    std::vector<const ExplodedNode*> Src;
 
     // Flush any outstanding reports to make sure we cover all the nodes.
     // This does not cause them to get displayed.
@@ -2315,7 +2363,7 @@ void ExprEngine::ViewGraph(bool trim) {
       if (N) Src.push_back(N);
     }
 
-    ViewGraph(&Src[0], &Src[0]+Src.size());
+    ViewGraph(Src);
   }
   else {
     GraphPrintCheckerState = this;
@@ -2329,12 +2377,12 @@ void ExprEngine::ViewGraph(bool trim) {
 #endif
 }
 
-void ExprEngine::ViewGraph(ExplodedNode** Beg, ExplodedNode** End) {
+void ExprEngine::ViewGraph(ArrayRef<const ExplodedNode*> Nodes) {
 #ifndef NDEBUG
   GraphPrintCheckerState = this;
   GraphPrintSourceManager = &getContext().getSourceManager();
 
-  std::auto_ptr<ExplodedGraph> TrimmedG(G.Trim(Beg, End).first);
+  OwningPtr<ExplodedGraph> TrimmedG(G.trim(Nodes));
 
   if (!TrimmedG.get())
     llvm::errs() << "warning: Trimmed ExplodedGraph is empty.\n";

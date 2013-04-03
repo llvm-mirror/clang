@@ -183,3 +183,12 @@ module cxx_inline_namespace {
 module cxx_linkage_cache {
   header "cxx-linkage-cache.h"
 }
+
+module config {
+  header "config.h"
+  config_macros [exhaustive] WANT_FOO, WANT_BAR
+}
+
+module diag_pragma {
+  header "diag_pragma.h"
+}

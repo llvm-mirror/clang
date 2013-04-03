@@ -86,6 +86,7 @@ CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
     NSConcreteGlobalBlock(0), NSConcreteStackBlock(0),
     BlockObjectAssign(0), BlockObjectDispose(0),
     BlockDescriptorType(0), GenericBlockLiteralType(0),
+    LifetimeStartFn(0), LifetimeEndFn(0),
     SanitizerBlacklist(CGO.SanitizerBlacklistFile),
     SanOpts(SanitizerBlacklist.isIn(M) ?
             SanitizerOptions::Disabled : LangOpts.Sanitize) {
@@ -656,7 +657,9 @@ void CodeGenModule::SetCommonAttributes(const Decl *D,
   if (const SectionAttr *SA = D->getAttr<SectionAttr>())
     GV->setSection(SA->getName());
 
-  getTargetCodeGenInfo().SetTargetAttributes(D, GV, *this);
+  // Alias cannot have attributes. Filter them here.
+  if (!isa<llvm::GlobalAlias>(GV))
+    getTargetCodeGenInfo().SetTargetAttributes(D, GV, *this);
 }
 
 void CodeGenModule::SetInternalFunctionAttributes(const Decl *D,

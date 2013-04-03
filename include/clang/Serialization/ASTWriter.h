@@ -18,7 +18,6 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclarationName.h"
 #include "clang/AST/TemplateBase.h"
-#include "clang/Lex/PPMutationListener.h"
 #include "clang/Sema/SemaConsumer.h"
 #include "clang/Serialization/ASTBitCodes.h"
 #include "clang/Serialization/ASTDeserializationListener.h"
@@ -48,12 +47,14 @@ class CXXCtorInitializer;
 class FileEntry;
 class FPOptions;
 class HeaderSearch;
+class HeaderSearchOptions;
 class IdentifierResolver;
 class MacroDefinition;
+class MacroDirective;
+class MacroInfo;
 class OpaqueValueExpr;
 class OpenCLOptions;
 class ASTReader;
-class MacroDirective;
 class Module;
 class PreprocessedEntity;
 class PreprocessingRecord;
@@ -74,7 +75,6 @@ namespace SrcMgr { class SLocEntry; }
 /// data structures. This bitstream can be de-serialized via an
 /// instance of the ASTReader class.
 class ASTWriter : public ASTDeserializationListener,
-                  public PPMutationListener,
                   public ASTMutationListener {
 public:
   typedef SmallVector<uint64_t, 64> RecordData;
@@ -230,7 +230,17 @@ private:
   serialization::MacroID NextMacroID;
 
   /// \brief Map that provides the ID numbers of each macro.
-  llvm::DenseMap<MacroDirective *, serialization::MacroID> MacroIDs;
+  llvm::DenseMap<MacroInfo *, serialization::MacroID> MacroIDs;
+
+  struct MacroInfoToEmitData {
+    const IdentifierInfo *Name;
+    MacroInfo *MI;
+    serialization::MacroID ID;
+  };
+  /// \brief The macro infos to emit.
+  std::vector<MacroInfoToEmitData> MacroInfosToEmit;
+
+  llvm::DenseMap<const IdentifierInfo *, uint64_t> IdentMacroDirectivesOffsetMap;
 
   /// @name FlushStmt Caches
   /// @{
@@ -266,11 +276,6 @@ private:
   /// \brief Offset of each selector within the method pool/selector
   /// table, indexed by the Selector ID (-1).
   std::vector<uint32_t> SelectorOffsets;
-
-  typedef llvm::MapVector<MacroDirective *, MacroUpdate> MacroUpdatesMap;
-
-  /// \brief Updates to macro definitions that were loaded from an AST file.
-  MacroUpdatesMap MacroUpdates;
 
   /// \brief Mapping from macro definitions (as they occur in the preprocessing
   /// record) to the macro IDs.
@@ -416,7 +421,9 @@ private:
   void WriteBlockInfoBlock();
   void WriteControlBlock(Preprocessor &PP, ASTContext &Context,
                          StringRef isysroot, const std::string &OutputFile);
-  void WriteInputFiles(SourceManager &SourceMgr, StringRef isysroot);
+  void WriteInputFiles(SourceManager &SourceMgr,
+                       HeaderSearchOptions &HSOpts,
+                       StringRef isysroot);
   void WriteSourceManagerBlock(SourceManager &SourceMgr,
                                const Preprocessor &PP,
                                StringRef isysroot);
@@ -425,7 +432,8 @@ private:
   void WritePreprocessorDetail(PreprocessingRecord &PPRec);
   void WriteSubmodules(Module *WritingModule);
                                         
-  void WritePragmaDiagnosticMappings(const DiagnosticsEngine &Diag);
+  void WritePragmaDiagnosticMappings(const DiagnosticsEngine &Diag,
+                                     bool isModule);
   void WriteCXXBaseSpecifiersOffsets();
   void WriteType(QualType T);
   uint64_t WriteDeclContextLexicalBlock(ASTContext &Context, DeclContext *DC);
@@ -438,7 +446,6 @@ private:
   void WriteIdentifierTable(Preprocessor &PP, IdentifierResolver &IdResolver,
                             bool IsModule);
   void WriteAttributes(ArrayRef<const Attr*> Attrs, RecordDataImpl &Record);
-  void WriteMacroUpdates();
   void ResolveDeclUpdatesBlocks();
   void WriteDeclUpdatesBlocks();
   void WriteDeclReplacementsBlock();
@@ -509,9 +516,6 @@ public:
   /// \brief Emit a reference to an identifier.
   void AddIdentifierRef(const IdentifierInfo *II, RecordDataImpl &Record);
 
-  /// \brief Emit a reference to a macro.
-  void addMacroRef(MacroDirective *MI, RecordDataImpl &Record);
-
   /// \brief Emit a Selector (which is a smart pointer reference).
   void AddSelectorRef(Selector, RecordDataImpl &Record);
 
@@ -530,7 +534,12 @@ public:
   serialization::IdentID getIdentifierRef(const IdentifierInfo *II);
 
   /// \brief Get the unique number used to refer to the given macro.
-  serialization::MacroID getMacroRef(MacroDirective *MI);
+  serialization::MacroID getMacroRef(MacroInfo *MI, const IdentifierInfo *Name);
+
+  /// \brief Determine the ID of an already-emitted macro.
+  serialization::MacroID getMacroID(MacroInfo *MI);
+
+  uint64_t getMacroDirectivesOffset(const IdentifierInfo *Name);
 
   /// \brief Emit a reference to a type.
   void AddTypeRef(QualType T, RecordDataImpl &Record);
@@ -641,6 +650,10 @@ public:
   /// source location.
   serialization::SubmoduleID inferSubmoduleIDFromLocation(SourceLocation Loc);
 
+  /// \brief Retrieve a submodule ID for this module.
+  /// Returns 0 If no ID has been associated with the module.
+  unsigned getExistingSubmoduleID(Module *Mod) const;
+
   /// \brief Note that the identifier II occurs at the given offset
   /// within the identifier table.
   void SetIdentifierOffset(const IdentifierInfo *II, uint32_t Offset);
@@ -693,15 +706,12 @@ public:
   // ASTDeserializationListener implementation
   void ReaderInitialized(ASTReader *Reader);
   void IdentifierRead(serialization::IdentID ID, IdentifierInfo *II);
-  void MacroRead(serialization::MacroID ID, MacroDirective *MI);
+  void MacroRead(serialization::MacroID ID, MacroInfo *MI);
   void TypeRead(serialization::TypeIdx Idx, QualType T);
   void SelectorRead(serialization::SelectorID ID, Selector Sel);
   void MacroDefinitionRead(serialization::PreprocessedEntityID ID,
                            MacroDefinition *MD);
   void ModuleRead(serialization::SubmoduleID ID, Module *Mod);
-
-  // PPMutationListener implementation.
-  virtual void UndefinedMacro(MacroDirective *MD);
 
   // ASTMutationListener implementation.
   virtual void CompletedTagDefinition(const TagDecl *D);
@@ -744,7 +754,6 @@ public:
   ~PCHGenerator();
   virtual void InitializeSema(Sema &S) { SemaPtr = &S; }
   virtual void HandleTranslationUnit(ASTContext &Ctx);
-  virtual PPMutationListener *GetPPMutationListener();
   virtual ASTMutationListener *GetASTMutationListener();
   virtual ASTDeserializationListener *GetASTDeserializationListener();
 };

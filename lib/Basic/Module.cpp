@@ -15,6 +15,7 @@
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/TargetInfo.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -27,7 +28,8 @@ Module::Module(StringRef Name, SourceLocation DefinitionLoc, Module *Parent,
     Umbrella(), ASTFile(0), IsAvailable(true), IsFromModuleFile(false),
     IsFramework(IsFramework), IsExplicit(IsExplicit), IsSystem(false),
     InferSubmodules(false), InferExplicitSubmodules(false), 
-    InferExportWildcard(false), NameVisibility(Hidden) 
+    InferExportWildcard(false), ConfigMacrosExhaustive(false),
+    NameVisibility(Hidden)
 { 
   if (Parent) {
     if (!Parent->isAvailable())
@@ -45,7 +47,6 @@ Module::~Module() {
        I != IEnd; ++I) {
     delete *I;
   }
-  
 }
 
 /// \brief Determine whether a translation unit built using the current
@@ -127,6 +128,19 @@ const DirectoryEntry *Module::getUmbrellaDir() const {
     return Header->getDir();
   
   return Umbrella.dyn_cast<const DirectoryEntry *>();
+}
+
+ArrayRef<const FileEntry *> Module::getTopHeaders(FileManager &FileMgr) {
+  if (!TopHeaderNames.empty()) {
+    for (std::vector<std::string>::iterator
+           I = TopHeaderNames.begin(), E = TopHeaderNames.end(); I != E; ++I) {
+      if (const FileEntry *FE = FileMgr.getFile(*I))
+        TopHeaders.insert(FE);
+    }
+    TopHeaderNames.clear();
+  }
+
+  return llvm::makeArrayRef(TopHeaders.begin(), TopHeaders.end());
 }
 
 void Module::addRequirement(StringRef Feature, const LangOptions &LangOpts,
@@ -265,7 +279,20 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS.write_escaped(UmbrellaDir->getName());
     OS << "\"\n";    
   }
-  
+
+  if (!ConfigMacros.empty() || ConfigMacrosExhaustive) {
+    OS.indent(Indent + 2);
+    OS << "config_macros ";
+    if (ConfigMacrosExhaustive)
+      OS << "[exhaustive]";
+    for (unsigned I = 0, N = ConfigMacros.size(); I != N; ++I) {
+      if (I)
+        OS << ", ";
+      OS << ConfigMacros[I];
+    }
+    OS << "\n";
+  }
+
   for (unsigned I = 0, N = Headers.size(); I != N; ++I) {
     OS.indent(Indent + 2);
     OS << "header \"";
@@ -318,6 +345,24 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS << "\"";
     OS.write_escaped(LinkLibraries[I].Library);
     OS << "\"";
+  }
+
+  for (unsigned I = 0, N = UnresolvedConflicts.size(); I != N; ++I) {
+    OS.indent(Indent + 2);
+    OS << "conflict ";
+    printModuleId(OS, UnresolvedConflicts[I].Id);
+    OS << ", \"";
+    OS.write_escaped(UnresolvedConflicts[I].Message);
+    OS << "\"\n";
+  }
+
+  for (unsigned I = 0, N = Conflicts.size(); I != N; ++I) {
+    OS.indent(Indent + 2);
+    OS << "conflict ";
+    OS << Conflicts[I].Other->getFullModuleName();
+    OS << ", \"";
+    OS.write_escaped(Conflicts[I].Message);
+    OS << "\"\n";
   }
 
   if (InferSubmodules) {

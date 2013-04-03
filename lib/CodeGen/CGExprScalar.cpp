@@ -583,62 +583,93 @@ void ScalarExprEmitter::EmitFloatConversionCheck(Value *OrigSrc,
       Check = Builder.CreateAnd(GE, LE);
     }
   } else {
-    // Floating-point to integer or floating-point to floating-point. This has
-    // undefined behavior if the source is +-Inf, NaN, or doesn't fit into the
-    // destination type.
     const llvm::fltSemantics &SrcSema =
       CGF.getContext().getFloatTypeSemantics(OrigSrcType);
-    APFloat MaxSrc(SrcSema, APFloat::uninitialized);
-    APFloat MinSrc(SrcSema, APFloat::uninitialized);
-
     if (isa<llvm::IntegerType>(DstTy)) {
+      // Floating-point to integer. This has undefined behavior if the source is
+      // +-Inf, NaN, or doesn't fit into the destination type (after truncation
+      // to an integer).
       unsigned Width = CGF.getContext().getIntWidth(DstType);
       bool Unsigned = DstType->isUnsignedIntegerOrEnumerationType();
 
       APSInt Min = APSInt::getMinValue(Width, Unsigned);
+      APFloat MinSrc(SrcSema, APFloat::uninitialized);
       if (MinSrc.convertFromAPInt(Min, !Unsigned, APFloat::rmTowardZero) &
           APFloat::opOverflow)
         // Don't need an overflow check for lower bound. Just check for
         // -Inf/NaN.
-        MinSrc = APFloat::getLargest(SrcSema, true);
+        MinSrc = APFloat::getInf(SrcSema, true);
+      else
+        // Find the largest value which is too small to represent (before
+        // truncation toward zero).
+        MinSrc.subtract(APFloat(SrcSema, 1), APFloat::rmTowardNegative);
 
       APSInt Max = APSInt::getMaxValue(Width, Unsigned);
+      APFloat MaxSrc(SrcSema, APFloat::uninitialized);
       if (MaxSrc.convertFromAPInt(Max, !Unsigned, APFloat::rmTowardZero) &
           APFloat::opOverflow)
         // Don't need an overflow check for upper bound. Just check for
         // +Inf/NaN.
-        MaxSrc = APFloat::getLargest(SrcSema, false);
+        MaxSrc = APFloat::getInf(SrcSema, false);
+      else
+        // Find the smallest value which is too large to represent (before
+        // truncation toward zero).
+        MaxSrc.add(APFloat(SrcSema, 1), APFloat::rmTowardPositive);
+
+      // If we're converting from __half, convert the range to float to match
+      // the type of src.
+      if (OrigSrcType->isHalfType()) {
+        const llvm::fltSemantics &Sema =
+          CGF.getContext().getFloatTypeSemantics(SrcType);
+        bool IsInexact;
+        MinSrc.convert(Sema, APFloat::rmTowardZero, &IsInexact);
+        MaxSrc.convert(Sema, APFloat::rmTowardZero, &IsInexact);
+      }
+
+      llvm::Value *GE =
+        Builder.CreateFCmpOGT(Src, llvm::ConstantFP::get(VMContext, MinSrc));
+      llvm::Value *LE =
+        Builder.CreateFCmpOLT(Src, llvm::ConstantFP::get(VMContext, MaxSrc));
+      Check = Builder.CreateAnd(GE, LE);
     } else {
+      // FIXME: Maybe split this sanitizer out from float-cast-overflow.
+      //
+      // Floating-point to floating-point. This has undefined behavior if the
+      // source is not in the range of representable values of the destination
+      // type. The C and C++ standards are spectacularly unclear here. We
+      // diagnose finite out-of-range conversions, but allow infinities and NaNs
+      // to convert to the corresponding value in the smaller type.
+      //
+      // C11 Annex F gives all such conversions defined behavior for IEC 60559
+      // conforming implementations. Unfortunately, LLVM's fptrunc instruction
+      // does not.
+
+      // Converting from a lower rank to a higher rank can never have
+      // undefined behavior, since higher-rank types must have a superset
+      // of values of lower-rank types.
+      if (CGF.getContext().getFloatingTypeOrder(OrigSrcType, DstType) != 1)
+        return;
+
+      assert(!OrigSrcType->isHalfType() &&
+             "should not check conversion from __half, it has the lowest rank");
+
       const llvm::fltSemantics &DstSema =
         CGF.getContext().getFloatTypeSemantics(DstType);
+      APFloat MinBad = APFloat::getLargest(DstSema, false);
+      APFloat MaxBad = APFloat::getInf(DstSema, false);
+
       bool IsInexact;
+      MinBad.convert(SrcSema, APFloat::rmTowardZero, &IsInexact);
+      MaxBad.convert(SrcSema, APFloat::rmTowardZero, &IsInexact);
 
-      MinSrc = APFloat::getLargest(DstSema, true);
-      if (MinSrc.convert(SrcSema, APFloat::rmTowardZero, &IsInexact) &
-          APFloat::opOverflow)
-        MinSrc = APFloat::getLargest(SrcSema, true);
-
-      MaxSrc = APFloat::getLargest(DstSema, false);
-      if (MaxSrc.convert(SrcSema, APFloat::rmTowardZero, &IsInexact) &
-          APFloat::opOverflow)
-        MaxSrc = APFloat::getLargest(SrcSema, false);
+      Value *AbsSrc = CGF.EmitNounwindRuntimeCall(
+        CGF.CGM.getIntrinsic(llvm::Intrinsic::fabs, Src->getType()), Src);
+      llvm::Value *GE =
+        Builder.CreateFCmpOGT(AbsSrc, llvm::ConstantFP::get(VMContext, MinBad));
+      llvm::Value *LE =
+        Builder.CreateFCmpOLT(AbsSrc, llvm::ConstantFP::get(VMContext, MaxBad));
+      Check = Builder.CreateNot(Builder.CreateAnd(GE, LE));
     }
-
-    // If we're converting from __half, convert the range to float to match
-    // the type of src.
-    if (OrigSrcType->isHalfType()) {
-      const llvm::fltSemantics &Sema =
-        CGF.getContext().getFloatTypeSemantics(SrcType);
-      bool IsInexact;
-      MinSrc.convert(Sema, APFloat::rmTowardZero, &IsInexact);
-      MaxSrc.convert(Sema, APFloat::rmTowardZero, &IsInexact);
-    }
-
-    llvm::Value *GE =
-      Builder.CreateFCmpOGE(Src, llvm::ConstantFP::get(VMContext, MinSrc));
-    llvm::Value *LE =
-      Builder.CreateFCmpOLE(Src, llvm::ConstantFP::get(VMContext, MaxSrc));
-    Check = Builder.CreateAnd(GE, LE);
   }
 
   // FIXME: Provide a SourceLocation.

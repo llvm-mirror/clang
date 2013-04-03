@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "Tools.h"
 #include "clang/Driver/ToolChain.h"
 #include "clang/Basic/ObjCRuntime.h"
 #include "clang/Driver/Action.h"
@@ -21,8 +22,9 @@
 using namespace clang::driver;
 using namespace clang;
 
-ToolChain::ToolChain(const Driver &D, const llvm::Triple &T)
-  : D(D), Triple(T) {
+ToolChain::ToolChain(const Driver &D, const llvm::Triple &T,
+                     const ArgList &A)
+  : D(D), Triple(T), Args(A) {
 }
 
 ToolChain::~ToolChain() {
@@ -30,6 +32,12 @@ ToolChain::~ToolChain() {
 
 const Driver &ToolChain::getDriver() const {
  return D;
+}
+
+bool ToolChain::useIntegratedAs() const {
+  return Args.hasFlag(options::OPT_integrated_as,
+                      options::OPT_no_integrated_as,
+                      IsIntegratedAssemblerDefault());
 }
 
 std::string ToolChain::getDefaultUniversalArchName() const {
@@ -49,6 +57,73 @@ std::string ToolChain::getDefaultUniversalArchName() const {
 
 bool ToolChain::IsUnwindTablesDefault() const {
   return false;
+}
+
+Tool *ToolChain::getClang() const {
+  if (!Clang)
+    Clang.reset(new tools::Clang(*this));
+  return Clang.get();
+}
+
+Tool *ToolChain::buildAssembler() const {
+  return new tools::ClangAs(*this);
+}
+
+Tool *ToolChain::buildLinker() const {
+  llvm_unreachable("Linking is not supported by this toolchain");
+}
+
+Tool *ToolChain::getAssemble() const {
+  if (!Assemble)
+    Assemble.reset(buildAssembler());
+  return Assemble.get();
+}
+
+Tool *ToolChain::getClangAs() const {
+  if (!Assemble)
+    Assemble.reset(new tools::ClangAs(*this));
+  return Assemble.get();
+}
+
+Tool *ToolChain::getLink() const {
+  if (!Link)
+    Link.reset(buildLinker());
+  return Link.get();
+}
+
+Tool *ToolChain::getTool(Action::ActionClass AC) const {
+  switch (AC) {
+  case Action::AssembleJobClass:
+    return getAssemble();
+
+  case Action::LinkJobClass:
+    return getLink();
+
+  case Action::InputClass:
+  case Action::BindArchClass:
+  case Action::LipoJobClass:
+  case Action::DsymutilJobClass:
+  case Action::VerifyJobClass:
+    llvm_unreachable("Invalid tool kind.");
+
+  case Action::CompileJobClass:
+  case Action::PrecompileJobClass:
+  case Action::PreprocessJobClass:
+  case Action::AnalyzeJobClass:
+  case Action::MigrateJobClass:
+    return getClang();
+  }
+
+  llvm_unreachable("Invalid tool kind.");
+}
+
+Tool *ToolChain::SelectTool(const JobAction &JA) const {
+  if (getDriver().ShouldUseClangCompiler(JA))
+    return getClang();
+  Action::ActionClass AC = JA.getKind();
+  if (AC == Action::AssembleJobClass && useIntegratedAs())
+    return getClangAs();
+  return getTool(AC);
 }
 
 std::string ToolChain::GetFilePath(const char *Name) const {

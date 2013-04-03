@@ -49,6 +49,16 @@ bool SimpleConstraintManager::canReasonAbout(SVal X) const {
       }
     }
 
+    if (const SymSymExpr *SSE = dyn_cast<SymSymExpr>(SE)) {
+      if (BinaryOperator::isComparisonOp(SSE->getOpcode())) {
+        // We handle Loc <> Loc comparisons, but not (yet) NonLoc <> NonLoc.
+        if (Loc::isLocType(SSE->getLHS()->getType())) {
+          assert(Loc::isLocType(SSE->getRHS()->getType()));
+          return true;
+        }
+      }
+    }
+
     return false;
   }
 
@@ -119,21 +129,6 @@ ProgramStateRef SimpleConstraintManager::assume(ProgramStateRef state,
   return state;
 }
 
-static BinaryOperator::Opcode NegateComparison(BinaryOperator::Opcode op) {
-  // FIXME: This should probably be part of BinaryOperator, since this isn't
-  // the only place it's used. (This code was copied from SimpleSValBuilder.cpp.)
-  switch (op) {
-  default:
-    llvm_unreachable("Invalid opcode.");
-  case BO_LT: return BO_GE;
-  case BO_GT: return BO_LE;
-  case BO_LE: return BO_GT;
-  case BO_GE: return BO_LT;
-  case BO_EQ: return BO_NE;
-  case BO_NE: return BO_EQ;
-  }
-}
-
 
 ProgramStateRef
 SimpleConstraintManager::assumeAuxForSymbol(ProgramStateRef State,
@@ -164,8 +159,6 @@ ProgramStateRef SimpleConstraintManager::assumeAux(ProgramStateRef state,
     return assumeAuxForSymbol(state, sym, Assumption);
   }
 
-  BasicValueFactory &BasicVals = getBasicVals();
-
   switch (Cond.getSubKind()) {
   default:
     llvm_unreachable("'Assume' not implemented for this NonLoc");
@@ -180,26 +173,45 @@ ProgramStateRef SimpleConstraintManager::assumeAux(ProgramStateRef state,
       return assumeAuxForSymbol(state, sym, Assumption);
 
     // Handle symbolic expression.
-    } else {
+    } else if (const SymIntExpr *SE = dyn_cast<SymIntExpr>(sym)) {
       // We can only simplify expressions whose RHS is an integer.
-      const SymIntExpr *SE = dyn_cast<SymIntExpr>(sym);
-      if (!SE)
-        return assumeAuxForSymbol(state, sym, Assumption);
 
       BinaryOperator::Opcode op = SE->getOpcode();
-      // Implicitly compare non-comparison expressions to 0.
-      if (!BinaryOperator::isComparisonOp(op)) {
-        QualType T = SE->getType();
-        const llvm::APSInt &zero = BasicVals.getValue(0, T);
-        op = (Assumption ? BO_NE : BO_EQ);
-        return assumeSymRel(state, SE, op, zero);
-      }
-      // From here on out, op is the real comparison we'll be testing.
-      if (!Assumption)
-        op = NegateComparison(op);
+      if (BinaryOperator::isComparisonOp(op)) {
+        if (!Assumption)
+          op = BinaryOperator::negateComparisonOp(op);
 
-      return assumeSymRel(state, SE->getLHS(), op, SE->getRHS());
+        return assumeSymRel(state, SE->getLHS(), op, SE->getRHS());
+      }
+
+    } else if (const SymSymExpr *SSE = dyn_cast<SymSymExpr>(sym)) {
+      // Translate "a != b" to "(b - a) != 0".
+      // We invert the order of the operands as a heuristic for how loop
+      // conditions are usually written ("begin != end") as compared to length
+      // calculations ("end - begin"). The more correct thing to do would be to
+      // canonicalize "a - b" and "b - a", which would allow us to treat
+      // "a != b" and "b != a" the same.
+      SymbolManager &SymMgr = getSymbolManager();
+      BinaryOperator::Opcode Op = SSE->getOpcode();
+      assert(BinaryOperator::isComparisonOp(Op));
+
+      // For now, we only support comparing pointers.
+      assert(Loc::isLocType(SSE->getLHS()->getType()));
+      assert(Loc::isLocType(SSE->getRHS()->getType()));
+      QualType DiffTy = SymMgr.getContext().getPointerDiffType();
+      SymbolRef Subtraction = SymMgr.getSymSymExpr(SSE->getRHS(), BO_Sub,
+                                                   SSE->getLHS(), DiffTy);
+
+      const llvm::APSInt &Zero = getBasicVals().getValue(0, DiffTy);
+      Op = BinaryOperator::reverseComparisonOp(Op);
+      if (!Assumption)
+        Op = BinaryOperator::negateComparisonOp(Op);
+      return assumeSymRel(state, Subtraction, Op, Zero);
     }
+
+    // If we get here, there's nothing else we can do but treat the symbol as
+    // opaque.
+    return assumeAuxForSymbol(state, sym, Assumption);
   }
 
   case nonloc::ConcreteIntKind: {
@@ -257,10 +269,14 @@ ProgramStateRef SimpleConstraintManager::assumeSymRel(ProgramStateRef state,
   APSIntType ComparisonType = std::max(WraparoundType, APSIntType(Int));
   llvm::APSInt ConvertedInt = ComparisonType.convert(Int);
 
+  // Prefer unsigned comparisons.
+  if (ComparisonType.getBitWidth() == WraparoundType.getBitWidth() &&
+      ComparisonType.isUnsigned() && !WraparoundType.isUnsigned())
+    Adjustment.setIsSigned(false);
+
   switch (op) {
   default:
-    // No logic yet for other operators.  assume the constraint is feasible.
-    return state;
+    llvm_unreachable("invalid operation not caught by assertion above");
 
   case BO_EQ:
     return assumeSymEQ(state, Sym, ConvertedInt, Adjustment);

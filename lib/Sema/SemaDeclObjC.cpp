@@ -151,7 +151,8 @@ void Sema::CheckObjCMethodOverride(ObjCMethodDecl *NewMethod,
     
     if (ObjCMethodFamily Family = Overridden->getMethodFamily())
       Diag(Overridden->getLocation(), 
-           diag::note_related_result_type_overridden_family)
+           diag::note_related_result_type_family)
+        << /*overridden method*/ 0
         << Family;
     else
       Diag(Overridden->getLocation(), 
@@ -1176,14 +1177,18 @@ void Sema::WarnUndefinedMethod(SourceLocation ImpLoc, ObjCMethodDecl *method,
     return;
   }
   
-  if (!IncompleteImpl) {
-    Diag(ImpLoc, diag::warn_incomplete_impl);
-    IncompleteImpl = true;
-  }
-  if (DiagID == diag::warn_unimplemented_protocol_method)
-    Diag(ImpLoc, DiagID) << method->getDeclName();
-  else
-    Diag(method->getLocation(), DiagID) << method->getDeclName();
+  // FIXME: For now ignore 'IncompleteImpl'.
+  // Previously we grouped all unimplemented methods under a single
+  // warning, but some users strongly voiced that they would prefer
+  // separate warnings.  We will give that approach a try, as that
+  // matches what we do with protocols.
+  
+  Diag(ImpLoc, DiagID) << method->getDeclName();
+
+  // Issue a note to the original declaration.
+  SourceLocation MethodLoc = method->getLocStart();
+  if (MethodLoc.isValid())
+    Diag(MethodLoc, diag::note_method_declared_at) << method;
 }
 
 /// Determines if type B can be substituted for type A.  Returns true if we can
@@ -1627,8 +1632,6 @@ void Sema::CheckProtocolMethodDefs(SourceLocation ImpLoc,
             if (Diags.getDiagnosticLevel(DIAG, ImpLoc)
                 != DiagnosticsEngine::Ignored) {
               WarnUndefinedMethod(ImpLoc, method, IncompleteImpl, DIAG);
-              Diag(method->getLocation(), diag::note_method_declared_at)
-                << method->getDeclName();
               Diag(CDecl->getLocation(), diag::note_required_for_protocol_at)
                 << PDecl->getDeclName();
             }
@@ -1650,8 +1653,6 @@ void Sema::CheckProtocolMethodDefs(SourceLocation ImpLoc,
       if (Diags.getDiagnosticLevel(DIAG, ImpLoc) !=
             DiagnosticsEngine::Ignored) {
         WarnUndefinedMethod(ImpLoc, method, IncompleteImpl, DIAG);
-        Diag(method->getLocation(), diag::note_method_declared_at)
-          << method->getDeclName();
         Diag(IDecl->getLocation(), diag::note_required_for_protocol_at) <<
           PDecl->getDeclName();
       }
@@ -1686,7 +1687,7 @@ void Sema::MatchAllMethodDeclarations(const SelectorSet &InsMap,
         !InsMap.count((*I)->getSelector())) {
       if (ImmediateClass)
         WarnUndefinedMethod(IMPDecl->getLocation(), *I, IncompleteImpl,
-                            diag::note_undef_method_impl);
+                            diag::warn_undef_method_impl);
       continue;
     } else {
       ObjCMethodDecl *ImpMethodDecl =
@@ -1716,7 +1717,7 @@ void Sema::MatchAllMethodDeclarations(const SelectorSet &InsMap,
     if (!ClsMap.count((*I)->getSelector())) {
       if (ImmediateClass)
         WarnUndefinedMethod(IMPDecl->getLocation(), *I, IncompleteImpl,
-                            diag::note_undef_method_impl);
+                            diag::warn_undef_method_impl);
     } else {
       ObjCMethodDecl *ImpMethodDecl =
         IMPDecl->getClassMethod((*I)->getSelector());
@@ -2726,9 +2727,9 @@ private:
       return;
     
     //   - categories,
-    for (ObjCInterfaceDecl::visible_categories_iterator
-           cat = iface->visible_categories_begin(),
-           catEnd = iface->visible_categories_end();
+    for (ObjCInterfaceDecl::known_categories_iterator
+           cat = iface->known_categories_begin(),
+           catEnd = iface->known_categories_end();
          cat != catEnd; ++cat) {
       search(*cat);
     }
@@ -2758,7 +2759,8 @@ private:
   void search(ObjCContainerDecl *container) {
     // Check for a method in this container which matches this selector.
     ObjCMethodDecl *meth = container->getMethod(Method->getSelector(),
-                                                Method->isInstanceMethod());
+                                                Method->isInstanceMethod(),
+                                                /*AllowHidden=*/true);
 
     // If we find one, record it and bail out.
     if (meth) {
@@ -3187,7 +3189,7 @@ Decl *Sema::ActOnObjCExceptionDecl(Scope *S, Declarator &D) {
     Diag(D.getDeclSpec().getThreadSpecLoc(), diag::err_invalid_thread);
   D.getMutableDeclSpec().ClearStorageClassSpecs();
 
-  DiagnoseFunctionSpecifiers(D);
+  DiagnoseFunctionSpecifiers(D.getDeclSpec());
   
   // Check that there are no default arguments inside the type of this
   // exception object (C++ only).

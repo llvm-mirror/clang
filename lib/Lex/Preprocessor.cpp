@@ -54,8 +54,6 @@ using namespace clang;
 //===----------------------------------------------------------------------===//
 ExternalPreprocessorSource::~ExternalPreprocessorSource() { }
 
-PPMutationListener::~PPMutationListener() { }
-
 Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
                            DiagnosticsEngine &diags, LangOptions &opts,
                            const TargetInfo *target, SourceManager &SM,
@@ -68,7 +66,7 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
       Identifiers(opts, IILookup), IncrementalProcessing(IncrProcessing),
       CodeComplete(0), CodeCompletionFile(0), CodeCompletionOffset(0),
       CodeCompletionReached(0), SkipMainFilePreamble(0, true), CurPPLexer(0),
-      CurDirLookup(0), CurLexerKind(CLK_Lexer), Callbacks(0), Listener(0),
+      CurDirLookup(0), CurLexerKind(CLK_Lexer), Callbacks(0),
       MacroArgCache(0), Record(0), MIChainHead(0), MICache(0) {
   OwnsHeaderSearch = OwnsHeaders;
   
@@ -306,15 +304,15 @@ StringRef Preprocessor::getLastMacroWithSpelling(
   StringRef BestSpelling;
   for (Preprocessor::macro_iterator I = macro_begin(), E = macro_end();
        I != E; ++I) {
-    if (!I->second->getInfo()->isObjectLike())
+    if (!I->second->getMacroInfo()->isObjectLike())
       continue;
-    const MacroDirective *
-      MD = I->second->findDirectiveAtLoc(Loc, SourceMgr);
-    if (!MD)
+    const MacroDirective::DefInfo
+      Def = I->second->findDirectiveAtLoc(Loc, SourceMgr);
+    if (!Def)
       continue;
-    if (!MacroDefinitionEquals(MD->getInfo(), Tokens))
+    if (!MacroDefinitionEquals(Def.getMacroInfo(), Tokens))
       continue;
-    SourceLocation Location = I->second->getInfo()->getDefinitionLoc();
+    SourceLocation Location = Def.getLocation();
     // Choose the macro defined latest.
     if (BestLocation.isInvalid() ||
         (Location.isValid() &&
@@ -643,7 +641,7 @@ void Preprocessor::HandleIdentifier(Token &Identifier) {
 
   // If this is a macro to be expanded, do it.
   if (MacroDirective *MD = getMacroDirective(&II)) {
-    MacroInfo *MI = MD->getInfo();
+    MacroInfo *MI = MD->getMacroInfo();
     if (!DisableMacroExpansion) {
       if (!Identifier.isExpandDisabled() && MI->isEnabled()) {
         if (!HandleMacroExpandedIdentifier(Identifier, MD))

@@ -29,7 +29,7 @@ endif ()
 set(CLANG_TEST_DEPS
   clang clang-headers
   c-index-test diagtool arcmt-test c-arcmt-test
-  clang-check
+  clang-check clang-format
   )
 set(CLANG_TEST_PARAMS
   clang_site_config=${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg
@@ -44,7 +44,7 @@ endif()
 
 if( NOT CLANG_BUILT_STANDALONE )
   list(APPEND CLANG_TEST_DEPS
-    llc opt FileCheck count not
+    llc opt FileCheck count not llvm-symbolizer
     )
 
   add_lit_testsuite(check-clang "Running the Clang regression tests"

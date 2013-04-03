@@ -101,21 +101,22 @@ class FindLastStoreBRVisitor
   SVal V;
   bool Satisfied;
 
-public:
-  /// \brief Convenience method to create a visitor given only the MemRegion.
-  /// Returns NULL if the visitor cannot be created. For example, when the
-  /// corresponding value is unknown.
-  static BugReporterVisitor *createVisitorObject(const ExplodedNode *N,
-                                                 const MemRegion *R);
+  /// If the visitor is tracking the value directly responsible for the
+  /// bug, we are going to employ false positive suppression.
+  bool EnableNullFPSuppression;
 
+public:
   /// Creates a visitor for every VarDecl inside a Stmt and registers it with
   /// the BugReport.
-  static void registerStatementVarDecls(BugReport &BR, const Stmt *S);
+  static void registerStatementVarDecls(BugReport &BR, const Stmt *S,
+                                        bool EnableNullFPSuppression);
 
-  FindLastStoreBRVisitor(KnownSVal V, const MemRegion *R)
+  FindLastStoreBRVisitor(KnownSVal V, const MemRegion *R,
+                         bool InEnableNullFPSuppression)
   : R(R),
     V(V),
-    Satisfied(false) {}
+    Satisfied(false),
+    EnableNullFPSuppression(InEnableNullFPSuppression) {}
 
   void Profile(llvm::FoldingSetNodeID &ID) const;
 
@@ -129,12 +130,14 @@ class TrackConstraintBRVisitor
   : public BugReporterVisitorImpl<TrackConstraintBRVisitor>
 {
   DefinedSVal Constraint;
-  const bool Assumption;
-  bool isSatisfied;
+  bool Assumption;
+  bool IsSatisfied;
+  bool IsZeroCheck;
 
 public:
   TrackConstraintBRVisitor(DefinedSVal constraint, bool assumption)
-  : Constraint(constraint), Assumption(assumption), isSatisfied(false) {}
+  : Constraint(constraint), Assumption(assumption), IsSatisfied(false),
+    IsZeroCheck(!Assumption && Constraint.getAs<Loc>()) {}
 
   void Profile(llvm::FoldingSetNodeID &ID) const;
 
@@ -146,12 +149,19 @@ public:
                                  const ExplodedNode *PrevN,
                                  BugReporterContext &BRC,
                                  BugReport &BR);
+
+private:
+  /// Checks if the constraint is valid in the current state.
+  bool isUnderconstrained(const ExplodedNode *N) const;
+
 };
 
+/// \class NilReceiverBRVisitor
+/// \brief Prints path notes when a message is sent to a nil receiver.
 class NilReceiverBRVisitor
-  : public BugReporterVisitorImpl<NilReceiverBRVisitor>
-{
+  : public BugReporterVisitorImpl<NilReceiverBRVisitor> {
 public:
+  
   void Profile(llvm::FoldingSetNodeID &ID) const {
     static int x = 0;
     ID.AddPointer(&x);
@@ -161,6 +171,10 @@ public:
                                  const ExplodedNode *PrevN,
                                  BugReporterContext &BRC,
                                  BugReport &BR);
+
+  /// If the statement is a message send expression with nil receiver, returns
+  /// the receiver expression. Returns NULL otherwise.
+  static const Expr *getNilReceiver(const Stmt *S, const ExplodedNode *N);
 };
 
 /// Visitor that tries to report interesting diagnostics from conditions.
@@ -290,12 +304,12 @@ class SuppressInlineDefensiveChecksVisitor
   /// Track if we found the node where the constraint was first added.
   bool IsSatisfied;
 
-  /// \brief The node from which we should start tracking the value.
-  /// Note: Since the visitors can be registered on nodes previous to the last
+  /// Since the visitors can be registered on nodes previous to the last
   /// node in the BugReport, but the path traversal always starts with the last
   /// node, the visitor invariant (that we start with a node in which V is null)
-  /// might not hold when node visitation starts.
-  const ExplodedNode *StartN;
+  /// might not hold when node visitation starts. We are going to start tracking
+  /// from the last node in which the value is null.
+  bool IsTrackingTurnedOn;
 
 public:
   SuppressInlineDefensiveChecksVisitor(DefinedSVal Val, const ExplodedNode *N);
@@ -305,10 +319,6 @@ public:
   /// Return the tag associated with this visitor.  This tag will be used
   /// to make all PathDiagnosticPieces created by this visitor.
   static const char *getTag();
-
-  PathDiagnosticPiece *getEndPath(BugReporterContext &BRC,
-                                  const ExplodedNode *N,
-                                  BugReport &BR);
 
   PathDiagnosticPiece *VisitNode(const ExplodedNode *Succ,
                                  const ExplodedNode *Pred,
@@ -328,12 +338,15 @@ namespace bugreporter {
 /// \param IsArg Whether the statement is an argument to an inlined function.
 ///              If this is the case, \p N \em must be the CallEnter node for
 ///              the function.
+/// \param EnableNullFPSuppression Whether we should employ false positive
+///         suppression (inlined defensive checks, returned null).
 ///
 /// \return Whether or not the function was able to add visitors for this
 ///         statement. Note that returning \c true does not actually imply
 ///         that any visitors were added.
 bool trackNullOrUndefValue(const ExplodedNode *N, const Stmt *S, BugReport &R,
-                           bool IsArg = false);
+                           bool IsArg = false,
+                           bool EnableNullFPSuppression = true);
 
 const Expr *getDerefExpr(const Stmt *S);
 const Stmt *GetDenomExpr(const ExplodedNode *N);

@@ -998,14 +998,12 @@ private:
 namespace llvm {
 /// Implement simplify_type for QualType, so that we can dyn_cast from QualType
 /// to a specific Type class.
-template<> struct simplify_type<const ::clang::QualType> {
+template<> struct simplify_type< ::clang::QualType> {
   typedef const ::clang::Type *SimpleType;
-  static SimpleType getSimplifiedValue(const ::clang::QualType &Val) {
+  static SimpleType getSimplifiedValue(::clang::QualType Val) {
     return Val.getTypePtr();
   }
 };
-template<> struct simplify_type< ::clang::QualType>
-  : public simplify_type<const ::clang::QualType> {};
 
 // Teach SmallPtrSet that QualType is "basically a pointer".
 template<>
@@ -1774,8 +1772,9 @@ public:
   /// \brief Determine the linkage and visibility of this type.
   LinkageInfo getLinkageAndVisibility() const;
 
-  /// \brief Note that the linkage is no longer known.
-  void ClearLinkageCache();
+  /// \brief True if the computed linkage is valid. Used for consistency
+  /// checking. Should always return true.
+  bool isLinkageValid() const;
 
   const char *getTypeClassName() const;
 
@@ -2861,6 +2860,9 @@ public:
   QualType getArgType(unsigned i) const {
     assert(i < NumArgs && "Invalid argument number!");
     return arg_type_begin()[i];
+  }
+  ArrayRef<QualType> getArgTypes() const {
+    return ArrayRef<QualType>(arg_type_begin(), arg_type_end());
   }
 
   ExtProtoInfo getExtProtoInfo() const {

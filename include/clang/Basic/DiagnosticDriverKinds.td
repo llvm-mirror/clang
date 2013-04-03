@@ -35,6 +35,8 @@ def err_drv_use_of_Z_option : Error<
   "unsupported use of internal gcc -Z option '%0'">;
 def err_drv_output_argument_with_multiple_files : Error<
   "cannot specify -o when generating multiple output files">;
+def err_no_external_windows_assembler : Error<
+  "there is no external assembler we can use on windows">;
 def err_drv_unable_to_remove_file : Error<
   "unable to remove file: %0">;
 def err_drv_command_failure : Error<
@@ -57,6 +59,8 @@ def err_drv_no_linker_llvm_support : Error<
   "'%0': unable to pass LLVM bit-code files to linker">;
 def err_drv_no_ast_support : Error<
   "'%0': unable to use AST files with this tool">;
+def err_drv_no_module_support : Error<
+  "'%0': unable to use module files with this tool">;
 def err_drv_clang_unsupported : Error<
   "the clang compiler does not support '%0'">;
 def err_drv_clang_unsupported_per_platform : Error<
@@ -75,7 +79,7 @@ def err_drv_invalid_libcxx_deployment : Error<
   "invalid deployment target for -stdlib=libc++ (requires %0 or later)">;
 def err_drv_invalid_feature : Error<
   "invalid feature '%0' for CPU '%1'">;
-  
+
 def err_drv_I_dash_not_supported : Error<
   "'%0' not supported, please use -iquote instead">;
 def err_drv_unknown_argument : Error<"unknown argument: '%0'">;
@@ -150,9 +154,4 @@ def err_analyzer_config_no_value : Error<
   "analyzer-config option '%0' has a key but no value">;
 def err_analyzer_config_multiple_values : Error<
   "analyzer-config option '%0' should contain only one '='">;
-  
-def err_drv_modules_integrated_as : Error<
-  "modules can only be used with the compiler's integrated assembler">;
-def note_drv_modules_integrated_as : Note<
-  "'-no-integrated-as' cannot be used with '-fmodules'">;
 }

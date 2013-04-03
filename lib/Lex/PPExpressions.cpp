@@ -24,6 +24,7 @@
 #include "clang/Lex/MacroInfo.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/SaveAndRestore.h"
 using namespace clang;
 
 namespace {
@@ -115,7 +116,7 @@ static bool EvaluateDefined(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
   // If there is a macro, mark it used.
   if (Result.Val != 0 && ValueLive) {
     Macro = PP.getMacroDirective(II);
-    PP.markMacroAsUsed(Macro->getInfo());
+    PP.markMacroAsUsed(Macro->getMacroInfo());
   }
 
   // Invoke the 'defined' callback.
@@ -730,6 +731,7 @@ static bool EvaluateDirectiveSubExpr(PPValue &LHS, unsigned MinPrec,
 /// to "!defined(X)" return X in IfNDefMacro.
 bool Preprocessor::
 EvaluateDirectiveExpression(IdentifierInfo *&IfNDefMacro) {
+  SaveAndRestore<bool> PPDir(ParsingIfOrElifDirective, true);
   // Save the current state of 'DisableMacroExpansion' and reset it to false. If
   // 'DisableMacroExpansion' is true, then we must be in a macro argument list
   // in which case a directive is undefined behavior.  We want macros to be able

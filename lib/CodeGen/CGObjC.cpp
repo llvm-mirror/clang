@@ -1686,7 +1686,8 @@ namespace {
     llvm::Value *object;
 
     void Emit(CodeGenFunction &CGF, Flags flags) {
-      CGF.EmitARCRelease(object, /*precise*/ true);
+      // Releases at the end of the full-expression are imprecise.
+      CGF.EmitARCRelease(object, ARCImpreciseLifetime);
     }
   };
 }
@@ -1704,6 +1705,21 @@ llvm::Value *CodeGenFunction::EmitObjCConsumeObject(QualType type,
 llvm::Value *CodeGenFunction::EmitObjCExtendObjectLifetime(QualType type,
                                                            llvm::Value *value) {
   return EmitARCRetainAutorelease(type, value);
+}
+
+/// Given a number of pointers, inform the optimizer that they're
+/// being intrinsically used up until this point in the program.
+void CodeGenFunction::EmitARCIntrinsicUse(ArrayRef<llvm::Value*> values) {
+  llvm::Constant *&fn = CGM.getARCEntrypoints().clang_arc_use;
+  if (!fn) {
+    llvm::FunctionType *fnType =
+      llvm::FunctionType::get(CGM.VoidTy, ArrayRef<llvm::Type*>(), true);
+    fn = CGM.CreateRuntimeFunction(fnType, "clang.arc.use");
+  }
+
+  // This isn't really a "runtime" function, but as an intrinsic it
+  // doesn't really matter as long as we align things up.
+  EmitNounwindRuntimeCall(fn, values);
 }
 
 
@@ -1940,7 +1956,8 @@ CodeGenFunction::EmitARCRetainAutoreleasedReturnValue(llvm::Value *value) {
 
 /// Release the given object.
 ///   call void \@objc_release(i8* %value)
-void CodeGenFunction::EmitARCRelease(llvm::Value *value, bool precise) {
+void CodeGenFunction::EmitARCRelease(llvm::Value *value,
+                                     ARCPreciseLifetime_t precise) {
   if (isa<llvm::ConstantPointerNull>(value)) return;
 
   llvm::Constant *&fn = CGM.getARCEntrypoints().objc_release;
@@ -1956,7 +1973,7 @@ void CodeGenFunction::EmitARCRelease(llvm::Value *value, bool precise) {
   // Call objc_release.
   llvm::CallInst *call = EmitNounwindRuntimeCall(fn, value);
 
-  if (!precise) {
+  if (precise == ARCImpreciseLifetime) {
     SmallVector<llvm::Value*,1> args;
     call->setMetadata("clang.imprecise_release",
                       llvm::MDNode::get(Builder.getContext(), args));
@@ -1972,7 +1989,8 @@ void CodeGenFunction::EmitARCRelease(llvm::Value *value, bool precise) {
 /// At -O1 and above, just load and call objc_release.
 ///
 ///   call void \@objc_storeStrong(i8** %addr, i8* null)
-void CodeGenFunction::EmitARCDestroyStrong(llvm::Value *addr, bool precise) {
+void CodeGenFunction::EmitARCDestroyStrong(llvm::Value *addr,
+                                           ARCPreciseLifetime_t precise) {
   if (CGM.getCodeGenOpts().OptimizationLevel == 0) {
     llvm::PointerType *addrTy = cast<llvm::PointerType>(addr->getType());
     llvm::Value *null = llvm::ConstantPointerNull::get(
@@ -2042,7 +2060,7 @@ llvm::Value *CodeGenFunction::EmitARCStoreStrong(LValue dst,
   EmitStoreOfScalar(newValue, dst);
 
   // Finally, release the old value.
-  EmitARCRelease(oldValue, /*precise*/ false);
+  EmitARCRelease(oldValue, dst.isARCPreciseLifetime());
 
   return newValue;
 }
@@ -2254,13 +2272,13 @@ void CodeGenFunction::EmitObjCMRRAutoreleasePoolPop(llvm::Value *Arg) {
 void CodeGenFunction::destroyARCStrongPrecise(CodeGenFunction &CGF,
                                               llvm::Value *addr,
                                               QualType type) {
-  CGF.EmitARCDestroyStrong(addr, /*precise*/ true);
+  CGF.EmitARCDestroyStrong(addr, ARCPreciseLifetime);
 }
 
 void CodeGenFunction::destroyARCStrongImprecise(CodeGenFunction &CGF,
                                                 llvm::Value *addr,
                                                 QualType type) {
-  CGF.EmitARCDestroyStrong(addr, /*precise*/ false);
+  CGF.EmitARCDestroyStrong(addr, ARCImpreciseLifetime);
 }
 
 void CodeGenFunction::destroyARCWeak(CodeGenFunction &CGF,
@@ -2737,7 +2755,7 @@ CodeGenFunction::EmitARCStoreStrong(const BinaryOperator *e,
     llvm::Value *oldValue =
       EmitLoadOfScalar(lvalue);
     EmitStoreOfScalar(value, lvalue);
-    EmitARCRelease(oldValue, /*precise*/ false);
+    EmitARCRelease(oldValue, lvalue.isARCPreciseLifetime());
   } else {
     value = EmitARCStoreStrong(lvalue, value, ignored);
   }

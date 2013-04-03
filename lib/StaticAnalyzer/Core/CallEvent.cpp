@@ -125,7 +125,7 @@ static bool isPointerToConst(QualType Ty) {
 // Try to retrieve the function declaration and find the function parameter
 // types which are pointers/references to a non-pointer const.
 // We will not invalidate the corresponding argument regions.
-static void findPtrToConstParams(llvm::SmallSet<unsigned, 1> &PreserveArgs,
+static void findPtrToConstParams(llvm::SmallSet<unsigned, 4> &PreserveArgs,
                                  const CallEvent &Call) {
   unsigned Idx = 0;
   for (CallEvent::param_type_iterator I = Call.param_type_begin(),
@@ -137,62 +137,29 @@ static void findPtrToConstParams(llvm::SmallSet<unsigned, 1> &PreserveArgs,
 }
 
 ProgramStateRef CallEvent::invalidateRegions(unsigned BlockCount,
-                                              ProgramStateRef Orig) const {
+                                             ProgramStateRef Orig) const {
   ProgramStateRef Result = (Orig ? Orig : getState());
 
+  SmallVector<const MemRegion *, 8> ConstRegions;
   SmallVector<const MemRegion *, 8> RegionsToInvalidate;
   getExtraInvalidatedRegions(RegionsToInvalidate);
 
   // Indexes of arguments whose values will be preserved by the call.
-  llvm::SmallSet<unsigned, 1> PreserveArgs;
+  llvm::SmallSet<unsigned, 4> PreserveArgs;
   if (!argumentsMayEscape())
     findPtrToConstParams(PreserveArgs, *this);
 
   for (unsigned Idx = 0, Count = getNumArgs(); Idx != Count; ++Idx) {
+    const MemRegion *R = getArgSVal(Idx).getAsRegion();
+    if (!R)
+      continue;
+
+    // Mark this region for invalidation.  We batch invalidate regions
+    // below for efficiency.
     if (PreserveArgs.count(Idx))
-      continue;
-
-    SVal V = getArgSVal(Idx);
-
-    // If we are passing a location wrapped as an integer, unwrap it and
-    // invalidate the values referred by the location.
-    if (Optional<nonloc::LocAsInteger> Wrapped =
-            V.getAs<nonloc::LocAsInteger>())
-      V = Wrapped->getLoc();
-    else if (!V.getAs<Loc>())
-      continue;
-
-    if (const MemRegion *R = V.getAsRegion()) {
-      // Invalidate the value of the variable passed by reference.
-
-      // Are we dealing with an ElementRegion?  If the element type is
-      // a basic integer type (e.g., char, int) and the underlying region
-      // is a variable region then strip off the ElementRegion.
-      // FIXME: We really need to think about this for the general case
-      //   as sometimes we are reasoning about arrays and other times
-      //   about (char*), etc., is just a form of passing raw bytes.
-      //   e.g., void *p = alloca(); foo((char*)p);
-      if (const ElementRegion *ER = dyn_cast<ElementRegion>(R)) {
-        // Checking for 'integral type' is probably too promiscuous, but
-        // we'll leave it in for now until we have a systematic way of
-        // handling all of these cases.  Eventually we need to come up
-        // with an interface to StoreManager so that this logic can be
-        // appropriately delegated to the respective StoreManagers while
-        // still allowing us to do checker-specific logic (e.g.,
-        // invalidating reference counts), probably via callbacks.
-        if (ER->getElementType()->isIntegralOrEnumerationType()) {
-          const MemRegion *superReg = ER->getSuperRegion();
-          if (isa<VarRegion>(superReg) || isa<FieldRegion>(superReg) ||
-              isa<ObjCIvarRegion>(superReg))
-            R = cast<TypedRegion>(superReg);
-        }
-        // FIXME: What about layers of ElementRegions?
-      }
-
-      // Mark this region for invalidation.  We batch invalidate regions
-      // below for efficiency.
+      ConstRegions.push_back(R);
+    else
       RegionsToInvalidate.push_back(R);
-    }
   }
 
   // Invalidate designated regions using the batch invalidation API.
@@ -201,7 +168,7 @@ ProgramStateRef CallEvent::invalidateRegions(unsigned BlockCount,
   return Result->invalidateRegions(RegionsToInvalidate, getOriginExpr(),
                                    BlockCount, getLocationContext(),
                                    /*CausedByPointerEscape*/ true,
-                                   /*Symbols=*/0, this);
+                                   /*Symbols=*/0, this, ConstRegions);
 }
 
 ProgramPoint CallEvent::getProgramPoint(bool IsPreVisit,

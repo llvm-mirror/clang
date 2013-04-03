@@ -34,6 +34,7 @@ namespace clang {
   
 class DirectoryEntry;
 class FileEntry;
+class FileManager;
 class LangOptions;
 class TargetInfo;
   
@@ -67,16 +68,19 @@ private:
   /// \brief The AST file if this is a top-level module which has a
   /// corresponding serialized AST file, or null otherwise.
   const FileEntry *ASTFile;
-  
+
+  /// \brief The top-level headers associated with this module.
+  llvm::SmallSetVector<const FileEntry *, 2> TopHeaders;
+
+  /// \brief top-level header filenames that aren't resolved to FileEntries yet.
+  std::vector<std::string> TopHeaderNames;
+
 public:
   /// \brief The headers that are part of this module.
   SmallVector<const FileEntry *, 2> Headers;
 
   /// \brief The headers that are explicitly excluded from this module.
   SmallVector<const FileEntry *, 2> ExcludedHeaders;
-
-  /// \brief The top-level headers associated with this module.
-  llvm::SmallSetVector<const FileEntry *, 2> TopHeaders;
 
   /// \brief The set of language features required to use this module.
   ///
@@ -115,7 +119,14 @@ public:
   /// \brief Whether, when inferring submodules, the inferr submodules should
   /// export all modules they import (e.g., the equivalent of "export *").
   unsigned InferExportWildcard : 1;
-  
+
+  /// \brief Whether the set of configuration macros is exhaustive.
+  ///
+  /// When the set of configuration macros is exhaustive, meaning
+  /// that no identifier not in this list should affect how the module is
+  /// built.
+  unsigned ConfigMacrosExhaustive : 1;
+
   /// \brief Describes the visibility of the various names within a
   /// particular module.
   enum NameVisibilityKind {
@@ -186,6 +197,35 @@ public:
   /// an entity from this module is used.
   llvm::SmallVector<LinkLibrary, 2> LinkLibraries;
 
+  /// \brief The set of "configuration macros", which are macros that
+  /// (intentionally) change how this module is built.
+  std::vector<std::string> ConfigMacros;
+
+  /// \brief An unresolved conflict with another module.
+  struct UnresolvedConflict {
+    /// \brief The (unresolved) module id.
+    ModuleId Id;
+
+    /// \brief The message provided to the user when there is a conflict.
+    std::string Message;
+  };
+
+  /// \brief The list of conflicts for which the module-id has not yet been
+  /// resolved.
+  std::vector<UnresolvedConflict> UnresolvedConflicts;
+
+  /// \brief A conflict between two modules.
+  struct Conflict {
+    /// \brief The module that this module conflicts with.
+    Module *Other;
+
+    /// \brief The message provided to the user when there is a conflict.
+    std::string Message;
+  };
+
+  /// \brief The list of conflicts.
+  std::vector<Conflict> Conflicts;
+
   /// \brief Construct a top-level module.
   explicit Module(StringRef Name, SourceLocation DefinitionLoc,
                   bool IsFramework)
@@ -193,7 +233,8 @@ public:
       IsAvailable(true), IsFromModuleFile(false), IsFramework(IsFramework), 
       IsExplicit(false), IsSystem(false),
       InferSubmodules(false), InferExplicitSubmodules(false),
-      InferExportWildcard(false), NameVisibility(Hidden) { }
+      InferExportWildcard(false), ConfigMacrosExhaustive(false),
+      NameVisibility(Hidden) { }
   
   /// \brief Construct a new module or submodule.
   Module(StringRef Name, SourceLocation DefinitionLoc, Module *Parent, 
@@ -292,6 +333,20 @@ public:
     return Umbrella && Umbrella.is<const DirectoryEntry *>();
   }
 
+  /// \brief Add a top-level header associated with this module.
+  void addTopHeader(const FileEntry *File) {
+    assert(File);
+    TopHeaders.insert(File);
+  }
+
+  /// \brief Add a top-level header filename associated with this module.
+  void addTopHeaderFilename(StringRef Filename) {
+    TopHeaderNames.push_back(Filename);
+  }
+
+  /// \brief The top-level headers associated with this module.
+  ArrayRef<const FileEntry *> getTopHeaders(FileManager &FileMgr);
+
   /// \brief Add the given feature requirement to the list of features
   /// required by this module.
   ///
@@ -310,7 +365,7 @@ public:
   ///
   /// \returns The submodule if found, or NULL otherwise.
   Module *findSubmodule(StringRef Name) const;
-  
+
   typedef std::vector<Module *>::iterator submodule_iterator;
   typedef std::vector<Module *>::const_iterator submodule_const_iterator;
   

@@ -31,7 +31,7 @@ CODEGENOPT(Name, Bits, Default)
 CODEGENOPT(AsmVerbose        , 1, 0) ///< -dA, -fverbose-asm.
 CODEGENOPT(ObjCAutoRefCountExceptions , 1, 0) ///< Whether ARC should be EH-safe.
 CODEGENOPT(CoverageExtraChecksum, 1, 0) ///< Whether we need a second checksum for functions in GCNO files.
-CODEGENOPT(CoverageFunctionNamesInData, 1, 0) ///< Whether we should include function names in GCDA files.
+CODEGENOPT(CoverageNoFunctionNamesInData, 1, 0) ///< Do not include function names in GCDA files.
 CODEGENOPT(CUDAIsDevice      , 1, 0) ///< Set when compiling for CUDA device.
 CODEGENOPT(CXAAtExit         , 1, 1) ///< Use __cxa_atexit for calling destructors.
 CODEGENOPT(CXXCtorDtorAliases, 1, 0) ///< Emit complete ctors/dtors as linker
@@ -42,6 +42,7 @@ CODEGENOPT(DisableLLVMOpts   , 1, 0) ///< Don't run any optimizations, for use i
                                      ///< getting .bc files that correspond to the
                                      ///< internal state before optimizations are
                                      ///< done.
+CODEGENOPT(DisableGCov       , 1, 0) ///< Don't run the GCov pass, for testing.
 CODEGENOPT(DisableRedZone    , 1, 0) ///< Set when -mno-red-zone is enabled.
 CODEGENOPT(DisableTailCalls  , 1, 0) ///< Do not emit tail calls.
 CODEGENOPT(EmitDeclMetadata  , 1, 0) ///< Emit special metadata indicating what

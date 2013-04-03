@@ -22,9 +22,10 @@
 namespace clang { 
 
 class GlobalModuleIndex;
+class ModuleMap;
 
 namespace serialization {
-  
+
 /// \brief Manages the set of modules loaded by an AST reader.
 class ModuleManager {
   /// \brief The chain of AST files. The first entry is the one named by the
@@ -59,9 +60,6 @@ class ModuleManager {
   /// The global module index will actually be owned by the ASTReader; this is
   /// just an non-owning pointer.
   GlobalModuleIndex *GlobalIndex;
-
-  /// \brief Update the set of modules files we know about known to the global index.
-  void updateModulesInCommonWithGlobalIndex();
 
   /// \brief State used by the "visit" operation to avoid malloc traffic in
   /// calls to visit().
@@ -137,12 +135,28 @@ public:
   
   /// \brief Returns the module associated with the given name
   ModuleFile *lookup(StringRef Name);
-  
+
+  /// \brief Returns the module associated with the given module file.
+  ModuleFile *lookup(const FileEntry *File);
+
   /// \brief Returns the in-memory (virtual file) buffer with the given name
   llvm::MemoryBuffer *lookupBuffer(StringRef Name);
   
   /// \brief Number of modules loaded
   unsigned size() const { return Chain.size(); }
+
+  /// \brief The result of attempting to add a new module.
+  enum AddModuleResult {
+    /// \brief The module file had already been loaded.
+    AlreadyLoaded,
+    /// \brief The module file was just loaded in response to this call.
+    NewlyLoaded,
+    /// \brief The module file is missing.
+    Missing,
+    /// \brief The module file is out-of-date.
+    OutOfDate
+  };
+
   /// \brief Attempts to create a new module and add it to the list of known
   /// modules.
   ///
@@ -157,24 +171,40 @@ public:
   ///
   /// \param Generation The generation in which this module was loaded.
   ///
+  /// \param ExpectedSize The expected size of the module file, used for
+  /// validation. This will be zero if unknown.
+  ///
+  /// \param ExpectedModTime The expected modification time of the module
+  /// file, used for validation. This will be zero if unknown.
+  ///
+  /// \param Module A pointer to the module file if the module was successfully
+  /// loaded.
+  ///
   /// \param ErrorStr Will be set to a non-empty string if any errors occurred
   /// while trying to load the module.
   ///
   /// \return A pointer to the module that corresponds to this file name,
-  /// and a boolean indicating whether the module was newly added.
-  std::pair<ModuleFile *, bool> 
-  addModule(StringRef FileName, ModuleKind Type, SourceLocation ImportLoc,
-            ModuleFile *ImportedBy, unsigned Generation,
-            std::string &ErrorStr);
+  /// and a value indicating whether the module was loaded.
+  AddModuleResult addModule(StringRef FileName, ModuleKind Type,
+                            SourceLocation ImportLoc,
+                            ModuleFile *ImportedBy, unsigned Generation,
+                            off_t ExpectedSize, time_t ExpectedModTime,
+                            ModuleFile *&Module,
+                            std::string &ErrorStr);
 
   /// \brief Remove the given set of modules.
-  void removeModules(ModuleIterator first, ModuleIterator last);
+  void removeModules(ModuleIterator first, ModuleIterator last,
+                     ModuleMap *modMap);
 
   /// \brief Add an in-memory buffer the list of known buffers
   void addInMemoryBuffer(StringRef FileName, llvm::MemoryBuffer *Buffer);
 
   /// \brief Set the global module index.
   void setGlobalIndex(GlobalModuleIndex *Index);
+
+  /// \brief Notification from the AST reader that the given module file
+  /// has been "accepted", and will not (can not) be unloaded.
+  void moduleFileAccepted(ModuleFile *MF);
 
   /// \brief Visit each of the modules.
   ///
@@ -200,7 +230,7 @@ public:
   /// Any module that is known to both the global module index and the module
   /// manager that is *not* in this set can be skipped.
   void visit(bool (*Visitor)(ModuleFile &M, void *UserData), void *UserData,
-             llvm::SmallPtrSet<const FileEntry *, 4> *ModuleFilesHit = 0);
+             llvm::SmallPtrSet<ModuleFile *, 4> *ModuleFilesHit = 0);
   
   /// \brief Visit each of the modules with a depth-first traversal.
   ///
@@ -221,7 +251,29 @@ public:
   void visitDepthFirst(bool (*Visitor)(ModuleFile &M, bool Preorder, 
                                        void *UserData), 
                        void *UserData);
-  
+
+  /// \brief Attempt to resolve the given module file name to a file entry.
+  ///
+  /// \param FileName The name of the module file.
+  ///
+  /// \param ExpectedSize The size that the module file is expected to have.
+  /// If the actual size differs, the resolver should return \c true.
+  ///
+  /// \param ExpectedModTime The modification time that the module file is
+  /// expected to have. If the actual modification time differs, the resolver
+  /// should return \c true.
+  ///
+  /// \param File Will be set to the file if there is one, or null
+  /// otherwise.
+  ///
+  /// \returns True if a file exists but does not meet the size/
+  /// modification time criteria, false if the file is either available and
+  /// suitable, or is missing.
+  bool lookupModuleFile(StringRef FileName,
+                        off_t ExpectedSize,
+                        time_t ExpectedModTime,
+                        const FileEntry *&File);
+
   /// \brief View the graphviz representation of the module graph.
   void viewGraph();
 };

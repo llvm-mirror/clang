@@ -40,6 +40,11 @@ inline void* operator new(__typeof__(sizeof(int)), void* __p) throw()
 
 extern bool coin();
 
+class SomeClass {
+public:
+  void doSomething();
+};
+
 namespace References {
   class Map {
     int *&getNewBox();
@@ -79,14 +84,9 @@ namespace References {
     *box = 1; // no-warning
 
     int *&box2 = m.getValue(i);
-    box = 0;
-    *box = 1; // expected-warning {{Dereference of null pointer}}
+    box2 = 0;
+    *box2 = 1; // expected-warning {{Dereference of null pointer}}
   }
-
-  class SomeClass {
-  public:
-    void doSomething();
-  };
 
   SomeClass *&getSomeClass() {
     if (coin()) {
@@ -123,5 +123,90 @@ namespace References {
 #ifndef SUPPRESSED
     // expected-warning@-2 {{Returning null reference}}
 #endif
+  }
+}
+
+class X{
+public:
+	void get();
+};
+
+X *getNull() {
+	return 0;
+}
+
+void deref1(X *const &p) {
+	return p->get();
+	#ifndef SUPPRESSED
+	  // expected-warning@-2 {{Called C++ object pointer is null}}
+	#endif
+}
+
+void test1() {
+	return deref1(getNull());
+}
+
+void deref2(X *p3) {
+	p3->get();
+	#ifndef SUPPRESSED
+	  // expected-warning@-2 {{Called C++ object pointer is null}}
+	#endif
+}
+
+void pass2(X *const &p2) {
+	deref2(p2);
+}
+
+void test2() {
+	pass2(getNull());
+}
+
+void deref3(X *const &p2) {
+	X *p3 = p2;
+	p3->get();
+	#ifndef SUPPRESSED
+	  // expected-warning@-2 {{Called C++ object pointer is null}}
+	#endif
+}
+
+void test3() {
+	deref3(getNull());
+}
+
+
+namespace Cleanups {
+  class NonTrivial {
+  public:
+    ~NonTrivial();
+
+    SomeClass *getNull() {
+      return 0;
+    }
+  };
+
+  void testImmediate() {
+    NonTrivial().getNull()->doSomething();
+#ifndef SUPPRESSED
+    // expected-warning@-2 {{Called C++ object pointer is null}}
+#endif
+  }
+
+  void testAssignment() {
+    SomeClass *ptr = NonTrivial().getNull();
+    ptr->doSomething();
+#ifndef SUPPRESSED
+    // expected-warning@-2 {{Called C++ object pointer is null}}
+#endif
+  }
+
+  void testArgumentHelper(SomeClass *arg) {
+    arg->doSomething();
+#ifndef SUPPRESSED
+    // expected-warning@-2 {{Called C++ object pointer is null}}
+#endif
+  }
+
+  void testArgument() {
+    testArgumentHelper(NonTrivial().getNull());
   }
 }

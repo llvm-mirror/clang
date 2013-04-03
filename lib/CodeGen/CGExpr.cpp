@@ -1800,10 +1800,6 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
 
     bool isBlockVariable = VD->hasAttr<BlocksAttr>();
 
-    bool NonGCable = VD->hasLocalStorage() &&
-                     !VD->getType()->isReferenceType() &&
-                     !isBlockVariable;
-
     llvm::Value *V = LocalDeclMap.lookup(VD);
     if (!V && VD->isStaticLocal()) 
       V = CGM.getStaticLocalDeclAddress(VD);
@@ -1837,10 +1833,20 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
       LV = MakeAddrLValue(V, T, Alignment);
     }
 
+    bool isLocalStorage = VD->hasLocalStorage();
+
+    bool NonGCable = isLocalStorage &&
+                     !VD->getType()->isReferenceType() &&
+                     !isBlockVariable;
     if (NonGCable) {
       LV.getQuals().removeObjCGCAttr();
       LV.setNonGC(true);
     }
+
+    bool isImpreciseLifetime =
+      (isLocalStorage && !VD->hasAttr<ObjCPreciseLifetimeAttr>());
+    if (isImpreciseLifetime)
+      LV.setARCPreciseLifetime(ARCImpreciseLifetime);
     setObjCGCLValueClass(getContext(), E, LV);
     return LV;
   }
@@ -2072,6 +2078,15 @@ llvm::Constant *CodeGenFunction::EmitCheckTypeDescriptor(QualType T) {
 llvm::Value *CodeGenFunction::EmitCheckValue(llvm::Value *V) {
   llvm::Type *TargetTy = IntPtrTy;
 
+  // Floating-point types which fit into intptr_t are bitcast to integers
+  // and then passed directly (after zero-extension, if necessary).
+  if (V->getType()->isFloatingPointTy()) {
+    unsigned Bits = V->getType()->getPrimitiveSizeInBits();
+    if (Bits <= TargetTy->getIntegerBitWidth())
+      V = Builder.CreateBitCast(V, llvm::Type::getIntNTy(getLLVMContext(),
+                                                         Bits));
+  }
+
   // Integers which fit in intptr_t are zero-extended and passed directly.
   if (V->getType()->isIntegerTy() &&
       V->getType()->getIntegerBitWidth() <= TargetTy->getIntegerBitWidth())
@@ -2079,7 +2094,7 @@ llvm::Value *CodeGenFunction::EmitCheckValue(llvm::Value *V) {
 
   // Pointers are passed directly, everything else is passed by address.
   if (!V->getType()->isPointerTy()) {
-    llvm::Value *Ptr = Builder.CreateAlloca(V->getType());
+    llvm::Value *Ptr = CreateTempAlloca(V->getType());
     Builder.CreateStore(V, Ptr);
     V = Ptr;
   }
@@ -2849,8 +2864,14 @@ RValue CodeGenFunction::EmitRValueForField(LValue LV,
 
 RValue CodeGenFunction::EmitCallExpr(const CallExpr *E, 
                                      ReturnValueSlot ReturnValue) {
-  if (CGDebugInfo *DI = getDebugInfo())
-    DI->EmitLocation(Builder, E->getLocStart());
+  if (CGDebugInfo *DI = getDebugInfo()) {
+    SourceLocation Loc = E->getLocStart();
+    // Force column info to be generated so we can differentiate
+    // multiple call sites on the same line in the debug info.
+    const FunctionDecl* Callee = E->getDirectCallee();
+    bool ForceColumnInfo = Callee && Callee->isInlineSpecified();
+    DI->EmitLocation(Builder, Loc, ForceColumnInfo);
+  }
 
   // Builtins never have block type.
   if (E->getCallee()->getType()->isBlockPointerType())
@@ -2907,7 +2928,7 @@ RValue CodeGenFunction::EmitCallExpr(const CallExpr *E,
       case Qualifiers::OCL_Strong:
         EmitARCRelease(Builder.CreateLoad(BaseValue, 
                           PseudoDtor->getDestroyedType().isVolatileQualified()),
-                       /*precise*/ true);
+                       ARCPreciseLifetime);
         break;
 
       case Qualifiers::OCL_Weak:

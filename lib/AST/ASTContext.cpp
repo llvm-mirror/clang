@@ -1496,10 +1496,7 @@ ASTContext::getTypeInfoImpl(const Type *T) const {
   }
   case Type::MemberPointer: {
     const MemberPointerType *MPT = cast<MemberPointerType>(T);
-    std::pair<uint64_t, unsigned> PtrDiffInfo =
-      getTypeInfo(getPointerDiffType());
-    Width = PtrDiffInfo.first * ABI->getMemberPointerSize(MPT);
-    Align = PtrDiffInfo.second;
+    llvm::tie(Width, Align) = ABI->getMemberPointerWidthAndAlign(MPT);
     break;
   }
   case Type::Complex: {
@@ -6844,6 +6841,27 @@ QualType ASTContext::mergeFunctionTypes(QualType lhs, QualType rhs,
   return getFunctionNoProtoType(retType, einfo);
 }
 
+/// Given that we have an enum type and a non-enum type, try to merge them.
+static QualType mergeEnumWithInteger(ASTContext &Context, const EnumType *ET,
+                                     QualType other, bool isBlockReturnType) {
+  // C99 6.7.2.2p4: Each enumerated type shall be compatible with char,
+  // a signed integer type, or an unsigned integer type.
+  // Compatibility is based on the underlying type, not the promotion
+  // type.
+  QualType underlyingType = ET->getDecl()->getIntegerType();
+  if (underlyingType.isNull()) return QualType();
+  if (Context.hasSameType(underlyingType, other))
+    return other;
+
+  // In block return types, we're more permissive and accept any
+  // integral type of the same size.
+  if (isBlockReturnType && other->isIntegerType() &&
+      Context.getTypeSize(underlyingType) == Context.getTypeSize(other))
+    return other;
+
+  return QualType();
+}
+
 QualType ASTContext::mergeTypes(QualType LHS, QualType RHS, 
                                 bool OfBlockPointer,
                                 bool Unqualified, bool BlockReturnType) {
@@ -6925,19 +6943,13 @@ QualType ASTContext::mergeTypes(QualType LHS, QualType RHS,
 
   // If the canonical type classes don't match.
   if (LHSClass != RHSClass) {
-    // C99 6.7.2.2p4: Each enumerated type shall be compatible with char,
-    // a signed integer type, or an unsigned integer type.
-    // Compatibility is based on the underlying type, not the promotion
-    // type.
+    // Note that we only have special rules for turning block enum
+    // returns into block int returns, not vice-versa.
     if (const EnumType* ETy = LHS->getAs<EnumType>()) {
-      QualType TINT = ETy->getDecl()->getIntegerType();
-      if (!TINT.isNull() && hasSameType(TINT, RHSCan.getUnqualifiedType()))
-        return RHS;
+      return mergeEnumWithInteger(*this, ETy, RHS, false);
     }
     if (const EnumType* ETy = RHS->getAs<EnumType>()) {
-      QualType TINT = ETy->getDecl()->getIntegerType();
-      if (!TINT.isNull() && hasSameType(TINT, LHSCan.getUnqualifiedType()))
-        return LHS;
+      return mergeEnumWithInteger(*this, ETy, LHS, BlockReturnType);
     }
     // allow block pointer type to match an 'id' type.
     if (OfBlockPointer && !BlockReturnType) {
@@ -7629,8 +7641,6 @@ GVALinkage ASTContext::GetGVALinkageForVariable(const VarDecl *VD) {
     TSK = VD->getTemplateSpecializationKind();
 
   Linkage L = VD->getLinkage();
-  assert (!(L == ExternalLinkage && getLangOpts().CPlusPlus &&
-            VD->getType()->getLinkage() == UniqueExternalLinkage));
 
   switch (L) {
   case NoLinkage:
@@ -7663,7 +7673,15 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
   if (const VarDecl *VD = dyn_cast<VarDecl>(D)) {
     if (!VD->isFileVarDecl())
       return false;
-  } else if (!isa<FunctionDecl>(D))
+  } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
+    // We never need to emit an uninstantiated function template.
+    if (FD->getTemplatedKind() == FunctionDecl::TK_FunctionTemplate)
+      return false;
+  } else
+    return false;
+
+  // If this is a member of a class template, we do not need to emit it.
+  if (D->getDeclContext()->isDependentContext())
     return false;
 
   // Weak references don't produce any output by themselves.

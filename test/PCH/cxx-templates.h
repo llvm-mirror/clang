@@ -246,3 +246,26 @@ struct __mt_alloc {
   }
 };
 }
+
+namespace PR13020 {
+template<typename T>
+void f() {
+ enum E {
+   enumerator
+ };
+
+ T t = enumerator;
+}
+
+template void f<int>();
+}
+
+template<typename T> void doNotDeserialize() {}
+template<typename T> struct ContainsDoNotDeserialize {
+  static int doNotDeserialize;
+};
+template<typename T> struct ContainsDoNotDeserialize2 {
+  static void doNotDeserialize();
+};
+template<typename T> int ContainsDoNotDeserialize<T>::doNotDeserialize = 0;
+template<typename T> void ContainsDoNotDeserialize2<T>::doNotDeserialize() {}

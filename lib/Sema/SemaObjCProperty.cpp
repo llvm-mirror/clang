@@ -127,6 +127,7 @@ CheckPropertyAgainstProtocol(Sema &S, ObjCPropertyDecl *Prop,
   for (unsigned I = 0, N = R.size(); I != N; ++I) {
     if (ObjCPropertyDecl *ProtoProp = dyn_cast<ObjCPropertyDecl>(R[I])) {
       S.DiagnosePropertyMismatch(Prop, ProtoProp, Proto->getIdentifier());
+      S.mergeDeclAttributes(Prop, ProtoProp, Sema::AMK_Override);
       return;
     }
   }
@@ -209,6 +210,7 @@ Decl *Sema::ActOnProperty(Scope *S, SourceLocation AtLoc,
       for (unsigned I = 0, N = R.size(); I != N; ++I) {
         if (ObjCPropertyDecl *SuperProp = dyn_cast<ObjCPropertyDecl>(R[I])) {
           DiagnosePropertyMismatch(Res, SuperProp, Super->getIdentifier());
+          mergeDeclAttributes(Res, SuperProp, AMK_Override);
           FoundInSuper = true;
           break;
         }
@@ -1585,13 +1587,33 @@ void Sema::DefaultSynthesizeProperties(Scope *S, ObjCImplDecl* IMPDecl,
   for (unsigned i = 0, e = PropertyOrder.size(); i != e; i++) {
     ObjCPropertyDecl *Prop = PropertyOrder[i];
     // If property to be implemented in the super class, ignore.
-    if (SuperPropMap[Prop->getIdentifier()])
+    if (SuperPropMap[Prop->getIdentifier()]) {
+      ObjCPropertyDecl *PropInSuperClass = SuperPropMap[Prop->getIdentifier()];
+      if ((Prop->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_readwrite) &&
+          (PropInSuperClass->getPropertyAttributes() &
+           ObjCPropertyDecl::OBJC_PR_readonly) &&
+          !IMPDecl->getInstanceMethod(Prop->getSetterName()) &&
+          !IDecl->HasUserDeclaredSetterMethod(Prop)) {
+            Diag(Prop->getLocation(), diag::warn_no_autosynthesis_property)
+              << Prop->getIdentifier()->getName();
+            Diag(PropInSuperClass->getLocation(), diag::note_property_declare);
+      }
       continue;
+    }
     // Is there a matching property synthesize/dynamic?
     if (Prop->isInvalidDecl() ||
-        Prop->getPropertyImplementation() == ObjCPropertyDecl::Optional ||
-        IMPDecl->FindPropertyImplIvarDecl(Prop->getIdentifier()))
+        Prop->getPropertyImplementation() == ObjCPropertyDecl::Optional)
       continue;
+    if (ObjCPropertyImplDecl *PID =
+          IMPDecl->FindPropertyImplIvarDecl(Prop->getIdentifier())) {
+      if (PID->getPropertyDecl() != Prop) {
+        Diag(Prop->getLocation(), diag::warn_no_autosynthesis_shared_ivar_property)
+          << Prop->getIdentifier()->getName();
+        if (!PID->getLocation().isInvalid())
+          Diag(PID->getLocation(), diag::note_property_synthesize);
+      }
+      continue;
+    }
     // Property may have been synthesized by user.
     if (IMPDecl->FindPropertyImplDecl(Prop->getIdentifier()))
       continue;

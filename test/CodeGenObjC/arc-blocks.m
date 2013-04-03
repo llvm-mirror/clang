@@ -80,13 +80,14 @@ void test3(void (^sink)(id*)) {
   // CHECK-NEXT: bitcast
   // CHECK-NEXT: getelementptr
   // CHECK-NEXT: [[BLOCK:%.*]] = bitcast
-  // CHECK-NEXT: [[T0:%.*]] = load i8** [[STRONG]]
-  // CHECK-NEXT: store i8* [[T0]], i8** [[TEMP]]
+  // CHECK-NEXT: [[V:%.*]] = load i8** [[STRONG]]
+  // CHECK-NEXT: store i8* [[V]], i8** [[TEMP]]
   // CHECK-NEXT: [[F0:%.*]] = load i8**
   // CHECK-NEXT: [[F1:%.*]] = bitcast i8* [[F0]] to void (i8*, i8**)*
   // CHECK-NEXT: call void [[F1]](i8* [[BLOCK]], i8** [[TEMP]])
   // CHECK-NEXT: [[T0:%.*]] = load i8** [[TEMP]]
   // CHECK-NEXT: [[T1:%.*]] = call i8* @objc_retain(i8* [[T0]])
+  // CHECK-NEXT: call void (...)* @clang.arc.use(i8* [[V]]) [[NUW]]
   // CHECK-NEXT: [[T2:%.*]] = load i8** [[STRONG]]
   // CHECK-NEXT: store i8* [[T1]], i8** [[STRONG]]
   // CHECK-NEXT: call void @objc_release(i8* [[T2]])
@@ -127,7 +128,7 @@ void test4(void) {
   // CHECK-NEXT: call void @_Block_object_dispose(i8* [[T0]], i32 8)
   // CHECK-NEXT: [[T0:%.*]] = load i8** [[SLOT]]
   // CHECK-NEXT: call void @objc_release(i8* [[T0]])
-  // CHECK-NEXT: ret void
+  // CHECK: ret void
 
   // CHECK:    define internal void @__Block_byref_object_copy_
   // CHECK:      [[T0:%.*]] = getelementptr inbounds [[BYREF_T]]* {{%.*}}, i32 0, i32 6
@@ -206,7 +207,7 @@ void test6(void) {
   // CHECK:      [[T0:%.*]] = bitcast [[BYREF_T]]* [[VAR]] to i8*
   // CHECK-NEXT: call void @_Block_object_dispose(i8* [[T0]], i32 8)
   // CHECK-NEXT: call void @objc_destroyWeak(i8** [[SLOT]])
-  // CHECK-NEXT: ret void
+  // CHECK: ret void
 
   // CHECK:    define internal void @__Block_byref_object_copy_
   // CHECK:      [[T0:%.*]] = getelementptr inbounds [[BYREF_T]]* {{%.*}}, i32 0, i32 6
@@ -255,14 +256,14 @@ void test7(void) {
   // CHECK:      call void @test7_helper(
   // CHECK-NEXT: call void @objc_destroyWeak(i8** {{%.*}})
   // CHECK-NEXT: call void @objc_destroyWeak(i8** [[VAR]])
-  // CHECK-NEXT: ret void
+  // CHECK: ret void
 
   // CHECK:    define internal void @__test7_block_invoke
   // CHECK:      [[SLOT:%.*]] = getelementptr inbounds [[BLOCK_T]]* {{%.*}}, i32 0, i32 5
   // CHECK-NEXT: [[T0:%.*]] = call i8* @objc_loadWeakRetained(i8** [[SLOT]])
   // CHECK-NEXT: call void @test7_consume(i8* [[T0]])
   // CHECK-NEXT: call void @objc_release(i8* [[T0]])
-  // CHECK-NEXT: ret void
+  // CHECK: ret void
 
   // CHECK:    define internal void @__copy_helper_block_
   // CHECK:      getelementptr
@@ -295,7 +296,7 @@ void test7(void) {
 // CHECK-NEXT: [[T1:%.*]] = load [[TEST8]]** [[D0]]
 // CHECK-NEXT: [[T2:%.*]] = bitcast [[TEST8]]* [[T1]] to i8*
 // CHECK-NEXT: call void @objc_release(i8* [[T2]])
-// CHECK-NEXT: ret void
+// CHECK: ret void
 
   extern void test8_helper(void (^)(void));
   test8_helper(^{ (void) self; });
@@ -353,7 +354,7 @@ void test10a(void) {
   // CHECK-NEXT: [[T1:%.*]] = load void ()** [[SLOT]]
   // CHECK-NEXT: [[T2:%.*]] = bitcast void ()* [[T1]] to i8*
   // CHECK-NEXT: call void @objc_release(i8* [[T2]])
-  // CHECK-NEXT: ret void
+  // CHECK: ret void
 }
 
 // <rdar://problem/10402698>: do this copy and dispose with
@@ -373,7 +374,7 @@ void test10a(void) {
 // CHECK-NEXT: [[T2:%.*]] = call i8* @objc_retainBlock(i8* [[T1]])
 // CHECK-NEXT: [[T3:%.*]] = bitcast i8* [[T2]] to void ()*
 // CHECK-NEXT: store void ()* [[T3]], void ()** [[D2]], align 8
-// CHECK-NEXT: ret void
+// CHECK: ret void
 
 // CHECK: define internal void @__Block_byref_object_dispose
 // CHECK:      [[T0:%.*]] = load i8** {{%.*}}
@@ -417,7 +418,7 @@ void test10b(void) {
   // CHECK-NEXT: [[T1:%.*]] = load void ()** [[SLOT]]
   // CHECK-NEXT: [[T2:%.*]] = bitcast void ()* [[T1]] to i8*
   // CHECK-NEXT: call void @objc_release(i8* [[T2]])
-  // CHECK-NEXT: ret void
+  // CHECK: ret void
 }
 
 // rdar://problem/10088932
@@ -437,7 +438,7 @@ void test11a(void) {
   // CHECK-NEXT: call void @test11_helper(i8* [[T4]])
   // CHECK-NEXT: [[T5:%.*]] = bitcast void ()* [[T3]] to i8*
   // CHECK-NEXT: call void @objc_release(i8* [[T5]])
-  // CHECK-NEXT: ret void
+  // CHECK: ret void
 }
 void test11b(void) {
   int x;
@@ -455,7 +456,7 @@ void test11b(void) {
   // CHECK-NEXT: store i8* [[T4]], i8** [[B]], align 8
   // CHECK-NEXT: [[T5:%.*]] = load i8** [[B]]
   // CHECK-NEXT: call void @objc_release(i8* [[T5]])
-  // CHECK-NEXT: ret void
+  // CHECK: ret void
 }
 
 // rdar://problem/9979150

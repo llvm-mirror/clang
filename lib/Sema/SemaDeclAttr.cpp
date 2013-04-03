@@ -2799,6 +2799,15 @@ static void handleVecTypeHint(Sema &S, Decl *D, const AttributeList &Attr) {
                                                ParmType, Attr.getLoc()));
 }
 
+static void handleEndianAttr(Sema &S, Decl *D, const AttributeList &Attr) {
+  if (!dyn_cast<VarDecl>(D))
+    S.Diag(Attr.getLoc(), diag::warn_attribute_wrong_decl_type) << "endian"
+                                                                << 9;
+  StringRef EndianType = Attr.getParameterName()->getName();
+  if (EndianType != "host" && EndianType != "device")
+    S.Diag(Attr.getLoc(), diag::warn_attribute_unknown_endian) << EndianType;
+}
+
 SectionAttr *Sema::mergeSectionAttr(Decl *D, SourceRange Range,
                                     StringRef Name,
                                     unsigned AttrSpellingListIndex) {
@@ -3988,6 +3997,22 @@ static void handleOpenCLKernelAttr(Sema &S, Decl *D, const AttributeList &Attr){
   D->addAttr(::new (S.Context) OpenCLKernelAttr(Attr.getRange(), S.Context));
 }
 
+static void handleOpenCLImageAccessAttr(Sema &S, Decl *D, const AttributeList &Attr){
+  assert(!Attr.isInvalid());
+
+  Expr *E = Attr.getArg(0);
+  llvm::APSInt ArgNum(32);
+  if (E->isTypeDependent() || E->isValueDependent() ||
+      !E->isIntegerConstantExpr(ArgNum, S.Context)) {
+    S.Diag(Attr.getLoc(), diag::err_attribute_argument_not_int)
+      << Attr.getName()->getName() << E->getSourceRange();
+    return;
+  }
+
+  D->addAttr(::new (S.Context) OpenCLImageAccessAttr(
+    Attr.getRange(), S.Context, ArgNum.getZExtValue()));
+}
+
 bool Sema::CheckCallingConvAttr(const AttributeList &attr, CallingConv &CC, 
                                 const FunctionDecl *FD) {
   if (attr.isInvalid())
@@ -4678,7 +4703,6 @@ static void ProcessInheritableDeclAttr(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_IBOutletCollection:
     handleIBOutletCollection(S, D, Attr); break;
   case AttributeList::AT_AddressSpace:
-  case AttributeList::AT_OpenCLImageAccess:
   case AttributeList::AT_ObjCGC:
   case AttributeList::AT_VectorSize:
   case AttributeList::AT_NeonVectorType:
@@ -4783,6 +4807,10 @@ static void ProcessInheritableDeclAttr(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_VecTypeHint:
     handleVecTypeHint(S, D, Attr); break;
 
+  case AttributeList::AT_Endian:
+    handleEndianAttr(S, D, Attr);
+    break;
+
   case AttributeList::AT_InitPriority: 
       handleInitPriorityAttr(S, D, Attr); break;
       
@@ -4852,6 +4880,9 @@ static void ProcessInheritableDeclAttr(Sema &S, Scope *scope, Decl *D,
     break;
   case AttributeList::AT_OpenCLKernel:
     handleOpenCLKernelAttr(S, D, Attr);
+    break;
+  case AttributeList::AT_OpenCLImageAccess:
+    handleOpenCLImageAccessAttr(S, D, Attr);
     break;
 
   // Microsoft attributes:

@@ -214,7 +214,11 @@ Parser::ParseSingleDeclarationAfterTemplate(
   if (Tok.is(tok::semi)) {
     ProhibitAttributes(prefixAttrs);
     DeclEnd = ConsumeToken();
-    Decl *Decl = Actions.ParsedFreeStandingDeclSpec(getCurScope(), AS, DS);
+    Decl *Decl = Actions.ParsedFreeStandingDeclSpec(
+        getCurScope(), AS, DS,
+        TemplateInfo.TemplateParams ? *TemplateInfo.TemplateParams
+                                    : MultiTemplateParamsArg(),
+        TemplateInfo.Kind == ParsedTemplateInfo::ExplicitInstantiation);
     DS.complete(Decl);
     return Decl;
   }
@@ -1196,7 +1200,7 @@ Parser::ParseTemplateArgumentList(TemplateArgList &TemplateArgs) {
 ///       explicit-instantiation:
 ///         'extern' [opt] 'template' declaration
 ///
-/// Note that the 'extern' is a GNU extension and C++0x feature.
+/// Note that the 'extern' is a GNU extension and C++11 feature.
 Decl *Parser::ParseExplicitInstantiation(unsigned Context,
                                          SourceLocation ExternLoc,
                                          SourceLocation TemplateLoc,
@@ -1301,7 +1305,7 @@ void Parser::ParseLateTemplatedFuncDef(LateParsedTemplatedFunction &LMT) {
   PP.EnterTokenStream(LMT.Toks.data(), LMT.Toks.size(), true, false);
 
   // Consume the previously pushed token.
-  ConsumeAnyToken();
+  ConsumeAnyToken(/*ConsumeCodeCompletionTok=*/true);
   assert((Tok.is(tok::l_brace) || Tok.is(tok::colon) || Tok.is(tok::kw_try))
          && "Inline method not starting with '{', ':' or 'try'");
 

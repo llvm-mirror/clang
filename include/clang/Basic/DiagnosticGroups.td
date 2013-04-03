@@ -47,6 +47,7 @@ def CastAlign : DiagGroup<"cast-align">;
 def : DiagGroup<"cast-qual">;
 def : DiagGroup<"char-align">;
 def Comment : DiagGroup<"comment">;
+def ConfigMacros : DiagGroup<"config-macros">;
 def : DiagGroup<"ctor-dtor-privacy">;
 def GNUDesignator : DiagGroup<"gnu-designator">;
 
@@ -158,6 +159,7 @@ def MismatchedParameterTypes : DiagGroup<"mismatched-parameter-types">;
 def MismatchedReturnTypes : DiagGroup<"mismatched-return-types">;
 def MismatchedTags : DiagGroup<"mismatched-tags">;
 def MissingFieldInitializers : DiagGroup<"missing-field-initializers">;
+def ModuleConflict : DiagGroup<"module-conflict">;
 def NullArithmetic : DiagGroup<"null-arithmetic">;
 def NullCharacter : DiagGroup<"null-character">;
 def NullDereference : DiagGroup<"null-dereference">;
@@ -185,6 +187,7 @@ def ObjCMissingSuperCalls : DiagGroup<"objc-missing-super-calls">;
 def ObjCRetainBlockProperty : DiagGroup<"objc-noncopy-retain-block-property">;
 def ObjCReadonlyPropertyHasSetter : DiagGroup<"objc-readonly-with-setter-property">;
 def ObjCRootClass : DiagGroup<"objc-root-class">;
+def DeprecatedObjCIsaUsage : DiagGroup<"deprecated-objc-isa-usage">;
 def Packed : DiagGroup<"packed">;
 def Padded : DiagGroup<"padded">;
 def PointerArith : DiagGroup<"pointer-arith">;
@@ -212,6 +215,7 @@ def : DiagGroup<"stack-protector">;
 def : DiagGroup<"switch-default">;
 def : DiagGroup<"synth">;
 def SizeofArrayArgument : DiagGroup<"sizeof-array-argument">;
+def SizeofArrayDecay : DiagGroup<"sizeof-array-decay">;
 def SizeofPointerMemaccess : DiagGroup<"sizeof-pointer-memaccess">;
 def StaticInInline : DiagGroup<"static-in-inline">;
 def GNUStaticFloatInit : DiagGroup<"gnu-static-float-init">;
@@ -264,6 +268,7 @@ def Trigraphs      : DiagGroup<"trigraphs">;
 
 def : DiagGroup<"type-limits">;
 def UndefinedReinterpretCast : DiagGroup<"undefined-reinterpret-cast">;
+def ReinterpretBaseClass : DiagGroup<"reinterpret-base-class">;
 def Unicode  : DiagGroup<"unicode">;
 def UninitializedMaybe : DiagGroup<"conditional-uninitialized">;
 def UninitializedSometimes : DiagGroup<"sometimes-uninitialized">;
@@ -417,6 +422,7 @@ def Most : DiagGroup<"most", [
     ReturnType,
     SelfAssignment,
     SizeofArrayArgument,
+    SizeofArrayDecay,
     StringPlusInt,
     Trigraphs,
     Uninitialized,
@@ -492,6 +498,8 @@ def ObjCNonUnifiedException : DiagGroup<"objc-nonunified-exceptions">;
 
 def ObjCProtocolMethodImpl : DiagGroup<"objc-protocol-method-implementation">;
 
+def ObjCNoPropertyAutoSynthesis : DiagGroup<"objc-property-synthesis">;
+
 // ObjC API warning groups.
 def ObjCRedundantLiteralUse : DiagGroup<"objc-redundant-literal-use">;
 def ObjCRedundantAPIUse : DiagGroup<"objc-redundant-api-use", [
@@ -512,3 +520,6 @@ def ASMOperandWidths : DiagGroup<"asm-operand-widths">;
 def ASM : DiagGroup<"asm", [
     ASMOperandWidths
   ]>;
+
+// OpenMP warnings.
+def SourceUsesOpenMP : DiagGroup<"source-uses-openmp">;

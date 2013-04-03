@@ -48,13 +48,13 @@ class CXXConstructorCall;
 
 class ExprEngine : public SubEngine {
 public:
-  /// The modes of inlining.
+  /// The modes of inlining, which override the default analysis-wide settings.
   enum InliningModes {
-    /// Do not inline any of the callees.
-    Inline_None = 0,
-    /// Inline all callees.
-    Inline_All = 0x1
-  } ;
+    /// Follow the default settings for inlining callees.
+    Inline_Regular = 0,
+    /// Do minimal inlining of callees.
+    Inline_Minimal = 0x1
+  };
 
 private:
   AnalysisManager &AMgr;
@@ -146,11 +146,12 @@ public:
   void enqueueEndOfPath(ExplodedNodeSet &S);
   void GenerateCallExitNode(ExplodedNode *N);
 
-  /// ViewGraph - Visualize the ExplodedGraph created by executing the
-  ///  simulation.
+  /// Visualize the ExplodedGraph created by executing the simulation.
   void ViewGraph(bool trim = false);
 
-  void ViewGraph(ExplodedNode** Beg, ExplodedNode** End);
+  /// Visualize a trimmed ExplodedGraph that only contains paths to the given
+  /// nodes.
+  void ViewGraph(ArrayRef<const ExplodedNode*> Nodes);
 
   /// getInitialState - Return the initial state used for the root vertex
   ///  in the ExplodedGraph.
@@ -222,6 +223,15 @@ public:
                      ExplodedNodeSet &Dst,
                      const CFGBlock *DstT,
                      const CFGBlock *DstF);
+
+  /// Called by CoreEngine.  Used to processing branching behavior
+  /// at static initalizers.
+  void processStaticInitializer(const DeclStmt *DS,
+                                NodeBuilderContext& BuilderCtx,
+                                ExplodedNode *Pred,
+                                ExplodedNodeSet &Dst,
+                                const CFGBlock *DstT,
+                                const CFGBlock *DstF);
 
   /// processIndirectGoto - Called by CoreEngine.  Used to generate successor
   ///  nodes by processing the 'effects' of a computed goto jump.
@@ -466,12 +476,14 @@ protected:
                                               SVal Loc, SVal Val);
   /// Call PointerEscape callback when a value escapes as a result of
   /// region invalidation.
-  ProgramStateRef processPointerEscapedOnInvalidateRegions(
+  /// \param[in] IsConst Specifies that the pointer is const.
+  ProgramStateRef notifyCheckersOfPointerEscape(
                             ProgramStateRef State,
                             const InvalidatedSymbols *Invalidated,
                             ArrayRef<const MemRegion *> ExplicitRegions,
                             ArrayRef<const MemRegion *> Regions,
-                            const CallEvent *Call);
+                            const CallEvent *Call,
+                            bool IsConst);
 
 public:
   // FIXME: 'tag' should be removed, and a LocationContext should be used
@@ -552,9 +564,10 @@ private:
 
   bool replayWithoutInlining(ExplodedNode *P, const LocationContext *CalleeLC);
 
-  /// Models a trivial copy or move constructor call with a simple bind.
+  /// Models a trivial copy or move constructor or trivial assignment operator
+  /// call with a simple bind.
   void performTrivialCopy(NodeBuilder &Bldr, ExplodedNode *Pred,
-                          const CXXConstructorCall &Call);
+                          const CallEvent &Call);
 
   /// If the value of the given expression is a NonLoc, copy it into a new
   /// temporary object region, and replace the value of the expression with

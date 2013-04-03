@@ -675,7 +675,7 @@ CFG* CFGBuilder::buildCFG(const Decl *D, Stmt *Statement) {
                                    E = BackpatchBlocks.end(); I != E; ++I ) {
 
     CFGBlock *B = I->block;
-    GotoStmt *G = cast<GotoStmt>(B->getTerminator());
+    const GotoStmt *G = cast<GotoStmt>(B->getTerminator());
     LabelMapTy::iterator LI = LabelMap.find(G->getLabel());
 
     // If there is no target for the goto, then we are looking at an
@@ -1653,6 +1653,21 @@ CFGBlock *CFGBuilder::VisitDeclSubExpr(DeclStmt *DS) {
   bool IsReference = false;
   bool HasTemporaries = false;
 
+  // Guard static initializers under a branch.
+  CFGBlock *blockAfterStaticInit = 0;
+
+  if (BuildOpts.AddStaticInitBranches && VD->isStaticLocal()) {
+    // For static variables, we need to create a branch to track
+    // whether or not they are initialized.
+    if (Block) {
+      Succ = Block;
+      Block = 0;
+      if (badCFG)
+        return 0;
+    }
+    blockAfterStaticInit = Succ;
+  }
+
   // Destructors of temporaries in initialization expression should be called
   // after initialization finishes.
   Expr *Init = VD->getInit();
@@ -1700,7 +1715,17 @@ CFGBlock *CFGBuilder::VisitDeclSubExpr(DeclStmt *DS) {
   if (ScopePos && VD == *ScopePos)
     ++ScopePos;
 
-  return Block ? Block : LastBlock;
+  CFGBlock *B = LastBlock;
+  if (blockAfterStaticInit) {
+    Succ = B;
+    Block = createBlock(false);
+    Block->setTerminator(DS);
+    addSuccessor(Block, blockAfterStaticInit);
+    addSuccessor(Block, B);
+    B = Block;
+  }
+
+  return B;
 }
 
 CFGBlock *CFGBuilder::VisitIfStmt(IfStmt *I) {
@@ -3640,6 +3665,11 @@ public:
   // Default case.
   void VisitStmt(Stmt *Terminator) {
     Terminator->printPretty(OS, Helper, Policy);
+  }
+
+  void VisitDeclStmt(DeclStmt *DS) {
+    VarDecl *VD = cast<VarDecl>(DS->getSingleDecl());
+    OS << "static init " << VD->getName();
   }
 
   void VisitForStmt(ForStmt *F) {

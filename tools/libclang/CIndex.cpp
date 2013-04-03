@@ -2456,7 +2456,8 @@ RefNamePieces buildPieces(unsigned NameFlags, bool IsMemberRefExpr,
 static llvm::sys::Mutex EnableMultithreadingMutex;
 static bool EnabledMultithreading;
 
-static void fatal_error_handler(void *user_data, const std::string& reason) {
+static void fatal_error_handler(void *user_data, const std::string& reason,
+                                bool gen_crash_diag) {
   // Write the result out to stderr avoiding errs() because raw_ostreams can
   // call report_fatal_error.
   fprintf(stderr, "LIBCLANG FATAL ERROR: %s\n", reason.c_str());
@@ -4458,6 +4459,7 @@ CXCursor clang_getCursorDefinition(CXCursor C) {
   case Decl::Label:  // FIXME: Is this right??
   case Decl::ClassScopeFunctionSpecialization:
   case Decl::Import:
+  case Decl::OMPThreadPrivate:
     return C;
 
   // Declaration kinds that don't make any sense here, but are
@@ -5984,20 +5986,26 @@ CXString clang_Module_getFullName(CXModule CXMod) {
   return cxstring::createDup(Mod->getFullModuleName());
 }
 
-unsigned clang_Module_getNumTopLevelHeaders(CXModule CXMod) {
-  if (!CXMod)
+unsigned clang_Module_getNumTopLevelHeaders(CXTranslationUnit TU,
+                                            CXModule CXMod) {
+  if (!TU || !CXMod)
     return 0;
   Module *Mod = static_cast<Module*>(CXMod);
-  return Mod->TopHeaders.size();
+  FileManager &FileMgr = cxtu::getASTUnit(TU)->getFileManager();
+  ArrayRef<const FileEntry *> TopHeaders = Mod->getTopHeaders(FileMgr);
+  return TopHeaders.size();
 }
 
-CXFile clang_Module_getTopLevelHeader(CXModule CXMod, unsigned Index) {
-  if (!CXMod)
+CXFile clang_Module_getTopLevelHeader(CXTranslationUnit TU,
+                                      CXModule CXMod, unsigned Index) {
+  if (!TU || !CXMod)
     return 0;
   Module *Mod = static_cast<Module*>(CXMod);
+  FileManager &FileMgr = cxtu::getASTUnit(TU)->getFileManager();
 
-  if (Index < Mod->TopHeaders.size())
-    return const_cast<FileEntry *>(Mod->TopHeaders[Index]);
+  ArrayRef<const FileEntry *> TopHeaders = Mod->getTopHeaders(FileMgr);
+  if (Index < TopHeaders.size())
+    return const_cast<FileEntry *>(TopHeaders[Index]);
 
   return 0;
 }
@@ -6298,10 +6306,12 @@ MacroInfo *cxindex::getMacroInfo(const IdentifierInfo &II,
   ASTUnit *Unit = cxtu::getASTUnit(TU);
   Preprocessor &PP = Unit->getPreprocessor();
   MacroDirective *MD = PP.getMacroDirectiveHistory(&II);
-  while (MD) {
-    if (MacroDefLoc == MD->getInfo()->getDefinitionLoc())
-      return MD->getInfo();
-    MD = MD->getPrevious();
+  if (MD) {
+    for (MacroDirective::DefInfo
+           Def = MD->getDefinition(); Def; Def = Def.getPreviousDefinition()) {
+      if (MacroDefLoc == Def.getMacroInfo()->getDefinitionLoc())
+        return Def.getMacroInfo();
+    }
   }
 
   return 0;
@@ -6357,7 +6367,7 @@ MacroDefinition *cxindex::checkForMacroInMacroDefinition(const MacroInfo *MI,
   if (!InnerMD)
     return 0;
 
-  return PPRec->findMacroDefinition(InnerMD->getInfo());
+  return PPRec->findMacroDefinition(InnerMD->getMacroInfo());
 }
 
 MacroDefinition *cxindex::checkForMacroInMacroDefinition(const MacroInfo *MI,

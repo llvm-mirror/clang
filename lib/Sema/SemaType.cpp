@@ -31,6 +31,7 @@
 #include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/Template.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/ErrorHandling.h"
 using namespace clang;
 
@@ -1085,52 +1086,22 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
   // Apply const/volatile/restrict qualifiers to T.
   if (unsigned TypeQuals = DS.getTypeQualifiers()) {
 
-    // Enforce C99 6.7.3p2: "Types other than pointer types derived from object
-    // or incomplete types shall not be restrict-qualified."  C++ also allows
-    // restrict-qualified references.
-    if (TypeQuals & DeclSpec::TQ_restrict) {
-      if (Result->isAnyPointerType() || Result->isReferenceType()) {
-        QualType EltTy;
-        if (Result->isObjCObjectPointerType())
-          EltTy = Result;
-        else
-          EltTy = Result->isPointerType() ?
-                    Result->getAs<PointerType>()->getPointeeType() :
-                    Result->getAs<ReferenceType>()->getPointeeType();
-
-        // If we have a pointer or reference, the pointee must have an object
-        // incomplete type.
-        if (!EltTy->isIncompleteOrObjectType()) {
-          S.Diag(DS.getRestrictSpecLoc(),
-               diag::err_typecheck_invalid_restrict_invalid_pointee)
-            << EltTy << DS.getSourceRange();
-          TypeQuals &= ~DeclSpec::TQ_restrict; // Remove the restrict qualifier.
-        }
-      } else {
-        S.Diag(DS.getRestrictSpecLoc(),
-               diag::err_typecheck_invalid_restrict_not_pointer)
-          << Result << DS.getSourceRange();
-        TypeQuals &= ~DeclSpec::TQ_restrict; // Remove the restrict qualifier.
-      }
-    }
-
     // Warn about CV qualifiers on functions: C99 6.7.3p8: "If the specification
     // of a function type includes any type qualifiers, the behavior is
     // undefined."
     if (Result->isFunctionType() && TypeQuals) {
-      // Get some location to point at, either the C or V location.
-      SourceLocation Loc;
       if (TypeQuals & DeclSpec::TQ_const)
-        Loc = DS.getConstSpecLoc();
+        S.Diag(DS.getConstSpecLoc(), diag::warn_typecheck_function_qualifiers)
+          << Result << DS.getSourceRange();
       else if (TypeQuals & DeclSpec::TQ_volatile)
-        Loc = DS.getVolatileSpecLoc();
+        S.Diag(DS.getVolatileSpecLoc(), diag::warn_typecheck_function_qualifiers)
+          << Result << DS.getSourceRange();
       else {
-        assert((TypeQuals & DeclSpec::TQ_restrict) &&
-               "Has CVR quals but not C, V, or R?");
-        Loc = DS.getRestrictSpecLoc();
+        assert((TypeQuals & (DeclSpec::TQ_restrict | DeclSpec::TQ_atomic)) &&
+               "Has CVRA quals but not C, V, R, or A?");
+        // No diagnostic; we'll diagnose 'restrict' or '_Atomic' applied to a
+        // function type later, in BuildQualifiedType.
       }
-      S.Diag(Loc, diag::warn_typecheck_function_qualifiers)
-        << Result << DS.getSourceRange();
     }
 
     // C++ [dcl.ref]p1:
@@ -1143,6 +1114,7 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
         TypeQuals && Result->isReferenceType()) {
       TypeQuals &= ~DeclSpec::TQ_const;
       TypeQuals &= ~DeclSpec::TQ_volatile;
+      TypeQuals &= ~DeclSpec::TQ_atomic;
     }
 
     // C90 6.5.3 constraints: "The same type qualifier shall not appear more
@@ -1160,12 +1132,17 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
           << "volatile";
       }
 
-      // C90 doesn't have restrict, so it doesn't force us to produce a warning
-      // in this case.
+      // C90 doesn't have restrict nor _Atomic, so it doesn't force us to
+      // produce a warning in this case.
     }
 
-    Qualifiers Quals = Qualifiers::fromCVRMask(TypeQuals);
-    Result = Context.getQualifiedType(Result, Quals);
+    QualType Qualified = S.BuildQualifiedType(Result, DeclLoc, TypeQuals, &DS);
+
+    // If adding qualifiers fails, just use the unqualified type.
+    if (Qualified.isNull())
+      declarator.setInvalidType(true);
+    else
+      Result = Qualified;
   }
 
   return Result;
@@ -1179,42 +1156,74 @@ static std::string getPrintableNameForEntity(DeclarationName Entity) {
 }
 
 QualType Sema::BuildQualifiedType(QualType T, SourceLocation Loc,
-                                  Qualifiers Qs) {
+                                  Qualifiers Qs, const DeclSpec *DS) {
   // Enforce C99 6.7.3p2: "Types other than pointer types derived from
   // object or incomplete types shall not be restrict-qualified."
   if (Qs.hasRestrict()) {
     unsigned DiagID = 0;
     QualType ProblemTy;
 
-    const Type *Ty = T->getCanonicalTypeInternal().getTypePtr();
-    if (const ReferenceType *RTy = dyn_cast<ReferenceType>(Ty)) {
-      if (!RTy->getPointeeType()->isIncompleteOrObjectType()) {
+    if (T->isAnyPointerType() || T->isReferenceType() ||
+        T->isMemberPointerType()) {
+      QualType EltTy;
+      if (T->isObjCObjectPointerType())
+        EltTy = T;
+      else if (const MemberPointerType *PTy = T->getAs<MemberPointerType>())
+        EltTy = PTy->getPointeeType();
+      else
+        EltTy = T->getPointeeType();
+
+      // If we have a pointer or reference, the pointee must have an object
+      // incomplete type.
+      if (!EltTy->isIncompleteOrObjectType()) {
         DiagID = diag::err_typecheck_invalid_restrict_invalid_pointee;
-        ProblemTy = T->getAs<ReferenceType>()->getPointeeType();
+        ProblemTy = EltTy;
       }
-    } else if (const PointerType *PTy = dyn_cast<PointerType>(Ty)) {
-      if (!PTy->getPointeeType()->isIncompleteOrObjectType()) {
-        DiagID = diag::err_typecheck_invalid_restrict_invalid_pointee;
-        ProblemTy = T->getAs<PointerType>()->getPointeeType();
-      }
-    } else if (const MemberPointerType *PTy = dyn_cast<MemberPointerType>(Ty)) {
-      if (!PTy->getPointeeType()->isIncompleteOrObjectType()) {
-        DiagID = diag::err_typecheck_invalid_restrict_invalid_pointee;
-        ProblemTy = T->getAs<PointerType>()->getPointeeType();
-      }
-    } else if (!Ty->isDependentType()) {
-      // FIXME: this deserves a proper diagnostic
-      DiagID = diag::err_typecheck_invalid_restrict_invalid_pointee;
+    } else if (!T->isDependentType()) {
+      DiagID = diag::err_typecheck_invalid_restrict_not_pointer;
       ProblemTy = T;
     }
 
     if (DiagID) {
-      Diag(Loc, DiagID) << ProblemTy;
+      Diag(DS ? DS->getRestrictSpecLoc() : Loc, DiagID) << ProblemTy;
       Qs.removeRestrict();
     }
   }
 
   return Context.getQualifiedType(T, Qs);
+}
+
+QualType Sema::BuildQualifiedType(QualType T, SourceLocation Loc,
+                                  unsigned CVRA, const DeclSpec *DS) {
+  // Convert from DeclSpec::TQ to Qualifiers::TQ by just dropping TQ_atomic.
+  unsigned CVR = CVRA & ~DeclSpec::TQ_atomic;
+
+  // C11 6.7.3/5:
+  //   If the same qualifier appears more than once in the same
+  //   specifier-qualifier-list, either directly or via one or more typedefs,
+  //   the behavior is the same as if it appeared only once.
+  //
+  // It's not specified what happens when the _Atomic qualifier is applied to
+  // a type specified with the _Atomic specifier, but we assume that this
+  // should be treated as if the _Atomic qualifier appeared multiple times.
+  if (CVRA & DeclSpec::TQ_atomic && !T->isAtomicType()) {
+    // C11 6.7.3/5:
+    //   If other qualifiers appear along with the _Atomic qualifier in a
+    //   specifier-qualifier-list, the resulting type is the so-qualified
+    //   atomic type.
+    //
+    // Don't need to worry about array types here, since _Atomic can't be
+    // applied to such types.
+    SplitQualType Split = T.getSplitUnqualifiedType();
+    T = BuildAtomicType(QualType(Split.Ty, 0),
+                        DS ? DS->getAtomicSpecLoc() : Loc);
+    if (T.isNull())
+      return T;
+    Split.Quals.addCVRQualifiers(CVR);
+    return BuildQualifiedType(T, Loc, Split.Quals);
+  }
+
+  return BuildQualifiedType(T, Loc, Qualifiers::fromCVRMask(CVR), DS);
 }
 
 /// \brief Build a paren type including \p T.
@@ -1719,13 +1728,28 @@ QualType Sema::BuildMemberPointerType(QualType T, QualType Class,
   // according to the class type, which means that we really need a
   // complete type if possible, which means we need to instantiate templates.
   //
-  // For now, just require a complete type, which will instantiate
-  // templates.  This will also error if the type is just forward-declared,
-  // which is a bug, but it's a bug that saves us from dealing with some
-  // complexities at the moment.
-  if (Context.getTargetInfo().getCXXABI().isMicrosoft() &&
-      RequireCompleteType(Loc, Class, diag::err_incomplete_type))
-    return QualType();
+  // If template instantiation fails or the type is just incomplete, we have to
+  // add an extra slot to the member pointer.  Yes, this does cause problems
+  // when passing pointers between TUs that disagree about the size.
+  if (Context.getTargetInfo().getCXXABI().isMicrosoft()) {
+    CXXRecordDecl *RD = Class->getAsCXXRecordDecl();
+    if (RD && !RD->hasAttr<MSInheritanceAttr>()) {
+      // Lock in the inheritance model on the first use of a member pointer.
+      // Otherwise we may disagree about the size at different points in the TU.
+      // FIXME: MSVC picks a model on the first use that needs to know the size,
+      // rather than on the first mention of the type, e.g. typedefs.
+      if (RequireCompleteType(Loc, Class, 0) && !RD->isBeingDefined()) {
+        // We know it doesn't have an attribute and it's incomplete, so use the
+        // unspecified inheritance model.  If we're in the record body, we can
+        // figure out the inheritance model.
+        for (CXXRecordDecl::redecl_iterator I = RD->redecls_begin(),
+             E = RD->redecls_end(); I != E; ++I) {
+          I->addAttr(::new (Context) UnspecifiedInheritanceAttr(
+              RD->getSourceRange(), Context));
+        }
+      }
+    }
+  }
 
   return Context.getMemberPointerType(T, Class.getTypePtr());
 }
@@ -1872,50 +1896,118 @@ static void inferARCWriteback(TypeProcessingState &state,
   // TODO: mark whether we did this inference?
 }
 
-static void DiagnoseIgnoredQualifiers(unsigned Quals,
-                                      SourceLocation ConstQualLoc,
-                                      SourceLocation VolatileQualLoc,
-                                      SourceLocation RestrictQualLoc,
-                                      Sema& S) {
-  std::string QualStr;
-  unsigned NumQuals = 0;
-  SourceLocation Loc;
-
-  FixItHint ConstFixIt;
-  FixItHint VolatileFixIt;
-  FixItHint RestrictFixIt;
+static void diagnoseIgnoredQualifiers(
+    Sema &S, unsigned Quals,
+    SourceLocation FallbackLoc,
+    SourceLocation ConstQualLoc = SourceLocation(),
+    SourceLocation VolatileQualLoc = SourceLocation(),
+    SourceLocation RestrictQualLoc = SourceLocation(),
+    SourceLocation AtomicQualLoc = SourceLocation()) {
+  if (!Quals)
+    return;
 
   const SourceManager &SM = S.getSourceManager();
 
-  // FIXME: The locations here are set kind of arbitrarily. It'd be nicer to
-  // find a range and grow it to encompass all the qualifiers, regardless of
-  // the order in which they textually appear.
-  if (Quals & Qualifiers::Const) {
-    ConstFixIt = FixItHint::CreateRemoval(ConstQualLoc);
-    QualStr = "const";
-    ++NumQuals;
-    if (!Loc.isValid() || SM.isBeforeInTranslationUnit(ConstQualLoc, Loc))
-      Loc = ConstQualLoc;
-  }
-  if (Quals & Qualifiers::Volatile) {
-    VolatileFixIt = FixItHint::CreateRemoval(VolatileQualLoc);
-    QualStr += (NumQuals == 0 ? "volatile" : " volatile");
-    ++NumQuals;
-    if (!Loc.isValid() || SM.isBeforeInTranslationUnit(VolatileQualLoc, Loc))
-      Loc = VolatileQualLoc;
-  }
-  if (Quals & Qualifiers::Restrict) {
-    RestrictFixIt = FixItHint::CreateRemoval(RestrictQualLoc);
-    QualStr += (NumQuals == 0 ? "restrict" : " restrict");
-    ++NumQuals;
-    if (!Loc.isValid() || SM.isBeforeInTranslationUnit(RestrictQualLoc, Loc))
-      Loc = RestrictQualLoc;
+  struct Qual {
+    unsigned Mask;
+    const char *Name;
+    SourceLocation Loc;
+  } const QualKinds[4] = {
+    { DeclSpec::TQ_const, "const", ConstQualLoc },
+    { DeclSpec::TQ_volatile, "volatile", VolatileQualLoc },
+    { DeclSpec::TQ_restrict, "restrict", RestrictQualLoc },
+    { DeclSpec::TQ_atomic, "_Atomic", AtomicQualLoc }
+  };
+
+  llvm::SmallString<32> QualStr;
+  unsigned NumQuals = 0;
+  SourceLocation Loc;
+  FixItHint FixIts[4];
+
+  // Build a string naming the redundant qualifiers.
+  for (unsigned I = 0; I != 4; ++I) {
+    if (Quals & QualKinds[I].Mask) {
+      if (!QualStr.empty()) QualStr += ' ';
+      QualStr += QualKinds[I].Name;
+
+      // If we have a location for the qualifier, offer a fixit.
+      SourceLocation QualLoc = QualKinds[I].Loc;
+      if (!QualLoc.isInvalid()) {
+        FixIts[NumQuals] = FixItHint::CreateRemoval(QualLoc);
+        if (Loc.isInvalid() || SM.isBeforeInTranslationUnit(QualLoc, Loc))
+          Loc = QualLoc;
+      }
+
+      ++NumQuals;
+    }
   }
 
-  assert(NumQuals > 0 && "No known qualifiers?");
+  S.Diag(Loc.isInvalid() ? FallbackLoc : Loc, diag::warn_qual_return_type)
+    << QualStr << NumQuals << FixIts[0] << FixIts[1] << FixIts[2] << FixIts[3];
+}
 
-  S.Diag(Loc, diag::warn_qual_return_type)
-    << QualStr << NumQuals << ConstFixIt << VolatileFixIt << RestrictFixIt;
+// Diagnose pointless type qualifiers on the return type of a function.
+static void diagnoseIgnoredFunctionQualifiers(Sema &S, QualType RetTy,
+                                              Declarator &D,
+                                              unsigned FunctionChunkIndex) {
+  if (D.getTypeObject(FunctionChunkIndex).Fun.hasTrailingReturnType()) {
+    // FIXME: TypeSourceInfo doesn't preserve location information for
+    // qualifiers.
+    diagnoseIgnoredQualifiers(S, RetTy.getLocalCVRQualifiers(),
+                              D.getIdentifierLoc());
+    return;
+  }
+
+  for (unsigned OuterChunkIndex = FunctionChunkIndex + 1,
+                End = D.getNumTypeObjects();
+       OuterChunkIndex != End; ++OuterChunkIndex) {
+    DeclaratorChunk &OuterChunk = D.getTypeObject(OuterChunkIndex);
+    switch (OuterChunk.Kind) {
+    case DeclaratorChunk::Paren:
+      continue;
+
+    case DeclaratorChunk::Pointer: {
+      DeclaratorChunk::PointerTypeInfo &PTI = OuterChunk.Ptr;
+      diagnoseIgnoredQualifiers(
+          S, PTI.TypeQuals,
+          SourceLocation(),
+          SourceLocation::getFromRawEncoding(PTI.ConstQualLoc),
+          SourceLocation::getFromRawEncoding(PTI.VolatileQualLoc),
+          SourceLocation::getFromRawEncoding(PTI.RestrictQualLoc),
+          SourceLocation::getFromRawEncoding(PTI.AtomicQualLoc));
+      return;
+    }
+
+    case DeclaratorChunk::Function:
+    case DeclaratorChunk::BlockPointer:
+    case DeclaratorChunk::Reference:
+    case DeclaratorChunk::Array:
+    case DeclaratorChunk::MemberPointer:
+      // FIXME: We can't currently provide an accurate source location and a
+      // fix-it hint for these.
+      unsigned AtomicQual = RetTy->isAtomicType() ? DeclSpec::TQ_atomic : 0;
+      diagnoseIgnoredQualifiers(S, RetTy.getCVRQualifiers() | AtomicQual,
+                                D.getIdentifierLoc());
+      return;
+    }
+
+    llvm_unreachable("unknown declarator chunk kind");
+  }
+
+  // If the qualifiers come from a conversion function type, don't diagnose
+  // them -- they're not necessarily redundant, since such a conversion
+  // operator can be explicitly called as "x.operator const int()".
+  if (D.getName().getKind() == UnqualifiedId::IK_ConversionFunctionId)
+    return;
+
+  // Just parens all the way out to the decl specifiers. Diagnose any qualifiers
+  // which are present there.
+  diagnoseIgnoredQualifiers(S, D.getDeclSpec().getTypeQualifiers(),
+                            D.getIdentifierLoc(),
+                            D.getDeclSpec().getConstSpecLoc(),
+                            D.getDeclSpec().getVolatileSpecLoc(),
+                            D.getDeclSpec().getRestrictSpecLoc(),
+                            D.getDeclSpec().getAtomicSpecLoc());
 }
 
 static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
@@ -2512,31 +2604,10 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
 
       // cv-qualifiers on return types are pointless except when the type is a
       // class type in C++.
-      if (isa<PointerType>(T) && T.getLocalCVRQualifiers() &&
-          (D.getName().getKind() != UnqualifiedId::IK_ConversionFunctionId) &&
-          (!LangOpts.CPlusPlus || !T->isDependentType())) {
-        assert(chunkIndex + 1 < e && "No DeclaratorChunk for the return type?");
-        DeclaratorChunk ReturnTypeChunk = D.getTypeObject(chunkIndex + 1);
-        assert(ReturnTypeChunk.Kind == DeclaratorChunk::Pointer);
-
-        DeclaratorChunk::PointerTypeInfo &PTI = ReturnTypeChunk.Ptr;
-
-        DiagnoseIgnoredQualifiers(PTI.TypeQuals,
-            SourceLocation::getFromRawEncoding(PTI.ConstQualLoc),
-            SourceLocation::getFromRawEncoding(PTI.VolatileQualLoc),
-            SourceLocation::getFromRawEncoding(PTI.RestrictQualLoc),
-            S);
-
-      } else if (T.getCVRQualifiers() && D.getDeclSpec().getTypeQualifiers() &&
-          (!LangOpts.CPlusPlus ||
-           (!T->isDependentType() && !T->isRecordType()))) {
-
-        DiagnoseIgnoredQualifiers(D.getDeclSpec().getTypeQualifiers(),
-                                  D.getDeclSpec().getConstSpecLoc(),
-                                  D.getDeclSpec().getVolatileSpecLoc(),
-                                  D.getDeclSpec().getRestrictSpecLoc(),
-                                  S);
-      }
+      if ((T.getCVRQualifiers() || T->isAtomicType()) &&
+          !(S.getLangOpts().CPlusPlus &&
+            (T->isDependentType() || T->isRecordType())))
+        diagnoseIgnoredFunctionQualifiers(S, T, D, chunkIndex);
 
       // Objective-C ARC ownership qualifiers are ignored on the function
       // return type (by type canonicalization). Complain if this attribute
@@ -3339,13 +3410,22 @@ namespace {
       TL.setNameLoc(DS.getTypeSpecTypeNameLoc());
     }
     void VisitAtomicTypeLoc(AtomicTypeLoc TL) {
-      TL.setKWLoc(DS.getTypeSpecTypeLoc());
-      TL.setParensRange(DS.getTypeofParensRange());
+      // An AtomicTypeLoc can come from either an _Atomic(...) type specifier
+      // or an _Atomic qualifier.
+      if (DS.getTypeSpecType() == DeclSpec::TST_atomic) {
+        TL.setKWLoc(DS.getTypeSpecTypeLoc());
+        TL.setParensRange(DS.getTypeofParensRange());
 
-      TypeSourceInfo *TInfo = 0;
-      Sema::GetTypeFromParser(DS.getRepAsType(), &TInfo);
-      assert(TInfo);
-      TL.getValueLoc().initializeFullCopy(TInfo->getTypeLoc());
+        TypeSourceInfo *TInfo = 0;
+        Sema::GetTypeFromParser(DS.getRepAsType(), &TInfo);
+        assert(TInfo);
+        TL.getValueLoc().initializeFullCopy(TInfo->getTypeLoc());
+      } else {
+        TL.setKWLoc(DS.getAtomicSpecLoc());
+        // No parens, to indicate this was spelled as an _Atomic qualifier.
+        TL.setParensRange(SourceRange());
+        Visit(TL.getValueLoc());
+      }
     }
 
     void VisitTypeLoc(TypeLoc TL) {
@@ -3468,6 +3548,29 @@ namespace {
   };
 }
 
+static void fillAtomicQualLoc(AtomicTypeLoc ATL, const DeclaratorChunk &Chunk) {
+  SourceLocation Loc;
+  switch (Chunk.Kind) {
+  case DeclaratorChunk::Function:
+  case DeclaratorChunk::Array:
+  case DeclaratorChunk::Paren:
+    llvm_unreachable("cannot be _Atomic qualified");
+
+  case DeclaratorChunk::Pointer:
+    Loc = SourceLocation::getFromRawEncoding(Chunk.Ptr.AtomicQualLoc);
+    break;
+
+  case DeclaratorChunk::BlockPointer:
+  case DeclaratorChunk::Reference:
+  case DeclaratorChunk::MemberPointer:
+    // FIXME: Provide a source location for the _Atomic keyword.
+    break;
+  }
+
+  ATL.setKWLoc(Loc);
+  ATL.setParensRange(SourceRange());
+}
+
 /// \brief Create and instantiate a TypeSourceInfo with type source information.
 ///
 /// \param T QualType referring to the type as written in source code.
@@ -3489,6 +3592,13 @@ Sema::GetTypeSourceInfoForDeclarator(Declarator &D, QualType T,
   }
 
   for (unsigned i = 0, e = D.getNumTypeObjects(); i != e; ++i) {
+    // An AtomicTypeLoc might be produced by an atomic qualifier in this
+    // declarator chunk.
+    if (AtomicTypeLoc ATL = CurrTL.getAs<AtomicTypeLoc>()) {
+      fillAtomicQualLoc(ATL, D.getTypeObject(i));
+      CurrTL = ATL.getValueLoc().getUnqualifiedLoc();
+    }
+
     while (AttributedTypeLoc TL = CurrTL.getAs<AttributedTypeLoc>()) {
       fillAttributedTypeLoc(TL, D.getTypeObject(i).getAttrs());
       CurrTL = TL.getNextTypeLoc().getUnqualifiedLoc();

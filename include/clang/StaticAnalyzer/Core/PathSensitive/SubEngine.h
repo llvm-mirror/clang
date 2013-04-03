@@ -72,6 +72,15 @@ public:
                              const CFGBlock *DstT,
                              const CFGBlock *DstF) = 0;
 
+  /// Called by CoreEngine.  Used to processing branching behavior
+  /// at static initalizers.
+  virtual void processStaticInitializer(const DeclStmt *DS,
+                                        NodeBuilderContext& BuilderCtx,
+                                        ExplodedNode *Pred,
+                                        ExplodedNodeSet &Dst,
+                                        const CFGBlock *DstT,
+                                        const CFGBlock *DstF) = 0;
+
   /// Called by CoreEngine.  Used to generate successor
   /// nodes by processing the 'effects' of a computed goto jump.
   virtual void processIndirectGoto(IndirectGotoNodeBuilder& builder) = 0;
@@ -120,11 +129,12 @@ public:
   processPointerEscapedOnBind(ProgramStateRef State, SVal Loc, SVal Val) = 0;
 
   virtual ProgramStateRef
-  processPointerEscapedOnInvalidateRegions(ProgramStateRef State,
+  notifyCheckersOfPointerEscape(ProgramStateRef State,
                            const InvalidatedSymbols *Invalidated,
                            ArrayRef<const MemRegion *> ExplicitRegions,
                            ArrayRef<const MemRegion *> Regions,
-                           const CallEvent *Call) = 0;
+                           const CallEvent *Call,
+                           bool IsConst = false) = 0;
 
   /// printState - Called by ProgramStateManager to print checker-specific data.
   virtual void printState(raw_ostream &Out, ProgramStateRef State,

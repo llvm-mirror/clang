@@ -217,6 +217,9 @@ struct ARCEntrypoints {
   /// A void(void) inline asm to use to mark that the return value of
   /// a call will be immediately retain.
   llvm::InlineAsm *retainAutoreleasedReturnValueMarker;
+
+  /// void clang.arc.use(...);
+  llvm::Constant *clang_arc_use;
 };
 
 /// CodeGenModule - This class organizes the cross-function state that is used
@@ -377,6 +380,12 @@ class CodeGenModule : public CodeGenTypeCache {
   struct {
     int GlobalUniqueCount;
   } Block;
+
+  /// void @llvm.lifetime.start(i64 %size, i8* nocapture <ptr>)
+  llvm::Constant *LifetimeStartFn;
+
+  /// void @llvm.lifetime.end(i64 %size, i8* nocapture <ptr>)
+  llvm::Constant *LifetimeEndFn;
 
   GlobalDecl initializedGlobalDecl;
 
@@ -753,6 +762,9 @@ public:
   llvm::Constant *getBlockObjectDispose();
 
   ///@}
+
+  llvm::Constant *getLLVMLifetimeStartFn();
+  llvm::Constant *getLLVMLifetimeEndFn();
 
   // UpdateCompleteType - Make sure that this type is translated.
   void UpdateCompletedType(const TagDecl *TD);

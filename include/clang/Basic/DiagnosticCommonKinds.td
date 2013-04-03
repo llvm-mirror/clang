@@ -52,8 +52,6 @@ def err_invalid_numeric_udl : Error<
   "numeric literal with user-defined suffix cannot be used here">;
 
 // Parse && Sema
-def ext_no_declarators : ExtWarn<"declaration does not declare anything">,
-  InGroup<MissingDeclarations>;
 def err_param_redefinition : Error<"redefinition of parameter %0">;
 def warn_method_param_redefinition : Warning<"redefinition of method parameter %0">;
 def warn_method_param_declaration : Warning<"redeclaration of method parameter %0">,
@@ -79,6 +77,7 @@ def note_decl_hiding_tag_type : Note<
   "%1 %0 is hidden by a non-type declaration of %0 here">;
 def err_attribute_not_type_attr : Error<
   "%0 attribute cannot be applied to types">;
+def err_enum_template : Error<"enumeration cannot be a template">;
 
 // Sema && Lex
 def ext_c99_longlong : Extension<

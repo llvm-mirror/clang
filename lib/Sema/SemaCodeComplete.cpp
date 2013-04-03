@@ -2541,6 +2541,27 @@ CodeCompletionResult::CreateCodeCompletionString(ASTContext &Ctx,
     if (Declaration) {
       Result.addParentContext(Declaration->getDeclContext());
       Pattern->ParentName = Result.getParentName();
+      // Provide code completion comment for self.GetterName where
+      // GetterName is the getter method for a property with name
+      // different from the property name (declared via a property
+      // getter attribute.
+      const NamedDecl *ND = Declaration;
+      if (const ObjCMethodDecl *M = dyn_cast<ObjCMethodDecl>(ND))
+        if (M->isPropertyAccessor())
+          if (const ObjCPropertyDecl *PDecl = M->findPropertyDecl())
+            if (PDecl->getGetterName() == M->getSelector() &&
+                PDecl->getIdentifier() != M->getIdentifier()) {
+              if (const RawComment *RC = 
+                    Ctx.getRawCommentForAnyRedecl(M)) {
+                Result.addBriefComment(RC->getBriefText(Ctx));
+                Pattern->BriefComment = Result.getBriefComment();
+              }
+              else if (const RawComment *RC = 
+                         Ctx.getRawCommentForAnyRedecl(PDecl)) {
+                Result.addBriefComment(RC->getBriefText(Ctx));
+                Pattern->BriefComment = Result.getBriefComment();
+              }
+            }
     }
     
     return Pattern;
@@ -2554,7 +2575,7 @@ CodeCompletionResult::CreateCodeCompletionString(ASTContext &Ctx,
   if (Kind == RK_Macro) {
     const MacroDirective *MD = PP.getMacroDirectiveHistory(Macro);
     assert(MD && "Not a macro?");
-    const MacroInfo *MI = MD->getInfo();
+    const MacroInfo *MI = MD->getMacroInfo();
 
     Result.AddTypedTextChunk(
                             Result.getAllocator().CopyString(Macro->getName()));
@@ -3708,6 +3729,9 @@ void Sema::CodeCompleteTypeQualifiers(DeclSpec &DS) {
   if (getLangOpts().C99 &&
       !(DS.getTypeQualifiers() & DeclSpec::TQ_restrict))
     Results.AddResult("restrict");
+  if (getLangOpts().C11 &&
+      !(DS.getTypeQualifiers() & DeclSpec::TQ_atomic))
+    Results.AddResult("_Atomic");
   Results.ExitScope();
   HandleCodeCompleteResults(this, CodeCompleter, 
                             Results.getCompletionContext(),
@@ -5315,7 +5339,7 @@ void Sema::CodeCompleteObjCSuperMessage(Scope *S, SourceLocation SuperLoc,
   } else {
     // "super" may be the name of a type or variable. Figure out which
     // it is.
-    IdentifierInfo *Super = &Context.Idents.get("super");
+    IdentifierInfo *Super = getSuperIdentifier();
     NamedDecl *ND = LookupSingleName(S, Super, SuperLoc, 
                                      LookupOrdinaryName);
     if ((CDecl = dyn_cast_or_null<ObjCInterfaceDecl>(ND))) {

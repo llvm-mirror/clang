@@ -38,6 +38,43 @@
 using namespace clang;
 using namespace sema;
 
+/// \brief Handle the result of the special case name lookup for inheriting
+/// constructor declarations. 'NS::X::X' and 'NS::X<...>::X' are treated as
+/// constructor names in member using declarations, even if 'X' is not the
+/// name of the corresponding type.
+ParsedType Sema::getInheritingConstructorName(CXXScopeSpec &SS,
+                                              SourceLocation NameLoc,
+                                              IdentifierInfo &Name) {
+  NestedNameSpecifier *NNS = SS.getScopeRep();
+
+  // Convert the nested-name-specifier into a type.
+  QualType Type;
+  switch (NNS->getKind()) {
+  case NestedNameSpecifier::TypeSpec:
+  case NestedNameSpecifier::TypeSpecWithTemplate:
+    Type = QualType(NNS->getAsType(), 0);
+    break;
+
+  case NestedNameSpecifier::Identifier:
+    // Strip off the last layer of the nested-name-specifier and build a
+    // typename type for it.
+    assert(NNS->getAsIdentifier() == &Name && "not a constructor name");
+    Type = Context.getDependentNameType(ETK_None, NNS->getPrefix(),
+                                        NNS->getAsIdentifier());
+    break;
+
+  case NestedNameSpecifier::Global:
+  case NestedNameSpecifier::Namespace:
+  case NestedNameSpecifier::NamespaceAlias:
+    llvm_unreachable("Nested name specifier is not a type for inheriting ctor");
+  }
+
+  // This reference to the type is located entirely at the location of the
+  // final identifier in the qualified-id.
+  return CreateParsedType(Type,
+                          Context.getTrivialTypeSourceInfo(Type, NameLoc));
+}
+
 ParsedType Sema::getDestructorName(SourceLocation TildeLoc,
                                    IdentifierInfo &II,
                                    SourceLocation NameLoc,
@@ -264,8 +301,16 @@ ParsedType Sema::getDestructorName(SourceLocation TildeLoc,
   } else if (ObjectTypePtr)
     Diag(NameLoc, diag::err_ident_in_dtor_not_a_type)
       << &II;
-  else
-    Diag(NameLoc, diag::err_destructor_class_name);
+  else {
+    SemaDiagnosticBuilder DtorDiag = Diag(NameLoc,
+                                          diag::err_destructor_class_name);
+    if (S) {
+      const DeclContext *Ctx = static_cast<DeclContext*>(S->getEntity());
+      if (const CXXRecordDecl *Class = dyn_cast_or_null<CXXRecordDecl>(Ctx))
+        DtorDiag << FixItHint::CreateReplacement(SourceRange(NameLoc),
+                                                 Class->getNameAsString());
+    }
+  }
 
   return ParsedType();
 }
@@ -2930,10 +2975,13 @@ static bool CheckUnaryTypeTraitTypeCompleteness(Sema &S,
     // type due to the overarching C++0x type predicates being implemented
     // requiring the complete type.
   case UTT_HasNothrowAssign:
+  case UTT_HasNothrowMoveAssign:
   case UTT_HasNothrowConstructor:
   case UTT_HasNothrowCopy:
   case UTT_HasTrivialAssign:
+  case UTT_HasTrivialMoveAssign:
   case UTT_HasTrivialDefaultConstructor:
+  case UTT_HasTrivialMoveConstructor:
   case UTT_HasTrivialCopy:
   case UTT_HasTrivialDestructor:
   case UTT_HasVirtualDestructor:
@@ -2950,6 +2998,42 @@ static bool CheckUnaryTypeTraitTypeCompleteness(Sema &S,
       Loc, ElTy, diag::err_incomplete_type_used_in_type_trait_expr);
   }
   llvm_unreachable("Type trait not handled by switch");
+}
+
+static bool HasNoThrowOperator(const RecordType *RT, OverloadedOperatorKind Op,
+                               Sema &Self, SourceLocation KeyLoc, ASTContext &C,
+                               bool (CXXRecordDecl::*HasTrivial)() const, 
+                               bool (CXXRecordDecl::*HasNonTrivial)() const, 
+                               bool (CXXMethodDecl::*IsDesiredOp)() const)
+{
+  CXXRecordDecl *RD = cast<CXXRecordDecl>(RT->getDecl());
+  if ((RD->*HasTrivial)() && !(RD->*HasNonTrivial)())
+    return true;
+
+  DeclarationName Name = C.DeclarationNames.getCXXOperatorName(Op);
+  DeclarationNameInfo NameInfo(Name, KeyLoc);
+  LookupResult Res(Self, NameInfo, Sema::LookupOrdinaryName);
+  if (Self.LookupQualifiedName(Res, RD)) {
+    bool FoundOperator = false;
+    Res.suppressDiagnostics();
+    for (LookupResult::iterator Op = Res.begin(), OpEnd = Res.end();
+         Op != OpEnd; ++Op) {
+      if (isa<FunctionTemplateDecl>(*Op))
+        continue;
+
+      CXXMethodDecl *Operator = cast<CXXMethodDecl>(*Op);
+      if((Operator->*IsDesiredOp)()) {
+        FoundOperator = true;
+        const FunctionProtoType *CPT =
+          Operator->getType()->getAs<FunctionProtoType>();
+        CPT = Self.ResolveExceptionSpec(KeyLoc, CPT);
+        if (!CPT || !CPT->isNothrow(Self.Context))
+          return false;
+      }
+    }
+    return FoundOperator;
+  }
+  return false;
 }
 
 static bool EvaluateUnaryTypeTrait(Sema &Self, UnaryTypeTrait UTT,
@@ -3088,6 +3172,15 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, UnaryTypeTrait UTT,
       return RD->hasTrivialDefaultConstructor() &&
              !RD->hasNonTrivialDefaultConstructor();
     return false;
+  case UTT_HasTrivialMoveConstructor:
+    //  This trait is implemented by MSVC 2012 and needed to parse the
+    //  standard library headers. Specifically this is used as the logic
+    //  behind std::is_trivially_move_constructible (20.9.4.3).
+    if (T.isPODType(Self.Context))
+      return true;
+    if (CXXRecordDecl *RD = C.getBaseElementType(T)->getAsCXXRecordDecl())
+      return RD->hasTrivialMoveConstructor() && !RD->hasNonTrivialMoveConstructor();
+    return false;
   case UTT_HasTrivialCopy:
     // http://gcc.gnu.org/onlinedocs/gcc/Type-Traits.html:
     //   If __is_pod (type) is true or type is a reference type then
@@ -3099,6 +3192,15 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, UnaryTypeTrait UTT,
     if (CXXRecordDecl *RD = T->getAsCXXRecordDecl())
       return RD->hasTrivialCopyConstructor() &&
              !RD->hasNonTrivialCopyConstructor();
+    return false;
+  case UTT_HasTrivialMoveAssign:
+    //  This trait is implemented by MSVC 2012 and needed to parse the
+    //  standard library headers. Specifically it is used as the logic
+    //  behind std::is_trivially_move_assignable (20.9.4.3)
+    if (T.isPODType(Self.Context))
+      return true;
+    if (CXXRecordDecl *RD = C.getBaseElementType(T)->getAsCXXRecordDecl())
+      return RD->hasTrivialMoveAssignment() && !RD->hasNonTrivialMoveAssignment();
     return false;
   case UTT_HasTrivialAssign:
     // http://gcc.gnu.org/onlinedocs/gcc/Type-Traits.html:
@@ -3153,38 +3255,26 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, UnaryTypeTrait UTT,
     if (T->isReferenceType())
       return false;
     if (T.isPODType(Self.Context) || T->isObjCLifetimeType())
-      return true;     
-    if (CXXRecordDecl *RD = T->getAsCXXRecordDecl()) {
-      if (RD->hasTrivialCopyAssignment() && !RD->hasNonTrivialCopyAssignment())
-        return true;
+      return true;
 
-      bool FoundAssign = false;
-      DeclarationName Name = C.DeclarationNames.getCXXOperatorName(OO_Equal);
-      LookupResult Res(Self, DeclarationNameInfo(Name, KeyLoc),
-                       Sema::LookupOrdinaryName);
-      if (Self.LookupQualifiedName(Res, RD)) {
-        Res.suppressDiagnostics();
-        for (LookupResult::iterator Op = Res.begin(), OpEnd = Res.end();
-             Op != OpEnd; ++Op) {
-          if (isa<FunctionTemplateDecl>(*Op))
-            continue;
-          
-          CXXMethodDecl *Operator = cast<CXXMethodDecl>(*Op);
-          if (Operator->isCopyAssignmentOperator()) {
-            FoundAssign = true;
-            const FunctionProtoType *CPT
-                = Operator->getType()->getAs<FunctionProtoType>();
-            CPT = Self.ResolveExceptionSpec(KeyLoc, CPT);
-            if (!CPT)
-              return false;
-            if (!CPT->isNothrow(Self.Context))
-              return false;
-          }
-        }
-      }
-      
-      return FoundAssign;
-    }
+    if (const RecordType *RT = T->getAs<RecordType>())
+      return HasNoThrowOperator(RT, OO_Equal, Self, KeyLoc, C,
+                                &CXXRecordDecl::hasTrivialCopyAssignment,
+                                &CXXRecordDecl::hasNonTrivialCopyAssignment,
+                                &CXXMethodDecl::isCopyAssignmentOperator);
+    return false;
+  case UTT_HasNothrowMoveAssign:
+    //  This trait is implemented by MSVC 2012 and needed to parse the
+    //  standard library headers. Specifically this is used as the logic
+    //  behind std::is_nothrow_move_assignable (20.9.4.3).
+    if (T.isPODType(Self.Context))
+      return true;
+
+    if (const RecordType *RT = C.getBaseElementType(T)->getAs<RecordType>())
+      return HasNoThrowOperator(RT, OO_Equal, Self, KeyLoc, C,
+                                &CXXRecordDecl::hasTrivialMoveAssignment,
+                                &CXXRecordDecl::hasNonTrivialMoveAssignment,
+                                &CXXMethodDecl::isMoveAssignmentOperator);
     return false;
   case UTT_HasNothrowCopy:
     // http://gcc.gnu.org/onlinedocs/gcc/Type-Traits.html:

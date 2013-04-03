@@ -601,6 +601,7 @@ public:
     bool AddInitializers;
     bool AddImplicitDtors;
     bool AddTemporaryDtors;
+    bool AddStaticInitBranches;
 
     bool alwaysAdd(const Stmt *stmt) const {
       return alwaysAddMask[stmt->getStmtClass()];
@@ -621,7 +622,8 @@ public:
       ,AddEHEdges(false)
       ,AddInitializers(false)
       ,AddImplicitDtors(false)
-      ,AddTemporaryDtors(false) {}
+      ,AddTemporaryDtors(false)
+      ,AddStaticInitBranches(false) {}
   };
 
   /// \brief Provides a custom implementation of the iterator class to have the
@@ -841,17 +843,10 @@ namespace llvm {
 
 /// Implement simplify_type for CFGTerminator, so that we can dyn_cast from
 /// CFGTerminator to a specific Stmt class.
-template <> struct simplify_type<const ::clang::CFGTerminator> {
-  typedef const ::clang::Stmt *SimpleType;
-  static SimpleType getSimplifiedValue(const ::clang::CFGTerminator &Val) {
-    return Val.getStmt();
-  }
-};
-
 template <> struct simplify_type< ::clang::CFGTerminator> {
   typedef ::clang::Stmt *SimpleType;
-  static SimpleType getSimplifiedValue(const ::clang::CFGTerminator &Val) {
-    return const_cast<SimpleType>(Val.getStmt());
+  static SimpleType getSimplifiedValue(::clang::CFGTerminator Val) {
+    return Val.getStmt();
   }
 };
 

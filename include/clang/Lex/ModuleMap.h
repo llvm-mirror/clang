@@ -33,6 +33,7 @@ class FileEntry;
 class FileManager;
 class DiagnosticConsumer;
 class DiagnosticsEngine;
+class HeaderSearch;
 class ModuleMapParser;
   
 class ModuleMap {
@@ -40,6 +41,7 @@ class ModuleMap {
   IntrusiveRefCntPtr<DiagnosticsEngine> Diags;
   const LangOptions &LangOpts;
   const TargetInfo *Target;
+  HeaderSearch &HeaderInfo;
   
   /// \brief The directory used for Clang-supplied, builtin include headers,
   /// such as "stdint.h".
@@ -132,7 +134,20 @@ class ModuleMap {
   Module::ExportDecl 
   resolveExport(Module *Mod, const Module::UnresolvedExportDecl &Unresolved,
                 bool Complain) const;
-  
+
+  /// \brief Resolve the given module id to an actual module.
+  ///
+  /// \param Id The module-id to resolve.
+  ///
+  /// \param Mod The module in which we're resolving the module-id.
+  ///
+  /// \param Complain Whether this routine should complain about unresolvable
+  /// module-ids.
+  ///
+  /// \returns The resolved module, or null if the module-id could not be
+  /// resolved.
+  Module *resolveModuleId(const ModuleId &Id, Module *Mod, bool Complain) const;
+
 public:
   /// \brief Construct a new module map.
   ///
@@ -147,7 +162,8 @@ public:
   ///
   /// \param Target The target for this translation unit.
   ModuleMap(FileManager &FileMgr, const DiagnosticConsumer &DC,
-            const LangOptions &LangOpts, const TargetInfo *Target);
+            const LangOptions &LangOpts, const TargetInfo *Target,
+            HeaderSearch &HeaderInfo);
 
   /// \brief Destroy the module map.
   ///
@@ -161,6 +177,7 @@ public:
   void setBuiltinIncludeDir(const DirectoryEntry *Dir) {
     BuiltinIncludeDir = Dir;
   }
+  const DirectoryEntry *getBuiltinIncludeDir() { return BuiltinIncludeDir; }
 
   /// \brief Retrieve the module that owns the given header file, if any.
   ///
@@ -262,7 +279,17 @@ public:
   /// false otherwise.
   bool resolveExports(Module *Mod, bool Complain);
 
-  /// \brief Infers the (sub)module based on the given source location and 
+  /// \brief Resolve all of the unresolved conflicts in the given module.
+  ///
+  /// \param Mod The module whose conflicts should be resolved.
+  ///
+  /// \param Complain Whether to emit diagnostics for failures.
+  ///
+  /// \returns true if any errors were encountered while resolving conflicts,
+  /// false otherwise.
+  bool resolveConflicts(Module *Mod, bool Complain);
+
+  /// \brief Infers the (sub)module based on the given source location and
   /// source manager.
   ///
   /// \param Loc The location within the source that we are querying, along

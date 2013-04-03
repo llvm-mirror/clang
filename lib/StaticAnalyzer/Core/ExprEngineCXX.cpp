@@ -48,13 +48,25 @@ void ExprEngine::CreateCXXTemporaryObject(const MaterializeTemporaryExpr *ME,
   Bldr.generateNode(ME, Pred, state);
 }
 
+// FIXME: This is the sort of code that should eventually live in a Core
+// checker rather than as a special case in ExprEngine.
 void ExprEngine::performTrivialCopy(NodeBuilder &Bldr, ExplodedNode *Pred,
-                                    const CXXConstructorCall &Call) {
-  const CXXConstructExpr *CtorExpr = Call.getOriginExpr();
-  assert(CtorExpr->getConstructor()->isCopyOrMoveConstructor());
-  assert(CtorExpr->getConstructor()->isTrivial());
+                                    const CallEvent &Call) {
+  SVal ThisVal;
+  bool AlwaysReturnsLValue;
+  if (const CXXConstructorCall *Ctor = dyn_cast<CXXConstructorCall>(&Call)) {
+    assert(Ctor->getDecl()->isTrivial());
+    assert(Ctor->getDecl()->isCopyOrMoveConstructor());
+    ThisVal = Ctor->getCXXThisVal();
+    AlwaysReturnsLValue = false;
+  } else {
+    assert(cast<CXXMethodDecl>(Call.getDecl())->isTrivial());
+    assert(cast<CXXMethodDecl>(Call.getDecl())->getOverloadedOperator() ==
+           OO_Equal);
+    ThisVal = cast<CXXInstanceCall>(Call).getCXXThisVal();
+    AlwaysReturnsLValue = true;
+  }
 
-  SVal ThisVal = Call.getCXXThisVal();
   const LocationContext *LCtx = Pred->getLocationContext();
 
   ExplodedNodeSet Dst;
@@ -62,17 +74,24 @@ void ExprEngine::performTrivialCopy(NodeBuilder &Bldr, ExplodedNode *Pred,
 
   SVal V = Call.getArgSVal(0);
 
-  // Make sure the value being copied is not unknown.
+  // If the value being copied is not unknown, load from its location to get
+  // an aggregate rvalue.
   if (Optional<Loc> L = V.getAs<Loc>())
     V = Pred->getState()->getSVal(*L);
+  else
+    assert(V.isUnknown());
 
-  evalBind(Dst, CtorExpr, Pred, ThisVal, V, true);
+  const Expr *CallExpr = Call.getOriginExpr();
+  evalBind(Dst, CallExpr, Pred, ThisVal, V, true);
 
-  PostStmt PS(CtorExpr, LCtx);
+  PostStmt PS(CallExpr, LCtx);
   for (ExplodedNodeSet::iterator I = Dst.begin(), E = Dst.end();
        I != E; ++I) {
     ProgramStateRef State = (*I)->getState();
-    State = bindReturnValue(Call, LCtx, State);
+    if (AlwaysReturnsLValue)
+      State = State->BindExpr(CallExpr, LCtx, ThisVal);
+    else
+      State = bindReturnValue(Call, LCtx, State);
     Bldr.generateNode(PS, State, *I);
   }
 }
@@ -255,15 +274,35 @@ void ExprEngine::VisitCXXNewExpr(const CXXNewExpr *CNE, ExplodedNode *Pred,
   // Also, we need to decide how allocators actually work -- they're not
   // really part of the CXXNewExpr because they happen BEFORE the
   // CXXConstructExpr subexpression. See PR12014 for some discussion.
-  StmtNodeBuilder Bldr(Pred, Dst, *currBldrCtx);
   
   unsigned blockCount = currBldrCtx->blockCount();
   const LocationContext *LCtx = Pred->getLocationContext();
-  DefinedOrUnknownSVal symVal = svalBuilder.conjureSymbolVal(0, CNE, LCtx,
-                                                             CNE->getType(),
-                                                             blockCount);
-  ProgramStateRef State = Pred->getState();
+  DefinedOrUnknownSVal symVal = UnknownVal();
+  FunctionDecl *FD = CNE->getOperatorNew();
 
+  bool IsStandardGlobalOpNewFunction = false;
+  if (FD && !isa<CXXMethodDecl>(FD) && !FD->isVariadic()) {
+    if (FD->getNumParams() == 2) {
+      QualType T = FD->getParamDecl(1)->getType();
+      if (const IdentifierInfo *II = T.getBaseTypeIdentifier())
+        // NoThrow placement new behaves as a standard new.
+        IsStandardGlobalOpNewFunction = II->getName().equals("nothrow_t");
+    }
+    else
+      // Placement forms are considered non-standard.
+      IsStandardGlobalOpNewFunction = (FD->getNumParams() == 1);
+  }
+
+  // We assume all standard global 'operator new' functions allocate memory in 
+  // heap. We realize this is an approximation that might not correctly model 
+  // a custom global allocator.
+  if (IsStandardGlobalOpNewFunction)
+    symVal = svalBuilder.getConjuredHeapSymbolVal(CNE, LCtx, blockCount);
+  else
+    symVal = svalBuilder.conjureSymbolVal(0, CNE, LCtx, CNE->getType(), 
+                                          blockCount);
+
+  ProgramStateRef State = Pred->getState();
   CallEventManager &CEMgr = getStateManager().getCallEventManager();
   CallEventRef<CXXAllocatorCall> Call =
     CEMgr.getCXXAllocatorCall(CNE, State, LCtx);
@@ -272,18 +311,21 @@ void ExprEngine::VisitCXXNewExpr(const CXXNewExpr *CNE, ExplodedNode *Pred,
   // FIXME: Once we figure out how we want allocators to work,
   // we should be using the usual pre-/(default-)eval-/post-call checks here.
   State = Call->invalidateRegions(blockCount);
+  if (!State)
+    return;
 
   // If we're compiling with exceptions enabled, and this allocation function
   // is not declared as non-throwing, failures /must/ be signalled by
   // exceptions, and thus the return value will never be NULL.
   // C++11 [basic.stc.dynamic.allocation]p3.
-  FunctionDecl *FD = CNE->getOperatorNew();
   if (FD && getContext().getLangOpts().CXXExceptions) {
     QualType Ty = FD->getType();
     if (const FunctionProtoType *ProtoType = Ty->getAs<FunctionProtoType>())
       if (!ProtoType->isNothrow(getContext()))
         State = State->assume(symVal, true);
   }
+
+  StmtNodeBuilder Bldr(Pred, Dst, *currBldrCtx);
 
   if (CNE->isArray()) {
     // FIXME: allocating an array requires simulating the constructors.
@@ -302,30 +344,32 @@ void ExprEngine::VisitCXXNewExpr(const CXXNewExpr *CNE, ExplodedNode *Pred,
   // CXXNewExpr, we need to make sure that the constructed object is not
   // immediately invalidated here. (The placement call should happen before
   // the constructor call anyway.)
+  SVal Result = symVal;
   if (FD && FD->isReservedGlobalPlacementOperator()) {
     // Non-array placement new should always return the placement location.
     SVal PlacementLoc = State->getSVal(CNE->getPlacementArg(0), LCtx);
-    SVal Result = svalBuilder.evalCast(PlacementLoc, CNE->getType(),
-                                       CNE->getPlacementArg(0)->getType());
-    State = State->BindExpr(CNE, LCtx, Result);
-  } else {
-    State = State->BindExpr(CNE, LCtx, symVal);
+    Result = svalBuilder.evalCast(PlacementLoc, CNE->getType(),
+                                  CNE->getPlacementArg(0)->getType());
   }
+
+  // Bind the address of the object, then check to see if we cached out.
+  State = State->BindExpr(CNE, LCtx, Result);
+  ExplodedNode *NewN = Bldr.generateNode(CNE, Pred, State);
+  if (!NewN)
+    return;
 
   // If the type is not a record, we won't have a CXXConstructExpr as an
   // initializer. Copy the value over.
   if (const Expr *Init = CNE->getInitializer()) {
     if (!isa<CXXConstructExpr>(Init)) {
-      QualType ObjTy = CNE->getType()->getAs<PointerType>()->getPointeeType();
-      (void)ObjTy;
-      assert(!ObjTy->isRecordType());
-      SVal Location = State->getSVal(CNE, LCtx);
-      if (Optional<Loc> LV = Location.getAs<Loc>())
-        State = State->bindLoc(*LV, State->getSVal(Init, LCtx));
+      assert(Bldr.getResults().size() == 1);
+      Bldr.takeNodes(NewN);
+
+      assert(!CNE->getType()->getPointeeCXXRecordDecl());
+      evalBind(Dst, CNE, NewN, Result, State->getSVal(Init, LCtx),
+               /*FirstInit=*/IsStandardGlobalOpNewFunction);
     }
   }
-
-  Bldr.generateNode(CNE, Pred, State);
 }
 
 void ExprEngine::VisitCXXDeleteExpr(const CXXDeleteExpr *CDE, 

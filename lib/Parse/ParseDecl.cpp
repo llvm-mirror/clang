@@ -931,7 +931,7 @@ void Parser::ParseLexedAttribute(LateParsedAttribute &LA,
   LA.Toks.push_back(Tok);
   PP.EnterTokenStream(LA.Toks.data(), LA.Toks.size(), true, false);
   // Consume the previously pushed token.
-  ConsumeAnyToken();
+  ConsumeAnyToken(/*ConsumeCodeCompletionTok=*/true);
 
   if (OnDefinition && !IsThreadSafetyAttribute(LA.AttrName.getName())) {
     // FIXME: Do not warn on C++11 attributes, once we start supporting
@@ -2905,8 +2905,17 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       continue;
 
     case tok::kw__Atomic:
-      ParseAtomicSpecifier(DS);
-      continue;
+      // C11 6.7.2.4/4:
+      //   If the _Atomic keyword is immediately followed by a left parenthesis,
+      //   it is interpreted as a type specifier (with a type name), not as a
+      //   type qualifier.
+      if (NextToken().is(tok::l_paren)) {
+        ParseAtomicSpecifier(DS);
+        continue;
+      }
+      isInvalid = DS.SetTypeQual(DeclSpec::TQ_atomic, Loc, PrevSpec, DiagID,
+                                 getLangOpts());
+      break;
 
     // OpenCL qualifiers:
     case tok::kw_private:
@@ -3253,7 +3262,7 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
     ColonProtectionRAIIObject X(*this, AllowFixedUnderlyingType);
 
     if (ParseOptionalCXXScopeSpecifier(SS, ParsedType(),
-                                       /*EnteringContext=*/false))
+                                       /*EnteringContext=*/true))
       return;
 
     if (SS.isSet() && Tok.isNot(tok::identifier)) {
@@ -3814,7 +3823,7 @@ bool Parser::isTypeSpecifierQualifier() {
   case tok::kw_private:
     return getLangOpts().OpenCL;
 
-  // C11 _Atomic()
+  // C11 _Atomic
   case tok::kw__Atomic:
     return true;
   }
@@ -3959,7 +3968,7 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
   case tok::annot_decltype:
   case tok::kw_constexpr:
 
-    // C11 _Atomic()
+    // C11 _Atomic
   case tok::kw__Atomic:
     return true;
 
@@ -4099,7 +4108,8 @@ bool Parser::isConstructorDeclarator() {
 ///
 void Parser::ParseTypeQualifierListOpt(DeclSpec &DS,
                                        bool VendorAttributesAllowed,
-                                       bool CXX11AttributesAllowed) {
+                                       bool CXX11AttributesAllowed,
+                                       bool AtomicAllowed) {
   if (getLangOpts().CPlusPlus11 && CXX11AttributesAllowed &&
       isCXX11AttributeSpecifier()) {
     ParsedAttributesWithRange attrs(AttrFactory);
@@ -4130,6 +4140,12 @@ void Parser::ParseTypeQualifierListOpt(DeclSpec &DS,
       break;
     case tok::kw_restrict:
       isInvalid = DS.SetTypeQual(DeclSpec::TQ_restrict, Loc, PrevSpec, DiagID,
+                                 getLangOpts());
+      break;
+    case tok::kw__Atomic:
+      if (!AtomicAllowed)
+        goto DoneWithTypeQuals;
+      isInvalid = DS.SetTypeQual(DeclSpec::TQ_atomic, Loc, PrevSpec, DiagID,
                                  getLangOpts());
       break;
 
@@ -4346,6 +4362,10 @@ void Parser::ParseDeclaratorInternal(Declarator &D,
       if (DS.getTypeQualifiers() & DeclSpec::TQ_volatile)
         Diag(DS.getVolatileSpecLoc(),
              diag::err_invalid_reference_qualifier_application) << "volatile";
+      // 'restrict' is permitted as an extension.
+      if (DS.getTypeQualifiers() & DeclSpec::TQ_atomic)
+        Diag(DS.getAtomicSpecLoc(),
+             diag::err_invalid_reference_qualifier_application) << "_Atomic";
     }
 
     // Recursively parse the declarator.
@@ -4368,7 +4388,7 @@ void Parser::ParseDeclaratorInternal(Declarator &D,
       }
     }
 
-    // Remember that we parsed a reference type. It doesn't have type-quals.
+    // Remember that we parsed a reference type.
     D.AddTypeInfo(DeclaratorChunk::getReference(DS.getTypeQualifiers(), Loc,
                                                 Kind == tok::amp),
                   DS.getAttributes(),
@@ -4809,7 +4829,9 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
       // with the virt-specifier-seq and pure-specifier in the same way.
 
       // Parse cv-qualifier-seq[opt].
-      ParseTypeQualifierListOpt(DS, false /*no attributes*/, false);
+      ParseTypeQualifierListOpt(DS, /*VendorAttributesAllowed*/ false,
+                                /*CXX11AttributesAllowed*/ false,
+                                /*AtomicAllowed*/ false);
       if (!DS.getSourceRange().getEnd().isInvalid()) {
         EndLoc = DS.getSourceRange().getEnd();
         ConstQualifierLoc = DS.getConstSpecLoc();
@@ -4833,12 +4855,14 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
       //   "pointer to cv-qualifier-seq X" between the optional cv-qualifer-seq
       //   and the end of the function-definition, member-declarator, or
       //   declarator.
+      // FIXME: currently, "static" case isn't handled correctly.
       bool IsCXX11MemberFunction =
         getLangOpts().CPlusPlus11 &&
-        (D.getContext() == Declarator::MemberContext ||
-         (D.getContext() == Declarator::FileContext &&
-          D.getCXXScopeSpec().isValid() &&
-          Actions.CurContext->isRecord()));
+        (D.getContext() == Declarator::MemberContext
+         ? !D.getDeclSpec().isFriendSpecified()
+         : D.getContext() == Declarator::FileContext &&
+           D.getCXXScopeSpec().isValid() &&
+           Actions.CurContext->isRecord());
       Sema::CXXThisScopeRAII ThisScope(Actions,
                                dyn_cast<CXXRecordDecl>(Actions.CurContext),
                                DS.getTypeQualifiers() |
@@ -5348,14 +5372,13 @@ void Parser::ParseTypeofSpecifier(DeclSpec &DS) {
 ///           _Atomic ( type-name )
 ///
 void Parser::ParseAtomicSpecifier(DeclSpec &DS) {
-  assert(Tok.is(tok::kw__Atomic) && "Not an atomic specifier");
+  assert(Tok.is(tok::kw__Atomic) && NextToken().is(tok::l_paren) &&
+         "Not an atomic specifier");
 
   SourceLocation StartLoc = ConsumeToken();
   BalancedDelimiterTracker T(*this, tok::l_paren);
-  if (T.expectAndConsume(diag::err_expected_lparen_after, "_Atomic")) {
-    SkipUntil(tok::r_paren);
+  if (T.consumeOpen())
     return;
-  }
 
   TypeResult Result = ParseTypeName();
   if (Result.isInvalid()) {

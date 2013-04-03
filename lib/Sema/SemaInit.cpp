@@ -3518,6 +3518,14 @@ static void TryReferenceInitializationCore(Sema &S,
       return;
     }
 
+    if ((RefRelationship == Sema::Ref_Compatible ||
+         RefRelationship == Sema::Ref_Compatible_With_Added_Qualification) &&
+        isRValueRef && InitCategory.isLValue()) {
+      Sequence.SetFailed(
+        InitializationSequence::FK_RValueReferenceBindingToLValue);
+      return;
+    }
+
     Sequence.SetFailed(InitializationSequence::FK_ReferenceInitDropsQualifiers);
     return;
   }
@@ -5464,7 +5472,7 @@ InitializationSequence::Perform(Sema &S,
     case SK_StdInitializerList: {
       QualType Dest = Step->Type;
       QualType E;
-      bool Success = S.isStdInitializerList(Dest, &E);
+      bool Success = S.isStdInitializerList(Dest.getNonReferenceType(), &E);
       (void)Success;
       assert(Success && "Destination type changed?");
 
@@ -5590,6 +5598,26 @@ static bool DiagnoseUninitializedReference(Sema &S, SourceLocation Loc,
 //===----------------------------------------------------------------------===//
 // Diagnose initialization failures
 //===----------------------------------------------------------------------===//
+
+/// Emit notes associated with an initialization that failed due to a
+/// "simple" conversion failure.
+static void emitBadConversionNotes(Sema &S, const InitializedEntity &entity,
+                                   Expr *op) {
+  QualType destType = entity.getType();
+  if (destType.getNonReferenceType()->isObjCObjectPointerType() &&
+      op->getType()->isObjCObjectPointerType()) {
+
+    // Emit a possible note about the conversion failing because the
+    // operand is a message send with a related result type.
+    S.EmitRelatedResultTypeNote(op);
+
+    // Emit a possible note about a return failing because we're
+    // expecting a related result type.
+    if (entity.getKind() == InitializedEntity::EK_Result)
+      S.EmitRelatedResultTypeNoteForReturn(destType);
+  }
+}
+
 bool InitializationSequence::Diagnose(Sema &S,
                                       const InitializedEntity &Entity,
                                       const InitializationKind &Kind,
@@ -5734,9 +5762,7 @@ bool InitializationSequence::Diagnose(Sema &S,
       << Args[0]->isLValue()
       << Args[0]->getType()
       << Args[0]->getSourceRange();
-    if (DestType.getNonReferenceType()->isObjCObjectPointerType() &&
-        Args[0]->getType()->isObjCObjectPointerType())
-      S.EmitRelatedResultTypeNote(Args[0]);
+    emitBadConversionNotes(S, Entity, Args[0]);
     break;
 
   case FK_ConversionFailed: {
@@ -5749,9 +5775,7 @@ bool InitializationSequence::Diagnose(Sema &S,
       << Args[0]->getSourceRange();
     S.HandleFunctionTypeMismatch(PDiag, FromType, DestType);
     S.Diag(Kind.getLocation(), PDiag);
-    if (DestType.getNonReferenceType()->isObjCObjectPointerType() &&
-        Args[0]->getType()->isObjCObjectPointerType())
-      S.EmitRelatedResultTypeNote(Args[0]);
+    emitBadConversionNotes(S, Entity, Args[0]);
     break;
   }
 
@@ -5825,7 +5849,8 @@ bool InitializationSequence::Diagnose(Sema &S,
             = cast<CXXConstructorDecl>(S.CurContext);
           if (Entity.getKind() == InitializedEntity::EK_Base) {
             S.Diag(Kind.getLocation(), diag::err_missing_default_ctor)
-              << Constructor->isImplicit()
+              << (Constructor->getInheritedConstructor() ? 2 :
+                  Constructor->isImplicit() ? 1 : 0)
               << S.Context.getTypeDeclType(Constructor->getParent())
               << /*base=*/0
               << Entity.getType();
@@ -5837,7 +5862,8 @@ bool InitializationSequence::Diagnose(Sema &S,
               << S.Context.getTagDeclType(BaseDecl);
           } else {
             S.Diag(Kind.getLocation(), diag::err_missing_default_ctor)
-              << Constructor->isImplicit()
+              << (Constructor->getInheritedConstructor() ? 2 :
+                  Constructor->isImplicit() ? 1 : 0)
               << S.Context.getTypeDeclType(Constructor->getParent())
               << /*member=*/1
               << Entity.getName();
@@ -5898,7 +5924,8 @@ bool InitializationSequence::Diagnose(Sema &S,
       // initialized.
       CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(S.CurContext);
       S.Diag(Kind.getLocation(), diag::err_uninitialized_member_in_ctor)
-        << Constructor->isImplicit()
+        << (Constructor->getInheritedConstructor() ? 2 :
+            Constructor->isImplicit() ? 1 : 0)
         << S.Context.getTypeDeclType(Constructor->getParent())
         << /*const=*/1
         << Entity.getName();
@@ -5939,7 +5966,7 @@ bool InitializationSequence::Diagnose(Sema &S,
     unsigned NumInits = InitList->getNumInits();
     QualType DestType = Entity.getType();
     QualType E;
-    bool Success = S.isStdInitializerList(DestType, &E);
+    bool Success = S.isStdInitializerList(DestType.getNonReferenceType(), &E);
     (void)Success;
     assert(Success && "Where did the std::initializer_list go?");
     InitializedEntity HiddenArray = InitializedEntity::InitializeTemporary(

@@ -32,7 +32,7 @@
  * compatible, thus CINDEX_VERSION_MAJOR is expected to remain stable.
  */
 #define CINDEX_VERSION_MAJOR 0
-#define CINDEX_VERSION_MINOR 14
+#define CINDEX_VERSION_MINOR 15
 
 #define CINDEX_VERSION_ENCODE(major, minor) ( \
       ((major) * 10000)                       \
@@ -2749,15 +2749,17 @@ CINDEX_LINKAGE int clang_getFieldDeclBitWidth(CXCursor C);
  * \brief Retrieve the number of non-variadic arguments associated with a given
  * cursor.
  *
- * If a cursor that is not a function or method is passed in, -1 is returned.
+ * The number of arguments can be determined for calls as well as for
+ * declarations of functions or methods. For other cursors -1 is returned.
  */
 CINDEX_LINKAGE int clang_Cursor_getNumArguments(CXCursor C);
 
 /**
  * \brief Retrieve the argument cursor of a function or method.
  *
- * If a cursor that is not a function or method is passed in or the index
- * exceeds the number of arguments, an invalid cursor is returned.
+ * The argument cursor can be determined for calls as well as for declarations
+ * of functions or methods. For other cursors and for invalid indices, an
+ * invalid cursor is returned.
  */
 CINDEX_LINKAGE CXCursor clang_Cursor_getArgument(CXCursor C, unsigned i);
 
@@ -3347,7 +3349,8 @@ CINDEX_LINKAGE CXString clang_Module_getFullName(CXModule Module);
  *
  * \returns the number of top level headers associated with this module.
  */
-CINDEX_LINKAGE unsigned clang_Module_getNumTopLevelHeaders(CXModule Module);
+CINDEX_LINKAGE unsigned clang_Module_getNumTopLevelHeaders(CXTranslationUnit,
+                                                           CXModule Module);
 
 /**
  * \param Module a module object.
@@ -3357,7 +3360,8 @@ CINDEX_LINKAGE unsigned clang_Module_getNumTopLevelHeaders(CXModule Module);
  * \returns the specified top level header associated with the module.
  */
 CINDEX_LINKAGE
-CXFile clang_Module_getTopLevelHeader(CXModule Module, unsigned Index);
+CXFile clang_Module_getTopLevelHeader(CXTranslationUnit,
+                                      CXModule Module, unsigned Index);
 
 /**
  * @}

@@ -1130,29 +1130,14 @@ Sema::LookupMemberExpr(LookupResult &R, ExprResult &BaseExpr,
       // There's an implicit 'isa' ivar on all objects.
       // But we only actually find it this way on objects of type 'id',
       // apparently.
-      if (OTy->isObjCId() && Member->isStr("isa")) {
-        Diag(MemberLoc, diag::warn_objc_isa_use);
+      if (OTy->isObjCId() && Member->isStr("isa"))
         return Owned(new (Context) ObjCIsaExpr(BaseExpr.take(), IsArrow, MemberLoc,
+                                               OpLoc,
                                                Context.getObjCClassType()));
-      }
-
       if (ShouldTryAgainWithRedefinitionType(*this, BaseExpr))
         return LookupMemberExpr(R, BaseExpr, IsArrow, OpLoc, SS,
                                 ObjCImpDecl, HasTemplateArgs);
       goto fail;
-    }
-    else if (Member && Member->isStr("isa")) {
-      // If an ivar is (1) the first ivar in a root class and (2) named `isa`,
-      // then issue the same deprecated warning that id->isa gets.
-      ObjCInterfaceDecl *ClassDeclared = 0;
-      if (ObjCIvarDecl *IV = 
-            IDecl->lookupInstanceVariable(Member, ClassDeclared)) {
-        if (!ClassDeclared->getSuperClass()
-            && (*ClassDeclared->ivar_begin()) == IV) {
-          Diag(MemberLoc, diag::warn_objc_isa_use);
-          Diag(IV->getLocation(), diag::note_ivar_decl);
-        }
-      }
     }
     
     if (RequireCompleteType(OpLoc, BaseType, diag::err_typecheck_incomplete_tag,

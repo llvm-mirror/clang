@@ -683,7 +683,7 @@ bool ExprEngine::shouldInlineCall(const CallEvent &Call, const Decl *D,
   if (CalleeADC->isBodyAutosynthesized())
     return true;
 
-  if (HowToInline == Inline_None)
+  if (!AMgr.shouldInlineCall())
     return false;
 
   // Check if we should inline a call based on its kind.
@@ -745,9 +745,29 @@ bool ExprEngine::shouldInlineCall(const CallEvent &Call, const Decl *D,
     NumReachedInlineCountMax++;
     return false;
   }
+
+  if (HowToInline == Inline_Minimal &&
+      (CalleeCFG->getNumBlockIDs() > Opts.getAlwaysInlineSize()
+      || IsRecursive))
+    return false;
+
   Engine.FunctionSummaries->bumpNumTimesInlined(D);
 
   return true;
+}
+
+static bool isTrivialObjectAssignment(const CallEvent &Call) {
+  const CXXInstanceCall *ICall = dyn_cast<CXXInstanceCall>(&Call);
+  if (!ICall)
+    return false;
+
+  const CXXMethodDecl *MD = dyn_cast_or_null<CXXMethodDecl>(ICall->getDecl());
+  if (!MD)
+    return false;
+  if (!(MD->isCopyAssignmentOperator() || MD->isMoveAssignmentOperator()))
+    return false;
+
+  return MD->isTrivial();
 }
 
 void ExprEngine::defaultEvalCall(NodeBuilder &Bldr, ExplodedNode *Pred,
@@ -755,6 +775,12 @@ void ExprEngine::defaultEvalCall(NodeBuilder &Bldr, ExplodedNode *Pred,
   // Make sure we have the most recent state attached to the call.
   ProgramStateRef State = Pred->getState();
   CallEventRef<> Call = CallTemplate.cloneWithState(State);
+
+  // Special-case trivial assignment operators.
+  if (isTrivialObjectAssignment(*Call)) {
+    performTrivialCopy(Bldr, Pred, *Call);
+    return;
+  }
 
   // Try to inline the call.
   // The origin expression here is just used as a kind of checksum;

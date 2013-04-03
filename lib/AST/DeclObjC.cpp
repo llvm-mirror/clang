@@ -65,12 +65,13 @@ ObjCContainerDecl::getIvarDecl(IdentifierInfo *Id) const {
 
 // Get the local instance/class method declared in this interface.
 ObjCMethodDecl *
-ObjCContainerDecl::getMethod(Selector Sel, bool isInstance) const {
+ObjCContainerDecl::getMethod(Selector Sel, bool isInstance,
+                             bool AllowHidden) const {
   // If this context is a hidden protocol definition, don't find any
   // methods there.
   if (const ObjCProtocolDecl *Proto = dyn_cast<ObjCProtocolDecl>(this)) {
     if (const ObjCProtocolDecl *Def = Proto->getDefinition())
-      if (Def->isHidden())
+      if (Def->isHidden() && !AllowHidden)
         return 0;
   }
 
@@ -90,6 +91,72 @@ ObjCContainerDecl::getMethod(Selector Sel, bool isInstance) const {
       return MD;
   }
   return 0;
+}
+
+/// HasUserDeclaredSetterMethod - This routine returns 'true' if a user declared setter
+/// method was found in the class, its protocols, its super classes or categories.
+/// It also returns 'true' if one of its categories has declared a 'readwrite' property.
+/// This is because, user must provide a setter method for the category's 'readwrite'
+/// property.
+bool
+ObjCContainerDecl::HasUserDeclaredSetterMethod(const ObjCPropertyDecl *Property) const {
+  Selector Sel = Property->getSetterName();
+  lookup_const_result R = lookup(Sel);
+  for (lookup_const_iterator Meth = R.begin(), MethEnd = R.end();
+       Meth != MethEnd; ++Meth) {
+    ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(*Meth);
+    if (MD && MD->isInstanceMethod() && !MD->isImplicit())
+      return true;
+  }
+
+  if (const ObjCInterfaceDecl *ID = dyn_cast<ObjCInterfaceDecl>(this)) {
+    // Also look into categories, including class extensions, looking
+    // for a user declared instance method.
+    for (ObjCInterfaceDecl::visible_categories_iterator
+         Cat = ID->visible_categories_begin(),
+         CatEnd = ID->visible_categories_end();
+         Cat != CatEnd;
+         ++Cat) {
+      if (ObjCMethodDecl *MD = Cat->getInstanceMethod(Sel))
+        if (!MD->isImplicit())
+          return true;
+      if (Cat->IsClassExtension())
+        continue;
+      // Also search through the categories looking for a 'readwrite' declaration
+      // of this property. If one found, presumably a setter will be provided
+      // (properties declared in categories will not get auto-synthesized).
+      for (ObjCContainerDecl::prop_iterator P = Cat->prop_begin(),
+           E = Cat->prop_end(); P != E; ++P)
+        if (P->getIdentifier() == Property->getIdentifier()) {
+          if (P->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_readwrite)
+            return true;
+          break;
+        }
+    }
+    
+    // Also look into protocols, for a user declared instance method.
+    for (ObjCInterfaceDecl::all_protocol_iterator P =
+         ID->all_referenced_protocol_begin(),
+         PE = ID->all_referenced_protocol_end(); P != PE; ++P) {
+      ObjCProtocolDecl *Proto = (*P);
+      if (Proto->HasUserDeclaredSetterMethod(Property))
+        return true;
+    }
+    // And in its super class.
+    ObjCInterfaceDecl *OSC = ID->getSuperClass();
+    while (OSC) {
+      if (OSC->HasUserDeclaredSetterMethod(Property))
+        return true;
+      OSC = OSC->getSuperClass();
+    }
+  }
+  if (const ObjCProtocolDecl *PD = dyn_cast<ObjCProtocolDecl>(this))
+    for (ObjCProtocolDecl::protocol_iterator PI = PD->protocol_begin(),
+         E = PD->protocol_end(); PI != E; ++PI) {
+      if ((*PI)->HasUserDeclaredSetterMethod(Property))
+        return true;
+    }
+  return false;
 }
 
 ObjCPropertyDecl *
@@ -788,7 +855,8 @@ static void CollectOverriddenMethodsRecurse(const ObjCContainerDecl *Container,
     if (MovedToSuper)
       if (ObjCMethodDecl *
             Overridden = Container->getMethod(Method->getSelector(),
-                                              Method->isInstanceMethod()))
+                                              Method->isInstanceMethod(),
+                                              /*AllowHidden=*/true))
         if (Method != Overridden) {
           // We found an override at this category; there is no need to look
           // into its protocols.
@@ -806,7 +874,8 @@ static void CollectOverriddenMethodsRecurse(const ObjCContainerDecl *Container,
   // Check whether we have a matching method at this level.
   if (const ObjCMethodDecl *
         Overridden = Container->getMethod(Method->getSelector(),
-                                                    Method->isInstanceMethod()))
+                                          Method->isInstanceMethod(),
+                                          /*AllowHidden=*/true))
     if (Method != Overridden) {
       // We found an override at this level; there is no need to look
       // into other protocols or categories.
@@ -828,9 +897,9 @@ static void CollectOverriddenMethodsRecurse(const ObjCContainerDecl *Container,
          P != PEnd; ++P)
       CollectOverriddenMethodsRecurse(*P, Method, Methods, MovedToSuper);
 
-    for (ObjCInterfaceDecl::visible_categories_iterator
-           Cat = Interface->visible_categories_begin(),
-           CatEnd = Interface->visible_categories_end();
+    for (ObjCInterfaceDecl::known_categories_iterator
+           Cat = Interface->known_categories_begin(),
+           CatEnd = Interface->known_categories_end();
          Cat != CatEnd; ++Cat) {
       CollectOverriddenMethodsRecurse(*Cat, Method, Methods,
                                       MovedToSuper);
@@ -865,7 +934,8 @@ static void collectOverriddenMethodsSlow(const ObjCMethodDecl *Method,
     // Start searching for overridden methods using the method from the
     // interface as starting point.
     if (const ObjCMethodDecl *IFaceMeth = ID->getMethod(Method->getSelector(),
-                                                  Method->isInstanceMethod()))
+                                                    Method->isInstanceMethod(),
+                                                    /*AllowHidden=*/true))
       Method = IFaceMeth;
     CollectOverriddenMethods(ID, Method, overridden);
 
@@ -877,7 +947,8 @@ static void collectOverriddenMethodsSlow(const ObjCMethodDecl *Method,
     // Start searching for overridden methods using the method from the
     // interface as starting point.
     if (const ObjCMethodDecl *IFaceMeth = ID->getMethod(Method->getSelector(),
-                                                  Method->isInstanceMethod()))
+                                                     Method->isInstanceMethod(),
+                                                     /*AllowHidden=*/true))
       Method = IFaceMeth;
     CollectOverriddenMethods(ID, Method, overridden);
 
@@ -896,9 +967,9 @@ static void collectOnCategoriesAfterLocation(SourceLocation Loc,
   if (!Class)
     return;
 
-  for (ObjCInterfaceDecl::visible_categories_iterator
-         Cat = Class->visible_categories_begin(),
-         CatEnd = Class->visible_categories_end();
+  for (ObjCInterfaceDecl::known_categories_iterator
+         Cat = Class->known_categories_begin(),
+         CatEnd = Class->known_categories_end();
        Cat != CatEnd; ++Cat) {
     if (SM.isBeforeInTranslationUnit(Loc, Cat->getLocation()))
       CollectOverriddenMethodsRecurse(*Cat, Method, Methods, true);
@@ -1575,7 +1646,7 @@ void ObjCImplDecl::setClassInterface(ObjCInterfaceDecl *IFace) {
 }
 
 /// FindPropertyImplIvarDecl - This method lookup the ivar in the list of
-/// properties implemented in this category \@implementation block and returns
+/// properties implemented in this \@implementation block and returns
 /// the implemented property that uses it.
 ///
 ObjCPropertyImplDecl *ObjCImplDecl::

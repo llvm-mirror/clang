@@ -34,6 +34,7 @@ enum TokenType {
   TT_ConditionalExpr,
   TT_CtorInitializerColon,
   TT_ImplicitStringLiteral,
+  TT_InlineASMColon,
   TT_InheritanceColon,
   TT_LineComment,
   TT_ObjCArrayLiteral,
@@ -79,10 +80,45 @@ public:
   }
 
   bool is(tok::TokenKind Kind) const { return FormatTok.Tok.is(Kind); }
+
+  bool isOneOf(tok::TokenKind K1, tok::TokenKind K2) const {
+    return is(K1) || is(K2);
+  }
+
+  bool isOneOf(tok::TokenKind K1, tok::TokenKind K2, tok::TokenKind K3) const {
+    return is(K1) || is(K2) || is(K3);
+  }
+
+  bool isOneOf(
+      tok::TokenKind K1, tok::TokenKind K2, tok::TokenKind K3,
+      tok::TokenKind K4, tok::TokenKind K5 = tok::NUM_TOKENS,
+      tok::TokenKind K6 = tok::NUM_TOKENS, tok::TokenKind K7 = tok::NUM_TOKENS,
+      tok::TokenKind K8 = tok::NUM_TOKENS, tok::TokenKind K9 = tok::NUM_TOKENS,
+      tok::TokenKind K10 = tok::NUM_TOKENS,
+      tok::TokenKind K11 = tok::NUM_TOKENS,
+      tok::TokenKind K12 = tok::NUM_TOKENS) const {
+    return is(K1) || is(K2) || is(K3) || is(K4) || is(K5) || is(K6) || is(K7) ||
+           is(K8) || is(K9) || is(K10) || is(K11) || is(K12);
+  }
+
   bool isNot(tok::TokenKind Kind) const { return FormatTok.Tok.isNot(Kind); }
 
   bool isObjCAtKeyword(tok::ObjCKeywordKind Kind) const {
     return FormatTok.Tok.isObjCAtKeyword(Kind);
+  }
+
+  bool isAccessSpecifier(bool ColonRequired = true) const {
+    return isOneOf(tok::kw_public, tok::kw_protected, tok::kw_private) &&
+           (!ColonRequired ||
+            (!Children.empty() && Children[0].is(tok::colon)));
+  }
+
+  bool isObjCAccessSpecifier() const {
+    return is(tok::at) && !Children.empty() &&
+           (Children[0].isObjCAtKeyword(tok::objc_public) ||
+            Children[0].isObjCAtKeyword(tok::objc_protected) ||
+            Children[0].isObjCAtKeyword(tok::objc_package) ||
+            Children[0].isObjCAtKeyword(tok::objc_private));
   }
 
   FormatToken FormatTok;

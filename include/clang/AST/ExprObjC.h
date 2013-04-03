@@ -211,7 +211,13 @@ struct ObjCDictionaryElement {
   /// \brief Determines whether this dictionary element is a pack expansion.
   bool isPackExpansion() const { return EllipsisLoc.isValid(); }
 };
+} // end namespace clang
 
+namespace llvm {
+template <> struct isPodLike<clang::ObjCDictionaryElement> : llvm::true_type {};
+}
+
+namespace clang {
 /// ObjCDictionaryLiteral - AST node to represent objective-c dictionary 
 /// literals; as in:  @{@"name" : NSUserName(), @"date" : [NSDate date] };
 class ObjCDictionaryLiteral : public Expr {
@@ -1374,16 +1380,20 @@ class ObjCIsaExpr : public Expr {
 
   /// IsaMemberLoc - This is the location of the 'isa'.
   SourceLocation IsaMemberLoc;
+  
+  /// OpLoc - This is the location of '.' or '->'
+  SourceLocation OpLoc;
 
   /// IsArrow - True if this is "X->F", false if this is "X.F".
   bool IsArrow;
 public:
-  ObjCIsaExpr(Expr *base, bool isarrow, SourceLocation l, QualType ty)
+  ObjCIsaExpr(Expr *base, bool isarrow, SourceLocation l, SourceLocation oploc,
+              QualType ty)
     : Expr(ObjCIsaExprClass, ty, VK_LValue, OK_Ordinary,
            /*TypeDependent=*/false, base->isValueDependent(),
            base->isInstantiationDependent(),
            /*ContainsUnexpandedParameterPack=*/false),
-      Base(base), IsaMemberLoc(l), IsArrow(isarrow) {}
+      Base(base), IsaMemberLoc(l), OpLoc(oploc), IsArrow(isarrow) {}
 
   /// \brief Build an empty expression.
   explicit ObjCIsaExpr(EmptyShell Empty) : Expr(ObjCIsaExprClass, Empty) { }
@@ -1398,10 +1408,18 @@ public:
   /// location of 'F'.
   SourceLocation getIsaMemberLoc() const { return IsaMemberLoc; }
   void setIsaMemberLoc(SourceLocation L) { IsaMemberLoc = L; }
+  
+  SourceLocation getOpLoc() const { return OpLoc; }
+  void setOpLoc(SourceLocation L) { OpLoc = L; }
 
   SourceLocation getLocStart() const LLVM_READONLY {
     return getBase()->getLocStart();
   }
+  
+  SourceLocation getBaseLocEnd() const LLVM_READONLY {
+    return getBase()->getLocEnd();
+  }
+  
   SourceLocation getLocEnd() const LLVM_READONLY { return IsaMemberLoc; }
 
   SourceLocation getExprLoc() const LLVM_READONLY { return IsaMemberLoc; }
