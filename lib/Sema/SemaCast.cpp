@@ -333,7 +333,7 @@ static bool tryDiagnoseOverloadedCast(Sema &S, CastType CT,
     : (CT == CT_Functional)? InitializationKind::CreateFunctionalCast(range,
                                                              listInitialization)
     : InitializationKind::CreateCast(/*type range?*/ range);
-  InitializationSequence sequence(S, entity, initKind, &src, 1);
+  InitializationSequence sequence(S, entity, initKind, src);
 
   assert(sequence.Failed() && "initialization succeeded on second try?");
   switch (sequence.getFailureKind()) {
@@ -695,14 +695,15 @@ static void DiagnoseReinterpretUpDownCast(Sema &Self, const Expr *SrcExpr,
   const CXXRecordDecl *SrcRD =
     SrcPointeeRD ? SrcPointeeRD : SrcType->getAsCXXRecordDecl();
 
-  // Examining subobjects for records is only possible if the complete
-  // definition is available.  Also, template instantiation is not allowed here.
-  if(!SrcRD || !SrcRD->isCompleteDefinition())
+  // Examining subobjects for records is only possible if the complete and
+  // valid definition is available.  Also, template instantiation is not
+  // allowed here.
+  if (!SrcRD || !SrcRD->isCompleteDefinition() || SrcRD->isInvalidDecl())
     return;
 
   const CXXRecordDecl *DestRD = DestType->getPointeeCXXRecordDecl();
 
-  if(!DestRD || !DestRD->isCompleteDefinition())
+  if (!DestRD || !DestRD->isCompleteDefinition() || DestRD->isInvalidDecl())
     return;
 
   enum {
@@ -721,7 +722,7 @@ static void DiagnoseReinterpretUpDownCast(Sema &Self, const Expr *SrcExpr,
 
   bool VirtualBase = true;
   bool NonZeroOffset = false;
-  for (CXXBasePaths::const_paths_iterator I = BasePaths.begin(), 
+  for (CXXBasePaths::const_paths_iterator I = BasePaths.begin(),
                                           E = BasePaths.end();
        I != E; ++I) {
     const CXXBasePath &Path = *I;
@@ -734,8 +735,16 @@ static void DiagnoseReinterpretUpDownCast(Sema &Self, const Expr *SrcExpr,
         break;
       const CXXRecordDecl *BaseRD = IElem->Base->getType()->getAsCXXRecordDecl();
       assert(BaseRD && "Base type should be a valid unqualified class type");
+      // Don't check if any base has invalid declaration or has no definition
+      // since it has no layout info.
+      const CXXRecordDecl *Class = IElem->Class,
+                          *ClassDefinition = Class->getDefinition();
+      if (Class->isInvalidDecl() || !ClassDefinition ||
+          !ClassDefinition->isCompleteDefinition())
+        return;
+
       const ASTRecordLayout &DerivedLayout =
-          Self.Context.getASTRecordLayout(IElem->Class);
+          Self.Context.getASTRecordLayout(Class);
       Offset += DerivedLayout.getBaseClassOffset(BaseRD);
     }
     if (!IsVirtual) {
@@ -757,12 +766,13 @@ static void DiagnoseReinterpretUpDownCast(Sema &Self, const Expr *SrcExpr,
   QualType DerivedType =
       ReinterpretKind == ReinterpretUpcast? SrcType : DestType;
 
-  Self.Diag(OpRange.getBegin(), diag::warn_reinterpret_different_from_static)
-    << DerivedType << BaseType << !VirtualBase << ReinterpretKind;
-  Self.Diag(OpRange.getBegin(), diag::note_reinterpret_updowncast_use_static)
-    << ReinterpretKind;
-
-  // TODO: emit fixits. This requires passing operator SourceRange from Parser.
+  SourceLocation BeginLoc = OpRange.getBegin();
+  Self.Diag(BeginLoc, diag::warn_reinterpret_different_from_static)
+    << DerivedType << BaseType << !VirtualBase << ReinterpretKind
+    << OpRange;
+  Self.Diag(BeginLoc, diag::note_reinterpret_updowncast_use_static)
+    << ReinterpretKind
+    << FixItHint::CreateReplacement(BeginLoc, "static_cast");
 }
 
 /// CheckReinterpretCast - Check that a reinterpret_cast\<DestType\>(SrcExpr) is
@@ -1408,7 +1418,7 @@ TryStaticImplicitCast(Sema &Self, ExprResult &SrcExpr, QualType DestType,
         ? InitializationKind::CreateFunctionalCast(OpRange, ListInitialization)
     : InitializationKind::CreateCast(OpRange);
   Expr *SrcExprRaw = SrcExpr.get();
-  InitializationSequence InitSeq(Self, Entity, InitKind, &SrcExprRaw, 1);
+  InitializationSequence InitSeq(Self, Entity, InitKind, SrcExprRaw);
 
   // At this point of CheckStaticCast, if the destination is a reference,
   // or the expression is an overload expression this has to work. 
@@ -1442,11 +1452,21 @@ static TryCastResult TryConstCast(Sema &Self, Expr *SrcExpr, QualType DestType,
   DestType = Self.Context.getCanonicalType(DestType);
   QualType SrcType = SrcExpr->getType();
   if (const ReferenceType *DestTypeTmp =DestType->getAs<ReferenceType>()) {
-    if (DestTypeTmp->isLValueReferenceType() && !SrcExpr->isLValue()) {
+    if (isa<LValueReferenceType>(DestTypeTmp) && !SrcExpr->isLValue()) {
       // Cannot const_cast non-lvalue to lvalue reference type. But if this
       // is C-style, static_cast might find a way, so we simply suggest a
       // message and tell the parent to keep searching.
       msg = diag::err_bad_cxx_cast_rvalue;
+      return TC_NotApplicable;
+    }
+
+    // It's not completely clear under the standard whether we can
+    // const_cast bit-field gl-values.  Doing so would not be
+    // intrinsically complicated, but for now, we say no for
+    // consistency with other compilers and await the word of the
+    // committee.
+    if (SrcExpr->refersToBitField()) {
+      msg = diag::err_bad_cxx_cast_bitfield;
       return TC_NotApplicable;
     }
 

@@ -105,10 +105,10 @@ struct CommandInfo {
   unsigned IsFunctionDeclarationCommand : 1;
 
   /// \brief True if block command is further describing a container API; such
-  /// as @coclass, @classdesign, etc.
+  /// as \@coclass, \@classdesign, etc.
   unsigned IsRecordLikeDetailCommand : 1;
   
-  /// \brief True if block command is a container API; such as @interface.
+  /// \brief True if block command is a container API; such as \@interface.
   unsigned IsRecordLikeDeclarationCommand : 1;
   
   /// \brief True if this command is unknown.  This \c CommandInfo object was
@@ -142,6 +142,8 @@ public:
     llvm_unreachable("the command should be known");
   }
 
+  const CommandInfo *getTypoCorrectCommandInfo(StringRef Typo) const;
+  
   const CommandInfo *getCommandInfo(unsigned CommandID) const;
 
   const CommandInfo *registerUnknownCommand(StringRef CommandName);

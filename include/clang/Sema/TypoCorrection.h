@@ -116,7 +116,7 @@ public:
   }
 
   /// \brief Gets the pointer to the declaration of the typo correction
-  NamedDecl* getCorrectionDecl() const {
+  NamedDecl *getCorrectionDecl() const {
     return hasCorrectionDecl() ? *(CorrectionDecls.begin()) : 0;
   }
   template <class DeclClass>
@@ -140,7 +140,7 @@ public:
   }
 
   /// \brief Returns whether this TypoCorrection has a non-empty DeclarationName
-  operator bool() const { return bool(CorrectionName); }
+  LLVM_EXPLICIT operator bool() const { return bool(CorrectionName); }
 
   /// \brief Mark this TypoCorrection as being a keyword.
   /// Since addCorrectionDeclsand setCorrectionDecl don't allow NULL to be
@@ -228,9 +228,11 @@ class CorrectionCandidateCallback {
   /// candidate is viable, without ranking potentially viable candidates.
   /// Only ValidateCandidate or RankCandidate need to be overriden by a
   /// callback wishing to check the viability of correction candidates.
-  virtual bool ValidateCandidate(const TypoCorrection &candidate) {
-    return true;
-  }
+  /// The default predicate always returns true if the candidate is not a type
+  /// name or keyword, true for types if WantTypeSpecifiers is true, and true
+  /// for keywords if WantTypeSpecifiers, WantExpressionKeywords,
+  /// WantCXXNamedCasts, WantRemainingKeywords, or WantObjCSuper is true.
+  virtual bool ValidateCandidate(const TypoCorrection &candidate);
 
   /// \brief Method used by Sema::CorrectTypo to assign an "edit distance" rank
   /// to a candidate (where a lower value represents a better candidate), or

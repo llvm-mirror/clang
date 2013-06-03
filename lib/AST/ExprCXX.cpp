@@ -178,8 +178,7 @@ CXXPseudoDestructorExpr::CXXPseudoDestructorExpr(ASTContext &Context,
                 SourceLocation ColonColonLoc, SourceLocation TildeLoc, 
                 PseudoDestructorTypeStorage DestroyedType)
   : Expr(CXXPseudoDestructorExprClass,
-         Context.getPointerType(Context.getFunctionType(Context.VoidTy,
-                                                        ArrayRef<QualType>(),
+         Context.getPointerType(Context.getFunctionType(Context.VoidTy, None,
                                          FunctionProtoType::ExtProtoInfo())),
          VK_RValue, OK_Ordinary,
          /*isTypeDependent=*/(Base->isTypeDependent() ||
@@ -704,6 +703,17 @@ CXXDefaultArgExpr::Create(ASTContext &C, SourceLocation Loc,
                                      SubExpr);
 }
 
+CXXDefaultInitExpr::CXXDefaultInitExpr(ASTContext &C, SourceLocation Loc,
+                                       FieldDecl *Field, QualType T)
+    : Expr(CXXDefaultInitExprClass, T.getNonLValueExprType(C),
+           T->isLValueReferenceType() ? VK_LValue : T->isRValueReferenceType()
+                                                        ? VK_XValue
+                                                        : VK_RValue,
+           /*FIXME*/ OK_Ordinary, false, false, false, false),
+      Field(Field), Loc(Loc) {
+  assert(Field->hasInClassInitializer());
+}
+
 CXXTemporary *CXXTemporary::Create(ASTContext &C,
                                    const CXXDestructorDecl *Destructor) {
   return new (C) CXXTemporary(Destructor);
@@ -801,7 +811,7 @@ CXXConstructExpr::CXXConstructExpr(ASTContext &C, StmtClass SC, QualType T,
 LambdaExpr::Capture::Capture(SourceLocation Loc, bool Implicit,
                              LambdaCaptureKind Kind, VarDecl *Var,
                              SourceLocation EllipsisLoc)
-  : VarAndBits(Var, 0), Loc(Loc), EllipsisLoc(EllipsisLoc)
+  : DeclAndBits(Var, 0), Loc(Loc), EllipsisLoc(EllipsisLoc)
 {
   unsigned Bits = 0;
   if (Implicit)
@@ -818,15 +828,27 @@ LambdaExpr::Capture::Capture(SourceLocation Loc, bool Implicit,
   case LCK_ByRef:
     assert(Var && "capture must have a variable!");
     break;
+
+  case LCK_Init:
+    llvm_unreachable("don't use this constructor for an init-capture");
   }
-  VarAndBits.setInt(Bits);
+  DeclAndBits.setInt(Bits);
 }
 
+LambdaExpr::Capture::Capture(FieldDecl *Field)
+    : DeclAndBits(Field,
+                  Field->getType()->isReferenceType() ? 0 : Capture_ByCopy),
+      Loc(Field->getLocation()), EllipsisLoc() {}
+
 LambdaCaptureKind LambdaExpr::Capture::getCaptureKind() const {
-  if (capturesThis())
+  Decl *D = DeclAndBits.getPointer();
+  if (!D)
     return LCK_This;
 
-  return (VarAndBits.getInt() & Capture_ByCopy)? LCK_ByCopy : LCK_ByRef;
+  if (isa<FieldDecl>(D))
+    return LCK_Init;
+
+  return (DeclAndBits.getInt() & Capture_ByCopy) ? LCK_ByCopy : LCK_ByRef;
 }
 
 LambdaExpr::LambdaExpr(QualType T, 

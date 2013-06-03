@@ -427,12 +427,24 @@ private:
 
 public:
 
+  /// \brief Returns true if this expression is a gl-value that
+  /// potentially refers to a bit-field.
+  ///
+  /// In C++, whether a gl-value refers to a bitfield is essentially
+  /// an aspect of the value-kind type system.
+  bool refersToBitField() const { return getObjectKind() == OK_BitField; }
+
   /// \brief If this expression refers to a bit-field, retrieve the
   /// declaration of that bit-field.
-  FieldDecl *getBitField();
+  ///
+  /// Note that this returns a non-null pointer in subtly different
+  /// places than refersToBitField returns true.  In particular, this can
+  /// return a non-null pointer even for r-values loaded from
+  /// bit-fields, but it will return null for a conditional bit-field.
+  FieldDecl *getSourceBitField();
 
-  const FieldDecl *getBitField() const {
-    return const_cast<Expr*>(this)->getBitField();
+  const FieldDecl *getSourceBitField() const {
+    return const_cast<Expr*>(this)->getSourceBitField();
   }
 
   /// \brief If this expression is an l-value for an Objective C
@@ -2644,7 +2656,7 @@ protected:
          (ty->isInstantiationDependentType() ||
           (op && op->isInstantiationDependent())),
          (ty->containsUnexpandedParameterPack() ||
-          op->containsUnexpandedParameterPack())),
+          (op && op->containsUnexpandedParameterPack()))),
     Op(op) {
     assert(kind != CK_Invalid && "creating cast with invalid cast kind");
     CastExprBits.Kind = kind;
@@ -2900,7 +2912,7 @@ public:
     SubExprs[LHS] = lhs;
     SubExprs[RHS] = rhs;
     assert(!isCompoundAssignmentOp() &&
-           "Use ArithAssignBinaryOperator for compound assignments");
+           "Use CompoundAssignOperator for compound assignments");
   }
 
   /// \brief Construct an empty binary operator.
@@ -2959,6 +2971,33 @@ public:
 
   static bool isComparisonOp(Opcode Opc) { return Opc >= BO_LT && Opc<=BO_NE; }
   bool isComparisonOp() const { return isComparisonOp(getOpcode()); }
+
+  static Opcode negateComparisonOp(Opcode Opc) {
+    switch (Opc) {
+    default:
+      llvm_unreachable("Not a comparsion operator.");
+    case BO_LT: return BO_GE;
+    case BO_GT: return BO_LE;
+    case BO_LE: return BO_GT;
+    case BO_GE: return BO_LT;
+    case BO_EQ: return BO_NE;
+    case BO_NE: return BO_EQ;
+    }
+  }
+
+  static Opcode reverseComparisonOp(Opcode Opc) {
+    switch (Opc) {
+    default:
+      llvm_unreachable("Not a comparsion operator.");
+    case BO_LT: return BO_GT;
+    case BO_GT: return BO_LT;
+    case BO_LE: return BO_GE;
+    case BO_GE: return BO_LE;
+    case BO_EQ:
+    case BO_NE:
+      return Opc;
+    }
+  }
 
   static bool isLogicalOp(Opcode Opc) { return Opc == BO_LAnd || Opc==BO_LOr; }
   bool isLogicalOp() const { return isLogicalOp(getOpcode()); }
@@ -3411,7 +3450,7 @@ public:
     return cast<Expr>(SubExprs[Index]);
   }
 
-  void setExprs(ASTContext &C, Expr ** Exprs, unsigned NumExprs);
+  void setExprs(ASTContext &C, ArrayRef<Expr *> Exprs);
 
   unsigned getShuffleMaskIdx(ASTContext &Ctx, unsigned N) const {
     assert((N < NumExprs - 2) && "Shuffle idx out of range!");

@@ -211,7 +211,7 @@ void EmptySubobjectMap::AddSubobjectAtOffset(const CXXRecordDecl *RD,
   if (!RD->isEmpty())
     return;
 
-  // If we have empty structures inside an union, we can assign both
+  // If we have empty structures inside a union, we can assign both
   // the same offset. Just avoid pushing them twice in the list.
   ClassVectorTy& Classes = EmptyClassOffsets[Offset];
   if (std::find(Classes.begin(), Classes.end(), RD) != Classes.end())
@@ -2354,7 +2354,7 @@ static const CXXMethodDecl *computeKeyFunction(ASTContext &Context,
   // A class that is not externally visible doesn't have a key function. (Or
   // at least, there's no point to assigning a key function to such a class;
   // this doesn't affect the ABI.)
-  if (RD->getLinkage() != ExternalLinkage)
+  if (!RD->isExternallyVisible())
     return 0;
 
   // Template instantiations don't have key functions,see Itanium C++ ABI 5.2.6.

@@ -866,19 +866,14 @@ bool HeaderSearch::isFileMultipleIncludeGuarded(const FileEntry *File) {
       HFI.ControllingMacro || HFI.ControllingMacroID;
 }
 
-void HeaderSearch::MarkFileModuleHeader(const FileEntry *FE) {
+void HeaderSearch::MarkFileModuleHeader(const FileEntry *FE,
+                                        bool isCompilingModuleHeader) {
   if (FE->getUID() >= FileInfo.size())
     FileInfo.resize(FE->getUID()+1);
 
   HeaderFileInfo &HFI = FileInfo[FE->getUID()];
   HFI.isModuleHeader = true;
-}
-
-void HeaderSearch::setHeaderFileInfoForUID(HeaderFileInfo HFI, unsigned UID) {
-  if (UID >= FileInfo.size())
-    FileInfo.resize(UID+1);
-  HFI.Resolved = true;
-  FileInfo[UID] = HFI;
+  HFI.isCompilingModuleHeader = isCompilingModuleHeader;
 }
 
 bool HeaderSearch::ShouldEnterIncludeFile(const FileEntry *File, bool isImport){
@@ -1148,6 +1143,20 @@ void HeaderSearch::collectAllModules(SmallVectorImpl<Module *> &Modules) {
                                MEnd = ModMap.module_end();
        M != MEnd; ++M) {
     Modules.push_back(M->getValue());
+  }
+}
+
+void HeaderSearch::loadTopLevelSystemModules() {
+  // Load module maps for each of the header search directories.
+  for (unsigned Idx = 0, N = SearchDirs.size(); Idx != N; ++Idx) {
+    // We only care about normal system header directories.
+    if (!SearchDirs[Idx].isNormalDir() ||
+        SearchDirs[Idx].getDirCharacteristic() != SrcMgr::C_System) {
+      continue;
+    }
+
+    // Try to load a module map file for the search directory.
+    loadModuleMapFile(SearchDirs[Idx].getDir());
   }
 }
 

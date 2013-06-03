@@ -161,6 +161,8 @@ def fuse_register_sized_bitfield_access: Flag<["-"], "fuse-register-sized-bitfie
   HelpText<"Use register sized accesses to bit-fields, when possible.">;
 def relaxed_aliasing : Flag<["-"], "relaxed-aliasing">,
   HelpText<"Turn off Type Based Alias Analysis">;
+def struct_path_tbaa : Flag<["-"], "struct-path-tbaa">,
+  HelpText<"Turn on struct-path aware Type Based Alias Analysis">;
 def masm_verbose : Flag<["-"], "masm-verbose">,
   HelpText<"Generate verbose assembly output">;
 def mcode_model : Separate<["-"], "mcode-model">,
@@ -184,6 +186,8 @@ def mlimit_float_precision : Separate<["-"], "mlimit-float-precision">,
   HelpText<"Limit float precision to the given value">;
 def mno_exec_stack : Flag<["-"], "mnoexecstack">,
   HelpText<"Mark the file as not needing an executable stack">;
+def split_stacks : Flag<["-"], "split-stacks">,
+  HelpText<"Try to use a split stack if possible.">;
 def mno_zero_initialized_in_bss : Flag<["-"], "mno-zero-initialized-in-bss">,
   HelpText<"Do not put zero initialized data in the BSS">;
 def backend_option : Separate<["-"], "backend-option">,
@@ -241,9 +245,6 @@ def fmessage_length : Separate<["-"], "fmessage-length">, MetaVarName<"<N>">,
 def Wno_rewrite_macros : Flag<["-"], "Wno-rewrite-macros">,
   HelpText<"Silence ObjC rewriting warnings">;
 
-def fwarn_on_spellcheck : Flag<["-"], "fwarn-on-spellcheck">,
-  HelpText<"Emit warning if spell-check is initiated, for testing">;
-
 //===----------------------------------------------------------------------===//
 // Frontend Options
 //===----------------------------------------------------------------------===//
@@ -282,8 +283,6 @@ def plugin_arg : JoinedAndSeparate<["-"], "plugin-arg-">,
     HelpText<"Pass <arg> to plugin <name>">;
 def add_plugin : Separate<["-"], "add-plugin">, MetaVarName<"<name>">,
   HelpText<"Use the named plugin action in addition to the default action">;
-def resource_dir : Separate<["-"], "resource-dir">,
-  HelpText<"The directory which holds the compiler resource files">;
 def version : Flag<["-"], "version">,
   HelpText<"Print the compiler version">;
 def ast_dump_filter : Separate<["-"], "ast-dump-filter">,
@@ -435,6 +434,8 @@ def ftemplate_depth : Separate<["-"], "ftemplate-depth">,
   HelpText<"Maximum depth of recursive template instantiation">;
 def fconstexpr_depth : Separate<["-"], "fconstexpr-depth">,
   HelpText<"Maximum depth of recursive constexpr function calls">;
+def fconstexpr_steps : Separate<["-"], "fconstexpr-steps">,
+  HelpText<"Maximum number of steps in constexpr function evaluation">;
 def fbracket_depth : Separate<["-"], "fbracket-depth">,
   HelpText<"Maximum nesting level for parentheses, brackets, and braces">;
 def fconst_strings : Flag<["-"], "fconst-strings">,

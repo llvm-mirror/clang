@@ -76,11 +76,13 @@ void test34(int cond) {
   // CHECK:      [[T0:%.*]] = load i8** [[ARG]]
   // CHECK-NEXT: store i8* [[T0]], i8** [[TEMP1]]
   // CHECK-NEXT: br label
+  // CHECK:      [[W0:%.*]] = phi i8* [ [[T0]], {{%.*}} ], [ undef, {{%.*}} ]
   // CHECK:      call void @_Z11test34_sinkPU15__autoreleasingP11objc_object(i8** [[T1]])
   // CHECK-NEXT: [[T0:%.*]] = icmp eq i8** [[ARG]], null
   // CHECK-NEXT: br i1 [[T0]],
   // CHECK:      [[T0:%.*]] = load i8** [[TEMP1]]
   // CHECK-NEXT: [[T1:%.*]] = call i8* @objc_retain(i8* [[T0]])
+  // CHECK-NEXT: call void (...)* @clang.arc.use(i8* [[W0]])
   // CHECK-NEXT: [[T2:%.*]] = load i8** [[ARG]]
   // CHECK-NEXT: store i8* [[T1]], i8** [[ARG]]
   // CHECK-NEXT: call void @objc_release(i8* [[T2]])
@@ -273,3 +275,25 @@ id Test39::bar() { return 0; }
 // CHECK:    define i8* @_ZThn8_N6Test393barEv(
 // CHECK:      call i8* @_ZN6Test393barEv(
 // CHECK-NEXT: ret i8*
+
+// rdar://13617051
+// Just a basic sanity-check that IR-gen still works after instantiating
+// a non-dependent message send that requires writeback.
+@interface Test40
++ (void) foo:(id *)errorPtr;
+@end
+template <class T> void test40_helper() {
+  id x;
+  [Test40 foo: &x];
+};
+template void test40_helper<int>();
+// CHECK:    define weak_odr void @_Z13test40_helperIiEvv()
+// CHECK:      [[X:%.*]] = alloca i8*
+// CHECK-NEXT: [[TEMP:%.*]] = alloca i8*
+// CHECK-NEXT: store i8* null, i8** [[X]]
+// CHECK:      [[T0:%.*]] = load i8** [[X]]
+// CHECK-NEXT: store i8* [[T0]], i8** [[TEMP]]
+// CHECK:      @objc_msgSend
+// CHECK-NEXT: [[T0:%.*]] = load i8** [[TEMP]]
+// CHECK-NEXT: call i8* @objc_retain(i8* [[T0]])
+

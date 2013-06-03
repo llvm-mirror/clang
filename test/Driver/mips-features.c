@@ -1,5 +1,3 @@
-// REQUIRES: mips-registered-target
-//
 // Check handling MIPS specific features options.
 //
 // -mips16
@@ -13,6 +11,18 @@
 // RUN:     -mips16 -mno-mips16 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-NOMIPS16 %s
 // CHECK-NOMIPS16: "-target-feature" "-mips16"
+//
+// -mmicromips
+// RUN: %clang -target mips-linux-gnu -### -c %s \
+// RUN:     -mno-micromips -mmicromips 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-MICROMIPS %s
+// CHECK-MICROMIPS: "-target-feature" "+micromips"
+//
+// -mno-micromips
+// RUN: %clang -target mips-linux-gnu -### -c %s \
+// RUN:     -mmicromips -mno-micromips 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-NOMICROMIPS %s
+// CHECK-NOMICROMIPS: "-target-feature" "-micromips"
 //
 // -mdsp
 // RUN: %clang -target mips-linux-gnu -### -c %s \
@@ -49,6 +59,18 @@
 // RUN:     -mxgot -mno-xgot 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-NOXGOT %s
 // CHECK-NOXGOT-NOT: "-mllvm" "-mxgot"
+//
+// -mldc1-sdc1
+// RUN: %clang -target mips-linux-gnu -### -c %s \
+// RUN:     -mno-ldc1-sdc1 -mldc1-sdc1 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-LDC1SDC1 %s
+// CHECK-LDC1SDC1-NOT: "-mllvm" "-mno-ldc1-sdc1"
+//
+// -mno-ldc1-sdc1
+// RUN: %clang -target mips-linux-gnu -### -c %s \
+// RUN:     -mldc1-sdc1 -mno-ldc1-sdc1 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-NOLDC1SDC1 %s
+// CHECK-NOLDC1SDC1: "-mllvm" "-mno-ldc1-sdc1"
 //
 // -G
 // RUN: %clang -target mips-linux-gnu -### -c %s \

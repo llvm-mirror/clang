@@ -77,9 +77,7 @@ CodeGenTypes::arrangeFreeFunctionType(CanQual<FunctionNoProtoType> FTNP) {
   // When translating an unprototyped function type, always use a
   // variadic type.
   return arrangeLLVMFunctionInfo(FTNP->getResultType().getUnqualifiedType(),
-                                 ArrayRef<CanQualType>(),
-                                 FTNP->getExtInfo(),
-                                 RequiredArgs(0));
+                                 None, FTNP->getExtInfo(), RequiredArgs(0));
 }
 
 /// Arrange the LLVM function layout for a value of the given function
@@ -257,10 +255,8 @@ CodeGenTypes::arrangeFunctionDeclaration(const FunctionDecl *FD) {
   // non-variadic type.
   if (isa<FunctionNoProtoType>(FTy)) {
     CanQual<FunctionNoProtoType> noProto = FTy.getAs<FunctionNoProtoType>();
-    return arrangeLLVMFunctionInfo(noProto->getResultType(),
-                                   ArrayRef<CanQualType>(),
-                                   noProto->getExtInfo(),
-                                   RequiredArgs::All);
+    return arrangeLLVMFunctionInfo(noProto->getResultType(), None,
+                                   noProto->getExtInfo(), RequiredArgs::All);
   }
 
   assert(isa<FunctionProtoType>(FTy));
@@ -420,7 +416,7 @@ CodeGenTypes::arrangeFunctionDeclaration(QualType resultType,
 }
 
 const CGFunctionInfo &CodeGenTypes::arrangeNullaryFunction() {
-  return arrangeLLVMFunctionInfo(getContext().VoidTy, ArrayRef<CanQualType>(),
+  return arrangeLLVMFunctionInfo(getContext().VoidTy, None,
                                  FunctionType::ExtInfo(), RequiredArgs::All);
 }
 
@@ -837,12 +833,11 @@ bool CodeGenModule::ReturnTypeUsesFPRet(QualType ResultType) {
     default:
       return false;
     case BuiltinType::Float:
-      return getContext().getTargetInfo().useObjCFPRetForRealType(TargetInfo::Float);
+      return getTarget().useObjCFPRetForRealType(TargetInfo::Float);
     case BuiltinType::Double:
-      return getContext().getTargetInfo().useObjCFPRetForRealType(TargetInfo::Double);
+      return getTarget().useObjCFPRetForRealType(TargetInfo::Double);
     case BuiltinType::LongDouble:
-      return getContext().getTargetInfo().useObjCFPRetForRealType(
-        TargetInfo::LongDouble);
+      return getTarget().useObjCFPRetForRealType(TargetInfo::LongDouble);
     }
   }
 
@@ -853,7 +848,7 @@ bool CodeGenModule::ReturnTypeUsesFP2Ret(QualType ResultType) {
   if (const ComplexType *CT = ResultType->getAs<ComplexType>()) {
     if (const BuiltinType *BT = CT->getElementType()->getAs<BuiltinType>()) {
       if (BT->getKind() == BuiltinType::LongDouble)
-        return getContext().getTargetInfo().useObjCFP2RetForComplexLongDouble();
+        return getTarget().useObjCFP2RetForComplexLongDouble();
     }
   }
 
@@ -1197,7 +1192,7 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
   // initialize the return value.  TODO: it might be nice to have
   // a more general mechanism for this that didn't require synthesized
   // return statements.
-  if (const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(CurFuncDecl)) {
+  if (const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(CurCodeDecl)) {
     if (FD->hasImplicitReturnZero()) {
       QualType RetTy = FD->getResultType().getUnqualifiedType();
       llvm::Type* LLVMTy = CGM.getTypes().ConvertType(RetTy);
@@ -1626,7 +1621,8 @@ static bool checkThisPointer(llvm::Value *ThisArg, llvm::Value *This) {
   return false;
 }
 
-void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI) {
+void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
+                                         bool EmitRetDbgLoc) {
   // Functions with no result always return void.
   if (ReturnValue == 0) {
     Builder.CreateRetVoid();
@@ -1671,8 +1667,10 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI) {
       // If there is a dominating store to ReturnValue, we can elide
       // the load, zap the store, and usually zap the alloca.
       if (llvm::StoreInst *SI = findDominatingStoreToReturnValue(*this)) {
+        // Reuse the debug location from the store unless we're told not to.
+        if (EmitRetDbgLoc)
+          RetDbgLoc = SI->getDebugLoc();
         // Get the stored value and nuke the now-dead store.
-        RetDbgLoc = SI->getDebugLoc();
         RV = SI->getValueOperand();
         SI->eraseFromParent();
 
@@ -1771,7 +1769,8 @@ static bool isProvablyNonNull(llvm::Value *addr) {
 /// Emit the actual writing-back of a writeback.
 static void emitWriteback(CodeGenFunction &CGF,
                           const CallArgList::Writeback &writeback) {
-  llvm::Value *srcAddr = writeback.Address;
+  const LValue &srcLV = writeback.Source;
+  llvm::Value *srcAddr = srcLV.getAddress();
   assert(!isProvablyNull(srcAddr) &&
          "shouldn't have writeback for provably null argument");
 
@@ -1798,9 +1797,35 @@ static void emitWriteback(CodeGenFunction &CGF,
                             "icr.writeback-cast");
   
   // Perform the writeback.
-  QualType srcAddrType = writeback.AddressType;
-  CGF.EmitStoreThroughLValue(RValue::get(value),
-                             CGF.MakeAddrLValue(srcAddr, srcAddrType));
+
+  // If we have a "to use" value, it's something we need to emit a use
+  // of.  This has to be carefully threaded in: if it's done after the
+  // release it's potentially undefined behavior (and the optimizer
+  // will ignore it), and if it happens before the retain then the
+  // optimizer could move the release there.
+  if (writeback.ToUse) {
+    assert(srcLV.getObjCLifetime() == Qualifiers::OCL_Strong);
+
+    // Retain the new value.  No need to block-copy here:  the block's
+    // being passed up the stack.
+    value = CGF.EmitARCRetainNonBlock(value);
+
+    // Emit the intrinsic use here.
+    CGF.EmitARCIntrinsicUse(writeback.ToUse);
+
+    // Load the old value (primitively).
+    llvm::Value *oldValue = CGF.EmitLoadOfScalar(srcLV);
+
+    // Put the new value in place (primitively).
+    CGF.EmitStoreOfScalar(value, srcLV, /*init*/ false);
+
+    // Release the old value.
+    CGF.EmitARCRelease(oldValue, srcLV.isARCPreciseLifetime());
+
+  // Otherwise, we can just do a normal lvalue store.
+  } else {
+    CGF.EmitStoreThroughLValue(RValue::get(value), srcLV);
+  }
 
   // Jump to the continuation block.
   if (!provablyNonNull)
@@ -1814,11 +1839,33 @@ static void emitWritebacks(CodeGenFunction &CGF,
     emitWriteback(CGF, *i);
 }
 
+static const Expr *maybeGetUnaryAddrOfOperand(const Expr *E) {
+  if (const UnaryOperator *uop = dyn_cast<UnaryOperator>(E->IgnoreParens()))
+    if (uop->getOpcode() == UO_AddrOf)
+      return uop->getSubExpr();
+  return 0;
+}
+
 /// Emit an argument that's being passed call-by-writeback.  That is,
 /// we are passing the address of 
 static void emitWritebackArg(CodeGenFunction &CGF, CallArgList &args,
                              const ObjCIndirectCopyRestoreExpr *CRE) {
-  llvm::Value *srcAddr = CGF.EmitScalarExpr(CRE->getSubExpr());
+  LValue srcLV;
+
+  // Make an optimistic effort to emit the address as an l-value.
+  // This can fail if the the argument expression is more complicated.
+  if (const Expr *lvExpr = maybeGetUnaryAddrOfOperand(CRE->getSubExpr())) {
+    srcLV = CGF.EmitLValue(lvExpr);
+
+  // Otherwise, just emit it as a scalar.
+  } else {
+    llvm::Value *srcAddr = CGF.EmitScalarExpr(CRE->getSubExpr());
+
+    QualType srcAddrType =
+      CRE->getSubExpr()->getType()->castAs<PointerType>()->getPointeeType();
+    srcLV = CGF.MakeNaturalAlignAddrLValue(srcAddr, srcAddrType);
+  }
+  llvm::Value *srcAddr = srcLV.getAddress();
 
   // The dest and src types don't necessarily match in LLVM terms
   // because of the crazy ObjC compatibility rules.
@@ -1832,9 +1879,6 @@ static void emitWritebackArg(CodeGenFunction &CGF, CallArgList &args,
              CRE->getType());
     return;
   }
-
-  QualType srcAddrType =
-    CRE->getSubExpr()->getType()->castAs<PointerType>()->getPointeeType();
 
   // Create the temporary.
   llvm::Value *temp = CGF.CreateTempAlloca(destType->getElementType(),
@@ -1855,6 +1899,7 @@ static void emitWritebackArg(CodeGenFunction &CGF, CallArgList &args,
   }
   
   llvm::BasicBlock *contBB = 0;
+  llvm::BasicBlock *originBB = 0;
 
   // If the address is *not* known to be non-null, we need to switch.
   llvm::Value *finalArgument;
@@ -1872,6 +1917,7 @@ static void emitWritebackArg(CodeGenFunction &CGF, CallArgList &args,
     // If we need to copy, then the load has to be conditional, which
     // means we need control flow.
     if (shouldCopy) {
+      originBB = CGF.Builder.GetInsertBlock();
       contBB = CGF.createBasicBlock("icr.cont");
       llvm::BasicBlock *copyBB = CGF.createBasicBlock("icr.copy");
       CGF.Builder.CreateCondBr(isNull, contBB, copyBB);
@@ -1880,9 +1926,10 @@ static void emitWritebackArg(CodeGenFunction &CGF, CallArgList &args,
     }
   }
 
+  llvm::Value *valueToUse = 0;
+
   // Perform a copy if necessary.
   if (shouldCopy) {
-    LValue srcLV = CGF.MakeAddrLValue(srcAddr, srcAddrType);
     RValue srcRV = CGF.EmitLoadOfLValue(srcLV);
     assert(srcRV.isScalar());
 
@@ -1892,15 +1939,37 @@ static void emitWritebackArg(CodeGenFunction &CGF, CallArgList &args,
 
     // Use an ordinary store, not a store-to-lvalue.
     CGF.Builder.CreateStore(src, temp);
+
+    // If optimization is enabled, and the value was held in a
+    // __strong variable, we need to tell the optimizer that this
+    // value has to stay alive until we're doing the store back.
+    // This is because the temporary is effectively unretained,
+    // and so otherwise we can violate the high-level semantics.
+    if (CGF.CGM.getCodeGenOpts().OptimizationLevel != 0 &&
+        srcLV.getObjCLifetime() == Qualifiers::OCL_Strong) {
+      valueToUse = src;
+    }
   }
   
   // Finish the control flow if we needed it.
   if (shouldCopy && !provablyNonNull) {
+    llvm::BasicBlock *copyBB = CGF.Builder.GetInsertBlock();
     CGF.EmitBlock(contBB);
+
+    // Make a phi for the value to intrinsically use.
+    if (valueToUse) {
+      llvm::PHINode *phiToUse = CGF.Builder.CreatePHI(valueToUse->getType(), 2,
+                                                      "icr.to-use");
+      phiToUse->addIncoming(valueToUse, copyBB);
+      phiToUse->addIncoming(llvm::UndefValue::get(valueToUse->getType()),
+                            originBB);
+      valueToUse = phiToUse;
+    }
+
     condEval.end(CGF);
   }
 
-  args.addWriteback(srcAddr, srcAddrType, temp);
+  args.addWriteback(srcLV, temp, valueToUse);
   args.add(RValue::get(finalArgument), CRE->getType());
 }
 

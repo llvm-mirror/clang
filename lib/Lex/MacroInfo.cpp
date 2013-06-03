@@ -28,7 +28,8 @@ MacroInfo::MacroInfo(SourceLocation DefLoc)
     IsDisabled(false),
     IsUsed(false),
     IsAllowRedefinitionsWithoutWarning(false),
-    IsWarnIfUnused(false) {
+    IsWarnIfUnused(false),
+    FromASTFile(false) {
 }
 
 unsigned MacroInfo::getDefinitionLengthSlow(SourceManager &SM) const {
@@ -60,11 +61,17 @@ unsigned MacroInfo::getDefinitionLengthSlow(SourceManager &SM) const {
   return DefinitionLength;
 }
 
-// isIdenticalTo - Return true if the specified macro definition is equal to
-// this macro in spelling, arguments, and whitespace.  This is used to emit
-// duplicate definition warnings.  This implements the rules in C99 6.10.3.
-//
-bool MacroInfo::isIdenticalTo(const MacroInfo &Other, Preprocessor &PP) const {
+/// \brief Return true if the specified macro definition is equal to
+/// this macro in spelling, arguments, and whitespace.
+///
+/// \param Syntactically if true, the macro definitions can be identical even
+/// if they use different identifiers for the function macro parameters.
+/// Otherwise the comparison is lexical and this implements the rules in
+/// C99 6.10.3.
+bool MacroInfo::isIdenticalTo(const MacroInfo &Other, Preprocessor &PP,
+                              bool Syntactically) const {
+  bool Lexically = !Syntactically;
+
   // Check # tokens in replacement, number of args, and various flags all match.
   if (ReplacementTokens.size() != Other.ReplacementTokens.size() ||
       getNumArgs() != Other.getNumArgs() ||
@@ -73,10 +80,12 @@ bool MacroInfo::isIdenticalTo(const MacroInfo &Other, Preprocessor &PP) const {
       isGNUVarargs() != Other.isGNUVarargs())
     return false;
 
-  // Check arguments.
-  for (arg_iterator I = arg_begin(), OI = Other.arg_begin(), E = arg_end();
-       I != E; ++I, ++OI)
-    if (*I != *OI) return false;
+  if (Lexically) {
+    // Check arguments.
+    for (arg_iterator I = arg_begin(), OI = Other.arg_begin(), E = arg_end();
+         I != E; ++I, ++OI)
+      if (*I != *OI) return false;
+  }
 
   // Check all the tokens.
   for (unsigned i = 0, e = ReplacementTokens.size(); i != e; ++i) {
@@ -94,7 +103,16 @@ bool MacroInfo::isIdenticalTo(const MacroInfo &Other, Preprocessor &PP) const {
 
     // If this is an identifier, it is easy.
     if (A.getIdentifierInfo() || B.getIdentifierInfo()) {
-      if (A.getIdentifierInfo() != B.getIdentifierInfo())
+      if (A.getIdentifierInfo() == B.getIdentifierInfo())
+        continue;
+      if (Lexically)
+        return false;
+      // With syntactic equivalence the parameter names can be different as long
+      // as they are used in the same place.
+      int AArgNum = getArgumentNum(A.getIdentifierInfo());
+      if (AArgNum == -1)
+        return false;
+      if (AArgNum != Other.getArgumentNum(B.getIdentifierInfo()))
         return false;
       continue;
     }
@@ -107,14 +125,40 @@ bool MacroInfo::isIdenticalTo(const MacroInfo &Other, Preprocessor &PP) const {
   return true;
 }
 
-const MacroDirective *
+MacroDirective::DefInfo MacroDirective::getDefinition(bool AllowHidden) {
+  MacroDirective *MD = this;
+  SourceLocation UndefLoc;
+  Optional<bool> isPublic;
+  for (; MD; MD = MD->getPrevious()) {
+    if (!AllowHidden && MD->isHidden())
+      continue;
+
+    if (DefMacroDirective *DefMD = dyn_cast<DefMacroDirective>(MD))
+      return DefInfo(DefMD, UndefLoc,
+                     !isPublic.hasValue() || isPublic.getValue());
+
+    if (UndefMacroDirective *UndefMD = dyn_cast<UndefMacroDirective>(MD)) {
+      UndefLoc = UndefMD->getLocation();
+      continue;
+    }
+
+    VisibilityMacroDirective *VisMD = cast<VisibilityMacroDirective>(MD);
+    if (!isPublic.hasValue())
+      isPublic = VisMD->isPublic();
+  }
+
+  return DefInfo();
+}
+
+const MacroDirective::DefInfo
 MacroDirective::findDirectiveAtLoc(SourceLocation L, SourceManager &SM) const {
   assert(L.isValid() && "SourceLocation is invalid.");
-  for (const MacroDirective *MD = this; MD; MD = MD->Previous) {
-    if (MD->getLocation().isInvalid() ||  // For macros defined on the command line.
-        SM.isBeforeInTranslationUnit(MD->getLocation(), L))
-      return (MD->UndefLocation.isInvalid() ||
-              SM.isBeforeInTranslationUnit(L, MD->UndefLocation)) ? MD : NULL;
+  for (DefInfo Def = getDefinition(); Def; Def = Def.getPreviousDefinition()) {
+    if (Def.getLocation().isInvalid() ||  // For macros defined on the command line.
+        SM.isBeforeInTranslationUnit(Def.getLocation(), L))
+      return (!Def.isUndefined() ||
+              SM.isBeforeInTranslationUnit(L, Def.getUndefLocation()))
+                  ? Def : DefInfo();
   }
-  return NULL;
+  return DefInfo();
 }

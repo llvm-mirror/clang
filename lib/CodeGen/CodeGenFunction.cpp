@@ -20,6 +20,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/StmtCXX.h"
+#include "clang/Basic/OpenCL.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/IR/DataLayout.h"
@@ -30,9 +31,9 @@ using namespace clang;
 using namespace CodeGen;
 
 CodeGenFunction::CodeGenFunction(CodeGenModule &cgm, bool suppressNewContext)
-  : CodeGenTypeCache(cgm), CGM(cgm),
-    Target(CGM.getContext().getTargetInfo()),
+  : CodeGenTypeCache(cgm), CGM(cgm), Target(cgm.getTarget()),
     Builder(cgm.getModule().getContext()),
+    CapturedStmtInfo(0),
     SanitizePerformTypeCheck(CGM.getSanOpts().Null |
                              CGM.getSanOpts().Alignment |
                              CGM.getSanOpts().ObjectSize |
@@ -41,11 +42,14 @@ CodeGenFunction::CodeGenFunction(CodeGenModule &cgm, bool suppressNewContext)
     AutoreleaseResult(false), BlockInfo(0), BlockPointer(0),
     LambdaThisCaptureField(0), NormalCleanupDest(0), NextCleanupDestIndex(1),
     FirstBlockInfo(0), EHResumeBlock(0), ExceptionSlot(0), EHSelectorSlot(0),
-    DebugInfo(0), DisableDebugInfo(false), DidCallStackSave(false),
+    DebugInfo(0), DisableDebugInfo(false), CalleeWithThisReturn(0),
+    DidCallStackSave(false),
     IndirectBranch(0), SwitchInsn(0), CaseRangeBlock(0), UnreachableBlock(0),
+    NumReturnExprs(0), NumSimpleReturnExprs(0),
     CXXABIThisDecl(0), CXXABIThisValue(0), CXXThisValue(0),
+    CXXDefaultInitExprThis(0),
     CXXStructorImplicitParamDecl(0), CXXStructorImplicitParamValue(0),
-    OutermostConditional(0), TerminateLandingPad(0),
+    OutermostConditional(0), CurLexicalScope(0), TerminateLandingPad(0),
     TerminateHandler(0), TrapBB(0) {
   if (!suppressNewContext)
     CGM.getCXXABI().getMangleContext().startNewFunction();
@@ -88,6 +92,9 @@ TypeEvaluationKind CodeGenFunction::getEvaluationKind(QualType type) {
 #define NON_CANONICAL_UNLESS_DEPENDENT_TYPE(name, parent) case Type::name:
 #include "clang/AST/TypeNodes.def"
       llvm_unreachable("non-canonical or dependent type in IR-generation");
+
+    case Type::Auto:
+      llvm_unreachable("undeduced auto type in IR-generation");
 
     // Various scalar types.
     case Type::Builtin:
@@ -182,15 +189,38 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
   assert(BreakContinueStack.empty() &&
          "mismatched push/pop in break/continue stack!");
 
-  if (CGDebugInfo *DI = getDebugInfo())
-    DI->EmitLocation(Builder, EndLoc);
+  bool OnlySimpleReturnStmts = NumSimpleReturnExprs > 0
+    && NumSimpleReturnExprs == NumReturnExprs;
+  // If the function contains only a simple return statement, the
+  // location before the cleanup code becomes the last useful
+  // breakpoint in the function, because the simple return expression
+  // will be evaluated after the cleanup code. To be safe, set the
+  // debug location for cleanup code to the location of the return
+  // statement. Otherwise the cleanup code should be at the end of the
+  // function's lexical scope.
+  if (CGDebugInfo *DI = getDebugInfo()) {
+    if (OnlySimpleReturnStmts)
+       DI->EmitLocation(Builder, LastStopPoint);
+    else
+      DI->EmitLocation(Builder, EndLoc);
+  }
 
   // Pop any cleanups that might have been associated with the
   // parameters.  Do this in whatever block we're currently in; it's
   // important to do this before we enter the return block or return
   // edges will be *really* confused.
-  if (EHStack.stable_begin() != PrologueCleanupDepth)
+  bool EmitRetDbgLoc = true;
+  if (EHStack.stable_begin() != PrologueCleanupDepth) {
     PopCleanupBlocks(PrologueCleanupDepth);
+
+    // Make sure the line table doesn't jump back into the body for
+    // the ret after it's been at EndLoc.
+    EmitRetDbgLoc = false;
+
+    if (CGDebugInfo *DI = getDebugInfo())
+      if (OnlySimpleReturnStmts)
+        DI->EmitLocation(Builder, EndLoc);
+  }
 
   // Emit function epilog (to return).
   EmitReturnBlock();
@@ -203,7 +233,7 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
     DI->EmitFunctionEnd(Builder);
   }
 
-  EmitFunctionEpilog(*CurFnInfo);
+  EmitFunctionEpilog(*CurFnInfo, EmitRetDbgLoc);
   EmitEndEHSpec(CurCodeDecl);
 
   assert(EHStack.empty() &&
@@ -277,22 +307,37 @@ void CodeGenFunction::EmitFunctionInstrumentation(const char *Fn) {
 void CodeGenFunction::EmitMCountInstrumentation() {
   llvm::FunctionType *FTy = llvm::FunctionType::get(VoidTy, false);
 
-  llvm::Constant *MCountFn = CGM.CreateRuntimeFunction(FTy,
-                                                       Target.getMCountName());
+  llvm::Constant *MCountFn =
+    CGM.CreateRuntimeFunction(FTy, getTarget().getMCountName());
   EmitNounwindRuntimeCall(MCountFn);
 }
 
 // OpenCL v1.2 s5.6.4.6 allows the compiler to store kernel argument
 // information in the program executable. The argument information stored
 // includes the argument name, its type, the address and access qualifiers used.
-// FIXME: Add type, address, and access qualifiers.
 static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
                                  CodeGenModule &CGM,llvm::LLVMContext &Context,
-                                 SmallVector <llvm::Value*, 5> &kernelMDArgs) {
-
-  // Create MDNodes that represents the kernel arg metadata.
+                                 SmallVector <llvm::Value*, 5> &kernelMDArgs,
+                                 CGBuilderTy& Builder, ASTContext &ASTCtx) {
+  // Create MDNodes that represent the kernel arg metadata.
   // Each MDNode is a list in the form of "key", N number of values which is
   // the same number of values as their are kernel arguments.
+
+  // MDNode for the kernel argument address space qualifiers.
+  SmallVector<llvm::Value*, 8> addressQuals;
+  addressQuals.push_back(llvm::MDString::get(Context, "kernel_arg_addr_space"));
+
+  // MDNode for the kernel argument access qualifiers (images only).
+  SmallVector<llvm::Value*, 8> accessQuals;
+  accessQuals.push_back(llvm::MDString::get(Context, "kernel_arg_access_qual"));
+
+  // MDNode for the kernel argument type names.
+  SmallVector<llvm::Value*, 8> argTypeNames;
+  argTypeNames.push_back(llvm::MDString::get(Context, "kernel_arg_type"));
+
+  // MDNode for the kernel argument type qualifiers.
+  SmallVector<llvm::Value*, 8> argTypeQuals;
+  argTypeQuals.push_back(llvm::MDString::get(Context, "kernel_arg_type_qual"));
 
   // MDNode for the kernel argument names.
   SmallVector<llvm::Value*, 8> argNames;
@@ -300,12 +345,74 @@ static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
 
   for (unsigned i = 0, e = FD->getNumParams(); i != e; ++i) {
     const ParmVarDecl *parm = FD->getParamDecl(i);
+    QualType ty = parm->getType();
+    std::string typeQuals;
+
+    if (ty->isPointerType()) {
+      QualType pointeeTy = ty->getPointeeType();
+
+      // Get address qualifier.
+      addressQuals.push_back(Builder.getInt32(ASTCtx.getTargetAddressSpace(
+        pointeeTy.getAddressSpace())));
+
+      // Get argument type name.
+      std::string typeName = pointeeTy.getUnqualifiedType().getAsString() + "*";
+
+      // Turn "unsigned type" to "utype"
+      std::string::size_type pos = typeName.find("unsigned");
+      if (pos != std::string::npos)
+        typeName.erase(pos+1, 8);
+
+      argTypeNames.push_back(llvm::MDString::get(Context, typeName));
+
+      // Get argument type qualifiers:
+      if (ty.isRestrictQualified())
+        typeQuals = "restrict";
+      if (pointeeTy.isConstQualified() ||
+          (pointeeTy.getAddressSpace() == LangAS::opencl_constant))
+        typeQuals += typeQuals.empty() ? "const" : " const";
+      if (pointeeTy.isVolatileQualified())
+        typeQuals += typeQuals.empty() ? "volatile" : " volatile";
+    } else {
+      addressQuals.push_back(Builder.getInt32(0));
+
+      // Get argument type name.
+      std::string typeName = ty.getUnqualifiedType().getAsString();
+
+      // Turn "unsigned type" to "utype"
+      std::string::size_type pos = typeName.find("unsigned");
+      if (pos != std::string::npos)
+        typeName.erase(pos+1, 8);
+
+      argTypeNames.push_back(llvm::MDString::get(Context, typeName));
+
+      // Get argument type qualifiers:
+      if (ty.isConstQualified())
+        typeQuals = "const";
+      if (ty.isVolatileQualified())
+        typeQuals += typeQuals.empty() ? "volatile" : " volatile";
+    }
+    
+    argTypeQuals.push_back(llvm::MDString::get(Context, typeQuals));
+
+    // Get image access qualifier:
+    if (ty->isImageType()) {
+      if (parm->hasAttr<OpenCLImageAccessAttr>() &&
+          parm->getAttr<OpenCLImageAccessAttr>()->getAccess() == CLIA_write_only)
+        accessQuals.push_back(llvm::MDString::get(Context, "write_only"));
+      else
+        accessQuals.push_back(llvm::MDString::get(Context, "read_only"));
+    } else
+      accessQuals.push_back(llvm::MDString::get(Context, "none"));
 
     // Get argument name.
     argNames.push_back(llvm::MDString::get(Context, parm->getName()));
-
   }
-  // Add MDNode to the list of all metadata.
+
+  kernelMDArgs.push_back(llvm::MDNode::get(Context, addressQuals));
+  kernelMDArgs.push_back(llvm::MDNode::get(Context, accessQuals));
+  kernelMDArgs.push_back(llvm::MDNode::get(Context, argTypeNames));
+  kernelMDArgs.push_back(llvm::MDNode::get(Context, argTypeQuals));
   kernelMDArgs.push_back(llvm::MDNode::get(Context, argNames));
 }
 
@@ -321,7 +428,8 @@ void CodeGenFunction::EmitOpenCLKernelMetadata(const FunctionDecl *FD,
   kernelMDArgs.push_back(Fn);
 
   if (CGM.getCodeGenOpts().EmitOpenCLArgMetadata)
-    GenOpenCLArgMetadata(FD, Fn, CGM, Context, kernelMDArgs);
+    GenOpenCLArgMetadata(FD, Fn, CGM, Context, kernelMDArgs,
+                         Builder, getContext());
 
   if (FD->hasAttr<VecTypeHintAttr>()) {
     VecTypeHintAttr *attr = FD->getAttr<VecTypeHintAttr>();
@@ -368,7 +476,8 @@ void CodeGenFunction::EmitOpenCLKernelMetadata(const FunctionDecl *FD,
   OpenCLKernelMetadata->addOperand(kernelMDNode);
 }
 
-void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
+void CodeGenFunction::StartFunction(GlobalDecl GD,
+                                    QualType RetTy,
                                     llvm::Function *Fn,
                                     const CGFunctionInfo &FnInfo,
                                     const FunctionArgList &Args,
@@ -376,7 +485,8 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
   const Decl *D = GD.getDecl();
 
   DidCallStackSave = false;
-  CurCodeDecl = CurFuncDecl = D;
+  CurCodeDecl = D;
+  CurFuncDecl = (D ? D->getNonClosureContext() : 0);
   FnRetTy = RetTy;
   CurFn = Fn;
   CurFnInfo = &FnInfo;
@@ -475,12 +585,7 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
                                         LambdaThisCaptureField);
       if (LambdaThisCaptureField) {
         // If this lambda captures this, load it.
-        QualType LambdaTagType =
-            getContext().getTagDeclType(LambdaThisCaptureField->getParent());
-        LValue LambdaLV = MakeNaturalAlignAddrLValue(CXXABIThisValue,
-                                                     LambdaTagType);
-        LValue ThisLValue = EmitLValueForField(LambdaLV,
-                                               LambdaThisCaptureField);
+        LValue ThisLValue = EmitLValueForLambdaField(LambdaThisCaptureField);
         CXXThisValue = EmitLoadOfLValue(ThisLValue).getScalarVal();
       }
     } else {
@@ -563,6 +668,7 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
 
   SourceRange BodyRange;
   if (Stmt *Body = FD->getBody()) BodyRange = Body->getSourceRange();
+  CurEHLocation = BodyRange.getEnd();
 
   // CalleeWithThisReturn keeps track of the last callee inside this function
   // that returns 'this'. Before starting the function, we set it to null.
@@ -823,6 +929,16 @@ void CodeGenFunction::EmitBranchOnBoolExpr(const Expr *Cond,
     EmitBranchOnBoolExpr(CondOp->getRHS(), TrueBlock, FalseBlock);
     cond.end(*this);
 
+    return;
+  }
+
+  if (const CXXThrowExpr *Throw = dyn_cast<CXXThrowExpr>(Cond)) {
+    // Conditional operator handling can give us a throw expression as a
+    // condition for a case like:
+    //   br(c ? throw x : y, t, f) -> br(c, br(throw x, t, f), br(y, t, f)
+    // Fold this to:
+    //   br(c, throw x, br(y, t, f))
+    EmitCXXThrowExpr(Throw, /*KeepInsertionPoint*/false);
     return;
   }
 
@@ -1335,3 +1451,5 @@ llvm::Value *CodeGenFunction::EmitFieldAnnotations(const FieldDecl *D,
 
   return V;
 }
+
+CodeGenFunction::CGCapturedStmtInfo::~CGCapturedStmtInfo() { }

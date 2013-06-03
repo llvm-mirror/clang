@@ -215,6 +215,7 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::TypeTraitExprClass:
   case Stmt::CXXBindTemporaryExprClass:
   case Stmt::CXXDefaultArgExprClass:
+  case Stmt::CXXDefaultInitExprClass:
   case Stmt::CXXScalarValueInitExprClass:
   case Stmt::CXXUuidofExprClass:
   case Stmt::ChooseExprClass:
@@ -268,6 +269,10 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
 
   case Stmt::DeclStmtClass:
     K = CXCursor_DeclStmt;
+    break;
+
+  case Stmt::CapturedStmtClass:
+    K = CXCursor_UnexposedStmt;
     break;
 
   case Stmt::IntegerLiteralClass:
@@ -430,7 +435,21 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
     K = CXCursor_SizeOfPackExpr;
     break;
 
-  case Stmt::DeclRefExprClass:           
+  case Stmt::DeclRefExprClass:
+    if (const ImplicitParamDecl *IPD =
+         dyn_cast_or_null<ImplicitParamDecl>(cast<DeclRefExpr>(S)->getDecl())) {
+      if (const ObjCMethodDecl *MD =
+            dyn_cast<ObjCMethodDecl>(IPD->getDeclContext())) {
+        if (MD->getSelfDecl() == IPD) {
+          K = CXCursor_ObjCSelfExpr;
+          break;
+        }
+      }
+    }
+
+    K = CXCursor_DeclRefExpr;
+    break;
+
   case Stmt::DependentScopeDeclRefExprClass:
   case Stmt::SubstNonTypeTemplateParmExprClass:
   case Stmt::SubstNonTypeTemplateParmPackExprClass:
@@ -442,6 +461,7 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::CXXDependentScopeMemberExprClass:
   case Stmt::CXXPseudoDestructorExprClass:
   case Stmt::MemberExprClass:            
+  case Stmt::MSPropertyRefExprClass:
   case Stmt::ObjCIsaExprClass:
   case Stmt::ObjCIvarRefExprClass:    
   case Stmt::ObjCPropertyRefExprClass: 
@@ -939,6 +959,13 @@ int clang_Cursor_getNumArguments(CXCursor C) {
       return FD->param_size();
   }
 
+  if (clang_isExpression(C.kind)) {
+    const Expr *E = cxcursor::getCursorExpr(C);
+    if (const CallExpr *CE = dyn_cast<CallExpr>(E)) {
+      return CE->getNumArgs();
+    }
+  }
+
   return -1;
 }
 
@@ -953,6 +980,17 @@ CXCursor clang_Cursor_getArgument(CXCursor C, unsigned i) {
       if (i < FD->param_size())
         return cxcursor::MakeCXCursor(FD->param_begin()[i],
                                       cxcursor::getCursorTU(C));
+    }
+  }
+
+  if (clang_isExpression(C.kind)) {
+    const Expr *E = cxcursor::getCursorExpr(C);
+    if (const CallExpr *CE = dyn_cast<CallExpr>(E)) {
+      if (i < CE->getNumArgs()) {
+        return cxcursor::MakeCXCursor(CE->getArg(i),
+                                      getCursorDecl(C),
+                                      cxcursor::getCursorTU(C));
+      }
     }
   }
 
@@ -1007,7 +1045,7 @@ unsigned clang_CXCursorSet_contains(CXCursorSet set, CXCursor cursor) {
   CXCursorSet_Impl *setImpl = unpackCXCursorSet(set);
   if (!setImpl)
     return 0;
-  return setImpl->find(cursor) == setImpl->end();
+  return setImpl->find(cursor) != setImpl->end();
 }
 
 unsigned clang_CXCursorSet_insert(CXCursorSet set, CXCursor cursor) {

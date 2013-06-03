@@ -97,7 +97,12 @@ RawComment *ASTContext::getRawCommentForDeclNoCache(const Decl *D) const {
     if (ED->getTemplateSpecializationKind() == TSK_ImplicitInstantiation)
       return NULL;
   }
-
+  if (const TagDecl *TD = dyn_cast<TagDecl>(D)) {
+    // When tag declaration (but not definition!) is part of the
+    // decl-specifier-seq of some other declaration, it doesn't get comment
+    if (TD->isEmbeddedInDeclarator() && !TD->isCompleteDefinition())
+      return NULL;
+  }
   // TODO: handle comments for function parameters properly.
   if (isa<ParmVarDecl>(D))
     return NULL;
@@ -141,7 +146,9 @@ RawComment *ASTContext::getRawCommentForDeclNoCache(const Decl *D) const {
     // When searching for comments during parsing, the comment we are looking
     // for is usually among the last two comments we parsed -- check them
     // first.
-    RawComment CommentAtDeclLoc(SourceMgr, SourceRange(DeclLoc));
+    RawComment CommentAtDeclLoc(
+        SourceMgr, SourceRange(DeclLoc), false,
+        LangOpts.CommentOpts.ParseAllComments);
     BeforeThanCompare<RawComment> Compare(SourceMgr);
     ArrayRef<RawComment *>::iterator MaybeBeforeDecl = RawComments.end() - 1;
     bool Found = Compare(*MaybeBeforeDecl, &CommentAtDeclLoc);
@@ -399,9 +406,16 @@ comments::FullComment *ASTContext::cloneFullComment(comments::FullComment *FC,
   
 }
 
+comments::FullComment *ASTContext::getLocalCommentForDeclUncached(const Decl *D) const {
+  const RawComment *RC = getRawCommentForDeclNoCache(D);
+  return RC ? RC->parse(*this, 0, D) : 0;
+}
+
 comments::FullComment *ASTContext::getCommentForDecl(
                                               const Decl *D,
                                               const Preprocessor *PP) const {
+  if (D->isInvalidDecl())
+    return NULL;
   D = adjustDeclToTemplate(D);
   
   const Decl *Canonical = D->getCanonicalDecl();
@@ -435,7 +449,7 @@ comments::FullComment *ASTContext::getCommentForDecl(
         if (comments::FullComment *FC = getCommentForDecl(Overridden[i], PP))
           return cloneFullComment(FC, D);
     }
-    else if (const TypedefDecl *TD = dyn_cast<TypedefDecl>(D)) {
+    else if (const TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(D)) {
       // Attach any tag type's documentation to its typedef if latter
       // does not have one of its own.
       QualType QT = TD->getUnderlyingType();
@@ -443,6 +457,53 @@ comments::FullComment *ASTContext::getCommentForDecl(
         if (const Decl *TD = TT->getDecl())
           if (comments::FullComment *FC = getCommentForDecl(TD, PP))
             return cloneFullComment(FC, D);
+    }
+    else if (const ObjCInterfaceDecl *IC = dyn_cast<ObjCInterfaceDecl>(D)) {
+      while (IC->getSuperClass()) {
+        IC = IC->getSuperClass();
+        if (comments::FullComment *FC = getCommentForDecl(IC, PP))
+          return cloneFullComment(FC, D);
+      }
+    }
+    else if (const ObjCCategoryDecl *CD = dyn_cast<ObjCCategoryDecl>(D)) {
+      if (const ObjCInterfaceDecl *IC = CD->getClassInterface())
+        if (comments::FullComment *FC = getCommentForDecl(IC, PP))
+          return cloneFullComment(FC, D);
+    }
+    else if (const CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(D)) {
+      if (!(RD = RD->getDefinition()))
+        return NULL;
+      // Check non-virtual bases.
+      for (CXXRecordDecl::base_class_const_iterator I =
+           RD->bases_begin(), E = RD->bases_end(); I != E; ++I) {
+        if (I->isVirtual() || (I->getAccessSpecifier() != AS_public))
+          continue;
+        QualType Ty = I->getType();
+        if (Ty.isNull())
+          continue;
+        if (const CXXRecordDecl *NonVirtualBase = Ty->getAsCXXRecordDecl()) {
+          if (!(NonVirtualBase= NonVirtualBase->getDefinition()))
+            continue;
+        
+          if (comments::FullComment *FC = getCommentForDecl((NonVirtualBase), PP))
+            return cloneFullComment(FC, D);
+        }
+      }
+      // Check virtual bases.
+      for (CXXRecordDecl::base_class_const_iterator I =
+           RD->vbases_begin(), E = RD->vbases_end(); I != E; ++I) {
+        if (I->getAccessSpecifier() != AS_public)
+          continue;
+        QualType Ty = I->getType();
+        if (Ty.isNull())
+          continue;
+        if (const CXXRecordDecl *VirtualBase = Ty->getAsCXXRecordDecl()) {
+          if (!(VirtualBase= VirtualBase->getDefinition()))
+            continue;
+          if (comments::FullComment *FC = getCommentForDecl((VirtualBase), PP))
+            return cloneFullComment(FC, D);
+        }
+      }
     }
     return NULL;
   }
@@ -843,13 +904,17 @@ void ASTContext::InitBuiltinTypes(const TargetInfo &Target) {
   InitBuiltinType(Int128Ty,            BuiltinType::Int128);
   InitBuiltinType(UnsignedInt128Ty,    BuiltinType::UInt128);
 
-  if (LangOpts.CPlusPlus && LangOpts.WChar) { // C++ 3.9.1p5
-    if (TargetInfo::isTypeSigned(Target.getWCharType()))
-      InitBuiltinType(WCharTy,           BuiltinType::WChar_S);
-    else  // -fshort-wchar makes wchar_t be unsigned.
-      InitBuiltinType(WCharTy,           BuiltinType::WChar_U);
-  } else // C99 (or C++ using -fno-wchar)
-    WCharTy = getFromTargetType(Target.getWCharType());
+  // C++ 3.9.1p5
+  if (TargetInfo::isTypeSigned(Target.getWCharType()))
+    InitBuiltinType(WCharTy,           BuiltinType::WChar_S);
+  else  // -fshort-wchar makes wchar_t be unsigned.
+    InitBuiltinType(WCharTy,           BuiltinType::WChar_U);
+  if (LangOpts.CPlusPlus && LangOpts.WChar)
+    WideCharTy = WCharTy;
+  else {
+    // C99 (or C++ using -fno-wchar).
+    WideCharTy = getFromTargetType(Target.getWCharType());
+  }
 
   WIntTy = getFromTargetType(Target.getWIntType());
 
@@ -1125,8 +1190,8 @@ void ASTContext::getOverriddenMethods(
   assert(D);
 
   if (const CXXMethodDecl *CXXMethod = dyn_cast<CXXMethodDecl>(D)) {
-    Overridden.append(CXXMethod->begin_overridden_methods(),
-                      CXXMethod->end_overridden_methods());
+    Overridden.append(overridden_methods_begin(CXXMethod),
+                      overridden_methods_end(CXXMethod));
     return;
   }
 
@@ -1229,6 +1294,10 @@ CharUnits ASTContext::getDeclAlign(const Decl *D, bool RefAsPointee) const {
         T = getBaseElementType(arrayType);
       }
       Align = std::max(Align, getPreferredTypeAlign(T.getTypePtr()));
+      if (const VarDecl *VD = dyn_cast<VarDecl>(D)) {
+        if (VD->hasGlobalStorage())
+          Align = std::max(Align, getTargetInfo().getMinGlobalAlign());
+      }
     }
 
     // Fields can be subject to extra alignment constraints, like if
@@ -1281,8 +1350,28 @@ ASTContext::getTypeInfoDataSizeInChars(QualType T) const {
   return sizeAndAlign;
 }
 
+/// getConstantArrayInfoInChars - Performing the computation in CharUnits
+/// instead of in bits prevents overflowing the uint64_t for some large arrays.
+std::pair<CharUnits, CharUnits>
+static getConstantArrayInfoInChars(const ASTContext &Context,
+                                   const ConstantArrayType *CAT) {
+  std::pair<CharUnits, CharUnits> EltInfo =
+      Context.getTypeInfoInChars(CAT->getElementType());
+  uint64_t Size = CAT->getSize().getZExtValue();
+  assert((Size == 0 || static_cast<uint64_t>(EltInfo.first.getQuantity()) <=
+              (uint64_t)(-1)/Size) &&
+         "Overflow in array type char size evaluation");
+  uint64_t Width = EltInfo.first.getQuantity() * Size;
+  unsigned Align = EltInfo.second.getQuantity();
+  Width = llvm::RoundUpToAlignment(Width, Align);
+  return std::make_pair(CharUnits::fromQuantity(Width),
+                        CharUnits::fromQuantity(Align));
+}
+
 std::pair<CharUnits, CharUnits>
 ASTContext::getTypeInfoInChars(const Type *T) const {
+  if (const ConstantArrayType *CAT = dyn_cast<ConstantArrayType>(T))
+    return getConstantArrayInfoInChars(*this, CAT);
   std::pair<uint64_t, unsigned> Info = getTypeInfo(T);
   return std::make_pair(toCharUnitsFromBits(Info.first),
                         toCharUnitsFromBits(Info.second));
@@ -1496,10 +1585,7 @@ ASTContext::getTypeInfoImpl(const Type *T) const {
   }
   case Type::MemberPointer: {
     const MemberPointerType *MPT = cast<MemberPointerType>(T);
-    std::pair<uint64_t, unsigned> PtrDiffInfo =
-      getTypeInfo(getPointerDiffType());
-    Width = PtrDiffInfo.first * ABI->getMemberPointerSize(MPT);
-    Align = PtrDiffInfo.second;
+    llvm::tie(Width, Align) = ABI->getMemberPointerWidthAndAlign(MPT);
     break;
   }
   case Type::Complex: {
@@ -1546,7 +1632,8 @@ ASTContext::getTypeInfoImpl(const Type *T) const {
 
   case Type::Auto: {
     const AutoType *A = cast<AutoType>(T);
-    assert(A->isDeduced() && "Cannot request the size of a dependent type");
+    assert(!A->getDeducedType().isNull() &&
+           "cannot request the size of an undeduced or dependent auto type");
     return getTypeInfo(A->getDeducedType().getTypePtr());
   }
 
@@ -1640,10 +1727,10 @@ int64_t ASTContext::toBits(CharUnits CharSize) const {
 /// getTypeSizeInChars - Return the size of the specified type, in characters.
 /// This method does not work on incomplete types.
 CharUnits ASTContext::getTypeSizeInChars(QualType T) const {
-  return toCharUnitsFromBits(getTypeSize(T));
+  return getTypeInfoInChars(T).first;
 }
 CharUnits ASTContext::getTypeSizeInChars(const Type *T) const {
-  return toCharUnitsFromBits(getTypeSize(T));
+  return getTypeInfoInChars(T).first;
 }
 
 /// getTypeAlignInChars - Return the ABI-specified alignment of a type, in 
@@ -1671,6 +1758,18 @@ unsigned ASTContext::getPreferredTypeAlign(const Type *T) const {
     return std::max(ABIAlign, (unsigned)getTypeSize(T));
 
   return ABIAlign;
+}
+
+/// getAlignOfGlobalVar - Return the alignment in bits that should be given
+/// to a global variable of the specified type.
+unsigned ASTContext::getAlignOfGlobalVar(QualType T) const {
+  return std::max(getTypeAlign(T), getTargetInfo().getMinGlobalAlign());
+}
+
+/// getAlignOfGlobalVarInChars - Return the alignment in characters that
+/// should be given to a global variable of the specified type.
+CharUnits ASTContext::getAlignOfGlobalVarInChars(QualType T) const {
+  return toCharUnitsFromBits(getAlignOfGlobalVar(T));
 }
 
 /// DeepCollectObjCIvars -
@@ -1981,6 +2080,22 @@ const FunctionType *ASTContext::adjustFunctionType(const FunctionType *T,
   }
 
   return cast<FunctionType>(Result.getTypePtr());
+}
+
+void ASTContext::adjustDeducedFunctionResultType(FunctionDecl *FD,
+                                                 QualType ResultType) {
+  FD = FD->getMostRecentDecl();
+  while (true) {
+    const FunctionProtoType *FPT = FD->getType()->castAs<FunctionProtoType>();
+    FunctionProtoType::ExtProtoInfo EPI = FPT->getExtProtoInfo();
+    FD->setType(getFunctionType(ResultType, FPT->getArgTypes(), EPI));
+    if (FunctionDecl *Next = FD->getPreviousDecl())
+      FD = Next;
+    else
+      break;
+  }
+  if (ASTMutationListener *L = getASTMutationListener())
+    L->DeducedReturnType(FD, ResultType);
 }
 
 /// getComplexType - Return the uniqued reference to the type for a complex
@@ -3511,18 +3626,24 @@ QualType ASTContext::getUnaryTransformType(QualType BaseType,
   return QualType(Ty, 0);
 }
 
-/// getAutoType - We only unique auto types after they've been deduced.
-QualType ASTContext::getAutoType(QualType DeducedType) const {
-  void *InsertPos = 0;
-  if (!DeducedType.isNull()) {
-    // Look in the folding set for an existing type.
-    llvm::FoldingSetNodeID ID;
-    AutoType::Profile(ID, DeducedType);
-    if (AutoType *AT = AutoTypes.FindNodeOrInsertPos(ID, InsertPos))
-      return QualType(AT, 0);
-  }
+/// getAutoType - Return the uniqued reference to the 'auto' type which has been
+/// deduced to the given type, or to the canonical undeduced 'auto' type, or the
+/// canonical deduced-but-dependent 'auto' type.
+QualType ASTContext::getAutoType(QualType DeducedType, bool IsDecltypeAuto,
+                                 bool IsDependent) const {
+  if (DeducedType.isNull() && !IsDecltypeAuto && !IsDependent)
+    return getAutoDeductType();
 
-  AutoType *AT = new (*this, TypeAlignment) AutoType(DeducedType);
+  // Look in the folding set for an existing type.
+  void *InsertPos = 0;
+  llvm::FoldingSetNodeID ID;
+  AutoType::Profile(ID, DeducedType, IsDecltypeAuto, IsDependent);
+  if (AutoType *AT = AutoTypes.FindNodeOrInsertPos(ID, InsertPos))
+    return QualType(AT, 0);
+
+  AutoType *AT = new (*this, TypeAlignment) AutoType(DeducedType,
+                                                     IsDecltypeAuto,
+                                                     IsDependent);
   Types.push_back(AT);
   if (InsertPos)
     AutoTypes.InsertNode(AT, InsertPos);
@@ -3560,8 +3681,10 @@ QualType ASTContext::getAtomicType(QualType T) const {
 /// getAutoDeductType - Get type pattern for deducing against 'auto'.
 QualType ASTContext::getAutoDeductType() const {
   if (AutoDeductTy.isNull())
-    AutoDeductTy = getAutoType(QualType());
-  assert(!AutoDeductTy.isNull() && "can't build 'auto' pattern");
+    AutoDeductTy = QualType(
+      new (*this, TypeAlignment) AutoType(QualType(), /*decltype(auto)*/false,
+                                          /*dependent*/false),
+      0);
   return AutoDeductTy;
 }
 
@@ -4191,7 +4314,7 @@ QualType ASTContext::isPromotableBitField(Expr *E) const {
   if (E->isTypeDependent() || E->isValueDependent())
     return QualType();
   
-  FieldDecl *Field = E->getBitField();
+  FieldDecl *Field = E->getSourceBitField(); // FIXME: conditional bit-fields?
   if (!Field)
     return QualType();
 
@@ -4824,6 +4947,10 @@ void ASTContext::getObjCEncodingForPropertyDecl(const ObjCPropertyDecl *PD,
 
   if (PD->isReadOnly()) {
     S += ",R";
+    if (PD->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_copy)
+      S += ",C";
+    if (PD->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_retain)
+      S += ",&";
   } else {
     switch (PD->getSetterKind()) {
     case ObjCPropertyDecl::Assign: break;
@@ -5332,6 +5459,11 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
     // This matches gcc's encoding, even though technically it is
     // insufficient.
     // FIXME. We should do a better job than gcc.
+    return;
+
+  case Type::Auto:
+    // We could see an undeduced auto type here during error recovery.
+    // Just ignore it.
     return;
 
 #define ABSTRACT_TYPE(KIND, BASE)
@@ -5889,6 +6021,80 @@ CreateAAPCSABIBuiltinVaListDecl(const ASTContext *Context) {
   return VaListTypeDecl;
 }
 
+static TypedefDecl *
+CreateSystemZBuiltinVaListDecl(const ASTContext *Context) {
+  // typedef struct __va_list_tag {
+  RecordDecl *VaListTagDecl;
+  VaListTagDecl = CreateRecordDecl(*Context, TTK_Struct,
+                                   Context->getTranslationUnitDecl(),
+                                   &Context->Idents.get("__va_list_tag"));
+  VaListTagDecl->startDefinition();
+
+  const size_t NumFields = 4;
+  QualType FieldTypes[NumFields];
+  const char *FieldNames[NumFields];
+
+  //   long __gpr;
+  FieldTypes[0] = Context->LongTy;
+  FieldNames[0] = "__gpr";
+
+  //   long __fpr;
+  FieldTypes[1] = Context->LongTy;
+  FieldNames[1] = "__fpr";
+
+  //   void *__overflow_arg_area;
+  FieldTypes[2] = Context->getPointerType(Context->VoidTy);
+  FieldNames[2] = "__overflow_arg_area";
+
+  //   void *__reg_save_area;
+  FieldTypes[3] = Context->getPointerType(Context->VoidTy);
+  FieldNames[3] = "__reg_save_area";
+
+  // Create fields
+  for (unsigned i = 0; i < NumFields; ++i) {
+    FieldDecl *Field = FieldDecl::Create(const_cast<ASTContext &>(*Context),
+                                         VaListTagDecl,
+                                         SourceLocation(),
+                                         SourceLocation(),
+                                         &Context->Idents.get(FieldNames[i]),
+                                         FieldTypes[i], /*TInfo=*/0,
+                                         /*BitWidth=*/0,
+                                         /*Mutable=*/false,
+                                         ICIS_NoInit);
+    Field->setAccess(AS_public);
+    VaListTagDecl->addDecl(Field);
+  }
+  VaListTagDecl->completeDefinition();
+  QualType VaListTagType = Context->getRecordType(VaListTagDecl);
+  Context->VaListTagTy = VaListTagType;
+
+  // } __va_list_tag;
+  TypedefDecl *VaListTagTypedefDecl
+    = TypedefDecl::Create(const_cast<ASTContext &>(*Context),
+                          Context->getTranslationUnitDecl(),
+                          SourceLocation(), SourceLocation(),
+                          &Context->Idents.get("__va_list_tag"),
+                          Context->getTrivialTypeSourceInfo(VaListTagType));
+  QualType VaListTagTypedefType =
+    Context->getTypedefType(VaListTagTypedefDecl);
+
+  // typedef __va_list_tag __builtin_va_list[1];
+  llvm::APInt Size(Context->getTypeSize(Context->getSizeType()), 1);
+  QualType VaListTagArrayType
+    = Context->getConstantArrayType(VaListTagTypedefType,
+                                      Size, ArrayType::Normal,0);
+  TypeSourceInfo *TInfo
+    = Context->getTrivialTypeSourceInfo(VaListTagArrayType);
+  TypedefDecl *VaListTypedefDecl
+    = TypedefDecl::Create(const_cast<ASTContext &>(*Context),
+                          Context->getTranslationUnitDecl(),
+                          SourceLocation(), SourceLocation(),
+                          &Context->Idents.get("__builtin_va_list"),
+                          TInfo);
+
+  return VaListTypedefDecl;
+}
+
 static TypedefDecl *CreateVaListDecl(const ASTContext *Context,
                                      TargetInfo::BuiltinVaListKind Kind) {
   switch (Kind) {
@@ -5906,6 +6112,8 @@ static TypedefDecl *CreateVaListDecl(const ASTContext *Context,
     return CreatePNaClABIBuiltinVaListDecl(Context);
   case TargetInfo::AAPCSABIBuiltinVaList:
     return CreateAAPCSABIBuiltinVaListDecl(Context);
+  case TargetInfo::SystemZBuiltinVaList:
+    return CreateSystemZBuiltinVaListDecl(Context);
   }
 
   llvm_unreachable("Unhandled __builtin_va_list type kind");
@@ -6975,6 +7183,7 @@ QualType ASTContext::mergeTypes(QualType LHS, QualType RHS,
 #include "clang/AST/TypeNodes.def"
     llvm_unreachable("Non-canonical and dependent types shouldn't get here");
 
+  case Type::Auto:
   case Type::LValueReference:
   case Type::RValueReference:
   case Type::MemberPointer:
@@ -7282,6 +7491,8 @@ QualType ASTContext::getCorrespondingUnsignedType(QualType T) const {
 
 ASTMutationListener::~ASTMutationListener() { }
 
+void ASTMutationListener::DeducedReturnType(const FunctionDecl *FD,
+                                            QualType ReturnType) {}
 
 //===----------------------------------------------------------------------===//
 //                          Builtin Type Computation
@@ -7583,30 +7794,23 @@ QualType ASTContext::GetBuiltinType(unsigned Id,
 }
 
 GVALinkage ASTContext::GetGVALinkageForFunction(const FunctionDecl *FD) {
-  GVALinkage External = GVA_StrongExternal;
-
-  Linkage L = FD->getLinkage();
-  switch (L) {
-  case NoLinkage:
-  case InternalLinkage:
-  case UniqueExternalLinkage:
+  if (!FD->isExternallyVisible())
     return GVA_Internal;
-    
-  case ExternalLinkage:
-    switch (FD->getTemplateSpecializationKind()) {
-    case TSK_Undeclared:
-    case TSK_ExplicitSpecialization:
-      External = GVA_StrongExternal;
-      break;
 
-    case TSK_ExplicitInstantiationDefinition:
-      return GVA_ExplicitTemplateInstantiation;
+  GVALinkage External = GVA_StrongExternal;
+  switch (FD->getTemplateSpecializationKind()) {
+  case TSK_Undeclared:
+  case TSK_ExplicitSpecialization:
+    External = GVA_StrongExternal;
+    break;
 
-    case TSK_ExplicitInstantiationDeclaration:
-    case TSK_ImplicitInstantiation:
-      External = GVA_TemplateInstantiation;
-      break;
-    }
+  case TSK_ExplicitInstantiationDefinition:
+    return GVA_ExplicitTemplateInstantiation;
+
+  case TSK_ExplicitInstantiationDeclaration:
+  case TSK_ImplicitInstantiation:
+    External = GVA_TemplateInstantiation;
+    break;
   }
 
   if (!FD->isInlined())
@@ -7636,6 +7840,9 @@ GVALinkage ASTContext::GetGVALinkageForFunction(const FunctionDecl *FD) {
 }
 
 GVALinkage ASTContext::GetGVALinkageForVariable(const VarDecl *VD) {
+  if (!VD->isExternallyVisible())
+    return GVA_Internal;
+
   // If this is a static data member, compute the kind of template
   // specialization. Otherwise, this variable is not part of a
   // template.
@@ -7643,30 +7850,20 @@ GVALinkage ASTContext::GetGVALinkageForVariable(const VarDecl *VD) {
   if (VD->isStaticDataMember())
     TSK = VD->getTemplateSpecializationKind();
 
-  Linkage L = VD->getLinkage();
+  switch (TSK) {
+  case TSK_Undeclared:
+  case TSK_ExplicitSpecialization:
+    return GVA_StrongExternal;
 
-  switch (L) {
-  case NoLinkage:
-  case InternalLinkage:
-  case UniqueExternalLinkage:
-    return GVA_Internal;
+  case TSK_ExplicitInstantiationDeclaration:
+    llvm_unreachable("Variable should not be instantiated");
+  // Fall through to treat this like any other instantiation.
 
-  case ExternalLinkage:
-    switch (TSK) {
-    case TSK_Undeclared:
-    case TSK_ExplicitSpecialization:
-      return GVA_StrongExternal;
+  case TSK_ExplicitInstantiationDefinition:
+    return GVA_ExplicitTemplateInstantiation;
 
-    case TSK_ExplicitInstantiationDeclaration:
-      llvm_unreachable("Variable should not be instantiated");
-      // Fall through to treat this like any other instantiation.
-        
-    case TSK_ExplicitInstantiationDefinition:
-      return GVA_ExplicitTemplateInstantiation;
-
-    case TSK_ImplicitInstantiation:
-      return GVA_TemplateInstantiation;      
-    }
+  case TSK_ImplicitInstantiation:
+    return GVA_TemplateInstantiation;
   }
 
   llvm_unreachable("Invalid Linkage!");
@@ -7676,7 +7873,15 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
   if (const VarDecl *VD = dyn_cast<VarDecl>(D)) {
     if (!VD->isFileVarDecl())
       return false;
-  } else if (!isa<FunctionDecl>(D))
+  } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
+    // We never need to emit an uninstantiated function template.
+    if (FD->getTemplatedKind() == FunctionDecl::TK_FunctionTemplate)
+      return false;
+  } else
+    return false;
+
+  // If this is a member of a class template, we do not need to emit it.
+  if (D->getDeclContext()->isDependentContext())
     return false;
 
   // Weak references don't produce any output by themselves.
@@ -7794,7 +7999,8 @@ size_t ASTContext::getSideTableAllocatedMemory() const {
 void ASTContext::addUnnamedTag(const TagDecl *Tag) {
   // FIXME: This mangling should be applied to function local classes too
   if (!Tag->getName().empty() || Tag->getTypedefNameForAnonDecl() ||
-      !isa<CXXRecordDecl>(Tag->getParent()) || Tag->getLinkage() != ExternalLinkage)
+      !isa<CXXRecordDecl>(Tag->getParent()) ||
+      !Tag->isExternallyVisible())
     return;
 
   std::pair<llvm::DenseMap<const DeclContext *, unsigned>::iterator, bool> P =

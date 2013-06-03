@@ -129,7 +129,8 @@ typedef internal::Matcher<NestedNameSpecifierLoc> NestedNameSpecifierLocMatcher;
 /// \endcode
 ///
 /// Usable as: Any Matcher
-inline internal::PolymorphicMatcherWithParam0<internal::TrueMatcher> anything() {
+inline internal::PolymorphicMatcherWithParam0<internal::TrueMatcher>
+anything() {
   return internal::PolymorphicMatcherWithParam0<internal::TrueMatcher>();
 }
 
@@ -156,6 +157,17 @@ const internal::VariadicAllOfMatcher<Decl> decl;
 ///   };
 /// \endcode
 const internal::VariadicDynCastAllOfMatcher<Decl, NamedDecl> namedDecl;
+
+/// \brief Matches a declaration of a namespace.
+///
+/// Given
+/// \code
+///   namespace {}
+///   namespace test {}
+/// \endcode
+/// namespaceDecl()
+///   matches "namespace {}" and "namespace test {}"
+const internal::VariadicDynCastAllOfMatcher<Decl, NamespaceDecl> namespaceDecl;
 
 /// \brief Matches C++ class declarations.
 ///
@@ -881,6 +893,26 @@ const internal::VariadicDynCastAllOfMatcher<Stmt, SwitchStmt> switchStmt;
 /// switchCase()
 ///   matches 'case 42: break;' and 'default: break;'.
 const internal::VariadicDynCastAllOfMatcher<Stmt, SwitchCase> switchCase;
+
+/// \brief Matches case statements inside switch statements.
+///
+/// Given
+/// \code
+///   switch(a) { case 42: break; default: break; }
+/// \endcode
+/// caseStmt()
+///   matches 'case 42: break;'.
+const internal::VariadicDynCastAllOfMatcher<Stmt, CaseStmt> caseStmt;
+
+/// \brief Matches default statements inside switch statements.
+///
+/// Given
+/// \code
+///   switch(a) { case 42: break; default: break; }
+/// \endcode
+/// defaultStmt()
+///   matches 'default: break;'.
+const internal::VariadicDynCastAllOfMatcher<Stmt, DefaultStmt> defaultStmt;
 
 /// \brief Matches compound statements.
 ///
@@ -1829,6 +1861,8 @@ AST_MATCHER_P(QualType, references, internal::Matcher<QualType>,
 /// varDecl(hasType(qualType(hasCanonicalType(referenceType())))))) does.
 AST_MATCHER_P(QualType, hasCanonicalType, internal::Matcher<QualType>,
               InnerMatcher) {
+  if (Node.isNull())
+    return false;
   return InnerMatcher.matches(Node.getCanonicalType(), Finder, Builder);
 }
 
@@ -2514,6 +2548,53 @@ AST_MATCHER_P(CXXMethodDecl, ofClass,
           InnerMatcher.matches(*Parent, Finder, Builder));
 }
 
+/// \brief Matches if the given method declaration is virtual.
+///
+/// Given
+/// \code
+///   class A {
+///    public:
+///     virtual void x();
+///   };
+/// \endcode
+///   matches A::x
+AST_MATCHER(CXXMethodDecl, isVirtual) {
+  return Node.isVirtual();
+}
+
+/// \brief Matches if the given method declaration is const.
+///
+/// Given
+/// \code
+/// struct A {
+///   void foo() const;
+///   void bar();
+/// };
+/// \endcode
+///
+/// methodDecl(isConst()) matches A::foo() but not A::bar()
+AST_MATCHER(CXXMethodDecl, isConst) {
+  return Node.isConst();
+}
+
+/// \brief Matches if the given method declaration overrides another method.
+///
+/// Given
+/// \code
+///   class A {
+///    public:
+///     virtual void x();
+///   };
+///   class B : public A {
+///    public:
+///     virtual void x();
+///   };
+/// \endcode
+///   matches B::x
+AST_MATCHER(CXXMethodDecl, isOverride) {
+  return Node.size_overridden_methods() > 0;
+}
+
 /// \brief Matches member expressions that are called with '->' as opposed
 /// to '.'.
 ///
@@ -2564,6 +2645,23 @@ AST_MATCHER(QualType, isInteger) {
 ///   is no top-level const on the parameter type "const int *".
 AST_MATCHER(QualType, isConstQualified) {
   return Node.isConstQualified();
+}
+
+/// \brief Matches QualType nodes that have local CV-qualifiers attached to
+/// the node, not hidden within a typedef.
+///
+/// Given
+/// \code
+///   typedef const int const_int;
+///   const_int i;
+///   int *const j;
+///   int *volatile k;
+///   int m;
+/// \endcode
+/// \c varDecl(hasType(hasLocalQualifiers())) matches only \c j and \c k.
+/// \c i is const-qualified but the qualifier is not local.
+AST_MATCHER(QualType, hasLocalQualifiers) {
+  return Node.hasLocalQualifiers();
 }
 
 /// \brief Matches a member expression where the member is matched by a
@@ -2893,6 +2991,32 @@ AST_TYPE_TRAVERSE_MATCHER(hasDeducedType, getDeducedType);
 /// functionType()
 ///   matches "int (*f)(int)" and the type of "g".
 AST_TYPE_MATCHER(FunctionType, functionType);
+
+/// \brief Matches \c ParenType nodes.
+///
+/// Given
+/// \code
+///   int (*ptr_to_array)[4];
+///   int *array_of_ptrs[4];
+/// \endcode
+///
+/// \c varDecl(hasType(pointsTo(parenType()))) matches \c ptr_to_array but not
+/// \c array_of_ptrs.
+AST_TYPE_MATCHER(ParenType, parenType);
+
+/// \brief Matches \c ParenType nodes where the inner type is a specific type.
+///
+/// Given
+/// \code
+///   int (*ptr_to_array)[4];
+///   int (*ptr_to_func)(int);
+/// \endcode
+///
+/// \c varDecl(hasType(pointsTo(parenType(innerType(functionType()))))) matches
+/// \c ptr_to_func but not \c ptr_to_array.
+///
+/// Usable as: Matcher<ParenType>
+AST_TYPE_TRAVERSE_MATCHER(innerType, getInnerType);
 
 /// \brief Matches block pointer types, i.e. types syntactically represented as
 /// "void (^)(int)".
@@ -3243,6 +3367,54 @@ AST_MATCHER_P_OVERLOAD(Stmt, equalsNode, Stmt*, Other, 1) {
 }
 
 /// @}
+
+/// \brief Matches each case or default statement belonging to the given switch
+/// statement. This matcher may produce multiple matches.
+///
+/// Given
+/// \code
+///   switch (1) { case 1: case 2: default: switch (2) { case 3: case 4: ; } }
+/// \endcode
+/// switchStmt(forEachSwitchCase(caseStmt().bind("c"))).bind("s")
+///   matches four times, with "c" binding each of "case 1:", "case 2:",
+/// "case 3:" and "case 4:", and "s" respectively binding "switch (1)",
+/// "switch (1)", "switch (2)" and "switch (2)".
+AST_MATCHER_P(SwitchStmt, forEachSwitchCase, internal::Matcher<SwitchCase>,
+              InnerMatcher) {
+  // FIXME: getSwitchCaseList() does not necessarily guarantee a stable
+  // iteration order. We should use the more general iterating matchers once
+  // they are capable of expressing this matcher (for example, it should ignore
+  // case statements belonging to nested switch statements).
+  bool Matched = false;
+  for (const SwitchCase *SC = Node.getSwitchCaseList(); SC;
+       SC = SC->getNextSwitchCase()) {
+    BoundNodesTreeBuilder CaseBuilder;
+    bool CaseMatched = InnerMatcher.matches(*SC, Finder, &CaseBuilder);
+    if (CaseMatched) {
+      Matched = true;
+      Builder->addMatch(CaseBuilder.build());
+    }
+  }
+
+  return Matched;
+}
+
+/// \brief If the given case statement does not use the GNU case range
+/// extension, matches the constant given in the statement.
+///
+/// Given
+/// \code
+///   switch (1) { case 1: case 1+1: case 3 ... 4: ; }
+/// \endcode
+/// caseStmt(hasCaseConstant(integerLiteral()))
+///   matches "case 1:"
+AST_MATCHER_P(CaseStmt, hasCaseConstant, internal::Matcher<Expr>,
+              InnerMatcher) {
+  if (Node.getRHS())
+    return false;
+
+  return InnerMatcher.matches(*Node.getLHS(), Finder, Builder);
+}
 
 } // end namespace ast_matchers
 } // end namespace clang

@@ -646,6 +646,13 @@ class SourceManager : public RefCountedBase<SourceManager> {
   // Statistics for -print-stats.
   mutable unsigned NumLinearScans, NumBinaryProbes;
 
+  /// \brief Associates a FileID with its "included/expanded in" decomposed
+  /// location.
+  ///
+  /// Used to cache results from and speed-up \c getDecomposedIncludedLoc
+  /// function.
+  mutable llvm::DenseMap<FileID, std::pair<FileID, unsigned> > IncludedLocMap;
+
   /// The key value into the IsBeforeInTUCache table.
   typedef std::pair<FileID, FileID> IsBeforeInTUCacheKey;
 
@@ -998,7 +1005,7 @@ public:
       return SourceLocation();
     
     unsigned FileOffset = Entry.getOffset();
-    return SourceLocation::getFileLoc(FileOffset + getFileIDSize(FID) - 1);
+    return SourceLocation::getFileLoc(FileOffset + getFileIDSize(FID));
   }
 
   /// \brief Returns the include location if \p FID is a \#include'd file
@@ -1127,6 +1134,10 @@ public:
     return getDecomposedSpellingLocSlowCase(E, Offset);
   }
 
+  /// \brief Returns the "included/expanded in" decomposed location of the given
+  /// FileID.
+  std::pair<FileID, unsigned> getDecomposedIncludedLoc(FileID FID) const;
+
   /// \brief Returns the offset from the start of the file that the
   /// specified SourceLocation represents.
   ///
@@ -1149,6 +1160,22 @@ public:
   /// This is equivalent to testing whether the location is part of a macro
   /// expansion but not the expansion of an argument to a function-like macro.
   bool isMacroBodyExpansion(SourceLocation Loc) const;
+
+  /// \brief Returns true if the given MacroID location points at the beginning
+  /// of the immediate macro expansion.
+  ///
+  /// \param MacroBegin If non-null and function returns true, it is set to the
+  /// begin location of the immediate macro expansion.
+  bool isAtStartOfImmediateMacroExpansion(SourceLocation Loc,
+                                          SourceLocation *MacroBegin = 0) const;
+
+  /// \brief Returns true if the given MacroID location points at the character
+  /// end of the immediate macro expansion.
+  ///
+  /// \param MacroEnd If non-null and function returns true, it is set to the
+  /// character end location of the immediate macro expansion.
+  bool isAtEndOfImmediateMacroExpansion(SourceLocation Loc,
+                                        SourceLocation *MacroEnd = 0) const;
 
   /// \brief Returns true if \p Loc is inside the [\p Start, +\p Length)
   /// chunk of the source location address space.
@@ -1558,6 +1585,14 @@ private:
     // local and loaded entries.
     return SLocOffset < getSLocEntryByID(FID.ID+1).getOffset();
   }
+
+  /// \brief Returns the previous in-order FileID or an invalid FileID if there
+  /// is no previous one.
+  FileID getPreviousFileID(FileID FID) const;
+
+  /// \brief Returns the next in-order FileID or an invalid FileID if there is
+  /// no next one.
+  FileID getNextFileID(FileID FID) const;
 
   /// \brief Create a new fileID for the specified ContentCache and
   /// include position.

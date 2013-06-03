@@ -496,3 +496,30 @@ namespace references {
     int &b;
   };
 }
+
+namespace operators {
+  struct A {
+    A(bool);
+    bool operator==(A);
+  };
+
+  A makeA();
+
+  A a1 = a1 = makeA();  // expected-warning{{variable 'a1' is uninitialized when used within its own initialization}}
+  A a2 = a2 == a1;  // expected-warning{{variable 'a2' is uninitialized when used within its own initialization}}
+  A a3 = a2 == a3;  // expected-warning{{variable 'a3' is uninitialized when used within its own initialization}}
+
+  int x = x = 5;
+}
+
+namespace lambdas {
+  struct A {
+    template<typename T> A(T) {}
+    int x;
+  };
+  A a0([] { return a0.x; }); // ok
+  void f() { 
+    A a1([=] { return a1.x; }); // expected-warning{{variable 'a1' is uninitialized when used within its own initialization}}
+    A a2([&] { return a2.x; }); // ok
+  }
+}

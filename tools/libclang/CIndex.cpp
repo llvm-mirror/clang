@@ -426,6 +426,9 @@ bool CursorVisitor::visitPreprocessedEntities(InputIterator First,
       continue;
 
     PreprocessedEntity *PPE = *First;
+    if (!PPE)
+      continue;
+
     if (MacroExpansion *ME = dyn_cast<MacroExpansion>(PPE)) {
       if (Visit(MakeMacroExpansionCursor(ME, TU)))
         return true;
@@ -723,6 +726,13 @@ bool CursorVisitor::VisitEnumConstantDecl(EnumConstantDecl *D) {
 }
 
 bool CursorVisitor::VisitDeclaratorDecl(DeclaratorDecl *DD) {
+  unsigned NumParamList = DD->getNumTemplateParameterLists();
+  for (unsigned i = 0; i < NumParamList; i++) {
+    TemplateParameterList* Params = DD->getTemplateParameterList(i);
+    if (VisitTemplateParameters(Params))
+      return true;
+  }
+
   if (TypeSourceInfo *TSInfo = DD->getTypeSourceInfo())
     if (Visit(TSInfo->getTypeLoc()))
       return true;
@@ -751,6 +761,13 @@ static int CompareCXXCtorInitializers(const void* Xp, const void *Yp) {
 }
 
 bool CursorVisitor::VisitFunctionDecl(FunctionDecl *ND) {
+  unsigned NumParamList = ND->getNumTemplateParameterLists();
+  for (unsigned i = 0; i < NumParamList; i++) {
+    TemplateParameterList* Params = ND->getTemplateParameterList(i);
+    if (VisitTemplateParameters(Params))
+      return true;
+  }
+
   if (TypeSourceInfo *TSInfo = ND->getTypeSourceInfo()) {
     // Visit the function declaration's syntactic components in the order
     // written. This requires a bit of work.
@@ -2349,9 +2366,10 @@ bool CursorVisitor::RunVisitorWorkList(VisitorWorkList &WL) {
         for (LambdaExpr::capture_iterator C = E->explicit_capture_begin(),
                                        CEnd = E->explicit_capture_end();
              C != CEnd; ++C) {
-          if (C->capturesThis())
+          // FIXME: Lambda init-captures.
+          if (!C->capturesVariable())
             continue;
-          
+
           if (Visit(MakeCursorVariableRef(C->getCapturedVar(),
                                           C->getLocation(),
                                           TU)))
@@ -2456,7 +2474,8 @@ RefNamePieces buildPieces(unsigned NameFlags, bool IsMemberRefExpr,
 static llvm::sys::Mutex EnableMultithreadingMutex;
 static bool EnabledMultithreading;
 
-static void fatal_error_handler(void *user_data, const std::string& reason) {
+static void fatal_error_handler(void *user_data, const std::string& reason,
+                                bool gen_crash_diag) {
   // Write the result out to stderr avoiding errs() because raw_ostreams can
   // call report_fatal_error.
   fprintf(stderr, "LIBCLANG FATAL ERROR: %s\n", reason.c_str());
@@ -2926,6 +2945,9 @@ CXString clang_getTranslationUnitSpelling(CXTranslationUnit CTUnit) {
 }
 
 CXCursor clang_getTranslationUnitCursor(CXTranslationUnit TU) {
+  if (!TU)
+    return clang_getNullCursor();
+
   ASTUnit *CXXUnit = cxtu::getASTUnit(TU);
   return MakeCXCursor(CXXUnit->getASTContext().getTranslationUnitDecl(), TU);
 }
@@ -3570,6 +3592,8 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
       return cxstring::createRef("ObjCStringLiteral");
   case CXCursor_ObjCBoolLiteralExpr:
       return cxstring::createRef("ObjCBoolLiteralExpr");
+  case CXCursor_ObjCSelfExpr:
+      return cxstring::createRef("ObjCSelfExpr");
   case CXCursor_ObjCEncodeExpr:
       return cxstring::createRef("ObjCEncodeExpr");
   case CXCursor_ObjCSelectorExpr:
@@ -4440,6 +4464,7 @@ CXCursor clang_getCursorDefinition(CXCursor C) {
   case Decl::TemplateTypeParm:
   case Decl::EnumConstant:
   case Decl::Field:
+  case Decl::MSProperty:
   case Decl::IndirectField:
   case Decl::ObjCIvar:
   case Decl::ObjCAtDefsField:
@@ -4455,9 +4480,11 @@ CXCursor clang_getCursorDefinition(CXCursor C) {
   case Decl::FileScopeAsm:
   case Decl::StaticAssert:
   case Decl::Block:
+  case Decl::Captured:
   case Decl::Label:  // FIXME: Is this right??
   case Decl::ClassScopeFunctionSpecialization:
   case Decl::Import:
+  case Decl::OMPThreadPrivate:
     return C;
 
   // Declaration kinds that don't make any sense here, but are
@@ -4911,6 +4938,9 @@ void clang_tokenize(CXTranslationUnit TU, CXSourceRange Range,
     *Tokens = 0;
   if (NumTokens)
     *NumTokens = 0;
+
+  if (!TU)
+    return;
 
   ASTUnit *CXXUnit = cxtu::getASTUnit(TU);
   if (!CXXUnit || !Tokens || !NumTokens)
@@ -5608,7 +5638,7 @@ extern "C" {
 void clang_annotateTokens(CXTranslationUnit TU,
                           CXToken *Tokens, unsigned NumTokens,
                           CXCursor *Cursors) {
-  if (NumTokens == 0 || !Tokens || !Cursors) {
+  if (!TU || NumTokens == 0 || !Tokens || !Cursors) {
     LOG_FUNC_SECTION { *Log << "<null input>"; }
     return;
   }
@@ -5652,7 +5682,7 @@ CXLinkageKind clang_getCursorLinkage(CXCursor cursor) {
 
   const Decl *D = cxcursor::getCursorDecl(cursor);
   if (const NamedDecl *ND = dyn_cast_or_null<NamedDecl>(D))
-    switch (ND->getLinkage()) {
+    switch (ND->getLinkageInternal()) {
       case NoLinkage: return CXLinkage_NoLinkage;
       case InternalLinkage: return CXLinkage_Internal;
       case UniqueExternalLinkage: return CXLinkage_UniqueExternal;
@@ -5895,6 +5925,72 @@ CXFile clang_getIncludedFile(CXCursor cursor) {
   return const_cast<FileEntry *>(ID->getFile());
 }
 
+unsigned clang_Cursor_getObjCPropertyAttributes(CXCursor C, unsigned reserved) {
+  if (C.kind != CXCursor_ObjCPropertyDecl)
+    return CXObjCPropertyAttr_noattr;
+
+  unsigned Result = CXObjCPropertyAttr_noattr;
+  const ObjCPropertyDecl *PD = dyn_cast<ObjCPropertyDecl>(getCursorDecl(C));
+  ObjCPropertyDecl::PropertyAttributeKind Attr =
+      PD->getPropertyAttributesAsWritten();
+
+#define SET_CXOBJCPROP_ATTR(A) \
+  if (Attr & ObjCPropertyDecl::OBJC_PR_##A) \
+    Result |= CXObjCPropertyAttr_##A
+  SET_CXOBJCPROP_ATTR(readonly);
+  SET_CXOBJCPROP_ATTR(getter);
+  SET_CXOBJCPROP_ATTR(assign);
+  SET_CXOBJCPROP_ATTR(readwrite);
+  SET_CXOBJCPROP_ATTR(retain);
+  SET_CXOBJCPROP_ATTR(copy);
+  SET_CXOBJCPROP_ATTR(nonatomic);
+  SET_CXOBJCPROP_ATTR(setter);
+  SET_CXOBJCPROP_ATTR(atomic);
+  SET_CXOBJCPROP_ATTR(weak);
+  SET_CXOBJCPROP_ATTR(strong);
+  SET_CXOBJCPROP_ATTR(unsafe_unretained);
+#undef SET_CXOBJCPROP_ATTR
+
+  return Result;
+}
+
+unsigned clang_Cursor_getObjCDeclQualifiers(CXCursor C) {
+  if (!clang_isDeclaration(C.kind))
+    return CXObjCDeclQualifier_None;
+
+  Decl::ObjCDeclQualifier QT = Decl::OBJC_TQ_None;
+  const Decl *D = getCursorDecl(C);
+  if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(D))
+    QT = MD->getObjCDeclQualifier();
+  else if (const ParmVarDecl *PD = dyn_cast<ParmVarDecl>(D))
+    QT = PD->getObjCDeclQualifier();
+  if (QT == Decl::OBJC_TQ_None)
+    return CXObjCDeclQualifier_None;
+
+  unsigned Result = CXObjCDeclQualifier_None;
+  if (QT & Decl::OBJC_TQ_In) Result |= CXObjCDeclQualifier_In;
+  if (QT & Decl::OBJC_TQ_Inout) Result |= CXObjCDeclQualifier_Inout;
+  if (QT & Decl::OBJC_TQ_Out) Result |= CXObjCDeclQualifier_Out;
+  if (QT & Decl::OBJC_TQ_Bycopy) Result |= CXObjCDeclQualifier_Bycopy;
+  if (QT & Decl::OBJC_TQ_Byref) Result |= CXObjCDeclQualifier_Byref;
+  if (QT & Decl::OBJC_TQ_Oneway) Result |= CXObjCDeclQualifier_Oneway;
+
+  return Result;
+}
+
+unsigned clang_Cursor_isVariadic(CXCursor C) {
+  if (!clang_isDeclaration(C.kind))
+    return 0;
+
+  const Decl *D = getCursorDecl(C);
+  if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
+    return FD->isVariadic();
+  if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(D))
+    return MD->isVariadic();
+
+  return 0;
+}
+
 CXSourceRange clang_Cursor_getCommentRange(CXCursor C) {
   if (!clang_isDeclaration(C.kind))
     return clang_getNullRange();
@@ -5963,6 +6059,13 @@ CXModule clang_Cursor_getModule(CXCursor C) {
   return 0;
 }
 
+CXFile clang_Module_getASTFile(CXModule CXMod) {
+  if (!CXMod)
+    return 0;
+  Module *Mod = static_cast<Module*>(CXMod);
+  return const_cast<FileEntry *>(Mod->getASTFile());
+}
+
 CXModule clang_Module_getParent(CXModule CXMod) {
   if (!CXMod)
     return 0;
@@ -6015,6 +6118,20 @@ CXFile clang_Module_getTopLevelHeader(CXTranslationUnit TU,
 //===----------------------------------------------------------------------===//
 
 extern "C" {
+unsigned clang_CXXMethod_isPureVirtual(CXCursor C) {
+  if (!clang_isDeclaration(C.kind))
+    return 0;
+
+  const CXXMethodDecl *Method = 0;
+  const Decl *D = cxcursor::getCursorDecl(C);
+  if (const FunctionTemplateDecl *FunTmpl =
+          dyn_cast_or_null<FunctionTemplateDecl>(D))
+    Method = dyn_cast<CXXMethodDecl>(FunTmpl->getTemplatedDecl());
+  else
+    Method = dyn_cast_or_null<CXXMethodDecl>(D);
+  return (Method && Method->isVirtual() && Method->isPure()) ? 1 : 0;
+}
+
 unsigned clang_CXXMethod_isStatic(CXCursor C) {
   if (!clang_isDeclaration(C.kind))
     return 0;
@@ -6304,10 +6421,12 @@ MacroInfo *cxindex::getMacroInfo(const IdentifierInfo &II,
   ASTUnit *Unit = cxtu::getASTUnit(TU);
   Preprocessor &PP = Unit->getPreprocessor();
   MacroDirective *MD = PP.getMacroDirectiveHistory(&II);
-  while (MD) {
-    if (MacroDefLoc == MD->getInfo()->getDefinitionLoc())
-      return MD->getInfo();
-    MD = MD->getPrevious();
+  if (MD) {
+    for (MacroDirective::DefInfo
+           Def = MD->getDefinition(); Def; Def = Def.getPreviousDefinition()) {
+      if (MacroDefLoc == Def.getMacroInfo()->getDefinitionLoc())
+        return Def.getMacroInfo();
+    }
   }
 
   return 0;
@@ -6363,7 +6482,7 @@ MacroDefinition *cxindex::checkForMacroInMacroDefinition(const MacroInfo *MI,
   if (!InnerMD)
     return 0;
 
-  return PPRec->findMacroDefinition(InnerMD->getInfo());
+  return PPRec->findMacroDefinition(InnerMD->getMacroInfo());
 }
 
 MacroDefinition *cxindex::checkForMacroInMacroDefinition(const MacroInfo *MI,

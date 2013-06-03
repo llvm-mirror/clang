@@ -151,7 +151,7 @@ bool USRGenerator::EmitDeclName(const NamedDecl *D) {
 }
 
 static inline bool ShouldGenerateLocation(const NamedDecl *D) {
-  return D->getLinkage() != ExternalLinkage;
+  return !D->isExternallyVisible();
 }
 
 void USRGenerator::VisitDeclContext(const DeclContext *DC) {
@@ -309,9 +309,8 @@ void USRGenerator::VisitObjCMethodDecl(const ObjCMethodDecl *D) {
   // Ideally we would use 'GenObjCMethod', but this is such a hot path
   // for Objective-C code that we don't want to use
   // DeclarationName::getAsString().
-  Out << (D->isInstanceMethod() ? "(im)" : "(cm)");
-  DeclarationName N(D->getSelector());
-  N.printName(Out);
+  Out << (D->isInstanceMethod() ? "(im)" : "(cm)")
+      << DeclarationName(D->getSelector());
 }
 
 void USRGenerator::VisitObjCContainerDecl(const ObjCContainerDecl *D) {

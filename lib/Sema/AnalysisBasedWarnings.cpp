@@ -817,6 +817,10 @@ namespace {
       return true;
     }
 
+    // We don't want to traverse local type declarations. We analyze their
+    // methods separately.
+    bool TraverseDecl(Decl *D) { return true; }
+
   private:
 
     static const AttributedStmt *asFallThroughAttr(const Stmt *S) {
@@ -1329,8 +1333,12 @@ class ThreadSafetyReporter : public clang::thread_safety::ThreadSafetyHandler {
       LocEndOfScope = FunEndLocation;
 
     PartialDiagnosticAt Warning(LocEndOfScope, S.PDiag(DiagID) << LockName);
-    PartialDiagnosticAt Note(LocLocked, S.PDiag(diag::note_locked_here));
-    Warnings.push_back(DelayedDiag(Warning, OptionalNotes(1, Note)));
+    if (LocLocked.isValid()) {
+      PartialDiagnosticAt Note(LocLocked, S.PDiag(diag::note_locked_here));
+      Warnings.push_back(DelayedDiag(Warning, OptionalNotes(1, Note)));
+      return;
+    }
+    Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
 
 

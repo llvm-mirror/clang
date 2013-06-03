@@ -1,4 +1,3 @@
-// XFAIL: *
 // RUN: rm -rf %t
 // RUN: %clang_cc1 -fmodules -x objective-c -emit-module -fmodules-cache-path=%t -fmodule-name=macros_top %S/Inputs/module.map
 // RUN: %clang_cc1 -fmodules -x objective-c -emit-module -fmodules-cache-path=%t -fmodule-name=macros_left %S/Inputs/module.map
@@ -9,13 +8,13 @@
 // FIXME: When we have a syntax for modules in C, use that.
 // These notes come from headers in modules, and are bogus.
 
-// FIXME: expected-note{{previous definition is here}}
-// expected-note{{other definition of 'LEFT_RIGHT_DIFFERENT'}}
-// expected-note{{expanding this definition of 'TOP_RIGHT_REDEF'}}
-// FIXME: expected-note{{previous definition is here}} \
-// expected-note{{expanding this definition of 'LEFT_RIGHT_DIFFERENT'}}
-
-// expected-note{{other definition of 'TOP_RIGHT_REDEF'}}
+// FIXME: expected-note@Inputs/macros_left.h:11{{previous definition is here}}
+// FIXME: expected-note@Inputs/macros_right.h:12{{previous definition is here}}
+// expected-note@Inputs/macros_right.h:12{{expanding this definition of 'LEFT_RIGHT_DIFFERENT'}}
+// expected-note@Inputs/macros_top.h:13{{other definition of 'TOP_RIGHT_REDEF'}}
+// expected-note@Inputs/macros_right.h:13{{expanding this definition of 'LEFT_RIGHT_DIFFERENT2'}}
+// expected-note@Inputs/macros_left.h:14{{other definition of 'LEFT_RIGHT_DIFFERENT'}}
+// expected-note@Inputs/macros_right.h:17{{expanding this definition of 'TOP_RIGHT_REDEF'}}
 
 @import macros;
 
@@ -80,8 +79,8 @@ void f() {
 #  error TOP should be visible
 #endif
 
-#ifdef TOP_LEFT_UNDEF
-#  error TOP_LEFT_UNDEF should not be visible
+#ifndef TOP_LEFT_UNDEF
+#  error TOP_LEFT_UNDEF should still be defined
 #endif
 
 void test1() {
@@ -89,7 +88,8 @@ void test1() {
   TOP_RIGHT_REDEF *ip = &i;
 }
 
-#define LEFT_RIGHT_DIFFERENT2 double // FIXME: expected-warning{{'LEFT_RIGHT_DIFFERENT2' macro redefined}}
+#define LEFT_RIGHT_DIFFERENT2 double // FIXME: expected-warning{{'LEFT_RIGHT_DIFFERENT2' macro redefined}} \
+                                     // expected-note{{other definition of 'LEFT_RIGHT_DIFFERENT2'}}
 
 // Import right module (which also imports top)
 @import macros_right;
@@ -112,11 +112,11 @@ void test2() {
   int i;
   float f;
   double d;
-  TOP_RIGHT_REDEF *ip = &i; // expected-warning{{ambiguous expansion of macro 'TOP_RIGHT_REDEF'}}
+  TOP_RIGHT_REDEF *fp = &f; // expected-warning{{ambiguous expansion of macro 'TOP_RIGHT_REDEF'}}
   
-  LEFT_RIGHT_IDENTICAL *ip2 = &i;
-  LEFT_RIGHT_DIFFERENT *fp = &f; // expected-warning{{ambiguous expansion of macro 'LEFT_RIGHT_DIFFERENT'}}
-  LEFT_RIGHT_DIFFERENT2 *dp = &d;
+  LEFT_RIGHT_IDENTICAL *ip = &i;
+  LEFT_RIGHT_DIFFERENT *ip2 = &i; // expected-warning{{ambiguous expansion of macro 'LEFT_RIGHT_DIFFERENT'}}
+  LEFT_RIGHT_DIFFERENT2 *ip3 = &i; // expected-warning{{ambiguous expansion of macro 'LEFT_RIGHT_DIFFERENT2}}
   int LEFT_RIGHT_DIFFERENT3;
 }
 
@@ -125,6 +125,7 @@ void test2() {
 void test3() {
   double d;
   LEFT_RIGHT_DIFFERENT *dp = &d; // okay
+  int x = FN_ADD(1,2);
 }
 
 #ifndef TOP_RIGHT_UNDEF
@@ -133,6 +134,6 @@ void test3() {
 
 @import macros_right.undef;
 
-#ifdef TOP_RIGHT_UNDEF
-# error TOP_RIGHT_UNDEF should not be defined
+#ifndef TOP_RIGHT_UNDEF
+# error TOP_RIGHT_UNDEF should still be defined
 #endif

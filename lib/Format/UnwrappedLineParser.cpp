@@ -16,7 +16,6 @@
 #define DEBUG_TYPE "format-parser"
 
 #include "UnwrappedLineParser.h"
-#include "clang/Basic/Diagnostic.h"
 #include "llvm/Support/Debug.h"
 
 namespace clang {
@@ -45,9 +44,11 @@ private:
 class ScopedMacroState : public FormatTokenSource {
 public:
   ScopedMacroState(UnwrappedLine &Line, FormatTokenSource *&TokenSource,
-                   FormatToken &ResetToken)
+                   FormatToken &ResetToken, bool &StructuralError)
       : Line(Line), TokenSource(TokenSource), ResetToken(ResetToken),
-        PreviousLineLevel(Line.Level), PreviousTokenSource(TokenSource) {
+        PreviousLineLevel(Line.Level), PreviousTokenSource(TokenSource),
+        StructuralError(StructuralError),
+        PreviousStructuralError(StructuralError) {
     TokenSource = this;
     Line.Level = 0;
     Line.InPPDirective = true;
@@ -58,6 +59,7 @@ public:
     ResetToken = Token;
     Line.InPPDirective = false;
     Line.Level = PreviousLineLevel;
+    StructuralError = PreviousStructuralError;
   }
 
   virtual FormatToken getNextToken() {
@@ -71,7 +73,7 @@ public:
   }
 
 private:
-  bool eof() { return Token.NewlinesBefore > 0 && Token.HasUnescapedNewline; }
+  bool eof() { return Token.HasUnescapedNewline; }
 
   FormatToken createEOF() {
     FormatToken FormatTok;
@@ -85,6 +87,8 @@ private:
   FormatToken &ResetToken;
   unsigned PreviousLineLevel;
   FormatTokenSource *PreviousTokenSource;
+  bool &StructuralError;
+  bool PreviousStructuralError;
 
   FormatToken Token;
 };
@@ -120,17 +124,17 @@ private:
   UnwrappedLine *PreBlockLine;
 };
 
-UnwrappedLineParser::UnwrappedLineParser(
-    clang::DiagnosticsEngine &Diag, const FormatStyle &Style,
-    FormatTokenSource &Tokens, UnwrappedLineConsumer &Callback)
+UnwrappedLineParser::UnwrappedLineParser(const FormatStyle &Style,
+                                         FormatTokenSource &Tokens,
+                                         UnwrappedLineConsumer &Callback)
     : Line(new UnwrappedLine), MustBreakBeforeNextToken(false),
-      CurrentLines(&Lines), Diag(Diag), Style(Style), Tokens(&Tokens),
-      Callback(Callback) {}
+      CurrentLines(&Lines), StructuralError(false), Style(Style),
+      Tokens(&Tokens), Callback(Callback) {}
 
 bool UnwrappedLineParser::parse() {
   DEBUG(llvm::dbgs() << "----\n");
   readToken();
-  bool Error = parseFile();
+  parseFile();
   for (std::vector<UnwrappedLine>::iterator I = Lines.begin(), E = Lines.end();
        I != E; ++I) {
     Callback.consumeUnwrappedLine(*I);
@@ -139,22 +143,20 @@ bool UnwrappedLineParser::parse() {
   // Create line with eof token.
   pushToken(FormatTok);
   Callback.consumeUnwrappedLine(*Line);
-
-  return Error;
+  return StructuralError;
 }
 
-bool UnwrappedLineParser::parseFile() {
-  ScopedDeclarationState DeclarationState(*Line, DeclarationScopeStack,
-                                          /*MustBeDeclaration=*/ true);
-  bool Error = parseLevel(/*HasOpeningBrace=*/ false);
+void UnwrappedLineParser::parseFile() {
+  ScopedDeclarationState DeclarationState(
+      *Line, DeclarationScopeStack,
+      /*MustBeDeclaration=*/ !Line->InPPDirective);
+  parseLevel(/*HasOpeningBrace=*/ false);
   // Make sure to format the remaining tokens.
   flushComments(true);
   addUnwrappedLine();
-  return Error;
 }
 
-bool UnwrappedLineParser::parseLevel(bool HasOpeningBrace) {
-  bool Error = false;
+void UnwrappedLineParser::parseLevel(bool HasOpeningBrace) {
   do {
     switch (FormatTok.Tok.getKind()) {
     case tok::comment:
@@ -164,30 +166,24 @@ bool UnwrappedLineParser::parseLevel(bool HasOpeningBrace) {
     case tok::l_brace:
       // FIXME: Add parameter whether this can happen - if this happens, we must
       // be in a non-declaration context.
-      Error |= parseBlock(/*MustBeDeclaration=*/ false);
+      parseBlock(/*MustBeDeclaration=*/ false);
       addUnwrappedLine();
       break;
     case tok::r_brace:
-      if (HasOpeningBrace) {
-        return false;
-      } else {
-        Diag.Report(FormatTok.Tok.getLocation(),
-                    Diag.getCustomDiagID(clang::DiagnosticsEngine::Error,
-                                         "unexpected '}'"));
-        Error = true;
-        nextToken();
-        addUnwrappedLine();
-      }
+      if (HasOpeningBrace)
+        return;
+      StructuralError = true;
+      nextToken();
+      addUnwrappedLine();
       break;
     default:
       parseStructuralElement();
       break;
     }
   } while (!eof());
-  return Error;
 }
 
-bool UnwrappedLineParser::parseBlock(bool MustBeDeclaration,
+void UnwrappedLineParser::parseBlock(bool MustBeDeclaration,
                                      unsigned AddLevels) {
   assert(FormatTok.Tok.is(tok::l_brace) && "'{' expected");
   nextToken();
@@ -201,17 +197,17 @@ bool UnwrappedLineParser::parseBlock(bool MustBeDeclaration,
 
   if (!FormatTok.Tok.is(tok::r_brace)) {
     Line->Level -= AddLevels;
-    return true;
+    StructuralError = true;
+    return;
   }
 
   nextToken(); // Munch the closing brace.
   Line->Level -= AddLevels;
-  return false;
 }
 
 void UnwrappedLineParser::parsePPDirective() {
   assert(FormatTok.Tok.is(tok::hash) && "'#' expected");
-  ScopedMacroState MacroState(*Line, Tokens, FormatTok);
+  ScopedMacroState MacroState(*Line, Tokens, FormatTok, StructuralError);
   nextToken();
 
   if (FormatTok.Tok.getIdentifierInfo() == NULL) {
@@ -259,9 +255,35 @@ void UnwrappedLineParser::parsePPUnknown() {
   addUnwrappedLine();
 }
 
+// Here we blacklist certain tokens that are not usually the first token in an
+// unwrapped line. This is used in attempt to distinguish macro calls without
+// trailing semicolons from other constructs split to several lines.
+bool tokenCanStartNewLine(clang::Token Tok) {
+  // Semicolon can be a null-statement, l_square can be a start of a macro or
+  // a C++11 attribute, but this doesn't seem to be common.
+  return Tok.isNot(tok::semi) && Tok.isNot(tok::l_brace) &&
+         Tok.isNot(tok::l_square) &&
+         // Tokens that can only be used as binary operators and a part of
+         // overloaded operator names.
+         Tok.isNot(tok::period) && Tok.isNot(tok::periodstar) &&
+         Tok.isNot(tok::arrow) && Tok.isNot(tok::arrowstar) &&
+         Tok.isNot(tok::less) && Tok.isNot(tok::greater) &&
+         Tok.isNot(tok::slash) && Tok.isNot(tok::percent) &&
+         Tok.isNot(tok::lessless) && Tok.isNot(tok::greatergreater) &&
+         Tok.isNot(tok::equal) && Tok.isNot(tok::plusequal) &&
+         Tok.isNot(tok::minusequal) && Tok.isNot(tok::starequal) &&
+         Tok.isNot(tok::slashequal) && Tok.isNot(tok::percentequal) &&
+         Tok.isNot(tok::ampequal) && Tok.isNot(tok::pipeequal) &&
+         Tok.isNot(tok::caretequal) && Tok.isNot(tok::greatergreaterequal) &&
+         Tok.isNot(tok::lesslessequal) &&
+         // Colon is used in labels, base class lists, initializer lists,
+         // range-based for loops, ternary operator, but should never be the
+         // first token in an unwrapped line.
+         Tok.isNot(tok::colon);
+}
+
 void UnwrappedLineParser::parseStructuralElement() {
   assert(!FormatTok.Tok.is(tok::l_brace));
-  int TokenNumber = 0;
   switch (FormatTok.Tok.getKind()) {
   case tok::at:
     nextToken();
@@ -296,7 +318,6 @@ void UnwrappedLineParser::parseStructuralElement() {
     return;
   case tok::kw_inline:
     nextToken();
-    TokenNumber++;
     if (FormatTok.Tok.is(tok::kw_namespace)) {
       parseNamespace();
       return;
@@ -346,7 +367,6 @@ void UnwrappedLineParser::parseStructuralElement() {
     break;
   }
   do {
-    ++TokenNumber;
     switch (FormatTok.Tok.getKind()) {
     case tok::at:
       nextToken();
@@ -378,14 +398,29 @@ void UnwrappedLineParser::parseStructuralElement() {
       // structural element.
       // FIXME: Figure out cases where this is not true, and add projections for
       // them (the one we know is missing are lambdas).
+      if (Style.BreakBeforeBraces == FormatStyle::BS_Linux ||
+          Style.BreakBeforeBraces == FormatStyle::BS_Stroustrup)
+        addUnwrappedLine();
+
       parseBlock(/*MustBeDeclaration=*/ false);
       addUnwrappedLine();
       return;
     case tok::identifier:
       nextToken();
-      if (TokenNumber == 1 && FormatTok.Tok.is(tok::colon)) {
-        parseLabel();
-        return;
+      if (Line->Tokens.size() == 1) {
+        if (FormatTok.Tok.is(tok::colon)) {
+          parseLabel();
+          return;
+        }
+        // Recognize function-like macro usages without trailing semicolon.
+        if (FormatTok.Tok.is(tok::l_paren)) {
+          parseParens();
+          if (FormatTok.HasUnescapedNewline &&
+              tokenCanStartNewLine(FormatTok.Tok)) {
+            addUnwrappedLine();
+            return;
+          }
+        }
       }
       break;
     case tok::equal:
@@ -404,16 +439,36 @@ void UnwrappedLineParser::parseStructuralElement() {
 void UnwrappedLineParser::parseBracedList() {
   nextToken();
 
+  // FIXME: Once we have an expression parser in the UnwrappedLineParser,
+  // replace this by using parseAssigmentExpression() inside.
+  bool StartOfExpression = true;
   do {
+    // FIXME: When we start to support lambdas, we'll want to parse them away
+    // here, otherwise our bail-out scenarios below break. The better solution
+    // might be to just implement a more or less complete expression parser.
     switch (FormatTok.Tok.getKind()) {
     case tok::l_brace:
+      if (!StartOfExpression) {
+        // Probably a missing closing brace. Bail out.
+        addUnwrappedLine();
+        return;
+      }
       parseBracedList();
+      StartOfExpression = false;
       break;
     case tok::r_brace:
       nextToken();
       return;
+    case tok::semi:
+      // Probably a missing closing brace. Bail out.
+      return;
+    case tok::comma:
+      nextToken();
+      StartOfExpression = true;
+      break;
     default:
       nextToken();
+      StartOfExpression = false;
       break;
     }
   } while (!eof());
@@ -426,6 +481,11 @@ void UnwrappedLineParser::parseReturn() {
     switch (FormatTok.Tok.getKind()) {
     case tok::l_brace:
       parseBracedList();
+      if (FormatTok.Tok.isNot(tok::semi)) {
+        // Assume missing ';'.
+        addUnwrappedLine();
+        return;
+      }
       break;
     case tok::l_paren:
       parseParens();
@@ -517,6 +577,9 @@ void UnwrappedLineParser::parseNamespace() {
   if (FormatTok.Tok.is(tok::identifier))
     nextToken();
   if (FormatTok.Tok.is(tok::l_brace)) {
+    if (Style.BreakBeforeBraces == FormatStyle::BS_Linux)
+      addUnwrappedLine();
+
     parseBlock(/*MustBeDeclaration=*/ true, 0);
     // Munch the semicolon after a namespace. This is more common than one would
     // think. Puttin the semicolon into its own line is very ugly.
@@ -691,8 +754,12 @@ void UnwrappedLineParser::parseRecord() {
       }
     }
   }
-  if (FormatTok.Tok.is(tok::l_brace))
+  if (FormatTok.Tok.is(tok::l_brace)) {
+    if (Style.BreakBeforeBraces == FormatStyle::BS_Linux)
+      addUnwrappedLine();
+
     parseBlock(/*MustBeDeclaration=*/ true);
+  }
   // We fall through to parsing a structural element afterwards, so
   // class A {} n, m;
   // will end up in one unwrapped line.
@@ -819,13 +886,16 @@ void UnwrappedLineParser::readToken() {
   do {
     FormatTok = Tokens->getNextToken();
     while (!Line->InPPDirective && FormatTok.Tok.is(tok::hash) &&
-           ((FormatTok.NewlinesBefore > 0 && FormatTok.HasUnescapedNewline) ||
-            FormatTok.IsFirst)) {
+           (FormatTok.HasUnescapedNewline || FormatTok.IsFirst)) {
       // If there is an unfinished unwrapped line, we flush the preprocessor
       // directives only after that unwrapped line was finished later.
       bool SwitchToPreprocessorLines =
           !Line->Tokens.empty() && CurrentLines == &Lines;
       ScopedLineState BlockState(*this, SwitchToPreprocessorLines);
+      // Comments stored before the preprocessor directive need to be output
+      // before the preprocessor directive, at the same level as the
+      // preprocessor directive, as we consider them to apply to the directive.
+      flushComments(FormatTok.NewlinesBefore > 0);
       parsePPDirective();
     }
     if (!FormatTok.Tok.is(tok::comment))

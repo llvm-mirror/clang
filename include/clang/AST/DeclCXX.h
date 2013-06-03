@@ -69,17 +69,6 @@ public:
 } // end namespace clang
 
 namespace llvm {
-  /// Implement simplify_type for AnyFunctionDecl, so that we can dyn_cast from
-  /// AnyFunctionDecl to any function or function template declaration.
-  template<> struct simplify_type<const ::clang::AnyFunctionDecl> {
-    typedef ::clang::NamedDecl* SimpleType;
-    static SimpleType getSimplifiedValue(const ::clang::AnyFunctionDecl &Val) {
-      return Val;
-    }
-  };
-  template<> struct simplify_type< ::clang::AnyFunctionDecl>
-  : public simplify_type<const ::clang::AnyFunctionDecl> {};
-
   // Provide PointerLikeTypeTraits for non-cvr pointers.
   template<>
   class PointerLikeTypeTraits< ::clang::AnyFunctionDecl> {
@@ -263,6 +252,16 @@ public:
 
   /// getTypeLoc - Retrieves the type and source location of the base class.
   TypeSourceInfo *getTypeSourceInfo() const { return BaseTypeInfo; }
+};
+
+/// The inheritance model to use for member pointers of a given CXXRecordDecl.
+enum MSInheritanceModel {
+  MSIM_Single,
+  MSIM_SinglePolymorphic,
+  MSIM_Multiple,
+  MSIM_MultiplePolymorphic,
+  MSIM_Virtual,
+  MSIM_Unspecified
 };
 
 /// CXXRecordDecl - Represents a C++ struct/union/class.
@@ -989,6 +988,8 @@ public:
   ///
   /// \param ThisCapture Will be set to the field declaration for the
   /// 'this' capture.
+  ///
+  /// \note No entries will be added for init-captures.
   void getCaptureFields(llvm::DenseMap<const VarDecl *, FieldDecl *> &Captures,
                         FieldDecl *&ThisCapture) const;
 
@@ -1543,6 +1544,9 @@ public:
     getLambdaData().ContextDecl = ContextDecl;
   }
 
+  /// \brief Returns the inheritance model used for this record.
+  MSInheritanceModel getMSInheritanceModel() const;
+
   /// \brief Determine whether this lambda expression was known to be dependent
   /// at the time it was created, even if its context does not appear to be
   /// dependent.
@@ -1581,11 +1585,10 @@ protected:
   CXXMethodDecl(Kind DK, CXXRecordDecl *RD, SourceLocation StartLoc,
                 const DeclarationNameInfo &NameInfo,
                 QualType T, TypeSourceInfo *TInfo,
-                bool isStatic, StorageClass SCAsWritten, bool isInline,
+                StorageClass SC, bool isInline,
                 bool isConstexpr, SourceLocation EndLocation)
     : FunctionDecl(DK, RD, StartLoc, NameInfo, T, TInfo,
-                   (isStatic ? SC_Static : SC_None),
-                   SCAsWritten, isInline, isConstexpr) {
+                   SC, isInline, isConstexpr) {
     if (EndLocation.isValid())
       setRangeEnd(EndLocation);
   }
@@ -1595,15 +1598,14 @@ public:
                                SourceLocation StartLoc,
                                const DeclarationNameInfo &NameInfo,
                                QualType T, TypeSourceInfo *TInfo,
-                               bool isStatic,
-                               StorageClass SCAsWritten,
+                               StorageClass SC,
                                bool isInline,
                                bool isConstexpr,
                                SourceLocation EndLocation);
 
   static CXXMethodDecl *CreateDeserialized(ASTContext &C, unsigned ID);
-  
-  bool isStatic() const { return getStorageClass() == SC_Static; }
+
+  bool isStatic() const;
   bool isInstance() const { return !isStatic(); }
 
   bool isConst() const { return getType()->castAs<FunctionType>()->isConst(); }
@@ -1754,8 +1756,6 @@ class CXXCtorInitializer {
 
   /// \brief The argument used to initialize the base or member, which may
   /// end up constructing an object (when multiple arguments are involved).
-  /// If 0, this is a field initializer, and the in-class member initializer
-  /// will be used.
   Stmt *Init;
 
   /// LParenLoc - Location of the left paren of the ctor-initializer.
@@ -1840,7 +1840,7 @@ public:
   /// implicit ctor initializer generated for a field with an initializer
   /// defined on the member declaration.
   bool isInClassMemberInitializer() const {
-    return !Init;
+    return isa<CXXDefaultInitExpr>(Init);
   }
 
   /// isDelegatingInitializer - Returns true when this initializer is creating
@@ -1967,14 +1967,8 @@ public:
                                getNumArrayIndices());
   }
 
-  /// \brief Get the initializer. This is 0 if this is an in-class initializer
-  /// for a non-static data member which has not yet been parsed.
-  Expr *getInit() const {
-    if (!Init)
-      return getAnyMember()->getInClassInitializer();
-
-    return static_cast<Expr*>(Init);
-  }
+  /// \brief Get the initializer.
+  Expr *getInit() const { return static_cast<Expr*>(Init); }
 };
 
 /// CXXConstructorDecl - Represents a C++ constructor within a
@@ -2011,7 +2005,7 @@ class CXXConstructorDecl : public CXXMethodDecl {
                      QualType T, TypeSourceInfo *TInfo,
                      bool isExplicitSpecified, bool isInline,
                      bool isImplicitlyDeclared, bool isConstexpr)
-    : CXXMethodDecl(CXXConstructor, RD, StartLoc, NameInfo, T, TInfo, false,
+    : CXXMethodDecl(CXXConstructor, RD, StartLoc, NameInfo, T, TInfo,
                     SC_None, isInline, isConstexpr, SourceLocation()),
       IsExplicitSpecified(isExplicitSpecified), ImplicitlyDefined(false),
       CtorInitializers(0), NumCtorInitializers(0) {
@@ -2230,7 +2224,7 @@ class CXXDestructorDecl : public CXXMethodDecl {
                     const DeclarationNameInfo &NameInfo,
                     QualType T, TypeSourceInfo *TInfo,
                     bool isInline, bool isImplicitlyDeclared)
-    : CXXMethodDecl(CXXDestructor, RD, StartLoc, NameInfo, T, TInfo, false,
+    : CXXMethodDecl(CXXDestructor, RD, StartLoc, NameInfo, T, TInfo,
                     SC_None, isInline, /*isConstexpr=*/false, SourceLocation()),
       ImplicitlyDefined(false), OperatorDelete(0) {
     setImplicit(isImplicitlyDeclared);
@@ -2297,7 +2291,7 @@ class CXXConversionDecl : public CXXMethodDecl {
                     QualType T, TypeSourceInfo *TInfo,
                     bool isInline, bool isExplicitSpecified,
                     bool isConstexpr, SourceLocation EndLocation)
-    : CXXMethodDecl(CXXConversion, RD, StartLoc, NameInfo, T, TInfo, false,
+    : CXXMethodDecl(CXXConversion, RD, StartLoc, NameInfo, T, TInfo,
                     SC_None, isInline, isConstexpr, EndLocation),
       IsExplicitSpecified(isExplicitSpecified) { }
 
@@ -2359,38 +2353,49 @@ public:
   };
 private:
   /// Language - The language for this linkage specification.
-  LanguageIDs Language;
+  unsigned Language : 3;
+  /// True if this linkage spec has brances. This is needed so that hasBraces()
+  /// returns the correct result while the linkage spec body is being parsed.
+  /// Once RBraceLoc has been set this is not used, so it doesn't need to be
+  /// serialized.
+  unsigned HasBraces : 1;
   /// ExternLoc - The source location for the extern keyword.
   SourceLocation ExternLoc;
   /// RBraceLoc - The source location for the right brace (if valid).
   SourceLocation RBraceLoc;
 
   LinkageSpecDecl(DeclContext *DC, SourceLocation ExternLoc,
-                  SourceLocation LangLoc, LanguageIDs lang,
-                  SourceLocation RBLoc)
+                  SourceLocation LangLoc, LanguageIDs lang, bool HasBraces)
     : Decl(LinkageSpec, DC, LangLoc), DeclContext(LinkageSpec),
-      Language(lang), ExternLoc(ExternLoc), RBraceLoc(RBLoc) { }
+      Language(lang), HasBraces(HasBraces), ExternLoc(ExternLoc),
+      RBraceLoc(SourceLocation()) { }
 
 public:
   static LinkageSpecDecl *Create(ASTContext &C, DeclContext *DC,
                                  SourceLocation ExternLoc,
                                  SourceLocation LangLoc, LanguageIDs Lang,
-                                 SourceLocation RBraceLoc = SourceLocation());
+                                 bool HasBraces);
   static LinkageSpecDecl *CreateDeserialized(ASTContext &C, unsigned ID);
   
   /// \brief Return the language specified by this linkage specification.
-  LanguageIDs getLanguage() const { return Language; }
+  LanguageIDs getLanguage() const { return LanguageIDs(Language); }
   /// \brief Set the language specified by this linkage specification.
   void setLanguage(LanguageIDs L) { Language = L; }
 
   /// \brief Determines whether this linkage specification had braces in
   /// its syntactic form.
-  bool hasBraces() const { return RBraceLoc.isValid(); }
+  bool hasBraces() const {
+    assert(!RBraceLoc.isValid() || HasBraces);
+    return HasBraces;
+  }
 
   SourceLocation getExternLoc() const { return ExternLoc; }
   SourceLocation getRBraceLoc() const { return RBraceLoc; }
   void setExternLoc(SourceLocation L) { ExternLoc = L; }
-  void setRBraceLoc(SourceLocation L) { RBraceLoc = L; }
+  void setRBraceLoc(SourceLocation L) {
+    RBraceLoc = L;
+    HasBraces = RBraceLoc.isValid();
+  }
 
   SourceLocation getLocEnd() const LLVM_READONLY {
     if (hasBraces())
@@ -2980,6 +2985,56 @@ public:
 
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == StaticAssert; }
+
+  friend class ASTDeclReader;
+};
+
+/// An instance of this class represents the declaration of a property
+/// member.  This is a Microsoft extension to C++, first introduced in
+/// Visual Studio .NET 2003 as a parallel to similar features in C#
+/// and Managed C++.
+///
+/// A property must always be a non-static class member.
+///
+/// A property member superficially resembles a non-static data
+/// member, except preceded by a property attribute:
+///   __declspec(property(get=GetX, put=PutX)) int x;
+/// Either (but not both) of the 'get' and 'put' names may be omitted.
+///
+/// A reference to a property is always an lvalue.  If the lvalue
+/// undergoes lvalue-to-rvalue conversion, then a getter name is
+/// required, and that member is called with no arguments.
+/// If the lvalue is assigned into, then a setter name is required,
+/// and that member is called with one argument, the value assigned.
+/// Both operations are potentially overloaded.  Compound assignments
+/// are permitted, as are the increment and decrement operators.
+///
+/// The getter and putter methods are permitted to be overloaded,
+/// although their return and parameter types are subject to certain
+/// restrictions according to the type of the property.
+///
+/// A property declared using an incomplete array type may
+/// additionally be subscripted, adding extra parameters to the getter
+/// and putter methods.
+class MSPropertyDecl : public DeclaratorDecl {
+  IdentifierInfo *GetterId, *SetterId;
+
+public:
+  MSPropertyDecl(DeclContext *DC, SourceLocation L,
+                 DeclarationName N, QualType T, TypeSourceInfo *TInfo,
+                 SourceLocation StartL, IdentifierInfo *Getter,
+                 IdentifierInfo *Setter):
+  DeclaratorDecl(MSProperty, DC, L, N, T, TInfo, StartL), GetterId(Getter),
+  SetterId(Setter) {}
+
+  static MSPropertyDecl *CreateDeserialized(ASTContext &C, unsigned ID);
+
+  static bool classof(const Decl *D) { return D->getKind() == MSProperty; }
+
+  bool hasGetter() const { return GetterId != NULL; }
+  IdentifierInfo* getGetterId() const { return GetterId; }
+  bool hasSetter() const { return SetterId != NULL; }
+  IdentifierInfo* getSetterId() const { return SetterId; }
 
   friend class ASTDeclReader;
 };

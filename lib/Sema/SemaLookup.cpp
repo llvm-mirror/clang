@@ -287,10 +287,10 @@ void LookupResult::configure() {
   IDNS = getIDNS(LookupKind, SemaRef.getLangOpts().CPlusPlus,
                  isForRedeclaration());
 
-  // If we're looking for one of the allocation or deallocation
-  // operators, make sure that the implicitly-declared new and delete
-  // operators can be found.
   if (!isForRedeclaration()) {
+    // If we're looking for one of the allocation or deallocation
+    // operators, make sure that the implicitly-declared new and delete
+    // operators can be found.
     switch (NameInfo.getName().getCXXOverloadedOperator()) {
     case OO_New:
     case OO_Delete:
@@ -301,6 +301,15 @@ void LookupResult::configure() {
 
     default:
       break;
+    }
+
+    // Compiler builtins are always visible, regardless of where they end
+    // up being declared.
+    if (IdentifierInfo *Id = NameInfo.getName().getAsIdentifierInfo()) {
+      if (unsigned BuiltinID = Id->getBuiltinID()) {
+        if (!SemaRef.Context.BuiltinInfo.isPredefinedLibFunction(BuiltinID))
+          AllowHidden = true;
+      }
     }
   }
 }
@@ -722,7 +731,7 @@ static bool LookupDirect(Sema &S, LookupResult &R, const DeclContext *DC) {
     EPI.NumExceptions = 0;
     QualType ExpectedType
       = R.getSema().Context.getFunctionType(R.getLookupName().getCXXNameType(),
-                                            ArrayRef<QualType>(), EPI);
+                                            None, EPI);
 
     // Perform template argument deduction against the type that we would
     // expect the function to have.
@@ -875,6 +884,8 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
   //   }
   // }
   //
+  UnqualUsingDirectiveSet UDirs;
+  bool VisitedUsingDirectives = false;
   DeclContext *OutsideOfTemplateParamDC = 0;
   for (; S && !isNamespaceOrTranslationUnitScope(S); S = S->getParent()) {
     DeclContext *Ctx = static_cast<DeclContext*>(S->getEntity());
@@ -945,6 +956,40 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
           continue;
         }
 
+        // If this is a file context, we need to perform unqualified name
+        // lookup considering using directives.
+        if (Ctx->isFileContext()) {
+          // If we haven't handled using directives yet, do so now.
+          if (!VisitedUsingDirectives) {
+            // Add using directives from this context up to the top level.
+            for (DeclContext *UCtx = Ctx; UCtx; UCtx = UCtx->getParent()) {
+              if (UCtx->isTransparentContext())
+                continue;
+
+              UDirs.visit(UCtx, UCtx);
+            }
+
+            // Find the innermost file scope, so we can add using directives
+            // from local scopes.
+            Scope *InnermostFileScope = S;
+            while (InnermostFileScope &&
+                   !isNamespaceOrTranslationUnitScope(InnermostFileScope))
+              InnermostFileScope = InnermostFileScope->getParent();
+            UDirs.visitScopeChain(Initial, InnermostFileScope);
+
+            UDirs.done();
+
+            VisitedUsingDirectives = true;
+          }
+
+          if (CppNamespaceLookup(*this, R, Context, Ctx, UDirs)) {
+            R.resolveKind();
+            return true;
+          }
+
+          continue;
+        }
+
         // Perform qualified name lookup into this context.
         // FIXME: In some cases, we know that every name that could be found by
         // this qualified name lookup will also be on the identifier chain. For
@@ -970,16 +1015,15 @@ bool Sema::CppLookupName(LookupResult &R, Scope *S) {
   //
   // FIXME: Cache this sorted list in Scope structure, and DeclContext, so we
   // don't build it for each lookup!
-
-  UnqualUsingDirectiveSet UDirs;
-  UDirs.visitScopeChain(Initial, S);
-  UDirs.done();
-
+  if (!VisitedUsingDirectives) {
+    UDirs.visitScopeChain(Initial, S);
+    UDirs.done();
+  }
+  
   // Lookup namespace scope, and global scope.
   // Unqualified name lookup in C++ requires looking into scopes
   // that aren't strictly lexical, and therefore we walk through the
   // context as well as walking through the scopes.
-
   for (; S; S = S->getParent()) {
     // Check whether the IdResolver has anything in this scope.
     bool Found = false;
@@ -2043,6 +2087,10 @@ addAssociatedClassesAndNamespaces(AssociatedLookup &Result, QualType Ty) {
     case Type::Complex:
       break;
 
+    // Non-deduced auto types only get here for error cases.
+    case Type::Auto:
+      break;
+
     // If T is an Objective-C object or interface type, or a pointer to an 
     // object or interface type, the associated namespace is the global
     // namespace.
@@ -2537,6 +2585,12 @@ Sema::LookupLiteralOperator(Scope *S, LookupResult &R,
     bool IsTemplate = isa<FunctionTemplateDecl>(D);
     bool IsRaw = false;
     bool IsExactMatch = false;
+
+    // If the declaration we found is invalid, skip it.
+    if (D->isInvalidDecl()) {
+      F.erase();
+      continue;
+    }
 
     if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
       if (FD->getNumParams() == 1 &&
@@ -3382,7 +3436,7 @@ class NamespaceSpecifierSet {
 }
 
 DeclContextList NamespaceSpecifierSet::BuildContextChain(DeclContext *Start) {
-  assert(Start && "Bulding a context chain from a null context");
+  assert(Start && "Building a context chain from a null context");
   DeclContextList Chain;
   for (DeclContext *DC = Start->getPrimaryContext(); DC != NULL;
        DC = DC->getLookupParent()) {
@@ -3737,13 +3791,6 @@ TypoCorrection Sema::CorrectTypo(const DeclarationNameInfo &TypoName,
   // Don't try to correct 'super'.
   if (S && S->isInObjcMethodScope() && Typo == getSuperIdentifier())
     return TypoCorrection();
-
-  // This is for testing.
-  if (Diags.getWarnOnSpellCheck()) {
-    unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Warning,
-                                            "spell-checking initiated for %0");
-    Diag(TypoName.getLoc(), DiagID) << TypoName.getName();
-  }
 
   NamespaceSpecifierSet Namespaces(Context, CurContext, SS);
 
@@ -4119,9 +4166,27 @@ std::string TypoCorrection::getAsString(const LangOptions &LO) const {
     std::string tmpBuffer;
     llvm::raw_string_ostream PrefixOStream(tmpBuffer);
     CorrectionNameSpec->print(PrefixOStream, PrintingPolicy(LO));
-    CorrectionName.printName(PrefixOStream);
+    PrefixOStream << CorrectionName;
     return PrefixOStream.str();
   }
 
   return CorrectionName.getAsString();
+}
+
+bool CorrectionCandidateCallback::ValidateCandidate(const TypoCorrection &candidate) {
+  if (!candidate.isResolved())
+    return true;
+
+  if (candidate.isKeyword())
+    return WantTypeSpecifiers || WantExpressionKeywords || WantCXXNamedCasts ||
+           WantRemainingKeywords || WantObjCSuper;
+
+  for (TypoCorrection::const_decl_iterator CDecl = candidate.begin(),
+                                           CDeclEnd = candidate.end();
+       CDecl != CDeclEnd; ++CDecl) {
+    if (!isa<TypeDecl>(*CDecl))
+      return true;
+  }
+
+  return WantTypeSpecifiers;
 }

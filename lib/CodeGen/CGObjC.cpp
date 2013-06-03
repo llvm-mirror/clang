@@ -21,6 +21,7 @@
 #include "clang/AST/StmtObjC.h"
 #include "clang/Basic/Diagnostic.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/CallSite.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InlineAsm.h"
 using namespace clang;
@@ -109,32 +110,50 @@ llvm::Value *CodeGenFunction::EmitObjCCollectionLiteral(const Expr *E,
   if (DLE)
     Keys = CreateMemTemp(ElementArrayType, "keys");
   
+  // In ARC, we may need to do extra work to keep all the keys and
+  // values alive until after the call.
+  SmallVector<llvm::Value *, 16> NeededObjects;
+  bool TrackNeededObjects =
+    (getLangOpts().ObjCAutoRefCount &&
+    CGM.getCodeGenOpts().OptimizationLevel != 0);
+
   // Perform the actual initialialization of the array(s).
   for (uint64_t i = 0; i < NumElements; i++) {
     if (ALE) {
-      // Emit the initializer.
+      // Emit the element and store it to the appropriate array slot.
       const Expr *Rhs = ALE->getElement(i);
       LValue LV = LValue::MakeAddr(Builder.CreateStructGEP(Objects, i),
                                    ElementType,
                                    Context.getTypeAlignInChars(Rhs->getType()),
                                    Context);
-      EmitScalarInit(Rhs, /*D=*/0, LV, /*capturedByInit=*/false);
+
+      llvm::Value *value = EmitScalarExpr(Rhs);
+      EmitStoreThroughLValue(RValue::get(value), LV, true);
+      if (TrackNeededObjects) {
+        NeededObjects.push_back(value);
+      }
     } else {      
-      // Emit the key initializer.
+      // Emit the key and store it to the appropriate array slot.
       const Expr *Key = DLE->getKeyValueElement(i).Key;
       LValue KeyLV = LValue::MakeAddr(Builder.CreateStructGEP(Keys, i),
                                       ElementType,
                                     Context.getTypeAlignInChars(Key->getType()),
                                       Context);
-      EmitScalarInit(Key, /*D=*/0, KeyLV, /*capturedByInit=*/false);
+      llvm::Value *keyValue = EmitScalarExpr(Key);
+      EmitStoreThroughLValue(RValue::get(keyValue), KeyLV, /*isInit=*/true);
 
-      // Emit the value initializer.
+      // Emit the value and store it to the appropriate array slot.
       const Expr *Value = DLE->getKeyValueElement(i).Value;  
       LValue ValueLV = LValue::MakeAddr(Builder.CreateStructGEP(Objects, i), 
                                         ElementType,
                                   Context.getTypeAlignInChars(Value->getType()),
                                         Context);
-      EmitScalarInit(Value, /*D=*/0, ValueLV, /*capturedByInit=*/false);
+      llvm::Value *valueValue = EmitScalarExpr(Value);
+      EmitStoreThroughLValue(RValue::get(valueValue), ValueLV, /*isInit=*/true);
+      if (TrackNeededObjects) {
+        NeededObjects.push_back(keyValue);
+        NeededObjects.push_back(valueValue);
+      }
     }
   }
   
@@ -172,6 +191,15 @@ llvm::Value *CodeGenFunction::EmitObjCCollectionLiteral(const Expr *E,
                                   Sel,
                                   Receiver, Args, Class,
                                   MethodWithObjects);
+
+  // The above message send needs these objects, but in ARC they are
+  // passed in a buffer that is essentially __unsafe_unretained.
+  // Therefore we must prevent the optimizer from releasing them until
+  // after the call.
+  if (TrackNeededObjects) {
+    EmitARCIntrinsicUse(NeededObjects);
+  }
+
   return Builder.CreateBitCast(result.getScalarVal(), 
                                ConvertType(E->getType()));
 }
@@ -686,7 +714,7 @@ PropertyImplStrategy::PropertyImplStrategy(CodeGenModule &CGM,
   }
 
   llvm::Triple::ArchType arch =
-    CGM.getContext().getTargetInfo().getTriple().getArch();
+    CGM.getTarget().getTriple().getArch();
 
   // Most architectures require memory to fit within a single cache
   // line, so the alignment has to be at least the size of the access.
@@ -1189,7 +1217,8 @@ CodeGenFunction::generateObjCSetterBody(const ObjCImplementationDecl *classImpl,
                             selfDecl->getType(), CK_LValueToRValue, &self,
                             VK_RValue);
   ObjCIvarRefExpr ivarRef(ivar, ivar->getType().getNonReferenceType(),
-                          SourceLocation(), &selfLoad, true, true);
+                          SourceLocation(), SourceLocation(),
+                          &selfLoad, true, true);
 
   ParmVarDecl *argDecl = *setterMethod->param_begin();
   QualType argType = argDecl->getType().getNonReferenceType();
@@ -1372,8 +1401,10 @@ bool CodeGenFunction::IvarTypeWithAggrGCObjects(QualType Ty) {
 }
 
 llvm::Value *CodeGenFunction::LoadObjCSelf() {
-  const ObjCMethodDecl *OMD = cast<ObjCMethodDecl>(CurFuncDecl);
-  return Builder.CreateLoad(LocalDeclMap[OMD->getSelfDecl()], "self");
+  VarDecl *Self = cast<ObjCMethodDecl>(CurFuncDecl)->getSelfDecl();
+  DeclRefExpr DRE(Self, /*is enclosing local*/ (CurFuncDecl != CurCodeDecl),
+                  Self->getType(), VK_LValue, SourceLocation());
+  return EmitLoadOfScalar(EmitDeclRefLValue(&DRE));
 }
 
 QualType CodeGenFunction::TypeOfSelfObject() {
@@ -1705,6 +1736,21 @@ llvm::Value *CodeGenFunction::EmitObjCConsumeObject(QualType type,
 llvm::Value *CodeGenFunction::EmitObjCExtendObjectLifetime(QualType type,
                                                            llvm::Value *value) {
   return EmitARCRetainAutorelease(type, value);
+}
+
+/// Given a number of pointers, inform the optimizer that they're
+/// being intrinsically used up until this point in the program.
+void CodeGenFunction::EmitARCIntrinsicUse(ArrayRef<llvm::Value*> values) {
+  llvm::Constant *&fn = CGM.getARCEntrypoints().clang_arc_use;
+  if (!fn) {
+    llvm::FunctionType *fnType =
+      llvm::FunctionType::get(CGM.VoidTy, ArrayRef<llvm::Type*>(), true);
+    fn = CGM.CreateRuntimeFunction(fnType, "clang.arc.use");
+  }
+
+  // This isn't really a "runtime" function, but as an intrinsic it
+  // doesn't really matter as long as we align things up.
+  EmitNounwindRuntimeCall(fn, values);
 }
 
 
@@ -2213,7 +2259,8 @@ void CodeGenFunction::EmitObjCAutoreleasePoolPop(llvm::Value *value) {
     fn = createARCRuntimeFunction(CGM, fnType, "objc_autoreleasePoolPop");
   }
 
-  EmitNounwindRuntimeCall(fn, value);
+  // objc_autoreleasePoolPop can throw.
+  EmitRuntimeCallOrInvoke(fn, value);
 }
 
 /// Produce the code to do an MRR version objc_autoreleasepool_push.
@@ -2832,7 +2879,6 @@ CodeGenFunction::GenerateObjCAtomicSetterCopyHelperFunction(
                                           SourceLocation(),
                                           SourceLocation(), II, C.VoidTy, 0,
                                           SC_Static,
-                                          SC_None,
                                           false,
                                           false);
   
@@ -2917,7 +2963,6 @@ CodeGenFunction::GenerateObjCAtomicGetterCopyHelperFunction(
                                           SourceLocation(),
                                           SourceLocation(), II, C.VoidTy, 0,
                                           SC_Static,
-                                          SC_None,
                                           false,
                                           false);
   

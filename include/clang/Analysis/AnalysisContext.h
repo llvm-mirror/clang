@@ -256,6 +256,8 @@ public:
 
   virtual void Profile(llvm::FoldingSetNodeID &ID) = 0;
 
+  LLVM_ATTRIBUTE_USED void dumpStack() const;
+
 public:
   static void ProfileCommon(llvm::FoldingSetNodeID &ID,
                             ContextKind ck,
@@ -410,7 +412,8 @@ public:
                              bool addImplicitDtors = false,
                              bool addInitializers = false,
                              bool addTemporaryDtors = false,
-                             bool synthesizeBodies = false);
+                             bool synthesizeBodies = false,
+                             bool addStaticInitBranches = false);
 
   ~AnalysisDeclContextManager();
 

@@ -81,7 +81,7 @@ public:
   operator QualType() const { return Stored; }
 
   /// \brief Implicit conversion to bool.
-  operator bool() const { return !isNull(); }
+  LLVM_EXPLICIT operator bool() const { return !isNull(); }
   
   bool isNull() const {
     return Stored.isNull();
@@ -351,15 +351,12 @@ namespace llvm {
 /// CanQual<T> to a specific Type class. We're prefer isa/dyn_cast/cast/etc.
 /// to return smart pointer (proxies?).
 template<typename T>
-struct simplify_type<const ::clang::CanQual<T> > {
+struct simplify_type< ::clang::CanQual<T> > {
   typedef const T *SimpleType;
-  static SimpleType getSimplifiedValue(const ::clang::CanQual<T> &Val) {
+  static SimpleType getSimplifiedValue(::clang::CanQual<T> Val) {
     return Val.getTypePtr();
   }
 };
-template<typename T>
-struct simplify_type< ::clang::CanQual<T> >
-: public simplify_type<const ::clang::CanQual<T> > {};
 
 // Teach SmallPtrSet that CanQual<T> is "basically a pointer".
 template<typename T>

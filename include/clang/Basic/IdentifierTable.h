@@ -146,9 +146,6 @@ public:
   bool hadMacroDefinition() const {
     return HadMacro;
   }
-  void setHadMacroDefinition(bool Val) {
-    HadMacro = Val;
-  }
 
   /// getTokenID - If this is a source-language token (e.g. 'for'), this API
   /// can be used to cause the lexer to map identifiers to source-language
@@ -397,7 +394,7 @@ public:
   ///
   /// \returns A new iterator into the set of known identifiers. The
   /// caller is responsible for deleting this iterator.
-  virtual IdentifierIterator *getIdentifiers() const;
+  virtual IdentifierIterator *getIdentifiers();
 };
 
 /// \brief An abstract class used to resolve numerical identifier

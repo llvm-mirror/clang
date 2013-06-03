@@ -1949,8 +1949,8 @@ llvm::Constant *CGObjCCommonMac::BuildGCBlockLayout(CodeGenModule &CGM,
   bool hasUnion = false;
   SkipIvars.clear();
   IvarsInfo.clear();
-  unsigned WordSizeInBits = CGM.getContext().getTargetInfo().getPointerWidth(0);
-  unsigned ByteSizeInBits = CGM.getContext().getTargetInfo().getCharWidth();
+  unsigned WordSizeInBits = CGM.getTarget().getPointerWidth(0);
+  unsigned ByteSizeInBits = CGM.getTarget().getCharWidth();
   
   // __isa is the first field in block descriptor and must assume by runtime's
   // convention that it is GC'able.
@@ -2077,7 +2077,7 @@ void CGObjCCommonMac::BuildRCRecordLayout(const llvm::StructLayout *RecLayout,
   
   if (RecFields.empty())
     return;
-  unsigned ByteSizeInBits = CGM.getContext().getTargetInfo().getCharWidth();
+  unsigned ByteSizeInBits = CGM.getTarget().getCharWidth();
   
   for (unsigned i = 0, e = RecFields.size(); i != e; ++i) {
     const FieldDecl *Field = RecFields[i];
@@ -2316,8 +2316,8 @@ llvm::Constant *CGObjCCommonMac::getBitmapBlockLayout(bool ComputeByrefLayout) {
   llvm::Constant *nullPtr = llvm::Constant::getNullValue(CGM.Int8PtrTy);
   if (RunSkipBlockVars.empty())
     return nullPtr;
-  unsigned WordSizeInBits = CGM.getContext().getTargetInfo().getPointerWidth(0);
-  unsigned ByteSizeInBits = CGM.getContext().getTargetInfo().getCharWidth();
+  unsigned WordSizeInBits = CGM.getTarget().getPointerWidth(0);
+  unsigned ByteSizeInBits = CGM.getTarget().getCharWidth();
   unsigned WordSizeInBytes = WordSizeInBits/ByteSizeInBits;
   
   // Sort on byte position; captures might not be allocated in order,
@@ -2393,7 +2393,7 @@ llvm::Constant *CGObjCCommonMac::getBitmapBlockLayout(bool ComputeByrefLayout) {
         printf("\n Inline instruction for BYREF variable layout: ");
       else
         printf("\n Inline instruction for block variable layout: ");
-      printf("0x0%llx\n", (unsigned long long)Result);
+      printf("0x0%" PRIx64 "\n", Result);
     }
     if (WordSizeInBytes == 8) {
       const llvm::APInt Instruction(64, Result);
@@ -2468,8 +2468,8 @@ llvm::Constant *CGObjCCommonMac::BuildRCBlockLayout(CodeGenModule &CGM,
   RunSkipBlockVars.clear();
   bool hasUnion = false;
   
-  unsigned WordSizeInBits = CGM.getContext().getTargetInfo().getPointerWidth(0);
-  unsigned ByteSizeInBits = CGM.getContext().getTargetInfo().getCharWidth();
+  unsigned WordSizeInBits = CGM.getTarget().getPointerWidth(0);
+  unsigned ByteSizeInBits = CGM.getTarget().getCharWidth();
   unsigned WordSizeInBytes = WordSizeInBits/ByteSizeInBits;
   
   const BlockDecl *blockDecl = blockInfo.getBlockDecl();
@@ -3519,6 +3519,9 @@ namespace {
       if (isa<ObjCAtTryStmt>(S)) {
         if (const ObjCAtFinallyStmt* FinallyStmt =
               cast<ObjCAtTryStmt>(S).getFinallyStmt()) {
+          // Don't try to do the @finally if this is an EH cleanup.
+          if (flags.isForEHCleanup()) return;
+
           // Save the current cleanup destination in case there's
           // control flow inside the finally statement.
           llvm::Value *CurCleanupDest =
@@ -3860,7 +3863,7 @@ void CGObjCMac::EmitTryOrSynchronizedStmt(CodeGen::CodeGenFunction &CGF,
   llvm::Value *PropagatingExnVar = 0;
 
   // Push a normal cleanup to leave the try scope.
-  CGF.EHStack.pushCleanup<PerformFragileFinally>(NormalCleanup, &S,
+  CGF.EHStack.pushCleanup<PerformFragileFinally>(NormalAndEHCleanup, &S,
                                                  SyncArgSlot,
                                                  CallTryExitVar,
                                                  ExceptionData,
@@ -4534,8 +4537,8 @@ void CGObjCCommonMac::BuildAggrIvarLayout(const ObjCImplementationDecl *OI,
 
   if (RecFields.empty())
     return;
-  unsigned WordSizeInBits = CGM.getContext().getTargetInfo().getPointerWidth(0);
-  unsigned ByteSizeInBits = CGM.getContext().getTargetInfo().getCharWidth();
+  unsigned WordSizeInBits = CGM.getTarget().getPointerWidth(0);
+  unsigned ByteSizeInBits = CGM.getTarget().getCharWidth();
   if (!RD && CGM.getLangOpts().ObjCAutoRefCount) {
     const FieldDecl *FirstField = RecFields[0];
     FirstFieldDelta = 

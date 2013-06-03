@@ -21,7 +21,6 @@
 #include "clang/Lex/Lexer.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/PPCallbacks.h"
-#include "clang/Lex/PPMutationListener.h"
 #include "clang/Lex/PTHLexer.h"
 #include "clang/Lex/PTHManager.h"
 #include "clang/Lex/TokenLexer.h"
@@ -296,11 +295,6 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   /// encountered (e.g. a file is \#included, etc).
   PPCallbacks *Callbacks;
 
-  /// \brief Listener whose actions are invoked when an entity in the
-  /// preprocessor (e.g., a macro) that was loaded from an AST file is
-  /// later mutated.
-  PPMutationListener *Listener;
-
   struct MacroExpandsInfo {
     Token Tok;
     MacroDirective *MD;
@@ -402,6 +396,14 @@ private:  // Cached tokens state.
   /// MICache - A "freelist" of MacroInfo objects that can be reused for quick
   /// allocation.
   MacroInfoChain *MICache;
+
+  struct DeserializedMacroInfoChain {
+    MacroInfo MI;
+    unsigned OwningModuleID; // MUST be immediately after the MacroInfo object
+                     // so it can be accessed by MacroInfo::getOwningModuleID().
+    DeserializedMacroInfoChain *Next;
+  };
+  DeserializedMacroInfoChain *DeserialMIChainHead;
 
 public:
   Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
@@ -519,27 +521,14 @@ public:
     Callbacks = C;
   }
 
-  /// \brief Attach an preprocessor mutation listener to the preprocessor.
-  ///
-  /// The preprocessor mutation listener provides the ability to track
-  /// modifications to the preprocessor entities committed after they were
-  /// initially created.
-  void setPPMutationListener(PPMutationListener *Listener) {
-    this->Listener = Listener;
-  }
-
-  /// \brief Retrieve a pointer to the preprocessor mutation listener
-  /// associated with this preprocessor, if any.
-  PPMutationListener *getPPMutationListener() const { return Listener; }
-
-  /// \brief Given an identifier, return the MacroInfo it is \#defined to
-  /// or null if it isn't \#define'd.
+  /// \brief Given an identifier, return its latest MacroDirective if it is
+  // \#defined or null if it isn't \#define'd.
   MacroDirective *getMacroDirective(IdentifierInfo *II) const {
     if (!II->hasMacroDefinition())
       return 0;
 
     MacroDirective *MD = getMacroDirectiveHistory(II);
-    assert(MD->getUndefLoc().isInvalid() && "Macro is undefined!");
+    assert(MD->isDefined() && "Macro is undefined!");
     return MD;
   }
 
@@ -549,7 +538,7 @@ public:
 
   MacroInfo *getMacroInfo(IdentifierInfo *II) {
     if (MacroDirective *MD = getMacroDirective(II))
-      return MD->getInfo();
+      return MD->getMacroInfo();
     return 0;
   }
 
@@ -559,20 +548,20 @@ public:
   /// identifiers that hadMacroDefinition().
   MacroDirective *getMacroDirectiveHistory(const IdentifierInfo *II) const;
 
-  /// \brief Specify a macro for this identifier.
-  MacroDirective *setMacroDirective(IdentifierInfo *II, MacroInfo *MI,
-                                    SourceLocation Loc, bool isImported);
-  MacroDirective *setMacroDirective(IdentifierInfo *II, MacroInfo *MI) {
-    return setMacroDirective(II, MI, MI->getDefinitionLoc(), false);
+  /// \brief Add a directive to the macro directive history for this identifier.
+  void appendMacroDirective(IdentifierInfo *II, MacroDirective *MD);
+  DefMacroDirective *appendDefMacroDirective(IdentifierInfo *II, MacroInfo *MI,
+                                             SourceLocation Loc,
+                                             bool isImported) {
+    DefMacroDirective *MD = AllocateDefMacroDirective(MI, Loc, isImported);
+    appendMacroDirective(II, MD);
+    return MD;
   }
-  /// \brief Add a MacroInfo that was loaded from an AST file.
-  void addLoadedMacroInfo(IdentifierInfo *II, MacroDirective *MD,
-                          MacroDirective *Hint = 0);
-  /// \brief Make the given MacroInfo, that was loaded from an AST file and
-  /// previously hidden, visible.
-  void makeLoadedMacroInfoVisible(IdentifierInfo *II, MacroDirective *MD);
-  /// \brief Undefine a macro for this identifier.
-  void clearMacroInfo(IdentifierInfo *II);
+  DefMacroDirective *appendDefMacroDirective(IdentifierInfo *II, MacroInfo *MI){
+    return appendDefMacroDirective(II, MI, MI->getDefinitionLoc(), false);
+  }
+  /// \brief Set a MacroDirective that was loaded from a PCH file.
+  void setLoadedMacroDirective(IdentifierInfo *II, MacroDirective *MD);
 
   /// macro_iterator/macro_begin/macro_end - This allows you to walk the macro
   /// history table. Currently defined macros have
@@ -960,8 +949,8 @@ public:
   ///   "cleaning", e.g. if it contains trigraphs or escaped newlines
   /// \param invalid If non-null, will be set \c true if an error occurs.
   StringRef getSpelling(SourceLocation loc,
-                              SmallVectorImpl<char> &buffer,
-                              bool *invalid = 0) const {
+                        SmallVectorImpl<char> &buffer,
+                        bool *invalid = 0) const {
     return Lexer::getSpelling(loc, buffer, SourceMgr, LangOpts, invalid);
   }
 
@@ -1208,6 +1197,10 @@ public:
   /// \brief Allocate a new MacroInfo object with the provided SourceLocation.
   MacroInfo *AllocateMacroInfo(SourceLocation L);
 
+  /// \brief Allocate a new MacroInfo object loaded from an AST file.
+  MacroInfo *AllocateDeserializedMacroInfo(SourceLocation L,
+                                           unsigned SubModuleID);
+
   /// \brief Turn the specified lexer token into a fully checked and spelled
   /// filename, e.g. as an operand of \#include. 
   ///
@@ -1283,8 +1276,12 @@ private:
   /// \brief Allocate a new MacroInfo object.
   MacroInfo *AllocateMacroInfo();
 
-  MacroDirective *AllocateMacroDirective(MacroInfo *MI, SourceLocation Loc,
-                                         bool isImported);
+  DefMacroDirective *AllocateDefMacroDirective(MacroInfo *MI,
+                                               SourceLocation Loc,
+                                               bool isImported);
+  UndefMacroDirective *AllocateUndefMacroDirective(SourceLocation UndefLoc);
+  VisibilityMacroDirective *AllocateVisibilityMacroDirective(SourceLocation Loc,
+                                                             bool isPublic);
 
   /// \brief Release the specified MacroInfo for re-use.
   ///
@@ -1403,7 +1400,7 @@ private:
   bool InCachingLexMode() const {
     // If the Lexer pointers are 0 and IncludeMacroStack is empty, it means
     // that we are past EOF, not that we are in CachingLex mode.
-    return CurPPLexer == 0 && CurTokenLexer == 0 && CurPTHLexer == 0 &&
+    return !CurPPLexer && !CurTokenLexer && !CurPTHLexer &&
            !IncludeMacroStack.empty();
   }
   void EnterCachingLexMode();
@@ -1438,8 +1435,6 @@ private:
   // Macro handling.
   void HandleDefineDirective(Token &Tok);
   void HandleUndefDirective(Token &Tok);
-  void UndefineMacro(IdentifierInfo *II, MacroDirective *MD,
-                     SourceLocation UndefLoc);
 
   // Conditional Inclusion.
   void HandleIfdefDirective(Token &Tok, bool isIfndef,
@@ -1457,8 +1452,6 @@ public:
   void HandlePragmaPoison(Token &PoisonTok);
   void HandlePragmaSystemHeader(Token &SysHeaderTok);
   void HandlePragmaDependency(Token &DependencyTok);
-  void HandlePragmaComment(Token &CommentTok);
-  void HandlePragmaMessage(Token &MessageTok);
   void HandlePragmaPushMacro(Token &Tok);
   void HandlePragmaPopMacro(Token &Tok);
   void HandlePragmaIncludeAlias(Token &Tok);

@@ -16,18 +16,18 @@
 #define LLVM_CLANG_SERIALIZATION_MODULE_MANAGER_H
 
 #include "clang/Basic/FileManager.h"
-#include "clang/Serialization/GlobalModuleIndex.h"
 #include "clang/Serialization/Module.h"
 #include "llvm/ADT/DenseMap.h"
 
 namespace clang { 
 
+class GlobalModuleIndex;
 class ModuleMap;
 
 namespace serialization {
-  
+
 /// \brief Manages the set of modules loaded by an AST reader.
-class ModuleManager : public ModuleFileNameResolver {
+class ModuleManager {
   /// \brief The chain of AST files. The first entry is the one named by the
   /// user, the last one is the one that doesn't depend on anything further.
   SmallVector<ModuleFile *, 2> Chain;
@@ -60,9 +60,6 @@ class ModuleManager : public ModuleFileNameResolver {
   /// The global module index will actually be owned by the ASTReader; this is
   /// just an non-owning pointer.
   GlobalModuleIndex *GlobalIndex;
-
-  /// \brief Update the set of modules files we know about known to the global index.
-  void updateModulesInCommonWithGlobalIndex();
 
   /// \brief State used by the "visit" operation to avoid malloc traffic in
   /// calls to visit().
@@ -138,7 +135,10 @@ public:
   
   /// \brief Returns the module associated with the given name
   ModuleFile *lookup(StringRef Name);
-  
+
+  /// \brief Returns the module associated with the given module file.
+  ModuleFile *lookup(const FileEntry *File);
+
   /// \brief Returns the in-memory (virtual file) buffer with the given name
   llvm::MemoryBuffer *lookupBuffer(StringRef Name);
   
@@ -201,6 +201,10 @@ public:
 
   /// \brief Set the global module index.
   void setGlobalIndex(GlobalModuleIndex *Index);
+
+  /// \brief Notification from the AST reader that the given module file
+  /// has been "accepted", and will not (can not) be unloaded.
+  void moduleFileAccepted(ModuleFile *MF);
 
   /// \brief Visit each of the modules.
   ///
@@ -269,11 +273,6 @@ public:
                         off_t ExpectedSize,
                         time_t ExpectedModTime,
                         const FileEntry *&File);
-
-  virtual bool resolveModuleFileName(StringRef FileName,
-                                     off_t ExpectedSize,
-                                     time_t ExpectedModTime,
-                                     ModuleFile *&File);
 
   /// \brief View the graphviz representation of the module graph.
   void viewGraph();

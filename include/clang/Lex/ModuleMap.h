@@ -52,6 +52,9 @@ class ModuleMap {
   /// These are always simple C language options.
   LangOptions MMapLangOpts;
 
+  // The module that we are building; related to \c LangOptions::CurrentModule.
+  Module *CompilingModule;
+
   /// \brief The top-level modules that are known.
   llvm::StringMap<Module *> Modules;
 
@@ -77,7 +80,7 @@ class ModuleMap {
 
     // \brief Whether this known header is valid (i.e., it has an
     // associated module).
-    operator bool() const { return Storage.getPointer() != 0; }
+    LLVM_EXPLICIT operator bool() const { return Storage.getPointer() != 0; }
   };
 
   typedef llvm::DenseMap<const FileEntry *, KnownHeader> HeadersMap;
@@ -161,7 +164,7 @@ public:
   /// \param LangOpts Language options for this translation unit.
   ///
   /// \param Target The target for this translation unit.
-  ModuleMap(FileManager &FileMgr, const DiagnosticConsumer &DC,
+  ModuleMap(FileManager &FileMgr, DiagnosticConsumer &DC,
             const LangOptions &LangOpts, const TargetInfo *Target,
             HeaderSearch &HeaderInfo);
 

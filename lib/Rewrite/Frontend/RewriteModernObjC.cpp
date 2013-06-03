@@ -1149,7 +1149,7 @@ void RewriteModernObjC::RewriteCategoryDecl(ObjCCategoryDecl *CatDecl) {
 
   // Lastly, comment out the @end.
   ReplaceText(CatDecl->getAtEndRange().getBegin(), 
-              strlen("@end"), "/* @end */");
+              strlen("@end"), "/* @end */\n");
 }
 
 void RewriteModernObjC::RewriteProtocolDecl(ObjCProtocolDecl *PDecl) {
@@ -1174,7 +1174,7 @@ void RewriteModernObjC::RewriteProtocolDecl(ObjCProtocolDecl *PDecl) {
   
   // Lastly, comment out the @end.
   SourceLocation LocEnd = PDecl->getAtEndRange().getBegin();
-  ReplaceText(LocEnd, strlen("@end"), "/* @end */");
+  ReplaceText(LocEnd, strlen("@end"), "/* @end */\n");
 
   // Must comment out @optional/@required
   const char *startBuf = SM->getCharacterData(LocStart);
@@ -1442,7 +1442,7 @@ void RewriteModernObjC::RewriteInterfaceDecl(ObjCInterfaceDecl *ClassDecl) {
 
     // Lastly, comment out the @end.
     ReplaceText(ClassDecl->getAtEndRange().getBegin(), strlen("@end"), 
-                "/* @end */");
+                "/* @end */\n");
   }
 }
 
@@ -2259,6 +2259,10 @@ void RewriteModernObjC::RewriteObjCQualifiedInterfaceTypes(Decl *Dcl) {
     Loc = FD->getLocation();
     Type = FD->getType();
   }
+  else if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(Dcl)) {
+    Loc = TD->getLocation();
+    Type = TD->getUnderlyingType();
+  }
   else
     return;
 
@@ -2361,7 +2365,7 @@ void RewriteModernObjC::SynthSelGetUidFunctionDecl() {
                                                SourceLocation(),
                                                SourceLocation(),
                                                SelGetUidIdent, getFuncType, 0,
-                                               SC_Extern, SC_None);
+                                               SC_Extern);
 }
 
 void RewriteModernObjC::RewriteFunctionDecl(FunctionDecl *FD) {
@@ -2459,7 +2463,7 @@ void RewriteModernObjC::SynthSuperContructorFunctionDecl() {
                                                      SourceLocation(),
                                                      SourceLocation(),
                                                      msgSendIdent, msgSendType,
-                                                     0, SC_Extern, SC_None);
+                                                     0, SC_Extern);
 }
 
 // SynthMsgSendFunctionDecl - id objc_msgSend(id self, SEL op, ...);
@@ -2478,7 +2482,7 @@ void RewriteModernObjC::SynthMsgSendFunctionDecl() {
                                              SourceLocation(),
                                              SourceLocation(),
                                              msgSendIdent, msgSendType, 0,
-                                             SC_Extern, SC_None);
+                                             SC_Extern);
 }
 
 // SynthMsgSendSuperFunctionDecl - id objc_msgSendSuper(void);
@@ -2492,7 +2496,7 @@ void RewriteModernObjC::SynthMsgSendSuperFunctionDecl() {
                                                   SourceLocation(),
                                                   SourceLocation(),
                                                   msgSendIdent, msgSendType, 0,
-                                                  SC_Extern, SC_None);
+                                                  SC_Extern);
 }
 
 // SynthMsgSendStretFunctionDecl - id objc_msgSend_stret(id self, SEL op, ...);
@@ -2511,7 +2515,7 @@ void RewriteModernObjC::SynthMsgSendStretFunctionDecl() {
                                                   SourceLocation(),
                                                   SourceLocation(),
                                                   msgSendIdent, msgSendType, 0,
-                                                  SC_Extern, SC_None);
+                                                  SC_Extern);
 }
 
 // SynthMsgSendSuperStretFunctionDecl -
@@ -2528,7 +2532,7 @@ void RewriteModernObjC::SynthMsgSendSuperStretFunctionDecl() {
                                                        SourceLocation(),
                                                        msgSendIdent,
                                                        msgSendType, 0,
-                                                       SC_Extern, SC_None);
+                                                       SC_Extern);
 }
 
 // SynthMsgSendFpretFunctionDecl - double objc_msgSend_fpret(id self, SEL op, ...);
@@ -2547,7 +2551,7 @@ void RewriteModernObjC::SynthMsgSendFpretFunctionDecl() {
                                                   SourceLocation(),
                                                   SourceLocation(),
                                                   msgSendIdent, msgSendType, 0,
-                                                  SC_Extern, SC_None);
+                                                  SC_Extern);
 }
 
 // SynthGetClassFunctionDecl - Class objc_getClass(const char *name);
@@ -2561,7 +2565,7 @@ void RewriteModernObjC::SynthGetClassFunctionDecl() {
                                               SourceLocation(),
                                               SourceLocation(),
                                               getClassIdent, getClassType, 0,
-                                              SC_Extern, SC_None);
+                                              SC_Extern);
 }
 
 // SynthGetSuperClassFunctionDecl - Class class_getSuperclass(Class cls);
@@ -2577,7 +2581,7 @@ void RewriteModernObjC::SynthGetSuperClassFunctionDecl() {
                                                    SourceLocation(),
                                                    getSuperClassIdent,
                                                    getClassType, 0,
-                                                   SC_Extern, SC_None);
+                                                   SC_Extern);
 }
 
 // SynthGetMetaClassFunctionDecl - Class objc_getMetaClass(const char *name);
@@ -2591,7 +2595,7 @@ void RewriteModernObjC::SynthGetMetaClassFunctionDecl() {
                                                   SourceLocation(),
                                                   SourceLocation(),
                                                   getClassIdent, getClassType,
-                                                  0, SC_Extern, SC_None);
+                                                  0, SC_Extern);
 }
 
 Stmt *RewriteModernObjC::RewriteObjCStringLiteral(ObjCStringLiteral *Exp) {
@@ -2624,7 +2628,7 @@ Stmt *RewriteModernObjC::RewriteObjCStringLiteral(ObjCStringLiteral *Exp) {
 
   VarDecl *NewVD = VarDecl::Create(*Context, TUDecl, SourceLocation(),
                                    SourceLocation(), &Context->Idents.get(S),
-                                   strType, 0, SC_Static, SC_None);
+                                   strType, 0, SC_Static);
   DeclRefExpr *DRE = new (Context) DeclRefExpr(NewVD, false, strType, VK_LValue,
                                                SourceLocation());
   Expr *Unop = new (Context) UnaryOperator(DRE, UO_AddrOf,
@@ -3135,7 +3139,7 @@ static SourceLocation getFunctionSourceLocation (RewriteModernObjC &R,
       if (!LSD->getRBraceLoc().isValid())
         return LSD->getExternLoc();
   }
-  if (FD->getStorageClassAsWritten() != SC_None)
+  if (FD->getStorageClass() != SC_None)
     R.RewriteBlockLiteralFunctionDecl(FD);
   return FD->getTypeSpecStartLoc();
 }
@@ -3246,7 +3250,7 @@ Expr *RewriteModernObjC::SynthMsgSendStretCallExpr(FunctionDecl *MsgSendStretFla
   IdentifierInfo *ID = &Context->Idents.get(name);
   FunctionDecl *FD = FunctionDecl::Create(*Context, TUDecl, SourceLocation(),
                                           SourceLocation(), ID, castType, 0,
-                                          SC_Extern, SC_None, false, false);
+                                          SC_Extern, false, false);
   DeclRefExpr *DRE = new (Context) DeclRefExpr(FD, false, castType, VK_RValue,
                                                SourceLocation());
   CallExpr *STCE = new (Context) CallExpr(*Context, DRE, MsgExprs,
@@ -3719,7 +3723,7 @@ Stmt *RewriteModernObjC::RewriteObjCProtocolExpr(ObjCProtocolExpr *Exp) {
   IdentifierInfo *ID = &Context->Idents.get(Name);
   VarDecl *VD = VarDecl::Create(*Context, TUDecl, SourceLocation(),
                                 SourceLocation(), ID, getProtocolType(), 0,
-                                SC_Extern, SC_None);
+                                SC_Extern);
   DeclRefExpr *DRE = new (Context) DeclRefExpr(VD, false, getProtocolType(),
                                                VK_LValue, SourceLocation());
   Expr *DerefExpr = new (Context) UnaryOperator(DRE, UO_AddrOf,
@@ -5399,7 +5403,7 @@ FunctionDecl *RewriteModernObjC::SynthBlockInitFunctionDecl(StringRef name) {
   QualType FType = Context->getFunctionNoProtoType(Context->VoidPtrTy);
   return FunctionDecl::Create(*Context, TUDecl, SourceLocation(),
                               SourceLocation(), ID, FType, 0, SC_Extern,
-                              SC_None, false, false);
+                              false, false);
 }
 
 Stmt *RewriteModernObjC::SynthBlockInitExpr(BlockExpr *Exp,
@@ -5500,7 +5504,7 @@ Stmt *RewriteModernObjC::SynthBlockInitExpr(BlockExpr *Exp,
                                    SourceLocation(), SourceLocation(),
                                    &Context->Idents.get(DescData.c_str()),
                                    Context->VoidPtrTy, 0,
-                                   SC_Static, SC_None);
+                                   SC_Static);
   UnaryOperator *DescRefExpr =
     new (Context) UnaryOperator(new (Context) DeclRefExpr(NewVD, false,
                                                           Context->VoidPtrTy,
@@ -5996,6 +6000,8 @@ void RewriteModernObjC::HandleDeclInMainFile(Decl *D) {
           RewriteBlockPointerDecl(TD);
         else if (TD->getUnderlyingType()->isFunctionPointerType())
           CheckFunctionPointerDecl(TD->getUnderlyingType(), TD);
+        else
+          RewriteObjCQualifiedInterfaceTypes(TD);
       }
       break;
     }
@@ -7762,7 +7768,7 @@ Stmt *RewriteModernObjC::RewriteObjCIvarRefExpr(ObjCIvarRefExpr *IV) {
                                                     BaseExpr);
       VarDecl *NewVD = VarDecl::Create(*Context, TUDecl, SourceLocation(),
                                        SourceLocation(), &Context->Idents.get(IvarOffsetName),
-                                       Context->UnsignedLongTy, 0, SC_Extern, SC_None);
+                                       Context->UnsignedLongTy, 0, SC_Extern);
       DeclRefExpr *DRE = new (Context) DeclRefExpr(NewVD, false,
                                                    Context->UnsignedLongTy, VK_LValue,
                                                    SourceLocation());

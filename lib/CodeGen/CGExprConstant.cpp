@@ -757,6 +757,12 @@ public:
     return Visit(DAE->getExpr());
   }
 
+  llvm::Constant *VisitCXXDefaultInitExpr(CXXDefaultInitExpr *DIE) {
+    // No need for a DefaultInitExprScope: we don't handle 'this' in a
+    // constant expression.
+    return Visit(DIE->getExpr());
+  }
+
   llvm::Constant *VisitMaterializeTemporaryExpr(MaterializeTemporaryExpr *E) {
     return Visit(E->GetTemporaryExpr());
   }
@@ -1018,8 +1024,7 @@ llvm::Constant *CodeGenModule::EmitConstantInit(const VarDecl &D,
       if (const CXXConstructExpr *E =
           dyn_cast_or_null<CXXConstructExpr>(D.getInit())) {
         const CXXConstructorDecl *CD = E->getConstructor();
-        if (CD->isTrivial() && CD->isDefaultConstructor() &&
-            Ty->getAsCXXRecordDecl()->hasTrivialDestructor())
+        if (CD->isTrivial() && CD->isDefaultConstructor())
           return EmitNullConstant(D.getType());
       }
   }

@@ -168,25 +168,35 @@ void Parser::CheckForLParenAfterColonColon() {
 /// if we do end up determining that we are parsing a destructor name,
 /// the last component of the nested-name-specifier is not parsed as
 /// part of the scope specifier.
-
-/// member access expression, e.g., the \p T:: in \p p->T::m.
+///
+/// \param IsTypename If \c true, this nested-name-specifier is known to be
+/// part of a type name. This is used to improve error recovery.
+///
+/// \param LastII When non-NULL, points to an IdentifierInfo* that will be
+/// filled in with the leading identifier in the last component of the
+/// nested-name-specifier, if any.
 ///
 /// \returns true if there was an error parsing a scope specifier
 bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
                                             ParsedType ObjectType,
                                             bool EnteringContext,
                                             bool *MayBePseudoDestructor,
-                                            bool IsTypename) {
+                                            bool IsTypename,
+                                            IdentifierInfo **LastII) {
   assert(getLangOpts().CPlusPlus &&
          "Call sites of this function should be guarded by checking for C++");
 
   if (Tok.is(tok::annot_cxxscope)) {
+    assert(!LastII && "want last identifier but have already annotated scope");
     Actions.RestoreNestedNameSpecifierAnnotation(Tok.getAnnotationValue(),
                                                  Tok.getAnnotationRange(),
                                                  SS);
     ConsumeToken();
     return false;
   }
+
+  if (LastII)
+    *LastII = 0;
 
   bool HasScopeSpecifier = false;
 
@@ -334,6 +344,9 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
         return false;
       }
 
+      if (LastII)
+        *LastII = TemplateId->Name;
+
       // Consume the template-id token.
       ConsumeToken();
       
@@ -404,6 +417,9 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
         *MayBePseudoDestructor = true;
         return false;
       }
+
+      if (LastII)
+        *LastII = &II;
 
       // We have an identifier followed by a '::'. Lookup this name
       // as the name in a nested-name-specifier.
@@ -567,7 +583,7 @@ ExprResult Parser::ParseCXXIdExpression(bool isAddressOfOperand) {
                                    Tok.is(tok::l_paren), isAddressOfOperand);
 }
 
-/// ParseLambdaExpression - Parse a C++0x lambda expression.
+/// ParseLambdaExpression - Parse a C++11 lambda expression.
 ///
 ///       lambda-expression:
 ///         lambda-introducer lambda-declarator[opt] compound-statement
@@ -589,9 +605,17 @@ ExprResult Parser::ParseCXXIdExpression(bool isAddressOfOperand) {
 ///         capture-list ',' capture
 ///
 ///       capture:
+///         simple-capture
+///         init-capture     [C++1y]
+///
+///       simple-capture:
 ///         identifier
 ///         '&' identifier
 ///         'this'
+///
+///       init-capture:      [C++1y]
+///         identifier initializer
+///         '&' identifier initializer
 ///
 ///       lambda-declarator:
 ///         '(' parameter-declaration-clause ')' attribute-specifier[opt]
@@ -721,6 +745,7 @@ Optional<unsigned> Parser::ParseLambdaIntroducer(LambdaIntroducer &Intro) {
     SourceLocation Loc;
     IdentifierInfo* Id = 0;
     SourceLocation EllipsisLoc;
+    ExprResult Init;
     
     if (Tok.is(tok::kw_this)) {
       Kind = LCK_This;
@@ -741,9 +766,6 @@ Optional<unsigned> Parser::ParseLambdaIntroducer(LambdaIntroducer &Intro) {
       if (Tok.is(tok::identifier)) {
         Id = Tok.getIdentifierInfo();
         Loc = ConsumeToken();
-        
-        if (Tok.is(tok::ellipsis))
-          EllipsisLoc = ConsumeToken();
       } else if (Tok.is(tok::kw_this)) {
         // FIXME: If we want to suggest a fixit here, will need to return more
         // than just DiagnosticID. Perhaps full DiagnosticBuilder that can be
@@ -752,9 +774,32 @@ Optional<unsigned> Parser::ParseLambdaIntroducer(LambdaIntroducer &Intro) {
       } else {
         return DiagResult(diag::err_expected_capture);
       }
+
+      if (Tok.is(tok::l_paren)) {
+        BalancedDelimiterTracker Parens(*this, tok::l_paren);
+        Parens.consumeOpen();
+
+        ExprVector Exprs;
+        CommaLocsTy Commas;
+        if (ParseExpressionList(Exprs, Commas)) {
+          Parens.skipToEnd();
+          Init = ExprError();
+        } else {
+          Parens.consumeClose();
+          Init = Actions.ActOnParenListExpr(Parens.getOpenLocation(),
+                                            Parens.getCloseLocation(),
+                                            Exprs);
+        }
+      } else if (Tok.is(tok::l_brace) || Tok.is(tok::equal)) {
+        if (Tok.is(tok::equal))
+          ConsumeToken();
+
+        Init = ParseInitializer();
+      } else if (Tok.is(tok::ellipsis))
+        EllipsisLoc = ConsumeToken();
     }
 
-    Intro.addCapture(Kind, Loc, Id, EllipsisLoc);
+    Intro.addCapture(Kind, Loc, Id, EllipsisLoc, Init);
   }
 
   T.consumeClose();
@@ -789,6 +834,9 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
 
   PrettyStackTraceLoc CrashInfo(PP.getSourceManager(), LambdaBeginLoc,
                                 "lambda expression parsing");
+
+  // FIXME: Call into Actions to add any init-capture declarations to the
+  // scope while parsing the lambda-declarator and compound-statement.
 
   // Parse lambda-declarator[opt].
   DeclSpec DS(AttrFactory);
@@ -1439,7 +1487,9 @@ bool Parser::ParseCXXCondition(ExprResult &ExprOut,
 
   if (!InitExpr.isInvalid())
     Actions.AddInitializerToDecl(DeclOut, InitExpr.take(), !CopyInitialization,
-                                 DS.getTypeSpecType() == DeclSpec::TST_auto);
+                                 DS.containsPlaceholderType());
+  else
+    Actions.ActOnInitializerError(DeclOut);
 
   // FIXME: Build a reference to this declaration? Convert it to bool?
   // (This is currently handled by Sema).
@@ -2017,7 +2067,7 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
   
   // Parse the conversion-declarator, which is merely a sequence of
   // ptr-operators.
-  Declarator D(DS, Declarator::TypeNameContext);
+  Declarator D(DS, Declarator::ConversionIdContext);
   ParseDeclaratorInternal(D, /*DirectDeclParser=*/0);
   
   // Finish up the type.
@@ -2495,11 +2545,15 @@ static UnaryTypeTrait UnaryTypeTraitFromTokKind(tok::TokenKind kind) {
   switch(kind) {
   default: llvm_unreachable("Not a known unary type trait.");
   case tok::kw___has_nothrow_assign:      return UTT_HasNothrowAssign;
+  case tok::kw___has_nothrow_move_assign: return UTT_HasNothrowMoveAssign;
   case tok::kw___has_nothrow_constructor: return UTT_HasNothrowConstructor;
   case tok::kw___has_nothrow_copy:           return UTT_HasNothrowCopy;
   case tok::kw___has_trivial_assign:      return UTT_HasTrivialAssign;
+  case tok::kw___has_trivial_move_assign: return UTT_HasTrivialMoveAssign;
   case tok::kw___has_trivial_constructor:
                                     return UTT_HasTrivialDefaultConstructor;
+  case tok::kw___has_trivial_move_constructor:
+                                    return UTT_HasTrivialMoveConstructor;
   case tok::kw___has_trivial_copy:           return UTT_HasTrivialCopy;
   case tok::kw___has_trivial_destructor:  return UTT_HasTrivialDestructor;
   case tok::kw___has_virtual_destructor:  return UTT_HasVirtualDestructor;

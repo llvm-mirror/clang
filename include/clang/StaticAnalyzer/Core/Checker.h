@@ -324,11 +324,14 @@ class PointerEscape {
                      ProgramStateRef State,
                      const InvalidatedSymbols &Escaped,
                      const CallEvent *Call,
-                     PointerEscapeKind Kind) {
-    return ((const CHECKER *)checker)->checkPointerEscape(State, 
-                                                          Escaped, 
-                                                          Call,
-                                                          Kind);
+                     PointerEscapeKind Kind,
+                    bool IsConst) {
+    if (!IsConst)
+      return ((const CHECKER *)checker)->checkPointerEscape(State,
+                                                            Escaped,
+                                                            Call,
+                                                            Kind);
+    return State;
   }
 
 public:
@@ -340,6 +343,33 @@ public:
   }
 };
 
+class ConstPointerEscape {
+  template <typename CHECKER>
+  static ProgramStateRef
+  _checkConstPointerEscape(void *checker,
+                      ProgramStateRef State,
+                      const InvalidatedSymbols &Escaped,
+                      const CallEvent *Call,
+                      PointerEscapeKind Kind,
+                      bool IsConst) {
+    if (IsConst)
+      return ((const CHECKER *)checker)->checkConstPointerEscape(State,
+                                                                 Escaped,
+                                                                 Call,
+                                                                 Kind);
+    return State;
+  }
+
+public:
+  template <typename CHECKER>
+  static void _register(CHECKER *checker, CheckerManager &mgr) {
+    mgr._registerForPointerEscape(
+      CheckerManager::CheckPointerEscapeFunc(checker,
+                                            _checkConstPointerEscape<CHECKER>));
+  }
+};
+
+  
 template <typename EVENT>
 class Event {
   template <typename CHECKER>
@@ -472,10 +502,14 @@ struct ImplicitNullDerefEvent {
 };
 
 /// \brief A helper class which wraps a boolean value set to false by default.
+///
+/// This class should behave exactly like 'bool' except that it doesn't need to
+/// be explicitly initialized.
 struct DefaultBool {
   bool val;
   DefaultBool() : val(false) {}
-  operator bool() const { return val; }
+  /*implicit*/ operator bool&() { return val; }
+  /*implicit*/ operator const bool&() const { return val; }
   DefaultBool &operator=(bool b) { val = b; return *this; }
 };
 

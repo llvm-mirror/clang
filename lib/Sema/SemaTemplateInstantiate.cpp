@@ -72,7 +72,7 @@ Sema::getTemplateInstantiationArgs(NamedDecl *D,
       if (TemplateTemplateParmDecl *TTP 
                                       = dyn_cast<TemplateTemplateParmDecl>(D)) {
         for (unsigned I = 0, N = TTP->getDepth() + 1; I != N; ++I)
-          Result.addOuterTemplateArguments(0, 0);
+          Result.addOuterTemplateArguments(None);
         return Result;
       }
     }
@@ -116,9 +116,7 @@ Sema::getTemplateInstantiationArgs(NamedDecl *D,
       } else if (FunctionTemplateDecl *FunTmpl
                                    = Function->getDescribedFunctionTemplate()) {
         // Add the "injected" template arguments.
-        std::pair<const TemplateArgument *, unsigned>
-          Injected = FunTmpl->getInjectedTemplateArgs();
-        Result.addOuterTemplateArguments(Injected.first, Injected.second);
+        Result.addOuterTemplateArguments(FunTmpl->getInjectedTemplateArgs());
       }
       
       // If this is a friend declaration and it declares an entity at
@@ -135,9 +133,10 @@ Sema::getTemplateInstantiationArgs(NamedDecl *D,
     } else if (CXXRecordDecl *Rec = dyn_cast<CXXRecordDecl>(Ctx)) {
       if (ClassTemplateDecl *ClassTemplate = Rec->getDescribedClassTemplate()) {
         QualType T = ClassTemplate->getInjectedClassNameSpecialization();
-        const TemplateSpecializationType *TST
-          = cast<TemplateSpecializationType>(Context.getCanonicalType(T));
-        Result.addOuterTemplateArguments(TST->getArgs(), TST->getNumArgs());
+        const TemplateSpecializationType *TST =
+            cast<TemplateSpecializationType>(Context.getCanonicalType(T));
+        Result.addOuterTemplateArguments(
+            llvm::makeArrayRef(TST->getArgs(), TST->getNumArgs()));
         if (ClassTemplate->isMemberSpecialization())
           break;
       }
@@ -1105,7 +1104,7 @@ TemplateInstantiator::TransformPredefinedExpr(PredefinedExpr *E) {
   llvm::APInt LengthI(32, Length + 1);
   QualType ResTy;
   if (IT == PredefinedExpr::LFunction)
-    ResTy = getSema().Context.WCharTy.withConst();
+    ResTy = getSema().Context.WideCharTy.withConst();
   else
     ResTy = getSema().Context.CharTy.withConst();
   ResTy = getSema().Context.getConstantArrayType(ResTy, LengthI, 
@@ -1682,8 +1681,7 @@ ParmVarDecl *Sema::SubstParmVarDecl(ParmVarDecl *OldParm,
                                         OldParm->getLocation(),
                                         OldParm->getIdentifier(),
                                         NewDI->getType(), NewDI,
-                                        OldParm->getStorageClass(),
-                                        OldParm->getStorageClassAsWritten());
+                                        OldParm->getStorageClass());
   if (!NewParm)
     return 0;
                                                 
@@ -2702,11 +2700,10 @@ void LocalInstantiationScope::InstantiatedLocal(const Decl *D, Decl *Inst) {
   llvm::PointerUnion<Decl *, DeclArgumentPack *> &Stored = LocalDecls[D];
   if (Stored.isNull())
     Stored = Inst;
-  else if (Stored.is<Decl *>()) {
+  else if (DeclArgumentPack *Pack = Stored.dyn_cast<DeclArgumentPack *>())
+    Pack->push_back(Inst);
+  else
     assert(Stored.get<Decl *>() == Inst && "Already instantiated this local");
-    Stored = Inst;
-  } else
-    LocalDecls[D].get<DeclArgumentPack *>()->push_back(Inst);
 }
 
 void LocalInstantiationScope::InstantiatedLocalPackArg(const Decl *D, 

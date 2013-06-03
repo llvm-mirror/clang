@@ -141,6 +141,8 @@ public:
                      raw_ostream &);
 
   void mangleItaniumGuardVariable(const VarDecl *D, raw_ostream &);
+  void mangleItaniumThreadLocalInit(const VarDecl *D, raw_ostream &);
+  void mangleItaniumThreadLocalWrapper(const VarDecl *D, raw_ostream &);
 
   void mangleInitDiscriminator() {
     Discriminator = 0;
@@ -403,7 +405,7 @@ bool ItaniumMangleContext::shouldMangleDeclName(const NamedDecl *D) {
     if (DC->isFunctionOrMethod() && D->hasLinkage())
       while (!DC->isNamespace() && !DC->isTranslationUnit())
         DC = getEffectiveParentContext(DC);
-    if (DC->isTranslationUnit() && D->getLinkage() != InternalLinkage)
+    if (DC->isTranslationUnit() && D->getFormalLinkage() != InternalLinkage)
       return false;
   }
 
@@ -1051,7 +1053,7 @@ void CXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
       //   static void foo();
       // This naming convention is the same as that followed by GCC,
       // though it shouldn't actually matter.
-      if (ND && ND->getLinkage() == InternalLinkage &&
+      if (ND && ND->getFormalLinkage() == InternalLinkage &&
           getEffectiveDeclContext(ND)->isFileContext())
         Out << 'L';
 
@@ -1095,6 +1097,15 @@ void CXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
       mangleSourceName(FD->getIdentifier());
       break;
     }
+
+    // Class extensions have no name as a category, and it's possible
+    // for them to be the semantic parent of certain declarations
+    // (primarily, tag decls defined within declarations).  Such
+    // declarations will always have internal linkage, so the name
+    // doesn't really matter, but we shouldn't crash on them.  For
+    // safety, just handle all ObjC containers here.
+    if (isa<ObjCContainerDecl>(ND))
+      break;
     
     // We must have an anonymous struct.
     const TagDecl *TD = cast<TagDecl>(ND);
@@ -1407,6 +1418,10 @@ void CXXNameMangler::manglePrefix(const DeclContext *DC, bool NoFunction) {
     Context.mangleBlock(Block, NameStream);
     NameStream.flush();
     Out << Name.size() << Name;
+    return;
+  } else if (isa<CapturedDecl>(DC)) {
+    // Skip CapturedDecl context.
+    manglePrefix(getEffectiveParentContext(DC), NoFunction);
     return;
   }
   
@@ -2264,7 +2279,7 @@ void CXXNameMangler::mangleType(const AutoType *T) {
   QualType D = T->getDeducedType();
   // <builtin-type> ::= Da  # dependent auto
   if (D.isNull())
-    Out << "Da";
+    Out << (T->isDecltypeAuto() ? "Dc" : "Da");
   else
     mangleType(D);
 }
@@ -2385,6 +2400,7 @@ recurse:
   case Expr::ImplicitValueInitExprClass:
   case Expr::ParenListExprClass:
   case Expr::LambdaExprClass:
+  case Expr::MSPropertyRefExprClass:
     llvm_unreachable("unexpected statement kind");
 
   // FIXME: invent manglings for all these.
@@ -2459,6 +2475,10 @@ recurse:
 
   case Expr::CXXDefaultArgExprClass:
     mangleExpression(cast<CXXDefaultArgExpr>(E)->getExpr(), Arity);
+    break;
+
+  case Expr::CXXDefaultInitExprClass:
+    mangleExpression(cast<CXXDefaultInitExpr>(E)->getExpr(), Arity);
     break;
 
   case Expr::SubstNonTypeTemplateParmExprClass:
@@ -3518,6 +3538,22 @@ void ItaniumMangleContext::mangleItaniumGuardVariable(const VarDecl *D,
   //                                            # initialization
   CXXNameMangler Mangler(*this, Out);
   Mangler.getStream() << "_ZGV";
+  Mangler.mangleName(D);
+}
+
+void ItaniumMangleContext::mangleItaniumThreadLocalInit(const VarDecl *D,
+                                                        raw_ostream &Out) {
+  //  <special-name> ::= TH <object name>
+  CXXNameMangler Mangler(*this, Out);
+  Mangler.getStream() << "_ZTH";
+  Mangler.mangleName(D);
+}
+
+void ItaniumMangleContext::mangleItaniumThreadLocalWrapper(const VarDecl *D,
+                                                           raw_ostream &Out) {
+  //  <special-name> ::= TW <object name>
+  CXXNameMangler Mangler(*this, Out);
+  Mangler.getStream() << "_ZTW";
   Mangler.mangleName(D);
 }
 

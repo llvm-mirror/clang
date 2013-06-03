@@ -48,4 +48,22 @@ class C {
     delete [] { return new int; } (); // expected-error{{expected expression}}
     delete [&] { return new int; } (); // ok, lambda
   }
+
+  // We support init-captures in C++11 as an extension.
+  int z;
+  void init_capture() {
+    // FIXME: These diagnostics should all disappear once semantic analysis
+    // for init-captures is complete.
+    [n(0)] () -> int { return ++n; }; // expected-error {{non-static data member}}
+    [n{0}] { return; }; // expected-error {{<initializer_list>}}
+    [n = 0] { return ++n; }; // expected-error {{non-static data member}}
+    [n = {0}] { return; }; // expected-error {{<initializer_list>}}
+    [a([&b = z]{})](){};
+
+    int x = 4;
+    auto y = [&r = x, x = x + 1]() -> int {
+      r += 2; // expected-error {{non-static data member}}
+      return x + 2; // expected-error {{non-static data member}}
+    } ();
+  }
 };

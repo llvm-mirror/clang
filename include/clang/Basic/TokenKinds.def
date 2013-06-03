@@ -262,6 +262,7 @@ KEYWORD(_Generic                    , KEYALL)
 KEYWORD(_Imaginary                  , KEYALL)
 KEYWORD(_Noreturn                   , KEYALL)
 KEYWORD(_Static_assert              , KEYALL)
+KEYWORD(_Thread_local               , KEYALL)
 KEYWORD(__func__                    , KEYALL)
 KEYWORD(__objc_yes                  , KEYALL)
 KEYWORD(__objc_no                   , KEYALL)
@@ -351,31 +352,34 @@ KEYWORD(typeof                      , KEYGNU)
 KEYWORD(L__FUNCTION__               , KEYMS)
 
 // GNU and MS Type Traits
-KEYWORD(__has_nothrow_assign        , KEYCXX)
-KEYWORD(__has_nothrow_copy          , KEYCXX)
-KEYWORD(__has_nothrow_constructor   , KEYCXX)
-KEYWORD(__has_trivial_assign        , KEYCXX)
-KEYWORD(__has_trivial_copy          , KEYCXX)
-KEYWORD(__has_trivial_constructor   , KEYCXX)
-KEYWORD(__has_trivial_destructor    , KEYCXX)
-KEYWORD(__has_virtual_destructor    , KEYCXX)
-KEYWORD(__is_abstract               , KEYCXX)
-KEYWORD(__is_base_of                , KEYCXX)
-KEYWORD(__is_class                  , KEYCXX)
-KEYWORD(__is_convertible_to         , KEYCXX)
-KEYWORD(__is_empty                  , KEYCXX)
-KEYWORD(__is_enum                   , KEYCXX)
-KEYWORD(__is_final                  , KEYCXX)
-KEYWORD(__is_interface_class        , KEYCXX)
+KEYWORD(__has_nothrow_assign          , KEYCXX)
+KEYWORD(__has_nothrow_move_assign     , KEYCXX)
+KEYWORD(__has_nothrow_copy            , KEYCXX)
+KEYWORD(__has_nothrow_constructor     , KEYCXX)
+KEYWORD(__has_trivial_assign          , KEYCXX)
+KEYWORD(__has_trivial_move_assign     , KEYCXX)
+KEYWORD(__has_trivial_copy            , KEYCXX)
+KEYWORD(__has_trivial_constructor     , KEYCXX)
+KEYWORD(__has_trivial_move_constructor, KEYCXX)
+KEYWORD(__has_trivial_destructor      , KEYCXX)
+KEYWORD(__has_virtual_destructor      , KEYCXX)
+KEYWORD(__is_abstract                 , KEYCXX)
+KEYWORD(__is_base_of                  , KEYCXX)
+KEYWORD(__is_class                    , KEYCXX)
+KEYWORD(__is_convertible_to           , KEYCXX)
+KEYWORD(__is_empty                    , KEYCXX)
+KEYWORD(__is_enum                     , KEYCXX)
+KEYWORD(__is_final                    , KEYCXX)
+KEYWORD(__is_interface_class          , KEYCXX)
 // Tentative name - there's no implementation of std::is_literal_type yet.
-KEYWORD(__is_literal                , KEYCXX)
+KEYWORD(__is_literal                  , KEYCXX)
 // Name for GCC 4.6 compatibility - people have already written libraries using
 // this name unfortunately.
-KEYWORD(__is_literal_type           , KEYCXX)
-KEYWORD(__is_pod                    , KEYCXX)
-KEYWORD(__is_polymorphic            , KEYCXX)
-KEYWORD(__is_trivial                , KEYCXX)
-KEYWORD(__is_union                  , KEYCXX)
+KEYWORD(__is_literal_type             , KEYCXX)
+KEYWORD(__is_pod                      , KEYCXX)
+KEYWORD(__is_polymorphic              , KEYCXX)
+KEYWORD(__is_trivial                  , KEYCXX)
+KEYWORD(__is_union                    , KEYCXX)
 
 // Clang-only C++ Type Traits
 KEYWORD(__is_trivially_constructible, KEYCXX)
@@ -520,6 +524,7 @@ KEYWORD(__interface                   , KEYMS)
 ALIAS("__int8"           , char       , KEYMS)
 ALIAS("__int16"          , short      , KEYMS)
 ALIAS("__int32"          , int        , KEYMS)
+ALIAS("__wchar_t"        , wchar_t    , KEYMS)
 ALIAS("_asm"             , asm        , KEYMS)
 ALIAS("_alignof"         , __alignof  , KEYMS)
 ALIAS("__builtin_alignof", __alignof  , KEYMS)
@@ -611,6 +616,11 @@ ANNOTATION(pragma_pack)
 // handles them.
 ANNOTATION(pragma_parser_crash)
 
+// Annotation for #pragma clang __debug captured...
+// The lexer produces these so that they only take effect when the parser
+// handles them.
+ANNOTATION(pragma_captured)
+
 // Annotation for #pragma ms_struct...
 // The lexer produces these so that they only take effect when the parser
 // handles them.
@@ -645,6 +655,12 @@ ANNOTATION(pragma_fp_contract)
 // The lexer produces these so that they only take effect when the parser
 // handles them.
 ANNOTATION(pragma_opencl_extension)
+
+// Annotations for OpenMP pragma directives - #pragma omp ...
+// The lexer produces these so that they only take effect when the parser
+// handles #pragma omp ... directives.
+ANNOTATION(pragma_openmp)
+ANNOTATION(pragma_openmp_end)
 
 #undef ANNOTATION
 #undef TESTING_KEYWORD

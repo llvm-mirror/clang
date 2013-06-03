@@ -290,7 +290,7 @@ llvm::Value *CodeGenFunction::GetVTTParameter(GlobalDecl GD,
     return 0;
   }
   
-  const CXXRecordDecl *RD = cast<CXXMethodDecl>(CurFuncDecl)->getParent();
+  const CXXRecordDecl *RD = cast<CXXMethodDecl>(CurCodeDecl)->getParent();
   const CXXRecordDecl *Base = cast<CXXMethodDecl>(GD.getDecl())->getParent();
 
   llvm::Value *VTT;
@@ -710,7 +710,7 @@ void CodeGenFunction::EmitConstructorBody(FunctionArgList &Args) {
   // Before we go any further, try the complete->base constructor
   // delegation optimization.
   if (CtorType == Ctor_Complete && IsConstructorDelegationValid(Ctor) &&
-      CGM.getContext().getTargetInfo().getCXXABI().hasConstructorVariants()) {
+      CGM.getTarget().getCXXABI().hasConstructorVariants()) {
     if (CGDebugInfo *DI = getDebugInfo()) 
       DI->EmitLocation(Builder, Ctor->getLocEnd());
     EmitDelegateCXXConstructorCall(Ctor, Ctor_Base, Args);
@@ -859,8 +859,12 @@ namespace {
       }
 
     void addNextField(FieldDecl *F) {
-      assert(F->getFieldIndex() == LastAddedFieldIndex + 1 &&
-             "Cannot aggregate non-contiguous fields.");
+      // For the most part, the following invariant will hold:
+      //   F->getFieldIndex() == LastAddedFieldIndex + 1
+      // The one exception is that Sema won't add a copy-initializer for an
+      // unnamed bitfield, which will show up here as a gap in the sequence.
+      assert(F->getFieldIndex() >= LastAddedFieldIndex + 1 &&
+             "Cannot aggregate fields out of order.");
       LastAddedFieldIndex = F->getFieldIndex();
 
       // The 'first' and 'last' fields are chosen by offset, rather than field
@@ -1139,6 +1143,7 @@ void CodeGenFunction::EmitCtorPrologue(const CXXConstructorDecl *CD,
   InitializeVTablePointers(ClassDecl);
 
   // And finally, initialize class members.
+  FieldConstructionScope FCS(*this, CXXThisValue);
   ConstructorMemcpyizer CM(*this, CD, Args);
   for (; B != E; B++) {
     CXXCtorInitializer *Member = (*B);
@@ -1278,7 +1283,7 @@ void CodeGenFunction::EmitDestructorBody(FunctionArgList &Args) {
     EnterDtorCleanups(Dtor, Dtor_Complete);
 
     if (!isTryBody &&
-        CGM.getContext().getTargetInfo().getCXXABI().hasDestructorVariants()) {
+        CGM.getTarget().getCXXABI().hasDestructorVariants()) {
       EmitCXXDestructorCall(Dtor, Dtor_Base, /*ForVirtualBase=*/false,
                             /*Delegating=*/false, LoadCXXThis());
       break;
@@ -2231,10 +2236,10 @@ void CodeGenFunction::EmitLambdaBlockInvokeBody() {
 }
 
 void CodeGenFunction::EmitLambdaToBlockPointerBody(FunctionArgList &Args) {
-  if (cast<CXXMethodDecl>(CurFuncDecl)->isVariadic()) {
+  if (cast<CXXMethodDecl>(CurCodeDecl)->isVariadic()) {
     // FIXME: Making this work correctly is nasty because it requires either
     // cloning the body of the call operator or making the call operator forward.
-    CGM.ErrorUnsupported(CurFuncDecl, "lambda conversion to variadic function");
+    CGM.ErrorUnsupported(CurCodeDecl, "lambda conversion to variadic function");
     return;
   }
 

@@ -48,13 +48,13 @@ class CXXConstructorCall;
 
 class ExprEngine : public SubEngine {
 public:
-  /// The modes of inlining.
+  /// The modes of inlining, which override the default analysis-wide settings.
   enum InliningModes {
-    /// Do not inline any of the callees.
-    Inline_None = 0,
-    /// Inline all callees.
-    Inline_All = 0x1
-  } ;
+    /// Follow the default settings for inlining callees.
+    Inline_Regular = 0,
+    /// Do minimal inlining of callees.
+    Inline_Minimal = 0x1
+  };
 
 private:
   AnalysisManager &AMgr;
@@ -223,6 +223,15 @@ public:
                      ExplodedNodeSet &Dst,
                      const CFGBlock *DstT,
                      const CFGBlock *DstF);
+
+  /// Called by CoreEngine.  Used to processing branching behavior
+  /// at static initalizers.
+  void processStaticInitializer(const DeclStmt *DS,
+                                NodeBuilderContext& BuilderCtx,
+                                ExplodedNode *Pred,
+                                ExplodedNodeSet &Dst,
+                                const CFGBlock *DstT,
+                                const CFGBlock *DstF);
 
   /// processIndirectGoto - Called by CoreEngine.  Used to generate successor
   ///  nodes by processing the 'effects' of a computed goto jump.
@@ -467,12 +476,14 @@ protected:
                                               SVal Loc, SVal Val);
   /// Call PointerEscape callback when a value escapes as a result of
   /// region invalidation.
-  ProgramStateRef processPointerEscapedOnInvalidateRegions(
+  /// \param[in] IsConst Specifies that the pointer is const.
+  ProgramStateRef notifyCheckersOfPointerEscape(
                             ProgramStateRef State,
                             const InvalidatedSymbols *Invalidated,
                             ArrayRef<const MemRegion *> ExplicitRegions,
                             ArrayRef<const MemRegion *> Regions,
-                            const CallEvent *Call);
+                            const CallEvent *Call,
+                            bool IsConst);
 
 public:
   // FIXME: 'tag' should be removed, and a LocationContext should be used

@@ -449,9 +449,7 @@ void ASTDumper::dumpBareDeclRef(const Decl *D) {
 
   if (const NamedDecl *ND = dyn_cast<NamedDecl>(D)) {
     ColorScope Color(*this, DeclNameColor);
-    OS << " '";
-    ND->getDeclName().printName(OS);
-    OS << "'";
+    OS << " '" << ND->getDeclName() << '\'';
   }
 
   if (const ValueDecl *VD = dyn_cast<ValueDecl>(D))
@@ -667,15 +665,16 @@ void ASTDumper::dumpDecl(const Decl *D) {
   dumpSourceRange(D->getSourceRange());
 
   bool HasAttrs = D->attr_begin() != D->attr_end();
-  bool HasComment = D->getASTContext().getCommentForDecl(D, 0);
+  const FullComment *Comment =
+      D->getASTContext().getLocalCommentForDeclUncached(D);
   // Decls within functions are visited by the body
   bool HasDeclContext = !isa<FunctionDecl>(*D) && !isa<ObjCMethodDecl>(*D) &&
                          hasNodes(dyn_cast<DeclContext>(D));
 
-  setMoreChildren(HasAttrs || HasComment || HasDeclContext);
+  setMoreChildren(HasAttrs || Comment || HasDeclContext);
   ConstDeclVisitor<ASTDumper>::Visit(D);
 
-  setMoreChildren(HasComment || HasDeclContext);
+  setMoreChildren(Comment || HasDeclContext);
   for (Decl::attr_iterator I = D->attr_begin(), E = D->attr_end();
        I != E; ++I) {
     if (I + 1 == E)
@@ -685,7 +684,7 @@ void ASTDumper::dumpDecl(const Decl *D) {
 
   setMoreChildren(HasDeclContext);
   lastChild();
-  dumpFullComment(D->getASTContext().getCommentForDecl(D, 0));
+  dumpFullComment(Comment);
 
   setMoreChildren(false);
   if (HasDeclContext)
@@ -749,7 +748,7 @@ void ASTDumper::VisitFunctionDecl(const FunctionDecl *D) {
   dumpName(D);
   dumpType(D->getType());
 
-  StorageClass SC = D->getStorageClassAsWritten();
+  StorageClass SC = D->getStorageClass();
   if (SC != SC_None)
     OS << ' ' << VarDecl::getStorageClassSpecifierString(SC);
   if (D->isInlineSpecified())
@@ -763,6 +762,19 @@ void ASTDumper::VisitFunctionDecl(const FunctionDecl *D) {
     OS << " pure";
   else if (D->isDeletedAsWritten())
     OS << " delete";
+
+  if (const FunctionProtoType *FPT = D->getType()->getAs<FunctionProtoType>()) {
+    FunctionProtoType::ExtProtoInfo EPI = FPT->getExtProtoInfo();
+    switch (EPI.ExceptionSpecType) {
+    default: break;
+    case EST_Unevaluated:
+      OS << " noexcept-unevaluated " << EPI.ExceptionSpecDecl;
+      break;
+    case EST_Uninstantiated:
+      OS << " noexcept-uninstantiated " << EPI.ExceptionSpecTemplate;
+      break;
+    }
+  }
 
   bool OldMoreChildren = hasMoreChildren();
   const FunctionTemplateSpecializationInfo *FTSI =
@@ -850,11 +862,14 @@ void ASTDumper::VisitFieldDecl(const FieldDecl *D) {
 void ASTDumper::VisitVarDecl(const VarDecl *D) {
   dumpName(D);
   dumpType(D->getType());
-  StorageClass SC = D->getStorageClassAsWritten();
+  StorageClass SC = D->getStorageClass();
   if (SC != SC_None)
     OS << ' ' << VarDecl::getStorageClassSpecifierString(SC);
-  if (D->isThreadSpecified())
-    OS << " __thread";
+  switch (D->getTLSKind()) {
+  case VarDecl::TLS_None: break;
+  case VarDecl::TLS_Static: OS << " tls"; break;
+  case VarDecl::TLS_Dynamic: OS << " tls_dynamic"; break;
+  }
   if (D->isModulePrivate())
     OS << " __module_private__";
   if (D->isNRVOVariable())
@@ -1328,7 +1343,7 @@ void ASTDumper::dumpStmt(const Stmt *S) {
     return;
   }
 
-  setMoreChildren(S->children());
+  setMoreChildren(!S->children().empty());
   ConstStmtVisitor<ASTDumper>::Visit(S);
   setMoreChildren(false);
   for (Stmt::const_child_range CI = S->children(); CI; ++CI) {

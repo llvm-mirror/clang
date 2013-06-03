@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -std=c++11 -fms-extensions -ast-dump -ast-dump-filter Test %s | FileCheck -check-prefix CHECK -strict-whitespace %s
+// RUN: %clang_cc1 -std=c++11 -triple x86_64-linux-gnu -fms-extensions -ast-dump -ast-dump-filter Test %s | FileCheck -check-prefix CHECK -strict-whitespace %s
 
 class testEnumDecl {
   enum class TestEnumDeclScoped;
@@ -91,6 +91,9 @@ class TestCXXRecordDeclPack : public T... {
 // CHECK:      CXXRecordDecl{{.*}} class TestCXXRecordDeclPack
 // CHECK-NEXT:   public 'T'...
 // CHECK-NEXT:   CXXRecordDecl{{.*}} class TestCXXRecordDeclPack
+
+thread_local int TestThreadLocalInt;
+// CHECK: TestThreadLocalInt {{.*}} tls_dynamic
 
 __module_private__ class TestCXXRecordDeclPrivate;
 // CHECK: CXXRecordDecl{{.*}} class TestCXXRecordDeclPrivate __module_private__
@@ -455,3 +458,19 @@ namespace TestFriendDecl2 {
 // CHECK:   |-CXXRecordDecl {{.*}} struct S
 // CHECK:   `-FriendDecl
 // CHECK:     `-FunctionDecl {{.*}} parent [[TestFriendDecl2]] prev [[TestFriendDecl2_f]] <{{.*}}> f 'void (void)'
+
+namespace Comment {
+  extern int Test;
+  /// Something here.
+  extern int Test;
+  extern int Test;
+}
+
+// CHECK: VarDecl {{.*}} Test 'int' extern
+// CHECK-NOT: FullComment
+// CHECK: VarDecl {{.*}} Test 'int' extern
+// CHECK: `-FullComment
+// CHECK:   `-ParagraphComment
+// CHECK:       `-TextComment
+// CHECK: VarDecl {{.*}} Test 'int' extern
+// CHECK-NOT: FullComment

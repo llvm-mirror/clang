@@ -29,6 +29,7 @@ class CXXConstructorDecl;
 class CXXDestructorDecl;
 class CXXMethodDecl;
 class CXXTemporary;
+class MSPropertyDecl;
 class TemplateArgumentListInfo;
 class UuidAttr;
 
@@ -560,6 +561,64 @@ public:
   }
 };
 
+/// A member reference to an MSPropertyDecl.  This expression always
+/// has pseudo-object type, and therefore it is typically not
+/// encountered in a fully-typechecked expression except within the
+/// syntactic form of a PseudoObjectExpr.
+class MSPropertyRefExpr : public Expr {
+  Expr *BaseExpr;
+  MSPropertyDecl *TheDecl;
+  SourceLocation MemberLoc;
+  bool IsArrow;
+  NestedNameSpecifierLoc QualifierLoc;
+
+public:
+  MSPropertyRefExpr(Expr *baseExpr, MSPropertyDecl *decl, bool isArrow,
+                    QualType ty, ExprValueKind VK,
+                    NestedNameSpecifierLoc qualifierLoc,
+                    SourceLocation nameLoc)
+  : Expr(MSPropertyRefExprClass, ty, VK, OK_Ordinary,
+         /*type-dependent*/ false, baseExpr->isValueDependent(),
+         baseExpr->isInstantiationDependent(),
+         baseExpr->containsUnexpandedParameterPack()),
+    BaseExpr(baseExpr), TheDecl(decl),
+    MemberLoc(nameLoc), IsArrow(isArrow),
+    QualifierLoc(qualifierLoc) {}
+
+  MSPropertyRefExpr(EmptyShell Empty) : Expr(MSPropertyRefExprClass, Empty) {}
+
+  SourceRange getSourceRange() const LLVM_READONLY {
+    return SourceRange(getLocStart(), getLocEnd());
+  }
+  bool isImplicitAccess() const {
+    return getBaseExpr() && getBaseExpr()->isImplicitCXXThis();
+  }
+  SourceLocation getLocStart() const {
+    if (!isImplicitAccess())
+      return BaseExpr->getLocStart();
+    else if (QualifierLoc)
+      return QualifierLoc.getBeginLoc();
+    else
+        return MemberLoc;
+  }
+  SourceLocation getLocEnd() const { return getMemberLoc(); }
+
+  child_range children() {
+    return child_range((Stmt**)&BaseExpr, (Stmt**)&BaseExpr + 1);
+  }
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == MSPropertyRefExprClass;
+  }
+
+  Expr *getBaseExpr() const { return BaseExpr; }
+  MSPropertyDecl *getPropertyDecl() const { return TheDecl; }
+  bool isArrow() const { return IsArrow; }
+  SourceLocation getMemberLoc() const { return MemberLoc; }
+  NestedNameSpecifierLoc getQualifierLoc() const { return QualifierLoc; }
+
+  friend class ASTStmtReader;
+};
+
 /// CXXUuidofExpr - A microsoft C++ @c __uuidof expression, which gets
 /// the _GUID that corresponds to the supplied type or expression.
 ///
@@ -823,6 +882,53 @@ public:
 
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
+};
+
+/// \brief This wraps a use of a C++ default initializer (technically,
+/// a brace-or-equal-initializer for a non-static data member) when it
+/// is implicitly used in a mem-initializer-list in a constructor
+/// (C++11 [class.base.init]p8) or in aggregate initialization
+/// (C++1y [dcl.init.aggr]p7).
+class CXXDefaultInitExpr : public Expr {
+  /// \brief The field whose default is being used.
+  FieldDecl *Field;
+
+  /// \brief The location where the default initializer expression was used.
+  SourceLocation Loc;
+
+  CXXDefaultInitExpr(ASTContext &C, SourceLocation Loc, FieldDecl *Field,
+                     QualType T);
+
+  CXXDefaultInitExpr(EmptyShell Empty) : Expr(CXXDefaultInitExprClass, Empty) {}
+
+public:
+  // Field is the non-static data member whose default initializer is used
+  // by this expression.
+  static CXXDefaultInitExpr *Create(ASTContext &C, SourceLocation Loc,
+                                    FieldDecl *Field) {
+    return new (C) CXXDefaultInitExpr(C, Loc, Field, Field->getType());
+  }
+
+  // Get the field whose initializer will be used.
+  FieldDecl *getField() { return Field; }
+  const FieldDecl *getField() const { return Field; }
+
+  // Get the initialization expression that will be used.
+  const Expr *getExpr() const { return Field->getInClassInitializer(); }
+  Expr *getExpr() { return Field->getInClassInitializer(); }
+
+  SourceLocation getLocStart() const LLVM_READONLY { return Loc; }
+  SourceLocation getLocEnd() const LLVM_READONLY { return Loc; }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == CXXDefaultInitExprClass;
+  }
+
+  // Iterators
+  child_range children() { return child_range(); }
+
+  friend class ASTReader;
+  friend class ASTStmtReader;
 };
 
 /// CXXTemporary - Represents a C++ temporary.
@@ -1150,7 +1256,7 @@ class LambdaExpr : public Expr {
     /// capture was implicit.
     Capture_Implicit = 0x01,
 
-    /// \brief Flag used by the Capture class to indciate that the
+    /// \brief Flag used by the Capture class to indicate that the
     /// given capture was by-copy.
     Capture_ByCopy = 0x02
   };
@@ -1193,7 +1299,7 @@ class LambdaExpr : public Expr {
 public:
   /// \brief Describes the capture of either a variable or 'this'.
   class Capture {
-    llvm::PointerIntPair<VarDecl *, 2> VarAndBits;
+    llvm::PointerIntPair<Decl *, 2> DeclAndBits;
     SourceLocation Loc;
     SourceLocation EllipsisLoc;
     
@@ -1209,7 +1315,8 @@ public:
     ///
     /// \param Implicit Whether the capture was implicit or explicit.
     ///
-    /// \param Var The local variable being captured, or null if capturing this.
+    /// \param Var The local variable being captured, or null if capturing this
+    ///        or if this is an init-capture.
     ///
     /// \param EllipsisLoc The location of the ellipsis (...) for a
     /// capture that is a pack expansion, or an invalid source
@@ -1218,29 +1325,43 @@ public:
             LambdaCaptureKind Kind, VarDecl *Var = 0,
             SourceLocation EllipsisLoc = SourceLocation());
 
+    /// \brief Create a new init-capture.
+    Capture(FieldDecl *Field);
+
     /// \brief Determine the kind of capture.
     LambdaCaptureKind getCaptureKind() const;
 
     /// \brief Determine whether this capture handles the C++ 'this'
     /// pointer.
-    bool capturesThis() const { return VarAndBits.getPointer() == 0; }
+    bool capturesThis() const { return DeclAndBits.getPointer() == 0; }
 
     /// \brief Determine whether this capture handles a variable.
-    bool capturesVariable() const { return VarAndBits.getPointer() != 0; }
+    bool capturesVariable() const {
+      return dyn_cast_or_null<VarDecl>(DeclAndBits.getPointer());
+    }
+
+    /// \brief Determines whether this is an init-capture.
+    bool isInitCapture() const { return getCaptureKind() == LCK_Init; }
 
     /// \brief Retrieve the declaration of the local variable being
     /// captured.
     ///
-    /// This operation is only valid if this capture does not capture
-    /// 'this'.
-    VarDecl *getCapturedVar() const { 
-      assert(!capturesThis() && "No variable available for 'this' capture");
-      return VarAndBits.getPointer();
+    /// This operation is only valid if this capture is a variable capture
+    /// (other than a capture of 'this').
+    VarDecl *getCapturedVar() const {
+      assert(capturesVariable() && "No variable available for 'this' capture");
+      return cast<VarDecl>(DeclAndBits.getPointer());
+    }
+
+    /// \brief Retrieve the field for an init-capture.
+    FieldDecl *getInitCaptureField() const {
+      assert(getCaptureKind() == LCK_Init && "no field for non-init-capture");
+      return cast<FieldDecl>(DeclAndBits.getPointer());
     }
 
     /// \brief Determine whether this was an implicit capture (not
     /// written between the square brackets introducing the lambda).
-    bool isImplicit() const { return VarAndBits.getInt() & Capture_Implicit; }
+    bool isImplicit() const { return DeclAndBits.getInt() & Capture_Implicit; }
 
     /// \brief Determine whether this was an explicit capture, written
     /// between the square brackets introducing the lambda.
@@ -1375,6 +1496,16 @@ public:
   /// initialization argument for this lambda expression.
   capture_init_iterator capture_init_end() const {
     return capture_init_begin() + NumCaptures;    
+  }
+
+  /// \brief Retrieve the initializer for an init-capture.
+  Expr *getInitCaptureInit(capture_iterator Capture) {
+    assert(Capture >= explicit_capture_begin() &&
+           Capture <= explicit_capture_end() && Capture->isInitCapture());
+    return capture_init_begin()[Capture - capture_begin()];
+  }
+  const Expr *getInitCaptureInit(capture_iterator Capture) const {
+    return const_cast<LambdaExpr*>(this)->getInitCaptureInit(Capture);
   }
 
   /// \brief Retrieve the set of index variables used in the capture 
@@ -1829,7 +1960,7 @@ public:
   /// \brief Determines whether this member expression actually had
   /// a C++ nested-name-specifier prior to the name of the member, e.g.,
   /// x->Base::foo.
-  bool hasQualifier() const { return QualifierLoc; }
+  bool hasQualifier() const { return QualifierLoc.hasQualifier(); }
 
   /// \brief Retrieves the nested-name-specifier that qualifies the type name,
   /// with source-location information.

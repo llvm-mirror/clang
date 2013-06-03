@@ -14,6 +14,7 @@
 #include "clang/Driver/ArgList.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
+#include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Options.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Path.h"
@@ -43,10 +44,8 @@ Tool *Windows::buildLinker() const {
 Tool *Windows::buildAssembler() const {
   if (getTriple().getEnvironment() == llvm::Triple::MachO)
     return new tools::darwin::Assemble(*this);
-  else
-    // There no assembler we can use on windows other than the integrated
-    // assembler, so we ignore -no-integrated-as.
-    return ToolChain::buildAssembler();
+  getDriver().Diag(clang::diag::err_no_external_windows_assembler);
+  return NULL;
 }
 
 bool Windows::IsIntegratedAssemblerDefault() const {
@@ -59,6 +58,10 @@ bool Windows::IsUnwindTablesDefault() const {
 
 bool Windows::isPICDefault() const {
   return getArch() == llvm::Triple::x86_64;
+}
+
+bool Windows::isPIEDefault() const {
+  return false;
 }
 
 bool Windows::isPICDefaultForced() const {

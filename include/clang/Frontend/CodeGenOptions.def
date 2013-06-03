@@ -28,6 +28,7 @@ CODEGENOPT(Name, Bits, Default)
 CODEGENOPT(Name, Bits, Default)
 #endif
 
+CODEGENOPT(Autolink          , 1, 1) ///< -fno-autolink
 CODEGENOPT(AsmVerbose        , 1, 0) ///< -dA, -fverbose-asm.
 CODEGENOPT(ObjCAutoRefCountExceptions , 1, 0) ///< Whether ARC should be EH-safe.
 CODEGENOPT(CoverageExtraChecksum, 1, 0) ///< Whether we need a second checksum for functions in GCNO files.
@@ -70,6 +71,7 @@ CODEGENOPT(NoDwarf2CFIAsm    , 1, 0) ///< Set when -fno-dwarf2-cfi-asm is enable
 CODEGENOPT(NoDwarfDirectoryAsm , 1, 0) ///< Set when -fno-dwarf-directory-asm is
                                        ///< enabled.
 CODEGENOPT(NoExecStack       , 1, 0) ///< Set when -Wa,--noexecstack is enabled.
+CODEGENOPT(EnableSegmentedStacks , 1, 0) ///< Set when -fsplit-stack is enabled.
 CODEGENOPT(NoGlobalMerge     , 1, 0) ///< Set when -mno-global-merge is enabled.
 CODEGENOPT(NoImplicitFloat   , 1, 0) ///< Set when -mno-implicit-float is enabled.
 CODEGENOPT(NoInfsFPMath      , 1, 0) ///< Assume FP arguments, results not +-Inf.
@@ -85,6 +87,7 @@ VALUE_CODEGENOPT(OptimizationLevel, 3, 0) ///< The -O[0-4] option specified.
 VALUE_CODEGENOPT(OptimizeSize, 2, 0) ///< If -Os (==1) or -Oz (==2) is specified.
 CODEGENOPT(RelaxAll          , 1, 0) ///< Relax all machine code instructions.
 CODEGENOPT(RelaxedAliasing   , 1, 0) ///< Set when -fno-strict-aliasing is enabled.
+CODEGENOPT(StructPathTBAA    , 1, 0) ///< Whether or not to use struct-path TBAA.
 CODEGENOPT(SaveTempLabels    , 1, 0) ///< Save temporary labels.
 CODEGENOPT(SanitizeAddressZeroBaseShadow , 1, 0) ///< Map shadow memory at zero
                                                  ///< offset in AddressSanitizer.
@@ -117,8 +120,6 @@ VALUE_CODEGENOPT(StackAlignment    , 32, 0) ///< Overrides default stack
                                             ///< alignment, if not 0.
 CODEGENOPT(DebugColumnInfo, 1, 0) ///< Whether or not to use column information
                                   ///< in debug info.
-
-CODEGENOPT(ModulesAutolink, 1, 0) ///< Whether to auto-link imported modules
 
 /// The user specified number of registers to be used for integral arguments,
 /// or 0 if unspecified.

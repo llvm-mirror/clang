@@ -10,33 +10,56 @@ standalone tool and editor integrations.
 Standalone Tool
 ===============
 
-:program:`clang-format` is part of the `clang/tools/extra` (see
-:doc:`ClangTools <ClangTools>`) repository and can be used to format
-C/C++/Obj-C code.
+:program:`clang-format` is located in `clang/tools/clang-format` and can be used
+to format C/C++/Obj-C code.
 
 .. code-block:: console
 
   $ clang-format --help
   OVERVIEW: A tool to format C/C++/Obj-C code.
 
-  Currently supports LLVM and Google style guides.
   If no arguments are specified, it formats the code from standard input
   and writes the result to the standard output.
-  If <file> is given, it reformats the file. If -i is specified together
-  with <file>, the file is edited in-place. Otherwise, the result is
-  written to the standard output.
+  If <file>s are given, it reformats the files. If -i is specified 
+  together with <file>s, the files are edited in-place. Otherwise, the 
+  result is written to the standard output.
 
-  USAGE: clang-format [options] [<file>]
+  USAGE: clang-format [options] [<file> ...]
 
   OPTIONS:
-    -fatal-assembler-warnings - Consider warnings as error
-    -help                     - Display available options (-help-hidden for more)
-    -i                        - Inplace edit <file>, if specified.
-    -length=<int>             - Format a range of this length, -1 for end of file.
-    -offset=<int>             - Format a range starting at this file offset.
-    -stats                    - Enable statistics output from program
-    -style=<string>           - Coding style, currently supports: LLVM, Google.
-    -version                  - Display the version of this program
+
+  Clang-format options:
+
+    -dump-config             - Dump configuration options to stdout and exit.
+                               Can be used with -style option.
+    -i                       - Inplace edit <file>s, if specified.
+    -length=<uint>           - Format a range of this length (in bytes).
+                               Multiple ranges can be formatted by specifying
+                               several -offset and -length pairs.
+                               When only a single -offset is specified without
+                               -length, clang-format will format up to the end
+                               of the file.
+                               Can only be used with one input file.
+    -offset=<uint>           - Format a range starting at this byte offset.
+                               Multiple ranges can be formatted by specifying
+                               several -offset and -length pairs.
+                               Can only be used with one input file.
+    -output-replacements-xml - Output replacements as XML.
+    -style=<string>          - Coding style, currently supports:
+                                 LLVM, Google, Chromium, Mozilla.
+                               Use -style=file to load style configuration from
+                               .clang-format file located in one of the parent
+                               directories of the source file (or current
+                               directory for stdin).
+                               Use -style="{key: value, ...}" to set specific
+                               parameters, e.g.:
+                                 -style="{BasedOnStyle: llvm, IndentWidth: 8}"
+
+  General options:
+
+    -help                    - Display available options (-help-hidden for more)
+    -help-list               - Display list of available options (-help-list-hidden for more)
+    -version                 - Display the version of this program
 
 
 Vim Integration
@@ -45,18 +68,18 @@ Vim Integration
 There is an integration for :program:`vim` which lets you run the
 :program:`clang-format` standalone tool on your current buffer, optionally
 selecting regions to reformat. The integration has the form of a `python`-file
-which can be found under `clang/tools/extra/clang-format/clang-format.py`.
+which can be found under `clang/tools/clang-format/clang-format.py`.
 
 This can be integrated by adding the following to your `.vimrc`:
 
 .. code-block:: vim
 
-  map <C-I> :pyf <path-to-this-file>/clang-format.py<CR>
-  imap <C-I> <ESC>:pyf <path-to-this-file>/clang-format.py<CR>i
+  map <C-K> :pyf <path-to-this-file>/clang-format.py<CR>
+  imap <C-K> <ESC>:pyf <path-to-this-file>/clang-format.py<CR>i
 
 The first line enables :program:`clang-format` for NORMAL and VISUAL mode, the
-second line adds support for INSERT mode. Change "C-I" to another binding if
-you need :program:`clang-format` on a different key (C-I stands for Ctrl+i).
+second line adds support for INSERT mode. Change "C-K" to another binding if
+you need :program:`clang-format` on a different key (C-K stands for Ctrl+k).
 
 With this integration you can press the bound key and clang-format will
 format the current line in NORMAL and INSERT mode or the selected region in
@@ -67,10 +90,41 @@ It operates on the current, potentially unsaved buffer and does not create
 or save any files. To revert a formatting, just undo.
 
 
+Emacs Integration
+=================
+
+Similar to the integration for :program:`vim`, there is an integration for
+:program:`emacs`. It can be found at `clang/tools/clang-format/clang-format.el`
+and used by adding this to your `.emacs`:
+
+.. code-block:: common-lisp
+
+  (load "<path-to-clang>/tools/clang-format/clang-format.el")
+  (global-set-key [C-M-tab] 'clang-format-region)
+
+This binds the function `clang-format-region` to C-M-tab, which then formats the
+current line or selected region.
+
+
+BBEdit Integration
+==================
+
+:program:`clang-format` cannot be used as a text filter with BBEdit, but works
+well via a script. The AppleScript to do this integration can be found at
+`clang/tools/clang-format/clang-format-bbedit.applescript`; place a copy in
+`~/Library/Application Support/BBEdit/Scripts`, and edit the path within it to
+point to your local copy of :program:`clang-format`.
+
+With this integration you can select the script from the Script menu and
+:program:`clang-format` will format the selection. Note that you can rename the
+menu item by renaming the script, and can assign the menu item a keyboard
+shortcut in the BBEdit preferences, under Menus & Shortcuts.
+
+
 Script for patch reformatting
 =============================
 
-The python script `clang/tools/extra/clang-format-diff.py` parses the output of
+The python script `clang/tools/clang-format-diff.py` parses the output of
 a unified diff and reformats all contained lines with :program:`clang-format`.
 
 .. code-block:: console
@@ -82,7 +136,7 @@ a unified diff and reformats all contained lines with :program:`clang-format`.
   optional arguments:
     -h, --help    show this help message and exit
     -p P          strip the smallest prefix containing P slashes
-    -style STYLE  formatting style to apply (LLVM, Google)
+    -style STYLE  formatting style to apply (LLVM, Google, Chromium)
 
 So to reformat all the lines in the latest :program:`git` commit, just do:
 

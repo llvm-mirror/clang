@@ -179,10 +179,14 @@ namespace {
       // If any capture names a function parameter pack, that pack is expanded
       // when the lambda is expanded.
       for (LambdaExpr::capture_iterator I = Lambda->capture_begin(),
-                                        E = Lambda->capture_end(); I != E; ++I)
-        if (VarDecl *VD = I->getCapturedVar())
+                                        E = Lambda->capture_end();
+           I != E; ++I) {
+        if (I->capturesVariable()) {
+          VarDecl *VD = I->getCapturedVar();
           if (VD->isParameterPack())
             Unexpanded.push_back(std::make_pair(VD, I->getLocation()));
+        }
+      }
 
       inherited::TraverseLambdaExpr(Lambda);
 
@@ -727,6 +731,7 @@ bool Sema::containsUnexpandedParameterPacks(Declarator &D) {
   case TST_interface:
   case TST_class:
   case TST_auto:
+  case TST_decltype_auto:
   case TST_unknown_anytype:
   case TST_image1d_t:
   case TST_image1d_array_t:

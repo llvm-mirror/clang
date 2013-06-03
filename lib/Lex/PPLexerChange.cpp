@@ -70,7 +70,7 @@ PreprocessorLexer *Preprocessor::getCurrentFileLexer() const {
 /// start lexing tokens from it instead of the current buffer.
 void Preprocessor::EnterSourceFile(FileID FID, const DirectoryLookup *CurDir,
                                    SourceLocation Loc) {
-  assert(CurTokenLexer == 0 && "Cannot #include a file inside a macro!");
+  assert(!CurTokenLexer && "Cannot #include a file inside a macro!");
   ++NumEnteredSourceFiles;
 
   if (MaxIncludeStackDepth < IncludeMacroStack.size())
@@ -401,8 +401,36 @@ bool Preprocessor::HandleEndOfFile(Token &Result, bool isEndOfMacro) {
         }
       }
     }
+
+    // Check whether there are any headers that were included, but not
+    // mentioned at all in the module map. Such headers 
+    SourceLocation StartLoc
+      = SourceMgr.getLocForStartOfFile(SourceMgr.getMainFileID());
+    if (getDiagnostics().getDiagnosticLevel(diag::warn_forgotten_module_header,
+                                            StartLoc)
+          != DiagnosticsEngine::Ignored) {
+      ModuleMap &ModMap = getHeaderSearchInfo().getModuleMap();
+      for (unsigned I = 0, N = SourceMgr.local_sloc_entry_size(); I != N; ++I) {
+        // We only care about file entries.
+        const SrcMgr::SLocEntry &Entry = SourceMgr.getLocalSLocEntry(I);
+        if (!Entry.isFile())
+          continue;
+
+        // Dig out the actual file.
+        const FileEntry *File = Entry.getFile().getContentCache()->OrigEntry;
+        if (!File)
+          continue;
+
+        // If it's not part of a module and not unknown, complain.
+        if (!ModMap.findModuleForHeader(File) &&
+            !ModMap.isHeaderInUnavailableModule(File)) {
+          Diag(StartLoc, diag::warn_forgotten_module_header)
+            << File->getName() << Mod->getFullModuleName();
+        }
+      }
+    }
   }
-  
+
   return true;
 }
 

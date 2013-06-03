@@ -44,6 +44,8 @@
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/system_error.h"
+#include <sys/stat.h>
+#include <time.h>
 
 using namespace clang;
 
@@ -62,7 +64,8 @@ void CompilerInstance::setInvocation(CompilerInvocation *Value) {
 
 bool CompilerInstance::shouldBuildGlobalModuleIndex() const {
   return (BuildGlobalModuleIndex ||
-          (ModuleManager && ModuleManager->isGlobalIndexUnavailable())) &&
+          (ModuleManager && ModuleManager->isGlobalIndexUnavailable() &&
+           getFrontendOpts().GenerateGlobalModuleIndex)) &&
          !ModuleBuildFailed;
 }
 
@@ -152,18 +155,15 @@ static void SetupSerializedDiagnostics(DiagnosticOptions *DiagOpts,
 }
 
 void CompilerInstance::createDiagnostics(DiagnosticConsumer *Client,
-                                         bool ShouldOwnClient,
-                                         bool ShouldCloneClient) {
+                                         bool ShouldOwnClient) {
   Diagnostics = createDiagnostics(&getDiagnosticOpts(), Client,
-                                  ShouldOwnClient, ShouldCloneClient,
-                                  &getCodeGenOpts());
+                                  ShouldOwnClient, &getCodeGenOpts());
 }
 
 IntrusiveRefCntPtr<DiagnosticsEngine>
 CompilerInstance::createDiagnostics(DiagnosticOptions *Opts,
                                     DiagnosticConsumer *Client,
                                     bool ShouldOwnClient,
-                                    bool ShouldCloneClient,
                                     const CodeGenOptions *CodeGenOpts) {
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
   IntrusiveRefCntPtr<DiagnosticsEngine>
@@ -172,10 +172,7 @@ CompilerInstance::createDiagnostics(DiagnosticOptions *Opts,
   // Create the diagnostic client for reporting errors or for
   // implementing -verify.
   if (Client) {
-    if (ShouldCloneClient)
-      Diags->setClient(Client->clone(*Diags), ShouldOwnClient);
-    else
-      Diags->setClient(Client, ShouldOwnClient);
+    Diags->setClient(Client, ShouldOwnClient);
   } else
     Diags->setClient(new TextDiagnosticPrinter(llvm::errs(), Opts));
 
@@ -865,9 +862,10 @@ static void compileModule(CompilerInstance &ImportingInstance,
   // module.
   CompilerInstance Instance;
   Instance.setInvocation(&*Invocation);
-  Instance.createDiagnostics(&ImportingInstance.getDiagnosticClient(),
-                             /*ShouldOwnClient=*/true,
-                             /*ShouldCloneClient=*/true);
+
+  Instance.createDiagnostics(new ForwardingDiagnosticConsumer(
+                                   ImportingInstance.getDiagnosticClient()),
+                             /*ShouldOwnClient=*/true);
 
   // Note that this module is part of the module build stack, so that we
   // can detect cycles in the module graph.
@@ -889,6 +887,7 @@ static void compileModule(CompilerInstance &ImportingInstance,
   llvm::CrashRecoveryContext CRC;
   CompileModuleMapData Data = { Instance, CreateModuleAction };
   CRC.RunSafelyOnThread(&doCompileMapModule, &Data, ThreadStackSize);
+
   
   // Delete the temporary module map file.
   // FIXME: Even though we're executing under crash protection, it would still
@@ -920,27 +919,24 @@ static void checkConfigMacro(Preprocessor &PP, StringRef ConfigMacro,
   // If this identifier does not currently have a macro definition,
   // check whether it had one on the command line.
   if (!Id->hasMacroDefinition()) {
-    MacroDirective *UndefMD = PP.getMacroDirectiveHistory(Id);
-    for (MacroDirective *MD = UndefMD; MD; MD = MD->getPrevious()) {
-
-      FileID FID = SourceMgr.getFileID(MD->getLocation());
+    MacroDirective::DefInfo LatestDef =
+        PP.getMacroDirectiveHistory(Id)->getDefinition();
+    for (MacroDirective::DefInfo Def = LatestDef; Def;
+           Def = Def.getPreviousDefinition()) {
+      FileID FID = SourceMgr.getFileID(Def.getLocation());
       if (FID.isInvalid())
         continue;
 
-      const llvm::MemoryBuffer *Buffer = SourceMgr.getBuffer(FID);
-      if (!Buffer)
-        continue;
-
       // We only care about the predefines buffer.
-      if (!StringRef(Buffer->getBufferIdentifier()).equals("<built-in>"))
+      if (FID != PP.getPredefinesFileID())
         continue;
 
       // This macro was defined on the command line, then #undef'd later.
       // Complain.
       PP.Diag(ImportLoc, diag::warn_module_config_macro_undef)
         << true << ConfigMacro << Mod->getFullModuleName();
-      if (UndefMD->getUndefLoc().isValid())
-        PP.Diag(UndefMD->getUndefLoc(), diag::note_module_def_undef_here)
+      if (LatestDef.isUndefined())
+        PP.Diag(LatestDef.getUndefLocation(), diag::note_module_def_undef_here)
           << true;
       return;
     }
@@ -951,48 +947,138 @@ static void checkConfigMacro(Preprocessor &PP, StringRef ConfigMacro,
 
   // This identifier has a macro definition. Check whether we had a definition
   // on the command line.
-  MacroDirective *DefMD = PP.getMacroDirective(Id);
-  MacroDirective *PredefinedMD = 0;
-  for (MacroDirective *MD = DefMD; MD; MD = MD->getPrevious()) {
-    FileID FID = SourceMgr.getFileID(MD->getLocation());
+  MacroDirective::DefInfo LatestDef =
+      PP.getMacroDirectiveHistory(Id)->getDefinition();
+  MacroDirective::DefInfo PredefinedDef;
+  for (MacroDirective::DefInfo Def = LatestDef; Def;
+         Def = Def.getPreviousDefinition()) {
+    FileID FID = SourceMgr.getFileID(Def.getLocation());
     if (FID.isInvalid())
       continue;
 
-    const llvm::MemoryBuffer *Buffer = SourceMgr.getBuffer(FID);
-    if (!Buffer)
-      continue;
-
     // We only care about the predefines buffer.
-    if (!StringRef(Buffer->getBufferIdentifier()).equals("<built-in>"))
+    if (FID != PP.getPredefinesFileID())
       continue;
 
-    PredefinedMD = MD;
+    PredefinedDef = Def;
     break;
   }
 
   // If there was no definition for this macro in the predefines buffer,
   // complain.
-  if (!PredefinedMD ||
-      (!PredefinedMD->getLocation().isValid() &&
-       PredefinedMD->getUndefLoc().isValid())) {
+  if (!PredefinedDef ||
+      (!PredefinedDef.getLocation().isValid() &&
+       PredefinedDef.getUndefLocation().isValid())) {
     PP.Diag(ImportLoc, diag::warn_module_config_macro_undef)
       << false << ConfigMacro << Mod->getFullModuleName();
-    PP.Diag(DefMD->getLocation(), diag::note_module_def_undef_here)
+    PP.Diag(LatestDef.getLocation(), diag::note_module_def_undef_here)
       << false;
     return;
   }
 
   // If the current macro definition is the same as the predefined macro
   // definition, it's okay.
-  if (DefMD == PredefinedMD ||
-      DefMD->getInfo()->isIdenticalTo(*PredefinedMD->getInfo(), PP))
+  if (LatestDef.getMacroInfo() == PredefinedDef.getMacroInfo() ||
+      LatestDef.getMacroInfo()->isIdenticalTo(*PredefinedDef.getMacroInfo(),PP,
+                                              /*Syntactically=*/true))
     return;
 
   // The macro definitions differ.
   PP.Diag(ImportLoc, diag::warn_module_config_macro_undef)
     << false << ConfigMacro << Mod->getFullModuleName();
-  PP.Diag(DefMD->getLocation(), diag::note_module_def_undef_here)
+  PP.Diag(LatestDef.getLocation(), diag::note_module_def_undef_here)
     << false;
+}
+
+/// \brief Write a new timestamp file with the given path.
+static void writeTimestampFile(StringRef TimestampFile) {
+  std::string ErrorInfo;
+  llvm::raw_fd_ostream Out(TimestampFile.str().c_str(), ErrorInfo,
+                           llvm::raw_fd_ostream::F_Binary);
+}
+
+/// \brief Prune the module cache of modules that haven't been accessed in
+/// a long time.
+static void pruneModuleCache(const HeaderSearchOptions &HSOpts) {
+  struct stat StatBuf;
+  llvm::SmallString<128> TimestampFile;
+  TimestampFile = HSOpts.ModuleCachePath;
+  llvm::sys::path::append(TimestampFile, "modules.timestamp");
+
+  // Try to stat() the timestamp file.
+  if (::stat(TimestampFile.c_str(), &StatBuf)) {
+    // If the timestamp file wasn't there, create one now.
+    if (errno == ENOENT) {
+      writeTimestampFile(TimestampFile);
+    }
+    return;
+  }
+
+  // Check whether the time stamp is older than our pruning interval.
+  // If not, do nothing.
+  time_t TimeStampModTime = StatBuf.st_mtime;
+  time_t CurrentTime = time(0);
+  if (CurrentTime - TimeStampModTime <= time_t(HSOpts.ModuleCachePruneInterval))
+    return;
+
+  // Write a new timestamp file so that nobody else attempts to prune.
+  // There is a benign race condition here, if two Clang instances happen to
+  // notice at the same time that the timestamp is out-of-date.
+  writeTimestampFile(TimestampFile);
+
+  // Walk the entire module cache, looking for unused module files and module
+  // indices.
+  llvm::error_code EC;
+  SmallString<128> ModuleCachePathNative;
+  llvm::sys::path::native(HSOpts.ModuleCachePath, ModuleCachePathNative);
+  for (llvm::sys::fs::directory_iterator
+         Dir(ModuleCachePathNative.str(), EC), DirEnd;
+       Dir != DirEnd && !EC; Dir.increment(EC)) {
+    // If we don't have a directory, there's nothing to look into.
+    bool IsDirectory;
+    if (llvm::sys::fs::is_directory(Dir->path(), IsDirectory) || !IsDirectory)
+      continue;
+
+    // Walk all of the files within this directory.
+    bool RemovedAllFiles = true;
+    for (llvm::sys::fs::directory_iterator File(Dir->path(), EC), FileEnd;
+         File != FileEnd && !EC; File.increment(EC)) {
+      // We only care about module and global module index files.
+      if (llvm::sys::path::extension(File->path()) != ".pcm" &&
+          llvm::sys::path::filename(File->path()) != "modules.idx") {
+        RemovedAllFiles = false;
+        continue;
+      }
+
+      // Look at this file. If we can't stat it, there's nothing interesting
+      // there.
+      if (::stat(File->path().c_str(), &StatBuf)) {
+        RemovedAllFiles = false;
+        continue;
+      }
+
+      // If the file has been used recently enough, leave it there.
+      time_t FileAccessTime = StatBuf.st_atime;
+      if (CurrentTime - FileAccessTime <=
+              time_t(HSOpts.ModuleCachePruneAfter)) {
+        RemovedAllFiles = false;
+        continue;
+      }
+
+      // Remove the file.
+      bool Existed;
+      if (llvm::sys::fs::remove(File->path(), Existed) || !Existed) {
+        RemovedAllFiles = false;
+      }
+    }
+
+    // If we removed all of the files in the directory, remove the directory
+    // itself.
+    if (RemovedAllFiles) {
+      bool Existed;
+      llvm::sys::fs::remove(Dir->path(), Existed);
+    }
+  }
 }
 
 ModuleLoadResult
@@ -1041,6 +1127,14 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
       if (!hasASTContext())
         createASTContext();
 
+      // If we're not recursively building a module, check whether we
+      // need to prune the module cache.
+      if (getSourceManager().getModuleBuildStack().empty() &&
+          getHeaderSearchOpts().ModuleCachePruneInterval > 0 &&
+          getHeaderSearchOpts().ModuleCachePruneAfter > 0) {
+        pruneModuleCache(getHeaderSearchOpts());
+      }
+
       std::string Sysroot = getHeaderSearchOpts().Sysroot;
       const PreprocessorOptions &PPOpts = getPreprocessorOpts();
       ModuleManager = new ASTReader(getPreprocessor(), *Context,
@@ -1053,8 +1147,6 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
           getASTConsumer().GetASTDeserializationListener());
         getASTContext().setASTMutationListener(
           getASTConsumer().GetASTMutationListener());
-        getPreprocessor().setPPMutationListener(
-          getASTConsumer().GetPPMutationListener());
       }
       OwningPtr<ExternalASTSource> Source;
       Source.reset(ModuleManager);

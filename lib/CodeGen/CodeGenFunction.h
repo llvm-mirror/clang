@@ -23,6 +23,7 @@
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/ABI.h"
+#include "clang/Basic/CapturedStmt.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -562,6 +563,11 @@ public:
     EHScopeStack::stable_iterator getScopeDepth() const { return ScopeDepth; }
     unsigned getDestIndex() const { return Index; }
 
+    // This should be used cautiously.
+    void setScopeDepth(EHScopeStack::stable_iterator depth) {
+      ScopeDepth = depth;
+    }
+
   private:
     llvm::BasicBlock *Block;
     EHScopeStack::stable_iterator ScopeDepth;
@@ -574,8 +580,8 @@ public:
   typedef std::pair<llvm::Value *, llvm::Value *> ComplexPairTy;
   CGBuilderTy Builder;
 
-  /// CurFuncDecl - Holds the Decl for the current function or ObjC method.
-  /// This excludes BlockDecls.
+  /// CurFuncDecl - Holds the Decl for the current outermost
+  /// non-closure context.
   const Decl *CurFuncDecl;
   /// CurCodeDecl - This is the inner-most code context, which includes blocks.
   const Decl *CurCodeDecl;
@@ -600,6 +606,65 @@ public:
   /// AllocaInsertPoint - This is an instruction in the entry block before which
   /// we prefer to insert allocas.
   llvm::AssertingVH<llvm::Instruction> AllocaInsertPt;
+
+  /// \brief API for captured statement code generation.
+  class CGCapturedStmtInfo {
+  public:
+    explicit CGCapturedStmtInfo(const CapturedStmt &S,
+                                CapturedRegionKind K = CR_Default)
+      : Kind(K), ThisValue(0), CXXThisFieldDecl(0) {
+
+      RecordDecl::field_iterator Field =
+        S.getCapturedRecordDecl()->field_begin();
+      for (CapturedStmt::const_capture_iterator I = S.capture_begin(),
+                                                E = S.capture_end();
+           I != E; ++I, ++Field) {
+        if (I->capturesThis())
+          CXXThisFieldDecl = *Field;
+        else
+          CaptureFields[I->getCapturedVar()] = *Field;
+      }
+    }
+
+    virtual ~CGCapturedStmtInfo();
+
+    CapturedRegionKind getKind() const { return Kind; }
+
+    void setContextValue(llvm::Value *V) { ThisValue = V; }
+    // \brief Retrieve the value of the context parameter.
+    llvm::Value *getContextValue() const { return ThisValue; }
+
+    /// \brief Lookup the captured field decl for a variable.
+    const FieldDecl *lookup(const VarDecl *VD) const {
+      return CaptureFields.lookup(VD);
+    }
+
+    bool isCXXThisExprCaptured() const { return CXXThisFieldDecl != 0; }
+    FieldDecl *getThisFieldDecl() const { return CXXThisFieldDecl; }
+
+    /// \brief Emit the captured statement body.
+    virtual void EmitBody(CodeGenFunction &CGF, Stmt *S) {
+      CGF.EmitStmt(S);
+    }
+
+    /// \brief Get the name of the capture helper.
+    virtual StringRef getHelperName() const { return "__captured_stmt"; }
+
+  private:
+    /// \brief The kind of captured statement being generated.
+    CapturedRegionKind Kind;
+
+    /// \brief Keep the map between VarDecl and FieldDecl.
+    llvm::SmallDenseMap<const VarDecl *, FieldDecl *> CaptureFields;
+
+    /// \brief The base address of the captured record, passed in as the first
+    /// argument of the parallel region function.
+    llvm::Value *ThisValue;
+
+    /// \brief Captured 'this' type.
+    FieldDecl *CXXThisFieldDecl;
+  };
+  CGCapturedStmtInfo *CapturedStmtInfo;
 
   /// BoundsChecking - Emit run-time bounds checks. Higher values mean
   /// potentially higher performance penalties.
@@ -853,6 +918,8 @@ public:
 
   class LexicalScope: protected RunCleanupsScope {
     SourceRange Range;
+    SmallVector<const LabelDecl*, 4> Labels;
+    LexicalScope *ParentScope;
 
     LexicalScope(const LexicalScope &) LLVM_DELETED_FUNCTION;
     void operator=(const LexicalScope &) LLVM_DELETED_FUNCTION;
@@ -860,29 +927,39 @@ public:
   public:
     /// \brief Enter a new cleanup scope.
     explicit LexicalScope(CodeGenFunction &CGF, SourceRange Range)
-      : RunCleanupsScope(CGF), Range(Range) {
+      : RunCleanupsScope(CGF), Range(Range), ParentScope(CGF.CurLexicalScope) {
+      CGF.CurLexicalScope = this;
       if (CGDebugInfo *DI = CGF.getDebugInfo())
         DI->EmitLexicalBlockStart(CGF.Builder, Range.getBegin());
+    }
+
+    void addLabel(const LabelDecl *label) {
+      assert(PerformCleanup && "adding label to dead scope?");
+      Labels.push_back(label);
     }
 
     /// \brief Exit this cleanup scope, emitting any accumulated
     /// cleanups.
     ~LexicalScope() {
-      if (PerformCleanup) endLexicalScope();
+      if (CGDebugInfo *DI = CGF.getDebugInfo())
+        DI->EmitLexicalBlockEnd(CGF.Builder, Range.getEnd());
+
+      // If we should perform a cleanup, force them now.  Note that
+      // this ends the cleanup scope before rescoping any labels.
+      if (PerformCleanup) ForceCleanup();
     }
 
     /// \brief Force the emission of cleanups now, instead of waiting
     /// until this object is destroyed.
     void ForceCleanup() {
+      CGF.CurLexicalScope = ParentScope;
       RunCleanupsScope::ForceCleanup();
-      endLexicalScope();
+
+      if (!Labels.empty())
+        rescopeLabels();
     }
 
-  private:
-    void endLexicalScope() {
-      if (CGDebugInfo *DI = CGF.getDebugInfo())
-        DI->EmitLexicalBlockEnd(CGF.Builder, Range.getEnd());
-    }
+    void rescopeLabels();
   };
 
 
@@ -1189,11 +1266,61 @@ private:
   /// lazily by getUnreachableBlock().
   llvm::BasicBlock *UnreachableBlock;
 
+  /// Counts of the number return expressions in the function.
+  unsigned NumReturnExprs;
+
+  /// Count the number of simple (constant) return expressions in the function.
+  unsigned NumSimpleReturnExprs;
+
+  /// The last regular (non-return) debug location (breakpoint) in the function.
+  SourceLocation LastStopPoint;
+
+public:
+  /// A scope within which we are constructing the fields of an object which
+  /// might use a CXXDefaultInitExpr. This stashes away a 'this' value to use
+  /// if we need to evaluate a CXXDefaultInitExpr within the evaluation.
+  class FieldConstructionScope {
+  public:
+    FieldConstructionScope(CodeGenFunction &CGF, llvm::Value *This)
+        : CGF(CGF), OldCXXDefaultInitExprThis(CGF.CXXDefaultInitExprThis) {
+      CGF.CXXDefaultInitExprThis = This;
+    }
+    ~FieldConstructionScope() {
+      CGF.CXXDefaultInitExprThis = OldCXXDefaultInitExprThis;
+    }
+
+  private:
+    CodeGenFunction &CGF;
+    llvm::Value *OldCXXDefaultInitExprThis;
+  };
+
+  /// The scope of a CXXDefaultInitExpr. Within this scope, the value of 'this'
+  /// is overridden to be the object under construction.
+  class CXXDefaultInitExprScope {
+  public:
+    CXXDefaultInitExprScope(CodeGenFunction &CGF)
+        : CGF(CGF), OldCXXThisValue(CGF.CXXThisValue) {
+      CGF.CXXThisValue = CGF.CXXDefaultInitExprThis;
+    }
+    ~CXXDefaultInitExprScope() {
+      CGF.CXXThisValue = OldCXXThisValue;
+    }
+
+  public:
+    CodeGenFunction &CGF;
+    llvm::Value *OldCXXThisValue;
+  };
+
+private:
   /// CXXThisDecl - When generating code for a C++ member function,
   /// this will hold the implicit 'this' declaration.
   ImplicitParamDecl *CXXABIThisDecl;
   llvm::Value *CXXABIThisValue;
   llvm::Value *CXXThisValue;
+
+  /// The value of 'this' to use when evaluating CXXDefaultInitExprs within
+  /// this expression.
+  llvm::Value *CXXDefaultInitExprThis;
 
   /// CXXStructorImplicitParamDecl - When generating code for a constructor or
   /// destructor, this will hold the implicit argument (e.g. VTT).
@@ -1205,6 +1332,12 @@ private:
   /// temporary should be destroyed conditionally.
   ConditionalEvaluation *OutermostConditional;
 
+  /// The current lexical scope.
+  LexicalScope *CurLexicalScope;
+
+  /// The current source location that should be used for exception
+  /// handling code.
+  SourceLocation CurEHLocation;
 
   /// ByrefValueInfoMap - For each __block variable, contains a pair of the LLVM
   /// type as well as the field number that contains the actual data.
@@ -1281,6 +1414,7 @@ public:
     return getInvokeDestImpl();
   }
 
+  const TargetInfo &getTarget() const { return Target; }
   llvm::LLVMContext &getLLVMContext() { return CGM.getLLVMContext(); }
 
   //===--------------------------------------------------------------------===//
@@ -1381,7 +1515,6 @@ public:
 
   llvm::Function *GenerateBlockFunction(GlobalDecl GD,
                                         const CGBlockInfo &Info,
-                                        const Decl *OuterFuncDecl,
                                         const DeclMapTy &ldm,
                                         bool IsLambdaConversionToBlock);
 
@@ -1412,7 +1545,8 @@ public:
 
   void GenerateCode(GlobalDecl GD, llvm::Function *Fn,
                     const CGFunctionInfo &FnInfo);
-  void StartFunction(GlobalDecl GD, QualType RetTy,
+  void StartFunction(GlobalDecl GD,
+                     QualType RetTy,
                      llvm::Function *Fn,
                      const CGFunctionInfo &FnInfo,
                      const FunctionArgList &Args,
@@ -1502,7 +1636,7 @@ public:
 
   /// EmitFunctionEpilog - Emit the target specific LLVM code to return the
   /// given temporary.
-  void EmitFunctionEpilog(const CGFunctionInfo &FI);
+  void EmitFunctionEpilog(const CGFunctionInfo &FI, bool EmitRetDbgLoc);
 
   /// EmitStartEHSpec - Emit the start of the exception spec.
   void EmitStartEHSpec(const Decl *D);
@@ -2001,17 +2135,33 @@ public:
     /// initializer.
     bool IsConstantAggregate;
 
+    /// Non-null if we should use lifetime annotations.
+    llvm::Value *SizeForLifetimeMarkers;
+
     struct Invalid {};
     AutoVarEmission(Invalid) : Variable(0) {}
 
     AutoVarEmission(const VarDecl &variable)
       : Variable(&variable), Address(0), NRVOFlag(0),
-        IsByRef(false), IsConstantAggregate(false) {}
+        IsByRef(false), IsConstantAggregate(false),
+        SizeForLifetimeMarkers(0) {}
 
     bool wasEmittedAsGlobal() const { return Address == 0; }
 
   public:
     static AutoVarEmission invalid() { return AutoVarEmission(Invalid()); }
+
+    bool useLifetimeMarkers() const { return SizeForLifetimeMarkers != 0; }
+    llvm::Value *getSizeForLifetimeMarkers() const {
+      assert(useLifetimeMarkers());
+      return SizeForLifetimeMarkers;
+    }
+
+    /// Returns the raw, allocated address, which is not necessarily
+    /// the address of the object itself.
+    llvm::Value *getAllocatedAddress() const {
+      return Address;
+    }
 
     /// Returns the address of the object within this declaration.
     /// Note that this does not chase the forwarding pointer for
@@ -2113,6 +2263,10 @@ public:
   void EmitCXXTryStmt(const CXXTryStmt &S);
   void EmitCXXForRangeStmt(const CXXForRangeStmt &S);
 
+  llvm::Function *EmitCapturedStmt(const CapturedStmt &S, CapturedRegionKind K);
+  llvm::Function *GenerateCapturedStmtFunction(const CapturedDecl *CD,
+                                               const RecordDecl *RD);
+
   //===--------------------------------------------------------------------===//
   //                         LValue Expression Emission
   //===--------------------------------------------------------------------===//
@@ -2176,7 +2330,9 @@ public:
   /// the LLVM value representation.
   llvm::Value *EmitLoadOfScalar(llvm::Value *Addr, bool Volatile,
                                 unsigned Alignment, QualType Ty,
-                                llvm::MDNode *TBAAInfo = 0);
+                                llvm::MDNode *TBAAInfo = 0,
+                                QualType TBAABaseTy = QualType(),
+                                uint64_t TBAAOffset = 0);
 
   /// EmitLoadOfScalar - Load a scalar value from an address, taking
   /// care to appropriately convert from the memory representation to
@@ -2189,7 +2345,9 @@ public:
   /// the LLVM value representation.
   void EmitStoreOfScalar(llvm::Value *Value, llvm::Value *Addr,
                          bool Volatile, unsigned Alignment, QualType Ty,
-                         llvm::MDNode *TBAAInfo = 0, bool isInit=false);
+                         llvm::MDNode *TBAAInfo = 0, bool isInit = false,
+                         QualType TBAABaseTy = QualType(),
+                         uint64_t TBAAOffset = 0);
 
   /// EmitStoreOfScalar - Store a scalar value to an address, taking
   /// care to appropriately convert from the memory representation to
@@ -2264,7 +2422,7 @@ public:
       return ConstantEmission(C, false);
     }
 
-    operator bool() const { return ValueAndIsReference.getOpaqueValue() != 0; }
+    LLVM_EXPLICIT operator bool() const { return ValueAndIsReference.getOpaqueValue() != 0; }
 
     bool isReference() const { return ValueAndIsReference.getInt(); }
     LValue getReferenceLValue(CodeGenFunction &CGF, Expr *refExpr) const {
@@ -2288,6 +2446,7 @@ public:
   llvm::Value *EmitIvarOffset(const ObjCInterfaceDecl *Interface,
                               const ObjCIvarDecl *Ivar);
   LValue EmitLValueForField(LValue Base, const FieldDecl* Field);
+  LValue EmitLValueForLambdaField(const FieldDecl *Field);
 
   /// EmitLValueForFieldInitialization - Like EmitLValueForField, except that
   /// if the Field is a reference, this will return the address of the reference
@@ -2407,6 +2566,7 @@ public:
   /// is unhandled by the current target.
   llvm::Value *EmitTargetBuiltinExpr(unsigned BuiltinID, const CallExpr *E);
 
+  llvm::Value *EmitAArch64BuiltinExpr(unsigned BuiltinID, const CallExpr *E);
   llvm::Value *EmitARMBuiltinExpr(unsigned BuiltinID, const CallExpr *E);
   llvm::Value *EmitNeonCall(llvm::Function *F,
                             SmallVectorImpl<llvm::Value*> &O,
@@ -2477,6 +2637,8 @@ public:
   llvm::Value *EmitARCExtendBlockObject(const Expr *expr);
   llvm::Value *EmitARCRetainScalarExpr(const Expr *expr);
   llvm::Value *EmitARCRetainAutoreleaseScalarExpr(const Expr *expr);
+
+  void EmitARCIntrinsicUse(llvm::ArrayRef<llvm::Value*> values);
 
   static Destroyer destroyARCStrongImprecise;
   static Destroyer destroyARCStrongPrecise;
@@ -2584,8 +2746,8 @@ public:
   /// GenerateCXXGlobalInitFunc - Generates code for initializing global
   /// variables.
   void GenerateCXXGlobalInitFunc(llvm::Function *Fn,
-                                 llvm::Constant **Decls,
-                                 unsigned NumDecls);
+                                 ArrayRef<llvm::Constant *> Decls,
+                                 llvm::GlobalVariable *Guard = 0);
 
   /// GenerateCXXGlobalDtorsFunc - Generates code for destroying global
   /// variables.
@@ -2609,7 +2771,7 @@ public:
   }
   void enterNonTrivialFullExpression(const ExprWithCleanups *E);
 
-  void EmitCXXThrowExpr(const CXXThrowExpr *E);
+  void EmitCXXThrowExpr(const CXXThrowExpr *E, bool KeepInsertionPoint = true);
 
   void EmitLambdaExpr(const LambdaExpr *E, AggValueSlot Dest);
 

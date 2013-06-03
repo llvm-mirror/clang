@@ -129,7 +129,14 @@ namespace clang {
 
     /// \brief An ID number that refers to a macro in an AST file.
     typedef uint32_t MacroID;
-    
+
+    /// \brief A global ID number that refers to a macro in an AST file.
+    typedef uint32_t GlobalMacroID;
+
+    /// \brief A local to a module ID number that refers to a macro in an
+    /// AST file.
+    typedef uint32_t LocalMacroID;
+
     /// \brief The number of predefined macro IDs.
     const unsigned int NUM_PREDEF_MACRO_IDS = 1;
 
@@ -522,9 +529,9 @@ namespace clang {
       /// macro definition.
       MACRO_OFFSET = 47,
 
-      /// \brief Record of updates for a macro that was modified after
-      /// being deserialized.
-      MACRO_UPDATES = 48,
+      /// \brief Mapping table from the identifier ID to the offset of the
+      /// macro directive history for the identifier.
+      MACRO_TABLE = 48,
 
       /// \brief Record code for undefined but used functions and variables that
       /// need a definition in this TU.
@@ -565,7 +572,10 @@ namespace clang {
 
       /// \brief Describes one token.
       /// [PP_TOKEN, SLoc, Length, IdentInfoID, Kind, Flags]
-      PP_TOKEN = 3
+      PP_TOKEN = 3,
+
+      /// \brief The macro directives history for a particular identifier.
+      PP_MACRO_DIRECTIVE_HISTORY = 4
     };
 
     /// \brief Record types used within a preprocessor detail block.
@@ -941,6 +951,8 @@ namespace clang {
       DECL_OBJC_PROPERTY_IMPL,
       /// \brief A FieldDecl record.
       DECL_FIELD,
+      /// \brief A MSPropertyDecl record.
+      DECL_MS_PROPERTY,
       /// \brief A VarDecl record.
       DECL_VAR,
       /// \brief An ImplicitParamDecl record.
@@ -951,6 +963,8 @@ namespace clang {
       DECL_FILE_SCOPE_ASM,
       /// \brief A BlockDecl record.
       DECL_BLOCK,
+      /// \brief A CapturedDecl record.
+      DECL_CAPTURED,
       /// \brief A record that stores the set of declarations that are
       /// lexically stored within a given DeclContext.
       ///
@@ -1036,6 +1050,8 @@ namespace clang {
       DECL_CLASS_SCOPE_FUNCTION_SPECIALIZATION,
       /// \brief An ImportDecl recording a module import.
       DECL_IMPORT,
+      /// \brief A OMPThreadPrivateDecl record.
+      DECL_OMP_THREADPRIVATE,
       /// \brief An EmptyDecl record.
       DECL_EMPTY
     };
@@ -1089,6 +1105,8 @@ namespace clang {
       STMT_RETURN,
       /// \brief A DeclStmt record.
       STMT_DECL,
+      /// \brief A CapturedStmt record.
+      STMT_CAPTURED,
       /// \brief A GCC-style AsmStmt record.
       STMT_GCCASM,
       /// \brief A MS-style AsmStmt record.
@@ -1249,6 +1267,7 @@ namespace clang {
       EXPR_CXX_THIS,              // CXXThisExpr
       EXPR_CXX_THROW,             // CXXThrowExpr
       EXPR_CXX_DEFAULT_ARG,       // CXXDefaultArgExpr
+      EXPR_CXX_DEFAULT_INIT,      // CXXDefaultInitExpr
       EXPR_CXX_BIND_TEMPORARY,    // CXXBindTemporaryExpr
 
       EXPR_CXX_SCALAR_VALUE_INIT, // CXXScalarValueInitExpr
@@ -1288,6 +1307,7 @@ namespace clang {
       EXPR_ASTYPE,                 // AsTypeExpr
 
       // Microsoft
+      EXPR_CXX_PROPERTY_REF_EXPR, // MSPropertyRefExpr
       EXPR_CXX_UUIDOF_EXPR,       // CXXUuidofExpr (of expr).
       EXPR_CXX_UUIDOF_TYPE,       // CXXUuidofExpr (of type).
       STMT_SEH_EXCEPT,            // SEHExceptStmt

@@ -337,14 +337,22 @@ TEST(DeclarationMatcher, hasDeclContext) {
       "    class D {};"
       "  }"
       "}",
-      recordDecl(hasDeclContext(namedDecl(hasName("M"))))));
+      recordDecl(hasDeclContext(namespaceDecl(hasName("M"))))));
   EXPECT_TRUE(notMatches(
       "namespace N {"
       "  namespace M {"
       "    class D {};"
       "  }"
       "}",
-      recordDecl(hasDeclContext(namedDecl(hasName("N"))))));
+      recordDecl(hasDeclContext(namespaceDecl(hasName("N"))))));
+
+  EXPECT_TRUE(matches("namespace {"
+                      "  namespace M {"
+                      "    class D {};"
+                      "  }"
+                      "}",
+                      recordDecl(hasDeclContext(namespaceDecl(
+                          hasName("M"), hasDeclContext(namespaceDecl()))))));
 }
 
 TEST(ClassTemplate, DoesNotMatchClass) {
@@ -1356,6 +1364,17 @@ TEST(QualType, hasCanonicalType) {
               varDecl(hasType(qualType(hasCanonicalType(referenceType()))))));
 }
 
+TEST(QualType, hasLocalQualifiers) {
+  EXPECT_TRUE(notMatches("typedef const int const_int; const_int i = 1;",
+                         varDecl(hasType(hasLocalQualifiers()))));
+  EXPECT_TRUE(matches("int *const j = nullptr;",
+                      varDecl(hasType(hasLocalQualifiers()))));
+  EXPECT_TRUE(matches("int *volatile k;",
+                      varDecl(hasType(hasLocalQualifiers()))));
+  EXPECT_TRUE(notMatches("int m;",
+                         varDecl(hasType(hasLocalQualifiers()))));
+}
+
 TEST(HasParameter, CallsInnerMatcher) {
   EXPECT_TRUE(matches("class X { void x(int) {} };",
       methodDecl(hasParameter(0, varDecl()))));
@@ -1479,6 +1498,34 @@ TEST(Matcher, MatchesAccessSpecDecls) {
       notMatches("class C { public: int i; };", accessSpecDecl(isPrivate())));
 
   EXPECT_TRUE(notMatches("class C { int i; };", accessSpecDecl()));
+}
+
+TEST(Matcher, MatchesVirtualMethod) {
+  EXPECT_TRUE(matches("class X { virtual int f(); };",
+      methodDecl(isVirtual(), hasName("::X::f"))));
+  EXPECT_TRUE(notMatches("class X { int f(); };",
+      methodDecl(isVirtual())));
+}
+
+TEST(Matcher, MatchesConstMethod) {
+  EXPECT_TRUE(matches("struct A { void foo() const; };",
+                      methodDecl(isConst())));
+  EXPECT_TRUE(notMatches("struct A { void foo(); };",
+                         methodDecl(isConst())));
+}
+
+TEST(Matcher, MatchesOverridingMethod) {
+  EXPECT_TRUE(matches("class X { virtual int f(); }; "
+                      "class Y : public X { int f(); };",
+       methodDecl(isOverride(), hasName("::Y::f"))));
+  EXPECT_TRUE(notMatches("class X { virtual int f(); }; "
+                        "class Y : public X { int f(); };",
+       methodDecl(isOverride(), hasName("::X::f"))));
+  EXPECT_TRUE(notMatches("class X { int f(); }; "
+                         "class Y : public X { int f(); };",
+       methodDecl(isOverride())));
+  EXPECT_TRUE(notMatches("class X { int f(); int f(int); }; ",
+       methodDecl(isOverride())));
 }
 
 TEST(Matcher, ConstructorCall) {
@@ -2877,6 +2924,31 @@ TEST(SwitchCase, MatchesSwitch) {
   EXPECT_TRUE(notMatches("void x() {}", switchStmt()));
 }
 
+TEST(SwitchCase, MatchesEachCase) {
+  EXPECT_TRUE(notMatches("void x() { switch(42); }",
+                         switchStmt(forEachSwitchCase(caseStmt()))));
+  EXPECT_TRUE(matches("void x() { switch(42) case 42:; }",
+                      switchStmt(forEachSwitchCase(caseStmt()))));
+  EXPECT_TRUE(matches("void x() { switch(42) { case 42:; } }",
+                      switchStmt(forEachSwitchCase(caseStmt()))));
+  EXPECT_TRUE(notMatches(
+      "void x() { if (1) switch(42) { case 42: switch (42) { default:; } } }",
+      ifStmt(has(switchStmt(forEachSwitchCase(defaultStmt()))))));
+  EXPECT_TRUE(matches("void x() { switch(42) { case 1+1: case 4:; } }",
+                      switchStmt(forEachSwitchCase(
+                          caseStmt(hasCaseConstant(integerLiteral()))))));
+  EXPECT_TRUE(notMatches("void x() { switch(42) { case 1+1: case 2+2:; } }",
+                         switchStmt(forEachSwitchCase(
+                             caseStmt(hasCaseConstant(integerLiteral()))))));
+  EXPECT_TRUE(notMatches("void x() { switch(42) { case 1 ... 2:; } }",
+                         switchStmt(forEachSwitchCase(
+                             caseStmt(hasCaseConstant(integerLiteral()))))));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "void x() { switch (42) { case 1: case 2: case 3: default:; } }",
+      switchStmt(forEachSwitchCase(caseStmt().bind("x"))),
+      new VerifyIdIsBoundTo<CaseStmt>("x", 3)));
+}
+
 TEST(ExceptionHandling, SimpleCases) {
   EXPECT_TRUE(matches("void foo() try { } catch(int X) { }", catchStmt()));
   EXPECT_TRUE(matches("void foo() try { } catch(int X) { }", tryStmt()));
@@ -3376,15 +3448,30 @@ TEST(TypeMatching, MatchesAutoTypes) {
   EXPECT_TRUE(matches("int v[] = { 2, 3 }; void f() { for (int i : v) {} }",
                       autoType()));
 
-  EXPECT_TRUE(matches("auto a = 1;",
-                      autoType(hasDeducedType(isInteger()))));
-  EXPECT_TRUE(notMatches("auto b = 2.0;",
-                         autoType(hasDeducedType(isInteger()))));
+  // FIXME: Matching against the type-as-written can't work here, because the
+  //        type as written was not deduced.
+  //EXPECT_TRUE(matches("auto a = 1;",
+  //                    autoType(hasDeducedType(isInteger()))));
+  //EXPECT_TRUE(notMatches("auto b = 2.0;",
+  //                       autoType(hasDeducedType(isInteger()))));
 }
 
 TEST(TypeMatching, MatchesFunctionTypes) {
   EXPECT_TRUE(matches("int (*f)(int);", functionType()));
   EXPECT_TRUE(matches("void f(int i) {}", functionType()));
+}
+
+TEST(TypeMatching, MatchesParenType) {
+  EXPECT_TRUE(
+      matches("int (*array)[4];", varDecl(hasType(pointsTo(parenType())))));
+  EXPECT_TRUE(notMatches("int *array[4];", varDecl(hasType(parenType()))));
+
+  EXPECT_TRUE(matches(
+      "int (*ptr_to_func)(int);",
+      varDecl(hasType(pointsTo(parenType(innerType(functionType())))))));
+  EXPECT_TRUE(notMatches(
+      "int (*ptr_to_array)[4];",
+      varDecl(hasType(pointsTo(parenType(innerType(functionType())))))));
 }
 
 TEST(TypeMatching, PointerTypes) {

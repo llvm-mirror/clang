@@ -302,12 +302,13 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
     else if (!LangOpts.GNUMode && LangOpts.Digraphs)
       Builder.defineMacro("__STDC_VERSION__", "199409L");
   } else {
-    // FIXME: LangOpts.CPlusPlus1y
-
+    // FIXME: Use the right value for __cplusplus for C++1y once one is chosen.
+    if (LangOpts.CPlusPlus1y)
+      Builder.defineMacro("__cplusplus", "201305L");
     // C++11 [cpp.predefined]p1:
     //   The name __cplusplus is defined to the value 201103L when compiling a
     //   C++ translation unit.
-    if (LangOpts.CPlusPlus11)
+    else if (LangOpts.CPlusPlus11)
       Builder.defineMacro("__cplusplus", "201103L");
     // C++03 [cpp.predefined]p1:
     //   The name __cplusplus is defined to the value 199711L when compiling a
@@ -490,6 +491,7 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   DefineTypeSize("__LONG_LONG_MAX__", TargetInfo::SignedLongLong, TI, Builder);
   DefineTypeSize("__WCHAR_MAX__", TI.getWCharType(), TI, Builder);
   DefineTypeSize("__INTMAX_MAX__", TI.getIntMaxType(), TI, Builder);
+  DefineTypeSize("__SIZE_MAX__", TI.getSizeType(), TI, Builder);
 
   DefineTypeSizeof("__SIZEOF_DOUBLE__", TI.getDoubleWidth(), TI, Builder);
   DefineTypeSizeof("__SIZEOF_FLOAT__", TI.getFloatWidth(), TI, Builder);

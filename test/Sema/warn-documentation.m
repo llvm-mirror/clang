@@ -149,6 +149,7 @@ struct S;
 @class NSArray;
 @interface NSArray @end
 
+// expected-warning@+3 {{unknown command tag name}}
 /*!
 @interface NSMutableArray 
 @super NSArray
@@ -171,3 +172,34 @@ struct S;
   @struct S1 THIS IS IT
 */
 @interface S1 @end
+
+// expected-warning@+1 {{unknown command tag name}}
+/// \t bbb IS_DOXYGEN_END
+int FooBar();
+
+// rdar://13836387
+/** \brief Module handling the incoming notifications from the system.
+ *
+ * This includes:
+ * - Network Reachability
+ * - Power State
+ * - Low Disk
+ */
+@interface BRC : NSObject
+- (void)removeReach:(NSObject*)observer;
+@end
+
+@implementation BRC : NSObject
+- (void)removeReach:(NSObject*)observer // expected-note {{previous declaration is here}}
+{
+}
+- (void)removeReach:(NSObject*)observer // expected-error {{duplicate declaration of method 'removeReach:'}}
+{
+}
+@end
+
+// rdar://13927330
+/// @class Asset  <- '@class' may be used in a comment attached to a an interface declaration
+@interface Asset : NSObject
+@end
+

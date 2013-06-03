@@ -468,7 +468,10 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
   }
 
   // Parse nested-name-specifier.
-  ParseOptionalCXXScopeSpecifier(SS, ParsedType(), /*EnteringContext=*/false);
+  IdentifierInfo *LastII = 0;
+  ParseOptionalCXXScopeSpecifier(SS, ParsedType(), /*EnteringContext=*/false,
+                                 /*MayBePseudoDtor=*/0, /*IsTypename=*/false,
+                                 /*LastII=*/&LastII);
 
   // Check nested-name specifier.
   if (SS.isInvalid()) {
@@ -476,18 +479,31 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
     return 0;
   }
 
+  SourceLocation TemplateKWLoc;
+  UnqualifiedId Name;
+
   // Parse the unqualified-id. We allow parsing of both constructor and
   // destructor names and allow the action module to diagnose any semantic
   // errors.
-  SourceLocation TemplateKWLoc;
-  UnqualifiedId Name;
-  if (ParseUnqualifiedId(SS,
-                         /*EnteringContext=*/false,
-                         /*AllowDestructorName=*/true,
-                         /*AllowConstructorName=*/true,
-                         ParsedType(),
-                         TemplateKWLoc,
-                         Name)) {
+  //
+  // C++11 [class.qual]p2:
+  //   [...] in a using-declaration that is a member-declaration, if the name
+  //   specified after the nested-name-specifier is the same as the identifier
+  //   or the simple-template-id's template-name in the last component of the
+  //   nested-name-specifier, the name is [...] considered to name the
+  //   constructor.
+  if (getLangOpts().CPlusPlus11 && Context == Declarator::MemberContext &&
+      Tok.is(tok::identifier) && NextToken().is(tok::semi) &&
+      SS.isNotEmpty() && LastII == Tok.getIdentifierInfo() &&
+      !SS.getScopeRep()->getAsNamespace() &&
+      !SS.getScopeRep()->getAsNamespaceAlias()) {
+    SourceLocation IdLoc = ConsumeToken();
+    ParsedType Type = Actions.getInheritingConstructorName(SS, IdLoc, *LastII);
+    Name.setConstructorName(Type, IdLoc, IdLoc);
+  } else if (ParseUnqualifiedId(SS, /*EnteringContext=*/ false,
+                                /*AllowDestructorName=*/ true,
+                                /*AllowConstructorName=*/ true, ParsedType(),
+                                TemplateKWLoc, Name)) {
     SkipUntil(tok::semi);
     return 0;
   }
@@ -658,15 +674,15 @@ Decl *Parser::ParseStaticAssertDeclaration(SourceLocation &DeclEnd){
                                               T.getCloseLocation());
 }
 
-/// ParseDecltypeSpecifier - Parse a C++0x decltype specifier.
+/// ParseDecltypeSpecifier - Parse a C++11 decltype specifier.
 ///
 /// 'decltype' ( expression )
+/// 'decltype' ( 'auto' )      [C++1y]
 ///
 SourceLocation Parser::ParseDecltypeSpecifier(DeclSpec &DS) {
   assert((Tok.is(tok::kw_decltype) || Tok.is(tok::annot_decltype))
            && "Not a decltype specifier");
   
-
   ExprResult Result;
   SourceLocation StartLoc = Tok.getLocation();
   SourceLocation EndLoc;
@@ -693,29 +709,44 @@ SourceLocation Parser::ParseDecltypeSpecifier(DeclSpec &DS) {
              StartLoc : T.getOpenLocation();
     }
 
-    // Parse the expression
+    // Check for C++1y 'decltype(auto)'.
+    if (Tok.is(tok::kw_auto)) {
+      // No need to disambiguate here: an expression can't start with 'auto',
+      // because the typename-specifier in a function-style cast operation can't
+      // be 'auto'.
+      Diag(Tok.getLocation(),
+           getLangOpts().CPlusPlus1y
+             ? diag::warn_cxx11_compat_decltype_auto_type_specifier
+             : diag::ext_decltype_auto_type_specifier);
+      ConsumeToken();
+    } else {
+      // Parse the expression
 
-    // C++0x [dcl.type.simple]p4:
-    //   The operand of the decltype specifier is an unevaluated operand.
-    EnterExpressionEvaluationContext Unevaluated(Actions, Sema::Unevaluated,
-                                                 0, /*IsDecltype=*/true);
-    Result = ParseExpression();
-    if (Result.isInvalid()) {
-      DS.SetTypeSpecError();
-      if (SkipUntil(tok::r_paren, /*StopAtSemi=*/true, /*DontConsume=*/true)) {
-        EndLoc = ConsumeParen();
-      } else {
-        if (PP.isBacktrackEnabled() && Tok.is(tok::semi)) {
-          // Backtrack to get the location of the last token before the semi.
-          PP.RevertCachedTokens(2);
-          ConsumeToken(); // the semi.
-          EndLoc = ConsumeAnyToken();
-          assert(Tok.is(tok::semi));
+      // C++11 [dcl.type.simple]p4:
+      //   The operand of the decltype specifier is an unevaluated operand.
+      EnterExpressionEvaluationContext Unevaluated(Actions, Sema::Unevaluated,
+                                                   0, /*IsDecltype=*/true);
+      Result = ParseExpression();
+      if (Result.isInvalid()) {
+        DS.SetTypeSpecError();
+        if (SkipUntil(tok::r_paren, /*StopAtSemi=*/true,
+                      /*DontConsume=*/true)) {
+          EndLoc = ConsumeParen();
         } else {
-          EndLoc = Tok.getLocation();
+          if (PP.isBacktrackEnabled() && Tok.is(tok::semi)) {
+            // Backtrack to get the location of the last token before the semi.
+            PP.RevertCachedTokens(2);
+            ConsumeToken(); // the semi.
+            EndLoc = ConsumeAnyToken();
+            assert(Tok.is(tok::semi));
+          } else {
+            EndLoc = Tok.getLocation();
+          }
         }
+        return EndLoc;
       }
-      return EndLoc;
+
+      Result = Actions.ActOnDecltypeExpression(Result.take());
     }
 
     // Match the ')'
@@ -727,7 +758,6 @@ SourceLocation Parser::ParseDecltypeSpecifier(DeclSpec &DS) {
       return T.getCloseLocation();
     }
 
-    Result = Actions.ActOnDecltypeExpression(Result.take());
     if (Result.isInvalid()) {
       DS.SetTypeSpecError();
       return T.getCloseLocation();
@@ -735,12 +765,16 @@ SourceLocation Parser::ParseDecltypeSpecifier(DeclSpec &DS) {
 
     EndLoc = T.getCloseLocation();
   }
+  assert(!Result.isInvalid());
 
   const char *PrevSpec = 0;
   unsigned DiagID;
   // Check for duplicate type specifiers (e.g. "int decltype(a)").
-  if (DS.SetTypeSpecType(DeclSpec::TST_decltype, StartLoc, PrevSpec,
-                         DiagID, Result.release())) {
+  if (Result.get()
+        ? DS.SetTypeSpecType(DeclSpec::TST_decltype, StartLoc, PrevSpec,
+                             DiagID, Result.release())
+        : DS.SetTypeSpecType(DeclSpec::TST_decltype_auto, StartLoc, PrevSpec,
+                             DiagID)) {
     Diag(StartLoc, DiagID) << PrevSpec;
     DS.SetTypeSpecError();
   }
@@ -757,8 +791,10 @@ void Parser::AnnotateExistingDecltypeSpecifier(const DeclSpec& DS,
     PP.EnterToken(Tok);
 
   Tok.setKind(tok::annot_decltype);
-  setExprAnnotation(Tok, DS.getTypeSpecType() == TST_decltype ? 
-                         DS.getRepAsExpr() : ExprResult());
+  setExprAnnotation(Tok,
+                    DS.getTypeSpecType() == TST_decltype ? DS.getRepAsExpr() :
+                    DS.getTypeSpecType() == TST_decltype_auto ? ExprResult() :
+                    ExprError());
   Tok.setAnnotationEndLoc(EndLoc);
   Tok.setLocation(StartLoc);
   PP.AnnotateCachedTokens(Tok);
@@ -2251,11 +2287,10 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
         SkipUntil(tok::comma, true, true);
       else if (ThisDecl)
         Actions.AddInitializerToDecl(ThisDecl, Init.get(), EqualLoc.isInvalid(),
-                                   DS.getTypeSpecType() == DeclSpec::TST_auto);      
+                                     DS.containsPlaceholderType());
     } else if (ThisDecl && DS.getStorageClassSpec() == DeclSpec::SCS_static) {
       // No initializer.
-      Actions.ActOnUninitializedDecl(ThisDecl, 
-                                   DS.getTypeSpecType() == DeclSpec::TST_auto);
+      Actions.ActOnUninitializedDecl(ThisDecl, DS.containsPlaceholderType());
     }
     
     if (ThisDecl) {
@@ -2525,6 +2560,11 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
         continue;
       }
 
+      if (Tok.is(tok::annot_pragma_openmp)) {
+        ParseOpenMPDeclarativeDirective();
+        continue;
+      }
+
       AccessSpecifier AS = getAccessSpecifierIfPresent();
       if (AS != AS_none) {
         // Current token is a C++ access specifier.
@@ -2769,9 +2809,8 @@ Parser::MemInitResult Parser::ParseMemInitializer(Decl *ConstructorDecl) {
 
     return Actions.ActOnMemInitializer(ConstructorDecl, getCurScope(), SS, II,
                                        TemplateTypeTy, DS, IdLoc,
-                                       T.getOpenLocation(), ArgExprs.data(),
-                                       ArgExprs.size(), T.getCloseLocation(),
-                                       EllipsisLoc);
+                                       T.getOpenLocation(), ArgExprs,
+                                       T.getCloseLocation(), EllipsisLoc);
   }
 
   Diag(Tok, getLangOpts().CPlusPlus11 ? diag::err_expected_lparen_or_lbrace

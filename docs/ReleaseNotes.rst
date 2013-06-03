@@ -81,6 +81,12 @@ C11 Feature Support
 C++ Language Changes in Clang
 -----------------------------
 
+- Clang now correctly implements language linkage for functions and variables.
+  This means that, for example, it is now possible to overload static functions
+  declared in an ``extern "C"`` context. For backwards compatibility, an alias
+  with the unmangled name is still emitted if it is the only one and has the
+  ``used`` attribute.
+
 C++11 Feature Support
 ^^^^^^^^^^^^^^^^^^^^^
 
@@ -111,11 +117,56 @@ succeeded). Essentially all previous 'cast' usage should be replaced with
 'castAs' and 'dyn_cast' should be replaced with 'getAs'. See r175462 for the
 first example of such a change along with many examples of how code was
 migrated to the new API.
- 
-API change 1
-^^^^^^^^^^^^
+
+Storage Class
+^^^^^^^^^^^^^
+
+For each variable and function Clang used to keep the storage class as written
+in the source, the linkage and a semantic storage class. This was a bit
+redundant and the semantic storage class has been removed. The method
+getStorageClass now returns what is written in the source code for that decl.
+
+Wide Character Types
+^^^^^^^^^^^^^^^^^^^^
+
+The ASTContext class now keeps track of two different types for wide character
+types: WCharTy and WideCharTy. WCharTy represents the built-in wchar_t type
+available in C++. WideCharTy is the type used for wide character literals; in
+C++ it is the same as WCharTy, but in C99, where wchar_t is a typedef, it is an
+integer type.
 
 ...
+
+libclang
+--------
+
+The clang_CXCursorSet_contains() function previously incorrectly returned 0
+if it contained a CXCursor, contrary to what the documentation stated.  This
+has been fixed so that the function returns a non-zero value if the set
+contains a cursor.  This is API breaking change, but matches the intended
+original behavior.  Moreover, this also fixes the issue of an invalid CXCursorSet
+appearing to contain any CXCursor.
+
+Static Analyzer
+---------------
+
+The static analyzer (which contains additional code checking beyond compiler
+warnings) has improved significantly in both in the core analysis engine and 
+also in the kinds of issues it can find.
+
+Core Analysis Improvements
+==========================
+
+- Support for interprocedural reasoning about constructors and destructors.
+- New false positive suppression mechanisms that reduced the number of false null pointer dereference warnings due to interprocedural analysis.
+- Major performance enhancements to speed up interprocedural analysis
+
+New Issues Found
+================
+
+- New memory error checks such as use-after-free with C++ 'delete'.
+- Detection of mismatched allocators and deallocators (e.g., using 'new' with 'free()', 'malloc()' with 'delete').
+- Additional checks for misuses of Apple Foundation framework collection APIs.
 
 Python Binding Changes
 ----------------------

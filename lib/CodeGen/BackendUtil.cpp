@@ -457,6 +457,7 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   Options.TrapFuncName = CodeGenOpts.TrapFuncName;
   Options.PositionIndependentExecutable = LangOpts.PIELevel != 0;
   Options.SSPBufferSize = CodeGenOpts.SSPBufferSize;
+  Options.EnableSegmentedStacks = CodeGenOpts.EnableSegmentedStacks;
 
   TargetMachine *TM = TheTarget->createTargetMachine(Triple, TargetOpts.CPU,
                                                      FeaturesStr, Options,
@@ -527,6 +528,7 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action, raw_ostream *OS) {
                       Action != Backend_EmitBC &&
                       Action != Backend_EmitLL);
   TargetMachine *TM = CreateTargetMachine(UsesCodeGen);
+  if (UsesCodeGen && !TM) return;
   CreatePasses(TM);
 
   switch (Action) {

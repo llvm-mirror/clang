@@ -557,6 +557,7 @@ Lexer::ComputePreamble(const llvm::MemoryBuffer *Buffer,
   SourceLocation FileLoc = SourceLocation::getFromRawEncoding(StartOffset);
   Lexer TheLexer(FileLoc, LangOpts, Buffer->getBufferStart(),
                  Buffer->getBufferStart(), Buffer->getBufferEnd());
+  TheLexer.SetCommentRetentionState(true);
 
   // StartLoc will differ from FileLoc if there is a BOM that was skipped.
   SourceLocation StartLoc = TheLexer.getSourceLocation();
@@ -565,6 +566,7 @@ Lexer::ComputePreamble(const llvm::MemoryBuffer *Buffer,
   Token TheTok;
   Token IfStartTok;
   unsigned IfCount = 0;
+  SourceLocation ActiveCommentLoc;
 
   unsigned MaxLineOffset = 0;
   if (MaxLines) {
@@ -612,13 +614,17 @@ Lexer::ComputePreamble(const llvm::MemoryBuffer *Buffer,
     }
 
     // Comments are okay; skip over them.
-    if (TheTok.getKind() == tok::comment)
+    if (TheTok.getKind() == tok::comment) {
+      if (ActiveCommentLoc.isInvalid())
+        ActiveCommentLoc = TheTok.getLocation();
       continue;
+    }
     
     if (TheTok.isAtStartOfLine() && TheTok.getKind() == tok::hash) {
       // This is the start of a preprocessor directive. 
       Token HashTok = TheTok;
       InPreprocessorDirective = true;
+      ActiveCommentLoc = SourceLocation();
       
       // Figure out which directive this is. Since we're lexing raw tokens,
       // we don't have an identifier table available. Instead, just look at
@@ -689,7 +695,14 @@ Lexer::ComputePreamble(const llvm::MemoryBuffer *Buffer,
     break;
   } while (true);
   
-  SourceLocation End = IfCount? IfStartTok.getLocation() : TheTok.getLocation();
+  SourceLocation End;
+  if (IfCount)
+    End = IfStartTok.getLocation();
+  else if (ActiveCommentLoc.isValid())
+    End = ActiveCommentLoc; // don't truncate a decl comment.
+  else
+    End = TheTok.getLocation();
+
   return std::make_pair(End.getRawEncoding() - StartLoc.getRawEncoding(),
                         IfCount? IfStartTok.isAtStartOfLine()
                                : TheTok.isAtStartOfLine());
@@ -785,14 +798,10 @@ bool Lexer::isAtStartOfMacroExpansion(SourceLocation loc,
                                       SourceLocation *MacroBegin) {
   assert(loc.isValid() && loc.isMacroID() && "Expected a valid macro loc");
 
-  std::pair<FileID, unsigned> infoLoc = SM.getDecomposedLoc(loc);
-  // FIXME: If the token comes from the macro token paste operator ('##')
-  // this function will always return false;
-  if (infoLoc.second > 0)
-    return false; // Does not point at the start of token.
+  SourceLocation expansionLoc;
+  if (!SM.isAtStartOfImmediateMacroExpansion(loc, &expansionLoc))
+    return false;
 
-  SourceLocation expansionLoc =
-    SM.getSLocEntry(infoLoc.first).getExpansion().getExpansionLocStart();
   if (expansionLoc.isFileID()) {
     // No other macro expansions, this is the first.
     if (MacroBegin)
@@ -816,16 +825,11 @@ bool Lexer::isAtEndOfMacroExpansion(SourceLocation loc,
   if (tokLen == 0)
     return false;
 
-  FileID FID = SM.getFileID(loc);
-  SourceLocation afterLoc = loc.getLocWithOffset(tokLen+1);
-  if (SM.isInFileID(afterLoc, FID))
-    return false; // Still in the same FileID, does not point to the last token.
+  SourceLocation afterLoc = loc.getLocWithOffset(tokLen);
+  SourceLocation expansionLoc;
+  if (!SM.isAtEndOfImmediateMacroExpansion(afterLoc, &expansionLoc))
+    return false;
 
-  // FIXME: If the token comes from the macro token paste operator ('##')
-  // or the stringify operator ('#') this function will always return false;
-
-  SourceLocation expansionLoc =
-    SM.getSLocEntry(FID).getExpansion().getExpansionLocEnd();
   if (expansionLoc.isFileID()) {
     // No other macro expansions.
     if (MacroEnd)
@@ -903,25 +907,25 @@ CharSourceRange Lexer::makeFileCharRange(CharSourceRange Range,
     return makeRangeFromFileLocs(Range, SM, LangOpts);
   }
 
-  FileID FID;
-  unsigned BeginOffs;
-  llvm::tie(FID, BeginOffs) = SM.getDecomposedLoc(Begin);
-  if (FID.isInvalid())
+  bool Invalid = false;
+  const SrcMgr::SLocEntry &BeginEntry = SM.getSLocEntry(SM.getFileID(Begin),
+                                                        &Invalid);
+  if (Invalid)
     return CharSourceRange();
 
-  unsigned EndOffs;
-  if (!SM.isInFileID(End, FID, &EndOffs) ||
-      BeginOffs > EndOffs)
-    return CharSourceRange();
+  if (BeginEntry.getExpansion().isMacroArgExpansion()) {
+    const SrcMgr::SLocEntry &EndEntry = SM.getSLocEntry(SM.getFileID(End),
+                                                        &Invalid);
+    if (Invalid)
+      return CharSourceRange();
 
-  const SrcMgr::SLocEntry *E = &SM.getSLocEntry(FID);
-  const SrcMgr::ExpansionInfo &Expansion = E->getExpansion();
-  if (Expansion.isMacroArgExpansion() &&
-      Expansion.getSpellingLoc().isFileID()) {
-    SourceLocation SpellLoc = Expansion.getSpellingLoc();
-    Range.setBegin(SpellLoc.getLocWithOffset(BeginOffs));
-    Range.setEnd(SpellLoc.getLocWithOffset(EndOffs));
-    return makeRangeFromFileLocs(Range, SM, LangOpts);
+    if (EndEntry.getExpansion().isMacroArgExpansion() &&
+        BeginEntry.getExpansion().getExpansionLocStart() ==
+            EndEntry.getExpansion().getExpansionLocStart()) {
+      Range.setBegin(SM.getImmediateSpellingLoc(Begin));
+      Range.setEnd(SM.getImmediateSpellingLoc(End));
+      return makeFileCharRange(Range, SM, LangOpts);
+    }
   }
 
   return CharSourceRange();
@@ -1857,7 +1861,9 @@ bool Lexer::SkipWhitespace(Token &Result, const char *CurPtr) {
   // Whitespace - Skip it, then return the token after the whitespace.
   bool SawNewline = isVerticalWhitespace(CurPtr[-1]);
 
-  unsigned char Char = *CurPtr;  // Skip consequtive spaces efficiently.
+  unsigned char Char = *CurPtr;
+
+  // Skip consecutive spaces efficiently.
   while (1) {
     // Skip horizontal whitespace very aggressively.
     while (isHorizontalWhitespace(Char))
@@ -1873,7 +1879,7 @@ bool Lexer::SkipWhitespace(Token &Result, const char *CurPtr) {
       return false;
     }
 
-    // ok, but handle newline.
+    // OK, but handle newline.
     SawNewline = true;
     Char = *++CurPtr;
   }

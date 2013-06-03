@@ -14,13 +14,14 @@
 #ifndef LLVM_CLANG_AST_ASTCONSUMER_H
 #define LLVM_CLANG_AST_ASTCONSUMER_H
 
+#include "llvm/ADT/StringRef.h"
+
 namespace clang {
   class ASTContext;
   class CXXRecordDecl;
   class Decl;
   class DeclGroupRef;
   class HandleTagDeclDefinition;
-  class PPMutationListener;
   class ASTMutationListener;
   class ASTDeserializationListener; // layering violation because void* is ugly
   class SemaConsumer; // layering violation required for safe SemaConsumer
@@ -87,6 +88,15 @@ public:
   /// The default implementation passes it to HandleTopLevelDecl.
   virtual void HandleImplicitImportDecl(ImportDecl *D);
 
+  /// \brief Handle a pragma that appends to Linker Options.  Currently this
+  /// only exists to support Microsoft's #pragma comment(linker, "/foo").
+  virtual void HandleLinkerOptionPragma(llvm::StringRef Opts) {}
+
+  /// \brief Handle a dependent library created by a pragma in the source.
+  /// Currently this only exists to support Microsoft's
+  /// #pragma comment(lib, "/foo").
+  virtual void HandleDependentLibrary(llvm::StringRef Lib) {}
+
   /// CompleteTentativeDefinition - Callback invoked at the end of a translation
   /// unit to notify the consumer that the given tentative definition should be
   /// completed.
@@ -112,11 +122,6 @@ public:
   /// required in this translation unit; otherwise, it is only needed if
   /// it was actually used.
   virtual void HandleVTable(CXXRecordDecl *RD, bool DefinitionRequired) {}
-
-  /// \brief If the consumer is interested in preprocessor entities getting
-  /// modified after their initial creation, it should return a pointer to
-  /// a PPMutationListener here.
-  virtual PPMutationListener *GetPPMutationListener() { return 0; }
 
   /// \brief If the consumer is interested in entities getting modified after
   /// their initial creation, it should return a pointer to

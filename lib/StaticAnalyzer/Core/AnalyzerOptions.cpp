@@ -74,7 +74,7 @@ AnalyzerOptions::mayInlineCXXMemberFunction(CXXInlineableMemberKind K) {
     static const char *ModeKey = "c++-inlining";
     
     StringRef ModeStr(Config.GetOrCreateValue(ModeKey,
-                                              "constructors").getValue());
+                                              "destructors").getValue());
 
     CXXInlineableMemberKind &MutableMode =
       const_cast<CXXInlineableMemberKind &>(CXXMemberInliningMode);
@@ -134,6 +134,19 @@ bool AnalyzerOptions::mayInlineTemplateFunctions() {
                           /*Default=*/true);
 }
 
+bool AnalyzerOptions::mayInlineCXXContainerCtorsAndDtors() {
+  return getBooleanOption(InlineCXXContainerCtorsAndDtors,
+                          "c++-container-inlining",
+                          /*Default=*/false);
+}
+
+bool AnalyzerOptions::mayInlineCXXSharedPtrDtor() {
+  return getBooleanOption(InlineCXXSharedPtrDtor,
+                          "c++-shared_ptr-inlining",
+                          /*Default=*/false);
+}
+
+
 bool AnalyzerOptions::mayInlineObjCMethod() {
   return getBooleanOption(ObjCInliningMode,
                           "objc-inlining",
@@ -156,6 +169,18 @@ bool AnalyzerOptions::shouldSuppressInlinedDefensiveChecks() {
   return getBooleanOption(SuppressInlinedDefensiveChecks,
                           "suppress-inlined-defensive-checks",
                           /* Default = */ true);
+}
+
+bool AnalyzerOptions::shouldSuppressFromCXXStandardLibrary() {
+  return getBooleanOption(SuppressFromCXXStandardLibrary,
+                          "suppress-c++-stdlib",
+                          /* Default = */ false);
+}
+
+bool AnalyzerOptions::shouldReportIssuesInMainSourceFile() {
+  return getBooleanOption(ReportIssuesInMainSourceFile,
+                          "report-in-main-source-file",
+                          /* Default = */ false);
 }
 
 int AnalyzerOptions::getOptionAsInteger(StringRef Name, int DefaultVal) {
@@ -236,3 +261,8 @@ bool AnalyzerOptions::shouldSynthesizeBodies() {
 bool AnalyzerOptions::shouldPrunePaths() {
   return getBooleanOption("prune-paths", true);
 }
+
+bool AnalyzerOptions::shouldConditionalizeStaticInitializers() {
+  return getBooleanOption("cfg-conditional-static-initializers", true);
+}
+

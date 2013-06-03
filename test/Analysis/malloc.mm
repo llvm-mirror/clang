@@ -68,7 +68,7 @@ void testNSStringFreeWhenDoneNO2(NSUInteger dataLength) {
 
 void testOffsetFree() {
   int *p = (int *)malloc(sizeof(int));
-  NSData *nsdata = [NSData dataWithBytesNoCopy:++p length:sizeof(int) freeWhenDone:1]; // expected-warning{{Argument to free() is offset by 4 bytes from the start of memory allocated by malloc()}}
+  NSData *nsdata = [NSData dataWithBytesNoCopy:++p length:sizeof(int) freeWhenDone:1]; // expected-warning{{Argument to +dataWithBytesNoCopy:length:freeWhenDone: is offset by 4 bytes from the start of memory allocated by malloc()}}
 }
 
 void testRelinquished1() {
@@ -81,7 +81,17 @@ void testRelinquished2() {
   void *data = malloc(42);
   NSData *nsdata;
   free(data);
-  [NSData dataWithBytesNoCopy:data length:42]; // expected-warning {{Attempt to free released memory}}
+  [NSData dataWithBytesNoCopy:data length:42]; // expected-warning {{Use of memory after it is freed}}
+}
+
+@interface My
++ (void)param:(void *)p;
+@end
+
+void testUseAfterFree() {
+  int *p = (int *)malloc(sizeof(int));
+  free(p);
+  [My param:p];  // expected-warning{{Use of memory after it is freed}}
 }
 
 void testNoCopy() {

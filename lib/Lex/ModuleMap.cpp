@@ -83,16 +83,17 @@ Module *ModuleMap::resolveModuleId(const ModuleId &Id, Module *Mod,
   return Context;
 }
 
-ModuleMap::ModuleMap(FileManager &FileMgr, const DiagnosticConsumer &DC,
+ModuleMap::ModuleMap(FileManager &FileMgr, DiagnosticConsumer &DC,
                      const LangOptions &LangOpts, const TargetInfo *Target,
                      HeaderSearch &HeaderInfo)
   : LangOpts(LangOpts), Target(Target), HeaderInfo(HeaderInfo),
-    BuiltinIncludeDir(0)
+    BuiltinIncludeDir(0), CompilingModule(0)
 {
   IntrusiveRefCntPtr<DiagnosticIDs> DiagIDs(new DiagnosticIDs);
   Diags = IntrusiveRefCntPtr<DiagnosticsEngine>(
             new DiagnosticsEngine(DiagIDs, new DiagnosticOptions));
-  Diags->setClient(DC.clone(*Diags), /*ShouldOwnClient=*/true);
+  Diags->setClient(new ForwardingDiagnosticConsumer(DC),
+                   /*ShouldOwnClient=*/true);
   SourceMgr = new SourceManager(*Diags, FileMgr);
 }
 
@@ -149,6 +150,24 @@ static StringRef sanitizeFilenameAsIdentifier(StringRef Name,
   return Name;
 }
 
+/// \brief Determine whether the given file name is the name of a builtin
+/// header, supplied by Clang to replace, override, or augment existing system
+/// headers.
+static bool isBuiltinHeader(StringRef FileName) {
+  return llvm::StringSwitch<bool>(FileName)
+           .Case("float.h", true)
+           .Case("iso646.h", true)
+           .Case("limits.h", true)
+           .Case("stdalign.h", true)
+           .Case("stdarg.h", true)
+           .Case("stdbool.h", true)
+           .Case("stddef.h", true)
+           .Case("stdint.h", true)
+           .Case("tgmath.h", true)
+           .Case("unwind.h", true)
+           .Default(false);
+}
+
 Module *ModuleMap::findModuleForHeader(const FileEntry *File) {
   HeadersMap::iterator Known = Headers.find(File);
   if (Known != Headers.end()) {
@@ -157,6 +176,24 @@ Module *ModuleMap::findModuleForHeader(const FileEntry *File) {
       return 0;
 
     return Known->second.getModule();
+  }
+
+  // If we've found a builtin header within Clang's builtin include directory,
+  // load all of the module maps to see if it will get associated with a
+  // specific module (e.g., in /usr/include).
+  if (File->getDir() == BuiltinIncludeDir &&
+      isBuiltinHeader(llvm::sys::path::filename(File->getName()))) {
+    HeaderInfo.loadTopLevelSystemModules();
+
+    // Check again.
+    Known = Headers.find(File);
+    if (Known != Headers.end()) {
+      // If a header is not available, don't report that it maps to anything.
+      if (!Known->second.isAvailable())
+        return 0;
+
+      return Known->second.getModule();
+    }
   }
   
   const DirectoryEntry *Dir = File->getDir();
@@ -350,8 +387,13 @@ ModuleMap::findOrCreateModule(StringRef Name, Module *Parent, bool IsFramework,
   // Create a new module with this name.
   Module *Result = new Module(Name, SourceLocation(), Parent, IsFramework, 
                               IsExplicit);
-  if (!Parent)
+  if (!Parent) {
     Modules[Name] = Result;
+    if (!LangOpts.CurrentModule.empty() && !CompilingModule &&
+        Name == LangOpts.CurrentModule) {
+      CompilingModule = Result;
+    }
+  }
   return std::make_pair(Result, true);
 }
 
@@ -567,7 +609,8 @@ void ModuleMap::addHeader(Module *Mod, const FileEntry *Header,
     Mod->ExcludedHeaders.push_back(Header);
   } else {
     Mod->Headers.push_back(Header);
-    HeaderInfo.MarkFileModuleHeader(Header);
+    bool isCompilingModuleHeader = Mod->getTopLevelModule() == CompilingModule;
+    HeaderInfo.MarkFileModuleHeader(Header, isCompilingModuleHeader);
   }
   Headers[Header] = KnownHeader(Mod, Excluded);
 }
@@ -1264,24 +1307,6 @@ static void appendSubframeworkPaths(Module *Mod,
     llvm::sys::path::append(Path, "Frameworks");
     llvm::sys::path::append(Path, Paths[I-1] + ".framework");
   }
-}
-
-/// \brief Determine whether the given file name is the name of a builtin
-/// header, supplied by Clang to replace, override, or augment existing system
-/// headers.
-static bool isBuiltinHeader(StringRef FileName) {
-  return llvm::StringSwitch<bool>(FileName)
-      .Case("float.h", true)
-      .Case("iso646.h", true)
-      .Case("limits.h", true)
-      .Case("stdalign.h", true)
-      .Case("stdarg.h", true)
-      .Case("stdbool.h", true)
-      .Case("stddef.h", true)
-      .Case("stdint.h", true)
-      .Case("tgmath.h", true)
-      .Case("unwind.h", true)
-      .Default(false);
 }
 
 /// \brief Parse a header declaration.

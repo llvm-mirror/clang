@@ -38,7 +38,8 @@ class SanitizerArgs {
     NeedsTsanRt = Thread,
     NeedsMsanRt = Memory,
     NeedsUbsanRt = Undefined | Integer,
-    NotAllowedWithTrap = Vptr
+    NotAllowedWithTrap = Vptr,
+    HasZeroBaseShadow = Thread | Memory
   };
   unsigned Kind;
   std::string BlacklistFile;
@@ -50,7 +51,7 @@ class SanitizerArgs {
   SanitizerArgs() : Kind(0), BlacklistFile(""), MsanTrackOrigins(false),
                     AsanZeroBaseShadow(false), UbsanTrapOnError(false) {}
   /// Parses the sanitizer arguments from an argument list.
-  SanitizerArgs(const Driver &D, const ArgList &Args);
+  SanitizerArgs(const ToolChain &TC, const ArgList &Args);
 
   bool needsAsanRt() const { return Kind & NeedsAsanRt; }
   bool needsTsanRt() const { return Kind & NeedsTsanRt; }
@@ -63,6 +64,9 @@ class SanitizerArgs {
 
   bool sanitizesVptr() const { return Kind & Vptr; }
   bool notAllowedWithTrap() const { return Kind & NotAllowedWithTrap; }
+  bool hasZeroBaseShadow() const {
+    return (Kind & HasZeroBaseShadow) || AsanZeroBaseShadow;
+  }
 
   void addArgs(const ArgList &Args, ArgStringList &CmdArgs) const {
     if (!Kind)
@@ -199,10 +203,16 @@ class SanitizerArgs {
 
   static bool getDefaultBlacklistForKind(const Driver &D, unsigned Kind,
                                          std::string &BLPath) {
-    // For now, specify the default blacklist location for ASan only.
-    if (Kind & NeedsAsanRt) {
+    const char *BlacklistFile = 0;
+    if (Kind & NeedsAsanRt)
+      BlacklistFile = "asan_blacklist.txt";
+    else if (Kind & NeedsMsanRt)
+      BlacklistFile = "msan_blacklist.txt";
+    else if (Kind & NeedsTsanRt)
+      BlacklistFile = "tsan_blacklist.txt";
+    if (BlacklistFile) {
       SmallString<64> Path(D.ResourceDir);
-      llvm::sys::path::append(Path, "asan_blacklist.txt");
+      llvm::sys::path::append(Path, BlacklistFile);
       BLPath = Path.str();
       return true;
     }

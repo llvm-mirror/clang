@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 -fsyntax-only -verify %s
+// RUN: %clang_cc1 -fsyntax-only -verify -fmodules %s
 
 namespace test1 {
   int x; // expected-note {{previous definition is here}}
@@ -123,5 +124,43 @@ extern "C" {
   void test11_f() {
     void  __attribute__((overloadable)) test11_g(int);
     void  __attribute__((overloadable)) test11_g(double);
+  }
+}
+
+namespace test12 {
+  const int n = 0;
+  extern const int n;
+  void f() {
+    extern const int n;
+  }
+}
+
+namespace test13 {
+  static void a(void);
+  extern void a();
+  static void a(void) {}
+}
+
+namespace test14 {
+  namespace {
+    void a(void); // expected-note {{previous declaration is here}}
+    static void a(void) {} // expected-error {{static declaration of 'a' follows non-static declaration}}
+  }
+}
+
+namespace test15 {
+  const int a = 5; // expected-note {{previous definition is here}}
+  static const int a; // expected-error {{redefinition of 'a'}}
+}
+
+namespace test16 {
+  extern "C" {
+    class Foo {
+      int x;
+      friend int bar(Foo *y);
+    };
+    int bar(Foo *y) {
+      return y->x;
+    }
   }
 }

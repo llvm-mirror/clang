@@ -833,6 +833,9 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
 
   // Emit the EH cleanup if required.
   if (RequiresEHCleanup) {
+    if (CGDebugInfo *DI = getDebugInfo())
+      DI->EmitLocation(Builder, CurEHLocation);
+
     CGBuilderTy::InsertPoint SavedIP = Builder.saveAndClearIP();
 
     EmitBlock(EHEntry);
@@ -840,6 +843,7 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
     // We only actually emit the cleanup code if the cleanup is either
     // active or was used before it was deactivated.
     if (EHActiveFlag || IsActive) {
+
       cleanupFlags.setIsForEHCleanup();
       EmitCleanup(*this, Fn, cleanupFlags, EHActiveFlag);
     }

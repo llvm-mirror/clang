@@ -750,16 +750,18 @@ struct LockData {
   ///
   /// FIXME: add support for re-entrant locking and lock up/downgrading
   LockKind LKind;
+  bool     Asserted;           // for asserted locks
   bool     Managed;            // for ScopedLockable objects
   SExpr    UnderlyingMutex;    // for ScopedLockable objects
 
-  LockData(SourceLocation AcquireLoc, LockKind LKind, bool M = false)
-    : AcquireLoc(AcquireLoc), LKind(LKind), Managed(M),
+  LockData(SourceLocation AcquireLoc, LockKind LKind, bool M=false,
+           bool Asrt=false)
+    : AcquireLoc(AcquireLoc), LKind(LKind), Asserted(Asrt), Managed(M),
       UnderlyingMutex(Decl::EmptyShell())
   {}
 
   LockData(SourceLocation AcquireLoc, LockKind LKind, const SExpr &Mu)
-    : AcquireLoc(AcquireLoc), LKind(LKind), Managed(false),
+    : AcquireLoc(AcquireLoc), LKind(LKind), Asserted(false), Managed(false),
       UnderlyingMutex(Mu)
   {}
 
@@ -784,7 +786,7 @@ struct LockData {
 
 /// \brief A FactEntry stores a single fact that is known at a particular point
 /// in the program execution.  Currently, this is information regarding a lock
-/// that is held at that point.  
+/// that is held at that point.
 struct FactEntry {
   SExpr    MutID;
   LockData LDat;
@@ -797,7 +799,7 @@ struct FactEntry {
 
 typedef unsigned short FactID;
 
-/// \brief FactManager manages the memory for all facts that are created during 
+/// \brief FactManager manages the memory for all facts that are created during
 /// the analysis of a single routine.
 class FactManager {
 private:
@@ -815,9 +817,9 @@ public:
 
 
 /// \brief A FactSet is the set of facts that are known to be true at a
-/// particular program point.  FactSets must be small, because they are 
+/// particular program point.  FactSets must be small, because they are
 /// frequently copied, and are thus implemented as a set of indices into a
-/// table maintained by a FactManager.  A typical FactSet only holds 1 or 2 
+/// table maintained by a FactManager.  A typical FactSet only holds 1 or 2
 /// locks, so we can get away with doing a linear search for lookup.  Note
 /// that a hashtable or map is inappropriate in this case, because lookups
 /// may involve partial pattern matches, rather than exact matches.
@@ -862,6 +864,16 @@ public:
       return true;
     }
     return false;
+  }
+
+  // Returns an iterator
+  iterator findLockIter(FactManager &FM, const SExpr &M) {
+    for (iterator I = begin(), E = end(); I != E; ++I) {
+      const SExpr &Exp = FM[*I].MutID;
+      if (Exp.matches(M))
+        return I;
+    }
+    return end();
   }
 
   LockData* findLock(FactManager &FM, const SExpr &M) const {
@@ -1484,7 +1496,8 @@ void ThreadSafetyAnalyzer::addLock(FactSet &FSet, const SExpr &Mutex,
     return;
 
   if (FSet.findLock(FactMan, Mutex)) {
-    Handler.handleDoubleLock(Mutex.toString(), LDat.AcquireLoc);
+    if (!LDat.Asserted)
+      Handler.handleDoubleLock(Mutex.toString(), LDat.AcquireLoc);
   } else {
     FSet.addLock(FactMan, Mutex, LDat);
   }
@@ -1858,13 +1871,11 @@ void BuildLockset::checkAccess(const Expr *Exp, AccessKind AK) {
     return;
   }
 
-  if (Analyzer->Handler.issueBetaWarnings()) {
-    if (const MemberExpr *ME = dyn_cast<MemberExpr>(Exp)) {
-      if (ME->isArrow())
-        checkPtAccess(ME->getBase(), AK);
-      else
-        checkAccess(ME->getBase(), AK);
-    }
+  if (const MemberExpr *ME = dyn_cast<MemberExpr>(Exp)) {
+    if (ME->isArrow())
+      checkPtAccess(ME->getBase(), AK);
+    else
+      checkAccess(ME->getBase(), AK);
   }
 
   const ValueDecl *D = getValueDecl(Exp);
@@ -1911,6 +1922,7 @@ void BuildLockset::checkPtAccess(const Expr *Exp, AccessKind AK) {
 /// the same signature as const method calls can be also treated as reads.
 ///
 void BuildLockset::handleCall(Expr *Exp, const NamedDecl *D, VarDecl *VD) {
+  SourceLocation Loc = Exp->getExprLoc();
   const AttrVec &ArgAttrs = D->getAttrs();
   MutexIDList ExclusiveLocksToAdd;
   MutexIDList SharedLocksToAdd;
@@ -1932,6 +1944,32 @@ void BuildLockset::handleCall(Expr *Exp, const NamedDecl *D, VarDecl *VD) {
       case attr::SharedLockFunction: {
         SharedLockFunctionAttr *A = cast<SharedLockFunctionAttr>(At);
         Analyzer->getMutexIDs(SharedLocksToAdd, A, Exp, D, VD);
+        break;
+      }
+
+      // An assert will add a lock to the lockset, but will not generate
+      // a warning if it is already there, and will not generate a warning
+      // if it is not removed.
+      case attr::AssertExclusiveLock: {
+        AssertExclusiveLockAttr *A = cast<AssertExclusiveLockAttr>(At);
+
+        MutexIDList AssertLocks;
+        Analyzer->getMutexIDs(AssertLocks, A, Exp, D, VD);
+        for (unsigned i=0,n=AssertLocks.size(); i<n; ++i) {
+          Analyzer->addLock(FSet, AssertLocks[i],
+                            LockData(Loc, LK_Exclusive, false, true));
+        }
+        break;
+      }
+      case attr::AssertSharedLock: {
+        AssertSharedLockAttr *A = cast<AssertSharedLockAttr>(At);
+
+        MutexIDList AssertLocks;
+        Analyzer->getMutexIDs(AssertLocks, A, Exp, D, VD);
+        for (unsigned i=0,n=AssertLocks.size(); i<n; ++i) {
+          Analyzer->addLock(FSet, AssertLocks[i],
+                            LockData(Loc, LK_Shared, false, true));
+        }
         break;
       }
 
@@ -1988,7 +2026,6 @@ void BuildLockset::handleCall(Expr *Exp, const NamedDecl *D, VarDecl *VD) {
   }
 
   // Add locks.
-  SourceLocation Loc = Exp->getExprLoc();
   for (unsigned i=0,n=ExclusiveLocksToAdd.size(); i<n; ++i) {
     Analyzer->addLock(FSet, ExclusiveLocksToAdd[i],
                             LockData(Loc, LK_Exclusive, isScopedVar));
@@ -2065,40 +2102,38 @@ void BuildLockset::VisitCastExpr(CastExpr *CE) {
 
 
 void BuildLockset::VisitCallExpr(CallExpr *Exp) {
-  if (Analyzer->Handler.issueBetaWarnings()) {
-    if (CXXMemberCallExpr *CE = dyn_cast<CXXMemberCallExpr>(Exp)) {
-      MemberExpr *ME = dyn_cast<MemberExpr>(CE->getCallee());
-      // ME can be null when calling a method pointer
-      CXXMethodDecl *MD = CE->getMethodDecl();
+  if (CXXMemberCallExpr *CE = dyn_cast<CXXMemberCallExpr>(Exp)) {
+    MemberExpr *ME = dyn_cast<MemberExpr>(CE->getCallee());
+    // ME can be null when calling a method pointer
+    CXXMethodDecl *MD = CE->getMethodDecl();
 
-      if (ME && MD) {
-        if (ME->isArrow()) {
-          if (MD->isConst()) {
-            checkPtAccess(CE->getImplicitObjectArgument(), AK_Read);
-          } else {  // FIXME -- should be AK_Written
-            checkPtAccess(CE->getImplicitObjectArgument(), AK_Read);
-          }
-        } else {
-          if (MD->isConst())
-            checkAccess(CE->getImplicitObjectArgument(), AK_Read);
-          else     // FIXME -- should be AK_Written
-            checkAccess(CE->getImplicitObjectArgument(), AK_Read);
+    if (ME && MD) {
+      if (ME->isArrow()) {
+        if (MD->isConst()) {
+          checkPtAccess(CE->getImplicitObjectArgument(), AK_Read);
+        } else {  // FIXME -- should be AK_Written
+          checkPtAccess(CE->getImplicitObjectArgument(), AK_Read);
         }
+      } else {
+        if (MD->isConst())
+          checkAccess(CE->getImplicitObjectArgument(), AK_Read);
+        else     // FIXME -- should be AK_Written
+          checkAccess(CE->getImplicitObjectArgument(), AK_Read);
       }
-    } else if (CXXOperatorCallExpr *OE = dyn_cast<CXXOperatorCallExpr>(Exp)) {
-      switch (OE->getOperator()) {
-        case OO_Equal: {
-          const Expr *Target = OE->getArg(0);
-          const Expr *Source = OE->getArg(1);
-          checkAccess(Target, AK_Written);
-          checkAccess(Source, AK_Read);
-          break;
-        }
-        default: {
-          const Expr *Source = OE->getArg(0);
-          checkAccess(Source, AK_Read);
-          break;
-        }
+    }
+  } else if (CXXOperatorCallExpr *OE = dyn_cast<CXXOperatorCallExpr>(Exp)) {
+    switch (OE->getOperator()) {
+      case OO_Equal: {
+        const Expr *Target = OE->getArg(0);
+        const Expr *Source = OE->getArg(1);
+        checkAccess(Target, AK_Written);
+        checkAccess(Source, AK_Read);
+        break;
+      }
+      default: {
+        const Expr *Source = OE->getArg(0);
+        checkAccess(Source, AK_Read);
+        break;
       }
     }
   }
@@ -2109,12 +2144,10 @@ void BuildLockset::VisitCallExpr(CallExpr *Exp) {
 }
 
 void BuildLockset::VisitCXXConstructExpr(CXXConstructExpr *Exp) {
-  if (Analyzer->Handler.issueBetaWarnings()) {
-    const CXXConstructorDecl *D = Exp->getConstructor();
-    if (D && D->isCopyConstructor()) {
-      const Expr* Source = Exp->getArg(0);
-      checkAccess(Source, AK_Read);
-    }
+  const CXXConstructorDecl *D = Exp->getConstructor();
+  if (D && D->isCopyConstructor()) {
+    const Expr* Source = Exp->getArg(0);
+    checkAccess(Source, AK_Read);
   }
   // FIXME -- only handles constructors in DeclStmt below.
 }
@@ -2166,20 +2199,27 @@ void ThreadSafetyAnalyzer::intersectAndWarn(FactSet &FSet1,
                                             bool Modify) {
   FactSet FSet1Orig = FSet1;
 
+  // Find locks in FSet2 that conflict or are not in FSet1, and warn.
   for (FactSet::const_iterator I = FSet2.begin(), E = FSet2.end();
        I != E; ++I) {
     const SExpr &FSet2Mutex = FactMan[*I].MutID;
     const LockData &LDat2 = FactMan[*I].LDat;
+    FactSet::iterator I1 = FSet1.findLockIter(FactMan, FSet2Mutex);
 
-    if (const LockData *LDat1 = FSet1.findLock(FactMan, FSet2Mutex)) {
+    if (I1 != FSet1.end()) {
+      const LockData* LDat1 = &FactMan[*I1].LDat;
       if (LDat1->LKind != LDat2.LKind) {
         Handler.handleExclusiveAndShared(FSet2Mutex.toString(),
                                          LDat2.AcquireLoc,
                                          LDat1->AcquireLoc);
         if (Modify && LDat1->LKind != LK_Exclusive) {
-          FSet1.removeLock(FactMan, FSet2Mutex);
-          FSet1.addLock(FactMan, FSet2Mutex, LDat2);
+          // Take the exclusive lock, which is the one in FSet2.
+          *I1 = *I;
         }
+      }
+      else if (LDat1->Asserted && !LDat2.Asserted) {
+        // The non-asserted lock in FSet2 is the one we want to track.
+        *I1 = *I;
       }
     } else {
       if (LDat2.UnderlyingMutex.isValid()) {
@@ -2192,14 +2232,15 @@ void ThreadSafetyAnalyzer::intersectAndWarn(FactSet &FSet1,
                                             JoinLoc, LEK1);
         }
       }
-      else if (!LDat2.Managed && !FSet2Mutex.isUniversal())
+      else if (!LDat2.Managed && !FSet2Mutex.isUniversal() && !LDat2.Asserted)
         Handler.handleMutexHeldEndOfScope(FSet2Mutex.toString(),
                                           LDat2.AcquireLoc,
                                           JoinLoc, LEK1);
     }
   }
 
-  for (FactSet::const_iterator I = FSet1.begin(), E = FSet1.end();
+  // Find locks in FSet1 that are not in FSet2, and remove them.
+  for (FactSet::const_iterator I = FSet1Orig.begin(), E = FSet1Orig.end();
        I != E; ++I) {
     const SExpr &FSet1Mutex = FactMan[*I].MutID;
     const LockData &LDat1 = FactMan[*I].LDat;
@@ -2215,7 +2256,7 @@ void ThreadSafetyAnalyzer::intersectAndWarn(FactSet &FSet1,
                                             JoinLoc, LEK1);
         }
       }
-      else if (!LDat1.Managed && !FSet1Mutex.isUniversal())
+      else if (!LDat1.Managed && !FSet1Mutex.isUniversal() && !LDat1.Asserted)
         Handler.handleMutexHeldEndOfScope(FSet1Mutex.toString(),
                                           LDat1.AcquireLoc,
                                           JoinLoc, LEK2);
@@ -2285,6 +2326,10 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
   // Fill in source locations for all CFGBlocks.
   findBlockLocations(CFGraph, SortedGraph, BlockInfo);
 
+  MutexIDList ExclusiveLocksAcquired;
+  MutexIDList SharedLocksAcquired;
+  MutexIDList LocksReleased;
+
   // Add locks from exclusive_locks_required and shared_locks_required
   // to initial lockset. Also turn off checking for lock and unlock functions.
   // FIXME: is there a more intelligent way to check lock/unlock functions?
@@ -2306,15 +2351,30 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
       } else if (SharedLocksRequiredAttr *A
                    = dyn_cast<SharedLocksRequiredAttr>(Attr)) {
         getMutexIDs(SharedLocksToAdd, A, (Expr*) 0, D);
-      } else if (isa<UnlockFunctionAttr>(Attr)) {
-        // Don't try to check unlock functions for now
-        return;
-      } else if (isa<ExclusiveLockFunctionAttr>(Attr)) {
-        // Don't try to check lock functions for now
-        return;
-      } else if (isa<SharedLockFunctionAttr>(Attr)) {
-        // Don't try to check lock functions for now
-        return;
+      } else if (UnlockFunctionAttr *A = dyn_cast<UnlockFunctionAttr>(Attr)) {
+        if (!Handler.issueBetaWarnings())
+          return;
+        // UNLOCK_FUNCTION() is used to hide the underlying lock implementation.
+        // We must ignore such methods.
+        if (A->args_size() == 0)
+          return;
+        // FIXME -- deal with exclusive vs. shared unlock functions?
+        getMutexIDs(ExclusiveLocksToAdd, A, (Expr*) 0, D);
+        getMutexIDs(LocksReleased, A, (Expr*) 0, D);
+      } else if (ExclusiveLockFunctionAttr *A
+                   = dyn_cast<ExclusiveLockFunctionAttr>(Attr)) {
+        if (!Handler.issueBetaWarnings())
+          return;
+        if (A->args_size() == 0)
+          return;
+        getMutexIDs(ExclusiveLocksAcquired, A, (Expr*) 0, D);
+      } else if (SharedLockFunctionAttr *A
+                   = dyn_cast<SharedLockFunctionAttr>(Attr)) {
+        if (!Handler.issueBetaWarnings())
+          return;
+        if (A->args_size() == 0)
+          return;
+        getMutexIDs(SharedLocksAcquired, A, (Expr*) 0, D);
       } else if (isa<ExclusiveTrylockFunctionAttr>(Attr)) {
         // Don't try to check trylock functions for now
         return;
@@ -2497,8 +2557,27 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
   if (!Final->Reachable)
     return;
 
+  // By default, we expect all locks held on entry to be held on exit.
+  FactSet ExpectedExitSet = Initial->EntrySet;
+
+  // Adjust the expected exit set by adding or removing locks, as declared
+  // by *-LOCK_FUNCTION and UNLOCK_FUNCTION.  The intersect below will then
+  // issue the appropriate warning.
+  // FIXME: the location here is not quite right.
+  for (unsigned i=0,n=ExclusiveLocksAcquired.size(); i<n; ++i) {
+    ExpectedExitSet.addLock(FactMan, ExclusiveLocksAcquired[i],
+                            LockData(D->getLocation(), LK_Exclusive));
+  }
+  for (unsigned i=0,n=SharedLocksAcquired.size(); i<n; ++i) {
+    ExpectedExitSet.addLock(FactMan, SharedLocksAcquired[i],
+                            LockData(D->getLocation(), LK_Shared));
+  }
+  for (unsigned i=0,n=LocksReleased.size(); i<n; ++i) {
+    ExpectedExitSet.removeLock(FactMan, LocksReleased[i]);
+  }
+
   // FIXME: Should we call this function for all blocks which exit the function?
-  intersectAndWarn(Initial->EntrySet, Final->ExitSet,
+  intersectAndWarn(ExpectedExitSet, Final->ExitSet,
                    Final->ExitLoc,
                    LEK_LockedAtEndOfFunction,
                    LEK_NotLockedAtEndOfFunction,

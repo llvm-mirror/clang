@@ -140,9 +140,10 @@ ProgramStateRef CallEvent::invalidateRegions(unsigned BlockCount,
                                              ProgramStateRef Orig) const {
   ProgramStateRef Result = (Orig ? Orig : getState());
 
-  SmallVector<const MemRegion *, 8> ConstRegions;
-  SmallVector<const MemRegion *, 8> RegionsToInvalidate;
-  getExtraInvalidatedRegions(RegionsToInvalidate);
+  SmallVector<SVal, 8> ConstValues;
+  SmallVector<SVal, 8> ValuesToInvalidate;
+
+  getExtraInvalidatedValues(ValuesToInvalidate);
 
   // Indexes of arguments whose values will be preserved by the call.
   llvm::SmallSet<unsigned, 4> PreserveArgs;
@@ -150,25 +151,21 @@ ProgramStateRef CallEvent::invalidateRegions(unsigned BlockCount,
     findPtrToConstParams(PreserveArgs, *this);
 
   for (unsigned Idx = 0, Count = getNumArgs(); Idx != Count; ++Idx) {
-    const MemRegion *R = getArgSVal(Idx).getAsRegion();
-    if (!R)
-      continue;
-
     // Mark this region for invalidation.  We batch invalidate regions
     // below for efficiency.
     if (PreserveArgs.count(Idx))
-      ConstRegions.push_back(R);
+      ConstValues.push_back(getArgSVal(Idx));
     else
-      RegionsToInvalidate.push_back(R);
+      ValuesToInvalidate.push_back(getArgSVal(Idx));
   }
 
   // Invalidate designated regions using the batch invalidation API.
   // NOTE: Even if RegionsToInvalidate is empty, we may still invalidate
   //  global variables.
-  return Result->invalidateRegions(RegionsToInvalidate, getOriginExpr(),
+  return Result->invalidateRegions(ValuesToInvalidate, getOriginExpr(),
                                    BlockCount, getLocationContext(),
                                    /*CausedByPointerEscape*/ true,
-                                   /*Symbols=*/0, this, ConstRegions);
+                                   /*Symbols=*/0, this, ConstValues);
 }
 
 ProgramPoint CallEvent::getProgramPoint(bool IsPreVisit,
@@ -242,8 +239,20 @@ QualType CallEvent::getDeclaredResultType(const Decl *D) {
   assert(D);
   if (const FunctionDecl* FD = dyn_cast<FunctionDecl>(D))
     return FD->getResultType();
-  else if (const ObjCMethodDecl* MD = dyn_cast<ObjCMethodDecl>(D))
+  if (const ObjCMethodDecl* MD = dyn_cast<ObjCMethodDecl>(D))
     return MD->getResultType();
+  if (const BlockDecl *BD = dyn_cast<BlockDecl>(D)) {
+    // Blocks are difficult because the return type may not be stored in the
+    // BlockDecl itself. The AST should probably be enhanced, but for now we
+    // just do what we can.
+    QualType Ty = BD->getSignatureAsWritten()->getType();
+    if (const FunctionType *FT = Ty->getAs<FunctionType>())
+      if (!FT->getResultType()->isDependentType())
+        return FT->getResultType();
+
+    return QualType();
+  }
+  
   return QualType();
 }
 
@@ -374,9 +383,8 @@ const FunctionDecl *CXXInstanceCall::getDecl() const {
   return getSVal(CE->getCallee()).getAsFunctionDecl();
 }
 
-void CXXInstanceCall::getExtraInvalidatedRegions(RegionList &Regions) const {
-  if (const MemRegion *R = getCXXThisVal().getAsRegion())
-    Regions.push_back(R);
+void CXXInstanceCall::getExtraInvalidatedValues(ValueList &Values) const {
+  Values.push_back(getCXXThisVal());
 }
 
 SVal CXXInstanceCall::getCXXThisVal() const {
@@ -529,10 +537,10 @@ CallEvent::param_iterator BlockCall::param_end() const {
   return D->param_end();
 }
 
-void BlockCall::getExtraInvalidatedRegions(RegionList &Regions) const {
+void BlockCall::getExtraInvalidatedValues(ValueList &Values) const {
   // FIXME: This also needs to invalidate captured globals.
   if (const MemRegion *R = getBlockRegion())
-    Regions.push_back(R);
+    Values.push_back(loc::MemRegionVal(R));
 }
 
 void BlockCall::getInitialStackFrameContents(const StackFrameContext *CalleeCtx,
@@ -550,9 +558,9 @@ SVal CXXConstructorCall::getCXXThisVal() const {
   return UnknownVal();
 }
 
-void CXXConstructorCall::getExtraInvalidatedRegions(RegionList &Regions) const {
+void CXXConstructorCall::getExtraInvalidatedValues(ValueList &Values) const {
   if (Data)
-    Regions.push_back(static_cast<const MemRegion *>(Data));
+    Values.push_back(loc::MemRegionVal(static_cast<const MemRegion *>(Data)));
 }
 
 void CXXConstructorCall::getInitialStackFrameContents(
@@ -604,9 +612,8 @@ CallEvent::param_iterator ObjCMethodCall::param_end() const {
 }
 
 void
-ObjCMethodCall::getExtraInvalidatedRegions(RegionList &Regions) const {
-  if (const MemRegion *R = getReceiverSVal().getAsRegion())
-    Regions.push_back(R);
+ObjCMethodCall::getExtraInvalidatedValues(ValueList &Values) const {
+  Values.push_back(getReceiverSVal());
 }
 
 SVal ObjCMethodCall::getSelfSVal() const {

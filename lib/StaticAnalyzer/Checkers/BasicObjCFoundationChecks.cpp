@@ -58,6 +58,7 @@ enum FoundationClass {
   FC_NSArray,
   FC_NSDictionary,
   FC_NSEnumerator,
+  FC_NSNull,
   FC_NSOrderedSet,
   FC_NSSet,
   FC_NSString
@@ -69,6 +70,7 @@ static FoundationClass findKnownClass(const ObjCInterfaceDecl *ID) {
     Classes["NSArray"] = FC_NSArray;
     Classes["NSDictionary"] = FC_NSDictionary;
     Classes["NSEnumerator"] = FC_NSEnumerator;
+    Classes["NSNull"] = FC_NSNull;
     Classes["NSOrderedSet"] = FC_NSOrderedSet;
     Classes["NSSet"] = FC_NSSet;
     Classes["NSString"] = FC_NSString;
@@ -83,43 +85,114 @@ static FoundationClass findKnownClass(const ObjCInterfaceDecl *ID) {
   return result;
 }
 
-static inline bool isNil(SVal X) {
-  return X.getAs<loc::ConcreteInt>().hasValue();
-}
-
 //===----------------------------------------------------------------------===//
 // NilArgChecker - Check for prohibited nil arguments to ObjC method calls.
 //===----------------------------------------------------------------------===//
 
 namespace {
-  class NilArgChecker : public Checker<check::PreObjCMessage> {
+  class NilArgChecker : public Checker<check::PreObjCMessage,
+                                       check::PostStmt<ObjCDictionaryLiteral>,
+                                       check::PostStmt<ObjCArrayLiteral> > {
     mutable OwningPtr<APIMisuse> BT;
 
-    void WarnNilArg(CheckerContext &C,
-                    const ObjCMethodCall &msg, unsigned Arg) const;
+    void warnIfNilExpr(const Expr *E,
+                       const char *Msg,
+                       CheckerContext &C) const;
+
+    void warnIfNilArg(CheckerContext &C,
+                      const ObjCMethodCall &msg, unsigned Arg,
+                      FoundationClass Class,
+                      bool CanBeSubscript = false) const;
+
+    void generateBugReport(ExplodedNode *N,
+                           StringRef Msg,
+                           SourceRange Range,
+                           const Expr *Expr,
+                           CheckerContext &C) const;
 
   public:
     void checkPreObjCMessage(const ObjCMethodCall &M, CheckerContext &C) const;
+    void checkPostStmt(const ObjCDictionaryLiteral *DL,
+                       CheckerContext &C) const;
+    void checkPostStmt(const ObjCArrayLiteral *AL,
+                       CheckerContext &C) const;
   };
 }
 
-void NilArgChecker::WarnNilArg(CheckerContext &C,
-                               const ObjCMethodCall &msg,
-                               unsigned int Arg) const
-{
-  if (!BT)
-    BT.reset(new APIMisuse("nil argument"));
-  
+void NilArgChecker::warnIfNilExpr(const Expr *E,
+                                  const char *Msg,
+                                  CheckerContext &C) const {
+  ProgramStateRef State = C.getState();
+  if (State->isNull(C.getSVal(E)).isConstrainedTrue()) {
+
+    if (ExplodedNode *N = C.generateSink()) {
+      generateBugReport(N, Msg, E->getSourceRange(), E, C);
+    }
+    
+  }
+}
+
+void NilArgChecker::warnIfNilArg(CheckerContext &C,
+                                 const ObjCMethodCall &msg,
+                                 unsigned int Arg,
+                                 FoundationClass Class,
+                                 bool CanBeSubscript) const {
+  // Check if the argument is nil.
+  ProgramStateRef State = C.getState();
+  if (!State->isNull(msg.getArgSVal(Arg)).isConstrainedTrue())
+      return;
+      
   if (ExplodedNode *N = C.generateSink()) {
     SmallString<128> sbuf;
     llvm::raw_svector_ostream os(sbuf);
-    os << "Argument to '" << GetReceiverInterfaceName(msg) << "' method '"
-       << msg.getSelector().getAsString() << "' cannot be nil";
 
-    BugReport *R = new BugReport(*BT, os.str(), N);
-    R->addRange(msg.getArgSourceRange(Arg));
-    C.emitReport(R);
+    if (CanBeSubscript && msg.getMessageKind() == OCM_Subscript) {
+
+      if (Class == FC_NSArray) {
+        os << "Array element cannot be nil";
+      } else if (Class == FC_NSDictionary) {
+        if (Arg == 0) {
+          os << "Value stored into '";
+          os << GetReceiverInterfaceName(msg) << "' cannot be nil";
+        } else {
+          assert(Arg == 1);
+          os << "'"<< GetReceiverInterfaceName(msg) << "' key cannot be nil";
+        }
+      } else
+        llvm_unreachable("Missing foundation class for the subscript expr");
+
+    } else {
+      if (Class == FC_NSDictionary) {
+        if (Arg == 0)
+          os << "Value argument ";
+        else {
+          assert(Arg == 1);
+          os << "Key argument ";
+        }
+        os << "to '" << msg.getSelector().getAsString() << "' cannot be nil";
+      } else {
+        os << "Argument to '" << GetReceiverInterfaceName(msg) << "' method '"
+        << msg.getSelector().getAsString() << "' cannot be nil";
+      }
+    }
+    
+    generateBugReport(N, os.str(), msg.getArgSourceRange(Arg),
+                      msg.getArgExpr(Arg), C);
   }
+}
+
+void NilArgChecker::generateBugReport(ExplodedNode *N,
+                                      StringRef Msg,
+                                      SourceRange Range,
+                                      const Expr *E,
+                                      CheckerContext &C) const {
+  if (!BT)
+    BT.reset(new APIMisuse("nil argument"));
+
+  BugReport *R = new BugReport(*BT, Msg, N);
+  R->addRange(Range);
+  bugreporter::trackNullOrUndefValue(N, E, *R);
+  C.emitReport(R);
 }
 
 void NilArgChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
@@ -132,7 +205,8 @@ void NilArgChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
 
   static const unsigned InvalidArgIndex = UINT_MAX;
   unsigned Arg = InvalidArgIndex;
-
+  bool CanBeSubscript = false;
+  
   if (Class == FC_NSString) {
     Selector S = msg.getSelector();
     
@@ -176,15 +250,56 @@ void NilArgChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
     } else if (S.getNameForSlot(0).equals("setObject") &&
                S.getNameForSlot(1).equals("atIndexedSubscript")) {
       Arg = 0;
+      CanBeSubscript = true;
     } else if (S.getNameForSlot(0).equals("arrayByAddingObject")) {
+      Arg = 0;
+    }
+  } else if (Class == FC_NSDictionary) {
+    Selector S = msg.getSelector();
+
+    if (S.isUnarySelector())
+      return;
+
+    if (S.getNameForSlot(0).equals("dictionaryWithObject") &&
+        S.getNameForSlot(1).equals("forKey")) {
+      Arg = 0;
+      warnIfNilArg(C, msg, /* Arg */1, Class);
+    } else if (S.getNameForSlot(0).equals("setObject") &&
+               S.getNameForSlot(1).equals("forKey")) {
+      Arg = 0;
+      warnIfNilArg(C, msg, /* Arg */1, Class);
+    } else if (S.getNameForSlot(0).equals("setObject") &&
+               S.getNameForSlot(1).equals("forKeyedSubscript")) {
+      CanBeSubscript = true;
+      Arg = 0;
+      warnIfNilArg(C, msg, /* Arg */1, Class, CanBeSubscript);
+    } else if (S.getNameForSlot(0).equals("removeObjectForKey")) {
       Arg = 0;
     }
   }
 
   // If argument is '0', report a warning.
-  if ((Arg != InvalidArgIndex) && isNil(msg.getArgSVal(Arg)))
-    WarnNilArg(C, msg, Arg);
+  if ((Arg != InvalidArgIndex))
+    warnIfNilArg(C, msg, Arg, Class, CanBeSubscript);
 
+}
+
+void NilArgChecker::checkPostStmt(const ObjCArrayLiteral *AL,
+                                  CheckerContext &C) const {
+  unsigned NumOfElements = AL->getNumElements();
+  for (unsigned i = 0; i < NumOfElements; ++i) {
+    warnIfNilExpr(AL->getElement(i), "Array element cannot be nil", C);
+  }
+}
+
+void NilArgChecker::checkPostStmt(const ObjCDictionaryLiteral *DL,
+                                  CheckerContext &C) const {
+  unsigned NumOfElements = DL->getNumElements();
+  for (unsigned i = 0; i < NumOfElements; ++i) {
+    ObjCDictionaryElement Element = DL->getKeyValueElement(i);
+    warnIfNilExpr(Element.Key, "Dictionary key cannot be nil", C);
+    warnIfNilExpr(Element.Value, "Dictionary value cannot be nil", C);
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -330,7 +445,7 @@ void CFNumberCreateChecker::checkPreStmt(const CallExpr *CE,
   // FIXME: If the pointee isn't an integer type, should we flag a warning?
   //  People can do weird stuff with pointers.
 
-  if (!T->isIntegerType())
+  if (!T->isIntegralOrEnumerationType())
     return;
 
   uint64_t SourceSize = Ctx.getTypeSize(T);
@@ -701,38 +816,81 @@ static bool isKnownNonNilCollectionType(QualType T) {
   }
 }
 
-void ObjCLoopChecker::checkPostStmt(const ObjCForCollectionStmt *FCS,
-                                    CheckerContext &C) const {
-  ProgramStateRef State = C.getState();
-  
-  // Check if this is the branch for the end of the loop.
-  SVal CollectionSentinel = State->getSVal(FCS, C.getLocationContext());
-  if (CollectionSentinel.isZeroConstant())
-    return;
-  
+/// Assumes that the collection is non-nil.
+///
+/// If the collection is known to be nil, returns NULL to indicate an infeasible
+/// path.
+static ProgramStateRef checkCollectionNonNil(CheckerContext &C,
+                                             ProgramStateRef State,
+                                             const ObjCForCollectionStmt *FCS) {
+  if (!State)
+    return NULL;
+
+  SVal CollectionVal = C.getSVal(FCS->getCollection());
+  Optional<DefinedSVal> KnownCollection = CollectionVal.getAs<DefinedSVal>();
+  if (!KnownCollection)
+    return State;
+
+  ProgramStateRef StNonNil, StNil;
+  llvm::tie(StNonNil, StNil) = State->assume(*KnownCollection);
+  if (StNil && !StNonNil) {
+    // The collection is nil. This path is infeasible.
+    return NULL;
+  }
+
+  return StNonNil;
+}
+
+/// Assumes that the collection elements are non-nil.
+///
+/// This only applies if the collection is one of those known not to contain
+/// nil values.
+static ProgramStateRef checkElementNonNil(CheckerContext &C,
+                                          ProgramStateRef State,
+                                          const ObjCForCollectionStmt *FCS) {
+  if (!State)
+    return NULL;
+
   // See if the collection is one where we /know/ the elements are non-nil.
-  const Expr *Collection = FCS->getCollection();
-  if (!isKnownNonNilCollectionType(Collection->getType()))
-    return;
-  
-  // FIXME: Copied from ExprEngineObjC.
+  if (!isKnownNonNilCollectionType(FCS->getCollection()->getType()))
+    return State;
+
+  const LocationContext *LCtx = C.getLocationContext();
   const Stmt *Element = FCS->getElement();
-  SVal ElementVar;
+
+  // FIXME: Copied from ExprEngineObjC.
+  Optional<Loc> ElementLoc;
   if (const DeclStmt *DS = dyn_cast<DeclStmt>(Element)) {
     const VarDecl *ElemDecl = cast<VarDecl>(DS->getSingleDecl());
     assert(ElemDecl->getInit() == 0);
-    ElementVar = State->getLValue(ElemDecl, C.getLocationContext());
+    ElementLoc = State->getLValue(ElemDecl, LCtx);
   } else {
-    ElementVar = State->getSVal(Element, C.getLocationContext());
+    ElementLoc = State->getSVal(Element, LCtx).getAs<Loc>();
   }
 
-  if (!ElementVar.getAs<Loc>())
-    return;
+  if (!ElementLoc)
+    return State;
 
   // Go ahead and assume the value is non-nil.
-  SVal Val = State->getSVal(ElementVar.castAs<Loc>());
-  State = State->assume(Val.castAs<DefinedOrUnknownSVal>(), true);
-  C.addTransition(State);
+  SVal Val = State->getSVal(*ElementLoc);
+  return State->assume(Val.castAs<DefinedOrUnknownSVal>(), true);
+}
+
+void ObjCLoopChecker::checkPostStmt(const ObjCForCollectionStmt *FCS,
+                                    CheckerContext &C) const {
+  // Check if this is the branch for the end of the loop.
+  SVal CollectionSentinel = C.getSVal(FCS);
+  if (CollectionSentinel.isZeroConstant())
+    return;
+
+  ProgramStateRef State = C.getState();
+  State = checkCollectionNonNil(C, State, FCS);
+  State = checkElementNonNil(C, State, FCS);
+
+  if (!State)
+    C.generateSink();
+  else if (State != C.getState())
+    C.addTransition(State);
 }
 
 namespace {
@@ -744,6 +902,7 @@ class ObjCNonNilReturnValueChecker
     mutable bool Initialized;
     mutable Selector ObjectAtIndex;
     mutable Selector ObjectAtIndexedSubscript;
+    mutable Selector NullSelector;
 
 public:
   ObjCNonNilReturnValueChecker() : Initialized(false) {}
@@ -769,6 +928,7 @@ void ObjCNonNilReturnValueChecker::checkPostObjCMessage(const ObjCMethodCall &M,
     ASTContext &Ctx = C.getASTContext();
     ObjectAtIndex = GetUnarySelector("objectAtIndex", Ctx);
     ObjectAtIndexedSubscript = GetUnarySelector("objectAtIndexedSubscript", Ctx);
+    NullSelector = GetNullarySelector("null", Ctx);
   }
 
   // Check the receiver type.
@@ -788,13 +948,22 @@ void ObjCNonNilReturnValueChecker::checkPostObjCMessage(const ObjCMethodCall &M,
       State = assumeExprIsNonNull(M.getOriginExpr(), State, C);
     }
 
+    FoundationClass Cl = findKnownClass(Interface);
+
     // Objects returned from
     // [NSArray|NSOrderedSet]::[ObjectAtIndex|ObjectAtIndexedSubscript]
     // are never 'nil'.
-    FoundationClass Cl = findKnownClass(Interface);
     if (Cl == FC_NSArray || Cl == FC_NSOrderedSet) {
       Selector Sel = M.getSelector();
       if (Sel == ObjectAtIndex || Sel == ObjectAtIndexedSubscript) {
+        // Go ahead and assume the value is non-nil.
+        State = assumeExprIsNonNull(M.getOriginExpr(), State, C);
+      }
+    }
+
+    // Objects returned from [NSNull null] are not nil.
+    if (Cl == FC_NSNull) {
+      if (M.getSelector() == NullSelector) {
         // Go ahead and assume the value is non-nil.
         State = assumeExprIsNonNull(M.getOriginExpr(), State, C);
       }

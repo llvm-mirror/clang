@@ -238,8 +238,8 @@ static ObjCMethodDecl *getNSNumberFactoryMethod(Sema &S, SourceLocation Loc,
                                              SourceLocation(), SourceLocation(),
                                              &CX.Idents.get("value"),
                                              NumberType, /*TInfo=*/0, SC_None,
-                                             SC_None, 0);
-    Method->setMethodParams(S.Context, value, ArrayRef<SourceLocation>());
+                                             0);
+    Method->setMethodParams(S.Context, value, None);
   }
 
   if (!validateBoxingMethod(S, Loc, S.NSNumberDecl, Sel, Method))
@@ -266,7 +266,7 @@ ExprResult Sema::BuildObjCNumericLiteral(SourceLocation AtLoc, Expr *Number) {
       break;
       
     case CharacterLiteral::Wide:
-      NumberType = Context.getWCharType();
+      NumberType = Context.getWideCharType();
       break;
       
     case CharacterLiteral::UTF16:
@@ -343,7 +343,7 @@ static ExprResult CheckObjCCollectionLiteralElement(Sema &S, Expr *Element,
     InitializationKind Kind
       = InitializationKind::CreateCopy(Element->getLocStart(),
                                        SourceLocation());
-    InitializationSequence Seq(S, Entity, Kind, &Element, 1);
+    InitializationSequence Seq(S, Entity, Kind, Element);
     if (!Seq.Failed())
       return Seq.Perform(S, Entity, Kind, Element);
   }
@@ -489,8 +489,8 @@ ExprResult Sema::BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr) {
                                 &Context.Idents.get("value"),
                                 Context.getPointerType(ConstCharType),
                                 /*TInfo=*/0,
-                                SC_None, SC_None, 0);
-          M->setMethodParams(Context, value, ArrayRef<SourceLocation>());
+                                SC_None, 0);
+          M->setMethodParams(Context, value, None);
           BoxingMethod = M;
         }
 
@@ -521,7 +521,7 @@ ExprResult Sema::BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr) {
         break;
         
       case CharacterLiteral::Wide:
-        ValueType = Context.getWCharType();
+        ValueType = Context.getWideCharType();
         break;
         
       case CharacterLiteral::UTF16:
@@ -656,18 +656,16 @@ ExprResult Sema::BuildObjCArrayLiteral(SourceRange SR, MultiExprArg Elements) {
                                                  SourceLocation(),
                                                  &Context.Idents.get("objects"),
                                                  Context.getPointerType(IdT),
-                                                 /*TInfo=*/0, SC_None, SC_None,
-                                                 0);
+                                                 /*TInfo=*/0, SC_None, 0);
       Params.push_back(objects);
       ParmVarDecl *cnt = ParmVarDecl::Create(Context, Method,
                                              SourceLocation(),
                                              SourceLocation(),
                                              &Context.Idents.get("cnt"),
                                              Context.UnsignedLongTy,
-                                             /*TInfo=*/0, SC_None, SC_None,
-                                             0);
+                                             /*TInfo=*/0, SC_None, 0);
       Params.push_back(cnt);
-      Method->setMethodParams(Context, Params, ArrayRef<SourceLocation>());
+      Method->setMethodParams(Context, Params, None);
     }
 
     if (!validateBoxingMethod(*this, SR.getBegin(), NSArrayDecl, Sel, Method))
@@ -774,26 +772,23 @@ ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR,
                                                  SourceLocation(),
                                                  &Context.Idents.get("objects"),
                                                  Context.getPointerType(IdT),
-                                                 /*TInfo=*/0, SC_None, SC_None,
-                                                 0);
+                                                 /*TInfo=*/0, SC_None, 0);
       Params.push_back(objects);
       ParmVarDecl *keys = ParmVarDecl::Create(Context, Method,
                                               SourceLocation(),
                                               SourceLocation(),
                                               &Context.Idents.get("keys"),
                                               Context.getPointerType(IdT),
-                                              /*TInfo=*/0, SC_None, SC_None,
-                                              0);
+                                              /*TInfo=*/0, SC_None, 0);
       Params.push_back(keys);
       ParmVarDecl *cnt = ParmVarDecl::Create(Context, Method,
                                              SourceLocation(),
                                              SourceLocation(),
                                              &Context.Idents.get("cnt"),
                                              Context.UnsignedLongTy,
-                                             /*TInfo=*/0, SC_None, SC_None,
-                                             0);
+                                             /*TInfo=*/0, SC_None, 0);
       Params.push_back(cnt);
-      Method->setMethodParams(Context, Params, ArrayRef<SourceLocation>());
+      Method->setMethodParams(Context, Params, None);
     }
 
     if (!validateBoxingMethod(*this, SR.getBegin(), NSDictionaryDecl, Sel,
@@ -1189,23 +1184,29 @@ void Sema::EmitRelatedResultTypeNote(const Expr *E) {
 }
 
 bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
-                                     Expr **Args, unsigned NumArgs,
-                                     Selector Sel, 
+                                     MultiExprArg Args,
+                                     Selector Sel,
                                      ArrayRef<SourceLocation> SelectorLocs,
                                      ObjCMethodDecl *Method,
                                      bool isClassMessage, bool isSuperMessage,
                                      SourceLocation lbrac, SourceLocation rbrac,
                                      QualType &ReturnType, ExprValueKind &VK) {
+  SourceLocation SelLoc;
+  if (!SelectorLocs.empty() && SelectorLocs.front().isValid())
+    SelLoc = SelectorLocs.front();
+  else
+    SelLoc = lbrac;
+
   if (!Method) {
     // Apply default argument promotion as for (C99 6.5.2.2p6).
-    for (unsigned i = 0; i != NumArgs; i++) {
+    for (unsigned i = 0, e = Args.size(); i != e; i++) {
       if (Args[i]->isTypeDependent())
         continue;
 
       ExprResult result;
       if (getLangOpts().DebuggerSupport) {
         QualType paramTy; // ignored
-        result = checkUnknownAnyArg(lbrac, Args[i], paramTy);
+        result = checkUnknownAnyArg(SelLoc, Args[i], paramTy);
       } else {
         result = DefaultArgumentPromotion(Args[i]);
       }
@@ -1220,10 +1221,17 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
     else
       DiagID = isClassMessage ? diag::warn_class_method_not_found
                               : diag::warn_inst_method_not_found;
-    if (!getLangOpts().DebuggerSupport)
-      Diag(lbrac, DiagID)
+    if (!getLangOpts().DebuggerSupport) {
+      Diag(SelLoc, DiagID)
         << Sel << isClassMessage << SourceRange(SelectorLocs.front(), 
                                                 SelectorLocs.back());
+      // Find the class to which we are sending this message.
+      if (ReceiverType->isObjCObjectPointerType()) {
+        if (ObjCInterfaceDecl *Class =
+              ReceiverType->getAs<ObjCObjectPointerType>()->getInterfaceDecl())
+          Diag(Class->getLocation(), diag::note_receiver_class_declared);
+      }
+    }
 
     // In debuggers, we want to use __unknown_anytype for these
     // results so that clients can cast them.
@@ -1246,9 +1254,9 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
   if (Method->param_size() > Sel.getNumArgs())
     NumNamedArgs = Method->param_size();
   // FIXME. This need be cleaned up.
-  if (NumArgs < NumNamedArgs) {
-    Diag(lbrac, diag::err_typecheck_call_too_few_args)
-      << 2 << NumNamedArgs << NumArgs;
+  if (Args.size() < NumNamedArgs) {
+    Diag(SelLoc, diag::err_typecheck_call_too_few_args)
+      << 2 << NumNamedArgs << static_cast<unsigned>(Args.size());
     return false;
   }
 
@@ -1273,7 +1281,7 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
     // from the argument.
     if (param->getType() == Context.UnknownAnyTy) {
       QualType paramType;
-      ExprResult argE = checkUnknownAnyArg(lbrac, argExpr, paramType);
+      ExprResult argE = checkUnknownAnyArg(SelLoc, argExpr, paramType);
       if (argE.isInvalid()) {
         IsError = true;
       } else {
@@ -1292,7 +1300,7 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
 
     InitializedEntity Entity = InitializedEntity::InitializeParameter(Context,
                                                                       param);
-    ExprResult ArgE = PerformCopyInitialization(Entity, lbrac, Owned(argExpr));
+    ExprResult ArgE = PerformCopyInitialization(Entity, SelLoc, Owned(argExpr));
     if (ArgE.isInvalid())
       IsError = true;
     else
@@ -1301,7 +1309,7 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
 
   // Promote additional arguments to variadic methods.
   if (Method->isVariadic()) {
-    for (unsigned i = NumNamedArgs; i < NumArgs; ++i) {
+    for (unsigned i = NumNamedArgs, e = Args.size(); i < e; ++i) {
       if (Args[i]->isTypeDependent())
         continue;
 
@@ -1312,20 +1320,22 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
     }
   } else {
     // Check for extra arguments to non-variadic methods.
-    if (NumArgs != NumNamedArgs) {
+    if (Args.size() != NumNamedArgs) {
       Diag(Args[NumNamedArgs]->getLocStart(),
            diag::err_typecheck_call_too_many_args)
-        << 2 /*method*/ << NumNamedArgs << NumArgs
+        << 2 /*method*/ << NumNamedArgs << static_cast<unsigned>(Args.size())
         << Method->getSourceRange()
         << SourceRange(Args[NumNamedArgs]->getLocStart(),
-                       Args[NumArgs-1]->getLocEnd());
+                       Args.back()->getLocEnd());
     }
   }
 
-  DiagnoseSentinelCalls(Method, lbrac, Args, NumArgs);
+  DiagnoseSentinelCalls(Method, SelLoc, Args);
 
   // Do additional checkings on method.
-  IsError |= CheckObjCMethodCall(Method, lbrac, Args, NumArgs);
+  IsError |= CheckObjCMethodCall(
+                  Method, SelLoc,
+                  llvm::makeArrayRef<const Expr *>(Args.data(), Args.size()));
 
   return IsError;
 }
@@ -1333,7 +1343,7 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
 bool Sema::isSelfExpr(Expr *receiver) {
   // 'self' is objc 'self' in an objc method only.
   ObjCMethodDecl *method =
-    dyn_cast<ObjCMethodDecl>(CurContext->getNonClosureAncestor());
+    dyn_cast_or_null<ObjCMethodDecl>(CurContext->getNonClosureAncestor());
   if (!method) return false;
 
   receiver = receiver->IgnoreParenLValueCasts();
@@ -1791,9 +1801,11 @@ Sema::ObjCMessageKind Sema::getObjCMessageKind(Scope *S,
     QualType T;
     if (ObjCInterfaceDecl *Class = dyn_cast<ObjCInterfaceDecl>(ND))
       T = Context.getObjCInterfaceType(Class);
-    else if (TypeDecl *Type = dyn_cast<TypeDecl>(ND))
+    else if (TypeDecl *Type = dyn_cast<TypeDecl>(ND)) {
       T = Context.getTypeDeclType(Type);
-    else 
+      DiagnoseUseOfDecl(Type, NameLoc);
+    }
+    else
       return ObjCInstanceMessage;
 
     //  We have a class message, and T is the type we're
@@ -1996,7 +2008,12 @@ ExprResult Sema::BuildClassMessage(TypeSourceInfo *ReceiverTypeInfo,
       << FixItHint::CreateInsertion(Loc, "[");
     LBracLoc = Loc;
   }
-  
+  SourceLocation SelLoc;
+  if (!SelectorLocs.empty() && SelectorLocs.front().isValid())
+    SelLoc = SelectorLocs.front();
+  else
+    SelLoc = Loc;
+
   if (ReceiverType->isDependentType()) {
     // If the receiver type is dependent, we can't type-check anything
     // at this point. Build a dependent expression.
@@ -2021,7 +2038,7 @@ ExprResult Sema::BuildClassMessage(TypeSourceInfo *ReceiverTypeInfo,
   assert(Class && "We don't know which class we're messaging?");
   // objc++ diagnoses during typename annotation.
   if (!getLangOpts().CPlusPlus)
-    (void)DiagnoseUseOfDecl(Class, Loc);
+    (void)DiagnoseUseOfDecl(Class, SelLoc);
   // Find the method we are messaging.
   if (!Method) {
     SourceRange TypeRange 
@@ -2046,7 +2063,7 @@ ExprResult Sema::BuildClassMessage(TypeSourceInfo *ReceiverTypeInfo,
     if (!Method)
       Method = Class->lookupPrivateClassMethod(Sel);
 
-    if (Method && DiagnoseUseOfDecl(Method, Loc))
+    if (Method && DiagnoseUseOfDecl(Method, SelLoc))
       return ExprError();
   }
 
@@ -2056,7 +2073,8 @@ ExprResult Sema::BuildClassMessage(TypeSourceInfo *ReceiverTypeInfo,
 
   unsigned NumArgs = ArgsIn.size();
   Expr **Args = ArgsIn.data();
-  if (CheckMessageArgumentTypes(ReceiverType, Args, NumArgs, Sel, SelectorLocs,
+  if (CheckMessageArgumentTypes(ReceiverType, MultiExprArg(Args, NumArgs),
+                                Sel, SelectorLocs,
                                 Method, true,
                                 SuperLoc.isValid(), LBracLoc, RBracLoc, 
                                 ReturnType, VK))
@@ -2162,7 +2180,14 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
                                       bool isImplicit) {
   // The location of the receiver.
   SourceLocation Loc = SuperLoc.isValid()? SuperLoc : Receiver->getLocStart();
-  
+  SourceRange RecRange =
+      SuperLoc.isValid()? SuperLoc : Receiver->getSourceRange();
+  SourceLocation SelLoc;
+  if (!SelectorLocs.empty() && SelectorLocs.front().isValid())
+    SelLoc = SelectorLocs.front();
+  else
+    SelLoc = Loc;
+
   if (LBracLoc.isInvalid()) {
     Diag(Loc, diag::err_missing_open_square_message_send)
       << FixItHint::CreateInsertion(Loc, "[");
@@ -2267,7 +2292,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
           Method = LookupMethodInQualifiedType(Sel, QClassTy, true);
           // warn if instance method found for a Class message.
           if (Method) {
-            Diag(Loc, diag::warn_instance_method_on_class_found)
+            Diag(SelLoc, diag::warn_instance_method_on_class_found)
               << Method->getSelector() << Sel;
             Diag(Method->getLocation(), diag::note_method_declared_at)
               << Method->getDeclName();
@@ -2282,7 +2307,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
             if (!Method)
               Method = ClassDecl->lookupPrivateClassMethod(Sel);
           }
-          if (Method && DiagnoseUseOfDecl(Method, Loc))
+          if (Method && DiagnoseUseOfDecl(Method, SelLoc))
             return ExprError();
         }
         if (!Method) {
@@ -2301,7 +2326,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
                   if (const ObjCInterfaceDecl *ID =
                       dyn_cast<ObjCInterfaceDecl>(Method->getDeclContext())) {
                     if (ID->getSuperClass())
-                      Diag(Loc, diag::warn_root_inst_method_not_found)
+                      Diag(SelLoc, diag::warn_root_inst_method_not_found)
                       << Sel << SourceRange(LBracLoc, RBracLoc);
                   }
             }
@@ -2320,7 +2345,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
         Method = LookupMethodInQualifiedType(Sel, QIdTy, true);
         if (!Method)
           Method = LookupMethodInQualifiedType(Sel, QIdTy, false);
-        if (Method && DiagnoseUseOfDecl(Method, Loc))
+        if (Method && DiagnoseUseOfDecl(Method, SelLoc))
           return ExprError();
       } else if (const ObjCObjectPointerType *OCIType
                    = ReceiverType->getAsObjCInterfacePointerType()) {
@@ -2356,8 +2381,8 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
           Method = ClassDecl->lookupPrivateMethod(Sel);
 
           if (!Method && getLangOpts().ObjCAutoRefCount) {
-            Diag(Loc, diag::err_arc_may_not_respond)
-              << OCIType->getPointeeType() << Sel 
+            Diag(SelLoc, diag::err_arc_may_not_respond)
+              << OCIType->getPointeeType() << Sel << RecRange
               << SourceRange(SelectorLocs.front(), SelectorLocs.back());
             return ExprError();
           }
@@ -2370,12 +2395,13 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
               Method = LookupInstanceMethodInGlobalPool(Sel,
                                               SourceRange(LBracLoc, RBracLoc));
               if (Method && !forwardClass)
-                Diag(Loc, diag::warn_maynot_respond)
-                  << OCIType->getInterfaceDecl()->getIdentifier() << Sel;
+                Diag(SelLoc, diag::warn_maynot_respond)
+                  << OCIType->getInterfaceDecl()->getIdentifier()
+                  << Sel << RecRange;
             }
           }
         }
-        if (Method && DiagnoseUseOfDecl(Method, Loc, forwardClass))
+        if (Method && DiagnoseUseOfDecl(Method, SelLoc, forwardClass))
           return ExprError();
       } else {
         // Reject other random receiver types (e.g. structs).
@@ -2393,8 +2419,8 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
   ExprValueKind VK = VK_RValue;
   bool ClassMessage = (ReceiverType->isObjCClassType() ||
                        ReceiverType->isObjCQualifiedClassType());
-  if (CheckMessageArgumentTypes(ReceiverType, Args, NumArgs, Sel,
-                                SelectorLocs, Method, 
+  if (CheckMessageArgumentTypes(ReceiverType, MultiExprArg(Args, NumArgs),
+                                Sel, SelectorLocs, Method,
                                 ClassMessage, SuperLoc.isValid(), 
                                 LBracLoc, RBracLoc, ReturnType, VK))
     return ExprError();
@@ -2403,8 +2429,6 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
       RequireCompleteType(LBracLoc, Method->getResultType(), 
                           diag::err_illegal_message_expr_incomplete_type))
     return ExprError();
-
-  SourceLocation SelLoc = SelectorLocs.front();
 
   // In ARC, forbid the user from sending messages to 
   // retain/release/autorelease/dealloc/retainCount explicitly.
@@ -2430,8 +2454,8 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
     case OMF_release:
     case OMF_autorelease:
     case OMF_retainCount:
-      Diag(Loc, diag::err_arc_illegal_explicit_message)
-        << Sel << SelLoc;
+      Diag(SelLoc, diag::err_arc_illegal_explicit_message)
+        << Sel << RecRange;
       break;
     
     case OMF_performSelector:
