@@ -90,7 +90,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     AccessCheckingSFINAE(false), InNonInstantiationSFINAEContext(false),
     NonInstantiationEntries(0), ArgumentPackSubstitutionIndex(-1),
     CurrentInstantiationScope(0), TyposCorrected(0),
-    AnalysisWarnings(*this), CurScope(0), Ident_super(0)
+    AnalysisWarnings(*this), CurScope(0), Ident_super(0), Ident___float128(0)
 {
   TUScope = 0;
 
@@ -681,13 +681,6 @@ void Sema::ActOnEndOfTranslationUnit() {
 
     if (const IncompleteArrayType *ArrayT
         = Context.getAsIncompleteArrayType(VD->getType())) {
-      if (RequireCompleteType(VD->getLocation(),
-                              ArrayT->getElementType(),
-                              diag::err_tentative_def_incomplete_type_arr)) {
-        VD->setInvalidDecl();
-        continue;
-      }
-
       // Set the length of the array to 1 (C99 6.9.2p5).
       Diag(VD->getLocation(), diag::warn_tentative_incomplete_array);
       llvm::APInt One(Context.getTypeSize(Context.getSizeType()), true);
@@ -824,6 +817,8 @@ FunctionDecl *Sema::getCurFunctionDecl() {
 
 ObjCMethodDecl *Sema::getCurMethodDecl() {
   DeclContext *DC = getFunctionLevelDeclContext();
+  while (isa<RecordDecl>(DC))
+    DC = DC->getParent();
   return dyn_cast<ObjCMethodDecl>(DC);
 }
 
@@ -1141,33 +1136,68 @@ void PrettyDeclStackTraceEntry::print(raw_ostream &OS) const {
 ///  call; otherwise, it is set to an empty QualType.
 /// \param OverloadSet - If the expression is an overloaded function
 ///  name, this parameter is populated with the decls of the various overloads.
-bool Sema::isExprCallable(const Expr &E, QualType &ZeroArgCallReturnTy,
-                          UnresolvedSetImpl &OverloadSet) {
+bool Sema::tryExprAsCall(Expr &E, QualType &ZeroArgCallReturnTy,
+                         UnresolvedSetImpl &OverloadSet) {
   ZeroArgCallReturnTy = QualType();
   OverloadSet.clear();
 
+  const OverloadExpr *Overloads = NULL;
+  bool IsMemExpr = false;
   if (E.getType() == Context.OverloadTy) {
     OverloadExpr::FindResult FR = OverloadExpr::find(const_cast<Expr*>(&E));
-    const OverloadExpr *Overloads = FR.Expression;
-
-    for (OverloadExpr::decls_iterator it = Overloads->decls_begin(),
-         DeclsEnd = Overloads->decls_end(); it != DeclsEnd; ++it) {
-      OverloadSet.addDecl(*it);
-
-      // Check whether the function is a non-template which takes no
-      // arguments.
-      if (const FunctionDecl *OverloadDecl
-            = dyn_cast<FunctionDecl>((*it)->getUnderlyingDecl())) {
-        if (OverloadDecl->getMinRequiredArguments() == 0)
-          ZeroArgCallReturnTy = OverloadDecl->getResultType();
-      }
-    }
 
     // Ignore overloads that are pointer-to-member constants.
     if (FR.HasFormOfMemberPointer)
       return false;
 
-    return true;
+    Overloads = FR.Expression;
+  } else if (E.getType() == Context.BoundMemberTy) {
+    Overloads = dyn_cast<UnresolvedMemberExpr>(E.IgnoreParens());
+    IsMemExpr = true;
+  }
+
+  bool Ambiguous = false;
+
+  if (Overloads) {
+    for (OverloadExpr::decls_iterator it = Overloads->decls_begin(),
+         DeclsEnd = Overloads->decls_end(); it != DeclsEnd; ++it) {
+      OverloadSet.addDecl(*it);
+
+      // Check whether the function is a non-template, non-member which takes no
+      // arguments.
+      if (IsMemExpr)
+        continue;
+      if (const FunctionDecl *OverloadDecl
+            = dyn_cast<FunctionDecl>((*it)->getUnderlyingDecl())) {
+        if (OverloadDecl->getMinRequiredArguments() == 0) {
+          if (!ZeroArgCallReturnTy.isNull() && !Ambiguous) {
+            ZeroArgCallReturnTy = QualType();
+            Ambiguous = true;
+          } else
+            ZeroArgCallReturnTy = OverloadDecl->getResultType();
+        }
+      }
+    }
+
+    // If it's not a member, use better machinery to try to resolve the call
+    if (!IsMemExpr)
+      return !ZeroArgCallReturnTy.isNull();
+  }
+
+  // Attempt to call the member with no arguments - this will correctly handle
+  // member templates with defaults/deduction of template arguments, overloads
+  // with default arguments, etc.
+  if (IsMemExpr && !E.isTypeDependent()) {
+    bool Suppress = getDiagnostics().getSuppressAllDiagnostics();
+    getDiagnostics().setSuppressAllDiagnostics(true);
+    ExprResult R = BuildCallToMemberFunction(NULL, &E, SourceLocation(), None,
+                                             SourceLocation());
+    getDiagnostics().setSuppressAllDiagnostics(Suppress);
+    if (R.isUsable()) {
+      ZeroArgCallReturnTy = R.get()->getType();
+      return true;
+    }
+    return false;
   }
 
   if (const DeclRefExpr *DeclRef = dyn_cast<DeclRefExpr>(E.IgnoreParens())) {
@@ -1187,14 +1217,6 @@ bool Sema::isExprCallable(const Expr &E, QualType &ZeroArgCallReturnTy,
     FunTy = PointeeTy->getAs<FunctionType>();
   if (!FunTy)
     FunTy = ExprTy->getAs<FunctionType>();
-  if (!FunTy && ExprTy == Context.BoundMemberTy) {
-    // Look for the bound-member type.  If it's still overloaded, give up,
-    // although we probably should have fallen into the OverloadExpr case above
-    // if we actually have an overloaded bound member.
-    QualType BoundMemberTy = Expr::findBoundMemberType(&E);
-    if (!BoundMemberTy.isNull())
-      FunTy = BoundMemberTy->castAs<FunctionType>();
-  }
 
   if (const FunctionProtoType *FPT =
       dyn_cast_or_null<FunctionProtoType>(FunTy)) {
@@ -1207,7 +1229,7 @@ bool Sema::isExprCallable(const Expr &E, QualType &ZeroArgCallReturnTy,
 
 /// \brief Give notes for a set of overloads.
 ///
-/// A companion to isExprCallable. In cases when the name that the programmer
+/// A companion to tryExprAsCall. In cases when the name that the programmer
 /// wrote was an overloaded function, we may be able to make some guesses about
 /// plausible overloads based on their return types; such guesses can be handed
 /// off to this method to be emitted as notes.
@@ -1277,7 +1299,7 @@ bool Sema::tryToRecoverWithCall(ExprResult &E, const PartialDiagnostic &PD,
 
   QualType ZeroArgCallTy;
   UnresolvedSet<4> Overloads;
-  if (isExprCallable(*E.get(), ZeroArgCallTy, Overloads) &&
+  if (tryExprAsCall(*E.get(), ZeroArgCallTy, Overloads) &&
       !ZeroArgCallTy.isNull() &&
       (!IsPlausibleResult || IsPlausibleResult(ZeroArgCallTy))) {
     // At this point, we know E is potentially callable with 0
@@ -1312,6 +1334,12 @@ IdentifierInfo *Sema::getSuperIdentifier() const {
   if (!Ident_super)
     Ident_super = &Context.Idents.get("super");
   return Ident_super;
+}
+
+IdentifierInfo *Sema::getFloat128Identifier() const {
+  if (!Ident___float128)
+    Ident___float128 = &Context.Idents.get("__float128");
+  return Ident___float128;
 }
 
 void Sema::PushCapturedRegionScope(Scope *S, CapturedDecl *CD, RecordDecl *RD,

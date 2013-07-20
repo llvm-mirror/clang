@@ -51,11 +51,10 @@ void Builtin::Context::InitializeBuiltins(IdentifierTable &Table,
                                           const LangOptions& LangOpts) {
   // Step #1: mark all target-independent builtins with their ID's.
   for (unsigned i = Builtin::NotBuiltin+1; i != Builtin::FirstTSBuiltin; ++i)
-    if (!LangOpts.NoBuiltin || !strchr(BuiltinInfo[i].Attributes, 'f')) {
-      if (LangOpts.ObjC1 || 
-          BuiltinInfo[i].builtin_lang != clang::OBJC_LANG)
-        Table.get(BuiltinInfo[i].Name).setBuiltinID(i);
-    }
+    if ((!LangOpts.NoBuiltin || !strchr(BuiltinInfo[i].Attributes, 'f')) &&
+        (LangOpts.GNUMode || !(BuiltinInfo[i].builtin_lang & GNU_LANG)) &&
+        (LangOpts.ObjC1 || BuiltinInfo[i].builtin_lang != OBJC_LANG))
+      Table.get(BuiltinInfo[i].Name).setBuiltinID(i);
 
   // Step #2: Register target-specific builtins.
   for (unsigned i = 0, e = NumTSRecords; i != e; ++i)
@@ -64,16 +63,15 @@ void Builtin::Context::InitializeBuiltins(IdentifierTable &Table,
 }
 
 void
-Builtin::Context::GetBuiltinNames(SmallVectorImpl<const char *> &Names,
-                                  bool NoBuiltins) {
+Builtin::Context::GetBuiltinNames(SmallVectorImpl<const char *> &Names) {
   // Final all target-independent names
   for (unsigned i = Builtin::NotBuiltin+1; i != Builtin::FirstTSBuiltin; ++i)
-    if (!NoBuiltins || !strchr(BuiltinInfo[i].Attributes, 'f'))
+    if (!strchr(BuiltinInfo[i].Attributes, 'f'))
       Names.push_back(BuiltinInfo[i].Name);
 
   // Find target-specific names.
   for (unsigned i = 0, e = NumTSRecords; i != e; ++i)
-    if (!NoBuiltins || !strchr(TSRecords[i].Attributes, 'f'))
+    if (!strchr(TSRecords[i].Attributes, 'f'))
       Names.push_back(TSRecords[i].Name);
 }
 

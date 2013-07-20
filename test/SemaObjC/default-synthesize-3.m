@@ -111,3 +111,46 @@ __attribute ((objc_requires_property_definitions)) // expected-error {{objc_requ
 
 @implementation S
 @end
+
+// rdar://14085456
+// No warning must be issued in this test.
+@interface ParentObject
+@end
+
+@protocol TestObject 
+@property (readonly) int six;
+@end
+
+@interface TestObject : ParentObject <TestObject>
+@property int six;
+@end
+
+@implementation TestObject
+@synthesize six;
+@end
+
+// rdar://14094682
+// no warning in this test
+@interface ISAChallenge : NSObject {
+}
+
+@property (assign, readonly) int failureCount;
+@end
+
+@interface ISSAChallenge : ISAChallenge {
+    int _failureCount;
+}
+@property (assign, readwrite) int failureCount;
+@end
+
+@implementation ISAChallenge
+- (int)failureCount {
+    return 0;
+}
+@end
+
+@implementation ISSAChallenge
+
+@synthesize failureCount = _failureCount;
+@end
+

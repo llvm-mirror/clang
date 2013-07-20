@@ -266,10 +266,6 @@ protected:
     /// Whether this initializer list originally had a GNU array-range
     /// designator in it. This is a temporary marker used by CodeGen.
     unsigned HadArrayRangeDesignator : 1;
-
-    /// Whether this initializer list initializes a std::initializer_list
-    /// object.
-    unsigned InitializesStdInitializerList : 1;
   };
 
   class TypeTraitExprBitfields {
@@ -289,7 +285,7 @@ protected:
     /// \brief The number of arguments to this type trait.
     unsigned NumArgs : 32 - 8 - 1 - NumExprBits;
   };
-  
+
   union {
     // FIXME: this is wasteful on 64-bit platforms.
     void *Aligner;
@@ -400,13 +396,6 @@ public:
     return const_cast<Stmt*>(
       const_cast<const Stmt*>(this)->stripLabelLikeStatements());
   }
-
-  /// hasImplicitControlFlow - Some statements (e.g. short circuited operations)
-  ///  contain implicit control-flow in the order their subexpressions
-  ///  are evaluated.  This predicate returns true if this statement has
-  ///  such implicit control-flow.  Such statements are also specially handled
-  ///  within CFGs.
-  bool hasImplicitControlFlow() const;
 
   /// Child Iterators: All subclasses must implement 'children'
   /// to permit easy iteration over the substatements/subexpessions of an

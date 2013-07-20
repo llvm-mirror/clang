@@ -36,7 +36,9 @@ StringRef ErrorTypeToString(Diagnostics::ErrorType Type) {
   case Diagnostics::ET_RegistryWrongArgCount:
     return "Incorrect argument count. (Expected = $0) != (Actual = $1)";
   case Diagnostics::ET_RegistryWrongArgType:
-    return "Incorrect type on function $0 for arg $1.";
+    return "Incorrect type for arg $0. (Expected = $1) != (Actual = $2)";
+  case Diagnostics::ET_RegistryNotBindable:
+    return "Matcher does not support binding.";
 
   case Diagnostics::ET_ParserStringError:
     return "Error parsing string token: <$0>";
@@ -56,6 +58,14 @@ StringRef ErrorTypeToString(Diagnostics::ErrorType Type) {
     return "Input value is not a matcher expression.";
   case Diagnostics::ET_ParserInvalidToken:
     return "Invalid token <$0> found when looking for a value.";
+  case Diagnostics::ET_ParserMalformedBindExpr:
+    return "Malformed bind() expression.";
+  case Diagnostics::ET_ParserTrailingCode:
+    return "Expected end of code.";
+  case Diagnostics::ET_ParserUnsignedError:
+    return "Error parsing unsigned token: <$0>";
+  case Diagnostics::ET_ParserOverloadedType:
+    return "Input value has unresolved overloaded type: $0";
 
   case Diagnostics::ET_None:
     return "<N/A>";

@@ -86,6 +86,29 @@ namespace std {
   struct forward_iterator_tag : public input_iterator_tag { };
   struct bidirectional_iterator_tag : public forward_iterator_tag { };
   struct random_access_iterator_tag : public bidirectional_iterator_tag { };
+
+  template <class _Tp>
+  class allocator {};
+
+  template <class _Tp, class _Alloc>
+  class __list_imp
+  {};
+
+  template <class _Tp, class _Alloc = allocator<_Tp> >
+  class list
+  : private __list_imp<_Tp, _Alloc>
+  {
+  public:
+    void pop_front() {
+      // Fake use-after-free.
+      // No warning is expected as we are suppressing warning comming
+      // out of std::list.
+      int z = 0;
+      z = 5/z;
+    }
+    bool empty() const;
+  };
+
 }
 
 void* operator new(std::size_t, const std::nothrow_t&) throw();

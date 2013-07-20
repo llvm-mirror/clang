@@ -244,7 +244,15 @@ public:
   ///
   /// \returns false if the visitation was terminated early, true otherwise.
   bool TraverseLambdaCapture(LambdaExpr *LE, const LambdaExpr::Capture *C);
-  
+
+  /// \brief Recursively visit the body of a lambda expression.
+  ///
+  /// This provides a hook for visitors that need more context when visiting
+  /// \c LE->getBody().
+  ///
+  /// \returns false if the visitation was terminated early, true otherwise.
+  bool TraverseLambdaBody(LambdaExpr *LE);
+
   // ---- Methods on Stmts ----
 
   // Declare Traverse*() for all concrete Stmt classes.
@@ -809,6 +817,13 @@ bool RecursiveASTVisitor<Derived>::TraverseLambdaCapture(
   return true;
 }
 
+template<typename Derived>
+bool RecursiveASTVisitor<Derived>::TraverseLambdaBody(LambdaExpr *LE) {
+  TRY_TO(TraverseStmt(LE->getBody()));
+  return true;
+}
+
+
 // ----------------- Type traversal -----------------
 
 // This macro makes available a variable T, the passed-in type.
@@ -845,6 +860,10 @@ DEF_TRAVERSE_TYPE(RValueReferenceType, {
 DEF_TRAVERSE_TYPE(MemberPointerType, {
     TRY_TO(TraverseType(QualType(T->getClass(), 0)));
     TRY_TO(TraverseType(T->getPointeeType()));
+  })
+
+DEF_TRAVERSE_TYPE(DecayedType, {
+    TRY_TO(TraverseType(T->getOriginalType()));
   })
 
 DEF_TRAVERSE_TYPE(ConstantArrayType, {
@@ -1051,6 +1070,10 @@ DEF_TRAVERSE_TYPELOC(RValueReferenceType, {
 DEF_TRAVERSE_TYPELOC(MemberPointerType, {
     TRY_TO(TraverseType(QualType(TL.getTypePtr()->getClass(), 0)));
     TRY_TO(TraverseTypeLoc(TL.getPointeeLoc()));
+  })
+
+DEF_TRAVERSE_TYPELOC(DecayedType, {
+    TRY_TO(TraverseTypeLoc(TL.getOriginalLoc()));
   })
 
 template<typename Derived>
@@ -2120,6 +2143,8 @@ DEF_TRAVERSE_STMT(CXXTemporaryObjectExpr, {
 // Walk only the visible parts of lambda expressions.  
 template<typename Derived>
 bool RecursiveASTVisitor<Derived>::TraverseLambdaExpr(LambdaExpr *S) {
+  TRY_TO(WalkUpFromLambdaExpr(S));
+
   for (LambdaExpr::capture_iterator C = S->explicit_capture_begin(),
                                  CEnd = S->explicit_capture_end();
        C != CEnd; ++C) {
@@ -2143,7 +2168,7 @@ bool RecursiveASTVisitor<Derived>::TraverseLambdaExpr(LambdaExpr *S) {
     }
   }
 
-  TRY_TO(TraverseStmt(S->getBody()));
+  TRY_TO(TraverseLambdaBody(S));
   return true;
 }
 
@@ -2177,6 +2202,7 @@ DEF_TRAVERSE_STMT(CXXDefaultInitExpr, { })
 DEF_TRAVERSE_STMT(CXXDeleteExpr, { })
 DEF_TRAVERSE_STMT(ExprWithCleanups, { })
 DEF_TRAVERSE_STMT(CXXNullPtrLiteralExpr, { })
+DEF_TRAVERSE_STMT(CXXStdInitializerListExpr, { })
 DEF_TRAVERSE_STMT(CXXPseudoDestructorExpr, {
   TRY_TO(TraverseNestedNameSpecifierLoc(S->getQualifierLoc()));
   if (TypeSourceInfo *ScopeInfo = S->getScopeTypeInfo())

@@ -309,7 +309,8 @@ void ExprEngine::VisitCast(const CastExpr *CastE, const Expr *Ex,
       case CK_BlockPointerToObjCPointerCast:
       case CK_AnyPointerToBlockPointerCast:  
       case CK_ObjCObjectLValueCast: 
-      case CK_ZeroToOCLEvent: {
+      case CK_ZeroToOCLEvent:
+      case CK_LValueBitCast: {
         // Delegate to SValBuilder to process.
         SVal V = state->getSVal(Ex, LCtx);
         V = svalBuilder.evalCast(V, T, ExTy);
@@ -370,7 +371,7 @@ void ExprEngine::VisitCast(const CastExpr *CastE, const Expr *Ex,
       }
       case CK_NullToMemberPointer: {
         // FIXME: For now, member pointers are represented by void *.
-        SVal V = svalBuilder.makeIntValWithPtrWidth(0, true);
+        SVal V = svalBuilder.makeNull();
         state = state->BindExpr(CastE, LCtx, V);
         Bldr.generateNode(CastE, Pred, state);
         continue;
@@ -381,8 +382,7 @@ void ExprEngine::VisitCast(const CastExpr *CastE, const Expr *Ex,
       case CK_BaseToDerivedMemberPointer:
       case CK_DerivedToBaseMemberPointer:
       case CK_ReinterpretMemberPointer:
-      case CK_VectorSplat:
-      case CK_LValueBitCast: {
+      case CK_VectorSplat: {
         // Recover some path-sensitivty by conjuring a new value.
         QualType resultType = CastE->getType();
         if (CastE->isGLValue())
@@ -579,9 +579,10 @@ void ExprEngine::VisitInitListExpr(const InitListExpr *IE,
   const LocationContext *LCtx = Pred->getLocationContext();
   QualType T = getContext().getCanonicalType(IE->getType());
   unsigned NumInitElements = IE->getNumInits();
-  
-  if (T->isArrayType() || T->isRecordType() || T->isVectorType() ||
-      T->isAnyComplexType()) {
+
+  if (!IE->isGLValue() &&
+      (T->isArrayType() || T->isRecordType() || T->isVectorType() ||
+       T->isAnyComplexType())) {
     llvm::ImmutableList<SVal> vals = getBasicVals().getEmptySValList();
     
     // Handle base case where the initializer has no elements.
@@ -606,7 +607,9 @@ void ExprEngine::VisitInitListExpr(const InitListExpr *IE,
     return;
   }
 
-  // Handle scalars: int{5} and int{}.
+  // Handle scalars: int{5} and int{} and GLvalues.
+  // Note, if the InitListExpr is a GLvalue, it means that there is an address
+  // representing it, so it must have a single init element.
   assert(NumInitElements <= 1);
 
   SVal V;

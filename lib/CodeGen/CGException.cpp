@@ -89,7 +89,7 @@ static llvm::Constant *getEndCatchFn(CodeGenModule &CGM) {
 }
 
 static llvm::Constant *getUnexpectedFn(CodeGenModule &CGM) {
-  // void __cxa_call_unexepcted(void *thrown_exception);
+  // void __cxa_call_unexpected(void *thrown_exception);
 
   llvm::FunctionType *FTy =
     llvm::FunctionType::get(CGM.VoidTy, CGM.Int8PtrTy, /*IsVarArgs=*/false);
@@ -1619,8 +1619,15 @@ llvm::BasicBlock *CodeGenFunction::getTerminateHandler() {
   // end of the function by FinishFunction.
   TerminateHandler = createBasicBlock("terminate.handler");
   Builder.SetInsertPoint(TerminateHandler);
-  llvm::CallInst *TerminateCall = EmitNounwindRuntimeCall(getTerminateFn(CGM));
-  TerminateCall->setDoesNotReturn();
+  llvm::CallInst *terminateCall;
+  if (useClangCallTerminate(CGM)) {
+    // Load the exception pointer.
+    llvm::Value *exn = getExceptionFromSlot();
+    terminateCall = EmitNounwindRuntimeCall(getClangCallTerminateFn(CGM), exn);
+  } else {
+    terminateCall = EmitNounwindRuntimeCall(getTerminateFn(CGM));
+  }
+  terminateCall->setDoesNotReturn();
   Builder.CreateUnreachable();
 
   // Restore the saved insertion state.

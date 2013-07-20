@@ -16,6 +16,7 @@
 
 #include "clang/AST/AttrIterator.h"
 #include "clang/AST/DeclarationName.h"
+#include "clang/Basic/Linkage.h"
 #include "clang/Basic/Specifiers.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/Support/Compiler.h"
@@ -31,6 +32,7 @@ class DeclarationName;
 class DependentDiagnostic;
 class EnumDecl;
 class FunctionDecl;
+class LinkageComputer;
 class LinkageSpecDecl;
 class Module;
 class NamedDecl;
@@ -284,19 +286,14 @@ protected:
   /// IdentifierNamespace - This specifies what IDNS_* namespace this lives in.
   unsigned IdentifierNamespace : 12;
 
-  /// \brief Whether the \c CachedLinkage field is active.
-  ///
-  /// This field is only valid for NamedDecls subclasses.
-  mutable unsigned HasCachedLinkage : 1;
-
-  /// \brief If \c HasCachedLinkage, the linkage of this declaration.
-  ///
-  /// This field is only valid for NamedDecls subclasses.
-  mutable unsigned CachedLinkage : 2;
+  /// \brief If 0, we have not computed the linkage of this declaration.
+  /// Otherwise, it is the linkage + 1.
+  mutable unsigned CacheValidAndLinkage : 3;
 
   friend class ASTDeclWriter;
   friend class ASTDeclReader;
   friend class ASTReader;
+  friend class LinkageComputer;
 
 private:
   void CheckAccessDeclContext() const;
@@ -309,7 +306,7 @@ protected:
       HasAttrs(false), Implicit(false), Used(false), Referenced(false),
       Access(AS_none), FromASTFile(0), Hidden(0),
       IdentifierNamespace(getIdentifierNamespaceForKind(DK)),
-      HasCachedLinkage(0)
+      CacheValidAndLinkage(0)
   {
     if (StatisticsEnabled) add(DK);
   }
@@ -319,7 +316,7 @@ protected:
       HasAttrs(false), Implicit(false), Used(false), Referenced(false),
       Access(AS_none), FromASTFile(0), Hidden(0),
       IdentifierNamespace(getIdentifierNamespaceForKind(DK)),
-      HasCachedLinkage(0)
+      CacheValidAndLinkage(0)
   {
     if (StatisticsEnabled) add(DK);
   }
@@ -340,6 +337,18 @@ protected:
 
   /// \brief Update a potentially out-of-date declaration.
   void updateOutOfDate(IdentifierInfo &II) const;
+
+  Linkage getCachedLinkage() const {
+    return Linkage(CacheValidAndLinkage - 1);
+  }
+
+  void setCachedLinkage(Linkage L) const {
+    CacheValidAndLinkage = L + 1;
+  }
+
+  bool hasCachedLinkage() const {
+    return CacheValidAndLinkage;
+  }
 
 public:
 
@@ -419,7 +428,6 @@ public:
     return const_cast<AttrVec&>(const_cast<const Decl*>(this)->getAttrs());
   }
   const AttrVec &getAttrs() const;
-  void swapAttrs(Decl *D);
   void dropAttrs();
 
   void addAttr(Attr *A) {
@@ -777,8 +785,10 @@ public:
   ///  top-level Stmt* of that body.  Otherwise this method returns null.
   virtual Stmt* getBody() const { return 0; }
 
-  /// \brief Returns true if this Decl represents a declaration for a body of
+  /// \brief Returns true if this \c Decl represents a declaration for a body of
   /// code, such as a function or method definition.
+  /// Note that \c hasBody can also return true if any redeclaration of this
+  /// \c Decl represents a declaration for a body of code.
   virtual bool hasBody() const { return getBody() != 0; }
 
   /// getBodyRBrace - Gets the right brace of the body, if a body exists.
@@ -836,9 +846,9 @@ public:
   }
 
   enum FriendObjectKind {
-    FOK_None, // not a friend object
-    FOK_Declared, // a friend of a previously-declared entity
-    FOK_Undeclared // a friend of a previously-undeclared entity
+    FOK_None,      ///< Not a friend object.
+    FOK_Declared,  ///< A friend of a previously-declared entity.
+    FOK_Undeclared ///< A friend of a previously-undeclared entity.
   };
 
   /// \brief Determines whether this declaration is the object of a
@@ -846,11 +856,11 @@ public:
   ///
   /// There is currently no direct way to find the associated FriendDecl.
   FriendObjectKind getFriendObjectKind() const {
-    unsigned mask
-      = (IdentifierNamespace & (IDNS_TagFriend | IDNS_OrdinaryFriend));
+    unsigned mask =
+        (IdentifierNamespace & (IDNS_TagFriend | IDNS_OrdinaryFriend));
     if (!mask) return FOK_None;
-    return (IdentifierNamespace & (IDNS_Tag | IDNS_Ordinary) ?
-              FOK_Declared : FOK_Undeclared);
+    return (IdentifierNamespace & (IDNS_Tag | IDNS_Ordinary) ? FOK_Declared
+                                                             : FOK_Undeclared);
   }
 
   /// Specifies that this declaration is a C++ overloaded non-member.
@@ -974,6 +984,7 @@ protected:
   mutable Decl *LastDecl;
 
   friend class ExternalASTSource;
+  friend class ASTDeclReader;
   friend class ASTWriter;
 
   /// \brief Build up a chain of declarations.
@@ -1429,12 +1440,20 @@ public:
     return const_cast<DeclContext*>(this)->lookup(Name);
   }
 
+  /// \brief Find the declarations with the given name that are visible
+  /// within this context; don't attempt to retrieve anything from an
+  /// external source.
+  lookup_result noload_lookup(DeclarationName Name);
+
   /// \brief A simplistic name lookup mechanism that performs name lookup
   /// into this declaration context without consulting the external source.
   ///
   /// This function should almost never be used, because it subverts the
   /// usual relationship between a DeclContext and the external source.
   /// See the ASTImporter for the (few, but important) use cases.
+  ///
+  /// FIXME: This is very inefficient; replace uses of it with uses of
+  /// noload_lookup.
   void localUncachedLookup(DeclarationName Name,
                            SmallVectorImpl<NamedDecl *> &Results);
 
@@ -1458,9 +1477,15 @@ public:
   /// of looking up every possible name.
   class all_lookups_iterator;
 
+  /// \brief Iterators over all possible lookups within this context.
   all_lookups_iterator lookups_begin() const;
-
   all_lookups_iterator lookups_end() const;
+
+  /// \brief Iterators over all possible lookups within this context that are
+  /// currently loaded; don't attempt to retrieve anything from an external
+  /// source.
+  all_lookups_iterator noload_lookups_begin() const;
+  all_lookups_iterator noload_lookups_end() const;
 
   /// udir_iterator - Iterates through the using-directives stored
   /// within this context.
@@ -1532,6 +1557,8 @@ public:
   static bool classof(const DeclContext *D) { return true; }
 
   LLVM_ATTRIBUTE_USED void dumpDeclContext() const;
+  LLVM_ATTRIBUTE_USED void dumpLookups() const;
+  LLVM_ATTRIBUTE_USED void dumpLookups(llvm::raw_ostream &OS) const;
 
 private:
   void reconcileExternalVisibleStorage();
@@ -1548,6 +1575,8 @@ private:
   friend class DependentDiagnostic;
   StoredDeclsMap *CreateStoredDeclsMap(ASTContext &C) const;
 
+  template<decl_iterator (DeclContext::*Begin)() const,
+           decl_iterator (DeclContext::*End)() const>
   void buildLookupImpl(DeclContext *DCtx);
   void makeDeclVisibleInContextWithFlags(NamedDecl *D, bool Internal,
                                          bool Rediscoverable);

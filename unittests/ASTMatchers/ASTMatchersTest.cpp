@@ -912,6 +912,15 @@ TEST(HasType, TakesDeclMatcherAndMatchesValueDecl) {
       notMatches("class X {}; void y() { X *x; }", varDecl(hasType(ClassX))));
 }
 
+TEST(HasTypeLoc, MatchesDeclaratorDecls) {
+  EXPECT_TRUE(matches("int x;",
+                      varDecl(hasName("x"), hasTypeLoc(loc(asString("int"))))));
+
+  // Make sure we don't crash on implicit constructors.
+  EXPECT_TRUE(notMatches("class X {}; X x;",
+                         declaratorDecl(hasTypeLoc(loc(asString("int"))))));
+}
+
 TEST(Matcher, Call) {
   // FIXME: Do we want to overload Call() to directly take
   // Matcher<Decl>, too?
@@ -1450,6 +1459,16 @@ TEST(Matcher, MatchesClassTemplateSpecialization) {
                       classTemplateSpecializationDecl()));
   EXPECT_TRUE(notMatches("template<typename T> struct A {};",
                          classTemplateSpecializationDecl()));
+}
+
+TEST(DeclaratorDecl, MatchesDeclaratorDecls) {
+  EXPECT_TRUE(matches("int x;", declaratorDecl()));
+  EXPECT_TRUE(notMatches("class A {};", declaratorDecl()));
+}
+
+TEST(ParmVarDecl, MatchesParmVars) {
+  EXPECT_TRUE(matches("void f(int x);", parmVarDecl()));
+  EXPECT_TRUE(notMatches("void f();", parmVarDecl()));
 }
 
 TEST(Matcher, MatchesTypeTemplateArgument) {
@@ -2231,10 +2250,9 @@ TEST(AstMatcherPMacro, Works) {
 }
 
 AST_POLYMORPHIC_MATCHER_P(
-    polymorphicHas, internal::Matcher<Decl>, AMatcher) {
-  TOOLING_COMPILE_ASSERT((llvm::is_same<NodeType, Decl>::value) ||
-                         (llvm::is_same<NodeType, Stmt>::value),
-                         assert_node_type_is_accessible);
+    polymorphicHas,
+    AST_POLYMORPHIC_SUPPORTED_TYPES_2(Decl, Stmt),
+    internal::Matcher<Decl>, AMatcher) {
   return Finder->matchesChildOf(
       Node, AMatcher, Builder,
       ASTMatchFinder::TK_IgnoreImplicitCastsAndParentheses,
@@ -3009,12 +3027,13 @@ TEST(ForEachDescendant, NestedForEachDescendant) {
     recordDecl(hasName("A"), anyOf(m, forEachDescendant(m))),
     new VerifyIdIsBoundTo<Decl>("x", "C")));
 
-  // FIXME: This is not really a useful matcher, but the result is still
-  // surprising (currently binds "A").
-  //EXPECT_TRUE(matchAndVerifyResultTrue(
-  //  "class A { class B { class C {}; }; };",
-  //  recordDecl(hasName("A"), allOf(hasDescendant(m), anyOf(m, anything()))),
-  //  new VerifyIdIsBoundTo<Decl>("x", "C")));
+  // Check that a partial match of 'm' that binds 'x' in the
+  // first part of anyOf(m, anything()) will not overwrite the
+  // binding created by the earlier binding in the hasDescendant.
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class A { class B { class C {}; }; };",
+      recordDecl(hasName("A"), allOf(hasDescendant(m), anyOf(m, anything()))),
+      new VerifyIdIsBoundTo<Decl>("x", "C")));
 }
 
 TEST(ForEachDescendant, BindsMultipleNodes) {
@@ -3032,6 +3051,112 @@ TEST(ForEachDescendant, BindsRecursiveCombinations) {
       recordDecl(hasName("C"), forEachDescendant(recordDecl(
           forEachDescendant(fieldDecl().bind("f"))))),
       new VerifyIdIsBoundTo<FieldDecl>("f", 8)));
+}
+
+TEST(ForEachDescendant, BindsCombinations) {
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "void f() { if(true) {} if (true) {} while (true) {} if (true) {} while "
+      "(true) {} }",
+      compoundStmt(forEachDescendant(ifStmt().bind("if")),
+                   forEachDescendant(whileStmt().bind("while"))),
+      new VerifyIdIsBoundTo<IfStmt>("if", 6)));
+}
+
+TEST(Has, DoesNotDeleteBindings) {
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class X { int a; };", recordDecl(decl().bind("x"), has(fieldDecl())),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+}
+
+TEST(LoopingMatchers, DoNotOverwritePreviousMatchResultOnFailure) {
+  // Those matchers cover all the cases where an inner matcher is called
+  // and there is not a 1:1 relationship between the match of the outer
+  // matcher and the match of the inner matcher.
+  // The pattern to look for is:
+  //   ... return InnerMatcher.matches(...); ...
+  // In which case no special handling is needed.
+  //
+  // On the other hand, if there are multiple alternative matches
+  // (for example forEach*) or matches might be discarded (for example has*)
+  // the implementation must make sure that the discarded matches do not
+  // affect the bindings.
+  // When new such matchers are added, add a test here that:
+  // - matches a simple node, and binds it as the first thing in the matcher:
+  //     recordDecl(decl().bind("x"), hasName("X")))
+  // - uses the matcher under test afterwards in a way that not the first
+  //   alternative is matched; for anyOf, that means the first branch
+  //   would need to return false; for hasAncestor, it means that not
+  //   the direct parent matches the inner matcher.
+
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class X { int y; };",
+      recordDecl(
+          recordDecl().bind("x"), hasName("::X"),
+          anyOf(forEachDescendant(recordDecl(hasName("Y"))), anything())),
+      new VerifyIdIsBoundTo<CXXRecordDecl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class X {};", recordDecl(recordDecl().bind("x"), hasName("::X"),
+                                anyOf(unless(anything()), anything())),
+      new VerifyIdIsBoundTo<CXXRecordDecl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "template<typename T1, typename T2> class X {}; X<float, int> x;",
+      classTemplateSpecializationDecl(
+          decl().bind("x"),
+          hasAnyTemplateArgument(refersToType(asString("int")))),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class X { void f(); void g(); };",
+      recordDecl(decl().bind("x"), hasMethod(hasName("g"))),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class X { X() : a(1), b(2) {} double a; int b; };",
+      recordDecl(decl().bind("x"),
+                 has(constructorDecl(
+                     hasAnyConstructorInitializer(forField(hasName("b")))))),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "void x(int, int) { x(0, 42); }",
+      callExpr(expr().bind("x"), hasAnyArgument(integerLiteral(equals(42)))),
+      new VerifyIdIsBoundTo<Expr>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "void x(int, int y) {}",
+      functionDecl(decl().bind("x"), hasAnyParameter(hasName("y"))),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "void x() { return; if (true) {} }",
+      functionDecl(decl().bind("x"),
+                   has(compoundStmt(hasAnySubstatement(ifStmt())))),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "namespace X { void b(int); void b(); }"
+      "using X::b;",
+      usingDecl(decl().bind("x"), hasAnyUsingShadowDecl(hasTargetDecl(
+                                      functionDecl(parameterCountIs(1))))),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class A{}; class B{}; class C : B, A {};",
+      recordDecl(decl().bind("x"), isDerivedFrom("::A")),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class A{}; typedef A B; typedef A C; typedef A D;"
+      "class E : A {};",
+      recordDecl(decl().bind("x"), isDerivedFrom("C")),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class A { class B { void f() {} }; };",
+      functionDecl(decl().bind("x"), hasAncestor(recordDecl(hasName("::A")))),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "template <typename T> struct A { struct B {"
+      "  void f() { if(true) {} }"
+      "}; };"
+      "void t() { A<int>::B b; b.f(); }",
+      ifStmt(stmt().bind("x"), hasAncestor(recordDecl(hasName("::A")))),
+      new VerifyIdIsBoundTo<Stmt>("x", 2)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class A {};",
+      recordDecl(hasName("::A"), decl().bind("x"), unless(hasName("fooble"))),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
 }
 
 TEST(ForEachDescendant, BindsCorrectNodes) {
@@ -3932,6 +4057,116 @@ TEST(MatchFinder, InterceptsStartOfTranslationUnit) {
   OwningPtr<FrontendActionFactory> Factory(newFrontendActionFactory(&Finder));
   ASSERT_TRUE(tooling::runToolOnCode(Factory->create(), "int x;"));
   EXPECT_TRUE(VerifyCallback.Called);
+}
+
+class VerifyEndOfTranslationUnit : public MatchFinder::MatchCallback {
+public:
+  VerifyEndOfTranslationUnit() : Called(false) {}
+  virtual void run(const MatchFinder::MatchResult &Result) {
+    EXPECT_FALSE(Called);
+  }
+  virtual void onEndOfTranslationUnit() {
+    Called = true;
+  }
+  bool Called;
+};
+
+TEST(MatchFinder, InterceptsEndOfTranslationUnit) {
+  MatchFinder Finder;
+  VerifyEndOfTranslationUnit VerifyCallback;
+  Finder.addMatcher(decl(), &VerifyCallback);
+  OwningPtr<FrontendActionFactory> Factory(newFrontendActionFactory(&Finder));
+  ASSERT_TRUE(tooling::runToolOnCode(Factory->create(), "int x;"));
+  EXPECT_TRUE(VerifyCallback.Called);
+}
+
+TEST(EqualsBoundNodeMatcher, QualType) {
+  EXPECT_TRUE(matches(
+      "int i = 1;", varDecl(hasType(qualType().bind("type")),
+                            hasInitializer(ignoringParenImpCasts(
+                                hasType(qualType(equalsBoundNode("type"))))))));
+  EXPECT_TRUE(notMatches("int i = 1.f;",
+                         varDecl(hasType(qualType().bind("type")),
+                                 hasInitializer(ignoringParenImpCasts(hasType(
+                                     qualType(equalsBoundNode("type"))))))));
+}
+
+TEST(EqualsBoundNodeMatcher, NonMatchingTypes) {
+  EXPECT_TRUE(notMatches(
+      "int i = 1;", varDecl(namedDecl(hasName("i")).bind("name"),
+                            hasInitializer(ignoringParenImpCasts(
+                                hasType(qualType(equalsBoundNode("type"))))))));
+}
+
+TEST(EqualsBoundNodeMatcher, Stmt) {
+  EXPECT_TRUE(
+      matches("void f() { if(true) {} }",
+              stmt(allOf(ifStmt().bind("if"),
+                         hasParent(stmt(has(stmt(equalsBoundNode("if")))))))));
+
+  EXPECT_TRUE(notMatches(
+      "void f() { if(true) { if (true) {} } }",
+      stmt(allOf(ifStmt().bind("if"), has(stmt(equalsBoundNode("if")))))));
+}
+
+TEST(EqualsBoundNodeMatcher, Decl) {
+  EXPECT_TRUE(matches(
+      "class X { class Y {}; };",
+      decl(allOf(recordDecl(hasName("::X::Y")).bind("record"),
+                 hasParent(decl(has(decl(equalsBoundNode("record")))))))));
+
+  EXPECT_TRUE(notMatches("class X { class Y {}; };",
+                         decl(allOf(recordDecl(hasName("::X")).bind("record"),
+                                    has(decl(equalsBoundNode("record")))))));
+}
+
+TEST(EqualsBoundNodeMatcher, Type) {
+  EXPECT_TRUE(matches(
+      "class X { int a; int b; };",
+      recordDecl(
+          has(fieldDecl(hasName("a"), hasType(type().bind("t")))),
+          has(fieldDecl(hasName("b"), hasType(type(equalsBoundNode("t"))))))));
+
+  EXPECT_TRUE(notMatches(
+      "class X { int a; double b; };",
+      recordDecl(
+          has(fieldDecl(hasName("a"), hasType(type().bind("t")))),
+          has(fieldDecl(hasName("b"), hasType(type(equalsBoundNode("t"))))))));
+}
+
+TEST(EqualsBoundNodeMatcher, UsingForEachDescendant) {
+
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "int f() {"
+      "  if (1) {"
+      "    int i = 9;"
+      "  }"
+      "  int j = 10;"
+      "  {"
+      "    float k = 9.0;"
+      "  }"
+      "  return 0;"
+      "}",
+      // Look for variable declarations within functions whose type is the same
+      // as the function return type.
+      functionDecl(returns(qualType().bind("type")),
+                   forEachDescendant(varDecl(hasType(
+                       qualType(equalsBoundNode("type")))).bind("decl"))),
+      // Only i and j should match, not k.
+      new VerifyIdIsBoundTo<VarDecl>("decl", 2)));
+}
+
+TEST(EqualsBoundNodeMatcher, FiltersMatchedCombinations) {
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "void f() {"
+      "  int x;"
+      "  double d;"
+      "  x = d + x - d + x;"
+      "}",
+      functionDecl(
+          hasName("f"), forEachDescendant(varDecl().bind("d")),
+          forEachDescendant(declRefExpr(to(decl(equalsBoundNode("d")))))),
+      new VerifyIdIsBoundTo<VarDecl>("d", 5)));
 }
 
 } // end namespace ast_matchers

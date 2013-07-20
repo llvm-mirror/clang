@@ -1258,7 +1258,7 @@ static void ComputeLineNumbers(DiagnosticsEngine &Diag, ContentCache *FI,
 
       // If we found a newline, adjust the pointer and jump to the handling code.
       if (Mask != 0) {
-        NextBuf += llvm::CountTrailingZeros_32(Mask);
+        NextBuf += llvm::countTrailingZeros(Mask);
         goto FoundSpecialChar;
       }
       NextBuf += 16;
@@ -1808,7 +1808,10 @@ void SourceManager::computeMacroArgsCache(MacroArgsMap *&CachePtr,
       return;
     }
 
-    const SrcMgr::SLocEntry &Entry = getSLocEntryByID(ID);
+    bool Invalid = false;
+    const SrcMgr::SLocEntry &Entry = getSLocEntryByID(ID, &Invalid);
+    if (Invalid)
+      return;
     if (Entry.isFile()) {
       SourceLocation IncludeLoc = Entry.getFile().getIncludeLoc();
       if (IncludeLoc.isInvalid())
@@ -1958,6 +1961,9 @@ SourceManager::getMacroArgExpandedLocation(SourceLocation Loc) const {
 
 std::pair<FileID, unsigned>
 SourceManager::getDecomposedIncludedLoc(FileID FID) const {
+  if (FID.isInvalid())
+    return std::make_pair(FileID(), 0);
+
   // Uses IncludedLocMap to retrieve/cache the decomposed loc.
 
   typedef std::pair<FileID, unsigned> DecompTy;
@@ -1969,11 +1975,14 @@ SourceManager::getDecomposedIncludedLoc(FileID FID) const {
     return DecompLoc; // already in map.
 
   SourceLocation UpperLoc;
-  const SrcMgr::SLocEntry &Entry = getSLocEntry(FID);
-  if (Entry.isExpansion())
-    UpperLoc = Entry.getExpansion().getExpansionLocStart();
-  else
-    UpperLoc = Entry.getFile().getIncludeLoc();
+  bool Invalid = false;
+  const SrcMgr::SLocEntry &Entry = getSLocEntry(FID, &Invalid);
+  if (!Invalid) {
+    if (Entry.isExpansion())
+      UpperLoc = Entry.getExpansion().getExpansionLocStart();
+    else
+      UpperLoc = Entry.getFile().getIncludeLoc();
+  }
 
   if (UpperLoc.isValid())
     DecompLoc = getDecomposedLoc(UpperLoc);
@@ -2032,6 +2041,12 @@ bool SourceManager::isBeforeInTranslationUnit(SourceLocation LHS,
 
   std::pair<FileID, unsigned> LOffs = getDecomposedLoc(LHS);
   std::pair<FileID, unsigned> ROffs = getDecomposedLoc(RHS);
+
+  // getDecomposedLoc may have failed to return a valid FileID because, e.g. it
+  // is a serialized one referring to a file that was removed after we loaded
+  // the PCH.
+  if (LOffs.first.isInvalid() || ROffs.first.isInvalid())
+    return LOffs.first.isInvalid() && !ROffs.first.isInvalid();
 
   // If the source locations are in the same file, just compare offsets.
   if (LOffs.first == ROffs.first)

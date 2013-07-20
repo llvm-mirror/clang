@@ -466,8 +466,8 @@ void Preprocessor::HandlePragmaDependency(Token &DependencyTok) {
 
   // Search include directories for this file.
   const DirectoryLookup *CurDir;
-  const FileEntry *File = LookupFile(Filename, isAngled, 0, CurDir, NULL, NULL,
-                                     NULL);
+  const FileEntry *File = LookupFile(FilenameTok.getLocation(), Filename,
+                                     isAngled, 0, CurDir, NULL, NULL, NULL);
   if (File == 0) {
     if (!SuppressIncludeNotFoundError)
       Diag(FilenameTok, diag::err_pp_file_not_found) << Filename;
@@ -1204,28 +1204,28 @@ struct PragmaARCCFCodeAuditedHandler : public PragmaHandler {
   }
 };
 
-  /// \brief Handle "\#pragma region [...]"
-  ///
-  /// The syntax is
-  /// \code
-  ///   #pragma region [optional name]
-  ///   #pragma endregion [optional comment]
-  /// \endcode
-  /// 
-  /// \note This is 
-  /// <a href="http://msdn.microsoft.com/en-us/library/b6xkz944(v=vs.80).aspx">editor-only</a>
-  /// pragma, just skipped by compiler.
-  struct PragmaRegionHandler : public PragmaHandler {
-    PragmaRegionHandler(const char *pragma) : PragmaHandler(pragma) { }
+/// \brief Handle "\#pragma region [...]"
+///
+/// The syntax is
+/// \code
+///   #pragma region [optional name]
+///   #pragma endregion [optional comment]
+/// \endcode
+///
+/// \note This is
+/// <a href="http://msdn.microsoft.com/en-us/library/b6xkz944(v=vs.80).aspx">editor-only</a>
+/// pragma, just skipped by compiler.
+struct PragmaRegionHandler : public PragmaHandler {
+  PragmaRegionHandler(const char *pragma) : PragmaHandler(pragma) { }
 
-    virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                              Token &NameTok) {
-      // #pragma region: endregion matches can be verified
-      // __pragma(region): no sense, but ignored by msvc
-      // _Pragma is not valid for MSVC, but there isn't any point
-      // to handle a _Pragma differently.
-    }
-  };
+  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                            Token &NameTok) {
+    // #pragma region: endregion matches can be verified
+    // __pragma(region): no sense, but ignored by msvc
+    // _Pragma is not valid for MSVC, but there isn't any point
+    // to handle a _Pragma differently.
+  }
+};
 
 }  // end anonymous namespace
 

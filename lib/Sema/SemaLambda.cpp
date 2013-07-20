@@ -52,6 +52,74 @@ static bool isInInlineFunction(const DeclContext *DC) {
   return false;
 }
 
+MangleNumberingContext *
+Sema::getCurrentMangleNumberContext(const DeclContext *DC,
+                                    Decl *&ManglingContextDecl) {
+  // Compute the context for allocating mangling numbers in the current
+  // expression, if the ABI requires them.
+  ManglingContextDecl = ExprEvalContexts.back().ManglingContextDecl;
+
+  enum ContextKind {
+    Normal,
+    DefaultArgument,
+    DataMember,
+    StaticDataMember
+  } Kind = Normal;
+
+  // Default arguments of member function parameters that appear in a class
+  // definition, as well as the initializers of data members, receive special
+  // treatment. Identify them.
+  if (ManglingContextDecl) {
+    if (ParmVarDecl *Param = dyn_cast<ParmVarDecl>(ManglingContextDecl)) {
+      if (const DeclContext *LexicalDC
+          = Param->getDeclContext()->getLexicalParent())
+        if (LexicalDC->isRecord())
+          Kind = DefaultArgument;
+    } else if (VarDecl *Var = dyn_cast<VarDecl>(ManglingContextDecl)) {
+      if (Var->getDeclContext()->isRecord())
+        Kind = StaticDataMember;
+    } else if (isa<FieldDecl>(ManglingContextDecl)) {
+      Kind = DataMember;
+    }
+  }
+
+  // Itanium ABI [5.1.7]:
+  //   In the following contexts [...] the one-definition rule requires closure
+  //   types in different translation units to "correspond":
+  bool IsInNonspecializedTemplate =
+    !ActiveTemplateInstantiations.empty() || CurContext->isDependentContext();
+  switch (Kind) {
+  case Normal:
+    //  -- the bodies of non-exported nonspecialized template functions
+    //  -- the bodies of inline functions
+    if ((IsInNonspecializedTemplate &&
+         !(ManglingContextDecl && isa<ParmVarDecl>(ManglingContextDecl))) ||
+        isInInlineFunction(CurContext)) {
+      ManglingContextDecl = 0;
+      return &Context.getManglingNumberContext(DC);
+    }
+
+    ManglingContextDecl = 0;
+    return 0;
+
+  case StaticDataMember:
+    //  -- the initializers of nonspecialized static members of template classes
+    if (!IsInNonspecializedTemplate) {
+      ManglingContextDecl = 0;
+      return 0;
+    }
+    // Fall through to get the current context.
+
+  case DataMember:
+    //  -- the in-class initializers of class members
+  case DefaultArgument:
+    //  -- default arguments appearing in class definitions
+    return &ExprEvalContexts.back().getMangleNumberingContext();
+  }
+
+  llvm_unreachable("unexpected context");
+}
+
 CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                  SourceRange IntroducerRange,
                  TypeSourceInfo *MethodType,
@@ -98,74 +166,13 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
       (*P)->setOwningFunction(Method);
   }
 
-  // Allocate a mangling number for this lambda expression, if the ABI
-  // requires one.
-  Decl *ContextDecl = ExprEvalContexts.back().LambdaContextDecl;
-
-  enum ContextKind {
-    Normal,
-    DefaultArgument,
-    DataMember,
-    StaticDataMember
-  } Kind = Normal;
-
-  // Default arguments of member function parameters that appear in a class
-  // definition, as well as the initializers of data members, receive special
-  // treatment. Identify them.
-  if (ContextDecl) {
-    if (ParmVarDecl *Param = dyn_cast<ParmVarDecl>(ContextDecl)) {
-      if (const DeclContext *LexicalDC
-          = Param->getDeclContext()->getLexicalParent())
-        if (LexicalDC->isRecord())
-          Kind = DefaultArgument;
-    } else if (VarDecl *Var = dyn_cast<VarDecl>(ContextDecl)) {
-      if (Var->getDeclContext()->isRecord())
-        Kind = StaticDataMember;
-    } else if (isa<FieldDecl>(ContextDecl)) {
-      Kind = DataMember;
-    }
+  Decl *ManglingContextDecl;
+  if (MangleNumberingContext *MCtx =
+          getCurrentMangleNumberContext(Class->getDeclContext(),
+                                        ManglingContextDecl)) {
+    unsigned ManglingNumber = MCtx->getManglingNumber(Method);
+    Class->setLambdaMangling(ManglingNumber, ManglingContextDecl);
   }
-
-  // Itanium ABI [5.1.7]:
-  //   In the following contexts [...] the one-definition rule requires closure
-  //   types in different translation units to "correspond":
-  bool IsInNonspecializedTemplate =
-    !ActiveTemplateInstantiations.empty() || CurContext->isDependentContext();
-  unsigned ManglingNumber;
-  switch (Kind) {
-  case Normal:
-    //  -- the bodies of non-exported nonspecialized template functions
-    //  -- the bodies of inline functions
-    if ((IsInNonspecializedTemplate &&
-         !(ContextDecl && isa<ParmVarDecl>(ContextDecl))) ||
-        isInInlineFunction(CurContext))
-      ManglingNumber = Context.getLambdaManglingNumber(Method);
-    else
-      ManglingNumber = 0;
-
-    // There is no special context for this lambda.
-    ContextDecl = 0;
-    break;
-
-  case StaticDataMember:
-    //  -- the initializers of nonspecialized static members of template classes
-    if (!IsInNonspecializedTemplate) {
-      ManglingNumber = 0;
-      ContextDecl = 0;
-      break;
-    }
-    // Fall through to assign a mangling number.
-
-  case DataMember:
-    //  -- the in-class initializers of class members
-  case DefaultArgument:
-    //  -- default arguments appearing in class definitions
-    ManglingNumber = ExprEvalContexts.back().getLambdaMangleContext()
-                       .getManglingNumber(Method);
-    break;
-  }
-
-  Class->setLambdaMangling(ManglingNumber, ContextDecl);
 
   return Method;
 }
@@ -194,9 +201,6 @@ LambdaScopeInfo *Sema::enterLambdaScope(CXXMethodDecl *CallOperator,
       if (RequireCompleteType(CallOperator->getLocStart(), LSI->ReturnType,
                               diag::err_lambda_incomplete_result)) {
         // Do nothing.
-      } else if (LSI->ReturnType->isObjCObjectOrInterfaceType()) {
-        Diag(CallOperator->getLocStart(), diag::err_lambda_objc_object_result)
-          << LSI->ReturnType;
       }
     }
   } else {
@@ -445,6 +449,7 @@ FieldDecl *Sema::checkInitCapture(SourceLocation Loc, bool ByRef,
     assert(!DeductType.isNull() && "can't build reference to auto");
     TLB.push<ReferenceTypeLoc>(DeductType).setSigilLoc(Loc);
   }
+  TypeSourceInfo *TSI = TLB.getTypeSourceInfo(Context, DeductType);
 
   InitializationKind InitKind = InitializationKind::CreateDefault(Loc);
   Expr *Init = InitExpr;
@@ -476,8 +481,7 @@ FieldDecl *Sema::checkInitCapture(SourceLocation Loc, bool ByRef,
   else
     InitKind = InitializationKind::CreateCopy(Loc, Loc);
   QualType DeducedType;
-  if (DeduceAutoType(TLB.getTemporaryTypeLoc(DeductType),
-                     Init, DeducedType) == DAR_Failed) {
+  if (DeduceAutoType(TSI, Init, DeducedType) == DAR_Failed) {
     if (isa<InitListExpr>(Init))
       Diag(Loc, diag::err_init_capture_deduction_failure_from_init_list)
           << Id << Init->getSourceRange();
@@ -492,7 +496,7 @@ FieldDecl *Sema::checkInitCapture(SourceLocation Loc, bool ByRef,
   //   the closure type. This member is not a bit-field and not mutable.
   // Core issue: the member is (probably...) public.
   FieldDecl *NewFD = CheckFieldDecl(
-      Id, DeducedType, TLB.getTypeSourceInfo(Context, DeductType), LSI->Lambda,
+      Id, DeducedType, TSI, LSI->Lambda,
       Loc, /*Mutable*/ false, /*BitWidth*/ 0, ICIS_NoInit,
       Loc, AS_public, /*PrevDecl*/ 0, /*Declarator*/ 0);
   LSI->Lambda->addDecl(NewFD);
@@ -604,10 +608,10 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
   // Handle explicit captures.
   SourceLocation PrevCaptureLoc
     = Intro.Default == LCD_None? Intro.Range.getBegin() : Intro.DefaultLoc;
-  for (SmallVector<LambdaCapture, 4>::const_iterator
-         C = Intro.Captures.begin(), 
-         E = Intro.Captures.end(); 
-       C != E; 
+  for (SmallVectorImpl<LambdaCapture>::const_iterator
+         C = Intro.Captures.begin(),
+         E = Intro.Captures.end();
+       C != E;
        PrevCaptureLoc = C->Loc, ++C) {
     if (C->Kind == LCK_This) {
       // C++11 [expr.prim.lambda]p8:
@@ -811,11 +815,8 @@ static void addFunctionPointerConversion(Sema &S,
   {
     FunctionProtoType::ExtProtoInfo ExtInfo = Proto->getExtProtoInfo();
     ExtInfo.TypeQuals = 0;
-    FunctionTy =
-      S.Context.getFunctionType(Proto->getResultType(),
-                                ArrayRef<QualType>(Proto->arg_type_begin(),
-                                                   Proto->getNumArgs()),
-                                ExtInfo);
+    FunctionTy = S.Context.getFunctionType(Proto->getResultType(),
+                                           Proto->getArgTypes(), ExtInfo);
     FunctionPtrTy = S.Context.getPointerType(FunctionTy);
   }
   
@@ -837,7 +838,7 @@ static void addFunctionPointerConversion(Sema &S,
                                 ConvTy, 
                                 S.Context.getTrivialTypeSourceInfo(ConvTy, 
                                                                    Loc),
-                                /*isInline=*/false, /*isExplicit=*/false,
+                                /*isInline=*/true, /*isExplicit=*/false,
                                 /*isConstexpr=*/false, 
                                 CallOperator->getBody()->getLocEnd());
   Conversion->setAccess(AS_public);
@@ -883,11 +884,8 @@ static void addBlockPointerConversion(Sema &S,
   {
     FunctionProtoType::ExtProtoInfo ExtInfo = Proto->getExtProtoInfo();
     ExtInfo.TypeQuals = 0;
-    QualType FunctionTy
-      = S.Context.getFunctionType(Proto->getResultType(),
-                                  ArrayRef<QualType>(Proto->arg_type_begin(),
-                                                     Proto->getNumArgs()),
-                                  ExtInfo);
+    QualType FunctionTy = S.Context.getFunctionType(
+        Proto->getResultType(), Proto->getArgTypes(), ExtInfo);
     BlockPtrTy = S.Context.getBlockPointerType(FunctionTy);
   }
   
@@ -906,7 +904,7 @@ static void addBlockPointerConversion(Sema &S,
                                 DeclarationNameInfo(Name, Loc, NameLoc),
                                 ConvTy, 
                                 S.Context.getTrivialTypeSourceInfo(ConvTy, Loc),
-                                /*isInline=*/false, /*isExplicit=*/false,
+                                /*isInline=*/true, /*isExplicit=*/false,
                                 /*isConstexpr=*/false, 
                                 CallOperator->getBody()->getLocEnd());
   Conversion->setAccess(AS_public);
@@ -1010,11 +1008,8 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
       // Create a function type with the inferred return type.
       const FunctionProtoType *Proto
         = CallOperator->getType()->getAs<FunctionProtoType>();
-      QualType FunctionTy
-        = Context.getFunctionType(LSI->ReturnType,
-                                  ArrayRef<QualType>(Proto->arg_type_begin(),
-                                                     Proto->getNumArgs()),
-                                  Proto->getExtProtoInfo());
+      QualType FunctionTy = Context.getFunctionType(
+          LSI->ReturnType, Proto->getArgTypes(), Proto->getExtProtoInfo());
       CallOperator->setType(FunctionTy);
     }
 

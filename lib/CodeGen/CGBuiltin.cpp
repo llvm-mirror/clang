@@ -1293,14 +1293,18 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
   case Builtin::BIpow:
   case Builtin::BIpowf:
   case Builtin::BIpowl: {
-    // Rewrite sqrt to intrinsic if allowed.
-    if (!FD->hasAttr<ConstAttr>())
-      break;
-    Value *Base = EmitScalarExpr(E->getArg(0));
-    Value *Exponent = EmitScalarExpr(E->getArg(1));
-    llvm::Type *ArgType = Base->getType();
-    Value *F = CGM.getIntrinsic(Intrinsic::pow, ArgType);
-    return RValue::get(Builder.CreateCall2(F, Base, Exponent));
+    // Transform a call to pow* into a @llvm.pow.* intrinsic call, but only
+    // if the target agrees.
+    if (getTargetHooks().emitIntrinsicForPow()) {
+      if (!FD->hasAttr<ConstAttr>())
+        break;
+      Value *Base = EmitScalarExpr(E->getArg(0));
+      Value *Exponent = EmitScalarExpr(E->getArg(1));
+      llvm::Type *ArgType = Base->getType();
+      Value *F = CGM.getIntrinsic(Intrinsic::pow, ArgType);
+      return RValue::get(Builder.CreateCall2(F, Base, Exponent));
+    }
+    break;
   }
 
   case Builtin::BIfma:
@@ -1345,10 +1349,12 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
     StringRef Str = cast<StringLiteral>(AnnotationStrExpr)->getString();
     return RValue::get(EmitAnnotationCall(F, AnnVal, Str, E->getExprLoc()));
   }
+  case Builtin::BI__builtin_addcb:
   case Builtin::BI__builtin_addcs:
   case Builtin::BI__builtin_addc:
   case Builtin::BI__builtin_addcl:
   case Builtin::BI__builtin_addcll:
+  case Builtin::BI__builtin_subcb:
   case Builtin::BI__builtin_subcs:
   case Builtin::BI__builtin_subc:
   case Builtin::BI__builtin_subcl:
@@ -1382,12 +1388,14 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
     llvm::Intrinsic::ID IntrinsicId;
     switch (BuiltinID) {
     default: llvm_unreachable("Unknown multiprecision builtin id.");
+    case Builtin::BI__builtin_addcb:
     case Builtin::BI__builtin_addcs:
     case Builtin::BI__builtin_addc:
     case Builtin::BI__builtin_addcl:
     case Builtin::BI__builtin_addcll:
       IntrinsicId = llvm::Intrinsic::uadd_with_overflow;
       break;
+    case Builtin::BI__builtin_subcb:
     case Builtin::BI__builtin_subcs:
     case Builtin::BI__builtin_subc:
     case Builtin::BI__builtin_subcl:
@@ -1410,6 +1418,79 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
     CarryOutStore->setAlignment(CarryOutPtr.second);
     return RValue::get(Sum2);
   }
+  case Builtin::BI__builtin_uadd_overflow:
+  case Builtin::BI__builtin_uaddl_overflow:
+  case Builtin::BI__builtin_uaddll_overflow:
+  case Builtin::BI__builtin_usub_overflow:
+  case Builtin::BI__builtin_usubl_overflow:
+  case Builtin::BI__builtin_usubll_overflow:
+  case Builtin::BI__builtin_umul_overflow:
+  case Builtin::BI__builtin_umull_overflow:
+  case Builtin::BI__builtin_umulll_overflow:
+  case Builtin::BI__builtin_sadd_overflow:
+  case Builtin::BI__builtin_saddl_overflow:
+  case Builtin::BI__builtin_saddll_overflow:
+  case Builtin::BI__builtin_ssub_overflow:
+  case Builtin::BI__builtin_ssubl_overflow:
+  case Builtin::BI__builtin_ssubll_overflow:
+  case Builtin::BI__builtin_smul_overflow:
+  case Builtin::BI__builtin_smull_overflow:
+  case Builtin::BI__builtin_smulll_overflow: {
+
+    // We translate all of these builtins directly to the relevant llvm IR node.
+
+    // Scalarize our inputs.
+    llvm::Value *X = EmitScalarExpr(E->getArg(0));
+    llvm::Value *Y = EmitScalarExpr(E->getArg(1));
+    std::pair<llvm::Value *, unsigned> SumOutPtr =
+      EmitPointerWithAlignment(E->getArg(2));
+
+    // Decide which of the overflow intrinsics we are lowering to:
+    llvm::Intrinsic::ID IntrinsicId;
+    switch (BuiltinID) {
+    default: llvm_unreachable("Unknown security overflow builtin id.");
+    case Builtin::BI__builtin_uadd_overflow:
+    case Builtin::BI__builtin_uaddl_overflow:
+    case Builtin::BI__builtin_uaddll_overflow:
+      IntrinsicId = llvm::Intrinsic::uadd_with_overflow;
+      break;
+    case Builtin::BI__builtin_usub_overflow:
+    case Builtin::BI__builtin_usubl_overflow:
+    case Builtin::BI__builtin_usubll_overflow:
+      IntrinsicId = llvm::Intrinsic::usub_with_overflow;
+      break;
+    case Builtin::BI__builtin_umul_overflow:
+    case Builtin::BI__builtin_umull_overflow:
+    case Builtin::BI__builtin_umulll_overflow:
+      IntrinsicId = llvm::Intrinsic::umul_with_overflow;
+      break;
+    case Builtin::BI__builtin_sadd_overflow:
+    case Builtin::BI__builtin_saddl_overflow:
+    case Builtin::BI__builtin_saddll_overflow:
+      IntrinsicId = llvm::Intrinsic::sadd_with_overflow;
+      break;
+    case Builtin::BI__builtin_ssub_overflow:
+    case Builtin::BI__builtin_ssubl_overflow:
+    case Builtin::BI__builtin_ssubll_overflow:
+      IntrinsicId = llvm::Intrinsic::ssub_with_overflow;
+      break;
+    case Builtin::BI__builtin_smul_overflow:
+    case Builtin::BI__builtin_smull_overflow:
+    case Builtin::BI__builtin_smulll_overflow:
+      IntrinsicId = llvm::Intrinsic::smul_with_overflow;
+      break;
+    }
+
+    
+    llvm::Value *Carry;
+    llvm::Value *Sum = EmitOverflowIntrinsic(*this, IntrinsicId, X, Y, Carry);
+    llvm::StoreInst *SumOutStore = Builder.CreateStore(Sum, SumOutPtr.first);
+    SumOutStore->setAlignment(SumOutPtr.second);
+
+    return RValue::get(Carry);
+  }
+  case Builtin::BI__builtin_addressof:
+    return RValue::get(EmitLValue(E->getArg(0)).getAddress());
   case Builtin::BI__noop:
     return RValue::get(0);
   }

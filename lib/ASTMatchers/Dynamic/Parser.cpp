@@ -32,11 +32,15 @@ struct Parser::TokenInfo {
     TK_OpenParen = 1,
     TK_CloseParen = 2,
     TK_Comma = 3,
-    TK_Literal = 4,
-    TK_Ident = 5,
-    TK_InvalidChar = 6,
-    TK_Error = 7
+    TK_Period = 4,
+    TK_Literal = 5,
+    TK_Ident = 6,
+    TK_InvalidChar = 7,
+    TK_Error = 8
   };
+
+  /// \brief Some known identifiers.
+  static const char* const ID_Bind;
 
   TokenInfo() : Text(), Kind(TK_Eof), Range(), Value() {}
 
@@ -45,6 +49,8 @@ struct Parser::TokenInfo {
   SourceRange Range;
   VariantValue Value;
 };
+
+const char* const Parser::TokenInfo::ID_Bind = "bind";
 
 /// \brief Simple tokenizer for the parser.
 class Parser::CodeTokenizer {
@@ -84,6 +90,11 @@ private:
       Result.Text = Code.substr(0, 1);
       Code = Code.drop_front();
       break;
+    case '.':
+      Result.Kind = TokenInfo::TK_Period;
+      Result.Text = Code.substr(0, 1);
+      Code = Code.drop_front();
+      break;
     case '(':
       Result.Kind = TokenInfo::TK_OpenParen;
       Result.Text = Code.substr(0, 1);
@@ -99,6 +110,12 @@ private:
     case '\'':
       // Parse a string literal.
       consumeStringLiteral(&Result);
+      break;
+
+    case '0': case '1': case '2': case '3': case '4':
+    case '5': case '6': case '7': case '8': case '9':
+      // Parse an unsigned literal.
+      consumeUnsignedLiteral(&Result);
       break;
 
     default:
@@ -120,6 +137,35 @@ private:
 
     Result.Range.End = currentLocation();
     return Result;
+  }
+
+  /// \brief Consume an unsigned literal.
+  void consumeUnsignedLiteral(TokenInfo *Result) {
+    unsigned Length = 1;
+    if (Code.size() > 1) {
+      // Consume the 'x' or 'b' radix modifier, if present.
+      switch (toLowercase(Code[1])) {
+      case 'x': case 'b': Length = 2;
+      }
+    }
+    while (Length < Code.size() && isHexDigit(Code[Length]))
+      ++Length;
+
+    Result->Text = Code.substr(0, Length);
+    Code = Code.drop_front(Length);
+
+    unsigned Value;
+    if (!Result->Text.getAsInteger(0, Value)) {
+      Result->Kind = TokenInfo::TK_Literal;
+      Result->Value = Value;
+    } else {
+      SourceRange Range;
+      Range.Start = Result->Range.Start;
+      Range.End = currentLocation();
+      Error->pushErrorFrame(Range, Error->ET_ParserUnsignedError)
+          << Result->Text;
+      Result->Kind = TokenInfo::TK_Error;
+    }
   }
 
   /// \brief Consume a string literal.
@@ -234,18 +280,50 @@ bool Parser::parseMatcherExpressionImpl(VariantValue *Value) {
     return false;
   }
 
+  std::string BindID;
+  if (Tokenizer->peekNextToken().Kind == TokenInfo::TK_Period) {
+    // Parse .bind("foo")
+    Tokenizer->consumeNextToken();  // consume the period.
+    const TokenInfo BindToken = Tokenizer->consumeNextToken();
+    const TokenInfo OpenToken = Tokenizer->consumeNextToken();
+    const TokenInfo IDToken = Tokenizer->consumeNextToken();
+    const TokenInfo CloseToken = Tokenizer->consumeNextToken();
+
+    // TODO: We could use different error codes for each/some to be more
+    //       explicit about the syntax error.
+    if (BindToken.Kind != TokenInfo::TK_Ident ||
+        BindToken.Text != TokenInfo::ID_Bind) {
+      Error->pushErrorFrame(BindToken.Range, Error->ET_ParserMalformedBindExpr);
+      return false;
+    }
+    if (OpenToken.Kind != TokenInfo::TK_OpenParen) {
+      Error->pushErrorFrame(OpenToken.Range, Error->ET_ParserMalformedBindExpr);
+      return false;
+    }
+    if (IDToken.Kind != TokenInfo::TK_Literal || !IDToken.Value.isString()) {
+      Error->pushErrorFrame(IDToken.Range, Error->ET_ParserMalformedBindExpr);
+      return false;
+    }
+    if (CloseToken.Kind != TokenInfo::TK_CloseParen) {
+      Error->pushErrorFrame(CloseToken.Range,
+                            Error->ET_ParserMalformedBindExpr);
+      return false;
+    }
+    BindID = IDToken.Value.getString();
+  }
+
   // Merge the start and end infos.
   SourceRange MatcherRange = NameToken.Range;
   MatcherRange.End = EndToken.Range.End;
-  DynTypedMatcher *Result =
-      S->actOnMatcherExpression(NameToken.Text, MatcherRange, Args, Error);
-  if (Result == NULL) {
+  MatcherList Result = S->actOnMatcherExpression(
+      NameToken.Text, MatcherRange, BindID, Args, Error);
+  if (Result.empty()) {
     Error->pushErrorFrame(NameToken.Range, Error->ET_ParserMatcherFailure)
         << NameToken.Text;
     return false;
   }
 
-  Value->takeMatcher(Result);
+  *Value = Result;
   return true;
 }
 
@@ -271,6 +349,7 @@ bool Parser::parseExpressionImpl(VariantValue *Value) {
   case TokenInfo::TK_OpenParen:
   case TokenInfo::TK_CloseParen:
   case TokenInfo::TK_Comma:
+  case TokenInfo::TK_Period:
   case TokenInfo::TK_InvalidChar:
     const TokenInfo Token = Tokenizer->consumeNextToken();
     Error->pushErrorFrame(Token.Range, Error->ET_ParserInvalidToken)
@@ -288,11 +367,17 @@ Parser::Parser(CodeTokenizer *Tokenizer, Sema *S,
 class RegistrySema : public Parser::Sema {
 public:
   virtual ~RegistrySema() {}
-  DynTypedMatcher *actOnMatcherExpression(StringRef MatcherName,
-                                          const SourceRange &NameRange,
-                                          ArrayRef<ParserValue> Args,
-                                          Diagnostics *Error) {
-    return Registry::constructMatcher(MatcherName, NameRange, Args, Error);
+  MatcherList actOnMatcherExpression(StringRef MatcherName,
+                                     const SourceRange &NameRange,
+                                     StringRef BindID,
+                                     ArrayRef<ParserValue> Args,
+                                     Diagnostics *Error) {
+    if (BindID.empty()) {
+      return Registry::constructMatcher(MatcherName, NameRange, Args, Error);
+    } else {
+      return Registry::constructBoundMatcher(MatcherName, NameRange, BindID,
+                                             Args, Error);
+    }
   }
 };
 
@@ -305,7 +390,13 @@ bool Parser::parseExpression(StringRef Code, VariantValue *Value,
 bool Parser::parseExpression(StringRef Code, Sema *S,
                              VariantValue *Value, Diagnostics *Error) {
   CodeTokenizer Tokenizer(Code, Error);
-  return Parser(&Tokenizer, S, Error).parseExpressionImpl(Value);
+  if (!Parser(&Tokenizer, S, Error).parseExpressionImpl(Value)) return false;
+  if (Tokenizer.peekNextToken().Kind != TokenInfo::TK_Eof) {
+    Error->pushErrorFrame(Tokenizer.peekNextToken().Range,
+                          Error->ET_ParserTrailingCode);
+    return false;
+  }
+  return true;
 }
 
 DynTypedMatcher *Parser::parseMatcherExpression(StringRef Code,
@@ -320,11 +411,16 @@ DynTypedMatcher *Parser::parseMatcherExpression(StringRef Code,
   VariantValue Value;
   if (!parseExpression(Code, S, &Value, Error))
     return NULL;
-  if (!Value.isMatcher()) {
+  if (!Value.isMatchers()) {
     Error->pushErrorFrame(SourceRange(), Error->ET_ParserNotAMatcher);
     return NULL;
   }
-  return Value.getMatcher().clone();
+  if (Value.getMatchers().matchers().size() != 1) {
+    Error->pushErrorFrame(SourceRange(), Error->ET_ParserOverloadedType)
+        << Value.getTypeAsString();
+    return NULL;
+  }
+  return Value.getMatchers().matchers()[0]->clone();
 }
 
 }  // namespace dynamic

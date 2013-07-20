@@ -968,8 +968,18 @@ ExprResult Sema::ParseObjCSelectorExpression(Selector Sel,
   if (!Method)
     Method = LookupFactoryMethodInGlobalPool(Sel,
                                           SourceRange(LParenLoc, RParenLoc));
-  if (!Method)
-    Diag(SelLoc, diag::warn_undeclared_selector) << Sel;
+  if (!Method) {
+    if (const ObjCMethodDecl *OM = SelectorsForTypoCorrection(Sel)) {
+      Selector MatchedSel = OM->getSelector();
+      SourceRange SelectorRange(LParenLoc.getLocWithOffset(1),
+                                RParenLoc.getLocWithOffset(-1));
+      Diag(SelLoc, diag::warn_undeclared_selector_with_typo)
+        << Sel << MatchedSel
+        << FixItHint::CreateReplacement(SelectorRange, MatchedSel.getAsString());
+      
+    } else
+        Diag(SelLoc, diag::warn_undeclared_selector) << Sel;
+  }
   
   if (!Method ||
       Method->getImplementationControl() != ObjCMethodDecl::Optional) {
@@ -1222,8 +1232,22 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
       DiagID = isClassMessage ? diag::warn_class_method_not_found
                               : diag::warn_inst_method_not_found;
     if (!getLangOpts().DebuggerSupport) {
-      Diag(SelLoc, DiagID)
-        << Sel << isClassMessage << SourceRange(SelectorLocs.front(), 
+      const ObjCMethodDecl *OMD = SelectorsForTypoCorrection(Sel, ReceiverType);
+      if (OMD && !OMD->isInvalidDecl()) {
+        if (getLangOpts().ObjCAutoRefCount)
+          DiagID = diag::error_method_not_found_with_typo;
+        else
+          DiagID = isClassMessage ? diag::warn_class_method_not_found_with_typo
+                                  : diag::warn_instance_method_not_found_with_typo;
+        Selector MatchedSel = OMD->getSelector();
+        SourceRange SelectorRange(SelectorLocs.front(), SelectorLocs.back());
+        Diag(SelLoc, DiagID)
+          << Sel<< isClassMessage << MatchedSel
+          << FixItHint::CreateReplacement(SelectorRange, MatchedSel.getAsString());
+      }
+      else
+        Diag(SelLoc, DiagID)
+          << Sel << isClassMessage << SourceRange(SelectorLocs.front(), 
                                                 SelectorLocs.back());
       // Find the class to which we are sending this message.
       if (ReceiverType->isObjCObjectPointerType()) {
@@ -1542,8 +1566,8 @@ HandleExprPropertyRefExpr(const ObjCObjectPointerType *OPT,
   // If we found a getter then this may be a valid dot-reference, we
   // will look for the matching setter, in case it is needed.
   Selector SetterSel =
-    SelectorTable::constructSetterName(PP.getIdentifierTable(),
-                                       PP.getSelectorTable(), Member);
+    SelectorTable::constructSetterSelector(PP.getIdentifierTable(),
+                                           PP.getSelectorTable(), Member);
   ObjCMethodDecl *Setter = IFace->lookupInstanceMethod(SetterSel);
       
   // May be founf in property's qualified list.
@@ -1689,8 +1713,9 @@ ActOnClassPropertyRefExpr(IdentifierInfo &receiverName,
 
   // Look for the matching setter, in case it is needed.
   Selector SetterSel =
-    SelectorTable::constructSetterName(PP.getIdentifierTable(),
-                                       PP.getSelectorTable(), &propertyName);
+    SelectorTable::constructSetterSelector(PP.getIdentifierTable(),
+                                           PP.getSelectorTable(),
+                                           &propertyName);
 
   ObjCMethodDecl *Setter = IFace->lookupClassMethod(SetterSel);
   if (!Setter) {

@@ -683,7 +683,6 @@ void ASTStmtWriter::VisitInitListExpr(InitListExpr *E) {
   else
     Writer.AddDeclRef(E->getInitializedFieldInUnion(), Record);
   Record.push_back(E->hadArrayRangeDesignator());
-  Record.push_back(E->initializesStdInitializerList());
   Record.push_back(E->getNumInits());
   if (isArrayFiller) {
     // ArrayFiller may have filled "holes" due to designated initializer.
@@ -1187,6 +1186,12 @@ void ASTStmtWriter::VisitLambdaExpr(LambdaExpr *E) {
   Code = serialization::EXPR_LAMBDA;
 }
 
+void ASTStmtWriter::VisitCXXStdInitializerListExpr(CXXStdInitializerListExpr *E) {
+  VisitExpr(E);
+  Writer.AddStmt(E->getSubExpr());
+  Code = serialization::EXPR_CXX_STD_INITIALIZER_LIST;
+}
+
 void ASTStmtWriter::VisitCXXNamedCastExpr(CXXNamedCastExpr *E) {
   VisitExplicitCastExpr(E);
   Writer.AddSourceRange(SourceRange(E->getOperatorLoc(), E->getRParenLoc()),
@@ -1572,6 +1577,7 @@ void ASTStmtWriter::VisitFunctionParmPackExpr(FunctionParmPackExpr *E) {
 void ASTStmtWriter::VisitMaterializeTemporaryExpr(MaterializeTemporaryExpr *E) {
   VisitExpr(E);
   Writer.AddStmt(E->Temporary);
+  Writer.AddDeclRef(E->ExtendingDecl, Record);
   Code = serialization::EXPR_MATERIALIZE_TEMPORARY;
 }
 

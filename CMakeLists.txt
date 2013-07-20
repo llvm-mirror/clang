@@ -151,7 +151,7 @@ if (LLVM_COMPILER_IS_GCC_COMPATIBLE)
 endif ()
 
 if (APPLE)
-  set(CMAKE_MODULE_LINKER_FLAGS "-Wl,-flat_namespace -Wl,-undefined -Wl,suppress")
+  set(CMAKE_MODULE_LINKER_FLAGS "${CMAKE_MODULE_LINKER_FLAGS} -Wl,-flat_namespace -Wl,-undefined -Wl,suppress")
 endif ()
 
 configure_file(
@@ -264,8 +264,27 @@ install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/include/
 
 add_definitions( -D_GNU_SOURCE )
 
-# FIXME: They should be options.
-add_definitions(-DCLANG_ENABLE_ARCMT -DCLANG_ENABLE_REWRITER -DCLANG_ENABLE_STATIC_ANALYZER)
+option(CLANG_ENABLE_ARCMT "Enable ARCMT by default." ON)
+option(CLANG_ENABLE_REWRITER "Enable rewriter by default." ON)
+option(CLANG_ENABLE_STATIC_ANALYZER "Enable static analyzer by default." ON)
+
+if (NOT CLANG_ENABLE_REWRITER AND CLANG_ENABLE_ARCMT)
+  message(FATAL_ERROR "Cannot disable rewriter while enabling ARCMT")
+endif()
+
+if (NOT CLANG_ENABLE_REWRITER AND CLANG_ENABLE_STATIC_ANALYZER)
+  message(FATAL_ERROR "Cannot disable rewriter while enabling static analyzer")
+endif()
+
+if(CLANG_ENABLE_ARCMT)
+  add_definitions(-DCLANG_ENABLE_ARCMT)
+endif()
+if(CLANG_ENABLE_REWRITER)
+  add_definitions(-DCLANG_ENABLE_REWRITER)
+endif()
+if(CLANG_ENABLE_STATIC_ANALYZER)
+  add_definitions(-DCLANG_ENABLE_STATIC_ANALYZER)
+endif()
 
 # Clang version information
 set(CLANG_EXECUTABLE_VERSION

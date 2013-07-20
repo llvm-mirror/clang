@@ -2195,7 +2195,7 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr) {
           // Adjust the pointer to point directly after the first slash. It's
           // not necessary to set C here, it will be overwritten at the end of
           // the outer loop.
-          CurPtr += llvm::CountTrailingZeros_32(cmp) + 1;
+          CurPtr += llvm::countTrailingZeros<unsigned>(cmp) + 1;
           goto FoundSlash;
         }
         CurPtr += 16;
@@ -3425,6 +3425,12 @@ HandleDirective:
 
   FormTokenWithChars(Result, CurPtr, tok::hash);
   PP->HandleDirective(Result);
+
+  if (PP->hadModuleLoaderFatalFailure()) {
+    // With a fatal failure in the module loader, we abort parsing.
+    assert(Result.is(tok::eof) && "Preprocessor did not set tok:eof");
+    return;
+  }
 
   // As an optimization, if the preprocessor didn't switch lexers, tail
   // recurse.

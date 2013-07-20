@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsyntax-only -verify %s 
+// RUN: %clang_cc1 -fsyntax-only -verify -std=c++11 %s 
 class X { };
 
 X operator+(X, X);
@@ -387,8 +387,8 @@ void test_lookup_through_using() {
 
 namespace rdar9136502 {
   struct X {
-    int i();
-    int i(int);
+    int i(); // expected-note{{possible target for call}}
+    int i(int); // expected-note{{possible target for call}}
   };
 
   struct Y {
@@ -396,7 +396,8 @@ namespace rdar9136502 {
   };
 
   void f(X x, Y y) {
-    y << x.i; // expected-error{{reference to non-static member function must be called}}
+    y << x
+      .i; // expected-error{{reference to non-static member function must be called; did you mean to call it with no arguments?}}
   }
 }
 
@@ -440,3 +441,7 @@ namespace test10 {
     a[bar<float>];
   }
 }
+
+struct InvalidOperatorEquals {
+  InvalidOperatorEquals operator=() = delete; // expected-error {{overloaded 'operator=' must be a binary operator}}
+};

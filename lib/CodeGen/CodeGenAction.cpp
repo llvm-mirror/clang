@@ -171,6 +171,10 @@ namespace clang {
       Gen->HandleTagDeclDefinition(D);
     }
 
+    virtual void HandleTagDeclRequiredDefinition(const TagDecl *D) {
+      Gen->HandleTagDeclRequiredDefinition(D);
+    }
+
     virtual void CompleteTentativeDefinition(VarDecl *D) {
       Gen->CompleteTentativeDefinition(D);
     }
@@ -181,6 +185,11 @@ namespace clang {
 
     virtual void HandleLinkerOptionPragma(llvm::StringRef Opts) {
       Gen->HandleLinkerOptionPragma(Opts);
+    }
+
+    virtual void HandleDetectMismatch(llvm::StringRef Name,
+                                      llvm::StringRef Value) {
+      Gen->HandleDetectMismatch(Name, Value);
     }
 
     virtual void HandleDependentLibrary(llvm::StringRef Opts) {

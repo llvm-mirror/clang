@@ -14,6 +14,7 @@
 #include "clang/AST/ParentMap.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/ExprCXX.h"
 #include "llvm/ADT/DenseMap.h"
 
 using namespace clang;
@@ -109,6 +110,13 @@ void ParentMap::addStmt(Stmt* S) {
   }
 }
 
+void ParentMap::setParent(const Stmt *S, const Stmt *Parent) {
+  assert(S);
+  assert(Parent);
+  MapTy *M = reinterpret_cast<MapTy *>(Impl);
+  M->insert(std::make_pair(const_cast<Stmt *>(S), const_cast<Stmt *>(Parent)));
+}
+
 Stmt* ParentMap::getParent(Stmt* S) const {
   MapTy* M = (MapTy*) Impl;
   MapTy::iterator I = M->find(S);
@@ -150,8 +158,9 @@ bool ParentMap::isConsumedExpr(Expr* E) const {
   Stmt *P = getParent(E);
   Stmt *DirectChild = E;
 
-  // Ignore parents that are parentheses or casts.
-  while (P && (isa<ParenExpr>(P) || isa<CastExpr>(P))) {
+  // Ignore parents that don't guarantee consumption.
+  while (P && (isa<ParenExpr>(P) || isa<CastExpr>(P) ||
+               isa<ExprWithCleanups>(P))) {
     DirectChild = P;
     P = getParent(P);
   }

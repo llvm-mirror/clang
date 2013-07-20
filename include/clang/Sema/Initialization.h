@@ -35,6 +35,7 @@ class ParmVarDecl;
 class Sema;
 class TypeLoc;
 class VarDecl;
+class ObjCMethodDecl;
   
 /// \brief Describes an entity that is being initialized.
 class InitializedEntity {
@@ -78,7 +79,10 @@ public:
     EK_LambdaCapture,
     /// \brief The entity being initialized is the initializer for a compound
     /// literal.
-    EK_CompoundLiteralInit
+    EK_CompoundLiteralInit,
+    /// \brief The entity being implicitly initialized back to the formal
+    /// result type.
+    EK_RelatedResult
   };
   
 private:
@@ -116,6 +120,10 @@ private:
     /// \brief When Kind == EK_Variable, or EK_Member, the VarDecl or
     /// FieldDecl, respectively.
     DeclaratorDecl *VariableOrMember;
+    
+    /// \brief When Kind == EK_RelatedResult, the ObjectiveC method where
+    /// result type was implicitly changed to accomodate ARC semantics.
+    ObjCMethodDecl *MethodDecl;
 
     /// \brief When Kind == EK_Parameter, the ParmVarDecl, with the
     /// low bit indicating whether the parameter is "consumed".
@@ -254,6 +262,15 @@ public:
     Result.TypeInfo = TypeInfo;
     return Result;
   }
+  
+  /// \brief Create the initialization entity for a related result.
+  static InitializedEntity InitializeRelatedResult(ObjCMethodDecl *MD,
+                                                   QualType Type) {
+    InitializedEntity Result(EK_RelatedResult, SourceLocation(), Type);
+    Result.MethodDecl = MD;
+    return Result;
+  }
+
 
   /// \brief Create the initialization entity for a base class subobject.
   static InitializedEntity InitializeBase(ASTContext &Context,
@@ -326,6 +343,9 @@ public:
   /// \brief Retrieve the variable, parameter, or field being
   /// initialized.
   DeclaratorDecl *getDecl() const;
+  
+  /// \brief Retrieve the ObjectiveC method being initialized.
+  ObjCMethodDecl *getMethodDecl() const { return MethodDecl; }
 
   /// \brief Determine whether this initialization allows the named return 
   /// value optimization, which also applies to thrown objects.
@@ -384,6 +404,13 @@ public:
     assert(getKind() == EK_LambdaCapture && "Not a lambda capture!");
     return SourceLocation::getFromRawEncoding(Capture.Location);
   }
+
+  /// Dump a representation of the initialized entity to standard error,
+  /// for debugging purposes.
+  void dump() const;
+
+private:
+  unsigned dumpImpl(raw_ostream &OS) const;
 };
   
 /// \brief Describes the kind of initialization being performed, along with 
@@ -763,9 +790,6 @@ public:
     /// \brief Initializer has a placeholder type which cannot be
     /// resolved by initialization.
     FK_PlaceholderType,
-    /// \brief Failed to initialize a std::initializer_list because copy
-    /// construction of some element failed.
-    FK_InitListElementCopyFailure,
     /// \brief List-copy-initialization chose an explicit constructor.
     FK_ExplicitConstructor
   };
@@ -855,8 +879,8 @@ public:
 
   /// \brief Determine whether the initialization sequence is invalid.
   bool Failed() const { return SequenceKind == FailedSequence; }
-  
-  typedef SmallVector<Step, 4>::const_iterator step_iterator;
+
+  typedef SmallVectorImpl<Step>::const_iterator step_iterator;
   step_iterator step_begin() const { return Steps.begin(); }
   step_iterator step_end()   const { return Steps.end(); }
 

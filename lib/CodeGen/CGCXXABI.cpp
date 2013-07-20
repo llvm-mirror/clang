@@ -273,8 +273,9 @@ CharUnits CGCXXABI::getMemberPointerPathAdjustment(const APValue &MP) {
   return ThisAdjustment;
 }
 
-llvm::BasicBlock *CGCXXABI::EmitCtorCompleteObjectHandler(
-                                                         CodeGenFunction &CGF) {
+llvm::BasicBlock *
+CGCXXABI::EmitCtorCompleteObjectHandler(CodeGenFunction &CGF,
+                                        const CXXRecordDecl *RD) {
   if (CGM.getTarget().getCXXABI().hasConstructorVariants())
     llvm_unreachable("shouldn't be called in this ABI");
 
@@ -291,4 +292,8 @@ LValue CGCXXABI::EmitThreadLocalDeclRefExpr(CodeGenFunction &CGF,
                                           const DeclRefExpr *DRE) {
   ErrorUnsupportedABI(CGF, "odr-use of thread_local global");
   return LValue();
+}
+
+bool CGCXXABI::NeedsVTTParameter(GlobalDecl GD) {
+  return false;
 }

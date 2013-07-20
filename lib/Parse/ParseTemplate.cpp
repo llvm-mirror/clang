@@ -236,8 +236,38 @@ Parser::ParseSingleDeclarationAfterTemplate(
         << FixItHint::CreateRemoval(DS.getStorageClassSpecLoc());
       DS.ClearStorageClassSpecs();
     }
+
+    if (TemplateInfo.Kind == ParsedTemplateInfo::ExplicitInstantiation) {
+      if (DeclaratorInfo.getName().getKind() != UnqualifiedId::IK_TemplateId) {
+        // If the declarator-id is not a template-id, issue a diagnostic and
+        // recover by ignoring the 'template' keyword.
+        Diag(Tok, diag::err_template_defn_explicit_instantiation) << 0;
+	return ParseFunctionDefinition(DeclaratorInfo, ParsedTemplateInfo(),
+				       &LateParsedAttrs);
+      } else {
+        SourceLocation LAngleLoc
+          = PP.getLocForEndOfToken(TemplateInfo.TemplateLoc);
+        Diag(DeclaratorInfo.getIdentifierLoc(), 
+             diag::err_explicit_instantiation_with_definition)
+          << SourceRange(TemplateInfo.TemplateLoc)
+          << FixItHint::CreateInsertion(LAngleLoc, "<>");
+
+        // Recover as if it were an explicit specialization. 
+        TemplateParameterLists FakedParamLists;
+        FakedParamLists.push_back(
+	     Actions.ActOnTemplateParameterList(0, SourceLocation(),
+					        TemplateInfo.TemplateLoc, 
+						LAngleLoc, 0, 0, LAngleLoc));
+
+        return ParseFunctionDefinition(DeclaratorInfo, 
+                                       ParsedTemplateInfo(&FakedParamLists,
+                                           /*isSpecialization=*/true,
+                                           /*LastParamListWasEmpty=*/true),
+                                       &LateParsedAttrs);
+      }
+    }
     return ParseFunctionDefinition(DeclaratorInfo, TemplateInfo,
-                                   &LateParsedAttrs);
+				   &LateParsedAttrs);
   }
 
   // Parse this declaration.
@@ -1253,7 +1283,7 @@ void Parser::ParseLateTemplatedFuncDef(LateParsedTemplatedFunction &LMT) {
   }
 
   // Reenter template scopes from outermost to innermost.
-  SmallVector<DeclContext*, 4>::reverse_iterator II =
+  SmallVectorImpl<DeclContext *>::reverse_iterator II =
       DeclContextsToReenter.rbegin();
   for (; II != DeclContextsToReenter.rend(); ++II) {
     if (ClassTemplatePartialSpecializationDecl *MD =
@@ -1263,12 +1293,14 @@ void Parser::ParseLateTemplatedFuncDef(LateParsedTemplatedFunction &LMT) {
       Actions.ActOnReenterTemplateScope(getCurScope(), MD);
       ++CurTemplateDepthTracker;
     } else if (CXXRecordDecl *MD = dyn_cast_or_null<CXXRecordDecl>(*II)) {
-      bool ManageScope = MD->getDescribedClassTemplate() != 0;
+      bool IsClassTemplate = MD->getDescribedClassTemplate() != 0;
       TemplateParamScopeStack.push_back(
-          new ParseScope(this, Scope::TemplateParamScope, ManageScope));
+          new ParseScope(this, Scope::TemplateParamScope, 
+                        /*ManageScope*/IsClassTemplate));
       Actions.ActOnReenterTemplateScope(getCurScope(),
                                         MD->getDescribedClassTemplate());
-      ++CurTemplateDepthTracker;
+      if (IsClassTemplate) 
+        ++CurTemplateDepthTracker;
     }
     TemplateParamScopeStack.push_back(new ParseScope(this, Scope::DeclScope));
     Actions.PushDeclContext(Actions.getCurScope(), *II);
@@ -1326,7 +1358,7 @@ void Parser::ParseLateTemplatedFuncDef(LateParsedTemplatedFunction &LMT) {
 
   // Exit scopes.
   FnScope.Exit();
-  SmallVector<ParseScope*, 4>::reverse_iterator I =
+  SmallVectorImpl<ParseScope *>::reverse_iterator I =
    TemplateParamScopeStack.rbegin();
   for (; I != TemplateParamScopeStack.rend(); ++I)
     delete *I;

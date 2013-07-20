@@ -200,8 +200,9 @@ static TryCastResult TryStaticCast(Sema &Self, ExprResult &SrcExpr,
                                    unsigned &msg, CastKind &Kind,
                                    CXXCastPath &BasePath,
                                    bool ListInitialization);
-static TryCastResult TryConstCast(Sema &Self, Expr *SrcExpr, QualType DestType,
-                                  bool CStyle, unsigned &msg);
+static TryCastResult TryConstCast(Sema &Self, ExprResult &SrcExpr,
+                                  QualType DestType, bool CStyle,
+                                  unsigned &msg);
 static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
                                         QualType DestType, bool CStyle,
                                         const SourceRange &OpRange,
@@ -383,11 +384,6 @@ static bool tryDiagnoseOverloadedCast(Sema &S, CastType CT,
 static void diagnoseBadCast(Sema &S, unsigned msg, CastType castType,
                             SourceRange opRange, Expr *src, QualType destType,
                             bool listInitialization) {
-  if (src->getType() == S.Context.BoundMemberTy) {
-    (void) S.CheckPlaceholderExpr(src); // will always fail
-    return;
-  }
-
   if (msg == diag::err_bad_cxx_cast_generic &&
       tryDiagnoseOverloadedCast(S, castType, opRange, src, destType,
                                 listInitialization))
@@ -515,8 +511,8 @@ CastsAwayConstness(Sema &Self, QualType SrcType, QualType DestType,
   QualType SrcConstruct = Self.Context.VoidTy;
   QualType DestConstruct = Self.Context.VoidTy;
   ASTContext &Context = Self.Context;
-  for (SmallVector<Qualifiers, 8>::reverse_iterator i1 = cv1.rbegin(),
-                                                          i2 = cv2.rbegin();
+  for (SmallVectorImpl<Qualifiers>::reverse_iterator i1 = cv1.rbegin(),
+                                                     i2 = cv2.rbegin();
        i1 != cv1.rend(); ++i1, ++i2) {
     SrcConstruct
       = Context.getPointerType(Context.getQualifiedType(SrcConstruct, *i1));
@@ -677,7 +673,7 @@ void CastOperation::CheckConstCast() {
     return;
 
   unsigned msg = diag::err_bad_cxx_cast_generic;
-  if (TryConstCast(Self, SrcExpr.get(), DestType, /*CStyle*/false, msg) != TC_Success
+  if (TryConstCast(Self, SrcExpr, DestType, /*CStyle*/false, msg) != TC_Success
       && msg != 0)
     Self.Diag(OpRange.getBegin(), msg) << CT_Const
       << SrcExpr.get()->getType() << DestType << OpRange;
@@ -758,6 +754,7 @@ static void DiagnoseReinterpretUpDownCast(Sema &Self, const Expr *SrcExpr,
     VirtualBase = VirtualBase && IsVirtual;
   }
 
+  (void) NonZeroOffset; // Silence set but not used warning.
   assert((VirtualBase || NonZeroOffset) &&
          "Should have returned if has non-virtual base with zero offset");
 
@@ -768,10 +765,10 @@ static void DiagnoseReinterpretUpDownCast(Sema &Self, const Expr *SrcExpr,
 
   SourceLocation BeginLoc = OpRange.getBegin();
   Self.Diag(BeginLoc, diag::warn_reinterpret_different_from_static)
-    << DerivedType << BaseType << !VirtualBase << ReinterpretKind
+    << DerivedType << BaseType << !VirtualBase << int(ReinterpretKind)
     << OpRange;
   Self.Diag(BeginLoc, diag::note_reinterpret_updowncast_use_static)
-    << ReinterpretKind
+    << int(ReinterpretKind)
     << FixItHint::CreateReplacement(BeginLoc, "static_cast");
 }
 
@@ -1447,12 +1444,26 @@ TryStaticImplicitCast(Sema &Self, ExprResult &SrcExpr, QualType DestType,
 
 /// TryConstCast - See if a const_cast from source to destination is allowed,
 /// and perform it if it is.
-static TryCastResult TryConstCast(Sema &Self, Expr *SrcExpr, QualType DestType,
-                                  bool CStyle, unsigned &msg) {
+static TryCastResult TryConstCast(Sema &Self, ExprResult &SrcExpr,
+                                  QualType DestType, bool CStyle,
+                                  unsigned &msg) {
   DestType = Self.Context.getCanonicalType(DestType);
-  QualType SrcType = SrcExpr->getType();
+  QualType SrcType = SrcExpr.get()->getType();
+  bool NeedToMaterializeTemporary = false;
+
   if (const ReferenceType *DestTypeTmp =DestType->getAs<ReferenceType>()) {
-    if (isa<LValueReferenceType>(DestTypeTmp) && !SrcExpr->isLValue()) {
+    // C++11 5.2.11p4:
+    //   if a pointer to T1 can be explicitly converted to the type "pointer to
+    //   T2" using a const_cast, then the following conversions can also be
+    //   made:
+    //    -- an lvalue of type T1 can be explicitly converted to an lvalue of
+    //       type T2 using the cast const_cast<T2&>;
+    //    -- a glvalue of type T1 can be explicitly converted to an xvalue of
+    //       type T2 using the cast const_cast<T2&&>; and
+    //    -- if T1 is a class type, a prvalue of type T1 can be explicitly
+    //       converted to an xvalue of type T2 using the cast const_cast<T2&&>.
+
+    if (isa<LValueReferenceType>(DestTypeTmp) && !SrcExpr.get()->isLValue()) {
       // Cannot const_cast non-lvalue to lvalue reference type. But if this
       // is C-style, static_cast might find a way, so we simply suggest a
       // message and tell the parent to keep searching.
@@ -1460,18 +1471,29 @@ static TryCastResult TryConstCast(Sema &Self, Expr *SrcExpr, QualType DestType,
       return TC_NotApplicable;
     }
 
+    if (isa<RValueReferenceType>(DestTypeTmp) && SrcExpr.get()->isRValue()) {
+      if (!SrcType->isRecordType()) {
+        // Cannot const_cast non-class prvalue to rvalue reference type. But if
+        // this is C-style, static_cast can do this.
+        msg = diag::err_bad_cxx_cast_rvalue;
+        return TC_NotApplicable;
+      }
+
+      // Materialize the class prvalue so that the const_cast can bind a
+      // reference to it.
+      NeedToMaterializeTemporary = true;
+    }
+
     // It's not completely clear under the standard whether we can
     // const_cast bit-field gl-values.  Doing so would not be
     // intrinsically complicated, but for now, we say no for
     // consistency with other compilers and await the word of the
     // committee.
-    if (SrcExpr->refersToBitField()) {
+    if (SrcExpr.get()->refersToBitField()) {
       msg = diag::err_bad_cxx_cast_bitfield;
       return TC_NotApplicable;
     }
 
-    // C++ 5.2.11p4: An lvalue of type T1 can be [cast] to an lvalue of type T2
-    //   [...] if a pointer to T1 can be [cast] to the type pointer to T2.
     DestType = Self.Context.getPointerType(DestTypeTmp->getPointeeType());
     SrcType = Self.Context.getPointerType(SrcType);
   }
@@ -1524,6 +1546,13 @@ static TryCastResult TryConstCast(Sema &Self, Expr *SrcExpr, QualType DestType,
   // Since we're dealing in canonical types, the remainder must be the same.
   if (SrcType != DestType)
     return TC_NotApplicable;
+
+  if (NeedToMaterializeTemporary)
+    // This is a const_cast from a class prvalue to an rvalue reference type.
+    // Materialize a temporary to store the result of the conversion.
+    SrcExpr = new (Self.Context) MaterializeTemporaryExpr(
+        SrcType, SrcExpr.take(), /*IsLValueReference*/ false,
+        /*ExtendingDecl*/ 0);
 
   return TC_Success;
 }
@@ -1614,8 +1643,18 @@ static void checkIntToPointerCast(bool CStyle, SourceLocation Loc,
       && !SrcType->isBooleanType()
       && !SrcType->isEnumeralType()
       && !SrcExpr->isIntegerConstantExpr(Self.Context)
-      && Self.Context.getTypeSize(DestType) > Self.Context.getTypeSize(SrcType))
-    Self.Diag(Loc, diag::warn_int_to_pointer_cast) << SrcType << DestType;
+      && Self.Context.getTypeSize(DestType) >
+         Self.Context.getTypeSize(SrcType)) {
+    // Separate between casts to void* and non-void* pointers.
+    // Some APIs use (abuse) void* for something like a user context,
+    // and often that value is an integer even if it isn't a pointer itself.
+    // Having a separate warning flag allows users to control the warning
+    // for their workflow.
+    unsigned Diag = DestType->isVoidPointerType() ?
+                      diag::warn_int_to_void_pointer_cast
+                    : diag::warn_int_to_pointer_cast;
+    Self.Diag(Loc, Diag) << SrcType << DestType;
+  }
 }
 
 static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
@@ -1803,10 +1842,12 @@ static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
     assert(srcIsPtr && "One type must be a pointer");
     // C++ 5.2.10p4: A pointer can be explicitly converted to any integral
     //   type large enough to hold it; except in Microsoft mode, where the
-    //   integral type size doesn't matter.
+    //   integral type size doesn't matter (except we don't allow bool).
+    bool MicrosoftException = Self.getLangOpts().MicrosoftExt &&
+                              !DestType->isBooleanType();
     if ((Self.Context.getTypeSize(SrcType) >
          Self.Context.getTypeSize(DestType)) &&
-         !Self.getLangOpts().MicrosoftExt) {
+         !MicrosoftException) {
       msg = diag::err_bad_reinterpret_cast_small_int;
       return TC_Failed;
     }
@@ -1980,8 +2021,10 @@ void CastOperation::CheckCXXCStyleCast(bool FunctionalStyle,
   //   even if a cast resulting from that interpretation is ill-formed.
   // In plain language, this means trying a const_cast ...
   unsigned msg = diag::err_bad_cxx_cast_generic;
-  TryCastResult tcr = TryConstCast(Self, SrcExpr.get(), DestType,
+  TryCastResult tcr = TryConstCast(Self, SrcExpr, DestType,
                                    /*CStyle*/true, msg);
+  if (SrcExpr.isInvalid())
+    return;
   if (tcr == TC_Success)
     Kind = CK_NoOp;
 

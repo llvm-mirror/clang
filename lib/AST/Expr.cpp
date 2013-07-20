@@ -50,9 +50,9 @@ const CXXRecordDecl *Expr::getBestDynamicClassType() const {
   return cast<CXXRecordDecl>(D);
 }
 
-const Expr *
-Expr::skipRValueSubobjectAdjustments(
-                     SmallVectorImpl<SubobjectAdjustment> &Adjustments) const  {
+const Expr *Expr::skipRValueSubobjectAdjustments(
+    SmallVectorImpl<const Expr *> &CommaLHSs,
+    SmallVectorImpl<SubobjectAdjustment> &Adjustments) const {
   const Expr *E = this;
   while (true) {
     E = E->IgnoreParens();
@@ -73,12 +73,14 @@ Expr::skipRValueSubobjectAdjustments(
         continue;
       }
     } else if (const MemberExpr *ME = dyn_cast<MemberExpr>(E)) {
-      if (!ME->isArrow() && ME->getBase()->isRValue()) {
+      if (!ME->isArrow()) {
         assert(ME->getBase()->getType()->isRecordType());
         if (FieldDecl *Field = dyn_cast<FieldDecl>(ME->getMemberDecl())) {
-          E = ME->getBase();
-          Adjustments.push_back(SubobjectAdjustment(Field));
-          continue;
+          if (!Field->isBitField() && !Field->getType()->isReferenceType()) {
+            E = ME->getBase();
+            Adjustments.push_back(SubobjectAdjustment(Field));
+            continue;
+          }
         }
       }
     } else if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
@@ -88,6 +90,11 @@ Expr::skipRValueSubobjectAdjustments(
         const MemberPointerType *MPT =
           BO->getRHS()->getType()->getAs<MemberPointerType>();
         Adjustments.push_back(SubobjectAdjustment(MPT, BO->getRHS()));
+        continue;
+      } else if (BO->getOpcode() == BO_Comma) {
+        CommaLHSs.push_back(BO->getLHS());
+        E = BO->getRHS();
+        continue;
       }
     }
 
@@ -1782,7 +1789,6 @@ InitListExpr::InitListExpr(ASTContext &C, SourceLocation lbraceloc,
     LBraceLoc(lbraceloc), RBraceLoc(rbraceloc), AltForm(0, true)
 {
   sawArrayRangeDesignator(false);
-  setInitializesStdInitializerList(false);
   for (unsigned I = 0; I != initExprs.size(); ++I) {
     if (initExprs[I]->isTypeDependent())
       ExprBits.TypeDependent = true;
@@ -2829,6 +2835,7 @@ bool Expr::HasSideEffects(const ASTContext &Ctx) const {
   case DesignatedInitExprClass:
   case ParenListExprClass:
   case CXXPseudoDestructorExprClass:
+  case CXXStdInitializerListExprClass:
   case SubstNonTypeTemplateParmExprClass:
   case MaterializeTemporaryExprClass:
   case ShuffleVectorExprClass:
@@ -3017,7 +3024,7 @@ bool Expr::hasNonTrivialCall(ASTContext &Ctx) {
 Expr::NullPointerConstantKind
 Expr::isNullPointerConstant(ASTContext &Ctx,
                             NullPointerConstantValueDependence NPC) const {
-  if (isValueDependent()) {
+  if (isValueDependent() && !Ctx.getLangOpts().CPlusPlus11) {
     switch (NPC) {
     case NPC_NeverValueDependent:
       llvm_unreachable("Unexpected value dependent expression!");
@@ -3078,7 +3085,8 @@ Expr::isNullPointerConstant(ASTContext &Ctx,
     return NPCK_CXX11_nullptr;
 
   if (const RecordType *UT = getType()->getAsUnionType())
-    if (UT && UT->getDecl()->hasAttr<TransparentUnionAttr>())
+    if (!Ctx.getLangOpts().CPlusPlus11 &&
+        UT && UT->getDecl()->hasAttr<TransparentUnionAttr>())
       if (const CompoundLiteralExpr *CLE = dyn_cast<CompoundLiteralExpr>(this)){
         const Expr *InitExpr = CLE->getInitializer();
         if (const InitListExpr *ILE = dyn_cast<InitListExpr>(InitExpr))
@@ -3089,14 +3097,14 @@ Expr::isNullPointerConstant(ASTContext &Ctx,
       (Ctx.getLangOpts().CPlusPlus && getType()->isEnumeralType()))
     return NPCK_NotNull;
 
-  // If we have an integer constant expression, we need to *evaluate* it and
-  // test for the value 0. Don't use the C++11 constant expression semantics
-  // for this, for now; once the dust settles on core issue 903, we might only
-  // allow a literal 0 here in C++11 mode.
   if (Ctx.getLangOpts().CPlusPlus11) {
-    if (!isCXX98IntegralConstantExpr(Ctx))
-      return NPCK_NotNull;
+    // C++11 [conv.ptr]p1: A null pointer constant is an integer literal with
+    // value zero or a prvalue of type std::nullptr_t.
+    const IntegerLiteral *Lit = dyn_cast<IntegerLiteral>(this);
+    return (Lit && !Lit->getValue()) ? NPCK_ZeroLiteral : NPCK_NotNull;
   } else {
+    // If we have an integer constant expression, we need to *evaluate* it and
+    // test for the value 0.
     if (!isIntegerConstantExpr(Ctx))
       return NPCK_NotNull;
   }

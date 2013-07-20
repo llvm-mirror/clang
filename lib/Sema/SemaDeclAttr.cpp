@@ -682,7 +682,7 @@ static void handleNoSanitizeThread(Sema &S, Decl *D,
 
 static bool checkAcquireOrderAttrCommon(Sema &S, Decl *D,
                                         const AttributeList &Attr,
-                                        SmallVector<Expr*, 1> &Args) {
+                                        SmallVectorImpl<Expr *> &Args) {
   assert(!Attr.isInvalid());
 
   if (!checkAttributeAtLeastNumArgs(S, Attr, 1))
@@ -743,7 +743,7 @@ static void handleAcquiredBeforeAttr(Sema &S, Decl *D,
 
 static bool checkLockFunAttrCommon(Sema &S, Decl *D,
                                    const AttributeList &Attr,
-                                   SmallVector<Expr*, 1> &Args) {
+                                   SmallVectorImpl<Expr *> &Args) {
   assert(!Attr.isInvalid());
 
   // zero or more arguments ok
@@ -818,7 +818,7 @@ static void handleAssertExclusiveLockAttr(Sema &S, Decl *D,
 
 static bool checkTryLockFunAttrCommon(Sema &S, Decl *D,
                                       const AttributeList &Attr,
-                                      SmallVector<Expr*, 2> &Args) {
+                                      SmallVectorImpl<Expr *> &Args) {
   assert(!Attr.isInvalid());
 
   if (!checkAttributeAtLeastNumArgs(S, Attr, 1))
@@ -872,7 +872,7 @@ static void handleExclusiveTrylockFunctionAttr(Sema &S, Decl *D,
 
 static bool checkLocksRequiredCommon(Sema &S, Decl *D,
                                      const AttributeList &Attr,
-                                     SmallVector<Expr*, 1> &Args) {
+                                     SmallVectorImpl<Expr *> &Args) {
   assert(!Attr.isInvalid());
 
   if (!checkAttributeAtLeastNumArgs(S, Attr, 1))
@@ -1746,6 +1746,12 @@ static void handleNoCommonAttr(Sema &S, Decl *D, const AttributeList &Attr) {
 
 static void handleCommonAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   assert(!Attr.isInvalid());
+
+  if (S.LangOpts.CPlusPlus) {
+    S.Diag(Attr.getLoc(), diag::err_common_not_supported_cplusplus);
+    return;
+  }
+
   if (isa<VarDecl>(D))
     D->addAttr(::new (S.Context)
                CommonAttr(Attr.getRange(), S.Context,
@@ -3724,14 +3730,18 @@ static void handleModeAttr(Sema &S, Decl *D, const AttributeList &Attr) {
     NewTy = S.Context.LongDoubleTy;
     break;
   case 128:
-    if (!IntegerMode) {
+    if (!IntegerMode && &S.Context.getTargetInfo().getLongDoubleFormat() !=
+        &llvm::APFloat::PPCDoubleDouble) {
       S.Diag(Attr.getLoc(), diag::err_unsupported_machine_mode) << Name;
       return;
     }
-    if (OldTy->isSignedIntegerType())
-      NewTy = S.Context.Int128Ty;
-    else
-      NewTy = S.Context.UnsignedInt128Ty;
+    if (IntegerMode) {
+      if (OldTy->isSignedIntegerType())
+        NewTy = S.Context.Int128Ty;
+      else
+        NewTy = S.Context.UnsignedInt128Ty;
+    } else
+      NewTy = S.Context.LongDoubleTy;
     break;
   }
 
@@ -3740,11 +3750,14 @@ static void handleModeAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   }
 
   // Install the new type.
-  if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(D)) {
-    // FIXME: preserve existing source info.
-    TD->setTypeSourceInfo(S.Context.getTrivialTypeSourceInfo(NewTy));
-  } else
+  if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(D))
+    TD->setModedTypeSourceInfo(TD->getTypeSourceInfo(), NewTy);
+  else
     cast<ValueDecl>(D)->setType(NewTy);
+
+  D->addAttr(::new (S.Context)
+             ModeAttr(Attr.getRange(), S.Context, Name,
+                      Attr.getAttributeSpellingListIndex()));
 }
 
 static void handleNoDebugAttr(Sema &S, Decl *D, const AttributeList &Attr) {
@@ -4252,7 +4265,7 @@ static void handleArgumentWithTypeTagAttr(Sema &S, Decl *D,
     QualType BufferTy = getFunctionOrMethodArgType(D, ArgumentIdx);
     if (!BufferTy->isPointerType()) {
       S.Diag(Attr.getLoc(), diag::err_attribute_pointers_only)
-        << AttrName;
+        << Attr.getName();
     }
   }
 
@@ -4695,15 +4708,7 @@ static void handlePortabilityAttr(Sema &S, Decl *D, const AttributeList &Attr) {
     return;
 
   AttributeList::Kind Kind = Attr.getKind();
-  if (Kind == AttributeList::AT_Ptr32)
-    D->addAttr(
-        ::new (S.Context) Ptr32Attr(Attr.getRange(), S.Context,
-                                    Attr.getAttributeSpellingListIndex()));
-  else if (Kind == AttributeList::AT_Ptr64)
-    D->addAttr(
-        ::new (S.Context) Ptr64Attr(Attr.getRange(), S.Context,
-                                    Attr.getAttributeSpellingListIndex()));
-  else if (Kind == AttributeList::AT_Win64)
+    if (Kind == AttributeList::AT_Win64)
     D->addAttr(
         ::new (S.Context) Win64Attr(Attr.getRange(), S.Context,
                                     Attr.getAttributeSpellingListIndex()));
@@ -4754,6 +4759,10 @@ static void ProcessInheritableDeclAttr(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_VectorSize:
   case AttributeList::AT_NeonVectorType:
   case AttributeList::AT_NeonPolyVectorType:
+  case AttributeList::AT_Ptr32:
+  case AttributeList::AT_Ptr64:
+  case AttributeList::AT_SPtr:
+  case AttributeList::AT_UPtr:
     // Ignore these, these are type attributes, handled by
     // ProcessTypeAttributes.
     break;
@@ -4946,8 +4955,6 @@ static void ProcessInheritableDeclAttr(Sema &S, Scope *scope, Decl *D,
     handleInheritanceAttr(S, D, Attr);
     break;
   case AttributeList::AT_Win64:
-  case AttributeList::AT_Ptr32:
-  case AttributeList::AT_Ptr64:
     handlePortabilityAttr(S, D, Attr);
     break;
   case AttributeList::AT_ForceInline:

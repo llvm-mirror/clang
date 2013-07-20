@@ -93,9 +93,6 @@ void Sema::ActOnForEachDeclStmt(DeclGroupPtrTy dg) {
     return;
   }
 
-  // suppress any potential 'unused variable' warning.
-  var->setUsed();
-
   // foreach variables are never actually initialized in the way that
   // the parser came up with.
   var->setInit(0);
@@ -592,52 +589,50 @@ Sema::ActOnStartOfSwitchStmt(SourceLocation SwitchLoc, Expr *Cond,
 
   public:
     SwitchConvertDiagnoser(Expr *Cond)
-      : ICEConvertDiagnoser(false, true), Cond(Cond) { }
+        : ICEConvertDiagnoser(/*AllowScopedEnumerations*/true, false, true),
+          Cond(Cond) {}
 
-    virtual DiagnosticBuilder diagnoseNotInt(Sema &S, SourceLocation Loc,
-                                             QualType T) {
+    virtual SemaDiagnosticBuilder diagnoseNotInt(Sema &S, SourceLocation Loc,
+                                                 QualType T) {
       return S.Diag(Loc, diag::err_typecheck_statement_requires_integer) << T;
     }
 
-    virtual DiagnosticBuilder diagnoseIncomplete(Sema &S, SourceLocation Loc,
-                                                 QualType T) {
+    virtual SemaDiagnosticBuilder diagnoseIncomplete(
+        Sema &S, SourceLocation Loc, QualType T) {
       return S.Diag(Loc, diag::err_switch_incomplete_class_type)
                << T << Cond->getSourceRange();
     }
 
-    virtual DiagnosticBuilder diagnoseExplicitConv(Sema &S, SourceLocation Loc,
-                                                   QualType T,
-                                                   QualType ConvTy) {
+    virtual SemaDiagnosticBuilder diagnoseExplicitConv(
+        Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) {
       return S.Diag(Loc, diag::err_switch_explicit_conversion) << T << ConvTy;
     }
 
-    virtual DiagnosticBuilder noteExplicitConv(Sema &S, CXXConversionDecl *Conv,
-                                               QualType ConvTy) {
+    virtual SemaDiagnosticBuilder noteExplicitConv(
+        Sema &S, CXXConversionDecl *Conv, QualType ConvTy) {
       return S.Diag(Conv->getLocation(), diag::note_switch_conversion)
         << ConvTy->isEnumeralType() << ConvTy;
     }
 
-    virtual DiagnosticBuilder diagnoseAmbiguous(Sema &S, SourceLocation Loc,
-                                                QualType T) {
+    virtual SemaDiagnosticBuilder diagnoseAmbiguous(Sema &S, SourceLocation Loc,
+                                                    QualType T) {
       return S.Diag(Loc, diag::err_switch_multiple_conversions) << T;
     }
 
-    virtual DiagnosticBuilder noteAmbiguous(Sema &S, CXXConversionDecl *Conv,
-                                            QualType ConvTy) {
+    virtual SemaDiagnosticBuilder noteAmbiguous(
+        Sema &S, CXXConversionDecl *Conv, QualType ConvTy) {
       return S.Diag(Conv->getLocation(), diag::note_switch_conversion)
       << ConvTy->isEnumeralType() << ConvTy;
     }
 
-    virtual DiagnosticBuilder diagnoseConversion(Sema &S, SourceLocation Loc,
-                                                 QualType T,
-                                                 QualType ConvTy) {
-      return DiagnosticBuilder::getEmpty();
+    virtual SemaDiagnosticBuilder diagnoseConversion(
+        Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) {
+      llvm_unreachable("conversion functions are permitted");
     }
   } SwitchDiagnoser(Cond);
 
-  CondResult
-    = ConvertToIntegralOrEnumerationType(SwitchLoc, Cond, SwitchDiagnoser,
-                                         /*AllowScopedEnumerations*/ true);
+  CondResult =
+      PerformContextualImplicitConversion(SwitchLoc, Cond, SwitchDiagnoser);
   if (CondResult.isInvalid()) return StmtError();
   Cond = CondResult.take();
 
@@ -1122,9 +1117,9 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
 void
 Sema::DiagnoseAssignmentEnum(QualType DstType, QualType SrcType,
                              Expr *SrcExpr) {
-  unsigned DIAG = diag::warn_not_in_enum_assignement;
-  if (Diags.getDiagnosticLevel(DIAG, SrcExpr->getExprLoc())
-      == DiagnosticsEngine::Ignored)
+  if (Diags.getDiagnosticLevel(diag::warn_not_in_enum_assignment,
+                               SrcExpr->getExprLoc()) ==
+      DiagnosticsEngine::Ignored)
     return;
 
   if (const EnumType *ET = DstType->getAs<EnumType>())
@@ -1133,13 +1128,14 @@ Sema::DiagnoseAssignmentEnum(QualType DstType, QualType SrcType,
       if (!SrcExpr->isTypeDependent() && !SrcExpr->isValueDependent() &&
           SrcExpr->isIntegerConstantExpr(Context)) {
         // Get the bitwidth of the enum value before promotions.
-        unsigned DstWith = Context.getIntWidth(DstType);
+        unsigned DstWidth = Context.getIntWidth(DstType);
         bool DstIsSigned = DstType->isSignedIntegerOrEnumerationType();
 
         llvm::APSInt RhsVal = SrcExpr->EvaluateKnownConstInt(Context);
+        AdjustAPSInt(RhsVal, DstWidth, DstIsSigned);
         const EnumDecl *ED = ET->getDecl();
-        typedef SmallVector<std::pair<llvm::APSInt, EnumConstantDecl*>, 64>
-        EnumValsTy;
+        typedef SmallVector<std::pair<llvm::APSInt, EnumConstantDecl *>, 64>
+            EnumValsTy;
         EnumValsTy EnumVals;
 
         // Gather all enum values, set their type and sort them,
@@ -1147,21 +1143,21 @@ Sema::DiagnoseAssignmentEnum(QualType DstType, QualType SrcType,
         for (EnumDecl::enumerator_iterator EDI = ED->enumerator_begin();
              EDI != ED->enumerator_end(); ++EDI) {
           llvm::APSInt Val = EDI->getInitVal();
-          AdjustAPSInt(Val, DstWith, DstIsSigned);
+          AdjustAPSInt(Val, DstWidth, DstIsSigned);
           EnumVals.push_back(std::make_pair(Val, *EDI));
         }
         if (EnumVals.empty())
           return;
         std::stable_sort(EnumVals.begin(), EnumVals.end(), CmpEnumVals);
         EnumValsTy::iterator EIend =
-        std::unique(EnumVals.begin(), EnumVals.end(), EqEnumVals);
+            std::unique(EnumVals.begin(), EnumVals.end(), EqEnumVals);
 
-        // See which case values aren't in enum.
+        // See which values aren't in the enum.
         EnumValsTy::const_iterator EI = EnumVals.begin();
         while (EI != EIend && EI->first < RhsVal)
           EI++;
         if (EI == EIend || EI->first != RhsVal) {
-          Diag(SrcExpr->getExprLoc(), diag::warn_not_in_enum_assignement)
+          Diag(SrcExpr->getExprLoc(), diag::warn_not_in_enum_assignment)
           << DstType;
         }
       }
@@ -1220,77 +1216,77 @@ namespace {
   // of the excluded constructs are used.
   class DeclExtractor : public EvaluatedExprVisitor<DeclExtractor> {
     llvm::SmallPtrSet<VarDecl*, 8> &Decls;
-    SmallVector<SourceRange, 10> &Ranges;
+    SmallVectorImpl<SourceRange> &Ranges;
     bool Simple;
-public:
-  typedef EvaluatedExprVisitor<DeclExtractor> Inherited;
+  public:
+    typedef EvaluatedExprVisitor<DeclExtractor> Inherited;
 
-  DeclExtractor(Sema &S, llvm::SmallPtrSet<VarDecl*, 8> &Decls,
-                SmallVector<SourceRange, 10> &Ranges) :
-      Inherited(S.Context),
-      Decls(Decls),
-      Ranges(Ranges),
-      Simple(true) {}
+    DeclExtractor(Sema &S, llvm::SmallPtrSet<VarDecl*, 8> &Decls,
+                  SmallVectorImpl<SourceRange> &Ranges) :
+        Inherited(S.Context),
+        Decls(Decls),
+        Ranges(Ranges),
+        Simple(true) {}
 
-  bool isSimple() { return Simple; }
+    bool isSimple() { return Simple; }
 
-  // Replaces the method in EvaluatedExprVisitor.
-  void VisitMemberExpr(MemberExpr* E) {
-    Simple = false;
-  }
-
-  // Any Stmt not whitelisted will cause the condition to be marked complex.
-  void VisitStmt(Stmt *S) {
-    Simple = false;
-  }
-
-  void VisitBinaryOperator(BinaryOperator *E) {
-    Visit(E->getLHS());
-    Visit(E->getRHS());
-  }
-
-  void VisitCastExpr(CastExpr *E) {
-    Visit(E->getSubExpr());
-  }
-
-  void VisitUnaryOperator(UnaryOperator *E) {
-    // Skip checking conditionals with derefernces.
-    if (E->getOpcode() == UO_Deref)
+    // Replaces the method in EvaluatedExprVisitor.
+    void VisitMemberExpr(MemberExpr* E) {
       Simple = false;
-    else
+    }
+
+    // Any Stmt not whitelisted will cause the condition to be marked complex.
+    void VisitStmt(Stmt *S) {
+      Simple = false;
+    }
+
+    void VisitBinaryOperator(BinaryOperator *E) {
+      Visit(E->getLHS());
+      Visit(E->getRHS());
+    }
+
+    void VisitCastExpr(CastExpr *E) {
       Visit(E->getSubExpr());
-  }
+    }
 
-  void VisitConditionalOperator(ConditionalOperator *E) {
-    Visit(E->getCond());
-    Visit(E->getTrueExpr());
-    Visit(E->getFalseExpr());
-  }
+    void VisitUnaryOperator(UnaryOperator *E) {
+      // Skip checking conditionals with derefernces.
+      if (E->getOpcode() == UO_Deref)
+        Simple = false;
+      else
+        Visit(E->getSubExpr());
+    }
 
-  void VisitParenExpr(ParenExpr *E) {
-    Visit(E->getSubExpr());
-  }
+    void VisitConditionalOperator(ConditionalOperator *E) {
+      Visit(E->getCond());
+      Visit(E->getTrueExpr());
+      Visit(E->getFalseExpr());
+    }
 
-  void VisitBinaryConditionalOperator(BinaryConditionalOperator *E) {
-    Visit(E->getOpaqueValue()->getSourceExpr());
-    Visit(E->getFalseExpr());
-  }
+    void VisitParenExpr(ParenExpr *E) {
+      Visit(E->getSubExpr());
+    }
 
-  void VisitIntegerLiteral(IntegerLiteral *E) { }
-  void VisitFloatingLiteral(FloatingLiteral *E) { }
-  void VisitCXXBoolLiteralExpr(CXXBoolLiteralExpr *E) { }
-  void VisitCharacterLiteral(CharacterLiteral *E) { }
-  void VisitGNUNullExpr(GNUNullExpr *E) { }
-  void VisitImaginaryLiteral(ImaginaryLiteral *E) { }
+    void VisitBinaryConditionalOperator(BinaryConditionalOperator *E) {
+      Visit(E->getOpaqueValue()->getSourceExpr());
+      Visit(E->getFalseExpr());
+    }
 
-  void VisitDeclRefExpr(DeclRefExpr *E) {
-    VarDecl *VD = dyn_cast<VarDecl>(E->getDecl());
-    if (!VD) return;
+    void VisitIntegerLiteral(IntegerLiteral *E) { }
+    void VisitFloatingLiteral(FloatingLiteral *E) { }
+    void VisitCXXBoolLiteralExpr(CXXBoolLiteralExpr *E) { }
+    void VisitCharacterLiteral(CharacterLiteral *E) { }
+    void VisitGNUNullExpr(GNUNullExpr *E) { }
+    void VisitImaginaryLiteral(ImaginaryLiteral *E) { }
 
-    Ranges.push_back(E->getSourceRange());
+    void VisitDeclRefExpr(DeclRefExpr *E) {
+      VarDecl *VD = dyn_cast<VarDecl>(E->getDecl());
+      if (!VD) return;
 
-    Decls.insert(VD);
-  }
+      Ranges.push_back(E->getSourceRange());
+
+      Decls.insert(VD);
+    }
 
   }; // end class DeclExtractor
 
@@ -1300,66 +1296,67 @@ public:
     llvm::SmallPtrSet<VarDecl*, 8> &Decls;
     bool FoundDecl;
 
-public:
-  typedef EvaluatedExprVisitor<DeclMatcher> Inherited;
+  public:
+    typedef EvaluatedExprVisitor<DeclMatcher> Inherited;
 
-  DeclMatcher(Sema &S, llvm::SmallPtrSet<VarDecl*, 8> &Decls, Stmt *Statement) :
-      Inherited(S.Context), Decls(Decls), FoundDecl(false) {
-    if (!Statement) return;
+    DeclMatcher(Sema &S, llvm::SmallPtrSet<VarDecl*, 8> &Decls,
+                Stmt *Statement) :
+        Inherited(S.Context), Decls(Decls), FoundDecl(false) {
+      if (!Statement) return;
 
-    Visit(Statement);
-  }
-
-  void VisitReturnStmt(ReturnStmt *S) {
-    FoundDecl = true;
-  }
-
-  void VisitBreakStmt(BreakStmt *S) {
-    FoundDecl = true;
-  }
-
-  void VisitGotoStmt(GotoStmt *S) {
-    FoundDecl = true;
-  }
-
-  void VisitCastExpr(CastExpr *E) {
-    if (E->getCastKind() == CK_LValueToRValue)
-      CheckLValueToRValueCast(E->getSubExpr());
-    else
-      Visit(E->getSubExpr());
-  }
-
-  void CheckLValueToRValueCast(Expr *E) {
-    E = E->IgnoreParenImpCasts();
-
-    if (isa<DeclRefExpr>(E)) {
-      return;
+      Visit(Statement);
     }
 
-    if (ConditionalOperator *CO = dyn_cast<ConditionalOperator>(E)) {
-      Visit(CO->getCond());
-      CheckLValueToRValueCast(CO->getTrueExpr());
-      CheckLValueToRValueCast(CO->getFalseExpr());
-      return;
+    void VisitReturnStmt(ReturnStmt *S) {
+      FoundDecl = true;
     }
 
-    if (BinaryConditionalOperator *BCO =
-            dyn_cast<BinaryConditionalOperator>(E)) {
-      CheckLValueToRValueCast(BCO->getOpaqueValue()->getSourceExpr());
-      CheckLValueToRValueCast(BCO->getFalseExpr());
-      return;
+    void VisitBreakStmt(BreakStmt *S) {
+      FoundDecl = true;
     }
 
-    Visit(E);
-  }
+    void VisitGotoStmt(GotoStmt *S) {
+      FoundDecl = true;
+    }
 
-  void VisitDeclRefExpr(DeclRefExpr *E) {
-    if (VarDecl *VD = dyn_cast<VarDecl>(E->getDecl()))
-      if (Decls.count(VD))
-        FoundDecl = true;
-  }
+    void VisitCastExpr(CastExpr *E) {
+      if (E->getCastKind() == CK_LValueToRValue)
+        CheckLValueToRValueCast(E->getSubExpr());
+      else
+        Visit(E->getSubExpr());
+    }
 
-  bool FoundDeclInUse() { return FoundDecl; }
+    void CheckLValueToRValueCast(Expr *E) {
+      E = E->IgnoreParenImpCasts();
+
+      if (isa<DeclRefExpr>(E)) {
+        return;
+      }
+
+      if (ConditionalOperator *CO = dyn_cast<ConditionalOperator>(E)) {
+        Visit(CO->getCond());
+        CheckLValueToRValueCast(CO->getTrueExpr());
+        CheckLValueToRValueCast(CO->getFalseExpr());
+        return;
+      }
+
+      if (BinaryConditionalOperator *BCO =
+              dyn_cast<BinaryConditionalOperator>(E)) {
+        CheckLValueToRValueCast(BCO->getOpaqueValue()->getSourceExpr());
+        CheckLValueToRValueCast(BCO->getFalseExpr());
+        return;
+      }
+
+      Visit(E);
+    }
+
+    void VisitDeclRefExpr(DeclRefExpr *E) {
+      if (VarDecl *VD = dyn_cast<VarDecl>(E->getDecl()))
+        if (Decls.count(VD))
+          FoundDecl = true;
+    }
+
+    bool FoundDeclInUse() { return FoundDecl; }
 
   };  // end class DeclMatcher
 
@@ -1411,7 +1408,7 @@ public:
     // Load SourceRanges into diagnostic if there is room.
     // Otherwise, load the SourceRange of the conditional expression.
     if (Ranges.size() <= PartialDiagnostic::MaxArguments)
-      for (SmallVector<SourceRange, 10>::iterator I = Ranges.begin(),
+      for (SmallVectorImpl<SourceRange>::iterator I = Ranges.begin(),
                                                   E = Ranges.end();
            I != E; ++I)
         PDiag << *I;
@@ -1768,7 +1765,8 @@ Sema::ActOnCXXForRangeStmt(SourceLocation ForLoc,
 
   // Claim the type doesn't contain auto: we've already done the checking.
   DeclGroupPtrTy RangeGroup =
-    BuildDeclaratorGroup((Decl**)&RangeVar, 1, /*TypeMayContainAuto=*/false);
+      BuildDeclaratorGroup(llvm::MutableArrayRef<Decl *>((Decl **)&RangeVar, 1),
+                           /*TypeMayContainAuto=*/ false);
   StmtResult RangeDecl = ActOnDeclStmt(RangeGroup, RangeLoc, RangeLoc);
   if (RangeDecl.isInvalid())
     return StmtError();
@@ -2048,7 +2046,8 @@ Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation ColonLoc,
     Decl *BeginEndDecls[] = { BeginVar, EndVar };
     // Claim the type doesn't contain auto: we've already done the checking.
     DeclGroupPtrTy BeginEndGroup =
-      BuildDeclaratorGroup(BeginEndDecls, 2, /*TypeMayContainAuto=*/false);
+        BuildDeclaratorGroup(llvm::MutableArrayRef<Decl *>(BeginEndDecls, 2),
+                             /*TypeMayContainAuto=*/ false);
     BeginEndDecl = ActOnDeclStmt(BeginEndGroup, ColonLoc, ColonLoc);
 
     const QualType BeginRefNonRefType = BeginType.getNonReferenceType();
@@ -2711,11 +2710,10 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
       // If we have a related result type, we need to implicitly
       // convert back to the formal result type.  We can't pretend to
       // initialize the result again --- we might end double-retaining
-      // --- so instead we initialize a notional temporary; this can
-      // lead to less-than-great diagnostics, but this stage is much
-      // less likely to fail than the previous stage.
+      // --- so instead we initialize a notional temporary.
       if (!RelatedRetType.isNull()) {
-        Entity = InitializedEntity::InitializeTemporary(FnRetType);
+        Entity = InitializedEntity::InitializeRelatedResult(getCurMethodDecl(),
+                                                            FnRetType);
         Res = PerformCopyInitialization(Entity, ReturnLoc, RetValExp);
         if (Res.isInvalid()) {
           // FIXME: Clean up temporaries here anyway?

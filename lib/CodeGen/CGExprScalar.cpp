@@ -992,18 +992,6 @@ Value *ScalarExprEmitter::VisitMemberExpr(MemberExpr *E) {
     return Builder.getInt(Value);
   }
 
-  // Emit debug info for aggregate now, if it was delayed to reduce
-  // debug info size.
-  CGDebugInfo *DI = CGF.getDebugInfo();
-  if (DI &&
-      CGF.CGM.getCodeGenOpts().getDebugInfo()
-        == CodeGenOptions::LimitedDebugInfo) {
-    QualType PQTy = E->getBase()->IgnoreParenImpCasts()->getType();
-    if (const PointerType * PTy = dyn_cast<PointerType>(PQTy))
-      if (FieldDecl *M = dyn_cast<FieldDecl>(E->getMemberDecl()))
-        DI->getOrCreateRecordType(PTy->getPointeeType(),
-                                  M->getParent()->getLocation());
-  }
   return EmitLoadOfLValue(E);
 }
 
@@ -1442,8 +1430,12 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
 
 Value *ScalarExprEmitter::VisitStmtExpr(const StmtExpr *E) {
   CodeGenFunction::StmtExprEvaluation eval(CGF);
-  return CGF.EmitCompoundStmt(*E->getSubStmt(), !E->getType()->isVoidType())
-    .getScalarVal();
+  llvm::Value *RetAlloca = CGF.EmitCompoundStmt(*E->getSubStmt(),
+                                                !E->getType()->isVoidType());
+  if (!RetAlloca)
+    return 0;
+  return CGF.EmitLoadOfScalar(CGF.MakeAddrLValue(RetAlloca, E->getType()));
+
 }
 
 //===----------------------------------------------------------------------===//
@@ -1927,15 +1919,8 @@ LValue ScalarExprEmitter::EmitCompoundAssignLValue(
   QualType LHSTy = E->getLHS()->getType();
   BinOpInfo OpInfo;
   
-  if (E->getComputationResultType()->isAnyComplexType()) {
-    // This needs to go through the complex expression emitter, but it's a tad
-    // complicated to do that... I'm leaving it out for now.  (Note that we do
-    // actually need the imaginary part of the RHS for multiplication and
-    // division.)
-    CGF.ErrorUnsupported(E, "complex compound assignment");
-    Result = llvm::UndefValue::get(CGF.ConvertType(E->getType()));
-    return LValue();
-  }
+  if (E->getComputationResultType()->isAnyComplexType())
+    return CGF.EmitScalarCompooundAssignWithComplex(E, Result);
   
   // Emit the RHS first.  __block variables need to have the rhs evaluated
   // first, plus this should improve codegen a little.

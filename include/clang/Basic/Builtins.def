@@ -70,6 +70,8 @@
 //  f -> this is a libc/libm function without the '__builtin_' prefix. It can
 //       be followed by ':headername:' to state which header this function
 //       comes from.
+//  i -> this is a runtime library implemented function without the
+//       '__builtin_' prefix. It will be implemented in compiter-rt or libgcc.
 //  p:N: -> this is a printf-like function whose Nth argument is the format
 //          string.
 //  P:N: -> similar to the p:N: attribute, but the function is like vprintf
@@ -718,48 +720,47 @@ LIBBUILTIN(vscanf, "icC*Ra",      "fS:0:", "stdio.h", ALL_LANGUAGES)
 LIBBUILTIN(vfscanf, "iP*RcC*Ra",  "fS:1:", "stdio.h", ALL_LANGUAGES)
 LIBBUILTIN(vsscanf, "icC*RcC*Ra", "fS:1:", "stdio.h", ALL_LANGUAGES)
 // C99
+#undef setjmp
+LIBBUILTIN(setjmp, "iJ",          "fj",    "setjmp.h", ALL_LANGUAGES)
 LIBBUILTIN(longjmp, "vJi",        "fr",    "setjmp.h", ALL_LANGUAGES)
 
-// Non-C library functions
-// FIXME: Non-C-standard stuff shouldn't be builtins in non-GNU mode!
-LIBBUILTIN(alloca, "v*z",         "f",     "stdlib.h", ALL_LANGUAGES)
+// Non-C library functions, active in GNU mode only.
+LIBBUILTIN(alloca, "v*z",         "f",     "stdlib.h", ALL_GNU_LANGUAGES)
 // POSIX string.h
-LIBBUILTIN(stpcpy, "c*c*cC*",     "f",     "string.h", ALL_LANGUAGES)
-LIBBUILTIN(stpncpy, "c*c*cC*z",   "f",     "string.h", ALL_LANGUAGES)
-LIBBUILTIN(strdup, "c*cC*",       "f",     "string.h", ALL_LANGUAGES)
-LIBBUILTIN(strndup, "c*cC*z",     "f",     "string.h", ALL_LANGUAGES)
+LIBBUILTIN(stpcpy, "c*c*cC*",     "f",     "string.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(stpncpy, "c*c*cC*z",   "f",     "string.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(strdup, "c*cC*",       "f",     "string.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(strndup, "c*cC*z",     "f",     "string.h", ALL_GNU_LANGUAGES)
 // POSIX strings.h
-LIBBUILTIN(index, "c*cC*i",       "f",     "strings.h", ALL_LANGUAGES)
-LIBBUILTIN(rindex, "c*cC*i",      "f",     "strings.h", ALL_LANGUAGES)
-LIBBUILTIN(bzero, "vv*z",         "f",     "strings.h", ALL_LANGUAGES)
+LIBBUILTIN(index, "c*cC*i",       "f",     "strings.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(rindex, "c*cC*i",      "f",     "strings.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(bzero, "vv*z",         "f",     "strings.h", ALL_GNU_LANGUAGES)
 // In some systems str[n]casejmp is a macro that expands to _str[n]icmp.
 // We undefine then here to avoid wrong name.
 #undef strcasecmp
 #undef strncasecmp
-LIBBUILTIN(strcasecmp, "icC*cC*", "f",     "strings.h", ALL_LANGUAGES)
-LIBBUILTIN(strncasecmp, "icC*cC*z", "f",   "strings.h", ALL_LANGUAGES)
+LIBBUILTIN(strcasecmp, "icC*cC*", "f",     "strings.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(strncasecmp, "icC*cC*z", "f",   "strings.h", ALL_GNU_LANGUAGES)
 // POSIX unistd.h
-LIBBUILTIN(_exit, "vi",           "fr",    "unistd.h", ALL_LANGUAGES)
-LIBBUILTIN(vfork, "p",            "fj",    "unistd.h", ALL_LANGUAGES)
+LIBBUILTIN(_exit, "vi",           "fr",    "unistd.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(vfork, "p",            "fj",    "unistd.h", ALL_GNU_LANGUAGES)
 // POSIX setjmp.h
 
 // In some systems setjmp is a macro that expands to _setjmp. We undefine
 // it here to avoid having two identical LIBBUILTIN entries.
-#undef setjmp
-LIBBUILTIN(_setjmp, "iJ",         "fj",   "setjmp.h", ALL_LANGUAGES)
-LIBBUILTIN(__sigsetjmp, "iSJi",   "fj",   "setjmp.h", ALL_LANGUAGES)
-LIBBUILTIN(setjmp, "iJ",          "fj",   "setjmp.h", ALL_LANGUAGES)
-LIBBUILTIN(sigsetjmp, "iSJi",     "fj",   "setjmp.h", ALL_LANGUAGES)
-LIBBUILTIN(setjmp_syscall, "iJ",  "fj",   "setjmp.h", ALL_LANGUAGES)
-LIBBUILTIN(savectx, "iJ",         "fj",   "setjmp.h", ALL_LANGUAGES)
-LIBBUILTIN(qsetjmp, "iJ",         "fj",   "setjmp.h", ALL_LANGUAGES)
-LIBBUILTIN(getcontext, "iK*",     "fj",   "setjmp.h", ALL_LANGUAGES)
+LIBBUILTIN(_setjmp, "iJ",         "fj",   "setjmp.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(__sigsetjmp, "iSJi",   "fj",   "setjmp.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(sigsetjmp, "iSJi",     "fj",   "setjmp.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(setjmp_syscall, "iJ",  "fj",   "setjmp.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(savectx, "iJ",         "fj",   "setjmp.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(qsetjmp, "iJ",         "fj",   "setjmp.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(getcontext, "iK*",     "fj",   "setjmp.h", ALL_GNU_LANGUAGES)
 
-LIBBUILTIN(_longjmp, "vJi",       "fr",    "setjmp.h", ALL_LANGUAGES)
-LIBBUILTIN(siglongjmp, "vSJi",    "fr",    "setjmp.h", ALL_LANGUAGES)
+LIBBUILTIN(_longjmp, "vJi",       "fr",    "setjmp.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(siglongjmp, "vSJi",    "fr",    "setjmp.h", ALL_GNU_LANGUAGES)
 // non-standard but very common
-LIBBUILTIN(strlcpy, "zc*cC*z",    "f",     "string.h", ALL_LANGUAGES)
-LIBBUILTIN(strlcat, "zc*cC*z",    "f",     "string.h", ALL_LANGUAGES)
+LIBBUILTIN(strlcpy, "zc*cC*z",    "f",     "string.h", ALL_GNU_LANGUAGES)
+LIBBUILTIN(strlcat, "zc*cC*z",    "f",     "string.h", ALL_GNU_LANGUAGES)
 //   id objc_msgSend(id, SEL, ...)
 LIBBUILTIN(objc_msgSend, "GGH.",   "f",     "objc/message.h", OBJC_LANG)
 // long double objc_msgSend_fpret(id self, SEL op, ...) 
@@ -927,14 +928,39 @@ LIBBUILTIN(_Block_object_dispose, "vvC*iC", "f", "Blocks.h", ALL_LANGUAGES)
 BUILTIN(__builtin_annotation, "v.", "tn")
 
 // Multiprecision Arithmetic Builtins.
+BUILTIN(__builtin_addcb, "UcUcCUcCUcCUc*", "n")
 BUILTIN(__builtin_addcs, "UsUsCUsCUsCUs*", "n")
 BUILTIN(__builtin_addc, "UiUiCUiCUiCUi*", "n")
 BUILTIN(__builtin_addcl, "ULiULiCULiCULiCULi*", "n")
 BUILTIN(__builtin_addcll, "ULLiULLiCULLiCULLiCULLi*", "n")
+BUILTIN(__builtin_subcb, "UcUcCUcCUcCUc*", "n")
 BUILTIN(__builtin_subcs, "UsUsCUsCUsCUs*", "n")
 BUILTIN(__builtin_subc, "UiUiCUiCUiCUi*", "n")
 BUILTIN(__builtin_subcl, "ULiULiCULiCULiCULi*", "n")
 BUILTIN(__builtin_subcll, "ULLiULLiCULLiCULLiCULLi*", "n")
+
+// Checked Arithmetic Builtins for Security.
+BUILTIN(__builtin_uadd_overflow, "bUiCUiCUi*", "n")
+BUILTIN(__builtin_uaddl_overflow, "bULiCULiCULi*", "n")
+BUILTIN(__builtin_uaddll_overflow, "bULLiCULLiCULLi*", "n")
+BUILTIN(__builtin_usub_overflow, "bUiCUiCUi*", "n")
+BUILTIN(__builtin_usubl_overflow, "bULiCULiCULi*", "n")
+BUILTIN(__builtin_usubll_overflow, "bULLiCULLiCULLi*", "n")
+BUILTIN(__builtin_umul_overflow, "bUiCUiCUi*", "n")
+BUILTIN(__builtin_umull_overflow, "bULiCULiCULi*", "n")
+BUILTIN(__builtin_umulll_overflow, "bULLiCULLiCULLi*", "n")
+BUILTIN(__builtin_sadd_overflow, "bSiCSiCSi*", "n")
+BUILTIN(__builtin_saddl_overflow, "bSLiCSLiCSLi*", "n")
+BUILTIN(__builtin_saddll_overflow, "bSLLiCSLLiCSLLi*", "n")
+BUILTIN(__builtin_ssub_overflow, "bSiCSiCSi*", "n")
+BUILTIN(__builtin_ssubl_overflow, "bSLiCSLiCSLi*", "n")
+BUILTIN(__builtin_ssubll_overflow, "bSLLiCSLLiCSLLi*", "n")
+BUILTIN(__builtin_smul_overflow, "bSiCSiCSi*", "n")
+BUILTIN(__builtin_smull_overflow, "bSLiCSLiCSLi*", "n")
+BUILTIN(__builtin_smulll_overflow, "bSLLiCSLLiCSLLi*", "n")
+
+// Clang builtins (not available in GCC).
+BUILTIN(__builtin_addressof, "v*v&", "nct")
 
 #undef BUILTIN
 #undef LIBBUILTIN

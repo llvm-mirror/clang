@@ -97,6 +97,11 @@ public:
     ///
     /// Optionally override to do per translation unit tasks.
     virtual void onStartOfTranslationUnit() {}
+
+    /// \brief Called at the end of each translation unit.
+    ///
+    /// Optionally override to do per translation unit tasks.
+    virtual void onEndOfTranslationUnit() {}
   };
 
   /// \brief Called when parsing is finished. Intended for testing only.
@@ -130,17 +135,6 @@ public:
   void addMatcher(const TypeLocMatcher &NodeMatch,
                   MatchCallback *Action);
   /// @}
-
-  /// \brief Adds a matcher to execute when running over the AST.
-  ///
-  /// This is similar to \c addMatcher(), but it uses the dynamic interface. It
-  /// is more flexible, but the lost type information enables a caller to pass
-  /// a matcher that cannot match anything.
-  ///
-  /// \returns \c true if the matcher is a valid top-level matcher, \c false
-  ///   otherwise.
-  bool addDynamicMatcher(const internal::DynTypedMatcher &NodeMatch,
-                         MatchCallback *Action);
 
   /// \brief Creates a clang ASTConsumer that finds all matches.
   clang::ASTConsumer *newASTConsumer();

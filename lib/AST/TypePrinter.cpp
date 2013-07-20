@@ -201,6 +201,7 @@ bool TypePrinter::canPrefixQualifiers(const Type *T,
       NeedARCStrongQualifier = true;
       // Fall through
       
+    case Type::Decayed:
     case Type::Pointer:
     case Type::BlockPointer:
     case Type::LValueReference:
@@ -466,6 +467,14 @@ void TypePrinter::printVariableArrayAfter(const VariableArrayType *T,
   OS << ']';
 
   printAfter(T->getElementType(), OS);
+}
+
+void TypePrinter::printDecayedBefore(const DecayedType *T, raw_ostream &OS) {
+  // Print as though it's a pointer.
+  printBefore(T->getDecayedType(), OS);
+}
+void TypePrinter::printDecayedAfter(const DecayedType *T, raw_ostream &OS) {
+  printAfter(T->getDecayedType(), OS);
 }
 
 void TypePrinter::printDependentSizedArrayBefore(
@@ -1072,6 +1081,17 @@ void TypePrinter::printAttributedBefore(const AttributedType *T,
     return printBefore(T->getEquivalentType(), OS);
 
   printBefore(T->getModifiedType(), OS);
+
+  if (T->isMSTypeSpec()) {
+    switch (T->getAttrKind()) {
+    default: return;
+    case AttributedType::attr_ptr32: OS << " __ptr32"; break;
+    case AttributedType::attr_ptr64: OS << " __ptr64"; break;
+    case AttributedType::attr_sptr: OS << " __sptr"; break;
+    case AttributedType::attr_uptr: OS << " __uptr"; break;
+}
+    spaceBeforePlaceHolder(OS);
+  }
 }
 
 void TypePrinter::printAttributedAfter(const AttributedType *T,
@@ -1082,8 +1102,12 @@ void TypePrinter::printAttributedAfter(const AttributedType *T,
     return printAfter(T->getEquivalentType(), OS);
 
   // TODO: not all attributes are GCC-style attributes.
+  if (T->isMSTypeSpec())
+    return;
+
   OS << " __attribute__((";
   switch (T->getAttrKind()) {
+  default: llvm_unreachable("This attribute should have been handled already");
   case AttributedType::attr_address_space:
     OS << "address_space(";
     OS << T->getEquivalentType().getAddressSpace();
@@ -1266,18 +1290,19 @@ TemplateSpecializationType::PrintTemplateArgumentList(
   
   bool needSpace = false;
   for (unsigned Arg = 0; Arg < NumArgs; ++Arg) {
-    if (Arg > 0)
-      OS << ", ";
-    
     // Print the argument into a string.
     SmallString<128> Buf;
     llvm::raw_svector_ostream ArgOS(Buf);
     if (Args[Arg].getKind() == TemplateArgument::Pack) {
+      if (Args[Arg].pack_size() && Arg > 0)
+        OS << ", ";
       PrintTemplateArgumentList(ArgOS,
                                 Args[Arg].pack_begin(), 
                                 Args[Arg].pack_size(), 
                                 Policy, true);
     } else {
+      if (Arg > 0)
+        OS << ", ";
       Args[Arg].print(Policy, ArgOS);
     }
     StringRef ArgString = ArgOS.str();

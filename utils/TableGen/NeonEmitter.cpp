@@ -770,9 +770,7 @@ GenerateRegisterCheckPatternForLoadStores(const StringRef &NameRef,
     // a dup/lane instruction.
     if (IsLDSTOne) {
       if ((HasLanePostfix || HasDupPostfix) && OutTypeCode != "8") {
-        RegisterSuffix += ", :" + OutTypeCode;
-      } else if (OutTypeCode == "64") {
-        RegisterSuffix += ", :64";
+        RegisterSuffix += ":" + OutTypeCode;
       }
     }
 
@@ -2229,6 +2227,8 @@ void NeonEmitter::runTests(raw_ostream &OS) {
     "// RUN: %clang_cc1 -triple thumbv7s-apple-darwin -target-abi apcs-gnu\\\n"
     "// RUN:  -target-cpu swift -ffreestanding -Os -S -o - %s\\\n"
     "// RUN:  | FileCheck %s\n"
+    "\n"
+    "// REQUIRES: long_tests\n"
     "\n"
     "#include <arm_neon.h>\n"
     "\n";

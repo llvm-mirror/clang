@@ -167,8 +167,14 @@ void pointer_to_integral_type_conv(char* ptr) {
    short sh = (short)ptr;
    ch = (char)ptr;
    sh = (short)ptr;
-} 
 
+   // These are valid C++.
+   bool b = (bool)ptr;
+   b = static_cast<bool>(ptr);
+
+   // This is bad.
+   b = reinterpret_cast<bool>(ptr); // expected-error {{cast from pointer to smaller type 'bool' loses information}}
+}
 
 namespace friend_as_a_forward_decl {
 
@@ -332,4 +338,50 @@ void TestSP9() {
   c3.f(); // Overloaded binary op operand
   c3.g(); // Overloaded incdec op operand
   c3.h(); // Overloaded unary op operand
+}
+
+union u {
+  int *i1;
+  int &i2;  // expected-warning {{union member 'i2' has reference type 'int &', which is a Microsoft extension}}
+};
+
+// Property getter using reference.
+struct SP11 {
+  __declspec(property(get=GetV)) int V;
+  int _v;
+  int& GetV() { return _v; }
+  void UseV();
+  void TakePtr(int *) {}
+  void TakeRef(int &) {}
+  void TakeVal(int) {}
+};
+
+void SP11::UseV() {
+  TakePtr(&V);
+  TakeRef(V);
+  TakeVal(V);
+}
+
+struct StructWithUnnamedMember {
+  __declspec(property(get=GetV)) int : 10; // expected-error {{anonymous property is not supported}}
+};
+
+namespace rdar14250378 {
+  class Bar {};
+  
+  namespace NyNamespace {
+    class Foo {
+    public:
+      Bar* EnsureBar();
+    };
+    
+    class Baz : public Foo {
+    public:
+      friend class Bar;
+    };
+    
+    Bar* Foo::EnsureBar() {
+      return 0;
+    }
+  }
 }

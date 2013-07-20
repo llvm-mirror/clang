@@ -12,9 +12,15 @@
 
 #include "clang/Basic/LLVM.h"
 
+namespace llvm {
+namespace opt {
+  class ArgList;
+}
+}
+
 namespace clang {
 namespace driver {
-  class ArgList;
+
   class Compilation;
   class InputInfo;
   class Job;
@@ -66,7 +72,7 @@ public:
   virtual void ConstructJob(Compilation &C, const JobAction &JA,
                             const InputInfo &Output,
                             const InputInfoList &Inputs,
-                            const ArgList &TCArgs,
+                            const llvm::opt::ArgList &TCArgs,
                             const char *LinkingOutput) const = 0;
 };
 

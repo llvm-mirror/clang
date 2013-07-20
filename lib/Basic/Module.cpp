@@ -111,8 +111,8 @@ std::string Module::getFullModuleName() const {
     Names.push_back(M->Name);
   
   std::string Result;
-  for (SmallVector<StringRef, 2>::reverse_iterator I = Names.rbegin(),
-                                                IEnd = Names.rend();
+  for (SmallVectorImpl<StringRef>::reverse_iterator I = Names.rbegin(),
+                                                 IEnd = Names.rend();
        I != IEnd; ++I) {
     if (!Result.empty())
       Result += '.';
@@ -293,10 +293,10 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS << "\n";
   }
 
-  for (unsigned I = 0, N = Headers.size(); I != N; ++I) {
+  for (unsigned I = 0, N = NormalHeaders.size(); I != N; ++I) {
     OS.indent(Indent + 2);
     OS << "header \"";
-    OS.write_escaped(Headers[I]->getName());
+    OS.write_escaped(NormalHeaders[I]->getName());
     OS << "\"\n";
   }
 
@@ -304,6 +304,13 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS.indent(Indent + 2);
     OS << "exclude header \"";
     OS.write_escaped(ExcludedHeaders[I]->getName());
+    OS << "\"\n";
+  }
+
+  for (unsigned I = 0, N = PrivateHeaders.size(); I != N; ++I) {
+    OS.indent(Indent + 2);
+    OS << "private header \"";
+    OS.write_escaped(PrivateHeaders[I]->getName());
     OS << "\"\n";
   }
   

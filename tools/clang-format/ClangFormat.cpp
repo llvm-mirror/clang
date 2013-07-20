@@ -162,8 +162,9 @@ static bool format(std::string FileName) {
     llvm::errs() << ec.message() << "\n";
     return true;
   }
+  if (Code->getBufferSize() == 0)
+    return true; // Empty files are formatted correctly.
   FileID ID = createInMemoryFile(FileName, Code.get(), Sources, Files);
-  Lexer Lex(ID, Sources.getBuffer(ID), Sources, getFormattingLangOpts());
   if (Offsets.empty())
     Offsets.push_back(0);
   if (Offsets.size() != Lengths.size() &&
@@ -195,8 +196,10 @@ static bool format(std::string FileName) {
     }
     Ranges.push_back(CharSourceRange::getCharRange(Start, End));
   }
-  tooling::Replacements Replaces =
-      reformat(getStyle(Style, FileName), Lex, Sources, Ranges);
+  FormatStyle FormatStyle = getStyle(Style, FileName);
+  Lexer Lex(ID, Sources.getBuffer(ID), Sources,
+            getFormattingLangOpts(FormatStyle.Standard));
+  tooling::Replacements Replaces = reformat(FormatStyle, Lex, Sources, Ranges);
   if (OutputXML) {
     llvm::outs()
         << "<?xml version='1.0'?>\n<replacements xml:space='preserve'>\n";
@@ -226,7 +229,7 @@ static bool format(std::string FileName) {
       Rewrite.getEditBuffer(ID).write(FileStream);
       FileStream.flush();
     } else {
-      if (Cursor != 0)
+      if (Cursor.getNumOccurrences() != 0)
         outs() << "{ \"Cursor\": " << tooling::shiftedCodePosition(
                                           Replaces, Cursor) << " }\n";
       Rewrite.getEditBuffer(ID).write(outs());

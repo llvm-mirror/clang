@@ -203,3 +203,29 @@ int FooBar();
 @interface Asset : NSObject
 @end
 
+// rdar://14024851 Check that this does not enter an infinite loop
+@interface rdar14024851
+-(void)meth; // expected-note {{declared here}}
+@end
+
+@implementation rdar14024851 // expected-warning {{method definition for 'meth' not found}} expected-note {{previous definition}}
+@end
+
+@implementation rdar14024851 // expected-error {{reimplementation}}
+/// \brief comment
+-(void)meth {}
+@end
+
+// rdar://14124644
+@interface test_vararg1
+/// @param[in] arg somthing
+/// @param[in] ... This is vararg
+- (void) VarArgMeth : (id)arg, ...;
+@end
+
+@implementation test_vararg1
+/// @param[in] arg somthing
+/// @param[in] ... This is vararg
+- (void) VarArgMeth : (id)arg, ... {}
+@end
+

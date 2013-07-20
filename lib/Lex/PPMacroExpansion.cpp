@@ -458,7 +458,12 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
         }
       } else if (Tok.is(tok::l_paren)) {
         ++NumParens;
-      } else if (Tok.is(tok::comma) && NumParens == 0) {
+      } else if (Tok.is(tok::comma) && NumParens == 0 &&
+                 !(Tok.getFlags() & Token::IgnoredComma)) {
+        // In Microsoft-compatibility mode, single commas from nested macro
+        // expansions should not be considered as argument separators. We test
+        // for this with the IgnoredComma token flag above.
+
         // Comma ends this argument if there are more fixed arguments expected.
         // However, if this is a variadic macro, and this is part of the
         // variadic part, then the comma is just an argument token.
@@ -992,7 +997,8 @@ static bool EvaluateHasIncludeCommon(Token &Tok,
   // Search include directories.
   const DirectoryLookup *CurDir;
   const FileEntry *File =
-      PP.LookupFile(Filename, isAngled, LookupFrom, CurDir, NULL, NULL, NULL);
+      PP.LookupFile(FilenameLoc, Filename, isAngled, LookupFrom, CurDir, NULL,
+                    NULL, NULL);
 
   // Get the result value.  A result of true means the file exists.
   return File != 0;
@@ -1212,9 +1218,7 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
     if (Tok.is(tok::l_paren)) {
       // Read the identifier
       LexUnexpandedToken(Tok);
-      if (Tok.is(tok::identifier) || Tok.is(tok::kw_const)) {
-        FeatureII = Tok.getIdentifierInfo();
-
+      if ((FeatureII = Tok.getIdentifierInfo())) {
         // Read the ')'.
         LexUnexpandedToken(Tok);
         if (Tok.is(tok::r_paren))

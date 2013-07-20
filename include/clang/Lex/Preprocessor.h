@@ -20,6 +20,7 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Lex/MacroInfo.h"
+#include "clang/Lex/ModuleMap.h"
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/PTHLexer.h"
 #include "clang/Lex/PTHManager.h"
@@ -457,6 +458,10 @@ public:
   /// \brief Retrieve the module loader associated with this preprocessor.
   ModuleLoader &getModuleLoader() const { return TheModuleLoader; }
 
+  bool hadModuleLoaderFatalFailure() const {
+    return TheModuleLoader.HadFatalFailure;
+  }
+
   /// \brief True if we are currently preprocessing a #if or #elif directive
   bool isParsingIfOrElifDirective() const { 
     return ParsingIfOrElifDirective;
@@ -826,6 +831,13 @@ public:
     assert(Tok.isAnnotation() && "Expected annotation token");
     if (CachedLexPos != 0 && isBacktrackEnabled())
       AnnotatePreviousCachedTokens(Tok);
+  }
+
+  /// Get the location of the last cached token, suitable for setting the end
+  /// location of an annotation token.
+  SourceLocation getLastCachedTokenLocation() const {
+    assert(CachedLexPos != 0);
+    return CachedTokens[CachedLexPos-1].getLocation();
   }
 
   /// \brief Replace the last token with an annotation token.
@@ -1216,12 +1228,12 @@ public:
   ///
   /// Returns null on failure.  \p isAngled indicates whether the file
   /// reference is for system \#include's or not (i.e. using <> instead of "").
-  const FileEntry *LookupFile(StringRef Filename,
+  const FileEntry *LookupFile(SourceLocation FilenameLoc, StringRef Filename,
                               bool isAngled, const DirectoryLookup *FromDir,
                               const DirectoryLookup *&CurDir,
                               SmallVectorImpl<char> *SearchPath,
                               SmallVectorImpl<char> *RelativePath,
-                              Module **SuggestedModule,
+                              ModuleMap::KnownHeader *SuggestedModule,
                               bool SkipCache = false);
 
   /// GetCurLookup - The DirectoryLookup structure used to find the current
@@ -1433,7 +1445,7 @@ private:
   void HandleMicrosoftImportDirective(Token &Tok);
 
   // Macro handling.
-  void HandleDefineDirective(Token &Tok);
+  void HandleDefineDirective(Token &Tok, bool ImmediatelyAfterTopLevelIfndef);
   void HandleUndefDirective(Token &Tok);
 
   // Conditional Inclusion.

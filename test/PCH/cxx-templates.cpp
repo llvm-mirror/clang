@@ -7,6 +7,11 @@
 // RUN: %clang_cc1 -std=c++11 -fcxx-exceptions -fexceptions -include-pch %t -verify %s -ast-dump  -o -
 // RUN: %clang_cc1 -std=c++11 -fcxx-exceptions -fexceptions -include-pch %t %s -emit-llvm -o - -error-on-deserialized-decl doNotDeserialize | FileCheck %s
 
+// Test with modules.
+// RUN: %clang_cc1 -std=c++11 -fcxx-exceptions -fexceptions -fmodules -x c++-header -emit-pch -o %t %S/cxx-templates.h
+// RUN: %clang_cc1 -std=c++11 -fcxx-exceptions -fexceptions -fmodules -include-pch %t -verify %s -ast-dump  -o -
+// RUN: %clang_cc1 -std=c++11 -fcxx-exceptions -fexceptions -fmodules -include-pch %t %s -emit-llvm -o - -error-on-deserialized-decl doNotDeserialize | FileCheck %s
+
 // expected-no-diagnostics
 
 // CHECK: define weak_odr void @_ZN2S4IiE1mEv
@@ -84,4 +89,13 @@ namespace rdar13135282 {
   void test() {
     __mt_alloc<> mt = __mt_alloc<>();
   }
+}
+
+void CallDependentSpecializedFunc(DependentSpecializedFuncClass<int> &x) {
+  DependentSpecializedFunc(x);
+}
+
+namespace cyclic_module_load {
+  extern std::valarray<int> x;
+  std::valarray<int> y(x);
 }

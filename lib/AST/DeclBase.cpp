@@ -595,32 +595,6 @@ const AttrVec &Decl::getAttrs() const {
   return getASTContext().getDeclAttrs(this);
 }
 
-void Decl::swapAttrs(Decl *RHS) {
-  bool HasLHSAttr = this->HasAttrs;
-  bool HasRHSAttr = RHS->HasAttrs;
-
-  // Usually, neither decl has attrs, nothing to do.
-  if (!HasLHSAttr && !HasRHSAttr) return;
-
-  // If 'this' has no attrs, swap the other way.
-  if (!HasLHSAttr)
-    return RHS->swapAttrs(this);
-
-  ASTContext &Context = getASTContext();
-
-  // Handle the case when both decls have attrs.
-  if (HasRHSAttr) {
-    std::swap(Context.getDeclAttrs(this), Context.getDeclAttrs(RHS));
-    return;
-  }
-
-  // Otherwise, LHS has an attr and RHS doesn't.
-  Context.getDeclAttrs(RHS) = Context.getDeclAttrs(this);
-  Context.eraseDeclAttrs(this);
-  this->HasAttrs = false;
-  RHS->HasAttrs = true;
-}
-
 Decl *Decl::castFromDeclContext (const DeclContext *D) {
   Decl::Kind DK = D->getDeclKind();
   switch(DK) {
@@ -1012,13 +986,38 @@ ExternalASTSource::SetExternalVisibleDeclsForName(const DeclContext *DC,
     Map = DC->CreateStoredDeclsMap(Context);
 
   StoredDeclsList &List = (*Map)[Name];
-  for (ArrayRef<NamedDecl*>::iterator
-         I = Decls.begin(), E = Decls.end(); I != E; ++I) {
-    if (List.isNull())
-      List.setOnlyValue(*I);
-    else
-      // FIXME: Need declarationReplaces handling for redeclarations in modules.
-      List.AddSubsequentDecl(*I);
+
+  // Clear out any old external visible declarations, to avoid quadratic
+  // performance in the redeclaration checks below.
+  List.removeExternalDecls();
+
+  if (!List.isNull()) {
+    // We have both existing declarations and new declarations for this name.
+    // Some of the declarations may simply replace existing ones. Handle those
+    // first.
+    llvm::SmallVector<unsigned, 8> Skip;
+    for (unsigned I = 0, N = Decls.size(); I != N; ++I)
+      if (List.HandleRedeclaration(Decls[I]))
+        Skip.push_back(I);
+    Skip.push_back(Decls.size());
+
+    // Add in any new declarations.
+    unsigned SkipPos = 0;
+    for (unsigned I = 0, N = Decls.size(); I != N; ++I) {
+      if (I == Skip[SkipPos])
+        ++SkipPos;
+      else
+        List.AddSubsequentDecl(Decls[I]);
+    }
+  } else {
+    // Convert the array to a StoredDeclsList.
+    for (ArrayRef<NamedDecl*>::iterator
+           I = Decls.begin(), E = Decls.end(); I != E; ++I) {
+      if (List.isNull())
+        List.setOnlyValue(*I);
+      else
+        List.AddSubsequentDecl(*I);
+    }
   }
 
   return List.getLookupResult();
@@ -1171,7 +1170,8 @@ StoredDeclsMap *DeclContext::buildLookup() {
   SmallVector<DeclContext *, 2> Contexts;
   collectAllContexts(Contexts);
   for (unsigned I = 0, N = Contexts.size(); I != N; ++I)
-    buildLookupImpl(Contexts[I]);
+    buildLookupImpl<&DeclContext::decls_begin,
+                    &DeclContext::decls_end>(Contexts[I]);
 
   // We no longer have any lazy decls.
   LookupPtr.setInt(false);
@@ -1183,16 +1183,26 @@ StoredDeclsMap *DeclContext::buildLookup() {
 /// declarations contained within DCtx, which will either be this
 /// DeclContext, a DeclContext linked to it, or a transparent context
 /// nested within it.
+template<DeclContext::decl_iterator (DeclContext::*Begin)() const,
+         DeclContext::decl_iterator (DeclContext::*End)() const>
 void DeclContext::buildLookupImpl(DeclContext *DCtx) {
-  for (decl_iterator I = DCtx->decls_begin(), E = DCtx->decls_end();
+  for (decl_iterator I = (DCtx->*Begin)(), E = (DCtx->*End)();
        I != E; ++I) {
     Decl *D = *I;
 
     // Insert this declaration into the lookup structure, but only if
     // it's semantically within its decl context. Any other decls which
     // should be found in this context are added eagerly.
+    //
+    // If it's from an AST file, don't add it now. It'll get handled by
+    // FindExternalVisibleDeclsByName if needed. Exception: if we're not
+    // in C++, we do not track external visible decls for the TU, so in
+    // that case we need to collect them all here.
     if (NamedDecl *ND = dyn_cast<NamedDecl>(D))
-      if (ND->getDeclContext() == DCtx && !shouldBeHidden(ND))
+      if (ND->getDeclContext() == DCtx && !shouldBeHidden(ND) &&
+          (!ND->isFromASTFile() ||
+           (isTranslationUnit() &&
+            !getParentASTContext().getLangOpts().CPlusPlus)))
         makeDeclVisibleInContextImpl(ND, false);
 
     // If this declaration is itself a transparent declaration context
@@ -1200,7 +1210,7 @@ void DeclContext::buildLookupImpl(DeclContext *DCtx) {
     // context (recursively).
     if (DeclContext *InnerCtx = dyn_cast<DeclContext>(D))
       if (InnerCtx->isTransparentContext() || InnerCtx->isInlineNamespace())
-        buildLookupImpl(InnerCtx);
+        buildLookupImpl<Begin, End>(InnerCtx);
   }
 }
 
@@ -1255,6 +1265,45 @@ DeclContext::lookup(DeclarationName Name) {
     return lookup_result(lookup_iterator(0), lookup_iterator(0));
 
   return I->second.getLookupResult();
+}
+
+DeclContext::lookup_result
+DeclContext::noload_lookup(DeclarationName Name) {
+  assert(DeclKind != Decl::LinkageSpec &&
+         "Should not perform lookups into linkage specs!");
+  if (!hasExternalVisibleStorage())
+    return lookup(Name);
+
+  DeclContext *PrimaryContext = getPrimaryContext();
+  if (PrimaryContext != this)
+    return PrimaryContext->noload_lookup(Name);
+
+  StoredDeclsMap *Map = LookupPtr.getPointer();
+  if (LookupPtr.getInt()) {
+    // Carefully build the lookup map, without deserializing anything.
+    SmallVector<DeclContext *, 2> Contexts;
+    collectAllContexts(Contexts);
+    for (unsigned I = 0, N = Contexts.size(); I != N; ++I)
+      buildLookupImpl<&DeclContext::noload_decls_begin,
+                      &DeclContext::noload_decls_end>(Contexts[I]);
+
+    // We no longer have any lazy decls.
+    LookupPtr.setInt(false);
+
+    // There may now be names for which we have local decls but are
+    // missing the external decls.
+    NeedToReconcileExternalVisibleStorage = true;
+
+    Map = LookupPtr.getPointer();
+  }
+
+  if (!Map)
+    return lookup_result(lookup_iterator(0), lookup_iterator(0));
+
+  StoredDeclsMap::iterator I = Map->find(Name);
+  return I != Map->end()
+             ? I->second.getLookupResult()
+             : lookup_result(lookup_iterator(0), lookup_iterator(0));
 }
 
 void DeclContext::localUncachedLookup(DeclarationName Name,

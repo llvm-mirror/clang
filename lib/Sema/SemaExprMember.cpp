@@ -610,6 +610,8 @@ LookupMemberExprInRecord(Sema &SemaRef, LookupResult &R,
         Corrected.getAsString(SemaRef.getLangOpts()));
     std::string CorrectedQuotedStr(
         Corrected.getQuoted(SemaRef.getLangOpts()));
+    bool droppedSpecifier =
+        Corrected.WillReplaceSpecifier() && Name.getAsString() == CorrectedStr;
 
     R.setLookupName(Corrected.getCorrection());
     for (TypoCorrection::decl_iterator DI = Corrected.begin(),
@@ -620,7 +622,7 @@ LookupMemberExprInRecord(Sema &SemaRef, LookupResult &R,
     R.resolveKind();
 
     SemaRef.Diag(R.getNameLoc(), diag::err_no_member_suggest)
-      << Name << DC << CorrectedQuotedStr << SS.getRange()
+      << Name << DC << droppedSpecifier << CorrectedQuotedStr << SS.getRange()
       << FixItHint::CreateReplacement(Corrected.getCorrectionRange(),
                                       CorrectedStr);
 
@@ -1311,7 +1313,7 @@ Sema::LookupMemberExpr(LookupResult &R, ExprResult &BaseExpr,
           Diags.getDiagnosticLevel(diag::warn_arc_repeated_use_of_weak,
                                    MemberLoc);
         if (Level != DiagnosticsEngine::Ignored)
-          getCurFunction()->recordUseOfWeak(Result);
+          recordUseOfEvaluatedWeak(Result);
       }
     }
 
@@ -1362,8 +1364,9 @@ Sema::LookupMemberExpr(LookupResult &R, ExprResult &BaseExpr,
           if (DiagnoseUseOfDecl(OMD, MemberLoc))
             return ExprError();
           Selector SetterSel =
-            SelectorTable::constructSetterName(PP.getIdentifierTable(),
-                                               PP.getSelectorTable(), Member);
+            SelectorTable::constructSetterSelector(PP.getIdentifierTable(),
+                                                   PP.getSelectorTable(),
+                                                   Member);
           ObjCMethodDecl *SMD = 0;
           if (Decl *SDecl = FindGetterSetterNameDecl(OPT, /*Property id*/0, 
                                                      SetterSel, Context))
@@ -1410,8 +1413,9 @@ Sema::LookupMemberExpr(LookupResult &R, ExprResult &BaseExpr,
       // If we found a getter then this may be a valid dot-reference, we
       // will look for the matching setter, in case it is needed.
       Selector SetterSel =
-        SelectorTable::constructSetterName(PP.getIdentifierTable(),
-                                           PP.getSelectorTable(), Member);
+        SelectorTable::constructSetterSelector(PP.getIdentifierTable(),
+                                               PP.getSelectorTable(),
+                                               Member);
       ObjCMethodDecl *Setter = IFace->lookupClassMethod(SetterSel);
       if (!Setter) {
         // If this reference is in an @implementation, also check for 'private'

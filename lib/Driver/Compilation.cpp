@@ -9,13 +9,14 @@
 
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Action.h"
-#include "clang/Driver/ArgList.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Options.h"
 #include "clang/Driver/ToolChain.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/Option/ArgList.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include <errno.h>
@@ -23,6 +24,7 @@
 
 using namespace clang::driver;
 using namespace clang;
+using namespace llvm::opt;
 
 Compilation::Compilation(const Driver &D, const ToolChain &_DefaultToolChain,
                          InputArgList *_Args, DerivedArgList *_TranslatedArgs)
@@ -200,29 +202,33 @@ void Compilation::PrintDiagnosticJob(raw_ostream &OS, const Job &J) const {
 }
 
 bool Compilation::CleanupFile(const char *File, bool IssueErrors) const {
-  llvm::sys::Path P(File);
-  std::string Error;
+  std::string P(File);
+
+  // FIXME: Why are we trying to remove files that we have not created? For
+  // example we should only try to remove a temporary assembly file if
+  // "clang -cc1" succeed in writing it. Was this a workaround for when
+  // clang was writing directly to a .s file and sometimes leaving it behind
+  // during a failure?
+
+  // FIXME: If this is necessary, we can still try to split
+  // llvm::sys::fs::remove into a removeFile and a removeDir and avoid the
+  // duplicated stat from is_regular_file.
 
   // Don't try to remove files which we don't have write access to (but may be
   // able to remove), or non-regular files. Underlying tools may have
   // intentionally not overwritten them.
-  if (!P.canWrite() || !P.isRegularFile())
+  if (!llvm::sys::fs::can_write(File) || !llvm::sys::fs::is_regular_file(File))
     return true;
 
-  if (P.eraseFromDisk(false, &Error)) {
-    // Failure is only failure if the file exists and is "regular". There is
-    // a race condition here due to the limited interface of
-    // llvm::sys::Path, we want to know if the removal gave ENOENT.
+  if (llvm::error_code EC = llvm::sys::fs::remove(File)) {
+    // Failure is only failure if the file exists and is "regular". We checked
+    // for it being regular before, and llvm::sys::fs::remove ignores ENOENT,
+    // so we don't need to check again.
     
-    // FIXME: Grumble, P.exists() is broken. PR3837.
-    struct stat buf;
-    if (::stat(P.c_str(), &buf) == 0 ? (buf.st_mode & S_IFMT) == S_IFREG :
-        (errno != ENOENT)) {
-      if (IssueErrors)
-        getDriver().Diag(clang::diag::err_drv_unable_to_remove_file)
-          << Error;
-      return false;
-    }
+    if (IssueErrors)
+      getDriver().Diag(clang::diag::err_drv_unable_to_remove_file)
+        << EC.message();
+    return false;
   }
   return true;
 }
@@ -254,7 +260,7 @@ bool Compilation::CleanupFileMap(const ArgStringMap &Files,
 
 int Compilation::ExecuteCommand(const Command &C,
                                 const Command *&FailingCommand) const {
-  llvm::sys::Path Prog(C.getExecutable());
+  std::string Prog(C.getExecutable());
   const char **Argv = new const char*[C.getArguments().size() + 2];
   Argv[0] = C.getExecutable();
   std::copy(C.getArguments().begin(), C.getArguments().end(), Argv+1);
@@ -291,11 +297,9 @@ int Compilation::ExecuteCommand(const Command &C,
 
   std::string Error;
   bool ExecutionFailed;
-  int Res =
-    llvm::sys::Program::ExecuteAndWait(Prog, Argv,
-                                       /*env*/0, Redirects,
-                                       /*secondsToWait*/0, /*memoryLimit*/0,
-                                       &Error, &ExecutionFailed);
+  int Res = llvm::sys::ExecuteAndWait(Prog, Argv, /*env*/ 0, Redirects,
+                                      /*secondsToWait*/ 0, /*memoryLimit*/ 0,
+                                      &Error, &ExecutionFailed);
   if (!Error.empty()) {
     assert(Res && "Error string set with 0 result code!");
     getDriver().Diag(clang::diag::err_drv_command_failure) << Error;
@@ -370,9 +374,10 @@ void Compilation::initCompilationForDiagnostics() {
   TranslatedArgs->ClaimAllArgs();
 
   // Redirect stdout/stderr to /dev/null.
-  Redirects = new const llvm::sys::Path*[3]();
-  Redirects[1] = new const llvm::sys::Path();
-  Redirects[2] = new const llvm::sys::Path();
+  Redirects = new const StringRef*[3]();
+  Redirects[0] = 0;
+  Redirects[1] = new const StringRef();
+  Redirects[2] = new const StringRef();
 }
 
 StringRef Compilation::getSysRoot() const {

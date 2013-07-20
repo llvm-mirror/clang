@@ -974,10 +974,23 @@ LocalScope* CFGBuilder::addLocalScopeForVarDecl(VarDecl *VD,
   // Check for const references bound to temporary. Set type to pointee.
   QualType QT = VD->getType();
   if (QT.getTypePtr()->isReferenceType()) {
-    if (!VD->extendsLifetimeOfTemporary())
+    // Attempt to determine whether this declaration lifetime-extends a
+    // temporary.
+    //
+    // FIXME: This is incorrect. Non-reference declarations can lifetime-extend
+    // temporaries, and a single declaration can extend multiple temporaries.
+    // We should look at the storage duration on each nested
+    // MaterializeTemporaryExpr instead.
+    const Expr *Init = VD->getInit();
+    if (!Init)
+      return Scope;
+    if (const ExprWithCleanups *EWC = dyn_cast<ExprWithCleanups>(Init))
+      Init = EWC->getSubExpr();
+    if (!isa<MaterializeTemporaryExpr>(Init))
       return Scope;
 
-    QT = getReferenceInitTemporaryType(*Context, VD->getInit());
+    // Lifetime-extending a temporary.
+    QT = getReferenceInitTemporaryType(*Context, Init);
   }
 
   // Check for constant size array. Set type to array element type.
@@ -1627,6 +1640,7 @@ CFGBlock *CFGBuilder::VisitDeclStmt(DeclStmt *DS) {
     Decl *D = *I;
     void *Mem = cfg->getAllocator().Allocate(sizeof(DeclStmt), A);
     DeclStmt *DSNew = new (Mem) DeclStmt(DG, D->getLocation(), GetEndLoc(D));
+    cfg->addSyntheticDeclStmt(DSNew, DS);
 
     // Append the fake DeclStmt to block.
     B = VisitDeclSubExpr(DSNew);
@@ -1639,19 +1653,11 @@ CFGBlock *CFGBuilder::VisitDeclStmt(DeclStmt *DS) {
 /// DeclStmts and initializers in them.
 CFGBlock *CFGBuilder::VisitDeclSubExpr(DeclStmt *DS) {
   assert(DS->isSingleDecl() && "Can handle single declarations only.");
-  Decl *D = DS->getSingleDecl();
- 
-  if (isa<StaticAssertDecl>(D)) {
-    // static_asserts aren't added to the CFG because they do not impact
-    // runtime semantics.
-    return Block;
-  }
-  
   VarDecl *VD = dyn_cast<VarDecl>(DS->getSingleDecl());
 
   if (!VD) {
-    autoCreateBlock();
-    appendStmt(Block, DS);
+    // Of everything that can be declared in a DeclStmt, only VarDecls impact
+    // runtime semantics.
     return Block;
   }
 
@@ -2190,17 +2196,24 @@ CFGBlock *CFGBuilder::VisitObjCForCollectionStmt(ObjCForCollectionStmt *S) {
   // Now create the true branch.
   {
     // Save the current values for Succ, continue and break targets.
-    SaveAndRestore<CFGBlock*> save_Succ(Succ);
+    SaveAndRestore<CFGBlock*> save_Block(Block), save_Succ(Succ);
     SaveAndRestore<JumpTarget> save_continue(ContinueJumpTarget),
-        save_break(BreakJumpTarget);
+                               save_break(BreakJumpTarget);
 
+    // Add an intermediate block between the BodyBlock and the
+    // EntryConditionBlock to represent the "loop back" transition, for looping
+    // back to the head of the loop.
+    CFGBlock *LoopBackBlock = 0;
+    Succ = LoopBackBlock = createBlock();
+    LoopBackBlock->setLoopTarget(S);
+    
     BreakJumpTarget = JumpTarget(LoopSuccessor, ScopePos);
-    ContinueJumpTarget = JumpTarget(EntryConditionBlock, ScopePos);
+    ContinueJumpTarget = JumpTarget(Succ, ScopePos);
 
     CFGBlock *BodyBlock = addStmt(S->getBody());
 
     if (!BodyBlock)
-      BodyBlock = EntryConditionBlock; // can happen for "for (X in Y) ;"
+      BodyBlock = ContinueJumpTarget.block; // can happen for "for (X in Y) ;"
     else if (Block) {
       if (badCFG)
         return 0;
@@ -2679,9 +2692,15 @@ CFGBlock *CFGBuilder::VisitSwitchStmt(SwitchStmt *Terminator) {
   // If we have no "default:" case, the default transition is to the code
   // following the switch body.  Moreover, take into account if all the
   // cases of a switch are covered (e.g., switching on an enum value).
+  //
+  // Note: We add a successor to a switch that is considered covered yet has no
+  //       case statements if the enumeration has no enumerators.
+  bool SwitchAlwaysHasSuccessor = false;
+  SwitchAlwaysHasSuccessor |= switchExclusivelyCovered;
+  SwitchAlwaysHasSuccessor |= Terminator->isAllEnumCasesCovered() &&
+                              Terminator->getSwitchCaseList();
   addSuccessor(SwitchTerminatedBlock,
-               switchExclusivelyCovered || Terminator->isAllEnumCasesCovered()
-               ? 0 : DefaultCaseBlock);
+               SwitchAlwaysHasSuccessor ? 0 : DefaultCaseBlock);
 
   // Add the terminator and condition in the switch block.
   SwitchTerminatedBlock->setTerminator(Terminator);
@@ -3953,6 +3972,10 @@ Stmt *CFGBlock::getTerminatorCondition() {
 
   switch (Terminator->getStmtClass()) {
     default:
+      break;
+
+    case Stmt::CXXForRangeStmtClass:
+      E = cast<CXXForRangeStmt>(Terminator)->getCond();
       break;
 
     case Stmt::ForStmtClass:

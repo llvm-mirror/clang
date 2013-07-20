@@ -307,3 +307,6 @@ namespace N {
     };
   }
 }
+
+namespace TypedefNamespace { typedef int F; };
+TypedefNamespace::F::NonexistentName BadNNSWithCXXScopeSpec; // expected-error {{expected a class or namespace}}

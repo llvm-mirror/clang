@@ -150,19 +150,11 @@ CodeGenTBAA::getTBAAInfo(QualType QTy) {
   // Enum types are distinct types. In C++ they have "underlying types",
   // however they aren't related for TBAA.
   if (const EnumType *ETy = dyn_cast<EnumType>(Ty)) {
-    // In C mode, two anonymous enums are compatible iff their members
-    // are the same -- see C99 6.2.7p1. For now, be conservative. We could
-    // theoretically implement this by combining information about all the
-    // members into a single identifying MDNode.
-    if (!Features.CPlusPlus &&
-        ETy->getDecl()->getTypedefNameForAnonDecl())
-      return MetadataCache[Ty] = getChar();
-
     // In C++ mode, types have linkage, so we can rely on the ODR and
     // on their mangled names, if they're external.
     // TODO: Is there a way to get a program-wide unique name for a
     // decl with local linkage or no linkage?
-    if (Features.CPlusPlus && !ETy->getDecl()->isExternallyVisible())
+    if (!Features.CPlusPlus || !ETy->getDecl()->isExternallyVisible())
       return MetadataCache[Ty] = getChar();
 
     // TODO: This is using the RTTI name. Is there a better way to get
@@ -203,18 +195,8 @@ CodeGenTBAA::CollectFields(uint64_t BaseOffset,
     const ASTRecordLayout &Layout = Context.getASTRecordLayout(RD);
 
     unsigned idx = 0;
-    const FieldDecl *LastFD = 0;
-    bool IsMsStruct = RD->isMsStruct(Context);
     for (RecordDecl::field_iterator i = RD->field_begin(),
          e = RD->field_end(); i != e; ++i, ++idx) {
-      if (IsMsStruct) {
-        // Zero-length bitfields following non-bitfield members are ignored.
-        if (Context.ZeroBitfieldFollowsNonBitfield(*i, LastFD)) {
-          --idx;
-          continue;
-        }
-        LastFD = *i;
-      }
       uint64_t Offset = BaseOffset +
                         Layout.getFieldOffset(idx) / Context.getCharWidth();
       QualType FieldQTy = i->getType();
@@ -278,19 +260,8 @@ CodeGenTBAA::getTBAAStructTypeInfo(QualType QTy) {
     const ASTRecordLayout &Layout = Context.getASTRecordLayout(RD);
     SmallVector <std::pair<llvm::MDNode*, uint64_t>, 4> Fields;
     unsigned idx = 0;
-    const FieldDecl *LastFD = 0;
-    bool IsMsStruct = RD->isMsStruct(Context);
     for (RecordDecl::field_iterator i = RD->field_begin(),
          e = RD->field_end(); i != e; ++i, ++idx) {
-      if (IsMsStruct) {
-        // Zero-length bitfields following non-bitfield members are ignored.
-        if (Context.ZeroBitfieldFollowsNonBitfield(*i, LastFD)) {
-          --idx;
-          continue;
-        }
-        LastFD = *i;
-      }
-
       QualType FieldQTy = i->getType();
       llvm::MDNode *FieldNode;
       if (isTBAAPathStruct(FieldQTy))

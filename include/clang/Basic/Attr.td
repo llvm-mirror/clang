@@ -441,7 +441,6 @@ def Mips16 : InheritableAttr {
 def Mode : Attr {
   let Spellings = [GNU<"mode">, CXX11<"gnu", "mode">];
   let Args = [IdentifierArgument<"Mode">];
-  let ASTNode = 0;
 }
 
 def Naked : InheritableAttr {
@@ -976,6 +975,14 @@ def Ptr32 : InheritableAttr {
 
 def Ptr64 : InheritableAttr {
   let Spellings = [Keyword<"__ptr64">];
+}
+
+def SPtr : InheritableAttr {
+  let Spellings = [Keyword<"__sptr">];
+}
+
+def UPtr : InheritableAttr {
+  let Spellings = [Keyword<"__uptr">];
 }
 
 class MSInheritanceAttr : InheritableAttr;

@@ -62,7 +62,7 @@ CXXRecordDecl::DefinitionData::DefinitionData(CXXRecordDecl *D)
     HasDeclaredCopyAssignmentWithConstParam(false),
     FailedImplicitMoveConstructor(false), FailedImplicitMoveAssignment(false),
     IsLambda(false), NumBases(0), NumVBases(0), Bases(), VBases(),
-    Definition(D), FirstFriend(0) {
+    Definition(D), FirstFriend() {
 }
 
 CXXBaseSpecifier *CXXRecordDecl::DefinitionData::getBasesSlowCase() const {
@@ -1406,7 +1406,8 @@ bool CXXMethodDecl::isCopyAssignmentOperator() const {
   //  type X, X&, const X&, volatile X& or const volatile X&.
   if (/*operator=*/getOverloadedOperator() != OO_Equal ||
       /*non-static*/ isStatic() || 
-      /*non-template*/getPrimaryTemplate() || getDescribedFunctionTemplate())
+      /*non-template*/getPrimaryTemplate() || getDescribedFunctionTemplate() ||
+      getNumParams() != 1)
     return false;
       
   QualType ParamType = getParamDecl(0)->getType();
@@ -1425,7 +1426,8 @@ bool CXXMethodDecl::isMoveAssignmentOperator() const {
   //  non-template member function of class X with exactly one parameter of type
   //  X&&, const X&&, volatile X&&, or const volatile X&&.
   if (getOverloadedOperator() != OO_Equal || isStatic() ||
-      getPrimaryTemplate() || getDescribedFunctionTemplate())
+      getPrimaryTemplate() || getDescribedFunctionTemplate() ||
+      getNumParams() != 1)
     return false;
 
   QualType ParamType = getParamDecl(0)->getType();

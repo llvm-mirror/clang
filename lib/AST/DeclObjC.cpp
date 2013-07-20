@@ -441,6 +441,17 @@ ObjCInterfaceDecl *ObjCInterfaceDecl::lookupInheritedClass(
   return NULL;
 }
 
+ObjCProtocolDecl *
+ObjCInterfaceDecl::lookupNestedProtocol(IdentifierInfo *Name) {
+  for (ObjCInterfaceDecl::all_protocol_iterator P =
+       all_referenced_protocol_begin(), PE = all_referenced_protocol_end();
+       P != PE; ++P)
+    if ((*P)->lookupProtocolNamed(Name))
+      return (*P);
+  ObjCInterfaceDecl *SuperClass = getSuperClass();
+  return SuperClass ? SuperClass->lookupNestedProtocol(Name) : NULL;
+}
+
 /// lookupMethod - This method returns an instance/class method by looking in
 /// the class, its categories, and its super classes (using a linear search).
 /// When argument category "C" is specified, any implicit method found
@@ -627,23 +638,29 @@ ObjCMethodDecl *ObjCMethodDecl::getNextRedeclaration() {
 
   Decl *CtxD = cast<Decl>(getDeclContext());
 
-  if (ObjCInterfaceDecl *IFD = dyn_cast<ObjCInterfaceDecl>(CtxD)) {
-    if (ObjCImplementationDecl *ImplD = Ctx.getObjCImplementation(IFD))
-      Redecl = ImplD->getMethod(getSelector(), isInstanceMethod());
+  if (!CtxD->isInvalidDecl()) {
+    if (ObjCInterfaceDecl *IFD = dyn_cast<ObjCInterfaceDecl>(CtxD)) {
+      if (ObjCImplementationDecl *ImplD = Ctx.getObjCImplementation(IFD))
+        if (!ImplD->isInvalidDecl())
+          Redecl = ImplD->getMethod(getSelector(), isInstanceMethod());
 
-  } else if (ObjCCategoryDecl *CD = dyn_cast<ObjCCategoryDecl>(CtxD)) {
-    if (ObjCCategoryImplDecl *ImplD = Ctx.getObjCImplementation(CD))
-      Redecl = ImplD->getMethod(getSelector(), isInstanceMethod());
+    } else if (ObjCCategoryDecl *CD = dyn_cast<ObjCCategoryDecl>(CtxD)) {
+      if (ObjCCategoryImplDecl *ImplD = Ctx.getObjCImplementation(CD))
+        if (!ImplD->isInvalidDecl())
+          Redecl = ImplD->getMethod(getSelector(), isInstanceMethod());
 
-  } else if (ObjCImplementationDecl *ImplD =
-               dyn_cast<ObjCImplementationDecl>(CtxD)) {
-    if (ObjCInterfaceDecl *IFD = ImplD->getClassInterface())
-      Redecl = IFD->getMethod(getSelector(), isInstanceMethod());
+    } else if (ObjCImplementationDecl *ImplD =
+                 dyn_cast<ObjCImplementationDecl>(CtxD)) {
+      if (ObjCInterfaceDecl *IFD = ImplD->getClassInterface())
+        if (!IFD->isInvalidDecl())
+          Redecl = IFD->getMethod(getSelector(), isInstanceMethod());
 
-  } else if (ObjCCategoryImplDecl *CImplD =
-               dyn_cast<ObjCCategoryImplDecl>(CtxD)) {
-    if (ObjCCategoryDecl *CatD = CImplD->getCategoryDecl())
-      Redecl = CatD->getMethod(getSelector(), isInstanceMethod());
+    } else if (ObjCCategoryImplDecl *CImplD =
+                 dyn_cast<ObjCCategoryImplDecl>(CtxD)) {
+      if (ObjCCategoryDecl *CatD = CImplD->getCategoryDecl())
+        if (!CatD->isInvalidDecl())
+          Redecl = CatD->getMethod(getSelector(), isInstanceMethod());
+    }
   }
 
   if (!Redecl && isRedeclaration()) {

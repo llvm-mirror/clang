@@ -1265,10 +1265,10 @@
 // MSP430:#define __INT32_C_SUFFIX__ L
 // MSP430:#define __INT32_TYPE__ long int
 // MSP430:#define __INT8_TYPE__ char
-// MSP430:#define __INTMAX_MAX__ 2147483647L
-// MSP430:#define __INTMAX_TYPE__ long int
-// MSP430:#define __INTMAX_WIDTH__ 32
-// MSP430:#define __INTPTR_TYPE__ short
+// MSP430:#define __INTMAX_MAX__ 9223372036854775807LL
+// MSP430:#define __INTMAX_TYPE__ long long int
+// MSP430:#define __INTMAX_WIDTH__ 64
+// MSP430:#define __INTPTR_TYPE__ int
 // MSP430:#define __INTPTR_WIDTH__ 16
 // MSP430:#define __INT_MAX__ 32767
 // MSP430:#define __LDBL_DENORM_MIN__ 4.9406564584124654e-324L
@@ -1309,7 +1309,7 @@
 // MSP430:#define __SIZE_MAX__ 65535U
 // MSP430:#define __SIZE_TYPE__ unsigned int
 // MSP430:#define __SIZE_WIDTH__ 16
-// MSP430:#define __UINTMAX_TYPE__ long unsigned int
+// MSP430:#define __UINTMAX_TYPE__ long long unsigned int
 // MSP430:#define __USER_LABEL_PREFIX__ _
 // MSP430:#define __WCHAR_MAX__ 32767
 // MSP430:#define __WCHAR_TYPE__ int
@@ -1585,6 +1585,7 @@
 // PPC603E:#define __NATURAL_ALIGNMENT__ 1
 // PPC603E:#define __POINTER_WIDTH__ 32
 // PPC603E:#define __POWERPC__ 1
+// PPC603E:#define __PPC__ 1
 // PPC603E:#define __PTRDIFF_TYPE__ long int
 // PPC603E:#define __PTRDIFF_WIDTH__ 32
 // PPC603E:#define __REGISTER_PREFIX__
@@ -1694,6 +1695,8 @@
 // PPC64:#define __NATURAL_ALIGNMENT__ 1
 // PPC64:#define __POINTER_WIDTH__ 64
 // PPC64:#define __POWERPC__ 1
+// PPC64:#define __PPC64__ 1
+// PPC64:#define __PPC__ 1
 // PPC64:#define __PTRDIFF_TYPE__ long int
 // PPC64:#define __PTRDIFF_WIDTH__ 64
 // PPC64:#define __REGISTER_PREFIX__ 
@@ -1957,6 +1960,8 @@
 // PPC64-LINUX:#define __NATURAL_ALIGNMENT__ 1
 // PPC64-LINUX:#define __POINTER_WIDTH__ 64
 // PPC64-LINUX:#define __POWERPC__ 1
+// PPC64-LINUX:#define __PPC64__ 1
+// PPC64-LINUX:#define __PPC__ 1
 // PPC64-LINUX:#define __PTRDIFF_TYPE__ long int
 // PPC64-LINUX:#define __PTRDIFF_WIDTH__ 64
 // PPC64-LINUX:#define __REGISTER_PREFIX__
@@ -2062,6 +2067,7 @@
 // PPC:#define __NATURAL_ALIGNMENT__ 1
 // PPC:#define __POINTER_WIDTH__ 32
 // PPC:#define __POWERPC__ 1
+// PPC:#define __PPC__ 1
 // PPC:#define __PTRDIFF_TYPE__ long int
 // PPC:#define __PTRDIFF_WIDTH__ 32
 // PPC:#define __REGISTER_PREFIX__ 
@@ -2163,6 +2169,7 @@
 // PPC-LINUX:#define __NATURAL_ALIGNMENT__ 1
 // PPC-LINUX:#define __POINTER_WIDTH__ 32
 // PPC-LINUX:#define __POWERPC__ 1
+// PPC-LINUX:#define __PPC__ 1
 // PPC-LINUX:#define __PTRDIFF_TYPE__ int
 // PPC-LINUX:#define __PTRDIFF_WIDTH__ 32
 // PPC-LINUX:#define __REGISTER_PREFIX__
@@ -2267,6 +2274,7 @@
 // PPC-DARWIN:#define __ORDER_PDP_ENDIAN__ 3412
 // PPC-DARWIN:#define __POINTER_WIDTH__ 32
 // PPC-DARWIN:#define __POWERPC__ 1
+// PPC-DARWIN:#define __PPC__ 1
 // PPC-DARWIN:#define __PTRDIFF_TYPE__ int
 // PPC-DARWIN:#define __PTRDIFF_WIDTH__ 32
 // PPC-DARWIN:#define __REGISTER_PREFIX__ 
@@ -2818,3 +2826,5 @@
 //
 // RUN: %clang_cc1 -triple arm-linux-androideabi -E -dM < /dev/null | FileCheck -check-prefix ANDROID %s
 // ANDROID: __ANDROID__ 1
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-unknown-freebsd < /dev/null | FileCheck -check-prefix PPC64-FREEBSD %s
+// PPC64-FREEBSD-NOT: #define __LONG_DOUBLE_128__ 1

@@ -60,14 +60,14 @@ class CGDebugInfo {
   llvm::DIType OCLImage2dDITy, OCLImage2dArrayDITy;
   llvm::DIType OCLImage3dDITy;
   llvm::DIType OCLEventDITy;
+  llvm::DIType BlockLiteralGeneric;
 
   /// TypeCache - Cache of previously constructed Types.
   llvm::DenseMap<void *, llvm::WeakVH> TypeCache;
 
   /// ObjCInterfaceCache - Cache of previously constructed interfaces
   /// which may change. Storing a pair of DIType and checksum.
-  llvm::DenseMap<void *, std::pair<llvm::WeakVH, unsigned > >
-    ObjCInterfaceCache;
+  llvm::DenseMap<void *, std::pair<llvm::WeakVH, unsigned> > ObjCInterfaceCache;
 
   /// RetainedTypes - list of interfaces we want to keep even if orphaned.
   std::vector<void *> RetainedTypes;
@@ -78,9 +78,6 @@ class CGDebugInfo {
   /// ReplaceMap - Cache of forward declared types to RAUW at the end of
   /// compilation.
   std::vector<std::pair<void *, llvm::WeakVH> >ReplaceMap;
-
-  bool BlockLiteralGenericSet;
-  llvm::DIType BlockLiteralGeneric;
 
   // LexicalBlockStack - Keep track of our current nested lexical block.
   std::vector<llvm::TrackingVH<llvm::MDNode> > LexicalBlockStack;
@@ -108,14 +105,14 @@ class CGDebugInfo {
   unsigned Checksum(const ObjCInterfaceDecl *InterfaceDecl);
   llvm::DIType CreateType(const BuiltinType *Ty);
   llvm::DIType CreateType(const ComplexType *Ty);
-  llvm::DIType CreateQualifiedType(QualType Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const TypedefType *Ty, llvm::DIFile F);
+  llvm::DIType CreateQualifiedType(QualType Ty, llvm::DIFile F, bool Declaration);
+  llvm::DIType CreateType(const TypedefType *Ty, llvm::DIFile F, bool Declaration);
   llvm::DIType CreateType(const ObjCObjectPointerType *Ty,
                           llvm::DIFile F);
   llvm::DIType CreateType(const PointerType *Ty, llvm::DIFile F);
   llvm::DIType CreateType(const BlockPointerType *Ty, llvm::DIFile F);
   llvm::DIType CreateType(const FunctionType *Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const RecordType *Ty);
+  llvm::DIType CreateType(const RecordType *Ty, bool Declaration);
   llvm::DIType CreateLimitedType(const RecordType *Ty);
   llvm::DIType CreateType(const ObjCInterfaceType *Ty, llvm::DIFile F);
   llvm::DIType CreateType(const ObjCObjectType *Ty, llvm::DIFile F);
@@ -129,15 +126,15 @@ class CGDebugInfo {
   llvm::DIType CreateSelfType(const QualType &QualTy, llvm::DIType Ty);
   llvm::DIType getTypeOrNull(const QualType);
   llvm::DIType getCompletedTypeOrNull(const QualType);
-  llvm::DIType getOrCreateMethodType(const CXXMethodDecl *Method,
-                                     llvm::DIFile F);
-  llvm::DIType getOrCreateInstanceMethodType(
+  llvm::DICompositeType getOrCreateMethodType(const CXXMethodDecl *Method,
+                                              llvm::DIFile F);
+  llvm::DICompositeType getOrCreateInstanceMethodType(
       QualType ThisPtr, const FunctionProtoType *Func, llvm::DIFile Unit);
-  llvm::DIType getOrCreateFunctionType(const Decl *D, QualType FnType,
-                                       llvm::DIFile F);
+  llvm::DICompositeType getOrCreateFunctionType(const Decl *D, QualType FnType,
+                                                llvm::DIFile F);
   llvm::DIType getOrCreateVTablePtrType(llvm::DIFile F);
   llvm::DINameSpace getOrCreateNameSpace(const NamespaceDecl *N);
-  llvm::DIType CreatePointeeType(QualType PointeeTy, llvm::DIFile F);
+  llvm::DIType getOrCreateTypeDeclaration(QualType PointeeTy, llvm::DIFile F);
   llvm::DIType CreatePointerLikeType(unsigned Tag,
                                      const Type *Ty, QualType PointeeTy,
                                      llvm::DIFile F);
@@ -166,7 +163,7 @@ class CGDebugInfo {
 
   llvm::DIArray
   CollectTemplateParams(const TemplateParameterList *TPList,
-                        const TemplateArgumentList &TAList,
+                        ArrayRef<TemplateArgument> TAList,
                         llvm::DIFile Unit);
   llvm::DIArray
   CollectFunctionTemplateParams(const FunctionDecl *FD, llvm::DIFile Unit);
@@ -289,6 +286,8 @@ public:
   llvm::DIType getOrCreateInterfaceType(QualType Ty,
                                         SourceLocation Loc);
 
+  void completeFwdDecl(const RecordDecl &TD);
+
 private:
   /// EmitDeclare - Emit call to llvm.dbg.declare for a variable declaration.
   void EmitDeclare(const VarDecl *decl, unsigned Tag, llvm::Value *AI,
@@ -326,14 +325,14 @@ private:
 
   /// getOrCreateType - Get the type from the cache or create a new type if
   /// necessary.
-  llvm::DIType getOrCreateType(QualType Ty, llvm::DIFile F);
+  llvm::DIType getOrCreateType(QualType Ty, llvm::DIFile F, bool Declaration = false);
 
   /// getOrCreateLimitedType - Get the type from the cache or create a new
   /// partial type if necessary.
   llvm::DIType getOrCreateLimitedType(QualType Ty, llvm::DIFile F);
 
   /// CreateTypeNode - Create type metadata for a source language type.
-  llvm::DIType CreateTypeNode(QualType Ty, llvm::DIFile F);
+  llvm::DIType CreateTypeNode(QualType Ty, llvm::DIFile F, bool Declaration);
 
   /// getObjCInterfaceDecl - return the underlying ObjCInterfaceDecl
   /// if Ty is an ObjCInterface or a pointer to one.

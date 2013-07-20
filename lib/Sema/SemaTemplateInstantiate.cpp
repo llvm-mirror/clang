@@ -435,7 +435,7 @@ void Sema::PrintInstantiationStack() {
 
   // FIXME: In all of these cases, we need to show the template arguments
   unsigned InstantiationIdx = 0;
-  for (SmallVector<ActiveTemplateInstantiation, 16>::reverse_iterator
+  for (SmallVectorImpl<ActiveTemplateInstantiation>::reverse_iterator
          Active = ActiveTemplateInstantiations.rbegin(),
          ActiveEnd = ActiveTemplateInstantiations.rend();
        Active != ActiveEnd;
@@ -615,7 +615,7 @@ Optional<TemplateDeductionInfo *> Sema::isSFINAEContext() const {
   if (InNonInstantiationSFINAEContext)
     return Optional<TemplateDeductionInfo *>(0);
 
-  for (SmallVector<ActiveTemplateInstantiation, 16>::const_reverse_iterator
+  for (SmallVectorImpl<ActiveTemplateInstantiation>::const_reverse_iterator
          Active = ActiveTemplateInstantiations.rbegin(),
          ActiveEnd = ActiveTemplateInstantiations.rend();
        Active != ActiveEnd;
@@ -1754,6 +1754,10 @@ Sema::SubstBaseSpecifiers(CXXRecordDecl *Instantiation,
          Base = Pattern->bases_begin(), BaseEnd = Pattern->bases_end();
        Base != BaseEnd; ++Base) {
     if (!Base->getType()->isDependentType()) {
+      if (const CXXRecordDecl *RD = Base->getType()->getAsCXXRecordDecl()) {
+        if (RD->isInvalidDecl())
+          Instantiation->setInvalidDecl();
+      }
       InstantiatedBases.push_back(new (Context) CXXBaseSpecifier(*Base));
       continue;
     }
@@ -2080,6 +2084,14 @@ Sema::InstantiateClass(SourceLocation PointOfInstantiation,
        E = LateAttrs.end(); I != E; ++I) {
     assert(CurrentInstantiationScope == Instantiator.getStartingScope());
     CurrentInstantiationScope = I->Scope;
+
+    // Allow 'this' within late-parsed attributes.
+    NamedDecl *ND = dyn_cast<NamedDecl>(I->NewDecl);
+    CXXRecordDecl *ThisContext =
+        dyn_cast_or_null<CXXRecordDecl>(ND->getDeclContext());
+    CXXThisScopeRAII ThisScope(*this, ThisContext, /*TypeQuals*/0,
+                               ND && ND->isCXXInstanceMember());
+
     Attr *NewAttr =
       instantiateTemplateAttribute(I->TmplAttr, Context, *this, TemplateArgs);
     I->NewDecl->addAttr(NewAttr);
@@ -2274,7 +2286,7 @@ Sema::InstantiateClassTemplateSpecialization(
   SmallVector<const NamedDecl *, 4> InstantiatedTemplateParameters;
   
   if (Matched.size() >= 1) {
-    SmallVector<MatchResult, 4>::iterator Best = Matched.begin();
+    SmallVectorImpl<MatchResult>::iterator Best = Matched.begin();
     if (Matched.size() == 1) {
       //   -- If exactly one matching specialization is found, the
       //      instantiation is generated from that specialization.
@@ -2287,8 +2299,8 @@ Sema::InstantiateClassTemplateSpecialization(
       //      specialized than all of the other matching
       //      specializations, then the use of the class template is
       //      ambiguous and the program is ill-formed.
-      for (SmallVector<MatchResult, 4>::iterator P = Best + 1,
-                                                    PEnd = Matched.end();
+      for (SmallVectorImpl<MatchResult>::iterator P = Best + 1,
+                                               PEnd = Matched.end();
            P != PEnd; ++P) {
         if (getMoreSpecializedPartialSpecialization(P->Partial, Best->Partial,
                                                     PointOfInstantiation) 
@@ -2299,8 +2311,8 @@ Sema::InstantiateClassTemplateSpecialization(
       // Determine if the best partial specialization is more specialized than
       // the others.
       bool Ambiguous = false;
-      for (SmallVector<MatchResult, 4>::iterator P = Matched.begin(),
-                                                    PEnd = Matched.end();
+      for (SmallVectorImpl<MatchResult>::iterator P = Matched.begin(),
+                                               PEnd = Matched.end();
            P != PEnd; ++P) {
         if (P != Best &&
             getMoreSpecializedPartialSpecialization(P->Partial, Best->Partial,
@@ -2318,8 +2330,8 @@ Sema::InstantiateClassTemplateSpecialization(
           << ClassTemplateSpec;
         
         // Print the matching partial specializations.
-        for (SmallVector<MatchResult, 4>::iterator P = Matched.begin(),
-                                                      PEnd = Matched.end();
+        for (SmallVectorImpl<MatchResult>::iterator P = Matched.begin(),
+                                                 PEnd = Matched.end();
              P != PEnd; ++P)
           Diag(P->Partial->getLocation(), diag::note_partial_spec_match)
             << getTemplateArgumentBindingsText(
@@ -2687,6 +2699,12 @@ LocalInstantiationScope::findInstantiationOf(const Decl *D) {
     if (!Current->CombineWithOuterScope)
       break;
   }
+
+  // If we're performing a partial substitution during template argument
+  // deduction, we may not have values for template parameters yet.
+  if (isa<NonTypeTemplateParmDecl>(D) || isa<TemplateTypeParmDecl>(D) ||
+      isa<TemplateTemplateParmDecl>(D))
+    return 0;
 
   // If we didn't find the decl, then we either have a sema bug, or we have a
   // forward reference to a label declaration.  Return null to indicate that

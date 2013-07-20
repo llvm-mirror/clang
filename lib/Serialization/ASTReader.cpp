@@ -210,6 +210,8 @@ bool PCHValidator::ReadTargetOptions(const TargetOptions &TargetOpts,
 namespace {
   typedef llvm::StringMap<std::pair<StringRef, bool /*IsUndef*/> >
     MacroDefinitionsMap;
+  typedef llvm::DenseMap<DeclarationName, SmallVector<NamedDecl *, 8> >
+    DeclsMap;
 }
 
 /// \brief Collect the macro definitions provided by the given preprocessor
@@ -1281,6 +1283,8 @@ HeaderFileInfoTrait::ReadData(internal_key_ref key, const unsigned char *d,
   using namespace clang::io;
   HeaderFileInfo HFI;
   unsigned Flags = *d++;
+  HFI.HeaderRole = static_cast<ModuleMap::ModuleHeaderRole>
+                   ((Flags >> 6) & 0x03);
   HFI.isImport = (Flags >> 5) & 0x01;
   HFI.isPragmaOnce = (Flags >> 4) & 0x01;
   HFI.DirInfo = (Flags >> 2) & 0x03;
@@ -1307,7 +1311,7 @@ HeaderFileInfoTrait::ReadData(internal_key_ref key, const unsigned char *d,
       FileManager &FileMgr = Reader.getFileManager();
       ModuleMap &ModMap =
           Reader.getPreprocessor().getHeaderSearchInfo().getModuleMap();
-      ModMap.addHeader(Mod, FileMgr.getFile(key.Filename), /*Excluded=*/false);
+      ModMap.addHeader(Mod, FileMgr.getFile(key.Filename), HFI.getHeaderRole());
     }
   }
 
@@ -1585,18 +1589,21 @@ void ASTReader::installPCHMacroDirectives(IdentifierInfo *II,
 /// \brief For the given macro definitions, check if they are both in system
 /// modules.
 static bool areDefinedInSystemModules(MacroInfo *PrevMI, MacroInfo *NewMI,
-                                       Module *NewOwner, ASTReader &Reader) {
+                                      Module *NewOwner, ASTReader &Reader) {
   assert(PrevMI && NewMI);
-  if (!NewOwner)
-    return false;
   Module *PrevOwner = 0;
   if (SubmoduleID PrevModID = PrevMI->getOwningModuleID())
     PrevOwner = Reader.getSubmodule(PrevModID);
-  if (!PrevOwner)
+  SourceManager &SrcMgr = Reader.getSourceManager();
+  bool PrevInSystem
+    = PrevOwner? PrevOwner->IsSystem
+               : SrcMgr.isInSystemHeader(PrevMI->getDefinitionLoc());
+  bool NewInSystem
+    = NewOwner? NewOwner->IsSystem
+              : SrcMgr.isInSystemHeader(NewMI->getDefinitionLoc());
+  if (PrevOwner && PrevOwner == NewOwner)
     return false;
-  if (PrevOwner == NewOwner)
-    return false;
-  return PrevOwner->IsSystem && NewOwner->IsSystem;
+  return PrevInSystem && NewInSystem;
 }
 
 void ASTReader::installImportedMacro(IdentifierInfo *II, MacroDirective *MD,
@@ -2900,6 +2907,9 @@ ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
                                             ModuleKind Type,
                                             SourceLocation ImportLoc,
                                             unsigned ClientLoadCapabilities) {
+  llvm::SaveAndRestore<SourceLocation>
+    SetCurImportLocRAII(CurrentImportLoc, ImportLoc);
+
   // Bump the generation number.
   unsigned PreviousGeneration = CurrentGeneration++;
 
@@ -3761,6 +3771,21 @@ bool ASTReader::ReadSubmoduleBlock(ModuleFile &F) {
       break;      
     }
 
+    case SUBMODULE_PRIVATE_HEADER: {
+      if (First) {
+        Error("missing submodule metadata record at beginning of block");
+        return true;
+      }
+
+      if (!CurrentModule)
+        break;
+      
+      // We lazily associate headers with their modules via the HeaderInfoTable.
+      // FIXME: Re-evaluate this section; maybe only store InputFile IDs instead
+      // of complete filenames or remove it entirely.
+      break;      
+    }
+
     case SUBMODULE_TOPHEADER: {
       if (First) {
         Error("missing submodule metadata record at beginning of block");
@@ -4508,6 +4533,18 @@ QualType ASTReader::readTypeRecord(unsigned Index) {
     return Context.getPointerType(PointeeType);
   }
 
+  case TYPE_DECAYED: {
+    if (Record.size() != 1) {
+      Error("Incorrect encoding of decayed type");
+      return QualType();
+    }
+    QualType OriginalType = readType(*Loc.F, Record, Idx);
+    QualType DT = Context.getAdjustedParameterType(OriginalType);
+    if (!isa<DecayedType>(DT))
+      Error("Decayed type does not decay");
+    return DT;
+  }
+
   case TYPE_BLOCK_POINTER: {
     if (Record.size() != 1) {
       Error("Incorrect encoding of block pointer type");
@@ -4953,6 +4990,9 @@ void TypeLocReader::VisitComplexTypeLoc(ComplexTypeLoc TL) {
 }
 void TypeLocReader::VisitPointerTypeLoc(PointerTypeLoc TL) {
   TL.setStarLoc(ReadSourceLocation(Record, Idx));
+}
+void TypeLocReader::VisitDecayedTypeLoc(DecayedTypeLoc TL) {
+  // nothing to do
 }
 void TypeLocReader::VisitBlockPointerTypeLoc(BlockPointerTypeLoc TL) {
   TL.setCaretLoc(ReadSourceLocation(Record, Idx));
@@ -5774,15 +5814,13 @@ namespace {
   class DeclContextAllNamesVisitor {
     ASTReader &Reader;
     SmallVectorImpl<const DeclContext *> &Contexts;
-    llvm::DenseMap<DeclarationName, SmallVector<NamedDecl *, 8> > &Decls;
+    DeclsMap &Decls;
     bool VisitAll;
 
   public:
     DeclContextAllNamesVisitor(ASTReader &Reader,
                                SmallVectorImpl<const DeclContext *> &Contexts,
-                               llvm::DenseMap<DeclarationName,
-                                           SmallVector<NamedDecl *, 8> > &Decls,
-                                bool VisitAll)
+                               DeclsMap &Decls, bool VisitAll)
       : Reader(Reader), Contexts(Contexts), Decls(Decls), VisitAll(VisitAll) { }
 
     static bool visit(ModuleFile &M, void *UserData) {
@@ -5833,7 +5871,7 @@ namespace {
 void ASTReader::completeVisibleDeclsMap(const DeclContext *DC) {
   if (!DC->hasExternalVisibleStorage())
     return;
-  llvm::DenseMap<DeclarationName, SmallVector<NamedDecl *, 8> > Decls;
+  DeclsMap Decls;
 
   // Compute the declaration contexts we need to look into. Multiple such
   // declaration contexts occur when two declaration contexts from disjoint
@@ -5856,9 +5894,7 @@ void ASTReader::completeVisibleDeclsMap(const DeclContext *DC) {
   ModuleMgr.visit(&DeclContextAllNamesVisitor::visit, &Visitor);
   ++NumVisibleDeclContextsRead;
 
-  for (llvm::DenseMap<DeclarationName,
-                      SmallVector<NamedDecl *, 8> >::iterator
-         I = Decls.begin(), E = Decls.end(); I != E; ++I) {
+  for (DeclsMap::iterator I = Decls.begin(), E = Decls.end(); I != E; ++I) {
     SetExternalVisibleDeclsForName(DC, I->first, I->second);
   }
   const_cast<DeclContext *>(DC)->setHasExternalVisibleStorage(false);
@@ -6886,7 +6922,7 @@ ASTReader::ReadTemplateParameterList(ModuleFile &F,
 
 void
 ASTReader::
-ReadTemplateArgumentList(SmallVector<TemplateArgument, 8> &TemplArgs,
+ReadTemplateArgumentList(SmallVectorImpl<TemplateArgument> &TemplArgs,
                          ModuleFile &F, const RecordData &Record,
                          unsigned &Idx) {
   unsigned NumTemplateArgs = Record[Idx++];
@@ -6990,9 +7026,16 @@ ASTReader::ReadCXXCtorInitializers(ModuleFile &F, const RecordData &Record,
                                                MemberOrEllipsisLoc, LParenLoc,
                                                Init, RParenLoc);
       } else {
-        BOMInit = CXXCtorInitializer::Create(Context, Member, MemberOrEllipsisLoc,
-                                             LParenLoc, Init, RParenLoc,
-                                             Indices.data(), Indices.size());
+        if (IndirectMember) {
+          assert(Indices.empty() && "Indirect field improperly initialized");
+          BOMInit = new (Context) CXXCtorInitializer(Context, IndirectMember,
+                                                     MemberOrEllipsisLoc, LParenLoc,
+                                                     Init, RParenLoc);
+        } else {
+          BOMInit = CXXCtorInitializer::Create(Context, Member, MemberOrEllipsisLoc,
+                                               LParenLoc, Init, RParenLoc,
+                                               Indices.data(), Indices.size());
+        }
       }
 
       if (IsWritten)
@@ -7167,7 +7210,7 @@ CXXTemporary *ASTReader::ReadCXXTemporary(ModuleFile &F,
 }
 
 DiagnosticBuilder ASTReader::Diag(unsigned DiagID) {
-  return Diag(SourceLocation(), DiagID);
+  return Diag(CurrentImportLoc, DiagID);
 }
 
 DiagnosticBuilder ASTReader::Diag(SourceLocation Loc, unsigned DiagID) {
@@ -7253,7 +7296,10 @@ void ASTReader::finishPendingActions() {
          !PendingMacroIDs.empty() || !PendingDeclContextInfos.empty()) {
     // If any identifiers with corresponding top-level declarations have
     // been loaded, load those declarations now.
-    llvm::DenseMap<IdentifierInfo *, SmallVector<Decl *, 2> > TopLevelDecls;
+    typedef llvm::DenseMap<IdentifierInfo *, SmallVector<Decl *, 2> >
+      TopLevelDeclsMap;
+    TopLevelDeclsMap TopLevelDecls;
+
     while (!PendingIdentifierInfos.empty()) {
       // FIXME: std::move
       IdentifierInfo *II = PendingIdentifierInfos.back().first;
@@ -7271,9 +7317,8 @@ void ASTReader::finishPendingActions() {
     PendingDeclChains.clear();
 
     // Make the most recent of the top-level declarations visible.
-    for (llvm::DenseMap<IdentifierInfo *, SmallVector<Decl *, 2> >::iterator
-           TLD = TopLevelDecls.begin(), TLDEnd = TopLevelDecls.end();
-         TLD != TLDEnd; ++TLD) {
+    for (TopLevelDeclsMap::iterator TLD = TopLevelDecls.begin(),
+           TLDEnd = TopLevelDecls.end(); TLD != TLDEnd; ++TLD) {
       IdentifierInfo *II = TLD->first;
       for (unsigned I = 0, N = TLD->second.size(); I != N; ++I) {
         pushExternalDeclIntoScope(cast<NamedDecl>(TLD->second[I]), II);

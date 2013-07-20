@@ -131,20 +131,26 @@ TEST(ToolInvocation, TestMapVirtualFile) {
   EXPECT_TRUE(Invocation.run());
 }
 
-struct VerifyEndCallback : public EndOfSourceFileCallback {
-  VerifyEndCallback() : Called(0), Matched(false) {}
-  virtual void run() {
-    ++Called;
+struct VerifyEndCallback : public SourceFileCallbacks {
+  VerifyEndCallback() : BeginCalled(0), EndCalled(0), Matched(false) {}
+  virtual bool handleBeginSource(CompilerInstance &CI,
+                                 StringRef Filename) LLVM_OVERRIDE {
+    ++BeginCalled;
+    return true;
+  }
+  virtual void handleEndSource() {
+    ++EndCalled;
   }
   ASTConsumer *newASTConsumer() {
     return new FindTopLevelDeclConsumer(&Matched);
   }
-  unsigned Called;
+  unsigned BeginCalled;
+  unsigned EndCalled;
   bool Matched;
 };
 
 #if !defined(_WIN32)
-TEST(newFrontendActionFactory, InjectsEndOfSourceFileCallback) {
+TEST(newFrontendActionFactory, InjectsSourceFileCallbacks) {
   VerifyEndCallback EndCallback;
 
   FixedCompilationDatabase Compilations("/", std::vector<std::string>());
@@ -159,7 +165,8 @@ TEST(newFrontendActionFactory, InjectsEndOfSourceFileCallback) {
   Tool.run(newFrontendActionFactory(&EndCallback, &EndCallback));
 
   EXPECT_TRUE(EndCallback.Matched);
-  EXPECT_EQ(2u, EndCallback.Called);
+  EXPECT_EQ(2u, EndCallback.BeginCalled);
+  EXPECT_EQ(2u, EndCallback.EndCalled);
 }
 #endif
 
@@ -184,6 +191,47 @@ TEST(runToolOnCode, TestSkipFunctionBody) {
                             "int skipMe() { an_error_here }"));
   EXPECT_FALSE(runToolOnCode(new SkipBodyAction,
                              "int skipMeNot() { an_error_here }"));
+}
+
+struct CheckSyntaxOnlyAdjuster: public ArgumentsAdjuster {
+  bool &Found;
+  bool &Ran;
+
+  CheckSyntaxOnlyAdjuster(bool &Found, bool &Ran) : Found(Found), Ran(Ran) { }
+
+  virtual CommandLineArguments
+  Adjust(const CommandLineArguments &Args) LLVM_OVERRIDE {
+    Ran = true;
+    for (unsigned I = 0, E = Args.size(); I != E; ++I) {
+      if (Args[I] == "-fsyntax-only") {
+        Found = true;
+        break;
+      }
+    }
+    return Args;
+  }
+};
+
+TEST(ClangToolTest, ArgumentAdjusters) {
+  FixedCompilationDatabase Compilations("/", std::vector<std::string>());
+
+  ClangTool Tool(Compilations, std::vector<std::string>(1, "/a.cc"));
+  Tool.mapVirtualFile("/a.cc", "void a() {}");
+
+  bool Found = false;
+  bool Ran = false;
+  Tool.appendArgumentsAdjuster(new CheckSyntaxOnlyAdjuster(Found, Ran));
+  Tool.run(newFrontendActionFactory<SyntaxOnlyAction>());
+  EXPECT_TRUE(Ran);
+  EXPECT_TRUE(Found);
+
+  Ran = Found = false;
+  Tool.clearArgumentsAdjusters();
+  Tool.appendArgumentsAdjuster(new CheckSyntaxOnlyAdjuster(Found, Ran));
+  Tool.appendArgumentsAdjuster(new ClangSyntaxOnlyAdjuster());
+  Tool.run(newFrontendActionFactory<SyntaxOnlyAction>());
+  EXPECT_TRUE(Ran);
+  EXPECT_FALSE(Found);
 }
 
 } // end namespace tooling

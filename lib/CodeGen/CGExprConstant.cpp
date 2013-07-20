@@ -368,40 +368,21 @@ void ConstStructBuilder::ConvertStructToPacked() {
 }
                             
 bool ConstStructBuilder::Build(InitListExpr *ILE) {
-  if (ILE->initializesStdInitializerList()) {
-    //CGM.ErrorUnsupported(ILE, "global std::initializer_list");
-    return false;
-  }
-
   RecordDecl *RD = ILE->getType()->getAs<RecordType>()->getDecl();
   const ASTRecordLayout &Layout = CGM.getContext().getASTRecordLayout(RD);
 
   unsigned FieldNo = 0;
   unsigned ElementNo = 0;
-  const FieldDecl *LastFD = 0;
-  bool IsMsStruct = RD->isMsStruct(CGM.getContext());
   
   for (RecordDecl::field_iterator Field = RD->field_begin(),
        FieldEnd = RD->field_end(); Field != FieldEnd; ++Field, ++FieldNo) {
-    if (IsMsStruct) {
-      // Zero-length bitfields following non-bitfield members are
-      // ignored:
-      if (CGM.getContext().ZeroBitfieldFollowsNonBitfield(*Field, LastFD)) {
-        --FieldNo;
-        continue;
-      }
-      LastFD = *Field;
-    }
-    
     // If this is a union, skip all the fields that aren't being initialized.
     if (RD->isUnion() && ILE->getInitializedFieldInUnion() != *Field)
       continue;
 
     // Don't emit anonymous bitfields, they just affect layout.
-    if (Field->isUnnamedBitfield()) {
-      LastFD = *Field;
+    if (Field->isUnnamedBitfield())
       continue;
-    }
 
     // Get the initializer.  A struct can include fields without initializers,
     // we just use explicit null values for them.
@@ -477,31 +458,17 @@ void ConstStructBuilder::Build(const APValue &Val, const RecordDecl *RD,
   }
 
   unsigned FieldNo = 0;
-  const FieldDecl *LastFD = 0;
-  bool IsMsStruct = RD->isMsStruct(CGM.getContext());
   uint64_t OffsetBits = CGM.getContext().toBits(Offset);
 
   for (RecordDecl::field_iterator Field = RD->field_begin(),
        FieldEnd = RD->field_end(); Field != FieldEnd; ++Field, ++FieldNo) {
-    if (IsMsStruct) {
-      // Zero-length bitfields following non-bitfield members are
-      // ignored:
-      if (CGM.getContext().ZeroBitfieldFollowsNonBitfield(*Field, LastFD)) {
-        --FieldNo;
-        continue;
-      }
-      LastFD = *Field;
-    }
-
     // If this is a union, skip all the fields that aren't being initialized.
     if (RD->isUnion() && Val.getUnionField() != *Field)
       continue;
 
     // Don't emit anonymous bitfields, they just affect layout.
-    if (Field->isUnnamedBitfield()) {
-      LastFD = *Field;
+    if (Field->isUnnamedBitfield())
       continue;
-    }
 
     // Emit the value of the initializer.
     const APValue &FieldValue =
@@ -1002,6 +969,15 @@ public:
     }
     case Expr::CXXUuidofExprClass: {
       return CGM.GetAddrOfUuidDescriptor(cast<CXXUuidofExpr>(E));
+    }
+    case Expr::MaterializeTemporaryExprClass: {
+      MaterializeTemporaryExpr *MTE = cast<MaterializeTemporaryExpr>(E);
+      assert(MTE->getStorageDuration() == SD_Static);
+      SmallVector<const Expr *, 2> CommaLHSs;
+      SmallVector<SubobjectAdjustment, 2> Adjustments;
+      const Expr *Inner = MTE->GetTemporaryExpr()
+          ->skipRValueSubobjectAdjustments(CommaLHSs, Adjustments);
+      return CGM.GetAddrOfGlobalTemporary(MTE, Inner);
     }
     }
 
