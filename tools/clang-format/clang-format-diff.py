@@ -63,9 +63,10 @@ def formatRange(r, style):
   offset, length = getOffsetLength(filename, line_number, line_count)
   with open(filename, 'r') as f:
     text = f.read()
-  p = subprocess.Popen([binary, '-offset', str(offset), '-length', str(length),
-                        '-style', style],
-                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+  command = [binary, '-offset', str(offset), '-length', str(length)]
+  if style:
+    command.extend(['-style', style])
+  p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                        stdin=subprocess.PIPE)
   stdout, stderr = p.communicate(input=text)
   if stderr:
@@ -82,10 +83,10 @@ def formatRange(r, style):
 def main():
   parser = argparse.ArgumentParser(description=
                                    'Reformat changed lines in diff')
-  parser.add_argument('-p', default=1,
+  parser.add_argument('-p', default=0,
                       help='strip the smallest prefix containing P slashes')
-  parser.add_argument('-style', default='LLVM',
-                      help='formatting style to apply (LLVM, Google)')
+  parser.add_argument('-style',
+                      help='formatting style to apply (LLVM, Google, Chromium)')
   args = parser.parse_args()
 
   filename = None

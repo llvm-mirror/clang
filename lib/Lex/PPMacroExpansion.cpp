@@ -13,7 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Lex/Preprocessor.h"
-#include "MacroArgs.h"
+#include "clang/Lex/MacroArgs.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
@@ -223,7 +223,7 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
   // If this is a builtin macro, like __LINE__ or _Pragma, handle it specially.
   if (MI->isBuiltinMacro()) {
     if (Callbacks) Callbacks->MacroExpands(Identifier, MD,
-                                           Identifier.getLocation());
+                                           Identifier.getLocation(),/*Args=*/0);
     ExpandBuiltinMacro(Identifier);
     return false;
   }
@@ -277,11 +277,12 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
       DelayedMacroExpandsCallbacks.push_back(
                               MacroExpandsInfo(Identifier, MD, ExpansionRange));
     } else {
-      Callbacks->MacroExpands(Identifier, MD, ExpansionRange);
+      Callbacks->MacroExpands(Identifier, MD, ExpansionRange, Args);
       if (!DelayedMacroExpandsCallbacks.empty()) {
         for (unsigned i=0, e = DelayedMacroExpandsCallbacks.size(); i!=e; ++i) {
           MacroExpandsInfo &Info = DelayedMacroExpandsCallbacks[i];
-          Callbacks->MacroExpands(Info.Tok, Info.MD, Info.Range);
+          // FIXME: We lose macro args info with delayed callback.
+          Callbacks->MacroExpands(Info.Tok, Info.MD, Info.Range, /*Args=*/0);
         }
         DelayedMacroExpandsCallbacks.clear();
       }
@@ -389,6 +390,136 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
   return false;
 }
 
+enum Bracket {
+  Brace,
+  Paren
+};
+
+/// CheckMatchedBrackets - Returns true if the braces and parentheses in the
+/// token vector are properly nested.
+static bool CheckMatchedBrackets(const SmallVectorImpl<Token> &Tokens) {
+  SmallVector<Bracket, 8> Brackets;
+  for (SmallVectorImpl<Token>::const_iterator I = Tokens.begin(),
+                                              E = Tokens.end();
+       I != E; ++I) {
+    if (I->is(tok::l_paren)) {
+      Brackets.push_back(Paren);
+    } else if (I->is(tok::r_paren)) {
+      if (Brackets.empty() || Brackets.back() == Brace)
+        return false;
+      Brackets.pop_back();
+    } else if (I->is(tok::l_brace)) {
+      Brackets.push_back(Brace);
+    } else if (I->is(tok::r_brace)) {
+      if (Brackets.empty() || Brackets.back() == Paren)
+        return false;
+      Brackets.pop_back();
+    }
+  }
+  if (!Brackets.empty())
+    return false;
+  return true;
+}
+
+/// GenerateNewArgTokens - Returns true if OldTokens can be converted to a new
+/// vector of tokens in NewTokens.  The new number of arguments will be placed
+/// in NumArgs and the ranges which need to surrounded in parentheses will be
+/// in ParenHints.
+/// Returns false if the token stream cannot be changed.  If this is because
+/// of an initializer list starting a macro argument, the range of those
+/// initializer lists will be place in InitLists.
+static bool GenerateNewArgTokens(Preprocessor &PP,
+                                 SmallVectorImpl<Token> &OldTokens,
+                                 SmallVectorImpl<Token> &NewTokens,
+                                 unsigned &NumArgs,
+                                 SmallVectorImpl<SourceRange> &ParenHints,
+                                 SmallVectorImpl<SourceRange> &InitLists) {
+  if (!CheckMatchedBrackets(OldTokens))
+    return false;
+
+  // Once it is known that the brackets are matched, only a simple count of the
+  // braces is needed.
+  unsigned Braces = 0;
+
+  // First token of a new macro argument.
+  SmallVectorImpl<Token>::iterator ArgStartIterator = OldTokens.begin();
+
+  // First closing brace in a new macro argument.  Used to generate
+  // SourceRanges for InitLists.
+  SmallVectorImpl<Token>::iterator ClosingBrace = OldTokens.end();
+  NumArgs = 0;
+  Token TempToken;
+  // Set to true when a macro separator token is found inside a braced list.
+  // If true, the fixed argument spans multiple old arguments and ParenHints
+  // will be updated.
+  bool FoundSeparatorToken = false;
+  for (SmallVectorImpl<Token>::iterator I = OldTokens.begin(),
+                                        E = OldTokens.end();
+       I != E; ++I) {
+    if (I->is(tok::l_brace)) {
+      ++Braces;
+    } else if (I->is(tok::r_brace)) {
+      --Braces;
+      if (Braces == 0 && ClosingBrace == E && FoundSeparatorToken)
+        ClosingBrace = I;
+    } else if (I->is(tok::eof)) {
+      // EOF token is used to separate macro arguments
+      if (Braces != 0) {
+        // Assume comma separator is actually braced list separator and change
+        // it back to a comma.
+        FoundSeparatorToken = true;
+        I->setKind(tok::comma);
+        I->setLength(1);
+      } else { // Braces == 0
+        // Separator token still separates arguments.
+        ++NumArgs;
+
+        // If the argument starts with a brace, it can't be fixed with
+        // parentheses.  A different diagnostic will be given.
+        if (FoundSeparatorToken && ArgStartIterator->is(tok::l_brace)) {
+          InitLists.push_back(
+              SourceRange(ArgStartIterator->getLocation(),
+                          PP.getLocForEndOfToken(ClosingBrace->getLocation())));
+          ClosingBrace = E;
+        }
+
+        // Add left paren
+        if (FoundSeparatorToken) {
+          TempToken.startToken();
+          TempToken.setKind(tok::l_paren);
+          TempToken.setLocation(ArgStartIterator->getLocation());
+          TempToken.setLength(0);
+          NewTokens.push_back(TempToken);
+        }
+
+        // Copy over argument tokens
+        NewTokens.insert(NewTokens.end(), ArgStartIterator, I);
+
+        // Add right paren and store the paren locations in ParenHints
+        if (FoundSeparatorToken) {
+          SourceLocation Loc = PP.getLocForEndOfToken((I - 1)->getLocation());
+          TempToken.startToken();
+          TempToken.setKind(tok::r_paren);
+          TempToken.setLocation(Loc);
+          TempToken.setLength(0);
+          NewTokens.push_back(TempToken);
+          ParenHints.push_back(SourceRange(ArgStartIterator->getLocation(),
+                                           Loc));
+        }
+
+        // Copy separator token
+        NewTokens.push_back(*I);
+
+        // Reset values
+        ArgStartIterator = I + 1;
+        FoundSeparatorToken = false;
+      }
+    }
+  }
+
+  return !ParenHints.empty() && InitLists.empty();
+}
+
 /// ReadFunctionLikeMacroArgs - After reading "MACRO" and knowing that the next
 /// token is the '(' of the macro, this method is invoked to read all of the
 /// actual arguments specified for the macro invocation.  This returns null on
@@ -413,6 +544,8 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
   // heap allocations in the common case.
   SmallVector<Token, 64> ArgTokens;
   bool ContainsCodeCompletionTok = false;
+
+  SourceLocation TooManyArgsLoc;
 
   unsigned NumActuals = 0;
   while (Tok.isNot(tok::r_paren)) {
@@ -457,7 +590,12 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
         }
       } else if (Tok.is(tok::l_paren)) {
         ++NumParens;
-      } else if (Tok.is(tok::comma) && NumParens == 0) {
+      } else if (Tok.is(tok::comma) && NumParens == 0 &&
+                 !(Tok.getFlags() & Token::IgnoredComma)) {
+        // In Microsoft-compatibility mode, single commas from nested macro
+        // expansions should not be considered as argument separators. We test
+        // for this with the IgnoredComma token flag above.
+
         // Comma ends this argument if there are more fixed arguments expected.
         // However, if this is a variadic macro, and this is part of the
         // variadic part, then the comma is just an argument token.
@@ -498,22 +636,15 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
 
     // If this is not a variadic macro, and too many args were specified, emit
     // an error.
-    if (!isVariadic && NumFixedArgsLeft == 0) {
+    if (!isVariadic && NumFixedArgsLeft == 0 && TooManyArgsLoc.isInvalid()) {
       if (ArgTokens.size() != ArgTokenStart)
-        ArgStartLoc = ArgTokens[ArgTokenStart].getLocation();
-
-      if (!ContainsCodeCompletionTok) {
-        // Emit the diagnostic at the macro name in case there is a missing ).
-        // Emitting it at the , could be far away from the macro name.
-        Diag(ArgStartLoc, diag::err_too_many_args_in_macro_invoc);
-        Diag(MI->getDefinitionLoc(), diag::note_macro_here)
-          << MacroName.getIdentifierInfo();
-        return 0;
-      }
+        TooManyArgsLoc = ArgTokens[ArgTokenStart].getLocation();
+      else
+        TooManyArgsLoc = ArgStartLoc;
     }
 
-    // Empty arguments are standard in C99 and C++0x, and are supported as an extension in
-    // other modes.
+    // Empty arguments are standard in C99 and C++0x, and are supported as an
+    // extension in other modes.
     if (ArgTokens.size() == ArgTokenStart && !LangOpts.C99)
       Diag(Tok, LangOpts.CPlusPlus11 ?
            diag::warn_cxx98_compat_empty_fnmacro_arg :
@@ -527,15 +658,65 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
     EOFTok.setLength(0);
     ArgTokens.push_back(EOFTok);
     ++NumActuals;
-    if (!ContainsCodeCompletionTok || NumFixedArgsLeft != 0) {
-      assert(NumFixedArgsLeft != 0 && "Too many arguments parsed");
+    if (!ContainsCodeCompletionTok && NumFixedArgsLeft != 0)
       --NumFixedArgsLeft;
-    }
   }
 
   // Okay, we either found the r_paren.  Check to see if we parsed too few
   // arguments.
   unsigned MinArgsExpected = MI->getNumArgs();
+
+  // If this is not a variadic macro, and too many args were specified, emit
+  // an error.
+  if (!isVariadic && NumActuals > MinArgsExpected &&
+      !ContainsCodeCompletionTok) {
+    // Emit the diagnostic at the macro name in case there is a missing ).
+    // Emitting it at the , could be far away from the macro name.
+    Diag(TooManyArgsLoc, diag::err_too_many_args_in_macro_invoc);
+    Diag(MI->getDefinitionLoc(), diag::note_macro_here)
+      << MacroName.getIdentifierInfo();
+
+    // Commas from braced initializer lists will be treated as argument
+    // separators inside macros.  Attempt to correct for this with parentheses.
+    // TODO: See if this can be generalized to angle brackets for templates
+    // inside macro arguments.
+
+    SmallVector<Token, 4> FixedArgTokens;
+    unsigned FixedNumArgs = 0;
+    SmallVector<SourceRange, 4> ParenHints, InitLists;
+    if (!GenerateNewArgTokens(*this, ArgTokens, FixedArgTokens, FixedNumArgs,
+                              ParenHints, InitLists)) {
+      if (!InitLists.empty()) {
+        DiagnosticBuilder DB =
+            Diag(MacroName,
+                 diag::note_init_list_at_beginning_of_macro_argument);
+        for (SmallVector<SourceRange, 4>::iterator
+                 Range = InitLists.begin(), RangeEnd = InitLists.end();
+                 Range != RangeEnd; ++Range) {
+          if (DB.hasMaxRanges())
+            break;
+          DB << *Range;
+        }
+      }
+      return 0;
+    }
+    if (FixedNumArgs != MinArgsExpected)
+      return 0;
+
+    DiagnosticBuilder DB = Diag(MacroName, diag::note_suggest_parens_for_macro);
+    for (SmallVector<SourceRange, 4>::iterator
+             ParenLocation = ParenHints.begin(), ParenEnd = ParenHints.end();
+         ParenLocation != ParenEnd; ++ParenLocation) {
+      if (DB.hasMaxFixItHints())
+        break;
+      DB << FixItHint::CreateInsertion(ParenLocation->getBegin(), "(");
+      if (DB.hasMaxFixItHints())
+        break;
+      DB << FixItHint::CreateInsertion(ParenLocation->getEnd(), ")");
+    }
+    ArgTokens.swap(FixedArgTokens);
+    NumActuals = FixedNumArgs;
+  }
 
   // See MacroArgs instance var for description of this.
   bool isVarargsElided = false;
@@ -721,11 +902,13 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("attribute_unavailable_with_message", true)
            .Case("attribute_unused_on_fields", true)
            .Case("blocks", LangOpts.Blocks)
+           .Case("c_thread_safety_attributes", true)
            .Case("cxx_exceptions", LangOpts.Exceptions)
            .Case("cxx_rtti", LangOpts.RTTI)
            .Case("enumerator_attributes", true)
            .Case("memory_sanitizer", LangOpts.Sanitize.Memory)
            .Case("thread_sanitizer", LangOpts.Sanitize.Thread)
+           .Case("dataflow_sanitizer", LangOpts.Sanitize.DataFlow)
            // Objective-C features
            .Case("objc_arr", LangOpts.ObjCAutoRefCount) // FIXME: REMOVE?
            .Case("objc_arc", LangOpts.ObjCAutoRefCount)
@@ -737,6 +920,7 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("objc_nonfragile_abi", LangOpts.ObjCRuntime.isNonFragile())
            .Case("objc_property_explicit_atomic", true) // Does clang support explicit "atomic" keyword?
            .Case("objc_weak_class", LangOpts.ObjCRuntime.hasWeakClassImport())
+           .Case("objc_msg_lookup_stret", LangOpts.ObjCRuntime.getKind() == ObjCRuntime::ObjFW)
            .Case("ownership_holds", true)
            .Case("ownership_returns", true)
            .Case("ownership_takes", true)
@@ -751,6 +935,8 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("c_atomic", LangOpts.C11)
            .Case("c_generic_selections", LangOpts.C11)
            .Case("c_static_assert", LangOpts.C11)
+           .Case("c_thread_local", 
+                 LangOpts.C11 && PP.getTargetInfo().isTLSSupported())
            // C++11 features
            .Case("cxx_access_control_sfinae", LangOpts.CPlusPlus11)
            .Case("cxx_alias_templates", LangOpts.CPlusPlus11)
@@ -768,7 +954,7 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("cxx_explicit_conversions", LangOpts.CPlusPlus11)
            .Case("cxx_generalized_initializers", LangOpts.CPlusPlus11)
            .Case("cxx_implicit_moves", LangOpts.CPlusPlus11)
-         //.Case("cxx_inheriting_constructors", false)
+           .Case("cxx_inheriting_constructors", LangOpts.CPlusPlus11)
            .Case("cxx_inline_namespaces", LangOpts.CPlusPlus11)
            .Case("cxx_lambdas", LangOpts.CPlusPlus11)
            .Case("cxx_local_type_template_args", LangOpts.CPlusPlus11)
@@ -782,11 +968,23 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("cxx_rvalue_references", LangOpts.CPlusPlus11)
            .Case("cxx_strong_enums", LangOpts.CPlusPlus11)
            .Case("cxx_static_assert", LangOpts.CPlusPlus11)
+           .Case("cxx_thread_local", 
+                 LangOpts.CPlusPlus11 && PP.getTargetInfo().isTLSSupported())
            .Case("cxx_trailing_return", LangOpts.CPlusPlus11)
            .Case("cxx_unicode_literals", LangOpts.CPlusPlus11)
            .Case("cxx_unrestricted_unions", LangOpts.CPlusPlus11)
            .Case("cxx_user_literals", LangOpts.CPlusPlus11)
            .Case("cxx_variadic_templates", LangOpts.CPlusPlus11)
+           // C++1y features
+           .Case("cxx_aggregate_nsdmi", LangOpts.CPlusPlus1y)
+           .Case("cxx_binary_literals", LangOpts.CPlusPlus1y)
+           .Case("cxx_contextual_conversions", LangOpts.CPlusPlus1y)
+           //.Case("cxx_generic_lambda", LangOpts.CPlusPlus1y)
+           //.Case("cxx_init_capture", LangOpts.CPlusPlus1y)
+           .Case("cxx_relaxed_constexpr", LangOpts.CPlusPlus1y)
+           .Case("cxx_return_type_deduction", LangOpts.CPlusPlus1y)
+           //.Case("cxx_runtime_array", LangOpts.CPlusPlus1y)
+           //.Case("cxx_variable_templates", LangOpts.CPlusPlus1y)
            // Type traits
            .Case("has_nothrow_assign", LangOpts.CPlusPlus)
            .Case("has_nothrow_copy", LangOpts.CPlusPlus)
@@ -847,7 +1045,7 @@ static bool HasExtension(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("c_atomic", true)
            .Case("c_generic_selections", true)
            .Case("c_static_assert", true)
-           // C++0x features supported by other languages as extensions.
+           // C++11 features supported by other languages as extensions.
            .Case("cxx_atomic", LangOpts.CPlusPlus)
            .Case("cxx_deleted_functions", LangOpts.CPlusPlus)
            .Case("cxx_explicit_conversions", LangOpts.CPlusPlus)
@@ -858,6 +1056,8 @@ static bool HasExtension(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("cxx_range_for", LangOpts.CPlusPlus)
            .Case("cxx_reference_qualified_functions", LangOpts.CPlusPlus)
            .Case("cxx_rvalue_references", LangOpts.CPlusPlus)
+           // C++1y features supported by other languages as extensions.
+           .Case("cxx_binary_literals", true)
            .Default(false);
 }
 
@@ -975,7 +1175,8 @@ static bool EvaluateHasIncludeCommon(Token &Tok,
   // Search include directories.
   const DirectoryLookup *CurDir;
   const FileEntry *File =
-      PP.LookupFile(Filename, isAngled, LookupFrom, CurDir, NULL, NULL, NULL);
+      PP.LookupFile(FilenameLoc, Filename, isAngled, LookupFrom, CurDir, NULL,
+                    NULL, NULL);
 
   // Get the result value.  A result of true means the file exists.
   return File != 0;
@@ -1195,9 +1396,7 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
     if (Tok.is(tok::l_paren)) {
       // Read the identifier
       LexUnexpandedToken(Tok);
-      if (Tok.is(tok::identifier) || Tok.is(tok::kw_const)) {
-        FeatureII = Tok.getIdentifierInfo();
-
+      if ((FeatureII = Tok.getIdentifierInfo())) {
         // Read the ')'.
         LexUnexpandedToken(Tok);
         if (Tok.is(tok::r_paren))

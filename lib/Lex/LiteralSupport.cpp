@@ -157,7 +157,7 @@ static unsigned ProcessCharEscape(const char *ThisTokBegin,
     // Check for overflow.
     if (Overflow && Diags)   // Too many digits to fit in
       Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf,
-           diag::warn_hex_escape_too_large);
+           diag::err_hex_escape_too_large);
     break;
   }
   case '0': case '1': case '2': case '3':
@@ -180,7 +180,7 @@ static unsigned ProcessCharEscape(const char *ThisTokBegin,
     if (CharWidth != 32 && (ResultChar >> CharWidth) != 0) {
       if (Diags)
         Diag(Diags, Features, Loc, ThisTokBegin, EscapeBegin, ThisTokBuf,
-             diag::warn_octal_escape_too_large);
+             diag::err_octal_escape_too_large);
       ResultChar &= ~0U >> (32-CharWidth);
     }
     break;
@@ -413,10 +413,12 @@ static void EncodeUCNEscape(const char *ThisTokBegin, const char *&ThisTokBuf,
 ///         decimal-constant integer-suffix
 ///         octal-constant integer-suffix
 ///         hexadecimal-constant integer-suffix
+///         binary-literal integer-suffix [GNU, C++1y]
 ///       user-defined-integer-literal: [C++11 lex.ext]
 ///         decimal-literal ud-suffix
 ///         octal-literal ud-suffix
 ///         hexadecimal-literal ud-suffix
+///         binary-literal ud-suffix [GNU, C++1y]
 ///       decimal-constant:
 ///         nonzero-digit
 ///         decimal-constant digit
@@ -428,6 +430,10 @@ static void EncodeUCNEscape(const char *ThisTokBegin, const char *&ThisTokBuf,
 ///         hexadecimal-constant hexadecimal-digit
 ///       hexadecimal-prefix: one of
 ///         0x 0X
+///       binary-literal:
+///         0b binary-digit
+///         0B binary-digit
+///         binary-literal binary-digit
 ///       integer-suffix:
 ///         unsigned-suffix [long-suffix]
 ///         unsigned-suffix [long-long-suffix]
@@ -441,6 +447,9 @@ static void EncodeUCNEscape(const char *ThisTokBegin, const char *&ThisTokBuf,
 ///         0 1 2 3 4 5 6 7 8 9
 ///         a b c d e f
 ///         A B C D E F
+///       binary-digit:
+///         0
+///         1
 ///       unsigned-suffix: one of
 ///         u U
 ///       long-suffix: one of
@@ -515,6 +524,7 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
   // Parse the suffix.  At this point we can classify whether we have an FP or
   // integer constant.
   bool isFPConstant = isFloatingLiteral();
+  const char *ImaginarySuffixLoc = 0;
 
   // Loop over all of the characters of the suffix.  If we see something bad,
   // we break out of the loop.
@@ -598,9 +608,8 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
     case 'j':
     case 'J':
       if (isImaginary) break;   // Cannot be repeated.
-      PP.Diag(PP.AdvanceToTokenCharacter(TokLoc, s - ThisTokBegin),
-              diag::ext_imaginary_constant);
       isImaginary = true;
+      ImaginarySuffixLoc = s;
       continue;  // Success.
     }
     // If we reached here, there was an error or a ud-suffix.
@@ -608,9 +617,17 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
   }
 
   if (s != ThisTokEnd) {
-    if (PP.getLangOpts().CPlusPlus11 && s == SuffixBegin && *s == '_') {
-      // We have a ud-suffix! By C++11 [lex.ext]p10, ud-suffixes not starting
-      // with an '_' are ill-formed.
+    if (isValidUDSuffix(PP.getLangOpts(),
+                        StringRef(SuffixBegin, ThisTokEnd - SuffixBegin))) {
+      // Any suffix pieces we might have parsed are actually part of the
+      // ud-suffix.
+      isLong = false;
+      isUnsigned = false;
+      isLongLong = false;
+      isFloat = false;
+      isImaginary = false;
+      isMicrosoftInteger = false;
+
       saw_ud_suffix = true;
       return;
     }
@@ -623,6 +640,35 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
     hadError = true;
     return;
   }
+
+  if (isImaginary) {
+    PP.Diag(PP.AdvanceToTokenCharacter(TokLoc,
+                                       ImaginarySuffixLoc - ThisTokBegin),
+            diag::ext_imaginary_constant);
+  }
+}
+
+/// Determine whether a suffix is a valid ud-suffix. We avoid treating reserved
+/// suffixes as ud-suffixes, because the diagnostic experience is better if we
+/// treat it as an invalid suffix.
+bool NumericLiteralParser::isValidUDSuffix(const LangOptions &LangOpts,
+                                           StringRef Suffix) {
+  if (!LangOpts.CPlusPlus11 || Suffix.empty())
+    return false;
+
+  // By C++11 [lex.ext]p10, ud-suffixes starting with an '_' are always valid.
+  if (Suffix[0] == '_')
+    return true;
+
+  // In C++11, there are no library suffixes.
+  if (!LangOpts.CPlusPlus1y)
+    return false;
+
+  // In C++1y, "s", "h", "min", "ms", "us", and "ns" are used in the library.
+  return llvm::StringSwitch<bool>(Suffix)
+      .Cases("h", "min", "s", true)
+      .Cases("ms", "us", "ns", true)
+      .Default(false);
 }
 
 /// ParseNumberStartingWithZero - This method is called when the first character
@@ -686,8 +732,13 @@ void NumericLiteralParser::ParseNumberStartingWithZero(SourceLocation TokLoc) {
 
   // Handle simple binary numbers 0b01010
   if (*s == 'b' || *s == 'B') {
-    // 0b101010 is a GCC extension.
-    PP.Diag(TokLoc, diag::ext_binary_literal);
+    // 0b101010 is a C++1y / GCC extension.
+    PP.Diag(TokLoc,
+            PP.getLangOpts().CPlusPlus1y
+              ? diag::warn_cxx11_compat_binary_literal
+              : PP.getLangOpts().CPlusPlus
+                ? diag::ext_binary_literal_cxx1y
+                : diag::ext_binary_literal);
     ++s;
     radix = 2;
     DigitsBegin = s;

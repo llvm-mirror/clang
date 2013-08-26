@@ -174,9 +174,14 @@ def ext_hexconstant_invalid : Extension<
   "hexadecimal floating constants are a C99 feature">, InGroup<C99>;
 def ext_binary_literal : Extension<
   "binary integer literals are a GNU extension">, InGroup<GNU>;
+def ext_binary_literal_cxx1y : Extension<
+  "binary integer literals are a C++1y extension">, InGroup<CXX1y>;
+def warn_cxx11_compat_binary_literal : Warning<
+  "binary integer literals are incompatible with C++ standards before C++1y">,
+  InGroup<CXXPre1yCompatPedantic>, DefaultIgnore;
 def err_pascal_string_too_long : Error<"Pascal string is too long">;
-def warn_octal_escape_too_large : ExtWarn<"octal escape sequence out of range">;
-def warn_hex_escape_too_large : ExtWarn<"hex escape sequence out of range">;
+def err_octal_escape_too_large : Error<"octal escape sequence out of range">;
+def err_hex_escape_too_large : Error<"hex escape sequence out of range">;
 def ext_string_too_long : Extension<"string literal of length %0 exceeds "
   "maximum length %1 that %select{C90|ISO C99|C++}2 compilers are required to "
   "support">, InGroup<OverlengthStrings>;
@@ -403,16 +408,15 @@ def warn_pragma_include_alias_expected_filename :
 
 def err__Pragma_malformed : Error<
   "_Pragma takes a parenthesized string literal">;
-def err_pragma_comment_malformed : Error<
-  "pragma comment requires parenthesized identifier and optional string">;
 def err_pragma_message_malformed : Error<
-  "pragma message requires parenthesized string">;
+  "pragma %select{message|warning|error}0 requires parenthesized string">;
 def err_pragma_push_pop_macro_malformed : Error<
    "pragma %0 requires a parenthesized string">;
 def warn_pragma_pop_macro_no_push : Warning<
    "pragma pop_macro could not pop '%0', no matching push_macro">;
 def warn_pragma_message : Warning<"%0">,
    InGroup<PoundPragmaMessage>, DefaultWarnNoWerror;
+def err_pragma_message : Error<"%0">;
 def warn_pragma_ignored : Warning<"unknown pragma ignored">,
    InGroup<UnknownPragmas>, DefaultIgnore;
 def ext_stdc_pragma_ignored : ExtWarn<"unknown pragma in STDC namespace">,
@@ -446,7 +450,6 @@ def warn_pragma_diagnostic_unknown_warning :
 def warn_pragma_debug_unexpected_command : Warning<
   "unexpected debug command '%0'">;
 
-def err_pragma_comment_unknown_kind : Error<"unknown kind of pragma comment">;
 def err_defined_macro_name : Error<"'defined' cannot be used as a macro name">;
 def err_paste_at_start : Error<
   "'##' cannot appear at start of macro expansion">;
@@ -457,6 +460,11 @@ def err_unterm_macro_invoc : Error<
   "unterminated function-like macro invocation">;
 def err_too_many_args_in_macro_invoc : Error<
   "too many arguments provided to function-like macro invocation">;
+def note_suggest_parens_for_macro : Note<
+  "parentheses are required around macro argument containing braced "
+  "initializer list">;
+def note_init_list_at_beginning_of_macro_argument : Note<
+  "cannot use initializer list at the beginning of a macro argument">;
 def err_too_few_args_in_macro_invoc : Error<
   "too few arguments provided to function-like macro invocation">;
 def err_pp_bad_paste : Error<
@@ -476,9 +484,9 @@ def ext_pp_line_zero : Extension<
 def err_pp_line_invalid_filename : Error<
   "invalid filename for #line directive">;
 def warn_pp_line_decimal : Warning<
-  "#line directive interprets number as decimal, not octal">;
+  "%select{#line|GNU line marker}0 directive interprets number as decimal, not octal">;
 def err_pp_line_digit_sequence : Error<
-  "#line directive requires a simple digit sequence">;
+  "%select{#line|GNU line marker}0 directive requires a simple digit sequence">;
 def err_pp_linemarker_requires_integer : Error<
   "line marker directive requires a positive integer argument">;
 def err_pp_linemarker_invalid_filename : Error<
@@ -576,8 +584,18 @@ def warn_auto_module_import : Warning<
   "import of module '%1'">, InGroup<AutoImport>, DefaultIgnore;
 def warn_uncovered_module_header : Warning<
   "umbrella header for module '%0' does not include header '%1'">, 
-  InGroup<IncompleteUmbrella>;
+  InGroup<IncompleteUmbrella>, DefaultIgnore;
+def warn_forgotten_module_header : Warning<
+  "header '%0' is included in module '%1' but not listed in module map">,
+  InGroup<IncompleteModule>, DefaultIgnore;
 def err_expected_id_building_module : Error<
   "expected a module name in '__building_module' expression">;
+def error_use_of_private_header_outside_module : Error<
+  "use of private header from outside its module: '%0'">;
   
+def warn_header_guard : Warning<
+  "%0 is used as a header guard here, followed by #define of a different macro">,
+  InGroup<DiagGroup<"header-guard">>;
+def note_header_guard : Note<
+  "%0 is defined here; did you mean %1?">;  
 }

@@ -55,12 +55,11 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
                                            TemplateParams, 0,
                                            VS, ICIS_NoInit);
     if (FnD) {
-      Actions.ProcessDeclAttributeList(getCurScope(), FnD, AccessAttrs,
-                                       false, true);
-      bool TypeSpecContainsAuto
-        = D.getDeclSpec().getTypeSpecType() == DeclSpec::TST_auto;
+      Actions.ProcessDeclAttributeList(getCurScope(), FnD, AccessAttrs, false,
+                                       true);
+      bool TypeSpecContainsAuto = D.getDeclSpec().containsPlaceholderType();
       if (Init.isUsable())
-        Actions.AddInitializerToDecl(FnD, Init.get(), false, 
+        Actions.AddInitializerToDecl(FnD, Init.get(), false,
                                      TypeSpecContainsAuto);
       else
         Actions.ActOnUninitializedDecl(FnD, TypeSpecContainsAuto);
@@ -121,18 +120,13 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
         TemplateInfo.Kind != ParsedTemplateInfo::NonTemplate) && 
         !Actions.IsInsideALocalClassWithinATemplateFunction())) {
 
-    if (FnD) {
-      LateParsedTemplatedFunction *LPT = new LateParsedTemplatedFunction(FnD);
+    CachedTokens Toks;
+    LexTemplateFunctionForLateParsing(Toks);
 
+    if (FnD) {
       FunctionDecl *FD = getFunctionDecl(FnD);
       Actions.CheckForFunctionRedefinition(FD);
-
-      LateParsedTemplateMap[FD] = LPT;
-      Actions.MarkAsLateParsedTemplate(FD);
-      LexTemplateFunctionForLateParsing(LPT->Toks);
-    } else {
-      CachedTokens Toks;
-      LexTemplateFunctionForLateParsing(Toks);
+      Actions.MarkAsLateParsedTemplate(FD, FnD, Toks);
     }
 
     return FnD;
@@ -152,9 +146,9 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
     // We didn't find the left-brace we expected after the
     // constructor initializer; we already printed an error, and it's likely
     // impossible to recover, so don't try to parse this method later.
-    // If we stopped at a semicolon, consume it to avoid an extra warning.
-     if (Tok.is(tok::semi))
-      ConsumeToken();
+    // Skip over the rest of the decl and back to somewhere that looks
+    // reasonable.
+    SkipMalformedDecl();
     delete getCurrentClass().LateParsedDeclarations.back();
     getCurrentClass().LateParsedDeclarations.pop_back();
     return FnD;
@@ -171,25 +165,24 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
     }
   }
 
-
-  if (!FnD) {
+  if (FnD) {
+    // If this is a friend function, mark that it's late-parsed so that
+    // it's still known to be a definition even before we attach the
+    // parsed body.  Sema needs to treat friend function definitions
+    // differently during template instantiation, and it's possible for
+    // the containing class to be instantiated before all its member
+    // function definitions are parsed.
+    //
+    // If you remove this, you can remove the code that clears the flag
+    // after parsing the member.
+    if (D.getDeclSpec().isFriendSpecified()) {
+      getFunctionDecl(FnD)->setLateTemplateParsed(true);
+    }
+  } else {
     // If semantic analysis could not build a function declaration,
     // just throw away the late-parsed declaration.
     delete getCurrentClass().LateParsedDeclarations.back();
     getCurrentClass().LateParsedDeclarations.pop_back();
-  }
-
-  // If this is a friend function, mark that it's late-parsed so that
-  // it's still known to be a definition even before we attach the
-  // parsed body.  Sema needs to treat friend function definitions
-  // differently during template instantiation, and it's possible for
-  // the containing class to be instantiated before all its member
-  // function definitions are parsed.
-  //
-  // If you remove this, you can remove the code that clears the flag
-  // after parsing the member.
-  if (D.getDeclSpec().isFriendSpecified()) {
-    getFunctionDecl(FnD)->setLateTemplateParsed(true);
   }
 
   return FnD;
@@ -279,8 +272,11 @@ void Parser::LateParsedMemberInitializer::ParseLexedMemberInitializers() {
 void Parser::ParseLexedMethodDeclarations(ParsingClass &Class) {
   bool HasTemplateScope = !Class.TopLevelClass && Class.TemplateScope;
   ParseScope ClassTemplateScope(this, Scope::TemplateParamScope, HasTemplateScope);
-  if (HasTemplateScope)
+  TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
+  if (HasTemplateScope) {
     Actions.ActOnReenterTemplateScope(getCurScope(), Class.TagOrTemplate);
+    ++CurTemplateDepthTracker;
+  }
 
   // The current scope is still active if we're the top-level class.
   // Otherwise we'll need to push and enter a new scope.
@@ -301,9 +297,11 @@ void Parser::ParseLexedMethodDeclarations(ParsingClass &Class) {
 void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
   // If this is a member template, introduce the template parameter scope.
   ParseScope TemplateScope(this, Scope::TemplateParamScope, LM.TemplateScope);
-  if (LM.TemplateScope)
+  TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
+  if (LM.TemplateScope) {
     Actions.ActOnReenterTemplateScope(getCurScope(), LM.Method);
-
+    ++CurTemplateDepthTracker;
+  }
   // Start the delayed C++ method declaration
   Actions.ActOnStartDelayedCXXMethodDeclaration(getCurScope(), LM.Method);
 
@@ -379,9 +377,11 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
 void Parser::ParseLexedMethodDefs(ParsingClass &Class) {
   bool HasTemplateScope = !Class.TopLevelClass && Class.TemplateScope;
   ParseScope ClassTemplateScope(this, Scope::TemplateParamScope, HasTemplateScope);
-  if (HasTemplateScope)
+  TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
+  if (HasTemplateScope) {
     Actions.ActOnReenterTemplateScope(getCurScope(), Class.TagOrTemplate);
-
+    ++CurTemplateDepthTracker;
+  }
   bool HasClassScope = !Class.TopLevelClass;
   ParseScope ClassScope(this, Scope::ClassScope|Scope::DeclScope,
                         HasClassScope);
@@ -394,9 +394,11 @@ void Parser::ParseLexedMethodDefs(ParsingClass &Class) {
 void Parser::ParseLexedMethodDef(LexedMethod &LM) {
   // If this is a member template, introduce the template parameter scope.
   ParseScope TemplateScope(this, Scope::TemplateParamScope, LM.TemplateScope);
-  if (LM.TemplateScope)
+  TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
+  if (LM.TemplateScope) {
     Actions.ActOnReenterTemplateScope(getCurScope(), LM.D);
-
+    ++CurTemplateDepthTracker;
+  }
   // Save the current token position.
   SourceLocation origLoc = Tok.getLocation();
 
@@ -441,6 +443,13 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
   } else
     Actions.ActOnDefaultCtorInitializers(LM.D);
 
+  assert((Actions.getDiagnostics().hasErrorOccurred() ||
+          !isa<FunctionTemplateDecl>(LM.D) ||
+          cast<FunctionTemplateDecl>(LM.D)->getTemplateParameters()->getDepth()
+            < TemplateParameterDepth) &&
+         "TemplateParameterDepth should be greater than the depth of "
+         "current template being instantiated!");
+
   ParseFunctionStatementBody(LM.D, FnScope);
 
   // Clear the late-template-parsed bit if we set it before.
@@ -466,9 +475,11 @@ void Parser::ParseLexedMemberInitializers(ParsingClass &Class) {
   bool HasTemplateScope = !Class.TopLevelClass && Class.TemplateScope;
   ParseScope ClassTemplateScope(this, Scope::TemplateParamScope,
                                 HasTemplateScope);
-  if (HasTemplateScope)
+  TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
+  if (HasTemplateScope) {
     Actions.ActOnReenterTemplateScope(getCurScope(), Class.TagOrTemplate);
-
+    ++CurTemplateDepthTracker;
+  }
   // Set or update the scope flags.
   bool AlreadyHasClassScope = Class.TopLevelClass;
   unsigned ScopeFlags = Scope::ClassScope|Scope::DeclScope;
@@ -636,83 +647,171 @@ bool Parser::ConsumeAndStoreUntil(tok::TokenKind T1, tok::TokenKind T2,
 /// the opening brace of the function body. The opening brace will be consumed
 /// if and only if there was no error.
 ///
-/// \return True on error. 
+/// \return True on error.
 bool Parser::ConsumeAndStoreFunctionPrologue(CachedTokens &Toks) {
   if (Tok.is(tok::kw_try)) {
     Toks.push_back(Tok);
     ConsumeToken();
   }
-  bool ReadInitializer = false;
-  if (Tok.is(tok::colon)) {
-    // Initializers can contain braces too.
+
+  if (Tok.isNot(tok::colon)) {
+    // Easy case, just a function body.
+
+    // Grab any remaining garbage to be diagnosed later. We stop when we reach a
+    // brace: an opening one is the function body, while a closing one probably
+    // means we've reached the end of the class.
+    ConsumeAndStoreUntil(tok::l_brace, tok::r_brace, Toks,
+                         /*StopAtSemi=*/true,
+                         /*ConsumeFinalToken=*/false);
+    if (Tok.isNot(tok::l_brace))
+      return Diag(Tok.getLocation(), diag::err_expected_lbrace);
+
     Toks.push_back(Tok);
-    ConsumeToken();
-
-    while (Tok.is(tok::identifier) || Tok.is(tok::coloncolon)) {
-      if (Tok.is(tok::eof) || Tok.is(tok::semi))
-        return Diag(Tok.getLocation(), diag::err_expected_lbrace);
-
-      // Grab the identifier.
-      if (!ConsumeAndStoreUntil(tok::l_paren, tok::l_brace, Toks,
-                                /*StopAtSemi=*/true,
-                                /*ConsumeFinalToken=*/false))
-        return Diag(Tok.getLocation(), diag::err_expected_lparen);
-
-      tok::TokenKind kind = Tok.getKind();
-      Toks.push_back(Tok);
-      bool IsLParen = (kind == tok::l_paren);
-      SourceLocation LOpen = Tok.getLocation();
-
-      if (IsLParen) {
-        ConsumeParen();
-      } else {
-        assert(kind == tok::l_brace && "Must be left paren or brace here.");
-        ConsumeBrace();
-        // In C++03, this has to be the start of the function body, which
-        // means the initializer is malformed; we'll diagnose it later.
-        if (!getLangOpts().CPlusPlus11)
-          return false;
-      }
-
-      // Grab the initializer
-      if (!ConsumeAndStoreUntil(IsLParen ? tok::r_paren : tok::r_brace,
-                                Toks, /*StopAtSemi=*/true)) {
-        Diag(Tok, IsLParen ? diag::err_expected_rparen :
-                             diag::err_expected_rbrace);
-        Diag(LOpen, diag::note_matching) << (IsLParen ? "(" : "{");
-        return true;
-      }
-
-      // Grab pack ellipsis, if present
-      if (Tok.is(tok::ellipsis)) {
-        Toks.push_back(Tok);
-        ConsumeToken();
-      }
-
-      // Grab the separating comma, if any.
-      if (Tok.is(tok::comma)) {
-        Toks.push_back(Tok);
-        ConsumeToken();
-      } else if (Tok.isNot(tok::l_brace)) {
-        ReadInitializer = true;
-        break;
-      }
-    }
-  }
-
-  // Grab any remaining garbage to be diagnosed later. We stop when we reach a
-  // brace: an opening one is the function body, while a closing one probably
-  // means we've reached the end of the class.
-  ConsumeAndStoreUntil(tok::l_brace, tok::r_brace, Toks,
-                       /*StopAtSemi=*/true,
-                       /*ConsumeFinalToken=*/false);
-  if (Tok.isNot(tok::l_brace)) {
-    if (ReadInitializer)
-      return Diag(Tok.getLocation(), diag::err_expected_lbrace_or_comma);
-    return Diag(Tok.getLocation(), diag::err_expected_lbrace);
+    ConsumeBrace();
+    return false;
   }
 
   Toks.push_back(Tok);
-  ConsumeBrace();
-  return false;
+  ConsumeToken();
+
+  // We can't reliably skip over a mem-initializer-id, because it could be
+  // a template-id involving not-yet-declared names. Given:
+  //
+  //   S ( ) : a < b < c > ( e )
+  //
+  // 'e' might be an initializer or part of a template argument, depending
+  // on whether 'b' is a template.
+
+  // Track whether we might be inside a template argument. We can give
+  // significantly better diagnostics if we know that we're not.
+  bool MightBeTemplateArgument = false;
+
+  while (true) {
+    // Skip over the mem-initializer-id, if possible.
+    if (Tok.is(tok::kw_decltype)) {
+      Toks.push_back(Tok);
+      SourceLocation OpenLoc = ConsumeToken();
+      if (Tok.isNot(tok::l_paren))
+        return Diag(Tok.getLocation(), diag::err_expected_lparen_after)
+                 << "decltype";
+      Toks.push_back(Tok);
+      ConsumeParen();
+      if (!ConsumeAndStoreUntil(tok::r_paren, Toks, /*StopAtSemi=*/true)) {
+        Diag(Tok.getLocation(), diag::err_expected_rparen);
+        Diag(OpenLoc, diag::note_matching) << "(";
+        return true;
+      }
+    }
+    do {
+      // Walk over a component of a nested-name-specifier.
+      if (Tok.is(tok::coloncolon)) {
+        Toks.push_back(Tok);
+        ConsumeToken();
+
+        if (Tok.is(tok::kw_template)) {
+          Toks.push_back(Tok);
+          ConsumeToken();
+        }
+      }
+
+      if (Tok.is(tok::identifier) || Tok.is(tok::kw_template)) {
+        Toks.push_back(Tok);
+        ConsumeToken();
+      } else if (Tok.is(tok::code_completion)) {
+        Toks.push_back(Tok);
+        ConsumeCodeCompletionToken();
+        // Consume the rest of the initializers permissively.
+        // FIXME: We should be able to perform code-completion here even if
+        //        there isn't a subsequent '{' token.
+        MightBeTemplateArgument = true;
+        break;
+      } else {
+        break;
+      }
+    } while (Tok.is(tok::coloncolon));
+
+    if (Tok.is(tok::less))
+      MightBeTemplateArgument = true;
+
+    if (MightBeTemplateArgument) {
+      // We may be inside a template argument list. Grab up to the start of the
+      // next parenthesized initializer or braced-init-list. This *might* be the
+      // initializer, or it might be a subexpression in the template argument
+      // list.
+      // FIXME: Count angle brackets, and clear MightBeTemplateArgument
+      //        if all angles are closed.
+      if (!ConsumeAndStoreUntil(tok::l_paren, tok::l_brace, Toks,
+                                /*StopAtSemi=*/true,
+                                /*ConsumeFinalToken=*/false)) {
+        // We're not just missing the initializer, we're also missing the
+        // function body!
+        return Diag(Tok.getLocation(), diag::err_expected_lbrace);
+      }
+    } else if (Tok.isNot(tok::l_paren) && Tok.isNot(tok::l_brace)) {
+      // We found something weird in a mem-initializer-id.
+      return Diag(Tok.getLocation(), getLangOpts().CPlusPlus11
+                                         ? diag::err_expected_lparen_or_lbrace
+                                         : diag::err_expected_lparen);
+    }
+
+    tok::TokenKind kind = Tok.getKind();
+    Toks.push_back(Tok);
+    bool IsLParen = (kind == tok::l_paren);
+    SourceLocation OpenLoc = Tok.getLocation();
+
+    if (IsLParen) {
+      ConsumeParen();
+    } else {
+      assert(kind == tok::l_brace && "Must be left paren or brace here.");
+      ConsumeBrace();
+      // In C++03, this has to be the start of the function body, which
+      // means the initializer is malformed; we'll diagnose it later.
+      if (!getLangOpts().CPlusPlus11)
+        return false;
+    }
+
+    // Grab the initializer (or the subexpression of the template argument).
+    // FIXME: If we support lambdas here, we'll need to set StopAtSemi to false
+    //        if we might be inside the braces of a lambda-expression.
+    if (!ConsumeAndStoreUntil(IsLParen ? tok::r_paren : tok::r_brace,
+                              Toks, /*StopAtSemi=*/true)) {
+      Diag(Tok, IsLParen ? diag::err_expected_rparen :
+                           diag::err_expected_rbrace);
+      Diag(OpenLoc, diag::note_matching) << (IsLParen ? "(" : "{");
+      return true;
+    }
+
+    // Grab pack ellipsis, if present.
+    if (Tok.is(tok::ellipsis)) {
+      Toks.push_back(Tok);
+      ConsumeToken();
+    }
+
+    // If we know we just consumed a mem-initializer, we must have ',' or '{'
+    // next.
+    if (Tok.is(tok::comma)) {
+      Toks.push_back(Tok);
+      ConsumeToken();
+    } else if (Tok.is(tok::l_brace)) {
+      // This is the function body if the ')' or '}' is immediately followed by
+      // a '{'. That cannot happen within a template argument, apart from the
+      // case where a template argument contains a compound literal:
+      //
+      //   S ( ) : a < b < c > ( d ) { }
+      //   // End of declaration, or still inside the template argument?
+      //
+      // ... and the case where the template argument contains a lambda:
+      //
+      //   S ( ) : a < 0 && b < c > ( d ) + [ ] ( ) { return 0; }
+      //     ( ) > ( ) { }
+      //
+      // FIXME: Disambiguate these cases. Note that the latter case is probably
+      //        going to be made ill-formed by core issue 1607.
+      Toks.push_back(Tok);
+      ConsumeBrace();
+      return false;
+    } else if (!MightBeTemplateArgument) {
+      return Diag(Tok.getLocation(), diag::err_expected_lbrace_or_comma);
+    }
+  }
 }

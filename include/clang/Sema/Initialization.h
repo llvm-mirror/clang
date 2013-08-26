@@ -35,6 +35,7 @@ class ParmVarDecl;
 class Sema;
 class TypeLoc;
 class VarDecl;
+class ObjCMethodDecl;
   
 /// \brief Describes an entity that is being initialized.
 class InitializedEntity {
@@ -75,7 +76,16 @@ public:
     EK_ComplexElement,
     /// \brief The entity being initialized is the field that captures a 
     /// variable in a lambda.
-    EK_LambdaCapture
+    EK_LambdaCapture,
+    /// \brief The entity being initialized is the initializer for a compound
+    /// literal.
+    EK_CompoundLiteralInit,
+    /// \brief The entity being implicitly initialized back to the formal
+    /// result type.
+    EK_RelatedResult,
+    /// \brief The entity being initialized is a function parameter; function
+    /// is member of group of audited CF APIs.
+    EK_Parameter_CF_Audited
   };
   
 private:
@@ -113,13 +123,17 @@ private:
     /// \brief When Kind == EK_Variable, or EK_Member, the VarDecl or
     /// FieldDecl, respectively.
     DeclaratorDecl *VariableOrMember;
+    
+    /// \brief When Kind == EK_RelatedResult, the ObjectiveC method where
+    /// result type was implicitly changed to accomodate ARC semantics.
+    ObjCMethodDecl *MethodDecl;
 
     /// \brief When Kind == EK_Parameter, the ParmVarDecl, with the
     /// low bit indicating whether the parameter is "consumed".
     uintptr_t Parameter;
     
-    /// \brief When Kind == EK_Temporary, the type source information for
-    /// the temporary.
+    /// \brief When Kind == EK_Temporary or EK_CompoundLiteralInit, the type
+    /// source information for the temporary.
     TypeSourceInfo *TypeInfo;
 
     struct LN LocAndNRVO;
@@ -251,10 +265,19 @@ public:
     Result.TypeInfo = TypeInfo;
     return Result;
   }
+  
+  /// \brief Create the initialization entity for a related result.
+  static InitializedEntity InitializeRelatedResult(ObjCMethodDecl *MD,
+                                                   QualType Type) {
+    InitializedEntity Result(EK_RelatedResult, SourceLocation(), Type);
+    Result.MethodDecl = MD;
+    return Result;
+  }
+
 
   /// \brief Create the initialization entity for a base class subobject.
   static InitializedEntity InitializeBase(ASTContext &Context,
-                                          CXXBaseSpecifier *Base,
+                                          const CXXBaseSpecifier *Base,
                                           bool IsInheritedVirtualBase);
 
   /// \brief Create the initialization entity for a delegated constructor.
@@ -287,7 +310,16 @@ public:
                                                    SourceLocation Loc) {
     return InitializedEntity(Var, Field, Loc);
   }
-                                                   
+
+  /// \brief Create the entity for a compound literal initializer.
+  static InitializedEntity InitializeCompoundLiteralInit(TypeSourceInfo *TSI) {
+    InitializedEntity Result(EK_CompoundLiteralInit, SourceLocation(),
+                             TSI->getType());
+    Result.TypeInfo = TSI;
+    return Result;
+  }
+
+
   /// \brief Determine the kind of initialization.
   EntityKind getKind() const { return Kind; }
   
@@ -302,7 +334,7 @@ public:
   /// \brief Retrieve complete type-source information for the object being 
   /// constructed, if known.
   TypeSourceInfo *getTypeSourceInfo() const {
-    if (Kind == EK_Temporary)
+    if (Kind == EK_Temporary || Kind == EK_CompoundLiteralInit)
       return TypeInfo;
     
     return 0;
@@ -314,22 +346,29 @@ public:
   /// \brief Retrieve the variable, parameter, or field being
   /// initialized.
   DeclaratorDecl *getDecl() const;
+  
+  /// \brief Retrieve the ObjectiveC method being initialized.
+  ObjCMethodDecl *getMethodDecl() const { return MethodDecl; }
 
   /// \brief Determine whether this initialization allows the named return 
   /// value optimization, which also applies to thrown objects.
   bool allowsNRVO() const;
 
+  bool isParameterKind() const {
+    return (getKind() == EK_Parameter  ||
+            getKind() == EK_Parameter_CF_Audited);
+  }
   /// \brief Determine whether this initialization consumes the
   /// parameter.
   bool isParameterConsumed() const {
-    assert(getKind() == EK_Parameter && "Not a parameter");
+    assert(isParameterKind() && "Not a parameter");
     return (Parameter & 1);
   }
                                   
   /// \brief Retrieve the base specifier.
-  CXXBaseSpecifier *getBaseSpecifier() const {
+  const CXXBaseSpecifier *getBaseSpecifier() const {
     assert(getKind() == EK_Base && "Not a base specifier");
-    return reinterpret_cast<CXXBaseSpecifier *>(Base & ~0x1);
+    return reinterpret_cast<const CXXBaseSpecifier *>(Base & ~0x1);
   }
 
   /// \brief Return whether the base is an inherited virtual base.
@@ -372,6 +411,17 @@ public:
     assert(getKind() == EK_LambdaCapture && "Not a lambda capture!");
     return SourceLocation::getFromRawEncoding(Capture.Location);
   }
+  
+  void setParameterCFAudited() {
+    Kind = EK_Parameter_CF_Audited;
+  }
+
+  /// Dump a representation of the initialized entity to standard error,
+  /// for debugging purposes.
+  void dump() const;
+
+private:
+  unsigned dumpImpl(raw_ostream &OS) const;
 };
   
 /// \brief Describes the kind of initialization being performed, along with 
@@ -594,6 +644,8 @@ public:
     SK_QualificationConversionXValue,
     /// \brief Perform a qualification conversion, producing an lvalue.
     SK_QualificationConversionLValue,
+    /// \brief Perform a load from a glvalue, producing an rvalue.
+    SK_LValueToRValue,
     /// \brief Perform an implicit conversion sequence.
     SK_ConversionSequence,
     /// \brief Perform list-initialization without a constructor
@@ -692,6 +744,16 @@ public:
     /// \brief Array must be initialized with an initializer list or a 
     /// string literal.
     FK_ArrayNeedsInitListOrStringLiteral,
+    /// \brief Array must be initialized with an initializer list or a
+    /// wide string literal.
+    FK_ArrayNeedsInitListOrWideStringLiteral,
+    /// \brief Initializing a wide char array with narrow string literal.
+    FK_NarrowStringIntoWideCharArray,
+    /// \brief Initializing char array with wide string literal.
+    FK_WideStringIntoCharArray,
+    /// \brief Initializing wide char array with incompatible wide string
+    /// literal.
+    FK_IncompatWideStringIntoWideChar,
     /// \brief Array type mismatch.
     FK_ArrayTypeMismatch,
     /// \brief Non-constant array initializer
@@ -739,9 +801,6 @@ public:
     /// \brief Initializer has a placeholder type which cannot be
     /// resolved by initialization.
     FK_PlaceholderType,
-    /// \brief Failed to initialize a std::initializer_list because copy
-    /// construction of some element failed.
-    FK_InitListElementCopyFailure,
     /// \brief List-copy-initialization chose an explicit constructor.
     FK_ExplicitConstructor
   };
@@ -777,13 +836,10 @@ public:
   /// \param Kind the kind of initialization being performed.
   ///
   /// \param Args the argument(s) provided for initialization.
-  ///
-  /// \param NumArgs the number of arguments provided for initialization.
   InitializationSequence(Sema &S, 
                          const InitializedEntity &Entity,
                          const InitializationKind &Kind,
-                         Expr **Args,
-                         unsigned NumArgs);
+                         MultiExprArg Args);
   
   ~InitializationSequence();
   
@@ -821,7 +877,7 @@ public:
   bool Diagnose(Sema &S, 
                 const InitializedEntity &Entity,
                 const InitializationKind &Kind,
-                Expr **Args, unsigned NumArgs);
+                ArrayRef<Expr *> Args);
   
   /// \brief Determine the kind of initialization sequence computed.
   enum SequenceKind getKind() const { return SequenceKind; }
@@ -830,12 +886,12 @@ public:
   void setSequenceKind(enum SequenceKind SK) { SequenceKind = SK; }
   
   /// \brief Determine whether the initialization sequence is valid.
-  operator bool() const { return !Failed(); }
+  LLVM_EXPLICIT operator bool() const { return !Failed(); }
 
   /// \brief Determine whether the initialization sequence is invalid.
   bool Failed() const { return SequenceKind == FailedSequence; }
-  
-  typedef SmallVector<Step, 4>::const_iterator step_iterator;
+
+  typedef SmallVectorImpl<Step>::const_iterator step_iterator;
   step_iterator step_begin() const { return Steps.begin(); }
   step_iterator step_end()   const { return Steps.end(); }
 
@@ -911,6 +967,12 @@ public:
   void AddQualificationConversionStep(QualType Ty,
                                      ExprValueKind Category);
   
+  /// \brief Add a new step that performs a load of the given type.
+  ///
+  /// Although the term "LValueToRValue" is conventional, this applies to both
+  /// lvalues and xvalues.
+  void AddLValueToRValueStep(QualType Ty);
+
   /// \brief Add a new step that applies an implicit conversion sequence.
   void AddConversionSequenceStep(const ImplicitConversionSequence &ICS,
                                  QualType T);

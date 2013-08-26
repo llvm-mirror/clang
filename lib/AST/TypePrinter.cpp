@@ -81,10 +81,11 @@ namespace {
   class TypePrinter {
     PrintingPolicy Policy;
     bool HasEmptyPlaceHolder;
+    bool InsideCCAttribute;
 
   public:
     explicit TypePrinter(const PrintingPolicy &Policy)
-      : Policy(Policy), HasEmptyPlaceHolder(false) { }
+      : Policy(Policy), HasEmptyPlaceHolder(false), InsideCCAttribute(false) { }
 
     void print(const Type *ty, Qualifiers qs, raw_ostream &OS,
                StringRef PlaceHolder);
@@ -201,6 +202,7 @@ bool TypePrinter::canPrefixQualifiers(const Type *T,
       NeedARCStrongQualifier = true;
       // Fall through
       
+    case Type::Decayed:
     case Type::Pointer:
     case Type::BlockPointer:
     case Type::LValueReference:
@@ -468,6 +470,14 @@ void TypePrinter::printVariableArrayAfter(const VariableArrayType *T,
   printAfter(T->getElementType(), OS);
 }
 
+void TypePrinter::printDecayedBefore(const DecayedType *T, raw_ostream &OS) {
+  // Print as though it's a pointer.
+  printBefore(T->getDecayedType(), OS);
+}
+void TypePrinter::printDecayedAfter(const DecayedType *T, raw_ostream &OS) {
+  printAfter(T->getDecayedType(), OS);
+}
+
 void TypePrinter::printDependentSizedArrayBefore(
                                                const DependentSizedArrayType *T, 
                                                raw_ostream &OS) {
@@ -621,36 +631,40 @@ void TypePrinter::printFunctionProtoAfter(const FunctionProtoType *T,
   OS << ')';
 
   FunctionType::ExtInfo Info = T->getExtInfo();
-  switch(Info.getCC()) {
-  case CC_Default: break;
-  case CC_C:
-    OS << " __attribute__((cdecl))";
-    break;
-  case CC_X86StdCall:
-    OS << " __attribute__((stdcall))";
-    break;
-  case CC_X86FastCall:
-    OS << " __attribute__((fastcall))";
-    break;
-  case CC_X86ThisCall:
-    OS << " __attribute__((thiscall))";
-    break;
-  case CC_X86Pascal:
-    OS << " __attribute__((pascal))";
-    break;
-  case CC_AAPCS:
-    OS << " __attribute__((pcs(\"aapcs\")))";
-    break;
-  case CC_AAPCS_VFP:
-    OS << " __attribute__((pcs(\"aapcs-vfp\")))";
-    break;
-  case CC_PnaclCall:
-    OS << " __attribute__((pnaclcall))";
-    break;
-  case CC_IntelOclBicc:
-    OS << " __attribute__((intel_ocl_bicc))";
-    break;
+
+  if (!InsideCCAttribute) {
+    switch (Info.getCC()) {
+    case CC_Default: break;
+    case CC_C:
+      OS << " __attribute__((cdecl))";
+      break;
+    case CC_X86StdCall:
+      OS << " __attribute__((stdcall))";
+      break;
+    case CC_X86FastCall:
+      OS << " __attribute__((fastcall))";
+      break;
+    case CC_X86ThisCall:
+      OS << " __attribute__((thiscall))";
+      break;
+    case CC_X86Pascal:
+      OS << " __attribute__((pascal))";
+      break;
+    case CC_AAPCS:
+      OS << " __attribute__((pcs(\"aapcs\")))";
+      break;
+    case CC_AAPCS_VFP:
+      OS << " __attribute__((pcs(\"aapcs-vfp\")))";
+      break;
+    case CC_PnaclCall:
+      OS << " __attribute__((pnaclcall))";
+      break;
+    case CC_IntelOclBicc:
+      OS << " __attribute__((intel_ocl_bicc))";
+      break;
+    }
   }
+
   if (Info.getNoReturn())
     OS << " __attribute__((noreturn))";
   if (Info.getRegParm())
@@ -776,16 +790,16 @@ void TypePrinter::printUnaryTransformAfter(const UnaryTransformType *T,
 
 void TypePrinter::printAutoBefore(const AutoType *T, raw_ostream &OS) { 
   // If the type has been deduced, do not print 'auto'.
-  if (T->isDeduced()) {
+  if (!T->getDeducedType().isNull()) {
     printBefore(T->getDeducedType(), OS);
   } else {
-    OS << "auto";
+    OS << (T->isDecltypeAuto() ? "decltype(auto)" : "auto");
     spaceBeforePlaceHolder(OS);
   }
 }
 void TypePrinter::printAutoAfter(const AutoType *T, raw_ostream &OS) { 
   // If the type has been deduced, do not print 'auto'.
-  if (T->isDeduced())
+  if (!T->getDeducedType().isNull())
     printAfter(T->getDeducedType(), OS);
 }
 
@@ -989,6 +1003,8 @@ void TypePrinter::printInjectedClassNameAfter(const InjectedClassNameType *T,
 
 void TypePrinter::printElaboratedBefore(const ElaboratedType *T,
                                         raw_ostream &OS) {
+  if (Policy.SuppressTag && isa<TagType>(T->getNamedType()))
+    return;
   OS << TypeWithKeyword::getKeywordName(T->getKeyword());
   if (T->getKeyword() != ETK_None)
     OS << " ";
@@ -1072,6 +1088,17 @@ void TypePrinter::printAttributedBefore(const AttributedType *T,
     return printBefore(T->getEquivalentType(), OS);
 
   printBefore(T->getModifiedType(), OS);
+
+  if (T->isMSTypeSpec()) {
+    switch (T->getAttrKind()) {
+    default: return;
+    case AttributedType::attr_ptr32: OS << " __ptr32"; break;
+    case AttributedType::attr_ptr64: OS << " __ptr64"; break;
+    case AttributedType::attr_sptr: OS << " __sptr"; break;
+    case AttributedType::attr_uptr: OS << " __uptr"; break;
+    }
+    spaceBeforePlaceHolder(OS);
+  }
 }
 
 void TypePrinter::printAttributedAfter(const AttributedType *T,
@@ -1082,8 +1109,18 @@ void TypePrinter::printAttributedAfter(const AttributedType *T,
     return printAfter(T->getEquivalentType(), OS);
 
   // TODO: not all attributes are GCC-style attributes.
+  if (T->isMSTypeSpec())
+    return;
+
+  // If this is a calling convention attribute, don't print the implicit CC from
+  // the modified type.
+  SaveAndRestore<bool> MaybeSuppressCC(InsideCCAttribute, T->isCallingConv());
+
+  printAfter(T->getModifiedType(), OS);
+
   OS << " __attribute__((";
   switch (T->getAttrKind()) {
+  default: llvm_unreachable("This attribute should have been handled already");
   case AttributedType::attr_address_space:
     OS << "address_space(";
     OS << T->getEquivalentType().getAddressSpace();
@@ -1266,18 +1303,19 @@ TemplateSpecializationType::PrintTemplateArgumentList(
   
   bool needSpace = false;
   for (unsigned Arg = 0; Arg < NumArgs; ++Arg) {
-    if (Arg > 0)
-      OS << ", ";
-    
     // Print the argument into a string.
     SmallString<128> Buf;
     llvm::raw_svector_ostream ArgOS(Buf);
     if (Args[Arg].getKind() == TemplateArgument::Pack) {
+      if (Args[Arg].pack_size() && Arg > 0)
+        OS << ", ";
       PrintTemplateArgumentList(ArgOS,
                                 Args[Arg].pack_begin(), 
                                 Args[Arg].pack_size(), 
                                 Policy, true);
     } else {
+      if (Arg > 0)
+        OS << ", ";
       Args[Arg].print(Policy, ArgOS);
     }
     StringRef ArgString = ArgOS.str();

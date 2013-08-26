@@ -10,6 +10,7 @@
 // CHECK-ASAN-LINUX-NOT: "-lc"
 // CHECK-ASAN-LINUX: libclang_rt.asan-i386.a"
 // CHECK-ASAN-LINUX: "-lpthread"
+// CHECK-ASAN-LINUX: "-lrt"
 // CHECK-ASAN-LINUX: "-ldl"
 // CHECK-ASAN-LINUX-NOT: "-export-dynamic"
 // CHECK-ASAN-LINUX: "--dynamic-list={{.*}}libclang_rt.asan-i386.a.syms"
@@ -24,6 +25,7 @@
 // CHECK-ASAN-LINUX-CXX-NOT: "-lc"
 // CHECK-ASAN-LINUX-CXX: "-whole-archive" "{{.*}}libclang_rt.asan-i386.a" "-no-whole-archive"
 // CHECK-ASAN-LINUX-CXX: "-lpthread"
+// CHECK-ASAN-LINUX-CXX: "-lrt"
 // CHECK-ASAN-LINUX-CXX: "-ldl"
 // CHECK-ASAN-LINUX-CXX: "-export-dynamic"
 // CHECK-ASAN-LINUX-CXX-NOT: "--dynamic-list"
@@ -70,6 +72,7 @@
 // CHECK-TSAN-LINUX-CXX-NOT: stdc++
 // CHECK-TSAN-LINUX-CXX: "-whole-archive" "{{.*}}libclang_rt.tsan-x86_64.a" "-no-whole-archive"
 // CHECK-TSAN-LINUX-CXX: "-lpthread"
+// CHECK-TSAN-LINUX-CXX: "-lrt"
 // CHECK-TSAN-LINUX-CXX: "-ldl"
 // CHECK-TSAN-LINUX-CXX-NOT: "-export-dynamic"
 // CHECK-TSAN-LINUX-CXX: "--dynamic-list={{.*}}libclang_rt.tsan-x86_64.a.syms"
@@ -85,6 +88,7 @@
 // CHECK-MSAN-LINUX-CXX-NOT: stdc++
 // CHECK-MSAN-LINUX-CXX: "-whole-archive" "{{.*}}libclang_rt.msan-x86_64.a" "-no-whole-archive"
 // CHECK-MSAN-LINUX-CXX: "-lpthread"
+// CHECK-MSAN-LINUX-CXX: "-lrt"
 // CHECK-MSAN-LINUX-CXX: "-ldl"
 // CHECK-MSAN-LINUX-CXX-NOT: "-export-dynamic"
 // CHECK-MSAN-LINUX-CXX: "--dynamic-list={{.*}}libclang_rt.msan-x86_64.a.syms"
@@ -148,4 +152,37 @@
 // RUN:     -shared \
 // RUN:   | FileCheck --check-prefix=CHECK-UBSAN-LINUX-SHARED %s
 // CHECK-UBSAN-LINUX-SHARED: "{{.*}}ld{{(.exe)?}}"
-// CHECK-UBSAN-LINUX-SHARED-NOT: libclang_rt.ubsan-i386.a"
+// CHECK-UBSAN-LINUX-SHARED: libclang_rt.ubsan-i386.a"
+
+// RUN: %clang -no-canonical-prefixes %s -### -o %t.o 2>&1 \
+// RUN:     -target x86_64-unknown-linux -fsanitize=leak \
+// RUN:     --sysroot=%S/Inputs/basic_linux_tree \
+// RUN:   | FileCheck --check-prefix=CHECK-LSAN-LINUX %s
+//
+// CHECK-LSAN-LINUX: "{{(.*[^-.0-9A-Z_a-z])?}}ld{{(.exe)?}}"
+// CHECK-LSAN-LINUX-NOT: "-lc"
+// CHECK-LSAN-LINUX: libclang_rt.lsan-x86_64.a"
+// CHECK-LSAN-LINUX: "-lpthread"
+// CHECK-LSAN-LINUX: "-ldl"
+
+// RUN: %clang -fsanitize=leak,undefined %s -### -o %t.o 2>&1 \
+// RUN:     -target x86_64-unknown-linux \
+// RUN:     --sysroot=%S/Inputs/basic_linux_tree \
+// RUN:   | FileCheck --check-prefix=CHECK-LSAN-UBSAN-LINUX %s
+// CHECK-LSAN-UBSAN-LINUX: "{{.*}}ld{{(.exe)?}}"
+// CHECK-LSAN-UBSAN-LINUX-NOT: libclang_rt.san
+// CHECK-LSAN-UBSAN-LINUX: "-whole-archive" "{{.*}}libclang_rt.lsan-x86_64.a" "-no-whole-archive"
+// CHECK-LSAN-UBSAN-LINUX-NOT: libclang_rt.san
+// CHECK-LSAN-UBSAN-LINUX: "-whole-archive" "{{.*}}libclang_rt.ubsan-x86_64.a" "-no-whole-archive"
+// CHECK-LSAN-UBSAN-LINUX-NOT: libclang_rt.ubsan_cxx
+// CHECK-LSAN-UBSAN-LINUX: "-lpthread"
+// CHECK-LSAN-UBSAN-LINUX-NOT: "-lstdc++"
+
+// RUN: %clang -fsanitize=leak,address %s -### -o %t.o 2>&1 \
+// RUN:     -target x86_64-unknown-linux \
+// RUN:     --sysroot=%S/Inputs/basic_linux_tree \
+// RUN:   | FileCheck --check-prefix=CHECK-LSAN-ASAN-LINUX %s
+// CHECK-LSAN-ASAN-LINUX: "{{.*}}ld{{(.exe)?}}"
+// CHECK-LSAN-ASAN-LINUX-NOT: libclang_rt.lsan
+// CHECK-LSAN-ASAN-LINUX: libclang_rt.asan-x86_64
+// CHECK-LSAN-ASAN-LINUX-NOT: libclang_rt.lsan

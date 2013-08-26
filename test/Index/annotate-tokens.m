@@ -142,6 +142,17 @@ static Rdar8595462_A * Rdar8595462_staticVar;
 }
 @end
 
+@interface MyClass
+  @property int classProperty;
+@end
+@interface MyClass (abc)
+  @property int categoryProperty;
+@end
+@interface MyClass ()
+  @property int extensionProperty;
+@end
+
+
 // RUN: c-index-test -test-annotate-tokens=%s:1:1:118:1 %s -DIBOutlet='__attribute__((iboutlet))' -DIBAction='void)__attribute__((ibaction)' | FileCheck %s
 // CHECK: Punctuation: "@" [1:1 - 1:2] ObjCInterfaceDecl=Foo:1:12
 // CHECK: Keyword: "interface" [1:2 - 1:11] ObjCInterfaceDecl=Foo:1:12
@@ -281,7 +292,7 @@ static Rdar8595462_A * Rdar8595462_staticVar;
 // CHECK: Punctuation: ")" [40:19 - 40:20] CallExpr=ibaction_test:36:12
 // CHECK: Punctuation: ";" [40:20 - 40:21] CompoundStmt=
 // CHECK: Punctuation: "[" [41:5 - 41:6] ObjCMessageExpr=foo::34:9
-// CHECK: Identifier: "self" [41:6 - 41:10] DeclRefExpr=self:0:0
+// CHECK: Identifier: "self" [41:6 - 41:10] ObjCSelfExpr=self:0:0
 // CHECK: Identifier: "foo" [41:11 - 41:14] ObjCMessageExpr=foo::34:9
 // CHECK: Punctuation: ":" [41:14 - 41:15] ObjCMessageExpr=foo::34:9
 // CHECK: Literal: "0" [41:15 - 41:16] IntegerLiteral=
@@ -391,7 +402,7 @@ static Rdar8595462_A * Rdar8595462_staticVar;
 // CHECK: Identifier: "local" [76:9 - 76:14] VarDecl=local:76:9 (Definition)
 // CHECK: Punctuation: "=" [76:15 - 76:16] VarDecl=local:76:9 (Definition)
 // CHECK: Punctuation: "[" [76:17 - 76:18] ObjCMessageExpr=foo::66:9
-// CHECK: Identifier: "self" [76:18 - 76:22] DeclRefExpr=self:0:0
+// CHECK: Identifier: "self" [76:18 - 76:22] ObjCSelfExpr=self:0:0
 // CHECK: Identifier: "foo" [76:23 - 76:26] ObjCMessageExpr=foo::66:9
 // CHECK: Punctuation: ":" [76:26 - 76:27] ObjCMessageExpr=foo::66:9
 // CHECK: Identifier: "VAL" [76:27 - 76:30] macro expansion=VAL:63:9
@@ -401,7 +412,7 @@ static Rdar8595462_A * Rdar8595462_staticVar;
 // CHECK: Identifier: "second" [77:9 - 77:15] VarDecl=second:77:9 (Definition)
 // CHECK: Punctuation: "=" [77:16 - 77:17] VarDecl=second:77:9 (Definition)
 // CHECK: Punctuation: "[" [77:18 - 77:19] ObjCMessageExpr=foo::66:9
-// CHECK: Identifier: "self" [77:19 - 77:23] DeclRefExpr=self:0:0
+// CHECK: Identifier: "self" [77:19 - 77:23] ObjCSelfExpr=self:0:0
 // CHECK: Identifier: "foo" [77:24 - 77:27] ObjCMessageExpr=foo::66:9
 // CHECK: Punctuation: ":" [77:27 - 77:28] ObjCMessageExpr=foo::66:9
 // CHECK: Literal: "0" [77:28 - 77:29] IntegerLiteral=
@@ -518,7 +529,7 @@ static Rdar8595462_A * Rdar8595462_staticVar;
 // CHECK-INSIDE_BLOCK: Identifier: "result" [127:9 - 127:15] VarDecl=result:127:9 (Definition)
 // CHECK-INSIDE_BLOCK: Punctuation: "=" [127:16 - 127:17] VarDecl=result:127:9 (Definition)
 // CHECK-INSIDE_BLOCK: Punctuation: "[" [127:18 - 127:19] ObjCMessageExpr=blah::124:8
-// CHECK-INSIDE_BLOCK: Identifier: "self" [127:19 - 127:23] DeclRefExpr=self:0:0
+// CHECK-INSIDE_BLOCK: Identifier: "self" [127:19 - 127:23] ObjCSelfExpr=self:0:0
 // CHECK-INSIDE_BLOCK: Identifier: "blah" [127:24 - 127:28] ObjCMessageExpr=blah::124:8
 // CHECK-INSIDE_BLOCK: Punctuation: ":" [127:28 - 127:29] ObjCMessageExpr=blah::124:8
 // CHECK-INSIDE_BLOCK: Literal: "5" [127:29 - 127:30] IntegerLiteral=
@@ -530,7 +541,7 @@ static Rdar8595462_A * Rdar8595462_staticVar;
 // CHECK-INSIDE_BLOCK: Punctuation: "*" [128:17 - 128:18] VarDecl=a:128:18 (Definition)
 // CHECK-INSIDE_BLOCK: Identifier: "a" [128:18 - 128:19] VarDecl=a:128:18 (Definition)
 // CHECK-INSIDE_BLOCK: Punctuation: "=" [128:20 - 128:21] VarDecl=a:128:18 (Definition)
-// CHECK-INSIDE_BLOCK: Identifier: "self" [128:22 - 128:26] DeclRefExpr=self:0:0
+// CHECK-INSIDE_BLOCK: Identifier: "self" [128:22 - 128:26] ObjCSelfExpr=self:0:0
 
 // RUN: c-index-test -test-annotate-tokens=%s:134:1:138:1 %s -DIBOutlet='__attribute__((iboutlet))' -DIBAction='void)__attribute__((ibaction)' | FileCheck -check-prefix=CHECK-PROP-AFTER-METHOD %s
 // CHECK-PROP-AFTER-METHOD: Punctuation: "@" [134:1 - 134:2] ObjCInterfaceDecl=Rdar8062781:134:12
@@ -574,3 +585,14 @@ static Rdar8595462_A * Rdar8595462_staticVar;
 // CHECK-WITH-WEAK: Identifier: "foo" [141:15 - 141:18] ObjCIvarDecl=foo:141:15 (Definition)
 // CHECK-WITH-WEAK: Punctuation: ";" [141:18 - 141:19] ObjCInterfaceDecl=rdar9535717:140:12
 // CHECK-WITH-WEAK: Punctuation: "}" [142:1 - 142:2] ObjCInterfaceDecl=rdar9535717:140:12
+
+// RUN: c-index-test -test-annotate-tokens=%s:145:1:153:1 %s -DIBOutlet='__attribute__((iboutlet))' -DIBAction='void)__attribute__((ibaction)' -target x86_64-apple-macosx10.7.0 | FileCheck -check-prefix=CHECK-PROP %s
+// CHECK-PROP: Keyword: "property" [146:4 - 146:12] ObjCPropertyDecl=classProperty:146:17
+// CHECK-PROP: Keyword: "int" [146:13 - 146:16] ObjCPropertyDecl=classProperty:146:17
+// CHECK-PROP: Identifier: "classProperty" [146:17 - 146:30] ObjCPropertyDecl=classProperty:146:17
+// CHECK-PROP: Keyword: "property" [149:4 - 149:12] ObjCPropertyDecl=categoryProperty:149:17
+// CHECK-PROP: Keyword: "int" [149:13 - 149:16] ObjCPropertyDecl=categoryProperty:149:17
+// CHECK-PROP: Identifier: "categoryProperty" [149:17 - 149:33] ObjCPropertyDecl=categoryProperty:149:17
+// CHECK-PROP: Keyword: "property" [152:4 - 152:12] ObjCPropertyDecl=extensionProperty:152:17
+// CHECK-PROP: Keyword: "int" [152:13 - 152:16] ObjCPropertyDecl=extensionProperty:152:17
+// CHECK-PROP: Identifier: "extensionProperty" [152:17 - 152:34] ObjCPropertyDecl=extensionProperty:152:17

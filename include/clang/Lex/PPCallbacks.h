@@ -19,6 +19,7 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Lex/DirectoryLookup.h"
 #include "clang/Lex/ModuleLoader.h"
+#include "clang/Lex/Pragma.h"
 #include "llvm/ADT/StringRef.h"
 #include <string>
 
@@ -27,6 +28,7 @@ namespace clang {
   class Token;
   class IdentifierInfo;
   class MacroDirective;
+  class MacroArgs;
 
 /// \brief This interface provides a way to observe the actions of the
 /// preprocessor as it does its thing.
@@ -154,15 +156,48 @@ public:
   virtual void Ident(SourceLocation Loc, const std::string &str) {
   }
 
+  /// \brief Callback invoked when start reading any pragma directive.
+  virtual void PragmaDirective(SourceLocation Loc,
+                               PragmaIntroducerKind Introducer) {
+  }
+
   /// \brief Callback invoked when a \#pragma comment directive is read.
   virtual void PragmaComment(SourceLocation Loc, const IdentifierInfo *Kind,
                              const std::string &Str) {
   }
 
+  /// \brief Callback invoked when a \#pragma detect_mismatch directive is
+  /// read.
+  virtual void PragmaDetectMismatch(SourceLocation Loc,
+                                    const std::string &Name,
+                                    const std::string &Value) {
+  }
+
+  /// \brief Callback invoked when a \#pragma clang __debug directive is read.
+  /// \param Loc The location of the debug directive.
+  /// \param DebugType The identifier following __debug.
+  virtual void PragmaDebug(SourceLocation Loc, StringRef DebugType) {
+  }
+
+  /// \brief Determines the kind of \#pragma invoking a call to PragmaMessage.
+  enum PragmaMessageKind {
+    /// \brief \#pragma message has been invoked.
+    PMK_Message,
+
+    /// \brief \#pragma GCC warning has been invoked.
+    PMK_Warning,
+
+    /// \brief \#pragma GCC error has been invoked.
+    PMK_Error
+  };
+
   /// \brief Callback invoked when a \#pragma message directive is read.
   /// \param Loc The location of the message directive.
+  /// \param Namespace The namespace of the message directive.
+  /// \param Kind The type of the message directive.
   /// \param Str The text of the message directive.
-  virtual void PragmaMessage(SourceLocation Loc, StringRef Str) {
+  virtual void PragmaMessage(SourceLocation Loc, StringRef Namespace,
+                             PragmaMessageKind Kind, StringRef Str) {
   }
 
   /// \brief Callback invoked when a \#pragma gcc dianostic push directive
@@ -185,7 +220,7 @@ public:
   /// \brief Called by Preprocessor::HandleMacroExpandedIdentifier when a
   /// macro invocation is found.
   virtual void MacroExpands(const Token &MacroNameTok, const MacroDirective *MD,
-                            SourceRange Range) {
+                            SourceRange Range, const MacroArgs *Args) {
   }
 
   /// \brief Hook called whenever a macro definition is seen.
@@ -202,7 +237,8 @@ public:
   
   /// \brief Hook called whenever the 'defined' operator is seen.
   /// \param MD The MacroDirective if the name was a macro, null otherwise.
-  virtual void Defined(const Token &MacroNameTok, const MacroDirective *MD) {
+  virtual void Defined(const Token &MacroNameTok, const MacroDirective *MD,
+                       SourceRange Range) {
   }
   
   /// \brief Hook called when a source range is skipped.
@@ -214,18 +250,21 @@ public:
   /// \brief Hook called whenever an \#if is seen.
   /// \param Loc the source location of the directive.
   /// \param ConditionRange The SourceRange of the expression being tested.
+  /// \param ConditionValue The evaluated value of the condition.
   ///
   // FIXME: better to pass in a list (or tree!) of Tokens.
-  virtual void If(SourceLocation Loc, SourceRange ConditionRange) {
+  virtual void If(SourceLocation Loc, SourceRange ConditionRange,
+                  bool ConditionValue) {
   }
 
   /// \brief Hook called whenever an \#elif is seen.
   /// \param Loc the source location of the directive.
   /// \param ConditionRange The SourceRange of the expression being tested.
+  /// \param ConditionValue The evaluated value of the condition.
   /// \param IfLoc the source location of the \#if/\#ifdef/\#ifndef directive.
   // FIXME: better to pass in a list (or tree!) of Tokens.
   virtual void Elif(SourceLocation Loc, SourceRange ConditionRange,
-                    SourceLocation IfLoc) {
+                    bool ConditionValue, SourceLocation IfLoc) {
   }
 
   /// \brief Hook called whenever an \#ifdef is seen.
@@ -330,9 +369,17 @@ public:
     Second->PragmaComment(Loc, Kind, Str);
   }
 
-  virtual void PragmaMessage(SourceLocation Loc, StringRef Str) {
-    First->PragmaMessage(Loc, Str);
-    Second->PragmaMessage(Loc, Str);
+  virtual void PragmaDetectMismatch(SourceLocation Loc,
+                                    const std::string &Name,
+                                    const std::string &Value) {
+    First->PragmaDetectMismatch(Loc, Name, Value);
+    Second->PragmaDetectMismatch(Loc, Name, Value);
+  }
+
+  virtual void PragmaMessage(SourceLocation Loc, StringRef Namespace,
+                             PragmaMessageKind Kind, StringRef Str) {
+    First->PragmaMessage(Loc, Namespace, Kind, Str);
+    Second->PragmaMessage(Loc, Namespace, Kind, Str);
   }
 
   virtual void PragmaDiagnosticPush(SourceLocation Loc,
@@ -354,9 +401,9 @@ public:
   }
 
   virtual void MacroExpands(const Token &MacroNameTok, const MacroDirective *MD,
-                            SourceRange Range) {
-    First->MacroExpands(MacroNameTok, MD, Range);
-    Second->MacroExpands(MacroNameTok, MD, Range);
+                            SourceRange Range, const MacroArgs *Args) {
+    First->MacroExpands(MacroNameTok, MD, Range, Args);
+    Second->MacroExpands(MacroNameTok, MD, Range, Args);
   }
 
   virtual void MacroDefined(const Token &MacroNameTok, const MacroDirective *MD) {
@@ -370,9 +417,10 @@ public:
     Second->MacroUndefined(MacroNameTok, MD);
   }
 
-  virtual void Defined(const Token &MacroNameTok, const MacroDirective *MD) {
-    First->Defined(MacroNameTok, MD);
-    Second->Defined(MacroNameTok, MD);
+  virtual void Defined(const Token &MacroNameTok, const MacroDirective *MD,
+                       SourceRange Range) {
+    First->Defined(MacroNameTok, MD, Range);
+    Second->Defined(MacroNameTok, MD, Range);
   }
 
   virtual void SourceRangeSkipped(SourceRange Range) {
@@ -381,16 +429,17 @@ public:
   }
 
   /// \brief Hook called whenever an \#if is seen.
-  virtual void If(SourceLocation Loc, SourceRange ConditionRange) {
-    First->If(Loc, ConditionRange);
-    Second->If(Loc, ConditionRange);
+  virtual void If(SourceLocation Loc, SourceRange ConditionRange,
+                  bool ConditionValue) {
+    First->If(Loc, ConditionRange, ConditionValue);
+    Second->If(Loc, ConditionRange, ConditionValue);
   }
 
-  /// \brief Hook called whenever an \#if is seen.
+  /// \brief Hook called whenever an \#elif is seen.
   virtual void Elif(SourceLocation Loc, SourceRange ConditionRange,
-                    SourceLocation IfLoc) {
-    First->Elif(Loc, ConditionRange, IfLoc);
-    Second->Elif(Loc, ConditionRange, IfLoc);
+                    bool ConditionValue, SourceLocation IfLoc) {
+    First->Elif(Loc, ConditionRange, ConditionValue, IfLoc);
+    Second->Elif(Loc, ConditionRange, ConditionValue, IfLoc);
   }
 
   /// \brief Hook called whenever an \#ifdef is seen.

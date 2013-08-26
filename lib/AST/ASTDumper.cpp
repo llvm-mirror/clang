@@ -16,6 +16,7 @@
 #include "clang/AST/Attr.h"
 #include "clang/AST/CommentVisitor.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/DeclLookups.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclVisitor.h"
 #include "clang/AST/StmtVisitor.h"
@@ -61,6 +62,9 @@ namespace  {
 
   // Null statements
   static const TerminalColor NullColor = { raw_ostream::BLUE, false };
+
+  // Undeserialized entities
+  static const TerminalColor UndeserializedColor = { raw_ostream::GREEN, true };
 
   // CastKind from CastExpr's
   static const TerminalColor CastColor = { raw_ostream::RED, false };
@@ -173,6 +177,7 @@ namespace  {
     void dumpName(const NamedDecl *D);
     bool hasNodes(const DeclContext *DC);
     void dumpDeclContext(const DeclContext *DC);
+    void dumpLookups(const DeclContext *DC);
     void dumpAttr(const Attr *A);
 
     // C++ Utilities
@@ -271,6 +276,7 @@ namespace  {
     void VisitCXXFunctionalCastExpr(const CXXFunctionalCastExpr *Node);
     void VisitCXXConstructExpr(const CXXConstructExpr *Node);
     void VisitCXXBindTemporaryExpr(const CXXBindTemporaryExpr *Node);
+    void VisitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *Node);
     void VisitExprWithCleanups(const ExprWithCleanups *Node);
     void VisitUnresolvedLookupExpr(const UnresolvedLookupExpr *Node);
     void dumpCXXTemporary(const CXXTemporary *Temporary);
@@ -329,8 +335,8 @@ void ASTDumper::indent() {
     OS << "\n";
 
   ColorScope Color(*this, IndentColor);
-  for (llvm::SmallVector<IndentType, 32>::const_iterator I = Indents.begin(),
-                                                         E = Indents.end();
+  for (SmallVectorImpl<IndentType>::const_iterator I = Indents.begin(),
+                                                   E = Indents.end();
        I != E; ++I) {
     switch (*I) {
     case IT_Child:
@@ -449,9 +455,7 @@ void ASTDumper::dumpBareDeclRef(const Decl *D) {
 
   if (const NamedDecl *ND = dyn_cast<NamedDecl>(D)) {
     ColorScope Color(*this, DeclNameColor);
-    OS << " '";
-    ND->getDeclName().printName(OS);
-    OS << "'";
+    OS << " '" << ND->getDeclName() << '\'';
   }
 
   if (const ValueDecl *VD = dyn_cast<ValueDecl>(D))
@@ -479,19 +483,72 @@ bool ASTDumper::hasNodes(const DeclContext *DC) {
   if (!DC)
     return false;
 
-  return DC->decls_begin() != DC->decls_end();
+  return DC->hasExternalLexicalStorage() ||
+         DC->noload_decls_begin() != DC->noload_decls_end();
 }
 
 void ASTDumper::dumpDeclContext(const DeclContext *DC) {
   if (!DC)
     return;
-  for (DeclContext::decl_iterator I = DC->decls_begin(), E = DC->decls_end();
+  bool HasUndeserializedDecls = DC->hasExternalLexicalStorage();
+  for (DeclContext::decl_iterator I = DC->noload_decls_begin(), E = DC->noload_decls_end();
        I != E; ++I) {
     DeclContext::decl_iterator Next = I;
     ++Next;
-    if (Next == E)
+    if (Next == E && !HasUndeserializedDecls)
       lastChild();
     dumpDecl(*I);
+  }
+  if (HasUndeserializedDecls) {
+    lastChild();
+    IndentScope Indent(*this);
+    ColorScope Color(*this, UndeserializedColor);
+    OS << "<undeserialized declarations>";
+  }
+}
+
+void ASTDumper::dumpLookups(const DeclContext *DC) {
+  IndentScope Indent(*this);
+
+  OS << "StoredDeclsMap ";
+  dumpBareDeclRef(cast<Decl>(DC));
+
+  const DeclContext *Primary = DC->getPrimaryContext();
+  if (Primary != DC) {
+    OS << " primary";
+    dumpPointer(cast<Decl>(Primary));
+  }
+
+  bool HasUndeserializedLookups = Primary->hasExternalVisibleStorage();
+
+  DeclContext::all_lookups_iterator I = Primary->noload_lookups_begin(),
+                                    E = Primary->noload_lookups_end();
+  while (I != E) {
+    DeclarationName Name = I.getLookupName();
+    DeclContextLookupResult R = *I++;
+    if (I == E && !HasUndeserializedLookups)
+      lastChild();
+
+    IndentScope Indent(*this);
+    OS << "DeclarationName ";
+    {
+      ColorScope Color(*this, DeclNameColor);
+      OS << '\'' << Name << '\'';
+    }
+
+    for (DeclContextLookupResult::iterator RI = R.begin(), RE = R.end();
+         RI != RE; ++RI) {
+      if (RI + 1 == RE)
+        lastChild();
+      dumpDeclRef(*RI);
+    }
+  }
+
+  if (HasUndeserializedLookups) {
+    lastChild();
+    IndentScope Indent(*this);
+    ColorScope Color(*this, UndeserializedColor);
+    OS << "<undeserialized lookups>";
   }
 }
 
@@ -667,15 +724,16 @@ void ASTDumper::dumpDecl(const Decl *D) {
   dumpSourceRange(D->getSourceRange());
 
   bool HasAttrs = D->attr_begin() != D->attr_end();
-  bool HasComment = D->getASTContext().getCommentForDecl(D, 0);
+  const FullComment *Comment =
+      D->getASTContext().getLocalCommentForDeclUncached(D);
   // Decls within functions are visited by the body
   bool HasDeclContext = !isa<FunctionDecl>(*D) && !isa<ObjCMethodDecl>(*D) &&
                          hasNodes(dyn_cast<DeclContext>(D));
 
-  setMoreChildren(HasAttrs || HasComment || HasDeclContext);
+  setMoreChildren(HasAttrs || Comment || HasDeclContext);
   ConstDeclVisitor<ASTDumper>::Visit(D);
 
-  setMoreChildren(HasComment || HasDeclContext);
+  setMoreChildren(Comment || HasDeclContext);
   for (Decl::attr_iterator I = D->attr_begin(), E = D->attr_end();
        I != E; ++I) {
     if (I + 1 == E)
@@ -685,7 +743,7 @@ void ASTDumper::dumpDecl(const Decl *D) {
 
   setMoreChildren(HasDeclContext);
   lastChild();
-  dumpFullComment(D->getASTContext().getCommentForDecl(D, 0));
+  dumpFullComment(Comment);
 
   setMoreChildren(false);
   if (HasDeclContext)
@@ -749,7 +807,7 @@ void ASTDumper::VisitFunctionDecl(const FunctionDecl *D) {
   dumpName(D);
   dumpType(D->getType());
 
-  StorageClass SC = D->getStorageClassAsWritten();
+  StorageClass SC = D->getStorageClass();
   if (SC != SC_None)
     OS << ' ' << VarDecl::getStorageClassSpecifierString(SC);
   if (D->isInlineSpecified())
@@ -763,6 +821,19 @@ void ASTDumper::VisitFunctionDecl(const FunctionDecl *D) {
     OS << " pure";
   else if (D->isDeletedAsWritten())
     OS << " delete";
+
+  if (const FunctionProtoType *FPT = D->getType()->getAs<FunctionProtoType>()) {
+    FunctionProtoType::ExtProtoInfo EPI = FPT->getExtProtoInfo();
+    switch (EPI.ExceptionSpecType) {
+    default: break;
+    case EST_Unevaluated:
+      OS << " noexcept-unevaluated " << EPI.ExceptionSpecDecl;
+      break;
+    case EST_Uninstantiated:
+      OS << " noexcept-uninstantiated " << EPI.ExceptionSpecTemplate;
+      break;
+    }
+  }
 
   bool OldMoreChildren = hasMoreChildren();
   const FunctionTemplateSpecializationInfo *FTSI =
@@ -850,11 +921,14 @@ void ASTDumper::VisitFieldDecl(const FieldDecl *D) {
 void ASTDumper::VisitVarDecl(const VarDecl *D) {
   dumpName(D);
   dumpType(D->getType());
-  StorageClass SC = D->getStorageClassAsWritten();
+  StorageClass SC = D->getStorageClass();
   if (SC != SC_None)
     OS << ' ' << VarDecl::getStorageClassSpecifierString(SC);
-  if (D->isThreadSpecified())
-    OS << " __thread";
+  switch (D->getTLSKind()) {
+  case VarDecl::TLS_None: break;
+  case VarDecl::TLS_Static: OS << " tls"; break;
+  case VarDecl::TLS_Dynamic: OS << " tls_dynamic"; break;
+  }
   if (D->isModulePrivate())
     OS << " __module_private__";
   if (D->isNRVOVariable())
@@ -1328,7 +1402,7 @@ void ASTDumper::dumpStmt(const Stmt *S) {
     return;
   }
 
-  setMoreChildren(S->children());
+  setMoreChildren(!S->children().empty());
   ConstStmtVisitor<ASTDumper>::Visit(S);
   setMoreChildren(false);
   for (Stmt::const_child_range CI = S->children(); CI; ++CI) {
@@ -1656,6 +1730,15 @@ void ASTDumper::VisitCXXBindTemporaryExpr(const CXXBindTemporaryExpr *Node) {
   dumpCXXTemporary(Node->getTemporary());
 }
 
+void
+ASTDumper::VisitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *Node) {
+  VisitExpr(Node);
+  if (const ValueDecl *VD = Node->getExtendingDecl()) {
+    OS << " extended by ";
+    dumpBareDeclRef(VD);
+  }
+}
+
 void ASTDumper::VisitExprWithCleanups(const ExprWithCleanups *Node) {
   VisitExpr(Node);
   for (unsigned i = 0, e = Node->getNumObjects(); i != e; ++i)
@@ -1946,6 +2029,20 @@ void Decl::dumpColor() const {
               &getASTContext().getSourceManager(), /*ShowColors*/true);
   P.dumpDecl(this);
 }
+
+void DeclContext::dumpLookups() const {
+  dumpLookups(llvm::errs());
+}
+
+void DeclContext::dumpLookups(raw_ostream &OS) const {
+  const DeclContext *DC = this;
+  while (!DC->isTranslationUnit())
+    DC = DC->getParent();
+  ASTContext &Ctx = cast<TranslationUnitDecl>(DC)->getASTContext();
+  ASTDumper P(OS, &Ctx.getCommentCommandTraits(), &Ctx.getSourceManager());
+  P.dumpLookups(this);
+}
+
 //===----------------------------------------------------------------------===//
 // Stmt method implementations
 //===----------------------------------------------------------------------===//

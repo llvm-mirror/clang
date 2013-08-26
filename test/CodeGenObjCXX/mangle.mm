@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 %s -triple=x86_64-apple-darwin10 -emit-llvm -o - | FileCheck %s
+// RUN: %clang_cc1 %s -triple=x86_64-apple-darwin10 -std=c++11 -emit-llvm -o - | FileCheck %s
 
 // CHECK: @"_ZZ11+[A shared]E1a" = internal global
 // CHECK: @"_ZZ11-[A(Foo) f]E1a" = internal global
@@ -54,3 +54,47 @@
   uiIsVisible();
 }
 @end
+
+// rdar://13434937
+//
+// Don't crash when mangling an enum whose semantic context
+// is a class extension (which looks anonymous in the AST).
+// The other tests here are just for coverage.
+@interface Test2 @end
+@interface Test2 ()
+@property (assign) enum { T2x, T2y, T2z } axis;
+@end
+@interface Test2 (a)
+@property (assign) enum { T2i, T2j, T2k } dimension;
+@end
+@implementation Test2 {
+@public
+  enum { T2a, T2b, T2c } alt_axis;
+}
+@end
+template <class T> struct Test2Template { Test2Template() {} }; // must have a member that we'll instantiate and mangle
+void test2(Test2 *t) {
+  Test2Template<decltype(t.axis)> t0;
+  Test2Template<decltype(t.dimension)> t1;
+  Test2Template<decltype(t->alt_axis)> t2;
+}
+
+@protocol P;
+void overload1(A<P>*) {}
+// CHECK: define void @_Z9overload1PU11objcproto1P1A
+void overload1(const A<P>*) {}
+// CHECK: define void @_Z9overload1PKU11objcproto1P1A
+void overload1(A<P>**) {}
+// CHECK: define void @_Z9overload1PPU11objcproto1P1A
+void overload1(A<P>*const*) {}
+// CHECK: define void @_Z9overload1PKPU11objcproto1P1A
+void overload1(A<P>***) {}
+// CHECK: define void @_Z9overload1PPPU11objcproto1P1A
+void overload1(void (f)(A<P>*)) {}
+// CHECK: define void @_Z9overload1PFvPU11objcproto1P1AE
+
+template<typename T> struct X { void f(); };
+template<> void X<A*>::f() {}
+// CHECK: define void @_ZN1XIP1AE1fEv
+template<> void X<A<P>*>::f() {}
+// CHECK: define void @_ZN1XIPU11objcproto1P1AE1fEv

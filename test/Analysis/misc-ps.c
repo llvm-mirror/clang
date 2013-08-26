@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -analyze -disable-free -analyzer-eagerly-assume -analyzer-checker=core -analyzer-checker=deadcode -verify %s
+// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -analyze -disable-free -analyzer-eagerly-assume -analyzer-checker=core,deadcode,debug.ExprInspection -verify %s
+
+void clang_analyzer_eval(int);
 
 int size_rdar9373039 = 1;
 int foo_rdar9373039(const char *);
@@ -163,3 +165,29 @@ int PR14634(int x) {
   return !y;
 }
 
+
+// PR15684: If a checker generates a sink node after generating a regular node
+// and no state changes between the two, graph trimming would consider the two
+// the same node, forming a loop.
+struct PR15684 {
+  void (*callback)(int);
+};
+void sinkAfterRegularNode(struct PR15684 *context) {
+  int uninitialized;
+  context->callback(uninitialized); // expected-warning {{uninitialized}}
+}
+
+
+// PR16131: C permits variables to be declared extern void.
+static void PR16131(int x) {
+  extern void v;
+
+  int *ip = (int *)&v;
+  char *cp = (char *)&v;
+  clang_analyzer_eval(ip == cp); // expected-warning{{TRUE}}
+  // expected-warning@-1 {{comparison of distinct pointer types}}
+
+  *ip = 42;
+  clang_analyzer_eval(*ip == 42); // expected-warning{{TRUE}}
+  clang_analyzer_eval(*(int *)&v == 42); // expected-warning{{TRUE}}
+}

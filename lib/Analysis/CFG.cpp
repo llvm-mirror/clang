@@ -155,7 +155,7 @@ public:
       return !(*this == rhs);
     }
 
-    operator bool() const {
+    LLVM_EXPLICIT operator bool() const {
       return *this != const_iterator();
     }
 
@@ -974,10 +974,23 @@ LocalScope* CFGBuilder::addLocalScopeForVarDecl(VarDecl *VD,
   // Check for const references bound to temporary. Set type to pointee.
   QualType QT = VD->getType();
   if (QT.getTypePtr()->isReferenceType()) {
-    if (!VD->extendsLifetimeOfTemporary())
+    // Attempt to determine whether this declaration lifetime-extends a
+    // temporary.
+    //
+    // FIXME: This is incorrect. Non-reference declarations can lifetime-extend
+    // temporaries, and a single declaration can extend multiple temporaries.
+    // We should look at the storage duration on each nested
+    // MaterializeTemporaryExpr instead.
+    const Expr *Init = VD->getInit();
+    if (!Init)
+      return Scope;
+    if (const ExprWithCleanups *EWC = dyn_cast<ExprWithCleanups>(Init))
+      Init = EWC->getSubExpr();
+    if (!isa<MaterializeTemporaryExpr>(Init))
       return Scope;
 
-    QT = getReferenceInitTemporaryType(*Context, VD->getInit());
+    // Lifetime-extending a temporary.
+    QT = getReferenceInitTemporaryType(*Context, Init);
   }
 
   // Check for constant size array. Set type to array element type.
@@ -1085,11 +1098,16 @@ CFGBlock *CFGBuilder::Visit(Stmt * S, AddStmtChoice asc) {
       return VisitExprWithCleanups(cast<ExprWithCleanups>(S), asc);
 
     case Stmt::CXXDefaultArgExprClass:
+    case Stmt::CXXDefaultInitExprClass:
       // FIXME: The expression inside a CXXDefaultArgExpr is owned by the
       // called function's declaration, not by the caller. If we simply add
       // this expression to the CFG, we could end up with the same Expr
       // appearing multiple times.
       // PR13385 / <rdar://problem/12156507>
+      //
+      // It's likewise possible for multiple CXXDefaultInitExprs for the same
+      // expression to be used in the same function (through aggregate
+      // initialization).
       return VisitStmt(S, asc);
 
     case Stmt::CXXBindTemporaryExprClass:
@@ -1622,6 +1640,7 @@ CFGBlock *CFGBuilder::VisitDeclStmt(DeclStmt *DS) {
     Decl *D = *I;
     void *Mem = cfg->getAllocator().Allocate(sizeof(DeclStmt), A);
     DeclStmt *DSNew = new (Mem) DeclStmt(DG, D->getLocation(), GetEndLoc(D));
+    cfg->addSyntheticDeclStmt(DSNew, DS);
 
     // Append the fake DeclStmt to block.
     B = VisitDeclSubExpr(DSNew);
@@ -1634,19 +1653,11 @@ CFGBlock *CFGBuilder::VisitDeclStmt(DeclStmt *DS) {
 /// DeclStmts and initializers in them.
 CFGBlock *CFGBuilder::VisitDeclSubExpr(DeclStmt *DS) {
   assert(DS->isSingleDecl() && "Can handle single declarations only.");
-  Decl *D = DS->getSingleDecl();
- 
-  if (isa<StaticAssertDecl>(D)) {
-    // static_asserts aren't added to the CFG because they do not impact
-    // runtime semantics.
-    return Block;
-  }
-  
   VarDecl *VD = dyn_cast<VarDecl>(DS->getSingleDecl());
 
   if (!VD) {
-    autoCreateBlock();
-    appendStmt(Block, DS);
+    // Of everything that can be declared in a DeclStmt, only VarDecls impact
+    // runtime semantics.
     return Block;
   }
 
@@ -2185,17 +2196,24 @@ CFGBlock *CFGBuilder::VisitObjCForCollectionStmt(ObjCForCollectionStmt *S) {
   // Now create the true branch.
   {
     // Save the current values for Succ, continue and break targets.
-    SaveAndRestore<CFGBlock*> save_Succ(Succ);
+    SaveAndRestore<CFGBlock*> save_Block(Block), save_Succ(Succ);
     SaveAndRestore<JumpTarget> save_continue(ContinueJumpTarget),
-        save_break(BreakJumpTarget);
+                               save_break(BreakJumpTarget);
 
+    // Add an intermediate block between the BodyBlock and the
+    // EntryConditionBlock to represent the "loop back" transition, for looping
+    // back to the head of the loop.
+    CFGBlock *LoopBackBlock = 0;
+    Succ = LoopBackBlock = createBlock();
+    LoopBackBlock->setLoopTarget(S);
+    
     BreakJumpTarget = JumpTarget(LoopSuccessor, ScopePos);
-    ContinueJumpTarget = JumpTarget(EntryConditionBlock, ScopePos);
+    ContinueJumpTarget = JumpTarget(Succ, ScopePos);
 
     CFGBlock *BodyBlock = addStmt(S->getBody());
 
     if (!BodyBlock)
-      BodyBlock = EntryConditionBlock; // can happen for "for (X in Y) ;"
+      BodyBlock = ContinueJumpTarget.block; // can happen for "for (X in Y) ;"
     else if (Block) {
       if (badCFG)
         return 0;
@@ -2674,9 +2692,15 @@ CFGBlock *CFGBuilder::VisitSwitchStmt(SwitchStmt *Terminator) {
   // If we have no "default:" case, the default transition is to the code
   // following the switch body.  Moreover, take into account if all the
   // cases of a switch are covered (e.g., switching on an enum value).
+  //
+  // Note: We add a successor to a switch that is considered covered yet has no
+  //       case statements if the enumeration has no enumerators.
+  bool SwitchAlwaysHasSuccessor = false;
+  SwitchAlwaysHasSuccessor |= switchExclusivelyCovered;
+  SwitchAlwaysHasSuccessor |= Terminator->isAllEnumCasesCovered() &&
+                              Terminator->getSwitchCaseList();
   addSuccessor(SwitchTerminatedBlock,
-               switchExclusivelyCovered || Terminator->isAllEnumCasesCovered()
-               ? 0 : DefaultCaseBlock);
+               SwitchAlwaysHasSuccessor ? 0 : DefaultCaseBlock);
 
   // Add the terminator and condition in the switch block.
   SwitchTerminatedBlock->setTerminator(Terminator);
@@ -3395,113 +3419,6 @@ bool CFGImplicitDtor::isNoReturn(ASTContext &astContext) const {
 }
 
 //===----------------------------------------------------------------------===//
-// CFG: Queries for BlkExprs.
-//===----------------------------------------------------------------------===//
-
-namespace {
-  typedef llvm::DenseMap<const Stmt*,unsigned> BlkExprMapTy;
-}
-
-static void FindSubExprAssignments(const Stmt *S,
-                                   llvm::SmallPtrSet<const Expr*,50>& Set) {
-  if (!S)
-    return;
-
-  for (Stmt::const_child_range I = S->children(); I; ++I) {
-    const Stmt *child = *I;
-    if (!child)
-      continue;
-
-    if (const BinaryOperator* B = dyn_cast<BinaryOperator>(child))
-      if (B->isAssignmentOp()) Set.insert(B);
-
-    FindSubExprAssignments(child, Set);
-  }
-}
-
-static BlkExprMapTy* PopulateBlkExprMap(CFG& cfg) {
-  BlkExprMapTy* M = new BlkExprMapTy();
-
-  // Look for assignments that are used as subexpressions.  These are the only
-  // assignments that we want to *possibly* register as a block-level
-  // expression.  Basically, if an assignment occurs both in a subexpression and
-  // at the block-level, it is a block-level expression.
-  llvm::SmallPtrSet<const Expr*,50> SubExprAssignments;
-
-  for (CFG::iterator I=cfg.begin(), E=cfg.end(); I != E; ++I)
-    for (CFGBlock::iterator BI=(*I)->begin(), EI=(*I)->end(); BI != EI; ++BI)
-      if (Optional<CFGStmt> S = BI->getAs<CFGStmt>())
-        FindSubExprAssignments(S->getStmt(), SubExprAssignments);
-
-  for (CFG::iterator I=cfg.begin(), E=cfg.end(); I != E; ++I) {
-
-    // Iterate over the statements again on identify the Expr* and Stmt* at the
-    // block-level that are block-level expressions.
-
-    for (CFGBlock::iterator BI=(*I)->begin(), EI=(*I)->end(); BI != EI; ++BI) {
-      Optional<CFGStmt> CS = BI->getAs<CFGStmt>();
-      if (!CS)
-        continue;
-      if (const Expr *Exp = dyn_cast<Expr>(CS->getStmt())) {
-        assert((Exp->IgnoreParens() == Exp) && "No parens on block-level exps");
-
-        if (const BinaryOperator* B = dyn_cast<BinaryOperator>(Exp)) {
-          // Assignment expressions that are not nested within another
-          // expression are really "statements" whose value is never used by
-          // another expression.
-          if (B->isAssignmentOp() && !SubExprAssignments.count(Exp))
-            continue;
-        } else if (const StmtExpr *SE = dyn_cast<StmtExpr>(Exp)) {
-          // Special handling for statement expressions.  The last statement in
-          // the statement expression is also a block-level expr.
-          const CompoundStmt *C = SE->getSubStmt();
-          if (!C->body_empty()) {
-            const Stmt *Last = C->body_back();
-            if (const Expr *LastEx = dyn_cast<Expr>(Last))
-              Last = LastEx->IgnoreParens();
-            unsigned x = M->size();
-            (*M)[Last] = x;
-          }
-        }
-
-        unsigned x = M->size();
-        (*M)[Exp] = x;
-      }
-    }
-
-    // Look at terminators.  The condition is a block-level expression.
-
-    Stmt *S = (*I)->getTerminatorCondition();
-
-    if (S && M->find(S) == M->end()) {
-      unsigned x = M->size();
-      (*M)[S] = x;
-    }
-  }
-
-  return M;
-}
-
-CFG::BlkExprNumTy CFG::getBlkExprNum(const Stmt *S) {
-  assert(S != NULL);
-  if (!BlkExprMap) { BlkExprMap = (void*) PopulateBlkExprMap(*this); }
-
-  BlkExprMapTy* M = reinterpret_cast<BlkExprMapTy*>(BlkExprMap);
-  BlkExprMapTy::iterator I = M->find(S);
-  return (I == M->end()) ? CFG::BlkExprNumTy() : CFG::BlkExprNumTy(I->second);
-}
-
-unsigned CFG::getNumBlkExprs() {
-  if (const BlkExprMapTy* M = reinterpret_cast<const BlkExprMapTy*>(BlkExprMap))
-    return M->size();
-
-  // We assume callers interested in the number of BlkExprs will want
-  // the map constructed if it doesn't already exist.
-  BlkExprMap = (void*) PopulateBlkExprMap(*this);
-  return reinterpret_cast<BlkExprMapTy*>(BlkExprMap)->size();
-}
-
-//===----------------------------------------------------------------------===//
 // Filtered walking of the CFG.
 //===----------------------------------------------------------------------===//
 
@@ -3522,14 +3439,6 @@ bool CFGBlock::FilterEdge(const CFGBlock::FilterOptions &F,
   }
 
   return false;
-}
-
-//===----------------------------------------------------------------------===//
-// Cleanup: CFG dstor.
-//===----------------------------------------------------------------------===//
-
-CFG::~CFG() {
-  delete reinterpret_cast<const BlkExprMapTy*>(BlkExprMap);
 }
 
 //===----------------------------------------------------------------------===//
@@ -4063,6 +3972,10 @@ Stmt *CFGBlock::getTerminatorCondition() {
 
   switch (Terminator->getStmtClass()) {
     default:
+      break;
+
+    case Stmt::CXXForRangeStmtClass:
+      E = cast<CXXForRangeStmt>(Terminator)->getCond();
       break;
 
     case Stmt::ForStmtClass:

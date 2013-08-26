@@ -262,12 +262,42 @@ namespace DefaultArgs {
   }
 
   int defaultReference(const int &input = 42) {
-    return input;
+    return -input;
+  }
+  int defaultReferenceZero(const int &input = 0) {
+    return -input;
   }
 
   void testReference() {
-    clang_analyzer_eval(defaultReference(1) == 1); // expected-warning{{TRUE}}
-    clang_analyzer_eval(defaultReference() == 42); // expected-warning{{TRUE}}
+    clang_analyzer_eval(defaultReference(1) == -1); // expected-warning{{TRUE}}
+    clang_analyzer_eval(defaultReference() == -42); // expected-warning{{TRUE}}
+
+    clang_analyzer_eval(defaultReferenceZero(1) == -1); // expected-warning{{TRUE}}
+    clang_analyzer_eval(defaultReferenceZero() == 0); // expected-warning{{TRUE}}
+}
+
+  double defaultFloatReference(const double &i = 42) {
+    return -i;
+  }
+  double defaultFloatReferenceZero(const double &i = 0) {
+    return -i;
+  }
+
+  void testFloatReference() {
+    clang_analyzer_eval(defaultFloatReference(1) == -1); // expected-warning{{UNKNOWN}}
+    clang_analyzer_eval(defaultFloatReference() == -42); // expected-warning{{UNKNOWN}}
+
+    clang_analyzer_eval(defaultFloatReferenceZero(1) == -1); // expected-warning{{UNKNOWN}}
+    clang_analyzer_eval(defaultFloatReferenceZero() == 0); // expected-warning{{UNKNOWN}}
+  }
+
+  char defaultString(const char *s = "abc") {
+    return s[1];
+  }
+
+  void testString() {
+    clang_analyzer_eval(defaultString("xyz") == 'y'); // expected-warning{{TRUE}}
+    clang_analyzer_eval(defaultString() == 'b'); // expected-warning{{TRUE}}
   }
 }
 
@@ -351,9 +381,7 @@ namespace VirtualWithSisterCasts {
 
   void testCastViaNew(B *b) {
     Grandchild *g = new (b) Grandchild();
-    // FIXME: We actually now have perfect type info because of 'new'.
-    // This should be TRUE.
-    clang_analyzer_eval(g->foo() == 42); // expected-warning{{UNKNOWN}}
+    clang_analyzer_eval(g->foo() == 42); // expected-warning{{TRUE}}
 
     g->x = 42;
     clang_analyzer_eval(g->x == 42); // expected-warning{{TRUE}}
@@ -399,5 +427,12 @@ namespace rdar12409977  {
     // go to layer a CXXBaseObjectRegion on it, the base isn't a direct base of
     // the object region and we get an assertion failure.
     clang_analyzer_eval(obj.getThis()->x == 42); // expected-warning{{TRUE}}
+  }
+}
+
+namespace bug16307 {
+  void one_argument(int a) { }
+  void call_with_less() {
+    reinterpret_cast<void (*)()>(one_argument)(); // expected-warning{{Function taking 1 argument}}
   }
 }

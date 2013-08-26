@@ -8,7 +8,17 @@
 // BLOCKS:#define __BLOCKS__ 1
 // BLOCKS:#define __block __attribute__((__blocks__(byref)))
 //
-// 
+//
+// RUN: %clang_cc1 -x c++ -std=c++1y -E -dM < /dev/null | FileCheck -check-prefix CXX1Y %s
+//
+// CXX1Y:#define __GNUG__
+// CXX1Y:#define __GXX_EXPERIMENTAL_CXX0X__ 1
+// CXX1Y:#define __GXX_RTTI 1
+// CXX1Y:#define __GXX_WEAK__ 1
+// CXX1Y:#define __cplusplus 201305L
+// CXX1Y:#define __private_extern__ extern
+//
+//
 // RUN: %clang_cc1 -x c++ -std=c++11 -E -dM < /dev/null | FileCheck -check-prefix CXX11 %s
 //
 // CXX11:#define __GNUG__
@@ -67,6 +77,14 @@
 // FREESTANDING:#define __STDC_HOSTED__ 0
 //
 //
+// RUN: %clang_cc1 -x c++ -std=gnu++1y -E -dM < /dev/null | FileCheck -check-prefix GXX1Y %s
+//
+// GXX1Y:#define __GNUG__
+// GXX1Y:#define __GXX_WEAK__ 1
+// GXX1Y:#define __cplusplus 201305L
+// GXX1Y:#define __private_extern__ extern
+//
+//
 // RUN: %clang_cc1 -x c++ -std=gnu++11 -E -dM < /dev/null | FileCheck -check-prefix GXX11 %s
 //
 // GXX11:#define __GNUG__
@@ -88,10 +106,24 @@
 // C94:#define __STDC_VERSION__ 199409L
 //
 // 
-// RUN: %clang_cc1 -fms-extensions -triple i686-pc-win32 -fobjc-runtime=gcc -E -dM < /dev/null | FileCheck -check-prefix MSEXT %s
+// RUN: %clang_cc1 -fms-extensions -triple i686-pc-win32 -E -dM < /dev/null | FileCheck -check-prefix MSEXT %s
 //
 // MSEXT-NOT:#define __STDC__
 // MSEXT:#define _INTEGRAL_MAX_BITS 64
+// MSEXT-NOT:#define _NATIVE_WCHAR_T_DEFINED 1
+// MSEXT-NOT:#define _WCHAR_T_DEFINED 1
+//
+//
+// RUN: %clang_cc1 -x c++ -fms-extensions -triple i686-pc-win32 -E -dM < /dev/null | FileCheck -check-prefix MSEXT-CXX %s
+//
+// MSEXT-CXX:#define _NATIVE_WCHAR_T_DEFINED 1
+// MSEXT-CXX:#define _WCHAR_T_DEFINED 1
+//
+//
+// RUN: %clang_cc1 -x c++ -fno-wchar -fms-extensions -triple i686-pc-win32 -E -dM < /dev/null | FileCheck -check-prefix MSEXT-CXX-NOWCHAR %s
+//
+// MSEXT-CXX-NOWCHAR-NOT:#define _NATIVE_WCHAR_T_DEFINED 1
+// MSEXT-CXX-NOWCHAR-NOT:#define _WCHAR_T_DEFINED 1
 //
 // 
 // RUN: %clang_cc1 -x objective-c -E -dM < /dev/null | FileCheck -check-prefix OBJC %s
@@ -1150,6 +1182,12 @@
 // MIPS-FABI-SINGLE:#define __mips_hard_float 1
 // MIPS-FABI-SINGLE:#define __mips_single_float 1
 //
+// RUN: %clang_cc1 -target-feature +soft-float -target-feature +single-float \
+// RUN:   -E -dM -ffreestanding -triple=mips-none-none < /dev/null \
+// RUN:   | FileCheck -check-prefix MIPS-FABI-SINGLE-SOFT %s
+// MIPS-FABI-SINGLE-SOFT:#define __mips_single_float 1
+// MIPS-FABI-SINGLE-SOFT:#define __mips_soft_float 1
+//
 // Check MIPS features macros
 //
 // RUN: %clang_cc1 -target-feature +mips16 \
@@ -1161,6 +1199,16 @@
 // RUN:   -E -dM -triple=mips-none-none < /dev/null \
 // RUN:   | FileCheck -check-prefix NOMIPS16 %s
 // NOMIPS16-NOT:#define __mips16 1
+//
+// RUN: %clang_cc1 -target-feature +micromips \
+// RUN:   -E -dM -triple=mips-none-none < /dev/null \
+// RUN:   | FileCheck -check-prefix MICROMIPS %s
+// MICROMIPS:#define __mips_micromips 1
+//
+// RUN: %clang_cc1 -target-feature -micromips \
+// RUN:   -E -dM -triple=mips-none-none < /dev/null \
+// RUN:   | FileCheck -check-prefix NOMICROMIPS %s
+// NOMICROMIPS-NOT:#define __mips_micromips 1
 //
 // RUN: %clang_cc1 -target-feature +dsp \
 // RUN:   -E -dM -triple=mips-none-none < /dev/null \
@@ -1175,6 +1223,11 @@
 // MIPS-DSPR2:#define __mips_dsp 1
 // MIPS-DSPR2:#define __mips_dsp_rev 2
 // MIPS-DSPR2:#define __mips_dspr2 1
+//
+// RUN: %clang_cc1 -target-feature +msa \
+// RUN:   -E -dM -triple=mips-none-none < /dev/null \
+// RUN:   | FileCheck -check-prefix MIPS-MSA %s
+// MIPS-MSA:#define __mips_msa 1
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=msp430-none-none < /dev/null | FileCheck -check-prefix MSP430 %s
 //
@@ -1217,10 +1270,10 @@
 // MSP430:#define __INT32_C_SUFFIX__ L
 // MSP430:#define __INT32_TYPE__ long int
 // MSP430:#define __INT8_TYPE__ char
-// MSP430:#define __INTMAX_MAX__ 2147483647L
-// MSP430:#define __INTMAX_TYPE__ long int
-// MSP430:#define __INTMAX_WIDTH__ 32
-// MSP430:#define __INTPTR_TYPE__ short
+// MSP430:#define __INTMAX_MAX__ 9223372036854775807LL
+// MSP430:#define __INTMAX_TYPE__ long long int
+// MSP430:#define __INTMAX_WIDTH__ 64
+// MSP430:#define __INTPTR_TYPE__ int
 // MSP430:#define __INTPTR_WIDTH__ 16
 // MSP430:#define __INT_MAX__ 32767
 // MSP430:#define __LDBL_DENORM_MIN__ 4.9406564584124654e-324L
@@ -1261,7 +1314,7 @@
 // MSP430:#define __SIZE_MAX__ 65535U
 // MSP430:#define __SIZE_TYPE__ unsigned int
 // MSP430:#define __SIZE_WIDTH__ 16
-// MSP430:#define __UINTMAX_TYPE__ long unsigned int
+// MSP430:#define __UINTMAX_TYPE__ long long unsigned int
 // MSP430:#define __USER_LABEL_PREFIX__ _
 // MSP430:#define __WCHAR_MAX__ 32767
 // MSP430:#define __WCHAR_TYPE__ int
@@ -1537,6 +1590,7 @@
 // PPC603E:#define __NATURAL_ALIGNMENT__ 1
 // PPC603E:#define __POINTER_WIDTH__ 32
 // PPC603E:#define __POWERPC__ 1
+// PPC603E:#define __PPC__ 1
 // PPC603E:#define __PTRDIFF_TYPE__ long int
 // PPC603E:#define __PTRDIFF_WIDTH__ 32
 // PPC603E:#define __REGISTER_PREFIX__
@@ -1646,6 +1700,8 @@
 // PPC64:#define __NATURAL_ALIGNMENT__ 1
 // PPC64:#define __POINTER_WIDTH__ 64
 // PPC64:#define __POWERPC__ 1
+// PPC64:#define __PPC64__ 1
+// PPC64:#define __PPC__ 1
 // PPC64:#define __PTRDIFF_TYPE__ long int
 // PPC64:#define __PTRDIFF_WIDTH__ 64
 // PPC64:#define __REGISTER_PREFIX__ 
@@ -1676,6 +1732,119 @@
 // PPC64:#define __WINT_WIDTH__ 32
 // PPC64:#define __ppc64__ 1
 // PPC64:#define __ppc__ 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64le-none-none -target-cpu pwr7 -fno-signed-char < /dev/null | FileCheck -check-prefix PPC64LE %s
+//
+// PPC64LE:#define _ARCH_PPC 1
+// PPC64LE:#define _ARCH_PPC64 1
+// PPC64LE:#define _ARCH_PPCGR 1
+// PPC64LE:#define _ARCH_PPCSQ 1
+// PPC64LE:#define _ARCH_PWR4 1
+// PPC64LE:#define _ARCH_PWR5 1
+// PPC64LE:#define _ARCH_PWR5X 1
+// PPC64LE:#define _ARCH_PWR6 1
+// PPC64LE:#define _ARCH_PWR6X 1
+// PPC64LE:#define _ARCH_PWR7 1
+// PPC64LE:#define _LITTLE_ENDIAN 1
+// PPC64LE:#define _LP64 1
+// PPC64LE:#define __BYTE_ORDER__ __ORDER_LITTLE_ENDIAN__
+// PPC64LE:#define __CHAR16_TYPE__ unsigned short
+// PPC64LE:#define __CHAR32_TYPE__ unsigned int
+// PPC64LE:#define __CHAR_BIT__ 8
+// PPC64LE:#define __CHAR_UNSIGNED__ 1
+// PPC64LE:#define __DBL_DENORM_MIN__ 4.9406564584124654e-324
+// PPC64LE:#define __DBL_DIG__ 15
+// PPC64LE:#define __DBL_EPSILON__ 2.2204460492503131e-16
+// PPC64LE:#define __DBL_HAS_DENORM__ 1
+// PPC64LE:#define __DBL_HAS_INFINITY__ 1
+// PPC64LE:#define __DBL_HAS_QUIET_NAN__ 1
+// PPC64LE:#define __DBL_MANT_DIG__ 53
+// PPC64LE:#define __DBL_MAX_10_EXP__ 308
+// PPC64LE:#define __DBL_MAX_EXP__ 1024
+// PPC64LE:#define __DBL_MAX__ 1.7976931348623157e+308
+// PPC64LE:#define __DBL_MIN_10_EXP__ (-307)
+// PPC64LE:#define __DBL_MIN_EXP__ (-1021)
+// PPC64LE:#define __DBL_MIN__ 2.2250738585072014e-308
+// PPC64LE:#define __DECIMAL_DIG__ 33
+// PPC64LE:#define __FLT_DENORM_MIN__ 1.40129846e-45F
+// PPC64LE:#define __FLT_DIG__ 6
+// PPC64LE:#define __FLT_EPSILON__ 1.19209290e-7F
+// PPC64LE:#define __FLT_EVAL_METHOD__ 0
+// PPC64LE:#define __FLT_HAS_DENORM__ 1
+// PPC64LE:#define __FLT_HAS_INFINITY__ 1
+// PPC64LE:#define __FLT_HAS_QUIET_NAN__ 1
+// PPC64LE:#define __FLT_MANT_DIG__ 24
+// PPC64LE:#define __FLT_MAX_10_EXP__ 38
+// PPC64LE:#define __FLT_MAX_EXP__ 128
+// PPC64LE:#define __FLT_MAX__ 3.40282347e+38F
+// PPC64LE:#define __FLT_MIN_10_EXP__ (-37)
+// PPC64LE:#define __FLT_MIN_EXP__ (-125)
+// PPC64LE:#define __FLT_MIN__ 1.17549435e-38F
+// PPC64LE:#define __FLT_RADIX__ 2
+// PPC64LE:#define __INT16_TYPE__ short
+// PPC64LE:#define __INT32_TYPE__ int
+// PPC64LE:#define __INT64_C_SUFFIX__ L
+// PPC64LE:#define __INT64_TYPE__ long int
+// PPC64LE:#define __INT8_TYPE__ char
+// PPC64LE:#define __INTMAX_MAX__ 9223372036854775807L
+// PPC64LE:#define __INTMAX_TYPE__ long int
+// PPC64LE:#define __INTMAX_WIDTH__ 64
+// PPC64LE:#define __INTPTR_TYPE__ long int
+// PPC64LE:#define __INTPTR_WIDTH__ 64
+// PPC64LE:#define __INT_MAX__ 2147483647
+// PPC64LE:#define __LDBL_DENORM_MIN__ 4.94065645841246544176568792868221e-324L
+// PPC64LE:#define __LDBL_DIG__ 31
+// PPC64LE:#define __LDBL_EPSILON__ 4.94065645841246544176568792868221e-324L
+// PPC64LE:#define __LDBL_HAS_DENORM__ 1
+// PPC64LE:#define __LDBL_HAS_INFINITY__ 1
+// PPC64LE:#define __LDBL_HAS_QUIET_NAN__ 1
+// PPC64LE:#define __LDBL_MANT_DIG__ 106
+// PPC64LE:#define __LDBL_MAX_10_EXP__ 308
+// PPC64LE:#define __LDBL_MAX_EXP__ 1024
+// PPC64LE:#define __LDBL_MAX__ 1.79769313486231580793728971405301e+308L
+// PPC64LE:#define __LDBL_MIN_10_EXP__ (-291)
+// PPC64LE:#define __LDBL_MIN_EXP__ (-968)
+// PPC64LE:#define __LDBL_MIN__ 2.00416836000897277799610805135016e-292L
+// PPC64LE:#define __LITTLE_ENDIAN__ 1
+// PPC64LE:#define __LONG_DOUBLE_128__ 1
+// PPC64LE:#define __LONG_LONG_MAX__ 9223372036854775807LL
+// PPC64LE:#define __LONG_MAX__ 9223372036854775807L
+// PPC64LE:#define __LP64__ 1
+// PPC64LE:#define __NATURAL_ALIGNMENT__ 1
+// PPC64LE:#define __POINTER_WIDTH__ 64
+// PPC64LE:#define __POWERPC__ 1
+// PPC64LE:#define __PPC64__ 1
+// PPC64LE:#define __PPC__ 1
+// PPC64LE:#define __PTRDIFF_TYPE__ long int
+// PPC64LE:#define __PTRDIFF_WIDTH__ 64
+// PPC64LE:#define __REGISTER_PREFIX__ 
+// PPC64LE:#define __SCHAR_MAX__ 127
+// PPC64LE:#define __SHRT_MAX__ 32767
+// PPC64LE:#define __SIG_ATOMIC_WIDTH__ 32
+// PPC64LE:#define __SIZEOF_DOUBLE__ 8
+// PPC64LE:#define __SIZEOF_FLOAT__ 4
+// PPC64LE:#define __SIZEOF_INT__ 4
+// PPC64LE:#define __SIZEOF_LONG_DOUBLE__ 16
+// PPC64LE:#define __SIZEOF_LONG_LONG__ 8
+// PPC64LE:#define __SIZEOF_LONG__ 8
+// PPC64LE:#define __SIZEOF_POINTER__ 8
+// PPC64LE:#define __SIZEOF_PTRDIFF_T__ 8
+// PPC64LE:#define __SIZEOF_SHORT__ 2
+// PPC64LE:#define __SIZEOF_SIZE_T__ 8
+// PPC64LE:#define __SIZEOF_WCHAR_T__ 4
+// PPC64LE:#define __SIZEOF_WINT_T__ 4
+// PPC64LE:#define __SIZE_MAX__ 18446744073709551615UL
+// PPC64LE:#define __SIZE_TYPE__ long unsigned int
+// PPC64LE:#define __SIZE_WIDTH__ 64
+// PPC64LE:#define __UINTMAX_TYPE__ long unsigned int
+// PPC64LE:#define __USER_LABEL_PREFIX__ _
+// PPC64LE:#define __WCHAR_MAX__ 2147483647
+// PPC64LE:#define __WCHAR_TYPE__ int
+// PPC64LE:#define __WCHAR_WIDTH__ 32
+// PPC64LE:#define __WINT_TYPE__ int
+// PPC64LE:#define __WINT_WIDTH__ 32
+// PPC64LE:#define __ppc64__ 1
+// PPC64LE:#define __ppc__ 1
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-none-none -target-cpu a2q -fno-signed-char < /dev/null | FileCheck -check-prefix PPCA2Q %s
 //
@@ -1909,6 +2078,8 @@
 // PPC64-LINUX:#define __NATURAL_ALIGNMENT__ 1
 // PPC64-LINUX:#define __POINTER_WIDTH__ 64
 // PPC64-LINUX:#define __POWERPC__ 1
+// PPC64-LINUX:#define __PPC64__ 1
+// PPC64-LINUX:#define __PPC__ 1
 // PPC64-LINUX:#define __PTRDIFF_TYPE__ long int
 // PPC64-LINUX:#define __PTRDIFF_WIDTH__ 64
 // PPC64-LINUX:#define __REGISTER_PREFIX__
@@ -2014,6 +2185,7 @@
 // PPC:#define __NATURAL_ALIGNMENT__ 1
 // PPC:#define __POINTER_WIDTH__ 32
 // PPC:#define __POWERPC__ 1
+// PPC:#define __PPC__ 1
 // PPC:#define __PTRDIFF_TYPE__ long int
 // PPC:#define __PTRDIFF_WIDTH__ 32
 // PPC:#define __REGISTER_PREFIX__ 
@@ -2115,6 +2287,7 @@
 // PPC-LINUX:#define __NATURAL_ALIGNMENT__ 1
 // PPC-LINUX:#define __POINTER_WIDTH__ 32
 // PPC-LINUX:#define __POWERPC__ 1
+// PPC-LINUX:#define __PPC__ 1
 // PPC-LINUX:#define __PTRDIFF_TYPE__ int
 // PPC-LINUX:#define __PTRDIFF_WIDTH__ 32
 // PPC-LINUX:#define __REGISTER_PREFIX__
@@ -2146,6 +2319,205 @@
 // PPC-LINUX:#define __WINT_WIDTH__ 32
 // PPC-LINUX:#define __powerpc__ 1
 // PPC-LINUX:#define __ppc__ 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc-apple-darwin8 < /dev/null | FileCheck -check-prefix PPC-DARWIN %s
+//
+// PPC-DARWIN:#define _ARCH_PPC 1
+// PPC-DARWIN:#define _BIG_ENDIAN 1
+// PPC-DARWIN:#define __BIG_ENDIAN__ 1
+// PPC-DARWIN:#define __BYTE_ORDER__ __ORDER_BIG_ENDIAN__
+// PPC-DARWIN:#define __CHAR16_TYPE__ unsigned short
+// PPC-DARWIN:#define __CHAR32_TYPE__ unsigned int
+// PPC-DARWIN:#define __CHAR_BIT__ 8
+// PPC-DARWIN:#define __DBL_DENORM_MIN__ 4.9406564584124654e-324
+// PPC-DARWIN:#define __DBL_DIG__ 15
+// PPC-DARWIN:#define __DBL_EPSILON__ 2.2204460492503131e-16
+// PPC-DARWIN:#define __DBL_HAS_DENORM__ 1
+// PPC-DARWIN:#define __DBL_HAS_INFINITY__ 1
+// PPC-DARWIN:#define __DBL_HAS_QUIET_NAN__ 1
+// PPC-DARWIN:#define __DBL_MANT_DIG__ 53
+// PPC-DARWIN:#define __DBL_MAX_10_EXP__ 308
+// PPC-DARWIN:#define __DBL_MAX_EXP__ 1024
+// PPC-DARWIN:#define __DBL_MAX__ 1.7976931348623157e+308
+// PPC-DARWIN:#define __DBL_MIN_10_EXP__ (-307)
+// PPC-DARWIN:#define __DBL_MIN_EXP__ (-1021)
+// PPC-DARWIN:#define __DBL_MIN__ 2.2250738585072014e-308
+// PPC-DARWIN:#define __DECIMAL_DIG__ 33
+// PPC-DARWIN:#define __FLT_DENORM_MIN__ 1.40129846e-45F
+// PPC-DARWIN:#define __FLT_DIG__ 6
+// PPC-DARWIN:#define __FLT_EPSILON__ 1.19209290e-7F
+// PPC-DARWIN:#define __FLT_EVAL_METHOD__ 0
+// PPC-DARWIN:#define __FLT_HAS_DENORM__ 1
+// PPC-DARWIN:#define __FLT_HAS_INFINITY__ 1
+// PPC-DARWIN:#define __FLT_HAS_QUIET_NAN__ 1
+// PPC-DARWIN:#define __FLT_MANT_DIG__ 24
+// PPC-DARWIN:#define __FLT_MAX_10_EXP__ 38
+// PPC-DARWIN:#define __FLT_MAX_EXP__ 128
+// PPC-DARWIN:#define __FLT_MAX__ 3.40282347e+38F
+// PPC-DARWIN:#define __FLT_MIN_10_EXP__ (-37)
+// PPC-DARWIN:#define __FLT_MIN_EXP__ (-125)
+// PPC-DARWIN:#define __FLT_MIN__ 1.17549435e-38F
+// PPC-DARWIN:#define __FLT_RADIX__ 2
+// PPC-DARWIN:#define __INT16_TYPE__ short
+// PPC-DARWIN:#define __INT32_TYPE__ int
+// PPC-DARWIN:#define __INT64_C_SUFFIX__ LL
+// PPC-DARWIN:#define __INT64_TYPE__ long long int
+// PPC-DARWIN:#define __INT8_TYPE__ char
+// PPC-DARWIN:#define __INTMAX_MAX__ 9223372036854775807LL
+// PPC-DARWIN:#define __INTMAX_TYPE__ long long int
+// PPC-DARWIN:#define __INTMAX_WIDTH__ 64
+// PPC-DARWIN:#define __INTPTR_TYPE__ long int
+// PPC-DARWIN:#define __INTPTR_WIDTH__ 32
+// PPC-DARWIN:#define __INT_MAX__ 2147483647
+// PPC-DARWIN:#define __LDBL_DENORM_MIN__ 4.94065645841246544176568792868221e-324L
+// PPC-DARWIN:#define __LDBL_DIG__ 31
+// PPC-DARWIN:#define __LDBL_EPSILON__ 4.94065645841246544176568792868221e-324L
+// PPC-DARWIN:#define __LDBL_HAS_DENORM__ 1
+// PPC-DARWIN:#define __LDBL_HAS_INFINITY__ 1
+// PPC-DARWIN:#define __LDBL_HAS_QUIET_NAN__ 1
+// PPC-DARWIN:#define __LDBL_MANT_DIG__ 106
+// PPC-DARWIN:#define __LDBL_MAX_10_EXP__ 308
+// PPC-DARWIN:#define __LDBL_MAX_EXP__ 1024
+// PPC-DARWIN:#define __LDBL_MAX__ 1.79769313486231580793728971405301e+308L
+// PPC-DARWIN:#define __LDBL_MIN_10_EXP__ (-291)
+// PPC-DARWIN:#define __LDBL_MIN_EXP__ (-968)
+// PPC-DARWIN:#define __LDBL_MIN__ 2.00416836000897277799610805135016e-292L
+// PPC-DARWIN:#define __LONG_DOUBLE_128__ 1
+// PPC-DARWIN:#define __LONG_LONG_MAX__ 9223372036854775807LL
+// PPC-DARWIN:#define __LONG_MAX__ 2147483647L
+// PPC-DARWIN:#define __MACH__ 1
+// PPC-DARWIN:#define __NATURAL_ALIGNMENT__ 1
+// PPC-DARWIN:#define __ORDER_BIG_ENDIAN__ 4321
+// PPC-DARWIN:#define __ORDER_LITTLE_ENDIAN__ 1234
+// PPC-DARWIN:#define __ORDER_PDP_ENDIAN__ 3412
+// PPC-DARWIN:#define __POINTER_WIDTH__ 32
+// PPC-DARWIN:#define __POWERPC__ 1
+// PPC-DARWIN:#define __PPC__ 1
+// PPC-DARWIN:#define __PTRDIFF_TYPE__ int
+// PPC-DARWIN:#define __PTRDIFF_WIDTH__ 32
+// PPC-DARWIN:#define __REGISTER_PREFIX__ 
+// PPC-DARWIN:#define __SCHAR_MAX__ 127
+// PPC-DARWIN:#define __SHRT_MAX__ 32767
+// PPC-DARWIN:#define __SIG_ATOMIC_WIDTH__ 32
+// PPC-DARWIN:#define __SIZEOF_DOUBLE__ 8
+// PPC-DARWIN:#define __SIZEOF_FLOAT__ 4
+// PPC-DARWIN:#define __SIZEOF_INT__ 4
+// PPC-DARWIN:#define __SIZEOF_LONG_DOUBLE__ 16
+// PPC-DARWIN:#define __SIZEOF_LONG_LONG__ 8
+// PPC-DARWIN:#define __SIZEOF_LONG__ 4
+// PPC-DARWIN:#define __SIZEOF_POINTER__ 4
+// PPC-DARWIN:#define __SIZEOF_PTRDIFF_T__ 4
+// PPC-DARWIN:#define __SIZEOF_SHORT__ 2
+// PPC-DARWIN:#define __SIZEOF_SIZE_T__ 4
+// PPC-DARWIN:#define __SIZEOF_WCHAR_T__ 4
+// PPC-DARWIN:#define __SIZEOF_WINT_T__ 4
+// PPC-DARWIN:#define __SIZE_MAX__ 4294967295UL
+// PPC-DARWIN:#define __SIZE_TYPE__ long unsigned int
+// PPC-DARWIN:#define __SIZE_WIDTH__ 32
+// PPC-DARWIN:#define __STDC_HOSTED__ 0
+// PPC-DARWIN:#define __STDC_VERSION__ 199901L
+// PPC-DARWIN:#define __STDC__ 1
+// PPC-DARWIN:#define __UINTMAX_TYPE__ long long unsigned int
+// PPC-DARWIN:#define __USER_LABEL_PREFIX__ _
+// PPC-DARWIN:#define __WCHAR_MAX__ 2147483647
+// PPC-DARWIN:#define __WCHAR_TYPE__ int
+// PPC-DARWIN:#define __WCHAR_WIDTH__ 32
+// PPC-DARWIN:#define __WINT_TYPE__ int
+// PPC-DARWIN:#define __WINT_WIDTH__ 32
+// PPC-DARWIN:#define __powerpc__ 1
+// PPC-DARWIN:#define __ppc__ 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=s390x-none-none -fno-signed-char < /dev/null | FileCheck -check-prefix S390X %s
+//
+// S390X:#define __CHAR16_TYPE__ unsigned short
+// S390X:#define __CHAR32_TYPE__ unsigned int
+// S390X:#define __CHAR_BIT__ 8
+// S390X:#define __CHAR_UNSIGNED__ 1
+// S390X:#define __DBL_DENORM_MIN__ 4.9406564584124654e-324
+// S390X:#define __DBL_DIG__ 15
+// S390X:#define __DBL_EPSILON__ 2.2204460492503131e-16
+// S390X:#define __DBL_HAS_DENORM__ 1
+// S390X:#define __DBL_HAS_INFINITY__ 1
+// S390X:#define __DBL_HAS_QUIET_NAN__ 1
+// S390X:#define __DBL_MANT_DIG__ 53
+// S390X:#define __DBL_MAX_10_EXP__ 308
+// S390X:#define __DBL_MAX_EXP__ 1024
+// S390X:#define __DBL_MAX__ 1.7976931348623157e+308
+// S390X:#define __DBL_MIN_10_EXP__ (-307)
+// S390X:#define __DBL_MIN_EXP__ (-1021)
+// S390X:#define __DBL_MIN__ 2.2250738585072014e-308
+// S390X:#define __DECIMAL_DIG__ 36
+// S390X:#define __FLT_DENORM_MIN__ 1.40129846e-45F
+// S390X:#define __FLT_DIG__ 6
+// S390X:#define __FLT_EPSILON__ 1.19209290e-7F
+// S390X:#define __FLT_EVAL_METHOD__ 0
+// S390X:#define __FLT_HAS_DENORM__ 1
+// S390X:#define __FLT_HAS_INFINITY__ 1
+// S390X:#define __FLT_HAS_QUIET_NAN__ 1
+// S390X:#define __FLT_MANT_DIG__ 24
+// S390X:#define __FLT_MAX_10_EXP__ 38
+// S390X:#define __FLT_MAX_EXP__ 128
+// S390X:#define __FLT_MAX__ 3.40282347e+38F
+// S390X:#define __FLT_MIN_10_EXP__ (-37)
+// S390X:#define __FLT_MIN_EXP__ (-125)
+// S390X:#define __FLT_MIN__ 1.17549435e-38F
+// S390X:#define __FLT_RADIX__ 2
+// S390X:#define __INT16_TYPE__ short
+// S390X:#define __INT32_TYPE__ int
+// S390X:#define __INT64_C_SUFFIX__ L
+// S390X:#define __INT64_TYPE__ long long int
+// S390X:#define __INT8_TYPE__ char
+// S390X:#define __INTMAX_MAX__ 9223372036854775807LL
+// S390X:#define __INTMAX_TYPE__ long long int
+// S390X:#define __INTMAX_WIDTH__ 64
+// S390X:#define __INTPTR_TYPE__ long int
+// S390X:#define __INTPTR_WIDTH__ 64
+// S390X:#define __INT_MAX__ 2147483647
+// S390X:#define __LDBL_DENORM_MIN__ 6.47517511943802511092443895822764655e-4966L
+// S390X:#define __LDBL_DIG__ 33
+// S390X:#define __LDBL_EPSILON__ 1.92592994438723585305597794258492732e-34L
+// S390X:#define __LDBL_HAS_DENORM__ 1
+// S390X:#define __LDBL_HAS_INFINITY__ 1
+// S390X:#define __LDBL_HAS_QUIET_NAN__ 1
+// S390X:#define __LDBL_MANT_DIG__ 113
+// S390X:#define __LDBL_MAX_10_EXP__ 4932
+// S390X:#define __LDBL_MAX_EXP__ 16384
+// S390X:#define __LDBL_MAX__ 1.18973149535723176508575932662800702e+4932L
+// S390X:#define __LDBL_MIN_10_EXP__ (-4931)
+// S390X:#define __LDBL_MIN_EXP__ (-16381)
+// S390X:#define __LDBL_MIN__ 3.36210314311209350626267781732175260e-4932L
+// S390X:#define __LONG_LONG_MAX__ 9223372036854775807LL
+// S390X:#define __LONG_MAX__ 9223372036854775807L
+// S390X:#define __NO_INLINE__ 1
+// S390X:#define __POINTER_WIDTH__ 64
+// S390X:#define __PTRDIFF_TYPE__ long int
+// S390X:#define __PTRDIFF_WIDTH__ 64
+// S390X:#define __SCHAR_MAX__ 127
+// S390X:#define __SHRT_MAX__ 32767
+// S390X:#define __SIG_ATOMIC_WIDTH__ 32
+// S390X:#define __SIZEOF_DOUBLE__ 8
+// S390X:#define __SIZEOF_FLOAT__ 4
+// S390X:#define __SIZEOF_INT__ 4
+// S390X:#define __SIZEOF_LONG_DOUBLE__ 16
+// S390X:#define __SIZEOF_LONG_LONG__ 8
+// S390X:#define __SIZEOF_LONG__ 8
+// S390X:#define __SIZEOF_POINTER__ 8
+// S390X:#define __SIZEOF_PTRDIFF_T__ 8
+// S390X:#define __SIZEOF_SHORT__ 2
+// S390X:#define __SIZEOF_SIZE_T__ 8
+// S390X:#define __SIZEOF_WCHAR_T__ 4
+// S390X:#define __SIZEOF_WINT_T__ 4
+// S390X:#define __SIZE_TYPE__ long unsigned int
+// S390X:#define __SIZE_WIDTH__ 64
+// S390X:#define __UINTMAX_TYPE__ long long unsigned int
+// S390X:#define __USER_LABEL_PREFIX__ _
+// S390X:#define __WCHAR_MAX__ 2147483647
+// S390X:#define __WCHAR_TYPE__ int
+// S390X:#define __WCHAR_WIDTH__ 32
+// S390X:#define __WINT_TYPE__ int
+// S390X:#define __WINT_WIDTH__ 32
+// S390X:#define __s390__ 1
+// S390X:#define __s390x__ 1
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=sparc-none-none < /dev/null | FileCheck -check-prefix SPARC %s
 //
@@ -2548,6 +2920,20 @@
 // X86_64-LINUX:#define __x86_64 1
 // X86_64-LINUX:#define __x86_64__ 1
 //
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=sparc64-none-none < /dev/null | FileCheck -check-prefix SPARCV9 %s
+// SPARCV9:#define __INT64_TYPE__ long int
+// SPARCV9:#define __INTMAX_TYPE__ long int
+// SPARCV9:#define __INTPTR_TYPE__ long int
+// SPARCV9:#define __LONG_MAX__ 9223372036854775807L
+// SPARCV9:#define __LP64__ 1
+// SPARCV9:#define __SIZEOF_LONG__ 8
+// SPARCV9:#define __SIZEOF_POINTER__ 8
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=sparc64-none-openbsd < /dev/null | FileCheck -check-prefix SPARC64-OBSD %s
+// SPARC64-OBSD:#define __INT64_TYPE__ long long int
+// SPARC64-OBSD:#define __INTMAX_TYPE__ long long int
+// SPARC64-OBSD:#define __UINTMAX_TYPE__ long long unsigned int
+//
 // RUN: %clang_cc1 -x c++ -triple i686-pc-linux-gnu -fobjc-runtime=gcc -E -dM < /dev/null | FileCheck -check-prefix GNUSOURCE %s
 // GNUSOURCE:#define _GNU_SOURCE 1
 // 
@@ -2558,3 +2944,8 @@
 //
 // RUN: %clang_cc1 -triple arm-linux-androideabi -E -dM < /dev/null | FileCheck -check-prefix ANDROID %s
 // ANDROID: __ANDROID__ 1
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-unknown-freebsd < /dev/null | FileCheck -check-prefix PPC64-FREEBSD %s
+// PPC64-FREEBSD-NOT: #define __LONG_DOUBLE_128__ 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=xcore-none-none < /dev/null | FileCheck -check-prefix XCORE %s
+// XCORE:#define __XS1B__ 1

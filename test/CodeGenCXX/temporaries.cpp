@@ -1,4 +1,32 @@
-// RUN: %clang_cc1 -emit-llvm %s -o - -triple=x86_64-apple-darwin9 | FileCheck %s
+// RUN: %clang_cc1 -emit-llvm %s -o - -triple=x86_64-apple-darwin9 -std=c++11 | FileCheck %s
+
+namespace PR16263 {
+  const unsigned int n = 1234;
+  extern const int &r = (const int&)n;
+  // CHECK: @_ZGRN7PR162631rE = private constant i32 1234,
+  // CHECK: @_ZN7PR162631rE = constant i32* @_ZGRN7PR162631rE,
+
+  extern const int &s = reinterpret_cast<const int&>(n);
+  // CHECK: @_ZN7PR16263L1nE = internal constant i32 1234, align 4
+  // CHECK: @_ZN7PR162631sE = constant i32* @_ZN7PR16263L1nE, align 8
+
+  struct A { int n; };
+  struct B { int n; };
+  struct C : A, B {};
+  extern const A &&a = (A&&)(A&&)(C&&)(C{});
+  // CHECK: @_ZGRN7PR162631aE = private global {{.*}} zeroinitializer,
+  // CHECK: @_ZN7PR162631aE = constant {{.*}} bitcast ({{.*}}* @_ZGRN7PR162631aE to
+
+  extern const int &&t = ((B&&)C{}).n;
+  // CHECK: @_ZGRN7PR162631tE = private global {{.*}} zeroinitializer,
+  // CHECK: @_ZN7PR162631tE = constant i32* {{.*}}* @_ZGRN7PR162631tE {{.*}} 4
+
+  struct D { double d; C c; };
+  extern const int &&u = (123, static_cast<B&&>(0, ((D&&)D{}).*&D::c).n);
+  // CHECK: @_ZGRN7PR162631uE = private global {{.*}} zeroinitializer
+  // CHECK: @_ZN7PR162631uE = constant i32* {{.*}} @_ZGRN7PR162631uE {{.*}} 12
+}
+
 struct A {
   A();
   ~A();
@@ -557,4 +585,195 @@ namespace AssignmentOp {
   // CHECK: call {{.*}} @_ZN12AssignmentOp1AD1Ev(
   // CHECK: call {{.*}} @_ZN12AssignmentOp1BaSERKS
   // CHECK: call {{.*}} @_ZN12AssignmentOp1AD1Ev(
+}
+
+namespace BindToSubobject {
+  struct A {
+    A();
+    ~A();
+    int a;
+  };
+
+  void f(), g();
+
+  // CHECK: call void @_ZN15BindToSubobject1AC1Ev({{.*}} @_ZGRN15BindToSubobject1aE)
+  // CHECK: call i32 @__cxa_atexit({{.*}} bitcast ({{.*}} @_ZN15BindToSubobject1AD1Ev to void (i8*)*), i8* bitcast ({{.*}} @_ZGRN15BindToSubobject1aE to i8*), i8* @__dso_handle)
+  // CHECK: store i32* getelementptr inbounds ({{.*}} @_ZGRN15BindToSubobject1aE, i32 0, i32 0), i32** @_ZN15BindToSubobject1aE, align 8
+  int &&a = A().a;
+
+  // CHECK: call void @_ZN15BindToSubobject1fEv()
+  // CHECK: call void @_ZN15BindToSubobject1AC1Ev({{.*}} @_ZGRN15BindToSubobject1bE)
+  // CHECK: call i32 @__cxa_atexit({{.*}} bitcast ({{.*}} @_ZN15BindToSubobject1AD1Ev to void (i8*)*), i8* bitcast ({{.*}} @_ZGRN15BindToSubobject1bE to i8*), i8* @__dso_handle)
+  // CHECK: store i32* getelementptr inbounds ({{.*}} @_ZGRN15BindToSubobject1bE, i32 0, i32 0), i32** @_ZN15BindToSubobject1bE, align 8
+  int &&b = (f(), A().a);
+
+  int A::*h();
+
+  // CHECK: call void @_ZN15BindToSubobject1fEv()
+  // CHECK: call void @_ZN15BindToSubobject1gEv()
+  // CHECK: call void @_ZN15BindToSubobject1AC1Ev({{.*}} @_ZGRN15BindToSubobject1cE)
+  // CHECK: call i32 @__cxa_atexit({{.*}} bitcast ({{.*}} @_ZN15BindToSubobject1AD1Ev to void (i8*)*), i8* bitcast ({{.*}} @_ZGRN15BindToSubobject1cE to i8*), i8* @__dso_handle)
+  // CHECK: call {{.*}} @_ZN15BindToSubobject1hE
+  // CHECK: getelementptr
+  // CHECK: store i32* {{.*}}, i32** @_ZN15BindToSubobject1cE, align 8
+  int &&c = (f(), (g(), A().*h()));
+
+  struct B {
+    int padding;
+    A a;
+  };
+
+  // CHECK: call void @_ZN15BindToSubobject1BC1Ev({{.*}} @_ZGRN15BindToSubobject1dE)
+  // CHECK: call i32 @__cxa_atexit({{.*}} bitcast ({{.*}} @_ZN15BindToSubobject1BD1Ev to void (i8*)*), i8* bitcast ({{.*}} @_ZGRN15BindToSubobject1dE to i8*), i8* @__dso_handle)
+  // CHECK: call {{.*}} @_ZN15BindToSubobject1hE
+  // CHECK: getelementptr {{.*}} getelementptr
+  // CHECK: store i32* {{.*}}, i32** @_ZN15BindToSubobject1dE, align 8
+  int &&d = (B().a).*h();
+}
+
+namespace Bitfield {
+  struct S { int a : 5; ~S(); };
+
+  // Do not lifetime extend the S() temporary here.
+  // CHECK: alloca
+  // CHECK: call {{.*}}memset
+  // CHECK: store i32 {{.*}}, i32* @_ZGRN8Bitfield1rE
+  // CHECK: call void @_ZN8Bitfield1SD1
+  // CHECK: store i32* @_ZGRN8Bitfield1rE, i32** @_ZN8Bitfield1rE, align 8
+  int &&r = S().a;
+}
+
+namespace Vector {
+  typedef __attribute__((vector_size(16))) int vi4a;
+  typedef __attribute__((ext_vector_type(4))) int vi4b;
+  struct S {
+    vi4a v;
+    vi4b w;
+  };
+  // CHECK: alloca
+  // CHECK: extractelement
+  // CHECK: store i32 {{.*}}, i32* @_ZGRN6Vector1rE
+  // CHECK: store i32* @_ZGRN6Vector1rE, i32** @_ZN6Vector1rE,
+  int &&r = S().v[1];
+
+  // CHECK: alloca
+  // CHECK: extractelement
+  // CHECK: store i32 {{.*}}, i32* @_ZGRN6Vector1sE
+  // CHECK: store i32* @_ZGRN6Vector1sE, i32** @_ZN6Vector1sE,
+  int &&s = S().w[1];
+  // FIXME PR16204: The following code leads to an assertion in Sema.
+  //int &&s = S().w.y;
+}
+
+namespace ImplicitTemporaryCleanup {
+  struct A { A(int); ~A(); };
+  void g();
+
+  // CHECK: define void @_ZN24ImplicitTemporaryCleanup1fEv(
+  void f() {
+    // CHECK: call {{.*}} @_ZN24ImplicitTemporaryCleanup1AC1Ei(
+    A &&a = 0;
+
+    // CHECK: call {{.*}} @_ZN24ImplicitTemporaryCleanup1gEv(
+    g();
+
+    // CHECK: call {{.*}} @_ZN24ImplicitTemporaryCleanup1AD1Ev(
+  }
+}
+
+namespace MultipleExtension {
+  struct A { A(); ~A(); };
+  struct B { B(); ~B(); };
+  struct C { C(); ~C(); };
+  struct D { D(); ~D(); int n; C c; };
+  struct E { const A &a; B b; const C &c; ~E(); };
+
+  E &&e1 = { A(), B(), D().c };
+
+  // CHECK: call void @_ZN17MultipleExtension1AC1Ev({{.*}} @[[TEMPA:_ZGRN17MultipleExtension2e1E.*]])
+  // CHECK: call i32 @__cxa_atexit({{.*}} @_ZN17MultipleExtension1AD1Ev {{.*}} @[[TEMPA]]
+  // CHECK: store {{.*}} @[[TEMPA]], {{.*}} getelementptr inbounds ({{.*}} @[[TEMPE:_ZGRN17MultipleExtension2e1E.*]], i32 0, i32 0)
+
+  // CHECK: call void @_ZN17MultipleExtension1BC1Ev({{.*}} getelementptr inbounds ({{.*}} @[[TEMPE]], i32 0, i32 1))
+
+  // CHECK: call void @_ZN17MultipleExtension1DC1Ev({{.*}} @[[TEMPD:_ZGRN17MultipleExtension2e1E.*]])
+  // CHECK: call i32 @__cxa_atexit({{.*}} @_ZN17MultipleExtension1DD1Ev {{.*}} @[[TEMPD]]
+  // CHECK: store {{.*}} @[[TEMPD]], {{.*}} getelementptr inbounds ({{.*}} @[[TEMPE]], i32 0, i32 2)
+  // CHECK: call i32 @__cxa_atexit({{.*}} @_ZN17MultipleExtension1ED1Ev {{.*}} @[[TEMPE]]
+  // CHECK: store {{.*}} @[[TEMPE]], %"struct.MultipleExtension::E"** @_ZN17MultipleExtension2e1E, align 8
+
+  E e2 = { A(), B(), D().c };
+
+  // CHECK: call void @_ZN17MultipleExtension1AC1Ev({{.*}} @[[TEMPA:_ZGRN17MultipleExtension2e2E.*]])
+  // CHECK: call i32 @__cxa_atexit({{.*}} @_ZN17MultipleExtension1AD1Ev {{.*}} @[[TEMPA]]
+  // CHECK: store {{.*}} @[[TEMPA]], {{.*}} getelementptr inbounds ({{.*}} @[[E:_ZN17MultipleExtension2e2E]], i32 0, i32 0)
+
+  // CHECK: call void @_ZN17MultipleExtension1BC1Ev({{.*}} getelementptr inbounds ({{.*}} @[[E]], i32 0, i32 1))
+
+  // CHECK: call void @_ZN17MultipleExtension1DC1Ev({{.*}} @[[TEMPD:_ZGRN17MultipleExtension2e2E.*]])
+  // CHECK: call i32 @__cxa_atexit({{.*}} @_ZN17MultipleExtension1DD1Ev {{.*}} @[[TEMPD]]
+  // CHECK: store {{.*}} @[[TEMPD]], {{.*}} getelementptr inbounds ({{.*}} @[[E]], i32 0, i32 2)
+  // CHECK: call i32 @__cxa_atexit({{.*}} @_ZN17MultipleExtension1ED1Ev {{.*}} @[[E]]
+
+
+  void g();
+  // CHECK: define void @[[NS:_ZN17MultipleExtension]]1fEv(
+  void f() {
+    E &&e1 = { A(), B(), D().c };
+    // CHECK: %[[TEMPE1_A:.*]] = getelementptr inbounds {{.*}} %[[TEMPE1:.*]], i32 0, i32 0
+    // CHECK: call void @[[NS]]1AC1Ev({{.*}} %[[TEMPA1:.*]])
+    // CHECK: store {{.*}} %[[TEMPA1]], {{.*}} %[[TEMPE1_A]]
+    // CHECK: %[[TEMPE1_B:.*]] = getelementptr inbounds {{.*}} %[[TEMPE1]], i32 0, i32 1
+    // CHECK: call void @[[NS]]1BC1Ev({{.*}} %[[TEMPE1_B]])
+    // CHECK: %[[TEMPE1_C:.*]] = getelementptr inbounds {{.*}} %[[TEMPE1]], i32 0, i32 2
+    // CHECK: call void @[[NS]]1DC1Ev({{.*}} %[[TEMPD1:.*]])
+    // CHECK: %[[TEMPD1_C:.*]] = getelementptr inbounds {{.*}} %[[TEMPD1]], i32 0, i32 1
+    // CHECK: store {{.*}} %[[TEMPD1_C]], {{.*}} %[[TEMPE1_C]]
+    // CHECK: store {{.*}} %[[TEMPE1]], {{.*}} %[[E1:.*]]
+
+    g();
+    // CHECK: call void @[[NS]]1gEv()
+
+    E e2 = { A(), B(), D().c };
+    // CHECK: %[[TEMPE2_A:.*]] = getelementptr inbounds {{.*}} %[[E2:.*]], i32 0, i32 0
+    // CHECK: call void @[[NS]]1AC1Ev({{.*}} %[[TEMPA2:.*]])
+    // CHECK: store {{.*}} %[[TEMPA2]], {{.*}} %[[TEMPE2_A]]
+    // CHECK: %[[TEMPE2_B:.*]] = getelementptr inbounds {{.*}} %[[E2]], i32 0, i32 1
+    // CHECK: call void @[[NS]]1BC1Ev({{.*}} %[[TEMPE2_B]])
+    // CHECK: %[[TEMPE2_C:.*]] = getelementptr inbounds {{.*}} %[[E2]], i32 0, i32 2
+    // CHECK: call void @[[NS]]1DC1Ev({{.*}} %[[TEMPD2:.*]])
+    // CHECK: %[[TEMPD2_C:.*]] = getelementptr inbounds {{.*}} %[[TEMPD2]], i32 0, i32 1
+    // CHECK: store {{.*}} %[[TEMPD2_C]], {{.*}}* %[[TEMPE2_C]]
+
+    g();
+    // CHECK: call void @[[NS]]1gEv()
+
+    // CHECK: call void @[[NS]]1ED1Ev({{.*}} %[[E2]])
+    // CHECK: call void @[[NS]]1DD1Ev({{.*}} %[[TEMPD2]])
+    // CHECK: call void @[[NS]]1AD1Ev({{.*}} %[[TEMPA2]])
+    // CHECK: call void @[[NS]]1ED1Ev({{.*}} %[[TEMPE1]])
+    // CHECK: call void @[[NS]]1DD1Ev({{.*}} %[[TEMPD1]])
+    // CHECK: call void @[[NS]]1AD1Ev({{.*}} %[[TEMPA1]])
+  }
+}
+
+namespace PR14130 {
+  struct S { S(int); };
+  struct U { S &&s; };
+  U v { { 0 } };
+  // CHECK: call void @_ZN7PR141301SC1Ei({{.*}} @_ZGRN7PR141301vE, i32 0)
+  // CHECK: store {{.*}} @_ZGRN7PR141301vE, {{.*}} @_ZN7PR141301vE
+}
+
+namespace Ctor {
+  struct A { A(); ~A(); };
+  void f();
+  struct B {
+    A &&a;
+    B() : a{} { f(); }
+  } b;
+  // CHECK: define {{.*}}void @_ZN4Ctor1BC1Ev(
+  // CHECK: call void @_ZN4Ctor1AC1Ev(
+  // CHECK: call void @_ZN4Ctor1fEv(
+  // CHECK: call void @_ZN4Ctor1AD1Ev(
 }

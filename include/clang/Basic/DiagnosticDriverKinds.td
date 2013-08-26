@@ -26,8 +26,6 @@ def err_drv_unsupported_rtlib_for_platform : Error<
   "unsupported runtime library '%0' for platform '%1'">;
 def err_drv_invalid_stdlib_name : Error<
   "invalid library name in argument '%0'">;
-def err_drv_invalid_opt_with_multiple_archs : Error<
-  "option '%0' cannot be used with multiple -arch options">;
 def err_drv_invalid_output_with_multiple_archs : Error<
   "cannot use '%0' output with multiple -arch options">;
 def err_drv_no_input_files : Error<"no input files">;
@@ -35,6 +33,8 @@ def err_drv_use_of_Z_option : Error<
   "unsupported use of internal gcc -Z option '%0'">;
 def err_drv_output_argument_with_multiple_files : Error<
   "cannot specify -o when generating multiple output files">;
+def err_drv_obj_file_argument_with_multiple_sources : Error<
+  "cannot specify '%0%1' when compiling multiple source files">;
 def err_no_external_windows_assembler : Error<
   "there is no external assembler we can use on windows">;
 def err_drv_unable_to_remove_file : Error<
@@ -105,8 +105,6 @@ def err_arc_unsupported_on_toolchain : Error< // feel free to generalize this
   "-fobjc-arc is not supported on versions of OS X prior to 10.6">;
 def err_drv_mg_requires_m_or_mm : Error<
   "option '-MG' requires '-M' or '-MM'">;
-def err_drv_asan_android_requires_pie : Error<
-  "AddressSanitizer on Android requires '-pie'">;
 def err_drv_unknown_objc_runtime : Error<
   "unknown or ill-formed Objective-C runtime '%0'">;
 
@@ -137,6 +135,12 @@ def warn_drv_assuming_mfloat_abi_is : Warning<
   "unknown platform, assuming -mfloat-abi=%0">;
 def warn_ignoring_ftabstop_value : Warning<
   "ignoring invalid -ftabstop value '%0', using default value %1">;
+def warn_drv_overriding_joined_option : Warning<
+  "overriding '%0%1' option with '%2%3'">,
+  InGroup<DiagGroup<"overriding-fo-option">>;
+def warn_drv_overriding_t_option : Warning<
+  "overriding '%0' option with '%1'">,
+  InGroup<DiagGroup<"overriding-t-option">>;
 def warn_drv_treating_input_as_cxx : Warning<
   "treating '%0' input as '%1' when in C++ mode, this behavior is deprecated">,
   InGroup<Deprecated>;
@@ -149,6 +153,8 @@ def warn_missing_sysroot : Warning<"no such sysroot directory: '%0'">,
 
 def note_drv_command_failed_diag_msg : Note<
   "diagnostic msg: %0">;
+def note_drv_t_option_is_global :
+  Note<"The last /TC or /TP option takes precedence over earlier instances">;
   
 def err_analyzer_config_no_value : Error<
   "analyzer-config option '%0' has a key but no value">;

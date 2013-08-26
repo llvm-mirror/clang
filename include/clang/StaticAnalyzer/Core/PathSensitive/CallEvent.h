@@ -162,11 +162,11 @@ protected:
   }
 
 
-  typedef SmallVectorImpl<const MemRegion *> RegionList;
+  typedef SmallVectorImpl<SVal> ValueList;
 
   /// \brief Used to specify non-argument regions that will be invalidated as a
   /// result of this call.
-  virtual void getExtraInvalidatedRegions(RegionList &Regions) const {}
+  virtual void getExtraInvalidatedValues(ValueList &Values) const {}
 
 public:
   virtual ~CallEvent() {}
@@ -350,19 +350,13 @@ public:
 
   /// Returns an iterator over the call's formal parameters.
   ///
-  /// If UseDefinitionParams is set, this will return the parameter decls
-  /// used in the callee's definition (suitable for inlining). Most of the
-  /// time it is better to use the decl found by name lookup, which likely
-  /// carries more annotations.
-  ///
   /// Remember that the number of formal parameters may not match the number
   /// of arguments for all calls. However, the first parameter will always
   /// correspond with the argument value returned by \c getArgSVal(0).
   ///
-  /// If the call has no accessible declaration (or definition, if
-  /// \p UseDefinitionParams is set), \c param_begin() will be equal to
-  /// \c param_end().
-  virtual param_iterator param_begin() const =0;
+  /// If the call has no accessible declaration, \c param_begin() will be equal
+  /// to \c param_end().
+  virtual param_iterator param_begin() const = 0;
   /// \sa param_begin()
   virtual param_iterator param_end() const = 0;
 
@@ -504,7 +498,7 @@ protected:
   BlockCall(const BlockCall &Other) : SimpleCall(Other) {}
   virtual void cloneTo(void *Dest) const { new (Dest) BlockCall(*this); }
 
-  virtual void getExtraInvalidatedRegions(RegionList &Regions) const;
+  virtual void getExtraInvalidatedValues(ValueList &Values) const;
 
 public:
   /// \brief Returns the region associated with this instance of the block.
@@ -548,7 +542,7 @@ public:
 /// it is written.
 class CXXInstanceCall : public AnyFunctionCall {
 protected:
-  virtual void getExtraInvalidatedRegions(RegionList &Regions) const;
+  virtual void getExtraInvalidatedValues(ValueList &Values) const;
 
   CXXInstanceCall(const CallExpr *CE, ProgramStateRef St,
                   const LocationContext *LCtx)
@@ -731,7 +725,7 @@ protected:
   CXXConstructorCall(const CXXConstructorCall &Other) : AnyFunctionCall(Other){}
   virtual void cloneTo(void *Dest) const { new (Dest) CXXConstructorCall(*this); }
 
-  virtual void getExtraInvalidatedRegions(RegionList &Regions) const;
+  virtual void getExtraInvalidatedValues(ValueList &Values) const;
 
 public:
   virtual const CXXConstructExpr *getOriginExpr() const {
@@ -830,7 +824,7 @@ protected:
   ObjCMethodCall(const ObjCMethodCall &Other) : CallEvent(Other) {}
   virtual void cloneTo(void *Dest) const { new (Dest) ObjCMethodCall(*this); }
 
-  virtual void getExtraInvalidatedRegions(RegionList &Regions) const;
+  virtual void getExtraInvalidatedValues(ValueList &Values) const;
 
   /// Check if the selector may have multiple definitions (may have overrides).
   virtual bool canBeOverridenInSubclass(ObjCInterfaceDecl *IDecl,

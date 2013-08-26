@@ -148,6 +148,8 @@ Module maps are specified as separate files (each named ``module.map``) alongsid
 .. note::
 
   To actually see any benefits from modules, one first has to introduce module maps for the underlying C standard library and the libraries and headers on which it depends. The section `Modularizing a Platform`_ describes the steps one must take to write these module maps.
+  
+One can use module maps without modules to check the integrity of the use of header files. To do this, use the ``-fmodule-maps`` option instead of the ``-fmodules`` option.
 
 Compilation model
 -----------------
@@ -165,11 +167,14 @@ Command-line parameters
 ``-fcxx-modules``
   Enable the modules feature for C++ (EXPERIMENTAL and VERY BROKEN).
 
+``-fmodule-maps``
+  Enable interpretation of module maps (EXPERIMENTAL). This option is implied by ``-fmodules``.
+
 ``-fmodules-cache-path=<directory>``
   Specify the path to the modules cache. If not provided, Clang will select a system-appropriate default.
 
-``-f[no-]modules-autolink``
-  Enable of disable automatic linking against the libraries associated with imported modules.
+``-fno-autolink``
+  Disable automatic linking against the libraries associated with imported modules.
 
 ``-fmodules-ignore-macro=macroname``
   Instruct modules to ignore the named macro when selecting an appropriate module variant. Use this for macros defined on the command line that don't affect how modules are built, to improve sharing of compiled module files.
@@ -231,8 +236,8 @@ Module map files use a simplified form of the C99 lexer, with the same rules for
 
   ``config_macros`` ``export``     ``module``
   ``conflict``      ``framework``  ``requires``
-  ``exclude``       ``header``     ``umbrella``
-  ``explicit``      ``link``
+  ``exclude``       ``header``     ``private``
+  ``explicit``      ``link``       ``umbrella``
 
 Module map file
 ---------------
@@ -360,6 +365,7 @@ A header declaration specifies that a particular header is associated with the e
 
   *header-declaration*:
     ``umbrella``:sub:`opt` ``header`` *string-literal*
+    ``private`` ``header`` *string-literal*
     ``exclude`` ``header`` *string-literal*
 
 A header declaration that does not contain ``exclude`` specifies a header that contributes to the enclosing module. Specifically, when the module is built, the named header will be parsed and its declarations will be (logically) placed into the enclosing submodule.
@@ -371,6 +377,8 @@ A header with the ``umbrella`` specifier is called an umbrella header. An umbrel
     explicit ``header`` declarations. Use the   
     ``-Wincomplete-umbrella`` warning option to ask Clang to complain
     about headers not covered by the umbrella header or the module map.
+
+A header with the ``private`` specifier may not be included from outside the module itself.
 
 A header with the ``exclude`` specifier is excluded from the module. It will not be included when the module is built, nor will it be considered to be part of the module.
 

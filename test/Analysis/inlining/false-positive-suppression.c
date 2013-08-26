@@ -9,6 +9,8 @@ int *getNull() {
   return 0;
 }
 
+int* getPtr();
+
 int *dynCastToInt(void *ptr) {
   if (opaquePropertyCheck(ptr))
     return (int *)ptr;
@@ -82,6 +84,14 @@ void testMultipleStore(void *p) {
 #endif
 }
 
+// Test that div by zero does not get suppressed. This is a policy choice.
+int retZero() {
+  return 0;
+}
+int triggerDivZero () {
+  int y = retZero();
+  return 5/y; // expected-warning {{Division by zero}}
+}
 
 // --------------------------
 // "Suppression suppression"
@@ -139,6 +149,27 @@ void testTrackNullVariable() {
 #ifndef SUPPRESSED
   // expected-warning@-2 {{Dereference of null pointer}}
 #endif
+}
+
+void inlinedIsDifferent(int inlined) {
+  int i;
+
+  // We were erroneously picking up the inner stack frame's initialization,
+  // even though the error occurs in the outer stack frame!
+  int *p = inlined ? &i : getNull();
+
+  if (!inlined)
+    inlinedIsDifferent(1);
+
+  *p = 1;
+#ifndef SUPPRESSED
+  // expected-warning@-2 {{Dereference of null pointer}}
+#endif
+}
+
+void testInlinedIsDifferent() {
+  // <rdar://problem/13787723>
+  inlinedIsDifferent(0);
 }
 
 
@@ -219,9 +250,10 @@ int derefAssignment(int *p) {
   // expected-warning@-2 {{Dereference of null pointer}}
 #endif
 }
+
 void ternaryAssignment(char cond) {
   static int x;
-  int *p = cond ? &x : getNull();
+  int *p = cond ? getNull() : getPtr();
   derefAssignment(p);
 }
 
@@ -237,4 +269,30 @@ int ternaryRetNull(char cond) {
 #endif
 }
 
+// Test suppression of nested conditional operators.
+int testConditionalOperatorSuppress(int x) {
+  return *(x ? getNull() : getPtr());
+#ifndef SUPPRESSED
+  // expected-warning@-2 {{Dereference of null pointer}}
+#endif
+}
+int testNestedConditionalOperatorSuppress(int x) {
+  return *(x ? (x ? getNull() : getPtr()) : getPtr());
+#ifndef SUPPRESSED
+  // expected-warning@-2 {{Dereference of null pointer}}
+#endif
+}
+int testConditionalOperator(int x) {
+  return *(x ? 0 : getPtr()); // expected-warning {{Dereference of null pointer}}
+}
+int testNestedConditionalOperator(int x) {
+  return *(x ? (x ? 0 : getPtr()) : getPtr()); // expected-warning {{Dereference of null pointer}}
+}
+
+int testConditionalOperatorSuppressFloatCond(float x) {
+  return *(x ? getNull() : getPtr());
+#ifndef SUPPRESSED
+  // expected-warning@-2 {{Dereference of null pointer}}
+#endif
+}
 

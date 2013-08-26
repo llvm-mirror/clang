@@ -93,7 +93,7 @@ void c() {
     break;
   }
 }
-template<bool B> int f() { return B; }
+template <bool B> int f() { return B; } // expected-note {{candidate template ignored: invalid explicitly-specified argument for template parameter 'B'}}
 template int f<&S::operator int>(); // expected-error {{does not refer to a function template}}
 template int f<(bool)&S::operator int>();
 
@@ -101,7 +101,7 @@ int n = Val<bool, &S::operator int>::value; // expected-error {{conversion from 
 
 namespace NonConstLValue {
   struct S {
-    constexpr operator int() { return 10; }
+    constexpr operator int() const { return 10; }
   };
   S s; // not constexpr
   // Under the FDIS, this is not a converted constant expression.

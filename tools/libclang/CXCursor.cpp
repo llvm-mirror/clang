@@ -75,7 +75,7 @@ CXCursor cxcursor::MakeCXCursor(const Decl *D, CXTranslationUnit TU,
         RegionOfInterest.getBegin() == RegionOfInterest.getEnd()) {
       SmallVector<SourceLocation, 16> SelLocs;
       cast<ObjCMethodDecl>(D)->getSelectorLocs(SelLocs);
-      SmallVector<SourceLocation, 16>::iterator
+      SmallVectorImpl<SourceLocation>::iterator
         I=std::find(SelLocs.begin(), SelLocs.end(),RegionOfInterest.getBegin());
       if (I != SelLocs.end())
         SelectorIdIndex = I - SelLocs.begin();
@@ -215,6 +215,8 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::TypeTraitExprClass:
   case Stmt::CXXBindTemporaryExprClass:
   case Stmt::CXXDefaultArgExprClass:
+  case Stmt::CXXDefaultInitExprClass:
+  case Stmt::CXXStdInitializerListExprClass:
   case Stmt::CXXScalarValueInitExprClass:
   case Stmt::CXXUuidofExprClass:
   case Stmt::ChooseExprClass:
@@ -268,6 +270,10 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
 
   case Stmt::DeclStmtClass:
     K = CXCursor_DeclStmt;
+    break;
+
+  case Stmt::CapturedStmtClass:
+    K = CXCursor_UnexposedStmt;
     break;
 
   case Stmt::IntegerLiteralClass:
@@ -430,7 +436,21 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
     K = CXCursor_SizeOfPackExpr;
     break;
 
-  case Stmt::DeclRefExprClass:           
+  case Stmt::DeclRefExprClass:
+    if (const ImplicitParamDecl *IPD =
+         dyn_cast_or_null<ImplicitParamDecl>(cast<DeclRefExpr>(S)->getDecl())) {
+      if (const ObjCMethodDecl *MD =
+            dyn_cast<ObjCMethodDecl>(IPD->getDeclContext())) {
+        if (MD->getSelfDecl() == IPD) {
+          K = CXCursor_ObjCSelfExpr;
+          break;
+        }
+      }
+    }
+
+    K = CXCursor_DeclRefExpr;
+    break;
+
   case Stmt::DependentScopeDeclRefExprClass:
   case Stmt::SubstNonTypeTemplateParmExprClass:
   case Stmt::SubstNonTypeTemplateParmPackExprClass:
@@ -442,6 +462,7 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::CXXDependentScopeMemberExprClass:
   case Stmt::CXXPseudoDestructorExprClass:
   case Stmt::MemberExprClass:            
+  case Stmt::MSPropertyRefExprClass:
   case Stmt::ObjCIsaExprClass:
   case Stmt::ObjCIvarRefExprClass:    
   case Stmt::ObjCPropertyRefExprClass: 
@@ -472,7 +493,7 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
         RegionOfInterest.getBegin() == RegionOfInterest.getEnd()) {
       SmallVector<SourceLocation, 16> SelLocs;
       cast<ObjCMessageExpr>(S)->getSelectorLocs(SelLocs);
-      SmallVector<SourceLocation, 16>::iterator
+      SmallVectorImpl<SourceLocation>::iterator
         I=std::find(SelLocs.begin(), SelLocs.end(),RegionOfInterest.getBegin());
       if (I != SelLocs.end())
         SelectorIdIndex = I - SelLocs.begin();
@@ -484,6 +505,10 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::MSDependentExistsStmtClass:
     K = CXCursor_UnexposedStmt;
     break;
+  case Stmt::OMPParallelDirectiveClass:
+    K = CXCursor_OMPParallelDirective;
+    break;
+  
   }
   
   CXCursor C = { K, 0, { Parent, S, TU } };
@@ -816,7 +841,7 @@ void cxcursor::getOverriddenCursors(CXCursor cursor,
   SmallVector<const NamedDecl *, 8> OverDecls;
   D->getASTContext().getOverriddenMethods(D, OverDecls);
 
-  for (SmallVector<const NamedDecl *, 8>::iterator
+  for (SmallVectorImpl<const NamedDecl *>::iterator
          I = OverDecls.begin(), E = OverDecls.end(); I != E; ++I) {
     overridden.push_back(MakeCXCursor(*I, TU));
   }
@@ -1025,7 +1050,7 @@ unsigned clang_CXCursorSet_contains(CXCursorSet set, CXCursor cursor) {
   CXCursorSet_Impl *setImpl = unpackCXCursorSet(set);
   if (!setImpl)
     return 0;
-  return setImpl->find(cursor) == setImpl->end();
+  return setImpl->find(cursor) != setImpl->end();
 }
 
 unsigned clang_CXCursorSet_insert(CXCursorSet set, CXCursor cursor) {

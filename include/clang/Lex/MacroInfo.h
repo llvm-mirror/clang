@@ -145,9 +145,12 @@ public:
   /// \brief Return true if the specified macro definition is equal to
   /// this macro in spelling, arguments, and whitespace.
   ///
-  /// This is used to emit duplicate definition warnings.  This implements the rules
-  /// in C99 6.10.3.
-  bool isIdenticalTo(const MacroInfo &Other, Preprocessor &PP) const;
+  /// \param Syntactically if true, the macro definitions can be identical even
+  /// if they use different identifiers for the function macro parameters.
+  /// Otherwise the comparison is lexical and this implements the rules in
+  /// C99 6.10.3.
+  bool isIdenticalTo(const MacroInfo &Other, Preprocessor &PP,
+                     bool Syntactically) const;
 
   /// \brief Set or clear the isBuiltinMacro flag.
   void setIsBuiltinMacro(bool Val = true) {
@@ -248,7 +251,7 @@ public:
     return ReplacementTokens[Tok];
   }
 
-  typedef SmallVector<Token, 8>::const_iterator tokens_iterator;
+  typedef SmallVectorImpl<Token>::const_iterator tokens_iterator;
   tokens_iterator tokens_begin() const { return ReplacementTokens.begin(); }
   tokens_iterator tokens_end() const { return ReplacementTokens.end(); }
   bool tokens_empty() const { return ReplacementTokens.empty(); }
@@ -418,7 +421,7 @@ public:
     bool isValid() const { return DefDirective != 0; }
     bool isInvalid() const { return !isValid(); }
 
-    operator bool() const { return isValid(); }
+    LLVM_EXPLICIT operator bool() const { return isValid(); }
 
     inline DefInfo getPreviousDefinition(bool AllowHidden = false);
     const DefInfo getPreviousDefinition(bool AllowHidden = false) const {

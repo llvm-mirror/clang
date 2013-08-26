@@ -30,7 +30,8 @@ static void HandleMSP430InterruptAttr(Decl *d,
                                       const AttributeList &Attr, Sema &S) {
     // Check the attribute arguments.
     if (Attr.getNumArgs() != 1) {
-      S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 1;
+      S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+        << Attr.getName() << 1;
       return;
     }
 
@@ -39,8 +40,9 @@ static void HandleMSP430InterruptAttr(Decl *d,
     Expr *NumParamsExpr = static_cast<Expr *>(Attr.getArg(0));
     llvm::APSInt NumParams(32);
     if (!NumParamsExpr->isIntegerConstantExpr(NumParams, S.Context)) {
-      S.Diag(Attr.getLoc(), diag::err_attribute_argument_not_int)
-        << "interrupt" << NumParamsExpr->getSourceRange();
+      S.Diag(Attr.getLoc(), diag::err_attribute_argument_type)
+        << Attr.getName() << AANT_ArgumentIntegerConstant
+        << NumParamsExpr->getSourceRange();
       return;
     }
 
@@ -71,61 +73,13 @@ namespace {
   };
 }
 
-static void HandleMBlazeInterruptHandlerAttr(Decl *d, const AttributeList &Attr,
-                                             Sema &S) {
-  // Check the attribute arguments.
-  if (Attr.getNumArgs() != 0) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 1;
-    return;
-  }
-
-  // FIXME: Check for decl - it should be void ()(void).
-
-  d->addAttr(::new (S.Context) MBlazeInterruptHandlerAttr(Attr.getLoc(),
-                                                          S.Context));
-  d->addAttr(::new (S.Context) UsedAttr(Attr.getLoc(), S.Context));
-}
-
-static void HandleMBlazeSaveVolatilesAttr(Decl *d, const AttributeList &Attr,
-                                          Sema &S) {
-  // Check the attribute arguments.
-  if (Attr.getNumArgs() != 0) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 1;
-    return;
-  }
-
-  // FIXME: Check for decl - it should be void ()(void).
-
-  d->addAttr(::new (S.Context) MBlazeSaveVolatilesAttr(Attr.getLoc(),
-                                                       S.Context));
-  d->addAttr(::new (S.Context) UsedAttr(Attr.getLoc(), S.Context));
-}
-
-
-namespace {
-  class MBlazeAttributesSema : public TargetAttributesSema {
-  public:
-    MBlazeAttributesSema() { }
-    bool ProcessDeclAttribute(Scope *scope, Decl *D, const AttributeList &Attr,
-                              Sema &S) const {
-      if (Attr.getName()->getName() == "interrupt_handler") {
-        HandleMBlazeInterruptHandlerAttr(D, Attr, S);
-        return true;
-      } else if (Attr.getName()->getName() == "save_volatiles") {
-        HandleMBlazeSaveVolatilesAttr(D, Attr, S);
-        return true;
-      }
-      return false;
-    }
-  };
-}
-
 static void HandleX86ForceAlignArgPointerAttr(Decl *D,
                                               const AttributeList& Attr,
                                               Sema &S) {
   // Check the attribute arguments.
   if (Attr.getNumArgs() != 0) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 0;
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << Attr.getName() << 0;
     return;
   }
 
@@ -161,6 +115,15 @@ DLLImportAttr *Sema::mergeDLLImportAttr(Decl *D, SourceRange Range,
   if (D->hasAttr<DLLImportAttr>())
     return NULL;
 
+  if (VarDecl *VD = dyn_cast<VarDecl>(D)) {
+    if (VD->hasDefinition()) {
+      // dllimport cannot be applied to definitions.
+      Diag(D->getLocation(), diag::warn_attribute_invalid_on_definition)
+        << "dllimport";
+      return NULL;
+    }
+  }
+
   return ::new (Context) DLLImportAttr(Range, Context,
                                        AttrSpellingListIndex);
 }
@@ -168,7 +131,8 @@ DLLImportAttr *Sema::mergeDLLImportAttr(Decl *D, SourceRange Range,
 static void HandleDLLImportAttr(Decl *D, const AttributeList &Attr, Sema &S) {
   // check the attribute arguments.
   if (Attr.getNumArgs() != 0) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 0;
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << Attr.getName() << 0;
     return;
   }
 
@@ -214,7 +178,8 @@ DLLExportAttr *Sema::mergeDLLExportAttr(Decl *D, SourceRange Range,
 static void HandleDLLExportAttr(Decl *D, const AttributeList &Attr, Sema &S) {
   // check the attribute arguments.
   if (Attr.getNumArgs() != 0) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 0;
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << Attr.getName() << 0;
     return;
   }
 
@@ -271,7 +236,8 @@ namespace {
 static void HandleMips16Attr(Decl *D, const AttributeList &Attr, Sema &S) {
   // check the attribute arguments.
   if (Attr.hasParameterOrArguments()) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 0;
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << Attr.getName() << 0;
     return;
   }
   // Attribute can only be applied to function types.
@@ -287,7 +253,8 @@ static void HandleMips16Attr(Decl *D, const AttributeList &Attr, Sema &S) {
 static void HandleNoMips16Attr(Decl *D, const AttributeList &Attr, Sema &S) {
   // check the attribute arguments.
   if (Attr.hasParameterOrArguments()) {
-    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments) << 0;
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << Attr.getName() << 0;
     return;
   }
   // Attribute can only be applied to function types.
@@ -327,8 +294,6 @@ const TargetAttributesSema &Sema::getTargetAttributesSema() const {
   switch (Triple.getArch()) {
   case llvm::Triple::msp430:
     return *(TheTargetAttributesSema = new MSP430AttributesSema);
-  case llvm::Triple::mblaze:
-    return *(TheTargetAttributesSema = new MBlazeAttributesSema);
   case llvm::Triple::x86:
   case llvm::Triple::x86_64:
     return *(TheTargetAttributesSema = new X86AttributesSema);

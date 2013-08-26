@@ -97,3 +97,45 @@ void test24(char *buffer) {
   use(buffer);
   buffer[1] = 'b';
 }
+
+// Ensure idc works on pointers with constant offset.
+void idcchar(const char *s2) {
+  if(s2)
+    ;
+}
+void testConstantOffset(char *value) {
+  char *cursor = value + 5;
+  idcchar(cursor);
+  if (*cursor) {
+    cursor++;
+  }
+}
+
+// Ensure idc works for integer zero values (ex: suppressed div by zero).
+void idcZero(int assume) {
+  if (assume)
+    ;
+}
+
+int idcTriggerZeroValue(int m) {
+  idcZero(m);
+  return 5/m; // no-warning
+}
+
+int idcTriggerZeroValueThroughCall(int i) {
+  return 5/i; // no-warning
+}
+void idcTrackZeroValueThroughCall(int x) {
+  idcZero(x);
+  idcTriggerZeroValueThroughCall(x);
+}
+
+int idcTriggerZeroThroughDoubleAssignemnt(int i) {
+  return 5/i; // no-warning
+}
+void idcTrackZeroThroughDoubleAssignemnt(int x) {
+  idcZero(x);
+  int y = x;
+  int z = y;
+  idcTriggerZeroValueThroughCall(z);
+}

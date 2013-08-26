@@ -126,8 +126,18 @@ class Attr {
   code AdditionalMembers = [{}];
 }
 
+/// A type attribute is not processed on a declaration or a statement.
+class TypeAttr : Attr {
+  let ASTNode = 0;
+}
+
 /// An inheritable attribute is inherited by later redeclarations.
 class InheritableAttr : Attr;
+
+/// A target-specific attribute that is meant to be processed via
+/// TargetAttributesSema::ProcessDeclAttribute.  This class is meant to be used
+/// as a mixin with InheritableAttr or Attr depending on the attribute's needs.
+class TargetSpecificAttr;
 
 /// An inheritable parameter attribute is inherited by later
 /// redeclarations, even when it's written on a parameter.
@@ -144,10 +154,9 @@ class IgnoredAttr : Attr {
 // Attributes begin here
 //
 
-def AddressSpace : Attr {
+def AddressSpace : TypeAttr {
   let Spellings = [GNU<"address_space">];
   let Args = [IntArgument<"AddressSpace">];
-  let ASTNode = 0;
 }
 
 def Alias : InheritableAttr {
@@ -172,7 +181,7 @@ def AlignMac68k : InheritableAttr {
   let SemaHandler = 0;
 }
 
-def AllocSize : Attr {
+def AllocSize : InheritableAttr {
   let Spellings = [GNU<"alloc_size">, CXX11<"gnu", "alloc_size">];
   let Args = [VariadicUnsignedArgument<"Args">];
 }
@@ -326,7 +335,7 @@ def CXX11NoReturn : InheritableAttr {
   let Subjects = [Function];
 }
 
-def OpenCLKernel : Attr {
+def OpenCLKernel : InheritableAttr {
   let Spellings = [Keyword<"__kernel">, Keyword<"kernel">];
 }
 
@@ -417,23 +426,13 @@ def MayAlias : InheritableAttr {
   let Spellings = [GNU<"may_alias">, CXX11<"gnu", "may_alias">];
 }
 
-def MSP430Interrupt : InheritableAttr {
+def MSP430Interrupt : InheritableAttr, TargetSpecificAttr {
   let Spellings = [];
   let Args = [UnsignedArgument<"Number">];
   let SemaHandler = 0;
 }
 
-def MBlazeInterruptHandler : InheritableAttr {
-  let Spellings = [];
-  let SemaHandler = 0;
-}
-
-def MBlazeSaveVolatiles : InheritableAttr {
-  let Spellings = [];
-  let SemaHandler = 0;
-}
-
-def Mips16 : InheritableAttr {
+def Mips16 : InheritableAttr, TargetSpecificAttr {
   let Spellings = [GNU<"mips16">, CXX11<"gnu", "mips16">];
   let Subjects = [Function];
 }
@@ -441,23 +440,20 @@ def Mips16 : InheritableAttr {
 def Mode : Attr {
   let Spellings = [GNU<"mode">, CXX11<"gnu", "mode">];
   let Args = [IdentifierArgument<"Mode">];
-  let ASTNode = 0;
 }
 
 def Naked : InheritableAttr {
   let Spellings = [GNU<"naked">, CXX11<"gnu", "naked">];
 }
 
-def NeonPolyVectorType : Attr {
+def NeonPolyVectorType : TypeAttr {
   let Spellings = [GNU<"neon_polyvector_type">];
   let Args = [IntArgument<"NumElements">];
-  let ASTNode = 0;
 }
 
-def NeonVectorType : Attr {
+def NeonVectorType : TypeAttr {
   let Spellings = [GNU<"neon_vector_type">];
   let Args = [IntArgument<"NumElements">];
-  let ASTNode = 0;
 }
 
 def ReturnsTwice : InheritableAttr {
@@ -476,7 +472,7 @@ def NoInline : InheritableAttr {
   let Spellings = [GNU<"noinline">, CXX11<"gnu", "noinline">];
 }
 
-def NoMips16 : InheritableAttr {
+def NoMips16 : InheritableAttr, TargetSpecificAttr {
   let Spellings = [GNU<"nomips16">, CXX11<"gnu", "nomips16">];
   let Subjects = [Function];
 }
@@ -558,12 +554,12 @@ def ObjCNSObject : InheritableAttr {
   let Spellings = [GNU<"NSObject">];
 }
 
-def ObjCPreciseLifetime : Attr {
+def ObjCPreciseLifetime : InheritableAttr {
   let Spellings = [GNU<"objc_precise_lifetime">];
   let Subjects = [Var];
 }
 
-def ObjCReturnsInnerPointer : Attr {
+def ObjCReturnsInnerPointer : InheritableAttr {
   let Spellings = [GNU<"objc_returns_inner_pointer">];
   let Subjects = [ObjCMethod];
 }
@@ -573,7 +569,7 @@ def ObjCRequiresSuper : InheritableAttr {
   let Subjects = [ObjCMethod];
 }
 
-def ObjCRootClass : Attr {
+def ObjCRootClass : InheritableAttr {
   let Spellings = [GNU<"objc_root_class">];
   let Subjects = [ObjCInterface];
 }
@@ -687,13 +683,12 @@ def ArcWeakrefUnavailable : InheritableAttr {
   let Subjects = [ObjCInterface];
 }
 
-def ObjCGC : Attr {
+def ObjCGC : TypeAttr {
   let Spellings = [GNU<"objc_gc">];
   let Args = [IdentifierArgument<"Kind">];
-  let ASTNode = 0;
 }
 
-def ObjCOwnership : Attr {
+def ObjCOwnership : InheritableAttr {
   let Spellings = [GNU<"objc_ownership">];
   let Args = [IdentifierArgument<"Kind">];
   let ASTNode = 0;
@@ -718,10 +713,9 @@ def Uuid : InheritableAttr {
   let Subjects = [CXXRecord];
 }
 
-def VectorSize : Attr {
+def VectorSize : TypeAttr {
   let Spellings = [GNU<"vector_size">, CXX11<"gnu", "vector_size">];
   let Args = [ExprArgument<"NumBytes">];
-  let ASTNode = 0;
 }
 
 def VecTypeHint : InheritableAttr {
@@ -750,6 +744,11 @@ def VecReturn : InheritableAttr {
   let Subjects = [CXXRecord];
 }
 
+def WarnUnused : InheritableAttr {
+  let Spellings = [GNU<"warn_unused">, CXX11<"gnu", "warn_unused">];
+  let Subjects = [Record];
+}
+
 def WarnUnusedResult : InheritableAttr {
   let Spellings = [GNU<"warn_unused_result">,
                    CXX11<"clang", "warn_unused_result">,
@@ -768,7 +767,7 @@ def WeakRef : InheritableAttr {
   let Spellings = [GNU<"weakref">, CXX11<"gnu", "weakref">];
 }
 
-def X86ForceAlignArgPointer : InheritableAttr {
+def X86ForceAlignArgPointer : InheritableAttr, TargetSpecificAttr {
   let Spellings = [];
 }
 
@@ -852,6 +851,20 @@ def SharedLockFunction : InheritableAttr {
   let TemplateDependent = 1;
 }
 
+def AssertExclusiveLock : InheritableAttr {
+  let Spellings = [GNU<"assert_exclusive_lock">];
+  let Args = [VariadicExprArgument<"Args">];
+  let LateParsed = 1;
+  let TemplateDependent = 1;
+}
+
+def AssertSharedLock : InheritableAttr {
+  let Spellings = [GNU<"assert_shared_lock">];
+  let Args = [VariadicExprArgument<"Args">];
+  let LateParsed = 1;
+  let TemplateDependent = 1;
+}
+
 // The first argument is an integer or boolean value specifying the return value
 // of a successful lock acquisition.
 def ExclusiveTrylockFunction : InheritableAttr {
@@ -905,6 +918,28 @@ def SharedLocksRequired : InheritableAttr {
   let TemplateDependent = 1;
 }
 
+// C/C++ consumed attributes.
+
+def CallableWhenUnconsumed : InheritableAttr {
+  let Spellings = [GNU<"callable_when_unconsumed">];
+  let Subjects = [CXXMethod];
+}
+
+def TestsUnconsumed : InheritableAttr {
+  let Spellings = [GNU<"tests_unconsumed">];
+  let Subjects = [CXXMethod];
+}
+
+def Consumes : InheritableAttr {
+  let Spellings = [GNU<"consumes">];
+  let Subjects = [CXXMethod];
+}
+
+def TestsConsumed : InheritableAttr {
+  let Spellings = [GNU<"tests_consumed">];
+  let Subjects = [CXXMethod];
+}
+
 // Type safety attributes for `void *' pointers and type tags.
 
 def ArgumentWithTypeTag : InheritableAttr {
@@ -928,15 +963,19 @@ def TypeTagForDatatype : InheritableAttr {
 
 // Microsoft-related attributes
 
+def MsProperty : Attr {
+  let Spellings = [Declspec<"property">];
+}
+
 def MsStruct : InheritableAttr {
   let Spellings = [Declspec<"ms_struct">];
 }
 
-def DLLExport : InheritableAttr {
+def DLLExport : InheritableAttr, TargetSpecificAttr {
   let Spellings = [Declspec<"dllexport">];
 }
 
-def DLLImport : InheritableAttr {
+def DLLImport : InheritableAttr, TargetSpecificAttr {
   let Spellings = [Declspec<"dllimport">];
 }
 
@@ -944,16 +983,28 @@ def ForceInline : InheritableAttr {
   let Spellings = [Keyword<"__forceinline">];
 }
 
+def SelectAny : InheritableAttr {
+  let Spellings = [Declspec<"selectany">];
+}
+
 def Win64 : InheritableAttr {
   let Spellings = [Keyword<"__w64">];
 }
 
-def Ptr32 : InheritableAttr {
+def Ptr32 : TypeAttr {
   let Spellings = [Keyword<"__ptr32">];
 }
 
-def Ptr64 : InheritableAttr {
+def Ptr64 : TypeAttr {
   let Spellings = [Keyword<"__ptr64">];
+}
+
+def SPtr : TypeAttr {
+  let Spellings = [Keyword<"__sptr">];
+}
+
+def UPtr : TypeAttr {
+  let Spellings = [Keyword<"__uptr">];
 }
 
 class MSInheritanceAttr : InheritableAttr;

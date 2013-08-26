@@ -24,6 +24,7 @@ using namespace clang;
 
 enum ActionType {
   GenClangAttrClasses,
+  GenClangAttrExprArgsList,
   GenClangAttrImpl,
   GenClangAttrList,
   GenClangAttrPCHRead,
@@ -47,7 +48,6 @@ enum ActionType {
   GenClangCommentHTMLNamedCharacterReferences,
   GenClangCommentCommandInfo,
   GenClangCommentCommandList,
-  GenOptParserDefs, GenOptParserImpl,
   GenArmNeon,
   GenArmNeonSema,
   GenArmNeonTest
@@ -56,12 +56,12 @@ enum ActionType {
 namespace {
   cl::opt<ActionType>
   Action(cl::desc("Action to perform:"),
-         cl::values(clEnumValN(GenOptParserDefs, "gen-opt-parser-defs",
-                               "Generate option definitions"),
-                    clEnumValN(GenOptParserImpl, "gen-opt-parser-impl",
-                               "Generate option parser implementation"),
-                    clEnumValN(GenClangAttrClasses, "gen-clang-attr-classes",
+         cl::values(clEnumValN(GenClangAttrClasses, "gen-clang-attr-classes",
                                "Generate clang attribute clases"),
+                    clEnumValN(GenClangAttrExprArgsList,
+                               "gen-clang-attr-expr-args-list",
+                               "Generate a clang attribute expression "
+                               "arguments list"),
                     clEnumValN(GenClangAttrImpl, "gen-clang-attr-impl",
                                "Generate clang attribute implementations"),
                     clEnumValN(GenClangAttrList, "gen-clang-attr-list",
@@ -143,6 +143,9 @@ bool ClangTableGenMain(raw_ostream &OS, RecordKeeper &Records) {
   case GenClangAttrClasses:
     EmitClangAttrClass(Records, OS);
     break;
+  case GenClangAttrExprArgsList:
+    EmitClangAttrExprArgsList(Records, OS);
+    break;
   case GenClangAttrImpl:
     EmitClangAttrImpl(Records, OS);
     break;
@@ -212,12 +215,6 @@ bool ClangTableGenMain(raw_ostream &OS, RecordKeeper &Records) {
     break;
   case GenClangCommentCommandList:
     EmitClangCommentCommandList(Records, OS);
-    break;
-  case GenOptParserDefs:
-    EmitOptParser(Records, OS, true);
-    break;
-  case GenOptParserImpl:
-    EmitOptParser(Records, OS, false);
     break;
   case GenArmNeon:
     EmitNeon(Records, OS);

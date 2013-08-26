@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Lex/TokenLexer.h"
-#include "MacroArgs.h"
+#include "clang/Lex/MacroArgs.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/MacroInfo.h"
@@ -121,7 +121,7 @@ void TokenLexer::destroy() {
 
 /// Remove comma ahead of __VA_ARGS__, if present, according to compiler dialect
 /// settings.  Returns true if the comma is removed.
-static bool MaybeRemoveCommaBeforeVaArgs(SmallVector<Token, 128> &ResultToks,
+static bool MaybeRemoveCommaBeforeVaArgs(SmallVectorImpl<Token> &ResultToks,
                                          bool &NextTokGetsSpace,
                                          bool HasPasteOperator,
                                          MacroInfo *Macro, unsigned MacroArgNo,
@@ -244,9 +244,11 @@ void TokenLexer::ExpandFunctionArguments() {
 
     // Otherwise, this is a use of the argument.  Find out if there is a paste
     // (##) operator before or after the argument.
-    bool PasteBefore =
+    bool NonEmptyPasteBefore =
       !ResultToks.empty() && ResultToks.back().is(tok::hashhash);
+    bool PasteBefore = i != 0 && Tokens[i-1].is(tok::hashhash);
     bool PasteAfter = i+1 != e && Tokens[i+1].is(tok::hashhash);
+    assert(!NonEmptyPasteBefore || PasteBefore);
 
     // In Microsoft mode, remove the comma before __VA_ARGS__ to ensure there
     // are no trailing commas if __VA_ARGS__ is empty.
@@ -275,6 +277,14 @@ void TokenLexer::ExpandFunctionArguments() {
         unsigned FirstResult = ResultToks.size();
         unsigned NumToks = MacroArgs::getArgLength(ResultArgToks);
         ResultToks.append(ResultArgToks, ResultArgToks+NumToks);
+
+        // In Microsoft-compatibility mode, we follow MSVC's preprocessing
+        // behavior by not considering single commas from nested macro
+        // expansions as argument separators. Set a flag on the token so we can
+        // test for this later when the macro expansion is processed.
+        if (PP.getLangOpts().MicrosoftMode && NumToks == 1 &&
+            ResultToks.back().is(tok::comma))
+          ResultToks.back().setFlag(Token::IgnoredComma);
 
         // If the '##' came from expanding an argument, turn it into 'unknown'
         // to avoid pasting.
@@ -314,7 +324,7 @@ void TokenLexer::ExpandFunctionArguments() {
       // that __VA_ARGS__ expands to multiple tokens, avoid a pasting error when
       // the expander trys to paste ',' with the first token of the __VA_ARGS__
       // expansion.
-      if (PasteBefore && ResultToks.size() >= 2 &&
+      if (NonEmptyPasteBefore && ResultToks.size() >= 2 &&
           ResultToks[ResultToks.size()-2].is(tok::comma) &&
           (unsigned)ArgNo == Macro->getNumArgs()-1 &&
           Macro->isVariadic()) {
@@ -350,7 +360,7 @@ void TokenLexer::ExpandFunctionArguments() {
       // case, we do not want the extra whitespace to be added.  For example,
       // we want ". ## foo" -> ".foo" not ". foo".
       if ((CurTok.hasLeadingSpace() || NextTokGetsSpace) &&
-          !PasteBefore)
+          !NonEmptyPasteBefore)
         ResultToks[ResultToks.size()-NumToks].setFlag(Token::LeadingSpace);
 
       NextTokGetsSpace = false;
@@ -371,10 +381,14 @@ void TokenLexer::ExpandFunctionArguments() {
     }
 
     // If this is on the RHS of a paste operator, we've already copied the
-    // paste operator to the ResultToks list.  Remove it.
-    assert(PasteBefore && ResultToks.back().is(tok::hashhash));
-    NextTokGetsSpace |= ResultToks.back().hasLeadingSpace();
-    ResultToks.pop_back();
+    // paste operator to the ResultToks list, unless the LHS was empty too.
+    // Remove it.
+    assert(PasteBefore);
+    if (NonEmptyPasteBefore) {
+      assert(ResultToks.back().is(tok::hashhash));
+      NextTokGetsSpace |= ResultToks.back().hasLeadingSpace();
+      ResultToks.pop_back();
+    }
 
     // If this is the __VA_ARGS__ token, and if the argument wasn't provided,
     // and if the macro had at least one real argument, and if the token before

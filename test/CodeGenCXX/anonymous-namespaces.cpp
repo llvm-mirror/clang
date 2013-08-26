@@ -1,6 +1,6 @@
 // RUN: %clang_cc1 -fcxx-exceptions -fexceptions -triple x86_64-apple-darwin10 -emit-llvm %s -o - > %t
-// RUN: FileCheck %s -check-prefix=1 < %t
-// RUN: FileCheck %s -check-prefix=2 < %t
+// RUN: FileCheck %s -check-prefix=CHECK-1 < %t
+// RUN: FileCheck %s -check-prefix=CHECK-2 < %t
 
 int f();
 
@@ -66,3 +66,12 @@ namespace test2 {
 
   // CHECK-2: define internal void @_ZN5test21A1BINS_12_GLOBAL__N_11CEE3fooEv()
 }
+
+namespace {
+
+int bar() {
+  extern int a;
+  return a;
+}
+
+} // namespace

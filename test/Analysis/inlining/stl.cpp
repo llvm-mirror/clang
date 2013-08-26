@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-config c++-stdlib-inlining=false -verify %s
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-config c++-stdlib-inlining=true -DINLINE=1 -verify %s
+// RUN: %clang_cc1 -analyze -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-config c++-container-inlining=true -analyzer-config c++-stdlib-inlining=false -verify %s
+// RUN: %clang_cc1 -analyze -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-config c++-container-inlining=true -analyzer-config c++-stdlib-inlining=true -DINLINE=1 -verify %s
 
 #include "../Inputs/system-header-simulator-cxx.h"
 
@@ -27,3 +27,9 @@ void testException(std::exception e) {
   // expected-warning@-4 {{UNKNOWN}}
 #endif
 }
+
+void testList_pop_front(std::list<int> list) {
+  while(!list.empty())
+    list.pop_front();  // no-warning
+}
+

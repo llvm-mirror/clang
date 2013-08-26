@@ -18,6 +18,7 @@
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/SemaInternal.h"
+#include "TypeLocBuilder.h"
 using namespace clang;
 using namespace sema;
 
@@ -51,6 +52,74 @@ static bool isInInlineFunction(const DeclContext *DC) {
   return false;
 }
 
+MangleNumberingContext *
+Sema::getCurrentMangleNumberContext(const DeclContext *DC,
+                                    Decl *&ManglingContextDecl) {
+  // Compute the context for allocating mangling numbers in the current
+  // expression, if the ABI requires them.
+  ManglingContextDecl = ExprEvalContexts.back().ManglingContextDecl;
+
+  enum ContextKind {
+    Normal,
+    DefaultArgument,
+    DataMember,
+    StaticDataMember
+  } Kind = Normal;
+
+  // Default arguments of member function parameters that appear in a class
+  // definition, as well as the initializers of data members, receive special
+  // treatment. Identify them.
+  if (ManglingContextDecl) {
+    if (ParmVarDecl *Param = dyn_cast<ParmVarDecl>(ManglingContextDecl)) {
+      if (const DeclContext *LexicalDC
+          = Param->getDeclContext()->getLexicalParent())
+        if (LexicalDC->isRecord())
+          Kind = DefaultArgument;
+    } else if (VarDecl *Var = dyn_cast<VarDecl>(ManglingContextDecl)) {
+      if (Var->getDeclContext()->isRecord())
+        Kind = StaticDataMember;
+    } else if (isa<FieldDecl>(ManglingContextDecl)) {
+      Kind = DataMember;
+    }
+  }
+
+  // Itanium ABI [5.1.7]:
+  //   In the following contexts [...] the one-definition rule requires closure
+  //   types in different translation units to "correspond":
+  bool IsInNonspecializedTemplate =
+    !ActiveTemplateInstantiations.empty() || CurContext->isDependentContext();
+  switch (Kind) {
+  case Normal:
+    //  -- the bodies of non-exported nonspecialized template functions
+    //  -- the bodies of inline functions
+    if ((IsInNonspecializedTemplate &&
+         !(ManglingContextDecl && isa<ParmVarDecl>(ManglingContextDecl))) ||
+        isInInlineFunction(CurContext)) {
+      ManglingContextDecl = 0;
+      return &Context.getManglingNumberContext(DC);
+    }
+
+    ManglingContextDecl = 0;
+    return 0;
+
+  case StaticDataMember:
+    //  -- the initializers of nonspecialized static members of template classes
+    if (!IsInNonspecializedTemplate) {
+      ManglingContextDecl = 0;
+      return 0;
+    }
+    // Fall through to get the current context.
+
+  case DataMember:
+    //  -- the in-class initializers of class members
+  case DefaultArgument:
+    //  -- default arguments appearing in class definitions
+    return &ExprEvalContexts.back().getMangleNumberingContext();
+  }
+
+  llvm_unreachable("unexpected context");
+}
+
 CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                  SourceRange IntroducerRange,
                  TypeSourceInfo *MethodType,
@@ -74,7 +143,6 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                                                 IntroducerRange.getBegin(),
                                                 MethodNameLoc),
                             MethodType->getType(), MethodType,
-                            /*isStatic=*/false,
                             SC_None,
                             /*isInline=*/true,
                             /*isConstExpr=*/false,
@@ -98,74 +166,13 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
       (*P)->setOwningFunction(Method);
   }
 
-  // Allocate a mangling number for this lambda expression, if the ABI
-  // requires one.
-  Decl *ContextDecl = ExprEvalContexts.back().LambdaContextDecl;
-
-  enum ContextKind {
-    Normal,
-    DefaultArgument,
-    DataMember,
-    StaticDataMember
-  } Kind = Normal;
-
-  // Default arguments of member function parameters that appear in a class
-  // definition, as well as the initializers of data members, receive special
-  // treatment. Identify them.
-  if (ContextDecl) {
-    if (ParmVarDecl *Param = dyn_cast<ParmVarDecl>(ContextDecl)) {
-      if (const DeclContext *LexicalDC
-          = Param->getDeclContext()->getLexicalParent())
-        if (LexicalDC->isRecord())
-          Kind = DefaultArgument;
-    } else if (VarDecl *Var = dyn_cast<VarDecl>(ContextDecl)) {
-      if (Var->getDeclContext()->isRecord())
-        Kind = StaticDataMember;
-    } else if (isa<FieldDecl>(ContextDecl)) {
-      Kind = DataMember;
-    }
+  Decl *ManglingContextDecl;
+  if (MangleNumberingContext *MCtx =
+          getCurrentMangleNumberContext(Class->getDeclContext(),
+                                        ManglingContextDecl)) {
+    unsigned ManglingNumber = MCtx->getManglingNumber(Method);
+    Class->setLambdaMangling(ManglingNumber, ManglingContextDecl);
   }
-
-  // Itanium ABI [5.1.7]:
-  //   In the following contexts [...] the one-definition rule requires closure
-  //   types in different translation units to "correspond":
-  bool IsInNonspecializedTemplate =
-    !ActiveTemplateInstantiations.empty() || CurContext->isDependentContext();
-  unsigned ManglingNumber;
-  switch (Kind) {
-  case Normal:
-    //  -- the bodies of non-exported nonspecialized template functions
-    //  -- the bodies of inline functions
-    if ((IsInNonspecializedTemplate &&
-         !(ContextDecl && isa<ParmVarDecl>(ContextDecl))) ||
-        isInInlineFunction(CurContext))
-      ManglingNumber = Context.getLambdaManglingNumber(Method);
-    else
-      ManglingNumber = 0;
-
-    // There is no special context for this lambda.
-    ContextDecl = 0;
-    break;
-
-  case StaticDataMember:
-    //  -- the initializers of nonspecialized static members of template classes
-    if (!IsInNonspecializedTemplate) {
-      ManglingNumber = 0;
-      ContextDecl = 0;
-      break;
-    }
-    // Fall through to assign a mangling number.
-
-  case DataMember:
-    //  -- the in-class initializers of class members
-  case DefaultArgument:
-    //  -- default arguments appearing in class definitions
-    ManglingNumber = ExprEvalContexts.back().getLambdaMangleContext()
-                       .getManglingNumber(Method);
-    break;
-  }
-
-  Class->setLambdaMangling(ManglingNumber, ContextDecl);
 
   return Method;
 }
@@ -173,6 +180,7 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
 LambdaScopeInfo *Sema::enterLambdaScope(CXXMethodDecl *CallOperator,
                                         SourceRange IntroducerRange,
                                         LambdaCaptureDefault CaptureDefault,
+                                        SourceLocation CaptureDefaultLoc,
                                         bool ExplicitParams,
                                         bool ExplicitResultType,
                                         bool Mutable) {
@@ -182,6 +190,7 @@ LambdaScopeInfo *Sema::enterLambdaScope(CXXMethodDecl *CallOperator,
     LSI->ImpCaptureStyle = LambdaScopeInfo::ImpCap_LambdaByval;
   else if (CaptureDefault == LCD_ByRef)
     LSI->ImpCaptureStyle = LambdaScopeInfo::ImpCap_LambdaByref;
+  LSI->CaptureDefaultLoc = CaptureDefaultLoc;
   LSI->IntroducerRange = IntroducerRange;
   LSI->ExplicitParams = ExplicitParams;
   LSI->Mutable = Mutable;
@@ -194,9 +203,6 @@ LambdaScopeInfo *Sema::enterLambdaScope(CXXMethodDecl *CallOperator,
       if (RequireCompleteType(CallOperator->getLocStart(), LSI->ReturnType,
                               diag::err_lambda_incomplete_result)) {
         // Do nothing.
-      } else if (LSI->ReturnType->isObjCObjectOrInterfaceType()) {
-        Diag(CallOperator->getLocStart(), diag::err_lambda_objc_object_result)
-          << LSI->ReturnType;
       }
     }
   } else {
@@ -276,11 +282,12 @@ static EnumDecl *findEnumForBlockReturn(Expr *E) {
   //   - it is an implicit integral conversion applied to an
   //     enumerator-like expression of type T or
   if (ImplicitCastExpr *ICE = dyn_cast<ImplicitCastExpr>(E)) {
-    // We can only see integral conversions in valid enumerator-like
-    // expressions.
+    // We can sometimes see integral conversions in valid
+    // enumerator-like expressions.
     if (ICE->getCastKind() == CK_IntegralCast)
       return findEnumForBlockReturn(ICE->getSubExpr());
-    return 0;
+
+    // Otherwise, just rely on the type.
   }
 
   //   - it is an expression of that formal enum type.
@@ -429,6 +436,88 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
   }
 }
 
+FieldDecl *Sema::checkInitCapture(SourceLocation Loc, bool ByRef,
+                                  IdentifierInfo *Id, Expr *InitExpr) {
+  LambdaScopeInfo *LSI = getCurLambda();
+
+  // C++1y [expr.prim.lambda]p11:
+  //   The type of [the] member corresponds to the type of a hypothetical
+  //   variable declaration of the form "auto init-capture;"
+  QualType DeductType = Context.getAutoDeductType();
+  TypeLocBuilder TLB;
+  TLB.pushTypeSpec(DeductType).setNameLoc(Loc);
+  if (ByRef) {
+    DeductType = BuildReferenceType(DeductType, true, Loc, Id);
+    assert(!DeductType.isNull() && "can't build reference to auto");
+    TLB.push<ReferenceTypeLoc>(DeductType).setSigilLoc(Loc);
+  }
+  TypeSourceInfo *TSI = TLB.getTypeSourceInfo(Context, DeductType);
+
+  InitializationKind InitKind = InitializationKind::CreateDefault(Loc);
+  Expr *Init = InitExpr;
+  if (ParenListExpr *Parens = dyn_cast<ParenListExpr>(Init)) {
+    if (Parens->getNumExprs() == 1) {
+      Init = Parens->getExpr(0);
+      InitKind = InitializationKind::CreateDirect(
+          Loc, Parens->getLParenLoc(), Parens->getRParenLoc());
+    } else {
+      // C++1y [dcl.spec.auto]p3:
+      //   In an initializer of the form ( expression-list ), the
+      //   expression-list shall be a single assignment-expression.
+      if (Parens->getNumExprs() == 0)
+        Diag(Parens->getLocStart(), diag::err_init_capture_no_expression)
+          << Id;
+      else if (Parens->getNumExprs() > 1)
+        Diag(Parens->getExpr(1)->getLocStart(),
+             diag::err_init_capture_multiple_expressions)
+          << Id;
+      return 0;
+    }
+  } else if (isa<InitListExpr>(Init))
+    // We do not need to distinguish between direct-list-initialization
+    // and copy-list-initialization here, because we will always deduce
+    // std::initializer_list<T>, and direct- and copy-list-initialization
+    // always behave the same for such a type.
+    // FIXME: We should model whether an '=' was present.
+    InitKind = InitializationKind::CreateDirectList(Loc);
+  else
+    InitKind = InitializationKind::CreateCopy(Loc, Loc);
+  QualType DeducedType;
+  if (DeduceAutoType(TSI, Init, DeducedType) == DAR_Failed) {
+    if (isa<InitListExpr>(Init))
+      Diag(Loc, diag::err_init_capture_deduction_failure_from_init_list)
+          << Id << Init->getSourceRange();
+    else
+      Diag(Loc, diag::err_init_capture_deduction_failure)
+          << Id << Init->getType() << Init->getSourceRange();
+  }
+  if (DeducedType.isNull())
+    return 0;
+
+  //   [...] a non-static data member named by the identifier is declared in
+  //   the closure type. This member is not a bit-field and not mutable.
+  // Core issue: the member is (probably...) public.
+  FieldDecl *NewFD = CheckFieldDecl(
+      Id, DeducedType, TSI, LSI->Lambda,
+      Loc, /*Mutable*/ false, /*BitWidth*/ 0, ICIS_NoInit,
+      Loc, AS_public, /*PrevDecl*/ 0, /*Declarator*/ 0);
+  LSI->Lambda->addDecl(NewFD);
+
+  if (CurContext->isDependentContext()) {
+    LSI->addInitCapture(NewFD, InitExpr);
+  } else {
+    InitializedEntity Entity = InitializedEntity::InitializeMember(NewFD);
+    InitializationSequence InitSeq(*this, Entity, InitKind, Init);
+    if (!InitSeq.Diagnose(*this, Entity, InitKind, Init)) {
+      ExprResult InitResult = InitSeq.Perform(*this, Entity, InitKind, Init);
+      if (!InitResult.isInvalid())
+        LSI->addInitCapture(NewFD, InitResult.take());
+    }
+  }
+
+  return NewFD;
+}
+
 void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
                                         Declarator &ParamInfo,
                                         Scope *CurScope) {
@@ -453,8 +542,7 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
     FunctionProtoType::ExtProtoInfo EPI;
     EPI.HasTrailingReturn = true;
     EPI.TypeQuals |= DeclSpec::TQ_const;
-    QualType MethodTy = Context.getFunctionType(Context.DependentTy,
-                                                ArrayRef<QualType>(),
+    QualType MethodTy = Context.getFunctionType(Context.DependentTy, None,
                                                 EPI);
     MethodTyInfo = Context.getTrivialTypeSourceInfo(MethodTy);
     ExplicitParams = false;
@@ -512,17 +600,23 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
     
   // Introduce the lambda scope.
   LambdaScopeInfo *LSI
-    = enterLambdaScope(Method, Intro.Range, Intro.Default, ExplicitParams,
+    = enterLambdaScope(Method,
+                       Intro.Range,
+                       Intro.Default, Intro.DefaultLoc,
+                       ExplicitParams,
                        ExplicitResultType,
                        !Method->isConst());
- 
+
+  // Distinct capture names, for diagnostics.
+  llvm::SmallSet<IdentifierInfo*, 8> CaptureNames;
+
   // Handle explicit captures.
   SourceLocation PrevCaptureLoc
     = Intro.Default == LCD_None? Intro.Range.getBegin() : Intro.DefaultLoc;
-  for (SmallVector<LambdaCapture, 4>::const_iterator
-         C = Intro.Captures.begin(), 
-         E = Intro.Captures.end(); 
-       C != E; 
+  for (SmallVectorImpl<LambdaCapture>::const_iterator
+         C = Intro.Captures.begin(),
+         E = Intro.Captures.end();
+       C != E;
        PrevCaptureLoc = C->Loc, ++C) {
     if (C->Kind == LCK_This) {
       // C++11 [expr.prim.lambda]p8:
@@ -562,6 +656,30 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
 
     assert(C->Id && "missing identifier for capture");
 
+    if (C->Init.isInvalid())
+      continue;
+    if (C->Init.isUsable()) {
+      // C++11 [expr.prim.lambda]p8:
+      //   An identifier or this shall not appear more than once in a
+      //   lambda-capture.
+      if (!CaptureNames.insert(C->Id))
+        Diag(C->Loc, diag::err_capture_more_than_once) << C->Id;
+
+      if (C->Init.get()->containsUnexpandedParameterPack())
+        ContainsUnexpandedParameterPack = true;
+
+      FieldDecl *NewFD = checkInitCapture(C->Loc, C->Kind == LCK_ByRef,
+                                          C->Id, C->Init.take());
+      // C++1y [expr.prim.lambda]p11:
+      //   Within the lambda-expression's lambda-declarator and
+      //   compound-statement, the identifier in the init-capture
+      //   hides any declaration of the same name in scopes enclosing
+      //   the lambda-expression.
+      if (NewFD)
+        PushOnScopeChains(NewFD, CurScope, false);
+      continue;
+    }
+
     // C++11 [expr.prim.lambda]p8:
     //   If a lambda-capture includes a capture-default that is &, the 
     //   identifiers in the lambda-capture shall not be preceded by &.
@@ -579,6 +697,9 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
       continue;
     }
 
+    // C++11 [expr.prim.lambda]p10:
+    //   The identifiers in a capture-list are looked up using the usual
+    //   rules for unqualified name lookup (3.4.1)
     DeclarationNameInfo Name(C->Id, C->Loc);
     LookupResult R(*this, Name, LookupOrdinaryName);
     LookupName(R, CurScope);
@@ -592,14 +713,27 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
         continue;
     }
 
-    // C++11 [expr.prim.lambda]p10:
-    //   The identifiers in a capture-list are looked up using the usual rules
-    //   for unqualified name lookup (3.4.1); each such lookup shall find a 
-    //   variable with automatic storage duration declared in the reaching 
-    //   scope of the local lambda expression.
-    // 
-    // Note that the 'reaching scope' check happens in tryCaptureVariable().
     VarDecl *Var = R.getAsSingle<VarDecl>();
+
+    // C++11 [expr.prim.lambda]p8:
+    //   An identifier or this shall not appear more than once in a
+    //   lambda-capture.
+    if (!CaptureNames.insert(C->Id)) {
+      if (Var && LSI->isCaptured(Var)) {
+        Diag(C->Loc, diag::err_capture_more_than_once)
+          << C->Id << SourceRange(LSI->getCapture(Var).getLocation())
+          << FixItHint::CreateRemoval(
+               SourceRange(PP.getLocForEndOfToken(PrevCaptureLoc), C->Loc));
+      } else
+        // Previous capture was an init-capture: no fixit.
+        Diag(C->Loc, diag::err_capture_more_than_once) << C->Id;
+      continue;
+    }
+
+    // C++11 [expr.prim.lambda]p10:
+    //   [...] each such lookup shall find a variable with automatic storage
+    //   duration declared in the reaching scope of the local lambda expression.
+    // Note that the 'reaching scope' check happens in tryCaptureVariable().
     if (!Var) {
       Diag(C->Loc, diag::err_capture_does_not_name_variable) << C->Id;
       continue;
@@ -612,18 +746,6 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
     if (!Var->hasLocalStorage()) {
       Diag(C->Loc, diag::err_capture_non_automatic_variable) << C->Id;
       Diag(Var->getLocation(), diag::note_previous_decl) << C->Id;
-      continue;
-    }
-
-    // C++11 [expr.prim.lambda]p8:
-    //   An identifier or this shall not appear more than once in a 
-    //   lambda-capture.
-    if (LSI->isCaptured(Var)) {
-      Diag(C->Loc, diag::err_capture_more_than_once) 
-        << C->Id
-        << SourceRange(LSI->getCapture(Var).getLocation())
-        << FixItHint::CreateRemoval(
-             SourceRange(PP.getLocForEndOfToken(PrevCaptureLoc), C->Loc));
       continue;
     }
 
@@ -698,18 +820,15 @@ static void addFunctionPointerConversion(Sema &S,
   {
     FunctionProtoType::ExtProtoInfo ExtInfo = Proto->getExtProtoInfo();
     ExtInfo.TypeQuals = 0;
-    FunctionTy =
-      S.Context.getFunctionType(Proto->getResultType(),
-                                ArrayRef<QualType>(Proto->arg_type_begin(),
-                                                   Proto->getNumArgs()),
-                                ExtInfo);
+    FunctionTy = S.Context.getFunctionType(Proto->getResultType(),
+                                           Proto->getArgTypes(), ExtInfo);
     FunctionPtrTy = S.Context.getPointerType(FunctionTy);
   }
   
   FunctionProtoType::ExtProtoInfo ExtInfo;
   ExtInfo.TypeQuals = Qualifiers::Const;
   QualType ConvTy =
-    S.Context.getFunctionType(FunctionPtrTy, ArrayRef<QualType>(), ExtInfo);
+    S.Context.getFunctionType(FunctionPtrTy, None, ExtInfo);
   
   SourceLocation Loc = IntroducerRange.getBegin();
   DeclarationName Name
@@ -724,7 +843,7 @@ static void addFunctionPointerConversion(Sema &S,
                                 ConvTy, 
                                 S.Context.getTrivialTypeSourceInfo(ConvTy, 
                                                                    Loc),
-                                /*isInline=*/false, /*isExplicit=*/false,
+                                /*isInline=*/true, /*isExplicit=*/false,
                                 /*isConstexpr=*/false, 
                                 CallOperator->getBody()->getLocEnd());
   Conversion->setAccess(AS_public);
@@ -738,7 +857,7 @@ static void addFunctionPointerConversion(Sema &S,
     = CXXMethodDecl::Create(S.Context, Class, Loc, 
                             DeclarationNameInfo(Name, Loc), FunctionTy, 
                             CallOperator->getTypeSourceInfo(),
-                            /*IsStatic=*/true, SC_Static, /*IsInline=*/true,
+                            SC_Static, /*IsInline=*/true,
                             /*IsConstexpr=*/false, 
                             CallOperator->getBody()->getLocEnd());
   SmallVector<ParmVarDecl *, 4> InvokeParams;
@@ -751,7 +870,6 @@ static void addFunctionPointerConversion(Sema &S,
                                                From->getType(),
                                                From->getTypeSourceInfo(),
                                                From->getStorageClass(),
-                                               From->getStorageClassAsWritten(),
                                                /*DefaultArg=*/0));
   }
   Invoke->setParams(InvokeParams);
@@ -771,18 +889,14 @@ static void addBlockPointerConversion(Sema &S,
   {
     FunctionProtoType::ExtProtoInfo ExtInfo = Proto->getExtProtoInfo();
     ExtInfo.TypeQuals = 0;
-    QualType FunctionTy
-      = S.Context.getFunctionType(Proto->getResultType(),
-                                  ArrayRef<QualType>(Proto->arg_type_begin(),
-                                                     Proto->getNumArgs()),
-                                  ExtInfo);
+    QualType FunctionTy = S.Context.getFunctionType(
+        Proto->getResultType(), Proto->getArgTypes(), ExtInfo);
     BlockPtrTy = S.Context.getBlockPointerType(FunctionTy);
   }
   
   FunctionProtoType::ExtProtoInfo ExtInfo;
   ExtInfo.TypeQuals = Qualifiers::Const;
-  QualType ConvTy = S.Context.getFunctionType(BlockPtrTy, ArrayRef<QualType>(),
-                                              ExtInfo);
+  QualType ConvTy = S.Context.getFunctionType(BlockPtrTy, None, ExtInfo);
   
   SourceLocation Loc = IntroducerRange.getBegin();
   DeclarationName Name
@@ -795,7 +909,7 @@ static void addBlockPointerConversion(Sema &S,
                                 DeclarationNameInfo(Name, Loc, NameLoc),
                                 ConvTy, 
                                 S.Context.getTrivialTypeSourceInfo(ConvTy, Loc),
-                                /*isInline=*/false, /*isExplicit=*/false,
+                                /*isInline=*/true, /*isExplicit=*/false,
                                 /*isConstexpr=*/false, 
                                 CallOperator->getBody()->getLocEnd());
   Conversion->setAccess(AS_public);
@@ -810,6 +924,7 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
   SmallVector<LambdaExpr::Capture, 4> Captures;
   SmallVector<Expr *, 4> CaptureInits;
   LambdaCaptureDefault CaptureDefault;
+  SourceLocation CaptureDefaultLoc;
   CXXRecordDecl *Class;
   CXXMethodDecl *CallOperator;
   SourceRange IntroducerRange;
@@ -848,11 +963,17 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
         continue;
       }
 
+      if (From.isInitCapture()) {
+        Captures.push_back(LambdaExpr::Capture(From.getInitCaptureField()));
+        CaptureInits.push_back(From.getInitExpr());
+        continue;
+      }
+
       VarDecl *Var = From.getVariable();
       LambdaCaptureKind Kind = From.isCopyCapture()? LCK_ByCopy : LCK_ByRef;
       Captures.push_back(LambdaExpr::Capture(From.getLocation(), IsImplicit, 
                                              Kind, Var, From.getEllipsisLoc()));
-      CaptureInits.push_back(From.getCopyExpr());
+      CaptureInits.push_back(From.getInitExpr());
     }
 
     switch (LSI->ImpCaptureStyle) {
@@ -864,6 +985,7 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
       CaptureDefault = LCD_ByCopy;
       break;
 
+    case CapturingScopeInfo::ImpCap_CapturedRegion:
     case CapturingScopeInfo::ImpCap_LambdaByref:
       CaptureDefault = LCD_ByRef;
       break;
@@ -872,6 +994,7 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
       llvm_unreachable("block capture in lambda");
       break;
     }
+    CaptureDefaultLoc = LSI->CaptureDefaultLoc;
 
     // C++11 [expr.prim.lambda]p4:
     //   If a lambda-expression does not include a
@@ -892,11 +1015,8 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
       // Create a function type with the inferred return type.
       const FunctionProtoType *Proto
         = CallOperator->getType()->getAs<FunctionProtoType>();
-      QualType FunctionTy
-        = Context.getFunctionType(LSI->ReturnType,
-                                  ArrayRef<QualType>(Proto->arg_type_begin(),
-                                                     Proto->getNumArgs()),
-                                  Proto->getExtProtoInfo());
+      QualType FunctionTy = Context.getFunctionType(
+          LSI->ReturnType, Proto->getArgTypes(), Proto->getExtProtoInfo());
       CallOperator->setType(FunctionTy);
     }
 
@@ -939,7 +1059,8 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
     ExprNeedsCleanups = true;
   
   LambdaExpr *Lambda = LambdaExpr::Create(Context, Class, IntroducerRange, 
-                                          CaptureDefault, Captures, 
+                                          CaptureDefault, CaptureDefaultLoc,
+                                          Captures, 
                                           ExplicitParams, ExplicitResultType,
                                           CaptureInits, ArrayIndexVars, 
                                           ArrayIndexStarts, Body->getLocEnd(),
@@ -951,6 +1072,7 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
   if (!CurContext->isDependentContext()) {
     switch (ExprEvalContexts.back().Context) {
     case Unevaluated:
+    case UnevaluatedAbstract:
       // We don't actually diagnose this case immediately, because we
       // could be within a context where we might find out later that
       // the expression is potentially evaluated (e.g., for typeid).
@@ -1010,7 +1132,6 @@ ExprResult Sema::BuildBlockForLambdaConversion(SourceLocation CurrentLocation,
                                               From->getType(),
                                               From->getTypeSourceInfo(),
                                               From->getStorageClass(),
-                                            From->getStorageClassAsWritten(),
                                               /*DefaultArg=*/0));
   }
   Block->setParams(BlockParams);
@@ -1025,7 +1146,7 @@ ExprResult Sema::BuildBlockForLambdaConversion(SourceLocation CurrentLocation,
   VarDecl *CapVar = VarDecl::Create(Context, Block, ConvLocation,
                                     ConvLocation, 0,
                                     Src->getType(), CapVarTSI,
-                                    SC_None, SC_None);
+                                    SC_None);
   BlockDecl::Capture Capture(/*Variable=*/CapVar, /*ByRef=*/false,
                              /*Nested=*/false, /*Copy=*/Init.take());
   Block->setCaptures(Context, &Capture, &Capture + 1, 

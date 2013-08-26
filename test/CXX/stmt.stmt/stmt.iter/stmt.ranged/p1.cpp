@@ -117,7 +117,7 @@ void g() {
 
   for (extern int a : A()) {} // expected-error {{loop variable 'a' may not be declared 'extern'}}
   for (static int a : A()) {} // expected-error {{loop variable 'a' may not be declared 'static'}}
-  for (register int a : A()) {} // expected-error {{loop variable 'a' may not be declared 'register'}}
+  for (register int a : A()) {} // expected-error {{loop variable 'a' may not be declared 'register'}} expected-warning {{deprecated}}
   for (constexpr int a : A()) {} // expected-error {{loop variable 'a' may not be declared 'constexpr'}}
 
   for (auto u : X::NoBeginADL()) { // expected-error {{invalid range expression of type 'X::NoBeginADL'; no viable 'begin' function available}}
@@ -241,4 +241,14 @@ void example() {
   int array[5] = { 1, 2, 3, 4, 5 };
   for (int &x : array)
     x *= 2;
+}
+
+namespace rdar13712739 {
+  template<typename T>
+  void foo(const T& t) {
+    auto &x = t.get(); // expected-error{{member reference base type 'const int' is not a structure or union}}
+    for (auto &blah : x) { }
+  }
+
+  template void foo(const int&); // expected-note{{in instantiation of function template specialization}}
 }

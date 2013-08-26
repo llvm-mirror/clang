@@ -30,21 +30,7 @@ void ExprEngine::CreateCXXTemporaryObject(const MaterializeTemporaryExpr *ME,
   ProgramStateRef state = Pred->getState();
   const LocationContext *LCtx = Pred->getLocationContext();
 
-  SVal V = state->getSVal(tempExpr, LCtx);
-
-  // If the value is already a CXXTempObjectRegion, it is fine as it is.
-  // Otherwise, create a new CXXTempObjectRegion, and copy the value into it.
-  // This is an optimization for when an rvalue is constructed and then
-  // immediately materialized.
-  const MemRegion *MR = V.getAsRegion();
-  if (const CXXTempObjectRegion *TR =
-        dyn_cast_or_null<CXXTempObjectRegion>(MR)) {
-    if (getContext().hasSameUnqualifiedType(TR->getValueType(), ME->getType()))
-      state = state->BindExpr(ME, LCtx, V);
-  }
-
-  if (state == Pred->getState())
-    state = createTemporaryRegionIfNeeded(state, LCtx, tempExpr, ME);
+  state = createTemporaryRegionIfNeeded(state, LCtx, tempExpr, ME);
   Bldr.generateNode(ME, Pred, state);
 }
 
@@ -96,6 +82,26 @@ void ExprEngine::performTrivialCopy(NodeBuilder &Bldr, ExplodedNode *Pred,
   }
 }
 
+
+/// Returns a region representing the first element of a (possibly
+/// multi-dimensional) array.
+///
+/// On return, \p Ty will be set to the base type of the array.
+///
+/// If the type is not an array type at all, the original value is returned.
+static SVal makeZeroElementRegion(ProgramStateRef State, SVal LValue,
+                                  QualType &Ty) {
+  SValBuilder &SVB = State->getStateManager().getSValBuilder();
+  ASTContext &Ctx = SVB.getContext();
+
+  while (const ArrayType *AT = Ctx.getAsArrayType(Ty)) {
+    Ty = AT->getElementType();
+    LValue = State->getLValue(Ty, SVB.makeZeroArrayIndex(), LValue);
+  }
+
+  return LValue;
+}
+
 void ExprEngine::VisitCXXConstructExpr(const CXXConstructExpr *CE,
                                        ExplodedNode *Pred,
                                        ExplodedNodeSet &destNodes) {
@@ -103,7 +109,10 @@ void ExprEngine::VisitCXXConstructExpr(const CXXConstructExpr *CE,
   ProgramStateRef State = Pred->getState();
 
   const MemRegion *Target = 0;
-  bool IsArray = false;
+
+  // FIXME: Handle arrays, which run the same constructor for every element.
+  // For now, we just run the first constructor (which should still invalidate
+  // the entire array).
 
   switch (CE->getConstructionKind()) {
   case CXXConstructExpr::CK_Complete: {
@@ -118,19 +127,10 @@ void ExprEngine::VisitCXXConstructExpr(const CXXConstructExpr *CE,
         if (const DeclStmt *DS = dyn_cast<DeclStmt>(StmtElem->getStmt())) {
           if (const VarDecl *Var = dyn_cast<VarDecl>(DS->getSingleDecl())) {
             if (Var->getInit()->IgnoreImplicit() == CE) {
+              SVal LValue = State->getLValue(Var, LCtx);
               QualType Ty = Var->getType();
-              if (const ArrayType *AT = getContext().getAsArrayType(Ty)) {
-                // FIXME: Handle arrays, which run the same constructor for
-                // every element. This workaround will just run the first
-                // constructor (which should still invalidate the entire array).
-                SVal Base = State->getLValue(Var, LCtx);
-                Target = State->getLValue(AT->getElementType(),
-                                          getSValBuilder().makeZeroArrayIndex(),
-                                          Base).getAsRegion();
-                IsArray = true;
-              } else {
-                Target = State->getLValue(Var, LCtx).getAsRegion();
-              }
+              LValue = makeZeroElementRegion(State, LValue, Ty);
+              Target = LValue.getAsRegion();
             }
           }
         }
@@ -146,16 +146,23 @@ void ExprEngine::VisitCXXConstructExpr(const CXXConstructExpr *CE,
                                                   LCtx->getCurrentStackFrame());
         SVal ThisVal = State->getSVal(ThisPtr);
 
+        const ValueDecl *Field;
+        SVal FieldVal;
         if (Init->isIndirectMemberInitializer()) {
-          SVal Field = State->getLValue(Init->getIndirectMember(), ThisVal);
-          Target = Field.getAsRegion();
+          Field = Init->getIndirectMember();
+          FieldVal = State->getLValue(Init->getIndirectMember(), ThisVal);
         } else {
-          SVal Field = State->getLValue(Init->getMember(), ThisVal);
-          Target = Field.getAsRegion();
+          Field = Init->getMember();
+          FieldVal = State->getLValue(Init->getMember(), ThisVal);
         }
+
+        QualType Ty = Field->getType();
+        FieldVal = makeZeroElementRegion(State, FieldVal, Ty);
+        Target = FieldVal.getAsRegion();
       }
 
       // FIXME: This will eventually need to handle new-expressions as well.
+      // Don't forget to update the pre-constructor initialization code below.
     }
 
     // If we couldn't find an existing region to construct into, assume we're
@@ -167,8 +174,26 @@ void ExprEngine::VisitCXXConstructExpr(const CXXConstructExpr *CE,
 
     break;
   }
-  case CXXConstructExpr::CK_NonVirtualBase:
   case CXXConstructExpr::CK_VirtualBase:
+    // Make sure we are not calling virtual base class initializers twice.
+    // Only the most-derived object should initialize virtual base classes.
+    if (const Stmt *Outer = LCtx->getCurrentStackFrame()->getCallSite()) {
+      const CXXConstructExpr *OuterCtor = dyn_cast<CXXConstructExpr>(Outer);
+      if (OuterCtor) {
+        switch (OuterCtor->getConstructionKind()) {
+        case CXXConstructExpr::CK_NonVirtualBase:
+        case CXXConstructExpr::CK_VirtualBase:
+          // Bail out!
+          destNodes.Add(Pred);
+          return;
+        case CXXConstructExpr::CK_Complete:
+        case CXXConstructExpr::CK_Delegating:
+          break;
+        }
+      }
+    }
+    // FALLTHROUGH
+  case CXXConstructExpr::CK_NonVirtualBase:
   case CXXConstructExpr::CK_Delegating: {
     const CXXMethodDecl *CurCtor = cast<CXXMethodDecl>(LCtx->getDecl());
     Loc ThisPtr = getSValBuilder().getCXXThis(CurCtor,
@@ -195,13 +220,44 @@ void ExprEngine::VisitCXXConstructExpr(const CXXConstructExpr *CE,
 
   ExplodedNodeSet DstPreVisit;
   getCheckerManager().runCheckersForPreStmt(DstPreVisit, Pred, CE, *this);
+
+  ExplodedNodeSet PreInitialized;
+  {
+    StmtNodeBuilder Bldr(DstPreVisit, PreInitialized, *currBldrCtx);
+    if (CE->requiresZeroInitialization()) {
+      // Type of the zero doesn't matter.
+      SVal ZeroVal = svalBuilder.makeZeroVal(getContext().CharTy);
+
+      for (ExplodedNodeSet::iterator I = DstPreVisit.begin(),
+                                     E = DstPreVisit.end();
+           I != E; ++I) {
+        ProgramStateRef State = (*I)->getState();
+        // FIXME: Once we properly handle constructors in new-expressions, we'll
+        // need to invalidate the region before setting a default value, to make
+        // sure there aren't any lingering bindings around. This probably needs
+        // to happen regardless of whether or not the object is zero-initialized
+        // to handle random fields of a placement-initialized object picking up
+        // old bindings. We might only want to do it when we need to, though.
+        // FIXME: This isn't actually correct for arrays -- we need to zero-
+        // initialize the entire array, not just the first element -- but our
+        // handling of arrays everywhere else is weak as well, so this shouldn't
+        // actually make things worse. Placement new makes this tricky as well,
+        // since it's then possible to be initializing one part of a multi-
+        // dimensional array.
+        State = State->bindDefault(loc::MemRegionVal(Target), ZeroVal);
+        Bldr.generateNode(CE, *I, State, /*tag=*/0, ProgramPoint::PreStmtKind);
+      }
+    }
+  }
+
   ExplodedNodeSet DstPreCall;
-  getCheckerManager().runCheckersForPreCall(DstPreCall, DstPreVisit,
+  getCheckerManager().runCheckersForPreCall(DstPreCall, PreInitialized,
                                             *Call, *this);
 
   ExplodedNodeSet DstEvaluated;
   StmtNodeBuilder Bldr(DstPreCall, DstEvaluated, *currBldrCtx);
 
+  bool IsArray = isa<ElementRegion>(Target);
   if (CE->getConstructor()->isTrivial() &&
       CE->getConstructor()->isCopyOrMoveConstructor() &&
       !IsArray) {
@@ -234,12 +290,9 @@ void ExprEngine::VisitCXXDestructor(QualType ObjectType,
   // FIXME: We need to run the same destructor on every element of the array.
   // This workaround will just run the first destructor (which will still
   // invalidate the entire array).
-  // This is a loop because of multidimensional arrays.
-  while (const ArrayType *AT = getContext().getAsArrayType(ObjectType)) {
-    ObjectType = AT->getElementType();
-    Dest = State->getLValue(ObjectType, getSValBuilder().makeZeroArrayIndex(),
-                            loc::MemRegionVal(Dest)).getAsRegion();
-  }
+  SVal DestVal = loc::MemRegionVal(Dest);
+  DestVal = makeZeroElementRegion(State, DestVal, ObjectType);
+  Dest = DestVal.getAsRegion();
 
   const CXXRecordDecl *RecordDecl = ObjectType->getAsCXXRecordDecl();
   assert(RecordDecl && "Only CXXRecordDecls should have destructors");
@@ -364,8 +417,6 @@ void ExprEngine::VisitCXXNewExpr(const CXXNewExpr *CNE, ExplodedNode *Pred,
     if (!isa<CXXConstructExpr>(Init)) {
       assert(Bldr.getResults().size() == 1);
       Bldr.takeNodes(NewN);
-
-      assert(!CNE->getType()->getPointeeCXXRecordDecl());
       evalBind(Dst, CNE, NewN, Result, State->getSVal(Init, LCtx),
                /*FirstInit=*/IsStandardGlobalOpNewFunction);
     }

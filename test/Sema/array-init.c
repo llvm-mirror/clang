@@ -187,7 +187,7 @@ char r6[sizeof r5 == 15 ? 1 : -1];
 const char r7[] = "zxcv";
 char r8[5] = "5char";
 char r9[5] = "6chars"; //expected-warning{{initializer-string for char array is too long}}
-
+unsigned char r10[] = __extension__ (_Generic(0, int: (__extension__ "foo" )));
 int r11[0] = {}; //expected-warning{{zero size arrays are an extension}} expected-warning{{use of GNU empty initializer extension}}
 
 // Some struct tests
@@ -226,7 +226,8 @@ void emptyInit() {struct {} x[] = {6};} //expected-warning{{empty struct is a GN
 // expected-error{{initializer for aggregate with no elements}}
 
 void noNamedInit() {
-  struct {int:5;} x[] = {6}; //expected-error{{initializer for aggregate with no elements}}
+  struct {int:5;} x[] = {6}; //expected-error{{initializer for aggregate with no elements}} \
+// expected-warning {{struct without named members is a GNU extension}}
 }
 struct {int a; int:5;} noNamedImplicit[] = {1,2,3};
 int noNamedImplicitCheck[sizeof(noNamedImplicit) == 3 * sizeof(*noNamedImplicit) ? 1 : -1];

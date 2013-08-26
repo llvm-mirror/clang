@@ -8,8 +8,8 @@
 - (void)method5:(D*)obj;
 @end
 
-// in other file: // expected-note@7{{using}}
-// in other file: expected-note@12{{also found}}
+// expected-note@Inputs/MethodPoolA.h:7{{using}}
+// expected-note@Inputs/MethodPoolB.h:12{{also found}}
 
 void testMethod1(id object) {
   [object method1]; 
@@ -47,12 +47,16 @@ void testMethod3Again(id object) {
   char *str = [object method3]; // okay: only found in MethodPoolB.Sub
 }
 
+void testMethod6(id object) {
+  [object method6];
+}
+
 @import MethodPoolA.Sub;
 
 void testMethod3AgainAgain(id object) {
   [object method3]; // expected-warning{{multiple methods named 'method3' found}}
-  // expected-note@2{{using}}
-  // expected-note@2{{also found}}
+  // expected-note@Inputs/MethodPoolBSub.h:2{{using}}
+  // expected-note@Inputs/MethodPoolASub.h:2{{also found}}
 }
 
 void testMethod4Again(id object) {

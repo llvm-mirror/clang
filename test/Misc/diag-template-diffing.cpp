@@ -1,7 +1,7 @@
-// RUN: %clang_cc1 -fsyntax-only %s -std=c++11 2>&1 | FileCheck %s -check-prefix=CHECK-ELIDE-NOTREE
-// RUN: %clang_cc1 -fsyntax-only %s -fno-elide-type -std=c++11 2>&1 | FileCheck %s -check-prefix=CHECK-NOELIDE-NOTREE
-// RUN: %clang_cc1 -fsyntax-only %s -fdiagnostics-show-template-tree -std=c++11 2>&1 | FileCheck %s -check-prefix=CHECK-ELIDE-TREE
-// RUN: %clang_cc1 -fsyntax-only %s -fno-elide-type -fdiagnostics-show-template-tree -std=c++11 2>&1 | FileCheck %s -check-prefix=CHECK-NOELIDE-TREE
+// RUN: not %clang_cc1 -fsyntax-only %s -std=c++11 2>&1 | FileCheck %s -check-prefix=CHECK-ELIDE-NOTREE
+// RUN: not %clang_cc1 -fsyntax-only %s -fno-elide-type -std=c++11 2>&1 | FileCheck %s -check-prefix=CHECK-NOELIDE-NOTREE
+// RUN: not %clang_cc1 -fsyntax-only %s -fdiagnostics-show-template-tree -std=c++11 2>&1 | FileCheck %s -check-prefix=CHECK-ELIDE-TREE
+// RUN: not %clang_cc1 -fsyntax-only %s -fno-elide-type -fdiagnostics-show-template-tree -std=c++11 2>&1 | FileCheck %s -check-prefix=CHECK-NOELIDE-TREE
 
 // PR9548 - "no known conversion from 'vector<string>' to 'vector<string>'"
 // vector<string> refers to two different types here.  Make sure the message
@@ -900,6 +900,154 @@ namespace ValueDecl {
     // CHECK-ELIDE-NOTREE: no viable overloaded '='
     // CHECK-ELIDE-NOTREE: no known conversion from 'S<(default) default_int>' to 'S<int2>'
 
+  }
+}
+
+namespace DependentDefault {
+  template <typename> struct Trait {
+    enum { V = 40 };
+    typedef int Ty;
+    static int I;
+  };
+  int other;
+
+  template <typename T, int = Trait<T>::V > struct A {};
+  template <typename T, typename = Trait<T>::Ty > struct B {};
+  template <typename T, int& = Trait<T>::I > struct C {};
+
+  void test() {
+
+    A<int> a1;
+    A<char> a2;
+    A<int, 10> a3;
+    a1 = a2;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'A<char, [...]>' to 'A<int, [...]>'
+    a3 = a1;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'A<[...], (default) 40>' to 'A<[...], 10>'
+    a2 = a3;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'A<int, 10>' to 'A<char, 40>'
+
+    B<int> b1;
+    B<char> b2;
+    B<int, char> b3;
+    b1 = b2;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'B<char, [...]>' to 'B<int, [...]>'
+    b3 = b1;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'B<[...], (default) int>' to 'B<[...], char>'
+    b2 = b3;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'B<int, char>' to 'B<char, int>'
+
+    C<int> c1;
+    C<char> c2;
+    C<int, other> c3;
+    c1 = c2;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'C<char, (default) I>' to 'C<int, I>'
+    c3 = c1;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'C<[...], (default) I>' to 'C<[...], other>'
+    c2 = c3;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'C<int, other>' to 'C<char, I>'
+  }
+}
+
+namespace VariadicDefault {
+  int i1, i2, i3;
+  template <int = 5, int...> struct A {};
+  template <int& = i1, int& ...> struct B {};
+  template <typename = void, typename...> struct C {};
+
+  void test() {
+    A<> a1;
+    A<5, 6, 7> a2;
+    A<1, 2> a3;
+    a2 = a1;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'A<[...], (no argument), (no argument)>' to 'A<[...], 6, 7>'
+    a3 = a1;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'A<(default) 5, (no argument)>' to 'A<1, 2>'
+
+    B<> b1;
+    B<i1, i2, i3> b2;
+    B<i2, i3> b3;
+    b2 = b1;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'B<[...], (no argument), (no argument)>' to 'B<[...], i2, i3>'
+    b3 = b1;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'B<(default) i1, (no argument)>' to 'B<i2, i3>'
+
+    B<i1, i2, i3> b4 = b1;
+    // CHECK-ELIDE-NOTREE: no viable conversion from 'B<[...], (no argument), (no argument)>' to 'B<[...], i2, i3>'
+    B<i2, i3> b5 = b1;
+    // CHECK-ELIDE-NOTREE: no viable conversion from 'B<(default) i1, (no argument)>' to 'B<i2, i3>'
+
+    C<> c1;
+    C<void, void> c2;
+    C<char, char> c3;
+    c2 = c1;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'C<[...], (no argument)>' to 'C<[...], void>'
+    c3 = c1;
+    // CHECK-ELIDE-NOTREE: no viable overloaded '='
+    // CHECK-ELIDE-NOTREE: no known conversion from 'C<(default) void, (no argument)>' to 'C<char, char>'
+  }
+}
+
+namespace PointerArguments {
+  template <int *p> class T {};
+  template <int* ...> class U {};
+  int a, b, c;
+  int z[5];
+  void test() {
+    T<&a> ta;
+    T<z> tz;
+    T<&b> tb(ta);
+    // CHECK-ELIDE-NOTREE: no matching constructor for initialization of 'T<&b>'
+    // CHECK-ELIDE-NOTREE: candidate constructor (the implicit copy constructor) not viable: no known conversion from 'T<&a>' to 'const T<&b>' for 1st argument
+    T<&c> tc(tz);
+    // CHECK-ELIDE-NOTREE: no matching constructor for initialization of 'T<&c>'
+    // CHECK-ELIDE-NOTREE: candidate constructor (the implicit copy constructor) not viable: no known conversion from 'T<z>' to 'const T<&c>' for 1st argument
+
+    U<&a, &a> uaa;
+    U<&b> ub(uaa);
+    // CHECK-ELIDE-NOTREE: no matching constructor for initialization of 'U<&b>'
+    // CHECK-ELIDE-NOTREE: candidate constructor (the implicit copy constructor) not viable: no known conversion from 'U<&a, &a>' to 'const U<&b, (no argument)>' for 1st argument
+
+    U<&b, &b, &b> ubbb(uaa);
+    // CHECK-ELIDE-NOTREE: no matching constructor for initialization of 'U<&b, &b, &b>'
+    // CHECK-ELIDE-NOTREE: candidate constructor (the implicit copy constructor) not viable: no known conversion from 'U<&a, &a, (no argument)>' to 'const U<&b, &b, &b>' for 1st argument
+
+  }
+}
+
+namespace DependentInt {
+  template<int Num> struct INT;
+
+  template <class CLASS, class Int_wrapper = INT<CLASS::val> >
+  struct C;
+
+  struct N {
+    static const int val = 1;
+  };
+
+  template <class M_T>
+  struct M {};
+
+  void test() {
+    using T1 = M<C<int, INT<0>>>;
+    using T2 = M<C<N>>;
+    T2 p;
+    T1 x = p;
+    // CHECK-ELIDE-NOTREE: no viable conversion from 'M<C<struct DependentInt::N, INT<1>>>' to 'M<C<int, INT<0>>>'
   }
 }
 

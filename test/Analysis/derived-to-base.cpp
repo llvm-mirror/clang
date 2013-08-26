@@ -2,6 +2,7 @@
 // RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -DCONSTRUCTORS=1 -analyzer-config c++-inlining=constructors -verify %s
 
 void clang_analyzer_eval(bool);
+void clang_analyzer_checkInlined(bool);
 
 class A {
 protected:
@@ -363,3 +364,114 @@ namespace Redeclaration {
   }
 };
 
+namespace PR15394 {
+  namespace Original {
+    class Base {
+    public:
+      virtual int f() = 0;
+      int i;
+    };
+
+    class Derived1 : public Base {
+    public:
+      int j;
+    };
+
+    class Derived2 : public Derived1 {
+    public:
+      virtual int f() {
+        clang_analyzer_checkInlined(true); // expected-warning{{TRUE}}
+        return i + j;
+      }
+    };
+
+    void testXXX() {
+      Derived1 *d1p = reinterpret_cast<Derived1*>(new Derived2);
+      d1p->i = 1;
+      d1p->j = 2;
+      clang_analyzer_eval(d1p->f() == 3); // expected-warning{{TRUE}}
+    }
+  }
+
+  namespace VirtualInDerived {
+    class Base {
+    public:
+      int i;
+    };
+
+    class Derived1 : public Base {
+    public:
+      virtual int f() = 0;
+      int j;
+    };
+
+    class Derived2 : public Derived1 {
+    public:
+      virtual int f() {
+        clang_analyzer_checkInlined(true); // expected-warning{{TRUE}}
+        return i + j;
+      }
+    };
+
+    void test() {
+      Derived1 *d1p = reinterpret_cast<Derived1*>(new Derived2);
+      d1p->i = 1;
+      d1p->j = 2;
+      clang_analyzer_eval(d1p->f() == 3); // expected-warning{{TRUE}}
+    }
+  }
+
+  namespace NoCast {
+    class Base {
+    public:
+      int i;
+    };
+
+    class Derived1 : public Base {
+    public:
+      virtual int f() = 0;
+      int j;
+    };
+
+    class Derived2 : public Derived1 {
+    public:
+      virtual int f() {
+        clang_analyzer_checkInlined(true); // expected-warning{{TRUE}}
+        return i + j;
+      }
+    };
+
+    void test() {
+      Derived1 *d1p = new Derived2;
+      d1p->i = 1;
+      d1p->j = 2;
+      clang_analyzer_eval(d1p->f() == 3); // expected-warning{{TRUE}}
+    }
+  }
+};
+
+namespace Bug16309 {
+  struct Incomplete;
+
+  struct Base { virtual ~Base(); };
+
+  struct Derived : public Base { int x; };
+
+  void* f(Incomplete *i) {
+    Base *b = reinterpret_cast<Base *>(i);
+    // This used to crash because of the reinterpret_cast above.
+    Derived *d = dynamic_cast<Derived *>(b);
+    return d;
+  }
+
+  // And check that reinterpret+dynamic casts work correctly after the fix.
+  void g() {
+    Derived d;
+    d.x = 47;
+    Base *b = &d;
+    Incomplete *i = reinterpret_cast<Incomplete *>(b);
+    Base *b2 = reinterpret_cast<Base *>(i);
+    Derived *d2 = dynamic_cast<Derived *>(b2);
+    clang_analyzer_eval(d2->x == 47); // expected-warning{{TRUE}}
+  }
+}

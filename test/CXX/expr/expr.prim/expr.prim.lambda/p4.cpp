@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 -fsyntax-only -std=c++11 %s -verify
+// RUN: %clang_cc1 -fsyntax-only -std=c++1y %s -verify
 
 void missing_lambda_declarator() {
   [](){}();
@@ -38,7 +39,10 @@ X infer_X_return_type_fail(X x) {
     if (y > 0)
       return X();
     else
-      return x; // expected-error{{return type 'const X' must match previous return type 'X' when lambda expression has unspecified explicit return type}}
+      return x;
+#if __cplusplus <= 201103L
+    // expected-error@-2 {{return type 'const X' must match previous return type 'X' when lambda expression has unspecified explicit return type}}
+#endif
   }(5);
 }
 

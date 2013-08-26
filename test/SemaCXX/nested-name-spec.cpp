@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsyntax-only -std=c++98 -verify %s 
+// RUN: %clang_cc1 -fsyntax-only -std=c++98 -verify -fblocks %s 
 namespace A {
   struct C {
     static int cx;
@@ -50,6 +50,7 @@ namespace B {
 
 void f1() {
   void A::Af(); // expected-error {{definition or redeclaration of 'Af' not allowed inside a function}}
+  void (^x)() = ^{ void A::Af(); }; // expected-error {{definition or redeclaration of 'Af' not allowed inside a block}}
 }
 
 void f2() {
@@ -297,3 +298,16 @@ namespace NS {
 int foobar = a + longer_b; // expected-error {{use of undeclared identifier 'a'; did you mean 'NS::a'?}} \
                            // expected-error {{use of undeclared identifier 'longer_b'; did you mean 'NS::longer_b'?}}
 }
+
+// <rdar://problem/13853540>
+namespace N {
+  struct X { };
+  namespace N {
+    struct Foo {
+      struct N::X *foo(); // expected-error{{no struct named 'X' in namespace 'N::N'}}
+    };
+  }
+}
+
+namespace TypedefNamespace { typedef int F; };
+TypedefNamespace::F::NonexistentName BadNNSWithCXXScopeSpec; // expected-error {{expected a class or namespace}}

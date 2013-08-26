@@ -4,21 +4,21 @@
 [repeatable][source_annotation_attribute( Parameter|ReturnValue )]
 struct SA_Post{ SA_Post(); int attr; };
 
-[returnvalue:SA_Post( attr=1)] 
+[returnvalue:SA_Post( attr=1)]
 int foo1([SA_Post(attr=1)] void *param);
 
 namespace {
-  [returnvalue:SA_Post(attr=1)] 
+  [returnvalue:SA_Post(attr=1)]
   int foo2([SA_Post(attr=1)] void *param);
 }
 
 class T {
-  [returnvalue:SA_Post(attr=1)] 
+  [returnvalue:SA_Post(attr=1)]
   int foo3([SA_Post(attr=1)] void *param);
 };
 
 extern "C" {
-  [returnvalue:SA_Post(attr=1)] 
+  [returnvalue:SA_Post(attr=1)]
   int foo5([SA_Post(attr=1)] void *param);
 }
 
@@ -32,7 +32,7 @@ public:
 
 
 void uuidof_test1()
-{  
+{
   __uuidof(0);  // expected-error {{you need to include <guiddef.h> before using the '__uuidof' operator}}
 }
 
@@ -44,8 +44,8 @@ typedef struct _GUID
     unsigned char  Data4[8];
 } GUID;
 
-struct __declspec(uuid(L"00000000-0000-0000-1234-000000000047")) uuid_attr_bad1 { };// expected-error {{'uuid' attribute requires parameter 1 to be a string}}
-struct __declspec(uuid(3)) uuid_attr_bad2 { };// expected-error {{'uuid' attribute requires parameter 1 to be a string}}
+struct __declspec(uuid(L"00000000-0000-0000-1234-000000000047")) uuid_attr_bad1 { };// expected-error {{'uuid' attribute requires a string}}
+struct __declspec(uuid(3)) uuid_attr_bad2 { };// expected-error {{'uuid' attribute requires a string}}
 struct __declspec(uuid("0000000-0000-0000-1234-0000500000047")) uuid_attr_bad3 { };// expected-error {{uuid attribute contains a malformed GUID}}
 struct __declspec(uuid("0000000-0000-0000-Z234-000000000047")) uuid_attr_bad4 { };// expected-error {{uuid attribute contains a malformed GUID}}
 struct __declspec(uuid("000000000000-0000-1234-000000000047")) uuid_attr_bad5 { };// expected-error {{uuid attribute contains a malformed GUID}}
@@ -59,7 +59,7 @@ struct struct_without_uuid { };
 struct __declspec(uuid("000000A0-0000-0000-C000-000000000049"))
 struct_with_uuid2;
 
-struct 
+struct
 struct_with_uuid2 {} ;
 
 int uuid_sema_test()
@@ -89,7 +89,7 @@ template <class T>
 void template_uuid()
 {
    T expr;
-   
+
    __uuidof(T);
    __uuidof(expr);
 }
@@ -113,7 +113,7 @@ typedef COM_CLASS_TEMPLATE_REF<struct_with_uuid, __uuidof(struct_with_uuid)> COM
   struct __declspec(uuid("000000A0-0000-0000-C000-000000000049")) late_defined_uuid;
 
 
-class CtorCall { 
+class CtorCall {
 public:
   CtorCall& operator=(const CtorCall& that);
 
@@ -136,7 +136,7 @@ public:
   class Iterator {
   };
 };
- 
+
 template<class T>
 class C2  {
   typename C1<T>:: /*template*/  Iterator<0> Mypos; // expected-warning {{use 'template' keyword to treat 'Iterator' as a dependent template name}}
@@ -160,7 +160,7 @@ void redundant_typename() {
    typename AAAA a;// expected-warning {{expected a qualified name after 'typename'}}
 
    t = 3;
-   
+
    typedef typename T* pointerT;// expected-warning {{expected a qualified name after 'typename'}}
    typedef typename SimpleTemplate<int> templateT;// expected-warning {{expected a qualified name after 'typename'}}
 
@@ -239,25 +239,25 @@ __if_not_exists(IF_EXISTS::Type_not) {
 int __if_exists_init_list() {
 
   int array1[] = {
-    0, 
+    0,
     __if_exists(IF_EXISTS::Type) {2, }
     3
   };
 
   int array2[] = {
-    0, 
+    0,
     __if_exists(IF_EXISTS::Type_not) { this wont compile }
     3
   };
 
   int array3[] = {
-    0, 
+    0,
     __if_not_exists(IF_EXISTS::Type_not) {2, }
     3
   };
 
   int array4[] = {
-    0, 
+    0,
     __if_not_exists(IF_EXISTS::Type) { this wont compile }
     3
   };
@@ -300,7 +300,7 @@ class inline_definition_pure_spec {
 
 int main () {
   // Necessary to force instantiation in -fdelayed-template-parsing mode.
-  test_late_defined_uuid<int>(); 
+  test_late_defined_uuid<int>();
   redundant_typename<int>();
   missing_template_keyword<int>();
 }
@@ -330,4 +330,33 @@ namespace Inheritance {
   class __single_inheritance A;
   class __multiple_inheritance B;
   class __virtual_inheritance C;
+}
+
+struct StructWithProperty {
+  __declspec(property) int V0; // expected-error {{expected '(' after 'property'}}
+  __declspec(property()) int V1; // expected-error {{property does not specify a getter or a putter}}
+  __declspec(property(set)) int V2; // expected-error {{putter for property must be specified as 'put', not 'set'}} expected-error {{expected '=' after 'set'}}
+  __declspec(property(ptu)) int V3; // expected-error {{missing 'get=' or 'put='}}
+  __declspec(property(ptu=PutV)) int V4; // expected-error {{expected 'get' or 'put' in property declaration}}
+  __declspec(property(get)) int V5; // expected-error {{expected '=' after 'get'}}
+  __declspec(property(get&)) int V6; // expected-error {{expected '=' after 'get'}}
+  __declspec(property(get=)) int V7; // expected-error {{expected name of accessor method}}
+  __declspec(property(get=GetV)) int V8; // no-warning
+  __declspec(property(get=GetV=)) int V9; // expected-error {{expected ',' or ')' at end of property accessor list}}
+  __declspec(property(get=GetV,)) int V10; // expected-error {{expected 'get' or 'put' in property declaration}}
+  __declspec(property(get=GetV,put=SetV)) int V11; // no-warning
+  __declspec(property(get=GetV,put=SetV,get=GetV)) int V12; // expected-error {{property declaration specifies 'get' accessor twice}}
+
+  int GetV() { return 123; }
+  void SetV(int v) {}
+};
+void TestProperty() {
+  StructWithProperty sp;
+  sp.V8;
+  sp.V8 = 0; // expected-error {{no setter defined for property 'V8'}}
+  int i = sp.V11;
+  sp.V11 = i++;
+  sp.V11 += 8;
+  sp.V11++;
+  ++sp.V11;
 }

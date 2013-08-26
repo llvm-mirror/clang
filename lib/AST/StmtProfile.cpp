@@ -215,6 +215,10 @@ void StmtProfiler::VisitSEHExceptStmt(const SEHExceptStmt *S) {
   VisitStmt(S);
 }
 
+void StmtProfiler::VisitCapturedStmt(const CapturedStmt *S) {
+  VisitStmt(S);
+}
+
 void StmtProfiler::VisitObjCForCollectionStmt(const ObjCForCollectionStmt *S) {
   VisitStmt(S);
 }
@@ -246,6 +250,40 @@ void StmtProfiler::VisitObjCAtThrowStmt(const ObjCAtThrowStmt *S) {
 void
 StmtProfiler::VisitObjCAutoreleasePoolStmt(const ObjCAutoreleasePoolStmt *S) {
   VisitStmt(S);
+}
+
+namespace {
+class OMPClauseProfiler : public ConstOMPClauseVisitor<OMPClauseProfiler> {
+  StmtProfiler *Profiler;
+public:
+  OMPClauseProfiler(StmtProfiler *P) : Profiler(P) { }
+#define OPENMP_CLAUSE(Name, Class)                                             \
+  void Visit##Class(const Class *C);
+#include "clang/Basic/OpenMPKinds.def"
+};
+
+void OMPClauseProfiler::VisitOMPDefaultClause(const OMPDefaultClause *C) { }
+#define PROCESS_OMP_CLAUSE_LIST(Class, Node)                                   \
+  for (OMPVarList<Class>::varlist_const_iterator I = Node->varlist_begin(),    \
+                                                 E = Node->varlist_end();      \
+         I != E; ++I)                                                          \
+    Profiler->VisitStmt(*I);
+
+void OMPClauseProfiler::VisitOMPPrivateClause(const OMPPrivateClause *C) {
+  PROCESS_OMP_CLAUSE_LIST(OMPPrivateClause, C)
+}
+#undef PROCESS_OMP_CLAUSE_LIST
+}
+
+void
+StmtProfiler::VisitOMPParallelDirective(const OMPParallelDirective *S) {
+  VisitStmt(S);
+  OMPClauseProfiler P(this);
+  ArrayRef<OMPClause *> Clauses = S->clauses();
+  for (ArrayRef<OMPClause *>::iterator I = Clauses.begin(), E = Clauses.end();
+       I != E; ++I)
+    if (*I)
+      P.Visit(*I);
 }
 
 void StmtProfiler::VisitExpr(const Expr *S) {
@@ -754,6 +792,11 @@ void StmtProfiler::VisitCXXNullPtrLiteralExpr(const CXXNullPtrLiteralExpr *S) {
   VisitExpr(S);
 }
 
+void StmtProfiler::VisitCXXStdInitializerListExpr(
+    const CXXStdInitializerListExpr *S) {
+  VisitExpr(S);
+}
+
 void StmtProfiler::VisitCXXTypeidExpr(const CXXTypeidExpr *S) {
   VisitExpr(S);
   if (S->isTypeOperand())
@@ -764,6 +807,11 @@ void StmtProfiler::VisitCXXUuidofExpr(const CXXUuidofExpr *S) {
   VisitExpr(S);
   if (S->isTypeOperand())
     VisitType(S->getTypeOperand());
+}
+
+void StmtProfiler::VisitMSPropertyRefExpr(const MSPropertyRefExpr *S) {
+  VisitExpr(S);
+  VisitDecl(S->getPropertyDecl());
 }
 
 void StmtProfiler::VisitCXXThisExpr(const CXXThisExpr *S) {
@@ -778,6 +826,11 @@ void StmtProfiler::VisitCXXThrowExpr(const CXXThrowExpr *S) {
 void StmtProfiler::VisitCXXDefaultArgExpr(const CXXDefaultArgExpr *S) {
   VisitExpr(S);
   VisitDecl(S->getParam());
+}
+
+void StmtProfiler::VisitCXXDefaultInitExpr(const CXXDefaultInitExpr *S) {
+  VisitExpr(S);
+  VisitDecl(S->getField());
 }
 
 void StmtProfiler::VisitCXXBindTemporaryExpr(const CXXBindTemporaryExpr *S) {
@@ -808,9 +861,17 @@ StmtProfiler::VisitLambdaExpr(const LambdaExpr *S) {
                                  CEnd = S->explicit_capture_end();
        C != CEnd; ++C) {
     ID.AddInteger(C->getCaptureKind());
-    if (C->capturesVariable()) {
+    switch (C->getCaptureKind()) {
+    case LCK_This:
+      break;
+    case LCK_ByRef:
+    case LCK_ByCopy:
       VisitDecl(C->getCapturedVar());
       ID.AddBoolean(C->isPackExpansion());
+      break;
+    case LCK_Init:
+      VisitDecl(C->getInitCaptureField());
+      break;
     }
   }
   // Note: If we actually needed to be able to match lambda
@@ -849,7 +910,14 @@ StmtProfiler::VisitCXXPseudoDestructorExpr(const CXXPseudoDestructorExpr *S) {
   VisitExpr(S);
   ID.AddBoolean(S->isArrow());
   VisitNestedNameSpecifier(S->getQualifier());
-  VisitType(S->getDestroyedType());
+  ID.AddBoolean(S->getScopeTypeInfo() != 0);
+  if (S->getScopeTypeInfo())
+    VisitType(S->getScopeTypeInfo()->getType());
+  ID.AddBoolean(S->getDestroyedTypeInfo() != 0);
+  if (S->getDestroyedTypeInfo())
+    VisitType(S->getDestroyedType());
+  else
+    ID.AddPointer(S->getDestroyedTypeIdentifier());
 }
 
 void StmtProfiler::VisitOverloadExpr(const OverloadExpr *S) {

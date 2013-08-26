@@ -1,7 +1,7 @@
 // RUN: %clang_cc1 -analyze -analyzer-checker=core -analyzer-store=region -verify %s
 
-// FIXME: Only the stack-address checking in Sema catches this right now, and
-// the stack analyzer doesn't handle the ImplicitCastExpr (lvalue).
+typedef __INTPTR_TYPE__ intptr_t;
+
 const int& g() {
   int s;
   return s; // expected-warning{{Address of stack memory associated with local variable 's' returned}} expected-warning{{reference to stack memory associated with local variable 's' returned}}
@@ -18,6 +18,10 @@ const int& g3() {
   int &s2 = s1; // expected-note {{binding reference variable 's2' here}}
   int &s3 = s2; // expected-note {{binding reference variable 's3' here}}
   return s3; // expected-warning{{Address of stack memory associated with local variable 's1' returned}} expected-warning {{reference to stack memory associated with local variable 's1' returned}}
+}
+
+void g4() {
+  static const int &x = 3; // no warning
 }
 
 int get_value();
@@ -94,5 +98,42 @@ int* f5() {
 void *radar13226577() {
     void *p = &p;
     return p; // expected-warning {{stack memory associated with local variable 'p' returned to caller}}
+}
+
+namespace rdar13296133 {
+  class ConvertsToBool {
+  public:
+    operator bool() const { return this; }
+  };
+
+  class ConvertsToIntptr {
+  public:
+    operator intptr_t() const { return reinterpret_cast<intptr_t>(this); }
+  };
+
+  class ConvertsToPointer {
+  public:
+    operator const void *() const { return this; }
+  };
+
+  intptr_t returnAsNonLoc() {
+    ConvertsToIntptr obj;
+    return obj; // expected-warning{{Address of stack memory associated with local variable 'obj' returned to caller}}
+  }
+
+  bool returnAsBool() {
+    ConvertsToBool obj;
+    return obj; // no-warning
+  }
+
+  intptr_t returnAsNonLocViaPointer() {
+    ConvertsToPointer obj;
+    return reinterpret_cast<intptr_t>(static_cast<const void *>(obj)); // expected-warning{{Address of stack memory associated with local variable 'obj' returned to caller}}
+  }
+
+  bool returnAsBoolViaPointer() {
+    ConvertsToPointer obj;
+    return obj; // no-warning
+  }
 }
 

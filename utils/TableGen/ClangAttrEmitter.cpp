@@ -892,7 +892,15 @@ void EmitClangAttrClass(RecordKeeper &Records, raw_ostream &OS) {
     if (!R.getValueAsBit("ASTNode"))
       continue;
     
-    const std::string &SuperName = R.getSuperClasses().back()->getName();
+    const std::vector<Record *> Supers = R.getSuperClasses();
+    assert(!Supers.empty() && "Forgot to specify a superclass for the attr");
+    std::string SuperName;
+    for (std::vector<Record *>::const_reverse_iterator I = Supers.rbegin(),
+         E = Supers.rend(); I != E; ++I) {
+      const Record &R = **I;
+      if (R.getName() != "TargetSpecificAttr" && SuperName.empty())
+        SuperName = R.getName();
+    }
 
     OS << "class " << R.getName() << "Attr : public " << SuperName << " {\n";
 
@@ -969,6 +977,48 @@ void EmitClangAttrClass(RecordKeeper &Records, raw_ostream &OS) {
   }
 
   OS << "#endif\n";
+}
+
+// Emits the all-arguments-are-expressions property for attributes.
+void EmitClangAttrExprArgsList(RecordKeeper &Records, raw_ostream &OS) {
+  emitSourceFileHeader("llvm::StringSwitch code to match attributes with "
+                       "expression arguments", OS);
+
+  std::vector<Record*> Attrs = Records.getAllDerivedDefinitions("Attr");
+
+  for (std::vector<Record*>::iterator I = Attrs.begin(), E = Attrs.end();
+       I != E; ++I) {
+    Record &Attr = **I;
+
+    // Determine whether the first argument is something that is always
+    // an expression.
+    std::vector<Record *> Args = Attr.getValueAsListOfDefs("Args");
+    if (Args.empty() || Args[0]->getSuperClasses().empty())
+      continue;
+
+    // Check whether this is one of the argument kinds that implies an
+    // expression.
+    // FIXME: Aligned is weird.
+    if (!llvm::StringSwitch<bool>(Args[0]->getSuperClasses().back()->getName())
+          .Case("AlignedArgument", true)
+          .Case("BoolArgument", true)
+          .Case("DefaultIntArgument", true)
+          .Case("IntArgument", true)
+          .Case("ExprArgument", true)
+          .Case("UnsignedArgument", true)
+          .Case("VariadicUnsignedArgument", true)
+          .Case("VariadicExprArgument", true)
+          .Default(false))
+      continue;
+
+    std::vector<Record*> Spellings = Attr.getValueAsListOfDefs("Spellings");
+
+    for (std::vector<Record*>::const_iterator I = Spellings.begin(),
+         E = Spellings.end(); I != E; ++I) {
+      OS << ".Case(\"" << (*I)->getValueAsString("Name") << "\", "
+         << "true" << ")\n";
+    }
+  }
 }
 
 // Emits the class method definitions for attributes.
@@ -1052,13 +1102,13 @@ void EmitClangAttrList(RecordKeeper &Records, raw_ostream &OS) {
         " INHERITABLE_PARAM_ATTR(NAME)\n";
   OS << "#endif\n\n";
 
-  OS << "#ifndef MS_INHERITABLE_ATTR\n";
-  OS << "#define MS_INHERITABLE_ATTR(NAME) INHERITABLE_ATTR(NAME)\n";
+  OS << "#ifndef MS_INHERITANCE_ATTR\n";
+  OS << "#define MS_INHERITANCE_ATTR(NAME) INHERITABLE_ATTR(NAME)\n";
   OS << "#endif\n\n";
 
-  OS << "#ifndef LAST_MS_INHERITABLE_ATTR\n";
-  OS << "#define LAST_MS_INHERITABLE_ATTR(NAME)"
-        " MS_INHERITABLE_ATTR(NAME)\n";
+  OS << "#ifndef LAST_MS_INHERITANCE_ATTR\n";
+  OS << "#define LAST_MS_INHERITANCE_ATTR(NAME)"
+        " MS_INHERITANCE_ATTR(NAME)\n";
   OS << "#endif\n\n";
 
   Record *InhClass = Records.getClass("InheritableAttr");
@@ -1082,16 +1132,16 @@ void EmitClangAttrList(RecordKeeper &Records, raw_ostream &OS) {
   }
 
   EmitAttrList(OS, "INHERITABLE_PARAM_ATTR", InhParamAttrs);
-  EmitAttrList(OS, "MS_INHERITABLE_ATTR", MSInhAttrs);
+  EmitAttrList(OS, "MS_INHERITANCE_ATTR", MSInhAttrs);
   EmitAttrList(OS, "INHERITABLE_ATTR", InhAttrs);
   EmitAttrList(OS, "ATTR", NonInhAttrs);
 
   OS << "#undef LAST_ATTR\n";
   OS << "#undef INHERITABLE_ATTR\n";
-  OS << "#undef MS_INHERITABLE_ATTR\n";
+  OS << "#undef MS_INHERITANCE_ATTR\n";
   OS << "#undef LAST_INHERITABLE_ATTR\n";
   OS << "#undef LAST_INHERITABLE_PARAM_ATTR\n";
-  OS << "#undef LAST_MS_INHERITABLE_ATTR\n";
+  OS << "#undef LAST_MS_INHERITANCE_ATTR\n";
   OS << "#undef ATTR\n";
 }
 

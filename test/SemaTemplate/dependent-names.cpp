@@ -264,7 +264,7 @@ namespace PR10053 {
 }
 
 namespace PR10187 {
-  namespace A {
+  namespace A1 {
     template<typename T>
     struct S {
       void f() {
@@ -275,6 +275,25 @@ namespace PR10187 {
     };
     void g() {
       S<int>().f(); // expected-note {{here}}
+    }
+  }
+
+  namespace A2 {
+    template<typename T>
+    struct S {
+      void f() {
+        for (auto &a : e)
+          __range(a); // expected-error {{undeclared identifier '__range'}}
+      }
+      T e[10];
+    };
+    void g() {
+      S<int>().f(); // expected-note {{here}}
+    }
+    struct X {};
+    void __range(X);
+    void h() {
+      S<X>().f();
     }
   }
 
@@ -335,7 +354,6 @@ namespace rdar12629723 {
     struct A : public B {  // expected-note{{'rdar12629723::X::A' declared here}}
       virtual void foo() { }
     };
-    struct B;
 
     struct D : T::foo { };
     struct E : D { };
@@ -369,3 +387,15 @@ namespace PR14695_A { void PR14695_f(PR14695_X); } // expected-note {{'PR14695_f
 template<typename T> void PR14695_g(T t) { PR14695_f(t); } // expected-error {{call to function 'PR14695_f' that is neither visible in the template definition nor found by argument-dependent lookup}}
 using namespace PR14695_A;
 template void PR14695_g(PR14695_X); // expected-note{{requested here}}
+
+namespace OperatorNew {
+  template<typename T> void f(T t) {
+    operator new(100, t); // expected-error{{call to function 'operator new' that is neither visible in the template definition nor found by argument-dependent lookup}}
+    // FIXME: This should give the same error.
+    new (t) int;
+  }
+  struct X {};
+};
+using size_t = decltype(sizeof(0));
+void *operator new(size_t, OperatorNew::X); // expected-note-re {{should be declared prior to the call site$}}
+template void OperatorNew::f(OperatorNew::X); // expected-note {{instantiation of}}

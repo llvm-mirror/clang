@@ -32,6 +32,7 @@ class CodeGenVTables {
   CodeGenModule &CGM;
 
   VTableContext VTContext;
+  OwningPtr<MicrosoftVFTableContext> VFTContext;
 
   /// VTables - All the vtables which have been defined.
   llvm::DenseMap<const CXXRecordDecl *, llvm::GlobalVariable *> VTables;
@@ -76,11 +77,6 @@ public:
   CodeGenVTables(CodeGenModule &CGM);
 
   VTableContext &getVTableContext() { return VTContext; }
-
-  /// needsVTTParameter - Return whether the given global decl needs a VTT
-  /// parameter, which it does if it's a base constructor or destructor with
-  /// virtual bases.
-  static bool needsVTTParameter(GlobalDecl GD);
 
   /// getSubVTTIndex - Return the index of the sub-VTT for the base class of the
   /// given record decl.

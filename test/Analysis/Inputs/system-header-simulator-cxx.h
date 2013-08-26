@@ -73,6 +73,70 @@ namespace std {
   struct nothrow_t {};
 
   extern const nothrow_t nothrow;
+
+  // libc++'s implementation
+  template <class _E>
+  class initializer_list
+  {
+    const _E* __begin_;
+    size_t    __size_;
+
+    initializer_list(const _E* __b, size_t __s)
+      : __begin_(__b),
+        __size_(__s)
+    {}
+
+  public:
+    typedef _E        value_type;
+    typedef const _E& reference;
+    typedef const _E& const_reference;
+    typedef size_t    size_type;
+
+    typedef const _E* iterator;
+    typedef const _E* const_iterator;
+
+    initializer_list() : __begin_(0), __size_(0) {}
+
+    size_t    size()  const {return __size_;}
+    const _E* begin() const {return __begin_;}
+    const _E* end()   const {return __begin_ + __size_;}
+  };
+
+  template<class InputIter, class OutputIter>
+  OutputIter copy(InputIter II, InputIter IE, OutputIter OI) {
+    while (II != IE)
+      *OI++ = *II++;
+    return OI;
+  }
+
+  struct input_iterator_tag { };
+  struct output_iterator_tag { };
+  struct forward_iterator_tag : public input_iterator_tag { };
+  struct bidirectional_iterator_tag : public forward_iterator_tag { };
+  struct random_access_iterator_tag : public bidirectional_iterator_tag { };
+
+  template <class _Tp>
+  class allocator {};
+
+  template <class _Tp, class _Alloc>
+  class __list_imp
+  {};
+
+  template <class _Tp, class _Alloc = allocator<_Tp> >
+  class list
+  : private __list_imp<_Tp, _Alloc>
+  {
+  public:
+    void pop_front() {
+      // Fake use-after-free.
+      // No warning is expected as we are suppressing warning comming
+      // out of std::list.
+      int z = 0;
+      z = 5/z;
+    }
+    bool empty() const;
+  };
+
 }
 
 void* operator new(std::size_t, const std::nothrow_t&) throw();

@@ -24,6 +24,8 @@
 // CHECK-PIE-LD: "Scrt1.o" "crti.o" "crtbeginS.o"
 // CHECK-PIE-LD: "crtendS.o" "crtn.o"
 //
+// CHECK-NOPIE-LD: "-nopie"
+//
 // CHECK-DYNAMIC-NO-PIC-32: "-mrelocation-model" "dynamic-no-pic"
 // CHECK-DYNAMIC-NO-PIC-32-NOT: "-pic-level"
 // CHECK-DYNAMIC-NO-PIC-32-NOT: "-pie-level"
@@ -35,6 +37,8 @@
 // CHECK-NON-DARWIN-DYNAMIC-NO-PIC: error: unsupported option '-mdynamic-no-pic' for target 'i386-unknown-unknown'
 //
 // CHECK-NO-PIE-NOT: "-pie"
+//
+// CHECK-NO-UNUSED-ARG-NOT: argument unused during compilation
 //
 // RUN: %clang -c %s -target i386-unknown-unknown -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
@@ -164,6 +168,8 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
 // RUN: %clang -c %s -target x86_64-apple-darwin -fPIE -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
+// RUN: %clang -c %s -target x86_64-apple-darwin -fPIC -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NO-UNUSED-ARG
 //
 // Darwin gets even more special with '-mdynamic-no-pic'. This flag is only
 // valid on Darwin, and it's behavior is very strange but needs to remain
@@ -193,3 +199,13 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
 // RUN: %clang -c %s -target armv7-apple-ios -fapple-kext -miphoneos-version-min=6.0.0 -static -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
+//
+// On OpenBSD, PIE is enabled by default, but can be disabled.
+// RUN: %clang -c %s -target i386-pc-openbsd -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIE2
+// RUN: %clang -c %s -target i386-pc-openbsd -fno-pie -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIC
+//
+// On OpenBSD, -nopie needs to be passed through to the linker.
+// RUN: %clang %s -target i386-pc-openbsd -nopie -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-NOPIE-LD

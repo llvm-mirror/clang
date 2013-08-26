@@ -6,7 +6,7 @@ void (*__fastcall fastpfunc)();
 struct __declspec(uuid("00000000-0000-0000-C000-000000000046")) __declspec(novtable) IUnknown {}; /* expected-warning{{__declspec attribute 'novtable' is not supported}} */
 extern __declspec(dllimport) void __stdcall VarR4FromDec();
 __declspec(deprecated) __declspec(deprecated) char * __cdecl ltoa( long _Val, char * _DstBuf, int _Radix);
-__declspec(noalias) __declspec(restrict) void * __cdecl xxx( void * _Memory ); /* expected-warning{{__declspec attribute 'noalias' is not supported}} expected-warning{{__declspec attribute 'restrict' is not supported}} */
+__declspec(safebuffers) __declspec(noalias) __declspec(restrict) void * __cdecl xxx( void * _Memory ); /* expected-warning{{__declspec attribute 'safebuffers' is not supported}} expected-warning{{__declspec attribute 'noalias' is not supported}} expected-warning{{__declspec attribute 'restrict' is not supported}} */
 typedef __w64 unsigned long ULONG_PTR, *PULONG_PTR;
 
 void * __ptr64 PtrToPtr64(const void *p)
@@ -105,3 +105,14 @@ __declspec() void quux( void ) {
   struct S7 s;
   int i = s.t;	/* expected-warning {{'t' is deprecated}} */
 }
+
+int * __sptr psp;
+int * __uptr pup;
+/* Either ordering is acceptable */
+int * __ptr32 __sptr psp32;
+int * __ptr32 __uptr pup32;
+int * __sptr __ptr64 psp64;
+int * __uptr __ptr64 pup64;
+
+/* Legal to have nested pointer attributes */
+int * __sptr * __ptr32 ppsp32;

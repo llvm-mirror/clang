@@ -169,7 +169,7 @@ def ReturnUndefChecker : Checker<"UndefReturn">,
 let ParentPackage = Cplusplus in {
 
 def NewDeleteChecker : Checker<"NewDelete">,
-  HelpText<"Check for memory leaks, double free, and use-after-free problems. Traces memory managed by new/delete.">, 
+  HelpText<"Check for double-free and use-after-free problems. Traces memory managed by new/delete.">, 
   DescFile<"MallocChecker.cpp">;
 
 } // end: "cplusplus"
@@ -179,6 +179,10 @@ let ParentPackage = CplusplusAlpha in {
 def VirtualCallChecker : Checker<"VirtualCall">,
   HelpText<"Check virtual function calls during construction or destruction">, 
   DescFile<"VirtualCallChecker.cpp">;
+
+def NewDeleteLeaksChecker : Checker<"NewDeleteLeaks">,
+  HelpText<"Check for memory leaks. Traces memory managed by new/delete.">, 
+  DescFile<"MallocChecker.cpp">;
 
 } // end: "alpha.cplusplus"
 
@@ -355,7 +359,7 @@ let ParentPackage = OSX in {
 
 def MacOSXAPIChecker : Checker<"API">,
   InPackage<OSX>,
-  HelpText<"Check for proper uses of various Mac OS X APIs">,
+  HelpText<"Check for proper uses of various Apple APIs">,
   DescFile<"MacOSXAPIChecker.cpp">;
 
 def MacOSKeychainAPIChecker : Checker<"SecKeychainAPI">,
@@ -533,5 +537,9 @@ def TaintTesterChecker : Checker<"TaintTest">,
 def ExprInspectionChecker : Checker<"ExprInspection">,
   HelpText<"Check the analyzer's understanding of expressions">,
   DescFile<"ExprInspectionChecker.cpp">;
+
+def ExplodedGraphViewer : Checker<"ViewExplodedGraph">,
+  HelpText<"View Exploded Graphs using GraphViz">,
+  DescFile<"DebugCheckers.cpp">;
 
 } // end "debug"

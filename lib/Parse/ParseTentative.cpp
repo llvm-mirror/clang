@@ -837,11 +837,12 @@ Parser::isExpressionOrTypeSpecifierSimple(tok::TokenKind Kind) {
   case tok::kw_char16_t:
   case tok::kw_char32_t:
   case tok::kw___underlying_type:
-  case tok::kw_thread_local:
   case tok::kw__Decimal32:
   case tok::kw__Decimal64:
   case tok::kw__Decimal128:
   case tok::kw___thread:
+  case tok::kw_thread_local:
+  case tok::kw__Thread_local:
   case tok::kw_typeof:
   case tok::kw___cdecl:
   case tok::kw___stdcall:
@@ -893,7 +894,7 @@ bool Parser::isTentativelyDeclared(IdentifierInfo *II) {
 ///           function-specifier
 ///           'friend'
 ///           'typedef'
-/// [C++0x]   'constexpr'
+/// [C++11]   'constexpr'
 /// [GNU]     attributes declaration-specifiers[opt]
 ///
 ///         storage-class-specifier:
@@ -903,6 +904,8 @@ bool Parser::isTentativelyDeclared(IdentifierInfo *II) {
 ///           'mutable'
 ///           'auto'
 /// [GNU]     '__thread'
+/// [C++11]   'thread_local'
+/// [C11]     '_Thread_local'
 ///
 ///         function-specifier:
 ///           'inline'
@@ -937,8 +940,9 @@ bool Parser::isTentativelyDeclared(IdentifierInfo *II) {
 ///           'void'
 /// [GNU]     typeof-specifier
 /// [GNU]     '_Complex'
-/// [C++0x]   'auto'                                                [TODO]
-/// [C++0x]   'decltype' ( expression )
+/// [C++11]   'auto'
+/// [C++11]   'decltype' ( expression )
+/// [C++1y]   'decltype' ( 'auto' )
 ///
 ///         type-name:
 ///           class-name
@@ -999,6 +1003,7 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
       // to types and identifiers, in order to try to recover from errors.
       CorrectionCandidateCallback TypoCorrection;
       TypoCorrection.WantRemainingKeywords = false;
+      TypoCorrection.WantTypeSpecifiers = Next.isNot(tok::arrow);
       switch (TryAnnotateName(false /* no nested name specifier */,
                               &TypoCorrection)) {
       case ANK_Error:
@@ -1072,6 +1077,8 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
   case tok::kw_mutable:
   case tok::kw_auto:
   case tok::kw___thread:
+  case tok::kw_thread_local:
+  case tok::kw__Thread_local:
     // function-specifier
   case tok::kw_inline:
   case tok::kw_virtual:
@@ -1115,6 +1122,8 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
   case tok::kw___fastcall:
   case tok::kw___thiscall:
   case tok::kw___w64:
+  case tok::kw___sptr:
+  case tok::kw___uptr:
   case tok::kw___ptr64:
   case tok::kw___ptr32:
   case tok::kw___forceinline:

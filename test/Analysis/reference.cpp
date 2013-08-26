@@ -75,6 +75,13 @@ namespace PR13440 {
     int (&x)[1];
 
     int *m() { return x; }
+
+    void testArrayToPointerDecayWithNonTypedValueRegion() {
+      int *p = x;
+      int *q = x;
+      clang_analyzer_eval(p[0] == q[0]); // expected-warning{{TRUE}}
+    }
+
   };
 
   void test() {
@@ -102,7 +109,7 @@ void testRetroactiveNullReference(int *x) {
   // "null reference". So the 'if' statement ought to be dead code.
   // However, Clang (and other compilers) don't actually check that a pointer
   // value is non-null in the implementation of references, so it is possible
-  // to produce a supposed "null reference" at runtime. The analyzer shoeuld
+  // to produce a supposed "null reference" at runtime. The analyzer should
   // still warn when it can prove such errors.
   int &y = *x;
   if (x != 0)
@@ -223,4 +230,14 @@ namespace rdar11212286 {
     idc(x);
     return *x; // no-warning
   }
+}
+
+namespace PR15694 {
+  class C {
+    bool bit : 1;
+    template <class T> void bar(const T &obj) {}
+    void foo() {
+      bar(bit); // don't crash
+    }
+  };
 }

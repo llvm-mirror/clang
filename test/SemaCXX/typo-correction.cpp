@@ -1,4 +1,8 @@
 // RUN: %clang_cc1 -fsyntax-only -verify -Wno-c++11-extensions %s
+//
+// WARNING: Do not add more typo correction test cases to this file lest you run
+// afoul the hard-coded limit (escape hatch) of 20 different typos whose
+// correction was attempted by Sema::CorrectTypo
 
 struct errc {
   int v_;
@@ -230,6 +234,18 @@ class foo { }; // expected-note{{'foo' declared here}}
 class bar : boo { }; // expected-error{{unknown class name 'boo'; did you mean 'foo'?}}
 }
 
+namespace outer {
+  void somefunc();  // expected-note{{'::outer::somefunc' declared here}}
+  void somefunc(int, int);  // expected-note{{'::outer::somefunc' declared here}}
+
+  namespace inner {
+    void somefunc(int) {
+      someFunc();  // expected-error{{use of undeclared identifier 'someFunc'; did you mean '::outer::somefunc'?}}
+      someFunc(1, 2);  // expected-error{{use of undeclared identifier 'someFunc'; did you mean '::outer::somefunc'?}}
+    }
+  }
+}
+
 namespace bogus_keyword_suggestion {
 void test() {
    status = "OK"; // expected-error-re{{use of undeclared identifier 'status'$}}
@@ -239,7 +255,7 @@ void test() {
 
 namespace PR13387 {
 struct A {
-  void CreateFoo(float, float); // expected-note {{'CreateFoo' declared here}}
+  void CreateFoo(float, float);
   void CreateBar(float, float);
 };
 struct B : A {
@@ -249,4 +265,63 @@ struct B : A {
 void f(B &x) {
   x.Createfoo(0,0); // expected-error {{no member named 'Createfoo' in 'PR13387::B'; did you mean 'CreateFoo'?}}
 }
+}
+
+struct DataStruct {void foo();};
+struct T {
+ DataStruct data_struct;
+ void f();
+};
+// should be void T::f();
+void f() {
+ data_struct->foo(); // expected-error-re{{use of undeclared identifier 'data_struct'$}}
+}
+
+namespace b6956809_test1 {
+  struct A {};
+  struct B {};
+
+  struct S1 {
+    void method(A*);  // no note here
+    void method(B*);
+  };
+
+  void test1() {
+    B b;
+    S1 s;
+    s.methodd(&b);  // expected-error{{no member named 'methodd' in 'b6956809_test1::S1'; did you mean 'method'}}
+  }
+
+  struct S2 {
+    S2();
+    void method(A*) const;  // expected-note{{candidate function not viable}}
+   private:
+    void method(B*);  // expected-note{{candidate function not viable}}
+  };
+
+  void test2() {
+    B b;
+    const S2 s;
+    s.methodd(&b);  // expected-error{{no member named 'methodd' in 'b6956809_test1::S2'; did you mean 'method'}}  expected-error{{no matching member function for call to 'method'}}
+  }
+}
+
+namespace b6956809_test2 {
+  template<typename T> struct Err { typename T::error n; };  // expected-error{{type 'void *' cannot be used prior to '::' because it has no members}}
+  struct S {
+    template<typename T> typename Err<T>::type method(T);  // expected-note{{in instantiation of template class 'b6956809_test2::Err<void *>' requested here}}  expected-note{{while substituting deduced template arguments into function template 'method' [with T = void *]}}
+    template<typename T> int method(T *);
+  };
+
+  void test() {
+    S s;
+    int k = s.methodd((void*)0);  // expected-error{{no member named 'methodd' in 'b6956809_test2::S'; did you mean 'method'?}}
+  }
+}
+
+namespace CorrectTypo_has_reached_its_limit {
+int flibberdy();  // no note here
+int no_correction() {
+  return gibberdy();  // expected-error-re{{use of undeclared identifier 'gibberdy'$}}
+};
 }

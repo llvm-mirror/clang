@@ -16,10 +16,10 @@ typedef __attribute__((neon_polyvector_type(16))) poly8_t  poly8x16_t;
 typedef __attribute__((neon_polyvector_type(8)))  poly16_t poly16x8_t;
 
 // The attributes must have a single argument.
-typedef __attribute__((neon_vector_type(2, 4))) int only_one_arg; // expected-error{{attribute takes one argument}}
+typedef __attribute__((neon_vector_type(2, 4))) int only_one_arg; // expected-error{{'neon_vector_type' attribute takes one argument}}
 
 // The number of elements must be an ICE.
-typedef __attribute__((neon_vector_type(2.0))) int non_int_width; // expected-error{{attribute requires integer constant}}
+typedef __attribute__((neon_vector_type(2.0))) int non_int_width; // expected-error{{'neon_vector_type' attribute requires an integer constant}}
 
 // Only certain element types are allowed.
 typedef __attribute__((neon_vector_type(2))) double double_elt; // expected-error{{invalid vector element type}}

@@ -1,4 +1,5 @@
-// RUN: %clang_cc1 -verify -std=c++11 -fcxx-exceptions %s
+// RUN: %clang_cc1 -verify -std=c++11 -fcxx-exceptions -Werror=c++1y-extensions %s
+// RUN: %clang_cc1 -verify -std=c++1y -fcxx-exceptions -DCXX1Y %s
 
 namespace N {
   typedef char C;
@@ -82,26 +83,47 @@ struct V {
   }
 
   constexpr V(int(&)[1]) {
-    for (int n = 0; n < 10; ++n) // expected-error {{statement not allowed in constexpr constructor}}
+    for (int n = 0; n < 10; ++n)
       /**/;
+#ifndef CXX1Y
+    // expected-error@-3 {{statement not allowed in constexpr constructor}}
+#endif
   }
   constexpr V(int(&)[2]) {
-    constexpr int a = 0; // expected-error {{variables cannot be declared in a constexpr constructor}}
+    constexpr int a = 0;
+#ifndef CXX1Y
+    // expected-error@-2 {{variable declaration in a constexpr constructor is a C++1y extension}}
+#endif
   }
   constexpr V(int(&)[3]) {
-    constexpr int ForwardDecl(int); // expected-error {{statement not allowed in constexpr constructor}}
+    constexpr int ForwardDecl(int);
+#ifndef CXX1Y
+    // expected-error@-2 {{use of this statement in a constexpr constructor is a C++1y extension}}
+#endif
   }
   constexpr V(int(&)[4]) {
-    typedef struct { } S1; // expected-error {{types cannot be defined in a constexpr constructor}}
+    typedef struct { } S1;
+#ifndef CXX1Y
+    // expected-error@-2 {{type definition in a constexpr constructor is a C++1y extension}}
+#endif
   }
   constexpr V(int(&)[5]) {
-    using S2 = struct { }; // expected-error {{types cannot be defined in a constexpr constructor}}
+    using S2 = struct { };
+#ifndef CXX1Y
+    // expected-error@-2 {{type definition in a constexpr constructor is a C++1y extension}}
+#endif
   }
   constexpr V(int(&)[6]) {
-    struct S3 { }; // expected-error {{types cannot be defined in a constexpr constructor}}
+    struct S3 { };
+#ifndef CXX1Y
+    // expected-error@-2 {{type definition in a constexpr constructor is a C++1y extension}}
+#endif
   }
   constexpr V(int(&)[7]) {
-    return; // expected-error {{statement not allowed in constexpr constructor}}
+    return;
+#ifndef CXX1Y
+    // expected-error@-2 {{use of this statement in a constexpr constructor is a C++1y extension}}
+#endif
   }
 };
 
@@ -291,4 +313,24 @@ namespace CtorLookup {
   };
   constexpr C::C(const C&) = default;
   constexpr C::C(C&) = default; // expected-error {{not constexpr}}
+}
+
+namespace PR14503 {
+  template<typename> struct V {
+    union {
+      int n;
+      struct {
+        int x,
+            y;
+      };
+    };
+    constexpr V() : x(0) {}
+  };
+
+  // The constructor is still 'constexpr' here, but the result is not intended
+  // to be a constant expression. The standard is not clear on how this should
+  // work.
+  constexpr V<int> v; // expected-error {{constant expression}} expected-note {{subobject of type 'int' is not initialized}}
+
+  constexpr int k = V<int>().x; // FIXME: ok?
 }
