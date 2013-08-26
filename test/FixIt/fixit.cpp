@@ -313,18 +313,6 @@ namespace PR5066 {
   X<int *p> x; // expected-error {{type-id cannot have a name}}
 }
 
-namespace PR15045 {
-  class Cl0 {
-  public:
-    int a;
-  };
-
-  int f() {
-    Cl0 c;
-    return c->a;  // expected-error {{member reference type 'PR15045::Cl0' is not a pointer; maybe you meant to use '.'?}}
-  }
-}
-
 namespace PR5898 {
   class A {
   public:
@@ -336,5 +324,17 @@ namespace PR5898 {
   }
   bool bar(A x, const char *y) {
     return foo->(x) == y;  // expected-error {{unexpected '->' in function call; perhaps remove the '->'?}}
+  }
+}
+
+namespace PR15045 {
+  class Cl0 {
+  public:
+    int a;
+  };
+
+  int f() {
+    Cl0 c;
+    return c->a;  // expected-error {{member reference type 'PR15045::Cl0' is not a pointer; maybe you meant to use '.'?}}
   }
 }

@@ -234,6 +234,9 @@ public:
   virtual llvm::BasicBlock *EmitCtorCompleteObjectHandler(CodeGenFunction &CGF,
                                                           const CXXRecordDecl *RD);
 
+  /// Emit constructor variants required by this ABI.
+  virtual void EmitCXXConstructors(const CXXConstructorDecl *D) = 0;
+
   /// Build the signature of the given destructor variant by adding
   /// any required parameters.  For convenience, ArgTys has been initialized
   /// with the type of 'this' and ResTy has been initialized with the type of
@@ -243,6 +246,15 @@ public:
                                         CXXDtorType T,
                                         CanQualType &ResTy,
                                SmallVectorImpl<CanQualType> &ArgTys) = 0;
+
+  /// Returns true if the given destructor type should be emitted as a linkonce
+  /// delegating thunk, regardless of whether the dtor is defined in this TU or
+  /// not.
+  virtual bool useThunkForDtorVariant(const CXXDestructorDecl *Dtor,
+                                      CXXDtorType DT) const = 0;
+
+  /// Emit destructor variants required by this ABI.
+  virtual void EmitCXXDestructors(const CXXDestructorDecl *D) = 0;
 
   /// Build the ABI-specific portion of the parameter list for a
   /// function.  This generally involves a 'this' parameter and

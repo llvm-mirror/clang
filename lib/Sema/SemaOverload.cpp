@@ -548,13 +548,13 @@ AmbiguousConversionSequence::copyFrom(const AmbiguousConversionSequence &O) {
 }
 
 namespace {
-  // Structure used by OverloadCandidate::DeductionFailureInfo to store
+  // Structure used by DeductionFailureInfo to store
   // template argument information.
   struct DFIArguments {
     TemplateArgument FirstArg;
     TemplateArgument SecondArg;
   };
-  // Structure used by OverloadCandidate::DeductionFailureInfo to store
+  // Structure used by DeductionFailureInfo to store
   // template parameter and template argument information.
   struct DFIParamWithArguments : DFIArguments {
     TemplateParameter Param;
@@ -563,11 +563,10 @@ namespace {
 
 /// \brief Convert from Sema's representation of template deduction information
 /// to the form used in overload-candidate information.
-OverloadCandidate::DeductionFailureInfo
-static MakeDeductionFailureInfo(ASTContext &Context,
-                                Sema::TemplateDeductionResult TDK,
-                                TemplateDeductionInfo &Info) {
-  OverloadCandidate::DeductionFailureInfo Result;
+DeductionFailureInfo MakeDeductionFailureInfo(ASTContext &Context,
+                                              Sema::TemplateDeductionResult TDK,
+                                              TemplateDeductionInfo &Info) {
+  DeductionFailureInfo Result;
   Result.Result = static_cast<unsigned>(TDK);
   Result.HasDiagnostic = false;
   Result.Data = 0;
@@ -625,7 +624,7 @@ static MakeDeductionFailureInfo(ASTContext &Context,
   return Result;
 }
 
-void OverloadCandidate::DeductionFailureInfo::Destroy() {
+void DeductionFailureInfo::Destroy() {
   switch (static_cast<Sema::TemplateDeductionResult>(Result)) {
   case Sema::TDK_Success:
   case Sema::TDK_Invalid:
@@ -659,15 +658,13 @@ void OverloadCandidate::DeductionFailureInfo::Destroy() {
   }
 }
 
-PartialDiagnosticAt *
-OverloadCandidate::DeductionFailureInfo::getSFINAEDiagnostic() {
+PartialDiagnosticAt *DeductionFailureInfo::getSFINAEDiagnostic() {
   if (HasDiagnostic)
     return static_cast<PartialDiagnosticAt*>(static_cast<void*>(Diagnostic));
   return 0;
 }
 
-TemplateParameter
-OverloadCandidate::DeductionFailureInfo::getTemplateParameter() {
+TemplateParameter DeductionFailureInfo::getTemplateParameter() {
   switch (static_cast<Sema::TemplateDeductionResult>(Result)) {
   case Sema::TDK_Success:
   case Sema::TDK_Invalid:
@@ -695,8 +692,7 @@ OverloadCandidate::DeductionFailureInfo::getTemplateParameter() {
   return TemplateParameter();
 }
 
-TemplateArgumentList *
-OverloadCandidate::DeductionFailureInfo::getTemplateArgumentList() {
+TemplateArgumentList *DeductionFailureInfo::getTemplateArgumentList() {
   switch (static_cast<Sema::TemplateDeductionResult>(Result)) {
   case Sema::TDK_Success:
   case Sema::TDK_Invalid:
@@ -722,7 +718,7 @@ OverloadCandidate::DeductionFailureInfo::getTemplateArgumentList() {
   return 0;
 }
 
-const TemplateArgument *OverloadCandidate::DeductionFailureInfo::getFirstArg() {
+const TemplateArgument *DeductionFailureInfo::getFirstArg() {
   switch (static_cast<Sema::TemplateDeductionResult>(Result)) {
   case Sema::TDK_Success:
   case Sema::TDK_Invalid:
@@ -748,8 +744,7 @@ const TemplateArgument *OverloadCandidate::DeductionFailureInfo::getFirstArg() {
   return 0;
 }
 
-const TemplateArgument *
-OverloadCandidate::DeductionFailureInfo::getSecondArg() {
+const TemplateArgument *DeductionFailureInfo::getSecondArg() {
   switch (static_cast<Sema::TemplateDeductionResult>(Result)) {
   case Sema::TDK_Success:
   case Sema::TDK_Invalid:
@@ -775,8 +770,7 @@ OverloadCandidate::DeductionFailureInfo::getSecondArg() {
   return 0;
 }
 
-Expr *
-OverloadCandidate::DeductionFailureInfo::getExpr() {
+Expr *DeductionFailureInfo::getExpr() {
   if (static_cast<Sema::TemplateDeductionResult>(Result) ==
         Sema::TDK_FailedOverloadResolution)
     return static_cast<Expr*>(Data);
@@ -2590,7 +2584,8 @@ bool Sema::FunctionArgTypesAreEqual(const FunctionProtoType *OldType,
   for (FunctionProtoType::arg_type_iterator O = OldType->arg_type_begin(),
        N = NewType->arg_type_begin(),
        E = OldType->arg_type_end(); O && (O != E); ++O, ++N) {
-    if (!Context.hasSameType(*O, *N)) {
+    if (!Context.hasSameType(O->getUnqualifiedType(),
+                             N->getUnqualifiedType())) {
       if (ArgPos) *ArgPos = O - OldType->arg_type_begin();
       return false;
     }
@@ -7664,11 +7659,10 @@ public:
 /// on the operator @p Op and the arguments given. For example, if the
 /// operator is a binary '+', this routine might add "int
 /// operator+(int, int)" to cover integer addition.
-void
-Sema::AddBuiltinOperatorCandidates(OverloadedOperatorKind Op,
-                                   SourceLocation OpLoc,
-                                   llvm::ArrayRef<Expr *> Args,
-                                   OverloadCandidateSet& CandidateSet) {
+void Sema::AddBuiltinOperatorCandidates(OverloadedOperatorKind Op,
+                                        SourceLocation OpLoc,
+                                        ArrayRef<Expr *> Args,
+                                        OverloadCandidateSet &CandidateSet) {
   // Find all of the types that the arguments can convert to, but only
   // if the operator we're looking at has built-in operator candidates
   // that make use of these types. Also record whether we encounter non-record
@@ -8128,7 +8122,7 @@ OverloadCandidateKind ClassifyOverloadCandidate(Sema &S,
   return isTemplate ? oc_function_template : oc_function;
 }
 
-void MaybeEmitInheritedConstructorNote(Sema &S, FunctionDecl *Fn) {
+void MaybeEmitInheritedConstructorNote(Sema &S, Decl *Fn) {
   const CXXConstructorDecl *Ctor = dyn_cast<CXXConstructorDecl>(Fn);
   if (!Ctor) return;
 
@@ -8414,30 +8408,52 @@ void DiagnoseBadConversion(Sema &S, OverloadCandidate *Cand, unsigned I) {
   MaybeEmitInheritedConstructorNote(S, Fn);
 }
 
-void DiagnoseArityMismatch(Sema &S, OverloadCandidate *Cand,
-                           unsigned NumFormalArgs) {
-  // TODO: treat calls to a missing default constructor as a special case
-
+/// Additional arity mismatch diagnosis specific to a function overload
+/// candidates. This is not covered by the more general DiagnoseArityMismatch()
+/// over a candidate in any candidate set.
+bool CheckArityMismatch(Sema &S, OverloadCandidate *Cand,
+                        unsigned NumArgs) {
   FunctionDecl *Fn = Cand->Function;
-  const FunctionProtoType *FnTy = Fn->getType()->getAs<FunctionProtoType>();
-
   unsigned MinParams = Fn->getMinRequiredArguments();
 
   // With invalid overloaded operators, it's possible that we think we
-  // have an arity mismatch when it fact it looks like we have the
+  // have an arity mismatch when in fact it looks like we have the
   // right number of arguments, because only overloaded operators have
   // the weird behavior of overloading member and non-member functions.
   // Just don't report anything.
   if (Fn->isInvalidDecl() && 
       Fn->getDeclName().getNameKind() == DeclarationName::CXXOperatorName)
-    return;
+    return true;
+
+  if (NumArgs < MinParams) {
+    assert((Cand->FailureKind == ovl_fail_too_few_arguments) ||
+           (Cand->FailureKind == ovl_fail_bad_deduction &&
+            Cand->DeductionFailure.Result == Sema::TDK_TooFewArguments));
+  } else {
+    assert((Cand->FailureKind == ovl_fail_too_many_arguments) ||
+           (Cand->FailureKind == ovl_fail_bad_deduction &&
+            Cand->DeductionFailure.Result == Sema::TDK_TooManyArguments));
+  }
+
+  return false;
+}
+
+/// General arity mismatch diagnosis over a candidate in a candidate set.
+void DiagnoseArityMismatch(Sema &S, Decl *D, unsigned NumFormalArgs) {
+  assert(isa<FunctionDecl>(D) &&
+      "The templated declaration should at least be a function"
+      " when diagnosing bad template argument deduction due to too many"
+      " or too few arguments");
+  
+  FunctionDecl *Fn = cast<FunctionDecl>(D);
+  
+  // TODO: treat calls to a missing default constructor as a special case
+  const FunctionProtoType *FnTy = Fn->getType()->getAs<FunctionProtoType>();
+  unsigned MinParams = Fn->getMinRequiredArguments();
 
   // at least / at most / exactly
   unsigned mode, modeCount;
   if (NumFormalArgs < MinParams) {
-    assert((Cand->FailureKind == ovl_fail_too_few_arguments) ||
-           (Cand->FailureKind == ovl_fail_bad_deduction &&
-            Cand->DeductionFailure.Result == Sema::TDK_TooFewArguments));
     if (MinParams != FnTy->getNumArgs() ||
         FnTy->isVariadic() || FnTy->isTemplateVariadic())
       mode = 0; // "at least"
@@ -8445,9 +8461,6 @@ void DiagnoseArityMismatch(Sema &S, OverloadCandidate *Cand,
       mode = 2; // "exactly"
     modeCount = MinParams;
   } else {
-    assert((Cand->FailureKind == ovl_fail_too_many_arguments) ||
-           (Cand->FailureKind == ovl_fail_bad_deduction &&
-            Cand->DeductionFailure.Result == Sema::TDK_TooManyArguments));
     if (MinParams != FnTy->getNumArgs())
       mode = 1; // "at most"
     else
@@ -8469,25 +8482,42 @@ void DiagnoseArityMismatch(Sema &S, OverloadCandidate *Cand,
   MaybeEmitInheritedConstructorNote(S, Fn);
 }
 
-/// Diagnose a failed template-argument deduction.
-void DiagnoseBadDeduction(Sema &S, OverloadCandidate *Cand,
-                          unsigned NumArgs) {
-  FunctionDecl *Fn = Cand->Function; // pattern
+/// Arity mismatch diagnosis specific to a function overload candidate.
+void DiagnoseArityMismatch(Sema &S, OverloadCandidate *Cand,
+                           unsigned NumFormalArgs) {
+  if (!CheckArityMismatch(S, Cand, NumFormalArgs))
+    DiagnoseArityMismatch(S, Cand->Function, NumFormalArgs);
+}
 
-  TemplateParameter Param = Cand->DeductionFailure.getTemplateParameter();
+TemplateDecl *getDescribedTemplate(Decl *Templated) {
+  if (FunctionDecl *FD = dyn_cast<FunctionDecl>(Templated))
+    return FD->getDescribedFunctionTemplate();
+  else if (CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(Templated))
+    return RD->getDescribedClassTemplate();
+
+  llvm_unreachable("Unsupported: Getting the described template declaration"
+                   " for bad deduction diagnosis");
+}
+
+/// Diagnose a failed template-argument deduction.
+void DiagnoseBadDeduction(Sema &S, Decl *Templated,
+                          DeductionFailureInfo &DeductionFailure,
+                          unsigned NumArgs) {
+  TemplateParameter Param = DeductionFailure.getTemplateParameter();
   NamedDecl *ParamD;
   (ParamD = Param.dyn_cast<TemplateTypeParmDecl*>()) ||
   (ParamD = Param.dyn_cast<NonTypeTemplateParmDecl*>()) ||
   (ParamD = Param.dyn_cast<TemplateTemplateParmDecl*>());
-  switch (Cand->DeductionFailure.Result) {
+  switch (DeductionFailure.Result) {
   case Sema::TDK_Success:
     llvm_unreachable("TDK_success while diagnosing bad deduction");
 
   case Sema::TDK_Incomplete: {
     assert(ParamD && "no parameter found for incomplete deduction result");
-    S.Diag(Fn->getLocation(), diag::note_ovl_candidate_incomplete_deduction)
-      << ParamD->getDeclName();
-    MaybeEmitInheritedConstructorNote(S, Fn);
+    S.Diag(Templated->getLocation(),
+           diag::note_ovl_candidate_incomplete_deduction)
+        << ParamD->getDeclName();
+    MaybeEmitInheritedConstructorNote(S, Templated);
     return;
   }
 
@@ -8495,7 +8525,7 @@ void DiagnoseBadDeduction(Sema &S, OverloadCandidate *Cand,
     assert(ParamD && "no parameter found for bad qualifiers deduction result");
     TemplateTypeParmDecl *TParam = cast<TemplateTypeParmDecl>(ParamD);
 
-    QualType Param = Cand->DeductionFailure.getFirstArg()->getAsType();
+    QualType Param = DeductionFailure.getFirstArg()->getAsType();
 
     // Param will have been canonicalized, but it should just be a
     // qualified version of ParamD, so move the qualifiers to that.
@@ -8508,11 +8538,11 @@ void DiagnoseBadDeduction(Sema &S, OverloadCandidate *Cand,
     // about that.  It also doesn't matter as much, because it won't
     // have any template parameters in it (because deduction isn't
     // done on dependent types).
-    QualType Arg = Cand->DeductionFailure.getSecondArg()->getAsType();
+    QualType Arg = DeductionFailure.getSecondArg()->getAsType();
 
-    S.Diag(Fn->getLocation(), diag::note_ovl_candidate_underqualified)
-      << ParamD->getDeclName() << Arg << NonCanonParam;
-    MaybeEmitInheritedConstructorNote(S, Fn);
+    S.Diag(Templated->getLocation(), diag::note_ovl_candidate_underqualified)
+        << ParamD->getDeclName() << Arg << NonCanonParam;
+    MaybeEmitInheritedConstructorNote(S, Templated);
     return;
   }
 
@@ -8527,20 +8557,20 @@ void DiagnoseBadDeduction(Sema &S, OverloadCandidate *Cand,
       which = 2;
     }
 
-    S.Diag(Fn->getLocation(), diag::note_ovl_candidate_inconsistent_deduction)
-      << which << ParamD->getDeclName()
-      << *Cand->DeductionFailure.getFirstArg()
-      << *Cand->DeductionFailure.getSecondArg();
-    MaybeEmitInheritedConstructorNote(S, Fn);
+    S.Diag(Templated->getLocation(),
+           diag::note_ovl_candidate_inconsistent_deduction)
+        << which << ParamD->getDeclName() << *DeductionFailure.getFirstArg()
+        << *DeductionFailure.getSecondArg();
+    MaybeEmitInheritedConstructorNote(S, Templated);
     return;
   }
 
   case Sema::TDK_InvalidExplicitArguments:
     assert(ParamD && "no parameter found for invalid explicit arguments");
     if (ParamD->getDeclName())
-      S.Diag(Fn->getLocation(),
+      S.Diag(Templated->getLocation(),
              diag::note_ovl_candidate_explicit_arg_mismatch_named)
-        << ParamD->getDeclName();
+          << ParamD->getDeclName();
     else {
       int index = 0;
       if (TemplateTypeParmDecl *TTP = dyn_cast<TemplateTypeParmDecl>(ParamD))
@@ -8550,35 +8580,36 @@ void DiagnoseBadDeduction(Sema &S, OverloadCandidate *Cand,
         index = NTTP->getIndex();
       else
         index = cast<TemplateTemplateParmDecl>(ParamD)->getIndex();
-      S.Diag(Fn->getLocation(),
+      S.Diag(Templated->getLocation(),
              diag::note_ovl_candidate_explicit_arg_mismatch_unnamed)
-        << (index + 1);
+          << (index + 1);
     }
-    MaybeEmitInheritedConstructorNote(S, Fn);
+    MaybeEmitInheritedConstructorNote(S, Templated);
     return;
 
   case Sema::TDK_TooManyArguments:
   case Sema::TDK_TooFewArguments:
-    DiagnoseArityMismatch(S, Cand, NumArgs);
+    DiagnoseArityMismatch(S, Templated, NumArgs);
     return;
 
   case Sema::TDK_InstantiationDepth:
-    S.Diag(Fn->getLocation(), diag::note_ovl_candidate_instantiation_depth);
-    MaybeEmitInheritedConstructorNote(S, Fn);
+    S.Diag(Templated->getLocation(),
+           diag::note_ovl_candidate_instantiation_depth);
+    MaybeEmitInheritedConstructorNote(S, Templated);
     return;
 
   case Sema::TDK_SubstitutionFailure: {
     // Format the template argument list into the argument string.
     SmallString<128> TemplateArgString;
     if (TemplateArgumentList *Args =
-          Cand->DeductionFailure.getTemplateArgumentList()) {
+            DeductionFailure.getTemplateArgumentList()) {
       TemplateArgString = " ";
       TemplateArgString += S.getTemplateArgumentBindingsText(
-          Fn->getDescribedFunctionTemplate()->getTemplateParameters(), *Args);
+          getDescribedTemplate(Templated)->getTemplateParameters(), *Args);
     }
 
     // If this candidate was disabled by enable_if, say so.
-    PartialDiagnosticAt *PDiag = Cand->DeductionFailure.getSFINAEDiagnostic();
+    PartialDiagnosticAt *PDiag = DeductionFailure.getSFINAEDiagnostic();
     if (PDiag && PDiag->second.getDiagID() ==
           diag::err_typename_nested_not_found_enable_if) {
       // FIXME: Use the source range of the condition, and the fully-qualified
@@ -8599,25 +8630,25 @@ void DiagnoseBadDeduction(Sema &S, OverloadCandidate *Cand,
       PDiag->second.EmitToString(S.getDiagnostics(), SFINAEArgString);
     }
 
-    S.Diag(Fn->getLocation(), diag::note_ovl_candidate_substitution_failure)
-      << TemplateArgString << SFINAEArgString << R;
-    MaybeEmitInheritedConstructorNote(S, Fn);
+    S.Diag(Templated->getLocation(),
+           diag::note_ovl_candidate_substitution_failure)
+        << TemplateArgString << SFINAEArgString << R;
+    MaybeEmitInheritedConstructorNote(S, Templated);
     return;
   }
 
   case Sema::TDK_FailedOverloadResolution: {
-    OverloadExpr::FindResult R =
-        OverloadExpr::find(Cand->DeductionFailure.getExpr());
-    S.Diag(Fn->getLocation(),
+    OverloadExpr::FindResult R = OverloadExpr::find(DeductionFailure.getExpr());
+    S.Diag(Templated->getLocation(),
            diag::note_ovl_candidate_failed_overload_resolution)
-      << R.Expression->getName();
+        << R.Expression->getName();
     return;
   }
 
   case Sema::TDK_NonDeducedMismatch: {
     // FIXME: Provide a source location to indicate what we couldn't match.
-    TemplateArgument FirstTA = *Cand->DeductionFailure.getFirstArg();
-    TemplateArgument SecondTA = *Cand->DeductionFailure.getSecondArg();
+    TemplateArgument FirstTA = *DeductionFailure.getFirstArg();
+    TemplateArgument SecondTA = *DeductionFailure.getSecondArg();
     if (FirstTA.getKind() == TemplateArgument::Template &&
         SecondTA.getKind() == TemplateArgument::Template) {
       TemplateName FirstTN = FirstTA.getAsTemplate();
@@ -8632,24 +8663,36 @@ void DiagnoseBadDeduction(Sema &S, OverloadCandidate *Cand,
           // 2) The diagnostic printer only attempts to find a better
           //    name for types, not decls.
           // Ideally, this should folded into the diagnostic printer.
-          S.Diag(Fn->getLocation(),
+          S.Diag(Templated->getLocation(),
                  diag::note_ovl_candidate_non_deduced_mismatch_qualified)
               << FirstTN.getAsTemplateDecl() << SecondTN.getAsTemplateDecl();
           return;
         }
       }
     }
-    S.Diag(Fn->getLocation(), diag::note_ovl_candidate_non_deduced_mismatch)
-      << FirstTA << SecondTA;
+    S.Diag(Templated->getLocation(),
+           diag::note_ovl_candidate_non_deduced_mismatch)
+        << FirstTA << SecondTA;
     return;
   }
   // TODO: diagnose these individually, then kill off
   // note_ovl_candidate_bad_deduction, which is uselessly vague.
   case Sema::TDK_MiscellaneousDeductionFailure:
-    S.Diag(Fn->getLocation(), diag::note_ovl_candidate_bad_deduction);
-    MaybeEmitInheritedConstructorNote(S, Fn);
+    S.Diag(Templated->getLocation(), diag::note_ovl_candidate_bad_deduction);
+    MaybeEmitInheritedConstructorNote(S, Templated);
     return;
   }
+}
+
+/// Diagnose a failed template-argument deduction, for function calls.
+void DiagnoseBadDeduction(Sema &S, OverloadCandidate *Cand, unsigned NumArgs) {
+  unsigned TDK = Cand->DeductionFailure.Result;
+  if (TDK == Sema::TDK_TooFewArguments || TDK == Sema::TDK_TooManyArguments) {
+    if (CheckArityMismatch(S, Cand, NumArgs))
+      return;
+  }
+  DiagnoseBadDeduction(S, Cand->Function, // pattern
+                       Cand->DeductionFailure, NumArgs);
 }
 
 /// CUDA: diagnose an invalid call across targets.
@@ -8799,7 +8842,7 @@ void NoteAmbiguousUserConversions(Sema &S, SourceLocation OpLoc,
   }
 }
 
-SourceLocation GetLocationForCandidate(const OverloadCandidate *Cand) {
+static SourceLocation GetLocationForCandidate(const OverloadCandidate *Cand) {
   if (Cand->Function)
     return Cand->Function->getLocation();
   if (Cand->IsSurrogate)
@@ -8807,8 +8850,7 @@ SourceLocation GetLocationForCandidate(const OverloadCandidate *Cand) {
   return SourceLocation();
 }
 
-static unsigned
-RankDeductionFailure(const OverloadCandidate::DeductionFailureInfo &DFI) {
+static unsigned RankDeductionFailure(const DeductionFailureInfo &DFI) {
   switch ((Sema::TemplateDeductionResult)DFI.Result) {
   case Sema::TDK_Success:
     llvm_unreachable("TDK_success while diagnosing bad deduction");
@@ -9101,6 +9143,108 @@ void OverloadCandidateSet::NoteCandidates(Sema &S,
     S.Diag(OpLoc, diag::note_ovl_too_many_candidates) << int(E - I);
 }
 
+static SourceLocation
+GetLocationForCandidate(const TemplateSpecCandidate *Cand) {
+  return Cand->Specialization ? Cand->Specialization->getLocation()
+                              : SourceLocation();
+}
+
+struct CompareTemplateSpecCandidatesForDisplay {
+  Sema &S;
+  CompareTemplateSpecCandidatesForDisplay(Sema &S) : S(S) {}
+
+  bool operator()(const TemplateSpecCandidate *L,
+                  const TemplateSpecCandidate *R) {
+    // Fast-path this check.
+    if (L == R)
+      return false;
+
+    // Assuming that both candidates are not matches...
+
+    // Sort by the ranking of deduction failures.
+    if (L->DeductionFailure.Result != R->DeductionFailure.Result)
+      return RankDeductionFailure(L->DeductionFailure) <
+             RankDeductionFailure(R->DeductionFailure);
+
+    // Sort everything else by location.
+    SourceLocation LLoc = GetLocationForCandidate(L);
+    SourceLocation RLoc = GetLocationForCandidate(R);
+
+    // Put candidates without locations (e.g. builtins) at the end.
+    if (LLoc.isInvalid())
+      return false;
+    if (RLoc.isInvalid())
+      return true;
+
+    return S.SourceMgr.isBeforeInTranslationUnit(LLoc, RLoc);
+  }
+};
+
+/// Diagnose a template argument deduction failure.
+/// We are treating these failures as overload failures due to bad
+/// deductions.
+void TemplateSpecCandidate::NoteDeductionFailure(Sema &S) {
+  DiagnoseBadDeduction(S, Specialization, // pattern
+                       DeductionFailure, /*NumArgs=*/0);
+}
+
+void TemplateSpecCandidateSet::destroyCandidates() {
+  for (iterator i = begin(), e = end(); i != e; ++i) {
+    i->DeductionFailure.Destroy();
+  }
+}
+
+void TemplateSpecCandidateSet::clear() {
+  destroyCandidates();
+  Candidates.clear();
+}
+
+/// NoteCandidates - When no template specialization match is found, prints
+/// diagnostic messages containing the non-matching specializations that form
+/// the candidate set.
+/// This is analoguous to OverloadCandidateSet::NoteCandidates() with
+/// OCD == OCD_AllCandidates and Cand->Viable == false.
+void TemplateSpecCandidateSet::NoteCandidates(Sema &S, SourceLocation Loc) {
+  // Sort the candidates by position (assuming no candidate is a match).
+  // Sorting directly would be prohibitive, so we make a set of pointers
+  // and sort those.
+  SmallVector<TemplateSpecCandidate *, 32> Cands;
+  Cands.reserve(size());
+  for (iterator Cand = begin(), LastCand = end(); Cand != LastCand; ++Cand) {
+    if (Cand->Specialization)
+      Cands.push_back(Cand);
+    // Otherwise, this is a non matching builtin candidate.  We do not,
+    // in general, want to list every possible builtin candidate.
+  }
+
+  std::sort(Cands.begin(), Cands.end(),
+            CompareTemplateSpecCandidatesForDisplay(S));
+
+  // FIXME: Perhaps rename OverloadsShown and getShowOverloads()
+  // for generalization purposes (?).
+  const OverloadsShown ShowOverloads = S.Diags.getShowOverloads();
+
+  SmallVectorImpl<TemplateSpecCandidate *>::iterator I, E;
+  unsigned CandsShown = 0;
+  for (I = Cands.begin(), E = Cands.end(); I != E; ++I) {
+    TemplateSpecCandidate *Cand = *I;
+
+    // Set an arbitrary limit on the number of candidates we'll spam
+    // the user with.  FIXME: This limit should depend on details of the
+    // candidate list.
+    if (CandsShown >= 4 && ShowOverloads == Ovl_Best)
+      break;
+    ++CandsShown;
+
+    assert(Cand->Specialization &&
+           "Non-matching built-in candidates are not added to Cands.");
+    Cand->NoteDeductionFailure(S);
+  }
+
+  if (I != E)
+    S.Diag(Loc, diag::note_ovl_too_many_candidates) << int(E - I);
+}
+
 // [PossiblyAFunctionType]  -->   [Return]
 // NonFunctionType --> NonFunctionType
 // R (A) --> R(A)
@@ -9138,47 +9282,51 @@ class AddressOfFunctionResolver
 
   bool TargetTypeIsNonStaticMemberFunction;
   bool FoundNonTemplateFunction;
+  bool StaticMemberFunctionFromBoundPointer;
 
   OverloadExpr::FindResult OvlExprInfo; 
   OverloadExpr *OvlExpr;
   TemplateArgumentListInfo OvlExplicitTemplateArgs;
   SmallVector<std::pair<DeclAccessPair, FunctionDecl*>, 4> Matches;
+  TemplateSpecCandidateSet FailedCandidates;
 
 public:
-  AddressOfFunctionResolver(Sema &S, Expr* SourceExpr, 
-                            const QualType& TargetType, bool Complain)
-    : S(S), SourceExpr(SourceExpr), TargetType(TargetType), 
-      Complain(Complain), Context(S.getASTContext()), 
-      TargetTypeIsNonStaticMemberFunction(
-                                    !!TargetType->getAs<MemberPointerType>()),
-      FoundNonTemplateFunction(false),
-      OvlExprInfo(OverloadExpr::find(SourceExpr)),
-      OvlExpr(OvlExprInfo.Expression)
-  {
+  AddressOfFunctionResolver(Sema &S, Expr *SourceExpr,
+                            const QualType &TargetType, bool Complain)
+      : S(S), SourceExpr(SourceExpr), TargetType(TargetType),
+        Complain(Complain), Context(S.getASTContext()),
+        TargetTypeIsNonStaticMemberFunction(
+            !!TargetType->getAs<MemberPointerType>()),
+        FoundNonTemplateFunction(false),
+        StaticMemberFunctionFromBoundPointer(false),
+        OvlExprInfo(OverloadExpr::find(SourceExpr)),
+        OvlExpr(OvlExprInfo.Expression),
+        FailedCandidates(OvlExpr->getNameLoc()) {
     ExtractUnqualifiedFunctionTypeFromTargetType();
-    
-    if (!TargetFunctionType->isFunctionType()) {        
-      if (OvlExpr->hasExplicitTemplateArgs()) {
-        DeclAccessPair dap;
-        if (FunctionDecl* Fn = S.ResolveSingleFunctionTemplateSpecialization(
-                                            OvlExpr, false, &dap) ) {
 
-          if (CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(Fn)) {
-            if (!Method->isStatic()) {
-              // If the target type is a non-function type and the function
-              // found is a non-static member function, pretend as if that was
-              // the target, it's the only possible type to end up with.
-              TargetTypeIsNonStaticMemberFunction = true;
+    if (TargetFunctionType->isFunctionType()) {
+      if (UnresolvedMemberExpr *UME = dyn_cast<UnresolvedMemberExpr>(OvlExpr))
+        if (!UME->isImplicitAccess() &&
+            !S.ResolveSingleFunctionTemplateSpecialization(UME))
+          StaticMemberFunctionFromBoundPointer = true;
+    } else if (OvlExpr->hasExplicitTemplateArgs()) {
+      DeclAccessPair dap;
+      if (FunctionDecl *Fn = S.ResolveSingleFunctionTemplateSpecialization(
+              OvlExpr, false, &dap)) {
+        if (CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(Fn))
+          if (!Method->isStatic()) {
+            // If the target type is a non-function type and the function found
+            // is a non-static member function, pretend as if that was the
+            // target, it's the only possible type to end up with.
+            TargetTypeIsNonStaticMemberFunction = true;
 
-              // And skip adding the function if its not in the proper form.
-              // We'll diagnose this due to an empty set of functions.
-              if (!OvlExprInfo.HasFormOfMemberPointer)
-                return;
-            }
+            // And skip adding the function if its not in the proper form.
+            // We'll diagnose this due to an empty set of functions.
+            if (!OvlExprInfo.HasFormOfMemberPointer)
+              return;
           }
 
-          Matches.push_back(std::make_pair(dap,Fn));
-        }
+        Matches.push_back(std::make_pair(dap, Fn));
       }
       return;
     }
@@ -9232,14 +9380,16 @@ private:
     //   function template specialization, which is added to the set of
     //   overloaded functions considered.
     FunctionDecl *Specialization = 0;
-    TemplateDeductionInfo Info(OvlExpr->getNameLoc());
+    TemplateDeductionInfo Info(FailedCandidates.getLocation());
     if (Sema::TemplateDeductionResult Result
           = S.DeduceTemplateArguments(FunctionTemplate, 
                                       &OvlExplicitTemplateArgs,
                                       TargetFunctionType, Specialization, 
                                       Info, /*InOverloadResolution=*/true)) {
-      // FIXME: make a note of the failed deduction for diagnostics.
-      (void)Result;
+      // Make a note of the failed deduction for diagnostics.
+      FailedCandidates.addCandidate()
+          .set(FunctionTemplate->getTemplatedDecl(),
+               MakeDeductionFailureInfo(Context, Result, Info));
       return false;
     } 
     
@@ -9343,15 +9493,15 @@ private:
     for (unsigned I = 0, E = Matches.size(); I != E; ++I)
       MatchesCopy.addDecl(Matches[I].second, Matches[I].first.getAccess());
 
-    UnresolvedSetIterator Result =
-      S.getMostSpecialized(MatchesCopy.begin(), MatchesCopy.end(),
-                           TPOC_Other, 0, SourceExpr->getLocStart(),
-                           S.PDiag(),
-                           S.PDiag(diag::err_addr_ovl_ambiguous)
-                             << Matches[0].second->getDeclName(),
-                           S.PDiag(diag::note_ovl_candidate)
-                             << (unsigned) oc_function_template,
-                           Complain, TargetFunctionType);
+    // TODO: It looks like FailedCandidates does not serve much purpose
+    // here, since the no_viable diagnostic has index 0.
+    UnresolvedSetIterator Result = S.getMostSpecialized(
+        MatchesCopy.begin(), MatchesCopy.end(), FailedCandidates, TPOC_Other, 0,
+        SourceExpr->getLocStart(), S.PDiag(),
+        S.PDiag(diag::err_addr_ovl_ambiguous) << Matches[0]
+                                                     .second->getDeclName(),
+        S.PDiag(diag::note_ovl_candidate) << (unsigned)oc_function_template,
+        Complain, TargetFunctionType);
 
     if (Result != MatchesCopy.end()) {
       // Make it the first and only element
@@ -9380,14 +9530,27 @@ public:
     S.Diag(OvlExpr->getLocStart(), diag::err_addr_ovl_no_viable)
         << OvlExpr->getName() << TargetFunctionType
         << OvlExpr->getSourceRange();
-    S.NoteAllOverloadCandidates(OvlExpr, TargetFunctionType);
-  } 
-  
+    if (FailedCandidates.empty())
+      S.NoteAllOverloadCandidates(OvlExpr, TargetFunctionType);
+    else {
+      // We have some deduction failure messages. Use them to diagnose
+      // the function templates, and diagnose the non-template candidates
+      // normally.
+      for (UnresolvedSetIterator I = OvlExpr->decls_begin(),
+                                 IEnd = OvlExpr->decls_end();
+           I != IEnd; ++I)
+        if (FunctionDecl *Fun =
+                dyn_cast<FunctionDecl>((*I)->getUnderlyingDecl()))
+          S.NoteOverloadCandidate(Fun, TargetFunctionType);
+      FailedCandidates.NoteCandidates(S, OvlExpr->getLocStart());
+    }
+  }
+
   bool IsInvalidFormOfPointerToMemberFunction() const {
     return TargetTypeIsNonStaticMemberFunction &&
       !OvlExprInfo.HasFormOfMemberPointer;
   }
-  
+
   void ComplainIsInvalidFormOfPointerToMemberFunction() const {
       // TODO: Should we condition this on whether any functions might
       // have matched, or is it more appropriate to do that in callers?
@@ -9395,7 +9558,17 @@ public:
       S.Diag(OvlExpr->getNameLoc(), diag::err_addr_ovl_no_qualifier)
         << TargetType << OvlExpr->getSourceRange();
   }
-  
+
+  bool IsStaticMemberFunctionFromBoundPointer() const {
+    return StaticMemberFunctionFromBoundPointer;
+  }
+
+  void ComplainIsStaticMemberFunctionFromBoundPointer() const {
+    S.Diag(OvlExpr->getLocStart(),
+           diag::err_invalid_form_pointer_member_function)
+      << OvlExpr->getSourceRange();
+  }
+
   void ComplainOfInvalidConversion() const {
     S.Diag(OvlExpr->getLocStart(), diag::err_addr_ovl_not_func_ptrref)
       << OvlExpr->getName() << TargetType;
@@ -9463,8 +9636,12 @@ Sema::ResolveAddressOfOverloadedFunction(Expr *AddressOfExpr,
     Fn = Resolver.getMatchingFunctionDecl();
     assert(Fn);
     FoundResult = *Resolver.getMatchingFunctionAccessPair();
-    if (Complain)
-      CheckAddressOfMemberAccess(AddressOfExpr, FoundResult);
+    if (Complain) {
+      if (Resolver.IsStaticMemberFunctionFromBoundPointer())
+        Resolver.ComplainIsStaticMemberFunctionFromBoundPointer();
+      else
+        CheckAddressOfMemberAccess(AddressOfExpr, FoundResult);
+    }
   }
 
   if (pHadMultipleCandidates)
@@ -9496,6 +9673,7 @@ Sema::ResolveSingleFunctionTemplateSpecialization(OverloadExpr *ovl,
 
   TemplateArgumentListInfo ExplicitTemplateArgs;
   ovl->getExplicitTemplateArgs().copyInto(ExplicitTemplateArgs);
+  TemplateSpecCandidateSet FailedCandidates(ovl->getNameLoc());
 
   // Look through all of the overloaded functions, searching for one
   // whose type matches exactly.
@@ -9518,13 +9696,16 @@ Sema::ResolveSingleFunctionTemplateSpecialization(OverloadExpr *ovl,
     //   function template specialization, which is added to the set of
     //   overloaded functions considered.
     FunctionDecl *Specialization = 0;
-    TemplateDeductionInfo Info(ovl->getNameLoc());
+    TemplateDeductionInfo Info(FailedCandidates.getLocation());
     if (TemplateDeductionResult Result
           = DeduceTemplateArguments(FunctionTemplate, &ExplicitTemplateArgs,
                                     Specialization, Info,
                                     /*InOverloadResolution=*/true)) {
-      // FIXME: make a note of the failed deduction for diagnostics.
-      (void)Result;
+      // Make a note of the failed deduction for diagnostics.
+      // TODO: Actually use the failed-deduction info?
+      FailedCandidates.addCandidate()
+          .set(FunctionTemplate->getTemplatedDecl(),
+               MakeDeductionFailureInfo(Context, Result, Info));
       continue;
     }
 
@@ -11309,7 +11490,8 @@ Sema::BuildCallToObjectOfClassType(Scope *S, Expr *Obj,
 ///  (if one exists), where @c Base is an expression of class type and
 /// @c Member is the name of the member we're trying to find.
 ExprResult
-Sema::BuildOverloadedArrowExpr(Scope *S, Expr *Base, SourceLocation OpLoc) {
+Sema::BuildOverloadedArrowExpr(Scope *S, Expr *Base, SourceLocation OpLoc,
+                               bool *NoArrowOperatorFound) {
   assert(Base->getType()->isRecordType() &&
          "left-hand side must have class type");
 
@@ -11355,13 +11537,17 @@ Sema::BuildOverloadedArrowExpr(Scope *S, Expr *Base, SourceLocation OpLoc) {
   case OR_No_Viable_Function:
     if (CandidateSet.empty()) {
       QualType BaseType = Base->getType();
+      if (NoArrowOperatorFound) {
+        // Report this specific error to the caller instead of emitting a
+        // diagnostic, as requested.
+        *NoArrowOperatorFound = true;
+        return ExprError();
+      }
+      Diag(OpLoc, diag::err_typecheck_member_reference_arrow)
+        << BaseType << Base->getSourceRange();
       if (BaseType->isRecordType() && !BaseType->isPointerType()) {
-        Diag(OpLoc, diag::err_typecheck_member_reference_suggestion)
-          << BaseType << 1 << Base->getSourceRange()
+        Diag(OpLoc, diag::note_typecheck_member_reference_suggestion)
           << FixItHint::CreateReplacement(OpLoc, ".");
-      } else {
-        Diag(OpLoc, diag::err_typecheck_member_reference_arrow)
-          << BaseType << Base->getSourceRange();
       }
     } else
       Diag(OpLoc, diag::err_ovl_no_viable_oper)

@@ -139,7 +139,8 @@ public:
       Redecl(Redecl != Sema::NotForRedeclaration),
       HideTags(true),
       Diagnose(Redecl == Sema::NotForRedeclaration),
-      AllowHidden(Redecl == Sema::ForRedeclaration)
+      AllowHidden(Redecl == Sema::ForRedeclaration),
+      Shadowed(false)
   {
     configure();
   }
@@ -160,7 +161,8 @@ public:
       Redecl(Redecl != Sema::NotForRedeclaration),
       HideTags(true),
       Diagnose(Redecl == Sema::NotForRedeclaration),
-      AllowHidden(Redecl == Sema::ForRedeclaration)
+      AllowHidden(Redecl == Sema::ForRedeclaration),
+      Shadowed(false)
   {
     configure();
   }
@@ -179,7 +181,8 @@ public:
       Redecl(Other.Redecl),
       HideTags(Other.HideTags),
       Diagnose(false),
-      AllowHidden(Other.AllowHidden)
+      AllowHidden(Other.AllowHidden),
+      Shadowed(false)
   {}
 
   ~LookupResult() {
@@ -283,33 +286,36 @@ public:
 
   /// \brief Determine whether the given declaration is visible to the
   /// program.
-  static bool isVisible(NamedDecl *D) {
+  static bool isVisible(Sema &SemaRef, NamedDecl *D) {
     // If this declaration is not hidden, it's visible.
     if (!D->isHidden())
       return true;
-    
-    // FIXME: We should be allowed to refer to a module-private name from 
-    // within the same module, e.g., during template instantiation.
-    // This requires us know which module a particular declaration came from.
-    return false;
+
+    if (SemaRef.ActiveTemplateInstantiations.empty())
+      return false;
+
+    // During template instantiation, we can refer to hidden declarations, if
+    // they were visible in any module along the path of instantiation.
+    return isVisibleSlow(SemaRef, D);
   }
-  
+
   /// \brief Retrieve the accepted (re)declaration of the given declaration,
   /// if there is one.
   NamedDecl *getAcceptableDecl(NamedDecl *D) const {
     if (!D->isInIdentifierNamespace(IDNS))
       return 0;
-    
-    if (isHiddenDeclarationVisible() || isVisible(D))
+
+    if (isHiddenDeclarationVisible() || isVisible(SemaRef, D))
       return D;
-    
+
     return getAcceptableDeclSlow(D);
   }
-  
+
 private:
+  static bool isVisibleSlow(Sema &SemaRef, NamedDecl *D);
   NamedDecl *getAcceptableDeclSlow(NamedDecl *D) const;
+
 public:
-  
   /// \brief Returns the identifier namespace mask for this lookup.
   unsigned getIdentifierNamespace() const {
     return IDNS;
@@ -390,7 +396,15 @@ public:
     assert(ResultKind == NotFound && Decls.empty());
     ResultKind = NotFoundInCurrentInstantiation;
   }
-  
+
+  /// \brief Determine whether the lookup result was shadowed by some other
+  /// declaration that lookup ignored.
+  bool isShadowed() const { return Shadowed; }
+
+  /// \brief Note that we found and ignored a declaration while performing
+  /// lookup.
+  void setShadowed() { Shadowed = true; }
+
   /// \brief Resolves the result kind of the lookup, possibly hiding
   /// decls.
   ///
@@ -479,6 +493,7 @@ public:
     if (Paths) deletePaths(Paths);
     Paths = NULL;
     NamingClass = 0;
+    Shadowed = false;
   }
 
   /// \brief Clears out any current state and re-initializes for a
@@ -657,6 +672,11 @@ private:
 
   /// \brief True if we should allow hidden declarations to be 'visible'.
   bool AllowHidden;
+
+  /// \brief True if the found declarations were shadowed by some other
+  /// declaration that we skipped. This only happens when \c LookupKind
+  /// is \c LookupRedeclarationWithLinkage.
+  bool Shadowed;
 };
 
   /// \brief Consumes visible declarations found when searching for

@@ -112,7 +112,8 @@ namespace Templates {
   int e = fwd_decl<int>(); // expected-error {{cannot be used before it is defined}}
   template<typename T> auto fwd_decl() { return 0; }
   int f = fwd_decl<int>();
-  template<typename T> auto fwd_decl();
+  template <typename T>
+  auto fwd_decl(); // expected-note {{candidate template ignored: could not match 'auto ()' against 'int ()'}}
   int g = fwd_decl<char>();
 
   auto (*p)() = f1; // expected-error {{incompatible initializer}}
@@ -126,7 +127,8 @@ namespace Templates {
   extern template int fwd_decl<char>(); // expected-error {{does not refer to a function template}}
   int k2 = fwd_decl<char>();
 
-  template<typename T> auto instantiate() { T::error; } // expected-error {{has no members}}
+  template <typename T> auto instantiate() { T::error; } // expected-error {{has no members}} \
+    // expected-note {{candidate template ignored: could not match 'auto ()' against 'void ()'}}
   extern template auto instantiate<int>(); // ok
   int k = instantiate<int>(); // expected-note {{in instantiation of}}
   template<> auto instantiate<char>() {} // ok
@@ -157,7 +159,7 @@ namespace Templates {
   double &mem_check4 = take_fn<double>(Outer<double>::arg_multi);
 
   namespace Deduce1 {
-    template<typename T> auto f() { return 0; } // expected-note {{candidate}}
+  template <typename T> auto f() { return 0; } // expected-note {{couldn't infer template argument 'T'}}
     template<typename T> void g(T(*)()); // expected-note 2{{candidate}}
     void h() {
       auto p = f<int>;
@@ -170,7 +172,7 @@ namespace Templates {
   }
 
   namespace Deduce2 {
-    template<typename T> auto f(int) { return 0; } // expected-note {{candidate}}
+  template <typename T> auto f(int) { return 0; } // expected-note {{couldn't infer template argument 'T'}}
     template<typename T> void g(T(*)(int)); // expected-note 2{{candidate}}
     void h() {
       auto p = f<int>;
@@ -322,7 +324,8 @@ namespace Redecl {
   int f(); // expected-error {{functions that differ only in their return type cannot be overloaded}}
   decltype(auto) f(); // expected-error {{cannot be overloaded}}
 
-  template<typename T> auto g(T t) { return t; } // expected-note {{candidate}}
+  template <typename T> auto g(T t) { return t; } // expected-note {{candidate}} \
+                                                  // expected-note {{candidate function [with T = int]}}
   template auto g(int);
   template char g(char); // expected-error {{does not refer to a function}}
   template<> auto g(double);
@@ -372,4 +375,27 @@ namespace MemberTemplatesWithDeduction {
   int Ninst = test<N>();
   
 }
+}
+
+namespace CurrentInstantiation {
+  // PR16875
+  template<typename T> struct S {
+    auto f() { return T(); }
+    int g() { return f(); }
+    auto h(bool b) {
+      if (b)
+        return T();
+      return h(true);
+    }
+  };
+  int k1 = S<int>().g();
+  int k2 = S<int>().h(false);
+
+  template<typename T> struct U {
+    auto f(); // expected-note {{here}}
+    int g() { return f(); } // expected-error {{cannot be used before it is defined}}
+  };
+  template int U<int>::g(); // expected-note {{in instantiation of}}
+  template<typename T> auto U<T>::f() { return T(); }
+  template int U<short>::g(); // ok
 }

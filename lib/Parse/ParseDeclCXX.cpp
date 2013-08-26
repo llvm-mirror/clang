@@ -15,6 +15,7 @@
 #include "RAIIObjectsForParser.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/OperatorKinds.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ParsedTemplate.h"
@@ -451,7 +452,7 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
                                     Decl **OwnedType) {
   CXXScopeSpec SS;
   SourceLocation TypenameLoc;
-  bool IsTypeName = false;
+  bool HasTypenameKeyword = false;
   ParsedAttributesWithRange Attrs(AttrFactory);
 
   // FIXME: Simply skip the attributes and diagnose, don't bother parsing them.
@@ -464,7 +465,7 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
   // FIXME: This is wrong; we should parse this as a typename-specifier.
   if (Tok.is(tok::kw_typename)) {
     TypenameLoc = ConsumeToken();
-    IsTypeName = true;
+    HasTypenameKeyword = true;
   }
 
   // Parse nested-name-specifier.
@@ -549,7 +550,7 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
       // No removal fixit: can't recover from this.
       SkipUntil(tok::semi);
       return 0;
-    } else if (IsTypeName)
+    } else if (HasTypenameKeyword)
       Diag(TypenameLoc, diag::err_alias_declaration_not_identifier)
         << FixItHint::CreateRemoval(SourceRange(TypenameLoc,
                              SS.isNotEmpty() ? SS.getEndLoc() : TypenameLoc));
@@ -593,11 +594,11 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
 
   // "typename" keyword is allowed for identifiers only,
   // because it may be a type definition.
-  if (IsTypeName && Name.getKind() != UnqualifiedId::IK_Identifier) {
+  if (HasTypenameKeyword && Name.getKind() != UnqualifiedId::IK_Identifier) {
     Diag(Name.getSourceRange().getBegin(), diag::err_typename_identifiers_only)
       << FixItHint::CreateRemoval(SourceRange(TypenameLoc));
-    // Proceed parsing, but reset the IsTypeName flag.
-    IsTypeName = false;
+    // Proceed parsing, but reset the HasTypenameKeyword flag.
+    HasTypenameKeyword = false;
   }
 
   if (IsAliasDecl) {
@@ -610,9 +611,10 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
                                          TypeAlias);
   }
 
-  return Actions.ActOnUsingDeclaration(getCurScope(), AS, true, UsingLoc, SS,
-                                       Name, Attrs.getList(),
-                                       IsTypeName, TypenameLoc);
+  return Actions.ActOnUsingDeclaration(getCurScope(), AS,
+                                       /* HasUsingKeyword */ true, UsingLoc,
+                                       SS, Name, Attrs.getList(),
+                                       HasTypenameKeyword, TypenameLoc);
 }
 
 /// ParseStaticAssertDeclaration - Parse C++0x or C11 static_assert-declaration.
@@ -918,8 +920,13 @@ Parser::TypeResult Parser::ParseBaseTypeSpecifier(SourceLocation &BaseLoc,
         << Id;
     }
 
-    if (!Template)
+    if (!Template) {
+      TemplateArgList TemplateArgs;
+      SourceLocation LAngleLoc, RAngleLoc;
+      ParseTemplateIdAfterTemplateName(TemplateTy(), IdLoc, SS,
+          true, LAngleLoc, TemplateArgs, RAngleLoc);
       return true;
+    }
 
     // Form the template name
     UnqualifiedId TemplateName;
@@ -1971,10 +1978,11 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
         return;
 
       Actions.ActOnUsingDeclaration(getCurScope(), AS,
-                                    false, SourceLocation(),
+                                    /* HasUsingKeyword */ false,
+                                    SourceLocation(),
                                     SS, Name,
                                     /* AttrList */ 0,
-                                    /* IsTypeName */ false,
+                                    /* HasTypenameKeyword */ false,
                                     SourceLocation());
       return;
     }
@@ -2162,11 +2170,13 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
         ParseCXXInlineMethodDef(AS, AccessAttrs, DeclaratorInfo, TemplateInfo,
                                 VS, DefinitionKind, Init);
 
-      for (unsigned i = 0, ni = CommonLateParsedAttrs.size(); i < ni; ++i) {
-        CommonLateParsedAttrs[i]->addDecl(FunDecl);
-      }
-      for (unsigned i = 0, ni = LateParsedAttrs.size(); i < ni; ++i) {
-        LateParsedAttrs[i]->addDecl(FunDecl);
+      if (FunDecl) {
+        for (unsigned i = 0, ni = CommonLateParsedAttrs.size(); i < ni; ++i) {
+          CommonLateParsedAttrs[i]->addDecl(FunDecl);
+        }
+        for (unsigned i = 0, ni = LateParsedAttrs.size(); i < ni; ++i) {
+          LateParsedAttrs[i]->addDecl(FunDecl);
+        }
       }
       LateParsedAttrs.clear();
 
@@ -2260,28 +2270,26 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
                                                   TemplateParams,
                                                   BitfieldSize.release(),
                                                   VS, HasInClassInit);
-      if (AccessAttrs)
+
+      if (VarTemplateDecl *VT =
+              ThisDecl ? dyn_cast<VarTemplateDecl>(ThisDecl) : 0)
+        // Re-direct this decl to refer to the templated decl so that we can
+        // initialize it.
+        ThisDecl = VT->getTemplatedDecl();
+
+      if (ThisDecl && AccessAttrs)
         Actions.ProcessDeclAttributeList(getCurScope(), ThisDecl, AccessAttrs,
                                          false, true);
     }
-    
-    // Set the Decl for any late parsed attributes
-    for (unsigned i = 0, ni = CommonLateParsedAttrs.size(); i < ni; ++i) {
-      CommonLateParsedAttrs[i]->addDecl(ThisDecl);
-    }
-    for (unsigned i = 0, ni = LateParsedAttrs.size(); i < ni; ++i) {
-      LateParsedAttrs[i]->addDecl(ThisDecl);
-    }
-    LateParsedAttrs.clear();
 
     // Handle the initializer.
     if (HasInClassInit != ICIS_NoInit &&
         DeclaratorInfo.getDeclSpec().getStorageClassSpec() !=
         DeclSpec::SCS_static) {
       // The initializer was deferred; parse it and cache the tokens.
-      Diag(Tok, getLangOpts().CPlusPlus11 ?
-           diag::warn_cxx98_compat_nonstatic_member_init :
-           diag::ext_nonstatic_member_init);
+      Diag(Tok, getLangOpts().CPlusPlus11
+                    ? diag::warn_cxx98_compat_nonstatic_member_init
+                    : diag::ext_nonstatic_member_init);
 
       if (DeclaratorInfo.isArrayOfUnknownBound()) {
         // C++11 [dcl.array]p3: An array bound may also be omitted when the
@@ -2291,37 +2299,45 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
         // initializer in the grammar, so this is ill-formed.
         Diag(Tok, diag::err_incomplete_array_member_init);
         SkipUntil(tok::comma, true, true);
+
+        // Avoid later warnings about a class member of incomplete type.
         if (ThisDecl)
-          // Avoid later warnings about a class member of incomplete type.
           ThisDecl->setInvalidDecl();
       } else
         ParseCXXNonStaticMemberInitializer(ThisDecl);
     } else if (HasInitializer) {
       // Normal initializer.
       if (!Init.isUsable())
-        Init = ParseCXXMemberInitializer(ThisDecl,
-                 DeclaratorInfo.isDeclarationOfFunction(), EqualLoc);
-      
+        Init = ParseCXXMemberInitializer(
+            ThisDecl, DeclaratorInfo.isDeclarationOfFunction(), EqualLoc);
+
       if (Init.isInvalid())
         SkipUntil(tok::comma, true, true);
       else if (ThisDecl)
         Actions.AddInitializerToDecl(ThisDecl, Init.get(), EqualLoc.isInvalid(),
                                      DS.containsPlaceholderType());
-    } else if (ThisDecl && DS.getStorageClassSpec() == DeclSpec::SCS_static) {
+    } else if (ThisDecl && DS.getStorageClassSpec() == DeclSpec::SCS_static)
       // No initializer.
       Actions.ActOnUninitializedDecl(ThisDecl, DS.containsPlaceholderType());
-    }
-    
+
     if (ThisDecl) {
+      if (!ThisDecl->isInvalidDecl()) {
+        // Set the Decl for any late parsed attributes
+        for (unsigned i = 0, ni = CommonLateParsedAttrs.size(); i < ni; ++i)
+          CommonLateParsedAttrs[i]->addDecl(ThisDecl);
+
+        for (unsigned i = 0, ni = LateParsedAttrs.size(); i < ni; ++i)
+          LateParsedAttrs[i]->addDecl(ThisDecl);
+      }
       Actions.FinalizeDeclaration(ThisDecl);
       DeclsInGroup.push_back(ThisDecl);
+
+      if (DeclaratorInfo.isFunctionDeclarator() &&
+          DeclaratorInfo.getDeclSpec().getStorageClassSpec() !=
+              DeclSpec::SCS_typedef)
+        HandleMemberFunctionDeclDelays(DeclaratorInfo, ThisDecl);
     }
-    
-    if (ThisDecl && DeclaratorInfo.isFunctionDeclarator() &&
-        DeclaratorInfo.getDeclSpec().getStorageClassSpec()
-          != DeclSpec::SCS_typedef) {
-      HandleMemberFunctionDeclDelays(DeclaratorInfo, ThisDecl);
-    }
+    LateParsedAttrs.clear();
 
     DeclaratorInfo.complete(ThisDecl);
 

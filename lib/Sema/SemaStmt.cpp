@@ -1418,6 +1418,104 @@ namespace {
     S.Diag(Ranges.begin()->getBegin(), PDiag);
   }
 
+  // If Statement is an incemement or decrement, return true and sets the
+  // variables Increment and DRE.
+  bool ProcessIterationStmt(Sema &S, Stmt* Statement, bool &Increment,
+                            DeclRefExpr *&DRE) {
+    if (UnaryOperator *UO = dyn_cast<UnaryOperator>(Statement)) {
+      switch (UO->getOpcode()) {
+        default: return false;
+        case UO_PostInc:
+        case UO_PreInc:
+          Increment = true;
+          break;
+        case UO_PostDec:
+        case UO_PreDec:
+          Increment = false;
+          break;
+      }
+      DRE = dyn_cast<DeclRefExpr>(UO->getSubExpr());
+      return DRE;
+    }
+
+    if (CXXOperatorCallExpr *Call = dyn_cast<CXXOperatorCallExpr>(Statement)) {
+      FunctionDecl *FD = Call->getDirectCallee();
+      if (!FD || !FD->isOverloadedOperator()) return false;
+      switch (FD->getOverloadedOperator()) {
+        default: return false;
+        case OO_PlusPlus:
+          Increment = true;
+          break;
+        case OO_MinusMinus:
+          Increment = false;
+          break;
+      }
+      DRE = dyn_cast<DeclRefExpr>(Call->getArg(0));
+      return DRE;
+    }
+
+    return false;
+  }
+
+  // A visitor to determine if a continue statement is a subexpression.
+  class ContinueFinder : public EvaluatedExprVisitor<ContinueFinder> {
+    bool Found;
+  public:
+    ContinueFinder(Sema &S, Stmt* Body) :
+        Inherited(S.Context),
+        Found(false) {
+      Visit(Body);
+    }
+
+    typedef EvaluatedExprVisitor<ContinueFinder> Inherited;
+
+    void VisitContinueStmt(ContinueStmt* E) {
+      Found = true;
+    }
+
+    bool ContinueFound() { return Found; }
+
+  };  // end class ContinueFinder
+
+  // Emit a warning when a loop increment/decrement appears twice per loop
+  // iteration.  The conditions which trigger this warning are:
+  // 1) The last statement in the loop body and the third expression in the
+  //    for loop are both increment or both decrement of the same variable
+  // 2) No continue statements in the loop body.
+  void CheckForRedundantIteration(Sema &S, Expr *Third, Stmt *Body) {
+    // Return when there is nothing to check.
+    if (!Body || !Third) return;
+
+    if (S.Diags.getDiagnosticLevel(diag::warn_redundant_loop_iteration,
+                                   Third->getLocStart())
+        == DiagnosticsEngine::Ignored)
+      return;
+
+    // Get the last statement from the loop body.
+    CompoundStmt *CS = dyn_cast<CompoundStmt>(Body);
+    if (!CS || CS->body_empty()) return;
+    Stmt *LastStmt = CS->body_back();
+    if (!LastStmt) return;
+
+    bool LoopIncrement, LastIncrement;
+    DeclRefExpr *LoopDRE, *LastDRE;
+
+    if (!ProcessIterationStmt(S, Third, LoopIncrement, LoopDRE)) return;
+    if (!ProcessIterationStmt(S, LastStmt, LastIncrement, LastDRE)) return;
+
+    // Check that the two statements are both increments or both decrements
+    // on the same varaible.
+    if (LoopIncrement != LastIncrement ||
+        LoopDRE->getDecl() != LastDRE->getDecl()) return;
+
+    if (ContinueFinder(S, Body).ContinueFound()) return;
+
+    S.Diag(LastDRE->getLocation(), diag::warn_redundant_loop_iteration)
+         << LastDRE->getDecl() << LastIncrement;
+    S.Diag(LoopDRE->getLocation(), diag::note_loop_iteration_here)
+         << LoopIncrement;
+  }
+
 } // end namespace
 
 StmtResult
@@ -1444,6 +1542,7 @@ Sema::ActOnForStmt(SourceLocation ForLoc, SourceLocation LParenLoc,
   }
 
   CheckForLoopConditionalStatement(*this, second.get(), third.get(), Body);
+  CheckForRedundantIteration(*this, third.get(), Body);
 
   ExprResult SecondResult(second.release());
   VarDecl *ConditionVar = 0;
@@ -2368,32 +2467,23 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // For blocks/lambdas with implicit return types, we check each return
   // statement individually, and deduce the common return type when the block
   // or lambda is completed.
-  if (AutoType *AT =
-          FnRetType.isNull() ? 0 : FnRetType->getContainedAutoType()) {
-    // In C++1y, the return type may involve 'auto'.
-    FunctionDecl *FD = cast<LambdaScopeInfo>(CurCap)->CallOperator;
-    if (CurContext->isDependentContext()) {
-      // C++1y [dcl.spec.auto]p12:
-      //   Return type deduction [...] occurs when the definition is
-      //   instantiated even if the function body contains a return
-      //   statement with a non-type-dependent operand.
-      CurCap->ReturnType = FnRetType = Context.DependentTy;
-    } else if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
-      FD->setInvalidDecl();
-      return StmtError();
-    } else
-      CurCap->ReturnType = FnRetType = FD->getResultType();
-  } else if (CurCap->HasImplicitReturnType) {
-    // FIXME: Fold this into the 'auto' codepath above.
+  if (CurCap->HasImplicitReturnType) {
+    // FIXME: Fold this into the 'auto' codepath below.
     if (RetValExp && !isa<InitListExpr>(RetValExp)) {
       ExprResult Result = DefaultFunctionArrayLvalueConversion(RetValExp);
       if (Result.isInvalid())
         return StmtError();
       RetValExp = Result.take();
 
-      if (!CurContext->isDependentContext())
+      if (!CurContext->isDependentContext()) {
         FnRetType = RetValExp->getType();
-      else
+        // In C++11, we take the type of the expression after decay and
+        // lvalue-to-rvalue conversion, so a class type can be cv-qualified.
+        // In C++1y, we perform template argument deduction as if the return
+        // type were 'auto', so an implicit return type is never cv-qualified.
+        if (getLangOpts().CPlusPlus1y && FnRetType.hasQualifiers())
+          FnRetType = FnRetType.getUnqualifiedType();
+      } else
         FnRetType = CurCap->ReturnType = Context.DependentTy;
     } else {
       if (RetValExp) {
@@ -2411,6 +2501,21 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     // make sure we provide a return type now for better error recovery.
     if (CurCap->ReturnType.isNull())
       CurCap->ReturnType = FnRetType;
+  } else if (AutoType *AT =
+                 FnRetType.isNull() ? 0 : FnRetType->getContainedAutoType()) {
+    // In C++1y, the return type may involve 'auto'.
+    FunctionDecl *FD = cast<LambdaScopeInfo>(CurCap)->CallOperator;
+    if (CurContext->isDependentContext()) {
+      // C++1y [dcl.spec.auto]p12:
+      //   Return type deduction [...] occurs when the definition is
+      //   instantiated even if the function body contains a return
+      //   statement with a non-type-dependent operand.
+      CurCap->ReturnType = FnRetType = Context.DependentTy;
+    } else if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
+      FD->setInvalidDecl();
+      return StmtError();
+    } else
+      CurCap->ReturnType = FnRetType = FD->getResultType();
   }
   assert(!FnRetType.isNull());
 
@@ -2506,7 +2611,21 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
     IgnoreParens().castAs<FunctionProtoTypeLoc>().getResultLoc();
   QualType Deduced;
 
-  if (RetExpr) {
+  if (RetExpr && isa<InitListExpr>(RetExpr)) {
+    //  If the deduction is for a return statement and the initializer is
+    //  a braced-init-list, the program is ill-formed.
+    Diag(RetExpr->getExprLoc(), diag::err_auto_fn_return_init_list);
+    return true;
+  }
+
+  if (FD->isDependentContext()) {
+    // C++1y [dcl.spec.auto]p12:
+    //   Return type deduction [...] occurs when the definition is
+    //   instantiated even if the function body contains a return
+    //   statement with a non-type-dependent operand.
+    assert(AT->isDeduced() && "should have deduced to dependent type");
+    return false;
+  } else if (RetExpr) {
     //  If the deduction is for a return statement and the initializer is
     //  a braced-init-list, the program is ill-formed.
     if (isa<InitListExpr>(RetExpr)) {
@@ -2547,7 +2666,8 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
   //  the program is ill-formed.
   if (AT->isDeduced() && !FD->isInvalidDecl()) {
     AutoType *NewAT = Deduced->getContainedAutoType();
-    if (!Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
+    if (!FD->isDependentContext() &&
+        !Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
       Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
         << (AT->isDecltypeAuto() ? 1 : 0)
         << NewAT->getDeducedType() << AT->getDeducedType();
@@ -2591,13 +2711,10 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
 
   // FIXME: Add a flag to the ScopeInfo to indicate whether we're performing
   // deduction.
-  bool HasDependentReturnType = FnRetType->isDependentType();
   if (getLangOpts().CPlusPlus1y) {
     if (AutoType *AT = FnRetType->getContainedAutoType()) {
       FunctionDecl *FD = cast<FunctionDecl>(CurContext);
-      if (CurContext->isDependentContext())
-        HasDependentReturnType = true;
-      else if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
+      if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
         FD->setInvalidDecl();
         return StmtError();
       } else {
@@ -2605,6 +2722,8 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
       }
     }
   }
+
+  bool HasDependentReturnType = FnRetType->isDependentType();
 
   ReturnStmt *Result = 0;
   if (FnRetType->isVoidType()) {

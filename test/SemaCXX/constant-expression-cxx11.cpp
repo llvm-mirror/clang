@@ -1709,3 +1709,58 @@ namespace ConstexprConstructorRecovery {
   }; 
   constexpr X x{};
 }
+
+namespace Lifetime {
+  void f() {
+    constexpr int &n = n; // expected-error {{constant expression}} expected-note {{use of reference outside its lifetime}} expected-warning {{not yet bound to a value}}
+    constexpr int m = m; // expected-error {{constant expression}} expected-note {{read of object outside its lifetime}}
+  }
+
+  constexpr int &get(int &&n) { return n; }
+  struct S {
+    int &&r; // expected-note 2{{declared here}}
+    int &s;
+    int t;
+    constexpr S() : r(0), s(get(0)), t(r) {} // expected-warning {{temporary}}
+    constexpr S(int) : r(0), s(get(0)), t(s) {} // expected-warning {{temporary}} expected-note {{read of object outside its lifetime}}
+  };
+  constexpr int k1 = S().t; // ok, int is lifetime-extended to end of constructor
+  constexpr int k2 = S(0).t; // expected-error {{constant expression}} expected-note {{in call}}
+}
+
+namespace Bitfields {
+  struct A {
+    bool b : 1;
+    unsigned u : 5;
+    int n : 5;
+    bool b2 : 3;
+    unsigned u2 : 74; // expected-warning {{exceeds the size of its type}}
+    int n2 : 81; // expected-warning {{exceeds the size of its type}}
+  };
+
+  constexpr A a = { false, 33, 31, false, 0xffffffff, 0x7fffffff }; // expected-warning 2{{truncation}}
+  static_assert(a.b == 0 && a.u == 1 && a.n == -1 && a.b2 == 0 &&
+                a.u2 + 1 == 0 && a.n2 == 0x7fffffff,
+                "bad truncation of bitfield values");
+
+  struct B {
+    int n : 3;
+    constexpr B(int k) : n(k) {}
+  };
+  static_assert(B(3).n == 3, "");
+  static_assert(B(4).n == -4, "");
+  static_assert(B(7).n == -1, "");
+  static_assert(B(8).n == 0, "");
+  static_assert(B(-1).n == -1, "");
+  static_assert(B(-8889).n == -1, "");
+
+  namespace PR16755 {
+    struct X {
+      int x : 1;
+      constexpr static int f(int x) {
+        return X{x}.x;
+      }
+    };
+    static_assert(X::f(3) == -1, "3 should truncate to -1");
+  }
+}

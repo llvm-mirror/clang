@@ -864,6 +864,12 @@ MemRegionManager::getBlockDataRegion(const BlockTextRegion *BC,
   return getSubRegion<BlockDataRegion>(BC, LC, sReg);
 }
 
+const CXXTempObjectRegion *
+MemRegionManager::getCXXStaticTempObjectRegion(const Expr *Ex) {
+  return getSubRegion<CXXTempObjectRegion>(
+      Ex, getGlobalsRegion(MemRegion::GlobalInternalSpaceRegionKind, NULL));
+}
+
 const CompoundLiteralRegion*
 MemRegionManager::getCompoundLiteralRegion(const CompoundLiteralExpr *CL,
                                            const LocationContext *LC) {
@@ -975,7 +981,7 @@ MemRegionManager::getCXXBaseObjectRegion(const CXXRecordDecl *RD,
                                          bool IsVirtual) {
   if (isa<TypedValueRegion>(Super)) {
     assert(isValidBaseClass(RD, dyn_cast<TypedValueRegion>(Super), IsVirtual));
-    (void)isValidBaseClass;
+    (void)&isValidBaseClass;
 
     if (IsVirtual) {
       // Virtual base regions should not be layered, since the layout rules

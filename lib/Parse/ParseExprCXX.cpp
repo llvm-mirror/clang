@@ -195,6 +195,13 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
     return false;
   }
 
+  if (Tok.is(tok::annot_template_id)) {
+    // If the current token is an annotated template id, it may already have
+    // a scope specifier. Restore it.
+    TemplateIdAnnotation *TemplateId = takeTemplateIdAnnotation(Tok);
+    SS = TemplateId->SS;
+  }
+
   if (LastII)
     *LastII = 0;
 
@@ -465,8 +472,8 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
                                     TemplateName, false))
           return true;
         continue;
-      } 
-      
+      }
+
       if (MemberOfUnknownSpecialization && (ObjectType || SS.isSet()) && 
           (IsTypename || IsTemplateArgumentList(1))) {
         // We have something like t::getAs<T>, where getAs is a 

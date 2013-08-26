@@ -27,6 +27,7 @@
 #include "clang/AST/Stmt.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/StmtObjC.h"
+#include "clang/AST/StmtOpenMP.h"
 #include "clang/AST/TemplateBase.h"
 #include "clang/AST/TemplateName.h"
 #include "clang/AST/Type.h"
@@ -394,6 +395,7 @@ private:
   // These are helper methods used by more than one Traverse* method.
   bool TraverseTemplateParameterListHelper(TemplateParameterList *TPL);
   bool TraverseClassInstantiations(ClassTemplateDecl *D);
+  bool TraverseVariableInstantiations(VarTemplateDecl *D);
   bool TraverseFunctionInstantiations(FunctionTemplateDecl *D) ;
   bool TraverseTemplateArgumentLocsHelper(const TemplateArgumentLoc *TAL,
                                           unsigned Count);
@@ -404,6 +406,10 @@ private:
   bool TraverseDeclContextHelper(DeclContext *DC);
   bool TraverseFunctionHelper(FunctionDecl *D);
   bool TraverseVarHelper(VarDecl *D);
+  bool TraverseOMPClause(OMPClause *C);
+#define OPENMP_CLAUSE(Name, Class)                                      \
+  bool Visit##Class(Class *C);
+#include "clang/Basic/OpenMPKinds.def"
 
   typedef SmallVector<Stmt *, 16> StmtsTy;
   typedef SmallVector<StmtsTy *, 4> QueuesTy;
@@ -1413,6 +1419,57 @@ DEF_TRAVERSE_DECL(ClassTemplateDecl, {
     // it was instantiated, and thus should not be traversed.
   })
 
+// A helper method for traversing the implicit instantiations of a
+// class template.
+template <typename Derived>
+bool RecursiveASTVisitor<Derived>::TraverseVariableInstantiations(
+    VarTemplateDecl *D) {
+  VarTemplateDecl::spec_iterator end = D->spec_end();
+  for (VarTemplateDecl::spec_iterator it = D->spec_begin(); it != end; ++it) {
+    VarTemplateSpecializationDecl *SD = *it;
+
+    switch (SD->getSpecializationKind()) {
+    // Visit the implicit instantiations with the requested pattern.
+    case TSK_Undeclared:
+    case TSK_ImplicitInstantiation:
+      TRY_TO(TraverseDecl(SD));
+      break;
+
+    // We don't need to do anything on an explicit instantiation
+    // or explicit specialization because there will be an explicit
+    // node for it elsewhere.
+    case TSK_ExplicitInstantiationDeclaration:
+    case TSK_ExplicitInstantiationDefinition:
+    case TSK_ExplicitSpecialization:
+      break;
+    }
+  }
+
+  return true;
+}
+
+DEF_TRAVERSE_DECL(
+    VarTemplateDecl,
+    {
+  VarDecl *TempDecl = D->getTemplatedDecl();
+  TRY_TO(TraverseDecl(TempDecl));
+  TRY_TO(TraverseTemplateParameterListHelper(D->getTemplateParameters()));
+
+  // By default, we do not traverse the instantiations of
+  // variable templates since they do not appear in the user code. The
+  // following code optionally traverses them.
+  //
+  // We only traverse the variable instantiations when we see the canonical
+  // declaration of the template, to ensure we only visit them once.
+  if (getDerived().shouldVisitTemplateInstantiations() &&
+      D == D->getCanonicalDecl())
+    TRY_TO(TraverseVariableInstantiations(D));
+
+      // Note that getInstantiatedFromMemberTemplate() is just a link
+      // from a template instantiation back to the template from which
+      // it was instantiated, and thus should not be traversed.
+})
+
 // A helper method for traversing the instantiations of a
 // function while skipping its specializations.
 template<typename Derived>
@@ -1590,7 +1647,8 @@ DEF_TRAVERSE_DECL(ClassTemplatePartialSpecializationDecl, {
     }
     // The args that remains unspecialized.
     TRY_TO(TraverseTemplateArgumentLocsHelper(
-        D->getTemplateArgsAsWritten(), D->getNumTemplateArgsAsWritten()));
+                       D->getTemplateArgsAsWritten()->getTemplateArgs(),
+                       D->getTemplateArgsAsWritten()->NumTemplateArgs));
 
     // Don't need the ClassTemplatePartialSpecializationHelper, even
     // though that's our parent class -- we already visit all the
@@ -1738,6 +1796,44 @@ bool RecursiveASTVisitor<Derived>::TraverseVarHelper(VarDecl *D) {
 DEF_TRAVERSE_DECL(VarDecl, {
     TRY_TO(TraverseVarHelper(D));
   })
+
+DEF_TRAVERSE_DECL(VarTemplateSpecializationDecl, {
+  // For implicit instantiations, we don't want to
+  // recurse at all, since the instatiated class isn't written in
+  // the source code anywhere.
+  if (TypeSourceInfo *TSI = D->getTypeAsWritten())
+    TRY_TO(TraverseTypeLoc(TSI->getTypeLoc()));
+
+  if (!getDerived().shouldVisitTemplateInstantiations() &&
+      D->getTemplateSpecializationKind() != TSK_ExplicitSpecialization)
+    // Returning from here skips traversing the
+    // declaration context of the VarTemplateSpecializationDecl
+    // (embedded in the DEF_TRAVERSE_DECL() macro).
+    return true;
+})
+
+DEF_TRAVERSE_DECL(VarTemplatePartialSpecializationDecl,
+                  {
+  // The partial specialization.
+  if (TemplateParameterList *TPL = D->getTemplateParameters()) {
+    for (TemplateParameterList::iterator I = TPL->begin(), E = TPL->end();
+         I != E; ++I) {
+      TRY_TO(TraverseDecl(*I));
+    }
+  }
+  // The args that remains unspecialized.
+  TRY_TO(TraverseTemplateArgumentLocsHelper(
+                         D->getTemplateArgsAsWritten()->getTemplateArgs(),
+                         D->getTemplateArgsAsWritten()->NumTemplateArgs));
+
+  // Don't need the VarTemplatePartialSpecializationHelper, even
+  // though that's our parent class -- we already visit all the
+  // template args here.
+  TRY_TO(TraverseVarHelper(D));
+
+                    // Instantiations will have been visited with the primary
+                    // template.
+})
 
 DEF_TRAVERSE_DECL(ImplicitParamDecl, {
     TRY_TO(TraverseVarHelper(D));
@@ -2201,6 +2297,47 @@ DEF_TRAVERSE_STMT(ObjCDictionaryLiteral, { })
   
 // Traverse OpenCL: AsType, Convert.
 DEF_TRAVERSE_STMT(AsTypeExpr, { })
+
+// OpenMP directives.
+DEF_TRAVERSE_STMT(OMPParallelDirective, {
+  ArrayRef<OMPClause *> Clauses = S->clauses();
+  for (ArrayRef<OMPClause *>::iterator I = Clauses.begin(), E = Clauses.end();
+       I != E; ++I)
+    if (!TraverseOMPClause(*I)) return false;
+})
+
+// OpenMP clauses.
+template<typename Derived>
+bool RecursiveASTVisitor<Derived>::TraverseOMPClause(OMPClause *C) {
+  if (!C) return true;
+  switch (C->getClauseKind()) {
+#define OPENMP_CLAUSE(Name, Class)                                      \
+  case OMPC_##Name:                                                     \
+    return getDerived().Visit##Class(static_cast<Class*>(C));
+#include "clang/Basic/OpenMPKinds.def"
+  default: break;
+  }
+  return true;
+}
+
+template<typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPDefaultClause(OMPDefaultClause *C) {
+  return true;
+}
+
+#define PROCESS_OMP_CLAUSE_LIST(Class, Node)                                   \
+  for (OMPVarList<Class>::varlist_iterator I = Node->varlist_begin(),          \
+                                           E = Node->varlist_end();            \
+         I != E; ++I)                                                          \
+    TraverseStmt(*I);
+
+template<typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPPrivateClause(OMPPrivateClause *C) {
+  PROCESS_OMP_CLAUSE_LIST(OMPPrivateClause, C)
+  return true;
+}
+
+#undef PROCESS_OMP_CLAUSE_LIST
 
 // FIXME: look at the following tricky-seeming exprs to see if we
 // need to recurse on anything.  These are ones that have methods

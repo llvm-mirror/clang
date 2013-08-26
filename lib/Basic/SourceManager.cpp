@@ -1580,15 +1580,16 @@ unsigned SourceManager::getFileIDSize(FileID FID) const {
 ///
 /// This routine involves a system call, and therefore should only be used
 /// in non-performance-critical code.
-static Optional<ino_t> getActualFileInode(const FileEntry *File) {
+static Optional<llvm::sys::fs::UniqueID>
+getActualFileUID(const FileEntry *File) {
   if (!File)
     return None;
-  
-  struct stat StatBuf;
-  if (::stat(File->getName(), &StatBuf))
+
+  llvm::sys::fs::UniqueID ID;
+  if (llvm::sys::fs::getUniqueID(File->getName(), ID))
     return None;
-    
-  return StatBuf.st_ino;
+
+  return ID;
 }
 
 /// \brief Get the source location for the given file:line:col triplet.
@@ -1617,7 +1618,7 @@ FileID SourceManager::translateFile(const FileEntry *SourceFile) const {
 
   // First, check the main file ID, since it is common to look for a
   // location in the main file.
-  Optional<ino_t> SourceFileInode;
+  Optional<llvm::sys::fs::UniqueID> SourceFileUID;
   Optional<StringRef> SourceFileName;
   if (!MainFileID.isInvalid()) {
     bool Invalid = false;
@@ -1638,10 +1639,11 @@ FileID SourceManager::translateFile(const FileEntry *SourceFile) const {
         const FileEntry *MainFile = MainContentCache->OrigEntry;
         SourceFileName = llvm::sys::path::filename(SourceFile->getName());
         if (*SourceFileName == llvm::sys::path::filename(MainFile->getName())) {
-          SourceFileInode = getActualFileInode(SourceFile);
-          if (SourceFileInode) {
-            if (Optional<ino_t> MainFileInode = getActualFileInode(MainFile)) {
-              if (*SourceFileInode == *MainFileInode) {
+          SourceFileUID = getActualFileUID(SourceFile);
+          if (SourceFileUID) {
+            if (Optional<llvm::sys::fs::UniqueID> MainFileUID =
+                    getActualFileUID(MainFile)) {
+              if (*SourceFileUID == *MainFileUID) {
                 FirstFID = MainFileID;
                 SourceFile = MainFile;
               }
@@ -1684,12 +1686,11 @@ FileID SourceManager::translateFile(const FileEntry *SourceFile) const {
 
   // If we haven't found what we want yet, try again, but this time stat()
   // each of the files in case the files have changed since we originally 
-  // parsed the file. 
+  // parsed the file.
   if (FirstFID.isInvalid() &&
-      (SourceFileName || 
+      (SourceFileName ||
        (SourceFileName = llvm::sys::path::filename(SourceFile->getName()))) &&
-      (SourceFileInode ||
-       (SourceFileInode = getActualFileInode(SourceFile)))) {
+      (SourceFileUID || (SourceFileUID = getActualFileUID(SourceFile)))) {
     bool Invalid = false;
     for (unsigned I = 0, N = local_sloc_entry_size(); I != N; ++I) {
       FileID IFileID;
@@ -1704,8 +1705,9 @@ FileID SourceManager::translateFile(const FileEntry *SourceFile) const {
       const FileEntry *Entry =FileContentCache? FileContentCache->OrigEntry : 0;
         if (Entry && 
             *SourceFileName == llvm::sys::path::filename(Entry->getName())) {
-          if (Optional<ino_t> EntryInode = getActualFileInode(Entry)) {
-            if (*SourceFileInode == *EntryInode) {
+          if (Optional<llvm::sys::fs::UniqueID> EntryUID =
+                  getActualFileUID(Entry)) {
+            if (*SourceFileUID == *EntryUID) {
               FirstFID = FileID::get(I);
               SourceFile = Entry;
               break;
@@ -1732,7 +1734,7 @@ SourceLocation SourceManager::translateLineCol(FileID FID,
   const SLocEntry &Entry = getSLocEntry(FID, &Invalid);
   if (Invalid)
     return SourceLocation();
-  
+
   if (!Entry.isFile())
     return SourceLocation();
 
@@ -1745,7 +1747,7 @@ SourceLocation SourceManager::translateLineCol(FileID FID,
     = const_cast<ContentCache *>(Entry.getFile().getContentCache());
   if (!Content)
     return SourceLocation();
-    
+
   // If this is the first use of line information for this buffer, compute the
   // SourceLineCache for it on demand.
   if (Content->SourceLineCache == 0) {
@@ -1774,10 +1776,7 @@ SourceLocation SourceManager::translateLineCol(FileID FID,
   // Check that the given column is valid.
   while (i < BufLength-1 && i < Col-1 && Buf[i] != '\n' && Buf[i] != '\r')
     ++i;
-  if (i < Col-1)
-    return FileLoc.getLocWithOffset(FilePos + i);
-
-  return FileLoc.getLocWithOffset(FilePos + Col - 1);
+  return FileLoc.getLocWithOffset(FilePos + i);
 }
 
 /// \brief Compute a map of macro argument chunks to their expanded source

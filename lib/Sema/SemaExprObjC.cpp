@@ -324,7 +324,8 @@ ExprResult Sema::ActOnObjCBoolLiteral(SourceLocation AtLoc,
 /// \brief Check that the given expression is a valid element of an Objective-C
 /// collection literal.
 static ExprResult CheckObjCCollectionLiteralElement(Sema &S, Expr *Element, 
-                                                    QualType T) {  
+                                                    QualType T,
+                                                    bool ArrayLiteral = false) {
   // If the expression is type-dependent, there's nothing for us to do.
   if (Element->isTypeDependent())
     return Element;
@@ -401,14 +402,20 @@ static ExprResult CheckObjCCollectionLiteralElement(Sema &S, Expr *Element,
         Recovered = true;
       }
     }
-    
+  
     if (!Recovered) {
       S.Diag(Element->getLocStart(), diag::err_invalid_collection_element)
         << Element->getType();
       return ExprError();
     }
   }
-  
+  if (ArrayLiteral)
+    if (ObjCStringLiteral *getString = dyn_cast<ObjCStringLiteral>(OrigElement)) {
+      if (getString->getString() && getString->getString()->getNumConcatenated() > 1)
+        S.Diag(Element->getLocStart(), diag::warn_concatenated_nsarray_literal)
+        << Element->getType();
+    }
+
   // Make sure that the element has the type that the container factory 
   // function expects. 
   return S.PerformCopyInitialization(
@@ -710,7 +717,7 @@ ExprResult Sema::BuildObjCArrayLiteral(SourceRange SR, MultiExprArg Elements) {
   for (unsigned I = 0, N = Elements.size(); I != N; ++I) {
     ExprResult Converted = CheckObjCCollectionLiteralElement(*this,
                                                              ElementsBuffer[I],
-                                                             RequiredType);
+                                                             RequiredType, true);
     if (Converted.isInvalid())
       return ExprError();
     
@@ -3157,7 +3164,8 @@ diagnoseObjCARCConversion(Sema &S, SourceRange castRange,
 
 Sema::ARCConversionResult
 Sema::CheckObjCARCConversion(SourceRange castRange, QualType castType,
-                             Expr *&castExpr, CheckedConversionKind CCK) {
+                             Expr *&castExpr, CheckedConversionKind CCK,
+                             bool DiagnoseCFAudited) {
   QualType castExprType = castExpr->getType();
 
   // For the purposes of the classification, we assume reference types
@@ -3238,8 +3246,14 @@ Sema::CheckObjCARCConversion(SourceRange castRange, QualType castType,
       CCK != CCK_ImplicitConversion)
     return ACR_unbridged;
 
-  diagnoseObjCARCConversion(*this, castRange, castType, castACTC,
-                            castExpr, castExpr, exprACTC, CCK);
+  // Do not issue "bridge cast" diagnostic when implicit casting
+  // a retainable object to a CF type parameter belonging to an audited
+  // CF API function. Let caller issue a normal type mismatched diagnostic
+  // instead.
+  if (!DiagnoseCFAudited || exprACTC != ACTC_retainable ||
+      castACTC != ACTC_coreFoundation)
+    diagnoseObjCARCConversion(*this, castRange, castType, castACTC,
+                              castExpr, castExpr, exprACTC, CCK);
   return ACR_okay;
 }
 

@@ -45,6 +45,7 @@ namespace clang {
   class InMessageExpressionRAIIObject;
   class PoisonSEHIdentifiersRAIIObject;
   class VersionTuple;
+  class OMPClause;
 
 /// Parser - This implements a parser for the C family of languages.  After
 /// parsing units of the grammar, productions are invoked to handle whatever has
@@ -1050,26 +1051,10 @@ private:
     SourceRange getSourceRange() const LLVM_READONLY;
   };
 
-  /// \brief Contains a late templated function.
-  /// Will be parsed at the end of the translation unit.
-  struct LateParsedTemplatedFunction {
-    explicit LateParsedTemplatedFunction(Decl *MD)
-      : D(MD) {}
-
-    CachedTokens Toks;
-
-    /// \brief The template function declaration to be late parsed.
-    Decl *D;
-  };
-
   void LexTemplateFunctionForLateParsing(CachedTokens &Toks);
-  void ParseLateTemplatedFuncDef(LateParsedTemplatedFunction &LMT);
-  typedef llvm::DenseMap<const FunctionDecl*, LateParsedTemplatedFunction*>
-    LateParsedTemplateMapT;
-  LateParsedTemplateMapT LateParsedTemplateMap;
+  void ParseLateTemplatedFuncDef(LateParsedTemplate &LPT);
 
-  static void LateTemplateParserCallback(void *P, const FunctionDecl *FD);
-  void LateTemplateParser(const FunctionDecl *FD);
+  static void LateTemplateParserCallback(void *P, LateParsedTemplate &LPT);
 
   Sema::ParsingClassState
   PushParsingClass(Decl *TagOrTemplate, bool TopLevelClass, bool IsInterface);
@@ -1281,6 +1266,12 @@ private:
                                                    Expr *Data,
                                                    ArrayRef<Expr *> Args) = 0,
                            Expr *Data = 0);
+
+  /// ParseSimpleExpressionList - A simple comma-separated list of expressions,
+  /// used for misc language extensions.
+  bool ParseSimpleExpressionList(SmallVectorImpl<Expr*> &Exprs,
+                                 SmallVectorImpl<SourceLocation> &CommaLocs);
+
 
   /// ParenParseOption - Control what ParseParenExpression will parse.
   enum ParenParseOption {
@@ -2155,6 +2146,32 @@ private:
   bool ParseOpenMPSimpleVarList(OpenMPDirectiveKind Kind,
                                 SmallVectorImpl<Expr *> &VarList,
                                 bool AllowScopeSpecifier);
+  /// \brief Parses declarative or executable directive.
+  StmtResult ParseOpenMPDeclarativeOrExecutableDirective();
+  /// \brief Parses clause of kind \a CKind for directive of a kind \a Kind.
+  ///
+  /// \param DKind Kind of current directive.
+  /// \param CKind Kind of current clause.
+  /// \param FirstClause true, if this is the first clause of a kind \a CKind
+  /// in current directive.
+  ///
+  OMPClause *ParseOpenMPClause(OpenMPDirectiveKind DKind,
+                               OpenMPClauseKind CKind, bool FirstClause);
+  /// \brief Parses clause with a single expression of a kind \a Kind.
+  ///
+  /// \param Kind Kind of current clause.
+  ///
+  OMPClause *ParseOpenMPSingleExprClause(OpenMPClauseKind Kind);
+  /// \brief Parses simple clause of a kind \a Kind.
+  ///
+  /// \param Kind Kind of current clause.
+  ///
+  OMPClause *ParseOpenMPSimpleClause(OpenMPClauseKind Kind);
+  /// \brief Parses clause with the list of variables of a kind \a Kind.
+  ///
+  /// \param Kind Kind of current clause.
+  ///
+  OMPClause *ParseOpenMPVarListClause(OpenMPClauseKind Kind);
 public:
   bool ParseUnqualifiedId(CXXScopeSpec &SS, bool EnteringContext,
                           bool AllowDestructorName,

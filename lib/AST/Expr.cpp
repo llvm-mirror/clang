@@ -1929,6 +1929,9 @@ bool Expr::isUnusedResultAWarning(const Expr *&WarnE, SourceLocation &Loc,
   case GenericSelectionExprClass:
     return cast<GenericSelectionExpr>(this)->getResultExpr()->
       isUnusedResultAWarning(WarnE, Loc, R1, R2, Ctx);
+  case ChooseExprClass:
+    return cast<ChooseExpr>(this)->getChosenSubExpr()->
+      isUnusedResultAWarning(WarnE, Loc, R1, R2, Ctx);
   case UnaryOperatorClass: {
     const UnaryOperator *UO = cast<UnaryOperator>(this);
 
@@ -2072,17 +2075,24 @@ bool Expr::isUnusedResultAWarning(const Expr *&WarnE, SourceLocation &Loc,
     return false;
 
   case CXXTemporaryObjectExprClass:
-  case CXXConstructExprClass:
+  case CXXConstructExprClass: {
+    if (const CXXRecordDecl *Type = getType()->getAsCXXRecordDecl()) {
+      if (Type->hasAttr<WarnUnusedAttr>()) {
+        WarnE = this;
+        Loc = getLocStart();
+        R1 = getSourceRange();
+        return true;
+      }
+    }
     return false;
+  }
 
   case ObjCMessageExprClass: {
     const ObjCMessageExpr *ME = cast<ObjCMessageExpr>(this);
     if (Ctx.getLangOpts().ObjCAutoRefCount &&
         ME->isInstanceMessage() &&
         !ME->getType()->isVoidType() &&
-        ME->getSelector().getIdentifierInfoForSlot(0) &&
-        ME->getSelector().getIdentifierInfoForSlot(0)
-                                               ->getName().startswith("init")) {
+        ME->getMethodFamily() == OMF_init) {
       WarnE = this;
       Loc = getExprLoc();
       R1 = ME->getSourceRange();
@@ -2297,6 +2307,12 @@ Expr* Expr::IgnoreParens() {
         continue;
       }
     }
+    if (ChooseExpr* P = dyn_cast<ChooseExpr>(E)) {
+      if (!P->isConditionDependent()) {
+        E = P->getChosenSubExpr();
+        continue;
+      }
+    }
     return E;
   }
 }
@@ -2306,25 +2322,10 @@ Expr* Expr::IgnoreParens() {
 Expr *Expr::IgnoreParenCasts() {
   Expr *E = this;
   while (true) {
-    if (ParenExpr* P = dyn_cast<ParenExpr>(E)) {
-      E = P->getSubExpr();
-      continue;
-    }
+    E = E->IgnoreParens();
     if (CastExpr *P = dyn_cast<CastExpr>(E)) {
       E = P->getSubExpr();
       continue;
-    }
-    if (UnaryOperator* P = dyn_cast<UnaryOperator>(E)) {
-      if (P->getOpcode() == UO_Extension) {
-        E = P->getSubExpr();
-        continue;
-      }
-    }
-    if (GenericSelectionExpr* P = dyn_cast<GenericSelectionExpr>(E)) {
-      if (!P->isResultDependent()) {
-        E = P->getResultExpr();
-        continue;
-      }
     }
     if (MaterializeTemporaryExpr *Materialize 
                                       = dyn_cast<MaterializeTemporaryExpr>(E)) {
@@ -2347,22 +2348,10 @@ Expr *Expr::IgnoreParenCasts() {
 Expr *Expr::IgnoreParenLValueCasts() {
   Expr *E = this;
   while (true) {
-    if (ParenExpr *P = dyn_cast<ParenExpr>(E)) {
-      E = P->getSubExpr();
-      continue;
-    } else if (CastExpr *P = dyn_cast<CastExpr>(E)) {
+    E = E->IgnoreParens();
+    if (CastExpr *P = dyn_cast<CastExpr>(E)) {
       if (P->getCastKind() == CK_LValueToRValue) {
         E = P->getSubExpr();
-        continue;
-      }
-    } else if (UnaryOperator* P = dyn_cast<UnaryOperator>(E)) {
-      if (P->getOpcode() == UO_Extension) {
-        E = P->getSubExpr();
-        continue;
-      }
-    } else if (GenericSelectionExpr* P = dyn_cast<GenericSelectionExpr>(E)) {
-      if (!P->isResultDependent()) {
-        E = P->getResultExpr();
         continue;
       }
     } else if (MaterializeTemporaryExpr *Materialize 
@@ -2382,10 +2371,7 @@ Expr *Expr::IgnoreParenLValueCasts() {
 Expr *Expr::ignoreParenBaseCasts() {
   Expr *E = this;
   while (true) {
-    if (ParenExpr *P = dyn_cast<ParenExpr>(E)) {
-      E = P->getSubExpr();
-      continue;
-    }
+    E = E->IgnoreParens();
     if (CastExpr *CE = dyn_cast<CastExpr>(E)) {
       if (CE->getCastKind() == CK_DerivedToBase ||
           CE->getCastKind() == CK_UncheckedDerivedToBase ||
@@ -2402,25 +2388,10 @@ Expr *Expr::ignoreParenBaseCasts() {
 Expr *Expr::IgnoreParenImpCasts() {
   Expr *E = this;
   while (true) {
-    if (ParenExpr *P = dyn_cast<ParenExpr>(E)) {
-      E = P->getSubExpr();
-      continue;
-    }
+    E = E->IgnoreParens();
     if (ImplicitCastExpr *P = dyn_cast<ImplicitCastExpr>(E)) {
       E = P->getSubExpr();
       continue;
-    }
-    if (UnaryOperator* P = dyn_cast<UnaryOperator>(E)) {
-      if (P->getOpcode() == UO_Extension) {
-        E = P->getSubExpr();
-        continue;
-      }
-    }
-    if (GenericSelectionExpr* P = dyn_cast<GenericSelectionExpr>(E)) {
-      if (!P->isResultDependent()) {
-        E = P->getResultExpr();
-        continue;
-      }
     }
     if (MaterializeTemporaryExpr *Materialize 
                                       = dyn_cast<MaterializeTemporaryExpr>(E)) {
@@ -2450,10 +2421,7 @@ Expr *Expr::IgnoreConversionOperator() {
 Expr *Expr::IgnoreParenNoopCasts(ASTContext &Ctx) {
   Expr *E = this;
   while (true) {
-    if (ParenExpr *P = dyn_cast<ParenExpr>(E)) {
-      E = P->getSubExpr();
-      continue;
-    }
+    E = E->IgnoreParens();
 
     if (CastExpr *P = dyn_cast<CastExpr>(E)) {
       // We ignore integer <-> casts that are of the same width, ptr<->ptr and
@@ -2471,20 +2439,6 @@ Expr *Expr::IgnoreParenNoopCasts(ASTContext &Ctx) {
            SE->getType()->isIntegralType(Ctx)) &&
           Ctx.getTypeSize(E->getType()) == Ctx.getTypeSize(SE->getType())) {
         E = SE;
-        continue;
-      }
-    }
-
-    if (UnaryOperator* P = dyn_cast<UnaryOperator>(E)) {
-      if (P->getOpcode() == UO_Extension) {
-        E = P->getSubExpr();
-        continue;
-      }
-    }
-
-    if (GenericSelectionExpr* P = dyn_cast<GenericSelectionExpr>(E)) {
-      if (!P->isResultDependent()) {
-        E = P->getResultExpr();
         continue;
       }
     }
@@ -2634,11 +2588,11 @@ bool Expr::hasAnyTypeDependentArguments(ArrayRef<Expr *> Exprs) {
 
 bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef) const {
   // This function is attempting whether an expression is an initializer
-  // which can be evaluated at compile-time.  isEvaluatable handles most
-  // of the cases, but it can't deal with some initializer-specific
-  // expressions, and it can't deal with aggregates; we deal with those here,
-  // and fall back to isEvaluatable for the other cases.
-
+  // which can be evaluated at compile-time. It very closely parallels
+  // ConstExprEmitter in CGExprConstant.cpp; if they don't match, it
+  // will lead to unexpected results.  Like ConstExprEmitter, it falls back
+  // to isEvaluatable most of the time.
+  //
   // If we ever capture reference-binding directly in the AST, we can
   // kill the second parameter.
 
@@ -2649,30 +2603,23 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef) const {
 
   switch (getStmtClass()) {
   default: break;
-  case IntegerLiteralClass:
-  case FloatingLiteralClass:
   case StringLiteralClass:
-  case ObjCStringLiteralClass:
   case ObjCEncodeExprClass:
     return true;
   case CXXTemporaryObjectExprClass:
   case CXXConstructExprClass: {
     const CXXConstructExpr *CE = cast<CXXConstructExpr>(this);
 
-    // Only if it's
-    if (CE->getConstructor()->isTrivial()) {
-      // 1) an application of the trivial default constructor or
+    if (CE->getConstructor()->isTrivial() &&
+        CE->getConstructor()->getParent()->hasTrivialDestructor()) {
+      // Trivial default constructor
       if (!CE->getNumArgs()) return true;
 
-      // 2) an elidable trivial copy construction of an operand which is
-      //    itself a constant initializer.  Note that we consider the
-      //    operand on its own, *not* as a reference binding.
-      if (CE->isElidable() &&
-          CE->getArg(0)->isConstantInitializer(Ctx, false))
-        return true;
+      // Trivial copy constructor
+      assert(CE->getNumArgs() == 1 && "trivial ctor with > 1 argument");
+      return CE->getArg(0)->isConstantInitializer(Ctx, false);
     }
 
-    // 3) a foldable constexpr constructor.
     break;
   }
   case CompoundLiteralExprClass: {
@@ -2686,13 +2633,47 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef) const {
     // FIXME: This doesn't deal with fields with reference types correctly.
     // FIXME: This incorrectly allows pointers cast to integers to be assigned
     // to bitfields.
-    const InitListExpr *Exp = cast<InitListExpr>(this);
-    unsigned numInits = Exp->getNumInits();
-    for (unsigned i = 0; i < numInits; i++) {
-      if (!Exp->getInit(i)->isConstantInitializer(Ctx, false))
-        return false;
+    const InitListExpr *ILE = cast<InitListExpr>(this);
+    if (ILE->getType()->isArrayType()) {
+      unsigned numInits = ILE->getNumInits();
+      for (unsigned i = 0; i < numInits; i++) {
+        if (!ILE->getInit(i)->isConstantInitializer(Ctx, false))
+          return false;
+      }
+      return true;
     }
-    return true;
+
+    if (ILE->getType()->isRecordType()) {
+      unsigned ElementNo = 0;
+      RecordDecl *RD = ILE->getType()->getAs<RecordType>()->getDecl();
+      for (RecordDecl::field_iterator Field = RD->field_begin(),
+           FieldEnd = RD->field_end(); Field != FieldEnd; ++Field) {
+        // If this is a union, skip all the fields that aren't being initialized.
+        if (RD->isUnion() && ILE->getInitializedFieldInUnion() != *Field)
+          continue;
+
+        // Don't emit anonymous bitfields, they just affect layout.
+        if (Field->isUnnamedBitfield())
+          continue;
+
+        if (ElementNo < ILE->getNumInits()) {
+          const Expr *Elt = ILE->getInit(ElementNo++);
+          if (Field->isBitField()) {
+            // Bitfields have to evaluate to an integer.
+            llvm::APSInt ResultTmp;
+            if (!Elt->EvaluateAsInt(ResultTmp, Ctx))
+              return false;
+          } else {
+            bool RefType = Field->getType()->isReferenceType();
+            if (!Elt->isConstantInitializer(Ctx, RefType))
+              return false;
+          }
+        }
+      }
+      return true;
+    }
+
+    break;
   }
   case ImplicitValueInitExprClass:
     return true;
@@ -2700,12 +2681,12 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef) const {
     return cast<ParenExpr>(this)->getSubExpr()
       ->isConstantInitializer(Ctx, IsForRef);
   case GenericSelectionExprClass:
-    if (cast<GenericSelectionExpr>(this)->isResultDependent())
-      return false;
     return cast<GenericSelectionExpr>(this)->getResultExpr()
       ->isConstantInitializer(Ctx, IsForRef);
   case ChooseExprClass:
-    return cast<ChooseExpr>(this)->getChosenSubExpr(Ctx)
+    if (cast<ChooseExpr>(this)->isConditionDependent())
+      return false;
+    return cast<ChooseExpr>(this)->getChosenSubExpr()
       ->isConstantInitializer(Ctx, IsForRef);
   case UnaryOperatorClass: {
     const UnaryOperator* Exp = cast<UnaryOperator>(this);
@@ -2716,37 +2697,36 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef) const {
   case CXXFunctionalCastExprClass:
   case CXXStaticCastExprClass:
   case ImplicitCastExprClass:
-  case CStyleCastExprClass: {
+  case CStyleCastExprClass:
+  case ObjCBridgedCastExprClass:
+  case CXXDynamicCastExprClass:
+  case CXXReinterpretCastExprClass:
+  case CXXConstCastExprClass: {
     const CastExpr *CE = cast<CastExpr>(this);
 
-    // If we're promoting an integer to an _Atomic type then this is constant
-    // if the integer is constant.  We also need to check the converse in case
-    // someone does something like:
-    //
-    // int a = (_Atomic(int))42;
-    //
-    // I doubt anyone would write code like this directly, but it's quite
-    // possible as the result of macro expansions.
-    if (CE->getCastKind() == CK_NonAtomicToAtomic ||
-        CE->getCastKind() == CK_AtomicToNonAtomic)
-      return CE->getSubExpr()->isConstantInitializer(Ctx, false);
-
-    // Handle bitcasts of vector constants.
-    if (getType()->isVectorType() && CE->getCastKind() == CK_BitCast)
-      return CE->getSubExpr()->isConstantInitializer(Ctx, false);
-
     // Handle misc casts we want to ignore.
-    // FIXME: Is it really safe to ignore all these?
     if (CE->getCastKind() == CK_NoOp ||
         CE->getCastKind() == CK_LValueToRValue ||
         CE->getCastKind() == CK_ToUnion ||
-        CE->getCastKind() == CK_ConstructorConversion)
+        CE->getCastKind() == CK_ConstructorConversion ||
+        CE->getCastKind() == CK_NonAtomicToAtomic ||
+        CE->getCastKind() == CK_AtomicToNonAtomic)
       return CE->getSubExpr()->isConstantInitializer(Ctx, false);
 
     break;
   }
   case MaterializeTemporaryExprClass:
     return cast<MaterializeTemporaryExpr>(this)->GetTemporaryExpr()
+                                            ->isConstantInitializer(Ctx, false);
+
+  case SubstNonTypeTemplateParmExprClass:
+    return cast<SubstNonTypeTemplateParmExpr>(this)->getReplacement()
+                                            ->isConstantInitializer(Ctx, false);
+  case CXXDefaultArgExprClass:
+    return cast<CXXDefaultArgExpr>(this)->getExpr()
+                                            ->isConstantInitializer(Ctx, false);
+  case CXXDefaultInitExprClass:
+    return cast<CXXDefaultInitExpr>(this)->getExpr()
                                             ->isConstantInitializer(Ctx, false);
   }
   return isEvaluatable(Ctx);
@@ -2865,7 +2845,7 @@ bool Expr::HasSideEffects(const ASTContext &Ctx) const {
         HasSideEffects(Ctx);
 
   case ChooseExprClass:
-    return cast<ChooseExpr>(this)->getChosenSubExpr(Ctx)->HasSideEffects(Ctx);
+    return cast<ChooseExpr>(this)->getChosenSubExpr()->HasSideEffects(Ctx);
 
   case CXXDefaultArgExprClass:
     return cast<CXXDefaultArgExpr>(this)->getExpr()->HasSideEffects(Ctx);
@@ -3060,7 +3040,13 @@ Expr::isNullPointerConstant(ASTContext &Ctx,
     return PE->getSubExpr()->isNullPointerConstant(Ctx, NPC);
   } else if (const GenericSelectionExpr *GE =
                dyn_cast<GenericSelectionExpr>(this)) {
+    if (GE->isResultDependent())
+      return NPCK_NotNull;
     return GE->getResultExpr()->isNullPointerConstant(Ctx, NPC);
+  } else if (const ChooseExpr *CE = dyn_cast<ChooseExpr>(this)) {
+    if (CE->isConditionDependent())
+      return NPCK_NotNull;
+    return CE->getChosenSubExpr()->isNullPointerConstant(Ctx, NPC);
   } else if (const CXXDefaultArgExpr *DefaultArg
                = dyn_cast<CXXDefaultArgExpr>(this)) {
     // See through default argument expressions.
@@ -3543,10 +3529,6 @@ StringRef ObjCBridgedCastExpr::getBridgeKindName() const {
   }
 
   llvm_unreachable("Invalid BridgeKind!");
-}
-
-bool ChooseExpr::isConditionTrue(const ASTContext &C) const {
-  return getCond()->EvaluateKnownConstInt(C) != 0;
 }
 
 ShuffleVectorExpr::ShuffleVectorExpr(ASTContext &C, ArrayRef<Expr*> args,

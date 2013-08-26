@@ -111,8 +111,8 @@ static void SetUpDiagnosticLog(DiagnosticOptions *DiagOpts,
   if (DiagOpts->DiagnosticLogFile != "-") {
     // Create the output stream.
     llvm::raw_fd_ostream *FileOS(
-      new llvm::raw_fd_ostream(DiagOpts->DiagnosticLogFile.c_str(),
-                               ErrorInfo, llvm::raw_fd_ostream::F_Append));
+        new llvm::raw_fd_ostream(DiagOpts->DiagnosticLogFile.c_str(), ErrorInfo,
+                                 llvm::sys::fs::F_Append));
     if (!ErrorInfo.empty()) {
       Diags.Report(diag::warn_fe_cc_log_diagnostics_failure)
         << DiagOpts->DiagnosticLogFile << ErrorInfo;
@@ -138,8 +138,8 @@ static void SetupSerializedDiagnostics(DiagnosticOptions *DiagOpts,
   std::string ErrorInfo;
   OwningPtr<llvm::raw_fd_ostream> OS;
   OS.reset(new llvm::raw_fd_ostream(OutputFile.str().c_str(), ErrorInfo,
-                                    llvm::raw_fd_ostream::F_Binary));
-  
+                                    llvm::sys::fs::F_Binary));
+
   if (!ErrorInfo.empty()) {
     Diags.Report(diag::warn_fe_serialized_diag_failure)
       << OutputFile << ErrorInfo;
@@ -259,7 +259,7 @@ void CompilerInstance::createPreprocessor() {
     AttachDependencyGraphGen(*PP, DepOpts.DOTOutputFile,
                              getHeaderSearchOpts().Sysroot);
 
-  
+
   // Handle generating header include information, if requested.
   if (DepOpts.ShowHeaderIncludes)
     AttachHeaderIncludeGen(*PP);
@@ -269,6 +269,11 @@ void CompilerInstance::createPreprocessor() {
       OutputPath = "";
     AttachHeaderIncludeGen(*PP, /*ShowAllHeaders=*/true, OutputPath,
                            /*ShowDepth=*/false);
+  }
+
+  if (DepOpts.PrintShowIncludes) {
+    AttachHeaderIncludeGen(*PP, /*ShowAllHeaders=*/false, /*OutputPath=*/"",
+                           /*ShowDepth=*/true, /*MSStyle=*/true);
   }
 }
 
@@ -567,9 +572,9 @@ CompilerInstance::createOutputFile(StringRef OutputPath,
 
   if (!OS) {
     OSFile = OutFile;
-    OS.reset(
-      new llvm::raw_fd_ostream(OSFile.c_str(), Error,
-                               (Binary ? llvm::raw_fd_ostream::F_Binary : 0)));
+    OS.reset(new llvm::raw_fd_ostream(
+        OSFile.c_str(), Error,
+        (Binary ? llvm::sys::fs::F_Binary : llvm::sys::fs::F_None)));
     if (!Error.empty())
       return 0;
   }
@@ -613,7 +618,7 @@ bool CompilerInstance::InitializeSourceManager(const FrontendInputFile &Input,
 
   // Figure out where to get and map in the main file.
   if (InputFile != "-") {
-    const FileEntry *File = FileMgr.getFile(InputFile);
+    const FileEntry *File = FileMgr.getFile(InputFile, /*OpenFile=*/true);
     if (!File) {
       Diags.Report(diag::err_fe_error_reading) << InputFile;
       return false;
@@ -621,26 +626,27 @@ bool CompilerInstance::InitializeSourceManager(const FrontendInputFile &Input,
 
     // The natural SourceManager infrastructure can't currently handle named
     // pipes, but we would at least like to accept them for the main
-    // file. Detect them here, read them with the more generic MemoryBuffer
-    // function, and simply override their contents as we do for STDIN.
+    // file. Detect them here, read them with the volatile flag so FileMgr will
+    // pick up the correct size, and simply override their contents as we do for
+    // STDIN.
     if (File->isNamedPipe()) {
-      OwningPtr<llvm::MemoryBuffer> MB;
-      if (llvm::error_code ec = llvm::MemoryBuffer::getFile(InputFile, MB)) {
-        Diags.Report(diag::err_cannot_open_file) << InputFile << ec.message();
+      std::string ErrorStr;
+      if (llvm::MemoryBuffer *MB =
+              FileMgr.getBufferForFile(File, &ErrorStr, /*isVolatile=*/true)) {
+        // Create a new virtual file that will have the correct size.
+        File = FileMgr.getVirtualFile(InputFile, MB->getBufferSize(), 0);
+        SourceMgr.overrideFileContents(File, MB);
+      } else {
+        Diags.Report(diag::err_cannot_open_file) << InputFile << ErrorStr;
         return false;
       }
-
-      // Create a new virtual file that will have the correct size.
-      File = FileMgr.getVirtualFile(InputFile, MB->getBufferSize(), 0);
-      SourceMgr.overrideFileContents(File, MB.take());
     }
 
     SourceMgr.createMainFileID(File, Kind);
   } else {
     OwningPtr<llvm::MemoryBuffer> SB;
-    if (llvm::MemoryBuffer::getSTDIN(SB)) {
-      // FIXME: Give ec.message() in this diag.
-      Diags.Report(diag::err_fe_error_reading_stdin);
+    if (llvm::error_code ec = llvm::MemoryBuffer::getSTDIN(SB)) {
+      Diags.Report(diag::err_fe_error_reading_stdin) << ec.message();
       return false;
     }
     const FileEntry *File = FileMgr.getVirtualFile(SB->getBufferIdentifier(),
@@ -1011,7 +1017,7 @@ static void checkConfigMacro(Preprocessor &PP, StringRef ConfigMacro,
 static void writeTimestampFile(StringRef TimestampFile) {
   std::string ErrorInfo;
   llvm::raw_fd_ostream Out(TimestampFile.str().c_str(), ErrorInfo,
-                           llvm::raw_fd_ostream::F_Binary);
+                           llvm::sys::fs::F_Binary);
 }
 
 /// \brief Prune the module cache of modules that haven't been accessed in
@@ -1052,8 +1058,7 @@ static void pruneModuleCache(const HeaderSearchOptions &HSOpts) {
          Dir(ModuleCachePathNative.str(), EC), DirEnd;
        Dir != DirEnd && !EC; Dir.increment(EC)) {
     // If we don't have a directory, there's nothing to look into.
-    bool IsDirectory;
-    if (llvm::sys::fs::is_directory(Dir->path(), IsDirectory) || !IsDirectory)
+    if (!llvm::sys::fs::is_directory(Dir->path()))
       continue;
 
     // Walk all of the files within this directory.

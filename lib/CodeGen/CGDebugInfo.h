@@ -47,6 +47,8 @@ namespace CodeGen {
 /// and is responsible for emitting to llvm globals or pass directly to
 /// the backend.
 class CGDebugInfo {
+  friend class NoLocation;
+  friend class ArtificialLocation;
   CodeGenModule &CGM;
   const CodeGenOptions::DebugInfoKind DebugKind;
   llvm::DIBuilder DBuilder;
@@ -329,7 +331,7 @@ private:
 
   /// getOrCreateLimitedType - Get the type from the cache or create a new
   /// partial type if necessary.
-  llvm::DIType getOrCreateLimitedType(QualType Ty, llvm::DIFile F);
+  llvm::DIType getOrCreateLimitedType(const RecordType *Ty, llvm::DIFile F);
 
   /// CreateTypeNode - Create type metadata for a source language type.
   llvm::DIType CreateTypeNode(QualType Ty, llvm::DIFile F, bool Declaration);
@@ -337,10 +339,6 @@ private:
   /// getObjCInterfaceDecl - return the underlying ObjCInterfaceDecl
   /// if Ty is an ObjCInterface or a pointer to one.
   ObjCInterfaceDecl* getObjCInterfaceDecl(QualType Ty);
-
-  /// CreateLimitedTypeNode - Create type metadata for a source language
-  /// type, but only partial types for records.
-  llvm::DIType CreateLimitedTypeNode(QualType Ty, llvm::DIFile F);
 
   /// CreateMemberType - Create new member and increase Offset by FType's size.
   llvm::DIType CreateMemberType(llvm::DIFile Unit, QualType FType,
@@ -387,6 +385,47 @@ private:
   /// \param Force  Assume DebugColumnInfo option is true.
   unsigned getColumnNumber(SourceLocation Loc, bool Force=false);
 };
+
+/// NoLocation - An RAII object that temporarily disables debug
+/// locations. This is useful for emitting instructions that should be
+/// counted towards the function prologue.
+class NoLocation {
+  SourceLocation SavedLoc;
+  CGDebugInfo *DI;
+  CGBuilderTy &Builder;
+public:
+  NoLocation(CodeGenFunction &CGF, CGBuilderTy &B);
+  /// ~NoLocation - Autorestore everything back to normal.
+  ~NoLocation();
+};
+
+/// ArtificialLocation - An RAII object that temporarily switches to
+/// an artificial debug location that has a valid scope, but no line
+/// information. This is useful when emitting compiler-generated
+/// helper functions that have no source location associated with
+/// them. The DWARF specification allows the compiler to use the
+/// special line number 0 to indicate code that can not be attributed
+/// to any source location.
+///
+/// This is necessary because passing an empty SourceLocation to
+/// CGDebugInfo::setLocation() will result in the last valid location
+/// being reused.
+class ArtificialLocation {
+  SourceLocation SavedLoc;
+  CGDebugInfo *DI;
+  CGBuilderTy &Builder;
+public:
+  ArtificialLocation(CodeGenFunction &CGF, CGBuilderTy &B);
+
+  /// Set the current location to line 0, but within the current scope
+  /// (= the top of the LexicalBlockStack).
+  void Emit();
+
+  /// ~ArtificialLocation - Autorestore everything back to normal.
+  ~ArtificialLocation();
+};
+
+
 } // namespace CodeGen
 } // namespace clang
 

@@ -55,11 +55,11 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
                                            TemplateParams, 0,
                                            VS, ICIS_NoInit);
     if (FnD) {
-      Actions.ProcessDeclAttributeList(getCurScope(), FnD, AccessAttrs,
-                                       false, true);
+      Actions.ProcessDeclAttributeList(getCurScope(), FnD, AccessAttrs, false,
+                                       true);
       bool TypeSpecContainsAuto = D.getDeclSpec().containsPlaceholderType();
       if (Init.isUsable())
-        Actions.AddInitializerToDecl(FnD, Init.get(), false, 
+        Actions.AddInitializerToDecl(FnD, Init.get(), false,
                                      TypeSpecContainsAuto);
       else
         Actions.ActOnUninitializedDecl(FnD, TypeSpecContainsAuto);
@@ -120,18 +120,13 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
         TemplateInfo.Kind != ParsedTemplateInfo::NonTemplate) && 
         !Actions.IsInsideALocalClassWithinATemplateFunction())) {
 
-    if (FnD) {
-      LateParsedTemplatedFunction *LPT = new LateParsedTemplatedFunction(FnD);
+    CachedTokens Toks;
+    LexTemplateFunctionForLateParsing(Toks);
 
+    if (FnD) {
       FunctionDecl *FD = getFunctionDecl(FnD);
       Actions.CheckForFunctionRedefinition(FD);
-
-      LateParsedTemplateMap[FD] = LPT;
-      Actions.MarkAsLateParsedTemplate(FD);
-      LexTemplateFunctionForLateParsing(LPT->Toks);
-    } else {
-      CachedTokens Toks;
-      LexTemplateFunctionForLateParsing(Toks);
+      Actions.MarkAsLateParsedTemplate(FD, FnD, Toks);
     }
 
     return FnD;

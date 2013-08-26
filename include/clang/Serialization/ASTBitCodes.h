@@ -535,7 +535,10 @@ namespace clang {
 
       /// \brief Record code for undefined but used functions and variables that
       /// need a definition in this TU.
-      UNDEFINED_BUT_USED = 49
+      UNDEFINED_BUT_USED = 49,
+
+      /// \brief Record code for late parsed template functions.
+      LATE_PARSED_TEMPLATE = 50
     };
 
     /// \brief Record types used within a source manager block.
@@ -1027,6 +1030,12 @@ namespace clang {
       DECL_CLASS_TEMPLATE_SPECIALIZATION,
       /// \brief A ClassTemplatePartialSpecializationDecl record.
       DECL_CLASS_TEMPLATE_PARTIAL_SPECIALIZATION,
+      /// \brief A VarTemplateDecl record.
+      DECL_VAR_TEMPLATE,
+      /// \brief A VarTemplateSpecializationDecl record.
+      DECL_VAR_TEMPLATE_SPECIALIZATION,
+      /// \brief A VarTemplatePartialSpecializationDecl record.
+      DECL_VAR_TEMPLATE_PARTIAL_SPECIALIZATION,
       /// \brief A FunctionTemplateDecl record.
       DECL_FUNCTION_TEMPLATE,
       /// \brief A TemplateTypeParmDecl record.
@@ -1054,7 +1063,7 @@ namespace clang {
       DECL_CLASS_SCOPE_FUNCTION_SPECIALIZATION,
       /// \brief An ImportDecl recording a module import.
       DECL_IMPORT,
-      /// \brief A OMPThreadPrivateDecl record.
+      /// \brief An OMPThreadPrivateDecl record.
       DECL_OMP_THREADPRIVATE,
       /// \brief An EmptyDecl record.
       DECL_EMPTY
@@ -1319,7 +1328,10 @@ namespace clang {
       STMT_SEH_EXCEPT,            // SEHExceptStmt
       STMT_SEH_FINALLY,           // SEHFinallyStmt
       STMT_SEH_TRY,               // SEHTryStmt
-      
+
+      // OpenMP drectives
+      STMT_OMP_PARALLEL_DIRECTIVE,
+
       // ARC
       EXPR_OBJC_BRIDGED_CAST,     // ObjCBridgedCastExpr
       

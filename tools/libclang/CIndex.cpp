@@ -701,8 +701,9 @@ bool CursorVisitor::VisitClassTemplatePartialSpecializationDecl(
     return true;
 
   // Visit the partial specialization arguments.
-  const TemplateArgumentLoc *TemplateArgs = D->getTemplateArgsAsWritten();
-  for (unsigned I = 0, N = D->getNumTemplateArgsAsWritten(); I != N; ++I)
+  const ASTTemplateArgumentListInfo *Info = D->getTemplateArgsAsWritten();
+  const TemplateArgumentLoc *TemplateArgs = Info->getTemplateArgs();
+  for (unsigned I = 0, N = Info->NumTemplateArgs; I != N; ++I)
     if (VisitTemplateArgumentLoc(TemplateArgs[I]))
       return true;
   
@@ -1802,6 +1803,7 @@ public:
   }
 };
 class EnqueueVisitor : public ConstStmtVisitor<EnqueueVisitor, void> {
+  friend class OMPClauseEnqueue;
   VisitorWorkList &WL;
   CXCursor Parent;
 public:
@@ -1853,6 +1855,8 @@ public:
   void VisitPseudoObjectExpr(const PseudoObjectExpr *E);
   void VisitOpaqueValueExpr(const OpaqueValueExpr *E);
   void VisitLambdaExpr(const LambdaExpr *E);
+  void VisitOMPExecutableDirective(const OMPExecutableDirective *D);
+  void VisitOMPParallelDirective(const OMPParallelDirective *D);
 
 private:
   void AddDeclarationNameInfo(const Stmt *S);
@@ -1863,6 +1867,7 @@ private:
   void AddDecl(const Decl *D, bool isFirst = true);
   void AddTypeLoc(TypeSourceInfo *TI);
   void EnqueueChildren(const Stmt *S);
+  void EnqueueChildren(const OMPClause *S);
 };
 } // end anonyous namespace
 
@@ -1904,6 +1909,39 @@ void EnqueueVisitor::EnqueueChildren(const Stmt *S) {
   for (Stmt::const_child_range Child = S->children(); Child; ++Child) {
     AddStmt(*Child);
   }
+  if (size == WL.size())
+    return;
+  // Now reverse the entries we just added.  This will match the DFS
+  // ordering performed by the worklist.
+  VisitorWorkList::iterator I = WL.begin() + size, E = WL.end();
+  std::reverse(I, E);
+}
+namespace {
+class OMPClauseEnqueue : public ConstOMPClauseVisitor<OMPClauseEnqueue> {
+  EnqueueVisitor *Visitor;
+public:
+  OMPClauseEnqueue(EnqueueVisitor *Visitor) : Visitor(Visitor) { }
+#define OPENMP_CLAUSE(Name, Class)                                             \
+  void Visit##Class(const Class *C);
+#include "clang/Basic/OpenMPKinds.def"
+};
+
+void OMPClauseEnqueue::VisitOMPDefaultClause(const OMPDefaultClause *C) { }
+#define PROCESS_OMP_CLAUSE_LIST(Class, Node)                                   \
+  for (OMPVarList<Class>::varlist_const_iterator I = Node->varlist_begin(),    \
+                                                 E = Node->varlist_end();      \
+         I != E; ++I)                                                          \
+    Visitor->AddStmt(*I);
+
+void OMPClauseEnqueue::VisitOMPPrivateClause(const OMPPrivateClause *C) {
+  PROCESS_OMP_CLAUSE_LIST(OMPPrivateClause, C)
+}
+#undef PROCESS_OMP_CLAUSE_LIST
+}
+void EnqueueVisitor::EnqueueChildren(const OMPClause *S) {
+  unsigned size = WL.size();
+  OMPClauseEnqueue Visitor(this);
+  Visitor.Visit(S);
   if (size == WL.size())
     return;
   // Now reverse the entries we just added.  This will match the DFS
@@ -2187,6 +2225,19 @@ void EnqueueVisitor::VisitLambdaExpr(const LambdaExpr *E) {
 void EnqueueVisitor::VisitPseudoObjectExpr(const PseudoObjectExpr *E) {
   // Treat the expression like its syntactic form.
   Visit(E->getSyntacticForm());
+}
+
+void EnqueueVisitor::VisitOMPExecutableDirective(
+  const OMPExecutableDirective *D) {
+  EnqueueChildren(D);
+  for (ArrayRef<OMPClause *>::iterator I = D->clauses().begin(),
+                                       E = D->clauses().end();
+       I != E; ++I)
+    EnqueueChildren(*I);
+}
+
+void EnqueueVisitor::VisitOMPParallelDirective(const OMPParallelDirective *D) {
+  VisitOMPExecutableDirective(D);
 }
 
 void CursorVisitor::EnqueueWorkList(VisitorWorkList &WL, const Stmt *S) {
@@ -3007,15 +3058,12 @@ int clang_getFileUniqueID(CXFile file, CXFileUniqueID *outID) {
   if (!file || !outID)
     return 1;
 
-#ifdef LLVM_ON_WIN32
-  return 1; // inodes not supported on windows.
-#else
   FileEntry *FEnt = static_cast<FileEntry *>(file);
-  outID->data[0] = FEnt->getDevice();
-  outID->data[1] = FEnt->getInode();
+  const llvm::sys::fs::UniqueID &ID = FEnt->getUniqueID();
+  outID->data[0] = ID.getDevice();
+  outID->data[1] = ID.getFile();
   outID->data[2] = FEnt->getModificationTime();
   return 0;
-#endif
 }
 
 } // end: extern "C"
@@ -3766,6 +3814,8 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("CXXAccessSpecifier");
   case CXCursor_ModuleImportDecl:
     return cxstring::createRef("ModuleImport");
+  case CXCursor_OMPParallelDirective:
+      return cxstring::createRef("OMPParallelDirective");
   }
 
   llvm_unreachable("Unhandled CXCursorKind");
@@ -4533,7 +4583,9 @@ CXCursor clang_getCursorDefinition(CXCursor C) {
     return clang_getNullCursor();
   }
 
-  case Decl::Var: {
+  case Decl::Var:
+  case Decl::VarTemplateSpecialization:
+  case Decl::VarTemplatePartialSpecialization: {
     // Ask the variable if it has a definition.
     if (const VarDecl *Def = cast<VarDecl>(D)->getDefinition())
       return MakeCXCursor(Def, TU);
@@ -4552,6 +4604,13 @@ CXCursor clang_getCursorDefinition(CXCursor C) {
                                                             ->getDefinition())
       return MakeCXCursor(cast<CXXRecordDecl>(Def)->getDescribedClassTemplate(),
                           TU);
+    return clang_getNullCursor();
+  }
+
+  case Decl::VarTemplate: {
+    if (VarDecl *Def =
+            cast<VarTemplateDecl>(D)->getTemplatedDecl()->getDefinition())
+      return MakeCXCursor(cast<VarDecl>(Def)->getDescribedVarTemplate(), TU);
     return clang_getNullCursor();
   }
 

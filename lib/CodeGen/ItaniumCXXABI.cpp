@@ -35,11 +35,15 @@ using namespace CodeGen;
 namespace {
 class ItaniumCXXABI : public CodeGen::CGCXXABI {
 protected:
-  bool IsARM;
+  bool UseARMMethodPtrABI;
+  bool UseARMGuardVarABI;
 
 public:
-  ItaniumCXXABI(CodeGen::CodeGenModule &CGM, bool IsARM = false) :
-    CGCXXABI(CGM), IsARM(IsARM) { }
+  ItaniumCXXABI(CodeGen::CodeGenModule &CGM,
+                bool UseARMMethodPtrABI = false,
+                bool UseARMGuardVarABI = false) :
+    CGCXXABI(CGM), UseARMMethodPtrABI(UseARMMethodPtrABI),
+    UseARMGuardVarABI(UseARMGuardVarABI) { }
 
   bool isReturnTypeIndirect(const CXXRecordDecl *RD) const {
     // Structures with either a non-trivial destructor or a non-trivial
@@ -108,10 +112,22 @@ public:
                                  CanQualType &ResTy,
                                  SmallVectorImpl<CanQualType> &ArgTys);
 
+  void EmitCXXConstructors(const CXXConstructorDecl *D);
+
   void BuildDestructorSignature(const CXXDestructorDecl *Dtor,
                                 CXXDtorType T,
                                 CanQualType &ResTy,
                                 SmallVectorImpl<CanQualType> &ArgTys);
+
+  bool useThunkForDtorVariant(const CXXDestructorDecl *Dtor,
+                              CXXDtorType DT) const {
+    // Itanium does not emit any destructor variant as an inline thunk.
+    // Delegating may occur as an optimization, but all variants are either
+    // emitted with external linkage or as linkonce if they are inline and used.
+    return false;
+  }
+
+  void EmitCXXDestructors(const CXXDestructorDecl *D);
 
   void BuildInstanceFunctionParams(CodeGenFunction &CGF,
                                    QualType &ResTy,
@@ -165,7 +181,9 @@ public:
 
 class ARMCXXABI : public ItaniumCXXABI {
 public:
-  ARMCXXABI(CodeGen::CodeGenModule &CGM) : ItaniumCXXABI(CGM, /*ARM*/ true) {}
+  ARMCXXABI(CodeGen::CodeGenModule &CGM) :
+    ItaniumCXXABI(CGM, /* UseARMMethodPtrABI = */ true,
+                  /* UseARMGuardVarABI = */ true) {}
 
   bool HasThisReturn(GlobalDecl GD) const {
     return (isa<CXXConstructorDecl>(GD.getDecl()) || (
@@ -198,9 +216,18 @@ CodeGen::CGCXXABI *CodeGen::CreateItaniumCXXABI(CodeGenModule &CGM) {
   // include the other 32-bit ARM oddities: constructor/destructor return values
   // and array cookies.
   case TargetCXXABI::GenericAArch64:
-    return  new ItaniumCXXABI(CGM, /*IsARM = */ true);
+    return new ItaniumCXXABI(CGM, /* UseARMMethodPtrABI = */ true,
+                             /* UseARMGuardVarABI = */ true);
 
   case TargetCXXABI::GenericItanium:
+    if (CGM.getContext().getTargetInfo().getTriple().getArch()
+        == llvm::Triple::le32) {
+      // For PNaCl, use ARM-style method pointers so that PNaCl code
+      // does not assume anything about the alignment of function
+      // pointers.
+      return new ItaniumCXXABI(CGM, /* UseARMMethodPtrABI = */ true,
+                               /* UseARMGuardVarABI = */ false);
+    }
     return new ItaniumCXXABI(CGM);
 
   case TargetCXXABI::Microsoft:
@@ -263,7 +290,7 @@ ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(CodeGenFunction &CGF,
 
   // Compute the true adjustment.
   llvm::Value *Adj = RawAdj;
-  if (IsARM)
+  if (UseARMMethodPtrABI)
     Adj = Builder.CreateAShr(Adj, ptrdiff_1, "memptr.adj.shifted");
 
   // Apply the adjustment and cast back to the original struct type
@@ -278,7 +305,7 @@ ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(CodeGenFunction &CGF,
   // If the LSB in the function pointer is 1, the function pointer points to
   // a virtual function.
   llvm::Value *IsVirtual;
-  if (IsARM)
+  if (UseARMMethodPtrABI)
     IsVirtual = Builder.CreateAnd(RawAdj, ptrdiff_1);
   else
     IsVirtual = Builder.CreateAnd(FnAsInt, ptrdiff_1);
@@ -297,7 +324,8 @@ ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(CodeGenFunction &CGF,
 
   // Apply the offset.
   llvm::Value *VTableOffset = FnAsInt;
-  if (!IsARM) VTableOffset = Builder.CreateSub(VTableOffset, ptrdiff_1);
+  if (!UseARMMethodPtrABI)
+    VTableOffset = Builder.CreateSub(VTableOffset, ptrdiff_1);
   VTable = Builder.CreateGEP(VTable, VTableOffset);
 
   // Load the virtual function to call.
@@ -407,7 +435,7 @@ ItaniumCXXABI::EmitMemberPointerConversion(CodeGenFunction &CGF,
   }
 
   // The this-adjustment is left-shifted by 1 on ARM.
-  if (IsARM) {
+  if (UseARMMethodPtrABI) {
     uint64_t offset = cast<llvm::ConstantInt>(adj)->getZExtValue();
     offset <<= 1;
     adj = llvm::ConstantInt::get(adj->getType(), offset);
@@ -455,7 +483,7 @@ ItaniumCXXABI::EmitMemberPointerConversion(const CastExpr *E,
   }
 
   // The this-adjustment is left-shifted by 1 on ARM.
-  if (IsARM) {
+  if (UseARMMethodPtrABI) {
     uint64_t offset = cast<llvm::ConstantInt>(adj)->getZExtValue();
     offset <<= 1;
     adj = llvm::ConstantInt::get(adj->getType(), offset);
@@ -513,7 +541,7 @@ llvm::Constant *ItaniumCXXABI::BuildMemberPointer(const CXXMethodDecl *MD,
       Context.toCharUnitsFromBits(Context.getTargetInfo().getPointerWidth(0));
     uint64_t VTableOffset = (Index * PointerWidth.getQuantity());
 
-    if (IsARM) {
+    if (UseARMMethodPtrABI) {
       // ARM C++ ABI 3.2.1:
       //   This ABI specifies that adj contains twice the this
       //   adjustment, plus 1 if the member function is virtual. The
@@ -547,7 +575,8 @@ llvm::Constant *ItaniumCXXABI::BuildMemberPointer(const CXXMethodDecl *MD,
     llvm::Constant *addr = CGM.GetAddrOfFunction(MD, Ty);
 
     MemPtr[0] = llvm::ConstantExpr::getPtrToInt(addr, CGM.PtrDiffTy);
-    MemPtr[1] = llvm::ConstantInt::get(CGM.PtrDiffTy, (IsARM ? 2 : 1) *
+    MemPtr[1] = llvm::ConstantInt::get(CGM.PtrDiffTy,
+                                       (UseARMMethodPtrABI ? 2 : 1) *
                                        ThisAdjustment.getQuantity());
   }
   
@@ -631,7 +660,7 @@ ItaniumCXXABI::EmitMemberPointerComparison(CodeGenFunction &CGF,
 
   // Null member function pointers on ARM clear the low bit of Adj,
   // so the zero condition has to check that neither low bit is set.
-  if (IsARM) {
+  if (UseARMMethodPtrABI) {
     llvm::Value *One = llvm::ConstantInt::get(LPtr->getType(), 1);
 
     // Compute (l.adj | r.adj) & 1 and test it against zero.
@@ -671,7 +700,7 @@ ItaniumCXXABI::EmitMemberPointerIsNotNull(CodeGenFunction &CGF,
 
   // On ARM, a member function pointer is also non-null if the low bit of 'adj'
   // (the virtual bit) is set.
-  if (IsARM) {
+  if (UseARMMethodPtrABI) {
     llvm::Constant *One = llvm::ConstantInt::get(Ptr->getType(), 1);
     llvm::Value *Adj = Builder.CreateExtractValue(MemPtr, 1, "memptr.adj");
     llvm::Value *VirtualBit = Builder.CreateAnd(Adj, One, "memptr.virtualbit");
@@ -745,6 +774,22 @@ void ItaniumCXXABI::BuildConstructorSignature(const CXXConstructorDecl *Ctor,
     ArgTys.push_back(Context.getPointerType(Context.VoidPtrTy));
 }
 
+void ItaniumCXXABI::EmitCXXConstructors(const CXXConstructorDecl *D) {
+  // Just make sure we're in sync with TargetCXXABI.
+  assert(CGM.getTarget().getCXXABI().hasConstructorVariants());
+
+  // The constructor used for constructing this as a complete class;
+  // constucts the virtual bases, then calls the base constructor.
+  if (!D->getParent()->isAbstract()) {
+    // We don't need to emit the complete ctor if the class is abstract.
+    CGM.EmitGlobal(GlobalDecl(D, Ctor_Complete));
+  }
+
+  // The constructor used for constructing this as a base class;
+  // ignores virtual bases.
+  CGM.EmitGlobal(GlobalDecl(D, Ctor_Base));
+}
+
 /// The generic ABI passes 'this', plus a VTT if it's destroying a
 /// base subobject.
 void ItaniumCXXABI::BuildDestructorSignature(const CXXDestructorDecl *Dtor,
@@ -759,6 +804,22 @@ void ItaniumCXXABI::BuildDestructorSignature(const CXXDestructorDecl *Dtor,
   // Check if we need to add a VTT parameter (which has type void **).
   if (Type == Dtor_Base && Dtor->getParent()->getNumVBases() != 0)
     ArgTys.push_back(Context.getPointerType(Context.VoidPtrTy));
+}
+
+void ItaniumCXXABI::EmitCXXDestructors(const CXXDestructorDecl *D) {
+  // The destructor in a virtual table is always a 'deleting'
+  // destructor, which calls the complete destructor and then uses the
+  // appropriate operator delete.
+  if (D->isVirtual())
+    CGM.EmitGlobal(GlobalDecl(D, Dtor_Deleting));
+
+  // The destructor used for destructing this as a most-derived class;
+  // call the base destructor and then destructs any virtual bases.
+  CGM.EmitGlobal(GlobalDecl(D, Dtor_Complete));
+
+  // The destructor used for destructing this as a base class; ignores
+  // virtual bases.
+  CGM.EmitGlobal(GlobalDecl(D, Dtor_Base));
 }
 
 void ItaniumCXXABI::BuildInstanceFunctionParams(CodeGenFunction &CGF,
@@ -834,7 +895,8 @@ void ItaniumCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
   const CGFunctionInfo *FInfo
     = &CGM.getTypes().arrangeCXXDestructor(Dtor, DtorType);
   llvm::Type *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
-  llvm::Value *Callee = CGF.BuildVirtualCall(Dtor, DtorType, This, Ty);
+  llvm::Value *Callee
+    = CGF.BuildVirtualCall(GlobalDecl(Dtor, DtorType), This, Ty);
 
   CGF.EmitCXXMemberCall(Dtor, CallLoc, Callee, ReturnValueSlot(), This,
                         /*ImplicitParam=*/0, QualType(), 0, 0);
@@ -1051,7 +1113,7 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
   } else {
     // Guard variables are 64 bits in the generic ABI and size width on ARM
     // (i.e. 32-bit on AArch32, 64-bit on AArch64).
-    guardTy = (IsARM ? CGF.SizeTy : CGF.Int64Ty);
+    guardTy = (UseARMGuardVarABI ? CGF.SizeTy : CGF.Int64Ty);
   }
   llvm::PointerType *guardPtrTy = guardTy->getPointerTo();
 
@@ -1094,7 +1156,7 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
   //       if (__cxa_guard_acquire(&obj_guard))
   //         ...
   //     }
-  if (IsARM && !useInt8GuardVariable) {
+  if (UseARMGuardVarABI && !useInt8GuardVariable) {
     llvm::Value *V = Builder.CreateLoad(guard);
     llvm::Value *Test1 = llvm::ConstantInt::get(guardTy, 1);
     V = Builder.CreateAnd(V, Test1);

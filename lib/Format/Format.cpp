@@ -50,6 +50,19 @@ struct ScalarEnumerationTraits<clang::format::FormatStyle::BraceBreakingStyle> {
     IO.enumCase(Value, "Attach", clang::format::FormatStyle::BS_Attach);
     IO.enumCase(Value, "Linux", clang::format::FormatStyle::BS_Linux);
     IO.enumCase(Value, "Stroustrup", clang::format::FormatStyle::BS_Stroustrup);
+    IO.enumCase(Value, "Allman", clang::format::FormatStyle::BS_Allman);
+  }
+};
+
+template <>
+struct ScalarEnumerationTraits<
+    clang::format::FormatStyle::NamespaceIndentationKind> {
+  static void
+  enumeration(IO &IO,
+              clang::format::FormatStyle::NamespaceIndentationKind &Value) {
+    IO.enumCase(Value, "None", clang::format::FormatStyle::NI_None);
+    IO.enumCase(Value, "Inner", clang::format::FormatStyle::NI_Inner);
+    IO.enumCase(Value, "All", clang::format::FormatStyle::NI_All);
   }
 };
 
@@ -78,7 +91,10 @@ template <> struct MappingTraits<clang::format::FormatStyle> {
     }
 
     IO.mapOptional("AccessModifierOffset", Style.AccessModifierOffset);
+    IO.mapOptional("ConstructorInitializerIndentWidth",
+                   Style.ConstructorInitializerIndentWidth);
     IO.mapOptional("AlignEscapedNewlinesLeft", Style.AlignEscapedNewlinesLeft);
+    IO.mapOptional("AlignTrailingComments", Style.AlignTrailingComments);
     IO.mapOptional("AllowAllParametersOfDeclarationOnNextLine",
                    Style.AllowAllParametersOfDeclarationOnNextLine);
     IO.mapOptional("AllowShortIfStatementsOnASingleLine",
@@ -89,6 +105,10 @@ template <> struct MappingTraits<clang::format::FormatStyle> {
                    Style.AlwaysBreakTemplateDeclarations);
     IO.mapOptional("AlwaysBreakBeforeMultilineStrings",
                    Style.AlwaysBreakBeforeMultilineStrings);
+    IO.mapOptional("BreakBeforeBinaryOperators",
+                   Style.BreakBeforeBinaryOperators);
+    IO.mapOptional("BreakConstructorInitializersBeforeComma",
+                   Style.BreakConstructorInitializersBeforeComma);
     IO.mapOptional("BinPackParameters", Style.BinPackParameters);
     IO.mapOptional("ColumnLimit", Style.ColumnLimit);
     IO.mapOptional("ConstructorInitializerAllOnOneLineOrOnePerLine",
@@ -98,6 +118,7 @@ template <> struct MappingTraits<clang::format::FormatStyle> {
                    Style.ExperimentalAutoDetectBinPacking);
     IO.mapOptional("IndentCaseLabels", Style.IndentCaseLabels);
     IO.mapOptional("MaxEmptyLinesToKeep", Style.MaxEmptyLinesToKeep);
+    IO.mapOptional("NamespaceIndentation", Style.NamespaceIndentation);
     IO.mapOptional("ObjCSpaceBeforeProtocolList",
                    Style.ObjCSpaceBeforeProtocolList);
     IO.mapOptional("PenaltyBreakComment", Style.PenaltyBreakComment);
@@ -110,7 +131,7 @@ template <> struct MappingTraits<clang::format::FormatStyle> {
     IO.mapOptional("PointerBindsToType", Style.PointerBindsToType);
     IO.mapOptional("SpacesBeforeTrailingComments",
                    Style.SpacesBeforeTrailingComments);
-    IO.mapOptional("SpacesInBracedLists", Style.SpacesInBracedLists);
+    IO.mapOptional("Cpp11BracedListStyle", Style.Cpp11BracedListStyle);
     IO.mapOptional("Standard", Style.Standard);
     IO.mapOptional("IndentWidth", Style.IndentWidth);
     IO.mapOptional("UseTab", Style.UseTab);
@@ -136,27 +157,32 @@ FormatStyle getLLVMStyle() {
   FormatStyle LLVMStyle;
   LLVMStyle.AccessModifierOffset = -2;
   LLVMStyle.AlignEscapedNewlinesLeft = false;
+  LLVMStyle.AlignTrailingComments = true;
   LLVMStyle.AllowAllParametersOfDeclarationOnNextLine = true;
   LLVMStyle.AllowShortIfStatementsOnASingleLine = false;
   LLVMStyle.AllowShortLoopsOnASingleLine = false;
-  LLVMStyle.AlwaysBreakTemplateDeclarations = false;
   LLVMStyle.AlwaysBreakBeforeMultilineStrings = false;
+  LLVMStyle.AlwaysBreakTemplateDeclarations = false;
   LLVMStyle.BinPackParameters = true;
+  LLVMStyle.BreakBeforeBinaryOperators = false;
+  LLVMStyle.BreakBeforeBraces = FormatStyle::BS_Attach;
+  LLVMStyle.BreakConstructorInitializersBeforeComma = false;
   LLVMStyle.ColumnLimit = 80;
   LLVMStyle.ConstructorInitializerAllOnOneLineOrOnePerLine = false;
+  LLVMStyle.ConstructorInitializerIndentWidth = 4;
+  LLVMStyle.Cpp11BracedListStyle = false;
   LLVMStyle.DerivePointerBinding = false;
   LLVMStyle.ExperimentalAutoDetectBinPacking = false;
   LLVMStyle.IndentCaseLabels = false;
+  LLVMStyle.IndentFunctionDeclarationAfterType = false;
+  LLVMStyle.IndentWidth = 2;
   LLVMStyle.MaxEmptyLinesToKeep = 1;
+  LLVMStyle.NamespaceIndentation = FormatStyle::NI_None;
   LLVMStyle.ObjCSpaceBeforeProtocolList = true;
   LLVMStyle.PointerBindsToType = false;
   LLVMStyle.SpacesBeforeTrailingComments = 1;
-  LLVMStyle.SpacesInBracedLists = true;
   LLVMStyle.Standard = FormatStyle::LS_Cpp03;
-  LLVMStyle.IndentWidth = 2;
   LLVMStyle.UseTab = false;
-  LLVMStyle.BreakBeforeBraces = FormatStyle::BS_Attach;
-  LLVMStyle.IndentFunctionDeclarationAfterType = false;
 
   setDefaultPenalties(LLVMStyle);
   LLVMStyle.PenaltyReturnTypeOnItsOwnLine = 60;
@@ -168,27 +194,32 @@ FormatStyle getGoogleStyle() {
   FormatStyle GoogleStyle;
   GoogleStyle.AccessModifierOffset = -1;
   GoogleStyle.AlignEscapedNewlinesLeft = true;
+  GoogleStyle.AlignTrailingComments = true;
   GoogleStyle.AllowAllParametersOfDeclarationOnNextLine = true;
   GoogleStyle.AllowShortIfStatementsOnASingleLine = true;
   GoogleStyle.AllowShortLoopsOnASingleLine = true;
-  GoogleStyle.AlwaysBreakTemplateDeclarations = true;
   GoogleStyle.AlwaysBreakBeforeMultilineStrings = true;
+  GoogleStyle.AlwaysBreakTemplateDeclarations = true;
   GoogleStyle.BinPackParameters = true;
+  GoogleStyle.BreakBeforeBinaryOperators = false;
+  GoogleStyle.BreakBeforeBraces = FormatStyle::BS_Attach;
+  GoogleStyle.BreakConstructorInitializersBeforeComma = false;
   GoogleStyle.ColumnLimit = 80;
   GoogleStyle.ConstructorInitializerAllOnOneLineOrOnePerLine = true;
+  GoogleStyle.ConstructorInitializerIndentWidth = 4;
+  GoogleStyle.Cpp11BracedListStyle = true;
   GoogleStyle.DerivePointerBinding = true;
   GoogleStyle.ExperimentalAutoDetectBinPacking = false;
   GoogleStyle.IndentCaseLabels = true;
+  GoogleStyle.IndentFunctionDeclarationAfterType = true;
+  GoogleStyle.IndentWidth = 2;
   GoogleStyle.MaxEmptyLinesToKeep = 1;
+  GoogleStyle.NamespaceIndentation = FormatStyle::NI_None;
   GoogleStyle.ObjCSpaceBeforeProtocolList = false;
   GoogleStyle.PointerBindsToType = true;
   GoogleStyle.SpacesBeforeTrailingComments = 2;
-  GoogleStyle.SpacesInBracedLists = false;
   GoogleStyle.Standard = FormatStyle::LS_Auto;
-  GoogleStyle.IndentWidth = 2;
   GoogleStyle.UseTab = false;
-  GoogleStyle.BreakBeforeBraces = FormatStyle::BS_Attach;
-  GoogleStyle.IndentFunctionDeclarationAfterType = true;
 
   setDefaultPenalties(GoogleStyle);
   GoogleStyle.PenaltyReturnTypeOnItsOwnLine = 200;
@@ -202,8 +233,8 @@ FormatStyle getChromiumStyle() {
   ChromiumStyle.AllowShortIfStatementsOnASingleLine = false;
   ChromiumStyle.AllowShortLoopsOnASingleLine = false;
   ChromiumStyle.BinPackParameters = false;
-  ChromiumStyle.Standard = FormatStyle::LS_Cpp03;
   ChromiumStyle.DerivePointerBinding = false;
+  ChromiumStyle.Standard = FormatStyle::LS_Cpp03;
   return ChromiumStyle;
 }
 
@@ -219,6 +250,20 @@ FormatStyle getMozillaStyle() {
   return MozillaStyle;
 }
 
+FormatStyle getWebKitStyle() {
+  FormatStyle Style = getLLVMStyle();
+  Style.AccessModifierOffset = -4;
+  Style.AlignTrailingComments = false;
+  Style.BreakBeforeBinaryOperators = true;
+  Style.BreakBeforeBraces = FormatStyle::BS_Stroustrup;
+  Style.BreakConstructorInitializersBeforeComma = true;
+  Style.ColumnLimit = 0;
+  Style.IndentWidth = 4;
+  Style.NamespaceIndentation = FormatStyle::NI_Inner;
+  Style.PointerBindsToType = true;
+  return Style;
+}
+
 bool getPredefinedStyle(StringRef Name, FormatStyle *Style) {
   if (Name.equals_lower("llvm"))
     *Style = getLLVMStyle();
@@ -228,6 +273,8 @@ bool getPredefinedStyle(StringRef Name, FormatStyle *Style) {
     *Style = getMozillaStyle();
   else if (Name.equals_lower("google"))
     *Style = getGoogleStyle();
+  else if (Name.equals_lower("webkit"))
+    *Style = getWebKitStyle();
   else
     return false;
 
@@ -298,6 +345,11 @@ public:
 
     // The first token has already been indented and thus consumed.
     moveStateToNextToken(State, /*DryRun=*/false, /*Newline=*/false);
+
+    if (Style.ColumnLimit == 0) {
+      formatWithoutColumnLimit(State);
+      return;
+    }
 
     // If everything fits on a single line, just put it there.
     unsigned ColumnLimit = Style.ColumnLimit;
@@ -506,6 +558,16 @@ private:
     }
   };
 
+  /// \brief Formats the line starting at \p State, simply keeping all of the
+  /// input's line breaking decisions.
+  void formatWithoutColumnLimit(LineState &State) {
+    while (State.NextToken != NULL) {
+      bool Newline = mustBreak(State) ||
+                     (canBreak(State) && State.NextToken->NewlinesBefore > 0);
+      addTokenToState(Newline, /*DryRun=*/false, State);
+    }
+  }
+
   /// \brief Appends the next token to \p State and updates information
   /// necessary for indentation.
   ///
@@ -537,6 +599,12 @@ private:
     unsigned ContinuationIndent =
         std::max(State.Stack.back().LastSpace, State.Stack.back().Indent) + 4;
     if (Newline) {
+      // Breaking before the first "<<" is generally not desirable if the LHS is
+      // short.
+      if (Current.is(tok::lessless) && State.Stack.back().FirstLessLess == 0 &&
+          State.Column <= Style.ColumnLimit / 2)
+        ExtraPenalty += Style.PenaltyBreakFirstLessLess;
+
       State.Stack.back().ContainsLineBreak = true;
       if (Current.is(tok::r_brace)) {
         if (Current.BlockKind == BK_BracedInit)
@@ -587,6 +655,10 @@ private:
                  Previous.isOneOf(tok::coloncolon, tok::equal) ||
                  Previous.Type == TT_ObjCMethodExpr) {
         State.Column = ContinuationIndent;
+      } else if (Current.Type == TT_CtorInitializerColon) {
+        State.Column = FirstIndent + Style.ConstructorInitializerIndentWidth;
+      } else if (Current.Type == TT_CtorInitializerComma) {
+        State.Column = State.Stack.back().Indent;
       } else {
         State.Column = State.Stack.back().Indent;
         // Ensure that we fall back to indenting 4 spaces instead of just
@@ -646,10 +718,6 @@ private:
              Line.MustBeDeclaration))
           State.Stack.back().BreakBeforeParameter = true;
       }
-
-      // Breaking before the first "<<" is generally not desirable.
-      if (Current.is(tok::lessless) && State.Stack.back().FirstLessLess == 0)
-        ExtraPenalty += Style.PenaltyBreakFirstLessLess;
 
     } else {
       if (Current.is(tok::equal) &&
@@ -761,7 +829,9 @@ private:
       //     : First(...), ...
       //       Next(...)
       //       ^ line up here.
-      State.Stack.back().Indent = State.Column + 2;
+      State.Stack.back().Indent =
+          State.Column +
+          (Style.BreakConstructorInitializersBeforeComma ? 0 : 2);
       if (Style.ConstructorInitializerAllOnOneLineOrOnePerLine)
         State.Stack.back().AvoidBinPacking = true;
       State.Stack.back().BreakBeforeParameter = false;
@@ -800,7 +870,8 @@ private:
       // prec::Assignment) as those have different indentation rules. Indent
       // other expression, unless the indentation needs to be skipped.
       if (*I == prec::Conditional ||
-          (!SkipFirstExtraIndent && *I > prec::Assignment))
+          (!SkipFirstExtraIndent && *I > prec::Assignment &&
+           !Style.BreakBeforeBinaryOperators))
         NewParenState.Indent += 4;
       if (Previous && !Previous->opensScope())
         NewParenState.BreakBeforeParameter = false;
@@ -815,7 +886,8 @@ private:
       unsigned LastSpace = State.Stack.back().LastSpace;
       bool AvoidBinPacking;
       if (Current.is(tok::l_brace)) {
-        NewIndent = Style.IndentWidth + LastSpace;
+        NewIndent =
+            LastSpace + (Style.Cpp11BracedListStyle ? 4 : Style.IndentWidth);
         const FormatToken *NextNoComment = Current.getNextNonComment();
         AvoidBinPacking = NextNoComment &&
                           NextNoComment->Type == TT_DesignatedInitializerPeriod;
@@ -876,7 +948,7 @@ private:
     State.NextToken = State.NextToken->Next;
 
     if (!Newline && Style.AlwaysBreakBeforeMultilineStrings &&
-        Current.is(tok::string_literal))
+        Current.is(tok::string_literal) && Current.CanBreakBefore)
       return 0;
 
     return breakProtrudingToken(Current, State, DryRun);
@@ -904,16 +976,42 @@ private:
       // Only break up default narrow strings.
       if (!Current.TokenText.startswith("\""))
         return 0;
+      // Don't break string literals with escaped newlines. As clang-format must
+      // not change the string's content, it is unlikely that we'll end up with
+      // a better format.
+      if (Current.TokenText.find("\\\n") != StringRef::npos)
+        return 0;
+      // Exempts unterminated string literals from line breaking. The user will
+      // likely want to terminate the string before any line breaking is done.
+      if (Current.IsUnterminatedLiteral)
+        return 0;
 
       Token.reset(new BreakableStringLiteral(Current, StartColumn,
                                              Line.InPPDirective, Encoding));
-    } else if (Current.Type == TT_BlockComment) {
+    } else if (Current.Type == TT_BlockComment && Current.isTrailingComment()) {
       Token.reset(new BreakableBlockComment(
           Style, Current, StartColumn, OriginalStartColumn, !Current.Previous,
           Line.InPPDirective, Encoding));
     } else if (Current.Type == TT_LineComment &&
                (Current.Previous == NULL ||
                 Current.Previous->Type != TT_ImplicitStringLiteral)) {
+      // Don't break line comments with escaped newlines. These look like
+      // separate line comments, but in fact contain a single line comment with
+      // multiple lines including leading whitespace and the '//' markers.
+      //
+      // FIXME: If we want to handle them correctly, we'll need to adjust
+      // leading whitespace in consecutive lines when changing indentation of
+      // the first line similar to what we do with block comments.
+      StringRef::size_type EscapedNewlinePos = Current.TokenText.find("\\\n");
+      if (EscapedNewlinePos != StringRef::npos) {
+        State.Column =
+            StartColumn +
+            encoding::getCodePointCount(
+                Current.TokenText.substr(0, EscapedNewlinePos), Encoding) +
+            1;
+        return 0;
+      }
+
       Token.reset(new BreakableLineComment(Current, StartColumn,
                                            Line.InPPDirective, Encoding));
     } else {
@@ -1139,40 +1237,61 @@ private:
     const FormatToken &Previous = *Current.Previous;
     if (Current.MustBreakBefore || Current.Type == TT_InlineASMColon)
       return true;
-    if (Current.is(tok::r_brace) && State.Stack.back().BreakBeforeClosingBrace)
+    if (!Style.Cpp11BracedListStyle && Current.is(tok::r_brace) &&
+        State.Stack.back().BreakBeforeClosingBrace)
       return true;
     if (Previous.is(tok::semi) && State.LineContainsContinuedForLoopSection)
       return true;
+    if (Style.BreakConstructorInitializersBeforeComma) {
+      if (Previous.Type == TT_CtorInitializerComma)
+        return false;
+      if (Current.Type == TT_CtorInitializerComma)
+        return true;
+    }
     if ((Previous.isOneOf(tok::comma, tok::semi) || Current.is(tok::question) ||
-         Current.Type == TT_ConditionalExpr) &&
+         (Current.Type == TT_ConditionalExpr &&
+          !(Current.is(tok::colon) && Previous.is(tok::question)))) &&
         State.Stack.back().BreakBeforeParameter &&
         !Current.isTrailingComment() &&
         !Current.isOneOf(tok::r_paren, tok::r_brace))
       return true;
-
-    // If we need to break somewhere inside the LHS of a binary expression, we
-    // should also break after the operator. Otherwise, the formatting would
-    // hide the operator precedence, e.g. in:
-    //   if (aaaaaaaaaaaaaa ==
-    //           bbbbbbbbbbbbbb && c) {..
-    // For comparisons, we only apply this rule, if the LHS is a binary
-    // expression itself as otherwise, the line breaks seem superfluous.
-    // We need special cases for ">>" which we have split into two ">" while
-    // lexing in order to make template parsing easier.
-    bool IsComparison = (Previous.getPrecedence() == prec::Relational ||
-                         Previous.getPrecedence() == prec::Equality) &&
-                        Previous.Previous &&
-                        Previous.Previous->Type != TT_BinaryOperator; // For >>.
-    bool LHSIsBinaryExpr =
-        Previous.Previous && Previous.Previous->FakeRParens > 0;
-    if (Previous.Type == TT_BinaryOperator &&
-        (!IsComparison || LHSIsBinaryExpr) &&
-        Current.Type != TT_BinaryOperator && // For >>.
-        !Current.isTrailingComment() &&
-        !Previous.isOneOf(tok::lessless, tok::question) &&
-        Previous.getPrecedence() != prec::Assignment &&
-        State.Stack.back().BreakBeforeParameter)
+    if (Style.AlwaysBreakBeforeMultilineStrings &&
+        State.Column > State.Stack.back().Indent &&
+        Current.is(tok::string_literal) && Previous.isNot(tok::lessless) &&
+        Previous.Type != TT_InlineASMColon &&
+        ((Current.getNextNonComment() &&
+          Current.getNextNonComment()->is(tok::string_literal)) ||
+         (Current.TokenText.find("\\\n") != StringRef::npos)))
       return true;
+
+    if (!Style.BreakBeforeBinaryOperators) {
+      // If we need to break somewhere inside the LHS of a binary expression, we
+      // should also break after the operator. Otherwise, the formatting would
+      // hide the operator precedence, e.g. in:
+      //   if (aaaaaaaaaaaaaa ==
+      //           bbbbbbbbbbbbbb && c) {..
+      // For comparisons, we only apply this rule, if the LHS is a binary
+      // expression itself as otherwise, the line breaks seem superfluous.
+      // We need special cases for ">>" which we have split into two ">" while
+      // lexing in order to make template parsing easier.
+      //
+      // FIXME: We'll need something similar for styles that break before binary
+      // operators.
+      bool IsComparison = (Previous.getPrecedence() == prec::Relational ||
+                           Previous.getPrecedence() == prec::Equality) &&
+                          Previous.Previous && Previous.Previous->Type !=
+                                                   TT_BinaryOperator; // For >>.
+      bool LHSIsBinaryExpr =
+          Previous.Previous && Previous.Previous->FakeRParens > 0;
+      if (Previous.Type == TT_BinaryOperator &&
+          (!IsComparison || LHSIsBinaryExpr) &&
+          Current.Type != TT_BinaryOperator && // For >>.
+          !Current.isTrailingComment() &&
+          !Previous.isOneOf(tok::lessless, tok::question) &&
+          Previous.getPrecedence() != prec::Assignment &&
+          State.Stack.back().BreakBeforeParameter)
+        return true;
+    }
 
     // Same as above, but for the first "<<" operator.
     if (Current.is(tok::lessless) && State.Stack.back().BreakBeforeParameter &&
@@ -1224,7 +1343,7 @@ public:
   FormatTokenLexer(Lexer &Lex, SourceManager &SourceMgr,
                    encoding::Encoding Encoding)
       : FormatTok(NULL), GreaterStashed(false), TrailingWhitespace(0), Lex(Lex),
-        SourceMgr(SourceMgr), IdentTable(Lex.getLangOpts()),
+        SourceMgr(SourceMgr), IdentTable(getFormattingLangOpts()),
         Encoding(Encoding) {
     Lex.SetKeepWhitespaceMode(true);
   }
@@ -1257,8 +1376,7 @@ private:
     }
 
     FormatTok = new (Allocator.Allocate()) FormatToken;
-    Lex.LexFromRawLexer(FormatTok->Tok);
-    StringRef Text = rawTokenText(FormatTok->Tok);
+    readRawToken(*FormatTok);
     SourceLocation WhitespaceStart =
         FormatTok->Tok.getLocation().getLocWithOffset(-TrailingWhitespace);
     if (SourceMgr.getFileOffset(WhitespaceStart) == 0)
@@ -1267,16 +1385,16 @@ private:
     // Consume and record whitespace until we find a significant token.
     unsigned WhitespaceLength = TrailingWhitespace;
     while (FormatTok->Tok.is(tok::unknown)) {
-      unsigned Newlines = Text.count('\n');
+      unsigned Newlines = FormatTok->TokenText.count('\n');
       if (Newlines > 0)
-        FormatTok->LastNewlineOffset = WhitespaceLength + Text.rfind('\n') + 1;
+        FormatTok->LastNewlineOffset =
+            WhitespaceLength + FormatTok->TokenText.rfind('\n') + 1;
       FormatTok->NewlinesBefore += Newlines;
-      unsigned EscapedNewlines = Text.count("\\\n");
+      unsigned EscapedNewlines = FormatTok->TokenText.count("\\\n");
       FormatTok->HasUnescapedNewline |= EscapedNewlines != Newlines;
       WhitespaceLength += FormatTok->Tok.getLength();
 
-      Lex.LexFromRawLexer(FormatTok->Tok);
-      Text = rawTokenText(FormatTok->Tok);
+      readRawToken(*FormatTok);
     }
 
     // In case the token starts with escaped newlines, we want to
@@ -1285,30 +1403,31 @@ private:
     // FIXME: What do we want to do with other escaped spaces, and escaped
     // spaces or newlines in the middle of tokens?
     // FIXME: Add a more explicit test.
-    while (Text.size() > 1 && Text[0] == '\\' && Text[1] == '\n') {
+    while (FormatTok->TokenText.size() > 1 && FormatTok->TokenText[0] == '\\' &&
+           FormatTok->TokenText[1] == '\n') {
       // FIXME: ++FormatTok->NewlinesBefore is missing...
       WhitespaceLength += 2;
-      Text = Text.substr(2);
+      FormatTok->TokenText = FormatTok->TokenText.substr(2);
     }
 
     TrailingWhitespace = 0;
     if (FormatTok->Tok.is(tok::comment)) {
-      StringRef UntrimmedText = Text;
-      Text = Text.rtrim();
-      TrailingWhitespace = UntrimmedText.size() - Text.size();
+      StringRef UntrimmedText = FormatTok->TokenText;
+      FormatTok->TokenText = FormatTok->TokenText.rtrim();
+      TrailingWhitespace = UntrimmedText.size() - FormatTok->TokenText.size();
     } else if (FormatTok->Tok.is(tok::raw_identifier)) {
-      IdentifierInfo &Info = IdentTable.get(Text);
+      IdentifierInfo &Info = IdentTable.get(FormatTok->TokenText);
       FormatTok->Tok.setIdentifierInfo(&Info);
       FormatTok->Tok.setKind(Info.getTokenID());
     } else if (FormatTok->Tok.is(tok::greatergreater)) {
       FormatTok->Tok.setKind(tok::greater);
-      Text = Text.substr(0, 1);
+      FormatTok->TokenText = FormatTok->TokenText.substr(0, 1);
       GreaterStashed = true;
     }
 
     // Now FormatTok is the next non-whitespace token.
-    FormatTok->TokenText = Text;
-    FormatTok->CodePointCount = encoding::getCodePointCount(Text, Encoding);
+    FormatTok->CodePointCount =
+        encoding::getCodePointCount(FormatTok->TokenText, Encoding);
 
     FormatTok->WhitespaceRange = SourceRange(
         WhitespaceStart, WhitespaceStart.getLocWithOffset(WhitespaceLength));
@@ -1325,10 +1444,18 @@ private:
   llvm::SpecificBumpPtrAllocator<FormatToken> Allocator;
   SmallVector<FormatToken *, 16> Tokens;
 
-  /// Returns the text of \c FormatTok.
-  StringRef rawTokenText(Token &Tok) {
-    return StringRef(SourceMgr.getCharacterData(Tok.getLocation()),
-                     Tok.getLength());
+  void readRawToken(FormatToken &Tok) {
+    Lex.LexFromRawLexer(Tok.Tok);
+    Tok.TokenText = StringRef(SourceMgr.getCharacterData(Tok.Tok.getLocation()),
+                              Tok.Tok.getLength());
+
+    // For formatting, treat unterminated string literals like normal string
+    // literals.
+    if (Tok.is(tok::unknown) && !Tok.TokenText.empty() &&
+        Tok.TokenText[0] == '"') {
+      Tok.Tok.setKind(tok::string_literal);
+      Tok.IsUnterminatedLiteral = true;
+    }
   }
 };
 
@@ -1548,6 +1675,9 @@ private:
     if (I->Last->Type == TT_LineComment)
       return;
 
+    if (Indent > Style.ColumnLimit)
+      return;
+
     unsigned Limit = Style.ColumnLimit - Indent;
     // If we already exceed the column limit, we set 'Limit' to 0. The different
     // tryMerge..() functions can then decide whether to still do merging.
@@ -1590,6 +1720,9 @@ private:
                                       std::vector<AnnotatedLine>::iterator E,
                                       unsigned Limit) {
     if (Limit == 0)
+      return;
+    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman &&
+        (I + 1)->First->is(tok::l_brace))
       return;
     if ((I + 1)->InPPDirective != I->InPPDirective ||
         ((I + 1)->InPPDirective && (I + 1)->First->HasUnescapedNewline))

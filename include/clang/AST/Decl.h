@@ -44,6 +44,7 @@ class TemplateArgumentList;
 class TemplateParameterList;
 class TypeLoc;
 class UnresolvedSetImpl;
+class VarTemplateDecl;
 
 /// \brief A container of type source information.
 ///
@@ -705,11 +706,17 @@ private:
 
     /// \brief Whether this variable is (C++0x) constexpr.
     unsigned IsConstexpr : 1;
+
+    /// \brief Whether this local extern variable's previous declaration was
+    /// declared in the same block scope. This controls whether we should merge
+    /// the type of this declaration with its previous declaration.
+    unsigned PreviousDeclInSameBlockScope : 1;
   };
-  enum { NumVarDeclBits = 12 };
+  enum { NumVarDeclBits = 13 };
 
   friend class ASTDeclReader;
   friend class StmtIteratorBase;
+  friend class ASTNodeImporter;
 
 protected:
   enum { NumParameterIndexBits = 8 };
@@ -748,15 +755,8 @@ protected:
   };
 
   VarDecl(Kind DK, DeclContext *DC, SourceLocation StartLoc,
-          SourceLocation IdLoc, IdentifierInfo *Id,
-          QualType T, TypeSourceInfo *TInfo, StorageClass SC)
-    : DeclaratorDecl(DK, DC, IdLoc, Id, T, TInfo, StartLoc), Init() {
-    assert(sizeof(VarDeclBitfields) <= sizeof(unsigned));
-    assert(sizeof(ParmVarDeclBitfields) <= sizeof(unsigned));
-    AllBits = 0;
-    VarDeclBits.SClass = SC;
-    // Everything else is implicitly initialized to false.
-  }
+          SourceLocation IdLoc, IdentifierInfo *Id, QualType T,
+          TypeSourceInfo *TInfo, StorageClass SC);
 
   typedef Redeclarable<VarDecl> redeclarable_base;
   virtual VarDecl *getNextRedeclaration() { return RedeclLink.getNext(); }
@@ -955,7 +955,8 @@ public:
 
   /// isFileVarDecl - Returns true for file scoped variable declaration.
   bool isFileVarDecl() const {
-    if (getKind() != Decl::Var)
+    Kind K = getKind();
+    if (K == ParmVar || K == ImplicitParam)
       return false;
 
     if (getDeclContext()->getRedeclContext()->isFileContext())
@@ -1131,6 +1132,15 @@ public:
   bool isConstexpr() const { return VarDeclBits.IsConstexpr; }
   void setConstexpr(bool IC) { VarDeclBits.IsConstexpr = IC; }
 
+  /// Whether this local extern variable declaration's previous declaration
+  /// was declared in the same block scope. Only correct in C++.
+  bool isPreviousDeclInSameBlockScope() const {
+    return VarDeclBits.PreviousDeclInSameBlockScope;
+  }
+  void setPreviousDeclInSameBlockScope(bool Same) {
+    VarDeclBits.PreviousDeclInSameBlockScope = Same;
+  }
+
   /// \brief If this variable is an instantiated static data member of a
   /// class template specialization, returns the templated static data member
   /// from which it was instantiated.
@@ -1149,6 +1159,26 @@ public:
   /// data member of a class template, set the template specialiation kind.
   void setTemplateSpecializationKind(TemplateSpecializationKind TSK,
                         SourceLocation PointOfInstantiation = SourceLocation());
+
+  /// \brief Specify that this variable is an instantiation of the
+  /// static data member VD.
+  void setInstantiationOfStaticDataMember(VarDecl *VD,
+                                          TemplateSpecializationKind TSK);
+
+  /// \brief Retrieves the variable template that is described by this
+  /// variable declaration.
+  ///
+  /// Every variable template is represented as a VarTemplateDecl and a
+  /// VarDecl. The former contains template properties (such as
+  /// the template parameter lists) while the latter contains the
+  /// actual description of the template's
+  /// contents. VarTemplateDecl::getTemplatedDecl() retrieves the
+  /// VarDecl that from a VarTemplateDecl, while
+  /// getDescribedVarTemplate() retrieves the VarTemplateDecl from
+  /// a VarDecl.
+  VarTemplateDecl *getDescribedVarTemplate() const;
+
+  void setDescribedVarTemplate(VarTemplateDecl *Template);
 
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
@@ -1719,6 +1749,21 @@ public:
   ///
   /// This function must be an allocation or deallocation function.
   bool isReservedGlobalPlacementOperator() const;
+
+  /// \brief Determines whether this function is one of the replaceable
+  /// global allocation functions:
+  ///    void *operator new(size_t);
+  ///    void *operator new(size_t, const std::nothrow_t &) noexcept;
+  ///    void *operator new[](size_t);
+  ///    void *operator new[](size_t, const std::nothrow_t &) noexcept;
+  ///    void operator delete(void *) noexcept;
+  ///    void operator delete(void *, const std::nothrow_t &) noexcept;
+  ///    void operator delete[](void *) noexcept;
+  ///    void operator delete[](void *, const std::nothrow_t &) noexcept;
+  /// These functions have special behavior under C++1y [expr.new]:
+  ///    An implementation is allowed to omit a call to a replaceable global
+  ///    allocation function. [...]
+  bool isReplaceableGlobalAllocationFunction() const;
 
   /// Compute the language linkage.
   LanguageLinkage getLanguageLinkage() const;
@@ -3406,6 +3451,14 @@ void Redeclarable<decl_type>::setPreviousDeclaration(decl_type *PrevDecl) {
     assert(First->RedeclLink.NextIsLatest() && "Expected first");
     decl_type *MostRecent = First->RedeclLink.getNext();
     RedeclLink = PreviousDeclLink(cast<decl_type>(MostRecent));
+
+    // If the declaration was previously visible, a redeclaration of it remains
+    // visible even if it wouldn't be visible by itself.
+    // FIXME: Once we handle local extern decls properly, this should inherit
+    // the visibility from MostRecent, not from PrevDecl.
+    static_cast<decl_type*>(this)->IdentifierNamespace |=
+      PrevDecl->getIdentifierNamespace() &
+      (Decl::IDNS_Ordinary | Decl::IDNS_Tag | Decl::IDNS_Type);
   } else {
     // Make this first.
     First = static_cast<decl_type*>(this);

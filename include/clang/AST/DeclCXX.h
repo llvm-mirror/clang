@@ -1323,6 +1323,11 @@ public:
     return dyn_cast<FunctionDecl>(getDeclContext());
   }
 
+  FunctionDecl *isLocalClass() {
+    return const_cast<FunctionDecl*>(
+        const_cast<const CXXRecordDecl*>(this)->isLocalClass());
+  }
+
   /// \brief Determine whether this dependent class is a current instantiation,
   /// when viewed from within the given context.
   bool isCurrentInstantiation(const DeclContext *CurContext) const;
@@ -2025,14 +2030,6 @@ class CXXConstructorDecl : public CXXMethodDecl {
   /// specified.
   bool IsExplicitSpecified : 1;
 
-  /// \brief Whether this constructor was implicitly defined by the compiler.
-  ///
-  /// When false, the constructor was defined by the user. In C++03, this flag
-  /// will have the same value as Implicit. In C++11, however, a constructor
-  /// that is explicitly defaulted (i.e., defined with " = default") will have
-  /// \c !Implicit && ImplicitlyDefined.
-  bool ImplicitlyDefined : 1;
-
   /// \name Support for base and member initializers.
   /// \{
   /// \brief The arguments used to initialize the base or member.
@@ -2047,8 +2044,8 @@ class CXXConstructorDecl : public CXXMethodDecl {
                      bool isImplicitlyDeclared, bool isConstexpr)
     : CXXMethodDecl(CXXConstructor, RD, StartLoc, NameInfo, T, TInfo,
                     SC_None, isInline, isConstexpr, SourceLocation()),
-      IsExplicitSpecified(isExplicitSpecified), ImplicitlyDefined(false),
-      CtorInitializers(0), NumCtorInitializers(0) {
+      IsExplicitSpecified(isExplicitSpecified), CtorInitializers(0),
+      NumCtorInitializers(0) {
     setImplicit(isImplicitlyDeclared);
   }
 
@@ -2070,25 +2067,6 @@ public:
   bool isExplicit() const {
     return cast<CXXConstructorDecl>(getFirstDeclaration())
       ->isExplicitSpecified();
-  }
-
-  /// \brief Whether this constructor was implicitly defined. 
-  ///
-  /// If false, then this constructor was defined by the user. This operation
-  /// must only be invoked if the constructor has already been defined.
-  bool isImplicitlyDefined() const {
-    assert(isThisDeclarationADefinition() &&
-           "Can only get the implicit-definition flag once the "
-           "constructor has been defined");
-    return ImplicitlyDefined;
-  }
-
-  /// \brief Set whether this constructor was implicitly defined or not.
-  void setImplicitlyDefined(bool ID) {
-    assert(isThisDeclarationADefinition() &&
-           "Can only set the implicit-definition flag once the constructor "
-           "has been defined");
-    ImplicitlyDefined = ID;
   }
 
   /// \brief Iterates through the member/base initializer list.
@@ -2249,13 +2227,6 @@ public:
 /// \endcode
 class CXXDestructorDecl : public CXXMethodDecl {
   virtual void anchor();
-  /// \brief Whether this destructor was implicitly defined by the compiler.
-  ///
-  /// When false, the destructor was defined by the user. In C++03, this
-  /// flag will have the same value as Implicit. In C++11, however, a
-  /// destructor that is explicitly defaulted (i.e., defined with " = default")
-  /// will have \c !Implicit && ImplicitlyDefined.
-  bool ImplicitlyDefined : 1;
 
   FunctionDecl *OperatorDelete;
 
@@ -2265,7 +2236,7 @@ class CXXDestructorDecl : public CXXMethodDecl {
                     bool isInline, bool isImplicitlyDeclared)
     : CXXMethodDecl(CXXDestructor, RD, StartLoc, NameInfo, T, TInfo,
                     SC_None, isInline, /*isConstexpr=*/false, SourceLocation()),
-      ImplicitlyDefined(false), OperatorDelete(0) {
+      OperatorDelete(0) {
     setImplicit(isImplicitlyDeclared);
   }
 
@@ -2277,25 +2248,6 @@ public:
                                    bool isInline,
                                    bool isImplicitlyDeclared);
   static CXXDestructorDecl *CreateDeserialized(ASTContext & C, unsigned ID);
-
-  /// \brief Whether this destructor was implicitly defined.
-  ///
-  /// If false, then this destructor was defined by the user. This operation
-  /// can only be invoked if the destructor has already been defined.
-  bool isImplicitlyDefined() const {
-    assert(isThisDeclarationADefinition() &&
-           "Can only get the implicit-definition flag once the destructor has "
-           "been defined");
-    return ImplicitlyDefined;
-  }
-
-  /// \brief Set whether this destructor was implicitly defined or not.
-  void setImplicitlyDefined(bool ID) {
-    assert(isThisDeclarationADefinition() &&
-           "Can only set the implicit-definition flag once the destructor has "
-           "been defined");
-    ImplicitlyDefined = ID;
-  }
 
   void setOperatorDelete(FunctionDecl *OD) { OperatorDelete = OD; }
   const FunctionDecl *getOperatorDelete() const { return OperatorDelete; }
@@ -2741,7 +2693,7 @@ public:
 class UsingDecl : public NamedDecl {
   virtual void anchor();
 
-  /// \brief The source location of the "using" location itself.
+  /// \brief The source location of the 'using' keyword itself.
   SourceLocation UsingLocation;
 
   /// \brief The nested-name-specifier that precedes the name.
@@ -2760,18 +2712,18 @@ class UsingDecl : public NamedDecl {
 
   UsingDecl(DeclContext *DC, SourceLocation UL,
             NestedNameSpecifierLoc QualifierLoc,
-            const DeclarationNameInfo &NameInfo, bool IsTypeNameArg)
+            const DeclarationNameInfo &NameInfo, bool HasTypenameKeyword)
     : NamedDecl(Using, DC, NameInfo.getLoc(), NameInfo.getName()),
       UsingLocation(UL), QualifierLoc(QualifierLoc),
-      DNLoc(NameInfo.getInfo()), FirstUsingShadow(0, IsTypeNameArg) {
+      DNLoc(NameInfo.getInfo()), FirstUsingShadow(0, HasTypenameKeyword) {
   }
 
 public:
-  /// \brief Returns the source location of the "using" keyword.
-  SourceLocation getUsingLocation() const { return UsingLocation; }
+  /// \brief Return the source location of the 'using' keyword.
+  SourceLocation getUsingLoc() const { return UsingLocation; }
 
   /// \brief Set the source location of the 'using' keyword.
-  void setUsingLocation(SourceLocation L) { UsingLocation = L; }
+  void setUsingLoc(SourceLocation L) { UsingLocation = L; }
 
   /// \brief Retrieve the nested-name-specifier that qualifies the name,
   /// with source-location information.
@@ -2786,11 +2738,14 @@ public:
     return DeclarationNameInfo(getDeclName(), getLocation(), DNLoc);
   }
 
+  /// \brief Return true if it is a C++03 access declaration (no 'using').
+  bool isAccessDeclaration() const { return UsingLocation.isInvalid(); }
+
   /// \brief Return true if the using declaration has 'typename'.
-  bool isTypeName() const { return FirstUsingShadow.getInt(); }
+  bool hasTypename() const { return FirstUsingShadow.getInt(); }
 
   /// \brief Sets whether the using declaration has 'typename'.
-  void setTypeName(bool TN) { FirstUsingShadow.setInt(TN); }
+  void setTypename(bool TN) { FirstUsingShadow.setInt(TN); }
 
   /// \brief Iterates through the using shadow declarations associated with
   /// this using declaration.
@@ -2848,13 +2803,11 @@ public:
                            SourceLocation UsingL,
                            NestedNameSpecifierLoc QualifierLoc,
                            const DeclarationNameInfo &NameInfo,
-                           bool IsTypeNameArg);
+                           bool HasTypenameKeyword);
 
   static UsingDecl *CreateDeserialized(ASTContext &C, unsigned ID);
-  
-  SourceRange getSourceRange() const LLVM_READONLY {
-    return SourceRange(UsingLocation, getNameInfo().getEndLoc());
-  }
+
+  SourceRange getSourceRange() const LLVM_READONLY;
 
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == Using; }
@@ -2904,6 +2857,9 @@ public:
   /// \brief Set the source location of the 'using' keyword.
   void setUsingLoc(SourceLocation L) { UsingLocation = L; }
 
+  /// \brief Return true if it is a C++03 access declaration (no 'using').
+  bool isAccessDeclaration() const { return UsingLocation.isInvalid(); }
+
   /// \brief Retrieve the nested-name-specifier that qualifies the name,
   /// with source-location information.
   NestedNameSpecifierLoc getQualifierLoc() const { return QualifierLoc; }
@@ -2925,9 +2881,7 @@ public:
   static UnresolvedUsingValueDecl *
   CreateDeserialized(ASTContext &C, unsigned ID);
 
-  SourceRange getSourceRange() const LLVM_READONLY {
-    return SourceRange(UsingLocation, getNameInfo().getEndLoc());
-  }
+  SourceRange getSourceRange() const LLVM_READONLY;
 
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == UnresolvedUsingValue; }
@@ -2949,9 +2903,6 @@ public:
 /// currently always a typename type.
 class UnresolvedUsingTypenameDecl : public TypeDecl {
   virtual void anchor();
-
-  /// \brief The source location of the 'using' keyword
-  SourceLocation UsingLocation;
 
   /// \brief The source location of the 'typename' keyword
   SourceLocation TypenameLocation;

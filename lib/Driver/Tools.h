@@ -59,9 +59,13 @@ using llvm::opt::ArgStringList;
                            llvm::opt::ArgStringList &CmdArgs) const;
     void AddSparcTargetArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const;
+    void AddSystemZTargetArgs(const llvm::opt::ArgList &Args,
+                              llvm::opt::ArgStringList &CmdArgs) const;
     void AddX86TargetArgs(const llvm::opt::ArgList &Args,
                           llvm::opt::ArgStringList &CmdArgs) const;
     void AddHexagonTargetArgs(const llvm::opt::ArgList &Args,
+                              llvm::opt::ArgStringList &CmdArgs) const;
+    void AddAArch64TargetArgs(const llvm::opt::ArgList &Args,
                               llvm::opt::ArgStringList &CmdArgs) const;
 
     enum RewriteKind { RK_None, RK_Fragile, RK_NonFragile };
@@ -69,6 +73,9 @@ using llvm::opt::ArgStringList;
     ObjCRuntime AddObjCRuntimeArgs(const llvm::opt::ArgList &args,
                                    llvm::opt::ArgStringList &cmdArgs,
                                    RewriteKind rewrite) const;
+
+    void AddClangCLArgs(const llvm::opt::ArgList &Args,
+                        llvm::opt::ArgStringList &CmdArgs) const;
 
   public:
     Clang(const ToolChain &TC) : Tool("clang", "clang frontend", TC) {}

@@ -20,6 +20,7 @@
 #include "MicrosoftVBTables.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/VTableBuilder.h"
 
 using namespace clang;
 using namespace CodeGen;
@@ -65,10 +66,52 @@ public:
   llvm::BasicBlock *EmitCtorCompleteObjectHandler(CodeGenFunction &CGF,
                                                   const CXXRecordDecl *RD);
 
-  void BuildDestructorSignature(const CXXDestructorDecl *Ctor,
+  void EmitCXXConstructors(const CXXConstructorDecl *D);
+
+  // Background on MSVC destructors
+  // ==============================
+  //
+  // Both Itanium and MSVC ABIs have destructor variants.  The variant names
+  // roughly correspond in the following way:
+  //   Itanium       Microsoft
+  //   Base       -> no name, just ~Class
+  //   Complete   -> vbase destructor
+  //   Deleting   -> scalar deleting destructor
+  //                 vector deleting destructor
+  //
+  // The base and complete destructors are the same as in Itanium, although the
+  // complete destructor does not accept a VTT parameter when there are virtual
+  // bases.  A separate mechanism involving vtordisps is used to ensure that
+  // virtual methods of destroyed subobjects are not called.
+  //
+  // The deleting destructors accept an i32 bitfield as a second parameter.  Bit
+  // 1 indicates if the memory should be deleted.  Bit 2 indicates if the this
+  // pointer points to an array.  The scalar deleting destructor assumes that
+  // bit 2 is zero, and therefore does not contain a loop.
+  //
+  // For virtual destructors, only one entry is reserved in the vftable, and it
+  // always points to the vector deleting destructor.  The vector deleting
+  // destructor is the most general, so it can be used to destroy objects in
+  // place, delete single heap objects, or delete arrays.
+  //
+  // A TU defining a non-inline destructor is only guaranteed to emit a base
+  // destructor, and all of the other variants are emitted on an as-needed basis
+  // in COMDATs.  Because a non-base destructor can be emitted in a TU that
+  // lacks a definition for the destructor, non-base destructors must always
+  // delegate to or alias the base destructor.
+
+  void BuildDestructorSignature(const CXXDestructorDecl *Dtor,
                                 CXXDtorType Type,
                                 CanQualType &ResTy,
                                 SmallVectorImpl<CanQualType> &ArgTys);
+
+  /// Non-base dtors should be emitted as delegating thunks in this ABI.
+  bool useThunkForDtorVariant(const CXXDestructorDecl *Dtor,
+                              CXXDtorType DT) const {
+    return DT != Dtor_Base;
+  }
+
+  void EmitCXXDestructors(const CXXDestructorDecl *D);
 
   void BuildInstanceFunctionParams(CodeGenFunction &CGF,
                                    QualType &ResTy,
@@ -275,24 +318,6 @@ CharUnits MicrosoftCXXABI::GetVBPtrOffsetFromBases(const CXXRecordDecl *RD) {
   return Total;
 }
 
-/// \brief Computes the index of BaseClassDecl in the vbtable of ClassDecl.
-/// BaseClassDecl must be a morally virtual base of ClassDecl.  The vbtable is
-/// an array of i32 offsets.  The first entry is a self entry, and the rest are
-/// offsets from the vbptr to virtual bases.  The bases are ordered the same way
-/// our vbases are ordered: as they appear in a left-to-right depth-first search
-/// of the hierarchy.
-static unsigned GetVBTableIndex(const CXXRecordDecl *ClassDecl,
-                                const CXXRecordDecl *BaseClassDecl) {
-  unsigned VBTableIndex = 1;  // Start with one to skip the self entry.
-  for (CXXRecordDecl::base_class_const_iterator I = ClassDecl->vbases_begin(),
-       E = ClassDecl->vbases_end(); I != E; ++I) {
-    if (I->getType()->getAsCXXRecordDecl() == BaseClassDecl)
-      return VBTableIndex;
-    VBTableIndex++;
-  }
-  llvm_unreachable("BaseClassDecl must be a vbase of ClassDecl");
-}
-
 llvm::Value *
 MicrosoftCXXABI::GetVirtualBaseClassOffset(CodeGenFunction &CGF,
                                            llvm::Value *This,
@@ -353,6 +378,11 @@ MicrosoftCXXABI::EmitCtorCompleteObjectHandler(CodeGenFunction &CGF,
   return SkipVbaseCtorsBB;
 }
 
+void MicrosoftCXXABI::EmitCXXConstructors(const CXXConstructorDecl *D) {
+  // There's only one constructor type in this ABI.
+  CGM.EmitGlobal(GlobalDecl(D, Ctor_Complete));
+}
+
 void MicrosoftCXXABI::EmitVBPtrStores(CodeGenFunction &CGF,
                                       const CXXRecordDecl *RD) {
   llvm::Value *ThisInt8Ptr =
@@ -385,6 +415,12 @@ void MicrosoftCXXABI::BuildDestructorSignature(const CXXDestructorDecl *Dtor,
     // The scalar deleting destructor takes an implicit bool parameter.
     ArgTys.push_back(CGM.getContext().BoolTy);
   }
+}
+
+void MicrosoftCXXABI::EmitCXXDestructors(const CXXDestructorDecl *D) {
+  // The TU defining a dtor is only guaranteed to emit a base destructor.  All
+  // other destructor variants are delegating thunks.
+  CGM.EmitGlobal(GlobalDecl(D, Dtor_Base));
 }
 
 static bool IsDeletingDtor(GlobalDecl GD) {
@@ -490,7 +526,8 @@ void MicrosoftCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
   const CGFunctionInfo *FInfo
       = &CGM.getTypes().arrangeCXXDestructor(Dtor, Dtor_Deleting);
   llvm::Type *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
-  llvm::Value *Callee = CGF.BuildVirtualCall(Dtor, Dtor_Deleting, This, Ty);
+  llvm::Value *Callee
+      = CGF.BuildVirtualCall(GlobalDecl(Dtor, Dtor_Deleting), This, Ty);
 
   ASTContext &Context = CGF.getContext();
   llvm::Value *ImplicitParam

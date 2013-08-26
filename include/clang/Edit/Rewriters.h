@@ -9,11 +9,16 @@
 
 #ifndef LLVM_CLANG_EDIT_REWRITERS_H
 #define LLVM_CLANG_EDIT_REWRITERS_H
+#include "llvm/ADT/SmallVector.h"
 
 namespace clang {
   class ObjCMessageExpr;
   class ObjCMethodDecl;
+  class ObjCInterfaceDecl;
+  class ObjCProtocolDecl;
   class NSAPI;
+  class EnumDecl;
+  class TypedefDecl;
   class ParentMap;
 
 namespace edit {
@@ -26,10 +31,6 @@ bool rewriteToObjCLiteralSyntax(const ObjCMessageExpr *Msg,
                                 const NSAPI &NS, Commit &commit,
                                 const ParentMap *PMap);
   
-bool rewriteToObjCProperty(const ObjCMethodDecl *Getter,
-                           const ObjCMethodDecl *Setter,
-                           const NSAPI &NS, Commit &commit);
-
 bool rewriteToObjCSubscriptSyntax(const ObjCMessageExpr *Msg,
                                   const NSAPI &NS, Commit &commit);
 

@@ -13,23 +13,79 @@ namespace clang {
 namespace ast_matchers {
 namespace dynamic {
 
-Diagnostics::ArgStream &
-Diagnostics::ArgStream::operator<<(const Twine &Arg) {
+Diagnostics::ArgStream Diagnostics::pushContextFrame(ContextType Type,
+                                                     SourceRange Range) {
+  ContextStack.push_back(ContextFrame());
+  ContextFrame& data = ContextStack.back();
+  data.Type = Type;
+  data.Range = Range;
+  return ArgStream(&data.Args);
+}
+
+Diagnostics::Context::Context(ConstructMatcherEnum, Diagnostics *Error,
+                              StringRef MatcherName,
+                              const SourceRange &MatcherRange)
+    : Error(Error) {
+  Error->pushContextFrame(CT_MatcherConstruct, MatcherRange) << MatcherName;
+}
+
+Diagnostics::Context::Context(MatcherArgEnum, Diagnostics *Error,
+                              StringRef MatcherName,
+                              const SourceRange &MatcherRange,
+                              unsigned ArgNumber)
+    : Error(Error) {
+  Error->pushContextFrame(CT_MatcherArg, MatcherRange) << ArgNumber
+                                                       << MatcherName;
+}
+
+Diagnostics::Context::~Context() { Error->ContextStack.pop_back(); }
+
+Diagnostics::OverloadContext::OverloadContext(Diagnostics *Error)
+    : Error(Error), BeginIndex(Error->Errors.size()) {}
+
+Diagnostics::OverloadContext::~OverloadContext() {
+  // Merge all errors that happened while in this context.
+  if (BeginIndex < Error->Errors.size()) {
+    Diagnostics::ErrorContent &Dest = Error->Errors[BeginIndex];
+    for (size_t i = BeginIndex + 1, e = Error->Errors.size(); i < e; ++i) {
+      Dest.Messages.push_back(Error->Errors[i].Messages[0]);
+    }
+    Error->Errors.resize(BeginIndex + 1);
+  }
+}
+
+void Diagnostics::OverloadContext::revertErrors() {
+  // Revert the errors.
+  Error->Errors.resize(BeginIndex);
+}
+
+Diagnostics::ArgStream &Diagnostics::ArgStream::operator<<(const Twine &Arg) {
   Out->push_back(Arg.str());
   return *this;
 }
 
-Diagnostics::ArgStream Diagnostics::pushErrorFrame(const SourceRange &Range,
-                                                   ErrorType Error) {
-  Frames.insert(Frames.begin(), ErrorFrame());
-  ErrorFrame &Last = Frames.front();
-  Last.Range = Range;
-  Last.Type = Error;
-  ArgStream Out = { &Last.Args };
-  return Out;
+Diagnostics::ArgStream Diagnostics::addError(const SourceRange &Range,
+                                             ErrorType Error) {
+  Errors.push_back(ErrorContent());
+  ErrorContent &Last = Errors.back();
+  Last.ContextStack = ContextStack;
+  Last.Messages.push_back(ErrorContent::Message());
+  Last.Messages.back().Range = Range;
+  Last.Messages.back().Type = Error;
+  return ArgStream(&Last.Messages.back().Args);
 }
 
-StringRef ErrorTypeToString(Diagnostics::ErrorType Type) {
+StringRef contextTypeToFormatString(Diagnostics::ContextType Type) {
+  switch (Type) {
+    case Diagnostics::CT_MatcherConstruct:
+      return "Error building matcher $0.";
+    case Diagnostics::CT_MatcherArg:
+      return "Error parsing argument $0 for matcher $1.";
+  }
+  llvm_unreachable("Unknown ContextType value.");
+}
+
+StringRef errorTypeToFormatString(Diagnostics::ErrorType Type) {
   switch (Type) {
   case Diagnostics::ET_RegistryNotFound:
     return "Matcher not found: $0";
@@ -39,13 +95,12 @@ StringRef ErrorTypeToString(Diagnostics::ErrorType Type) {
     return "Incorrect type for arg $0. (Expected = $1) != (Actual = $2)";
   case Diagnostics::ET_RegistryNotBindable:
     return "Matcher does not support binding.";
+  case Diagnostics::ET_RegistryAmbiguousOverload:
+    // TODO: Add type info about the overload error.
+    return "Ambiguous matcher overload.";
 
   case Diagnostics::ET_ParserStringError:
     return "Error parsing string token: <$0>";
-  case Diagnostics::ET_ParserMatcherArgFailure:
-    return "Error parsing argument $0 for matcher $1.";
-  case Diagnostics::ET_ParserMatcherFailure:
-    return "Error building matcher $0.";
   case Diagnostics::ET_ParserNoOpenParen:
     return "Error parsing matcher. Found token <$0> while looking for '('.";
   case Diagnostics::ET_ParserNoCloseParen:
@@ -73,12 +128,11 @@ StringRef ErrorTypeToString(Diagnostics::ErrorType Type) {
   llvm_unreachable("Unknown ErrorType value.");
 }
 
-std::string FormatErrorString(StringRef FormatString,
-                              ArrayRef<std::string> Args) {
-  std::string Out;
+void formatErrorString(StringRef FormatString, ArrayRef<std::string> Args,
+                       llvm::raw_ostream &OS) {
   while (!FormatString.empty()) {
     std::pair<StringRef, StringRef> Pieces = FormatString.split("$");
-    Out += Pieces.first.str();
+    OS << Pieces.first.str();
     if (Pieces.second.empty()) break;
 
     const char Next = Pieces.second.front();
@@ -86,36 +140,79 @@ std::string FormatErrorString(StringRef FormatString,
     if (Next >= '0' && Next <= '9') {
       const unsigned Index = Next - '0';
       if (Index < Args.size()) {
-        Out += Args[Index];
+        OS << Args[Index];
       } else {
-        Out += "<Argument_Not_Provided>";
+        OS << "<Argument_Not_Provided>";
       }
     }
   }
-  return Out;
 }
 
-std::string Diagnostics::ErrorFrame::ToString() const {
-  StringRef FormatString = ErrorTypeToString(Type);
-  std::string ErrorOut = FormatErrorString(FormatString, Args);
-  if (Range.Start.Line > 0 && Range.Start.Column > 0)
-    return (Twine(Range.Start.Line) + ":" + Twine(Range.Start.Column) + ": " +
-            ErrorOut).str();
-  return ErrorOut;
-}
-
-std::string Diagnostics::ToString() const {
-  if (Frames.empty()) return "";
-  return Frames[Frames.size() - 1].ToString();
-}
-
-std::string Diagnostics::ToStringFull() const {
-  std::string Result;
-  for (size_t i = 0, end = Frames.size(); i != end; ++i) {
-    if (i > 0) Result += "\n";
-    Result += Frames[i].ToString();
+static void maybeAddLineAndColumn(const SourceRange &Range,
+                                  llvm::raw_ostream &OS) {
+  if (Range.Start.Line > 0 && Range.Start.Column > 0) {
+    OS << Range.Start.Line << ":" << Range.Start.Column << ": ";
   }
-  return Result;
+}
+
+static void printContextFrameToStream(const Diagnostics::ContextFrame &Frame,
+                                      llvm::raw_ostream &OS) {
+  maybeAddLineAndColumn(Frame.Range, OS);
+  formatErrorString(contextTypeToFormatString(Frame.Type), Frame.Args, OS);
+}
+
+static void
+printMessageToStream(const Diagnostics::ErrorContent::Message &Message,
+                     const Twine Prefix, llvm::raw_ostream &OS) {
+  maybeAddLineAndColumn(Message.Range, OS);
+  OS << Prefix;
+  formatErrorString(errorTypeToFormatString(Message.Type), Message.Args, OS);
+}
+
+static void printErrorContentToStream(const Diagnostics::ErrorContent &Content,
+                                      llvm::raw_ostream &OS) {
+  if (Content.Messages.size() == 1) {
+    printMessageToStream(Content.Messages[0], "", OS);
+  } else {
+    for (size_t i = 0, e = Content.Messages.size(); i != e; ++i) {
+      if (i != 0) OS << "\n";
+      printMessageToStream(Content.Messages[i],
+                           "Candidate " + Twine(i + 1) + ": ", OS);
+    }
+  }
+}
+
+void Diagnostics::printToStream(llvm::raw_ostream &OS) const {
+  for (size_t i = 0, e = Errors.size(); i != e; ++i) {
+    if (i != 0) OS << "\n";
+    printErrorContentToStream(Errors[i], OS);
+  }
+}
+
+std::string Diagnostics::toString() const {
+  std::string S;
+  llvm::raw_string_ostream OS(S);
+  printToStream(OS);
+  return OS.str();
+}
+
+void Diagnostics::printToStreamFull(llvm::raw_ostream &OS) const {
+  for (size_t i = 0, e = Errors.size(); i != e; ++i) {
+    if (i != 0) OS << "\n";
+    const ErrorContent &Error = Errors[i];
+    for (size_t i = 0, e = Error.ContextStack.size(); i != e; ++i) {
+      printContextFrameToStream(Error.ContextStack[i], OS);
+      OS << "\n";
+    }
+    printErrorContentToStream(Error, OS);
+  }
+}
+
+std::string Diagnostics::toStringFull() const {
+  std::string S;
+  llvm::raw_string_ostream OS(S);
+  printToStreamFull(OS);
+  return OS.str();
 }
 
 }  // namespace dynamic

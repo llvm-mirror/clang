@@ -271,13 +271,25 @@ class ASTContext : public RefCountedBase<ASTContext> {
   /// wasting space in the Decl class.
   llvm::DenseMap<const Decl*, AttrVec*> DeclAttrs;
 
-  /// \brief Keeps track of the static data member templates from which
-  /// static data members of class template specializations were instantiated.
+public:
+  /// \brief A type synonym for the TemplateOrInstantiation mapping.
+  typedef llvm::PointerUnion<VarTemplateDecl *, MemberSpecializationInfo *>
+  TemplateOrSpecializationInfo;
+
+private:
+
+  /// \brief A mapping to contain the template or declaration that
+  /// a variable declaration describes or was instantiated from,
+  /// respectively.
   ///
-  /// This data structure stores the mapping from instantiations of static
-  /// data members to the static data member representations within the
-  /// class template from which they were instantiated along with the kind
-  /// of instantiation or specialization (a TemplateSpecializationKind - 1).
+  /// For non-templates, this value will be NULL. For variable
+  /// declarations that describe a variable template, this will be a
+  /// pointer to a VarTemplateDecl. For static data members
+  /// of class template specializations, this will be the
+  /// MemberSpecializationInfo referring to the member variable that was
+  /// instantiated or specialized. Thus, the mapping will keep track of
+  /// the static data member templates from which static data members of
+  /// class template specializations were instantiated.
   ///
   /// Given the following example:
   ///
@@ -296,8 +308,8 @@ class ASTContext : public RefCountedBase<ASTContext> {
   /// This mapping will contain an entry that maps from the VarDecl for
   /// X<int>::value to the corresponding VarDecl for X<T>::value (within the
   /// class template X) and will be marked TSK_ImplicitInstantiation.
-  llvm::DenseMap<const VarDecl *, MemberSpecializationInfo *> 
-    InstantiatedFromStaticDataMember;
+  llvm::DenseMap<const VarDecl *, TemplateOrSpecializationInfo>
+  TemplateOrInstantiation;
 
   /// \brief Keeps track of the declaration from which a UsingDecl was
   /// created during instantiation.
@@ -606,8 +618,12 @@ public:
   /// \brief If this variable is an instantiated static data member of a
   /// class template specialization, returns the templated static data member
   /// from which it was instantiated.
+  // FIXME: Remove ?
   MemberSpecializationInfo *getInstantiatedFromStaticDataMember(
                                                            const VarDecl *Var);
+
+  TemplateOrSpecializationInfo
+  getTemplateOrSpecializationInfo(const VarDecl *Var);
 
   FunctionDecl *getClassScopeSpecializationPattern(const FunctionDecl *FD);
 
@@ -619,6 +635,9 @@ public:
   void setInstantiatedFromStaticDataMember(VarDecl *Inst, VarDecl *Tmpl,
                                            TemplateSpecializationKind TSK,
                         SourceLocation PointOfInstantiation = SourceLocation());
+
+  void setTemplateOrSpecializationInfo(VarDecl *Inst,
+                                       TemplateOrSpecializationInfo TSI);
 
   /// \brief If the given using decl \p Inst is an instantiation of a
   /// (possibly unresolved) using decl from a template instantiation,
@@ -1603,9 +1622,11 @@ public:
   /// \pre \p D must not be a bitfield type, as bitfields do not have a valid
   /// alignment.
   ///
-  /// If \p RefAsPointee, references are treated like their underlying type
-  /// (for alignof), else they're treated like pointers (for CodeGen).
-  CharUnits getDeclAlign(const Decl *D, bool RefAsPointee = false) const;
+  /// If \p ForAlignof, references are treated like their underlying type
+  /// and  large arrays don't get any special treatment. If not \p ForAlignof
+  /// it computes the value expected by CodeGen: references are treated like
+  /// pointers and large arrays get extra alignment.
+  CharUnits getDeclAlign(const Decl *D, bool ForAlignof = false) const;
 
   /// \brief Get or compute information about the layout of the specified
   /// record (struct/union/class) \p D, which indicates its size and field
@@ -1717,6 +1738,9 @@ public:
            getCanonicalType(T2).getTypePtr();
   }
 
+  bool ObjCMethodsAreEqual(const ObjCMethodDecl *MethodDecl,
+                           const ObjCMethodDecl *MethodImp);
+  
   bool UnwrapSimilarPointerTypes(QualType &T1, QualType &T2);
   
   /// \brief Retrieves the "canonical" nested name specifier for a

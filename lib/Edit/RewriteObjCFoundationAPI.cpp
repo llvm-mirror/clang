@@ -355,53 +355,6 @@ bool edit::rewriteToObjCLiteralSyntax(const ObjCMessageExpr *Msg,
   return false;
 }
 
-bool edit::rewriteToObjCProperty(const ObjCMethodDecl *Getter,
-                                 const ObjCMethodDecl *Setter,
-                                 const NSAPI &NS, Commit &commit) {
-  ASTContext &Context = NS.getASTContext();
-  std::string PropertyString = "@property";
-  const ParmVarDecl *argDecl = *Setter->param_begin();
-  QualType ArgType = Context.getCanonicalType(argDecl->getType());
-  Qualifiers::ObjCLifetime propertyLifetime = ArgType.getObjCLifetime();
-  
-  if (ArgType->isObjCRetainableType() &&
-      propertyLifetime == Qualifiers::OCL_Strong) {
-    if (const ObjCObjectPointerType *ObjPtrTy =
-          ArgType->getAs<ObjCObjectPointerType>()) {
-      ObjCInterfaceDecl *IDecl = ObjPtrTy->getObjectType()->getInterface();
-      if (IDecl &&
-          IDecl->lookupNestedProtocol(&Context.Idents.get("NSCopying")))
-        PropertyString += "(copy)";
-    }
-  }
-  else if (propertyLifetime == Qualifiers::OCL_Weak)
-    // TODO. More precise determination of 'weak' attribute requires
-    // looking into setter's implementation for backing weak ivar.
-    PropertyString += "(weak)";
-  else
-    PropertyString += "(unsafe_unretained)";
-
-  // strip off any ARC lifetime qualifier.
-  QualType CanResultTy = Context.getCanonicalType(Getter->getResultType());
-  if (CanResultTy.getQualifiers().hasObjCLifetime()) {
-    Qualifiers Qs = CanResultTy.getQualifiers();
-    Qs.removeObjCLifetime();
-    CanResultTy = Context.getQualifiedType(CanResultTy.getUnqualifiedType(), Qs);
-  }
-  PropertyString += " ";
-  PropertyString += CanResultTy.getAsString(Context.getPrintingPolicy());
-  PropertyString += " ";
-  PropertyString += Getter->getNameAsString();
-  commit.replace(CharSourceRange::getCharRange(Getter->getLocStart(),
-                                               Getter->getDeclaratorEndLoc()),
-                 PropertyString);
-  SourceLocation EndLoc = Setter->getDeclaratorEndLoc();
-  // Get location past ';'
-  EndLoc = EndLoc.getLocWithOffset(1);
-  commit.remove(CharSourceRange::getCharRange(Setter->getLocStart(), EndLoc));
-  return true;
-}
-
 /// \brief Returns true if the immediate message arguments of \c Msg should not
 /// be rewritten because it will interfere with the rewrite of the parent
 /// message expression. e.g.

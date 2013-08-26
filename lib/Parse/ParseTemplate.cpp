@@ -242,32 +242,31 @@ Parser::ParseSingleDeclarationAfterTemplate(
         // If the declarator-id is not a template-id, issue a diagnostic and
         // recover by ignoring the 'template' keyword.
         Diag(Tok, diag::err_template_defn_explicit_instantiation) << 0;
-	return ParseFunctionDefinition(DeclaratorInfo, ParsedTemplateInfo(),
-				       &LateParsedAttrs);
+        return ParseFunctionDefinition(DeclaratorInfo, ParsedTemplateInfo(),
+                                       &LateParsedAttrs);
       } else {
         SourceLocation LAngleLoc
           = PP.getLocForEndOfToken(TemplateInfo.TemplateLoc);
-        Diag(DeclaratorInfo.getIdentifierLoc(), 
+        Diag(DeclaratorInfo.getIdentifierLoc(),
              diag::err_explicit_instantiation_with_definition)
-          << SourceRange(TemplateInfo.TemplateLoc)
-          << FixItHint::CreateInsertion(LAngleLoc, "<>");
+            << SourceRange(TemplateInfo.TemplateLoc)
+            << FixItHint::CreateInsertion(LAngleLoc, "<>");
 
-        // Recover as if it were an explicit specialization. 
+        // Recover as if it were an explicit specialization.
         TemplateParameterLists FakedParamLists;
-        FakedParamLists.push_back(
-	     Actions.ActOnTemplateParameterList(0, SourceLocation(),
-					        TemplateInfo.TemplateLoc, 
-						LAngleLoc, 0, 0, LAngleLoc));
+        FakedParamLists.push_back(Actions.ActOnTemplateParameterList(
+            0, SourceLocation(), TemplateInfo.TemplateLoc, LAngleLoc, 0, 0,
+            LAngleLoc));
 
-        return ParseFunctionDefinition(DeclaratorInfo, 
-                                       ParsedTemplateInfo(&FakedParamLists,
-                                           /*isSpecialization=*/true,
-                                           /*LastParamListWasEmpty=*/true),
-                                       &LateParsedAttrs);
+        return ParseFunctionDefinition(
+            DeclaratorInfo, ParsedTemplateInfo(&FakedParamLists,
+                                               /*isSpecialization=*/true,
+                                               /*LastParamListWasEmpty=*/true),
+            &LateParsedAttrs);
       }
     }
     return ParseFunctionDefinition(DeclaratorInfo, TemplateInfo,
-				   &LateParsedAttrs);
+                                   &LateParsedAttrs);
   }
 
   // Parse this declaration.
@@ -680,6 +679,8 @@ Parser::ParseNonTypeTemplateParameter(unsigned Depth, unsigned Position) {
 /// \param RAngleLoc the location of the consumed '>'.
 ///
 /// \param ConsumeLastToken if true, the '>' is not consumed.
+///
+/// \returns true, if current token does not start with '>', false otherwise.
 bool Parser::ParseGreaterThanInTemplateList(SourceLocation &RAngleLoc,
                                             bool ConsumeLastToken) {
   // What will be left once we've consumed the '>'.
@@ -1242,30 +1243,19 @@ SourceRange Parser::ParsedTemplateInfo::getSourceRange() const {
   return R;
 }
 
-void Parser::LateTemplateParserCallback(void *P, const FunctionDecl *FD) {
-  ((Parser*)P)->LateTemplateParser(FD);
-}
-
-
-void Parser::LateTemplateParser(const FunctionDecl *FD) {
-  LateParsedTemplatedFunction *LPT = LateParsedTemplateMap[FD];
-  if (LPT) {
-    ParseLateTemplatedFuncDef(*LPT);
-    return;
-  }
-
-  llvm_unreachable("Late templated function without associated lexed tokens");
+void Parser::LateTemplateParserCallback(void *P, LateParsedTemplate &LPT) {
+  ((Parser *)P)->ParseLateTemplatedFuncDef(LPT);
 }
 
 /// \brief Late parse a C++ function template in Microsoft mode.
-void Parser::ParseLateTemplatedFuncDef(LateParsedTemplatedFunction &LMT) {
-  if(!LMT.D)
+void Parser::ParseLateTemplatedFuncDef(LateParsedTemplate &LPT) {
+  if(!LPT.D)
      return;
 
   // Get the FunctionDecl.
-  FunctionTemplateDecl *FunTmplD = dyn_cast<FunctionTemplateDecl>(LMT.D);
+  FunctionTemplateDecl *FunTmplD = dyn_cast<FunctionTemplateDecl>(LPT.D);
   FunctionDecl *FunD =
-      FunTmplD ? FunTmplD->getTemplatedDecl() : cast<FunctionDecl>(LMT.D);
+      FunTmplD ? FunTmplD->getTemplatedDecl() : cast<FunctionDecl>(LPT.D);
   // Track template parameter depth.
   TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
 
@@ -1313,15 +1303,15 @@ void Parser::ParseLateTemplatedFuncDef(LateParsedTemplatedFunction &LMT) {
     Actions.ActOnReenterDeclaratorTemplateScope(getCurScope(), Declarator);
     ++CurTemplateDepthTracker;
   }
-  Actions.ActOnReenterTemplateScope(getCurScope(), LMT.D);
+  Actions.ActOnReenterTemplateScope(getCurScope(), LPT.D);
   ++CurTemplateDepthTracker;
 
-  assert(!LMT.Toks.empty() && "Empty body!");
+  assert(!LPT.Toks.empty() && "Empty body!");
 
   // Append the current token at the end of the new token stream so that it
   // doesn't get lost.
-  LMT.Toks.push_back(Tok);
-  PP.EnterTokenStream(LMT.Toks.data(), LMT.Toks.size(), true, false);
+  LPT.Toks.push_back(Tok);
+  PP.EnterTokenStream(LPT.Toks.data(), LPT.Toks.size(), true, false);
 
   // Consume the previously pushed token.
   ConsumeAnyToken(/*ConsumeCodeCompletionTok=*/true);
@@ -1338,22 +1328,22 @@ void Parser::ParseLateTemplatedFuncDef(LateParsedTemplatedFunction &LMT) {
   Actions.ActOnStartOfFunctionDef(getCurScope(), FunD);
 
   if (Tok.is(tok::kw_try)) {
-    ParseFunctionTryBlock(LMT.D, FnScope);
+    ParseFunctionTryBlock(LPT.D, FnScope);
   } else {
     if (Tok.is(tok::colon))
-      ParseConstructorInitializer(LMT.D);
+      ParseConstructorInitializer(LPT.D);
     else
-      Actions.ActOnDefaultCtorInitializers(LMT.D);
+      Actions.ActOnDefaultCtorInitializers(LPT.D);
 
     if (Tok.is(tok::l_brace)) {
       assert((!FunTmplD || FunTmplD->getTemplateParameters()->getDepth() <
                                TemplateParameterDepth) &&
              "TemplateParameterDepth should be greater than the depth of "
              "current template being instantiated!");
-      ParseFunctionStatementBody(LMT.D, FnScope);
-      Actions.MarkAsLateParsedTemplate(FunD, false);
+      ParseFunctionStatementBody(LPT.D, FnScope);
+      Actions.UnmarkAsLateParsedTemplate(FunD);
     } else
-      Actions.ActOnFinishFunctionBody(LMT.D, 0);
+      Actions.ActOnFinishFunctionBody(LPT.D, 0);
   }
 
   // Exit scopes.
@@ -1363,7 +1353,7 @@ void Parser::ParseLateTemplatedFuncDef(LateParsedTemplatedFunction &LMT) {
   for (; I != TemplateParamScopeStack.rend(); ++I)
     delete *I;
 
-  DeclGroupPtrTy grp = Actions.ConvertDeclToDeclGroup(LMT.D);
+  DeclGroupPtrTy grp = Actions.ConvertDeclToDeclGroup(LPT.D);
   if (grp)
     Actions.getASTConsumer().HandleTopLevelDecl(grp.get());
 }

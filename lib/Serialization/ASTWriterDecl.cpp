@@ -68,6 +68,9 @@ namespace clang {
                                             ClassTemplateSpecializationDecl *D);
     void VisitClassTemplatePartialSpecializationDecl(
                                      ClassTemplatePartialSpecializationDecl *D);
+    void VisitVarTemplateSpecializationDecl(VarTemplateSpecializationDecl *D);
+    void VisitVarTemplatePartialSpecializationDecl(
+        VarTemplatePartialSpecializationDecl *D);
     void VisitClassScopeFunctionSpecializationDecl(
                                        ClassScopeFunctionSpecializationDecl *D);
     void VisitTemplateTypeParmDecl(TemplateTypeParmDecl *D);
@@ -90,6 +93,7 @@ namespace clang {
     void VisitTemplateDecl(TemplateDecl *D);
     void VisitRedeclarableTemplateDecl(RedeclarableTemplateDecl *D);
     void VisitClassTemplateDecl(ClassTemplateDecl *D);
+    void VisitVarTemplateDecl(VarTemplateDecl *D);
     void VisitFunctionTemplateDecl(FunctionTemplateDecl *D);
     void VisitTemplateTemplateParmDecl(TemplateTemplateParmDecl *D);
     void VisitTypeAliasTemplateDecl(TypeAliasTemplateDecl *D);
@@ -338,6 +342,7 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
   Record.push_back(D->hasImplicitReturnZero());
   Record.push_back(D->isConstexpr());
   Record.push_back(D->HasSkippedBody);
+  Record.push_back(D->isLateTemplateParsed());
   Record.push_back(D->getLinkageInternal());
   Writer.AddSourceLocation(D->getLocEnd(), Record);
 
@@ -698,6 +703,7 @@ void ASTDeclWriter::VisitVarDecl(VarDecl *D) {
   Record.push_back(D->isCXXForRangeDecl());
   Record.push_back(D->isARCPseudoStrong());
   Record.push_back(D->isConstexpr());
+  Record.push_back(D->isPreviousDeclInSameBlockScope());
   Record.push_back(D->getLinkageInternal());
 
   if (D->getInit()) {
@@ -706,14 +712,21 @@ void ASTDeclWriter::VisitVarDecl(VarDecl *D) {
   } else {
     Record.push_back(0);
   }
-
-  MemberSpecializationInfo *SpecInfo
-    = D->isStaticDataMember() ? D->getMemberSpecializationInfo() : 0;
-  Record.push_back(SpecInfo != 0);
-  if (SpecInfo) {
+  
+  enum {
+    VarNotTemplate = 0, VarTemplate, StaticDataMemberSpecialization
+  };
+  if (VarTemplateDecl *TemplD = D->getDescribedVarTemplate()) {
+    Record.push_back(VarTemplate);
+    Writer.AddDeclRef(TemplD, Record);
+  } else if (MemberSpecializationInfo *SpecInfo
+               = D->getMemberSpecializationInfo()) {
+    Record.push_back(StaticDataMemberSpecialization);
     Writer.AddDeclRef(SpecInfo->getInstantiatedFrom(), Record);
     Record.push_back(SpecInfo->getTemplateSpecializationKind());
     Writer.AddSourceLocation(SpecInfo->getPointOfInstantiation(), Record);
+  } else {
+    Record.push_back(VarNotTemplate);
   }
 
   if (!D->hasAttrs() &&
@@ -730,8 +743,10 @@ void ASTDeclWriter::VisitVarDecl(VarDecl *D) {
       D->getInitStyle() == VarDecl::CInit &&
       D->getInit() == 0 &&
       !isa<ParmVarDecl>(D) &&
+      !isa<VarTemplateSpecializationDecl>(D) &&
       !D->isConstexpr() &&
-      !SpecInfo)
+      !D->isPreviousDeclInSameBlockScope() &&
+      !D->getMemberSpecializationInfo())
     AbbrevToUse = Writer.getDeclVarAbbrev();
 
   Code = serialization::DECL_VAR;
@@ -909,11 +924,11 @@ void ASTDeclWriter::VisitNamespaceAliasDecl(NamespaceAliasDecl *D) {
 
 void ASTDeclWriter::VisitUsingDecl(UsingDecl *D) {
   VisitNamedDecl(D);
-  Writer.AddSourceLocation(D->getUsingLocation(), Record);
+  Writer.AddSourceLocation(D->getUsingLoc(), Record);
   Writer.AddNestedNameSpecifierLoc(D->getQualifierLoc(), Record);
   Writer.AddDeclarationNameLoc(D->DNLoc, D->getDeclName(), Record);
   Writer.AddDeclRef(D->FirstUsingShadow.getPointer(), Record);
-  Record.push_back(D->isTypeName());
+  Record.push_back(D->hasTypename());
   Writer.AddDeclRef(Context.getInstantiatedFromUsingDecl(D), Record);
   Code = serialization::DECL_USING;
 }
@@ -1001,7 +1016,6 @@ void ASTDeclWriter::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
   VisitCXXMethodDecl(D);
 
   Record.push_back(D->IsExplicitSpecified);
-  Record.push_back(D->ImplicitlyDefined);
   Writer.AddCXXCtorInitializers(D->CtorInitializers, D->NumCtorInitializers,
                                 Record);
 
@@ -1011,7 +1025,6 @@ void ASTDeclWriter::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
 void ASTDeclWriter::VisitCXXDestructorDecl(CXXDestructorDecl *D) {
   VisitCXXMethodDecl(D);
 
-  Record.push_back(D->ImplicitlyDefined);
   Writer.AddDeclRef(D->OperatorDelete, Record);
 
   Code = serialization::DECL_CXX_DESTRUCTOR;
@@ -1170,10 +1183,7 @@ void ASTDeclWriter::VisitClassTemplatePartialSpecializationDecl(
   VisitClassTemplateSpecializationDecl(D);
 
   Writer.AddTemplateParameterList(D->getTemplateParameters(), Record);
-
-  Record.push_back(D->getNumTemplateArgsAsWritten());
-  for (int i = 0, e = D->getNumTemplateArgsAsWritten(); i != e; ++i)
-    Writer.AddTemplateArgumentLoc(D->getTemplateArgsAsWritten()[i], Record);
+  Writer.AddASTTemplateArgumentListInfo(D->getTemplateArgsAsWritten(), Record);
 
   // These are read/set from/to the first declaration.
   if (D->getPreviousDecl() == 0) {
@@ -1182,6 +1192,82 @@ void ASTDeclWriter::VisitClassTemplatePartialSpecializationDecl(
   }
 
   Code = serialization::DECL_CLASS_TEMPLATE_PARTIAL_SPECIALIZATION;
+}
+
+void ASTDeclWriter::VisitVarTemplateDecl(VarTemplateDecl *D) {
+  VisitRedeclarableTemplateDecl(D);
+
+  if (D->isFirstDeclaration()) {
+    typedef llvm::FoldingSetVector<VarTemplateSpecializationDecl> VTSDSetTy;
+    VTSDSetTy &VTSDSet = D->getSpecializations();
+    Record.push_back(VTSDSet.size());
+    for (VTSDSetTy::iterator I = VTSDSet.begin(), E = VTSDSet.end(); I != E;
+         ++I) {
+      assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
+      Writer.AddDeclRef(&*I, Record);
+    }
+
+    typedef llvm::FoldingSetVector<VarTemplatePartialSpecializationDecl>
+    VTPSDSetTy;
+    VTPSDSetTy &VTPSDSet = D->getPartialSpecializations();
+    Record.push_back(VTPSDSet.size());
+    for (VTPSDSetTy::iterator I = VTPSDSet.begin(), E = VTPSDSet.end(); I != E;
+         ++I) {
+      assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
+      Writer.AddDeclRef(&*I, Record);
+    }
+  }
+  Code = serialization::DECL_VAR_TEMPLATE;
+}
+
+void ASTDeclWriter::VisitVarTemplateSpecializationDecl(
+    VarTemplateSpecializationDecl *D) {
+  VisitVarDecl(D);
+
+  llvm::PointerUnion<VarTemplateDecl *, VarTemplatePartialSpecializationDecl *>
+  InstFrom = D->getSpecializedTemplateOrPartial();
+  if (Decl *InstFromD = InstFrom.dyn_cast<VarTemplateDecl *>()) {
+    Writer.AddDeclRef(InstFromD, Record);
+  } else {
+    Writer.AddDeclRef(InstFrom.get<VarTemplatePartialSpecializationDecl *>(),
+                      Record);
+    Writer.AddTemplateArgumentList(&D->getTemplateInstantiationArgs(), Record);
+  }
+
+  // Explicit info.
+  Writer.AddTypeSourceInfo(D->getTypeAsWritten(), Record);
+  if (D->getTypeAsWritten()) {
+    Writer.AddSourceLocation(D->getExternLoc(), Record);
+    Writer.AddSourceLocation(D->getTemplateKeywordLoc(), Record);
+  }
+
+  Writer.AddTemplateArgumentList(&D->getTemplateArgs(), Record);
+  Writer.AddSourceLocation(D->getPointOfInstantiation(), Record);
+  Record.push_back(D->getSpecializationKind());
+  Record.push_back(D->isCanonicalDecl());
+
+  if (D->isCanonicalDecl()) {
+    // When reading, we'll add it to the folding set of the following template.
+    Writer.AddDeclRef(D->getSpecializedTemplate()->getCanonicalDecl(), Record);
+  }
+
+  Code = serialization::DECL_VAR_TEMPLATE_SPECIALIZATION;
+}
+
+void ASTDeclWriter::VisitVarTemplatePartialSpecializationDecl(
+    VarTemplatePartialSpecializationDecl *D) {
+  VisitVarTemplateSpecializationDecl(D);
+
+  Writer.AddTemplateParameterList(D->getTemplateParameters(), Record);
+  Writer.AddASTTemplateArgumentListInfo(D->getTemplateArgsAsWritten(), Record);
+
+  // These are read/set from/to the first declaration.
+  if (D->getPreviousDecl() == 0) {
+    Writer.AddDeclRef(D->getInstantiatedFromMember(), Record);
+    Record.push_back(D->isMemberSpecialization());
+  }
+
+  Code = serialization::DECL_VAR_TEMPLATE_PARTIAL_SPECIALIZATION;
 }
 
 void ASTDeclWriter::VisitClassScopeFunctionSpecializationDecl(
@@ -1545,6 +1631,7 @@ void ASTWriter::WriteDeclsBlockAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(0));                       // isCXXForRangeDecl
   Abv->Add(BitCodeAbbrevOp(0));                       // isARCPseudoStrong
   Abv->Add(BitCodeAbbrevOp(0));                       // isConstexpr
+  Abv->Add(BitCodeAbbrevOp(0));                       // isPrevDeclInSameScope
   Abv->Add(BitCodeAbbrevOp(0));                       // Linkage
   Abv->Add(BitCodeAbbrevOp(0));                       // HasInit
   Abv->Add(BitCodeAbbrevOp(0));                   // HasMemberSpecializationInfo
@@ -1624,6 +1711,7 @@ void ASTWriter::WriteDeclsBlockAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // isCXXForRangeDecl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // isARCPseudoStrong
   Abv->Add(BitCodeAbbrevOp(0));                         // isConstexpr
+  Abv->Add(BitCodeAbbrevOp(0));                         // isPrevDeclInSameScope
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3)); // Linkage
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // HasInit
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // HasMemberSpecInfo

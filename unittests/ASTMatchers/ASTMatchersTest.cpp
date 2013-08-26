@@ -311,6 +311,12 @@ TEST(DeclarationMatcher, ClassIsDerived) {
   EXPECT_TRUE(matches(
       "class X {}; class Y : public X {};",
       recordDecl(isDerivedFrom(recordDecl(hasName("X")).bind("test")))));
+
+  EXPECT_TRUE(matches(
+      "template<typename T> class X {};"
+      "template<typename T> using Z = X<T>;"
+      "template <typename T> class Y : Z<T> {};",
+      recordDecl(isDerivedFrom(namedDecl(hasName("X"))))));
 }
 
 TEST(DeclarationMatcher, hasMethod) {
@@ -1853,6 +1859,17 @@ TEST(Matcher, IntegerLiterals) {
   EXPECT_TRUE(notMatches("int i = 10.0;", HasIntLiteral));
 }
 
+TEST(Matcher, FloatLiterals) {
+  StatementMatcher HasFloatLiteral = floatLiteral();
+  EXPECT_TRUE(matches("float i = 10.0;", HasFloatLiteral));
+  EXPECT_TRUE(matches("float i = 10.0f;", HasFloatLiteral));
+  EXPECT_TRUE(matches("double i = 10.0;", HasFloatLiteral));
+  EXPECT_TRUE(matches("double i = 10.0L;", HasFloatLiteral));
+  EXPECT_TRUE(matches("double i = 1e10;", HasFloatLiteral));
+
+  EXPECT_TRUE(notMatches("float i = 10;", HasFloatLiteral));
+}
+
 TEST(Matcher, NullPtrLiteral) {
   EXPECT_TRUE(matches("int* i = nullptr;", nullPtrLiteralExpr()));
 }
@@ -2967,6 +2984,12 @@ TEST(SwitchCase, MatchesEachCase) {
       new VerifyIdIsBoundTo<CaseStmt>("x", 3)));
 }
 
+TEST(ForEachConstructorInitializer, MatchesInitializers) {
+  EXPECT_TRUE(matches(
+      "struct X { X() : i(42), j(42) {} int i, j; };",
+      constructorDecl(forEachConstructorInitializer(ctorInitializer()))));
+}
+
 TEST(ExceptionHandling, SimpleCases) {
   EXPECT_TRUE(matches("void foo() try { } catch(int X) { }", catchStmt()));
   EXPECT_TRUE(matches("void foo() try { } catch(int X) { }", tryStmt()));
@@ -3156,6 +3179,11 @@ TEST(LoopingMatchers, DoNotOverwritePreviousMatchResultOnFailure) {
   EXPECT_TRUE(matchAndVerifyResultTrue(
       "class A {};",
       recordDecl(hasName("::A"), decl().bind("x"), unless(hasName("fooble"))),
+      new VerifyIdIsBoundTo<Decl>("x", 1)));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "class A { A() : s(), i(42) {} const char *s; int i; };",
+      constructorDecl(hasName("::A::A"), decl().bind("x"),
+                      forEachConstructorInitializer(forField(hasName("i")))),
       new VerifyIdIsBoundTo<Decl>("x", 1)));
 }
 

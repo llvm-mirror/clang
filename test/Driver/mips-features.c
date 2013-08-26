@@ -48,6 +48,18 @@
 // RUN:   | FileCheck --check-prefix=CHECK-NOMDSPR2 %s
 // CHECK-NOMDSPR2: "-target-feature" "-dspr2"
 //
+// -mmsa
+// RUN: %clang -target mips-linux-gnu -### -c %s \
+// RUN:     -mno-msa -mmsa 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-MMSA %s
+// CHECK-MMSA: "-target-feature" "+msa"
+//
+// -mno-msa
+// RUN: %clang -target mips-linux-gnu -### -c %s \
+// RUN:     -mmsa -mno-msa 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-NOMMSA %s
+// CHECK-NOMMSA: "-target-feature" "-msa"
+//
 // -mxgot
 // RUN: %clang -target mips-linux-gnu -### -c %s \
 // RUN:     -mno-xgot -mxgot 2>&1 \
@@ -71,6 +83,18 @@
 // RUN:     -mldc1-sdc1 -mno-ldc1-sdc1 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-NOLDC1SDC1 %s
 // CHECK-NOLDC1SDC1: "-mllvm" "-mno-ldc1-sdc1"
+//
+// -mcheck-zero-division
+// RUN: %clang -target mips-linux-gnu -### -c %s \
+// RUN:     -mno-check-zero-division -mcheck-zero-division 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-ZERODIV %s
+// CHECK-ZERODIV-NOT: "-mllvm" "-mno-check-zero-division"
+//
+// -mno-check-zero-division
+// RUN: %clang -target mips-linux-gnu -### -c %s \
+// RUN:     -mcheck-zero-division -mno-check-zero-division 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-NOZERODIV %s
+// CHECK-NOZERODIV: "-mllvm" "-mno-check-zero-division"
 //
 // -G
 // RUN: %clang -target mips-linux-gnu -### -c %s \

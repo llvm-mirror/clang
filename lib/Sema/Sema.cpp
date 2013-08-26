@@ -173,6 +173,10 @@ void Sema::Initialize() {
 }
 
 Sema::~Sema() {
+  for (LateParsedTemplateMapT::iterator I = LateParsedTemplateMap.begin(),
+                                        E = LateParsedTemplateMap.end();
+       I != E; ++I)
+    delete I->second;
   if (PackContext) FreePackedContext();
   if (VisContext) FreeVisContext();
   delete TheTargetAttributesSema;
@@ -283,9 +287,6 @@ ExprResult Sema::ImpCastExprToType(Expr *E, QualType Ty,
 
   if (ExprTy == TypeTy)
     return Owned(E);
-
-  if (getLangOpts().ObjCAutoRefCount)
-    CheckObjCARCConversion(SourceRange(), Ty, E, CCK);
 
   // If this is a derived-to-base cast to a through a virtual base, we
   // need a vtable.
@@ -551,9 +552,9 @@ void Sema::ActOnEndOfTranslationUnit() {
   if (PP.isCodeCompletionEnabled())
     return;
 
-  // Only complete translation units define vtables and perform implicit
-  // instantiations.
-  if (TUKind == TU_Complete) {
+  // Complete translation units and modules define vtables and perform implicit
+  // instantiations. PCH files do not.
+  if (TUKind != TU_Prefix) {
     DiagnoseUseOfUnimplementedSelectors();
 
     // If any dynamic classes have their key function defined within
@@ -582,10 +583,9 @@ void Sema::ActOnEndOfTranslationUnit() {
     // carefully keep track of the point of instantiation (C++ [temp.point]).
     // This means that name lookup that occurs within the template
     // instantiation will always happen at the end of the translation unit,
-    // so it will find some names that should not be found. Although this is
-    // common behavior for C++ compilers, it is technically wrong. In the
-    // future, we either need to be able to filter the results of name lookup
-    // or we need to perform template instantiations earlier.
+    // so it will find some names that are not required to be found. This is
+    // valid, but we could do better by diagnosing if an instantiation uses a
+    // name that was not visible at its first point of instantiation.
     PerformPendingInstantiations();
   }
 

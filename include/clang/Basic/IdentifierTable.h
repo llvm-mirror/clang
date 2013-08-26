@@ -578,6 +578,18 @@ enum { ObjCMethodFamilyBitWidth = 4 };
 /// \brief An invalid value of ObjCMethodFamily.
 enum { InvalidObjCMethodFamily = (1 << ObjCMethodFamilyBitWidth) - 1 };
 
+/// \brief A family of Objective-C methods.
+///
+/// These are family of methods whose result type is initially 'id', but
+/// but are candidate for the result type to be changed to 'instancetype'.
+enum ObjCInstanceTypeFamily {
+  OIT_None,
+  OIT_Array,
+  OIT_Dictionary,
+  OIT_MemManage,
+  OIT_Singleton
+};
+
 /// \brief Smart pointer class that efficiently represents Objective-C method
 /// names.
 ///
@@ -698,6 +710,8 @@ public:
   static Selector getTombstoneMarker() {
     return Selector(uintptr_t(-2));
   }
+  
+  static ObjCInstanceTypeFamily getInstTypeMethodFamily(Selector sel);
 };
 
 /// \brief This table allows us to fully hide how we implement

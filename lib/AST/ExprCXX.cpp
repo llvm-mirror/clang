@@ -72,6 +72,21 @@ UuidAttr *CXXUuidofExpr::GetUuidAttrOfType(QualType QT) {
   return 0;
 }
 
+StringRef CXXUuidofExpr::getUuidAsStringRef(ASTContext &Context) const {
+  StringRef Uuid;
+  if (isTypeOperand())
+    Uuid = CXXUuidofExpr::GetUuidAttrOfType(getTypeOperand())->getGuid();
+  else {
+    // Special case: __uuidof(0) means an all-zero GUID.
+    Expr *Op = getExprOperand();
+    if (!Op->isNullPointerConstant(Context, Expr::NPC_ValueDependentIsNull))
+      Uuid = CXXUuidofExpr::GetUuidAttrOfType(Op->getType())->getGuid();
+    else
+      Uuid = "00000000-0000-0000-0000-000000000000";
+  }
+  return Uuid;
+}
+
 // CXXScalarValueInitExpr
 SourceLocation CXXScalarValueInitExpr::getLocStart() const {
   return TypeInfo ? TypeInfo->getTypeLoc().getBeginLoc() : RParenLoc;
@@ -854,10 +869,11 @@ LambdaCaptureKind LambdaExpr::Capture::getCaptureKind() const {
   return (DeclAndBits.getInt() & Capture_ByCopy) ? LCK_ByCopy : LCK_ByRef;
 }
 
-LambdaExpr::LambdaExpr(QualType T, 
+LambdaExpr::LambdaExpr(QualType T,
                        SourceRange IntroducerRange,
                        LambdaCaptureDefault CaptureDefault,
-                       ArrayRef<Capture> Captures, 
+                       SourceLocation CaptureDefaultLoc,
+                       ArrayRef<Capture> Captures,
                        bool ExplicitParams,
                        bool ExplicitResultType,
                        ArrayRef<Expr *> CaptureInits,
@@ -869,6 +885,7 @@ LambdaExpr::LambdaExpr(QualType T,
          T->isDependentType(), T->isDependentType(), T->isDependentType(),
          ContainsUnexpandedParameterPack),
     IntroducerRange(IntroducerRange),
+    CaptureDefaultLoc(CaptureDefaultLoc),
     NumCaptures(Captures.size()),
     CaptureDefault(CaptureDefault),
     ExplicitParams(ExplicitParams),
@@ -914,11 +931,12 @@ LambdaExpr::LambdaExpr(QualType T,
   }
 }
 
-LambdaExpr *LambdaExpr::Create(ASTContext &Context, 
+LambdaExpr *LambdaExpr::Create(ASTContext &Context,
                                CXXRecordDecl *Class,
                                SourceRange IntroducerRange,
                                LambdaCaptureDefault CaptureDefault,
-                               ArrayRef<Capture> Captures, 
+                               SourceLocation CaptureDefaultLoc,
+                               ArrayRef<Capture> Captures,
                                bool ExplicitParams,
                                bool ExplicitResultType,
                                ArrayRef<Expr *> CaptureInits,
@@ -938,8 +956,9 @@ LambdaExpr *LambdaExpr::Create(ASTContext &Context,
     Size += sizeof(VarDecl *) * ArrayIndexVars.size();
   }
   void *Mem = Context.Allocate(Size);
-  return new (Mem) LambdaExpr(T, IntroducerRange, CaptureDefault, 
-                              Captures, ExplicitParams, ExplicitResultType,
+  return new (Mem) LambdaExpr(T, IntroducerRange,
+                              CaptureDefault, CaptureDefaultLoc, Captures,
+                              ExplicitParams, ExplicitResultType,
                               CaptureInits, ArrayIndexVars, ArrayIndexStarts,
                               ClosingBrace, ContainsUnexpandedParameterPack);
 }

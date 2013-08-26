@@ -424,7 +424,8 @@ private:
                          StringRef isysroot, const std::string &OutputFile);
   void WriteInputFiles(SourceManager &SourceMgr,
                        HeaderSearchOptions &HSOpts,
-                       StringRef isysroot);
+                       StringRef isysroot,
+                       bool Modules);
   void WriteSourceManagerBlock(SourceManager &SourceMgr,
                                const Preprocessor &PP,
                                StringRef isysroot);
@@ -456,7 +457,8 @@ private:
   void WriteObjCCategories();
   void WriteRedeclarations();
   void WriteMergedDecls();
-                        
+  void WriteLateParsedTemplates(Sema &SemaRef);
+
   unsigned DeclParmVarAbbrev;
   unsigned DeclContextLexicalAbbrev;
   unsigned DeclContextVisibleLookupAbbrev;
@@ -574,6 +576,11 @@ public:
   /// \brief Emits a template argument location.
   void AddTemplateArgumentLoc(const TemplateArgumentLoc &Arg,
                               RecordDataImpl &Record);
+
+  /// \brief Emits an AST template argument list info.
+  void AddASTTemplateArgumentListInfo(
+                          const ASTTemplateArgumentListInfo *ASTTemplArgList,
+                          RecordDataImpl &Record);
 
   /// \brief Emit a reference to a declaration.
   void AddDeclRef(const Decl *D, RecordDataImpl &Record);
@@ -723,6 +730,9 @@ public:
   virtual void AddedCXXImplicitMember(const CXXRecordDecl *RD, const Decl *D);
   virtual void AddedCXXTemplateSpecialization(const ClassTemplateDecl *TD,
                                     const ClassTemplateSpecializationDecl *D);
+  virtual void
+  AddedCXXTemplateSpecialization(const VarTemplateDecl *TD,
+                                 const VarTemplateSpecializationDecl *D);
   virtual void AddedCXXTemplateSpecialization(const FunctionTemplateDecl *TD,
                                               const FunctionDecl *D);
   virtual void DeducedReturnType(const FunctionDecl *FD, QualType ReturnType);

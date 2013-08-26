@@ -206,6 +206,14 @@ static void addThreadSanitizerPass(const PassManagerBuilder &Builder,
   PM.add(createThreadSanitizerPass(CGOpts.SanitizerBlacklistFile));
 }
 
+static void addDataFlowSanitizerPass(const PassManagerBuilder &Builder,
+                                     PassManagerBase &PM) {
+  const PassManagerBuilderWrapper &BuilderWrapper =
+      static_cast<const PassManagerBuilderWrapper&>(Builder);
+  const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
+  PM.add(createDataFlowSanitizerPass(CGOpts.SanitizerBlacklistFile));
+}
+
 void EmitAssemblyHelper::CreatePasses(TargetMachine *TM) {
   unsigned OptLevel = CodeGenOpts.OptimizationLevel;
   CodeGenOptions::InliningMethod Inlining = CodeGenOpts.getInlining();
@@ -263,6 +271,13 @@ void EmitAssemblyHelper::CreatePasses(TargetMachine *TM) {
                            addThreadSanitizerPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addThreadSanitizerPass);
+  }
+
+  if (LangOpts.Sanitize.DataFlow) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
+                           addDataFlowSanitizerPass);
+    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                           addDataFlowSanitizerPass);
   }
 
   // Figure out TargetLibraryInfo.
@@ -412,13 +427,10 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   // Set frame pointer elimination mode.
   if (!CodeGenOpts.DisableFPElim) {
     Options.NoFramePointerElim = false;
-    Options.NoFramePointerElimNonLeaf = false;
   } else if (CodeGenOpts.OmitLeafFramePointer) {
     Options.NoFramePointerElim = false;
-    Options.NoFramePointerElimNonLeaf = true;
   } else {
     Options.NoFramePointerElim = true;
-    Options.NoFramePointerElimNonLeaf = true;
   }
 
   if (CodeGenOpts.UseInitArray)
@@ -454,7 +466,6 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   Options.UnsafeFPMath = CodeGenOpts.UnsafeFPMath;
   Options.UseSoftFloat = CodeGenOpts.SoftFloat;
   Options.StackAlignmentOverride = CodeGenOpts.StackAlignment;
-  Options.RealignStack = CodeGenOpts.StackRealignment;
   Options.DisableTailCalls = CodeGenOpts.DisableTailCalls;
   Options.TrapFuncName = CodeGenOpts.TrapFuncName;
   Options.PositionIndependentExecutable = LangOpts.PIELevel != 0;

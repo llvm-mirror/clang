@@ -326,7 +326,7 @@ public:
   // The following Visit*() and Traverse*() functions "override"
   // methods in RecursiveASTVisitor.
 
-  bool VisitTypedefDecl(TypedefDecl *DeclNode) {
+  bool VisitTypedefNameDecl(TypedefNameDecl *DeclNode) {
     // When we see 'typedef A B', we add name 'B' to the set of names
     // A's canonical type maps to.  This is necessary for implementing
     // isDerivedFrom(x) properly, where x can be the name of the base
@@ -373,27 +373,30 @@ public:
                                   const DynTypedMatcher &Matcher,
                                   BoundNodesTreeBuilder *Builder, int MaxDepth,
                                   TraversalKind Traversal, BindKind Bind) {
+    // For AST-nodes that don't have an identity, we can't memoize.
+    if (!Node.getMemoizationData())
+      return matchesRecursively(Node, Matcher, Builder, MaxDepth, Traversal,
+                                Bind);
+
     MatchKey Key;
     Key.MatcherID = Matcher.getID();
     Key.Node = Node;
     // Note that we key on the bindings *before* the match.
     Key.BoundNodes = *Builder;
 
-    // For AST-nodes that don't have an identity, we can't memoize.
-    if (!Node.getMemoizationData())
-      return matchesRecursively(Node, Matcher, Builder, MaxDepth, Traversal,
-                                Bind);
-
-    std::pair<MemoizationMap::iterator, bool> InsertResult =
-        ResultCache.insert(std::make_pair(Key, MemoizedMatchResult()));
-    if (InsertResult.second) {
-      InsertResult.first->second.Nodes = *Builder;
-      InsertResult.first->second.ResultOfMatch =
-          matchesRecursively(Node, Matcher, &InsertResult.first->second.Nodes,
-                             MaxDepth, Traversal, Bind);
+    MemoizationMap::iterator I = ResultCache.find(Key);
+    if (I != ResultCache.end()) {
+      *Builder = I->second.Nodes;
+      return I->second.ResultOfMatch;
     }
-    *Builder = InsertResult.first->second.Nodes;
-    return InsertResult.first->second.ResultOfMatch;
+
+    MemoizedMatchResult Result;
+    Result.Nodes = *Builder;
+    Result.ResultOfMatch = matchesRecursively(Node, Matcher, &Result.Nodes,
+                                              MaxDepth, Traversal, Bind);
+    ResultCache[Key] = Result;
+    *Builder = Result.Nodes;
+    return Result.ResultOfMatch;
   }
 
   // Matches children or descendants of 'Node' with 'BaseMatcher'.
@@ -416,8 +419,10 @@ public:
                               BoundNodesTreeBuilder *Builder,
                               TraversalKind Traversal,
                               BindKind Bind) {
-    return matchesRecursively(Node, Matcher, Builder, 1, Traversal,
-                              Bind);
+    if (ResultCache.size() > MaxMemoizationEntries)
+      ResultCache.clear();
+    return memoizedMatchesRecursively(Node, Matcher, Builder, 1, Traversal,
+                                      Bind);
   }
   // Implements ASTMatchFinder::matchesDescendantOf.
   virtual bool matchesDescendantOf(const ast_type_traits::DynTypedNode &Node,
@@ -502,57 +507,62 @@ private:
     Key.MatcherID = Matcher.getID();
     Key.Node = Node;
     Key.BoundNodes = *Builder;
-    std::pair<MemoizationMap::iterator, bool> InsertResult =
-        ResultCache.insert(std::make_pair(Key, MemoizedMatchResult()));
-    if (InsertResult.second) {
-      bool Matches = false;
-      if (Parents.size() == 1) {
-        // Only one parent - do recursive memoization.
-        const ast_type_traits::DynTypedNode Parent = Parents[0];
-        BoundNodesTreeBuilder Result(*Builder);
-        if (Matcher.matches(Parent, this, &Result)) {
-          InsertResult.first->second.Nodes = Result;
-          Matches = true;
-        } else if (MatchMode != ASTMatchFinder::AMM_ParentOnly) {
-          Matches = memoizedMatchesAncestorOfRecursively(Parent, Matcher,
-                                                         Builder, MatchMode);
-          // Once we get back from the recursive call, the result will be the
-          // same as the parent's result.
-          InsertResult.first->second.Nodes = *Builder;
-        }
-      } else {
-        // Multiple parents - BFS over the rest of the nodes.
-        llvm::DenseSet<const void *> Visited;
-        std::deque<ast_type_traits::DynTypedNode> Queue(Parents.begin(),
-                                                        Parents.end());
-        while (!Queue.empty()) {
-          BoundNodesTreeBuilder Result(*Builder);
-          if (Matcher.matches(Queue.front(), this, &Result)) {
-            InsertResult.first->second.Nodes = Result;
-            Matches = true;
-            break;
-          }
-          if (MatchMode != ASTMatchFinder::AMM_ParentOnly) {
-            ASTContext::ParentVector Ancestors =
-                ActiveASTContext->getParents(Queue.front());
-            for (ASTContext::ParentVector::const_iterator I = Ancestors.begin(),
-                                                          E = Ancestors.end();
-                 I != E; ++I) {
-              // Make sure we do not visit the same node twice.
-              // Otherwise, we'll visit the common ancestors as often as there
-              // are splits on the way down.
-              if (Visited.insert(I->getMemoizationData()).second)
-                Queue.push_back(*I);
-            }
-          }
-          Queue.pop_front();
-        }
-      }
 
-      InsertResult.first->second.ResultOfMatch = Matches;
+    // Note that we cannot use insert and reuse the iterator, as recursive
+    // calls to match might invalidate the result cache iterators.
+    MemoizationMap::iterator I = ResultCache.find(Key);
+    if (I != ResultCache.end()) {
+      *Builder = I->second.Nodes;
+      return I->second.ResultOfMatch;
     }
-    *Builder = InsertResult.first->second.Nodes;
-    return InsertResult.first->second.ResultOfMatch;
+    MemoizedMatchResult Result;
+    Result.ResultOfMatch = false;
+    Result.Nodes = *Builder;
+    if (Parents.size() == 1) {
+      // Only one parent - do recursive memoization.
+      const ast_type_traits::DynTypedNode Parent = Parents[0];
+      if (Matcher.matches(Parent, this, &Result.Nodes)) {
+        Result.ResultOfMatch = true;
+      } else if (MatchMode != ASTMatchFinder::AMM_ParentOnly) {
+        // Reset the results to not include the bound nodes from the failed
+        // match above.
+        Result.Nodes = *Builder;
+        Result.ResultOfMatch = memoizedMatchesAncestorOfRecursively(
+            Parent, Matcher, &Result.Nodes, MatchMode);
+        // Once we get back from the recursive call, the result will be the
+        // same as the parent's result.
+      }
+    } else {
+      // Multiple parents - BFS over the rest of the nodes.
+      llvm::DenseSet<const void *> Visited;
+      std::deque<ast_type_traits::DynTypedNode> Queue(Parents.begin(),
+                                                      Parents.end());
+      while (!Queue.empty()) {
+        Result.Nodes = *Builder;
+        if (Matcher.matches(Queue.front(), this, &Result.Nodes)) {
+          Result.ResultOfMatch = true;
+          break;
+        }
+        if (MatchMode != ASTMatchFinder::AMM_ParentOnly) {
+          ASTContext::ParentVector Ancestors =
+              ActiveASTContext->getParents(Queue.front());
+          for (ASTContext::ParentVector::const_iterator I = Ancestors.begin(),
+                                                        E = Ancestors.end();
+               I != E; ++I) {
+            // Make sure we do not visit the same node twice.
+            // Otherwise, we'll visit the common ancestors as often as there
+            // are splits on the way down.
+            if (Visited.insert(I->getMemoizationData()).second)
+              Queue.push_back(*I);
+          }
+        }
+        Queue.pop_front();
+      }
+    }
+    ResultCache[Key] = Result;
+
+    *Builder = Result.Nodes;
+    return Result.ResultOfMatch;
   }
 
   // Implements a BoundNodesTree::Visitor that calls a MatchCallback with
@@ -579,8 +589,9 @@ private:
                             BoundNodesTreeBuilder *Builder) {
     const Type *const CanonicalType =
       ActiveASTContext->getCanonicalType(TypeNode);
-    const std::set<const TypedefDecl*> &Aliases = TypeAliases[CanonicalType];
-    for (std::set<const TypedefDecl*>::const_iterator
+    const std::set<const TypedefNameDecl *> &Aliases =
+        TypeAliases[CanonicalType];
+    for (std::set<const TypedefNameDecl*>::const_iterator
            It = Aliases.begin(), End = Aliases.end();
          It != End; ++It) {
       BoundNodesTreeBuilder Result(*Builder);
@@ -597,12 +608,54 @@ private:
   ASTContext *ActiveASTContext;
 
   // Maps a canonical type to its TypedefDecls.
-  llvm::DenseMap<const Type*, std::set<const TypedefDecl*> > TypeAliases;
+  llvm::DenseMap<const Type*, std::set<const TypedefNameDecl*> > TypeAliases;
 
   // Maps (matcher, node) -> the match result for memoization.
   typedef std::map<MatchKey, MemoizedMatchResult> MemoizationMap;
   MemoizationMap ResultCache;
 };
+
+static CXXRecordDecl *getAsCXXRecordDecl(const Type *TypeNode) {
+  // Type::getAs<...>() drills through typedefs.
+  if (TypeNode->getAs<DependentNameType>() != NULL ||
+      TypeNode->getAs<DependentTemplateSpecializationType>() != NULL ||
+      TypeNode->getAs<TemplateTypeParmType>() != NULL)
+    // Dependent names and template TypeNode parameters will be matched when
+    // the template is instantiated.
+    return NULL;
+  TemplateSpecializationType const *TemplateType =
+      TypeNode->getAs<TemplateSpecializationType>();
+  if (TemplateType == NULL) {
+    return TypeNode->getAsCXXRecordDecl();
+  }
+  if (TemplateType->getTemplateName().isDependent())
+    // Dependent template specializations will be matched when the
+    // template is instantiated.
+    return NULL;
+
+  // For template specialization types which are specializing a template
+  // declaration which is an explicit or partial specialization of another
+  // template declaration, getAsCXXRecordDecl() returns the corresponding
+  // ClassTemplateSpecializationDecl.
+  //
+  // For template specialization types which are specializing a template
+  // declaration which is neither an explicit nor partial specialization of
+  // another template declaration, getAsCXXRecordDecl() returns NULL and
+  // we get the CXXRecordDecl of the templated declaration.
+  CXXRecordDecl *SpecializationDecl = TemplateType->getAsCXXRecordDecl();
+  if (SpecializationDecl != NULL) {
+    return SpecializationDecl;
+  }
+  NamedDecl *Templated =
+      TemplateType->getTemplateName().getAsTemplateDecl()->getTemplatedDecl();
+  if (CXXRecordDecl *TemplatedRecord = dyn_cast<CXXRecordDecl>(Templated)) {
+    return TemplatedRecord;
+  }
+  // Now it can still be that we have an alias template.
+  TypeAliasDecl *AliasDecl = dyn_cast<TypeAliasDecl>(Templated);
+  assert(AliasDecl);
+  return getAsCXXRecordDecl(AliasDecl->getUnderlyingType().getTypePtr());
+}
 
 // Returns true if the given class is directly or indirectly derived
 // from a base type with the given name.  A class is not considered to be
@@ -614,54 +667,19 @@ bool MatchASTVisitor::classIsDerivedFrom(const CXXRecordDecl *Declaration,
     return false;
   typedef CXXRecordDecl::base_class_const_iterator BaseIterator;
   for (BaseIterator It = Declaration->bases_begin(),
-                    End = Declaration->bases_end(); It != End; ++It) {
+                    End = Declaration->bases_end();
+       It != End; ++It) {
     const Type *TypeNode = It->getType().getTypePtr();
 
     if (typeHasMatchingAlias(TypeNode, Base, Builder))
       return true;
 
-    // Type::getAs<...>() drills through typedefs.
-    if (TypeNode->getAs<DependentNameType>() != NULL ||
-        TypeNode->getAs<DependentTemplateSpecializationType>() != NULL ||
-        TypeNode->getAs<TemplateTypeParmType>() != NULL)
-      // Dependent names and template TypeNode parameters will be matched when
-      // the template is instantiated.
+    CXXRecordDecl *ClassDecl = getAsCXXRecordDecl(TypeNode);
+    if (ClassDecl == NULL)
       continue;
-    CXXRecordDecl *ClassDecl = NULL;
-    TemplateSpecializationType const *TemplateType =
-      TypeNode->getAs<TemplateSpecializationType>();
-    if (TemplateType != NULL) {
-      if (TemplateType->getTemplateName().isDependent())
-        // Dependent template specializations will be matched when the
-        // template is instantiated.
-        continue;
-
-      // For template specialization types which are specializing a template
-      // declaration which is an explicit or partial specialization of another
-      // template declaration, getAsCXXRecordDecl() returns the corresponding
-      // ClassTemplateSpecializationDecl.
-      //
-      // For template specialization types which are specializing a template
-      // declaration which is neither an explicit nor partial specialization of
-      // another template declaration, getAsCXXRecordDecl() returns NULL and
-      // we get the CXXRecordDecl of the templated declaration.
-      CXXRecordDecl *SpecializationDecl =
-        TemplateType->getAsCXXRecordDecl();
-      if (SpecializationDecl != NULL) {
-        ClassDecl = SpecializationDecl;
-      } else {
-        ClassDecl = dyn_cast<CXXRecordDecl>(
-            TemplateType->getTemplateName()
-                .getAsTemplateDecl()->getTemplatedDecl());
-      }
-    } else {
-      ClassDecl = TypeNode->getAsCXXRecordDecl();
-    }
-    assert(ClassDecl != NULL);
     if (ClassDecl == Declaration) {
       // This can happen for recursive template definitions; if the
       // current declaration did not match, we can safely return false.
-      assert(TemplateType);
       return false;
     }
     BoundNodesTreeBuilder Result(*Builder);

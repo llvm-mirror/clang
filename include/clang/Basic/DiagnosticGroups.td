@@ -58,11 +58,13 @@ def AbstractFinalClass : DiagGroup<"abstract-final-class">;
 
 def DeprecatedDeclarations : DiagGroup<"deprecated-declarations">;
 def DeprecatedImplementations :DiagGroup<"deprecated-implementations">;
+def DeprecatedIncrementBool : DiagGroup<"deprecated-increment-bool">;
 def DeprecatedRegister : DiagGroup<"deprecated-register">;
 def DeprecatedWritableStr : DiagGroup<"deprecated-writable-strings">;
 // FIXME: Why are DeprecatedImplementations and DeprecatedWritableStr
 // not in this group?
 def Deprecated : DiagGroup<"deprecated", [DeprecatedDeclarations,
+                                          DeprecatedIncrementBool,
                                           DeprecatedRegister]>,
                  DiagCategory<"Deprecations">;
 
@@ -163,6 +165,7 @@ def : DiagGroup<"invalid-pch">;
 def LiteralRange : DiagGroup<"literal-range">;
 def LocalTypeTemplateArgs : DiagGroup<"local-type-template-args",
                                       [CXX98CompatLocalTypeTemplateArgs]>;
+def LoopAnalysis : DiagGroup<"loop-analysis">;
 def MalformedWarningCheck : DiagGroup<"malformed-warning-check">;
 def Main : DiagGroup<"main">;
 def MainReturnType : DiagGroup<"main-return-type">;
@@ -475,6 +478,10 @@ def ThreadSafety : DiagGroup<"thread-safety",
                               ThreadSafetyPrecise]>;
 def ThreadSafetyBeta : DiagGroup<"thread-safety-beta">;
 
+// Uniqueness Analysis warnings
+def Consumed       : DiagGroup<"consumed">;
+def ConsumedStrict : DiagGroup<"consumed-strict", [Consumed]>;
+
 // Note that putting warnings in -Wall will not disable them by default. If a
 // warning should be active _only_ when -Wall is passed in, mark it as
 // DefaultIgnore in addition to putting it here.
@@ -485,7 +492,7 @@ def Pedantic : DiagGroup<"pedantic">;
 
 // Aliases.
 def : DiagGroup<"", [Extra]>;                   // -W = -Wextra
-def : DiagGroup<"endif-labels", [ExtraTokens]>; // -Wendif-labels=-Wendif-tokens
+def : DiagGroup<"endif-labels", [ExtraTokens]>; // -Wendif-labels=-Wextra-tokens
 def : DiagGroup<"comments", [Comment]>;         // -Wcomments = -Wcomment
 def : DiagGroup<"conversion-null",
                 [NullConversion]>; // -Wconversion-null = -Wnull-conversion
@@ -545,6 +552,7 @@ def ObjCCocoaAPI : DiagGroup<"objc-cocoa-api", [
   ]>;
 
 def ObjCStringComparison : DiagGroup<"objc-string-compare">;
+def ObjCStringConcatenation : DiagGroup<"objc-string-concatenation">;
 def ObjCLiteralComparison : DiagGroup<"objc-literal-compare", [
     ObjCStringComparison
   ]>;

@@ -1103,7 +1103,7 @@ bool ASTReader::ReadBlockAbbrevs(BitstreamCursor &Cursor, unsigned BlockID) {
   }
 }
 
-Token ASTReader::ReadToken(ModuleFile &F, const RecordData &Record,
+Token ASTReader::ReadToken(ModuleFile &F, const RecordDataImpl &Record,
                            unsigned &Idx) {
   Token Tok;
   Tok.startToken();
@@ -2749,6 +2749,11 @@ bool ASTReader::ReadASTBlock(ModuleFile &F) {
 
     case MACRO_TABLE: {
       // FIXME: Not used yet.
+      break;
+    }
+
+    case LATE_PARSED_TEMPLATE: {
+      LateParsedTemplates.append(Record.begin(), Record.end());
       break;
     }
     }
@@ -5354,6 +5359,19 @@ ASTReader::ReadTemplateArgumentLoc(ModuleFile &F,
                                                              Record, Index));
 }
 
+const ASTTemplateArgumentListInfo*
+ASTReader::ReadASTTemplateArgumentListInfo(ModuleFile &F,
+                                           const RecordData &Record,
+                                           unsigned &Index) {
+  SourceLocation LAngleLoc = ReadSourceLocation(F, Record, Index);
+  SourceLocation RAngleLoc = ReadSourceLocation(F, Record, Index);
+  unsigned NumArgsAsWritten = Record[Index++];
+  TemplateArgumentListInfo TemplArgsInfo(LAngleLoc, RAngleLoc);
+  for (unsigned i = 0; i != NumArgsAsWritten; ++i)
+    TemplArgsInfo.addArgument(ReadTemplateArgumentLoc(F, Record, Index));
+  return ASTTemplateArgumentListInfo::Create(getContext(), TemplArgsInfo);
+}
+
 Decl *ASTReader::GetExternalDecl(uint32_t ID) {
   return GetDecl(ID);
 }
@@ -6475,6 +6493,29 @@ void ASTReader::ReadPendingInstantiations(
   PendingInstantiations.clear();
 }
 
+void ASTReader::ReadLateParsedTemplates(
+    llvm::DenseMap<const FunctionDecl *, LateParsedTemplate *> &LPTMap) {
+  for (unsigned Idx = 0, N = LateParsedTemplates.size(); Idx < N;
+       /* In loop */) {
+    FunctionDecl *FD = cast<FunctionDecl>(GetDecl(LateParsedTemplates[Idx++]));
+
+    LateParsedTemplate *LT = new LateParsedTemplate;
+    LT->D = GetDecl(LateParsedTemplates[Idx++]);
+
+    ModuleFile *F = getOwningModuleFile(LT->D);
+    assert(F && "No module");
+
+    unsigned TokN = LateParsedTemplates[Idx++];
+    LT->Toks.reserve(TokN);
+    for (unsigned T = 0; T < TokN; ++T)
+      LT->Toks.push_back(ReadToken(*F, LateParsedTemplates, Idx));
+
+    LPTMap[FD] = LT;
+  }
+
+  LateParsedTemplates.clear();
+}
+
 void ASTReader::LoadSelector(Selector Sel) {
   // It would be complicated to avoid reading the methods anyway. So don't.
   ReadMethodPool(Sel);
@@ -7498,7 +7539,7 @@ ASTReader::ASTReader(Preprocessor &PP, ASTContext &Context,
     NumVisibleDeclContextsRead(0), TotalVisibleDeclContexts(0),
     TotalModulesSizeInBits(0), NumCurrentElementsDeserializing(0),
     PassingDeclsToConsumer(false),
-    NumCXXBaseSpecifiersLoaded(0)
+    NumCXXBaseSpecifiersLoaded(0), ReadingKind(Read_None)
 {
   SourceMgr.setExternalSLocEntrySource(this);
 }

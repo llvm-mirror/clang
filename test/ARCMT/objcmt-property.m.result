@@ -3,6 +3,7 @@
 // RUN: c-arcmt-test -mt-migrate-directory %t | arcmt-test -verify-transformed-files %s.result
 // RUN: %clang_cc1 -triple x86_64-apple-darwin10 -fsyntax-only -x objective-c -fobjc-runtime-has-weak -fobjc-arc -fobjc-default-synthesize-properties %s.result
 
+typedef char BOOL;
 @class NSString;
 @protocol NSCopying @end
 
@@ -18,7 +19,7 @@
 
 @property(weak) NSString * WeakProp;
 
-@property NSString * StrongProp;
+@property(retain) NSString * StrongProp;
 
 
 - (NSString *) UnavailProp  __attribute__((unavailable));
@@ -50,8 +51,40 @@
 
 
 
-@property NSArray * names2;
-@property NSArray * names3;
-@property NSArray * names4;
-@property NSArray * names1;
+@property(retain) NSArray * names2;
+@property(retain) NSArray * names3;
+@property(retain) NSArray * names4;
+@property(retain) NSArray * names1;
+@end
+
+// Properties that contain the name "delegate" or "dataSource",
+// or have exact name "target" have unsafe_unretained attribute.
+@interface NSInvocation 
+@property(unsafe_unretained) id target;
+
+
+@property(unsafe_unretained) id dataSource;
+
+@property(unsafe_unretained) id xxxdelegateYYY;
+
+
+
+
+@property(retain) id MYtarget;
+
+
+@property(retain) id targetX;
+
+ 
+@property int value;
+
+
+@property(getter=isContinuous) BOOL continuous;
+
+
+- (id) isAnObject;
+- (void)setAnObject : (id) object;
+
+- (BOOL) isinValid;
+- (void) setInValid : (BOOL) arg;
 @end

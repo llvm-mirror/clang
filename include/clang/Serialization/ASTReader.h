@@ -240,6 +240,7 @@ class ASTReader
 {
 public:
   typedef SmallVector<uint64_t, 64> RecordData;
+  typedef SmallVectorImpl<uint64_t> RecordDataImpl;
 
   /// \brief The result of reading the control block of an AST file, which
   /// can fail for various reasons.
@@ -710,6 +711,9 @@ private:
   /// SourceLocation of a matching ODR-use.
   SmallVector<uint64_t, 8> UndefinedButUsed;
 
+  // \brief A list of late parsed template function data.
+  SmallVector<uint64_t, 1> LateParsedTemplates;
+
   /// \brief A list of modules that were imported by precompiled headers or
   /// any other non-module AST file.
   SmallVector<serialization::SubmoduleID, 2> ImportedModules;
@@ -907,16 +911,13 @@ private:
   /// the given canonical declaration.
   MergedDeclsMap::iterator
   combineStoredMergedDecls(Decl *Canon, serialization::GlobalDeclID CanonID);
-  
-  /// \brief Ready to load the previous declaration of the given Decl.
-  void loadAndAttachPreviousDecl(Decl *D, serialization::DeclID ID);
 
   /// \brief When reading a Stmt tree, Stmt operands are placed in this stack.
   SmallVector<Stmt *, 16> StmtStack;
 
   /// \brief What kind of records we are reading.
   enum ReadingKind {
-    Read_Decl, Read_Type, Read_Stmt
+    Read_None, Read_Decl, Read_Type, Read_Stmt
   };
 
   /// \brief What kind of records we are reading.
@@ -1384,6 +1385,10 @@ public:
   ReadTemplateArgumentLoc(ModuleFile &F,
                           const RecordData &Record, unsigned &Idx);
 
+  const ASTTemplateArgumentListInfo*
+  ReadASTTemplateArgumentListInfo(ModuleFile &F,
+                                  const RecordData &Record, unsigned &Index);
+
   /// \brief Reads a declarator info from the given record.
   TypeSourceInfo *GetTypeSourceInfo(ModuleFile &F,
                                     const RecordData &Record, unsigned &Idx);
@@ -1610,6 +1615,9 @@ public:
                  SmallVectorImpl<std::pair<ValueDecl *,
                                            SourceLocation> > &Pending);
 
+  virtual void ReadLateParsedTemplates(
+      llvm::DenseMap<const FunctionDecl *, LateParsedTemplate *> &LPTMap);
+
   /// \brief Load a selector from disk, registering its ID if it exists.
   void LoadSelector(Selector Sel);
 
@@ -1760,7 +1768,8 @@ public:
 
   /// \brief Read a source location.
   SourceLocation ReadSourceLocation(ModuleFile &ModuleFile,
-                                    const RecordData &Record, unsigned &Idx) {
+                                    const RecordDataImpl &Record,
+                                    unsigned &Idx) {
     return ReadSourceLocation(ModuleFile, Record[Idx++]);
   }
 
@@ -1811,7 +1820,7 @@ public:
   Expr *ReadSubExpr();
 
   /// \brief Reads a token out of a record.
-  Token ReadToken(ModuleFile &M, const RecordData &Record, unsigned &Idx);
+  Token ReadToken(ModuleFile &M, const RecordDataImpl &Record, unsigned &Idx);
 
   /// \brief Reads the macro record located at the given offset.
   MacroInfo *ReadMacroRecord(ModuleFile &F, uint64_t Offset);

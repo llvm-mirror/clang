@@ -260,7 +260,7 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
   else
     FInfo = &CGM.getTypes().arrangeCXXMethodDeclaration(CalleeDecl);
 
-  llvm::Type *Ty = CGM.getTypes().GetFunctionType(*FInfo);
+  llvm::FunctionType *Ty = CGM.getTypes().GetFunctionType(*FInfo);
 
   // C++ [class.virtual]p12:
   //   Explicit qualification with the scope operator (5.1) suppresses the
@@ -284,7 +284,7 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
           ME->hasQualifier())
         Callee = BuildAppleKextVirtualCall(MD, ME->getQualifier(), Ty);
       else if (!DevirtualizedMethod)
-        Callee = CGM.GetAddrOfFunction(GlobalDecl(Dtor, Dtor_Complete), Ty);
+        Callee = CGM.GetAddrOfCXXDestructor(Dtor, Dtor_Complete, FInfo, Ty);
       else {
         const CXXDestructorDecl *DDtor =
           cast<CXXDestructorDecl>(DevirtualizedMethod);
@@ -1002,6 +1002,41 @@ static void EmitNewInitializer(CodeGenFunction &CGF, const CXXNewExpr *E,
   StoreAnyExprIntoOneUnit(CGF, Init, E->getAllocatedType(), NewPtr);
 }
 
+/// Emit a call to an operator new or operator delete function, as implicitly
+/// created by new-expressions and delete-expressions.
+static RValue EmitNewDeleteCall(CodeGenFunction &CGF,
+                                const FunctionDecl *Callee,
+                                const FunctionProtoType *CalleeType,
+                                const CallArgList &Args) {
+  llvm::Instruction *CallOrInvoke;
+  llvm::Value *CalleeAddr = CGF.CGM.GetAddrOfFunction(Callee);
+  RValue RV =
+      CGF.EmitCall(CGF.CGM.getTypes().arrangeFreeFunctionCall(Args, CalleeType),
+                   CalleeAddr, ReturnValueSlot(), Args,
+                   Callee, &CallOrInvoke);
+
+  /// C++1y [expr.new]p10:
+  ///   [In a new-expression,] an implementation is allowed to omit a call
+  ///   to a replaceable global allocation function.
+  ///
+  /// We model such elidable calls with the 'builtin' attribute.
+  llvm::Function *Fn = dyn_cast<llvm::Function>(CalleeAddr);
+  if (Callee->isReplaceableGlobalAllocationFunction() &&
+      Fn && Fn->hasFnAttribute(llvm::Attribute::NoBuiltin)) {
+    // FIXME: Add addAttribute to CallSite.
+    if (llvm::CallInst *CI = dyn_cast<llvm::CallInst>(CallOrInvoke))
+      CI->addAttribute(llvm::AttributeSet::FunctionIndex,
+                       llvm::Attribute::Builtin);
+    else if (llvm::InvokeInst *II = dyn_cast<llvm::InvokeInst>(CallOrInvoke))
+      II->addAttribute(llvm::AttributeSet::FunctionIndex,
+                       llvm::Attribute::Builtin);
+    else
+      llvm_unreachable("unexpected kind of call instruction");
+  }
+
+  return RV;
+}
+
 namespace {
   /// A cleanup to call the given 'operator delete' function upon
   /// abnormal exit from a new expression.
@@ -1051,9 +1086,7 @@ namespace {
         DeleteArgs.add(getPlacementArgs()[I], *AI++);
 
       // Call 'operator delete'.
-      CGF.EmitCall(CGF.CGM.getTypes().arrangeFreeFunctionCall(DeleteArgs, FPT),
-                   CGF.CGM.GetAddrOfFunction(OperatorDelete),
-                   ReturnValueSlot(), DeleteArgs, OperatorDelete);
+      EmitNewDeleteCall(CGF, OperatorDelete, FPT, DeleteArgs);
     }
   };
 
@@ -1112,9 +1145,7 @@ namespace {
       }
 
       // Call 'operator delete'.
-      CGF.EmitCall(CGF.CGM.getTypes().arrangeFreeFunctionCall(DeleteArgs, FPT),
-                   CGF.CGM.GetAddrOfFunction(OperatorDelete),
-                   ReturnValueSlot(), DeleteArgs, OperatorDelete);
+      EmitNewDeleteCall(CGF, OperatorDelete, FPT, DeleteArgs);
     }
   };
 }
@@ -1227,10 +1258,7 @@ llvm::Value *CodeGenFunction::EmitCXXNewExpr(const CXXNewExpr *E) {
     // TODO: kill any unnecessary computations done for the size
     // argument.
   } else {
-    RV = EmitCall(CGM.getTypes().arrangeFreeFunctionCall(allocatorArgs,
-                                                         allocatorType),
-                  CGM.GetAddrOfFunction(allocator), ReturnValueSlot(),
-                  allocatorArgs, allocator);
+    RV = EmitNewDeleteCall(*this, allocator, allocatorType, allocatorArgs);
   }
 
   // Emit a null check on the allocation result if the allocation
@@ -1350,9 +1378,7 @@ void CodeGenFunction::EmitDeleteCall(const FunctionDecl *DeleteFD,
     DeleteArgs.add(RValue::get(Size), SizeTy);
 
   // Emit the call to delete.
-  EmitCall(CGM.getTypes().arrangeFreeFunctionCall(DeleteArgs, DeleteFTy),
-           CGM.GetAddrOfFunction(DeleteFD), ReturnValueSlot(), 
-           DeleteArgs, DeleteFD);
+  EmitNewDeleteCall(*this, DeleteFD, DeleteFTy, DeleteArgs);
 }
 
 namespace {
@@ -1508,9 +1534,7 @@ namespace {
       }
 
       // Emit the call to delete.
-      CGF.EmitCall(CGF.getTypes().arrangeFreeFunctionCall(Args, DeleteFTy),
-                   CGF.CGM.GetAddrOfFunction(OperatorDelete),
-                   ReturnValueSlot(), Args, OperatorDelete);
+      EmitNewDeleteCall(CGF, OperatorDelete, DeleteFTy, Args);
     }
   };
 }
