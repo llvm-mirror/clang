@@ -229,7 +229,7 @@ static void diagnoseUseOfInternalDeclInInlineFunction(Sema &S,
   // This last can give us false negatives, but it's better than warning on
   // wrappers for simple C library functions.
   const FunctionDecl *UsedFn = dyn_cast<FunctionDecl>(D);
-  bool DowngradeWarning = S.getSourceManager().isFromMainFile(Loc);
+  bool DowngradeWarning = S.getSourceManager().isInMainFile(Loc);
   if (!DowngradeWarning && UsedFn)
     DowngradeWarning = UsedFn->isInlined() || UsedFn->hasAttr<ConstAttr>();
 
@@ -1775,12 +1775,14 @@ bool Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
   if (S && (Corrected = CorrectTypo(R.getLookupNameInfo(), R.getLookupKind(),
                                     S, &SS, CCC))) {
     std::string CorrectedStr(Corrected.getAsString(getLangOpts()));
-    std::string CorrectedQuotedStr(Corrected.getQuoted(getLangOpts()));
-    bool droppedSpecifier =
+    bool DroppedSpecifier =
         Corrected.WillReplaceSpecifier() && Name.getAsString() == CorrectedStr;
     R.setLookupName(Corrected.getCorrection());
 
-    if (NamedDecl *ND = Corrected.getCorrectionDecl()) {
+    bool AcceptableWithRecovery = false;
+    bool AcceptableWithoutRecovery = false;
+    NamedDecl *ND = Corrected.getCorrectionDecl();
+    if (ND) {
       if (Corrected.isOverloaded()) {
         OverloadCandidateSet OCS(R.getNameLoc());
         OverloadCandidateSet::iterator Best;
@@ -1798,63 +1800,49 @@ bool Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
                                    Args, OCS);
         }
         switch (OCS.BestViableFunction(*this, R.getNameLoc(), Best)) {
-          case OR_Success:
-            ND = Best->Function;
-            break;
-          default:
-            break;
+        case OR_Success:
+          ND = Best->Function;
+          Corrected.setCorrectionDecl(ND);
+          break;
+        default:
+          // FIXME: Arbitrarily pick the first declaration for the note.
+          Corrected.setCorrectionDecl(ND);
+          break;
         }
       }
       R.addDecl(ND);
-      if (isa<ValueDecl>(ND) || isa<FunctionTemplateDecl>(ND)) {
-        if (SS.isEmpty())
-          Diag(R.getNameLoc(), diagnostic_suggest) << Name << CorrectedQuotedStr
-            << FixItHint::CreateReplacement(R.getNameLoc(), CorrectedStr);
-        else
-          Diag(R.getNameLoc(), diag::err_no_member_suggest)
-            << Name << computeDeclContext(SS, false) << droppedSpecifier
-            << CorrectedQuotedStr << SS.getRange()
-            << FixItHint::CreateReplacement(Corrected.getCorrectionRange(),
-                                            CorrectedStr);
 
-        unsigned diag = isa<ImplicitParamDecl>(ND)
-          ? diag::note_implicit_param_decl
-          : diag::note_previous_decl;
-
-        Diag(ND->getLocation(), diag)
-          << CorrectedQuotedStr;
-
-        // Tell the callee to try to recover.
-        return false;
-      }
-
-      if (isa<TypeDecl>(ND) || isa<ObjCInterfaceDecl>(ND)) {
-        // FIXME: If we ended up with a typo for a type name or
-        // Objective-C class name, we're in trouble because the parser
-        // is in the wrong place to recover. Suggest the typo
-        // correction, but don't make it a fix-it since we're not going
-        // to recover well anyway.
-        if (SS.isEmpty())
-          Diag(R.getNameLoc(), diagnostic_suggest)
-            << Name << CorrectedQuotedStr;
-        else
-          Diag(R.getNameLoc(), diag::err_no_member_suggest)
-            << Name << computeDeclContext(SS, false) << droppedSpecifier
-            << CorrectedQuotedStr << SS.getRange();
-
-        // Don't try to recover; it won't work.
-        return true;
-      }
+      AcceptableWithRecovery =
+          isa<ValueDecl>(ND) || isa<FunctionTemplateDecl>(ND);
+      // FIXME: If we ended up with a typo for a type name or
+      // Objective-C class name, we're in trouble because the parser
+      // is in the wrong place to recover. Suggest the typo
+      // correction, but don't make it a fix-it since we're not going
+      // to recover well anyway.
+      AcceptableWithoutRecovery =
+          isa<TypeDecl>(ND) || isa<ObjCInterfaceDecl>(ND);
     } else {
       // FIXME: We found a keyword. Suggest it, but don't provide a fix-it
       // because we aren't able to recover.
+      AcceptableWithoutRecovery = true;
+    }
+
+    if (AcceptableWithRecovery || AcceptableWithoutRecovery) {
+      unsigned NoteID = (Corrected.getCorrectionDecl() &&
+                         isa<ImplicitParamDecl>(Corrected.getCorrectionDecl()))
+                            ? diag::note_implicit_param_decl
+                            : diag::note_previous_decl;
       if (SS.isEmpty())
-        Diag(R.getNameLoc(), diagnostic_suggest) << Name << CorrectedQuotedStr;
+        diagnoseTypo(Corrected, PDiag(diagnostic_suggest) << Name,
+                     PDiag(NoteID), AcceptableWithRecovery);
       else
-        Diag(R.getNameLoc(), diag::err_no_member_suggest)
-          << Name << computeDeclContext(SS, false) << droppedSpecifier
-          << CorrectedQuotedStr << SS.getRange();
-      return true;
+        diagnoseTypo(Corrected, PDiag(diag::err_no_member_suggest)
+                                  << Name << computeDeclContext(SS, false)
+                                  << DroppedSpecifier << SS.getRange(),
+                     PDiag(NoteID), AcceptableWithRecovery);
+
+      // Tell the callee whether to try to recover.
+      return !AcceptableWithRecovery;
     }
   }
   R.clear();
@@ -2771,14 +2759,14 @@ ExprResult Sema::ActOnPredefinedExpr(SourceLocation Loc, tok::TokenKind Kind) {
   // Pre-defined identifiers are of type char[x], where x is the length of the
   // string.
 
-  Decl *currentDecl = getCurFunctionOrMethodDecl();
-  // Blocks and lambdas can occur at global scope. Don't emit a warning.
-  if (!currentDecl) {
-    if (const BlockScopeInfo *BSI = getCurBlock())
-      currentDecl = BSI->TheDecl;
-    else if (const LambdaScopeInfo *LSI = getCurLambda())
-      currentDecl = LSI->CallOperator;
-  }
+  // Pick the current block, lambda or function.
+  Decl *currentDecl;
+  if (const BlockScopeInfo *BSI = getCurBlock())
+    currentDecl = BSI->TheDecl;
+  else if (const LambdaScopeInfo *LSI = getCurLambda())
+    currentDecl = LSI->CallOperator;
+  else
+    currentDecl = getCurFunctionOrMethodDecl();
 
   if (!currentDecl) {
     Diag(Loc, diag::ext_predef_outside_function);
@@ -3988,19 +3976,13 @@ Sema::ConvertArgumentsForCall(CallExpr *Call, Expr *Fn,
                         *this, DeclarationNameInfo(FDecl->getDeclName(),
                                                    Fn->getLocStart()),
                         Args))) {
-        std::string CorrectedStr(TC.getAsString(getLangOpts()));
-        std::string CorrectedQuotedStr(TC.getQuoted(getLangOpts()));
         unsigned diag_id =
             MinArgs == NumArgsInProto && !Proto->isVariadic()
                 ? diag::err_typecheck_call_too_few_args_suggest
                 : diag::err_typecheck_call_too_few_args_at_least_suggest;
-        Diag(RParenLoc, diag_id)
-            << FnKind << MinArgs << static_cast<unsigned>(Args.size())
-            << Fn->getSourceRange() << CorrectedQuotedStr
-            << FixItHint::CreateReplacement(TC.getCorrectionRange(),
-                                            CorrectedStr);
-        Diag(TC.getCorrectionDecl()->getLocStart(),
-             diag::note_previous_decl) << CorrectedQuotedStr;
+        diagnoseTypo(TC, PDiag(diag_id) << FnKind << MinArgs
+                                        << static_cast<unsigned>(Args.size())
+                                        << Fn->getSourceRange());
       } else if (MinArgs == 1 && FDecl && FDecl->getParamDecl(0)->getDeclName())
         Diag(RParenLoc, MinArgs == NumArgsInProto && !Proto->isVariadic()
                           ? diag::err_typecheck_call_too_few_args_one
@@ -4034,20 +4016,15 @@ Sema::ConvertArgumentsForCall(CallExpr *Call, Expr *Fn,
                         *this, DeclarationNameInfo(FDecl->getDeclName(),
                                                    Fn->getLocStart()),
                         Args))) {
-        std::string CorrectedStr(TC.getAsString(getLangOpts()));
-        std::string CorrectedQuotedStr(TC.getQuoted(getLangOpts()));
         unsigned diag_id =
             MinArgs == NumArgsInProto && !Proto->isVariadic()
                 ? diag::err_typecheck_call_too_many_args_suggest
                 : diag::err_typecheck_call_too_many_args_at_most_suggest;
-        Diag(Args[NumArgsInProto]->getLocStart(), diag_id)
-            << FnKind << NumArgsInProto << static_cast<unsigned>(Args.size())
-            << Fn->getSourceRange() << CorrectedQuotedStr
-            << FixItHint::CreateReplacement(TC.getCorrectionRange(),
-                                            CorrectedStr);
-        Diag(TC.getCorrectionDecl()->getLocStart(),
-             diag::note_previous_decl) << CorrectedQuotedStr;
-      } else if (NumArgsInProto == 1 && FDecl && FDecl->getParamDecl(0)->getDeclName())
+        diagnoseTypo(TC, PDiag(diag_id) << FnKind << NumArgsInProto
+                                        << static_cast<unsigned>(Args.size())
+                                        << Fn->getSourceRange());
+      } else if (NumArgsInProto == 1 && FDecl &&
+                 FDecl->getParamDecl(0)->getDeclName())
         Diag(Args[NumArgsInProto]->getLocStart(),
              MinArgs == NumArgsInProto
                ? diag::err_typecheck_call_too_many_args_one
@@ -9138,14 +9115,16 @@ EmitDiagnosticForLogicalAndInLogicalOr(Sema &Self, SourceLocation OpLoc,
 /// 'true'.
 static bool EvaluatesAsTrue(Sema &S, Expr *E) {
   bool Res;
-  return E->EvaluateAsBooleanCondition(Res, S.getASTContext()) && Res;
+  return !E->isValueDependent() &&
+         E->EvaluateAsBooleanCondition(Res, S.getASTContext()) && Res;
 }
 
 /// \brief Returns true if the given expression can be evaluated as a constant
 /// 'false'.
 static bool EvaluatesAsFalse(Sema &S, Expr *E) {
   bool Res;
-  return E->EvaluateAsBooleanCondition(Res, S.getASTContext()) && !Res;
+  return !E->isValueDependent() &&
+         E->EvaluateAsBooleanCondition(Res, S.getASTContext()) && !Res;
 }
 
 /// \brief Look for '&&' in the left hand of a '||' expr.
@@ -9418,9 +9397,6 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
       break;
     if (resultType->isArithmeticType() || // C99 6.5.3.3p1
         resultType->isVectorType()) 
-      break;
-    else if (getLangOpts().CPlusPlus && // C++ [expr.unary.op]p6-7
-             resultType->isEnumeralType())
       break;
     else if (getLangOpts().CPlusPlus && // C++ [expr.unary.op]p6
              Opc == UO_Plus &&

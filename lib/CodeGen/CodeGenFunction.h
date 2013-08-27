@@ -1180,7 +1180,6 @@ public:
   void InitializeVTablePointer(BaseSubobject Base,
                                const CXXRecordDecl *NearestVBase,
                                CharUnits OffsetFromNearestVBase,
-                               llvm::Constant *VTable,
                                const CXXRecordDecl *VTableClass);
 
   typedef llvm::SmallPtrSet<const CXXRecordDecl *, 4> VisitedVirtualBasesSetTy;
@@ -1188,7 +1187,6 @@ public:
                                 const CXXRecordDecl *NearestVBase,
                                 CharUnits OffsetFromNearestVBase,
                                 bool BaseIsNonVirtualPrimaryBase,
-                                llvm::Constant *VTable,
                                 const CXXRecordDecl *VTableClass,
                                 VisitedVirtualBasesSetTy& VBases);
 
@@ -1197,6 +1195,12 @@ public:
   /// GetVTablePtr - Return the Value of the vtable pointer member pointed
   /// to by This.
   llvm::Value *GetVTablePtr(llvm::Value *This, llvm::Type *Ty);
+
+
+  /// CanDevirtualizeMemberFunctionCalls - Checks whether virtual calls on given
+  /// expr can be devirtualized.
+  bool CanDevirtualizeMemberFunctionCall(const Expr *Base,
+                                         const CXXMethodDecl *MD);
 
   /// EnterDtorCleanups - Enter the cleanups necessary to complete the
   /// given phase of destruction for a destructor.  The end result
@@ -1327,8 +1331,7 @@ public:
 
   /// ErrorUnsupported - Print out an error that codegen doesn't support the
   /// specified stmt yet.
-  void ErrorUnsupported(const Stmt *S, const char *Type,
-                        bool OmitOnError=false);
+  void ErrorUnsupported(const Stmt *S, const char *Type);
 
   //===--------------------------------------------------------------------===//
   //                                  Helpers
@@ -2103,8 +2106,6 @@ public:
   void EmitNoreturnRuntimeCallOrInvoke(llvm::Value *callee,
                                        ArrayRef<llvm::Value*> args);
 
-  llvm::Value *BuildVirtualCall(GlobalDecl GD, llvm::Value *This,
-                                llvm::Type *Ty);
   llvm::Value *BuildAppleKextVirtualCall(const CXXMethodDecl *MD, 
                                          NestedNameSpecifier *Qual,
                                          llvm::Type *Ty);

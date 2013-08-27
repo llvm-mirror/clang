@@ -114,14 +114,6 @@ public:
   /// \brief Returns a human readable string representation.
   std::string toString() const;
 
-  /// \brief Comparator to be able to use Replacement in std::set for uniquing.
-  class Less {
-  public:
-    bool operator()(const Replacement &R1, const Replacement &R2) const;
-  };
-
-  bool operator==(const Replacement &Other) const;
-
  private:
   void setFromSourceLocation(SourceManager &Sources, SourceLocation Start,
                              unsigned Length, StringRef ReplacementText);
@@ -133,9 +125,15 @@ public:
   std::string ReplacementText;
 };
 
+/// \brief Less-than operator between two Replacements.
+bool operator<(const Replacement &LHS, const Replacement &RHS);
+
+/// \brief Equal-to operator between two Replacements.
+bool operator==(const Replacement &LHS, const Replacement &RHS);
+
 /// \brief A set of Replacements.
 /// FIXME: Change to a vector and deduplicate in the RefactoringTool.
-typedef std::set<Replacement, Replacement::Less> Replacements;
+typedef std::set<Replacement> Replacements;
 
 /// \brief Apply all replacements in \p Replaces to the Rewriter \p Rewrite.
 ///
@@ -171,6 +169,19 @@ unsigned shiftedCodePosition(const Replacements& Replaces, unsigned Position);
 /// by offset into \p Replaces and number of elements in the conflict.
 void deduplicate(std::vector<Replacement> &Replaces,
                  std::vector<Range> &Conflicts);
+
+/// \brief Collection of Replacements generated from a single translation unit.
+struct TranslationUnitReplacements {
+  /// Name of the main source for the translation unit.
+  std::string MainSourceFile;
+
+  /// A freeform chunk of text to describe the context of the replacements.
+  /// Will be printed, for example, when detecting conflicts during replacement
+  /// deduplication.
+  std::string Context;
+
+  std::vector<Replacement> Replacements;
+};
 
 /// \brief A tool to run refactorings.
 ///

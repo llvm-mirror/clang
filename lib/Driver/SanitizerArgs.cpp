@@ -6,15 +6,17 @@
 // License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
-#include "SanitizerArgs.h"
+#include "clang/Driver/SanitizerArgs.h"
 
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Options.h"
 #include "clang/Driver/ToolChain.h"
+#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Transforms/Utils/SpecialCaseList.h"
 
 using namespace clang::driver;
 using namespace llvm::opt;
@@ -31,14 +33,8 @@ SanitizerArgs::SanitizerArgs() {
   clear();
 }
 
-SanitizerArgs::SanitizerArgs(const Driver &D,
-                             const llvm::opt::ArgList &Args) {
+SanitizerArgs::SanitizerArgs(const Driver &D, const llvm::opt::ArgList &Args) {
   clear();
-  parse(D, Args);
-}
-
-void SanitizerArgs::parse(const Driver &D,
-                          const llvm::opt::ArgList &Args) {
   unsigned AllKinds = 0;  // All kinds of sanitizers that were turned on
                           // at least once (possibly, disabled further).
   for (ArgList::const_iterator I = Args.begin(), E = Args.end(); I != E; ++I) {
@@ -121,10 +117,18 @@ void SanitizerArgs::parse(const Driver &D,
                                    options::OPT_fno_sanitize_blacklist)) {
     if (BLArg->getOption().matches(options::OPT_fsanitize_blacklist)) {
       std::string BLPath = BLArg->getValue();
-      if (llvm::sys::fs::exists(BLPath))
-        BlacklistFile = BLPath;
-      else
+      if (llvm::sys::fs::exists(BLPath)) {
+        // Validate the blacklist format.
+        std::string BLError;
+        llvm::OwningPtr<llvm::SpecialCaseList> SCL(
+            llvm::SpecialCaseList::create(BLPath, BLError));
+        if (!SCL.get())
+          D.Diag(diag::err_drv_malformed_sanitizer_blacklist) << BLError;
+        else
+          BlacklistFile = BLPath;
+      } else {
         D.Diag(diag::err_drv_no_such_file) << BLPath;
+      }
     }
   } else {
     // If no -fsanitize-blacklist option is specified, try to look up for

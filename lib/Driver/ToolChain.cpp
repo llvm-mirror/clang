@@ -42,6 +42,10 @@ bool ToolChain::useIntegratedAs() const {
                       IsIntegratedAssemblerDefault());
 }
 
+const SanitizerArgs& ToolChain::getSanitizerArgs() const {
+  return D.getOrParseSanitizerArgs(Args);
+}
+
 std::string ToolChain::getDefaultUniversalArchName() const {
   // In universal driver terms, the arch name accepted by -arch isn't exactly
   // the same as the ones that appear in the triple. Roughly speaking, this is
@@ -176,7 +180,7 @@ static const char *getARMTargetCPU(const ArgList &Args,
     MArch = Triple.getArchName();
   }
 
-  return llvm::StringSwitch<const char *>(MArch)
+  const char *result = llvm::StringSwitch<const char *>(MArch)
     .Cases("armv2", "armv2a","arm2")
     .Case("armv3", "arm6")
     .Case("armv3m", "arm7m")
@@ -203,7 +207,15 @@ static const char *getARMTargetCPU(const ArgList &Args,
     .Case("xscale", "xscale")
     // If all else failed, return the most base CPU with thumb interworking
     // supported by LLVM.
-    .Default("arm7tdmi");
+    .Default(0);
+
+  if (result)
+    return result;
+
+  return
+    Triple.getEnvironment() == llvm::Triple::GNUEABIHF
+      ? "arm1176jzf-s"
+      : "arm7tdmi";
 }
 
 /// getLLVMArchSuffixForARM - Get the LLVM arch name to use for a particular

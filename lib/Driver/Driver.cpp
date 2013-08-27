@@ -16,6 +16,7 @@
 #include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Job.h"
 #include "clang/Driver/Options.h"
+#include "clang/Driver/SanitizerArgs.h"
 #include "clang/Driver/Tool.h"
 #include "clang/Driver/ToolChain.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -1170,6 +1171,10 @@ void Driver::BuildActions(const ToolChain &TC, DerivedArgList &Args,
   Arg *FinalPhaseArg;
   phases::ID FinalPhase = getFinalPhase(Args, &FinalPhaseArg);
 
+  if (FinalPhase == phases::Link && Args.hasArg(options::OPT_emit_llvm)) {
+    Diag(clang::diag::err_drv_emit_llvm_link);
+  }
+
   // Reject -Z* at the top level, these options should never have been exposed
   // by gcc.
   if (Arg *A = Args.getLastArg(options::OPT_Z_Joined))
@@ -1339,6 +1344,10 @@ Action *Driver::ConstructPhaseAction(const ArgList &Args, phases::ID Phase,
       types::ID Output =
         Args.hasArg(options::OPT_S) ? types::TY_LTO_IR : types::TY_LTO_BC;
       return new CompileJobAction(Input, Output);
+    } else if (Args.hasArg(options::OPT_emit_llvm)) {
+      types::ID Output =
+        Args.hasArg(options::OPT_S) ? types::TY_LLVM_IR : types::TY_LLVM_BC;
+      return new CompileJobAction(Input, Output);
     } else {
       return new CompileJobAction(Input, types::TY_PP_Asm);
     }
@@ -1351,14 +1360,8 @@ Action *Driver::ConstructPhaseAction(const ArgList &Args, phases::ID Phase,
 }
 
 bool Driver::IsUsingLTO(const ArgList &Args) const {
-  // Check for -emit-llvm or -flto.
-  if (Args.hasArg(options::OPT_emit_llvm) ||
-      Args.hasFlag(options::OPT_flto, options::OPT_fno_lto, false))
+  if (Args.hasFlag(options::OPT_flto, options::OPT_fno_lto, false))
     return true;
-
-  // Check for -O4.
-  if (const Arg *A = Args.getLastArg(options::OPT_O_Group))
-      return A->getOption().matches(options::OPT_O4);
 
   return false;
 }
@@ -2050,4 +2053,11 @@ std::pair<unsigned, unsigned> Driver::getIncludeExcludeOptionFlagMasks() const {
   }
 
   return std::make_pair(IncludedFlagsBitmask, ExcludedFlagsBitmask);
+}
+
+const SanitizerArgs &
+Driver::getOrParseSanitizerArgs(const ArgList &Args) const {
+  if (!SanitizerArguments.get())
+    SanitizerArguments.reset(new SanitizerArgs(*this, Args));
+  return *SanitizerArguments.get();
 }

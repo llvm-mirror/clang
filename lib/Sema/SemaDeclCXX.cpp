@@ -1249,8 +1249,7 @@ static bool findCircularInheritance(const CXXRecordDecl *Class,
     if (Queue.empty())
       return false;
 
-    Current = Queue.back();
-    Queue.pop_back();
+    Current = Queue.pop_back_val();
   }
 
   return false;
@@ -2412,18 +2411,13 @@ Sema::BuildMemInitializer(Decl *ConstructorD,
       if (R.empty() && BaseType.isNull() &&
           (Corr = CorrectTypo(R.getLookupNameInfo(), R.getLookupKind(), S, &SS,
                               Validator, ClassDecl))) {
-        std::string CorrectedStr(Corr.getAsString(getLangOpts()));
-        std::string CorrectedQuotedStr(Corr.getQuoted(getLangOpts()));
         if (FieldDecl *Member = Corr.getCorrectionDeclAs<FieldDecl>()) {
           // We have found a non-static data member with a similar
           // name to what was typed; complain and initialize that
           // member.
-          Diag(R.getNameLoc(), diag::err_mem_init_not_member_or_class_suggest)
-            << MemberOrBase << true << CorrectedQuotedStr
-            << FixItHint::CreateReplacement(R.getNameLoc(), CorrectedStr);
-          Diag(Member->getLocation(), diag::note_previous_decl)
-            << CorrectedQuotedStr;
-
+          diagnoseTypo(Corr,
+                       PDiag(diag::err_mem_init_not_member_or_class_suggest)
+                         << MemberOrBase << true);
           return BuildMemberInitializer(Member, Init, IdLoc);
         } else if (TypeDecl *Type = Corr.getCorrectionDeclAs<TypeDecl>()) {
           const CXXBaseSpecifier *DirectBaseSpec;
@@ -2434,12 +2428,13 @@ Sema::BuildMemInitializer(Decl *ConstructorD,
             // We have found a direct or virtual base class with a
             // similar name to what was typed; complain and initialize
             // that base class.
-            Diag(R.getNameLoc(), diag::err_mem_init_not_member_or_class_suggest)
-              << MemberOrBase << false << CorrectedQuotedStr
-              << FixItHint::CreateReplacement(R.getNameLoc(), CorrectedStr);
+            diagnoseTypo(Corr,
+                         PDiag(diag::err_mem_init_not_member_or_class_suggest)
+                           << MemberOrBase << false,
+                         PDiag() /*Suppress note, we provide our own.*/);
 
-            const CXXBaseSpecifier *BaseSpec = DirectBaseSpec? DirectBaseSpec 
-                                                             : VirtualBaseSpec;
+            const CXXBaseSpecifier *BaseSpec = DirectBaseSpec ? DirectBaseSpec
+                                                              : VirtualBaseSpec;
             Diag(BaseSpec->getLocStart(),
                  diag::note_base_class_specified_here)
               << BaseSpec->getType()
@@ -6628,24 +6623,19 @@ static bool TryNamespaceTypoCorrection(Sema &S, LookupResult &R, Scope *Sc,
   if (TypoCorrection Corrected = S.CorrectTypo(R.getLookupNameInfo(),
                                                R.getLookupKind(), Sc, &SS,
                                                Validator)) {
-    std::string CorrectedStr(Corrected.getAsString(S.getLangOpts()));
-    std::string CorrectedQuotedStr(Corrected.getQuoted(S.getLangOpts()));
     if (DeclContext *DC = S.computeDeclContext(SS, false)) {
-      bool droppedSpecifier = Corrected.WillReplaceSpecifier() &&
+      std::string CorrectedStr(Corrected.getAsString(S.getLangOpts()));
+      bool DroppedSpecifier = Corrected.WillReplaceSpecifier() &&
                               Ident->getName().equals(CorrectedStr);
-      S.Diag(IdentLoc, diag::err_using_directive_member_suggest)
-          << Ident << DC << droppedSpecifier << CorrectedQuotedStr
-          << SS.getRange() << FixItHint::CreateReplacement(
-                                  Corrected.getCorrectionRange(), CorrectedStr);
+      S.diagnoseTypo(Corrected,
+                     S.PDiag(diag::err_using_directive_member_suggest)
+                       << Ident << DC << DroppedSpecifier << SS.getRange(),
+                     S.PDiag(diag::note_namespace_defined_here));
     } else {
-      S.Diag(IdentLoc, diag::err_using_directive_suggest)
-        << Ident << CorrectedQuotedStr
-        << FixItHint::CreateReplacement(IdentLoc, CorrectedStr);
+      S.diagnoseTypo(Corrected,
+                     S.PDiag(diag::err_using_directive_suggest) << Ident,
+                     S.PDiag(diag::note_namespace_defined_here));
     }
-
-    S.Diag(Corrected.getCorrectionDecl()->getLocation(),
-         diag::note_namespace_defined_here) << CorrectedQuotedStr;
-
     R.addDecl(Corrected.getCorrectionDecl());
     return true;
   }
@@ -6719,7 +6709,7 @@ Decl *Sema::ActOnUsingDirective(Scope *S,
                                       IdentLoc, Named, CommonAncestor);
 
     if (IsUsingDirectiveInToplevelContext(CurContext) &&
-        !SourceMgr.isFromMainFile(SourceMgr.getExpansionLoc(IdentLoc))) {
+        !SourceMgr.isInMainFile(SourceMgr.getExpansionLoc(IdentLoc))) {
       Diag(IdentLoc, diag::warn_using_directive_in_header);
     }
 
@@ -7193,21 +7183,15 @@ NamedDecl *Sema::BuildUsingDeclaration(Scope *S, AccessSpecifier AS,
                                                R.getLookupKind(), S, &SS, CCC)){
       // We reject any correction for which ND would be NULL.
       NamedDecl *ND = Corrected.getCorrectionDecl();
-      std::string CorrectedStr(Corrected.getAsString(getLangOpts()));
-      std::string CorrectedQuotedStr(Corrected.getQuoted(getLangOpts()));
       R.setLookupName(Corrected.getCorrection());
       R.addDecl(ND);
-      // We reject candidates where droppedSpecifier == true, hence the
+      // We reject candidates where DroppedSpecifier == true, hence the
       // literal '0' below.
-      Diag(R.getNameLoc(), diag::err_no_member_suggest)
-        << NameInfo.getName() << LookupContext << 0
-        << CorrectedQuotedStr << SS.getRange()
-        << FixItHint::CreateReplacement(Corrected.getCorrectionRange(),
-                                        CorrectedStr);
-      Diag(ND->getLocation(), diag::note_previous_decl)
-        << CorrectedQuotedStr;
+      diagnoseTypo(Corrected, PDiag(diag::err_no_member_suggest)
+                                << NameInfo.getName() << LookupContext << 0
+                                << SS.getRange());
     } else {
-      Diag(IdentLoc, diag::err_no_member) 
+      Diag(IdentLoc, diag::err_no_member)
         << NameInfo.getName() << LookupContext << SS.getRange();
       UD->setInvalidDecl();
       return UD;
@@ -9813,13 +9797,11 @@ void Sema::DefineImplicitCopyConstructor(SourceLocation CurrentLocation,
     CopyConstructor->setInvalidDecl();
   }  else {
     Sema::CompoundScopeRAII CompoundScope(*this);
-    CopyConstructor->setBody(ActOnCompoundStmt(CopyConstructor->getLocation(),
-                                               CopyConstructor->getLocation(),
-                                               MultiStmtArg(),
-                                               /*isStmtExpr=*/false)
-                                                              .takeAs<Stmt>());
+    CopyConstructor->setBody(ActOnCompoundStmt(
+        CopyConstructor->getLocation(), CopyConstructor->getLocation(), None,
+        /*isStmtExpr=*/ false).takeAs<Stmt>());
   }
-  
+
   CopyConstructor->setUsed();
   if (ASTMutationListener *L = getASTMutationListener()) {
     L->CompletedImplicitDefinition(CopyConstructor);
@@ -10002,11 +9984,9 @@ void Sema::DefineImplicitMoveConstructor(SourceLocation CurrentLocation,
     MoveConstructor->setInvalidDecl();
   }  else {
     Sema::CompoundScopeRAII CompoundScope(*this);
-    MoveConstructor->setBody(ActOnCompoundStmt(MoveConstructor->getLocation(),
-                                               MoveConstructor->getLocation(),
-                                               MultiStmtArg(),
-                                               /*isStmtExpr=*/false)
-                                                              .takeAs<Stmt>());
+    MoveConstructor->setBody(ActOnCompoundStmt(
+        MoveConstructor->getLocation(), MoveConstructor->getLocation(), None,
+        /*isStmtExpr=*/ false).takeAs<Stmt>());
   }
 
   MoveConstructor->setUsed();

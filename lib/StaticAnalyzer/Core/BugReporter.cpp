@@ -2233,7 +2233,7 @@ static void removePunyEdges(PathPieces &path,
     SourceLocation FirstLoc = start->getLocStart();
     SourceLocation SecondLoc = end->getLocStart();
 
-    if (!SM.isFromSameFile(FirstLoc, SecondLoc))
+    if (!SM.isWrittenInSameFile(FirstLoc, SecondLoc))
       continue;
     if (SM.isBeforeInTranslationUnit(SecondLoc, FirstLoc))
       std::swap(SecondLoc, FirstLoc);
@@ -2651,10 +2651,8 @@ void BugReport::pushInterestingSymbolsAndRegions() {
 }
 
 void BugReport::popInterestingSymbolsAndRegions() {
-  delete interestingSymbols.back();
-  interestingSymbols.pop_back();
-  delete interestingRegions.back();
-  interestingRegions.pop_back();
+  delete interestingSymbols.pop_back_val();
+  delete interestingRegions.pop_back_val();
 }
 
 const Stmt *BugReport::getStmt() const {

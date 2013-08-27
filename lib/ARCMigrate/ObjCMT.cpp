@@ -24,11 +24,14 @@
 #include "clang/Lex/PPConditionalDirectiveRecord.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Rewrite/Core/Rewriter.h"
+#include "clang/Analysis/DomainSpecific/CocoaConventions.h"
+#include "clang/StaticAnalyzer/Checkers/ObjCRetainCount.h"
 #include "clang/AST/Attr.h"
 #include "llvm/ADT/SmallString.h"
 
 using namespace clang;
 using namespace arcmt;
+using namespace ento::objc_retain;
 
 namespace {
 
@@ -46,16 +49,23 @@ class ObjCMigrateASTConsumer : public ASTConsumer {
                             ObjCMethodDecl *OM,
                             ObjCInstanceTypeFamily OIT_Family = OIT_None);
   
-  void migrateFunctionDeclAnnotation(ASTContext &Ctx,
-                                     const FunctionDecl *FuncDecl);
+  void migrateCFAnnotation(ASTContext &Ctx, const Decl *Decl);
   
-  void migrateObjCMethodDeclAnnotation(ASTContext &Ctx,
-                                       const ObjCMethodDecl *MethodDecl);
+  void AnnotateImplicitBridging(ASTContext &Ctx);
+  
+  bool migrateAddFunctionAnnotation(ASTContext &Ctx,
+                                    const FunctionDecl *FuncDecl);
+  
+  void migrateARCSafeAnnotation(ASTContext &Ctx, ObjCContainerDecl *CDecl);
+  
+  bool migrateAddMethodAnnotation(ASTContext &Ctx,
+                                  const ObjCMethodDecl *MethodDecl);
 public:
   std::string MigrateDir;
   bool MigrateLiterals;
   bool MigrateSubscripting;
   bool MigrateProperty;
+  unsigned  FileId;
   OwningPtr<NSAPI> NSAPIObj;
   OwningPtr<edit::EditedSource> Editor;
   FileRemapper &Remapper;
@@ -64,6 +74,7 @@ public:
   Preprocessor &PP;
   bool IsOutputFile;
   llvm::SmallPtrSet<ObjCProtocolDecl *, 32> ObjCProtocolDecls;
+  llvm::SmallVector<const Decl *, 8> CFFunctionIBCandidates;
   
   ObjCMigrateASTConsumer(StringRef migrateDir,
                          bool migrateLiterals,
@@ -77,7 +88,7 @@ public:
   : MigrateDir(migrateDir),
     MigrateLiterals(migrateLiterals),
     MigrateSubscripting(migrateSubscripting),
-    MigrateProperty(migrateProperty),
+    MigrateProperty(migrateProperty), FileId(0),
     Remapper(remapper), FileMgr(fileMgr), PPRec(PPRec), PP(PP),
     IsOutputFile(isOutputFile) { }
 
@@ -212,11 +223,9 @@ void ObjCMigrateASTConsumer::migrateDecl(Decl *D) {
   BodyMigrator(*this).TraverseDecl(D);
 }
 
-static void append_attr(std::string &PropertyString, const char *attr,
-                        bool GetterHasIsPrefix) {
-  PropertyString += (GetterHasIsPrefix ? ", " : "(");
+static void append_attr(std::string &PropertyString, const char *attr) {
+  PropertyString += ", ";
   PropertyString += attr;
-  PropertyString += ')';
 }
 
 static bool rewriteToObjCProperty(const ObjCMethodDecl *Getter,
@@ -224,11 +233,11 @@ static bool rewriteToObjCProperty(const ObjCMethodDecl *Getter,
                                   const NSAPI &NS, edit::Commit &commit,
                                   bool GetterHasIsPrefix) {
   ASTContext &Context = NS.getASTContext();
-  std::string PropertyString = "@property";
+  std::string PropertyString = "@property(nonatomic";
   std::string PropertyNameString = Getter->getNameAsString();
   StringRef PropertyName(PropertyNameString);
   if (GetterHasIsPrefix) {
-    PropertyString += "(getter=";
+    PropertyString += ", getter=";
     PropertyString += PropertyNameString;
   }
   // Short circuit properties that contain the name "delegate" or "dataSource",
@@ -236,7 +245,7 @@ static bool rewriteToObjCProperty(const ObjCMethodDecl *Getter,
   if (PropertyName.equals("target") ||
       (PropertyName.find("delegate") != StringRef::npos) ||
       (PropertyName.find("dataSource") != StringRef::npos))
-    append_attr(PropertyString, "unsafe_unretained", GetterHasIsPrefix);
+    append_attr(PropertyString, "unsafe_unretained");
   else {
     const ParmVarDecl *argDecl = *Setter->param_begin();
     QualType ArgType = Context.getCanonicalType(argDecl->getType());
@@ -248,20 +257,18 @@ static bool rewriteToObjCProperty(const ObjCMethodDecl *Getter,
         ObjCInterfaceDecl *IDecl = ObjPtrTy->getObjectType()->getInterface();
         if (IDecl &&
             IDecl->lookupNestedProtocol(&Context.Idents.get("NSCopying")))
-          append_attr(PropertyString, "copy", GetterHasIsPrefix);
+          append_attr(PropertyString, "copy");
         else
-          append_attr(PropertyString, "retain", GetterHasIsPrefix);
-      } else if (GetterHasIsPrefix)
-          PropertyString += ')';
+          append_attr(PropertyString, "retain");
+      }
     } else if (propertyLifetime == Qualifiers::OCL_Weak)
       // TODO. More precise determination of 'weak' attribute requires
       // looking into setter's implementation for backing weak ivar.
-      append_attr(PropertyString, "weak", GetterHasIsPrefix);
+      append_attr(PropertyString, "weak");
     else if (RetainableObject)
-      append_attr(PropertyString, "retain", GetterHasIsPrefix);
-    else if (GetterHasIsPrefix)
-      PropertyString += ')';
+      append_attr(PropertyString, "retain");
   }
+  PropertyString += ')';
   
   QualType RT = Getter->getResultType();
   if (!isa<TypedefType>(RT)) {
@@ -493,6 +500,7 @@ static bool rewriteToNSMacroDecl(const EnumDecl *EnumDcl,
 static bool UseNSOptionsMacro(ASTContext &Ctx,
                               const EnumDecl *EnumDcl) {
   bool PowerOfTwo = true;
+  uint64_t MaxPowerOfTwoVal = 0;
   for (EnumDecl::enumerator_iterator EI = EnumDcl->enumerator_begin(),
        EE = EnumDcl->enumerator_end(); EI != EE; ++EI) {
     EnumConstantDecl *Enumerator = (*EI);
@@ -507,10 +515,14 @@ static bool UseNSOptionsMacro(ASTContext &Ctx,
         return true;
     
     uint64_t EnumVal = Enumerator->getInitVal().getZExtValue();
-    if (PowerOfTwo && EnumVal && !llvm::isPowerOf2_64(EnumVal))
-      PowerOfTwo = false;
+    if (PowerOfTwo && EnumVal) {
+      if (!llvm::isPowerOf2_64(EnumVal))
+        PowerOfTwo = false;
+      else if (EnumVal > MaxPowerOfTwoVal)
+        MaxPowerOfTwoVal = EnumVal;
+    }
   }
-  return PowerOfTwo;
+  return PowerOfTwo && (MaxPowerOfTwoVal > 2);
 }
 
 void ObjCMigrateASTConsumer::migrateProtocolConformance(ASTContext &Ctx,   
@@ -749,24 +761,248 @@ void ObjCMigrateASTConsumer::migrateFactoryMethod(ASTContext &Ctx,
   ReplaceWithInstancetype(*this, OM);
 }
 
-void ObjCMigrateASTConsumer::migrateFunctionDeclAnnotation(
-                                                ASTContext &Ctx,
-                                                const FunctionDecl *FuncDecl) {
-  if (FuncDecl->hasAttr<CFAuditedTransferAttr>() ||
-      FuncDecl->getAttr<CFReturnsRetainedAttr>() ||
-      FuncDecl->getAttr<CFReturnsNotRetainedAttr>() ||
-      FuncDecl->hasBody())
-    return;
+static bool IsVoidStarType(QualType Ty) {
+  if (!Ty->isPointerType())
+    return false;
+  
+  while (const TypedefType *TD = dyn_cast<TypedefType>(Ty.getTypePtr()))
+    Ty = TD->getDecl()->getUnderlyingType();
+  
+  // Is the type void*?
+  const PointerType* PT = Ty->getAs<PointerType>();
+  if (PT->getPointeeType().getUnqualifiedType()->isVoidType())
+    return true;
+  return IsVoidStarType(PT->getPointeeType());
 }
 
-void ObjCMigrateASTConsumer::migrateObjCMethodDeclAnnotation(
-                                            ASTContext &Ctx,
-                                            const ObjCMethodDecl *MethodDecl) {
-  if (MethodDecl->hasAttr<CFAuditedTransferAttr>() ||
-      MethodDecl->getAttr<CFReturnsRetainedAttr>() ||
-      MethodDecl->getAttr<CFReturnsNotRetainedAttr>() ||
-      MethodDecl->hasBody())
+/// AuditedType - This routine audits the type AT and returns false if it is one of known
+/// CF object types or of the "void *" variety. It returns true if we don't care about the type
+/// such as a non-pointer or pointers which have no ownership issues (such as "int *").
+static bool
+AuditedType (QualType AT, bool &IsPoniter) {
+  IsPoniter = (AT->isAnyPointerType() || AT->isBlockPointerType());
+  if (!IsPoniter)
+    return true;
+  // FIXME. There isn't much we can say about CF pointer type; or is there?
+  if (ento::coreFoundation::isCFObjectRef(AT) ||
+      IsVoidStarType(AT) ||
+      // If an ObjC object is type, assuming that it is not a CF function and
+      // that it is an un-audited function.
+      AT->isObjCObjectPointerType() || AT->isObjCBuiltinType())
+    return false;
+  // All other pointers are assumed audited as harmless.
+  return true;
+}
+
+void ObjCMigrateASTConsumer::AnnotateImplicitBridging(ASTContext &Ctx) {
+  if (CFFunctionIBCandidates.empty())
     return;
+  if (!Ctx.Idents.get("CF_IMPLICIT_BRIDGING_ENABLED").hasMacroDefinition()) {
+    CFFunctionIBCandidates.clear();
+    FileId = 0;
+    return;
+  }
+  // Insert CF_IMPLICIT_BRIDGING_ENABLE/CF_IMPLICIT_BRIDGING_DISABLED
+  const Decl *FirstFD = CFFunctionIBCandidates[0];
+  const Decl *LastFD  =
+    CFFunctionIBCandidates[CFFunctionIBCandidates.size()-1];
+  const char *PragmaString = "\nCF_IMPLICIT_BRIDGING_ENABLED\n\n";
+  edit::Commit commit(*Editor);
+  commit.insertBefore(FirstFD->getLocStart(), PragmaString);
+  PragmaString = "\n\nCF_IMPLICIT_BRIDGING_DISABLED\n";
+  SourceLocation EndLoc = LastFD->getLocEnd();
+  // get location just past end of function location.
+  EndLoc = PP.getLocForEndOfToken(EndLoc);
+  if (isa<FunctionDecl>(LastFD)) {
+    // For Methods, EndLoc points to the ending semcolon. So,
+    // not of these extra work is needed.
+    Token Tok;
+    // get locaiton of token that comes after end of function.
+    bool Failed = PP.getRawToken(EndLoc, Tok, /*IgnoreWhiteSpace=*/true);
+    if (!Failed)
+      EndLoc = Tok.getLocation();
+  }
+  commit.insertAfterToken(EndLoc, PragmaString);
+  Editor->commit(commit);
+  FileId = 0;
+  CFFunctionIBCandidates.clear();
+}
+
+void ObjCMigrateASTConsumer::migrateCFAnnotation(ASTContext &Ctx, const Decl *Decl) {
+  if (Decl->hasAttr<CFAuditedTransferAttr>()) {
+    assert(CFFunctionIBCandidates.empty() &&
+           "Cannot have audited functions/methods inside user "
+           "provided CF_IMPLICIT_BRIDGING_ENABLE");
+    return;
+  }
+  
+  // Finction must be annotated first.
+  bool Audited;
+  if (const FunctionDecl *FuncDecl = dyn_cast<FunctionDecl>(Decl))
+    Audited = migrateAddFunctionAnnotation(Ctx, FuncDecl);
+  else
+    Audited = migrateAddMethodAnnotation(Ctx, cast<ObjCMethodDecl>(Decl));
+  if (Audited) {
+    CFFunctionIBCandidates.push_back(Decl);
+    if (!FileId)
+      FileId = PP.getSourceManager().getFileID(Decl->getLocation()).getHashValue();
+  }
+  else
+    AnnotateImplicitBridging(Ctx);
+}
+
+bool ObjCMigrateASTConsumer::migrateAddFunctionAnnotation(
+                                                  ASTContext &Ctx,
+                                                  const FunctionDecl *FuncDecl) {
+  if (FuncDecl->hasBody())
+    return false;
+
+  CallEffects CE  = CallEffects::getEffect(FuncDecl);
+  bool FuncIsReturnAnnotated = (FuncDecl->getAttr<CFReturnsRetainedAttr>() ||
+                                FuncDecl->getAttr<CFReturnsNotRetainedAttr>());
+  
+  // Trivial case of when funciton is annotated and has no argument.
+  if (FuncIsReturnAnnotated && FuncDecl->getNumParams() == 0)
+    return false;
+  
+  bool HasAtLeastOnePointer = FuncIsReturnAnnotated;
+  if (!FuncIsReturnAnnotated) {
+    RetEffect Ret = CE.getReturnValue();
+    const char *AnnotationString = 0;
+    if (Ret.getObjKind() == RetEffect::CF && Ret.isOwned()) {
+      if (Ctx.Idents.get("CF_RETURNS_RETAINED").hasMacroDefinition())
+        AnnotationString = " CF_RETURNS_RETAINED";
+    }
+    else if (Ret.getObjKind() == RetEffect::CF && !Ret.isOwned()) {
+      if (Ctx.Idents.get("CF_RETURNS_NOT_RETAINED").hasMacroDefinition())
+        AnnotationString = " CF_RETURNS_NOT_RETAINED";
+    }
+    if (AnnotationString) {
+      edit::Commit commit(*Editor);
+      commit.insertAfterToken(FuncDecl->getLocEnd(), AnnotationString);
+      Editor->commit(commit);
+      HasAtLeastOnePointer = true;
+    }
+    else if (!AuditedType(FuncDecl->getResultType(), HasAtLeastOnePointer))
+      return false;
+  }
+  
+  // At this point result type is either annotated or audited.
+  // Now, how about argument types.
+  llvm::ArrayRef<ArgEffect> AEArgs = CE.getArgs();
+  unsigned i = 0;
+  for (FunctionDecl::param_const_iterator pi = FuncDecl->param_begin(),
+       pe = FuncDecl->param_end(); pi != pe; ++pi, ++i) {
+    const ParmVarDecl *pd = *pi;
+    ArgEffect AE = AEArgs[i];
+    if (AE == DecRef /*CFConsumed annotated*/ ||
+        AE == IncRef) {
+      if (AE == DecRef && !pd->getAttr<CFConsumedAttr>() &&
+          Ctx.Idents.get("CF_CONSUMED").hasMacroDefinition()) {
+        edit::Commit commit(*Editor);
+        commit.insertBefore(pd->getLocation(), "CF_CONSUMED ");
+        Editor->commit(commit);
+        HasAtLeastOnePointer = true;
+      }
+      // When AE == IncRef, there is no attribute to annotate with.
+      // It is assumed that compiler will extract the info. from function
+      // API name.
+      HasAtLeastOnePointer = true;
+      continue;
+    }
+
+    QualType AT = pd->getType();
+    bool IsPointer;
+    if (!AuditedType(AT, IsPointer))
+      return false;
+    else if (IsPointer)
+      HasAtLeastOnePointer = true;
+  }
+  return HasAtLeastOnePointer;
+}
+
+void ObjCMigrateASTConsumer::migrateARCSafeAnnotation(ASTContext &Ctx,
+                                                 ObjCContainerDecl *CDecl) {
+  if (!isa<ObjCInterfaceDecl>(CDecl))
+    return;
+  
+  // migrate methods which can have instancetype as their result type.
+  for (ObjCContainerDecl::method_iterator M = CDecl->meth_begin(),
+       MEnd = CDecl->meth_end();
+       M != MEnd; ++M) {
+    ObjCMethodDecl *Method = (*M);
+    migrateCFAnnotation(Ctx, Method);
+  }
+}
+
+bool ObjCMigrateASTConsumer::migrateAddMethodAnnotation(ASTContext &Ctx,
+                                                        const ObjCMethodDecl *MethodDecl) {
+  if (MethodDecl->hasBody())
+    return false;
+  
+  CallEffects CE  = CallEffects::getEffect(MethodDecl);
+  bool MethodIsReturnAnnotated = (MethodDecl->getAttr<CFReturnsRetainedAttr>() ||
+                                  MethodDecl->getAttr<CFReturnsNotRetainedAttr>());
+  
+  // Trivial case of when funciton is annotated and has no argument.
+  if (MethodIsReturnAnnotated &&
+      (MethodDecl->param_begin() == MethodDecl->param_end()))
+    return false;
+  
+  bool HasAtLeastOnePointer = MethodIsReturnAnnotated;
+  if (!MethodIsReturnAnnotated) {
+    RetEffect Ret = CE.getReturnValue();
+    const char *AnnotationString = 0;
+    if (Ret.getObjKind() == RetEffect::CF && Ret.isOwned()) {
+      if (Ctx.Idents.get("CF_RETURNS_RETAINED").hasMacroDefinition())
+        AnnotationString = " CF_RETURNS_RETAINED";
+    }
+    else if (Ret.getObjKind() == RetEffect::CF && !Ret.isOwned()) {
+      if (Ctx.Idents.get("CF_RETURNS_NOT_RETAINED").hasMacroDefinition())
+        AnnotationString = " CF_RETURNS_NOT_RETAINED";
+    }
+    if (AnnotationString) {
+      edit::Commit commit(*Editor);
+      commit.insertBefore(MethodDecl->getLocEnd(), AnnotationString);
+      Editor->commit(commit);
+      HasAtLeastOnePointer = true;
+    }
+    else if (!AuditedType(MethodDecl->getResultType(), HasAtLeastOnePointer))
+      return false;
+  }
+  
+  // At this point result type is either annotated or audited.
+  // Now, how about argument types.
+  llvm::ArrayRef<ArgEffect> AEArgs = CE.getArgs();
+  unsigned i = 0;
+  for (ObjCMethodDecl::param_const_iterator pi = MethodDecl->param_begin(),
+       pe = MethodDecl->param_end(); pi != pe; ++pi, ++i) {
+    const ParmVarDecl *pd = *pi;
+    ArgEffect AE = AEArgs[i];
+    if (AE == DecRef /*CFConsumed annotated*/ ||
+        AE == IncRef) {
+      if (AE == DecRef && !pd->getAttr<CFConsumedAttr>() &&
+          Ctx.Idents.get("CF_CONSUMED").hasMacroDefinition()) {
+        edit::Commit commit(*Editor);
+        commit.insertBefore(pd->getLocation(), "CF_CONSUMED ");
+        Editor->commit(commit);
+        HasAtLeastOnePointer = true;
+      }
+      // When AE == IncRef, there is no attribute to annotate with.
+      // It is assumed that compiler will extract the info. from function
+      // API name.
+      HasAtLeastOnePointer = true;
+      continue;
+    }
+    
+    QualType AT = pd->getType();
+    bool IsPointer;
+    if (!AuditedType(AT, IsPointer))
+      return false;
+    else if (IsPointer)
+      HasAtLeastOnePointer = true;
+  }
+  return HasAtLeastOnePointer;
 }
 
 namespace {
@@ -790,9 +1026,16 @@ public:
 void ObjCMigrateASTConsumer::HandleTranslationUnit(ASTContext &Ctx) {
   
   TranslationUnitDecl *TU = Ctx.getTranslationUnitDecl();
-  if (MigrateProperty)
+  if (MigrateProperty) {
     for (DeclContext::decl_iterator D = TU->decls_begin(), DEnd = TU->decls_end();
          D != DEnd; ++D) {
+      if (unsigned FID =
+            PP.getSourceManager().getFileID((*D)->getLocation()).getHashValue())
+        if (FileId && FileId != FID) {
+          assert(!CFFunctionIBCandidates.empty());
+          AnnotateImplicitBridging(Ctx);
+        }
+          
       if (ObjCInterfaceDecl *CDecl = dyn_cast<ObjCInterfaceDecl>(*D))
         migrateObjCInterfaceDecl(Ctx, CDecl);
       else if (ObjCProtocolDecl *PDecl = dyn_cast<ObjCProtocolDecl>(*D))
@@ -808,14 +1051,17 @@ void ObjCMigrateASTConsumer::HandleTranslationUnit(ASTContext &Ctx) {
             migrateNSEnumDecl(Ctx, ED, TD);
       }
       else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(*D))
-        migrateFunctionDeclAnnotation(Ctx, FD);
-      else if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(*D))
-        migrateObjCMethodDeclAnnotation(Ctx, MD);
+        migrateCFAnnotation(Ctx, FD);
       
-      // migrate methods which can have instancetype as their result type.
-      if (ObjCContainerDecl *CDecl = dyn_cast<ObjCContainerDecl>(*D))
+      if (ObjCContainerDecl *CDecl = dyn_cast<ObjCContainerDecl>(*D)) {
+        // migrate methods which can have instancetype as their result type.
         migrateInstanceType(Ctx, CDecl);
+        // annotate methods with CF annotations.
+        migrateARCSafeAnnotation(Ctx, CDecl);
+      }
     }
+    AnnotateImplicitBridging(Ctx);
+  }
   
   Rewriter rewriter(Ctx.getSourceManager(), Ctx.getLangOpts());
   RewritesReceiver Rec(rewriter);

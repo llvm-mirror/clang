@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 #include "clang/Lex/ModuleMap.h"
-#include "clang/Serialization/ModuleManager.h"
 #include "clang/Serialization/GlobalModuleIndex.h"
+#include "clang/Serialization/ModuleManager.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -332,8 +332,7 @@ ModuleManager::visit(bool (*Visitor)(ModuleFile &M, void *UserData),
         break;
 
       // Pop the next module off the stack.
-      NextModule = State->Stack.back();
-      State->Stack.pop_back();
+      NextModule = State->Stack.pop_back_val();
     } while (true);
   }
 

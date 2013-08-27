@@ -64,3 +64,16 @@ enum {
   UNTwo
 };
 
+// Should use NS_ENUM even though it is all power of 2.
+enum {
+  UIKOne = 0x1,
+  UIKTwo = 0x2,
+};
+typedef NSInteger UIK;
+
+typedef enum  {
+    NSTickMarkBelow = 0,
+    NSTickMarkAbove = 1,
+    NSTickMarkLeft = NSTickMarkAbove,
+    NSTickMarkRight = NSTickMarkBelow
+} NSTickMarkPosition;

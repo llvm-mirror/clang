@@ -291,11 +291,10 @@ sema::CompoundScopeInfo &Sema::getCurCompoundScope() const {
   return getCurFunction()->CompoundScopes.back();
 }
 
-StmtResult
-Sema::ActOnCompoundStmt(SourceLocation L, SourceLocation R,
-                        MultiStmtArg elts, bool isStmtExpr) {
-  unsigned NumElts = elts.size();
-  Stmt **Elts = elts.data();
+StmtResult Sema::ActOnCompoundStmt(SourceLocation L, SourceLocation R,
+                                   ArrayRef<Stmt *> Elts, bool isStmtExpr) {
+  const unsigned NumElts = Elts.size();
+
   // If we're in C89 mode, check that we don't have any decls after stmts.  If
   // so, emit an extension diagnostic.
   if (!getLangOpts().C99 && !getLangOpts().CPlusPlus) {
@@ -332,9 +331,7 @@ Sema::ActOnCompoundStmt(SourceLocation L, SourceLocation R,
       DiagnoseEmptyLoopBody(Elts[i], Elts[i + 1]);
   }
 
-  return Owned(new (Context) CompoundStmt(Context,
-                                          llvm::makeArrayRef(Elts, NumElts),
-                                          L, R));
+  return Owned(new (Context) CompoundStmt(Context, Elts, L, R));
 }
 
 StmtResult
@@ -1834,10 +1831,10 @@ StmtResult
 Sema::ActOnCXXForRangeStmt(SourceLocation ForLoc,
                            Stmt *First, SourceLocation ColonLoc, Expr *Range,
                            SourceLocation RParenLoc, BuildForRangeKind Kind) {
-  if (!First || !Range)
+  if (!First)
     return StmtError();
 
-  if (ObjCEnumerationCollection(Range))
+  if (Range && ObjCEnumerationCollection(Range))
     return ActOnObjCForCollectionStmt(ForLoc, First, Range, RParenLoc);
 
   DeclStmt *DS = dyn_cast<DeclStmt>(First);
@@ -1847,11 +1844,13 @@ Sema::ActOnCXXForRangeStmt(SourceLocation ForLoc,
     Diag(DS->getStartLoc(), diag::err_type_defined_in_for_range);
     return StmtError();
   }
-  if (DS->getSingleDecl()->isInvalidDecl())
-    return StmtError();
 
-  if (DiagnoseUnexpandedParameterPack(Range, UPPC_Expression))
+  Decl *LoopVar = DS->getSingleDecl();
+  if (LoopVar->isInvalidDecl() || !Range ||
+      DiagnoseUnexpandedParameterPack(Range, UPPC_Expression)) {
+    LoopVar->setInvalidDecl();
     return StmtError();
+  }
 
   // Build  auto && __range = range-init
   SourceLocation RangeLoc = Range->getLocStart();
@@ -1859,16 +1858,20 @@ Sema::ActOnCXXForRangeStmt(SourceLocation ForLoc,
                                            Context.getAutoRRefDeductType(),
                                            "__range");
   if (FinishForRangeVarDecl(*this, RangeVar, Range, RangeLoc,
-                            diag::err_for_range_deduction_failure))
+                            diag::err_for_range_deduction_failure)) {
+    LoopVar->setInvalidDecl();
     return StmtError();
+  }
 
   // Claim the type doesn't contain auto: we've already done the checking.
   DeclGroupPtrTy RangeGroup =
       BuildDeclaratorGroup(llvm::MutableArrayRef<Decl *>((Decl **)&RangeVar, 1),
                            /*TypeMayContainAuto=*/ false);
   StmtResult RangeDecl = ActOnDeclStmt(RangeGroup, RangeLoc, RangeLoc);
-  if (RangeDecl.isInvalid())
+  if (RangeDecl.isInvalid()) {
+    LoopVar->setInvalidDecl();
     return StmtError();
+  }
 
   return BuildCXXForRangeStmt(ForLoc, ColonLoc, RangeDecl.get(),
                               /*BeginEndDecl=*/0, /*Cond=*/0, /*Inc=*/0, DS,
@@ -1997,6 +2000,22 @@ static StmtResult RebuildForRangeWithDereference(Sema &SemaRef, Scope *S,
                                       Sema::BFRK_Rebuild);
 }
 
+namespace {
+/// RAII object to automatically invalidate a declaration if an error occurs.
+struct InvalidateOnErrorScope {
+  InvalidateOnErrorScope(Sema &SemaRef, Decl *D, bool Enabled)
+      : Trap(SemaRef.Diags), D(D), Enabled(Enabled) {}
+  ~InvalidateOnErrorScope() {
+    if (Enabled && Trap.hasErrorOccurred())
+      D->setInvalidDecl();
+  }
+
+  DiagnosticErrorTrap Trap;
+  Decl *D;
+  bool Enabled;
+};
+}
+
 /// BuildCXXForRangeStmt - Build or instantiate a C++11 for-range statement.
 StmtResult
 Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation ColonLoc,
@@ -2011,6 +2030,11 @@ Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation ColonLoc,
 
   DeclStmt *LoopVarDS = cast<DeclStmt>(LoopVarDecl);
   VarDecl *LoopVar = cast<VarDecl>(LoopVarDS->getSingleDecl());
+
+  // If we hit any errors, mark the loop variable as invalid if its type
+  // contains 'auto'.
+  InvalidateOnErrorScope Invalidate(*this, LoopVar,
+                                    LoopVar->getType()->isUndeducedType());
 
   StmtResult BeginEndDecl = BeginEnd;
   ExprResult NotEqExpr = Cond, IncrExpr = Inc;
@@ -3015,18 +3039,16 @@ public:
 
 /// ActOnCXXTryBlock - Takes a try compound-statement and a number of
 /// handlers and creates a try statement from them.
-StmtResult
-Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
-                       MultiStmtArg RawHandlers) {
+StmtResult Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
+                                  ArrayRef<Stmt *> Handlers) {
   // Don't report an error if 'try' is used in system headers.
   if (!getLangOpts().CXXExceptions &&
       !getSourceManager().isInSystemHeader(TryLoc))
       Diag(TryLoc, diag::err_exceptions_disabled) << "try";
 
-  unsigned NumHandlers = RawHandlers.size();
+  const unsigned NumHandlers = Handlers.size();
   assert(NumHandlers > 0 &&
          "The parser shouldn't call this if there are no handlers.");
-  Stmt **Handlers = RawHandlers.data();
 
   SmallVector<TypeWithHandler, 8> TypesWithHandlers;
 
@@ -3074,8 +3096,7 @@ Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
   // Neither of these are explicitly forbidden, but every compiler detects them
   // and warns.
 
-  return Owned(CXXTryStmt::Create(Context, TryLoc, TryBlock,
-                                  llvm::makeArrayRef(Handlers, NumHandlers)));
+  return Owned(CXXTryStmt::Create(Context, TryLoc, TryBlock, Handlers));
 }
 
 StmtResult

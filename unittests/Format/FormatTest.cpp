@@ -1518,6 +1518,40 @@ TEST_F(FormatTest, FormatsEnum) {
   verifyFormat("enum X f() {\n  a();\n  return 42;\n}");
 }
 
+TEST_F(FormatTest, FormatsEnumStruct) {
+  verifyFormat("enum struct {\n"
+               "  Zero,\n"
+               "  One = 1,\n"
+               "  Two = One + 1,\n"
+               "  Three = (One + Two),\n"
+               "  Four = (Zero && (One ^ Two)) | (One << Two),\n"
+               "  Five = (One, Two, Three, Four, 5)\n"
+               "};");
+  verifyFormat("enum struct Enum {};");
+  verifyFormat("enum struct {};");
+  verifyFormat("enum struct X E {\n} d;");
+  verifyFormat("enum struct __attribute__((...)) E {\n} d;");
+  verifyFormat("enum struct __declspec__((...)) E {\n} d;");
+  verifyFormat("enum struct X f() {\n  a();\n  return 42;\n}");
+}
+
+TEST_F(FormatTest, FormatsEnumClass) {
+  verifyFormat("enum class {\n"
+               "  Zero,\n"
+               "  One = 1,\n"
+               "  Two = One + 1,\n"
+               "  Three = (One + Two),\n"
+               "  Four = (Zero && (One ^ Two)) | (One << Two),\n"
+               "  Five = (One, Two, Three, Four, 5)\n"
+               "};");
+  verifyFormat("enum class Enum {};");
+  verifyFormat("enum class {};");
+  verifyFormat("enum class X E {\n} d;");
+  verifyFormat("enum class __attribute__((...)) E {\n} d;");
+  verifyFormat("enum class __declspec__((...)) E {\n} d;");
+  verifyFormat("enum class X f() {\n  a();\n  return 42;\n}");
+}
+
 TEST_F(FormatTest, FormatsBitfields) {
   verifyFormat("struct Bitfields {\n"
                "  unsigned sClass : 8;\n"
@@ -1657,16 +1691,6 @@ TEST_F(FormatTest, StaticInitializers) {
       "  100000000, \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n"
       "};");
 
-  verifyFormat(
-      "static SomeClass = { a, b, c, d, e, f, g, h, i, j,\n"
-      "                     looooooooooooooooooooooooooooooooooongname,\n"
-      "                     looooooooooooooooooooooooooooooong };");
-  // Allow bin-packing in static initializers as this would often lead to
-  // terrible results, e.g.:
-  verifyGoogleFormat(
-      "static SomeClass = {a, b, c, d, e, f, g, h, i, j,\n"
-      "                    looooooooooooooooooooooooooooooooooongname,\n"
-      "                    looooooooooooooooooooooooooooooong};");
   // Here, everything other than the "}" would fit on a line.
   verifyFormat("static int LooooooooooooooooooooooooongVariable[1] = {\n"
                "  100000000000000000000000\n"
@@ -1748,7 +1772,7 @@ TEST_F(FormatTest, NestedStaticInitializers) {
       "struct {\n"
       "  unsigned bit;\n"
       "  const char *const name;\n"
-      "} kBitsToOs[] = { { kOsMac, \"Mac\" }, { kOsWin, \"Windows\" },\n"
+      "} kBitsToOs[] = { { kOsMac, \"Mac\" },     { kOsWin, \"Windows\" },\n"
       "                  { kOsLinux, \"Linux\" }, { kOsCrOS, \"Chrome OS\" } };");
 }
 
@@ -2523,6 +2547,10 @@ TEST_F(FormatTest, BreaksFunctionDeclarations) {
   // 1) break amongst arguments.
   verifyFormat("Aaaaaaaaaaaaaa bbbbbbbbbbbbbb(Cccccccccccccc cccccccccccccc,\n"
                "                              Cccccccccccccc cccccccccccccc);");
+  verifyFormat(
+      "template <class TemplateIt>\n"
+      "SomeReturnType SomeFunction(TemplateIt begin, TemplateIt end,\n"
+      "                            TemplateIt *stop) {}");
 
   // 2) break after return type.
   verifyFormat(
@@ -3490,7 +3518,19 @@ TEST_F(FormatTest, UnderstandsUnaryOperators) {
   verifyFormat("int a = i /* confusing comment */++;");
 }
 
-TEST_F(FormatTest, UndestandsOverloadedOperators) {
+TEST_F(FormatTest, IndentsRelativeToUnaryOperators) {
+  verifyFormat("if (!aaaaaaaaaa( // break\n"
+               "         aaaaa)) {\n"
+               "}");
+  verifyFormat("aaaaaaaaaa(!aaaaaaaaaa( // break\n"
+               "                aaaaa));");
+
+  // Only indent relative to unary operators if the expression is nested.
+  verifyFormat("*aaa = aaaaaaa( // break\n"
+               "    bbbbbb);");
+}
+
+TEST_F(FormatTest, UnderstandsOverloadedOperators) {
   verifyFormat("bool operator<();");
   verifyFormat("bool operator>();");
   verifyFormat("bool operator=();");
@@ -3859,11 +3899,10 @@ TEST_F(FormatTest, BreaksLongDeclarations) {
                "SomeLoooooooooooooooooooooongType<\n"
                "    typename some_namespace::SomeOtherType<A>::Type>\n"
                "Function() {}");
-  verifyFormat(
-      "aaaaaaaaaaaaaaaa::aaaaaaaaaaaaaaaa<aaaaaaaaaaaaa, aaaaaaaaaaaa>\n"
-      "    aaaaaaaaaaaaaaaaaaaaaaa;",
-      getGoogleStyle());
 
+  verifyGoogleFormat(
+      "aaaaaaaaaaaaaaaa::aaaaaaaaaaaaaaaa<aaaaaaaaaaaaa, aaaaaaaaaaaa>\n"
+      "    aaaaaaaaaaaaaaaaaaaaaaa;");
   verifyGoogleFormat(
       "TypeSpecDecl* TypeSpecDecl::Create(ASTContext& C, DeclContext* DC,\n"
       "                                   SourceLocation L) {}");
@@ -4105,6 +4144,57 @@ TEST_F(FormatTest, LayoutCxx11ConstructorBraceInitializers) {
                  "  T member = {arg1, arg2};\n"
                  "};",
                  NoSpaces);
+}
+
+TEST_F(FormatTest, FormatsBracedListsinColumnLayout) {
+  verifyFormat("vector<int> x = { 1, 22, 333, 4444, 55555, 666666, 7777777,\n"
+               "                  1, 22, 333, 4444, 55555, 666666, 7777777,\n"
+               "                  1, 22, 333, 4444, 55555, 666666, 7777777,\n"
+               "                  1, 22, 333, 4444, 55555, 666666, 7777777,\n"
+               "                  1, 22, 333, 4444, 55555, 666666, 7777777,\n"
+               "                  1, 22, 333, 4444, 55555, 666666, 7777777 };");
+  verifyFormat("vector<int> x = { 1, 22, 333, 4444, 55555, 666666, 7777777,\n"
+               "                  // line comment\n"
+               "                  1, 22, 333, 4444, 55555, 666666, 7777777,\n"
+               "                  1, 22, 333, 4444, 55555,\n"
+               "                  // line comment\n"
+               "                  1, 22, 333, 4444, 55555, 666666, 7777777,\n"
+               "                  1, 22, 333, 4444, 55555, 666666, 7777777 };");
+  verifyFormat(
+      "vector<int> x = { 1,       22, 333, 4444, 55555, 666666, 7777777,\n"
+      "                  1,       22, 333, 4444, 55555, 666666, 7777777,\n"
+      "                  1,       22, 333, 4444, 55555, 666666, // comment\n"
+      "                  7777777, 1,  22,  333,  4444,  55555,  666666,\n"
+      "                  7777777, 1,  22,  333,  4444,  55555,  666666,\n"
+      "                  7777777, 1,  22,  333,  4444,  55555,  666666,\n"
+      "                  7777777 };");
+  verifyFormat("static const uint16_t CallerSavedRegs64Bittttt[] = {\n"
+               "  X86::RAX, X86::RDX, X86::RCX, X86::RSI, X86::RDI,\n"
+               "  X86::R8,  X86::R9,  X86::R10, X86::R11, 0\n"
+               "};");
+  verifyFormat("vector<int> x = { 1, 1, 1, 1,\n"
+               "                  1, 1, 1, 1 };",
+               getLLVMStyleWithColumns(39));
+  verifyFormat("vector<int> x = { 1, 1, 1, 1,\n"
+               "                  1, 1, 1, 1 };",
+               getLLVMStyleWithColumns(38));
+  verifyFormat("vector<int> aaaaaaaaaaaaaaaaaaaaaa = {\n"
+               "  1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1\n"
+               "};",
+               getLLVMStyleWithColumns(40));
+
+  // Trailing commas.
+  verifyFormat("vector<int> x = { 1, 1, 1, 1,\n"
+               "                  1, 1, 1, 1, };",
+               getLLVMStyleWithColumns(39));
+  verifyFormat("vector<int> x = {\n"
+               "  1, 1, 1, 1, 1, 1, 1, 1, //\n"
+               "};",
+               getLLVMStyleWithColumns(39));
+  verifyFormat("vector<int> x = { 1, 1, 1, 1,\n"
+               "                  1, 1, 1, 1,\n"
+               "                  /**/ /**/ };",
+               getLLVMStyleWithColumns(39));
 }
 
 TEST_F(FormatTest, PullTrivialFunctionDefinitionsIntoSingleLine) {
@@ -5183,6 +5273,12 @@ TEST_F(FormatTest, BreakStringLiterals) {
             format("llvm::outs() << "
                    "\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa aaaaaaaaaaaaaaaaaa"
                    "aaaaaaaaaaaaaaaaaaa\";"));
+  EXPECT_EQ("ffff(\n"
+            "    {\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \"\n"
+            "     \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"});",
+            format("ffff({\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa "
+                   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"});",
+                   getGoogleStyle()));
 
   FormatStyle AlignLeft = getLLVMStyleWithColumns(12);
   AlignLeft.AlignEscapedNewlinesLeft = true;
@@ -5419,6 +5515,88 @@ TEST_F(FormatTest, ConfigurableUseOfTab) {
                    "\t */\n"
                    "\t int i;\n"
                    "}"));
+}
+
+TEST_F(FormatTest, ConfigurableSpaceAfterControlStatementKeyword) {
+  FormatStyle NoSpace = getLLVMStyle();
+  NoSpace.SpaceAfterControlStatementKeyword = false;
+
+  verifyFormat("while(true)\n"
+               "  continue;", NoSpace);
+  verifyFormat("for(;;)\n"
+               "  continue;", NoSpace);
+  verifyFormat("if(true)\n"
+               "  f();\n"
+               "else if(true)\n"
+               "  f();", NoSpace);
+  verifyFormat("do {\n"
+               "  do_something();\n"
+               "} while(something());", NoSpace);
+  verifyFormat("switch(x) {\n"
+               "default:\n"
+               "  break;\n"
+               "}", NoSpace);
+}
+
+TEST_F(FormatTest, ConfigurableSpacesInParentheses) {
+  FormatStyle Spaces = getLLVMStyle();
+
+  Spaces.SpacesInParentheses = true;
+  verifyFormat("call( x, y, z );", Spaces);
+  verifyFormat("while ( (bool)1 )\n"
+               "  continue;", Spaces);
+  verifyFormat("for ( ;; )\n"
+               "  continue;", Spaces);
+  verifyFormat("if ( true )\n"
+               "  f();\n"
+               "else if ( true )\n"
+               "  f();", Spaces);
+  verifyFormat("do {\n"
+               "  do_something( (int)i );\n"
+               "} while ( something() );", Spaces);
+  verifyFormat("switch ( x ) {\n"
+               "default:\n"
+               "  break;\n"
+               "}", Spaces);
+
+  Spaces.SpacesInParentheses = false;
+  Spaces.SpacesInCStyleCastParentheses = true;
+  verifyFormat("Type *A = ( Type * )P;", Spaces);
+  verifyFormat("Type *A = ( vector<Type *, int *> )P;", Spaces);
+  verifyFormat("x = ( int32 )y;", Spaces);
+  verifyFormat("int a = ( int )(2.0f);", Spaces);
+  verifyFormat("#define AA(X) sizeof((( X * )NULL)->a)", Spaces);
+  verifyFormat("my_int a = ( my_int )sizeof(int);", Spaces);
+  verifyFormat("#define x (( int )-1)", Spaces);
+
+  Spaces.SpacesInParentheses = false;
+  Spaces.SpaceInEmptyParentheses = true;
+  verifyFormat("call(x, y, z);", Spaces);
+  verifyFormat("call( )", Spaces);
+
+  // Run the first set of tests again with
+  // Spaces.SpacesInParentheses = false,
+  // Spaces.SpaceInEmptyParentheses = true and
+  // Spaces.SpacesInCStyleCastParentheses = true
+  Spaces.SpacesInParentheses = false,
+  Spaces.SpaceInEmptyParentheses = true;
+  Spaces.SpacesInCStyleCastParentheses = true;
+  verifyFormat("call(x, y, z);", Spaces);
+  verifyFormat("while (( bool )1)\n"
+               "  continue;", Spaces);
+  verifyFormat("for (;;)\n"
+               "  continue;", Spaces);
+  verifyFormat("if (true)\n"
+               "  f( );\n"
+               "else if (true)\n"
+               "  f( );", Spaces);
+  verifyFormat("do {\n"
+               "  do_something(( int )i);\n"
+               "} while (something( ));", Spaces);
+  verifyFormat("switch (x) {\n"
+               "default:\n"
+               "  break;\n"
+               "}", Spaces);
 }
 
 TEST_F(FormatTest, LinuxBraceBreaking) {
@@ -5658,6 +5836,10 @@ TEST_F(FormatTest, ParsesConfiguration) {
   CHECK_PARSE_BOOL(Cpp11BracedListStyle);
   CHECK_PARSE_BOOL(UseTab);
   CHECK_PARSE_BOOL(IndentFunctionDeclarationAfterType);
+  CHECK_PARSE_BOOL(SpacesInParentheses);
+  CHECK_PARSE_BOOL(SpaceInEmptyParentheses);
+  CHECK_PARSE_BOOL(SpacesInCStyleCastParentheses);
+  CHECK_PARSE_BOOL(SpaceAfterControlStatementKeyword);
 
   CHECK_PARSE("AccessModifierOffset: -1234", AccessModifierOffset, -1234);
   CHECK_PARSE("ConstructorInitializerIndentWidth: 1234",
