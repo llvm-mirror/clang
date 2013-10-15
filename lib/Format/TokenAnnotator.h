@@ -28,7 +28,6 @@ namespace format {
 enum LineType {
   LT_Invalid,
   LT_Other,
-  LT_BuilderTypeCall,
   LT_PreprocessorDirective,
   LT_VirtualFunctionDecl,
   LT_ObjCDecl, // An @interface, @implementation, or @protocol line.
@@ -39,24 +38,40 @@ enum LineType {
 class AnnotatedLine {
 public:
   AnnotatedLine(const UnwrappedLine &Line)
-      : First(Line.Tokens.front()), Level(Line.Level),
+      : First(Line.Tokens.front().Tok), Level(Line.Level),
         InPPDirective(Line.InPPDirective),
         MustBeDeclaration(Line.MustBeDeclaration), MightBeFunctionDecl(false),
         StartsDefinition(false) {
     assert(!Line.Tokens.empty());
     FormatToken *Current = First;
-    for (std::list<FormatToken *>::const_iterator I = ++Line.Tokens.begin(),
-                                                  E = Line.Tokens.end();
+    for (std::list<UnwrappedLineNode>::const_iterator I = ++Line.Tokens.begin(),
+                                                      E = Line.Tokens.end();
          I != E; ++I) {
-      Current->Next = *I;
-      (*I)->Previous = Current;
+      const UnwrappedLineNode &Node = *I;
+      Current->Next = I->Tok;
+      I->Tok->Previous = Current;
       Current = Current->Next;
+      for (SmallVectorImpl<UnwrappedLine>::const_iterator
+               I = Node.Children.begin(),
+               E = Node.Children.end();
+           I != E; ++I) {
+        Children.push_back(new AnnotatedLine(*I));
+        Current->Children.push_back(Children.back());
+      }
     }
     Last = Current;
   }
 
+  ~AnnotatedLine() {
+    for (unsigned i = 0, e = Children.size(); i != e; ++i) {
+      delete Children[i];
+    }
+  }
+
   FormatToken *First;
   FormatToken *Last;
+
+  SmallVector<AnnotatedLine *, 0> Children;
 
   LineType Type;
   unsigned Level;
@@ -64,6 +79,11 @@ public:
   bool MustBeDeclaration;
   bool MightBeFunctionDecl;
   bool StartsDefinition;
+
+private:
+  // Disallow copying.
+  AnnotatedLine(const AnnotatedLine &) LLVM_DELETED_FUNCTION;
+  void operator=(const AnnotatedLine &) LLVM_DELETED_FUNCTION;
 };
 
 /// \brief Determines extra information about the tokens comprising an
@@ -72,6 +92,11 @@ class TokenAnnotator {
 public:
   TokenAnnotator(const FormatStyle &Style, IdentifierInfo &Ident_in)
       : Style(Style), Ident_in(Ident_in) {}
+
+  /// \brief Adapts the indent levels of comment lines to the indent of the
+  /// subsequent line.
+  // FIXME: Can/should this be done in the UnwrappedLineParser?
+  void setCommentLineLevels(SmallVectorImpl<AnnotatedLine *> &Lines);
 
   void annotate(AnnotatedLine &Line);
   void calculateFormattingInformation(AnnotatedLine &Line);
@@ -84,6 +109,8 @@ private:
                             const FormatToken &Right);
 
   bool spaceRequiredBefore(const AnnotatedLine &Line, const FormatToken &Tok);
+
+  bool mustBreakBefore(const AnnotatedLine &Line, const FormatToken &Right);
 
   bool canBreakBefore(const AnnotatedLine &Line, const FormatToken &Right);
 

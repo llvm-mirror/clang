@@ -24,6 +24,8 @@
 namespace clang {
 namespace format {
 
+struct UnwrappedLineNode;
+
 /// \brief An unwrapped line is a sequence of \c Token, that we would like to
 /// put on a single line if there was no column limit.
 ///
@@ -31,11 +33,11 @@ namespace format {
 /// \c UnwrappedLineFormatter. The key property is that changing the formatting
 /// within an unwrapped line does not affect any other unwrapped lines.
 struct UnwrappedLine {
-  UnwrappedLine() : Level(0), InPPDirective(false), MustBeDeclaration(false) {}
+  UnwrappedLine();
 
   // FIXME: Don't use std::list here.
   /// \brief The \c Tokens comprising this \c UnwrappedLine.
-  std::list<FormatToken *> Tokens;
+  std::list<UnwrappedLineNode> Tokens;
 
   /// \brief The indent level of the \c UnwrappedLine.
   unsigned Level;
@@ -50,6 +52,7 @@ class UnwrappedLineConsumer {
 public:
   virtual ~UnwrappedLineConsumer() {}
   virtual void consumeUnwrappedLine(const UnwrappedLine &Line) = 0;
+  virtual void finishRun() = 0;
 };
 
 class FormatTokenSource;
@@ -63,20 +66,22 @@ public:
   bool parse();
 
 private:
+  void reset();
   void parseFile();
   void parseLevel(bool HasOpeningBrace);
-  void parseBlock(bool MustBeDeclaration, bool AddLevel = true);
+  void parseBlock(bool MustBeDeclaration, bool AddLevel = true,
+                  bool MunchSemi = true);
+  void parseChildBlock();
   void parsePPDirective();
   void parsePPDefine();
-  void parsePPIf();
-  void parsePPIfdef();
+  void parsePPIf(bool IfDef);
   void parsePPElIf();
   void parsePPElse();
   void parsePPEndIf();
   void parsePPUnknown();
   void parseStructuralElement();
   bool tryToParseBracedList();
-  void parseBracedList();
+  bool parseBracedList(bool ContinueOnSemicolons = false);
   void parseReturn();
   void parseParens();
   void parseIfThenElse();
@@ -93,6 +98,8 @@ private:
   void parseObjCUntilAtEnd();
   void parseObjCInterfaceOrImplementation();
   void parseObjCProtocol();
+  void tryToParseLambda();
+  bool tryToParseLambdaIntroducer();
   void addUnwrappedLine();
   bool eof() const;
   void nextToken();
@@ -116,18 +123,18 @@ private:
   bool MustBreakBeforeNextToken;
 
   // The parsed lines. Only added to through \c CurrentLines.
-  std::vector<UnwrappedLine> Lines;
+  SmallVector<UnwrappedLine, 8> Lines;
 
   // Preprocessor directives are parsed out-of-order from other unwrapped lines.
   // Thus, we need to keep a list of preprocessor directives to be reported
   // after an unwarpped line that has been started was finished.
-  std::vector<UnwrappedLine> PreprocessorDirectives;
+  SmallVector<UnwrappedLine, 4> PreprocessorDirectives;
 
   // New unwrapped lines are added via CurrentLines.
   // Usually points to \c &Lines. While parsing a preprocessor directive when
   // there is an unfinished previous unwrapped line, will point to
   // \c &PreprocessorDirectives.
-  std::vector<UnwrappedLine> *CurrentLines;
+  SmallVectorImpl<UnwrappedLine> *CurrentLines;
 
   // We store for each line whether it must be a declaration depending on
   // whether we are in a compound statement or not.
@@ -156,8 +163,40 @@ private:
   // Keeps a stack of currently active preprocessor branching directives.
   SmallVector<PPBranchKind, 16> PPStack;
 
+  // The \c UnwrappedLineParser re-parses the code for each combination
+  // of preprocessor branches that can be taken.
+  // To that end, we take the same branch (#if, #else, or one of the #elif
+  // branches) for each nesting level of preprocessor branches.
+  // \c PPBranchLevel stores the current nesting level of preprocessor
+  // branches during one pass over the code.
+  int PPBranchLevel;
+
+  // Contains the current branch (#if, #else or one of the #elif branches)
+  // for each nesting level.
+  SmallVector<int, 8> PPLevelBranchIndex;
+
+  // Contains the maximum number of branches at each nesting level.
+  SmallVector<int, 8> PPLevelBranchCount;
+
+  // Contains the number of branches per nesting level we are currently
+  // in while parsing a preprocessor branch sequence.
+  // This is used to update PPLevelBranchCount at the end of a branch
+  // sequence.
+  std::stack<int> PPChainBranchIndex;
+
   friend class ScopedLineState;
 };
+
+struct UnwrappedLineNode {
+  UnwrappedLineNode() : Tok(NULL) {}
+  UnwrappedLineNode(FormatToken *Tok) : Tok(Tok) {}
+
+  FormatToken *Tok;
+  SmallVector<UnwrappedLine, 0> Children;
+};
+
+inline UnwrappedLine::UnwrappedLine()
+    : Level(0), InPPDirective(false), MustBeDeclaration(false) {}
 
 } // end namespace format
 } // end namespace clang

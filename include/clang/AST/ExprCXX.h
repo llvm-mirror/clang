@@ -566,7 +566,7 @@ public:
 
   /// \brief Retrieves the type operand of this typeid() expression after
   /// various required adjustments (removing reference types, cv-qualifiers).
-  QualType getTypeOperand() const;
+  QualType getTypeOperand(ASTContext &Context) const;
 
   /// \brief Retrieve source information for the type operand.
   TypeSourceInfo *getTypeOperandSourceInfo() const {
@@ -701,7 +701,7 @@ public:
 
   /// \brief Retrieves the type operand of this __uuidof() expression after
   /// various required adjustments (removing reference types, cv-qualifiers).
-  QualType getTypeOperand() const;
+  QualType getTypeOperand(ASTContext &Context) const;
 
   /// \brief Retrieve source information for the type operand.
   TypeSourceInfo *getTypeOperandSourceInfo() const {
@@ -735,8 +735,10 @@ public:
     return T->getStmtClass() == CXXUuidofExprClass;
   }
 
-  /// Grabs __declspec(uuid()) off a type, or returns 0 if there is none.
-  static UuidAttr *GetUuidAttrOfType(QualType QT);
+  /// Grabs __declspec(uuid()) off a type, or returns 0 if we cannot resolve to
+  /// a single GUID.
+  static UuidAttr *GetUuidAttrOfType(QualType QT,
+                                     bool *HasMultipleGUIDsPtr = 0);
 
   // Iterators
   child_range children() {
@@ -1070,7 +1072,7 @@ private:
   CXXConstructorDecl *Constructor;
 
   SourceLocation Loc;
-  SourceRange ParenRange;
+  SourceRange ParenOrBraceRange;
   unsigned NumArgs : 16;
   bool Elidable : 1;
   bool HadMultipleCandidates : 1;
@@ -1088,7 +1090,7 @@ protected:
                    bool ListInitialization,
                    bool ZeroInitialization,
                    ConstructionKind ConstructKind,
-                   SourceRange ParenRange);
+                   SourceRange ParenOrBraceRange);
 
   /// \brief Construct an empty C++ construction expression.
   CXXConstructExpr(StmtClass SC, EmptyShell Empty)
@@ -1114,7 +1116,7 @@ public:
                                   bool ListInitialization,
                                   bool ZeroInitialization,
                                   ConstructionKind ConstructKind,
-                                  SourceRange ParenRange);
+                                  SourceRange ParenOrBraceRange);
 
   CXXConstructorDecl* getConstructor() const { return Constructor; }
   void setConstructor(CXXConstructorDecl *C) { Constructor = C; }
@@ -1180,8 +1182,8 @@ public:
 
   SourceLocation getLocStart() const LLVM_READONLY;
   SourceLocation getLocEnd() const LLVM_READONLY;
-  SourceRange getParenRange() const { return ParenRange; }
-  void setParenRange(SourceRange Range) { ParenRange = Range; }
+  SourceRange getParenOrBraceRange() const { return ParenOrBraceRange; }
+  void setParenOrBraceRange(SourceRange Range) { ParenOrBraceRange = Range; }
 
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CXXConstructExprClass ||
@@ -1264,7 +1266,7 @@ public:
   CXXTemporaryObjectExpr(const ASTContext &C, CXXConstructorDecl *Cons,
                          TypeSourceInfo *Type,
                          ArrayRef<Expr *> Args,
-                         SourceRange parenRange,
+                         SourceRange ParenOrBraceRange,
                          bool HadMultipleCandidates,
                          bool ListInitialization,
                          bool ZeroInitialization);
@@ -1386,9 +1388,6 @@ public:
             LambdaCaptureKind Kind, VarDecl *Var = 0,
             SourceLocation EllipsisLoc = SourceLocation());
 
-    /// \brief Create a new init-capture.
-    Capture(FieldDecl *Field);
-
     /// \brief Determine the kind of capture.
     LambdaCaptureKind getCaptureKind() const;
 
@@ -1402,7 +1401,9 @@ public:
     }
 
     /// \brief Determine whether this is an init-capture.
-    bool isInitCapture() const { return getCaptureKind() == LCK_Init; }
+    bool isInitCapture() const {
+      return capturesVariable() && getCapturedVar()->isInitCapture();
+    }
 
     /// \brief Retrieve the declaration of the local variable being
     /// captured.
@@ -1412,16 +1413,6 @@ public:
     VarDecl *getCapturedVar() const {
       assert(capturesVariable() && "No variable available for 'this' capture");
       return cast<VarDecl>(DeclAndBits.getPointer());
-    }
-
-    /// \brief Retrieve the field for an init-capture.
-    ///
-    /// This works only for an init-capture.  To retrieve the FieldDecl for
-    /// a captured variable or for a capture of \c this, use
-    /// LambdaExpr::getLambdaClass and CXXRecordDecl::getCaptureFields.
-    FieldDecl *getInitCaptureField() const {
-      assert(getCaptureKind() == LCK_Init && "no field for non-init-capture");
-      return cast<FieldDecl>(DeclAndBits.getPointer());
     }
 
     /// \brief Determine whether this was an implicit capture (not
@@ -1571,16 +1562,6 @@ public:
     return capture_init_begin() + NumCaptures;    
   }
 
-  /// \brief Retrieve the initializer for an init-capture.
-  Expr *getInitCaptureInit(capture_iterator Capture) {
-    assert(Capture >= explicit_capture_begin() &&
-           Capture <= explicit_capture_end() && Capture->isInitCapture());
-    return capture_init_begin()[Capture - capture_begin()];
-  }
-  const Expr *getInitCaptureInit(capture_iterator Capture) const {
-    return const_cast<LambdaExpr*>(this)->getInitCaptureInit(Capture);
-  }
-
   /// \brief Retrieve the set of index variables used in the capture 
   /// initializer of an array captured by copy.
   ///
@@ -1603,6 +1584,13 @@ public:
   /// \brief Retrieve the function call operator associated with this
   /// lambda expression. 
   CXXMethodDecl *getCallOperator() const;
+
+  /// \brief If this is a generic lambda expression, retrieve the template 
+  /// parameter list associated with it, or else return null. 
+  TemplateParameterList *getTemplateParameterList() const;
+
+  /// \brief Whether this is a generic lambda.
+  bool isGenericLambda() const { return getTemplateParameterList(); }
 
   /// \brief Retrieve the body of the lambda.
   CompoundStmt *getBody() const;
@@ -2774,7 +2762,7 @@ public:
 /// DependentScopeDeclRefExpr node is used only within C++ templates when
 /// the qualification (e.g., X<T>::) refers to a dependent type. In
 /// this case, X<T>::value cannot resolve to a declaration because the
-/// declaration will differ from on instantiation of X<T> to the
+/// declaration will differ from one instantiation of X<T> to the
 /// next. Therefore, DependentScopeDeclRefExpr keeps track of the
 /// qualifier (X<T>::) and the name of the entity being referenced
 /// ("value"). Such expressions will instantiate to a DeclRefExpr once the
@@ -2826,12 +2814,13 @@ public:
   DeclarationName getDeclName() const { return NameInfo.getName(); }
 
   /// \brief Retrieve the location of the name within the expression.
+  ///
+  /// For example, in "X<T>::value" this is the location of "value".
   SourceLocation getLocation() const { return NameInfo.getLoc(); }
 
   /// \brief Retrieve the nested-name-specifier that qualifies the
   /// name, with source location information.
   NestedNameSpecifierLoc getQualifierLoc() const { return QualifierLoc; }
-
 
   /// \brief Retrieve the nested-name-specifier that qualifies this
   /// declaration.
@@ -2904,6 +2893,8 @@ public:
     return getExplicitTemplateArgs().NumTemplateArgs;
   }
 
+  /// Note: getLocStart() is the start of the whole DependentScopeDeclRefExpr,
+  /// and differs from getLocation().getStart().
   SourceLocation getLocStart() const LLVM_READONLY {
     return QualifierLoc.getBeginLoc();
   }

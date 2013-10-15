@@ -20,9 +20,9 @@
 // RUN: %clang_cl /GR- -### -- %s 2>&1 | FileCheck -check-prefix=GR_ %s
 // GR_: -fno-rtti
 
-// RUN: %clang_cl /Imyincludedir -### -- %s 2>&1 | FileCheck -check-prefix=I %s
-// RUN: %clang_cl /I myincludedir -### -- %s 2>&1 | FileCheck -check-prefix=I %s
-// I: "-I" "myincludedir"
+// RUN: %clang_cl /Imyincludedir -### -- %s 2>&1 | FileCheck -check-prefix=SLASH_I %s
+// RUN: %clang_cl /I myincludedir -### -- %s 2>&1 | FileCheck -check-prefix=SLASH_I %s
+// SLASH_I: "-I" "myincludedir"
 
 // RUN: %clang_cl /J -### -- %s 2>&1 | FileCheck -check-prefix=J %s
 // J: -fno-signed-char
@@ -88,22 +88,50 @@
 // RUN: %clang_cl /Zs -### -- %s 2>&1 | FileCheck -check-prefix=Zs %s
 // Zs: -fsyntax-only
 
+// RUN: %clang_cl /FIasdf.h -### -- %s 2>&1 | FileCheck -check-prefix=FI %s
+// FI: "-include" "asdf.h"
+
+// We forward any unrecognized -W diagnostic options to cc1.
+// RUN: %clang_cl -Wunused-pragmas -### -- %s 2>&1 | FileCheck -check-prefix=WJoined %s
+// WJoined: "-cc1"
+// WJoined: "-Wunused-pragmas"
+
 
 // Ignored options. Check that we don't get "unused during compilation" errors.
 // (/Zs is for syntax-only, /WX is for -Werror)
 // RUN: %clang_cl /Zs /WX /analyze- /errorReport:foo /nologo /Ob1 /Ob2 -- %s
-// RUN: %clang_cl /Zs /WX /Zc:forScope /Zc:wchar_t /wd1234 -- %s
+// RUN: %clang_cl /Zs /WX /Zc:forScope /Zc:wchar_t /w12345 /wd1234 /RTC1 /GS- -- %s
+// RUN: %clang_cl /Zs /WX /sdl /sdl- -- %s
+
+// Ignored options and compile-only options are ignored for link jobs.
+// RUN: touch %t.obj
+// RUN: %clang_cl /nologo -### -- %t.obj 2>&1 | FileCheck -check-prefix=LINKUNUSED %s
+// RUN: %clang_cl /Dfoo -### -- %t.obj 2>&1 | FileCheck -check-prefix=LINKUNUSED %s
+// RUN: %clang_cl /MD -### -- %t.obj 2>&1 | FileCheck -check-prefix=LINKUNUSED %s
+// LINKUNUSED-NOT: argument unused during compilation
+
+// Support ignoring warnings about unused arguments.
+// RUN: %clang_cl /Abracadabra -Qunused-arguments -### -- %s 2>&1 | FileCheck -check-prefix=UNUSED %s
+// UNUSED-NOT: warning
 
 
 // Unsupported but parsed options. Check that we don't error on them.
 // (/Zs is for syntax-only)
 // RUN: %clang_cl /Zs /EHsc /Fdfoo /fp:precise /Gd /GL /GL- -- %s 2>&1
 // RUN: %clang_cl /Zs /Gm /Gm- /GS /Gy /Gy- /GZ -- %s 2>&1
-// RUN: %clang_cl /Zs /RTC1 /wfoo /Zc:wchar_t- -- %s 2>&1
+// RUN: %clang_cl /Zs /ofoo.obj /o foo.obj -- %s 2>&1
+// RUN: %clang_cl /Zs /wfoo /Zc:wchar_t- -- %s 2>&1
 // RUN: %clang_cl /Zs /ZI /Zi /MP -- %s 2>&1
+// RUN: %clang_cl /Zs /FA /FAc /FAs /FAu /Fafilename -- %s 2>&1
 
 
 // We support -Xclang for forwarding options to cc1.
 // RUN: %clang_cl -Xclang hellocc1 -### -- %s 2>&1 | FileCheck -check-prefix=Xclang %s
 // Xclang: "-cc1"
 // Xclang: "hellocc1"
+
+// We support -m32 and -m64.
+// RUN: %clang_cl /Zs /WX -m32 -m64 -- %s
+
+
+void f() { }

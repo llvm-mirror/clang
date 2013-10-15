@@ -98,3 +98,86 @@ void testBuiltinSize() {
   extern int *dummy();
   (void)__builtin_object_size(dummy(), 0);
 }
+
+
+class A {
+public:
+  A() {}
+  ~A() {}
+};
+
+// CHECK: [B2 (ENTRY)]
+// CHECK-NEXT:   Succs (1): B1
+// CHECK: [B1]
+// CHECK-NEXT:   1:  (CXXConstructExpr, class A)
+// CHECK-NEXT:   2: new A([B1.1])
+// CHECK-NEXT:   3: A *a = new A();
+// CHECK-NEXT:   4: a
+// CHECK-NEXT:   5: [B1.4] (ImplicitCastExpr, LValueToRValue, class A *)
+// CHECK-NEXT:   6: [B1.5]->~A() (Implicit destructor)
+// CHECK-NEXT:   7: delete [B1.5]
+// CHECK-NEXT:   Preds (1): B2
+// CHECK-NEXT:   Succs (1): B0
+// CHECK: [B0 (EXIT)]
+// CHECK-NEXT:   Preds (1): B1
+void test_deletedtor() {
+  A *a = new A();
+  delete a;
+}
+
+// CHECK: [B2 (ENTRY)]
+// CHECK-NEXT:   Succs (1): B1
+// CHECK: [B1]
+// CHECK-NEXT:   1: 5
+// CHECK-NEXT:   2:  (CXXConstructExpr, class A)
+// CHECK-NEXT:   3: new A {{\[\[}}B1.1]]
+// CHECK-NEXT:   4: A *a = new A [5];
+// CHECK-NEXT:   5: a
+// CHECK-NEXT:   6: [B1.5] (ImplicitCastExpr, LValueToRValue, class A *)
+// CHECK-NEXT:   7: [B1.6]->~A() (Implicit destructor)
+// CHECK-NEXT:   8: delete [] [B1.6]
+// CHECK-NEXT:   Preds (1): B2
+// CHECK-NEXT:   Succs (1): B0
+// CHECK: [B0 (EXIT)]
+// CHECK-NEXT:   Preds (1): B1
+void test_deleteArraydtor() {
+  A *a = new A[5];
+  delete[] a;
+}
+
+
+namespace NoReturnSingleSuccessor {
+  struct A {
+    A();
+    ~A();
+  };
+
+  struct B : public A {
+    B();
+    ~B() __attribute__((noreturn));
+  };
+
+// CHECK: ENTRY
+// CHECK: 1: 1
+// CHECK-NEXT: 2: return
+// CHECK-NEXT: ~B() (Implicit destructor)
+// CHECK-NEXT: Preds (1)
+// CHECK-NEXT: Succs (1): B0
+  int test1(int *x) {
+    B b;
+    if (x)
+      return 1;
+  }
+
+// CHECK: ENTRY
+// CHECK: 1: 1
+// CHECK-NEXT: 2: return
+// CHECK-NEXT: destructor
+// CHECK-NEXT: Preds (1)
+// CHECK-NEXT: Succs (1): B0
+  int test2(int *x) {
+    const A& a = B();
+    if (x)
+      return 1;
+  }
+}

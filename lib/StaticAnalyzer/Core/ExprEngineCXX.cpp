@@ -91,6 +91,12 @@ void ExprEngine::performTrivialCopy(NodeBuilder &Bldr, ExplodedNode *Pred,
 /// If the type is not an array type at all, the original value is returned.
 static SVal makeZeroElementRegion(ProgramStateRef State, SVal LValue,
                                   QualType &Ty) {
+  // FIXME: This check is just a temporary workaround, because
+  // ProcessTemporaryDtor sends us NULL regions. It will not be necessary once
+  // we can properly process temporary destructors.
+  if (!LValue.getAsRegion())
+    return LValue;
+
   SValBuilder &SVB = State->getStateManager().getSValBuilder();
   ASTContext &Ctx = SVB.getContext();
 
@@ -290,7 +296,9 @@ void ExprEngine::VisitCXXDestructor(QualType ObjectType,
   // FIXME: We need to run the same destructor on every element of the array.
   // This workaround will just run the first destructor (which will still
   // invalidate the entire array).
-  SVal DestVal = loc::MemRegionVal(Dest);
+  SVal DestVal = UnknownVal();
+  if (Dest)
+    DestVal = loc::MemRegionVal(Dest);
   DestVal = makeZeroElementRegion(State, DestVal, ObjectType);
   Dest = DestVal.getAsRegion();
 
@@ -367,11 +375,14 @@ void ExprEngine::VisitCXXNewExpr(const CXXNewExpr *CNE, ExplodedNode *Pred,
   if (!State)
     return;
 
-  // If we're compiling with exceptions enabled, and this allocation function
-  // is not declared as non-throwing, failures /must/ be signalled by
-  // exceptions, and thus the return value will never be NULL.
+  // If this allocation function is not declared as non-throwing, failures
+  // /must/ be signalled by exceptions, and thus the return value will never be
+  // NULL. -fno-exceptions does not influence this semantics.
+  // FIXME: GCC has a -fcheck-new option, which forces it to consider the case
+  // where new can return NULL. If we end up supporting that option, we can
+  // consider adding a check for it here.
   // C++11 [basic.stc.dynamic.allocation]p3.
-  if (FD && getContext().getLangOpts().CXXExceptions) {
+  if (FD) {
     QualType Ty = FD->getType();
     if (const FunctionProtoType *ProtoType = Ty->getAs<FunctionProtoType>())
       if (!ProtoType->isNothrow(getContext()))

@@ -3028,6 +3028,10 @@ ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
     }
   }
   UnresolvedModuleRefs.clear();
+
+  // FIXME: How do we load the 'use'd modules? They may not be submodules.
+  // Might be unnecessary as use declarations are only used to build the
+  // module itself.
   
   InitializeContext();
 
@@ -6972,14 +6976,14 @@ ReadTemplateArgumentList(SmallVectorImpl<TemplateArgument> &TemplArgs,
 }
 
 /// \brief Read a UnresolvedSet structure.
-void ASTReader::ReadUnresolvedSet(ModuleFile &F, ASTUnresolvedSet &Set,
+void ASTReader::ReadUnresolvedSet(ModuleFile &F, LazyASTUnresolvedSet &Set,
                                   const RecordData &Record, unsigned &Idx) {
   unsigned NumDecls = Record[Idx++];
   Set.reserve(Context, NumDecls);
   while (NumDecls--) {
-    NamedDecl *D = ReadDeclAs<NamedDecl>(F, Record, Idx);
+    DeclID ID = ReadDeclID(F, Record, Idx);
     AccessSpecifier AS = (AccessSpecifier)Record[Idx++];
-    Set.addDecl(Context, D, AS);
+    Set.addLazyDecl(Context, ID, AS);
   }
 }
 

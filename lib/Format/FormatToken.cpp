@@ -36,12 +36,17 @@ unsigned CommaSeparatedList::format(LineState &State,
   // Ensure that we start on the opening brace.
   const FormatToken *LBrace = State.NextToken->Previous->Previous;
   if (LBrace->isNot(tok::l_brace) ||
+      LBrace->BlockKind == BK_Block ||
       LBrace->Next->Type == TT_DesignatedInitializerPeriod)
     return 0;
 
+  // Calculate the number of code points we have to format this list. As the
+  // first token is already placed, we have to subtract it.
+  unsigned RemainingCodePoints = Style.ColumnLimit - State.Column +
+                                 State.NextToken->Previous->ColumnWidth;
+
   // Find the best ColumnFormat, i.e. the best number of columns to use.
-  unsigned RemainingCharacters = Style.ColumnLimit - State.Stack.back().Indent;
-  const ColumnFormat *Format = getColumnFormat(RemainingCharacters);
+  const ColumnFormat *Format = getColumnFormat(RemainingCodePoints);
   if (!Format)
     return 0;
 
@@ -78,7 +83,7 @@ unsigned CommaSeparatedList::format(LineState &State,
 static unsigned CodePointsBetween(const FormatToken *Begin,
                                   const FormatToken *End) {
   assert(End->TotalLength >= Begin->TotalLength);
-  return End->TotalLength - Begin->TotalLength + Begin->CodePointCount;
+  return End->TotalLength - Begin->TotalLength + Begin->ColumnWidth;
 }
 
 void CommaSeparatedList::precomputeFormattingInfos(const FormatToken *Token) {
@@ -140,6 +145,7 @@ void CommaSeparatedList::precomputeFormattingInfos(const FormatToken *Token) {
     bool HasRowWithSufficientColumns = false;
     unsigned Column = 0;
     for (unsigned i = 0, e = ItemLengths.size(); i != e; ++i) {
+      assert(i < MustBreakBeforeItem.size());
       if (MustBreakBeforeItem[i] || Column == Columns) {
         ++Format.LineCount;
         Column = 0;

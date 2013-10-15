@@ -335,11 +335,15 @@ option(CLANG_INCLUDE_TESTS
        "Generate build targets for the Clang unit tests."
        ${LLVM_INCLUDE_TESTS})
 
-# TODO: docs.
-
 if( CLANG_INCLUDE_TESTS )
   add_subdirectory(test)
   add_subdirectory(unittests)
+endif()
+
+option(CLANG_INCLUDE_DOCS "Generate build targets for the Clang docs."
+  ${LLVM_INCLUDE_DOCS})
+if( CLANG_INCLUDE_DOCS )
+  add_subdirectory(docs)
 endif()
 
 # Workaround for MSVS10 to avoid the Dialog Hell
@@ -354,5 +358,5 @@ endif()
 set(BUG_REPORT_URL "http://llvm.org/bugs/" CACHE STRING
   "Default URL where bug reports are to be submitted.")
 
-option(CLANG_ORDER_FILE
-  "Order file to use when compiling clang in order to improve startup time." "")
+set(CLANG_ORDER_FILE "" CACHE FILEPATH
+  "Order file to use when compiling clang in order to improve startup time.")

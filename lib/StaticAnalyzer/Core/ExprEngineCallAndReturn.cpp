@@ -740,10 +740,10 @@ static bool isCXXSharedPtrDtor(const FunctionDecl *FD) {
 /// This checks static properties of the function, such as its signature and
 /// CFG, to determine whether the analyzer should ever consider inlining it,
 /// in any context.
-static bool mayInlineDecl(const CallEvent &Call, AnalysisDeclContext *CalleeADC,
+static bool mayInlineDecl(AnalysisDeclContext *CalleeADC,
                           AnalyzerOptions &Opts) {
   // FIXME: Do not inline variadic calls.
-  if (Call.isVariadic())
+  if (CallEvent::isVariadic(CalleeADC->getDecl()))
     return false;
 
   // Check certain C++-related inlining policies.
@@ -807,6 +807,14 @@ bool ExprEngine::shouldInlineCall(const CallEvent &Call, const Decl *D,
   AnalysisDeclContextManager &ADCMgr = AMgr.getAnalysisDeclContextManager();
   AnalysisDeclContext *CalleeADC = ADCMgr.getContext(D);
 
+  // Temporary object destructor processing is currently broken, so we never
+  // inline them.
+  // FIXME: Remove this once temp destructors are working.
+  if (isa<CXXDestructorCall>(Call)) {
+    if ((*currBldrCtx->getBlock())[currStmtIdx].getAs<CFGTemporaryDtor>())
+      return false;
+  }
+
   // The auto-synthesized bodies are essential to inline as they are
   // usually small and commonly used. Note: we should do this check early on to
   // ensure we always inline these calls.
@@ -825,7 +833,7 @@ bool ExprEngine::shouldInlineCall(const CallEvent &Call, const Decl *D,
   } else {
     // We haven't actually checked the static properties of this function yet.
     // Do that now, and record our decision in the function summaries.
-    if (mayInlineDecl(Call, CalleeADC, Opts)) {
+    if (mayInlineDecl(CalleeADC, Opts)) {
       Engine.FunctionSummaries->markMayInline(D);
     } else {
       Engine.FunctionSummaries->markShouldNotInline(D);

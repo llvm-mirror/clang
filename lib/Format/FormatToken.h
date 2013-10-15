@@ -26,6 +26,7 @@ namespace format {
 
 enum TokenType {
   TT_BinaryOperator,
+  TT_BitFieldColon,
   TT_BlockComment,
   TT_CastRParen,
   TT_ConditionalExpr,
@@ -36,6 +37,7 @@ enum TokenType {
   TT_InlineASMColon,
   TT_InheritanceColon,
   TT_FunctionTypeLParen,
+  TT_LambdaLSquare,
   TT_LineComment,
   TT_ObjCArrayLiteral,
   TT_ObjCBlockLParen,
@@ -74,22 +76,31 @@ enum ParameterPackingKind {
   PPK_Inconclusive
 };
 
+enum FormatDecision {
+  FD_Unformatted,
+  FD_Continue,
+  FD_Break
+};
+
 class TokenRole;
+class AnnotatedLine;
 
 /// \brief A wrapper around a \c Token storing information about the
 /// whitespace characters preceeding it.
 struct FormatToken {
   FormatToken()
       : NewlinesBefore(0), HasUnescapedNewline(false), LastNewlineOffset(0),
-        CodePointCount(0), IsFirst(false), MustBreakBefore(false),
-        IsUnterminatedLiteral(false), BlockKind(BK_Unknown), Type(TT_Unknown),
-        SpacesRequiredBefore(0), CanBreakBefore(false),
-        ClosesTemplateDeclaration(false), ParameterCount(0),
-        PackingKind(PPK_Inconclusive), TotalLength(0), UnbreakableTailLength(0),
-        BindingStrength(0), SplitPenalty(0), LongestObjCSelectorName(0),
-        FakeRParens(0), LastInChainOfCalls(false),
-        PartOfMultiVariableDeclStmt(false), MatchingParen(NULL), Previous(NULL),
-        Next(NULL) {}
+        ColumnWidth(0), LastLineColumnWidth(0), IsMultiline(false),
+        IsFirst(false), MustBreakBefore(false), IsUnterminatedLiteral(false),
+        BlockKind(BK_Unknown), Type(TT_Unknown), SpacesRequiredBefore(0),
+        CanBreakBefore(false), ClosesTemplateDeclaration(false),
+        ParameterCount(0), PackingKind(PPK_Inconclusive), TotalLength(0),
+        UnbreakableTailLength(0), BindingStrength(0), SplitPenalty(0),
+        LongestObjCSelectorName(0), FakeRParens(0),
+        StartsBinaryExpression(false), EndsBinaryExpression(false),
+        LastInChainOfCalls(false), PartOfMultiVariableDeclStmt(false),
+        MatchingParen(NULL), Previous(NULL), Next(NULL),
+        Decision(FD_Unformatted), Finalized(false) {}
 
   /// \brief The \c Token.
   Token Tok;
@@ -111,9 +122,17 @@ struct FormatToken {
   /// whitespace (relative to \c WhiteSpaceStart). 0 if there is no '\n'.
   unsigned LastNewlineOffset;
 
-  /// \brief The length of the non-whitespace parts of the token in CodePoints.
+  /// \brief The width of the non-whitespace parts of the token (or its first
+  /// line for multi-line tokens) in columns.
   /// We need this to correctly measure number of columns a token spans.
-  unsigned CodePointCount;
+  unsigned ColumnWidth;
+
+  /// \brief Contains the width in columns of the last line of a multi-line
+  /// token.
+  unsigned LastLineColumnWidth;
+
+  /// \brief Whether the token text contains newlines (escaped or not).
+  bool IsMultiline;
 
   /// \brief Indicates that this is the first token.
   bool IsFirst;
@@ -169,8 +188,13 @@ struct FormatToken {
   /// \brief If this is an opening parenthesis, how are the parameters packed?
   ParameterPackingKind PackingKind;
 
-  /// \brief The total length of the line up to and including this token.
+  /// \brief The total length of the unwrapped line up to and including this
+  /// token.
   unsigned TotalLength;
+
+  /// \brief The original 0-based column of this token, including expanded tabs.
+  /// The configured TabWidth is used as tab width.
+  unsigned OriginalColumn;
 
   /// \brief The length of following tokens until the next natural split point,
   /// or the next token that can be broken.
@@ -196,6 +220,12 @@ struct FormatToken {
   SmallVector<prec::Level, 4> FakeLParens;
   /// \brief Insert this many fake ) after this token for correct indentation.
   unsigned FakeRParens;
+
+  /// \brief \c true if this token starts a binary expression, i.e. has at least
+  /// one fake l_paren with a precedence greater than prec::Unknown.
+  bool StartsBinaryExpression;
+  /// \brief \c true if this token ends a binary expression.
+  bool EndsBinaryExpression;
 
   /// \brief Is this the last "." or "->" in a builder-type call?
   bool LastInChainOfCalls;
@@ -257,6 +287,12 @@ struct FormatToken {
            Type == TT_TemplateCloser;
   }
 
+  /// \brief Returns \c true if this is a "." or "->" accessing a member.
+  bool isMemberAccess() const {
+    return isOneOf(tok::arrow, tok::period) &&
+           Type != TT_DesignatedInitializerPeriod;
+  }
+
   bool isUnaryOperator() const {
     switch (Tok.getKind()) {
     case tok::plus:
@@ -272,10 +308,12 @@ struct FormatToken {
       return false;
     }
   }
+
   bool isBinaryOperator() const {
     // Comma is a binary operator, but does not behave as such wrt. formatting.
     return getPrecedence() > prec::Comma;
   }
+
   bool isTrailingComment() const {
     return is(tok::comment) && (!Next || Next->NewlinesBefore > 0);
   }
@@ -304,6 +342,16 @@ struct FormatToken {
 
   FormatToken *Previous;
   FormatToken *Next;
+
+  SmallVector<AnnotatedLine *, 1> Children;
+
+  /// \brief Stores the formatting decision for the token once it was made.
+  FormatDecision Decision;
+
+  /// \brief If \c true, this token has been fully formatted (indented and
+  /// potentially re-formatted inside), and we do not allow further formatting
+  /// changes.
+  bool Finalized;
 
 private:
   // Disallow copying.

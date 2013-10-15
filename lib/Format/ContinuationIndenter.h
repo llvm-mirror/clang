@@ -35,14 +35,14 @@ public:
   /// \brief Constructs a \c ContinuationIndenter to format \p Line starting in
   /// column \p FirstIndent.
   ContinuationIndenter(const FormatStyle &Style, SourceManager &SourceMgr,
-                       const AnnotatedLine &Line, unsigned FirstIndent,
                        WhitespaceManager &Whitespaces,
                        encoding::Encoding Encoding,
                        bool BinPackInconclusiveFunctions);
 
-  /// \brief Get the initial state, i.e. the state after placing the line's
-  /// first token.
-  LineState getInitialState();
+  /// \brief Get the initial state, i.e. the state after placing \p Line's
+  /// first token at \p FirstIndent.
+  LineState getInitialState(unsigned FirstIndent, const AnnotatedLine *Line,
+                            bool DryRun);
 
   // FIXME: canBreak and mustBreak aren't strictly indentation-related. Find a
   // better home.
@@ -65,7 +65,7 @@ public:
 
   /// \brief Get the column limit for this line. This is the style's column
   /// limit, potentially reduced for preprocessor definitions.
-  unsigned getColumnLimit() const;
+  unsigned getColumnLimit(const LineState &State) const;
 
 private:
   /// \brief Mark the next token as consumed in \p State and modify its stacks
@@ -84,6 +84,32 @@ private:
   unsigned breakProtrudingToken(const FormatToken &Current, LineState &State,
                                 bool DryRun);
 
+  /// \brief Appends the next token to \p State and updates information
+  /// necessary for indentation.
+  ///
+  /// Puts the token on the current line.
+  ///
+  /// If \p DryRun is \c false, also creates and stores the required
+  /// \c Replacement.
+  void addTokenOnCurrentLine(LineState &State, bool DryRun,
+                             unsigned ExtraSpaces);
+
+  /// \brief Appends the next token to \p State and updates information
+  /// necessary for indentation.
+  ///
+  /// Adds a line break and necessary indentation.
+  ///
+  /// If \p DryRun is \c false, also creates and stores the required
+  /// \c Replacement.
+  unsigned addTokenOnNewLine(LineState &State, bool DryRun);
+
+  /// \brief Adds a multiline token to the \p State.
+  ///
+  /// \returns Extra penalty for the first line of the literal: last line is
+  /// handled in \c addNextStateToQueue, and the penalty for other lines doesn't
+  /// matter, as we don't change them.
+  unsigned addMultilineToken(const FormatToken &Current, LineState &State);
+
   /// \brief Returns \c true if the next token starts a multiline string
   /// literal.
   ///
@@ -93,26 +119,28 @@ private:
 
   FormatStyle Style;
   SourceManager &SourceMgr;
-  const AnnotatedLine &Line;
-  const unsigned FirstIndent;
   WhitespaceManager &Whitespaces;
   encoding::Encoding Encoding;
   bool BinPackInconclusiveFunctions;
 };
 
 struct ParenState {
-  ParenState(unsigned Indent, unsigned LastSpace, bool AvoidBinPacking,
-             bool NoLineBreak)
-      : Indent(Indent), LastSpace(LastSpace), FirstLessLess(0),
-        BreakBeforeClosingBrace(false), QuestionColumn(0),
+  ParenState(unsigned Indent, unsigned IndentLevel, unsigned LastSpace,
+             bool AvoidBinPacking, bool NoLineBreak)
+      : Indent(Indent), IndentLevel(IndentLevel), LastSpace(LastSpace),
+        FirstLessLess(0), BreakBeforeClosingBrace(false), QuestionColumn(0),
         AvoidBinPacking(AvoidBinPacking), BreakBeforeParameter(false),
         NoLineBreak(NoLineBreak), ColonPos(0), StartOfFunctionCall(0),
         StartOfArraySubscripts(0), NestedNameSpecifierContinuation(0),
-        CallContinuation(0), VariablePos(0), ContainsLineBreak(false) {}
+        CallContinuation(0), VariablePos(0), ContainsLineBreak(false),
+        ContainsUnwrappedBuilder(0) {}
 
   /// \brief The position to which a specific parenthesis level needs to be
   /// indented.
   unsigned Indent;
+
+  /// \brief The number of indentation levels of the block.
+  unsigned IndentLevel;
 
   /// \brief The position of the last space on each level.
   ///
@@ -178,6 +206,10 @@ struct ParenState {
   /// parenthesis.
   bool ContainsLineBreak;
 
+  /// \brief \c true if this \c ParenState contains multiple segments of a
+  /// builder-type call on one line.
+  bool ContainsUnwrappedBuilder;
+
   bool operator<(const ParenState &Other) const {
     if (Indent != Other.Indent)
       return Indent < Other.Indent;
@@ -207,6 +239,8 @@ struct ParenState {
       return VariablePos < Other.VariablePos;
     if (ContainsLineBreak != Other.ContainsLineBreak)
       return ContainsLineBreak < Other.ContainsLineBreak;
+    if (ContainsUnwrappedBuilder != Other.ContainsUnwrappedBuilder)
+      return ContainsUnwrappedBuilder < Other.ContainsUnwrappedBuilder;
     return false;
   }
 };
@@ -219,7 +253,7 @@ struct LineState {
   unsigned Column;
 
   /// \brief The token that needs to be next formatted.
-  const FormatToken *NextToken;
+  FormatToken *NextToken;
 
   /// \brief \c true if this line contains a continued for-loop section.
   bool LineContainsContinuedForLoopSection;
@@ -255,6 +289,14 @@ struct LineState {
   ///
   /// FIXME: Come up with a better algorithm instead.
   bool IgnoreStackForComparison;
+
+  /// \brief The indent of the first token.
+  unsigned FirstIndent;
+
+  /// \brief The line that is being formatted.
+  ///
+  /// Does not need to be considered for memoization because it doesn't change.
+  const AnnotatedLine *Line;
 
   /// \brief Comparison operator to be able to used \c LineState in \c map.
   bool operator<(const LineState &Other) const {

@@ -586,6 +586,9 @@ void StmtPrinter::VisitSEHFinallyStmt(SEHFinallyStmt *Node) {
 namespace {
 class OMPClausePrinter : public OMPClauseVisitor<OMPClausePrinter> {
   raw_ostream &OS;
+  /// \brief Process clauses with list of variables.
+  template <typename T>
+  void VisitOMPClauseList(T *Node, char StartSym);
 public:
   OMPClausePrinter(raw_ostream &OS) : OS(OS) { }
 #define OPENMP_CLAUSE(Name, Class)                              \
@@ -599,22 +602,39 @@ void OMPClausePrinter::VisitOMPDefaultClause(OMPDefaultClause *Node) {
      << ")";
 }
 
-#define PROCESS_OMP_CLAUSE_LIST(Class, Node, StartSym)                         \
-  for (OMPVarList<Class>::varlist_iterator I = Node->varlist_begin(),          \
-                                           E = Node->varlist_end();            \
-         I != E; ++I)                                                          \
-    OS << (I == Node->varlist_begin() ? StartSym : ',')                        \
+template<typename T>
+void OMPClausePrinter::VisitOMPClauseList(T *Node, char StartSym) {
+  for (typename T::varlist_iterator I = Node->varlist_begin(),
+                                    E = Node->varlist_end();
+         I != E; ++I)
+    OS << (I == Node->varlist_begin() ? StartSym : ',')
        << *cast<NamedDecl>(cast<DeclRefExpr>(*I)->getDecl());
+}
 
 void OMPClausePrinter::VisitOMPPrivateClause(OMPPrivateClause *Node) {
   if (!Node->varlist_empty()) {
     OS << "private";
-    PROCESS_OMP_CLAUSE_LIST(OMPPrivateClause, Node, '(')
+    VisitOMPClauseList(Node, '(');
     OS << ")";
   }
 }
 
-#undef PROCESS_OMP_CLAUSE_LIST
+void OMPClausePrinter::VisitOMPFirstprivateClause(OMPFirstprivateClause *Node) {
+  if (!Node->varlist_empty()) {
+    OS << "firstprivate";
+    VisitOMPClauseList(Node, '(');
+    OS << ")";
+  }
+}
+
+void OMPClausePrinter::VisitOMPSharedClause(OMPSharedClause *Node) {
+  if (!Node->varlist_empty()) {
+    OS << "shared";
+    VisitOMPClauseList(Node, '(');
+    OS << ")";
+  }
+}
+
 }
 
 //===----------------------------------------------------------------------===//
@@ -1080,6 +1100,14 @@ void StmtPrinter::VisitShuffleVectorExpr(ShuffleVectorExpr *Node) {
   OS << ")";
 }
 
+void StmtPrinter::VisitConvertVectorExpr(ConvertVectorExpr *Node) {
+  OS << "__builtin_convertvector(";
+  PrintExpr(Node->getSrcExpr());
+  OS << ", ";
+  Node->getType().print(OS, Policy);
+  OS << ")";
+}
+
 void StmtPrinter::VisitInitListExpr(InitListExpr* Node) {
   if (Node->getSyntacticForm()) {
     Visit(Node->getSyntacticForm());
@@ -1287,7 +1315,7 @@ void StmtPrinter::VisitCXXConstCastExpr(CXXConstCastExpr *Node) {
 void StmtPrinter::VisitCXXTypeidExpr(CXXTypeidExpr *Node) {
   OS << "typeid(";
   if (Node->isTypeOperand()) {
-    Node->getTypeOperand().print(OS, Policy);
+    Node->getTypeOperandSourceInfo()->getType().print(OS, Policy);
   } else {
     PrintExpr(Node->getExprOperand());
   }
@@ -1297,7 +1325,7 @@ void StmtPrinter::VisitCXXTypeidExpr(CXXTypeidExpr *Node) {
 void StmtPrinter::VisitCXXUuidofExpr(CXXUuidofExpr *Node) {
   OS << "__uuidof(";
   if (Node->isTypeOperand()) {
-    Node->getTypeOperand().print(OS, Policy);
+    Node->getTypeOperandSourceInfo()->getType().print(OS, Policy);
   } else {
     PrintExpr(Node->getExprOperand());
   }
@@ -1440,24 +1468,18 @@ void StmtPrinter::VisitLambdaExpr(LambdaExpr *Node) {
       break;
 
     case LCK_ByRef:
-      if (Node->getCaptureDefault() != LCD_ByRef)
+      if (Node->getCaptureDefault() != LCD_ByRef || C->isInitCapture())
         OS << '&';
       OS << C->getCapturedVar()->getName();
       break;
 
     case LCK_ByCopy:
-      if (Node->getCaptureDefault() != LCD_ByCopy)
-        OS << '=';
       OS << C->getCapturedVar()->getName();
       break;
-
-    case LCK_Init:
-      if (C->getInitCaptureField()->getType()->isReferenceType())
-        OS << '&';
-      OS << C->getInitCaptureField()->getName();
-      PrintExpr(Node->getInitCaptureInit(C));
-      break;
     }
+
+    if (C->isInitCapture())
+      PrintExpr(C->getCapturedVar()->getInit());
   }
   OS << ']';
 

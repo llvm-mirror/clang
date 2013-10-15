@@ -217,6 +217,26 @@ public:
                                 diag::Mapping mapping, StringRef Str) {
   }
 
+  /// \brief Called when an OpenCL extension is either disabled or
+  /// enabled with a pragma.
+  virtual void PragmaOpenCLExtension(SourceLocation NameLoc, 
+                                     const IdentifierInfo *Name,
+                                     SourceLocation StateLoc, unsigned State) {
+  }
+
+  /// \brief Callback invoked when a \#pragma warning directive is read.
+  virtual void PragmaWarning(SourceLocation Loc, StringRef WarningSpec,
+                             ArrayRef<int> Ids) {
+  }
+
+  /// \brief Callback invoked when a \#pragma warning(push) directive is read.
+  virtual void PragmaWarningPush(SourceLocation Loc, int Level) {
+  }
+
+  /// \brief Callback invoked when a \#pragma warning(pop) directive is read.
+  virtual void PragmaWarningPop(SourceLocation Loc) {
+  }
+
   /// \brief Called by Preprocessor::HandleMacroExpandedIdentifier when a
   /// macro invocation is found.
   virtual void MacroExpands(const Token &MacroNameTok, const MacroDirective *MD,
@@ -398,6 +418,29 @@ public:
                                 diag::Mapping mapping, StringRef Str) {
     First->PragmaDiagnostic(Loc, Namespace, mapping, Str);
     Second->PragmaDiagnostic(Loc, Namespace, mapping, Str);
+  }
+
+  virtual void PragmaOpenCLExtension(SourceLocation NameLoc, 
+                                     const IdentifierInfo *Name,
+                                     SourceLocation StateLoc, unsigned State) {
+    First->PragmaOpenCLExtension(NameLoc, Name, StateLoc, State);
+    Second->PragmaOpenCLExtension(NameLoc, Name, StateLoc, State);
+  }
+
+  virtual void PragmaWarning(SourceLocation Loc, StringRef WarningSpec,
+                             ArrayRef<int> Ids) {
+    First->PragmaWarning(Loc, WarningSpec, Ids);
+    Second->PragmaWarning(Loc, WarningSpec, Ids);
+  }
+
+  virtual void PragmaWarningPush(SourceLocation Loc, int Level) {
+    First->PragmaWarningPush(Loc, Level);
+    Second->PragmaWarningPush(Loc, Level);
+  }
+
+  virtual void PragmaWarningPop(SourceLocation Loc) {
+    First->PragmaWarningPop(Loc);
+    Second->PragmaWarningPop(Loc);
   }
 
   virtual void MacroExpands(const Token &MacroNameTok, const MacroDirective *MD,

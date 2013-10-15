@@ -106,3 +106,46 @@ class TC1 {
     void foo() { }
    };
 };
+
+namespace PR8020 {
+  template <typename T> struct X { X() {} };
+  template<> struct X<int> { X(); };
+  template X<int>::X() {}  // expected-error{{function cannot be defined in an explicit instantiation}}
+}
+
+namespace PR10086 {
+  template void foobar(int i) {}  // expected-error{{function cannot be defined in an explicit instantiation}}
+  int func() {
+    foobar(5);
+  }
+}
+
+namespace undefined_static_data_member {
+  template<typename T> struct A {
+    static int a; // expected-note {{here}}
+    template<typename U> static int b; // expected-note {{here}} expected-warning {{extension}}
+  };
+  struct B {
+    template<typename U> static int c; // expected-note {{here}} expected-warning {{extension}}
+  };
+
+  template int A<int>::a; // expected-error {{explicit instantiation of undefined static data member 'a' of class template 'undefined_static_data_member::A<int>'}}
+  template int A<int>::b<int>; // expected-error {{explicit instantiation of undefined variable template 'undefined_static_data_member::A<int>::b<int>'}}
+  template int B::c<int>; // expected-error {{explicit instantiation of undefined variable template 'undefined_static_data_member::B::c<int>'}}
+
+
+  template<typename T> struct C {
+    static int a;
+    template<typename U> static int b; // expected-warning {{extension}}
+  };
+  struct D {
+    template<typename U> static int c; // expected-warning {{extension}}
+  };
+  template<typename T> int C<T>::a;
+  template<typename T> template<typename U> int C<T>::b; // expected-warning {{extension}}
+  template<typename U> int D::c; // expected-warning {{extension}}
+
+  template int C<int>::a;
+  template int C<int>::b<int>;
+  template int D::c<int>;
+}

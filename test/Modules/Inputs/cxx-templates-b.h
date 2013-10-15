@@ -17,6 +17,9 @@ typedef SomeTemplate<int&> SomeTemplateIntRef;
 
 extern DefinedInCommon &defined_in_common;
 
+template<int> struct MergeTemplates;
+MergeTemplates<0> *merge_templates_b;
+
 @import cxx_templates_b_impl;
 
 template<typename T, typename> struct Identity { typedef T type; };
@@ -34,6 +37,12 @@ struct RedeclareTemplateAsFriend {
   template<typename U>
   friend struct RedeclaredAsFriend;
 };
+
+void use_some_template_b() {
+  SomeTemplate<char[1]> a;
+  SomeTemplate<char[2]> b, c;
+  b = c;
+}
 
 @import cxx_templates_a;
 template<typename T> void UseDefinedInBImplIndirectly(T &v) {

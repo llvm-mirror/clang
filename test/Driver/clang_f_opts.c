@@ -19,7 +19,7 @@
 // RUN: %clang -### -S -Wwrite-strings -Wno-write-strings %s 2>&1 | FileCheck -check-prefix=WRITE-STRINGS2 %s
 // WRITE-STRINGS2-NOT: -fconst-strings
 // RUN: %clang -### -S -Wwrite-strings -w %s 2>&1 | FileCheck -check-prefix=WRITE-STRINGS3 %s
-// WRITE-STRINGS3: -fconst-strings
+// WRITE-STRINGS3-NOT: -fconst-strings
 
 // RUN: %clang -### -x c++ -c %s 2>&1 | FileCheck -check-prefix=DEPRECATED-ON-CHECK %s
 // RUN: %clang -### -x c++ -c -Wdeprecated %s 2>&1 | FileCheck -check-prefix=DEPRECATED-ON-CHECK %s
@@ -97,4 +97,35 @@
 // CHECK-NO-M-PASCAL-STRINGS-NOT: "-fpascal-strings"
 
 // RUN: %clang -### -S -O4 %s 2>&1 | FileCheck -check-prefix=CHECK-MAX-O %s
+// CHECK-MAX-O: warning: -O4 is equivalent to -O3
 // CHECK-MAX-O: -O3
+
+// Test that we don't error on these.
+// RUN: %clang -### -S -Werror                                                \
+// RUN:     -falign-functions -falign-functions=2 -fno-align-functions        \
+// RUN:     -fasynchronous-unwind-tables -fno-asynchronous-unwind-tables      \
+// RUN:     -fbuiltin -fno-builtin                                            \
+// RUN:     -ffloat-store -fno-float-store                                    \
+// RUN:     -feliminate-unused-debug-types -fno-eliminate-unused-debug-types  \
+// RUN:     -fgcse -fno-gcse                                                  \
+// RUN:     -fident -fno-ident                                                \
+// RUN:     -fivopts -fno-ivopts                                              \
+// RUN:     -fnon-call-exceptions -fno-non-call-exceptions                    \
+// RUN:     -fpermissive -fno-permissive                                      \
+// RUN:     -fprefetch-loop-arrays -fno-prefetch-loop-arrays                  \
+// RUN:     -fprofile-correction -fno-profile-correction                      \
+// RUN:     -fprofile-dir=bar                                                 \
+// RUN:     -fprofile-use -fprofile-use=zed -fno-profile-use                  \
+// RUN:     -fprofile-values -fno-profile-values                              \
+// RUN:     -frounding-math -fno-rounding-math                                \
+// RUN:     -fsee -fno-see                                                    \
+// RUN:     -ftracer -fno-tracer                                              \
+// RUN:     -funroll-all-loops -fno-unroll-all-loops                          \
+// RUN:     -fuse-ld=gold                                                     \
+// RUN:     -fno-builtin-foobar                                               \
+// RUN:     -fno-builtin-strcat -fno-builtin-strcpy                           \
+// RUN:     -fno-var-tracking                                                 \
+// RUN:     -fno-unsigned-char                                                \
+// RUN:     -fno-signed-char                                                  \
+// RUN:     %s 2>&1 | FileCheck --check-prefix=IGNORE %s
+// IGNORE-NOT: error: unknown argument

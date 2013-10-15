@@ -25,6 +25,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExternalASTSource.h"
 #include "clang/AST/Mangle.h"
+#include "clang/AST/MangleNumberingContext.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/TypeLoc.h"
@@ -694,6 +695,19 @@ static const LangAS::Map *getAddressSpaceMap(const TargetInfo &T,
   }
 }
 
+static bool isAddrSpaceMapManglingEnabled(const TargetInfo &TI,
+                                          const LangOptions &LangOpts) {
+  switch (LangOpts.getAddressSpaceMapMangling()) {
+  case LangOptions::ASMM_Target:
+    return TI.useAddressSpaceMapMangling();
+  case LangOptions::ASMM_On:
+    return true;
+  case LangOptions::ASMM_Off:
+    return false;
+  }
+  llvm_unreachable("getAddressSpaceMapMangling() doesn't cover anything.");
+}
+
 ASTContext::ASTContext(LangOptions& LOpts, SourceManager &SM,
                        const TargetInfo *t,
                        IdentifierTable &idents, SelectorTable &sels,
@@ -766,6 +780,12 @@ ASTContext::~ASTContext() {
                                                     AEnd = DeclAttrs.end();
        A != AEnd; ++A)
     A->second->~AttrVec();
+
+  for (llvm::DenseMap<const DeclContext *, MangleNumberingContext *>::iterator
+           I = MangleNumberingContexts.begin(),
+           E = MangleNumberingContexts.end();
+       I != E; ++I)
+    delete I->second;
 }
 
 void ASTContext::AddDeallocation(void (*Callback)(void*), void *Data) {
@@ -893,6 +913,7 @@ void ASTContext::InitBuiltinTypes(const TargetInfo &Target) {
   
   ABI.reset(createCXXABI(Target));
   AddrSpaceMap = getAddressSpaceMap(Target, LangOpts);
+  AddrSpaceMapMangling = isAddrSpaceMapManglingEnabled(Target, LangOpts);
   
   // C99 6.2.5p19.
   InitBuiltinType(VoidTy,              BuiltinType::Void);
@@ -2732,9 +2753,8 @@ ASTContext::getDependentSizedExtVectorType(QualType vecType,
 QualType
 ASTContext::getFunctionNoProtoType(QualType ResultTy,
                                    const FunctionType::ExtInfo &Info) const {
-  const CallingConv DefaultCC = Info.getCC();
-  const CallingConv CallConv = (LangOpts.MRTD && DefaultCC == CC_Default) ?
-                               CC_X86StdCall : DefaultCC;
+  const CallingConv CallConv = Info.getCC();
+
   // Unique functions, to guarantee there is only one function of a particular
   // structure.
   llvm::FoldingSetNodeID ID;
@@ -2746,11 +2766,8 @@ ASTContext::getFunctionNoProtoType(QualType ResultTy,
     return QualType(FT, 0);
 
   QualType Canonical;
-  if (!ResultTy.isCanonical() ||
-      getCanonicalCallConv(CallConv) != CallConv) {
-    Canonical =
-      getFunctionNoProtoType(getCanonicalType(ResultTy),
-                     Info.withCallingConv(getCanonicalCallConv(CallConv)));
+  if (!ResultTy.isCanonical()) {
+    Canonical = getFunctionNoProtoType(getCanonicalType(ResultTy), Info);
 
     // Get the new insert position for the node we care about.
     FunctionNoProtoType *NewIP =
@@ -2799,14 +2816,10 @@ ASTContext::getFunctionType(QualType ResultTy, ArrayRef<QualType> ArgArray,
     if (!ArgArray[i].isCanonicalAsParam())
       isCanonical = false;
 
-  const CallingConv DefaultCC = EPI.ExtInfo.getCC();
-  const CallingConv CallConv = (LangOpts.MRTD && DefaultCC == CC_Default) ?
-                               CC_X86StdCall : DefaultCC;
-
   // If this type isn't canonical, get the canonical version of it.
   // The exception spec is not part of the canonical type.
   QualType Canonical;
-  if (!isCanonical || getCanonicalCallConv(CallConv) != CallConv) {
+  if (!isCanonical) {
     SmallVector<QualType, 16> CanonicalArgs;
     CanonicalArgs.reserve(NumArgs);
     for (unsigned i = 0; i != NumArgs; ++i)
@@ -2816,8 +2829,6 @@ ASTContext::getFunctionType(QualType ResultTy, ArrayRef<QualType> ArgArray,
     CanonicalEPI.HasTrailingReturn = false;
     CanonicalEPI.ExceptionSpecType = EST_None;
     CanonicalEPI.NumExceptions = 0;
-    CanonicalEPI.ExtInfo
-      = CanonicalEPI.ExtInfo.withCallingConv(getCanonicalCallConv(CallConv));
 
     // Result types do not have ARC lifetime qualifiers.
     QualType CanResultTy = getCanonicalType(ResultTy);
@@ -2859,7 +2870,6 @@ ASTContext::getFunctionType(QualType ResultTy, ArrayRef<QualType> ArgArray,
 
   FunctionProtoType *FTP = (FunctionProtoType*) Allocate(Size, TypeAlignment);
   FunctionProtoType::ExtProtoInfo newEPI = EPI;
-  newEPI.ExtInfo = EPI.ExtInfo.withCallingConv(CallConv);
   new (FTP) FunctionProtoType(ResultTy, ArgArray, Canonical, newEPI);
   Types.push_back(FTP);
   FunctionProtoTypes.InsertNode(FTP, InsertPos);
@@ -4407,12 +4417,27 @@ Qualifiers::ObjCLifetime ASTContext::getInnerObjCOwnership(QualType T) const {
   return Qualifiers::OCL_None;
 }
 
+static const Type *getIntegerTypeForEnum(const EnumType *ET) {
+  // Incomplete enum types are not treated as integer types.
+  // FIXME: In C++, enum types are never integer types.
+  if (ET->getDecl()->isComplete() && !ET->getDecl()->isScoped())
+    return ET->getDecl()->getIntegerType().getTypePtr();
+  return NULL;
+}
+
 /// getIntegerTypeOrder - Returns the highest ranked integer type:
 /// C99 6.3.1.8p1.  If LHS > RHS, return 1.  If LHS == RHS, return 0. If
 /// LHS < RHS, return -1.
 int ASTContext::getIntegerTypeOrder(QualType LHS, QualType RHS) const {
   const Type *LHSC = getCanonicalType(LHS).getTypePtr();
   const Type *RHSC = getCanonicalType(RHS).getTypePtr();
+
+  // Unwrap enums to their underlying type.
+  if (const EnumType *ET = dyn_cast<EnumType>(LHSC))
+    LHSC = getIntegerTypeForEnum(ET);
+  if (const EnumType *ET = dyn_cast<EnumType>(RHSC))
+    RHSC = getIntegerTypeForEnum(ET);
+
   if (LHSC == RHSC) return 0;
 
   bool LHSUnsigned = LHSC->isUnsignedIntegerType();
@@ -5542,7 +5567,8 @@ void ASTContext::getObjCEncodingForStructureImpl(RecordDecl *RDecl,
       if (base->isEmpty())
         continue;
       uint64_t offs = toBits(layout.getVBaseClassOffset(base));
-      if (FieldOrBaseOffsets.find(offs) == FieldOrBaseOffsets.end())
+      if (offs >= uint64_t(toBits(layout.getNonVirtualSize())) &&
+          FieldOrBaseOffsets.find(offs) == FieldOrBaseOffsets.end())
         FieldOrBaseOffsets.insert(FieldOrBaseOffsets.end(),
                                   std::make_pair(offs, base));
     }
@@ -6325,6 +6351,8 @@ ASTContext::getSubstTemplateTemplateParmPack(TemplateTemplateParmDecl *Param,
 CanQualType ASTContext::getFromTargetType(unsigned Type) const {
   switch (Type) {
   case TargetInfo::NoInt: return CanQualType();
+  case TargetInfo::SignedChar: return SignedCharTy;
+  case TargetInfo::UnsignedChar: return UnsignedCharTy;
   case TargetInfo::SignedShort: return ShortTy;
   case TargetInfo::UnsignedShort: return UnsignedShortTy;
   case TargetInfo::SignedInt: return IntTy;
@@ -6939,7 +6967,7 @@ QualType ASTContext::mergeFunctionTypes(QualType lhs, QualType rhs,
   FunctionType::ExtInfo rbaseInfo = rbase->getExtInfo();
 
   // Compatible functions must have compatible calling conventions
-  if (!isSameCallConv(lbaseInfo.getCC(), rbaseInfo.getCC()))
+  if (lbaseInfo.getCC() != rbaseInfo.getCC())
     return QualType();
 
   // Regparm is part of the calling convention.
@@ -7784,7 +7812,7 @@ QualType ASTContext::GetBuiltinType(unsigned Id,
   assert((TypeStr[0] != '.' || TypeStr[1] == 0) &&
          "'.' should only occur at end of builtin type list!");
 
-  FunctionType::ExtInfo EI;
+  FunctionType::ExtInfo EI(CC_C);
   if (BuiltinInfo.isNoReturn(Id)) EI = EI.withNoReturn(true);
 
   bool Variadic = (TypeStr[0] == '.');
@@ -7851,14 +7879,7 @@ GVALinkage ASTContext::GetGVALinkageForVariable(const VarDecl *VD) {
   if (!VD->isExternallyVisible())
     return GVA_Internal;
 
-  // If this is a static data member, compute the kind of template
-  // specialization. Otherwise, this variable is not part of a
-  // template.
-  TemplateSpecializationKind TSK = TSK_Undeclared;
-  if (VD->isStaticDataMember())
-    TSK = VD->getTemplateSpecializationKind();
-
-  switch (TSK) {
+  switch (VD->getTemplateSpecializationKind()) {
   case TSK_Undeclared:
   case TSK_ExplicitSpecialization:
     return GVA_StrongExternal;
@@ -7955,16 +7976,13 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
   return false;
 }
 
-CallingConv ASTContext::getDefaultCXXMethodCallConv(bool isVariadic) {
+CallingConv ASTContext::getDefaultCallingConvention(bool IsVariadic,
+                                                    bool IsCXXMethod) const {
   // Pass through to the C++ ABI object
-  return ABI->getDefaultMethodCallConv(isVariadic);
-}
+  if (IsCXXMethod)
+    return ABI->getDefaultMethodCallConv(IsVariadic);
 
-CallingConv ASTContext::getCanonicalCallConv(CallingConv CC) const {
-  if (CC == CC_C && !LangOpts.MRTD &&
-      getTargetInfo().getCXXABI().isMemberFunctionCCDefault())
-    return CC_Default;
-  return CC;
+  return (LangOpts.MRTD && !IsVariadic) ? CC_X86StdCall : CC_C;
 }
 
 bool ASTContext::isNearlyEmpty(const CXXRecordDecl *RD) const {
@@ -7978,9 +7996,9 @@ MangleContext *ASTContext::createMangleContext() {
   case TargetCXXABI::GenericItanium:
   case TargetCXXABI::GenericARM:
   case TargetCXXABI::iOS:
-    return createItaniumMangleContext(*this, getDiagnostics());
+    return ItaniumMangleContext::create(*this, getDiagnostics());
   case TargetCXXABI::Microsoft:
-    return createMicrosoftMangleContext(*this, getDiagnostics());
+    return MicrosoftMangleContext::create(*this, getDiagnostics());
   }
   llvm_unreachable("Unsupported ABI");
 }
@@ -8004,6 +8022,38 @@ size_t ASTContext::getSideTableAllocatedMemory() const {
          llvm::capacity_in_bytes(ClassScopeSpecializationPattern);
 }
 
+/// getIntTypeForBitwidth -
+/// sets integer QualTy according to specified details:
+/// bitwidth, signed/unsigned.
+/// Returns empty type if there is no appropriate target types.
+QualType ASTContext::getIntTypeForBitwidth(unsigned DestWidth,
+                                           unsigned Signed) const {
+  TargetInfo::IntType Ty = getTargetInfo().getIntTypeByWidth(DestWidth, Signed);
+  CanQualType QualTy = getFromTargetType(Ty);
+  if (!QualTy && DestWidth == 128)
+    return Signed ? Int128Ty : UnsignedInt128Ty;
+  return QualTy;
+}
+
+/// getRealTypeForBitwidth -
+/// sets floating point QualTy according to specified bitwidth.
+/// Returns empty type if there is no appropriate target types.
+QualType ASTContext::getRealTypeForBitwidth(unsigned DestWidth) const {
+  TargetInfo::RealType Ty = getTargetInfo().getRealTypeByWidth(DestWidth);
+  switch (Ty) {
+  case TargetInfo::Float:
+    return FloatTy;
+  case TargetInfo::Double:
+    return DoubleTy;
+  case TargetInfo::LongDouble:
+    return LongDoubleTy;
+  case TargetInfo::NoFloat:
+    return QualType();
+  }
+
+  llvm_unreachable("Unhandled TargetInfo::RealType value");
+}
+
 void ASTContext::setManglingNumber(const NamedDecl *ND, unsigned Number) {
   if (Number > 1)
     MangleNumbers[ND] = Number;
@@ -8017,7 +8067,15 @@ unsigned ASTContext::getManglingNumber(const NamedDecl *ND) const {
 
 MangleNumberingContext &
 ASTContext::getManglingNumberContext(const DeclContext *DC) {
-  return MangleNumberingContexts[DC];
+  assert(LangOpts.CPlusPlus);  // We don't need mangling numbers for plain C.
+  MangleNumberingContext *&MCtx = MangleNumberingContexts[DC];
+  if (!MCtx)
+    MCtx = createMangleNumberingContext();
+  return *MCtx;
+}
+
+MangleNumberingContext *ASTContext::createMangleNumberingContext() const {
+  return ABI->createMangleNumberingContext();
 }
 
 void ASTContext::setParameterIndex(const ParmVarDecl *D, unsigned int index) {

@@ -249,6 +249,7 @@ void CallAndMessageChecker::checkPreStmt(const CallExpr *CE,
       BT_call_null.reset(
         new BuiltinBug("Called function pointer is null (null dereference)"));
     emitBadCall(BT_call_null.get(), C, Callee);
+    return;
   }
 
   C.addTransition(StNonNull);
@@ -446,8 +447,7 @@ void CallAndMessageChecker::emitNilReceiverBug(CheckerContext &C,
 
 static bool supportsNilWithFloatRet(const llvm::Triple &triple) {
   return (triple.getVendor() == llvm::Triple::Apple &&
-          (triple.getOS() == llvm::Triple::IOS ||
-           !triple.isMacOSXVersionLT(10,5)));
+          (triple.isiOS() || !triple.isMacOSXVersionLT(10,5)));
 }
 
 void CallAndMessageChecker::HandleNilReceiver(CheckerContext &C,

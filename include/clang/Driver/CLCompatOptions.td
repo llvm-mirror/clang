@@ -14,11 +14,17 @@
 def cl_Group : OptionGroup<"<clang-cl options>">,
   HelpText<"CL.EXE COMPATIBILITY OPTIONS">;
 
+def cl_compile_Group : OptionGroup<"<clang-cl compile-only options>">,
+  Group<cl_Group>;
+
 def cl_ignored_Group : OptionGroup<"<clang-cl ignored options>">,
   Group<cl_Group>;
 
 class CLFlag<string name> : Option<["/", "-"], name, KIND_FLAG>,
   Group<cl_Group>, Flags<[CLOption, DriverOption]>;
+
+class CLCompileFlag<string name> : Option<["/", "-"], name, KIND_FLAG>,
+  Group<cl_compile_Group>, Flags<[CLOption, DriverOption]>;
 
 class CLIgnoredFlag<string name> : Option<["/", "-"], name, KIND_FLAG>,
   Group<cl_ignored_Group>, Flags<[CLOption, DriverOption]>;
@@ -26,22 +32,33 @@ class CLIgnoredFlag<string name> : Option<["/", "-"], name, KIND_FLAG>,
 class CLJoined<string name> : Option<["/", "-"], name, KIND_JOINED>,
   Group<cl_Group>, Flags<[CLOption, DriverOption]>;
 
+class CLCompileJoined<string name> : Option<["/", "-"], name, KIND_JOINED>,
+  Group<cl_compile_Group>, Flags<[CLOption, DriverOption]>;
+
 class CLIgnoredJoined<string name> : Option<["/", "-"], name, KIND_JOINED>,
   Group<cl_ignored_Group>, Flags<[CLOption, DriverOption]>;
 
 class CLJoinedOrSeparate<string name> : Option<["/", "-"], name,
   KIND_JOINED_OR_SEPARATE>, Group<cl_Group>, Flags<[CLOption, DriverOption]>;
 
+class CLCompileJoinedOrSeparate<string name> : Option<["/", "-"], name,
+  KIND_JOINED_OR_SEPARATE>, Group<cl_compile_Group>,
+  Flags<[CLOption, DriverOption]>;
+
 class CLRemainingArgs<string name> : Option<["/", "-"], name,
   KIND_REMAINING_ARGS>, Group<cl_Group>, Flags<[CLOption, DriverOption]>;
 
 // Aliases:
+// (We don't put any of these in cl_compile_Group as the options they alias are
+// already in the right group.)
 
 def _SLASH_c : CLFlag<"c">, HelpText<"Compile only">, Alias<c>;
 def _SLASH_D : CLJoinedOrSeparate<"D">, HelpText<"Define macro">,
   MetaVarName<"<macro[=value]>">, Alias<D>;
 def _SLASH_GR : CLFlag<"GR">, HelpText<"Enable RTTI">, Alias<frtti>;
 def _SLASH_GR_ : CLFlag<"GR-">, HelpText<"Disable RTTI">, Alias<fno_rtti>;
+def _SLASH_GF_ : CLFlag<"GF-">, HelpText<"Disable string pooling">,
+  Alias<fwritable_strings>;
 def _SLASH_help : CLFlag<"help">, Alias<help>,
   HelpText<"Display available options">;
 def _SLASH_I : CLJoinedOrSeparate<"I">,
@@ -93,43 +110,63 @@ def _SLASH_Zs : CLFlag<"Zs">, HelpText<"Syntax-check only">,
 
 // Non-aliases:
 
+def _SLASH_M_Group : OptionGroup<"</M group>">, Group<cl_compile_Group>;
+
+def _SLASH_fallback : CLCompileFlag<"fallback">,
+  HelpText<"Fall back to cl.exe if clang-cl fails to compile">;
+def _SLASH_FI : CLJoined<"FI">,
+  HelpText<"Include file before parsing">, Alias<include_>;
 def _SLASH_Fe : CLJoined<"Fe">,
   HelpText<"Set output executable file or directory (ends in / or \\)">,
   MetaVarName<"<file or directory>">;
-def _SLASH_Fo : CLJoined<"Fo">,
+def _SLASH_Fo : CLCompileJoined<"Fo">,
   HelpText<"Set output object file, or directory (ends in / or \\)">,
   MetaVarName<"<file or directory>">;
+def _SLASH_LD : CLFlag<"LD">, HelpText<"Create DLL">;
+def _SLASH_LDd : CLFlag<"LDd">, HelpText<"Create debug DLL">;
 def _SLASH_link : CLRemainingArgs<"link">,
   HelpText<"Forward options to the linker">, MetaVarName<"<options>">;
-def _SLASH_MD : CLFlag<"MD">,
-  HelpText<"Use DLL run-time">;
-def _SLASH_MDd : CLFlag<"MDd">,
-  HelpText<"Use DLL debug run-time">;
-def _SLASH_MT : CLFlag<"MT">, HelpText<"Use static run-time">;
-def _SLASH_MTd : CLFlag<"MTd">, HelpText<"Use static debug run-time">;
-def _SLASH_Tc : CLJoinedOrSeparate<"Tc">, HelpText<"Specify a C source file">,
-  MetaVarName<"<filename>">;
-def _SLASH_TC : CLFlag<"TC">, HelpText<"Treat all source files as C">;
-def _SLASH_Tp : CLJoinedOrSeparate<"Tp">, HelpText<"Specify a C++ source file">,
-  MetaVarName<"<filename>">;
-def _SLASH_TP : CLFlag<"TP">, HelpText<"Treat all source files as C++">;
+def _SLASH_MD : Option<["/", "-"], "MD", KIND_FLAG>, Group<_SLASH_M_Group>,
+  Flags<[CLOption, DriverOption]>, HelpText<"Use DLL run-time">;
+def _SLASH_MDd : Option<["/", "-"], "MDd", KIND_FLAG>, Group<_SLASH_M_Group>,
+  Flags<[CLOption, DriverOption]>, HelpText<"Use DLL debug run-time">;
+def _SLASH_MT : Option<["/", "-"], "MT", KIND_FLAG>, Group<_SLASH_M_Group>,
+  Flags<[CLOption, DriverOption]>, HelpText<"Use static run-time">;
+def _SLASH_MTd : Option<["/", "-"], "MTd", KIND_FLAG>, Group<_SLASH_M_Group>,
+  Flags<[CLOption, DriverOption]>, HelpText<"Use static debug run-time">;
+def _SLASH_Tc : CLCompileJoinedOrSeparate<"Tc">,
+  HelpText<"Specify a C source file">, MetaVarName<"<filename>">;
+def _SLASH_TC : CLCompileFlag<"TC">, HelpText<"Treat all source files as C">;
+def _SLASH_Tp : CLCompileJoinedOrSeparate<"Tp">,
+  HelpText<"Specify a C++ source file">, MetaVarName<"<filename>">;
+def _SLASH_TP : CLCompileFlag<"TP">, HelpText<"Treat all source files as C++">;
 
 
 // Ignored:
 
 def _SLASH_analyze_ : CLIgnoredFlag<"analyze-">;
 def _SLASH_errorReport : CLIgnoredJoined<"errorReport">;
+def _SLASH_GF : CLIgnoredFlag<"GF">;
+def _SLASH_GS_ : CLIgnoredFlag<"GS-">;
 def _SLASH_nologo : CLIgnoredFlag<"nologo">;
 def _SLASH_Ob1 : CLIgnoredFlag<"Ob1">;
 def _SLASH_Ob2 : CLIgnoredFlag<"Ob2">;
+def _SLASH_RTC : CLIgnoredJoined<"RTC">;
+def _SLASH_sdl : CLIgnoredFlag<"sdl">;
+def _SLASH_sdl_ : CLIgnoredFlag<"sdl-">;
+def _SLASH_vmg : CLIgnoredFlag<"vmg">;
+def _SLASH_w : CLIgnoredJoined<"w">;
 def _SLASH_Zc_forScope : CLIgnoredFlag<"Zc:forScope">;
 def _SLASH_Zc_wchar_t : CLIgnoredFlag<"Zc:wchar_t">;
-def _SLASH_wd : CLIgnoredJoined<"wd">;
+def _SLASH_Zm : CLIgnoredJoined<"Zm">;
 
 
 // Unsupported:
 
+def _SLASH_bigobj : CLFlag<"bigobj">;
 def _SLASH_EH : CLJoined<"EH">;
+def _SLASH_FA : CLJoined<"FA">;
+def _SLASH_Fa : CLJoined<"Fa">;
 def _SLASH_Fd : CLJoined<"Fd">;
 def _SLASH_fp : CLJoined<"fp">;
 def _SLASH_Gd : CLFlag<"Gd">;
@@ -142,8 +179,11 @@ def _SLASH_Gy : CLFlag<"Gy">;
 def _SLASH_Gy_ : CLFlag<"Gy-">;
 def _SLASH_GZ : CLFlag<"GZ">;
 def _SLASH_MP : CLJoined<"MP">;
-def _SLASH_RTC : CLJoined<"RTC">;
-def _SLASH_w : CLJoined<"w">;
+def _SLASH_o : CLJoinedOrSeparate<"o">;
+def _SLASH_vmb : CLFlag<"vmb">;
+def _SLASH_vmm : CLFlag<"vmm">;
+def _SLASH_vms : CLFlag<"vms">;
+def _SLASH_vmv : CLFlag<"vmv">;
 def _SLASH_Za : CLFlag<"Za">;
 def _SLASH_Zc : CLJoined<"Zc:">;
 def _SLASH_ZI : CLFlag<"ZI">;

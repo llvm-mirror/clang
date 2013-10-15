@@ -81,10 +81,11 @@ static void diagnoseBadTypeAttribute(Sema &S, const AttributeList &attr,
   StringRef name = attr.getName()->getName();
 
   // The GC attributes are usually written with macros;  special-case them.
-  if (useExpansionLoc && loc.isMacroID() && attr.getParameterName()) {
-    if (attr.getParameterName()->isStr("strong")) {
+  IdentifierInfo *II = attr.isArgIdent(0) ? attr.getArgAsIdent(0)->Ident : 0;
+  if (useExpansionLoc && loc.isMacroID() && II) {
+    if (II->isStr("strong")) {
       if (S.findMacroSpelling(loc, "__strong")) name = "__strong";
-    } else if (attr.getParameterName()->isStr("weak")) {
+    } else if (II->isStr("weak")) {
       if (S.findMacroSpelling(loc, "__weak")) name = "__weak";
     }
   }
@@ -107,6 +108,8 @@ static void diagnoseBadTypeAttribute(Sema &S, const AttributeList &attr,
     case AttributeList::AT_StdCall: \
     case AttributeList::AT_ThisCall: \
     case AttributeList::AT_Pascal: \
+    case AttributeList::AT_MSABI: \
+    case AttributeList::AT_SysVABI: \
     case AttributeList::AT_Regparm: \
     case AttributeList::AT_Pcs: \
     case AttributeList::AT_PnaclCall: \
@@ -231,26 +234,6 @@ namespace {
         savedAttrs[i]->setNext(savedAttrs[i+1]);
       savedAttrs.back()->setNext(0);
     }
-  };
-
-  /// Basically std::pair except that we really want to avoid an
-  /// implicit operator= for safety concerns.  It's also a minor
-  /// link-time optimization for this to be a private type.
-  struct AttrAndList {
-    /// The attribute.
-    AttributeList &first;
-
-    /// The head of the list the attribute is currently in.
-    AttributeList *&second;
-
-    AttrAndList(AttributeList &attr, AttributeList *&head)
-      : first(attr), second(head) {}
-  };
-}
-
-namespace llvm {
-  template <> struct isPodLike<AttrAndList> {
-    static const bool value = true;
   };
 }
 
@@ -779,8 +762,13 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
     // is inferred from the return statements inside the block.
     // The declspec is always missing in a lambda expr context; it is either
     // specified with a trailing return type or inferred.
-    if (declarator.getContext() == Declarator::LambdaExprContext ||
-        isOmittedBlockReturnType(declarator)) {
+    if (S.getLangOpts().CPlusPlus1y &&
+        declarator.getContext() == Declarator::LambdaExprContext) {
+      // In C++1y, a lambda's implicit return type is 'auto'.
+      Result = Context.getAutoDeductType();
+      break;
+    } else if (declarator.getContext() == Declarator::LambdaExprContext ||
+               isOmittedBlockReturnType(declarator)) {
       Result = Context.DependentTy;
       break;
     }
@@ -1006,11 +994,54 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
 
   case DeclSpec::TST_auto:
     // TypeQuals handled by caller.
-    Result = Context.getAutoType(QualType(), /*decltype(auto)*/false);
+    // If auto is mentioned in a lambda parameter context, convert it to a 
+    // template parameter type immediately, with the appropriate depth and 
+    // index, and update sema's state (LambdaScopeInfo) for the current lambda 
+    // being analyzed (which tracks the invented type template parameter).
+    if (declarator.getContext() == Declarator::LambdaExprParameterContext) {
+      sema::LambdaScopeInfo *LSI = S.getCurLambda();
+      assert(LSI && "No LambdaScopeInfo on the stack!");
+      const unsigned TemplateParameterDepth = LSI->AutoTemplateParameterDepth;
+      const unsigned AutoParameterPosition = LSI->AutoTemplateParams.size();
+      const bool IsParameterPack = declarator.hasEllipsis();
+      
+      // Create a name for the invented template parameter type.
+      std::string InventedTemplateParamName = "$auto-";
+      llvm::raw_string_ostream ss(InventedTemplateParamName);
+      ss << TemplateParameterDepth; 
+      ss << "-" << AutoParameterPosition;
+      ss.flush();
+
+      IdentifierInfo& TemplateParamII = Context.Idents.get(
+                                        InventedTemplateParamName.c_str());
+      // Turns out we must create the TemplateTypeParmDecl here to 
+      // retrieve the corresponding template parameter type. 
+      TemplateTypeParmDecl *CorrespondingTemplateParam =
+        TemplateTypeParmDecl::Create(Context, 
+        // Temporarily add to the TranslationUnit DeclContext.  When the 
+        // associated TemplateParameterList is attached to a template
+        // declaration (such as FunctionTemplateDecl), the DeclContext 
+        // for each template parameter gets updated appropriately via
+        // a call to AdoptTemplateParameterList. 
+        Context.getTranslationUnitDecl(), 
+        /*KeyLoc*/ SourceLocation(), 
+        /*NameLoc*/ declarator.getLocStart(),  
+        TemplateParameterDepth, 
+        AutoParameterPosition,  // our template param index 
+        /* Identifier*/ &TemplateParamII, false, IsParameterPack);
+      LSI->AutoTemplateParams.push_back(CorrespondingTemplateParam);
+      // Replace the 'auto' in the function parameter with this invented 
+      // template type parameter.
+      Result = QualType(CorrespondingTemplateParam->getTypeForDecl(), 0);  
+    } else {
+      Result = Context.getAutoType(QualType(), /*decltype(auto)*/false, false);
+    }
     break;
 
   case DeclSpec::TST_decltype_auto:
-    Result = Context.getAutoType(QualType(), /*decltype(auto)*/true);
+    Result = Context.getAutoType(QualType(), 
+                                 /*decltype(auto)*/true, 
+                                 /*IsDependent*/   false);
     break;
 
   case DeclSpec::TST_unknown_anytype:
@@ -1557,7 +1588,7 @@ QualType Sema::BuildArrayType(QualType T, ArrayType::ArraySizeModifier ASM,
         ASM = ArrayType::Normal;
       }
     } else if (!T->isDependentType() && !T->isVariablyModifiedType() &&
-               !T->isIncompleteType()) {
+               !T->isIncompleteType() && !T->isUndeducedType()) {
       // Is the array too large?
       unsigned ActiveSizeBits
         = ConstantArrayType::getNumAddressingBits(Context, T, ConstVal);
@@ -1581,7 +1612,6 @@ QualType Sema::BuildArrayType(QualType T, ArrayType::ArraySizeModifier ASM,
   if (!getLangOpts().C99) {
     if (T->isVariableArrayType()) {
       // Prohibit the use of non-POD types in VLAs.
-      // FIXME: C++1y allows this.
       QualType BaseT = Context.getBaseElementType(T);
       if (!T->isDependentType() &&
           !BaseT.isPODType(Context) &&
@@ -1597,9 +1627,7 @@ QualType Sema::BuildArrayType(QualType T, ArrayType::ArraySizeModifier ASM,
       }
       // Just extwarn about VLAs.
       else
-        Diag(Loc, getLangOpts().CPlusPlus1y
-                      ? diag::warn_cxx11_compat_array_of_runtime_bound
-                      : diag::ext_vla);
+        Diag(Loc, diag::ext_vla);
     } else if (ASM != ArrayType::Normal || Quals != 0)
       Diag(Loc,
            getLangOpts().CPlusPlus? diag::err_c99_array_usage_cxx
@@ -1783,6 +1811,8 @@ QualType Sema::BuildMemberPointerType(QualType T, QualType Class,
       }
     }
   }
+
+  // FIXME: Adjust member function pointer calling conventions.
 
   return Context.getMemberPointerType(T, Class.getTypePtr());
 }
@@ -2097,6 +2127,7 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
   // In C++11, a function declarator using 'auto' must have a trailing return
   // type (this is checked later) and we can skip this. In other languages
   // using auto, we need to check regardless.
+  // C++14 In generic lambdas allow 'auto' in their parameters.
   if (ContainsPlaceholderType &&
       (!SemaRef.getLangOpts().CPlusPlus11 || !D.isFunctionDeclarator())) {
     int Error = -1;
@@ -2109,7 +2140,12 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
     case Declarator::ObjCParameterContext:
     case Declarator::ObjCResultContext:
     case Declarator::PrototypeContext:
-      Error = 0; // Function prototype
+      Error = 0;  
+      break;
+    case Declarator::LambdaExprParameterContext:
+      if (!(SemaRef.getLangOpts().CPlusPlus1y 
+              && D.getDeclSpec().getTypeSpecType() == DeclSpec::TST_auto))
+        Error = 14;
       break;
     case Declarator::MemberContext:
       if (D.getDeclSpec().getStorageClassSpec() == DeclSpec::SCS_static)
@@ -2189,8 +2225,10 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
       AutoRange = D.getName().getSourceRange();
 
     if (Error != -1) {
+      const bool IsDeclTypeAuto = 
+          D.getDeclSpec().getTypeSpecType() == DeclSpec::TST_decltype_auto;
       SemaRef.Diag(AutoRange.getBegin(), diag::err_auto_not_allowed)
-        << Error << AutoRange;
+        << IsDeclTypeAuto << Error << AutoRange;
       T = SemaRef.Context.IntTy;
       D.setInvalidType(true);
     } else
@@ -2240,6 +2278,7 @@ static QualType GetDeclSpecTypeForDeclarator(TypeProcessingState &state,
       D.setInvalidType(true);
       break;
     case Declarator::PrototypeContext:
+    case Declarator::LambdaExprParameterContext:
     case Declarator::ObjCParameterContext:
     case Declarator::ObjCResultContext:
     case Declarator::KNRTypeListContext:
@@ -2410,7 +2449,8 @@ static void warnAboutAmbiguousFunction(Sema &S, Declarator &D,
       S.Diag(DeclType.Loc, diag::note_empty_parens_default_ctor)
         << FixItHint::CreateRemoval(ParenRange);
     else {
-      std::string Init = S.getFixItZeroInitializerForType(RT);
+      std::string Init =
+          S.getFixItZeroInitializerForType(RT, ParenRange.getBegin());
       if (Init.empty() && S.LangOpts.CPlusPlus11)
         Init = "{}";
       if (!Init.empty())
@@ -2418,6 +2458,52 @@ static void warnAboutAmbiguousFunction(Sema &S, Declarator &D,
           << FixItHint::CreateReplacement(ParenRange, Init);
     }
   }
+}
+
+/// Helper for figuring out the default CC for a function declarator type.  If
+/// this is the outermost chunk, then we can determine the CC from the
+/// declarator context.  If not, then this could be either a member function
+/// type or normal function type.
+static CallingConv
+getCCForDeclaratorChunk(Sema &S, Declarator &D,
+                        const DeclaratorChunk::FunctionTypeInfo &FTI,
+                        unsigned ChunkIndex) {
+  assert(D.getTypeObject(ChunkIndex).Kind == DeclaratorChunk::Function);
+
+  bool IsCXXInstanceMethod = false;
+
+  if (S.getLangOpts().CPlusPlus) {
+    // Look inwards through parentheses to see if this chunk will form a
+    // member pointer type or if we're the declarator.  Any type attributes
+    // between here and there will override the CC we choose here.
+    unsigned I = ChunkIndex;
+    bool FoundNonParen = false;
+    while (I && !FoundNonParen) {
+      --I;
+      if (D.getTypeObject(I).Kind != DeclaratorChunk::Paren)
+        FoundNonParen = true;
+    }
+
+    if (FoundNonParen) {
+      // If we're not the declarator, we're a regular function type unless we're
+      // in a member pointer.
+      IsCXXInstanceMethod =
+          D.getTypeObject(I).Kind == DeclaratorChunk::MemberPointer;
+    } else {
+      // We're the innermost decl chunk, so must be a function declarator.
+      assert(D.isFunctionDeclarator());
+
+      // If we're inside a record, we're declaring a method, but it could be
+      // explicitly or implicitly static.
+      IsCXXInstanceMethod =
+          D.isFirstDeclarationOfMember() &&
+          D.getDeclSpec().getStorageClassSpec() != DeclSpec::SCS_typedef &&
+          !D.isStaticMember();
+    }
+  }
+
+  return S.Context.getDefaultCallingConvention(FTI.isVariadic,
+                                               IsCXXInstanceMethod);
 }
 
 static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
@@ -2613,8 +2699,10 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
           }
         }
       }
-
-      if (const AutoType *AT = T->getContainedAutoType()) {
+      const AutoType *AT = T->getContainedAutoType();
+      // Allow arrays of auto if we are a generic lambda parameter.
+      // i.e. [](auto (&array)[5]) { return array[0]; }; OK
+      if (AT && D.getContext() != Declarator::LambdaExprParameterContext) {
         // We've already diagnosed this for decltype(auto).
         if (!AT->isDecltypeAuto())
           S.Diag(DeclType.Loc, diag::err_illegal_decl_array_of_auto)
@@ -2793,9 +2881,11 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
       if (FTI.isAmbiguous)
         warnAboutAmbiguousFunction(S, D, DeclType, T);
 
+      FunctionType::ExtInfo EI(getCCForDeclaratorChunk(S, D, FTI, chunkIndex));
+
       if (!FTI.NumArgs && !FTI.isVariadic && !LangOpts.CPlusPlus) {
         // Simple void foo(), where the incoming T is the result type.
-        T = Context.getFunctionNoProtoType(T);
+        T = Context.getFunctionNoProtoType(T, EI);
       } else {
         // We allow a zero-parameter variadic function in C if the
         // function is marked with the "overloadable" attribute. Scan
@@ -2820,11 +2910,12 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
           S.Diag(FTI.ArgInfo[0].IdentLoc, diag::err_ident_list_in_fn_declaration);
           D.setInvalidType(true);
           // Recover by creating a K&R-style function type.
-          T = Context.getFunctionNoProtoType(T);
+          T = Context.getFunctionNoProtoType(T, EI);
           break;
         }
 
         FunctionProtoType::ExtProtoInfo EPI;
+        EPI.ExtInfo = EI;
         EPI.Variadic = FTI.isVariadic;
         EPI.HasTrailingReturn = FTI.hasTrailingReturnType();
         EPI.TypeQuals = FTI.TypeQuals;
@@ -3110,6 +3201,7 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
     //   is a parameter pack (14.5.3). [...]
     switch (D.getContext()) {
     case Declarator::PrototypeContext:
+    case Declarator::LambdaExprParameterContext:
       // C++0x [dcl.fct]p13:
       //   [...] When it is part of a parameter-declaration-clause, the
       //   parameter pack is a function parameter pack (14.5.3). The type T
@@ -3128,7 +3220,6 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
         T = Context.getPackExpansionType(T, None);
       }
       break;
-
     case Declarator::TemplateParamContext:
       // C++0x [temp.param]p15:
       //   If a template-parameter is a [...] is a parameter-declaration that
@@ -3237,13 +3328,18 @@ static void transferARCOwnershipToDeclaratorChunk(TypeProcessingState &state,
   case Qualifiers::OCL_Autoreleasing: attrStr = "autoreleasing"; break;
   }
 
+  IdentifierLoc *Arg = new (S.Context) IdentifierLoc;
+  Arg->Ident = &S.Context.Idents.get(attrStr);
+  Arg->Loc = SourceLocation();
+
+  ArgsUnion Args(Arg);
+
   // If there wasn't one, add one (with an invalid source location
   // so that we don't make an AttributedType for it).
   AttributeList *attr = D.getAttributePool()
     .create(&S.Context.Idents.get("objc_ownership"), SourceLocation(),
             /*scope*/ 0, SourceLocation(),
-            &S.Context.Idents.get(attrStr), SourceLocation(),
-            /*args*/ 0, 0, AttributeList::AS_GNU);
+            /*args*/ &Args, 1, AttributeList::AS_GNU);
   spliceAttrIntoList(*attr, chunk.getAttrListRef());
 
   // TODO: mark whether we did this inference?
@@ -3353,6 +3449,10 @@ static AttributeList::Kind getAttrListKind(AttributedType::Kind kind) {
     return AttributeList::AT_PnaclCall;
   case AttributedType::attr_inteloclbicc:
     return AttributeList::AT_IntelOclBicc;
+  case AttributedType::attr_ms_abi:
+    return AttributeList::AT_MSABI;
+  case AttributedType::attr_sysv_abi:
+    return AttributeList::AT_SysVABI;
   case AttributedType::attr_ptr32:
     return AttributeList::AT_Ptr32;
   case AttributedType::attr_ptr64:
@@ -3377,10 +3477,10 @@ static void fillAttributedTypeLoc(AttributedTypeLoc TL,
   }
 
   TL.setAttrNameLoc(attrs->getLoc());
-  if (TL.hasAttrExprOperand())
-    TL.setAttrExprOperand(attrs->getArg(0));
-  else if (TL.hasAttrEnumOperand())
-    TL.setAttrEnumOperandLoc(attrs->getParameterLoc());
+  if (TL.hasAttrExprOperand() && attrs->isArgExpr(0))
+    TL.setAttrExprOperand(attrs->getArgAsExpr(0));
+  else if (TL.hasAttrEnumOperand() && attrs->isArgIdent(0))
+    TL.setAttrEnumOperandLoc(attrs->getArgAsIdent(0)->Loc);
 
   // FIXME: preserve this information to here.
   if (TL.hasAttrOperand())
@@ -3844,7 +3944,7 @@ static void HandleAddressSpaceTypeAttribute(QualType &Type,
     Attr.setInvalid();
     return;
   }
-  Expr *ASArgExpr = static_cast<Expr *>(Attr.getArg(0));
+  Expr *ASArgExpr = static_cast<Expr *>(Attr.getArgAsExpr(0));
   llvm::APSInt addrSpace(32);
   if (ASArgExpr->isTypeDependent() || ASArgExpr->isValueDependent() ||
       !ASArgExpr->isIntegerConstantExpr(addrSpace, S.Context)) {
@@ -3944,7 +4044,7 @@ static bool handleObjCOwnershipTypeAttr(TypeProcessingState &state,
   if (AttrLoc.isMacroID())
     AttrLoc = S.getSourceManager().getImmediateExpansionRange(AttrLoc).first;
 
-  if (!attr.getParameterName()) {
+  if (!attr.isArgIdent(0)) {
     S.Diag(AttrLoc, diag::err_attribute_argument_type)
       << attr.getName() << AANT_ArgumentString;
     attr.setInvalid();
@@ -3956,18 +4056,19 @@ static bool handleObjCOwnershipTypeAttr(TypeProcessingState &state,
   if (!S.getLangOpts().ObjCAutoRefCount)
     return true;
 
+  IdentifierInfo *II = attr.getArgAsIdent(0)->Ident;
   Qualifiers::ObjCLifetime lifetime;
-  if (attr.getParameterName()->isStr("none"))
+  if (II->isStr("none"))
     lifetime = Qualifiers::OCL_ExplicitNone;
-  else if (attr.getParameterName()->isStr("strong"))
+  else if (II->isStr("strong"))
     lifetime = Qualifiers::OCL_Strong;
-  else if (attr.getParameterName()->isStr("weak"))
+  else if (II->isStr("weak"))
     lifetime = Qualifiers::OCL_Weak;
-  else if (attr.getParameterName()->isStr("autoreleasing"))
+  else if (II->isStr("autoreleasing"))
     lifetime = Qualifiers::OCL_Autoreleasing;
   else {
     S.Diag(AttrLoc, diag::warn_attribute_type_not_supported)
-      << "objc_ownership" << attr.getParameterName();
+      << attr.getName() << II;
     attr.setInvalid();
     return true;
   }
@@ -4078,28 +4179,30 @@ static bool handleObjCGCTypeAttr(TypeProcessingState &state,
     attr.setInvalid();
     return true;
   }
-
+  
   // Check the attribute arguments.
-  if (!attr.getParameterName()) {
+  if (!attr.isArgIdent(0)) {
     S.Diag(attr.getLoc(), diag::err_attribute_argument_type)
       << attr.getName() << AANT_ArgumentString;
     attr.setInvalid();
     return true;
   }
   Qualifiers::GC GCAttr;
-  if (attr.getNumArgs() != 0) {
+  if (attr.getNumArgs() > 1) {
     S.Diag(attr.getLoc(), diag::err_attribute_wrong_number_arguments)
       << attr.getName() << 1;
     attr.setInvalid();
     return true;
   }
-  if (attr.getParameterName()->isStr("weak"))
+
+  IdentifierInfo *II = attr.getArgAsIdent(0)->Ident;
+  if (II->isStr("weak"))
     GCAttr = Qualifiers::Weak;
-  else if (attr.getParameterName()->isStr("strong"))
+  else if (II->isStr("strong"))
     GCAttr = Qualifiers::Strong;
   else {
     S.Diag(attr.getLoc(), diag::warn_attribute_type_not_supported)
-      << "objc_gc" << attr.getParameterName();
+      << attr.getName() << II;
     attr.setInvalid();
     return true;
   }
@@ -4324,9 +4427,15 @@ static AttributedType::Kind getCCTypeAttrKind(AttributeList &Attr) {
   case AttributeList::AT_Pascal:
     return AttributedType::attr_pascal;
   case AttributeList::AT_Pcs: {
-    // We know attr is valid so it can only have one of two strings args.
-    StringLiteral *Str = cast<StringLiteral>(Attr.getArg(0));
-    return llvm::StringSwitch<AttributedType::Kind>(Str->getString())
+    // The attribute may have had a fixit applied where we treated an
+    // identifier as a string literal.  The contents of the string are valid,
+    // but the form may not be.
+    StringRef Str;
+    if (Attr.isArgExpr(0))
+      Str = cast<StringLiteral>(Attr.getArgAsExpr(0))->getString();
+    else
+      Str = Attr.getArgAsIdent(0)->Ident->getName();
+    return llvm::StringSwitch<AttributedType::Kind>(Str)
         .Case("aapcs", AttributedType::attr_pcs)
         .Case("aapcs-vfp", AttributedType::attr_pcs_vfp);
   }
@@ -4334,6 +4443,10 @@ static AttributedType::Kind getCCTypeAttrKind(AttributeList &Attr) {
     return AttributedType::attr_pnaclcall;
   case AttributeList::AT_IntelOclBicc:
     return AttributedType::attr_inteloclbicc;
+  case AttributeList::AT_MSABI:
+    return AttributedType::attr_ms_abi;
+  case AttributeList::AT_SysVABI:
+    return AttributedType::attr_sysv_abi;
   }
   llvm_unreachable("unexpected attribute kind!");
 }
@@ -4414,34 +4527,41 @@ static bool handleFunctionTypeAttr(TypeProcessingState &state,
 
   const FunctionType *fn = unwrapped.get();
   CallingConv CCOld = fn->getCallConv();
-  if (S.Context.getCanonicalCallConv(CC) ==
-      S.Context.getCanonicalCallConv(CCOld)) {
-    FunctionType::ExtInfo EI= unwrapped.get()->getExtInfo().withCallingConv(CC);
-    type = unwrapped.wrap(S, S.Context.adjustFunctionType(unwrapped.get(), EI));
-    return true;
-  }
+  AttributedType::Kind CCAttrKind = getCCTypeAttrKind(attr);
 
-  if (CCOld != (S.LangOpts.MRTD ? CC_X86StdCall : CC_Default)) {
-    // Should we diagnose reapplications of the same convention?
-    S.Diag(attr.getLoc(), diag::err_attributes_are_not_compatible)
-      << FunctionType::getNameForCallConv(CC)
-      << FunctionType::getNameForCallConv(CCOld);
-    attr.setInvalid();
-    return true;
-  }
-
-  // Diagnose the use of X86 fastcall on varargs or unprototyped functions.
-  if (CC == CC_X86FastCall) {
-    if (isa<FunctionNoProtoType>(fn)) {
-      S.Diag(attr.getLoc(), diag::err_cconv_knr)
-        << FunctionType::getNameForCallConv(CC);
+  if (CCOld != CC) {
+    // Error out on when there's already an attribute on the type
+    // and the CCs don't match.
+    const AttributedType *AT = S.getCallingConvAttributedType(type);
+    if (AT && AT->getAttrKind() != CCAttrKind) {
+      S.Diag(attr.getLoc(), diag::err_attributes_are_not_compatible)
+        << FunctionType::getNameForCallConv(CC)
+        << FunctionType::getNameForCallConv(CCOld);
       attr.setInvalid();
       return true;
     }
+  }
 
-    const FunctionProtoType *FnP = cast<FunctionProtoType>(fn);
-    if (FnP->isVariadic()) {
-      S.Diag(attr.getLoc(), diag::err_cconv_varargs)
+  // Diagnose use of callee-cleanup calling convention on variadic functions.
+  if (isCalleeCleanup(CC)) {
+    const FunctionProtoType *FnP = dyn_cast<FunctionProtoType>(fn);
+    if (FnP && FnP->isVariadic()) {
+      unsigned DiagID = diag::err_cconv_varargs;
+      // stdcall and fastcall are ignored with a warning for GCC and MS
+      // compatibility.
+      if (CC == CC_X86StdCall || CC == CC_X86FastCall)
+        DiagID = diag::warn_cconv_varargs;
+
+      S.Diag(attr.getLoc(), DiagID) << FunctionType::getNameForCallConv(CC);
+      attr.setInvalid();
+      return true;
+    }
+  }
+
+  // Diagnose the use of X86 fastcall on unprototyped functions.
+  if (CC == CC_X86FastCall) {
+    if (isa<FunctionNoProtoType>(fn)) {
+      S.Diag(attr.getLoc(), diag::err_cconv_knr)
         << FunctionType::getNameForCallConv(CC);
       attr.setInvalid();
       return true;
@@ -4463,8 +4583,40 @@ static bool handleFunctionTypeAttr(TypeProcessingState &state,
   FunctionType::ExtInfo EI = unwrapped.get()->getExtInfo().withCallingConv(CC);
   QualType Equivalent =
       unwrapped.wrap(S, S.Context.adjustFunctionType(unwrapped.get(), EI));
-  type = S.Context.getAttributedType(getCCTypeAttrKind(attr), type, Equivalent);
+  type = S.Context.getAttributedType(CCAttrKind, type, Equivalent);
   return true;
+}
+
+void Sema::adjustMemberFunctionCC(QualType &T, bool IsStatic) {
+  const FunctionType *FT = T->castAs<FunctionType>();
+  bool IsVariadic = (isa<FunctionProtoType>(FT) &&
+                     cast<FunctionProtoType>(FT)->isVariadic());
+  CallingConv CC = FT->getCallConv();
+
+  // Only adjust types with the default convention.  For example, on Windows we
+  // should adjust a __cdecl type to __thiscall for instance methods, and a
+  // __thiscall type to __cdecl for static methods.
+  CallingConv DefaultCC =
+      Context.getDefaultCallingConvention(IsVariadic, IsStatic);
+  if (CC != DefaultCC)
+    return;
+
+  // Check if there was an explicit attribute, but only look through parens.
+  // The intent is to look for an attribute on the current declarator, but not
+  // one that came from a typedef.
+  QualType R = T.IgnoreParens();
+  while (const AttributedType *AT = dyn_cast<AttributedType>(R)) {
+    if (AT->isCallingConv())
+      return;
+    R = AT->getModifiedType().IgnoreParens();
+  }
+
+  // FIXME: This loses sugar.  This should probably be fixed with an implicit
+  // AttributedType node that adjusts the convention.
+  CC = Context.getDefaultCallingConvention(IsVariadic, !IsStatic);
+  FT = Context.adjustFunctionType(FT, FT->getExtInfo().withCallingConv(CC));
+  FunctionTypeUnwrapper Unwrapped(*this, T);
+  T = Unwrapped.wrap(*this, FT);
 }
 
 /// Handle OpenCL image access qualifiers: read_only, write_only, read_write
@@ -4478,7 +4630,7 @@ static void HandleOpenCLImageAccessAttribute(QualType& CurType,
     Attr.setInvalid();
     return;
   }
-  Expr *sizeExpr = static_cast<Expr *>(Attr.getArg(0));
+  Expr *sizeExpr = static_cast<Expr *>(Attr.getArgAsExpr(0));
   llvm::APSInt arg(32);
   if (sizeExpr->isTypeDependent() || sizeExpr->isValueDependent() ||
       !sizeExpr->isIntegerConstantExpr(arg, S.Context)) {
@@ -4520,7 +4672,7 @@ static void HandleVectorSizeAttr(QualType& CurType, const AttributeList &Attr,
     Attr.setInvalid();
     return;
   }
-  Expr *sizeExpr = static_cast<Expr *>(Attr.getArg(0));
+  Expr *sizeExpr = static_cast<Expr *>(Attr.getArgAsExpr(0));
   llvm::APSInt vecSize(32);
   if (sizeExpr->isTypeDependent() || sizeExpr->isValueDependent() ||
       !sizeExpr->isIntegerConstantExpr(vecSize, S.Context)) {
@@ -4530,8 +4682,9 @@ static void HandleVectorSizeAttr(QualType& CurType, const AttributeList &Attr,
     Attr.setInvalid();
     return;
   }
-  // the base type must be integer or float, and can't already be a vector.
-  if (!CurType->isBuiltinType() ||
+  // The base type must be integer (not Boolean or enumeration) or float, and
+  // can't already be a vector.
+  if (!CurType->isBuiltinType() || CurType->isBooleanType() ||
       (!CurType->isIntegerType() && !CurType->isRealFloatingType())) {
     S.Diag(Attr.getLoc(), diag::err_attribute_invalid_vector_type) << CurType;
     Attr.setInvalid();
@@ -4572,14 +4725,21 @@ static void HandleVectorSizeAttr(QualType& CurType, const AttributeList &Attr,
 static void HandleExtVectorTypeAttr(QualType &CurType,
                                     const AttributeList &Attr,
                                     Sema &S) {
+  // check the attribute arguments.
+  if (Attr.getNumArgs() != 1) {
+    S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
+      << Attr.getName() << 1;
+    return;
+  }
+
   Expr *sizeExpr;
 
   // Special case where the argument is a template id.
-  if (Attr.getParameterName()) {
+  if (Attr.isArgIdent(0)) {
     CXXScopeSpec SS;
     SourceLocation TemplateKWLoc;
     UnqualifiedId id;
-    id.setIdentifier(Attr.getParameterName(), Attr.getLoc());
+    id.setIdentifier(Attr.getArgAsIdent(0)->Ident, Attr.getLoc());
 
     ExprResult Size = S.ActOnIdExpression(S.getCurScope(), SS, TemplateKWLoc,
                                           id, false, false);
@@ -4588,13 +4748,7 @@ static void HandleExtVectorTypeAttr(QualType &CurType,
 
     sizeExpr = Size.get();
   } else {
-    // check the attribute arguments.
-    if (Attr.getNumArgs() != 1) {
-      S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
-        << Attr.getName() << 1;
-      return;
-    }
-    sizeExpr = Attr.getArg(0);
+    sizeExpr = Attr.getArgAsExpr(0);
   }
 
   // Create the vector type.
@@ -4649,6 +4803,12 @@ static bool isPermittedNeonBaseType(QualType &Ty,
 static void HandleNeonVectorTypeAttr(QualType& CurType,
                                      const AttributeList &Attr, Sema &S,
                                      VectorType::VectorKind VecKind) {
+  // Target must have NEON
+  if (!S.Context.getTargetInfo().hasFeature("neon")) {
+    S.Diag(Attr.getLoc(), diag::err_attribute_unsupported) << Attr.getName();
+    Attr.setInvalid();
+    return;
+  }
   // Check the attribute arguments.
   if (Attr.getNumArgs() != 1) {
     S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
@@ -4657,7 +4817,7 @@ static void HandleNeonVectorTypeAttr(QualType& CurType,
     return;
   }
   // The number of elements must be an ICE.
-  Expr *numEltsExpr = static_cast<Expr *>(Attr.getArg(0));
+  Expr *numEltsExpr = static_cast<Expr *>(Attr.getArgAsExpr(0));
   llvm::APSInt numEltsInt(32);
   if (numEltsExpr->isTypeDependent() || numEltsExpr->isValueDependent() ||
       !numEltsExpr->isIntegerConstantExpr(numEltsInt, S.Context)) {
@@ -4835,38 +4995,42 @@ bool Sema::RequireCompleteExprType(Expr *E, TypeDiagnoser &Diagnoser){
     return false;
 
   // Incomplete array types may be completed by the initializer attached to
-  // their definitions. For static data members of class templates we need to
-  // instantiate the definition to get this initializer and complete the type.
+  // their definitions. For static data members of class templates and for
+  // variable templates, we need to instantiate the definition to get this
+  // initializer and complete the type.
   if (T->isIncompleteArrayType()) {
     if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E->IgnoreParens())) {
       if (VarDecl *Var = dyn_cast<VarDecl>(DRE->getDecl())) {
-        if (Var->isStaticDataMember() &&
-            Var->getInstantiatedFromStaticDataMember()) {
+        if (isTemplateInstantiation(Var->getTemplateSpecializationKind())) {
+          SourceLocation PointOfInstantiation = E->getExprLoc();
 
-          MemberSpecializationInfo *MSInfo = Var->getMemberSpecializationInfo();
-          assert(MSInfo && "Missing member specialization information?");
-          if (MSInfo->getTemplateSpecializationKind()
-                != TSK_ExplicitSpecialization) {
+          if (MemberSpecializationInfo *MSInfo =
+                  Var->getMemberSpecializationInfo()) {
             // If we don't already have a point of instantiation, this is it.
             if (MSInfo->getPointOfInstantiation().isInvalid()) {
-              MSInfo->setPointOfInstantiation(E->getLocStart());
+              MSInfo->setPointOfInstantiation(PointOfInstantiation);
 
               // This is a modification of an existing AST node. Notify
               // listeners.
               if (ASTMutationListener *L = getASTMutationListener())
                 L->StaticDataMemberInstantiated(Var);
             }
+          } else {
+            VarTemplateSpecializationDecl *VarSpec =
+                cast<VarTemplateSpecializationDecl>(Var);
+            if (VarSpec->getPointOfInstantiation().isInvalid())
+              VarSpec->setPointOfInstantiation(PointOfInstantiation);
+          }
 
-            InstantiateStaticDataMemberDefinition(E->getExprLoc(), Var);
+          InstantiateVariableDefinition(PointOfInstantiation, Var);
 
-            // Update the type to the newly instantiated definition's type both
-            // here and within the expression.
-            if (VarDecl *Def = Var->getDefinition()) {
-              DRE->setDecl(Def);
-              T = Def->getType();
-              DRE->setType(T);
-              E->setType(T);
-            }
+          // Update the type to the newly instantiated definition's type both
+          // here and within the expression.
+          if (VarDecl *Def = Var->getDefinition()) {
+            DRE->setDecl(Def);
+            T = Def->getType();
+            DRE->setType(T);
+            E->setType(T);
           }
 
           // We still go on to try to complete the type independently, as it
@@ -4970,6 +5134,14 @@ bool Sema::RequireCompleteTypeImpl(SourceLocation Loc, QualType T,
 
     return false;
   }
+
+  // FIXME: If there's an unimported definition of this type in a module (for
+  // instance, because we forward declared it, then imported the definition),
+  // import that definition now.
+  // FIXME: What about other cases where an import extends a redeclaration
+  // chain for a declaration that can be accessed through a mechanism other
+  // than name lookup (eg, referenced in a template, or a variable whose type
+  // could be completed by the module)?
 
   const TagType *Tag = T->getAs<TagType>();
   const ObjCInterfaceType *IFace = 0;

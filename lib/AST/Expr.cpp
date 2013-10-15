@@ -604,6 +604,16 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
     Out.flush();
     return Name.str().str();
   }
+  if (const CapturedDecl *CD = dyn_cast<CapturedDecl>(CurrentDecl)) {
+    for (const DeclContext *DC = CD->getParent(); DC; DC = DC->getParent())
+      // Skip to its enclosing function or method, but not its enclosing
+      // CapturedDecl.
+      if (DC->isFunctionOrMethod() && (DC->getDeclKind() != Decl::Captured)) {
+        const Decl *D = Decl::castFromDeclContext(DC);
+        return ComputeName(IT, D);
+      }
+    llvm_unreachable("CapturedDecl not inside a function or method");
+  }
   if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(CurrentDecl)) {
     SmallString<256> Name;
     llvm::raw_svector_ostream Out(Name);
@@ -2644,9 +2654,6 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef) const {
     return Exp->isConstantInitializer(Ctx, false);
   }
   case InitListExprClass: {
-    // FIXME: This doesn't deal with fields with reference types correctly.
-    // FIXME: This incorrectly allows pointers cast to integers to be assigned
-    // to bitfields.
     const InitListExpr *ILE = cast<InitListExpr>(this);
     if (ILE->getType()->isArrayType()) {
       unsigned numInits = ILE->getNumInits();
@@ -2833,6 +2840,7 @@ bool Expr::HasSideEffects(const ASTContext &Ctx) const {
   case SubstNonTypeTemplateParmExprClass:
   case MaterializeTemporaryExprClass:
   case ShuffleVectorExprClass:
+  case ConvertVectorExprClass:
   case AsTypeExprClass:
     // These have a side-effect if any subexpression does.
     break;

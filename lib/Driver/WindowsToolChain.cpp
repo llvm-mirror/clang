@@ -33,6 +33,42 @@ using namespace clang::driver::toolchains;
 using namespace clang;
 using namespace llvm::opt;
 
+Windows::Windows(const Driver &D, const llvm::Triple& Triple,
+                 const ArgList &Args)
+  : ToolChain(D, Triple, Args) {
+}
+
+Tool *Windows::buildLinker() const {
+  return new tools::visualstudio::Link(*this);
+}
+
+Tool *Windows::buildAssembler() const {
+  if (getTriple().getEnvironment() == llvm::Triple::MachO)
+    return new tools::darwin::Assemble(*this);
+  getDriver().Diag(clang::diag::err_no_external_windows_assembler);
+  return NULL;
+}
+
+bool Windows::IsIntegratedAssemblerDefault() const {
+  return true;
+}
+
+bool Windows::IsUnwindTablesDefault() const {
+  return getArch() == llvm::Triple::x86_64;
+}
+
+bool Windows::isPICDefault() const {
+  return getArch() == llvm::Triple::x86_64;
+}
+
+bool Windows::isPIEDefault() const {
+  return false;
+}
+
+bool Windows::isPICDefaultForced() const {
+  return getArch() == llvm::Triple::x86_64;
+}
+
 // FIXME: This probably should goto to some platform utils place.
 #ifdef _MSC_VER
 
@@ -90,7 +126,8 @@ static bool getSystemRegistryString(const char *keyPath, const char *valueName,
     strncpy(partialKey, subKey, partialKeyLength);
     partialKey[partialKeyLength] = '\0';
     HKEY hTopKey = NULL;
-    lResult = RegOpenKeyEx(hRootKey, partialKey, 0, KEY_READ, &hTopKey);
+    lResult = RegOpenKeyEx(hRootKey, partialKey, 0, KEY_READ | KEY_WOW64_32KEY,
+                           &hTopKey);
     if (lResult == ERROR_SUCCESS) {
       char keyName[256];
       int bestIndex = -1;
@@ -109,33 +146,34 @@ static bool getSystemRegistryString(const char *keyPath, const char *valueName,
         char numBuf[32];
         strncpy(numBuf, sp, sizeof(numBuf) - 1);
         numBuf[sizeof(numBuf) - 1] = '\0';
-        double value = strtod(numBuf, NULL);
-        if (value > bestValue) {
-          bestIndex = (int)index;
-          bestValue = value;
+        double dvalue = strtod(numBuf, NULL);
+        if (dvalue > bestValue) {
+          // Test that InstallDir is indeed there before keeping this index.
+          // Open the chosen key path remainder.
           strcpy(bestName, keyName);
+          // Append rest of key.
+          strncat(bestName, nextKey, sizeof(bestName) - 1);
+          bestName[sizeof(bestName) - 1] = '\0';
+          lResult = RegOpenKeyEx(hTopKey, bestName, 0,
+                                 KEY_READ | KEY_WOW64_32KEY, &hKey);
+          if (lResult == ERROR_SUCCESS) {
+            lResult = RegQueryValueEx(hKey, valueName, NULL, &valueType,
+              (LPBYTE)value, &valueSize);
+            if (lResult == ERROR_SUCCESS) {
+              bestIndex = (int)index;
+              bestValue = dvalue;
+              returnValue = true;
+            }
+            RegCloseKey(hKey);
+          }
         }
         size = sizeof(keyName) - 1;
-      }
-      // If we found the highest versioned key, open the key and get the value.
-      if (bestIndex != -1) {
-        // Append rest of key.
-        strncat(bestName, nextKey, sizeof(bestName) - 1);
-        bestName[sizeof(bestName) - 1] = '\0';
-        // Open the chosen key path remainder.
-        lResult = RegOpenKeyEx(hTopKey, bestName, 0, KEY_READ, &hKey);
-        if (lResult == ERROR_SUCCESS) {
-          lResult = RegQueryValueEx(hKey, valueName, NULL, &valueType,
-            (LPBYTE)value, &valueSize);
-          if (lResult == ERROR_SUCCESS)
-            returnValue = true;
-          RegCloseKey(hKey);
-        }
       }
       RegCloseKey(hTopKey);
     }
   } else {
-    lResult = RegOpenKeyEx(hRootKey, subKey, 0, KEY_READ, &hKey);
+    lResult = RegOpenKeyEx(hRootKey, subKey, 0, KEY_READ | KEY_WOW64_32KEY,
+                           &hKey);
     if (lResult == ERROR_SUCCESS) {
       lResult = RegQueryValueEx(hKey, valueName, NULL, &valueType,
         (LPBYTE)value, &valueSize);
@@ -164,7 +202,7 @@ static bool getWindowsSDKDir(std::string &path) {
   return false;
 }
 
-// Get Visual Studio installation directory.
+  // Get Visual Studio installation directory.
 static bool getVisualStudioDir(std::string &path) {
   // First check the environment variables that vsvars32.bat sets.
   const char* vcinstalldir = getenv("VCINSTALLDIR");
@@ -240,47 +278,6 @@ static bool getVisualStudioDir(std::string &path) {
 }
 
 #endif // _MSC_VER
-
-Windows::Windows(const Driver &D, const llvm::Triple& Triple,
-                 const ArgList &Args)
-  : ToolChain(D, Triple, Args) {
-#ifdef _MSC_VER
-  std::string VSDir;
-  if (getVisualStudioDir(VSDir))
-    getProgramPaths().push_back(VSDir + "\\VC\\bin");
-#endif
-}
-
-Tool *Windows::buildLinker() const {
-  return new tools::visualstudio::Link(*this);
-}
-
-Tool *Windows::buildAssembler() const {
-  if (getTriple().getEnvironment() == llvm::Triple::MachO)
-    return new tools::darwin::Assemble(*this);
-  getDriver().Diag(clang::diag::err_no_external_windows_assembler);
-  return NULL;
-}
-
-bool Windows::IsIntegratedAssemblerDefault() const {
-  return true;
-}
-
-bool Windows::IsUnwindTablesDefault() const {
-  return getArch() == llvm::Triple::x86_64;
-}
-
-bool Windows::isPICDefault() const {
-  return getArch() == llvm::Triple::x86_64;
-}
-
-bool Windows::isPIEDefault() const {
-  return false;
-}
-
-bool Windows::isPICDefaultForced() const {
-  return getArch() == llvm::Triple::x86_64;
-}
 
 void Windows::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
                                         ArgStringList &CC1Args) const {

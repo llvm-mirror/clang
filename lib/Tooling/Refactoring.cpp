@@ -19,6 +19,8 @@
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/Tooling/Refactoring.h"
 #include "llvm/Support/raw_os_ostream.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
 
 namespace clang {
 namespace tooling {
@@ -103,7 +105,15 @@ void Replacement::setFromSourceLocation(SourceManager &Sources,
   const std::pair<FileID, unsigned> DecomposedLocation =
       Sources.getDecomposedLoc(Start);
   const FileEntry *Entry = Sources.getFileEntryForID(DecomposedLocation.first);
-  this->FilePath = Entry != NULL ? Entry->getName() : InvalidLocation;
+  if (Entry != NULL) {
+    // Make FilePath absolute so replacements can be applied correctly when
+    // relative paths for files are used.
+    llvm::SmallString<256> FilePath(Entry->getName());
+    llvm::error_code EC = llvm::sys::fs::make_absolute(FilePath);
+    this->FilePath = EC ? FilePath.c_str() : Entry->getName();
+  } else {
+    this->FilePath = InvalidLocation;
+  }
   this->ReplacementRange = Range(DecomposedLocation.second, Length);
   this->ReplacementText = ReplacementText;
 }
@@ -194,6 +204,23 @@ unsigned shiftedCodePosition(const Replacements &Replaces, unsigned Position) {
   unsigned NewPosition = Position;
   for (Replacements::iterator I = Replaces.begin(), E = Replaces.end(); I != E;
        ++I) {
+    if (I->getOffset() >= Position)
+      break;
+    if (I->getOffset() + I->getLength() > Position)
+      NewPosition += I->getOffset() + I->getLength() - Position;
+    NewPosition += I->getReplacementText().size() - I->getLength();
+  }
+  return NewPosition;
+}
+
+// FIXME: Remove this function when Replacements is implemented as std::vector
+// instead of std::set.
+unsigned shiftedCodePosition(const std::vector<Replacement> &Replaces,
+                             unsigned Position) {
+  unsigned NewPosition = Position;
+  for (std::vector<Replacement>::const_iterator I = Replaces.begin(),
+                                                E = Replaces.end();
+       I != E; ++I) {
     if (I->getOffset() >= Position)
       break;
     if (I->getOffset() + I->getLength() > Position)

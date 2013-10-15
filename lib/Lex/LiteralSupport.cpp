@@ -336,7 +336,7 @@ static void EncodeUCNEscape(const char *ThisTokBegin, const char *&ThisTokBuf,
     return;
   }
 
-  assert((CharByteWidth == 1 || CharByteWidth == 2 || CharByteWidth) &&
+  assert((CharByteWidth == 1 || CharByteWidth == 2 || CharByteWidth == 4) &&
          "only character widths of 1, 2, or 4 bytes supported");
 
   (void)UcnLen;
@@ -498,15 +498,19 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
       hadError = true;
       return;
     } else if (*s == '.') {
+      checkSeparator(TokLoc, s, CSK_AfterDigits);
       s++;
       saw_period = true;
+      checkSeparator(TokLoc, s, CSK_BeforeDigits);
       s = SkipDigits(s);
     }
     if ((*s == 'e' || *s == 'E')) { // exponent
+      checkSeparator(TokLoc, s, CSK_AfterDigits);
       const char *Exponent = s;
       s++;
       saw_exponent = true;
       if (*s == '+' || *s == '-')  s++; // sign
+      checkSeparator(TokLoc, s, CSK_BeforeDigits);
       const char *first_non_digit = SkipDigits(s);
       if (first_non_digit != s) {
         s = first_non_digit;
@@ -520,6 +524,7 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
   }
 
   SuffixBegin = s;
+  checkSeparator(TokLoc, s, CSK_AfterDigits);
 
   // Parse the suffix.  At this point we can classify whether we have an FP or
   // integer constant.
@@ -604,6 +609,9 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
           break;
         }
       }
+      // "i", "if", and "il" are user-defined suffixes in C++1y.
+      if (PP.getLangOpts().CPlusPlus1y && *s == 'i')
+        break;
       // fall through.
     case 'j':
     case 'J':
@@ -665,10 +673,28 @@ bool NumericLiteralParser::isValidUDSuffix(const LangOptions &LangOpts,
     return false;
 
   // In C++1y, "s", "h", "min", "ms", "us", and "ns" are used in the library.
+  // Per tweaked N3660, "il", "i", and "if" are also used in the library.
   return llvm::StringSwitch<bool>(Suffix)
       .Cases("h", "min", "s", true)
       .Cases("ms", "us", "ns", true)
+      .Cases("il", "i", "if", true)
       .Default(false);
+}
+
+void NumericLiteralParser::checkSeparator(SourceLocation TokLoc,
+                                          const char *Pos,
+                                          CheckSeparatorKind IsAfterDigits) {
+  if (IsAfterDigits == CSK_AfterDigits) {
+    if (Pos == ThisTokBegin)
+      return;
+    --Pos;
+  } else if (Pos == ThisTokEnd)
+    return;
+
+  if (isDigitSeparator(*Pos))
+    PP.Diag(PP.AdvanceToTokenCharacter(TokLoc, Pos - ThisTokBegin),
+            diag::err_digit_separator_not_between_digits)
+      << IsAfterDigits;
 }
 
 /// ParseNumberStartingWithZero - This method is called when the first character
@@ -680,8 +706,11 @@ void NumericLiteralParser::ParseNumberStartingWithZero(SourceLocation TokLoc) {
   assert(s[0] == '0' && "Invalid method call");
   s++;
 
+  int c1 = s[0];
+  int c2 = s[1];
+
   // Handle a hex number like 0x1234.
-  if ((*s == 'x' || *s == 'X') && (isHexDigit(s[1]) || s[1] == '.')) {
+  if ((c1 == 'x' || c1 == 'X') && (isHexDigit(c2) || c2 == '.')) {
     s++;
     radix = 16;
     DigitsBegin = s;
@@ -731,7 +760,7 @@ void NumericLiteralParser::ParseNumberStartingWithZero(SourceLocation TokLoc) {
   }
 
   // Handle simple binary numbers 0b01010
-  if (*s == 'b' || *s == 'B') {
+  if ((c1 == 'b' || c1 == 'B') && (c2 == '0' || c2 == '1')) {
     // 0b101010 is a C++1y / GCC extension.
     PP.Diag(TokLoc,
             PP.getLangOpts().CPlusPlus1y
@@ -835,7 +864,8 @@ bool NumericLiteralParser::GetIntegerValue(llvm::APInt &Val) {
   if (alwaysFitsInto64Bits(radix, NumDigits)) {
     uint64_t N = 0;
     for (const char *Ptr = DigitsBegin; Ptr != SuffixBegin; ++Ptr)
-      N = N * radix + llvm::hexDigitValue(*Ptr);
+      if (!isDigitSeparator(*Ptr))
+        N = N * radix + llvm::hexDigitValue(*Ptr);
 
     // This will truncate the value to Val's input width. Simply check
     // for overflow by comparing.
@@ -852,6 +882,11 @@ bool NumericLiteralParser::GetIntegerValue(llvm::APInt &Val) {
 
   bool OverflowOccurred = false;
   while (Ptr < SuffixBegin) {
+    if (isDigitSeparator(*Ptr)) {
+      ++Ptr;
+      continue;
+    }
+
     unsigned C = llvm::hexDigitValue(*Ptr++);
 
     // If this letter is out of bound for this radix, reject it.
@@ -880,8 +915,17 @@ NumericLiteralParser::GetFloatValue(llvm::APFloat &Result) {
   using llvm::APFloat;
 
   unsigned n = std::min(SuffixBegin - ThisTokBegin, ThisTokEnd - ThisTokBegin);
-  return Result.convertFromString(StringRef(ThisTokBegin, n),
-                                  APFloat::rmNearestTiesToEven);
+
+  llvm::SmallString<16> Buffer;
+  StringRef Str(ThisTokBegin, n);
+  if (Str.find('\'') != StringRef::npos) {
+    Buffer.reserve(n);
+    std::remove_copy_if(Str.begin(), Str.end(), std::back_inserter(Buffer),
+                        &isDigitSeparator);
+    Str = Buffer;
+  }
+
+  return Result.convertFromString(Str, APFloat::rmNearestTiesToEven);
 }
 
 

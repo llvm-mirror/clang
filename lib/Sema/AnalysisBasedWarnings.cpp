@@ -439,14 +439,9 @@ static bool SuggestInitializationFixit(Sema &S, const VarDecl *VD) {
     << FixItHint::CreateInsertion(VD->getLocation(), "__block ");
     return true;
   }
-  
+
   // Don't issue a fixit if there is already an initializer.
   if (VD->getInit())
-    return false;
-  
-  // Suggest possible initialization (if any).
-  std::string Init = S.getFixItZeroInitializerForType(VariableTy);
-  if (Init.empty())
     return false;
 
   // Don't suggest a fixit inside macros.
@@ -454,7 +449,12 @@ static bool SuggestInitializationFixit(Sema &S, const VarDecl *VD) {
     return false;
 
   SourceLocation Loc = S.PP.getLocForEndOfToken(VD->getLocEnd());
-  
+
+  // Suggest possible initialization (if any).
+  std::string Init = S.getFixItZeroInitializerForType(VariableTy, Loc);
+  if (Init.empty())
+    return false;
+
   S.Diag(Loc, diag::note_var_fixit_add_initialization) << VD->getDeclName()
     << FixItHint::CreateInsertion(Loc, Init);
   return true;
@@ -493,6 +493,31 @@ static void DiagUninitUse(Sema &S, const VarDecl *VD, const UninitUse &Use,
                           bool IsCapturedByBlock) {
   bool Diagnosed = false;
 
+  switch (Use.getKind()) {
+  case UninitUse::Always:
+    S.Diag(Use.getUser()->getLocStart(), diag::warn_uninit_var)
+        << VD->getDeclName() << IsCapturedByBlock
+        << Use.getUser()->getSourceRange();
+    return;
+
+  case UninitUse::AfterDecl:
+  case UninitUse::AfterCall:
+    S.Diag(VD->getLocation(), diag::warn_sometimes_uninit_var)
+      << VD->getDeclName() << IsCapturedByBlock
+      << (Use.getKind() == UninitUse::AfterDecl ? 4 : 5)
+      << const_cast<DeclContext*>(VD->getLexicalDeclContext())
+      << VD->getSourceRange();
+    S.Diag(Use.getUser()->getLocStart(), diag::note_uninit_var_use)
+      << IsCapturedByBlock << Use.getUser()->getSourceRange();
+    return;
+
+  case UninitUse::Maybe:
+  case UninitUse::Sometimes:
+    // Carry on to report sometimes-uninitialized branches, if possible,
+    // or a 'may be used uninitialized' diagnostic otherwise.
+    break;
+  }
+
   // Diagnose each branch which leads to a sometimes-uninitialized use.
   for (UninitUse::branch_iterator I = Use.branch_begin(), E = Use.branch_end();
        I != E; ++I) {
@@ -515,14 +540,10 @@ static void DiagUninitUse(Sema &S, const VarDecl *VD, const UninitUse &Use,
                                   : (I->Output ? "1" : "0");
     FixItHint Fixit1, Fixit2;
 
-    switch (Term->getStmtClass()) {
+    switch (Term ? Term->getStmtClass() : Stmt::DeclStmtClass) {
     default:
       // Don't know how to report this. Just fall back to 'may be used
-      // uninitialized'. This happens for range-based for, which the user
-      // can't explicitly fix.
-      // FIXME: This also happens if the first use of a variable is always
-      // uninitialized, eg "for (int n; n < 10; ++n)". We should report that
-      // with the 'is uninitialized' diagnostic.
+      // uninitialized'. FIXME: Can this happen?
       continue;
 
     // "condition is true / condition is false".
@@ -583,6 +604,17 @@ static void DiagUninitUse(Sema &S, const VarDecl *VD, const UninitUse &Use,
       else
         Fixit1 = FixItHint::CreateReplacement(Range, FixitStr);
       break;
+    case Stmt::CXXForRangeStmtClass:
+      if (I->Output == 1) {
+        // The use occurs if a range-based for loop's body never executes.
+        // That may be impossible, and there's no syntactic fix for this,
+        // so treat it as a 'may be uninitialized' case.
+        continue;
+      }
+      DiagKind = 1;
+      Str = "for";
+      Range = cast<CXXForRangeStmt>(Term)->getRangeInit()->getSourceRange();
+      break;
 
     // "condition is true / loop is exited".
     case Stmt::DoStmtClass:
@@ -619,9 +651,7 @@ static void DiagUninitUse(Sema &S, const VarDecl *VD, const UninitUse &Use,
   }
 
   if (!Diagnosed)
-    S.Diag(Use.getUser()->getLocStart(),
-           Use.getKind() == UninitUse::Always ? diag::warn_uninit_var
-                                              : diag::warn_maybe_uninit_var)
+    S.Diag(Use.getUser()->getLocStart(), diag::warn_maybe_uninit_var)
         << VD->getDeclName() << IsCapturedByBlock
         << Use.getUser()->getSourceRange();
 }
@@ -1233,7 +1263,9 @@ public:
 private:
   static bool hasAlwaysUninitializedUse(const UsesVec* vec) {
   for (UsesVec::const_iterator i = vec->begin(), e = vec->end(); i != e; ++i) {
-    if (i->getKind() == UninitUse::Always) {
+    if (i->getKind() == UninitUse::Always ||
+        i->getKind() == UninitUse::AfterCall ||
+        i->getKind() == UninitUse::AfterDecl) {
       return true;
     }
   }
@@ -1445,76 +1477,44 @@ public:
     }
   }
   
-  /// Warn about unnecessary-test errors.
-  /// \param VariableName -- The name of the variable that holds the unique
-  /// value.
-  ///
-  /// \param Loc -- The SourceLocation of the unnecessary test.
-  void warnUnnecessaryTest(StringRef VariableName, StringRef VariableState,
-                           SourceLocation Loc) {
-
-    PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_unnecessary_test) <<
-                                 VariableName << VariableState);
+  void warnLoopStateMismatch(SourceLocation Loc, StringRef VariableName) {
+    PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_loop_state_mismatch) <<
+      VariableName);
     
     Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
   
-  /// Warn about use-while-consumed errors.
-  /// \param MethodName -- The name of the method that was incorrectly
-  /// invoked.
-  /// 
-  /// \param Loc -- The SourceLocation of the method invocation.
-  void warnUseOfTempWhileConsumed(StringRef MethodName, SourceLocation Loc) {
+  void warnReturnTypestateForUnconsumableType(SourceLocation Loc,
+                                              StringRef TypeName) {
+    PartialDiagnosticAt Warning(Loc, S.PDiag(
+      diag::warn_return_typestate_for_unconsumable_type) << TypeName);
+    
+    Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
+  }
+  
+  void warnReturnTypestateMismatch(SourceLocation Loc, StringRef ExpectedState,
+                                   StringRef ObservedState) {
+                                    
+    PartialDiagnosticAt Warning(Loc, S.PDiag(
+      diag::warn_return_typestate_mismatch) << ExpectedState << ObservedState);
+    
+    Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
+  }
+  
+  void warnUseOfTempInInvalidState(StringRef MethodName, StringRef State,
+                                   SourceLocation Loc) {
                                                     
     PartialDiagnosticAt Warning(Loc, S.PDiag(
-      diag::warn_use_of_temp_while_consumed) << MethodName);
+      diag::warn_use_of_temp_in_invalid_state) << MethodName << State);
     
     Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
   
-  /// Warn about use-in-unknown-state errors.
-  /// \param MethodName -- The name of the method that was incorrectly
-  /// invoked.
-  ///
-  /// \param Loc -- The SourceLocation of the method invocation.
-  void warnUseOfTempInUnknownState(StringRef MethodName, SourceLocation Loc) {
+  void warnUseInInvalidState(StringRef MethodName, StringRef VariableName,
+                                  StringRef State, SourceLocation Loc) {
   
-    PartialDiagnosticAt Warning(Loc, S.PDiag(
-      diag::warn_use_of_temp_in_unknown_state) << MethodName);
-    
-    Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
-  }
-  
-  /// Warn about use-while-consumed errors.
-  /// \param MethodName -- The name of the method that was incorrectly
-  /// invoked.
-  ///
-  /// \param VariableName -- The name of the variable that holds the unique
-  /// value.
-  ///
-  /// \param Loc -- The SourceLocation of the method invocation.
-  void warnUseWhileConsumed(StringRef MethodName, StringRef VariableName,
-                            SourceLocation Loc) {
-  
-    PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_use_while_consumed) <<
-                                MethodName << VariableName);
-    
-    Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
-  }
-  
-  /// Warn about use-in-unknown-state errors.
-  /// \param MethodName -- The name of the method that was incorrectly
-  /// invoked.
-  ///
-  /// \param VariableName -- The name of the variable that holds the unique
-  /// value.
-  ///
-  /// \param Loc -- The SourceLocation of the method invocation.
-  void warnUseInUnknownState(StringRef MethodName, StringRef VariableName,
-                             SourceLocation Loc) {
-
-    PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_use_in_unknown_state) <<
-                                MethodName << VariableName);
+    PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_use_in_invalid_state) <<
+                                MethodName << VariableName << State);
     
     Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
@@ -1552,7 +1552,7 @@ clang::sema::AnalysisBasedWarnings::AnalysisBasedWarnings(Sema &s)
     (D.getDiagnosticLevel(diag::warn_double_lock, SourceLocation()) !=
      DiagnosticsEngine::Ignored);
   DefaultPolicy.enableConsumedAnalysis = (unsigned)
-    (D.getDiagnosticLevel(diag::warn_use_while_consumed, SourceLocation()) !=
+    (D.getDiagnosticLevel(diag::warn_use_in_invalid_state, SourceLocation()) !=
      DiagnosticsEngine::Ignored);
 }
 
@@ -1598,10 +1598,11 @@ AnalysisBasedWarnings::IssueWarnings(sema::AnalysisBasedWarnings::Policy P,
   const Stmt *Body = D->getBody();
   assert(Body);
 
+  // Construct the analysis context with the specified CFG build options.
   AnalysisDeclContext AC(/* AnalysisDeclContextManager */ 0, D);
 
   // Don't generate EH edges for CallExprs as we'd like to avoid the n^2
-  // explosion for destrutors that can result and the compile time hit.
+  // explosion for destructors that can result and the compile time hit.
   AC.getCFGBuildOptions().PruneTriviallyFalseEdges = true;
   AC.getCFGBuildOptions().AddEHEdges = false;
   AC.getCFGBuildOptions().AddInitializers = true;
@@ -1631,8 +1632,7 @@ AnalysisBasedWarnings::IssueWarnings(sema::AnalysisBasedWarnings::Policy P,
       .setAlwaysAdd(Stmt::AttributedStmtClass);
   }
 
-  // Construct the analysis context with the specified CFG build options.
-  
+
   // Emit delayed diagnostics.
   if (!fscope->PossiblyUnreachableDiags.empty()) {
     bool analyzed = false;

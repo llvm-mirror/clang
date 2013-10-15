@@ -1,4 +1,5 @@
 // RUN: %clang_cc1 %s -fsyntax-only -triple i386-unknown-unknown -verify
+// RUN: %clang_cc1 %s -fsyntax-only -triple i386-unknown-unknown -fms-compatibility -DWIN -verify
 
 void __attribute__((fastcall)) foo(float *a) {
 }
@@ -15,7 +16,11 @@ void __attribute__((fastcall)) test0() { // expected-error {{function with no pr
 void __attribute__((fastcall)) test1(void) {
 }
 
-void __attribute__((fastcall)) test2(int a, ...) { // expected-error {{variadic function cannot use fastcall calling convention}}
+void __attribute__((fastcall)) test2(int a, ...) { // expected-warning {{fastcall calling convention ignored on variadic function}}
+}
+void __attribute__((stdcall)) test3(int a, ...) { // expected-warning {{stdcall calling convention ignored on variadic function}}
+}
+void __attribute__((thiscall)) test4(int a, ...) { // expected-error {{variadic function cannot use thiscall calling convention}}
 }
 
 void __attribute__((cdecl)) ctest0() {}
@@ -38,7 +43,8 @@ Handler H = foo;
 
 int __attribute__((pcs("aapcs", "aapcs"))) pcs1(void); // expected-error {{'pcs' attribute takes one argument}}
 int __attribute__((pcs())) pcs2(void); // expected-error {{'pcs' attribute takes one argument}}
-int __attribute__((pcs(pcs1))) pcs3(void); // expected-error {{'pcs' attribute takes one argument}}
+int __attribute__((pcs(pcs1))) pcs3(void); // expected-error {{'pcs' attribute requires a string}} \
+                                           // expected-error {{invalid PCS type}}
 int __attribute__((pcs(0))) pcs4(void); // expected-error {{'pcs' attribute requires a string}}
 /* These are ignored because the target is i386 and not ARM */
 int __attribute__((pcs("aapcs"))) pcs5(void); // expected-warning {{calling convention 'pcs' ignored for this target}}
@@ -56,3 +62,7 @@ PROC __attribute__((cdecl)) ctest4(const char *x) {}
 void __attribute__((pnaclcall)) pnaclfunc(float *a) {} // expected-warning {{calling convention 'pnaclcall' ignored for this target}}
 
 void __attribute__((intel_ocl_bicc)) inteloclbifunc(float *a) {}
+
+typedef void typedef_fun_t(int);
+typedef_fun_t typedef_fun; // expected-note {{previous declaration is here}}
+void __attribute__((stdcall)) typedef_fun(int x) { } // expected-error {{function declared 'stdcall' here was previously declared without calling convention}}

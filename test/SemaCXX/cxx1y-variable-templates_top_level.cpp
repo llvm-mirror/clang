@@ -168,7 +168,10 @@ namespace explicit_instantiation {
     template int var<int>;
   }
 #endif
-  
+
+  template<typename=int> int missing_args; // expected-note {{here}}
+  template int missing_args; // expected-error {{must specify a template argument list}}
+
   namespace extern_var {
     // TODO:
   }
@@ -312,8 +315,7 @@ namespace explicit_specialization {
   
   namespace diff_type {
     // TODO:
-    template<typename T> T var = T();
-    template<typename T> T* var<T> = new T();
+    template<typename T> T* var = new T();
 #ifndef PRECXX11
     template<typename T> auto var<T*> = T();  // expected-note {{previous definition is here}}
     template<typename T> T var<T*> = T();     // expected-error {{redefinition of 'var' with a different type: 'T' vs 'auto'}}

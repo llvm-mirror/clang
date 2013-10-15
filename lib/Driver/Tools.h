@@ -21,6 +21,7 @@ namespace clang {
   class ObjCRuntime;
 
 namespace driver {
+  class Command;
   class Driver;
 
 namespace toolchains {
@@ -590,7 +591,7 @@ namespace dragonfly {
 
   /// Visual studio tools.
 namespace visualstudio {
-  class LLVM_LIBRARY_VISIBILITY Link : public Tool  {
+  class LLVM_LIBRARY_VISIBILITY Link : public Tool {
   public:
     Link(const ToolChain &TC) : Tool("visualstudio::Link", "linker", TC) {}
 
@@ -603,7 +604,60 @@ namespace visualstudio {
                               const llvm::opt::ArgList &TCArgs,
                               const char *LinkingOutput) const;
   };
+
+  class LLVM_LIBRARY_VISIBILITY Compile : public Tool {
+  public:
+    Compile(const ToolChain &TC) : Tool("visualstudio::Compile", "compiler", TC) {}
+
+    virtual bool hasIntegratedAssembler() const { return true; }
+    virtual bool hasIntegratedCPP() const { return true; }
+    virtual bool isLinkJob() const { return false; }
+
+    virtual void ConstructJob(Compilation &C, const JobAction &JA,
+                              const InputInfo &Output,
+                              const InputInfoList &Inputs,
+                              const llvm::opt::ArgList &TCArgs,
+                              const char *LinkingOutput) const;
+
+    Command *GetCommand(Compilation &C, const JobAction &JA,
+                        const InputInfo &Output,
+                        const InputInfoList &Inputs,
+                        const llvm::opt::ArgList &TCArgs,
+                        const char *LinkingOutput) const;
+  };
 } // end namespace visualstudio
+
+namespace XCore {
+  // For XCore, we do not need to instantiate tools for PreProcess, PreCompile and Compile.
+  // We simply use "clang -cc1" for those actions.
+  class LLVM_LIBRARY_VISIBILITY Assemble : public Tool {
+  public:
+    Assemble(const ToolChain &TC) : Tool("XCore::Assemble",
+      "XCore-as", TC) {}
+
+    virtual bool hasIntegratedCPP() const { return false; }
+    virtual void ConstructJob(Compilation &C, const JobAction &JA,
+                              const InputInfo &Output,
+                              const InputInfoList &Inputs,
+                              const llvm::opt::ArgList &TCArgs,
+                              const char *LinkingOutput) const;
+  };
+
+  class LLVM_LIBRARY_VISIBILITY Link : public Tool {
+  public:
+    Link(const ToolChain &TC) : Tool("XCore::Link",
+      "XCore-ld", TC) {}
+
+    virtual bool hasIntegratedCPP() const { return false; }
+    virtual bool isLinkJob() const { return true; }
+    virtual void ConstructJob(Compilation &C, const JobAction &JA,
+                              const InputInfo &Output,
+                              const InputInfoList &Inputs,
+                              const llvm::opt::ArgList &TCArgs,
+                              const char *LinkingOutput) const;
+  };
+} // end namespace XCore.
+
 
 } // end namespace toolchains
 } // end namespace driver

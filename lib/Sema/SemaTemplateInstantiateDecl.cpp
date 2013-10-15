@@ -318,7 +318,6 @@ TemplateDeclInstantiator::VisitTypeAliasTemplateDecl(TypeAliasTemplateDecl *D) {
   return Inst;
 }
 
-// FIXME: Revise for static member templates.
 Decl *TemplateDeclInstantiator::VisitVarDecl(VarDecl *D) {
   return VisitVarDecl(D, /*InstantiatingVarTemplate=*/false);
 }
@@ -347,8 +346,12 @@ Decl *TemplateDeclInstantiator::VisitVarDecl(VarDecl *D,
     return 0;
   }
 
+  DeclContext *DC = Owner;
+  if (D->isLocalExternDecl())
+    SemaRef.adjustContextForLocalExternDecl(DC);
+
   // Build the instantiated declaration.
-  VarDecl *Var = VarDecl::Create(SemaRef.Context, Owner, D->getInnerLocStart(),
+  VarDecl *Var = VarDecl::Create(SemaRef.Context, DC, D->getInnerLocStart(),
                                  D->getLocation(), D->getIdentifier(),
                                  DI->getType(), DI, D->getStorageClass());
 
@@ -361,7 +364,7 @@ Decl *TemplateDeclInstantiator::VisitVarDecl(VarDecl *D,
   if (SubstQualifier(D, Var))
     return 0;
 
-  SemaRef.BuildVariableInstantiation(Var, D, TemplateArgs, LateAttrs,
+  SemaRef.BuildVariableInstantiation(Var, D, TemplateArgs, LateAttrs, Owner,
                                      StartingScope, InstantiatingVarTemplate);
   return Var;
 }
@@ -919,7 +922,7 @@ Decl *TemplateDeclInstantiator::VisitClassTemplateDecl(ClassTemplateDecl *D) {
     SmallVector<ClassTemplatePartialSpecializationDecl *, 4> PartialSpecs;
     D->getPartialSpecializations(PartialSpecs);
     for (unsigned I = 0, N = PartialSpecs.size(); I != N; ++I)
-      if (PartialSpecs[I]->isOutOfLine())
+      if (PartialSpecs[I]->getFirstDeclaration()->isOutOfLine())
         OutOfLinePartialSpecs.push_back(std::make_pair(Inst, PartialSpecs[I]));
   }
 
@@ -1000,7 +1003,7 @@ Decl *TemplateDeclInstantiator::VisitVarTemplateDecl(VarTemplateDecl *D) {
     SmallVector<VarTemplatePartialSpecializationDecl *, 4> PartialSpecs;
     D->getPartialSpecializations(PartialSpecs);
     for (unsigned I = 0, N = PartialSpecs.size(); I != N; ++I)
-      if (PartialSpecs[I]->isOutOfLine())
+      if (PartialSpecs[I]->getFirstDeclaration()->isOutOfLine())
         OutOfLineVarPartialSpecs.push_back(
             std::make_pair(Inst, PartialSpecs[I]));
   }
@@ -1199,11 +1202,13 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(FunctionDecl *D,
   }
 
   // If we're instantiating a local function declaration, put the result
-  // in the owner;  otherwise we need to find the instantiated context.
+  // in the enclosing namespace; otherwise we need to find the instantiated
+  // context.
   DeclContext *DC;
-  if (D->getDeclContext()->isFunctionOrMethod())
+  if (D->isLocalExternDecl()) {
     DC = Owner;
-  else if (isFriend && QualifierLoc) {
+    SemaRef.adjustContextForLocalExternDecl(DC);
+  } else if (isFriend && QualifierLoc) {
     CXXScopeSpec SS;
     SS.Adopt(QualifierLoc);
     DC = SemaRef.computeDeclContext(SS);
@@ -1227,8 +1232,11 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(FunctionDecl *D,
   if (QualifierLoc)
     Function->setQualifierInfo(QualifierLoc);
 
+  if (D->isLocalExternDecl())
+    Function->setLocalExternDecl();
+
   DeclContext *LexicalDC = Owner;
-  if (!isFriend && D->isOutOfLine()) {
+  if (!isFriend && D->isOutOfLine() && !D->isLocalExternDecl()) {
     assert(D->getDeclContext()->isFileContext());
     LexicalDC = D->getDeclContext();
   }
@@ -1294,8 +1302,11 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(FunctionDecl *D,
 
   bool isExplicitSpecialization = false;
 
-  LookupResult Previous(SemaRef, Function->getDeclName(), SourceLocation(),
-                        Sema::LookupOrdinaryName, Sema::ForRedeclaration);
+  LookupResult Previous(
+      SemaRef, Function->getDeclName(), SourceLocation(),
+      D->isLocalExternDecl() ? Sema::LookupRedeclarationWithLinkage
+                             : Sema::LookupOrdinaryName,
+      Sema::ForRedeclaration);
 
   if (DependentFunctionTemplateSpecializationInfo *Info
         = D->getDependentSpecializationInfo()) {
@@ -1427,6 +1438,9 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(FunctionDecl *D,
     }
   }
 
+  if (Function->isLocalExternDecl() && !Function->getPreviousDecl())
+    DC->makeDeclVisibleInContext(PrincipalDecl);
+
   if (Function->isOverloadedOperator() && !DC->isRecord() &&
       PrincipalDecl->isInIdentifierNamespace(Decl::IDNS_Ordinary))
     PrincipalDecl->setNonMemberOperator();
@@ -1540,7 +1554,7 @@ TemplateDeclInstantiator::VisitCXXMethodDecl(CXXMethodDecl *D,
                "inheriting constructor template in dependent context?");
         Sema::InstantiatingTemplate Inst(SemaRef, Constructor->getLocation(),
                                          Inh);
-        if (Inst)
+        if (Inst.isInvalid())
           return 0;
         Sema::ContextRAII SavedContext(SemaRef, Inh->getDeclContext());
         LocalInstantiationScope LocalScope(SemaRef);
@@ -1737,8 +1751,13 @@ Decl *TemplateDeclInstantiator::VisitTemplateTypeParmDecl(
                                  D->isParameterPack());
   Inst->setAccess(AS_public);
 
-  if (D->hasDefaultArgument())
-    Inst->setDefaultArgument(D->getDefaultArgumentInfo(), false);
+  if (D->hasDefaultArgument()) {
+    TypeSourceInfo *InstantiatedDefaultArg =
+        SemaRef.SubstType(D->getDefaultArgumentInfo(), TemplateArgs,
+                          D->getDefaultArgumentLoc(), D->getDeclName());
+    if (InstantiatedDefaultArg)
+      Inst->setDefaultArgument(InstantiatedDefaultArg, false);
+  }
 
   // Introduce this template parameter's instantiation into the instantiation
   // scope.
@@ -1888,7 +1907,11 @@ Decl *TemplateDeclInstantiator::VisitNonTypeTemplateParmDecl(
   if (Invalid)
     Param->setInvalidDecl();
 
-  Param->setDefaultArgument(D->getDefaultArgument(), false);
+  if (D->hasDefaultArgument()) {
+    ExprResult Value = SemaRef.SubstExpr(D->getDefaultArgument(), TemplateArgs);
+    if (!Value.isInvalid())
+      Param->setDefaultArgument(Value.get(), false);
+  }
 
   // Introduce this template parameter's instantiation into the instantiation
   // scope.
@@ -2011,7 +2034,21 @@ TemplateDeclInstantiator::VisitTemplateTemplateParmDecl(
                                              D->getPosition(),
                                              D->isParameterPack(),
                                              D->getIdentifier(), InstParams);
-  Param->setDefaultArgument(D->getDefaultArgument(), false);
+  if (D->hasDefaultArgument()) {
+    NestedNameSpecifierLoc QualifierLoc =
+        D->getDefaultArgument().getTemplateQualifierLoc();
+    QualifierLoc =
+        SemaRef.SubstNestedNameSpecifierLoc(QualifierLoc, TemplateArgs);
+    TemplateName TName = SemaRef.SubstTemplateName(
+        QualifierLoc, D->getDefaultArgument().getArgument().getAsTemplate(),
+        D->getDefaultArgument().getTemplateNameLoc(), TemplateArgs);
+    if (!TName.isNull())
+      Param->setDefaultArgument(
+          TemplateArgumentLoc(TemplateArgument(TName),
+                              D->getDefaultArgument().getTemplateQualifierLoc(),
+                              D->getDefaultArgument().getTemplateNameLoc()),
+          false);
+  }
   Param->setAccess(AS_public);
 
   // Introduce this template parameter's instantiation into the instantiation
@@ -2300,7 +2337,7 @@ Decl *TemplateDeclInstantiator::VisitVarTemplateSpecializationDecl(
 Decl *TemplateDeclInstantiator::VisitVarTemplateSpecializationDecl(
     VarTemplateDecl *VarTemplate, VarDecl *D, void *InsertPos,
     const TemplateArgumentListInfo &TemplateArgsInfo,
-    SmallVectorImpl<TemplateArgument> &Converted) {
+    llvm::ArrayRef<TemplateArgument> Converted) {
 
   // If this is the variable for an anonymous struct or union,
   // instantiate the anonymous struct/union type first.
@@ -2328,14 +2365,15 @@ Decl *TemplateDeclInstantiator::VisitVarTemplateSpecializationDecl(
       VarTemplate, DI->getType(), DI, D->getStorageClass(), Converted.data(),
       Converted.size());
   Var->setTemplateArgsInfo(TemplateArgsInfo);
-  VarTemplate->AddSpecialization(Var, InsertPos);
+  if (InsertPos)
+    VarTemplate->AddSpecialization(Var, InsertPos);
 
   // Substitute the nested name specifier, if any.
   if (SubstQualifier(D, Var))
     return 0;
 
   SemaRef.BuildVariableInstantiation(Var, D, TemplateArgs, LateAttrs,
-                                     StartingScope);
+                                     Owner, StartingScope);
 
   return Var;
 }
@@ -2653,12 +2691,8 @@ TemplateDeclInstantiator::InstantiateVarTemplatePartialSpecialization(
   // specializations. The instantiation of the initializer is not necessary.
   VarTemplate->AddPartialSpecialization(InstPartialSpec, /*InsertPos=*/0);
 
-  // Set the initializer, to use as pattern for initialization.
-  if (VarDecl *Def = PartialSpec->getDefinition(SemaRef.getASTContext()))
-    PartialSpec = cast<VarTemplatePartialSpecializationDecl>(Def);
   SemaRef.BuildVariableInstantiation(InstPartialSpec, PartialSpec, TemplateArgs,
-                                     LateAttrs, StartingScope);
-  InstPartialSpec->setInit(PartialSpec->getInit());
+                                     LateAttrs, Owner, StartingScope);
 
   return InstPartialSpec;
 }
@@ -2930,7 +2964,7 @@ void Sema::InstantiateExceptionSpec(SourceLocation PointOfInstantiation,
 
   InstantiatingTemplate Inst(*this, PointOfInstantiation, Decl,
                              InstantiatingTemplate::ExceptionSpecification());
-  if (Inst) {
+  if (Inst.isInvalid()) {
     // We hit the instantiation depth limit. Clear the exception specification
     // so that our callers don't have to cope with EST_Uninstantiated.
     FunctionProtoType::ExtProtoInfo EPI = Proto->getExtProtoInfo();
@@ -3154,7 +3188,7 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     Function->setImplicitlyInline();
 
   InstantiatingTemplate Inst(*this, PointOfInstantiation, Function);
-  if (Inst)
+  if (Inst.isInvalid())
     return;
 
   // Copy the inner loc start from the pattern.
@@ -3265,15 +3299,22 @@ VarTemplateSpecializationDecl *Sema::BuildVarTemplateInstantiation(
     return 0;
 
   InstantiatingTemplate Inst(*this, PointOfInstantiation, FromVar);
-  if (Inst)
+  if (Inst.isInvalid())
     return 0;
 
   MultiLevelTemplateArgumentList TemplateArgLists;
   TemplateArgLists.addOuterTemplateArguments(&TemplateArgList);
 
-  TemplateDeclInstantiator Instantiator(
-      *this, VarTemplate->getDeclContext(),
-      MultiLevelTemplateArgumentList(TemplateArgList));
+  // Instantiate the first declaration of the variable template: for a partial
+  // specialization of a static data member template, the first declaration may
+  // or may not be the declaration in the class; if it's in the class, we want
+  // to instantiate a member in the class (a declaration), and if it's outside,
+  // we want to instantiate a definition.
+  FromVar = FromVar->getFirstDeclaration();
+
+  MultiLevelTemplateArgumentList MultiLevelList(TemplateArgList);
+  TemplateDeclInstantiator Instantiator(*this, FromVar->getDeclContext(),
+                                        MultiLevelList);
 
   // TODO: Set LateAttrs and StartingScope ...
 
@@ -3289,10 +3330,8 @@ VarTemplateSpecializationDecl *Sema::CompleteVarTemplateSpecializationDecl(
     const MultiLevelTemplateArgumentList &TemplateArgs) {
 
   // Do substitution on the type of the declaration
-  MultiLevelTemplateArgumentList Innermost;
-  Innermost.addOuterTemplateArguments(TemplateArgs.getInnermost());
   TypeSourceInfo *DI =
-      SubstType(PatternDecl->getTypeSourceInfo(), Innermost,
+      SubstType(PatternDecl->getTypeSourceInfo(), TemplateArgs,
                 PatternDecl->getTypeSpecStartLoc(), PatternDecl->getDeclName());
   if (!DI)
     return 0;
@@ -3312,25 +3351,45 @@ VarTemplateSpecializationDecl *Sema::CompleteVarTemplateSpecializationDecl(
 void Sema::BuildVariableInstantiation(
     VarDecl *NewVar, VarDecl *OldVar,
     const MultiLevelTemplateArgumentList &TemplateArgs,
-    LateInstantiatedAttrVec *LateAttrs, LocalInstantiationScope *StartingScope,
+    LateInstantiatedAttrVec *LateAttrs, DeclContext *Owner,
+    LocalInstantiationScope *StartingScope,
     bool InstantiatingVarTemplate) {
 
+  // If we are instantiating a local extern declaration, the
+  // instantiation belongs lexically to the containing function.
   // If we are instantiating a static data member defined
   // out-of-line, the instantiation will have the same lexical
   // context (which will be a namespace scope) as the template.
-  if (OldVar->isOutOfLine())
+  if (OldVar->isLocalExternDecl()) {
+    NewVar->setLocalExternDecl();
+    NewVar->setLexicalDeclContext(Owner);
+  } else if (OldVar->isOutOfLine())
     NewVar->setLexicalDeclContext(OldVar->getLexicalDeclContext());
   NewVar->setTSCSpec(OldVar->getTSCSpec());
   NewVar->setInitStyle(OldVar->getInitStyle());
   NewVar->setCXXForRangeDecl(OldVar->isCXXForRangeDecl());
   NewVar->setConstexpr(OldVar->isConstexpr());
+  NewVar->setInitCapture(OldVar->isInitCapture());
   NewVar->setPreviousDeclInSameBlockScope(
       OldVar->isPreviousDeclInSameBlockScope());
   NewVar->setAccess(OldVar->getAccess());
 
   if (!OldVar->isStaticDataMember()) {
-    NewVar->setUsed(OldVar->isUsed(false));
+    NewVar->setIsUsed(OldVar->isUsed(false));
     NewVar->setReferenced(OldVar->isReferenced());
+  }
+
+  // See if the old variable had a type-specifier that defined an anonymous tag.
+  // If it did, mark the new variable as being the declarator for the new
+  // anonymous tag.
+  if (const TagType *OldTagType = OldVar->getType()->getAs<TagType>()) {
+    TagDecl *OldTag = OldTagType->getDecl();
+    if (OldTag->getDeclaratorForAnonDecl() == OldVar) {
+      TagDecl *NewTag = NewVar->getType()->castAs<TagType>()->getDecl();
+      assert(!NewTag->hasNameForLinkage() &&
+             !NewTag->hasDeclaratorForAnonDecl());
+      NewTag->setDeclaratorForAnonDecl(NewVar);
+    }
   }
 
   InstantiateAttrs(TemplateArgs, OldVar, NewVar, LateAttrs, StartingScope);
@@ -3338,11 +3397,13 @@ void Sema::BuildVariableInstantiation(
   if (NewVar->hasAttrs())
     CheckAlignasUnderalignment(NewVar);
 
-  LookupResult Previous(*this, NewVar->getDeclName(), NewVar->getLocation(),
-                        Sema::LookupOrdinaryName, Sema::ForRedeclaration);
+  LookupResult Previous(
+      *this, NewVar->getDeclName(), NewVar->getLocation(),
+      NewVar->isLocalExternDecl() ? Sema::LookupRedeclarationWithLinkage
+                                  : Sema::LookupOrdinaryName,
+      Sema::ForRedeclaration);
 
-  if (NewVar->getLexicalDeclContext()->isFunctionOrMethod() &&
-      OldVar->getPreviousDecl()) {
+  if (NewVar->isLocalExternDecl() && OldVar->getPreviousDecl()) {
     // We have a previous declaration. Use that one, so we merge with the
     // right type.
     if (NamedDecl *NewPrev = FindInstantiatedDecl(
@@ -3353,13 +3414,13 @@ void Sema::BuildVariableInstantiation(
     LookupQualifiedName(Previous, NewVar->getDeclContext(), false);
   CheckVariableDeclaration(NewVar, Previous);
 
-  if (OldVar->isOutOfLine()) {
-    OldVar->getLexicalDeclContext()->addDecl(NewVar);
-    if (!InstantiatingVarTemplate)
+  if (!InstantiatingVarTemplate) {
+    NewVar->getLexicalDeclContext()->addHiddenDecl(NewVar);
+    if (!NewVar->isLocalExternDecl() || !NewVar->getPreviousDecl())
       NewVar->getDeclContext()->makeDeclVisibleInContext(NewVar);
-  } else {
-    if (!InstantiatingVarTemplate)
-      NewVar->getDeclContext()->addDecl(NewVar);
+  }
+
+  if (!OldVar->isOutOfLine()) {
     if (NewVar->getDeclContext()->isFunctionOrMethod())
       CurrentInstantiationScope->InstantiatedLocal(OldVar, NewVar);
   }
@@ -3370,14 +3431,9 @@ void Sema::BuildVariableInstantiation(
     NewVar->setInstantiationOfStaticDataMember(OldVar,
                                                TSK_ImplicitInstantiation);
 
-  if (isa<VarTemplateSpecializationDecl>(NewVar)) {
-    // Do not instantiate the variable just yet.
-  } else if (InstantiatingVarTemplate) {
-    assert(!NewVar->getInit() &&
-           "A variable should not have an initializer if it is templated"
-           " and we are instantiating its template");
-    NewVar->setInit(OldVar->getInit());
-  } else
+  // Delay instantiation of the initializer for variable templates until a
+  // definition of the variable is needed.
+  if (!isa<VarTemplateSpecializationDecl>(NewVar) && !InstantiatingVarTemplate)
     InstantiateVariableInitializer(NewVar, OldVar, TemplateArgs);
 
   // Diagnose unused local variables with dependent types, where the diagnostic
@@ -3454,19 +3510,18 @@ void Sema::InstantiateStaticDataMemberDefinition(
 void Sema::InstantiateVariableDefinition(SourceLocation PointOfInstantiation,
                                          VarDecl *Var, bool Recursive,
                                          bool DefinitionRequired) {
-
   if (Var->isInvalidDecl())
     return;
 
   VarTemplateSpecializationDecl *VarSpec =
       dyn_cast<VarTemplateSpecializationDecl>(Var);
-  assert((VarSpec || Var->isStaticDataMember()) &&
-         "Not a static data member, nor a variable template specialization?");
-  VarDecl *PatternDecl = 0;
+  VarDecl *PatternDecl = 0, *Def = 0;
+  MultiLevelTemplateArgumentList TemplateArgs =
+      getTemplateInstantiationArgs(Var);
 
-  // If this is a variable template specialization, make sure that it is
-  // non-dependent, then find its instantiation pattern.
   if (VarSpec) {
+    // If this is a variable template specialization, make sure that it is
+    // non-dependent, then find its instantiation pattern.
     bool InstantiationDependent = false;
     assert(!TemplateSpecializationType::anyDependentTemplateArguments(
                VarSpec->getTemplateArgsInfo(), InstantiationDependent) &&
@@ -3474,59 +3529,123 @@ void Sema::InstantiateVariableDefinition(SourceLocation PointOfInstantiation,
            "not type-dependent");
     (void)InstantiationDependent;
 
-    // Find the variable initialization that we'll be substituting.
+    // Find the variable initialization that we'll be substituting. If the
+    // pattern was instantiated from a member template, look back further to
+    // find the real pattern.
     assert(VarSpec->getSpecializedTemplate() &&
            "Specialization without specialized template?");
     llvm::PointerUnion<VarTemplateDecl *,
                        VarTemplatePartialSpecializationDecl *> PatternPtr =
         VarSpec->getSpecializedTemplateOrPartial();
     if (PatternPtr.is<VarTemplatePartialSpecializationDecl *>()) {
-      PatternDecl = cast<VarDecl>(
-          PatternPtr.get<VarTemplatePartialSpecializationDecl *>());
+      VarTemplatePartialSpecializationDecl *Tmpl =
+          PatternPtr.get<VarTemplatePartialSpecializationDecl *>();
+      while (VarTemplatePartialSpecializationDecl *From =
+                 Tmpl->getInstantiatedFromMember()) {
+        if (Tmpl->isMemberSpecialization())
+          break;
 
-      // Find actual definition
-      if (VarDecl *Def = PatternDecl->getDefinition(getASTContext()))
-        PatternDecl = Def;
+        Tmpl = From;
+      }
+      PatternDecl = Tmpl;
     } else {
-      VarTemplateDecl *PatternTemplate = PatternPtr.get<VarTemplateDecl *>();
+      VarTemplateDecl *Tmpl = PatternPtr.get<VarTemplateDecl *>();
+      while (VarTemplateDecl *From =
+                 Tmpl->getInstantiatedFromMemberTemplate()) {
+        if (Tmpl->isMemberSpecialization())
+          break;
 
-      // Find actual definition
-      if (VarTemplateDecl *Def = PatternTemplate->getDefinition())
-        PatternTemplate = Def;
-
-      PatternDecl = PatternTemplate->getTemplatedDecl();
+        Tmpl = From;
+      }
+      PatternDecl = Tmpl->getTemplatedDecl();
     }
-    assert(PatternDecl && "instantiating a non-template");
+
+    // If this is a static data member template, there might be an
+    // uninstantiated initializer on the declaration. If so, instantiate
+    // it now.
+    if (PatternDecl->isStaticDataMember() &&
+        (PatternDecl = PatternDecl->getFirstDeclaration())->hasInit() &&
+        !Var->hasInit()) {
+      // FIXME: Factor out the duplicated instantiation context setup/tear down
+      // code here.
+      InstantiatingTemplate Inst(*this, PointOfInstantiation, Var);
+      if (Inst.isInvalid())
+        return;
+
+      // If we're performing recursive template instantiation, create our own
+      // queue of pending implicit instantiations that we will instantiate
+      // later, while we're still within our own instantiation context.
+      SmallVector<VTableUse, 16> SavedVTableUses;
+      std::deque<PendingImplicitInstantiation> SavedPendingInstantiations;
+      if (Recursive) {
+        VTableUses.swap(SavedVTableUses);
+        PendingInstantiations.swap(SavedPendingInstantiations);
+      }
+
+      LocalInstantiationScope Local(*this);
+
+      // Enter the scope of this instantiation. We don't use
+      // PushDeclContext because we don't have a scope.
+      ContextRAII PreviousContext(*this, Var->getDeclContext());
+      InstantiateVariableInitializer(Var, PatternDecl, TemplateArgs);
+      PreviousContext.pop();
+
+      // FIXME: Need to inform the ASTConsumer that we instantiated the
+      // initializer?
+
+      // This variable may have local implicit instantiations that need to be
+      // instantiated within this scope.
+      PerformPendingInstantiations(/*LocalOnly=*/true);
+
+      Local.Exit();
+
+      if (Recursive) {
+        // Define any newly required vtables.
+        DefineUsedVTables();
+
+        // Instantiate any pending implicit instantiations found during the
+        // instantiation of this template.
+        PerformPendingInstantiations();
+
+        // Restore the set of pending vtables.
+        assert(VTableUses.empty() &&
+               "VTableUses should be empty before it is discarded.");
+        VTableUses.swap(SavedVTableUses);
+
+        // Restore the set of pending implicit instantiations.
+        assert(PendingInstantiations.empty() &&
+               "PendingInstantiations should be empty before it is discarded.");
+        PendingInstantiations.swap(SavedPendingInstantiations);
+      }
+    }
+
+    // Find actual definition
+    Def = PatternDecl->getDefinition(getASTContext());
+  } else {
+    // If this is a static data member, find its out-of-line definition.
+    assert(Var->isStaticDataMember() && "not a static data member?");
+    PatternDecl = Var->getInstantiatedFromStaticDataMember();
+
+    assert(PatternDecl && "data member was not instantiated from a template?");
+    assert(PatternDecl->isStaticDataMember() && "not a static data member?");
+    Def = PatternDecl->getOutOfLineDefinition();
   }
 
-  // If this is a static data member, find its out-of-line definition.
-  VarDecl *Def = Var->getInstantiatedFromStaticDataMember();
-  if (Var->isStaticDataMember()) {
-    assert(Def && "This data member was not instantiated from a template?");
-    assert(Def->isStaticDataMember() && "Not a static data member?");
-    Def = Def->getOutOfLineDefinition();
-  }
-
-  // If the instantiation pattern does not have an initializer, or if an
-  // out-of-line definition is not found, we won't perform any instantiation.
-  // Rather, we rely on the user to instantiate this definition (or provide
-  // a specialization for it) in another translation unit.
-  if ((VarSpec && !PatternDecl->getInit()) ||
-      (!VarSpec && Var->isStaticDataMember() && !Def)) {
+  // If we don't have a definition of the variable template, we won't perform
+  // any instantiation. Rather, we rely on the user to instantiate this
+  // definition (or provide a specialization for it) in another translation
+  // unit.
+  if (!Def) {
     if (DefinitionRequired) {
-      if (!Var->isStaticDataMember()) {
+      if (VarSpec)
         Diag(PointOfInstantiation,
-             diag::err_explicit_instantiation_undefined_var_template)
-            << PatternDecl;
-        Diag(PatternDecl->getLocation(),
-             diag::note_explicit_instantiation_here);
-      } else {
-        Def = Var->getInstantiatedFromStaticDataMember();
+             diag::err_explicit_instantiation_undefined_var_template) << Var;
+      else
         Diag(PointOfInstantiation,
              diag::err_explicit_instantiation_undefined_member)
-            << 3 << Var->getDeclName() << Var->getDeclContext();
-        Diag(Def->getLocation(), diag::note_explicit_instantiation_here);
-      }
+            << 2 << Var->getDeclName() << Var->getDeclContext();
+      Diag(PatternDecl->getLocation(),
+           diag::note_explicit_instantiation_here);
       if (VarSpec)
         Var->setInvalidDecl();
     } else if (Var->getTemplateSpecializationKind()
@@ -3544,11 +3663,6 @@ void Sema::InstantiateVariableDefinition(SourceLocation PointOfInstantiation,
   if (TSK == TSK_ExplicitSpecialization)
     return;
 
-  // C++0x [temp.explicit]p9:
-  //   Except for inline functions, other explicit instantiation declarations
-  //   have the effect of suppressing the implicit instantiation of the entity
-  //   to which they refer.
-  //
   // C++11 [temp.explicit]p10:
   //   Except for inline functions, [...] explicit instantiation declarations
   //   have the effect of suppressing the implicit instantiation of the entity
@@ -3565,28 +3679,21 @@ void Sema::InstantiateVariableDefinition(SourceLocation PointOfInstantiation,
       : Consumer(Consumer), Var(Var) { }
 
     ~PassToConsumerRAII() {
-      if (Var->isStaticDataMember())
-        Consumer.HandleCXXStaticMemberVarInstantiation(Var);
-      else {
-        DeclGroupRef DG(Var);
-        Consumer.HandleTopLevelDecl(DG);
-      }
+      Consumer.HandleCXXStaticMemberVarInstantiation(Var);
     }
   } PassToConsumerRAII(Consumer, Var);
 
-  if (!VarSpec) {
-    // If we already have a definition, we're done.
-    if (VarDecl *Def = Var->getDefinition()) {
-      // We may be explicitly instantiating something we've already implicitly
-      // instantiated.
-      Def->setTemplateSpecializationKind(Var->getTemplateSpecializationKind(),
-                                         PointOfInstantiation);
-      return;
-    }
+  // If we already have a definition, we're done.
+  if (VarDecl *Def = Var->getDefinition()) {
+    // We may be explicitly instantiating something we've already implicitly
+    // instantiated.
+    Def->setTemplateSpecializationKind(Var->getTemplateSpecializationKind(),
+                                       PointOfInstantiation);
+    return;
   }
 
   InstantiatingTemplate Inst(*this, PointOfInstantiation, Var);
-  if (Inst)
+  if (Inst.isInvalid())
     return;
 
   // If we're performing recursive template instantiation, create our own
@@ -3607,29 +3714,46 @@ void Sema::InstantiateVariableDefinition(SourceLocation PointOfInstantiation,
   VarDecl *OldVar = Var;
   if (!VarSpec)
     Var = cast_or_null<VarDecl>(SubstDecl(Def, Var->getDeclContext(),
-                                          getTemplateInstantiationArgs(Var)));
-  else
-    // Construct a VarTemplateSpecializationDecl to avoid name clashing with
-    // the primary template. (Note that unlike function declarations, variable
-    // declarations cannot be overloaded.)
-    // In fact, there is no need to construct a new declaration from scratch.
-    // Thus, simply complete its definition with an appropriately substituted
-    // type and initializer.
-    Var = CompleteVarTemplateSpecializationDecl(
-        VarSpec, PatternDecl, getTemplateInstantiationArgs(Var));
+                                          TemplateArgs));
+  else if (Var->isStaticDataMember() &&
+           Var->getLexicalDeclContext()->isRecord()) {
+    // We need to instantiate the definition of a static data member template,
+    // and all we have is the in-class declaration of it. Instantiate a separate
+    // declaration of the definition.
+    TemplateDeclInstantiator Instantiator(*this, Var->getDeclContext(),
+                                          TemplateArgs);
+    Var = cast_or_null<VarDecl>(Instantiator.VisitVarTemplateSpecializationDecl(
+        VarSpec->getSpecializedTemplate(), Def, 0,
+        VarSpec->getTemplateArgsInfo(), VarSpec->getTemplateArgs().asArray()));
+    if (Var) {
+      llvm::PointerUnion<VarTemplateDecl *,
+                         VarTemplatePartialSpecializationDecl *> PatternPtr =
+          VarSpec->getSpecializedTemplateOrPartial();
+      if (VarTemplatePartialSpecializationDecl *Partial =
+          PatternPtr.dyn_cast<VarTemplatePartialSpecializationDecl *>())
+        cast<VarTemplateSpecializationDecl>(Var)->setInstantiationOf(
+            Partial, &VarSpec->getTemplateInstantiationArgs());
+
+      // Merge the definition with the declaration.
+      LookupResult R(*this, Var->getDeclName(), Var->getLocation(),
+                     LookupOrdinaryName, ForRedeclaration);
+      R.addDecl(OldVar);
+      MergeVarDecl(Var, R);
+
+      // Attach the initializer.
+      InstantiateVariableInitializer(Var, Def, TemplateArgs);
+    }
+  } else
+    // Complete the existing variable's definition with an appropriately
+    // substituted type and initializer.
+    Var = CompleteVarTemplateSpecializationDecl(VarSpec, Def, TemplateArgs);
 
   PreviousContext.pop();
 
   if (Var) {
-    MemberSpecializationInfo *MSInfo = OldVar->getMemberSpecializationInfo();
-    if (!VarSpec)
-      assert(MSInfo && "Missing member specialization information?");
-
     PassToConsumerRAII.Var = Var;
-    if (MSInfo)
-      Var->setTemplateSpecializationKind(
-          MSInfo->getTemplateSpecializationKind(),
-          MSInfo->getPointOfInstantiation());
+    Var->setTemplateSpecializationKind(OldVar->getTemplateSpecializationKind(),
+                                       OldVar->getPointOfInstantiation());
   }
 
   // This variable may have local implicit instantiations that need to be

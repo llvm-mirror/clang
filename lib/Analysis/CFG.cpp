@@ -363,6 +363,7 @@ private:
                                       AddStmtChoice asc);
   CFGBlock *VisitCXXCatchStmt(CXXCatchStmt *S);
   CFGBlock *VisitCXXConstructExpr(CXXConstructExpr *C, AddStmtChoice asc);
+  CFGBlock *VisitCXXDeleteExpr(CXXDeleteExpr *DE, AddStmtChoice asc);
   CFGBlock *VisitCXXForRangeStmt(CXXForRangeStmt *S);
   CFGBlock *VisitCXXFunctionalCastExpr(CXXFunctionalCastExpr *E,
                                        AddStmtChoice asc);
@@ -469,6 +470,10 @@ private:
   }
   void appendAutomaticObjDtor(CFGBlock *B, VarDecl *VD, Stmt *S) {
     B->appendAutomaticObjDtor(VD, S, cfg->getBumpVectorContext());
+  }
+
+  void appendDeleteDtor(CFGBlock *B, CXXRecordDecl *RD, CXXDeleteExpr *DE) {
+    B->appendDeleteDtor(RD, DE, cfg->getBumpVectorContext());
   }
 
   void prependAutomaticObjDtorsWithTerminator(CFGBlock *Blk,
@@ -1116,6 +1121,9 @@ CFGBlock *CFGBuilder::Visit(Stmt * S, AddStmtChoice asc) {
 
     case Stmt::CXXConstructExprClass:
       return VisitCXXConstructExpr(cast<CXXConstructExpr>(S), asc);
+
+    case Stmt::CXXDeleteExprClass:
+      return VisitCXXDeleteExpr(cast<CXXDeleteExpr>(S), asc);
 
     case Stmt::CXXFunctionalCastExprClass:
       return VisitCXXFunctionalCastExpr(cast<CXXFunctionalCastExpr>(S), asc);
@@ -1891,9 +1899,12 @@ CFGBlock *CFGBuilder::VisitReturnStmt(ReturnStmt *R) {
   // Create the new block.
   Block = createBlock(false);
 
-  // The Exit block is the only successor.
   addAutomaticObjDtors(ScopePos, LocalScope::const_iterator(), R);
-  addSuccessor(Block, &cfg->getExit());
+
+  // If the one of the destructors does not return, we already have the Exit
+  // block as a successor.
+  if (!Block->hasNoReturnElement())
+    addSuccessor(Block, &cfg->getExit());
 
   // Add the return statement to the block.  This may create new blocks if R
   // contains control-flow (short-circuit operations).
@@ -3113,6 +3124,22 @@ CFGBlock *CFGBuilder::VisitCXXConstructExpr(CXXConstructExpr *C,
   return VisitChildren(C);
 }
 
+
+CFGBlock *CFGBuilder::VisitCXXDeleteExpr(CXXDeleteExpr *DE,
+                                         AddStmtChoice asc) {
+  autoCreateBlock();
+  appendStmt(Block, DE);
+  QualType DTy = DE->getDestroyedType();
+  DTy = DTy.getNonReferenceType();
+  CXXRecordDecl *RD = Context->getBaseElementType(DTy)->getAsCXXRecordDecl();
+  if (RD) {
+    if (RD->isCompleteDefinition() && !RD->hasTrivialDestructor())
+      appendDeleteDtor(Block, RD, DE);
+  }
+
+  return VisitChildren(DE);
+}
+
 CFGBlock *CFGBuilder::VisitCXXFunctionalCastExpr(CXXFunctionalCastExpr *E,
                                                  AddStmtChoice asc) {
   if (asc.alwaysAdd(*this, E)) {
@@ -3412,6 +3439,14 @@ CFGImplicitDtor::getDestructorDecl(ASTContext &astContext) const {
       const CXXRecordDecl *classDecl =
       cast<CXXRecordDecl>(recordType->getDecl());
       return classDecl->getDestructor();      
+    }
+    case CFGElement::DeleteDtor: {
+      const CXXDeleteExpr *DE = castAs<CFGDeleteDtor>().getDeleteExpr();
+      QualType DTy = DE->getDestroyedType();
+      DTy = DTy.getNonReferenceType();
+      const CXXRecordDecl *classDecl =
+          astContext.getBaseElementType(DTy)->getAsCXXRecordDecl();
+      return classDecl->getDestructor();
     }
     case CFGElement::TemporaryDtor: {
       const CXXBindTemporaryExpr *bindExpr =
@@ -3751,6 +3786,15 @@ static void print_elem(raw_ostream &OS, StmtPrinterHelper* Helper,
     OS << ".~" << T->getAsCXXRecordDecl()->getName().str() << "()";
     OS << " (Implicit destructor)\n";
 
+  } else if (Optional<CFGDeleteDtor> DE = E.getAs<CFGDeleteDtor>()) {
+    const CXXRecordDecl *RD = DE->getCXXRecordDecl();
+    if (!RD)
+      return;
+    CXXDeleteExpr *DelExpr =
+        const_cast<CXXDeleteExpr*>(DE->getDeleteExpr());
+    Helper->handledStmt(cast<Stmt>(DelExpr->getArgument()), OS);
+    OS << "->~" << RD->getName().str() << "()";
+    OS << " (Implicit destructor)\n";
   } else if (Optional<CFGBaseDtor> BE = E.getAs<CFGBaseDtor>()) {
     const CXXBaseSpecifier *BS = BE->getBaseSpecifier();
     OS << "~" << BS->getType()->getAsCXXRecordDecl()->getName() << "()";
@@ -3765,8 +3809,9 @@ static void print_elem(raw_ostream &OS, StmtPrinterHelper* Helper,
 
   } else if (Optional<CFGTemporaryDtor> TE = E.getAs<CFGTemporaryDtor>()) {
     const CXXBindTemporaryExpr *BT = TE->getBindTemporaryExpr();
-    OS << "~" << BT->getType()->getAsCXXRecordDecl()->getName() << "()";
-    OS << " (Temporary object destructor)\n";
+    OS << "~";
+    BT->getType().print(OS, PrintingPolicy(Helper->getLangOpts()));
+    OS << "() (Temporary object destructor)\n";
   }
 }
 

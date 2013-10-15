@@ -40,34 +40,79 @@ bool CXXTypeidExpr::isPotentiallyEvaluated() const {
   return false;
 }
 
-QualType CXXTypeidExpr::getTypeOperand() const {
+QualType CXXTypeidExpr::getTypeOperand(ASTContext &Context) const {
   assert(isTypeOperand() && "Cannot call getTypeOperand for typeid(expr)");
-  return Operand.get<TypeSourceInfo *>()->getType().getNonReferenceType()
-                                                        .getUnqualifiedType();
+  Qualifiers Quals;
+  return Context.getUnqualifiedArrayType(
+      Operand.get<TypeSourceInfo *>()->getType().getNonReferenceType(), Quals);
 }
 
-QualType CXXUuidofExpr::getTypeOperand() const {
+QualType CXXUuidofExpr::getTypeOperand(ASTContext &Context) const {
   assert(isTypeOperand() && "Cannot call getTypeOperand for __uuidof(expr)");
-  return Operand.get<TypeSourceInfo *>()->getType().getNonReferenceType()
-                                                        .getUnqualifiedType();
+  Qualifiers Quals;
+  return Context.getUnqualifiedArrayType(
+      Operand.get<TypeSourceInfo *>()->getType().getNonReferenceType(), Quals);
 }
 
 // static
-UuidAttr *CXXUuidofExpr::GetUuidAttrOfType(QualType QT) {
+UuidAttr *CXXUuidofExpr::GetUuidAttrOfType(QualType QT,
+                                           bool *RDHasMultipleGUIDsPtr) {
   // Optionally remove one level of pointer, reference or array indirection.
   const Type *Ty = QT.getTypePtr();
   if (QT->isPointerType() || QT->isReferenceType())
     Ty = QT->getPointeeType().getTypePtr();
   else if (QT->isArrayType())
-    Ty = cast<ArrayType>(QT)->getElementType().getTypePtr();
+    Ty = Ty->getBaseElementTypeUnsafe();
 
   // Loop all record redeclaration looking for an uuid attribute.
   CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
+  if (!RD)
+    return 0;
+
+  // __uuidof can grab UUIDs from template arguments.
+  if (ClassTemplateSpecializationDecl *CTSD =
+          dyn_cast<ClassTemplateSpecializationDecl>(RD)) {
+    const TemplateArgumentList &TAL = CTSD->getTemplateArgs();
+    UuidAttr *UuidForRD = 0;
+
+    for (unsigned I = 0, N = TAL.size(); I != N; ++I) {
+      const TemplateArgument &TA = TAL[I];
+      bool SeenMultipleGUIDs = false;
+
+      UuidAttr *UuidForTA = 0;
+      if (TA.getKind() == TemplateArgument::Type)
+        UuidForTA = GetUuidAttrOfType(TA.getAsType(), &SeenMultipleGUIDs);
+      else if (TA.getKind() == TemplateArgument::Declaration)
+        UuidForTA =
+            GetUuidAttrOfType(TA.getAsDecl()->getType(), &SeenMultipleGUIDs);
+
+      // If the template argument has a UUID, there are three cases:
+      //  - This is the first UUID seen for this RecordDecl.
+      //  - This is a different UUID than previously seen for this RecordDecl.
+      //  - This is the same UUID than previously seen for this RecordDecl.
+      if (UuidForTA) {
+        if (!UuidForRD)
+          UuidForRD = UuidForTA;
+        else if (UuidForRD != UuidForTA)
+          SeenMultipleGUIDs = true;
+      }
+
+      // Seeing multiple UUIDs means that we couldn't find a UUID
+      if (SeenMultipleGUIDs) {
+        if (RDHasMultipleGUIDsPtr)
+          *RDHasMultipleGUIDsPtr = true;
+        return 0;
+      }
+    }
+
+    return UuidForRD;
+  }
+
   for (CXXRecordDecl::redecl_iterator I = RD->redecls_begin(),
-       E = RD->redecls_end(); I != E; ++I) {
+                                      E = RD->redecls_end();
+       I != E; ++I)
     if (UuidAttr *Uuid = I->getAttr<UuidAttr>())
       return Uuid;
-  }
 
   return 0;
 }
@@ -75,7 +120,7 @@ UuidAttr *CXXUuidofExpr::GetUuidAttrOfType(QualType QT) {
 StringRef CXXUuidofExpr::getUuidAsStringRef(ASTContext &Context) const {
   StringRef Uuid;
   if (isTypeOperand())
-    Uuid = CXXUuidofExpr::GetUuidAttrOfType(getTypeOperand())->getGuid();
+    Uuid = CXXUuidofExpr::GetUuidAttrOfType(getTypeOperand(Context))->getGuid();
   else {
     // Special case: __uuidof(0) means an all-zero GUID.
     Expr *Op = getExprOperand();
@@ -196,8 +241,10 @@ CXXPseudoDestructorExpr::CXXPseudoDestructorExpr(const ASTContext &Context,
                 SourceLocation ColonColonLoc, SourceLocation TildeLoc, 
                 PseudoDestructorTypeStorage DestroyedType)
   : Expr(CXXPseudoDestructorExprClass,
-         Context.getPointerType(Context.getFunctionType(Context.VoidTy, None,
-                                         FunctionProtoType::ExtProtoInfo())),
+         Context.getPointerType(Context.getFunctionType(
+             Context.VoidTy, None,
+             FunctionProtoType::ExtProtoInfo(
+                 Context.getDefaultCallingConvention(false, true)))),
          VK_RValue, OK_Ordinary,
          /*isTypeDependent=*/(Base->isTypeDependent() ||
            (DestroyedType.getTypeSourceInfo() &&
@@ -445,8 +492,8 @@ SourceLocation CXXConstructExpr::getLocEnd() const {
   if (isa<CXXTemporaryObjectExpr>(this))
     return cast<CXXTemporaryObjectExpr>(this)->getLocEnd();
 
-  if (ParenRange.isValid())
-    return ParenRange.getEnd();
+  if (ParenOrBraceRange.isValid())
+    return ParenOrBraceRange.getEnd();
 
   SourceLocation End = Loc;
   for (unsigned I = getNumArgs(); I > 0; --I) {
@@ -759,7 +806,7 @@ CXXTemporaryObjectExpr::CXXTemporaryObjectExpr(const ASTContext &C,
                                                CXXConstructorDecl *Cons,
                                                TypeSourceInfo *Type,
                                                ArrayRef<Expr*> Args,
-                                               SourceRange parenRange,
+                                               SourceRange ParenOrBraceRange,
                                                bool HadMultipleCandidates,
                                                bool ListInitialization,
                                                bool ZeroInitialization)
@@ -769,7 +816,7 @@ CXXTemporaryObjectExpr::CXXTemporaryObjectExpr(const ASTContext &C,
                      Cons, false, Args,
                      HadMultipleCandidates,
                      ListInitialization, ZeroInitialization,
-                     CXXConstructExpr::CK_Complete, parenRange),
+                     CXXConstructExpr::CK_Complete, ParenOrBraceRange),
     Type(Type) {
 }
 
@@ -778,7 +825,10 @@ SourceLocation CXXTemporaryObjectExpr::getLocStart() const {
 }
 
 SourceLocation CXXTemporaryObjectExpr::getLocEnd() const {
-  return getParenRange().getEnd();
+  SourceLocation Loc = getParenOrBraceRange().getEnd();
+  if (Loc.isInvalid() && getNumArgs())
+    Loc = getArg(getNumArgs()-1)->getLocEnd();
+  return Loc;
 }
 
 CXXConstructExpr *CXXConstructExpr::Create(const ASTContext &C, QualType T,
@@ -789,12 +839,12 @@ CXXConstructExpr *CXXConstructExpr::Create(const ASTContext &C, QualType T,
                                            bool ListInitialization,
                                            bool ZeroInitialization,
                                            ConstructionKind ConstructKind,
-                                           SourceRange ParenRange) {
+                                           SourceRange ParenOrBraceRange) {
   return new (C) CXXConstructExpr(C, CXXConstructExprClass, T, Loc, D, 
                                   Elidable, Args,
                                   HadMultipleCandidates, ListInitialization,
                                   ZeroInitialization, ConstructKind,
-                                  ParenRange);
+                                  ParenOrBraceRange);
 }
 
 CXXConstructExpr::CXXConstructExpr(const ASTContext &C, StmtClass SC,
@@ -805,12 +855,13 @@ CXXConstructExpr::CXXConstructExpr(const ASTContext &C, StmtClass SC,
                                    bool ListInitialization,
                                    bool ZeroInitialization,
                                    ConstructionKind ConstructKind,
-                                   SourceRange ParenRange)
+                                   SourceRange ParenOrBraceRange)
   : Expr(SC, T, VK_RValue, OK_Ordinary,
          T->isDependentType(), T->isDependentType(),
          T->isInstantiationDependentType(),
          T->containsUnexpandedParameterPack()),
-    Constructor(D), Loc(Loc), ParenRange(ParenRange),  NumArgs(args.size()),
+    Constructor(D), Loc(Loc), ParenOrBraceRange(ParenOrBraceRange),
+    NumArgs(args.size()),
     Elidable(elidable), HadMultipleCandidates(HadMultipleCandidates),
     ListInitialization(ListInitialization),
     ZeroInitialization(ZeroInitialization),
@@ -854,25 +905,14 @@ LambdaExpr::Capture::Capture(SourceLocation Loc, bool Implicit,
   case LCK_ByRef:
     assert(Var && "capture must have a variable!");
     break;
-
-  case LCK_Init:
-    llvm_unreachable("don't use this constructor for an init-capture");
   }
   DeclAndBits.setInt(Bits);
 }
-
-LambdaExpr::Capture::Capture(FieldDecl *Field)
-    : DeclAndBits(Field,
-                  Field->getType()->isReferenceType() ? 0 : Capture_ByCopy),
-      Loc(Field->getLocation()), EllipsisLoc() {}
 
 LambdaCaptureKind LambdaExpr::Capture::getCaptureKind() const {
   Decl *D = DeclAndBits.getPointer();
   if (!D)
     return LCK_This;
-
-  if (isa<FieldDecl>(D))
-    return LCK_Init;
 
   return (DeclAndBits.getInt() & Capture_ByCopy) ? LCK_ByCopy : LCK_ByRef;
 }
@@ -1027,13 +1067,13 @@ CXXRecordDecl *LambdaExpr::getLambdaClass() const {
 
 CXXMethodDecl *LambdaExpr::getCallOperator() const {
   CXXRecordDecl *Record = getLambdaClass();
-  DeclarationName Name
-    = Record->getASTContext().DeclarationNames.getCXXOperatorName(OO_Call);
-  DeclContext::lookup_result Calls = Record->lookup(Name);
-  assert(!Calls.empty() && "Missing lambda call operator!");
-  assert(Calls.size() == 1 && "More than one lambda call operator!");
-  CXXMethodDecl *Result = cast<CXXMethodDecl>(Calls.front());
-  return Result;
+  return Record->getLambdaCallOperator();  
+}
+
+TemplateParameterList *LambdaExpr::getTemplateParameterList() const {
+  CXXRecordDecl *Record = getLambdaClass();
+  return Record->getGenericLambdaTemplateParameterList();
+
 }
 
 CompoundStmt *LambdaExpr::getBody() const {

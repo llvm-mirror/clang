@@ -10,9 +10,9 @@
 // This file implements the C++ related Decl classes.
 //
 //===----------------------------------------------------------------------===//
-
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTLambda.h"
 #include "clang/AST/ASTMutationListener.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/DeclTemplate.h"
@@ -33,6 +33,17 @@ void AccessSpecDecl::anchor() { }
 AccessSpecDecl *AccessSpecDecl::CreateDeserialized(ASTContext &C, unsigned ID) {
   void *Mem = AllocateDeserializedDecl(C, ID, sizeof(AccessSpecDecl));
   return new (Mem) AccessSpecDecl(EmptyShell());
+}
+
+void LazyASTUnresolvedSet::getFromExternalSource(ASTContext &C) const {
+  ExternalASTSource *Source = C.getExternalSource();
+  assert(Impl.Decls.isLazy() && "getFromExternalSource for non-lazy set");
+  assert(Source && "getFromExternalSource with no external source");
+
+  for (ASTUnresolvedSet::iterator I = Impl.begin(); I != Impl.end(); ++I)
+    I.setDecl(cast<NamedDecl>(Source->GetExternalDecl(
+        reinterpret_cast<uintptr_t>(I.getDecl()) >> 2)));
+  Impl.Decls.setLazy(false);
 }
 
 CXXRecordDecl::DefinitionData::DefinitionData(CXXRecordDecl *D)
@@ -103,6 +114,7 @@ CXXRecordDecl *CXXRecordDecl::CreateLambda(const ASTContext &C, DeclContext *DC,
   R->IsBeingDefined = true;
   R->DefinitionData = new (C) struct LambdaDefinitionData(R, Info, Dependent);
   R->MayHaveOutOfDateDef = false;
+  R->setImplicit(true);
   C.getTypeDeclType(R, /*PrevDecl=*/0);
   return R;
 }
@@ -552,18 +564,16 @@ void CXXRecordDecl::addedMember(Decl *D) {
 
       if (Conversion->getPrimaryTemplate()) {
         // We don't record specializations.
-      } else if (FunTmpl) {
-        if (FunTmpl->getPreviousDecl())
-          data().Conversions.replace(FunTmpl->getPreviousDecl(),
-                                     FunTmpl, AS);
-        else
-          data().Conversions.addDecl(getASTContext(), FunTmpl, AS);
       } else {
-        if (Conversion->getPreviousDecl())
-          data().Conversions.replace(Conversion->getPreviousDecl(),
-                                     Conversion, AS);
+        ASTContext &Ctx = getASTContext();
+        ASTUnresolvedSet &Conversions = data().Conversions.get(Ctx);
+        NamedDecl *Primary =
+            FunTmpl ? cast<NamedDecl>(FunTmpl) : cast<NamedDecl>(Conversion);
+        if (Primary->getPreviousDecl())
+          Conversions.replace(cast<NamedDecl>(Primary->getPreviousDecl()),
+                              Primary, AS);
         else
-          data().Conversions.addDecl(getASTContext(), Conversion, AS);
+          Conversions.addDecl(Ctx, Primary, AS);
       }
     }
 
@@ -880,10 +890,13 @@ void CXXRecordDecl::addedMember(Decl *D) {
   }
   
   // Handle using declarations of conversion functions.
-  if (UsingShadowDecl *Shadow = dyn_cast<UsingShadowDecl>(D))
+  if (UsingShadowDecl *Shadow = dyn_cast<UsingShadowDecl>(D)) {
     if (Shadow->getDeclName().getNameKind()
-          == DeclarationName::CXXConversionFunctionName)
-      data().Conversions.addDecl(getASTContext(), Shadow, Shadow->getAccess());
+          == DeclarationName::CXXConversionFunctionName) {
+      ASTContext &Ctx = getASTContext();
+      data().Conversions.get(Ctx).addDecl(Ctx, Shadow, Shadow->getAccess());
+    }
+  }
 }
 
 void CXXRecordDecl::finishedDefaultedOrDeletedMember(CXXMethodDecl *D) {
@@ -930,6 +943,43 @@ bool CXXRecordDecl::isCLike() const {
   return isPOD() && data().HasOnlyCMembers;
 }
 
+bool CXXRecordDecl::isGenericLambda() const { 
+  return isLambda() && 
+      getLambdaCallOperator()->getDescribedFunctionTemplate(); 
+}
+
+CXXMethodDecl* CXXRecordDecl::getLambdaCallOperator() const {
+  if (!isLambda()) return 0;
+  DeclarationName Name = 
+    getASTContext().DeclarationNames.getCXXOperatorName(OO_Call);
+  DeclContext::lookup_const_result Calls = lookup(Name);
+
+  assert(!Calls.empty() && "Missing lambda call operator!");
+  assert(Calls.size() == 1 && "More than one lambda call operator!"); 
+   
+  NamedDecl *CallOp = Calls.front();
+  if (FunctionTemplateDecl *CallOpTmpl = 
+                    dyn_cast<FunctionTemplateDecl>(CallOp)) 
+    return cast<CXXMethodDecl>(CallOpTmpl->getTemplatedDecl());
+  
+  return cast<CXXMethodDecl>(CallOp);
+}
+
+CXXMethodDecl* CXXRecordDecl::getLambdaStaticInvoker() const {
+  if (!isLambda()) return 0;
+  DeclarationName Name = 
+    &getASTContext().Idents.get(getLambdaStaticInvokerName());
+  DeclContext::lookup_const_result Invoker = lookup(Name);
+  if (Invoker.empty()) return 0;
+  assert(Invoker.size() == 1 && "More than one static invoker operator!");  
+  NamedDecl *InvokerFun = Invoker.front();
+  if (FunctionTemplateDecl *InvokerTemplate =
+                  dyn_cast<FunctionTemplateDecl>(InvokerFun)) 
+    return cast<CXXMethodDecl>(InvokerTemplate->getTemplatedDecl());
+  
+  return cast<CXXMethodDecl>(InvokerFun); 
+}
+
 void CXXRecordDecl::getCaptureFields(
        llvm::DenseMap<const VarDecl *, FieldDecl *> &Captures,
        FieldDecl *&ThisCapture) const {
@@ -945,8 +995,17 @@ void CXXRecordDecl::getCaptureFields(
     else if (C->capturesVariable())
       Captures[C->getCapturedVar()] = *Field;
   }
+  assert(Field == field_end());
 }
 
+TemplateParameterList * 
+CXXRecordDecl::getGenericLambdaTemplateParameterList() const {
+  if (!isLambda()) return 0;
+  CXXMethodDecl *CallOp = getLambdaCallOperator();     
+  if (FunctionTemplateDecl *Tmpl = CallOp->getDescribedFunctionTemplate())
+    return Tmpl->getTemplateParameters();
+  return 0;
+}
 
 static CanQualType GetConversionType(ASTContext &Context, NamedDecl *Conv) {
   QualType T;
@@ -1083,16 +1142,21 @@ static void CollectVisibleConversions(ASTContext &Context,
 /// in current class; including conversion function templates.
 std::pair<CXXRecordDecl::conversion_iterator,CXXRecordDecl::conversion_iterator>
 CXXRecordDecl::getVisibleConversionFunctions() {
-  // If root class, all conversions are visible.
-  if (bases_begin() == bases_end())
-    return std::make_pair(data().Conversions.begin(), data().Conversions.end());
-  // If visible conversion list is already evaluated, return it.
-  if (!data().ComputedVisibleConversions) {
-    CollectVisibleConversions(getASTContext(), this, data().VisibleConversions);
-    data().ComputedVisibleConversions = true;
+  ASTContext &Ctx = getASTContext();
+
+  ASTUnresolvedSet *Set;
+  if (bases_begin() == bases_end()) {
+    // If root class, all conversions are visible.
+    Set = &data().Conversions.get(Ctx);
+  } else {
+    Set = &data().VisibleConversions.get(Ctx);
+    // If visible conversion list is not evaluated, evaluate it.
+    if (!data().ComputedVisibleConversions) {
+      CollectVisibleConversions(Ctx, this, *Set);
+      data().ComputedVisibleConversions = true;
+    }
   }
-  return std::make_pair(data().VisibleConversions.begin(),
-                        data().VisibleConversions.end());
+  return std::make_pair(Set->begin(), Set->end());
 }
 
 void CXXRecordDecl::removeConversion(const NamedDecl *ConvDecl) {
@@ -1107,7 +1171,7 @@ void CXXRecordDecl::removeConversion(const NamedDecl *ConvDecl) {
   // with sufficiently large numbers of directly-declared conversions
   // that asymptotic behavior matters.
 
-  ASTUnresolvedSet &Convs = data().Conversions;
+  ASTUnresolvedSet &Convs = data().Conversions.get(getASTContext());
   for (unsigned I = 0, E = Convs.size(); I != E; ++I) {
     if (Convs[I].getDecl() == ConvDecl) {
       Convs.erase(I);
@@ -1233,8 +1297,7 @@ void CXXRecordDecl::completeDefinition(CXXFinalOverriderMap *FinalOverriders) {
   }
   
   // Set access bits correctly on the directly-declared conversions.
-  for (UnresolvedSetIterator I = data().Conversions.begin(), 
-                             E = data().Conversions.end(); 
+  for (conversion_iterator I = conversion_begin(), E = conversion_end();
        I != E; ++I)
     I.setAccess((*I)->getAccess());
 }
@@ -1264,21 +1327,8 @@ bool CXXMethodDecl::isStatic() const {
   if (MD->getStorageClass() == SC_Static)
     return true;
 
-  DeclarationName Name = getDeclName();
-  // [class.free]p1:
-  // Any allocation function for a class T is a static member
-  // (even if not explicitly declared static).
-  if (Name.getCXXOverloadedOperator() == OO_New ||
-      Name.getCXXOverloadedOperator() == OO_Array_New)
-    return true;
-
-  // [class.free]p6 Any deallocation function for a class X is a static member
-  // (even if not explicitly declared static).
-  if (Name.getCXXOverloadedOperator() == OO_Delete ||
-      Name.getCXXOverloadedOperator() == OO_Array_Delete)
-    return true;
-
-  return false;
+  OverloadedOperatorKind OOK = getDeclName().getCXXOverloadedOperator();
+  return isStaticOverloadedOperator(OOK);
 }
 
 static bool recursivelyOverrides(const CXXMethodDecl *DerivedMD,
@@ -1492,10 +1542,16 @@ bool CXXMethodDecl::hasInlineBody() const {
 }
 
 bool CXXMethodDecl::isLambdaStaticInvoker() const {
-  return getParent()->isLambda() && 
-         getIdentifier() && getIdentifier()->getName() == "__invoke";
+  const CXXRecordDecl *P = getParent();
+  if (P->isLambda()) {
+    if (const CXXMethodDecl *StaticInvoker = P->getLambdaStaticInvoker()) {
+      if (StaticInvoker == this) return true;
+      if (P->isGenericLambda() && this->isFunctionTemplateSpecialization())
+        return StaticInvoker == this->getPrimaryTemplate()->getTemplatedDecl();
+    }
+  }
+  return false;
 }
-
 
 CXXCtorInitializer::CXXCtorInitializer(ASTContext &Context,
                                        TypeSourceInfo *TInfo, bool IsVirtual,

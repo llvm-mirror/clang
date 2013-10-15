@@ -69,6 +69,8 @@ void g() {
   // expected-error@Inputs/cxx-templates-a.h:19 {{definition of 'DefinedInBImpl' must be imported}}
   // expected-note@Inputs/cxx-templates-b-impl.h:1 {{definition is here}}
   PerformDelayedLookup(defined_in_b_impl); // expected-note {{in instantiation of}}
+
+  merge_templates_a = merge_templates_b; // ok, same type
 }
 
 RedeclaredAsFriend<int> raf1;
@@ -82,10 +84,15 @@ typedef SomeTemplate<int&> SomeTemplateIntRef;
 SomeTemplate<char*> some_template_char_ptr;
 SomeTemplate<char&> some_template_char_ref;
 
-// FIXME: There should only be two 'f's here.
+void testImplicitSpecialMembers(SomeTemplate<char[1]> &a,
+                                const SomeTemplate<char[1]> &b,
+                                SomeTemplate<char[2]> &c,
+                                const SomeTemplate<char[2]> &d) {
+  a = b;
+  c = d;
+}
+
 // CHECK-GLOBAL:      DeclarationName 'f'
-// CHECK-GLOBAL-NEXT: |-FunctionTemplate {{.*}} 'f'
-// CHECK-GLOBAL-NEXT: |-FunctionTemplate {{.*}} 'f'
 // CHECK-GLOBAL-NEXT: |-FunctionTemplate {{.*}} 'f'
 // CHECK-GLOBAL-NEXT: `-FunctionTemplate {{.*}} 'f'
 

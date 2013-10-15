@@ -128,3 +128,90 @@
 // AVX512F2: #define __SSE_MATH__ 1
 // AVX512F2: #define __SSE__ 1
 // AVX512F2: #define __SSSE3__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -msse4.2 -x c -E -dM -o - %s | FileCheck --check-prefix=SSE42POPCNT %s
+
+// SSE42POPCNT: #define __POPCNT__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -mno-popcnt -msse4.2 -x c -E -dM -o - %s | FileCheck --check-prefix=SSE42NOPOPCNT %s
+
+// SSE42NOPOPCNT-NOT: #define __POPCNT__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -mpopcnt -mno-sse4.2 -x c -E -dM -o - %s | FileCheck --check-prefix=NOSSE42POPCNT %s
+
+// NOSSE42POPCNT: #define __POPCNT__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -msse -x c -E -dM -o - %s | FileCheck --check-prefix=SSEMMX %s
+
+// SSEMMX: #define __MMX__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -msse -mno-sse -x c -E -dM -o - %s | FileCheck --check-prefix=SSENOSSEMMX %s
+
+// SSENOSSEMMX-NOT: #define __MMX__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -msse -mno-mmx -x c -E -dM -o - %s | FileCheck --check-prefix=SSENOMMX %s
+
+// SSENOMMX-NOT: #define __MMX__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -mf16c -x c -E -dM -o - %s | FileCheck --check-prefix=F16C %s
+
+// F16C: #define __AVX__ 1
+// F16C: #define __F16C__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -mf16c -mno-avx -x c -E -dM -o - %s | FileCheck --check-prefix=F16CNOAVX %s
+
+// F16CNOAVX-NOT: #define __AVX__ 1
+// F16CNOAVX-NOT: #define __F16C__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=pentiumpro -mpclmul -x c -E -dM -o - %s | FileCheck --check-prefix=PCLMUL %s
+
+// PCLMUL: #define __PCLMUL__ 1
+// PCLMUL: #define __SSE2__ 1
+// PCLMUL-NOT: #define __SSE3__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=pentiumpro -mpclmul -mno-sse2 -x c -E -dM -o - %s | FileCheck --check-prefix=PCLMULNOSSE2 %s
+
+// PCLMULNOSSE2-NOT: #define __PCLMUL__ 1
+// PCLMULNOSSE2-NOT: #define __SSE2__ 1
+// PCLMULNOSSE2-NOT: #define __SSE3__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=pentiumpro -maes -x c -E -dM -o - %s | FileCheck --check-prefix=AES %s
+
+// AES: #define __AES__ 1
+// AES: #define __SSE2__ 1
+// AES-NOT: #define __SSE3__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=pentiumpro -maes -mno-sse2 -x c -E -dM -o - %s | FileCheck --check-prefix=AESNOSSE2 %s
+
+// AESNOSSE2-NOT: #define __AES__ 1
+// AESNOSSE2-NOT: #define __SSE2__ 1
+// AESNOSSE2-NOT: #define __SSE3__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=pentiumpro -msha -x c -E -dM -o - %s | FileCheck --check-prefix=SHA %s
+
+// SHA: #define __SHA__ 1
+// SHA: #define __SSE2__ 1
+// SHA-NOT: #define __SSE3__ 1
+
+// run: %clang -target i386-unknown-unknown -march=pentiumpro -msha -mno-sha -x c -e -dm -o - %s | filecheck --check-prefix=SHANOSHA %s
+
+// SHANOSHA-NOT: #define __SHA__ 1
+// SHANOSHA-NOT: #define __SSE2__ 1
+
+// run: %clang -target i386-unknown-unknown -march=pentiumpro -msha -mno-sse2 -x c -e -dm -o - %s | filecheck --check-prefix=SHANOSSE2 %s
+
+// SHANOSSSE2-NOT: #define __SHA__ 1
+// SHANOSSSE2-NOT: #define __SSE2__ 1
+// SHANOSSSE2-NOT: #define __SSE3__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -mtbm -x c -E -dM -o - %s | FileCheck --check-prefix=TBM %s
+
+// TBM: #define __TBM__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=bdver2 -mno-tbm -x c -E -dM -o - %s | FileCheck --check-prefix=NOTBM %s
+
+// NOTBM-NOT: #define __TBM__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=pentiumpro -mcx16 -x c -E -dM -o - %s | FileCheck --check-prefix=MCX16 %s
+
+// MCX16: #define __GCC_HAVE_SYNC_COMPARE_AND_SWAP_16 1

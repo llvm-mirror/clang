@@ -1483,7 +1483,9 @@ void Sema::HandleDelayedAccessCheck(DelayedDiagnostic &DD, Decl *D) {
 
   DeclContext *DC = D->getDeclContext();
   if (FunctionDecl *FN = dyn_cast<FunctionDecl>(D)) {
-    if (!DC->isFunctionOrMethod())
+    if (D->getLexicalDeclContext()->isFunctionOrMethod())
+      DC = D->getLexicalDeclContext();
+    else
       DC = FN;
   } else if (TemplateDecl *TD = dyn_cast<TemplateDecl>(D)) {
     DC = cast<DeclContext>(TD->getTemplatedDecl());
@@ -1712,14 +1714,14 @@ Sema::AccessResult Sema::CheckAllocationAccess(SourceLocation OpLoc,
 /// \brief Checks access to a member.
 Sema::AccessResult Sema::CheckMemberAccess(SourceLocation UseLoc,
                                            CXXRecordDecl *NamingClass,
-                                           NamedDecl *D) {
+                                           DeclAccessPair Found) {
   if (!getLangOpts().AccessControl ||
       !NamingClass ||
-      D->getAccess() == AS_public)
+      Found.getAccess() == AS_public)
     return AR_accessible;
 
   AccessTarget Entity(Context, AccessTarget::Member, NamingClass,
-                      DeclAccessPair::make(D, D->getAccess()), QualType());
+                      Found, QualType());
 
   return CheckAccess(*this, UseLoc, Entity);
 }

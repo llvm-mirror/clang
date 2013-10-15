@@ -49,6 +49,14 @@
 // C99:#define __STRICT_ANSI__ 1
 //
 // 
+// RUN: %clang_cc1 -std=c11 -E -dM < /dev/null | FileCheck -check-prefix C11 %s
+//
+// C11:#define __STDC_UTF_16__ 1
+// C11:#define __STDC_UTF_32__ 1
+// C11:#define __STDC_VERSION__ 201112L
+// C11:#define __STRICT_ANSI__ 1
+//
+// 
 // RUN: %clang_cc1 -E -dM < /dev/null | FileCheck -check-prefix COMMON %s
 //
 // COMMON:#define __CONSTANT_CFSTRINGS__ 1
@@ -144,7 +152,7 @@
 // NONFRAGILE:#define __OBJC2__ 1
 //
 //
-// RUN: %clang_cc1 -O0 -E -dM < /dev/null | FileCheck -check-prefix O0 %s
+// RUN: %clang_cc1 -E -dM < /dev/null | FileCheck -check-prefix O0 %s
 //
 // O0:#define __NO_INLINE__ 1
 // O0-NOT:#define __OPTIMIZE_SIZE__
@@ -1228,6 +1236,11 @@
 // RUN:   -E -dM -triple=mips-none-none < /dev/null \
 // RUN:   | FileCheck -check-prefix MIPS-MSA %s
 // MIPS-MSA:#define __mips_msa 1
+//
+// RUN: %clang_cc1 -target-feature +nan2008 \
+// RUN:   -E -dM -triple=mips-none-none < /dev/null \
+// RUN:   | FileCheck -check-prefix MIPS-NAN2008 %s
+// MIPS-NAN2008:#define __mips_nan2008 1
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=msp430-none-none < /dev/null | FileCheck -check-prefix MSP430 %s
 //
@@ -2920,6 +2933,12 @@
 // X86_64-LINUX:#define __x86_64 1
 // X86_64-LINUX:#define __x86_64__ 1
 //
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=x86_64-unknown-freebsd9.1 < /dev/null | FileCheck -check-prefix X86_64-FREEBSD %s
+//
+// X86_64-FREEBSD:#define __FreeBSD__ 9
+// X86_64-FREEBSD:#define __FreeBSD_cc_version 900001
+// X86_64-FREEBSD:#define __STDC_MB_MIGHT_NEQ_WC__ 1
+//
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=sparc64-none-none < /dev/null | FileCheck -check-prefix SPARCV9 %s
 // SPARCV9:#define __INT64_TYPE__ long int
 // SPARCV9:#define __INTMAX_TYPE__ long int
@@ -2934,9 +2953,17 @@
 // SPARC64-OBSD:#define __INTMAX_TYPE__ long long int
 // SPARC64-OBSD:#define __UINTMAX_TYPE__ long long unsigned int
 //
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=x86_64-pc-kfreebsd-gnu < /dev/null | FileCheck -check-prefix KFREEBSD-DEFINE %s
+// KFREEBSD-DEFINE:#define __FreeBSD_kernel__ 1
+// KFREEBSD-DEFINE:#define __GLIBC__ 1
+//
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=i686-pc-kfreebsd-gnu < /dev/null | FileCheck -check-prefix KFREEBSDI686-DEFINE %s
+// KFREEBSDI686-DEFINE:#define __FreeBSD_kernel__ 1
+// KFREEBSDI686-DEFINE:#define __GLIBC__ 1
+//
 // RUN: %clang_cc1 -x c++ -triple i686-pc-linux-gnu -fobjc-runtime=gcc -E -dM < /dev/null | FileCheck -check-prefix GNUSOURCE %s
 // GNUSOURCE:#define _GNU_SOURCE 1
-// 
+//
 // RUN: %clang_cc1 -x c++ -std=c++98 -fno-rtti -E -dM < /dev/null | FileCheck -check-prefix NORTTI %s
 // NORTTI: __GXX_ABI_VERSION
 // NORTTI-NOT:#define __GXX_RTTI
@@ -2944,6 +2971,7 @@
 //
 // RUN: %clang_cc1 -triple arm-linux-androideabi -E -dM < /dev/null | FileCheck -check-prefix ANDROID %s
 // ANDROID: __ANDROID__ 1
+//
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-unknown-freebsd < /dev/null | FileCheck -check-prefix PPC64-FREEBSD %s
 // PPC64-FREEBSD-NOT: #define __LONG_DOUBLE_128__ 1
 //

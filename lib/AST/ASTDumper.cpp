@@ -219,6 +219,11 @@ namespace  {
         const ClassTemplatePartialSpecializationDecl *D);
     void VisitClassScopeFunctionSpecializationDecl(
         const ClassScopeFunctionSpecializationDecl *D);
+    void VisitVarTemplateDecl(const VarTemplateDecl *D);
+    void VisitVarTemplateSpecializationDecl(
+        const VarTemplateSpecializationDecl *D);
+    void VisitVarTemplatePartialSpecializationDecl(
+        const VarTemplatePartialSpecializationDecl *D);
     void VisitTemplateTypeParmDecl(const TemplateTypeParmDecl *D);
     void VisitNonTypeTemplateParmDecl(const NonTypeTemplateParmDecl *D);
     void VisitTemplateTemplateParmDecl(const TemplateTemplateParmDecl *D);
@@ -249,6 +254,7 @@ namespace  {
     void VisitAttributedStmt(const AttributedStmt *Node);
     void VisitLabelStmt(const LabelStmt *Node);
     void VisitGotoStmt(const GotoStmt *Node);
+    void VisitCXXCatchStmt(const CXXCatchStmt *Node);
 
     // Exprs
     void VisitExpr(const Expr *Node);
@@ -280,6 +286,10 @@ namespace  {
     void VisitExprWithCleanups(const ExprWithCleanups *Node);
     void VisitUnresolvedLookupExpr(const UnresolvedLookupExpr *Node);
     void dumpCXXTemporary(const CXXTemporary *Temporary);
+    void VisitLambdaExpr(const LambdaExpr *Node) {
+      VisitExpr(Node);
+      dumpDecl(Node->getLambdaClass());
+    }
 
     // ObjC
     void VisitObjCAtCatchStmt(const ObjCAtCatchStmt *Node);
@@ -745,6 +755,9 @@ void ASTDumper::dumpDecl(const Decl *D) {
   lastChild();
   dumpFullComment(Comment);
 
+  if (D->isInvalidDecl())
+    OS << " invalid";
+
   setMoreChildren(false);
   if (HasDeclContext)
     dumpDeclContext(cast<DeclContext>(D));
@@ -780,6 +793,8 @@ void ASTDumper::VisitRecordDecl(const RecordDecl *D) {
   dumpName(D);
   if (D->isModulePrivate())
     OS << " __module_private__";
+  if (D->isCompleteDefinition())
+    OS << " definition";
 }
 
 void ASTDumper::VisitEnumConstantDecl(const EnumConstantDecl *D) {
@@ -1081,6 +1096,49 @@ void ASTDumper::VisitClassScopeFunctionSpecializationDecl(
   dumpDeclRef(D->getSpecialization());
   if (D->hasExplicitTemplateArgs())
     dumpTemplateArgumentListInfo(D->templateArgs());
+}
+
+void ASTDumper::VisitVarTemplateDecl(const VarTemplateDecl *D) {
+  dumpName(D);
+  dumpTemplateParameters(D->getTemplateParameters());
+
+  VarTemplateDecl::spec_iterator I = D->spec_begin();
+  VarTemplateDecl::spec_iterator E = D->spec_end();
+  if (I == E)
+    lastChild();
+  dumpDecl(D->getTemplatedDecl());
+  for (; I != E; ++I) {
+    VarTemplateDecl::spec_iterator Next = I;
+    ++Next;
+    if (Next == E)
+      lastChild();
+    switch (I->getTemplateSpecializationKind()) {
+    case TSK_Undeclared:
+    case TSK_ImplicitInstantiation:
+      if (D == D->getCanonicalDecl())
+        dumpDecl(*I);
+      else
+        dumpDeclRef(*I);
+      break;
+    case TSK_ExplicitSpecialization:
+    case TSK_ExplicitInstantiationDeclaration:
+    case TSK_ExplicitInstantiationDefinition:
+      dumpDeclRef(*I);
+      break;
+    }
+  }
+}
+
+void ASTDumper::VisitVarTemplateSpecializationDecl(
+    const VarTemplateSpecializationDecl *D) {
+  dumpTemplateArgumentList(D->getTemplateArgs());
+  VisitVarDecl(D);
+}
+
+void ASTDumper::VisitVarTemplatePartialSpecializationDecl(
+    const VarTemplatePartialSpecializationDecl *D) {
+  dumpTemplateParameters(D->getTemplateParameters());
+  VisitVarTemplateSpecializationDecl(D);
 }
 
 void ASTDumper::VisitTemplateTypeParmDecl(const TemplateTypeParmDecl *D) {
@@ -1454,6 +1512,11 @@ void ASTDumper::VisitGotoStmt(const GotoStmt *Node) {
   VisitStmt(Node);
   OS << " '" << Node->getLabel()->getName() << "'";
   dumpPointer(Node->getLabel());
+}
+
+void ASTDumper::VisitCXXCatchStmt(const CXXCatchStmt *Node) {
+  VisitStmt(Node);
+  dumpDecl(Node->getExceptionDecl());
 }
 
 //===----------------------------------------------------------------------===//

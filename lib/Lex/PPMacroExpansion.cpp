@@ -225,7 +225,7 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
     if (Callbacks) Callbacks->MacroExpands(Identifier, MD,
                                            Identifier.getLocation(),/*Args=*/0);
     ExpandBuiltinMacro(Identifier);
-    return false;
+    return true;
   }
 
   /// Args - If this is a function-like macro expansion, this contains,
@@ -239,11 +239,6 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
 
   // If this is a function-like macro, read the arguments.
   if (MI->isFunctionLike()) {
-    // C99 6.10.3p10: If the preprocessing token immediately after the macro
-    // name isn't a '(', this macro should not be expanded.
-    if (!isNextPPTokenLParen())
-      return true;
-
     // Remember that we are now parsing the arguments to a macro invocation.
     // Preprocessor directives used inside macro arguments are not portable, and
     // this enables the warning.
@@ -254,7 +249,7 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
     InMacroArgs = false;
 
     // If there was an error parsing the arguments, bail out.
-    if (Args == 0) return false;
+    if (Args == 0) return true;
 
     ++NumFnMacroExpanded;
   } else {
@@ -314,25 +309,12 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
     // No need for arg info.
     if (Args) Args->destroy(*this);
 
-    // Ignore this macro use, just return the next token in the current
-    // buffer.
-    bool HadLeadingSpace = Identifier.hasLeadingSpace();
-    bool IsAtStartOfLine = Identifier.isAtStartOfLine();
-
-    Lex(Identifier);
-
-    // If the identifier isn't on some OTHER line, inherit the leading
-    // whitespace/first-on-a-line property of this token.  This handles
-    // stuff like "! XX," -> "! ," and "   XX," -> "    ,", when XX is
-    // empty.
-    if (!Identifier.isAtStartOfLine()) {
-      if (IsAtStartOfLine) Identifier.setFlag(Token::StartOfLine);
-      if (HadLeadingSpace) Identifier.setFlag(Token::LeadingSpace);
-    }
+    // Propagate whitespace info as if we had pushed, then popped,
+    // a macro context.
     Identifier.setFlag(Token::LeadingEmptyMacro);
+    PropagateLineStartLeadingSpaceInfo(Identifier);
     ++NumFastMacroExpanded;
     return false;
-
   } else if (MI->getNumTokens() == 1 &&
              isTrivialSingleTokenExpansion(MI, Identifier.getIdentifierInfo(),
                                            *this)) {
@@ -378,15 +360,11 @@ bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
     // Since this is not an identifier token, it can't be macro expanded, so
     // we're done.
     ++NumFastMacroExpanded;
-    return false;
+    return true;
   }
 
   // Start expanding the macro.
   EnterMacro(Identifier, ExpansionEnd, MI, Args);
-
-  // Now that the macro is at the top of the include stack, ask the
-  // preprocessor to read the next token from it.
-  Lex(Identifier);
   return false;
 }
 
@@ -920,7 +898,6 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("objc_nonfragile_abi", LangOpts.ObjCRuntime.isNonFragile())
            .Case("objc_property_explicit_atomic", true) // Does clang support explicit "atomic" keyword?
            .Case("objc_weak_class", LangOpts.ObjCRuntime.hasWeakClassImport())
-           .Case("objc_msg_lookup_stret", LangOpts.ObjCRuntime.getKind() == ObjCRuntime::ObjFW)
            .Case("ownership_holds", true)
            .Case("ownership_returns", true)
            .Case("ownership_takes", true)
@@ -968,7 +945,7 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("cxx_rvalue_references", LangOpts.CPlusPlus11)
            .Case("cxx_strong_enums", LangOpts.CPlusPlus11)
            .Case("cxx_static_assert", LangOpts.CPlusPlus11)
-           .Case("cxx_thread_local", 
+           .Case("cxx_thread_local",
                  LangOpts.CPlusPlus11 && PP.getTargetInfo().isTLSSupported())
            .Case("cxx_trailing_return", LangOpts.CPlusPlus11)
            .Case("cxx_unicode_literals", LangOpts.CPlusPlus11)
@@ -979,12 +956,12 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("cxx_aggregate_nsdmi", LangOpts.CPlusPlus1y)
            .Case("cxx_binary_literals", LangOpts.CPlusPlus1y)
            .Case("cxx_contextual_conversions", LangOpts.CPlusPlus1y)
-           //.Case("cxx_generic_lambda", LangOpts.CPlusPlus1y)
-           //.Case("cxx_init_capture", LangOpts.CPlusPlus1y)
+           //.Case("cxx_generic_lambdas", LangOpts.CPlusPlus1y)
+           .Case("cxx_init_captures", LangOpts.CPlusPlus1y)
            .Case("cxx_relaxed_constexpr", LangOpts.CPlusPlus1y)
            .Case("cxx_return_type_deduction", LangOpts.CPlusPlus1y)
-           //.Case("cxx_runtime_array", LangOpts.CPlusPlus1y)
-           //.Case("cxx_variable_templates", LangOpts.CPlusPlus1y)
+           //.Case("cxx_runtime_arrays", LangOpts.CPlusPlus1y)
+           .Case("cxx_variable_templates", LangOpts.CPlusPlus1y)
            // Type traits
            .Case("has_nothrow_assign", LangOpts.CPlusPlus)
            .Case("has_nothrow_copy", LangOpts.CPlusPlus)
@@ -1045,6 +1022,7 @@ static bool HasExtension(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("c_atomic", true)
            .Case("c_generic_selections", true)
            .Case("c_static_assert", true)
+           .Case("c_thread_local", PP.getTargetInfo().isTLSSupported())
            // C++11 features supported by other languages as extensions.
            .Case("cxx_atomic", LangOpts.CPlusPlus)
            .Case("cxx_deleted_functions", LangOpts.CPlusPlus)
@@ -1058,6 +1036,8 @@ static bool HasExtension(const Preprocessor &PP, const IdentifierInfo *II) {
            .Case("cxx_rvalue_references", LangOpts.CPlusPlus)
            // C++1y features supported by other languages as extensions.
            .Case("cxx_binary_literals", true)
+           .Case("cxx_init_captures", LangOpts.CPlusPlus11)
+           .Case("cxx_variable_templates", true)
            .Default(false);
 }
 

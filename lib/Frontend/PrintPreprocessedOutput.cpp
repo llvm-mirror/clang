@@ -152,6 +152,10 @@ public:
                                    StringRef Namespace);
   virtual void PragmaDiagnostic(SourceLocation Loc, StringRef Namespace,
                                 diag::Mapping Map, StringRef Str);
+  virtual void PragmaWarning(SourceLocation Loc, StringRef WarningSpec,
+                             ArrayRef<int> Ids);
+  virtual void PragmaWarningPush(SourceLocation Loc, int Level);
+  virtual void PragmaWarningPop(SourceLocation Loc);
 
   bool HandleFirstTokOnLine(Token &Tok);
 
@@ -190,11 +194,11 @@ void PrintPPOutputPPCallbacks::WriteLineInfo(unsigned LineNo,
   // Emit #line directives or GNU line markers depending on what mode we're in.
   if (UseLineDirective) {
     OS << "#line" << ' ' << LineNo << ' ' << '"';
-    OS.write(CurFilename.data(), CurFilename.size());
+    OS.write_escaped(CurFilename);
     OS << '"';
   } else {
     OS << '#' << ' ' << LineNo << ' ' << '"';
-    OS.write(CurFilename.data(), CurFilename.size());
+    OS.write_escaped(CurFilename);
     OS << '"';
 
     if (ExtraLen)
@@ -285,7 +289,6 @@ void PrintPPOutputPPCallbacks::FileChanged(SourceLocation Loc,
 
   CurFilename.clear();
   CurFilename += UserLoc.getFilename();
-  Lexer::Stringify(CurFilename);
   FileType = NewFileType;
 
   if (DisableLineMarkers) {
@@ -508,6 +511,36 @@ PragmaDiagnostic(SourceLocation Loc, StringRef Namespace,
   setEmittedDirectiveOnThisLine();
 }
 
+void PrintPPOutputPPCallbacks::PragmaWarning(SourceLocation Loc,
+                                             StringRef WarningSpec,
+                                             ArrayRef<int> Ids) {
+  startNewLineIfNeeded();
+  MoveToLine(Loc);
+  OS << "#pragma warning(" << WarningSpec << ':';
+  for (ArrayRef<int>::iterator I = Ids.begin(), E = Ids.end(); I != E; ++I)
+    OS << ' ' << *I;
+  OS << ')';
+  setEmittedDirectiveOnThisLine();
+}
+
+void PrintPPOutputPPCallbacks::PragmaWarningPush(SourceLocation Loc,
+                                                 int Level) {
+  startNewLineIfNeeded();
+  MoveToLine(Loc);
+  OS << "#pragma warning(push";
+  if (Level >= 0)
+    OS << ", " << Level;
+  OS << ')';
+  setEmittedDirectiveOnThisLine();
+}
+
+void PrintPPOutputPPCallbacks::PragmaWarningPop(SourceLocation Loc) {
+  startNewLineIfNeeded();
+  MoveToLine(Loc);
+  OS << "#pragma warning(pop)";
+  setEmittedDirectiveOnThisLine();
+}
+
 /// HandleFirstTokOnLine - When emitting a preprocessed file in -E mode, this
 /// is called for the first token on each new line.  If this really is the start
 /// of a new logical line, handle it and return true, otherwise return false.
@@ -658,9 +691,7 @@ static void PrintPreprocessedTokens(Preprocessor &PP, Token &Tok,
 }
 
 typedef std::pair<const IdentifierInfo *, MacroInfo *> id_macro_pair;
-static int MacroIDCompare(const void* a, const void* b) {
-  const id_macro_pair *LHS = static_cast<const id_macro_pair*>(a);
-  const id_macro_pair *RHS = static_cast<const id_macro_pair*>(b);
+static int MacroIDCompare(const id_macro_pair *LHS, const id_macro_pair *RHS) {
   return LHS->first->getName().compare(RHS->first->getName());
 }
 

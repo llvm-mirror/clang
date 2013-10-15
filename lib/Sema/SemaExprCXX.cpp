@@ -305,7 +305,7 @@ ParsedType Sema::getDestructorName(SourceLocation TildeLoc,
     SemaDiagnosticBuilder DtorDiag = Diag(NameLoc,
                                           diag::err_destructor_class_name);
     if (S) {
-      const DeclContext *Ctx = static_cast<DeclContext*>(S->getEntity());
+      const DeclContext *Ctx = S->getEntity();
       if (const CXXRecordDecl *Class = dyn_cast_or_null<CXXRecordDecl>(Ctx))
         DtorDiag << FixItHint::CreateReplacement(SourceRange(NameLoc),
                                                  Class->getNameAsString());
@@ -462,11 +462,16 @@ ExprResult Sema::BuildCXXUuidof(QualType TypeInfoType,
                                 TypeSourceInfo *Operand,
                                 SourceLocation RParenLoc) {
   if (!Operand->getType()->isDependentType()) {
-    if (!CXXUuidofExpr::GetUuidAttrOfType(Operand->getType()))
-      return ExprError(Diag(TypeidLoc, diag::err_uuidof_without_guid));
+    bool HasMultipleGUIDs = false;
+    if (!CXXUuidofExpr::GetUuidAttrOfType(Operand->getType(),
+                                          &HasMultipleGUIDs)) {
+      if (HasMultipleGUIDs)
+        return ExprError(Diag(TypeidLoc, diag::err_uuidof_with_multiple_guids));
+      else
+        return ExprError(Diag(TypeidLoc, diag::err_uuidof_without_guid));
+    }
   }
 
-  // FIXME: add __uuidof semantic analysis for type operand.
   return Owned(new (Context) CXXUuidofExpr(TypeInfoType.withConst(),
                                            Operand,
                                            SourceRange(TypeidLoc, RParenLoc)));
@@ -478,11 +483,16 @@ ExprResult Sema::BuildCXXUuidof(QualType TypeInfoType,
                                 Expr *E,
                                 SourceLocation RParenLoc) {
   if (!E->getType()->isDependentType()) {
-    if (!CXXUuidofExpr::GetUuidAttrOfType(E->getType()) &&
-        !E->isNullPointerConstant(Context, Expr::NPC_ValueDependentIsNull))
-      return ExprError(Diag(TypeidLoc, diag::err_uuidof_without_guid));
+    bool HasMultipleGUIDs = false;
+    if (!CXXUuidofExpr::GetUuidAttrOfType(E->getType(), &HasMultipleGUIDs) &&
+        !E->isNullPointerConstant(Context, Expr::NPC_ValueDependentIsNull)) {
+      if (HasMultipleGUIDs)
+        return ExprError(Diag(TypeidLoc, diag::err_uuidof_with_multiple_guids));
+      else
+        return ExprError(Diag(TypeidLoc, diag::err_uuidof_without_guid));
+    }
   }
-  // FIXME: add __uuidof semantic analysis for type operand.
+
   return Owned(new (Context) CXXUuidofExpr(TypeInfoType.withConst(),
                                            E,
                                            SourceRange(TypeidLoc, RParenLoc)));
@@ -893,18 +903,21 @@ Sema::BuildCXXTypeConstructExpr(TypeSourceInfo *TInfo,
   InitializationSequence InitSeq(*this, Entity, Kind, Exprs);
   ExprResult Result = InitSeq.Perform(*this, Entity, Kind, Exprs);
 
-  if (!Result.isInvalid() && ListInitialization &&
-      isa<InitListExpr>(Result.get())) {
+  if (Result.isInvalid() || !ListInitialization)
+    return Result;
+
+  Expr *Inner = Result.get();
+  if (CXXBindTemporaryExpr *BTE = dyn_cast_or_null<CXXBindTemporaryExpr>(Inner))
+    Inner = BTE->getSubExpr();
+  if (isa<InitListExpr>(Inner)) {
     // If the list-initialization doesn't involve a constructor call, we'll get
     // the initializer-list (with corrected type) back, but that's not what we
     // want, since it will be treated as an initializer list in further
     // processing. Explicitly insert a cast here.
-    InitListExpr *List = cast<InitListExpr>(Result.take());
-    Result = Owned(CXXFunctionalCastExpr::Create(Context, List->getType(),
-                                    Expr::getValueKindForType(TInfo->getType()),
-                                                 TInfo, CK_NoOp, List,
-                                                 /*Path=*/0,
-                                                 LParenLoc, RParenLoc));
+    QualType ResultType = Result.get()->getType();
+    Result = Owned(CXXFunctionalCastExpr::Create(
+        Context, ResultType, Expr::getValueKindForType(TInfo->getType()), TInfo,
+        CK_NoOp, Result.take(), /*Path=*/ 0, LParenLoc, RParenLoc));
   }
 
   // FIXME: Improve AST representation?
@@ -1526,16 +1539,23 @@ bool Sema::CheckAllocatedType(QualType AllocType, SourceLocation Loc,
 
 /// \brief Determine whether the given function is a non-placement
 /// deallocation function.
-static bool isNonPlacementDeallocationFunction(FunctionDecl *FD) {
+static bool isNonPlacementDeallocationFunction(Sema &S, FunctionDecl *FD) {
   if (FD->isInvalidDecl())
     return false;
 
   if (CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(FD))
     return Method->isUsualDeallocationFunction();
 
-  return ((FD->getOverloadedOperator() == OO_Delete ||
-           FD->getOverloadedOperator() == OO_Array_Delete) &&
-          FD->getNumParams() == 1);
+  if (FD->getOverloadedOperator() != OO_Delete &&
+      FD->getOverloadedOperator() != OO_Array_Delete)
+    return false;
+
+  if (FD->getNumParams() == 1)
+    return true;
+
+  return S.getLangOpts().SizedDeallocation && FD->getNumParams() == 2 &&
+         S.Context.hasSameUnqualifiedType(FD->getParamDecl(1)->getType(),
+                                          S.Context.getSizeType());
 }
 
 /// FindAllocationFunctions - Finds the overloads of operator new and delete
@@ -1710,8 +1730,27 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
                              DEnd = FoundDelete.end();
          D != DEnd; ++D) {
       if (FunctionDecl *Fn = dyn_cast<FunctionDecl>((*D)->getUnderlyingDecl()))
-        if (isNonPlacementDeallocationFunction(Fn))
+        if (isNonPlacementDeallocationFunction(*this, Fn))
           Matches.push_back(std::make_pair(D.getPair(), Fn));
+    }
+
+    // C++1y [expr.new]p22:
+    //   For a non-placement allocation function, the normal deallocation
+    //   function lookup is used
+    // C++1y [expr.delete]p?:
+    //   If [...] deallocation function lookup finds both a usual deallocation
+    //   function with only a pointer parameter and a usual deallocation
+    //   function with both a pointer parameter and a size parameter, then the
+    //   selected deallocation function shall be the one with two parameters.
+    //   Otherwise, the selected deallocation function shall be the function
+    //   with one parameter.
+    if (getLangOpts().SizedDeallocation && Matches.size() == 2) {
+      if (Matches[0].second->getNumParams() == 1)
+        Matches.erase(Matches.begin());
+      else
+        Matches.erase(Matches.begin() + 1);
+      assert(Matches[0].second->getNumParams() == 2 &&
+             "found an unexpected uusal deallocation function");
     }
   }
 
@@ -1729,12 +1768,13 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
     //   selected as a match for the allocation function, the program
     //   is ill-formed.
     if (!PlaceArgs.empty() && getLangOpts().CPlusPlus11 &&
-        isNonPlacementDeallocationFunction(OperatorDelete)) {
+        isNonPlacementDeallocationFunction(*this, OperatorDelete)) {
       Diag(StartLoc, diag::err_placement_new_non_placement_delete)
         << SourceRange(PlaceArgs.front()->getLocStart(),
                        PlaceArgs.back()->getLocEnd());
-      Diag(OperatorDelete->getLocation(), diag::note_previous_decl)
-        << DeleteName;
+      if (!OperatorDelete->isImplicit())
+        Diag(OperatorDelete->getLocation(), diag::note_previous_decl)
+          << DeleteName;
     } else {
       CheckAllocationAccess(StartLoc, Range, FoundDelete.getNamingClass(),
                             Matches[0].first);
@@ -1861,13 +1901,19 @@ bool Sema::FindAllocationOverload(SourceLocation StartLoc, SourceRange Range,
 ///   void* operator new[](std::size_t) throw(std::bad_alloc);
 ///   void operator delete(void *) throw();
 ///   void operator delete[](void *) throw();
-///   // C++0x:
+///   // C++11:
 ///   void* operator new(std::size_t);
 ///   void* operator new[](std::size_t);
-///   void operator delete(void *);
-///   void operator delete[](void *);
+///   void operator delete(void *) noexcept;
+///   void operator delete[](void *) noexcept;
+///   // C++1y:
+///   void* operator new(std::size_t);
+///   void* operator new[](std::size_t);
+///   void operator delete(void *) noexcept;
+///   void operator delete[](void *) noexcept;
+///   void operator delete(void *, std::size_t) noexcept;
+///   void operator delete[](void *, std::size_t) noexcept;
 /// @endcode
-/// C++0x operator delete is implicitly noexcept.
 /// Note that the placement and nothrow forms of new are *not* implicitly
 /// declared. Their use requires including \<new\>.
 void Sema::DeclareGlobalNewDelete() {
@@ -1884,11 +1930,18 @@ void Sema::DeclareGlobalNewDelete() {
   //     void* operator new[](std::size_t) throw(std::bad_alloc);
   //     void  operator delete(void*) throw();
   //     void  operator delete[](void*) throw();
-  //     C++0x:
+  //     C++11:
   //     void* operator new(std::size_t);
   //     void* operator new[](std::size_t);
-  //     void  operator delete(void*);
-  //     void  operator delete[](void*);
+  //     void  operator delete(void*) noexcept;
+  //     void  operator delete[](void*) noexcept;
+  //     C++1y:
+  //     void* operator new(std::size_t);
+  //     void* operator new[](std::size_t);
+  //     void  operator delete(void*) noexcept;
+  //     void  operator delete[](void*) noexcept;
+  //     void  operator delete(void*, std::size_t) noexcept;
+  //     void  operator delete[](void*, std::size_t) noexcept;
   //
   //   These implicit declarations introduce only the function names operator
   //   new, operator new[], operator delete, operator delete[].
@@ -1897,8 +1950,6 @@ void Sema::DeclareGlobalNewDelete() {
   // "std" or "bad_alloc" as necessary to form the exception specification.
   // However, we do not make these implicit declarations visible to name
   // lookup.
-  // Note that the C++0x versions of operator delete are deallocation functions,
-  // and thus are implicitly noexcept.
   if (!StdBadAlloc && !getLangOpts().CPlusPlus11) {
     // The "std::bad_alloc" class has not yet been declared, so build it
     // implicitly.
@@ -1918,42 +1969,59 @@ void Sema::DeclareGlobalNewDelete() {
 
   DeclareGlobalAllocationFunction(
       Context.DeclarationNames.getCXXOperatorName(OO_New),
-      VoidPtr, SizeT, AssumeSaneOperatorNew);
+      VoidPtr, SizeT, QualType(), AssumeSaneOperatorNew);
   DeclareGlobalAllocationFunction(
       Context.DeclarationNames.getCXXOperatorName(OO_Array_New),
-      VoidPtr, SizeT, AssumeSaneOperatorNew);
+      VoidPtr, SizeT, QualType(), AssumeSaneOperatorNew);
   DeclareGlobalAllocationFunction(
       Context.DeclarationNames.getCXXOperatorName(OO_Delete),
       Context.VoidTy, VoidPtr);
   DeclareGlobalAllocationFunction(
       Context.DeclarationNames.getCXXOperatorName(OO_Array_Delete),
       Context.VoidTy, VoidPtr);
+  if (getLangOpts().SizedDeallocation) {
+    DeclareGlobalAllocationFunction(
+        Context.DeclarationNames.getCXXOperatorName(OO_Delete),
+        Context.VoidTy, VoidPtr, Context.getSizeType());
+    DeclareGlobalAllocationFunction(
+        Context.DeclarationNames.getCXXOperatorName(OO_Array_Delete),
+        Context.VoidTy, VoidPtr, Context.getSizeType());
+  }
 }
 
 /// DeclareGlobalAllocationFunction - Declares a single implicit global
 /// allocation function if it doesn't already exist.
 void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
-                                           QualType Return, QualType Argument,
+                                           QualType Return,
+                                           QualType Param1, QualType Param2,
                                            bool AddMallocAttr) {
   DeclContext *GlobalCtx = Context.getTranslationUnitDecl();
+  unsigned NumParams = Param2.isNull() ? 1 : 2;
 
   // Check if this function is already declared.
-  {
-    DeclContext::lookup_result R = GlobalCtx->lookup(Name);
-    for (DeclContext::lookup_iterator Alloc = R.begin(), AllocEnd = R.end();
-         Alloc != AllocEnd; ++Alloc) {
-      // Only look at non-template functions, as it is the predefined,
-      // non-templated allocation function we are trying to declare here.
-      if (FunctionDecl *Func = dyn_cast<FunctionDecl>(*Alloc)) {
-        QualType InitialParamType =
-          Context.getCanonicalType(
-            Func->getParamDecl(0)->getType().getUnqualifiedType());
+  DeclContext::lookup_result R = GlobalCtx->lookup(Name);
+  for (DeclContext::lookup_iterator Alloc = R.begin(), AllocEnd = R.end();
+       Alloc != AllocEnd; ++Alloc) {
+    // Only look at non-template functions, as it is the predefined,
+    // non-templated allocation function we are trying to declare here.
+    if (FunctionDecl *Func = dyn_cast<FunctionDecl>(*Alloc)) {
+      if (Func->getNumParams() == NumParams) {
+        QualType InitialParam1Type =
+            Context.getCanonicalType(Func->getParamDecl(0)
+                                         ->getType().getUnqualifiedType());
+        QualType InitialParam2Type =
+            NumParams == 2
+                ? Context.getCanonicalType(Func->getParamDecl(1)
+                                               ->getType().getUnqualifiedType())
+                : QualType();
         // FIXME: Do we need to check for default arguments here?
-        if (Func->getNumParams() == 1 && InitialParamType == Argument) {
+        if (InitialParam1Type == Param1 &&
+            (NumParams == 1 || InitialParam2Type == Param2)) {
           if (AddMallocAttr && !Func->hasAttr<MallocAttr>())
-            Func->addAttr(::new (Context) MallocAttr(SourceLocation(), Context));
-          // Make the function visible to name lookup, even if we found it in an
-          // unimported module. It either is an implicitly-declared global
+            Func->addAttr(::new (Context) MallocAttr(SourceLocation(),
+                                                     Context));
+          // Make the function visible to name lookup, even if we found it in
+          // an unimported module. It either is an implicitly-declared global
           // allocation function, or is suppressing that function.
           Func->setHidden(false);
           return;
@@ -1983,7 +2051,10 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
                                 EST_BasicNoexcept : EST_DynamicNone;
   }
 
-  QualType FnType = Context.getFunctionType(Return, Argument, EPI);
+  QualType Params[] = { Param1, Param2 };
+
+  QualType FnType = Context.getFunctionType(
+      Return, ArrayRef<QualType>(Params, NumParams), EPI);
   FunctionDecl *Alloc =
     FunctionDecl::Create(Context, GlobalCtx, SourceLocation(),
                          SourceLocation(), Name,
@@ -1993,16 +2064,60 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
   if (AddMallocAttr)
     Alloc->addAttr(::new (Context) MallocAttr(SourceLocation(), Context));
 
-  ParmVarDecl *Param = ParmVarDecl::Create(Context, Alloc, SourceLocation(),
-                                           SourceLocation(), 0,
-                                           Argument, /*TInfo=*/0,
-                                           SC_None, 0);
-  Alloc->setParams(Param);
+  ParmVarDecl *ParamDecls[2];
+  for (unsigned I = 0; I != NumParams; ++I)
+    ParamDecls[I] = ParmVarDecl::Create(Context, Alloc, SourceLocation(),
+                                        SourceLocation(), 0,
+                                        Params[I], /*TInfo=*/0,
+                                        SC_None, 0);
+  Alloc->setParams(ArrayRef<ParmVarDecl*>(ParamDecls, NumParams));
 
   // FIXME: Also add this declaration to the IdentifierResolver, but
   // make sure it is at the end of the chain to coincide with the
   // global scope.
   Context.getTranslationUnitDecl()->addDecl(Alloc);
+}
+
+FunctionDecl *Sema::FindUsualDeallocationFunction(SourceLocation StartLoc,
+                                                  bool CanProvideSize,
+                                                  DeclarationName Name) {
+  DeclareGlobalNewDelete();
+
+  LookupResult FoundDelete(*this, Name, StartLoc, LookupOrdinaryName);
+  LookupQualifiedName(FoundDelete, Context.getTranslationUnitDecl());
+
+  // C++ [expr.new]p20:
+  //   [...] Any non-placement deallocation function matches a
+  //   non-placement allocation function. [...]
+  llvm::SmallVector<FunctionDecl*, 2> Matches;
+  for (LookupResult::iterator D = FoundDelete.begin(),
+                           DEnd = FoundDelete.end();
+       D != DEnd; ++D) {
+    if (FunctionDecl *Fn = dyn_cast<FunctionDecl>(*D))
+      if (isNonPlacementDeallocationFunction(*this, Fn))
+        Matches.push_back(Fn);
+  }
+
+  // C++1y [expr.delete]p?:
+  //   If the type is complete and deallocation function lookup finds both a
+  //   usual deallocation function with only a pointer parameter and a usual
+  //   deallocation function with both a pointer parameter and a size
+  //   parameter, then the selected deallocation function shall be the one
+  //   with two parameters.  Otherwise, the selected deallocation function
+  //   shall be the function with one parameter.
+  if (getLangOpts().SizedDeallocation && Matches.size() == 2) {
+    unsigned NumArgs = CanProvideSize ? 2 : 1;
+    if (Matches[0]->getNumParams() != NumArgs)
+      Matches.erase(Matches.begin());
+    else
+      Matches.erase(Matches.begin() + 1);
+    assert(Matches[0]->getNumParams() == NumArgs &&
+           "found an unexpected uusal deallocation function");
+  }
+
+  assert(Matches.size() == 1 &&
+         "unexpectedly have multiple usual deallocation functions");
+  return Matches.front();
 }
 
 bool Sema::FindDeallocationFunction(SourceLocation StartLoc, CXXRecordDecl *RD,
@@ -2079,17 +2194,7 @@ bool Sema::FindDeallocationFunction(SourceLocation StartLoc, CXXRecordDecl *RD,
   }
 
   // Look for a global declaration.
-  DeclareGlobalNewDelete();
-  DeclContext *TUDecl = Context.getTranslationUnitDecl();
-
-  CXXNullPtrLiteralExpr Null(Context.VoidPtrTy, SourceLocation());
-  Expr *DeallocArgs[1] = { &Null };
-  if (FindAllocationOverload(StartLoc, SourceRange(), Name,
-                             DeallocArgs, TUDecl, !Diagnose,
-                             Operator, Diagnose))
-    return true;
-
-  assert(Operator && "Did not find a deallocation function!");
+  Operator = FindUsualDeallocationFunction(StartLoc, true, Name);
   return false;
 }
 
@@ -2277,20 +2382,13 @@ Sema::ActOnCXXDelete(SourceLocation StartLoc, bool UseGlobal,
 
     }
 
-    if (!OperatorDelete) {
+    if (!OperatorDelete)
       // Look for a global declaration.
-      DeclareGlobalNewDelete();
-      DeclContext *TUDecl = Context.getTranslationUnitDecl();
-      Expr *Arg = Ex.get();
-      if (!Context.hasSameType(Arg->getType(), Context.VoidPtrTy))
-        Arg = ImplicitCastExpr::Create(Context, Context.VoidPtrTy,
-                                       CK_BitCast, Arg, 0, VK_RValue);
-      Expr *DeallocArgs[1] = { Arg };
-      if (FindAllocationOverload(StartLoc, SourceRange(), DeleteName,
-                                 DeallocArgs, TUDecl, /*AllowMissing=*/false,
-                                 OperatorDelete))
-        return ExprError();
-    }
+      OperatorDelete = FindUsualDeallocationFunction(
+          StartLoc, !RequireCompleteType(StartLoc, Pointee, 0) &&
+                    (!ArrayForm || UsualArrayDeleteWantsSize ||
+                     Pointee.isDestructedType()),
+          DeleteName);
 
     MarkFunctionReferenced(StartLoc, OperatorDelete);
     
@@ -3512,24 +3610,24 @@ static bool evaluateTypeTrait(Sema &S, TypeTrait Kind, SourceLocation KWLoc,
         << 1 << 1 << 1 << (int)Args.size();
       return false;
     }
-    
-    bool SawVoid = false;
+
+    // Precondition: T and all types in the parameter pack Args shall be
+    // complete types, (possibly cv-qualified) void, or arrays of
+    // unknown bound.
     for (unsigned I = 0, N = Args.size(); I != N; ++I) {
-      if (Args[I]->getType()->isVoidType()) {
-        SawVoid = true;
+      QualType ArgTy = Args[I]->getType();
+      if (ArgTy->isVoidType() || ArgTy->isIncompleteArrayType())
         continue;
-      }
-      
-      if (!Args[I]->getType()->isIncompleteType() &&
-        S.RequireCompleteType(KWLoc, Args[I]->getType(), 
+
+      if (S.RequireCompleteType(KWLoc, ArgTy, 
           diag::err_incomplete_type_used_in_type_trait_expr))
         return false;
     }
-    
-    // If any argument was 'void', of course it won't type-check.
-    if (SawVoid)
+
+    // Make sure the first argument is a complete type.
+    if (Args[0]->getType()->isIncompleteType())
       return false;
-    
+
     SmallVector<OpaqueValueExpr, 2> OpaqueArgExprs;
     SmallVector<Expr *, 2> ArgExprs;
     ArgExprs.reserve(Args.size() - 1);

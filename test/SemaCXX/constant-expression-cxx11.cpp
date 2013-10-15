@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple i686-linux -Wno-string-plus-int -fsyntax-only -fcxx-exceptions -verify -std=c++11 -pedantic %s -Wno-comment
+// RUN: %clang_cc1 -triple i686-linux -Wno-string-plus-int -Wno-pointer-arith -Wno-zero-length-array -fsyntax-only -fcxx-exceptions -verify -std=c++11 -pedantic %s -Wno-comment
 
 namespace StaticAssertFoldTest {
 
@@ -1763,4 +1763,34 @@ namespace Bitfields {
     };
     static_assert(X::f(3) == -1, "3 should truncate to -1");
   }
+}
+
+namespace ZeroSizeTypes {
+  constexpr int (*p1)[0] = 0, (*p2)[0] = 0;
+  constexpr int k = p2 - p1;
+  // expected-error@-1 {{constexpr variable 'k' must be initialized by a constant expression}}
+  // expected-note@-2 {{subtraction of pointers to type 'int [0]' of zero size}}
+
+  int arr[5][0];
+  constexpr int f() { // expected-error {{never produces a constant expression}}
+    return &arr[3] - &arr[0]; // expected-note {{subtraction of pointers to type 'int [0]' of zero size}}
+  }
+}
+
+namespace BadDefaultInit {
+  template<int N> struct X { static const int n = N; };
+
+  struct A { // expected-note {{subexpression}}
+    int k = X<A().k>::n; // expected-error {{defaulted default constructor of 'A' cannot be used}} expected-error {{not a constant expression}} expected-note {{in call to 'A()'}}
+  };
+
+  // FIXME: The "constexpr constructor must initialize all members" diagnostic
+  // here is bogus (we discard the k(k) initializer because the parameter 'k'
+  // has been marked invalid).
+  struct B { // expected-note 2{{candidate}}
+    constexpr B( // expected-error {{must initialize all members}} expected-note {{candidate}}
+        int k = X<B().k>::n) : // expected-error {{no matching constructor}}
+      k(k) {}
+    int k; // expected-note {{not initialized}}
+  };
 }

@@ -234,6 +234,12 @@ public:
   virtual llvm::BasicBlock *EmitCtorCompleteObjectHandler(CodeGenFunction &CGF,
                                                           const CXXRecordDecl *RD);
 
+  /// Emit the code to initialize hidden members required
+  /// to handle virtual inheritance, if needed by the ABI.
+  virtual void
+  initializeHiddenVirtualInheritanceMembers(CodeGenFunction &CGF,
+                                            const CXXRecordDecl *RD) {}
+
   /// Emit constructor variants required by this ABI.
   virtual void EmitCXXConstructors(const CXXConstructorDecl *D) = 0;
 
@@ -303,6 +309,29 @@ public:
                                    CallExpr::const_arg_iterator ArgBeg,
                                    CallExpr::const_arg_iterator ArgEnd) = 0;
 
+  /// Emits the VTable definitions required for the given record type.
+  virtual void emitVTableDefinitions(CodeGenVTables &CGVT,
+                                     const CXXRecordDecl *RD) = 0;
+
+  /// Get the address point of the vtable for the given base subobject while
+  /// building a constructor or a destructor. On return, NeedsVirtualOffset
+  /// tells if a virtual base adjustment is needed in order to get the offset
+  /// of the base subobject.
+  virtual llvm::Value *getVTableAddressPointInStructor(
+      CodeGenFunction &CGF, const CXXRecordDecl *RD, BaseSubobject Base,
+      const CXXRecordDecl *NearestVBase, bool &NeedsVirtualOffset) = 0;
+
+  /// Get the address point of the vtable for the given base subobject while
+  /// building a constexpr.
+  virtual llvm::Constant *
+  getVTableAddressPointForConstExpr(BaseSubobject Base,
+                                    const CXXRecordDecl *VTableClass) = 0;
+
+  /// Get the address of the vtable for the given record decl which should be
+  /// used for the vptr at the given offset in RD.
+  virtual llvm::GlobalVariable *getAddrOfVTable(const CXXRecordDecl *RD,
+                                                CharUnits VPtrOffset) = 0;
+
   /// Build a virtual function pointer in the ABI-specific way.
   virtual llvm::Value *getVirtualFunctionPointer(CodeGenFunction &CGF,
                                                  GlobalDecl GD,
@@ -316,12 +345,16 @@ public:
                                          SourceLocation CallLoc,
                                          llvm::Value *This) = 0;
 
+  virtual void adjustCallArgsForDestructorThunk(CodeGenFunction &CGF,
+                                                GlobalDecl GD,
+                                                CallArgList &CallArgs) {}
+
   /// Emit any tables needed to implement virtual inheritance.  For Itanium,
   /// this emits virtual table tables.  For the MSVC++ ABI, this emits virtual
   /// base tables.
-  virtual void
-      EmitVirtualInheritanceTables(llvm::GlobalVariable::LinkageTypes Linkage,
-                                   const CXXRecordDecl *RD) = 0;
+  virtual void emitVirtualInheritanceTables(const CXXRecordDecl *RD) = 0;
+
+  virtual void setThunkLinkage(llvm::Function *Thunk, bool ForVTable) = 0;
 
   virtual void EmitReturnFromThunk(CodeGenFunction &CGF,
                                    RValue RV, QualType ResultType);
@@ -413,7 +446,8 @@ public:
   ///   - a static local variable
   ///   - a static data member of a class template instantiation
   virtual void EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
-                               llvm::GlobalVariable *DeclPtr, bool PerformInit);
+                               llvm::GlobalVariable *DeclPtr,
+                               bool PerformInit) = 0;
 
   /// Emit code to force the execution of a destructor during global
   /// teardown.  The default implementation of this uses atexit.

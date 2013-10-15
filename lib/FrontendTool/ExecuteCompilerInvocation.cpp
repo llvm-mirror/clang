@@ -37,7 +37,6 @@ static FrontendAction *CreateFrontendBaseAction(CompilerInstance &CI) {
   switch (CI.getFrontendOpts().ProgramAction) {
   case ASTDeclList:            return new ASTDeclListAction();
   case ASTDump:                return new ASTDumpAction();
-  case ASTDumpXML:             return new ASTDumpXMLAction();
   case ASTPrint:               return new ASTPrintAction();
   case ASTView:                return new ASTViewAction();
   case DumpRawTokens:          return new DumpRawTokensAction();
@@ -162,9 +161,7 @@ static FrontendAction *CreateFrontendAction(CompilerInstance &CI) {
 
   if (FEOpts.ObjCMTAction != FrontendOptions::ObjCMT_None) {
     Act = new arcmt::ObjCMigrateAction(Act, FEOpts.MTMigrateDir,
-                   FEOpts.ObjCMTAction & FrontendOptions::ObjCMT_Literals,
-                   FEOpts.ObjCMTAction & FrontendOptions::ObjCMT_Subscripting,
-                   FEOpts.ObjCMTAction & FrontendOptions::ObjCMT_Property);
+                                       FEOpts.ObjCMTAction);
   }
 #endif
 

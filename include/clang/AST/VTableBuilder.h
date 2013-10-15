@@ -200,7 +200,6 @@ private:
 class VTableLayout {
 public:
   typedef std::pair<uint64_t, ThunkInfo> VTableThunkTy;
-  typedef SmallVector<ThunkInfo, 1> ThunkInfoVectorTy;
 
   typedef const VTableComponent *vtable_component_iterator;
   typedef const VTableThunkTy *vtable_thunk_iterator;
@@ -210,7 +209,7 @@ private:
   uint64_t NumVTableComponents;
   llvm::OwningArrayPtr<VTableComponent> VTableComponents;
 
-  /// \brief Contains thunks needed by vtables.
+  /// \brief Contains thunks needed by vtables, sorted by indices.
   uint64_t NumVTableThunks;
   llvm::OwningArrayPtr<VTableThunkTy> VTableThunks;
 
@@ -285,9 +284,12 @@ protected:
   virtual ~VTableContextBase() {}
 
 public:
-  const ThunkInfoVectorTy *getThunkInfo(const CXXMethodDecl *MD) {
+  virtual const ThunkInfoVectorTy *getThunkInfo(GlobalDecl GD) {
+    const CXXMethodDecl *MD = cast<CXXMethodDecl>(GD.getDecl()->getCanonicalDecl());
     computeVTableRelatedInformation(MD->getParent());
 
+    // This assumes that all the destructors present in the vtable
+    // use exactly the same set of thunks.
     ThunksMapTy::const_iterator I = Thunks.find(MD);
     if (I == Thunks.end()) {
       // We did not find a thunk for this method.
@@ -298,8 +300,7 @@ public:
   }
 };
 
-// FIXME: rename to ItaniumVTableContext.
-class VTableContext : public VTableContextBase {
+class ItaniumVTableContext : public VTableContextBase {
 private:
   bool IsMicrosoftABI;
 
@@ -326,15 +327,8 @@ private:
   void computeVTableRelatedInformation(const CXXRecordDecl *RD);
 
 public:
-  VTableContext(ASTContext &Context);
-  ~VTableContext();
-
-  bool isMicrosoftABI() const {
-    // FIXME: Currently, this method is only used in the VTableContext and
-    // VTableBuilder code which is ABI-specific. Probably we can remove it
-    // when we add a layer of abstraction for vtable generation.
-    return IsMicrosoftABI;
-  }
+  ItaniumVTableContext(ASTContext &Context);
+  ~ItaniumVTableContext();
 
   const VTableLayout &getVTableLayout(const CXXRecordDecl *RD) {
     computeVTableRelatedInformation(RD);
@@ -377,11 +371,13 @@ unsigned GetVBTableIndex(const CXXRecordDecl *Derived,
 struct VFPtrInfo {
   typedef SmallVector<const CXXRecordDecl *, 1> BasePath;
 
+  // Don't pass the PathToMangle as it should be calculated later.
   VFPtrInfo(CharUnits VFPtrOffset, const BasePath &PathToBaseWithVFPtr)
       : VBTableIndex(0), LastVBase(0), VFPtrOffset(VFPtrOffset),
         PathToBaseWithVFPtr(PathToBaseWithVFPtr), VFPtrFullOffset(VFPtrOffset) {
   }
 
+  // Don't pass the PathToMangle as it should be calculated later.
   VFPtrInfo(uint64_t VBTableIndex, const CXXRecordDecl *LastVBase,
             CharUnits VFPtrOffset, const BasePath &PathToBaseWithVFPtr,
             CharUnits VFPtrFullOffset)
@@ -404,8 +400,12 @@ struct VFPtrInfo {
   CharUnits VFPtrOffset;
 
   /// This holds the base classes path from the complete type to the first base
-  /// with the given vfptr offset.
+  /// with the given vfptr offset, in the base-to-derived order.
   BasePath PathToBaseWithVFPtr;
+
+  /// This holds the subset of records that need to be mangled into the vftable
+  /// symbol name in order to get a unique name, in the derived-to-base order.
+  BasePath PathToMangle;
 
   /// This is the full offset of the vfptr from the start of the complete type.
   CharUnits VFPtrFullOffset;
@@ -484,6 +484,14 @@ public:
                                        CharUnits VFPtrOffset);
 
   const MethodVFTableLocation &getMethodVFTableLocation(GlobalDecl GD);
+
+  const ThunkInfoVectorTy *getThunkInfo(GlobalDecl GD) {
+    // Complete destructors don't have a slot in a vftable, so no thunks needed.
+    if (isa<CXXDestructorDecl>(GD.getDecl()) &&
+        GD.getDtorType() == Dtor_Complete)
+      return 0;
+    return VTableContextBase::getThunkInfo(GD);
+  }
 };
 }
 

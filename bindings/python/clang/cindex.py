@@ -1055,6 +1055,7 @@ CursorKind.CXX_FINAL_ATTR = CursorKind(404)
 CursorKind.CXX_OVERRIDE_ATTR = CursorKind(405)
 CursorKind.ANNOTATE_ATTR = CursorKind(406)
 CursorKind.ASM_LABEL_ATTR = CursorKind(407)
+CursorKind.PACKED_ATTR = CursorKind(408)
 
 ###
 # Preprocessing
@@ -1315,6 +1316,16 @@ class Cursor(Structure):
 
         return self._referenced
 
+    @property
+    def brief_comment(self):
+        """Returns the brief comment text associated with that Cursor"""
+        return conf.lib.clang_Cursor_getBriefCommentText(self)
+    
+    @property
+    def raw_comment(self):
+        """Returns the raw comment text associated with that Cursor"""
+        return conf.lib.clang_Cursor_getRawCommentText(self)
+
     def get_arguments(self):
         """Return an iterator for accessing the arguments of this cursor."""
         num_args = conf.lib.clang_Cursor_getNumArguments(self)
@@ -1486,6 +1497,51 @@ TypeKind.VECTOR = TypeKind(113)
 TypeKind.INCOMPLETEARRAY = TypeKind(114)
 TypeKind.VARIABLEARRAY = TypeKind(115)
 TypeKind.DEPENDENTSIZEDARRAY = TypeKind(116)
+TypeKind.MEMBERPOINTER = TypeKind(117)
+
+class RefQualifierKind(object):
+    """Describes a specific ref-qualifier of a type."""
+
+    # The unique kind objects, indexed by id.
+    _kinds = []
+    _name_map = None
+
+    def __init__(self, value):
+        if value >= len(RefQualifierKind._kinds):
+            num_kinds = value - len(RefQualifierKind._kinds) + 1
+            RefQualifierKind._kinds += [None] * num_kinds
+        if RefQualifierKind._kinds[value] is not None:
+            raise ValueError, 'RefQualifierKind already loaded'
+        self.value = value
+        RefQualifierKind._kinds[value] = self
+        RefQualifierKind._name_map = None
+
+    def from_param(self):
+        return self.value
+
+    @property
+    def name(self):
+        """Get the enumeration name of this kind."""
+        if self._name_map is None:
+            self._name_map = {}
+            for key, value in RefQualifierKind.__dict__.items():
+                if isinstance(value, RefQualifierKind):
+                    self._name_map[value] = key
+        return self._name_map[self]
+
+    @staticmethod
+    def from_id(id):
+        if (id >= len(RefQualifierKind._kinds) or
+                RefQualifierKind._kinds[id] is None):
+            raise ValueError, 'Unknown type kind %d' % id
+        return RefQualifierKind._kinds[id]
+
+    def __repr__(self):
+        return 'RefQualifierKind.%s' % (self.name,)
+
+RefQualifierKind.NONE = RefQualifierKind(0)
+RefQualifierKind.LVALUE = RefQualifierKind(1)
+RefQualifierKind.RVALUE = RefQualifierKind(2)
 
 class Type(Structure):
     """
@@ -1661,6 +1717,12 @@ class Type(Structure):
         """
         return conf.lib.clang_getArraySize(self)
 
+    def get_class_type(self):
+        """
+        Retrieve the class type of the member pointer type.
+        """
+        return conf.lib.clang_Type_getClassType(self)
+
     def get_align(self):
         """
         Retrieve the alignment of the record.
@@ -1678,6 +1740,18 @@ class Type(Structure):
         Retrieve the offset of a field in the record.
         """
         return conf.lib.clang_Type_getOffsetOf(self, c_char_p(fieldname))
+
+    def get_ref_qualifier(self):
+        """
+        Retrieve the ref-qualifier of the type.
+        """
+        return RefQualifierKind.from_id(
+                conf.lib.clang_Type_getCXXRefQualifier(self))
+
+    @property
+    def spelling(self):
+        """Retrieve the spelling of this Type."""
+        return conf.lib.clang_getTypeSpelling(self)
 
     def __eq__(self, other):
         if type(other) != type(self):
@@ -3013,6 +3087,11 @@ functionList = [
    _CXString,
    _CXString.from_result),
 
+  ("clang_getTypeSpelling",
+   [Type],
+   _CXString,
+   _CXString.from_result),
+
   ("clang_hashCursor",
    [Cursor],
    c_uint),
@@ -3117,9 +3196,24 @@ functionList = [
    [Cursor],
    bool),
 
+  ("clang_Cursor_getBriefCommentText",
+   [Cursor],
+   _CXString,
+   _CXString.from_result),
+
+  ("clang_Cursor_getRawCommentText",
+   [Cursor],
+   _CXString,
+   _CXString.from_result),
+
   ("clang_Type_getAlignOf",
    [Type],
    c_longlong),
+
+  ("clang_Type_getClassType",
+   [Type],
+   Type,
+   Type.from_result),
 
   ("clang_Type_getOffsetOf",
    [Type, c_char_p],
@@ -3127,7 +3221,11 @@ functionList = [
 
   ("clang_Type_getSizeOf",
    [Type],
-   c_ulonglong),
+   c_longlong),
+
+  ("clang_Type_getCXXRefQualifier",
+   [Type],
+   c_uint),
 ]
 
 class LibclangError(Exception):

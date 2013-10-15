@@ -18,6 +18,7 @@ Using Clang as a Compiler
 
    UsersManual
    LanguageExtensions
+   CrossCompilation
    AddressSanitizer
    ThreadSanitizer
    MemorySanitizer
@@ -25,6 +26,11 @@ Using Clang as a Compiler
    SanitizerSpecialCaseList
    Modules
    FAQ
+
+.. toctree::
+   :hidden:
+
+   LeakSanitizer
 
 Using Clang as a Library
 ========================
@@ -53,6 +59,7 @@ Using Clang Tools
    ClangTools
    ClangCheck
    ClangFormat
+   ClangFormatStyleOptions
 
 Design Documents
 ================

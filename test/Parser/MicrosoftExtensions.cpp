@@ -72,6 +72,10 @@ int uuid_sema_test()
    __uuidof(struct_without_uuid); // expected-error {{cannot call operator __uuidof on a type with no GUID}}
    __uuidof(struct_with_uuid*);
    __uuidof(struct_without_uuid*); // expected-error {{cannot call operator __uuidof on a type with no GUID}}
+   __uuidof(struct_with_uuid[1]);
+   __uuidof(struct_with_uuid*[1]); // expected-error {{cannot call operator __uuidof on a type with no GUID}}
+   __uuidof(const struct_with_uuid[1][1]);
+   __uuidof(const struct_with_uuid*[1][1]); // expected-error {{cannot call operator __uuidof on a type with no GUID}}
 
    __uuidof(var_with_uuid);
    __uuidof(var_without_uuid);// expected-error {{cannot call operator __uuidof on a type with no GUID}}
@@ -116,6 +120,25 @@ COM_CLASS_TEMPLATE_REF<int, __uuidof(struct_with_uuid)> good_template_arg;
 
 COM_CLASS_TEMPLATE<int, __uuidof(struct_with_uuid)> bad_template_arg; // expected-error {{non-type template argument of type 'const _GUID' is not a constant expression}}
 
+namespace PR16911 {
+struct __declspec(uuid("{12345678-1234-1234-1234-1234567890aB}")) uuid;
+struct __declspec(uuid("{12345678-1234-1234-1234-1234567890aB}")) uuid2;
+
+template <typename T, typename T2>
+struct thing {
+};
+
+struct empty {};
+struct inher : public thing<empty, uuid2> {};
+
+struct __declspec(uuid("{12345678-1234-1234-1234-1234567890aB}")) uuid;
+const struct _GUID *w = &__uuidof(inher); // expected-error{{cannot call operator __uuidof on a type with no GUID}}
+const struct _GUID *x = &__uuidof(thing<uuid, inher>);
+const struct _GUID *y = &__uuidof(thing<uuid2, uuid>); // expected-error{{cannot call operator __uuidof on a type with multiple GUIDs}}
+thing<uuid2, uuid> thing_obj = thing<uuid2, uuid>();
+const struct _GUID *z = &__uuidof(thing_obj); // expected-error{{cannot call operator __uuidof on a type with multiple GUIDs}}
+}
+
 class CtorCall {
 public:
   CtorCall& operator=(const CtorCall& that);
@@ -152,7 +175,9 @@ void missing_template_keyword(){
 
 
 
-class AAAA { };
+class AAAA {
+   typedef int D;
+};
 
 template <typename T>
 class SimpleTemplate {};
@@ -174,6 +199,12 @@ void redundant_typename() {
    int k = typename var;// expected-error {{expected a qualified name after 'typename'}}
 }
 
+template <typename T>
+struct TypenameWrongPlace {
+  typename typedef T::D D;// expected-warning {{expected a qualified name after 'typename'}}
+};
+
+extern TypenameWrongPlace<AAAA> PR16925;
 
 __interface MicrosoftInterface;
 __interface MicrosoftInterface {
@@ -298,6 +329,15 @@ int __identifier(generic) = 3;
 class inline_definition_pure_spec {
    virtual int f() = 0 { return 0; }// expected-warning {{function definition with pure-specifier is a Microsoft extension}}
    virtual int f2() = 0;
+};
+
+struct pure_virtual_dtor {
+  virtual ~pure_virtual_dtor() = 0;
+};
+pure_virtual_dtor::~pure_virtual_dtor() { }
+
+struct pure_virtual_dtor_inline {
+  virtual ~pure_virtual_dtor_inline() = 0 { }// expected-warning {{function definition with pure-specifier is a Microsoft extension}}
 };
 
 

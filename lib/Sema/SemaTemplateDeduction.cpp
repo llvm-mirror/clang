@@ -13,6 +13,7 @@
 #include "clang/Sema/TemplateDeduction.h"
 #include "TreeTransform.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTLambda.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
@@ -26,7 +27,6 @@
 
 namespace clang {
   using namespace sema;
-
   /// \brief Various flags that control template argument deduction.
   ///
   /// These flags can be bitwise-OR'd together.
@@ -2276,7 +2276,7 @@ Sema::DeduceTemplateArguments(ClassTemplatePartialSpecializationDecl *Partial,
   SmallVector<TemplateArgument, 4> DeducedArgs(Deduced.begin(), Deduced.end());
   InstantiatingTemplate Inst(*this, Partial->getLocation(), Partial,
                              DeducedArgs, Info);
-  if (Inst)
+  if (Inst.isInvalid())
     return TDK_InstantiationDepth;
 
   if (Trap.hasErrorOccurred())
@@ -2440,7 +2440,7 @@ Sema::DeduceTemplateArguments(VarTemplatePartialSpecializationDecl *Partial,
   SmallVector<TemplateArgument, 4> DeducedArgs(Deduced.begin(), Deduced.end());
   InstantiatingTemplate Inst(*this, Partial->getLocation(), Partial,
                              DeducedArgs, Info);
-  if (Inst)
+  if (Inst.isInvalid())
     return TDK_InstantiationDepth;
 
   if (Trap.hasErrorOccurred())
@@ -2528,7 +2528,7 @@ Sema::SubstituteExplicitTemplateArguments(
                              FunctionTemplate, DeducedArgs,
            ActiveTemplateInstantiation::ExplicitTemplateArgumentSubstitution,
                              Info);
-  if (Inst)
+  if (Inst.isInvalid())
     return TDK_InstantiationDepth;
 
   if (CheckTemplateArgumentList(FunctionTemplate,
@@ -2779,7 +2779,7 @@ Sema::FinishTemplateArgumentDeduction(FunctionTemplateDecl *FunctionTemplate,
                              FunctionTemplate, DeducedArgs,
               ActiveTemplateInstantiation::DeducedTemplateArgumentSubstitution,
                              Info);
-  if (Inst)
+  if (Inst.isInvalid())
     return TDK_InstantiationDepth;
 
   ContextRAII SavedContext(*this, FunctionTemplate->getTemplatedDecl());
@@ -3607,19 +3607,37 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
   return TDK_Success;
 }
 
+/// \brief Given a function declaration (e.g. a generic lambda conversion 
+///  function) that contains an 'auto' in its result type, substitute it 
+///  with the same Deduced type that the TypeToReplaceAutoWith was deduced 
+///  with.
+static inline void 
+ReplaceAutoWithinFunctionReturnType(FunctionDecl *F, 
+                                    QualType TypeToReplaceAutoWith, Sema &S) {
+  if (TypeToReplaceAutoWith->getContainedAutoType())
+    TypeToReplaceAutoWith = TypeToReplaceAutoWith->
+        getContainedAutoType()->getDeducedType();
+
+  QualType AutoResultType = F->getResultType();
+  assert(AutoResultType->getContainedAutoType()); 
+  QualType DeducedResultType = S.SubstAutoType(AutoResultType, 
+                                               TypeToReplaceAutoWith);
+  S.Context.adjustDeducedFunctionResultType(F, DeducedResultType);
+}
 /// \brief Deduce template arguments for a templated conversion
 /// function (C++ [temp.deduct.conv]) and, if successful, produce a
 /// conversion function template specialization.
 Sema::TemplateDeductionResult
-Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
+Sema::DeduceTemplateArguments(FunctionTemplateDecl *ConversionTemplate,
                               QualType ToType,
                               CXXConversionDecl *&Specialization,
                               TemplateDeductionInfo &Info) {
-  if (FunctionTemplate->isInvalidDecl())
+  if (ConversionTemplate->isInvalidDecl())
     return TDK_Invalid;
 
   CXXConversionDecl *Conv
-    = cast<CXXConversionDecl>(FunctionTemplate->getTemplatedDecl());
+    = cast<CXXConversionDecl>(ConversionTemplate->getTemplatedDecl());
+
   QualType FromType = Conv->getConversionType();
 
   // Canonicalize the types for deduction.
@@ -3675,7 +3693,7 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
   //   type that is required as the result of the conversion (call it
   //   A) as described in 14.8.2.4.
   TemplateParameterList *TemplateParams
-    = FunctionTemplate->getTemplateParameters();
+    = ConversionTemplate->getTemplateParameters();
   SmallVector<DeducedTemplateArgument, 4> Deduced;
   Deduced.resize(TemplateParams->size());
 
@@ -3704,13 +3722,143 @@ Sema::DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
                                              P, A, Info, Deduced, TDF))
     return Result;
 
-  // Finish template argument deduction.
+  // Create an Instantiation Scope for finalizing the operator.
   LocalInstantiationScope InstScope(*this);
-  FunctionDecl *Spec = 0;
+  
+  CXXMethodDecl *LambdaCallOpSpec = 0;
+  bool GenericLambdaCallOperatorHasDeducedReturnType = false;
+  
+  // Having successfully deduced and matched the type of the conversion
+  // function against the destination type, if the destination type
+  // is a ptr-to-function and the source type is a generic lambda conversion
+  // to ptr-to-function, we know that the parameters of the destination 
+  // ptr-to-function have matched successfully against those of our 
+  // lambda's conversion function.  
+  // For instance:
+  //  int (*fp)(int) = [](auto a) { return a; };
+  //     [template<class T> operator id<auto(*)(T)>() const]
+  // If it is indeed the conversion operator of a generic lambda then if
+  // not already done, create the corresponding specializations of the call 
+  // operator and the static-invoker; and if the return type is auto, 
+  // deduce the return type, and then check and see if it matches the ToType.
+
+  const bool IsGenericLambdaConversionOperator = 
+      isLambdaConversionOperator(Conv);
+  if (IsGenericLambdaConversionOperator) {
+    const Type *ToTypePtr = A.getTypePtr();
+
+    assert(A->isPointerType());
+    ToTypePtr = A->getPointeeType().getTypePtr();
+    
+    CXXRecordDecl *LambdaClass = Conv->getParent();
+    assert(LambdaClass && LambdaClass->isGenericLambda()); 
+
+    const FunctionType *ToFunType = ToTypePtr->getAs<FunctionType>();
+
+    // The specialization of the Generic Lambda Call Op, instantiated
+    // using the deduced parameters from the conversion function
+    // i.e.
+    // auto L = [](auto a) { return f(a); };
+    // int (*fp)(int) = L;
+    //
+
+    CXXMethodDecl *CallOp = LambdaClass->getLambdaCallOperator();
+    QualType CallOpResultType = CallOp->getResultType(); 
+    GenericLambdaCallOperatorHasDeducedReturnType = 
+        CallOpResultType->getContainedAutoType();
+    FunctionTemplateDecl *CallOpTemplate = 
+        CallOp->getDescribedFunctionTemplate();
+
+    TemplateDeductionInfo OpInfo(Info.getLocation()); 
+    FunctionDecl *CallOpSpec = 0;
+    // Use the deduced arguments so far, to specialize our generic
+    // lambda's call operator.
+    if (TemplateDeductionResult Result
+                  = FinishTemplateArgumentDeduction(CallOpTemplate, Deduced, 
+                                                    0, CallOpSpec, OpInfo))
+      return Result;
+ 
+    // bool HadToDeduceReturnTypeDuringCurrentCall = false;
+    // If we need to deduce the return type, do so (instantiates the callop).
+    if (GenericLambdaCallOperatorHasDeducedReturnType && 
+        CallOpSpec->getResultType()->isUndeducedType()) {
+      // HadToDeduceReturnTypeDuringCurrentCall = true;
+      DeduceReturnType(CallOpSpec, CallOpSpec->getPointOfInstantiation(),
+                      /*Diagnose*/ true);
+    }
+    
+    LambdaCallOpSpec = cast<CXXMethodDecl>(CallOpSpec);
+    
+    // Check to see if the return type of the destination ptr-to-function
+    // matches the return type of the call operator.
+    if (!Context.hasSameType(LambdaCallOpSpec->getResultType(), 
+        ToFunType->getResultType()))
+      return TDK_NonDeducedMismatch;
+    // Since we have succeeded in matching the source and destination
+    // ptr-to-functions (now including return type), and have successfully 
+    // specialized our corresponding call operator, we are ready to
+    // specialize the static invoker with the deduced arguments of our
+    // ptr-to-function.
+    FunctionDecl *InvokerSpecialization = 0;
+    FunctionTemplateDecl *InvokerTemplate = LambdaClass->
+                    getLambdaStaticInvoker()->getDescribedFunctionTemplate();
+
+    TemplateDeductionResult LLVM_ATTRIBUTE_UNUSED Result
+      = FinishTemplateArgumentDeduction(InvokerTemplate, Deduced, 0, 
+            InvokerSpecialization, Info);
+    assert(Result == TDK_Success);
+    // Set the result type to match the corresponding call operator
+    // specialization's result type.
+    if (GenericLambdaCallOperatorHasDeducedReturnType && 
+        InvokerSpecialization->getResultType()->isUndeducedType())
+      ReplaceAutoWithinFunctionReturnType(InvokerSpecialization,
+                                LambdaCallOpSpec->getResultType(), *this);
+    
+    // Ensure that static invoker doesn't have a const qualifier.
+    // FIXME: When creating the InvokerTemplate in SemaLambda.cpp 
+    // do not use the CallOperator's TypeSourceInfo which allows
+    // the const qualifier to leak through. 
+    const FunctionProtoType *InvokerFPT = InvokerSpecialization->
+                    getType().getTypePtr()->castAs<FunctionProtoType>();
+    FunctionProtoType::ExtProtoInfo EPI = InvokerFPT->getExtProtoInfo();
+    EPI.TypeQuals = 0;
+    InvokerSpecialization->setType(Context.getFunctionType(
+        InvokerFPT->getResultType(), InvokerFPT->getArgTypes(),EPI));
+    
+    // Since the original conversion operator's parameters are the same 
+    // entities as the lambda's call operator's, we introduce a mapping
+    // from the generic to the specialized parameters of the call operators.
+    // This only needs to be done in the absence of return type deduction,
+    // since deducing the return type entails instantiation which adds
+    // the parameter mapping to the CurrentInstantiationScope. 
+    // This is necessary when transforming nested lambdas that do not
+    // capture.
+    // FIXME: This will be fixed once nested lambdas and capturing
+    // is implemented since it does require handling parameter 
+    // packs correctly which might require careful calls to
+    // SemaTemplateInstantiate::addInstantiatedParametersToScope.
+    // if (!HadToDeduceReturnTypeDuringCurrentCall) { ... }
+  }
+  
+  
+  // Finish template argument deduction.
+  FunctionDecl *ConversionSpec = 0;
   TemplateDeductionResult Result
-    = FinishTemplateArgumentDeduction(FunctionTemplate, Deduced, 0, Spec,
-                                      Info);
-  Specialization = cast_or_null<CXXConversionDecl>(Spec);
+        = FinishTemplateArgumentDeduction(ConversionTemplate, Deduced, 0, 
+              ConversionSpec, Info);
+  Specialization = cast_or_null<CXXConversionDecl>(ConversionSpec);
+  if (Result == TDK_Success && GenericLambdaCallOperatorHasDeducedReturnType) {
+    // Set the return type of the conversion specialization, since even 
+    // though we have ensured that the return types are compatible, if 
+    // there is an auto in the return type of this conversion function, 
+    // replace it permanently with the return type of the deduced lambda
+    // so we don't try and deduce against it.
+    assert(LambdaCallOpSpec);
+    if (ConversionSpec->getResultType()->isUndeducedType())
+      ReplaceAutoWithinFunctionReturnType(ConversionSpec, 
+                                          LambdaCallOpSpec->getResultType(),
+                                         *this);
+  } 
   return Result;
 }
 
@@ -3913,17 +4061,29 @@ Sema::DeduceAutoType(TypeLoc Type, Expr *&Init, QualType &Result) {
   return DAR_Succeeded;
 }
 
-QualType Sema::SubstAutoType(QualType Type, QualType Deduced) {
-  return SubstituteAutoTransform(*this, Deduced).TransformType(Type);
+QualType Sema::SubstAutoType(QualType TypeWithAuto, 
+                             QualType TypeToReplaceAuto) {
+  return SubstituteAutoTransform(*this, TypeToReplaceAuto).
+               TransformType(TypeWithAuto);
+}
+
+TypeSourceInfo* Sema::SubstAutoTypeSourceInfo(TypeSourceInfo *TypeWithAuto, 
+                             QualType TypeToReplaceAuto) {
+    return SubstituteAutoTransform(*this, TypeToReplaceAuto).
+               TransformType(TypeWithAuto);
 }
 
 void Sema::DiagnoseAutoDeductionFailure(VarDecl *VDecl, Expr *Init) {
   if (isa<InitListExpr>(Init))
     Diag(VDecl->getLocation(),
-         diag::err_auto_var_deduction_failure_from_init_list)
+         VDecl->isInitCapture()
+             ? diag::err_init_capture_deduction_failure_from_init_list
+             : diag::err_auto_var_deduction_failure_from_init_list)
       << VDecl->getDeclName() << VDecl->getType() << Init->getSourceRange();
   else
-    Diag(VDecl->getLocation(), diag::err_auto_var_deduction_failure)
+    Diag(VDecl->getLocation(),
+         VDecl->isInitCapture() ? diag::err_init_capture_deduction_failure
+                                : diag::err_auto_var_deduction_failure)
       << VDecl->getDeclName() << VDecl->getType() << Init->getType()
       << Init->getSourceRange();
 }
@@ -3979,7 +4139,7 @@ static bool isAtLeastAsSpecializedAs(Sema &S,
                                      FunctionTemplateDecl *FT1,
                                      FunctionTemplateDecl *FT2,
                                      TemplatePartialOrderingContext TPOC,
-                                     unsigned NumCallArguments,
+                                     unsigned NumCallArguments1,
     SmallVectorImpl<RefParamPartialOrderingComparison> *RefParamComparisons) {
   FunctionDecl *FD1 = FT1->getTemplatedDecl();
   FunctionDecl *FD2 = FT2->getTemplatedDecl();
@@ -3995,19 +4155,13 @@ static bool isAtLeastAsSpecializedAs(Sema &S,
   //   The types used to determine the ordering depend on the context in which
   //   the partial ordering is done:
   TemplateDeductionInfo Info(Loc);
-  CXXMethodDecl *Method1 = 0;
-  CXXMethodDecl *Method2 = 0;
-  bool IsNonStatic2 = false;
-  bool IsNonStatic1 = false;
-  unsigned Skip2 = 0;
+  SmallVector<QualType, 4> Args2;
   switch (TPOC) {
   case TPOC_Call: {
     //   - In the context of a function call, the function parameter types are
     //     used.
-    Method1 = dyn_cast<CXXMethodDecl>(FD1);
-    Method2 = dyn_cast<CXXMethodDecl>(FD2);
-    IsNonStatic1 = Method1 && !Method1->isStatic();
-    IsNonStatic2 = Method2 && !Method2->isStatic();
+    CXXMethodDecl *Method1 = dyn_cast<CXXMethodDecl>(FD1);
+    CXXMethodDecl *Method2 = dyn_cast<CXXMethodDecl>(FD2);
 
     // C++11 [temp.func.order]p3:
     //   [...] If only one of the function templates is a non-static
@@ -4026,26 +4180,39 @@ static bool isAtLeastAsSpecializedAs(Sema &S,
     // first argument of the free function, which seems to match
     // existing practice.
     SmallVector<QualType, 4> Args1;
-    unsigned Skip1 = !S.getLangOpts().CPlusPlus11 && IsNonStatic2 && !Method1;
-    if (S.getLangOpts().CPlusPlus11 && IsNonStatic1 && !Method2)
-      AddImplicitObjectParameterType(S.Context, Method1, Args1);
+
+    unsigned Skip1 = 0, Skip2 = 0;
+    unsigned NumComparedArguments = NumCallArguments1;
+
+    if (!Method2 && Method1 && !Method1->isStatic()) {
+      if (S.getLangOpts().CPlusPlus11) {
+        // Compare 'this' from Method1 against first parameter from Method2.
+        AddImplicitObjectParameterType(S.Context, Method1, Args1);
+        ++NumComparedArguments;
+      } else
+        // Ignore first parameter from Method2.
+        ++Skip2;
+    } else if (!Method1 && Method2 && !Method2->isStatic()) {
+      if (S.getLangOpts().CPlusPlus11)
+        // Compare 'this' from Method2 against first parameter from Method1.
+        AddImplicitObjectParameterType(S.Context, Method2, Args2);
+      else
+        // Ignore first parameter from Method1.
+        ++Skip1;
+    }
+
     Args1.insert(Args1.end(),
                  Proto1->arg_type_begin() + Skip1, Proto1->arg_type_end());
-
-    SmallVector<QualType, 4> Args2;
-    Skip2 = !S.getLangOpts().CPlusPlus11 && IsNonStatic1 && !Method2;
-    if (S.getLangOpts().CPlusPlus11 && IsNonStatic2 && !Method1)
-      AddImplicitObjectParameterType(S.Context, Method2, Args2);
     Args2.insert(Args2.end(),
                  Proto2->arg_type_begin() + Skip2, Proto2->arg_type_end());
 
     // C++ [temp.func.order]p5:
     //   The presence of unused ellipsis and default arguments has no effect on
     //   the partial ordering of function templates.
-    if (Args1.size() > NumCallArguments)
-      Args1.resize(NumCallArguments);
-    if (Args2.size() > NumCallArguments)
-      Args2.resize(NumCallArguments);
+    if (Args1.size() > NumComparedArguments)
+      Args1.resize(NumComparedArguments);
+    if (Args2.size() > NumComparedArguments)
+      Args2.resize(NumComparedArguments);
     if (DeduceTemplateArguments(S, TemplateParams, Args2.data(), Args2.size(),
                                 Args1.data(), Args1.size(), Info, Deduced,
                                 TDF_None, /*PartialOrdering=*/true,
@@ -4099,20 +4266,12 @@ static bool isAtLeastAsSpecializedAs(Sema &S,
   // Figure out which template parameters were used.
   llvm::SmallBitVector UsedParameters(TemplateParams->size());
   switch (TPOC) {
-  case TPOC_Call: {
-    unsigned NumParams = std::min(NumCallArguments,
-                                  std::min(Proto1->getNumArgs(),
-                                           Proto2->getNumArgs()));
-    if (S.getLangOpts().CPlusPlus11 && IsNonStatic2 && !IsNonStatic1)
-      ::MarkUsedTemplateParameters(S.Context, Method2->getThisType(S.Context),
-                                   false,
-                                   TemplateParams->getDepth(), UsedParameters);
-    for (unsigned I = Skip2; I < NumParams; ++I)
-      ::MarkUsedTemplateParameters(S.Context, Proto2->getArgType(I), false,
+  case TPOC_Call:
+    for (unsigned I = 0, N = Args2.size(); I != N; ++I)
+      ::MarkUsedTemplateParameters(S.Context, Args2[I], false,
                                    TemplateParams->getDepth(),
                                    UsedParameters);
     break;
-  }
 
   case TPOC_Conversion:
     ::MarkUsedTemplateParameters(S.Context, Proto2->getResultType(), false,
@@ -4167,8 +4326,11 @@ static bool isVariadicFunctionTemplate(FunctionTemplateDecl *FunTmpl) {
 /// \param TPOC the context in which we are performing partial ordering of
 /// function templates.
 ///
-/// \param NumCallArguments The number of arguments in a call, used only
-/// when \c TPOC is \c TPOC_Call.
+/// \param NumCallArguments1 The number of arguments in the call to FT1, used
+/// only when \c TPOC is \c TPOC_Call.
+///
+/// \param NumCallArguments2 The number of arguments in the call to FT2, used
+/// only when \c TPOC is \c TPOC_Call.
 ///
 /// \returns the more specialized function template. If neither
 /// template is more specialized, returns NULL.
@@ -4177,12 +4339,13 @@ Sema::getMoreSpecializedTemplate(FunctionTemplateDecl *FT1,
                                  FunctionTemplateDecl *FT2,
                                  SourceLocation Loc,
                                  TemplatePartialOrderingContext TPOC,
-                                 unsigned NumCallArguments) {
+                                 unsigned NumCallArguments1,
+                                 unsigned NumCallArguments2) {
   SmallVector<RefParamPartialOrderingComparison, 4> RefParamComparisons;
   bool Better1 = isAtLeastAsSpecializedAs(*this, Loc, FT1, FT2, TPOC,
-                                          NumCallArguments, 0);
+                                          NumCallArguments1, 0);
   bool Better2 = isAtLeastAsSpecializedAs(*this, Loc, FT2, FT1, TPOC,
-                                          NumCallArguments,
+                                          NumCallArguments2,
                                           &RefParamComparisons);
 
   if (Better1 != Better2) // We have a clear winner
@@ -4286,12 +4449,6 @@ static bool isSameTemplate(TemplateDecl *T1, TemplateDecl *T2) {
 /// \param SpecEnd the end iterator of the function template
 /// specializations, paired with \p SpecBegin.
 ///
-/// \param TPOC the partial ordering context to use to compare the function
-/// template specializations.
-///
-/// \param NumCallArguments The number of arguments in a call, used only
-/// when \c TPOC is \c TPOC_Call.
-///
 /// \param Loc the location where the ambiguity or no-specializations
 /// diagnostic should occur.
 ///
@@ -4311,7 +4468,6 @@ static bool isSameTemplate(TemplateDecl *T1, TemplateDecl *T2) {
 UnresolvedSetIterator Sema::getMostSpecialized(
     UnresolvedSetIterator SpecBegin, UnresolvedSetIterator SpecEnd,
     TemplateSpecCandidateSet &FailedCandidates,
-    TemplatePartialOrderingContext TPOC, unsigned NumCallArguments,
     SourceLocation Loc, const PartialDiagnostic &NoneDiag,
     const PartialDiagnostic &AmbigDiag, const PartialDiagnostic &CandidateDiag,
     bool Complain, QualType TargetType) {
@@ -4337,7 +4493,7 @@ UnresolvedSetIterator Sema::getMostSpecialized(
       = cast<FunctionDecl>(*I)->getPrimaryTemplate();
     assert(Challenger && "Not a function template specialization?");
     if (isSameTemplate(getMoreSpecializedTemplate(BestTemplate, Challenger,
-                                                  Loc, TPOC, NumCallArguments),
+                                                  Loc, TPOC_Other, 0, 0),
                        Challenger)) {
       Best = I;
       BestTemplate = Challenger;
@@ -4352,7 +4508,7 @@ UnresolvedSetIterator Sema::getMostSpecialized(
       = cast<FunctionDecl>(*I)->getPrimaryTemplate();
     if (I != Best &&
         !isSameTemplate(getMoreSpecializedTemplate(BestTemplate, Challenger,
-                                                   Loc, TPOC, NumCallArguments),
+                                                   Loc, TPOC_Other, 0, 0),
                         BestTemplate)) {
       Ambiguous = true;
       break;
