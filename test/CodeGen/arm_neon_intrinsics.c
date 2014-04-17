@@ -1887,6 +1887,12 @@ poly16x4_t test_vdup_n_p16(poly16_t a) {
   return vdup_n_p16(a);
 }
 
+// CHECK: test_vdup_n_f16
+// CHECK: vld1.16 {{{d[0-9]+\[\]}}}
+float16x4_t test_vdup_n_f16(float16_t *a) {
+  return vdup_n_f16(*a);
+}
+
 // CHECK: test_vdup_n_f32
 // CHECK: vmov 
 float32x2_t test_vdup_n_f32(float32_t a) {
@@ -1939,6 +1945,12 @@ poly8x16_t test_vdupq_n_p8(poly8_t a) {
 // CHECK: vmov 
 poly16x8_t test_vdupq_n_p16(poly16_t a) {
   return vdupq_n_p16(a);
+}
+
+// CHECK: test_vdupq_n_f16
+// CHECK: vld1.16 {{{d[0-9]+\[\], d[0-9]+\[\]}}}
+float16x8_t test_vdupq_n_f16(float16_t *a) {
+  return vdupq_n_f16(*a);
 }
 
 // CHECK: test_vdupq_n_f32
@@ -4439,7 +4451,7 @@ uint32x4_t test_vmlaq_n_u32(uint32x4_t a, uint32x4_t b, uint32_t c) {
 }
 
 // CHECK: test_vmlaq_n_f32
-// CHECK: vmul.f32 q{{[0-9]+}}, q{{[0-9]+}}, q{{[0-9]+}}
+// CHECK: vmul.f32 q{{[0-9]+}}, q{{[0-9]+}}, d{{[0-9]+}}[0]
 // CHECK: vadd.f32
 float32x4_t test_vmlaq_n_f32(float32x4_t a, float32x4_t b, float32_t c) {
   return vmlaq_n_f32(a, b, c);
@@ -4739,7 +4751,7 @@ uint32x4_t test_vmlsq_n_u32(uint32x4_t a, uint32x4_t b, uint32_t c) {
 }
 
 // CHECK: test_vmlsq_n_f32
-// CHECK: vmul.f32 q{{[0-9]+}}, q{{[0-9]+}}, q{{[0-9]+}}
+// CHECK: vmul.f32 q{{[0-9]+}}, q{{[0-9]+}}, d{{[0-9]+}}[0]
 // CHECK: vsub.f32
 float32x4_t test_vmlsq_n_f32(float32x4_t a, float32x4_t b, float32_t c) {
   return vmlsq_n_f32(a, b, c);
@@ -4868,6 +4880,12 @@ poly16x4_t test_vmov_n_p16(poly16_t a) {
   return vmov_n_p16(a);
 }
 
+// CHECK: test_vmov_n_f16
+// CHECK: vld1.16 {{{d[0-9]+\[\]}}}
+float16x4_t test_vmov_n_f16(float16_t *a) {
+  return vmov_n_f16(*a);
+}
+
 // CHECK: test_vmov_n_f32
 // CHECK: vmov 
 float32x2_t test_vmov_n_f32(float32_t a) {
@@ -4920,6 +4938,12 @@ poly8x16_t test_vmovq_n_p8(poly8_t a) {
 // CHECK: vmov 
 poly16x8_t test_vmovq_n_p16(poly16_t a) {
   return vmovq_n_p16(a);
+}
+
+// CHECK: test_vmovq_n_f16
+// CHECK: vld1.16 {{{d[0-9]+\[\], d[0-9]+\[\]}}}
+float16x8_t test_vmovq_n_f16(float16_t *a) {
+  return vmovq_n_f16(*a);
 }
 
 // CHECK: test_vmovq_n_f32
@@ -5248,7 +5272,7 @@ int32x4_t test_vmulq_n_s32(int32x4_t a, int32_t b) {
 }
 
 // CHECK: test_vmulq_n_f32
-// CHECK: vmul.f32 q{{[0-9]+}}, q{{[0-9]+}}, q{{[0-9]+}}
+// CHECK: vmul.f32 q{{[0-9]+}}, q{{[0-9]+}}, d{{[0-9]+}}[0]
 float32x4_t test_vmulq_n_f32(float32x4_t a, float32_t b) {
   return vmulq_n_f32(a, b);
 }
@@ -11361,6 +11385,12 @@ uint8x8_t test_vtst_p8(poly8x8_t a, poly8x8_t b) {
   return vtst_p8(a, b);
 }
 
+// CHECK: test_vtst_p16
+// CHECK: vtst.16 d{{[0-9]+}}, d{{[0-9]+}}, d{{[0-9]+}}
+uint16x4_t test_vtst_p16(poly16x4_t a, poly16x4_t b) {
+  return vtst_p16(a, b);
+}
+
 // CHECK: test_vtstq_s8
 // CHECK: vtst.8 q{{[0-9]+}}, q{{[0-9]+}}, q{{[0-9]+}}
 uint8x16_t test_vtstq_s8(int8x16_t a, int8x16_t b) {
@@ -11401,6 +11431,12 @@ uint32x4_t test_vtstq_u32(uint32x4_t a, uint32x4_t b) {
 // CHECK: vtst.8 q{{[0-9]+}}, q{{[0-9]+}}, q{{[0-9]+}}
 uint8x16_t test_vtstq_p8(poly8x16_t a, poly8x16_t b) {
   return vtstq_p8(a, b);
+}
+
+// CHECK: test_vtstq_p16
+// CHECK: vtst.16 q{{[0-9]+}}, q{{[0-9]+}}, q{{[0-9]+}}
+uint16x8_t test_vtstq_p16(poly16x8_t a, poly16x8_t b) {
+  return vtstq_p16(a, b);
 }
 
 

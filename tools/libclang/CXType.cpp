@@ -89,6 +89,7 @@ static CXTypeKind GetTypeKind(QualType T) {
     TKCASE(VariableArray);
     TKCASE(DependentSizedArray);
     TKCASE(Vector);
+    TKCASE(MemberPointer);
     default:
       return CXType_Unexposed;
   }
@@ -109,6 +110,11 @@ CXType cxtype::MakeCXType(QualType T, CXTranslationUnit TU) {
         TK = CXType_ObjCClass;
       else if (Ctx.isObjCSelType(UnqualT))
         TK = CXType_ObjCSel;
+    }
+
+    /* Handle decayed types as the original type */
+    if (const DecayedType *DT = T->getAs<DecayedType>()) {
+      return MakeCXType(DT->getOriginalType(), TU);
     }
   }
   if (TK == CXType_Invalid)
@@ -360,6 +366,9 @@ CXType clang_getPointeeType(CXType CT) {
     case Type::ObjCObjectPointer:
       T = cast<ObjCObjectPointerType>(TP)->getPointeeType();
       break;
+    case Type::MemberPointer:
+      T = cast<MemberPointerType>(TP)->getPointeeType();
+      break;
     default:
       T = QualType();
       break;
@@ -473,6 +482,7 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
     TKIND(VariableArray);
     TKIND(DependentSizedArray);
     TKIND(Vector);
+    TKIND(MemberPointer);
   }
 #undef TKIND
   return cxstring::createRef(s);
@@ -504,12 +514,13 @@ CXCallingConv clang_getFunctionTypeCallingConv(CXType X) {
   if (const FunctionType *FD = T->getAs<FunctionType>()) {
 #define TCALLINGCONV(X) case CC_##X: return CXCallingConv_##X
     switch (FD->getCallConv()) {
-      TCALLINGCONV(Default);
       TCALLINGCONV(C);
       TCALLINGCONV(X86StdCall);
       TCALLINGCONV(X86FastCall);
       TCALLINGCONV(X86ThisCall);
       TCALLINGCONV(X86Pascal);
+      TCALLINGCONV(X86_64Win64);
+      TCALLINGCONV(X86_64SysV);
       TCALLINGCONV(AAPCS);
       TCALLINGCONV(AAPCS_VFP);
       TCALLINGCONV(PnaclCall);
@@ -527,7 +538,7 @@ int clang_getNumArgTypes(CXType X) {
     return -1;
   
   if (const FunctionProtoType *FD = T->getAs<FunctionProtoType>()) {
-    return FD->getNumArgs();
+    return FD->getNumParams();
   }
   
   if (T->getAs<FunctionNoProtoType>()) {
@@ -543,11 +554,11 @@ CXType clang_getArgType(CXType X, unsigned i) {
     return MakeCXType(QualType(), GetTU(X));
 
   if (const FunctionProtoType *FD = T->getAs<FunctionProtoType>()) {
-    unsigned numArgs = FD->getNumArgs();
-    if (i >= numArgs)
+    unsigned numParams = FD->getNumParams();
+    if (i >= numParams)
       return MakeCXType(QualType(), GetTU(X));
-    
-    return MakeCXType(FD->getArgType(i), GetTU(X));
+
+    return MakeCXType(FD->getParamType(i), GetTU(X));
   }
   
   return MakeCXType(QualType(), GetTU(X));
@@ -559,8 +570,8 @@ CXType clang_getResultType(CXType X) {
     return MakeCXType(QualType(), GetTU(X));
   
   if (const FunctionType *FD = T->getAs<FunctionType>())
-    return MakeCXType(FD->getResultType(), GetTU(X));
-  
+    return MakeCXType(FD->getReturnType(), GetTU(X));
+
   return MakeCXType(QualType(), GetTU(X));
 }
 
@@ -568,7 +579,7 @@ CXType clang_getCursorResultType(CXCursor C) {
   if (clang_isDeclaration(C.kind)) {
     const Decl *D = cxcursor::getCursorDecl(C);
     if (const ObjCMethodDecl *MD = dyn_cast_or_null<ObjCMethodDecl>(D))
-      return MakeCXType(MD->getResultType(), cxcursor::getCursorTU(C));
+      return MakeCXType(MD->getReturnType(), cxcursor::getCursorTU(C));
 
     return clang_getResultType(clang_getCursorType(C));
   }
@@ -701,6 +712,17 @@ long long clang_Type_getAlignOf(CXType T) {
   return Ctx.getTypeAlignInChars(QT).getQuantity();
 }
 
+CXType clang_Type_getClassType(CXType CT) {
+  QualType ET = QualType();
+  QualType T = GetQualType(CT);
+  const Type *TP = T.getTypePtrOrNull();
+
+  if (TP && TP->getTypeClass() == Type::MemberPointer) {
+    ET = QualType(cast<MemberPointerType> (TP)->getClass(), 0);
+  }
+  return MakeCXType(ET, GetTU(CT));
+}
+
 long long clang_Type_getSizeOf(CXType T) {
   if (T.kind == CXType_Invalid)
     return CXTypeLayoutError_Invalid;
@@ -730,15 +752,14 @@ long long clang_Type_getSizeOf(CXType T) {
 }
 
 static long long visitRecordForValidation(const RecordDecl *RD) {
-  for (RecordDecl::field_iterator I = RD->field_begin(), E = RD->field_end();
-       I != E; ++I){
-    QualType FQT = (*I)->getType();
+  for (const auto *I : RD->fields()){
+    QualType FQT = I->getType();
     if (FQT->isIncompleteType())
       return CXTypeLayoutError_Incomplete;
     if (FQT->isDependentType())
       return CXTypeLayoutError_Dependent;
     // recurse
-    if (const RecordType *ChildType = (*I)->getType()->getAs<RecordType>()) {
+    if (const RecordType *ChildType = I->getType()->getAs<RecordType>()) {
       if (const RecordDecl *Child = ChildType->getDecl()) {
         long long ret = visitRecordForValidation(Child);
         if (ret < 0)
@@ -794,6 +815,24 @@ long long clang_Type_getOffsetOf(CXType PT, const char *S) {
   return CXTypeLayoutError_InvalidFieldName;
 }
 
+enum CXRefQualifierKind clang_Type_getCXXRefQualifier(CXType T) {
+  QualType QT = GetQualType(T);
+  if (QT.isNull())
+    return CXRefQualifier_None;
+  const FunctionProtoType *FD = QT->getAs<FunctionProtoType>();
+  if (!FD)
+    return CXRefQualifier_None;
+  switch (FD->getRefQualifier()) {
+    case RQ_None:
+      return CXRefQualifier_None;
+    case RQ_LValue:
+      return CXRefQualifier_LValue;
+    case RQ_RValue:
+      return CXRefQualifier_RValue;
+  }
+  return CXRefQualifier_None;
+}
+
 unsigned clang_Cursor_isBitField(CXCursor C) {
   if (!clang_isDeclaration(C.kind))
     return 0;
@@ -829,6 +868,40 @@ CXString clang_getDeclObjCTypeEncoding(CXCursor C) {
   }
 
   return cxstring::createDup(encoding);
+}
+
+int clang_Type_getNumTemplateArguments(CXType CT) {
+  QualType T = GetQualType(CT);
+  if (T.isNull())
+    return -1;
+  const CXXRecordDecl *RecordDecl = T->getAsCXXRecordDecl();
+  if (!RecordDecl)
+    return -1;
+  const ClassTemplateSpecializationDecl *TemplateDecl =
+      dyn_cast<ClassTemplateSpecializationDecl>(RecordDecl);
+  if (!TemplateDecl)
+    return -1;
+  return TemplateDecl->getTemplateArgs().size();
+}
+
+CXType clang_Type_getTemplateArgumentAsType(CXType CT, unsigned i) {
+  QualType T = GetQualType(CT);
+  if (T.isNull())
+    return MakeCXType(QualType(), GetTU(CT));
+  const CXXRecordDecl *RecordDecl = T->getAsCXXRecordDecl();
+  if (!RecordDecl)
+    return MakeCXType(QualType(), GetTU(CT));
+  const ClassTemplateSpecializationDecl *TemplateDecl =
+      dyn_cast<ClassTemplateSpecializationDecl>(RecordDecl);
+  if (!TemplateDecl)
+    return MakeCXType(QualType(), GetTU(CT));
+  const TemplateArgumentList &TA = TemplateDecl->getTemplateArgs();
+  if (TA.size() <= i)
+    return MakeCXType(QualType(), GetTU(CT));
+  const TemplateArgument &A = TA.get(i);
+  if (A.getKind() != TemplateArgument::Type)
+    return MakeCXType(QualType(), GetTU(CT));
+  return MakeCXType(A.getAsType(), GetTU(CT));
 }
 
 } // end: extern "C"

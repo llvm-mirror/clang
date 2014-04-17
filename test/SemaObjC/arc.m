@@ -87,6 +87,8 @@ void test1(A *a) {
 + (id)alloc;
 - (id)initWithInt: (int) i;
 - (id)myInit __attribute__((objc_method_family(init)));
+- (id)myBadInit __attribute__((objc_method_family(12)));  // expected-error {{'objc_method_family' attribute requires parameter 1 to be an identifier}}
+
 @end
 
 void rdar8861761() {
@@ -769,4 +771,14 @@ void test(NSArray *x) {
   NSMutableArray *y = x; // expected-warning {{incompatible pointer types initializing 'NSMutableArray *' with an expression of type 'NSArray *'}}
   __strong NSMutableArray *y1 = x; // expected-warning {{incompatible pointer types initializing 'NSMutableArray *' with an expression of type 'NSArray *'}}
   PSNS y2 = x; // expected-warning {{incompatible pointer types initializing 'NSMutableArray *' with an expression of type 'NSArray *'}}
+}
+
+// rdar://15123684
+@class NSString;
+
+void foo(NSArray *array) {
+  for (NSString *string in array) {
+    for (string in @[@"blah", @"more blah", string]) { // expected-error {{selector element of type 'NSString *const __strong' cannot be a constant l-value}}
+    }
+  }
 }

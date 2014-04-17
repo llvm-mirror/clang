@@ -33,6 +33,9 @@ class TargetInfo;
 class SourceManager;
 class LangOptions;
 
+/// Copy characters from Input to Buf, expanding any UCNs.
+void expandUCNs(SmallVectorImpl<char> &Buf, StringRef Input);
+
 /// NumericLiteralParser - This performs strict semantic analysis of the content
 /// of a ppnumber, classifying it as either integer, floating, or erroneous,
 /// determines the radix of the value and can convert it to a useful value.
@@ -47,6 +50,8 @@ class NumericLiteralParser {
   unsigned radix;
 
   bool saw_exponent, saw_period, saw_ud_suffix;
+
+  SmallString<32> UDSuffixBuf;
 
 public:
   NumericLiteralParser(StringRef TokSpelling,
@@ -72,7 +77,7 @@ public:
   }
   StringRef getUDSuffix() const {
     assert(saw_ud_suffix);
-    return StringRef(SuffixBegin, ThisTokEnd - SuffixBegin);
+    return UDSuffixBuf;
   }
   unsigned getUDSuffixOffset() const {
     assert(saw_ud_suffix);
@@ -100,10 +105,18 @@ private:
 
   void ParseNumberStartingWithZero(SourceLocation TokLoc);
 
+  static bool isDigitSeparator(char C) { return C == '\''; }
+
+  enum CheckSeparatorKind { CSK_BeforeDigits, CSK_AfterDigits };
+
+  /// \brief Ensure that we don't have a digit separator here.
+  void checkSeparator(SourceLocation TokLoc, const char *Pos,
+                      CheckSeparatorKind IsAfterDigits);
+
   /// SkipHexDigits - Read and skip over any hex digits, up to End.
   /// Return a pointer to the first non-hex digit or End.
   const char *SkipHexDigits(const char *ptr) {
-    while (ptr != ThisTokEnd && isHexDigit(*ptr))
+    while (ptr != ThisTokEnd && (isHexDigit(*ptr) || isDigitSeparator(*ptr)))
       ptr++;
     return ptr;
   }
@@ -111,7 +124,8 @@ private:
   /// SkipOctalDigits - Read and skip over any octal digits, up to End.
   /// Return a pointer to the first non-hex digit or End.
   const char *SkipOctalDigits(const char *ptr) {
-    while (ptr != ThisTokEnd && ((*ptr >= '0') && (*ptr <= '7')))
+    while (ptr != ThisTokEnd &&
+           ((*ptr >= '0' && *ptr <= '7') || isDigitSeparator(*ptr)))
       ptr++;
     return ptr;
   }
@@ -119,7 +133,7 @@ private:
   /// SkipDigits - Read and skip over any digits, up to End.
   /// Return a pointer to the first non-hex digit or End.
   const char *SkipDigits(const char *ptr) {
-    while (ptr != ThisTokEnd && isDigit(*ptr))
+    while (ptr != ThisTokEnd && (isDigit(*ptr) || isDigitSeparator(*ptr)))
       ptr++;
     return ptr;
   }
@@ -127,7 +141,8 @@ private:
   /// SkipBinaryDigits - Read and skip over any binary digits, up to End.
   /// Return a pointer to the first non-binary digit or End.
   const char *SkipBinaryDigits(const char *ptr) {
-    while (ptr != ThisTokEnd && (*ptr == '0' || *ptr == '1'))
+    while (ptr != ThisTokEnd &&
+           (*ptr == '0' || *ptr == '1' || isDigitSeparator(*ptr)))
       ptr++;
     return ptr;
   }

@@ -6,16 +6,17 @@
 // License. See LICENSE.TXT for details.
 //
 //===----------------------------------------------------------------------===//
-//
-// This file defines the DelayedDiagnostic class, which is used to
-// record diagnostics that are being conditionally produced during
-// declarator parsing.  Certain kinds of diagnostics --- notably
-// deprecation and access control --- are suppressed based on
-// semantic properties of the parsed declaration that aren't known
-// until it is fully parsed.
-//
-// This file also defines AccessedEntity.
-//
+///
+/// \file
+/// \brief Defines the classes clang::DelayedDiagnostic and 
+/// clang::AccessedEntity.
+///
+/// DelayedDiangostic is used to record diagnostics that are being
+/// conditionally produced during declarator parsing.  Certain kinds of
+/// diagnostics -- notably deprecation and access control -- are suppressed
+/// based on semantic properties of the parsed declaration that aren't known
+/// until it is fully parsed.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_CLANG_SEMA_DELAYED_DIAGNOSTIC_H
@@ -112,7 +113,7 @@ private:
 /// the complete parsing of the current declaration.
 class DelayedDiagnostic {
 public:
-  enum DDKind { Deprecation, Access, ForbiddenType };
+  enum DDKind { Deprecation, Unavailable, Access, ForbiddenType };
 
   unsigned char Kind; // actually a DDKind
   bool Triggered;
@@ -121,11 +122,13 @@ public:
 
   void Destroy();
 
-  static DelayedDiagnostic makeDeprecation(SourceLocation Loc,
-           const NamedDecl *D,
-           const ObjCInterfaceDecl *UnknownObjCClass,
-           const ObjCPropertyDecl  *ObjCProperty,
-           StringRef Msg);
+  static DelayedDiagnostic makeAvailability(Sema::AvailabilityDiagnostic AD,
+                                            SourceLocation Loc,
+                                            const NamedDecl *D,
+                                            const ObjCInterfaceDecl *UnknownObjCClass,
+                                            const ObjCPropertyDecl  *ObjCProperty,
+                                            StringRef Msg);
+
 
   static DelayedDiagnostic makeAccess(SourceLocation Loc,
                                       const AccessedEntity &Entity) {
@@ -161,12 +164,14 @@ public:
   }
 
   const NamedDecl *getDeprecationDecl() const {
-    assert(Kind == Deprecation && "Not a deprecation diagnostic.");
+    assert((Kind == Deprecation || Kind == Unavailable) &&
+           "Not a deprecation diagnostic.");
     return DeprecationData.Decl;
   }
 
   StringRef getDeprecationMessage() const {
-    assert(Kind == Deprecation && "Not a deprecation diagnostic.");
+    assert((Kind == Deprecation || Kind == Unavailable) &&
+           "Not a deprecation diagnostic.");
     return StringRef(DeprecationData.Message,
                            DeprecationData.MessageLen);
   }
@@ -224,8 +229,7 @@ private:
   };
 };
 
-/// DelayedDiagnosticPool - A collection of diagnostics which were
-/// delayed.
+/// \brief A collection of diagnostics which were delayed.
 class DelayedDiagnosticPool {
   const DelayedDiagnosticPool *Parent;
   SmallVector<DelayedDiagnostic, 4> Diagnostics;
@@ -257,7 +261,7 @@ public:
     if (pool.Diagnostics.empty()) return;
 
     if (Diagnostics.empty()) {
-      Diagnostics = llvm_move(pool.Diagnostics);
+      Diagnostics = std::move(pool.Diagnostics);
     } else {
       Diagnostics.append(pool.pool_begin(), pool.pool_end());
     }

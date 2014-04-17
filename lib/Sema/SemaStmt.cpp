@@ -65,7 +65,7 @@ StmtResult Sema::ActOnNullStmt(SourceLocation SemiLoc,
 
 StmtResult Sema::ActOnDeclStmt(DeclGroupPtrTy dg, SourceLocation StartLoc,
                                SourceLocation EndLoc) {
-  DeclGroupRef DG = dg.getAsVal<DeclGroupRef>();
+  DeclGroupRef DG = dg.get();
 
   // If we have an invalid decl, just return an error.
   if (DG.isNull()) return StmtError();
@@ -74,7 +74,7 @@ StmtResult Sema::ActOnDeclStmt(DeclGroupPtrTy dg, SourceLocation StartLoc,
 }
 
 void Sema::ActOnForEachDeclStmt(DeclGroupPtrTy dg) {
-  DeclGroupRef DG = dg.getAsVal<DeclGroupRef>();
+  DeclGroupRef DG = dg.get();
 
   // If we don't have a declaration, or we have an invalid declaration,
   // just return.
@@ -114,25 +114,38 @@ void Sema::ActOnForEachDeclStmt(DeclGroupPtrTy dg) {
   }
 }
 
-/// \brief Diagnose unused '==' and '!=' as likely typos for '=' or '|='.
+/// \brief Diagnose unused comparisons, both builtin and overloaded operators.
+/// For '==' and '!=', suggest fixits for '=' or '|='.
 ///
 /// Adding a cast to void (or other expression wrappers) will prevent the
 /// warning from firing.
 static bool DiagnoseUnusedComparison(Sema &S, const Expr *E) {
   SourceLocation Loc;
-  bool IsNotEqual, CanAssign;
+  bool IsNotEqual, CanAssign, IsRelational;
 
   if (const BinaryOperator *Op = dyn_cast<BinaryOperator>(E)) {
-    if (Op->getOpcode() != BO_EQ && Op->getOpcode() != BO_NE)
+    if (!Op->isComparisonOp())
       return false;
 
+    IsRelational = Op->isRelationalOp();
     Loc = Op->getOperatorLoc();
     IsNotEqual = Op->getOpcode() == BO_NE;
     CanAssign = Op->getLHS()->IgnoreParenImpCasts()->isLValue();
   } else if (const CXXOperatorCallExpr *Op = dyn_cast<CXXOperatorCallExpr>(E)) {
-    if (Op->getOperator() != OO_EqualEqual &&
-        Op->getOperator() != OO_ExclaimEqual)
+    switch (Op->getOperator()) {
+    default:
       return false;
+    case OO_EqualEqual:
+    case OO_ExclaimEqual:
+      IsRelational = false;
+      break;
+    case OO_Less:
+    case OO_Greater:
+    case OO_GreaterEqual:
+    case OO_LessEqual:
+      IsRelational = true;
+      break;
+    }
 
     Loc = Op->getOperatorLoc();
     IsNotEqual = Op->getOperator() == OO_ExclaimEqual;
@@ -148,11 +161,11 @@ static bool DiagnoseUnusedComparison(Sema &S, const Expr *E) {
     return false;
 
   S.Diag(Loc, diag::warn_unused_comparison)
-    << (unsigned)IsNotEqual << E->getSourceRange();
+    << (unsigned)IsRelational << (unsigned)IsNotEqual << E->getSourceRange();
 
   // If the LHS is a plausible entity to assign to, provide a fixit hint to
   // correct common typos.
-  if (CanAssign) {
+  if (!IsRelational && CanAssign) {
     if (IsNotEqual)
       S.Diag(Loc, diag::note_inequality_comparison_to_or_assign)
         << FixItHint::CreateReplacement(Loc, "|=");
@@ -216,17 +229,17 @@ void Sema::DiagnoseUnusedExprResult(const Stmt *S) {
     // is written in a macro body, only warn if it has the warn_unused_result
     // attribute.
     if (const Decl *FD = CE->getCalleeDecl()) {
-      if (FD->getAttr<WarnUnusedResultAttr>()) {
+      if (FD->hasAttr<WarnUnusedResultAttr>()) {
         Diag(Loc, diag::warn_unused_result) << R1 << R2;
         return;
       }
       if (ShouldSuppress)
         return;
-      if (FD->getAttr<PureAttr>()) {
+      if (FD->hasAttr<PureAttr>()) {
         Diag(Loc, diag::warn_unused_call) << R1 << R2 << "pure";
         return;
       }
-      if (FD->getAttr<ConstAttr>()) {
+      if (FD->hasAttr<ConstAttr>()) {
         Diag(Loc, diag::warn_unused_call) << R1 << R2 << "const";
         return;
       }
@@ -240,7 +253,7 @@ void Sema::DiagnoseUnusedExprResult(const Stmt *S) {
       return;
     }
     const ObjCMethodDecl *MD = ME->getMethodDecl();
-    if (MD && MD->getAttr<WarnUnusedResultAttr>()) {
+    if (MD && MD->hasAttr<WarnUnusedResultAttr>()) {
       Diag(Loc, diag::warn_unused_result) << R1 << R2;
       return;
     }
@@ -291,11 +304,10 @@ sema::CompoundScopeInfo &Sema::getCurCompoundScope() const {
   return getCurFunction()->CompoundScopes.back();
 }
 
-StmtResult
-Sema::ActOnCompoundStmt(SourceLocation L, SourceLocation R,
-                        MultiStmtArg elts, bool isStmtExpr) {
-  unsigned NumElts = elts.size();
-  Stmt **Elts = elts.data();
+StmtResult Sema::ActOnCompoundStmt(SourceLocation L, SourceLocation R,
+                                   ArrayRef<Stmt *> Elts, bool isStmtExpr) {
+  const unsigned NumElts = Elts.size();
+
   // If we're in C89 mode, check that we don't have any decls after stmts.  If
   // so, emit an extension diagnostic.
   if (!getLangOpts().C99 && !getLangOpts().CPlusPlus) {
@@ -332,9 +344,7 @@ Sema::ActOnCompoundStmt(SourceLocation L, SourceLocation R,
       DiagnoseEmptyLoopBody(Elts[i], Elts[i + 1]);
   }
 
-  return Owned(new (Context) CompoundStmt(Context,
-                                          llvm::makeArrayRef(Elts, NumElts),
-                                          L, R));
+  return Owned(new (Context) CompoundStmt(Context, Elts, L, R));
 }
 
 StmtResult
@@ -502,7 +512,6 @@ void Sema::ConvertIntegerToTypeWarnOnOverflow(llvm::APSInt &Val,
     // We don't diagnose this overflow, because it is implementation-defined
     // behavior.
     // FIXME: Introduce a second, default-ignored warning for this case?
-    llvm::APSInt OldVal(Val);
     Val.setIsSigned(NewSign);
   }
 }
@@ -592,41 +601,41 @@ Sema::ActOnStartOfSwitchStmt(SourceLocation SwitchLoc, Expr *Cond,
         : ICEConvertDiagnoser(/*AllowScopedEnumerations*/true, false, true),
           Cond(Cond) {}
 
-    virtual SemaDiagnosticBuilder diagnoseNotInt(Sema &S, SourceLocation Loc,
-                                                 QualType T) {
+    SemaDiagnosticBuilder diagnoseNotInt(Sema &S, SourceLocation Loc,
+                                         QualType T) override {
       return S.Diag(Loc, diag::err_typecheck_statement_requires_integer) << T;
     }
 
-    virtual SemaDiagnosticBuilder diagnoseIncomplete(
-        Sema &S, SourceLocation Loc, QualType T) {
+    SemaDiagnosticBuilder diagnoseIncomplete(
+        Sema &S, SourceLocation Loc, QualType T) override {
       return S.Diag(Loc, diag::err_switch_incomplete_class_type)
                << T << Cond->getSourceRange();
     }
 
-    virtual SemaDiagnosticBuilder diagnoseExplicitConv(
-        Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) {
+    SemaDiagnosticBuilder diagnoseExplicitConv(
+        Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) override {
       return S.Diag(Loc, diag::err_switch_explicit_conversion) << T << ConvTy;
     }
 
-    virtual SemaDiagnosticBuilder noteExplicitConv(
-        Sema &S, CXXConversionDecl *Conv, QualType ConvTy) {
+    SemaDiagnosticBuilder noteExplicitConv(
+        Sema &S, CXXConversionDecl *Conv, QualType ConvTy) override {
       return S.Diag(Conv->getLocation(), diag::note_switch_conversion)
         << ConvTy->isEnumeralType() << ConvTy;
     }
 
-    virtual SemaDiagnosticBuilder diagnoseAmbiguous(Sema &S, SourceLocation Loc,
-                                                    QualType T) {
+    SemaDiagnosticBuilder diagnoseAmbiguous(Sema &S, SourceLocation Loc,
+                                            QualType T) override {
       return S.Diag(Loc, diag::err_switch_multiple_conversions) << T;
     }
 
-    virtual SemaDiagnosticBuilder noteAmbiguous(
-        Sema &S, CXXConversionDecl *Conv, QualType ConvTy) {
+    SemaDiagnosticBuilder noteAmbiguous(
+        Sema &S, CXXConversionDecl *Conv, QualType ConvTy) override {
       return S.Diag(Conv->getLocation(), diag::note_switch_conversion)
       << ConvTy->isEnumeralType() << ConvTy;
     }
 
-    virtual SemaDiagnosticBuilder diagnoseConversion(
-        Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) {
+    SemaDiagnosticBuilder diagnoseConversion(
+        Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) override {
       llvm_unreachable("conversion functions are permitted");
     }
   } SwitchDiagnoser(Cond);
@@ -661,6 +670,29 @@ static void AdjustAPSInt(llvm::APSInt &Val, unsigned BitWidth, bool IsSigned) {
   else if (Val.getBitWidth() > BitWidth)
     Val = Val.trunc(BitWidth);
   Val.setIsSigned(IsSigned);
+}
+
+/// Returns true if we should emit a diagnostic about this case expression not
+/// being a part of the enum used in the switch controlling expression.
+static bool ShouldDiagnoseSwitchCaseNotInEnum(const ASTContext &Ctx,
+                                              const EnumDecl *ED,
+                                              const Expr *CaseExpr) {
+  // Don't warn if the 'case' expression refers to a static const variable of
+  // the enum type.
+  CaseExpr = CaseExpr->IgnoreParenImpCasts();
+  if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(CaseExpr)) {
+    if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
+      if (!VD->hasGlobalStorage())
+        return true;
+      QualType VarType = VD->getType();
+      if (!VarType.isConstQualified())
+        return true;
+      QualType EnumType = Ctx.getTypeDeclType(ED);
+      if (Ctx.hasSameUnqualifiedType(EnumType, VarType))
+        return false;
+    }
+  }
+  return true;
 }
 
 StmtResult
@@ -996,11 +1028,10 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
 
       // Gather all enum values, set their type and sort them,
       // allowing easier comparison with CaseVals.
-      for (EnumDecl::enumerator_iterator EDI = ED->enumerator_begin();
-           EDI != ED->enumerator_end(); ++EDI) {
+      for (auto *EDI : ED->enumerators()) {
         llvm::APSInt Val = EDI->getInitVal();
         AdjustAPSInt(Val, CondWidth, CondIsSigned);
-        EnumVals.push_back(std::make_pair(Val, *EDI));
+        EnumVals.push_back(std::make_pair(Val, EDI));
       }
       std::stable_sort(EnumVals.begin(), EnumVals.end(), CmpEnumVals);
       EnumValsTy::iterator EIend =
@@ -1012,9 +1043,12 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
            CI != CaseVals.end(); CI++) {
         while (EI != EIend && EI->first < CI->first)
           EI++;
-        if (EI == EIend || EI->first > CI->first)
-          Diag(CI->second->getLHS()->getExprLoc(), diag::warn_not_in_enum)
-            << CondTypeBeforePromotion;
+        if (EI == EIend || EI->first > CI->first) {
+          Expr *CaseExpr = CI->second->getLHS();
+          if (ShouldDiagnoseSwitchCaseNotInEnum(Context, ED, CaseExpr))
+            Diag(CaseExpr->getExprLoc(), diag::warn_not_in_enum)
+              << CondTypeBeforePromotion;
+        }
       }
       // See which of case ranges aren't in enum
       EI = EnumVals.begin();
@@ -1024,8 +1058,10 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
           EI++;
 
         if (EI == EIend || EI->first != RI->first) {
-          Diag(RI->second->getLHS()->getExprLoc(), diag::warn_not_in_enum)
-            << CondTypeBeforePromotion;
+          Expr *CaseExpr = RI->second->getLHS();
+          if (ShouldDiagnoseSwitchCaseNotInEnum(Context, ED, CaseExpr))
+            Diag(CaseExpr->getExprLoc(), diag::warn_not_in_enum)
+              << CondTypeBeforePromotion;
         }
 
         llvm::APSInt Hi =
@@ -1033,9 +1069,12 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
         AdjustAPSInt(Hi, CondWidth, CondIsSigned);
         while (EI != EIend && EI->first < Hi)
           EI++;
-        if (EI == EIend || EI->first != Hi)
-          Diag(RI->second->getRHS()->getExprLoc(), diag::warn_not_in_enum)
-            << CondTypeBeforePromotion;
+        if (EI == EIend || EI->first != Hi) {
+          Expr *CaseExpr = RI->second->getRHS();
+          if (ShouldDiagnoseSwitchCaseNotInEnum(Context, ED, CaseExpr))
+            Diag(CaseExpr->getExprLoc(), diag::warn_not_in_enum)
+              << CondTypeBeforePromotion;
+        }
       }
 
       // Check which enum vals aren't in switch
@@ -1047,7 +1086,6 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
 
       for (EI = EnumVals.begin(); EI != EIend; EI++){
         // Drop unneeded case values
-        llvm::APSInt CIVal;
         while (CI != CaseVals.end() && CI->first < EI->first)
           CI++;
 
@@ -1123,7 +1161,7 @@ Sema::DiagnoseAssignmentEnum(QualType DstType, QualType SrcType,
     return;
 
   if (const EnumType *ET = DstType->getAs<EnumType>())
-    if (!Context.hasSameType(SrcType, DstType) &&
+    if (!Context.hasSameUnqualifiedType(SrcType, DstType) &&
         SrcType->isIntegerType()) {
       if (!SrcExpr->isTypeDependent() && !SrcExpr->isValueDependent() &&
           SrcExpr->isIntegerConstantExpr(Context)) {
@@ -1140,11 +1178,10 @@ Sema::DiagnoseAssignmentEnum(QualType DstType, QualType SrcType,
 
         // Gather all enum values, set their type and sort them,
         // allowing easier comparison with rhs constant.
-        for (EnumDecl::enumerator_iterator EDI = ED->enumerator_begin();
-             EDI != ED->enumerator_end(); ++EDI) {
+        for (auto *EDI : ED->enumerators()) {
           llvm::APSInt Val = EDI->getInitVal();
           AdjustAPSInt(Val, DstWidth, DstIsSigned);
-          EnumVals.push_back(std::make_pair(Val, *EDI));
+          EnumVals.push_back(std::make_pair(Val, EDI));
         }
         if (EnumVals.empty())
           return;
@@ -1158,7 +1195,7 @@ Sema::DiagnoseAssignmentEnum(QualType DstType, QualType SrcType,
           EI++;
         if (EI == EIend || EI->first != RhsVal) {
           Diag(SrcExpr->getExprLoc(), diag::warn_not_in_enum_assignment)
-          << DstType;
+              << DstType.getUnqualifiedType();
         }
       }
     }
@@ -1179,6 +1216,7 @@ Sema::ActOnWhileStmt(SourceLocation WhileLoc, FullExprArg Cond,
   Expr *ConditionExpr = CondResult.take();
   if (!ConditionExpr)
     return StmtError();
+  CheckBreakContinueBinding(ConditionExpr);
 
   DiagnoseUnusedExprResult(Body);
 
@@ -1195,6 +1233,7 @@ Sema::ActOnDoStmt(SourceLocation DoLoc, Stmt *Body,
                   Expr *Cond, SourceLocation CondRParen) {
   assert(Cond && "ActOnDoStmt(): missing expression");
 
+  CheckBreakContinueBinding(Cond);
   ExprResult CondResult = CheckBooleanCondition(Cond, DoLoc);
   if (CondResult.isInvalid())
     return StmtError();
@@ -1457,25 +1496,33 @@ namespace {
     return false;
   }
 
-  // A visitor to determine if a continue statement is a subexpression.
-  class ContinueFinder : public EvaluatedExprVisitor<ContinueFinder> {
-    bool Found;
+  // A visitor to determine if a continue or break statement is a
+  // subexpression.
+  class BreakContinueFinder : public EvaluatedExprVisitor<BreakContinueFinder> {
+    SourceLocation BreakLoc;
+    SourceLocation ContinueLoc;
   public:
-    ContinueFinder(Sema &S, Stmt* Body) :
-        Inherited(S.Context),
-        Found(false) {
+    BreakContinueFinder(Sema &S, Stmt* Body) :
+        Inherited(S.Context) {
       Visit(Body);
     }
 
-    typedef EvaluatedExprVisitor<ContinueFinder> Inherited;
+    typedef EvaluatedExprVisitor<BreakContinueFinder> Inherited;
 
     void VisitContinueStmt(ContinueStmt* E) {
-      Found = true;
+      ContinueLoc = E->getContinueLoc();
     }
 
-    bool ContinueFound() { return Found; }
+    void VisitBreakStmt(BreakStmt* E) {
+      BreakLoc = E->getBreakLoc();
+    }
 
-  };  // end class ContinueFinder
+    bool ContinueFound() { return ContinueLoc.isValid(); }
+    bool BreakFound() { return BreakLoc.isValid(); }
+    SourceLocation GetContinueLoc() { return ContinueLoc; }
+    SourceLocation GetBreakLoc() { return BreakLoc; }
+
+  };  // end class BreakContinueFinder
 
   // Emit a warning when a loop increment/decrement appears twice per loop
   // iteration.  The conditions which trigger this warning are:
@@ -1504,11 +1551,11 @@ namespace {
     if (!ProcessIterationStmt(S, LastStmt, LastIncrement, LastDRE)) return;
 
     // Check that the two statements are both increments or both decrements
-    // on the same varaible.
+    // on the same variable.
     if (LoopIncrement != LastIncrement ||
         LoopDRE->getDecl() != LastDRE->getDecl()) return;
 
-    if (ContinueFinder(S, Body).ContinueFound()) return;
+    if (BreakContinueFinder(S, Body).ContinueFound()) return;
 
     S.Diag(LastDRE->getLocation(), diag::warn_redundant_loop_iteration)
          << LastDRE->getDecl() << LastIncrement;
@@ -1517,6 +1564,25 @@ namespace {
   }
 
 } // end namespace
+
+
+void Sema::CheckBreakContinueBinding(Expr *E) {
+  if (!E || getLangOpts().CPlusPlus)
+    return;
+  BreakContinueFinder BCFinder(*this, E);
+  Scope *BreakParent = CurScope->getBreakParent();
+  if (BCFinder.BreakFound() && BreakParent) {
+    if (BreakParent->getFlags() & Scope::SwitchScope) {
+      Diag(BCFinder.GetBreakLoc(), diag::warn_break_binds_to_switch);
+    } else {
+      Diag(BCFinder.GetBreakLoc(), diag::warn_loop_ctrl_binds_to_inner)
+          << "break";
+    }
+  } else if (BCFinder.ContinueFound() && CurScope->getContinueParent()) {
+    Diag(BCFinder.GetContinueLoc(), diag::warn_loop_ctrl_binds_to_inner)
+        << "continue";
+  }
+}
 
 StmtResult
 Sema::ActOnForStmt(SourceLocation ForLoc, SourceLocation LParenLoc,
@@ -1528,18 +1594,20 @@ Sema::ActOnForStmt(SourceLocation ForLoc, SourceLocation LParenLoc,
       // C99 6.8.5p3: The declaration part of a 'for' statement shall only
       // declare identifiers for objects having storage class 'auto' or
       // 'register'.
-      for (DeclStmt::decl_iterator DI=DS->decl_begin(), DE=DS->decl_end();
-           DI!=DE; ++DI) {
-        VarDecl *VD = dyn_cast<VarDecl>(*DI);
+      for (auto *DI : DS->decls()) {
+        VarDecl *VD = dyn_cast<VarDecl>(DI);
         if (VD && VD->isLocalVarDecl() && !VD->hasLocalStorage())
           VD = 0;
         if (VD == 0) {
-          Diag((*DI)->getLocation(), diag::err_non_local_variable_decl_in_for);
-          (*DI)->setInvalidDecl();
+          Diag(DI->getLocation(), diag::err_non_local_variable_decl_in_for);
+          DI->setInvalidDecl();
         }
       }
     }
   }
+
+  CheckBreakContinueBinding(second.get());
+  CheckBreakContinueBinding(third.get());
 
   CheckForLoopConditionalStatement(*this, second.get(), third.get(), Body);
   CheckForRedundantIteration(*this, third.get(), Body);
@@ -1714,6 +1782,9 @@ Sema::ActOnObjCForCollectionStmt(SourceLocation ForLoc,
           << First->getSourceRange());
 
       FirstType = static_cast<Expr*>(First)->getType();
+      if (FirstType.isConstQualified())
+        Diag(ForLoc, diag::err_selector_element_const_type)
+          << FirstType << First->getSourceRange();
     }
     if (!FirstType->isDependentType() &&
         !FirstType->isObjCObjectPointerType() &&
@@ -1834,10 +1905,10 @@ StmtResult
 Sema::ActOnCXXForRangeStmt(SourceLocation ForLoc,
                            Stmt *First, SourceLocation ColonLoc, Expr *Range,
                            SourceLocation RParenLoc, BuildForRangeKind Kind) {
-  if (!First || !Range)
+  if (!First)
     return StmtError();
 
-  if (ObjCEnumerationCollection(Range))
+  if (Range && ObjCEnumerationCollection(Range))
     return ActOnObjCForCollectionStmt(ForLoc, First, Range, RParenLoc);
 
   DeclStmt *DS = dyn_cast<DeclStmt>(First);
@@ -1847,11 +1918,13 @@ Sema::ActOnCXXForRangeStmt(SourceLocation ForLoc,
     Diag(DS->getStartLoc(), diag::err_type_defined_in_for_range);
     return StmtError();
   }
-  if (DS->getSingleDecl()->isInvalidDecl())
-    return StmtError();
 
-  if (DiagnoseUnexpandedParameterPack(Range, UPPC_Expression))
+  Decl *LoopVar = DS->getSingleDecl();
+  if (LoopVar->isInvalidDecl() || !Range ||
+      DiagnoseUnexpandedParameterPack(Range, UPPC_Expression)) {
+    LoopVar->setInvalidDecl();
     return StmtError();
+  }
 
   // Build  auto && __range = range-init
   SourceLocation RangeLoc = Range->getLocStart();
@@ -1859,16 +1932,20 @@ Sema::ActOnCXXForRangeStmt(SourceLocation ForLoc,
                                            Context.getAutoRRefDeductType(),
                                            "__range");
   if (FinishForRangeVarDecl(*this, RangeVar, Range, RangeLoc,
-                            diag::err_for_range_deduction_failure))
+                            diag::err_for_range_deduction_failure)) {
+    LoopVar->setInvalidDecl();
     return StmtError();
+  }
 
   // Claim the type doesn't contain auto: we've already done the checking.
   DeclGroupPtrTy RangeGroup =
       BuildDeclaratorGroup(llvm::MutableArrayRef<Decl *>((Decl **)&RangeVar, 1),
                            /*TypeMayContainAuto=*/ false);
   StmtResult RangeDecl = ActOnDeclStmt(RangeGroup, RangeLoc, RangeLoc);
-  if (RangeDecl.isInvalid())
+  if (RangeDecl.isInvalid()) {
+    LoopVar->setInvalidDecl();
     return StmtError();
+  }
 
   return BuildCXXForRangeStmt(ForLoc, ColonLoc, RangeDecl.get(),
                               /*BeginEndDecl=*/0, /*Cond=*/0, /*Inc=*/0, DS,
@@ -1997,6 +2074,22 @@ static StmtResult RebuildForRangeWithDereference(Sema &SemaRef, Scope *S,
                                       Sema::BFRK_Rebuild);
 }
 
+namespace {
+/// RAII object to automatically invalidate a declaration if an error occurs.
+struct InvalidateOnErrorScope {
+  InvalidateOnErrorScope(Sema &SemaRef, Decl *D, bool Enabled)
+      : Trap(SemaRef.Diags), D(D), Enabled(Enabled) {}
+  ~InvalidateOnErrorScope() {
+    if (Enabled && Trap.hasErrorOccurred())
+      D->setInvalidDecl();
+  }
+
+  DiagnosticErrorTrap Trap;
+  Decl *D;
+  bool Enabled;
+};
+}
+
 /// BuildCXXForRangeStmt - Build or instantiate a C++11 for-range statement.
 StmtResult
 Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation ColonLoc,
@@ -2012,12 +2105,17 @@ Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation ColonLoc,
   DeclStmt *LoopVarDS = cast<DeclStmt>(LoopVarDecl);
   VarDecl *LoopVar = cast<VarDecl>(LoopVarDS->getSingleDecl());
 
+  // If we hit any errors, mark the loop variable as invalid if its type
+  // contains 'auto'.
+  InvalidateOnErrorScope Invalidate(*this, LoopVar,
+                                    LoopVar->getType()->isUndeducedType());
+
   StmtResult BeginEndDecl = BeginEnd;
   ExprResult NotEqExpr = Cond, IncrExpr = Inc;
 
   if (RangeVarType->isDependentType()) {
     // The range is implicitly used as a placeholder when it is dependent.
-    RangeVar->setUsed();
+    RangeVar->markUsed(Context);
 
     // Deduce any 'auto's in the loop variable as 'DependentTy'. We'll fill
     // them in properly when we instantiate the loop.
@@ -2078,8 +2176,6 @@ Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation ColonLoc,
                                                  RangeLoc));
       else if (const VariableArrayType *VAT =
                dyn_cast<VariableArrayType>(UnqAT))
-        // FIXME: Need to build an OpaqueValueExpr for this rather than
-        // recomputing it!
         BoundExpr = VAT->getSizeExpr();
       else {
         // Can't be a DependentSizedArrayType or an IncompleteArrayType since
@@ -2106,10 +2202,25 @@ Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation ColonLoc,
                                 BeginVar, EndVar, ColonLoc, &CandidateSet,
                                 &BeginExpr, &EndExpr, &BEFFailure);
 
-      // If building the range failed, try dereferencing the range expression
-      // unless a diagnostic was issued or the end function is problematic.
       if (Kind == BFRK_Build && RangeStatus == FRS_NoViableFunction &&
           BEFFailure == BEF_begin) {
+        // If the range is being built from an array parameter, emit a
+        // a diagnostic that it is being treated as a pointer.
+        if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Range)) {
+          if (ParmVarDecl *PVD = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+            QualType ArrayTy = PVD->getOriginalType();
+            QualType PointerTy = PVD->getType();
+            if (PointerTy->isPointerType() && ArrayTy->isArrayType()) {
+              Diag(Range->getLocStart(), diag::err_range_on_array_parameter)
+                << RangeLoc << PVD << ArrayTy << PointerTy;
+              Diag(PVD->getLocation(), diag::note_declared_at);
+              return StmtError();
+            }
+          }
+        }
+
+        // If building the range failed, try dereferencing the range expression
+        // unless a diagnostic was issued or the end function is problematic.
         StmtResult SR = RebuildForRangeWithDereference(*this, S, ForLoc,
                                                        LoopVarDecl, ColonLoc,
                                                        Range, RangeLoc,
@@ -2260,7 +2371,7 @@ StmtResult Sema::ActOnGotoStmt(SourceLocation GotoLoc,
                                SourceLocation LabelLoc,
                                LabelDecl *TheDecl) {
   getCurFunction()->setHasBranchIntoScope();
-  TheDecl->setUsed();
+  TheDecl->markUsed(Context);
   return Owned(new (Context) GotoStmt(TheDecl, GotoLoc, LabelLoc));
 }
 
@@ -2454,6 +2565,14 @@ Sema::PerformMoveOrCopyInitialization(const InitializedEntity &Entity,
   return Res;
 }
 
+/// \brief Determine whether the declared return type of the specified function
+/// contains 'auto'.
+static bool hasDeducedReturnType(FunctionDecl *FD) {
+  const FunctionProtoType *FPT =
+      FD->getTypeSourceInfo()->getType()->castAs<FunctionProtoType>();
+  return FPT->getReturnType()->isUndeducedType();
+}
+
 /// ActOnCapScopeReturnStmt - Utility routine to type-check return statements
 /// for capturing scopes.
 ///
@@ -2463,27 +2582,36 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
   // [expr.prim.lambda]p4 in C++11; block literals follow the same rules.
   CapturingScopeInfo *CurCap = cast<CapturingScopeInfo>(getCurFunction());
   QualType FnRetType = CurCap->ReturnType;
+  LambdaScopeInfo *CurLambda = dyn_cast<LambdaScopeInfo>(CurCap);
 
-  // For blocks/lambdas with implicit return types, we check each return
-  // statement individually, and deduce the common return type when the block
-  // or lambda is completed.
-  if (CurCap->HasImplicitReturnType) {
-    // FIXME: Fold this into the 'auto' codepath below.
+  if (CurLambda && hasDeducedReturnType(CurLambda->CallOperator)) {
+    // In C++1y, the return type may involve 'auto'.
+    // FIXME: Blocks might have a return type of 'auto' explicitly specified.
+    FunctionDecl *FD = CurLambda->CallOperator;
+    if (CurCap->ReturnType.isNull())
+      CurCap->ReturnType = FD->getReturnType();
+
+    AutoType *AT = CurCap->ReturnType->getContainedAutoType();
+    assert(AT && "lost auto type from lambda return type");
+    if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
+      FD->setInvalidDecl();
+      return StmtError();
+    }
+    CurCap->ReturnType = FnRetType = FD->getReturnType();
+  } else if (CurCap->HasImplicitReturnType) {
+    // For blocks/lambdas with implicit return types, we check each return
+    // statement individually, and deduce the common return type when the block
+    // or lambda is completed.
+    // FIXME: Fold this into the 'auto' codepath above.
     if (RetValExp && !isa<InitListExpr>(RetValExp)) {
       ExprResult Result = DefaultFunctionArrayLvalueConversion(RetValExp);
       if (Result.isInvalid())
         return StmtError();
       RetValExp = Result.take();
 
-      if (!CurContext->isDependentContext()) {
+      if (!CurContext->isDependentContext())
         FnRetType = RetValExp->getType();
-        // In C++11, we take the type of the expression after decay and
-        // lvalue-to-rvalue conversion, so a class type can be cv-qualified.
-        // In C++1y, we perform template argument deduction as if the return
-        // type were 'auto', so an implicit return type is never cv-qualified.
-        if (getLangOpts().CPlusPlus1y && FnRetType.hasQualifiers())
-          FnRetType = FnRetType.getUnqualifiedType();
-      } else
+      else
         FnRetType = CurCap->ReturnType = Context.DependentTy;
     } else {
       if (RetValExp) {
@@ -2501,21 +2629,6 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     // make sure we provide a return type now for better error recovery.
     if (CurCap->ReturnType.isNull())
       CurCap->ReturnType = FnRetType;
-  } else if (AutoType *AT =
-                 FnRetType.isNull() ? 0 : FnRetType->getContainedAutoType()) {
-    // In C++1y, the return type may involve 'auto'.
-    FunctionDecl *FD = cast<LambdaScopeInfo>(CurCap)->CallOperator;
-    if (CurContext->isDependentContext()) {
-      // C++1y [dcl.spec.auto]p12:
-      //   Return type deduction [...] occurs when the definition is
-      //   instantiated even if the function body contains a return
-      //   statement with a non-type-dependent operand.
-      CurCap->ReturnType = FnRetType = Context.DependentTy;
-    } else if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
-      FD->setInvalidDecl();
-      return StmtError();
-    } else
-      CurCap->ReturnType = FnRetType = FD->getResultType();
   }
   assert(!FnRetType.isNull());
 
@@ -2529,8 +2642,9 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
     Diag(ReturnLoc, diag::err_return_in_captured_stmt) << CurRegion->getRegionName();
     return StmtError();
   } else {
-    LambdaScopeInfo *LSI = cast<LambdaScopeInfo>(CurCap);
-    if (LSI->CallOperator->getType()->getAs<FunctionType>()->getNoReturnAttr()){
+    assert(CurLambda && "unknown kind of captured scope");
+    if (CurLambda->CallOperator->getType()->getAs<FunctionType>()
+            ->getNoReturnAttr()) {
       Diag(ReturnLoc, diag::err_noreturn_lambda_has_return_expr);
       return StmtError();
     }
@@ -2578,7 +2692,7 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
       return StmtError();
     }
     RetValExp = Res.take();
-    CheckReturnStackAddr(RetValExp, FnRetType, ReturnLoc);
+    CheckReturnValExpr(RetValExp, FnRetType, ReturnLoc);
   }
 
   if (RetValExp) {
@@ -2608,13 +2722,16 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
                                             Expr *&RetExpr,
                                             AutoType *AT) {
   TypeLoc OrigResultType = FD->getTypeSourceInfo()->getTypeLoc().
-    IgnoreParens().castAs<FunctionProtoTypeLoc>().getResultLoc();
+    IgnoreParens().castAs<FunctionProtoTypeLoc>().getReturnLoc();
   QualType Deduced;
 
   if (RetExpr && isa<InitListExpr>(RetExpr)) {
     //  If the deduction is for a return statement and the initializer is
     //  a braced-init-list, the program is ill-formed.
-    Diag(RetExpr->getExprLoc(), diag::err_auto_fn_return_init_list);
+    Diag(RetExpr->getExprLoc(),
+         getCurLambda() ? diag::err_lambda_return_init_list
+                        : diag::err_auto_fn_return_init_list)
+        << RetExpr->getSourceRange();
     return true;
   }
 
@@ -2668,9 +2785,16 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
     AutoType *NewAT = Deduced->getContainedAutoType();
     if (!FD->isDependentContext() &&
         !Context.hasSameType(AT->getDeducedType(), NewAT->getDeducedType())) {
-      Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
-        << (AT->isDecltypeAuto() ? 1 : 0)
-        << NewAT->getDeducedType() << AT->getDeducedType();
+      const LambdaScopeInfo *LambdaSI = getCurLambda();
+      if (LambdaSI && LambdaSI->HasImplicitReturnType) {
+        Diag(ReturnLoc, diag::err_typecheck_missing_return_type_incompatible)
+          << NewAT->getDeducedType() << AT->getDeducedType()
+          << true /*IsLambda*/;
+      } else {
+        Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
+          << (AT->isDecltypeAuto() ? 1 : 0)
+          << NewAT->getDeducedType() << AT->getDeducedType();
+      }
       return true;
     }
   } else if (!FD->isInvalidDecl()) {
@@ -2692,13 +2816,21 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
 
   QualType FnRetType;
   QualType RelatedRetType;
+  const AttrVec *Attrs = 0;
+  bool isObjCMethod = false;
+
   if (const FunctionDecl *FD = getCurFunctionDecl()) {
-    FnRetType = FD->getResultType();
+    FnRetType = FD->getReturnType();
+    if (FD->hasAttrs())
+      Attrs = &FD->getAttrs();
     if (FD->isNoReturn())
       Diag(ReturnLoc, diag::warn_noreturn_function_has_return_expr)
         << FD->getDeclName();
   } else if (ObjCMethodDecl *MD = getCurMethodDecl()) {
-    FnRetType = MD->getResultType();
+    FnRetType = MD->getReturnType();
+    isObjCMethod = true;
+    if (MD->hasAttrs())
+      Attrs = &MD->getAttrs();
     if (MD->hasRelatedResultType() && MD->getClassInterface()) {
       // In the implementation of a method with a related return type, the
       // type used to type-check the validity of return statements within the
@@ -2718,7 +2850,7 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
         FD->setInvalidDecl();
         return StmtError();
       } else {
-        FnRetType = FD->getResultType();
+        FnRetType = FD->getReturnType();
       }
     }
   }
@@ -2750,8 +2882,14 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
       } else if (!RetValExp->isTypeDependent()) {
         // C99 6.8.6.4p1 (ext_ since GCC warns)
         unsigned D = diag::ext_return_has_expr;
-        if (RetValExp->getType()->isVoidType())
-          D = diag::ext_return_has_void_expr;
+        if (RetValExp->getType()->isVoidType()) {
+          NamedDecl *CurDecl = getCurFunctionOrMethodDecl();
+          if (isa<CXXConstructorDecl>(CurDecl) ||
+              isa<CXXDestructorDecl>(CurDecl))
+            D = diag::err_ctor_dtor_returns_void;
+          else
+            D = diag::ext_return_has_void_expr;
+        }
         else {
           ExprResult Result = Owned(RetValExp);
           Result = IgnoredValueConversions(Result.take());
@@ -2761,9 +2899,15 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
           RetValExp = ImpCastExprToType(RetValExp,
                                         Context.VoidTy, CK_ToVoid).take();
         }
-
+        // return of void in constructor/destructor is illegal in C++.
+        if (D == diag::err_ctor_dtor_returns_void) {
+          NamedDecl *CurDecl = getCurFunctionOrMethodDecl();
+          Diag(ReturnLoc, D)
+            << CurDecl->getDeclName() << isa<CXXDestructorDecl>(CurDecl)
+            << RetValExp->getSourceRange();
+        }
         // return (some void expression); is legal in C++.
-        if (D != diag::ext_return_has_void_expr ||
+        else if (D != diag::ext_return_has_void_expr ||
             !getLangOpts().CPlusPlus) {
           NamedDecl *CurDecl = getCurFunctionOrMethodDecl();
 
@@ -2841,7 +2985,8 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
         RetValExp = Res.takeAs<Expr>();
       }
 
-      CheckReturnStackAddr(RetValExp, FnRetType, ReturnLoc);
+      CheckReturnValExpr(RetValExp, FnRetType, ReturnLoc, isObjCMethod, Attrs,
+                         getCurFunctionDecl());
     }
 
     if (RetValExp) {
@@ -3015,18 +3160,16 @@ public:
 
 /// ActOnCXXTryBlock - Takes a try compound-statement and a number of
 /// handlers and creates a try statement from them.
-StmtResult
-Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
-                       MultiStmtArg RawHandlers) {
+StmtResult Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
+                                  ArrayRef<Stmt *> Handlers) {
   // Don't report an error if 'try' is used in system headers.
   if (!getLangOpts().CXXExceptions &&
       !getSourceManager().isInSystemHeader(TryLoc))
       Diag(TryLoc, diag::err_exceptions_disabled) << "try";
 
-  unsigned NumHandlers = RawHandlers.size();
+  const unsigned NumHandlers = Handlers.size();
   assert(NumHandlers > 0 &&
          "The parser shouldn't call this if there are no handlers.");
-  Stmt **Handlers = RawHandlers.data();
 
   SmallVector<TypeWithHandler, 8> TypesWithHandlers;
 
@@ -3074,8 +3217,7 @@ Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
   // Neither of these are explicitly forbidden, but every compiler detects them
   // and warns.
 
-  return Owned(CXXTryStmt::Create(Context, TryLoc, TryBlock,
-                                  llvm::makeArrayRef(Handlers, NumHandlers)));
+  return Owned(CXXTryStmt::Create(Context, TryLoc, TryBlock, Handlers));
 }
 
 StmtResult
@@ -3219,10 +3361,7 @@ void Sema::ActOnCapturedRegionError() {
   RecordDecl *Record = RSI->TheRecordDecl;
   Record->setInvalidDecl();
 
-  SmallVector<Decl*, 4> Fields;
-  for (RecordDecl::field_iterator I = Record->field_begin(),
-                                  E = Record->field_end(); I != E; ++I)
-    Fields.push_back(*I);
+  SmallVector<Decl*, 4> Fields(Record->fields());
   ActOnFields(/*Scope=*/0, Record->getLocation(), Record, Fields,
               SourceLocation(), SourceLocation(), /*AttributeList=*/0);
 

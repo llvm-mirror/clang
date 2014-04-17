@@ -658,12 +658,12 @@ protected:
 private:
   const void *TagKind;
 };
-  
+
 class SimpleProgramPointTag : public ProgramPointTag {
-  std::string desc;
+  std::string Desc;
 public:
-  SimpleProgramPointTag(StringRef description);
-  StringRef getTagDescription() const;
+  SimpleProgramPointTag(StringRef MsgProvider, StringRef Msg);
+  StringRef getTagDescription() const override;
 };
 
 } // end namespace clang

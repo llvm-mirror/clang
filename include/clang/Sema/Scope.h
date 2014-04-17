@@ -18,6 +18,12 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+namespace llvm {
+
+class raw_ostream;
+
+}
+
 namespace clang {
 
 class Decl;
@@ -91,7 +97,10 @@ public:
     TryScope = 0x2000,
 
     /// \brief This is the scope for a function-level C++ try or catch scope.
-    FnTryCatchScope = 0x4000
+    FnTryCatchScope = 0x4000,
+
+    /// \brief This is the scope of OpenMP executable directive
+    OpenMPDirectiveScope = 0x8000
   };
 private:
   /// The parent scope for this scope.  This is null for the translation-unit
@@ -106,6 +115,10 @@ private:
   /// interrelates with other control flow statements.
   unsigned short Flags;
 
+  /// \brief Declarations with static linkage are mangled with the number of
+  /// scopes seen as a component.
+  unsigned short MSLocalManglingNumber;
+
   /// PrototypeDepth - This is the number of function prototype scopes
   /// enclosing this scope, including this scope.
   unsigned short PrototypeDepth;
@@ -117,6 +130,7 @@ private:
   /// FnParent - If this scope has a parent scope that is a function body, this
   /// pointer is non-null and points to it.  This is used for label processing.
   Scope *FnParent;
+  Scope *MSLocalManglingParent;
 
   /// BreakParent/ContinueParent - This is a direct link to the innermost
   /// BreakScope/ContinueScope which contains the contents of this scope
@@ -143,11 +157,10 @@ private:
   typedef llvm::SmallPtrSet<Decl *, 32> DeclSetTy;
   DeclSetTy DeclsInScope;
 
-  /// Entity - The entity with which this scope is associated. For
+  /// The DeclContext with which this scope is associated. For
   /// example, the entity of a class scope is the class itself, the
-  /// entity of a function scope is a function, etc. This field is
-  /// maintained by the Action implementation.
-  void *Entity;
+  /// entity of a function scope is a function, etc.
+  DeclContext *Entity;
 
   typedef SmallVector<UsingDirectiveDecl *, 2> UsingDirectivesTy;
   UsingDirectivesTy UsingDirectives;
@@ -178,6 +191,11 @@ public:
   ///
   const Scope *getFnParent() const { return FnParent; }
   Scope *getFnParent() { return FnParent; }
+
+  const Scope *getMSLocalManglingParent() const {
+    return MSLocalManglingParent;
+  }
+  Scope *getMSLocalManglingParent() { return MSLocalManglingParent; }
 
   /// getContinueParent - Return the closest scope that a continue statement
   /// would be affected by.
@@ -217,10 +235,11 @@ public:
     return PrototypeIndex++;
   }
 
-  typedef DeclSetTy::iterator decl_iterator;
-  decl_iterator decl_begin() const { return DeclsInScope.begin(); }
-  decl_iterator decl_end()   const { return DeclsInScope.end(); }
-  bool decl_empty()          const { return DeclsInScope.empty(); }
+  typedef llvm::iterator_range<DeclSetTy::iterator> decl_range;
+  decl_range decls() const {
+    return decl_range(DeclsInScope.begin(), DeclsInScope.end());
+  }
+  bool decl_empty() const { return DeclsInScope.empty(); }
 
   void AddDecl(Decl *D) {
     DeclsInScope.insert(D);
@@ -230,14 +249,30 @@ public:
     DeclsInScope.erase(D);
   }
 
+  void incrementMSLocalManglingNumber() {
+    if (Scope *MSLMP = getMSLocalManglingParent())
+      MSLMP->MSLocalManglingNumber += 1;
+  }
+
+  void decrementMSLocalManglingNumber() {
+    if (Scope *MSLMP = getMSLocalManglingParent())
+      MSLMP->MSLocalManglingNumber -= 1;
+  }
+
+  unsigned getMSLocalManglingNumber() const {
+    if (const Scope *MSLMP = getMSLocalManglingParent())
+      return MSLMP->MSLocalManglingNumber;
+    return 1;
+  }
+
   /// isDeclScope - Return true if this is the scope that the specified decl is
   /// declared in.
   bool isDeclScope(Decl *D) {
     return DeclsInScope.count(D) != 0;
   }
 
-  void* getEntity() const { return Entity; }
-  void setEntity(void *E) { Entity = E; }
+  DeclContext *getEntity() const { return Entity; }
+  void setEntity(DeclContext *E) { Entity = E; }
 
   bool hasErrorOccurred() const { return ErrorTrap.hasErrorOccurred(); }
 
@@ -271,6 +306,18 @@ public:
     return false;
   }
 
+  /// isInObjcMethodOuterScope - Return true if this scope is an
+  /// Objective-C method outer most body.
+  bool isInObjcMethodOuterScope() const {
+    if (const Scope *S = this) {
+      // If this scope is an objc method scope, then we succeed.
+      if (S->getFlags() & ObjCMethodScope)
+        return true;
+    }
+    return false;
+  }
+
+  
   /// isTemplateParamScope - Return true if this scope is a C++
   /// template parameter scope.
   bool isTemplateParamScope() const {
@@ -301,7 +348,12 @@ public:
     }
     return false;
   }
-  
+
+  /// \brief Determines whether this scope is the OpenMP directive scope
+  bool isOpenMPDirectiveScope() const {
+    return (getFlags() & Scope::OpenMPDirectiveScope);
+  }
+
   /// \brief Determine whether this scope is a C++ 'try' block.
   bool isTryScope() const { return getFlags() & Scope::TryScope; }
 
@@ -309,32 +361,29 @@ public:
   /// is a FunctionPrototypeScope.
   bool containedInPrototypeScope() const;
 
-  typedef UsingDirectivesTy::iterator udir_iterator;
-  typedef UsingDirectivesTy::const_iterator const_udir_iterator;
-
   void PushUsingDirective(UsingDirectiveDecl *UDir) {
     UsingDirectives.push_back(UDir);
   }
 
-  udir_iterator using_directives_begin() {
-    return UsingDirectives.begin();
-  }
+  typedef llvm::iterator_range<UsingDirectivesTy::iterator>
+    using_directives_range;
 
-  udir_iterator using_directives_end() {
-    return UsingDirectives.end();
-  }
-
-  const_udir_iterator using_directives_begin() const {
-    return UsingDirectives.begin();
-  }
-
-  const_udir_iterator using_directives_end() const {
-    return UsingDirectives.end();
+  using_directives_range using_directives() {
+    return using_directives_range(UsingDirectives.begin(),
+                                  UsingDirectives.end());
   }
 
   /// Init - This is used by the parser to implement scope caching.
   ///
   void Init(Scope *parent, unsigned flags);
+
+  /// \brief Sets up the specified scope flags and adjusts the scope state
+  /// variables accordingly.
+  ///
+  void AddFlags(unsigned Flags);
+
+  void dumpImpl(raw_ostream &OS) const;
+  void dump() const;
 };
 
 }  // end namespace clang

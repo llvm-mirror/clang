@@ -55,8 +55,8 @@ static void printIntegral(const TemplateArgument &TemplArg,
 //===----------------------------------------------------------------------===//
 
 TemplateArgument::TemplateArgument(ASTContext &Ctx, const llvm::APSInt &Value,
-                                   QualType Type)
-  : Kind(Integral) {
+                                   QualType Type) {
+  Integer.Kind = Integral;
   // Copy the APSInt value into our decomposed form.
   Integer.BitWidth = Value.getBitWidth();
   Integer.IsUnsigned = Value.isUnsigned();
@@ -225,7 +225,7 @@ bool TemplateArgument::containsUnexpandedParameterPack() const {
 }
 
 Optional<unsigned> TemplateArgument::getNumTemplateExpansions() const {
-  assert(Kind == TemplateExpansion);
+  assert(getKind() == TemplateExpansion);
   if (TemplateArg.NumExpansions)
     return TemplateArg.NumExpansions - 1;
   
@@ -234,13 +234,17 @@ Optional<unsigned> TemplateArgument::getNumTemplateExpansions() const {
 
 void TemplateArgument::Profile(llvm::FoldingSetNodeID &ID,
                                const ASTContext &Context) const {
-  ID.AddInteger(Kind);
-  switch (Kind) {
+  ID.AddInteger(getKind());
+  switch (getKind()) {
   case Null:
     break;
 
   case Type:
     getAsType().Profile(ID);
+    break;
+
+  case NullPtr:
+    getNullPtrType().Profile(ID);
     break;
 
   case Declaration:
@@ -291,7 +295,7 @@ bool TemplateArgument::structurallyEquals(const TemplateArgument &Other) const {
   case Template:
   case TemplateExpansion:
   case NullPtr:
-    return TypeOrValue == Other.TypeOrValue;
+    return TypeOrValue.V == Other.TypeOrValue.V;
 
   case Declaration:
     return getAsDecl() == Other.getAsDecl() && 
@@ -341,7 +345,7 @@ void TemplateArgument::print(const PrintingPolicy &Policy,
                              raw_ostream &Out) const {
   switch (getKind()) {
   case Null:
-    Out << "<no value>";
+    Out << "(no value)";
     break;
     
   case Type: {
@@ -358,7 +362,7 @@ void TemplateArgument::print(const PrintingPolicy &Policy,
       // FIXME: distinguish between pointer and reference args?
       ND->printQualifiedName(Out);
     } else {
-      Out << "<anonymous>";
+      Out << "(anonymous)";
     }
     break;
   }
@@ -507,6 +511,8 @@ const DiagnosticBuilder &clang::operator<<(const DiagnosticBuilder &DB,
 const ASTTemplateArgumentListInfo *
 ASTTemplateArgumentListInfo::Create(ASTContext &C,
                                     const TemplateArgumentListInfo &List) {
+  assert(llvm::alignOf<ASTTemplateArgumentListInfo>() >=
+         llvm::alignOf<TemplateArgumentLoc>());
   std::size_t size = ASTTemplateArgumentListInfo::sizeFor(List.size());
   void *Mem = C.Allocate(size, llvm::alignOf<ASTTemplateArgumentListInfo>());
   ASTTemplateArgumentListInfo *TAI = new (Mem) ASTTemplateArgumentListInfo();

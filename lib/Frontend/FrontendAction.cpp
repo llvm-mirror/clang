@@ -18,6 +18,7 @@
 #include "clang/Frontend/FrontendPluginRegistry.h"
 #include "clang/Frontend/LayoutOverrideSource.h"
 #include "clang/Frontend/MultiplexConsumer.h"
+#include "clang/Frontend/Utils.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Parse/ParseAST.h"
@@ -42,29 +43,29 @@ public:
                                            ASTDeserializationListener *Previous)
     : Previous(Previous) { }
 
-  virtual void ReaderInitialized(ASTReader *Reader) {
+  void ReaderInitialized(ASTReader *Reader) override {
     if (Previous)
       Previous->ReaderInitialized(Reader);
   }
-  virtual void IdentifierRead(serialization::IdentID ID,
-                              IdentifierInfo *II) {
+  void IdentifierRead(serialization::IdentID ID,
+                      IdentifierInfo *II) override {
     if (Previous)
       Previous->IdentifierRead(ID, II);
   }
-  virtual void TypeRead(serialization::TypeIdx Idx, QualType T) {
+  void TypeRead(serialization::TypeIdx Idx, QualType T) override {
     if (Previous)
       Previous->TypeRead(Idx, T);
   }
-  virtual void DeclRead(serialization::DeclID ID, const Decl *D) {
+  void DeclRead(serialization::DeclID ID, const Decl *D) override {
     if (Previous)
       Previous->DeclRead(ID, D);
   }
-  virtual void SelectorRead(serialization::SelectorID ID, Selector Sel) {
+  void SelectorRead(serialization::SelectorID ID, Selector Sel) override {
     if (Previous)
       Previous->SelectorRead(ID, Sel);
   }
-  virtual void MacroDefinitionRead(serialization::PreprocessedEntityID PPID, 
-                                   MacroDefinition *MD) {
+  void MacroDefinitionRead(serialization::PreprocessedEntityID PPID,
+                           MacroDefinition *MD) override {
     if (Previous)
       Previous->MacroDefinitionRead(PPID, MD);
   }
@@ -76,7 +77,7 @@ public:
   explicit DeserializedDeclsDumper(ASTDeserializationListener *Previous)
     : DelegatingDeserializationListener(Previous) { }
 
-  virtual void DeclRead(serialization::DeclID ID, const Decl *D) {
+  void DeclRead(serialization::DeclID ID, const Decl *D) override {
     llvm::outs() << "PCH DECL: " << D->getDeclKindName();
     if (const NamedDecl *ND = dyn_cast<NamedDecl>(D))
       llvm::outs() << " - " << *ND;
@@ -99,7 +100,7 @@ public:
     : DelegatingDeserializationListener(Previous),
       Ctx(Ctx), NamesToCheck(NamesToCheck) { }
 
-  virtual void DeclRead(serialization::DeclID ID, const Decl *D) {
+  void DeclRead(serialization::DeclID ID, const Decl *D) override {
     if (const NamedDecl *ND = dyn_cast<NamedDecl>(D))
       if (NamesToCheck.find(ND->getNameAsString()) != NamesToCheck.end()) {
         unsigned DiagID
@@ -147,7 +148,7 @@ ASTConsumer* FrontendAction::CreateWrappedASTConsumer(CompilerInstance &CI,
         ie = FrontendPluginRegistry::end();
         it != ie; ++it) {
       if (it->getName() == CI.getFrontendOpts().AddPluginActions[i]) {
-        OwningPtr<PluginASTAction> P(it->instantiate());
+        std::unique_ptr<PluginASTAction> P(it->instantiate());
         FrontendAction* c = P.get();
         if (P->ParseArgs(CI, CI.getFrontendOpts().AddPluginArgs[i]))
           Consumers.push_back(c->CreateASTConsumer(CI, InFile));
@@ -157,7 +158,6 @@ ASTConsumer* FrontendAction::CreateWrappedASTConsumer(CompilerInstance &CI,
 
   return new MultiplexConsumer(Consumers);
 }
-
 
 bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
                                      const FrontendInputFile &Input) {
@@ -180,7 +180,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
            "This action does not have AST file support!");
 
     IntrusiveRefCntPtr<DiagnosticsEngine> Diags(&CI.getDiagnostics());
-    std::string Error;
+
     ASTUnit *AST = ASTUnit::LoadFromASTFile(InputFile, Diags,
                                             CI.getFileSystemOpts());
     if (!AST)
@@ -209,6 +209,32 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
       goto failure;
 
     return true;
+  }
+
+  if (!CI.getHeaderSearchOpts().VFSOverlayFiles.empty()) {
+    IntrusiveRefCntPtr<vfs::OverlayFileSystem>
+        Overlay(new vfs::OverlayFileSystem(vfs::getRealFileSystem()));
+    // earlier vfs files are on the bottom
+    const std::vector<std::string> &Files =
+        CI.getHeaderSearchOpts().VFSOverlayFiles;
+    for (std::vector<std::string>::const_iterator I = Files.begin(),
+                                                  E = Files.end();
+         I != E; ++I) {
+      std::unique_ptr<llvm::MemoryBuffer> Buffer;
+      if (llvm::errc::success != llvm::MemoryBuffer::getFile(*I, Buffer)) {
+        CI.getDiagnostics().Report(diag::err_missing_vfs_overlay_file) << *I;
+        goto failure;
+      }
+
+      IntrusiveRefCntPtr<vfs::FileSystem> FS =
+          vfs::getVFSFromYAML(Buffer.release(), /*DiagHandler*/ 0);
+      if (!FS.getPtr()) {
+        CI.getDiagnostics().Report(diag::err_invalid_vfs_overlay) << *I;
+        goto failure;
+      }
+      Overlay->pushOverlay(FS);
+    }
+    CI.setVirtualFileSystem(Overlay);
   }
 
   // Set up the file and source managers, if needed.
@@ -265,7 +291,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
   }
 
   // Set up the preprocessor.
-  CI.createPreprocessor();
+  CI.createPreprocessor(getTranslationUnitKind());
 
   // Inform the diagnostic client we are processing a source file.
   CI.getDiagnosticClient().BeginSourceFile(CI.getLangOpts(),
@@ -281,8 +307,8 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
   if (!usesPreprocessorOnly()) {
     CI.createASTContext();
 
-    OwningPtr<ASTConsumer> Consumer(
-                                   CreateWrappedASTConsumer(CI, InputFile));
+    std::unique_ptr<ASTConsumer> Consumer(
+        CreateWrappedASTConsumer(CI, InputFile));
     if (!Consumer)
       goto failure;
 
@@ -290,12 +316,11 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     
     if (!CI.getPreprocessorOpts().ChainedIncludes.empty()) {
       // Convert headers to PCH and chain them.
-      OwningPtr<ExternalASTSource> source;
-      source.reset(ChainedIncludesSource::create(CI));
+      IntrusiveRefCntPtr<ChainedIncludesSource> source;
+      source = ChainedIncludesSource::create(CI);
       if (!source)
         goto failure;
-      CI.setModuleManager(static_cast<ASTReader*>(
-         &static_cast<ChainedIncludesSource*>(source.get())->getFinalReader()));
+      CI.setModuleManager(static_cast<ASTReader*>(&source->getFinalReader()));
       CI.getASTContext().setExternalSource(source);
 
     } else if (!CI.getPreprocessorOpts().ImplicitPCHInclude.empty()) {
@@ -318,7 +343,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
         goto failure;
     }
 
-    CI.setASTConsumer(Consumer.take());
+    CI.setASTConsumer(Consumer.release());
     if (!CI.hasASTConsumer())
       goto failure;
   }
@@ -335,7 +360,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
   // provides the layouts from that file.
   if (!CI.getFrontendOpts().OverrideRecordLayoutsFile.empty() && 
       CI.hasASTContext() && !CI.getASTContext().getExternalSource()) {
-    OwningPtr<ExternalASTSource> 
+    IntrusiveRefCntPtr<ExternalASTSource> 
       Override(new LayoutOverrideSource(
                      CI.getFrontendOpts().OverrideRecordLayoutsFile));
     CI.getASTContext().setExternalSource(Override);
@@ -403,9 +428,9 @@ void FrontendAction::EndSourceFile() {
   //
   // FIXME: There is more per-file stuff we could just drop here?
   if (CI.getFrontendOpts().DisableFree) {
-    CI.takeASTConsumer();
+    BuryPointer(CI.takeASTConsumer());
     if (!isCurrentFileAST()) {
-      CI.takeSema();
+      BuryPointer(CI.takeSema());
       CI.resetAndLeakASTContext();
     }
   } else {

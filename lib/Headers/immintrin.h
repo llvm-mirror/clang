@@ -48,7 +48,7 @@
 #include <smmintrin.h>
 #endif
 
-#if defined (__AES__)
+#if defined (__AES__) || defined (__PCLMUL__)
 #include <wmmintrin.h>
 #endif
 
@@ -109,6 +109,10 @@ _xtest(void)
 {
   return __builtin_ia32_xtest();
 }
+#endif
+
+#ifdef __SHA__
+#include <shaintrin.h>
 #endif
 
 #endif /* __IMMINTRIN_H */

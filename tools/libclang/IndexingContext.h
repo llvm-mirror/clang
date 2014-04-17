@@ -270,14 +270,6 @@ public:
   }
 };
 
-struct RefFileOccurence {
-  const FileEntry *File;
-  const Decl *Dcl;
-
-  RefFileOccurence(const FileEntry *File, const Decl *Dcl)
-    : File(File), Dcl(Dcl) { }
-};
-
 class IndexingContext {
   ASTContext *Ctx;
   CXClientData ClientData;
@@ -294,7 +286,8 @@ class IndexingContext {
   ContainerMapTy ContainerMap;
   EntityMapTy EntityMap;
 
-  llvm::DenseSet<RefFileOccurence> RefFileOccurences;
+  typedef std::pair<const FileEntry *, const Decl *> RefFileOccurrence;
+  llvm::DenseSet<RefFileOccurrence> RefFileOccurrences;
 
   std::deque<DeclGroupRef> TUDeclsInObjCContainer;
   
@@ -342,7 +335,7 @@ public:
                   unsigned indexOptions, CXTranslationUnit cxTU)
     : Ctx(0), ClientData(clientData), CB(indexCallbacks),
       IndexOptions(indexOptions), CXTU(cxTU),
-      StrScratch(/*size=*/1024), StrAdapterCount(0) { }
+      StrScratch(), StrAdapterCount(0) { }
 
   ASTContext &getASTContext() const { return *Ctx; }
 
@@ -524,29 +517,3 @@ inline T *ScratchAlloc::allocate() {
 }
 
 }} // end clang::cxindex
-
-namespace llvm {
-  /// Define DenseMapInfo so that FileID's can be used as keys in DenseMap and
-  /// DenseSets.
-  template <>
-  struct DenseMapInfo<clang::cxindex::RefFileOccurence> {
-    static inline clang::cxindex::RefFileOccurence getEmptyKey() {
-      return clang::cxindex::RefFileOccurence(0, 0);
-    }
-
-    static inline clang::cxindex::RefFileOccurence getTombstoneKey() {
-      return clang::cxindex::RefFileOccurence((const clang::FileEntry *)~0,
-                                              (const clang::Decl *)~0);
-    }
-
-    static unsigned getHashValue(clang::cxindex::RefFileOccurence S) {
-      typedef std::pair<const clang::FileEntry *, const clang::Decl *> PairTy;
-      return DenseMapInfo<PairTy>::getHashValue(PairTy(S.File, S.Dcl));
-    }
-
-    static bool isEqual(clang::cxindex::RefFileOccurence LHS,
-                        clang::cxindex::RefFileOccurence RHS) {
-      return LHS.File == RHS.File && LHS.Dcl == RHS.Dcl;
-    }
-  };
-}

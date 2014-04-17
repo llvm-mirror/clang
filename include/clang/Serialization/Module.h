@@ -18,9 +18,9 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Serialization/ASTBitCodes.h"
 #include "clang/Serialization/ContinuousRangeMap.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Bitcode/BitstreamReader.h"
+#include <memory>
 #include <string>
 
 namespace clang {
@@ -57,11 +57,12 @@ struct DeclContextInfo {
 
 /// \brief The input file that has been loaded from this AST file, along with
 /// bools indicating whether this was an overridden buffer or if it was
-/// out-of-date.
+/// out-of-date or not-found.
 class InputFile {
   enum {
     Overridden = 1,
-    OutOfDate = 2
+    OutOfDate = 2,
+    NotFound = 3
   };
   llvm::PointerIntPair<const FileEntry *, 2, unsigned> Val;
 
@@ -79,9 +80,16 @@ public:
     Val.setPointerAndInt(File, intVal);
   }
 
+  static InputFile getNotFound() {
+    InputFile File;
+    File.Val.setInt(NotFound);
+    return File;
+  }
+
   const FileEntry *getFile() const { return Val.getPointer(); }
   bool isOverridden() const { return Val.getInt() == Overridden; }
   bool isOutOfDate() const { return Val.getInt() == OutOfDate; }
+  bool isNotFound() const { return Val.getInt() == NotFound; }
 };
 
 /// \brief Information about a module that has been loaded by the ASTReader.
@@ -106,6 +114,10 @@ public:
 
   /// \brief The file name of the module file.
   std::string FileName;
+
+  std::string getTimestampFilename() const {
+    return FileName + ".timestamp";
+  }
 
   /// \brief The original source file name that was used to build the
   /// primary AST file, which may have been modified for
@@ -139,7 +151,7 @@ public:
   
   /// \brief The memory buffer that stores the data associated with
   /// this AST file.
-  OwningPtr<llvm::MemoryBuffer> Buffer;
+  std::unique_ptr<llvm::MemoryBuffer> Buffer;
 
   /// \brief The size of this file, in bits.
   uint64_t SizeInBits;
@@ -159,6 +171,9 @@ public:
   /// If module A depends on and imports module B, both modules will have the
   /// same DirectImportLoc, but different ImportLoc (B's ImportLoc will be a
   /// source location inside module A).
+  ///
+  /// WARNING: This is largely useless. It doesn't tell you when a module was
+  /// made visible, just when the first submodule of that module was imported.
   SourceLocation DirectImportLoc;
 
   /// \brief The source location where this module was first imported.
@@ -176,6 +191,12 @@ public:
 
   /// \brief The input files that have been loaded from this AST file.
   std::vector<InputFile> InputFilesLoaded;
+
+  /// \brief If non-zero, specifies the time when we last validated input
+  /// files.  Zero means we never validated them.
+  ///
+  /// The time is specified in seconds since the start of the Epoch.
+  uint64_t InputFilesValidationTimestamp;
 
   // === Source Locations ===
 

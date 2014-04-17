@@ -1,18 +1,23 @@
 // RUN: rm -rf %t
-// RUN: %clang_cc1 -objcmt-migrate-property -mt-migrate-directory %t %s -x objective-c -fobjc-runtime-has-weak -fobjc-arc -fobjc-default-synthesize-properties -triple x86_64-apple-darwin11
+// RUN: %clang_cc1 -objcmt-migrate-instancetype -mt-migrate-directory %t %s -x objective-c -fobjc-runtime-has-weak -fobjc-arc -triple x86_64-apple-darwin11
 // RUN: c-arcmt-test -mt-migrate-directory %t | arcmt-test -verify-transformed-files %s.result
-// RUN: %clang_cc1 -triple x86_64-apple-darwin11 -fsyntax-only -x objective-c -fobjc-runtime-has-weak -fobjc-arc -fobjc-default-synthesize-properties %s.result
+// RUN: %clang_cc1 -triple x86_64-apple-darwin11 -fsyntax-only -x objective-c -fobjc-runtime-has-weak -fobjc-arc %s.result
 
 typedef signed char BOOL;
 #define nil ((void*) 0)
 
 @interface NSObject
-+ (instancetype)alloc;
++ (id)alloc;
 @end
 
 @interface NSString : NSObject
 + (instancetype)stringWithString:(NSString *)string;
 - (instancetype)initWithString:(NSString *)aString;
+@end
+
+@implementation NSString : NSObject
++ (instancetype)stringWithString:(NSString *)string { return 0; };
+- (instancetype)initWithString:(NSString *)aString { return 0; };
 @end
 
 @interface NSArray : NSObject
@@ -32,6 +37,25 @@ typedef signed char BOOL;
 - (instancetype)initWithArray:(NSArray *)array;
 
 - (id)objectAtIndex:(unsigned long)index;
+@end
+
+@implementation NSArray (NSArrayCreation)
++ (instancetype)array { return 0; }
++ (instancetype)arrayWithObject:(id)anObject {
+  return anObject;
+}
++ (instancetype)arrayWithObjects:(const id [])objects count:(unsigned long)cnt { return 0; }
++ (instancetype)arrayWithObjects:(id)firstObj, ... {
+  return 0; }
++ (instancetype) arrayWithArray:(NSArray *)array {
+  return 0;
+}
+
+- (instancetype)initWithObjects:(const id [])objects count:(unsigned long)cnt { return 0; }
+- (instancetype)initWithObjects:(id)firstObj, ... { return 0; }
+- (instancetype)initWithArray:(NSArray *)array { return 0; }
+
+- (id)objectAtIndex:(unsigned long)index { return 0; }
 @end
 
 @interface NSMutableArray : NSArray
@@ -69,6 +93,10 @@ typedef signed char BOOL;
 
 @interface NSNumber (NSNumberCreation)
 + (NSNumber *)numberWithInt:(int)value;
+@end
+
+@implementation NSNumber (NSNumberCreation)
++ (NSNumber *)numberWithInt:(int)value { return 0; }
 @end
 
 #define M(x) (x)

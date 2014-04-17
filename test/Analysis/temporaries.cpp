@@ -1,5 +1,6 @@
 // RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -verify -w -std=c++03 %s
 // RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -verify -w -std=c++11 %s
+// RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -DTEMPORARY_DTORS -verify -w -analyzer-config cfg-temporary-dtors=true %s 
 
 extern bool clang_analyzer_eval(bool);
 
@@ -110,36 +111,125 @@ namespace compound_literals {
 }
 
 namespace destructors {
-  void testPR16664Crash() {
+  void testPR16664andPR18159Crash() {
     struct Dtor {
       ~Dtor();
     };
     extern bool coin();
     extern bool check(const Dtor &);
 
-    // Don't crash here.
+#ifndef TEMPORARY_DTORS
+    // FIXME: Don't assert here when tmp dtors are enabled.
+    // PR16664 and PR18159
     if (coin() && (coin() || coin() || check(Dtor()))) {
       Dtor();
     }
+#endif
   }
 
-  void testConsistency(int i) {
-    struct NoReturnDtor {
-      ~NoReturnDtor() __attribute__((noreturn));
-    };
-    extern bool check(const NoReturnDtor &);
-    
-    if (i == 5 && (i == 4 || i == 5 || check(NoReturnDtor())))
-      clang_analyzer_eval(true); // expected-warning{{TRUE}}
+#ifdef TEMPORARY_DTORS
+  struct NoReturnDtor {
+    ~NoReturnDtor() __attribute__((noreturn));
+  };
 
+  void noReturnTemp(int *x) {
+    if (! x) NoReturnDtor();
+    *x = 47; // no warning
+  }
+
+  void noReturnInline(int **x) {
+    NoReturnDtor();
+  }
+
+  void callNoReturn() {
+    int *x;
+    noReturnInline(&x);
+    *x = 47; // no warning
+  }
+
+  extern bool check(const NoReturnDtor &);
+
+  void testConsistencyIf(int i) {
     if (i != 5)
       return;
     if (i == 5 && (i == 4 || check(NoReturnDtor()) || i == 5)) {
-      // FIXME: Should be no-warning, because the noreturn destructor should
-      // fire on all paths.
-      clang_analyzer_eval(true); // expected-warning{{TRUE}}
+      clang_analyzer_eval(true); // no warning, unreachable code
     }
   }
+
+  void testConsistencyTernary(int i) {
+    (i == 5 && (i == 4 || check(NoReturnDtor()) || i == 5)) ? 1 : 0;
+
+    clang_analyzer_eval(true);  // expected-warning{{TRUE}}
+
+    if (i != 5)
+      return;
+
+    (i == 5 && (i == 4 || check(NoReturnDtor()) || i == 5)) ? 1 : 0;
+
+    clang_analyzer_eval(true); // no warning, unreachable code
+  }
+
+/*
+  // PR16664 and PR18159
+  FIXME: Don't assert here.
+  void testConsistencyNested(int i) {
+    extern bool compute(bool);
+  
+    if (i == 5 && (i == 4 || i == 5 || check(NoReturnDtor())))
+      clang_analyzer_eval(true); // expected TRUE
+  
+    if (i == 5 && (i == 4 || i == 5 || check(NoReturnDtor())))
+      clang_analyzer_eval(true);  // expected TRUE
+
+    if (i != 5)
+      return;
+
+    if (compute(i == 5 &&
+                (i == 4 || compute(true) ||
+                 compute(i == 5 && (i == 4 || check(NoReturnDtor()))))) ||
+        i != 4) {
+      clang_analyzer_eval(true); // expected TRUE
+    }
+
+    FIXME: This shouldn't cause a warning.
+    if (compute(i == 5 &&
+                (i == 4 || i == 4 ||
+                 compute(i == 5 && (i == 4 || check(NoReturnDtor()))))) ||
+        i != 4) {
+      clang_analyzer_eval(true); // no warning, unreachable code
+    }
+  }*/
+
+  // PR16664 and PR18159
+  void testConsistencyNestedSimple(bool value) {
+    if (value) {
+      if (!value || check(NoReturnDtor())) {
+        clang_analyzer_eval(true); // no warning, unreachable code
+      }
+    }
+  }
+
+  // PR16664 and PR18159
+  void testConsistencyNestedComplex(bool value) {
+    if (value) {
+      if (!value || !value || check(NoReturnDtor())) {
+        // FIXME: This shouldn't cause a warning.
+        clang_analyzer_eval(true); // expected-warning{{TRUE}}
+      }
+    }
+  }
+
+  // PR16664 and PR18159
+  void testConsistencyNestedWarning(bool value) {
+    if (value) {
+      if (!value || value || check(NoReturnDtor())) {
+        clang_analyzer_eval(true); // expected-warning{{TRUE}}
+      }
+    }
+  }
+
+#endif // TEMPORARY_DTORS
 }
 
 void testStaticMaterializeTemporaryExpr() {

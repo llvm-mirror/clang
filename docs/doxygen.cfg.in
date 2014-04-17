@@ -697,6 +697,59 @@ BINARY_TOC             = NO
 
 TOC_EXPAND             = NO
 
+# If the GENERATE_QHP tag is set to YES and both QHP_NAMESPACE and 
+# QHP_VIRTUAL_FOLDER are set, an additional index file will be generated 
+# that can be used as input for Qt's qhelpgenerator to generate a 
+# Qt Compressed Help (.qch) of the generated HTML documentation.
+
+GENERATE_QHP           = @clang_doxygen_generate_qhp@
+
+# If the QHG_LOCATION tag is specified, the QCH_FILE tag can 
+# be used to specify the file name of the resulting .qch file. 
+# The path specified is relative to the HTML output folder.
+
+QCH_FILE               = @clang_doxygen_qch_filename@
+
+# The QHP_NAMESPACE tag specifies the namespace to use when generating 
+# Qt Help Project output. For more information please see 
+# http://qt-project.org/doc/qt-4.8/qthelpproject.html#namespace
+
+QHP_NAMESPACE          = @clang_doxygen_qhp_namespace@
+
+# The QHP_VIRTUAL_FOLDER tag specifies the namespace to use when generating 
+# Qt Help Project output. For more information please see 
+# http://qt-project.org/doc/qt-4.8/qthelpproject.html#virtual-folders
+
+QHP_VIRTUAL_FOLDER     = doc
+
+# If QHP_CUST_FILTER_NAME is set, it specifies the name of a custom filter to 
+# add. For more information please see 
+# http://qt-project.org/doc/qt-4.8/qthelpproject.html#custom-filters
+
+QHP_CUST_FILTER_NAME   = @clang_doxygen_qhp_cust_filter_name@
+
+# The QHP_CUST_FILT_ATTRS tag specifies the list of the attributes of the 
+# custom filter to add. For more information please see 
+# <a href="http://qt-project.org/doc/qt-4.8/qthelpproject.html#custom-filters"> 
+# Qt Help Project / Custom Filters</a>.
+
+QHP_CUST_FILTER_ATTRS  = @clang_doxygen_qhp_cust_filter_attrs@
+
+# The QHP_SECT_FILTER_ATTRS tag specifies the list of the attributes this 
+# project's 
+# filter section matches. 
+# <a href="http://qt-project.org/doc/qt-4.8/qthelpproject.html#filter-attributes"> 
+# Qt Help Project / Filter Attributes</a>.
+
+QHP_SECT_FILTER_ATTRS  = 
+
+# If the GENERATE_QHP tag is set to YES, the QHG_LOCATION tag can 
+# be used to specify the location of Qt's qhelpgenerator. 
+# If non-empty doxygen will try to run qhelpgenerator on the generated 
+# .qhp file.
+
+QHG_LOCATION           = @clang_doxygen_qhelpgenerator_path@
+
 # The DISABLE_INDEX tag can be used to turn on/off the condensed index at 
 # top of each HTML page. The value NO (the default) enables the index and 
 # the value YES disables it.
@@ -1224,7 +1277,30 @@ DOT_CLEANUP            = YES
 # Configuration::additions related to the search engine   
 #---------------------------------------------------------------------------
 
-# The SEARCHENGINE tag specifies whether or not a search engine should be 
-# used. If set to NO the values of all tags below this one will be ignored.
+# When the SEARCHENGINE tag is enabled doxygen will generate a search box
+# for the HTML output. The underlying search engine uses javascript
+# and DHTML and should work on any modern browser. Note that when using
+# HTML help (GENERATE_HTMLHELP), Qt help (GENERATE_QHP), or docsets
+# (GENERATE_DOCSET) there is already a search function so this one should
+# typically be disabled. For large projects the javascript based search engine
+# can be slow, then enabling SERVER_BASED_SEARCH may provide a better solution.
 
-SEARCHENGINE           = NO
+SEARCHENGINE           = @enable_searchengine@
+
+# When the SERVER_BASED_SEARCH tag is enabled the search engine will be
+# implemented using a PHP enabled web server instead of at the web client
+# using Javascript. Doxygen will generate the search PHP script and index
+# file to put on the web server. The advantage of the server
+# based approach is that it scales better to large projects and allows
+# full text search. The disadvances is that it is more difficult to setup
+# and does not have live searching capabilities.
+
+SERVER_BASED_SEARCH    = @enable_server_based_search@
+
+SEARCHENGINE_URL       = @searchengine_url@
+
+EXTERNAL_SEARCH        = @enable_external_search@
+
+EXTERNAL_SEARCH_ID     = clang
+
+EXTRA_SEARCH_MAPPINGS  = @extra_search_mappings@

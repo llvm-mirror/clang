@@ -25,7 +25,16 @@
 #include "clang/Basic/LLVM.h"
 #include "llvm/Support/AlignOf.h"
 
+namespace llvm {
+
+class raw_ostream;
+
+}
+
 namespace clang {
+
+struct PrintingPolicy;
+
 namespace ast_type_traits {
 
 /// \brief Kind identifier.
@@ -48,10 +57,17 @@ public:
   bool isSame(ASTNodeKind Other) const;
 
   /// \brief Returns \c true if \c this is a base kind of (or same as) \c Other.
-  bool isBaseOf(ASTNodeKind Other) const;
+  /// \param Distance If non-null, used to return the distance between \c this
+  /// and \c Other in the class hierarchy.
+  bool isBaseOf(ASTNodeKind Other, unsigned *Distance = 0) const;
 
   /// \brief String representation of the kind.
   StringRef asStringRef() const;
+
+  /// \brief Strict weak ordering for ASTNodeKind.
+  bool operator<(const ASTNodeKind &Other) const {
+    return KindId < Other.KindId;
+  }
 
 private:
   /// \brief Kind ids.
@@ -82,7 +98,9 @@ private:
 
   /// \brief Returns \c true if \c Base is a base kind of (or same as) \c
   ///   Derived.
-  static bool isBaseOf(NodeKindId Base, NodeKindId Derived);
+  /// \param Distance If non-null, used to return the distance between \c Base
+  /// and \c Derived in the class hierarchy.
+  static bool isBaseOf(NodeKindId Base, NodeKindId Derived, unsigned *Distance);
 
   /// \brief Helper meta-function to convert a kind T to its enum value.
   ///
@@ -123,6 +141,11 @@ KIND_TO_KIND_ID(Type)
 #define TYPE(DERIVED, BASE) KIND_TO_KIND_ID(DERIVED##Type)
 #include "clang/AST/TypeNodes.def"
 #undef KIND_TO_KIND_ID
+
+inline raw_ostream &operator<<(raw_ostream &OS, ASTNodeKind K) {
+  OS << K.asStringRef();
+  return OS;
+}
 
 /// \brief A dynamically typed AST node container.
 ///
@@ -168,6 +191,16 @@ public:
   /// method returns NULL.
   const void *getMemoizationData() const;
 
+  /// \brief Prints the node to the given output stream.
+  void print(llvm::raw_ostream &OS, const PrintingPolicy &PP) const;
+
+  /// \brief Dumps the node to the given output stream.
+  void dump(llvm::raw_ostream &OS, SourceManager &SM) const;
+
+  /// \brief For nodes which represent textual entities in the source code,
+  /// return their SourceRange.  For all other nodes, return SourceRange().
+  SourceRange getSourceRange() const;
+
   /// @{
   /// \brief Imposes an order on \c DynTypedNode.
   ///
@@ -179,8 +212,8 @@ public:
     return getMemoizationData() < Other.getMemoizationData();
   }
   bool operator==(const DynTypedNode &Other) const {
-    // Nodes with different types cannot be equal.
-    if (!NodeKind.isSame(Other.NodeKind))
+    if (!NodeKind.isBaseOf(Other.NodeKind) &&
+        !Other.NodeKind.isBaseOf(NodeKind))
       return false;
 
     // FIXME: Implement for other types.
@@ -264,18 +297,18 @@ private:
 
 template <typename T>
 struct DynTypedNode::BaseConverter<
-    T, typename llvm::enable_if<llvm::is_base_of<
-           Decl, T> >::type> : public DynCastPtrConverter<T, Decl> {};
+    T, typename std::enable_if<std::is_base_of<Decl, T>::value>::type>
+    : public DynCastPtrConverter<T, Decl> {};
 
 template <typename T>
 struct DynTypedNode::BaseConverter<
-    T, typename llvm::enable_if<llvm::is_base_of<
-           Stmt, T> >::type> : public DynCastPtrConverter<T, Stmt> {};
+    T, typename std::enable_if<std::is_base_of<Stmt, T>::value>::type>
+    : public DynCastPtrConverter<T, Stmt> {};
 
 template <typename T>
 struct DynTypedNode::BaseConverter<
-    T, typename llvm::enable_if<llvm::is_base_of<
-           Type, T> >::type> : public DynCastPtrConverter<T, Type> {};
+    T, typename std::enable_if<std::is_base_of<Type, T>::value>::type>
+    : public DynCastPtrConverter<T, Type> {};
 
 template <>
 struct DynTypedNode::BaseConverter<

@@ -2,6 +2,8 @@
 
 enum E { e };
 
+constexpr int id(int n) { return n; }
+
 class C {
 
   int f() {
@@ -34,12 +36,18 @@ class C {
     typedef int T; 
     const int b = 0; 
     const int c = 1;
-    int a1[1] = {[b] (T()) {}}; // expected-error{{no viable conversion from '<lambda}}
+    int d;
+    int a1[1] = {[b] (T()) {}}; // expected-error{{no viable conversion from '(lambda}}
     int a2[1] = {[b] = 1 };
-    int a3[1] = {[b,c] = 1 }; // expected-error{{expected body of lambda expression}}
+    int a3[1] = {[b,c] = 1 }; // expected-error{{expected ']'}} expected-note {{to match}}
     int a4[1] = {[&b] = 1 }; // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'const int *'}}
     int a5[3] = { []{return 0;}() };
     int a6[1] = {[this] = 1 }; // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'C *'}}
+    int a7[1] = {[d(0)] { return d; } ()}; // expected-warning{{extension}}
+    int a8[1] = {[d = 0] { return d; } ()}; // expected-warning{{extension}}
+    int a9[1] = {[d = 0] = 1}; // expected-error{{is not an integral constant expression}}
+    int a10[1] = {[id(0)] { return id; } ()}; // expected-warning{{extension}}
+    int a11[1] = {[id(0)] = 1};
   }
 
   void delete_lambda(int *p) {
@@ -52,18 +60,34 @@ class C {
   // We support init-captures in C++11 as an extension.
   int z;
   void init_capture() {
-    // FIXME: These diagnostics should all disappear once semantic analysis
-    // for init-captures is complete.
-    [n(0)] () -> int { return ++n; }; // expected-error {{non-static data member}}
-    [n{0}] { return; }; // expected-error {{<initializer_list>}}
-    [n = 0] { return ++n; }; // expected-error {{non-static data member}}
-    [n = {0}] { return; }; // expected-error {{<initializer_list>}}
-    [a([&b = z]{})](){};
+    [n(0)] () mutable -> int { return ++n; }; // expected-warning{{extension}}
+    [n{0}] { return; }; // expected-error {{<initializer_list>}} expected-warning{{extension}}
+    [n = 0] { return ++n; }; // expected-error {{captured by copy in a non-mutable}} expected-warning{{extension}}
+    [n = {0}] { return; }; // expected-error {{<initializer_list>}} expected-warning{{extension}}
+    [a([&b = z]{})](){}; // expected-warning 2{{extension}}
 
     int x = 4;
-    auto y = [&r = x, x = x + 1]() -> int {
-      r += 2; // expected-error {{non-static data member}}
-      return x + 2; // expected-error {{non-static data member}}
+    auto y = [&r = x, x = x + 1]() -> int { // expected-warning 2{{extension}}
+      r += 2;
+      return x + 2;
     } ();
+  }
+
+  void attributes() {
+    [] [[]] {}; // expected-error {{lambda requires '()' before attribute specifier}}
+    [] __attribute__((noreturn)) {}; // expected-error {{lambda requires '()' before attribute specifier}}
+    []() [[]]
+      mutable {}; // expected-error {{expected body of lambda expression}}
+
+    []() [[]] {};
+    []() [[]] -> void {};
+    []() mutable [[]] -> void {};
+    []() mutable noexcept [[]] -> void {};
+
+    // Testing GNU-style attributes on lambdas -- the attribute is specified
+    // before the mutable specifier instead of after (unlike C++11).
+    []() __attribute__((noreturn)) mutable { while(1); };
+    []() mutable
+      __attribute__((noreturn)) { while(1); }; // expected-error {{expected body of lambda expression}}
   }
 };

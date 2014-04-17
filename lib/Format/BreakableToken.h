@@ -61,18 +61,28 @@ public:
   virtual void insertBreak(unsigned LineIndex, unsigned TailOffset, Split Split,
                            WhitespaceManager &Whitespaces) = 0;
 
+  /// \brief Replaces the whitespace range described by \p Split with a single
+  /// space.
+  virtual void replaceWhitespace(unsigned LineIndex, unsigned TailOffset,
+                                 Split Split,
+                                 WhitespaceManager &Whitespaces) = 0;
+
   /// \brief Replaces the whitespace between \p LineIndex-1 and \p LineIndex.
   virtual void replaceWhitespaceBefore(unsigned LineIndex,
                                        WhitespaceManager &Whitespaces) {}
 
 protected:
-  BreakableToken(const FormatToken &Tok, bool InPPDirective,
-                 encoding::Encoding Encoding)
-      : Tok(Tok), InPPDirective(InPPDirective), Encoding(Encoding) {}
+  BreakableToken(const FormatToken &Tok, unsigned IndentLevel,
+                 bool InPPDirective, encoding::Encoding Encoding,
+                 const FormatStyle &Style)
+      : Tok(Tok), IndentLevel(IndentLevel), InPPDirective(InPPDirective),
+        Encoding(Encoding), Style(Style) {}
 
   const FormatToken &Tok;
+  const unsigned IndentLevel;
   const bool InPPDirective;
   const encoding::Encoding Encoding;
+  const FormatStyle &Style;
 };
 
 /// \brief Base class for single line tokens that can be broken.
@@ -80,15 +90,16 @@ protected:
 /// \c getSplit() needs to be implemented by child classes.
 class BreakableSingleLineToken : public BreakableToken {
 public:
-  virtual unsigned getLineCount() const;
-  virtual unsigned getLineLengthAfterSplit(unsigned LineIndex,
-                                           unsigned TailOffset,
-                                           StringRef::size_type Length) const;
+  unsigned getLineCount() const override;
+  unsigned getLineLengthAfterSplit(unsigned LineIndex, unsigned TailOffset,
+                                   StringRef::size_type Length) const override;
 
 protected:
-  BreakableSingleLineToken(const FormatToken &Tok, unsigned StartColumn,
-                           StringRef Prefix, StringRef Postfix,
-                           bool InPPDirective, encoding::Encoding Encoding);
+  BreakableSingleLineToken(const FormatToken &Tok, unsigned IndentLevel,
+                           unsigned StartColumn, StringRef Prefix,
+                           StringRef Postfix, bool InPPDirective,
+                           encoding::Encoding Encoding,
+                           const FormatStyle &Style);
 
   // The column in which the token starts.
   unsigned StartColumn;
@@ -106,13 +117,17 @@ public:
   ///
   /// \p StartColumn specifies the column in which the token will start
   /// after formatting.
-  BreakableStringLiteral(const FormatToken &Tok, unsigned StartColumn,
-                         bool InPPDirective, encoding::Encoding Encoding);
+  BreakableStringLiteral(const FormatToken &Tok, unsigned IndentLevel,
+                         unsigned StartColumn, StringRef Prefix,
+                         StringRef Postfix, bool InPPDirective,
+                         encoding::Encoding Encoding, const FormatStyle &Style);
 
-  virtual Split getSplit(unsigned LineIndex, unsigned TailOffset,
-                         unsigned ColumnLimit) const;
-  virtual void insertBreak(unsigned LineIndex, unsigned TailOffset, Split Split,
-                           WhitespaceManager &Whitespaces);
+  Split getSplit(unsigned LineIndex, unsigned TailOffset,
+                 unsigned ColumnLimit) const override;
+  void insertBreak(unsigned LineIndex, unsigned TailOffset, Split Split,
+                   WhitespaceManager &Whitespaces) override;
+  void replaceWhitespace(unsigned LineIndex, unsigned TailOffset, Split Split,
+                         WhitespaceManager &Whitespaces) override {}
 };
 
 class BreakableLineComment : public BreakableSingleLineToken {
@@ -121,15 +136,18 @@ public:
   ///
   /// \p StartColumn specifies the column in which the comment will start
   /// after formatting.
-  BreakableLineComment(const FormatToken &Token, unsigned StartColumn,
-                       bool InPPDirective, encoding::Encoding Encoding);
+  BreakableLineComment(const FormatToken &Token, unsigned IndentLevel,
+                       unsigned StartColumn, bool InPPDirective,
+                       encoding::Encoding Encoding, const FormatStyle &Style);
 
-  virtual Split getSplit(unsigned LineIndex, unsigned TailOffset,
-                         unsigned ColumnLimit) const;
-  virtual void insertBreak(unsigned LineIndex, unsigned TailOffset, Split Split,
-                           WhitespaceManager &Whitespaces);
-  virtual void replaceWhitespaceBefore(unsigned LineIndex,
-                                       WhitespaceManager &Whitespaces);
+  Split getSplit(unsigned LineIndex, unsigned TailOffset,
+                 unsigned ColumnLimit) const override;
+  void insertBreak(unsigned LineIndex, unsigned TailOffset, Split Split,
+                   WhitespaceManager &Whitespaces) override;
+  void replaceWhitespace(unsigned LineIndex, unsigned TailOffset, Split Split,
+                         WhitespaceManager &Whitespaces) override;
+  void replaceWhitespaceBefore(unsigned LineIndex,
+                               WhitespaceManager &Whitespaces) override;
 
 private:
   // The prefix without an additional space if one was added.
@@ -144,21 +162,22 @@ public:
   /// after formatting, while \p OriginalStartColumn specifies in which
   /// column the comment started before formatting.
   /// If the comment starts a line after formatting, set \p FirstInLine to true.
-  BreakableBlockComment(const FormatStyle &Style, const FormatToken &Token,
+  BreakableBlockComment(const FormatToken &Token, unsigned IndentLevel,
                         unsigned StartColumn, unsigned OriginaStartColumn,
                         bool FirstInLine, bool InPPDirective,
-                        encoding::Encoding Encoding);
+                        encoding::Encoding Encoding, const FormatStyle &Style);
 
-  virtual unsigned getLineCount() const;
-  virtual unsigned getLineLengthAfterSplit(unsigned LineIndex,
-                                           unsigned TailOffset,
-                                           StringRef::size_type Length) const;
-  virtual Split getSplit(unsigned LineIndex, unsigned TailOffset,
-                         unsigned ColumnLimit) const;
-  virtual void insertBreak(unsigned LineIndex, unsigned TailOffset, Split Split,
-                           WhitespaceManager &Whitespaces);
-  virtual void replaceWhitespaceBefore(unsigned LineIndex,
-                                       WhitespaceManager &Whitespaces);
+  unsigned getLineCount() const override;
+  unsigned getLineLengthAfterSplit(unsigned LineIndex, unsigned TailOffset,
+                                   StringRef::size_type Length) const override;
+  Split getSplit(unsigned LineIndex, unsigned TailOffset,
+                 unsigned ColumnLimit) const override;
+  void insertBreak(unsigned LineIndex, unsigned TailOffset, Split Split,
+                   WhitespaceManager &Whitespaces) override;
+  void replaceWhitespace(unsigned LineIndex, unsigned TailOffset, Split Split,
+                         WhitespaceManager &Whitespaces) override;
+  void replaceWhitespaceBefore(unsigned LineIndex,
+                               WhitespaceManager &Whitespaces) override;
 
 private:
   // Rearranges the whitespace between Lines[LineIndex-1] and Lines[LineIndex],
@@ -172,8 +191,7 @@ private:
   // Sets StartOfLineColumn to the intended column in which the text at
   // Lines[LineIndex] starts (note that the decoration, if present, is not
   // considered part of the text).
-  void adjustWhitespace(const FormatStyle &Style, unsigned LineIndex,
-                        int IndentDelta);
+  void adjustWhitespace(unsigned LineIndex, int IndentDelta);
 
   // Returns the column at which the text in line LineIndex starts, when broken
   // at TailOffset. Note that the decoration (if present) is not considered part

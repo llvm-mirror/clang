@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -emit-llvm %s -o - -cxx-abi microsoft -triple=i386-pc-win32 | FileCheck %s
-// RUN: %clang_cc1 -emit-llvm %s -o - -cxx-abi microsoft -triple=x86_64-pc-win32 | FileCheck -check-prefix=X64 %s
+// RUN: %clang_cc1 -emit-llvm %s -o - -triple=i386-pc-win32 | FileCheck %s
+// RUN: %clang_cc1 -emit-llvm %s -o - -triple=x86_64-pc-win32 | FileCheck -check-prefix=X64 %s
 
 void foo(const unsigned int) {}
 // CHECK: "\01?foo@@YAXI@Z"
@@ -36,6 +36,22 @@ void foo_rad(char * volatile x) {}
 void foo_sad(char * const volatile x) {}
 // CHECK: "\01?foo_sad@@YAXSAD@Z"
 // X64: "\01?foo_sad@@YAXSEAD@Z"
+
+void foo_piad(char * __restrict x) {}
+// CHECK: "\01?foo_piad@@YAXPIAD@Z"
+// X64: "\01?foo_piad@@YAXPEIAD@Z"
+
+void foo_qiad(char * const __restrict x) {}
+// CHECK: "\01?foo_qiad@@YAXQIAD@Z"
+// X64: "\01?foo_qiad@@YAXQEIAD@Z"
+
+void foo_riad(char * volatile __restrict x) {}
+// CHECK: "\01?foo_riad@@YAXRIAD@Z"
+// X64: "\01?foo_riad@@YAXREIAD@Z"
+
+void foo_siad(char * const volatile __restrict x) {}
+// CHECK: "\01?foo_siad@@YAXSIAD@Z"
+// X64: "\01?foo_siad@@YAXSEIAD@Z"
 
 void foo_papad(char ** x) {}
 // CHECK: "\01?foo_papad@@YAXPAPAD@Z"
@@ -204,3 +220,41 @@ void mangle_fwd(char * x) {}
 void mangle_no_fwd(char * x) {}
 // CHECK: "\01?mangle_no_fwd@@YAXPAD@Z"
 // X64:   "\01?mangle_no_fwd@@YAXPEAD@Z"
+
+// The first argument gets mangled as-if it were written "int *const"
+// The second arg should not form a backref because it isn't qualified
+void mangle_no_backref0(int[], int *) {}
+// CHECK: "\01?mangle_no_backref0@@YAXQAHPAH@Z"
+// X64:   "\01?mangle_no_backref0@@YAXQEAHPEAH@Z"
+
+void mangle_no_backref1(int[], int *const) {}
+// CHECK: "\01?mangle_no_backref1@@YAXQAHQAH@Z"
+// X64:   "\01?mangle_no_backref1@@YAXQEAHQEAH@Z"
+
+typedef void fun_type(void);
+typedef void (*ptr_to_fun_type)(void);
+
+// Pointer to function types don't backref with function types
+void mangle_no_backref2(fun_type, ptr_to_fun_type) {}
+// CHECK: "\01?mangle_no_backref2@@YAXP6AXXZP6AXXZ@Z"
+// X64:   "\01?mangle_no_backref2@@YAXP6AXXZP6AXXZ@Z"
+
+void mangle_yes_backref0(int[], int []) {}
+// CHECK: "\01?mangle_yes_backref0@@YAXQAH0@Z"
+// X64:   "\01?mangle_yes_backref0@@YAXQEAH0@Z"
+
+void mangle_yes_backref1(int *const, int *const) {}
+// CHECK: "\01?mangle_yes_backref1@@YAXQAH0@Z"
+// X64:   "\01?mangle_yes_backref1@@YAXQEAH0@Z"
+
+void mangle_yes_backref2(fun_type *const[], ptr_to_fun_type const[]) {}
+// CHECK: "\01?mangle_yes_backref2@@YAXQBQ6AXXZ0@Z"
+// X64:   "\01?mangle_yes_backref2@@YAXQEBQ6AXXZ0@Z"
+
+void mangle_yes_backref3(ptr_to_fun_type *const, void (**const)(void)) {}
+// CHECK: "\01?mangle_yes_backref3@@YAXQAP6AXXZ0@Z"
+// X64:   "\01?mangle_yes_backref3@@YAXQEAP6AXXZ0@Z"
+
+void mangle_yes_backref4(int *const __restrict, int *const __restrict) {}
+// CHECK: "\01?mangle_yes_backref4@@YAXQIAH0@Z"
+// X64:   "\01?mangle_yes_backref4@@YAXQEIAH0@Z"

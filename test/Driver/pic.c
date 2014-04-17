@@ -138,7 +138,7 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-NO-PIE
 //
 // Darwin is a beautiful and unique snowflake when it comes to these flags.
-// When targetting a 32-bit darwin system, the -fno-* flag variants work and
+// When targeting a 32-bit darwin system, the -fno-* flag variants work and
 // disable PIC, but any other flag enables PIC (*not* PIE) even if the flag
 // specifies PIE. On 64-bit targets, there is simply nothing you can do, there
 // is no PIE, there is only PIC when it comes to compilation.
@@ -209,3 +209,11 @@
 // On OpenBSD, -nopie needs to be passed through to the linker.
 // RUN: %clang %s -target i386-pc-openbsd -nopie -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-NOPIE-LD
+//
+// On Android PIC is enabled by default
+// RUN: %clang -c %s -target i686-linux-android -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIC2
+// RUN: %clang -c %s -target arm-linux-androideabi -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIC1
+// RUN: %clang -c %s -target mipsel-linux-android -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIC1

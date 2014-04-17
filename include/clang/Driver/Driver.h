@@ -19,6 +19,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Support/Path.h" // FIXME: Kill when CompilationInfo
+#include <memory>
                               // lands.
 #include <list>
 #include <set>
@@ -42,6 +43,7 @@ namespace driver {
   class Compilation;
   class InputInfo;
   class JobAction;
+  class SanitizerArgs;
   class ToolChain;
 
 /// Driver - Encapsulate logic for constructing compilation processes
@@ -313,9 +315,6 @@ public:
   /// \param ShowHidden - Show hidden options.
   void PrintHelp(bool ShowHidden) const;
 
-  /// PrintOptions - Print the list of arguments.
-  void PrintOptions(const llvm::opt::ArgList &Args) const;
-
   /// PrintVersion - Print the driver version.
   void PrintVersion(const Compilation &C, raw_ostream &OS) const;
 
@@ -415,6 +414,10 @@ public:
                                 unsigned &Minor, unsigned &Micro,
                                 bool &HadExtra);
 };
+
+/// \return True if the last defined optimization level is -Ofast.
+/// And False otherwise.
+bool isOptimizationLevelFast(const llvm::opt::ArgList &Args);
 
 } // end namespace driver
 } // end namespace clang

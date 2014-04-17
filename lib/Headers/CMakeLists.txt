@@ -10,8 +10,10 @@ set(files
   float.h
   fma4intrin.h
   fmaintrin.h
+  ia32intrin.h
   immintrin.h
   iso646.h
+  Intrin.h
   limits.h
   lzcntintrin.h
   mm3dnow.h
@@ -23,6 +25,7 @@ set(files
   prfchwintrin.h
   rdseedintrin.h
   rtmintrin.h
+  shaintrin.h
   smmintrin.h
   stdalign.h
   stdarg.h
@@ -30,6 +33,7 @@ set(files
   stddef.h
   stdint.h
   stdnoreturn.h
+  tbmintrin.h
   tgmath.h
   tmmintrin.h
   varargs.h
@@ -44,17 +48,10 @@ set(files
   module.map
   )
 
-set(output_dir ${LLVM_BINARY_DIR}/lib/clang/${CLANG_VERSION}/include)
-
-# If we are in an IDE that has a configuration directory, we need to
-# create a second copy of the headers so that 'clang' can find them if
-# it's run from the build directory.
-if(MSVC_IDE OR XCODE)
-   set(other_output_dir ${LLVM_BINARY_DIR}/bin/lib/clang/${CLANG_VERSION}/include)
-endif()
+set(output_dir ${LLVM_LIBRARY_OUTPUT_INTDIR}/clang/${CLANG_VERSION}/include)
 
 # Generate arm_neon.h
-clang_tablegen(arm_neon.h.inc -gen-arm-neon
+clang_tablegen(arm_neon.h -gen-arm-neon
   SOURCE ${CLANG_SOURCE_DIR}/include/clang/Basic/arm_neon.td)
 
 set(out_files)
@@ -66,43 +63,18 @@ foreach( f ${files} )
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${src} ${dst}
     COMMENT "Copying clang's ${f}...")
   list(APPEND out_files ${dst})
-
-  if(other_output_dir)
-   set(other_dst ${other_output_dir}/${f})
-    add_custom_command(OUTPUT ${other_dst}
-      DEPENDS ${src}
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${src} ${other_dst}
-      COMMENT "Copying clang's ${f}...")    
-    list(APPEND out_files ${other_dst})
-  endif()
 endforeach( f )
 
 add_custom_command(OUTPUT ${output_dir}/arm_neon.h 
-  DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/arm_neon.h.inc
-  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_BINARY_DIR}/arm_neon.h.inc ${output_dir}/arm_neon.h
+  DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/arm_neon.h
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_BINARY_DIR}/arm_neon.h ${output_dir}/arm_neon.h
   COMMENT "Copying clang's arm_neon.h...")
 list(APPEND out_files ${output_dir}/arm_neon.h)
-
-if (other_output_dir)
-    set(other_dst ${other_output_dir}/arm_neon.h)
-    add_custom_command(OUTPUT ${other_dst}
-      DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/arm_neon.h.inc
-      COMMAND ${CMAKE_COMMAND} -E copy_if_different ${CMAKE_CURRENT_BINARY_DIR}/arm_neon.h.inc ${other_dst}
-      COMMENT "Copying clang's arm_neon.h...")
-    list(APPEND out_files ${other_dst})
-endif ()
 
 add_custom_target(clang-headers ALL DEPENDS ${out_files})
 set_target_properties(clang-headers PROPERTIES FOLDER "Misc")
 
-if (other_output_dir)
-	if(UNIX)
-		add_custom_command(TARGET clang-headers POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${LLVM_BINARY_DIR}/lib/${CMAKE_CFG_INTDIR}"
-	    	COMMAND ${CMAKE_COMMAND} -E create_symlink "${LLVM_BINARY_DIR}/bin/lib/clang" "${LLVM_BINARY_DIR}/lib/${CMAKE_CFG_INTDIR}/clang")
-	endif()
-endif ()
-
-install(FILES ${files} ${output_dir}/arm_neon.h
+install(
+  FILES ${files} ${CMAKE_CURRENT_BINARY_DIR}/arm_neon.h
   PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ
   DESTINATION lib${LLVM_LIBDIR_SUFFIX}/clang/${CLANG_VERSION}/include)

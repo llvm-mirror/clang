@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsyntax-only -fobjc-default-synthesize-properties -verify -Wno-objc-root-class %s
+// RUN: %clang_cc1 -fsyntax-only -verify -Wno-objc-root-class %s
 
 @interface NSString @end
 
@@ -136,5 +136,5 @@
 @interface MyClass <MyProtocol> 
 @end
  
-@implementation MyClass // expected-warning {{auto property synthesis will not synthesize property declared in a protocol}}
+@implementation MyClass // expected-warning {{auto property synthesis will not synthesize property 'requiredString' declared in protocol 'MyProtocol'}}
 @end

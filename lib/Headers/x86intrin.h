@@ -24,6 +24,8 @@
 #ifndef __X86INTRIN_H
 #define __X86INTRIN_H
 
+#include <ia32intrin.h>
+
 #include <immintrin.h>
 
 #ifdef __3dNOW__
@@ -64,6 +66,10 @@
 
 #ifdef __XOP__
 #include <xopintrin.h>
+#endif
+
+#ifdef __TBM__
+#include <tbmintrin.h>
 #endif
 
 #ifdef __F16C__

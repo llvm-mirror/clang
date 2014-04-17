@@ -1,7 +1,5 @@
-// -flto and -O4 both cause a switch to llvm-bc object files.
+// -flto causes a switch to llvm-bc object files.
 // RUN: %clang -ccc-print-phases -c %s -flto 2> %t.log
-// RUN: grep '2: compiler, {1}, lto-bc' %t.log
-// RUN: %clang -ccc-print-phases -c %s -O4 2> %t.log
 // RUN: grep '2: compiler, {1}, lto-bc' %t.log
 
 // RUN: %clang -ccc-print-phases %s -flto 2> %t.log
@@ -20,3 +18,5 @@
 // RUN: %clang %s -flto -S -### 2> %t.log
 // RUN: grep '"-o" ".*lto\.s" "-x" "c" ".*lto\.c"' %t.log
 
+// RUN: not %clang %s -emit-llvm 2>&1 | FileCheck --check-prefix=LLVM-LINK %s
+// LLVM-LINK: -emit-llvm cannot be used when linking

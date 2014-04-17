@@ -30,9 +30,9 @@
 
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -42,14 +42,24 @@ namespace tooling {
 /// \brief Specifies the working directory and command of a compilation.
 struct CompileCommand {
   CompileCommand() {}
-  CompileCommand(Twine Directory, ArrayRef<std::string> CommandLine)
-    : Directory(Directory.str()), CommandLine(CommandLine) {}
+  CompileCommand(Twine Directory, std::vector<std::string> CommandLine)
+      : Directory(Directory.str()), CommandLine(std::move(CommandLine)) {}
 
   /// \brief The working directory the command was executed from.
   std::string Directory;
 
   /// \brief The command line that was executed.
   std::vector<std::string> CommandLine;
+
+  /// \brief An optional mapping from each file's path to its content for all
+  /// files needed for the compilation that are not available via the file
+  /// system.
+  ///
+  /// Note that a tool implementation is required to fall back to the file
+  /// system if a source file is not provided in the mapped sources, as
+  /// compilation databases will usually not provide all files in mapped sources
+  /// for performance reasons.
+  std::vector<std::pair<std::string, std::string> > MappedSources;
 };
 
 /// \brief Interface for compilation databases.
@@ -108,6 +118,10 @@ public:
 
   /// \brief Returns all compile commands for all the files in the compilation
   /// database.
+  ///
+  /// FIXME: Add a layer in Tooling that provides an interface to run a tool
+  /// over all files in a compilation database. Not all build systems have the
+  /// ability to provide a feasible implementation for \c getAllCompileCommands.
   virtual std::vector<CompileCommand> getAllCompileCommands() const = 0;
 };
 
@@ -152,7 +166,7 @@ public:
   /// The argument list is meant to be compatible with normal llvm command line
   /// parsing in main methods.
   /// int main(int argc, char **argv) {
-  ///   OwningPtr<FixedCompilationDatabase> Compilations(
+  ///   std::unique_ptr<FixedCompilationDatabase> Compilations(
   ///     FixedCompilationDatabase::loadFromCommandLine(argc, argv));
   ///   cl::ParseCommandLineOptions(argc, argv);
   ///   ...
@@ -176,19 +190,19 @@ public:
   /// Will always return a vector with one entry that contains the directory
   /// and command line specified at construction with "clang-tool" as argv[0]
   /// and 'FilePath' as positional argument.
-  virtual std::vector<CompileCommand> getCompileCommands(
-    StringRef FilePath) const;
+  std::vector<CompileCommand>
+  getCompileCommands(StringRef FilePath) const override;
 
   /// \brief Returns the list of all files available in the compilation database.
   ///
   /// Note: This is always an empty list for the fixed compilation database.
-  virtual std::vector<std::string> getAllFiles() const;
+  std::vector<std::string> getAllFiles() const override;
 
   /// \brief Returns all compile commands for all the files in the compilation
   /// database.
   ///
   /// Note: This is always an empty list for the fixed compilation database.
-  virtual std::vector<CompileCommand> getAllCompileCommands() const;
+  std::vector<CompileCommand> getAllCompileCommands() const override;
 
 private:
   /// This is built up to contain a single entry vector to be returned from

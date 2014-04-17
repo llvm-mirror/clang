@@ -42,9 +42,6 @@ int f3 [[gnu::warn_unused_result]] ();
 // CHECK: {{\[}}[noreturn]];
 void f4 [[noreturn]] ();
 
-// CHECK: {{\[}}[std::noreturn]];
-void f5 [[std::noreturn]] ();
-
 // CHECK: __attribute__((gnu_inline));
 inline void f6() __attribute__((gnu_inline));
 
@@ -52,7 +49,7 @@ inline void f6() __attribute__((gnu_inline));
 inline void f7 [[gnu::gnu_inline]] ();
 
 // arguments printing
-// CHECK: __attribute__((format("printf", 2, 3)));
+// CHECK: __attribute__((format(printf, 2, 3)));
 void f8 (void *, const char *, ...) __attribute__ ((format (printf, 2, 3)));
 
 // CHECK: int m __attribute__((aligned(4

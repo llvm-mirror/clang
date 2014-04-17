@@ -242,7 +242,7 @@ namespace clang {
                                    QualType &ConstantType) const;
     bool isPointerConversionToBool() const;
     bool isPointerConversionToVoidPointer(ASTContext& Context) const;
-    void DebugPrint() const;
+    void dump() const;
   };
 
   /// UserDefinedConversionSequence - Represents a user-defined
@@ -288,7 +288,7 @@ namespace clang {
     /// that refers to \c ConversionFunction.
     DeclAccessPair FoundConversionFunction;
 
-    void DebugPrint() const;
+    void dump() const;
   };
 
   /// Represents an ambiguous user-defined conversion sequence.
@@ -406,9 +406,6 @@ namespace clang {
     /// ConversionKind - The kind of implicit conversion sequence.
     unsigned ConversionKind : 30;
 
-    /// \brief Whether the argument is an initializer list.
-    bool ListInitializationSequence : 1;
-
     /// \brief Whether the target is really a std::initializer_list, and the
     /// sequence only represents the worst element conversion.
     bool StdInitializerListElement : 1;
@@ -441,16 +438,14 @@ namespace clang {
       BadConversionSequence Bad;
     };
 
-    ImplicitConversionSequence() 
-      : ConversionKind(Uninitialized), ListInitializationSequence(false),
-        StdInitializerListElement(false)
+    ImplicitConversionSequence()
+      : ConversionKind(Uninitialized), StdInitializerListElement(false)
     {}
     ~ImplicitConversionSequence() {
       destruct();
     }
     ImplicitConversionSequence(const ImplicitConversionSequence &Other)
-      : ConversionKind(Other.ConversionKind), 
-        ListInitializationSequence(Other.ListInitializationSequence),
+      : ConversionKind(Other.ConversionKind),
         StdInitializerListElement(Other.StdInitializerListElement)
     {
       switch (ConversionKind) {
@@ -536,16 +531,6 @@ namespace clang {
       Ambiguous.construct();
     }
 
-    /// \brief Whether this sequence was created by the rules of
-    /// list-initialization sequences.
-    bool isListInitializationSequence() const {
-      return ListInitializationSequence;
-    }
-
-    void setListInitializationSequence() {
-      ListInitializationSequence = true;
-    }
-
     /// \brief Whether the target is really a std::initializer_list, and the
     /// sequence only represents the worst element conversion.
     bool isStdInitializerListElement() const {
@@ -569,7 +554,7 @@ namespace clang {
                                      SourceLocation CaretLoc,
                                      const PartialDiagnostic &PDiag) const;
 
-    void DebugPrint() const;
+    void dump() const;
   };
 
   enum OverloadFailureKind {
@@ -594,7 +579,11 @@ namespace clang {
     /// (CUDA) This candidate was not viable because the callee
     /// was not accessible from the caller's target (i.e. host->device,
     /// global->host, device->host).
-    ovl_fail_bad_target
+    ovl_fail_bad_target,
+
+    /// This candidate function was not viable because an enable_if
+    /// attribute disabled it.
+    ovl_fail_enable_if
   };
 
   /// OverloadCandidate - A single candidate in an overload set (C++ 13.3).

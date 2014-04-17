@@ -17,6 +17,8 @@ def err_drv_unsupported_option_argument : Error<
   "unsupported argument '%1' to option '%0'">;
 def err_drv_unknown_stdin_type : Error<
   "-E or -x required when input is from standard input">;
+def err_drv_unknown_stdin_type_clang_cl : Error<
+  "use /Tc or /Tp to set input type for standard input">;
 def err_drv_unknown_language : Error<"language not recognized: '%0'">;
 def err_drv_invalid_arch_name : Error<
   "invalid arch name '%0'">;
@@ -33,10 +35,10 @@ def err_drv_use_of_Z_option : Error<
   "unsupported use of internal gcc -Z option '%0'">;
 def err_drv_output_argument_with_multiple_files : Error<
   "cannot specify -o when generating multiple output files">;
-def err_drv_obj_file_argument_with_multiple_sources : Error<
+def err_drv_out_file_argument_with_multiple_sources : Error<
   "cannot specify '%0%1' when compiling multiple source files">;
-def err_no_external_windows_assembler : Error<
-  "there is no external assembler we can use on windows">;
+def err_no_external_assembler : Error<
+  "there is no external assembler that can be used on this platform">;
 def err_drv_unable_to_remove_file : Error<
   "unable to remove file: %0">;
 def err_drv_command_failure : Error<
@@ -77,8 +79,11 @@ def err_drv_invalid_mfloat_abi : Error<
   "invalid float ABI '%0'">;
 def err_drv_invalid_libcxx_deployment : Error<
   "invalid deployment target for -stdlib=libc++ (requires %0 or later)">;
-def err_drv_invalid_feature : Error<
-  "invalid feature '%0' for CPU '%1'">;
+def err_drv_malformed_sanitizer_blacklist : Error<
+  "malformed sanitizer blacklist: '%0'">;
+
+def err_target_unsupported_arch
+  : Error<"the target architecture '%0' is not supported by the target '%1'">;
 
 def err_drv_I_dash_not_supported : Error<
   "'%0' not supported, please use -iquote instead">;
@@ -107,7 +112,12 @@ def err_drv_mg_requires_m_or_mm : Error<
   "option '-MG' requires '-M' or '-MM'">;
 def err_drv_unknown_objc_runtime : Error<
   "unknown or ill-formed Objective-C runtime '%0'">;
+def err_drv_emit_llvm_link : Error<
+   "-emit-llvm cannot be used when linking">;
 
+def warn_O4_is_O3 : Warning<"-O4 is equivalent to -O3">, InGroup<Deprecated>;
+def warn_drv_optimization_value : Warning<"optimization level '%0' is unsupported; using '%1%2' instead">,
+  InGroup<InvalidCommandLineArgument>;
 def warn_c_kext : Warning<
   "ignoring -fapple-kext which is valid for C++ and Objective-C++ only">;
 def warn_drv_input_file_unused : Warning<
@@ -129,16 +139,11 @@ def warn_drv_unused_sanitizer : Warning<"'%0' is ignored in absence of '%1'">,
   InGroup<UnusedSanitizeArgument>;
 def warn_drv_clang_unsupported : Warning<
   "the clang compiler does not support '%0'">;
-def warn_drv_deprecated_arg : Warning<
-  "argument '%0' is deprecated, use '%1' instead">, InGroup<Deprecated>;
 def warn_drv_assuming_mfloat_abi_is : Warning<
   "unknown platform, assuming -mfloat-abi=%0">;
 def warn_ignoring_ftabstop_value : Warning<
   "ignoring invalid -ftabstop value '%0', using default value %1">;
-def warn_drv_overriding_joined_option : Warning<
-  "overriding '%0%1' option with '%2%3'">,
-  InGroup<DiagGroup<"overriding-fo-option">>;
-def warn_drv_overriding_t_option : Warning<
+def warn_drv_overriding_flag_option : Warning<
   "overriding '%0' option with '%1'">,
   InGroup<DiagGroup<"overriding-t-option">>;
 def warn_drv_treating_input_as_cxx : Warning<
@@ -150,6 +155,8 @@ def warn_drv_pch_not_first_include : Warning<
   "precompiled header '%0' was ignored because '%1' is not first '-include'">;
 def warn_missing_sysroot : Warning<"no such sysroot directory: '%0'">,
   InGroup<DiagGroup<"missing-sysroot">>;
+def warn_debug_compression_unavailable : Warning<"cannot compress debug sections (zlib not installed)">,
+  InGroup<DiagGroup<"debug-compression-unavailable">>;
 
 def note_drv_command_failed_diag_msg : Note<
   "diagnostic msg: %0">;
@@ -160,4 +167,11 @@ def err_analyzer_config_no_value : Error<
   "analyzer-config option '%0' has a key but no value">;
 def err_analyzer_config_multiple_values : Error<
   "analyzer-config option '%0' should contain only one '='">;
+
+def err_drv_modules_validate_once_requires_timestamp : Error<
+  "option '-fmodules-validate-once-per-build-session' requires "
+  "'-fbuild-session-timestamp=<seconds since Epoch>'">;
+
+def warn_drv_invoking_fallback : Warning<"falling back to %0">,
+  InGroup<DiagGroup<"fallback">>;
 }

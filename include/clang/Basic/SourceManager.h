@@ -42,7 +42,6 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/Support/Allocator.h"
@@ -50,6 +49,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include <cassert>
 #include <map>
+#include <memory>
 #include <vector>
 
 namespace clang {
@@ -569,7 +569,7 @@ class SourceManager : public RefCountedBase<SourceManager> {
 
   /// \brief Lazily create the object keeping overridden files info, since
   /// it is uncommonly used.
-  OwningPtr<OverriddenFilesInfoTy> OverriddenFilesInfo;
+  std::unique_ptr<OverriddenFilesInfoTy> OverriddenFilesInfo;
 
   OverriddenFilesInfoTy &getOverriddenFilesInfo() {
     if (!OverriddenFilesInfo)
@@ -1292,14 +1292,28 @@ public:
   PresumedLoc getPresumedLoc(SourceLocation Loc,
                              bool UseLineDirectives = true) const;
 
-  /// \brief Returns true if both SourceLocations correspond to the same file.
-  bool isFromSameFile(SourceLocation Loc1, SourceLocation Loc2) const {
+  /// \brief Returns whether the PresumedLoc for a given SourceLocation is 
+  /// in the main file.
+  ///
+  /// This computes the "presumed" location for a SourceLocation, then checks
+  /// whether it came from a file other than the main file. This is different
+  /// from isWrittenInMainFile() because it takes line marker directives into
+  /// account.
+  bool isInMainFile(SourceLocation Loc) const;
+
+  /// \brief Returns true if the spelling locations for both SourceLocations
+  /// are part of the same file buffer.
+  ///
+  /// This check ignores line marker directives.
+  bool isWrittenInSameFile(SourceLocation Loc1, SourceLocation Loc2) const {
     return getFileID(Loc1) == getFileID(Loc2);
   }
 
-  /// \brief Returns true if the file of provided SourceLocation is the main
-  /// file.
-  bool isFromMainFile(SourceLocation Loc) const {
+  /// \brief Returns true if the spelling location for the given location
+  /// is in the main file buffer.
+  ///
+  /// This check ignores line marker directives.
+  bool isWrittenInMainFile(SourceLocation Loc) const {
     return getFileID(Loc) == getMainFileID();
   }
 
@@ -1318,7 +1332,7 @@ public:
     return loc.isMacroID() && isInSystemHeader(getSpellingLoc(loc));
   }
 
-  /// \brief The size of the SLocEnty that \p FID represents.
+  /// \brief The size of the SLocEntry that \p FID represents.
   unsigned getFileIDSize(FileID FID) const;
 
   /// \brief Given a specific FileID, returns true if \p Loc is inside that

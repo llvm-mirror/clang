@@ -20,6 +20,7 @@
 #include "CXXABI.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/MangleNumberingContext.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/TargetInfo.h"
@@ -27,6 +28,24 @@
 using namespace clang;
 
 namespace {
+
+/// \brief Keeps track of the mangled names of lambda expressions and block
+/// literals within a particular context.
+class ItaniumNumberingContext : public MangleNumberingContext {
+  llvm::DenseMap<IdentifierInfo*, unsigned> VarManglingNumbers;
+  llvm::DenseMap<IdentifierInfo*, unsigned> TagManglingNumbers;
+
+public:
+  /// Variable decls are numbered by identifier.
+  unsigned getManglingNumber(const VarDecl *VD, unsigned) override {
+    return ++VarManglingNumbers[VD->getIdentifier()];
+  }
+
+  unsigned getManglingNumber(const TagDecl *TD, unsigned) override {
+    return ++TagManglingNumbers[TD->getIdentifier()];
+  }
+};
+
 class ItaniumCXXABI : public CXXABI {
 protected:
   ASTContext &Context;
@@ -34,7 +53,7 @@ public:
   ItaniumCXXABI(ASTContext &Ctx) : Context(Ctx) { }
 
   std::pair<uint64_t, unsigned>
-  getMemberPointerWidthAndAlign(const MemberPointerType *MPT) const {
+  getMemberPointerWidthAndAlign(const MemberPointerType *MPT) const override {
     const TargetInfo &Target = Context.getTargetInfo();
     TargetInfo::IntType PtrDiff = Target.getPtrDiffType(0);
     uint64_t Width = Target.getTypeWidth(PtrDiff);
@@ -44,13 +63,17 @@ public:
     return std::make_pair(Width, Align);
   }
 
-  CallingConv getDefaultMethodCallConv(bool isVariadic) const {
+  CallingConv getDefaultMethodCallConv(bool isVariadic) const override {
+    const llvm::Triple &T = Context.getTargetInfo().getTriple();
+    if (!isVariadic && T.isWindowsGNUEnvironment() &&
+        T.getArch() == llvm::Triple::x86)
+      return CC_X86ThisCall;
     return CC_C;
   }
 
   // We cheat and just check that the class has a vtable pointer, and that it's
   // only big enough to have a vtable pointer and nothing more (or less).
-  bool isNearlyEmpty(const CXXRecordDecl *RD) const {
+  bool isNearlyEmpty(const CXXRecordDecl *RD) const override {
 
     // Check that the class has a vtable pointer.
     if (!RD->isDynamicClass())
@@ -60,6 +83,10 @@ public:
     CharUnits PointerSize = 
       Context.toCharUnitsFromBits(Context.getTargetInfo().getPointerWidth(0));
     return Layout.getNonVirtualSize() == PointerSize;
+  }
+
+  MangleNumberingContext *createMangleNumberingContext() const override {
+    return new ItaniumNumberingContext();
   }
 };
 

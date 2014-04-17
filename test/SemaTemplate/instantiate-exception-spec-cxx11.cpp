@@ -1,7 +1,10 @@
-// RUN: %clang_cc1 -fsyntax-only -verify -std=c++11 -ftemplate-depth 16 -fcxx-exceptions -fexceptions %s
+// RUN: %clang_cc1 -fsyntax-only -verify -triple %itanium_abi_triple -std=c++11 -ftemplate-depth 16 -fcxx-exceptions -fexceptions %s
 
 // DR1330: an exception specification for a function template is only
 // instantiated when it is needed.
+
+// Note: the test is Itanium-specific because it depends on key functions in the
+// PR12763 namespace.
 
 template<typename T> void f1(T*) throw(T); // expected-error{{incomplete type 'Incomplete' is not allowed in exception specification}}
 struct Incomplete; // expected-note{{forward}}
@@ -44,13 +47,14 @@ namespace dr1330_example {
     A<int>().f(42);
   }
 
+  struct S {
+    template<typename T>
+    static int f() noexcept(noexcept(A<T>().f("boo!"))) { return 0; } // \
+    // expected-note {{instantiation of exception spec}}
+    typedef decltype(f<S>()) X;
+  };
+
   int test2() {
-    struct S {
-      template<typename T>
-      static int f() noexcept(noexcept(A<T>().f("boo!"))) { return 0; } // \
-      // expected-note {{instantiation of exception spec}}
-      typedef decltype(f<S>()) X;
-    };
     S().f<S>(); // ok
     S().f<int>(); // expected-note {{instantiation of exception spec}}
   }

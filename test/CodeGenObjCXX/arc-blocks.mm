@@ -2,7 +2,7 @@
 
 // CHECK: [[A:.*]] = type { i64, [10 x i8*] }
 
-// CHECK: [[LAYOUT0:@.*]] = internal global [3 x i8] c" 9\00"
+// CHECK: [[LAYOUT0:@.*]] = private global [3 x i8] c" 9\00"
 
 // rdar://13045269
 // If a __block variable requires extended layout information *and*
@@ -16,7 +16,7 @@ namespace test0 {
   void foo() {
     __block A v;
   }
-  // CHECK:    define void @_ZN5test03fooEv() 
+  // CHECK-LABEL:    define void @_ZN5test03fooEv() 
   // CHECK:      [[V:%.*]] = alloca [[BYREF_A:%.*]], align 8
   // CHECK:      [[T0:%.*]] = getelementptr inbounds [[BYREF_A]]* [[V]], i32 0, i32 4
   // CHECK-NEXT: store i8* bitcast (void (i8*, i8*)* [[COPY_HELPER:@.*]] to i8*), i8** [[T0]]

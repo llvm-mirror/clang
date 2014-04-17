@@ -12,6 +12,7 @@
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
+#include "clang/Basic/CharInfo.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -41,14 +42,16 @@ good implements_child_begin_end(Comment::child_iterator (T::*)() const) {
   return good();
 }
 
+LLVM_ATTRIBUTE_UNUSED
 static inline bad implements_child_begin_end(
                       Comment::child_iterator (Comment::*)() const) {
   return bad();
 }
 
 #define ASSERT_IMPLEMENTS_child_begin(function) \
-  (void) sizeof(good(implements_child_begin_end(function)))
+  (void) good(implements_child_begin_end(function))
 
+LLVM_ATTRIBUTE_UNUSED
 static inline void CheckCommentASTNodes() {
 #define ABSTRACT_COMMENT(COMMENT)
 #define COMMENT(CLASS, PARENT) \
@@ -94,9 +97,7 @@ Comment::child_iterator Comment::child_end() const {
 bool TextComment::isWhitespaceNoCache() const {
   for (StringRef::const_iterator I = Text.begin(), E = Text.end();
        I != E; ++I) {
-    const char C = *I;
-    if (C != ' ' && C != '\n' && C != '\r' &&
-        C != '\t' && C != '\f' && C != '\v')
+    if (!clang::isWhitespace(*I))
       return false;
   }
   return true;
@@ -158,7 +159,7 @@ void DeclInfo::fill() {
     Kind = FunctionKind;
     ParamVars = ArrayRef<const ParmVarDecl *>(FD->param_begin(),
                                               FD->getNumParams());
-    ResultType = FD->getResultType();
+    ReturnType = FD->getReturnType();
     unsigned NumLists = FD->getNumTemplateParameterLists();
     if (NumLists != 0) {
       TemplateKind = TemplateSpecialization;
@@ -179,7 +180,7 @@ void DeclInfo::fill() {
     Kind = FunctionKind;
     ParamVars = ArrayRef<const ParmVarDecl *>(MD->param_begin(),
                                               MD->param_size());
-    ResultType = MD->getResultType();
+    ReturnType = MD->getReturnType();
     IsObjCMethod = true;
     IsInstanceMethod = MD->isInstanceMethod();
     IsClassMethod = !IsInstanceMethod;
@@ -192,7 +193,7 @@ void DeclInfo::fill() {
     const FunctionDecl *FD = FTD->getTemplatedDecl();
     ParamVars = ArrayRef<const ParmVarDecl *>(FD->param_begin(),
                                               FD->getNumParams());
-    ResultType = FD->getResultType();
+    ReturnType = FD->getReturnType();
     TemplateParameters = FTD->getTemplateParameters();
     break;
   }
@@ -250,6 +251,16 @@ void DeclInfo::fill() {
         TL = PointerTL.getPointeeLoc().getUnqualifiedLoc();
         continue;
       }
+      // Look through reference types.
+      if (ReferenceTypeLoc ReferenceTL = TL.getAs<ReferenceTypeLoc>()) {
+        TL = ReferenceTL.getPointeeLoc().getUnqualifiedLoc();
+        continue;
+      }
+      // Look through adjusted types.
+      if (AdjustedTypeLoc ATL = TL.getAs<AdjustedTypeLoc>()) {
+        TL = ATL.getOriginalLoc();
+        continue;
+      }
       if (BlockPointerTypeLoc BlockPointerTL =
               TL.getAs<BlockPointerTypeLoc>()) {
         TL = BlockPointerTL.getPointeeLoc().getUnqualifiedLoc();
@@ -260,13 +271,39 @@ void DeclInfo::fill() {
         TL = MemberPointerTL.getPointeeLoc().getUnqualifiedLoc();
         continue;
       }
+      if (ElaboratedTypeLoc ETL = TL.getAs<ElaboratedTypeLoc>()) {
+        TL = ETL.getNamedTypeLoc();
+        continue;
+      }
       // Is this a typedef for a function type?
       if (FunctionTypeLoc FTL = TL.getAs<FunctionTypeLoc>()) {
         Kind = FunctionKind;
         ArrayRef<ParmVarDecl *> Params = FTL.getParams();
         ParamVars = ArrayRef<const ParmVarDecl *>(Params.data(),
                                                   Params.size());
-        ResultType = FTL.getResultLoc().getType();
+        ReturnType = FTL.getReturnLoc().getType();
+        break;
+      }
+      if (TemplateSpecializationTypeLoc STL =
+              TL.getAs<TemplateSpecializationTypeLoc>()) {
+        // If we have a typedef to a template specialization with exactly one
+        // template argument of a function type, this looks like std::function,
+        // boost::function, or other function wrapper.  Treat these typedefs as
+        // functions.
+        if (STL.getNumArgs() != 1)
+          break;
+        TemplateArgumentLoc MaybeFunction = STL.getArgLoc(0);
+        if (MaybeFunction.getArgument().getKind() != TemplateArgument::Type)
+          break;
+        TypeSourceInfo *MaybeFunctionTSI = MaybeFunction.getTypeSourceInfo();
+        TypeLoc TL = MaybeFunctionTSI->getTypeLoc().getUnqualifiedLoc();
+        if (FunctionTypeLoc FTL = TL.getAs<FunctionTypeLoc>()) {
+          Kind = FunctionKind;
+          ArrayRef<ParmVarDecl *> Params = FTL.getParams();
+          ParamVars = ArrayRef<const ParmVarDecl *>(Params.data(),
+                                                    Params.size());
+          ReturnType = FTL.getReturnLoc().getType();
+        }
         break;
       }
       break;

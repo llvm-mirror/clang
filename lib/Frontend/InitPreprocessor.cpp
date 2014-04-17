@@ -29,6 +29,12 @@
 #include "llvm/Support/Path.h"
 using namespace clang;
 
+static bool MacroBodyEndsInBackslash(StringRef MacroBody) {
+  while (!MacroBody.empty() && isWhitespace(MacroBody.back()))
+    MacroBody = MacroBody.drop_back();
+  return !MacroBody.empty() && MacroBody.back() == '\\';
+}
+
 // Append a #define line to Buf for Macro.  Macro should be of the form XXX,
 // in which case we emit "#define XXX 1" or "XXX=Y z W" in which case we emit
 // "#define XXX Y z W".  To get a #define with no value, use "XXX=".
@@ -43,7 +49,14 @@ static void DefineBuiltinMacro(MacroBuilder &Builder, StringRef Macro,
     if (End != StringRef::npos)
       Diags.Report(diag::warn_fe_macro_contains_embedded_newline)
         << MacroName;
-    Builder.defineMacro(MacroName, MacroBody.substr(0, End));
+    MacroBody = MacroBody.substr(0, End);
+    // We handle macro bodies which end in a backslash by appending an extra
+    // backslash+newline.  This makes sure we don't accidentally treat the
+    // backslash as a line continuation marker.
+    if (MacroBodyEndsInBackslash(MacroBody))
+      Builder.defineMacro(MacroName, Twine(MacroBody) + "\\\n");
+    else
+      Builder.defineMacro(MacroName, MacroBody);
   } else {
     // Push "macroname 1".
     Builder.defineMacro(Macro);
@@ -287,7 +300,7 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
                                                const LangOptions &LangOpts,
                                                const FrontendOptions &FEOpts,
                                                MacroBuilder &Builder) {
-  if (!LangOpts.MicrosoftMode && !LangOpts.TraditionalCPP)
+  if (!LangOpts.MSVCCompat && !LangOpts.TraditionalCPP)
     Builder.defineMacro("__STDC__");
   if (LangOpts.Freestanding)
     Builder.defineMacro("__STDC_HOSTED__", "0");
@@ -302,9 +315,11 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
     else if (!LangOpts.GNUMode && LangOpts.Digraphs)
       Builder.defineMacro("__STDC_VERSION__", "199409L");
   } else {
-    // FIXME: Use the right value for __cplusplus for C++1y once one is chosen.
-    if (LangOpts.CPlusPlus1y)
-      Builder.defineMacro("__cplusplus", "201305L");
+    // C++1y [cpp.predefined]p1:
+    //   The name __cplusplus is defined to the value 201402L when compiling a
+    //   C++ translation unit.
+     if (LangOpts.CPlusPlus1y)
+      Builder.defineMacro("__cplusplus", "201402L");
     // C++11 [cpp.predefined]p1:
     //   The name __cplusplus is defined to the value 201103L when compiling a
     //   C++ translation unit.
@@ -317,12 +332,52 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
       Builder.defineMacro("__cplusplus", "199711L");
   }
 
+  // In C11 these are environment macros. In C++11 they are only defined
+  // as part of <cuchar>. To prevent breakage when mixing C and C++
+  // code, define these macros unconditionally. We can define them
+  // unconditionally, as Clang always uses UTF-16 and UTF-32 for 16-bit
+  // and 32-bit character literals.
+  Builder.defineMacro("__STDC_UTF_16__", "1");
+  Builder.defineMacro("__STDC_UTF_32__", "1");
+
   if (LangOpts.ObjC1)
     Builder.defineMacro("__OBJC__");
 
   // Not "standard" per se, but available even with the -undef flag.
   if (LangOpts.AsmPreprocessor)
     Builder.defineMacro("__ASSEMBLER__");
+}
+
+/// Initialize the predefined C++ language feature test macros defined in
+/// ISO/IEC JTC1/SC22/WG21 (C++) SD-6: "SG10 Feature Test Recommendations".
+static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
+                                                 MacroBuilder &Builder) {
+  // C++11 features.
+  if (LangOpts.CPlusPlus11) {
+    Builder.defineMacro("__cpp_unicode_characters", "200704");
+    Builder.defineMacro("__cpp_raw_strings", "200710");
+    Builder.defineMacro("__cpp_unicode_literals", "200710");
+    Builder.defineMacro("__cpp_user_defined_literals", "200809");
+    Builder.defineMacro("__cpp_lambdas", "200907");
+    Builder.defineMacro("__cpp_constexpr",
+                        LangOpts.CPlusPlus1y ? "201304" : "200704");
+    Builder.defineMacro("__cpp_static_assert", "200410");
+    Builder.defineMacro("__cpp_decltype", "200707");
+    Builder.defineMacro("__cpp_attributes", "200809");
+    Builder.defineMacro("__cpp_rvalue_references", "200610");
+    Builder.defineMacro("__cpp_variadic_templates", "200704");
+  }
+
+  // C++14 features.
+  if (LangOpts.CPlusPlus1y) {
+    Builder.defineMacro("__cpp_binary_literals", "201304");
+    Builder.defineMacro("__cpp_init_captures", "201304");
+    Builder.defineMacro("__cpp_generic_lambdas", "201304");
+    Builder.defineMacro("__cpp_decltype_auto", "201304");
+    Builder.defineMacro("__cpp_return_type_deduction", "201304");
+    Builder.defineMacro("__cpp_aggregate_nsdmi", "201304");
+    Builder.defineMacro("__cpp_variable_templates", "201304");
+  }
 }
 
 static void InitializePredefinedMacros(const TargetInfo &TI,
@@ -346,7 +401,7 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
                       + getClangFullRepositoryVersion() + "\"");
 #undef TOSTR
 #undef TOSTR2
-  if (!LangOpts.MicrosoftMode) {
+  if (!LangOpts.MSVCCompat) {
     // Currently claim to be compatible with GCC 4.2.1-5621, but only if we're
     // not compiling for MSVC compatibility
     Builder.defineMacro("__GNUC_MINOR__", "2");
@@ -395,11 +450,30 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
     if (LangOpts.ObjCRuntime.isNeXTFamily())
       Builder.defineMacro("__NEXT_RUNTIME__");
 
+    if (LangOpts.ObjCRuntime.getKind() == ObjCRuntime::ObjFW) {
+      VersionTuple tuple = LangOpts.ObjCRuntime.getVersion();
+
+      unsigned minor = 0;
+      if (tuple.getMinor().hasValue())
+        minor = tuple.getMinor().getValue();
+
+      unsigned subminor = 0;
+      if (tuple.getSubminor().hasValue())
+        subminor = tuple.getSubminor().getValue();
+
+      Builder.defineMacro("__OBJFW_RUNTIME_ABI__",
+                          Twine(tuple.getMajor() * 10000 + minor * 100 +
+                                subminor));
+    }
+
     Builder.defineMacro("IBOutlet", "__attribute__((iboutlet))");
     Builder.defineMacro("IBOutletCollection(ClassName)",
                         "__attribute__((iboutletcollection(ClassName)))");
     Builder.defineMacro("IBAction", "void)__attribute__((ibaction)");
   }
+
+  if (LangOpts.CPlusPlus)
+    InitializeCPlusPlusFeatureTestMacros(LangOpts, Builder);
 
   // darwin_constant_cfstrings controls this. This is also dependent
   // on other things like the runtime I believe.  This is set even for C code.
@@ -434,19 +508,10 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   }
 
   if (LangOpts.MicrosoftExt) {
-    // Both __PRETTY_FUNCTION__ and __FUNCTION__ are GCC extensions, however
-    // VC++ appears to only like __FUNCTION__.
-    Builder.defineMacro("__PRETTY_FUNCTION__", "__FUNCTION__");
-    // Work around some issues with Visual C++ headers.
     if (LangOpts.WChar) {
       // wchar_t supported as a keyword.
       Builder.defineMacro("_WCHAR_T_DEFINED");
       Builder.defineMacro("_NATIVE_WCHAR_T_DEFINED");
-    }
-    if (LangOpts.CPlusPlus) {
-      // FIXME: Support Microsoft's __identifier extension in the lexer.
-      Builder.append("#define __identifier(x) x");
-      Builder.append("class type_info;");
     }
   }
 
@@ -468,11 +533,13 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   Builder.defineMacro("__ORDER_LITTLE_ENDIAN__", "1234");
   Builder.defineMacro("__ORDER_BIG_ENDIAN__",    "4321");
   Builder.defineMacro("__ORDER_PDP_ENDIAN__",    "3412");
-  if (TI.isBigEndian())
+  if (TI.isBigEndian()) {
     Builder.defineMacro("__BYTE_ORDER__", "__ORDER_BIG_ENDIAN__");
-  else
+    Builder.defineMacro("__BIG_ENDIAN__");
+  } else {
     Builder.defineMacro("__BYTE_ORDER__", "__ORDER_LITTLE_ENDIAN__");
-
+    Builder.defineMacro("__LITTLE_ENDIAN__");
+  }
 
   if (TI.getPointerWidth(0) == 64 && TI.getLongWidth() == 64
       && TI.getIntWidth() == 32) {
@@ -484,7 +551,7 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   assert(TI.getCharWidth() == 8 && "Only support 8-bit char so far");
   Builder.defineMacro("__CHAR_BIT__", "8");
 
-  DefineTypeSize("__SCHAR_MAX__", TI.getCharWidth(), "", true, Builder);
+  DefineTypeSize("__SCHAR_MAX__", TargetInfo::SignedChar, TI, Builder);
   DefineTypeSize("__SHRT_MAX__", TargetInfo::SignedShort, TI, Builder);
   DefineTypeSize("__INT_MAX__", TargetInfo::SignedInt, TI, Builder);
   DefineTypeSize("__LONG_MAX__", TargetInfo::SignedLong, TI, Builder);
@@ -621,8 +688,10 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
 
   if (LangOpts.getStackProtector() == LangOptions::SSPOn)
     Builder.defineMacro("__SSP__");
+  else if (LangOpts.getStackProtector() == LangOptions::SSPStrong)
+    Builder.defineMacro("__SSP_STRONG__", "2");
   else if (LangOpts.getStackProtector() == LangOptions::SSPReq)
-    Builder.defineMacro("__SSP_ALL__", "2");
+    Builder.defineMacro("__SSP_ALL__", "3");
 
   if (FEOpts.ProgramAction == frontend::RewriteObjC)
     Builder.defineMacro("__weak", "__attribute__((objc_gc(weak)))");
@@ -645,12 +714,12 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
 
   // OpenMP definition
   if (LangOpts.OpenMP) {
-    // OpenMP 2.2: 
+    // OpenMP 2.2:
     //   In implementations that support a preprocessor, the _OPENMP
     //   macro name is defined to have the decimal value yyyymm where
     //   yyyy and mm are the year and the month designations of the
     //   version of the OpenMP API that the implementation support.
-    Builder.defineMacro("_OPENMP", "201107");
+    Builder.defineMacro("_OPENMP", "201307");
   }
 
   // Get other target #defines.

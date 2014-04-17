@@ -1,4 +1,4 @@
-// RUN: %clang -cc1 -triple x86_64-unknown-unknown -std=c++11 -verify %s
+// RUN: %clang_cc1 -triple x86_64-unknown-unknown -std=c++11 -verify %s
 
 // Error cases.
 
@@ -11,14 +11,13 @@ int *[[gnu::unused]] attr_on_ptr;
 
 // Valid cases.
 
+void aliasb [[gnu::alias("_Z6alias1v")]] ();
 void alias1() {}
-void alias2 [[gnu::alias("_Z6alias1v")]] ();
+void aliasa [[gnu::alias("_Z6alias1v")]] ();
 
 [[gnu::aligned(8)]] int aligned;
 void aligned_fn [[gnu::aligned(32)]] ();
 struct [[gnu::aligned(8)]] aligned_struct {};
-
-[[gnu::malloc, gnu::alloc_size(1,2)]] void *alloc_size(int a, int b);
 
 void always_inline [[gnu::always_inline]] ();
 

@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 %s -emit-llvm -o - | FileCheck %s
+// RUN: %clang_cc1 %s -emit-llvm -triple %itanium_abi_triple -o - | FileCheck %s
 // rdar: //8620524
 // PR7851
 struct string {
@@ -18,7 +18,7 @@ void IntToString(T a)
 }
 
 int main() {
-// CHECK: define linkonce_odr void @_Z11IntToStringIcEvT_(
+// CHECK-LABEL: define linkonce_odr void @_Z11IntToStringIcEvT_(
   IntToString('a');
 }
 

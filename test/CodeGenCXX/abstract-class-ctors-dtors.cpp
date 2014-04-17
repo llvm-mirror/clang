@@ -8,9 +8,9 @@ struct A {
 };
 
 // CHECK-NOT: define void @_ZN1AC1Ev
-// CHECK: define void @_ZN1AC2Ev
-// CHECK: define void @_ZN1AD1Ev
-// CHECK: define void @_ZN1AD2Ev
+// CHECK-LABEL: define void @_ZN1AC2Ev
+// CHECK-LABEL: define void @_ZN1AD2Ev
+// CHECK-LABEL: define void @_ZN1AD1Ev
 A::A() { }
 
 A::~A() { }

@@ -2,12 +2,12 @@
 Modules
 =======
 
+.. warning::
+   The functionality described on this page is supported for C and
+   Objective-C. C++ support is experimental.
+
 .. contents::
    :local:
-
-.. warning::
-   The functionality described on this page is still experimental! Please
-   try it out and send us bug reports!
 
 Introduction
 ============
@@ -106,24 +106,25 @@ Using Modules
 =============
 To enable modules, pass the command-line flag ``-fmodules`` [#]_. This will make any modules-enabled software libraries available as modules as well as introducing any modules-specific syntax. Additional `command-line parameters`_ are described in a separate section later.
 
-Import declaration
-------------------
-The most direct way to import a module is with an *import declaration*, which imports the named module:
+Objective-C Import declaration
+------------------------------
+Objective-C provides syntax for importing a module via an *@import declaration*, which imports the named module:
 
 .. parsed-literal::
 
-  import std;
+  @import std;
 
-The import declaration above imports the entire contents of the ``std`` module (which would contain, e.g., the entire C or C++ standard library) and make its API available within the current translation unit. To import only part of a module, one may use dot syntax to specific a particular submodule, e.g.,
+The @import declaration above imports the entire contents of the ``std`` module (which would contain, e.g., the entire C or C++ standard library) and make its API available within the current translation unit. To import only part of a module, one may use dot syntax to specific a particular submodule, e.g.,
 
 .. parsed-literal::
 
-  import std.io;
+  @import std.io;
 
 Redundant import declarations are ignored, and one is free to import modules at any point within the translation unit, so long as the import declaration is at global scope.
 
-.. warning::
-  The import declaration syntax described here does not actually exist. Rather, it is a straw man proposal that may very well change when modules are discussed in the C and C++ committees. See the section `Includes as imports`_ to see how modules get imported today.
+At present, there is no C or C++ syntax for import declarations. Clang
+will track the modules proposal in the C++ committee. See the section
+`Includes as imports`_ to see how modules get imported today.
 
 Includes as imports
 -------------------
@@ -143,7 +144,7 @@ Module maps
 -----------
 The crucial link between modules and headers is described by a *module map*, which describes how a collection of existing headers maps on to the (logical) structure of a module. For example, one could imagine a module ``std`` covering the C standard library. Each of the C standard library headers (``<stdio.h>``, ``<stdlib.h>``, ``<math.h>``, etc.) would contribute to the ``std`` module, by placing their respective APIs into the corresponding submodule (``std.io``, ``std.lib``, ``std.math``, etc.). Having a list of the headers that are part of the ``std`` module allows the compiler to build the ``std`` module as a standalone entity, and having the mapping from header names to (sub)modules allows the automatic translation of ``#include`` directives to module imports.
 
-Module maps are specified as separate files (each named ``module.map``) alongside the headers they describe, which allows them to be added to existing software libraries without having to change the library headers themselves (in most cases [#]_). The actual `Module map language`_ is described in a later section.
+Module maps are specified as separate files (each named ``module.modulemap``) alongside the headers they describe, which allows them to be added to existing software libraries without having to change the library headers themselves (in most cases [#]_). The actual `Module map language`_ is described in a later section.
 
 .. note::
 
@@ -188,20 +189,69 @@ Command-line parameters
 ``-module-file-info <module file name>``
   Debugging aid that prints information about a given module file (with a ``.pcm`` extension), including the language and preprocessor options that particular module variant was built with.
 
+``-fmodules-decluse``
+  Enable checking of module ``use`` declarations.
+
+``-fmodule-name=module-id``
+  Consider a source file as a part of the given module.
+
+``-fmodule-map-file=<file>``
+  Load the given module map file if a header from its directory or one of its subdirectories is loaded.
+
+Module Semantics
+================
+
+Modules are modeled as if each submodule were a separate translation unit, and a module import makes names from the other translation unit visible. Each submodule starts with a new preprocessor state and an empty translation unit.
+
+.. note::
+
+  This behavior is currently only approximated when building a module. Entities within a submodule that has already been built are visible when building later submodules in that module. This can lead to fragile modules that depend on the build order used for the submodules of the module, and should not be relied upon.
+
+As an example, in C, this implies that if two structs are defined in different submodules with the same name, those two types are distinct types (but may be *compatible* types if their definitions match. In C++, two structs defined with the same name in different submodules are the *same* type, and must be equivalent under C++'s One Definition Rule.
+
+.. note::
+
+  Clang currently only performs minimal checking for violations of the One Definition Rule.
+
+Macros
+------
+
+The C and C++ preprocessor assumes that the input text is a single linear buffer, but with modules this is not the case. It is possible to import two modules that have conflicting definitions for a macro (or where one ``#define``\s a macro and the other ``#undef``\ines it). The rules for handling macro definitions in the presence of modules are as follows:
+
+* Each definition and undefinition of a macro is considered to be a distinct entity.
+* Such entities are *visible* if they are from the current submodule or translation unit, or if they were exported from a submodule that has been imported.
+* A ``#define X`` or ``#undef X`` directive *overrides* all definitions of ``X`` that are visible at the point of the directive.
+* A ``#define`` or ``#undef`` directive is *active* if it is visible and no visible directive overrides it.
+* A set of macro directives is *consistent* if it consists of only ``#undef`` directives, or if all ``#define`` directives in the set define the macro name to the same sequence of tokens (following the usual rules for macro redefinitions).
+* If a macro name is used and the set of active directives is not consistent, the program is ill-formed. Otherwise, the (unique) meaning of the macro name is used.
+
+For example, suppose:
+
+* ``<stdio.h>`` defines a macro ``getc`` (and exports its ``#define``)
+* ``<cstdio>`` imports the ``<stdio.h>`` module and undefines the macro (and exports its ``#undef``)
+  
+The ``#undef`` overrides the ``#define``, and a source file that imports both modules *in any order* will not see ``getc`` defined as a macro.
+
 Module Map Language
 ===================
 
 The module map language describes the mapping from header files to the
 logical structure of modules. To enable support for using a library as
-a module, one must write a ``module.map`` file for that library. The
-``module.map`` file is placed alongside the header files themselves,
+a module, one must write a ``module.modulemap`` file for that library. The
+``module.modulemap`` file is placed alongside the header files themselves,
 and is written in the module map language described below.
+
+.. note::
+    For compatibility with previous releases, if a module map file named
+    ``module.modulemap`` is not found, Clang will also search for a file named
+    ``module.map``. This behavior is deprecated and we plan to eventually
+    remove it.
 
 As an example, the module map file for the C standard library might look a bit like this:
 
 .. parsed-literal::
 
-  module std [system] {
+  module std [system] [extern_c] {
     module complex {
       header "complex.h"
       export *
@@ -238,6 +288,7 @@ Module map files use a simplified form of the C99 lexer, with the same rules for
   ``conflict``      ``framework``  ``requires``
   ``exclude``       ``header``     ``private``
   ``explicit``      ``link``       ``umbrella``
+  ``extern``        ``use``
 
 Module map file
 ---------------
@@ -263,6 +314,7 @@ A module declaration describes a module, including the headers that contribute t
 
   *module-declaration*:
     ``explicit``:sub:`opt` ``framework``:sub:`opt` ``module`` *module-id* *attributes*:sub:`opt` '{' *module-member** '}'
+    ``extern`` ``module`` *module-id* *string-literal*
 
 The *module-id* should consist of only a single *identifier*, which provides the name of the module being defined. Each module shall have a single definition. 
 
@@ -273,13 +325,15 @@ The ``framework`` qualifier specifies that this module corresponds to a Darwin-s
 .. parsed-literal::
 
   Name.framework/
-    module.map                Module map for the framework
+    Modules/module.modulemap  Module map for the framework
     Headers/                  Subdirectory containing framework headers
     Frameworks/               Subdirectory containing embedded frameworks
     Resources/                Subdirectory containing additional resources
     Name                      Symbolic link to the shared library for the framework
 
-The ``system`` attribute specifies that the module is a system module. When a system module is rebuilt, all of the module's header will be considered system headers, which suppresses warnings. This is equivalent to placing ``#pragma GCC system_header`` in each of the module's headers. The form of attributes is described in the section Attributes_, below.
+The ``system`` attribute specifies that the module is a system module. When a system module is rebuilt, all of the module's headers will be considered system headers, which suppresses warnings. This is equivalent to placing ``#pragma GCC system_header`` in each of the module's headers. The form of attributes is described in the section Attributes_, below.
+
+The ``extern_c`` attribute specifies that the module contains C code that can be used from within C++. When such a module is built for use in C++ code, all of the module's headers will be treated as if they were contained within an implicit ``extern "C"`` block. An import for a module with this attribute can appear within an ``extern "C"`` block. No other restrictions are lifted, however: the module currently cannot be imported within an ``extern "C"`` block in a namespace.
 
 Modules can have a number of different kinds of members, each of which is described below:
 
@@ -291,9 +345,12 @@ Modules can have a number of different kinds of members, each of which is descri
     *umbrella-dir-declaration*
     *submodule-declaration*
     *export-declaration*
+    *use-declaration*
     *link-declaration*
     *config-macros-declaration*
     *conflict-declaration*
+
+An extern module references a module defined by the *module-id* in a file given by the *string-literal*. The file can be referenced either by an absolute path or by a path relative to the current map file.
 
 Requires declaration
 ~~~~~~~~~~~~~~~~~~~~
@@ -305,9 +362,12 @@ A *requires-declaration* specifies the requirements that an importing translatio
     ``requires`` *feature-list*
 
   *feature-list*:
-    *identifier* (',' *identifier*)*
+    *feature* (',' *feature*)*
 
-The requirements clause allows specific modules or submodules to specify that they are only accessible with certain language dialects or on certain platforms. The feature list is a set of identifiers, defined below. If any of the features is not available in a given translation unit, that translation unit shall not import the module.
+  *feature*:
+    ``!``:sub:`opt` *identifier*
+
+The requirements clause allows specific modules or submodules to specify that they are only accessible with certain language dialects or on certain platforms. The feature list is a set of identifiers, defined below. If any of the features is not available in a given translation unit, that translation unit shall not import the module. The optional ``!`` indicates that a feature is incompatible with the module.
 
 The following features are defined:
 
@@ -529,6 +589,36 @@ Note that, if ``Derived.h`` includes ``Base.h``, one can simply use a wildcard e
   compatibility for programs that rely on transitive inclusion (i.e.,
   all of them).
 
+Use declaration
+~~~~~~~~~~~~~~~
+A *use-declaration* specifies one of the other modules that the module is allowed to use. An import or include not matching one of these is rejected when the option *-fmodules-decluse*.
+
+.. parsed-literal::
+
+  *use-declaration*:
+    ``use`` *module-id*
+
+**Example**:: In the following example, use of A from C is not declared, so will trigger a warning.
+
+.. parsed-literal::
+
+  module A {
+    header "a.h"
+  }
+
+  module B {
+    header "b.h"
+  }
+
+  module C {
+    header "c.h"
+    use B
+  }
+
+When compiling a source file that implements a module, use the option ``-fmodule-name=module-id`` to indicate that the source file is logically part of that module.
+
+The compiler at present only applies restrictions to the module directly being built.
+
 Link declaration
 ~~~~~~~~~~~~~~~~
 A *link-declaration* specifies a library or framework against which a program should be linked if the enclosing module is imported in any translation unit in that program.
@@ -642,6 +732,63 @@ Attributes are used in a number of places in the grammar to describe specific be
     '[' *identifier* ']'
 
 Any *identifier* can be used as an attribute, and each declaration specifies what attributes can be applied to it.
+
+Private Module Map Files
+------------------------
+Module map files are typically named ``module.modulemap`` and live
+either alongside the headers they describe or in a parent directory of
+the headers they describe. These module maps typically describe all of
+the API for the library.
+
+However, in some cases, the presence or absence of particular headers
+is used to distinguish between the "public" and "private" APIs of a
+particular library. For example, a library may contain the headers
+``Foo.h`` and ``Foo_Private.h``, providing public and private APIs,
+respectively. Additionally, ``Foo_Private.h`` may only be available on
+some versions of library, and absent in others. One cannot easily
+express this with a single module map file in the library:
+
+.. parsed-literal::
+
+  module Foo {
+    header "Foo.h"
+    
+    explicit module Private {
+      header "Foo_Private.h"
+    }
+  }
+
+
+because the header ``Foo_Private.h`` won't always be available. The
+module map file could be customized based on whether
+``Foo_Private.h``is available or not, but doing so requires custom
+build machinery.
+
+Private module map files, which are named ``module.private.modulemap``
+(or, for backward compatibility, ``module_private.map``), allow one to
+augment the primary module map file with an additional submodule. For
+example, we would split the module map file above into two module map
+files:
+
+.. parsed-literal::
+
+  /* module.modulemap */
+  module Foo {
+    header "Foo.h"
+  }
+  
+  /* module.private.modulemap */
+  explicit module Foo.Private {
+    header "Foo_Private.h"
+  }
+
+
+When a ``module.private.modulemap`` file is found alongside a
+``module.modulemap`` file, it is loaded after the ``module.modulemap``
+file. In our example library, the ``module.private.modulemap`` file
+would be available when ``Foo_Private.h`` is available, making it
+easier to split a library's public and private APIs along header
+boundaries.
 
 Modularizing a Platform
 =======================

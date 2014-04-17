@@ -193,7 +193,7 @@ namespace PR15045 {
   };
 
   template <class T> void call_func(T t) {
-    t->func();  // expected-error-re 2 {{member reference type 'PR15045::bar' is not a pointer$}} \
+    t->func();  // expected-error-re 2 {{member reference type 'PR15045::bar' is not a pointer{{$}}}} \
                 // expected-note {{did you mean to use '.' instead?}}
   }
 
@@ -207,10 +207,20 @@ namespace PR15045 {
 
     // Make sure a fixit isn't given in the case that the '->' isn't actually
     // the problem (the problem is with the return value of an operator->).
-    f->func();  // expected-error-re {{member reference type 'PR15045::bar' is not a pointer$}}
+    f->func();  // expected-error-re {{member reference type 'PR15045::bar' is not a pointer{{$}}}}
 
     call_func(e);  // expected-note {{in instantiation of function template specialization 'PR15045::call_func<PR15045::bar>' requested here}}
 
     call_func(f);  // expected-note {{in instantiation of function template specialization 'PR15045::call_func<PR15045::foo>' requested here}}
+  }
+}
+
+namespace pr16676 {
+  struct S { int i; };
+  struct T { S* get_s(); };
+  int f(S* s) {
+    T t;
+    return t.get_s  // expected-error {{reference to non-static member function must be called; did you mean to call it with no arguments?}}
+        .i;  // expected-error {{member reference type 'pr16676::S *' is a pointer; maybe you meant to use '->'}}
   }
 }

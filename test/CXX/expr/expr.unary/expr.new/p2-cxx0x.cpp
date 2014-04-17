@@ -11,8 +11,10 @@ void f() {
   only<double*> q = new (auto) (0.0);
 
   new auto; // expected-error{{new expression for type 'auto' requires a constructor argument}}
-  new (const auto)(); // expected-error{{new expression for type 'auto const' requires a constructor argument}}
+  new (const auto)(); // expected-error{{new expression for type 'const auto' requires a constructor argument}}
   new (auto) (1,2,3); // expected-error{{new expression for type 'auto' contains multiple constructor arguments}}
+  new auto {1,2,3}; // expected-error{{new expression for type 'auto' cannot use list-initialization}}
+  new auto ({1,2,3}); // expected-error{{new expression for type 'auto' cannot use list-initialization}}
 }
 
 void p2example() {

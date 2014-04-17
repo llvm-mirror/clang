@@ -50,7 +50,7 @@ struct __declspec(uuid("0000000-0000-0000-1234-0000500000047")) uuid_attr_bad3 {
 struct __declspec(uuid("0000000-0000-0000-Z234-000000000047")) uuid_attr_bad4 { };// expected-error {{uuid attribute contains a malformed GUID}}
 struct __declspec(uuid("000000000000-0000-1234-000000000047")) uuid_attr_bad5 { };// expected-error {{uuid attribute contains a malformed GUID}}
 
-
+__declspec(uuid("000000A0-0000-0000-C000-000000000046")) int i; // expected-warning {{'uuid' attribute only applies to classes}}
 
 struct __declspec(uuid("000000A0-0000-0000-C000-000000000046"))
 struct_with_uuid { };
@@ -72,6 +72,10 @@ int uuid_sema_test()
    __uuidof(struct_without_uuid); // expected-error {{cannot call operator __uuidof on a type with no GUID}}
    __uuidof(struct_with_uuid*);
    __uuidof(struct_without_uuid*); // expected-error {{cannot call operator __uuidof on a type with no GUID}}
+   __uuidof(struct_with_uuid[1]);
+   __uuidof(struct_with_uuid*[1]); // expected-error {{cannot call operator __uuidof on a type with no GUID}}
+   __uuidof(const struct_with_uuid[1][1]);
+   __uuidof(const struct_with_uuid*[1][1]); // expected-error {{cannot call operator __uuidof on a type with no GUID}}
 
    __uuidof(var_with_uuid);
    __uuidof(var_without_uuid);// expected-error {{cannot call operator __uuidof on a type with no GUID}}
@@ -95,10 +99,10 @@ void template_uuid()
 }
 
 
-template <class T, const GUID* g = &__uuidof(T)>
+template <class T, const GUID* g = &__uuidof(T)> // expected-note {{template parameter is declared here}}
 class COM_CLASS_TEMPLATE  { };
 
-typedef COM_CLASS_TEMPLATE<struct_with_uuid, &__uuidof(struct_with_uuid)> COM_TYPE_1;
+typedef COM_CLASS_TEMPLATE<struct_with_uuid, &*&__uuidof(struct_with_uuid)> COM_TYPE_1; // expected-warning {{non-type template argument containing a dereference operation is a Microsoft extension}}
 typedef COM_CLASS_TEMPLATE<struct_with_uuid> COM_TYPE_2;
 
 template <class T, const GUID& g>
@@ -112,6 +116,28 @@ typedef COM_CLASS_TEMPLATE_REF<struct_with_uuid, __uuidof(struct_with_uuid)> COM
   }
   struct __declspec(uuid("000000A0-0000-0000-C000-000000000049")) late_defined_uuid;
 
+COM_CLASS_TEMPLATE_REF<int, __uuidof(struct_with_uuid)> good_template_arg;
+
+COM_CLASS_TEMPLATE<int, __uuidof(struct_with_uuid)> bad_template_arg; // expected-error {{non-type template argument of type 'const _GUID' is not a constant expression}}
+
+namespace PR16911 {
+struct __declspec(uuid("{12345678-1234-1234-1234-1234567890aB}")) uuid;
+struct __declspec(uuid("{12345678-1234-1234-1234-1234567890aB}")) uuid2;
+
+template <typename T, typename T2>
+struct thing {
+};
+
+struct empty {};
+struct inher : public thing<empty, uuid2> {};
+
+struct __declspec(uuid("{12345678-1234-1234-1234-1234567890aB}")) uuid;
+const struct _GUID *w = &__uuidof(inher); // expected-error{{cannot call operator __uuidof on a type with no GUID}}
+const struct _GUID *x = &__uuidof(thing<uuid, inher>);
+const struct _GUID *y = &__uuidof(thing<uuid2, uuid>); // expected-error{{cannot call operator __uuidof on a type with multiple GUIDs}}
+thing<uuid2, uuid> thing_obj = thing<uuid2, uuid>();
+const struct _GUID *z = &__uuidof(thing_obj); // expected-error{{cannot call operator __uuidof on a type with multiple GUIDs}}
+}
 
 class CtorCall {
 public:
@@ -149,7 +175,9 @@ void missing_template_keyword(){
 
 
 
-class AAAA { };
+class AAAA {
+   typedef int D;
+};
 
 template <typename T>
 class SimpleTemplate {};
@@ -171,6 +199,12 @@ void redundant_typename() {
    int k = typename var;// expected-error {{expected a qualified name after 'typename'}}
 }
 
+template <typename T>
+struct TypenameWrongPlace {
+  typename typedef T::D D;// expected-warning {{expected a qualified name after 'typename'}}
+};
+
+extern TypenameWrongPlace<AAAA> PR16925;
 
 __interface MicrosoftInterface;
 __interface MicrosoftInterface {
@@ -208,10 +242,10 @@ int __if_exists_test() {
      b++;
   }
   __if_exists(IF_EXISTS::Type_not) {
-     this wont compile.
+     this will not compile.
   }
   __if_not_exists(IF_EXISTS::Type) {
-     this wont compile.
+     this will not compile.
   }
   __if_not_exists(IF_EXISTS::Type_not) {
      b++;
@@ -225,11 +259,11 @@ __if_exists(IF_EXISTS::Type) {
 }
 
 __if_exists(IF_EXISTS::Type_not) {
- this wont compile.
+ this will not compile.
 }
 
 __if_not_exists(IF_EXISTS::Type) {
- this wont compile.
+ this will not compile.
 }
 
 __if_not_exists(IF_EXISTS::Type_not) {
@@ -246,7 +280,7 @@ int __if_exists_init_list() {
 
   int array2[] = {
     0,
-    __if_exists(IF_EXISTS::Type_not) { this wont compile }
+    __if_exists(IF_EXISTS::Type_not) { this will not compile }
     3
   };
 
@@ -258,7 +292,7 @@ int __if_exists_init_list() {
 
   int array4[] = {
     0,
-    __if_not_exists(IF_EXISTS::Type) { this wont compile }
+    __if_not_exists(IF_EXISTS::Type) { this will not compile }
     3
   };
 
@@ -275,11 +309,11 @@ class IF_EXISTS_CLASS_TEST {
   }
 
   __if_exists(IF_EXISTS::Type_not) {
-   this wont compile.
+   this will not compile.
   }
 
   __if_not_exists(IF_EXISTS::Type) {
-   this wont compile.
+   this will not compile.
   }
 
   __if_not_exists(IF_EXISTS::Type_not) {
@@ -291,10 +325,42 @@ class IF_EXISTS_CLASS_TEST {
 
 
 int __identifier(generic) = 3;
+int __identifier(int) = 4;
+struct __identifier(class) { __identifier(class) *__identifier(for); };
+__identifier(class) __identifier(struct) = { &__identifier(struct) };
+
+int __identifier for; // expected-error {{missing '(' after '__identifier'}}
+int __identifier(else} = __identifier(for); // expected-error {{missing ')' after identifier}} expected-note {{to match this '('}}
+#define identifier_weird(x) __identifier(x
+int k = identifier_weird(if)); // expected-error {{use of undeclared identifier 'if'}}
+
+// This is a bit weird, but the alternative tokens aren't keywords, and this
+// behavior matches MSVC. FIXME: Consider supporting this anyway.
+extern int __identifier(and) r; // expected-error {{cannot convert '&&' token to an identifier}}
+
+void f() {
+  __identifier(() // expected-error {{cannot convert '(' token to an identifier}}
+  __identifier(void) // expected-error {{use of undeclared identifier 'void'}}
+  __identifier()) // expected-error {{cannot convert ')' token to an identifier}}
+  // FIXME: We should pick a friendlier display name for this token kind.
+  __identifier(1) // expected-error {{cannot convert <numeric_constant> token to an identifier}}
+  __identifier(+) // expected-error {{cannot convert '+' token to an identifier}}
+  __identifier("foo") // expected-error {{cannot convert <string_literal> token to an identifier}}
+  __identifier(;) // expected-error {{cannot convert ';' token to an identifier}}
+}
 
 class inline_definition_pure_spec {
    virtual int f() = 0 { return 0; }// expected-warning {{function definition with pure-specifier is a Microsoft extension}}
    virtual int f2() = 0;
+};
+
+struct pure_virtual_dtor {
+  virtual ~pure_virtual_dtor() = 0;
+};
+pure_virtual_dtor::~pure_virtual_dtor() { }
+
+struct pure_virtual_dtor_inline {
+  virtual ~pure_virtual_dtor_inline() = 0 { }// expected-warning {{function definition with pure-specifier is a Microsoft extension}}
 };
 
 

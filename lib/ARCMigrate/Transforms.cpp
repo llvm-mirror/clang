@@ -49,7 +49,7 @@ bool trans::canApplyWeak(ASTContext &Ctx, QualType type,
     return false;
 
   // iOS is always safe to use 'weak'.
-  if (Ctx.getTargetInfo().getTriple().getOS() == llvm::Triple::IOS)
+  if (Ctx.getTargetInfo().getTriple().isiOS())
     AllowOnUnknownClass = true;
 
   while (const PointerType *ptr = T->getAs<PointerType>())
@@ -88,7 +88,7 @@ bool trans::isPlusOne(const Expr *E) {
   if (const CallExpr *
         callE = dyn_cast<CallExpr>(E->IgnoreParenCasts())) {
     if (const FunctionDecl *FD = callE->getDirectCallee()) {
-      if (FD->getAttr<CFReturnsRetainedAttr>())
+      if (FD->hasAttr<CFReturnsRetainedAttr>())
         return true;
 
       if (FD->isGlobal() &&
@@ -122,8 +122,8 @@ bool trans::isPlusOne(const Expr *E) {
 /// If no semicolon is found or the location is inside a macro, the returned
 /// source location will be invalid.
 SourceLocation trans::findLocationAfterSemi(SourceLocation loc,
-                                            ASTContext &Ctx) {
-  SourceLocation SemiLoc = findSemiAfterLocation(loc, Ctx);
+                                            ASTContext &Ctx, bool IsDecl) {
+  SourceLocation SemiLoc = findSemiAfterLocation(loc, Ctx, IsDecl);
   if (SemiLoc.isInvalid())
     return SourceLocation();
   return SemiLoc.getLocWithOffset(1);
@@ -134,7 +134,8 @@ SourceLocation trans::findLocationAfterSemi(SourceLocation loc,
 /// If no semicolon is found or the location is inside a macro, the returned
 /// source location will be invalid.
 SourceLocation trans::findSemiAfterLocation(SourceLocation loc,
-                                            ASTContext &Ctx) {
+                                            ASTContext &Ctx,
+                                            bool IsDecl) {
   SourceManager &SM = Ctx.getSourceManager();
   if (loc.isMacroID()) {
     if (!Lexer::isAtEndOfMacroExpansion(loc, SM, Ctx.getLangOpts(), &loc))
@@ -159,8 +160,13 @@ SourceLocation trans::findSemiAfterLocation(SourceLocation loc,
               file.begin(), tokenBegin, file.end());
   Token tok;
   lexer.LexFromRawLexer(tok);
-  if (tok.isNot(tok::semi))
-    return SourceLocation();
+  if (tok.isNot(tok::semi)) {
+    if (!IsDecl)
+      return SourceLocation();
+    // Declaration may be followed with other tokens; such as an __attribute,
+    // before ending with a semicolon.
+    return findSemiAfterLocation(tok.getLocation(), Ctx, /*IsDecl*/true);
+  }
 
   return tok.getLocation();
 }
@@ -258,9 +264,8 @@ public:
   }
   
   bool VisitCompoundStmt(CompoundStmt *S) {
-    for (CompoundStmt::body_iterator
-        I = S->body_begin(), E = S->body_end(); I != E; ++I)
-      mark(*I);
+    for (auto *I : S->body())
+      mark(I);
     return true;
   }
   
@@ -532,15 +537,12 @@ static void GCRewriteFinalize(MigrationPass &pass) {
   impl_iterator;
   for (impl_iterator I = impl_iterator(DC->decls_begin()),
        E = impl_iterator(DC->decls_end()); I != E; ++I) {
-    for (ObjCImplementationDecl::instmeth_iterator
-         MI = I->instmeth_begin(),
-         ME = I->instmeth_end(); MI != ME; ++MI) {
-      ObjCMethodDecl *MD = *MI;
+    for (const auto *MD : I->instance_methods()) {
       if (!MD->hasBody())
         continue;
       
       if (MD->isInstanceMethod() && MD->getSelector() == FinalizeSel) {
-        ObjCMethodDecl *FinalizeM = MD;
+        const ObjCMethodDecl *FinalizeM = MD;
         Transaction Trans(TA);
         TA.insert(FinalizeM->getSourceRange().getBegin(), 
                   "#if !__has_feature(objc_arc)\n");

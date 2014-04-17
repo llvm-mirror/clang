@@ -33,7 +33,7 @@ def I : JoinedOrSeparate<["-"], "I">, MetaVarName<"<directory>">,
   HelpText<"Add directory to include search path">;
 def n : Flag<["-"], "n">,
   HelpText<"Don't automatically start assembly file with a text section">;
-def L : Flag<["-"], "L">,
+def msave_temp_labels : Flag<["-"], "msave-temp-labels">,
   HelpText<"Save temporary labels in the symbol table. "
            "Note this may change .s semantics, it should almost never be used "
            "on compiler generated code!">;
@@ -82,6 +82,9 @@ def mrelax_all : Flag<["-"], "mrelax-all">,
 
 def mno_exec_stack : Flag<["-"], "mnoexecstack">,
     HelpText<"Mark the file as not needing an executable stack">;
+
+def compress_debug_sections : Flag<["-"], "compress-debug-sections">,
+    HelpText<"Compress DWARF debug sections using zlib">;
 
 def g : Flag<["-"], "g">, HelpText<"Generate source level debug information">;
 

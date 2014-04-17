@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 %s -emit-llvm -o - | FileCheck %s
+// RUN: %clang_cc1 %s -emit-llvm -triple %itanium_abi_triple -o - | FileCheck %s
 template <typename T> void f(T) {}
 template <typename T> void f() { }
 
@@ -9,8 +9,8 @@ void test() {
   // CHECK: @_Z1fIiEvv
   void (*p2)() = f<int>;
 }
-// CHECK: define linkonce_odr void @_Z1fIiEvT_
-// CHECK: define linkonce_odr void @_Z1fIiEvv
+// CHECK-LABEL: define linkonce_odr void @_Z1fIiEvT_
+// CHECK-LABEL: define linkonce_odr void @_Z1fIiEvv
 
 namespace PR6973 {
   template<typename T>

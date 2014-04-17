@@ -38,7 +38,7 @@ class RetainReleaseDeallocRemover :
   MigrationPass &Pass;
 
   ExprSet Removables;
-  OwningPtr<ParentMap> StmtMap;
+  std::unique_ptr<ParentMap> StmtMap;
 
   Selector DelegateSel, FinalizeSel;
 
@@ -212,7 +212,7 @@ private:
       return false;
 
     Stmt *prevStmt, *nextStmt;
-    llvm::tie(prevStmt, nextStmt) = getPreviousAndNextStmt(E);
+    std::tie(prevStmt, nextStmt) = getPreviousAndNextStmt(E);
 
     return isPlusOneAssignToVar(prevStmt, RefD) ||
            isPlusOneAssignToVar(nextStmt, RefD);

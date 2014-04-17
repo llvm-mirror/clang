@@ -14,19 +14,15 @@ ifndef CLANG_LEVEL
 
 IS_UNITTEST_LEVEL := 1
 CLANG_LEVEL := ..
-PARALLEL_DIRS = Basic Lex
+PARALLEL_DIRS = Basic Lex Driver libclang
 
 include $(CLANG_LEVEL)/../..//Makefile.config
 
 ifeq ($(ENABLE_CLANG_REWRITER),1)
-PARALLEL_DIRS += Format
+PARALLEL_DIRS += Format ASTMatchers AST Tooling Sema
 endif
 
-ifeq ($(ENABLE_CLANG_REWRITER),1)
-PARALLEL_DIRS += ASTMatchers AST Tooling Sema
-endif
-
-ifeq ($(ENABLE_CLANG_STATIC_ANALYZER),1)
+ifeq ($(ENABLE_CLANG_ARCMT),1)
 PARALLEL_DIRS += Frontend
 endif
 

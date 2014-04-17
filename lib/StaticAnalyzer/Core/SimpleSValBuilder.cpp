@@ -21,9 +21,9 @@ using namespace ento;
 namespace {
 class SimpleSValBuilder : public SValBuilder {
 protected:
-  virtual SVal dispatchCast(SVal val, QualType castTy);
-  virtual SVal evalCastFromNonLoc(NonLoc val, QualType castTy);
-  virtual SVal evalCastFromLoc(Loc val, QualType castTy);
+  SVal dispatchCast(SVal val, QualType castTy) override;
+  SVal evalCastFromNonLoc(NonLoc val, QualType castTy) override;
+  SVal evalCastFromLoc(Loc val, QualType castTy) override;
 
 public:
   SimpleSValBuilder(llvm::BumpPtrAllocator &alloc, ASTContext &context,
@@ -31,19 +31,19 @@ public:
                     : SValBuilder(alloc, context, stateMgr) {}
   virtual ~SimpleSValBuilder() {}
 
-  virtual SVal evalMinus(NonLoc val);
-  virtual SVal evalComplement(NonLoc val);
-  virtual SVal evalBinOpNN(ProgramStateRef state, BinaryOperator::Opcode op,
-                           NonLoc lhs, NonLoc rhs, QualType resultTy);
-  virtual SVal evalBinOpLL(ProgramStateRef state, BinaryOperator::Opcode op,
-                           Loc lhs, Loc rhs, QualType resultTy);
-  virtual SVal evalBinOpLN(ProgramStateRef state, BinaryOperator::Opcode op,
-                           Loc lhs, NonLoc rhs, QualType resultTy);
+  SVal evalMinus(NonLoc val) override;
+  SVal evalComplement(NonLoc val) override;
+  SVal evalBinOpNN(ProgramStateRef state, BinaryOperator::Opcode op,
+                   NonLoc lhs, NonLoc rhs, QualType resultTy) override;
+  SVal evalBinOpLL(ProgramStateRef state, BinaryOperator::Opcode op,
+                   Loc lhs, Loc rhs, QualType resultTy) override;
+  SVal evalBinOpLN(ProgramStateRef state, BinaryOperator::Opcode op,
+                   Loc lhs, NonLoc rhs, QualType resultTy) override;
 
   /// getKnownValue - evaluates a given SVal. If the SVal has only one possible
   ///  (integer) value, that value is returned. Otherwise, returns NULL.
-  virtual const llvm::APSInt *getKnownValue(ProgramStateRef state, SVal V);
-  
+  const llvm::APSInt *getKnownValue(ProgramStateRef state, SVal V) override;
+
   SVal MakeSymIntVal(const SymExpr *LHS, BinaryOperator::Opcode op,
                      const llvm::APSInt &RHS, QualType resultTy);
 };
@@ -97,7 +97,7 @@ SVal SimpleSValBuilder::evalCastFromNonLoc(NonLoc val, QualType castTy) {
     return UnknownVal();
   }
 
-  // If value is a non integer constant, produce unknown.
+  // If value is a non-integer constant, produce unknown.
   if (!val.getAs<nonloc::ConcreteInt>())
     return UnknownVal();
 
@@ -108,7 +108,7 @@ SVal SimpleSValBuilder::evalCastFromNonLoc(NonLoc val, QualType castTy) {
   }
 
   // Only handle casts from integers to integers - if val is an integer constant
-  // being cast to a non integer type, produce unknown.
+  // being cast to a non-integer type, produce unknown.
   if (!isLocType && !castTy->isIntegralOrEnumerationType())
     return UnknownVal();
 
@@ -136,6 +136,32 @@ SVal SimpleSValBuilder::evalCastFromLoc(Loc val, QualType castTy) {
   //  lifted into a union type.
   if (castTy->isUnionType())
     return UnknownVal();
+
+  // Casting a Loc to a bool will almost always be true,
+  // unless this is a weak function or a symbolic region.
+  if (castTy->isBooleanType()) {
+    switch (val.getSubKind()) {
+      case loc::MemRegionKind: {
+        const MemRegion *R = val.castAs<loc::MemRegionVal>().getRegion();
+        if (const FunctionTextRegion *FTR = dyn_cast<FunctionTextRegion>(R))
+          if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(FTR->getDecl()))
+            if (FD->isWeak())
+              // FIXME: Currently we are using an extent symbol here,
+              // because there are no generic region address metadata
+              // symbols to use, only content metadata.
+              return nonloc::SymbolVal(SymMgr.getExtentSymbol(FTR));
+
+        if (const SymbolicRegion *SymR = R->getSymbolicBase())
+          return nonloc::SymbolVal(SymR->getSymbol());
+
+        // FALL-THROUGH
+      }
+
+      case loc::GotoLabelKind:
+        // Labels and non-symbolic memory regions are always true.
+        return makeTruthVal(true, castTy);
+    }
+  }
 
   if (castTy->isIntegralOrEnumerationType()) {
     unsigned BitWidth = Context.getTypeSize(castTy);
@@ -543,11 +569,10 @@ static SVal evalBinOpFieldRegionFieldRegion(const FieldRegion *LeftFR,
   // members and the units in which bit-fields reside have addresses that
   // increase in the order in which they are declared."
   bool leftFirst = (op == BO_LT || op == BO_LE);
-  for (RecordDecl::field_iterator I = RD->field_begin(),
-       E = RD->field_end(); I!=E; ++I) {
-    if (*I == LeftFD)
+  for (const auto *I : RD->fields()) {
+    if (I == LeftFD)
       return SVB.makeTruthVal(leftFirst, resultTy);
-    if (*I == RightFD)
+    if (I == RightFD)
       return SVB.makeTruthVal(!leftFirst, resultTy);
   }
 
@@ -668,7 +693,7 @@ SVal SimpleSValBuilder::evalBinOpLL(ProgramStateRef state,
     if (Optional<loc::ConcreteInt> rInt = rhs.getAs<loc::ConcreteInt>()) {
       // If one of the operands is a symbol and the other is a constant,
       // build an expression for use by the constraint manager.
-      if (SymbolRef lSym = lhs.getAsLocSymbol())
+      if (SymbolRef lSym = lhs.getAsLocSymbol(true))
         return MakeSymIntVal(lSym, op, rInt->getValue(), resultTy);
 
       // Special case comparisons to NULL.
@@ -676,19 +701,14 @@ SVal SimpleSValBuilder::evalBinOpLL(ProgramStateRef state,
       // build constraints. The address of any non-symbolic region is guaranteed
       // to be non-NULL.
       if (rInt->isZeroConstant()) {
-        switch (op) {
-        default:
-          break;
-        case BO_Sub:
+        if (op == BO_Sub)
           return evalCastFromLoc(lhs, resultTy);
-        case BO_EQ:
-        case BO_LT:
-        case BO_LE:
-          return makeTruthVal(false, resultTy);
-        case BO_NE:
-        case BO_GT:
-        case BO_GE:
-          return makeTruthVal(true, resultTy);
+
+        if (BinaryOperator::isComparisonOp(op)) {
+          QualType boolType = getContext().BoolTy;
+          NonLoc l = evalCastFromLoc(lhs, boolType).castAs<NonLoc>();
+          NonLoc r = makeTruthVal(false, boolType).castAs<NonLoc>();
+          return evalBinOpNN(state, op, l, r, resultTy);
         }
       }
 

@@ -44,6 +44,7 @@ static char getCharForLevel(DiagnosticsEngine::Level Level) {
   switch (Level) {
   case DiagnosticsEngine::Ignored: return ' ';
   case DiagnosticsEngine::Note:    return '-';
+  case DiagnosticsEngine::Remark:  return 'R';
   case DiagnosticsEngine::Warning: return 'W';
   case DiagnosticsEngine::Error:   return 'E';
   case DiagnosticsEngine::Fatal:   return 'F';
@@ -63,9 +64,9 @@ createDiagnostics(unsigned int argc, char **argv) {
     new DiagnosticsEngine(DiagIDs, new DiagnosticOptions(), DiagsBuffer));
 
   // Try to build a CompilerInvocation.
-  OwningPtr<CompilerInvocation> Invocation(
-    createInvocationFromCommandLine(ArrayRef<const char *>(argv, argc),
-                                    InterimDiags));
+  std::unique_ptr<CompilerInvocation> Invocation(
+      createInvocationFromCommandLine(ArrayRef<const char *>(argv, argc),
+                                      InterimDiags));
   if (!Invocation)
     return NULL;
 

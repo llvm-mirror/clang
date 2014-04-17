@@ -143,7 +143,7 @@ namespace TestStaticAssertDecl {
   static_assert(true, "msg");
 }
 // CHECK:      NamespaceDecl{{.*}} TestStaticAssertDecl
-// CHECK-NEXT:   StaticAssertDecl{{.*>$}}
+// CHECK-NEXT:   StaticAssertDecl{{.*> .*$}}
 // CHECK-NEXT:     CXXBoolLiteralExpr
 // CHECK-NEXT:     StringLiteral
 
@@ -273,7 +273,7 @@ namespace testCanonicalTemplate {
   // CHECK-NEXT:   FunctionDecl{{.*}} TestFunctionTemplate 'void (T)'
   // CHECK-NEXT:     ParmVarDecl{{.*}} 'T'
   // CHECK-NEXT:   Function{{.*}} 'TestFunctionTemplate'
-  // CHECK-NEXT-NOT: TemplateArgument
+  // CHECK-NOT:      TemplateArgument
 
   template<typename T1> class TestClassTemplate {
     template<typename T2> friend class TestClassTemplate;
@@ -308,7 +308,8 @@ namespace TestTemplateTypeParmDecl {
 // CHECK:      NamespaceDecl{{.*}} TestTemplateTypeParmDecl
 // CHECK-NEXT:   FunctionTemplateDecl
 // CHECK-NEXT:     TemplateTypeParmDecl{{.*}} typename ... T
-// CHECK-NEXT:     TemplateTypeParmDecl{{.*}} class U 'int'
+// CHECK-NEXT:     TemplateTypeParmDecl{{.*}} class U
+// CHECK-NEXT:       TemplateArgument type 'int'
 
 namespace TestNonTypeTemplateParmDecl {
   template<int I = 1, int ... J> void foo();
@@ -316,7 +317,8 @@ namespace TestNonTypeTemplateParmDecl {
 // CHECK:      NamespaceDecl{{.*}} TestNonTypeTemplateParmDecl
 // CHECK-NEXT:   FunctionTemplateDecl
 // CHECK-NEXT:     NonTypeTemplateParmDecl{{.*}} 'int' I
-// CHECK-NEXT:       IntegerLiteral{{.*}} 'int' 1
+// CHECK-NEXT:       TemplateArgument expr
+// CHECK-NEXT:         IntegerLiteral{{.*}} 'int' 1
 // CHECK-NEXT:     NonTypeTemplateParmDecl{{.*}} 'int' ... J
 
 namespace TestTemplateTemplateParmDecl {
@@ -443,7 +445,7 @@ namespace TestFileScopeAsmDecl {
   asm("ret");
 }
 // CHECK:      NamespaceDecl{{.*}} TestFileScopeAsmDecl{{$}}
-// CHECK:        FileScopeAsmDecl{{.*>$}}
+// CHECK:        FileScopeAsmDecl{{.*> .*$}}
 // CHECK-NEXT:     StringLiteral
 
 namespace TestFriendDecl2 {
@@ -452,12 +454,12 @@ namespace TestFriendDecl2 {
     friend void f();
   };
 }
-// CHECK: NamespaceDecl [[TestFriendDecl2:0x.*]] <{{.*}}> TestFriendDecl2
-// CHECK: |-FunctionDecl [[TestFriendDecl2_f:0x.*]] <{{.*}}> f 'void (void)'
+// CHECK: NamespaceDecl [[TestFriendDecl2:0x.*]] <{{.*}}> {{.*}} TestFriendDecl2
+// CHECK: |-FunctionDecl [[TestFriendDecl2_f:0x.*]] <{{.*}}> {{.*}} f 'void (void)'
 // CHECK: `-CXXRecordDecl {{.*}} struct S
 // CHECK:   |-CXXRecordDecl {{.*}} struct S
 // CHECK:   `-FriendDecl
-// CHECK:     `-FunctionDecl {{.*}} parent [[TestFriendDecl2]] prev [[TestFriendDecl2_f]] <{{.*}}> f 'void (void)'
+// CHECK:     `-FunctionDecl {{.*}} parent [[TestFriendDecl2]] prev [[TestFriendDecl2_f]] <{{.*}}> {{.*}} f 'void (void)'
 
 namespace Comment {
   extern int Test;

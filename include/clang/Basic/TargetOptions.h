@@ -32,12 +32,11 @@ public:
   /// If given, the name of the target CPU to generate code for.
   std::string CPU;
 
+  /// If given, the unit to use for floating point math.
+  std::string FPMath;
+
   /// If given, the name of the target ABI to use.
   std::string ABI;
-
-  /// If given, the name of the target C++ ABI to use. If not given, defaults
-  /// to "itanium".
-  std::string CXXABI;
 
   /// If given, the version string of the linker in use.
   std::string LinkerVersion;

@@ -24,7 +24,7 @@ using namespace ento;
 namespace {
 class UndefinedAssignmentChecker
   : public Checker<check::Bind> {
-  mutable OwningPtr<BugType> BT;
+  mutable std::unique_ptr<BugType> BT;
 
 public:
   void checkBind(SVal location, SVal val, const Stmt *S,
@@ -54,7 +54,7 @@ void UndefinedAssignmentChecker::checkBind(SVal location, SVal val,
   const char *str = "Assigned value is garbage or undefined";
 
   if (!BT)
-    BT.reset(new BuiltinBug(str));
+    BT.reset(new BuiltinBug(this, str));
 
   // Generate a report for this bug.
   const Expr *ex = 0;

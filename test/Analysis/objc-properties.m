@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=alpha.osx.cocoa.DirectIvarAssignment -fobjc-default-synthesize-properties -verify -fblocks %s
+// RUN: %clang_cc1 -analyze -analyzer-checker=alpha.osx.cocoa.DirectIvarAssignment -verify -fblocks %s
 
 typedef signed char BOOL;
 @protocol NSObject  - (BOOL)isEqual:(id)object; @end
@@ -23,8 +23,8 @@ typedef signed char BOOL;
 
   @property (assign, nonatomic) MyClass* Y; // automatically synthesized, implemented
 
-  @property (assign, nonatomic) MyClass* Z; // non synthesized ivar, implemented setter
-  @property (readonly) id nonSynth;  // non synthesized, explicitly implemented to return ivar with expected name
+  @property (assign, nonatomic) MyClass* Z; // non-synthesized ivar, implemented setter
+  @property (readonly) id nonSynth;  // non-synthesized, explicitly implemented to return ivar with expected name
   
   - (id) initWithPtr:(MyClass*) value;
   - (id) myInitWithPtr:(MyClass*) value;

@@ -5,24 +5,28 @@
 //
 // CHECK-NOT: @_ZTVN5test118stdio_sync_filebufIwEE = constant
 // CHECK-NOT: _ZTVN5test315basic_fstreamXXIcEE
-// CHECK: @_ZTVN5test018stdio_sync_filebufIwEE = unnamed_addr constant
+// CHECK-NOT: @_ZTVN5test018stdio_sync_filebufIA1_iEE
+// CHECK-NOT: @_ZTVN5test018stdio_sync_filebufIA2_iEE
+// CHECK:     @_ZTVN5test018stdio_sync_filebufIA3_iEE = weak_odr unnamed_addr constant
 
 // CHECK: @_ZN7PR100011SIiE3arrE = weak_odr global [3 x i32]
 // CHECK-NOT: @_ZN7PR100011SIiE3arr2E = weak_odr global [3 x i32]A
 
+// CHECK:     @_ZTVN5test018stdio_sync_filebufIA4_iEE = linkonce_odr unnamed_addr constant
+
 // CHECK-NOT: _ZTVN5test31SIiEE
 // CHECK-NOT: _ZTSN5test31SIiEE
 
-// CHECK: define linkonce_odr void @_ZN5test21CIiEC1Ev(%"class.test2::C"* %this) unnamed_addr
-// CHECK: define linkonce_odr void @_ZN5test21CIiE6foobarIdEEvT_(
-// CHECK: define available_externally void @_ZN5test21CIiE6zedbarEd(
+// CHECK-LABEL: define linkonce_odr void @_ZN5test21CIiEC1Ev(%"class.test2::C"* %this) unnamed_addr
+// CHECK-LABEL: define linkonce_odr void @_ZN5test21CIiE6foobarIdEEvT_(
+// CHECK-LABEL: define available_externally void @_ZN5test21CIiE6zedbarEd(
 
-// CHECK: define linkonce_odr void @_ZN7PR106662g1ENS_1SILi1EEE()
-// CHECK: define linkonce_odr void @_ZN7PR106662g1ENS_1SILi2EEE()
-// CHECK: define linkonce_odr void @_ZN7PR106662g1ENS_1SILi3EEE()
-// CHECK: define linkonce_odr void @_ZN7PR106662g2ENS_1SILi1EEE()
-// CHECK: define linkonce_odr void @_ZN7PR106662g2ENS_1SILi2EEE()
-// CHECK: define linkonce_odr void @_ZN7PR106662g2ENS_1SILi3EEE()
+// CHECK-LABEL: define linkonce_odr void @_ZN7PR106662g1ENS_1SILi1EEE()
+// CHECK-LABEL: define linkonce_odr void @_ZN7PR106662g1ENS_1SILi2EEE()
+// CHECK-LABEL: define linkonce_odr void @_ZN7PR106662g1ENS_1SILi3EEE()
+// CHECK-LABEL: define linkonce_odr void @_ZN7PR106662g2ENS_1SILi1EEE()
+// CHECK-LABEL: define linkonce_odr void @_ZN7PR106662g2ENS_1SILi2EEE()
+// CHECK-LABEL: define linkonce_odr void @_ZN7PR106662g2ENS_1SILi3EEE()
 // CHECK: declare void @_ZN7PR106662h1ENS_1SILi1EEE()
 // CHECK: declare void @_ZN7PR106662h1ENS_1SILi2EEE()
 // CHECK: declare void @_ZN7PR106662h1ENS_1SILi3EEE()
@@ -39,11 +43,21 @@ namespace test0 {
     virtual void      xsgetn();
   };
 
-  // This specialization should cause the vtable to be emitted, even with
-  // the following extern template declaration.
-  template<> void stdio_sync_filebuf<wchar_t>::xsgetn()  {
+  // This specialization is not a key function, so doesn't cause the vtable to
+  // be instantiated unless we're instantiating a class definition anyway.
+  template<> void stdio_sync_filebuf<int[1]>::xsgetn()  {
   }
-  extern template class stdio_sync_filebuf<wchar_t>;
+  template<> void stdio_sync_filebuf<int[2]>::xsgetn()  {
+  }
+  template<> void stdio_sync_filebuf<int[3]>::xsgetn()  {
+  }
+  template<> void stdio_sync_filebuf<int[4]>::xsgetn()  {
+  }
+  extern template class stdio_sync_filebuf<int[2]>;
+
+  // These two both cause vtables to be emitted.
+  template class stdio_sync_filebuf<int[3]>;
+  stdio_sync_filebuf<int[4]> implicit_instantiation;
 }
 
 namespace test1 {

@@ -161,11 +161,17 @@ public:
   /// \param [out] InUserSpecifiedSystemFramework If the file is found,
   /// set to true if the file is located in a framework that has been
   /// user-specified to be treated as a system framework.
-  const FileEntry *LookupFile(StringRef Filename, HeaderSearch &HS,
+  ///
+  /// \param [out] MappedName if this is a headermap which maps the filename to
+  /// a framework include ("Foo.h" -> "Foo/Foo.h"), set the new name to this
+  /// vector and point Filename to it.
+  const FileEntry *LookupFile(StringRef &Filename, HeaderSearch &HS,
                               SmallVectorImpl<char> *SearchPath,
                               SmallVectorImpl<char> *RelativePath,
                               ModuleMap::KnownHeader *SuggestedModule,
-                              bool &InUserSpecifiedSystemFramework) const;
+                              bool &InUserSpecifiedSystemFramework,
+                              bool &HasBeenMapped,
+                              SmallVectorImpl<char> &MappedName) const;
 
 private:
   const FileEntry *DoFrameworkLookup(

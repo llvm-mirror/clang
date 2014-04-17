@@ -116,7 +116,7 @@ unexpected b; // expected-error@33 1-1 {{unknown type}}
 // CHECK6-NEXT:   (frontend): error reading '{{.*}}verify.c.tmp.invalid'
 // CHECK6-NEXT: 2 errors generated.
 
-// RUN: echo -e '//expected-error@2{{1}}\n#error 2' | not %clang_cc1 -verify 2>&1 | FileCheck -check-prefix=CHECK7 %s
+// RUN: printf '//expected-error@2{{1}}\n#error 2\n' | not %clang_cc1 -verify 2>&1 | FileCheck -check-prefix=CHECK7 %s
 
 //      CHECK7: error: 'error' diagnostics expected but not seen:
 // CHECK7-NEXT:   Line 2 (directive at <stdin>:1): 1
@@ -128,8 +128,8 @@ unexpected b; // expected-error@33 1-1 {{unknown type}}
 #ifdef TEST8
 // RUN: not %clang_cc1 -DTEST8 -verify %s 2>&1 | FileCheck -check-prefix=CHECK8 %s
 
-// expected-warning@nonexistant-file:1 {{ }}
-// expected-error@-1 {{file 'nonexistant-file' could not be located}}
+// expected-warning@nonexistent-file:1 {{ }}
+// expected-error@-1 {{file 'nonexistent-file' could not be located}}
 
 // expected-warning@verify-directive.h: {{ }}
 // expected-error@-1 {{missing or invalid line number}}

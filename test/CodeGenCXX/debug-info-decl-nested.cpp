@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -std=c++11 -g -O0 -emit-llvm -g -triple x86_64-apple-darwin %s -o %t
+// RUN: %clang_cc1 -std=c++11 -g -emit-llvm -g -triple x86_64-apple-darwin %s -o %t
 // RUN: cat %t | FileCheck %s -check-prefix=CHECK0
 // RUN: cat %t | FileCheck %s -check-prefix=CHECK1
 // RUN: cat %t | FileCheck %s -check-prefix=CHECK2
@@ -35,11 +35,11 @@ class OuterClass1
   public:
     InnerClass1();
   } theInnerClass1;
-// CHECK1: metadata {{.*}}, metadata ![[DECL:[0-9]+]], metadata {{.*}}, i32 [[@LINE+5]]} ; [ DW_TAG_subprogram ] [line [[@LINE+5]]] [def] [Bar]
+// CHECK1: [[DECL:[0-9]+]] = {{.*}} ; [ DW_TAG_subprogram ] [line [[@LINE+2]]] [private] [Bar]
+// CHECK1: metadata {{.*}}, metadata ![[DECL]], metadata {{.*}}, i32 [[@LINE+4]]} ; [ DW_TAG_subprogram ] [line [[@LINE+4]]] [def] [Bar]
   void Bar(const Foo1 *);
 };
 OuterClass1::InnerClass1 OuterClass1::theInnerClass1;
-// CHECK1: [[DECL]] = {{.*}} ; [ DW_TAG_subprogram ] [line [[@LINE-3]]] [private] [Bar]
 void OuterClass1::Bar(const Foo1 *meta) { }
 
 

@@ -18,9 +18,9 @@
 #include "CodeGenModule.h"
 #include "clang/AST/DeclObjC.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Support/CallSite.h"
 #include <algorithm>
 #include <cstdio>
 
@@ -53,7 +53,7 @@ static llvm::Constant *buildCopyHelper(CodeGenModule &CGM,
   return CodeGenFunction(CGM).GenerateCopyHelperFunction(blockInfo);
 }
 
-/// Build the helper function to dipose of a block.
+/// Build the helper function to dispose of a block.
 static llvm::Constant *buildDisposeHelper(CodeGenModule &CGM,
                                           const CGBlockInfo &blockInfo) {
   return CodeGenFunction(CGM).GenerateDestroyHelperFunction(blockInfo);
@@ -300,8 +300,8 @@ static void initializeForBlockHeader(CodeGenModule &CGM, CGBlockInfo &info,
 
   // The header is basically a 'struct { void *; int; int; void *; void *; }'.
   CharUnits ptrSize, ptrAlign, intSize, intAlign;
-  llvm::tie(ptrSize, ptrAlign) = C.getTypeInfoInChars(C.VoidPtrTy);
-  llvm::tie(intSize, intAlign) = C.getTypeInfoInChars(C.IntTy);
+  std::tie(ptrSize, ptrAlign) = C.getTypeInfoInChars(C.VoidPtrTy);
+  std::tie(intSize, intAlign) = C.getTypeInfoInChars(C.IntTy);
 
   // Are there crazy embedded platforms where this isn't true?
   assert(intSize <= ptrSize && "layout assumptions horribly violated");
@@ -370,11 +370,10 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
   }
 
   // Next, all the block captures.
-  for (BlockDecl::capture_const_iterator ci = block->capture_begin(),
-         ce = block->capture_end(); ci != ce; ++ci) {
-    const VarDecl *variable = ci->getVariable();
+  for (const auto &CI : block->captures()) {
+    const VarDecl *variable = CI.getVariable();
 
-    if (ci->isByRef()) {
+    if (CI.isByRef()) {
       // We have to copy/dispose of the __block reference.
       info.NeedsCopyDispose = true;
 
@@ -387,8 +386,7 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
       maxFieldAlign = std::max(maxFieldAlign, tinfo.second);
 
       layout.push_back(BlockLayoutChunk(tinfo.second, tinfo.first,
-                                        Qualifiers::OCL_None,
-                                        &*ci, llvmType));
+                                        Qualifiers::OCL_None, &CI, llvmType));
       continue;
     }
 
@@ -422,7 +420,7 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
       lifetime = Qualifiers::OCL_Strong;
 
     // So do types that require non-trivial copy construction.
-    } else if (ci->hasCopyExpr()) {
+    } else if (CI.hasCopyExpr()) {
       info.NeedsCopyDispose = true;
       info.HasCXXObject = true;
 
@@ -446,7 +444,7 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
     llvm::Type *llvmType =
       CGM.getTypes().ConvertTypeForMem(VT);
     
-    layout.push_back(BlockLayoutChunk(align, size, lifetime, &*ci, llvmType));
+    layout.push_back(BlockLayoutChunk(align, size, lifetime, &CI, llvmType));
   }
 
   // If that was everything, we're done here.
@@ -581,14 +579,13 @@ static void enterBlockScope(CodeGenFunction &CGF, BlockDecl *block) {
 
   // Walk through the captures (in order) and find the ones not
   // captured by constant.
-  for (BlockDecl::capture_const_iterator ci = block->capture_begin(),
-         ce = block->capture_end(); ci != ce; ++ci) {
+  for (const auto &CI : block->captures()) {
     // Ignore __block captures; there's nothing special in the
     // on-stack block that we need to do for them.
-    if (ci->isByRef()) continue;
+    if (CI.isByRef()) continue;
 
     // Ignore variables that are constant-captured.
-    const VarDecl *variable = ci->getVariable();
+    const VarDecl *variable = CI.getVariable();
     CGBlockInfo::Capture &capture = blockInfo.getCapture(variable);
     if (capture.isConstant()) continue;
 
@@ -679,7 +676,7 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const BlockExpr *blockExpr) {
   }
 
   // Find the block info for this block and take ownership of it.
-  OwningPtr<CGBlockInfo> blockInfo;
+  std::unique_ptr<CGBlockInfo> blockInfo;
   blockInfo.reset(findAndRemoveBlockInfo(&FirstBlockInfo,
                                          blockExpr->getBlockDecl()));
 
@@ -741,9 +738,8 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
   }
 
   // Next, captured variables.
-  for (BlockDecl::capture_const_iterator ci = blockDecl->capture_begin(),
-         ce = blockDecl->capture_end(); ci != ce; ++ci) {
-    const VarDecl *variable = ci->getVariable();
+  for (const auto &CI : blockDecl->captures()) {
+    const VarDecl *variable = CI.getVariable();
     const CGBlockInfo::Capture &capture = blockInfo.getCapture(variable);
 
     // Ignore constant captures.
@@ -761,7 +757,7 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
     // Compute the address of the thing we're going to move into the
     // block literal.
     llvm::Value *src;
-    if (BlockInfo && ci->isNested()) {
+    if (BlockInfo && CI.isNested()) {
       // We need to use the capture from the enclosing block.
       const CGBlockInfo::Capture &enclosingCapture =
         BlockInfo->getCapture(variable);
@@ -780,8 +776,8 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
       // emission.
       src = LocalDeclMap.lookup(variable);
       if (!src) {
-        DeclRefExpr declRef(const_cast<VarDecl*>(variable),
-                            /*refersToEnclosing*/ ci->isNested(), type,
+        DeclRefExpr declRef(const_cast<VarDecl *>(variable),
+                            /*refersToEnclosing*/ CI.isNested(), type,
                             VK_LValue, SourceLocation());
         src = EmitDeclRefLValue(&declRef).getAddress();
       }
@@ -791,9 +787,9 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
     // the block field.  There's no need to chase the forwarding
     // pointer at this point, since we're building something that will
     // live a shorter life than the stack byref anyway.
-    if (ci->isByRef()) {
+    if (CI.isByRef()) {
       // Get a void* that points to the byref struct.
-      if (ci->isNested())
+      if (CI.isNested())
         src = Builder.CreateAlignedLoad(src, align.getQuantity(),
                                         "byref.capture");
       else
@@ -803,7 +799,7 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
       Builder.CreateAlignedStore(src, blockField, align.getQuantity());
 
     // If we have a copy constructor, evaluate that into the block field.
-    } else if (const Expr *copyExpr = ci->getCopyExpr()) {
+    } else if (const Expr *copyExpr = CI.getCopyExpr()) {
       if (blockDecl->isConversionFromLambda()) {
         // If we have a lambda conversion, emit the expression
         // directly into the block instead.
@@ -834,7 +830,7 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
                type->isBlockPointerType()) {
       // Load the block and do a simple retain.
       LValue srcLV = MakeAddrLValue(src, type, align);
-      llvm::Value *value = EmitLoadOfScalar(srcLV);
+      llvm::Value *value = EmitLoadOfScalar(srcLV, SourceLocation());
       value = EmitARCRetainNonBlock(value);
 
       // Do a primitive store to the block field.
@@ -851,7 +847,7 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
       // We use one of these or the other depending on whether the
       // reference is nested.
       DeclRefExpr declRef(const_cast<VarDecl*>(variable),
-                          /*refersToEnclosing*/ ci->isNested(), type,
+                          /*refersToEnclosing*/ CI.isNested(), type,
                           VK_LValue, SourceLocation());
 
       ImplicitCastExpr l2r(ImplicitCastExpr::OnStack, type, CK_LValueToRValue,
@@ -862,7 +858,7 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
     }
 
     // Activate the cleanup if layout pushed one.
-    if (!ci->isByRef()) {
+    if (!CI.isByRef()) {
       EHScopeStack::stable_iterator cleanup = capture.getCleanup();
       if (cleanup.isValid())
         ActivateCleanupBlock(cleanup, blockInfo.DominatingIP);
@@ -931,7 +927,7 @@ llvm::Type *CodeGenModule::getGenericBlockLiteralType() {
 }
 
 
-RValue CodeGenFunction::EmitBlockCallExpr(const CallExpr* E, 
+RValue CodeGenFunction::EmitBlockCallExpr(const CallExpr *E, 
                                           ReturnValueSlot ReturnValue) {
   const BlockPointerType *BPT =
     E->getCallee()->getType()->getAs<BlockPointerType>();
@@ -1089,8 +1085,6 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
                                        bool IsLambdaConversionToBlock) {
   const BlockDecl *blockDecl = blockInfo.getBlockDecl();
 
-  // Check if we should generate debug info for this block function.
-  maybeInitializeDebugInfo();
   CurGD = GD;
   
   BlockInfo = &blockInfo;
@@ -1119,17 +1113,15 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
   args.push_back(&selfDecl);
 
   // Now add the rest of the parameters.
-  for (BlockDecl::param_const_iterator i = blockDecl->param_begin(),
-       e = blockDecl->param_end(); i != e; ++i)
-    args.push_back(*i);
+  for (auto i : blockDecl->params())
+    args.push_back(i);
 
   // Create the function declaration.
   const FunctionProtoType *fnType = blockInfo.getBlockExpr()->getFunctionType();
-  const CGFunctionInfo &fnInfo =
-    CGM.getTypes().arrangeFunctionDeclaration(fnType->getResultType(), args,
-                                              fnType->getExtInfo(),
-                                              fnType->isVariadic());
-  if (CGM.ReturnTypeUsesSRet(fnInfo))
+  const CGFunctionInfo &fnInfo = CGM.getTypes().arrangeFreeFunctionDeclaration(
+      fnType->getReturnType(), args, fnType->getExtInfo(),
+      fnType->isVariadic());
+  if (CGM.ReturnSlotInterferesWithArgs(fnInfo))
     blockInfo.UsesStret = true;
 
   llvm::FunctionType *fnLLVMType = CGM.getTypes().GetFunctionType(fnInfo);
@@ -1142,7 +1134,8 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
   CGM.SetInternalFunctionAttributes(blockDecl, fn, fnInfo);
 
   // Begin generating the function.
-  StartFunction(blockDecl, fnType->getResultType(), fn, fnInfo, args,
+  StartFunction(blockDecl, fnType->getReturnType(), fn, fnInfo, args,
+                blockDecl->getLocation(),
                 blockInfo.getBlockExpr()->getBody()->getLocStart());
 
   // Okay.  Undo some of what StartFunction did.
@@ -1179,9 +1172,8 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
   }
 
   // Also force all the constant captures.
-  for (BlockDecl::capture_const_iterator ci = blockDecl->capture_begin(),
-         ce = blockDecl->capture_end(); ci != ce; ++ci) {
-    const VarDecl *variable = ci->getVariable();
+  for (const auto &CI : blockDecl->captures()) {
+    const VarDecl *variable = CI.getVariable();
     const CGBlockInfo::Capture &capture = blockInfo.getCapture(variable);
     if (!capture.isConstant()) continue;
 
@@ -1203,8 +1195,14 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
 
   if (IsLambdaConversionToBlock)
     EmitLambdaBlockInvokeBody();
-  else
+  else {
+    PGO.assignRegionCounters(blockDecl, fn);
+    RegionCounter Cnt = getPGORegionCounter(blockDecl->getBody());
+    Cnt.beginRegion(Builder);
     EmitStmt(blockDecl->getBody());
+    PGO.emitInstrumentationData();
+    PGO.destroyRegionCounters();
+  }
 
   // Remember where we were...
   llvm::BasicBlock *resume = Builder.GetInsertBlock();
@@ -1216,9 +1214,8 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
   // Emit debug information for all the DeclRefExprs.
   // FIXME: also for 'this'
   if (CGDebugInfo *DI = getDebugInfo()) {
-    for (BlockDecl::capture_const_iterator ci = blockDecl->capture_begin(),
-           ce = blockDecl->capture_end(); ci != ce; ++ci) {
-      const VarDecl *variable = ci->getVariable();
+    for (const auto &CI : blockDecl->captures()) {
+      const VarDecl *variable = CI.getVariable();
       DI->EmitLocation(Builder, variable->getLocation());
 
       if (CGM.getCodeGenOpts().getDebugInfo()
@@ -1287,10 +1284,8 @@ CodeGenFunction::GenerateCopyHelperFunction(const CGBlockInfo &blockInfo) {
   ImplicitParamDecl srcDecl(0, SourceLocation(), 0, C.VoidPtrTy);
   args.push_back(&srcDecl);
 
-  const CGFunctionInfo &FI =
-    CGM.getTypes().arrangeFunctionDeclaration(C.VoidTy, args,
-                                              FunctionType::ExtInfo(),
-                                              /*variadic*/ false);
+  const CGFunctionInfo &FI = CGM.getTypes().arrangeFreeFunctionDeclaration(
+      C.VoidTy, args, FunctionType::ExtInfo(), /*variadic=*/false);
 
   // FIXME: it would be nice if these were mergeable with things with
   // identical semantics.
@@ -1303,9 +1298,6 @@ CodeGenFunction::GenerateCopyHelperFunction(const CGBlockInfo &blockInfo) {
   IdentifierInfo *II
     = &CGM.getContext().Idents.get("__copy_helper_block_");
 
-  // Check if we should generate debug info for this block helper function.
-  maybeInitializeDebugInfo();
-
   FunctionDecl *FD = FunctionDecl::Create(C,
                                           C.getTranslationUnitDecl(),
                                           SourceLocation(),
@@ -1315,7 +1307,7 @@ CodeGenFunction::GenerateCopyHelperFunction(const CGBlockInfo &blockInfo) {
                                           false);
   // Create a scope with an artificial location for the body of this function.
   ArtificialLocation AL(*this, Builder);
-  StartFunction(FD, C.VoidTy, Fn, FI, args, SourceLocation());
+  StartFunction(FD, C.VoidTy, Fn, FI, args);
   AL.Emit();
 
   llvm::Type *structPtrTy = blockInfo.StructureType->getPointerTo();
@@ -1330,25 +1322,24 @@ CodeGenFunction::GenerateCopyHelperFunction(const CGBlockInfo &blockInfo) {
 
   const BlockDecl *blockDecl = blockInfo.getBlockDecl();
 
-  for (BlockDecl::capture_const_iterator ci = blockDecl->capture_begin(),
-         ce = blockDecl->capture_end(); ci != ce; ++ci) {
-    const VarDecl *variable = ci->getVariable();
+  for (const auto &CI : blockDecl->captures()) {
+    const VarDecl *variable = CI.getVariable();
     QualType type = variable->getType();
 
     const CGBlockInfo::Capture &capture = blockInfo.getCapture(variable);
     if (capture.isConstant()) continue;
 
-    const Expr *copyExpr = ci->getCopyExpr();
+    const Expr *copyExpr = CI.getCopyExpr();
     BlockFieldFlags flags;
 
     bool useARCWeakCopy = false;
     bool useARCStrongCopy = false;
 
     if (copyExpr) {
-      assert(!ci->isByRef());
+      assert(!CI.isByRef());
       // don't bother computing flags
 
-    } else if (ci->isByRef()) {
+    } else if (CI.isByRef()) {
       flags = BLOCK_FIELD_IS_BYREF;
       if (type.isObjCGCWeak())
         flags |= BLOCK_FIELD_IS_WEAK;
@@ -1428,7 +1419,7 @@ CodeGenFunction::GenerateCopyHelperFunction(const CGBlockInfo &blockInfo) {
         };
 
         bool copyCanThrow = false;
-        if (ci->isByRef() && variable->getType()->getAsCXXRecordDecl()) {
+        if (CI.isByRef() && variable->getType()->getAsCXXRecordDecl()) {
           const Expr *copyExpr =
             CGM.getContext().getBlockVarCopyInits(variable);
           if (copyExpr) {
@@ -1465,10 +1456,8 @@ CodeGenFunction::GenerateDestroyHelperFunction(const CGBlockInfo &blockInfo) {
   ImplicitParamDecl srcDecl(0, SourceLocation(), 0, C.VoidPtrTy);
   args.push_back(&srcDecl);
 
-  const CGFunctionInfo &FI =
-    CGM.getTypes().arrangeFunctionDeclaration(C.VoidTy, args,
-                                              FunctionType::ExtInfo(),
-                                              /*variadic*/ false);
+  const CGFunctionInfo &FI = CGM.getTypes().arrangeFreeFunctionDeclaration(
+      C.VoidTy, args, FunctionType::ExtInfo(), /*variadic=*/false);
 
   // FIXME: We'd like to put these into a mergable by content, with
   // internal linkage.
@@ -1477,9 +1466,6 @@ CodeGenFunction::GenerateDestroyHelperFunction(const CGBlockInfo &blockInfo) {
   llvm::Function *Fn =
     llvm::Function::Create(LTy, llvm::GlobalValue::InternalLinkage,
                            "__destroy_helper_block_", &CGM.getModule());
-
-  // Check if we should generate debug info for this block destroy function.
-  maybeInitializeDebugInfo();
 
   IdentifierInfo *II
     = &CGM.getContext().Idents.get("__destroy_helper_block_");
@@ -1491,7 +1477,7 @@ CodeGenFunction::GenerateDestroyHelperFunction(const CGBlockInfo &blockInfo) {
                                           false, false);
   // Create a scope with an artificial location for the body of this function.
   ArtificialLocation AL(*this, Builder);
-  StartFunction(FD, C.VoidTy, Fn, FI, args, SourceLocation());
+  StartFunction(FD, C.VoidTy, Fn, FI, args);
   AL.Emit();
 
   llvm::Type *structPtrTy = blockInfo.StructureType->getPointerTo();
@@ -1504,9 +1490,8 @@ CodeGenFunction::GenerateDestroyHelperFunction(const CGBlockInfo &blockInfo) {
 
   CodeGenFunction::RunCleanupsScope cleanups(*this);
 
-  for (BlockDecl::capture_const_iterator ci = blockDecl->capture_begin(),
-         ce = blockDecl->capture_end(); ci != ce; ++ci) {
-    const VarDecl *variable = ci->getVariable();
+  for (const auto &CI : blockDecl->captures()) {
+    const VarDecl *variable = CI.getVariable();
     QualType type = variable->getType();
 
     const CGBlockInfo::Capture &capture = blockInfo.getCapture(variable);
@@ -1518,7 +1503,7 @@ CodeGenFunction::GenerateDestroyHelperFunction(const CGBlockInfo &blockInfo) {
     bool useARCWeakDestroy = false;
     bool useARCStrongDestroy = false;
 
-    if (ci->isByRef()) {
+    if (CI.isByRef()) {
       flags = BLOCK_FIELD_IS_BYREF;
       if (type.isObjCGCWeak())
         flags |= BLOCK_FIELD_IS_WEAK;
@@ -1595,7 +1580,7 @@ public:
     : ByrefHelpers(alignment), Flags(flags) {}
 
   void emitCopy(CodeGenFunction &CGF, llvm::Value *destField,
-                llvm::Value *srcField) {
+                llvm::Value *srcField) override {
     destField = CGF.Builder.CreateBitCast(destField, CGF.VoidPtrTy);
 
     srcField = CGF.Builder.CreateBitCast(srcField, CGF.VoidPtrPtrTy);
@@ -1610,14 +1595,14 @@ public:
     CGF.EmitNounwindRuntimeCall(fn, args);
   }
 
-  void emitDispose(CodeGenFunction &CGF, llvm::Value *field) {
+  void emitDispose(CodeGenFunction &CGF, llvm::Value *field) override {
     field = CGF.Builder.CreateBitCast(field, CGF.Int8PtrTy->getPointerTo(0));
     llvm::Value *value = CGF.Builder.CreateLoad(field);
 
     CGF.BuildBlockRelease(value, Flags | BLOCK_BYREF_CALLER);
   }
 
-  void profileImpl(llvm::FoldingSetNodeID &id) const {
+  void profileImpl(llvm::FoldingSetNodeID &id) const override {
     id.AddInteger(Flags.getBitMask());
   }
 };
@@ -1628,15 +1613,15 @@ public:
   ARCWeakByrefHelpers(CharUnits alignment) : ByrefHelpers(alignment) {}
 
   void emitCopy(CodeGenFunction &CGF, llvm::Value *destField,
-                llvm::Value *srcField) {
+                llvm::Value *srcField) override {
     CGF.EmitARCMoveWeak(destField, srcField);
   }
 
-  void emitDispose(CodeGenFunction &CGF, llvm::Value *field) {
+  void emitDispose(CodeGenFunction &CGF, llvm::Value *field) override {
     CGF.EmitARCDestroyWeak(field);
   }
 
-  void profileImpl(llvm::FoldingSetNodeID &id) const {
+  void profileImpl(llvm::FoldingSetNodeID &id) const override {
     // 0 is distinguishable from all pointers and byref flags
     id.AddInteger(0);
   }
@@ -1649,7 +1634,7 @@ public:
   ARCStrongByrefHelpers(CharUnits alignment) : ByrefHelpers(alignment) {}
 
   void emitCopy(CodeGenFunction &CGF, llvm::Value *destField,
-                llvm::Value *srcField) {
+                llvm::Value *srcField) override {
     // Do a "move" by copying the value and then zeroing out the old
     // variable.
 
@@ -1673,11 +1658,11 @@ public:
     store->setAlignment(Alignment.getQuantity());
   }
 
-  void emitDispose(CodeGenFunction &CGF, llvm::Value *field) {
+  void emitDispose(CodeGenFunction &CGF, llvm::Value *field) override {
     CGF.EmitARCDestroyStrong(field, ARCImpreciseLifetime);
   }
 
-  void profileImpl(llvm::FoldingSetNodeID &id) const {
+  void profileImpl(llvm::FoldingSetNodeID &id) const override {
     // 1 is distinguishable from all pointers and byref flags
     id.AddInteger(1);
   }
@@ -1690,7 +1675,7 @@ public:
   ARCStrongBlockByrefHelpers(CharUnits alignment) : ByrefHelpers(alignment) {}
 
   void emitCopy(CodeGenFunction &CGF, llvm::Value *destField,
-                llvm::Value *srcField) {
+                llvm::Value *srcField) override {
     // Do the copy with objc_retainBlock; that's all that
     // _Block_object_assign would do anyway, and we'd have to pass the
     // right arguments to make sure it doesn't get no-op'ed.
@@ -1703,11 +1688,11 @@ public:
     store->setAlignment(Alignment.getQuantity());
   }
 
-  void emitDispose(CodeGenFunction &CGF, llvm::Value *field) {
+  void emitDispose(CodeGenFunction &CGF, llvm::Value *field) override {
     CGF.EmitARCDestroyStrong(field, ARCImpreciseLifetime);
   }
 
-  void profileImpl(llvm::FoldingSetNodeID &id) const {
+  void profileImpl(llvm::FoldingSetNodeID &id) const override {
     // 2 is distinguishable from all pointers and byref flags
     id.AddInteger(2);
   }
@@ -1724,20 +1709,20 @@ public:
                   const Expr *copyExpr)
     : ByrefHelpers(alignment), VarType(type), CopyExpr(copyExpr) {}
 
-  bool needsCopy() const { return CopyExpr != 0; }
+  bool needsCopy() const override { return CopyExpr != 0; }
   void emitCopy(CodeGenFunction &CGF, llvm::Value *destField,
-                llvm::Value *srcField) {
+                llvm::Value *srcField) override {
     if (!CopyExpr) return;
     CGF.EmitSynthesizedCXXCopyCtor(destField, srcField, CopyExpr);
   }
 
-  void emitDispose(CodeGenFunction &CGF, llvm::Value *field) {
+  void emitDispose(CodeGenFunction &CGF, llvm::Value *field) override {
     EHScopeStack::stable_iterator cleanupDepth = CGF.EHStack.stable_begin();
     CGF.PushDestructorCleanup(VarType, field);
     CGF.PopCleanupBlocks(cleanupDepth);
   }
 
-  void profileImpl(llvm::FoldingSetNodeID &id) const {
+  void profileImpl(llvm::FoldingSetNodeID &id) const override {
     id.AddPointer(VarType.getCanonicalType().getAsOpaquePtr());
   }
 };
@@ -1759,10 +1744,8 @@ generateByrefCopyHelper(CodeGenFunction &CGF,
   ImplicitParamDecl src(0, SourceLocation(), 0, Context.VoidPtrTy);
   args.push_back(&src);
 
-  const CGFunctionInfo &FI =
-    CGF.CGM.getTypes().arrangeFunctionDeclaration(R, args,
-                                                  FunctionType::ExtInfo(),
-                                                  /*variadic*/ false);
+  const CGFunctionInfo &FI = CGF.CGM.getTypes().arrangeFreeFunctionDeclaration(
+      R, args, FunctionType::ExtInfo(), /*variadic=*/false);
 
   CodeGenTypes &Types = CGF.CGM.getTypes();
   llvm::FunctionType *LTy = Types.GetFunctionType(FI);
@@ -1783,9 +1766,7 @@ generateByrefCopyHelper(CodeGenFunction &CGF,
                                           SC_Static,
                                           false, false);
 
-  // Initialize debug info if necessary.
-  CGF.maybeInitializeDebugInfo();
-  CGF.StartFunction(FD, R, Fn, FI, args, SourceLocation());
+  CGF.StartFunction(FD, R, Fn, FI, args);
 
   if (byrefInfo.needsCopy()) {
     llvm::Type *byrefPtrType = byrefType.getPointerTo(0);
@@ -1832,10 +1813,8 @@ generateByrefDisposeHelper(CodeGenFunction &CGF,
   ImplicitParamDecl src(0, SourceLocation(), 0, Context.VoidPtrTy);
   args.push_back(&src);
 
-  const CGFunctionInfo &FI =
-    CGF.CGM.getTypes().arrangeFunctionDeclaration(R, args,
-                                                  FunctionType::ExtInfo(),
-                                                  /*variadic*/ false);
+  const CGFunctionInfo &FI = CGF.CGM.getTypes().arrangeFreeFunctionDeclaration(
+      R, args, FunctionType::ExtInfo(), /*variadic=*/false);
 
   CodeGenTypes &Types = CGF.CGM.getTypes();
   llvm::FunctionType *LTy = Types.GetFunctionType(FI);
@@ -1856,9 +1835,7 @@ generateByrefDisposeHelper(CodeGenFunction &CGF,
                                           SourceLocation(), II, R, 0,
                                           SC_Static,
                                           false, false);
-  // Initialize debug info if necessary.
-  CGF.maybeInitializeDebugInfo();
-  CGF.StartFunction(FD, R, Fn, FI, args, SourceLocation());
+  CGF.StartFunction(FD, R, Fn, FI, args);
 
   if (byrefInfo.needsDispose()) {
     llvm::Value *V = CGF.GetAddrOfLocalVar(&src);
@@ -2230,7 +2207,7 @@ namespace {
     llvm::Value *Addr;
     CallBlockRelease(llvm::Value *Addr) : Addr(Addr) {}
 
-    void Emit(CodeGenFunction &CGF, Flags flags) {
+    void Emit(CodeGenFunction &CGF, Flags flags) override {
       // Should we be passing FIELD_IS_WEAK here?
       CGF.BuildBlockRelease(Addr, BLOCK_FIELD_IS_BYREF);
     }

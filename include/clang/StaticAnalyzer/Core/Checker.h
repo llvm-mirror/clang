@@ -320,18 +320,35 @@ public:
 class PointerEscape {
   template <typename CHECKER>
   static ProgramStateRef
-  _checkPointerEscape(void *checker,
+  _checkPointerEscape(void *Checker,
                      ProgramStateRef State,
                      const InvalidatedSymbols &Escaped,
                      const CallEvent *Call,
                      PointerEscapeKind Kind,
-                    bool IsConst) {
-    if (!IsConst)
-      return ((const CHECKER *)checker)->checkPointerEscape(State,
+                     RegionAndSymbolInvalidationTraits *ETraits) {
+
+    if (!ETraits)
+      return ((const CHECKER *)Checker)->checkPointerEscape(State,
                                                             Escaped,
                                                             Call,
                                                             Kind);
-    return State;
+
+    InvalidatedSymbols RegularEscape;
+    for (InvalidatedSymbols::const_iterator I = Escaped.begin(), 
+                                            E = Escaped.end(); I != E; ++I)
+      if (!ETraits->hasTrait(*I,
+              RegionAndSymbolInvalidationTraits::TK_PreserveContents) &&
+          !ETraits->hasTrait(*I,
+              RegionAndSymbolInvalidationTraits::TK_SuppressEscape))
+        RegularEscape.insert(*I);
+
+    if (RegularEscape.empty())
+      return State;
+
+    return ((const CHECKER *)Checker)->checkPointerEscape(State,
+                                                          RegularEscape,
+                                                          Call,
+                                                          Kind);
   }
 
 public:
@@ -346,18 +363,32 @@ public:
 class ConstPointerEscape {
   template <typename CHECKER>
   static ProgramStateRef
-  _checkConstPointerEscape(void *checker,
+  _checkConstPointerEscape(void *Checker,
                       ProgramStateRef State,
                       const InvalidatedSymbols &Escaped,
                       const CallEvent *Call,
                       PointerEscapeKind Kind,
-                      bool IsConst) {
-    if (IsConst)
-      return ((const CHECKER *)checker)->checkConstPointerEscape(State,
-                                                                 Escaped,
-                                                                 Call,
-                                                                 Kind);
-    return State;
+                      RegionAndSymbolInvalidationTraits *ETraits) {
+
+    if (!ETraits)
+      return State;
+
+    InvalidatedSymbols ConstEscape;
+    for (InvalidatedSymbols::const_iterator I = Escaped.begin(), 
+                                            E = Escaped.end(); I != E; ++I)
+      if (ETraits->hasTrait(*I,
+              RegionAndSymbolInvalidationTraits::TK_PreserveContents) &&
+          !ETraits->hasTrait(*I,
+              RegionAndSymbolInvalidationTraits::TK_SuppressEscape))
+        ConstEscape.insert(*I);
+
+    if (ConstEscape.empty())
+      return State;
+
+    return ((const CHECKER *)Checker)->checkConstPointerEscape(State,
+                                                               ConstEscape,
+                                                               Call,
+                                                               Kind);
   }
 
 public:
@@ -422,14 +453,29 @@ public:
 } // end eval namespace
 
 class CheckerBase : public ProgramPointTag {
+  CheckName Name;
+  friend class ::clang::ento::CheckerManager;
+
 public:
-  StringRef getTagDescription() const;
+  StringRef getTagDescription() const override;
+  CheckName getCheckName() const;
 
   /// See CheckerManager::runCheckersForPrintState.
   virtual void printState(raw_ostream &Out, ProgramStateRef State,
                           const char *NL, const char *Sep) const { }
 };
-  
+
+/// Dump checker name to stream.
+raw_ostream& operator<<(raw_ostream &Out, const CheckerBase &Checker);
+
+/// Tag that can use a checker name as a message provider 
+/// (see SimpleProgramPointTag).
+class CheckerProgramPointTag : public SimpleProgramPointTag {
+public:
+  CheckerProgramPointTag(StringRef CheckerName, StringRef Msg);
+  CheckerProgramPointTag(const CheckerBase *Checker, StringRef Msg);
+};
+
 template <typename CHECK1, typename CHECK2=check::_VoidCheck,
           typename CHECK3=check::_VoidCheck, typename CHECK4=check::_VoidCheck,
           typename CHECK5=check::_VoidCheck, typename CHECK6=check::_VoidCheck,

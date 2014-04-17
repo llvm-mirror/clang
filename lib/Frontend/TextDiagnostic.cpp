@@ -26,6 +26,8 @@ using namespace clang;
 
 static const enum raw_ostream::Colors noteColor =
   raw_ostream::BLACK;
+static const enum raw_ostream::Colors remarkColor =
+  raw_ostream::BLUE;
 static const enum raw_ostream::Colors fixitColor =
   raw_ostream::GREEN;
 static const enum raw_ostream::Colors caretColor =
@@ -312,14 +314,6 @@ private:
   SmallVector<int,200> m_byteToColumn;
   SmallVector<int,200> m_columnToByte;
 };
-
-// used in assert in selectInterestingSourceRegion()
-struct char_out_of_range {
-  const char lower,upper;
-  char_out_of_range(char lower, char upper) :
-    lower(lower), upper(upper) {}
-  bool operator()(char c) { return c < lower || upper < c; }
-};
 } // end anonymous namespace
 
 /// \brief When the source code line we want to print is too long for
@@ -339,7 +333,7 @@ static void selectInterestingSourceRegion(std::string &SourceLine,
   // No special characters are allowed in CaretLine.
   assert(CaretLine.end() ==
          std::find_if(CaretLine.begin(), CaretLine.end(),
-         char_out_of_range(' ','~')));
+                      [](char c) { return c < ' ' || '~' < c; }));
 
   // Find the slice that we need to display the full caret line
   // correctly.
@@ -693,7 +687,8 @@ TextDiagnostic::emitDiagnosticMessage(SourceLocation Loc,
   if (DiagOpts->ShowColors)
     OS.resetColor();
   
-  printDiagnosticLevel(OS, Level, DiagOpts->ShowColors);
+  printDiagnosticLevel(OS, Level, DiagOpts->ShowColors,
+                       DiagOpts->CLFallbackMode);
   printDiagnosticMessage(OS, Level, Message,
                          OS.tell() - StartOfLocationInfo,
                          DiagOpts->MessageLength, DiagOpts->ShowColors);
@@ -702,13 +697,15 @@ TextDiagnostic::emitDiagnosticMessage(SourceLocation Loc,
 /*static*/ void
 TextDiagnostic::printDiagnosticLevel(raw_ostream &OS,
                                      DiagnosticsEngine::Level Level,
-                                     bool ShowColors) {
+                                     bool ShowColors,
+                                     bool CLFallbackMode) {
   if (ShowColors) {
     // Print diagnostic category in bold and color
     switch (Level) {
     case DiagnosticsEngine::Ignored:
       llvm_unreachable("Invalid diagnostic type");
     case DiagnosticsEngine::Note:    OS.changeColor(noteColor, true); break;
+    case DiagnosticsEngine::Remark:  OS.changeColor(remarkColor, true); break;
     case DiagnosticsEngine::Warning: OS.changeColor(warningColor, true); break;
     case DiagnosticsEngine::Error:   OS.changeColor(errorColor, true); break;
     case DiagnosticsEngine::Fatal:   OS.changeColor(fatalColor, true); break;
@@ -718,11 +715,21 @@ TextDiagnostic::printDiagnosticLevel(raw_ostream &OS,
   switch (Level) {
   case DiagnosticsEngine::Ignored:
     llvm_unreachable("Invalid diagnostic type");
-  case DiagnosticsEngine::Note:    OS << "note: "; break;
-  case DiagnosticsEngine::Warning: OS << "warning: "; break;
-  case DiagnosticsEngine::Error:   OS << "error: "; break;
-  case DiagnosticsEngine::Fatal:   OS << "fatal error: "; break;
+  case DiagnosticsEngine::Note:    OS << "note"; break;
+  case DiagnosticsEngine::Remark:  OS << "remark"; break;
+  case DiagnosticsEngine::Warning: OS << "warning"; break;
+  case DiagnosticsEngine::Error:   OS << "error"; break;
+  case DiagnosticsEngine::Fatal:   OS << "fatal error"; break;
   }
+
+  // In clang-cl /fallback mode, print diagnostics as "error(clang):". This
+  // makes it more clear whether a message is coming from clang or cl.exe,
+  // and it prevents MSBuild from concluding that the build failed just because
+  // there is an "error:" in the output.
+  if (CLFallbackMode)
+    OS << "(clang)";
+
+  OS << ": ";
 
   if (ShowColors)
     OS.resetColor();
@@ -776,7 +783,7 @@ void TextDiagnostic::emitDiagnosticLoc(SourceLocation Loc, PresumedLoc PLoc,
     FileID FID = SM.getFileID(Loc);
     if (!FID.isInvalid()) {
       const FileEntry* FE = SM.getFileEntryForID(FID);
-      if (FE && FE->getName()) {
+      if (FE && FE->isValid()) {
         OS << FE->getName();
         if (FE->isInPCH())
           OS << " (in PCH)";
@@ -805,7 +812,9 @@ void TextDiagnostic::emitDiagnosticLoc(SourceLocation Loc, PresumedLoc PLoc,
     if (unsigned ColNo = PLoc.getColumn()) {
       if (DiagOpts->getFormat() == DiagnosticOptions::Msvc) {
         OS << ',';
-        ColNo--;
+        // Visual Studio 2010 or earlier expects column number to be off by one
+        if (LangOpts.MSCVersion && LangOpts.MSCVersion < 1700)
+          ColNo--;
       } else
         OS << ':';
       OS << ColNo;

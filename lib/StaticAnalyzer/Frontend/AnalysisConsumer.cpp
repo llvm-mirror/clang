@@ -13,13 +13,13 @@
 
 #define DEBUG_TYPE "AnalysisConsumer"
 
-#include "AnalysisConsumer.h"
+#include "clang/StaticAnalyzer/Frontend/AnalysisConsumer.h"
 #include "clang/AST/ASTConsumer.h"
+#include "clang/AST/DataRecursiveASTVisitor.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/ParentMap.h"
-#include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Analysis/Analyses/LiveVariables.h"
 #include "clang/Analysis/CFG.h"
 #include "clang/Analysis/CallGraph.h"
@@ -36,7 +36,6 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "clang/StaticAnalyzer/Frontend/CheckerRegistration.h"
 #include "llvm/ADT/DepthFirstIterator.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
@@ -45,6 +44,7 @@
 #include "llvm/Support/Program.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
+#include <memory>
 #include <queue>
 
 using namespace clang;
@@ -66,50 +66,65 @@ STATISTIC(MaxCFGSize, "The maximum number of basic blocks in a function.");
 // Special PathDiagnosticConsumers.
 //===----------------------------------------------------------------------===//
 
-static void createPlistHTMLDiagnosticConsumer(AnalyzerOptions &AnalyzerOpts,
-                                              PathDiagnosticConsumers &C,
-                                              const std::string &prefix,
-                                              const Preprocessor &PP) {
+void ento::createPlistHTMLDiagnosticConsumer(AnalyzerOptions &AnalyzerOpts,
+                                             PathDiagnosticConsumers &C,
+                                             const std::string &prefix,
+                                             const Preprocessor &PP) {
   createHTMLDiagnosticConsumer(AnalyzerOpts, C,
                                llvm::sys::path::parent_path(prefix), PP);
   createPlistDiagnosticConsumer(AnalyzerOpts, C, prefix, PP);
 }
 
+void ento::createTextPathDiagnosticConsumer(AnalyzerOptions &AnalyzerOpts,
+                                            PathDiagnosticConsumers &C,
+                                            const std::string &Prefix,
+                                            const clang::Preprocessor &PP) {
+  llvm_unreachable("'text' consumer should be enabled on ClangDiags");
+}
+
 namespace {
 class ClangDiagPathDiagConsumer : public PathDiagnosticConsumer {
   DiagnosticsEngine &Diag;
+  bool IncludePath;
 public:
-  ClangDiagPathDiagConsumer(DiagnosticsEngine &Diag) : Diag(Diag) {}
+  ClangDiagPathDiagConsumer(DiagnosticsEngine &Diag)
+    : Diag(Diag), IncludePath(false) {}
   virtual ~ClangDiagPathDiagConsumer() {}
-  virtual StringRef getName() const { return "ClangDiags"; }
-  virtual PathGenerationScheme getGenerationScheme() const { return None; }
+  StringRef getName() const override { return "ClangDiags"; }
+
+  bool supportsLogicalOpControlFlow() const override { return true; }
+  bool supportsCrossFileDiagnostics() const override { return true; }
+
+  PathGenerationScheme getGenerationScheme() const override {
+    return IncludePath ? Minimal : None;
+  }
+
+  void enablePaths() {
+    IncludePath = true;
+  }
 
   void FlushDiagnosticsImpl(std::vector<const PathDiagnostic *> &Diags,
-                            FilesMade *filesMade) {
+                            FilesMade *filesMade) override {
+    unsigned WarnID = Diag.getCustomDiagID(DiagnosticsEngine::Warning, "%0");
+    unsigned NoteID = Diag.getCustomDiagID(DiagnosticsEngine::Note, "%0");
+
     for (std::vector<const PathDiagnostic*>::iterator I = Diags.begin(),
          E = Diags.end(); I != E; ++I) {
       const PathDiagnostic *PD = *I;
-      StringRef desc = PD->getShortDescription();
-      SmallString<512> TmpStr;
-      llvm::raw_svector_ostream Out(TmpStr);
-      for (StringRef::iterator I=desc.begin(), E=desc.end(); I!=E; ++I) {
-        if (*I == '%')
-          Out << "%%";
-        else
-          Out << *I;
-      }
-      Out.flush();
-      unsigned ErrorDiag = Diag.getCustomDiagID(DiagnosticsEngine::Warning,
-                                                TmpStr);
-      SourceLocation L = PD->getLocation().asLocation();
-      DiagnosticBuilder diagBuilder = Diag.Report(L, ErrorDiag);
+      SourceLocation WarnLoc = PD->getLocation().asLocation();
+      Diag.Report(WarnLoc, WarnID) << PD->getShortDescription()
+                                   << PD->path.back()->getRanges();
 
-      // Get the ranges from the last point in the path.
-      ArrayRef<SourceRange> Ranges = PD->path.back()->getRanges();
+      if (!IncludePath)
+        continue;
 
-      for (ArrayRef<SourceRange>::iterator I = Ranges.begin(),
-                                           E = Ranges.end(); I != E; ++I) {
-        diagBuilder << *I;
+      PathPieces FlatPath = PD->path.flatten(/*ShouldFlattenMacros=*/true);
+      for (PathPieces::const_iterator PI = FlatPath.begin(),
+                                      PE = FlatPath.end();
+           PI != PE; ++PI) {
+        SourceLocation NoteLoc = (*PI)->getLocation().asLocation();
+        Diag.Report(NoteLoc, NoteID) << (*PI)->getString()
+                                     << (*PI)->getRanges();
       }
     }
   }
@@ -122,8 +137,8 @@ public:
 
 namespace {
 
-class AnalysisConsumer : public ASTConsumer,
-                         public RecursiveASTVisitor<AnalysisConsumer> {
+class AnalysisConsumer : public AnalysisASTConsumer,
+                         public DataRecursiveASTVisitor<AnalysisConsumer> {
   enum {
     AM_None = 0,
     AM_Syntax = 0x1,
@@ -156,8 +171,8 @@ public:
   StoreManagerCreator CreateStoreMgr;
   ConstraintManagerCreator CreateConstraintMgr;
 
-  OwningPtr<CheckerManager> checkerMgr;
-  OwningPtr<AnalysisManager> Mgr;
+  std::unique_ptr<CheckerManager> checkerMgr;
+  std::unique_ptr<AnalysisManager> Mgr;
 
   /// Time the analyzes time of each translation unit.
   static llvm::Timer* TUTotalTimer;
@@ -185,21 +200,25 @@ public:
   }
 
   void DigestAnalyzerOptions() {
-    // Create the PathDiagnosticConsumer.
-    PathConsumers.push_back(new ClangDiagPathDiagConsumer(PP.getDiagnostics()));
+    if (Opts->AnalysisDiagOpt != PD_NONE) {
+      // Create the PathDiagnosticConsumer.
+      ClangDiagPathDiagConsumer *clangDiags =
+          new ClangDiagPathDiagConsumer(PP.getDiagnostics());
+      PathConsumers.push_back(clangDiags);
 
-    if (!OutDir.empty()) {
-      switch (Opts->AnalysisDiagOpt) {
-      default:
-#define ANALYSIS_DIAGNOSTICS(NAME, CMDFLAG, DESC, CREATEFN, AUTOCREATE) \
-        case PD_##NAME: CREATEFN(*Opts.getPtr(), PathConsumers, OutDir, PP);\
-        break;
+      if (Opts->AnalysisDiagOpt == PD_TEXT) {
+        clangDiags->enablePaths();
+
+      } else if (!OutDir.empty()) {
+        switch (Opts->AnalysisDiagOpt) {
+        default:
+#define ANALYSIS_DIAGNOSTICS(NAME, CMDFLAG, DESC, CREATEFN)                    \
+  case PD_##NAME:                                                              \
+    CREATEFN(*Opts.getPtr(), PathConsumers, OutDir, PP);                       \
+    break;
 #include "clang/StaticAnalyzer/Core/Analyses.def"
+        }
       }
-    } else if (Opts->AnalysisDiagOpt == PD_TEXT) {
-      // Create the text client even without a specified output file since
-      // it just uses diagnostic notes.
-      createTextPathDiagnosticConsumer(*Opts.getPtr(), PathConsumers, "", PP);
     }
 
     // Create the analyzer component creators.
@@ -263,7 +282,7 @@ public:
     }
   }
 
-  virtual void Initialize(ASTContext &Context) {
+  void Initialize(ASTContext &Context) override {
     Ctx = &Context;
     checkerMgr.reset(createCheckerManager(*Opts, PP.getLangOpts(), Plugins,
                                           PP.getDiagnostics()));
@@ -279,10 +298,10 @@ public:
 
   /// \brief Store the top level decls in the set to be processed later on.
   /// (Doing this pre-processing avoids deserialization of data from PCH.)
-  virtual bool HandleTopLevelDecl(DeclGroupRef D);
-  virtual void HandleTopLevelDeclInObjCContainer(DeclGroupRef D);
+  bool HandleTopLevelDecl(DeclGroupRef D) override;
+  void HandleTopLevelDeclInObjCContainer(DeclGroupRef D) override;
 
-  virtual void HandleTranslationUnit(ASTContext &C);
+  void HandleTranslationUnit(ASTContext &C) override;
 
   /// \brief Determine which inlining mode should be used when this function is
   /// analyzed. This allows to redefine the default inlining policies when
@@ -351,6 +370,11 @@ public:
       HandleCode(BD, RecVisitorMode);
     }
     return true;
+  }
+
+  virtual void
+  AddDiagnosticConsumer(PathDiagnosticConsumer *Consumer) override {
+    PathConsumers.push_back(Consumer);
   }
 
 private:
@@ -560,7 +584,7 @@ AnalysisConsumer::getModeForDecl(Decl *D, AnalysisMode Mode) {
   // - System headers: don't run any checks.
   SourceManager &SM = Ctx->getSourceManager();
   SourceLocation SL = SM.getExpansionLoc(D->getLocation());
-  if (!Opts->AnalyzeAll && !SM.isFromMainFile(SL)) {
+  if (!Opts->AnalyzeAll && !SM.isInMainFile(SL)) {
     if (SL.isInvalid() || SM.isInSystemHeader(SL))
       return AM_None;
     return Mode & ~AM_Path;
@@ -617,7 +641,7 @@ void AnalysisConsumer::ActionExprEngine(Decl *D, bool ObjCGCEnabled,
   ExprEngine Eng(*Mgr, ObjCGCEnabled, VisitedCallees, &FunctionSummaries,IMode);
 
   // Set the graph auditor.
-  OwningPtr<ExplodedNode::Auditor> Auditor;
+  std::unique_ptr<ExplodedNode::Auditor> Auditor;
   if (Mgr->options.visualizeExplodedGraphWithUbiGraph) {
     Auditor.reset(CreateUbiViz());
     ExplodedNode::SetAuditor(Auditor.get());
@@ -663,10 +687,10 @@ void AnalysisConsumer::RunPathSensitiveChecks(Decl *D,
 // AnalysisConsumer creation.
 //===----------------------------------------------------------------------===//
 
-ASTConsumer* ento::CreateAnalysisConsumer(const Preprocessor& pp,
-                                          const std::string& outDir,
-                                          AnalyzerOptionsRef opts,
-                                          ArrayRef<std::string> plugins) {
+AnalysisASTConsumer *
+ento::CreateAnalysisConsumer(const Preprocessor &pp, const std::string &outDir,
+                             AnalyzerOptionsRef opts,
+                             ArrayRef<std::string> plugins) {
   // Disable the effects of '-Werror' when using the AnalysisConsumer.
   pp.getDiagnostics().setWarningsAsErrors(false);
 
@@ -680,7 +704,7 @@ ASTConsumer* ento::CreateAnalysisConsumer(const Preprocessor& pp,
 namespace {
 
 class UbigraphViz : public ExplodedNode::Auditor {
-  OwningPtr<raw_ostream> Out;
+  std::unique_ptr<raw_ostream> Out;
   std::string Filename;
   unsigned Cntr;
 
@@ -692,7 +716,7 @@ public:
 
   ~UbigraphViz();
 
-  virtual void AddEdge(ExplodedNode *Src, ExplodedNode *Dst);
+  void AddEdge(ExplodedNode *Src, ExplodedNode *Dst) override;
 };
 
 } // end anonymous namespace
@@ -703,10 +727,10 @@ static ExplodedNode::Auditor* CreateUbiViz() {
   llvm::sys::fs::createTemporaryFile("llvm_ubi", "", FD, P);
   llvm::errs() << "Writing '" << P.str() << "'.\n";
 
-  OwningPtr<llvm::raw_fd_ostream> Stream;
+  std::unique_ptr<llvm::raw_fd_ostream> Stream;
   Stream.reset(new llvm::raw_fd_ostream(FD, true));
 
-  return new UbigraphViz(Stream.take(), P);
+  return new UbigraphViz(Stream.release(), P);
 }
 
 void UbigraphViz::AddEdge(ExplodedNode *Src, ExplodedNode *Dst) {

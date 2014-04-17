@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -verify -Wno-return-type -Wno-main -std=c++11 -emit-llvm -triple %itanium_abi_triple -o - %s | FileCheck %s
+// expected-no-diagnostics
+
 namespace test1 {
 int x;
 template <int& D> class T { };
@@ -101,7 +103,7 @@ namespace test8 {
   template<typename T>
   void f(int_c<meta<T>::type::value>) { }
 
-  // CHECK: define weak_odr void @_ZN5test81fIiEEvNS_5int_cIXsr4metaIT_E4typeE5valueEEE(
+  // CHECK-LABEL: define weak_odr void @_ZN5test81fIiEEvNS_5int_cIXsr4metaIT_E4typeE5valueEEE(
   template void f<int>(int_c<sizeof(int)>);
 }
 
@@ -156,17 +158,17 @@ namespace test11 {
 
 namespace test12 {
   // Make sure we can mangle non-type template args with internal linkage.
-  static int f();
+  static int f() {}
   const int n = 10;
   template<typename T, T v> void test() {}
   void use() {
-    // CHECK: define internal void @_ZN6test124testIFivEXadL_ZNS_L1fEvEEEEvv(
+    // CHECK-LABEL: define internal void @_ZN6test124testIFivEXadL_ZNS_L1fEvEEEEvv(
     test<int(), &f>();
-    // CHECK: define internal void @_ZN6test124testIRFivELZNS_L1fEvEEEvv(
+    // CHECK-LABEL: define internal void @_ZN6test124testIRFivELZNS_L1fEvEEEvv(
     test<int(&)(), f>();
-    // CHECK: define internal void @_ZN6test124testIPKiXadL_ZNS_L1nEEEEEvv(
+    // CHECK-LABEL: define internal void @_ZN6test124testIPKiXadL_ZNS_L1nEEEEEvv(
     test<const int*, &n>();
-    // CHECK: define internal void @_ZN6test124testIRKiLZNS_L1nEEEEvv(
+    // CHECK-LABEL: define internal void @_ZN6test124testIRKiLZNS_L1nEEEEvv(
     test<const int&, n>();
   }
 }
@@ -181,4 +183,26 @@ namespace test13 {
   template <short s> short returnShort() { return s; }
   template short returnShort<-32768>();
   // CHECK: @_ZN6test1311returnShortILsn32768EEEsv()
+}
+
+namespace test14 {
+  template <typename> inline int inl(bool b) {
+    if (b) {
+      static struct {
+        int field;
+      } a;
+      // CHECK: @_ZZN6test143inlIvEEibE1a
+
+      return a.field;
+    } else {
+      static struct {
+        int field;
+      } a;
+      // CHECK: @_ZZN6test143inlIvEEibE1a_0
+
+      return a.field;
+    }
+  }
+
+  int call(bool b) { return inl<void>(b); }
 }

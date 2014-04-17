@@ -1,7 +1,7 @@
 // RUN: rm -rf %t
-// RUN: %clang_cc1 -objcmt-migrate-property -mt-migrate-directory %t %s -x objective-c -fobjc-runtime-has-weak -fobjc-arc -fobjc-default-synthesize-properties -triple x86_64-apple-darwin11
+// RUN: %clang_cc1 -objcmt-migrate-protocol-conformance -mt-migrate-directory %t %s -x objective-c -fobjc-runtime-has-weak -fobjc-arc -triple x86_64-apple-darwin11
 // RUN: c-arcmt-test -mt-migrate-directory %t | arcmt-test -verify-transformed-files %s.result
-// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -fsyntax-only -x objective-c -fobjc-runtime-has-weak -fobjc-arc -fobjc-default-synthesize-properties %s.result
+// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -fsyntax-only -x objective-c -fobjc-runtime-has-weak -fobjc-arc %s.result
 
 @interface NSObject @end
 
@@ -112,3 +112,19 @@
 @implementation Test7
 @end
 
+// rdar://15515206
+@interface BTLEBrowser
+@end
+
+@protocol CBCentralManagerDelegate; 
+
+@protocol CBCentralManagerDelegate 
+- (id) Meth1: (double) arg;
+@end
+
+@interface BTLEBrowser() <CBCentralManagerDelegate> 
+@end
+
+@implementation BTLEBrowser
+- (id) Meth15515206: (double) arg { return 0; }
+@end

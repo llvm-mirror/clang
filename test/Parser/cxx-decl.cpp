@@ -1,6 +1,6 @@
-// RUN: %clang_cc1 -verify -fsyntax-only -triple i386-linux -pedantic -fcxx-exceptions -fexceptions %s
+// RUN: %clang_cc1 -verify -fsyntax-only -triple i386-linux -pedantic-errors -fcxx-exceptions -fexceptions %s
 
-const char const *x10; // expected-warning {{duplicate 'const' declaration specifier}}
+const char const *x10; // expected-error {{duplicate 'const' declaration specifier}}
 
 int x(*g); // expected-error {{use of undeclared identifier 'g'}}
 
@@ -46,7 +46,7 @@ class asm_class_test {
   void foo() __asm__("baz");
 };
 
-enum { fooenum = 1, }; // expected-warning {{commas at the end of enumerator lists are a C++11 extension}}
+enum { fooenum = 1, }; // expected-error {{commas at the end of enumerator lists are a C++11 extension}}
 
 struct a {
   int Type : fooenum;
@@ -81,7 +81,7 @@ namespace Commas {
   (global5),
   *global6,
   &global7 = global1,
-  &&global8 = static_cast<int&&>(global1), // expected-warning 2{{rvalue reference}}
+  &&global8 = static_cast<int&&>(global1), // expected-error 2{{rvalue reference}}
   S::a,
   global9,
   global10 = 0,
@@ -108,9 +108,9 @@ template<class T>
 class Class1;
 
 class Class2 {
-}  // no ;
+} // expected-error {{expected ';' after class}}
 
-typedef Class1<Class2> Type1; // expected-error {{cannot combine with previous 'class' declaration specifier}}
+typedef Class1<Class2> Type1;
 
 // rdar : // 8307865
 struct CodeCompleteConsumer {
@@ -181,17 +181,62 @@ void test (DIE die, DIE *Die, DIE INT, DIE *FLOAT) {
 }
 
 namespace PR15017 {
-  template<typename T = struct X { int i; }> struct S {}; // expected-error {{'PR15017::X' can not be defined in a type specifier}}
+  template<typename T = struct X { int i; }> struct S {}; // expected-error {{'PR15017::X' cannot be defined in a type specifier}}
 }
 
 // Ensure we produce at least some diagnostic for attributes in C++98.
 [[]] struct S; // expected-error 2{{}}
 
+namespace test7 {
+  struct Foo {
+    void a();
+    void b();
+  };
+
+  void Foo::
+  // Comment!
+  a() {}
+
+
+  void Foo::  // expected-error {{expected unqualified-id}}
+  // Comment!
+}
+
+void test8() {
+  struct {} o;
+  // This used to crash.
+  (&o)->(); // expected-error{{expected unqualified-id}}
+}
+
 namespace PR5066 {
   template<typename T> struct X {};
   X<int N> x; // expected-error {{type-id cannot have a name}}
 
-  using T = int (*T)(); // expected-error {{type-id cannot have a name}} expected-warning {{C++11}}
+  using T = int (*T)(); // expected-error {{type-id cannot have a name}} expected-error {{C++11}}
+}
+
+namespace PR17255 {
+void foo() {
+  typename A::template B<>; // expected-error {{use of undeclared identifier 'A'}} \
+                            // expected-error {{expected a qualified name after 'typename'}} \
+                            // expected-error {{'template' keyword outside of a template}}
+}
+}
+
+namespace PR17567 {
+  struct Foobar { // expected-note 2{{declared here}}
+    FooBar(); // expected-error {{missing return type for function 'FooBar'; did you mean the constructor name 'Foobar'?}}
+    ~FooBar(); // expected-error {{expected the class name after '~' to name a destructor}}
+  };
+  FooBar::FooBar() {} // expected-error {{undeclared}} expected-error {{missing return type}}
+  FooBar::~FooBar() {} // expected-error {{undeclared}} expected-error {{expected the class name}}
+}
+
+namespace DuplicateFriend {
+  struct A {
+    friend void friend f(); // expected-warning {{duplicate 'friend' declaration specifier}}
+    friend struct B friend; // expected-warning {{duplicate 'friend' declaration specifier}}
+  };
 }
 
 // PR8380

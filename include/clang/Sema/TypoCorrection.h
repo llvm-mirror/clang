@@ -43,7 +43,8 @@ public:
                  unsigned QualifierDistance = 0)
       : CorrectionName(Name), CorrectionNameSpec(NNS),
         CharDistance(CharDistance), QualifierDistance(QualifierDistance),
-        CallbackDistance(0), ForceSpecifierReplacement(false) {
+        CallbackDistance(0), ForceSpecifierReplacement(false),
+        RequiresImport(false) {
     if (NameDecl)
       CorrectionDecls.push_back(NameDecl);
   }
@@ -52,7 +53,7 @@ public:
                  unsigned CharDistance = 0)
       : CorrectionName(Name->getDeclName()), CorrectionNameSpec(NNS),
         CharDistance(CharDistance), QualifierDistance(0), CallbackDistance(0),
-        ForceSpecifierReplacement(false) {
+        ForceSpecifierReplacement(false), RequiresImport(false) {
     if (Name)
       CorrectionDecls.push_back(Name);
   }
@@ -61,11 +62,12 @@ public:
                  unsigned CharDistance = 0)
       : CorrectionName(Name), CorrectionNameSpec(NNS),
         CharDistance(CharDistance), QualifierDistance(0), CallbackDistance(0),
-        ForceSpecifierReplacement(false) {}
+        ForceSpecifierReplacement(false), RequiresImport(false) {}
 
   TypoCorrection()
       : CorrectionNameSpec(0), CharDistance(0), QualifierDistance(0),
-        CallbackDistance(0), ForceSpecifierReplacement(false) {}
+        CallbackDistance(0), ForceSpecifierReplacement(false),
+        RequiresImport(false) {}
 
   /// \brief Gets the DeclarationName of the typo correction
   DeclarationName getCorrection() const { return CorrectionName; }
@@ -134,11 +136,22 @@ public:
   DeclClass *getCorrectionDeclAs() const {
     return dyn_cast_or_null<DeclClass>(getCorrectionDecl());
   }
-  
+
+  /// \brief Clears the list of NamedDecls.
+  void ClearCorrectionDecls() {
+    CorrectionDecls.clear();
+  }
+
   /// \brief Clears the list of NamedDecls before adding the new one.
   void setCorrectionDecl(NamedDecl *CDecl) {
     CorrectionDecls.clear();
     addCorrectionDecl(CDecl);
+  }
+
+  /// \brief Clears the list of NamedDecls and adds the given set.
+  void setCorrectionDecls(ArrayRef<NamedDecl*> Decls) {
+    CorrectionDecls.clear();
+    CorrectionDecls.insert(CorrectionDecls.begin(), Decls.begin(), Decls.end());
   }
 
   /// \brief Add the given NamedDecl to the list of NamedDecls that are the
@@ -183,9 +196,9 @@ public:
     return CorrectionDecls.size() > 1;
   }
 
-  void setCorrectionRange(CXXScopeSpec* SS,
+  void setCorrectionRange(CXXScopeSpec *SS,
                           const DeclarationNameInfo &TypoName) {
-    CorrectionRange.setBegin(ForceSpecifierReplacement && SS
+    CorrectionRange.setBegin(ForceSpecifierReplacement && SS && !SS->isEmpty()
                                  ? SS->getBeginLoc()
                                  : TypoName.getLoc());
     CorrectionRange.setEnd(TypoName.getLoc());
@@ -206,6 +219,11 @@ public:
   }
   const_decl_iterator end() const { return CorrectionDecls.end(); }
 
+  /// \brief Returns whether this typo correction is correcting to a
+  /// declaration that was declared in a module that has not been imported.
+  bool requiresImport() const { return RequiresImport; }
+  void setRequiresImport(bool Req) { RequiresImport = Req; }
+
 private:
   bool hasCorrectionDecl() const {
     return (!isKeyword() && !CorrectionDecls.empty());
@@ -220,6 +238,7 @@ private:
   unsigned CallbackDistance;
   SourceRange CorrectionRange;
   bool ForceSpecifierReplacement;
+  bool RequiresImport;
 };
 
 /// @brief Base class for callback objects used by Sema::CorrectTypo to check
@@ -275,7 +294,7 @@ public:
 template <class C>
 class DeclFilterCCC : public CorrectionCandidateCallback {
 public:
-  virtual bool ValidateCandidate(const TypoCorrection &candidate) {
+  bool ValidateCandidate(const TypoCorrection &candidate) override {
     return candidate.getCorrectionDeclAs<C>();
   }
 };
@@ -286,13 +305,16 @@ public:
 class FunctionCallFilterCCC : public CorrectionCandidateCallback {
 public:
   FunctionCallFilterCCC(Sema &SemaRef, unsigned NumArgs,
-                        bool HasExplicitTemplateArgs);
+                        bool HasExplicitTemplateArgs,
+                        MemberExpr *ME = 0);
 
-  virtual bool ValidateCandidate(const TypoCorrection &candidate);
+  bool ValidateCandidate(const TypoCorrection &candidate) override;
 
  private:
   unsigned NumArgs;
   bool HasExplicitTemplateArgs;
+  DeclContext *CurContext;
+  MemberExpr *MemberFn;
 };
 
 // @brief Callback class that effectively disabled typo correction
@@ -305,7 +327,7 @@ public:
     WantRemainingKeywords = false;
   }
 
-  virtual bool ValidateCandidate(const TypoCorrection &candidate) {
+  bool ValidateCandidate(const TypoCorrection &candidate) override {
     return false;
   }
 };

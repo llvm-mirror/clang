@@ -79,9 +79,8 @@ void StmtProfiler::VisitStmt(const Stmt *S) {
 
 void StmtProfiler::VisitDeclStmt(const DeclStmt *S) {
   VisitStmt(S);
-  for (DeclStmt::const_decl_iterator D = S->decl_begin(), DEnd = S->decl_end();
-       D != DEnd; ++D)
-    VisitDecl(*D);
+  for (const auto *D : S->decls())
+    VisitDecl(D);
 }
 
 void StmtProfiler::VisitNullStmt(const NullStmt *S) {
@@ -255,6 +254,9 @@ StmtProfiler::VisitObjCAutoreleasePoolStmt(const ObjCAutoreleasePoolStmt *S) {
 namespace {
 class OMPClauseProfiler : public ConstOMPClauseVisitor<OMPClauseProfiler> {
   StmtProfiler *Profiler;
+  /// \brief Process clauses with list of variables.
+  template <typename T>
+  void VisitOMPClauseList(T *Node);
 public:
   OMPClauseProfiler(StmtProfiler *P) : Profiler(P) { }
 #define OPENMP_CLAUSE(Name, Class)                                             \
@@ -262,21 +264,46 @@ public:
 #include "clang/Basic/OpenMPKinds.def"
 };
 
+void OMPClauseProfiler::VisitOMPIfClause(const OMPIfClause *C) {
+  if (C->getCondition())
+    Profiler->VisitStmt(C->getCondition());
+}
+
+void OMPClauseProfiler::VisitOMPNumThreadsClause(const OMPNumThreadsClause *C) {
+  if (C->getNumThreads())
+    Profiler->VisitStmt(C->getNumThreads());
+}
+
+void OMPClauseProfiler::VisitOMPSafelenClause(const OMPSafelenClause *C) {
+  if (C->getSafelen())
+    Profiler->VisitStmt(C->getSafelen());
+}
+
 void OMPClauseProfiler::VisitOMPDefaultClause(const OMPDefaultClause *C) { }
-#define PROCESS_OMP_CLAUSE_LIST(Class, Node)                                   \
-  for (OMPVarList<Class>::varlist_const_iterator I = Node->varlist_begin(),    \
-                                                 E = Node->varlist_end();      \
-         I != E; ++I)                                                          \
-    Profiler->VisitStmt(*I);
+
+template<typename T>
+void OMPClauseProfiler::VisitOMPClauseList(T *Node) {
+  for (auto *I : Node->varlists())
+    Profiler->VisitStmt(I);
+}
 
 void OMPClauseProfiler::VisitOMPPrivateClause(const OMPPrivateClause *C) {
-  PROCESS_OMP_CLAUSE_LIST(OMPPrivateClause, C)
+  VisitOMPClauseList(C);
 }
-#undef PROCESS_OMP_CLAUSE_LIST
+void OMPClauseProfiler::VisitOMPFirstprivateClause(
+                                         const OMPFirstprivateClause *C) {
+  VisitOMPClauseList(C);
+}
+void OMPClauseProfiler::VisitOMPSharedClause(const OMPSharedClause *C) {
+  VisitOMPClauseList(C);
+}
+void OMPClauseProfiler::VisitOMPCopyinClause(const OMPCopyinClause *C) {
+  VisitOMPClauseList(C);
+}
 }
 
 void
-StmtProfiler::VisitOMPParallelDirective(const OMPParallelDirective *S) {
+StmtProfiler::VisitOMPExecutableDirective(const OMPExecutableDirective *S) {
   VisitStmt(S);
   OMPClauseProfiler P(this);
   ArrayRef<OMPClause *> Clauses = S->clauses();
@@ -284,6 +311,14 @@ StmtProfiler::VisitOMPParallelDirective(const OMPParallelDirective *S) {
        I != E; ++I)
     if (*I)
       P.Visit(*I);
+}
+
+void StmtProfiler::VisitOMPParallelDirective(const OMPParallelDirective *S) {
+  VisitOMPExecutableDirective(S);
+}
+
+void StmtProfiler::VisitOMPSimdDirective(const OMPSimdDirective *S) {
+  VisitOMPExecutableDirective(S);
 }
 
 void StmtProfiler::VisitExpr(const Expr *S) {
@@ -448,6 +483,10 @@ void StmtProfiler::VisitStmtExpr(const StmtExpr *S) {
 }
 
 void StmtProfiler::VisitShuffleVectorExpr(const ShuffleVectorExpr *S) {
+  VisitExpr(S);
+}
+
+void StmtProfiler::VisitConvertVectorExpr(const ConvertVectorExpr *S) {
   VisitExpr(S);
 }
 
@@ -800,13 +839,13 @@ void StmtProfiler::VisitCXXStdInitializerListExpr(
 void StmtProfiler::VisitCXXTypeidExpr(const CXXTypeidExpr *S) {
   VisitExpr(S);
   if (S->isTypeOperand())
-    VisitType(S->getTypeOperand());
+    VisitType(S->getTypeOperandSourceInfo()->getType());
 }
 
 void StmtProfiler::VisitCXXUuidofExpr(const CXXUuidofExpr *S) {
   VisitExpr(S);
   if (S->isTypeOperand())
-    VisitType(S->getTypeOperand());
+    VisitType(S->getTypeOperandSourceInfo()->getType());
 }
 
 void StmtProfiler::VisitMSPropertyRefExpr(const MSPropertyRefExpr *S) {
@@ -869,9 +908,6 @@ StmtProfiler::VisitLambdaExpr(const LambdaExpr *S) {
       VisitDecl(C->getCapturedVar());
       ID.AddBoolean(C->isPackExpansion());
       break;
-    case LCK_Init:
-      VisitDecl(C->getInitCaptureField());
-      break;
     }
   }
   // Note: If we actually needed to be able to match lambda
@@ -933,19 +969,6 @@ void StmtProfiler::VisitOverloadExpr(const OverloadExpr *S) {
 void
 StmtProfiler::VisitUnresolvedLookupExpr(const UnresolvedLookupExpr *S) {
   VisitOverloadExpr(S);
-}
-
-void StmtProfiler::VisitUnaryTypeTraitExpr(const UnaryTypeTraitExpr *S) {
-  VisitExpr(S);
-  ID.AddInteger(S->getTrait());
-  VisitType(S->getQueriedType());
-}
-
-void StmtProfiler::VisitBinaryTypeTraitExpr(const BinaryTypeTraitExpr *S) {
-  VisitExpr(S);
-  ID.AddInteger(S->getTrait());
-  VisitType(S->getLhsType());
-  VisitType(S->getRhsType());
 }
 
 void StmtProfiler::VisitTypeTraitExpr(const TypeTraitExpr *S) {

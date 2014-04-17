@@ -74,7 +74,7 @@ public:
     StructuralError = PreviousStructuralError;
   }
 
-  virtual FormatToken *getNextToken() {
+  FormatToken *getNextToken() override {
     // The \c UnwrappedLineParser guards against this by never calling
     // \c getNextToken() after it has encountered the first eof token.
     assert(!eof());
@@ -84,9 +84,9 @@ public:
     return Token;
   }
 
-  virtual unsigned getPosition() { return PreviousTokenSource->getPosition(); }
+  unsigned getPosition() override { return PreviousTokenSource->getPosition(); }
 
-  virtual FormatToken *setPosition(unsigned Position) {
+  FormatToken *setPosition(unsigned Position) override {
     Token = PreviousTokenSource->setPosition(Position);
     return Token;
   }
@@ -122,10 +122,13 @@ class ScopedLineState {
 public:
   ScopedLineState(UnwrappedLineParser &Parser,
                   bool SwitchToPreprocessorLines = false)
-      : Parser(Parser), SwitchToPreprocessorLines(SwitchToPreprocessorLines) {
+      : Parser(Parser) {
+    OriginalLines = Parser.CurrentLines;
     if (SwitchToPreprocessorLines)
       Parser.CurrentLines = &Parser.PreprocessorDirectives;
-    PreBlockLine = Parser.Line.take();
+    else if (!Parser.Line->Tokens.empty())
+      Parser.CurrentLines = &Parser.Line->Tokens.back().Children;
+    PreBlockLine = Parser.Line.release();
     Parser.Line.reset(new UnwrappedLine());
     Parser.Line->Level = PreBlockLine->Level;
     Parser.Line->InPPDirective = PreBlockLine->InPPDirective;
@@ -137,16 +140,37 @@ public:
     }
     assert(Parser.Line->Tokens.empty());
     Parser.Line.reset(PreBlockLine);
-    Parser.MustBreakBeforeNextToken = true;
-    if (SwitchToPreprocessorLines)
-      Parser.CurrentLines = &Parser.Lines;
+    if (Parser.CurrentLines == &Parser.PreprocessorDirectives)
+      Parser.MustBreakBeforeNextToken = true;
+    Parser.CurrentLines = OriginalLines;
   }
 
 private:
   UnwrappedLineParser &Parser;
-  const bool SwitchToPreprocessorLines;
 
   UnwrappedLine *PreBlockLine;
+  SmallVectorImpl<UnwrappedLine> *OriginalLines;
+};
+
+class CompoundStatementIndenter {
+public:
+  CompoundStatementIndenter(UnwrappedLineParser *Parser,
+                            const FormatStyle &Style, unsigned &LineLevel)
+      : LineLevel(LineLevel), OldLineLevel(LineLevel) {
+    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman) {
+      Parser->addUnwrappedLine();
+    } else if (Style.BreakBeforeBraces == FormatStyle::BS_GNU) {
+      Parser->addUnwrappedLine();
+      ++LineLevel;
+    }
+  }
+  ~CompoundStatementIndenter() {
+    LineLevel = OldLineLevel;
+  }
+
+private:
+  unsigned &LineLevel;
+  unsigned OldLineLevel;
 };
 
 namespace {
@@ -156,20 +180,22 @@ public:
   IndexedTokenSource(ArrayRef<FormatToken *> Tokens)
       : Tokens(Tokens), Position(-1) {}
 
-  virtual FormatToken *getNextToken() {
+  FormatToken *getNextToken() override {
     ++Position;
     return Tokens[Position];
   }
 
-  virtual unsigned getPosition() {
+  unsigned getPosition() override {
     assert(Position >= 0);
     return Position;
   }
 
-  virtual FormatToken *setPosition(unsigned P) {
+  FormatToken *setPosition(unsigned P) override {
     Position = P;
     return Tokens[Position];
   }
+
+  void reset() { Position = -1; }
 
 private:
   ArrayRef<FormatToken *> Tokens;
@@ -183,22 +209,54 @@ UnwrappedLineParser::UnwrappedLineParser(const FormatStyle &Style,
                                          UnwrappedLineConsumer &Callback)
     : Line(new UnwrappedLine), MustBreakBeforeNextToken(false),
       CurrentLines(&Lines), StructuralError(false), Style(Style), Tokens(NULL),
-      Callback(Callback), AllTokens(Tokens) {}
+      Callback(Callback), AllTokens(Tokens), PPBranchLevel(-1) {}
+
+void UnwrappedLineParser::reset() {
+  PPBranchLevel = -1;
+  Line.reset(new UnwrappedLine);
+  CommentsBeforeNextToken.clear();
+  FormatTok = NULL;
+  MustBreakBeforeNextToken = false;
+  PreprocessorDirectives.clear();
+  CurrentLines = &Lines;
+  DeclarationScopeStack.clear();
+  StructuralError = false;
+  PPStack.clear();
+}
 
 bool UnwrappedLineParser::parse() {
-  DEBUG(llvm::dbgs() << "----\n");
   IndexedTokenSource TokenSource(AllTokens);
-  Tokens = &TokenSource;
-  readToken();
-  parseFile();
-  for (std::vector<UnwrappedLine>::iterator I = Lines.begin(), E = Lines.end();
-       I != E; ++I) {
-    Callback.consumeUnwrappedLine(*I);
-  }
+  do {
+    DEBUG(llvm::dbgs() << "----\n");
+    reset();
+    Tokens = &TokenSource;
+    TokenSource.reset();
 
-  // Create line with eof token.
-  pushToken(FormatTok);
-  Callback.consumeUnwrappedLine(*Line);
+    readToken();
+    parseFile();
+    // Create line with eof token.
+    pushToken(FormatTok);
+    addUnwrappedLine();
+
+    for (SmallVectorImpl<UnwrappedLine>::iterator I = Lines.begin(),
+                                                  E = Lines.end();
+         I != E; ++I) {
+      Callback.consumeUnwrappedLine(*I);
+    }
+    Callback.finishRun();
+    Lines.clear();
+    while (!PPLevelBranchIndex.empty() &&
+           PPLevelBranchIndex.back() + 1 >= PPLevelBranchCount.back()) {
+      PPLevelBranchIndex.resize(PPLevelBranchIndex.size() - 1);
+      PPLevelBranchCount.resize(PPLevelBranchCount.size() - 1);
+    }
+    if (!PPLevelBranchIndex.empty()) {
+      ++PPLevelBranchIndex.back();
+      assert(PPLevelBranchIndex.size() == PPLevelBranchCount.size());
+      assert(PPLevelBranchIndex.back() <= PPLevelBranchCount.back());
+    }
+  } while (!PPLevelBranchIndex.empty());
+
   return StructuralError;
 }
 
@@ -235,8 +293,9 @@ void UnwrappedLineParser::parseLevel(bool HasOpeningBrace) {
       break;
     case tok::kw_default:
     case tok::kw_case:
-      if (!SwitchLabelEncountered)
-        Line->Level += Style.IndentCaseLabels;
+      if (!SwitchLabelEncountered &&
+          (Style.IndentCaseLabels || (Line->InPPDirective && Line->Level == 1)))
+        ++Line->Level;
       SwitchLabelEncountered = true;
       parseStructuralElement();
       break;
@@ -276,16 +335,25 @@ void UnwrappedLineParser::calculateBraceTypes() {
     case tok::r_brace:
       if (!LBraceStack.empty()) {
         if (LBraceStack.back()->BlockKind == BK_Unknown) {
-          // If there is a comma, semicolon or right paren after the closing
-          // brace, we assume this is a braced initializer list.
-
-          // FIXME: Note that this currently works only because we do not
-          // use the brace information while inside a braced init list.
-          // Thus, if the parent is a braced init list, we consider all
-          // brace blocks inside it braced init list. That works good enough
-          // for now, but we will need to fix it to correctly handle lambdas.
-          if (NextTok->isOneOf(tok::comma, tok::semi, tok::r_paren,
-                               tok::l_brace, tok::colon)) {
+          bool ProbablyBracedList = false;
+          if (Style.Language == FormatStyle::LK_Proto) {
+            ProbablyBracedList = NextTok->isOneOf(tok::comma, tok::r_square);
+          } else {
+            // If there is a comma, semicolon or right paren after the closing
+            // brace, we assume this is a braced initializer list.  Note that
+            // regardless how we mark inner braces here, we will overwrite the
+            // BlockKind later if we parse a braced list (where all blocks
+            // inside are by default braced lists), or when we explicitly detect
+            // blocks (for example while parsing lambdas).
+            //
+            // We exclude + and - as they can be ObjC visibility modifiers.
+            ProbablyBracedList =
+                NextTok->isOneOf(tok::comma, tok::semi, tok::period, tok::colon,
+                                 tok::r_paren, tok::r_square, tok::l_brace) ||
+                (NextTok->isBinaryOperator() &&
+                 !NextTok->isOneOf(tok::plus, tok::minus));
+          }
+          if (ProbablyBracedList) {
             Tok->BlockKind = BK_BracedInit;
             LBraceStack.back()->BlockKind = BK_BracedInit;
           } else {
@@ -296,6 +364,7 @@ void UnwrappedLineParser::calculateBraceTypes() {
         LBraceStack.pop_back();
       }
       break;
+    case tok::at:
     case tok::semi:
     case tok::kw_if:
     case tok::kw_while:
@@ -310,16 +379,18 @@ void UnwrappedLineParser::calculateBraceTypes() {
     }
     Tok = NextTok;
     Position += ReadTokens;
-  } while (Tok->Tok.isNot(tok::eof));
+  } while (Tok->Tok.isNot(tok::eof) && !LBraceStack.empty());
   // Assume other blocks for all unclosed opening braces.
   for (unsigned i = 0, e = LBraceStack.size(); i != e; ++i) {
     if (LBraceStack[i]->BlockKind == BK_Unknown)
       LBraceStack[i]->BlockKind = BK_Block;
   }
+
   FormatTok = Tokens->setPosition(StoredPosition);
 }
 
-void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel) {
+void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel,
+                                     bool MunchSemi) {
   assert(FormatTok->Tok.is(tok::l_brace) && "'{' expected");
   unsigned InitialLevel = Line->Level;
   nextToken();
@@ -339,7 +410,23 @@ void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel) {
   }
 
   nextToken(); // Munch the closing brace.
+  if (MunchSemi && FormatTok->Tok.is(tok::semi))
+    nextToken();
   Line->Level = InitialLevel;
+}
+
+void UnwrappedLineParser::parseChildBlock() {
+  FormatTok->BlockKind = BK_Block;
+  nextToken();
+  {
+    ScopedLineState LineState(*this);
+    ScopedDeclarationState DeclarationState(*Line, DeclarationScopeStack,
+                                            /*MustBeDeclaration=*/false);
+    Line->Level += 1;
+    parseLevel(/*HasOpeningBrace=*/true);
+    Line->Level -= 1;
+  }
+  nextToken();
 }
 
 void UnwrappedLineParser::parsePPDirective() {
@@ -357,11 +444,11 @@ void UnwrappedLineParser::parsePPDirective() {
     parsePPDefine();
     return;
   case tok::pp_if:
-    parsePPIf();
+    parsePPIf(/*IfDef=*/false);
     break;
   case tok::pp_ifdef:
   case tok::pp_ifndef:
-    parsePPIfdef();
+    parsePPIf(/*IfDef=*/true);
     break;
   case tok::pp_else:
     parsePPElse();
@@ -385,12 +472,20 @@ void UnwrappedLineParser::pushPPConditional() {
     PPStack.push_back(PP_Conditional);
 }
 
-void UnwrappedLineParser::parsePPIf() {
+void UnwrappedLineParser::parsePPIf(bool IfDef) {
+  ++PPBranchLevel;
+  assert(PPBranchLevel >= 0 && PPBranchLevel <= (int)PPLevelBranchIndex.size());
+  if (PPBranchLevel == (int)PPLevelBranchIndex.size()) {
+    PPLevelBranchIndex.push_back(0);
+    PPLevelBranchCount.push_back(0);
+  }
+  PPChainBranchIndex.push(0);
   nextToken();
-  if ((FormatTok->Tok.isLiteral() &&
-       StringRef(FormatTok->Tok.getLiteralData(), FormatTok->Tok.getLength()) ==
-           "0") ||
-      FormatTok->Tok.is(tok::kw_false)) {
+  bool IsLiteralFalse = (FormatTok->Tok.isLiteral() &&
+                         StringRef(FormatTok->Tok.getLiteralData(),
+                                   FormatTok->Tok.getLength()) == "0") ||
+                        FormatTok->Tok.is(tok::kw_false);
+  if ((!IfDef && IsLiteralFalse) || PPLevelBranchIndex[PPBranchLevel] > 0) {
     PPStack.push_back(PP_Unreachable);
   } else {
     pushPPConditional();
@@ -398,21 +493,35 @@ void UnwrappedLineParser::parsePPIf() {
   parsePPUnknown();
 }
 
-void UnwrappedLineParser::parsePPIfdef() {
-  pushPPConditional();
-  parsePPUnknown();
-}
-
 void UnwrappedLineParser::parsePPElse() {
   if (!PPStack.empty())
     PPStack.pop_back();
-  pushPPConditional();
+  assert(PPBranchLevel < (int)PPLevelBranchIndex.size());
+  if (!PPChainBranchIndex.empty())
+    ++PPChainBranchIndex.top();
+  if (PPBranchLevel >= 0 && !PPChainBranchIndex.empty() &&
+      PPLevelBranchIndex[PPBranchLevel] != PPChainBranchIndex.top()) {
+    PPStack.push_back(PP_Unreachable);
+  } else {
+    pushPPConditional();
+  }
   parsePPUnknown();
 }
 
 void UnwrappedLineParser::parsePPElIf() { parsePPElse(); }
 
 void UnwrappedLineParser::parsePPEndIf() {
+  assert(PPBranchLevel < (int)PPLevelBranchIndex.size());
+  if (PPBranchLevel >= 0 && !PPChainBranchIndex.empty()) {
+    if (PPChainBranchIndex.top() + 1 > PPLevelBranchCount[PPBranchLevel]) {
+      PPLevelBranchCount[PPBranchLevel] = PPChainBranchIndex.top() + 1;
+    }
+  }
+  // Guard against #endif's without #if.
+  if (PPBranchLevel > 0)
+    --PPBranchLevel;
+  if (!PPChainBranchIndex.empty())
+    PPChainBranchIndex.pop();
   if (!PPStack.empty())
     PPStack.pop_back();
   parsePPUnknown();
@@ -542,9 +651,6 @@ void UnwrappedLineParser::parseStructuralElement() {
   case tok::kw_case:
     parseCaseLabel();
     return;
-  case tok::kw_return:
-    parseReturn();
-    return;
   case tok::kw_extern:
     nextToken();
     if (FormatTok->Tok.is(tok::string_literal)) {
@@ -554,6 +660,12 @@ void UnwrappedLineParser::parseStructuralElement() {
         addUnwrappedLine();
         return;
       }
+    }
+    break;
+  case tok::identifier:
+    if (FormatTok->IsForEachMacro) {
+      parseForOrWhileLoop();
+      return;
     }
     // In all other cases, parse the declaration.
     break;
@@ -569,6 +681,12 @@ void UnwrappedLineParser::parseStructuralElement() {
       break;
     case tok::kw_enum:
       parseEnum();
+      break;
+    case tok::kw_typedef:
+      nextToken();
+      // FIXME: Use the IdentifierTable instead.
+      if (FormatTok->TokenText == "NS_ENUM")
+        parseEnum();
       break;
     case tok::kw_struct:
     case tok::kw_union:
@@ -587,16 +705,25 @@ void UnwrappedLineParser::parseStructuralElement() {
     case tok::l_paren:
       parseParens();
       break;
+    case tok::caret:
+      nextToken();
+      if (FormatTok->Tok.isAnyIdentifier() ||
+          FormatTok->isSimpleTypeSpecifier())
+        nextToken();
+      if (FormatTok->is(tok::l_paren))
+        parseParens();
+      if (FormatTok->is(tok::l_brace))
+        parseChildBlock();
+      break;
     case tok::l_brace:
       if (!tryToParseBracedList()) {
         // A block outside of parentheses must be the last part of a
         // structural element.
         // FIXME: Figure out cases where this is not true, and add projections
         // for them (the one we know is missing are lambdas).
-        if (Style.BreakBeforeBraces == FormatStyle::BS_Linux ||
-            Style.BreakBeforeBraces == FormatStyle::BS_Stroustrup ||
-            Style.BreakBeforeBraces == FormatStyle::BS_Allman)
+        if (Style.BreakBeforeBraces != FormatStyle::BS_Attach)
           addUnwrappedLine();
+        FormatTok->Type = TT_FunctionLBrace;
         parseBlock(/*MustBeDeclaration=*/false);
         addUnwrappedLine();
         return;
@@ -615,8 +742,8 @@ void UnwrappedLineParser::parseStructuralElement() {
         // Recognize function-like macro usages without trailing semicolon.
         if (FormatTok->Tok.is(tok::l_paren)) {
           parseParens();
-          if (FormatTok->HasUnescapedNewline &&
-              tokenCanStartNewLine(FormatTok->Tok)) {
+          if (FormatTok->NewlinesBefore > 0 &&
+              tokenCanStartNewLine(FormatTok->Tok) && Text == Text.upper()) {
             addUnwrappedLine();
             return;
           }
@@ -635,11 +762,104 @@ void UnwrappedLineParser::parseStructuralElement() {
         parseBracedList();
       }
       break;
+    case tok::l_square:
+      parseSquare();
+      break;
     default:
       nextToken();
       break;
     }
   } while (!eof());
+}
+
+bool UnwrappedLineParser::tryToParseLambda() {
+  // FIXME: This is a dirty way to access the previous token. Find a better
+  // solution.
+  if (!Line->Tokens.empty() &&
+      (Line->Tokens.back().Tok->isOneOf(tok::identifier, tok::kw_operator) ||
+       Line->Tokens.back().Tok->closesScope() ||
+       Line->Tokens.back().Tok->isSimpleTypeSpecifier())) {
+    nextToken();
+    return false;
+  }
+  assert(FormatTok->is(tok::l_square));
+  FormatToken &LSquare = *FormatTok;
+  if (!tryToParseLambdaIntroducer())
+    return false;
+
+  while (FormatTok->isNot(tok::l_brace)) {
+    if (FormatTok->isSimpleTypeSpecifier()) {
+      nextToken();
+      continue;
+    }
+    switch (FormatTok->Tok.getKind()) {
+    case tok::l_brace:
+      break;
+    case tok::l_paren:
+      parseParens();
+      break;
+    case tok::less:
+    case tok::greater:
+    case tok::identifier:
+    case tok::coloncolon:
+    case tok::kw_mutable:
+      nextToken();
+      break;
+    case tok::arrow:
+      FormatTok->Type = TT_TrailingReturnArrow;
+      nextToken();
+      break;
+    default:
+      return true;
+    }
+  }
+  LSquare.Type = TT_LambdaLSquare;
+  parseChildBlock();
+  return true;
+}
+
+bool UnwrappedLineParser::tryToParseLambdaIntroducer() {
+  nextToken();
+  if (FormatTok->is(tok::equal)) {
+    nextToken();
+    if (FormatTok->is(tok::r_square)) {
+      nextToken();
+      return true;
+    }
+    if (FormatTok->isNot(tok::comma))
+      return false;
+    nextToken();
+  } else if (FormatTok->is(tok::amp)) {
+    nextToken();
+    if (FormatTok->is(tok::r_square)) {
+      nextToken();
+      return true;
+    }
+    if (!FormatTok->isOneOf(tok::comma, tok::identifier)) {
+      return false;
+    }
+    if (FormatTok->is(tok::comma))
+      nextToken();
+  } else if (FormatTok->is(tok::r_square)) {
+    nextToken();
+    return true;
+  }
+  do {
+    if (FormatTok->is(tok::amp))
+      nextToken();
+    if (!FormatTok->isOneOf(tok::identifier, tok::kw_this))
+      return false;
+    nextToken();
+    if (FormatTok->is(tok::comma)) {
+      nextToken();
+    } else if (FormatTok->is(tok::r_square)) {
+      nextToken();
+      return true;
+    } else {
+      return false;
+    }
+  } while (!eof());
+  return false;
 }
 
 bool UnwrappedLineParser::tryToParseBracedList() {
@@ -652,7 +872,8 @@ bool UnwrappedLineParser::tryToParseBracedList() {
   return true;
 }
 
-void UnwrappedLineParser::parseBracedList() {
+bool UnwrappedLineParser::parseBracedList(bool ContinueOnSemicolons) {
+  bool HasError = false;
   nextToken();
 
   // FIXME: Once we have an expression parser in the UnwrappedLineParser,
@@ -662,15 +883,30 @@ void UnwrappedLineParser::parseBracedList() {
     // here, otherwise our bail-out scenarios below break. The better solution
     // might be to just implement a more or less complete expression parser.
     switch (FormatTok->Tok.getKind()) {
+    case tok::caret:
+      nextToken();
+      if (FormatTok->is(tok::l_brace)) {
+        parseChildBlock();
+      }
+      break;
+    case tok::l_square:
+      tryToParseLambda();
+      break;
     case tok::l_brace:
+      // Assume there are no blocks inside a braced init list apart
+      // from the ones we explicitly parse out (like lambdas).
+      FormatTok->BlockKind = BK_BracedInit;
       parseBracedList();
       break;
     case tok::r_brace:
       nextToken();
-      return;
+      return !HasError;
     case tok::semi:
-      // Probably a missing closing brace. Bail out.
-      return;
+      HasError = true;
+      if (!ContinueOnSemicolons)
+        return !HasError;
+      nextToken();
+      break;
     case tok::comma:
       nextToken();
       break;
@@ -679,37 +915,7 @@ void UnwrappedLineParser::parseBracedList() {
       break;
     }
   } while (!eof());
-}
-
-void UnwrappedLineParser::parseReturn() {
-  nextToken();
-
-  do {
-    switch (FormatTok->Tok.getKind()) {
-    case tok::l_brace:
-      parseBracedList();
-      if (FormatTok->Tok.isNot(tok::semi)) {
-        // Assume missing ';'.
-        addUnwrappedLine();
-        return;
-      }
-      break;
-    case tok::l_paren:
-      parseParens();
-      break;
-    case tok::r_brace:
-      // Assume missing ';'.
-      addUnwrappedLine();
-      return;
-    case tok::semi:
-      nextToken();
-      addUnwrappedLine();
-      return;
-    default:
-      nextToken();
-      break;
-    }
-  } while (!eof());
+  return false;
 }
 
 void UnwrappedLineParser::parseParens() {
@@ -726,18 +932,48 @@ void UnwrappedLineParser::parseParens() {
     case tok::r_brace:
       // A "}" inside parenthesis is an error if there wasn't a matching "{".
       return;
+    case tok::l_square:
+      tryToParseLambda();
+      break;
     case tok::l_brace: {
       if (!tryToParseBracedList()) {
-        nextToken();
-        {
-          ScopedLineState LineState(*this);
-          ScopedDeclarationState DeclarationState(*Line, DeclarationScopeStack,
-                                                  /*MustBeDeclaration=*/false);
-          Line->Level += 1;
-          parseLevel(/*HasOpeningBrace=*/true);
-          Line->Level -= 1;
-        }
-        nextToken();
+        parseChildBlock();
+      }
+      break;
+    }
+    case tok::at:
+      nextToken();
+      if (FormatTok->Tok.is(tok::l_brace))
+        parseBracedList();
+      break;
+    default:
+      nextToken();
+      break;
+    }
+  } while (!eof());
+}
+
+void UnwrappedLineParser::parseSquare() {
+  assert(FormatTok->Tok.is(tok::l_square) && "'[' expected.");
+  if (tryToParseLambda())
+    return;
+  do {
+    switch (FormatTok->Tok.getKind()) {
+    case tok::l_paren:
+      parseParens();
+      break;
+    case tok::r_square:
+      nextToken();
+      return;
+    case tok::r_brace:
+      // A "}" inside parenthesis is an error if there wasn't a matching "{".
+      return;
+    case tok::l_square:
+      parseSquare();
+      break;
+    case tok::l_brace: {
+      if (!tryToParseBracedList()) {
+        parseChildBlock();
       }
       break;
     }
@@ -760,13 +996,14 @@ void UnwrappedLineParser::parseIfThenElse() {
     parseParens();
   bool NeedsUnwrappedLine = false;
   if (FormatTok->Tok.is(tok::l_brace)) {
-    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman)
-      addUnwrappedLine();
+    CompoundStatementIndenter Indenter(this, Style, Line->Level);
     parseBlock(/*MustBeDeclaration=*/false);
-    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman)
+    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
+        Style.BreakBeforeBraces == FormatStyle::BS_GNU) {
       addUnwrappedLine();
-    else
+    } else {
       NeedsUnwrappedLine = true;
+    }
   } else {
     addUnwrappedLine();
     ++Line->Level;
@@ -776,8 +1013,7 @@ void UnwrappedLineParser::parseIfThenElse() {
   if (FormatTok->Tok.is(tok::kw_else)) {
     nextToken();
     if (FormatTok->Tok.is(tok::l_brace)) {
-      if (Style.BreakBeforeBraces == FormatStyle::BS_Allman)
-        addUnwrappedLine();
+      CompoundStatementIndenter Indenter(this, Style, Line->Level);
       parseBlock(/*MustBeDeclaration=*/false);
       addUnwrappedLine();
     } else if (FormatTok->Tok.is(tok::kw_if)) {
@@ -800,7 +1036,8 @@ void UnwrappedLineParser::parseNamespace() {
     nextToken();
   if (FormatTok->Tok.is(tok::l_brace)) {
     if (Style.BreakBeforeBraces == FormatStyle::BS_Linux ||
-        Style.BreakBeforeBraces == FormatStyle::BS_Allman)
+        Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
+        Style.BreakBeforeBraces == FormatStyle::BS_GNU)
       addUnwrappedLine();
 
     bool AddLevel = Style.NamespaceIndentation == FormatStyle::NI_All ||
@@ -817,14 +1054,14 @@ void UnwrappedLineParser::parseNamespace() {
 }
 
 void UnwrappedLineParser::parseForOrWhileLoop() {
-  assert((FormatTok->Tok.is(tok::kw_for) || FormatTok->Tok.is(tok::kw_while)) &&
-         "'for' or 'while' expected");
+  assert((FormatTok->Tok.is(tok::kw_for) || FormatTok->Tok.is(tok::kw_while) ||
+          FormatTok->IsForEachMacro) &&
+         "'for', 'while' or foreach macro expected");
   nextToken();
   if (FormatTok->Tok.is(tok::l_paren))
     parseParens();
   if (FormatTok->Tok.is(tok::l_brace)) {
-    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman)
-      addUnwrappedLine();
+    CompoundStatementIndenter Indenter(this, Style, Line->Level);
     parseBlock(/*MustBeDeclaration=*/false);
     addUnwrappedLine();
   } else {
@@ -839,9 +1076,10 @@ void UnwrappedLineParser::parseDoWhile() {
   assert(FormatTok->Tok.is(tok::kw_do) && "'do' expected");
   nextToken();
   if (FormatTok->Tok.is(tok::l_brace)) {
-    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman)
-      addUnwrappedLine();
+    CompoundStatementIndenter Indenter(this, Style, Line->Level);
     parseBlock(/*MustBeDeclaration=*/false);
+    if (Style.BreakBeforeBraces == FormatStyle::BS_GNU)
+      addUnwrappedLine();
   } else {
     addUnwrappedLine();
     ++Line->Level;
@@ -860,24 +1098,25 @@ void UnwrappedLineParser::parseDoWhile() {
 }
 
 void UnwrappedLineParser::parseLabel() {
-  if (FormatTok->Tok.isNot(tok::colon))
-    return;
   nextToken();
   unsigned OldLineLevel = Line->Level;
   if (Line->Level > 1 || (!Line->InPPDirective && Line->Level > 0))
     --Line->Level;
   if (CommentsBeforeNextToken.empty() && FormatTok->Tok.is(tok::l_brace)) {
-    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman)
-      addUnwrappedLine();
+    CompoundStatementIndenter Indenter(this, Style, Line->Level);
     parseBlock(/*MustBeDeclaration=*/false);
     if (FormatTok->Tok.is(tok::kw_break)) {
-      // "break;" after "}" on its own line only for BS_Allman
-      if (Style.BreakBeforeBraces == FormatStyle::BS_Allman)
+      // "break;" after "}" on its own line only for BS_Allman and BS_GNU
+      if (Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
+          Style.BreakBeforeBraces == FormatStyle::BS_GNU) {
         addUnwrappedLine();
+      }
       parseStructuralElement();
     }
+    addUnwrappedLine();
+  } else {
+    addUnwrappedLine();
   }
-  addUnwrappedLine();
   Line->Level = OldLineLevel;
 }
 
@@ -896,8 +1135,7 @@ void UnwrappedLineParser::parseSwitch() {
   if (FormatTok->Tok.is(tok::l_paren))
     parseParens();
   if (FormatTok->Tok.is(tok::l_brace)) {
-    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman)
-      addUnwrappedLine();
+    CompoundStatementIndenter Indenter(this, Style, Line->Level);
     parseBlock(/*MustBeDeclaration=*/false);
     addUnwrappedLine();
   } else {
@@ -910,6 +1148,10 @@ void UnwrappedLineParser::parseSwitch() {
 
 void UnwrappedLineParser::parseAccessSpecifier() {
   nextToken();
+  // Understand Qt's slots.
+  if (FormatTok->is(tok::identifier) &&
+      (FormatTok->TokenText == "slots" || FormatTok->TokenText == "Q_SLOTS"))
+    nextToken();
   // Otherwise, we don't know what it is, and we'd better keep the next token.
   if (FormatTok->Tok.is(tok::colon))
     nextToken();
@@ -917,10 +1159,16 @@ void UnwrappedLineParser::parseAccessSpecifier() {
 }
 
 void UnwrappedLineParser::parseEnum() {
-  nextToken();
-  if (FormatTok->Tok.is(tok::identifier) ||
-      FormatTok->Tok.is(tok::kw___attribute) ||
-      FormatTok->Tok.is(tok::kw___declspec)) {
+  if (FormatTok->Tok.is(tok::kw_enum)) {
+    // Won't be 'enum' for NS_ENUMs.
+    nextToken();
+  }
+  // Eat up enum class ...
+  if (FormatTok->Tok.is(tok::kw_class) ||
+      FormatTok->Tok.is(tok::kw_struct))
+      nextToken();
+  while (FormatTok->Tok.getIdentifierInfo() ||
+         FormatTok->isOneOf(tok::colon, tok::coloncolon)) {
     nextToken();
     // We can have macros or attributes in between 'enum' and the enum name.
     if (FormatTok->Tok.is(tok::l_paren)) {
@@ -930,30 +1178,13 @@ void UnwrappedLineParser::parseEnum() {
       nextToken();
   }
   if (FormatTok->Tok.is(tok::l_brace)) {
-    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman)
+    FormatTok->BlockKind = BK_Block;
+    bool HasError = !parseBracedList(/*ContinueOnSemicolons=*/true);
+    if (HasError) {
+      if (FormatTok->is(tok::semi))
+        nextToken();
       addUnwrappedLine();
-    nextToken();
-    addUnwrappedLine();
-    ++Line->Level;
-    do {
-      switch (FormatTok->Tok.getKind()) {
-      case tok::l_paren:
-        parseParens();
-        break;
-      case tok::r_brace:
-        addUnwrappedLine();
-        nextToken();
-        --Line->Level;
-        return;
-      case tok::comma:
-        nextToken();
-        addUnwrappedLine();
-        break;
-      default:
-        nextToken();
-        break;
-      }
-    } while (!eof());
+    }
   }
   // We fall through to parsing a structural element afterwards, so that in
   // enum A {} n, m;
@@ -964,7 +1195,8 @@ void UnwrappedLineParser::parseRecord() {
   nextToken();
   if (FormatTok->Tok.is(tok::identifier) ||
       FormatTok->Tok.is(tok::kw___attribute) ||
-      FormatTok->Tok.is(tok::kw___declspec)) {
+      FormatTok->Tok.is(tok::kw___declspec) ||
+      FormatTok->Tok.is(tok::kw_alignas)) {
     nextToken();
     // We can have macros or attributes in between 'class' and the class name.
     if (FormatTok->Tok.is(tok::l_paren)) {
@@ -997,10 +1229,12 @@ void UnwrappedLineParser::parseRecord() {
   }
   if (FormatTok->Tok.is(tok::l_brace)) {
     if (Style.BreakBeforeBraces == FormatStyle::BS_Linux ||
-        Style.BreakBeforeBraces == FormatStyle::BS_Allman)
+        Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
+        Style.BreakBeforeBraces == FormatStyle::BS_GNU)
       addUnwrappedLine();
 
-    parseBlock(/*MustBeDeclaration=*/true);
+    parseBlock(/*MustBeDeclaration=*/true, /*AddLevel=*/true,
+               /*MunchSemi=*/false);
   }
   // We fall through to parsing a structural element afterwards, so
   // class A {} n, m;
@@ -1022,7 +1256,17 @@ void UnwrappedLineParser::parseObjCUntilAtEnd() {
       addUnwrappedLine();
       break;
     }
-    parseStructuralElement();
+    if (FormatTok->is(tok::l_brace)) {
+      parseBlock(/*MustBeDeclaration=*/false);
+      // In ObjC interfaces, nothing should be following the "}".
+      addUnwrappedLine();
+    } else if (FormatTok->is(tok::r_brace)) {
+      // Ignore stray "}". parseStructuralElement doesn't consume them.
+      nextToken();
+      addUnwrappedLine();
+    } else {
+      parseStructuralElement();
+    }
   } while (!eof());
 }
 
@@ -1069,23 +1313,40 @@ void UnwrappedLineParser::parseObjCProtocol() {
   parseObjCUntilAtEnd();
 }
 
+LLVM_ATTRIBUTE_UNUSED static void printDebugInfo(const UnwrappedLine &Line,
+                                                 StringRef Prefix = "") {
+  llvm::dbgs() << Prefix << "Line(" << Line.Level << ")"
+               << (Line.InPPDirective ? " MACRO" : "") << ": ";
+  for (std::list<UnwrappedLineNode>::const_iterator I = Line.Tokens.begin(),
+                                                    E = Line.Tokens.end();
+       I != E; ++I) {
+    llvm::dbgs() << I->Tok->Tok.getName() << "[" << I->Tok->Type << "] ";
+  }
+  for (std::list<UnwrappedLineNode>::const_iterator I = Line.Tokens.begin(),
+                                                    E = Line.Tokens.end();
+       I != E; ++I) {
+    const UnwrappedLineNode &Node = *I;
+    for (SmallVectorImpl<UnwrappedLine>::const_iterator
+             I = Node.Children.begin(),
+             E = Node.Children.end();
+         I != E; ++I) {
+      printDebugInfo(*I, "\nChild: ");
+    }
+  }
+  llvm::dbgs() << "\n";
+}
+
 void UnwrappedLineParser::addUnwrappedLine() {
   if (Line->Tokens.empty())
     return;
   DEBUG({
-    llvm::dbgs() << "Line(" << Line->Level << ")"
-                 << (Line->InPPDirective ? " MACRO" : "") << ": ";
-    for (std::list<FormatToken *>::iterator I = Line->Tokens.begin(),
-                                            E = Line->Tokens.end();
-         I != E; ++I) {
-      llvm::dbgs() << (*I)->Tok.getName() << " ";
-    }
-    llvm::dbgs() << "\n";
+    if (CurrentLines == &Lines)
+      printDebugInfo(*Line);
   });
   CurrentLines->push_back(*Line);
   Line->Tokens.clear();
   if (CurrentLines == &Lines && !PreprocessorDirectives.empty()) {
-    for (std::vector<UnwrappedLine>::iterator
+    for (SmallVectorImpl<UnwrappedLine>::iterator
              I = PreprocessorDirectives.begin(),
              E = PreprocessorDirectives.end();
          I != E; ++I) {
@@ -1097,13 +1358,18 @@ void UnwrappedLineParser::addUnwrappedLine() {
 
 bool UnwrappedLineParser::eof() const { return FormatTok->Tok.is(tok::eof); }
 
+bool UnwrappedLineParser::isOnNewLine(const FormatToken& FormatTok) {
+  return (Line->InPPDirective || FormatTok.HasUnescapedNewline) &&
+         FormatTok.NewlinesBefore > 0;
+}
+
 void UnwrappedLineParser::flushComments(bool NewlineBeforeNext) {
   bool JustComments = Line->Tokens.empty();
   for (SmallVectorImpl<FormatToken *>::const_iterator
            I = CommentsBeforeNextToken.begin(),
            E = CommentsBeforeNextToken.end();
        I != E; ++I) {
-    if ((*I)->NewlinesBefore && JustComments) {
+    if (isOnNewLine(**I) && JustComments) {
       addUnwrappedLine();
     }
     pushToken(*I);
@@ -1117,7 +1383,7 @@ void UnwrappedLineParser::flushComments(bool NewlineBeforeNext) {
 void UnwrappedLineParser::nextToken() {
   if (eof())
     return;
-  flushComments(FormatTok->NewlinesBefore > 0);
+  flushComments(isOnNewLine(*FormatTok));
   pushToken(FormatTok);
   readToken();
 }
@@ -1126,6 +1392,7 @@ void UnwrappedLineParser::readToken() {
   bool CommentsInCurrentLine = true;
   do {
     FormatTok = Tokens->getNextToken();
+    assert(FormatTok);
     while (!Line->InPPDirective && FormatTok->Tok.is(tok::hash) &&
            (FormatTok->HasUnescapedNewline || FormatTok->IsFirst)) {
       // If there is an unfinished unwrapped line, we flush the preprocessor
@@ -1136,7 +1403,7 @@ void UnwrappedLineParser::readToken() {
       // Comments stored before the preprocessor directive need to be output
       // before the preprocessor directive, at the same level as the
       // preprocessor directive, as we consider them to apply to the directive.
-      flushComments(FormatTok->NewlinesBefore > 0);
+      flushComments(isOnNewLine(*FormatTok));
       parsePPDirective();
     }
 
@@ -1147,7 +1414,7 @@ void UnwrappedLineParser::readToken() {
 
     if (!FormatTok->Tok.is(tok::comment))
       return;
-    if (FormatTok->NewlinesBefore > 0 || FormatTok->IsFirst) {
+    if (isOnNewLine(*FormatTok) || FormatTok->IsFirst) {
       CommentsInCurrentLine = false;
     }
     if (CommentsInCurrentLine) {
@@ -1159,9 +1426,9 @@ void UnwrappedLineParser::readToken() {
 }
 
 void UnwrappedLineParser::pushToken(FormatToken *Tok) {
-  Line->Tokens.push_back(Tok);
+  Line->Tokens.push_back(UnwrappedLineNode(Tok));
   if (MustBreakBeforeNextToken) {
-    Line->Tokens.back()->MustBreakBefore = true;
+    Line->Tokens.back().Tok->MustBreakBefore = true;
     MustBreakBeforeNextToken = false;
   }
 }

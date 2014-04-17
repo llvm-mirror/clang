@@ -333,3 +333,28 @@ namespace reference_count {
   }
 }
 
+// Test double delete
+class DerefClass{
+public:
+  int *x;
+  DerefClass() {}
+  ~DerefClass() {*x = 1;}
+};
+
+void testDoubleDeleteClassInstance() {
+  DerefClass *foo = new DerefClass();
+  delete foo;
+  delete foo; // expected-warning {{Attempt to delete released memory}}
+}
+
+class EmptyClass{
+public:
+  EmptyClass() {}
+  ~EmptyClass() {}
+};
+
+void testDoubleDeleteEmptyClass() {
+  EmptyClass *foo = new EmptyClass();
+  delete foo;
+  delete foo;  // expected-warning {{Attempt to delete released memory}}
+}

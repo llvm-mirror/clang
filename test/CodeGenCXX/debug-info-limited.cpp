@@ -11,8 +11,7 @@ A *foo (A* x) {
   return a;
 }
 
-// Verify that we're not emitting a full definition of B in limit debug mode.
-// CHECK: ; [ DW_TAG_class_type ] [B] {{.*}} [decl]
+// CHECK: ; [ DW_TAG_class_type ] [B] {{.*}} [def]
 
 class B {
 public:
@@ -24,3 +23,10 @@ int baz(B *b) {
   return bar(b);
 }
 
+
+// CHECK: ; [ DW_TAG_structure_type ] [C] {{.*}} [decl]
+
+struct C {
+};
+
+C (*x)(C);

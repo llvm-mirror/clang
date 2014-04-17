@@ -1,4 +1,7 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.NonNilReturnValue,osx.cocoa.NilArg,osx.cocoa.Loops -verify -Wno-objc-root-class %s
+// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.NonNilReturnValue,osx.cocoa.NilArg,osx.cocoa.Loops,debug.ExprInspection -verify -Wno-objc-root-class %s
+
+void clang_analyzer_eval(int);
+
 typedef unsigned long NSUInteger;
 typedef signed char BOOL;
 typedef struct _NSZone NSZone;
@@ -88,6 +91,12 @@ typedef struct {
 - (void)setDictionary:(NSDictionary *)otherDictionary;
 - (void)setObject:(id)obj forKeyedSubscript:(id <NSCopying>)key __attribute__((availability(macosx,introduced=10.8)));
 
+@end
+
+@interface NSOrderedSet : NSObject <NSFastEnumeration>
+@end
+@interface NSOrderedSet (NSOrderedSetCreation)
+- (NSUInteger)count;
 @end
 
 @interface NSString : NSObject <NSCopying, NSMutableCopying, NSSecureCoding>
@@ -260,4 +269,26 @@ void testCollectionIsNotEmptyWhenCountIsGreaterThanZero(NSMutableDictionary *D){
   }
 }
 
+void testCountAwareNSOrderedSet(NSOrderedSet *containers, int *validptr) {
+	int *x = 0;
+  NSUInteger containerCount = [containers count];
+  if (containerCount > 0)    
+		x = validptr;
+	for (id c in containers) {
+		*x = 1; // no warning
+	}
+}
+
+void testLiteralsNonNil() {
+  clang_analyzer_eval(!!@[]); // expected-warning{{TRUE}}
+  clang_analyzer_eval(!!@{}); // expected-warning{{TRUE}}
+}
+
+@interface NSMutableArray (MySafeAdd)
+- (void)addObject:(id)obj safe:(BOOL)safe;
+@end
+
+void testArrayCategory(NSMutableArray *arr) {
+  [arr addObject:0 safe:1]; // no-warning
+}
 

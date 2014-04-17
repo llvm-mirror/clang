@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 #include "clang/Lex/ModuleMap.h"
-#include "clang/Serialization/ModuleManager.h"
 #include "clang/Serialization/GlobalModuleIndex.h"
+#include "clang/Serialization/ModuleManager.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
@@ -62,11 +62,13 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
   // Look for the file entry. This only fails if the expected size or
   // modification time differ.
   const FileEntry *Entry;
-  if (lookupModuleFile(FileName, ExpectedSize, ExpectedModTime, Entry))
+  if (lookupModuleFile(FileName, ExpectedSize, ExpectedModTime, Entry)) {
+    ErrorStr = "module file out of date";
     return OutOfDate;
+  }
 
   if (!Entry && FileName != "-") {
-    ErrorStr = "file not found";
+    ErrorStr = "module file not found";
     return Missing;
   }
 
@@ -83,6 +85,16 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
     Chain.push_back(New);
     NewModule = true;
     ModuleEntry = New;
+
+    New->InputFilesValidationTimestamp = 0;
+    if (New->Kind == MK_Module) {
+      std::string TimestampFilename = New->getTimestampFilename();
+      vfs::Status Status;
+      // A cached stat value would be fine as well.
+      if (!FileMgr.getNoncachedStatValue(TimestampFilename, Status))
+        New->InputFilesValidationTimestamp =
+            Status.getLastModificationTime().toEpochTime();
+    }
 
     // Load the contents of the module
     if (llvm::MemoryBuffer *Buffer = lookupBuffer(FileName)) {
@@ -122,22 +134,6 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
   return NewModule? NewlyLoaded : AlreadyLoaded;
 }
 
-namespace {
-  /// \brief Predicate that checks whether a module file occurs within
-  /// the given set.
-  class IsInModuleFileSet : public std::unary_function<ModuleFile *, bool> {
-    llvm::SmallPtrSet<ModuleFile *, 4> &Removed;
-
-  public:
-    IsInModuleFileSet(llvm::SmallPtrSet<ModuleFile *, 4> &Removed)
-    : Removed(Removed) { }
-
-    bool operator()(ModuleFile *MF) const {
-      return Removed.count(MF);
-    }
-  };
-}
-
 void ModuleManager::removeModules(ModuleIterator first, ModuleIterator last,
                                   ModuleMap *modMap) {
   if (first == last)
@@ -147,9 +143,10 @@ void ModuleManager::removeModules(ModuleIterator first, ModuleIterator last,
   llvm::SmallPtrSet<ModuleFile *, 4> victimSet(first, last);
 
   // Remove any references to the now-destroyed modules.
-  IsInModuleFileSet checkInSet(victimSet);
   for (unsigned i = 0, n = Chain.size(); i != n; ++i) {
-    Chain[i]->ImportedBy.remove_if(checkInSet);
+    Chain[i]->ImportedBy.remove_if([&](ModuleFile *MF) {
+      return victimSet.count(MF);
+    });
   }
 
   // Delete the modules and erase them from the various structures.
@@ -332,8 +329,7 @@ ModuleManager::visit(bool (*Visitor)(ModuleFile &M, void *UserData),
         break;
 
       // Pop the next module off the stack.
-      NextModule = State->Stack.back();
-      State->Stack.pop_back();
+      NextModule = State->Stack.pop_back_val();
     } while (true);
   }
 

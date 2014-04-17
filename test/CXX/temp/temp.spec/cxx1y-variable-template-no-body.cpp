@@ -9,7 +9,7 @@ T pi = T(3.1415926535897932385); // expected-note {{template is declared here}}
 template int pi<int>;
 
 #ifndef FIXING
-template float pi; // expected-error {{too few template arguments for template 'pi'}}
+template float pi<>; // expected-error {{too few template arguments for template 'pi'}}
 template double pi_var0; // expected-error {{explicit instantiation of 'pi_var0' does not refer to a function template, variable template, member function, member class, or static data member}}
 #endif
 
@@ -24,14 +24,14 @@ template int pi0 = 10; // expected-error {{variable cannot be defined in an expl
 #endif
 
 template<typename T> 
-T pi1 = T(3.1415926535897932385);
+T pi1 = T(3.1415926535897932385); // expected-note 0-2 {{here}}
 
 // Should recover as if specialization
 template float pi1<float> = 1.0;  // expected-error {{explicit template instantiation cannot have a definition; if this definition is meant to be an explicit specialization, add '<>' after the 'template' keyword}}
 #ifndef FIXING
 namespace expected_global {
-  template<> double pi1<double> = 1.5;  // expected-error {{no variable template matches specialization}}
+  template<> double pi1<double> = 1.5;  // expected-error {{variable template specialization of 'pi1' must originally be declared in the global scope}}
   template int pi1<int> = 10;  // expected-error {{explicit template instantiation cannot have a definition; if this definition is meant to be an explicit specialization, add '<>' after the 'template' keyword}} \
-                                  expected-error {{no variable template matches specialization}}
+                                  expected-error {{variable template specialization of 'pi1' must originally be declared in the global scope}}
 }
 #endif

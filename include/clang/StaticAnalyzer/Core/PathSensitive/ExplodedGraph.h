@@ -27,11 +27,11 @@
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/GraphTraits.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Casting.h"
+#include <memory>
 #include <vector>
 
 namespace clang {
@@ -184,7 +184,7 @@ public:
 
   bool isSink() const { return Succs.getFlag(); }
 
-   bool hasSinglePred() const {
+  bool hasSinglePred() const {
     return (pred_size() == 1);
   }
 

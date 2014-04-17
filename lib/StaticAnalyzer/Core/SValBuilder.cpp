@@ -202,10 +202,12 @@ DefinedSVal SValBuilder::getFunctionPointer(const FunctionDecl *func) {
 
 DefinedSVal SValBuilder::getBlockPointer(const BlockDecl *block,
                                          CanQualType locTy,
-                                         const LocationContext *locContext) {
+                                         const LocationContext *locContext,
+                                         unsigned blockCount) {
   const BlockTextRegion *BC =
     MemMgr.getBlockTextRegion(block, locTy, locContext->getAnalysisDeclContext());
-  const BlockDataRegion *BD = MemMgr.getBlockDataRegion(BC, locContext);
+  const BlockDataRegion *BD = MemMgr.getBlockDataRegion(BC, locContext,
+                                                        blockCount);
   return loc::MemRegionVal(BD);
 }
 
@@ -360,7 +362,7 @@ SVal SValBuilder::evalBinOp(ProgramStateRef state, BinaryOperator::Opcode op,
 DefinedOrUnknownSVal SValBuilder::evalEQ(ProgramStateRef state,
                                          DefinedOrUnknownSVal lhs,
                                          DefinedOrUnknownSVal rhs) {
-  return evalBinOp(state, BO_EQ, lhs, rhs, Context.IntTy)
+  return evalBinOp(state, BO_EQ, lhs, rhs, getConditionType())
       .castAs<DefinedOrUnknownSVal>();
 }
 
@@ -374,7 +376,7 @@ static bool shouldBeModeledWithNoOp(ASTContext &Context, QualType ToTy,
     ToTy = Context.getUnqualifiedArrayType(ToTy, Quals1);
     FromTy = Context.getUnqualifiedArrayType(FromTy, Quals2);
 
-    // Make sure that non cvr-qualifiers the other qualifiers (e.g., address
+    // Make sure that non-cvr-qualifiers the other qualifiers (e.g., address
     // spaces) are identical.
     Quals1.removeCVRQualifiers();
     Quals2.removeCVRQualifiers();
@@ -405,15 +407,22 @@ SVal SValBuilder::evalCast(SVal val, QualType castTy, QualType originalTy) {
       return val;
     if (val.isConstant())
       return makeTruthVal(!val.isZeroConstant(), castTy);
-    if (SymbolRef Sym = val.getAsSymbol()) {
+    if (!Loc::isLocType(originalTy) &&
+        !originalTy->isIntegralOrEnumerationType() &&
+        !originalTy->isMemberPointerType())
+      return UnknownVal();
+    if (SymbolRef Sym = val.getAsSymbol(true)) {
       BasicValueFactory &BVF = getBasicValueFactory();
       // FIXME: If we had a state here, we could see if the symbol is known to
       // be zero, but we don't.
       return makeNonLoc(Sym, BO_NE, BVF.getValue(0, Sym->getType()), castTy);
     }
+    // Loc values are not always true, they could be weakly linked functions.
+    if (Optional<Loc> L = val.getAs<Loc>())
+      return evalCastFromLoc(*L, castTy);
 
-    assert(val.getAs<Loc>() || val.getAs<nonloc::LocAsInteger>());
-    return makeTruthVal(true, castTy);
+    Loc L = val.castAs<nonloc::LocAsInteger>().getLoc();
+    return evalCastFromLoc(L, castTy);
   }
 
   // For const casts, casts to void, just propagate the value.

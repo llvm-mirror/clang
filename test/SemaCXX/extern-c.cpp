@@ -29,20 +29,40 @@ namespace test3 {
   }
 }
 
-extern "C" {
-  void test4_f() {
-    extern int test4_b; // expected-note {{declared with C language linkage here}}
+namespace N {
+  extern "C" {
+    void test4_f() {
+      extern int test4_b; // expected-note {{declared with C language linkage here}}
+    }
   }
 }
 static float test4_b; // expected-error {{declaration of 'test4_b' in global scope conflicts with declaration with C language linkage}}
 
 extern "C" {
-  void test5_f() {
-    extern int test5_b; // expected-note {{declared with C language linkage here}}
+  void test4c_f() {
+    extern int test4_c; // expected-note {{previous}}
+  }
+}
+static float test4_c; // expected-error {{redefinition of 'test4_c' with a different type: 'float' vs 'int'}}
+
+namespace N {
+  extern "C" {
+    void test5_f() {
+      extern int test5_b; // expected-note {{declared with C language linkage here}}
+    }
   }
 }
 extern "C" {
   static float test5_b; // expected-error {{declaration of 'test5_b' in global scope conflicts with declaration with C language linkage}}
+}
+
+extern "C" {
+  void test5c_f() {
+    extern int test5_c; // expected-note {{previous}}
+  }
+}
+extern "C" {
+  static float test5_c; // expected-error {{redefinition of 'test5_c' with a different type: 'float' vs 'int'}}
 }
 
 extern "C" {
@@ -120,7 +140,7 @@ namespace N2 {
 
 // We allow all these even though the standard says they are ill-formed.
 extern "C" {
-  struct stat {};
+  struct stat {};   // expected-warning{{empty struct has size 0 in C, size 1 in C++}}
   void stat(struct stat);
 }
 namespace X {
@@ -167,3 +187,20 @@ namespace X {
   extern "C" double global_var_vs_extern_c_var_2; // expected-note {{here}}
 }
 int global_var_vs_extern_c_var_2; // expected-error {{conflicts with declaration with C language linkage}}
+
+template <class T> struct pr5065_n1 {};
+extern "C" {
+  union pr5065_1 {}; // expected-warning{{empty union has size 0 in C, size 1 in C++}}
+  struct pr5065_2 { int: 0; }; // expected-warning{{struct has size 0 in C, size 1 in C++}}
+  struct pr5065_3 {}; // expected-warning{{empty struct has size 0 in C, size 1 in C++}}
+  struct pr5065_4 { // expected-warning{{empty struct has size 0 in C, size 1 in C++}}
+    struct Inner {}; // expected-warning{{empty struct has size 0 in C, size 1 in C++}}
+  };
+  // These should not warn
+  class pr5065_n3 {};
+  pr5065_n1<int> pr5065_v;
+  struct pr5065_n4 { void m() {} };
+  struct pr5065_n5 : public pr5065_3 {};
+  struct pr5065_n6 : public virtual pr5065_3 {};
+}
+struct pr5065_n7 {};

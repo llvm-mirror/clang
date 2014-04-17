@@ -34,9 +34,7 @@ public:
   //===------------------------------------------------------------------===//
 
   ProgramStateRef assume(ProgramStateRef state, DefinedSVal Cond,
-                        bool Assumption);
-
-  ProgramStateRef assume(ProgramStateRef state, Loc Cond, bool Assumption);
+                        bool Assumption) override;
 
   ProgramStateRef assume(ProgramStateRef state, NonLoc Cond, bool Assumption);
 
@@ -84,11 +82,7 @@ protected:
   BasicValueFactory &getBasicVals() const { return SVB.getBasicValueFactory(); }
   SymbolManager &getSymbolManager() const { return SVB.getSymbolManager(); }
 
-  bool canReasonAbout(SVal X) const;
-
-  ProgramStateRef assumeAux(ProgramStateRef state,
-                                Loc Cond,
-                                bool Assumption);
+  bool canReasonAbout(SVal X) const override;
 
   ProgramStateRef assumeAux(ProgramStateRef state,
                                 NonLoc Cond,

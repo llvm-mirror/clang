@@ -17,6 +17,9 @@ typedef SomeTemplate<int&> SomeTemplateIntRef;
 
 extern DefinedInCommon &defined_in_common;
 
+template<int> struct MergeTemplates;
+MergeTemplates<0> *merge_templates_b;
+
 @import cxx_templates_b_impl;
 
 template<typename T, typename> struct Identity { typedef T type; };
@@ -35,6 +38,27 @@ struct RedeclareTemplateAsFriend {
   friend struct RedeclaredAsFriend;
 };
 
+void use_some_template_b() {
+  SomeTemplate<char[1]> a;
+  SomeTemplate<char[2]> b, c;
+  b = c;
+}
+
+auto enum_b_from_b = CommonTemplate<int>::b;
+const auto enum_c_from_b = CommonTemplate<int>::c;
+
+template<int> struct UseInt;
+template<typename T> void UseRedeclaredEnum(UseInt<T() + CommonTemplate<char>::a>);
+constexpr void (*UseRedeclaredEnumB)(UseInt<1>) = UseRedeclaredEnum<int>;
+
+template<typename> struct MergeSpecializations;
+template<typename T> struct MergeSpecializations<T&> {
+  typedef int partially_specialized_in_b;
+};
+template<> struct MergeSpecializations<double> {
+  typedef int explicitly_specialized_in_b;
+};
+
 @import cxx_templates_a;
 template<typename T> void UseDefinedInBImplIndirectly(T &v) {
   PerformDelayedLookup(v);
@@ -42,4 +66,5 @@ template<typename T> void UseDefinedInBImplIndirectly(T &v) {
 
 void TriggerInstantiation() {
   UseDefinedInBImpl<void>();
+  Std::f<int>();
 }
