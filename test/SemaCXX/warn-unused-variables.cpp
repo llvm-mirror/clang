@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsyntax-only -Wunused-variable -verify %s
+// RUN: %clang_cc1 -fsyntax-only -Wunused-variable -Wunused-label -Wno-c++1y-extensions -verify %s
 template<typename T> void f() {
   T t;
   t = 17;
@@ -113,6 +113,17 @@ namespace PR11550 {
     S3 y;
     S3 z = a; // expected-warning {{unused variable 'z'}}
   }
+}
+
+namespace PR19305 {
+  template<typename T> int n = 0; // no warning
+  int a = n<int>;
+
+  template<typename T> const int l = 0; // no warning
+  int b = l<int>;
+
+  // FIXME: It'd be nice to warn here.
+  template<typename T> int m = 0;
 }
 
 namespace ctor_with_cleanups {

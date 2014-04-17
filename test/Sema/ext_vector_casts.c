@@ -1,6 +1,7 @@
-// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -fsyntax-only -verify -fno-lax-vector-conversions %s
+// RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -fsyntax-only -verify -fno-lax-vector-conversions -Wconversion %s
 
 typedef __attribute__(( ext_vector_type(2) )) float float2;
+typedef __attribute__(( ext_vector_type(3) )) float float3;
 typedef __attribute__(( ext_vector_type(4) )) int int4;
 typedef __attribute__(( ext_vector_type(8) )) short short8;
 typedef __attribute__(( ext_vector_type(4) )) float float4;
@@ -11,12 +12,16 @@ typedef size_t stride4 __attribute__((ext_vector_type(4)));
 
 static void test() {
     float2 vec2;
+    float3 vec3;
     float4 vec4, vec4_2;
     int4 ivec4;
     short8 ish8;
     t3 vec4_3;
     int *ptr;
     int i;
+
+    vec3 += vec2; // expected-error {{can't convert between vector values of different size}}
+    vec4 += vec3; // expected-error {{can't convert between vector values of different size}}
     
     vec4 = 5.0f;
     vec4 = (float4)5.0f;
@@ -33,9 +38,8 @@ static void test() {
     ivec4 = (int4)ptr; // expected-error {{invalid conversion between vector type 'int4' and scalar type 'int *'}}
     
     vec4 = (float4)vec2; // expected-error {{invalid conversion between ext-vector type 'float4' and 'float2'}}
-    
-    ish8 += 5; // expected-error {{can't convert between vector values of different size ('short8' and 'int')}}
-    ish8 += (short)5;
+  
+    ish8 += 5;
     ivec4 *= 5;
      vec4 /= 5.2f;
      vec4 %= 4; // expected-error {{invalid operands to binary expression ('float4' and 'int')}}
@@ -44,7 +48,7 @@ static void test() {
     ivec4 += (int4)vec4;
     ivec4 -= ivec4;
     ivec4 |= ivec4;
-    ivec4 += ptr; // expected-error {{can't convert between vector values of different size ('int4' and 'int *')}}
+    ivec4 += ptr; // expected-error {{can't convert between vector and non-scalar values ('int4' and 'int *')}}
 }
 
 typedef __attribute__(( ext_vector_type(2) )) float2 vecfloat2; // expected-error{{invalid vector element type 'float2'}}
@@ -74,3 +78,47 @@ stride4 RDar15091442_get_stride4(int4 x, PixelByteStride pixelByteStride)
     return stride;
 }
 
+// rdar://16196902
+typedef __attribute__((ext_vector_type(4))) float float32x4_t;
+
+typedef float C3DVector3 __attribute__((ext_vector_type(3)));
+
+extern float32x4_t vabsq_f32(float32x4_t __a);
+
+C3DVector3 Func(const C3DVector3 a) {
+    return (C3DVector3)vabsq_f32((float32x4_t)a); // expected-error {{invalid conversion between ext-vector type 'float32x4_t' and 'C3DVector3'}}
+}
+
+// rdar://16350802
+typedef double double2 __attribute__ ((ext_vector_type(2)));
+
+static void splats(int i, long l, __uint128_t t, float f, double d) {
+  short8 vs = 0;
+  int4 vi = i;
+  ulong2 vl = (unsigned long)l;
+  float2 vf = f;
+  double2 vd = d;
+  
+  vs = 65536 + vs; // expected-warning {{implicit conversion from 'int' to 'short8' changes value from 65536 to 0}}
+  vs = vs + i; // expected-warning {{implicit conversion loses integer precision}}
+  vs = vs + 1;
+  vs = vs + 1.f; // expected-error {{can't convert between vector values of different size}}
+  
+  vi = l + vi; // expected-warning {{implicit conversion loses integer precision}}
+  vi = 1 + vi;
+  vi = vi + 2.0; // expected-error {{can't convert between vector values of different size}}
+  vi = vi + 0xffffffff; // expected-warning {{implicit conversion changes signedness}}
+  
+  vl = l + vl; // expected-warning {{implicit conversion changes signedness}}
+  vl = vl + t; // expected-warning {{implicit conversion loses integer precision}}
+  
+  vf = 1 + vf;
+  vf = l + vf;
+  vf = 2.0 + vf;
+  vf = d + vf; // expected-warning {{implicit conversion loses floating-point precision}}
+  vf = vf + 0xffffffff;
+  vf = vf + 2.1; // expected-warning {{implicit conversion loses floating-point precision}}
+  
+  vd = l + vd;
+  vd = vd + t;
+}

@@ -62,8 +62,8 @@ class StreamChecker : public Checker<eval::Call,
                  *II_fwrite, 
                  *II_fseek, *II_ftell, *II_rewind, *II_fgetpos, *II_fsetpos,  
                  *II_clearerr, *II_feof, *II_ferror, *II_fileno;
-  mutable OwningPtr<BuiltinBug> BT_nullfp, BT_illegalwhence,
-                                      BT_doubleclose, BT_ResourceLeak;
+  mutable std::unique_ptr<BuiltinBug> BT_nullfp, BT_illegalwhence,
+      BT_doubleclose, BT_ResourceLeak;
 
 public:
   StreamChecker() 
@@ -218,7 +218,7 @@ void StreamChecker::OpenFileAux(CheckerContext &C, const CallExpr *CE) const {
   // Bifurcate the state into two: one with a valid FILE* pointer, the other
   // with a NULL.
   ProgramStateRef stateNotNull, stateNull;
-  llvm::tie(stateNotNull, stateNull) = CM.assumeDual(state, RetVal);
+  std::tie(stateNotNull, stateNull) = CM.assumeDual(state, RetVal);
   
   if (SymbolRef Sym = RetVal.getAsSymbol()) {
     // if RetVal is not NULL, set the symbol's state to Opened.
@@ -270,9 +270,10 @@ void StreamChecker::Fseek(CheckerContext &C, const CallExpr *CE) const {
 
   if (ExplodedNode *N = C.addTransition(state)) {
     if (!BT_illegalwhence)
-      BT_illegalwhence.reset(new BuiltinBug("Illegal whence argument",
-					"The whence argument to fseek() should be "
-					"SEEK_SET, SEEK_END, or SEEK_CUR."));
+      BT_illegalwhence.reset(
+          new BuiltinBug(this, "Illegal whence argument",
+                         "The whence argument to fseek() should be "
+                         "SEEK_SET, SEEK_END, or SEEK_CUR."));
     BugReport *R = new BugReport(*BT_illegalwhence, 
 				 BT_illegalwhence->getDescription(), N);
     C.emitReport(R);
@@ -343,13 +344,13 @@ ProgramStateRef StreamChecker::CheckNullStream(SVal SV, ProgramStateRef state,
 
   ConstraintManager &CM = C.getConstraintManager();
   ProgramStateRef stateNotNull, stateNull;
-  llvm::tie(stateNotNull, stateNull) = CM.assumeDual(state, *DV);
+  std::tie(stateNotNull, stateNull) = CM.assumeDual(state, *DV);
 
   if (!stateNotNull && stateNull) {
     if (ExplodedNode *N = C.generateSink(stateNull)) {
       if (!BT_nullfp)
-        BT_nullfp.reset(new BuiltinBug("NULL stream pointer",
-                                     "Stream pointer might be NULL."));
+        BT_nullfp.reset(new BuiltinBug(this, "NULL stream pointer",
+                                       "Stream pointer might be NULL."));
       BugReport *R =new BugReport(*BT_nullfp, BT_nullfp->getDescription(), N);
       C.emitReport(R);
     }
@@ -378,9 +379,9 @@ ProgramStateRef StreamChecker::CheckDoubleClose(const CallExpr *CE,
     ExplodedNode *N = C.generateSink();
     if (N) {
       if (!BT_doubleclose)
-        BT_doubleclose.reset(new BuiltinBug("Double fclose",
-                                        "Try to close a file Descriptor already"
-                                        " closed. Cause undefined behaviour."));
+        BT_doubleclose.reset(new BuiltinBug(
+            this, "Double fclose", "Try to close a file Descriptor already"
+                                   " closed. Cause undefined behaviour."));
       BugReport *R = new BugReport(*BT_doubleclose,
                                    BT_doubleclose->getDescription(), N);
       C.emitReport(R);
@@ -407,8 +408,9 @@ void StreamChecker::checkDeadSymbols(SymbolReaper &SymReaper,
       ExplodedNode *N = C.generateSink();
       if (N) {
         if (!BT_ResourceLeak)
-          BT_ResourceLeak.reset(new BuiltinBug("Resource Leak", 
-                         "Opened File never closed. Potential Resource leak."));
+          BT_ResourceLeak.reset(new BuiltinBug(
+              this, "Resource Leak",
+              "Opened File never closed. Potential Resource leak."));
         BugReport *R = new BugReport(*BT_ResourceLeak, 
                                      BT_ResourceLeak->getDescription(), N);
         C.emitReport(R);

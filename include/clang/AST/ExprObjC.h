@@ -215,7 +215,7 @@ struct ObjCDictionaryElement {
 } // end namespace clang
 
 namespace llvm {
-template <> struct isPodLike<clang::ObjCDictionaryElement> : llvm::true_type {};
+template <> struct isPodLike<clang::ObjCDictionaryElement> : std::true_type {};
 }
 
 namespace clang {
@@ -683,13 +683,13 @@ public:
     if (isExplicitProperty()) {
       const ObjCPropertyDecl *PDecl = getExplicitProperty();
       if (const ObjCMethodDecl *Getter = PDecl->getGetterMethodDecl())
-        ResultType = Getter->getResultType();
+        ResultType = Getter->getReturnType();
       else
         ResultType = PDecl->getType();
     } else {
       const ObjCMethodDecl *Getter = getImplicitPropertyGetter();
       if (Getter)
-        ResultType = Getter->getResultType(); // with reference!
+        ResultType = Getter->getReturnType(); // with reference!
     }
     return ResultType;
   }

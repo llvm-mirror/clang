@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple i686-pc-win32 -emit-llvm %s -o - | FileCheck %s
+// RUN: %clang_cc1 -fms-extensions -triple %itanium_abi_triple -emit-llvm %s -o - | FileCheck %s
 
 class A {
  public:
@@ -11,4 +11,3 @@ void f() {
 // CHECK: ret void
   __noop(A());
 };
-

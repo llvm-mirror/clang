@@ -20,10 +20,10 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/DIBuilder.h"
-#include "llvm/DebugInfo.h"
+#include "llvm/IR/DIBuilder.h"
+#include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/ValueHandle.h"
 #include "llvm/Support/Allocator.h"
-#include "llvm/Support/ValueHandle.h"
 
 namespace llvm {
   class MDNode;
@@ -47,8 +47,8 @@ namespace CodeGen {
 /// and is responsible for emitting to llvm globals or pass directly to
 /// the backend.
 class CGDebugInfo {
-  friend class NoLocation;
   friend class ArtificialLocation;
+  friend class SaveAndRestoreLocation;
   CodeGenModule &CGM;
   const CodeGenOptions::DebugInfoKind DebugKind;
   llvm::DIBuilder DBuilder;
@@ -109,6 +109,7 @@ class CGDebugInfo {
   llvm::DIType CreateType(const ComplexType *Ty);
   llvm::DIType CreateQualifiedType(QualType Ty, llvm::DIFile Fg);
   llvm::DIType CreateType(const TypedefType *Ty, llvm::DIFile Fg);
+  llvm::DIType CreateType(const TemplateSpecializationType *Ty, llvm::DIFile Fg);
   llvm::DIType CreateType(const ObjCObjectPointerType *Ty,
                           llvm::DIFile F);
   llvm::DIType CreateType(const PointerType *Ty, llvm::DIFile F);
@@ -219,8 +220,12 @@ public:
 
   /// EmitFunctionStart - Emit a call to llvm.dbg.function.start to indicate
   /// start of a new function.
-  void EmitFunctionStart(GlobalDecl GD, QualType FnType,
-                         llvm::Function *Fn, CGBuilderTy &Builder);
+  /// \param Loc       The location of the function header.
+  /// \param ScopeLoc  The location of the function body.
+  void EmitFunctionStart(GlobalDecl GD,
+                         SourceLocation Loc, SourceLocation ScopeLoc,
+                         QualType FnType, llvm::Function *Fn,
+                         CGBuilderTy &Builder);
 
   /// EmitFunctionEnd - Constructs the debug code for exiting a function.
   void EmitFunctionEnd(CGBuilderTy &Builder);
@@ -288,6 +293,8 @@ public:
   void completeRequiredType(const RecordDecl *RD);
   void completeClassData(const RecordDecl *RD);
 
+  void completeTemplateDefinition(const ClassTemplateSpecializationDecl &SD);
+
 private:
   /// EmitDeclare - Emit call to llvm.dbg.declare for a variable declaration.
   void EmitDeclare(const VarDecl *decl, unsigned Tag, llvm::Value *AI,
@@ -342,9 +349,9 @@ private:
   llvm::DIType CreateMemberType(llvm::DIFile Unit, QualType FType,
                                 StringRef Name, uint64_t *Offset);
 
-  /// \brief Retrieve the DIDescriptor, if any, for the canonical form of this
+  /// \brief Retrieve the DIScope, if any, for the canonical form of this
   /// declaration.
-  llvm::DIDescriptor getDeclarationOrDefinition(const Decl *D);
+  llvm::DIScope getDeclarationOrDefinition(const Decl *D);
 
   /// getFunctionDeclaration - Return debug info descriptor to describe method
   /// declaration for the given method definition.
@@ -354,6 +361,13 @@ private:
   /// declaration for the given out-of-class definition.
   llvm::DIDerivedType
   getOrCreateStaticDataMemberDeclarationOrNull(const VarDecl *D);
+
+  /// Return a global variable that represents one of the collection of
+  /// global variables created for an anonmyous union.
+  llvm::DIGlobalVariable
+  CollectAnonRecordDecls(const RecordDecl *RD, llvm::DIFile Unit, unsigned LineNo,
+                         StringRef LinkageName, llvm::GlobalVariable *Var,
+                         llvm::DIDescriptor DContext);
 
   /// getFunctionName - Get function name for the given FunctionDecl. If the
   /// name is constructed on demand (e.g. C++ destructor) then the name
@@ -394,16 +408,26 @@ private:
   }
 };
 
-/// NoLocation - An RAII object that temporarily disables debug
-/// locations. This is useful for emitting instructions that should be
-/// counted towards the function prologue.
-class NoLocation {
+/// SaveAndRestoreLocation - An RAII object saves the current location
+/// and automatically restores it to the original value.
+class SaveAndRestoreLocation {
+protected:
   SourceLocation SavedLoc;
   CGDebugInfo *DI;
   CGBuilderTy &Builder;
 public:
+  SaveAndRestoreLocation(CodeGenFunction &CGF, CGBuilderTy &B);
+  /// Autorestore everything back to normal.
+  ~SaveAndRestoreLocation();
+};
+
+/// NoLocation - An RAII object that temporarily disables debug
+/// locations. This is useful for emitting instructions that should be
+/// counted towards the function prologue.
+class NoLocation : public SaveAndRestoreLocation {
+public:
   NoLocation(CodeGenFunction &CGF, CGBuilderTy &B);
-  /// ~NoLocation - Autorestore everything back to normal.
+  /// Autorestore everything back to normal.
   ~NoLocation();
 };
 
@@ -418,10 +442,7 @@ public:
 /// This is necessary because passing an empty SourceLocation to
 /// CGDebugInfo::setLocation() will result in the last valid location
 /// being reused.
-class ArtificialLocation {
-  SourceLocation SavedLoc;
-  CGDebugInfo *DI;
-  CGBuilderTy &Builder;
+class ArtificialLocation : public SaveAndRestoreLocation {
 public:
   ArtificialLocation(CodeGenFunction &CGF, CGBuilderTy &B);
 
@@ -429,7 +450,7 @@ public:
   /// (= the top of the LexicalBlockStack).
   void Emit();
 
-  /// ~ArtificialLocation - Autorestore everything back to normal.
+  /// Autorestore everything back to normal.
   ~ArtificialLocation();
 };
 

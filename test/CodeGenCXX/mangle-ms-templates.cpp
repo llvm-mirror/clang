@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -std=c++11 -emit-llvm %s -o - -cxx-abi microsoft -fms-extensions -fdelayed-template-parsing -triple=i386-pc-win32 | FileCheck %s
-// RUN: %clang_cc1 -std=c++11 -emit-llvm %s -o - -cxx-abi microsoft -fms-extensions -fdelayed-template-parsing -triple=x86_64-pc-win32 | FileCheck -check-prefix X64 %s
+// RUN: %clang_cc1 -std=c++11 -emit-llvm %s -o - -fms-extensions -fdelayed-template-parsing -triple=i386-pc-win32 | FileCheck %s
+// RUN: %clang_cc1 -std=c++11 -emit-llvm %s -o - -fms-extensions -fdelayed-template-parsing -triple=x86_64-pc-win32 | FileCheck -check-prefix X64 %s
 
 template<typename T>
 class Class {
@@ -22,6 +22,18 @@ template<int param>
 class IntTemplate {
  public:
   IntTemplate() {}
+};
+
+template<long long param>
+class LongLongTemplate {
+ public:
+  LongLongTemplate() {}
+};
+
+template<unsigned long long param>
+class UnsignedLongLongTemplate {
+ public:
+  UnsignedLongLongTemplate() {}
 };
 
 template<>
@@ -108,6 +120,32 @@ void template_mangling() {
   IntTemplate<65535> ffff;
 // CHECK: call {{.*}} @"\01??0?$IntTemplate@$0PPPP@@@QAE@XZ"
 // X64: call {{.*}} @"\01??0?$IntTemplate@$0PPPP@@@QEAA@XZ"
+
+  IntTemplate<-1>  neg_1;
+// CHECK: call {{.*}} @"\01??0?$IntTemplate@$0?0@@QAE@XZ"
+// X64: call {{.*}} @"\01??0?$IntTemplate@$0?0@@QEAA@XZ"
+  IntTemplate<-9>  neg_9;
+// CHECK: call {{.*}} @"\01??0?$IntTemplate@$0?8@@QAE@XZ"
+// X64: call {{.*}} @"\01??0?$IntTemplate@$0?8@@QEAA@XZ"
+  IntTemplate<-10> neg_10;
+// CHECK: call {{.*}} @"\01??0?$IntTemplate@$0?9@@QAE@XZ"
+// X64: call {{.*}} @"\01??0?$IntTemplate@$0?9@@QEAA@XZ"
+  IntTemplate<-11> neg_11;
+// CHECK: call {{.*}} @"\01??0?$IntTemplate@$0?L@@@QAE@XZ"
+// X64: call {{.*}} @"\01??0?$IntTemplate@$0?L@@@QEAA@XZ"
+
+  LongLongTemplate<-9223372036854775807LL-1LL> int64_min;
+// CHECK: call {{.*}} @"\01??0?$LongLongTemplate@$0?IAAAAAAAAAAAAAAA@@@QAE@XZ"
+// X64: call {{.*}} @"\01??0?$LongLongTemplate@$0?IAAAAAAAAAAAAAAA@@@QEAA@XZ"
+  LongLongTemplate<9223372036854775807LL>      int64_max;
+// CHECK: call {{.*}} @"\01??0?$LongLongTemplate@$0HPPPPPPPPPPPPPPP@@@QAE@XZ"
+// X64: call {{.*}} @"\01??0?$LongLongTemplate@$0HPPPPPPPPPPPPPPP@@@QEAA@XZ"
+  UnsignedLongLongTemplate<18446744073709551615ULL> uint64_max;
+// CHECK: call {{.*}} @"\01??0?$UnsignedLongLongTemplate@$0?0@@QAE@XZ"
+// X64: call {{.*}} @"\01??0?$UnsignedLongLongTemplate@$0?0@@QEAA@XZ"
+  UnsignedLongLongTemplate<(unsigned long long)-1>  uint64_neg_1;
+// CHECK: call {{.*}} @"\01??0?$UnsignedLongLongTemplate@$0?0@@QAE@XZ"
+// X64: call {{.*}} @"\01??0?$UnsignedLongLongTemplate@$0?0@@QEAA@XZ"
 }
 
 namespace space {

@@ -21,10 +21,20 @@
 
 namespace clang {
 
+  namespace NEON {
+  enum {
+    LastTIBuiltin = clang::Builtin::FirstTSBuiltin - 1,
+#define BUILTIN(ID, TYPE, ATTRS) BI##ID,
+#include "clang/Basic/BuiltinsNEON.def"
+    FirstTSBuiltin
+  };
+  }
+
   /// \brief AArch64 builtins
   namespace AArch64 {
     enum {
       LastTIBuiltin = clang::Builtin::FirstTSBuiltin-1,
+      LastNEONBuiltin = NEON::FirstTSBuiltin - 1,
 #define BUILTIN(ID, TYPE, ATTRS) BI##ID,
 #include "clang/Basic/BuiltinsAArch64.def"
       LastTSBuiltin
@@ -33,11 +43,23 @@ namespace clang {
   /// \brief ARM builtins
   namespace ARM {
     enum {
-        LastTIBuiltin = clang::Builtin::FirstTSBuiltin-1,
+      LastTIBuiltin = clang::Builtin::FirstTSBuiltin-1,
+      LastNEONBuiltin = NEON::FirstTSBuiltin - 1,
 #define BUILTIN(ID, TYPE, ATTRS) BI##ID,
 #include "clang/Basic/BuiltinsARM.def"
-        LastTSBuiltin
+      LastTSBuiltin
     };
+  }
+
+  /// \brief ARM64 builtins
+  namespace ARM64 {
+  enum {
+    LastTIBuiltin = clang::Builtin::FirstTSBuiltin - 1,
+    LastNEONBuiltin = NEON::FirstTSBuiltin - 1,
+  #define BUILTIN(ID, TYPE, ATTRS) BI##ID,
+  #include "clang/Basic/BuiltinsARM64.def"
+    LastTSBuiltin
+  };
   }
 
   /// \brief PPC builtins
@@ -90,6 +112,8 @@ namespace clang {
       Int64,
       Poly8,
       Poly16,
+      Poly64,
+      Poly128,
       Float16,
       Float32,
       Float64

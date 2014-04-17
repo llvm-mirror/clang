@@ -17,13 +17,14 @@
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Basic/Version.h"
 #include "clang/Format/Format.h"
 #include "clang/Lex/Lexer.h"
 #include "clang/Rewrite/Core/Rewriter.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Signals.h"
-#include "llvm/ADT/StringMap.h"
 
 using namespace llvm;
 
@@ -31,7 +32,7 @@ static cl::opt<bool> Help("h", cl::desc("Alias for -help"), cl::Hidden);
 
 // Mark all our options with this category, everything else (except for -version
 // and -help) will be hidden.
-cl::OptionCategory ClangFormatCategory("Clang-format options");
+static cl::OptionCategory ClangFormatCategory("Clang-format options");
 
 static cl::list<unsigned>
     Offsets("offset",
@@ -62,6 +63,13 @@ static cl::opt<std::string>
     Style("style",
           cl::desc(clang::format::StyleOptionHelpDescription),
           cl::init("file"), cl::cat(ClangFormatCategory));
+static cl::opt<std::string>
+FallbackStyle("fallback-style",
+              cl::desc("The name of the predefined style used as a\n"
+                       "fallback in case clang-format is invoked with\n"
+                       "-style=file, but can not find the .clang-format\n"
+                       "file to use."),
+              cl::init("LLVM"), cl::cat(ClangFormatCategory));
 
 static cl::opt<std::string>
 AssumeFilename("assume-filename",
@@ -173,14 +181,34 @@ static bool fillRanges(SourceManager &Sources, FileID ID,
   return false;
 }
 
+static void outputReplacementXML(StringRef Text) {
+  size_t From = 0;
+  size_t Index;
+  while ((Index = Text.find_first_of("\n\r", From)) != StringRef::npos) {
+    llvm::outs() << Text.substr(From, Index - From);
+    switch (Text[Index]) {
+    case '\n':
+      llvm::outs() << "&#10;";
+      break;
+    case '\r':
+      llvm::outs() << "&#13;";
+      break;
+    default:
+      llvm_unreachable("Unexpected character encountered!");
+    }
+    From = Index + 1;
+  }
+  llvm::outs() << Text.substr(From);
+}
+
 // Returns true on error.
-static bool format(std::string FileName) {
+static bool format(StringRef FileName) {
   FileManager Files((FileSystemOptions()));
   DiagnosticsEngine Diagnostics(
       IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
       new DiagnosticOptions);
   SourceManager Sources(Diagnostics, Files);
-  OwningPtr<MemoryBuffer> Code;
+  std::unique_ptr<MemoryBuffer> Code;
   if (error_code ec = MemoryBuffer::getFileOrSTDIN(FileName, Code)) {
     llvm::errs() << ec.message() << "\n";
     return true;
@@ -192,8 +220,8 @@ static bool format(std::string FileName) {
   if (fillRanges(Sources, ID, Code.get(), Ranges))
     return true;
 
-  FormatStyle FormatStyle =
-      getStyle(Style, (FileName == "-") ? AssumeFilename : FileName);
+  FormatStyle FormatStyle = getStyle(
+      Style, (FileName == "-") ? AssumeFilename : FileName, FallbackStyle);
   Lexer Lex(ID, Sources.getBuffer(ID), Sources,
             getFormattingLangOpts(FormatStyle.Standard));
   tooling::Replacements Replaces = reformat(FormatStyle, Lex, Sources, Ranges);
@@ -205,26 +233,17 @@ static bool format(std::string FileName) {
          I != E; ++I) {
       llvm::outs() << "<replacement "
                    << "offset='" << I->getOffset() << "' "
-                   << "length='" << I->getLength() << "'>"
-                   << I->getReplacementText() << "</replacement>\n";
+                   << "length='" << I->getLength() << "'>";
+      outputReplacementXML(I->getReplacementText());
+      llvm::outs() << "</replacement>\n";
     }
     llvm::outs() << "</replacements>\n";
   } else {
     Rewriter Rewrite(Sources, LangOptions());
     tooling::applyAllReplacements(Replaces, Rewrite);
     if (Inplace) {
-      if (Replaces.size() == 0)
-        return false; // Nothing changed, don't touch the file.
-
-      std::string ErrorInfo;
-      llvm::raw_fd_ostream FileStream(FileName.c_str(), ErrorInfo,
-                                      llvm::sys::fs::F_Binary);
-      if (!ErrorInfo.empty()) {
-        llvm::errs() << "Error while writing file: " << ErrorInfo << "\n";
+      if (Rewrite.overwriteChangedFiles())
         return true;
-      }
-      Rewrite.getEditBuffer(ID).write(FileStream);
-      FileStream.flush();
     } else {
       if (Cursor.getNumOccurrences() != 0)
         outs() << "{ \"Cursor\": " << tooling::shiftedCodePosition(
@@ -237,6 +256,11 @@ static bool format(std::string FileName) {
 
 }  // namespace format
 }  // namespace clang
+
+static void PrintVersion() {
+  raw_ostream &OS = outs();
+  OS << clang::getClangToolFullVersion("clang-format") << '\n';
+}
 
 int main(int argc, const char **argv) {
   llvm::sys::PrintStackTraceOnErrorSignal();
@@ -251,6 +275,7 @@ int main(int argc, const char **argv) {
       I->second->setHiddenFlag(cl::ReallyHidden);
   }
 
+  cl::SetVersionPrinter(PrintVersion);
   cl::ParseCommandLineOptions(
       argc, argv,
       "A tool to format C/C++/Obj-C code.\n\n"
@@ -266,7 +291,8 @@ int main(int argc, const char **argv) {
   if (DumpConfig) {
     std::string Config =
         clang::format::configurationAsText(clang::format::getStyle(
-            Style, FileNames.empty() ? AssumeFilename : FileNames[0]));
+            Style, FileNames.empty() ? AssumeFilename : FileNames[0],
+            FallbackStyle));
     llvm::outs() << Config << "\n";
     return 0;
   }

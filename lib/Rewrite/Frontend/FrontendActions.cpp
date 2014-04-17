@@ -19,10 +19,10 @@
 #include "clang/Rewrite/Frontend/ASTConsumers.h"
 #include "clang/Rewrite/Frontend/FixItRewriter.h"
 #include "clang/Rewrite/Frontend/Rewriters.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
+#include <memory>
 
 using namespace clang;
 
@@ -48,7 +48,7 @@ ASTConsumer *FixItAction::CreateASTConsumer(CompilerInstance &CI,
 namespace {
 class FixItRewriteInPlace : public FixItOptions {
 public:
-  std::string RewriteFilename(const std::string &Filename, int &fd) {
+  std::string RewriteFilename(const std::string &Filename, int &fd) override {
     fd = -1;
     return Filename;
   }
@@ -63,7 +63,7 @@ public:
       this->FixWhatYouCan = FixWhatYouCan;
   }
 
-  std::string RewriteFilename(const std::string &Filename, int &fd) {
+  std::string RewriteFilename(const std::string &Filename, int &fd) override {
     fd = -1;
     SmallString<128> Path(Filename);
     llvm::sys::path::replace_extension(Path,
@@ -74,7 +74,7 @@ public:
 
 class FixItRewriteToTemp : public FixItOptions {
 public:
-  std::string RewriteFilename(const std::string &Filename, int &fd) {
+  std::string RewriteFilename(const std::string &Filename, int &fd) override {
     SmallString<128> Path;
     llvm::sys::fs::createTemporaryFile(llvm::sys::path::filename(Filename),
                                        llvm::sys::path::extension(Filename), fd,
@@ -110,9 +110,9 @@ bool FixItRecompile::BeginInvocation(CompilerInstance &CI) {
   bool err = false;
   {
     const FrontendOptions &FEOpts = CI.getFrontendOpts();
-    OwningPtr<FrontendAction> FixAction(new SyntaxOnlyAction());
+    std::unique_ptr<FrontendAction> FixAction(new SyntaxOnlyAction());
     if (FixAction->BeginSourceFile(CI, FEOpts.Inputs[0])) {
-      OwningPtr<FixItOptions> FixItOpts;
+      std::unique_ptr<FixItOptions> FixItOpts;
       if (FEOpts.FixToTemporaries)
         FixItOpts.reset(new FixItRewriteToTemp());
       else

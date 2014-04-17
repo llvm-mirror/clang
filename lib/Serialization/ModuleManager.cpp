@@ -86,6 +86,16 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
     NewModule = true;
     ModuleEntry = New;
 
+    New->InputFilesValidationTimestamp = 0;
+    if (New->Kind == MK_Module) {
+      std::string TimestampFilename = New->getTimestampFilename();
+      vfs::Status Status;
+      // A cached stat value would be fine as well.
+      if (!FileMgr.getNoncachedStatValue(TimestampFilename, Status))
+        New->InputFilesValidationTimestamp =
+            Status.getLastModificationTime().toEpochTime();
+    }
+
     // Load the contents of the module
     if (llvm::MemoryBuffer *Buffer = lookupBuffer(FileName)) {
       // The buffer was already provided for us.
@@ -124,22 +134,6 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
   return NewModule? NewlyLoaded : AlreadyLoaded;
 }
 
-namespace {
-  /// \brief Predicate that checks whether a module file occurs within
-  /// the given set.
-  class IsInModuleFileSet : public std::unary_function<ModuleFile *, bool> {
-    llvm::SmallPtrSet<ModuleFile *, 4> &Removed;
-
-  public:
-    IsInModuleFileSet(llvm::SmallPtrSet<ModuleFile *, 4> &Removed)
-    : Removed(Removed) { }
-
-    bool operator()(ModuleFile *MF) const {
-      return Removed.count(MF);
-    }
-  };
-}
-
 void ModuleManager::removeModules(ModuleIterator first, ModuleIterator last,
                                   ModuleMap *modMap) {
   if (first == last)
@@ -149,9 +143,10 @@ void ModuleManager::removeModules(ModuleIterator first, ModuleIterator last,
   llvm::SmallPtrSet<ModuleFile *, 4> victimSet(first, last);
 
   // Remove any references to the now-destroyed modules.
-  IsInModuleFileSet checkInSet(victimSet);
   for (unsigned i = 0, n = Chain.size(); i != n; ++i) {
-    Chain[i]->ImportedBy.remove_if(checkInSet);
+    Chain[i]->ImportedBy.remove_if([&](ModuleFile *MF) {
+      return victimSet.count(MF);
+    });
   }
 
   // Delete the modules and erase them from the various structures.

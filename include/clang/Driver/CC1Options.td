@@ -17,8 +17,6 @@ let Flags = [CC1Option, NoDriverOption] in {
 // Target Options
 //===----------------------------------------------------------------------===//
 
-def cxx_abi : Separate<["-"], "cxx-abi">,
-  HelpText<"Target a particular C++ ABI type">;
 def target_abi : Separate<["-"], "target-abi">,
   HelpText<"Target a particular ABI type">;
 def target_cpu : Separate<["-"], "target-cpu">,
@@ -140,6 +138,8 @@ def split_dwarf : Flag<["-"], "split-dwarf">,
   HelpText<"Split out the dwarf .dwo sections">;
 def gnu_pubnames : Flag<["-"], "gnu-pubnames">,
   HelpText<"Emit newer GNU style pubnames">;
+def arange_sections : Flag<["-"], "arange_sections">,
+  HelpText<"Emit DWARF .debug_arange sections">;
 def fforbid_guard_variables : Flag<["-"], "fforbid-guard-variables">,
   HelpText<"Emit an error if a C++ static local initializer would need a guard variable">;
 def no_implicit_float : Flag<["-"], "no-implicit-float">,
@@ -190,6 +190,8 @@ def mlimit_float_precision : Separate<["-"], "mlimit-float-precision">,
   HelpText<"Limit float precision to the given value">;
 def mno_exec_stack : Flag<["-"], "mnoexecstack">,
   HelpText<"Mark the file as not needing an executable stack">;
+def compress_debug_sections : Flag<["-"], "compress-debug-sections">,
+    HelpText<"Compress DWARF debug sections using zlib">;
 def split_stacks : Flag<["-"], "split-stacks">,
   HelpText<"Try to use a split stack if possible.">;
 def mno_zero_initialized_in_bss : Flag<["-"], "mno-zero-initialized-in-bss">,
@@ -223,6 +225,8 @@ def dependent_lib : Joined<["--"], "dependent-lib=">,
 
 def sys_header_deps : Flag<["-"], "sys-header-deps">,
   HelpText<"Include system headers in dependency output">;
+def module_file_deps : Flag<["-"], "module-file-deps">,
+  HelpText<"Include module files in dependency output">;
 def header_include_file : Separate<["-"], "header-include-file">,
   HelpText<"Filename (or -) to write header include output to">;
 def show_includes : Flag<["--"], "show-includes">,
@@ -256,6 +260,8 @@ def fconstexpr_backtrace_limit : Separate<["-"], "fconstexpr-backtrace-limit">, 
   HelpText<"Set the maximum number of entries to print in a constexpr evaluation backtrace (0 = no limit).">;
 def fmessage_length : Separate<["-"], "fmessage-length">, MetaVarName<"<N>">,
   HelpText<"Format message diagnostics so that they fit within N columns or fewer, when possible.">;
+def verify : Flag<["-"], "verify">,
+  HelpText<"Verify diagnostic output using comment directives">;
 def Wno_rewrite_macros : Flag<["-"], "Wno-rewrite-macros">,
   HelpText<"Silence ObjC rewriting warnings">;
 
@@ -397,8 +403,6 @@ def fblocks_runtime_optional : Flag<["-"], "fblocks-runtime-optional">,
   HelpText<"Weakly link in the blocks runtime">;
 def fsjlj_exceptions : Flag<["-"], "fsjlj-exceptions">,
   HelpText<"Use SjLj style exceptions">;
-def fhidden_weak_vtables : Flag<["-"], "fhidden-weak-vtables">,
-  HelpText<"Generate weak vtables and RTTI with hidden visibility">;
 def main_file_name : Separate<["-"], "main-file-name">,
   HelpText<"Main file name to use for debug info">;
 def split_dwarf_file : Separate<["-"], "split-dwarf-file">,
@@ -442,6 +446,8 @@ def ftype_visibility : Separate<["-"], "ftype-visibility">,
   HelpText<"Default type visibility">;
 def ftemplate_depth : Separate<["-"], "ftemplate-depth">,
   HelpText<"Maximum depth of recursive template instantiation">;
+def foperator_arrow_depth : Separate<["-"], "foperator-arrow-depth">,
+  HelpText<"Maximum number of 'operator->'s to call for a member access">;
 def fconstexpr_depth : Separate<["-"], "fconstexpr-depth">,
   HelpText<"Maximum depth of recursive constexpr function calls">;
 def fconstexpr_steps : Separate<["-"], "fconstexpr-steps">,
@@ -472,6 +478,10 @@ def fno_deprecated_macro : Flag<["-"], "fno-deprecated-macro">,
   HelpText<"Undefines the __DEPRECATED macro">;
 def fsized_deallocation : Flag<["-"], "fsized-deallocation">,
   HelpText<"Enable C++1y sized global deallocation functions">;
+def fobjc_subscripting_legacy_runtime : Flag<["-"], "fobjc-subscripting-legacy-runtime">,
+  HelpText<"Allow Objective-C array and dictionary subscripting in legacy runtime">;
+def vtordisp_mode_EQ : Joined<["-"], "vtordisp-mode=">,
+  HelpText<"Control vtordisp placement on win32 targets">;
 
 //===----------------------------------------------------------------------===//
 // Header Search Options
@@ -479,12 +489,6 @@ def fsized_deallocation : Flag<["-"], "fsized-deallocation">,
 
 def nostdsysteminc : Flag<["-"], "nostdsysteminc">,
   HelpText<"Disable standard system #include directories">;
-def fmodule_name : Joined<["-"], "fmodule-name=">,
-  MetaVarName<"<name>">,
-  HelpText<"Specify the name of the module to build">;
-def fmodule_map_file : Joined<["-"], "fmodule-map-file=">,
-  MetaVarName<"<file>">,
-  HelpText<"Load this module map file">;
 def fdisable_module_hash : Flag<["-"], "fdisable-module-hash">,
   HelpText<"Disable the module hash">;
 def c_isystem : JoinedOrSeparate<["-"], "c-isystem">, MetaVarName<"<directory>">,
@@ -506,14 +510,6 @@ def internal_externc_isystem : JoinedOrSeparate<["-"], "internal-externc-isystem
            "implicit extern \"C\" semantics; these are assumed to not be "
            "user-provided and are used to model system and standard headers' "
            "paths.">;
-def isystem_prefix : JoinedOrSeparate<["-"], "isystem-prefix">,
-  MetaVarName<"<prefix>">,
-  HelpText<"Treat all #include paths starting with <prefix> as including a "
-           "system header.">;
-def ino_system_prefix : JoinedOrSeparate<["-"], "ino-system-prefix">,
-  MetaVarName<"<prefix>">,
-  HelpText<"Treat all #include paths starting with <prefix> as not including a "
-           "system header.">;
 
 //===----------------------------------------------------------------------===//
 // Preprocessor Options
@@ -541,6 +537,8 @@ def cl_single_precision_constant : Flag<["-"], "cl-single-precision-constant">,
   HelpText<"OpenCL only. Treat double precision floating-point constant as single precision constant.">;
 def cl_finite_math_only : Flag<["-"], "cl-finite-math-only">,
   HelpText<"OpenCL only. Allow floating-point optimizations that assume arguments and results are not NaNs or +-Inf.">;
+def cl_kernel_arg_info : Flag<["-"], "cl-kernel-arg-info">,
+  HelpText<"OpenCL only. Generate kernel argument metadata.">;
 def cl_unsafe_math_optimizations : Flag<["-"], "cl-unsafe-math-optimizations">,
   HelpText<"OpenCL only. Allow unsafe floating-point optimizations.  Also implies -cl-no-signed-zeros and -cl-mad-enable">;
 def cl_fast_relaxed_math : Flag<["-"], "cl-fast-relaxed-math">,

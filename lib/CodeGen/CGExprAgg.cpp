@@ -713,6 +713,7 @@ void AggExprEmitter::VisitCastExpr(CastExpr *E) {
   case CK_CopyAndAutoreleaseBlockObject:
   case CK_BuiltinFnToFnPtr:
   case CK_ZeroToOCLEvent:
+  case CK_AddressSpaceConversion:
     llvm_unreachable("cast kind invalid for aggregate types");
   }
 }
@@ -891,14 +892,16 @@ VisitAbstractConditionalOperator(const AbstractConditionalOperator *E) {
   // Bind the common expression if necessary.
   CodeGenFunction::OpaqueValueMapping binding(CGF, E);
 
+  RegionCounter Cnt = CGF.getPGORegionCounter(E);
   CodeGenFunction::ConditionalEvaluation eval(CGF);
-  CGF.EmitBranchOnBoolExpr(E->getCond(), LHSBlock, RHSBlock);
+  CGF.EmitBranchOnBoolExpr(E->getCond(), LHSBlock, RHSBlock, Cnt.getCount());
 
   // Save whether the destination's lifetime is externally managed.
   bool isExternallyDestructed = Dest.isExternallyDestructed();
 
   eval.begin(CGF);
   CGF.EmitBlock(LHSBlock);
+  Cnt.beginRegion(Builder);
   Visit(E->getTrueExpr());
   eval.end(CGF);
 
@@ -928,7 +931,11 @@ void AggExprEmitter::VisitVAArgExpr(VAArgExpr *VE) {
   llvm::Value *ArgPtr = CGF.EmitVAArg(ArgValue, VE->getType());
 
   if (!ArgPtr) {
-    CGF.ErrorUnsupported(VE, "aggregate va_arg expression");
+    // If EmitVAArg fails, we fall back to the LLVM instruction.
+    llvm::Value *Val =
+        Builder.CreateVAArg(ArgValue, CGF.ConvertType(VE->getType()));
+    if (!Dest.isIgnored())
+      Builder.CreateStore(Val, Dest.getAddr());
     return;
   }
 
@@ -1134,9 +1141,7 @@ void AggExprEmitter::VisitInitListExpr(InitListExpr *E) {
 #ifndef NDEBUG
       // Make sure that it's really an empty and not a failure of
       // semantic analysis.
-      for (RecordDecl::field_iterator Field = record->field_begin(),
-                                   FieldEnd = record->field_end();
-           Field != FieldEnd; ++Field)
+      for (const auto *Field : record->fields())
         assert(Field->isUnnamedBitfield() && "Only unnamed bitfields allowed");
 #endif
       return;
@@ -1165,9 +1170,7 @@ void AggExprEmitter::VisitInitListExpr(InitListExpr *E) {
   // Here we iterate over the fields; this makes it simpler to both
   // default-initialize fields and skip over unnamed fields.
   unsigned curInitIndex = 0;
-  for (RecordDecl::field_iterator field = record->field_begin(),
-                               fieldEnd = record->field_end();
-       field != fieldEnd; ++field) {
+  for (const auto *field : record->fields()) {
     // We're done once we hit the flexible array member.
     if (field->getType()->isIncompleteArrayType())
       break;
@@ -1184,7 +1187,7 @@ void AggExprEmitter::VisitInitListExpr(InitListExpr *E) {
       break;
     
 
-    LValue LV = CGF.EmitLValueForFieldInitialization(DestLV, *field);
+    LValue LV = CGF.EmitLValueForFieldInitialization(DestLV, field);
     // We never generate write-barries for initialized fields.
     LV.setNonGC(true);
     
@@ -1261,8 +1264,7 @@ static CharUnits GetNumNonZeroBytesInInit(const Expr *E, CodeGenFunction &CGF) {
       CharUnits NumNonZeroBytes = CharUnits::Zero();
       
       unsigned ILEElement = 0;
-      for (RecordDecl::field_iterator Field = SD->field_begin(),
-           FieldEnd = SD->field_end(); Field != FieldEnd; ++Field) {
+      for (const auto *Field : SD->fields()) {
         // We're done once we hit the flexible array member or run out of
         // InitListExpr elements.
         if (Field->getType()->isIncompleteArrayType() ||

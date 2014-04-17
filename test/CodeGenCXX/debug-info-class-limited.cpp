@@ -1,4 +1,4 @@
-// RUN: %clang -emit-llvm -g -S %s -o - | FileCheck %s
+// RUN: %clang -emit-llvm -fno-standalone-debug -g -S %s -o - | FileCheck %s
 
 namespace PR16214_1 {
 // CHECK-DAG: [ DW_TAG_structure_type ] [foo] [line [[@LINE+1]], {{.*}} [def]
@@ -24,7 +24,7 @@ foo *bar(foo *a) {
 }
 
 namespace test1 {
-// CHECK-DAG: [ DW_TAG_structure_type ] [foo] [line [[@LINE+1]], {{.*}} [decl]
+// CHECK-DAG: [ DW_TAG_structure_type ] [foo] [line [[@LINE+1]], {{.*}} [def]
 struct foo {
 };
 

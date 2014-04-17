@@ -383,15 +383,17 @@ void BlockTextRegion::Profile(llvm::FoldingSetNodeID& ID) const {
 void BlockDataRegion::ProfileRegion(llvm::FoldingSetNodeID& ID,
                                     const BlockTextRegion *BC,
                                     const LocationContext *LC,
+                                    unsigned BlkCount,
                                     const MemRegion *sReg) {
   ID.AddInteger(MemRegion::BlockDataRegionKind);
   ID.AddPointer(BC);
   ID.AddPointer(LC);
+  ID.AddInteger(BlkCount);
   ID.AddPointer(sReg);
 }
 
 void BlockDataRegion::Profile(llvm::FoldingSetNodeID& ID) const {
-  BlockDataRegion::ProfileRegion(ID, BC, LC, getSuperRegion());
+  BlockDataRegion::ProfileRegion(ID, BC, LC, BlockCount, getSuperRegion());
 }
 
 void CXXTempObjectRegion::ProfileRegion(llvm::FoldingSetNodeID &ID,
@@ -464,7 +466,14 @@ void BlockTextRegion::dumpToStream(raw_ostream &os) const {
 }
 
 void BlockDataRegion::dumpToStream(raw_ostream &os) const {
-  os << "block_data{" << BC << '}';
+  os << "block_data{" << BC;
+  os << "; ";
+  for (BlockDataRegion::referenced_vars_iterator
+         I = referenced_vars_begin(),
+         E = referenced_vars_end(); I != E; ++I)
+    os << "(" << I.getCapturedRegion() << "," <<
+                 I.getOriginalRegion() << ") ";
+  os << '}';
 }
 
 void CompoundLiteralRegion::dumpToStream(raw_ostream &os) const {
@@ -839,7 +848,8 @@ const VarRegion *MemRegionManager::getVarRegion(const VarDecl *D,
 
 const BlockDataRegion *
 MemRegionManager::getBlockDataRegion(const BlockTextRegion *BC,
-                                     const LocationContext *LC) {
+                                     const LocationContext *LC,
+                                     unsigned blockCount) {
   const MemRegion *sReg = 0;
   const BlockDecl *BD = BC->getDecl();
   if (!BD->hasCaptures()) {
@@ -861,7 +871,7 @@ MemRegionManager::getBlockDataRegion(const BlockTextRegion *BC,
     }
   }
 
-  return getSubRegion<BlockDataRegion>(BC, LC, sReg);
+  return getSubRegion<BlockDataRegion>(BC, LC, blockCount, sReg);
 }
 
 const CXXTempObjectRegion *
@@ -965,10 +975,8 @@ static bool isValidBaseClass(const CXXRecordDecl *BaseClass,
   if (IsVirtual)
     return Class->isVirtuallyDerivedFrom(BaseClass);
 
-  for (CXXRecordDecl::base_class_const_iterator I = Class->bases_begin(),
-                                                E = Class->bases_end();
-       I != E; ++I) {
-    if (I->getType()->getAsCXXRecordDecl()->getCanonicalDecl() == BaseClass)
+  for (const auto &I : Class->bases()) {
+    if (I.getType()->getAsCXXRecordDecl()->getCanonicalDecl() == BaseClass)
       return true;
   }
 
@@ -1166,10 +1174,8 @@ static bool isImmediateBase(const CXXRecordDecl *Child,
   // Note that we do NOT canonicalize the base class here, because
   // ASTRecordLayout doesn't either. If that leads us down the wrong path,
   // so be it; at least we won't crash.
-  for (CXXRecordDecl::base_class_const_iterator I = Child->bases_begin(),
-                                                E = Child->bases_end();
-       I != E; ++I) {
-    if (I->getType()->getAsCXXRecordDecl() == Base)
+  for (const auto &I : Child->bases()) {
+    if (I.getType()->getAsCXXRecordDecl() == Base)
       return true;
   }
 
@@ -1353,7 +1359,7 @@ BlockDataRegion::getCaptureRegions(const VarDecl *VD) {
   const VarRegion *VR = 0;
   const VarRegion *OriginalVR = 0;
 
-  if (!VD->getAttr<BlocksAttr>() && VD->hasLocalStorage()) {
+  if (!VD->hasAttr<BlocksAttr>() && VD->hasLocalStorage()) {
     VR = MemMgr.getVarRegion(VD, this);
     OriginalVR = MemMgr.getVarRegion(VD, LC);
   }
@@ -1376,7 +1382,7 @@ void BlockDataRegion::LazyInitializeReferencedVars() {
 
   AnalysisDeclContext *AC = getCodeRegion()->getAnalysisDeclContext();
   AnalysisDeclContext::referenced_decls_iterator I, E;
-  llvm::tie(I, E) = AC->getReferencedBlockVars(BC->getDecl());
+  std::tie(I, E) = AC->getReferencedBlockVars(BC->getDecl());
 
   if (I == E) {
     ReferencedVars = (void*) 0x1;
@@ -1396,7 +1402,7 @@ void BlockDataRegion::LazyInitializeReferencedVars() {
   for ( ; I != E; ++I) {
     const VarRegion *VR = 0;
     const VarRegion *OriginalVR = 0;
-    llvm::tie(VR, OriginalVR) = getCaptureRegions(*I);
+    std::tie(VR, OriginalVR) = getCaptureRegions(*I);
     assert(VR);
     assert(OriginalVR);
     BV->push_back(VR, BC);

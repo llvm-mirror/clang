@@ -16,15 +16,22 @@
 #define LLVM_CLANG_FILESYSTEMSTATCACHE_H
 
 #include "clang/Basic/LLVM.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/FileSystem.h"
+#include <memory>
 #include <sys/stat.h>
 #include <sys/types.h>
 
 namespace clang {
 
+namespace vfs {
+class File;
+class FileSystem;
+}
+
+// FIXME: should probably replace this with vfs::Status
 struct FileData {
+  std::string Name;
   uint64_t Size;
   time_t ModTime;
   llvm::sys::fs::UniqueID UniqueID;
@@ -39,8 +46,8 @@ struct FileData {
 class FileSystemStatCache {
   virtual void anchor();
 protected:
-  OwningPtr<FileSystemStatCache> NextStatCache;
-  
+  std::unique_ptr<FileSystemStatCache> NextStatCache;
+
 public:
   virtual ~FileSystemStatCache() {}
   
@@ -57,10 +64,11 @@ public:
   /// If isFile is true, then this lookup should only return success for files
   /// (not directories).  If it is false this lookup should only return
   /// success for directories (not files).  On a successful file lookup, the
-  /// implementation can optionally fill in FileDescriptor with a valid
-  /// descriptor and the client guarantees that it will close it.
+  /// implementation can optionally fill in \p F with a valid \p File object and
+  /// the client guarantees that it will close it.
   static bool get(const char *Path, FileData &Data, bool isFile,
-                  int *FileDescriptor, FileSystemStatCache *Cache);
+                  vfs::File **F, FileSystemStatCache *Cache,
+                  vfs::FileSystem &FS);
 
   /// \brief Sets the next stat call cache in the chain of stat caches.
   /// Takes ownership of the given stat cache.
@@ -74,21 +82,20 @@ public:
   /// \brief Retrieve the next stat call cache in the chain, transferring
   /// ownership of this cache (and, transitively, all of the remaining caches)
   /// to the caller.
-  FileSystemStatCache *takeNextStatCache() { return NextStatCache.take(); }
-  
+  FileSystemStatCache *takeNextStatCache() { return NextStatCache.release(); }
+
 protected:
   virtual LookupResult getStat(const char *Path, FileData &Data, bool isFile,
-                               int *FileDescriptor) = 0;
+                               vfs::File **F, vfs::FileSystem &FS) = 0;
 
   LookupResult statChained(const char *Path, FileData &Data, bool isFile,
-                           int *FileDescriptor) {
+                           vfs::File **F, vfs::FileSystem &FS) {
     if (FileSystemStatCache *Next = getNextStatCache())
-      return Next->getStat(Path, Data, isFile, FileDescriptor);
+      return Next->getStat(Path, Data, isFile, F, FS);
 
     // If we hit the end of the list of stat caches to try, just compute and
     // return it without a cache.
-    return get(Path, Data, isFile, FileDescriptor, 0) ? CacheMissing
-                                                      : CacheExists;
+    return get(Path, Data, isFile, F, 0, FS) ? CacheMissing : CacheExists;
   }
 };
 
@@ -106,8 +113,8 @@ public:
   iterator begin() const { return StatCalls.begin(); }
   iterator end() const { return StatCalls.end(); }
 
-  virtual LookupResult getStat(const char *Path, FileData &Data, bool isFile,
-                               int *FileDescriptor);
+  LookupResult getStat(const char *Path, FileData &Data, bool isFile,
+                       vfs::File **F, vfs::FileSystem &FS) override;
 };
 
 } // end namespace clang

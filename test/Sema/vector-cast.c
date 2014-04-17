@@ -36,3 +36,21 @@ void f3(t3 Y) {
   f2(Y);  // expected-warning {{incompatible vector types passing 't3' to parameter of type 't2'}}
 }
 
+typedef float float2 __attribute__ ((vector_size (8)));
+
+void f4() {
+  float2 f2;
+  double d;
+  f2 += d;
+  d += f2;
+}
+
+// rdar://15931426
+// Don't permit a lax conversion to and from a pointer type.
+typedef short short_sizeof_pointer __attribute__((vector_size(sizeof(void*))));
+void f5() {
+  short_sizeof_pointer v;
+  void *ptr;
+  v = ptr; // expected-error {{assigning to 'short_sizeof_pointer' from incompatible type 'void *'}}
+  ptr = v; // expected-error {{assigning to 'void *' from incompatible type 'short_sizeof_pointer'}}
+}

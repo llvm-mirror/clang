@@ -30,13 +30,13 @@
 #include "clang/Sema/Sema.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/Support/Atomic.h"
 #include "llvm/Support/CrashRecoveryContext.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -315,7 +315,7 @@ struct AllocatedCXCodeCompleteResults : public CXCodeCompleteResults {
 /// currently active.
 ///
 /// Used for debugging purposes only.
-static llvm::sys::cas_flag CodeCompletionResultObjects;
+static std::atomic<unsigned> CodeCompletionResultObjects;
   
 AllocatedCXCodeCompleteResults::AllocatedCXCodeCompleteResults(
                                       const FileSystemOptions& FileSystemOpts)
@@ -332,10 +332,9 @@ AllocatedCXCodeCompleteResults::AllocatedCXCodeCompleteResults(
     ContainerKind(CXCursor_InvalidCode),
     ContainerIsIncomplete(1)
 { 
-  if (getenv("LIBCLANG_OBJTRACKING")) {
-    llvm::sys::AtomicIncrement(&CodeCompletionResultObjects);
-    fprintf(stderr, "+++ %d completion results\n", CodeCompletionResultObjects);
-  }    
+  if (getenv("LIBCLANG_OBJTRACKING"))
+    fprintf(stderr, "+++ %u completion results\n",
+            ++CodeCompletionResultObjects);
 }
   
 AllocatedCXCodeCompleteResults::~AllocatedCXCodeCompleteResults() {
@@ -346,10 +345,9 @@ AllocatedCXCodeCompleteResults::~AllocatedCXCodeCompleteResults() {
   for (unsigned I = 0, N = TemporaryBuffers.size(); I != N; ++I)
     delete TemporaryBuffers[I];
 
-  if (getenv("LIBCLANG_OBJTRACKING")) {
-    llvm::sys::AtomicDecrement(&CodeCompletionResultObjects);
-    fprintf(stderr, "--- %d completion results\n", CodeCompletionResultObjects);
-  }    
+  if (getenv("LIBCLANG_OBJTRACKING"))
+    fprintf(stderr, "--- %u completion results\n",
+            --CodeCompletionResultObjects);
 }
   
 } // end extern "C"
@@ -539,11 +537,11 @@ namespace {
         AllocatedResults(Results), CCTUInfo(Results.CodeCompletionAllocator),
         TU(TranslationUnit) { }
     ~CaptureCompletionResults() { Finish(); }
-    
-    virtual void ProcessCodeCompleteResults(Sema &S, 
-                                            CodeCompletionContext Context,
-                                            CodeCompletionResult *Results,
-                                            unsigned NumResults) {
+
+    void ProcessCodeCompleteResults(Sema &S, 
+                                    CodeCompletionContext Context,
+                                    CodeCompletionResult *Results,
+                                    unsigned NumResults) override {
       StoredResults.reserve(StoredResults.size() + NumResults);
       for (unsigned I = 0; I != NumResults; ++I) {
         CodeCompletionString *StoredCompletion        
@@ -616,10 +614,10 @@ namespace {
         AllocatedResults.ContainerIsIncomplete = 1;
       }
     }
-    
-    virtual void ProcessOverloadCandidates(Sema &S, unsigned CurrentArg,
-                                           OverloadCandidate *Candidates,
-                                           unsigned NumCandidates) {
+
+    void ProcessOverloadCandidates(Sema &S, unsigned CurrentArg,
+                                   OverloadCandidate *Candidates,
+                                   unsigned NumCandidates) override {
       StoredResults.reserve(StoredResults.size() + NumCandidates);
       for (unsigned I = 0; I != NumCandidates; ++I) {
         CodeCompletionString *StoredCompletion
@@ -632,13 +630,13 @@ namespace {
         StoredResults.push_back(R);
       }
     }
-    
-    virtual CodeCompletionAllocator &getAllocator() { 
+
+    CodeCompletionAllocator &getAllocator() override {
       return *AllocatedResults.CodeCompletionAllocator;
     }
 
-    virtual CodeCompletionTUInfo &getCodeCompletionTUInfo() { return CCTUInfo; }
-    
+    CodeCompletionTUInfo &getCodeCompletionTUInfo() override { return CCTUInfo;}
+
   private:
     void Finish() {
       AllocatedResults.Results = new CXCompletionResult [StoredResults.size()];
@@ -680,7 +678,12 @@ void clang_codeCompleteAt_Impl(void *UserData) {
 #endif
 
   bool EnableLogging = getenv("LIBCLANG_CODE_COMPLETION_LOGGING") != 0;
-  
+
+  if (cxtu::isNotUsableTU(TU)) {
+    LOG_BAD_TU(TU);
+    return;
+  }
+
   ASTUnit *AST = cxtu::getASTUnit(TU);
   if (!AST)
     return;
@@ -718,7 +721,7 @@ void clang_codeCompleteAt_Impl(void *UserData) {
 
   // Perform completion.
   AST->CodeComplete(complete_filename, complete_line, complete_column,
-                    RemappedFiles.data(), RemappedFiles.size(), 
+                    RemappedFiles,
                     (options & CXCodeComplete_IncludeMacros),
                     (options & CXCodeComplete_IncludeCodePatterns),
                     IncludeBriefComments,

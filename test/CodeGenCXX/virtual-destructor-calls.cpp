@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -emit-llvm %s -o - -triple=x86_64-apple-darwin10 -mconstructor-aliases | FileCheck %s
+// RUN: %clang_cc1 -emit-llvm %s -o - -triple=x86_64-apple-darwin10 -mconstructor-aliases -O1 -disable-llvm-optzns | FileCheck %s
 
 struct Member {
   ~Member();
@@ -20,15 +20,15 @@ struct B : A {
 // CHECK: @_ZN1CD1Ev = alias {{.*}} @_ZN1CD2Ev
 // CHECK: @_ZN1CD2Ev = alias bitcast {{.*}} @_ZN1BD2Ev
 
-// Deleting dtor: defers to the complete dtor.
-// CHECK-LABEL: define void @_ZN1BD0Ev(%struct.B* %this) unnamed_addr
-// CHECK: call void @_ZN1BD1Ev
-// CHECK: call void @_ZdlPv
-
 // Base dtor: actually calls A's base dtor.
 // CHECK-LABEL: define void @_ZN1BD2Ev(%struct.B* %this) unnamed_addr
 // CHECK: call void @_ZN6MemberD1Ev
 // CHECK: call void @_ZN1AD2Ev
+
+// Deleting dtor: defers to the complete dtor.
+// CHECK-LABEL: define void @_ZN1BD0Ev(%struct.B* %this) unnamed_addr
+// CHECK: call void @_ZN1BD1Ev
+// CHECK: call void @_ZdlPv
 
 B::~B() { }
 

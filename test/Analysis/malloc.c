@@ -270,6 +270,222 @@ void PR7217() {
   buf[1] = 'c'; // not crash
 }
 
+void cast_emtpy_struct() {
+  struct st {
+  };
+
+  struct st *s = malloc(sizeof(struct st)); // no-warning
+  free(s);
+}
+
+void cast_struct_1() {
+  struct st {
+    int i[100];
+    char j[];
+  };
+
+  struct st *s = malloc(sizeof(struct st)); // no-warning
+  free(s);
+}
+
+void cast_struct_2() {
+  struct st {
+    int i[100];
+    char j[0];
+  };
+
+  struct st *s = malloc(sizeof(struct st)); // no-warning
+  free(s);
+}
+
+void cast_struct_3() {
+  struct st {
+    int i[100];
+    char j[1];
+  };
+
+  struct st *s = malloc(sizeof(struct st)); // no-warning
+  free(s);
+}
+
+void cast_struct_4() {
+  struct st {
+    int i[100];
+    char j[2];
+  };
+
+  struct st *s = malloc(sizeof(struct st)); // no-warning
+  free(s);
+}
+
+void cast_struct_5() {
+  struct st {
+    char i[200];
+    char j[1];
+  };
+
+  struct st *s = malloc(sizeof(struct st) - sizeof(char)); // no-warning
+  free(s);
+}
+
+void cast_struct_warn_1() {
+  struct st {
+    int i[100];
+    char j[2];
+  };
+
+  struct st *s = malloc(sizeof(struct st) + 2); // expected-warning{{Cast a region whose size is not a multiple of the destination type size}}
+  free(s);
+}
+
+void cast_struct_warn_2() {
+  struct st {
+    int i[100];
+    char j[2];
+  };
+
+  struct st *s = malloc(2); // expected-warning{{Cast a region whose size is not a multiple of the destination type size}}
+  free(s);
+}
+
+void cast_struct_flex_array_1() {
+  struct st {
+    int i[100];
+    char j[];
+  };
+
+  struct st *s = malloc(sizeof(struct st) + 3); // no-warning
+  free(s);
+}
+
+void cast_struct_flex_array_2() {
+  struct st {
+    int i[100];
+    char j[0];
+  };
+
+  struct st *s = malloc(sizeof(struct st) + 3); // no-warning
+  free(s);
+}
+
+void cast_struct_flex_array_3() {
+  struct st {
+    int i[100];
+    char j[1];
+  };
+
+  struct st *s = malloc(sizeof(struct st) + 3); // no-warning
+  free(s);
+}
+
+void cast_struct_flex_array_4() {
+  struct foo {
+    char f[32];
+  };
+  struct st {
+    char i[100];
+    struct foo data[];
+  };
+
+  struct st *s = malloc(sizeof(struct st) + 3 * sizeof(struct foo)); // no-warning
+  free(s);
+}
+
+void cast_struct_flex_array_5() {
+  struct foo {
+    char f[32];
+  };
+  struct st {
+    char i[100];
+    struct foo data[0];
+  };
+
+  struct st *s = malloc(sizeof(struct st) + 3 * sizeof(struct foo)); // no-warning
+  free(s);
+}
+
+void cast_struct_flex_array_6() {
+  struct foo {
+    char f[32];
+  };
+  struct st {
+    char i[100];
+    struct foo data[1];
+  };
+
+  struct st *s = malloc(sizeof(struct st) + 3 * sizeof(struct foo)); // no-warning
+  free(s);
+}
+
+void cast_struct_flex_array_warn_1() {
+  struct foo {
+    char f[32];
+  };
+  struct st {
+    char i[100];
+    struct foo data[];
+  };
+
+  struct st *s = malloc(3 * sizeof(struct st) + 3 * sizeof(struct foo)); // expected-warning{{Cast a region whose size is not a multiple of the destination type size}}
+  free(s);
+}
+
+void cast_struct_flex_array_warn_2() {
+  struct foo {
+    char f[32];
+  };
+  struct st {
+    char i[100];
+    struct foo data[0];
+  };
+
+  struct st *s = malloc(3 * sizeof(struct st) + 3 * sizeof(struct foo)); // expected-warning{{Cast a region whose size is not a multiple of the destination type size}}
+  free(s);
+}
+
+void cast_struct_flex_array_warn_3() {
+  struct foo {
+    char f[32];
+  };
+  struct st {
+    char i[100];
+    struct foo data[1];
+  };
+
+  struct st *s = malloc(3 * sizeof(struct st) + 3 * sizeof(struct foo)); // expected-warning{{Cast a region whose size is not a multiple of the destination type size}}
+  free(s);
+}
+
+void cast_struct_flex_array_warn_4() {
+  struct st {
+    int i[100];
+    int j[];
+  };
+
+  struct st *s = malloc(sizeof(struct st) + 3); // expected-warning{{Cast a region whose size is not a multiple of the destination type size}}
+  free(s);
+}
+
+void cast_struct_flex_array_warn_5() {
+  struct st {
+    int i[100];
+    int j[0];
+  };
+
+  struct st *s = malloc(sizeof(struct st) + 3); // expected-warning{{Cast a region whose size is not a multiple of the destination type size}}
+  free(s);
+}
+
+void cast_struct_flex_array_warn_6() {
+  struct st {
+    int i[100];
+    int j[1];
+  };
+
+  struct st *s = malloc(sizeof(struct st) + 3); // expected-warning{{Cast a region whose size is not a multiple of the destination type size}}
+  free(s);
+}
+
 void mallocCastToVoid() {
   void *p = malloc(2);
   const void *cp = p; // not crash
@@ -627,7 +843,48 @@ void doNotInvalidateWhenPassedToSystemCalls(char *s) {
   char *p = malloc(12);
   strlen(p);
   strcpy(p, s);
+  strcpy(s, p);
+  strcpy(p, p);
+  memcpy(p, s, 1);
+  memcpy(s, p, 1);
+  memcpy(p, p, 1);
 } // expected-warning {{leak}}
+
+// Treat source buffer contents as escaped.
+void escapeSourceContents(char *s) {
+  char *p = malloc(12);
+  memcpy(s, &p, 12); // no warning
+
+  void *p1 = malloc(7);
+  char *a;
+  memcpy(&a, &p1, sizeof a);
+  // FIXME: No warning due to limitations imposed by current modelling of
+  // 'memcpy' (regions metadata is not copied).
+
+  int *ptrs[2];
+  int *allocated = (int *)malloc(4);
+  memcpy(&ptrs[0], &allocated, sizeof(int *));
+  // FIXME: No warning due to limitations imposed by current modelling of
+  // 'memcpy' (regions metadata is not copied).
+}
+
+void invalidateDestinationContents() {
+  int *null = 0;
+  int *p = (int *)malloc(4);
+  memcpy(&p, &null, sizeof(int *));
+
+  int *ptrs1[2]; // expected-warning {{Potential leak of memory pointed to by}}
+  ptrs1[0] = (int *)malloc(4);
+  memcpy(ptrs1,  &null, sizeof(int *));
+
+  int *ptrs2[2]; // expected-warning {{Potential memory leak}}
+  ptrs2[0] = (int *)malloc(4);
+  memcpy(&ptrs2[1],  &null, sizeof(int *));
+
+  int *ptrs3[2]; // expected-warning {{Potential memory leak}}
+  ptrs3[0] = (int *)malloc(4);
+  memcpy(&ptrs3[0],  &null, sizeof(int *));
+} // expected-warning {{Potential memory leak}}
 
 // Rely on the CString checker evaluation of the strcpy API to convey that the result of strcpy is equal to p.
 void symbolLostWithStrcpy(char *s) {
@@ -1246,6 +1503,12 @@ char *dupstrWarn(const char *s) {
   const int len = strlen(s);
   char *p = (char*) smallocWarn(len + 1);
   strcpy(p, s); // expected-warning{{String copy function overflows destination buffer}}
+  return p;
+}
+
+int *radar15580979() {
+  int *data = (int *)malloc(32);
+  int *p = data ?: (int*)malloc(32); // no warning
   return p;
 }
 

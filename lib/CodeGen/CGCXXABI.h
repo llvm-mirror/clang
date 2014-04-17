@@ -41,7 +41,7 @@ namespace CodeGen {
 class CGCXXABI {
 protected:
   CodeGenModule &CGM;
-  OwningPtr<MangleContext> MangleCtx;
+  std::unique_ptr<MangleContext> MangleCtx;
 
   CGCXXABI(CodeGenModule &CGM)
     : CGM(CGM), MangleCtx(CGM.getContext().createMangleContext()) {}
@@ -60,15 +60,6 @@ protected:
   /// Get a null value for unsupported member pointers.
   llvm::Constant *GetBogusMemberPointer(QualType T);
 
-  // FIXME: Every place that calls getVTT{Decl,Value} is something
-  // that needs to be abstracted properly.
-  ImplicitParamDecl *&getVTTDecl(CodeGenFunction &CGF) {
-    return CGF.CXXStructorImplicitParamDecl;
-  }
-  llvm::Value *&getVTTValue(CodeGenFunction &CGF) {
-    return CGF.CXXStructorImplicitParamValue;
-  }
-
   ImplicitParamDecl *&getStructorImplicitParamDecl(CodeGenFunction &CGF) {
     return CGF.CXXStructorImplicitParamDecl;
   }
@@ -76,11 +67,8 @@ protected:
     return CGF.CXXStructorImplicitParamValue;
   }
 
-  /// Build a parameter variable suitable for 'this'.
-  void BuildThisParam(CodeGenFunction &CGF, FunctionArgList &Params);
-
   /// Perform prolog initialization of the parameter variable suitable
-  /// for 'this' emitted by BuildThisParam.
+  /// for 'this' emitted by buildThisParam.
   void EmitThisParam(CodeGenFunction &CGF);
 
   ASTContext &getContext() const { return CGM.getContext(); }
@@ -134,17 +122,15 @@ public:
   /// Load a member function from an object and a member function
   /// pointer.  Apply the this-adjustment and set 'This' to the
   /// adjusted value.
-  virtual llvm::Value *
-  EmitLoadOfMemberFunctionPointer(CodeGenFunction &CGF,
-                                  llvm::Value *&This,
-                                  llvm::Value *MemPtr,
-                                  const MemberPointerType *MPT);
+  virtual llvm::Value *EmitLoadOfMemberFunctionPointer(
+      CodeGenFunction &CGF, const Expr *E, llvm::Value *&This,
+      llvm::Value *MemPtr, const MemberPointerType *MPT);
 
   /// Calculate an l-value from an object and a data member pointer.
-  virtual llvm::Value *EmitMemberDataPointerAddress(CodeGenFunction &CGF,
-                                                    llvm::Value *Base,
-                                                    llvm::Value *MemPtr,
-                                            const MemberPointerType *MPT);
+  virtual llvm::Value *
+  EmitMemberDataPointerAddress(CodeGenFunction &CGF, const Expr *E,
+                               llvm::Value *Base, llvm::Value *MemPtr,
+                               const MemberPointerType *MPT);
 
   /// Perform a derived-to-base, base-to-derived, or bitcast member
   /// pointer conversion.
@@ -272,23 +258,27 @@ public:
   }
 
   /// Perform ABI-specific "this" argument adjustment required prior to
-  /// a virtual function call.
-  virtual llvm::Value *adjustThisArgumentForVirtualCall(CodeGenFunction &CGF,
-                                                        GlobalDecl GD,
-                                                        llvm::Value *This) {
+  /// a call of a virtual function.
+  /// The "VirtualCall" argument is true iff the call itself is virtual.
+  virtual llvm::Value *
+  adjustThisArgumentForVirtualFunctionCall(CodeGenFunction &CGF, GlobalDecl GD,
+                                           llvm::Value *This,
+                                           bool VirtualCall) {
     return This;
   }
 
-  /// Build the ABI-specific portion of the parameter list for a
-  /// function.  This generally involves a 'this' parameter and
-  /// possibly some extra data for constructors and destructors.
+  /// Build a parameter variable suitable for 'this'.
+  void buildThisParam(CodeGenFunction &CGF, FunctionArgList &Params);
+
+  /// Insert any ABI-specific implicit parameters into the parameter list for a
+  /// function.  This generally involves extra data for constructors and
+  /// destructors.
   ///
   /// ABIs may also choose to override the return type, which has been
   /// initialized with the type of 'this' if HasThisReturn(CGF.CurGD) is true or
   /// the formal return type of the function otherwise.
-  virtual void BuildInstanceFunctionParams(CodeGenFunction &CGF,
-                                           QualType &ResTy,
-                                           FunctionArgList &Params) = 0;
+  virtual void addImplicitStructorParams(CodeGenFunction &CGF, QualType &ResTy,
+                                         FunctionArgList &Params) = 0;
 
   /// Perform ABI-specific "this" parameter adjustment in a virtual function
   /// prologue.
@@ -300,14 +290,20 @@ public:
   /// Emit the ABI-specific prolog for the function.
   virtual void EmitInstanceFunctionProlog(CodeGenFunction &CGF) = 0;
 
-  /// Emit the constructor call. Return the function that is called.
-  virtual void EmitConstructorCall(CodeGenFunction &CGF,
-                                   const CXXConstructorDecl *D,
-                                   CXXCtorType Type,
-                                   bool ForVirtualBase, bool Delegating,
-                                   llvm::Value *This,
-                                   CallExpr::const_arg_iterator ArgBeg,
-                                   CallExpr::const_arg_iterator ArgEnd) = 0;
+  /// Add any ABI-specific implicit arguments needed to call a constructor.
+  ///
+  /// \return The number of args added to the call, which is typically zero or
+  /// one.
+  virtual unsigned
+  addImplicitConstructorArgs(CodeGenFunction &CGF, const CXXConstructorDecl *D,
+                             CXXCtorType Type, bool ForVirtualBase,
+                             bool Delegating, CallArgList &Args) = 0;
+
+  /// Emit the destructor call.
+  virtual void EmitDestructorCall(CodeGenFunction &CGF,
+                                  const CXXDestructorDecl *DD, CXXDtorType Type,
+                                  bool ForVirtualBase, bool Delegating,
+                                  llvm::Value *This) = 0;
 
   /// Emits the VTable definitions required for the given record type.
   virtual void emitVTableDefinitions(CodeGenVTables &CGVT,
@@ -356,6 +352,14 @@ public:
 
   virtual void setThunkLinkage(llvm::Function *Thunk, bool ForVTable) = 0;
 
+  virtual llvm::Value *performThisAdjustment(CodeGenFunction &CGF,
+                                             llvm::Value *This,
+                                             const ThisAdjustment &TA) = 0;
+
+  virtual llvm::Value *performReturnAdjustment(CodeGenFunction &CGF,
+                                               llvm::Value *Ret,
+                                               const ReturnAdjustment &RA) = 0;
+
   virtual void EmitReturnFromThunk(CodeGenFunction &CGF,
                                    RValue RV, QualType ResultType);
 
@@ -364,6 +368,10 @@ public:
 
   /// Gets the deleted virtual member call name.
   virtual StringRef GetDeletedVirtualCallName() = 0;
+
+  /// \brief Returns true iff static data members that are initialized in the
+  /// class definition should have linkonce linkage.
+  virtual bool isInlineInitializedStaticDataMemberLinkOnce() { return false; }
 
   /**************************** Array cookies ******************************/
 
@@ -473,8 +481,39 @@ public:
   /// Emit a reference to a non-local thread_local variable (including
   /// triggering the initialization of all thread_local variables in its
   /// translation unit).
-  virtual LValue EmitThreadLocalDeclRefExpr(CodeGenFunction &CGF,
-                                            const DeclRefExpr *DRE);
+  virtual LValue EmitThreadLocalVarDeclLValue(CodeGenFunction &CGF,
+                                              const VarDecl *VD,
+                                              QualType LValType);
+
+  /**************************** RTTI Uniqueness ******************************/
+
+protected:
+  /// Returns true if the ABI requires RTTI type_info objects to be unique
+  /// across a program.
+  virtual bool shouldRTTIBeUnique() { return true; }
+
+public:
+  /// What sort of unique-RTTI behavior should we use?
+  enum RTTIUniquenessKind {
+    /// We are guaranteeing, or need to guarantee, that the RTTI string
+    /// is unique.
+    RUK_Unique,
+
+    /// We are not guaranteeing uniqueness for the RTTI string, so we
+    /// can demote to hidden visibility but must use string comparisons.
+    RUK_NonUniqueHidden,
+
+    /// We are not guaranteeing uniqueness for the RTTI string, so we
+    /// have to use string comparisons, but we also have to emit it with
+    /// non-hidden visibility.
+    RUK_NonUniqueVisible
+  };
+
+  /// Return the required visibility status for the given type and linkage in
+  /// the current ABI.
+  RTTIUniquenessKind
+  classifyRTTIUniqueness(QualType CanTy,
+                         llvm::GlobalValue::LinkageTypes Linkage);
 };
 
 // Create an instance of a C++ ABI class:

@@ -13,7 +13,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/SemaInternal.h"
-#include "TargetAttributesSema.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTDiagnostic.h"
 #include "clang/AST/DeclCXX.h"
@@ -70,13 +69,18 @@ void Sema::ActOnTranslationUnitScope(Scope *S) {
 Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
            TranslationUnitKind TUKind,
            CodeCompleteConsumer *CodeCompleter)
-  : TheTargetAttributesSema(0), ExternalSource(0),
+  : ExternalSource(0),
     isMultiplexExternalSource(false), FPFeatures(pp.getLangOpts()),
     LangOpts(pp.getLangOpts()), PP(pp), Context(ctxt), Consumer(consumer),
     Diags(PP.getDiagnostics()), SourceMgr(PP.getSourceManager()),
     CollectStats(false), CodeCompleter(CodeCompleter),
     CurContext(0), OriginalLexicalContext(0),
-    PackContext(0), MSStructPragmaOn(false), VisContext(0),
+    PackContext(0), MSStructPragmaOn(false),
+    MSPointerToMemberRepresentationMethod(
+        LangOpts.getMSPointerToMemberRepresentationMethod()),
+    VtorDispModeStack(1, MSVtorDispAttr::Mode(LangOpts.VtorDispMode)),
+    DataSegStack(nullptr), BSSSegStack(nullptr), ConstSegStack(nullptr),
+    CodeSegStack(nullptr), VisContext(0),
     IsBuildingRecoveryCallExpr(false),
     ExprNeedsCleanups(false), LateTemplateParser(0), OpaqueParser(0),
     IdResolver(pp), StdInitializerList(0), CXXTypeInfoDecl(0), MSVCGuidDecl(0),
@@ -86,7 +90,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     NSDictionaryDecl(0), DictionaryWithObjectsMethod(0),
     GlobalNewDeleteDeclared(false),
     TUKind(TUKind),
-    NumSFINAEErrors(0), InFunctionDeclarator(0),
+    NumSFINAEErrors(0),
     AccessCheckingSFINAE(false), InNonInstantiationSFINAEContext(false),
     NonInstantiationEntries(0), ArgumentPackSubstitutionIndex(-1),
     CurrentInstantiationScope(0), DisableTypoCorrection(false),
@@ -118,6 +122,12 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
 
   // Initilization of data sharing attributes stack for OpenMP
   InitDataSharingAttributesStack();
+}
+
+void Sema::addImplicitTypedef(StringRef Name, QualType T) {
+  DeclarationName DN = &Context.Idents.get(Name);
+  if (IdResolver.begin(DN) == IdResolver.end())
+    PushOnScopeChains(Context.buildImplicitTypedef(T, Name), TUScope);
 }
 
 void Sema::Initialize() {
@@ -172,20 +182,36 @@ void Sema::Initialize() {
       PushOnScopeChains(Context.getObjCProtocolDecl(), TUScope);
   }
 
+  // Initialize Microsoft "predefined C++ types".
+  if (PP.getLangOpts().MSVCCompat && PP.getLangOpts().CPlusPlus) {
+    if (IdResolver.begin(&Context.Idents.get("type_info")) == IdResolver.end())
+      PushOnScopeChains(Context.buildImplicitRecord("type_info", TTK_Class),
+                        TUScope);
+
+    addImplicitTypedef("size_t", Context.getSizeType());
+  }
+
+  // Initialize predefined OpenCL types.
+  if (PP.getLangOpts().OpenCL) {
+    addImplicitTypedef("image1d_t", Context.OCLImage1dTy);
+    addImplicitTypedef("image1d_array_t", Context.OCLImage1dArrayTy);
+    addImplicitTypedef("image1d_buffer_t", Context.OCLImage1dBufferTy);
+    addImplicitTypedef("image2d_t", Context.OCLImage2dTy);
+    addImplicitTypedef("image2d_array_t", Context.OCLImage2dArrayTy);
+    addImplicitTypedef("image3d_t", Context.OCLImage3dTy);
+    addImplicitTypedef("sampler_t", Context.OCLSamplerTy);
+    addImplicitTypedef("event_t", Context.OCLEventTy);
+  }
+
   DeclarationName BuiltinVaList = &Context.Idents.get("__builtin_va_list");
   if (IdResolver.begin(BuiltinVaList) == IdResolver.end())
     PushOnScopeChains(Context.getBuiltinVaListDecl(), TUScope);
 }
 
 Sema::~Sema() {
-  for (LateParsedTemplateMapT::iterator I = LateParsedTemplateMap.begin(),
-                                        E = LateParsedTemplateMap.end();
-       I != E; ++I)
-    delete I->second;
+  llvm::DeleteContainerSeconds(LateParsedTemplateMap);
   if (PackContext) FreePackedContext();
   if (VisContext) FreeVisContext();
-  delete TheTargetAttributesSema;
-  MSStructPragmaOn = false;
   // Kill all the active scopes.
   for (unsigned I = 1, E = FunctionScopes.size(); I != E; ++I)
     delete FunctionScopes[I];
@@ -230,7 +256,7 @@ bool Sema::makeUnavailableInSystemHeader(SourceLocation loc,
   // If the function is already unavailable, it's not an error.
   if (fn->hasAttr<UnavailableAttr>()) return true;
 
-  fn->addAttr(new (Context) UnavailableAttr(loc, Context, msg));
+  fn->addAttr(UnavailableAttr::CreateImplicit(Context, msg, loc));
   return true;
 }
 
@@ -384,25 +410,6 @@ static bool ShouldRemoveFromUnused(Sema *SemaRef, const DeclaratorDecl *D) {
   return false;
 }
 
-namespace {
-  struct SortUndefinedButUsed {
-    const SourceManager &SM;
-    explicit SortUndefinedButUsed(SourceManager &SM) : SM(SM) {}
-
-    bool operator()(const std::pair<NamedDecl *, SourceLocation> &l,
-                    const std::pair<NamedDecl *, SourceLocation> &r) const {
-      if (l.second.isValid() && !r.second.isValid())
-        return true;
-      if (!l.second.isValid() && r.second.isValid())
-        return false;
-      if (l.second != r.second)
-        return SM.isBeforeInTranslationUnit(l.second, r.second);
-      return SM.isBeforeInTranslationUnit(l.first->getLocation(),
-                                          r.first->getLocation());
-    }
-  };
-}
-
 /// Obtains a sorted list of functions that are undefined but ODR-used.
 void Sema::getUndefinedButUsed(
     SmallVectorImpl<std::pair<NamedDecl *, SourceLocation> > &Undefined) {
@@ -435,8 +442,19 @@ void Sema::getUndefinedButUsed(
 
   // Sort (in order of use site) so that we're not dependent on the iteration
   // order through an llvm::DenseMap.
+  SourceManager &SM = Context.getSourceManager();
   std::sort(Undefined.begin(), Undefined.end(),
-            SortUndefinedButUsed(Context.getSourceManager()));
+            [&SM](const std::pair<NamedDecl *, SourceLocation> &l,
+                  const std::pair<NamedDecl *, SourceLocation> &r) {
+    if (l.second.isValid() && !r.second.isValid())
+      return true;
+    if (!l.second.isValid() && r.second.isValid())
+      return false;
+    if (l.second != r.second)
+      return SM.isBeforeInTranslationUnit(l.second, r.second);
+    return SM.isBeforeInTranslationUnit(l.first->getLocation(),
+                                        r.first->getLocation());
+  });
 }
 
 /// checkUndefinedButUsed - Check for undefined objects with internal linkage
@@ -603,8 +621,22 @@ void Sema::ActOnEndOfTranslationUnit() {
     // so it will find some names that are not required to be found. This is
     // valid, but we could do better by diagnosing if an instantiation uses a
     // name that was not visible at its first point of instantiation.
+    if (ExternalSource) {
+      // Load pending instantiations from the external source.
+      SmallVector<PendingImplicitInstantiation, 4> Pending;
+      ExternalSource->ReadPendingInstantiations(Pending);
+      PendingInstantiations.insert(PendingInstantiations.begin(),
+                                   Pending.begin(), Pending.end());
+    }
     PerformPendingInstantiations();
+
+    CheckDelayedMemberExceptionSpecs();
   }
+
+  // All delayed member exception specs should be checked or we end up accepting
+  // incompatible declarations.
+  assert(DelayedDefaultedMemberExceptionSpecs.empty());
+  assert(DelayedDestructorExceptionSpecChecks.empty());
 
   // Remove file scoped decls that turned out to be used.
   UnusedFileScopedDecls.erase(
@@ -1023,8 +1055,10 @@ void Sema::PushBlockScope(Scope *BlockScope, BlockDecl *Block) {
                                               BlockScope, Block));
 }
 
-void Sema::PushLambdaScope() {
-  FunctionScopes.push_back(new LambdaScopeInfo(getDiagnostics()));
+LambdaScopeInfo *Sema::PushLambdaScope() {
+  LambdaScopeInfo *const LSI = new LambdaScopeInfo(getDiagnostics());
+  FunctionScopes.push_back(LSI);
+  return LSI;
 }
 
 void Sema::RecordParsingTemplateParameterDepth(unsigned Depth) {
@@ -1207,7 +1241,7 @@ bool Sema::tryExprAsCall(Expr &E, QualType &ZeroArgCallReturnTy,
             ZeroArgCallReturnTy = QualType();
             Ambiguous = true;
           } else
-            ZeroArgCallReturnTy = OverloadDecl->getResultType();
+            ZeroArgCallReturnTy = OverloadDecl->getReturnType();
         }
       }
     }
@@ -1236,7 +1270,7 @@ bool Sema::tryExprAsCall(Expr &E, QualType &ZeroArgCallReturnTy,
   if (const DeclRefExpr *DeclRef = dyn_cast<DeclRefExpr>(E.IgnoreParens())) {
     if (const FunctionDecl *Fun = dyn_cast<FunctionDecl>(DeclRef->getDecl())) {
       if (Fun->getMinRequiredArguments() == 0)
-        ZeroArgCallReturnTy = Fun->getResultType();
+        ZeroArgCallReturnTy = Fun->getReturnType();
       return true;
     }
   }
@@ -1253,8 +1287,8 @@ bool Sema::tryExprAsCall(Expr &E, QualType &ZeroArgCallReturnTy,
 
   if (const FunctionProtoType *FPT =
       dyn_cast_or_null<FunctionProtoType>(FunTy)) {
-    if (FPT->getNumArgs() == 0)
-      ZeroArgCallReturnTy = FunTy->getResultType();
+    if (FPT->getNumParams() == 0)
+      ZeroArgCallReturnTy = FunTy->getReturnType();
     return true;
   }
   return false;
@@ -1305,7 +1339,7 @@ static void notePlausibleOverloads(Sema &S, SourceLocation Loc,
   for (OverloadExpr::decls_iterator It = Overloads.begin(),
          DeclsEnd = Overloads.end(); It != DeclsEnd; ++It) {
     const FunctionDecl *OverloadDecl = cast<FunctionDecl>(*It);
-    QualType OverloadResultTy = OverloadDecl->getResultType();
+    QualType OverloadResultTy = OverloadDecl->getReturnType();
     if (IsPlausibleResult(OverloadResultTy))
       PlausibleOverloads.addDecl(It.getDecl());
   }

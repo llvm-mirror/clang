@@ -13,14 +13,15 @@
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/CompilerInvocation.h"
+#include "clang/Frontend/Utils.h"
 #include "clang/Lex/ModuleLoader.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/StringRef.h"
 #include <cassert>
 #include <list>
+#include <memory>
 #include <string>
 #include <utility>
 
@@ -74,6 +75,9 @@ class CompilerInstance : public ModuleLoader {
   /// The target being compiled for.
   IntrusiveRefCntPtr<TargetInfo> Target;
 
+  /// The virtual file system.
+  IntrusiveRefCntPtr<vfs::FileSystem> VirtualFileSystem;
+
   /// The file manager.
   IntrusiveRefCntPtr<FileManager> FileMgr;
 
@@ -87,19 +91,22 @@ class CompilerInstance : public ModuleLoader {
   IntrusiveRefCntPtr<ASTContext> Context;
 
   /// The AST consumer.
-  OwningPtr<ASTConsumer> Consumer;
+  std::unique_ptr<ASTConsumer> Consumer;
 
   /// The code completion consumer.
-  OwningPtr<CodeCompleteConsumer> CompletionConsumer;
+  std::unique_ptr<CodeCompleteConsumer> CompletionConsumer;
 
   /// \brief The semantic analysis object.
-  OwningPtr<Sema> TheSema;
+  std::unique_ptr<Sema> TheSema;
 
   /// \brief The frontend timer
-  OwningPtr<llvm::Timer> FrontendTimer;
+  std::unique_ptr<llvm::Timer> FrontendTimer;
 
-  /// \brief Non-owning reference to the ASTReader, if one exists.
-  ASTReader *ModuleManager;
+  /// \brief The ASTReader, if one exists.
+  IntrusiveRefCntPtr<ASTReader> ModuleManager;
+
+  /// \brief The dependency file generator.
+  std::unique_ptr<DependencyFileGenerator> TheDependencyFileGenerator;
 
   /// \brief The set of top-level modules that has already been loaded,
   /// along with the module map
@@ -123,7 +130,7 @@ class CompilerInstance : public ModuleLoader {
   /// \brief Holds information about the output file.
   ///
   /// If TempFilename is not empty we must rename it to Filename at the end.
-  /// TempFilename may be empty and Filename non empty if creating the temporary
+  /// TempFilename may be empty and Filename non-empty if creating the temporary
   /// failed.
   struct OutputFile {
     std::string Filename;
@@ -313,6 +320,26 @@ public:
   void setTarget(TargetInfo *Value);
 
   /// }
+  /// @name Virtual File System
+  /// {
+
+  bool hasVirtualFileSystem() const { return VirtualFileSystem != 0; }
+
+  vfs::FileSystem &getVirtualFileSystem() const {
+    assert(hasVirtualFileSystem() &&
+           "Compiler instance has no virtual file system");
+    return *VirtualFileSystem;
+  }
+
+  /// \brief Replace the current virtual file system.
+  ///
+  /// \note Most clients should use setFileManager, which will implicitly reset
+  /// the virtual file system to the one contained in the file manager.
+  void setVirtualFileSystem(IntrusiveRefCntPtr<vfs::FileSystem> FS) {
+    VirtualFileSystem = FS;
+  }
+
+  /// }
   /// @name File Manager
   /// {
 
@@ -325,10 +352,11 @@ public:
   }
   
   void resetAndLeakFileManager() {
+    BuryPointer(FileMgr.getPtr());
     FileMgr.resetWithoutRelease();
   }
 
-  /// setFileManager - Replace the current file manager.
+  /// \brief Replace the current file manager and virtual file system.
   void setFileManager(FileManager *Value);
 
   /// }
@@ -344,6 +372,7 @@ public:
   }
   
   void resetAndLeakSourceManager() {
+    BuryPointer(SourceMgr.getPtr());
     SourceMgr.resetWithoutRelease();
   }
 
@@ -363,6 +392,7 @@ public:
   }
 
   void resetAndLeakPreprocessor() {
+    BuryPointer(PP.getPtr());
     PP.resetWithoutRelease();
   }
 
@@ -381,6 +411,7 @@ public:
   }
   
   void resetAndLeakASTContext() {
+    BuryPointer(Context.getPtr());
     Context.resetWithoutRelease();
   }
 
@@ -395,7 +426,7 @@ public:
   /// @name ASTConsumer
   /// {
 
-  bool hasASTConsumer() const { return Consumer.isValid(); }
+  bool hasASTConsumer() const { return (bool)Consumer; }
 
   ASTConsumer &getASTConsumer() const {
     assert(Consumer && "Compiler instance has no AST consumer!");
@@ -404,7 +435,7 @@ public:
 
   /// takeASTConsumer - Remove the current AST consumer and give ownership to
   /// the caller.
-  ASTConsumer *takeASTConsumer() { return Consumer.take(); }
+  ASTConsumer *takeASTConsumer() { return Consumer.release(); }
 
   /// setASTConsumer - Replace the current AST consumer; the compiler instance
   /// takes ownership of \p Value.
@@ -413,29 +444,27 @@ public:
   /// }
   /// @name Semantic analysis
   /// {
-  bool hasSema() const { return TheSema.isValid(); }
-  
+  bool hasSema() const { return (bool)TheSema; }
+
   Sema &getSema() const { 
     assert(TheSema && "Compiler instance has no Sema object!");
     return *TheSema;
   }
-  
-  Sema *takeSema() { return TheSema.take(); }
-  
+
+  Sema *takeSema() { return TheSema.release(); }
+
   /// }
   /// @name Module Management
   /// {
 
-  ASTReader *getModuleManager() const { return ModuleManager; }
-  void setModuleManager(ASTReader *Reader) { ModuleManager = Reader; }
+  IntrusiveRefCntPtr<ASTReader> getModuleManager() const;
+  void setModuleManager(IntrusiveRefCntPtr<ASTReader> Reader);
 
   /// }
   /// @name Code Completion
   /// {
 
-  bool hasCodeCompletionConsumer() const {
-    return CompletionConsumer.isValid();
-  }
+  bool hasCodeCompletionConsumer() const { return (bool)CompletionConsumer; }
 
   CodeCompleteConsumer &getCodeCompletionConsumer() const {
     assert(CompletionConsumer &&
@@ -446,7 +475,7 @@ public:
   /// takeCodeCompletionConsumer - Remove the current code completion consumer
   /// and give ownership to the caller.
   CodeCompleteConsumer *takeCodeCompletionConsumer() {
-    return CompletionConsumer.take();
+    return CompletionConsumer.release();
   }
 
   /// setCodeCompletionConsumer - Replace the current code completion consumer;
@@ -457,7 +486,7 @@ public:
   /// @name Frontend timer
   /// {
 
-  bool hasFrontendTimer() const { return FrontendTimer.isValid(); }
+  bool hasFrontendTimer() const { return (bool)FrontendTimer; }
 
   llvm::Timer &getFrontendTimer() const {
     assert(FrontendTimer && "Compiler instance has no frontend timer!");
@@ -530,7 +559,7 @@ public:
 
   /// Create the preprocessor, using the invocation, file, and source managers,
   /// and replace any existing one with it.
-  void createPreprocessor();
+  void createPreprocessor(TranslationUnitKind TUKind);
 
   /// Create the AST context.
   void createASTContext();
@@ -653,16 +682,13 @@ public:
                 const FrontendOptions &Opts);
 
   /// }
-  
-  virtual ModuleLoadResult loadModule(SourceLocation ImportLoc,
-                                      ModuleIdPath Path,
-                                      Module::NameVisibilityKind Visibility,
-                                      bool IsInclusionDirective);
 
-  virtual void makeModuleVisible(Module *Mod,
-                                 Module::NameVisibilityKind Visibility,
-                                 SourceLocation ImportLoc,
-                                 bool Complain);
+  ModuleLoadResult loadModule(SourceLocation ImportLoc, ModuleIdPath Path,
+                              Module::NameVisibilityKind Visibility,
+                              bool IsInclusionDirective) override;
+
+  void makeModuleVisible(Module *Mod, Module::NameVisibilityKind Visibility,
+                         SourceLocation ImportLoc, bool Complain) override;
 
   bool hadModuleLoaderFatalFailure() const {
     return ModuleLoader::HadFatalFailure;

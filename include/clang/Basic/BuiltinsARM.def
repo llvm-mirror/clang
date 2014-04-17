@@ -61,9 +61,8 @@ BUILTIN(__builtin_arm_crc32cd, "UiUiLLUi", "nc")
 // HINT
 BUILTIN(__builtin_arm_sevl, "v", "")
 
-// NEON
-#define GET_NEON_BUILTINS
-#include "clang/Basic/arm_neon.inc"
-#undef GET_NEON_BUILTINS
+// Data barrier
+BUILTIN(__builtin_arm_dmb, "vUi", "nc")
+BUILTIN(__builtin_arm_dsb, "vUi", "nc")
 
 #undef BUILTIN

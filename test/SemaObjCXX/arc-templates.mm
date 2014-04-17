@@ -292,3 +292,29 @@ namespace rdar12367446 {
     A<id()> value;
   }
 }
+
+namespace rdar14467941 {
+  template<typename T> int &takePtr(const T &);
+  template<typename T> float &takePtr(T * const &);
+
+  void testTakePtr(A *a) {
+    float &fr1 = takePtr(a);
+    float &fr2 = takePtr<A>(a);
+  }
+}
+
+namespace rdar15713945 {
+  template <class T> int &f(__strong T &);
+  template <class T> float &f(__weak T &);
+  template <class T> double &f(__unsafe_unretained T &);
+  template <class T> char &f(T &);
+
+  void foo() {
+    __strong NSString * const strong = 0;
+    int &ir = (f)(strong);
+    __weak NSString * const weak = 0;
+    float &fr = (f)(weak);
+    __unsafe_unretained NSString * const unsafe = 0;
+    double &dr = (f)(unsafe);
+  }
+}

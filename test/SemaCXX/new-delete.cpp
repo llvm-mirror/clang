@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsyntax-only -verify %s -triple=i686-pc-linux-gnu
+// RUN: %clang_cc1 -fsyntax-only -verify %s -triple=i686-pc-linux-gnu -Wno-new-returns-null
 
 #include <stddef.h>
 
@@ -17,6 +17,13 @@ struct U
 struct V : U
 {
 };
+
+inline void operator delete(void *); // expected-warning {{replacement function 'operator delete' cannot be declared 'inline'}}
+
+__attribute__((used))
+inline void *operator new(size_t) { // no warning, due to __attribute__((used))
+  return 0;
+}
 
 // PR5823
 void* operator new(const size_t); // expected-note 2 {{candidate}}
@@ -510,3 +517,7 @@ class DeletingPlaceholder {
     return 0;
   }
 };
+
+namespace PR18544 {
+  inline void *operator new(size_t); // expected-error {{'operator new' cannot be declared inside a namespace}}
+}

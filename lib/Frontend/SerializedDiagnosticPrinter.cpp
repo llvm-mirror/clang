@@ -59,32 +59,32 @@ public:
   virtual ~SDiagsRenderer() {}
   
 protected:
-  virtual void emitDiagnosticMessage(SourceLocation Loc,
-                                     PresumedLoc PLoc,
-                                     DiagnosticsEngine::Level Level,
-                                     StringRef Message,
-                                     ArrayRef<CharSourceRange> Ranges,
-                                     const SourceManager *SM,
-                                     DiagOrStoredDiag D);
-  
-  virtual void emitDiagnosticLoc(SourceLocation Loc, PresumedLoc PLoc,
-                                 DiagnosticsEngine::Level Level,
-                                 ArrayRef<CharSourceRange> Ranges,
-                                 const SourceManager &SM) {}
+  void emitDiagnosticMessage(SourceLocation Loc,
+                             PresumedLoc PLoc,
+                             DiagnosticsEngine::Level Level,
+                             StringRef Message,
+                             ArrayRef<CharSourceRange> Ranges,
+                             const SourceManager *SM,
+                             DiagOrStoredDiag D) override;
 
-  virtual void emitNote(SourceLocation Loc, StringRef Message,
-                        const SourceManager *SM);
+  void emitDiagnosticLoc(SourceLocation Loc, PresumedLoc PLoc,
+                         DiagnosticsEngine::Level Level,
+                         ArrayRef<CharSourceRange> Ranges,
+                         const SourceManager &SM) override {}
 
-  virtual void emitCodeContext(SourceLocation Loc,
-                               DiagnosticsEngine::Level Level,
-                               SmallVectorImpl<CharSourceRange>& Ranges,
-                               ArrayRef<FixItHint> Hints,
-                               const SourceManager &SM);
+  void emitNote(SourceLocation Loc, StringRef Message,
+                const SourceManager *SM) override;
 
-  virtual void beginDiagnostic(DiagOrStoredDiag D,
-                               DiagnosticsEngine::Level Level);
-  virtual void endDiagnostic(DiagOrStoredDiag D,
-                             DiagnosticsEngine::Level Level);
+  void emitCodeContext(SourceLocation Loc,
+                       DiagnosticsEngine::Level Level,
+                       SmallVectorImpl<CharSourceRange>& Ranges,
+                       ArrayRef<FixItHint> Hints,
+                       const SourceManager &SM) override;
+
+  void beginDiagnostic(DiagOrStoredDiag D,
+                       DiagnosticsEngine::Level Level) override;
+  void endDiagnostic(DiagOrStoredDiag D,
+                     DiagnosticsEngine::Level Level) override;
 };
   
 class SDiagsWriter : public DiagnosticConsumer {
@@ -103,16 +103,15 @@ public:
   }
 
   ~SDiagsWriter() {}
-  
+
   void HandleDiagnostic(DiagnosticsEngine::Level DiagLevel,
-                        const Diagnostic &Info);
-  
-  void BeginSourceFile(const LangOptions &LO,
-                       const Preprocessor *PP) {
+                        const Diagnostic &Info) override;
+
+  void BeginSourceFile(const LangOptions &LO, const Preprocessor *PP) override {
     LangOpts = &LO;
   }
 
-  virtual void finish();
+  void finish() override;
 
 private:
   /// \brief Emit the preamble for the serialized diagnostics.
@@ -174,7 +173,7 @@ private:
                                   const SourceManager &SM);
 
   /// \brief The version of the diagnostics file.
-  enum { Version = 1 };
+  enum { Version = 2 };
 
   /// \brief Language options, which can differ from one clone of this client
   /// to another.
@@ -200,7 +199,7 @@ private:
     llvm::BitstreamWriter Stream;
 
     /// \brief The name of the diagnostics file.
-    OwningPtr<raw_ostream> OS;
+    std::unique_ptr<raw_ostream> OS;
 
     /// \brief The set of constructed record abbreviations.
     AbbreviationMap Abbrevs;
@@ -566,6 +565,21 @@ void SDiagsWriter::HandleDiagnostic(DiagnosticsEngine::Level DiagLevel,
                           &Info);
 }
 
+static serialized_diags::Level getStableLevel(DiagnosticsEngine::Level Level) {
+  switch (Level) {
+#define CASE(X) case DiagnosticsEngine::X: return serialized_diags::X;
+  CASE(Ignored)
+  CASE(Note)
+  CASE(Remark)
+  CASE(Warning)
+  CASE(Error)
+  CASE(Fatal)
+#undef CASE
+  }
+
+  llvm_unreachable("invalid diagnostic level");
+}
+
 void SDiagsWriter::EmitDiagnosticMessage(SourceLocation Loc,
                                          PresumedLoc PLoc,
                                          DiagnosticsEngine::Level Level,
@@ -579,7 +593,7 @@ void SDiagsWriter::EmitDiagnosticMessage(SourceLocation Loc,
   // Emit the RECORD_DIAG record.
   Record.clear();
   Record.push_back(RECORD_DIAG);
-  Record.push_back(Level);
+  Record.push_back(getStableLevel(Level));
   AddLocToRecord(Loc, SM, PLoc, Record);
 
   if (const Diagnostic *Info = D.dyn_cast<const Diagnostic*>()) {

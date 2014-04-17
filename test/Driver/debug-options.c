@@ -33,8 +33,12 @@
 // RUN: %clang -### -c -g -g0 %s 2>&1 | FileCheck -check-prefix=G_NO %s
 // RUN: %clang -### -c -ggdb0 %s 2>&1 | FileCheck -check-prefix=G_NO %s
 //
+// RUN: %clang -### -c -gmlt %s 2>&1 \
+// RUN:             | FileCheck -check-prefix=GLTO_ONLY %s
 // RUN: %clang -### -c -gline-tables-only %s 2>&1 \
 // RUN:             | FileCheck -check-prefix=GLTO_ONLY %s
+// RUN: %clang -### -c -gline-tables-only %s -target x86_64-apple-darwin 2>&1 \
+// RUN:             | FileCheck -check-prefix=GLTO_ONLY_DARWIN %s
 // RUN: %clang -### -c -gline-tables-only -g %s -target x86_64-linux-gnu 2>&1 \
 // RUN:             | FileCheck -check-prefix=G_ONLY %s
 // RUN: %clang -### -c -gline-tables-only -g %s -target x86_64-apple-darwin 2>&1 \
@@ -43,18 +47,26 @@
 // RUN:             | FileCheck -check-prefix=GLTO_NO %s
 //
 // RUN: %clang -### -c -grecord-gcc-switches -gno-record-gcc-switches \
-// RUN:        -gstrict-dwarf -gno-strict-dwarf -fdebug-types-section \
-// RUN:        -fno-debug-types-section %s 2>&1                       \
+// RUN:        -gstrict-dwarf -gno-strict-dwarf %s 2>&1 \
 // RUN:        | FileCheck -check-prefix=GIGNORE %s
 //
 // RUN: %clang -### -c -ggnu-pubnames %s 2>&1 | FileCheck -check-prefix=GOPT %s
+//
+// RUN: %clang -### -c -gdwarf-aranges %s 2>&1 | FileCheck -check-prefix=GARANGE %s
+//
+// RUN: %clang -### -fdebug-types-section %s 2>&1 \
+// RUN:        | FileCheck -check-prefix=FDTS %s
+//
+// RUN: %clang -### -fdebug-types-section -fno-debug-types-section %s 2>&1 \
+// RUN:        | FileCheck -check-prefix=NOFDTS %s
+//
 //
 // G: "-cc1"
 // G: "-g"
 //
 // G_DARWIN: "-cc1"
 // G_DARWIN: "-gdwarf-2"
-// 
+//
 // G_D2: "-cc1"
 // G_D2: "-gdwarf-2"
 //
@@ -65,6 +77,12 @@
 // GLTO_ONLY-NOT: "-g"
 // GLTO_ONLY: "-gline-tables-only"
 // GLTO_ONLY-NOT: "-g"
+//
+// GLTO_ONLY_DARWIN: "-cc1"
+// GLTO_ONLY_DARWIN-NOT: "-g"
+// GLTO_ONLY_DARWIN: "-gline-tables-only"
+// GLTO_ONLY_DARWIN: "-gdwarf-2"
+// GLTO_ONLY_DARWIN-NOT: "-g"
 //
 // G_ONLY: "-cc1"
 // G_ONLY-NOT: "-gline-tables-only"
@@ -82,3 +100,9 @@
 // GIGNORE-NOT: "argument unused during compilation"
 //
 // GOPT: -generate-gnu-dwarf-pub-sections
+//
+// GARANGE: -generate-arange-section
+//
+// FDTS: "-backend-option" "-generate-type-units"
+//
+// NOFDTS-NOT: "-backend-option" "-generate-type-units"

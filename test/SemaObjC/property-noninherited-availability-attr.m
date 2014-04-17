@@ -1,17 +1,16 @@
 // RUN: %clang_cc1 -triple x86_64-apple-macosx10.8.0 -fsyntax-only -verify %s
 
-// This test case shows that 'availablity' and 'deprecated' does not inherit
+// This test case shows that 'availability' and 'deprecated' do not inherit
 // when a property is redeclared in a subclass.  This is intentional.
 
 @interface NSObject @end
 @protocol myProtocol
-@property int myProtocolProperty __attribute__((availability(macosx,introduced=10.7,deprecated=10.8))); // expected-note {{method 'myProtocolProperty' declared here}} \
+@property int myProtocolProperty __attribute__((availability(macosx,introduced=10.7,deprecated=10.8))); // expected-note {{'myProtocolProperty' has been explicitly marked deprecated here}} \
                                                                                                         // expected-note {{property 'myProtocolProperty' is declared deprecated here}}
 @end
 
 @interface Foo : NSObject
-@property int myProperty __attribute__((availability(macosx,introduced=10.7,deprecated=10.8)));  // expected-note {{'myProperty' declared here}} \
-								// expected-note {{method 'myProperty' declared here}} \
+@property int myProperty __attribute__((availability(macosx,introduced=10.7,deprecated=10.8)));  // expected-note 2 {{'myProperty' has been explicitly marked deprecated here}} \
 								// expected-note {{property 'myProperty' is declared deprecated here}}
 @end
 

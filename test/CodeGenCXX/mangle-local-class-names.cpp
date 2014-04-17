@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 %s -emit-llvm -o - | FileCheck %s
+// RUN: %clang_cc1 %s -emit-llvm -triple %itanium_abi_triple -o - | FileCheck %s
 
 // CHECK:  @_ZZ4FUNCvEN4SSSSC1ERKf
 // CHECK: @_ZZ4FUNCvEN4SSSSC2E_0RKf
@@ -74,16 +74,6 @@ inline void OmittingCode(float x) {
   SSSS VAR2(x);
 }
 void CallOmittingCode() { OmittingCode(1); }
-
-// CHECK: @_ZZ25LocalTemplateFunctionTestdEN5Local3fooIdEET_S1_
-int LocalTemplateFunctionTest(double d) {
-  struct Local {
-    template<class T> T foo(T t) {
-      return t;
-    }
-  };
-  return Local().foo(d);
-}
 
 // CHECK: @_ZZ15LocalAnonStructvENUt0_1gEv
 inline void LocalAnonStruct() {

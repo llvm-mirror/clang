@@ -100,6 +100,10 @@ def CastToStructChecker : Checker<"CastToStruct">,
   HelpText<"Check for cast from non-struct pointer to struct pointer">,
   DescFile<"CastToStructChecker.cpp">;
 
+def IdenticalExprChecker : Checker<"IdenticalExpr">,
+  HelpText<"Warn about unintended use of identical expressions in operators">,
+  DescFile<"IdenticalExprChecker.cpp">;
+
 def FixedAddressChecker : Checker<"FixedAddr">,
   HelpText<"Check for assignment of a fixed address to a pointer">,
   DescFile<"FixedAddressChecker.cpp">;
@@ -115,6 +119,10 @@ def PointerSubChecker : Checker<"PointerSub">,
 def SizeofPointerChecker : Checker<"SizeofPtr">,
   HelpText<"Warn about unintended use of sizeof() on pointer expressions">,
   DescFile<"CheckSizeofPointer.cpp">;
+
+def CallAndMessageUnInitRefArg : Checker<"CallAndMessageUnInitRefArg">,
+  HelpText<"Check for logical errors for function calls and Objective-C message expressions (e.g., uninitialized arguments, null function pointers, and pointer to undefined variables)">,
+  DescFile<"CallAndMessageChecker.cpp">;
 
 } // end "alpha.core"
 
@@ -198,10 +206,6 @@ def DeadStoresChecker : Checker<"DeadStores">,
 } // end DeadCode
 
 let ParentPackage = DeadCodeAlpha in {
-
-def IdempotentOperationChecker : Checker<"IdempotentOperations">,
-  HelpText<"Warn about idempotent operations">,
-  DescFile<"IdempotentOperationChecker.cpp">;
 
 def UnreachableCodeChecker : Checker<"UnreachableCode">,
   HelpText<"Check unreachable code">,
@@ -412,6 +416,10 @@ def ObjCNonNilReturnValueChecker : Checker<"NonNilReturnValue">,
   HelpText<"Model the APIs that are guaranteed to return a non-nil value">,
   DescFile<"BasicObjCFoundationChecks.cpp">;
 
+def ObjCSuperCallChecker : Checker<"MissingSuperCall">,
+  HelpText<"Warn about Objective-C methods that lack a necessary call to super">,
+  DescFile<"ObjCMissingSuperCallChecker.cpp">;
+
 def NSErrorChecker : Checker<"NSError">,
   HelpText<"Check usage of NSError** parameters">,
   DescFile<"NSErrorChecker.cpp">;
@@ -443,10 +451,6 @@ def DirectIvarAssignment : Checker<"DirectIvarAssignment">,
 def DirectIvarAssignmentForAnnotatedFunctions : Checker<"DirectIvarAssignmentForAnnotatedFunctions">,
   HelpText<"Check for direct assignments to instance variables in the methods annotated with objc_no_direct_instance_variable_assignment">,
   DescFile<"DirectIvarAssignment.cpp">;
-
-def ObjCSuperCallChecker : Checker<"MissingSuperCall">,
-  HelpText<"Warn about Objective-C methods that lack a necessary call to super">,
-  DescFile<"ObjCMissingSuperCallChecker.cpp">;
 
 } // end "alpha.osx.cocoa"
 

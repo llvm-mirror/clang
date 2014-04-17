@@ -1,5 +1,7 @@
 // RUN: %clang_cc1 -ffreestanding -fsyntax-only -std=c++11 %s
-// RUN: %clang_cc1 -ffreestanding -fsyntax-only -std=c++11 -fmodules %s
+// DISABLED: %clang_cc1 -ffreestanding -fsyntax-only -std=c++11 -fmodules %s
+
+// FIXME: This test fails on OS X 10.9 with headers in /usr/include, see PR18322
 
 #include <stdalign.h>
 

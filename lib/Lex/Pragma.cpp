@@ -48,9 +48,7 @@ void EmptyPragmaHandler::HandlePragma(Preprocessor &PP,
 //===----------------------------------------------------------------------===//
 
 PragmaNamespace::~PragmaNamespace() {
-  for (llvm::StringMap<PragmaHandler*>::iterator
-         I = Handlers.begin(), E = Handlers.end(); I != E; ++I)
-    delete I->second;
+  llvm::DeleteContainerSeconds(Handlers);
 }
 
 /// FindHandler - Check to see if there is already a handler for the
@@ -812,8 +810,8 @@ namespace {
 /// PragmaOnceHandler - "\#pragma once" marks the file as atomically included.
 struct PragmaOnceHandler : public PragmaHandler {
   PragmaOnceHandler() : PragmaHandler("once") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &OnceTok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &OnceTok) override {
     PP.CheckEndOfDirective("pragma once");
     PP.HandlePragmaOnce(OnceTok);
   }
@@ -823,8 +821,8 @@ struct PragmaOnceHandler : public PragmaHandler {
 /// rest of the line is not lexed.
 struct PragmaMarkHandler : public PragmaHandler {
   PragmaMarkHandler() : PragmaHandler("mark") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &MarkTok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &MarkTok) override {
     PP.HandlePragmaMark();
   }
 };
@@ -832,8 +830,8 @@ struct PragmaMarkHandler : public PragmaHandler {
 /// PragmaPoisonHandler - "\#pragma poison x" marks x as not usable.
 struct PragmaPoisonHandler : public PragmaHandler {
   PragmaPoisonHandler() : PragmaHandler("poison") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &PoisonTok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &PoisonTok) override {
     PP.HandlePragmaPoison(PoisonTok);
   }
 };
@@ -842,24 +840,24 @@ struct PragmaPoisonHandler : public PragmaHandler {
 /// as a system header, which silences warnings in it.
 struct PragmaSystemHeaderHandler : public PragmaHandler {
   PragmaSystemHeaderHandler() : PragmaHandler("system_header") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &SHToken) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &SHToken) override {
     PP.HandlePragmaSystemHeader(SHToken);
     PP.CheckEndOfDirective("pragma");
   }
 };
 struct PragmaDependencyHandler : public PragmaHandler {
   PragmaDependencyHandler() : PragmaHandler("dependency") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &DepToken) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &DepToken) override {
     PP.HandlePragmaDependency(DepToken);
   }
 };
 
 struct PragmaDebugHandler : public PragmaHandler {
   PragmaDebugHandler() : PragmaHandler("__debug") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &DepToken) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &DepToken) override {
     Token Tok;
     PP.LexUnexpandedToken(Tok);
     if (Tok.isNot(tok::identifier)) {
@@ -926,8 +924,9 @@ struct PragmaDebugHandler : public PragmaHandler {
 #ifdef _MSC_VER
     #pragma warning(disable : 4717)
 #endif
-  void DebugOverflowStack() {
-    DebugOverflowStack();
+  static void DebugOverflowStack() {
+    void (*volatile Self)() = DebugOverflowStack;
+    Self();
   }
 #ifdef _MSC_VER
     #pragma warning(default : 4717)
@@ -942,8 +941,8 @@ private:
 public:
   explicit PragmaDiagnosticHandler(const char *NS) :
     PragmaHandler("diagnostic"), Namespace(NS) {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &DiagToken) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &DiagToken) override {
     SourceLocation DiagLoc = DiagToken.getLocation();
     Token Tok;
     PP.LexUnexpandedToken(Tok);
@@ -1007,36 +1006,18 @@ public:
   }
 };
 
-// Returns -1 on failure.
-static int LexSimpleInt(Preprocessor &PP, Token &Tok) {
-  assert(Tok.is(tok::numeric_constant));
-  SmallString<8> IntegerBuffer;
-  bool NumberInvalid = false;
-  StringRef Spelling = PP.getSpelling(Tok, IntegerBuffer, &NumberInvalid);
-  if (NumberInvalid)
-    return -1;
-  NumericLiteralParser Literal(Spelling, Tok.getLocation(), PP);
-  if (Literal.hadError || !Literal.isIntegerLiteral() || Literal.hasUDSuffix())
-    return -1;
-  llvm::APInt APVal(32, 0);
-  if (Literal.GetIntegerValue(APVal))
-    return -1;
-  PP.Lex(Tok);
-  return int(APVal.getLimitedValue(INT_MAX));
-}
-
 /// "\#pragma warning(...)".  MSVC's diagnostics do not map cleanly to clang's
 /// diagnostics, so we don't really implement this pragma.  We parse it and
 /// ignore it to avoid -Wunknown-pragma warnings.
 struct PragmaWarningHandler : public PragmaHandler {
   PragmaWarningHandler() : PragmaHandler("warning") {}
 
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &Tok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &Tok) override {
     // Parse things like:
     // warning(push, 1)
     // warning(pop)
-    // warning(disable : 1 2 3 ; error 4 5 6 ; suppress 7 8 9)
+    // warning(disable : 1 2 3 ; error : 4 5 6 ; suppress : 7 8 9)
     SourceLocation DiagLoc = Tok.getLocation();
     PPCallbacks *Callbacks = PP.getPPCallbacks();
 
@@ -1059,8 +1040,10 @@ struct PragmaWarningHandler : public PragmaHandler {
       PP.Lex(Tok);
       if (Tok.is(tok::comma)) {
         PP.Lex(Tok);
-        if (Tok.is(tok::numeric_constant))
-          Level = LexSimpleInt(PP, Tok);
+        uint64_t Value;
+        if (Tok.is(tok::numeric_constant) &&
+            PP.parseSimpleIntegerLiteral(Tok, Value))
+          Level = int(Value);
         if (Level < 0 || Level > 4) {
           PP.Diag(Tok, diag::warn_pragma_warning_push_level);
           return;
@@ -1104,12 +1087,13 @@ struct PragmaWarningHandler : public PragmaHandler {
         SmallVector<int, 4> Ids;
         PP.Lex(Tok);
         while (Tok.is(tok::numeric_constant)) {
-          int Id = LexSimpleInt(PP, Tok);
-          if (Id <= 0) {
+          uint64_t Value;
+          if (!PP.parseSimpleIntegerLiteral(Tok, Value) || Value == 0 ||
+              Value > INT_MAX) {
             PP.Diag(Tok, diag::warn_pragma_warning_expected_number);
             return;
           }
-          Ids.push_back(Id);
+          Ids.push_back(int(Value));
         }
         if (Callbacks)
           Callbacks->PragmaWarning(DiagLoc, Specifier, Ids);
@@ -1135,8 +1119,8 @@ struct PragmaWarningHandler : public PragmaHandler {
 /// PragmaIncludeAliasHandler - "\#pragma include_alias("...")".
 struct PragmaIncludeAliasHandler : public PragmaHandler {
   PragmaIncludeAliasHandler() : PragmaHandler("include_alias") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &IncludeAliasTok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &IncludeAliasTok) override {
     PP.HandlePragmaIncludeAlias(IncludeAliasTok);
   }
 };
@@ -1177,8 +1161,8 @@ public:
                        StringRef Namespace = StringRef())
     : PragmaHandler(PragmaKind(Kind, true)), Kind(Kind), Namespace(Namespace) {}
 
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &Tok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &Tok) override {
     SourceLocation MessageLoc = Tok.getLocation();
     PP.Lex(Tok);
     bool ExpectClosingParen = false;
@@ -1230,8 +1214,8 @@ public:
 /// macro on the top of the stack.
 struct PragmaPushMacroHandler : public PragmaHandler {
   PragmaPushMacroHandler() : PragmaHandler("push_macro") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &PushMacroTok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &PushMacroTok) override {
     PP.HandlePragmaPushMacro(PushMacroTok);
   }
 };
@@ -1241,8 +1225,8 @@ struct PragmaPushMacroHandler : public PragmaHandler {
 /// macro to the value on the top of the stack.
 struct PragmaPopMacroHandler : public PragmaHandler {
   PragmaPopMacroHandler() : PragmaHandler("pop_macro") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &PopMacroTok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &PopMacroTok) override {
     PP.HandlePragmaPopMacro(PopMacroTok);
   }
 };
@@ -1252,8 +1236,8 @@ struct PragmaPopMacroHandler : public PragmaHandler {
 /// PragmaSTDC_FENV_ACCESSHandler - "\#pragma STDC FENV_ACCESS ...".
 struct PragmaSTDC_FENV_ACCESSHandler : public PragmaHandler {
   PragmaSTDC_FENV_ACCESSHandler() : PragmaHandler("FENV_ACCESS") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &Tok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &Tok) override {
     tok::OnOffSwitch OOS;
     if (PP.LexOnOffSwitch(OOS))
      return;
@@ -1266,8 +1250,8 @@ struct PragmaSTDC_FENV_ACCESSHandler : public PragmaHandler {
 struct PragmaSTDC_CX_LIMITED_RANGEHandler : public PragmaHandler {
   PragmaSTDC_CX_LIMITED_RANGEHandler()
     : PragmaHandler("CX_LIMITED_RANGE") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &Tok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &Tok) override {
     tok::OnOffSwitch OOS;
     PP.LexOnOffSwitch(OOS);
   }
@@ -1276,8 +1260,8 @@ struct PragmaSTDC_CX_LIMITED_RANGEHandler : public PragmaHandler {
 /// PragmaSTDC_UnknownHandler - "\#pragma STDC ...".
 struct PragmaSTDC_UnknownHandler : public PragmaHandler {
   PragmaSTDC_UnknownHandler() {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &UnknownTok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &UnknownTok) override {
     // C99 6.10.6p2, unknown forms are not allowed.
     PP.Diag(UnknownTok, diag::ext_stdc_pragma_ignored);
   }
@@ -1287,8 +1271,8 @@ struct PragmaSTDC_UnknownHandler : public PragmaHandler {
 ///   \#pragma clang arc_cf_code_audited begin/end
 struct PragmaARCCFCodeAuditedHandler : public PragmaHandler {
   PragmaARCCFCodeAuditedHandler() : PragmaHandler("arc_cf_code_audited") {}
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &NameTok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &NameTok) override {
     SourceLocation Loc = NameTok.getLocation();
     bool IsBegin;
 
@@ -1351,8 +1335,8 @@ struct PragmaARCCFCodeAuditedHandler : public PragmaHandler {
 struct PragmaRegionHandler : public PragmaHandler {
   PragmaRegionHandler(const char *pragma) : PragmaHandler(pragma) { }
 
-  virtual void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
-                            Token &NameTok) {
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &NameTok) override {
     // #pragma region: endregion matches can be verified
     // __pragma(region): no sense, but ignored by msvc
     // _Pragma is not valid for MSVC, but there isn't any point

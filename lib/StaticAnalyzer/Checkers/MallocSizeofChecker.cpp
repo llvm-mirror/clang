@@ -101,9 +101,8 @@ public:
   }
 
   TypeCallPair VisitDeclStmt(const DeclStmt *S) {
-    for (DeclStmt::const_decl_iterator I = S->decl_begin(), E = S->decl_end();
-         I!=E; ++I)
-      if (const VarDecl *VD = dyn_cast<VarDecl>(*I))
+    for (const auto *I : S->decls())
+      if (const VarDecl *VD = dyn_cast<VarDecl>(I))
         if (const Expr *Init = VD->getInit())
           VisitChild(VD, Init);
     return TypeCallPair();
@@ -236,10 +235,8 @@ public:
             PathDiagnosticLocation::createBegin(i->AllocCall->getCallee(),
                 BR.getSourceManager(), ADC);
 
-        BR.EmitBasicReport(D, "Allocator sizeof operand mismatch",
-            categories::UnixAPI,
-            OS.str(),
-            L, Ranges);
+        BR.EmitBasicReport(D, this, "Allocator sizeof operand mismatch",
+                           categories::UnixAPI, OS.str(), L, Ranges);
       }
     }
   }

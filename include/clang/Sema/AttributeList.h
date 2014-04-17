@@ -18,8 +18,9 @@
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/VersionTuple.h"
 #include "clang/Sema/Ownership.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/PointerUnion.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/Triple.h"
 #include "llvm/Support/Allocator.h"
 #include <cassert>
 
@@ -245,6 +246,26 @@ private:
     AttrKind = getKind(getName(), getScopeName(), syntaxUsed);
   }
 
+  /// Constructor for objc_bridge_related attributes.
+  AttributeList(IdentifierInfo *attrName, SourceRange attrRange,
+                IdentifierInfo *scopeName, SourceLocation scopeLoc,
+                IdentifierLoc *Parm1,
+                IdentifierLoc *Parm2,
+                IdentifierLoc *Parm3,
+                Syntax syntaxUsed)
+  : AttrName(attrName), ScopeName(scopeName), AttrRange(attrRange),
+    ScopeLoc(scopeLoc), EllipsisLoc(), NumArgs(3), SyntaxUsed(syntaxUsed),
+    Invalid(false), UsedAsTypeAttr(false), IsAvailability(false),
+    IsTypeTagForDatatype(false), IsProperty(false), HasParsedType(false),
+    NextInPosition(0), NextInPool(0) {
+    ArgsVector Args;
+    Args.push_back(Parm1);
+    Args.push_back(Parm2);
+    Args.push_back(Parm3);
+    memcpy(getArgsBuffer(), &Args[0], 3 * sizeof(ArgsUnion));
+    AttrKind = getKind(getName(), getScopeName(), syntaxUsed);
+  }
+  
   /// Constructor for type_tag_for_datatype attribute.
   AttributeList(IdentifierInfo *attrName, SourceRange attrRange,
                 IdentifierInfo *scopeName, SourceLocation scopeLoc,
@@ -368,44 +389,6 @@ public:
     return getArg(Arg).get<IdentifierLoc*>();
   }
 
-  class arg_iterator {
-    ArgsUnion const *X;
-    unsigned Idx;
-  public:
-    arg_iterator(ArgsUnion const *x, unsigned idx) : X(x), Idx(idx) {}
-
-    arg_iterator& operator++() {
-      ++Idx;
-      return *this;
-    }
-
-    bool operator==(const arg_iterator& I) const {
-      assert (X == I.X &&
-              "compared arg_iterators are for different argument lists");
-      return Idx == I.Idx;
-    }
-
-    bool operator!=(const arg_iterator& I) const {
-      return !operator==(I);
-    }
-
-    ArgsUnion operator*() const {
-      return X[Idx];
-    }
-
-    unsigned getArgNum() const {
-      return Idx+1;
-    }
-  };
-
-  arg_iterator arg_begin() const {
-    return arg_iterator(getArgsBuffer(), 0);
-  }
-
-  arg_iterator arg_end() const {
-    return arg_iterator(getArgsBuffer(), NumArgs);
-  }
-
   const AvailabilityChange &getAvailabilityIntroduced() const {
     assert(getKind() == AT_Availability && "Not an availability attribute");
     return getAvailabilitySlot(IntroducedSlot);
@@ -450,7 +433,7 @@ public:
   }
 
   const ParsedType &getTypeArg() const {
-    assert(getKind() == AT_VecTypeHint && "Not a type attribute");
+    assert(HasParsedType && "Not a type attribute");
     return getTypeBuffer();
   }
 
@@ -464,9 +447,23 @@ public:
   /// to pretty print itself.
   unsigned getAttributeSpellingListIndex() const;
 
+  bool isTargetSpecificAttr() const;
+  bool isTypeAttr() const;
+
   bool hasCustomParsing() const;
   unsigned getMinArgs() const;
   unsigned getMaxArgs() const;
+  bool diagnoseAppertainsTo(class Sema &S, const Decl *D) const;
+  bool diagnoseLangOpts(class Sema &S) const;
+  bool existsInTarget(const llvm::Triple &T) const;
+  bool isKnownToGCC() const;
+
+  /// \brief If the parsed attribute has a semantic equivalent, and it would
+  /// have a semantic Spelling enumeration (due to having semantically-distinct
+  /// spelling variations), return the value of that semantic spelling. If the
+  /// parsed attribute does not have a semantic equivalent, or would not have
+  /// a Spelling enumeration, the value UINT_MAX is returned.
+  unsigned getSemanticSpelling() const;
 };
 
 /// A factory, from which one makes pools, from which one creates
@@ -607,8 +604,19 @@ public:
                                           syntax));
   }
 
-  AttributeList *createIntegerAttribute(ASTContext &C, IdentifierInfo *Name,
-                                        SourceLocation TokLoc, int Arg);
+  AttributeList *create(IdentifierInfo *attrName, SourceRange attrRange,
+                        IdentifierInfo *scopeName, SourceLocation scopeLoc,
+                        IdentifierLoc *Param1,
+                        IdentifierLoc *Param2,
+                        IdentifierLoc *Param3,
+                        AttributeList::Syntax syntax) {
+    size_t size = sizeof(AttributeList) + 3 * sizeof(ArgsUnion);
+    void *memory = allocate(size);
+    return add(new (memory) AttributeList(attrName, attrRange,
+                                          scopeName, scopeLoc,
+                                          Param1, Param2, Param3,
+                                          syntax));
+  }
 
   AttributeList *createTypeTagForDatatype(
                     IdentifierInfo *attrName, SourceRange attrRange,
@@ -647,40 +655,6 @@ public:
   }
 };
 
-/// addAttributeLists - Add two AttributeLists together
-/// The right-hand list is appended to the left-hand list, if any
-/// A pointer to the joined list is returned.
-/// Note: the lists are not left unmodified.
-inline AttributeList *addAttributeLists(AttributeList *Left,
-                                        AttributeList *Right) {
-  if (!Left)
-    return Right;
-
-  AttributeList *next = Left, *prev;
-  do {
-    prev = next;
-    next = next->getNext();
-  } while (next);
-  prev->setNext(Right);
-  return Left;
-}
-
-/// CXX11AttributeList - A wrapper around a C++11 attribute list.
-/// Stores, in addition to the list proper, whether or not an actual list was
-/// (as opposed to an empty list, which may be ill-formed in some places) and
-/// the source range of the list.
-struct CXX11AttributeList { 
-  AttributeList *AttrList;
-  SourceRange Range;
-  bool HasAttr;
-  CXX11AttributeList (AttributeList *attrList, SourceRange range, bool hasAttr)
-    : AttrList(attrList), Range(range), HasAttr (hasAttr) {
-  }
-  CXX11AttributeList ()
-    : AttrList(0), Range(), HasAttr(false) {
-  }
-};
-
 /// ParsedAttributes - A collection of parsed attributes.  Currently
 /// we don't differentiate between the various attribute syntaxes,
 /// which is basically silly.
@@ -693,10 +667,7 @@ public:
     : pool(factory), list(0) {
   }
 
-  ParsedAttributes(ParsedAttributes &attrs)
-    : pool(attrs.pool), list(attrs.list) {
-    attrs.list = 0;
-  }
+  ParsedAttributes(const ParsedAttributes &) LLVM_DELETED_FUNCTION;
 
   AttributePool &getPool() const { return pool; }
 
@@ -767,6 +738,20 @@ public:
     return attr;
   }
 
+  /// Add objc_bridge_related attribute.
+  AttributeList *addNew(IdentifierInfo *attrName, SourceRange attrRange,
+                        IdentifierInfo *scopeName, SourceLocation scopeLoc,
+                        IdentifierLoc *Param1,
+                        IdentifierLoc *Param2,
+                        IdentifierLoc *Param3,
+                        AttributeList::Syntax syntax) {
+    AttributeList *attr =
+      pool.create(attrName, attrRange, scopeName, scopeLoc,
+                  Param1, Param2, Param3, syntax);
+    add(attr);
+    return attr;
+  }
+
   /// Add type_tag_for_datatype attribute.
   AttributeList *addNewTypeTagForDatatype(
                         IdentifierInfo *attrName, SourceRange attrRange,
@@ -808,15 +793,6 @@ public:
     return attr;
   }
 
-  AttributeList *addNewInteger(ASTContext &C, IdentifierInfo *name,
-                               SourceLocation loc, int arg) {
-    AttributeList *attr =
-      pool.createIntegerAttribute(C, name, loc, arg);
-    add(attr);
-    return attr;
-  }
-
-
 private:
   mutable AttributePool pool;
   AttributeList *list;
@@ -829,6 +805,41 @@ enum AttributeArgumentNType {
   AANT_ArgumentIntegerConstant,
   AANT_ArgumentString,
   AANT_ArgumentIdentifier
+};
+
+/// These constants match the enumerated choices of
+/// warn_attribute_wrong_decl_type and err_attribute_wrong_decl_type.
+enum AttributeDeclKind {
+  ExpectedFunction,
+  ExpectedUnion,
+  ExpectedVariableOrFunction,
+  ExpectedFunctionOrMethod,
+  ExpectedParameter,
+  ExpectedFunctionMethodOrBlock,
+  ExpectedFunctionMethodOrClass,
+  ExpectedFunctionMethodOrParameter,
+  ExpectedClass,
+  ExpectedVariable,
+  ExpectedMethod,
+  ExpectedVariableFunctionOrLabel,
+  ExpectedFieldOrGlobalVar,
+  ExpectedStruct,
+  ExpectedVariableFunctionOrTag,
+  ExpectedTLSVar,
+  ExpectedVariableOrField,
+  ExpectedVariableFieldOrTag,
+  ExpectedTypeOrNamespace,
+  ExpectedObjectiveCInterface,
+  ExpectedMethodOrProperty,
+  ExpectedStructOrUnion,
+  ExpectedStructOrUnionOrClass,
+  ExpectedType,
+  ExpectedObjCInstanceMethod,
+  ExpectedObjCInterfaceDeclInitMethod,
+  ExpectedFunctionVariableOrClass,
+  ExpectedObjectiveCProtocol,
+  ExpectedFunctionGlobalVarMethodOrProperty,
+  ExpectedStructOrTypedef
 };
 
 }  // end namespace clang

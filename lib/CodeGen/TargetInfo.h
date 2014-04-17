@@ -17,10 +17,11 @@
 
 #include "clang/AST/Type.h"
 #include "clang/Basic/LLVM.h"
-#include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringRef.h"
 
 namespace llvm {
+  class Constant;
   class GlobalValue;
   class Type;
   class Value;
@@ -122,6 +123,10 @@ namespace clang {
       return Ty;
     }
 
+    /// doesReturnSlotInterfereWithArgs - Return true if the target uses an
+    /// argument slot for an 'sret' type.
+    virtual bool doesReturnSlotInterfereWithArgs() const { return true; }
+
     /// Retrieve the address of a function to call immediately before
     /// calling objc_retainAutoreleasedReturnValue.  The
     /// implementation of objc_autoreleaseReturnValue sniffs the
@@ -134,6 +139,13 @@ namespace clang {
     /// empty if none is required.
     virtual StringRef getARCRetainAutoreleasedReturnValueMarker() const {
       return "";
+    }
+
+    /// Return a constant used by UBSan as a signature to identify functions
+    /// possessing type information, or 0 if the platform is unsupported.
+    virtual llvm::Constant *getUBSanFunctionSignature(
+        CodeGen::CodeGenModule &CGM) const {
+      return 0;
     }
 
     /// Determine whether a call to an unprototyped functions under
@@ -168,7 +180,7 @@ namespace clang {
     /// However, some platforms make the conventions identical except
     /// for passing additional out-of-band information to a variadic
     /// function: for example, x86-64 passes the number of SSE
-    /// arguments in %al.  On these platforms, it is desireable to
+    /// arguments in %al.  On these platforms, it is desirable to
     /// call unprototyped functions using the variadic convention so
     /// that unprototyped calls to varargs functions still succeed.
     ///

@@ -17,6 +17,7 @@
 #include "clang/Basic/LLVM.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/DataTypes.h"
+#include "llvm/Support/EndianStream.h"
 #include "llvm/Support/Host.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -29,84 +30,11 @@ namespace io {
 
 typedef uint32_t Offset;
 
-inline void Emit8(raw_ostream& Out, uint32_t V) {
-  Out << (unsigned char)(V);
-}
-
-inline void Emit16(raw_ostream& Out, uint32_t V) {
-  Out << (unsigned char)(V);
-  Out << (unsigned char)(V >>  8);
-  assert((V >> 16) == 0);
-}
-
-inline void Emit24(raw_ostream& Out, uint32_t V) {
-  Out << (unsigned char)(V);
-  Out << (unsigned char)(V >>  8);
-  Out << (unsigned char)(V >> 16);
-  assert((V >> 24) == 0);
-}
-
-inline void Emit32(raw_ostream& Out, uint32_t V) {
-  Out << (unsigned char)(V);
-  Out << (unsigned char)(V >>  8);
-  Out << (unsigned char)(V >> 16);
-  Out << (unsigned char)(V >> 24);
-}
-
-inline void Emit64(raw_ostream& Out, uint64_t V) {
-  Out << (unsigned char)(V);
-  Out << (unsigned char)(V >>  8);
-  Out << (unsigned char)(V >> 16);
-  Out << (unsigned char)(V >> 24);
-  Out << (unsigned char)(V >> 32);
-  Out << (unsigned char)(V >> 40);
-  Out << (unsigned char)(V >> 48);
-  Out << (unsigned char)(V >> 56);
-}
-
 inline void Pad(raw_ostream& Out, unsigned A) {
+  using namespace llvm::support;
   Offset off = (Offset) Out.tell();
   for (uint32_t n = llvm::OffsetToAlignment(off, A); n; --n)
-    Emit8(Out, 0);
-}
-
-inline uint16_t ReadUnalignedLE16(const unsigned char *&Data) {
-  uint16_t V = ((uint16_t)Data[0]) |
-               ((uint16_t)Data[1] <<  8);
-  Data += 2;
-  return V;
-}
-
-inline uint32_t ReadUnalignedLE32(const unsigned char *&Data) {
-  uint32_t V = ((uint32_t)Data[0])  |
-               ((uint32_t)Data[1] << 8)  |
-               ((uint32_t)Data[2] << 16) |
-               ((uint32_t)Data[3] << 24);
-  Data += 4;
-  return V;
-}
-
-inline uint64_t ReadUnalignedLE64(const unsigned char *&Data) {
-  uint64_t V = ((uint64_t)Data[0])  |
-    ((uint64_t)Data[1] << 8)  |
-    ((uint64_t)Data[2] << 16) |
-    ((uint64_t)Data[3] << 24) |
-    ((uint64_t)Data[4] << 32) |
-    ((uint64_t)Data[5] << 40) |
-    ((uint64_t)Data[6] << 48) |
-    ((uint64_t)Data[7] << 56);
-  Data += 8;
-  return V;
-}
-
-inline uint32_t ReadLE32(const unsigned char *&Data) {
-  // Hosts that directly support little-endian 32-bit loads can just
-  // use them.  Big-endian hosts need a bswap.
-  uint32_t V = *((const uint32_t*)Data);
-  if (llvm::sys::IsBigEndianHost)
-    V = llvm::ByteSwap_32(V);
-  Data += 4;
-  return V;
+    endian::Writer<little>(Out).write<uint8_t>(0);
 }
 
 } // end namespace io
@@ -188,7 +116,8 @@ public:
   }
 
   io::Offset Emit(raw_ostream &out, Info &InfoObj) {
-    using namespace clang::io;
+    using namespace llvm::support;
+    endian::Writer<little> LE(out);
 
     // Emit the payload of the table.
     for (unsigned i = 0; i < NumBuckets; ++i) {
@@ -200,12 +129,12 @@ public:
       assert(B.off && "Cannot write a bucket at offset 0. Please add padding.");
 
       // Write out the number of items in the bucket.
-      Emit16(out, B.length);
+      LE.write<uint16_t>(B.length);
       assert(B.length != 0  && "Bucket has a head but zero length?");
 
       // Write out the entries in the bucket.
       for (Item *I = B.head; I ; I = I->next) {
-        Emit32(out, I->hash);
+        LE.write<uint32_t>(I->hash);
         const std::pair<unsigned, unsigned>& Len =
           InfoObj.EmitKeyDataLength(out, I->key, I->data);
         InfoObj.EmitKey(out, I->key, Len.first);
@@ -214,11 +143,12 @@ public:
     }
 
     // Emit the hashtable itself.
-    Pad(out, 4);
+    io::Pad(out, 4);
     io::Offset TableOff = out.tell();
-    Emit32(out, NumBuckets);
-    Emit32(out, NumEntries);
-    for (unsigned i = 0; i < NumBuckets; ++i) Emit32(out, Buckets[i].off);
+    LE.write<uint32_t>(NumBuckets);
+    LE.write<uint32_t>(NumEntries);
+    for (unsigned i = 0; i < NumBuckets; ++i)
+      LE.write<uint32_t>(Buckets[i].off);
 
     return TableOff;
   }
@@ -286,7 +216,7 @@ public:
     if (!InfoPtr)
       InfoPtr = &InfoObj;
 
-    using namespace io;
+    using namespace llvm::support;
     const internal_key_type& iKey = InfoObj.GetInternalKey(eKey);
     unsigned key_hash = InfoObj.ComputeHash(iKey);
 
@@ -294,17 +224,17 @@ public:
     unsigned idx = key_hash & (NumBuckets - 1);
     const unsigned char* Bucket = Buckets + sizeof(uint32_t)*idx;
 
-    unsigned offset = ReadLE32(Bucket);
+    unsigned offset = endian::readNext<uint32_t, little, aligned>(Bucket);
     if (offset == 0) return iterator(); // Empty bucket.
     const unsigned char* Items = Base + offset;
 
     // 'Items' starts with a 16-bit unsigned integer representing the
     // number of items in this bucket.
-    unsigned len = ReadUnalignedLE16(Items);
+    unsigned len = endian::readNext<uint16_t, little, unaligned>(Items);
 
     for (unsigned i = 0; i < len; ++i) {
       // Read the hash.
-      uint32_t item_hash = ReadUnalignedLE32(Items);
+      uint32_t item_hash = endian::readNext<uint32_t, little, unaligned>(Items);
 
       // Determine the length of the key and the data.
       const std::pair<unsigned, unsigned>& L = Info::ReadKeyDataLength(Items);
@@ -359,10 +289,12 @@ public:
     }
 
     key_iterator& operator++() {  // Preincrement
+      using namespace llvm::support;
       if (!NumItemsInBucketLeft) {
         // 'Items' starts with a 16-bit unsigned integer representing the
         // number of items in this bucket.
-        NumItemsInBucketLeft = io::ReadUnalignedLE16(Ptr);
+        NumItemsInBucketLeft =
+            endian::readNext<uint16_t, little, unaligned>(Ptr);
       }
       Ptr += 4; // Skip the hash.
       // Determine the length of the key and the data.
@@ -423,10 +355,12 @@ public:
     }
 
     data_iterator& operator++() {  // Preincrement
+      using namespace llvm::support;
       if (!NumItemsInBucketLeft) {
         // 'Items' starts with a 16-bit unsigned integer representing the
         // number of items in this bucket.
-        NumItemsInBucketLeft = io::ReadUnalignedLE16(Ptr);
+        NumItemsInBucketLeft =
+            endian::readNext<uint16_t, little, unaligned>(Ptr);
       }
       Ptr += 4; // Skip the hash.
       // Determine the length of the key and the data.
@@ -468,13 +402,13 @@ public:
   static OnDiskChainedHashTable* Create(const unsigned char* buckets,
                                         const unsigned char* const base,
                                         const Info &InfoObj = Info()) {
-    using namespace io;
+    using namespace llvm::support;
     assert(buckets > base);
     assert((reinterpret_cast<uintptr_t>(buckets) & 0x3) == 0 &&
            "buckets should be 4-byte aligned.");
 
-    unsigned numBuckets = ReadLE32(buckets);
-    unsigned numEntries = ReadLE32(buckets);
+    unsigned numBuckets = endian::readNext<uint32_t, little, aligned>(buckets);
+    unsigned numEntries = endian::readNext<uint32_t, little, aligned>(buckets);
     return new OnDiskChainedHashTable<Info>(numBuckets, numEntries, buckets,
                                             base, InfoObj);
   }

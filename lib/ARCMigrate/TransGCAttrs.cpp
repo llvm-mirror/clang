@@ -134,8 +134,7 @@ public:
       return hasObjCImpl(ContD);
 
     if (CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(D)) {
-      for (CXXRecordDecl::method_iterator
-             MI = RD->method_begin(), ME = RD->method_end(); MI != ME; ++MI) {
+      for (const auto *MI : RD->methods()) {
         if (MI->isOutOfLine())
           return true;
       }
@@ -164,8 +163,7 @@ public:
     if (!D)
       return false;
 
-    for (Decl::redecl_iterator
-           I = D->redecls_begin(), E = D->redecls_end(); I != E; ++I)
+    for (auto I : D->redecls())
       if (!isInMainFile(I->getLocation()))
         return false;
     

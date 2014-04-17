@@ -345,7 +345,7 @@ void TemplateArgument::print(const PrintingPolicy &Policy,
                              raw_ostream &Out) const {
   switch (getKind()) {
   case Null:
-    Out << "<no value>";
+    Out << "(no value)";
     break;
     
   case Type: {
@@ -362,7 +362,7 @@ void TemplateArgument::print(const PrintingPolicy &Policy,
       // FIXME: distinguish between pointer and reference args?
       ND->printQualifiedName(Out);
     } else {
-      Out << "<anonymous>";
+      Out << "(anonymous)";
     }
     break;
   }
@@ -511,6 +511,8 @@ const DiagnosticBuilder &clang::operator<<(const DiagnosticBuilder &DB,
 const ASTTemplateArgumentListInfo *
 ASTTemplateArgumentListInfo::Create(ASTContext &C,
                                     const TemplateArgumentListInfo &List) {
+  assert(llvm::alignOf<ASTTemplateArgumentListInfo>() >=
+         llvm::alignOf<TemplateArgumentLoc>());
   std::size_t size = ASTTemplateArgumentListInfo::sizeFor(List.size());
   void *Mem = C.Allocate(size, llvm::alignOf<ASTTemplateArgumentListInfo>());
   ASTTemplateArgumentListInfo *TAI = new (Mem) ASTTemplateArgumentListInfo();

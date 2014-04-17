@@ -67,9 +67,7 @@ AttrListInfo::AttrListInfo(const Decl *D, IndexingContext &IdxCtx)
   if (!D->hasAttrs())
     return;
 
-  for (AttrVec::const_iterator AttrI = D->attr_begin(), AttrE = D->attr_end();
-         AttrI != AttrE; ++AttrI) {
-    const Attr *A = *AttrI;
+  for (const auto *A : D->attrs()) {
     CXCursor C = MakeCXCursor(A, D, IdxCtx.CXTU);
     CXIdxLoc Loc =  IdxCtx.getIndexLoc(A->getLocation());
     switch (C.kind) {
@@ -94,17 +92,19 @@ AttrListInfo::AttrListInfo(const Decl *D, IndexingContext &IdxCtx)
 
     const IBOutletCollectionAttr *
       IBAttr = cast<IBOutletCollectionAttr>(IBInfo.A);
+    SourceLocation InterfaceLocStart =
+        IBAttr->getInterfaceLoc()->getTypeLoc().getLocStart();
     IBInfo.IBCollInfo.attrInfo = &IBInfo;
-    IBInfo.IBCollInfo.classLoc = IdxCtx.getIndexLoc(IBAttr->getInterfaceLoc());
+    IBInfo.IBCollInfo.classLoc = IdxCtx.getIndexLoc(InterfaceLocStart);
     IBInfo.IBCollInfo.objcClass = 0;
     IBInfo.IBCollInfo.classCursor = clang_getNullCursor();
     QualType Ty = IBAttr->getInterface();
-    if (const ObjCInterfaceType *InterTy = Ty->getAs<ObjCInterfaceType>()) {
-      if (const ObjCInterfaceDecl *InterD = InterTy->getInterface()) {
+    if (const ObjCObjectType *ObjectTy = Ty->getAs<ObjCObjectType>()) {
+      if (const ObjCInterfaceDecl *InterD = ObjectTy->getInterface()) {
         IdxCtx.getEntityInfo(InterD, IBInfo.ClassInfo, SA);
         IBInfo.IBCollInfo.objcClass = &IBInfo.ClassInfo;
-        IBInfo.IBCollInfo.classCursor = MakeCursorObjCClassRef(InterD,
-                                        IBAttr->getInterfaceLoc(), IdxCtx.CXTU);
+        IBInfo.IBCollInfo.classCursor =
+            MakeCursorObjCClassRef(InterD, InterfaceLocStart, IdxCtx.CXTU);
       }
     }
   }
@@ -123,9 +123,7 @@ AttrListInfo::create(const Decl *D, IndexingContext &IdxCtx) {
 IndexingContext::CXXBasesListInfo::CXXBasesListInfo(const CXXRecordDecl *D,
                                    IndexingContext &IdxCtx,
                                    ScratchAlloc &SA) {
-  for (CXXRecordDecl::base_class_const_iterator
-         I = D->bases_begin(), E = D->bases_end(); I != E; ++I) {
-    const CXXBaseSpecifier &Base = *I;
+  for (const auto &Base : D->bases()) {
     BaseEntities.push_back(EntityInfo());
     const NamedDecl *BaseD = 0;
     QualType T = Base.getType();
@@ -266,7 +264,6 @@ void IndexingContext::importedModule(const ImportDecl *ImportD) {
   Module *Mod = ImportD->getImportedModule();
   if (!Mod)
     return;
-  std::string ModuleName = Mod->getFullModuleName();
 
   CXIdxImportedASTFileInfo Info = {
                                     static_cast<CXFile>(
@@ -381,14 +378,14 @@ bool IndexingContext::handleFunction(const FunctionDecl *D) {
     isContainer = false;
   }
 
-  DeclInfo DInfo(!D->isFirstDeclaration(), isDef, isContainer);
+  DeclInfo DInfo(!D->isFirstDecl(), isDef, isContainer);
   if (isSkipped)
     DInfo.flags |= CXIdxDeclFlag_Skipped;
   return handleDecl(D, D->getLocation(), getCursor(D), DInfo);
 }
 
 bool IndexingContext::handleVar(const VarDecl *D) {
-  DeclInfo DInfo(!D->isFirstDeclaration(), D->isThisDeclarationADefinition(),
+  DeclInfo DInfo(!D->isFirstDecl(), D->isThisDeclarationADefinition(),
                  /*isContainer=*/false);
   return handleDecl(D, D->getLocation(), getCursor(D), DInfo);
 }
@@ -415,13 +412,13 @@ bool IndexingContext::handleTagDecl(const TagDecl *D) {
   if (const CXXRecordDecl *CXXRD = dyn_cast<CXXRecordDecl>(D))
     return handleCXXRecordDecl(CXXRD, D);
 
-  DeclInfo DInfo(!D->isFirstDeclaration(), D->isThisDeclarationADefinition(),
+  DeclInfo DInfo(!D->isFirstDecl(), D->isThisDeclarationADefinition(),
                  D->isThisDeclarationADefinition());
   return handleDecl(D, D->getLocation(), getCursor(D), DInfo);
 }
 
 bool IndexingContext::handleTypedefName(const TypedefNameDecl *D) {
-  DeclInfo DInfo(!D->isFirstDeclaration(), /*isDefinition=*/true,
+  DeclInfo DInfo(!D->isFirstDecl(), /*isDefinition=*/true,
                  /*isContainer=*/false);
   return handleDecl(D, D->getLocation(), getCursor(D), DInfo);
 }
@@ -801,9 +798,9 @@ bool IndexingContext::markEntityOccurrenceInFile(const NamedDecl *D,
   const FileEntry *FE = SM.getFileEntryForID(FID);
   if (!FE)
     return true;
-  RefFileOccurence RefOccur(FE, D);
-  std::pair<llvm::DenseSet<RefFileOccurence>::iterator, bool>
-  res = RefFileOccurences.insert(RefOccur);
+  RefFileOccurrence RefOccur(FE, D);
+  std::pair<llvm::DenseSet<RefFileOccurrence>::iterator, bool>
+  res = RefFileOccurrences.insert(RefOccur);
   if (!res.second)
     return true; // already in map.
 

@@ -34,7 +34,6 @@ public:
   static void *getTag() { static int Tag; return &Tag; }
 
   void checkPostStmt(const CallExpr *CE, CheckerContext &C) const;
-  void checkPostStmt(const DeclRefExpr *DRE, CheckerContext &C) const;
 
   void checkPreStmt(const CallExpr *CE, CheckerContext &C) const;
 
@@ -43,10 +42,10 @@ private:
   /// Denotes the return vale.
   static const unsigned ReturnValueIndex = UINT_MAX - 1;
 
-  mutable OwningPtr<BugType> BT;
+  mutable std::unique_ptr<BugType> BT;
   inline void initBugType() const {
     if (!BT)
-      BT.reset(new BugType("Use of Untrusted Data", "Untrusted Data"));
+      BT.reset(new BugType(this, "Use of Untrusted Data", "Untrusted Data"));
   }
 
   /// \brief Catch taint related bugs. Check if tainted data is passed to a
@@ -613,11 +612,7 @@ static bool getPrintfFormatArgumentNum(const CallExpr *CE,
   const FunctionDecl *FDecl = C.getCalleeDecl(CE);
   if (!FDecl)
     return false;
-  for (specific_attr_iterator<FormatAttr>
-         i = FDecl->specific_attr_begin<FormatAttr>(),
-         e = FDecl->specific_attr_end<FormatAttr>(); i != e ; ++i) {
-
-    const FormatAttr *Format = *i;
+  for (const auto *Format : FDecl->specific_attrs<FormatAttr>()) {
     ArgNum = Format->getFormatIdx() - 1;
     if ((Format->getType()->getName() == "printf") &&
          CE->getNumArgs() > ArgNum)

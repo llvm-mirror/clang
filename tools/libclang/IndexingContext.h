@@ -286,8 +286,8 @@ class IndexingContext {
   ContainerMapTy ContainerMap;
   EntityMapTy EntityMap;
 
-  typedef std::pair<const FileEntry *, const Decl *> RefFileOccurence;
-  llvm::DenseSet<RefFileOccurence> RefFileOccurences;
+  typedef std::pair<const FileEntry *, const Decl *> RefFileOccurrence;
+  llvm::DenseSet<RefFileOccurrence> RefFileOccurrences;
 
   std::deque<DeclGroupRef> TUDeclsInObjCContainer;
   
@@ -335,7 +335,7 @@ public:
                   unsigned indexOptions, CXTranslationUnit cxTU)
     : Ctx(0), ClientData(clientData), CB(indexCallbacks),
       IndexOptions(indexOptions), CXTU(cxTU),
-      StrScratch(/*size=*/1024), StrAdapterCount(0) { }
+      StrScratch(), StrAdapterCount(0) { }
 
   ASTContext &getASTContext() const { return *Ctx; }
 

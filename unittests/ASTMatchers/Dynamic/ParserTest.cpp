@@ -7,65 +7,28 @@
 //
 //===-------------------------------------------------------------------===//
 
-#include <string>
-#include <vector>
-
 #include "../ASTMatchersTest.h"
 #include "clang/ASTMatchers/Dynamic/Parser.h"
 #include "clang/ASTMatchers/Dynamic/Registry.h"
-#include "gtest/gtest.h"
+#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringMap.h"
+#include "gtest/gtest.h"
+#include <string>
+#include <vector>
 
 namespace clang {
 namespace ast_matchers {
 namespace dynamic {
 namespace {
 
-class DummyDynTypedMatcher : public DynTypedMatcher {
-public:
-  DummyDynTypedMatcher(uint64_t ID) : ID(ID) {}
-  DummyDynTypedMatcher(uint64_t ID, StringRef BoundID)
-      : ID(ID), BoundID(BoundID) {}
-
-  typedef ast_matchers::internal::ASTMatchFinder ASTMatchFinder;
-  typedef ast_matchers::internal::BoundNodesTreeBuilder BoundNodesTreeBuilder;
-  virtual bool matches(const ast_type_traits::DynTypedNode DynNode,
-                       ASTMatchFinder *Finder,
-                       BoundNodesTreeBuilder *Builder) const {
-    return false;
-  }
-
-  /// \brief Makes a copy of this matcher object.
-  virtual DynTypedMatcher *clone() const {
-    return new DummyDynTypedMatcher(*this);
-  }
-
-  /// \brief Returns a unique ID for the matcher.
-  virtual uint64_t getID() const { return ID; }
-
-  virtual DynTypedMatcher* tryBind(StringRef BoundID) const {
-    return new DummyDynTypedMatcher(ID, BoundID);
-  }
-
-  StringRef boundID() const { return BoundID; }
-
-  virtual ast_type_traits::ASTNodeKind getSupportedKind() const {
-    return ast_type_traits::ASTNodeKind();
-  }
-
-private:
-  uint64_t ID;
-  std::string BoundID;
-};
-
 class MockSema : public Parser::Sema {
 public:
   virtual ~MockSema() {}
 
   uint64_t expectMatcher(StringRef MatcherName) {
-    uint64_t ID = ExpectedMatchers.size() + 1;
-    ExpectedMatchers[MatcherName] = ID;
-    return ID;
+    ast_matchers::internal::Matcher<Stmt> M = stmt();
+    ExpectedMatchers.insert(std::make_pair(MatcherName, M));
+    return M.getID();
   }
 
   void parse(StringRef Code) {
@@ -76,16 +39,24 @@ public:
     Errors.push_back(Error.toStringFull());
   }
 
-  VariantMatcher actOnMatcherExpression(StringRef MatcherName,
+  llvm::Optional<MatcherCtor> lookupMatcherCtor(StringRef MatcherName,
+                                                const SourceRange &NameRange,
+                                                Diagnostics *Error) {
+    const ExpectedMatchersTy::value_type *Matcher =
+        &*ExpectedMatchers.find(MatcherName);
+    return reinterpret_cast<MatcherCtor>(Matcher);
+  }
+
+  VariantMatcher actOnMatcherExpression(MatcherCtor Ctor,
                                         const SourceRange &NameRange,
                                         StringRef BindID,
                                         ArrayRef<ParserValue> Args,
                                         Diagnostics *Error) {
-    MatcherInfo ToStore = { MatcherName, NameRange, Args, BindID };
+    const ExpectedMatchersTy::value_type *Matcher =
+        reinterpret_cast<const ExpectedMatchersTy::value_type *>(Ctor);
+    MatcherInfo ToStore = { Matcher->first, NameRange, Args, BindID };
     Matchers.push_back(ToStore);
-    DummyDynTypedMatcher Matcher(ExpectedMatchers[MatcherName]);
-    OwningPtr<DynTypedMatcher> Out(Matcher.tryBind(BindID));
-    return VariantMatcher::SingleMatcher(*Out);
+    return VariantMatcher::SingleMatcher(Matcher->second);
   }
 
   struct MatcherInfo {
@@ -98,7 +69,9 @@ public:
   std::vector<std::string> Errors;
   std::vector<VariantValue> Values;
   std::vector<MatcherInfo> Matchers;
-  llvm::StringMap<uint64_t> ExpectedMatchers;
+  typedef std::map<std::string, ast_matchers::internal::Matcher<Stmt> >
+  ExpectedMatchersTy;
+  ExpectedMatchersTy ExpectedMatchers;
 };
 
 TEST(ParserTest, ParseUnsigned) {
@@ -137,10 +110,11 @@ bool matchesRange(const SourceRange &Range, unsigned StartLine,
          Range.Start.Column == StartColumn && Range.End.Column == EndColumn;
 }
 
-const DynTypedMatcher *getSingleMatcher(const VariantValue &Value) {
-  const DynTypedMatcher *Out;
-  EXPECT_TRUE(Value.getMatcher().getSingleMatcher(Out));
-  return Out;
+llvm::Optional<DynTypedMatcher> getSingleMatcher(const VariantValue &Value) {
+  llvm::Optional<DynTypedMatcher> Result =
+      Value.getMatcher().getSingleMatcher();
+  EXPECT_TRUE(Result.hasValue());
+  return Result;
 }
 
 TEST(ParserTest, ParseMatcher) {
@@ -155,8 +129,6 @@ TEST(ParserTest, ParseMatcher) {
 
   EXPECT_EQ(1ULL, Sema.Values.size());
   EXPECT_EQ(ExpectedFoo, getSingleMatcher(Sema.Values[0])->getID());
-  EXPECT_EQ("Yo!", static_cast<const DummyDynTypedMatcher *>(
-                       getSingleMatcher(Sema.Values[0]))->boundID());
 
   EXPECT_EQ(3ULL, Sema.Matchers.size());
   const MockSema::MatcherInfo Bar = Sema.Matchers[0];
@@ -184,27 +156,28 @@ using ast_matchers::internal::Matcher;
 
 TEST(ParserTest, FullParserTest) {
   Diagnostics Error;
-  OwningPtr<DynTypedMatcher> VarDecl(Parser::parseMatcherExpression(
+  llvm::Optional<DynTypedMatcher> VarDecl(Parser::parseMatcherExpression(
       "varDecl(hasInitializer(binaryOperator(hasLHS(integerLiteral()),"
       "                                      hasOperatorName(\"+\"))))",
       &Error));
   EXPECT_EQ("", Error.toStringFull());
-  Matcher<Decl> M = Matcher<Decl>::constructFrom(*VarDecl);
+  Matcher<Decl> M = VarDecl->unconditionalConvertTo<Decl>();
   EXPECT_TRUE(matches("int x = 1 + false;", M));
   EXPECT_FALSE(matches("int x = true + 1;", M));
   EXPECT_FALSE(matches("int x = 1 - false;", M));
   EXPECT_FALSE(matches("int x = true - 1;", M));
 
-  OwningPtr<DynTypedMatcher> HasParameter(Parser::parseMatcherExpression(
+  llvm::Optional<DynTypedMatcher> HasParameter(Parser::parseMatcherExpression(
       "functionDecl(hasParameter(1, hasName(\"x\")))", &Error));
   EXPECT_EQ("", Error.toStringFull());
-  M = Matcher<Decl>::constructFrom(*HasParameter);
+  M = HasParameter->unconditionalConvertTo<Decl>();
 
   EXPECT_TRUE(matches("void f(int a, int x);", M));
   EXPECT_FALSE(matches("void f(int x, int a);", M));
 
-  EXPECT_TRUE(Parser::parseMatcherExpression(
-      "hasInitializer(\n    binaryOperator(hasLHS(\"A\")))", &Error) == NULL);
+  EXPECT_TRUE(!Parser::parseMatcherExpression(
+                   "hasInitializer(\n    binaryOperator(hasLHS(\"A\")))",
+                   &Error).hasValue());
   EXPECT_EQ("1:1: Error parsing argument 1 for matcher hasInitializer.\n"
             "2:5: Error parsing argument 1 for matcher binaryOperator.\n"
             "2:20: Error building matcher hasLHS.\n"
@@ -231,16 +204,19 @@ TEST(ParserTest, Errors) {
       "1:5: Error parsing matcher. Found token <123> while looking for '('.",
       ParseWithError("Foo 123"));
   EXPECT_EQ(
+      "1:1: Matcher not found: Foo\n"
       "1:9: Error parsing matcher. Found token <123> while looking for ','.",
       ParseWithError("Foo(\"A\" 123)"));
   EXPECT_EQ(
+      "1:1: Matcher not found: Foo\n"
       "1:4: Error parsing matcher. Found end-of-code while looking for ')'.",
       ParseWithError("Foo("));
   EXPECT_EQ("1:1: End of code found while looking for token.",
             ParseWithError(""));
   EXPECT_EQ("Input value is not a matcher expression.",
             ParseMatcherWithError("\"A\""));
-  EXPECT_EQ("1:1: Error parsing argument 1 for matcher Foo.\n"
+  EXPECT_EQ("1:1: Matcher not found: Foo\n"
+            "1:1: Error parsing argument 1 for matcher Foo.\n"
             "1:5: Invalid token <(> found when looking for a value.",
             ParseWithError("Foo(("));
   EXPECT_EQ("1:7: Expected end of code.", ParseWithError("expr()a"));
@@ -267,6 +243,20 @@ TEST(ParserTest, OverloadErrors) {
             "1:8: Candidate 2: Incorrect type for arg 1. "
             "(Expected = Matcher<Decl>) != (Actual = String)",
             ParseWithError("callee(\"A\")"));
+}
+
+TEST(ParserTest, Completion) {
+  std::vector<MatcherCompletion> Comps =
+      Parser::completeExpression("while", 5);
+  ASSERT_EQ(1u, Comps.size());
+  EXPECT_EQ("Stmt(", Comps[0].TypedText);
+  EXPECT_EQ("Matcher<Stmt> whileStmt(Matcher<WhileStmt>...)",
+            Comps[0].MatcherDecl);
+
+  Comps = Parser::completeExpression("whileStmt().", 12);
+  ASSERT_EQ(1u, Comps.size());
+  EXPECT_EQ("bind(\"", Comps[0].TypedText);
+  EXPECT_EQ("bind", Comps[0].MatcherDecl);
 }
 
 }  // end anonymous namespace

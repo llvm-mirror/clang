@@ -288,12 +288,10 @@ static AccessResult IsDerivedFromInclusive(const CXXRecordDecl *Derived,
     if (Derived->isDependentContext() && !Derived->hasDefinition())
       return AR_dependent;
     
-    for (CXXRecordDecl::base_class_const_iterator
-           I = Derived->bases_begin(), E = Derived->bases_end(); I != E; ++I) {
-
+    for (const auto &I : Derived->bases()) {
       const CXXRecordDecl *RD;
 
-      QualType T = I->getType();
+      QualType T = I.getType();
       if (const RecordType *RT = T->getAs<RecordType>()) {
         RD = cast<CXXRecordDecl>(RT->getDecl());
       } else if (const InjectedClassNameType *IT
@@ -376,18 +374,16 @@ static bool MightInstantiateTo(Sema &S,
   if (FriendTy.getQualifiers() != ContextTy.getQualifiers())
     return false;
 
-  if (FriendTy->getNumArgs() != ContextTy->getNumArgs())
+  if (FriendTy->getNumParams() != ContextTy->getNumParams())
     return false;
 
-  if (!MightInstantiateTo(S,
-                          ContextTy->getResultType(),
-                          FriendTy->getResultType()))
+  if (!MightInstantiateTo(S, ContextTy->getReturnType(),
+                          FriendTy->getReturnType()))
     return false;
 
-  for (unsigned I = 0, E = FriendTy->getNumArgs(); I != E; ++I)
-    if (!MightInstantiateTo(S,
-                            ContextTy->getArgType(I),
-                            FriendTy->getArgType(I)))
+  for (unsigned I = 0, E = FriendTy->getNumParams(); I != E; ++I)
+    if (!MightInstantiateTo(S, ContextTy->getParamType(I),
+                            FriendTy->getParamType(I)))
       return false;
 
   return true;
@@ -575,10 +571,7 @@ static AccessResult GetFriendKind(Sema &S,
   AccessResult OnFailure = AR_inaccessible;
 
   // Okay, check friends.
-  for (CXXRecordDecl::friend_iterator I = Class->friend_begin(),
-         E = Class->friend_end(); I != E; ++I) {
-    FriendDecl *Friend = *I;
-
+  for (auto *Friend : Class->friends()) {
     switch (MatchesFriend(S, EC, Friend)) {
     case AR_accessible:
       return AR_accessible;
@@ -648,18 +641,16 @@ struct ProtectedFriendContext {
       EverDependent = true;
 
     // Recurse into the base classes.
-    for (CXXRecordDecl::base_class_const_iterator
-           I = Cur->bases_begin(), E = Cur->bases_end(); I != E; ++I) {
-
+    for (const auto &I : Cur->bases()) {
       // If this is private inheritance, then a public member of the
       // base will not have any access in classes derived from Cur.
       unsigned BasePrivateDepth = PrivateDepth;
-      if (I->getAccessSpecifier() == AS_private)
+      if (I.getAccessSpecifier() == AS_private)
         BasePrivateDepth = CurPath.size() - 1;
 
       const CXXRecordDecl *RD;
 
-      QualType T = I->getType();
+      QualType T = I.getType();
       if (const RecordType *RT = T->getAs<RecordType>()) {
         RD = cast<CXXRecordDecl>(RT->getDecl());
       } else if (const InjectedClassNameType *IT
@@ -797,7 +788,7 @@ static AccessResult HasAccess(Sema &S,
         // Emulate a MSVC bug where the creation of pointer-to-member
         // to protected member of base class is allowed but only from
         // static member functions.
-        if (S.getLangOpts().MicrosoftMode && !EC.Functions.empty())
+        if (S.getLangOpts().MSVCCompat && !EC.Functions.empty())
           if (CXXMethodDecl* MD = dyn_cast<CXXMethodDecl>(EC.Functions.front()))
             if (MD->isStatic()) return AR_accessible;
 
@@ -1082,15 +1073,15 @@ static bool TryDiagnoseProtectedAccess(Sema &S, const EffectiveContext &EC,
         (isa<FunctionTemplateDecl>(D) &&
          isa<CXXConstructorDecl>(
                 cast<FunctionTemplateDecl>(D)->getTemplatedDecl()))) {
-      S.Diag(D->getLocation(), diag::note_access_protected_restricted_ctordtor)
-        << isa<CXXDestructorDecl>(D);
-      return true;
+      return S.Diag(D->getLocation(),
+                    diag::note_access_protected_restricted_ctordtor)
+             << isa<CXXDestructorDecl>(D->getAsFunction());
     }
 
     // Otherwise, use the generic diagnostic.
-    S.Diag(D->getLocation(), diag::note_access_protected_restricted_object)
-      << S.Context.getTypeDeclType(ECRecord);
-    return true;
+    return S.Diag(D->getLocation(),
+                  diag::note_access_protected_restricted_object)
+           << S.Context.getTypeDeclType(ECRecord);
   }
 
   return false;
@@ -1140,11 +1131,9 @@ static void diagnoseBadDirectAccess(Sema &S,
   // Check whether there's an AccessSpecDecl preceding this in the
   // chain of the DeclContext.
   bool isImplicit = true;
-  for (CXXRecordDecl::decl_iterator
-         I = DeclaringClass->decls_begin(), E = DeclaringClass->decls_end();
-       I != E; ++I) {
-    if (*I == ImmediateChild) break;
-    if (isa<AccessSpecDecl>(*I)) {
+  for (const auto *I : DeclaringClass->decls()) {
+    if (I == ImmediateChild) break;
+    if (isa<AccessSpecDecl>(I)) {
       isImplicit = false;
       break;
     }
@@ -1422,16 +1411,15 @@ static AccessResult CheckEffectiveAccess(Sema &S,
                                          AccessTarget &Entity) {
   assert(Entity.getAccess() != AS_public && "called for public access!");
 
-  if (S.getLangOpts().MicrosoftMode &&
-      IsMicrosoftUsingDeclarationAccessBug(S, Loc, Entity))
-    return AR_accessible;
-
   switch (IsAccessible(S, EC, Entity)) {
   case AR_dependent:
     DelayDependentAccess(S, EC, Loc, Entity);
     return AR_dependent;
 
   case AR_inaccessible:
+    if (S.getLangOpts().MSVCCompat &&
+        IsMicrosoftUsingDeclarationAccessBug(S, Loc, Entity))
+      return AR_accessible;
     if (!Entity.isQuiet())
       DiagnoseBadAccess(S, Loc, EC, Entity);
     return AR_inaccessible;
@@ -1482,11 +1470,10 @@ void Sema::HandleDelayedAccessCheck(DelayedDiagnostic &DD, Decl *D) {
   // However, this does not apply to local extern declarations.
 
   DeclContext *DC = D->getDeclContext();
-  if (FunctionDecl *FN = dyn_cast<FunctionDecl>(D)) {
-    if (D->getLexicalDeclContext()->isFunctionOrMethod())
-      DC = D->getLexicalDeclContext();
-    else
-      DC = FN;
+  if (D->isLocalExternDecl()) {
+    DC = D->getLexicalDeclContext();
+  } else if (FunctionDecl *FN = dyn_cast<FunctionDecl>(D)) {
+    DC = FN;
   } else if (TemplateDecl *TD = dyn_cast<TemplateDecl>(D)) {
     DC = cast<DeclContext>(TD->getTemplatedDecl());
   }
@@ -1650,9 +1637,9 @@ Sema::AccessResult Sema::CheckConstructorAccess(SourceLocation UseLoc,
   }
 
   case InitializedEntity::EK_LambdaCapture: {
-    const VarDecl *Var = Entity.getCapturedVar();
+    StringRef VarName = Entity.getCapturedVarName();
     PD = PDiag(diag::err_access_lambda_capture);
-    PD << Var->getName() << Entity.getType() << getSpecialMember(Constructor);
+    PD << VarName << Entity.getType() << getSpecialMember(Constructor);
     break;
   }
 
@@ -1750,10 +1737,7 @@ Sema::AccessResult Sema::CheckMemberOperatorAccess(SourceLocation OpLoc,
 
 /// Checks access to the target of a friend declaration.
 Sema::AccessResult Sema::CheckFriendAccess(NamedDecl *target) {
-  assert(isa<CXXMethodDecl>(target) ||
-         (isa<FunctionTemplateDecl>(target) &&
-          isa<CXXMethodDecl>(cast<FunctionTemplateDecl>(target)
-                               ->getTemplatedDecl())));
+  assert(isa<CXXMethodDecl>(target->getAsFunction()));
 
   // Friendship lookup is a redeclaration lookup, so there's never an
   // inheritance path modifying access.
@@ -1762,10 +1746,7 @@ Sema::AccessResult Sema::CheckFriendAccess(NamedDecl *target) {
   if (!getLangOpts().AccessControl || access == AS_public)
     return AR_accessible;
 
-  CXXMethodDecl *method = dyn_cast<CXXMethodDecl>(target);
-  if (!method)
-    method = cast<CXXMethodDecl>(
-                     cast<FunctionTemplateDecl>(target)->getTemplatedDecl());
+  CXXMethodDecl *method = cast<CXXMethodDecl>(target->getAsFunction());
   assert(method->getQualifier());
 
   AccessTarget entity(Context, AccessTarget::Member,

@@ -11,7 +11,7 @@
 #define LLVM_CLANG_CODEGEN_CODE_GEN_ACTION_H
 
 #include "clang/Frontend/FrontendAction.h"
-#include "llvm/ADT/OwningPtr.h"
+#include <memory>
 
 namespace llvm {
   class LLVMContext;
@@ -24,7 +24,7 @@ class BackendConsumer;
 class CodeGenAction : public ASTFrontendAction {
 private:
   unsigned Act;
-  OwningPtr<llvm::Module> TheModule;
+  std::unique_ptr<llvm::Module> TheModule;
   llvm::Module *LinkModule;
   llvm::LLVMContext *VMContext;
   bool OwnsVMContext;
@@ -35,14 +35,14 @@ protected:
   /// otherwise it creates a fresh LLVM context and takes ownership.
   CodeGenAction(unsigned _Act, llvm::LLVMContext *_VMContext = 0);
 
-  virtual bool hasIRSupport() const;
+  bool hasIRSupport() const override;
 
-  virtual ASTConsumer *CreateASTConsumer(CompilerInstance &CI,
-                                         StringRef InFile);
+  ASTConsumer *CreateASTConsumer(CompilerInstance &CI,
+                                 StringRef InFile) override;
 
-  virtual void ExecuteAction();
+  void ExecuteAction() override;
 
-  virtual void EndSourceFileAction();
+  void EndSourceFileAction() override;
 
 public:
   ~CodeGenAction();

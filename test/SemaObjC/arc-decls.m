@@ -51,20 +51,28 @@ void func()
 }
 
 // rdar://9157348
+// rdar://15757510
 
 @interface J
-@property (retain) id newFoo; // expected-note {{property declared here}}
-@property (strong) id copyBar; // expected-note {{property declared here}}
-@property (copy) id allocBaz; // expected-note {{property declared here}}
+@property (retain) id newFoo; // expected-error {{property follows Cocoa naming convention for returning 'owned' objects}}
+@property (strong) id copyBar;  // expected-error {{property follows Cocoa naming convention for returning 'owned' objects}}
+@property (copy) id allocBaz; // expected-error {{property follows Cocoa naming convention for returning 'owned' objects}}
 @property (copy, nonatomic) id new;
+@property (retain) id newDFoo; // expected-error {{property follows Cocoa naming convention for returning 'owned' objects}}
+@property (strong) id copyDBar; // expected-error {{property follows Cocoa naming convention for returning 'owned' objects}}
+@property (copy) id allocDBaz; // expected-error {{property follows Cocoa naming convention for returning 'owned' objects}}
 @end
 
 @implementation J
-@synthesize newFoo;	// expected-error {{property's synthesized getter follows Cocoa naming convention for returning}}
-@synthesize copyBar;	// expected-error {{property's synthesized getter follows Cocoa naming convention for returning}}
-@synthesize allocBaz;	// expected-error {{property's synthesized getter follows Cocoa naming convention for returning}}
+@synthesize newFoo;
+@synthesize copyBar;
+@synthesize allocBaz;
 @synthesize new;
 - new {return 0; };
+
+@dynamic newDFoo;
+@dynamic copyDBar; 
+@dynamic allocDBaz;
 @end
 
 
@@ -104,4 +112,22 @@ void func(void) __attribute__((objc_ownership(none)));  // expected-warning {{'o
 struct __attribute__((objc_ownership(none))) S2 {}; // expected-error {{'objc_ownership' attribute only applies to variables}}
 @interface I2
     @property __attribute__((objc_ownership(frob))) id i; // expected-warning {{'objc_ownership' attribute argument not supported: 'frob'}}
+@end
+
+// rdar://15304886
+@interface NSObject @end
+
+@interface ControllerClass : NSObject @end
+
+@interface SomeClassOwnedByController
+@property (readonly) ControllerClass *controller; // expected-note {{property declared here}}
+
+// rdar://15465916
+@property (readonly, weak) ControllerClass *weak_controller;
+@end
+
+@interface SomeClassOwnedByController ()
+@property (readwrite, weak) ControllerClass *controller; // expected-warning {{primary property declaration is implicitly strong while redeclaration in class extension is weak}}
+
+@property (readwrite, weak) ControllerClass *weak_controller;
 @end

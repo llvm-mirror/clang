@@ -193,16 +193,16 @@
 // SHA: #define __SSE2__ 1
 // SHA-NOT: #define __SSE3__ 1
 
-// run: %clang -target i386-unknown-unknown -march=pentiumpro -msha -mno-sha -x c -e -dm -o - %s | filecheck --check-prefix=SHANOSHA %s
+// RUN: %clang -target i386-unknown-unknown -march=pentiumpro -msha -mno-sha -x c -E -dM -o - %s | FileCheck --check-prefix=SHANOSHA %s
 
 // SHANOSHA-NOT: #define __SHA__ 1
 // SHANOSHA-NOT: #define __SSE2__ 1
 
-// run: %clang -target i386-unknown-unknown -march=pentiumpro -msha -mno-sse2 -x c -e -dm -o - %s | filecheck --check-prefix=SHANOSSE2 %s
+// RUN: %clang -target i386-unknown-unknown -march=pentiumpro -msha -mno-sse2 -x c -E -dM -o - %s | FileCheck --check-prefix=SHANOSSE2 %s
 
-// SHANOSSSE2-NOT: #define __SHA__ 1
-// SHANOSSSE2-NOT: #define __SSE2__ 1
-// SHANOSSSE2-NOT: #define __SSE3__ 1
+// SHANOSSE2-NOT: #define __SHA__ 1
+// SHANOSSE2-NOT: #define __SSE2__ 1
+// SHANOSSE2-NOT: #define __SSE3__ 1
 
 // RUN: %clang -target i386-unknown-unknown -march=atom -mtbm -x c -E -dM -o - %s | FileCheck --check-prefix=TBM %s
 
@@ -215,3 +215,24 @@
 // RUN: %clang -target i386-unknown-unknown -march=pentiumpro -mcx16 -x c -E -dM -o - %s | FileCheck --check-prefix=MCX16 %s
 
 // MCX16: #define __GCC_HAVE_SYNC_COMPARE_AND_SWAP_16 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -mprfchw -x c -E -dM -o - %s | FileCheck --check-prefix=PRFCHW %s
+
+// PRFCHW: #define __PRFCHW__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=btver2 -mno-prfchw -x c -E -dM -o - %s | FileCheck --check-prefix=NOPRFCHW %s
+
+// NOPRFCHW-NOT: #define __PRFCHW__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -m3dnow -x c -E -dM -o - %s | FileCheck --check-prefix=3DNOWPRFCHW %s
+
+// 3DNOWPRFCHW: #define __PRFCHW__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -mno-prfchw -m3dnow -x c -E -dM -o - %s | FileCheck --check-prefix=3DNOWNOPRFCHW %s
+
+// 3DNOWNOPRFCHW-NOT: #define __PRFCHW__ 1
+
+// RUN: %clang -target i386-unknown-unknown -march=atom -mprfchw -mno-3dnow -x c -E -dM -o - %s | FileCheck --check-prefix=NO3DNOWPRFCHW %s
+
+// NO3DNOWPRFCHW: #define __PRFCHW__ 1
+

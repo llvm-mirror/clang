@@ -21,13 +21,17 @@
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Config/config.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 using namespace clang;
 
 raw_ostream &RewriteBuffer::write(raw_ostream &os) const {
-  // FIXME: eliminate the copy by writing out each chunk at a time
-  os << std::string(begin(), end());
+  // Walk RewriteRope chunks efficiently using MoveToNextPiece() instead of the
+  // character iterator.
+  for (RopePieceBTreeIterator I = begin(), E = end(); I != E;
+       I.MoveToNextPiece())
+    os << I.piece();
   return os;
 }
 
@@ -446,7 +450,7 @@ public:
     if (!ok()) return;
 
     FileStream->flush();
-#ifdef _WIN32
+#ifdef LLVM_ON_WIN32
     // Win32 does not allow rename/removing opened files.
     FileStream.reset();
 #endif
@@ -455,21 +459,20 @@ public:
       AllWritten = false;
       Diagnostics.Report(clang::diag::err_unable_to_rename_temp)
         << TempFilename << Filename << ec.message();
-      bool existed;
       // If the remove fails, there's not a lot we can do - this is already an
       // error.
-      llvm::sys::fs::remove(TempFilename.str(), existed);
+      llvm::sys::fs::remove(TempFilename.str());
     }
   }
 
-  bool ok() { return FileStream.isValid(); }
+  bool ok() { return (bool)FileStream; }
   raw_ostream &getStream() { return *FileStream; }
 
 private:
   DiagnosticsEngine &Diagnostics;
   StringRef Filename;
   SmallString<128> TempFilename;
-  OwningPtr<llvm::raw_fd_ostream> FileStream;
+  std::unique_ptr<llvm::raw_fd_ostream> FileStream;
   bool &AllWritten;
 };
 } // end anonymous namespace

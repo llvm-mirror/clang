@@ -216,8 +216,11 @@ enum {
 } NS_ENUM_AVAILABLE_MAC(10.9);
 typedef NSInteger NSModalResponse NS_AVAILABLE_MAC(10.9);
 
+// rdar://15201056
+typedef NSUInteger FarFarAwayOptions;
+
 // rdar://15200915
-typedef NSUInteger NSWorkspaceLaunchOptions;
+typedef NSUInteger FarAwayOptions;
 enum {
      NSWorkspaceLaunchAndPrint =                 0x00000002,
      NSWorkspaceLaunchWithErrorPresentation    = 0x00000040,
@@ -231,23 +234,63 @@ enum {
      NSWorkspaceLaunchAndHide                  = 0x00100000,
      NSWorkspaceLaunchAndHideOthers            = 0x00200000,
      NSWorkspaceLaunchDefault = NSWorkspaceLaunchAsync | 
-NSWorkspaceLaunchAllowingClassicStartup
+     NSWorkspaceLaunchAllowingClassicStartup
 };
+typedef NSUInteger NSWorkspaceLaunchOptions;
 
-typedef NSUInteger NSWorkspaceIconCreationOptions;
 enum {
     NSExcludeQuickDrawElementsIconCreationOption    = 1 << 1,
     NSExclude10_4ElementsIconCreationOption         = 1 << 2
 };
+typedef NSUInteger NSExcludeOptions;
 
-typedef NSUInteger NSWorkspaceCreationOptions;
 enum {
     NSExcludeQuickDrawElementsCreationOption    = 1 << 1,
     NSExclude10_4ElementsCreationOption         = 1 << 2
+};
+typedef NSUInteger NSExcludeCreationOption;
+
+enum {
+  FarAway1    = 1 << 1,
+  FarAway2    = 1 << 2
 };
 
 enum {
     NSExcludeQuickDrawElementsIconOption    = 1 << 1,
     NSExclude10_4ElementsIconOption         = 1 << 2
 };
-typedef NSUInteger NSWorkspaceIconOptions;
+typedef NSUInteger NSExcludeIconOptions;
+
+@interface INTF {
+  NSExcludeIconOptions I1;
+  NSExcludeIconOptions I2;
+}
+@end
+
+enum {
+  FarFarAway1    = 1 << 1,
+  FarFarAway2    = 1 << 2
+};
+
+// rdar://15200915
+typedef NS_OPTIONS(NSUInteger, NSWindowOcclusionState) {
+    NSWindowOcclusionStateVisible = 1UL << 1,
+};
+
+typedef NSUInteger NSWindowNumberListOptions;
+
+enum {
+    NSDirectSelection = 0,
+    NSSelectingNext,
+    NSSelectingPrevious
+};
+typedef NSUInteger NSSelectionDirection;
+
+// standard window buttons
+enum {
+    NSWindowCloseButton,
+    NSWindowMiniaturizeButton,
+    NSWindowZoomButton,
+    NSWindowToolbarButton,
+    NSWindowDocumentIconButton
+};

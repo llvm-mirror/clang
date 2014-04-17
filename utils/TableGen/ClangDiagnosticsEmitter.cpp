@@ -472,6 +472,11 @@ static bool isError(const Record &Diag) {
   return ClsName == "CLASS_ERROR";
 }
 
+static bool isRemark(const Record &Diag) {
+  const std::string &ClsName = Diag.getValueAsDef("Class")->getName();
+  return ClsName == "CLASS_REMARK";
+}
+
 /// ClangDiagsDefsEmitter - The top-level class emits .def files containing
 /// declarations of Clang diagnostics.
 namespace clang {
@@ -518,6 +523,14 @@ void EmitClangDiagsDefs(RecordKeeper &Records, raw_ostream &OS,
       }
     }
 
+    // Check that all remarks have an associated diagnostic group.
+    if (isRemark(R)) {
+      if (!isa<DefInit>(R.getValueInit("Group"))) {
+        PrintFatalError(R.getLoc(), "Error " + R.getName() +
+                                        " not in any diagnostic group");
+      }
+    }
+
     // Filter by component.
     if (!Component.empty() && Component != R.getValueAsString("Component"))
       continue;
@@ -546,33 +559,20 @@ void EmitClangDiagsDefs(RecordKeeper &Records, raw_ostream &OS,
       OS << ", 0";
     }
 
-    // SFINAE bit
-    if (R.getValueAsBit("SFINAE"))
+    // SFINAE response.
+    OS << ", " << R.getValueAsDef("SFINAE")->getName();
+
+    // Default warning has no Werror bit.
+    if (R.getValueAsBit("WarningNoWerror"))
       OS << ", true";
     else
       OS << ", false";
 
-    // Access control bit
-    if (R.getValueAsBit("AccessControl"))
+    // Default warning show in system header bit.
+    if (R.getValueAsBit("WarningShowInSystemHeader"))
       OS << ", true";
     else
       OS << ", false";
-
-    // FIXME: This condition is just to avoid temporary revlock, it can be
-    // removed.
-    if (R.getValue("WarningNoWerror")) {
-      // Default warning has no Werror bit.
-      if (R.getValueAsBit("WarningNoWerror"))
-        OS << ", true";
-      else
-        OS << ", false";
-
-      // Default warning show in system header bit.
-      if (R.getValueAsBit("WarningShowInSystemHeader"))
-        OS << ", true";
-      else
-        OS << ", false";
-    }
 
     // Category number.
     OS << ", " << CategoryIDs.getID(getDiagnosticCategory(&R, DGParentMap));
@@ -761,17 +761,6 @@ struct RecordIndexElement
 
   std::string Name;
 };
-
-struct RecordIndexElementSorter :
-  public std::binary_function<RecordIndexElement, RecordIndexElement, bool> {
-
-  bool operator()(RecordIndexElement const &Lhs,
-                  RecordIndexElement const &Rhs) const {
-    return Lhs.Name < Rhs.Name;
-  }
-
-};
-
 } // end anonymous namespace.
 
 namespace clang {
@@ -786,7 +775,9 @@ void EmitClangDiagsIndexName(RecordKeeper &Records, raw_ostream &OS) {
     Index.push_back(RecordIndexElement(R));
   }
 
-  std::sort(Index.begin(), Index.end(), RecordIndexElementSorter());
+  std::sort(Index.begin(), Index.end(),
+            [](const RecordIndexElement &Lhs,
+               const RecordIndexElement &Rhs) { return Lhs.Name < Rhs.Name; });
 
   for (unsigned i = 0, e = Index.size(); i != e; ++i) {
     const RecordIndexElement &R = Index[i];

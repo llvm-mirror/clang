@@ -114,3 +114,12 @@ void LLVMBuildStructGEP() { CreateConstInBoundsGEP2_32(); }
 
 }
 
+namespace PR17661 {
+template <typename T>
+constexpr T Fun(T A) { return T(0); }
+
+constexpr int Var = Fun(20);
+}
+
+template <typename T>
+auto invalidTrailingRetType() -> Bogus {} // expected-error {{unknown type name 'Bogus'}}

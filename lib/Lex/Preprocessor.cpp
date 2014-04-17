@@ -26,7 +26,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Lex/Preprocessor.h"
-#include "clang/Lex/MacroArgs.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
@@ -35,6 +34,7 @@
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/LiteralSupport.h"
+#include "clang/Lex/MacroArgs.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/ModuleLoader.h"
 #include "clang/Lex/Pragma.h"
@@ -42,8 +42,8 @@
 #include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Lex/ScratchBuffer.h"
 #include "llvm/ADT/APFloat.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Capacity.h"
 #include "llvm/Support/ConvertUTF.h"
@@ -59,15 +59,18 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
                            const TargetInfo *target, SourceManager &SM,
                            HeaderSearch &Headers, ModuleLoader &TheModuleLoader,
                            IdentifierInfoLookup *IILookup, bool OwnsHeaders,
-                           bool DelayInitialization, bool IncrProcessing)
+                           bool DelayInitialization, bool IncrProcessing,
+                           TranslationUnitKind TUKind)
     : PPOpts(PPOpts), Diags(&diags), LangOpts(opts), Target(target),
       FileMgr(Headers.getFileMgr()), SourceMgr(SM), HeaderInfo(Headers),
       TheModuleLoader(TheModuleLoader), ExternalSource(0),
       Identifiers(opts, IILookup), IncrementalProcessing(IncrProcessing),
+      TUKind(TUKind),
       CodeComplete(0), CodeCompletionFile(0), CodeCompletionOffset(0),
+      LastTokenWasAt(false), ModuleImportExpectsIdentifier(false),
       CodeCompletionReached(0), SkipMainFilePreamble(0, true), CurPPLexer(0),
-      CurDirLookup(0), CurLexerKind(CLK_Lexer), Callbacks(0),
-      MacroArgCache(0), Record(0), MIChainHead(0), MICache(0),
+      CurDirLookup(0), CurLexerKind(CLK_Lexer), CurSubmodule(0),
+      Callbacks(0), MacroArgCache(0), Record(0), MIChainHead(0), MICache(0),
       DeserialMIChainHead(0) {
   OwnsHeaderSearch = OwnsHeaders;
   
@@ -140,11 +143,7 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
 Preprocessor::~Preprocessor() {
   assert(BacktrackPositions.empty() && "EnableBacktrack/Backtrack imbalance!");
 
-  while (!IncludeMacroStack.empty()) {
-    delete IncludeMacroStack.back().TheLexer;
-    delete IncludeMacroStack.back().TheTokenLexer;
-    IncludeMacroStack.pop_back();
-  }
+  IncludeMacroStack.clear();
 
   // Free any macro definitions.
   for (MacroInfoChain *I = MIChainHead ; I ; I = I->Next)
@@ -502,48 +501,6 @@ void Preprocessor::EndSourceFile() {
 // Lexer Event Handling.
 //===----------------------------------------------------------------------===//
 
-static void appendCodePoint(unsigned Codepoint,
-                            llvm::SmallVectorImpl<char> &Str) {
-  char ResultBuf[4];
-  char *ResultPtr = ResultBuf;
-  bool Res = llvm::ConvertCodePointToUTF8(Codepoint, ResultPtr);
-  (void)Res;
-  assert(Res && "Unexpected conversion failure");
-  Str.append(ResultBuf, ResultPtr);
-}
-
-static void expandUCNs(SmallVectorImpl<char> &Buf, StringRef Input) {
-  for (StringRef::iterator I = Input.begin(), E = Input.end(); I != E; ++I) {
-    if (*I != '\\') {
-      Buf.push_back(*I);
-      continue;
-    }
-
-    ++I;
-    assert(*I == 'u' || *I == 'U');
-
-    unsigned NumHexDigits;
-    if (*I == 'u')
-      NumHexDigits = 4;
-    else
-      NumHexDigits = 8;
-
-    assert(I + NumHexDigits <= E);
-
-    uint32_t CodePoint = 0;
-    for (++I; NumHexDigits != 0; ++I, --NumHexDigits) {
-      unsigned Value = llvm::hexDigitValue(*I);
-      assert(Value != -1U);
-
-      CodePoint <<= 4;
-      CodePoint += Value;
-    }
-
-    appendCodePoint(CodePoint, Buf);
-    --I;
-  }
-}
-
 /// LookUpIdentifierInfo - Given a tok::raw_identifier token, look up the
 /// identifier information for the token and install it into the token,
 /// updating the token kind accordingly.
@@ -668,7 +625,7 @@ bool Preprocessor::HandleIdentifier(Token &Identifier) {
   // name of a macro.
   // FIXME: This warning is disabled in cases where it shouldn't be, like
   //   "#define constexpr constexpr", "int constexpr;"
-  if (II.isCXX11CompatKeyword() & !DisableMacroExpansion) {
+  if (II.isCXX11CompatKeyword() && !DisableMacroExpansion) {
     Diag(Identifier, diag::warn_cxx11_keyword) << II.getName();
     // Don't diagnose this keyword again in this translation unit.
     II.setIsCXX11CompatKeyword(false);
@@ -687,14 +644,15 @@ bool Preprocessor::HandleIdentifier(Token &Identifier) {
   if (II.isExtensionToken() && !DisableMacroExpansion)
     Diag(Identifier, diag::ext_token_used);
   
-  // If this is the 'import' contextual keyword, note
+  // If this is the 'import' contextual keyword following an '@', note
   // that the next token indicates a module name.
   //
   // Note that we do not treat 'import' as a contextual
   // keyword when we're in a caching lexer, because caching lexers only get
   // used in contexts where import declarations are disallowed.
-  if (II.isModulesImport() && !InMacroArgs && !DisableMacroExpansion &&
-      getLangOpts().Modules && CurLexerKind != CLK_CachingLexer) {
+  if (LastTokenWasAt && II.isModulesImport() && !InMacroArgs && 
+      !DisableMacroExpansion && getLangOpts().Modules && 
+      CurLexerKind != CLK_CachingLexer) {
     ModuleImportLoc = Identifier.getLocation();
     ModuleImportPath.clear();
     ModuleImportExpectsIdentifier = true;
@@ -727,6 +685,8 @@ void Preprocessor::Lex(Token &Result) {
       break;
     }
   } while (!ReturnedToken);
+
+  LastTokenWasAt = Result.is(tok::at);
 }
 
 
@@ -812,6 +772,24 @@ bool Preprocessor::FinishLexStringLiteral(Token &Result, std::string &String,
   }
 
   String = Literal.GetString();
+  return true;
+}
+
+bool Preprocessor::parseSimpleIntegerLiteral(Token &Tok, uint64_t &Value) {
+  assert(Tok.is(tok::numeric_constant));
+  SmallString<8> IntegerBuffer;
+  bool NumberInvalid = false;
+  StringRef Spelling = getSpelling(Tok, IntegerBuffer, &NumberInvalid);
+  if (NumberInvalid)
+    return false;
+  NumericLiteralParser Literal(Spelling, Tok.getLocation(), *this);
+  if (Literal.hadError || !Literal.isIntegerLiteral() || Literal.hasUDSuffix())
+    return false;
+  llvm::APInt APVal(64, 0);
+  if (Literal.GetIntegerValue(APVal))
+    return false;
+  Lex(Tok);
+  Value = APVal.getLimitedValue();
   return true;
 }
 

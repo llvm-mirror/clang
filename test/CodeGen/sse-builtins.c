@@ -206,3 +206,34 @@ void test_stream_si128(__m128i x, void *y) {
   // CHECK: store {{.*}} <2 x i64>* {{.*}}, align 16, !nontemporal
   _mm_stream_si128(y, x);
 }
+
+void test_extract_epi16(__m128i __a) {
+  // CHECK-LABEL: define void @test_extract_epi16
+  // CHECK: [[x:%.*]] = and i32 %{{.*}}, 7
+  // CHECK: extractelement <8 x i16> %{{.*}}, i32 [[x]]
+  _mm_extract_epi16(__a, 8);
+}
+
+int test_extract_ps(__m128i __a) {
+  // CHECK-LABEL: @test_extract_ps
+  // CHECK: extractelement <4 x float> %{{.*}}, i32 0
+  return _mm_extract_ps(__a, 4);
+}
+
+int test_extract_epi8(__m128i __a) {
+  // CHECK-LABEL: @test_extract_epi8
+  // CHECK: extractelement <16 x i8> %{{.*}}, i32 0
+  return _mm_extract_epi8(__a, 16);
+}
+
+int test_extract_epi32(__m128i __a) {
+  // CHECK-LABEL: @test_extract_epi32
+  // CHECK: extractelement <4 x i32> %{{.*}}, i32 0
+  return _mm_extract_epi32(__a, 4);
+}
+
+void test_insert_epi32(__m128i __a, int b) {
+  // CHECK-LABEL: @test_insert_epi32
+  // CHECK: insertelement <4 x i32> %{{.*}}, i32 %{{.*}}, i32 0
+   _mm_insert_epi32(__a, b, 4);
+}

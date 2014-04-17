@@ -235,7 +235,10 @@ namespace {
     }
 
     /// Return true if assignments have a non-void result.
-    bool CanCaptureValueOfType(QualType ty) {
+    bool CanCaptureValue(Expr *exp) {
+      if (exp->isGLValue())
+        return true;
+      QualType ty = exp->getType();
       assert(!ty->isIncompleteType());
       assert(!ty->isDependentType());
 
@@ -280,10 +283,10 @@ namespace {
     bool findSetter(bool warn=true);
     bool findGetter();
 
-    Expr *rebuildAndCaptureObject(Expr *syntacticBase);
-    ExprResult buildGet();
-    ExprResult buildSet(Expr *op, SourceLocation, bool);
-    ExprResult complete(Expr *SyntacticForm);
+    Expr *rebuildAndCaptureObject(Expr *syntacticBase) override;
+    ExprResult buildGet() override;
+    ExprResult buildSet(Expr *op, SourceLocation, bool) override;
+    ExprResult complete(Expr *SyntacticForm) override;
 
     bool isWeakProperty() const;
   };
@@ -311,13 +314,13 @@ namespace {
                                        SourceLocation opLoc,
                                        BinaryOperatorKind opcode,
                                        Expr *LHS, Expr *RHS);
-   Expr *rebuildAndCaptureObject(Expr *syntacticBase);
-   
+   Expr *rebuildAndCaptureObject(Expr *syntacticBase) override;
+
    bool findAtIndexGetter();
    bool findAtIndexSetter();
-  
-   ExprResult buildGet();
-   ExprResult buildSet(Expr *op, SourceLocation, bool);
+
+   ExprResult buildGet() override;
+   ExprResult buildSet(Expr *op, SourceLocation, bool) override;
  };
 
  class MSPropertyOpBuilder : public PseudoOpBuilder {
@@ -328,9 +331,9 @@ namespace {
      PseudoOpBuilder(S, refExpr->getSourceRange().getBegin()),
      RefExpr(refExpr) {}
 
-   Expr *rebuildAndCaptureObject(Expr *);
-   ExprResult buildGet();
-   ExprResult buildSet(Expr *op, SourceLocation, bool);
+   Expr *rebuildAndCaptureObject(Expr *) override;
+   ExprResult buildGet() override;
+   ExprResult buildSet(Expr *op, SourceLocation, bool) override;
  };
 }
 
@@ -461,7 +464,7 @@ PseudoOpBuilder::buildIncDecOperation(Scope *Sc, SourceLocation opcLoc,
 
   // That's the postfix result.
   if (UnaryOperator::isPostfix(opcode) &&
-      (result.get()->isTypeDependent() || CanCaptureValueOfType(resultType))) {
+      (result.get()->isTypeDependent() || CanCaptureValue(result.get()))) {
     result = capture(result.take());
     setResultToLastSemantic();
   }
@@ -540,7 +543,7 @@ bool ObjCPropertyOpBuilder::isWeakProperty() const {
 
     T = Prop->getType();
   } else if (Getter) {
-    T = Getter->getResultType();
+    T = Getter->getReturnType();
   } else {
     return false;
   }
@@ -621,7 +624,7 @@ bool ObjCPropertyOpBuilder::findSetter(bool warn) {
         if (ObjCPropertyDecl *prop1 = IFace->FindPropertyDeclaration(AltMember))
           if (prop != prop1 && (prop1->getSetterMethodDecl() == setter)) {
             S.Diag(RefExpr->getExprLoc(), diag::error_property_setter_ambiguous_use)
-              << prop->getName() << prop1->getName() << setter->getSelector();
+              << prop << prop1 << setter->getSelector();
             S.Diag(prop->getLocation(), diag::note_property_declare);
             S.Diag(prop1->getLocation(), diag::note_property_declare);
           }
@@ -730,6 +733,16 @@ ExprResult ObjCPropertyOpBuilder::buildSet(Expr *op, SourceLocation opcLoc,
       op = opResult.take();
       assert(op && "successful assignment left argument invalid?");
     }
+    else if (OpaqueValueExpr *OVE = dyn_cast<OpaqueValueExpr>(op)) {
+      Expr *Initializer = OVE->getSourceExpr();
+      // passing C++11 style initialized temporaries to objc++ properties
+      // requires special treatment by removing OpaqueValueExpr so type
+      // conversion takes place and adding the OpaqueValueExpr later on.
+      if (isa<InitListExpr>(Initializer) &&
+          Initializer->getType()->isVoidType()) {
+        op = Initializer;
+      }
+    }
   }
 
   // Arguments.
@@ -752,7 +765,7 @@ ExprResult ObjCPropertyOpBuilder::buildSet(Expr *op, SourceLocation opcLoc,
     ObjCMessageExpr *msgExpr =
       cast<ObjCMessageExpr>(msg.get()->IgnoreImplicit());
     Expr *arg = msgExpr->getArg(0);
-    if (CanCaptureValueOfType(arg->getType()))
+    if (CanCaptureValue(arg))
       msgExpr->setArg(0, captureValueAsResult(arg));
   }
 
@@ -803,7 +816,7 @@ bool ObjCPropertyOpBuilder::tryBuildGetOfReference(Expr *op,
   assert(Getter && "property has no setter and no getter!");
 
   // Only do this if the getter returns an l-value reference type.
-  QualType resultType = Getter->getResultType();
+  QualType resultType = Getter->getReturnType();
   if (!resultType->isLValueReferenceType()) return false;
 
   result = buildRValueOperation(op);
@@ -1001,8 +1014,6 @@ Sema::ObjCSubscriptKind
   
   // Look for a conversion to an integral, enumeration type, or
   // objective-C pointer type.
-  UnresolvedSet<4> ViableConversions;
-  UnresolvedSet<4> ExplicitConversions;
   std::pair<CXXRecordDecl::conversion_iterator,
             CXXRecordDecl::conversion_iterator> Conversions
     = cast<CXXRecordDecl>(RecordTy->getDecl())->getVisibleConversionFunctions();
@@ -1162,7 +1173,7 @@ bool ObjCSubscriptOpBuilder::findAtIndexGetter() {
              diag::note_parameter_type) << T;
       return false;
     }
-    QualType R = AtIndexGetter->getResultType();
+    QualType R = AtIndexGetter->getReturnType();
     if (!R->isObjCObjectPointerType()) {
       S.Diag(RefExpr->getKeyExpr()->getExprLoc(),
              diag::err_objc_indexing_method_result_type) << R << arrayRef;
@@ -1229,18 +1240,15 @@ bool ObjCSubscriptOpBuilder::findAtIndexSetter() {
                          BaseT->isObjCQualifiedIdType());
 
   if (!AtIndexSetter && S.getLangOpts().DebuggerObjCLiteral) {
-    TypeSourceInfo *ResultTInfo = 0;
+    TypeSourceInfo *ReturnTInfo = 0;
     QualType ReturnType = S.Context.VoidTy;
-    AtIndexSetter = ObjCMethodDecl::Create(S.Context, SourceLocation(),
-                           SourceLocation(), AtIndexSetterSelector,
-                           ReturnType,
-                           ResultTInfo,
-                           S.Context.getTranslationUnitDecl(),
-                           true /*Instance*/, false/*isVariadic*/,
-                           /*isPropertyAccessor=*/false,
-                           /*isImplicitlyDeclared=*/true, /*isDefined=*/false,
-                           ObjCMethodDecl::Required,
-                           false); 
+    AtIndexSetter = ObjCMethodDecl::Create(
+        S.Context, SourceLocation(), SourceLocation(), AtIndexSetterSelector,
+        ReturnType, ReturnTInfo, S.Context.getTranslationUnitDecl(),
+        true /*Instance*/, false /*isVariadic*/,
+        /*isPropertyAccessor=*/false,
+        /*isImplicitlyDeclared=*/true, /*isDefined=*/false,
+        ObjCMethodDecl::Required, false);
     SmallVector<ParmVarDecl *, 2> Params;
     ParmVarDecl *object = ParmVarDecl::Create(S.Context, AtIndexSetter,
                                                 SourceLocation(), SourceLocation(),
@@ -1363,7 +1371,7 @@ ExprResult ObjCSubscriptOpBuilder::buildSet(Expr *op, SourceLocation opcLoc,
     ObjCMessageExpr *msgExpr =
       cast<ObjCMessageExpr>(msg.get()->IgnoreImplicit());
     Expr *arg = msgExpr->getArg(0);
-    if (CanCaptureValueOfType(arg->getType()))
+    if (CanCaptureValue(arg))
       msgExpr->setArg(0, captureValueAsResult(arg));
   }
   
@@ -1385,8 +1393,8 @@ Expr *MSPropertyOpBuilder::rebuildAndCaptureObject(Expr *syntacticBase) {
 
 ExprResult MSPropertyOpBuilder::buildGet() {
   if (!RefExpr->getPropertyDecl()->hasGetter()) {
-    S.Diag(RefExpr->getMemberLoc(), diag::err_no_getter_for_property)
-      << RefExpr->getPropertyDecl()->getName();
+    S.Diag(RefExpr->getMemberLoc(), diag::err_no_accessor_for_property)
+      << 0 /* getter */ << RefExpr->getPropertyDecl();
     return ExprError();
   }
 
@@ -1400,8 +1408,9 @@ ExprResult MSPropertyOpBuilder::buildGet() {
     RefExpr->isArrow() ? tok::arrow : tok::period, SS, SourceLocation(),
     GetterName, 0, true);
   if (GetterExpr.isInvalid()) {
-    S.Diag(RefExpr->getMemberLoc(), diag::error_cannot_find_suitable_getter)
-      << RefExpr->getPropertyDecl()->getName();
+    S.Diag(RefExpr->getMemberLoc(),
+           diag::error_cannot_find_suitable_accessor) << 0 /* getter */
+      << RefExpr->getPropertyDecl();
     return ExprError();
   }
 
@@ -1414,8 +1423,8 @@ ExprResult MSPropertyOpBuilder::buildGet() {
 ExprResult MSPropertyOpBuilder::buildSet(Expr *op, SourceLocation sl,
                                          bool captureSetValueAsResult) {
   if (!RefExpr->getPropertyDecl()->hasSetter()) {
-    S.Diag(RefExpr->getMemberLoc(), diag::err_no_setter_for_property)
-      << RefExpr->getPropertyDecl()->getName();
+    S.Diag(RefExpr->getMemberLoc(), diag::err_no_accessor_for_property)
+      << 1 /* setter */ << RefExpr->getPropertyDecl();
     return ExprError();
   }
 
@@ -1429,8 +1438,9 @@ ExprResult MSPropertyOpBuilder::buildSet(Expr *op, SourceLocation sl,
     RefExpr->isArrow() ? tok::arrow : tok::period, SS, SourceLocation(),
     SetterName, 0, true);
   if (SetterExpr.isInvalid()) {
-    S.Diag(RefExpr->getMemberLoc(), diag::error_cannot_find_suitable_setter)
-      << RefExpr->getPropertyDecl()->getName();
+    S.Diag(RefExpr->getMemberLoc(),
+           diag::error_cannot_find_suitable_accessor) << 1 /* setter */
+      << RefExpr->getPropertyDecl();
     return ExprError();
   }
 

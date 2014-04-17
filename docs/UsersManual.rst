@@ -112,11 +112,11 @@ Options to Control Error and Warning Messages
 
 .. option:: -w
 
-  Disable all warnings.
+  Disable all diagnostics.
 
 .. option:: -Weverything
 
-  :ref:`Enable all warnings. <diagnostics_enable_everything>`
+  :ref:`Enable all diagnostics. <diagnostics_enable_everything>`
 
 .. option:: -pedantic
 
@@ -264,11 +264,6 @@ output format of the diagnostics that it generates.
        ::
 
            t.c +3:11: warning: conversion specifies type 'char *' but the argument has type 'int'
-
-**-f[no-]diagnostics-show-name**
-   Enable the display of the diagnostic name.
-   This option, which defaults to off, controls whether or not Clang
-   prints the associated name.
 
 .. _opt_fdiagnostics-show-option:
 
@@ -587,6 +582,7 @@ All diagnostics are mapped into one of these 5 classes:
 
 -  Ignored
 -  Note
+-  Remark
 -  Warning
 -  Error
 -  Fatal
@@ -704,17 +700,18 @@ the pragma onwards within the same file.
 
   char b = 'ab'; // no warning
 
-The :option:`-isystem-prefix` and :option:`-ino-system-prefix` command-line
-arguments can be used to override whether subsets of an include path are
-treated as system headers. When the name in a ``#include`` directive is
-found within a header search path and starts with a system prefix, the
+The :option:`--system-header-prefix=` and :option:`--no-system-header-prefix=`
+command-line arguments can be used to override whether subsets of an include
+path are treated as system headers. When the name in a ``#include`` directive
+is found within a header search path and starts with a system prefix, the
 header is treated as a system header. The last prefix on the
 command-line which matches the specified header name takes precedence.
 For instance:
 
 .. code-block:: console
 
-  $ clang -Ifoo -isystem bar -isystem-prefix x/ -ino-system-prefix x/y/
+  $ clang -Ifoo -isystem bar --system-header-prefix=x/ \
+      --no-system-header-prefix=x/y/
 
 Here, ``#include "x/a.h"`` is treated as including a system header, even
 if the header is found in ``foo``, and ``#include "x/y/b.h"`` is treated
@@ -727,11 +724,12 @@ is treated as a system header.
 
 .. _diagnostics_enable_everything:
 
-Enabling All Warnings
-^^^^^^^^^^^^^^^^^^^^^
+Enabling All Diagnostics
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 In addition to the traditional ``-W`` flags, one can enable **all**
-warnings by passing :option:`-Weverything`. This works as expected with
+diagnostics by passing :option:`-Weverything`. This works as expected
+with
 :option:`-Werror`, and also includes the warnings from :option:`-pedantic`.
 
 Note that when combined with :option:`-w` (which disables all warnings), that
@@ -765,7 +763,7 @@ on-disk cache that contains the vital information necessary to reduce
 some of the work needed to process a corresponding header file. While
 details of precompiled headers vary between compilers, precompiled
 headers have been shown to be highly effective at speeding up program
-compilation on systems with very large system headers (e.g., Mac OS/X).
+compilation on systems with very large system headers (e.g., Mac OS X).
 
 Generating a PCH File
 ^^^^^^^^^^^^^^^^^^^^^
@@ -921,6 +919,8 @@ are listed below.
       destination.
    -  ``-fsanitize=float-divide-by-zero``: Floating point division by
       zero.
+   -  ``-fsanitize=function``: Indirect call of a function through a
+      function pointer of the wrong type (Linux, C++ and x86/x86_64 only).
    -  ``-fsanitize=integer-divide-by-zero``: Integer division by zero.
    -  ``-fsanitize=null``: Use of a null pointer or creation of a null
       reference.
@@ -969,11 +969,16 @@ are listed below.
    Extra features of MemorySanitizer (require explicit
    ``-fsanitize=memory``):
 
-   -  ``-fsanitize-memory-track-origins``: Enables origin tracking in
+   -  ``-fsanitize-memory-track-origins[=level]``: Enables origin tracking in
       MemorySanitizer. Adds a second section to MemorySanitizer
       reports pointing to the heap or stack allocation the
       uninitialized bits came from. Slows down execution by additional
       1.5x-2x.
+
+      Possible values for level are 0 (off), 1 (default), 2. Level 2 adds more
+      sections to MemorySanitizer reports describing the order of memory stores
+      the uninitialized value went through. Beware, this mode may use a lot of
+      extra memory.
 
    Extra features of UndefinedBehaviorSanitizer:
 
@@ -999,18 +1004,6 @@ are listed below.
    ``-fsanitize=thread``, and ``-fsanitize=memory`` checkers in the same
    program. The ``-fsanitize=undefined`` checks can be combined with other
    sanitizers.
-
-**-f[no-]address-sanitizer**
-   Deprecated synonym for :ref:`-f[no-]sanitize=address
-   <opt_fsanitize_address>`.
-**-f[no-]thread-sanitizer**
-   Deprecated synonym for :ref:`-f[no-]sanitize=thread
-   <opt_fsanitize_thread>`.
-
-.. option:: -fcatch-undefined-behavior
-
-   Deprecated synonym for :ref:`-fsanitize=undefined
-   <opt_fsanitize_undefined>`.
 
 .. option:: -fno-assume-sane-operator-new
 
@@ -1045,6 +1038,33 @@ are listed below.
    efficient model can be used. The TLS model can be overridden per
    variable using the ``tls_model`` attribute.
 
+.. option:: -mhwdiv=[values]
+
+   Select the ARM modes (arm or thumb) that support hardware division
+   instructions.
+
+   Valid values are: ``arm``, ``thumb`` and ``arm,thumb``.
+   This option is used to indicate which mode (arm or thumb) supports
+   hardware division instructions. This only applies to the ARM
+   architecture.
+
+.. option:: -m[no-]crc
+
+   Enable or disable CRC instructions.
+
+   This option is used to indicate whether CRC instructions are to
+   be generated. This only applies to the ARM architecture.
+
+   CRC instructions are enabled by default on ARMv8.
+
+.. option:: -mgeneral-regs-only
+
+   Generate code which only uses the general purpose registers.
+
+   This option restricts the generated code to use general registers
+   only. This only applies to the AArch64 architecture.
+
+
 Controlling Size of Debug Information
 -------------------------------------
 
@@ -1069,17 +1089,42 @@ below. If multiple flags are present, the last one is used.
   Generate complete debug info.
 
 Comment Parsing Options
---------------------------
+-----------------------
 
 Clang parses Doxygen and non-Doxygen style documentation comments and attaches
 them to the appropriate declaration nodes.  By default, it only parses
 Doxygen-style comments and ignores ordinary comments starting with ``//`` and
 ``/*``.
 
+.. option:: -Wdocumentation
+
+  Emit warnings about use of documentation comments.  This warning group is off
+  by default.
+
+  This includes checking that ``\param`` commands name parameters that actually
+  present in the function signature, checking that ``\returns`` is used only on
+  functions that actually return a value etc.
+
+.. option:: -Wno-documentation-unknown-command
+
+  Don't warn when encountering an unknown Doxygen command.
+
 .. option:: -fparse-all-comments
 
   Parse all comments as documentation comments (including ordinary comments
   starting with ``//`` and ``/*``).
+
+.. option:: -fcomment-block-commands=[commands]
+
+  Define custom documentation commands as block commands.  This allows Clang to
+  construct the correct AST for these custom commands, and silences warnings
+  about unknown commands.  Several commands must be separated by a comma
+  *without trailing space*; e.g. ``-fcomment-block-commands=foo,bar`` defines
+  custom commands ``\foo`` and ``\bar``.
+
+  It is also possible to use ``-fcomment-block-commands`` several times; e.g.
+  ``-fcomment-block-commands=foo -fcomment-block-commands=bar`` does the same
+  as above.
 
 .. _c:
 
@@ -1216,23 +1261,23 @@ Microsoft extensions
 --------------------
 
 clang has some experimental support for extensions from Microsoft Visual
-C++; to enable it, use the -fms-extensions command-line option. This is
+C++; to enable it, use the ``-fms-extensions`` command-line option. This is
 the default for Windows targets. Note that the support is incomplete.
-Some constructs such as dllexport on classes are ignored with a warning,
+Some constructs such as ``dllexport`` on classes are ignored with a warning,
 and others such as `Microsoft IDL annotations
 <http://msdn.microsoft.com/en-us/library/8tesw2eh.aspx>`_ are silently
 ignored.
 
-clang has a -fms-compatibility flag that makes clang accept enough
+clang has a ``-fms-compatibility`` flag that makes clang accept enough
 invalid C++ to be able to parse most Microsoft headers. For example, it
 allows `unqualified lookup of dependent base class members
 <http://clang.llvm.org/compatibility.html#dep_lookup_bases>`_, which is
 a common compatibility issue with clang. This flag is enabled by default
 for Windows targets.
 
--fdelayed-template-parsing lets clang delay all template instantiation
-until the end of a translation unit. This flag is enabled by default for
-Windows targets.
+``-fdelayed-template-parsing`` lets clang delay parsing of function template
+definitions until the end of a translation unit. This flag is enabled by
+default for Windows targets.
 
 -  clang allows setting ``_MSC_VER`` with ``-fmsc-version=``. It defaults to
    1700 which is the same as Visual C/C++ 2012. Any number is supported
@@ -1258,8 +1303,8 @@ C++ Language Features
 =====================
 
 clang fully implements all of standard C++98 except for exported
-templates (which were removed in C++11), and `many C++11
-features <http://clang.llvm.org/cxx_status.html>`_ are also implemented.
+templates (which were removed in C++11), and all of standard C++11
+and the current draft standard for C++1y.
 
 Controlling implementation limits
 ---------------------------------
@@ -1277,7 +1322,12 @@ Controlling implementation limits
 .. option:: -ftemplate-depth=N
 
   Sets the limit for recursively nested template instantiations to N.  The
-  default is 1024.
+  default is 256.
+
+.. option:: -foperator-arrow-depth=N
+
+  Sets the limit for iterative calls to 'operator->' functions to N.  The
+  default is 256.
 
 .. _objc:
 
@@ -1302,13 +1352,20 @@ X86
 ^^^
 
 The support for X86 (both 32-bit and 64-bit) is considered stable on
-Darwin (Mac OS/X), Linux, FreeBSD, and Dragonfly BSD: it has been tested
+Darwin (Mac OS X), Linux, FreeBSD, and Dragonfly BSD: it has been tested
 to correctly compile many large C, C++, Objective-C, and Objective-C++
 codebases.
 
-On ``x86_64-mingw32``, passing i128(by value) is incompatible to Microsoft
-x64 calling conversion. You might need to tweak
+On ``x86_64-mingw32``, passing i128(by value) is incompatible with the
+Microsoft x64 calling convention. You might need to tweak
 ``WinX86_64ABIInfo::classify()`` in lib/CodeGen/TargetInfo.cpp.
+
+For the X86 target, clang supports the :option:`-m16` command line
+argument which enables 16-bit code output. This is broadly similar to
+using ``asm(".code16gcc")`` with the GNU toolchain. The generated code
+and the ABI remains 32-bit but the assembler emits instructions
+appropriate for a CPU running in 16-bit mode, with address-size and
+operand-size prefixes to enable 32-bit addressing and operations.
 
 ARM
 ^^^
@@ -1350,15 +1407,16 @@ backend.
 Operating System Features and Limitations
 -----------------------------------------
 
-Darwin (Mac OS/X)
+Darwin (Mac OS X)
 ^^^^^^^^^^^^^^^^^
 
-None
+Thread Sanitizer is not supported.
 
 Windows
 ^^^^^^^
 
-Experimental supports are on Cygming.
+Clang has experimental support for targeting "Cygming" (Cygwin / MinGW)
+platforms.
 
 See also :ref:`Microsoft Extensions <c_ms>`.
 
@@ -1456,6 +1514,8 @@ Execute ``clang-cl /?`` to see a list of supported options:
     /c                     Compile only
     /D <macro[=value]>     Define macro
     /fallback              Fall back to cl.exe if clang-cl fails to compile
+    /FA                    Output assembly code file during compilation
+    /Fa<file or directory> Output assembly code to this file during compilation
     /Fe<file or directory> Set output executable file or directory (ends in / or \)
     /FI<value>             Include file before parsing
     /Fo<file or directory> Set output object file, or directory (ends in / or \)

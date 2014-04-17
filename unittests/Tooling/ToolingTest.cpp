@@ -10,11 +10,14 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclGroup.h"
+#include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Frontend/FrontendActions.h"
 #include "clang/Tooling/CompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Config/config.h"
 #include "gtest/gtest.h"
 #include <string>
 
@@ -58,12 +61,7 @@ TEST(runToolOnCode, FindsNoTopLevelDeclOnEmptyCode) {
   bool FoundTopLevelDecl = false;
   EXPECT_TRUE(runToolOnCode(
       new TestAction(new FindTopLevelDeclConsumer(&FoundTopLevelDecl)), ""));
-#if !defined(_MSC_VER)
   EXPECT_FALSE(FoundTopLevelDecl);
-#else
-  // FIXME: LangOpts.MicrosoftExt appends "class type_info;"
-  EXPECT_TRUE(FoundTopLevelDecl);
-#endif
 }
 
 namespace {
@@ -83,6 +81,18 @@ class FindClassDeclXConsumer : public clang::ASTConsumer {
  private:
   bool *FoundClassDeclX;
 };
+bool FindClassDeclX(ASTUnit *AST) {
+  for (std::vector<Decl *>::iterator i = AST->top_level_begin(),
+                                     e = AST->top_level_end();
+       i != e; ++i) {
+    if (CXXRecordDecl* Record = dyn_cast<clang::CXXRecordDecl>(*i)) {
+      if (Record->getName() == "X") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 } // end namespace
 
 TEST(runToolOnCode, FindsClassDecl) {
@@ -97,10 +107,20 @@ TEST(runToolOnCode, FindsClassDecl) {
   EXPECT_FALSE(FoundClassDeclX);
 }
 
+TEST(buildASTFromCode, FindsClassDecl) {
+  std::unique_ptr<ASTUnit> AST(buildASTFromCode("class X;"));
+  ASSERT_TRUE(AST.get());
+  EXPECT_TRUE(FindClassDeclX(AST.get()));
+
+  AST.reset(buildASTFromCode("class Y;"));
+  ASSERT_TRUE(AST.get());
+  EXPECT_FALSE(FindClassDeclX(AST.get()));
+}
+
 TEST(newFrontendActionFactory, CreatesFrontendActionFactoryFromType) {
-  OwningPtr<FrontendActionFactory> Factory(
+  std::unique_ptr<FrontendActionFactory> Factory(
       newFrontendActionFactory<SyntaxOnlyAction>());
-  OwningPtr<FrontendAction> Action(Factory->create());
+  std::unique_ptr<FrontendAction> Action(Factory->create());
   EXPECT_TRUE(Action.get() != NULL);
 }
 
@@ -112,29 +132,53 @@ struct IndependentFrontendActionCreator {
 
 TEST(newFrontendActionFactory, CreatesFrontendActionFactoryFromFactoryType) {
   IndependentFrontendActionCreator Creator;
-  OwningPtr<FrontendActionFactory> Factory(
+  std::unique_ptr<FrontendActionFactory> Factory(
       newFrontendActionFactory(&Creator));
-  OwningPtr<FrontendAction> Action(Factory->create());
+  std::unique_ptr<FrontendAction> Action(Factory->create());
   EXPECT_TRUE(Action.get() != NULL);
 }
 
 TEST(ToolInvocation, TestMapVirtualFile) {
-  clang::FileManager Files((clang::FileSystemOptions()));
+  IntrusiveRefCntPtr<clang::FileManager> Files(
+      new clang::FileManager(clang::FileSystemOptions()));
   std::vector<std::string> Args;
   Args.push_back("tool-executable");
   Args.push_back("-Idef");
   Args.push_back("-fsyntax-only");
   Args.push_back("test.cpp");
-  clang::tooling::ToolInvocation Invocation(Args, new SyntaxOnlyAction, &Files);
+  clang::tooling::ToolInvocation Invocation(Args, new SyntaxOnlyAction,
+                                            Files.getPtr());
   Invocation.mapVirtualFile("test.cpp", "#include <abc>\n");
   Invocation.mapVirtualFile("def/abc", "\n");
+  EXPECT_TRUE(Invocation.run());
+}
+
+TEST(ToolInvocation, TestVirtualModulesCompilation) {
+  // FIXME: Currently, this only tests that we don't exit with an error if a
+  // mapped module.map is found on the include path. In the future, expand this
+  // test to run a full modules enabled compilation, so we make sure we can
+  // rerun modules compilations with a virtual file system.
+  IntrusiveRefCntPtr<clang::FileManager> Files(
+      new clang::FileManager(clang::FileSystemOptions()));
+  std::vector<std::string> Args;
+  Args.push_back("tool-executable");
+  Args.push_back("-Idef");
+  Args.push_back("-fsyntax-only");
+  Args.push_back("test.cpp");
+  clang::tooling::ToolInvocation Invocation(Args, new SyntaxOnlyAction,
+                                            Files.getPtr());
+  Invocation.mapVirtualFile("test.cpp", "#include <abc>\n");
+  Invocation.mapVirtualFile("def/abc", "\n");
+  // Add a module.map file in the include directory of our header, so we trigger
+  // the module.map header search logic.
+  Invocation.mapVirtualFile("def/module.map", "\n");
   EXPECT_TRUE(Invocation.run());
 }
 
 struct VerifyEndCallback : public SourceFileCallbacks {
   VerifyEndCallback() : BeginCalled(0), EndCalled(0), Matched(false) {}
   virtual bool handleBeginSource(CompilerInstance &CI,
-                                 StringRef Filename) LLVM_OVERRIDE {
+                                 StringRef Filename) override {
     ++BeginCalled;
     return true;
   }
@@ -149,7 +193,7 @@ struct VerifyEndCallback : public SourceFileCallbacks {
   bool Matched;
 };
 
-#if !defined(_WIN32)
+#if !defined(LLVM_ON_WIN32)
 TEST(newFrontendActionFactory, InjectsSourceFileCallbacks) {
   VerifyEndCallback EndCallback;
 
@@ -193,6 +237,21 @@ TEST(runToolOnCode, TestSkipFunctionBody) {
                              "int skipMeNot() { an_error_here }"));
 }
 
+TEST(runToolOnCodeWithArgs, TestNoDepFile) {
+  llvm::SmallString<32> DepFilePath;
+  ASSERT_FALSE(
+      llvm::sys::fs::createTemporaryFile("depfile", "d", DepFilePath));
+  std::vector<std::string> Args;
+  Args.push_back("-MMD");
+  Args.push_back("-MT");
+  Args.push_back(DepFilePath.str());
+  Args.push_back("-MF");
+  Args.push_back(DepFilePath.str());
+  EXPECT_TRUE(runToolOnCodeWithArgs(new SkipBodyAction, "", Args));
+  EXPECT_FALSE(llvm::sys::fs::exists(DepFilePath.str()));
+  EXPECT_FALSE(llvm::sys::fs::remove(DepFilePath.str()));
+}
+
 struct CheckSyntaxOnlyAdjuster: public ArgumentsAdjuster {
   bool &Found;
   bool &Ran;
@@ -200,7 +259,7 @@ struct CheckSyntaxOnlyAdjuster: public ArgumentsAdjuster {
   CheckSyntaxOnlyAdjuster(bool &Found, bool &Ran) : Found(Found), Ran(Ran) { }
 
   virtual CommandLineArguments
-  Adjust(const CommandLineArguments &Args) LLVM_OVERRIDE {
+  Adjust(const CommandLineArguments &Args) override {
     Ran = true;
     for (unsigned I = 0, E = Args.size(); I != E; ++I) {
       if (Args[I] == "-fsyntax-only") {
@@ -233,6 +292,57 @@ TEST(ClangToolTest, ArgumentAdjusters) {
   EXPECT_TRUE(Ran);
   EXPECT_FALSE(Found);
 }
+
+#ifndef LLVM_ON_WIN32
+TEST(ClangToolTest, BuildASTs) {
+  FixedCompilationDatabase Compilations("/", std::vector<std::string>());
+
+  std::vector<std::string> Sources;
+  Sources.push_back("/a.cc");
+  Sources.push_back("/b.cc");
+  ClangTool Tool(Compilations, Sources);
+
+  Tool.mapVirtualFile("/a.cc", "void a() {}");
+  Tool.mapVirtualFile("/b.cc", "void b() {}");
+
+  std::vector<ASTUnit *> ASTs;
+  EXPECT_EQ(0, Tool.buildASTs(ASTs));
+  EXPECT_EQ(2u, ASTs.size());
+
+  llvm::DeleteContainerPointers(ASTs);
+}
+
+struct TestDiagnosticConsumer : public DiagnosticConsumer {
+  TestDiagnosticConsumer() : NumDiagnosticsSeen(0) {}
+  virtual void HandleDiagnostic(DiagnosticsEngine::Level DiagLevel,
+                                const Diagnostic &Info) {
+    ++NumDiagnosticsSeen;
+  }
+  unsigned NumDiagnosticsSeen;
+};
+
+TEST(ClangToolTest, InjectDiagnosticConsumer) {
+  FixedCompilationDatabase Compilations("/", std::vector<std::string>());
+  ClangTool Tool(Compilations, std::vector<std::string>(1, "/a.cc"));
+  Tool.mapVirtualFile("/a.cc", "int x = undeclared;");
+  TestDiagnosticConsumer Consumer;
+  Tool.setDiagnosticConsumer(&Consumer);
+  Tool.run(newFrontendActionFactory<SyntaxOnlyAction>());
+  EXPECT_EQ(1u, Consumer.NumDiagnosticsSeen);
+}
+
+TEST(ClangToolTest, InjectDiagnosticConsumerInBuildASTs) {
+  FixedCompilationDatabase Compilations("/", std::vector<std::string>());
+  ClangTool Tool(Compilations, std::vector<std::string>(1, "/a.cc"));
+  Tool.mapVirtualFile("/a.cc", "int x = undeclared;");
+  TestDiagnosticConsumer Consumer;
+  Tool.setDiagnosticConsumer(&Consumer);
+  std::vector<ASTUnit*> ASTs;
+  Tool.buildASTs(ASTs);
+  EXPECT_EQ(1u, ASTs.size());
+  EXPECT_EQ(1u, Consumer.NumDiagnosticsSeen);
+}
+#endif
 
 } // end namespace tooling
 } // end namespace clang

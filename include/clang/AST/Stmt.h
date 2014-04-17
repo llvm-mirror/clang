@@ -371,12 +371,12 @@ public:
 
   /// \brief Dumps the specified AST fragment and all subtrees to
   /// \c llvm::errs().
-  LLVM_ATTRIBUTE_USED void dump() const;
-  LLVM_ATTRIBUTE_USED void dump(SourceManager &SM) const;
+  void dump() const;
+  void dump(SourceManager &SM) const;
   void dump(raw_ostream &OS, SourceManager &SM) const;
 
   /// dumpColor - same as dump(), but forces color highlighting.
-  LLVM_ATTRIBUTE_USED void dumpColor() const;
+  void dumpColor() const;
 
   /// dumpPretty/printPretty - These two methods do a "pretty print" of the AST
   /// back to its original source language syntax.
@@ -485,7 +485,13 @@ public:
 
   typedef DeclGroupRef::iterator decl_iterator;
   typedef DeclGroupRef::const_iterator const_decl_iterator;
+  typedef llvm::iterator_range<decl_iterator> decl_range;
+  typedef llvm::iterator_range<const_decl_iterator> decl_const_range;
 
+  decl_range decls() { return decl_range(decl_begin(), decl_end()); }
+  decl_const_range decls() const {
+    return decl_const_range(decl_begin(), decl_end());
+  }
   decl_iterator decl_begin() { return DG.begin(); }
   decl_iterator decl_end() { return DG.end(); }
   const_decl_iterator decl_begin() const { return DG.begin(); }
@@ -547,7 +553,7 @@ public:
   CompoundStmt(const ASTContext &C, ArrayRef<Stmt*> Stmts,
                SourceLocation LB, SourceLocation RB);
 
-  // \brief Build an empty compound statment with a location.
+  // \brief Build an empty compound statement with a location.
   explicit CompoundStmt(SourceLocation Loc)
     : Stmt(CompoundStmtClass), Body(0), LBracLoc(Loc), RBracLoc(Loc) {
     CompoundStmtBits.NumStmts = 0;
@@ -565,6 +571,9 @@ public:
   unsigned size() const { return CompoundStmtBits.NumStmts; }
 
   typedef Stmt** body_iterator;
+  typedef llvm::iterator_range<body_iterator> body_range;
+
+  body_range body() { return body_range(body_begin(), body_end()); }
   body_iterator body_begin() { return Body; }
   body_iterator body_end() { return Body + size(); }
   Stmt *body_back() { return !body_empty() ? Body[size()-1] : 0; }
@@ -575,6 +584,11 @@ public:
   }
 
   typedef Stmt* const * const_body_iterator;
+  typedef llvm::iterator_range<const_body_iterator> body_const_range;
+
+  body_const_range body() const {
+    return body_const_range(body_begin(), body_end());
+  }
   const_body_iterator body_begin() const { return Body; }
   const_body_iterator body_end() const { return Body + size(); }
   const Stmt *body_back() const { return !body_empty() ? Body[size()-1] : 0; }
@@ -612,11 +626,11 @@ public:
 
   // Iterators
   child_range children() {
-    return child_range(&Body[0], &Body[0]+CompoundStmtBits.NumStmts);
+    return child_range(Body, Body + CompoundStmtBits.NumStmts);
   }
 
   const_child_range children() const {
-    return child_range(&Body[0], &Body[0]+CompoundStmtBits.NumStmts);
+    return child_range(Body, Body + CompoundStmtBits.NumStmts);
   }
 };
 
@@ -1767,7 +1781,7 @@ public:
   }
 
   child_range children() {
-    return child_range(&Exprs[0], &Exprs[0]);
+    return child_range(&Exprs[0], &Exprs[NumInputs + NumOutputs]);
   }
 };
 
@@ -2042,6 +2056,15 @@ public:
   /// \brief An iterator that walks over the captures.
   typedef Capture *capture_iterator;
   typedef const Capture *const_capture_iterator;
+  typedef llvm::iterator_range<capture_iterator> capture_range;
+  typedef llvm::iterator_range<const_capture_iterator> capture_const_range;
+
+  capture_range captures() {
+    return capture_range(capture_begin(), capture_end());
+  }
+  capture_const_range captures() const {
+    return capture_const_range(capture_begin(), capture_end());
+  }
 
   /// \brief Retrieve an iterator pointing to the first capture.
   capture_iterator capture_begin() { return getStoredCaptures(); }
@@ -2058,6 +2081,11 @@ public:
 
   /// \brief Iterator that walks over the capture initialization arguments.
   typedef Expr **capture_init_iterator;
+  typedef llvm::iterator_range<capture_init_iterator> capture_init_range;
+
+  capture_init_range capture_inits() const {
+    return capture_init_range(capture_init_begin(), capture_init_end());
+  }
 
   /// \brief Retrieve the first initialization argument.
   capture_init_iterator capture_init_begin() const {

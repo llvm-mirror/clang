@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 #include "clang/AST/ASTDiagnostic.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/Attr.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/ExprCXX.h"
@@ -48,6 +49,11 @@ static QualType Desugar(ASTContext &Context, QualType QT, bool &ShouldAKA) {
     }
     // ...or an attributed type...
     if (const AttributedType *AT = dyn_cast<AttributedType>(Ty)) {
+      QT = AT->desugar();
+      continue;
+    }
+    // ...or an adjusted type...
+    if (const AdjustedType *AT = dyn_cast<AdjustedType>(Ty)) {
       QT = AT->desugar();
       continue;
     }
@@ -354,6 +360,14 @@ void clang::FormatASTNodeDiagnosticArgument(
       NeedQuotes = false;
       break;
     }
+    case DiagnosticsEngine::ak_attr: {
+      const Attr *At = reinterpret_cast<Attr *>(Val);
+      assert(At && "Received null Attr object!");
+      OS << '\'' << At->getSpelling() << '\'';
+      NeedQuotes = false;
+      break;
+    }
+
   }
 
   OS.flush();
@@ -1349,8 +1363,7 @@ class TemplateDiff {
         FromType.getLocalUnqualifiedType() ==
         ToType.getLocalUnqualifiedType()) {
       Qualifiers FromQual = FromType.getLocalQualifiers(),
-                 ToQual = ToType.getLocalQualifiers(),
-                 CommonQual;
+                 ToQual = ToType.getLocalQualifiers();
       PrintQualifiers(FromQual, ToQual);
       FromType.getLocalUnqualifiedType().print(OS, Policy);
       return;

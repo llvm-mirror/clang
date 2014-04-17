@@ -178,8 +178,7 @@ static llvm::Constant *createAtExitStub(CodeGenModule &CGM, const VarDecl &VD,
   CodeGenFunction CGF(CGM);
 
   CGF.StartFunction(&VD, CGM.getContext().VoidTy, fn,
-                    CGM.getTypes().arrangeNullaryFunction(), FunctionArgList(),
-                    SourceLocation());
+                    CGM.getTypes().arrangeNullaryFunction(), FunctionArgList());
 
   llvm::CallInst *call = CGF.Builder.CreateCall(dtor, addr);
  
@@ -281,9 +280,8 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
     // FIXME: We only need to register one __cxa_thread_atexit function for the
     // entire TU.
     CXXThreadLocalInits.push_back(Fn);
-  } else if (D->hasAttr<InitPriorityAttr>()) {
-    unsigned int order = D->getAttr<InitPriorityAttr>()->getPriority();
-    OrderGlobalInits Key(order, PrioritizedCXXGlobalInits.size());
+  } else if (const InitPriorityAttr *IPA = D->getAttr<InitPriorityAttr>()) {
+    OrderGlobalInits Key(IPA->getPriority(), PrioritizedCXXGlobalInits.size());
     PrioritizedCXXGlobalInits.push_back(std::make_pair(Key, Fn));
     DelayedCXXInitPosition.erase(D);
   } else if (D->getTemplateSpecializationKind() != TSK_ExplicitSpecialization &&
@@ -413,7 +411,8 @@ void CodeGenFunction::GenerateCXXGlobalVarDeclInitFunc(llvm::Function *Fn,
 
   StartFunction(GlobalDecl(D), getContext().VoidTy, Fn,
                 getTypes().arrangeNullaryFunction(),
-                FunctionArgList(), D->getInit()->getExprLoc());
+                FunctionArgList(), D->getLocation(),
+                D->getInit()->getExprLoc());
 
   // Use guarded initialization if the global variable is weak. This
   // occurs for, e.g., instantiated static data members and
@@ -432,44 +431,49 @@ void
 CodeGenFunction::GenerateCXXGlobalInitFunc(llvm::Function *Fn,
                                            ArrayRef<llvm::Constant *> Decls,
                                            llvm::GlobalVariable *Guard) {
-  StartFunction(GlobalDecl(), getContext().VoidTy, Fn,
-                getTypes().arrangeNullaryFunction(),
-                FunctionArgList(), SourceLocation());
+  {
+    ArtificialLocation AL(*this, Builder);
+    StartFunction(GlobalDecl(), getContext().VoidTy, Fn,
+                  getTypes().arrangeNullaryFunction(), FunctionArgList());
+    // Emit an artificial location for this function.
+    AL.Emit();
 
-  llvm::BasicBlock *ExitBlock = 0;
-  if (Guard) {
-    // If we have a guard variable, check whether we've already performed these
-    // initializations. This happens for TLS initialization functions.
-    llvm::Value *GuardVal = Builder.CreateLoad(Guard);
-    llvm::Value *Uninit = Builder.CreateIsNull(GuardVal, "guard.uninitialized");
-    // Mark as initialized before initializing anything else. If the
-    // initializers use previously-initialized thread_local vars, that's
-    // probably supposed to be OK, but the standard doesn't say.
-    Builder.CreateStore(llvm::ConstantInt::get(GuardVal->getType(), 1), Guard);
-    llvm::BasicBlock *InitBlock = createBasicBlock("init");
-    ExitBlock = createBasicBlock("exit");
-    Builder.CreateCondBr(Uninit, InitBlock, ExitBlock);
-    EmitBlock(InitBlock);
-  }
+    llvm::BasicBlock *ExitBlock = 0;
+    if (Guard) {
+      // If we have a guard variable, check whether we've already performed
+      // these initializations. This happens for TLS initialization functions.
+      llvm::Value *GuardVal = Builder.CreateLoad(Guard);
+      llvm::Value *Uninit = Builder.CreateIsNull(GuardVal,
+                                                 "guard.uninitialized");
+      // Mark as initialized before initializing anything else. If the
+      // initializers use previously-initialized thread_local vars, that's
+      // probably supposed to be OK, but the standard doesn't say.
+      Builder.CreateStore(llvm::ConstantInt::get(GuardVal->getType(),1), Guard);
+      llvm::BasicBlock *InitBlock = createBasicBlock("init");
+      ExitBlock = createBasicBlock("exit");
+      Builder.CreateCondBr(Uninit, InitBlock, ExitBlock);
+      EmitBlock(InitBlock);
+    }
 
-  RunCleanupsScope Scope(*this);
+    RunCleanupsScope Scope(*this);
 
-  // When building in Objective-C++ ARC mode, create an autorelease pool
-  // around the global initializers.
-  if (getLangOpts().ObjCAutoRefCount && getLangOpts().CPlusPlus) {    
-    llvm::Value *token = EmitObjCAutoreleasePoolPush();
-    EmitObjCAutoreleasePoolCleanup(token);
-  }
+    // When building in Objective-C++ ARC mode, create an autorelease pool
+    // around the global initializers.
+    if (getLangOpts().ObjCAutoRefCount && getLangOpts().CPlusPlus) {
+      llvm::Value *token = EmitObjCAutoreleasePoolPush();
+      EmitObjCAutoreleasePoolCleanup(token);
+    }
 
-  for (unsigned i = 0, e = Decls.size(); i != e; ++i)
-    if (Decls[i])
-      EmitRuntimeCall(Decls[i]);
+    for (unsigned i = 0, e = Decls.size(); i != e; ++i)
+      if (Decls[i])
+        EmitRuntimeCall(Decls[i]);
 
-  Scope.ForceCleanup();
+    Scope.ForceCleanup();
 
-  if (ExitBlock) {
-    Builder.CreateBr(ExitBlock);
-    EmitBlock(ExitBlock);
+    if (ExitBlock) {
+      Builder.CreateBr(ExitBlock);
+      EmitBlock(ExitBlock);
+    }
   }
 
   FinishFunction();
@@ -478,18 +482,22 @@ CodeGenFunction::GenerateCXXGlobalInitFunc(llvm::Function *Fn,
 void CodeGenFunction::GenerateCXXGlobalDtorsFunc(llvm::Function *Fn,
                   const std::vector<std::pair<llvm::WeakVH, llvm::Constant*> >
                                                 &DtorsAndObjects) {
-  StartFunction(GlobalDecl(), getContext().VoidTy, Fn,
-                getTypes().arrangeNullaryFunction(),
-                FunctionArgList(), SourceLocation());
+  {
+    ArtificialLocation AL(*this, Builder);
+    StartFunction(GlobalDecl(), getContext().VoidTy, Fn,
+                  getTypes().arrangeNullaryFunction(), FunctionArgList());
+    // Emit an artificial location for this function.
+    AL.Emit();
 
-  // Emit the dtors, in reverse order from construction.
-  for (unsigned i = 0, e = DtorsAndObjects.size(); i != e; ++i) {
-    llvm::Value *Callee = DtorsAndObjects[e - i - 1].first;
-    llvm::CallInst *CI = Builder.CreateCall(Callee,
-                                            DtorsAndObjects[e - i - 1].second);
-    // Make sure the call and the callee agree on calling convention.
-    if (llvm::Function *F = dyn_cast<llvm::Function>(Callee))
-      CI->setCallingConv(F->getCallingConv());
+    // Emit the dtors, in reverse order from construction.
+    for (unsigned i = 0, e = DtorsAndObjects.size(); i != e; ++i) {
+      llvm::Value *Callee = DtorsAndObjects[e - i - 1].first;
+      llvm::CallInst *CI = Builder.CreateCall(Callee,
+                                          DtorsAndObjects[e - i - 1].second);
+      // Make sure the call and the callee agree on calling convention.
+      if (llvm::Function *F = dyn_cast<llvm::Function>(Callee))
+        CI->setCallingConv(F->getCallingConv());
+    }
   }
 
   FinishFunction();
@@ -503,16 +511,14 @@ llvm::Function *CodeGenFunction::generateDestroyHelper(
   FunctionArgList args;
   ImplicitParamDecl dst(0, SourceLocation(), 0, getContext().VoidPtrTy);
   args.push_back(&dst);
-  
-  const CGFunctionInfo &FI = 
-    CGM.getTypes().arrangeFunctionDeclaration(getContext().VoidTy, args,
-                                              FunctionType::ExtInfo(),
-                                              /*variadic*/ false);
+
+  const CGFunctionInfo &FI = CGM.getTypes().arrangeFreeFunctionDeclaration(
+      getContext().VoidTy, args, FunctionType::ExtInfo(), /*variadic=*/false);
   llvm::FunctionType *FTy = CGM.getTypes().GetFunctionType(FI);
   llvm::Function *fn = 
     CreateGlobalInitOrDestructFunction(CGM, FTy, "__cxx_global_array_dtor");
 
-  StartFunction(VD, getContext().VoidTy, fn, FI, args, SourceLocation());
+  StartFunction(VD, getContext().VoidTy, fn, FI, args);
 
   emitDestroy(addr, type, destroyer, useEHCleanupForArray);
   

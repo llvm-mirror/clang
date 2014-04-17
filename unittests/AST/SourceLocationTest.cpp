@@ -17,11 +17,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/AST/ASTContext.h"
+#include "MatchVerifier.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Tooling/Tooling.h"
 #include "gtest/gtest.h"
-#include "MatchVerifier.h"
 
 namespace clang {
 namespace ast_matchers {
@@ -209,6 +209,16 @@ TEST(CXXFunctionalCastExpr, SourceRange) {
       "  return int{};\n"
       "}",
       functionalCastExpr(), Lang_CXX11));
+}
+
+TEST(CXXConstructExpr, SourceRange) {
+  RangeVerifier<CXXConstructExpr> Verifier;
+  Verifier.expectRange(3, 14, 3, 19);
+  EXPECT_TRUE(Verifier.match(
+      "struct A { A(int, int); };\n"
+      "void f(A a);\n"
+      "void g() { f({0, 0}); }",
+      constructExpr(), Lang_CXX11));
 }
 
 TEST(CXXTemporaryObjectExpr, SourceRange) {

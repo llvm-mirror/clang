@@ -17,8 +17,8 @@
 #include "TargetInfo.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/StmtObjC.h"
+#include "llvm/IR/CallSite.h"
 #include "llvm/IR/Intrinsics.h"
-#include "llvm/Support/CallSite.h"
 
 using namespace clang;
 using namespace CodeGen;
@@ -263,12 +263,9 @@ static llvm::Constant *getOpaquePersonalityFn(CodeGenModule &CGM,
 /// Check whether a personality function could reasonably be swapped
 /// for a C++ personality function.
 static bool PersonalityHasOnlyCXXUses(llvm::Constant *Fn) {
-  for (llvm::Constant::use_iterator
-         I = Fn->use_begin(), E = Fn->use_end(); I != E; ++I) {
-    llvm::User *User = *I;
-
+  for (llvm::User *U : Fn->users()) {
     // Conditionally white-list bitcasts.
-    if (llvm::ConstantExpr *CE = dyn_cast<llvm::ConstantExpr>(User)) {
+    if (llvm::ConstantExpr *CE = dyn_cast<llvm::ConstantExpr>(U)) {
       if (CE->getOpcode() != llvm::Instruction::BitCast) return false;
       if (!PersonalityHasOnlyCXXUses(CE))
         return false;
@@ -276,7 +273,7 @@ static bool PersonalityHasOnlyCXXUses(llvm::Constant *Fn) {
     }
 
     // Otherwise, it has to be a landingpad instruction.
-    llvm::LandingPadInst *LPI = dyn_cast<llvm::LandingPadInst>(User);
+    llvm::LandingPadInst *LPI = dyn_cast<llvm::LandingPadInst>(U);
     if (!LPI) return false;
 
     for (unsigned I = 0, E = LPI->getNumClauses(); I != E; ++I) {
@@ -363,7 +360,7 @@ namespace {
   struct FreeException : EHScopeStack::Cleanup {
     llvm::Value *exn;
     FreeException(llvm::Value *exn) : exn(exn) {}
-    void Emit(CodeGenFunction &CGF, Flags flags) {
+    void Emit(CodeGenFunction &CGF, Flags flags) override {
       CGF.EmitNounwindRuntimeCall(getFreeExceptionFn(CGF.CGM), exn);
     }
   };
@@ -766,11 +763,9 @@ llvm::BasicBlock *CodeGenFunction::EmitLandingPad() {
 
   // Save the current IR generation state.
   CGBuilderTy::InsertPoint savedIP = Builder.saveAndClearIP();
-  SourceLocation SavedLocation;
-  if (CGDebugInfo *DI = getDebugInfo()) {
-    SavedLocation = DI->getLocation();
+  SaveAndRestoreLocation AutoRestoreLocation(*this, Builder);
+  if (CGDebugInfo *DI = getDebugInfo())
     DI->EmitLocation(Builder, CurEHLocation);
-  }
 
   const EHPersonality &personality = EHPersonality::get(getLangOpts());
 
@@ -892,8 +887,6 @@ llvm::BasicBlock *CodeGenFunction::EmitLandingPad() {
 
   // Restore the old IR generation state.
   Builder.restoreIP(savedIP);
-  if (CGDebugInfo *DI = getDebugInfo())
-    DI->EmitLocation(Builder, SavedLocation);
 
   return lpad;
 }
@@ -915,7 +908,7 @@ namespace {
     CallEndCatch(bool MightThrow) : MightThrow(MightThrow) {}
     bool MightThrow;
 
-    void Emit(CodeGenFunction &CGF, Flags flags) {
+    void Emit(CodeGenFunction &CGF, Flags flags) override {
       if (!MightThrow) {
         CGF.EmitNounwindRuntimeCall(getEndCatchFn(CGF.CGM));
         return;
@@ -1244,6 +1237,7 @@ void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
 
   // If the catch was not required, bail out now.
   if (!CatchScope.hasEHBranches()) {
+    CatchScope.clearHandlerBlocks();
     EHStack.popCatch();
     return;
   }
@@ -1294,6 +1288,10 @@ void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
     // Initialize the catch variable and set up the cleanups.
     BeginCatch(*this, C);
 
+    // Emit the PGO counter increment.
+    RegionCounter CatchCnt = getPGORegionCounter(C);
+    CatchCnt.beginRegion(Builder);
+
     // Perform the body of the catch.
     EmitStmt(C->getHandlerBlock());
 
@@ -1320,7 +1318,9 @@ void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
       Builder.CreateBr(ContBB);
   }
 
+  RegionCounter ContCnt = getPGORegionCounter(&S);
   EmitBlock(ContBB);
+  ContCnt.beginRegion(Builder);
 }
 
 namespace {
@@ -1330,7 +1330,7 @@ namespace {
     CallEndCatchForFinally(llvm::Value *ForEHVar, llvm::Value *EndCatchFn)
       : ForEHVar(ForEHVar), EndCatchFn(EndCatchFn) {}
 
-    void Emit(CodeGenFunction &CGF, Flags flags) {
+    void Emit(CodeGenFunction &CGF, Flags flags) override {
       llvm::BasicBlock *EndCatchBB = CGF.createBasicBlock("finally.endcatch");
       llvm::BasicBlock *CleanupContBB =
         CGF.createBasicBlock("finally.cleanup.cont");
@@ -1357,7 +1357,7 @@ namespace {
       : Body(Body), ForEHVar(ForEHVar), EndCatchFn(EndCatchFn),
         RethrowFn(RethrowFn), SavedExnVar(SavedExnVar) {}
 
-    void Emit(CodeGenFunction &CGF, Flags flags) {
+    void Emit(CodeGenFunction &CGF, Flags flags) override {
       // Enter a cleanup to call the end-catch function if one was provided.
       if (EndCatchFn)
         CGF.EHStack.pushCleanup<CallEndCatchForFinally>(NormalAndEHCleanup,

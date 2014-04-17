@@ -41,7 +41,7 @@ namespace {
         : Out(Out ? *Out : llvm::outs()), Dump(Dump),
           FilterString(FilterString), DumpLookups(DumpLookups) {}
 
-    virtual void HandleTranslationUnit(ASTContext &Context) {
+    void HandleTranslationUnit(ASTContext &Context) override {
       TranslationUnitDecl *D = Context.getTranslationUnitDecl();
 
       if (FilterString.empty())
@@ -101,13 +101,13 @@ namespace {
     ASTDeclNodeLister(raw_ostream *Out = NULL)
         : Out(Out ? *Out : llvm::outs()) {}
 
-    virtual void HandleTranslationUnit(ASTContext &Context) {
+    void HandleTranslationUnit(ASTContext &Context) override {
       TraverseDecl(Context.getTranslationUnitDecl());
     }
 
     bool shouldWalkTypesOfTypeLocs() const { return false; }
 
-    virtual bool VisitNamedDecl(NamedDecl *D) {
+    bool VisitNamedDecl(NamedDecl *D) {
       D->printQualifiedName(Out);
       Out << '\n';
       return true;
@@ -138,11 +138,11 @@ namespace {
   class ASTViewer : public ASTConsumer {
     ASTContext *Context;
   public:
-    void Initialize(ASTContext &Context) {
+    void Initialize(ASTContext &Context) override {
       this->Context = &Context;
     }
 
-    virtual bool HandleTopLevelDecl(DeclGroupRef D) {
+    bool HandleTopLevelDecl(DeclGroupRef D) override {
       for (DeclGroupRef::iterator I = D.begin(), E = D.end(); I != E; ++I)
         HandleTopLevelSingleDecl(*I);
       return true;
@@ -177,7 +177,7 @@ class DeclContextPrinter : public ASTConsumer {
 public:
   DeclContextPrinter() : Out(llvm::errs()) {}
 
-  void HandleTranslationUnit(ASTContext &C) {
+  void HandleTranslationUnit(ASTContext &C) override {
     PrintDeclContext(C.getTranslationUnitDecl(), 4);
   }
 
@@ -259,13 +259,12 @@ void DeclContextPrinter::PrintDeclContext(const DeclContext* DC,
     // Print the parameters.
     Out << "(";
     bool PrintComma = false;
-    for (FunctionDecl::param_const_iterator I = FD->param_begin(),
-           E = FD->param_end(); I != E; ++I) {
+    for (auto I : FD->params()) {
       if (PrintComma)
         Out << ", ";
       else
         PrintComma = true;
-      Out << **I;
+      Out << *I;
     }
     Out << ")";
     break;
@@ -369,8 +368,7 @@ void DeclContextPrinter::PrintDeclContext(const DeclContext* DC,
   Out << "\n";
 
   // Print decls in the DeclContext.
-  for (DeclContext::decl_iterator I = DC->decls_begin(), E = DC->decls_end();
-       I != E; ++I) {
+  for (auto *I : DC->decls()) {
     for (unsigned i = 0; i < Indentation; ++i)
       Out << "  ";
 
@@ -394,58 +392,58 @@ void DeclContextPrinter::PrintDeclContext(const DeclContext* DC,
     case Decl::CXXDestructor:
     case Decl::CXXConversion:
     {
-      DeclContext* DC = cast<DeclContext>(*I);
+      DeclContext* DC = cast<DeclContext>(I);
       PrintDeclContext(DC, Indentation+2);
       break;
     }
     case Decl::IndirectField: {
-      IndirectFieldDecl* IFD = cast<IndirectFieldDecl>(*I);
+      IndirectFieldDecl* IFD = cast<IndirectFieldDecl>(I);
       Out << "<IndirectField> " << *IFD << '\n';
       break;
     }
     case Decl::Label: {
-      LabelDecl *LD = cast<LabelDecl>(*I);
+      LabelDecl *LD = cast<LabelDecl>(I);
       Out << "<Label> " << *LD << '\n';
       break;
     }
     case Decl::Field: {
-      FieldDecl *FD = cast<FieldDecl>(*I);
+      FieldDecl *FD = cast<FieldDecl>(I);
       Out << "<field> " << *FD << '\n';
       break;
     }
     case Decl::Typedef:
     case Decl::TypeAlias: {
-      TypedefNameDecl* TD = cast<TypedefNameDecl>(*I);
+      TypedefNameDecl* TD = cast<TypedefNameDecl>(I);
       Out << "<typedef> " << *TD << '\n';
       break;
     }
     case Decl::EnumConstant: {
-      EnumConstantDecl* ECD = cast<EnumConstantDecl>(*I);
+      EnumConstantDecl* ECD = cast<EnumConstantDecl>(I);
       Out << "<enum constant> " << *ECD << '\n';
       break;
     }
     case Decl::Var: {
-      VarDecl* VD = cast<VarDecl>(*I);
+      VarDecl* VD = cast<VarDecl>(I);
       Out << "<var> " << *VD << '\n';
       break;
     }
     case Decl::ImplicitParam: {
-      ImplicitParamDecl* IPD = cast<ImplicitParamDecl>(*I);
+      ImplicitParamDecl* IPD = cast<ImplicitParamDecl>(I);
       Out << "<implicit parameter> " << *IPD << '\n';
       break;
     }
     case Decl::ParmVar: {
-      ParmVarDecl* PVD = cast<ParmVarDecl>(*I);
+      ParmVarDecl* PVD = cast<ParmVarDecl>(I);
       Out << "<parameter> " << *PVD << '\n';
       break;
     }
     case Decl::ObjCProperty: {
-      ObjCPropertyDecl* OPD = cast<ObjCPropertyDecl>(*I);
+      ObjCPropertyDecl* OPD = cast<ObjCPropertyDecl>(I);
       Out << "<objc property> " << *OPD << '\n';
       break;
     }
     case Decl::FunctionTemplate: {
-      FunctionTemplateDecl* FTD = cast<FunctionTemplateDecl>(*I);
+      FunctionTemplateDecl* FTD = cast<FunctionTemplateDecl>(I);
       Out << "<function template> " << *FTD << '\n';
       break;
     }
@@ -458,21 +456,21 @@ void DeclContextPrinter::PrintDeclContext(const DeclContext* DC,
       break;
     }
     case Decl::NamespaceAlias: {
-      NamespaceAliasDecl* NAD = cast<NamespaceAliasDecl>(*I);
+      NamespaceAliasDecl* NAD = cast<NamespaceAliasDecl>(I);
       Out << "<namespace alias> " << *NAD << '\n';
       break;
     }
     case Decl::ClassTemplate: {
-      ClassTemplateDecl *CTD = cast<ClassTemplateDecl>(*I);
+      ClassTemplateDecl *CTD = cast<ClassTemplateDecl>(I);
       Out << "<class template> " << *CTD << '\n';
       break;
     }
     case Decl::OMPThreadPrivate: {
-      Out << "<omp threadprivate> " << '"' << *I << "\"\n";
+      Out << "<omp threadprivate> " << '"' << I << "\"\n";
       break;
     }
     default:
-      Out << "DeclKind: " << DK << '"' << *I << "\"\n";
+      Out << "DeclKind: " << DK << '"' << I << "\"\n";
       llvm_unreachable("decl unhandled");
     }
   }

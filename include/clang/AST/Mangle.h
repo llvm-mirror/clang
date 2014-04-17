@@ -31,9 +31,10 @@ namespace clang {
   class FunctionDecl;
   class NamedDecl;
   class ObjCMethodDecl;
-  class VarDecl;
+  class StringLiteral;
   struct ThisAdjustment;
   struct ThunkInfo;
+  class VarDecl;
 
 /// MangleBuffer - a convenient class for storing a name which is
 /// either the result of a mangling or is a constant string with
@@ -80,6 +81,7 @@ private:
 
   llvm::DenseMap<const BlockDecl*, unsigned> GlobalBlockIds;
   llvm::DenseMap<const BlockDecl*, unsigned> LocalBlockIds;
+  llvm::DenseMap<const TagDecl*, uint64_t> AnonStructIds;
 
 public:
   ManglerKind getKind() const { return Kind; }
@@ -104,14 +106,23 @@ public:
       Result = BlockIds.insert(std::make_pair(BD, BlockIds.size()));
     return Result.first->second;
   }
-  
+
+  uint64_t getAnonymousStructId(const TagDecl *TD) {
+    std::pair<llvm::DenseMap<const TagDecl *, uint64_t>::iterator, bool>
+        Result = AnonStructIds.insert(std::make_pair(TD, AnonStructIds.size()));
+    return Result.first->second;
+  }
+
   /// @name Mangler Entry Points
   /// @{
 
-  virtual bool shouldMangleDeclName(const NamedDecl *D) = 0;
+  bool shouldMangleDeclName(const NamedDecl *D);
+  virtual bool shouldMangleCXXName(const NamedDecl *D) = 0;
+  virtual bool shouldMangleStringLiteral(const StringLiteral *SL) = 0;
 
   // FIXME: consider replacing raw_ostream & with something like SmallString &.
-  virtual void mangleName(const NamedDecl *D, raw_ostream &) = 0;
+  void mangleName(const NamedDecl *D, raw_ostream &);
+  virtual void mangleCXXName(const NamedDecl *D, raw_ostream &) = 0;
   virtual void mangleThunk(const CXXMethodDecl *MD,
                           const ThunkInfo &Thunk,
                           raw_ostream &) = 0;
@@ -126,6 +137,7 @@ public:
                              raw_ostream &) = 0;
   virtual void mangleCXXDtor(const CXXDestructorDecl *D, CXXDtorType Type,
                              raw_ostream &) = 0;
+  virtual void mangleStringLiteral(const StringLiteral *SL, raw_ostream &) = 0;
 
   void mangleGlobalBlock(const BlockDecl *BD,
                          const NamedDecl *ID,
@@ -145,6 +157,12 @@ public:
 
   virtual void mangleDynamicAtExitDestructor(const VarDecl *D,
                                              raw_ostream &) = 0;
+
+  /// Generates a unique string for an externally visible type for use with TBAA
+  /// or type uniquing.
+  /// TODO: Extend this to internal types by generating names that are unique
+  /// across translation units so it can be used with LTO.
+  virtual void mangleTypeName(QualType T, raw_ostream &) = 0;
 
   /// @}
 };
@@ -190,6 +208,9 @@ public:
   virtual void mangleCXXVBTable(const CXXRecordDecl *Derived,
                                 ArrayRef<const CXXRecordDecl *> BasePath,
                                 raw_ostream &Out) = 0;
+
+  virtual void mangleVirtualMemPtrThunk(const CXXMethodDecl *MD,
+                                        raw_ostream &) = 0;
 
   static bool classof(const MangleContext *C) {
     return C->getKind() == MK_Microsoft;

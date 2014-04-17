@@ -82,9 +82,9 @@ public:
 
   static std::pair<unsigned, unsigned>
   ReadKeyDataLength(const unsigned char*& d) {
-    using namespace clang::io;
-    unsigned KeyLen = ReadUnalignedLE16(d);
-    unsigned DataLen = ReadUnalignedLE16(d);
+    using namespace llvm::support;
+    unsigned KeyLen = endian::readNext<uint16_t, little, unaligned>(d);
+    unsigned DataLen = endian::readNext<uint16_t, little, unaligned>(d);
     return std::make_pair(KeyLen, DataLen);
   }
 
@@ -101,11 +101,11 @@ public:
   static data_type ReadData(const internal_key_type& k,
                             const unsigned char* d,
                             unsigned DataLen) {
-    using namespace clang::io;
+    using namespace llvm::support;
 
     data_type Result;
     while (DataLen > 0) {
-      unsigned ID = ReadUnalignedLE32(d);
+      unsigned ID = endian::readNext<uint32_t, little, unaligned>(d);
       Result.push_back(ID);
       DataLen -= 4;
     }
@@ -228,8 +228,9 @@ GlobalModuleIndex::readIndex(StringRef Path) {
   IndexPath += Path;
   llvm::sys::path::append(IndexPath, IndexFileName);
 
-  llvm::OwningPtr<llvm::MemoryBuffer> Buffer;
-  if (llvm::MemoryBuffer::getFile(IndexPath, Buffer) != llvm::errc::success)
+  std::unique_ptr<llvm::MemoryBuffer> Buffer;
+  if (llvm::MemoryBuffer::getFile(IndexPath.c_str(), Buffer) !=
+      llvm::errc::success)
     return std::make_pair((GlobalModuleIndex *)0, EC_NotFound);
 
   /// \brief The bitstream reader from which we'll read the AST file.
@@ -246,8 +247,9 @@ GlobalModuleIndex::readIndex(StringRef Path) {
       Cursor.Read(8) != 'I') {
     return std::make_pair((GlobalModuleIndex *)0, EC_IOError);
   }
-  
-  return std::make_pair(new GlobalModuleIndex(Buffer.take(), Cursor), EC_None);
+
+  return std::make_pair(new GlobalModuleIndex(Buffer.release(), Cursor),
+                        EC_None);
 }
 
 void
@@ -457,8 +459,8 @@ namespace {
                        unsigned DataLen) {
       // The first bit indicates whether this identifier is interesting.
       // That's all we care about.
-      using namespace clang::io;
-      unsigned RawID = ReadUnalignedLE32(d);
+      using namespace llvm::support;
+      unsigned RawID = endian::readNext<uint32_t, little, unaligned>(d);
       bool IsInteresting = RawID & 0x01;
       return std::make_pair(k, IsInteresting);
     }
@@ -467,7 +469,7 @@ namespace {
 
 bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
   // Open the module file.
-  OwningPtr<llvm::MemoryBuffer> Buffer;
+  std::unique_ptr<llvm::MemoryBuffer> Buffer;
   std::string ErrorStr;
   Buffer.reset(FileMgr.getBufferForFile(File, &ErrorStr, /*isVolatile=*/true));
   if (!Buffer) {
@@ -591,10 +593,10 @@ bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
     if (State == ASTBlock && Code == IDENTIFIER_TABLE && Record[0] > 0) {
       typedef OnDiskChainedHashTable<InterestingASTIdentifierLookupTrait>
         InterestingIdentifierTable;
-      llvm::OwningPtr<InterestingIdentifierTable>
-        Table(InterestingIdentifierTable::Create(
-                (const unsigned char *)Blob.data() + Record[0],
-                (const unsigned char *)Blob.data()));
+      std::unique_ptr<InterestingIdentifierTable> Table(
+          InterestingIdentifierTable::Create(
+              (const unsigned char *)Blob.data() + Record[0],
+              (const unsigned char *)Blob.data()));
       for (InterestingIdentifierTable::data_iterator D = Table->data_begin(),
                                                      DEnd = Table->data_end();
            D != DEnd; ++D) {
@@ -629,10 +631,12 @@ public:
 
   std::pair<unsigned,unsigned>
   EmitKeyDataLength(raw_ostream& Out, key_type_ref Key, data_type_ref Data) {
+    using namespace llvm::support;
+    endian::Writer<little> LE(Out);
     unsigned KeyLen = Key.size();
     unsigned DataLen = Data.size() * 4;
-    clang::io::Emit16(Out, KeyLen);
-    clang::io::Emit16(Out, DataLen);
+    LE.write<uint16_t>(KeyLen);
+    LE.write<uint16_t>(DataLen);
     return std::make_pair(KeyLen, DataLen);
   }
   
@@ -642,8 +646,9 @@ public:
 
   void EmitData(raw_ostream& Out, key_type_ref Key, data_type_ref Data,
                 unsigned DataLen) {
+    using namespace llvm::support;
     for (unsigned I = 0, N = Data.size(); I != N; ++I)
-      clang::io::Emit32(Out, Data[I]);
+      endian::Writer<little>(Out).write<uint32_t>(Data[I]);
   }
 };
 
@@ -705,9 +710,10 @@ void GlobalModuleIndexBuilder::writeIndex(llvm::BitstreamWriter &Stream) {
     SmallString<4096> IdentifierTable;
     uint32_t BucketOffset;
     {
+      using namespace llvm::support;
       llvm::raw_svector_ostream Out(IdentifierTable);
       // Make sure that no bucket is at offset 0
-      clang::io::Emit32(Out, 0);
+      endian::Writer<little>(Out).write<uint32_t>(0);
       BucketOffset = Generator.Emit(Out, Trait);
     }
 
@@ -806,13 +812,12 @@ GlobalModuleIndex::writeIndex(FileManager &FileMgr, StringRef Path) {
     return EC_IOError;
 
   // Remove the old index file. It isn't relevant any more.
-  bool OldIndexExisted;
-  llvm::sys::fs::remove(IndexPath.str(), OldIndexExisted);
+  llvm::sys::fs::remove(IndexPath.str());
 
   // Rename the newly-written index file to the proper name.
   if (llvm::sys::fs::rename(IndexTmpPath.str(), IndexPath.str())) {
     // Rename failed; just remove the 
-    llvm::sys::fs::remove(IndexTmpPath.str(), OldIndexExisted);
+    llvm::sys::fs::remove(IndexTmpPath.str());
     return EC_IOError;
   }
 
@@ -834,7 +839,7 @@ namespace {
       End = Idx.key_end();
     }
 
-    virtual StringRef Next() {
+    StringRef Next() override {
       if (Current == End)
         return StringRef();
 

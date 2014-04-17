@@ -176,7 +176,7 @@ class B {};
 template <class T>
 class Base {
  public:
-  bool base_fun(void* p) { return false; }  // expected-note {{must qualify identifier to find this declaration in dependent base clas}}
+  bool base_fun(void* p) { return false; }  // expected-note {{must qualify identifier to find this declaration in dependent base class}}
   operator T*() const { return 0; }
 };
 
@@ -196,3 +196,66 @@ void f() {
 }
 
 }  // namespace PR12701
+
+namespace PR16014 {
+
+struct A {
+  int a;
+  static int sa;
+};
+template <typename T> struct B : T {
+  int     foo() { return a; }
+  int    *bar() { return &a; }
+  int     baz() { return T::a; }
+  int T::*qux() { return &T::a; }
+  static int T::*stuff() { return &T::a; }
+  static int stuff1() { return T::sa; }
+  static int *stuff2() { return &T::sa; }
+};
+
+template <typename T> struct C : T {
+  int     foo() { return b; }      // expected-error {{no member named 'b' in 'PR16014::C<PR16014::A>'}}
+  int    *bar() { return &b; }     // expected-error {{no member named 'b' in 'PR16014::C<PR16014::A>'}}
+  int     baz() { return T::b; }   // expected-error {{no member named 'b' in 'PR16014::A'}}
+  int T::*qux() { return &T::b; }  // expected-error {{no member named 'b' in 'PR16014::A'}}
+  int T::*fuz() { return &U::a; }  // expected-error {{use of undeclared identifier 'U'}}
+};
+
+template struct B<A>;
+template struct C<A>;  // expected-note-re 1+ {{in instantiation of member function 'PR16014::C<PR16014::A>::{{.*}}' requested here}}
+
+template <typename T> struct D : T {
+  struct Inner {
+    int foo() {
+      // FIXME: MSVC can find this in D's base T!  Even worse, if ::sa exists,
+      // clang will use it instead.
+      return sa; // expected-error {{use of undeclared identifier 'sa'}}
+    }
+  };
+};
+template struct D<A>;
+
+}
+
+namespace PR19233 {
+template <class T>
+struct A : T {
+  void foo() {
+    ::undef(); // expected-error {{no member named 'undef' in the global namespace}}
+  }
+  void bar() {
+    ::UndefClass::undef(); // expected-error {{no member named 'UndefClass' in the global namespace}}
+  }
+  void baz() {
+    B::qux(); // expected-error {{use of undeclared identifier 'B'}}
+  }
+};
+
+struct B { void qux(); };
+struct C : B { };
+template struct A<C>; // No error!  B is a base of A<C>, and qux is available.
+
+struct D { };
+template struct A<D>; // expected-note {{in instantiation of member function 'PR19233::A<PR19233::D>::baz' requested here}}
+
+}

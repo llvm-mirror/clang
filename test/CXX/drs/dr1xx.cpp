@@ -1,6 +1,6 @@
-// RUN: %clang_cc1 -std=c++98 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++1y %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++98 -triple x86_64-unknown-unknown %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++11 -triple x86_64-unknown-unknown %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++1y -triple x86_64-unknown-unknown %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 
 namespace dr100 { // dr100: yes
   template<const char *> struct A {}; // expected-note {{declared here}}
@@ -9,7 +9,7 @@ namespace dr100 { // dr100: yes
   B<"bar"> b; // expected-error {{does not refer to any declaration}}
 }
 
-namespace dr101 { // dr101: yes
+namespace dr101 { // dr101: 3.5
   extern "C" void dr101_f();
   typedef unsigned size_t;
   namespace X {
@@ -18,6 +18,8 @@ namespace dr101 { // dr101: yes
   }
   using X::dr101_f;
   using X::size_t;
+  extern "C" void dr101_f();
+  typedef unsigned size_t;
 }
 
 namespace dr102 { // dr102: yes
@@ -38,13 +40,13 @@ namespace dr102 { // dr102: yes
 namespace dr106 { // dr106: sup 540
   typedef int &r1;
   typedef r1 &r1;
-  typedef const r1 r1;
-  typedef const r1 &r1;
+  typedef const r1 r1; // expected-warning {{has no effect}}
+  typedef const r1 &r1; // expected-warning {{has no effect}}
 
   typedef const int &r2;
   typedef r2 &r2;
-  typedef const r2 r2;
-  typedef const r2 &r2;
+  typedef const r2 r2; // expected-warning {{has no effect}}
+  typedef const r2 &r2; // expected-warning {{has no effect}}
 }
 
 namespace dr107 { // dr107: yes
@@ -64,14 +66,14 @@ namespace dr108 { // dr108: yes
 namespace dr109 { // dr109: yes
   struct A { template<typename T> void f(T); };
   template<typename T> struct B : T {
-    using T::template f; // expected-error {{using declaration can not refer to a template}}
+    using T::template f; // expected-error {{using declaration cannot refer to a template}}
     void g() { this->f<int>(123); } // expected-error {{use 'template'}}
   };
 }
 
 namespace dr111 { // dr111: dup 535
   struct A { A(); A(volatile A&, int = 0); A(A&, const char * = "foo"); };
-  struct B : A { B(); }; // expected-note {{would lose const qualifier}} expected-note {{requires 0 arguments}}
+  struct B : A { B(); }; // expected-note +{{would lose const qualifier}} expected-note {{requires 0 arguments}}
   const B b1;
   B b2(b1); // expected-error {{no matching constructor}}
 }
@@ -223,14 +225,18 @@ namespace dr122 { // dr122: yes
 // dr124: dup 201
 
 // dr125: yes
-struct dr125_A { struct dr125_B {}; };
+struct dr125_A { struct dr125_B {}; }; // expected-note {{here}}
 dr125_A::dr125_B dr125_C();
 namespace dr125_B { dr125_A dr125_C(); }
 namespace dr125 {
   struct X {
     friend dr125_A::dr125_B (::dr125_C)(); // ok
     friend dr125_A (::dr125_B::dr125_C)(); // ok
-    friend dr125_A::dr125_B::dr125_C(); // expected-error {{requires a type specifier}}
+    friend dr125_A::dr125_B::dr125_C(); // expected-error {{did you mean the constructor name 'dr125_B'?}}
+    // expected-warning@-1 {{missing exception specification}}
+#if __cplusplus >= 201103L
+    // expected-error@-3 {{follows constexpr declaration}} expected-note@-10 {{here}}
+#endif
   };
 }
 
@@ -552,3 +558,457 @@ namespace dr148 { // dr148: yes
 }
 
 // dr149: na
+
+namespace dr151 { // dr151: yes
+  struct X {};
+  typedef int X::*p;
+#if __cplusplus < 201103L
+#define fold(x) (__builtin_constant_p(0) ? (x) : (x))
+#else
+#define fold
+#endif
+  int check[fold(p() == 0) ? 1 : -1];
+#undef fold
+}
+
+namespace dr152 { // dr152: yes
+  struct A {
+    A(); // expected-note {{not viable}}
+    explicit A(const A&);
+  };
+  A a1 = A(); // expected-error {{no matching constructor}}
+  A a2((A()));
+}
+
+// dr153: na
+
+namespace dr154 { // dr154: yes
+  union { int a; }; // expected-error {{must be declared 'static'}}
+  namespace {
+    union { int b; };
+  }
+  static union { int c; };
+}
+
+namespace dr155 { // dr155: dup 632
+  struct S { int n; } s = { { 1 } }; // expected-warning {{braces around scalar initializer}}
+}
+
+// dr158 FIXME write codegen test
+
+namespace dr159 { // dr159: 3.5
+  namespace X { void f(); }
+  void f();
+  void dr159::f() {} // expected-warning {{extra qualification}}
+  void dr159::X::f() {}
+}
+
+// dr160: na
+
+namespace dr161 { // dr161: yes
+  class A {
+  protected:
+    struct B { int n; } b; // expected-note 2{{here}}
+    static B bs;
+    void f(); // expected-note {{here}}
+    static void sf();
+  };
+  struct C : A {};
+  struct D : A {
+    void g(C c) {
+      (void)b.n;
+      B b1;
+      C::B b2; // ok, accessible as a member of A
+      (void)&C::b; // expected-error {{protected}}
+      (void)&C::bs;
+      (void)c.b; // expected-error {{protected}}
+      (void)c.bs;
+      f();
+      sf();
+      c.f(); // expected-error {{protected}}
+      c.sf();
+      A::f();
+      D::f();
+      A::sf();
+      C::sf();
+      D::sf();
+    }
+  };
+}
+
+namespace dr162 { // dr162: no
+  struct A {
+    char &f(char);
+    static int &f(int);
+
+    void g() {
+      int &a = (&A::f)(0); // FIXME: expected-error {{could not be resolved}}
+      char &b = (&A::f)('0'); // expected-error {{could not be resolved}}
+    }
+  };
+
+  int &c = (&A::f)(0); // FIXME: expected-error {{could not be resolved}}
+  char &d = (&A::f)('0'); // expected-error {{could not be resolved}}
+}
+
+// dr163: na
+
+namespace dr164 { // dr164: yes
+  void f(int);
+  template <class T> int g(T t) { return f(t); }
+
+  enum E { e };
+  int f(E);
+
+  int k = g(e);
+}
+
+namespace dr165 { // dr165: no
+  namespace N {
+    struct A { friend struct B; };
+    void f() { void g(); }
+  }
+  // FIXME: dr1477 says this is ok, dr165 says it's ill-formed
+  struct N::B {};
+  // FIXME: dr165 says this is ill-formed, but the argument in dr1477 says it's ok
+  void N::g() {}
+}
+
+namespace dr166 { // dr166: yes
+  namespace A { class X; }
+
+  template<typename T> int f(T t) { return t.n; }
+  int g(A::X);
+  template<typename T> int h(T t) { return t.n; } // expected-error {{private}}
+  int i(A::X);
+
+  namespace A {
+    class X {
+      friend int f<X>(X);
+      friend int dr166::g(X);
+      friend int h(X);
+      friend int i(X);
+      int n; // expected-note 2{{here}}
+    };
+
+    int h(X x) { return x.n; }
+    int i(X x) { return x.n; }
+  }
+
+  template int f(A::X);
+  int g(A::X x) { return x.n; }
+  template int h(A::X); // expected-note {{instantiation}}
+  int i(A::X x) { return x.n; } // expected-error {{private}}
+}
+
+// dr167: sup 1012
+
+namespace dr168 { // dr168: no
+  extern "C" typedef int (*p)();
+  extern "C++" typedef int (*q)();
+  struct S {
+    static int f();
+  };
+  p a = &S::f; // FIXME: this should fail.
+  q b = &S::f;
+}
+
+namespace dr169 { // dr169: yes
+  template<typename> struct A { int n; };
+  struct B {
+    template<typename> struct C;
+    template<typename> void f();
+    template<typename> static int n; // expected-error 0-1{{extension}}
+  };
+  struct D : A<int>, B {
+    using A<int>::n;
+    using B::C<int>; // expected-error {{using declaration cannot refer to a template specialization}}
+    using B::f<int>; // expected-error {{using declaration cannot refer to a template specialization}}
+    using B::n<int>; // expected-error {{using declaration cannot refer to a template specialization}}
+  };
+}
+
+namespace { // dr171: yes
+  int dr171a;
+}
+int dr171b; // expected-note {{here}}
+namespace dr171 {
+  extern "C" void dr171a();
+  extern "C" void dr171b(); // expected-error {{conflicts}}
+}
+
+namespace dr172 { // dr172: yes
+  enum { zero };
+  int check1[-1 < zero ? 1 : -1];
+
+  enum { x = -1, y = (unsigned int)-1 };
+  int check2[sizeof(x) > sizeof(int) ? 1 : -1];
+
+  enum { a = (unsigned int)-1 / 2 };
+  int check3a[sizeof(a) == sizeof(int) ? 1 : -1];
+  int check3b[-a < 0 ? 1 : -1];
+
+  enum { b = (unsigned int)-1 / 2 + 1 };
+  int check4a[sizeof(b) == sizeof(unsigned int) ? 1 : -1];
+  int check4b[-b > 0 ? 1 : -1];
+
+  enum { c = (unsigned long)-1 / 2 };
+  int check5a[sizeof(c) == sizeof(long) ? 1 : -1];
+  int check5b[-c < 0 ? 1 : -1];
+
+  enum { d = (unsigned long)-1 / 2 + 1 };
+  int check6a[sizeof(d) == sizeof(unsigned long) ? 1 : -1];
+  int check6b[-d > 0 ? 1 : -1];
+
+  enum { e = (unsigned long long)-1 / 2 }; // expected-error 0-1{{extension}}
+  int check7a[sizeof(e) == sizeof(long) ? 1 : -1]; // expected-error 0-1{{extension}}
+  int check7b[-e < 0 ? 1 : -1];
+
+  enum { f = (unsigned long long)-1 / 2 + 1 }; // expected-error 0-1{{extension}}
+  int check8a[sizeof(f) == sizeof(unsigned long) ? 1 : -1]; // expected-error 0-1{{extension}}
+  int check8b[-f > 0 ? 1 : -1];
+}
+
+namespace dr173 { // dr173: yes
+  int check[('0' + 1 == '1' && '0' + 2 == '2' && '0' + 3 == '3' &&
+             '0' + 4 == '4' && '0' + 5 == '5' && '0' + 6 == '6' &&
+             '0' + 7 == '7' && '0' + 8 == '8' && '0' + 9 == '9') ? 1 : -1];
+}
+
+// dr174: sup 1012
+
+namespace dr175 { // dr175: yes
+  struct A {}; // expected-note {{here}}
+  struct B : private A {}; // expected-note {{constrained by private inheritance}}
+  struct C : B {
+    A a; // expected-error {{private}}
+    dr175::A b;
+  };
+}
+
+namespace dr176 { // dr176: yes
+  template<typename T> class Y;
+  template<> class Y<int> {
+    void f() {
+      typedef Y A; // expected-note {{here}}
+      typedef Y<char> A; // expected-error {{different types ('Y<char>' vs 'Y<int>')}}
+    }
+  };
+
+  template<typename T> struct Base {}; // expected-note 2{{found}}
+  template<typename T> struct Derived : public Base<T> {
+    void f() {
+      typedef typename Derived::template Base<T> A;
+      typedef typename Derived::Base A;
+    }
+  };
+  template struct Derived<int>;
+
+  template<typename T> struct Derived2 : Base<int>, Base<char> {
+    typename Derived2::Base b; // expected-error {{found in multiple base classes}}
+    typename Derived2::Base<double> d;
+  };
+
+  template<typename T> class X { // expected-note {{here}}
+    X *p1;
+    X<T> *p2;
+    X<int> *p3;
+    dr176::X *p4; // expected-error {{requires template arguments}}
+  };
+}
+
+namespace dr177 { // dr177: yes
+  struct B {};
+  struct A {
+    A(A &); // expected-note {{not viable: expects an l-value}}
+    A(const B &);
+  };
+  B b;
+  A a = b; // expected-error {{no viable constructor copying variable}}
+}
+
+namespace dr178 { // dr178: yes
+  int check[int() == 0 ? 1 : -1];
+#if __cplusplus >= 201103L
+  static_assert(int{} == 0, "");
+  struct S { int a, b; };
+  static_assert(S{1}.b == 0, "");
+  struct T { constexpr T() : n() {} int n; };
+  static_assert(T().n == 0, "");
+  struct U : S { constexpr U() : S() {} };
+  static_assert(U().b == 0, "");
+#endif
+}
+
+namespace dr179 { // dr179: yes
+  void f();
+  int n = &f - &f; // expected-error {{arithmetic on pointers to the function type 'void ()'}}
+}
+
+namespace dr180 { // dr180: yes
+  template<typename T> struct X : T, T::some_base {
+    X() : T::some_type_that_might_be_T(), T::some_base() {}
+    friend class T::some_class;
+    void f() {
+      enum T::some_enum e;
+    }
+  };
+}
+
+namespace dr181 { // dr181: yes
+  namespace X {
+    template <template X<class T> > struct A { }; // expected-error +{{}}
+    template <template X<class T> > void f(A<X>) { } // expected-error +{{}}
+  }
+
+  namespace Y {
+    template <template <class T> class X> struct A { };
+    template <template <class T> class X> void f(A<X>) { }
+  }
+}
+
+namespace dr182 { // dr182: yes
+  template <class T> struct C {
+    void f();
+    void g();
+  };
+
+  template <class T> void C<T>::f() {}
+  template <class T> void C<T>::g() {}
+
+  class A {
+    class B {}; // expected-note {{here}}
+    void f();
+  };
+
+  template void C<A::B>::f();
+  template <> void C<A::B>::g(); // expected-error {{private}}
+
+  void A::f() {
+    C<B> cb;
+    cb.f();
+  }
+}
+
+namespace dr183 { // dr183: sup 382
+  template<typename T> struct A {};
+  template<typename T> struct B {
+    typedef int X;
+  };
+  template<> struct A<int> {
+    typename B<int>::X x;
+  };
+}
+
+namespace dr184 { // dr184: yes
+  template<typename T = float> struct B {};
+
+  template<template<typename TT = float> class T> struct A {
+    void f();
+    void g();
+  };
+
+  template<template<typename TT> class T> void A<T>::f() { // expected-note {{here}}
+    T<> t; // expected-error {{too few template arguments}}
+  }
+
+  template<template<typename TT = char> class T> void A<T>::g() {
+    T<> t;
+    typedef T<> X;
+    typedef T<char> X;
+  }
+
+  void h() { A<B>().g(); }
+}
+
+// dr185 FIXME: add codegen test
+
+namespace dr187 { // dr187: sup 481
+  const int Z = 1;
+  template<int X = Z, int Z = X> struct A;
+  typedef A<> T;
+  typedef A<1, 1> T;
+}
+
+namespace dr188 { // dr188: yes
+  char c[10];
+  int check[sizeof(0, c) == 10 ? 1 : -1];
+}
+
+// dr190 FIXME: add codegen test for tbaa
+
+// dr193 FIXME: add codegen test
+
+namespace dr194 { // dr194: yes
+  struct A {
+    A();
+    void A(); // expected-error {{has the same name as its class}} expected-error {{constructor cannot have a return type}}
+  };
+  struct B {
+    void B(); // expected-error {{has the same name as its class}} expected-error {{constructor cannot have a return type}}
+    B();
+  };
+  struct C {
+    inline explicit C(int) {}
+  };
+}
+
+namespace dr195 { // dr195: yes
+  void f();
+  int *p = (int*)&f; // expected-error 0-1{{extension}}
+  void (*q)() = (void(*)())&p; // expected-error 0-1{{extension}}
+}
+
+namespace dr197 { // dr197: yes
+  char &f(char);
+
+  template <class T> void g(T t) {
+    char &a = f(1);
+    char &b = f(T(1)); // expected-error {{unrelated type 'int'}}
+    char &c = f(t); // expected-error {{unrelated type 'int'}}
+  }
+
+  void f(int);
+
+  enum E { e };
+  int &f(E);
+
+  void h() {
+    g('a');
+    g(2);
+    g(e); // expected-note {{in instantiation of}}
+  }
+}
+
+namespace dr198 { // dr198: yes
+  struct A {
+    int n;
+    struct B {
+      int m[sizeof(n)];
+#if __cplusplus < 201103L
+      // expected-error@-2 {{invalid use of non-static data member}}
+#endif
+      int f() { return n; }
+      // expected-error@-1 {{use of non-static data member 'n' of 'A' from nested type 'B'}}
+    };
+    struct C;
+    struct D;
+  };
+  struct A::C {
+    int m[sizeof(n)];
+#if __cplusplus < 201103L
+    // expected-error@-2 {{invalid use of non-static data member}}
+#endif
+    int f() { return n; }
+    // expected-error@-1 {{use of non-static data member 'n' of 'A' from nested type 'C'}}
+  };
+  struct A::D : A {
+    int m[sizeof(n)];
+#if __cplusplus < 201103L
+    // expected-error@-2 {{invalid use of non-static data member}}
+#endif
+    int f() { return n; }
+  };
+}
+
+// dr199 FIXME: add codegen test

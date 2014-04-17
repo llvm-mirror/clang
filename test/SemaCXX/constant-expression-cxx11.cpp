@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple i686-linux -Wno-string-plus-int -Wno-pointer-arith -Wno-zero-length-array -fsyntax-only -fcxx-exceptions -verify -std=c++11 -pedantic %s -Wno-comment
+// RUN: %clang_cc1 -triple i686-linux -Wno-string-plus-int -Wno-pointer-arith -Wno-zero-length-array -fsyntax-only -fcxx-exceptions -verify -std=c++11 -pedantic %s -Wno-comment -Wno-tautological-pointer-compare -Wno-bool-conversion
 
 namespace StaticAssertFoldTest {
 
@@ -1793,4 +1793,83 @@ namespace BadDefaultInit {
       k(k) {}
     int k; // expected-note {{not initialized}}
   };
+}
+
+namespace NeverConstantTwoWays {
+  // If we see something non-constant but foldable followed by something
+  // non-constant and not foldable, we want the first diagnostic, not the
+  // second.
+  constexpr int f(int n) { // expected-error {{never produces a constant expression}}
+    return (int *)(long)&n == &n ? // expected-note {{reinterpret_cast}}
+        1 / 0 : // expected-warning {{division by zero}}
+        0;
+  }
+
+  // FIXME: We should diagnose the cast to long here, not the division by zero.
+  constexpr int n = // expected-error {{must be initialized by a constant expression}}
+      (int *)(long)&n == &n ?
+        1 / 0 : // expected-warning {{division by zero}} expected-note {{division by zero}}
+        0;
+}
+
+namespace PR17800 {
+  struct A {
+    constexpr int operator()() const { return 0; }
+  };
+  template <typename ...T> constexpr int sink(T ...) {
+    return 0;
+  }
+  template <int ...N> constexpr int run() {
+    return sink(A()() + N ...);
+  }
+  constexpr int k = run<1, 2, 3>();
+}
+
+namespace BuiltinStrlen {
+  constexpr const char *a = "foo\0quux";
+  constexpr char b[] = "foo\0quux";
+  constexpr int f() { return 'u'; }
+  constexpr char c[] = { 'f', 'o', 'o', 0, 'q', f(), 'u', 'x', 0 };
+
+  static_assert(__builtin_strlen("foo") == 3, "");
+  static_assert(__builtin_strlen("foo\0quux") == 3, "");
+  static_assert(__builtin_strlen("foo\0quux" + 4) == 4, "");
+
+  constexpr bool check(const char *p) {
+    return __builtin_strlen(p) == 3 &&
+           __builtin_strlen(p + 1) == 2 &&
+           __builtin_strlen(p + 2) == 1 &&
+           __builtin_strlen(p + 3) == 0 &&
+           __builtin_strlen(p + 4) == 4 &&
+           __builtin_strlen(p + 5) == 3 &&
+           __builtin_strlen(p + 6) == 2 &&
+           __builtin_strlen(p + 7) == 1 &&
+           __builtin_strlen(p + 8) == 0;
+  }
+
+  static_assert(check(a), "");
+  static_assert(check(b), "");
+  static_assert(check(c), "");
+
+  constexpr int over1 = __builtin_strlen(a + 9); // expected-error {{constant expression}} expected-note {{one-past-the-end}}
+  constexpr int over2 = __builtin_strlen(b + 9); // expected-error {{constant expression}} expected-note {{one-past-the-end}}
+  constexpr int over3 = __builtin_strlen(c + 9); // expected-error {{constant expression}} expected-note {{one-past-the-end}}
+
+  constexpr int under1 = __builtin_strlen(a - 1); // expected-error {{constant expression}} expected-note {{cannot refer to element -1}}
+  constexpr int under2 = __builtin_strlen(b - 1); // expected-error {{constant expression}} expected-note {{cannot refer to element -1}}
+  constexpr int under3 = __builtin_strlen(c - 1); // expected-error {{constant expression}} expected-note {{cannot refer to element -1}}
+
+  // FIXME: The diagnostic here could be better.
+  constexpr char d[] = { 'f', 'o', 'o' }; // no nul terminator.
+  constexpr int bad = __builtin_strlen(d); // expected-error {{constant expression}} expected-note {{one-past-the-end}}
+}
+
+namespace PR19010 {
+  struct Empty {};
+  struct Empty2 : Empty {};
+  struct Test : Empty2 {
+    constexpr Test() {}
+    Empty2 array[2];
+  };
+  void test() { constexpr Test t; }
 }

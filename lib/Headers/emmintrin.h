@@ -1266,7 +1266,7 @@ static __inline__ int __attribute__((__always_inline__, __nodebug__))
 _mm_extract_epi16(__m128i __a, int __imm)
 {
   __v8hi __b = (__v8hi)__a;
-  return (unsigned short)__b[__imm];
+  return (unsigned short)__b[__imm & 7];
 }
 
 static __inline__ __m128i __attribute__((__always_inline__, __nodebug__))
@@ -1366,7 +1366,7 @@ _mm_movepi64_pi64(__m128i __a)
 }
 
 static __inline__ __m128i __attribute__((__always_inline__, __nodebug__))
-_mm_movpi64_pi64(__m64 __a)
+_mm_movpi64_epi64(__m64 __a)
 {
   return (__m128i){ (long long)__a, 0 };
 }

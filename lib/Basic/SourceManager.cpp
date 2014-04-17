@@ -404,10 +404,7 @@ SourceManager::~SourceManager() {
   delete FakeBufferForRecovery;
   delete FakeContentCacheForRecovery;
 
-  for (llvm::DenseMap<FileID, MacroArgsMap *>::iterator
-         I = MacroArgsCacheMap.begin(),E = MacroArgsCacheMap.end(); I!=E; ++I) {
-    delete I->second;
-  }
+  llvm::DeleteContainerSeconds(MacroArgsCacheMap);
 }
 
 void SourceManager::clearIDTables() {
@@ -1381,31 +1378,6 @@ unsigned SourceManager::getLineNumber(FileID FID, unsigned FilePos,
     }
   }
 
-  // If the spread is large, do a "radix" test as our initial guess, based on
-  // the assumption that lines average to approximately the same length.
-  // NOTE: This is currently disabled, as it does not appear to be profitable in
-  // initial measurements.
-  if (0 && SourceLineCacheEnd-SourceLineCache > 20) {
-    unsigned FileLen = Content->SourceLineCache[Content->NumLines-1];
-
-    // Take a stab at guessing where it is.
-    unsigned ApproxPos = Content->NumLines*QueriedFilePos / FileLen;
-
-    // Check for -10 and +10 lines.
-    unsigned LowerBound = std::max(int(ApproxPos-10), 0);
-    unsigned UpperBound = std::min(ApproxPos+10, FileLen);
-
-    // If the computed lower bound is less than the query location, move it in.
-    if (SourceLineCache < SourceLineCacheStart+LowerBound &&
-        SourceLineCacheStart[LowerBound] < QueriedFilePos)
-      SourceLineCache = SourceLineCacheStart+LowerBound;
-
-    // If the computed upper bound is greater than the query location, move it.
-    if (SourceLineCacheEnd > SourceLineCacheStart+UpperBound &&
-        SourceLineCacheStart[UpperBound] >= QueriedFilePos)
-      SourceLineCacheEnd = SourceLineCacheStart+UpperBound;
-  }
-
   unsigned *Pos
     = std::lower_bound(SourceLineCache, SourceLineCacheEnd, QueriedFilePos);
   unsigned LineNo = Pos-SourceLineCacheStart;
@@ -1583,7 +1555,7 @@ bool SourceManager::isInMainFile(SourceLocation Loc) const {
   return FI.getIncludeLoc().isInvalid();
 }
 
-/// \brief The size of the SLocEnty that \arg FID represents.
+/// \brief The size of the SLocEntry that \p FID represents.
 unsigned SourceManager::getFileIDSize(FileID FID) const {
   bool Invalid = false;
   const SrcMgr::SLocEntry &Entry = getSLocEntry(FID, &Invalid);
@@ -1757,6 +1729,10 @@ FileID SourceManager::translateFile(const FileEntry *SourceFile) const {
 SourceLocation SourceManager::translateLineCol(FileID FID,
                                                unsigned Line,
                                                unsigned Col) const {
+  // Lines are used as a one-based index into a zero-based array. This assert
+  // checks for possible buffer underruns.
+  assert(Line != 0 && "Passed a zero-based line");
+
   if (FID.isInvalid())
     return SourceLocation();
 
@@ -1889,7 +1865,7 @@ void SourceManager::associateFileChunkWithMacroArgExp(
 
     FileID SpellFID; // Current FileID in the spelling range.
     unsigned SpellRelativeOffs;
-    llvm::tie(SpellFID, SpellRelativeOffs) = getDecomposedLoc(SpellLoc);
+    std::tie(SpellFID, SpellRelativeOffs) = getDecomposedLoc(SpellLoc);
     while (1) {
       const SLocEntry &Entry = getSLocEntry(SpellFID);
       unsigned SpellFIDBeginOffs = Entry.getOffset();
@@ -1968,7 +1944,7 @@ SourceManager::getMacroArgExpandedLocation(SourceLocation Loc) const {
 
   FileID FID;
   unsigned Offset;
-  llvm::tie(FID, Offset) = getDecomposedLoc(Loc);
+  std::tie(FID, Offset) = getDecomposedLoc(Loc);
   if (FID.isInvalid())
     return Loc;
 

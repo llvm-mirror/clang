@@ -122,18 +122,23 @@ void Sema::AddAlignmentAttributesForRecord(RecordDecl *RD) {
   // Otherwise, check to see if we need a max field alignment attribute.
   if (unsigned Alignment = Stack->getAlignment()) {
     if (Alignment == PackStackEntry::kMac68kAlignmentSentinel)
-      RD->addAttr(::new (Context) AlignMac68kAttr(SourceLocation(), Context));
+      RD->addAttr(AlignMac68kAttr::CreateImplicit(Context));
     else
-      RD->addAttr(::new (Context) MaxFieldAlignmentAttr(SourceLocation(),
-                                                        Context,
+      RD->addAttr(MaxFieldAlignmentAttr::CreateImplicit(Context,
                                                         Alignment * 8));
   }
 }
 
 void Sema::AddMsStructLayoutForRecord(RecordDecl *RD) {
-  if (!MSStructPragmaOn)
-    return;
-  RD->addAttr(::new (Context) MsStructAttr(SourceLocation(), Context));
+  if (MSStructPragmaOn)
+    RD->addAttr(MsStructAttr::CreateImplicit(Context));
+
+  // FIXME: We should merge AddAlignmentAttributesForRecord with
+  // AddMsStructLayoutForRecord into AddPragmaAttributesForRecord, which takes
+  // all active pragmas and applies them as attributes to class definitions.
+  if (VtorDispModeStack.back() != getLangOpts().VtorDispMode)
+    RD->addAttr(
+        MSVtorDispAttr::CreateImplicit(Context, VtorDispModeStack.back()));
 }
 
 void Sema::ActOnPragmaOptionsAlign(PragmaOptionsAlignKind Kind,
@@ -247,8 +252,8 @@ void Sema::ActOnPragmaPack(PragmaPackKind Kind, IdentifierInfo *Name,
       // If a name was specified then failure indicates the name
       // wasn't found. Otherwise failure indicates the stack was
       // empty.
-      Diag(PragmaLoc, diag::warn_pragma_pack_pop_failed)
-        << (Name ? "no record matching name" : "stack empty");
+      Diag(PragmaLoc, diag::warn_pragma_pop_failed)
+          << "pack" << (Name ? "no record matching name" : "stack empty");
 
       // FIXME: Warn about popping named records as MSVC does.
     } else {
@@ -288,6 +293,144 @@ void Sema::ActOnPragmaDetectMismatch(StringRef Name, StringRef Value) {
   Consumer.HandleDetectMismatch(Name, Value);
 }
 
+void Sema::ActOnPragmaMSPointersToMembers(
+    LangOptions::PragmaMSPointersToMembersKind RepresentationMethod,
+    SourceLocation PragmaLoc) {
+  MSPointerToMemberRepresentationMethod = RepresentationMethod;
+  ImplicitMSInheritanceAttrLoc = PragmaLoc;
+}
+
+void Sema::ActOnPragmaMSVtorDisp(PragmaVtorDispKind Kind,
+                                 SourceLocation PragmaLoc,
+                                 MSVtorDispAttr::Mode Mode) {
+  switch (Kind) {
+  case PVDK_Set:
+    VtorDispModeStack.back() = Mode;
+    break;
+  case PVDK_Push:
+    VtorDispModeStack.push_back(Mode);
+    break;
+  case PVDK_Reset:
+    VtorDispModeStack.clear();
+    VtorDispModeStack.push_back(MSVtorDispAttr::Mode(LangOpts.VtorDispMode));
+    break;
+  case PVDK_Pop:
+    VtorDispModeStack.pop_back();
+    if (VtorDispModeStack.empty()) {
+      Diag(PragmaLoc, diag::warn_pragma_pop_failed) << "vtordisp"
+                                                    << "stack empty";
+      VtorDispModeStack.push_back(MSVtorDispAttr::Mode(LangOpts.VtorDispMode));
+    }
+    break;
+  }
+}
+
+template<typename ValueType>
+void Sema::PragmaStack<ValueType>::Act(SourceLocation PragmaLocation,
+                                       PragmaMsStackAction Action,
+                                       llvm::StringRef StackSlotLabel,
+                                       ValueType Value) {
+  if (Action == PSK_Reset) {
+    CurrentValue = nullptr;
+    return;
+  }
+  if (Action & PSK_Push)
+    Stack.push_back(Slot(StackSlotLabel, CurrentValue, CurrentPragmaLocation));
+  else if (Action & PSK_Pop) {
+    if (!StackSlotLabel.empty()) {
+      // If we've got a label, try to find it and jump there.
+      auto I = std::find_if(Stack.rbegin(), Stack.rend(),
+        [&](const Slot &x) { return x.StackSlotLabel == StackSlotLabel; });
+      // If we found the label so pop from there.
+      if (I != Stack.rend()) {
+        CurrentValue = I->Value;
+        CurrentPragmaLocation = I->PragmaLocation;
+        Stack.erase(std::prev(I.base()), Stack.end());
+      }
+    } else if (!Stack.empty()) {
+      // We don't have a label, just pop the last entry.
+      CurrentValue = Stack.back().Value;
+      CurrentPragmaLocation = Stack.back().PragmaLocation;
+      Stack.pop_back();
+    }
+  }
+  if (Action & PSK_Set) {
+    CurrentValue = Value;
+    CurrentPragmaLocation = PragmaLocation;
+  }
+}
+
+bool Sema::UnifySection(const StringRef &SectionName,
+                        int SectionFlags,
+                        DeclaratorDecl *Decl) {
+  auto Section = SectionInfos.find(SectionName);
+  if (Section == SectionInfos.end()) {
+    SectionInfos[SectionName] =
+        SectionInfo(Decl, SourceLocation(), SectionFlags);
+    return false;
+  }
+  // A pre-declared section takes precedence w/o diagnostic.
+  if (Section->second.SectionFlags == SectionFlags ||
+      !(Section->second.SectionFlags & PSF_Implicit))
+    return false;
+  auto OtherDecl = Section->second.Decl;
+  Diag(Decl->getLocation(), diag::err_section_conflict)
+      << Decl << OtherDecl;
+  Diag(OtherDecl->getLocation(), diag::note_declared_at)
+      << OtherDecl->getName();
+  if (auto A = Decl->getAttr<SectionAttr>())
+    if (A->isImplicit())
+      Diag(A->getLocation(), diag::note_pragma_entered_here);
+  if (auto A = OtherDecl->getAttr<SectionAttr>())
+    if (A->isImplicit())
+      Diag(A->getLocation(), diag::note_pragma_entered_here);
+  return false;
+}
+
+bool Sema::UnifySection(const StringRef &SectionName,
+                        int SectionFlags,
+                        SourceLocation PragmaSectionLocation) {
+  auto Section = SectionInfos.find(SectionName);
+  if (Section != SectionInfos.end()) {
+    if (Section->second.SectionFlags == SectionFlags)
+      return false;
+    if (!(Section->second.SectionFlags & PSF_Implicit)) {
+      Diag(PragmaSectionLocation, diag::err_section_conflict)
+          << "this" << "a prior #pragma section";
+      Diag(Section->second.PragmaSectionLocation,
+           diag::note_pragma_entered_here);
+      return true;
+    }
+  }
+  SectionInfos[SectionName] =
+      SectionInfo(nullptr, PragmaSectionLocation, SectionFlags);
+  return false;
+}
+
+/// \brief Called on well formed \#pragma bss_seg().
+void Sema::ActOnPragmaMSSeg(SourceLocation PragmaLocation,
+                            PragmaMsStackAction Action,
+                            llvm::StringRef StackSlotLabel,
+                            StringLiteral *SegmentName,
+                            llvm::StringRef PragmaName) {
+  PragmaStack<StringLiteral *> *Stack =
+    llvm::StringSwitch<PragmaStack<StringLiteral *> *>(PragmaName)
+        .Case("data_seg", &DataSegStack)
+        .Case("bss_seg", &BSSSegStack)
+        .Case("const_seg", &ConstSegStack)
+        .Case("code_seg", &CodeSegStack);
+  if (Action & PSK_Pop && Stack->Stack.empty())
+    Diag(PragmaLocation, diag::warn_pragma_pop_failed) << PragmaName
+        << "stack empty";
+  Stack->Act(PragmaLocation, Action, StackSlotLabel, SegmentName);
+}
+
+/// \brief Called on well formed \#pragma bss_seg().
+void Sema::ActOnPragmaMSSection(SourceLocation PragmaLocation,
+                                int SectionFlags, StringLiteral *SegmentName) {
+  UnifySection(SegmentName->getString(), SectionFlags, PragmaLocation);
+}
+
 void Sema::ActOnPragmaUnused(const Token &IdTok, Scope *curScope,
                              SourceLocation PragmaLoc) {
 
@@ -312,7 +455,7 @@ void Sema::ActOnPragmaUnused(const Token &IdTok, Scope *curScope,
   if (VD->isUsed())
     Diag(PragmaLoc, diag::warn_used_but_marked_unused) << Name;
 
-  VD->addAttr(::new (Context) UnusedAttr(IdTok.getLocation(), Context));
+  VD->addAttr(UnusedAttr::CreateImplicit(Context, IdTok.getLocation()));
 }
 
 void Sema::AddCFAuditedAttribute(Decl *D) {
@@ -324,11 +467,11 @@ void Sema::AddCFAuditedAttribute(Decl *D) {
       D->hasAttr<CFUnknownTransferAttr>())
     return;
 
-  D->addAttr(::new (Context) CFAuditedTransferAttr(Loc, Context));
+  D->addAttr(CFAuditedTransferAttr::CreateImplicit(Context, Loc));
 }
 
 typedef std::vector<std::pair<unsigned, SourceLocation> > VisStack;
-enum { NoVisibility = (unsigned) -1 };
+enum : unsigned { NoVisibility = ~0U };
 
 void Sema::AddPushedVisibilityAttribute(Decl *D) {
   if (!VisContext)
@@ -346,7 +489,7 @@ void Sema::AddPushedVisibilityAttribute(Decl *D) {
     = (VisibilityAttr::VisibilityType) rawType;
   SourceLocation loc = Stack->back().second;
 
-  D->addAttr(::new (Context) VisibilityAttr(loc, Context, type));
+  D->addAttr(VisibilityAttr::CreateImplicit(Context, type, loc));
 }
 
 /// FreeVisContext - Deallocate and null out VisContext.

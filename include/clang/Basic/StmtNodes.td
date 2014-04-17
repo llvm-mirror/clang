@@ -115,8 +115,6 @@ def CXXNewExpr : DStmt<Expr>;
 def CXXDeleteExpr : DStmt<Expr>;
 def CXXPseudoDestructorExpr : DStmt<Expr>;
 def TypeTraitExpr : DStmt<Expr>;
-def UnaryTypeTraitExpr : DStmt<Expr>;
-def BinaryTypeTraitExpr : DStmt<Expr>;
 def ArrayTypeTraitExpr : DStmt<Expr>;
 def ExpressionTraitExpr : DStmt<Expr>;
 def DependentScopeDeclRefExpr : DStmt<Expr>;
@@ -180,3 +178,4 @@ def AsTypeExpr : DStmt<Expr>;
 // OpenMP Directives.
 def OMPExecutableDirective : Stmt<1>;
 def OMPParallelDirective : DStmt<OMPExecutableDirective>;
+def OMPSimdDirective : DStmt<OMPExecutableDirective>;

@@ -18,8 +18,8 @@
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/StmtCXX.h"
-#include "clang/Analysis/AnalysisContext.h"
 #include "clang/Analysis/Analyses/PostOrderCFGView.h"
+#include "clang/Analysis/AnalysisContext.h"
 #include "clang/Basic/SourceLocation.h"
 
 namespace clang {
@@ -59,6 +59,25 @@ namespace consumed {
     virtual void warnLoopStateMismatch(SourceLocation Loc,
                                        StringRef VariableName) {}
     
+    /// \brief Warn about parameter typestate mismatches upon return.
+    ///
+    /// \param Loc -- The SourceLocation of the return statement.
+    ///
+    /// \param ExpectedState -- The state the return value was expected to be
+    /// in.
+    ///
+    /// \param ObservedState -- The state the return value was observed to be
+    /// in.
+    virtual void warnParamReturnTypestateMismatch(SourceLocation Loc,
+                                                  StringRef VariableName,
+                                                  StringRef ExpectedState,
+                                                  StringRef ObservedState) {};
+    
+    // FIXME: Add documentation.
+    virtual void warnParamTypestateMismatch(SourceLocation LOC,
+                                            StringRef ExpectedState,
+                                            StringRef ObservedState) {}
+    
     // FIXME: This can be removed when the attr propagation fix for templated
     //        classes lands.
     /// \brief Warn about return typestates set for unconsumable types.
@@ -70,7 +89,14 @@ namespace consumed {
                                                         StringRef TypeName) {}
     
     /// \brief Warn about return typestate mismatches.
+    ///
     /// \param Loc -- The SourceLocation of the return statement.
+    ///
+    /// \param ExpectedState -- The state the return value was expected to be
+    /// in.
+    ///
+    /// \param ObservedState -- The state the return value was observed to be
+    /// in.
     virtual void warnReturnTypestateMismatch(SourceLocation Loc,
                                              StringRef ExpectedState,
                                              StringRef ObservedState) {}
@@ -104,22 +130,36 @@ namespace consumed {
 
   class ConsumedStateMap {
     
-    typedef llvm::DenseMap<const VarDecl *, ConsumedState> MapType;
-    typedef std::pair<const VarDecl *, ConsumedState> PairType;
+    typedef llvm::DenseMap<const VarDecl *, ConsumedState> VarMapType;
+    typedef llvm::DenseMap<const CXXBindTemporaryExpr *, ConsumedState>
+            TmpMapType;
     
   protected:
     
     bool Reachable;
     const Stmt *From;
-    MapType Map;
+    VarMapType VarMap;
+    TmpMapType TmpMap;
     
   public:
     ConsumedStateMap() : Reachable(true), From(NULL) {}
     ConsumedStateMap(const ConsumedStateMap &Other)
-      : Reachable(Other.Reachable), From(Other.From), Map(Other.Map) {}
+      : Reachable(Other.Reachable), From(Other.From), VarMap(Other.VarMap),
+        TmpMap() {}
+    
+    /// \brief Warn if any of the parameters being tracked are not in the state
+    /// they were declared to be in upon return from a function.
+    void checkParamsForReturnTypestate(SourceLocation BlameLoc,
+      ConsumedWarningsHandlerBase &WarningsHandler) const;
+    
+    /// \brief Clear the TmpMap.
+    void clearTemporaries();
     
     /// \brief Get the consumed state of a given variable.
     ConsumedState getState(const VarDecl *Var) const;
+    
+    /// \brief Get the consumed state of a given temporary value.
+    ConsumedState getState(const CXXBindTemporaryExpr *Tmp) const;
     
     /// \brief Merge this state map with another map.
     void intersect(const ConsumedStateMap *Other);
@@ -141,6 +181,9 @@ namespace consumed {
     
     /// \brief Set the consumed state of a given variable.
     void setState(const VarDecl *Var, ConsumedState State);
+    
+    /// \brief Set the consumed state of a given temporary value.
+    void setState(const CXXBindTemporaryExpr *Tmp, ConsumedState State);
     
     /// \brief Remove the variable from our state map.
     void remove(const VarDecl *Var);

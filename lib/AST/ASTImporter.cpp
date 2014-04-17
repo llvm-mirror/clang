@@ -407,10 +407,11 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
       return false;
     break;
   
+  case Type::Adjusted:
   case Type::Decayed:
     if (!IsStructurallyEquivalent(Context,
-                                  cast<DecayedType>(T1)->getPointeeType(),
-                                  cast<DecayedType>(T2)->getPointeeType()))
+                                  cast<AdjustedType>(T1)->getOriginalType(),
+                                  cast<AdjustedType>(T2)->getOriginalType()))
       return false;
     break;
 
@@ -534,12 +535,11 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
   case Type::FunctionProto: {
     const FunctionProtoType *Proto1 = cast<FunctionProtoType>(T1);
     const FunctionProtoType *Proto2 = cast<FunctionProtoType>(T2);
-    if (Proto1->getNumArgs() != Proto2->getNumArgs())
+    if (Proto1->getNumParams() != Proto2->getNumParams())
       return false;
-    for (unsigned I = 0, N = Proto1->getNumArgs(); I != N; ++I) {
-      if (!IsStructurallyEquivalent(Context, 
-                                    Proto1->getArgType(I),
-                                    Proto2->getArgType(I)))
+    for (unsigned I = 0, N = Proto1->getNumParams(); I != N; ++I) {
+      if (!IsStructurallyEquivalent(Context, Proto1->getParamType(I),
+                                    Proto2->getParamType(I)))
         return false;
     }
     if (Proto1->isVariadic() != Proto2->isVariadic())
@@ -570,9 +570,8 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
   case Type::FunctionNoProto: {
     const FunctionType *Function1 = cast<FunctionType>(T1);
     const FunctionType *Function2 = cast<FunctionType>(T2);
-    if (!IsStructurallyEquivalent(Context, 
-                                  Function1->getResultType(),
-                                  Function2->getResultType()))
+    if (!IsStructurallyEquivalent(Context, Function1->getReturnType(),
+                                  Function2->getReturnType()))
       return false;
       if (Function1->getExtInfo() != Function2->getExtInfo())
         return false;
@@ -931,10 +930,8 @@ static Optional<unsigned> findAnonymousStructOrUnionIndex(RecordDecl *Anon) {
     return None;
 
   unsigned Index = 0;
-  for (DeclContext::decl_iterator D = Owner->noload_decls_begin(),
-                               DEnd = Owner->noload_decls_end();
-       D != DEnd; ++D) {
-    FieldDecl *F = dyn_cast<FieldDecl>(*D);
+  for (const auto *D : Owner->noload_decls()) {
+    const auto *F = dyn_cast<FieldDecl>(D);
     if (!F || !F->isAnonymousStructOrUnion())
       continue;
 
@@ -1586,7 +1583,7 @@ QualType
 ASTNodeImporter::VisitFunctionNoProtoType(const FunctionNoProtoType *T) {
   // FIXME: What happens if we're importing a function without a prototype 
   // into C++? Should we make it variadic?
-  QualType ToResultType = Importer.Import(T->getResultType());
+  QualType ToResultType = Importer.Import(T->getReturnType());
   if (ToResultType.isNull())
     return QualType();
 
@@ -1595,16 +1592,14 @@ ASTNodeImporter::VisitFunctionNoProtoType(const FunctionNoProtoType *T) {
 }
 
 QualType ASTNodeImporter::VisitFunctionProtoType(const FunctionProtoType *T) {
-  QualType ToResultType = Importer.Import(T->getResultType());
+  QualType ToResultType = Importer.Import(T->getReturnType());
   if (ToResultType.isNull())
     return QualType();
   
   // Import argument types
   SmallVector<QualType, 4> ArgTypes;
-  for (FunctionProtoType::arg_type_iterator A = T->arg_type_begin(),
-                                         AEnd = T->arg_type_end();
-       A != AEnd; ++A) {
-    QualType ArgType = Importer.Import(*A);
+  for (const auto &A : T->param_types()) {
+    QualType ArgType = Importer.Import(A);
     if (ArgType.isNull())
       return QualType();
     ArgTypes.push_back(ArgType);
@@ -1612,10 +1607,8 @@ QualType ASTNodeImporter::VisitFunctionProtoType(const FunctionProtoType *T) {
   
   // Import exception types
   SmallVector<QualType, 4> ExceptionTypes;
-  for (FunctionProtoType::exception_iterator E = T->exception_begin(),
-                                          EEnd = T->exception_end();
-       E != EEnd; ++E) {
-    QualType ExceptionType = Importer.Import(*E);
+  for (const auto &E : T->exceptions()) {
+    QualType ExceptionType = Importer.Import(E);
     if (ExceptionType.isNull())
       return QualType();
     ExceptionTypes.push_back(ExceptionType);
@@ -1631,7 +1624,7 @@ QualType ASTNodeImporter::VisitFunctionProtoType(const FunctionProtoType *T) {
   ToEPI.RefQualifier = FromEPI.RefQualifier;
   ToEPI.NumExceptions = ExceptionTypes.size();
   ToEPI.Exceptions = ExceptionTypes.data();
-  ToEPI.ConsumedArguments = FromEPI.ConsumedArguments;
+  ToEPI.ConsumedParameters = FromEPI.ConsumedParameters;
   ToEPI.ExceptionSpecType = FromEPI.ExceptionSpecType;
   ToEPI.NoexceptExpr = Importer.Import(FromEPI.NoexceptExpr);
   ToEPI.ExceptionSpecDecl = cast_or_null<FunctionDecl>(
@@ -1787,11 +1780,9 @@ QualType ASTNodeImporter::VisitObjCObjectType(const ObjCObjectType *T) {
     return QualType();
 
   SmallVector<ObjCProtocolDecl *, 4> Protocols;
-  for (ObjCObjectType::qual_iterator P = T->qual_begin(), 
-                                     PEnd = T->qual_end();
-       P != PEnd; ++P) {
+  for (auto *P : T->quals()) {
     ObjCProtocolDecl *Protocol
-      = dyn_cast_or_null<ObjCProtocolDecl>(Importer.Import(*P));
+      = dyn_cast_or_null<ObjCProtocolDecl>(Importer.Import(P));
     if (!Protocol)
       return QualType();
     Protocols.push_back(Protocol);
@@ -1909,11 +1900,8 @@ void ASTNodeImporter::ImportDeclContext(DeclContext *FromDC, bool ForceImport) {
     return;
   }
   
-  for (DeclContext::decl_iterator From = FromDC->decls_begin(),
-                               FromEnd = FromDC->decls_end();
-       From != FromEnd;
-       ++From)
-    Importer.Import(*From);
+  for (auto *From : FromDC->decls())
+    Importer.Import(From);
 }
 
 bool ASTNodeImporter::ImportDefinition(RecordDecl *From, RecordDecl *To, 
@@ -1946,6 +1934,7 @@ bool ASTNodeImporter::ImportDefinition(RecordDecl *From, RecordDecl *To,
     ToData.HasProtectedFields = FromData.HasProtectedFields;
     ToData.HasPublicFields = FromData.HasPublicFields;
     ToData.HasMutableFields = FromData.HasMutableFields;
+    ToData.HasVariantMembers = FromData.HasVariantMembers;
     ToData.HasOnlyCMembers = FromData.HasOnlyCMembers;
     ToData.HasInClassInitializer = FromData.HasInClassInitializer;
     ToData.HasUninitializedReferenceMember
@@ -1983,35 +1972,28 @@ bool ASTNodeImporter::ImportDefinition(RecordDecl *From, RecordDecl *To,
       = FromData.HasDeclaredCopyConstructorWithConstParam;
     ToData.HasDeclaredCopyAssignmentWithConstParam
       = FromData.HasDeclaredCopyAssignmentWithConstParam;
-    ToData.FailedImplicitMoveConstructor
-      = FromData.FailedImplicitMoveConstructor;
-    ToData.FailedImplicitMoveAssignment = FromData.FailedImplicitMoveAssignment;
     ToData.IsLambda = FromData.IsLambda;
 
     SmallVector<CXXBaseSpecifier *, 4> Bases;
-    for (CXXRecordDecl::base_class_iterator 
-                  Base1 = FromCXX->bases_begin(),
-            FromBaseEnd = FromCXX->bases_end();
-         Base1 != FromBaseEnd;
-         ++Base1) {
-      QualType T = Importer.Import(Base1->getType());
+    for (const auto &Base1 : FromCXX->bases()) {
+      QualType T = Importer.Import(Base1.getType());
       if (T.isNull())
         return true;
 
       SourceLocation EllipsisLoc;
-      if (Base1->isPackExpansion())
-        EllipsisLoc = Importer.Import(Base1->getEllipsisLoc());
+      if (Base1.isPackExpansion())
+        EllipsisLoc = Importer.Import(Base1.getEllipsisLoc());
 
       // Ensure that we have a definition for the base.
-      ImportDefinitionIfNeeded(Base1->getType()->getAsCXXRecordDecl());
+      ImportDefinitionIfNeeded(Base1.getType()->getAsCXXRecordDecl());
         
       Bases.push_back(
                     new (Importer.getToContext()) 
-                      CXXBaseSpecifier(Importer.Import(Base1->getSourceRange()),
-                                       Base1->isVirtual(),
-                                       Base1->isBaseOfClass(),
-                                       Base1->getAccessSpecifierAsWritten(),
-                                   Importer.Import(Base1->getTypeSourceInfo()),
+                      CXXBaseSpecifier(Importer.Import(Base1.getSourceRange()),
+                                       Base1.isVirtual(),
+                                       Base1.isBaseOfClass(),
+                                       Base1.getAccessSpecifierAsWritten(),
+                                   Importer.Import(Base1.getTypeSourceInfo()),
                                        EllipsisLoc));
     }
     if (!Bases.empty())
@@ -2541,6 +2523,21 @@ Decl *ASTNodeImporter::VisitRecordDecl(RecordDecl *D) {
         } else if (!D->isCompleteDefinition()) {
           // We have a forward declaration of this type, so adopt that forward
           // declaration rather than building a new one.
+            
+          // If one or both can be completed from external storage then try one
+          // last time to complete and compare them before doing this.
+            
+          if (FoundRecord->hasExternalLexicalStorage() &&
+              !FoundRecord->isCompleteDefinition())
+            FoundRecord->getASTContext().getExternalSource()->CompleteType(FoundRecord);
+          if (D->hasExternalLexicalStorage())
+            D->getASTContext().getExternalSource()->CompleteType(D);
+            
+          if (FoundRecord->isCompleteDefinition() &&
+              D->isCompleteDefinition() &&
+              !IsStructuralMatch(D, FoundRecord))
+            continue;
+              
           AdoptDecl = FoundRecord;
           continue;
         } else if (!SearchName) {
@@ -2719,7 +2716,7 @@ Decl *ASTNodeImporter::VisitFunctionDecl(FunctionDecl *D) {
         FromEPI.NoexceptExpr) {
       FunctionProtoType::ExtProtoInfo DefaultEPI;
       FromTy = Importer.getFromContext().getFunctionType(
-          FromFPT->getResultType(), FromFPT->getArgTypes(), DefaultEPI);
+          FromFPT->getReturnType(), FromFPT->getParamTypes(), DefaultEPI);
       usedDifferentExceptionSpec = true;
     }
   }
@@ -2731,9 +2728,8 @@ Decl *ASTNodeImporter::VisitFunctionDecl(FunctionDecl *D) {
   
   // Import the function parameters.
   SmallVector<ParmVarDecl *, 8> Parameters;
-  for (FunctionDecl::param_iterator P = D->param_begin(), PEnd = D->param_end();
-       P != PEnd; ++P) {
-    ParmVarDecl *ToP = cast_or_null<ParmVarDecl>(Importer.Import(*P));
+  for (auto P : D->params()) {
+    ParmVarDecl *ToP = cast_or_null<ParmVarDecl>(Importer.Import(P));
     if (!ToP)
       return 0;
     
@@ -2841,10 +2837,8 @@ static unsigned getFieldIndex(Decl *F) {
     return 0;
 
   unsigned Index = 1;
-  for (DeclContext::decl_iterator D = Owner->noload_decls_begin(),
-                               DEnd = Owner->noload_decls_end();
-       D != DEnd; ++D) {
-    if (*D == F)
+  for (const auto *D : Owner->noload_decls()) {
+    if (D == F)
       return Index;
 
     if (isa<FieldDecl>(*D) || isa<IndirectFieldDecl>(*D))
@@ -2956,9 +2950,8 @@ Decl *ASTNodeImporter::VisitIndirectFieldDecl(IndirectFieldDecl *D) {
     new (Importer.getToContext())NamedDecl*[D->getChainingSize()];
 
   unsigned i = 0;
-  for (IndirectFieldDecl::chain_iterator PI = D->chain_begin(),
-       PE = D->chain_end(); PI != PE; ++PI) {
-    Decl* D = Importer.Import(*PI);
+  for (auto *PI : D->chain()) {
+    Decl *D = Importer.Import(PI);
     if (!D)
       return 0;
     NamedChain[i++] = cast<NamedDecl>(D);
@@ -3217,11 +3210,11 @@ Decl *ASTNodeImporter::VisitObjCMethodDecl(ObjCMethodDecl *D) {
         continue;
 
       // Check return types.
-      if (!Importer.IsStructurallyEquivalent(D->getResultType(),
-                                             FoundMethod->getResultType())) {
+      if (!Importer.IsStructurallyEquivalent(D->getReturnType(),
+                                             FoundMethod->getReturnType())) {
         Importer.ToDiag(Loc, diag::err_odr_objc_method_result_type_inconsistent)
-          << D->isInstanceMethod() << Name
-          << D->getResultType() << FoundMethod->getResultType();
+            << D->isInstanceMethod() << Name << D->getReturnType()
+            << FoundMethod->getReturnType();
         Importer.ToDiag(FoundMethod->getLocation(), 
                         diag::note_odr_objc_method_here)
           << D->isInstanceMethod() << Name;
@@ -3272,36 +3265,25 @@ Decl *ASTNodeImporter::VisitObjCMethodDecl(ObjCMethodDecl *D) {
   }
 
   // Import the result type.
-  QualType ResultTy = Importer.Import(D->getResultType());
+  QualType ResultTy = Importer.Import(D->getReturnType());
   if (ResultTy.isNull())
     return 0;
 
-  TypeSourceInfo *ResultTInfo = Importer.Import(D->getResultTypeSourceInfo());
+  TypeSourceInfo *ReturnTInfo = Importer.Import(D->getReturnTypeSourceInfo());
 
-  ObjCMethodDecl *ToMethod
-    = ObjCMethodDecl::Create(Importer.getToContext(),
-                             Loc,
-                             Importer.Import(D->getLocEnd()),
-                             Name.getObjCSelector(),
-                             ResultTy, ResultTInfo, DC,
-                             D->isInstanceMethod(),
-                             D->isVariadic(),
-                             D->isPropertyAccessor(),
-                             D->isImplicit(),
-                             D->isDefined(),
-                             D->getImplementationControl(),
-                             D->hasRelatedResultType());
+  ObjCMethodDecl *ToMethod = ObjCMethodDecl::Create(
+      Importer.getToContext(), Loc, Importer.Import(D->getLocEnd()),
+      Name.getObjCSelector(), ResultTy, ReturnTInfo, DC, D->isInstanceMethod(),
+      D->isVariadic(), D->isPropertyAccessor(), D->isImplicit(), D->isDefined(),
+      D->getImplementationControl(), D->hasRelatedResultType());
 
   // FIXME: When we decide to merge method definitions, we'll need to
   // deal with implicit parameters.
 
   // Import the parameters
   SmallVector<ParmVarDecl *, 5> ToParams;
-  for (ObjCMethodDecl::param_iterator FromP = D->param_begin(),
-                                   FromPEnd = D->param_end();
-       FromP != FromPEnd; 
-       ++FromP) {
-    ParmVarDecl *ToP = cast_or_null<ParmVarDecl>(Importer.Import(*FromP));
+  for (auto *FromP : D->params()) {
+    ParmVarDecl *ToP = cast_or_null<ParmVarDecl>(Importer.Import(FromP));
     if (!ToP)
       return 0;
     
@@ -3560,12 +3542,8 @@ bool ASTNodeImporter::ImportDefinition(ObjCInterfaceDecl *From,
   
   // Import categories. When the categories themselves are imported, they'll
   // hook themselves into this interface.
-  for (ObjCInterfaceDecl::known_categories_iterator
-         Cat = From->known_categories_begin(),
-         CatEnd = From->known_categories_end();
-       Cat != CatEnd; ++Cat) {
-    Importer.Import(*Cat);
-  }
+  for (auto *Cat : From->known_categories())
+    Importer.Import(Cat);
   
   // If we have an @implementation, import it as well.
   if (From->getImplementation()) {
@@ -4242,8 +4220,7 @@ Decl *ASTNodeImporter::VisitVarTemplateDecl(VarTemplateDecl *D) {
     return 0;
 
   VarTemplateDecl *D2 = VarTemplateDecl::Create(
-      Importer.getToContext(), DC, Loc, Name, TemplateParams, D2Templated,
-      /*PrevDecl=*/0);
+      Importer.getToContext(), DC, Loc, Name, TemplateParams, D2Templated);
   D2Templated->setDescribedVarTemplate(D2);
 
   D2->setAccess(D->getAccess());

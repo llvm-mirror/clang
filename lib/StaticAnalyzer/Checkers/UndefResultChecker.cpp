@@ -28,8 +28,8 @@ namespace {
 class UndefResultChecker 
   : public Checker< check::PostStmt<BinaryOperator> > {
 
-  mutable OwningPtr<BugType> BT;
-  
+  mutable std::unique_ptr<BugType> BT;
+
 public:
   void checkPostStmt(const BinaryOperator *B, CheckerContext &C) const;
 };
@@ -55,7 +55,8 @@ void UndefResultChecker::checkPostStmt(const BinaryOperator *B,
       return;
     
     if (!BT)
-      BT.reset(new BuiltinBug("Result of operation is garbage or undefined"));
+      BT.reset(
+          new BuiltinBug(this, "Result of operation is garbage or undefined"));
 
     SmallString<256> sbuf;
     llvm::raw_svector_ostream OS(sbuf);

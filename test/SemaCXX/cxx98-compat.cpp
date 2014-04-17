@@ -23,7 +23,7 @@ template<int ...I>  // expected-warning {{variadic templates are incompatible wi
 class Variadic3 {};
 
 alignas(8) int with_alignas; // expected-warning {{'alignas' is incompatible with C++98}}
-int with_attribute [[ ]]; // expected-warning {{attributes are incompatible with C++98}}
+int with_attribute [[ ]]; // expected-warning {{C++11 attribute syntax is incompatible with C++98}}
 
 void Literals() {
   (void)u8"str"; // expected-warning {{unicode literals are incompatible with C++98}}
@@ -219,18 +219,11 @@ int n = {}; // expected-warning {{scalar initialized from empty initializer list
 class PrivateMember {
   struct ImPrivate {};
 };
-template<typename T> typename T::ImPrivate SFINAEAccessControl(T t) { // expected-warning {{substitution failure due to access control is incompatible with C++98}} expected-note {{while substituting deduced template arguments into function template 'SFINAEAccessControl' [with T = PrivateMember]}}
+template<typename T> typename T::ImPrivate SFINAEAccessControl(T t) { // expected-warning {{substitution failure due to access control is incompatible with C++98}}
   return typename T::ImPrivate();
 }
 int SFINAEAccessControl(...) { return 0; }
-int CheckSFINAEAccessControl = SFINAEAccessControl(PrivateMember());
-
-template<typename T>
-struct FriendRedefinition {
-  friend void Friend() {} // expected-warning {{friend function 'Friend' would be implicitly redefined in C++98}} expected-note {{previous}}
-};
-FriendRedefinition<int> FriendRedef1;
-FriendRedefinition<char> FriendRedef2; // expected-note {{requested here}}
+int CheckSFINAEAccessControl = SFINAEAccessControl(PrivateMember()); // expected-note {{while substituting deduced template arguments into function template 'SFINAEAccessControl' [with T = PrivateMember]}}
 
 namespace CopyCtorIssues {
   struct Private {

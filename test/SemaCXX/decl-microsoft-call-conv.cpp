@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple i686-pc-win32 -cxx-abi microsoft -fms-extensions -verify %s
+// RUN: %clang_cc1 -triple i686-pc-win32 -fms-extensions -verify %s
 
 typedef void void_fun_t();
 typedef void __cdecl cdecl_fun_t();
@@ -160,3 +160,72 @@ struct ExactlyInt {
   }
 };
 template <> inline int ExactlyInt::cast_to_int<int>(int x) { return x; }
+
+namespace test2 {
+  class foo {
+    template <typename T> void bar(T v);
+  };
+  extern template void foo::bar(const void *);
+}
+
+namespace test3 {
+  struct foo {
+    typedef void bar();
+  };
+  bool zed(foo::bar *);
+  void bah() {}
+  void baz() { zed(bah); }
+}
+
+namespace test4 {
+  class foo {
+    template <typename T> static void bar(T v);
+  };
+  extern template void foo::bar(const void *);
+}
+
+namespace test5 {
+  template <class T>
+  class valarray {
+    void bar();
+  };
+  extern template void valarray<int>::bar();
+}
+
+namespace test6 {
+  struct foo {
+    int bar();
+  };
+  typedef int bar_t();
+  void zed(bar_t foo::*) {
+  }
+  void baz() {
+    zed(&foo::bar);
+  }
+}
+
+namespace test7 {
+  template <typename T>
+  struct S {
+    void f(T t) {
+      t = 42;
+    }
+  };
+  template<> void S<void*>::f(void*);
+  void g(S<void*> s, void* p) {
+    s.f(p);
+  }
+}
+
+namespace test8 {
+  template <typename T>
+  struct S {
+    void f(T t) { // expected-note {{previous declaration is here}}
+      t = 42; // expected-error {{assigning to 'void *' from incompatible type 'int'}}
+    }
+  };
+  template<> void __cdecl S<void*>::f(void*); // expected-error {{function declared 'cdecl' here was previously declared without calling convention}}
+  void g(S<void*> s, void* p) {
+    s.f(p); // expected-note {{in instantiation of member function 'test8::S<void *>::f' requested here}}
+  }
+}

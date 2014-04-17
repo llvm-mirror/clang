@@ -70,8 +70,6 @@ const DerivedArgList &Compilation::getArgsForToolChain(const ToolChain *TC,
 }
 
 bool Compilation::CleanupFile(const char *File, bool IssueErrors) const {
-  std::string P(File);
-
   // FIXME: Why are we trying to remove files that we have not created? For
   // example we should only try to remove a temporary assembly file if
   // "clang -cc1" succeed in writing it. Was this a workaround for when
@@ -137,7 +135,8 @@ int Compilation::ExecuteCommand(const Command &C,
     if (getDriver().CCPrintOptions && getDriver().CCPrintOptionsFilename) {
       std::string Error;
       OS = new llvm::raw_fd_ostream(getDriver().CCPrintOptionsFilename, Error,
-                                    llvm::sys::fs::F_Append);
+                                    llvm::sys::fs::F_Append |
+                                        llvm::sys::fs::F_Text);
       if (!Error.empty()) {
         getDriver().Diag(clang::diag::err_drv_cc_print_options_failure)
           << Error;

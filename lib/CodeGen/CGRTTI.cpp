@@ -332,11 +332,11 @@ getTypeInfoLinkage(CodeGenModule &CGM, QualType Ty) {
   
   switch (Ty->getLinkage()) {
   case NoLinkage:
-  case VisibleNoLinkage:
   case InternalLinkage:
   case UniqueExternalLinkage:
     return llvm::GlobalValue::InternalLinkage;
 
+  case VisibleNoLinkage:
   case ExternalLinkage:
     if (!CGM.getLangOpts().RTTI) {
       // RTTI is not enabled, which means that this type info struct is going
@@ -544,8 +544,25 @@ llvm::Constant *RTTIBuilder::BuildTypeInfo(QualType Ty, bool Force) {
   
   // And the name.
   llvm::GlobalVariable *TypeName = GetAddrOfTypeName(Ty, Linkage);
+  llvm::Constant *TypeNameField;
 
-  Fields.push_back(llvm::ConstantExpr::getBitCast(TypeName, CGM.Int8PtrTy));
+  // If we're supposed to demote the visibility, be sure to set a flag
+  // to use a string comparison for type_info comparisons.
+  CGCXXABI::RTTIUniquenessKind RTTIUniqueness =
+      CGM.getCXXABI().classifyRTTIUniqueness(Ty, Linkage);
+  if (RTTIUniqueness != CGCXXABI::RUK_Unique) {
+    // The flag is the sign bit, which on ARM64 is defined to be clear
+    // for global pointers.  This is very ARM64-specific.
+    TypeNameField = llvm::ConstantExpr::getPtrToInt(TypeName, CGM.Int64Ty);
+    llvm::Constant *flag =
+        llvm::ConstantInt::get(CGM.Int64Ty, ((uint64_t)1) << 63);
+    TypeNameField = llvm::ConstantExpr::getAdd(TypeNameField, flag);
+    TypeNameField =
+        llvm::ConstantExpr::getIntToPtr(TypeNameField, CGM.Int8PtrTy);
+  } else {
+    TypeNameField = llvm::ConstantExpr::getBitCast(TypeName, CGM.Int8PtrTy);
+  }
+  Fields.push_back(TypeNameField);
 
   switch (Ty->getTypeClass()) {
 #define TYPE(Class, Base)
@@ -644,31 +661,34 @@ llvm::Constant *RTTIBuilder::BuildTypeInfo(QualType Ty, bool Force) {
     OldGV->eraseFromParent();
   }
 
-  // GCC only relies on the uniqueness of the type names, not the
-  // type_infos themselves, so we can emit these as hidden symbols.
-  // But don't do this if we're worried about strict visibility
-  // compatibility.
-  if (const RecordType *RT = dyn_cast<RecordType>(Ty)) {
-    const CXXRecordDecl *RD = cast<CXXRecordDecl>(RT->getDecl());
+  // The Itanium ABI specifies that type_info objects must be globally
+  // unique, with one exception: if the type is an incomplete class
+  // type or a (possibly indirect) pointer to one.  That exception
+  // affects the general case of comparing type_info objects produced
+  // by the typeid operator, which is why the comparison operators on
+  // std::type_info generally use the type_info name pointers instead
+  // of the object addresses.  However, the language's built-in uses
+  // of RTTI generally require class types to be complete, even when
+  // manipulating pointers to those class types.  This allows the
+  // implementation of dynamic_cast to rely on address equality tests,
+  // which is much faster.
 
-    CGM.setTypeVisibility(GV, RD, CodeGenModule::TVK_ForRTTI);
-    CGM.setTypeVisibility(TypeName, RD, CodeGenModule::TVK_ForRTTIName);
-  } else {
-    Visibility TypeInfoVisibility = DefaultVisibility;
-    if (CGM.getCodeGenOpts().HiddenWeakVTables &&
-        Linkage == llvm::GlobalValue::LinkOnceODRLinkage)
-      TypeInfoVisibility = HiddenVisibility;
+  // All of this is to say that it's important that both the type_info
+  // object and the type_info name be uniqued when weakly emitted.
 
-    // The type name should have the same visibility as the type itself.
-    Visibility ExplicitVisibility = Ty->getVisibility();
-    TypeName->setVisibility(CodeGenModule::
-                            GetLLVMVisibility(ExplicitVisibility));
-  
-    TypeInfoVisibility = minVisibility(TypeInfoVisibility, Ty->getVisibility());
-    GV->setVisibility(CodeGenModule::GetLLVMVisibility(TypeInfoVisibility));
+  // Give the type_info object and name the formal visibility of the
+  // type itself.
+  Visibility formalVisibility = Ty->getVisibility();
+  llvm::GlobalValue::VisibilityTypes llvmVisibility =
+    CodeGenModule::GetLLVMVisibility(formalVisibility);
+  TypeName->setVisibility(llvmVisibility);
+  GV->setVisibility(llvmVisibility);
+
+  // FIXME: integrate this better into the above when we move to trunk
+  if (RTTIUniqueness == CGCXXABI::RUK_NonUniqueHidden) {
+    TypeName->setVisibility(llvm::GlobalValue::HiddenVisibility);
+    GV->setVisibility(llvm::GlobalValue::HiddenVisibility);
   }
-
-  GV->setUnnamedAddr(true);
 
   return llvm::ConstantExpr::getBitCast(GV, CGM.Int8PtrTy);
 }
@@ -766,9 +786,8 @@ static unsigned ComputeVMIClassTypeInfoFlags(const CXXBaseSpecifier *Base,
   }
 
   // Walk all bases.
-  for (CXXRecordDecl::base_class_const_iterator I = BaseDecl->bases_begin(),
-       E = BaseDecl->bases_end(); I != E; ++I) 
-    Flags |= ComputeVMIClassTypeInfoFlags(I, Bases);
+  for (const auto &I : BaseDecl->bases()) 
+    Flags |= ComputeVMIClassTypeInfoFlags(&I, Bases);
   
   return Flags;
 }
@@ -778,9 +797,8 @@ static unsigned ComputeVMIClassTypeInfoFlags(const CXXRecordDecl *RD) {
   SeenBases Bases;
   
   // Walk all bases.
-  for (CXXRecordDecl::base_class_const_iterator I = RD->bases_begin(),
-       E = RD->bases_end(); I != E; ++I) 
-    Flags |= ComputeVMIClassTypeInfoFlags(I, Bases);
+  for (const auto &I : RD->bases()) 
+    Flags |= ComputeVMIClassTypeInfoFlags(&I, Bases);
   
   return Flags;
 }
@@ -827,15 +845,12 @@ void RTTIBuilder::BuildVMIClassTypeInfo(const CXXRecordDecl *RD) {
   //       __offset_shift = 8
   //     };
   //   };
-  for (CXXRecordDecl::base_class_const_iterator I = RD->bases_begin(),
-       E = RD->bases_end(); I != E; ++I) {
-    const CXXBaseSpecifier *Base = I;
-
+  for (const auto &Base : RD->bases()) {
     // The __base_type member points to the RTTI for the base type.
-    Fields.push_back(RTTIBuilder(CGM).BuildTypeInfo(Base->getType()));
+    Fields.push_back(RTTIBuilder(CGM).BuildTypeInfo(Base.getType()));
 
     const CXXRecordDecl *BaseDecl = 
-      cast<CXXRecordDecl>(Base->getType()->getAs<RecordType>()->getDecl());
+      cast<CXXRecordDecl>(Base.getType()->getAs<RecordType>()->getDecl());
 
     int64_t OffsetFlags = 0;
     
@@ -844,9 +859,9 @@ void RTTIBuilder::BuildVMIClassTypeInfo(const CXXRecordDecl *RD) {
     // subobject. For a virtual base, this is the offset in the virtual table of
     // the virtual base offset for the virtual base referenced (negative).
     CharUnits Offset;
-    if (Base->isVirtual())
+    if (Base.isVirtual())
       Offset = 
-        CGM.getVTableContext().getVirtualBaseOffsetOffset(RD, BaseDecl);
+        CGM.getItaniumVTableContext().getVirtualBaseOffsetOffset(RD, BaseDecl);
     else {
       const ASTRecordLayout &Layout = CGM.getContext().getASTRecordLayout(RD);
       Offset = Layout.getBaseClassOffset(BaseDecl);
@@ -856,9 +871,9 @@ void RTTIBuilder::BuildVMIClassTypeInfo(const CXXRecordDecl *RD) {
     
     // The low-order byte of __offset_flags contains flags, as given by the 
     // masks from the enumeration __offset_flags_masks.
-    if (Base->isVirtual())
+    if (Base.isVirtual())
       OffsetFlags |= BCTI_Virtual;
-    if (Base->getAccessSpecifier() == AS_public)
+    if (Base.getAccessSpecifier() == AS_public)
       OffsetFlags |= BCTI_Public;
 
     Fields.push_back(llvm::ConstantInt::get(LongLTy, OffsetFlags));

@@ -21,23 +21,19 @@ typedef char BOOL;
 @interface I : NSObject {
   int ivarVal;
 }
-
 @property (nonatomic, weak) NSString *WeakProp;
 
-@property (nonatomic, retain) NSString *StrongProp;
+@property (nonatomic, strong) NSString *StrongProp;
 
-
-- (NSString *) UnavailProp  __attribute__((unavailable));
+@property (nonatomic, strong) NSString *UnavailProp  __attribute__((unavailable));
 - (void) setUnavailProp  : (NSString *)Val;
 
-@property (nonatomic, retain) NSString *UnavailProp1  __attribute__((unavailable));
+@property (nonatomic, strong) NSString *UnavailProp1  __attribute__((unavailable));
 
-
-- (NSString *) UnavailProp2;
+@property (nonatomic, strong) NSString *UnavailProp2;
 - (void) setUnavailProp2  : (NSString *)Val  __attribute__((unavailable));
 
 @property (nonatomic, copy) NSDictionary *undoAction;
-
 @end
 
 @implementation I
@@ -52,40 +48,32 @@ typedef char BOOL;
     NSArray *_names3;
     NSArray *_names4;
 }
-
-
-
-
-@property (nonatomic, retain) NSArray *names2;
-@property (nonatomic, retain) NSArray *names3;
-@property (nonatomic, retain) NSArray *names4;
-@property (nonatomic, retain) NSArray *names1;
+@property (nonatomic, strong) NSArray *names2;
+@property (nonatomic, strong) NSArray *names3;
+@property (nonatomic, strong) NSArray *names4;
+@property (nonatomic, strong) NSArray *names1;
 @end
 
 // Properties that contain the name "delegate" or "dataSource",
 // or have exact name "target" have unsafe_unretained attribute.
 @interface NSInvocation 
-@property (nonatomic, unsafe_unretained) id target;
+@property (nonatomic, assign) id target;
+
+@property (nonatomic, assign) id dataSource;
+
+// rdar://15509831
+@property (nonatomic, readonly, assign) id delegate;
+
+@property (nonatomic, assign) id xxxdelegateYYY;
 
 
-@property (nonatomic, unsafe_unretained) id dataSource;
+@property (nonatomic, strong) id MYtarget;
 
-@property (nonatomic, unsafe_unretained) id xxxdelegateYYY;
-
-
-
-
-@property (nonatomic, retain) id MYtarget;
-
-
-@property (nonatomic, retain) id targetX;
-
+@property (nonatomic, strong) id targetX;
  
 @property (nonatomic) int value;
 
-
 @property (nonatomic, getter=isContinuous) BOOL continuous;
-
 
 - (id) isAnObject;
 - (void)setAnObject : (id) object;
@@ -95,15 +83,14 @@ typedef char BOOL;
 
 - (void) Nothing;
 @property (nonatomic, readonly) int Length;
-@property (nonatomic, readonly) id object;
+@property (nonatomic, readonly, strong) id object;
 + (double) D;
 @property (nonatomic, readonly) void *JSObject WEBKIT_OBJC_METHOD_ANNOTATION(AVAILABLE_WEBKIT_VERSION_3_0_AND_LATER);
 @property (nonatomic, getter=isIgnoringInteractionEvents, readonly) BOOL ignoringInteractionEvents;
 
-@property (nonatomic, getter=getStringValue, retain) NSString *stringValue;
+@property (nonatomic, getter=getStringValue, strong) NSString *stringValue;
 @property (nonatomic, getter=getCounterValue, readonly) BOOL counterValue;
-
-@property (nonatomic, getter=getns_dixtionary, readonly) NSDictionary *ns_dixtionary;
+@property (nonatomic, getter=getns_dixtionary, readonly, copy) NSDictionary *ns_dixtionary;
 
 - (BOOL)is3bar; // watch out
 - (NSString *)get3foo; // watch out
@@ -117,27 +104,20 @@ typedef char BOOL;
 
 
 @interface NSInvocation(CAT)
-@property (nonatomic, unsafe_unretained) id target;
+@property (nonatomic, assign) id target;
+
+@property (nonatomic, assign) id dataSource;
+
+@property (nonatomic, assign) id xxxdelegateYYY;
 
 
-@property (nonatomic, unsafe_unretained) id dataSource;
+@property (nonatomic, strong) id MYtarget;
 
-@property (nonatomic, unsafe_unretained) id xxxdelegateYYY;
-
-
-
-
-@property (nonatomic, retain) id MYtarget;
-
-
-@property (nonatomic, retain) id targetX;
-
+@property (nonatomic, strong) id targetX;
 
 @property (nonatomic) int value;
 
-
 @property (nonatomic, getter=isContinuous) BOOL continuous;
-
 
 - (id) isAnObject;
 - (void)setAnObject : (id) object;
@@ -147,7 +127,7 @@ typedef char BOOL;
 
 - (void) Nothing;
 @property (nonatomic, readonly) int Length;
-@property (nonatomic, readonly) id object;
+@property (nonatomic, readonly, strong) id object;
 + (double) D;
 
 - (BOOL)is3bar; // watch out
@@ -184,28 +164,26 @@ DEPRECATED
 
 @interface NSURL
 // Do not infer a property.
-- (NSURL *)appStoreReceiptURL NS_AVAILABLE;
+@property (nonatomic, strong) NSURL *appStoreReceiptURL NS_AVAILABLE;
 - (void) setAppStoreReceiptURL : (NSURL *)object;
 
-@property (nonatomic, retain) NSURL *appStoreReceiptURLX NS_AVAILABLE;
-
+@property (nonatomic, strong) NSURL *appStoreReceiptURLX NS_AVAILABLE;
 
 // Do not infer a property.
-- (NSURL *)appStoreReceiptURLY ;
+@property (nonatomic, strong) NSURL *appStoreReceiptURLY ;
 - (void) setAppStoreReceiptURLY : (NSURL *)object NS_AVAILABLE;
 
-@property (nonatomic, readonly) id OkToInfer NS_AVAILABLE;
+@property (nonatomic, readonly, strong) id OkToInfer NS_AVAILABLE;
 
 // Do not infer a property.
-- (NSURL *)appStoreReceiptURLZ ;
+@property (nonatomic, strong) NSURL *appStoreReceiptURLZ ;
 - (void) setAppStoreReceiptURLZ : (NSURL *)object NS_AVAILABLE;
 
 // Do not infer a property.
 - (id) t1 NORETURN NS_AVAILABLE;
 - (void) setT1 : (id) arg NS_AVAILABLE;
 
-@property (nonatomic, retain) id method1 ALIGNED NS_AVAILABLE;
-
+@property (nonatomic, strong) id method1 ALIGNED NS_AVAILABLE;
 
 - (NSURL *)init;  // No Change
 + (id)alloc;      // No Change
@@ -220,10 +198,16 @@ DEPRECATED
 @class NSMutableDictionary;
 
 @interface NSArray
-@property (nonatomic, readonly) id (^expressionBlock)(id, NSArray *, NSMutableDictionary *);
+@property (nonatomic, readonly, copy) id (^expressionBlock)(id, NSArray *, NSMutableDictionary *);
 @property (nonatomic, copy) id (^MyBlock)(id, NSArray *, NSMutableDictionary *);
-
 @property (nonatomic, readonly) id (*expressionFuncptr)(id, NSArray *, NSMutableDictionary *);
 @property (nonatomic) id (*MyFuncptr)(id, NSArray *, NSMutableDictionary *);
+@end
 
+// rdar://15231241
+@interface rdar15231241
+@property (nonatomic, readonly) double Ddelegate;
+@property (nonatomic, readonly) float Fdelegate;
+@property (nonatomic, readonly) int Idelegate;
+@property (nonatomic, readonly) BOOL Bdelegate;
 @end

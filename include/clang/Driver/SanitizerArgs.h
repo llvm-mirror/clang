@@ -9,10 +9,9 @@
 #ifndef CLANG_LIB_DRIVER_SANITIZERARGS_H_
 #define CLANG_LIB_DRIVER_SANITIZERARGS_H_
 
-#include <string>
-
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
+#include <string>
 
 namespace clang {
 namespace driver {
@@ -25,6 +24,7 @@ class SanitizerArgs {
   /// bit positions within \c Kind.
   enum SanitizeOrdinal {
 #define SANITIZER(NAME, ID) SO_##ID,
+#define SANITIZER_GROUP(NAME, ID, ALIAS) SO_##ID##Group,
 #include "clang/Basic/Sanitizers.def"
     SO_Count
   };
@@ -32,7 +32,8 @@ class SanitizerArgs {
   /// Bugs to catch at runtime.
   enum SanitizeKind {
 #define SANITIZER(NAME, ID) ID = 1 << SO_##ID,
-#define SANITIZER_GROUP(NAME, ID, ALIAS) ID = ALIAS,
+#define SANITIZER_GROUP(NAME, ID, ALIAS)                                       \
+  ID = ALIAS, ID##Group = 1 << SO_##ID##Group,
 #include "clang/Basic/Sanitizers.def"
     NeedsAsanRt = Address,
     NeedsTsanRt = Thread,
@@ -41,25 +42,24 @@ class SanitizerArgs {
     NeedsLeakDetection = Leak,
     NeedsUbsanRt = Undefined | Integer,
     NotAllowedWithTrap = Vptr,
-    HasZeroBaseShadow = Thread | Memory | DataFlow
+    HasZeroBaseShadow = Thread | Memory | DataFlow,
+    NeedsUnwindTables = Address | Thread | Memory | DataFlow
   };
   unsigned Kind;
 
   std::string BlacklistFile;
-  bool MsanTrackOrigins;
-  enum AsanZeroBaseShadowKind {
-    AZBSK_Default,  // Default value is toolchain-specific.
-    AZBSK_On,
-    AZBSK_Off
-  } AsanZeroBaseShadow;
+  int MsanTrackOrigins;
+  bool AsanZeroBaseShadow;
   bool UbsanTrapOnError;
+  bool AsanSharedRuntime;
 
  public:
   SanitizerArgs();
   /// Parses the sanitizer arguments from an argument list.
-  SanitizerArgs(const Driver &D, const llvm::opt::ArgList &Args);
+  SanitizerArgs(const ToolChain &TC, const llvm::opt::ArgList &Args);
 
   bool needsAsanRt() const { return Kind & NeedsAsanRt; }
+  bool needsSharedAsanRt() const { return AsanSharedRuntime; }
   bool needsTsanRt() const { return Kind & NeedsTsanRt; }
   bool needsMsanRt() const { return Kind & NeedsMsanRt; }
   bool needsLeakDetection() const { return Kind & NeedsLeakDetection; }
@@ -73,16 +73,15 @@ class SanitizerArgs {
 
   bool sanitizesVptr() const { return Kind & Vptr; }
   bool notAllowedWithTrap() const { return Kind & NotAllowedWithTrap; }
-  bool hasZeroBaseShadow(const ToolChain &TC) const {
-    return (Kind & HasZeroBaseShadow) || hasAsanZeroBaseShadow(TC);
+  bool hasZeroBaseShadow() const {
+    return (Kind & HasZeroBaseShadow) || AsanZeroBaseShadow;
   }
-  void addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
+  bool needsUnwindTables() const { return Kind & NeedsUnwindTables; }
+  void addArgs(const llvm::opt::ArgList &Args,
                llvm::opt::ArgStringList &CmdArgs) const;
 
  private:
   void clear();
-
-  bool hasAsanZeroBaseShadow(const ToolChain &TC) const;
 
   /// Parse a single value from a -fsanitize= or -fno-sanitize= value list.
   /// Returns OR of members of the \c SanitizeKind enumeration, or \c 0
@@ -103,7 +102,7 @@ class SanitizerArgs {
 
   /// Produce an argument string from ArgList \p Args, which shows how it
   /// provides a sanitizer kind in \p Mask. For example, the argument list
-  /// "-fsanitize=thread,vptr -faddress-sanitizer" with mask \c NeedsUbsanRt
+  /// "-fsanitize=thread,vptr -fsanitize=address" with mask \c NeedsUbsanRt
   /// would produce "-fsanitize=vptr".
   static std::string lastArgumentForKind(const Driver &D,
                                          const llvm::opt::ArgList &Args,
@@ -119,6 +118,30 @@ class SanitizerArgs {
 
   static bool getDefaultBlacklistForKind(const Driver &D, unsigned Kind,
                                          std::string &BLPath);
+
+  /// Return the smallest superset of sanitizer set \p Kinds such that each
+  /// member of each group whose flag is set in \p Kinds has its flag set in the
+  /// result.
+  static unsigned expandGroups(unsigned Kinds);
+
+  /// Return the subset of \p Kinds supported by toolchain \p TC.  If
+  /// \p DiagnoseErrors is true, produce an error diagnostic for each sanitizer
+  /// removed from \p Kinds.
+  static unsigned filterUnsupportedKinds(const ToolChain &TC, unsigned Kinds,
+                                         const llvm::opt::ArgList &Args,
+                                         const llvm::opt::Arg *A,
+                                         bool DiagnoseErrors,
+                                         unsigned &DiagnosedKinds);
+
+  /// The flags in \p Mask are unsupported by \p TC.  If present in \p Kinds,
+  /// remove them and produce an error diagnostic referring to \p A if
+  /// \p DiagnoseErrors is true.
+  static void filterUnsupportedMask(const ToolChain &TC, unsigned &Kinds,
+                                    unsigned Mask,
+                                    const llvm::opt::ArgList &Args,
+                                    const llvm::opt::Arg *A,
+                                    bool DiagnoseErrors,
+                                    unsigned &DiagnosedKinds);
 };
 
 }  // namespace driver

@@ -13,10 +13,10 @@
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Lex/Preprocessor.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/PointerIntPair.h"
 #include "llvm/ADT/STLExtras.h"
 #include <climits>
+#include <memory>
 
 namespace clang {
 
@@ -108,10 +108,11 @@ class FileEntry;
 ///
 /// In this example, the diagnostic may appear only once, if at all.
 ///
-/// Regex matching mode may be selected by appending '-re' to type, such as:
+/// Regex matching mode may be selected by appending '-re' to type and
+/// including regexes wrapped in double curly braces in the directive, such as:
 ///
 /// \code
-///   expected-error-re
+///   expected-error-re {{format specifies type 'wchar_t **' (aka '{{.+}}')}}
 /// \endcode
 ///
 /// Examples matching error: "variable has incomplete type 'struct s'"
@@ -120,10 +121,10 @@ class FileEntry;
 ///   // expected-error {{variable has incomplete type 'struct s'}}
 ///   // expected-error {{variable has incomplete type}}
 ///
-///   // expected-error-re {{variable has has type 'struct .'}}
-///   // expected-error-re {{variable has has type 'struct .*'}}
-///   // expected-error-re {{variable has has type 'struct (.*)'}}
-///   // expected-error-re {{variable has has type 'struct[[:space:]](.*)'}}
+///   // expected-error-re {{variable has type 'struct {{.}}'}}
+///   // expected-error-re {{variable has type 'struct {{.*}}'}}
+///   // expected-error-re {{variable has type 'struct {{(.*)}}'}}
+///   // expected-error-re {{variable has type 'struct{{[[:space:]](.*)}}'}}
 /// \endcode
 ///
 /// VerifyDiagnosticConsumer expects at least one expected-* directive to
@@ -203,7 +204,7 @@ private:
   DiagnosticsEngine &Diags;
   DiagnosticConsumer *PrimaryClient;
   bool OwnsPrimaryClient;
-  OwningPtr<TextDiagnosticBuffer> Buffer;
+  std::unique_ptr<TextDiagnosticBuffer> Buffer;
   const Preprocessor *CurrentPreprocessor;
   const LangOptions *LangOpts;
   SourceManager *SrcManager;
@@ -217,24 +218,19 @@ private:
     SrcManager = &SM;
   }
 
-#ifndef NDEBUG
+  // These facilities are used for validation in debug builds.
   class UnparsedFileStatus {
     llvm::PointerIntPair<const FileEntry *, 1, bool> Data;
-
   public:
     UnparsedFileStatus(const FileEntry *File, bool FoundDirectives)
       : Data(File, FoundDirectives) {}
-
     const FileEntry *getFile() const { return Data.getPointer(); }
     bool foundDirectives() const { return Data.getInt(); }
   };
-
   typedef llvm::DenseMap<FileID, const FileEntry *> ParsedFilesMap;
   typedef llvm::DenseMap<FileID, UnparsedFileStatus> UnparsedFilesMap;
-
   ParsedFilesMap ParsedFiles;
   UnparsedFilesMap UnparsedFiles;
-#endif
 
 public:
   /// Create a new verifying diagnostic client, which will issue errors to
@@ -243,10 +239,10 @@ public:
   VerifyDiagnosticConsumer(DiagnosticsEngine &Diags);
   ~VerifyDiagnosticConsumer();
 
-  virtual void BeginSourceFile(const LangOptions &LangOpts,
-                               const Preprocessor *PP);
+  void BeginSourceFile(const LangOptions &LangOpts,
+                       const Preprocessor *PP) override;
 
-  virtual void EndSourceFile();
+  void EndSourceFile() override;
 
   enum ParsedStatus {
     /// File has been processed via HandleComment.
@@ -262,10 +258,10 @@ public:
   /// \brief Update lists of parsed and unparsed files.
   void UpdateParsedFileStatus(SourceManager &SM, FileID FID, ParsedStatus PS);
 
-  virtual bool HandleComment(Preprocessor &PP, SourceRange Comment);
+  bool HandleComment(Preprocessor &PP, SourceRange Comment) override;
 
-  virtual void HandleDiagnostic(DiagnosticsEngine::Level DiagLevel,
-                                const Diagnostic &Info);
+  void HandleDiagnostic(DiagnosticsEngine::Level DiagLevel,
+                        const Diagnostic &Info) override;
 };
 
 } // end namspace clang

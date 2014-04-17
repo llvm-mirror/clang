@@ -25,6 +25,7 @@
 #include "clang/Lex/Pragma.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/SaveAndRestore.h"
 using namespace clang;
 
@@ -60,8 +61,8 @@ MacroInfo *Preprocessor::AllocateMacroInfo(SourceLocation L) {
 
 MacroInfo *Preprocessor::AllocateDeserializedMacroInfo(SourceLocation L,
                                                        unsigned SubModuleID) {
-  LLVM_STATIC_ASSERT(llvm::AlignOf<MacroInfo>::Alignment >= sizeof(SubModuleID),
-                     "alignment for MacroInfo is less than the ID");
+  static_assert(llvm::AlignOf<MacroInfo>::Alignment >= sizeof(SubModuleID),
+                "alignment for MacroInfo is less than the ID");
   DeserializedMacroInfoChain *MIChain =
       BP.Allocate<DeserializedMacroInfoChain>();
   MIChain->Next = DeserialMIChainHead;
@@ -162,7 +163,7 @@ void Preprocessor::ReadMacroName(Token &MacroNameTok, char isDefineUndef) {
     const IdentifierInfo &Info = Identifiers.get(Spelling);
 
     // Allow #defining |and| and friends in microsoft mode.
-    if (Info.isCPlusPlusOperatorKeyword() && getLangOpts().MicrosoftMode) {
+    if (Info.isCPlusPlusOperatorKeyword() && getLangOpts().MSVCCompat) {
       MacroNameTok.setIdentifierInfo(getIdentifierInfo(Spelling));
       return;
     }
@@ -404,35 +405,33 @@ void Preprocessor::SkipExcludedConditionalBlock(SourceLocation IfTokenLoc,
       } else if (Sub == "lif") {  // "elif".
         PPConditionalInfo &CondInfo = CurPPLexer->peekConditionalLevel();
 
-        bool ShouldEnter;
-        const SourceLocation ConditionalBegin = CurPPLexer->getSourceLocation();
+        // If this is a #elif with a #else before it, report the error.
+        if (CondInfo.FoundElse) Diag(Tok, diag::pp_err_elif_after_else);
+
         // If this is in a skipping block or if we're already handled this #if
         // block, don't bother parsing the condition.
         if (CondInfo.WasSkipping || CondInfo.FoundNonSkip) {
           DiscardUntilEndOfDirective();
-          ShouldEnter = false;
         } else {
+          const SourceLocation CondBegin = CurPPLexer->getSourceLocation();
           // Restore the value of LexingRawMode so that identifiers are
           // looked up, etc, inside the #elif expression.
           assert(CurPPLexer->LexingRawMode && "We have to be skipping here!");
           CurPPLexer->LexingRawMode = false;
           IdentifierInfo *IfNDefMacro = 0;
-          ShouldEnter = EvaluateDirectiveExpression(IfNDefMacro);
+          const bool CondValue = EvaluateDirectiveExpression(IfNDefMacro);
           CurPPLexer->LexingRawMode = true;
-        }
-        const SourceLocation ConditionalEnd = CurPPLexer->getSourceLocation();
-
-        // If this is a #elif with a #else before it, report the error.
-        if (CondInfo.FoundElse) Diag(Tok, diag::pp_err_elif_after_else);
-
-        // If this condition is true, enter it!
-        if (ShouldEnter) {
-          CondInfo.FoundNonSkip = true;
-          if (Callbacks)
+          if (Callbacks) {
+            const SourceLocation CondEnd = CurPPLexer->getSourceLocation();
             Callbacks->Elif(Tok.getLocation(),
-                            SourceRange(ConditionalBegin, ConditionalEnd),
-                            ShouldEnter, CondInfo.IfLoc);
-          break;
+                            SourceRange(CondBegin, CondEnd),
+                            (CondValue ? PPCallbacks::CVK_True : PPCallbacks::CVK_False), CondInfo.IfLoc);
+          }
+          // If this condition is true, enter it!
+          if (CondValue) {
+            CondInfo.FoundNonSkip = true;
+            break;
+          }
         }
       }
     }
@@ -540,7 +539,8 @@ Module *Preprocessor::getModuleForLocation(SourceLocation FilenameLoc) {
     return HeaderInfo.getModuleMap().SourceModule; // Compiling a source.
   }
   // Try to determine the module of the include directive.
-  FileID IDOfIncl = SourceMgr.getFileID(FilenameLoc);
+  // FIXME: Look into directly passing the FileEntry from LookupFile instead.
+  FileID IDOfIncl = SourceMgr.getFileID(SourceMgr.getExpansionLoc(FilenameLoc));
   if (const FileEntry *EntryOfIncl = SourceMgr.getFileEntryForID(IDOfIncl)) {
     // The include comes from a file.
     return ModMap.findModuleForHeader(EntryOfIncl).getModule();
@@ -549,69 +549,6 @@ Module *Preprocessor::getModuleForLocation(SourceLocation FilenameLoc) {
     // so it is probably a module compilation.
     return getCurrentModule();
   }
-}
-
-bool Preprocessor::violatesPrivateInclude(
-    Module *RequestingModule,
-    const FileEntry *IncFileEnt,
-    ModuleMap::ModuleHeaderRole Role,
-    Module *RequestedModule) {
-  #ifndef NDEBUG
-  // Check for consistency between the module header role
-  // as obtained from the lookup and as obtained from the module.
-  // This check is not cheap, so enable it only for debugging.
-  SmallVectorImpl<const FileEntry *> &PvtHdrs
-      = RequestedModule->PrivateHeaders;
-  SmallVectorImpl<const FileEntry *>::iterator Look
-      = std::find(PvtHdrs.begin(), PvtHdrs.end(), IncFileEnt);
-  bool IsPrivate = Look != PvtHdrs.end();
-  assert((IsPrivate && Role == ModuleMap::PrivateHeader)
-               || (!IsPrivate && Role != ModuleMap::PrivateHeader));
-  #endif
-  return Role == ModuleMap::PrivateHeader &&
-         RequestedModule->getTopLevelModule() != RequestingModule;
-}
-
-bool Preprocessor::violatesUseDeclarations(
-    Module *RequestingModule,
-    Module *RequestedModule) {
-  ModuleMap &ModMap = HeaderInfo.getModuleMap();
-  ModMap.resolveUses(RequestingModule, /*Complain=*/false);
-  const SmallVectorImpl<Module *> &AllowedUses = RequestingModule->DirectUses;
-  SmallVectorImpl<Module *>::const_iterator Declared =
-      std::find(AllowedUses.begin(), AllowedUses.end(), RequestedModule);
-  return Declared == AllowedUses.end();
-}
-
-void Preprocessor::verifyModuleInclude(
-    SourceLocation FilenameLoc,
-    StringRef Filename,
-    const FileEntry *IncFileEnt,
-    ModuleMap::KnownHeader *SuggestedModule) {
-  Module *RequestingModule = getModuleForLocation(FilenameLoc);
-  Module *RequestedModule = SuggestedModule->getModule();
-  if (!RequestedModule)
-    RequestedModule = HeaderInfo.findModuleForHeader(IncFileEnt).getModule();
-
-  if (RequestingModule == RequestedModule)
-    return; // No faults wihin a module, or between files both not in modules.
-
-  if (RequestingModule != HeaderInfo.getModuleMap().SourceModule)
-    return; // No errors for indirect modules.
-            // This may be a bit of a problem for modules with no source files.
-
-  if (RequestedModule &&
-      violatesPrivateInclude(RequestingModule, IncFileEnt,
-                             SuggestedModule->getRole(), RequestedModule))
-    Diag(FilenameLoc, diag::error_use_of_private_header_outside_module)
-        << Filename;
-
-  // FIXME: Add support for FixIts in module map files and offer adding the
-  // required use declaration.
-  if (RequestingModule && getLangOpts().ModulesDeclUse &&
-      violatesUseDeclarations(RequestingModule, RequestedModule))
-    Diag(FilenameLoc, diag::error_undeclared_use_of_module)
-        << Filename;
 }
 
 const FileEntry *Preprocessor::LookupFile(
@@ -624,12 +561,12 @@ const FileEntry *Preprocessor::LookupFile(
     SmallVectorImpl<char> *RelativePath,
     ModuleMap::KnownHeader *SuggestedModule,
     bool SkipCache) {
-  // If the header lookup mechanism may be relative to the current file, pass in
-  // info about where the current file is.
-  const FileEntry *CurFileEnt = 0;
+  // If the header lookup mechanism may be relative to the current inclusion
+  // stack, record the parent #includes.
+  SmallVector<const FileEntry *, 16> Includers;
   if (!FromDir) {
     FileID FID = getCurrentFileLexer()->getFileID();
-    CurFileEnt = SourceMgr.getFileEntryForID(FID);
+    const FileEntry *FileEnt = SourceMgr.getFileEntryForID(FID);
 
     // If there is no file entry associated with this file, it must be the
     // predefines buffer.  Any other file is not lexed with a normal lexer, so
@@ -637,23 +574,39 @@ const FileEntry *Preprocessor::LookupFile(
     // predefines buffer, resolve #include references (which come from the
     // -include command line argument) as if they came from the main file, this
     // affects file lookup etc.
-    if (CurFileEnt == 0) {
-      FID = SourceMgr.getMainFileID();
-      CurFileEnt = SourceMgr.getFileEntryForID(FID);
+    if (!FileEnt)
+      FileEnt = SourceMgr.getFileEntryForID(SourceMgr.getMainFileID());
+
+    if (FileEnt)
+      Includers.push_back(FileEnt);
+
+    // MSVC searches the current include stack from top to bottom for
+    // headers included by quoted include directives.
+    // See: http://msdn.microsoft.com/en-us/library/36k2cdd4.aspx
+    if (LangOpts.MSVCCompat && !isAngled) {
+      for (unsigned i = 0, e = IncludeMacroStack.size(); i != e; ++i) {
+        IncludeStackInfo &ISEntry = IncludeMacroStack[e - i - 1];
+        if (IsFileLexer(ISEntry))
+          if ((FileEnt = SourceMgr.getFileEntryForID(
+                   ISEntry.ThePPLexer->getFileID())))
+            Includers.push_back(FileEnt);
+      }
     }
   }
 
   // Do a standard file entry lookup.
   CurDir = CurDirLookup;
   const FileEntry *FE = HeaderInfo.LookupFile(
-      Filename, isAngled, FromDir, CurDir, CurFileEnt,
-      SearchPath, RelativePath, SuggestedModule, SkipCache);
+      Filename, FilenameLoc, isAngled, FromDir, CurDir, Includers, SearchPath,
+      RelativePath, SuggestedModule, SkipCache);
   if (FE) {
-    if (SuggestedModule)
-      verifyModuleInclude(FilenameLoc, Filename, FE, SuggestedModule);
+    if (SuggestedModule && !LangOpts.AsmPreprocessor)
+      HeaderInfo.getModuleMap().diagnoseHeaderInclusion(
+          getModuleForLocation(FilenameLoc), FilenameLoc, Filename, FE);
     return FE;
   }
 
+  const FileEntry *CurFileEnt;
   // Otherwise, see if this is a subframework header.  If so, this is relative
   // to one of the headers on the #include stack.  Walk the list of the current
   // headers on the #include stack and pass them to HeaderInfo.
@@ -1327,21 +1280,20 @@ bool Preprocessor::GetIncludeFilenameSpelling(SourceLocation Loc,
   return isAngled;
 }
 
-/// \brief Handle cases where the \#include name is expanded from a macro
-/// as multiple tokens, which need to be glued together.
-///
-/// This occurs for code like:
-/// \code
-///    \#define FOO <a/b.h>
-///    \#include FOO
-/// \endcode
-/// because in this case, "<a/b.h>" is returned as 7 tokens, not one.
-///
-/// This code concatenates and consumes tokens up to the '>' token.  It returns
-/// false if the > was found, otherwise it returns true if it finds and consumes
-/// the EOD marker.
-bool Preprocessor::ConcatenateIncludeName(
-                                        SmallString<128> &FilenameBuffer,
+// \brief Handle cases where the \#include name is expanded from a macro
+// as multiple tokens, which need to be glued together.
+//
+// This occurs for code like:
+// \code
+//    \#define FOO <a/b.h>
+//    \#include FOO
+// \endcode
+// because in this case, "<a/b.h>" is returned as 7 tokens, not one.
+//
+// This code concatenates and consumes tokens up to the '>' token.  It returns
+// false if the > was found, otherwise it returns true if it finds and consumes
+// the EOD marker.
+bool Preprocessor::ConcatenateIncludeName(SmallString<128> &FilenameBuffer,
                                           SourceLocation &End) {
   Token CurTok;
 
@@ -1387,6 +1339,19 @@ bool Preprocessor::ConcatenateIncludeName(
   // knows the EOD has been read.
   Diag(CurTok.getLocation(), diag::err_pp_expects_filename);
   return true;
+}
+
+/// \brief Push a token onto the token stream containing an annotation.
+static void EnterAnnotationToken(Preprocessor &PP,
+                                 SourceLocation Begin, SourceLocation End,
+                                 tok::TokenKind Kind, void *AnnotationVal) {
+  Token *Tok = new Token[1];
+  Tok[0].startToken();
+  Tok[0].setKind(Kind);
+  Tok[0].setLocation(Begin);
+  Tok[0].setAnnotationEndLoc(End);
+  Tok[0].setAnnotationValue(AnnotationVal);
+  PP.EnterTokenStream(Tok, 1, true, true);
 }
 
 /// HandleIncludeDirective - The "\#include" tokens have just been read, read
@@ -1485,9 +1450,15 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
   // the path.
   ModuleMap::KnownHeader SuggestedModule;
   SourceLocation FilenameLoc = FilenameTok.getLocation();
+  SmallString<128> NormalizedPath;
+  if (LangOpts.MSVCCompat) {
+    NormalizedPath = Filename.str();
+    llvm::sys::fs::normalize_separators(NormalizedPath);
+  }
   const FileEntry *File = LookupFile(
-      FilenameLoc, Filename, isAngled, LookupFrom, CurDir,
-      Callbacks ? &SearchPath : NULL, Callbacks ? &RelativePath : NULL,
+      FilenameLoc, LangOpts.MSVCCompat ? NormalizedPath.c_str() : Filename,
+      isAngled, LookupFrom, CurDir, Callbacks ? &SearchPath : NULL,
+      Callbacks ? &RelativePath : NULL,
       HeaderInfo.getHeaderSearchOpts().ModuleMaps ? &SuggestedModule : 0);
 
   if (Callbacks) {
@@ -1501,8 +1472,11 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
           HeaderInfo.AddSearchPath(DL, isAngled);
           
           // Try the lookup again, skipping the cache.
-          File = LookupFile(FilenameLoc, Filename, isAngled, LookupFrom, CurDir,
-                            0, 0, HeaderInfo.getHeaderSearchOpts().ModuleMaps
+          File = LookupFile(FilenameLoc,
+                            LangOpts.MSVCCompat ? NormalizedPath.c_str()
+                                                : Filename,
+                            isAngled, LookupFrom, CurDir, 0, 0,
+                            HeaderInfo.getHeaderSearchOpts().ModuleMaps
                                       ? &SuggestedModule
                                       : 0,
                             /*SkipCache*/ true);
@@ -1512,10 +1486,11 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
     
     if (!SuggestedModule || !getLangOpts().Modules) {
       // Notify the callback object that we've seen an inclusion directive.
-      Callbacks->InclusionDirective(HashLoc, IncludeTok, Filename, isAngled,
-                                    FilenameRange, File,
-                                    SearchPath, RelativePath,
-                                    /*ImportedModule=*/0);
+      Callbacks->InclusionDirective(HashLoc, IncludeTok,
+                                    LangOpts.MSVCCompat ? NormalizedPath.c_str()
+                                                        : Filename,
+                                    isAngled, FilenameRange, File, SearchPath,
+                                    RelativePath, /*ImportedModule=*/0);
     }
   }
   
@@ -1526,8 +1501,9 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
       // provide the user with a possible fixit.
       if (isAngled) {
         File = LookupFile(
-            FilenameLoc, Filename, false, LookupFrom, CurDir,
-            Callbacks ? &SearchPath : 0, Callbacks ? &RelativePath : 0,
+            FilenameLoc, LangOpts.MSVCCompat ? NormalizedPath.c_str() : Filename,
+            false, LookupFrom, CurDir, Callbacks ? &SearchPath : 0,
+            Callbacks ? &RelativePath : 0,
             HeaderInfo.getHeaderSearchOpts().ModuleMaps ? &SuggestedModule : 0);
         if (File) {
           SourceRange Range(FilenameTok.getLocation(), CharEnd);
@@ -1590,7 +1566,7 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
     // include directive maps to.
     bool BuildingImportedModule
       = Path[0].first->getName() == getLangOpts().CurrentModule;
-    
+
     if (!BuildingImportedModule && getLangOpts().ObjC2) {
       // If we're not building the imported module, warn that we're going
       // to automatically turn this inclusion directive into a module import.
@@ -1603,10 +1579,9 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
              "@import " + PathString.str().str() + ";");
     }
     
-    // Load the module.
-    // If this was an #__include_macros directive, only make macros visible.
-    Module::NameVisibilityKind Visibility 
-      = (IncludeKind == 3)? Module::MacrosVisible : Module::AllVisible;
+    // Load the module. Only make macros visible. We'll make the declarations
+    // visible when the parser gets here.
+    Module::NameVisibilityKind Visibility = Module::MacrosVisible;
     ModuleLoadResult Imported
       = TheModuleLoader.loadModule(IncludeTok.getLocation(), Path, Visibility,
                                    /*IsIncludeDirective=*/true);
@@ -1626,13 +1601,22 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
       }
       return;
     }
-    
+
     // If this header isn't part of the module we're building, we're done.
     if (!BuildingImportedModule && Imported) {
       if (Callbacks) {
         Callbacks->InclusionDirective(HashLoc, IncludeTok, Filename, isAngled,
                                       FilenameRange, File,
                                       SearchPath, RelativePath, Imported);
+      }
+
+      if (IncludeKind != 3) {
+        // Let the parser know that we hit a module import, and it should
+        // make the module visible.
+        // FIXME: Produce this as the current token directly, rather than
+        // allocating a new token for it.
+        EnterAnnotationToken(*this, HashLoc, End, tok::annot_module_include,
+                             Imported);
       }
       return;
     }
@@ -1679,8 +1663,27 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
   FileID FID = SourceMgr.createFileID(File, IncludePos, FileCharacter);
   assert(!FID.isInvalid() && "Expected valid file ID");
 
-  // Finally, if all is good, enter the new file!
-  EnterSourceFile(FID, CurDir, FilenameTok.getLocation());
+  // Determine if we're switching to building a new submodule, and which one.
+  ModuleMap::KnownHeader BuildingModule;
+  if (getLangOpts().Modules && !getLangOpts().CurrentModule.empty()) {
+    Module *RequestingModule = getModuleForLocation(FilenameLoc);
+    BuildingModule =
+        HeaderInfo.getModuleMap().findModuleForHeader(File, RequestingModule);
+  }
+
+  // If all is good, enter the new file!
+  if (EnterSourceFile(FID, CurDir, FilenameTok.getLocation()))
+    return;
+
+  // If we're walking into another part of the same module, let the parser
+  // know that any future declarations are within that other submodule.
+  if (BuildingModule) {
+    assert(!CurSubmodule && "should not have marked this as a module yet");
+    CurSubmodule = BuildingModule.getModule();
+
+    EnterAnnotationToken(*this, HashLoc, End, tok::annot_module_begin,
+                         CurSubmodule);
+  }
 }
 
 /// HandleIncludeNextDirective - Implements \#include_next.
@@ -1725,7 +1728,7 @@ void Preprocessor::HandleMicrosoftImportDirective(Token &Tok) {
 void Preprocessor::HandleImportDirective(SourceLocation HashLoc,
                                          Token &ImportTok) {
   if (!LangOpts.ObjC1) {  // #import is standard for ObjC.
-    if (LangOpts.MicrosoftMode)
+    if (LangOpts.MSVCCompat)
       return HandleMicrosoftImportDirective(ImportTok);
     Diag(ImportTok, diag::ext_pp_import_directive);
   }
@@ -2005,13 +2008,8 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
             MI->getReplacementToken(NumTokens-1).is(tok::comma))
           MI->setHasCommaPasting();
 
-        // Things look ok, add the '##' and param name tokens to the macro.
+        // Things look ok, add the '##' token to the macro.
         MI->AddTokenToBody(LastTok);
-        MI->AddTokenToBody(Tok);
-        LastTok = Tok;
-
-        // Get the next token of the macro.
-        LexUnexpandedToken(Tok);
         continue;
       }
 
@@ -2251,7 +2249,7 @@ void Preprocessor::HandleIfDirective(Token &IfToken,
   if (Callbacks)
     Callbacks->If(IfToken.getLocation(),
                   SourceRange(ConditionalBegin, ConditionalEnd),
-                  ConditionalTrue);
+                  (ConditionalTrue ? PPCallbacks::CVK_True : PPCallbacks::CVK_False));
 
   // Should we include the stuff contained by this directive?
   if (ConditionalTrue) {
@@ -2348,7 +2346,7 @@ void Preprocessor::HandleElifDirective(Token &ElifToken) {
   if (Callbacks)
     Callbacks->Elif(ElifToken.getLocation(),
                     SourceRange(ConditionalBegin, ConditionalEnd),
-                    true, CI.IfLoc);
+                    PPCallbacks::CVK_NotEvaluated, CI.IfLoc);
 
   // Finally, skip the rest of the contents of this block.
   SkipExcludedConditionalBlock(CI.IfLoc, /*Foundnonskip*/true,

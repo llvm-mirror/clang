@@ -36,9 +36,9 @@ inline bool isLambdaCallOperator(const DeclContext *DC) {
   return isLambdaCallOperator(cast<CXXMethodDecl>(DC));
 }
 
-inline bool isGenericLambdaCallOperatorSpecialization(CXXMethodDecl *MD) {
+inline bool isGenericLambdaCallOperatorSpecialization(const CXXMethodDecl *MD) {
   if (!MD) return false;
-  CXXRecordDecl *LambdaClass = MD->getParent();
+  const CXXRecordDecl *LambdaClass = MD->getParent();
   if (LambdaClass && LambdaClass->isGenericLambda())
     return isLambdaCallOperator(MD) && 
                     MD->isFunctionTemplateSpecialization();
@@ -63,6 +63,16 @@ inline bool isLambdaConversionOperator(Decl *D) {
 inline bool isGenericLambdaCallOperatorSpecialization(DeclContext *DC) {
   return isGenericLambdaCallOperatorSpecialization(
                                           dyn_cast<CXXMethodDecl>(DC));
+}
+
+
+// This returns the parent DeclContext ensuring that the correct
+// parent DeclContext is returned for Lambdas
+inline DeclContext *getLambdaAwareParentOfDeclContext(DeclContext *DC) {
+  if (isLambdaCallOperator(DC))
+    return DC->getParent()->getParent();
+  else 
+    return DC->getParent();
 }
 
 } // clang
