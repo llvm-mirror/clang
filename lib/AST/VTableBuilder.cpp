@@ -2649,6 +2649,8 @@ VFTableBuilder::ComputeThisOffset(FinalOverriders::OverriderInfo Overrider) {
   CharUnits Ret;
   bool First = true;
 
+  const ASTRecordLayout &OverriderRDLayout =
+      Context.getASTRecordLayout(Overrider.Method->getParent());
   for (CXXBasePaths::paths_iterator I = Paths.begin(), E = Paths.end();
        I != E; ++I) {
     const CXXBasePath &Path = (*I);
@@ -2665,19 +2667,18 @@ VFTableBuilder::ComputeThisOffset(FinalOverriders::OverriderInfo Overrider) {
       const ASTRecordLayout &Layout = Context.getASTRecordLayout(PrevRD);
 
       if (Element.Base->isVirtual()) {
-        LastVBaseOffset = MostDerivedClassLayout.getVBaseClassOffset(CurRD);
-        if (Overrider.Method->getParent() == PrevRD) {
-          // This one's interesting. If the final overrider is in a vbase B of the
-          // most derived class and it overrides a method of the B's own vbase A,
-          // it uses A* as "this". In its prologue, it can cast A* to B* with
-          // a static offset. This offset is used regardless of the actual
-          // offset of A from B in the most derived class, requiring an
-          // this-adjusting thunk in the vftable if A and B are laid out
-          // differently in the most derived class.
-          ThisOffset += Layout.getVBaseClassOffset(CurRD);
-        } else {
-          ThisOffset = LastVBaseOffset;
-        }
+        // The interesting things begin when you have virtual inheritance.
+        // The final overrider will use a static adjustment equal to the offset
+        // of the vbase in the final overrider class.
+        // For example, if the final overrider is in a vbase B of the most
+        // derived class and it overrides a method of the B's own vbase A,
+        // it uses A* as "this".  In its prologue, it can cast A* to B* with
+        // a static offset.  This offset is used regardless of the actual
+        // offset of A from B in the most derived class, requiring an
+        // this-adjusting thunk in the vftable if A and B are laid out
+        // differently in the most derived class.
+        LastVBaseOffset = ThisOffset =
+            Overrider.Offset + OverriderRDLayout.getVBaseClassOffset(CurRD);
       } else {
         ThisOffset += Layout.getBaseClassOffset(CurRD);
       }
@@ -2715,26 +2716,31 @@ void VFTableBuilder::CalculateVtordispAdjustment(
       VBaseMap.find(WhichVFPtr.getVBaseWithVPtr());
   assert(VBaseMapEntry != VBaseMap.end());
 
-  // Check if we need a vtordisp adjustment at all.
+  // If there's no vtordisp, we don't need any vtordisp adjustment.
   if (!VBaseMapEntry->second.hasVtorDisp())
     return;
 
-  CharUnits VFPtrVBaseOffset = VBaseMapEntry->second.VBaseOffset;
+  const CXXRecordDecl *OverriderRD = Overrider.Method->getParent();
+  const CXXRecordDecl *OverriderVBase = 0;
+  if (OverriderRD != MostDerivedClass) {
+    OverriderVBase =
+        ComputeBaseOffset(Context, OverriderRD, MostDerivedClass).VirtualBase;
+  }
+
+  // If the final overrider is defined in the same vbase as the initial
+  // declaration, we don't need a vtordisp thunk at all.
+  if (OverriderVBase == WhichVFPtr.getVBaseWithVPtr())
+    return;
+
+  // OK, now we know we need to use a vtordisp thunk.
   // The implicit vtordisp field is located right before the vbase.
+  CharUnits VFPtrVBaseOffset = VBaseMapEntry->second.VBaseOffset;
   TA.Virtual.Microsoft.VtordispOffset =
       (VFPtrVBaseOffset - WhichVFPtr.FullOffsetInMDC).getQuantity() - 4;
 
-  // If the final overrider is defined in either:
-  // - the most derived class or its non-virtual base or
-  // - the same vbase as the initial declaration,
-  // a simple vtordisp thunk will suffice.
-  const CXXRecordDecl *OverriderRD = Overrider.Method->getParent();
-  if (OverriderRD == MostDerivedClass)
-    return;
-
-  const CXXRecordDecl *OverriderVBase =
-      ComputeBaseOffset(Context, OverriderRD, MostDerivedClass).VirtualBase;
-  if (!OverriderVBase || OverriderVBase == WhichVFPtr.getVBaseWithVPtr())
+  // A simple vtordisp thunk will suffice if the final overrider is defined
+  // in either the most derived class or its non-virtual base.
+  if (OverriderRD == MostDerivedClass || !OverriderVBase)
     return;
 
   // Otherwise, we need to do use the dynamic offset of the final overrider
@@ -3174,11 +3180,7 @@ void MicrosoftVTableContext::computeVTablePaths(bool ForVBTables,
     const VPtrInfoVector &BasePaths =
         ForVBTables ? enumerateVBTables(Base) : getVFPtrOffsets(Base);
 
-    for (VPtrInfoVector::const_iterator II = BasePaths.begin(),
-                                        EE = BasePaths.end();
-         II != EE; ++II) {
-      VPtrInfo *BaseInfo = *II;
-
+    for (VPtrInfo *BaseInfo : BasePaths) {
       // Don't include the path if it goes through a virtual base that we've
       // already included.
       if (setsIntersect(VBasesSeen, BaseInfo->ContainingVBases))
@@ -3196,12 +3198,16 @@ void MicrosoftVTableContext::computeVTablePaths(bool ForVBTables,
       // FIXME: Why do we need this?
       P->PathToBaseWithVPtr.insert(P->PathToBaseWithVPtr.begin(), Base);
 
-      // Keep track of which derived class ultimately uses the vtable, and what
-      // the full adjustment is from the MDC to this vtable.  The adjustment is
-      // captured by an optional vbase and a non-virtual offset.
-      if (Base == (ForVBTables ? Layout.getBaseSharingVBPtr()
+      // Keep track of which vtable the derived class is going to extend with
+      // new methods or bases.  We append to either the vftable of our primary
+      // base, or the first non-virtual base that has a vbtable.
+      if (P->ReusingBase == Base &&
+          Base == (ForVBTables ? Layout.getBaseSharingVBPtr()
                                : Layout.getPrimaryBase()))
         P->ReusingBase = RD;
+
+      // Keep track of the full adjustment from the MDC to this vtable.  The
+      // adjustment is captured by an optional vbase and a non-virtual offset.
       if (B.isVirtual())
         P->ContainingVBases.push_back(Base);
       else if (P->ContainingVBases.empty())

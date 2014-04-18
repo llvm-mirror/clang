@@ -1853,7 +1853,7 @@ bool Sema::FindAllocationOverload(SourceLocation StartLoc, SourceRange Range,
 
   R.suppressDiagnostics();
 
-  OverloadCandidateSet Candidates(StartLoc);
+  OverloadCandidateSet Candidates(StartLoc, OverloadCandidateSet::CSK_Normal);
   for (LookupResult::iterator Alloc = R.begin(), AllocEnd = R.end();
        Alloc != AllocEnd; ++Alloc) {
     // Even member operator new/delete are implicitly treated as
@@ -3656,6 +3656,11 @@ static bool evaluateTypeTrait(Sema &S, TypeTrait Kind, SourceLocation KWLoc,
     if (Args[0]->getType()->isIncompleteType())
       return false;
 
+    // Make sure the first argument is not an abstract type.
+    CXXRecordDecl *RD = Args[0]->getType()->getAsCXXRecordDecl();
+    if (RD && RD->isAbstract())
+      return false;
+
     SmallVector<OpaqueValueExpr, 2> OpaqueArgExprs;
     SmallVector<Expr *, 2> ArgExprs;
     ArgExprs.reserve(Args.size() - 1);
@@ -4298,7 +4303,8 @@ static bool TryClassUnification(Sema &Self, Expr *From, Expr *To,
 static bool FindConditionalOverload(Sema &Self, ExprResult &LHS, ExprResult &RHS,
                                     SourceLocation QuestionLoc) {
   Expr *Args[2] = { LHS.get(), RHS.get() };
-  OverloadCandidateSet CandidateSet(QuestionLoc);
+  OverloadCandidateSet CandidateSet(QuestionLoc,
+                                    OverloadCandidateSet::CSK_Operator);
   Self.AddBuiltinOperatorCandidates(OO_Conditional, QuestionLoc, Args,
                                     CandidateSet);
 

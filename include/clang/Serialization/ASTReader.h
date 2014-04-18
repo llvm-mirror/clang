@@ -109,6 +109,9 @@ public:
     return FullVersion != getClangFullRepositoryVersion();
   }
 
+  virtual void ReadModuleName(StringRef ModuleName) {}
+  virtual void ReadModuleMapFile(StringRef ModuleMapPath) {}
+
   /// \brief Receives the language options.
   ///
   /// \returns true to indicate the options are invalid or false otherwise.
@@ -203,6 +206,8 @@ public:
       : First(First), Second(Second) { }
 
   bool ReadFullVersionInformation(StringRef FullVersion) override;
+  void ReadModuleName(StringRef ModuleName) override;
+  void ReadModuleMapFile(StringRef ModuleMapPath) override;
   bool ReadLanguageOptions(const LangOptions &LangOpts, bool Complain) override;
   bool ReadTargetOptions(const TargetOptions &TargetOpts,
                          bool Complain) override;
@@ -254,7 +259,7 @@ class ReadMethodPoolVisitor;
 namespace reader {
   class ASTIdentifierLookupTrait;
   /// \brief The on-disk hash table used for the DeclContext's Name lookup table.
-  typedef OnDiskChainedHashTable<ASTDeclContextNameLookupTrait>
+  typedef OnDiskIterableChainedHashTable<ASTDeclContextNameLookupTrait>
     ASTDeclContextNameLookupTable;
 }
 
@@ -1079,6 +1084,7 @@ private:
                             unsigned ClientLoadCapabilities);
   ASTReadResult ReadControlBlock(ModuleFile &F,
                                  SmallVectorImpl<ImportedModule> &Loaded,
+                                 const ModuleFile *ImportedBy,
                                  unsigned ClientLoadCapabilities);
   ASTReadResult ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities);
   bool ParseLineTable(ModuleFile &F, SmallVectorImpl<uint64_t> &Record);

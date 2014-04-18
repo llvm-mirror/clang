@@ -70,6 +70,14 @@ ChainedASTReaderListener::ReadFullVersionInformation(StringRef FullVersion) {
   return First->ReadFullVersionInformation(FullVersion) ||
          Second->ReadFullVersionInformation(FullVersion);
 }
+void ChainedASTReaderListener::ReadModuleName(StringRef ModuleName) {
+  First->ReadModuleName(ModuleName);
+  Second->ReadModuleName(ModuleName);
+}
+void ChainedASTReaderListener::ReadModuleMapFile(StringRef ModuleMapPath) {
+  First->ReadModuleMapFile(ModuleMapPath);
+  Second->ReadModuleMapFile(ModuleMapPath);
+}
 bool ChainedASTReaderListener::ReadLanguageOptions(const LangOptions &LangOpts,
                                                    bool Complain) {
   return First->ReadLanguageOptions(LangOpts, Complain) ||
@@ -851,11 +859,11 @@ bool ASTReader::ReadDeclContextStorage(ModuleFile &M,
       Error("Expected visible lookup table block");
       return true;
     }
-    Info.NameLookupTableData
-      = ASTDeclContextNameLookupTable::Create(
-                    (const unsigned char *)Blob.data() + Record[0],
-                    (const unsigned char *)Blob.data(),
-                    ASTDeclContextNameLookupTrait(*this, M));
+    Info.NameLookupTableData = ASTDeclContextNameLookupTable::Create(
+        (const unsigned char *)Blob.data() + Record[0],
+        (const unsigned char *)Blob.data() + sizeof(uint32_t),
+        (const unsigned char *)Blob.data(),
+        ASTDeclContextNameLookupTrait(*this, M));
   }
 
   return false;
@@ -1161,7 +1169,7 @@ std::pair<SourceLocation, StringRef> ASTReader::getModuleImportLoc(int ID) {
 
   // FIXME: Can we map this down to a particular submodule? That would be
   // ideal.
-  return std::make_pair(M->ImportLoc, llvm::sys::path::stem(M->FileName));
+  return std::make_pair(M->ImportLoc, StringRef(M->ModuleName));
 }
 
 /// \brief Find the location where the module F is imported.
@@ -1172,14 +1180,10 @@ SourceLocation ASTReader::getImportLocation(ModuleFile *F) {
   // Otherwise we have a PCH. It's considered to be "imported" at the first
   // location of its includer.
   if (F->ImportedBy.empty() || !F->ImportedBy[0]) {
-    // Main file is the importer. We assume that it is the first entry in the
-    // entry table. We can't ask the manager, because at the time of PCH loading
-    // the main file entry doesn't exist yet.
-    // The very first entry is the invalid instantiation loc, which takes up
-    // offsets 0 and 1.
-    return SourceLocation::getFromRawEncoding(2U);
+    // Main file is the importer.
+    assert(!SourceMgr.getMainFileID().isInvalid() && "missing main file");
+    return SourceMgr.getLocForStartOfFile(SourceMgr.getMainFileID());
   }
-  //return F->Loaders[0]->FirstLoc;
   return F->ImportedBy[0]->FirstLoc;
 }
 
@@ -2089,6 +2093,7 @@ void ASTReader::MaybeAddSystemRootToFilename(ModuleFile &M,
 ASTReader::ASTReadResult
 ASTReader::ReadControlBlock(ModuleFile &F,
                             SmallVectorImpl<ImportedModule> &Loaded,
+                            const ModuleFile *ImportedBy,
                             unsigned ClientLoadCapabilities) {
   BitstreamCursor &Stream = F.Stream;
 
@@ -2314,6 +2319,49 @@ ASTReader::ReadControlBlock(ModuleFile &F,
       F.OriginalDir = Blob;
       break;
 
+    case MODULE_NAME:
+      F.ModuleName = Blob;
+      if (Listener)
+        Listener->ReadModuleName(F.ModuleName);
+      break;
+
+    case MODULE_MAP_FILE:
+      F.ModuleMapPath = Blob;
+
+      // Try to resolve ModuleName in the current header search context and
+      // verify that it is found in the same module map file as we saved. If the
+      // top-level AST file is a main file, skip this check because there is no
+      // usable header search context.
+      assert(!F.ModuleName.empty() &&
+             "MODULE_NAME should come before MOUDLE_MAP_FILE");
+      if (F.Kind == MK_Module &&
+          (*ModuleMgr.begin())->Kind != MK_MainFile) {
+        Module *M = PP.getHeaderSearchInfo().lookupModule(F.ModuleName);
+        if (!M) {
+          assert(ImportedBy && "top-level import should be verified");
+          if ((ClientLoadCapabilities & ARR_Missing) == 0)
+            Diag(diag::err_imported_module_not_found)
+              << F.ModuleName << ImportedBy->FileName;
+          return Missing;
+        }
+
+        const FileEntry *StoredModMap = FileMgr.getFile(F.ModuleMapPath);
+        if (StoredModMap == nullptr || StoredModMap != M->ModuleMap) {
+          assert(M->ModuleMap && "found module is missing module map file");
+          assert(M->Name == F.ModuleName && "found module with different name");
+          assert(ImportedBy && "top-level import should be verified");
+          if ((ClientLoadCapabilities & ARR_OutOfDate) == 0)
+            Diag(diag::err_imported_module_modmap_changed)
+              << F.ModuleName << ImportedBy->FileName
+              << M->ModuleMap->getName() << F.ModuleMapPath;
+          return OutOfDate;
+        }
+      }
+
+      if (Listener)
+        Listener->ReadModuleMapFile(F.ModuleMapPath);
+      break;
+
     case INPUT_FILE_OFFSETS:
       F.InputFileOffsets = (const uint32_t *)Blob.data();
       F.InputFilesLoaded.resize(Record[0]);
@@ -2509,10 +2557,11 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       unsigned Idx = 0;
       serialization::DeclID ID = ReadDeclID(F, Record, Idx);
       ASTDeclContextNameLookupTable *Table =
-        ASTDeclContextNameLookupTable::Create(
-                        (const unsigned char *)Blob.data() + Record[Idx++],
-                        (const unsigned char *)Blob.data(),
-                        ASTDeclContextNameLookupTrait(*this, F));
+          ASTDeclContextNameLookupTable::Create(
+              (const unsigned char *)Blob.data() + Record[Idx++],
+              (const unsigned char *)Blob.data() + sizeof(uint32_t),
+              (const unsigned char *)Blob.data(),
+              ASTDeclContextNameLookupTrait(*this, F));
       if (ID == PREDEF_DECL_TRANSLATION_UNIT_ID) { // Is it the TU?
         DeclContext *TU = Context.getTranslationUnitDecl();
         F.DeclContextInfos[TU].NameLookupTableData = Table;
@@ -2531,11 +2580,11 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
     case IDENTIFIER_TABLE:
       F.IdentifierTableData = Blob.data();
       if (Record[0]) {
-        F.IdentifierLookupTable
-          = ASTIdentifierLookupTable::Create(
-                       (const unsigned char *)F.IdentifierTableData + Record[0],
-                       (const unsigned char *)F.IdentifierTableData,
-                       ASTIdentifierLookupTrait(*this, F));
+        F.IdentifierLookupTable = ASTIdentifierLookupTable::Create(
+            (const unsigned char *)F.IdentifierTableData + Record[0],
+            (const unsigned char *)F.IdentifierTableData + sizeof(uint32_t),
+            (const unsigned char *)F.IdentifierTableData,
+            ASTIdentifierLookupTrait(*this, F));
         
         PP.getIdentifierTable().setExternalIdentifierLookup(this);
       }
@@ -3536,7 +3585,7 @@ ASTReader::ReadASTCore(StringRef FileName,
       break;
     case CONTROL_BLOCK_ID:
       HaveReadControlBlock = true;
-      switch (ReadControlBlock(F, Loaded, ClientLoadCapabilities)) {
+      switch (ReadControlBlock(F, Loaded, ImportedBy, ClientLoadCapabilities)) {
       case Success:
         break;
 
@@ -3916,6 +3965,12 @@ bool ASTReader::readASTFileControlBlock(StringRef Filename,
       
       break;
     }
+    case MODULE_NAME:
+      Listener.ReadModuleName(Blob);
+      break;
+    case MODULE_MAP_FILE:
+      Listener.ReadModuleMapFile(Blob);
+      break;
     case LANGUAGE_OPTIONS:
       if (ParseLanguageOptions(Record, false, Listener))
         return true;
@@ -4058,13 +4113,19 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       bool InferExportWildcard = Record[Idx++];
       bool ConfigMacrosExhaustive = Record[Idx++];
 
-      Module *ParentModule = 0;
-      if (Parent)
+      Module *ParentModule = nullptr;
+      const FileEntry *ModuleMap = nullptr;
+      if (Parent) {
         ParentModule = getSubmodule(Parent);
-      
+        ModuleMap = ParentModule->ModuleMap;
+      }
+
+      if (!F.ModuleMapPath.empty())
+        ModuleMap = FileMgr.getFile(F.ModuleMapPath);
+
       // Retrieve this (sub)module from the module map, creating it if
       // necessary.
-      CurrentModule = ModMap.findOrCreateModule(Name, ParentModule, 
+      CurrentModule = ModMap.findOrCreateModule(Name, ParentModule, ModuleMap,
                                                 IsFramework, 
                                                 IsExplicit).first;
       SubmoduleID GlobalIndex = GlobalID - NUM_PREDEF_SUBMODULE_IDS;
@@ -4089,7 +4150,7 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
 
         CurrentModule->setASTFile(F.File);
       }
-      
+
       CurrentModule->IsFromModuleFile = true;
       CurrentModule->IsSystem = IsSystem || CurrentModule->IsSystem;
       CurrentModule->IsExternC = IsExternC;

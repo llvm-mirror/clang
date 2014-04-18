@@ -343,6 +343,7 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
     GoogleStyle.SpacesInContainerLiterals = false;
   } else if (Language == FormatStyle::LK_Proto) {
     GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_None;
+    GoogleStyle.SpacesInContainerLiterals = false;
   }
 
   return GoogleStyle;
@@ -721,6 +722,13 @@ public:
 
   unsigned format(const SmallVectorImpl<AnnotatedLine *> &Lines, bool DryRun,
                   int AdditionalIndent = 0, bool FixBadIndentation = false) {
+    // Try to look up already computed penalty in DryRun-mode.
+    std::pair<const SmallVectorImpl<AnnotatedLine *> *, unsigned> CacheKey(
+        &Lines, AdditionalIndent);
+    auto CacheIt = PenaltyCache.find(CacheKey);
+    if (DryRun && CacheIt != PenaltyCache.end())
+      return CacheIt->second;
+
     assert(!Lines.empty());
     unsigned Penalty = 0;
     std::vector<int> IndentForLevel;
@@ -844,6 +852,7 @@ public:
       }
       PreviousLine = *I;
     }
+    PenaltyCache[CacheKey] = Penalty;
     return Penalty;
   }
 
@@ -1131,6 +1140,13 @@ private:
     if (Previous.Children[0]->Last->isTrailingComment())
       return false;
 
+    // If the child line exceeds the column limit, we wouldn't want to merge it.
+    // We add +2 for the trailing " }".
+    if (Style.ColumnLimit > 0 &&
+        Previous.Children[0]->Last->TotalLength + State.Column + 2 >
+            Style.ColumnLimit)
+      return false;
+
     if (!DryRun) {
       Whitespaces->replaceWhitespace(
           *Previous.Children[0]->First,
@@ -1149,6 +1165,12 @@ private:
   LineJoiner Joiner;
 
   llvm::SpecificBumpPtrAllocator<StateNode> Allocator;
+
+  // Cache to store the penalty of formatting a vector of AnnotatedLines
+  // starting from a specific additional offset. Improves performance if there
+  // are many nested blocks.
+  std::map<std::pair<const SmallVectorImpl<AnnotatedLine *> *, unsigned>,
+           unsigned> PenaltyCache;
 };
 
 class FormatTokenLexer {
@@ -1157,7 +1179,8 @@ public:
                    encoding::Encoding Encoding)
       : FormatTok(NULL), IsFirstToken(true), GreaterStashed(false), Column(0),
         TrailingWhitespace(0), Lex(Lex), SourceMgr(SourceMgr), Style(Style),
-        IdentTable(getFormattingLangOpts()), Encoding(Encoding) {
+        IdentTable(getFormattingLangOpts()), Encoding(Encoding),
+        FirstInLineIndex(0) {
     Lex.SetKeepWhitespaceMode(true);
 
     for (const std::string& ForEachMacro : Style.ForEachMacros)
@@ -1167,9 +1190,12 @@ public:
 
   ArrayRef<FormatToken *> lex() {
     assert(Tokens.empty());
+    assert(FirstInLineIndex == 0);
     do {
       Tokens.push_back(getNextToken());
       tryMergePreviousTokens();
+      if (Tokens.back()->NewlinesBefore > 0)
+        FirstInLineIndex = Tokens.size() - 1;
     } while (Tokens.back()->Tok.isNot(tok::eof));
     return Tokens;
   }
@@ -1179,6 +1205,8 @@ public:
 private:
   void tryMergePreviousTokens() {
     if (tryMerge_TMacro())
+      return;
+    if (tryMergeConflictMarkers())
       return;
 
     if (Style.Language == FormatStyle::LK_JavaScript) {
@@ -1252,6 +1280,68 @@ private:
     Tokens.pop_back();
     Tokens.back() = String;
     return true;
+  }
+
+  bool tryMergeConflictMarkers() {
+    if (Tokens.back()->NewlinesBefore == 0 && Tokens.back()->isNot(tok::eof))
+      return false;
+
+    // Conflict lines look like:
+    // <marker> <text from the vcs>
+    // For example:
+    // >>>>>>> /file/in/file/system at revision 1234
+    //
+    // We merge all tokens in a line that starts with a conflict marker
+    // into a single token with a special token type that the unwrapped line
+    // parser will use to correctly rebuild the underlying code.
+
+    FileID ID;
+    // Get the position of the first token in the line.
+    unsigned FirstInLineOffset;
+    std::tie(ID, FirstInLineOffset) = SourceMgr.getDecomposedLoc(
+        Tokens[FirstInLineIndex]->getStartOfNonWhitespace());
+    StringRef Buffer = SourceMgr.getBuffer(ID)->getBuffer();
+    // Calculate the offset of the start of the current line.
+    auto LineOffset = Buffer.rfind('\n', FirstInLineOffset);
+    if (LineOffset == StringRef::npos) {
+      LineOffset = 0;
+    } else {
+      ++LineOffset;
+    }
+
+    auto FirstSpace = Buffer.find_first_of(" \n", LineOffset);
+    StringRef LineStart;
+    if (FirstSpace == StringRef::npos) {
+      LineStart = Buffer.substr(LineOffset);
+    } else {
+      LineStart = Buffer.substr(LineOffset, FirstSpace - LineOffset);
+    }
+
+    TokenType Type = TT_Unknown;
+    if (LineStart == "<<<<<<<" || LineStart == ">>>>") {
+      Type = TT_ConflictStart;
+    } else if (LineStart == "|||||||" || LineStart == "=======" ||
+               LineStart == "====") {
+      Type = TT_ConflictAlternative;
+    } else if (LineStart == ">>>>>>>" || LineStart == "<<<<") {
+      Type = TT_ConflictEnd;
+    }
+
+    if (Type != TT_Unknown) {
+      FormatToken *Next = Tokens.back();
+
+      Tokens.resize(FirstInLineIndex + 1);
+      // We do not need to build a complete token here, as we will skip it
+      // during parsing anyway (as we must not touch whitespace around conflict
+      // markers).
+      Tokens.back()->Type = Type;
+      Tokens.back()->Tok.setKind(tok::kw___unknown_anytype);
+
+      Tokens.push_back(Next);
+      return true;
+    }
+
+    return false;
   }
 
   FormatToken *getNextToken() {
@@ -1401,6 +1491,8 @@ private:
   IdentifierTable IdentTable;
   encoding::Encoding Encoding;
   llvm::SpecificBumpPtrAllocator<FormatToken> Allocator;
+  // Index (in 'Tokens') of the last token that starts a new line.
+  unsigned FirstInLineIndex;
   SmallVector<FormatToken *, 16> Tokens;
   SmallVector<IdentifierInfo*, 8> ForEachMacros;
 
@@ -1757,6 +1849,7 @@ LangOptions getFormattingLangOpts(FormatStyle::LanguageStandard Standard) {
   LangOptions LangOpts;
   LangOpts.CPlusPlus = 1;
   LangOpts.CPlusPlus11 = Standard == FormatStyle::LS_Cpp03 ? 0 : 1;
+  LangOpts.CPlusPlus1y = Standard == FormatStyle::LS_Cpp03 ? 0 : 1;
   LangOpts.LineComment = 1;
   LangOpts.Bool = 1;
   LangOpts.ObjC1 = 1;

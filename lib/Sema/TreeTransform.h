@@ -9759,9 +9759,6 @@ TreeTransform<Derived>::RebuildCXXOperatorCallExpr(OverloadedOperatorKind Op,
 
   if (UnresolvedLookupExpr *ULE = dyn_cast<UnresolvedLookupExpr>(Callee)) {
     assert(ULE->requiresADL());
-
-    // FIXME: Do we have to check
-    // IsAcceptableNonMemberOperatorCandidate for each of these?
     Functions.append(ULE->decls_begin(), ULE->decls_end());
   } else {
     // If we've resolved this to a particular non-member function, just call

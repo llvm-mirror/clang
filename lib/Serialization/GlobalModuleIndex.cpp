@@ -14,6 +14,7 @@
 #include "ASTReaderInternals.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/OnDiskHashTable.h"
+#include "clang/Lex/HeaderSearch.h"
 #include "clang/Serialization/ASTBitCodes.h"
 #include "clang/Serialization/GlobalModuleIndex.h"
 #include "clang/Serialization/Module.h"
@@ -114,7 +115,8 @@ public:
   }
 };
 
-typedef OnDiskChainedHashTable<IdentifierIndexReaderTrait> IdentifierIndexTable;
+typedef OnDiskIterableChainedHashTable<IdentifierIndexReaderTrait>
+    IdentifierIndexTable;
 
 }
 
@@ -202,7 +204,12 @@ GlobalModuleIndex::GlobalModuleIndex(llvm::MemoryBuffer *Buffer,
       assert(Idx == Record.size() && "More module info?");
 
       // Record this module as an unresolved module.
-      UnresolvedModules[llvm::sys::path::stem(Modules[ID].FileName)] = ID;
+      // FIXME: this doesn't work correctly for module names containing path
+      // separators.
+      StringRef ModuleName = llvm::sys::path::stem(Modules[ID].FileName);
+      // Remove the -<hash of ModuleMapPath>
+      ModuleName = ModuleName.rsplit('-').first;
+      UnresolvedModules[ModuleName] = ID;
       break;
     }
 
@@ -210,9 +217,9 @@ GlobalModuleIndex::GlobalModuleIndex(llvm::MemoryBuffer *Buffer,
       // Wire up the identifier index.
       if (Record[0]) {
         IdentifierIndex = IdentifierIndexTable::Create(
-                            (const unsigned char *)Blob.data() + Record[0],
-                            (const unsigned char *)Blob.data(),
-                            IdentifierIndexReaderTrait());
+            (const unsigned char *)Blob.data() + Record[0],
+            (const unsigned char *)Blob.data() + sizeof(uint32_t),
+            (const unsigned char *)Blob.data(), IdentifierIndexReaderTrait());
       }
       break;
     }
@@ -307,7 +314,7 @@ bool GlobalModuleIndex::lookupIdentifier(StringRef Name, HitSet &Hits) {
 
 bool GlobalModuleIndex::loadedModuleFile(ModuleFile *File) {
   // Look for the module in the global module index based on the module name.
-  StringRef Name = llvm::sys::path::stem(File->FileName);
+  StringRef Name = File->ModuleName;
   llvm::StringMap<unsigned>::iterator Known = UnresolvedModules.find(Name);
   if (Known == UnresolvedModules.end()) {
     return true;
@@ -340,6 +347,19 @@ void GlobalModuleIndex::printStats() {
             (double)NumIdentifierLookupHits*100.0/NumIdentifierLookups);
   }
   std::fprintf(stderr, "\n");
+}
+
+void GlobalModuleIndex::dump() {
+  llvm::errs() << "*** Global Module Index Dump:\n";
+  llvm::errs() << "Module files:\n";
+  for (auto &MI : Modules) {
+    llvm::errs() << "** " << MI.FileName << "\n";
+    if (MI.File)
+      MI.File->dump();
+    else
+      llvm::errs() << "\n";
+  }
+  llvm::errs() << "\n";
 }
 
 //----------------------------------------------------------------------------//
@@ -591,11 +611,13 @@ bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
 
     // Handle the identifier table
     if (State == ASTBlock && Code == IDENTIFIER_TABLE && Record[0] > 0) {
-      typedef OnDiskChainedHashTable<InterestingASTIdentifierLookupTrait>
-        InterestingIdentifierTable;
+      typedef
+          OnDiskIterableChainedHashTable<InterestingASTIdentifierLookupTrait>
+          InterestingIdentifierTable;
       std::unique_ptr<InterestingIdentifierTable> Table(
           InterestingIdentifierTable::Create(
               (const unsigned char *)Blob.data() + Record[0],
+              (const unsigned char *)Blob.data() + sizeof(uint32_t),
               (const unsigned char *)Blob.data()));
       for (InterestingIdentifierTable::data_iterator D = Table->data_begin(),
                                                      DEnd = Table->data_end();

@@ -1593,6 +1593,9 @@ static SourceRange getRangeOfTypeInNestedNameSpecifier(ASTContext &Context,
 /// parameter lists. This scope specifier precedes a qualified name that is
 /// being declared.
 ///
+/// \param TemplateId The template-id following the scope specifier, if there
+/// is one. Used to check for a missing 'template<>'.
+///
 /// \param ParamLists the template parameter lists, from the outermost to the
 /// innermost template parameter lists.
 ///
@@ -1611,6 +1614,7 @@ static SourceRange getRangeOfTypeInNestedNameSpecifier(ASTContext &Context,
 /// itself a template).
 TemplateParameterList *Sema::MatchTemplateParametersToScopeSpecifier(
     SourceLocation DeclStartLoc, SourceLocation DeclLoc, const CXXScopeSpec &SS,
+    TemplateIdAnnotation *TemplateId,
     ArrayRef<TemplateParameterList *> ParamLists, bool IsFriend,
     bool &IsExplicitSpecialization, bool &Invalid) {
   IsExplicitSpecialization = false;
@@ -1717,6 +1721,37 @@ TemplateParameterList *Sema::MatchTemplateParametersToScopeSpecifier(
   //   template<> for each enclosing class template that is
   //   explicitly specialized.
   bool SawNonEmptyTemplateParameterList = false;
+
+  auto CheckExplicitSpecialization = [&](SourceRange Range, bool Recovery) {
+    if (SawNonEmptyTemplateParameterList) {
+      Diag(DeclLoc, diag::err_specialize_member_of_template)
+        << !Recovery << Range;
+      Invalid = true;
+      IsExplicitSpecialization = false;
+      return true;
+    }
+
+    return false;
+  };
+
+  auto DiagnoseMissingExplicitSpecialization = [&] (SourceRange Range) {
+    // Check that we can have an explicit specialization here.
+    if (CheckExplicitSpecialization(Range, true))
+      return true;
+
+    // We don't have a template header, but we should.
+    SourceLocation ExpectedTemplateLoc;
+    if (!ParamLists.empty())
+      ExpectedTemplateLoc = ParamLists[0]->getTemplateLoc();
+    else
+      ExpectedTemplateLoc = DeclStartLoc;
+
+    Diag(DeclLoc, diag::err_template_spec_needs_header)
+      << Range
+      << FixItHint::CreateInsertion(ExpectedTemplateLoc, "template<> ");
+    return false;
+  };
+
   unsigned ParamIdx = 0;
   for (unsigned TypeIdx = 0, NumTypes = NestedTypes.size(); TypeIdx != NumTypes;
        ++TypeIdx) {
@@ -1787,13 +1822,9 @@ TemplateParameterList *Sema::MatchTemplateParametersToScopeSpecifier(
     //   are not explicitly specialized as well.
     if (ParamIdx < ParamLists.size()) {
       if (ParamLists[ParamIdx]->size() == 0) {
-        if (SawNonEmptyTemplateParameterList) {
-          Diag(DeclLoc, diag::err_specialize_member_of_template)
-            << ParamLists[ParamIdx]->getSourceRange();
-          Invalid = true;
-          IsExplicitSpecialization = false;
+        if (CheckExplicitSpecialization(ParamLists[ParamIdx]->getSourceRange(),
+                                        false))
           return 0;
-        }
       } else
         SawNonEmptyTemplateParameterList = true;
     }
@@ -1816,28 +1847,20 @@ TemplateParameterList *Sema::MatchTemplateParametersToScopeSpecifier(
           Invalid = true;
           return 0;
         }
-        
+
         // Consume this template header.
         ++ParamIdx;
         continue;
-      } 
-      
-      if (!IsFriend) {
-        // We don't have a template header, but we should.
-        SourceLocation ExpectedTemplateLoc;
-        if (!ParamLists.empty())
-          ExpectedTemplateLoc = ParamLists[0]->getTemplateLoc();
-        else
-          ExpectedTemplateLoc = DeclStartLoc;
-
-        Diag(DeclLoc, diag::err_template_spec_needs_header)
-          << getRangeOfTypeInNestedNameSpecifier(Context, T, SS)
-          << FixItHint::CreateInsertion(ExpectedTemplateLoc, "template<> ");
       }
-      
+
+      if (!IsFriend)
+        if (DiagnoseMissingExplicitSpecialization(
+                getRangeOfTypeInNestedNameSpecifier(Context, T, SS)))
+          return 0;
+
       continue;
     }
-    
+
     if (NeedNonemptyTemplateHeader) {
       // In friend declarations we can have template-ids which don't
       // depend on the corresponding template parameter lists.  But
@@ -1875,12 +1898,26 @@ TemplateParameterList *Sema::MatchTemplateParametersToScopeSpecifier(
       continue;
     }
   }
-    
+
   // If there were at least as many template-ids as there were template
   // parameter lists, then there are no template parameter lists remaining for
   // the declaration itself.
-  if (ParamIdx >= ParamLists.size())
+  if (ParamIdx >= ParamLists.size()) {
+    if (TemplateId && !IsFriend) {
+      // We don't have a template header for the declaration itself, but we
+      // should.
+      IsExplicitSpecialization = true;
+      DiagnoseMissingExplicitSpecialization(SourceRange(TemplateId->LAngleLoc,
+                                                        TemplateId->RAngleLoc));
+
+      // Fabricate an empty template parameter list for the invented header.
+      return TemplateParameterList::Create(Context, SourceLocation(),
+                                           SourceLocation(), 0, 0,
+                                           SourceLocation());
+    }
+
     return 0;
+  }
 
   // If there were too many template parameter lists, complain about that now.
   if (ParamIdx < ParamLists.size() - 1) {
@@ -1921,14 +1958,11 @@ TemplateParameterList *Sema::MatchTemplateParametersToScopeSpecifier(
   //   unspecialized, except that the declaration shall not explicitly 
   //   specialize a class member template if its en- closing class templates 
   //   are not explicitly specialized as well.
-  if (ParamLists.back()->size() == 0 && SawNonEmptyTemplateParameterList) {
-    Diag(DeclLoc, diag::err_specialize_member_of_template)
-      << ParamLists[ParamIdx]->getSourceRange();
-    Invalid = true;
-    IsExplicitSpecialization = false;
+  if (ParamLists.back()->size() == 0 &&
+      CheckExplicitSpecialization(ParamLists[ParamIdx]->getSourceRange(),
+                                  false))
     return 0;
-  }
-  
+
   // Return the last template parameter list, which corresponds to the
   // entity being declared.
   return ParamLists.back();
@@ -2355,6 +2389,17 @@ static bool isSameAsPrimaryTemplate(TemplateParameterList *Params,
   return true;
 }
 
+/// Convert the parser's template argument list representation into our form.
+static TemplateArgumentListInfo
+makeTemplateArgumentListInfo(Sema &S, TemplateIdAnnotation &TemplateId) {
+  TemplateArgumentListInfo TemplateArgs(TemplateId.LAngleLoc,
+                                        TemplateId.RAngleLoc);
+  ASTTemplateArgsPtr TemplateArgsPtr(TemplateId.getTemplateArgs(),
+                                     TemplateId.NumArgs);
+  S.translateTemplateArguments(TemplateArgsPtr, TemplateArgs);
+  return TemplateArgs;
+}
+
 DeclResult Sema::ActOnVarTemplateSpecialization(
     Scope *S, Declarator &D, TypeSourceInfo *DI, SourceLocation TemplateKWLoc,
     TemplateParameterList *TemplateParams, VarDecl::StorageClass SC,
@@ -2364,13 +2409,12 @@ DeclResult Sema::ActOnVarTemplateSpecialization(
          "Variable template specialization is declared with a template it.");
 
   TemplateIdAnnotation *TemplateId = D.getName().TemplateId;
+  TemplateArgumentListInfo TemplateArgs =
+      makeTemplateArgumentListInfo(*this, *TemplateId);
   SourceLocation TemplateNameLoc = D.getIdentifierLoc();
   SourceLocation LAngleLoc = TemplateId->LAngleLoc;
   SourceLocation RAngleLoc = TemplateId->RAngleLoc;
-  ASTTemplateArgsPtr TemplateArgsPtr(TemplateId->getTemplateArgs(),
-                                     TemplateId->NumArgs);
-  TemplateArgumentListInfo TemplateArgs(LAngleLoc, RAngleLoc);
-  translateTemplateArguments(TemplateArgsPtr, TemplateArgs);
+
   TemplateName Name = TemplateId->Template.get();
 
   // The template-id must name a variable template.
@@ -5840,23 +5884,23 @@ Sema::ActOnClassTemplateSpecialization(Scope *S, unsigned TagSpec,
                                        TagUseKind TUK,
                                        SourceLocation KWLoc,
                                        SourceLocation ModulePrivateLoc,
-                                       CXXScopeSpec &SS,
-                                       TemplateTy TemplateD,
-                                       SourceLocation TemplateNameLoc,
-                                       SourceLocation LAngleLoc,
-                                       ASTTemplateArgsPtr TemplateArgsIn,
-                                       SourceLocation RAngleLoc,
+                                       TemplateIdAnnotation &TemplateId,
                                        AttributeList *Attr,
                                MultiTemplateParamsArg TemplateParameterLists) {
   assert(TUK != TUK_Reference && "References are not specializations");
 
+  CXXScopeSpec &SS = TemplateId.SS;
+
   // NOTE: KWLoc is the location of the tag keyword. This will instead
   // store the location of the outermost template keyword in the declaration.
   SourceLocation TemplateKWLoc = TemplateParameterLists.size() > 0
-    ? TemplateParameterLists[0]->getTemplateLoc() : SourceLocation();
+    ? TemplateParameterLists[0]->getTemplateLoc() : KWLoc;
+  SourceLocation TemplateNameLoc = TemplateId.TemplateNameLoc;
+  SourceLocation LAngleLoc = TemplateId.LAngleLoc;
+  SourceLocation RAngleLoc = TemplateId.RAngleLoc;
 
   // Find the class template we're specializing
-  TemplateName Name = TemplateD.get();
+  TemplateName Name = TemplateId.Template.get();
   ClassTemplateDecl *ClassTemplate
     = dyn_cast_or_null<ClassTemplateDecl>(Name.getAsTemplateDecl());
 
@@ -5877,8 +5921,9 @@ Sema::ActOnClassTemplateSpecialization(Scope *S, unsigned TagSpec,
   bool Invalid = false;
   TemplateParameterList *TemplateParams =
       MatchTemplateParametersToScopeSpecifier(
-          TemplateNameLoc, TemplateNameLoc, SS, TemplateParameterLists,
-          TUK == TUK_Friend, isExplicitSpecialization, Invalid);
+          KWLoc, TemplateNameLoc, SS, &TemplateId,
+          TemplateParameterLists, TUK == TUK_Friend, isExplicitSpecialization,
+          Invalid);
   if (Invalid)
     return true;
 
@@ -5929,11 +5974,8 @@ Sema::ActOnClassTemplateSpecialization(Scope *S, unsigned TagSpec,
         << SourceRange(LAngleLoc, RAngleLoc);
     else
       isExplicitSpecialization = true;
-  } else if (TUK != TUK_Friend) {
-    Diag(KWLoc, diag::err_template_spec_needs_header)
-      << FixItHint::CreateInsertion(KWLoc, "template<> ");
-    TemplateKWLoc = KWLoc;
-    isExplicitSpecialization = true;
+  } else {
+    assert(TUK == TUK_Friend && "should have a 'template<>' for this decl");
   }
 
   // Check that the specialization uses the same tag kind as the
@@ -5953,10 +5995,8 @@ Sema::ActOnClassTemplateSpecialization(Scope *S, unsigned TagSpec,
   }
 
   // Translate the parser's template argument list in our AST format.
-  TemplateArgumentListInfo TemplateArgs;
-  TemplateArgs.setLAngleLoc(LAngleLoc);
-  TemplateArgs.setRAngleLoc(RAngleLoc);
-  translateTemplateArguments(TemplateArgsIn, TemplateArgs);
+  TemplateArgumentListInfo TemplateArgs =
+      makeTemplateArgumentListInfo(*this, TemplateId);
 
   // Check for unexpanded parameter packs in any of the template arguments.
   for (unsigned I = 0, N = TemplateArgs.size(); I != N; ++I)
@@ -7416,13 +7456,8 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
       }
 
       // Translate the parser's template argument list into our AST format.
-      TemplateArgumentListInfo TemplateArgs;
-      TemplateIdAnnotation *TemplateId = D.getName().TemplateId;
-      TemplateArgs.setLAngleLoc(TemplateId->LAngleLoc);
-      TemplateArgs.setRAngleLoc(TemplateId->RAngleLoc);
-      ASTTemplateArgsPtr TemplateArgsPtr(TemplateId->getTemplateArgs(),
-                                         TemplateId->NumArgs);
-      translateTemplateArguments(TemplateArgsPtr, TemplateArgs);
+      TemplateArgumentListInfo TemplateArgs =
+          makeTemplateArgumentListInfo(*this, *D.getName().TemplateId);
 
       DeclResult Res = CheckVarTemplateId(PrevTemplate, TemplateLoc,
                                           D.getIdentifierLoc(), TemplateArgs);
@@ -7492,12 +7527,7 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
   bool HasExplicitTemplateArgs = false;
   TemplateArgumentListInfo TemplateArgs;
   if (D.getName().getKind() == UnqualifiedId::IK_TemplateId) {
-    TemplateIdAnnotation *TemplateId = D.getName().TemplateId;
-    TemplateArgs.setLAngleLoc(TemplateId->LAngleLoc);
-    TemplateArgs.setRAngleLoc(TemplateId->RAngleLoc);
-    ASTTemplateArgsPtr TemplateArgsPtr(TemplateId->getTemplateArgs(),
-                                       TemplateId->NumArgs);
-    translateTemplateArguments(TemplateArgsPtr, TemplateArgs);
+    TemplateArgs = makeTemplateArgumentListInfo(*this, *D.getName().TemplateId);
     HasExplicitTemplateArgs = true;
   }
 
