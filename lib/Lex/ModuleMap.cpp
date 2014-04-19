@@ -411,8 +411,9 @@ bool ModuleMap::isHeaderInUnavailableModule(const FileEntry *Header) const {
   return isHeaderUnavailableInModule(Header, 0);
 }
 
-bool ModuleMap::isHeaderUnavailableInModule(const FileEntry *Header,
-                                            Module *RequestingModule) const {
+bool
+ModuleMap::isHeaderUnavailableInModule(const FileEntry *Header,
+                                       const Module *RequestingModule) const {
   HeadersMap::const_iterator Known = Headers.find(Header);
   if (Known != Headers.end()) {
     for (SmallVectorImpl<KnownHeader>::const_iterator
@@ -1476,6 +1477,15 @@ void ModuleMapParser::parseModuleDecl() {
     inferFrameworkLink(ActiveModule, Directory, SourceMgr.getFileManager());
   }
 
+  // If the module meets all requirements but is still unavailable, mark the
+  // whole tree as unavailable to prevent it from building.
+  if (!ActiveModule->IsAvailable && !ActiveModule->IsMissingRequirement &&
+      ActiveModule->Parent) {
+    ActiveModule->getTopLevelModule()->markUnavailable();
+    ActiveModule->getTopLevelModule()->MissingHeaders.append(
+      ActiveModule->MissingHeaders.begin(), ActiveModule->MissingHeaders.end());
+  }
+
   // We're done parsing this module. Pop back to the previous module.
   ActiveModule = PreviousActiveModule;
 }
@@ -1704,9 +1714,8 @@ void ModuleMapParser::parseHeaderDecl(MMToken::TokenKind LeadingToken,
 
     // If we find a module that has a missing header, we mark this module as
     // unavailable and store the header directive for displaying diagnostics.
-    // Other submodules in the same module can still be used.
     Header.IsUmbrella = LeadingToken == MMToken::UmbrellaKeyword;
-    ActiveModule->IsAvailable = false;
+    ActiveModule->markUnavailable();
     ActiveModule->MissingHeaders.push_back(Header);
   }
 }
