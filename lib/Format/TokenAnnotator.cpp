@@ -110,6 +110,11 @@ private:
          Left->Previous->Type == TT_BinaryOperator)) {
       // static_assert, if and while usually contain expressions.
       Contexts.back().IsExpression = true;
+    } else if (Line.InPPDirective &&
+               (!Left->Previous ||
+                (Left->Previous->isNot(tok::identifier) &&
+                 Left->Previous->Type != TT_OverloadedOperator))) {
+      Contexts.back().IsExpression = true;
     } else if (Left->Previous && Left->Previous->is(tok::r_square) &&
                Left->Previous->MatchingParen &&
                Left->Previous->MatchingParen->Type == TT_LambdaLSquare) {
@@ -735,6 +740,8 @@ private:
         Current.Type = determineIncrementUsage(Current);
       } else if (Current.is(tok::exclaim)) {
         Current.Type = TT_UnaryOperator;
+      } else if (Current.is(tok::question)) {
+        Current.Type = TT_ConditionalExpr;
       } else if (Current.isBinaryOperator() &&
                  (!Current.Previous ||
                   Current.Previous->isNot(tok::l_square))) {
@@ -858,6 +865,7 @@ private:
                            tok::comma, tok::semi, tok::kw_return, tok::colon,
                            tok::equal, tok::kw_delete, tok::kw_sizeof) ||
         PrevToken->Type == TT_BinaryOperator ||
+        PrevToken->Type == TT_ConditionalExpr ||
         PrevToken->Type == TT_UnaryOperator || PrevToken->Type == TT_CastRParen)
       return TT_UnaryOperator;
 
@@ -970,6 +978,7 @@ public:
 
     FormatToken *Start = Current;
     FormatToken *LatestOperator = NULL;
+    unsigned OperatorIndex = 0;
 
     while (Current) {
       // Consume operators with higher precedence.
@@ -989,8 +998,8 @@ public:
       if (Current == NULL || Current->closesScope() ||
           (CurrentPrecedence != -1 && CurrentPrecedence < Precedence)) {
         if (LatestOperator) {
+          LatestOperator->LastOperator = true;
           if (Precedence == PrecedenceArrowAndPeriod) {
-            LatestOperator->LastInChainOfCalls = true;
             // Call expressions don't have a binary operator precedence.
             addFakeParenthesis(Start, prec::Unknown);
           } else {
@@ -1009,8 +1018,11 @@ public:
         next();
       } else {
         // Operator found.
-        if (CurrentPrecedence == Precedence)
+        if (CurrentPrecedence == Precedence) {
           LatestOperator = Current;
+          Current->OperatorIndex = OperatorIndex;
+          ++OperatorIndex;
+        }
 
         next();
       }
@@ -1235,7 +1247,8 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
 
   if (Left.is(tok::semi))
     return 0;
-  if (Left.is(tok::comma))
+  if (Left.is(tok::comma) || (Right.is(tok::identifier) && Right.Next &&
+                              Right.Next->Type == TT_DictLiteral))
     return 1;
   if (Right.is(tok::l_square)) {
     if (Style.Language == FormatStyle::LK_Proto)
@@ -1494,7 +1507,8 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
       Tok.getPrecedence() == prec::Assignment)
     return false;
   if ((Tok.Type == TT_BinaryOperator && !Tok.Previous->is(tok::l_paren)) ||
-      Tok.Previous->Type == TT_BinaryOperator)
+      Tok.Previous->Type == TT_BinaryOperator ||
+      Tok.Previous->Type == TT_ConditionalExpr)
     return true;
   if (Tok.Previous->Type == TT_TemplateCloser && Tok.is(tok::l_paren))
     return false;
@@ -1636,6 +1650,10 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
     return true;
 
   if (Left.is(tok::identifier) && Right.is(tok::string_literal))
+    return true;
+
+  if (Right.is(tok::identifier) && Right.Next &&
+      Right.Next->Type == TT_DictLiteral)
     return true;
 
   if (Left.Type == TT_CtorInitializerComma &&

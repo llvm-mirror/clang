@@ -2277,7 +2277,7 @@ public:
                                     SourceLocation OpLoc, ArrayRef<Expr *> Args,
                                     OverloadCandidateSet& CandidateSet);
   void AddArgumentDependentLookupCandidates(DeclarationName Name,
-                                            bool Operator, SourceLocation Loc,
+                                            SourceLocation Loc,
                                             ArrayRef<Expr *> Args,
                                 TemplateArgumentListInfo *ExplicitTemplateArgs,
                                             OverloadCandidateSet& CandidateSet,
@@ -2564,6 +2564,9 @@ public:
   void LookupOverloadedOperatorName(OverloadedOperatorKind Op, Scope *S,
                                     QualType T1, QualType T2,
                                     UnresolvedSetImpl &Functions);
+  void addOverloadedOperatorToUnresolvedSet(UnresolvedSetImpl &Functions,
+                                            DeclAccessPair Operator,
+                                            QualType T1, QualType T2);
 
   LabelDecl *LookupOrCreateLabel(IdentifierInfo *II, SourceLocation IdentLoc,
                                  SourceLocation GnuLabelLoc = SourceLocation());
@@ -2588,10 +2591,8 @@ public:
                                                     bool AllowStringTemplate);
   bool isKnownName(StringRef name);
 
-  void ArgumentDependentLookup(DeclarationName Name, bool Operator,
-                               SourceLocation Loc,
-                               ArrayRef<Expr *> Args,
-                               ADLResult &Functions);
+  void ArgumentDependentLookup(DeclarationName Name, SourceLocation Loc,
+                               ArrayRef<Expr *> Args, ADLResult &Functions);
 
   void LookupVisibleDecls(Scope *S, LookupNameKind Kind,
                           VisibleDeclConsumer &Consumer,
@@ -5196,7 +5197,8 @@ public:
                                   TemplateParamListContext TPC);
   TemplateParameterList *MatchTemplateParametersToScopeSpecifier(
       SourceLocation DeclStartLoc, SourceLocation DeclLoc,
-      const CXXScopeSpec &SS, ArrayRef<TemplateParameterList *> ParamLists,
+      const CXXScopeSpec &SS, TemplateIdAnnotation *TemplateId,
+      ArrayRef<TemplateParameterList *> ParamLists,
       bool IsFriend, bool &IsExplicitSpecialization, bool &Invalid);
 
   DeclResult CheckClassTemplate(Scope *S, unsigned TagSpec, TagUseKind TUK,
@@ -5278,12 +5280,7 @@ public:
   ActOnClassTemplateSpecialization(Scope *S, unsigned TagSpec, TagUseKind TUK,
                                    SourceLocation KWLoc,
                                    SourceLocation ModulePrivateLoc,
-                                   CXXScopeSpec &SS,
-                                   TemplateTy Template,
-                                   SourceLocation TemplateNameLoc,
-                                   SourceLocation LAngleLoc,
-                                   ASTTemplateArgsPtr TemplateArgs,
-                                   SourceLocation RAngleLoc,
+                                   TemplateIdAnnotation &TemplateId,
                                    AttributeList *Attr,
                                  MultiTemplateParamsArg TemplateParameterLists);
 
@@ -7086,13 +7083,13 @@ public:
     PSK_CodeSeg,
   };
 
-  enum PragmaSectionFlag {
+  enum PragmaSectionFlag : unsigned {
     PSF_None = 0,
     PSF_Read = 0x1,
     PSF_Write = 0x2,
     PSF_Execute = 0x4,
     PSF_Implicit = 0x8,
-    PSF_Invalid = 0x80000000,
+    PSF_Invalid = 0x80000000U,
   };
 
   struct SectionInfo {
@@ -8066,14 +8063,14 @@ public:
 
 private:
   bool SemaBuiltinPrefetch(CallExpr *TheCall);
-  bool SemaBuiltinMMPrefetch(CallExpr *TheCall);
-  bool SemaBuiltinObjectSize(CallExpr *TheCall);
   bool SemaBuiltinLongjmp(CallExpr *TheCall);
   ExprResult SemaBuiltinAtomicOverloaded(ExprResult TheCallResult);
   ExprResult SemaAtomicOpsOverloaded(ExprResult TheCallResult,
                                      AtomicExpr::AtomicOp Op);
   bool SemaBuiltinConstantArg(CallExpr *TheCall, int ArgNum,
                               llvm::APSInt &Result);
+  bool SemaBuiltinConstantArgRange(CallExpr *TheCall, int ArgNum,
+                                   int Low, int High);
 
 public:
   enum FormatStringType {

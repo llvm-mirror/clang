@@ -176,7 +176,7 @@ Sema::CheckBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
       return ExprError();
     break;
   case Builtin::BI__builtin_object_size:
-    if (SemaBuiltinObjectSize(TheCall))
+    if (SemaBuiltinConstantArgRange(TheCall, 1, 0, 3))
       return ExprError();
     break;
   case Builtin::BI__builtin_longjmp:
@@ -467,24 +467,8 @@ bool Sema::CheckNeonBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
 #include "clang/Basic/arm_neon.inc"
 #undef GET_NEON_IMMEDIATE_CHECK
   }
-  ;
 
-  // We can't check the value of a dependent argument.
-  if (TheCall->getArg(i)->isTypeDependent() ||
-      TheCall->getArg(i)->isValueDependent())
-    return false;
-
-  // Check that the immediate argument is actually a constant.
-  if (SemaBuiltinConstantArg(TheCall, i, Result))
-    return true;
-
-  // Range check against the upper/lower values for this isntruction.
-  unsigned Val = Result.getZExtValue();
-  if (Val < l || Val > (u + l))
-    return Diag(TheCall->getLocStart(), diag::err_argument_invalid_range)
-           << l << u + l << TheCall->getArg(i)->getSourceRange();
-
-  return false;
+  return SemaBuiltinConstantArgRange(TheCall, i, l, u + l);
 }
 
 bool Sema::CheckAArch64BuiltinFunctionCall(unsigned BuiltinID,
@@ -628,25 +612,10 @@ bool Sema::CheckARMBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   case ARM::BI__builtin_arm_vcvtr_d: i = 1; u = 1; break;
   case ARM::BI__builtin_arm_dmb:
   case ARM::BI__builtin_arm_dsb: l = 0; u = 15; break;
-  };
-
-  // We can't check the value of a dependent argument.
-  if (TheCall->getArg(i)->isTypeDependent() ||
-      TheCall->getArg(i)->isValueDependent())
-    return false;
-
-  // Check that the immediate argument is actually a constant.
-  if (SemaBuiltinConstantArg(TheCall, i, Result))
-    return true;
-
-  // Range check against the upper/lower values for this isntruction.
-  unsigned Val = Result.getZExtValue();
-  if (Val < l || Val > (u + l))
-    return Diag(TheCall->getLocStart(), diag::err_argument_invalid_range)
-      << l << u+l << TheCall->getArg(i)->getSourceRange();
+  }
 
   // FIXME: VFP Intrinsics should error if VFP not present.
-  return false;
+  return SemaBuiltinConstantArgRange(TheCall, i, l, u + l);
 }
 
 bool Sema::CheckARM64BuiltinFunctionCall(unsigned BuiltinID,
@@ -675,31 +644,16 @@ bool Sema::CheckMipsBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   case Mips::BI__builtin_mips_precr_sra_ph_w: i = 2; l = 0; u = 31; break;
   case Mips::BI__builtin_mips_precr_sra_r_ph_w: i = 2; l = 0; u = 31; break;
   case Mips::BI__builtin_mips_prepend: i = 2; l = 0; u = 31; break;
-  };
+  }
 
-  // We can't check the value of a dependent argument.
-  if (TheCall->getArg(i)->isTypeDependent() ||
-      TheCall->getArg(i)->isValueDependent())
-    return false;
-
-  // Check that the immediate argument is actually a constant.
-  llvm::APSInt Result;
-  if (SemaBuiltinConstantArg(TheCall, i, Result))
-    return true;
-
-  // Range check against the upper/lower values for this instruction.
-  unsigned Val = Result.getZExtValue();
-  if (Val < l || Val > u)
-    return Diag(TheCall->getLocStart(), diag::err_argument_invalid_range)
-      << l << u << TheCall->getArg(i)->getSourceRange();
-
-  return false;
+  return SemaBuiltinConstantArgRange(TheCall, i, l, u);
 }
 
 bool Sema::CheckX86BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   switch (BuiltinID) {
   case X86::BI_mm_prefetch:
-    return SemaBuiltinMMPrefetch(TheCall);
+    // This is declared to take (const char*, int)
+    return SemaBuiltinConstantArgRange(TheCall, 1, 0, 3);
   }
   return false;
 }
@@ -1969,50 +1923,9 @@ bool Sema::SemaBuiltinPrefetch(CallExpr *TheCall) {
 
   // Argument 0 is checked for us and the remaining arguments must be
   // constant integers.
-  for (unsigned i = 1; i != NumArgs; ++i) {
-    Expr *Arg = TheCall->getArg(i);
-
-    // We can't check the value of a dependent argument.
-    if (Arg->isTypeDependent() || Arg->isValueDependent())
-      continue;
-
-    llvm::APSInt Result;
-    if (SemaBuiltinConstantArg(TheCall, i, Result))
+  for (unsigned i = 1; i != NumArgs; ++i)
+    if (SemaBuiltinConstantArgRange(TheCall, i, 0, i == 1 ? 1 : 3))
       return true;
-
-    // FIXME: gcc issues a warning and rewrites these to 0. These
-    // seems especially odd for the third argument since the default
-    // is 3.
-    if (i == 1) {
-      if (Result.getLimitedValue() > 1)
-        return Diag(TheCall->getLocStart(), diag::err_argument_invalid_range)
-             << "0" << "1" << Arg->getSourceRange();
-    } else {
-      if (Result.getLimitedValue() > 3)
-        return Diag(TheCall->getLocStart(), diag::err_argument_invalid_range)
-            << "0" << "3" << Arg->getSourceRange();
-    }
-  }
-
-  return false;
-}
-
-/// SemaBuiltinMMPrefetch - Handle _mm_prefetch.
-// This is declared to take (const char*, int)
-bool Sema::SemaBuiltinMMPrefetch(CallExpr *TheCall) {
-  Expr *Arg = TheCall->getArg(1);
-
-  // We can't check the value of a dependent argument.
-  if (Arg->isTypeDependent() || Arg->isValueDependent())
-    return false;
-
-  llvm::APSInt Result;
-  if (SemaBuiltinConstantArg(TheCall, 1, Result))
-    return true;
-
-  if (Result.getLimitedValue() > 3)
-    return Diag(TheCall->getLocStart(), diag::err_argument_invalid_range)
-        << "0" << "3" << Arg->getSourceRange();
 
   return false;
 }
@@ -2034,27 +1947,24 @@ bool Sema::SemaBuiltinConstantArg(CallExpr *TheCall, int ArgNum,
   return false;
 }
 
-/// SemaBuiltinObjectSize - Handle __builtin_object_size(void *ptr,
-/// int type). This simply type checks that type is one of the defined
-/// constants (0-3).
-// For compatibility check 0-3, llvm only handles 0 and 2.
-bool Sema::SemaBuiltinObjectSize(CallExpr *TheCall) {
+/// SemaBuiltinConstantArgRange - Handle a check if argument ArgNum of CallExpr
+/// TheCall is a constant expression in the range [Low, High].
+bool Sema::SemaBuiltinConstantArgRange(CallExpr *TheCall, int ArgNum,
+                                       int Low, int High) {
   llvm::APSInt Result;
 
   // We can't check the value of a dependent argument.
-  if (TheCall->getArg(1)->isTypeDependent() ||
-      TheCall->getArg(1)->isValueDependent())
+  Expr *Arg = TheCall->getArg(ArgNum);
+  if (Arg->isTypeDependent() || Arg->isValueDependent())
     return false;
 
   // Check constant-ness first.
-  if (SemaBuiltinConstantArg(TheCall, 1, Result))
+  if (SemaBuiltinConstantArg(TheCall, ArgNum, Result))
     return true;
 
-  Expr *Arg = TheCall->getArg(1);
-  if (Result.getSExtValue() < 0 || Result.getSExtValue() > 3) {
+  if (Result.getSExtValue() < Low || Result.getSExtValue() > High)
     return Diag(TheCall->getLocStart(), diag::err_argument_invalid_range)
-             << "0" << "3" << SourceRange(Arg->getLocStart(), Arg->getLocEnd());
-  }
+      << Low << High << Arg->getSourceRange();
 
   return false;
 }
@@ -3862,54 +3772,107 @@ static unsigned getAbsoluteValueFunctionKind(const FunctionDecl *FDecl) {
 // If the replacement is valid, emit a note with replacement function.
 // Additionally, suggest including the proper header if not already included.
 static void emitReplacement(Sema &S, SourceLocation Loc, SourceRange Range,
-                            unsigned AbsKind) {
-  std::string AbsName = S.Context.BuiltinInfo.GetName(AbsKind);
-
-  // Look up absolute value function in TU scope.
-  DeclarationName DN(&S.Context.Idents.get(AbsName));
-  LookupResult R(S, DN, Loc, Sema::LookupAnyName);
-  R.suppressDiagnostics();
-  S.LookupName(R, S.TUScope);
-
-  // Skip notes if multiple results found in lookup.
-  if (!R.empty() && !R.isSingleResult())
-    return;
-
-  FunctionDecl *FD = 0;
-  bool FoundFunction = R.isSingleResult();
-  // When one result is found, see if it is the correct function.
-  if (R.isSingleResult()) {
-    FD = dyn_cast<FunctionDecl>(R.getFoundDecl());
-    if (!FD || FD->getBuiltinID() != AbsKind)
-      return;
-  }
-
-  // Look for local name conflict, prepend "::" as necessary.
-  R.clear();
-  S.LookupName(R, S.getCurScope());
-
-  if (!FoundFunction) {
-    if (!R.empty()) {
-      AbsName = "::" + AbsName;
+                            unsigned AbsKind, QualType ArgType) {
+  bool EmitHeaderHint = true;
+  const char *HeaderName = 0;
+  const char *FunctionName = 0;
+  if (S.getLangOpts().CPlusPlus && !ArgType->isAnyComplexType()) {
+    FunctionName = "std::abs";
+    if (ArgType->isIntegralOrEnumerationType()) {
+      HeaderName = "cstdlib";
+    } else if (ArgType->isRealFloatingType()) {
+      HeaderName = "cmath";
+    } else {
+      llvm_unreachable("Invalid Type");
     }
-  } else { // FoundFunction
-    if (R.isSingleResult()) {
-      if (R.getFoundDecl() != FD) {
-        AbsName = "::" + AbsName;
+
+    // Lookup all std::abs
+    if (NamespaceDecl *Std = S.getStdNamespace()) {
+      LookupResult R(S, &S.PP.getIdentifierTable().get("abs"), Loc,
+                     Sema::LookupAnyName);
+      R.suppressDiagnostics();
+      S.LookupQualifiedName(R, Std);
+
+      for (const auto *I : R) {
+        const FunctionDecl *FDecl = 0;
+        if (const UsingShadowDecl *UsingD = dyn_cast<UsingShadowDecl>(I)) {
+          FDecl = dyn_cast<FunctionDecl>(UsingD->getTargetDecl());
+        } else {
+          FDecl = dyn_cast<FunctionDecl>(I);
+        }
+        if (!FDecl)
+          continue;
+
+        // Found std::abs(), check that they are the right ones.
+        if (FDecl->getNumParams() != 1)
+          continue;
+
+        // Check that the parameter type can handle the argument.
+        QualType ParamType = FDecl->getParamDecl(0)->getType();
+        if (getAbsoluteValueKind(ArgType) == getAbsoluteValueKind(ParamType) &&
+            S.Context.getTypeSize(ArgType) <=
+                S.Context.getTypeSize(ParamType)) {
+          // Found a function, don't need the header hint.
+          EmitHeaderHint = false;
+          break;
+        }
       }
-    } else if (!R.empty()) {
-      AbsName = "::" + AbsName;
+    }
+  } else {
+    FunctionName = S.Context.BuiltinInfo.GetName(AbsKind);
+    HeaderName = S.Context.BuiltinInfo.getHeaderName(AbsKind);
+
+    if (HeaderName) {
+      DeclarationName DN(&S.Context.Idents.get(FunctionName));
+      LookupResult R(S, DN, Loc, Sema::LookupAnyName);
+      R.suppressDiagnostics();
+      S.LookupName(R, S.getCurScope());
+
+      if (R.isSingleResult()) {
+        FunctionDecl *FD = dyn_cast<FunctionDecl>(R.getFoundDecl());
+        if (FD && FD->getBuiltinID() == AbsKind) {
+          EmitHeaderHint = false;
+        } else {
+          return;
+        }
+      } else if (!R.empty()) {
+        return;
+      }
     }
   }
 
   S.Diag(Loc, diag::note_replace_abs_function)
-      << AbsName << FixItHint::CreateReplacement(Range, AbsName);
+      << FunctionName << FixItHint::CreateReplacement(Range, FunctionName);
 
-  if (!FoundFunction) {
-    S.Diag(Loc, diag::note_please_include_header)
-        << S.Context.BuiltinInfo.getHeaderName(AbsKind)
-        << S.Context.BuiltinInfo.GetName(AbsKind);
+  if (!HeaderName)
+    return;
+
+  if (!EmitHeaderHint)
+    return;
+
+  S.Diag(Loc, diag::note_please_include_header) << HeaderName << FunctionName;
+}
+
+static bool IsFunctionStdAbs(const FunctionDecl *FDecl) {
+  if (!FDecl)
+    return false;
+
+  if (!FDecl->getIdentifier() || !FDecl->getIdentifier()->isStr("abs"))
+    return false;
+
+  const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(FDecl->getDeclContext());
+
+  while (ND && ND->isInlineNamespace()) {
+    ND = dyn_cast<NamespaceDecl>(ND->getDeclContext());
   }
+
+  if (!ND || !ND->getIdentifier() || !ND->getIdentifier()->isStr("std"))
+    return false;
+
+  if (!isa<TranslationUnitDecl>(ND->getDeclContext()))
+    return false;
+
+  return true;
 }
 
 // Warn when using the wrong abs() function.
@@ -3920,7 +3883,8 @@ void Sema::CheckAbsoluteValueFunction(const CallExpr *Call,
     return;
 
   unsigned AbsKind = getAbsoluteValueFunctionKind(FDecl);
-  if (AbsKind == 0)
+  bool IsStdAbs = IsFunctionStdAbs(FDecl);
+  if (AbsKind == 0 && !IsStdAbs)
     return;
 
   QualType ArgType = Call->getArg(0)->IgnoreParenImpCasts()->getType();
@@ -3929,12 +3893,19 @@ void Sema::CheckAbsoluteValueFunction(const CallExpr *Call,
   // Unsigned types can not be negative.  Suggest to drop the absolute value
   // function.
   if (ArgType->isUnsignedIntegerType()) {
+    const char *FunctionName =
+        IsStdAbs ? "std::abs" : Context.BuiltinInfo.GetName(AbsKind);
     Diag(Call->getExprLoc(), diag::warn_unsigned_abs) << ArgType << ParamType;
     Diag(Call->getExprLoc(), diag::note_remove_abs)
-        << FDecl
+        << FunctionName
         << FixItHint::CreateRemoval(Call->getCallee()->getSourceRange());
     return;
   }
+
+  // std::abs has overloads which prevent most of the absolute value problems
+  // from occurring.
+  if (IsStdAbs)
+    return;
 
   AbsoluteValueKind ArgValueKind = getAbsoluteValueKind(ArgType);
   AbsoluteValueKind ParamValueKind = getAbsoluteValueKind(ParamType);
@@ -3953,7 +3924,7 @@ void Sema::CheckAbsoluteValueFunction(const CallExpr *Call,
       return;
 
     emitReplacement(*this, Call->getExprLoc(),
-                    Call->getCallee()->getSourceRange(), NewAbsKind);
+                    Call->getCallee()->getSourceRange(), NewAbsKind, ArgType);
     return;
   }
 
@@ -3969,7 +3940,7 @@ void Sema::CheckAbsoluteValueFunction(const CallExpr *Call,
       << FDecl << ParamValueKind << ArgValueKind;
 
   emitReplacement(*this, Call->getExprLoc(),
-                  Call->getCallee()->getSourceRange(), NewAbsKind);
+                  Call->getCallee()->getSourceRange(), NewAbsKind, ArgType);
   return;
 }
 

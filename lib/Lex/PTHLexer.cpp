@@ -15,7 +15,6 @@
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemStatCache.h"
 #include "clang/Basic/IdentifierTable.h"
-#include "clang/Basic/OnDiskHashTable.h"
 #include "clang/Basic/TokenKinds.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/PTHManager.h"
@@ -25,10 +24,10 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/OnDiskHashTable.h"
 #include "llvm/Support/system_error.h"
 #include <memory>
 using namespace clang;
-using namespace clang::io;
 
 #define DISK_TOKEN_SIZE (1+1+2+4+4)
 
@@ -319,8 +318,10 @@ public:
 class PTHFileLookupCommonTrait {
 public:
   typedef std::pair<unsigned char, const char*> internal_key_type;
+  typedef unsigned hash_value_type;
+  typedef unsigned offset_type;
 
-  static unsigned ComputeHash(internal_key_type x) {
+  static hash_value_type ComputeHash(internal_key_type x) {
     return llvm::HashString(x.second);
   }
 
@@ -364,13 +365,11 @@ public:
 
 class PTHStringLookupTrait {
 public:
-  typedef uint32_t
-          data_type;
-
-  typedef const std::pair<const char*, unsigned>
-          external_key_type;
-
+  typedef uint32_t data_type;
+  typedef const std::pair<const char*, unsigned> external_key_type;
   typedef external_key_type internal_key_type;
+  typedef uint32_t hash_value_type;
+  typedef unsigned offset_type;
 
   static bool EqualKey(const internal_key_type& a,
                        const internal_key_type& b) {
@@ -378,7 +377,7 @@ public:
                                   : false;
   }
 
-  static unsigned ComputeHash(const internal_key_type& a) {
+  static hash_value_type ComputeHash(const internal_key_type& a) {
     return llvm::HashString(StringRef(a.first, a.second));
   }
 
@@ -409,8 +408,8 @@ public:
 
 } // end anonymous namespace
 
-typedef OnDiskChainedHashTable<PTHFileLookupTrait>   PTHFileLookup;
-typedef OnDiskChainedHashTable<PTHStringLookupTrait> PTHStringIdLookup;
+typedef llvm::OnDiskChainedHashTable<PTHFileLookupTrait>   PTHFileLookup;
+typedef llvm::OnDiskChainedHashTable<PTHStringLookupTrait> PTHStringIdLookup;
 
 //===----------------------------------------------------------------------===//
 // PTHManager methods.
@@ -693,7 +692,7 @@ public:
 };
 
 class PTHStatCache : public FileSystemStatCache {
-  typedef OnDiskChainedHashTable<PTHStatLookupTrait> CacheTy;
+  typedef llvm::OnDiskChainedHashTable<PTHStatLookupTrait> CacheTy;
   CacheTy Cache;
 
 public:

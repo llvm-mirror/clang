@@ -23,12 +23,16 @@
 #include <memory>
 #include <string>
 
+namespace llvm {
+template <typename Info> class OnDiskChainedHashTable;
+template <typename Info> class OnDiskIterableChainedHashTable;
+}
+
 namespace clang {
 
 class FileEntry;
 class DeclContext;
 class Module;
-template<typename Info> class OnDiskChainedHashTable;
 
 namespace serialization {
 
@@ -49,7 +53,7 @@ struct DeclContextInfo {
   DeclContextInfo()
     : NameLookupTableData(), LexicalDecls(), NumLexicalDecls() {}
 
-  OnDiskChainedHashTable<reader::ASTDeclContextNameLookupTrait>
+  llvm::OnDiskIterableChainedHashTable<reader::ASTDeclContextNameLookupTrait>
     *NameLookupTableData; // an ASTDeclContextNameLookupTable.
   const KindDeclIDPair *LexicalDecls;
   unsigned NumLexicalDecls;
@@ -115,6 +119,9 @@ public:
   /// \brief The file name of the module file.
   std::string FileName;
 
+  /// \brief The name of the module.
+  std::string ModuleName;
+
   std::string getTimestampFilename() const {
     return FileName + ".timestamp";
   }
@@ -135,6 +142,8 @@ public:
   /// \brief The directory that the PCH was originally created in. Used to
   /// allow resolving headers even after headers+PCH was moved to a new path.
   std::string OriginalDir;
+
+  std::string ModuleMapPath;
 
   /// \brief Whether this precompiled header is a relocatable PCH file.
   bool RelocatablePCH;

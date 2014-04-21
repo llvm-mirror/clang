@@ -261,7 +261,7 @@ void Parser::ParseAttributeWithTypeArg(IdentifierInfo &AttrName,
                  0, AttrNameLoc, 0, 0, AttributeList::AS_GNU);
 }
 
-void Parser::ParseAttributeArgsCommon(
+unsigned Parser::ParseAttributeArgsCommon(
     IdentifierInfo *AttrName, SourceLocation AttrNameLoc,
     ParsedAttributes &Attrs, SourceLocation *EndLoc, IdentifierInfo *ScopeName,
     SourceLocation ScopeLoc, AttributeList::Syntax Syntax) {
@@ -302,7 +302,7 @@ void Parser::ParseAttributeArgsCommon(
       ExprResult ArgExpr(ParseAssignmentExpression());
       if (ArgExpr.isInvalid()) {
         SkipUntil(tok::r_paren, StopAtSemi);
-        return;
+        return 0;
       }
       ArgExprs.push_back(ArgExpr.release());
       // Eat the comma, move to the next argument
@@ -318,6 +318,8 @@ void Parser::ParseAttributeArgsCommon(
 
   if (EndLoc)
     *EndLoc = RParen;
+
+  return static_cast<unsigned>(ArgExprs.size());
 }
 
 /// Parse the arguments to a parameterized GNU attribute or
@@ -391,6 +393,8 @@ bool Parser::ParseMicrosoftDeclSpecArgs(IdentifierInfo *AttrName,
     SkipUntil(tok::r_paren);
     return false;
   }
+
+  SourceLocation OpenParenLoc = Tok.getLocation();
 
   if (AttrName->getName() == "property") {
     // The property declspec is more complex in that it can take one or two
@@ -505,8 +509,17 @@ bool Parser::ParseMicrosoftDeclSpecArgs(IdentifierInfo *AttrName,
     return !HasInvalidAccessor;
   }
 
-  ParseAttributeArgsCommon(AttrName, AttrNameLoc, Attrs, nullptr, nullptr,
-                           SourceLocation(), AttributeList::AS_Declspec);
+  unsigned NumArgs =
+      ParseAttributeArgsCommon(AttrName, AttrNameLoc, Attrs, nullptr, nullptr,
+                               SourceLocation(), AttributeList::AS_Declspec);
+
+  // If this attribute's args were parsed, and it was expected to have
+  // arguments but none were provided, emit a diagnostic.
+  const AttributeList *Attr = Attrs.getList();
+  if (Attr && Attr->getMaxArgs() && !NumArgs) {
+    Diag(OpenParenLoc, diag::err_attribute_requires_arguments) << AttrName;
+    return false;
+  }
   return true;
 }
 

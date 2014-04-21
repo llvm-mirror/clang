@@ -25,8 +25,8 @@
 using namespace clang;
 
 Module::Module(StringRef Name, SourceLocation DefinitionLoc, Module *Parent,
-               bool IsFramework, bool IsExplicit)
-  : Name(Name), DefinitionLoc(DefinitionLoc), Parent(Parent),
+               const FileEntry *File, bool IsFramework, bool IsExplicit)
+  : Name(Name), DefinitionLoc(DefinitionLoc), Parent(Parent), ModuleMap(File),
     Umbrella(), ASTFile(0), IsAvailable(true), IsFromModuleFile(false),
     IsFramework(IsFramework), IsExplicit(IsExplicit), IsSystem(false),
     IsExternC(false), InferSubmodules(false), InferExplicitSubmodules(false),
@@ -39,6 +39,7 @@ Module::Module(StringRef Name, SourceLocation DefinitionLoc, Module *Parent,
       IsSystem = true;
     if (Parent->IsExternC)
       IsExternC = true;
+    IsMissingRequirement = Parent->IsMissingRequirement;
     
     Parent->SubModuleIndex[Name] = Parent->SubModules.size();
     Parent->SubModules.push_back(this);
@@ -91,7 +92,7 @@ Module::isAvailable(const LangOptions &LangOpts, const TargetInfo &Target,
   llvm_unreachable("could not find a reason why module is unavailable");
 }
 
-bool Module::isSubModuleOf(Module *Other) const {
+bool Module::isSubModuleOf(const Module *Other) const {
   const Module *This = this;
   do {
     if (This == Other)
@@ -160,6 +161,10 @@ void Module::addRequirement(StringRef Feature, bool RequiredState,
   if (hasFeature(Feature, LangOpts, Target) == RequiredState)
     return;
 
+  markUnavailable(/*MissingRequirement*/true);
+}
+
+void Module::markUnavailable(bool MissingRequirement) {
   if (!IsAvailable)
     return;
 
@@ -173,6 +178,7 @@ void Module::addRequirement(StringRef Feature, bool RequiredState,
       continue;
 
     Current->IsAvailable = false;
+    Current->IsMissingRequirement |= MissingRequirement;
     for (submodule_iterator Sub = Current->submodule_begin(),
                          SubEnd = Current->submodule_end();
          Sub != SubEnd; ++Sub) {

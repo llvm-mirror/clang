@@ -35,7 +35,7 @@ def warn_unsigned_abs : Warning<
   "taking the absolute value of unsigned type %0 has no effect">,
   InGroup<AbsoluteValue>;
 def note_remove_abs : Note<
-  "remove the call to %0 since unsigned values cannot be negative">;
+  "remove the call to '%0' since unsigned values cannot be negative">;
 def warn_abs_too_small : Warning<
   "absolute value function %0 given an argument of type %1 but has parameter "
   "of type %2 which may cause truncation of value">, InGroup<AbsoluteValue>;
@@ -3267,8 +3267,8 @@ def err_template_qualified_declarator_no_match : Error<
   "nested name specifier '%0' for declaration does not refer into a class, "
   "class template or class template partial specialization">;
 def err_specialize_member_of_template : Error<
-  "cannot specialize (with 'template<>') a member of an unspecialized "
-  "template">;
+  "cannot specialize %select{|(with 'template<>') }0a member of an "
+  "unspecialized template">;
 
 // C++ Class Template Partial Specialization
 def err_default_arg_in_partial_spec : Error<
@@ -6983,5 +6983,12 @@ let CategoryName = "Documentation Issue" in {
 def warn_not_a_doxygen_trailing_member_comment : Warning<
   "not a Doxygen trailing comment">, InGroup<Documentation>, DefaultIgnore;
 } // end of documentation issue category
+
+let CategoryName = "Instrumentation Issue" in {
+def warn_profile_data_out_of_date : Warning<
+  "profile data may be out of date: of %0 function%s0, %1 %plural{1:has|:have}1"
+  " no data and %2 %plural{1:has|:have}2 mismatched data that will be ignored">,
+  InGroup<ProfileInstrOutOfDate>;
+} // end of instrumentation issue category
 
 } // end of sema component.

@@ -25,7 +25,6 @@
 #include "clang/AST/TypeLocVisitor.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemStatCache.h"
-#include "clang/Basic/OnDiskHashTable.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/SourceManagerInternals.h"
 #include "clang/Basic/TargetInfo.h"
@@ -49,6 +48,7 @@
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/OnDiskHashTable.h"
 #include "llvm/Support/Path.h"
 #include <algorithm>
 #include <cstdio>
@@ -798,6 +798,8 @@ void ASTWriter::WriteBlockInfoBlock() {
   // Control Block.
   BLOCK(CONTROL_BLOCK);
   RECORD(METADATA);
+  RECORD(MODULE_NAME);
+  RECORD(MODULE_MAP_FILE);
   RECORD(IMPORTS);
   RECORD(LANGUAGE_OPTIONS);
   RECORD(TARGET_OPTIONS);
@@ -1050,6 +1052,32 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
   Stream.EmitRecordWithBlob(MetadataAbbrevCode, Record,
                             getClangFullRepositoryVersion());
 
+  // Module name
+  if (WritingModule) {
+    BitCodeAbbrev *Abbrev = new BitCodeAbbrev();
+    Abbrev->Add(BitCodeAbbrevOp(MODULE_NAME));
+    Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob)); // Name
+    unsigned AbbrevCode = Stream.EmitAbbrev(Abbrev);
+    RecordData Record;
+    Record.push_back(MODULE_NAME);
+    Stream.EmitRecordWithBlob(AbbrevCode, Record, WritingModule->Name);
+  }
+
+  // Module map file
+  if (WritingModule) {
+    BitCodeAbbrev *Abbrev = new BitCodeAbbrev();
+    Abbrev->Add(BitCodeAbbrevOp(MODULE_MAP_FILE));
+    Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob)); // Filename
+    unsigned AbbrevCode = Stream.EmitAbbrev(Abbrev);
+
+    assert(WritingModule->ModuleMap && "missing module map");
+    SmallString<128> ModuleMap(WritingModule->ModuleMap->getName());
+    llvm::sys::fs::make_absolute(ModuleMap);
+    RecordData Record;
+    Record.push_back(MODULE_MAP_FILE);
+    Stream.EmitRecordWithBlob(AbbrevCode, Record, ModuleMap.str());
+  }
+
   // Imports
   if (Chain) {
     serialization::ModuleManager &Mgr = Chain->getModuleManager();
@@ -1065,7 +1093,6 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
       AddSourceLocation((*M)->ImportLoc, Record);
       Record.push_back((*M)->File->getSize());
       Record.push_back((*M)->File->getModificationTime());
-      // FIXME: This writes the absolute path for AST files we depend on.
       const std::string &FileName = (*M)->FileName;
       Record.push_back(FileName.size());
       Record.append(FileName.begin(), FileName.end());
@@ -1455,8 +1482,10 @@ namespace {
     
     typedef HeaderFileInfo data_type;
     typedef const data_type &data_type_ref;
+    typedef unsigned hash_value_type;
+    typedef unsigned offset_type;
     
-    static unsigned ComputeHash(key_type_ref key) {
+    static hash_value_type ComputeHash(key_type_ref key) {
       // The hash is based only on size/time of the file, so that the reader can
       // match even when symlinking or excess path elements ("foo/../", "../")
       // change the form of the name. However, complete path is still the key.
@@ -1548,7 +1577,7 @@ void ASTWriter::WriteHeaderSearch(const HeaderSearch &HS, StringRef isysroot) {
     FilesByUID.resize(HS.header_file_size());
   
   HeaderFileInfoTrait GeneratorTrait(*this, HS);
-  OnDiskChainedHashTableGenerator<HeaderFileInfoTrait> Generator;  
+  llvm::OnDiskChainedHashTableGenerator<HeaderFileInfoTrait> Generator;
   SmallVector<const char *, 4> SavedStrings;
   unsigned NumHeaderSearchEntries = 0;
   for (unsigned UID = 0, LastUID = FilesByUID.size(); UID != LastUID; ++UID) {
@@ -1828,8 +1857,10 @@ public:
 
   typedef Data data_type;
   typedef const data_type &data_type_ref;
+  typedef unsigned hash_value_type;
+  typedef unsigned offset_type;
 
-  static unsigned ComputeHash(IdentID IdID) {
+  static hash_value_type ComputeHash(IdentID IdID) {
     return llvm::hash_value(IdID);
   }
 
@@ -1921,7 +1952,7 @@ void ASTWriter::WritePreprocessor(const Preprocessor &PP, bool IsModule) {
   llvm::array_pod_sort(MacroDirectives.begin(), MacroDirectives.end(),
                        &compareMacroDirectives);
 
-  OnDiskChainedHashTableGenerator<ASTMacroTableTrait> Generator;
+  llvm::OnDiskChainedHashTableGenerator<ASTMacroTableTrait> Generator;
 
   // Emit the macro directives as a list and associate the offset with the
   // identifier they belong to.
@@ -2711,9 +2742,12 @@ public:
   };
   typedef const data_type& data_type_ref;
 
+  typedef unsigned hash_value_type;
+  typedef unsigned offset_type;
+
   explicit ASTMethodPoolTrait(ASTWriter &Writer) : Writer(Writer) { }
 
-  static unsigned ComputeHash(Selector Sel) {
+  static hash_value_type ComputeHash(Selector Sel) {
     return serialization::ComputeHash(Sel);
   }
 
@@ -2807,7 +2841,7 @@ void ASTWriter::WriteSelectors(Sema &SemaRef) {
   unsigned NumTableEntries = 0;
   // Create and write out the blob that contains selectors and the method pool.
   {
-    OnDiskChainedHashTableGenerator<ASTMethodPoolTrait> Generator;
+    llvm::OnDiskChainedHashTableGenerator<ASTMethodPoolTrait> Generator;
     ASTMethodPoolTrait Trait(*this);
 
     // Create the on-disk hash table representation. We walk through every
@@ -3063,11 +3097,14 @@ public:
   typedef IdentID data_type;
   typedef data_type data_type_ref;
 
+  typedef unsigned hash_value_type;
+  typedef unsigned offset_type;
+
   ASTIdentifierTableTrait(ASTWriter &Writer, Preprocessor &PP, 
                           IdentifierResolver &IdResolver, bool IsModule)
     : Writer(Writer), PP(PP), IdResolver(IdResolver), IsModule(IsModule) { }
 
-  static unsigned ComputeHash(const IdentifierInfo* II) {
+  static hash_value_type ComputeHash(const IdentifierInfo* II) {
     return llvm::HashString(II->getName());
   }
 
@@ -3233,7 +3270,7 @@ void ASTWriter::WriteIdentifierTable(Preprocessor &PP,
   // Create and write out the blob that contains the identifier
   // strings.
   {
-    OnDiskChainedHashTableGenerator<ASTIdentifierTableTrait> Generator;
+    llvm::OnDiskChainedHashTableGenerator<ASTIdentifierTableTrait> Generator;
     ASTIdentifierTableTrait Trait(*this, PP, IdResolver, IsModule);
 
     // Look for any identifiers that were named while processing the
@@ -3322,9 +3359,12 @@ public:
   typedef DeclContext::lookup_result data_type;
   typedef const data_type& data_type_ref;
 
+  typedef unsigned hash_value_type;
+  typedef unsigned offset_type;
+
   explicit ASTDeclContextNameLookupTrait(ASTWriter &Writer) : Writer(Writer) { }
 
-  unsigned ComputeHash(DeclarationName Name) {
+  hash_value_type ComputeHash(DeclarationName Name) {
     llvm::FoldingSetNodeID ID;
     ID.AddInteger(Name.getNameKind());
 
@@ -3437,7 +3477,8 @@ ASTWriter::GenerateNameLookupTable(const DeclContext *DC,
   assert(!DC->LookupPtr.getInt() && "must call buildLookups first");
   assert(DC == DC->getPrimaryContext() && "only primary DC has lookup table");
 
-  OnDiskChainedHashTableGenerator<ASTDeclContextNameLookupTrait> Generator;
+  llvm::OnDiskChainedHashTableGenerator<ASTDeclContextNameLookupTrait>
+      Generator;
   ASTDeclContextNameLookupTrait Trait(*this);
 
   // Create the on-disk hash table representation.
@@ -5221,6 +5262,7 @@ void ASTWriter::AddCXXDefinitionData(const CXXRecordDecl *D, RecordDataImpl &Rec
   Record.push_back(Data.DefaultedMoveAssignmentIsDeleted);
   Record.push_back(Data.DefaultedDestructorIsDeleted);
   Record.push_back(Data.HasTrivialSpecialMembers);
+  Record.push_back(Data.DeclaredNonTrivialSpecialMembers);
   Record.push_back(Data.HasIrrelevantDestructor);
   Record.push_back(Data.HasConstexprNonCopyMoveConstructor);
   Record.push_back(Data.DefaultedDefaultConstructorIsConstexpr);

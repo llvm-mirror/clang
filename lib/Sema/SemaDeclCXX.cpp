@@ -1960,14 +1960,19 @@ Sema::ActOnCXXMemberDeclarator(Scope *S, AccessSpecifier AS, Declarator &D,
         Diag(DS.getConstexprSpecLoc(), diag::err_invalid_constexpr_member);
     SourceLocation ConstexprLoc = DS.getConstexprSpecLoc();
     if (InitStyle == ICIS_NoInit) {
-      B << 0 << 0 << FixItHint::CreateReplacement(ConstexprLoc, "const");
-      D.getMutableDeclSpec().ClearConstexprSpec();
-      const char *PrevSpec;
-      unsigned DiagID;
-      bool Failed = D.getMutableDeclSpec().SetTypeQual(DeclSpec::TQ_const, ConstexprLoc,
-                                         PrevSpec, DiagID, getLangOpts());
-      (void)Failed;
-      assert(!Failed && "Making a constexpr member const shouldn't fail");
+      B << 0 << 0;
+      if (D.getDeclSpec().getTypeQualifiers() & DeclSpec::TQ_const)
+        B << FixItHint::CreateRemoval(ConstexprLoc);
+      else {
+        B << FixItHint::CreateReplacement(ConstexprLoc, "const");
+        D.getMutableDeclSpec().ClearConstexprSpec();
+        const char *PrevSpec;
+        unsigned DiagID;
+        bool Failed = D.getMutableDeclSpec().SetTypeQual(
+            DeclSpec::TQ_const, ConstexprLoc, PrevSpec, DiagID, getLangOpts());
+        (void)Failed;
+        assert(!Failed && "Making a constexpr member const shouldn't fail");
+      }
     } else {
       B << 1;
       const char *PrevSpec;
@@ -11365,7 +11370,7 @@ Decl *Sema::ActOnTemplatedFriendTag(Scope *S, SourceLocation FriendLoc,
 
   if (TemplateParameterList *TemplateParams =
           MatchTemplateParametersToScopeSpecifier(
-              TagLoc, NameLoc, SS, TempParamLists, /*friend*/ true,
+              TagLoc, NameLoc, SS, 0, TempParamLists, /*friend*/ true,
               isExplicitSpecialization, Invalid)) {
     if (TemplateParams->size() > 0) {
       // This is a declaration of a class template.

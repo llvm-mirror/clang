@@ -225,7 +225,7 @@ def err_expected_property_name : Error<"expected property name">;
 
 def err_unexpected_at : Error<"unexpected '@' in program">;
 def err_atimport : Error<
-"use of '@import' when modules are disabled, add -fmodules">;
+"use of '@import' when modules are disabled">;
 
 def err_invalid_reference_qualifier_application : Error<
   "'%0' qualifier may not be applied to a reference">;
@@ -526,7 +526,9 @@ def warn_cxx98_compat_attribute : Warning<
   "C++11 attribute syntax is incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
 def err_cxx11_attribute_forbids_arguments : Error<
-  "attribute '%0' cannot have an argument list">;
+  "attribute %0 cannot have an argument list">;
+def err_attribute_requires_arguments : Error<
+  "parentheses must be omitted if %0 attribute's argument list is empty">;
 def err_cxx11_attribute_forbids_ellipsis : Error<
   "attribute '%0' cannot be used as an attribute pack">;
 def err_cxx11_attribute_repeated : Error<
