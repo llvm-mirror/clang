@@ -3700,9 +3700,8 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
       return;
     }
 
-    TypeResult Type = Actions.ActOnDependentTag(getCurScope(), DeclSpec::TST_enum,
-                                                TUK, SS, Name, StartLoc,
-                                                NameLoc);
+    TypeResult Type = Actions.ActOnDependentTag(
+        getCurScope(), DeclSpec::TST_enum, TUK, SS, Name, StartLoc, NameLoc);
     if (Type.isInvalid()) {
       DS.SetTypeSpecError();
       return;
@@ -4786,6 +4785,7 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
            "There's a C++-specific check for tok::identifier above");
     assert(Tok.getIdentifierInfo() && "Not an identifier?");
     D.SetIdentifier(Tok.getIdentifierInfo(), Tok.getLocation());
+    D.SetRangeEnd(Tok.getLocation());
     ConsumeToken();
     goto PastIdentifier;
   } else if (Tok.is(tok::identifier) && D.diagnoseIdentifier()) {
@@ -4834,7 +4834,8 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
       LLVM_BUILTIN_TRAP;
     if (D.getContext() == Declarator::MemberContext)
       Diag(Tok, diag::err_expected_member_name_or_semi)
-        << D.getDeclSpec().getSourceRange();
+          << (D.getDeclSpec().isEmpty() ? SourceRange()
+                                        : D.getDeclSpec().getSourceRange());
     else if (getLangOpts().CPlusPlus) {
       if (Tok.is(tok::period) || Tok.is(tok::arrow))
         Diag(Tok, diag::err_invalid_operator_on_type) << Tok.is(tok::arrow);

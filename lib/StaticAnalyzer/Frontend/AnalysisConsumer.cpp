@@ -11,8 +11,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "AnalysisConsumer"
-
 #include "clang/StaticAnalyzer/Frontend/AnalysisConsumer.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/DataRecursiveASTVisitor.h"
@@ -50,6 +48,8 @@
 using namespace clang;
 using namespace ento;
 using llvm::SmallPtrSet;
+
+#define DEBUG_TYPE "AnalysisConsumer"
 
 static ExplodedNode::Auditor* CreateUbiViz();
 
@@ -307,7 +307,7 @@ public:
   /// analyzed. This allows to redefine the default inlining policies when
   /// analyzing a given function.
   ExprEngine::InliningModes
-  getInliningModeForFunction(const Decl *D, SetOfConstDecls Visited);
+  getInliningModeForFunction(const Decl *D, const SetOfConstDecls &Visited);
 
   /// \brief Build the call graph for all the top level decls of this TU and
   /// use it to define the order in which the functions should be visited.
@@ -414,8 +414,8 @@ void AnalysisConsumer::storeTopLevelDecls(DeclGroupRef DG) {
 }
 
 static bool shouldSkipFunction(const Decl *D,
-                               SetOfConstDecls Visited,
-                               SetOfConstDecls VisitedAsTopLevel) {
+                               const SetOfConstDecls &Visited,
+                               const SetOfConstDecls &VisitedAsTopLevel) {
   if (VisitedAsTopLevel.count(D))
     return true;
 
@@ -435,7 +435,7 @@ static bool shouldSkipFunction(const Decl *D,
 
 ExprEngine::InliningModes
 AnalysisConsumer::getInliningModeForFunction(const Decl *D,
-                                             SetOfConstDecls Visited) {
+                                             const SetOfConstDecls &Visited) {
   // We want to reanalyze all ObjC methods as top level to report Retain
   // Count naming convention errors more aggressively. But we should tune down
   // inlining when reanalyzing an already inlined function.

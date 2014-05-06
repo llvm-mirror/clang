@@ -2081,6 +2081,9 @@ def err_attribute_weak_static : Error<
   "weak declaration cannot have internal linkage">;
 def err_attribute_selectany_non_extern_data : Error<
   "'selectany' can only be applied to data items with external linkage">;
+def err_declspec_thread_on_thread_variable : Error<
+  "'__declspec(thread)' applied to variable that already has a "
+  "thread-local storage specifier">;
 def err_attribute_dll_not_extern : Error<
   "%q0 must have external linkage when declared %q1">;
 def warn_attribute_invalid_on_definition : Warning<
@@ -2102,6 +2105,9 @@ def err_alias_to_undefined : Error<
   "alias must point to a defined variable or function">;
 def warn_alias_to_weak_alias : Warning<
   "alias will always resolve to %0 even if weak definition of alias %1 is overridden">,
+  InGroup<IgnoredAttributes>;
+def warn_alias_with_section : Warning<
+  "alias will not be in section '%0' but in the same section as the aliasee">,
   InGroup<IgnoredAttributes>;
 def err_duplicate_mangled_name : Error<
   "definition with same mangled name as another definition">;
@@ -2319,7 +2325,7 @@ def warn_impcast_float_precision : Warning<
   InGroup<Conversion>, DefaultIgnore;
 def warn_impcast_float_integer : Warning<
   "implicit conversion turns floating-point number into integer: %0 to %1">,
-  InGroup<Conversion>, DefaultIgnore;
+  InGroup<FloatConversion>, DefaultIgnore;
 def warn_impcast_integer_sign : Warning<
   "implicit conversion changes signedness: %0 to %1">,
   InGroup<SignConversion>, DefaultIgnore;
@@ -4638,7 +4644,7 @@ def warn_deprecated_string_literal_conversion : Warning<
   InGroup<CXX11CompatDeprecatedWritableStr>;
 def ext_deprecated_string_literal_conversion : ExtWarn<
   "ISO C++11 does not allow conversion from string literal to %0">,
-  InGroup<CXX11CompatDeprecatedWritableStr>, SFINAEFailure;
+  InGroup<WritableStrings>, SFINAEFailure;
 def err_realimag_invalid_type : Error<"invalid type %0 to %1 operator">;
 def err_typecheck_sclass_fscope : Error<
   "illegal storage class on file-scoped variable">;
@@ -6928,6 +6934,16 @@ def err_omp_ambiguous_conversion : Error<
   "enumeration type">;
 def err_omp_required_access : Error<
   "%0 variable must be %1">;
+def err_omp_const_variable : Error<
+  "const-qualified variable cannot be %0">;
+def err_omp_linear_incomplete_type : Error<
+  "a linear variable with incomplete type %0">;
+def err_omp_linear_expected_int_or_ptr : Error<
+  "argument of a linear clause should be of integral or pointer "
+  "type, not %0">;
+def warn_omp_linear_step_zero : Warning<
+  "zero linear step (%0 %select{|and other variables in clause }1should probably be const)">,
+  InGroup<OpenMPClauses>;
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {
@@ -6977,6 +6993,8 @@ def note_module_import_in_extern_c : Note<
 def err_module_import_not_at_top_level : Error<
   "import of module '%0' appears within %1">;
 def note_module_import_not_at_top_level : Note<"%0 begins here">;
+def err_module_self_import : Error<
+  "import of module '%0' appears within same top-level module '%1'">;
 }
 
 let CategoryName = "Documentation Issue" in {

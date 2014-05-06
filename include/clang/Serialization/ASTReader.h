@@ -34,12 +34,12 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Bitcode/BitstreamReader.h"
 #include "llvm/Support/DataTypes.h"
 #include <deque>
@@ -133,8 +133,9 @@ public:
   ///
   /// \returns true to indicate the diagnostic options are invalid, or false
   /// otherwise.
-  virtual bool ReadDiagnosticOptions(const DiagnosticOptions &DiagOpts,
-                                     bool Complain) {
+  virtual bool
+  ReadDiagnosticOptions(IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts,
+                        bool Complain) {
     return false;
   }
 
@@ -211,7 +212,7 @@ public:
   bool ReadLanguageOptions(const LangOptions &LangOpts, bool Complain) override;
   bool ReadTargetOptions(const TargetOptions &TargetOpts,
                          bool Complain) override;
-  bool ReadDiagnosticOptions(const DiagnosticOptions &DiagOpts,
+  bool ReadDiagnosticOptions(IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts,
                              bool Complain) override;
   bool ReadFileSystemOptions(const FileSystemOptions &FSOpts,
                              bool Complain) override;
@@ -244,6 +245,8 @@ public:
                            bool Complain) override;
   bool ReadTargetOptions(const TargetOptions &TargetOpts,
                          bool Complain) override;
+  bool ReadDiagnosticOptions(IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts,
+                             bool Complain) override;
   bool ReadPreprocessorOptions(const PreprocessorOptions &PPOpts, bool Complain,
                                std::string &SuggestedPredefines) override;
   void ReadCounter(const serialization::ModuleFile &M, unsigned Value) override;
@@ -413,6 +416,11 @@ private:
   /// \brief Declarations that have modifications residing in a later file
   /// in the chain.
   DeclUpdateOffsetsMap DeclUpdateOffsets;
+
+  /// \brief Declaration updates for already-loaded declarations that we need
+  /// to apply once we finish processing an import.
+  llvm::SmallVector<std::pair<serialization::GlobalDeclID, Decl*>, 16>
+      PendingUpdateRecords;
 
   struct ReplacedDeclInfo {
     ModuleFile *Mod;
@@ -956,6 +964,13 @@ private:
   /// once recursing loading has been completed.
   llvm::SmallVector<NamedDecl *, 16> PendingOdrMergeChecks;
 
+  /// \brief Record definitions in which we found an ODR violation.
+  llvm::SmallDenseMap<CXXRecordDecl *, llvm::TinyPtrVector<CXXRecordDecl *>, 2>
+      PendingOdrMergeFailures;
+
+  /// \brief DeclContexts in which we have diagnosed an ODR violation.
+  llvm::SmallPtrSet<DeclContext*, 2> DiagnosedOdrMergeFailures;
+
   /// \brief The set of Objective-C categories that have been deserialized
   /// since the last time the declaration chains were linked.
   llvm::SmallPtrSet<ObjCCategoryDecl *, 16> CategoriesDeserialized;
@@ -964,7 +979,14 @@ private:
   /// loaded, for which we will need to check for categories whenever a new
   /// module is loaded.
   SmallVector<ObjCInterfaceDecl *, 16> ObjCClassesLoaded;
-  
+
+  /// \brief A mapping from a primary context for a declaration chain to the
+  /// other declarations of that entity that also have name lookup tables.
+  /// Used when we merge together two class definitions that have different
+  /// sets of declared special member functions.
+  llvm::DenseMap<const DeclContext*, SmallVector<const DeclContext*, 2>>
+      MergedLookups;
+
   typedef llvm::DenseMap<Decl *, SmallVector<serialization::DeclID, 2> >
     MergedDeclsMap;
     
@@ -1365,6 +1387,12 @@ public:
   /// \brief Determine whether this AST reader has a global index.
   bool hasGlobalIndex() const { return (bool)GlobalIndex; }
 
+  /// \brief Return global module index.
+  GlobalModuleIndex *getGlobalIndex() { return GlobalIndex.get(); }
+
+  /// \brief Reset reader for a reload try.
+  void resetForReload() { TriedLoadingGlobalIndex = false; }
+
   /// \brief Attempts to load the global index.
   ///
   /// \returns true if loading the global index has failed for any reason.
@@ -1552,7 +1580,11 @@ public:
   /// \brief Retrieve the module file that owns the given declaration, or NULL
   /// if the declaration is not from a module file.
   ModuleFile *getOwningModuleFile(const Decl *D);
-  
+
+  /// \brief Get the best name we know for the module that owns the given
+  /// declaration, or an empty string if the declaration is not from a module.
+  std::string getOwningModuleNameForDiagnostic(const Decl *D);
+
   /// \brief Returns the source location for the decl \p ID.
   SourceLocation getSourceLocationForDeclID(serialization::GlobalDeclID ID);
 
@@ -1560,6 +1592,10 @@ public:
   /// building a new declaration.
   Decl *GetDecl(serialization::DeclID ID);
   Decl *GetExternalDecl(uint32_t ID) override;
+
+  /// \brief Resolve a declaration ID into a declaration. Return 0 if it's not
+  /// been loaded yet.
+  Decl *GetExistingDecl(serialization::DeclID ID);
 
   /// \brief Reads a declaration with the given local ID in the given module.
   Decl *GetLocalDecl(ModuleFile &F, uint32_t LocalID) {
@@ -1790,7 +1826,7 @@ public:
   void installImportedMacro(IdentifierInfo *II, ModuleMacroInfo *MMI,
                             Module *Owner);
 
-  typedef llvm::SmallVector<DefMacroDirective*, 1> AmbiguousMacros;
+  typedef llvm::TinyPtrVector<DefMacroDirective *> AmbiguousMacros;
   llvm::DenseMap<IdentifierInfo*, AmbiguousMacros> AmbiguousMacroDefs;
 
   void

@@ -330,6 +330,8 @@ static bool ParseDirective(StringRef S, ExpectedData *ED, SourceManager &SM,
       DL = ED ? &ED->Errors : NULL;
     else if (PH.Next("warning"))
       DL = ED ? &ED->Warnings : NULL;
+    else if (PH.Next("remark"))
+      DL = ED ? &ED->Remarks : NULL;
     else if (PH.Next("note"))
       DL = ED ? &ED->Notes : NULL;
     else if (PH.Next("no-diagnostics")) {
@@ -491,11 +493,12 @@ static bool ParseDirective(StringRef S, ExpectedData *ED, SourceManager &SM,
     }
 
     // Construct new directive.
-    Directive *D = Directive::create(RegexKind, Pos, ExpectedLoc, Text,
-                                     Min, Max);
+    std::unique_ptr<Directive> D(
+        Directive::create(RegexKind, Pos, ExpectedLoc, Text, Min, Max));
+
     std::string Error;
     if (D->isValid(Error)) {
-      DL->push_back(D);
+      DL->push_back(D.release());
       FoundDirective = true;
     } else {
       Diags.Report(Pos.getLocWithOffset(ContentBegin-PH.Begin),
@@ -736,6 +739,10 @@ static unsigned CheckResults(DiagnosticsEngine &Diags, SourceManager &SourceMgr,
   NumProblems += CheckLists(Diags, SourceMgr, "warning", ED.Warnings,
                             Buffer.warn_begin(), Buffer.warn_end());
 
+  // See if there are remark mismatches.
+  NumProblems += CheckLists(Diags, SourceMgr, "remark", ED.Remarks,
+                            Buffer.remark_begin(), Buffer.remark_end());
+
   // See if there are note mismatches.
   NumProblems += CheckLists(Diags, SourceMgr, "note", ED.Notes,
                             Buffer.note_begin(), Buffer.note_end());
@@ -846,9 +853,7 @@ void VerifyDiagnosticConsumer::CheckDiagnostics() {
 
   // Reset the buffer, we have processed all the diagnostics in it.
   Buffer.reset(new TextDiagnosticBuffer());
-  ED.Errors.clear();
-  ED.Warnings.clear();
-  ED.Notes.clear();
+  ED.Reset();
 }
 
 Directive *Directive::create(bool RegexKind, SourceLocation DirectiveLoc,
@@ -880,5 +885,6 @@ Directive *Directive::create(bool RegexKind, SourceLocation DirectiveLoc,
     }
   }
 
-  return new RegexDirective(DirectiveLoc, DiagnosticLoc, Text, Min, Max, RegexStr);
+  return new RegexDirective(DirectiveLoc, DiagnosticLoc, Text, Min, Max,
+                            RegexStr);
 }

@@ -31,3 +31,11 @@ void triggerPendingInstantiationToo() {
 void redeclDefinitionEmit(){}
 
 typedef Outer<int>::Inner OuterIntInner_right;
+
+int defineListDoubleRight() {
+  List<double> ld;
+  ld.push_back(0.0);
+  return ld.size;
+}
+
+template<typename T> struct MergePatternDecl;

@@ -22,7 +22,6 @@
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/TargetInfo.h"
-#include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Initialization.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/SemaInternal.h"
@@ -33,6 +32,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include <algorithm>
+#include <cstdlib>
 
 namespace clang {
 using namespace sema;
@@ -5187,7 +5187,7 @@ diagnoseNoViableConversion(Sema &SemaRef, SourceLocation Loc, Expr *&From,
         << FixItHint::CreateInsertion(From->getLocStart(),
                                       "static_cast<" + TypeStr + ">(")
         << FixItHint::CreateInsertion(
-               SemaRef.PP.getLocForEndOfToken(From->getLocEnd()), ")");
+               SemaRef.getLocForEndOfToken(From->getLocEnd()), ")");
     Converter.noteExplicitConv(SemaRef, Conversion, ConvTy);
 
     // If we aren't in a SFINAE context, build a call to the
@@ -9229,7 +9229,10 @@ static unsigned RankDeductionFailure(const DeductionFailureInfo &DFI) {
 
 struct CompareOverloadCandidatesForDisplay {
   Sema &S;
-  CompareOverloadCandidatesForDisplay(Sema &S) : S(S) {}
+  size_t NumArgs;
+
+  CompareOverloadCandidatesForDisplay(Sema &S, size_t nArgs)
+      : S(S), NumArgs(nArgs) {}
 
   bool operator()(const OverloadCandidate *L,
                   const OverloadCandidate *R) {
@@ -9254,8 +9257,18 @@ struct CompareOverloadCandidatesForDisplay {
     if (!L->Viable) {
       // 1. Arity mismatches come after other candidates.
       if (L->FailureKind == ovl_fail_too_many_arguments ||
-          L->FailureKind == ovl_fail_too_few_arguments)
+          L->FailureKind == ovl_fail_too_few_arguments) {
+        if (R->FailureKind == ovl_fail_too_many_arguments ||
+            R->FailureKind == ovl_fail_too_few_arguments) {
+          int LDist = std::abs((int)L->Function->getNumParams() - (int)NumArgs);
+          int RDist = std::abs((int)R->Function->getNumParams() - (int)NumArgs);
+          if (LDist == RDist)
+            return L->FailureKind == ovl_fail_too_many_arguments &&
+                   R->FailureKind == ovl_fail_too_few_arguments;
+          return LDist < RDist;
+        }
         return false;
+      }
       if (R->FailureKind == ovl_fail_too_many_arguments ||
           R->FailureKind == ovl_fail_too_few_arguments)
         return true;
@@ -9442,7 +9455,7 @@ void OverloadCandidateSet::NoteCandidates(Sema &S,
   }
 
   std::sort(Cands.begin(), Cands.end(),
-            CompareOverloadCandidatesForDisplay(S));
+            CompareOverloadCandidatesForDisplay(S, Args.size()));
 
   bool ReportedAmbiguousConversions = false;
 

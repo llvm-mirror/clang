@@ -50,20 +50,37 @@ TLS models are mutually exclusive.
   }];
 }
 
+def ThreadDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``__declspec(thread)`` attribute declares a variable with thread local
+storage.  It is available under the ``-fms-extensions`` flag for MSVC
+compatibility.  Documentation for the Visual C++ attribute is available on MSDN_.
+
+.. _MSDN: http://msdn.microsoft.com/en-us/library/9w1sdazb.aspx
+
+In Clang, ``__declspec(thread)`` is generally equivalent in functionality to the
+GNU ``__thread`` keyword.  The variable must not have a destructor and must have
+a constant initializer, if any.  The attribute only applies to variables
+declared with static storage duration, such as globals, class static data
+members, and static locals.
+  }];
+}
+
 def CarriesDependencyDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
 The ``carries_dependency`` attribute specifies dependency propagation into and
 out of functions.
 
-When specified on a function or Objective-C method, the ``carries_depedency``
+When specified on a function or Objective-C method, the ``carries_dependency``
 attribute means that the return value carries a dependency out of the function, 
 so that the implementation need not constrain ordering upon return from that
 function. Implementations of the function and its caller may choose to preserve
 dependencies instead of emitting memory ordering instructions such as fences.
 
 Note, this attribute does not change the meaning of the program, but may result
-in generatation of more efficient code.
+in generation of more efficient code.
   }];
 }
 

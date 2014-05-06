@@ -190,10 +190,11 @@ const {
   return FinalPhase;
 }
 
-static Arg* MakeInputArg(const DerivedArgList &Args, OptTable *Opts,
+static Arg* MakeInputArg(DerivedArgList &Args, OptTable *Opts,
                          StringRef Value) {
   Arg *A = new Arg(Opts->getOption(options::OPT_INPUT), Value,
                    Args.getBaseArgs().MakeIndex(Value), Value.data());
+  Args.AddSynthesizedArg(A);
   A->claim();
   return A;
 }
@@ -447,12 +448,13 @@ void Driver::generateCompilationDiagnostics(Compilation &C,
     bool IgnoreInput = false;
 
     // Ignore input from stdin or any inputs that cannot be preprocessed.
-    if (!strcmp(it->second->getValue(), "-")) {
+    // Check type first as not all linker inputs have a value.
+   if (types::getPreprocessedType(it->first) == types::TY_INVALID) {
+      IgnoreInput = true;
+    } else if (!strcmp(it->second->getValue(), "-")) {
       Diag(clang::diag::note_drv_command_failed_diag_msg)
         << "Error generating preprocessed source(s) - ignoring input from stdin"
         ".";
-      IgnoreInput = true;
-    } else if (types::getPreprocessedType(it->first) == types::TY_INVALID) {
       IgnoreInput = true;
     }
 
@@ -955,7 +957,7 @@ static bool DiagnoseInputExistence(const Driver &D, const DerivedArgList &Args,
 }
 
 // Construct a the list of inputs and their types.
-void Driver::BuildInputs(const ToolChain &TC, const DerivedArgList &Args,
+void Driver::BuildInputs(const ToolChain &TC, DerivedArgList &Args,
                          InputList &Inputs) const {
   // Track the current user specified (-x) input. We also explicitly track the
   // argument used to set the type; we only want to claim the type when we

@@ -27,7 +27,7 @@
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/TargetBuiltins.h"
 #include "clang/Basic/TargetInfo.h"
-#include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/Lexer.h" // TODO: Extract static functions to fix layering.
 #include "clang/Sema/Initialization.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/ScopeInfo.h"
@@ -43,8 +43,8 @@ using namespace sema;
 
 SourceLocation Sema::getLocationOfStringLiteralByte(const StringLiteral *SL,
                                                     unsigned ByteNo) const {
-  return SL->getLocationOfByte(ByteNo, PP.getSourceManager(),
-                               PP.getLangOpts(), PP.getTargetInfo());
+  return SL->getLocationOfByte(ByteNo, getSourceManager(), LangOpts,
+                               Context.getTargetInfo());
 }
 
 /// Checks that a call expression's argument count is the desired number.
@@ -310,6 +310,7 @@ Sema::CheckBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
           return ExprError();
         break;
       case llvm::Triple::arm64:
+      case llvm::Triple::arm64_be:
         if (CheckARM64BuiltinFunctionCall(BuiltinID, TheCall))
           return ExprError();
         break;
@@ -716,11 +717,8 @@ static void CheckNonNullArguments(Sema &S,
                                   SourceLocation CallSiteLoc) {
   // Check the attributes attached to the method/function itself.
   for (const auto *NonNull : FDecl->specific_attrs<NonNullAttr>()) {
-    for (NonNullAttr::args_iterator i = NonNull->args_begin(),
-         e = NonNull->args_end();
-         i != e; ++i) {
-      CheckNonNullArgument(S, ExprArgs[*i], CallSiteLoc);
-    }
+    for (const auto &Val : NonNull->args())
+      CheckNonNullArgument(S, ExprArgs[Val], CallSiteLoc);
   }
 
   // Check the attributes on the parameters.
@@ -2862,7 +2860,7 @@ CXXRecordMembersNamed(StringRef Name, Sema &S, QualType Ty) {
   if (!RD || !RD->getDefinition())
     return Results;
 
-  LookupResult R(S, &S.PP.getIdentifierTable().get(Name), SourceLocation(),
+  LookupResult R(S, &S.Context.Idents.get(Name), SourceLocation(),
                  Sema::LookupMemberName);
   R.suppressDiagnostics();
 
@@ -2908,8 +2906,7 @@ bool CheckPrintfHandler::checkForCStrMembers(
     if (Method->getMinRequiredArguments() == 0 &&
         AT.matchesType(S.Context, Method->getReturnType())) {
       // FIXME: Suggest parens if the expression needs them.
-      SourceLocation EndLoc =
-          S.getPreprocessor().getLocForEndOfToken(E->getLocEnd());
+      SourceLocation EndLoc = S.getLocForEndOfToken(E->getLocEnd());
       S.Diag(E->getLocStart(), diag::note_printf_c_str)
           << "c_str()"
           << FixItHint::CreateInsertion(EndLoc, ".c_str()");
@@ -3238,7 +3235,7 @@ CheckPrintfHandler::checkFormatExpr(const analyze_printf::PrintfSpecifier &FS,
         Hints.push_back(FixItHint::CreateInsertion(E->getLocStart(),
                                                    CastFix.str()));
 
-        SourceLocation After = S.PP.getLocForEndOfToken(E->getLocEnd());
+        SourceLocation After = S.getLocForEndOfToken(E->getLocEnd());
         Hints.push_back(FixItHint::CreateInsertion(After, ")"));
       }
 
@@ -3788,8 +3785,7 @@ static void emitReplacement(Sema &S, SourceLocation Loc, SourceRange Range,
 
     // Lookup all std::abs
     if (NamespaceDecl *Std = S.getStdNamespace()) {
-      LookupResult R(S, &S.PP.getIdentifierTable().get("abs"), Loc,
-                     Sema::LookupAnyName);
+      LookupResult R(S, &S.Context.Idents.get("abs"), Loc, Sema::LookupAnyName);
       R.suppressDiagnostics();
       S.LookupQualifiedName(R, Std);
 
@@ -3962,20 +3958,17 @@ static bool CheckMemorySizeofForComparison(Sema &S, const Expr *E,
   if (!Size->isComparisonOp() && !Size->isEqualityOp() && !Size->isLogicalOp())
     return false;
 
-  Preprocessor &PP = S.getPreprocessor();
   SourceRange SizeRange = Size->getSourceRange();
   S.Diag(Size->getOperatorLoc(), diag::warn_memsize_comparison)
       << SizeRange << FnName;
   S.Diag(FnLoc, diag::warn_memsize_comparison_paren_note)
-      << FnName
-      << FixItHint::CreateInsertion(
-             PP.getLocForEndOfToken(Size->getLHS()->getLocEnd()),
-             ")")
+      << FnName << FixItHint::CreateInsertion(
+                       S.getLocForEndOfToken(Size->getLHS()->getLocEnd()), ")")
       << FixItHint::CreateRemoval(RParenLoc);
   S.Diag(SizeRange.getBegin(), diag::warn_memsize_comparison_cast_note)
       << FixItHint::CreateInsertion(SizeRange.getBegin(), "(size_t)(")
-      << FixItHint::CreateInsertion(
-             PP.getLocForEndOfToken(SizeRange.getEnd()), ")");
+      << FixItHint::CreateInsertion(S.getLocForEndOfToken(SizeRange.getEnd()),
+                                    ")");
 
   return true;
 }
@@ -4089,7 +4082,7 @@ void Sema::CheckMemaccessArguments(const CallExpr *Call,
           SourceLocation SL = SizeOfArg->getExprLoc();
           SourceRange DSR = Dest->getSourceRange();
           SourceRange SSR = SizeOfArg->getSourceRange();
-          SourceManager &SM  = PP.getSourceManager();
+          SourceManager &SM = getSourceManager();
 
           if (SM.isMacroArgExpansion(SL)) {
             ReadableName = Lexer::getImmediateMacroName(SL, SM, LangOpts);
@@ -4342,7 +4335,7 @@ void Sema::CheckStrncatArguments(const CallExpr *CE,
   // Generate the diagnostic.
   SourceLocation SL = LenArg->getLocStart();
   SourceRange SR = LenArg->getSourceRange();
-  SourceManager &SM  = PP.getSourceManager();
+  SourceManager &SM = getSourceManager();
 
   // If the function is defined as a builtin macro, do not show macro expansion.
   if (SM.isMacroArgExpansion(SL)) {
@@ -6277,8 +6270,7 @@ void Sema::DiagnoseAlwaysNonNullPointer(Expr *E,
       return;
   }
   Diag(E->getExprLoc(), diag::note_function_to_function_call)
-      << FixItHint::CreateInsertion(
-             getPreprocessor().getLocForEndOfToken(E->getLocEnd()), "()");
+      << FixItHint::CreateInsertion(getLocForEndOfToken(E->getLocEnd()), "()");
 }
 
 

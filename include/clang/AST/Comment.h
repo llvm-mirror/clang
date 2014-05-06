@@ -100,16 +100,26 @@ protected:
   };
   enum { NumInlineCommandCommentBits = NumInlineContentCommentBits + 10 };
 
+  class HTMLTagCommentBitfields {
+    friend class HTMLTagComment;
+
+    unsigned : NumInlineContentCommentBits;
+
+    /// True if we found that this tag is malformed in some way.
+    unsigned IsMalformed : 1;
+  };
+  enum { NumHTMLTagCommentBits = NumInlineContentCommentBits + 1 };
+
   class HTMLStartTagCommentBitfields {
     friend class HTMLStartTagComment;
 
-    unsigned : NumInlineContentCommentBits;
+    unsigned : NumHTMLTagCommentBits;
 
     /// True if this tag is self-closing (e. g., <br />).  This is based on tag
     /// spelling in comment (plain <br> would not set this flag).
     unsigned IsSelfClosing : 1;
   };
-  enum { NumHTMLStartTagCommentBits = NumInlineContentCommentBits + 1 };
+  enum { NumHTMLStartTagCommentBits = NumHTMLTagCommentBits + 1 };
 
   class ParagraphCommentBitfields {
     friend class ParagraphComment;
@@ -155,6 +165,7 @@ protected:
     InlineContentCommentBitfields InlineContentCommentBits;
     TextCommentBitfields TextCommentBits;
     InlineCommandCommentBitfields InlineCommandCommentBits;
+    HTMLTagCommentBitfields HTMLTagCommentBits;
     HTMLStartTagCommentBitfields HTMLStartTagCommentBits;
     ParagraphCommentBitfields ParagraphCommentBits;
     BlockCommandCommentBitfields BlockCommandCommentBits;
@@ -360,8 +371,7 @@ public:
 };
 
 /// Abstract class for opening and closing HTML tags.  HTML tags are always
-/// treated as inline content (regardless HTML semantics); opening and closing
-/// tags are not matched.
+/// treated as inline content (regardless HTML semantics).
 class HTMLTagComment : public InlineContentComment {
 protected:
   StringRef TagName;
@@ -377,6 +387,7 @@ protected:
       TagName(TagName),
       TagNameRange(TagNameBegin, TagNameEnd) {
     setLocation(TagNameBegin);
+    HTMLTagCommentBits.IsMalformed = 0;
   }
 
 public:
@@ -391,6 +402,14 @@ public:
     SourceLocation L = getLocation();
     return SourceRange(L.getLocWithOffset(1),
                        L.getLocWithOffset(1 + TagName.size()));
+  }
+
+  bool isMalformed() const {
+    return HTMLTagCommentBits.IsMalformed;
+  }
+
+  void setIsMalformed() {
+    HTMLTagCommentBits.IsMalformed = 1;
   }
 };
 

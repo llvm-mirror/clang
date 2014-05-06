@@ -44,17 +44,7 @@ public:
     return !RD->isPOD();
   }
 
-  RecordArgABI getRecordArgABI(const CXXRecordDecl *RD) const override {
-    if (RD->hasNonTrivialCopyConstructor() || RD->hasNonTrivialDestructor()) {
-      llvm::Triple::ArchType Arch = CGM.getTarget().getTriple().getArch();
-      if (Arch == llvm::Triple::x86)
-        return RAA_DirectInMemory;
-      // On x64, pass non-trivial records indirectly.
-      // FIXME: Test other Windows architectures.
-      return RAA_Indirect;
-    }
-    return RAA_Default;
-  }
+  RecordArgABI getRecordArgABI(const CXXRecordDecl *RD) const override;
 
   StringRef GetPureVirtualCallName() override { return "_purecall"; }
   // No known support for deleted functions in MSVC yet, so this choice is
@@ -405,6 +395,33 @@ private:
   llvm::DenseMap<const DeclContext *, GuardInfo> GuardVariableMap;
 };
 
+}
+
+CGCXXABI::RecordArgABI
+MicrosoftCXXABI::getRecordArgABI(const CXXRecordDecl *RD) const {
+  switch (CGM.getTarget().getTriple().getArch()) {
+  default:
+    // FIXME: Implement for other architectures.
+    return RAA_Default;
+
+  case llvm::Triple::x86:
+    // 32-bit x86 constructs non-trivial objects directly in outgoing argument
+    // slots.  LLVM uses the inalloca attribute to implement this.
+    if (RD->hasNonTrivialCopyConstructor() || RD->hasNonTrivialDestructor())
+      return RAA_DirectInMemory;
+    return RAA_Default;
+
+  case llvm::Triple::x86_64:
+    // Win64 passes objects with non-trivial copy ctors indirectly.
+    if (RD->hasNonTrivialCopyConstructor())
+      return RAA_Indirect;
+    // Win64 passes objects larger than 8 bytes indirectly.
+    if (getContext().getTypeSize(RD->getTypeForDecl()) > 64)
+      return RAA_Indirect;
+    return RAA_Default;
+  }
+
+  llvm_unreachable("invalid enum");
 }
 
 llvm::Value *MicrosoftCXXABI::adjustToCompleteObject(CodeGenFunction &CGF,
@@ -1273,10 +1290,14 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
   llvm::ConstantInt *Zero = llvm::ConstantInt::get(GuardTy, 0);
 
   // Get the guard variable for this function if we have one already.
-  GuardInfo &GI = GuardVariableMap[D.getDeclContext()];
+  GuardInfo EmptyGuardInfo;
+  GuardInfo *GI = &EmptyGuardInfo;
+  if (isa<FunctionDecl>(D.getDeclContext())) {
+    GI = &GuardVariableMap[D.getDeclContext()];
+  }
 
   unsigned BitIndex;
-  if (D.isExternallyVisible()) {
+  if (D.isStaticLocal() && D.isExternallyVisible()) {
     // Externally visible variables have to be numbered in Sema to properly
     // handle unreachable VarDecls.
     BitIndex = getContext().getStaticLocalNumber(&D);
@@ -1284,18 +1305,18 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
     BitIndex--;
   } else {
     // Non-externally visible variables are numbered here in CodeGen.
-    BitIndex = GI.BitIndex++;
+    BitIndex = GI->BitIndex++;
   }
 
   if (BitIndex >= 32) {
     if (D.isExternallyVisible())
       ErrorUnsupportedABI(CGF, "more than 32 guarded initializations");
     BitIndex %= 32;
-    GI.Guard = 0;
+    GI->Guard = 0;
   }
 
   // Lazily create the i32 bitfield for this function.
-  if (!GI.Guard) {
+  if (!GI->Guard) {
     // Mangle the name for the guard.
     SmallString<256> GuardName;
     {
@@ -1306,11 +1327,12 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
 
     // Create the guard variable with a zero-initializer.  Just absorb linkage
     // and visibility from the guarded variable.
-    GI.Guard = new llvm::GlobalVariable(CGM.getModule(), GuardTy, false,
-                                     GV->getLinkage(), Zero, GuardName.str());
-    GI.Guard->setVisibility(GV->getVisibility());
+    GI->Guard =
+        new llvm::GlobalVariable(CGM.getModule(), GuardTy, false,
+                                 GV->getLinkage(), Zero, GuardName.str());
+    GI->Guard->setVisibility(GV->getVisibility());
   } else {
-    assert(GI.Guard->getLinkage() == GV->getLinkage() &&
+    assert(GI->Guard->getLinkage() == GV->getLinkage() &&
            "static local from the same function had different linkage");
   }
 
@@ -1322,7 +1344,7 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
 
   // Test our bit from the guard variable.
   llvm::ConstantInt *Bit = llvm::ConstantInt::get(GuardTy, 1U << BitIndex);
-  llvm::LoadInst *LI = Builder.CreateLoad(GI.Guard);
+  llvm::LoadInst *LI = Builder.CreateLoad(GI->Guard);
   llvm::Value *IsInitialized =
       Builder.CreateICmpNE(Builder.CreateAnd(LI, Bit), Zero);
   llvm::BasicBlock *InitBlock = CGF.createBasicBlock("init");
@@ -1332,7 +1354,7 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
   // Set our bit in the guard variable and emit the initializer and add a global
   // destructor if appropriate.
   CGF.EmitBlock(InitBlock);
-  Builder.CreateStore(Builder.CreateOr(LI, Bit), GI.Guard);
+  Builder.CreateStore(Builder.CreateOr(LI, Bit), GI->Guard);
   CGF.EmitCXXGlobalVarDeclInit(D, GV, PerformInit);
   Builder.CreateBr(EndBlock);
 
@@ -1623,7 +1645,7 @@ MicrosoftCXXABI::EmitMemberPointerIsNotNull(CodeGenFunction &CGF,
   for (int I = 1, E = fields.size(); I < E; ++I) {
     llvm::Value *Field = Builder.CreateExtractValue(MemPtr, I);
     llvm::Value *Next = Builder.CreateICmpNE(Field, fields[I], "memptr.cmp");
-    Res = Builder.CreateAnd(Res, Next, "memptr.tobool");
+    Res = Builder.CreateOr(Res, Next, "memptr.tobool");
   }
   return Res;
 }

@@ -21,7 +21,7 @@ template<typename T> thread_local int V<T>::m = g();
 // CHECK: @e = global i32 0
 int e = V<int>::m;
 
-// CHECK: @_ZN1VIiE1mE = weak_odr thread_local global i32 0
+// CHECK: @_ZN1VIiE1mE = linkonce_odr thread_local global i32 0
 
 // CHECK: @_ZZ1fvE1n = internal thread_local global i32 0
 
@@ -35,9 +35,9 @@ int e = V<int>::m;
 
 // CHECK: @_ZZ8tls_dtorvE1u = internal thread_local global
 // CHECK: @_ZGVZ8tls_dtorvE1u = internal thread_local global i8 0
-// CHECK: @_ZGRZ8tls_dtorvE1u = private thread_local global
+// CHECK: @_ZGRZ8tls_dtorvE1u = internal thread_local global
 
-// CHECK: @_ZGVN1VIiE1mE = weak_odr thread_local global i64 0
+// CHECK: @_ZGVN1VIiE1mE = linkonce_odr thread_local global i64 0
 
 // CHECK: @__tls_guard = internal thread_local global i8 0
 
@@ -46,7 +46,7 @@ int e = V<int>::m;
 // CHECK: @_ZTH1a = alias void ()* @__tls_init
 // CHECK: @_ZTHL1d = alias internal void ()* @__tls_init
 // CHECK: @_ZTHN1U1mE = alias void ()* @__tls_init
-// CHECK: @_ZTHN1VIiE1mE = alias weak_odr void ()* @__tls_init
+// CHECK: @_ZTHN1VIiE1mE = alias linkonce_odr void ()* @__tls_init
 
 
 // Individual variable initialization functions:
@@ -144,6 +144,14 @@ int PR19254::f() {
   // CHECK: call void @_ZTHN7PR192541nE(
   return this->n;
 }
+
+namespace {
+thread_local int anon_i{1};
+}
+void set_anon_i() {
+  anon_i = 2;
+}
+// CHECK-LABEL: define internal hidden i32* @_ZTWN12_GLOBAL__N_16anon_iE()
 
 // CHECK: define {{.*}} @[[V_M_INIT:.*]]()
 // CHECK: load i8* bitcast (i64* @_ZGVN1VIiE1mE to i8*)

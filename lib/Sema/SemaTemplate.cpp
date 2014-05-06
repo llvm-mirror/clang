@@ -325,7 +325,8 @@ void Sema::LookupTemplateName(LookupResult &Found,
     FilterCCC.WantCXXNamedCasts = true;
     if (TypoCorrection Corrected = CorrectTypo(Found.getLookupNameInfo(),
                                                Found.getLookupKind(), S, &SS,
-                                               FilterCCC, LookupCtx)) {
+                                               FilterCCC, CTK_ErrorRecovery,
+                                               LookupCtx)) {
       Found.setLookupName(Corrected.getCorrection());
       if (Corrected.getCorrectionDecl())
         Found.addDecl(Corrected.getCorrectionDecl());
@@ -4214,10 +4215,9 @@ isNullPointerValueTemplateArgument(Sema &S, NonTypeTemplateParmDecl *Param,
   if (Arg->isNullPointerConstant(S.Context, Expr::NPC_NeverValueDependent)) {
     std::string Code = "static_cast<" + ParamType.getAsString() + ">(";
     S.Diag(Arg->getExprLoc(), diag::err_template_arg_untyped_null_constant)
-      << ParamType
-      << FixItHint::CreateInsertion(Arg->getLocStart(), Code)
-      << FixItHint::CreateInsertion(S.PP.getLocForEndOfToken(Arg->getLocEnd()),
-                                    ")");
+        << ParamType << FixItHint::CreateInsertion(Arg->getLocStart(), Code)
+        << FixItHint::CreateInsertion(S.getLocForEndOfToken(Arg->getLocEnd()),
+                                      ")");
     S.Diag(Param->getLocation(), diag::note_template_param_here);
     return NPV_NullPointer;
   }
@@ -7187,6 +7187,7 @@ Sema::ActOnExplicitInstantiation(Scope *S,
     // TSK_ExplicitInstantiationDefinition
     if (Old_TSK == TSK_ExplicitInstantiationDeclaration &&
         TSK == TSK_ExplicitInstantiationDefinition)
+      // FIXME: Need to notify the ASTMutationListener that we did this.
       Def->setTemplateSpecializationKind(TSK);
 
     InstantiateClassTemplateSpecializationMembers(TemplateNameLoc, Def, TSK);
@@ -7623,7 +7624,11 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
   if (Attr)
     ProcessDeclAttributeList(S, Specialization, Attr);
 
-  if (TSK == TSK_ExplicitInstantiationDefinition)
+  if (Specialization->isDefined()) {
+    // Let the ASTConsumer know that this function has been explicitly
+    // instantiated now, and its linkage might have changed.
+    Consumer.HandleTopLevelDecl(DeclGroupRef(Specialization));
+  } else if (TSK == TSK_ExplicitInstantiationDefinition)
     InstantiateFunctionDefinition(D.getIdentifierLoc(), Specialization);
 
   // C++0x [temp.explicit]p2:

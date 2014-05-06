@@ -169,6 +169,12 @@ public:
   R_SExpr reduceStore(Store &Orig, R_SExpr E0, R_SExpr E1) {
     return new (Arena) Store(Orig, E0, E1);
   }
+  R_SExpr reduceArrayFirst(ArrayFirst &Orig, R_SExpr E0) {
+    return new (Arena) ArrayFirst(Orig, E0);
+  }
+  R_SExpr reduceArrayAdd(ArrayAdd &Orig, R_SExpr E0, R_SExpr E1) {
+    return new (Arena) ArrayAdd(Orig, E0, E1);
+  }
   R_SExpr reduceUnaryOp(UnaryOp &Orig, R_SExpr E0) {
     return new (Arena) UnaryOp(Orig, E0);
   }
@@ -279,6 +285,10 @@ public:
   R_SExpr reduceAlloc(Alloc &Orig, R_SExpr E0) { return E0; }
   R_SExpr reduceLoad(Load &Orig, R_SExpr E0) { return E0; }
   R_SExpr reduceStore(Store &Orig, R_SExpr E0, R_SExpr E1) { return E0 && E1; }
+  R_SExpr reduceArrayFirst(Store &Orig, R_SExpr E0) { return E0; }
+  R_SExpr reduceArrayAdd(Store &Orig, R_SExpr E0, R_SExpr E1) {
+    return E0 && E1;
+  }
   R_SExpr reduceUnaryOp(UnaryOp &Orig, R_SExpr E0) { return E0; }
   R_SExpr reduceBinaryOp(BinaryOp &Orig, R_SExpr E0, R_SExpr E1) {
     return E0 && E1;
@@ -396,7 +406,12 @@ public:
 // Pretty printer for TIL expressions
 template <typename Self, typename StreamType>
 class PrettyPrinter {
+private:
+  bool Verbose;  // Print out additional information
+
 public:
+  PrettyPrinter(bool V = false) : Verbose(V) { }
+
   static void print(SExpr *E, StreamType &SS) {
     Self printer;
     printer.printSExpr(E, SS, Prec_MAX);
@@ -449,6 +464,8 @@ protected:
       case COP_Alloc:      return Prec_Other;
       case COP_Load:       return Prec_Postfix;
       case COP_Store:      return Prec_Other;
+      case COP_ArrayFirst: return Prec_Postfix;
+      case COP_ArrayAdd:   return Prec_Postfix;
 
       case COP_UnaryOp:    return Prec_Unary;
       case COP_BinaryOp:   return Prec_Binary;
@@ -505,16 +522,46 @@ protected:
   }
 
   void printLiteral(Literal *E, StreamType &SS) {
-    // TODO: actually pretty print the literal.
-    SS << "#lit";
+    const clang::Expr *CE = E->clangExpr();
+    switch (CE->getStmtClass()) {
+      case Stmt::IntegerLiteralClass:
+        SS << cast<IntegerLiteral>(CE)->getValue().toString(10, true);
+        return;
+      case Stmt::StringLiteralClass:
+        SS << "\"" << cast<StringLiteral>(CE)->getString() << "\"";
+        return;
+      case Stmt::CharacterLiteralClass:
+      case Stmt::CXXNullPtrLiteralExprClass:
+      case Stmt::GNUNullExprClass:
+      case Stmt::CXXBoolLiteralExprClass:
+      case Stmt::FloatingLiteralClass:
+      case Stmt::ImaginaryLiteralClass:
+      case Stmt::ObjCStringLiteralClass:
+      default:
+        SS << "#lit";
+        return;
+    }
   }
 
   void printLiteralPtr(LiteralPtr *E, StreamType &SS) {
     SS << E->clangDecl()->getNameAsString();
   }
 
-  void printVariable(Variable *E, StreamType &SS) {
-    SS << E->name() << E->getBlockID() << "_" << E->getID();
+  void printVariable(Variable *V, StreamType &SS, bool IsVarDecl = false) {
+    SExpr* E = nullptr;
+    if (!IsVarDecl) {
+      E = getCanonicalVal(V);
+      if (E != V) {
+        printSExpr(E, SS, Prec_Atom);
+        if (Verbose) {
+          SS << " /*";
+          SS << V->name() << V->getBlockID() << "_" << V->getID();
+          SS << "*/";
+        }
+        return;
+      }
+    }
+    SS << V->name() << V->getBlockID() << "_" << V->getID();
   }
 
   void printFunction(Function *E, StreamType &SS, unsigned sugared = 0) {
@@ -528,7 +575,7 @@ protected:
         SS << ", ";    // Curried functions
         break;
     }
-    self()->printVariable(E->variableDecl(), SS);
+    self()->printVariable(E->variableDecl(), SS, true);
     SS << ": ";
     self()->printSExpr(E->variableDecl()->definition(), SS, Prec_MAX);
 
@@ -541,7 +588,7 @@ protected:
 
   void printSFunction(SFunction *E, StreamType &SS) {
     SS << "@";
-    self()->printVariable(E->variableDecl(), SS);
+    self()->printVariable(E->variableDecl(), SS, true);
     SS << " ";
     self()->printSExpr(E->body(), SS, Prec_Decl);
   }
@@ -610,6 +657,23 @@ protected:
     self()->printSExpr(E->source(), SS, Prec_Other-1);
   }
 
+  void printArrayFirst(ArrayFirst *E, StreamType &SS) {
+    self()->printSExpr(E->array(), SS, Prec_Postfix);
+    if (ArrayAdd *A = dyn_cast_or_null<ArrayAdd>(E)) {
+      SS << "[";
+      printSExpr(A->index(), SS, Prec_MAX);
+      SS << "]";
+      return;
+    }
+    SS << "[0]";
+  }
+
+  void printArrayAdd(ArrayAdd *E, StreamType &SS) {
+    self()->printSExpr(E->array(), SS, Prec_Postfix);
+    SS << " + ";
+    self()->printSExpr(E->index(), SS, Prec_Atom);
+  }
+
   void printUnaryOp(UnaryOp *E, StreamType &SS) {
     self()->printSExpr(E->expr(), SS, Prec_Unary);
   }
@@ -632,7 +696,7 @@ protected:
       newline(SS);
       for (auto A : BBI->arguments()) {
         SS << "let ";
-        self()->printVariable(A, SS);
+        self()->printVariable(A, SS, true);
         SS << " = ";
         self()->printSExpr(A->definition(), SS, Prec_MAX);
         SS << ";";
@@ -641,7 +705,7 @@ protected:
       for (auto I : BBI->instructions()) {
         if (I->definition()->opcode() != COP_Store) {
           SS << "let ";
-          self()->printVariable(I, SS);
+          self()->printVariable(I, SS, true);
           SS << " = ";
         }
         self()->printSExpr(I->definition(), SS, Prec_MAX);
@@ -662,12 +726,15 @@ protected:
 
   void printPhi(Phi *E, StreamType &SS) {
     SS << "phi(";
-    unsigned i = 0;
-    for (auto V : E->values()) {
-      if (i > 0)
-        SS << ", ";
-      self()->printSExpr(V, SS, Prec_MAX);
-      ++i;
+    if (E->status() == Phi::PH_SingleVal)
+      self()->printSExpr(E->values()[0], SS, Prec_MAX);
+    else {
+      unsigned i = 0;
+      for (auto V : E->values()) {
+        if (i++ > 0)
+          SS << ", ";
+        self()->printSExpr(V, SS, Prec_MAX);
+      }
     }
     SS << ")";
   }

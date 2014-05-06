@@ -441,8 +441,8 @@ def fdiagnostics_show_template_tree : Flag<["-"], "fdiagnostics-show-template-tr
     HelpText<"Print a template comparison tree for differing templates">;
 def fdollars_in_identifiers : Flag<["-"], "fdollars-in-identifiers">, Group<f_Group>,
   HelpText<"Allow '$' in identifiers">, Flags<[CC1Option]>;
-def fdwarf2_cfi_asm : Flag<["-"], "fdwarf2-cfi-asm">, Group<f_Group>;
-def fno_dwarf2_cfi_asm : Flag<["-"], "fno-dwarf2-cfi-asm">, Group<f_Group>,  Flags<[CC1Option]>;
+def fdwarf2_cfi_asm : Flag<["-"], "fdwarf2-cfi-asm">, Group<clang_ignored_f_Group>;
+def fno_dwarf2_cfi_asm : Flag<["-"], "fno-dwarf2-cfi-asm">, Group<clang_ignored_f_Group>;
 def fdwarf_directory_asm : Flag<["-"], "fdwarf-directory-asm">, Group<f_Group>;
 def fno_dwarf_directory_asm : Flag<["-"], "fno-dwarf-directory-asm">, Group<f_Group>, Flags<[CC1Option]>;
 def felide_constructors : Flag<["-"], "felide-constructors">, Group<f_Group>;
@@ -583,6 +583,9 @@ def fmodules_prune_interval : Joined<["-"], "fmodules-prune-interval=">, Group<i
 def fmodules_prune_after : Joined<["-"], "fmodules-prune-after=">, Group<i_Group>,
   Flags<[CC1Option]>, MetaVarName<"<seconds>">,
   HelpText<"Specify the interval (in seconds) after which a module file will be considered unused">;
+def fmodules_search_all : Flag <["-"], "fmodules-search-all">, Group<f_Group>,
+  Flags<[DriverOption, CC1Option]>,
+  HelpText<"Search even non-imported modules to resolve references">;
 def fbuild_session_timestamp : Joined<["-"], "fbuild-session-timestamp=">,
   Group<i_Group>, Flags<[CC1Option]>, MetaVarName<"<time since Epoch in seconds>">,
   HelpText<"Time when the current build session started">;
@@ -613,6 +616,8 @@ def fmodules_decluse : Flag <["-"], "fmodules-decluse">, Group<f_Group>,
 def fmodules_strict_decluse : Flag <["-"], "fmodules-strict-decluse">, Group<f_Group>,
   Flags<[DriverOption,CC1Option]>,
   HelpText<"Like -fmodules-decluse but requires all headers to be in modules">;
+def fno_modules_search_all : Flag <["-"], "fno-modules-search-all">, Group<f_Group>,
+  Flags<[DriverOption, CC1Option]>;
 def fretain_comments_from_system_headers : Flag<["-"], "fretain-comments-from-system-headers">, Group<f_Group>, Flags<[CC1Option]>;
 
 def fmudflapth : Flag<["-"], "fmudflapth">, Group<f_Group>;

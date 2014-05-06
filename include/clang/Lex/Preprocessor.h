@@ -455,21 +455,18 @@ private:  // Cached tokens state.
 public:
   Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
                DiagnosticsEngine &diags, LangOptions &opts,
-               const TargetInfo *target,
                SourceManager &SM, HeaderSearch &Headers,
                ModuleLoader &TheModuleLoader,
                IdentifierInfoLookup *IILookup = 0,
                bool OwnsHeaderSearch = false,
-               bool DelayInitialization = false,
-               bool IncrProcessing = false,
                TranslationUnitKind TUKind = TU_Complete);
 
   ~Preprocessor();
 
-  /// \brief Initialize the preprocessor, if the constructor did not already
-  /// perform the initialization.
+  /// \brief Initialize the preprocessor using information about the target.
   ///
-  /// \param Target Information about the target.
+  /// \param Target is owned by the caller and must remain valid for the
+  /// lifetime of the preprocessor.
   void Initialize(const TargetInfo &Target);
 
   /// \brief Retrieve the preprocessor options used to initialize this
@@ -666,6 +663,9 @@ public:
   void RemovePragmaHandler(PragmaHandler *Handler) {
     RemovePragmaHandler(StringRef(), Handler);
   }
+
+  /// Install empty handlers for all pragmas (making them ignored).
+  void IgnorePragmas();
 
   /// \brief Add the specified comment handler to the preprocessor.
   void addCommentHandler(CommentHandler *Handler);

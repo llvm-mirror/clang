@@ -25,12 +25,14 @@
 #include "clang/AST/EvaluatedExprVisitor.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/StmtCXX.h"
+#include "clang/Basic/Builtins.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
-#include "clang/Lex/HeaderSearch.h" // FIXME: Sema shouldn't depend on Lex
-#include "clang/Lex/ModuleLoader.h" // FIXME: Sema shouldn't depend on Lex
-#include "clang/Lex/Preprocessor.h" // FIXME: Sema shouldn't depend on Lex
+#include "clang/Lex/HeaderSearch.h" // TODO: Sema shouldn't depend on Lex
+#include "clang/Lex/Lexer.h" // TODO: Extract static functions to fix layering.
+#include "clang/Lex/ModuleLoader.h" // TODO: Sema shouldn't depend on Lex
+#include "clang/Lex/Preprocessor.h" // Included for isCodeCompletionEnabled()
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Sema/CXXFieldCollector.h"
 #include "clang/Sema/DeclSpec.h"
@@ -170,11 +172,9 @@ ParsedType Sema::getTypeName(const IdentifierInfo &II, SourceLocation NameLoc,
           return ActOnTypenameType(S, SourceLocation(), *SS, II, NameLoc).get();
         
         NestedNameSpecifierLoc QualifierLoc = SS->getWithLocInContext(Context);
-        QualType T =
-          CheckTypenameType(ETK_None, SourceLocation(), QualifierLoc,
-                            II, NameLoc);
-        
-          return ParsedType::make(T);
+        QualType T = CheckTypenameType(ETK_None, SourceLocation(), QualifierLoc,
+                                       II, NameLoc);
+        return ParsedType::make(T);
       }
       
       return ParsedType();
@@ -218,7 +218,8 @@ ParsedType Sema::getTypeName(const IdentifierInfo &II, SourceLocation NameLoc,
     if (CorrectedII) {
       TypeNameValidatorCCC Validator(true, isClassName);
       TypoCorrection Correction = CorrectTypo(Result.getLookupNameInfo(),
-                                              Kind, S, SS, Validator);
+                                              Kind, S, SS, Validator,
+                                              CTK_ErrorRecovery);
       IdentifierInfo *NewII = Correction.getCorrectionAsIdentifierInfo();
       TemplateTy Template;
       bool MemberOfUnknownSpecialization;
@@ -308,8 +309,7 @@ ParsedType Sema::getTypeName(const IdentifierInfo &II, SourceLocation NameLoc,
   if (TypeDecl *TD = dyn_cast<TypeDecl>(IIDecl)) {
     DiagnoseUseOfDecl(IIDecl, NameLoc);
 
-    if (T.isNull())
-      T = Context.getTypeDeclType(TD);
+    T = Context.getTypeDeclType(TD);
 
     // NOTE: avoid constructing an ElaboratedType(Loc) if this is a
     // constructor or destructor name (in such a case, the scope specifier
@@ -408,7 +408,7 @@ bool Sema::DiagnoseUnknownTypeName(IdentifierInfo *&II,
   TypeNameValidatorCCC Validator(false, false, AllowClassTemplates);
   if (TypoCorrection Corrected = CorrectTypo(DeclarationNameInfo(II, IILoc),
                                              LookupOrdinaryName, S, SS,
-                                             Validator)) {
+                                             Validator, CTK_ErrorRecovery)) {
     if (Corrected.isKeyword()) {
       // We corrected to a keyword.
       diagnoseTypo(Corrected, PDiag(diag::err_unknown_typename_suggest) << II);
@@ -650,7 +650,8 @@ Corrected:
       SecondTry = true;
       if (TypoCorrection Corrected = CorrectTypo(Result.getLookupNameInfo(),
                                                  Result.getLookupKind(), S, 
-                                                 &SS, *CCC)) {
+                                                 &SS, *CCC,
+                                                 CTK_ErrorRecovery)) {
         unsigned UnqualifiedDiag = diag::err_undeclared_var_use_suggest;
         unsigned QualifiedDiag = diag::err_no_member_suggest;
 
@@ -821,8 +822,8 @@ Corrected:
   ObjCInterfaceDecl *Class = dyn_cast<ObjCInterfaceDecl>(FirstDecl);
   if (!Class) {
     // FIXME: It's unfortunate that we don't have a Type node for handling this.
-    if (ObjCCompatibleAliasDecl *Alias 
-                                = dyn_cast<ObjCCompatibleAliasDecl>(FirstDecl))
+    if (ObjCCompatibleAliasDecl *Alias =
+            dyn_cast<ObjCCompatibleAliasDecl>(FirstDecl))
       Class = Alias->getClassInterface();
   }
   
@@ -1310,7 +1311,8 @@ static bool ShouldDiagnoseUnusedDecl(const NamedDecl *D) {
           return false;
 
         if (const Expr *Init = VD->getInit()) {
-          if (const ExprWithCleanups *Cleanups = dyn_cast<ExprWithCleanups>(Init))
+          if (const ExprWithCleanups *Cleanups =
+                  dyn_cast<ExprWithCleanups>(Init))
             Init = Cleanups->getSubExpr();
           const CXXConstructExpr *Construct =
             dyn_cast<CXXConstructExpr>(Init);
@@ -1345,10 +1347,10 @@ static void GenerateFixForUnusedDecl(const NamedDecl *D, ASTContext &Ctx,
 /// DiagnoseUnusedDecl - Emit warnings about declarations that are not used
 /// unless they are marked attr(unused).
 void Sema::DiagnoseUnusedDecl(const NamedDecl *D) {
-  FixItHint Hint;
   if (!ShouldDiagnoseUnusedDecl(D))
     return;
   
+  FixItHint Hint;
   GenerateFixForUnusedDecl(D, Context, Hint);
 
   unsigned DiagID;
@@ -1371,6 +1373,8 @@ static void CheckPoppedLabel(LabelDecl *L, Sema &S) {
 }
 
 void Sema::ActOnPopScope(SourceLocation Loc, Scope *S) {
+  S->mergeNRVOIntoParent();
+
   if (S->decl_empty()) return;
   assert((S->getFlags() & (Scope::DeclScope | Scope::TemplateParamScope)) &&
          "Scope shouldn't contain decls!");
@@ -1422,7 +1426,7 @@ ObjCInterfaceDecl *Sema::getObjCInterfaceDecl(IdentifierInfo *&Id,
     DeclFilterCCC<ObjCInterfaceDecl> Validator;
     if (TypoCorrection C = CorrectTypo(DeclarationNameInfo(Id, IdLoc),
                                        LookupOrdinaryName, TUScope, NULL,
-                                       Validator)) {
+                                       Validator, CTK_ErrorRecovery)) {
       diagnoseTypo(C, PDiag(diag::err_undef_interface_suggest) << Id);
       IDecl = C.getCorrectionDeclAs<ObjCInterfaceDecl>();
       Id = IDecl->getIdentifier();
@@ -4934,7 +4938,8 @@ static bool isFunctionDefinitionDiscarded(Sema &S, FunctionDecl *FD) {
   FD->setLazyBody(1);
 #endif
 
-  bool isC99Inline = (S.Context.GetGVALinkageForFunction(FD) == GVA_C99Inline);
+  bool isC99Inline =
+      S.Context.GetGVALinkageForFunction(FD) == GVA_AvailableExternally;
 
 #ifndef NDEBUG
   FD->setLazyBody(0);
@@ -6160,7 +6165,7 @@ static NamedDecl *DiagnoseInvalidRedeclaration(
   } else if ((Correction = SemaRef.CorrectTypo(
                  Prev.getLookupNameInfo(), Prev.getLookupKind(), S,
                  &ExtraArgs.D.getCXXScopeSpec(), Validator,
-                 IsLocalFriend ? 0 : NewDC))) {
+                 Sema::CTK_ErrorRecovery, IsLocalFriend ? 0 : NewDC))) {
     // Set up everything for the call to ActOnFunctionDeclarator
     ExtraArgs.D.SetIdentifier(Correction.getCorrectionAsIdentifierInfo(),
                               ExtraArgs.D.getIdentifierLoc());
@@ -6760,7 +6765,7 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
           SourceLocation InsertLoc;
           if (D.getName().getKind() != UnqualifiedId::IK_TemplateId) {
             InsertLoc = D.getName().getSourceRange().getEnd();
-            InsertLoc = PP.getLocForEndOfToken(InsertLoc);
+            InsertLoc = getLocForEndOfToken(InsertLoc);
           }
 
           Diag(D.getIdentifierLoc(), diag::err_template_spec_decl_friend)
@@ -7585,7 +7590,7 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
         SourceLocation AddConstLoc;
         if (FunctionTypeLoc FTL = MD->getTypeSourceInfo()->getTypeLoc()
                 .IgnoreParens().getAs<FunctionTypeLoc>())
-          AddConstLoc = PP.getLocForEndOfToken(FTL.getRParenLoc());
+          AddConstLoc = getLocForEndOfToken(FTL.getRParenLoc());
 
         Diag(MD->getLocation(), diag::warn_cxx1y_compat_constexpr_not_const)
           << FixItHint::CreateInsertion(AddConstLoc, " const");
@@ -7781,8 +7786,7 @@ void Sema::CheckMain(FunctionDecl* FD, const DeclSpec& DS) {
       << FixItHint::CreateRemoval(DS.getInlineSpecLoc());
   if (DS.isNoreturnSpecified()) {
     SourceLocation NoreturnLoc = DS.getNoreturnSpecLoc();
-    SourceRange NoreturnRange(NoreturnLoc,
-                              PP.getLocForEndOfToken(NoreturnLoc));
+    SourceRange NoreturnRange(NoreturnLoc, getLocForEndOfToken(NoreturnLoc));
     Diag(NoreturnLoc, diag::ext_noreturn_main);
     Diag(NoreturnLoc, diag::note_main_remove_noreturn)
       << FixItHint::CreateRemoval(NoreturnRange);
@@ -8536,19 +8540,6 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
     // C99 6.7.8p4. All file scoped initializers need to be constant.
     if (!getLangOpts().CPlusPlus && !VDecl->isInvalidDecl())
       CheckForConstantInitializer(Init, DclT);
-    else if (VDecl->getTLSKind() == VarDecl::TLS_Static &&
-             !VDecl->isInvalidDecl() && !DclT->isDependentType() &&
-             !Init->isValueDependent() && !VDecl->isConstexpr() &&
-             !Init->isConstantInitializer(
-                 Context, VDecl->getType()->isReferenceType())) {
-      // GNU C++98 edits for __thread, [basic.start.init]p4:
-      //   An object of thread storage duration shall not require dynamic
-      //   initialization.
-      // FIXME: Need strict checking here.
-      Diag(VDecl->getLocation(), diag::err_thread_dynamic_init);
-      if (getLangOpts().CPlusPlus11)
-        Diag(VDecl->getLocation(), diag::note_use_thread_local);
-    }
   }
 
   // We will represent direct-initialization similarly to copy-initialization:
@@ -8910,14 +8901,26 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
       Diag(var->getLocation(), diag::warn_missing_variable_declarations) << var;
   }
 
-  if (var->getTLSKind() == VarDecl::TLS_Static &&
-      var->getType().isDestructedType()) {
-    // GNU C++98 edits for __thread, [basic.start.term]p3:
-    //   The type of an object with thread storage duration shall not
-    //   have a non-trivial destructor.
-    Diag(var->getLocation(), diag::err_thread_nontrivial_dtor);
-    if (getLangOpts().CPlusPlus11)
-      Diag(var->getLocation(), diag::note_use_thread_local);
+  if (var->getTLSKind() == VarDecl::TLS_Static) {
+    if (var->getType().isDestructedType()) {
+      // GNU C++98 edits for __thread, [basic.start.term]p3:
+      //   The type of an object with thread storage duration shall not
+      //   have a non-trivial destructor.
+      Diag(var->getLocation(), diag::err_thread_nontrivial_dtor);
+      if (getLangOpts().CPlusPlus11)
+        Diag(var->getLocation(), diag::note_use_thread_local);
+    } else if (getLangOpts().CPlusPlus && var->hasInit() &&
+               !var->getInit()->isConstantInitializer(
+                   Context, var->getType()->isReferenceType())) {
+      // GNU C++98 edits for __thread, [basic.start.init]p4:
+      //   An object of thread storage duration shall not require dynamic
+      //   initialization.
+      // FIXME: Need strict checking here.
+      Diag(var->getLocation(), diag::err_thread_dynamic_init);
+      if (getLangOpts().CPlusPlus11)
+        Diag(var->getLocation(), diag::note_use_thread_local);
+    }
+
   }
 
   if (var->isThisDeclarationADefinition() &&
@@ -9060,7 +9063,8 @@ Sema::FinalizeDeclaration(Decl *ThisDecl) {
     AddPushedVisibilityAttribute(VD);
 
   // FIXME: Warn on unused templates.
-  if (VD->isFileVarDecl() && !VD->getDescribedVarTemplate())
+  if (VD->isFileVarDecl() && !VD->getDescribedVarTemplate() &&
+      !isa<VarTemplatePartialSpecializationDecl>(VD))
     MarkUnusedFileScopedDecl(VD);
 
   // Now we have parsed the initializer and can update the table of magic
@@ -9794,28 +9798,17 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D) {
 /// use the named return value optimization.
 ///
 /// This function applies a very simplistic algorithm for NRVO: if every return
-/// statement in the function has the same NRVO candidate, that candidate is
-/// the NRVO variable.
-///
-/// FIXME: Employ a smarter algorithm that accounts for multiple return 
-/// statements and the lifetimes of the NRVO candidates. We should be able to
-/// find a maximal set of NRVO variables.
+/// statement in the scope of a variable has the same NRVO candidate, that
+/// candidate is an NRVO variable.
 void Sema::computeNRVO(Stmt *Body, FunctionScopeInfo *Scope) {
   ReturnStmt **Returns = Scope->Returns.data();
 
-  const VarDecl *NRVOCandidate = 0;
   for (unsigned I = 0, E = Scope->Returns.size(); I != E; ++I) {
-    if (!Returns[I]->getNRVOCandidate())
-      return;
-    
-    if (!NRVOCandidate)
-      NRVOCandidate = Returns[I]->getNRVOCandidate();
-    else if (NRVOCandidate != Returns[I]->getNRVOCandidate())
-      return;
+    if (const VarDecl *NRVOCandidate = Returns[I]->getNRVOCandidate()) {
+      if (!NRVOCandidate->isNRVOVariable())
+        Returns[I]->setNRVOCandidate(nullptr);
+    }
   }
-  
-  if (NRVOCandidate)
-    const_cast<VarDecl*>(NRVOCandidate)->setNRVOVariable(true);
 }
 
 bool Sema::canDelayFunctionBody(const Declarator &D) {
@@ -9917,7 +9910,9 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
       Diag(FD->getLocation(), diag::warn_pure_function_definition);
 
     if (!FD->isInvalidDecl()) {
-      DiagnoseUnusedParameters(FD->param_begin(), FD->param_end());
+      // Don't diagnose unused parameters of defaulted or deleted functions.
+      if (Body)
+        DiagnoseUnusedParameters(FD->param_begin(), FD->param_end());
       DiagnoseSizeOfParametersAndReturnValue(FD->param_begin(), FD->param_end(),
                                              FD->getReturnType(), FD);
 
@@ -10018,11 +10013,11 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
     // If any errors have occurred, clear out any temporaries that may have
     // been leftover. This ensures that these temporaries won't be picked up for
     // deletion in some later function.
-    if (PP.getDiagnostics().hasErrorOccurred() ||
-        PP.getDiagnostics().getSuppressAllDiagnostics()) {
+    if (getDiagnostics().hasErrorOccurred() ||
+        getDiagnostics().getSuppressAllDiagnostics()) {
       DiscardCleanupsInEvaluationContext();
     }
-    if (!PP.getDiagnostics().hasUncompilableErrorOccurred() &&
+    if (!getDiagnostics().hasUncompilableErrorOccurred() &&
         !isa<FunctionTemplateDecl>(dcl)) {
       // Since the body is valid, issue any analysis-based warnings that are
       // enabled.
@@ -10100,7 +10095,8 @@ NamedDecl *Sema::ImplicitlyDefineFunction(SourceLocation Loc,
     TypoCorrection Corrected;
     DeclFilterCCC<FunctionDecl> Validator;
     if (S && (Corrected = CorrectTypo(DeclarationNameInfo(&II, Loc),
-                                      LookupOrdinaryName, S, 0, Validator)))
+                                      LookupOrdinaryName, S, 0, Validator,
+                                      CTK_NonError)))
       diagnoseTypo(Corrected, PDiag(diag::note_function_suggestion),
                    /*ErrorRecovery*/false);
   }
@@ -10318,8 +10314,7 @@ TypedefDecl *Sema::ParseTypedefDecl(Scope *S, Declarator &D, QualType T,
       Diag(D.getIdentifierLoc(), diag::err_typedef_changes_linkage);
 
       SourceLocation tagLoc = D.getDeclSpec().getTypeSpecTypeLoc();
-      tagLoc = Lexer::getLocForEndOfToken(tagLoc, 0, getSourceManager(),
-                                          getLangOpts());
+      tagLoc = getLocForEndOfToken(tagLoc);
 
       llvm::SmallString<40> textToInsert;
       textToInsert += ' ';
@@ -13139,13 +13134,20 @@ static void checkModuleImportContext(Sema &S, Module *M,
 DeclResult Sema::ActOnModuleImport(SourceLocation AtLoc, 
                                    SourceLocation ImportLoc, 
                                    ModuleIdPath Path) {
-  Module *Mod = PP.getModuleLoader().loadModule(ImportLoc, Path, 
-                                                Module::AllVisible,
-                                                /*IsIncludeDirective=*/false);
+  Module *Mod =
+      getModuleLoader().loadModule(ImportLoc, Path, Module::AllVisible,
+                                   /*IsIncludeDirective=*/false);
   if (!Mod)
     return true;
 
   checkModuleImportContext(*this, Mod, ImportLoc, CurContext);
+
+  // FIXME: we should support importing a submodule within a different submodule
+  // of the same top-level module. Until we do, make it an error rather than
+  // silently ignoring the import.
+  if (Mod->getTopLevelModuleName() == getLangOpts().CurrentModule)
+    Diag(ImportLoc, diag::err_module_self_import)
+        << Mod->getFullModuleName() << getLangOpts().CurrentModule;
 
   SmallVector<SourceLocation, 2> IdentifierLocs;
   Module *ModCheck = Mod;
@@ -13171,8 +13173,8 @@ void Sema::ActOnModuleInclude(SourceLocation DirectiveLoc, Module *Mod) {
   checkModuleImportContext(*this, Mod, DirectiveLoc, CurContext);
 
   // FIXME: Should we synthesize an ImportDecl here?
-  PP.getModuleLoader().makeModuleVisible(Mod, Module::AllVisible, DirectiveLoc,
-                                         /*Complain=*/true);
+  getModuleLoader().makeModuleVisible(Mod, Module::AllVisible, DirectiveLoc,
+                                      /*Complain=*/true);
 }
 
 void Sema::createImplicitModuleImport(SourceLocation Loc, Module *Mod) {
@@ -13184,8 +13186,8 @@ void Sema::createImplicitModuleImport(SourceLocation Loc, Module *Mod) {
   Consumer.HandleImplicitImportDecl(ImportD);
 
   // Make the module visible.
-  PP.getModuleLoader().makeModuleVisible(Mod, Module::AllVisible, Loc,
-                                         /*Complain=*/false);
+  getModuleLoader().makeModuleVisible(Mod, Module::AllVisible, Loc,
+                                      /*Complain=*/false);
 }
 
 void Sema::ActOnPragmaRedefineExtname(IdentifierInfo* Name,

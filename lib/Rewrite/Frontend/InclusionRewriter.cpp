@@ -250,6 +250,10 @@ void InclusionRewriter::CommentOutDirective(Lexer &DirectiveLex,
   do {
     DirectiveLex.LexFromRawLexer(DirectiveToken);
   } while (!DirectiveToken.is(tok::eod) && DirectiveToken.isNot(tok::eof));
+  if (&FromFile == PredefinesBuffer) {
+    // OutputContentUpTo() would not output anything anyway.
+    return;
+  }
   OS << "#if 0 /* expanded by -frewrite-includes */" << EOL;
   OutputContentUpTo(FromFile, NextToWrite,
     SM.getFileOffset(DirectiveToken.getLocation()) + DirectiveToken.getLength(),
@@ -352,8 +356,11 @@ bool InclusionRewriter::Process(FileID FileId,
 
   StringRef EOL = DetectEOL(FromFile);
 
-  // Per the GNU docs: "1" indicates the start of a new file.
-  WriteLineInfo(FileName, 1, FileType, EOL, " 1");
+  // Per the GNU docs: "1" indicates entering a new file.
+  if (FileId == SM.getMainFileID() || FileId == PP.getPredefinesFileID())
+    WriteLineInfo(FileName, 1, FileType, EOL, "");
+  else
+    WriteLineInfo(FileName, 1, FileType, EOL, " 1");
 
   if (SM.getFileIDSize(FileId) == 0)
     return false;
@@ -383,6 +390,8 @@ bool InclusionRewriter::Process(FileID FileId,
           case tok::pp_import: {
             CommentOutDirective(RawLex, HashToken, FromFile, EOL, NextToWrite,
               Line);
+            if (FileId != PP.getPredefinesFileID())
+              WriteLineInfo(FileName, Line - 1, FileType, EOL, "");
             StringRef LineInfoExtra;
             if (const FileChange *Change = FindFileChangeLocation(
                 HashToken.getLocation())) {
@@ -514,13 +523,7 @@ void clang::RewriteIncludesInInput(Preprocessor &PP, raw_ostream *OS,
   InclusionRewriter *Rewrite = new InclusionRewriter(PP, *OS,
                                                      Opts.ShowLineMarkers);
   PP.addPPCallbacks(Rewrite);
-  // Ignore all pragmas, otherwise there will be warnings about unknown pragmas
-  // (because there's nothing to handle them).
-  PP.AddPragmaHandler(new EmptyPragmaHandler());
-  // Ignore also all pragma in all namespaces created
-  // in Preprocessor::RegisterBuiltinPragmas().
-  PP.AddPragmaHandler("GCC", new EmptyPragmaHandler());
-  PP.AddPragmaHandler("clang", new EmptyPragmaHandler());
+  PP.IgnorePragmas();
 
   // First let the preprocessor process the entire file and call callbacks.
   // Callbacks will record which #include's were actually performed.

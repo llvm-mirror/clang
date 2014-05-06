@@ -53,17 +53,22 @@ protected:
 };
 
 class VoidModuleLoader : public ModuleLoader {
-  virtual ModuleLoadResult loadModule(SourceLocation ImportLoc, 
-                                      ModuleIdPath Path,
-                                      Module::NameVisibilityKind Visibility,
-                                      bool IsInclusionDirective) {
+  ModuleLoadResult loadModule(SourceLocation ImportLoc, 
+                              ModuleIdPath Path,
+                              Module::NameVisibilityKind Visibility,
+                              bool IsInclusionDirective) override {
     return ModuleLoadResult();
   }
 
-  virtual void makeModuleVisible(Module *Mod,
-                                 Module::NameVisibilityKind Visibility,
-                                 SourceLocation ImportLoc,
-                                 bool Complain) { }
+  void makeModuleVisible(Module *Mod,
+                         Module::NameVisibilityKind Visibility,
+                         SourceLocation ImportLoc,
+                         bool Complain) override { }
+
+  GlobalModuleIndex *loadGlobalModuleIndex(SourceLocation TriggerLoc) override
+    { return 0; }
+  bool lookupMissingImports(StringRef Name, SourceLocation TriggerLoc) override
+    { return 0; };
 };
 
 TEST_F(PPConditionalDirectiveRecordTest, PPRecAPI) {
@@ -92,11 +97,11 @@ TEST_F(PPConditionalDirectiveRecordTest, PPRecAPI) {
   VoidModuleLoader ModLoader;
   HeaderSearch HeaderInfo(new HeaderSearchOptions, SourceMgr, Diags, LangOpts, 
                           Target.getPtr());
-  Preprocessor PP(new PreprocessorOptions(), Diags, LangOpts,Target.getPtr(),
-                  SourceMgr, HeaderInfo, ModLoader,
-                  /*IILookup =*/ 0,
-                  /*OwnsHeaderSearch =*/false,
-                  /*DelayInitialization =*/ false);
+  Preprocessor PP(new PreprocessorOptions(), Diags, LangOpts, SourceMgr,
+                  HeaderInfo, ModLoader,
+                  /*IILookup =*/0,
+                  /*OwnsHeaderSearch =*/false);
+  PP.Initialize(*Target);
   PPConditionalDirectiveRecord *
     PPRec = new PPConditionalDirectiveRecord(SourceMgr);
   PP.addPPCallbacks(PPRec);

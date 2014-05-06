@@ -399,7 +399,6 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.RelaxAll = Args.hasArg(OPT_mrelax_all);
   Opts.OmitLeafFramePointer = Args.hasArg(OPT_momit_leaf_frame_pointer);
   Opts.SaveTempLabels = Args.hasArg(OPT_msave_temp_labels);
-  Opts.NoDwarf2CFIAsm = Args.hasArg(OPT_fno_dwarf2_cfi_asm);
   Opts.NoDwarfDirectoryAsm = Args.hasArg(OPT_fno_dwarf_directory_asm);
   Opts.SoftFloat = Args.hasArg(OPT_msoft_float);
   Opts.StrictEnums = Args.hasArg(OPT_fstrict_enums);
@@ -1357,6 +1356,9 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.ModulesStrictDeclUse = Args.hasArg(OPT_fmodules_strict_decluse);
   Opts.ModulesDeclUse =
       Args.hasArg(OPT_fmodules_decluse) || Opts.ModulesStrictDeclUse;
+  Opts.ModulesSearchAll = Opts.Modules &&
+    !Args.hasArg(OPT_fno_modules_search_all) &&
+    Args.hasArg(OPT_fmodules_search_all);
   Opts.CharIsSigned = Opts.OpenCL || !Args.hasArg(OPT_fno_signed_char);
   Opts.WChar = Opts.CPlusPlus && !Args.hasArg(OPT_fno_wchar);
   Opts.ShortWChar = Args.hasFlag(OPT_fshort_wchar, OPT_fno_short_wchar, false);
@@ -1816,7 +1818,7 @@ std::string CompilerInvocation::getModuleHash() const {
   
   // Extend the signature with the target options.
   code = hash_combine(code, TargetOpts->Triple, TargetOpts->CPU,
-                      TargetOpts->ABI, TargetOpts->LinkerVersion);
+                      TargetOpts->ABI);
   for (unsigned i = 0, n = TargetOpts->FeaturesAsWritten.size(); i != n; ++i)
     code = hash_combine(code, TargetOpts->FeaturesAsWritten[i]);
 
@@ -1846,6 +1848,7 @@ std::string CompilerInvocation::getModuleHash() const {
                       hsOpts.UseStandardSystemIncludes,
                       hsOpts.UseStandardCXXIncludes,
                       hsOpts.UseLibcxx);
+  code = hash_combine(code, hsOpts.ResourceDir);
 
   // Extend the signature with the user build path.
   code = hash_combine(code, hsOpts.ModuleUserBuildPath);

@@ -23,6 +23,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/LangOptions.h"
+#include "clang/Lex/ModuleLoader.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ExternalSemaSource.h"
 #include "clang/Sema/Overload.h"
@@ -3924,6 +3925,7 @@ TypoCorrection Sema::CorrectTypo(const DeclarationNameInfo &TypoName,
                                  Sema::LookupNameKind LookupKind,
                                  Scope *S, CXXScopeSpec *SS,
                                  CorrectionCandidateCallback &CCC,
+                                 CorrectTypoKind Mode,
                                  DeclContext *MemberContext,
                                  bool EnteringContext,
                                  const ObjCObjectPointerType *OPT,
@@ -3978,9 +3980,19 @@ TypoCorrection Sema::CorrectTypo(const DeclarationNameInfo &TypoName,
   if (getLangOpts().AltiVec && Typo->isStr("vector"))
     return TypoCorrection();
 
-  NamespaceSpecifierSet Namespaces(Context, CurContext, SS);
-
   TypoCorrectionConsumer Consumer(*this, Typo);
+
+  if ((Mode == CTK_ErrorRecovery) &&  getLangOpts().Modules &&
+      getLangOpts().ModulesSearchAll) {
+    if (getModuleLoader().lookupMissingImports(Typo->getName(),
+                                               TypoName.getLocStart())) {
+      TypoCorrection TC(TypoName.getName(), (NestedNameSpecifier *)0, 0);
+      TC.setCorrectionRange(SS, TypoName);
+      TC.setRequiresImport(true);
+    }
+  }
+
+  NamespaceSpecifierSet Namespaces(Context, CurContext, SS);
 
   // If a callback object considers an empty typo correction candidate to be
   // viable, assume it does not do any actual validation of the candidates.

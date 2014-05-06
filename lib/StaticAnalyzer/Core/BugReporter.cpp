@@ -12,8 +12,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "BugReporter"
-
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclObjC.h"
@@ -39,6 +37,8 @@
 
 using namespace clang;
 using namespace ento;
+
+#define DEBUG_TYPE "BugReporter"
 
 STATISTIC(MaxBugClassSize,
           "The maximum number of bug reports in the same equivalence class");
@@ -3149,21 +3149,21 @@ bool GRBugReporter::generatePathDiagnostic(PathDiagnostic& PD,
 
       // Generate the very last diagnostic piece - the piece is visible before 
       // the trace is expanded.
-      PathDiagnosticPiece *LastPiece = 0;
+      std::unique_ptr<PathDiagnosticPiece> LastPiece;
       for (BugReport::visitor_iterator I = visitors.begin(), E = visitors.end();
           I != E; ++I) {
         if (PathDiagnosticPiece *Piece = (*I)->getEndPath(PDB, N, *R)) {
           assert (!LastPiece &&
               "There can only be one final piece in a diagnostic.");
-          LastPiece = Piece;
+          LastPiece.reset(Piece);
         }
       }
 
       if (ActiveScheme != PathDiagnosticConsumer::None) {
         if (!LastPiece)
-          LastPiece = BugReporterVisitor::getDefaultEndPath(PDB, N, *R);
+          LastPiece.reset(BugReporterVisitor::getDefaultEndPath(PDB, N, *R));
         assert(LastPiece);
-        PD.setEndOfPath(LastPiece);
+        PD.setEndOfPath(LastPiece.release());
       }
 
       // Make sure we get a clean location context map so we don't

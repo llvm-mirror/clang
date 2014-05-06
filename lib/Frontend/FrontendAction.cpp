@@ -408,16 +408,16 @@ void FrontendAction::EndSourceFile() {
   // Finalize the action.
   EndSourceFileAction();
 
-  // Release the consumer and the AST, in that order since the consumer may
-  // perform actions in its destructor which require the context.
+  // Sema references the ast consumer, so reset sema first.
   //
   // FIXME: There is more per-file stuff we could just drop here?
-  if (CI.getFrontendOpts().DisableFree) {
-    BuryPointer(CI.takeASTConsumer());
+  bool DisableFree = CI.getFrontendOpts().DisableFree;
+  if (DisableFree) {
     if (!isCurrentFileAST()) {
-      BuryPointer(CI.takeSema());
+      CI.resetAndLeakSema();
       CI.resetAndLeakASTContext();
     }
+    BuryPointer(CI.takeASTConsumer());
   } else {
     if (!isCurrentFileAST()) {
       CI.setSema(0);
@@ -443,8 +443,9 @@ void FrontendAction::EndSourceFile() {
   // FrontendAction.
   CI.clearOutputFiles(/*EraseFiles=*/shouldEraseOutputFiles());
 
+  // FIXME: Only do this if DisableFree is set.
   if (isCurrentFileAST()) {
-    CI.takeSema();
+    CI.resetAndLeakSema();
     CI.resetAndLeakASTContext();
     CI.resetAndLeakPreprocessor();
     CI.resetAndLeakSourceManager();

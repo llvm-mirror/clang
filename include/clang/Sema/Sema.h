@@ -26,11 +26,11 @@
 #include "clang/AST/TypeLoc.h"
 #include "clang/Basic/ExpressionTraits.h"
 #include "clang/Basic/LangOptions.h"
+#include "clang/Basic/Module.h"
 #include "clang/Basic/OpenMPKinds.h"
 #include "clang/Basic/Specifiers.h"
 #include "clang/Basic/TemplateKinds.h"
 #include "clang/Basic/TypeTraits.h"
-#include "clang/Lex/ModuleLoader.h"
 #include "clang/Sema/AnalysisBasedWarnings.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ExternalSemaSource.h"
@@ -47,6 +47,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
 #include <deque>
 #include <memory>
@@ -124,6 +125,8 @@ namespace clang {
   class LocalInstantiationScope;
   class LookupResult;
   class MacroInfo;
+  typedef ArrayRef<std::pair<IdentifierInfo *, SourceLocation>> ModuleIdPath;
+  class ModuleLoader;
   class MultiLevelTemplateArgumentList;
   class NamedDecl;
   class NonNullAttr;
@@ -838,7 +841,7 @@ public:
   /// \brief The number of SFINAE diagnostics that have been trapped.
   unsigned NumSFINAEErrors;
 
-  typedef llvm::DenseMap<ParmVarDecl *, SmallVector<ParmVarDecl *, 1> >
+  typedef llvm::DenseMap<ParmVarDecl *, llvm::TinyPtrVector<ParmVarDecl *>>
     UnparsedDefaultArgInstantiationsMap;
 
   /// \brief A mapping from parameters with unparsed default arguments to the
@@ -1021,6 +1024,12 @@ public:
   std::string
   getFixItZeroInitializerForType(QualType T, SourceLocation Loc) const;
   std::string getFixItZeroLiteralForType(QualType T, SourceLocation Loc) const;
+
+  /// \brief Calls \c Lexer::getLocForEndOfToken()
+  SourceLocation getLocForEndOfToken(SourceLocation Loc, unsigned Offset = 0);
+
+  /// \brief Retrieve the module loader associated with the preprocessor.
+  ModuleLoader &getModuleLoader() const;
 
   ExprResult Owned(Expr* E) { return E; }
   ExprResult Owned(ExprResult R) { return R; }
@@ -2601,10 +2610,16 @@ public:
                           VisibleDeclConsumer &Consumer,
                           bool IncludeGlobalScope = true);
 
+  enum CorrectTypoKind {
+    CTK_NonError,     // CorrectTypo used in a non error recovery situation.
+    CTK_ErrorRecovery // CorrectTypo used in normal error recovery.
+  };
+
   TypoCorrection CorrectTypo(const DeclarationNameInfo &Typo,
                              Sema::LookupNameKind LookupKind,
                              Scope *S, CXXScopeSpec *SS,
                              CorrectionCandidateCallback &CCC,
+                             CorrectTypoKind Mode,
                              DeclContext *MemberContext = 0,
                              bool EnteringContext = false,
                              const ObjCObjectPointerType *OPT = 0,
@@ -3050,10 +3065,14 @@ public:
   RecordDecl *CreateCapturedStmtRecordDecl(CapturedDecl *&CD,
                                            SourceLocation Loc,
                                            unsigned NumParams);
-  const VarDecl *getCopyElisionCandidate(QualType ReturnType, Expr *E,
-                                         bool AllowFunctionParameters);
+  VarDecl *getCopyElisionCandidate(QualType ReturnType, Expr *E,
+                                   bool AllowFunctionParameters);
+  bool isCopyElisionCandidate(QualType ReturnType, const VarDecl *VD,
+                              bool AllowFunctionParameters);
 
-  StmtResult ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp);
+  StmtResult ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp,
+                             Scope *CurScope);
+  StmtResult BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp);
   StmtResult ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp);
 
   StmtResult ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
@@ -3779,7 +3798,7 @@ public:
   NamedDecl *BuildUsingDeclaration(Scope *S, AccessSpecifier AS,
                                    SourceLocation UsingLoc,
                                    CXXScopeSpec &SS,
-                                   const DeclarationNameInfo &NameInfo,
+                                   DeclarationNameInfo NameInfo,
                                    AttributeList *AttrList,
                                    bool IsInstantiation,
                                    bool HasTypenameKeyword,
@@ -4878,8 +4897,7 @@ public:
   void ActOnFinishCXXMemberDecls();
 
   void ActOnReenterCXXMethodParameter(Scope *S, ParmVarDecl *Param);
-  void ActOnReenterTemplateScope(Scope *S, Decl *Template);
-  void ActOnReenterDeclaratorTemplateScope(Scope *S, DeclaratorDecl *D);
+  unsigned ActOnReenterTemplateScope(Scope *S, Decl *Template);
   void ActOnStartDelayedMemberDeclarations(Scope *S, Decl *Record);
   void ActOnStartDelayedCXXMethodDeclaration(Scope *S, Decl *Method);
   void ActOnDelayedCXXMethodParameter(Scope *S, Decl *Param);
@@ -7286,8 +7304,10 @@ public:
 
   OMPClause *ActOnOpenMPVarListClause(OpenMPClauseKind Kind,
                                       ArrayRef<Expr *> Vars,
+                                      Expr *TailExpr,
                                       SourceLocation StartLoc,
                                       SourceLocation LParenLoc,
+                                      SourceLocation ColonLoc,
                                       SourceLocation EndLoc);
   /// \brief Called on well-formed 'private' clause.
   OMPClause *ActOnOpenMPPrivateClause(ArrayRef<Expr *> VarList,
@@ -7303,6 +7323,13 @@ public:
   OMPClause *ActOnOpenMPSharedClause(ArrayRef<Expr *> VarList,
                                      SourceLocation StartLoc,
                                      SourceLocation LParenLoc,
+                                     SourceLocation EndLoc);
+  /// \brief Called on well-formed 'linear' clause.
+  OMPClause *ActOnOpenMPLinearClause(ArrayRef<Expr *> VarList,
+                                     Expr *Step,
+                                     SourceLocation StartLoc,
+                                     SourceLocation LParenLoc,
+                                     SourceLocation ColonLoc,
                                      SourceLocation EndLoc);
   /// \brief Called on well-formed 'copyin' clause.
   OMPClause *ActOnOpenMPCopyinClause(ArrayRef<Expr *> VarList,

@@ -1567,8 +1567,9 @@ void ASTStmtWriter::VisitFunctionParmPackExpr(FunctionParmPackExpr *E) {
 
 void ASTStmtWriter::VisitMaterializeTemporaryExpr(MaterializeTemporaryExpr *E) {
   VisitExpr(E);
-  Writer.AddStmt(E->Temporary);
-  Writer.AddDeclRef(E->ExtendingDecl, Record);
+  Writer.AddStmt(E->getTemporary());
+  Writer.AddDeclRef(E->getExtendingDecl(), Record);
+  Record.push_back(E->getManglingNumber());
   Code = serialization::EXPR_MATERIALIZE_TEMPORARY;
 }
 
@@ -1714,6 +1715,15 @@ void OMPClauseWriter::VisitOMPSharedClause(OMPSharedClause *C) {
   Writer->Writer.AddSourceLocation(C->getLParenLoc(), Record);
   for (auto *VE : C->varlists())
     Writer->Writer.AddStmt(VE);
+}
+
+void OMPClauseWriter::VisitOMPLinearClause(OMPLinearClause *C) {
+  Record.push_back(C->varlist_size());
+  Writer->Writer.AddSourceLocation(C->getLParenLoc(), Record);
+  Writer->Writer.AddSourceLocation(C->getColonLoc(), Record);
+  for (auto *VE : C->varlists())
+    Writer->Writer.AddStmt(VE);
+  Writer->Writer.AddStmt(C->getStep());
 }
 
 void OMPClauseWriter::VisitOMPCopyinClause(OMPCopyinClause *C) {

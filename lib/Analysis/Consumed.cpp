@@ -57,11 +57,9 @@ ConsumedWarningsHandlerBase::~ConsumedWarningsHandlerBase() {}
 static SourceLocation getFirstStmtLoc(const CFGBlock *Block) {
   // Find the source location of the first statement in the block, if the block
   // is not empty.
-  for (CFGBlock::const_iterator BI = Block->begin(), BE = Block->end();
-       BI != BE; ++BI) {
-    if (Optional<CFGStmt> CS = BI->getAs<CFGStmt>())
+  for (const auto &B : *Block)
+    if (Optional<CFGStmt> CS = B.getAs<CFGStmt>())
       return CS->getStmt()->getLocStart();
-  }
 
   // Block is empty.
   // If we have one successor, return the first statement in that block
@@ -115,14 +113,10 @@ static ConsumedState invertConsumedUnconsumed(ConsumedState State) {
 static bool isCallableInState(const CallableWhenAttr *CWAttr,
                               ConsumedState State) {
   
-  CallableWhenAttr::callableState_iterator I = CWAttr->callableState_begin(),
-                                           E = CWAttr->callableState_end();
-  
-  for (; I != E; ++I) {
-    
+  for (const auto &S : CWAttr->callableStates()) {
     ConsumedState MappedAttrState = CS_None;
-    
-    switch (*I) {
+
+    switch (S) {
     case CallableWhenAttr::Unknown:
       MappedAttrState = CS_Unknown;
       break;
@@ -1144,21 +1138,19 @@ bool ConsumedBlockInfo::isBackEdgeTarget(const CFGBlock *Block) {
 void ConsumedStateMap::checkParamsForReturnTypestate(SourceLocation BlameLoc,
   ConsumedWarningsHandlerBase &WarningsHandler) const {
   
-  for (VarMapType::const_iterator DMI = VarMap.begin(), DME = VarMap.end();
-       DMI != DME; ++DMI) {
-    
-    if (isa<ParmVarDecl>(DMI->first)) {
-      const ParmVarDecl *Param = cast<ParmVarDecl>(DMI->first);
+  for (const auto &DM : VarMap) {
+    if (isa<ParmVarDecl>(DM.first)) {
+      const ParmVarDecl *Param = cast<ParmVarDecl>(DM.first);
       const ReturnTypestateAttr *RTA = Param->getAttr<ReturnTypestateAttr>();
       
       if (!RTA)
         continue;
       
       ConsumedState ExpectedState = mapReturnTypestateAttrState(RTA);      
-      if (DMI->second != ExpectedState)
+      if (DM.second != ExpectedState)
         WarningsHandler.warnParamReturnTypestateMismatch(BlameLoc,
           Param->getNameAsString(), stateToString(ExpectedState),
-          stateToString(DMI->second));
+          stateToString(DM.second));
     }
   }
 }
@@ -1194,16 +1186,14 @@ void ConsumedStateMap::intersect(const ConsumedStateMap *Other) {
     return;
   }
   
-  for (VarMapType::const_iterator DMI = Other->VarMap.begin(),
-       DME = Other->VarMap.end(); DMI != DME; ++DMI) {
-    
-    LocalState = this->getState(DMI->first);
+  for (const auto &DM : Other->VarMap) {
+    LocalState = this->getState(DM.first);
     
     if (LocalState == CS_None)
       continue;
     
-    if (LocalState != DMI->second)
-       VarMap[DMI->first] = CS_Unknown;
+    if (LocalState != DM.second)
+     VarMap[DM.first] = CS_Unknown;
   }
 }
 
@@ -1214,18 +1204,16 @@ void ConsumedStateMap::intersectAtLoopHead(const CFGBlock *LoopHead,
   ConsumedState LocalState;
   SourceLocation BlameLoc = getLastStmtLoc(LoopBack);
   
-  for (VarMapType::const_iterator DMI = LoopBackStates->VarMap.begin(),
-       DME = LoopBackStates->VarMap.end(); DMI != DME; ++DMI) {
-    
-    LocalState = this->getState(DMI->first);
+  for (const auto &DM : LoopBackStates->VarMap) {    
+    LocalState = this->getState(DM.first);
     
     if (LocalState == CS_None)
       continue;
     
-    if (LocalState != DMI->second) {
-      VarMap[DMI->first] = CS_Unknown;
-      WarningsHandler.warnLoopStateMismatch(
-        BlameLoc, DMI->first->getNameAsString());
+    if (LocalState != DM.second) {
+      VarMap[DM.first] = CS_Unknown;
+      WarningsHandler.warnLoopStateMismatch(BlameLoc,
+                                            DM.first->getNameAsString());
     }
   }
 }
@@ -1250,13 +1238,9 @@ void ConsumedStateMap::remove(const VarDecl *Var) {
 }
 
 bool ConsumedStateMap::operator!=(const ConsumedStateMap *Other) const {
-  for (VarMapType::const_iterator DMI = Other->VarMap.begin(),
-       DME = Other->VarMap.end(); DMI != DME; ++DMI) {
-    
-    if (this->getState(DMI->first) != DMI->second)
-      return true;
-  }
-  
+  for (const auto &DM : Other->VarMap)
+    if (this->getState(DM.first) != DM.second)
+      return true;  
   return false;
 }
 
@@ -1396,16 +1380,11 @@ void ConsumedAnalyzer::run(AnalysisDeclContext &AC) {
   ConsumedStmtVisitor Visitor(AC, *this, CurrStates);
   
   // Add all trackable parameters to the state map.
-  for (auto PI : D->params()) {
+  for (const auto *PI : D->params())
     Visitor.VisitParmVarDecl(PI);
-  }
   
   // Visit all of the function's basic blocks.
-  for (PostOrderCFGView::iterator I = SortedGraph->begin(),
-       E = SortedGraph->end(); I != E; ++I) {
-    
-    const CFGBlock *CurrBlock = *I;
-    
+  for (const auto *CurrBlock : *SortedGraph) {
     if (CurrStates == NULL)
       CurrStates = BlockInfo.getInfo(CurrBlock);
     
@@ -1421,16 +1400,14 @@ void ConsumedAnalyzer::run(AnalysisDeclContext &AC) {
     Visitor.reset(CurrStates);
     
     // Visit all of the basic block's statements.
-    for (CFGBlock::const_iterator BI = CurrBlock->begin(),
-         BE = CurrBlock->end(); BI != BE; ++BI) {
-      
-      switch (BI->getKind()) {
+    for (const auto &B : *CurrBlock) {
+      switch (B.getKind()) {
       case CFGElement::Statement:
-        Visitor.Visit(BI->castAs<CFGStmt>().getStmt());
+        Visitor.Visit(B.castAs<CFGStmt>().getStmt());
         break;
         
       case CFGElement::TemporaryDtor: {
-        const CFGTemporaryDtor DTor = BI->castAs<CFGTemporaryDtor>();
+        const CFGTemporaryDtor &DTor = B.castAs<CFGTemporaryDtor>();
         const CXXBindTemporaryExpr *BTE = DTor.getBindTemporaryExpr();
         
         Visitor.checkCallability(PropagationInfo(BTE),
@@ -1440,7 +1417,7 @@ void ConsumedAnalyzer::run(AnalysisDeclContext &AC) {
       }
       
       case CFGElement::AutomaticObjectDtor: {
-        const CFGAutomaticObjDtor DTor = BI->castAs<CFGAutomaticObjDtor>();
+        const CFGAutomaticObjDtor &DTor = B.castAs<CFGAutomaticObjDtor>();
         SourceLocation Loc = DTor.getTriggerStmt()->getLocEnd();
         const VarDecl *Var = DTor.getVarDecl();
         

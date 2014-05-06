@@ -17,6 +17,8 @@
 #include "clang/Basic/SourceManager.h"
 #include "llvm/Support/Debug.h"
 
+#define DEBUG_TYPE "format-token-annotator"
+
 namespace clang {
 namespace format {
 
@@ -368,7 +370,8 @@ private:
       if (Tok->Previous == NULL)
         return false;
       // Colons from ?: are handled in parseConditional().
-      if (Tok->Previous->is(tok::r_paren) && Contexts.size() == 1) {
+      if (Tok->Previous->is(tok::r_paren) && Contexts.size() == 1 &&
+          Line.First->isNot(tok::kw_case)) {
         Tok->Type = TT_CtorInitializerColon;
       } else if (Contexts.back().ColonIsDictLiteral) {
         Tok->Type = TT_DictLiteral;
@@ -411,7 +414,9 @@ private:
       if (!parseParens())
         return false;
       if (Line.MustBeDeclaration && Contexts.size() == 1 &&
-          !Contexts.back().IsExpression && Line.First->Type != TT_ObjCProperty)
+          !Contexts.back().IsExpression &&
+          Line.First->Type != TT_ObjCProperty &&
+          (!Tok->Previous || Tok->Previous->isNot(tok::kw_decltype)))
         Line.MightBeFunctionDecl = true;
       break;
     case tok::l_square:
@@ -679,7 +684,7 @@ private:
       for (FormatToken *Previous = Current.Previous;
            Previous && !Previous->isOneOf(tok::comma, tok::semi);
            Previous = Previous->Previous) {
-        if (Previous->is(tok::r_square))
+        if (Previous->isOneOf(tok::r_square, tok::r_paren))
           Previous = Previous->MatchingParen;
         if (Previous->Type == TT_BinaryOperator &&
             Previous->isOneOf(tok::star, tok::amp)) {
@@ -689,7 +694,8 @@ private:
     } else if (Current.isOneOf(tok::kw_return, tok::kw_throw)) {
       Contexts.back().IsExpression = true;
     } else if (Current.is(tok::l_paren) && !Line.MustBeDeclaration &&
-               !Line.InPPDirective) {
+               !Line.InPPDirective && Current.Previous &&
+               Current.Previous->isNot(tok::kw_decltype)) {
       bool ParametersOfFunctionType =
           Current.Previous && Current.Previous->is(tok::r_paren) &&
           Current.Previous->MatchingParen &&
@@ -752,6 +758,7 @@ private:
         else
           Current.Type = TT_BlockComment;
       } else if (Current.is(tok::r_paren)) {
+        // FIXME: Pull cast detection into its own function.
         FormatToken *LeftOfParens = NULL;
         if (Current.MatchingParen)
           LeftOfParens = Current.MatchingParen->getPreviousNonComment();
@@ -772,19 +779,42 @@ private:
               Contexts[Contexts.size() - 2].IsExpression) ||
              (Current.Next && Current.Next->isBinaryOperator())))
           IsCast = true;
-        if (Current.Next && Current.Next->isNot(tok::string_literal) &&
-            (Current.Next->Tok.isLiteral() ||
-             Current.Next->isOneOf(tok::kw_sizeof, tok::kw_alignof)))
+        else if (Current.Next && Current.Next->isNot(tok::string_literal) &&
+                 (Current.Next->Tok.isLiteral() ||
+                  Current.Next->isOneOf(tok::kw_sizeof, tok::kw_alignof)))
           IsCast = true;
         // If there is an identifier after the (), it is likely a cast, unless
         // there is also an identifier before the ().
-        if (LeftOfParens && (LeftOfParens->Tok.getIdentifierInfo() == NULL ||
-                             LeftOfParens->is(tok::kw_return)) &&
-            LeftOfParens->Type != TT_OverloadedOperator &&
-            LeftOfParens->isNot(tok::at) &&
-            LeftOfParens->Type != TT_TemplateCloser && Current.Next &&
-            Current.Next->is(tok::identifier))
-          IsCast = true;
+        else if (LeftOfParens &&
+                 (LeftOfParens->Tok.getIdentifierInfo() == NULL ||
+                  LeftOfParens->is(tok::kw_return)) &&
+                 LeftOfParens->Type != TT_OverloadedOperator &&
+                 LeftOfParens->isNot(tok::at) &&
+                 LeftOfParens->Type != TT_TemplateCloser && Current.Next) {
+          if (Current.Next->isOneOf(tok::identifier, tok::numeric_constant)) {
+            IsCast = true;
+          } else {
+            // Use heuristics to recognize c style casting.
+            FormatToken *Prev = Current.Previous;
+            if (Prev && Prev->isOneOf(tok::amp, tok::star))
+              Prev = Prev->Previous;
+
+            if (Prev && Current.Next && Current.Next->Next) {
+              bool NextIsUnary = Current.Next->isUnaryOperator() ||
+                                 Current.Next->isOneOf(tok::amp, tok::star);
+              IsCast = NextIsUnary &&
+                       Current.Next->Next->isOneOf(tok::identifier,
+                                                   tok::numeric_constant);
+            }
+
+            for (; Prev != Current.MatchingParen; Prev = Prev->Previous) {
+              if (!Prev || !Prev->isOneOf(tok::kw_const, tok::identifier)) {
+                IsCast = false;
+                break;
+              }
+            }
+          }
+        }
         if (IsCast && !ParensAreEmpty)
           Current.Type = TT_CastRParen;
       } else if (Current.is(tok::at) && Current.Next) {
@@ -840,6 +870,11 @@ private:
       return PreviousNotConst && PreviousNotConst->MatchingParen &&
              PreviousNotConst->MatchingParen->Previous &&
              PreviousNotConst->MatchingParen->Previous->isNot(tok::kw_template);
+
+    if (PreviousNotConst->is(tok::r_paren) && PreviousNotConst->MatchingParen &&
+        PreviousNotConst->MatchingParen->Previous &&
+        PreviousNotConst->MatchingParen->Previous->is(tok::kw_decltype))
+      return true;
 
     return (!IsPPKeyword && PreviousNotConst->is(tok::identifier)) ||
            PreviousNotConst->Type == TT_PointerOrReference ||
@@ -1427,7 +1462,7 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
                         tok::semi) ||
            (Style.SpaceBeforeParens != FormatStyle::SBPO_Never &&
             (Left.isOneOf(tok::kw_if, tok::kw_for, tok::kw_while,
-                          tok::kw_switch, tok::kw_catch) ||
+                          tok::kw_switch, tok::kw_catch, tok::kw_case) ||
              Left.IsForEachMacro)) ||
            (Style.SpaceBeforeParens == FormatStyle::SBPO_Always &&
             Left.isOneOf(tok::identifier, tok::kw___attribute) &&
@@ -1580,6 +1615,8 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
                                     const FormatToken &Right) {
   const FormatToken &Left = *Right.Previous;
   if (Left.is(tok::at))
+    return false;
+  if (Left.Tok.getObjCKeywordID() == tok::objc_interface)
     return false;
   if (Right.Type == TT_StartOfName || Right.is(tok::kw_operator))
     return true;

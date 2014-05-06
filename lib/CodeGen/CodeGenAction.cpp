@@ -383,7 +383,7 @@ BackendConsumer::StackSizeDiagHandler(const llvm::DiagnosticInfoStackSize &D) {
 void BackendConsumer::OptimizationRemarkHandler(
     const llvm::DiagnosticInfoOptimizationRemark &D) {
   // We only support remarks.
-  assert (D.getSeverity() == llvm::DS_Remark);
+  assert(D.getSeverity() == llvm::DS_Remark);
 
   // Optimization remarks are active only if -Rpass=regexp is given and the
   // regular expression pattern in 'regexp' matches the name of the pass
@@ -405,7 +405,7 @@ void BackendConsumer::OptimizationRemarkHandler(
                                            Column);
     }
     Diags.Report(Loc, diag::remark_fe_backend_optimization_remark)
-        << D.getMsg().str();
+        << AddFlagValue(D.getPassName()) << D.getMsg().str();
 
     if (Line == 0)
       // If we could not extract a source location for the diagnostic,

@@ -716,23 +716,16 @@ ASTUnit *ASTUnit::LoadFromASTFile(const std::string &Filename,
   HeaderSearch &HeaderInfo = *AST->HeaderInfo.get();
   unsigned Counter;
 
-  AST->PP = new Preprocessor(PPOpts,
-                             AST->getDiagnostics(), AST->ASTFileLangOpts,
-                             /*Target=*/0, AST->getSourceManager(), HeaderInfo, 
-                             *AST, 
-                             /*IILookup=*/0,
-                             /*OwnsHeaderSearch=*/false,
-                             /*DelayInitialization=*/true);
+  AST->PP =
+      new Preprocessor(PPOpts, AST->getDiagnostics(), AST->ASTFileLangOpts,
+                       AST->getSourceManager(), HeaderInfo, *AST,
+                       /*IILookup=*/0,
+                       /*OwnsHeaderSearch=*/false);
   Preprocessor &PP = *AST->PP;
 
-  AST->Ctx = new ASTContext(AST->ASTFileLangOpts,
-                            AST->getSourceManager(),
-                            /*Target=*/0,
-                            PP.getIdentifierTable(),
-                            PP.getSelectorTable(),
-                            PP.getBuiltinInfo(),
-                            /* size_reserve = */0,
-                            /*DelayInitialization=*/true);
+  AST->Ctx = new ASTContext(AST->ASTFileLangOpts, AST->getSourceManager(),
+                            PP.getIdentifierTable(), PP.getSelectorTable(),
+                            PP.getBuiltinInfo());
   ASTContext &Context = *AST->Ctx;
 
   bool disableValid = false;
@@ -1714,7 +1707,10 @@ void ASTUnit::RealizeTopLevelDeclsFromPreamble() {
 }
 
 void ASTUnit::transferASTDataFromCompilerInstance(CompilerInstance &CI) {
-  // Steal the created target, context, and preprocessor.
+  // Steal the created target, context, and preprocessor if they have been
+  // created.
+  assert(CI.hasInvocation() && "missing invocation");
+  LangOpts = CI.getInvocation().getLangOpts();
   TheSema.reset(CI.takeSema());
   Consumer.reset(CI.takeASTConsumer());
   if (CI.hasASTContext())
@@ -1942,18 +1938,13 @@ bool ASTUnit::LoadFromCompilerInvocation(bool PrecompilePreamble) {
   return Parse(OverrideMainBuffer);
 }
 
-ASTUnit *ASTUnit::LoadFromCompilerInvocation(CompilerInvocation *CI,
-                              IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
-                                             bool OnlyLocalDecls,
-                                             bool CaptureDiagnostics,
-                                             bool PrecompilePreamble,
-                                             TranslationUnitKind TUKind,
-                                             bool CacheCodeCompletionResults,
-                                    bool IncludeBriefCommentsInCodeCompletion,
-                                             bool UserFilesAreVolatile) {
+std::unique_ptr<ASTUnit> ASTUnit::LoadFromCompilerInvocation(
+    CompilerInvocation *CI, IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
+    bool OnlyLocalDecls, bool CaptureDiagnostics, bool PrecompilePreamble,
+    TranslationUnitKind TUKind, bool CacheCodeCompletionResults,
+    bool IncludeBriefCommentsInCodeCompletion, bool UserFilesAreVolatile) {
   // Create the AST unit.
-  std::unique_ptr<ASTUnit> AST;
-  AST.reset(new ASTUnit(false));
+  std::unique_ptr<ASTUnit> AST(new ASTUnit(false));
   ConfigureDiags(Diags, 0, 0, *AST, CaptureDiagnostics);
   AST->Diagnostics = Diags;
   AST->OnlyLocalDecls = OnlyLocalDecls;
@@ -1978,8 +1969,9 @@ ASTUnit *ASTUnit::LoadFromCompilerInvocation(CompilerInvocation *CI,
     llvm::CrashRecoveryContextReleaseRefCleanup<DiagnosticsEngine> >
     DiagCleanup(Diags.getPtr());
 
-  return AST->LoadFromCompilerInvocation(PrecompilePreamble) ? 0
-                                                             : AST.release();
+  if (AST->LoadFromCompilerInvocation(PrecompilePreamble))
+    return nullptr;
+  return AST;
 }
 
 ASTUnit *ASTUnit::LoadFromCommandLine(

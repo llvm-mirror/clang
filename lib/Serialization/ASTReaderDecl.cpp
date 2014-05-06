@@ -99,9 +99,12 @@ namespace clang {
     Module *readModule(const RecordData &R, unsigned &I) {
       return Reader.getSubmodule(readSubmoduleID(R, I));
     }
-    
+
+    void ReadCXXRecordDefinition(CXXRecordDecl *D);
     void ReadCXXDefinitionData(struct CXXRecordDecl::DefinitionData &Data,
                                const RecordData &R, unsigned &I);
+    void MergeDefinitionData(CXXRecordDecl *D,
+                             struct CXXRecordDecl::DefinitionData &NewDD);
 
     /// \brief RAII class used to capture the first ID within a redeclaration
     /// chain and to introduce it into the list of pending redeclaration chains
@@ -264,7 +267,7 @@ namespace clang {
     void VisitImplicitParamDecl(ImplicitParamDecl *PD);
     void VisitParmVarDecl(ParmVarDecl *PD);
     void VisitNonTypeTemplateParmDecl(NonTypeTemplateParmDecl *D);
-    void VisitTemplateDecl(TemplateDecl *D);
+    DeclID VisitTemplateDecl(TemplateDecl *D);
     RedeclarableResult VisitRedeclarableTemplateDecl(RedeclarableTemplateDecl *D);
     void VisitClassTemplateDecl(ClassTemplateDecl *D);
     void VisitVarTemplateDecl(VarTemplateDecl *D);
@@ -285,19 +288,25 @@ namespace clang {
     void VisitEmptyDecl(EmptyDecl *D);
 
     std::pair<uint64_t, uint64_t> VisitDeclContext(DeclContext *DC);
-    
-    template<typename T> 
+
+    template<typename T>
     RedeclarableResult VisitRedeclarable(Redeclarable<T> *D);
 
     template<typename T>
-    void mergeRedeclarable(Redeclarable<T> *D, RedeclarableResult &Redecl);
+    void mergeRedeclarable(Redeclarable<T> *D, RedeclarableResult &Redecl,
+                           DeclID TemplatePatternID = 0);
 
     template<typename T>
     void mergeRedeclarable(Redeclarable<T> *D, T *Existing,
-                           RedeclarableResult &Redecl);
+                           RedeclarableResult &Redecl,
+                           DeclID TemplatePatternID = 0);
 
     template<typename T>
     void mergeMergeable(Mergeable<T> *D);
+
+    void mergeTemplatePattern(RedeclarableTemplateDecl *D,
+                              RedeclarableTemplateDecl *Existing,
+                              DeclID DsID);
 
     // FIXME: Reorder according to DeclNodes.td?
     void VisitObjCMethodDecl(ObjCMethodDecl *D);
@@ -337,7 +346,7 @@ void ASTDeclReader::Visit(Decl *D) {
   }
 
   if (TypeDecl *TD = dyn_cast<TypeDecl>(D)) {
-    // if we have a fully initialized TypeDecl, we can safely read its type now.
+    // We have a fully initialized TypeDecl. Read its type now.
     TD->setTypeForDecl(Reader.GetType(TypeIDForTypeDecl).getTypePtrOrNull());
   } else if (ObjCInterfaceDecl *ID = dyn_cast<ObjCInterfaceDecl>(D)) {
     // if we have a fully initialized TypeDecl, we can safely read its type now.
@@ -474,7 +483,8 @@ ASTDeclReader::RedeclarableResult ASTDeclReader::VisitTagDecl(TagDecl *TD) {
   } else
     TD->NamedDeclOrQualifier = ReadDeclAs<NamedDecl>(Record, Idx);
 
-  mergeRedeclarable(TD, Redecl);
+  if (!isa<CXXRecordDecl>(TD))
+    mergeRedeclarable(TD, Redecl);
   return Redecl;
 }
 
@@ -576,9 +586,10 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
 
   switch ((FunctionDecl::TemplatedKind)Record[Idx++]) {
   case FunctionDecl::TK_NonTemplate:
-    mergeRedeclarable(FD, Redecl);      
+    mergeRedeclarable(FD, Redecl);
     break;
   case FunctionDecl::TK_FunctionTemplate:
+    // Merged when we merge the template.
     FD->setDescribedFunctionTemplate(ReadDeclAs<FunctionTemplateDecl>(Record, 
                                                                       Idx));
     break;
@@ -588,6 +599,7 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
     SourceLocation POI = ReadSourceLocation(Record, Idx);
     FD->setInstantiationOfMemberFunction(Reader.getContext(), InstFD, TSK);
     FD->getMemberSpecializationInfo()->setPointOfInstantiation(POI);
+    mergeRedeclarable(FD, Redecl);
     break;
   }
   case FunctionDecl::TK_FunctionTemplateSpecialization: {
@@ -673,6 +685,8 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
     
     FD->setDependentTemplateSpecialization(Reader.getContext(),
                                            TemplDecls, TemplArgs);
+
+    // FIXME: Merging.
     break;
   }
   }
@@ -977,10 +991,6 @@ ASTDeclReader::RedeclarableResult ASTDeclReader::VisitVarDeclImpl(VarDecl *VD) {
       VD->getLexicalDeclContext()->isFunctionOrMethod())
     VD->setLocalExternDecl();
 
-  // Only true variables (not parameters or implicit parameters) can be merged.
-  if (VD->getKind() != Decl::ParmVar && VD->getKind() != Decl::ImplicitParam)
-    mergeRedeclarable(VD, Redecl);
-  
   if (uint64_t Val = Record[Idx++]) {
     VD->setInit(Reader.ReadExpr(F));
     if (Val > 1) {
@@ -995,8 +1005,12 @@ ASTDeclReader::RedeclarableResult ASTDeclReader::VisitVarDeclImpl(VarDecl *VD) {
   };
   switch ((VarKind)Record[Idx++]) {
   case VarNotTemplate:
+    // Only true variables (not parameters or implicit parameters) can be merged
+    if (VD->getKind() != Decl::ParmVar && VD->getKind() != Decl::ImplicitParam)
+      mergeRedeclarable(VD, Redecl);
     break;
   case VarTemplate:
+    // Merged when we merge the template.
     VD->setDescribedVarTemplate(ReadDeclAs<VarTemplateDecl>(Record, Idx));
     break;
   case StaticDataMemberSpecialization: { // HasMemberSpecializationInfo.
@@ -1004,6 +1018,7 @@ ASTDeclReader::RedeclarableResult ASTDeclReader::VisitVarDeclImpl(VarDecl *VD) {
     TemplateSpecializationKind TSK = (TemplateSpecializationKind)Record[Idx++];
     SourceLocation POI = ReadSourceLocation(Record, Idx);
     Reader.getContext().setInstantiatedFromStaticDataMember(VD, Tmpl, TSK,POI);
+    mergeRedeclarable(VD, Redecl);
     break;
   }
   }
@@ -1259,61 +1274,168 @@ void ASTDeclReader::ReadCXXDefinitionData(
   }
 }
 
+void ASTDeclReader::MergeDefinitionData(
+    CXXRecordDecl *D, struct CXXRecordDecl::DefinitionData &MergeDD) {
+  assert(D->DefinitionData && "merging class definition into non-definition");
+  auto &DD = *D->DefinitionData;
+
+  // If the new definition has new special members, let the name lookup
+  // code know that it needs to look in the new definition too.
+  if ((MergeDD.DeclaredSpecialMembers & ~DD.DeclaredSpecialMembers) &&
+      DD.Definition != MergeDD.Definition) {
+    Reader.MergedLookups[DD.Definition].push_back(MergeDD.Definition);
+    DD.Definition->setHasExternalVisibleStorage();
+  }
+
+  // FIXME: Move this out into a .def file?
+  // FIXME: Issue a diagnostic on a mismatched MATCH_FIELD, rather than
+  // asserting; this can happen in the case of an ODR violation.
+  bool DetectedOdrViolation = false;
+#define OR_FIELD(Field) DD.Field |= MergeDD.Field;
+#define MATCH_FIELD(Field) \
+    DetectedOdrViolation |= DD.Field != MergeDD.Field; \
+    OR_FIELD(Field)
+  MATCH_FIELD(UserDeclaredConstructor)
+  MATCH_FIELD(UserDeclaredSpecialMembers)
+  MATCH_FIELD(Aggregate)
+  MATCH_FIELD(PlainOldData)
+  MATCH_FIELD(Empty)
+  MATCH_FIELD(Polymorphic)
+  MATCH_FIELD(Abstract)
+  MATCH_FIELD(IsStandardLayout)
+  MATCH_FIELD(HasNoNonEmptyBases)
+  MATCH_FIELD(HasPrivateFields)
+  MATCH_FIELD(HasProtectedFields)
+  MATCH_FIELD(HasPublicFields)
+  MATCH_FIELD(HasMutableFields)
+  MATCH_FIELD(HasVariantMembers)
+  MATCH_FIELD(HasOnlyCMembers)
+  MATCH_FIELD(HasInClassInitializer)
+  MATCH_FIELD(HasUninitializedReferenceMember)
+  MATCH_FIELD(NeedOverloadResolutionForMoveConstructor)
+  MATCH_FIELD(NeedOverloadResolutionForMoveAssignment)
+  MATCH_FIELD(NeedOverloadResolutionForDestructor)
+  MATCH_FIELD(DefaultedMoveConstructorIsDeleted)
+  MATCH_FIELD(DefaultedMoveAssignmentIsDeleted)
+  MATCH_FIELD(DefaultedDestructorIsDeleted)
+  OR_FIELD(HasTrivialSpecialMembers)
+  OR_FIELD(DeclaredNonTrivialSpecialMembers)
+  MATCH_FIELD(HasIrrelevantDestructor)
+  OR_FIELD(HasConstexprNonCopyMoveConstructor)
+  MATCH_FIELD(DefaultedDefaultConstructorIsConstexpr)
+  OR_FIELD(HasConstexprDefaultConstructor)
+  MATCH_FIELD(HasNonLiteralTypeFieldsOrBases)
+  // ComputedVisibleConversions is handled below.
+  MATCH_FIELD(UserProvidedDefaultConstructor)
+  OR_FIELD(DeclaredSpecialMembers)
+  MATCH_FIELD(ImplicitCopyConstructorHasConstParam)
+  MATCH_FIELD(ImplicitCopyAssignmentHasConstParam)
+  OR_FIELD(HasDeclaredCopyConstructorWithConstParam)
+  OR_FIELD(HasDeclaredCopyAssignmentWithConstParam)
+  MATCH_FIELD(IsLambda)
+#undef OR_FIELD
+#undef MATCH_FIELD
+
+  if (DD.NumBases != MergeDD.NumBases || DD.NumVBases != MergeDD.NumVBases)
+    DetectedOdrViolation = true;
+  // FIXME: Issue a diagnostic if the base classes don't match when we come
+  // to lazily load them.
+
+  // FIXME: Issue a diagnostic if the list of conversion functions doesn't
+  // match when we come to lazily load them.
+  if (MergeDD.ComputedVisibleConversions && !DD.ComputedVisibleConversions) {
+    DD.VisibleConversions = std::move(MergeDD.VisibleConversions);
+    DD.ComputedVisibleConversions = true;
+  }
+
+  // FIXME: Issue a diagnostic if FirstFriend doesn't match when we come to
+  // lazily load it.
+
+  if (DD.IsLambda) {
+    // FIXME: ODR-checking for merging lambdas (this happens, for instance,
+    // when they occur within the body of a function template specialization).
+  }
+
+  if (DetectedOdrViolation)
+    Reader.PendingOdrMergeFailures[DD.Definition].push_back(MergeDD.Definition);
+}
+
+void ASTDeclReader::ReadCXXRecordDefinition(CXXRecordDecl *D) {
+  struct CXXRecordDecl::DefinitionData *DD;
+  ASTContext &C = Reader.getContext();
+
+  // Determine whether this is a lambda closure type, so that we can
+  // allocate the appropriate DefinitionData structure.
+  bool IsLambda = Record[Idx++];
+  if (IsLambda)
+    DD = new (C) CXXRecordDecl::LambdaDefinitionData(D, 0, false, false,
+                                                     LCD_None);
+  else
+    DD = new (C) struct CXXRecordDecl::DefinitionData(D);
+
+  ReadCXXDefinitionData(*DD, Record, Idx);
+
+  // If we're reading an update record, we might already have a definition for
+  // this record. If so, just merge into it.
+  if (D->DefinitionData) {
+    MergeDefinitionData(D, *DD);
+    return;
+  }
+
+  // Propagate the DefinitionData pointer to the canonical declaration, so
+  // that all other deserialized declarations will see it.
+  CXXRecordDecl *Canon = D->getCanonicalDecl();
+  if (Canon == D) {
+    D->DefinitionData = DD;
+    D->IsCompleteDefinition = true;
+  } else if (!Canon->DefinitionData) {
+    Canon->DefinitionData = D->DefinitionData = DD;
+    D->IsCompleteDefinition = true;
+
+    // Note that we have deserialized a definition. Any declarations
+    // deserialized before this one will be be given the DefinitionData
+    // pointer at the end.
+    Reader.PendingDefinitions.insert(D);
+  } else {
+    // We have already deserialized a definition of this record. This
+    // definition is no longer really a definition. Note that the pre-existing
+    // definition is the *real* definition.
+    Reader.MergedDeclContexts.insert(
+        std::make_pair(D, Canon->DefinitionData->Definition));
+    D->DefinitionData = D->getCanonicalDecl()->DefinitionData;
+    D->IsCompleteDefinition = false;
+    MergeDefinitionData(D, *DD);
+  }
+}
+
 ASTDeclReader::RedeclarableResult
 ASTDeclReader::VisitCXXRecordDeclImpl(CXXRecordDecl *D) {
   RedeclarableResult Redecl = VisitRecordDeclImpl(D);
 
   ASTContext &C = Reader.getContext();
-  bool WasDefinition = Record[Idx++];
-  if (WasDefinition) {
-    // Determine whether this is a lambda closure type, so that we can
-    // allocate the appropriate DefinitionData structure.
-    bool IsLambda = Record[Idx++];
-    if (IsLambda)
-      D->DefinitionData = new (C) CXXRecordDecl::LambdaDefinitionData(D, 0,
-                                                                      false,
-                                                                      false, LCD_None);
-    else
-      D->DefinitionData = new (C) struct CXXRecordDecl::DefinitionData(D);
-
-    ReadCXXDefinitionData(*D->DefinitionData, Record, Idx);
-
-    // Propagate the DefinitionData pointer to the canonical declaration, so
-    // that all other deserialized declarations will see it.
-    CXXRecordDecl *Canon = D->getCanonicalDecl();
-    if (Canon == D) {
-      // Nothing to do.
-    } else if (!Canon->DefinitionData) {
-      Canon->DefinitionData = D->DefinitionData;
-
-      // Note that we have deserialized a definition. Any declarations
-      // deserialized before this one will be be given the DefinitionData
-      // pointer at the end.
-      Reader.PendingDefinitions.insert(D);
-    } else {
-      // We have already deserialized a definition of this record. This
-      // definition is no longer really a definition. Note that the pre-existing
-      // definition is the *real* definition.
-      // FIXME: Check DefinitionData for consistency with prior definition.
-      Reader.MergedDeclContexts.insert(
-          std::make_pair(D, D->getCanonicalDecl()->DefinitionData->Definition));
-      D->IsCompleteDefinition = false;
-      D->DefinitionData = D->getCanonicalDecl()->DefinitionData;
-    }
-  } else {
-    // Propagate DefinitionData pointer from the canonical declaration.
-    D->DefinitionData = D->getCanonicalDecl()->DefinitionData;
-  }
 
   enum CXXRecKind {
     CXXRecNotTemplate = 0, CXXRecTemplate, CXXRecMemberSpecialization
   };
   switch ((CXXRecKind)Record[Idx++]) {
   case CXXRecNotTemplate:
+    mergeRedeclarable(D, Redecl);
     break;
-  case CXXRecTemplate:
-    D->TemplateOrInstantiation = ReadDeclAs<ClassTemplateDecl>(Record, Idx);
+  case CXXRecTemplate: {
+    // Merged when we merge the template.
+    ClassTemplateDecl *Template = ReadDeclAs<ClassTemplateDecl>(Record, Idx);
+    D->TemplateOrInstantiation = Template;
+    if (!Template->getTemplatedDecl()) {
+      // We've not actually loaded the ClassTemplateDecl yet, because we're
+      // currently being loaded as its pattern. Rely on it to set up our
+      // TypeForDecl (see VisitClassTemplateDecl).
+      //
+      // Beware: we do not yet know our canonical declaration, and may still
+      // get merged once the surrounding class template has got off the ground.
+      TypeIDForTypeDecl = 0;
+    }
     break;
+  }
   case CXXRecMemberSpecialization: {
     CXXRecordDecl *RD = ReadDeclAs<CXXRecordDecl>(Record, Idx);
     TemplateSpecializationKind TSK = (TemplateSpecializationKind)Record[Idx++];
@@ -1321,9 +1443,17 @@ ASTDeclReader::VisitCXXRecordDeclImpl(CXXRecordDecl *D) {
     MemberSpecializationInfo *MSI = new (C) MemberSpecializationInfo(RD, TSK);
     MSI->setPointOfInstantiation(POI);
     D->TemplateOrInstantiation = MSI;
+    mergeRedeclarable(D, Redecl);
     break;
   }
   }
+
+  bool WasDefinition = Record[Idx++];
+  if (WasDefinition)
+    ReadCXXRecordDefinition(D);
+  else
+    // Propagate DefinitionData pointer from the canonical declaration.
+    D->DefinitionData = D->getCanonicalDecl()->DefinitionData;
 
   // Lazily load the key function to avoid deserializing every method so we can
   // compute it.
@@ -1353,6 +1483,7 @@ void ASTDeclReader::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
   if (auto *CD = ReadDeclAs<CXXConstructorDecl>(Record, Idx))
     D->setInheritedConstructor(CD);
   D->IsExplicitSpecified = Record[Idx++];
+  // FIXME: We should defer loading this until we need the constructor's body.
   std::tie(D->CtorInitializers, D->NumCtorInitializers) =
       Reader.ReadCXXCtorInitializers(F, Record, Idx);
 }
@@ -1410,16 +1541,19 @@ void ASTDeclReader::VisitFriendTemplateDecl(FriendTemplateDecl *D) {
   D->FriendLoc = ReadSourceLocation(Record, Idx);
 }
 
-void ASTDeclReader::VisitTemplateDecl(TemplateDecl *D) {
+DeclID ASTDeclReader::VisitTemplateDecl(TemplateDecl *D) {
   VisitNamedDecl(D);
 
-  NamedDecl *TemplatedDecl = ReadDeclAs<NamedDecl>(Record, Idx);
+  DeclID PatternID = ReadDeclID(Record, Idx);
+  NamedDecl *TemplatedDecl = cast_or_null<NamedDecl>(Reader.GetDecl(PatternID));
   TemplateParameterList* TemplateParams
       = Reader.ReadTemplateParameterList(F, Record, Idx); 
   D->init(TemplatedDecl, TemplateParams);
 
   // FIXME: If this is a redeclaration of a template from another module, handle
   // inheritance of default template arguments.
+
+  return PatternID;
 }
 
 ASTDeclReader::RedeclarableResult 
@@ -1448,10 +1582,10 @@ ASTDeclReader::VisitRedeclarableTemplateDecl(RedeclarableTemplateDecl *D) {
     }
   }
 
-  VisitTemplateDecl(D);
+  DeclID PatternID = VisitTemplateDecl(D);
   D->IdentifierNamespace = Record[Idx++];
 
-  mergeRedeclarable(D, Redecl);
+  mergeRedeclarable(D, Redecl, PatternID);
 
   // If we merged the template with a prior declaration chain, merge the common
   // pointer.
@@ -1494,6 +1628,14 @@ void ASTDeclReader::VisitClassTemplateDecl(ClassTemplateDecl *D) {
     }
     
     CommonPtr->InjectedClassNameType = Reader.readType(F, Record, Idx);
+  }
+
+  if (D->getTemplatedDecl()->TemplateOrInstantiation) {
+    // We were loaded before our templated declaration was. We've not set up
+    // its corresponding type yet (see VisitCXXRecordDeclImpl), so reconstruct
+    // it now.
+    Reader.Context.getInjectedClassNameType(
+        D->getTemplatedDecl(), D->getCommonPtr()->InjectedClassNameType);
   }
 }
 
@@ -1590,7 +1732,7 @@ ASTDeclReader::VisitClassTemplateSpecializationDeclImpl(
           if (!CanonSpec->DefinitionData) {
             CanonSpec->DefinitionData = D->DefinitionData;
           } else {
-            // FIXME: Check DefinitionData for consistency with prior definition
+            MergeDefinitionData(CanonSpec, *D->DefinitionData);
             Reader.PendingDefinitions.erase(D);
             Reader.MergedDeclContexts.insert(
                 std::make_pair(D, CanonSpec->DefinitionData->Definition));
@@ -1845,23 +1987,54 @@ ASTDeclReader::VisitRedeclarable(Redeclarable<T> *D) {
 /// of the same entity.
 template<typename T>
 void ASTDeclReader::mergeRedeclarable(Redeclarable<T> *D,
-                                      RedeclarableResult &Redecl) {
+                                      RedeclarableResult &Redecl,
+                                      DeclID TemplatePatternID) {
   // If modules are not available, there is no reason to perform this merge.
   if (!Reader.getContext().getLangOpts().Modules)
     return;
 
   if (FindExistingResult ExistingRes = findExisting(static_cast<T*>(D)))
     if (T *Existing = ExistingRes)
-      mergeRedeclarable(D, Existing, Redecl);
+      mergeRedeclarable(D, Existing, Redecl, TemplatePatternID);
+}
+
+/// \brief "Cast" to type T, asserting if we don't have an implicit conversion.
+/// We use this to put code in a template that will only be valid for certain
+/// instantiations.
+template<typename T> static T assert_cast(T t) { return t; }
+template<typename T> static T assert_cast(...) {
+  llvm_unreachable("bad assert_cast");
+}
+
+/// \brief Merge together the pattern declarations from two template
+/// declarations.
+void ASTDeclReader::mergeTemplatePattern(RedeclarableTemplateDecl *D,
+                                         RedeclarableTemplateDecl *Existing,
+                                         DeclID DsID) {
+  auto *DPattern = D->getTemplatedDecl();
+  auto *ExistingPattern = Existing->getTemplatedDecl();
+  RedeclarableResult Result(Reader, DsID, DPattern->getKind());
+  if (auto *DClass = dyn_cast<CXXRecordDecl>(DPattern))
+    // FIXME: Merge definitions here, if both declarations had definitions.
+    return mergeRedeclarable(DClass, cast<TagDecl>(ExistingPattern),
+                             Result);
+  if (auto *DFunction = dyn_cast<FunctionDecl>(DPattern))
+    return mergeRedeclarable(DFunction, cast<FunctionDecl>(ExistingPattern),
+                             Result);
+  if (auto *DVar = dyn_cast<VarDecl>(DPattern))
+    return mergeRedeclarable(DVar, cast<VarDecl>(ExistingPattern), Result);
+  llvm_unreachable("merged an unknown kind of redeclarable template");
 }
 
 /// \brief Attempts to merge the given declaration (D) with another declaration
 /// of the same entity.
 template<typename T>
-void ASTDeclReader::mergeRedeclarable(Redeclarable<T> *D, T *Existing,
-                                      RedeclarableResult &Redecl) {
+void ASTDeclReader::mergeRedeclarable(Redeclarable<T> *DBase, T *Existing,
+                                      RedeclarableResult &Redecl,
+                                      DeclID TemplatePatternID) {
+  T *D = static_cast<T*>(DBase);
   T *ExistingCanon = Existing->getCanonicalDecl();
-  T *DCanon = static_cast<T*>(D)->getCanonicalDecl();
+  T *DCanon = D->getCanonicalDecl();
   if (ExistingCanon != DCanon) {
     // Have our redeclaration link point back at the canonical declaration
     // of the existing declaration, so that this declaration has the 
@@ -1869,11 +2042,15 @@ void ASTDeclReader::mergeRedeclarable(Redeclarable<T> *D, T *Existing,
     D->RedeclLink = Redeclarable<T>::PreviousDeclLink(ExistingCanon);
 
     // When we merge a namespace, update its pointer to the first namespace.
-    if (NamespaceDecl *Namespace
-          = dyn_cast<NamespaceDecl>(static_cast<T*>(D))) {
+    if (auto *Namespace = dyn_cast<NamespaceDecl>(D))
       Namespace->AnonOrFirstNamespaceAndInline.setPointer(
-        static_cast<NamespaceDecl *>(static_cast<void*>(ExistingCanon)));
-    }
+          assert_cast<NamespaceDecl*>(ExistingCanon));
+
+    // When we merge a template, merge its pattern.
+    if (auto *DTemplate = dyn_cast<RedeclarableTemplateDecl>(D))
+      mergeTemplatePattern(
+          DTemplate, assert_cast<RedeclarableTemplateDecl*>(ExistingCanon),
+          TemplatePatternID);
 
     // Don't introduce DCanon into the set of pending declaration chains.
     Redecl.suppress();
@@ -1890,7 +2067,7 @@ void ASTDeclReader::mergeRedeclarable(Redeclarable<T> *D, T *Existing,
     // If this declaration was the canonical declaration, make a note of
     // that. We accept the linear algorithm here because the number of
     // unique canonical declarations of an entity should always be tiny.
-    if (DCanon == static_cast<T*>(D)) {
+    if (DCanon == D) {
       SmallVectorImpl<DeclID> &Merged = Reader.MergedDecls[ExistingCanon];
       if (std::find(Merged.begin(), Merged.end(), Redecl.getFirstID())
             == Merged.end())
@@ -2150,9 +2327,7 @@ static bool isSameEntity(NamedDecl *X, NamedDecl *Y) {
   // Fields with the same name and the same type match.
   if (FieldDecl *FDX = dyn_cast<FieldDecl>(X)) {
     FieldDecl *FDY = cast<FieldDecl>(Y);
-    // FIXME: Diagnose if the types don't match. More generally, diagnose if we
-    // get a declaration in a class definition that isn't in the canonical class
-    // definition.
+    // FIXME: Diagnose if the types don't match.
     // FIXME: Also check the bitwidth is odr-equivalent, if any.
     return X->getASTContext().hasSameType(FDX->getType(), FDY->getType());
   }
@@ -2259,6 +2434,9 @@ ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
 
   // If this declaration is from a merged context, make a note that we need to
   // check that the canonical definition of that context contains the decl.
+  //
+  // FIXME: We should do something similar if we merge two definitions of the
+  // same template specialization into the same CXXRecordDecl.
   if (Reader.MergedDeclContexts.count(D->getLexicalDeclContext()))
     Reader.PendingOdrMergeChecks.push_back(D);
 
@@ -2623,7 +2801,7 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
   assert(Idx == Record.size());
 
   // Load any relevant update records.
-  loadDeclUpdateRecords(ID, D);
+  PendingUpdateRecords.push_back(std::make_pair(ID, D));
 
   // Load the categories after recursive loading is finished.
   if (ObjCInterfaceDecl *Class = dyn_cast<ObjCInterfaceDecl>(D))
@@ -2923,12 +3101,14 @@ void ASTReader::loadObjCCategories(serialization::GlobalDeclID ID,
 
 void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
                                const RecordData &Record) {
-  unsigned Idx = 0;
   while (Idx < Record.size()) {
     switch ((DeclUpdateKind)Record[Idx++]) {
-    case UPD_CXX_ADDED_IMPLICIT_MEMBER:
-      cast<CXXRecordDecl>(D)->addedMember(Reader.ReadDecl(ModuleFile, Record, Idx));
+    case UPD_CXX_ADDED_IMPLICIT_MEMBER: {
+      Decl *MD = Reader.ReadDecl(ModuleFile, Record, Idx);
+      assert(MD && "couldn't read decl from update record");
+      cast<CXXRecordDecl>(D)->addedMember(MD);
       break;
+    }
 
     case UPD_CXX_ADDED_TEMPLATE_SPECIALIZATION:
       // It will be added to the template's specializations set when loaded.
@@ -2958,9 +3138,11 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
 
     case UPD_CXX_INSTANTIATED_FUNCTION_DEFINITION: {
       FunctionDecl *FD = cast<FunctionDecl>(D);
-      if (Reader.PendingBodies[FD])
+      if (Reader.PendingBodies[FD]) {
         // FIXME: Maybe check for ODR violations.
-        break;
+        // It's safe to stop now because this update record is always last.
+        return;
+      }
 
       if (Record[Idx++])
         FD->setImplicitlyInline();
@@ -2972,6 +3154,45 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
       Reader.PendingBodies[FD] = GetCurrentCursorOffset();
       HasPendingBody = true;
       assert(Idx == Record.size() && "lazy body must be last");
+      break;
+    }
+
+    case UPD_CXX_INSTANTIATED_CLASS_DEFINITION: {
+      auto *RD = cast<CXXRecordDecl>(D);
+      bool HadDefinition = RD->getDefinition();
+      ReadCXXRecordDefinition(RD);
+      // Visible update is handled separately.
+      uint64_t LexicalOffset = Record[Idx++];
+      if (!HadDefinition && LexicalOffset) {
+        RD->setHasExternalLexicalStorage(true);
+        Reader.ReadDeclContextStorage(ModuleFile, ModuleFile.DeclsCursor,
+                                          std::make_pair(LexicalOffset, 0),
+                                          ModuleFile.DeclContextInfos[RD]);
+      }
+
+      auto TSK = (TemplateSpecializationKind)Record[Idx++];
+      SourceLocation POI = Reader.ReadSourceLocation(ModuleFile, Record, Idx);
+      if (MemberSpecializationInfo *MSInfo =
+              RD->getMemberSpecializationInfo()) {
+        MSInfo->setTemplateSpecializationKind(TSK);
+        MSInfo->setPointOfInstantiation(POI);
+      } else {
+        ClassTemplateSpecializationDecl *Spec =
+            cast<ClassTemplateSpecializationDecl>(RD);
+        Spec->setTemplateSpecializationKind(TSK);
+        Spec->setPointOfInstantiation(POI);
+      }
+
+      RD->setTagKind((TagTypeKind)Record[Idx++]);
+      RD->setLocation(Reader.ReadSourceLocation(ModuleFile, Record, Idx));
+      RD->setLocStart(Reader.ReadSourceLocation(ModuleFile, Record, Idx));
+      RD->setRBraceLoc(Reader.ReadSourceLocation(ModuleFile, Record, Idx));
+
+      if (Record[Idx++]) {
+        AttrVec Attrs;
+        Reader.ReadAttributes(F, Attrs, Record, Idx);
+        D->setAttrsImpl(Attrs, Reader.getContext());
+      }
       break;
     }
 

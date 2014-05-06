@@ -830,9 +830,8 @@ def NonNull : InheritableAttr {
   let Args = [VariadicUnsignedArgument<"Args">];
   let AdditionalMembers =
 [{bool isNonNull(unsigned idx) const {
-    for (args_iterator i = args_begin(), e = args_end();
-         i != e; ++i)
-      if (*i == idx)
+    for (const auto &V : args())
+      if (V == idx)
         return true;
     return false;
   } }];
@@ -1568,7 +1567,7 @@ def ConsumableSetOnRead : InheritableAttr {
 def CallableWhen : InheritableAttr {
   let Spellings = [GNU<"callable_when">];
   let Subjects = SubjectList<[CXXMethod]>;
-  let Args = [VariadicEnumArgument<"CallableState", "ConsumedState",
+  let Args = [VariadicEnumArgument<"CallableStates", "ConsumedState",
                                    ["unknown", "consumed", "unconsumed"],
                                    ["Unknown", "Consumed", "Unconsumed"]>];
   let Documentation = [CallableWhenDocs];
@@ -1663,6 +1662,13 @@ def SelectAny : InheritableAttr {
   let Spellings = [Declspec<"selectany">];
   let LangOpts = [MicrosoftExt];
   let Documentation = [Undocumented];
+}
+
+def Thread : Attr {
+  let Spellings = [Declspec<"thread">];
+  let LangOpts = [MicrosoftExt];
+  let Documentation = [ThreadDocs];
+  let Subjects = SubjectList<[Var]>;
 }
 
 def Win64 : IgnoredAttr {

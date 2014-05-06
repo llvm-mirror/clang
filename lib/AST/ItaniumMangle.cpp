@@ -136,7 +136,8 @@ public:
   void mangleCXXDtorThunk(const CXXDestructorDecl *DD, CXXDtorType Type,
                           const ThisAdjustment &ThisAdjustment,
                           raw_ostream &) override;
-  void mangleReferenceTemporary(const VarDecl *D, raw_ostream &) override;
+  void mangleReferenceTemporary(const VarDecl *D, unsigned ManglingNumber,
+                                raw_ostream &) override;
   void mangleCXXVTable(const CXXRecordDecl *RD, raw_ostream &) override;
   void mangleCXXVTT(const CXXRecordDecl *RD, raw_ostream &) override;
   void mangleCXXCtorVTable(const CXXRecordDecl *RD, int64_t Offset,
@@ -455,6 +456,25 @@ void CXXNameMangler::mangleFunctionEncoding(const FunctionDecl *FD) {
   // Don't mangle in the type if this isn't a decl we should typically mangle.
   if (!Context.shouldMangleDeclName(FD))
     return;
+
+  if (FD->hasAttr<EnableIfAttr>()) {
+    FunctionTypeDepthState Saved = FunctionTypeDepth.push();
+    Out << "Ua9enable_ifI";
+    // FIXME: specific_attr_iterator iterates in reverse order. Fix that and use
+    // it here.
+    for (AttrVec::const_reverse_iterator I = FD->getAttrs().rbegin(),
+                                         E = FD->getAttrs().rend();
+         I != E; ++I) {
+      EnableIfAttr *EIA = dyn_cast<EnableIfAttr>(*I);
+      if (!EIA)
+        continue;
+      Out << 'X';
+      mangleExpression(EIA->getCond());
+      Out << 'E';
+    }
+    Out << 'E';
+    FunctionTypeDepth.pop(Saved);
+  }
 
   // Whether the mangling of a function type includes the return type depends on
   // the context and the nature of the function. The rules for deciding whether
@@ -2279,6 +2299,7 @@ void CXXNameMangler::mangleType(const VectorType *T) {
         getASTContext().getTargetInfo().getTriple().getArch();
     if (Arch == llvm::Triple::aarch64 ||
         Arch == llvm::Triple::aarch64_be ||
+        Arch == llvm::Triple::arm64_be ||
         (Arch == llvm::Triple::arm64 && !Target.isOSDarwin()))
       mangleAArch64NeonVectorType(T);
     else
@@ -3762,12 +3783,16 @@ ItaniumMangleContextImpl::mangleItaniumThreadLocalWrapper(const VarDecl *D,
 }
 
 void ItaniumMangleContextImpl::mangleReferenceTemporary(const VarDecl *D,
+                                                        unsigned ManglingNumber,
                                                         raw_ostream &Out) {
   // We match the GCC mangling here.
   //  <special-name> ::= GR <object name>
   CXXNameMangler Mangler(*this, Out);
   Mangler.getStream() << "_ZGR";
   Mangler.mangleName(D);
+  assert(ManglingNumber > 0 && "Reference temporary mangling number is zero!");
+  if (ManglingNumber > 1)
+    Mangler.mangleNumber(ManglingNumber - 2);
 }
 
 void ItaniumMangleContextImpl::mangleCXXVTable(const CXXRecordDecl *RD,

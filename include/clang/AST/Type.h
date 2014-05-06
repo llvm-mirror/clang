@@ -3980,9 +3980,9 @@ public:
 
   static bool KeywordIsTagTypeKind(ElaboratedTypeKeyword Keyword);
 
-  static const char *getKeywordName(ElaboratedTypeKeyword Keyword);
+  static StringRef getKeywordName(ElaboratedTypeKeyword Keyword);
 
-  static const char *getTagTypeKindName(TagTypeKind Kind) {
+  static StringRef getTagTypeKindName(TagTypeKind Kind) {
     return getKeywordName(getKeywordForTagTypeKind(Kind));
   }
 
@@ -4223,7 +4223,7 @@ class PackExpansionType : public Type, public llvm::FoldingSetNode {
                     Optional<unsigned> NumExpansions)
     : Type(PackExpansion, Canon, /*Dependent=*/Pattern->isDependentType(),
            /*InstantiationDependent=*/true,
-           /*VariableModified=*/Pattern->isVariablyModifiedType(),
+           /*VariablyModified=*/Pattern->isVariablyModifiedType(),
            /*ContainsUnexpandedParameterPack=*/false),
       Pattern(Pattern),
       NumExpansions(NumExpansions? *NumExpansions + 1: 0) { }

@@ -217,3 +217,7 @@
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC1
 // RUN: %clang -c %s -target mipsel-linux-android -### 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=CHECK-PIC1
+// RUN: %clang -c %s -target aarch64-linux-android -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIC1
+// RUN: %clang -c %s -target arm64-linux-android -### 2>&1 \
+// RUN:   | FileCheck %s --check-prefix=CHECK-PIC1
