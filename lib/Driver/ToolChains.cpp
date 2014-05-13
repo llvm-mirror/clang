@@ -680,10 +680,7 @@ DerivedArgList *MachO::TranslateArgs(const DerivedArgList &Args,
   // have something that works, we should reevaluate each translation
   // and try to push it down into tool specific logic.
 
-  for (ArgList::const_iterator it = Args.begin(),
-         ie = Args.end(); it != ie; ++it) {
-    Arg *A = *it;
-
+  for (Arg *A : Args) {
     if (A->getOption().matches(options::OPT_Xarch__)) {
       // Skip this argument unless the architecture matches either the toolchain
       // triple arch, or the arch being bound.
@@ -1285,19 +1282,14 @@ Generic_GCC::GCCInstallationDetector::init(
 }
 
 void Generic_GCC::GCCInstallationDetector::print(raw_ostream &OS) const {
-  for (std::set<std::string>::const_iterator
-           I = CandidateGCCInstallPaths.begin(),
-           E = CandidateGCCInstallPaths.end();
-       I != E; ++I)
-    OS << "Found candidate GCC installation: " << *I << "\n";
+  for (const auto &InstallPath : CandidateGCCInstallPaths)
+    OS << "Found candidate GCC installation: " << InstallPath << "\n";
 
   if (!GCCInstallPath.empty())
     OS << "Selected GCC installation: " << GCCInstallPath << "\n";
 
-  for (MultilibSet::const_iterator I = Multilibs.begin(), E = Multilibs.end();
-       I != E; ++I) {
-    OS << "Candidate multilib: " << *I << "\n";
-  }
+  for (const auto &Multilib : Multilibs)
+    OS << "Candidate multilib: " << Multilib << "\n";
 
   if (Multilibs.size() != 0 || !SelectedMultilib.isDefault())
     OS << "Selected multilib: " << SelectedMultilib << "\n";
@@ -1320,10 +1312,11 @@ bool Generic_GCC::GCCInstallationDetector::getBiarchSibling(Multilib &M) const {
   // Declare a bunch of static data sets that we'll select between below. These
   // are specifically designed to always refer to string literals to avoid any
   // lifetime or initialization issues.
-  static const char *const AArch64LibDirs[] = { "/lib" };
+  static const char *const AArch64LibDirs[] = { "/lib64", "/lib" };
   static const char *const AArch64Triples[] = { "aarch64-none-linux-gnu",
                                                 "aarch64-linux-gnu",
-                                                "aarch64-linux-android" };
+                                                "aarch64-linux-android",
+                                                "aarch64-redhat-linux" };
   static const char *const AArch64beLibDirs[] = { "/lib" };
   static const char *const AArch64beTriples[] = { "aarch64_be-none-linux-gnu",
                                                   "aarch64_be-linux-gnu" };
@@ -2564,7 +2557,9 @@ NetBSD::NetBSD(const Driver &D, const llvm::Triple& Triple, const ArgList &Args)
       getFilePaths().push_back("=/usr/lib/i386");
       break;
     case llvm::Triple::arm:
+    case llvm::Triple::armeb:
     case llvm::Triple::thumb:
+    case llvm::Triple::thumbeb:
       switch (Triple.getEnvironment()) {
       case llvm::Triple::EABI:
       case llvm::Triple::EABIHF:
@@ -2618,8 +2613,12 @@ NetBSD::GetCXXStdlibType(const ArgList &Args) const {
 
   unsigned Major, Minor, Micro;
   getTriple().getOSVersion(Major, Minor, Micro);
-  if (Major >= 7 || (Major == 6 && Minor == 99 && Micro >= 23) || Major == 0) {
+  if (Major >= 7 || (Major == 6 && Minor == 99 && Micro >= 40) || Major == 0) {
     switch (getArch()) {
+    case llvm::Triple::arm:
+    case llvm::Triple::armeb:
+    case llvm::Triple::thumb:
+    case llvm::Triple::thumbeb:
     case llvm::Triple::x86:
     case llvm::Triple::x86_64:
       return ToolChain::CST_Libcxx;
@@ -3181,10 +3180,9 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   if (CIncludeDirs != "") {
     SmallVector<StringRef, 5> dirs;
     CIncludeDirs.split(dirs, ":");
-    for (SmallVectorImpl<StringRef>::iterator I = dirs.begin(), E = dirs.end();
-         I != E; ++I) {
-      StringRef Prefix = llvm::sys::path::is_absolute(*I) ? SysRoot : "";
-      addExternCSystemInclude(DriverArgs, CC1Args, Prefix + *I);
+    for (StringRef dir : dirs) {
+      StringRef Prefix = llvm::sys::path::is_absolute(dir) ? SysRoot : "";
+      addExternCSystemInclude(DriverArgs, CC1Args, Prefix + dir);
     }
     return;
   }
@@ -3271,11 +3269,9 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   } else if (getTriple().getArch() == llvm::Triple::ppc64) {
     MultiarchIncludeDirs = PPC64MultiarchIncludeDirs;
   }
-  for (ArrayRef<StringRef>::iterator I = MultiarchIncludeDirs.begin(),
-                                     E = MultiarchIncludeDirs.end();
-       I != E; ++I) {
-    if (llvm::sys::fs::exists(SysRoot + *I)) {
-      addExternCSystemInclude(DriverArgs, CC1Args, SysRoot + *I);
+  for (StringRef Dir : MultiarchIncludeDirs) {
+    if (llvm::sys::fs::exists(SysRoot + Dir)) {
+      addExternCSystemInclude(DriverArgs, CC1Args, SysRoot + Dir);
       break;
     }
   }
@@ -3338,12 +3334,11 @@ void Linux::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
       // FIXME: We should really remove this. It doesn't make any sense.
       getDriver().SysRoot + "/usr/include/c++/v1"
     };
-    for (unsigned i = 0; i < llvm::array_lengthof(LibCXXIncludePathCandidates);
-         ++i) {
-      if (!llvm::sys::fs::exists(LibCXXIncludePathCandidates[i]))
+    for (const auto &IncludePath : LibCXXIncludePathCandidates) {
+      if (!llvm::sys::fs::exists(IncludePath))
         continue;
       // Add the first candidate that exists.
-      addSystemInclude(DriverArgs, CC1Args, LibCXXIncludePathCandidates[i]);
+      addSystemInclude(DriverArgs, CC1Args, IncludePath);
       break;
     }
     return;
@@ -3381,9 +3376,8 @@ void Linux::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
     LibDir.str() + "/../include/c++",
   };
 
-  for (unsigned i = 0; i < llvm::array_lengthof(LibStdCXXIncludePathCandidates);
-       ++i) {
-    if (addLibStdCXXIncludePaths(LibStdCXXIncludePathCandidates[i],
+  for (const auto &IncludePath : LibStdCXXIncludePathCandidates) {
+    if (addLibStdCXXIncludePaths(IncludePath,
                                  TripleStr + Multilib.includeSuffix(),
                                  DriverArgs, CC1Args))
       break;

@@ -11,8 +11,9 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#include "clang/AST/ASTConsumer.h"
 #include "RAIIObjectsForParser.h"
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/ASTContext.h"
 #include "clang/AST/StmtOpenMP.h"
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Parse/Parser.h"
@@ -148,7 +149,7 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective() {
     {
       // The body is a block scope like in Lambdas and Blocks.
       Sema::CompoundScopeRAII CompoundScope(Actions);
-      Actions.ActOnCapturedRegionStart(Loc, getCurScope(), CR_OpenMP, 1);
+      Actions.ActOnOpenMPRegionStart(DKind, Loc, getCurScope());
       Actions.ActOnStartOfCompoundStmt();
       // Parse statement
       AssociatedStmt = ParseStatement();
@@ -288,9 +289,12 @@ OMPClause *Parser::ParseOpenMPClause(OpenMPDirectiveKind DKind,
     Clause = ParseOpenMPSingleExprClause(CKind);
     break;
   case OMPC_default:
+  case OMPC_proc_bind:
     // OpenMP [2.14.3.1, Restrictions]
     //  Only a single default clause may be specified on a parallel, task or
     //  teams directive.
+    // OpenMP [2.5, parallel Construct, Restrictions]
+    //  At most one proc_bind clause can appear on the directive.
     if (!FirstClause) {
       Diag(Tok, diag::err_omp_more_one_clause)
            << getOpenMPDirectiveName(DKind) << getOpenMPClauseName(CKind);
@@ -355,10 +359,13 @@ OMPClause *Parser::ParseOpenMPSingleExprClause(OpenMPClauseKind Kind) {
                                              T.getCloseLocation());
 }
 
-/// \brief Parsing of simple OpenMP clauses like 'default'.
+/// \brief Parsing of simple OpenMP clauses like 'default' or 'proc_bind'.
 ///
 ///    default-clause:
 ///         'default' '(' 'none' | 'shared' ')
+///
+///    proc_bind-clause:
+///         'proc_bind' '(' 'master' | 'close' | 'spread' ')
 ///
 OMPClause *Parser::ParseOpenMPSimpleClause(OpenMPClauseKind Kind) {
   SourceLocation Loc = Tok.getLocation();
@@ -369,9 +376,9 @@ OMPClause *Parser::ParseOpenMPSimpleClause(OpenMPClauseKind Kind) {
                          getOpenMPClauseName(Kind)))
     return 0;
 
-  unsigned Type = Tok.isAnnotation() ?
-                     unsigned(OMPC_DEFAULT_unknown) :
-                     getOpenMPSimpleClauseType(Kind, PP.getSpelling(Tok));
+  unsigned Type =
+      getOpenMPSimpleClauseType(Kind,
+                                Tok.isAnnotation() ? "" : PP.getSpelling(Tok));
   SourceLocation TypeLoc = Tok.getLocation();
   if (Tok.isNot(tok::r_paren) && Tok.isNot(tok::comma) &&
       Tok.isNot(tok::annot_pragma_openmp_end))

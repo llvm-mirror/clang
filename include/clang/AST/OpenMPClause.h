@@ -179,7 +179,7 @@ public:
   ///
   OMPIfClause()
       : OMPClause(OMPC_if, SourceLocation(), SourceLocation()),
-        LParenLoc(SourceLocation()), Condition(0) {}
+        LParenLoc(SourceLocation()), Condition(nullptr) {}
 
   /// \brief Sets the location of '('.
   void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
@@ -233,7 +233,7 @@ public:
   ///
   OMPNumThreadsClause()
       : OMPClause(OMPC_num_threads, SourceLocation(), SourceLocation()),
-        LParenLoc(SourceLocation()), NumThreads(0) {}
+        LParenLoc(SourceLocation()), NumThreads(nullptr) {}
 
   /// \brief Sets the location of '('.
   void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
@@ -289,7 +289,7 @@ public:
   ///
   explicit OMPSafelenClause()
       : OMPClause(OMPC_safelen, SourceLocation(), SourceLocation()),
-        LParenLoc(SourceLocation()), Safelen(0) {}
+        LParenLoc(SourceLocation()), Safelen(nullptr) {}
 
   /// \brief Sets the location of '('.
   void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
@@ -370,6 +370,76 @@ public:
 
   static bool classof(const OMPClause *T) {
     return T->getClauseKind() == OMPC_default;
+  }
+
+  StmtRange children() { return StmtRange(); }
+};
+
+/// \brief This represents 'proc_bind' clause in the '#pragma omp ...' directive.
+///
+/// \code
+/// #pragma omp parallel proc_bind(master)
+/// \endcode
+/// In this example directive '#pragma omp parallel' has simple 'proc_bind'
+/// clause with kind 'master'.
+///
+class OMPProcBindClause : public OMPClause {
+  friend class OMPClauseReader;
+  /// \brief Location of '('.
+  SourceLocation LParenLoc;
+  /// \brief A kind of the 'proc_bind' clause.
+  OpenMPProcBindClauseKind Kind;
+  /// \brief Start location of the kind in source code.
+  SourceLocation KindKwLoc;
+
+  /// \brief Set kind of the clause.
+  ///
+  /// \param K Kind of clause.
+  ///
+  void setProcBindKind(OpenMPProcBindClauseKind K) { Kind = K; }
+
+  /// \brief Set clause kind location.
+  ///
+  /// \param KLoc Kind location.
+  ///
+  void setProcBindKindKwLoc(SourceLocation KLoc) { KindKwLoc = KLoc; }
+
+public:
+  /// \brief Build 'proc_bind' clause with argument \a A ('master', 'close' or
+  ///        'spread').
+  ///
+  /// \param A Argument of the clause ('master', 'close' or 'spread').
+  /// \param ALoc Starting location of the argument.
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  ///
+  OMPProcBindClause(OpenMPProcBindClauseKind A, SourceLocation ALoc,
+                   SourceLocation StartLoc, SourceLocation LParenLoc,
+                   SourceLocation EndLoc)
+      : OMPClause(OMPC_proc_bind, StartLoc, EndLoc), LParenLoc(LParenLoc),
+        Kind(A), KindKwLoc(ALoc) {}
+
+  /// \brief Build an empty clause.
+  ///
+  OMPProcBindClause()
+      : OMPClause(OMPC_proc_bind, SourceLocation(), SourceLocation()),
+        LParenLoc(SourceLocation()), Kind(OMPC_PROC_BIND_unknown),
+        KindKwLoc(SourceLocation()) {}
+
+  /// \brief Sets the location of '('.
+  void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
+  /// \brief Returns the location of '('.
+  SourceLocation getLParenLoc() const { return LParenLoc; }
+
+  /// \brief Returns kind of the clause.
+  OpenMPProcBindClauseKind getProcBindKind() const { return Kind; }
+
+  /// \brief Returns location of clause kind.
+  SourceLocation getProcBindKindKwLoc() const { return KindKwLoc; }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_proc_bind;
   }
 
   StmtRange children() { return StmtRange(); }

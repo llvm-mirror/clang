@@ -1,4 +1,4 @@
-//===--- TokenLexer.cpp - Lex from a token stream -------------------------===//
+//===--- MacroArgs.cpp - Formal argument info for Macros ------------------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -7,7 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements the TokenLexer interface.
+// This file implements the MacroArgs interface.
 //
 //===----------------------------------------------------------------------===//
 

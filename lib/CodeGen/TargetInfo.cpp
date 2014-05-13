@@ -3550,7 +3550,8 @@ static llvm::Value *EmitAArch64VAArg(llvm::Value *VAListAddr, QualType Ty,
 
   const Type *Base = 0;
   uint64_t NumMembers;
-  if (isHomogeneousAggregate(Ty, Base, Ctx, &NumMembers) && NumMembers > 1) {
+  bool IsHFA = isHomogeneousAggregate(Ty, Base, Ctx, &NumMembers);
+  if (IsHFA && NumMembers > 1) {
     // Homogeneous aggregates passed in registers will have their elements split
     // and stored 16-bytes apart regardless of size (they're notionally in qN,
     // qN+1, ...). We reload and store into a temporary local variable
@@ -3579,7 +3580,8 @@ static llvm::Value *EmitAArch64VAArg(llvm::Value *VAListAddr, QualType Ty,
   } else {
     // Otherwise the object is contiguous in memory
     unsigned BeAlign = reg_top_index == 2 ? 16 : 8;
-    if (CGF.CGM.getDataLayout().isBigEndian() && !isAggregateTypeForABI(Ty) &&
+    if (CGF.CGM.getDataLayout().isBigEndian() &&
+        (IsHFA || !isAggregateTypeForABI(Ty)) &&
         Ctx.getTypeSize(Ty) < (BeAlign * 8)) {
       int Offset = BeAlign - Ctx.getTypeSize(Ty) / 8;
       BaseAddr = CGF.Builder.CreatePtrToInt(BaseAddr, CGF.Int64Ty);
@@ -3794,7 +3796,7 @@ public:
 
 private:
   ABIArgInfo classifyReturnType(QualType RetTy, bool isVariadic) const;
-  ABIArgInfo classifyArgumentType(QualType RetTy, bool &IsHA, bool isVariadic,
+  ABIArgInfo classifyArgumentType(QualType RetTy, bool isVariadic,
                                   bool &IsCPRC) const;
   bool isIllegalVectorType(QualType Ty) const;
 
@@ -3899,22 +3901,10 @@ void ARMABIInfo::computeInfo(CGFunctionInfo &FI) const {
   for (auto &I : FI.arguments()) {
     unsigned PreAllocationVFPs = AllocatedVFPs;
     unsigned PreAllocationGPRs = AllocatedGPRs;
-    bool IsHA = false;
     bool IsCPRC = false;
     // 6.1.2.3 There is one VFP co-processor register class using registers
     // s0-s15 (d0-d7) for passing arguments.
-    I.info = classifyArgumentType(I.type, IsHA, FI.isVariadic(), IsCPRC);
-    assert((IsCPRC || !IsHA) && "Homogeneous aggregates must be CPRCs");
-    // If we do not have enough VFP registers for the HA, any VFP registers
-    // that are unallocated are marked as unavailable. To achieve this, we add
-    // padding of (NumVFPs - PreAllocationVFP) floats.
-    // Note that IsHA will only be set when using the AAPCS-VFP calling convention,
-    // and the callee is not variadic.
-    if (IsHA && AllocatedVFPs > NumVFPs && PreAllocationVFPs < NumVFPs) {
-      llvm::Type *PaddingTy = llvm::ArrayType::get(
-          llvm::Type::getFloatTy(getVMContext()), NumVFPs - PreAllocationVFPs);
-      I.info = ABIArgInfo::getExpandWithPadding(false, PaddingTy);
-    }
+    I.info = classifyArgumentType(I.type, FI.isVariadic(), IsCPRC);
 
     // If we have allocated some arguments onto the stack (due to running
     // out of VFP registers), we cannot split an argument between GPRs and
@@ -3926,7 +3916,9 @@ void ARMABIInfo::computeInfo(CGFunctionInfo &FI) const {
     if (!IsCPRC && PreAllocationGPRs < NumGPRs && AllocatedGPRs > NumGPRs && StackUsed) {
       llvm::Type *PaddingTy = llvm::ArrayType::get(
           llvm::Type::getInt32Ty(getVMContext()), NumGPRs - PreAllocationGPRs);
-      I.info = ABIArgInfo::getExpandWithPadding(false, PaddingTy);
+      I.info = ABIArgInfo::getDirect(nullptr /* type */, 0 /* offset */,
+                                     PaddingTy);
+
     }
   }
 
@@ -4110,8 +4102,7 @@ void ARMABIInfo::resetAllocatedRegs(void) const {
     VFPRegs[i] = 0;
 }
 
-ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty, bool &IsHA,
-                                            bool isVariadic,
+ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty, bool isVariadic,
                                             bool &IsCPRC) const {
   // We update number of allocated VFPs according to
   // 6.1.2.1 The following argument types are VFP CPRCs:
@@ -4223,9 +4214,8 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty, bool &IsHA,
                Base->isSpecificBuiltinType(BuiltinType::LongDouble));
         markAllocatedVFPs(2, Members * 2);
       }
-      IsHA = true;
       IsCPRC = true;
-      return ABIArgInfo::getExpand();
+      return ABIArgInfo::getDirect();
     }
   }
 
@@ -4239,7 +4229,7 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty, bool &IsHA,
       getABIKind() == ARMABIInfo::AAPCS)
     ABIAlign = std::min(std::max(TyAlign, (uint64_t)4), (uint64_t)8);
   if (getContext().getTypeSizeInChars(Ty) > CharUnits::fromQuantity(64)) {
-      // Update Allocated GPRs
+    // Update Allocated GPRs
     markAllocatedGPRs(1, 1);
     return ABIArgInfo::getIndirect(TyAlign, /*ByVal=*/true,
            /*Realign=*/TyAlign > ABIAlign);
@@ -6181,6 +6171,7 @@ class TypeStringCache {
   unsigned IncompleteCount;     // Number of Incomplete entries in the Map.
   unsigned IncompleteUsedCount; // Number of IncompleteUsed entries in the Map.
 public:
+  TypeStringCache() : IncompleteCount(0), IncompleteUsedCount(0) {};
   void addIncomplete(const IdentifierInfo *ID, std::string StubEnc);
   bool removeIncomplete(const IdentifierInfo *ID);
   void addIfComplete(const IdentifierInfo *ID, StringRef Str,
@@ -6214,8 +6205,8 @@ class XCoreTargetCodeGenInfo : public TargetCodeGenInfo {
 public:
   XCoreTargetCodeGenInfo(CodeGenTypes &CGT)
     :TargetCodeGenInfo(new XCoreABIInfo(CGT)) {}
-  virtual void emitTargetMD(const Decl *D, llvm::GlobalValue *GV,
-                            CodeGen::CodeGenModule &M) const;
+  void emitTargetMD(const Decl *D, llvm::GlobalValue *GV,
+                    CodeGen::CodeGenModule &M) const override;
 };
 
 } // End anonymous namespace.

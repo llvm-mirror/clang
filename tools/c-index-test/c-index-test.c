@@ -1788,7 +1788,8 @@ static int checkForErrors(CXTranslationUnit TU) {
   return 0;
 }
 
-void print_completion_string(CXCompletionString completion_string, FILE *file) {
+static void print_completion_string(CXCompletionString completion_string,
+                                    FILE *file) {
   int I, N;
 
   N = clang_getNumCompletionChunks(completion_string);
@@ -1822,9 +1823,8 @@ void print_completion_string(CXCompletionString completion_string, FILE *file) {
 
 }
 
-void print_completion_result(CXCompletionResult *completion_result,
-                             CXClientData client_data) {
-  FILE *file = (FILE *)client_data;
+static void print_completion_result(CXCompletionResult *completion_result,
+                                    FILE *file) {
   CXString ks = clang_getCursorKindSpelling(completion_result->CursorKind);
   unsigned annotationCount;
   enum CXCursorKind ParentKind;
@@ -2231,7 +2231,8 @@ static int inspect_cursor_at(int argc, const char **argv) {
         }
         clang_disposeString(Spelling);
         if (clang_Cursor_getObjCSelectorIndex(Cursor) != -1)
-          printf(" Selector index=%d",clang_Cursor_getObjCSelectorIndex(Cursor));
+          printf(" Selector index=%d",
+                 clang_Cursor_getObjCSelectorIndex(Cursor));
         if (clang_Cursor_isDynamicCall(Cursor))
           printf(" Dynamic-call");
         if (Cursor.kind == CXCursor_ObjCMessageExpr) {
@@ -2531,6 +2532,11 @@ static void importedASTS_insert(ImportedASTFilesData *p, const char *file) {
   p->filenames[p->num_files++] = strdup(file);
 }
 
+typedef struct IndexDataStringList_ {
+  struct IndexDataStringList_ *next;
+  char data[1]; /* Dynamically sized. */
+} IndexDataStringList;
+
 typedef struct {
   const char *check_prefix;
   int first_check_printed;
@@ -2538,7 +2544,18 @@ typedef struct {
   int abort;
   const char *main_filename;
   ImportedASTFilesData *importedASTs;
+  IndexDataStringList *strings;
 } IndexData;
+
+static void free_client_data(IndexData *index_data) {
+  IndexDataStringList *node = index_data->strings;
+  while (node) {
+    IndexDataStringList *next = node->next;
+    free(node);
+    node = next;
+  }
+  index_data->strings = NULL;
+}
 
 static void printCheck(IndexData *data) {
   if (data->check_prefix) {
@@ -2600,8 +2617,11 @@ static unsigned digitCount(unsigned val) {
   }
 }
 
-static CXIdxClientContainer makeClientContainer(const CXIdxEntityInfo *info,
+static CXIdxClientContainer makeClientContainer(CXClientData *client_data,
+                                                const CXIdxEntityInfo *info,
                                                 CXIdxLoc loc) {
+  IndexData *index_data;
+  IndexDataStringList *node;
   const char *name;
   char *newStr;
   CXIdxClientFile file;
@@ -2612,10 +2632,18 @@ static CXIdxClientContainer makeClientContainer(const CXIdxEntityInfo *info,
     name = "<anon-tag>";
 
   clang_indexLoc_getFileLocation(loc, &file, 0, &line, &column, 0);
-  /* FIXME: free these.*/
-  newStr = (char *)malloc(strlen(name) +
-                          digitCount(line) + digitCount(column) + 3);
+
+  node =
+      (IndexDataStringList *)malloc(sizeof(IndexDataStringList) + strlen(name) +
+                                    digitCount(line) + digitCount(column) + 2);
+  newStr = node->data;
   sprintf(newStr, "%s:%d:%d", name, line, column);
+
+  /* Remember string so it can be freed later. */
+  index_data = (IndexData *)client_data;
+  node->next = index_data->strings;
+  index_data->strings = node;
+
   return (CXIdxClientContainer)newStr;
 }
 
@@ -2829,8 +2857,8 @@ static CXIdxClientFile index_importedASTFile(CXClientData client_data,
   return (CXIdxClientFile)info->file;
 }
 
-static CXIdxClientContainer index_startedTranslationUnit(CXClientData client_data,
-                                                   void *reserved) {
+static CXIdxClientContainer
+index_startedTranslationUnit(CXClientData client_data, void *reserved) {
   IndexData *index_data;
   index_data = (IndexData *)client_data;
   printCheck(index_data);
@@ -2931,13 +2959,15 @@ static void index_indexDeclaration(CXClientData client_data,
   }
 
   if (info->declAsContainer)
-    clang_index_setClientContainer(info->declAsContainer,
-                              makeClientContainer(info->entityInfo, info->loc));
+    clang_index_setClientContainer(
+        info->declAsContainer,
+        makeClientContainer(client_data, info->entityInfo, info->loc));
 }
 
 static void index_indexEntityReference(CXClientData client_data,
                                        const CXIdxEntityRefInfo *info) {
-  printEntityInfo("[indexEntityReference]", client_data, info->referencedEntity);
+  printEntityInfo("[indexEntityReference]", client_data,
+                  info->referencedEntity);
   printf(" | cursor: ");
   PrintCursor(info->cursor, NULL);
   printf(" | loc: ");
@@ -3002,6 +3032,7 @@ static int index_compile_args(int num_args, const char **args,
   index_data.abort = 0;
   index_data.main_filename = "";
   index_data.importedASTs = importedASTs;
+  index_data.strings = NULL;
 
   index_opts = getIndexOptions();
   result = clang_indexSourceFile(idxAction, &index_data,
@@ -3014,6 +3045,7 @@ static int index_compile_args(int num_args, const char **args,
   if (index_data.fail_for_error)
     result = -1;
 
+  free_client_data(&index_data);
   return result;
 }
 
@@ -3036,6 +3068,7 @@ static int index_ast_file(const char *ast_file,
   index_data.abort = 0;
   index_data.main_filename = "";
   index_data.importedASTs = importedASTs;
+  index_data.strings = NULL;
 
   index_opts = getIndexOptions();
   result = clang_indexTranslationUnit(idxAction, &index_data,
@@ -3045,6 +3078,7 @@ static int index_ast_file(const char *ast_file,
     result = -1;
 
   clang_disposeTranslationUnit(TU);
+  free_client_data(&index_data);
   return result;
 }
 

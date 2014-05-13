@@ -60,6 +60,7 @@ enum TokenType {
   TT_PointerOrReference,
   TT_PureVirtualSpecifier,
   TT_RangeBasedForLoopColon,
+  TT_RegexLiteral,
   TT_StartOfName,
   TT_TemplateCloser,
   TT_TemplateOpener,
@@ -108,7 +109,7 @@ struct FormatToken {
         StartsBinaryExpression(false), EndsBinaryExpression(false),
         OperatorIndex(0), LastOperator(false),
         PartOfMultiVariableDeclStmt(false), IsForEachMacro(false),
-        MatchingParen(NULL), Previous(NULL), Next(NULL),
+        MatchingParen(nullptr), Previous(nullptr), Next(nullptr),
         Decision(FD_Unformatted), Finalized(false) {}
 
   /// \brief The \c Token.
@@ -353,7 +354,7 @@ struct FormatToken {
   /// \brief Returns the previous token ignoring comments.
   FormatToken *getPreviousNonComment() const {
     FormatToken *Tok = Previous;
-    while (Tok != NULL && Tok->is(tok::comment))
+    while (Tok && Tok->is(tok::comment))
       Tok = Tok->Previous;
     return Tok;
   }
@@ -361,7 +362,7 @@ struct FormatToken {
   /// \brief Returns the next token ignoring comments.
   const FormatToken *getNextNonComment() const {
     const FormatToken *Tok = Next;
-    while (Tok != NULL && Tok->is(tok::comment))
+    while (Tok && Tok->is(tok::comment))
       Tok = Tok->Next;
     return Tok;
   }
@@ -454,7 +455,9 @@ public:
                            bool DryRun) override;
 
   /// \brief Adds \p Token as the next comma to the \c CommaSeparated list.
-  void CommaFound(const FormatToken *Token) override { Commas.push_back(Token);}
+  void CommaFound(const FormatToken *Token) override {
+    Commas.push_back(Token);
+  }
 
 private:
   /// \brief A struct that holds information on how to format a given list with

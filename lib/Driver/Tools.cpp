@@ -1037,8 +1037,14 @@ static void getMIPSTargetFeatures(const Driver &D, const ArgList &Args,
   }
 
   if (Arg *A = Args.getLastArg(options::OPT_mnan_EQ)) {
-    if (StringRef(A->getValue()) == "2008")
+    StringRef Val = StringRef(A->getValue());
+    if (Val == "2008")
       Features.push_back("+nan2008");
+    else if (Val == "legacy")
+      Features.push_back("-nan2008");
+    else
+      D.Diag(diag::err_drv_unsupported_option_argument)
+          << A->getOption().getName() << Val;
   }
 
   AddTargetFeature(Args, Features, options::OPT_msingle_float,
@@ -3391,10 +3397,18 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                                  options::OPT_munaligned_access)) {
       if (A->getOption().matches(options::OPT_mno_unaligned_access)) {
         CmdArgs.push_back("-backend-option");
-        CmdArgs.push_back("-arm-strict-align");
+        if (getToolChain().getTriple().getArch() == llvm::Triple::arm64 ||
+            getToolChain().getTriple().getArch() == llvm::Triple::arm64_be)
+          CmdArgs.push_back("-arm64-strict-align");
+        else
+          CmdArgs.push_back("-arm-strict-align");
       } else {
         CmdArgs.push_back("-backend-option");
-        CmdArgs.push_back("-arm-no-strict-align");
+        if (getToolChain().getTriple().getArch() == llvm::Triple::arm64 ||
+            getToolChain().getTriple().getArch() == llvm::Triple::arm64_be)
+          CmdArgs.push_back("-arm64-no-strict-align");
+        else
+          CmdArgs.push_back("-arm-no-strict-align");
       }
     }
   }
@@ -6600,8 +6614,12 @@ void netbsd::Link::ConstructJob(Compilation &C, const JobAction &JA,
   unsigned Major, Minor, Micro;
   getToolChain().getTriple().getOSVersion(Major, Minor, Micro);
   bool useLibgcc = true;
-  if (Major >= 7 || (Major == 6 && Minor == 99 && Micro >= 23) || Major == 0) {
+  if (Major >= 7 || (Major == 6 && Minor == 99 && Micro >= 40) || Major == 0) {
     switch(getToolChain().getArch()) {
+    case llvm::Triple::arm:
+    case llvm::Triple::armeb:
+    case llvm::Triple::thumb:
+    case llvm::Triple::thumbeb:
     case llvm::Triple::x86:
     case llvm::Triple::x86_64:
       useLibgcc = false;

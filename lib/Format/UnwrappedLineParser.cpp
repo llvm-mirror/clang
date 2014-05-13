@@ -60,7 +60,7 @@ public:
       : Line(Line), TokenSource(TokenSource), ResetToken(ResetToken),
         PreviousLineLevel(Line.Level), PreviousTokenSource(TokenSource),
         StructuralError(StructuralError),
-        PreviousStructuralError(StructuralError), Token(NULL) {
+        PreviousStructuralError(StructuralError), Token(nullptr) {
     TokenSource = this;
     Line.Level = 0;
     Line.InPPDirective = true;
@@ -164,9 +164,7 @@ public:
       ++LineLevel;
     }
   }
-  ~CompoundStatementIndenter() {
-    LineLevel = OldLineLevel;
-  }
+  ~CompoundStatementIndenter() { LineLevel = OldLineLevel; }
 
 private:
   unsigned &LineLevel;
@@ -208,14 +206,15 @@ UnwrappedLineParser::UnwrappedLineParser(const FormatStyle &Style,
                                          ArrayRef<FormatToken *> Tokens,
                                          UnwrappedLineConsumer &Callback)
     : Line(new UnwrappedLine), MustBreakBeforeNextToken(false),
-      CurrentLines(&Lines), StructuralError(false), Style(Style), Tokens(NULL),
-      Callback(Callback), AllTokens(Tokens), PPBranchLevel(-1) {}
+      CurrentLines(&Lines), StructuralError(false), Style(Style),
+      Tokens(nullptr), Callback(Callback), AllTokens(Tokens),
+      PPBranchLevel(-1) {}
 
 void UnwrappedLineParser::reset() {
   PPBranchLevel = -1;
   Line.reset(new UnwrappedLine);
   CommentsBeforeNextToken.clear();
-  FormatTok = NULL;
+  FormatTok = nullptr;
   MustBreakBeforeNextToken = false;
   PreprocessorDirectives.clear();
   CurrentLines = &Lines;
@@ -415,16 +414,34 @@ void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel,
   Line->Level = InitialLevel;
 }
 
+static bool IsGoogScope(const UnwrappedLine &Line) {
+  if (Line.Tokens.size() < 4)
+    return false;
+  auto I = Line.Tokens.begin();
+  if (I->Tok->TokenText != "goog")
+    return false;
+  ++I;
+  if (I->Tok->isNot(tok::period))
+    return false;
+  ++I;
+  if (I->Tok->TokenText != "scope")
+    return false;
+  ++I;
+  return I->Tok->is(tok::l_paren);
+}
+
 void UnwrappedLineParser::parseChildBlock() {
   FormatTok->BlockKind = BK_Block;
   nextToken();
   {
+    bool GoogScope =
+        Style.Language == FormatStyle::LK_JavaScript && IsGoogScope(*Line);
     ScopedLineState LineState(*this);
     ScopedDeclarationState DeclarationState(*Line, DeclarationScopeStack,
                                             /*MustBeDeclaration=*/false);
-    Line->Level += 1;
+    Line->Level += GoogScope ? 0 : 1;
     parseLevel(/*HasOpeningBrace=*/true);
-    Line->Level -= 1;
+    Line->Level -= GoogScope ? 0 : 1;
   }
   nextToken();
 }
@@ -434,7 +451,7 @@ void UnwrappedLineParser::parsePPDirective() {
   ScopedMacroState MacroState(*Line, Tokens, FormatTok, StructuralError);
   nextToken();
 
-  if (FormatTok->Tok.getIdentifierInfo() == NULL) {
+  if (!FormatTok->Tok.getIdentifierInfo()) {
     parsePPUnknown();
     return;
   }
@@ -657,6 +674,9 @@ void UnwrappedLineParser::parseStructuralElement() {
   case tok::kw_case:
     parseCaseLabel();
     return;
+  case tok::kw_try:
+    parseTryCatch();
+    return;
   case tok::kw_extern:
     nextToken();
     if (FormatTok->Tok.is(tok::string_literal)) {
@@ -737,6 +757,10 @@ void UnwrappedLineParser::parseStructuralElement() {
       // Otherwise this was a braced init list, and the structural
       // element continues.
       break;
+    case tok::kw_try:
+      // We arrive here when parsing function-try blocks.
+      parseTryCatch();
+      return;
     case tok::identifier: {
       StringRef Text = FormatTok->TokenText;
       nextToken();
@@ -868,6 +892,22 @@ bool UnwrappedLineParser::tryToParseLambdaIntroducer() {
   return false;
 }
 
+void UnwrappedLineParser::tryToParseJSFunction() {
+  nextToken();
+  if (FormatTok->isNot(tok::l_paren))
+    return;
+  nextToken();
+  while (FormatTok->isNot(tok::l_brace)) {
+    // Err on the side of caution in order to avoid consuming the full file in
+    // case of incomplete code.
+    if (!FormatTok->isOneOf(tok::identifier, tok::comma, tok::r_paren,
+                            tok::comment))
+      return;
+    nextToken();
+  }
+  parseChildBlock();
+}
+
 bool UnwrappedLineParser::tryToParseBracedList() {
   if (FormatTok->BlockKind == BK_Unknown)
     calculateBraceTypes();
@@ -885,9 +925,11 @@ bool UnwrappedLineParser::parseBracedList(bool ContinueOnSemicolons) {
   // FIXME: Once we have an expression parser in the UnwrappedLineParser,
   // replace this by using parseAssigmentExpression() inside.
   do {
-    // FIXME: When we start to support lambdas, we'll want to parse them away
-    // here, otherwise our bail-out scenarios below break. The better solution
-    // might be to just implement a more or less complete expression parser.
+    if (Style.Language == FormatStyle::LK_JavaScript &&
+        FormatTok->TokenText == "function") {
+      tryToParseJSFunction();
+      continue;
+    }
     switch (FormatTok->Tok.getKind()) {
     case tok::caret:
       nextToken();
@@ -1035,6 +1077,72 @@ void UnwrappedLineParser::parseIfThenElse() {
   }
 }
 
+void UnwrappedLineParser::parseTryCatch() {
+  assert(FormatTok->is(tok::kw_try) && "'try' expected");
+  nextToken();
+  bool NeedsUnwrappedLine = false;
+  if (FormatTok->is(tok::colon)) {
+    // We are in a function try block, what comes is an initializer list.
+    nextToken();
+    while (FormatTok->is(tok::identifier)) {
+      nextToken();
+      if (FormatTok->is(tok::l_paren))
+        parseParens();
+      else
+        StructuralError = true;
+      if (FormatTok->is(tok::comma))
+        nextToken();
+    }
+  }
+  if (FormatTok->is(tok::l_brace)) {
+    CompoundStatementIndenter Indenter(this, Style, Line->Level);
+    parseBlock(/*MustBeDeclaration=*/false);
+    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
+        Style.BreakBeforeBraces == FormatStyle::BS_GNU ||
+        Style.BreakBeforeBraces == FormatStyle::BS_Stroustrup) {
+      addUnwrappedLine();
+    } else {
+      NeedsUnwrappedLine = true;
+    }
+  } else if (!FormatTok->is(tok::kw_catch)) {
+    // The C++ standard requires a compound-statement after a try.
+    // If there's none, we try to assume there's a structuralElement
+    // and try to continue.
+    StructuralError = true;
+    addUnwrappedLine();
+    ++Line->Level;
+    parseStructuralElement();
+    --Line->Level;
+  }
+  while (FormatTok->is(tok::kw_catch) ||
+         (Style.Language == FormatStyle::LK_JavaScript &&
+          FormatTok->TokenText == "finally")) {
+    nextToken();
+    while (FormatTok->isNot(tok::l_brace)) {
+      if (FormatTok->is(tok::l_paren)) {
+        parseParens();
+        continue;
+      }
+      if (FormatTok->isOneOf(tok::semi, tok::r_brace))
+        return;
+      nextToken();
+    }
+    NeedsUnwrappedLine = false;
+    CompoundStatementIndenter Indenter(this, Style, Line->Level);
+    parseBlock(/*MustBeDeclaration=*/false);
+    if (Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
+        Style.BreakBeforeBraces == FormatStyle::BS_GNU ||
+        Style.BreakBeforeBraces == FormatStyle::BS_Stroustrup) {
+      addUnwrappedLine();
+    } else {
+      NeedsUnwrappedLine = true;
+    }
+  }
+  if (NeedsUnwrappedLine) {
+    addUnwrappedLine();
+  }
+}
+
 void UnwrappedLineParser::parseNamespace() {
   assert(FormatTok->Tok.is(tok::kw_namespace) && "'namespace' expected");
   nextToken();
@@ -1170,9 +1278,8 @@ void UnwrappedLineParser::parseEnum() {
     nextToken();
   }
   // Eat up enum class ...
-  if (FormatTok->Tok.is(tok::kw_class) ||
-      FormatTok->Tok.is(tok::kw_struct))
-      nextToken();
+  if (FormatTok->Tok.is(tok::kw_class) || FormatTok->Tok.is(tok::kw_struct))
+    nextToken();
   while (FormatTok->Tok.getIdentifierInfo() ||
          FormatTok->isOneOf(tok::colon, tok::coloncolon)) {
     nextToken();
@@ -1367,7 +1474,7 @@ void UnwrappedLineParser::addUnwrappedLine() {
 
 bool UnwrappedLineParser::eof() const { return FormatTok->Tok.is(tok::eof); }
 
-bool UnwrappedLineParser::isOnNewLine(const FormatToken& FormatTok) {
+bool UnwrappedLineParser::isOnNewLine(const FormatToken &FormatTok) {
   return (Line->InPPDirective || FormatTok.HasUnescapedNewline) &&
          FormatTok.NewlinesBefore > 0;
 }
@@ -1422,7 +1529,7 @@ void UnwrappedLineParser::readToken() {
         conditionalCompilationStart(/*Unreachable=*/false);
       } else if (FormatTok->Type == TT_ConflictAlternative) {
         conditionalCompilationAlternative();
-      } else if(FormatTok->Type == TT_ConflictEnd) {
+      } else if (FormatTok->Type == TT_ConflictEnd) {
         conditionalCompilationEnd();
       }
       FormatTok = Tokens->getNextToken();

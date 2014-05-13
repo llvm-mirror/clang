@@ -35,7 +35,7 @@ int e = V<int>::m;
 
 // CHECK: @_ZZ8tls_dtorvE1u = internal thread_local global
 // CHECK: @_ZGVZ8tls_dtorvE1u = internal thread_local global i8 0
-// CHECK: @_ZGRZ8tls_dtorvE1u = internal thread_local global
+// CHECK: @_ZGRZ8tls_dtorvE1u_ = internal thread_local global
 
 // CHECK: @_ZGVN1VIiE1mE = linkonce_odr thread_local global i64 0
 
@@ -120,8 +120,8 @@ void tls_dtor() {
   static thread_local T t;
 
   // CHECK: load i8* @_ZGVZ8tls_dtorvE1u
-  // CHECK: call void @_ZN1SC1Ev(%struct.S* @_ZGRZ8tls_dtorvE1u)
-  // CHECK: call i32 @__cxa_thread_atexit({{.*}}@_ZN1SD1Ev {{.*}} @_ZGRZ8tls_dtorvE1u{{.*}} @__dso_handle
+  // CHECK: call void @_ZN1SC1Ev(%struct.S* @_ZGRZ8tls_dtorvE1u_)
+  // CHECK: call i32 @__cxa_thread_atexit({{.*}}@_ZN1SD1Ev {{.*}} @_ZGRZ8tls_dtorvE1u_{{.*}} @__dso_handle
   // CHECK: store i8 1, i8* @_ZGVZ8tls_dtorvE1u
   static thread_local const S &u = S();
 }
@@ -151,7 +151,7 @@ thread_local int anon_i{1};
 void set_anon_i() {
   anon_i = 2;
 }
-// CHECK-LABEL: define internal hidden i32* @_ZTWN12_GLOBAL__N_16anon_iE()
+// CHECK-LABEL: define internal i32* @_ZTWN12_GLOBAL__N_16anon_iE()
 
 // CHECK: define {{.*}} @[[V_M_INIT:.*]]()
 // CHECK: load i8* bitcast (i64* @_ZGVN1VIiE1mE to i8*)
@@ -189,7 +189,7 @@ void set_anon_i() {
 // CHECK: declare extern_weak void @_ZTH1b()
 
 
-// CHECK-LABEL: define internal hidden i32* @_ZTWL1d()
+// CHECK-LABEL: define internal i32* @_ZTWL1d()
 // CHECK: call void @_ZTHL1d()
 // CHECK: ret i32* @_ZL1d
 

@@ -9997,8 +9997,6 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
     
     // Verify that gotos and switch cases don't jump into scopes illegally.
     if (getCurFunction()->NeedsScopeChecking() &&
-        !dcl->isInvalidDecl() &&
-        !hasAnyUnrecoverableErrorsInThisFunction() &&
         !PP.isCodeCompletionEnabled())
       DiagnoseInvalidJumps(Body);
 
@@ -13177,7 +13175,12 @@ void Sema::ActOnModuleInclude(SourceLocation DirectiveLoc, Module *Mod) {
                                       /*Complain=*/true);
 }
 
-void Sema::createImplicitModuleImport(SourceLocation Loc, Module *Mod) {
+void Sema::createImplicitModuleImportForErrorRecovery(SourceLocation Loc,
+                                                      Module *Mod) {
+  // Bail if we're not allowed to implicitly import a module here.
+  if (isSFINAEContext() || !getLangOpts().ModulesErrorRecovery)
+    return;
+
   // Create the implicit import declaration.
   TranslationUnitDecl *TU = getASTContext().getTranslationUnitDecl();
   ImportDecl *ImportD = ImportDecl::CreateImplicit(getASTContext(), TU,

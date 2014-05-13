@@ -2420,10 +2420,19 @@ DeclResult Sema::ActOnVarTemplateSpecialization(
 
   // The template-id must name a variable template.
   VarTemplateDecl *VarTemplate =
-      dyn_cast<VarTemplateDecl>(Name.getAsTemplateDecl());
-  if (!VarTemplate)
+      dyn_cast_or_null<VarTemplateDecl>(Name.getAsTemplateDecl());
+  if (!VarTemplate) {
+    NamedDecl *FnTemplate;
+    if (auto *OTS = Name.getAsOverloadedTemplate())
+      FnTemplate = *OTS->begin();
+    else
+      FnTemplate = dyn_cast_or_null<FunctionTemplateDecl>(Name.getAsTemplateDecl());
+    if (FnTemplate)
+      return Diag(D.getIdentifierLoc(), diag::err_var_spec_no_template_but_method)
+               << FnTemplate->getDeclName();
     return Diag(D.getIdentifierLoc(), diag::err_var_spec_no_template)
              << IsPartialSpecialization;
+  }
 
   // Check for unexpanded parameter packs in any of the template arguments.
   for (unsigned I = 0, N = TemplateArgs.size(); I != N; ++I)
@@ -6517,8 +6526,12 @@ Sema::CheckSpecializationInstantiationRedecl(SourceLocation NewLoc,
       //   For a given template and a given set of template-arguments,
       //     - an explicit instantiation definition shall appear at most once
       //       in a program,
-      Diag(NewLoc, diag::err_explicit_instantiation_duplicate)
-        << PrevDecl;
+
+      // MSVCCompat: MSVC silently ignores duplicate explicit instantiations.
+      Diag(NewLoc, (getLangOpts().MSVCCompat)
+                       ? diag::warn_explicit_instantiation_duplicate
+                       : diag::err_explicit_instantiation_duplicate)
+          << PrevDecl;
       Diag(DiagLocForExplicitInstantiation(PrevDecl, PrevPointOfInstantiation),
            diag::note_previous_explicit_instantiation);
       HasNoEffect = true;

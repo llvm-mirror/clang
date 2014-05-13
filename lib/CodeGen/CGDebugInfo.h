@@ -65,7 +65,7 @@ class CGDebugInfo {
   llvm::DIType BlockLiteralGeneric;
 
   /// TypeCache - Cache of previously constructed Types.
-  llvm::DenseMap<void *, llvm::WeakVH> TypeCache;
+  llvm::DenseMap<const void *, llvm::WeakVH> TypeCache;
 
   struct ObjCInterfaceCacheEntry {
     const ObjCInterfaceType *Type;
@@ -85,7 +85,7 @@ class CGDebugInfo {
 
   /// ReplaceMap - Cache of forward declared types to RAUW at the end of
   /// compilation.
-  std::vector<std::pair<void *, llvm::WeakVH> >ReplaceMap;
+  std::vector<std::pair<const TagType *, llvm::WeakVH>> ReplaceMap;
 
   // LexicalBlockStack - Keep track of our current nested lexical block.
   std::vector<llvm::TrackingVH<llvm::MDNode> > LexicalBlockStack;
@@ -135,6 +135,7 @@ class CGDebugInfo {
   llvm::DIType CreateType(const MemberPointerType *Ty, llvm::DIFile F);
   llvm::DIType CreateType(const AtomicType *Ty, llvm::DIFile F);
   llvm::DIType CreateEnumType(const EnumType *Ty);
+  llvm::DIType CreateTypeDefinition(const EnumType *Ty);
   llvm::DIType CreateSelfType(const QualType &QualTy, llvm::DIType Ty);
   llvm::DIType getTypeOrNull(const QualType);
   llvm::DICompositeType getOrCreateMethodType(const CXXMethodDecl *Method,
@@ -146,7 +147,7 @@ class CGDebugInfo {
   llvm::DIType getOrCreateVTablePtrType(llvm::DIFile F);
   llvm::DINameSpace getOrCreateNameSpace(const NamespaceDecl *N);
   llvm::DIType getOrCreateTypeDeclaration(QualType PointeeTy, llvm::DIFile F);
-  llvm::DIType CreatePointerLikeType(unsigned Tag,
+  llvm::DIType CreatePointerLikeType(llvm::dwarf::Tag Tag,
                                      const Type *Ty, QualType PointeeTy,
                                      llvm::DIFile F);
 
@@ -295,6 +296,7 @@ public:
   llvm::DIType getOrCreateInterfaceType(QualType Ty,
                                         SourceLocation Loc);
 
+  void completeType(const EnumDecl *ED);
   void completeType(const RecordDecl *RD);
   void completeRequiredType(const RecordDecl *RD);
   void completeClassData(const RecordDecl *RD);
@@ -303,8 +305,10 @@ public:
 
 private:
   /// EmitDeclare - Emit call to llvm.dbg.declare for a variable declaration.
-  void EmitDeclare(const VarDecl *decl, unsigned Tag, llvm::Value *AI,
-                   unsigned ArgNo, CGBuilderTy &Builder);
+  /// Tag accepts custom types DW_TAG_arg_variable and DW_TAG_auto_variable,
+  /// otherwise would be of type llvm::dwarf::Tag.
+  void EmitDeclare(const VarDecl *decl, llvm::dwarf::LLVMConstants Tag,
+                   llvm::Value *AI, unsigned ArgNo, CGBuilderTy &Builder);
 
   // EmitTypeForVarWithBlocksAttr - Build up structure info for the byref.
   // See BuildByRefType.

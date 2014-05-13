@@ -270,6 +270,17 @@ TEST_F(FormatTest, ReformatsMovedLines) {
           9, 5, getLLVMStyle()));
 }
 
+TEST_F(FormatTest, RecognizesBinaryOperatorKeywords) {
+    verifyFormat("x = (a) and (b);");
+    verifyFormat("x = (a) or (b);");
+    verifyFormat("x = (a) bitand (b);");
+    verifyFormat("x = (a) bitor (b);");
+    verifyFormat("x = (a) not_eq (b);");
+    verifyFormat("x = (a) and_eq (b);");
+    verifyFormat("x = (a) or_eq (b);");
+    verifyFormat("x = (a) xor (b);");
+}
+
 //===----------------------------------------------------------------------===//
 // Tests for control statements.
 //===----------------------------------------------------------------------===//
@@ -389,6 +400,11 @@ TEST_F(FormatTest, ElseIf) {
                "// or else ..\n"
                "else {\n"
                "  g()\n"
+               "}");
+
+  verifyFormat("if (a) {\n"
+               "} else if (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
+               "               aaaaaaaaaaaaaaaaaaaaaaaaaaaa)) {\n"
                "}");
 }
 
@@ -847,6 +863,18 @@ TEST_F(FormatTest, UnderstandsSingleLineComments) {
       "  int i;                        /* iiiiiiiiiiiiiiiiiiiii */ \\\n"
       "  int jjjjjjjjjjjjjjjjjjjjjjjj; /* */",
       getLLVMStyleWithColumns(61));
+
+  verifyFormat("if ( // This is some comment\n"
+               "    x + 3) {\n"
+               "}");
+  EXPECT_EQ("if ( // This is some comment\n"
+            "     // spanning two lines\n"
+            "    x + 3) {\n"
+            "}",
+            format("if( // This is some comment\n"
+                   "     // spanning two lines\n"
+                   " x + 3) {\n"
+                   "}"));
 }
 
 TEST_F(FormatTest, KeepsParameterWithTrailingCommentsOnTheirOwnLine) {
@@ -1972,30 +2000,79 @@ TEST_F(FormatTest, FormatsInlineASM) {
 }
 
 TEST_F(FormatTest, FormatTryCatch) {
-  // FIXME: Handle try-catch explicitly in the UnwrappedLineParser, then we'll
-  // also not create single-line-blocks.
   verifyFormat("try {\n"
                "  throw a * b;\n"
-               "}\n"
-               "catch (int a) {\n"
+               "} catch (int a) {\n"
                "  // Do nothing.\n"
-               "}\n"
-               "catch (...) {\n"
+               "} catch (...) {\n"
                "  exit(42);\n"
                "}");
 
   // Function-level try statements.
-  verifyFormat("int f() try { return 4; }\n"
-               "catch (...) {\n"
+  verifyFormat("int f() try { return 4; } catch (...) {\n"
                "  return 5;\n"
                "}");
   verifyFormat("class A {\n"
                "  int a;\n"
-               "  A() try : a(0) {}\n"
-               "  catch (...) {\n"
+               "  A() try : a(0) {\n"
+               "  } catch (...) {\n"
                "    throw;\n"
                "  }\n"
                "};\n");
+}
+
+TEST_F(FormatTest, IncompleteTryCatchBlocks) {
+  verifyFormat("try {\n"
+               "  f();\n"
+               "} catch {\n"
+               "  g();\n"
+               "}");
+  verifyFormat("try {\n"
+               "  f();\n"
+               "} catch (A a) MACRO(x) {\n"
+               "  g();\n"
+               "} catch (B b) MACRO(x) {\n"
+               "  g();\n"
+               "}");
+}
+
+TEST_F(FormatTest, FormatTryCatchBraceStyles) {
+  FormatStyle Style = getLLVMStyle();
+  Style.BreakBeforeBraces = FormatStyle::BS_Attach;
+  verifyFormat("try {\n"
+               "  // something\n"
+               "} catch (...) {\n"
+               "  // something\n"
+               "}",
+               Style);
+  Style.BreakBeforeBraces = FormatStyle::BS_Stroustrup;
+  verifyFormat("try {\n"
+               "  // something\n"
+               "}\n"
+               "catch (...) {\n"
+               "  // something\n"
+               "}",
+               Style);
+  Style.BreakBeforeBraces = FormatStyle::BS_Allman;
+  verifyFormat("try\n"
+               "{\n"
+               "  // something\n"
+               "}\n"
+               "catch (...)\n"
+               "{\n"
+               "  // something\n"
+               "}",
+               Style);
+  Style.BreakBeforeBraces = FormatStyle::BS_GNU;
+  verifyFormat("try\n"
+               "  {\n"
+               "    // something\n"
+               "  }\n"
+               "catch (...)\n"
+               "  {\n"
+               "    // something\n"
+               "  }",
+               Style);
 }
 
 TEST_F(FormatTest, FormatObjCTryCatch) {
@@ -2425,8 +2502,7 @@ TEST_F(FormatTest, MacroCallsWithoutTrailingSemicolon) {
             "  F(x)\n"
             "  try {\n"
             "    Q();\n"
-            "  }\n"
-            "  catch (...) {\n"
+            "  } catch (...) {\n"
             "  }\n"
             "}\n",
             format("int q() {\n"
@@ -2443,8 +2519,7 @@ TEST_F(FormatTest, MacroCallsWithoutTrailingSemicolon) {
             "  A() : t(0) {}\n"
             "  A(X x)\n" // FIXME: function-level try blocks are broken.
             "  try : t(0) {\n"
-            "  }\n"
-            "  catch (...) {\n"
+            "  } catch (...) {\n"
             "  }\n"
             "};",
             format("class A {\n"
@@ -2844,9 +2919,21 @@ TEST_F(FormatTest, LineBreakingInBinaryExpressions) {
       "bool aaaaaaa =\n"
       "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(aaa).aaaaaaaaaaaaaaaaaaa() ||\n"
       "    bbbbbbbb();");
+  verifyFormat(
+      "bool aaaaaaa =\n"
+      "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(aaa).aaaaaaaaaaaaaaaaaaa() or\n"
+      "    bbbbbbbb();");
+
   verifyFormat("bool aaaaaaaaaaaaaaaaaaaaa =\n"
                "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa != bbbbbbbbbbbbbbbbbb &&\n"
                "    ccccccccc == ddddddddddd;");
+  verifyFormat("bool aaaaaaaaaaaaaaaaaaaaa =\n"
+               "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa != bbbbbbbbbbbbbbbbbb and\n"
+               "    ccccccccc == ddddddddddd;");
+  verifyFormat(
+      "bool aaaaaaaaaaaaaaaaaaaaa =\n"
+      "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa not_eq bbbbbbbbbbbbbbbbbb and\n"
+      "    ccccccccc == ddddddddddd;");
 
   verifyFormat("aaaaaa = aaaaaaa(aaaaaaa, // break\n"
                "                 aaaaaa) &&\n"
@@ -3592,19 +3679,41 @@ TEST_F(FormatTest, BreaksAccordingToOperatorPrecedence) {
   verifyFormat(
       "if (aaaaaaaaaaaaaaaaaaaaaaaaa ||\n"
       "    bbbbbbbbbbbbbbbbbbbbbbbbb && ccccccccccccccccccccccccc) {\n}");
+  verifyFormat(
+      "if (aaaaaaaaaaaaaaaaaaaaaaaaa or\n"
+      "    bbbbbbbbbbbbbbbbbbbbbbbbb and cccccccccccccccccccccccc) {\n}");
+
   verifyFormat("if (aaaaaaaaaaaaaaaaaaaaaaaaa && bbbbbbbbbbbbbbbbbbbbbbbbb ||\n"
                "    ccccccccccccccccccccccccc) {\n}");
+  verifyFormat("if (aaaaaaaaaaaaaaaaaaaaaaaaa and bbbbbbbbbbbbbbbbbbbbbbbb or\n"
+               "    ccccccccccccccccccccccccc) {\n}");
+
   verifyFormat("if (aaaaaaaaaaaaaaaaaaaaaaaaa || bbbbbbbbbbbbbbbbbbbbbbbbb ||\n"
                "    ccccccccccccccccccccccccc) {\n}");
+  verifyFormat("if (aaaaaaaaaaaaaaaaaaaaaaaaa or bbbbbbbbbbbbbbbbbbbbbbbbb or\n"
+               "    ccccccccccccccccccccccccc) {\n}");
+
   verifyFormat(
       "if ((aaaaaaaaaaaaaaaaaaaaaaaaa || bbbbbbbbbbbbbbbbbbbbbbbbb) &&\n"
       "    ccccccccccccccccccccccccc) {\n}");
+  verifyFormat(
+      "if ((aaaaaaaaaaaaaaaaaaaaaaaaa or bbbbbbbbbbbbbbbbbbbbbbbbb) and\n"
+      "    ccccccccccccccccccccccccc) {\n}");
+
   verifyFormat("return aaaa & AAAAAAAAAAAAAAAAAAAAAAAAAAAAA ||\n"
                "       bbbb & BBBBBBBBBBBBBBBBBBBBBBBBBBBBB ||\n"
                "       cccc & CCCCCCCCCCCCCCCCCCCCCCCCCC ||\n"
                "       dddd & DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD;");
+  verifyFormat("return aaaa & AAAAAAAAAAAAAAAAAAAAAAAAAAAAA or\n"
+               "       bbbb & BBBBBBBBBBBBBBBBBBBBBBBBBBBBB or\n"
+               "       cccc & CCCCCCCCCCCCCCCCCCCCCCCCCC or\n"
+               "       dddd & DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD;");
+
   verifyFormat("if ((aaaaaaaaaa != aaaaaaaaaaaaaaa ||\n"
                "     aaaaaaaaaaaaaaaaaaaaaaaa() >= aaaaaaaaaaaaaaaaaaaa) &&\n"
+               "    aaaaaaaaaaaaaaa != aa) {\n}");
+  verifyFormat("if ((aaaaaaaaaa != aaaaaaaaaaaaaaa or\n"
+               "     aaaaaaaaaaaaaaaaaaaaaaaa() >= aaaaaaaaaaaaaaaaaaaa) and\n"
                "    aaaaaaaaaaaaaaa != aa) {\n}");
 }
 
@@ -4550,6 +4659,7 @@ TEST_F(FormatTest, UnderstandsUsesOfStarAndAmp) {
   verifyIndependentOfContext("void f(int *a = d * e, int *b = c * d);");
   verifyFormat("for (char **a = b; *a; ++a) {\n}");
   verifyFormat("for (; a && b;) {\n}");
+  verifyFormat("bool foo = true && [] { return false; }();");
 
   verifyFormat(
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
@@ -4753,6 +4863,8 @@ TEST_F(FormatTest, FormatsCasts) {
 
   // FIXME: single value wrapped with paren will be treated as cast.
   verifyFormat("void f(int i = (kValue)*kMask) {}");
+
+  verifyFormat("{ (void)F; }");
 
   // Don't break after a cast's
   verifyFormat("int aaaaaaaaaaaaaaaaaaaaaaaaaaa =\n"
@@ -5091,6 +5203,7 @@ TEST_F(FormatTest, LayoutCxx11BraceInitializers) {
   verifyFormat("Class::Class : member{1, 2, 3} {}");
   verifyFormat("new vector<int>{1, 2, 3};");
   verifyFormat("new int[3]{1, 2, 3};");
+  verifyFormat("new int{1};");
   verifyFormat("return {arg1, arg2};");
   verifyFormat("return {arg1, SomeType{parameter}};");
   verifyFormat("int count = set<int>{f(), g(), h()}.size();");
@@ -7686,8 +7799,7 @@ TEST_F(FormatTest, GNUBraceBreaking) {
 TEST_F(FormatTest, CatchExceptionReferenceBinding) {
   verifyFormat("void f() {\n"
                "  try {\n"
-               "  }\n"
-               "  catch (const Exception &e) {\n"
+               "  } catch (const Exception &e) {\n"
                "  }\n"
                "}\n",
                getLLVMStyle());

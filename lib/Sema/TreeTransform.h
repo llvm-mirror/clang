@@ -1345,6 +1345,19 @@ public:
                                               StartLoc, LParenLoc, EndLoc);
   }
 
+  /// \brief Build a new OpenMP 'proc_bind' clause.
+  ///
+  /// By default, performs semantic analysis to build the new statement.
+  /// Subclasses may override this routine to provide different behavior.
+  OMPClause *RebuildOMPProcBindClause(OpenMPProcBindClauseKind Kind,
+                                      SourceLocation KindKwLoc,
+                                      SourceLocation StartLoc,
+                                      SourceLocation LParenLoc,
+                                      SourceLocation EndLoc) {
+    return getSema().ActOnOpenMPProcBindClause(Kind, KindKwLoc,
+                                               StartLoc, LParenLoc, EndLoc);
+  }
+
   /// \brief Build a new OpenMP 'private' clause.
   ///
   /// By default, performs semantic analysis to build the new statement.
@@ -6313,7 +6326,7 @@ TreeTransform<Derived>::TransformOMPExecutableDirective(
       TClauses.push_back(Clause);
     }
     else {
-      TClauses.push_back(0);
+      TClauses.push_back(nullptr);
     }
   }
   if (!D->getAssociatedStmt()) {
@@ -6392,6 +6405,16 @@ TreeTransform<Derived>::TransformOMPDefaultClause(OMPDefaultClause *C) {
                                               C->getLocStart(),
                                               C->getLParenLoc(),
                                               C->getLocEnd());
+}
+
+template<typename Derived>
+OMPClause *
+TreeTransform<Derived>::TransformOMPProcBindClause(OMPProcBindClause *C) {
+  return getDerived().RebuildOMPProcBindClause(C->getProcBindKind(),
+                                               C->getProcBindKindKwLoc(),
+                                               C->getLocStart(),
+                                               C->getLParenLoc(),
+                                               C->getLocEnd());
 }
 
 template<typename Derived>
@@ -9888,9 +9911,22 @@ template<typename Derived>
 StmtResult
 TreeTransform<Derived>::TransformCapturedStmt(CapturedStmt *S) {
   SourceLocation Loc = S->getLocStart();
-  unsigned NumParams = S->getCapturedDecl()->getNumParams();
+  CapturedDecl *CD = S->getCapturedDecl();
+  unsigned NumParams = CD->getNumParams();
+  unsigned ContextParamPos = CD->getContextParamPosition();
+  SmallVector<Sema::CapturedParamNameType, 4> Params;
+  for (unsigned I = 0; I < NumParams; ++I) {
+    if (I != ContextParamPos) {
+      Params.push_back(
+             std::make_pair(
+                  CD->getParam(I)->getName(),
+                  getDerived().TransformType(CD->getParam(I)->getType())));
+    } else {
+      Params.push_back(std::make_pair(StringRef(), QualType()));
+    }
+  }
   getSema().ActOnCapturedRegionStart(Loc, /*CurScope*/0,
-                                     S->getCapturedRegionKind(), NumParams);
+                                     S->getCapturedRegionKind(), Params);
   StmtResult Body = getDerived().TransformStmt(S->getCapturedStmt());
 
   if (Body.isInvalid()) {
