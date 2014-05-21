@@ -3281,6 +3281,14 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                    options::OPT_fno_sanitize_undefined_trap_on_error, false))
     CmdArgs.push_back("-fsanitize-undefined-trap-on-error");
 
+  // We may have to constrain some compilation options to be on when
+  // -fcheckvfunc
+  if (Args.hasFlag(options::OPT_fcheck_vfunc, 
+                   options::OPT_fno_check_vfunc, false)) {
+    // do something here
+    
+  }
+
   // Report an error for -faltivec on anything other than PowerPC.
   if (const Arg *A = Args.getLastArg(options::OPT_faltivec))
     if (!(getToolChain().getArch() == llvm::Triple::ppc ||
