@@ -863,9 +863,11 @@ void ASTDeclWriter::VisitBlockDecl(BlockDecl *D) {
 void ASTDeclWriter::VisitCapturedDecl(CapturedDecl *CD) {
   Record.push_back(CD->getNumParams());
   VisitDecl(CD);
+  Record.push_back(CD->getContextParamPosition());
+  Record.push_back(CD->isNothrow() ? 1 : 0);
   // Body is stored by VisitCapturedStmt.
-  for (unsigned i = 0; i < CD->getNumParams(); ++i)
-    Writer.AddDeclRef(CD->getParam(i), Record);
+  for (unsigned I = 0; I < CD->getNumParams(); ++I)
+    Writer.AddDeclRef(CD->getParam(I), Record);
   Code = serialization::DECL_CAPTURED;
 }
 
@@ -984,9 +986,6 @@ void ASTDeclWriter::VisitUnresolvedUsingTypenameDecl(
 
 void ASTDeclWriter::VisitCXXRecordDecl(CXXRecordDecl *D) {
   VisitRecordDecl(D);
-  Record.push_back(D->isThisDeclarationADefinition());
-  if (D->isThisDeclarationADefinition())
-    Writer.AddCXXDefinitionData(D, Record);
 
   enum {
     CXXRecNotTemplate = 0, CXXRecTemplate, CXXRecMemberSpecialization
@@ -1003,6 +1002,10 @@ void ASTDeclWriter::VisitCXXRecordDecl(CXXRecordDecl *D) {
   } else {
     Record.push_back(CXXRecNotTemplate);
   }
+
+  Record.push_back(D->isThisDeclarationADefinition());
+  if (D->isThisDeclarationADefinition())
+    Writer.AddCXXDefinitionData(D, Record);
 
   // Store (what we currently believe to be) the key function to avoid
   // deserializing every method so we can compute it.

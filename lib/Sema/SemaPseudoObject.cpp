@@ -31,6 +31,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/SemaInternal.h"
+#include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExprObjC.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Lex/Preprocessor.h"
@@ -681,7 +682,8 @@ ExprResult ObjCPropertyOpBuilder::buildGet() {
 
   // Build a message-send.
   ExprResult msg;
-  if (Getter->isInstanceMethod() || RefExpr->isObjectReceiver()) {
+  if ((Getter->isInstanceMethod() && !RefExpr->isClassReceiver()) ||
+      RefExpr->isObjectReceiver()) {
     assert(InstanceReceiver || RefExpr->isSuperReceiver());
     msg = S.BuildInstanceMessageImplicit(InstanceReceiver, receiverType,
                                          GenericLoc, Getter->getSelector(),
@@ -750,7 +752,8 @@ ExprResult ObjCPropertyOpBuilder::buildSet(Expr *op, SourceLocation opcLoc,
 
   // Build a message-send.
   ExprResult msg;
-  if (Setter->isInstanceMethod() || RefExpr->isObjectReceiver()) {
+  if ((Setter->isInstanceMethod() && !RefExpr->isClassReceiver()) ||
+      RefExpr->isObjectReceiver()) {
     msg = S.BuildInstanceMessageImplicit(InstanceReceiver, receiverType,
                                          GenericLoc, SetterSelector, Setter,
                                          MultiExprArg(args, 1));

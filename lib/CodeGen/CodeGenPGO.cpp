@@ -140,13 +140,22 @@ llvm::GlobalVariable *CodeGenPGO::buildDataVar() {
   Data->setSection(getDataSection(CGM));
   Data->setAlignment(8);
 
+  // Hide all these symbols so that we correctly get a copy for each
+  // executable.  The profile format expects names and counters to be
+  // contiguous, so references into shared objects would be invalid.
+  if (!llvm::GlobalValue::isLocalLinkage(VarLinkage)) {
+    Name->setVisibility(llvm::GlobalValue::HiddenVisibility);
+    Data->setVisibility(llvm::GlobalValue::HiddenVisibility);
+    RegionCounters->setVisibility(llvm::GlobalValue::HiddenVisibility);
+  }
+
   // Make sure the data doesn't get deleted.
   CGM.addUsedGlobal(Data);
   return Data;
 }
 
 void CodeGenPGO::emitInstrumentationData() {
-  if (!CGM.getCodeGenOpts().ProfileInstrGenerate)
+  if (!RegionCounters)
     return;
 
   // Build the data.
@@ -803,7 +812,7 @@ void CodeGenPGO::assignRegionCounters(const Decl *D, llvm::Function *Fn) {
   llvm::IndexedInstrProfReader *PGOReader = CGM.getPGOReader();
   if (!InstrumentRegions && !PGOReader)
     return;
-  if (!D)
+  if (D->isImplicit())
     return;
   setFuncName(Fn);
 
@@ -845,6 +854,7 @@ void CodeGenPGO::mapRegionCounters(const Decl *D) {
     Walker.TraverseDecl(const_cast<BlockDecl *>(BD));
   else if (const CapturedDecl *CD = dyn_cast_or_null<CapturedDecl>(D))
     Walker.TraverseDecl(const_cast<CapturedDecl *>(CD));
+  assert(Walker.NextCounter > 0 && "no entry counter mapped for decl");
   NumRegionCounters = Walker.NextCounter;
   FunctionHash = Walker.Hash.finalize();
 }
@@ -920,6 +930,7 @@ void CodeGenPGO::destroyRegionCounters() {
   RegionCounterMap.reset();
   StmtCountMap.reset();
   RegionCounts.reset();
+  RegionCounters = nullptr;
 }
 
 /// \brief Calculate what to divide by to scale weights.

@@ -418,6 +418,11 @@ llvm::Value *CodeGenFunction::getSelectorFromSlot() {
 
 void CodeGenFunction::EmitCXXThrowExpr(const CXXThrowExpr *E,
                                        bool KeepInsertionPoint) {
+  if (CGM.getTarget().getTriple().isWindowsMSVCEnvironment()) {
+    ErrorUnsupported(E, "throw expression");
+    return;
+  }
+
   if (!E->getSubExpr()) {
     EmitNoreturnRuntimeCallOrInvoke(getReThrowFn(CGM),
                                     ArrayRef<llvm::Value*>());
@@ -487,8 +492,14 @@ void CodeGenFunction::EmitStartEHSpec(const Decl *D) {
     return;
   
   const FunctionDecl* FD = dyn_cast_or_null<FunctionDecl>(D);
-  if (FD == 0)
+  if (FD == 0) {
+    // Check if CapturedDecl is nothrow and create terminate scope for it.
+    if (const CapturedDecl* CD = dyn_cast_or_null<CapturedDecl>(D)) {
+      if (CD->isNothrow())
+        EHStack.pushTerminate();
+    }
     return;
+  }
   const FunctionProtoType *Proto = FD->getType()->getAs<FunctionProtoType>();
   if (Proto == 0)
     return;
@@ -555,8 +566,14 @@ void CodeGenFunction::EmitEndEHSpec(const Decl *D) {
     return;
   
   const FunctionDecl* FD = dyn_cast_or_null<FunctionDecl>(D);
-  if (FD == 0)
+  if (FD == 0) {
+    // Check if CapturedDecl is nothrow and pop terminate scope for it.
+    if (const CapturedDecl* CD = dyn_cast_or_null<CapturedDecl>(D)) {
+      if (CD->isNothrow())
+        EHStack.popTerminate();
+    }
     return;
+  }
   const FunctionProtoType *Proto = FD->getType()->getAs<FunctionProtoType>();
   if (Proto == 0)
     return;
@@ -574,6 +591,11 @@ void CodeGenFunction::EmitEndEHSpec(const Decl *D) {
 }
 
 void CodeGenFunction::EmitCXXTryStmt(const CXXTryStmt &S) {
+  if (CGM.getTarget().getTriple().isWindowsMSVCEnvironment()) {
+    ErrorUnsupported(&S, "try statement");
+    return;
+  }
+
   EnterCXXTryStmt(S);
   EmitStmt(S.getTryBlock());
   ExitCXXTryStmt(S);

@@ -41,6 +41,7 @@ def PointerBoolConversion : DiagGroup<"pointer-bool-conversion">;
 def BoolConversion : DiagGroup<"bool-conversion", [ PointerBoolConversion ] >;
 def IntConversion : DiagGroup<"int-conversion">;
 def EnumConversion : DiagGroup<"enum-conversion">;
+def FloatConversion : DiagGroup<"float-conversion">;
 def EnumTooLarge : DiagGroup<"enum-too-large">;
 def NonLiteralNullConversion : DiagGroup<"non-literal-null-conversion">;
 def NullConversion : DiagGroup<"null-conversion">;
@@ -81,11 +82,11 @@ def DeprecatedIncrementBool : DiagGroup<"deprecated-increment-bool">;
 def DeprecatedRegister : DiagGroup<"deprecated-register">;
 def DeprecatedWritableStr : DiagGroup<"deprecated-writable-strings",
                                       [CXX11CompatDeprecatedWritableStr]>;
-// FIXME: Why are DeprecatedImplementations and DeprecatedWritableStr
-// not in this group?
+// FIXME: Why is DeprecatedImplementations not in this group?
 def Deprecated : DiagGroup<"deprecated", [DeprecatedDeclarations,
                                           DeprecatedIncrementBool,
-                                          DeprecatedRegister]>,
+                                          DeprecatedRegister,
+                                          DeprecatedWritableStr]>,
                  DiagCategory<"Deprecations">;
 
 def : DiagGroup<"disabled-optimization">;
@@ -185,6 +186,10 @@ def IncompatiblePointerTypes
     [IncompatiblePointerTypesDiscardsQualifiers]>;
 def IncompleteUmbrella : DiagGroup<"incomplete-umbrella">;
 def IncompleteModule : DiagGroup<"incomplete-module", [IncompleteUmbrella]>;
+def NonModularIncludeInFrameworkModule
+  : DiagGroup<"non-modular-include-in-framework-module">;
+def NonModularIncludeInModule : DiagGroup<"non-modular-include-in-module",
+                                          [NonModularIncludeInFrameworkModule]>;
 def InvalidNoreturn : DiagGroup<"invalid-noreturn">;
 def InvalidSourceEncoding : DiagGroup<"invalid-source-encoding">;
 def KNRPromotedParameter : DiagGroup<"knr-promoted-parameter">;
@@ -420,9 +425,20 @@ def Visibility : DiagGroup<"visibility">;
 def ZeroLengthArray : DiagGroup<"zero-length-array">;
 def GNUZeroLineDirective : DiagGroup<"gnu-zero-line-directive">;
 def GNUZeroVariadicMacroArguments : DiagGroup<"gnu-zero-variadic-macro-arguments">;
+def Fallback : DiagGroup<"fallback">;
+
+// This covers both the deprecated case (in C++98)
+// and the extension case (in C++11 onwards).
+def WritableStrings : DiagGroup<"writable-strings", [DeprecatedWritableStr]>;
 
 // GCC calls -Wdeprecated-writable-strings -Wwrite-strings.
-def GCCWriteStrings : DiagGroup<"write-strings" , [DeprecatedWritableStr]>;
+//
+// Bizarrely, this warning flag enables -fconst-strings in C. This is
+// GCC-compatible, but really weird.
+//
+// FIXME: Should this affect C++11 (where this is an error,
+//        not just deprecated) or not?
+def GCCWriteStrings : DiagGroup<"write-strings" , [WritableStrings]>;
 
 def CharSubscript : DiagGroup<"char-subscripts">;
 def LargeByValueCopy : DiagGroup<"large-by-value-copy">;
@@ -476,6 +492,7 @@ def Conversion : DiagGroup<"conversion",
                            [BoolConversion,
                             ConstantConversion,
                             EnumConversion,
+                            FloatConversion,
                             Shorten64To32,
                             IntConversion,
                             LiteralConversion,
@@ -659,6 +676,7 @@ def ASM : DiagGroup<"asm", [
 
 // OpenMP warnings.
 def SourceUsesOpenMP : DiagGroup<"source-uses-openmp">;
+def OpenMPClauses : DiagGroup<"openmp-clauses">;
 
 // Backend warnings.
 def BackendInlineAsm : DiagGroup<"inline-asm">;

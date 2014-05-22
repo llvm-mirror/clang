@@ -106,7 +106,7 @@ struct HeaderFileInfo {
       External(false), isModuleHeader(false), isCompilingModuleHeader(false),
       HeaderRole(ModuleMap::NormalHeader),
       Resolved(false), IndexHeaderMapHeader(false), IsValid(0),
-      NumIncludes(0), ControllingMacroID(0), ControllingMacro(0)  {}
+      NumIncludes(0), ControllingMacroID(0), ControllingMacro(nullptr)  {}
 
   /// \brief Retrieve the controlling macro for this header file, if
   /// any.
@@ -510,7 +510,6 @@ public:
   ///
   /// \returns The module with the given name.
   Module *lookupModule(StringRef ModuleName, bool AllowSearch = true);
-
 
   /// \brief Try to find a module map file in the given directory, returning
   /// \c nullptr if none is found.

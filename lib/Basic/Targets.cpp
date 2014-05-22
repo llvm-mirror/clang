@@ -384,6 +384,17 @@ protected:
     Builder.defineMacro("__ELF__");
     if (Opts.POSIXThreads)
       Builder.defineMacro("_POSIX_THREADS");
+
+    switch (Triple.getArch()) {
+    default:
+      break;
+    case llvm::Triple::arm:
+    case llvm::Triple::armeb:
+    case llvm::Triple::thumb:
+    case llvm::Triple::thumbeb:
+      Builder.defineMacro("__ARM_DWARF_EH__");
+      break;
+    }
   }
 public:
   NetBSDTargetInfo(const llvm::Triple &Triple) : OSTargetInfo<Target>(Triple) {
@@ -445,7 +456,6 @@ protected:
 public:
   BitrigTargetInfo(const llvm::Triple &Triple) : OSTargetInfo<Target>(Triple) {
     this->UserLabelPrefix = "";
-    this->TLSSupported = false;
     this->MCountName = "__mcount";
   }
 };
@@ -1346,7 +1356,7 @@ namespace {
     void getGCCRegAliases(const GCCRegAlias *&Aliases,
                                   unsigned &NumAliases) const override {
       // No aliases.
-      Aliases = 0;
+      Aliases = nullptr;
       NumAliases = 0;
     }
     bool validateAsmConstraint(const char *&Name,
@@ -1473,13 +1483,13 @@ public:
 
   void getGCCRegNames(const char * const *&Names,
                       unsigned &numNames) const override {
-    Names = NULL;
+    Names = nullptr;
     numNames = 0;
   }
 
   void getGCCRegAliases(const GCCRegAlias *&Aliases,
                         unsigned &NumAliases) const override {
-    Aliases = NULL;
+    Aliases = nullptr;
     NumAliases = 0;
   }
 
@@ -1490,7 +1500,7 @@ public:
 
   void getTargetBuiltins(const Builtin::Info *&Records,
                          unsigned &NumRecords) const override {
-    Records = NULL;
+    Records = nullptr;
     NumRecords = 0;
   }
 
@@ -1769,6 +1779,7 @@ class X86TargetInfo : public TargetInfo {
     CK_BDVER1,
     CK_BDVER2,
     CK_BDVER3,
+    CK_BDVER4,
     //@}
 
     /// This specification is deprecated and will be removed in the future.
@@ -1818,7 +1829,7 @@ public:
   }
   void getGCCRegAliases(const GCCRegAlias *&Aliases,
                         unsigned &NumAliases) const override {
-    Aliases = 0;
+    Aliases = nullptr;
     NumAliases = 0;
   }
   void getGCCAddlRegNames(const AddlRegName *&Names,
@@ -1912,6 +1923,7 @@ public:
       .Case("bdver1", CK_BDVER1)
       .Case("bdver2", CK_BDVER2)
       .Case("bdver3", CK_BDVER3)
+      .Case("bdver4", CK_BDVER4)
       .Case("x86-64", CK_x86_64)
       .Case("geode", CK_Geode)
       .Default(CK_Generic);
@@ -1981,6 +1993,7 @@ public:
     case CK_BDVER1:
     case CK_BDVER2:
     case CK_BDVER3:
+    case CK_BDVER4:
     case CK_x86_64:
       return true;
     }
@@ -2183,6 +2196,10 @@ void X86TargetInfo::getDefaultFeatures(llvm::StringMap<bool> &Features) const {
     setFeatureEnabledImpl(Features, "prfchw", true);
     setFeatureEnabledImpl(Features, "cx16", true);
     break;
+  case CK_BDVER4:
+    setFeatureEnabledImpl(Features, "avx2", true);
+    setFeatureEnabledImpl(Features, "bmi2", true);
+    // FALLTHROUGH
   case CK_BDVER2:
   case CK_BDVER3:
     setFeatureEnabledImpl(Features, "xop", true);
@@ -2686,6 +2703,9 @@ void X86TargetInfo::getTargetDefines(const LangOptions &Opts,
   case CK_BDVER3:
     defineCPUMacros(Builder, "bdver3");
     break;
+  case CK_BDVER4:
+    defineCPUMacros(Builder, "bdver4");
+    break;
   case CK_Geode:
     defineCPUMacros(Builder, "geode");
     break;
@@ -3051,7 +3071,6 @@ class WindowsX86_32TargetInfo : public WindowsTargetInfo<X86_32TargetInfo> {
 public:
   WindowsX86_32TargetInfo(const llvm::Triple &Triple)
       : WindowsTargetInfo<X86_32TargetInfo>(Triple) {
-    TLSSupported = false;
     WCharType = UnsignedShort;
     DoubleAlign = LongLongAlign = 64;
     DescriptionString = "e-m:w-p:32:32-i64:64-f80:32-n8:16:32-S32";
@@ -3085,6 +3104,33 @@ public:
 };
 } // end anonymous namespace
 
+static void addMinGWDefines(const LangOptions &Opts, MacroBuilder &Builder) {
+  Builder.defineMacro("__MSVCRT__");
+  Builder.defineMacro("__MINGW32__");
+
+  // Mingw defines __declspec(a) to __attribute__((a)).  Clang supports
+  // __declspec natively under -fms-extensions, but we define a no-op __declspec
+  // macro anyway for pre-processor compatibility.
+  if (Opts.MicrosoftExt)
+    Builder.defineMacro("__declspec", "__declspec");
+  else
+    Builder.defineMacro("__declspec(a)", "__attribute__((a))");
+
+  if (!Opts.MicrosoftExt) {
+    // Provide macros for all the calling convention keywords.  Provide both
+    // single and double underscore prefixed variants.  These are available on
+    // x64 as well as x86, even though they have no effect.
+    const char *CCs[] = {"cdecl", "stdcall", "fastcall", "thiscall", "pascal"};
+    for (const char *CC : CCs) {
+      std::string GCCSpelling = "__attribute__((__";
+      GCCSpelling += CC;
+      GCCSpelling += "__))";
+      Builder.defineMacro(Twine("_") + CC, GCCSpelling);
+      Builder.defineMacro(Twine("__") + CC, GCCSpelling);
+    }
+  }
+}
+
 namespace {
 // x86-32 MinGW target
 class MinGWX86_32TargetInfo : public WindowsX86_32TargetInfo {
@@ -3097,17 +3143,7 @@ public:
     DefineStd(Builder, "WIN32", Opts);
     DefineStd(Builder, "WINNT", Opts);
     Builder.defineMacro("_X86_");
-    Builder.defineMacro("__MSVCRT__");
-    Builder.defineMacro("__MINGW32__");
-
-    // mingw32-gcc provides __declspec(a) as alias of __attribute__((a)).
-    // In contrast, clang-cc1 provides __declspec(a) with -fms-extensions.
-    if (Opts.MicrosoftExt)
-      // Provide "as-is" __declspec.
-      Builder.defineMacro("__declspec", "__declspec");
-    else
-      // Provide alias of __attribute__ like mingw32-gcc.
-      Builder.defineMacro("__declspec(a)", "__attribute__((a))");
+    addMinGWDefines(Opts, Builder);
   }
 };
 } // end anonymous namespace
@@ -3270,7 +3306,6 @@ class WindowsX86_64TargetInfo : public WindowsTargetInfo<X86_64TargetInfo> {
 public:
   WindowsX86_64TargetInfo(const llvm::Triple &Triple)
       : WindowsTargetInfo<X86_64TargetInfo>(Triple) {
-    TLSSupported = false;
     WCharType = UnsignedShort;
     LongWidth = LongAlign = 32;
     DoubleAlign = LongLongAlign = 64;
@@ -3327,18 +3362,8 @@ public:
                         MacroBuilder &Builder) const override {
     WindowsX86_64TargetInfo::getTargetDefines(Opts, Builder);
     DefineStd(Builder, "WIN64", Opts);
-    Builder.defineMacro("__MSVCRT__");
-    Builder.defineMacro("__MINGW32__");
     Builder.defineMacro("__MINGW64__");
-
-    // mingw32-gcc provides __declspec(a) as alias of __attribute__((a)).
-    // In contrast, clang-cc1 provides __declspec(a) with -fms-extensions.
-    if (Opts.MicrosoftExt)
-      // Provide "as-is" __declspec.
-      Builder.defineMacro("__declspec", "__declspec");
-    else
-      // Provide alias of __attribute__ like mingw32-gcc.
-      Builder.defineMacro("__declspec(a)", "__attribute__((a))");
+    addMinGWDefines(Opts, Builder);
   }
 };
 } // end anonymous namespace
@@ -3395,6 +3420,7 @@ class AArch64TargetInfo : public TargetInfo {
   };
 
   unsigned FPU;
+  unsigned CRC;
   unsigned Crypto;
   static const Builtin::Info BuiltinInfo[];
 
@@ -3468,8 +3494,11 @@ public:
     if (FPU == NeonMode) {
       Builder.defineMacro("__ARM_NEON");
       // 64-bit NEON supports half, single and double precision operations.
-      Builder.defineMacro("__ARM_NEON_FP", "7");
+      Builder.defineMacro("__ARM_NEON_FP", "0xe");
     }
+
+    if (CRC)
+      Builder.defineMacro("__ARM_FEATURE_CRC32");
 
     if (Crypto) {
       Builder.defineMacro("__ARM_FEATURE_CRYPTO");
@@ -3494,10 +3523,13 @@ public:
   bool handleTargetFeatures(std::vector<std::string> &Features,
                             DiagnosticsEngine &Diags) override {
     FPU = FPUMode;
+    CRC = 0;
     Crypto = 0;
     for (unsigned i = 0, e = Features.size(); i != e; ++i) {
       if (Features[i] == "+neon")
         FPU = NeonMode;
+      if (Features[i] == "+crc")
+        CRC = 1;
       if (Features[i] == "+crypto")
         Crypto = 1;
     }
@@ -3763,11 +3795,18 @@ class ARMTargetInfo : public TargetInfo {
     else
       SizeType = UnsignedInt;
 
-    if (T.getOS() == llvm::Triple::NetBSD) {
+    switch (T.getOS()) {
+    case llvm::Triple::NetBSD:
       WCharType = SignedInt;
-    } else {
+      break;
+    case llvm::Triple::Win32:
+      WCharType = UnsignedShort;
+      break;
+    case llvm::Triple::Linux:
+    default:
       // AAPCS 7.1.1, ARM-Linux ABI 2.4: type of wchar_t is unsigned int.
       WCharType = UnsignedInt;
+      break;
     }
 
     UseBitFieldTypeAlignment = true;
@@ -4064,7 +4103,7 @@ public:
       .Cases("cortex-m3", "cortex-m4", "7M")
       .Case("cortex-m0", "6M")
       .Cases("cortex-a53", "cortex-a57", "8A")
-      .Default(0);
+      .Default(nullptr);
   }
   static const char *getCPUProfile(StringRef Name) {
     return llvm::StringSwitch<const char*>(Name)
@@ -4488,6 +4527,7 @@ class ARM64TargetInfo : public TargetInfo {
   };
 
   unsigned FPU;
+  unsigned CRC;
   unsigned Crypto;
 
   static const Builtin::Info BuiltinInfo[];
@@ -4582,8 +4622,11 @@ public:
     if (FPU == NeonMode) {
       Builder.defineMacro("__ARM_NEON");
       // 64-bit NEON supports half, single and double precision operations.
-      Builder.defineMacro("__ARM_NEON_FP", "7");
+      Builder.defineMacro("__ARM_NEON_FP", "0xe");
     }
+
+    if (CRC)
+      Builder.defineMacro("__ARM_FEATURE_CRC32");
 
     if (Crypto)
       Builder.defineMacro("__ARM_FEATURE_CRYPTO");
@@ -4604,10 +4647,13 @@ public:
   bool handleTargetFeatures(std::vector<std::string> &Features,
                             DiagnosticsEngine &Diags) override {
     FPU = FPUMode;
+    CRC = 0;
     Crypto = 0;
     for (unsigned i = 0, e = Features.size(); i != e; ++i) {
       if (Features[i] == "+neon")
         FPU = NeonMode;
+      if (Features[i] == "+crc")
+        CRC = 1;
       if (Features[i] == "+crypto")
         Crypto = 1;
     }
@@ -4636,44 +4682,35 @@ public:
     case 'w': // Floating point and SIMD registers (V0-V31)
       Info.setAllowsRegister();
       return true;
+    case 'I': // Constant that can be used with an ADD instruction
+    case 'J': // Constant that can be used with a SUB instruction
+    case 'K': // Constant that can be used with a 32-bit logical instruction
+    case 'L': // Constant that can be used with a 64-bit logical instruction
+    case 'M': // Constant that can be used as a 32-bit MOV immediate
+    case 'N': // Constant that can be used as a 64-bit MOV immediate
+    case 'Y': // Floating point constant zero
+    case 'Z': // Integer constant zero
+      return true;
+    case 'Q': // A memory reference with base register and no offset
+      Info.setAllowsMemory();
+      return true;
+    case 'S': // A symbolic address
+      Info.setAllowsRegister();
+      return true;
+    case 'U':
+      // Ump: A memory address suitable for ldp/stp in SI, DI, SF and DF modes, whatever they may be
+      // Utf: A memory address suitable for ldp/stp in TF mode, whatever it may be
+      // Usa: An absolute symbolic address
+      // Ush: The high part (bits 32:12) of a pc-relative symbolic address
+      llvm_unreachable("FIXME: Unimplemented support for bizarre constraints");
     case 'z': // Zero register, wzr or xzr
       Info.setAllowsRegister();
       return true;
     case 'x': // Floating point and SIMD registers (V0-V15)
       Info.setAllowsRegister();
       return true;
-    case 'Q': // A memory address that is a single base register.
-      Info.setAllowsMemory();
-      return true;
     }
     return false;
-  }
-
-  virtual bool validateConstraintModifier(StringRef Constraint,
-                                          const char Modifier,
-                                          unsigned Size) const {
-    // Strip off constraint modifiers.
-    while (Constraint[0] == '=' || Constraint[0] == '+' || Constraint[0] == '&')
-      Constraint = Constraint.substr(1);
-
-    switch (Constraint[0]) {
-    default:
-      return true;
-    case 'z':
-    case 'r': {
-      switch (Modifier) {
-      case 'x':
-      case 'w':
-        // For now assume that the person knows what they're
-        // doing with the modifier.
-        return true;
-      default:
-        // By default an 'r' constraint will be in the 'x'
-        // registers.
-        return (Size == 64);
-      }
-    }
-    }
   }
 
   virtual const char *getClobbers() const { return ""; }
@@ -4869,7 +4906,7 @@ public:
     return llvm::StringSwitch<const char*>(Name)
       .Case("hexagonv4", "4")
       .Case("hexagonv5", "5")
-      .Default(0);
+      .Default(nullptr);
   }
 
   bool setCPU(const std::string &Name) override {
@@ -5201,7 +5238,7 @@ public:
   void getTargetBuiltins(const Builtin::Info *&Records,
                          unsigned &NumRecords) const override {
     // FIXME: Implement.
-    Records = 0;
+    Records = nullptr;
     NumRecords = 0;
   }
 
@@ -5210,7 +5247,7 @@ public:
   void getGCCRegAliases(const GCCRegAlias *&Aliases,
                         unsigned &NumAliases) const override {
     // No aliases.
-    Aliases = 0;
+    Aliases = nullptr;
     NumAliases = 0;
   }
   bool validateAsmConstraint(const char *&Name,
@@ -5307,7 +5344,7 @@ namespace {
     void getTargetBuiltins(const Builtin::Info *&Records,
                            unsigned &NumRecords) const override {
       // FIXME: Implement.
-      Records = 0;
+      Records = nullptr;
       NumRecords = 0;
     }
     bool hasFeature(StringRef Feature) const override {
@@ -5318,7 +5355,7 @@ namespace {
     void getGCCRegAliases(const GCCRegAlias *&Aliases,
                           unsigned &NumAliases) const override {
       // No aliases.
-      Aliases = 0;
+      Aliases = nullptr;
       NumAliases = 0;
     }
     bool validateAsmConstraint(const char *&Name,
@@ -5643,9 +5680,6 @@ public:
       std::find(Features.begin(), Features.end(), "+soft-float");
     if (it != Features.end())
       Features.erase(it);
-    it = std::find(Features.begin(), Features.end(), "+nan2008");
-    if (it != Features.end())
-      Features.erase(it);
 
     setDescriptionString();
 
@@ -5779,32 +5813,44 @@ class Mips64TargetInfoBase : public MipsTargetInfoBase {
 public:
   Mips64TargetInfoBase(const llvm::Triple &Triple)
       : MipsTargetInfoBase(Triple, "n64", "mips64r2") {
-    LongWidth = LongAlign = 64;
-    PointerWidth = PointerAlign = 64;
     LongDoubleWidth = LongDoubleAlign = 128;
     LongDoubleFormat = &llvm::APFloat::IEEEquad;
     if (getTriple().getOS() == llvm::Triple::FreeBSD) {
       LongDoubleWidth = LongDoubleAlign = 64;
       LongDoubleFormat = &llvm::APFloat::IEEEdouble;
     }
+    setN64ABITypes();
     SuitableAlign = 128;
     MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 64;
   }
+
+  void setN64ABITypes() {
+    LongWidth = LongAlign = 64;
+    PointerWidth = PointerAlign = 64;
+    SizeType = UnsignedLong;
+    PtrDiffType = SignedLong;
+  }
+
+  void setN32ABITypes() {
+    LongWidth = LongAlign = 32;
+    PointerWidth = PointerAlign = 32;
+    SizeType = UnsignedInt;
+    PtrDiffType = SignedInt;
+  }
+
   bool setABI(const std::string &Name) override {
     if (Name == "n32") {
-      LongWidth = LongAlign = 32;
-      PointerWidth = PointerAlign = 32;
+      setN32ABITypes();
       ABI = Name;
       return true;
-    } else if (Name == "n64") {
-      ABI = Name;
-      return true;
-    } else if (Name == "64") {
+    } else if (Name == "n64" || Name == "64") {
+      setN64ABITypes();
       ABI = "n64";
       return true;
-    } else
-      return false;
+    }
+    return false;
   }
+
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override {
     MipsTargetInfoBase::getTargetDefines(Opts, Builder);
@@ -5864,6 +5910,8 @@ public:
     Aliases = GCCRegAliases;
     NumAliases = llvm::array_lengthof(GCCRegAliases);
   }
+
+  bool hasInt128Type() const override { return true; }
 };
 
 class Mips64EBTargetInfo : public Mips64TargetInfoBase {
@@ -5965,13 +6013,13 @@ public:
 
 void PNaClTargetInfo::getGCCRegNames(const char * const *&Names,
                                      unsigned &NumNames) const {
-  Names = NULL;
+  Names = nullptr;
   NumNames = 0;
 }
 
 void PNaClTargetInfo::getGCCRegAliases(const GCCRegAlias *&Aliases,
                                        unsigned &NumAliases) const {
-  Aliases = NULL;
+  Aliases = nullptr;
   NumAliases = 0;
 }
 } // end anonymous namespace.
@@ -6105,7 +6153,7 @@ public:
   }
   void getGCCRegAliases(const GCCRegAlias *&Aliases,
                         unsigned &NumAliases) const override {
-    Aliases = NULL;
+    Aliases = nullptr;
     NumAliases = 0;
   }
   bool validateAsmConstraint(const char *&Name,
@@ -6136,7 +6184,7 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
 
   switch (Triple.getArch()) {
   default:
-    return NULL;
+    return nullptr;
 
   case llvm::Triple::arm64:
     if (Triple.isOSDarwin())
@@ -6314,7 +6362,7 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
       case llvm::Triple::NaCl:
         return new NaClTargetInfo<PNaClTargetInfo>(Triple);
       default:
-        return NULL;
+        return nullptr;
     }
 
   case llvm::Triple::ppc:
@@ -6503,13 +6551,13 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
     case llvm::Triple::spir: {
       if (Triple.getOS() != llvm::Triple::UnknownOS ||
           Triple.getEnvironment() != llvm::Triple::UnknownEnvironment)
-        return NULL;
+        return nullptr;
       return new SPIR32TargetInfo(Triple);
     }
     case llvm::Triple::spir64: {
       if (Triple.getOS() != llvm::Triple::UnknownOS ||
           Triple.getEnvironment() != llvm::Triple::UnknownEnvironment)
-        return NULL;
+        return nullptr;
       return new SPIR64TargetInfo(Triple);
     }
   }
@@ -6525,26 +6573,26 @@ TargetInfo *TargetInfo::CreateTargetInfo(DiagnosticsEngine &Diags,
   std::unique_ptr<TargetInfo> Target(AllocateTarget(Triple));
   if (!Target) {
     Diags.Report(diag::err_target_unknown_triple) << Triple.str();
-    return 0;
+    return nullptr;
   }
   Target->setTargetOpts(Opts);
 
   // Set the target CPU if specified.
   if (!Opts->CPU.empty() && !Target->setCPU(Opts->CPU)) {
     Diags.Report(diag::err_target_unknown_cpu) << Opts->CPU;
-    return 0;
+    return nullptr;
   }
 
   // Set the target ABI if specified.
   if (!Opts->ABI.empty() && !Target->setABI(Opts->ABI)) {
     Diags.Report(diag::err_target_unknown_abi) << Opts->ABI;
-    return 0;
+    return nullptr;
   }
 
   // Set the fp math unit.
   if (!Opts->FPMath.empty() && !Target->setFPMath(Opts->FPMath)) {
     Diags.Report(diag::err_target_unknown_fpmath) << Opts->FPMath;
-    return 0;
+    return nullptr;
   }
 
   // Compute the default target features, we need the target to handle this
@@ -6570,7 +6618,7 @@ TargetInfo *TargetInfo::CreateTargetInfo(DiagnosticsEngine &Diags,
          ie = Features.end(); it != ie; ++it)
     Opts->Features.push_back((it->second ? "+" : "-") + it->first().str());
   if (!Target->handleTargetFeatures(Opts->Features, Diags))
-    return 0;
+    return nullptr;
 
   return Target.release();
 }

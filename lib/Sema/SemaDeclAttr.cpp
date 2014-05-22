@@ -18,6 +18,7 @@
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/ExprCXX.h"
 #include "clang/AST/Mangle.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/SourceManager.h"
@@ -2179,9 +2180,16 @@ template <typename WorkGroupAttr>
 static void handleWorkGroupSize(Sema &S, Decl *D,
                                 const AttributeList &Attr) {
   uint32_t WGSize[3];
-  for (unsigned i = 0; i < 3; ++i)
-    if (!checkUInt32Argument(S, Attr, Attr.getArgAsExpr(i), WGSize[i], i))
+  for (unsigned i = 0; i < 3; ++i) {
+    const Expr *E = Attr.getArgAsExpr(i);
+    if (!checkUInt32Argument(S, Attr, E, WGSize[i], i))
       return;
+    if (WGSize[i] == 0) {
+      S.Diag(Attr.getLoc(), diag::err_attribute_argument_is_zero)
+        << Attr.getName() << E->getSourceRange();
+      return;
+    }
+  }
 
   WorkGroupAttr *Existing = D->getAttr<WorkGroupAttr>();
   if (Existing && !(Existing->getXDim() == WGSize[0] &&
@@ -3697,6 +3705,25 @@ static void handleMSInheritanceAttr(Sema &S, Decl *D, const AttributeList &Attr)
     D->addAttr(IA);
 }
 
+static void handleDeclspecThreadAttr(Sema &S, Decl *D,
+                                     const AttributeList &Attr) {
+  VarDecl *VD = cast<VarDecl>(D);
+  if (!S.Context.getTargetInfo().isTLSSupported()) {
+    S.Diag(Attr.getLoc(), diag::err_thread_unsupported);
+    return;
+  }
+  if (VD->getTSCSpec() != TSCS_unspecified) {
+    S.Diag(Attr.getLoc(), diag::err_declspec_thread_on_thread_variable);
+    return;
+  }
+  if (VD->hasLocalStorage()) {
+    S.Diag(Attr.getLoc(), diag::err_thread_non_global) << "__declspec(thread)";
+    return;
+  }
+  VD->addAttr(::new (S.Context) ThreadAttr(
+      Attr.getRange(), S.Context, Attr.getAttributeSpellingListIndex()));
+}
+
 static void handleARMInterruptAttr(Sema &S, Decl *D,
                                    const AttributeList &Attr) {
   // Check the attribute arguments.
@@ -3821,13 +3848,6 @@ static void handleDLLImportAttr(Sema &S, Decl *D, const AttributeList &Attr) {
     return;
   }
 
-  // Currently, the dllimport attribute is ignored for inlined functions.
-  // Warning is emitted.
-  if (FD && FD->isInlineSpecified()) {
-    S.Diag(Attr.getLoc(), diag::warn_attribute_ignored) << Attr.getName();
-    return;
-  }
-
   unsigned Index = Attr.getAttributeSpellingListIndex();
   DLLImportAttr *NewAttr = S.mergeDLLImportAttr(D, Attr.getRange(), Index);
   if (NewAttr)
@@ -3848,14 +3868,6 @@ DLLExportAttr *Sema::mergeDLLExportAttr(Decl *D, SourceRange Range,
 }
 
 static void handleDLLExportAttr(Sema &S, Decl *D, const AttributeList &Attr) {
-  // Currently, the dllexport attribute is ignored for inlined functions, unless
-  // the -fkeep-inline-functions flag has been used. Warning is emitted.
-  if (isa<FunctionDecl>(D) && cast<FunctionDecl>(D)->isInlineSpecified()) {
-    // FIXME: ... unless the -fkeep-inline-functions flag has been used.
-    S.Diag(Attr.getLoc(), diag::warn_attribute_ignored) << Attr.getName();
-    return;
-  }
-
   unsigned Index = Attr.getAttributeSpellingListIndex();
   DLLExportAttr *NewAttr = S.mergeDLLExportAttr(D, Attr.getRange(), Index);
   if (NewAttr)
@@ -4135,6 +4147,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_OptimizeNone:
     handleOptimizeNoneAttr(S, D, Attr);
     break;
+  case AttributeList::AT_Flatten:
+    handleSimpleAttribute<FlattenAttr>(S, D, Attr);
+    break;
   case AttributeList::AT_Format:
     handleFormatAttr(S, D, Attr);
     break;
@@ -4167,6 +4182,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
   case AttributeList::AT_NoCommon:
     handleSimpleAttribute<NoCommonAttr>(S, D, Attr);
+    break;
+  case AttributeList::AT_NoSplitStack:
+    handleSimpleAttribute<NoSplitStackAttr>(S, D, Attr);
     break;
   case AttributeList::AT_NonNull:
     if (ParmVarDecl *PVD = dyn_cast<ParmVarDecl>(D))
@@ -4393,6 +4411,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
   case AttributeList::AT_SelectAny:
     handleSimpleAttribute<SelectAnyAttr>(S, D, Attr);
+    break;
+  case AttributeList::AT_Thread:
+    handleDeclspecThreadAttr(S, D, Attr);
     break;
 
   // Thread safety attributes:

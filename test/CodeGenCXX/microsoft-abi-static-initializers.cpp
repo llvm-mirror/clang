@@ -1,8 +1,8 @@
-// RUN: %clang_cc1 -emit-llvm %s -o - -mconstructor-aliases -triple=i386-pc-win32 | FileCheck %s
+// RUN: %clang_cc1 -fms-extensions -emit-llvm %s -o - -mconstructor-aliases -triple=i386-pc-win32 | FileCheck %s
 
 // CHECK: @llvm.global_ctors = appending global [2 x { i32, void ()* }]
 // CHECK: [{ i32, void ()* } { i32 65535, void ()* @"\01??__Efoo@?$B@H@@2VA@@A@YAXXZ"
-// CHECK:  { i32, void ()* } { i32 65535, void ()* @_GLOBAL__I_a }]
+// CHECK:  { i32, void ()* } { i32 65535, void ()* @_GLOBAL__sub_I_microsoft_abi_static_initializers.cpp }]
 
 struct S {
   S();
@@ -18,6 +18,17 @@ S s;
 
 // CHECK: define internal void @"\01??__Fs@@YAXXZ"() [[NUW]] {
 // CHECK: call x86_thiscallcc void @"\01??1S@@QAE@XZ"
+// CHECK: ret void
+
+// These globals should use distinct guard variables, and not different bits of
+// the same global.
+__declspec(selectany) S selectany1;
+__declspec(selectany) S selectany2;
+// CHECK: define internal void @"\01??__Eselectany1@@YAXXZ"() [[NUW:#[0-9]+]]
+// CHECK: load i32* @"\01??_Bselectany1@@3US@@A@5"
+// CHECK: ret void
+// CHECK: define internal void @"\01??__Eselectany2@@YAXXZ"() [[NUW:#[0-9]+]]
+// CHECK: load i32* @"\01??_Bselectany2@@3US@@A@5"
 // CHECK: ret void
 
 void StaticLocal() {
@@ -149,7 +160,7 @@ void force_usage() {
 // CHECK: call x86_thiscallcc void @"\01??1A@@QAE@XZ"{{.*}}foo
 // CHECK: ret void
 
-// CHECK: define internal void @_GLOBAL__I_a() [[NUW]] {
+// CHECK: define internal void @_GLOBAL__sub_I_microsoft_abi_static_initializers.cpp() [[NUW]] {
 // CHECK: call void @"\01??__Es@@YAXXZ"()
 // CHECK: ret void
 

@@ -11,6 +11,7 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceManager.h"
@@ -34,17 +35,22 @@ namespace {
 
 // Stub out module loading.
 class VoidModuleLoader : public ModuleLoader {
-  virtual ModuleLoadResult loadModule(SourceLocation ImportLoc, 
-                                      ModuleIdPath Path,
-                                      Module::NameVisibilityKind Visibility,
-                                      bool IsInclusionDirective) {
+  ModuleLoadResult loadModule(SourceLocation ImportLoc, 
+                              ModuleIdPath Path,
+                              Module::NameVisibilityKind Visibility,
+                              bool IsInclusionDirective) override {
     return ModuleLoadResult();
   }
 
-  virtual void makeModuleVisible(Module *Mod,
-                                 Module::NameVisibilityKind Visibility,
-                                 SourceLocation ImportLoc,
-                                 bool Complain) { }
+  void makeModuleVisible(Module *Mod,
+                         Module::NameVisibilityKind Visibility,
+                         SourceLocation ImportLoc,
+                         bool Complain) override { }
+
+  GlobalModuleIndex *loadGlobalModuleIndex(SourceLocation TriggerLoc) override
+    { return 0; }
+  bool lookupMissingImports(StringRef Name, SourceLocation TriggerLoc) override
+    { return 0; };
 };
 
 // Stub to collect data from InclusionDirective callbacks.
@@ -167,12 +173,10 @@ protected:
     AddFakeHeader(HeaderInfo, HeaderPath, SystemHeader);
 
     IntrusiveRefCntPtr<PreprocessorOptions> PPOpts = new PreprocessorOptions();
-    Preprocessor PP(PPOpts, Diags, LangOpts,
-      Target.getPtr(),
-      SourceMgr, HeaderInfo, ModLoader,
-      /*IILookup =*/ 0,
-      /*OwnsHeaderSearch =*/false,
-      /*DelayInitialization =*/ false);
+    Preprocessor PP(PPOpts, Diags, LangOpts, SourceMgr, HeaderInfo, ModLoader,
+                    /*IILookup =*/0,
+                    /*OwnsHeaderSearch =*/false);
+    PP.Initialize(*Target);
     InclusionDirectiveCallbacks* Callbacks = new InclusionDirectiveCallbacks;
     PP.addPPCallbacks(Callbacks); // Takes ownership.
 
@@ -202,19 +206,19 @@ protected:
     HeaderSearch HeaderInfo(new HeaderSearchOptions, SourceMgr, Diags, 
                             OpenCLLangOpts, Target.getPtr());
 
-    Preprocessor PP(new PreprocessorOptions(), Diags, OpenCLLangOpts, 
-                    Target.getPtr(),
-                    SourceMgr, HeaderInfo, ModLoader,
-                   /*IILookup =*/ 0,
-                    /*OwnsHeaderSearch =*/false,
-                    /*DelayInitialization =*/ false);
+    Preprocessor PP(new PreprocessorOptions(), Diags, OpenCLLangOpts, SourceMgr,
+                    HeaderInfo, ModLoader, /*IILookup =*/0,
+                    /*OwnsHeaderSearch =*/false);
+    PP.Initialize(*Target);
 
     // parser actually sets correct pragma handlers for preprocessor
     // according to LangOptions, so we init Parser to register opencl
     // pragma handlers
-    ASTContext Context(OpenCLLangOpts, SourceMgr, Target.getPtr(), 
+    ASTContext Context(OpenCLLangOpts, SourceMgr,
                        PP.getIdentifierTable(), PP.getSelectorTable(), 
-                       PP.getBuiltinInfo(), 0);    
+                       PP.getBuiltinInfo());
+    Context.InitBuiltinTypes(*Target);
+
     ASTConsumer Consumer;
     Sema S(PP, Context, Consumer);
     Parser P(PP, S, false);

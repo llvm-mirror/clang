@@ -480,3 +480,90 @@ struct C : virtual B {
 
 C c;
 }
+
+namespace pr19505 {
+struct A {
+  virtual void f();
+  virtual void z();
+};
+
+struct B : A {
+  virtual void f();
+};
+
+struct C : A, B {
+  virtual void g();
+};
+
+struct X : B, virtual C {
+  X() {}
+  virtual void g();
+
+  // CHECK-LABEL: VFTable for 'pr19505::A' in 'pr19505::B' in 'pr19505::C' in 'pr19505::X' (2 entries).
+  // CHECK-NEXT:   0 | void pr19505::B::f()
+  // CHECK-NEXT:   1 | void pr19505::A::z()
+
+  // MANGLING-DAG: @"\01??_7X@pr19505@@6BB@1@@" = {{.*}}@"\01?f@B@pr19505@@UAEXXZ"
+} x;
+
+void build_vftable(X *obj) { obj->g(); }
+}
+
+namespace pr19506 {
+struct A {
+  virtual void f();
+  virtual void g();
+};
+
+struct B : A {
+  virtual void f();
+};
+
+struct C : B {};
+
+struct X : C, virtual B {
+  virtual void g();
+  X() {}
+
+  // CHECK-LABEL: VFTable for 'pr19506::A' in 'pr19506::B' in 'pr19506::X' (2 entries).
+  // CHECK-NEXT:   0 | void pr19506::B::f()
+  // CHECK-NEXT:   1 | void pr19506::X::g()
+  // CHECK-NEXT:       [this adjustment: vtordisp at -4, -12 non-virtual]
+
+  // MANGLING-DAG: @"\01??_7X@pr19506@@6BB@1@@" = {{.*}}@"\01?f@B@pr19506@@UAEXXZ"
+} x;
+
+void build_vftable(X *obj) { obj->g(); }
+}
+
+namespace pr19519 {
+// VS2013 CL miscompiles this, just make sure we don't regress.
+
+struct A {
+  virtual void f();
+  virtual void g();
+};
+
+struct B : virtual A {
+  virtual void f();
+  B();
+};
+
+struct C : virtual A {
+  virtual void g();
+};
+
+struct X : B, C {
+  X();
+
+  // CHECK-LABEL: VFTable for 'pr19519::A' in 'pr19519::B' in 'pr19519::X' (2 entries).
+  // CHECK-NEXT:   0 | void pr19519::B::f()
+  // CHECK-NEXT:       [this adjustment: vtordisp at -4, -4 non-virtual]
+  // CHECK-NEXT:   1 | void pr19519::C::g()
+  // CHECK-NEXT:       [this adjustment: vtordisp at -4, -4 non-virtual]
+
+  // MANGLING-DAG: @"\01??_7X@pr19519@@6B@" = {{.*}}@"\01?g@C@pr19519@@$4PPPPPPPM@3AEXXZ"
+};
+
+X::X() {}
+}

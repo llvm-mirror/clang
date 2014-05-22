@@ -17,7 +17,7 @@
 #ifndef LLVM_CLANG_THREAD_SAFETY_TRAVERSE_H
 #define LLVM_CLANG_THREAD_SAFETY_TRAVERSE_H
 
-#include "clang/Analysis/Analyses/ThreadSafetyTIL.h"
+#include "ThreadSafetyTIL.h"
 
 namespace clang {
 namespace threadSafety {
@@ -72,10 +72,8 @@ public:
 #define TIL_OPCODE_DEF(X)                                                   \
     case COP_##X:                                                           \
       return self()->traverse##X(cast<X>(E));
-#include "clang/Analysis/Analyses/ThreadSafetyOps.def"
+#include "ThreadSafetyOps.def"
 #undef TIL_OPCODE_DEF
-    case COP_MAX:
-      return self()->reduceNull();
     }
   }
 
@@ -83,7 +81,7 @@ public:
 // Override these methods to do something for a particular kind of term.
 #define TIL_OPCODE_DEF(X)                                                   \
   typename R::R_SExpr traverse##X(X *e) { return e->traverse(*self()); }
-#include "clang/Analysis/Analyses/ThreadSafetyOps.def"
+#include "ThreadSafetyOps.def"
 #undef TIL_OPCODE_DEF
 };
 
@@ -146,6 +144,9 @@ public:
   R_SExpr reduceCode(Code &Orig, R_SExpr E0, R_SExpr E1) {
     return new (Arena) Code(Orig, E0, E1);
   }
+  R_SExpr reduceField(Field &Orig, R_SExpr E0, R_SExpr E1) {
+    return new (Arena) Field(Orig, E0, E1);
+  }
 
   R_SExpr reduceApply(Apply &Orig, R_SExpr E0, R_SExpr E1) {
     return new (Arena) Apply(Orig, E0, E1);
@@ -169,6 +170,12 @@ public:
   R_SExpr reduceStore(Store &Orig, R_SExpr E0, R_SExpr E1) {
     return new (Arena) Store(Orig, E0, E1);
   }
+  R_SExpr reduceArrayFirst(ArrayFirst &Orig, R_SExpr E0) {
+    return new (Arena) ArrayFirst(Orig, E0);
+  }
+  R_SExpr reduceArrayAdd(ArrayAdd &Orig, R_SExpr E0, R_SExpr E1) {
+    return new (Arena) ArrayAdd(Orig, E0, E1);
+  }
   R_SExpr reduceUnaryOp(UnaryOp &Orig, R_SExpr E0) {
     return new (Arena) UnaryOp(Orig, E0);
   }
@@ -190,6 +197,16 @@ public:
   }
   R_SExpr reduceBranch(Branch &O, R_SExpr C, BasicBlock *B0, BasicBlock *B1) {
     return new (Arena) Branch(O, C, B0, B1);
+  }
+
+  R_SExpr reduceIdentifier(Identifier &Orig) {
+    return new (Arena) Identifier(Orig);
+  }
+  R_SExpr reduceIfThenElse(IfThenElse &Orig, R_SExpr C, R_SExpr T, R_SExpr E) {
+    return new (Arena) IfThenElse(Orig, C, T, E);
+  }
+  R_SExpr reduceLet(Let &Orig, Variable *Nvd, R_SExpr B) {
+    return new (Arena) Let(Orig, Nvd, B);
   }
 
   BasicBlock *reduceBasicBlock(BasicBlock &Orig, Container<Variable *> &As,
@@ -268,6 +285,9 @@ public:
   R_SExpr reduceCode(Code &Orig, R_SExpr E0, R_SExpr E1) {
     return E0 && E1;
   }
+  R_SExpr reduceField(Field &Orig, R_SExpr E0, R_SExpr E1) {
+    return E0 && E1;
+  }
   R_SExpr reduceApply(Apply &Orig, R_SExpr E0, R_SExpr E1) {
     return E0 && E1;
   }
@@ -279,6 +299,10 @@ public:
   R_SExpr reduceAlloc(Alloc &Orig, R_SExpr E0) { return E0; }
   R_SExpr reduceLoad(Load &Orig, R_SExpr E0) { return E0; }
   R_SExpr reduceStore(Store &Orig, R_SExpr E0, R_SExpr E1) { return E0 && E1; }
+  R_SExpr reduceArrayFirst(Store &Orig, R_SExpr E0) { return E0; }
+  R_SExpr reduceArrayAdd(Store &Orig, R_SExpr E0, R_SExpr E1) {
+    return E0 && E1;
+  }
   R_SExpr reduceUnaryOp(UnaryOp &Orig, R_SExpr E0) { return E0; }
   R_SExpr reduceBinaryOp(BinaryOp &Orig, R_SExpr E0, R_SExpr E1) {
     return E0 && E1;
@@ -296,6 +320,16 @@ public:
   }
   R_SExpr reduceBranch(Branch &O, R_SExpr C, BasicBlock *B0, BasicBlock *B1) {
     return C;
+  }
+
+  R_SExpr reduceIdentifier(Identifier &Orig) {
+    return true;
+  }
+  R_SExpr reduceIfThenElse(IfThenElse &Orig, R_SExpr C, R_SExpr T, R_SExpr E) {
+    return C && T && E;
+  }
+  R_SExpr reduceLet(Let &Orig, Variable *Nvd, R_SExpr B) {
+    return Nvd && B;
   }
 
   BasicBlock *reduceBasicBlock(BasicBlock &Orig, Container<Variable *> &As,
@@ -350,10 +384,8 @@ public:
 #define TIL_OPCODE_DEF(X)                                                     \
     case COP_##X:                                                             \
       return cast<X>(E1)->compare(cast<X>(E2), *self());
-#include "clang/Analysis/Analyses/ThreadSafetyOps.def"
+#include "ThreadSafetyOps.def"
 #undef TIL_OPCODE_DEF
-    case COP_MAX:
-      return false;
     }
   }
 };
@@ -369,7 +401,8 @@ public:
   CType trueResult() { return true; }
   bool notTrue(CType ct) { return !ct; }
 
-  bool compareIntegers(unsigned i, unsigned j) { return i == j; }
+  bool compareIntegers(unsigned i, unsigned j)       { return i == j; }
+  bool compareStrings (StringRef s, StringRef r)     { return s == r; }
   bool comparePointers(const void* P, const void* Q) { return P == Q; }
 
   bool compare(SExpr *E1, SExpr* E2) {
@@ -396,7 +429,12 @@ public:
 // Pretty printer for TIL expressions
 template <typename Self, typename StreamType>
 class PrettyPrinter {
+private:
+  bool Verbose;  // Print out additional information
+
 public:
+  PrettyPrinter(bool V = false) : Verbose(V) { }
+
   static void print(SExpr *E, StreamType &SS) {
     Self printer;
     printer.printSExpr(E, SS, Prec_MAX);
@@ -440,6 +478,7 @@ protected:
       case COP_Function:   return Prec_Decl;
       case COP_SFunction:  return Prec_Decl;
       case COP_Code:       return Prec_Decl;
+      case COP_Field:      return Prec_Decl;
 
       case COP_Apply:      return Prec_Postfix;
       case COP_SApply:     return Prec_Postfix;
@@ -449,6 +488,8 @@ protected:
       case COP_Alloc:      return Prec_Other;
       case COP_Load:       return Prec_Postfix;
       case COP_Store:      return Prec_Other;
+      case COP_ArrayFirst: return Prec_Postfix;
+      case COP_ArrayAdd:   return Prec_Postfix;
 
       case COP_UnaryOp:    return Prec_Unary;
       case COP_BinaryOp:   return Prec_Binary;
@@ -458,7 +499,10 @@ protected:
       case COP_Phi:        return Prec_Atom;
       case COP_Goto:       return Prec_Atom;
       case COP_Branch:     return Prec_Atom;
-      case COP_MAX:        return Prec_MAX;
+
+      case COP_Identifier: return Prec_Atom;
+      case COP_IfThenElse: return Prec_Other;
+      case COP_Let:        return Prec_Decl;
     }
     return Prec_MAX;
   }
@@ -481,10 +525,8 @@ protected:
     case COP_##X:                                                          \
       self()->print##X(cast<X>(E), SS);                                    \
       return;
-#include "clang/Analysis/Analyses/ThreadSafetyOps.def"
+#include "ThreadSafetyOps.def"
 #undef TIL_OPCODE_DEF
-    case COP_MAX:
-      return;
     }
   }
 
@@ -504,8 +546,88 @@ protected:
     SS << "_";
   }
 
+  template<class T>
+  void printLiteralT(LiteralT<T> *E, StreamType &SS) {
+    SS << E->value();
+  }
+
   void printLiteral(Literal *E, StreamType &SS) {
-    // TODO: actually pretty print the literal.
+    if (E->clangExpr())
+      SS << getSourceLiteralString(E->clangExpr());
+    else {
+      ValueType VT = E->valueType();
+      switch (VT.Base) {
+      case ValueType::BT_Void: {
+        SS << "void";
+        return;
+      }
+      case ValueType::BT_Bool: {
+        if (reinterpret_cast<LiteralT<bool>*>(E)->value())
+          SS << "true";
+        else
+          SS << "false";
+        return;
+      }
+      case ValueType::BT_Int: {
+        switch (VT.Size) {
+        case ValueType::ST_8:
+          if (VT.Signed)
+            printLiteralT(reinterpret_cast<LiteralT<int8_t>*>(E), SS);
+          else
+            printLiteralT(reinterpret_cast<LiteralT<uint8_t>*>(E), SS);
+          return;
+        case ValueType::ST_16:
+          if (VT.Signed)
+            printLiteralT(reinterpret_cast<LiteralT<int16_t>*>(E), SS);
+          else
+            printLiteralT(reinterpret_cast<LiteralT<uint16_t>*>(E), SS);
+          return;
+        case ValueType::ST_32:
+          if (VT.Signed)
+            printLiteralT(reinterpret_cast<LiteralT<int32_t>*>(E), SS);
+          else
+            printLiteralT(reinterpret_cast<LiteralT<uint32_t>*>(E), SS);
+          return;
+        case ValueType::ST_64:
+          if (VT.Signed)
+            printLiteralT(reinterpret_cast<LiteralT<int64_t>*>(E), SS);
+          else
+            printLiteralT(reinterpret_cast<LiteralT<uint64_t>*>(E), SS);
+          return;
+        default:
+          break;
+        }
+        break;
+      }
+      case ValueType::BT_Float: {
+        switch (VT.Size) {
+        case ValueType::ST_32:
+          printLiteralT(reinterpret_cast<LiteralT<float>*>(E), SS);
+          return;
+        case ValueType::ST_64:
+          printLiteralT(reinterpret_cast<LiteralT<double>*>(E), SS);
+          return;
+        default:
+          break;
+        }
+        break;
+      }
+      case ValueType::BT_String: {
+        SS << "\"";
+        printLiteralT(reinterpret_cast<LiteralT<bool>*>(E), SS);
+        SS << "\"";
+        return;
+      }
+      case ValueType::BT_Pointer: {
+        SS << "#ptr";
+        return;
+      }
+      case ValueType::BT_ValueRef: {
+        SS << "#vref";
+        return;
+      }
+      }
+    }
     SS << "#lit";
   }
 
@@ -513,14 +635,28 @@ protected:
     SS << E->clangDecl()->getNameAsString();
   }
 
-  void printVariable(Variable *E, StreamType &SS) {
-    SS << E->name() << E->getBlockID() << "_" << E->getID();
+  void printVariable(Variable *V, StreamType &SS, bool IsVarDecl = false) {
+    SExpr* E = nullptr;
+    if (!IsVarDecl) {
+      E = getCanonicalVal(V);
+      if (E != V) {
+        printSExpr(E, SS, Prec_Atom);
+        if (Verbose) {
+          SS << " /*";
+          SS << V->name() << V->getBlockID() << "_" << V->getID();
+          SS << "*/";
+        }
+        return;
+      }
+    }
+    SS << V->name() << V->getBlockID() << "_" << V->getID();
   }
 
   void printFunction(Function *E, StreamType &SS, unsigned sugared = 0) {
     switch (sugared) {
       default:
         SS << "\\(";   // Lambda
+        break;
       case 1:
         SS << "(";     // Slot declarations
         break;
@@ -528,20 +664,22 @@ protected:
         SS << ", ";    // Curried functions
         break;
     }
-    self()->printVariable(E->variableDecl(), SS);
+    self()->printVariable(E->variableDecl(), SS, true);
     SS << ": ";
     self()->printSExpr(E->variableDecl()->definition(), SS, Prec_MAX);
 
     SExpr *B = E->body();
     if (B && B->opcode() == COP_Function)
       self()->printFunction(cast<Function>(B), SS, 2);
-    else
+    else {
+      SS << ")";
       self()->printSExpr(B, SS, Prec_Decl);
+    }
   }
 
   void printSFunction(SFunction *E, StreamType &SS) {
     SS << "@";
-    self()->printVariable(E->variableDecl(), SS);
+    self()->printVariable(E->variableDecl(), SS, true);
     SS << " ";
     self()->printSExpr(E->body(), SS, Prec_Decl);
   }
@@ -549,6 +687,13 @@ protected:
   void printCode(Code *E, StreamType &SS) {
     SS << ": ";
     self()->printSExpr(E->returnType(), SS, Prec_Decl-1);
+    SS << " -> ";
+    self()->printSExpr(E->body(), SS, Prec_Decl);
+  }
+
+  void printField(Field *E, StreamType &SS) {
+    SS << ": ";
+    self()->printSExpr(E->range(), SS, Prec_Decl-1);
     SS << " = ";
     self()->printSExpr(E->body(), SS, Prec_Decl);
   }
@@ -610,18 +755,36 @@ protected:
     self()->printSExpr(E->source(), SS, Prec_Other-1);
   }
 
+  void printArrayFirst(ArrayFirst *E, StreamType &SS) {
+    self()->printSExpr(E->array(), SS, Prec_Postfix);
+    if (ArrayAdd *A = dyn_cast_or_null<ArrayAdd>(E->array())) {
+      SS << "[";
+      printSExpr(A->index(), SS, Prec_MAX);
+      SS << "]";
+      return;
+    }
+    SS << "[0]";
+  }
+
+  void printArrayAdd(ArrayAdd *E, StreamType &SS) {
+    self()->printSExpr(E->array(), SS, Prec_Postfix);
+    SS << " + ";
+    self()->printSExpr(E->index(), SS, Prec_Atom);
+  }
+
   void printUnaryOp(UnaryOp *E, StreamType &SS) {
+    SS << getUnaryOpcodeString(E->unaryOpcode());
     self()->printSExpr(E->expr(), SS, Prec_Unary);
   }
 
   void printBinaryOp(BinaryOp *E, StreamType &SS) {
     self()->printSExpr(E->expr0(), SS, Prec_Binary-1);
-    SS << " " << clang::BinaryOperator::getOpcodeStr(E->binaryOpcode()) << " ";
+    SS << " " << getBinaryOpcodeString(E->binaryOpcode()) << " ";
     self()->printSExpr(E->expr1(), SS, Prec_Binary-1);
   }
 
   void printCast(Cast *E, StreamType &SS) {
-    SS << "~";
+    SS << "%";
     self()->printSExpr(E->expr(), SS, Prec_Unary);
   }
 
@@ -632,7 +795,7 @@ protected:
       newline(SS);
       for (auto A : BBI->arguments()) {
         SS << "let ";
-        self()->printVariable(A, SS);
+        self()->printVariable(A, SS, true);
         SS << " = ";
         self()->printSExpr(A->definition(), SS, Prec_MAX);
         SS << ";";
@@ -641,7 +804,7 @@ protected:
       for (auto I : BBI->instructions()) {
         if (I->definition()->opcode() != COP_Store) {
           SS << "let ";
-          self()->printVariable(I, SS);
+          self()->printVariable(I, SS, true);
           SS << " = ";
         }
         self()->printSExpr(I->definition(), SS, Prec_MAX);
@@ -662,12 +825,15 @@ protected:
 
   void printPhi(Phi *E, StreamType &SS) {
     SS << "phi(";
-    unsigned i = 0;
-    for (auto V : E->values()) {
-      if (i > 0)
-        SS << ", ";
-      self()->printSExpr(V, SS, Prec_MAX);
-      ++i;
+    if (E->status() == Phi::PH_SingleVal)
+      self()->printSExpr(E->values()[0], SS, Prec_MAX);
+    else {
+      unsigned i = 0;
+      for (auto V : E->values()) {
+        if (i++ > 0)
+          SS << ", ";
+        self()->printSExpr(V, SS, Prec_MAX);
+      }
     }
     SS << ")";
   }
@@ -684,6 +850,28 @@ protected:
     printBlockLabel(SS, E->thenBlock(), E->thenIndex());
     SS << " ";
     printBlockLabel(SS, E->elseBlock(), E->elseIndex());
+  }
+
+  void printIdentifier(Identifier *E, StreamType &SS) {
+    SS << E->name();
+  }
+
+  void printIfThenElse(IfThenElse *E, StreamType &SS) {
+    SS << "if (";
+    printSExpr(E->condition(), SS, Prec_MAX);
+    SS << ") then ";
+    printSExpr(E->thenExpr(), SS, Prec_Other);
+    SS << " else ";
+    printSExpr(E->elseExpr(), SS, Prec_Other);
+  }
+
+  void printLet(Let *E, StreamType &SS) {
+    SS << "let ";
+    printVariable(E->variableDecl(), SS, true);
+    SS << " = ";
+    printSExpr(E->variableDecl()->definition(), SS, Prec_Decl-1);
+    SS << "; ";
+    printSExpr(E->body(), SS, Prec_Decl-1);
   }
 };
 

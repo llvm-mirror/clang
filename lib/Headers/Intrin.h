@@ -100,9 +100,6 @@ static __inline__
 unsigned int __popcnt(unsigned int);
 static __inline__
 unsigned short __popcnt16(unsigned short);
-static __inline__
-unsigned __int64 __rdtsc(void);
-unsigned __int64 __rdtscp(unsigned int *);
 unsigned long __readcr0(void);
 unsigned long __readcr2(void);
 static __inline__
@@ -828,14 +825,12 @@ _InterlockedCompareExchangePointer(void *volatile *_Destination,
   return _Comparand;
 }
 #endif
-#ifdef __x86_64__
 static __inline__ __int64 __attribute__((__always_inline__, __nodebug__))
 _InterlockedCompareExchange64(__int64 volatile *_Destination,
                               __int64 _Exchange, __int64 _Comparand) {
   __atomic_compare_exchange(_Destination, &_Comparand, &_Exchange, 0, 0, 0);
   return _Comparand;
 }
-#endif
 /*----------------------------------------------------------------------------*\
 |* Barriers
 \*----------------------------------------------------------------------------*/

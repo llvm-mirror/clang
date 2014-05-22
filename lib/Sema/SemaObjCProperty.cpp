@@ -19,7 +19,6 @@
 #include "clang/AST/ExprObjC.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
-#include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Initialization.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallString.h"
@@ -293,8 +292,7 @@ static bool LocPropertyAttribute( ASTContext &Context, const char *attrName,
   Token Tok;
   do {
     lexer.LexFromRawLexer(Tok);
-    if (Tok.is(tok::raw_identifier) &&
-        StringRef(Tok.getRawIdentifierData(), Tok.getLength()) == attrName) {
+    if (Tok.is(tok::raw_identifier) && Tok.getRawIdentifier() == attrName) {
       Loc = Tok.getLocation();
       return true;
     }
@@ -550,7 +548,7 @@ ObjCPropertyDecl *Sema::CreatePropertyDecl(Scope *S,
 
   if (T->isObjCObjectType()) {
     SourceLocation StarLoc = TInfo->getTypeLoc().getLocEnd();
-    StarLoc = PP.getLocForEndOfToken(StarLoc);
+    StarLoc = getLocForEndOfToken(StarLoc);
     Diag(FD.D.getIdentifierLoc(), diag::err_statically_allocated_object)
       << FixItHint::CreateInsertion(StarLoc, "*");
     T = Context.getObjCObjectPointerType(T);
@@ -1679,7 +1677,7 @@ void Sema::DiagnoseUnimplementedProperties(Scope *S, ObjCImplDecl* IMPDecl,
       // Lazily construct a set of all the properties in the @interface
       // of the class, without looking at the superclass.  We cannot
       // use the call to CollectImmediateProperties() above as that
-      // utilizes information fromt he super class's properties as well
+      // utilizes information from the super class's properties as well
       // as scans the adopted protocols.  This work only triggers for protocols
       // with the attribute, which is very rare, and only occurs when
       // analyzing the @implementation.

@@ -129,14 +129,14 @@ static StringRef NormalizeAttrSpelling(StringRef AttrSpelling) {
   return AttrSpelling;
 }
 
-typedef std::vector<std::pair<std::string, Record *>> ParsedAttrMap;
+typedef std::vector<std::pair<std::string, const Record *>> ParsedAttrMap;
 
 static ParsedAttrMap getParsedAttrList(const RecordKeeper &Records,
-                                       ParsedAttrMap *Dupes = 0) {
+                                       ParsedAttrMap *Dupes = nullptr) {
   std::vector<Record *> Attrs = Records.getAllDerivedDefinitions("Attr");
   std::set<std::string> Seen;
   ParsedAttrMap R;
-  for (auto Attr : Attrs) {
+  for (const auto *Attr : Attrs) {
     if (Attr->getValueAsBit("SemaHandler")) {
       std::string AN;
       if (Attr->isSubClassOf("TargetSpecificAttr") &&
@@ -167,7 +167,7 @@ namespace {
     bool isOpt;
 
   public:
-    Argument(Record &Arg, StringRef Attr)
+    Argument(const Record &Arg, StringRef Attr)
       : lowerName(Arg.getValueAsString("Name")), upperName(lowerName),
         attrName(Attr), isOpt(false) {
       if (!lowerName.empty()) {
@@ -216,7 +216,7 @@ namespace {
     std::string type;
 
   public:
-    SimpleArgument(Record &Arg, StringRef Attr, std::string T)
+    SimpleArgument(const Record &Arg, StringRef Attr, std::string T)
       : Argument(Arg, Attr), type(T)
     {}
 
@@ -293,7 +293,7 @@ namespace {
     int64_t Default;
 
   public:
-    DefaultSimpleArgument(Record &Arg, StringRef Attr,
+    DefaultSimpleArgument(const Record &Arg, StringRef Attr,
                           std::string T, int64_t Default)
       : SimpleArgument(Arg, Attr, T), Default(Default) {}
 
@@ -307,7 +307,7 @@ namespace {
 
   class StringArgument : public Argument {
   public:
-    StringArgument(Record &Arg, StringRef Attr)
+    StringArgument(const Record &Arg, StringRef Attr)
       : Argument(Arg, Attr)
     {}
 
@@ -374,7 +374,7 @@ namespace {
 
   class AlignedArgument : public Argument {
   public:
-    AlignedArgument(Record &Arg, StringRef Attr)
+    AlignedArgument(const Record &Arg, StringRef Attr)
       : Argument(Arg, Attr)
     {}
 
@@ -504,32 +504,33 @@ namespace {
   };
 
   class VariadicArgument : public Argument {
-    std::string type;
+    std::string Type, ArgName, ArgSizeName, RangeName;
 
   public:
-    VariadicArgument(Record &Arg, StringRef Attr, std::string T)
-      : Argument(Arg, Attr), type(T)
-    {}
+    VariadicArgument(const Record &Arg, StringRef Attr, std::string T)
+        : Argument(Arg, Attr), Type(T), ArgName(getLowerName().str() + "_"),
+          ArgSizeName(ArgName + "Size"), RangeName(getLowerName()) {}
 
-    std::string getType() const { return type; }
+    std::string getType() const { return Type; }
 
     void writeAccessors(raw_ostream &OS) const override {
-      OS << "  typedef " << type << "* " << getLowerName() << "_iterator;\n";
-      OS << "  " << getLowerName() << "_iterator " << getLowerName()
-         << "_begin() const {\n";
-      OS << "    return " << getLowerName() << ";\n";
-      OS << "  }\n";
-      OS << "  " << getLowerName() << "_iterator " << getLowerName()
-         << "_end() const {\n";
-      OS << "    return " << getLowerName() << " + " << getLowerName()
-         << "Size;\n";
-      OS << "  }\n";
-      OS << "  unsigned " << getLowerName() << "_size() const {\n"
-         << "    return " << getLowerName() << "Size;\n";
-      OS << "  }";
+      std::string IteratorType = getLowerName().str() + "_iterator";
+      std::string BeginFn = getLowerName().str() + "_begin()";
+      std::string EndFn = getLowerName().str() + "_end()";
+      
+      OS << "  typedef " << Type << "* " << IteratorType << ";\n";
+      OS << "  " << IteratorType << " " << BeginFn << " const {"
+         << " return " << ArgName << "; }\n";
+      OS << "  " << IteratorType << " " << EndFn << " const {"
+         << " return " << ArgName << " + " << ArgSizeName << "; }\n";
+      OS << "  unsigned " << getLowerName() << "_size() const {"
+         << " return " << ArgSizeName << "; }\n";
+      OS << "  llvm::iterator_range<" << IteratorType << "> " << RangeName
+         << "() const { return llvm::make_range(" << BeginFn << ", " << EndFn
+         << "); }\n";
     }
     void writeCloneArgs(raw_ostream &OS) const override {
-      OS << getLowerName() << ", " << getLowerName() << "Size";
+      OS << ArgName << ", " << ArgSizeName;
     }
     void writeTemplateInstantiationArgs(raw_ostream &OS) const override {
       // This isn't elegant, but we have to go through public methods...
@@ -537,17 +538,16 @@ namespace {
          << "A->" << getLowerName() << "_size()";
     }
     void writeCtorBody(raw_ostream &OS) const override {
-      // FIXME: memcpy is not safe on non-trivial types.
-      OS << "    std::memcpy(" << getLowerName() << ", " << getUpperName()
-         << ", " << getLowerName() << "Size * sizeof(" << getType() << "));\n";
+      OS << "    std::copy(" << getUpperName() << ", " << getUpperName()
+         << " + " << ArgSizeName << ", " << ArgName << ");";
     }
     void writeCtorInitializers(raw_ostream &OS) const override {
-      OS << getLowerName() << "Size(" << getUpperName() << "Size), "
-         << getLowerName() << "(new (Ctx, 16) " << getType() << "["
-         << getLowerName() << "Size])";
+      OS << ArgSizeName << "(" << getUpperName() << "Size), "
+         << ArgName << "(new (Ctx, 16) " << getType() << "["
+         << ArgSizeName << "])";
     }
     void writeCtorDefaultInitializers(raw_ostream &OS) const override {
-      OS << getLowerName() << "Size(0), " << getLowerName() << "(0)";
+      OS << ArgSizeName << "(0), " << ArgName << "(nullptr)";
     }
     void writeCtorParameters(raw_ostream &OS) const override {
       OS << getType() << " *" << getUpperName() << ", unsigned "
@@ -557,18 +557,18 @@ namespace {
       OS << getUpperName() << ", " << getUpperName() << "Size";
     }
     void writeDeclarations(raw_ostream &OS) const override {
-      OS << "  unsigned " << getLowerName() << "Size;\n";
-      OS << "  " << getType() << " *" << getLowerName() << ";";
+      OS << "  unsigned " << ArgSizeName << ";\n";
+      OS << "  " << getType() << " *" << ArgName << ";";
     }
     void writePCHReadDecls(raw_ostream &OS) const override {
       OS << "  unsigned " << getLowerName() << "Size = Record[Idx++];\n";
-      OS << "  SmallVector<" << type << ", 4> " << getLowerName()
+      OS << "  SmallVector<" << Type << ", 4> " << getLowerName()
          << ";\n";
       OS << "  " << getLowerName() << ".reserve(" << getLowerName()
          << "Size);\n";
       OS << "    for (unsigned i = " << getLowerName() << "Size; i; --i)\n";
       
-      std::string read = ReadPCHRecord(type);
+      std::string read = ReadPCHRecord(Type);
       OS << "    " << getLowerName() << ".push_back(" << read << ");\n";
     }
     void writePCHReadArgs(raw_ostream &OS) const override {
@@ -576,28 +576,22 @@ namespace {
     }
     void writePCHWrite(raw_ostream &OS) const override {
       OS << "    Record.push_back(SA->" << getLowerName() << "_size());\n";
-      OS << "    for (" << getAttrName() << "Attr::" << getLowerName()
-         << "_iterator i = SA->" << getLowerName() << "_begin(), e = SA->"
-         << getLowerName() << "_end(); i != e; ++i)\n";
-      OS << "      " << WritePCHRecord(type, "(*i)");
+      OS << "    for (auto &Val : SA->" << RangeName << "())\n";
+      OS << "      " << WritePCHRecord(Type, "Val");
     }
     void writeValue(raw_ostream &OS) const override {
       OS << "\";\n";
       OS << "  bool isFirst = true;\n"
-         << "  for (" << getAttrName() << "Attr::" << getLowerName()
-         << "_iterator i = " << getLowerName() << "_begin(), e = "
-         << getLowerName() << "_end(); i != e; ++i) {\n"
+         << "  for (const auto &Val : " << RangeName << "()) {\n"
          << "    if (isFirst) isFirst = false;\n"
          << "    else OS << \", \";\n"
-         << "    OS << *i;\n"
+         << "    OS << Val;\n"
          << "  }\n";
       OS << "  OS << \"";
     }
     void writeDump(raw_ostream &OS) const override {
-      OS << "    for (" << getAttrName() << "Attr::" << getLowerName()
-         << "_iterator I = SA->" << getLowerName() << "_begin(), E = SA->"
-         << getLowerName() << "_end(); I != E; ++I)\n";
-      OS << "      OS << \" \" << *I;\n";
+      OS << "    for (const auto &Val : SA->" << RangeName << "())\n";
+      OS << "      OS << \" \" << Val;\n";
     }
   };
 
@@ -620,7 +614,7 @@ namespace {
     std::string type;
     std::vector<std::string> values, enums, uniques;
   public:
-    EnumArgument(Record &Arg, StringRef Attr)
+    EnumArgument(const Record &Arg, StringRef Attr)
       : Argument(Arg, Attr), type(Arg.getValueAsString("Type")),
         values(Arg.getValueAsListOfStrings("Values")),
         enums(Arg.getValueAsListOfStrings("Enums")),
@@ -712,7 +706,7 @@ namespace {
     std::string type, QualifiedTypeName;
     std::vector<std::string> values, enums, uniques;
   public:
-    VariadicEnumArgument(Record &Arg, StringRef Attr)
+    VariadicEnumArgument(const Record &Arg, StringRef Attr)
       : VariadicArgument(Arg, Attr, Arg.getValueAsString("Type")),
         type(Arg.getValueAsString("Type")),
         values(Arg.getValueAsListOfStrings("Values")),
@@ -792,7 +786,7 @@ namespace {
 
   class VersionArgument : public Argument {
   public:
-    VersionArgument(Record &Arg, StringRef Attr)
+    VersionArgument(const Record &Arg, StringRef Attr)
       : Argument(Arg, Attr)
     {}
 
@@ -843,7 +837,7 @@ namespace {
 
   class ExprArgument : public SimpleArgument {
   public:
-    ExprArgument(Record &Arg, StringRef Attr)
+    ExprArgument(const Record &Arg, StringRef Attr)
       : SimpleArgument(Arg, Attr, "Expr *")
     {}
 
@@ -880,7 +874,7 @@ namespace {
 
   class VariadicExprArgument : public VariadicArgument {
   public:
-    VariadicExprArgument(Record &Arg, StringRef Attr)
+    VariadicExprArgument(const Record &Arg, StringRef Attr)
       : VariadicArgument(Arg, Attr, "Expr *")
     {}
 
@@ -942,7 +936,7 @@ namespace {
 
   class TypeArgument : public SimpleArgument {
   public:
-    TypeArgument(Record &Arg, StringRef Attr)
+    TypeArgument(const Record &Arg, StringRef Attr)
       : SimpleArgument(Arg, Attr, "TypeSourceInfo *")
     {}
 
@@ -964,12 +958,13 @@ namespace {
   };
 }
 
-static std::unique_ptr<Argument> createArgument(Record &Arg, StringRef Attr,
-                                                Record *Search = 0) {
+static std::unique_ptr<Argument>
+createArgument(const Record &Arg, StringRef Attr,
+               const Record *Search = nullptr) {
   if (!Search)
     Search = &Arg;
 
-  Argument *Ptr = 0;
+  Argument *Ptr = nullptr;
   llvm::StringRef ArgName = Search->getName();
 
   if (ArgName == "AlignedArgument") Ptr = new AlignedArgument(Arg, Attr);
@@ -1004,8 +999,8 @@ static std::unique_ptr<Argument> createArgument(Record &Arg, StringRef Attr,
   if (!Ptr) {
     // Search in reverse order so that the most-derived type is handled first.
     std::vector<Record*> Bases = Search->getSuperClasses();
-    for (auto i = Bases.rbegin(), e = Bases.rend(); i != e; ++i) {
-      Ptr = createArgument(Arg, Attr, *i).release();
+    for (const auto *Base : llvm::make_range(Bases.rbegin(), Bases.rend())) {
+      Ptr = createArgument(Arg, Attr, Base).release();
       if (Ptr)
         break;
     }
@@ -1154,7 +1149,7 @@ getSpellingListIndex(const std::vector<FlattenedSpelling> &SpellingList,
 
 static void writeAttrAccessorDefinition(const Record &R, raw_ostream &OS) {
   std::vector<Record*> Accessors = R.getValueAsListOfDefs("Accessors");
-  for (auto Accessor : Accessors) {
+  for (const auto *Accessor : Accessors) {
     std::string Name = Accessor->getValueAsString("Name");
     std::vector<FlattenedSpelling> Spellings = 
       GetFlattenedSpellings(*Accessor);
@@ -1178,9 +1173,9 @@ SpellingNamesAreCommon(const std::vector<FlattenedSpelling>& Spellings) {
   assert(!Spellings.empty() && "An empty list of spellings was provided");
   std::string FirstName = NormalizeNameForSpellingComparison(
     Spellings.front().name());
-  for (auto I = std::next(Spellings.begin()), E = Spellings.end();
-       I != E; ++I) {
-    std::string Name = NormalizeNameForSpellingComparison(I->name());
+  for (const auto &Spelling :
+       llvm::make_range(std::next(Spellings.begin()), Spellings.end())) {
+    std::string Name = NormalizeNameForSpellingComparison(Spelling.name());
     if (Name != FirstName)
       return false;
   }
@@ -1246,7 +1241,7 @@ static void emitClangAttrLateParsedList(RecordKeeper &Records, raw_ostream &OS) 
   OS << "#if defined(CLANG_ATTR_LATE_PARSED_LIST)\n";
   std::vector<Record*> Attrs = Records.getAllDerivedDefinitions("Attr");
 
-  for (auto Attr : Attrs) {
+  for (const auto *Attr : Attrs) {
     bool LateParsed = Attr->getValueAsBit("LateParsed");
 
     if (LateParsed) {
@@ -1268,7 +1263,7 @@ static void emitClangAttrTypeArgList(RecordKeeper &Records, raw_ostream &OS) {
   OS << "#if defined(CLANG_ATTR_TYPE_ARG_LIST)\n";
   std::vector<Record *> Attrs = Records.getAllDerivedDefinitions("Attr");
 
-  for (auto Attr : Attrs) {
+  for (const auto *Attr : Attrs) {
     // Determine whether the first argument is a type.
     std::vector<Record *> Args = Attr->getValueAsListOfDefs("Args");
     if (Args.empty())
@@ -1323,7 +1318,7 @@ static void emitClangAttrIdentifierArgList(RecordKeeper &Records, raw_ostream &O
   OS << "#if defined(CLANG_ATTR_IDENTIFIER_ARG_LIST)\n";
   std::vector<Record*> Attrs = Records.getAllDerivedDefinitions("Attr");
 
-  for (auto Attr : Attrs) {
+  for (const auto *Attr : Attrs) {
     // Determine whether the first argument is an identifier.
     std::vector<Record *> Args = Attr->getValueAsListOfDefs("Args");
     if (Args.empty() || !isIdentifierArgument(Args[0]))
@@ -1351,8 +1346,8 @@ void EmitClangAttrClass(RecordKeeper &Records, raw_ostream &OS) {
 
   std::vector<Record*> Attrs = Records.getAllDerivedDefinitions("Attr");
 
-  for (auto i : Attrs) {
-    const Record &R = *i;
+  for (const auto *Attr : Attrs) {
+    const Record &R = *Attr;
 
     // FIXME: Currently, documentation is generated as-needed due to the fact
     // that there is no way to allow a generated project "reach into" the docs
@@ -1371,8 +1366,8 @@ void EmitClangAttrClass(RecordKeeper &Records, raw_ostream &OS) {
     const std::vector<Record *> Supers = R.getSuperClasses();
     assert(!Supers.empty() && "Forgot to specify a superclass for the attr");
     std::string SuperName;
-    for (auto I = Supers.rbegin(), E = Supers.rend(); I != E; ++I) {
-      const Record &R = **I;
+    for (const auto *Super : llvm::make_range(Supers.rbegin(), Supers.rend())) {
+      const Record &R = *Super;
       if (R.getName() != "TargetSpecificAttr" && SuperName.empty())
         SuperName = R.getName();
     }
@@ -1383,7 +1378,7 @@ void EmitClangAttrClass(RecordKeeper &Records, raw_ostream &OS) {
     std::vector<std::unique_ptr<Argument>> Args;
     Args.reserve(ArgRecords.size());
 
-    for (auto ArgRecord : ArgRecords) {
+    for (const auto *ArgRecord : ArgRecords) {
       Args.emplace_back(createArgument(*ArgRecord, R.getName()));
       Args.back()->writeDeclarations(OS);
       OS << "\n\n";
@@ -1542,16 +1537,16 @@ void EmitClangAttrImpl(RecordKeeper &Records, raw_ostream &OS) {
 
   std::vector<Record*> Attrs = Records.getAllDerivedDefinitions("Attr");
 
-  for (auto i : Attrs) {
-    Record &R = *i;
+  for (auto *Attr : Attrs) {
+    Record &R = *Attr;
     
     if (!R.getValueAsBit("ASTNode"))
       continue;
 
     std::vector<Record*> ArgRecords = R.getValueAsListOfDefs("Args");
     std::vector<std::unique_ptr<Argument>> Args;
-    for (auto ri : ArgRecords)
-      Args.emplace_back(createArgument(*ri, R.getName()));
+    for (const auto *Arg : ArgRecords)
+      Args.emplace_back(createArgument(*Arg, R.getName()));
 
     for (auto const &ai : Args)
       ai->writeAccessorDefinitions(OS);
@@ -1620,16 +1615,16 @@ void EmitClangAttrList(RecordKeeper &Records, raw_ostream &OS) {
   Record *InhParamClass = Records.getClass("InheritableParamAttr");
   std::vector<Record*> Attrs = Records.getAllDerivedDefinitions("Attr"),
                        NonInhAttrs, InhAttrs, InhParamAttrs;
-  for (auto i : Attrs) {
-    if (!i->getValueAsBit("ASTNode"))
+  for (auto *Attr : Attrs) {
+    if (!Attr->getValueAsBit("ASTNode"))
       continue;
     
-    if (i->isSubClassOf(InhParamClass))
-      InhParamAttrs.push_back(i);
-    else if (i->isSubClassOf(InhClass))
-      InhAttrs.push_back(i);
+    if (Attr->isSubClassOf(InhParamClass))
+      InhParamAttrs.push_back(Attr);
+    else if (Attr->isSubClassOf(InhClass))
+      InhAttrs.push_back(Attr);
     else
-      NonInhAttrs.push_back(i);
+      NonInhAttrs.push_back(Attr);
   }
 
   EmitAttrList(OS, "INHERITABLE_PARAM_ATTR", InhParamAttrs);
@@ -1656,8 +1651,8 @@ void EmitClangAttrPCHRead(RecordKeeper &Records, raw_ostream &OS) {
   OS << "  default:\n";
   OS << "    assert(0 && \"Unknown attribute!\");\n";
   OS << "    break;\n";
-  for (auto i : Attrs) {
-    const Record &R = *i;
+  for (const auto *Attr : Attrs) {
+    const Record &R = *Attr;
     if (!R.getValueAsBit("ASTNode"))
       continue;
     
@@ -1668,8 +1663,8 @@ void EmitClangAttrPCHRead(RecordKeeper &Records, raw_ostream &OS) {
     OS << "    unsigned Spelling = Record[Idx++];\n";
     ArgRecords = R.getValueAsListOfDefs("Args");
     Args.clear();
-    for (auto ai : ArgRecords) {
-      Args.emplace_back(createArgument(*ai, R.getName()));
+    for (const auto *Arg : ArgRecords) {
+      Args.emplace_back(createArgument(*Arg, R.getName()));
       Args.back()->writePCHReadDecls(OS);
     }
     OS << "    New = new (Context) " << R.getName() << "Attr(Range, Context";
@@ -1698,8 +1693,8 @@ void EmitClangAttrPCHWrite(RecordKeeper &Records, raw_ostream &OS) {
   OS << "  default:\n";
   OS << "    llvm_unreachable(\"Unknown attribute kind!\");\n";
   OS << "    break;\n";
-  for (auto i : Attrs) {
-    const Record &R = *i;
+  for (const auto *Attr : Attrs) {
+    const Record &R = *Attr;
     if (!R.getValueAsBit("ASTNode"))
       continue;
     OS << "  case attr::" << R.getName() << ": {\n";
@@ -1712,8 +1707,8 @@ void EmitClangAttrPCHWrite(RecordKeeper &Records, raw_ostream &OS) {
     OS << "    Record.push_back(A->isImplicit());\n";
     OS << "    Record.push_back(A->getSpellingListIndex());\n";
 
-    for (auto ai : Args)
-      createArgument(*ai, R.getName())->writePCHWrite(OS);
+    for (const auto *Arg : Args)
+      createArgument(*Arg, R.getName())->writePCHWrite(OS);
     OS << "    break;\n";
     OS << "  }\n";
   }
@@ -1841,7 +1836,7 @@ void EmitClangAttrSpellingListIndex(RecordKeeper &Records, raw_ostream &OS) {
 
   ParsedAttrMap Attrs = getParsedAttrList(Records);
   for (const auto &I : Attrs) {
-    Record &R = *I.second;
+    const Record &R = *I.second;
     std::vector<FlattenedSpelling> Spellings = GetFlattenedSpellings(R);
     OS << "  case AT_" << I.first << ": {\n";
     for (unsigned I = 0; I < Spellings.size(); ++ I) {
@@ -1876,8 +1871,8 @@ void EmitClangAttrASTVisitor(RecordKeeper &Records, raw_ostream &OS) {
   // We emit this here because we only generate methods for attributes that
   // are declared as ASTNodes.
   OS << "#ifdef ATTR_VISITOR_DECLS_ONLY\n\n";
-  for (auto I : Attrs) {
-    const Record &R = *I;
+  for (const auto *Attr : Attrs) {
+    const Record &R = *Attr;
     if (!R.getValueAsBit("ASTNode"))
       continue;
     OS << "  bool Traverse"
@@ -1890,8 +1885,8 @@ void EmitClangAttrASTVisitor(RecordKeeper &Records, raw_ostream &OS) {
   OS << "\n#else // ATTR_VISITOR_DECLS_ONLY\n\n";
 
   // Write individual Traverse* methods for each attribute class.
-  for (auto I : Attrs) {
-    const Record &R = *I;
+  for (const auto *Attr : Attrs) {
+    const Record &R = *Attr;
     if (!R.getValueAsBit("ASTNode"))
       continue;
 
@@ -1904,8 +1899,8 @@ void EmitClangAttrASTVisitor(RecordKeeper &Records, raw_ostream &OS) {
        << "    return false;\n";
 
     std::vector<Record*> ArgRecords = R.getValueAsListOfDefs("Args");
-    for (auto ri : ArgRecords)
-      createArgument(*ri, R.getName())->writeASTVisitorTraversal(OS);
+    for (const auto *Arg : ArgRecords)
+      createArgument(*Arg, R.getName())->writeASTVisitorTraversal(OS);
 
     OS << "  return true;\n";
     OS << "}\n\n";
@@ -1921,8 +1916,8 @@ void EmitClangAttrASTVisitor(RecordKeeper &Records, raw_ostream &OS) {
      << "    default:\n"
      << "      return true;\n";
 
-  for (auto I : Attrs) {
-    const Record &R = *I;
+  for (const auto *Attr : Attrs) {
+    const Record &R = *Attr;
     if (!R.getValueAsBit("ASTNode"))
       continue;
 
@@ -1950,8 +1945,8 @@ void EmitClangAttrTemplateInstantiate(RecordKeeper &Records, raw_ostream &OS) {
      << "    default:\n"
      << "      break;\n";
 
-  for (auto I : Attrs) {
-    const Record &R = *I;
+  for (const auto *Attr : Attrs) {
+    const Record &R = *Attr;
     if (!R.getValueAsBit("ASTNode"))
       continue;
 
@@ -1978,7 +1973,7 @@ void EmitClangAttrTemplateInstantiate(RecordKeeper &Records, raw_ostream &OS) {
     std::vector<std::unique_ptr<Argument>> Args;
     Args.reserve(ArgRecords.size());
 
-    for (auto ArgRecord : ArgRecords)
+    for (const auto *ArgRecord : ArgRecords)
       Args.emplace_back(createArgument(*ArgRecord, R.getName()));
 
     for (auto const &ai : Args)
@@ -2019,7 +2014,7 @@ static void emitArgInfo(const Record &R, std::stringstream &OS) {
   // number of optional arguments.
   std::vector<Record *> Args = R.getValueAsListOfDefs("Args");
   unsigned ArgCount = 0, OptCount = 0;
-  for (auto Arg : Args) {
+  for (const auto *Arg : Args) {
     Arg->getValueAsBit("Optional") ? ++OptCount : ++ArgCount;
   }
   OS << ArgCount << ", " << OptCount;
@@ -2053,16 +2048,15 @@ static std::string CalculateDiagnostic(const Record &S) {
     ObjCInterface = 1U << 9,
     Block = 1U << 10,
     Namespace = 1U << 11,
-    FuncTemplate = 1U << 12,
-    Field = 1U << 13,
-    CXXMethod = 1U << 14,
-    ObjCProtocol = 1U << 15
+    Field = 1U << 12,
+    CXXMethod = 1U << 13,
+    ObjCProtocol = 1U << 14
   };
   uint32_t SubMask = 0;
 
   std::vector<Record *> Subjects = S.getValueAsListOfDefs("Subjects");
-  for (auto I : Subjects) {
-    const Record &R = *I;
+  for (const auto *Subject : Subjects) {
+    const Record &R = *Subject;
     std::string Name;
 
     if (R.isSubClassOf("SubsetSubject")) {
@@ -2088,7 +2082,6 @@ static std::string CalculateDiagnostic(const Record &S) {
                    .Case("Block", Block)
                    .Case("CXXRecord", Class)
                    .Case("Namespace", Namespace)
-                   .Case("FunctionTemplate", FuncTemplate)
                    .Case("Field", Field)
                    .Case("CXXMethod", CXXMethod)
                    .Default(0);
@@ -2127,7 +2120,6 @@ static std::string CalculateDiagnostic(const Record &S) {
     case Func | ObjCMethod | Class: return "ExpectedFunctionMethodOrClass";
     case Func | Param:
     case Func | ObjCMethod | Param: return "ExpectedFunctionMethodOrParameter";
-    case Func | FuncTemplate:
     case Func | ObjCMethod: return "ExpectedFunctionOrMethod";
     case Func | Var: return "ExpectedVariableOrFunction";
 
@@ -2480,8 +2472,8 @@ void EmitClangAttrParsedAttrKinds(RecordKeeper &Records, raw_ostream &OS) {
   std::vector<Record *> Attrs = Records.getAllDerivedDefinitions("Attr");
   std::vector<StringMatcher::StringPair> GNU, Declspec, CXX11, Keywords;
   std::set<std::string> Seen;
-  for (auto I : Attrs) {
-    const Record &Attr = *I;
+  for (const auto *A : Attrs) {
+    const Record &Attr = *A;
 
     bool SemaHandler = Attr.getValueAsBit("SemaHandler");
     bool Ignored = Attr.getValueAsBit("Ignored");
@@ -2509,7 +2501,7 @@ void EmitClangAttrParsedAttrKinds(RecordKeeper &Records, raw_ostream &OS) {
       std::vector<FlattenedSpelling> Spellings = GetFlattenedSpellings(Attr);
       for (const auto &S : Spellings) {
         std::string RawSpelling = S.name();
-        std::vector<StringMatcher::StringPair> *Matches = 0;
+        std::vector<StringMatcher::StringPair> *Matches = nullptr;
         std::string Spelling, Variety = S.variety();
         if (Variety == "CXX11") {
           Matches = &CXX11;
@@ -2560,8 +2552,8 @@ void EmitClangAttrDump(RecordKeeper &Records, raw_ostream &OS) {
     "    llvm_unreachable(\"Unknown attribute kind!\");\n"
     "    break;\n";
   std::vector<Record*> Attrs = Records.getAllDerivedDefinitions("Attr"), Args;
-  for (auto I : Attrs) {
-    const Record &R = *I;
+  for (const auto *Attr : Attrs) {
+    const Record &R = *Attr;
     if (!R.getValueAsBit("ASTNode"))
       continue;
     OS << "  case attr::" << R.getName() << ": {\n";
@@ -2577,8 +2569,8 @@ void EmitClangAttrDump(RecordKeeper &Records, raw_ostream &OS) {
     if (!Args.empty()) {
       OS << "    const " << R.getName() << "Attr *SA = cast<" << R.getName()
          << "Attr>(A);\n";
-      for (auto AI : Args)
-        createArgument(*AI, R.getName())->writeDump(OS);
+      for (const auto *Arg : Args)
+        createArgument(*Arg, R.getName())->writeDump(OS);
 
       // Code for detecting the last child.
       OS << "    bool OldMoreChildren = hasMoreChildren();\n";
@@ -2786,11 +2778,11 @@ void EmitClangAttrDocs(RecordKeeper &Records, raw_ostream &OS) {
   // category provided.
   std::vector<Record *> Attrs = Records.getAllDerivedDefinitions("Attr");
   std::map<const Record *, std::vector<DocumentationData>> SplitDocs;
-  for (auto I : Attrs) {
-    const Record &Attr = *I;
+  for (const auto *A : Attrs) {
+    const Record &Attr = *A;
     std::vector<Record *> Docs = Attr.getValueAsListOfDefs("Documentation");
-    for (auto DI : Docs) {
-      const Record &Doc = *DI;
+    for (const auto *D : Docs) {
+      const Record &Doc = *D;
       const Record *Category = Doc.getValueAsDef("Category");
       // If the category is "undocumented", then there cannot be any other
       // documentation categories (otherwise, the attribute would become

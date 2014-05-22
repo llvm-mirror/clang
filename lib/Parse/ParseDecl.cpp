@@ -1620,7 +1620,8 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
   }
 
   SmallVector<Decl *, 8> DeclsInGroup;
-  Decl *FirstDecl = ParseDeclarationAfterDeclaratorAndAttributes(D);
+  Decl *FirstDecl = ParseDeclarationAfterDeclaratorAndAttributes(
+      D, ParsedTemplateInfo(), FRI);
   if (LateParsedAttrs.size() > 0)
     ParseLexedAttributeList(LateParsedAttrs, FirstDecl, true, false);
   D.complete(FirstDecl);
@@ -1726,16 +1727,16 @@ bool Parser::ParseAsmAttributesAfterDeclarator(Declarator &D) {
 /// According to the standard grammar, =default and =delete are function
 /// definitions, but that definitely doesn't fit with the parser here.
 ///
-Decl *Parser::ParseDeclarationAfterDeclarator(Declarator &D,
-                                     const ParsedTemplateInfo &TemplateInfo) {
+Decl *Parser::ParseDeclarationAfterDeclarator(
+    Declarator &D, const ParsedTemplateInfo &TemplateInfo) {
   if (ParseAsmAttributesAfterDeclarator(D))
     return 0;
 
   return ParseDeclarationAfterDeclaratorAndAttributes(D, TemplateInfo);
 }
 
-Decl *Parser::ParseDeclarationAfterDeclaratorAndAttributes(Declarator &D,
-                                     const ParsedTemplateInfo &TemplateInfo) {
+Decl *Parser::ParseDeclarationAfterDeclaratorAndAttributes(
+    Declarator &D, const ParsedTemplateInfo &TemplateInfo, ForRangeInit *FRI) {
   // Inform the current actions module that we just parsed this declarator.
   Decl *ThisDecl = 0;
   switch (TemplateInfo.Kind) {
@@ -1800,7 +1801,7 @@ Decl *Parser::ParseDeclarationAfterDeclaratorAndAttributes(Declarator &D,
   // Parse declarator '=' initializer.
   // If a '==' or '+=' is found, suggest a fixit to '='.
   if (isTokenEqualOrEqualTypo()) {
-    ConsumeToken();
+    SourceLocation EqualLoc = ConsumeToken();
 
     if (Tok.is(tok::kw_delete)) {
       if (D.isFunctionDeclarator())
@@ -1829,13 +1830,29 @@ Decl *Parser::ParseDeclarationAfterDeclaratorAndAttributes(Declarator &D,
 
       ExprResult Init(ParseInitializer());
 
+      // If this is the only decl in (possibly) range based for statement,
+      // our best guess is that the user meant ':' instead of '='.
+      if (Tok.is(tok::r_paren) && FRI && D.isFirstDeclarator()) {
+        Diag(EqualLoc, diag::err_single_decl_assign_in_for_range)
+            << FixItHint::CreateReplacement(EqualLoc, ":");
+        // We are trying to stop parser from looking for ';' in this for
+        // statement, therefore preventing spurious errors to be issued.
+        FRI->ColonLoc = EqualLoc;
+        Init = ExprError();
+        FRI->RangeExpr = Init;
+      }
+
       if (getLangOpts().CPlusPlus && D.getCXXScopeSpec().isSet()) {
         Actions.ActOnCXXExitDeclInitializer(getCurScope(), ThisDecl);
         ExitScope();
       }
 
       if (Init.isInvalid()) {
-        SkipUntil(tok::comma, StopAtSemi | StopBeforeMatch);
+        SmallVector<tok::TokenKind, 2> StopTokens;
+        StopTokens.push_back(tok::comma);
+        if (D.getContext() == Declarator::ForContext)
+          StopTokens.push_back(tok::r_paren);
+        SkipUntil(StopTokens, StopAtSemi | StopBeforeMatch);
         Actions.ActOnInitializerError(ThisDecl);
       } else
         Actions.AddInitializerToDecl(ThisDecl, Init.take(),
@@ -2001,7 +2018,7 @@ static bool isValidAfterIdentifierInDeclarator(const Token &T) {
 ///
 bool Parser::ParseImplicitInt(DeclSpec &DS, CXXScopeSpec *SS,
                               const ParsedTemplateInfo &TemplateInfo,
-                              AccessSpecifier AS, DeclSpecContext DSC, 
+                              AccessSpecifier AS, DeclSpecContext DSC,
                               ParsedAttributesWithRange &Attrs) {
   assert(Tok.is(tok::identifier) && "should have identifier");
 
@@ -2105,15 +2122,14 @@ bool Parser::ParseImplicitInt(DeclSpec &DS, CXXScopeSpec *SS,
       // x(int n);    // 'x' is not a type
       // x (*p)[];    // 'x' is a type
       //
-      // Since we're in an error case (or the rare 'implicit int in C++' MS
-      // extension), we can afford to perform a tentative parse to determine
-      // which case we're in.
+      // Since we're in an error case, we can afford to perform a tentative
+      // parse to determine which case we're in.
       TentativeParsingAction PA(*this);
       ConsumeToken();
       TPResult TPR = TryParseDeclarator(/*mayBeAbstract*/false);
       PA.Revert();
 
-      if (TPR != TPResult::False()) {
+      if (TPR != TPResult::False) {
         // The identifier is followed by a parenthesized declarator.
         // It's supposed to be a type.
         break;
@@ -3547,13 +3563,13 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
       TPResult TPR = isExpressionOrTypeSpecifierSimple(NextToken().getKind());
       // If the next token starts an expression, we know we're parsing a
       // bit-field. This is the common case.
-      if (TPR == TPResult::True())
+      if (TPR == TPResult::True)
         PossibleBitfield = true;
       // If the next token starts a type-specifier-seq, it may be either a
       // a fixed underlying type or the start of a function-style cast in C++;
       // lookahead one more token to see if it's obvious that we have a
       // fixed underlying type.
-      else if (TPR == TPResult::False() &&
+      else if (TPR == TPResult::False &&
                GetLookAheadToken(2).getKind() == tok::semi) {
         // Consume the ':'.
         ConsumeToken();
@@ -3573,7 +3589,7 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
         // FIXME: The standard is not entirely clear on how to disambiguate in
         // this case.
         if ((getLangOpts().CPlusPlus &&
-             isCXXDeclarationSpecifier(TPResult::True()) != TPResult::True()) ||
+             isCXXDeclarationSpecifier(TPResult::True) != TPResult::True) ||
             (!getLangOpts().CPlusPlus && !isDeclarationSpecifier(true))) {
           // We'll parse this as a bitfield later.
           PossibleBitfield = true;
@@ -3700,9 +3716,8 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
       return;
     }
 
-    TypeResult Type = Actions.ActOnDependentTag(getCurScope(), DeclSpec::TST_enum,
-                                                TUK, SS, Name, StartLoc,
-                                                NameLoc);
+    TypeResult Type = Actions.ActOnDependentTag(
+        getCurScope(), DeclSpec::TST_enum, TUK, SS, Name, StartLoc, NameLoc);
     if (Type.isInvalid()) {
       DS.SetTypeSpecError();
       return;
@@ -4786,6 +4801,7 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
            "There's a C++-specific check for tok::identifier above");
     assert(Tok.getIdentifierInfo() && "Not an identifier?");
     D.SetIdentifier(Tok.getIdentifierInfo(), Tok.getLocation());
+    D.SetRangeEnd(Tok.getLocation());
     ConsumeToken();
     goto PastIdentifier;
   } else if (Tok.is(tok::identifier) && D.diagnoseIdentifier()) {
@@ -4834,7 +4850,8 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
       LLVM_BUILTIN_TRAP;
     if (D.getContext() == Declarator::MemberContext)
       Diag(Tok, diag::err_expected_member_name_or_semi)
-        << D.getDeclSpec().getSourceRange();
+          << (D.getDeclSpec().isEmpty() ? SourceRange()
+                                        : D.getDeclSpec().getSourceRange());
     else if (getLangOpts().CPlusPlus) {
       if (Tok.is(tok::period) || Tok.is(tok::arrow))
         Diag(Tok, diag::err_invalid_operator_on_type) << Tok.is(tok::arrow);

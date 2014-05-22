@@ -37,11 +37,16 @@ namespace {
 
 class DelegatingDeserializationListener : public ASTDeserializationListener {
   ASTDeserializationListener *Previous;
+  bool DeletePrevious;
 
 public:
   explicit DelegatingDeserializationListener(
-                                           ASTDeserializationListener *Previous)
-    : Previous(Previous) { }
+      ASTDeserializationListener *Previous, bool DeletePrevious)
+      : Previous(Previous), DeletePrevious(DeletePrevious) {}
+  virtual ~DelegatingDeserializationListener() {
+    if (DeletePrevious)
+      delete Previous;
+  }
 
   void ReaderInitialized(ASTReader *Reader) override {
     if (Previous)
@@ -74,8 +79,9 @@ public:
 /// \brief Dumps deserialized declarations.
 class DeserializedDeclsDumper : public DelegatingDeserializationListener {
 public:
-  explicit DeserializedDeclsDumper(ASTDeserializationListener *Previous)
-    : DelegatingDeserializationListener(Previous) { }
+  explicit DeserializedDeclsDumper(ASTDeserializationListener *Previous,
+                                   bool DeletePrevious)
+      : DelegatingDeserializationListener(Previous, DeletePrevious) {}
 
   void DeclRead(serialization::DeclID ID, const Decl *D) override {
     llvm::outs() << "PCH DECL: " << D->getDeclKindName();
@@ -96,9 +102,10 @@ class DeserializedDeclsChecker : public DelegatingDeserializationListener {
 public:
   DeserializedDeclsChecker(ASTContext &Ctx,
                            const std::set<std::string> &NamesToCheck,
-                           ASTDeserializationListener *Previous)
-    : DelegatingDeserializationListener(Previous),
-      Ctx(Ctx), NamesToCheck(NamesToCheck) { }
+                           ASTDeserializationListener *Previous,
+                           bool DeletePrevious)
+      : DelegatingDeserializationListener(Previous, DeletePrevious), Ctx(Ctx),
+        NamesToCheck(NamesToCheck) {}
 
   void DeclRead(serialization::DeclID ID, const Decl *D) override {
     if (const NamedDecl *ND = dyn_cast<NamedDecl>(D))
@@ -320,17 +327,24 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
       assert(hasPCHSupport() && "This action does not have PCH support!");
       ASTDeserializationListener *DeserialListener =
           Consumer->GetASTDeserializationListener();
-      if (CI.getPreprocessorOpts().DumpDeserializedPCHDecls)
-        DeserialListener = new DeserializedDeclsDumper(DeserialListener);
-      if (!CI.getPreprocessorOpts().DeserializedPCHDeclsToErrorOn.empty())
-        DeserialListener = new DeserializedDeclsChecker(CI.getASTContext(),
-                         CI.getPreprocessorOpts().DeserializedPCHDeclsToErrorOn,
-                                                        DeserialListener);
+      bool DeleteDeserialListener = false;
+      if (CI.getPreprocessorOpts().DumpDeserializedPCHDecls) {
+        DeserialListener = new DeserializedDeclsDumper(DeserialListener,
+                                                       DeleteDeserialListener);
+        DeleteDeserialListener = true;
+      }
+      if (!CI.getPreprocessorOpts().DeserializedPCHDeclsToErrorOn.empty()) {
+        DeserialListener = new DeserializedDeclsChecker(
+            CI.getASTContext(),
+            CI.getPreprocessorOpts().DeserializedPCHDeclsToErrorOn,
+            DeserialListener, DeleteDeserialListener);
+        DeleteDeserialListener = true;
+      }
       CI.createPCHExternalASTSource(
-                                CI.getPreprocessorOpts().ImplicitPCHInclude,
-                                CI.getPreprocessorOpts().DisablePCHValidation,
-                            CI.getPreprocessorOpts().AllowPCHWithCompilerErrors,
-                                DeserialListener);
+          CI.getPreprocessorOpts().ImplicitPCHInclude,
+          CI.getPreprocessorOpts().DisablePCHValidation,
+          CI.getPreprocessorOpts().AllowPCHWithCompilerErrors, DeserialListener,
+          DeleteDeserialListener);
       if (!CI.getASTContext().getExternalSource())
         goto failure;
     }
@@ -344,8 +358,21 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
   // source.
   if (!CI.hasASTContext() || !CI.getASTContext().getExternalSource()) {
     Preprocessor &PP = CI.getPreprocessor();
+
+    // If modules are enabled, create the module manager before creating
+    // any builtins, so that all declarations know that they might be
+    // extended by an external source.
+    if (CI.getLangOpts().Modules)
+      CI.createModuleManager();
+
     PP.getBuiltinInfo().InitializeBuiltins(PP.getIdentifierTable(),
                                            PP.getLangOpts());
+  } else {
+    // FIXME: If this is a problem, recover from it by creating a multiplex
+    // source.
+    assert((!CI.getLangOpts().Modules || CI.getModuleManager()) &&
+           "modules enabled but created an external source that "
+           "doesn't support modules");
   }
 
   // If there is a layout overrides file, attach an external AST source that
@@ -357,7 +384,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
                      CI.getFrontendOpts().OverrideRecordLayoutsFile));
     CI.getASTContext().setExternalSource(Override);
   }
-  
+
   return true;
 
   // If we failed, reset state since the client will not end up calling the
@@ -408,16 +435,16 @@ void FrontendAction::EndSourceFile() {
   // Finalize the action.
   EndSourceFileAction();
 
-  // Release the consumer and the AST, in that order since the consumer may
-  // perform actions in its destructor which require the context.
+  // Sema references the ast consumer, so reset sema first.
   //
   // FIXME: There is more per-file stuff we could just drop here?
-  if (CI.getFrontendOpts().DisableFree) {
-    BuryPointer(CI.takeASTConsumer());
+  bool DisableFree = CI.getFrontendOpts().DisableFree;
+  if (DisableFree) {
     if (!isCurrentFileAST()) {
-      BuryPointer(CI.takeSema());
+      CI.resetAndLeakSema();
       CI.resetAndLeakASTContext();
     }
+    BuryPointer(CI.takeASTConsumer());
   } else {
     if (!isCurrentFileAST()) {
       CI.setSema(0);
@@ -443,8 +470,9 @@ void FrontendAction::EndSourceFile() {
   // FrontendAction.
   CI.clearOutputFiles(/*EraseFiles=*/shouldEraseOutputFiles());
 
+  // FIXME: Only do this if DisableFree is set.
   if (isCurrentFileAST()) {
-    CI.takeSema();
+    CI.resetAndLeakSema();
     CI.resetAndLeakASTContext();
     CI.resetAndLeakPreprocessor();
     CI.resetAndLeakSourceManager();

@@ -86,7 +86,7 @@ public:
     llvm::PointerIntPair<Module *, 2, ModuleHeaderRole> Storage;
 
   public:
-    KnownHeader() : Storage(0, NormalHeader) { }
+    KnownHeader() : Storage(nullptr, NormalHeader) { }
     KnownHeader(Module *M, ModuleHeaderRole Role) : Storage(M, Role) { }
 
     /// \brief Retrieve the module the header is stored in.
@@ -102,7 +102,9 @@ public:
 
     // \brief Whether this known header is valid (i.e., it has an
     // associated module).
-    LLVM_EXPLICIT operator bool() const { return Storage.getPointer() != 0; }
+    LLVM_EXPLICIT operator bool() const {
+      return Storage.getPointer() != nullptr;
+    }
   };
 
 private:
@@ -195,6 +197,13 @@ private:
   KnownHeader findHeaderInUmbrellaDirs(const FileEntry *File,
                     SmallVectorImpl<const DirectoryEntry *> &IntermediateDirs);
 
+  /// \brief A convenience method to determine if \p File is (possibly nested)
+  /// in an umbrella directory.
+  bool isHeaderInUmbrellaDirs(const FileEntry *File) {
+    SmallVector<const DirectoryEntry *, 2> IntermediateDirs;
+    return static_cast<bool>(findHeaderInUmbrellaDirs(File, IntermediateDirs));
+  }
+
 public:
   /// \brief Construct a new module map.
   ///
@@ -236,7 +245,7 @@ public:
   /// given header file.  The KnownHeader is default constructed to indicate
   /// that no module owns this header file.
   KnownHeader findModuleForHeader(const FileEntry *File,
-                                  Module *RequestingModule = NULL);
+                                  Module *RequestingModule = nullptr);
 
   /// \brief Reports errors if a module must not include a specific file.
   ///

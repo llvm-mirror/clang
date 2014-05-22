@@ -364,7 +364,7 @@ namespace clang {
     }
     void init(FailureKind K, QualType From, QualType To) {
       Kind = K;
-      FromExpr = 0;
+      FromExpr = nullptr;
       setFromType(From);
       setToType(To);
     }
@@ -678,6 +678,18 @@ namespace clang {
         Fix.clear();
 
       return CanFix;
+    }
+
+    unsigned getNumParams() const {
+      if (IsSurrogate) {
+        auto STy = Surrogate->getConversionType();
+        while (STy->isPointerType() || STy->isReferenceType())
+          STy = STy->getPointeeType();
+        return STy->getAs<FunctionProtoType>()->getNumParams();
+      }
+      if (Function)
+        return Function->getNumParams();
+      return ExplicitCallArguments;
     }
   };
 

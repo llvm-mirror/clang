@@ -31,6 +31,7 @@
 #include "clang/Sema/CodeCompleteConsumer.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Serialization/ASTReader.h"
+#include "clang/Serialization/GlobalModuleIndex.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Config/config.h"
 #include "llvm/Support/CrashRecoveryContext.h"
@@ -49,9 +50,11 @@
 
 using namespace clang;
 
-CompilerInstance::CompilerInstance()
-  : Invocation(new CompilerInvocation()), ModuleManager(0),
-    BuildGlobalModuleIndex(false), ModuleBuildFailed(false) {
+CompilerInstance::CompilerInstance(bool BuildingModule)
+  : ModuleLoader(BuildingModule),
+    Invocation(new CompilerInvocation()), ModuleManager(0),
+    BuildGlobalModuleIndex(false), HaveFullGlobalModuleIndex(false),
+    ModuleBuildFailed(false) {
 }
 
 CompilerInstance::~CompilerInstance() {
@@ -236,13 +239,10 @@ void CompilerInstance::createPreprocessor(TranslationUnitKind TUKind) {
                                               getDiagnostics(),
                                               getLangOpts(),
                                               &getTarget());
-  PP = new Preprocessor(&getPreprocessorOpts(),
-                        getDiagnostics(), getLangOpts(), &getTarget(),
+  PP = new Preprocessor(&getPreprocessorOpts(), getDiagnostics(), getLangOpts(),
                         getSourceManager(), *HeaderInfo, *this, PTHMgr,
-                        /*OwnsHeaderSearch=*/true,
-                        /*DelayInitialization=*/false,
-                        /*IncrProcessing=*/false,
-                        TUKind);
+                        /*OwnsHeaderSearch=*/true, TUKind);
+  PP->Initialize(getTarget());
 
   // Note that this is different then passing PTHMgr to Preprocessor's ctor.
   // That argument is used as the IdentifierInfoLookup argument to
@@ -300,40 +300,32 @@ void CompilerInstance::createPreprocessor(TranslationUnitKind TUKind) {
 void CompilerInstance::createASTContext() {
   Preprocessor &PP = getPreprocessor();
   Context = new ASTContext(getLangOpts(), PP.getSourceManager(),
-                           &getTarget(), PP.getIdentifierTable(),
-                           PP.getSelectorTable(), PP.getBuiltinInfo(),
-                           /*size_reserve=*/ 0);
+                           PP.getIdentifierTable(), PP.getSelectorTable(),
+                           PP.getBuiltinInfo());
+  Context->InitBuiltinTypes(getTarget());
 }
 
 // ExternalASTSource
 
-void CompilerInstance::createPCHExternalASTSource(StringRef Path,
-                                                  bool DisablePCHValidation,
-                                                bool AllowPCHWithCompilerErrors,
-                                                 void *DeserializationListener){
+void CompilerInstance::createPCHExternalASTSource(
+    StringRef Path, bool DisablePCHValidation, bool AllowPCHWithCompilerErrors,
+    void *DeserializationListener, bool OwnDeserializationListener) {
   IntrusiveRefCntPtr<ExternalASTSource> Source;
   bool Preamble = getPreprocessorOpts().PrecompiledPreambleBytes.first != 0;
-  Source = createPCHExternalASTSource(Path, getHeaderSearchOpts().Sysroot,
-                                          DisablePCHValidation,
-                                          AllowPCHWithCompilerErrors,
-                                          getPreprocessor(), getASTContext(),
-                                          DeserializationListener,
-                                          Preamble,
-                                       getFrontendOpts().UseGlobalModuleIndex);
+  Source = createPCHExternalASTSource(
+      Path, getHeaderSearchOpts().Sysroot, DisablePCHValidation,
+      AllowPCHWithCompilerErrors, getPreprocessor(), getASTContext(),
+      DeserializationListener, OwnDeserializationListener, Preamble,
+      getFrontendOpts().UseGlobalModuleIndex);
   ModuleManager = static_cast<ASTReader*>(Source.getPtr());
   getASTContext().setExternalSource(Source);
 }
 
-ExternalASTSource *
-CompilerInstance::createPCHExternalASTSource(StringRef Path,
-                                             const std::string &Sysroot,
-                                             bool DisablePCHValidation,
-                                             bool AllowPCHWithCompilerErrors,
-                                             Preprocessor &PP,
-                                             ASTContext &Context,
-                                             void *DeserializationListener,
-                                             bool Preamble,
-                                             bool UseGlobalModuleIndex) {
+ExternalASTSource *CompilerInstance::createPCHExternalASTSource(
+    StringRef Path, const std::string &Sysroot, bool DisablePCHValidation,
+    bool AllowPCHWithCompilerErrors, Preprocessor &PP, ASTContext &Context,
+    void *DeserializationListener, bool OwnDeserializationListener,
+    bool Preamble, bool UseGlobalModuleIndex) {
   HeaderSearchOptions &HSOpts = PP.getHeaderSearchInfo().getHeaderSearchOpts();
 
   std::unique_ptr<ASTReader> Reader;
@@ -346,7 +338,8 @@ CompilerInstance::createPCHExternalASTSource(StringRef Path,
                              UseGlobalModuleIndex));
 
   Reader->setDeserializationListener(
-            static_cast<ASTDeserializationListener *>(DeserializationListener));
+      static_cast<ASTDeserializationListener *>(DeserializationListener),
+      /*TakeOwnership=*/OwnDeserializationListener);
   switch (Reader->ReadAST(Path,
                           Preamble ? serialization::MK_Preamble
                                    : serialization::MK_PCH,
@@ -830,7 +823,7 @@ static void compileModuleImpl(CompilerInstance &ImportingInstance,
   
   // Construct a compiler instance that will be used to actually create the
   // module.
-  CompilerInstance Instance;
+  CompilerInstance Instance(/*BuildingModule=*/true);
   Instance.setInvocation(&*Invocation);
 
   Instance.createDiagnostics(new ForwardingDiagnosticConsumer(
@@ -1097,6 +1090,43 @@ static void pruneModuleCache(const HeaderSearchOptions &HSOpts) {
   }
 }
 
+void CompilerInstance::createModuleManager() {
+  if (!ModuleManager) {
+    if (!hasASTContext())
+      createASTContext();
+
+    // If we're not recursively building a module, check whether we
+    // need to prune the module cache.
+    if (getSourceManager().getModuleBuildStack().empty() &&
+        getHeaderSearchOpts().ModuleCachePruneInterval > 0 &&
+        getHeaderSearchOpts().ModuleCachePruneAfter > 0) {
+      pruneModuleCache(getHeaderSearchOpts());
+    }
+
+    HeaderSearchOptions &HSOpts = getHeaderSearchOpts();
+    std::string Sysroot = HSOpts.Sysroot;
+    const PreprocessorOptions &PPOpts = getPreprocessorOpts();
+    ModuleManager = new ASTReader(getPreprocessor(), *Context,
+                                  Sysroot.empty() ? "" : Sysroot.c_str(),
+                                  PPOpts.DisablePCHValidation,
+                                  /*AllowASTWithCompilerErrors=*/false,
+                                  /*AllowConfigurationMismatch=*/false,
+                                  HSOpts.ModulesValidateSystemHeaders,
+                                  getFrontendOpts().UseGlobalModuleIndex);
+    if (hasASTConsumer()) {
+      ModuleManager->setDeserializationListener(
+        getASTConsumer().GetASTDeserializationListener());
+      getASTContext().setASTMutationListener(
+        getASTConsumer().GetASTMutationListener());
+    }
+    getASTContext().setExternalSource(ModuleManager);
+    if (hasSema())
+      ModuleManager->InitializeSema(getSema());
+    if (hasASTConsumer())
+      ModuleManager->StartTranslationUnit(&getASTConsumer());
+  }
+}
+
 ModuleLoadResult
 CompilerInstance::loadModule(SourceLocation ImportLoc,
                              ModuleIdPath Path,
@@ -1127,7 +1157,7 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
     Module = Known->second;    
   } else if (ModuleName == getLangOpts().CurrentModule) {
     // This is the module we're building. 
-    Module = PP->getHeaderSearchInfo().getModuleMap().findModule(ModuleName);
+    Module = PP->getHeaderSearchInfo().lookupModule(ModuleName);
     Known = KnownModules.insert(std::make_pair(Path[0].first, Module)).first;
   } else {
     // Search for a module with the given name.
@@ -1140,43 +1170,12 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
       return ModuleLoadResult();
     }
 
-    std::string ModuleFileName = PP->getHeaderSearchInfo().getModuleFileName(Module);
+    std::string ModuleFileName =
+        PP->getHeaderSearchInfo().getModuleFileName(Module);
 
     // If we don't already have an ASTReader, create one now.
-    if (!ModuleManager) {
-      if (!hasASTContext())
-        createASTContext();
-
-      // If we're not recursively building a module, check whether we
-      // need to prune the module cache.
-      if (getSourceManager().getModuleBuildStack().empty() &&
-          getHeaderSearchOpts().ModuleCachePruneInterval > 0 &&
-          getHeaderSearchOpts().ModuleCachePruneAfter > 0) {
-        pruneModuleCache(getHeaderSearchOpts());
-      }
-
-      HeaderSearchOptions &HSOpts = getHeaderSearchOpts();
-      std::string Sysroot = HSOpts.Sysroot;
-      const PreprocessorOptions &PPOpts = getPreprocessorOpts();
-      ModuleManager = new ASTReader(getPreprocessor(), *Context,
-                                    Sysroot.empty() ? "" : Sysroot.c_str(),
-                                    PPOpts.DisablePCHValidation,
-                                    /*AllowASTWithCompilerErrors=*/false,
-                                    /*AllowConfigurationMismatch=*/false,
-                                    HSOpts.ModulesValidateSystemHeaders,
-                                    getFrontendOpts().UseGlobalModuleIndex);
-      if (hasASTConsumer()) {
-        ModuleManager->setDeserializationListener(
-          getASTConsumer().GetASTDeserializationListener());
-        getASTContext().setASTMutationListener(
-          getASTConsumer().GetASTMutationListener());
-      }
-      getASTContext().setExternalSource(ModuleManager);
-      if (hasSema())
-        ModuleManager->InitializeSema(getSema());
-      if (hasASTConsumer())
-        ModuleManager->StartTranslationUnit(&getASTConsumer());
-    }
+    if (!ModuleManager)
+      createModuleManager();
 
     if (TheDependencyFileGenerator)
       TheDependencyFileGenerator->AttachToASTReader(*ModuleManager);
@@ -1212,6 +1211,9 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
           << ModuleName << CyclePath;
         return ModuleLoadResult();
       }
+
+      getDiagnostics().Report(ImportLoc, diag::remark_module_build)
+          << ModuleName << ModuleFileName;
 
       // Check whether we have already attempted to build this module (but
       // failed).
@@ -1403,3 +1405,84 @@ void CompilerInstance::makeModuleVisible(Module *Mod,
   ModuleManager->makeModuleVisible(Mod, Visibility, ImportLoc, Complain);
 }
 
+GlobalModuleIndex *CompilerInstance::loadGlobalModuleIndex(
+    SourceLocation TriggerLoc) {
+  if (!ModuleManager)
+    createModuleManager();
+  // Can't do anything if we don't have the module manager.
+  if (!ModuleManager)
+    return 0;
+  // Get an existing global index.  This loads it if not already
+  // loaded.
+  ModuleManager->loadGlobalIndex();
+  GlobalModuleIndex *GlobalIndex = ModuleManager->getGlobalIndex();
+  // If the global index doesn't exist, create it.
+  if (!GlobalIndex && shouldBuildGlobalModuleIndex() && hasFileManager() &&
+      hasPreprocessor()) {
+    llvm::sys::fs::create_directories(
+      getPreprocessor().getHeaderSearchInfo().getModuleCachePath());
+    GlobalModuleIndex::writeIndex(
+      getFileManager(),
+      getPreprocessor().getHeaderSearchInfo().getModuleCachePath());
+    ModuleManager->resetForReload();
+    ModuleManager->loadGlobalIndex();
+    GlobalIndex = ModuleManager->getGlobalIndex();
+  }
+  // For finding modules needing to be imported for fixit messages,
+  // we need to make the global index cover all modules, so we do that here.
+  if (!HaveFullGlobalModuleIndex && GlobalIndex && !buildingModule()) {
+    ModuleMap &MMap = getPreprocessor().getHeaderSearchInfo().getModuleMap();
+    bool RecreateIndex = false;
+    for (ModuleMap::module_iterator I = MMap.module_begin(),
+        E = MMap.module_end(); I != E; ++I) {
+      Module *TheModule = I->second;
+      const FileEntry *Entry = TheModule->getASTFile();
+      if (!Entry) {
+        SmallVector<std::pair<IdentifierInfo *, SourceLocation>, 2> Path;
+        Path.push_back(std::make_pair(
+				  getPreprocessor().getIdentifierInfo(TheModule->Name), TriggerLoc));
+        std::reverse(Path.begin(), Path.end());
+		    // Load a module as hidden.  This also adds it to the global index.
+        loadModule(TheModule->DefinitionLoc, Path,
+                                             Module::Hidden, false);
+        RecreateIndex = true;
+      }
+    }
+    if (RecreateIndex) {
+      GlobalModuleIndex::writeIndex(
+        getFileManager(),
+        getPreprocessor().getHeaderSearchInfo().getModuleCachePath());
+      ModuleManager->resetForReload();
+      ModuleManager->loadGlobalIndex();
+      GlobalIndex = ModuleManager->getGlobalIndex();
+    }
+    HaveFullGlobalModuleIndex = true;
+  }
+  return GlobalIndex;
+}
+
+// Check global module index for missing imports.
+bool
+CompilerInstance::lookupMissingImports(StringRef Name,
+                                       SourceLocation TriggerLoc) {
+  // Look for the symbol in non-imported modules, but only if an error
+  // actually occurred.
+  if (!buildingModule()) {
+    // Load global module index, or retrieve a previously loaded one.
+    GlobalModuleIndex *GlobalIndex = loadGlobalModuleIndex(
+      TriggerLoc);
+
+    // Only if we have a global index.
+    if (GlobalIndex) {
+      GlobalModuleIndex::HitSet FoundModules;
+
+      // Find the modules that reference the identifier.
+      // Note that this only finds top-level modules.
+      // We'll let diagnoseTypo find the actual declaration module.
+      if (GlobalIndex->lookupIdentifier(Name, FoundModules))
+        return true;
+    }
+  }
+
+  return false;
+}

@@ -188,12 +188,11 @@ private:
   // getFinalPhase - Determine which compilation mode we are in and record 
   // which option we used to determine the final phase.
   phases::ID getFinalPhase(const llvm::opt::DerivedArgList &DAL,
-                           llvm::opt::Arg **FinalPhaseArg = 0) const;
+                           llvm::opt::Arg **FinalPhaseArg = nullptr) const;
 
 public:
   Driver(StringRef _ClangExecutable,
          StringRef _DefaultTargetTriple,
-         StringRef _DefaultImageName,
          DiagnosticsEngine &_Diags);
   ~Driver();
 
@@ -259,7 +258,7 @@ public:
   /// \param Args - The input arguments.
   /// \param Inputs - The list to store the resulting compilation 
   /// inputs onto.
-  void BuildInputs(const ToolChain &TC, const llvm::opt::DerivedArgList &Args,
+  void BuildInputs(const ToolChain &TC, llvm::opt::DerivedArgList &Args,
                    InputList &Inputs) const;
 
   /// BuildActions - Construct the list of actions to perform for the

@@ -11,6 +11,7 @@
 
 #include "clang/Basic/VirtualFileSystem.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -67,12 +68,14 @@ FileSystem::~FileSystem() {}
 error_code FileSystem::getBufferForFile(const llvm::Twine &Name,
                                         std::unique_ptr<MemoryBuffer> &Result,
                                         int64_t FileSize,
-                                        bool RequiresNullTerminator) {
+                                        bool RequiresNullTerminator,
+                                        bool IsVolatile) {
   std::unique_ptr<File> F;
   if (error_code EC = openFileForRead(Name, F))
     return EC;
 
-  error_code EC = F->getBuffer(Name, Result, FileSize, RequiresNullTerminator);
+  error_code EC = F->getBuffer(Name, Result, FileSize, RequiresNullTerminator,
+                               IsVolatile);
   return EC;
 }
 
@@ -95,7 +98,8 @@ public:
   ErrorOr<Status> status() override;
   error_code getBuffer(const Twine &Name, std::unique_ptr<MemoryBuffer> &Result,
                        int64_t FileSize = -1,
-                       bool RequiresNullTerminator = true) override;
+                       bool RequiresNullTerminator = true,
+                       bool IsVolatile = false) override;
   error_code close() override;
   void setName(StringRef Name) override;
 };
@@ -117,10 +121,11 @@ ErrorOr<Status> RealFile::status() {
 
 error_code RealFile::getBuffer(const Twine &Name,
                                std::unique_ptr<MemoryBuffer> &Result,
-                               int64_t FileSize, bool RequiresNullTerminator) {
+                               int64_t FileSize, bool RequiresNullTerminator,
+                               bool IsVolatile) {
   assert(FD != -1 && "cannot get buffer for closed file");
   return MemoryBuffer::getOpenFile(FD, Name.str().c_str(), Result, FileSize,
-                                   RequiresNullTerminator);
+                                   RequiresNullTerminator, IsVolatile);
 }
 
 // FIXME: This is terrible, we need this for ::close.
@@ -469,7 +474,7 @@ class VFSFromYAMLParser {
     yaml::MappingNode *M = dyn_cast<yaml::MappingNode>(N);
     if (!M) {
       error(N, "expected mapping node for file or directory entry");
-      return NULL;
+      return nullptr;
     }
 
     KeyStatusPair Fields[] = {
@@ -497,32 +502,32 @@ class VFSFromYAMLParser {
       // parsing value.
       SmallString<256> Buffer;
       if (!parseScalarString(I->getKey(), Key, Buffer))
-        return NULL;
+        return nullptr;
 
       if (!checkDuplicateOrUnknownKey(I->getKey(), Key, Keys))
-        return NULL;
+        return nullptr;
 
       StringRef Value;
       if (Key == "name") {
         if (!parseScalarString(I->getValue(), Value, Buffer))
-          return NULL;
+          return nullptr;
         Name = Value;
       } else if (Key == "type") {
         if (!parseScalarString(I->getValue(), Value, Buffer))
-          return NULL;
+          return nullptr;
         if (Value == "file")
           Kind = EK_File;
         else if (Value == "directory")
           Kind = EK_Directory;
         else {
           error(I->getValue(), "unknown value for 'type'");
-          return NULL;
+          return nullptr;
         }
       } else if (Key == "contents") {
         if (HasContents) {
           error(I->getKey(),
                 "entry already has 'contents' or 'external-contents'");
-          return NULL;
+          return nullptr;
         }
         HasContents = true;
         yaml::SequenceNode *Contents =
@@ -530,7 +535,7 @@ class VFSFromYAMLParser {
         if (!Contents) {
           // FIXME: this is only for directories, what about files?
           error(I->getValue(), "expected array");
-          return NULL;
+          return nullptr;
         }
 
         for (yaml::SequenceNode::iterator I = Contents->begin(),
@@ -539,22 +544,22 @@ class VFSFromYAMLParser {
           if (Entry *E = parseEntry(&*I))
             EntryArrayContents.push_back(E);
           else
-            return NULL;
+            return nullptr;
         }
       } else if (Key == "external-contents") {
         if (HasContents) {
           error(I->getKey(),
                 "entry already has 'contents' or 'external-contents'");
-          return NULL;
+          return nullptr;
         }
         HasContents = true;
         if (!parseScalarString(I->getValue(), Value, Buffer))
-          return NULL;
+          return nullptr;
         ExternalContentsPath = Value;
       } else if (Key == "use-external-name") {
         bool Val;
         if (!parseScalarBool(I->getValue(), Val))
-          return NULL;
+          return nullptr;
         UseExternalName = Val ? FileEntry::NK_External : FileEntry::NK_Virtual;
       } else {
         llvm_unreachable("key missing from Keys");
@@ -562,20 +567,20 @@ class VFSFromYAMLParser {
     }
 
     if (Stream.failed())
-      return NULL;
+      return nullptr;
 
     // check for missing keys
     if (!HasContents) {
       error(N, "missing key 'contents' or 'external-contents'");
-      return NULL;
+      return nullptr;
     }
     if (!checkMissingKeys(N, Keys))
-      return NULL;
+      return nullptr;
 
     // check invalid configuration
     if (Kind == EK_Directory && UseExternalName != FileEntry::NK_NotSet) {
       error(N, "'use-external-name' is not supported for directories");
-      return NULL;
+      return nullptr;
     }
 
     // Remove trailing slash(es), being careful not to remove the root path
@@ -587,7 +592,7 @@ class VFSFromYAMLParser {
     // Get the last component
     StringRef LastComponent = sys::path::filename(Trimmed);
 
-    Entry *Result = 0;
+    Entry *Result = nullptr;
     switch (Kind) {
     case EK_File:
       Result = new FileEntry(LastComponent, std::move(ExternalContentsPath),
@@ -718,14 +723,14 @@ VFSFromYAML *VFSFromYAML::create(MemoryBuffer *Buffer,
   yaml::Node *Root = DI->getRoot();
   if (DI == Stream.end() || !Root) {
     SM.PrintMessage(SMLoc(), SourceMgr::DK_Error, "expected root node");
-    return NULL;
+    return nullptr;
   }
 
   VFSFromYAMLParser P(Stream);
 
   std::unique_ptr<VFSFromYAML> FS(new VFSFromYAML(ExternalFS));
   if (!P.parse(Root, FS.get()))
-    return NULL;
+    return nullptr;
 
   return FS.release();
 }
@@ -838,4 +843,128 @@ UniqueID vfs::getNextVirtualUniqueID() {
   // The following assumes that uint64_t max will never collide with a real
   // dev_t value from the OS.
   return UniqueID(std::numeric_limits<uint64_t>::max(), ID);
+}
+
+#ifndef NDEBUG
+static bool pathHasTraversal(StringRef Path) {
+  using namespace llvm::sys;
+  for (StringRef Comp : llvm::make_range(path::begin(Path), path::end(Path)))
+    if (Comp == "." || Comp == "..")
+      return true;
+  return false;
+}
+#endif
+
+void YAMLVFSWriter::addFileMapping(StringRef VirtualPath, StringRef RealPath) {
+  assert(sys::path::is_absolute(VirtualPath) && "virtual path not absolute");
+  assert(sys::path::is_absolute(RealPath) && "real path not absolute");
+  assert(!pathHasTraversal(VirtualPath) && "path traversal is not supported");
+  Mappings.emplace_back(VirtualPath, RealPath);
+}
+
+ArrayRef<YAMLVFSWriter::MapEntry>
+YAMLVFSWriter::printDirNodes(llvm::raw_ostream &OS, ArrayRef<MapEntry> Entries,
+                             StringRef ParentPath, unsigned Indent) {
+  while (!Entries.empty()) {
+    const MapEntry &Entry = Entries.front();
+    OS.indent(Indent) << "{\n";
+    Indent += 2;
+    OS.indent(Indent) << "'type': 'directory',\n";
+    StringRef DirName =
+        containedPart(ParentPath, sys::path::parent_path(Entry.VPath));
+    OS.indent(Indent)
+        << "'name': \"" << llvm::yaml::escape(DirName) << "\",\n";
+    OS.indent(Indent) << "'contents': [\n";
+    Entries = printContents(OS, Entries, Indent + 2);
+    OS.indent(Indent) << "]\n";
+    Indent -= 2;
+    OS.indent(Indent) << '}';
+    if (Entries.empty()) {
+      OS << '\n';
+      break;
+    }
+    StringRef NextVPath = Entries.front().VPath;
+    if (!containedIn(ParentPath, NextVPath)) {
+      OS << '\n';
+      break;
+    }
+    OS << ",\n";
+  }
+  return Entries;
+}
+
+ArrayRef<YAMLVFSWriter::MapEntry>
+YAMLVFSWriter::printContents(llvm::raw_ostream &OS, ArrayRef<MapEntry> Entries,
+                             unsigned Indent) {
+  using namespace llvm::sys;
+  while (!Entries.empty()) {
+    const MapEntry &Entry = Entries.front();
+    Entries = Entries.slice(1);
+    StringRef ParentPath = path::parent_path(Entry.VPath);
+    StringRef VName = path::filename(Entry.VPath);
+    OS.indent(Indent) << "{\n";
+    Indent += 2;
+    OS.indent(Indent) << "'type': 'file',\n";
+    OS.indent(Indent) << "'name': \"" << llvm::yaml::escape(VName) << "\",\n";
+    OS.indent(Indent) << "'external-contents': \""
+                      << llvm::yaml::escape(Entry.RPath) << "\"\n";
+    Indent -= 2;
+    OS.indent(Indent) << '}';
+    if (Entries.empty()) {
+      OS << '\n';
+      break;
+    }
+    StringRef NextVPath = Entries.front().VPath;
+    if (!containedIn(ParentPath, NextVPath)) {
+      OS << '\n';
+      break;
+    }
+    OS << ",\n";
+    if (path::parent_path(NextVPath) != ParentPath) {
+      Entries = printDirNodes(OS, Entries, ParentPath, Indent);
+    }
+  }
+  return Entries;
+}
+
+bool YAMLVFSWriter::containedIn(StringRef Parent, StringRef Path) {
+  using namespace llvm::sys;
+  // Compare each path component.
+  auto IParent = path::begin(Parent), EParent = path::end(Parent);
+  for (auto IChild = path::begin(Path), EChild = path::end(Path);
+       IParent != EParent && IChild != EChild; ++IParent, ++IChild) {
+    if (*IParent != *IChild)
+      return false;
+  }
+  // Have we exhausted the parent path?
+  return IParent == EParent;
+}
+
+StringRef YAMLVFSWriter::containedPart(StringRef Parent, StringRef Path) {
+  assert(containedIn(Parent, Path));
+  if (Parent.empty())
+    return Path;
+  return Path.slice(Parent.size() + 1, StringRef::npos);
+}
+
+void YAMLVFSWriter::write(llvm::raw_ostream &OS) {
+  std::sort(Mappings.begin(), Mappings.end(),
+            [](const MapEntry &LHS, const MapEntry &RHS) {
+    return LHS.VPath < RHS.VPath;
+  });
+
+  OS << "{\n"
+        "  'version': 0,\n";
+  if (IsCaseSensitive.hasValue()) {
+    OS << "  'case-sensitive': '";
+    if (IsCaseSensitive.getValue())
+      OS << "true";
+    else
+      OS << "false";
+    OS << "',\n";
+  }
+  OS << "  'roots': [\n";
+  printDirNodes(OS, Mappings, "", 4);
+  OS << "  ]\n"
+     << "}\n";
 }

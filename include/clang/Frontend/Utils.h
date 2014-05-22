@@ -63,12 +63,6 @@ void InitializePreprocessor(Preprocessor &PP,
                             const HeaderSearchOptions &HSOpts,
                             const FrontendOptions &FEOpts);
 
-/// ProcessWarningOptions - Initialize the diagnostic client and process the
-/// warning options specified on the command line.
-void ProcessWarningOptions(DiagnosticsEngine &Diags,
-                           const DiagnosticOptions &Opts,
-                           bool ReportDiags = true);
-
 /// DoPrintPreprocessedInput - Implement -E mode.
 void DoPrintPreprocessedInput(Preprocessor &PP, raw_ostream* OS,
                               const PreprocessorOutputOptions &Opts);
@@ -124,7 +118,7 @@ createInvocationFromCommandLine(ArrayRef<const char *> Args,
 /// is non-null, emits an error if the argument is given, but non-integral.
 int getLastArgIntValue(const llvm::opt::ArgList &Args,
                        llvm::opt::OptSpecifier Id, int Default,
-                       DiagnosticsEngine *Diags = 0);
+                       DiagnosticsEngine *Diags = nullptr);
 
 inline int getLastArgIntValue(const llvm::opt::ArgList &Args,
                               llvm::opt::OptSpecifier Id, int Default,
@@ -134,7 +128,7 @@ inline int getLastArgIntValue(const llvm::opt::ArgList &Args,
 
 uint64_t getLastArgUInt64Value(const llvm::opt::ArgList &Args,
                                llvm::opt::OptSpecifier Id, uint64_t Default,
-                               DiagnosticsEngine *Diags = 0);
+                               DiagnosticsEngine *Diags = nullptr);
 
 inline uint64_t getLastArgUInt64Value(const llvm::opt::ArgList &Args,
                                       llvm::opt::OptSpecifier Id,

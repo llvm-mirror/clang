@@ -1843,7 +1843,7 @@ bool Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
   // We didn't find anything, so try to correct for a typo.
   TypoCorrection Corrected;
   if (S && (Corrected = CorrectTypo(R.getLookupNameInfo(), R.getLookupKind(),
-                                    S, &SS, CCC))) {
+                                    S, &SS, CCC, CTK_ErrorRecovery))) {
     std::string CorrectedStr(Corrected.getAsString(getLangOpts()));
     bool DroppedSpecifier =
         Corrected.WillReplaceSpecifier() && Name.getAsString() == CorrectedStr;
@@ -3130,7 +3130,7 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
     // FIXME: Actually, they don't. We seem to have accidentally invented the
     //        i128 suffix.
     if (Literal.isMicrosoftInteger && MaxWidth < 128 &&
-        PP.getTargetInfo().hasInt128Type())
+        Context.getTargetInfo().hasInt128Type())
       MaxWidth = 128;
     llvm::APInt ResultVal(MaxWidth, 0);
 
@@ -3201,7 +3201,7 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
       // If it doesn't fit in unsigned long long, and we're using Microsoft
       // extensions, then its a 128-bit integer literal.
       if (Ty.isNull() && Literal.isMicrosoftInteger &&
-          PP.getTargetInfo().hasInt128Type()) {
+          Context.getTargetInfo().hasInt128Type()) {
         if (Literal.isUnsigned)
           Ty = Context.UnsignedInt128Ty;
         else
@@ -4004,7 +4004,8 @@ static TypoCorrection TryTypoCorrectionForCall(Sema &S, Expr *Fn,
 
   if (TypoCorrection Corrected = S.CorrectTypo(
           DeclarationNameInfo(FuncName, NameLoc), Sema::LookupOrdinaryName,
-          S.getScopeForContext(S.CurContext), NULL, CCC)) {
+          S.getScopeForContext(S.CurContext), NULL, CCC,
+          Sema::CTK_ErrorRecovery)) {
     if (NamedDecl *ND = Corrected.getCorrectionDecl()) {
       if (Corrected.isOverloaded()) {
         OverloadCandidateSet OCS(NameLoc, OverloadCandidateSet::CSK_Normal);
@@ -4163,18 +4164,14 @@ bool Sema::GatherArgumentsForCall(SourceLocation CallLoc, FunctionDecl *FDecl,
                                   VariadicCallType CallType, bool AllowExplicit,
                                   bool IsListInitialization) {
   unsigned NumParams = Proto->getNumParams();
-  unsigned NumArgsToCheck = Args.size();
   bool Invalid = false;
-  if (Args.size() != NumParams)
-    // Use default arguments for missing arguments
-    NumArgsToCheck = NumParams;
   unsigned ArgIx = 0;
   // Continue to check argument types (even if we have too few/many args).
-  for (unsigned i = FirstParam; i != NumArgsToCheck; i++) {
+  for (unsigned i = FirstParam; i < NumParams; i++) {
     QualType ProtoArgType = Proto->getParamType(i);
 
     Expr *Arg;
-    ParmVarDecl *Param;
+    ParmVarDecl *Param = FDecl ? FDecl->getParamDecl(i) : nullptr;
     if (ArgIx < Args.size()) {
       Arg = Args[ArgIx++];
 
@@ -4182,11 +4179,6 @@ bool Sema::GatherArgumentsForCall(SourceLocation CallLoc, FunctionDecl *FDecl,
                               ProtoArgType,
                               diag::err_call_incomplete_argument, Arg))
         return true;
-
-      // Pass the argument
-      Param = 0;
-      if (FDecl && i < FDecl->getNumParams())
-        Param = FDecl->getParamDecl(i);
 
       // Strip the unbridged-cast placeholder expression off, if applicable.
       bool CFAudited = false;
@@ -4208,7 +4200,7 @@ bool Sema::GatherArgumentsForCall(SourceLocation CallLoc, FunctionDecl *FDecl,
       // Remember that parameter belongs to a CF audited API.
       if (CFAudited)
         Entity.setParameterCFAudited();
-      
+
       ExprResult ArgE = PerformCopyInitialization(Entity,
                                                   SourceLocation(),
                                                   Owned(Arg),
@@ -4219,8 +4211,7 @@ bool Sema::GatherArgumentsForCall(SourceLocation CallLoc, FunctionDecl *FDecl,
 
       Arg = ArgE.takeAs<Expr>();
     } else {
-      assert(FDecl && "can't use default arguments without a known callee");
-      Param = FDecl->getParamDecl(i);
+      assert(Param && "can't use default arguments without a known callee");
 
       ExprResult ArgExpr =
         BuildCXXDefaultArgExpr(CallLoc, FDecl, Param);
@@ -5205,6 +5196,8 @@ Sema::ActOnCastExpr(Scope *S, SourceLocation LParenLoc,
   if (getLangOpts().CPlusPlus && !castType->isVoidType() &&
       !getSourceManager().isInSystemMacro(LParenLoc))
     Diag(LParenLoc, diag::warn_old_style_cast) << CastExpr->getSourceRange();
+  
+  CheckTollFreeBridgeCast(castType, CastExpr);
 
   return BuildCStyleCastExpr(LParenLoc, castTInfo, RParenLoc, CastExpr);
 }
@@ -8267,7 +8260,8 @@ inline QualType Sema::CheckLogicalOperands( // C99 6.5.[13,14]
     // Parens on the RHS are ignored.
     llvm::APSInt Result;
     if (RHS.get()->EvaluateAsInt(Result, Context))
-      if ((getLangOpts().Bool && !RHS.get()->getType()->isBooleanType()) ||
+      if ((getLangOpts().Bool && !RHS.get()->getType()->isBooleanType() &&
+           !RHS.get()->getExprLoc().isMacroID()) ||
           (Result != 0 && Result != 1)) {
         Diag(Loc, diag::warn_logical_instead_of_bitwise)
           << RHS.get()->getSourceRange()
@@ -8881,7 +8875,7 @@ QualType Sema::CheckAddressOfOperand(ExprResult &OrigOp, SourceLocation OpLoc) {
       return QualType();
     // Materialize the temporary as an lvalue so that we can take its address.
     OrigOp = op = new (Context)
-        MaterializeTemporaryExpr(op->getType(), OrigOp.take(), true, 0);
+        MaterializeTemporaryExpr(op->getType(), OrigOp.take(), true);
   } else if (isa<ObjCSelectorExpr>(op)) {
     return Context.getPointerType(op->getType());
   } else if (lval == Expr::LV_MemberFunction) {
@@ -9022,10 +9016,6 @@ static QualType CheckIndirectionOperand(Sema &S, Expr *Op, ExprValueKind &VK,
                                      Op->getSourceRange());
   }
 
-  // Note that per both C89 and C99, indirection is always legal, even if OpTy
-  // is an incomplete type or void.  It would be possible to warn about
-  // dereferencing a void pointer, but it's completely well-defined, and such a
-  // warning is unlikely to catch any mistakes.
   if (const PointerType *PT = OpTy->getAs<PointerType>())
     Result = PT->getPointeeType();
   else if (const ObjCObjectPointerType *OPT =
@@ -9043,6 +9033,19 @@ static QualType CheckIndirectionOperand(Sema &S, Expr *Op, ExprValueKind &VK,
       << OpTy << Op->getSourceRange();
     return QualType();
   }
+
+  // Note that per both C89 and C99, indirection is always legal, even if Result
+  // is an incomplete type or void.  It would be possible to warn about
+  // dereferencing a void pointer, but it's completely well-defined, and such a
+  // warning is unlikely to catch any mistakes. In C++, indirection is not valid
+  // for pointers to 'void' but is fine for any other pointer type:
+  //
+  // C++ [expr.unary.op]p1:
+  //   [...] the expression to which [the unary * operator] is applied shall
+  //   be a pointer to an object type, or a pointer to a function type
+  if (S.getLangOpts().CPlusPlus && Result->isVoidType())
+    S.Diag(OpLoc, diag::ext_typecheck_indirection_through_void_pointer)
+      << OpTy << Op->getSourceRange();
 
   // Dereferences are usually l-values...
   VK = VK_LValue;
@@ -10545,7 +10548,6 @@ ExprResult Sema::ActOnBlockStmtExpr(SourceLocation CaretLoc,
 
   // If needed, diagnose invalid gotos and switches in the block.
   if (getCurFunction()->NeedsScopeChecking() &&
-      !hasAnyUnrecoverableErrorsInThisFunction() &&
       !PP.isCodeCompletionEnabled())
     DiagnoseInvalidJumps(cast<CompoundStmt>(Body));
 
@@ -10556,7 +10558,7 @@ ExprResult Sema::ActOnBlockStmtExpr(SourceLocation CaretLoc,
   // to deduce an implicit return type.
   if (getLangOpts().CPlusPlus && RetTy->isRecordType() &&
       !BSI->TheDecl->isDependentContext())
-    computeNRVO(Body, getCurBlock());
+    computeNRVO(Body, BSI);
   
   BlockExpr *Result = new (Context) BlockExpr(BSI->TheDecl, BlockTy);
   AnalysisBasedWarnings::Policy WP = AnalysisWarnings.getDefaultPolicy();
@@ -11684,9 +11686,8 @@ static bool captureInCapturedRegion(CapturedRegionScopeInfo *RSI,
   Expr *CopyExpr = 0;
   if (BuildAndDiagnose) {
     // The current implementation assumes that all variables are captured
-    // by references. Since there is no capture by copy, no expression evaluation
-    // will be needed.
-    //
+    // by references. Since there is no capture by copy, no expression
+    // evaluation will be needed.
     RecordDecl *RD = RSI->TheRecordDecl;
 
     FieldDecl *Field
@@ -12364,9 +12365,9 @@ void Sema::MarkMemberReferenced(MemberExpr *E) {
 }
 
 /// \brief Perform marking for a reference to an arbitrary declaration.  It
-/// marks the declaration referenced, and performs odr-use checking for functions
-/// and variables. This method should not be used when building an normal
-/// expression which refers to a variable.
+/// marks the declaration referenced, and performs odr-use checking for
+/// functions and variables. This method should not be used when building a
+/// normal expression which refers to a variable.
 void Sema::MarkAnyDeclReferenced(SourceLocation Loc, Decl *D, bool OdrUse) {
   if (OdrUse) {
     if (VarDecl *VD = dyn_cast<VarDecl>(D)) {
@@ -12400,7 +12401,7 @@ namespace {
 }
 
 bool MarkReferencedDecls::TraverseTemplateArgument(
-  const TemplateArgument &Arg) {
+    const TemplateArgument &Arg) {
   if (Arg.getKind() == TemplateArgument::Declaration) {
     if (Decl *D = Arg.getAsDecl())
       S.MarkAnyDeclReferenced(Loc, D, true);
@@ -12447,7 +12448,7 @@ namespace {
       
       S.MarkDeclRefReferenced(E);
     }
-    
+
     void VisitMemberExpr(MemberExpr *E) {
       S.MarkMemberReferenced(E);
       Inherited::VisitMemberExpr(E);

@@ -1,6 +1,6 @@
-// RUN: %clang_cc1 -std=c++98 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++1y %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: env ASAN_OPTIONS=detect_stack_use_after_return=0 %clang_cc1 -std=c++98 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: env ASAN_OPTIONS=detect_stack_use_after_return=0 %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: env ASAN_OPTIONS=detect_stack_use_after_return=0 %clang_cc1 -std=c++1y %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 
 // FIXME: __SIZE_TYPE__ expands to 'long long' on some targets.
 __extension__ typedef __SIZE_TYPE__ size_t;
@@ -844,14 +844,14 @@ namespace dr474 { // dr474: yes
 
 // dr475 FIXME write a codegen test
 
-namespace dr477 { // dr477: no
+namespace dr477 { // dr477: 3.5
   struct A {
     explicit A();
     virtual void f();
   };
   struct B {
-    friend explicit A::A(); // FIXME: reject this
-    friend virtual void A::f(); // FIXME: reject this
+    friend explicit A::A(); // expected-error {{'explicit' is invalid in friend declarations}}
+    friend virtual void A::f(); // expected-error {{'virtual' is invalid in friend declarations}}
   };
   explicit A::A() {} // expected-error {{can only be specified inside the class definition}}
   virtual void A::f() {} // expected-error {{can only be specified inside the class definition}}
@@ -1165,7 +1165,7 @@ namespace dr494 { // dr494: dup 372
   };
 }
 
-namespace dr495 { // dr495: yes
+namespace dr495 { // dr495: 3.5
   template<typename T>
   struct S {
     operator int() { return T::error; }
@@ -1173,6 +1173,14 @@ namespace dr495 { // dr495: yes
   };
   S<int> s;
   long n = s;
+
+  template<typename T>
+  struct S2 {
+    template<typename U> operator U();
+    operator int() { return T::error; }
+  };
+  S2<int> s2;
+  long n2 = s2;
 }
 
 namespace dr496 { // dr496: no

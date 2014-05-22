@@ -34,12 +34,12 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/APSInt.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Bitcode/BitstreamReader.h"
 #include "llvm/Support/DataTypes.h"
 #include <deque>
@@ -133,8 +133,9 @@ public:
   ///
   /// \returns true to indicate the diagnostic options are invalid, or false
   /// otherwise.
-  virtual bool ReadDiagnosticOptions(const DiagnosticOptions &DiagOpts,
-                                     bool Complain) {
+  virtual bool
+  ReadDiagnosticOptions(IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts,
+                        bool Complain) {
     return false;
   }
 
@@ -211,7 +212,7 @@ public:
   bool ReadLanguageOptions(const LangOptions &LangOpts, bool Complain) override;
   bool ReadTargetOptions(const TargetOptions &TargetOpts,
                          bool Complain) override;
-  bool ReadDiagnosticOptions(const DiagnosticOptions &DiagOpts,
+  bool ReadDiagnosticOptions(IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts,
                              bool Complain) override;
   bool ReadFileSystemOptions(const FileSystemOptions &FSOpts,
                              bool Complain) override;
@@ -244,6 +245,8 @@ public:
                            bool Complain) override;
   bool ReadTargetOptions(const TargetOptions &TargetOpts,
                          bool Complain) override;
+  bool ReadDiagnosticOptions(IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts,
+                             bool Complain) override;
   bool ReadPreprocessorOptions(const PreprocessorOptions &PPOpts, bool Complain,
                                std::string &SuggestedPredefines) override;
   void ReadCounter(const serialization::ModuleFile &M, unsigned Value) override;
@@ -337,6 +340,7 @@ private:
 
   /// \brief The receiver of deserialization events.
   ASTDeserializationListener *DeserializationListener;
+  bool OwnsDeserializationListener;
 
   SourceManager &SourceMgr;
   FileManager &FileMgr;
@@ -414,12 +418,17 @@ private:
   /// in the chain.
   DeclUpdateOffsetsMap DeclUpdateOffsets;
 
+  /// \brief Declaration updates for already-loaded declarations that we need
+  /// to apply once we finish processing an import.
+  llvm::SmallVector<std::pair<serialization::GlobalDeclID, Decl*>, 16>
+      PendingUpdateRecords;
+
   struct ReplacedDeclInfo {
     ModuleFile *Mod;
     uint64_t Offset;
     unsigned RawLoc;
 
-    ReplacedDeclInfo() : Mod(0), Offset(0), RawLoc(0) {}
+    ReplacedDeclInfo() : Mod(nullptr), Offset(0), RawLoc(0) {}
     ReplacedDeclInfo(ModuleFile *Mod, uint64_t Offset, unsigned RawLoc)
       : Mod(Mod), Offset(Offset), RawLoc(RawLoc) {}
   };
@@ -433,7 +442,7 @@ private:
     ModuleFile *Mod;
     ArrayRef<serialization::LocalDeclID> Decls;
 
-    FileDeclsInfo() : Mod(0) {}
+    FileDeclsInfo() : Mod(nullptr) {}
     FileDeclsInfo(ModuleFile *Mod, ArrayRef<serialization::LocalDeclID> Decls)
       : Mod(Mod), Decls(Decls) {}
   };
@@ -812,10 +821,6 @@ private:
   /// \brief Whether we have tried loading the global module index yet.
   bool TriedLoadingGlobalIndex;
 
-  /// \brief The current "generation" of the module file import stack, which 
-  /// indicates how many separate module file load operations have occurred.
-  unsigned CurrentGeneration;
-
   typedef llvm::DenseMap<unsigned, SwitchCase *> SwitchCaseMapTy;
   /// \brief Mapping from switch-case IDs in the chain to switch-case statements
   ///
@@ -933,6 +938,10 @@ private:
   /// \brief Keeps track of the elements added to PendingDeclChains.
   llvm::SmallSet<serialization::DeclID, 16> PendingDeclChainsKnown;
 
+  /// \brief The list of canonical declarations whose redeclaration chains
+  /// need to be marked as incomplete once we're done deserializing things.
+  SmallVector<Decl *, 16> PendingIncompleteDeclChains;
+
   /// \brief The Decl IDs for the Sema/Lexical DeclContext of a Decl that has
   /// been loaded but its DeclContext was not set yet.
   struct PendingDeclContextInfo {
@@ -956,6 +965,13 @@ private:
   /// once recursing loading has been completed.
   llvm::SmallVector<NamedDecl *, 16> PendingOdrMergeChecks;
 
+  /// \brief Record definitions in which we found an ODR violation.
+  llvm::SmallDenseMap<CXXRecordDecl *, llvm::TinyPtrVector<CXXRecordDecl *>, 2>
+      PendingOdrMergeFailures;
+
+  /// \brief DeclContexts in which we have diagnosed an ODR violation.
+  llvm::SmallPtrSet<DeclContext*, 2> DiagnosedOdrMergeFailures;
+
   /// \brief The set of Objective-C categories that have been deserialized
   /// since the last time the declaration chains were linked.
   llvm::SmallPtrSet<ObjCCategoryDecl *, 16> CategoriesDeserialized;
@@ -964,7 +980,14 @@ private:
   /// loaded, for which we will need to check for categories whenever a new
   /// module is loaded.
   SmallVector<ObjCInterfaceDecl *, 16> ObjCClassesLoaded;
-  
+
+  /// \brief A mapping from a primary context for a declaration chain to the
+  /// other declarations of that entity that also have name lookup tables.
+  /// Used when we merge together two class definitions that have different
+  /// sets of declared special member functions.
+  llvm::DenseMap<const DeclContext*, SmallVector<const DeclContext*, 2>>
+      MergedLookups;
+
   typedef llvm::DenseMap<Decl *, SmallVector<serialization::DeclID, 2> >
     MergedDeclsMap;
     
@@ -1122,6 +1145,7 @@ private:
   RecordLocation TypeCursorForIndex(unsigned Index);
   void LoadedDecl(unsigned Index, Decl *D);
   Decl *ReadDeclRecord(serialization::DeclID ID);
+  void markIncompleteDeclChain(Decl *Canon);
   RecordLocation DeclCursorForID(serialization::DeclID ID,
                                  unsigned &RawLocation);
   void loadDeclUpdateRecords(serialization::DeclID ID, Decl *D);
@@ -1132,13 +1156,10 @@ private:
   RecordLocation getLocalBitOffset(uint64_t GlobalOffset);
   uint64_t getGlobalBitOffset(ModuleFile &M, uint32_t LocalOffset);
 
-  /// \brief Returns the first preprocessed entity ID that ends after BLoc.
+  /// \brief Returns the first preprocessed entity ID that begins or ends after
+  /// \arg Loc.
   serialization::PreprocessedEntityID
-    findBeginPreprocessedEntity(SourceLocation BLoc) const;
-
-  /// \brief Returns the first preprocessed entity ID that begins after ELoc.
-  serialization::PreprocessedEntityID
-    findEndPreprocessedEntity(SourceLocation ELoc) const;
+  findPreprocessedEntity(SourceLocation Loc, bool EndsAfter) const;
 
   /// \brief Find the next module that contains entities and return the ID
   /// of the first entry.
@@ -1170,7 +1191,7 @@ private:
     typedef value_type&         reference;
     typedef value_type*         pointer;
 
-    ModuleDeclIterator() : Reader(0), Mod(0), Pos(0) { }
+    ModuleDeclIterator() : Reader(nullptr), Mod(nullptr), Pos(nullptr) { }
 
     ModuleDeclIterator(ASTReader *Reader, ModuleFile *Mod,
                        const serialization::LocalDeclID *Pos)
@@ -1360,10 +1381,17 @@ public:
   }
 
   /// \brief Set the AST deserialization listener.
-  void setDeserializationListener(ASTDeserializationListener *Listener);
+  void setDeserializationListener(ASTDeserializationListener *Listener,
+                                  bool TakeOwnership = false);
 
   /// \brief Determine whether this AST reader has a global index.
   bool hasGlobalIndex() const { return (bool)GlobalIndex; }
+
+  /// \brief Return global module index.
+  GlobalModuleIndex *getGlobalIndex() { return GlobalIndex.get(); }
+
+  /// \brief Reset reader for a reload try.
+  void resetForReload() { TriedLoadingGlobalIndex = false; }
 
   /// \brief Attempts to load the global index.
   ///
@@ -1552,7 +1580,11 @@ public:
   /// \brief Retrieve the module file that owns the given declaration, or NULL
   /// if the declaration is not from a module file.
   ModuleFile *getOwningModuleFile(const Decl *D);
-  
+
+  /// \brief Get the best name we know for the module that owns the given
+  /// declaration, or an empty string if the declaration is not from a module.
+  std::string getOwningModuleNameForDiagnostic(const Decl *D);
+
   /// \brief Returns the source location for the decl \p ID.
   SourceLocation getSourceLocationForDeclID(serialization::GlobalDeclID ID);
 
@@ -1560,6 +1592,10 @@ public:
   /// building a new declaration.
   Decl *GetDecl(serialization::DeclID ID);
   Decl *GetExternalDecl(uint32_t ID) override;
+
+  /// \brief Resolve a declaration ID into a declaration. Return 0 if it's not
+  /// been loaded yet.
+  Decl *GetExistingDecl(serialization::DeclID ID);
 
   /// \brief Reads a declaration with the given local ID in the given module.
   Decl *GetLocalDecl(ModuleFile &F, uint32_t LocalID) {
@@ -1605,6 +1641,11 @@ public:
   T *ReadDeclAs(ModuleFile &F, const RecordData &R, unsigned &I) {
     return cast_or_null<T>(GetDecl(ReadDeclID(F, R, I)));
   }
+
+  /// \brief If any redeclarations of \p D have been imported since it was
+  /// last checked, this digs out those redeclarations and adds them to the
+  /// redeclaration chain for \p D.
+  void CompleteRedeclChain(const Decl *D) override;
 
   /// \brief Read a CXXBaseSpecifiers ID form the given record and
   /// return its global bit offset.
@@ -1686,7 +1727,7 @@ public:
   void InitializeSema(Sema &S) override;
 
   /// \brief Inform the semantic consumer that Sema is no longer available.
-  void ForgetSema() override { SemaObj = 0; }
+  void ForgetSema() override { SemaObj = nullptr; }
 
   /// \brief Retrieve the IdentifierInfo for the named identifier.
   ///
@@ -1753,7 +1794,7 @@ public:
   void SetIdentifierInfo(unsigned ID, IdentifierInfo *II);
   void SetGloballyVisibleDecls(IdentifierInfo *II,
                                const SmallVectorImpl<uint32_t> &DeclIDs,
-                               SmallVectorImpl<Decl *> *Decls = 0);
+                               SmallVectorImpl<Decl *> *Decls = nullptr);
 
   /// \brief Report a diagnostic.
   DiagnosticBuilder Diag(unsigned DiagID);
@@ -1790,7 +1831,7 @@ public:
   void installImportedMacro(IdentifierInfo *II, ModuleMacroInfo *MMI,
                             Module *Owner);
 
-  typedef llvm::SmallVector<DefMacroDirective*, 1> AmbiguousMacros;
+  typedef llvm::TinyPtrVector<DefMacroDirective *> AmbiguousMacros;
   llvm::DenseMap<IdentifierInfo*, AmbiguousMacros> AmbiguousMacroDefs;
 
   void

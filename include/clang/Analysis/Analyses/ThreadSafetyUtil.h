@@ -14,11 +14,15 @@
 #ifndef LLVM_CLANG_THREAD_SAFETY_UTIL_H
 #define LLVM_CLANG_THREAD_SAFETY_UTIL_H
 
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/AlignOf.h"
 #include "llvm/Support/Allocator.h"
+#include "llvm/Support/Compiler.h"
+#include "clang/AST/ExprCXX.h"
 
 #include <cassert>
 #include <cstddef>
+#include <vector>
 #include <utility>
 
 namespace clang {
@@ -68,9 +72,14 @@ inline void *operator new(size_t Sz,
 
 namespace clang {
 namespace threadSafety {
-namespace til {
+
+std::string getSourceLiteralString(const clang::Expr *CE);
 
 using llvm::StringRef;
+using clang::SourceLocation;
+
+namespace til {
+
 
 // A simple fixed size array class that does not manage its own memory,
 // suitable for use with bump pointer allocation.
@@ -161,7 +170,7 @@ private:
   size_t Capacity;
 };
 
-} // end namespace til
+}  // end namespace til
 
 
 // A copy on write vector.

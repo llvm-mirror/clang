@@ -283,7 +283,7 @@ public:
   unsigned getLongLongAlign() const { return LongLongAlign; }
 
   /// \brief Determine whether the __int128 type is supported on this target.
-  bool hasInt128Type() const { return getPointerWidth(0) >= 64; } // FIXME
+  virtual bool hasInt128Type() const { return getPointerWidth(0) >= 64; } // FIXME
 
   /// \brief Return the alignment that is suitable for storing any
   /// object with a fundamental alignment requirement.
@@ -735,7 +735,7 @@ public:
 
   /// \brief Return the section to use for C++ static initialization functions.
   virtual const char *getStaticInitSectionSpecifier() const {
-    return 0;
+    return nullptr;
   }
 
   const LangAS::Map &getAddressSpaceMap() const {
@@ -801,7 +801,7 @@ protected:
                                 unsigned &NumAliases) const = 0;
   virtual void getGCCAddlRegNames(const AddlRegName *&Addl,
                                   unsigned &NumAddl) const {
-    Addl = 0;
+    Addl = nullptr;
     NumAddl = 0;
   }
   virtual bool validateAsmConstraint(const char *&Name,

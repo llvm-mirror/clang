@@ -14,6 +14,7 @@
 #include "clang/Analysis/Analyses/ThreadSafetyCommon.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/DeclObjC.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/StmtCXX.h"
 #include "clang/Analysis/Analyses/PostOrderCFGView.h"
@@ -35,6 +36,43 @@
 
 namespace clang {
 namespace threadSafety {
+
+// From ThreadSafetyUtil.h
+std::string getSourceLiteralString(const clang::Expr *CE) {
+  switch (CE->getStmtClass()) {
+    case Stmt::IntegerLiteralClass:
+      return cast<IntegerLiteral>(CE)->getValue().toString(10, true);
+    case Stmt::StringLiteralClass: {
+      std::string ret("\"");
+      ret += cast<StringLiteral>(CE)->getString();
+      ret += "\"";
+      return ret;
+    }
+    case Stmt::CharacterLiteralClass:
+    case Stmt::CXXNullPtrLiteralExprClass:
+    case Stmt::GNUNullExprClass:
+    case Stmt::CXXBoolLiteralExprClass:
+    case Stmt::FloatingLiteralClass:
+    case Stmt::ImaginaryLiteralClass:
+    case Stmt::ObjCStringLiteralClass:
+    default:
+      return "#lit";
+  }
+}
+
+namespace til {
+
+// Return true if E is a variable that points to an incomplete Phi node.
+static bool isIncompleteVar(const SExpr *E) {
+  if (const auto *V = dyn_cast<Variable>(E)) {
+    if (const auto *Ph = dyn_cast<Phi>(V->definition()))
+      return Ph->status() == Phi::PH_Incomplete;
+  }
+  return false;
+}
+
+}  // end namespace til
+
 
 typedef SExprBuilder::CallingContext CallingContext;
 
@@ -81,6 +119,7 @@ til::SExpr *SExprBuilder::translate(const Stmt *S, CallingContext *Ctx) {
   case Stmt::UnaryOperatorClass:
     return translateUnaryOperator(cast<UnaryOperator>(S), Ctx);
   case Stmt::BinaryOperatorClass:
+  case Stmt::CompoundAssignOperatorClass:
     return translateBinaryOperator(cast<BinaryOperator>(S), Ctx);
 
   case Stmt::ArraySubscriptExprClass:
@@ -206,15 +245,61 @@ til::SExpr *SExprBuilder::translateUnaryOperator(const UnaryOperator *UO,
     return translate(UO->getSubExpr(), Ctx);
 
   case UO_Minus:
+    return new (Arena)
+      til::UnaryOp(til::UOP_Minus, translate(UO->getSubExpr(), Ctx));
   case UO_Not:
+    return new (Arena)
+      til::UnaryOp(til::UOP_BitNot, translate(UO->getSubExpr(), Ctx));
   case UO_LNot:
+    return new (Arena)
+      til::UnaryOp(til::UOP_LogicNot, translate(UO->getSubExpr(), Ctx));
+
+  // Currently unsupported
   case UO_Real:
   case UO_Imag:
   case UO_Extension:
-    return new (Arena)
-        til::UnaryOp(UO->getOpcode(), translate(UO->getSubExpr(), Ctx));
+    return new (Arena) til::Undefined(UO);
   }
   return new (Arena) til::Undefined(UO);
+}
+
+
+til::SExpr *SExprBuilder::translateBinOp(til::TIL_BinaryOpcode Op,
+                                         const BinaryOperator *BO,
+                                         CallingContext *Ctx, bool Reverse) {
+   til::SExpr *E0 = translate(BO->getLHS(), Ctx);
+   til::SExpr *E1 = translate(BO->getRHS(), Ctx);
+   if (Reverse)
+     return new (Arena) til::BinaryOp(Op, E1, E0);
+   else
+     return new (Arena) til::BinaryOp(Op, E0, E1);
+}
+
+
+til::SExpr *SExprBuilder::translateBinAssign(til::TIL_BinaryOpcode Op,
+                                             const BinaryOperator *BO,
+                                             CallingContext *Ctx,
+                                             bool Assign) {
+  const Expr *LHS = BO->getLHS();
+  const Expr *RHS = BO->getRHS();
+  til::SExpr *E0 = translate(LHS, Ctx);
+  til::SExpr *E1 = translate(RHS, Ctx);
+
+  const ValueDecl *VD = nullptr;
+  til::SExpr *CV = nullptr;
+  if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(LHS)) {
+    VD = DRE->getDecl();
+    CV = lookupVarDecl(VD);
+  }
+
+  if (!Assign) {
+    til::SExpr *Arg = CV ? CV : new (Arena) til::Load(E0);
+    E1 = new (Arena) til::BinaryOp(Op, Arg, E1);
+    E1 = addStatement(E1, nullptr, VD);
+  }
+  if (VD && CV)
+    return updateVarDecl(VD, E1);
+  return new (Arena) til::Store(E0, E1);
 }
 
 
@@ -225,56 +310,41 @@ til::SExpr *SExprBuilder::translateBinaryOperator(const BinaryOperator *BO,
   case BO_PtrMemI:
     return new (Arena) til::Undefined(BO);
 
-  case BO_Mul:
-  case BO_Div:
-  case BO_Rem:
-  case BO_Add:
-  case BO_Sub:
-  case BO_Shl:
-  case BO_Shr:
-  case BO_LT:
-  case BO_GT:
-  case BO_LE:
-  case BO_GE:
-  case BO_EQ:
-  case BO_NE:
-  case BO_And:
-  case BO_Xor:
-  case BO_Or:
-  case BO_LAnd:
-  case BO_LOr:
-    return new (Arena)
-        til::BinaryOp(BO->getOpcode(), translate(BO->getLHS(), Ctx),
-                      translate(BO->getRHS(), Ctx));
+  case BO_Mul:  return translateBinOp(til::BOP_Mul, BO, Ctx);
+  case BO_Div:  return translateBinOp(til::BOP_Div, BO, Ctx);
+  case BO_Rem:  return translateBinOp(til::BOP_Rem, BO, Ctx);
+  case BO_Add:  return translateBinOp(til::BOP_Add, BO, Ctx);
+  case BO_Sub:  return translateBinOp(til::BOP_Sub, BO, Ctx);
+  case BO_Shl:  return translateBinOp(til::BOP_Shl, BO, Ctx);
+  case BO_Shr:  return translateBinOp(til::BOP_Shr, BO, Ctx);
+  case BO_LT:   return translateBinOp(til::BOP_Lt,  BO, Ctx);
+  case BO_GT:   return translateBinOp(til::BOP_Lt,  BO, Ctx, true);
+  case BO_LE:   return translateBinOp(til::BOP_Leq, BO, Ctx);
+  case BO_GE:   return translateBinOp(til::BOP_Leq, BO, Ctx, true);
+  case BO_EQ:   return translateBinOp(til::BOP_Eq,  BO, Ctx);
+  case BO_NE:   return translateBinOp(til::BOP_Neq, BO, Ctx);
+  case BO_And:  return translateBinOp(til::BOP_BitAnd,   BO, Ctx);
+  case BO_Xor:  return translateBinOp(til::BOP_BitXor,   BO, Ctx);
+  case BO_Or:   return translateBinOp(til::BOP_BitOr,    BO, Ctx);
+  case BO_LAnd: return translateBinOp(til::BOP_LogicAnd, BO, Ctx);
+  case BO_LOr:  return translateBinOp(til::BOP_LogicOr,  BO, Ctx);
 
-  case BO_Assign: {
-    const Expr *LHS = BO->getLHS();
-    if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(LHS)) {
-      const Expr *RHS = BO->getRHS();
-      til::SExpr *E1 = translate(RHS, Ctx);
-      return updateVarDecl(DRE->getDecl(), E1);
-    }
-    til::SExpr *E0 = translate(LHS, Ctx);
-    til::SExpr *E1 = translate(BO->getRHS(), Ctx);
-    return new (Arena) til::Store(E0, E1);
-  }
-  case BO_MulAssign:
-  case BO_DivAssign:
-  case BO_RemAssign:
-  case BO_AddAssign:
-  case BO_SubAssign:
-  case BO_ShlAssign:
-  case BO_ShrAssign:
-  case BO_AndAssign:
-  case BO_XorAssign:
-  case BO_OrAssign:
-    return new (Arena) til::Undefined(BO);
+  case BO_Assign:    return translateBinAssign(til::BOP_Eq,  BO, Ctx, true);
+  case BO_MulAssign: return translateBinAssign(til::BOP_Mul, BO, Ctx);
+  case BO_DivAssign: return translateBinAssign(til::BOP_Div, BO, Ctx);
+  case BO_RemAssign: return translateBinAssign(til::BOP_Rem, BO, Ctx);
+  case BO_AddAssign: return translateBinAssign(til::BOP_Add, BO, Ctx);
+  case BO_SubAssign: return translateBinAssign(til::BOP_Sub, BO, Ctx);
+  case BO_ShlAssign: return translateBinAssign(til::BOP_Shl, BO, Ctx);
+  case BO_ShrAssign: return translateBinAssign(til::BOP_Shr, BO, Ctx);
+  case BO_AndAssign: return translateBinAssign(til::BOP_BitAnd, BO, Ctx);
+  case BO_XorAssign: return translateBinAssign(til::BOP_BitXor, BO, Ctx);
+  case BO_OrAssign:  return translateBinAssign(til::BOP_BitOr,  BO, Ctx);
 
   case BO_Comma:
-    // TODO: handle LHS
+    // The clang CFG should have already processed both sides.
     return translate(BO->getRHS(), Ctx);
   }
-
   return new (Arena) til::Undefined(BO);
 }
 
@@ -301,8 +371,9 @@ til::SExpr *SExprBuilder::translateCastExpr(const CastExpr *CE,
     return E0;
   }
   default: {
+    // FIXME: handle different kinds of casts.
     til::SExpr *E0 = translate(CE->getSubExpr(), Ctx);
-    return new (Arena) til::Cast(K, E0);
+    return new (Arena) til::Cast(til::CAST_none, E0);
   }
   }
 }
@@ -311,7 +382,10 @@ til::SExpr *SExprBuilder::translateCastExpr(const CastExpr *CE,
 til::SExpr *
 SExprBuilder::translateArraySubscriptExpr(const ArraySubscriptExpr *E,
                                           CallingContext *Ctx) {
-  return new (Arena) til::Undefined(E);
+  til::SExpr *E0 = translate(E->getBase(), Ctx);
+  til::SExpr *E1 = translate(E->getIdx(), Ctx);
+  auto *AA = new (Arena) til::ArrayAdd(E0, E1);
+  return new (Arena) til::ArrayFirst(AA);
 }
 
 
@@ -416,19 +490,6 @@ til::SExpr *SExprBuilder::updateVarDecl(const ValueDecl *VD, til::SExpr *E) {
 }
 
 
-// Return true if the given expression represents a possibly unnecessary
-// variable: i.e. a variable that references a Phi node that may be removed.
-inline bool isIncompleteVar(til::SExpr *E) {
-  if (!E)
-    return true;  // Null values are used on unknown backedges.
-  if (til::Variable *V = dyn_cast<til::Variable>(E)) {
-    if (til::Phi *Ph = dyn_cast<til::Phi>(V->definition()))
-      return Ph->incomplete();
-  }
-  return false;
-}
-
-
 // Make a Phi node in the current block for the i^th variable in CurrentVarMap.
 // If E != null, sets Phi[CurrentBlockInfo->ArgIndex] = E.
 // If E == null, this is a backedge and will be set later.
@@ -444,25 +505,29 @@ void SExprBuilder::makePhiNodeVar(unsigned i, unsigned NPreds, til::SExpr *E) {
     assert(Ph && "Expecting Phi node.");
     if (E)
       Ph->values()[ArgIndex] = E;
-    if (!Ph->incomplete() && isIncompleteVar(E))
-      Ph->setIncomplete(true);
     return;
   }
 
   // Make a new phi node: phi(..., E)
   // All phi args up to the current index are set to the current value.
+  til::SExpr *CurrE = CurrentLVarMap[i].second;
   til::Phi *Ph = new (Arena) til::Phi(Arena, NPreds);
   Ph->values().setValues(NPreds, nullptr);
   for (unsigned PIdx = 0; PIdx < ArgIndex; ++PIdx)
-    Ph->values()[PIdx] = CurrentLVarMap[i].second;
+    Ph->values()[PIdx] = CurrE;
   if (E)
     Ph->values()[ArgIndex] = E;
-  if (isIncompleteVar(E))
-    Ph->setIncomplete(true);
+  // If E is from a back-edge, or either E or CurrE are incomplete, then
+  // mark this node as incomplete; we may need to remove it later.
+  if (!E || isIncompleteVar(E) || isIncompleteVar(CurrE)) {
+    Ph->setStatus(til::Phi::PH_Incomplete);
+  }
 
   // Add Phi node to current block, and update CurrentLVarMap[i]
   auto *Var = new (Arena) til::Variable(Ph, CurrentLVarMap[i].first);
   CurrentArguments.push_back(Var);
+  if (Ph->status() == til::Phi::PH_Incomplete)
+    IncompleteArgs.push_back(Var);
 
   CurrentLVarMap.makeWritable();
   CurrentLVarMap.elem(i).second = Var;
@@ -552,8 +617,6 @@ void SExprBuilder::mergePhiNodesBackEdge(const CFGBlock *Blk) {
   }
 }
 
-
-
 void SExprBuilder::enterCFG(CFG *Cfg, const NamedDecl *D,
                             const CFGBlock *First) {
   // Perform initial setup operations.
@@ -568,22 +631,37 @@ void SExprBuilder::enterCFG(CFG *Cfg, const NamedDecl *D,
     auto *BB = new (Arena) til::BasicBlock(Arena, 0, B->size());
     BlockMap[B->getBlockID()] = BB;
   }
-  CallCtx = new SExprBuilder::CallingContext(D);
+  CallCtx.reset(new SExprBuilder::CallingContext(D));
+
+  CurrentBB = lookupBlock(&Cfg->getEntry());
+  auto Parms = isa<ObjCMethodDecl>(D) ? cast<ObjCMethodDecl>(D)->parameters()
+                                      : cast<FunctionDecl>(D)->parameters();
+  for (auto *Pm : Parms) {
+    QualType T = Pm->getType();
+    if (!T.isTrivialType(Pm->getASTContext()))
+      continue;
+
+    // Add parameters to local variable map.
+    // FIXME: right now we emulate params with loads; that should be fixed.
+    til::SExpr *Lp = new (Arena) til::LiteralPtr(Pm);
+    til::SExpr *Ld = new (Arena) til::Load(Lp);
+    til::SExpr *V  = addStatement(Ld, nullptr, Pm);
+    addVarDecl(Pm, V);
+  }
 }
 
 
 void SExprBuilder::enterCFGBlock(const CFGBlock *B) {
   // Intialize TIL basic block and add it to the CFG.
-  CurrentBB = BlockMap[B->getBlockID()];
+  CurrentBB = lookupBlock(B);
   CurrentBB->setNumPredecessors(B->pred_size());
   Scfg->add(CurrentBB);
 
   CurrentBlockInfo = &BBInfo[B->getBlockID()];
-  CurrentArguments.clear();
-  CurrentInstructions.clear();
 
   // CurrentLVarMap is moved to ExitMap on block exit.
-  assert(!CurrentLVarMap.valid() && "CurrentLVarMap already initialized.");
+  // FIXME: the entry block will hold function parameters.
+  // assert(!CurrentLVarMap.valid() && "CurrentLVarMap already initialized.");
 }
 
 
@@ -618,7 +696,7 @@ void SExprBuilder::enterCFGBlockBody(const CFGBlock *B) {
 
 
 void SExprBuilder::handleStatement(const Stmt *S) {
-  til::SExpr *E = translate(S, CallCtx);
+  til::SExpr *E = translate(S, CallCtx.get());
   addStatement(E, S);
 }
 
@@ -650,7 +728,7 @@ void SExprBuilder::exitCFGBlockBody(const CFGBlock *B) {
     CurrentBB->setTerminator(Tm);
   }
   else if (N == 2) {
-    til::SExpr *C = translate(B->getTerminatorCondition(true), CallCtx);
+    til::SExpr *C = translate(B->getTerminatorCondition(true), CallCtx.get());
     til::BasicBlock *BB1 = *It ? lookupBlock(*It) : nullptr;
     ++It;
     til::BasicBlock *BB2 = *It ? lookupBlock(*It) : nullptr;
@@ -673,6 +751,8 @@ void SExprBuilder::handleSuccessorBackEdge(const CFGBlock *Succ) {
 
 
 void SExprBuilder::exitCFGBlock(const CFGBlock *B) {
+  CurrentArguments.clear();
+  CurrentInstructions.clear();
   CurrentBlockInfo->ExitMap = std::move(CurrentLVarMap);
   CurrentBB = nullptr;
   CurrentBlockInfo = nullptr;
@@ -680,14 +760,20 @@ void SExprBuilder::exitCFGBlock(const CFGBlock *B) {
 
 
 void SExprBuilder::exitCFG(const CFGBlock *Last) {
+  for (auto *V : IncompleteArgs) {
+    til::Phi *Ph = dyn_cast<til::Phi>(V->definition());
+    if (Ph && Ph->status() == til::Phi::PH_Incomplete)
+      simplifyIncompleteArg(V, Ph);
+  }
+
   CurrentArguments.clear();
   CurrentInstructions.clear();
+  IncompleteArgs.clear();
 }
 
 
 
-class LLVMPrinter : public til::PrettyPrinter<LLVMPrinter, llvm::raw_ostream> {
-};
+class TILPrinter : public til::PrettyPrinter<TILPrinter, llvm::raw_ostream> {};
 
 
 void printSCFG(CFGWalker &Walker) {
@@ -695,7 +781,7 @@ void printSCFG(CFGWalker &Walker) {
   til::MemRegionRef Arena(&Bpa);
   SExprBuilder builder(Arena);
   til::SCFG *Cfg = builder.buildCFG(Walker);
-  LLVMPrinter::print(Cfg, llvm::errs());
+  TILPrinter::print(Cfg, llvm::errs());
 }
 
 

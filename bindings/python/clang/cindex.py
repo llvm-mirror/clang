@@ -361,13 +361,13 @@ class Diagnostic(object):
 
     @property
     def category_number(self):
-        """The category number for this diagnostic."""
+        """The category number for this diagnostic or 0 if unavailable."""
         return conf.lib.clang_getDiagnosticCategory(self)
 
     @property
     def category_name(self):
         """The string name of the category for this diagnostic."""
-        return conf.lib.clang_getDiagnosticCategoryName(self.category_number)
+        return conf.lib.clang_getDiagnosticCategoryText(self)
 
     @property
     def option(self):
@@ -1079,6 +1079,9 @@ CursorKind.CXX_OVERRIDE_ATTR = CursorKind(405)
 CursorKind.ANNOTATE_ATTR = CursorKind(406)
 CursorKind.ASM_LABEL_ATTR = CursorKind(407)
 CursorKind.PACKED_ATTR = CursorKind(408)
+CursorKind.PURE_ATTR = CursorKind(409)
+CursorKind.CONST_ATTR = CursorKind(410)
+CursorKind.NODUPLICATE_ATTR = CursorKind(411)
 
 ###
 # Preprocessing
@@ -1203,6 +1206,17 @@ class Cursor(Structure):
             self._extent = conf.lib.clang_getCursorExtent(self)
 
         return self._extent
+
+    @property
+    def access_specifier(self):
+        """
+        Retrieves the access specifier (if any) of the entity pointed at by the
+        cursor.
+        """
+        if not hasattr(self, '_access_specifier'):
+            self._access_specifier = conf.lib.clang_getCXXAccessSpecifier(self)
+
+        return AccessSpecifier.from_id(self._access_specifier)
 
     @property
     def type(self):
@@ -1425,6 +1439,54 @@ class Cursor(Structure):
 
         res._tu = args[0]._tu
         return res
+
+### C++ access specifiers ###
+
+class AccessSpecifier(object):
+    """
+    Describes the access of a C++ class member
+    """
+
+    # The unique kind objects, index by id.
+    _kinds = []
+    _name_map = None
+
+    def __init__(self, value):
+        if value >= len(AccessSpecifier._kinds):
+            AccessSpecifier._kinds += [None] * (value - len(AccessSpecifier._kinds) + 1)
+        if AccessSpecifier._kinds[value] is not None:
+            raise ValueError,'AccessSpecifier already loaded'
+        self.value = value
+        AccessSpecifier._kinds[value] = self
+        AccessSpecifier._name_map = None
+
+    def from_param(self):
+        return self.value
+
+    @property
+    def name(self):
+        """Get the enumeration name of this access specifier."""
+        if self._name_map is None:
+            self._name_map = {}
+            for key,value in AccessSpecifier.__dict__.items():
+                if isinstance(value,AccessSpecifier):
+                    self._name_map[value] = key
+        return self._name_map[self]
+
+    @staticmethod
+    def from_id(id):
+        if id >= len(AccessSpecifier._kinds) or not AccessSpecifier._kinds[id]:
+            raise ValueError,'Unknown access specifier %d' % id
+        return AccessSpecifier._kinds[id]
+
+    def __repr__(self):
+        return 'AccessSpecifier.%s' % (self.name,)
+
+AccessSpecifier.INVALID = AccessSpecifier(0)
+AccessSpecifier.PUBLIC = AccessSpecifier(1)
+AccessSpecifier.PROTECTED = AccessSpecifier(2)
+AccessSpecifier.PRIVATE = AccessSpecifier(3)
+AccessSpecifier.NONE = AccessSpecifier(4)
 
 ### Type Kinds ###
 
@@ -1934,7 +1996,7 @@ class CompletionString(ClangObject):
             return "<Availability: %s>" % self
 
     def __len__(self):
-        self.num_chunks
+        return self.num_chunks
 
     @CachedProperty
     def num_chunks(self):
@@ -2922,8 +2984,8 @@ functionList = [
    [Diagnostic],
    c_uint),
 
-  ("clang_getDiagnosticCategoryName",
-   [c_uint],
+  ("clang_getDiagnosticCategoryText",
+   [Diagnostic],
    _CXString,
    _CXString.from_result),
 
@@ -3342,8 +3404,8 @@ class Config:
         python bindings can disable the compatibility check. This will cause
         the python bindings to load, even though they are written for a newer
         version of libclang. Failures now arise if unsupported or incompatible
-        features are accessed. The user is required to test himself if the
-        features he is using are available and compatible between different
+        features are accessed. The user is required to test themselves if the
+        features they are using are available and compatible between different
         libclang versions.
         """
         if Config.loaded:

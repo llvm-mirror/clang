@@ -27,6 +27,9 @@
 #ifndef OPENMP_DEFAULT_KIND
 #  define OPENMP_DEFAULT_KIND(Name)
 #endif
+#ifndef OPENMP_PROC_BIND_KIND
+#  define OPENMP_PROC_BIND_KIND(Name)
+#endif
 
 // OpenMP directives.
 OPENMP_DIRECTIVE(threadprivate)
@@ -42,12 +45,15 @@ OPENMP_CLAUSE(default, OMPDefaultClause)
 OPENMP_CLAUSE(private, OMPPrivateClause)
 OPENMP_CLAUSE(firstprivate, OMPFirstprivateClause)
 OPENMP_CLAUSE(shared,  OMPSharedClause)
+OPENMP_CLAUSE(linear,  OMPLinearClause)
 OPENMP_CLAUSE(copyin,  OMPCopyinClause)
+OPENMP_CLAUSE(proc_bind, OMPProcBindClause)
 
 // Clauses allowed for OpenMP directive 'parallel'.
 OPENMP_PARALLEL_CLAUSE(if)
 OPENMP_PARALLEL_CLAUSE(num_threads)
 OPENMP_PARALLEL_CLAUSE(default)
+OPENMP_PARALLEL_CLAUSE(proc_bind)
 OPENMP_PARALLEL_CLAUSE(private)
 OPENMP_PARALLEL_CLAUSE(firstprivate)
 OPENMP_PARALLEL_CLAUSE(shared)
@@ -55,12 +61,19 @@ OPENMP_PARALLEL_CLAUSE(copyin)
 
 // FIXME: more clauses allowed for directive 'omp simd'.
 OPENMP_SIMD_CLAUSE(private)
+OPENMP_SIMD_CLAUSE(linear)
 OPENMP_SIMD_CLAUSE(safelen)
 
 // Static attributes for 'default' clause.
 OPENMP_DEFAULT_KIND(none)
 OPENMP_DEFAULT_KIND(shared)
 
+// Static attributes for 'proc_bind' clause.
+OPENMP_PROC_BIND_KIND(master)
+OPENMP_PROC_BIND_KIND(close)
+OPENMP_PROC_BIND_KIND(spread)
+
+#undef OPENMP_PROC_BIND_KIND
 #undef OPENMP_DEFAULT_KIND
 #undef OPENMP_DIRECTIVE
 #undef OPENMP_CLAUSE

@@ -17,6 +17,7 @@
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/Support/Path.h"
 
 using namespace clang;
 using namespace CodeGen;
@@ -362,7 +363,7 @@ CodeGenModule::EmitCXXGlobalInitFunc() {
       // Compute the function suffix from priority. Prepend with zeroes to make
       // sure the function names are also ordered as priorities.
       std::string PrioritySuffix = llvm::utostr(Priority);
-      // Priority is always <= 65535 (enforced by sema)..
+      // Priority is always <= 65535 (enforced by sema).
       PrioritySuffix = std::string(6-PrioritySuffix.size(), '0')+PrioritySuffix;
       llvm::Function *Fn = 
         CreateGlobalInitOrDestructFunction(*this, FTy,
@@ -376,8 +377,20 @@ CodeGenModule::EmitCXXGlobalInitFunc() {
     }
   }
   
-  llvm::Function *Fn = 
-    CreateGlobalInitOrDestructFunction(*this, FTy, "_GLOBAL__I_a");
+  // Include the filename in the symbol name. Including "sub_" matches gcc and
+  // makes sure these symbols appear lexicographically behind the symbols with
+  // priority emitted above.
+  SourceManager &SM = Context.getSourceManager();
+  SmallString<128> FileName(llvm::sys::path::filename(
+      SM.getFileEntryForID(SM.getMainFileID())->getName()));
+  for (size_t i = 0; i < FileName.size(); ++i) {
+    // Replace everything that's not [a-zA-Z0-9._] with a _. This set happens
+    // to be the set of C preprocessing numbers.
+    if (!isPreprocessingNumberBody(FileName[i]))
+      FileName[i] = '_';
+  }
+  llvm::Function *Fn = CreateGlobalInitOrDestructFunction(
+      *this, FTy, llvm::Twine("_GLOBAL__sub_I_", FileName));
 
   CodeGenFunction(*this).GenerateCXXGlobalInitFunc(Fn, CXXGlobalInits);
   AddGlobalCtor(Fn);
@@ -417,8 +430,8 @@ void CodeGenFunction::GenerateCXXGlobalVarDeclInitFunc(llvm::Function *Fn,
   // Use guarded initialization if the global variable is weak. This
   // occurs for, e.g., instantiated static data members and
   // definitions explicitly marked weak.
-  if (Addr->getLinkage() == llvm::GlobalValue::WeakODRLinkage ||
-      Addr->getLinkage() == llvm::GlobalValue::WeakAnyLinkage) {
+  if (llvm::GlobalVariable::isWeakLinkage(Addr->getLinkage()) ||
+      llvm::GlobalVariable::isLinkOnceLinkage(Addr->getLinkage())) {
     EmitCXXGuardedInit(*D, Addr, PerformInit);
   } else {
     EmitCXXGlobalVarDeclInit(*D, Addr, PerformInit);
@@ -509,7 +522,8 @@ llvm::Function *CodeGenFunction::generateDestroyHelper(
     llvm::Constant *addr, QualType type, Destroyer *destroyer,
     bool useEHCleanupForArray, const VarDecl *VD) {
   FunctionArgList args;
-  ImplicitParamDecl dst(0, SourceLocation(), 0, getContext().VoidPtrTy);
+  ImplicitParamDecl dst(getContext(), 0, SourceLocation(), 0,
+                        getContext().VoidPtrTy);
   args.push_back(&dst);
 
   const CGFunctionInfo &FI = CGM.getTypes().arrangeFreeFunctionDeclaration(

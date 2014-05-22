@@ -39,6 +39,8 @@ def err_pch_langopt_mismatch : Error<"%0 was %select{disabled|enabled}1 in "
     "PCH file but is currently %select{disabled|enabled}2">;
 def err_pch_langopt_value_mismatch : Error<
   "%0 differs in PCH file vs. current file">;
+def err_pch_diagopt_mismatch : Error<"%0 is currently enabled, but was not in "
+  "the PCH file">;
   
 def err_pch_version_too_old : Error<
     "PCH file uses an older PCH format that is no longer supported">;
@@ -83,6 +85,13 @@ def note_module_odr_violation_no_possible_decls : Note<
   "definition has no member %0">;
 def note_module_odr_violation_possible_decl : Note<
   "declaration of %0 does not match">;
+def err_module_odr_violation_different_definitions : Error<
+  "%q0 has different definitions in different modules; "
+  "%select{definition in module '%2' is here|defined here}1">;
+def note_module_odr_violation_different_definitions : Note<
+  "definition in module '%0' is here">;
+def err_module_odr_violation_different_instantiations : Error<
+  "instantiation of %q0 is different in different modules">;
 
 } // let CategoryName
 } // let Component

@@ -35,51 +35,51 @@
 #include "llvm/Support/Debug.h"
 
 namespace llvm {
-  class BasicBlock;
-  class LLVMContext;
-  class MDNode;
-  class Module;
-  class SwitchInst;
-  class Twine;
-  class Value;
-  class CallSite;
+class BasicBlock;
+class LLVMContext;
+class MDNode;
+class Module;
+class SwitchInst;
+class Twine;
+class Value;
+class CallSite;
 }
 
 namespace clang {
-  class ASTContext;
-  class BlockDecl;
-  class CXXDestructorDecl;
-  class CXXForRangeStmt;
-  class CXXTryStmt;
-  class Decl;
-  class LabelDecl;
-  class EnumConstantDecl;
-  class FunctionDecl;
-  class FunctionProtoType;
-  class LabelStmt;
-  class ObjCContainerDecl;
-  class ObjCInterfaceDecl;
-  class ObjCIvarDecl;
-  class ObjCMethodDecl;
-  class ObjCImplementationDecl;
-  class ObjCPropertyImplDecl;
-  class TargetInfo;
-  class TargetCodeGenInfo;
-  class VarDecl;
-  class ObjCForCollectionStmt;
-  class ObjCAtTryStmt;
-  class ObjCAtThrowStmt;
-  class ObjCAtSynchronizedStmt;
-  class ObjCAutoreleasePoolStmt;
+class ASTContext;
+class BlockDecl;
+class CXXDestructorDecl;
+class CXXForRangeStmt;
+class CXXTryStmt;
+class Decl;
+class LabelDecl;
+class EnumConstantDecl;
+class FunctionDecl;
+class FunctionProtoType;
+class LabelStmt;
+class ObjCContainerDecl;
+class ObjCInterfaceDecl;
+class ObjCIvarDecl;
+class ObjCMethodDecl;
+class ObjCImplementationDecl;
+class ObjCPropertyImplDecl;
+class TargetInfo;
+class TargetCodeGenInfo;
+class VarDecl;
+class ObjCForCollectionStmt;
+class ObjCAtTryStmt;
+class ObjCAtThrowStmt;
+class ObjCAtSynchronizedStmt;
+class ObjCAutoreleasePoolStmt;
 
 namespace CodeGen {
-  class CodeGenTypes;
-  class CGFunctionInfo;
-  class CGRecordLayout;
-  class CGBlockInfo;
-  class CGCXXABI;
-  class BlockFlags;
-  class BlockFieldFlags;
+class CodeGenTypes;
+class CGFunctionInfo;
+class CGRecordLayout;
+class CGBlockInfo;
+class CGCXXABI;
+class BlockFlags;
+class BlockFieldFlags;
 
 /// The kind of evaluation to perform on values of a particular
 /// type.  Basically, is the code in CGExprScalar, CGExprComplex, or
@@ -1878,6 +1878,9 @@ public:
   llvm::Function *GenerateCapturedStmtFunction(const CapturedDecl *CD,
                                                const RecordDecl *RD,
                                                SourceLocation Loc);
+  llvm::Value *GenerateCapturedStmtArgument(const CapturedStmt &S);
+
+  void EmitOMPParallelDirective(const OMPParallelDirective &S);
 
   //===--------------------------------------------------------------------===//
   //                         LValue Expression Emission
@@ -1976,12 +1979,14 @@ public:
   RValue EmitLoadOfLValue(LValue V, SourceLocation Loc);
   RValue EmitLoadOfExtVectorElementLValue(LValue V);
   RValue EmitLoadOfBitfieldLValue(LValue LV);
+  RValue EmitLoadOfGlobalRegLValue(LValue LV);
 
   /// EmitStoreThroughLValue - Store the specified rvalue into the specified
   /// lvalue, where both are guaranteed to the have the same type, and that type
   /// is 'Ty'.
   void EmitStoreThroughLValue(RValue Src, LValue Dst, bool isInit=false);
   void EmitStoreThroughExtVectorComponentLValue(RValue Src, LValue Dst);
+  void EmitStoreThroughGlobalRegLValue(RValue Src, LValue Dst);
 
   /// EmitStoreThroughBitfieldLValue - Store Src into Dst with same constraints
   /// as EmitStoreThroughLValue.
@@ -2006,6 +2011,7 @@ public:
   // Note: only available for agg return types
   LValue EmitVAArgExprLValue(const VAArgExpr *E);
   LValue EmitDeclRefLValue(const DeclRefExpr *E);
+  LValue EmitReadRegister(const VarDecl *VD);
   LValue EmitStringLiteralLValue(const StringLiteral *E);
   LValue EmitObjCEncodeExprLValue(const ObjCEncodeExpr *E);
   LValue EmitPredefinedLValue(const PredefinedExpr *E);

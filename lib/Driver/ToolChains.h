@@ -145,13 +145,6 @@ protected:
                                 const std::string &LibDir,
                                 StringRef CandidateTriple,
                                 bool NeedsBiarchSuffix = false);
-
-    bool findMIPSMultilibs(const llvm::Triple &TargetArch, StringRef Path,
-                           const llvm::opt::ArgList &Args);
-
-    bool findBiarchMultilibs(const llvm::Triple &TargetArch, StringRef Path,
-                             const llvm::opt::ArgList &Args,
-                             bool NeedsBiarchSuffix);
   };
 
   GCCInstallationDetector GCCInstallation;
@@ -557,6 +550,7 @@ public:
   bool IsMathErrnoDefault() const override { return false; }
   bool IsObjCNonFragileABIDefault() const override { return true; }
 
+  CXXStdlibType GetCXXStdlibType(const llvm::opt::ArgList &Args) const override;
   void
   AddClangCXXStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                               llvm::opt::ArgStringList &CC1Args) const override;

@@ -20,9 +20,9 @@
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/TypeOrdering.h"
 #include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/TargetInfo.h"
-#include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Initialization.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/SemaInternal.h"
@@ -33,6 +33,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include <algorithm>
+#include <cstdlib>
 
 namespace clang {
 using namespace sema;
@@ -2525,7 +2526,8 @@ void Sema::HandleFunctionTypeMismatch(PartialDiagnostic &PDiag,
   if (FromType->isMemberPointerType() && ToType->isMemberPointerType()) {
     const MemberPointerType *FromMember = FromType->getAs<MemberPointerType>(),
                             *ToMember = ToType->getAs<MemberPointerType>();
-    if (FromMember->getClass() != ToMember->getClass()) {
+    if (FromMember->getClass()->getCanonicalTypeInternal() !=
+        ToMember->getClass()->getCanonicalTypeInternal()) {
       PDiag << ft_different_class << QualType(ToMember->getClass(), 0)
             << QualType(FromMember->getClass(), 0);
       return;
@@ -5187,7 +5189,7 @@ diagnoseNoViableConversion(Sema &SemaRef, SourceLocation Loc, Expr *&From,
         << FixItHint::CreateInsertion(From->getLocStart(),
                                       "static_cast<" + TypeStr + ">(")
         << FixItHint::CreateInsertion(
-               SemaRef.PP.getLocForEndOfToken(From->getLocEnd()), ")");
+               SemaRef.getLocForEndOfToken(From->getLocEnd()), ")");
     Converter.noteExplicitConv(SemaRef, Conversion, ConvTy);
 
     // If we aren't in a SFINAE context, build a call to the
@@ -8236,29 +8238,6 @@ isBetterOverloadCandidate(Sema &S,
   if (HasBetterConversion)
     return true;
 
-  //     - F1 is a non-template function and F2 is a function template
-  //       specialization, or, if not that,
-  if ((!Cand1.Function || !Cand1.Function->getPrimaryTemplate()) &&
-      Cand2.Function && Cand2.Function->getPrimaryTemplate())
-    return true;
-
-  //   -- F1 and F2 are function template specializations, and the function
-  //      template for F1 is more specialized than the template for F2
-  //      according to the partial ordering rules described in 14.5.5.2, or,
-  //      if not that,
-  if (Cand1.Function && Cand1.Function->getPrimaryTemplate() &&
-      Cand2.Function && Cand2.Function->getPrimaryTemplate()) {
-    if (FunctionTemplateDecl *BetterTemplate
-          = S.getMoreSpecializedTemplate(Cand1.Function->getPrimaryTemplate(),
-                                         Cand2.Function->getPrimaryTemplate(),
-                                         Loc,
-                       isa<CXXConversionDecl>(Cand1.Function)? TPOC_Conversion
-                                                             : TPOC_Call,
-                                         Cand1.ExplicitCallArguments,
-                                         Cand2.ExplicitCallArguments))
-      return BetterTemplate == Cand1.Function->getPrimaryTemplate();
-  }
-
   //   -- the context is an initialization by user-defined conversion
   //      (see 8.5, 13.3.1.5) and the standard conversion sequence
   //      from the return type of F1 to the destination type (i.e.,
@@ -8272,26 +8251,44 @@ isBetterOverloadCandidate(Sema &S,
     // other. This only distinguishes the results in non-standard, extension
     // cases such as the conversion from a lambda closure type to a function
     // pointer or block.
-    ImplicitConversionSequence::CompareKind FuncResult
-      = compareConversionFunctions(S, Cand1.Function, Cand2.Function);
-    if (FuncResult != ImplicitConversionSequence::Indistinguishable)
-      return FuncResult;
-          
-    switch (CompareStandardConversionSequences(S,
-                                               Cand1.FinalConversion,
-                                               Cand2.FinalConversion)) {
-    case ImplicitConversionSequence::Better:
-      // Cand1 has a better conversion sequence.
-      return true;
+    ImplicitConversionSequence::CompareKind Result =
+        compareConversionFunctions(S, Cand1.Function, Cand2.Function);
+    if (Result == ImplicitConversionSequence::Indistinguishable)
+      Result = CompareStandardConversionSequences(S,
+                                                  Cand1.FinalConversion,
+                                                  Cand2.FinalConversion);
 
-    case ImplicitConversionSequence::Worse:
-      // Cand1 can't be better than Cand2.
-      return false;
+    if (Result != ImplicitConversionSequence::Indistinguishable)
+      return Result == ImplicitConversionSequence::Better;
 
-    case ImplicitConversionSequence::Indistinguishable:
-      // Do nothing
-      break;
-    }
+    // FIXME: Compare kind of reference binding if conversion functions
+    // convert to a reference type used in direct reference binding, per
+    // C++14 [over.match.best]p1 section 2 bullet 3.
+  }
+
+  //    -- F1 is a non-template function and F2 is a function template
+  //       specialization, or, if not that,
+  bool Cand1IsSpecialization = Cand1.Function &&
+                               Cand1.Function->getPrimaryTemplate();
+  bool Cand2IsSpecialization = Cand2.Function &&
+                               Cand2.Function->getPrimaryTemplate();
+  if (Cand1IsSpecialization != Cand2IsSpecialization)
+    return Cand2IsSpecialization;
+
+  //   -- F1 and F2 are function template specializations, and the function
+  //      template for F1 is more specialized than the template for F2
+  //      according to the partial ordering rules described in 14.5.5.2, or,
+  //      if not that,
+  if (Cand1IsSpecialization && Cand2IsSpecialization) {
+    if (FunctionTemplateDecl *BetterTemplate
+          = S.getMoreSpecializedTemplate(Cand1.Function->getPrimaryTemplate(),
+                                         Cand2.Function->getPrimaryTemplate(),
+                                         Loc,
+                       isa<CXXConversionDecl>(Cand1.Function)? TPOC_Conversion
+                                                             : TPOC_Call,
+                                         Cand1.ExplicitCallArguments,
+                                         Cand2.ExplicitCallArguments))
+      return BetterTemplate == Cand1.Function->getPrimaryTemplate();
   }
 
   // Check for enable_if value-based overload resolution.
@@ -8302,37 +8299,41 @@ isBetterOverloadCandidate(Sema &S,
     // specific_attr_iterator<EnableIfAttr> but going in declaration order,
     // instead of reverse order which is how they're stored in the AST.
     AttrVec Cand1Attrs;
-    AttrVec::iterator Cand1E = Cand1Attrs.end();
     if (Cand1.Function->hasAttrs()) {
       Cand1Attrs = Cand1.Function->getAttrs();
-      Cand1E = std::remove_if(Cand1Attrs.begin(), Cand1Attrs.end(),
-                              IsNotEnableIfAttr);
-      std::reverse(Cand1Attrs.begin(), Cand1E);
+      Cand1Attrs.erase(std::remove_if(Cand1Attrs.begin(), Cand1Attrs.end(),
+                                      IsNotEnableIfAttr),
+                       Cand1Attrs.end());
+      std::reverse(Cand1Attrs.begin(), Cand1Attrs.end());
     }
 
     AttrVec Cand2Attrs;
-    AttrVec::iterator Cand2E = Cand2Attrs.end();
     if (Cand2.Function->hasAttrs()) {
       Cand2Attrs = Cand2.Function->getAttrs();
-      Cand2E = std::remove_if(Cand2Attrs.begin(), Cand2Attrs.end(),
-                              IsNotEnableIfAttr);
-      std::reverse(Cand2Attrs.begin(), Cand2E);
+      Cand2Attrs.erase(std::remove_if(Cand2Attrs.begin(), Cand2Attrs.end(),
+                                      IsNotEnableIfAttr),
+                       Cand2Attrs.end());
+      std::reverse(Cand2Attrs.begin(), Cand2Attrs.end());
     }
-    for (AttrVec::iterator
-         Cand1I = Cand1Attrs.begin(), Cand2I = Cand2Attrs.begin();
-         Cand1I != Cand1E || Cand2I != Cand2E; ++Cand1I, ++Cand2I) {
-      if (Cand1I == Cand1E)
-        return false;
-      if (Cand2I == Cand2E)
-        return true;
+
+    // Candidate 1 is better if it has strictly more attributes and
+    // the common sequence is identical.
+    if (Cand1Attrs.size() <= Cand2Attrs.size())
+      return false;
+
+    auto Cand1I = Cand1Attrs.begin();
+    for (auto &Cand2A : Cand2Attrs) {
+      auto &Cand1A = *Cand1I++;
       llvm::FoldingSetNodeID Cand1ID, Cand2ID;
-      cast<EnableIfAttr>(*Cand1I)->getCond()->Profile(Cand1ID,
-                                                      S.getASTContext(), true);
-      cast<EnableIfAttr>(*Cand2I)->getCond()->Profile(Cand2ID,
-                                                      S.getASTContext(), true);
+      cast<EnableIfAttr>(Cand1A)->getCond()->Profile(Cand1ID,
+                                                     S.getASTContext(), true);
+      cast<EnableIfAttr>(Cand2A)->getCond()->Profile(Cand2ID,
+                                                     S.getASTContext(), true);
       if (Cand1ID != Cand2ID)
         return false;
     }
+
+    return true;
   }
 
   return false;
@@ -9229,7 +9230,10 @@ static unsigned RankDeductionFailure(const DeductionFailureInfo &DFI) {
 
 struct CompareOverloadCandidatesForDisplay {
   Sema &S;
-  CompareOverloadCandidatesForDisplay(Sema &S) : S(S) {}
+  size_t NumArgs;
+
+  CompareOverloadCandidatesForDisplay(Sema &S, size_t nArgs)
+      : S(S), NumArgs(nArgs) {}
 
   bool operator()(const OverloadCandidate *L,
                   const OverloadCandidate *R) {
@@ -9254,8 +9258,24 @@ struct CompareOverloadCandidatesForDisplay {
     if (!L->Viable) {
       // 1. Arity mismatches come after other candidates.
       if (L->FailureKind == ovl_fail_too_many_arguments ||
-          L->FailureKind == ovl_fail_too_few_arguments)
+          L->FailureKind == ovl_fail_too_few_arguments) {
+        if (R->FailureKind == ovl_fail_too_many_arguments ||
+            R->FailureKind == ovl_fail_too_few_arguments) {
+          int LDist = std::abs((int)L->getNumParams() - (int)NumArgs);
+          int RDist = std::abs((int)R->getNumParams() - (int)NumArgs);
+          if (LDist == RDist) {
+            if (L->FailureKind == R->FailureKind)
+              // Sort non-surrogates before surrogates.
+              return !L->IsSurrogate && R->IsSurrogate;
+            // Sort candidates requiring fewer parameters than there were
+            // arguments given after candidates requiring more parameters
+            // than there were arguments given.
+            return L->FailureKind == ovl_fail_too_many_arguments;
+          }
+          return LDist < RDist;
+        }
         return false;
+      }
       if (R->FailureKind == ovl_fail_too_many_arguments ||
           R->FailureKind == ovl_fail_too_few_arguments)
         return true;
@@ -9442,7 +9462,7 @@ void OverloadCandidateSet::NoteCandidates(Sema &S,
   }
 
   std::sort(Cands.begin(), Cands.end(),
-            CompareOverloadCandidatesForDisplay(S));
+            CompareOverloadCandidatesForDisplay(S, Args.size()));
 
   bool ReportedAmbiguousConversions = false;
 

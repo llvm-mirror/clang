@@ -47,9 +47,11 @@ class DiagnosticsEngine;
 /// When errors are encountered, return false and, if Diags is non-null,
 /// report the error(s).
 bool ParseDiagnosticArgs(DiagnosticOptions &Opts, llvm::opt::ArgList &Args,
-                         DiagnosticsEngine *Diags = 0);
+                         DiagnosticsEngine *Diags = nullptr);
 
 class CompilerInvocationBase : public RefCountedBase<CompilerInvocation> {
+  void operator=(const CompilerInvocationBase &) LLVM_DELETED_FUNCTION;
+
 protected:
   /// Options controlling the language variant.
   IntrusiveRefCntPtr<LangOptions> LangOpts;
@@ -68,6 +70,7 @@ protected:
 
 public:
   CompilerInvocationBase();
+  ~CompilerInvocationBase();
 
   CompilerInvocationBase(const CompilerInvocationBase &X);
   

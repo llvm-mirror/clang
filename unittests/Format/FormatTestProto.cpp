@@ -7,12 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "format-test"
-
 #include "FormatTestUtils.h"
 #include "clang/Format/Format.h"
 #include "llvm/Support/Debug.h"
 #include "gtest/gtest.h"
+
+#define DEBUG_TYPE "format-test"
 
 namespace clang {
 namespace format {
@@ -52,10 +52,10 @@ TEST_F(FormatTestProto, FormatsMessages) {
                "}");
 
   verifyFormat("message SomeMessage {\n"
-               "  optional really.really.long.and.qualified.type.aaaaaaa\n"
+               "  optional really.really.long.qualified.type.aaa.aaaaaaa\n"
                "      fiiiiiiiiiiiiiiiiiiiiiiiiield = 1;\n"
                "  optional\n"
-               "      really.really.long.and.qualified.type.aaaaaaa.aaaaaaaa\n"
+               "      really.really.long.qualified.type.aaa.aaaaaaa.aaaaaaaa\n"
                "          another_fiiiiiiiiiiiiiiiiiiiiield = 2;\n"
                "}");
 }
@@ -88,6 +88,10 @@ TEST_F(FormatTestProto, MessageFieldAttributes) {
   verifyFormat("repeated double value = 1\n"
                "    [(aaaaaaa.aaaaaaaaa) = {aaaaaaaaaaaaaaaa: AAAAAAAAAA\n"
                "                            bbbbbbbbbbbbbbbb: BBBBBBBBBB}];");
+  verifyFormat("repeated double value = 1\n"
+               "    [(aaaaaaa.aaaaaaaaa) = {aaaaaaaaaaaaaaaa: AAAAAAAAAA,\n"
+               "                            bbbbbbb: BBBB,\n"
+               "                            bbbb: BBB}];");
 }
 
 TEST_F(FormatTestProto, FormatsOptions) {

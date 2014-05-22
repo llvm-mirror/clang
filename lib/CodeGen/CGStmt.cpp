@@ -76,7 +76,6 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
   case Stmt::SEHExceptStmtClass:
   case Stmt::SEHFinallyStmtClass:
   case Stmt::MSDependentExistsStmtClass:
-  case Stmt::OMPParallelDirectiveClass:
   case Stmt::OMPSimdDirectiveClass:
     llvm_unreachable("invalid statement class to emit generically");
   case Stmt::NullStmtClass:
@@ -173,6 +172,9 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
     break;
   case Stmt::SEHTryStmtClass:
     EmitSEHTryStmt(cast<SEHTryStmt>(*S));
+    break;
+  case Stmt::OMPParallelDirectiveClass:
+    EmitOMPParallelDirective(cast<OMPParallelDirective>(*S));
     break;
   }
 }
@@ -1302,13 +1304,6 @@ static bool FindCaseStatementsForValue(const SwitchStmt &S,
 }
 
 void CodeGenFunction::EmitSwitchStmt(const SwitchStmt &S) {
-  JumpDest SwitchExit = getJumpDestInCurrentScope("sw.epilog");
-
-  RunCleanupsScope ConditionScope(*this);
-
-  if (S.getConditionVariable())
-    EmitAutoVarDecl(*S.getConditionVariable());
-
   // Handle nested switch statements.
   llvm::SwitchInst *SavedSwitchInsn = SwitchInsn;
   SmallVector<uint64_t, 16> *SavedSwitchWeights = SwitchWeights;
@@ -1327,6 +1322,11 @@ void CodeGenFunction::EmitSwitchStmt(const SwitchStmt &S) {
         CaseCnt.beginRegion(Builder);
       }
       RunCleanupsScope ExecutedScope(*this);
+
+      // Emit the condition variable if needed inside the entire cleanup scope
+      // used by this special case for constant folded switches.
+      if (S.getConditionVariable())
+        EmitAutoVarDecl(*S.getConditionVariable());
 
       // At this point, we are no longer "within" a switch instance, so
       // we can temporarily enforce this to ensure that any embedded case
@@ -1348,6 +1348,11 @@ void CodeGenFunction::EmitSwitchStmt(const SwitchStmt &S) {
     }
   }
 
+  JumpDest SwitchExit = getJumpDestInCurrentScope("sw.epilog");
+
+  RunCleanupsScope ConditionScope(*this);
+  if (S.getConditionVariable())
+    EmitAutoVarDecl(*S.getConditionVariable());
   llvm::Value *CondV = EmitScalarExpr(S.getCond());
 
   // Create basic block to hold stuff that comes after switch
@@ -1916,6 +1921,12 @@ CodeGenFunction::EmitCapturedStmt(const CapturedStmt &S, CapturedRegionKind K) {
   EmitCallOrInvoke(F, CapStruct.getAddress());
 
   return F;
+}
+
+llvm::Value *
+CodeGenFunction::GenerateCapturedStmtArgument(const CapturedStmt &S) {
+  LValue CapStruct = InitCapturedStruct(*this, S);
+  return CapStruct.getAddress();
 }
 
 /// Creates the outlined function for a CapturedStmt.

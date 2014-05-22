@@ -49,14 +49,14 @@ struct TestVFO {
   }
 
   ~TestVFO() {
-    if (!Contents)
-      return;
-    char *BufPtr;
-    unsigned BufSize;
-    clang_VirtualFileOverlay_writeToBuffer(VFO, 0, &BufPtr, &BufSize);
-    std::string BufStr(BufPtr, BufSize);
-    EXPECT_STREQ(Contents, BufStr.c_str());
-    free(BufPtr);
+    if (Contents) {
+      char *BufPtr;
+      unsigned BufSize;
+      clang_VirtualFileOverlay_writeToBuffer(VFO, 0, &BufPtr, &BufSize);
+      std::string BufStr(BufPtr, BufSize);
+      EXPECT_STREQ(Contents, BufStr.c_str());
+      free(BufPtr);
+    }
     clang_VirtualFileOverlay_dispose(VFO);
   }
 };
@@ -91,7 +91,7 @@ TEST(libclang, VirtualFileOverlay) {
     "  'roots': [\n"
     "    {\n"
     "      'type': 'directory',\n"
-    "      'name': \"/path/virtual\",\n"
+    "      'name': \"/path/\\u266B\",\n"
     "      'contents': [\n"
     "        {\n"
     "          'type': 'file',\n"
@@ -103,7 +103,7 @@ TEST(libclang, VirtualFileOverlay) {
     "  ]\n"
     "}\n";
     TestVFO T(contents);
-    T.map("/path/virtual/☂.h", "/real/☂.h");
+    T.map("/path/♫/☂.h", "/real/☂.h");
   }
   {
     TestVFO T(NULL);
@@ -183,6 +183,57 @@ TEST(libclang, VirtualFileOverlay) {
     TestVFO T(contents);
     T.map("/path/virtual/foo.h", "/real/foo.h");
     clang_VirtualFileOverlay_setCaseSensitivity(T.VFO, false);
+  }
+  {
+    const char *contents =
+    "{\n"
+    "  'version': 0,\n"
+    "  'roots': [\n"
+    "    {\n"
+    "      'type': 'directory',\n"
+    "      'name': \"/path/foo\",\n"
+    "      'contents': [\n"
+    "        {\n"
+    "          'type': 'file',\n"
+    "          'name': \"bar\",\n"
+    "          'external-contents': \"/real/bar\"\n"
+    "        },\n"
+    "        {\n"
+    "          'type': 'file',\n"
+    "          'name': \"bar.h\",\n"
+    "          'external-contents': \"/real/bar.h\"\n"
+    "        }\n"
+    "      ]\n"
+    "    },\n"
+    "    {\n"
+    "      'type': 'directory',\n"
+    "      'name': \"/path/foobar\",\n"
+    "      'contents': [\n"
+    "        {\n"
+    "          'type': 'file',\n"
+    "          'name': \"baz.h\",\n"
+    "          'external-contents': \"/real/baz.h\"\n"
+    "        }\n"
+    "      ]\n"
+    "    },\n"
+    "    {\n"
+    "      'type': 'directory',\n"
+    "      'name': \"/path\",\n"
+    "      'contents': [\n"
+    "        {\n"
+    "          'type': 'file',\n"
+    "          'name': \"foobarbaz.h\",\n"
+    "          'external-contents': \"/real/foobarbaz.h\"\n"
+    "        }\n"
+    "      ]\n"
+    "    }\n"
+    "  ]\n"
+    "}\n";
+    TestVFO T(contents);
+    T.map("/path/foo/bar.h", "/real/bar.h");
+    T.map("/path/foo/bar", "/real/bar");
+    T.map("/path/foobar/baz.h", "/real/baz.h");
+    T.map("/path/foobarbaz.h", "/real/foobarbaz.h");
   }
 }
 

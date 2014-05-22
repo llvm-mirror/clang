@@ -18,13 +18,12 @@
 #include "clang/AST/TemplateName.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/ExceptionSpecificationType.h"
-#include "clang/Basic/IdentifierTable.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/Linkage.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/Specifiers.h"
 #include "clang/Basic/Visibility.h"
-#include "llvm/ADT/APSInt.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/Optional.h"
@@ -500,7 +499,7 @@ struct SplitQualType {
   /// The local qualifiers.
   Qualifiers Quals;
 
-  SplitQualType() : Ty(0), Quals() {}
+  SplitQualType() : Ty(nullptr), Quals() {}
   SplitQualType(const Type *ty, Qualifiers qs) : Ty(ty), Quals(qs) {}
 
   SplitQualType getSingleStepDesugaredType() const; // end of this file
@@ -1438,7 +1437,7 @@ public:
   /// \brief Def If non-NULL, and the type refers to some kind of declaration
   /// that can be completed (such as a C struct, C++ class, or Objective-C
   /// class), will be set to the declaration.
-  bool isIncompleteType(NamedDecl **Def = 0) const;
+  bool isIncompleteType(NamedDecl **Def = nullptr) const;
 
   /// isIncompleteOrObjectType - Return true if this is an incomplete or object
   /// type, in other words, not a function type.
@@ -2850,14 +2849,16 @@ public:
     ExtProtoInfo()
         : Variadic(false), HasTrailingReturn(false), TypeQuals(0),
           ExceptionSpecType(EST_None), RefQualifier(RQ_None), NumExceptions(0),
-          Exceptions(0), NoexceptExpr(0), ExceptionSpecDecl(0),
-          ExceptionSpecTemplate(0), ConsumedParameters(0) {}
+          Exceptions(nullptr), NoexceptExpr(nullptr),
+          ExceptionSpecDecl(nullptr), ExceptionSpecTemplate(nullptr),
+          ConsumedParameters(nullptr) {}
 
     ExtProtoInfo(CallingConv CC)
         : ExtInfo(CC), Variadic(false), HasTrailingReturn(false), TypeQuals(0),
           ExceptionSpecType(EST_None), RefQualifier(RQ_None), NumExceptions(0),
-          Exceptions(0), NoexceptExpr(0), ExceptionSpecDecl(0),
-          ExceptionSpecTemplate(0), ConsumedParameters(0) {}
+          Exceptions(nullptr), NoexceptExpr(nullptr),
+          ExceptionSpecDecl(nullptr), ExceptionSpecTemplate(nullptr),
+          ConsumedParameters(nullptr) {}
 
     FunctionType::ExtInfo ExtInfo;
     bool Variadic : 1;
@@ -3011,7 +3012,7 @@ public:
   }
   Expr *getNoexceptExpr() const {
     if (getExceptionSpecType() != EST_ComputedNoexcept)
-      return 0;
+      return nullptr;
     // NoexceptExpr sits where the arguments end.
     return *reinterpret_cast<Expr *const *>(param_type_end());
   }
@@ -3022,7 +3023,7 @@ public:
   FunctionDecl *getExceptionSpecDecl() const {
     if (getExceptionSpecType() != EST_Uninstantiated &&
         getExceptionSpecType() != EST_Unevaluated)
-      return 0;
+      return nullptr;
     return reinterpret_cast<FunctionDecl *const *>(param_type_end())[0];
   }
   /// \brief If this function type has an uninstantiated exception
@@ -3031,7 +3032,7 @@ public:
   /// this type.
   FunctionDecl *getExceptionSpecTemplate() const {
     if (getExceptionSpecType() != EST_Uninstantiated)
-      return 0;
+      return nullptr;
     return reinterpret_cast<FunctionDecl *const *>(param_type_end())[1];
   }
   /// \brief Determine whether this function type has a non-throwing exception
@@ -3519,7 +3520,7 @@ public:
   bool isParameterPack() const { return getCanTTPTInfo().ParameterPack; }
 
   TemplateTypeParmDecl *getDecl() const {
-    return isCanonicalUnqualified() ? 0 : TTPDecl;
+    return isCanonicalUnqualified() ? nullptr : TTPDecl;
   }
 
   IdentifierInfo *getIdentifier() const;
@@ -3980,9 +3981,9 @@ public:
 
   static bool KeywordIsTagTypeKind(ElaboratedTypeKeyword Keyword);
 
-  static const char *getKeywordName(ElaboratedTypeKeyword Keyword);
+  static StringRef getKeywordName(ElaboratedTypeKeyword Keyword);
 
-  static const char *getTagTypeKindName(TagTypeKind Kind) {
+  static StringRef getTagTypeKindName(TagTypeKind Kind) {
     return getKeywordName(getKeywordForTagTypeKind(Kind));
   }
 
@@ -4014,7 +4015,7 @@ class ElaboratedType : public TypeWithKeyword, public llvm::FoldingSetNode {
                       NamedType->isVariablyModifiedType(),
                       NamedType->containsUnexpandedParameterPack()),
       NNS(NNS), NamedType(NamedType) {
-    assert(!(Keyword == ETK_None && NNS == 0) &&
+    assert(!(Keyword == ETK_None && NNS == nullptr) &&
            "ElaboratedType cannot have elaborated type keyword "
            "and name qualifier both null.");
   }
@@ -4223,7 +4224,7 @@ class PackExpansionType : public Type, public llvm::FoldingSetNode {
                     Optional<unsigned> NumExpansions)
     : Type(PackExpansion, Canon, /*Dependent=*/Pattern->isDependentType(),
            /*InstantiationDependent=*/true,
-           /*VariableModified=*/Pattern->isVariablyModifiedType(),
+           /*VariablyModified=*/Pattern->isVariablyModifiedType(),
            /*ContainsUnexpandedParameterPack=*/false),
       Pattern(Pattern),
       NumExpansions(NumExpansions? *NumExpansions + 1: 0) { }
@@ -4456,7 +4457,7 @@ inline ObjCInterfaceDecl *ObjCObjectType::getInterface() const {
   if (const ObjCInterfaceType *T =
         getBaseType()->getAs<ObjCInterfaceType>())
     return T->getDecl();
-  return 0;
+  return nullptr;
 }
 
 /// ObjCObjectPointerType - Used to represent a pointer to an
@@ -4661,7 +4662,7 @@ inline const Type *QualType::getTypePtr() const {
 }
 
 inline const Type *QualType::getTypePtrOrNull() const {
-  return (isNull() ? 0 : getCommonPtr()->BaseType);
+  return (isNull() ? nullptr : getCommonPtr()->BaseType);
 }
 
 inline SplitQualType QualType::split() const {
@@ -5050,7 +5051,7 @@ inline const BuiltinType *Type::getAsPlaceholderType() const {
   if (const BuiltinType *BT = dyn_cast<BuiltinType>(this))
     if (BT->isPlaceholderType())
       return BT;
-  return 0;
+  return nullptr;
 }
 
 inline bool Type::isSpecificPlaceholderType(unsigned K) const {
@@ -5205,7 +5206,7 @@ template <typename T> const T *Type::getAs() const {
 
   // If the canonical form of this type isn't the right kind, reject it.
   if (!isa<T>(CanonicalType))
-    return 0;
+    return nullptr;
 
   // If this is a typedef for the type, strip the typedef off without
   // losing all typedef information.
@@ -5219,7 +5220,7 @@ inline const ArrayType *Type::getAsArrayTypeUnsafe() const {
 
   // If the canonical form of this type isn't the right kind, reject it.
   if (!isa<ArrayType>(CanonicalType))
-    return 0;
+    return nullptr;
 
   // If this is a typedef for the type, strip the typedef off without
   // losing all typedef information.

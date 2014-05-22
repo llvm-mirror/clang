@@ -26,12 +26,15 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCInstPrinter.h"
+#include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCTargetAsmParser.h"
+#include "llvm/MC/MCTargetOptions.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
@@ -1476,12 +1479,10 @@ StmtResult Parser::ParseForStatement(SourceLocation *TrailingElseLoc) {
 
     SourceLocation DeclStart = Tok.getLocation(), DeclEnd;
     StmtVector Stmts;
-    DeclGroupPtrTy DG = ParseSimpleDeclaration(Stmts, Declarator::ForContext,
-                                               DeclEnd, attrs, false,
-                                               MightBeForRangeStmt ?
-                                                 &ForRangeInit : 0);
+    DeclGroupPtrTy DG = ParseSimpleDeclaration(
+        Stmts, Declarator::ForContext, DeclEnd, attrs, false,
+        MightBeForRangeStmt ? &ForRangeInit : nullptr);
     FirstPart = Actions.ActOnDeclStmt(DG, DeclStart, Tok.getLocation());
-
     if (ForRangeInit.ParsedForRangeDecl()) {
       Diag(ForRangeInit.ColonLoc, getLangOpts().CPlusPlus11 ?
            diag::warn_cxx98_compat_for_range : diag::ext_for_range);
@@ -1747,7 +1748,7 @@ StmtResult Parser::ParseReturnStatement() {
       return StmtError();
     }
   }
-  return Actions.ActOnReturnStmt(ReturnLoc, R.take());
+  return Actions.ActOnReturnStmt(ReturnLoc, R.take(), getCurScope());
 }
 
 namespace {
@@ -2174,7 +2175,7 @@ StmtResult Parser::ParseMicrosoftAsmStatement(SourceLocation AsmLoc) {
   std::unique_ptr<llvm::MCRegisterInfo> MRI(TheTarget->createMCRegInfo(TT));
   std::unique_ptr<llvm::MCAsmInfo> MAI(TheTarget->createMCAsmInfo(*MRI, TT));
   // Get the instruction descriptor.
-  const llvm::MCInstrInfo *MII = TheTarget->createMCInstrInfo();
+  std::unique_ptr<llvm::MCInstrInfo> MII(TheTarget->createMCInstrInfo());
   std::unique_ptr<llvm::MCObjectFileInfo> MOFI(new llvm::MCObjectFileInfo());
   std::unique_ptr<llvm::MCSubtargetInfo> STI(
       TheTarget->createMCSubtargetInfo(TT, "", ""));
@@ -2190,11 +2191,14 @@ StmtResult Parser::ParseMicrosoftAsmStatement(SourceLocation AsmLoc) {
   std::unique_ptr<llvm::MCStreamer> Str(createNullStreamer(Ctx));
   std::unique_ptr<llvm::MCAsmParser> Parser(
       createMCAsmParser(TempSrcMgr, Ctx, *Str.get(), *MAI));
-  std::unique_ptr<llvm::MCTargetAsmParser> TargetParser(
-      TheTarget->createMCAsmParser(*STI, *Parser, *MII));
 
-  llvm::MCInstPrinter *IP =
-    TheTarget->createMCInstPrinter(1, *MAI, *MII, *MRI, *STI);
+  // FIXME: init MCOptions from sanitizer flags here.
+  llvm::MCTargetOptions MCOptions;
+  std::unique_ptr<llvm::MCTargetAsmParser> TargetParser(
+      TheTarget->createMCAsmParser(*STI, *Parser, *MII, MCOptions));
+
+  std::unique_ptr<llvm::MCInstPrinter> IP(
+      TheTarget->createMCInstPrinter(1, *MAI, *MII, *MRI, *STI));
 
   // Change to the Intel dialect.
   Parser->setAssemblerDialect(1);
@@ -2216,7 +2220,7 @@ StmtResult Parser::ParseMicrosoftAsmStatement(SourceLocation AsmLoc) {
   SmallVector<std::string, 4> Clobbers;
   if (Parser->parseMSInlineAsm(AsmLoc.getPtrEncoding(), AsmStringIR,
                                NumOutputs, NumInputs, OpExprs, Constraints,
-                               Clobbers, MII, IP, Callback))
+                               Clobbers, MII.get(), IP.get(), Callback))
     return StmtError();
 
   // Filter out "fpsw".  Clang doesn't accept it, and it always lists flags and

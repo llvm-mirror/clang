@@ -13,14 +13,14 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "format-token-breaker"
-
 #include "BreakableToken.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Format/Format.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 #include <algorithm>
+
+#define DEBUG_TYPE "format-token-breaker"
 
 namespace clang {
 namespace format {
@@ -82,11 +82,9 @@ static BreakableToken::Split getCommentSplit(StringRef Text,
   return BreakableToken::Split(StringRef::npos, 0);
 }
 
-static BreakableToken::Split getStringSplit(StringRef Text,
-                                            unsigned UsedColumns,
-                                            unsigned ColumnLimit,
-                                            unsigned TabWidth,
-                                            encoding::Encoding Encoding) {
+static BreakableToken::Split
+getStringSplit(StringRef Text, unsigned UsedColumns, unsigned ColumnLimit,
+               unsigned TabWidth, encoding::Encoding Encoding) {
   // FIXME: Reduce unit test case.
   if (Text.empty())
     return BreakableToken::Split(StringRef::npos, 0);
