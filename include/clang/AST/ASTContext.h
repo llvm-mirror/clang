@@ -424,7 +424,9 @@ public:
   typedef llvm::SmallVector<ast_type_traits::DynTypedNode, 1> ParentVector;
 
   /// \brief Maps from a node to its parents.
-  typedef llvm::DenseMap<const void *, ParentVector> ParentMap;
+  typedef llvm::DenseMap<const void *,
+                         llvm::PointerUnion<ast_type_traits::DynTypedNode *,
+                                            ParentVector *>> ParentMap;
 
   /// \brief Returns the parents of the given node.
   ///
@@ -1776,6 +1778,10 @@ public:
     return getCanonicalType(T1) == getCanonicalType(T2);
   }
 
+  bool hasSameType(const Type *T1, const Type *T2) const {
+    return getCanonicalType(T1) == getCanonicalType(T2);
+  }
+
   /// \brief Return this type as a completely-unqualified array type,
   /// capturing the qualifiers in \p Quals.
   ///
@@ -2293,6 +2299,7 @@ private:
   friend class DeclContext;
   friend class DeclarationNameTable;
   void ReleaseDeclContextMaps();
+  void ReleaseParentMapEntries();
 
   std::unique_ptr<ParentMap> AllParents;
 

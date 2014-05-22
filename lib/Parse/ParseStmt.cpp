@@ -115,7 +115,7 @@ Parser::ParseStatementOrDeclaration(StmtVector &Stmts, bool OnlyStatement,
   ParenBraceBracketBalancer BalancerRAIIObj(*this);
 
   ParsedAttributesWithRange Attrs(AttrFactory);
-  MaybeParseCXX11Attributes(Attrs, 0, /*MightBeObjCMessageSend*/ true);
+  MaybeParseCXX11Attributes(Attrs, nullptr, /*MightBeObjCMessageSend*/ true);
 
   StmtResult Res = ParseStatementOrDeclarationAfterAttributes(Stmts,
                                  OnlyStatement, TrailingElseLoc, Attrs);
@@ -165,7 +165,7 @@ StmtResult
 Parser::ParseStatementOrDeclarationAfterAttributes(StmtVector &Stmts,
           bool OnlyStatement, SourceLocation *TrailingElseLoc,
           ParsedAttributesWithRange &Attrs) {
-  const char *SemiError = 0;
+  const char *SemiError = nullptr;
   StmtResult Res;
 
   // Cases in this switch statement should fall through if the parser expects
@@ -548,7 +548,7 @@ StmtResult Parser::ParseLabeledStatement(ParsedAttributesWithRange &attrs) {
       // can't handle GNU attributes), so only call it in the one case where
       // GNU attributes are allowed.
       SubStmt = ParseStatementOrDeclarationAfterAttributes(
-          Stmts, /*OnlyStmts*/ true, 0, TempAttrs);
+          Stmts, /*OnlyStmts*/ true, nullptr, TempAttrs);
       if (!TempAttrs.empty() && !SubStmt.isInvalid())
         SubStmt = Actions.ProcessStmtAttributes(
             SubStmt.get(), TempAttrs.getList(), TempAttrs.Range);
@@ -605,13 +605,14 @@ StmtResult Parser::ParseCaseStatement(bool MissingCase, ExprResult Expr) {
   // DeepestParsedCaseStmt - This is the deepest statement we have parsed, which
   // gets updated each time a new case is parsed, and whose body is unset so
   // far.  When parsing 'case 4', this is the 'case 3' node.
-  Stmt *DeepestParsedCaseStmt = 0;
+  Stmt *DeepestParsedCaseStmt = nullptr;
 
   // While we have case statements, eat and stack them.
   SourceLocation ColonLoc;
   do {
     SourceLocation CaseLoc = MissingCase ? Expr.get()->getExprLoc() :
                                            ConsumeToken();  // eat the 'case'.
+    ColonLoc = SourceLocation();
 
     if (Tok.is(tok::code_completion)) {
       Actions.CodeCompleteCase(getCurScope());
@@ -624,11 +625,21 @@ StmtResult Parser::ParseCaseStatement(bool MissingCase, ExprResult Expr) {
     /// expression.
     ColonProtectionRAIIObject ColonProtection(*this);
 
-    ExprResult LHS(MissingCase ? Expr : ParseConstantExpression());
-    MissingCase = false;
-    if (LHS.isInvalid()) {
-      SkipUntil(tok::colon, StopAtSemi);
-      return StmtError();
+    ExprResult LHS;
+    if (!MissingCase) {
+      LHS = ParseConstantExpression();
+      if (LHS.isInvalid()) {
+        // If constant-expression is parsed unsuccessfully, recover by skipping
+        // current case statement (moving to the colon that ends it).
+        if (SkipUntil(tok::colon, tok::r_brace, StopAtSemi | StopBeforeMatch)) {
+          TryConsumeToken(tok::colon, ColonLoc);
+          continue;
+        }
+        return StmtError();
+      }
+    } else {
+      LHS = Expr;
+      MissingCase = false;
     }
 
     // GNU case range extension.
@@ -638,7 +649,10 @@ StmtResult Parser::ParseCaseStatement(bool MissingCase, ExprResult Expr) {
       Diag(DotDotDotLoc, diag::ext_gnu_case_range);
       RHS = ParseConstantExpression();
       if (RHS.isInvalid()) {
-        SkipUntil(tok::colon, StopAtSemi);
+        if (SkipUntil(tok::colon, tok::r_brace, StopAtSemi | StopBeforeMatch)) {
+          TryConsumeToken(tok::colon, ColonLoc);
+          continue;
+        }
         return StmtError();
       }
     }
@@ -684,8 +698,6 @@ StmtResult Parser::ParseCaseStatement(bool MissingCase, ExprResult Expr) {
     // Handle all case statements.
   } while (Tok.is(tok::kw_case));
 
-  assert(!TopLevelCase.isInvalid() && "Should have parsed at least one case!");
-
   // If we found a non-case statement, start by parsing it.
   StmtResult SubStmt;
 
@@ -693,19 +705,23 @@ StmtResult Parser::ParseCaseStatement(bool MissingCase, ExprResult Expr) {
     SubStmt = ParseStatement();
   } else {
     // Nicely diagnose the common error "switch (X) { case 4: }", which is
-    // not valid.
-    SourceLocation AfterColonLoc = PP.getLocForEndOfToken(ColonLoc);
-    Diag(AfterColonLoc, diag::err_label_end_of_compound_statement)
-      << FixItHint::CreateInsertion(AfterColonLoc, " ;");
-    SubStmt = true;
+    // not valid.  If ColonLoc doesn't point to a valid text location, there was
+    // another parsing error, so avoid producing extra diagnostics.
+    if (ColonLoc.isValid()) {
+      SourceLocation AfterColonLoc = PP.getLocForEndOfToken(ColonLoc);
+      Diag(AfterColonLoc, diag::err_label_end_of_compound_statement)
+        << FixItHint::CreateInsertion(AfterColonLoc, " ;");
+    }
+    SubStmt = StmtError();
   }
 
-  // Broken sub-stmt shouldn't prevent forming the case statement properly.
-  if (SubStmt.isInvalid())
-    SubStmt = Actions.ActOnNullStmt(SourceLocation());
-
   // Install the body into the most deeply-nested case.
-  Actions.ActOnCaseStmtBody(DeepestParsedCaseStmt, SubStmt.get());
+  if (DeepestParsedCaseStmt) {
+    // Broken sub-stmt shouldn't prevent forming the case statement properly.
+    if (SubStmt.isInvalid())
+      SubStmt = Actions.ActOnNullStmt(SourceLocation());
+    Actions.ActOnCaseStmtBody(DeepestParsedCaseStmt, SubStmt.get());
+  }
 
   // Return the top level parsed statement tree.
   return TopLevelCase;
@@ -927,7 +943,8 @@ StmtResult Parser::ParseCompoundStatementBody(bool isStmtExpr) {
         ConsumeToken();
 
       ParsedAttributesWithRange attrs(AttrFactory);
-      MaybeParseCXX11Attributes(attrs, 0, /*MightBeObjCMessageSend*/ true);
+      MaybeParseCXX11Attributes(attrs, nullptr,
+                                /*MightBeObjCMessageSend*/ true);
 
       // If this is the start of a declaration, parse it as such.
       if (isDeclarationStatement()) {
@@ -995,7 +1012,7 @@ bool Parser::ParseParenExprOrCondition(ExprResult &ExprResult,
     ParseCXXCondition(ExprResult, DeclResult, Loc, ConvertToBoolean);
   else {
     ExprResult = ParseExpression();
-    DeclResult = 0;
+    DeclResult = nullptr;
 
     // If required, convert to a boolean value.
     if (!ExprResult.isInvalid() && ConvertToBoolean)
@@ -1065,7 +1082,7 @@ StmtResult Parser::ParseIfStatement(SourceLocation *TrailingElseLoc) {
 
   // Parse the condition.
   ExprResult CondExp;
-  Decl *CondVar = 0;
+  Decl *CondVar = nullptr;
   if (ParseParenExprOrCondition(CondExp, CondVar, IfLoc, true))
     return StmtError();
 
@@ -1141,8 +1158,8 @@ StmtResult Parser::ParseIfStatement(SourceLocation *TrailingElseLoc) {
   // make turn the invalid one into a null stmt to avoid dropping the other
   // part.  If both are invalid, return error.
   if ((ThenStmt.isInvalid() && ElseStmt.isInvalid()) ||
-      (ThenStmt.isInvalid() && ElseStmt.get() == 0) ||
-      (ThenStmt.get() == 0  && ElseStmt.isInvalid())) {
+      (ThenStmt.isInvalid() && ElseStmt.get() == nullptr) ||
+      (ThenStmt.get() == nullptr && ElseStmt.isInvalid())) {
     // Both invalid, or one is invalid and other is non-present: return error.
     return StmtError();
   }
@@ -1192,7 +1209,7 @@ StmtResult Parser::ParseSwitchStatement(SourceLocation *TrailingElseLoc) {
 
   // Parse the condition.
   ExprResult Cond;
-  Decl *CondVar = 0;
+  Decl *CondVar = nullptr;
   if (ParseParenExprOrCondition(Cond, CondVar, SwitchLoc, false))
     return StmtError();
 
@@ -1232,15 +1249,6 @@ StmtResult Parser::ParseSwitchStatement(SourceLocation *TrailingElseLoc) {
   // Pop the scopes.
   InnerScope.Exit();
   SwitchScope.Exit();
-
-  if (Body.isInvalid()) {
-    // FIXME: Remove the case statement list from the Switch statement.
-
-    // Put the synthesized null statement on the same line as the end of switch
-    // condition.
-    SourceLocation SynthesizedNullStmtLocation = Cond.get()->getLocEnd();
-    Body = Actions.ActOnNullStmt(SynthesizedNullStmtLocation);
-  }
 
   return Actions.ActOnFinishSwitchStmt(SwitchLoc, Switch.get(), Body.get());
 }
@@ -1284,7 +1292,7 @@ StmtResult Parser::ParseWhileStatement(SourceLocation *TrailingElseLoc) {
 
   // Parse the condition.
   ExprResult Cond;
-  Decl *CondVar = 0;
+  Decl *CondVar = nullptr;
   if (ParseParenExprOrCondition(Cond, CondVar, WhileLoc, true))
     return StmtError();
 
@@ -1450,7 +1458,7 @@ StmtResult Parser::ParseForStatement(SourceLocation *TrailingElseLoc) {
   ExprResult Collection;
   ForRangeInit ForRangeInit;
   FullExprArg ThirdPart(Actions);
-  Decl *SecondVar = 0;
+  Decl *SecondVar = nullptr;
 
   if (Tok.is(tok::code_completion)) {
     Actions.CodeCompleteOrdinaryName(getCurScope(),
@@ -1778,7 +1786,7 @@ namespace {
                                     bool IsUnevaluatedContext) override {
       // Collect the desired tokens.
       SmallVector<Token, 16> LineToks;
-      const Token *FirstOrigToken = 0;
+      const Token *FirstOrigToken = nullptr;
       findTokensForString(LineBuf, LineToks, FirstOrigToken);
 
       unsigned NumConsumedToks;
@@ -2146,7 +2154,7 @@ StmtResult Parser::ParseMicrosoftAsmStatement(SourceLocation AsmLoc) {
   const llvm::Triple &TheTriple = Actions.Context.getTargetInfo().getTriple();
   llvm::Triple::ArchType ArchTy = TheTriple.getArch();
   const std::string &TT = TheTriple.getTriple();
-  const llvm::Target *TheTarget = 0;
+  const llvm::Target *TheTarget = nullptr;
   bool UnsupportedArch = (ArchTy != llvm::Triple::x86 &&
                           ArchTy != llvm::Triple::x86_64);
   if (UnsupportedArch) {
@@ -2325,7 +2333,7 @@ StmtResult Parser::ParseAsmStatement(bool &msAsm) {
     // We have a simple asm expression like 'asm("foo")'.
     T.consumeClose();
     return Actions.ActOnGCCAsmStmt(AsmLoc, /*isSimple*/ true, isVolatile,
-                                   /*NumOutputs*/ 0, /*NumInputs*/ 0, 0,
+                                   /*NumOutputs*/ 0, /*NumInputs*/ 0, nullptr,
                                    Constraints, Exprs, AsmString.take(),
                                    Clobbers, T.getCloseLocation());
   }
@@ -2432,7 +2440,7 @@ bool Parser::ParseAsmOperandsOpt(SmallVectorImpl<IdentifierInfo *> &Names,
       Names.push_back(II);
       T.consumeClose();
     } else
-      Names.push_back(0);
+      Names.push_back(nullptr);
 
     ExprResult Constraint(ParseAsmStringLiteral());
     if (Constraint.isInvalid()) {
@@ -2664,7 +2672,7 @@ StmtResult Parser::ParseCXXCatchBlock(bool FnCatch) {
 
   // exception-declaration is equivalent to '...' or a parameter-declaration
   // without default arguments.
-  Decl *ExceptionDecl = 0;
+  Decl *ExceptionDecl = nullptr;
   if (Tok.isNot(tok::ellipsis)) {
     ParsedAttributesWithRange Attributes(AttrFactory);
     MaybeParseCXX11Attributes(Attributes);
