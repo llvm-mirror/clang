@@ -355,6 +355,46 @@ TEST_F(FormatTest, FormatLoopsWithoutCompoundStatement) {
                AllowsMergedLoops);
 }
 
+TEST_F(FormatTest, FormatShortBracedStatements) {
+  FormatStyle AllowSimpleBracedStatements = getLLVMStyle();
+  AllowSimpleBracedStatements.AllowShortBlocksOnASingleLine = true;
+
+  AllowSimpleBracedStatements.AllowShortIfStatementsOnASingleLine = true;
+  AllowSimpleBracedStatements.AllowShortLoopsOnASingleLine = true;
+
+  verifyFormat("if (true) {}", AllowSimpleBracedStatements);
+  verifyFormat("while (true) {}", AllowSimpleBracedStatements);
+  verifyFormat("for (;;) {}", AllowSimpleBracedStatements);
+  verifyFormat("if (true) { f(); }", AllowSimpleBracedStatements);
+  verifyFormat("while (true) { f(); }", AllowSimpleBracedStatements);
+  verifyFormat("for (;;) { f(); }", AllowSimpleBracedStatements);
+  verifyFormat("if (true) { //\n"
+               "  f();\n"
+               "}",
+               AllowSimpleBracedStatements);
+  verifyFormat("if (true) {\n"
+               "  f();\n"
+               "  f();\n"
+               "}",
+               AllowSimpleBracedStatements);
+
+  AllowSimpleBracedStatements.AllowShortIfStatementsOnASingleLine = false;
+  verifyFormat("if (true) {\n"
+               "  f();\n"
+               "}",
+               AllowSimpleBracedStatements);
+
+  AllowSimpleBracedStatements.AllowShortLoopsOnASingleLine = false;
+  verifyFormat("while (true) {\n"
+               "  f();\n"
+               "}",
+               AllowSimpleBracedStatements);
+  verifyFormat("for (;;) {\n"
+               "  f();\n"
+               "}",
+               AllowSimpleBracedStatements);
+}
+
 TEST_F(FormatTest, ParseIfElse) {
   verifyFormat("if (true)\n"
                "  if (true)\n"
@@ -3082,6 +3122,12 @@ TEST_F(FormatTest, ExpressionIndentationBreakingBeforeOperators) {
 
   verifyFormat("return boost::fusion::at_c<0>(iiii).second\n"
                "       == boost::fusion::at_c<1>(iiii).second;",
+               Style);
+
+  Style.ColumnLimit = 60;
+  verifyFormat("zzzzzzzzzz\n"
+               "    = bbbbbbbbbbbbbbbbb\n"
+               "      >> aaaaaaaaaaaaaaaa(aaaaaaaaaaaaaaaaaaaaaaaaaa);",
                Style);
 }
 
@@ -7922,6 +7968,7 @@ TEST_F(FormatTest, ParsesConfiguration) {
   CHECK_PARSE_BOOL(AlignEscapedNewlinesLeft);
   CHECK_PARSE_BOOL(AlignTrailingComments);
   CHECK_PARSE_BOOL(AllowAllParametersOfDeclarationOnNextLine);
+  CHECK_PARSE_BOOL(AllowShortBlocksOnASingleLine);
   CHECK_PARSE_BOOL(AllowShortIfStatementsOnASingleLine);
   CHECK_PARSE_BOOL(AllowShortLoopsOnASingleLine);
   CHECK_PARSE_BOOL(AlwaysBreakTemplateDeclarations);
@@ -8500,12 +8547,16 @@ TEST_F(FormatTest, FormatsWithWebKitStyle) {
                    Style));
 
   // Keep empty and one-element array literals on a single line.
-  verifyFormat("NSArray* a = [[NSArray alloc] initWithArray:@[]\n"
-               "                                  copyItems:YES];",
-               Style);
-  verifyFormat("NSArray* a = [[NSArray alloc] initWithArray:@[ @\"a\" ]\n"
-               "                                  copyItems:YES];",
-               Style);
+  EXPECT_EQ("NSArray* a = [[NSArray alloc] initWithArray:@[]\n"
+            "                                  copyItems:YES];",
+            format("NSArray*a=[[NSArray alloc] initWithArray:@[]\n"
+                   "copyItems:YES];",
+                   Style));
+  EXPECT_EQ("NSArray* a = [[NSArray alloc] initWithArray:@[ @\"a\" ]\n"
+            "                                  copyItems:YES];",
+            format("NSArray*a=[[NSArray alloc]initWithArray:@[ @\"a\" ]\n"
+                   "             copyItems:YES];",
+                   Style));
   EXPECT_EQ("NSArray* a = [[NSArray alloc] initWithArray:@[\n"
             "                                               @\"a\",\n"
             "                                               @\"a\"\n"
@@ -8517,10 +8568,19 @@ TEST_F(FormatTest, FormatsWithWebKitStyle) {
                    "     ]\n"
                    "       copyItems:YES];",
                    Style));
-  verifyFormat(
+  EXPECT_EQ(
       "NSArray* a = [[NSArray alloc] initWithArray:@[ @\"a\", @\"a\" ]\n"
       "                                  copyItems:YES];",
-      Style);
+      format("NSArray* a = [[NSArray alloc] initWithArray:@[ @\"a\", @\"a\" ]\n"
+             "   copyItems:YES];",
+             Style));
+
+  verifyFormat("[self.a b:c c:d];", Style);
+  EXPECT_EQ("[self.a b:c\n"
+            "        c:d];",
+            format("[self.a b:c\n"
+                   "c:d];",
+                   Style));
 }
 
 TEST_F(FormatTest, FormatsLambdas) {

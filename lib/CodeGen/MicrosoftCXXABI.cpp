@@ -39,12 +39,11 @@ public:
 
   bool HasThisReturn(GlobalDecl GD) const override;
 
-  bool isReturnTypeIndirect(const CXXRecordDecl *RD) const override {
-    // Structures that are not C++03 PODs are always indirect.
-    return !RD->isPOD();
-  }
+  bool classifyReturnType(CGFunctionInfo &FI) const override;
 
   RecordArgABI getRecordArgABI(const CXXRecordDecl *RD) const override;
+
+  bool isSRetParameterAfterThis() const override { return true; }
 
   StringRef GetPureVirtualCallName() override { return "_purecall"; }
   // No known support for deleted functions in MSVC yet, so this choice is
@@ -405,19 +404,46 @@ MicrosoftCXXABI::getRecordArgABI(const CXXRecordDecl *RD) const {
     return RAA_Default;
 
   case llvm::Triple::x86:
-    // 32-bit x86 constructs non-trivial objects directly in outgoing argument
-    // slots.  LLVM uses the inalloca attribute to implement this.
-    if (RD->hasNonTrivialCopyConstructor() || RD->hasNonTrivialDestructor())
+    // All record arguments are passed in memory on x86.  Decide whether to
+    // construct the object directly in argument memory, or to construct the
+    // argument elsewhere and copy the bytes during the call.
+
+    // If C++ prohibits us from making a copy, construct the arguments directly
+    // into argument memory.
+    if (!canCopyArgument(RD))
       return RAA_DirectInMemory;
+
+    // Otherwise, construct the argument into a temporary and copy the bytes
+    // into the outgoing argument memory.
     return RAA_Default;
 
   case llvm::Triple::x86_64:
     // Win64 passes objects with non-trivial copy ctors indirectly.
     if (RD->hasNonTrivialCopyConstructor())
       return RAA_Indirect;
+
     // Win64 passes objects larger than 8 bytes indirectly.
     if (getContext().getTypeSize(RD->getTypeForDecl()) > 64)
       return RAA_Indirect;
+
+    // We have a trivial copy constructor or no copy constructors, but we have
+    // to make sure it isn't deleted.
+    bool CopyDeleted = false;
+    for (const CXXConstructorDecl *CD : RD->ctors()) {
+      if (CD->isCopyConstructor()) {
+        assert(CD->isTrivial());
+        // We had at least one undeleted trivial copy ctor.  Return directly.
+        if (!CD->isDeleted())
+          return RAA_Default;
+        CopyDeleted = true;
+      }
+    }
+
+    // The trivial copy constructor was deleted.  Return indirectly.
+    if (CopyDeleted)
+      return RAA_Indirect;
+
+    // There were no copy ctors.  Return in RAX.
     return RAA_Default;
   }
 
@@ -455,6 +481,27 @@ MicrosoftCXXABI::GetVirtualBaseClassOffset(CodeGenFunction &CGF,
 
 bool MicrosoftCXXABI::HasThisReturn(GlobalDecl GD) const {
   return isa<CXXConstructorDecl>(GD.getDecl());
+}
+
+bool MicrosoftCXXABI::classifyReturnType(CGFunctionInfo &FI) const {
+  const CXXRecordDecl *RD = FI.getReturnType()->getAsCXXRecordDecl();
+  if (!RD)
+    return false;
+
+  if (FI.isInstanceMethod()) {
+    // If it's an instance method, aggregates are always returned indirectly via
+    // the second parameter.
+    FI.getReturnInfo() = ABIArgInfo::getIndirect(0, /*ByVal=*/false);
+    FI.getReturnInfo().setSRetAfterThis(FI.isInstanceMethod());
+    return true;
+  } else if (!RD->isPOD()) {
+    // If it's a free function, non-POD types are returned indirectly.
+    FI.getReturnInfo() = ABIArgInfo::getIndirect(0, /*ByVal=*/false);
+    return true;
+  }
+
+  // Otherwise, use the C ABI rules.
+  return false;
 }
 
 void MicrosoftCXXABI::BuildConstructorSignature(
@@ -1064,8 +1111,31 @@ llvm::Function *MicrosoftCXXABI::EmitVirtualMemPtrThunk(
       CGF.Builder.CreateConstInBoundsGEP1_64(VTable, ML.Index, "vfn");
   llvm::Value *Callee = CGF.Builder.CreateLoad(VFuncPtr);
 
-  // Make the call and return the result.
-  CGF.EmitCallAndReturnForThunk(MD, Callee, 0);
+  unsigned CallingConv;
+  CodeGen::AttributeListType AttributeList;
+  CGM.ConstructAttributeList(FnInfo, MD, AttributeList, CallingConv, true);
+  llvm::AttributeSet Attrs =
+      llvm::AttributeSet::get(CGF.getLLVMContext(), AttributeList);
+
+  // Do a musttail call with perfect argument forwarding.  Any inalloca argument
+  // will be forwarded in place without any copy.
+  SmallVector<llvm::Value *, 8> Args;
+  for (llvm::Argument &A : ThunkFn->args())
+    Args.push_back(&A);
+  llvm::CallInst *Call = CGF.Builder.CreateCall(Callee, Args);
+  Call->setTailCallKind(llvm::CallInst::TCK_MustTail);
+  Call->setAttributes(Attrs);
+  Call->setCallingConv(static_cast<llvm::CallingConv::ID>(CallingConv));
+
+  if (Call->getType()->isVoidTy())
+    CGF.Builder.CreateRetVoid();
+  else
+    CGF.Builder.CreateRet(Call);
+
+  // Finish the function to maintain CodeGenFunction invariants.
+  // FIXME: Don't emit unreachable code.
+  CGF.EmitBlock(CGF.createBasicBlock());
+  CGF.FinishFunction();
 
   return ThunkFn;
 }

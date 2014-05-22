@@ -376,9 +376,6 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
 
   TargetMachine::setAsmVerbosityDefault(CodeGenOpts.AsmVerbose);
 
-  TargetMachine::setFunctionSections(CodeGenOpts.FunctionSections);
-  TargetMachine::setDataSections    (CodeGenOpts.DataSections);
-
   unsigned CodeModel =
     llvm::StringSwitch<unsigned>(CodeGenOpts.CodeModel)
       .Case("small", llvm::CodeModel::Small)
@@ -491,19 +488,17 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   Options.DisableTailCalls = CodeGenOpts.DisableTailCalls;
   Options.TrapFuncName = CodeGenOpts.TrapFuncName;
   Options.PositionIndependentExecutable = LangOpts.PIELevel != 0;
+  Options.FunctionSections = CodeGenOpts.FunctionSections;
+  Options.DataSections = CodeGenOpts.DataSections;
+
+  Options.MCOptions.MCRelaxAll = CodeGenOpts.RelaxAll;
+  Options.MCOptions.MCSaveTempLabels = CodeGenOpts.SaveTempLabels;
+  Options.MCOptions.MCUseDwarfDirectory = !CodeGenOpts.NoDwarfDirectoryAsm;
+  Options.MCOptions.MCNoExecStack = CodeGenOpts.NoExecStack;
 
   TargetMachine *TM = TheTarget->createTargetMachine(Triple, TargetOpts.CPU,
                                                      FeaturesStr, Options,
                                                      RM, CM, OptLevel);
-
-  if (CodeGenOpts.RelaxAll)
-    TM->setMCRelaxAll(true);
-  if (CodeGenOpts.SaveTempLabels)
-    TM->setMCSaveTempLabels(true);
-  if (!CodeGenOpts.NoDwarfDirectoryAsm)
-    TM->setMCUseDwarfDirectory(true);
-  if (CodeGenOpts.NoExecStack)
-    TM->setMCNoExecStack(true);
 
   return TM;
 }

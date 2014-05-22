@@ -18,6 +18,7 @@
 #include "UnwrappedLineParser.h"
 #include "WhitespaceManager.h"
 #include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Format/Format.h"
 #include "clang/Lex/Lexer.h"
@@ -150,6 +151,8 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("AlignTrailingComments", Style.AlignTrailingComments);
     IO.mapOptional("AllowAllParametersOfDeclarationOnNextLine",
                    Style.AllowAllParametersOfDeclarationOnNextLine);
+    IO.mapOptional("AllowShortBlocksOnASingleLine",
+                   Style.AllowShortBlocksOnASingleLine);
     IO.mapOptional("AllowShortIfStatementsOnASingleLine",
                    Style.AllowShortIfStatementsOnASingleLine);
     IO.mapOptional("AllowShortLoopsOnASingleLine",
@@ -262,6 +265,7 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.AlignTrailingComments = true;
   LLVMStyle.AllowAllParametersOfDeclarationOnNextLine = true;
   LLVMStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_All;
+  LLVMStyle.AllowShortBlocksOnASingleLine = false;
   LLVMStyle.AllowShortIfStatementsOnASingleLine = false;
   LLVMStyle.AllowShortLoopsOnASingleLine = false;
   LLVMStyle.AlwaysBreakBeforeMultilineStrings = false;
@@ -608,7 +612,7 @@ private:
       return 0;
     if ((Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
          Style.BreakBeforeBraces == FormatStyle::BS_GNU) &&
-        I[1]->First->is(tok::l_brace))
+        (I[1]->First->is(tok::l_brace) && !Style.AllowShortBlocksOnASingleLine))
       return 0;
     if (I[1]->InPPDirective != (*I)->InPPDirective ||
         (I[1]->InPPDirective && I[1]->First->HasUnescapedNewline))
@@ -634,16 +638,31 @@ private:
   tryMergeSimpleBlock(SmallVectorImpl<AnnotatedLine *>::const_iterator I,
                       SmallVectorImpl<AnnotatedLine *>::const_iterator E,
                       unsigned Limit) {
-    // First, check that the current line allows merging. This is the case if
-    // we're not in a control flow statement and the last token is an opening
-    // brace.
     AnnotatedLine &Line = **I;
-    if (Line.First->isOneOf(tok::kw_if, tok::kw_while, tok::kw_do, tok::r_brace,
-                            tok::kw_else, tok::kw_try, tok::kw_catch,
-                            tok::kw_for, tok::kw_case,
-                            // This gets rid of all ObjC @ keywords and methods.
-                            tok::at, tok::minus, tok::plus))
+
+    // Don't merge ObjC @ keywords and methods.
+    if (Line.First->isOneOf(tok::at, tok::minus, tok::plus))
       return 0;
+
+    // Check that the current line allows merging. This depends on whether we
+    // are in a control flow statements as well as several style flags.
+    if (Line.First->isOneOf(tok::kw_else, tok::kw_case))
+      return 0;
+    if (Line.First->isOneOf(tok::kw_if, tok::kw_while, tok::kw_do, tok::kw_try,
+                            tok::kw_catch, tok::kw_for, tok::r_brace)) {
+      if (!Style.AllowShortBlocksOnASingleLine)
+        return 0;
+      if (!Style.AllowShortIfStatementsOnASingleLine &&
+          Line.First->is(tok::kw_if))
+        return 0;
+      if (!Style.AllowShortLoopsOnASingleLine &&
+          Line.First->isOneOf(tok::kw_while, tok::kw_do, tok::kw_for))
+        return 0;
+      // FIXME: Consider an option to allow short exception handling clauses on
+      // a single line.
+      if (Line.First->isOneOf(tok::kw_try, tok::kw_catch))
+        return 0;
+    }
 
     FormatToken *Tok = I[1]->First;
     if (Tok->is(tok::r_brace) && !Tok->MustBreakBefore &&
@@ -671,7 +690,8 @@ private:
       if (I[1]->Last->Type == TT_LineComment)
         return 0;
       do {
-        if (Tok->isOneOf(tok::l_brace, tok::r_brace))
+        if (Tok->isOneOf(tok::l_brace, tok::r_brace) &&
+            !Style.AllowShortBlocksOnASingleLine)
           return 0;
         Tok = Tok->Next;
       } while (Tok);
@@ -1215,6 +1235,8 @@ private:
       return;
 
     if (Style.Language == FormatStyle::LK_JavaScript) {
+      if (tryMergeEscapeSequence())
+        return;
       if (tryMergeJSRegexLiteral())
         return;
 
@@ -1222,6 +1244,7 @@ private:
       static tok::TokenKind JSNotIdentity[] = { tok::exclaimequal, tok::equal };
       static tok::TokenKind JSShiftEqual[] = { tok::greater, tok::greater,
                                                tok::greaterequal };
+      static tok::TokenKind JSRightArrow[] = { tok::equal, tok::greater };
       // FIXME: We probably need to change token type to mimic operator with the
       // correct priority.
       if (tryMergeTokens(JSIdentity))
@@ -1229,6 +1252,8 @@ private:
       if (tryMergeTokens(JSNotIdentity))
         return;
       if (tryMergeTokens(JSShiftEqual))
+        return;
+      if (tryMergeTokens(JSRightArrow))
         return;
     }
   }
@@ -1255,6 +1280,23 @@ private:
     return true;
   }
 
+  // Tries to merge an escape sequence, i.e. a "\\" and the following
+  // character. Use e.g. inside JavaScript regex literals.
+  bool tryMergeEscapeSequence() {
+    if (Tokens.size() < 2)
+      return false;
+    FormatToken *Previous = Tokens[Tokens.size() - 2];
+    if (Previous->isNot(tok::unknown) || Previous->TokenText != "\\" ||
+        Tokens.back()->NewlinesBefore != 0)
+      return false;
+    Previous->ColumnWidth += Tokens.back()->ColumnWidth;
+    StringRef Text = Previous->TokenText;
+    Previous->TokenText =
+        StringRef(Text.data(), Text.size() + Tokens.back()->TokenText.size());
+    Tokens.resize(Tokens.size() - 1);
+    return true;
+  }
+
   // Try to determine whether the current token ends a JavaScript regex literal.
   // We heuristically assume that this is a regex literal if we find two
   // unescaped slashes on a line and the token before the first slash is one of
@@ -1262,7 +1304,8 @@ private:
   // a division.
   bool tryMergeJSRegexLiteral() {
     if (Tokens.size() < 2 || Tokens.back()->isNot(tok::slash) ||
-        Tokens[Tokens.size() - 2]->is(tok::unknown))
+        (Tokens[Tokens.size() - 2]->is(tok::unknown) &&
+         Tokens[Tokens.size() - 2]->TokenText == "\\"))
       return false;
     unsigned TokenCount = 0;
     unsigned LastColumn = Tokens.back()->OriginalColumn;

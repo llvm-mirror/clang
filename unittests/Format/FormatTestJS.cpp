@@ -31,7 +31,9 @@ protected:
     return Result;
   }
 
-  static std::string format(llvm::StringRef Code, const FormatStyle &Style) {
+  static std::string format(
+      llvm::StringRef Code,
+      const FormatStyle &Style = getGoogleStyle(FormatStyle::LK_JavaScript)) {
     return format(Code, 0, Code.size(), Style);
   }
 
@@ -77,6 +79,13 @@ TEST_F(FormatTestJS, UnderstandsJavaScriptOperators) {
                "            bbbbbb :\n"
                "            ccc;",
                getGoogleJSStyleWithColumns(20));
+
+  verifyFormat("var b = a.map((x) => x + 1);");
+}
+
+TEST_F(FormatTestJS, ES6DestructuringAssignment) {
+  verifyFormat("var [a, b, c] = [1, 2, 3];");
+  verifyFormat("var {a, b} = {a: 1, b: 2};");
 }
 
 TEST_F(FormatTestJS, SpacesInContainerLiterals) {
@@ -109,6 +118,8 @@ TEST_F(FormatTestJS, Closures) {
                "    style: {direction: ''}\n"
                "  }\n"
                "};");
+  EXPECT_EQ("abc = xyz ? function() { return 1; } : function() { return -1; };",
+            format("abc=xyz?function(){return 1;}:function(){return -1;};"));
 }
 
 TEST_F(FormatTestJS, ReturnStatements) {
@@ -180,6 +191,9 @@ TEST_F(FormatTestJS, RegexLiteralSpecialCharacters) {
   verifyFormat("var regex = /\\W/;");
   verifyFormat("var regex = /a(a)\\1/;");
   verifyFormat("var regex = /\\0/;");
+  verifyFormat("var regex = /\\\\/g;");
+  verifyFormat("var regex = /\\a\\\\/g;");
+  verifyFormat("var regex = /\a\\//g;");
 }
 
 TEST_F(FormatTestJS, RegexLiteralModifiers) {

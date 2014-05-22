@@ -247,7 +247,7 @@ private:
   /// \brief A definition will return its interface declaration.
   /// An interface declaration will return its definition.
   /// Otherwise it will return itself.
-  ObjCMethodDecl *getNextRedeclaration() override;
+  ObjCMethodDecl *getNextRedeclarationImpl() override;
 
 public:
   static ObjCMethodDecl *
@@ -734,9 +734,9 @@ class ObjCInterfaceDecl : public ObjCContainerDecl
                        InheritedDesignatedInitializers(IDI_Unknown) { }
   };
 
-  ObjCInterfaceDecl(DeclContext *DC, SourceLocation atLoc, IdentifierInfo *Id,
-                    SourceLocation CLoc, ObjCInterfaceDecl *PrevDecl,
-                    bool isInternal);
+  ObjCInterfaceDecl(const ASTContext &C, DeclContext *DC, SourceLocation AtLoc,
+                    IdentifierInfo *Id, SourceLocation CLoc,
+                    ObjCInterfaceDecl *PrevDecl, bool IsInternal);
 
   void LoadExternalDefinition() const;
 
@@ -756,8 +756,8 @@ class ObjCInterfaceDecl : public ObjCContainerDecl
   void allocateDefinitionData();
   
   typedef Redeclarable<ObjCInterfaceDecl> redeclarable_base;
-  ObjCInterfaceDecl *getNextRedeclaration() override {
-    return RedeclLink.getNext();
+  ObjCInterfaceDecl *getNextRedeclarationImpl() override {
+    return getNextRedeclaration();
   }
   ObjCInterfaceDecl *getPreviousDeclImpl() override {
     return getPreviousDecl();
@@ -774,7 +774,7 @@ public:
                                    SourceLocation ClassLoc = SourceLocation(),
                                    bool isInternal = false);
 
-  static ObjCInterfaceDecl *CreateDeserialized(ASTContext &C, unsigned ID);
+  static ObjCInterfaceDecl *CreateDeserialized(const ASTContext &C, unsigned ID);
 
   SourceRange getSourceRange() const override LLVM_READONLY {
     if (isThisDeclarationADefinition())
@@ -1524,15 +1524,15 @@ class ObjCProtocolDecl : public ObjCContainerDecl,
     return *Data.getPointer();
   }
   
-  ObjCProtocolDecl(DeclContext *DC, IdentifierInfo *Id,
+  ObjCProtocolDecl(ASTContext &C, DeclContext *DC, IdentifierInfo *Id,
                    SourceLocation nameLoc, SourceLocation atStartLoc,
                    ObjCProtocolDecl *PrevDecl);
 
   void allocateDefinitionData();
 
   typedef Redeclarable<ObjCProtocolDecl> redeclarable_base;
-  ObjCProtocolDecl *getNextRedeclaration() override {
-    return RedeclLink.getNext(); 
+  ObjCProtocolDecl *getNextRedeclarationImpl() override {
+    return getNextRedeclaration();
   }
   ObjCProtocolDecl *getPreviousDeclImpl() override {
     return getPreviousDecl();
@@ -1549,7 +1549,7 @@ public:
                                   ObjCProtocolDecl *PrevDecl);
 
   static ObjCProtocolDecl *CreateDeserialized(ASTContext &C, unsigned ID);
-                           
+
   const ObjCProtocolList &getReferencedProtocols() const {
     assert(hasDefinition() && "No definition available!");
     return data().ReferencedProtocols;

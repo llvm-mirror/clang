@@ -1381,6 +1381,9 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
     if (Right.is(tok::l_paren) &&
         (Left.TokenText == "returns" || Left.TokenText == "option"))
       return true;
+  } else if (Style.Language == FormatStyle::LK_JavaScript) {
+    if (Left.TokenText == "var")
+      return true;
   }
   if (Left.is(tok::kw_return) && Right.isNot(tok::semi))
     return true;
@@ -1702,11 +1705,11 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
   if (Right.Type == TT_CtorInitializerComma &&
       Style.BreakConstructorInitializersBeforeComma)
     return true;
-  if (Right.Type == TT_BinaryOperator && Style.BreakBeforeBinaryOperators)
-    return true;
   if (Left.is(tok::greater) && Right.is(tok::greater) &&
       Left.Type != TT_TemplateCloser)
     return false;
+  if (Right.Type == TT_BinaryOperator && Style.BreakBeforeBinaryOperators)
+    return true;
   if (Left.Type == TT_ArrayInitializerLSquare)
     return true;
   return (Left.isBinaryOperator() && Left.isNot(tok::lessless) &&

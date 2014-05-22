@@ -21,6 +21,7 @@
 #include "clang/AST/Redeclarable.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/Linkage.h"
+#include "clang/Basic/OperatorKinds.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/Support/Compiler.h"
@@ -354,12 +355,12 @@ class NamespaceDecl : public NamedDecl, public DeclContext,
   /// boolean value indicating whether this is an inline namespace.
   llvm::PointerIntPair<NamespaceDecl *, 1, bool> AnonOrFirstNamespaceAndInline;
 
-  NamespaceDecl(DeclContext *DC, bool Inline, SourceLocation StartLoc,
-                SourceLocation IdLoc, IdentifierInfo *Id,
-                NamespaceDecl *PrevDecl);
+  NamespaceDecl(ASTContext &C, DeclContext *DC, bool Inline,
+                SourceLocation StartLoc, SourceLocation IdLoc,
+                IdentifierInfo *Id, NamespaceDecl *PrevDecl);
 
   typedef Redeclarable<NamespaceDecl> redeclarable_base;
-  NamespaceDecl *getNextRedeclaration() override;
+  NamespaceDecl *getNextRedeclarationImpl() override;
   NamespaceDecl *getPreviousDeclImpl() override;
   NamespaceDecl *getMostRecentDeclImpl() override;
 
@@ -768,12 +769,14 @@ protected:
     ParmVarDeclBitfields ParmVarDeclBits;
   };
 
-  VarDecl(Kind DK, DeclContext *DC, SourceLocation StartLoc,
+  VarDecl(Kind DK, ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
           SourceLocation IdLoc, IdentifierInfo *Id, QualType T,
           TypeSourceInfo *TInfo, StorageClass SC);
 
   typedef Redeclarable<VarDecl> redeclarable_base;
-  VarDecl *getNextRedeclaration() override { return RedeclLink.getNext(); }
+  VarDecl *getNextRedeclarationImpl() override {
+    return getNextRedeclaration();
+  }
   VarDecl *getPreviousDeclImpl() override {
     return getPreviousDecl();
   }
@@ -822,6 +825,10 @@ public:
     if (getStorageClass() == SC_None)
       // Second check is for C++11 [dcl.stc]p4.
       return !isFileVarDecl() && getTSCSpec() == TSCS_unspecified;
+
+    // Global Named Register (GNU extension)
+    if (getStorageClass() == SC_Register && !isLocalVarDecl())
+      return false;
 
     // Return true for:  Auto, Register.
     // Return false for: Extern, Static, PrivateExtern, OpenCLWorkGroupLocal.
@@ -1211,10 +1218,10 @@ public:
                                    QualType T);
 
   static ImplicitParamDecl *CreateDeserialized(ASTContext &C, unsigned ID);
-  
-  ImplicitParamDecl(DeclContext *DC, SourceLocation IdLoc,
+
+  ImplicitParamDecl(ASTContext &C, DeclContext *DC, SourceLocation IdLoc,
                     IdentifierInfo *Id, QualType Type)
-    : VarDecl(ImplicitParam, DC, IdLoc, IdLoc, Id, Type,
+    : VarDecl(ImplicitParam, C, DC, IdLoc, IdLoc, Id, Type,
               /*tinfo*/ nullptr, SC_None) {
     setImplicit();
   }
@@ -1231,11 +1238,10 @@ public:
   enum { MaxFunctionScopeIndex = 255 };
 
 protected:
-  ParmVarDecl(Kind DK, DeclContext *DC, SourceLocation StartLoc,
-              SourceLocation IdLoc, IdentifierInfo *Id,
-              QualType T, TypeSourceInfo *TInfo,
-              StorageClass S, Expr *DefArg)
-    : VarDecl(DK, DC, StartLoc, IdLoc, Id, T, TInfo, S) {
+  ParmVarDecl(Kind DK, ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
+              SourceLocation IdLoc, IdentifierInfo *Id, QualType T,
+              TypeSourceInfo *TInfo, StorageClass S, Expr *DefArg)
+      : VarDecl(DK, C, DC, StartLoc, IdLoc, Id, T, TInfo, S) {
     assert(ParmVarDeclBits.HasInheritedDefaultArg == false);
     assert(ParmVarDeclBits.IsKNRPromoted == false);
     assert(ParmVarDeclBits.IsObjCMethodParam == false);
@@ -1532,7 +1538,7 @@ private:
   void setParams(ASTContext &C, ArrayRef<ParmVarDecl *> NewParamInfo);
 
 protected:
-  FunctionDecl(Kind DK, DeclContext *DC, SourceLocation StartLoc,
+  FunctionDecl(Kind DK, ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
                const DeclarationNameInfo &NameInfo,
                QualType T, TypeSourceInfo *TInfo,
                StorageClass S, bool isInlineSpecified,
@@ -1540,6 +1546,7 @@ protected:
     : DeclaratorDecl(DK, DC, NameInfo.getLoc(), NameInfo.getName(), T, TInfo,
                      StartLoc),
       DeclContext(DK),
+      redeclarable_base(C),
       ParamInfo(nullptr), Body(),
       SClass(S),
       IsInline(isInlineSpecified), IsInlineSpecified(isInlineSpecified),
@@ -1553,7 +1560,9 @@ protected:
       DNLoc(NameInfo.getInfo()) {}
 
   typedef Redeclarable<FunctionDecl> redeclarable_base;
-  FunctionDecl *getNextRedeclaration() override { return RedeclLink.getNext(); }
+  FunctionDecl *getNextRedeclarationImpl() override {
+    return getNextRedeclaration();
+  }
   FunctionDecl *getPreviousDeclImpl() override {
     return getPreviousDecl();
   }
@@ -2400,14 +2409,15 @@ class TypedefNameDecl : public TypeDecl, public Redeclarable<TypedefNameDecl> {
   llvm::PointerUnion<TypeSourceInfo*, ModedTInfo*> MaybeModedTInfo;
 
 protected:
-  TypedefNameDecl(Kind DK, DeclContext *DC, SourceLocation StartLoc,
-                  SourceLocation IdLoc, IdentifierInfo *Id,
-                  TypeSourceInfo *TInfo)
-    : TypeDecl(DK, DC, IdLoc, Id, StartLoc), MaybeModedTInfo(TInfo) {}
+  TypedefNameDecl(Kind DK, ASTContext &C, DeclContext *DC,
+                  SourceLocation StartLoc, SourceLocation IdLoc,
+                  IdentifierInfo *Id, TypeSourceInfo *TInfo)
+      : TypeDecl(DK, DC, IdLoc, Id, StartLoc), redeclarable_base(C),
+        MaybeModedTInfo(TInfo) {}
 
   typedef Redeclarable<TypedefNameDecl> redeclarable_base;
-  TypedefNameDecl *getNextRedeclaration() override {
-    return RedeclLink.getNext();
+  TypedefNameDecl *getNextRedeclarationImpl() override {
+    return getNextRedeclaration();
   }
   TypedefNameDecl *getPreviousDeclImpl() override {
     return getPreviousDecl();
@@ -2459,9 +2469,9 @@ public:
 /// TypedefDecl - Represents the declaration of a typedef-name via the 'typedef'
 /// type specifier.
 class TypedefDecl : public TypedefNameDecl {
-  TypedefDecl(DeclContext *DC, SourceLocation StartLoc, SourceLocation IdLoc,
-              IdentifierInfo *Id, TypeSourceInfo *TInfo)
-    : TypedefNameDecl(Typedef, DC, StartLoc, IdLoc, Id, TInfo) {}
+  TypedefDecl(ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
+              SourceLocation IdLoc, IdentifierInfo *Id, TypeSourceInfo *TInfo)
+      : TypedefNameDecl(Typedef, C, DC, StartLoc, IdLoc, Id, TInfo) {}
 
 public:
   static TypedefDecl *Create(ASTContext &C, DeclContext *DC,
@@ -2479,9 +2489,9 @@ public:
 /// TypeAliasDecl - Represents the declaration of a typedef-name via a C++0x
 /// alias-declaration.
 class TypeAliasDecl : public TypedefNameDecl {
-  TypeAliasDecl(DeclContext *DC, SourceLocation StartLoc, SourceLocation IdLoc,
-                IdentifierInfo *Id, TypeSourceInfo *TInfo)
-    : TypedefNameDecl(TypeAlias, DC, StartLoc, IdLoc, Id, TInfo) {}
+  TypeAliasDecl(ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
+                SourceLocation IdLoc, IdentifierInfo *Id, TypeSourceInfo *TInfo)
+      : TypedefNameDecl(TypeAlias, C, DC, StartLoc, IdLoc, Id, TInfo) {}
 
 public:
   static TypeAliasDecl *Create(ASTContext &C, DeclContext *DC,
@@ -2577,10 +2587,11 @@ private:
   }
 
 protected:
-  TagDecl(Kind DK, TagKind TK, DeclContext *DC, SourceLocation L,
-          IdentifierInfo *Id, TagDecl *PrevDecl, SourceLocation StartL)
-      : TypeDecl(DK, DC, L, Id, StartL), DeclContext(DK), TagDeclKind(TK),
-        IsCompleteDefinition(false), IsBeingDefined(false),
+  TagDecl(Kind DK, TagKind TK, const ASTContext &C, DeclContext *DC,
+          SourceLocation L, IdentifierInfo *Id, TagDecl *PrevDecl,
+          SourceLocation StartL)
+      : TypeDecl(DK, DC, L, Id, StartL), DeclContext(DK), redeclarable_base(C),
+        TagDeclKind(TK), IsCompleteDefinition(false), IsBeingDefined(false),
         IsEmbeddedInDeclarator(false), IsFreeStanding(false),
         IsCompleteDefinitionRequired(false),
         NamedDeclOrQualifier((NamedDecl *)nullptr) {
@@ -2590,7 +2601,9 @@ protected:
   }
 
   typedef Redeclarable<TagDecl> redeclarable_base;
-  TagDecl *getNextRedeclaration() override { return RedeclLink.getNext(); }
+  TagDecl *getNextRedeclarationImpl() override {
+    return getNextRedeclaration();
+  }
   TagDecl *getPreviousDeclImpl() override {
     return getPreviousDecl();
   }
@@ -2625,8 +2638,8 @@ public:
   SourceLocation getOuterLocStart() const;
   SourceRange getSourceRange() const override LLVM_READONLY;
 
-  TagDecl* getCanonicalDecl() override;
-  const TagDecl* getCanonicalDecl() const {
+  TagDecl *getCanonicalDecl() override;
+  const TagDecl *getCanonicalDecl() const {
     return const_cast<TagDecl*>(this)->getCanonicalDecl();
   }
 
@@ -2821,11 +2834,11 @@ class EnumDecl : public TagDecl {
   /// information.
   MemberSpecializationInfo *SpecializationInfo;
 
-  EnumDecl(DeclContext *DC, SourceLocation StartLoc, SourceLocation IdLoc,
-           IdentifierInfo *Id, EnumDecl *PrevDecl,
+  EnumDecl(ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
+           SourceLocation IdLoc, IdentifierInfo *Id, EnumDecl *PrevDecl,
            bool Scoped, bool ScopedUsingClassTag, bool Fixed)
-    : TagDecl(Enum, TTK_Enum, DC, IdLoc, Id, PrevDecl, StartLoc),
-      SpecializationInfo(nullptr) {
+      : TagDecl(Enum, TTK_Enum, C, DC, IdLoc, Id, PrevDecl, StartLoc),
+        SpecializationInfo(nullptr) {
     assert(Scoped || !ScopedUsingClassTag);
     IntegerType = (const Type *)nullptr;
     NumNegativeBits = 0;
@@ -3054,7 +3067,7 @@ class RecordDecl : public TagDecl {
   friend class DeclContext;
 
 protected:
-  RecordDecl(Kind DK, TagKind TK, DeclContext *DC,
+  RecordDecl(Kind DK, TagKind TK, const ASTContext &C, DeclContext *DC,
              SourceLocation StartLoc, SourceLocation IdLoc,
              IdentifierInfo *Id, RecordDecl *PrevDecl);
 
@@ -3575,6 +3588,8 @@ template<typename decl_type>
 void Redeclarable<decl_type>::setPreviousDecl(decl_type *PrevDecl) {
   // Note: This routine is implemented here because we need both NamedDecl
   // and Redeclarable to be defined.
+  assert(RedeclLink.NextIsLatest() &&
+         "setPreviousDecl on a decl already in a redeclaration chain");
 
   decl_type *First;
 
@@ -3584,7 +3599,7 @@ void Redeclarable<decl_type>::setPreviousDecl(decl_type *PrevDecl) {
     // redeclaration is invalid, it won't be PrevDecl, but we want it anyway.
     First = PrevDecl->getFirstDecl();
     assert(First->RedeclLink.NextIsLatest() && "Expected first");
-    decl_type *MostRecent = First->RedeclLink.getNext();
+    decl_type *MostRecent = First->getNextRedeclaration();
     RedeclLink = PreviousDeclLink(cast<decl_type>(MostRecent));
 
     // If the declaration was previously visible, a redeclaration of it remains
@@ -3598,7 +3613,8 @@ void Redeclarable<decl_type>::setPreviousDecl(decl_type *PrevDecl) {
   }
 
   // First one will point to this one as latest.
-  First->RedeclLink = LatestDeclLink(static_cast<decl_type*>(this));
+  First->RedeclLink.setLatest(static_cast<decl_type*>(this));
+
   assert(!isa<NamedDecl>(static_cast<decl_type*>(this)) ||
          cast<NamedDecl>(static_cast<decl_type*>(this))->isLinkageValid());
 }

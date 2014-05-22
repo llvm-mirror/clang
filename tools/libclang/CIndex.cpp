@@ -5694,14 +5694,13 @@ static void annotatePreprocessorTokens(CXTranslationUnit TU,
         break;
 
       MacroInfo *MI = 0;
-      if (Tok.is(tok::raw_identifier) &&
-          StringRef(Tok.getRawIdentifierData(), Tok.getLength()) == "define") {
+      if (Tok.is(tok::raw_identifier) && Tok.getRawIdentifier() == "define") {
         if (lexNext(Lex, Tok, NextIdx, NumTokens))
           break;
 
         if (Tok.is(tok::raw_identifier)) {
-          StringRef Name(Tok.getRawIdentifierData(), Tok.getLength());
-          IdentifierInfo &II = PP.getIdentifierTable().get(Name);
+          IdentifierInfo &II =
+              PP.getIdentifierTable().get(Tok.getRawIdentifier());
           SourceLocation MappedTokLoc =
               CXXUnit->mapLocationToPreamble(Tok.getLocation());
           MI = getMacroInfo(II, MappedTokLoc, TU);
@@ -6329,6 +6328,26 @@ CXModule clang_Cursor_getModule(CXCursor C) {
   return 0;
 }
 
+CXModule clang_getModuleForFile(CXTranslationUnit TU, CXFile File) {
+  if (isNotUsableTU(TU)) {
+    LOG_BAD_TU(TU);
+    return nullptr;
+  }
+  if (!File)
+    return nullptr;
+  FileEntry *FE = static_cast<FileEntry *>(File);
+  
+  ASTUnit &Unit = *cxtu::getASTUnit(TU);
+  HeaderSearch &HS = Unit.getPreprocessor().getHeaderSearchInfo();
+  ModuleMap::KnownHeader Header = HS.findModuleForHeader(FE);
+  
+  if (Module *Mod = Header.getModule()) {
+    if (Header.getRole() != ModuleMap::ExcludedHeader)
+      return Mod;
+  }
+  return nullptr;
+}
+
 CXFile clang_Module_getASTFile(CXModule CXMod) {
   if (!CXMod)
     return 0;
@@ -6355,6 +6374,13 @@ CXString clang_Module_getFullName(CXModule CXMod) {
     return cxstring::createEmpty();
   Module *Mod = static_cast<Module*>(CXMod);
   return cxstring::createDup(Mod->getFullModuleName());
+}
+
+int clang_Module_isSystem(CXModule CXMod) {
+  if (!CXMod)
+    return 0;
+  Module *Mod = static_cast<Module*>(CXMod);
+  return Mod->IsSystem;
 }
 
 unsigned clang_Module_getNumTopLevelHeaders(CXTranslationUnit TU,
@@ -6792,8 +6818,7 @@ MacroDefinition *cxindex::checkForMacroInMacroDefinition(const MacroInfo *MI,
   if (!PPRec)
     return 0;
 
-  StringRef Name(Tok.getRawIdentifierData(), Tok.getLength());
-  IdentifierInfo &II = PP.getIdentifierTable().get(Name);
+  IdentifierInfo &II = PP.getIdentifierTable().get(Tok.getRawIdentifier());
   if (!II.hadMacroDefinition())
     return 0;
 

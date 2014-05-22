@@ -26,14 +26,14 @@
 #include <vector>
 
 namespace clang {
-  class DiagnosticConsumer;
+  class DeclContext;
   class DiagnosticBuilder;
+  class DiagnosticConsumer;
+  class DiagnosticErrorTrap;
   class DiagnosticOptions;
   class IdentifierInfo;
-  class DeclContext;
   class LangOptions;
   class Preprocessor;
-  class DiagnosticErrorTrap;
   class StoredDiagnostic;
   namespace tok {
   enum TokenKind : unsigned short;
@@ -132,6 +132,9 @@ public:
 /// the user. DiagnosticsEngine is tied to one translation unit and one
 /// SourceManager.
 class DiagnosticsEngine : public RefCountedBase<DiagnosticsEngine> {
+  DiagnosticsEngine(const DiagnosticsEngine &) LLVM_DELETED_FUNCTION;
+  void operator=(const DiagnosticsEngine &) LLVM_DELETED_FUNCTION;
+
 public:
   /// \brief The level of the diagnostic, after it has been through mapping.
   enum Level {

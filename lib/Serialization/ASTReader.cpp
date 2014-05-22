@@ -22,6 +22,7 @@
 #include "clang/AST/NestedNameSpecifier.h"
 #include "clang/AST/Type.h"
 #include "clang/AST/TypeLocVisitor.h"
+#include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/SourceManagerInternals.h"
@@ -1248,8 +1249,8 @@ bool ASTReader::ReadSLocEntry(int ID) {
 
     llvm::MemoryBuffer *Buffer
       = llvm::MemoryBuffer::getMemBuffer(Blob.drop_back(1), Name);
-    SourceMgr.createFileIDForMemBuffer(Buffer, FileCharacter, ID,
-                                       BaseOffset + Offset, IncludeLoc);
+    SourceMgr.createFileID(Buffer, FileCharacter, ID, BaseOffset + Offset,
+                           IncludeLoc);
     break;
   }
 
@@ -1706,7 +1707,7 @@ void ASTReader::markIdentifierUpToDate(IdentifierInfo *II) {
 
   // Update the generation for this identifier.
   if (getContext().getLangOpts().Modules)
-    IdentifierGeneration[II] = CurrentGeneration;
+    IdentifierGeneration[II] = getGeneration();
 }
 
 struct ASTReader::ModuleMacroInfo {
@@ -3434,7 +3435,7 @@ ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
   Deserializing AnASTFile(this);
 
   // Bump the generation number.
-  unsigned PreviousGeneration = CurrentGeneration++;
+  unsigned PreviousGeneration = incrementGeneration(Context);
 
   unsigned NumModules = ModuleMgr.size();
   SmallVector<ImportedModule, 4> Loaded;
@@ -3614,7 +3615,7 @@ ASTReader::ReadASTCore(StringRef FileName,
   std::string ErrorStr;
   ModuleManager::AddModuleResult AddResult
     = ModuleMgr.addModule(FileName, Type, ImportLoc, ImportedBy,
-                          CurrentGeneration, ExpectedSize, ExpectedModTime,
+                          getGeneration(), ExpectedSize, ExpectedModTime,
                           M, ErrorStr);
 
   switch (AddResult) {
@@ -4838,15 +4839,13 @@ struct PPEntityComp {
 
 }
 
-/// \brief Returns the first preprocessed entity ID that ends after \arg BLoc.
-PreprocessedEntityID
-ASTReader::findBeginPreprocessedEntity(SourceLocation BLoc) const {
-  if (SourceMgr.isLocalSourceLocation(BLoc))
+PreprocessedEntityID ASTReader::findPreprocessedEntity(SourceLocation Loc,
+                                                       bool EndsAfter) const {
+  if (SourceMgr.isLocalSourceLocation(Loc))
     return getTotalNumPreprocessedEntities();
 
-  GlobalSLocOffsetMapType::const_iterator
-    SLocMapI = GlobalSLocOffsetMap.find(SourceManager::MaxLoadedOffset -
-                                        BLoc.getOffset() - 1);
+  GlobalSLocOffsetMapType::const_iterator SLocMapI = GlobalSLocOffsetMap.find(
+      SourceManager::MaxLoadedOffset - Loc.getOffset() - 1);
   assert(SLocMapI != GlobalSLocOffsetMap.end() &&
          "Corrupted global sloc offset map");
 
@@ -4863,51 +4862,27 @@ ASTReader::findBeginPreprocessedEntity(SourceLocation BLoc) const {
   pp_iterator First = pp_begin;
   pp_iterator PPI;
 
-  // Do a binary search manually instead of using std::lower_bound because
-  // The end locations of entities may be unordered (when a macro expansion
-  // is inside another macro argument), but for this case it is not important
-  // whether we get the first macro expansion or its containing macro.
-  while (Count > 0) {
-    Half = Count/2;
-    PPI = First;
-    std::advance(PPI, Half);
-    if (SourceMgr.isBeforeInTranslationUnit(ReadSourceLocation(M, PPI->End),
-                                            BLoc)){
-      First = PPI;
-      ++First;
-      Count = Count - Half - 1;
-    } else
-      Count = Half;
+  if (EndsAfter) {
+    PPI = std::upper_bound(pp_begin, pp_end, Loc,
+                           PPEntityComp<&PPEntityOffset::Begin>(*this, M));
+  } else {
+    // Do a binary search manually instead of using std::lower_bound because
+    // The end locations of entities may be unordered (when a macro expansion
+    // is inside another macro argument), but for this case it is not important
+    // whether we get the first macro expansion or its containing macro.
+    while (Count > 0) {
+      Half = Count / 2;
+      PPI = First;
+      std::advance(PPI, Half);
+      if (SourceMgr.isBeforeInTranslationUnit(ReadSourceLocation(M, PPI->End),
+                                              Loc)) {
+        First = PPI;
+        ++First;
+        Count = Count - Half - 1;
+      } else
+        Count = Half;
+    }
   }
-
-  if (PPI == pp_end)
-    return findNextPreprocessedEntity(SLocMapI);
-
-  return M.BasePreprocessedEntityID + (PPI - pp_begin);
-}
-
-/// \brief Returns the first preprocessed entity ID that begins after \arg ELoc.
-PreprocessedEntityID
-ASTReader::findEndPreprocessedEntity(SourceLocation ELoc) const {
-  if (SourceMgr.isLocalSourceLocation(ELoc))
-    return getTotalNumPreprocessedEntities();
-
-  GlobalSLocOffsetMapType::const_iterator
-    SLocMapI = GlobalSLocOffsetMap.find(SourceManager::MaxLoadedOffset -
-                                        ELoc.getOffset() - 1);
-  assert(SLocMapI != GlobalSLocOffsetMap.end() &&
-         "Corrupted global sloc offset map");
-
-  if (SLocMapI->second->NumPreprocessedEntities == 0)
-    return findNextPreprocessedEntity(SLocMapI);
-
-  ModuleFile &M = *SLocMapI->second;
-  typedef const PPEntityOffset *pp_iterator;
-  pp_iterator pp_begin = M.PreprocessedEntityOffsets;
-  pp_iterator pp_end = pp_begin + M.NumPreprocessedEntities;
-  pp_iterator PPI =
-      std::upper_bound(pp_begin, pp_end, ELoc,
-                       PPEntityComp<&PPEntityOffset::Begin>(*this, M));
 
   if (PPI == pp_end)
     return findNextPreprocessedEntity(SLocMapI);
@@ -4923,8 +4898,9 @@ std::pair<unsigned, unsigned>
     return std::make_pair(0,0);
   assert(!SourceMgr.isBeforeInTranslationUnit(Range.getEnd(),Range.getBegin()));
 
-  PreprocessedEntityID BeginID = findBeginPreprocessedEntity(Range.getBegin());
-  PreprocessedEntityID EndID = findEndPreprocessedEntity(Range.getEnd());
+  PreprocessedEntityID BeginID =
+      findPreprocessedEntity(Range.getBegin(), false);
+  PreprocessedEntityID EndID = findPreprocessedEntity(Range.getEnd(), true);
   return std::make_pair(BeginID, EndID);
 }
 
@@ -5963,6 +5939,46 @@ Decl *ASTReader::GetExternalDecl(uint32_t ID) {
   return GetDecl(ID);
 }
 
+void ASTReader::CompleteRedeclChain(const Decl *D) {
+  if (NumCurrentElementsDeserializing) {
+    // We arrange to not care about the complete redeclaration chain while we're
+    // deserializing. Just remember that the AST has marked this one as complete
+    // but that it's not actually complete yet, so we know we still need to
+    // complete it later.
+    PendingIncompleteDeclChains.push_back(const_cast<Decl*>(D));
+    return;
+  }
+
+  const DeclContext *DC = D->getDeclContext()->getRedeclContext();
+
+  // Recursively ensure that the decl context itself is complete
+  // (in particular, this matters if the decl context is a namespace).
+  //
+  // FIXME: This should be performed by lookup instead of here.
+  cast<Decl>(DC)->getMostRecentDecl();
+
+  // If this is a named declaration, complete it by looking it up
+  // within its context.
+  //
+  // FIXME: We don't currently handle the cases where we can't do this;
+  // merging a class definition that contains unnamed entities should merge
+  // those entities. Likewise, merging a function definition should merge
+  // all mergeable entities within it.
+  if (isa<TranslationUnitDecl>(DC) || isa<NamespaceDecl>(DC) ||
+      isa<CXXRecordDecl>(DC) || isa<EnumDecl>(DC)) {
+    if (DeclarationName Name = cast<NamedDecl>(D)->getDeclName()) {
+      auto *II = Name.getAsIdentifierInfo();
+      if (isa<TranslationUnitDecl>(DC) && II) {
+        // Outside of C++, we don't have a lookup table for the TU, so update
+        // the identifier instead. In C++, either way should work fine.
+        if (II->isOutOfDate())
+          updateOutOfDateIdentifier(*II);
+      } else
+        DC->lookup(Name);
+    }
+  }
+}
+
 uint64_t ASTReader::readCXXBaseSpecifiers(ModuleFile &M,
                                           const RecordData &Record,
                                           unsigned &Idx) {
@@ -6950,7 +6966,7 @@ void ASTReader::ReadMethodPool(Selector Sel) {
   // Get the selector generation and update it to the current generation.
   unsigned &Generation = SelectorGeneration[Sel];
   unsigned PriorGeneration = Generation;
-  Generation = CurrentGeneration;
+  Generation = getGeneration();
   
   // Search for methods defined with this selector.
   ++NumMethodPoolLookups;
@@ -7976,7 +7992,8 @@ std::string ASTReader::getOwningModuleNameForDiagnostic(const Decl *D) {
 }
 
 void ASTReader::finishPendingActions() {
-  while (!PendingIdentifierInfos.empty() || !PendingDeclChains.empty() ||
+  while (!PendingIdentifierInfos.empty() ||
+         !PendingIncompleteDeclChains.empty() || !PendingDeclChains.empty() ||
          !PendingMacroIDs.empty() || !PendingDeclContextInfos.empty() ||
          !PendingUpdateRecords.empty() || !PendingOdrMergeChecks.empty()) {
     // If any identifiers with corresponding top-level declarations have
@@ -7993,6 +8010,13 @@ void ASTReader::finishPendingActions() {
 
       SetGloballyVisibleDecls(II, DeclIDs, &TopLevelDecls[II]);
     }
+
+    // For each decl chain that we wanted to complete while deserializing, mark
+    // it as "still needs to be completed".
+    for (unsigned I = 0; I != PendingIncompleteDeclChains.size(); ++I) {
+      markIncompleteDeclChain(PendingIncompleteDeclChains[I]);
+    }
+    PendingIncompleteDeclChains.clear();
 
     // Load pending declaration chains.
     for (unsigned I = 0; I != PendingDeclChains.size(); ++I) {
@@ -8138,7 +8162,6 @@ void ASTReader::finishPendingActions() {
       if (auto RD = dyn_cast<CXXRecordDecl>(*D)) {
         for (auto R : RD->redecls())
           cast<CXXRecordDecl>(R)->DefinitionData = RD->DefinitionData;
-        
       }
 
       continue;
@@ -8274,7 +8297,7 @@ ASTReader::ASTReader(Preprocessor &PP, ASTContext &Context, StringRef isysroot,
       AllowConfigurationMismatch(AllowConfigurationMismatch),
       ValidateSystemInputs(ValidateSystemInputs),
       UseGlobalIndex(UseGlobalIndex), TriedLoadingGlobalIndex(false),
-      CurrentGeneration(0), CurrSwitchCaseStmts(&SwitchCaseStmts),
+      CurrSwitchCaseStmts(&SwitchCaseStmts),
       NumSLocEntriesRead(0), TotalNumSLocEntries(0), NumStatementsRead(0),
       TotalNumStatements(0), NumMacrosRead(0), TotalNumMacros(0),
       NumIdentifierLookups(0), NumIdentifierLookupHits(0), NumSelectorsRead(0),

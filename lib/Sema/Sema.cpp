@@ -21,6 +21,7 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/StmtCXX.h"
+#include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/TargetInfo.h"
@@ -1085,19 +1086,12 @@ void Sema::PopFunctionScopeInfo(const AnalysisBasedWarnings::Policy *WP,
   // Issue any analysis-based warnings.
   if (WP && D)
     AnalysisWarnings.IssueWarnings(*WP, Scope, D, blkExpr);
-  else {
-    for (SmallVectorImpl<sema::PossiblyUnreachableDiag>::iterator
-         i = Scope->PossiblyUnreachableDiags.begin(),
-         e = Scope->PossiblyUnreachableDiags.end();
-         i != e; ++i) {
-      const sema::PossiblyUnreachableDiag &D = *i;
-      Diag(D.Loc, D.PD);
-    }
-  }
+  else
+    for (const auto &PUD : Scope->PossiblyUnreachableDiags)
+      Diag(PUD.Loc, PUD.PD);
 
-  if (FunctionScopes.back() != Scope) {
+  if (FunctionScopes.back() != Scope)
     delete Scope;
-  }
 }
 
 void Sema::PushCompoundScope() {

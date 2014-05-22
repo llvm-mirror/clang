@@ -898,10 +898,7 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
 
     ExplicitResultType = FTI.hasTrailingReturnType();
 
-    if (FTI.NumParams == 1 && !FTI.isVariadic && FTI.Params[0].Ident == 0 &&
-        cast<ParmVarDecl>(FTI.Params[0].Param)->getType()->isVoidType()) {
-      // Empty arg list, don't push any params.
-    } else {
+    if (FTIHasNonVoidParameters(FTI)) {
       Params.reserve(FTI.NumParams);
       for (unsigned i = 0, e = FTI.NumParams; i != e; ++i)
         Params.push_back(cast<ParmVarDecl>(FTI.Params[i].Param));
@@ -957,10 +954,7 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
   // Handle explicit captures.
   SourceLocation PrevCaptureLoc
     = Intro.Default == LCD_None? Intro.Range.getBegin() : Intro.DefaultLoc;
-  for (SmallVectorImpl<LambdaCapture>::const_iterator
-         C = Intro.Captures.begin(),
-         E = Intro.Captures.end();
-       C != E;
+  for (auto C = Intro.Captures.begin(), E = Intro.Captures.end(); C != E;
        PrevCaptureLoc = C->Loc, ++C) {
     if (C->Kind == LCK_This) {
       // C++11 [expr.prim.lambda]p8:
@@ -1379,7 +1373,7 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
                                  Scope *CurScope, 
                                  bool IsInstantiation) {
   // Collect information from the lambda scope.
-  SmallVector<LambdaExpr::Capture, 4> Captures;
+  SmallVector<LambdaCapture, 4> Captures;
   SmallVector<Expr *, 4> CaptureInits;
   LambdaCaptureDefault CaptureDefault;
   SourceLocation CaptureDefaultLoc;
@@ -1412,9 +1406,8 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
 
       // Handle 'this' capture.
       if (From.isThisCapture()) {
-        Captures.push_back(LambdaExpr::Capture(From.getLocation(),
-                                               IsImplicit,
-                                               LCK_This));
+        Captures.push_back(
+            LambdaCapture(From.getLocation(), IsImplicit, LCK_This));
         CaptureInits.push_back(new (Context) CXXThisExpr(From.getLocation(),
                                                          getCurrentThisType(),
                                                          /*isImplicit=*/true));
@@ -1423,8 +1416,8 @@ ExprResult Sema::ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
 
       VarDecl *Var = From.getVariable();
       LambdaCaptureKind Kind = From.isCopyCapture()? LCK_ByCopy : LCK_ByRef;
-      Captures.push_back(LambdaExpr::Capture(From.getLocation(), IsImplicit, 
-                                             Kind, Var, From.getEllipsisLoc()));
+      Captures.push_back(LambdaCapture(From.getLocation(), IsImplicit, Kind,
+                                       Var, From.getEllipsisLoc()));
       CaptureInits.push_back(From.getInitExpr());
     }
 

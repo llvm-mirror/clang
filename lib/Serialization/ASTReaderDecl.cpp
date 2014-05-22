@@ -198,8 +198,19 @@ namespace clang {
         RawLocation(RawLocation), Record(Record), Idx(Idx),
         TypeIDForTypeDecl(0), HasPendingBody(false) { }
 
+    template <typename DeclT>
+    static void attachPreviousDeclImpl(Redeclarable<DeclT> *D, Decl *Previous);
+    static void attachPreviousDeclImpl(...);
     static void attachPreviousDecl(Decl *D, Decl *previous);
+
+    template <typename DeclT>
+    static void attachLatestDeclImpl(Redeclarable<DeclT> *D, Decl *Latest);
+    static void attachLatestDeclImpl(...);
     static void attachLatestDecl(Decl *D, Decl *latest);
+
+    template <typename DeclT>
+    static void markIncompleteDeclChainImpl(Redeclarable<DeclT> *D);
+    static void markIncompleteDeclChainImpl(...);
 
     /// \brief Determine whether this declaration has a pending body.
     bool hasPendingBody() const { return HasPendingBody; }
@@ -1247,7 +1258,7 @@ void ASTDeclReader::ReadCXXDefinitionData(
   Data.FirstFriend = ReadDeclID(Record, Idx);
 
   if (Data.IsLambda) {
-    typedef LambdaExpr::Capture Capture;
+    typedef LambdaCapture Capture;
     CXXRecordDecl::LambdaDefinitionData &Lambda
       = static_cast<CXXRecordDecl::LambdaDefinitionData &>(Data);
     Lambda.Dependent = Record[Idx++];
@@ -1282,8 +1293,9 @@ void ASTDeclReader::ReadCXXDefinitionData(
 
 void ASTDeclReader::MergeDefinitionData(
     CXXRecordDecl *D, struct CXXRecordDecl::DefinitionData &MergeDD) {
-  assert(D->DefinitionData && "merging class definition into non-definition");
-  auto &DD = *D->DefinitionData;
+  assert(D->DefinitionData.getNotUpdated() &&
+         "merging class definition into non-definition");
+  auto &DD = *D->DefinitionData.getNotUpdated();
 
   // If the new definition has new special members, let the name lookup
   // code know that it needs to look in the new definition too.
@@ -1383,7 +1395,7 @@ void ASTDeclReader::ReadCXXRecordDefinition(CXXRecordDecl *D) {
 
   // If we're reading an update record, we might already have a definition for
   // this record. If so, just merge into it.
-  if (D->DefinitionData) {
+  if (D->DefinitionData.getNotUpdated()) {
     MergeDefinitionData(D, *DD);
     return;
   }
@@ -1392,25 +1404,26 @@ void ASTDeclReader::ReadCXXRecordDefinition(CXXRecordDecl *D) {
   // that all other deserialized declarations will see it.
   CXXRecordDecl *Canon = D->getCanonicalDecl();
   if (Canon == D) {
-    D->DefinitionData = DD;
+    D->DefinitionData.setNotUpdated(DD);
     D->IsCompleteDefinition = true;
-  } else if (!Canon->DefinitionData) {
-    Canon->DefinitionData = D->DefinitionData = DD;
+  } else if (auto *CanonDD = Canon->DefinitionData.getNotUpdated()) {
+    // We have already deserialized a definition of this record. This
+    // definition is no longer really a definition. Note that the pre-existing
+    // definition is the *real* definition.
+    Reader.MergedDeclContexts.insert(
+        std::make_pair(D, CanonDD->Definition));
+    D->DefinitionData = Canon->DefinitionData;
+    D->IsCompleteDefinition = false;
+    MergeDefinitionData(D, *DD);
+  } else {
+    Canon->DefinitionData.setNotUpdated(DD);
+    D->DefinitionData = Canon->DefinitionData;
     D->IsCompleteDefinition = true;
 
     // Note that we have deserialized a definition. Any declarations
     // deserialized before this one will be be given the DefinitionData
     // pointer at the end.
     Reader.PendingDefinitions.insert(D);
-  } else {
-    // We have already deserialized a definition of this record. This
-    // definition is no longer really a definition. Note that the pre-existing
-    // definition is the *real* definition.
-    Reader.MergedDeclContexts.insert(
-        std::make_pair(D, Canon->DefinitionData->Definition));
-    D->DefinitionData = D->getCanonicalDecl()->DefinitionData;
-    D->IsCompleteDefinition = false;
-    MergeDefinitionData(D, *DD);
   }
 }
 
@@ -1734,16 +1747,16 @@ ASTDeclReader::VisitClassTemplateSpecializationDeclImpl(
 
         // This declaration might be a definition. Merge with any existing
         // definition.
-        if (D->DefinitionData) {
-          if (!CanonSpec->DefinitionData) {
-            CanonSpec->DefinitionData = D->DefinitionData;
-          } else {
-            MergeDefinitionData(CanonSpec, *D->DefinitionData);
+        if (auto *DDD = D->DefinitionData.getNotUpdated()) {
+          if (auto *CanonDD = CanonSpec->DefinitionData.getNotUpdated()) {
+            MergeDefinitionData(CanonSpec, *DDD);
             Reader.PendingDefinitions.erase(D);
             Reader.MergedDeclContexts.insert(
-                std::make_pair(D, CanonSpec->DefinitionData->Definition));
+                std::make_pair(D, CanonDD->Definition));
             D->IsCompleteDefinition = false;
             D->DefinitionData = CanonSpec->DefinitionData;
+          } else {
+            CanonSpec->DefinitionData = D->DefinitionData;
           }
         }
       }
@@ -2449,27 +2462,25 @@ ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
   return FindExistingResult(Reader, D, /*Existing=*/0);
 }
 
-void ASTDeclReader::attachPreviousDecl(Decl *D, Decl *previous) {
-  assert(D && previous);
-  if (TagDecl *TD = dyn_cast<TagDecl>(D)) {
-    TD->RedeclLink.setNext(cast<TagDecl>(previous));
-  } else if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
-    FD->RedeclLink.setNext(cast<FunctionDecl>(previous));
-  } else if (VarDecl *VD = dyn_cast<VarDecl>(D)) {
-    VD->RedeclLink.setNext(cast<VarDecl>(previous));
-  } else if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(D)) {
-    TD->RedeclLink.setNext(cast<TypedefNameDecl>(previous));
-  } else if (UsingShadowDecl *USD = dyn_cast<UsingShadowDecl>(D)) {
-    USD->RedeclLink.setNext(cast<UsingShadowDecl>(previous));
-  } else if (ObjCInterfaceDecl *ID = dyn_cast<ObjCInterfaceDecl>(D)) {
-    ID->RedeclLink.setNext(cast<ObjCInterfaceDecl>(previous));
-  } else if (ObjCProtocolDecl *PD = dyn_cast<ObjCProtocolDecl>(D)) {
-    PD->RedeclLink.setNext(cast<ObjCProtocolDecl>(previous));
-  } else if (NamespaceDecl *ND = dyn_cast<NamespaceDecl>(D)) {
-    ND->RedeclLink.setNext(cast<NamespaceDecl>(previous));
-  } else {
-    RedeclarableTemplateDecl *TD = cast<RedeclarableTemplateDecl>(D);
-    TD->RedeclLink.setNext(cast<RedeclarableTemplateDecl>(previous));
+template<typename DeclT>
+void ASTDeclReader::attachPreviousDeclImpl(Redeclarable<DeclT> *D,
+                                           Decl *Previous) {
+  D->RedeclLink.setPrevious(cast<DeclT>(Previous));
+}
+void ASTDeclReader::attachPreviousDeclImpl(...) {
+  llvm_unreachable("attachPreviousDecl on non-redeclarable declaration");
+}
+
+void ASTDeclReader::attachPreviousDecl(Decl *D, Decl *Previous) {
+  assert(D && Previous);
+
+  switch (D->getKind()) {
+#define ABSTRACT_DECL(TYPE)
+#define DECL(TYPE, BASE)                                   \
+  case Decl::TYPE:                                         \
+    attachPreviousDeclImpl(cast<TYPE##Decl>(D), Previous); \
+    break;
+#include "clang/AST/DeclNodes.inc"
   }
 
   // If the declaration was visible in one module, a redeclaration of it in
@@ -2478,46 +2489,47 @@ void ASTDeclReader::attachPreviousDecl(Decl *D, Decl *previous) {
   // FIXME: In this case, the declaration should only be visible if a module
   //        that makes it visible has been imported.
   D->IdentifierNamespace |=
-      previous->IdentifierNamespace &
+      Previous->IdentifierNamespace &
       (Decl::IDNS_Ordinary | Decl::IDNS_Tag | Decl::IDNS_Type);
+}
+
+template<typename DeclT>
+void ASTDeclReader::attachLatestDeclImpl(Redeclarable<DeclT> *D, Decl *Latest) {
+  D->RedeclLink.setLatest(cast<DeclT>(Latest));
+}
+void ASTDeclReader::attachLatestDeclImpl(...) {
+  llvm_unreachable("attachLatestDecl on non-redeclarable declaration");
 }
 
 void ASTDeclReader::attachLatestDecl(Decl *D, Decl *Latest) {
   assert(D && Latest);
-  if (TagDecl *TD = dyn_cast<TagDecl>(D)) {
-    TD->RedeclLink
-      = Redeclarable<TagDecl>::LatestDeclLink(cast<TagDecl>(Latest));
-  } else if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
-    FD->RedeclLink
-      = Redeclarable<FunctionDecl>::LatestDeclLink(cast<FunctionDecl>(Latest));
-  } else if (VarDecl *VD = dyn_cast<VarDecl>(D)) {
-    VD->RedeclLink
-      = Redeclarable<VarDecl>::LatestDeclLink(cast<VarDecl>(Latest));
-  } else if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(D)) {
-    TD->RedeclLink
-      = Redeclarable<TypedefNameDecl>::LatestDeclLink(
-                                                cast<TypedefNameDecl>(Latest));
-  } else if (UsingShadowDecl *USD = dyn_cast<UsingShadowDecl>(D)) {
-    USD->RedeclLink
-      = Redeclarable<UsingShadowDecl>::LatestDeclLink(
-                                             cast<UsingShadowDecl>(Latest));
-  } else if (ObjCInterfaceDecl *ID = dyn_cast<ObjCInterfaceDecl>(D)) {
-    ID->RedeclLink
-      = Redeclarable<ObjCInterfaceDecl>::LatestDeclLink(
-                                              cast<ObjCInterfaceDecl>(Latest));
-  } else if (ObjCProtocolDecl *PD = dyn_cast<ObjCProtocolDecl>(D)) {
-    PD->RedeclLink
-      = Redeclarable<ObjCProtocolDecl>::LatestDeclLink(
-                                                cast<ObjCProtocolDecl>(Latest));
-  } else if (NamespaceDecl *ND = dyn_cast<NamespaceDecl>(D)) {
-    ND->RedeclLink
-      = Redeclarable<NamespaceDecl>::LatestDeclLink(
-                                                   cast<NamespaceDecl>(Latest));
-  } else {
-    RedeclarableTemplateDecl *TD = cast<RedeclarableTemplateDecl>(D);
-    TD->RedeclLink
-      = Redeclarable<RedeclarableTemplateDecl>::LatestDeclLink(
-                                        cast<RedeclarableTemplateDecl>(Latest));
+
+  switch (D->getKind()) {
+#define ABSTRACT_DECL(TYPE)
+#define DECL(TYPE, BASE)                                  \
+  case Decl::TYPE:                                        \
+    attachLatestDeclImpl(cast<TYPE##Decl>(D), Latest); \
+    break;
+#include "clang/AST/DeclNodes.inc"
+  }
+}
+
+template<typename DeclT>
+void ASTDeclReader::markIncompleteDeclChainImpl(Redeclarable<DeclT> *D) {
+  D->RedeclLink.markIncomplete();
+}
+void ASTDeclReader::markIncompleteDeclChainImpl(...) {
+  llvm_unreachable("markIncompleteDeclChain on non-redeclarable declaration");
+}
+
+void ASTReader::markIncompleteDeclChain(Decl *D) {
+  switch (D->getKind()) {
+#define ABSTRACT_DECL(TYPE)
+#define DECL(TYPE, BASE)                                             \
+  case Decl::TYPE:                                                   \
+    ASTDeclReader::markIncompleteDeclChainImpl(cast<TYPE##Decl>(D)); \
+    break;
+#include "clang/AST/DeclNodes.inc"
   }
 }
 

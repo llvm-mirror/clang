@@ -768,7 +768,7 @@ void Clang::AddARMTargetArgs(const ArgList &Args,
   // Select the ABI to use.
   //
   // FIXME: Support -meabi.
-  const char *ABIName = 0;
+  const char *ABIName = nullptr;
   if (Arg *A = Args.getLastArg(options::OPT_mabi_EQ)) {
     ABIName = A->getValue();
   } else if (Triple.isOSDarwin()) {
@@ -898,7 +898,7 @@ void Clang::AddARM64TargetArgs(const ArgList &Args,
                     options::OPT_mno_implicit_float, true))
     CmdArgs.push_back("-no-implicit-float");
 
-  const char *ABIName = 0;
+  const char *ABIName = nullptr;
   if (Arg *A = Args.getLastArg(options::OPT_mabi_EQ))
     ABIName = A->getValue();
   else if (Triple.isOSDarwin())
@@ -1304,7 +1304,7 @@ static const char *getX86TargetCPU(const ArgList &Args,
 
   if (Triple.getArch() != llvm::Triple::x86_64 &&
       Triple.getArch() != llvm::Triple::x86)
-    return 0; // This routine is only handling x86 targets.
+    return nullptr; // This routine is only handling x86 targets.
 
   bool Is64Bit = Triple.getArch() == llvm::Triple::x86_64;
 
@@ -1486,6 +1486,17 @@ void Clang::AddX86TargetArgs(const ArgList &Args,
   }
   if (NoImplicitFloat)
     CmdArgs.push_back("-no-implicit-float");
+
+  if (Arg *A = Args.getLastArg(options::OPT_masm_EQ)) {
+    StringRef Value = A->getValue();
+    if (Value == "intel" || Value == "att") {
+      CmdArgs.push_back("-mllvm");
+      CmdArgs.push_back(Args.MakeArgString("-x86-asm-syntax=" + Value));
+    } else {
+      getToolChain().getDriver().Diag(diag::err_drv_unsupported_option_argument)
+          << A->getOption().getName() << Value;
+    }
+  }
 }
 
 static inline bool HasPICArg(const ArgList &Args) {
@@ -1646,7 +1657,8 @@ namespace {
   };
 } // end anonymous namespace.
 
-// exceptionSettings() exists to share the logic between -cc1 and linker invocations.
+// exceptionSettings() exists to share the logic between -cc1 and linker
+// invocations.
 static ExceptionSettings exceptionSettings(const ArgList &Args,
                                            const llvm::Triple &Triple) {
   ExceptionSettings ES;
@@ -1843,6 +1855,8 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
           // -I. The next arg will be the include directory.
           if (Value == "-I")
             TakeNextArg = true;
+        } else if (Value.startswith("-gdwarf-")) {
+          CmdArgs.push_back(Value.data());
         } else {
           D.Diag(diag::err_drv_unsupported_option_argument)
             << A->getOption().getName() << Value;
@@ -1901,9 +1915,16 @@ static void addProfileRT(
         Args.hasArg(options::OPT_coverage)))
     return;
 
+  // -fprofile-instr-generate requires position-independent code to build with
+  // shared objects.  Link against the right archive.
+  const char *Lib = "libclang_rt.profile-";
+  if (Args.hasArg(options::OPT_fprofile_instr_generate) &&
+      Args.hasArg(options::OPT_shared))
+    Lib = "libclang_rt.profile-pic-";
+
   SmallString<128> LibProfile = getCompilerRTLibDir(TC);
   llvm::sys::path::append(LibProfile,
-      Twine("libclang_rt.profile-") + getArchNameForCompilerRTLib(TC) + ".a");
+      Twine(Lib) + getArchNameForCompilerRTLib(TC) + ".a");
 
   CmdArgs.push_back(Args.MakeArgString(LibProfile));
 }
@@ -1971,7 +1992,7 @@ static void addSanitizerRTLinkFlags(const ToolChain &TC, const ArgList &Args,
 /// If AddressSanitizer is enabled, add appropriate linker flags (Linux).
 /// This needs to be called before we add the C run-time (malloc, etc).
 static void addAsanRT(const ToolChain &TC, const ArgList &Args,
-                      ArgStringList &CmdArgs, bool Shared) {
+                      ArgStringList &CmdArgs, bool Shared, bool IsCXX) {
   if (Shared) {
     // Link dynamic runtime if necessary.
     SmallString<128> LibSanitizer =
@@ -1984,10 +2005,15 @@ static void addAsanRT(const ToolChain &TC, const ArgList &Args,
       (TC.getTriple().getEnvironment() == llvm::Triple::Android))
     return;
 
-  const char *LibAsanStaticPart = Shared ? "asan-preinit" : "asan";
-  addSanitizerRTLinkFlags(TC, Args, CmdArgs, LibAsanStaticPart,
-                          /*BeforeLibStdCXX*/ true, /*ExportSymbols*/ !Shared,
-                          /*LinkDeps*/ !Shared);
+  if (Shared) {
+    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "asan-preinit",
+                            /*BeforeLibStdCXX*/ true, /*ExportSymbols*/ false,
+                            /*LinkDeps*/ false);
+  } else {
+    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "asan", true);
+    if (IsCXX)
+      addSanitizerRTLinkFlags(TC, Args, CmdArgs, "asan_cxx", true);
+  }
 }
 
 /// If ThreadSanitizer is enabled, add appropriate linker flags (Linux).
@@ -2048,7 +2074,7 @@ static void addSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
                     Sanitize.needsAsanRt() || Sanitize.needsTsanRt() ||
                     Sanitize.needsMsanRt() || Sanitize.needsLsanRt());
   if (Sanitize.needsAsanRt())
-    addAsanRT(TC, Args, CmdArgs, Sanitize.needsSharedAsanRt());
+    addAsanRT(TC, Args, CmdArgs, Sanitize.needsSharedAsanRt(), D.CCCIsCXX());
   if (Sanitize.needsTsanRt())
     addTsanRT(TC, Args, CmdArgs);
   if (Sanitize.needsMsanRt())
@@ -2118,7 +2144,8 @@ static const char *SplitDebugName(const ArgList &Args,
     return Args.MakeArgString(T);
   } else {
     // Use the compilation dir.
-    SmallString<128> T(Args.getLastArgValue(options::OPT_fdebug_compilation_dir));
+    SmallString<128> T(
+        Args.getLastArgValue(options::OPT_fdebug_compilation_dir));
     SmallString<128> F(llvm::sys::path::stem(Inputs[0].getBaseInput()));
     llvm::sys::path::replace_extension(F, "dwo");
     T += F;
@@ -2209,7 +2236,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   ArgStringList CmdArgs;
 
   bool IsWindowsGNU = getToolChain().getTriple().isWindowsGNUEnvironment();
-  bool IsWindowsCygnus = getToolChain().getTriple().isWindowsCygwinEnvironment();
+  bool IsWindowsCygnus =
+      getToolChain().getTriple().isWindowsCygwinEnvironment();
   bool IsWindowsMSVC = getToolChain().getTriple().isWindowsMSVCEnvironment();
 
   assert(Inputs.size() == 1 && "Unable to handle multiple inputs.");
@@ -2231,7 +2259,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     unsigned Version;
     TT.getArchName().substr(Offset).getAsInteger(10, Version);
     if (Version < 7)
-      D.Diag(diag::err_target_unsupported_arch) << TT.getArchName() << TripleStr;
+      D.Diag(diag::err_target_unsupported_arch) << TT.getArchName()
+                                                << TripleStr;
   }
 
   // Push all default warning arguments that are specific to
@@ -2346,8 +2375,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       if (types::isCXX(Inputs[0].getType()))
         CmdArgs.push_back("-analyzer-checker=cplusplus");
 
-      // Enable the following experimental checkers for testing. 
-      CmdArgs.push_back("-analyzer-checker=security.insecureAPI.UncheckedReturn");
+      // Enable the following experimental checkers for testing.
+      CmdArgs.push_back(
+          "-analyzer-checker=security.insecureAPI.UncheckedReturn");
       CmdArgs.push_back("-analyzer-checker=security.insecureAPI.getpw");
       CmdArgs.push_back("-analyzer-checker=security.insecureAPI.gets");
       CmdArgs.push_back("-analyzer-checker=security.insecureAPI.mktemp");      
@@ -2675,7 +2705,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                                options::OPT_fno_fast_math))
       if (!A->getOption().matches(options::OPT_fno_fast_math))
         CmdArgs.push_back("-ffast-math");
-  if (Arg *A = Args.getLastArg(options::OPT_ffinite_math_only, options::OPT_fno_fast_math))
+  if (Arg *A = Args.getLastArg(options::OPT_ffinite_math_only,
+                               options::OPT_fno_fast_math))
     if (A->getOption().matches(options::OPT_ffinite_math_only))
       CmdArgs.push_back("-ffinite-math-only");
 
@@ -3422,6 +3453,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-backend-option");
       CmdArgs.push_back("-arm-no-restrict-it");
     }
+  } else if (TT.isOSWindows() && (TT.getArch() == llvm::Triple::arm ||
+                                  TT.getArch() == llvm::Triple::thumb)) {
+    // Windows on ARM expects restricted IT blocks
+    CmdArgs.push_back("-backend-option");
+    CmdArgs.push_back("-arm-restrict-it");
   }
 
   // Forward -f options with positive and negative forms; we translate
@@ -4084,7 +4120,15 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     tools::visualstudio::Compile CL(getToolChain());
     Command *CLCommand = CL.GetCommand(C, JA, Output, Inputs, Args,
                                        LinkingOutput);
-    C.addCommand(new FallbackCommand(JA, *this, Exec, CmdArgs, CLCommand));
+    // RTTI support in clang-cl is a work in progress.  Fall back to MSVC early
+    // if we are using 'clang-cl /fallback /GR'.
+    // FIXME: Remove this when RTTI is finished.
+    if (Args.hasFlag(options::OPT_frtti, options::OPT_fno_rtti, false)) {
+      D.Diag(diag::warn_drv_rtti_fallback) << CLCommand->getExecutable();
+      C.addCommand(CLCommand);
+    } else {
+      C.addCommand(new FallbackCommand(JA, *this, Exec, CmdArgs, CLCommand));
+    }
   } else {
     C.addCommand(new Command(JA, *this, Exec, CmdArgs));
   }
@@ -4399,6 +4443,13 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
     if (Arg *A = Args.getLastArg(options::OPT_g_Group))
       if (!A->getOption().matches(options::OPT_g0))
         CmdArgs.push_back("-g");
+
+    if (Args.hasArg(options::OPT_gdwarf_2))
+      CmdArgs.push_back("-gdwarf-2");
+    if (Args.hasArg(options::OPT_gdwarf_3))
+      CmdArgs.push_back("-gdwarf-3");
+    if (Args.hasArg(options::OPT_gdwarf_4))
+      CmdArgs.push_back("-gdwarf-4");
 
     // Add the -fdebug-compilation-dir flag if needed.
     addDebugCompDirArg(Args, CmdArgs);
@@ -6304,7 +6355,7 @@ void freebsd::Link::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (!Args.hasArg(options::OPT_nostdlib) &&
       !Args.hasArg(options::OPT_nostartfiles)) {
-    const char *crt1 = NULL;
+    const char *crt1 = nullptr;
     if (!Args.hasArg(options::OPT_shared)) {
       if (Args.hasArg(options::OPT_pg))
         crt1 = "gcrt1.o";
@@ -6318,7 +6369,7 @@ void freebsd::Link::ConstructJob(Compilation &C, const JobAction &JA,
 
     CmdArgs.push_back(Args.MakeArgString(ToolChain.GetFilePath("crti.o")));
 
-    const char *crtbegin = NULL;
+    const char *crtbegin = nullptr;
     if (Args.hasArg(options::OPT_static))
       crtbegin = "crtbeginT.o";
     else if (Args.hasArg(options::OPT_shared) || IsPIE)
@@ -7034,7 +7085,7 @@ void gnutools::Link::ConstructJob(Compilation &C, const JobAction &JA,
   if (!Args.hasArg(options::OPT_nostdlib) &&
       !Args.hasArg(options::OPT_nostartfiles)) {
     if (!isAndroid) {
-      const char *crt1 = NULL;
+      const char *crt1 = nullptr;
       if (!Args.hasArg(options::OPT_shared)){
         if (Args.hasArg(options::OPT_pg))
           crt1 = "gcrt1.o";
@@ -7422,6 +7473,15 @@ void dragonfly::Link::ConstructJob(Compilation &C, const JobAction &JA,
   C.addCommand(new Command(JA, *this, Exec, CmdArgs));
 }
 
+static void addSanitizerRTWindows(const ToolChain &TC, const ArgList &Args,
+                                  ArgStringList &CmdArgs,
+                                  const StringRef RTName) {
+  SmallString<128> LibSanitizer(getCompilerRTLibDir(TC));
+  llvm::sys::path::append(LibSanitizer,
+                          Twine("clang_rt.") + RTName + ".lib");
+  CmdArgs.push_back(Args.MakeArgString(LibSanitizer));
+}
+
 void visualstudio::Link::ConstructJob(Compilation &C, const JobAction &JA,
                                       const InputInfo &Output,
                                       const InputInfoList &Inputs,
@@ -7462,15 +7522,14 @@ void visualstudio::Link::ConstructJob(Compilation &C, const JobAction &JA,
   if (getToolChain().getSanitizerArgs().needsAsanRt()) {
     CmdArgs.push_back(Args.MakeArgString("-debug"));
     CmdArgs.push_back(Args.MakeArgString("-incremental:no"));
-    SmallString<128> LibSanitizer(getToolChain().getDriver().ResourceDir);
-    llvm::sys::path::append(LibSanitizer, "lib", "windows");
-    if (DLL) {
-      llvm::sys::path::append(LibSanitizer, "clang_rt.asan_dll_thunk-i386.lib");
-    } else {
-      llvm::sys::path::append(LibSanitizer, "clang_rt.asan-i386.lib");
-    }
     // FIXME: Handle 64-bit.
-    CmdArgs.push_back(Args.MakeArgString(LibSanitizer));
+    if (DLL) {
+      addSanitizerRTWindows(getToolChain(), Args, CmdArgs,
+                            "asan_dll_thunk-i386");
+    } else {
+      addSanitizerRTWindows(getToolChain(), Args, CmdArgs, "asan-i386");
+      addSanitizerRTWindows(getToolChain(), Args, CmdArgs, "asan_cxx-i386");
+    }
   }
 
   Args.AddAllArgValues(CmdArgs, options::OPT_l);

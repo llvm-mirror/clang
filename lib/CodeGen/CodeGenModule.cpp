@@ -204,7 +204,7 @@ void CodeGenModule::applyReplacements() {
     auto *NewF = dyn_cast<llvm::Function>(Replacement);
     if (!NewF) {
       if (auto *Alias = dyn_cast<llvm::GlobalAlias>(Replacement)) {
-        NewF = dyn_cast<llvm::Function>(Alias->getAliasedGlobal());
+        NewF = dyn_cast<llvm::Function>(Alias->getAliasee());
       } else {
         auto *CE = cast<llvm::ConstantExpr>(Replacement);
         assert(CE->getOpcode() == llvm::Instruction::BitCast ||
@@ -237,46 +237,18 @@ void CodeGenModule::checkAliases() {
     StringRef MangledName = getMangledName(GD);
     llvm::GlobalValue *Entry = GetGlobalValue(MangledName);
     auto *Alias = cast<llvm::GlobalAlias>(Entry);
-    llvm::GlobalValue *GV = Alias->getAliasedGlobal();
-    if (!GV) {
-      Error = true;
-      Diags.Report(AA->getLocation(), diag::err_cyclic_alias);
-    } else if (GV->isDeclaration()) {
+    llvm::GlobalValue *GV = Alias->getAliasee();
+    if (GV->isDeclaration()) {
       Error = true;
       Diags.Report(AA->getLocation(), diag::err_alias_to_undefined);
     }
 
-    llvm::Constant *Aliasee = Alias->getAliasee();
-    llvm::GlobalValue *AliaseeGV;
-    if (auto CE = dyn_cast<llvm::ConstantExpr>(Aliasee)) {
-      assert((CE->getOpcode() == llvm::Instruction::BitCast ||
-              CE->getOpcode() == llvm::Instruction::AddrSpaceCast) &&
-             "Unsupported aliasee");
-      AliaseeGV = cast<llvm::GlobalValue>(CE->getOperand(0));
-    } else {
-      AliaseeGV = cast<llvm::GlobalValue>(Aliasee);
-    }
-
+    llvm::GlobalObject *Aliasee = Alias->getAliasee();
     if (const SectionAttr *SA = D->getAttr<SectionAttr>()) {
       StringRef AliasSection = SA->getName();
-      if (AliasSection != AliaseeGV->getSection())
+      if (AliasSection != Aliasee->getSection())
         Diags.Report(SA->getLocation(), diag::warn_alias_with_section)
             << AliasSection;
-    }
-
-    // We have to handle alias to weak aliases in here. LLVM itself disallows
-    // this since the object semantics would not match the IL one. For
-    // compatibility with gcc we implement it by just pointing the alias
-    // to its aliasee's aliasee. We also warn, since the user is probably
-    // expecting the link to be weak.
-    if (auto GA = dyn_cast<llvm::GlobalAlias>(AliaseeGV)) {
-      if (GA->mayBeOverridden()) {
-        Diags.Report(AA->getLocation(), diag::warn_alias_to_weak_alias)
-          << GA->getAliasedGlobal()->getName() << GA->getName();
-        Aliasee = llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(
-            GA->getAliasee(), Alias->getType());
-        Alias->setAliasee(Aliasee);
-      }
     }
   }
   if (!Error)
@@ -329,12 +301,10 @@ void CodeGenModule::Release() {
     getModule().addModuleFlag(llvm::Module::Warning, "Dwarf Version",
                               CodeGenOpts.DwarfVersion);
   if (DebugInfo)
-    // We support a single version in the linked module: error out when
-    // modules do not have the same version. We are going to implement dropping
-    // debug info when the version number is not up-to-date. Once that is
-    // done, the bitcode linker is not going to see modules with different
-    // version numbers.
-    getModule().addModuleFlag(llvm::Module::Error, "Debug Info Version",
+    // We support a single version in the linked module. The LLVM
+    // parser will drop debug info with a different version number
+    // (and warn about it, too).
+    getModule().addModuleFlag(llvm::Module::Warning, "Debug Info Version",
                               llvm::DEBUG_METADATA_VERSION);
 
   SimplifyPersonality();
@@ -590,7 +560,7 @@ CodeGenModule::getFunctionLinkage(GlobalDecl GD) {
       getCXXABI().useThunkForDtorVariant(cast<CXXDestructorDecl>(D),
                                          GD.getDtorType());
 
-  return getLLVMLinkageforDeclarator(D, Linkage, /*isConstantVariable=*/false,
+  return getLLVMLinkageForDeclarator(D, Linkage, /*isConstantVariable=*/false,
                                      UseThunkForDtorVariant);
 }
 
@@ -725,14 +695,13 @@ void CodeGenModule::SetCommonAttributes(const Decl *D,
 }
 
 void CodeGenModule::setNonAliasAttributes(const Decl *D,
-                                          llvm::GlobalValue *GV) {
-  assert(!isa<llvm::GlobalAlias>(GV));
-  SetCommonAttributes(D, GV);
+                                          llvm::GlobalObject *GO) {
+  SetCommonAttributes(D, GO);
 
   if (const SectionAttr *SA = D->getAttr<SectionAttr>())
-    GV->setSection(SA->getName());
+    GO->setSection(SA->getName());
 
-  getTargetCodeGenInfo().SetTargetAttributes(D, GV, *this);
+  getTargetCodeGenInfo().SetTargetAttributes(D, GO, *this);
 }
 
 void CodeGenModule::SetInternalFunctionAttributes(const Decl *D,
@@ -1943,7 +1912,7 @@ static bool isVarDeclStrongDefinition(const VarDecl *D, bool NoCommon) {
   return false;
 }
 
-llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageforDeclarator(
+llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageForDeclarator(
     const DeclaratorDecl *D, GVALinkage Linkage, bool IsConstantVariable,
     bool UseThunkForDtorVariant) {
   if (Linkage == GVA_Internal)
@@ -1961,15 +1930,6 @@ llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageforDeclarator(
   if (Linkage == GVA_AvailableExternally)
     return llvm::Function::AvailableExternallyLinkage;
 
-  // LinkOnceODRLinkage is insufficient if the symbol is required to exist in
-  // the symbol table.  Promote the linkage to WeakODRLinkage to preserve the
-  // semantics of LinkOnceODRLinkage while providing visibility in the symbol
-  // table.
-  llvm::GlobalValue::LinkageTypes OnceLinkage =
-      llvm::GlobalValue::LinkOnceODRLinkage;
-  if (D->hasAttr<DLLExportAttr>() || D->hasAttr<DLLImportAttr>())
-    OnceLinkage = llvm::GlobalVariable::WeakODRLinkage;
-
   // Note that Apple's kernel linker doesn't support symbol
   // coalescing, so we need to avoid linkonce and weak linkages there.
   // Normally, this means we just map to internal, but for explicit
@@ -1982,7 +1942,7 @@ llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageforDeclarator(
   // merged with other definitions. c) C++ has the ODR, so we know the
   // definition is dependable.
   if (Linkage == GVA_DiscardableODR)
-    return !Context.getLangOpts().AppleKext ? OnceLinkage
+    return !Context.getLangOpts().AppleKext ? llvm::Function::LinkOnceODRLinkage
                                             : llvm::Function::InternalLinkage;
 
   // An explicit instantiation of a template has weak linkage, since
@@ -1996,14 +1956,14 @@ llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageforDeclarator(
   // Destructor variants in the Microsoft C++ ABI are always linkonce_odr thunks
   // emitted on an as-needed basis.
   if (UseThunkForDtorVariant)
-    return OnceLinkage;
+    return llvm::GlobalValue::LinkOnceODRLinkage;
 
   // If required by the ABI, give definitions of static data members with inline
   // initializers at least linkonce_odr linkage.
   if (getCXXABI().isInlineInitializedStaticDataMemberLinkOnce() &&
       isa<VarDecl>(D) &&
       isVarDeclInlineInitializedStaticDataMember(cast<VarDecl>(D)))
-    return OnceLinkage;
+    return llvm::GlobalValue::LinkOnceODRLinkage;
 
   // C++ doesn't have tentative definitions and thus cannot have common
   // linkage.
@@ -2026,7 +1986,7 @@ llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageforDeclarator(
 llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageVarDefinition(
     const VarDecl *VD, bool IsConstant) {
   GVALinkage Linkage = getContext().GetGVALinkageForVariable(VD);
-  return getLLVMLinkageforDeclarator(VD, Linkage, IsConstant,
+  return getLLVMLinkageForDeclarator(VD, Linkage, IsConstant,
                                      /*UseThunkForDtorVariant=*/false);
 }
 
@@ -2256,6 +2216,29 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
     AddGlobalAnnotations(D, Fn);
 }
 
+static llvm::GlobalObject &getGlobalObjectInExpr(DiagnosticsEngine &Diags,
+                                                 const AliasAttr *AA,
+                                                 llvm::Constant *C) {
+  if (auto *GO = dyn_cast<llvm::GlobalObject>(C))
+    return *GO;
+
+  auto *GA = dyn_cast<llvm::GlobalAlias>(C);
+  if (GA) {
+    if (GA->mayBeOverridden()) {
+      Diags.Report(AA->getLocation(), diag::warn_alias_to_weak_alias)
+          << GA->getAliasee()->getName() << GA->getName();
+    }
+
+    return *GA->getAliasee();
+  }
+
+  auto *CE = cast<llvm::ConstantExpr>(C);
+  assert(CE->getOpcode() == llvm::Instruction::BitCast ||
+         CE->getOpcode() == llvm::Instruction::GetElementPtr ||
+         CE->getOpcode() == llvm::Instruction::AddrSpaceCast);
+  return *cast<llvm::GlobalObject>(CE->getOperand(0));
+}
+
 void CodeGenModule::EmitAliasDefinition(GlobalDecl GD) {
   const auto *D = cast<ValueDecl>(GD.getDecl());
   const AliasAttr *AA = D->getAttr<AliasAttr>();
@@ -2284,11 +2267,17 @@ void CodeGenModule::EmitAliasDefinition(GlobalDecl GD) {
                                     llvm::PointerType::getUnqual(DeclTy), 0);
 
   // Create the new alias itself, but don't set a name yet.
-  auto *GA =
-      new llvm::GlobalAlias(Aliasee->getType(), llvm::Function::ExternalLinkage,
-                            "", Aliasee, &getModule());
+  auto *GA = llvm::GlobalAlias::create(
+      cast<llvm::PointerType>(Aliasee->getType())->getElementType(), 0,
+      llvm::Function::ExternalLinkage, "",
+      &getGlobalObjectInExpr(Diags, AA, Aliasee));
 
   if (Entry) {
+    if (GA->getAliasee() == Entry) {
+      Diags.Report(AA->getLocation(), diag::err_cyclic_alias);
+      return;
+    }
+
     assert(Entry->isDeclaration());
 
     // If there is a declaration in the module, then we had an extern followed
@@ -3206,8 +3195,8 @@ void CodeGenModule::EmitStaticExternCAliases() {
     IdentifierInfo *Name = I->first;
     llvm::GlobalValue *Val = I->second;
     if (Val && !getModule().getNamedValue(Name->getName()))
-      addUsedGlobal(new llvm::GlobalAlias(Val->getType(), Val->getLinkage(),
-                                          Name->getName(), Val, &getModule()));
+      addUsedGlobal(llvm::GlobalAlias::create(Name->getName(),
+                                              cast<llvm::GlobalObject>(Val)));
   }
 }
 

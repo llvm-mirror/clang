@@ -32,7 +32,7 @@
  * compatible, thus CINDEX_VERSION_MAJOR is expected to remain stable.
  */
 #define CINDEX_VERSION_MAJOR 0
-#define CINDEX_VERSION_MINOR 26
+#define CINDEX_VERSION_MINOR 27
 
 #define CINDEX_VERSION_ENCODE(major, minor) ( \
       ((major) * 10000)                       \
@@ -3587,6 +3587,12 @@ typedef void *CXModule;
 CINDEX_LINKAGE CXModule clang_Cursor_getModule(CXCursor C);
 
 /**
+ * \brief Given a CXFile header file, return the module that contains it, if one
+ * exists.
+ */
+CINDEX_LINKAGE CXModule clang_getModuleForFile(CXTranslationUnit, CXFile);
+
+/**
  * \param Module a module object.
  *
  * \returns the module file where the provided module object came from.
@@ -3615,6 +3621,13 @@ CINDEX_LINKAGE CXString clang_Module_getName(CXModule Module);
  * \returns the full name of the module, e.g. "std.vector".
  */
 CINDEX_LINKAGE CXString clang_Module_getFullName(CXModule Module);
+
+/**
+ * \param Module a module object.
+ *
+ * \returns non-zero if the module is a system one.
+ */
+CINDEX_LINKAGE int clang_Module_isSystem(CXModule Module);
 
 /**
  * \param Module a module object.

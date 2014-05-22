@@ -821,10 +821,6 @@ private:
   /// \brief Whether we have tried loading the global module index yet.
   bool TriedLoadingGlobalIndex;
 
-  /// \brief The current "generation" of the module file import stack, which 
-  /// indicates how many separate module file load operations have occurred.
-  unsigned CurrentGeneration;
-
   typedef llvm::DenseMap<unsigned, SwitchCase *> SwitchCaseMapTy;
   /// \brief Mapping from switch-case IDs in the chain to switch-case statements
   ///
@@ -941,6 +937,10 @@ private:
 
   /// \brief Keeps track of the elements added to PendingDeclChains.
   llvm::SmallSet<serialization::DeclID, 16> PendingDeclChainsKnown;
+
+  /// \brief The list of canonical declarations whose redeclaration chains
+  /// need to be marked as incomplete once we're done deserializing things.
+  SmallVector<Decl *, 16> PendingIncompleteDeclChains;
 
   /// \brief The Decl IDs for the Sema/Lexical DeclContext of a Decl that has
   /// been loaded but its DeclContext was not set yet.
@@ -1145,6 +1145,7 @@ private:
   RecordLocation TypeCursorForIndex(unsigned Index);
   void LoadedDecl(unsigned Index, Decl *D);
   Decl *ReadDeclRecord(serialization::DeclID ID);
+  void markIncompleteDeclChain(Decl *Canon);
   RecordLocation DeclCursorForID(serialization::DeclID ID,
                                  unsigned &RawLocation);
   void loadDeclUpdateRecords(serialization::DeclID ID, Decl *D);
@@ -1155,13 +1156,10 @@ private:
   RecordLocation getLocalBitOffset(uint64_t GlobalOffset);
   uint64_t getGlobalBitOffset(ModuleFile &M, uint32_t LocalOffset);
 
-  /// \brief Returns the first preprocessed entity ID that ends after BLoc.
+  /// \brief Returns the first preprocessed entity ID that begins or ends after
+  /// \arg Loc.
   serialization::PreprocessedEntityID
-    findBeginPreprocessedEntity(SourceLocation BLoc) const;
-
-  /// \brief Returns the first preprocessed entity ID that begins after ELoc.
-  serialization::PreprocessedEntityID
-    findEndPreprocessedEntity(SourceLocation ELoc) const;
+  findPreprocessedEntity(SourceLocation Loc, bool EndsAfter) const;
 
   /// \brief Find the next module that contains entities and return the ID
   /// of the first entry.
@@ -1643,6 +1641,11 @@ public:
   T *ReadDeclAs(ModuleFile &F, const RecordData &R, unsigned &I) {
     return cast_or_null<T>(GetDecl(ReadDeclID(F, R, I)));
   }
+
+  /// \brief If any redeclarations of \p D have been imported since it was
+  /// last checked, this digs out those redeclarations and adds them to the
+  /// redeclaration chain for \p D.
+  void CompleteRedeclChain(const Decl *D) override;
 
   /// \brief Read a CXXBaseSpecifiers ID form the given record and
   /// return its global bit offset.
