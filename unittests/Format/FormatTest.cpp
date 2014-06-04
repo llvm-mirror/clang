@@ -378,6 +378,11 @@ TEST_F(FormatTest, FormatShortBracedStatements) {
                "}",
                AllowSimpleBracedStatements);
 
+  verifyFormat("template <int> struct A2 {\n"
+               "  struct B {};\n"
+               "};",
+               AllowSimpleBracedStatements);
+
   AllowSimpleBracedStatements.AllowShortIfStatementsOnASingleLine = false;
   verifyFormat("if (true) {\n"
                "  f();\n"
@@ -678,6 +683,13 @@ TEST_F(FormatTest, FormatsSwitchStatement) {
                "case (b):\n"
                "  return;\n"
                "}");
+
+  verifyFormat("switch (a) {\n"
+               "case some_namespace::\n"
+               "    some_constant:\n"
+               "  return;\n"
+               "}",
+               getLLVMStyleWithColumns(34));
 }
 
 TEST_F(FormatTest, CaseRanges) {
@@ -3457,6 +3469,13 @@ TEST_F(FormatTest, BreaksFunctionDeclarationsWithTrailingTokens) {
                "    int parameter) const override {}",
                Style);
 
+  Style.BreakBeforeBraces = FormatStyle::BS_Allman;
+  verifyFormat("void someLongFunction(\n"
+               "    int someLongParameter) const\n"
+               "{\n"
+               "}",
+               Style);
+
   // Unless these are unknown annotations.
   verifyFormat("void SomeFunction(aaaaaaaaaa aaaaaaaaaaaaaaa,\n"
                "                  aaaaaaaaaa aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\n"
@@ -4694,6 +4713,8 @@ TEST_F(FormatTest, UnderstandsUsesOfStarAndAmp) {
   verifyFormat("auto PointerBinding = [](const char *S) {};");
   verifyFormat("typedef typeof(int(int, int)) *MyFunc;");
   verifyIndependentOfContext("typedef void (*f)(int *a);");
+  verifyIndependentOfContext("int i{a * b};");
+  verifyIndependentOfContext("aaa && aaa->f();");
 
   verifyIndependentOfContext("InvalidRegions[*R] = 0;");
 
@@ -4778,8 +4799,8 @@ TEST_F(FormatTest, UnderstandsUsesOfStarAndAmp) {
   verifyFormat("STATIC_ASSERT((a & b) == 0);");
   verifyFormat("STATIC_ASSERT(0 == (a & b));");
   verifyFormat("template <bool a, bool b> "
-               "typename t::if<x && y>::type f() {};");
-  verifyFormat("template <int *y> f() {};");
+               "typename t::if<x && y>::type f() {}");
+  verifyFormat("template <int *y> f() {}");
   verifyFormat("vector<int *> v;");
   verifyFormat("vector<int *const> v;");
   verifyFormat("vector<int *const **const *> v;");
@@ -5236,7 +5257,7 @@ TEST_F(FormatTest, LayoutCallsInsideBraceInitializers) {
 }
 
 TEST_F(FormatTest, LayoutBraceInitializersInReturnStatement) {
-  verifyFormat("return (a)(b) {1, 2, 3};");
+  verifyFormat("return (a)(b){1, 2, 3};");
 }
 
 TEST_F(FormatTest, LayoutCxx11BraceInitializers) {
@@ -5261,6 +5282,12 @@ TEST_F(FormatTest, LayoutCxx11BraceInitializers) {
                "  T member = {arg1, arg2};\n"
                "};");
   verifyFormat("vector<int> foo = {::SomeGlobalFunction()};");
+  verifyFormat("static_assert(std::is_integral<int>{} + 0, \"\");");
+  verifyFormat("int a = std::is_integral<int>{} + 0;");
+
+  verifyFormat("int foo(int i) { return fo1{}(i); }");
+  verifyFormat("int foo(int i) { return fo1{}(i); }");
+  verifyFormat("auto i = decltype(x){};");
 
   // In combination with BinPackParameters = false.
   FormatStyle NoBinPacking = getLLVMStyle();
@@ -6084,10 +6111,14 @@ TEST_F(FormatTest, FormatObjCImplementation) {
                "@implementation Bar\n"
                "@end");
 
-  verifyFormat("@implementation Foo : Bar\n"
-               "+ (id)init {\n}\n"
-               "- (void)foo {\n}\n"
-               "@end");
+  EXPECT_EQ("@implementation Foo : Bar\n"
+            "+ (id)init {\n}\n"
+            "- (void)foo {\n}\n"
+            "@end",
+            format("@implementation Foo : Bar\n"
+                   "+(id)init{}\n"
+                   "-(void)foo{}\n"
+                   "@end"));
 
   verifyFormat("@implementation Foo {\n"
                "  int _i;\n"
@@ -6476,6 +6507,12 @@ TEST_F(FormatTest, ObjCDictLiterals) {
       "  @\"dte\" : [NSDate date],\n"
       "  @\"processInfo\" : [NSProcessInfo processInfo]\n"
       "};");
+  verifyFormat("NSMutableDictionary *dictionary =\n"
+               "    [NSMutableDictionary dictionaryWithDictionary:@{\n"
+               "      aaaaaaaaaaaaaaaaaaaaa : aaaaaaaaaaaaa,\n"
+               "      bbbbbbbbbbbbbbbbbb : bbbbb,\n"
+               "      cccccccccccccccc : ccccccccccccccc\n"
+               "    }];");
 }
 
 TEST_F(FormatTest, ObjCArrayLiterals) {
@@ -7037,16 +7074,14 @@ TEST_F(FormatTest, DoNotCreateUnreasonableUnwrappedLines) {
   verifyFormat("void f() {\n"
                "  return g() {}\n"
                "  void h() {}");
-  verifyFormat("int a[] = {void forgot_closing_brace() {f();\n"
+  verifyFormat("int a[] = {void forgot_closing_brace(){f();\n"
                "g();\n"
                "}");
 }
 
 TEST_F(FormatTest, DoNotPrematurelyEndUnwrappedLineForReturnStatements) {
   verifyFormat(
-      "void f() {\n"
-      "  return C{param1, param2}.SomeCall(param1, param2);\n"
-      "}\n");
+      "void f() { return C{param1, param2}.SomeCall(param1, param2); }");
 }
 
 TEST_F(FormatTest, FormatsClosingBracesInEmptyNestedBlocks) {
@@ -7646,6 +7681,11 @@ TEST_F(FormatTest, AllmanBraceBreaking) {
                "  Y = 0,\n"
                "}\n",
                BreakBeforeBrace);
+  verifyFormat("enum X\n"
+               "{\n"
+               "  Y = 0\n"
+               "}\n",
+               BreakBeforeBrace);
 
   verifyFormat("@interface BSApplicationController ()\n"
                "{\n"
@@ -7683,6 +7723,24 @@ TEST_F(FormatTest, AllmanBraceBreaking) {
                "#else\n"
                "void bar() { foobar(); }\n"
                "#endif",
+               BreakBeforeBrace);
+
+  // This shouldn't affect ObjC blocks..
+  verifyFormat("[self doSomeThingWithACompletionHandler:^{\n"
+               "    // ...\n"
+               "    int i;\n"
+               "}];",
+               BreakBeforeBrace);
+  verifyFormat("void (^block)(void) = ^{\n"
+               "    // ...\n"
+               "    int i;\n"
+               "};",
+               BreakBeforeBrace);
+  // .. or dict literals.
+  verifyFormat("void f()\n"
+               "{\n"
+               "  [object someMethod:@{ @\"a\" : @\"b\" }];\n"
+               "}",
                BreakBeforeBrace);
 
   BreakBeforeBrace.ColumnLimit = 19;
@@ -8143,20 +8201,19 @@ TEST_F(FormatTest, ParsesConfigurationWithLanguages) {
   Style.IndentWidth = 234;
   Style.BreakBeforeBraces = FormatStyle::BS_Linux;
   Style.TabWidth = 345;
-  EXPECT_EQ(llvm::errc::success,
-            parseConfiguration("---\n"
-                               "IndentWidth: 456\n"
-                               "BreakBeforeBraces: Allman\n"
-                               "---\n"
-                               "Language: JavaScript\n"
-                               "IndentWidth: 111\n"
-                               "TabWidth: 111\n"
-                               "---\n"
-                               "Language: Cpp\n"
-                               "BreakBeforeBraces: Stroustrup\n"
-                               "TabWidth: 789\n"
-                               "...\n",
-                               &Style));
+  EXPECT_FALSE(parseConfiguration("---\n"
+                                  "IndentWidth: 456\n"
+                                  "BreakBeforeBraces: Allman\n"
+                                  "---\n"
+                                  "Language: JavaScript\n"
+                                  "IndentWidth: 111\n"
+                                  "TabWidth: 111\n"
+                                  "---\n"
+                                  "Language: Cpp\n"
+                                  "BreakBeforeBraces: Stroustrup\n"
+                                  "TabWidth: 789\n"
+                                  "...\n",
+                                  &Style));
   EXPECT_EQ(123u, Style.ColumnLimit);
   EXPECT_EQ(456u, Style.IndentWidth);
   EXPECT_EQ(FormatStyle::BS_Stroustrup, Style.BreakBeforeBraces);
@@ -8559,10 +8616,12 @@ TEST_F(FormatTest, FormatsWithWebKitStyle) {
             format("NSArray*a=[[NSArray alloc]initWithArray:@[ @\"a\" ]\n"
                    "             copyItems:YES];",
                    Style));
+  // FIXME: This does not seem right, there should be more indentation before
+  // the array literal's entries. Nested blocks have the same problem.
   EXPECT_EQ("NSArray* a = [[NSArray alloc] initWithArray:@[\n"
-            "                                               @\"a\",\n"
-            "                                               @\"a\"\n"
-            "                                            ]\n"
+            "    @\"a\",\n"
+            "    @\"a\"\n"
+            "]\n"
             "                                  copyItems:YES];",
             format("NSArray* a = [[NSArray alloc] initWithArray:@[\n"
                    "     @\"a\",\n"
@@ -8586,21 +8645,11 @@ TEST_F(FormatTest, FormatsWithWebKitStyle) {
 }
 
 TEST_F(FormatTest, FormatsLambdas) {
-  verifyFormat("int c = [b]() mutable {\n"
-               "  return [&b] { return b++; }();\n"
-               "}();\n");
-  verifyFormat("int c = [&] {\n"
-               "  [=] { return b++; }();\n"
-               "}();\n");
-  verifyFormat("int c = [&, &a, a] {\n"
-               "  [=, c, &d] { return b++; }();\n"
-               "}();\n");
-  verifyFormat("int c = [&a, &a, a] {\n"
-               "  [=, a, b, &c] { return b++; }();\n"
-               "}();\n");
-  verifyFormat("auto c = {[&a, &a, a] {\n"
-               "  [=, a, b, &c] { return b++; }();\n"
-               "}}\n");
+  verifyFormat("int c = [b]() mutable { return [&b] { return b++; }(); }();\n");
+  verifyFormat("int c = [&] { [=] { return b++; }(); }();\n");
+  verifyFormat("int c = [&, &a, a] { [=, c, &d] { return b++; }(); }();\n");
+  verifyFormat("int c = [&a, &a, a] { [=, a, b, &c] { return b++; }(); }();\n");
+  verifyFormat("auto c = {[&a, &a, a] { [=, a, b, &c] { return b++; }(); }}\n");
   verifyFormat("auto c = {[&a, &a, a] { [=, a, b, &c] {}(); }}\n");
   verifyFormat("void f() {\n"
                "  other(x.begin(), x.end(), [&](int, int) { return 1; });\n"
@@ -8676,7 +8725,7 @@ TEST_F(FormatTest, FormatsBlocks) {
   verifyFormat("int a = [operation block:^int(int *i) { return 1; }];");
   verifyFormat("[myObject doSomethingWith:arg1\n"
                "                      aaa:^int(int *a) { return 1; }\n"
-               "                      bbb:f(a * b)];");
+               "                      bbb:f(a * bbbbbbbb)];");
 
   verifyFormat("[operation setCompletionBlock:^{\n"
                "    [self.delegate newDataAvailable];\n"

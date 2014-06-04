@@ -859,7 +859,7 @@ namespace {
       OS << "        ExprResult " << "Result = S.SubstExpr("
          << "A->get" << getUpperName() << "(), TemplateArgs);\n";
       OS << "        tempInst" << getUpperName() << " = "
-         << "Result.takeAs<Expr>();\n";
+         << "Result.getAs<Expr>();\n";
       OS << "      }\n";
     }
 
@@ -911,7 +911,7 @@ namespace {
          << "_end();\n";
       OS << "        for (; I != E; ++I, ++TI) {\n";
       OS << "          ExprResult Result = S.SubstExpr(*I, TemplateArgs);\n";
-      OS << "          *TI = Result.takeAs<Expr>();\n";
+      OS << "          *TI = Result.getAs<Expr>();\n";
       OS << "        }\n";
       OS << "      }\n";
     }
@@ -1553,12 +1553,16 @@ void EmitClangAttrImpl(RecordKeeper &Records, raw_ostream &OS) {
 
     OS << R.getName() << "Attr *" << R.getName()
        << "Attr::clone(ASTContext &C) const {\n";
-    OS << "  return new (C) " << R.getName() << "Attr(getLocation(), C";
+    OS << "  auto *A = new (C) " << R.getName() << "Attr(getLocation(), C";
     for (auto const &ai : Args) {
       OS << ", ";
       ai->writeCloneArgs(OS);
     }
-    OS << ", getSpellingListIndex());\n}\n\n";
+    OS << ", getSpellingListIndex());\n";
+    OS << "  A->Inherited = Inherited;\n";
+    OS << "  A->IsPackExpansion = IsPackExpansion;\n";
+    OS << "  A->Implicit = Implicit;\n";
+    OS << "  return A;\n}\n\n";
 
     writePrettyPrintFunction(R, Args, OS);
     writeGetSpellingFunction(R, OS);

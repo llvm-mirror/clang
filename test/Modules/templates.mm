@@ -4,6 +4,12 @@
 // expected-no-diagnostics
 
 @import templates_left;
+
+void testInlineRedeclEarly() {
+  // instantiate definition now, we'll add another declaration in _right.
+  OutOfLineInline<int>().h();
+}
+
 @import templates_right;
 
 // CHECK: @list_left = global { %{{.*}}*, i32, [4 x i8] } { %{{.*}}* null, i32 8,
@@ -39,6 +45,14 @@ void testRedeclDefinition() {
   redeclDefinitionEmit();
 }
 
+void testInlineRedecl() {
+  outOfLineInlineUseLeftF();
+  outOfLineInlineUseRightG();
+
+  outOfLineInlineUseRightF();
+  outOfLineInlineUseLeftG();
+}
+
 // CHECK-NOT: @_ZN21ExplicitInstantiationILb0ELb0EE1fEv(
 // CHECK: declare {{.*}}@_ZN21ExplicitInstantiationILb1ELb0EE1fEv(
 // CHECK: define {{.*}}@_ZN21ExplicitInstantiationILb1ELb1EE1fEv(
@@ -66,9 +80,9 @@ unsigned testMixedStruct() {
   // CHECK: call {{.*}}memcpy{{.*}}(i8* %{{.*}}, i8* bitcast ({{.*}}* @_ZZ15testMixedStructvE1r to i8*), i64 16,
   ListInt_right r{0, 2};
 
-  // CHECK: call void @_Z10useListIntR4ListIiE(%[[ListInt]]* %[[l]])
+  // CHECK: call void @_Z10useListIntR4ListIiE(%[[ListInt]]* nonnull %[[l]])
   useListInt(l);
-  // CHECK: call void @_Z10useListIntR4ListIiE(%[[ListInt]]* %[[r]])
+  // CHECK: call void @_Z10useListIntR4ListIiE(%[[ListInt]]* nonnull %[[r]])
   useListInt(r);
 
   // CHECK: load i32* bitcast (i8* getelementptr inbounds (i8* bitcast ({{.*}}* @list_left to i8*), i64 8) to i32*)

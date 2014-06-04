@@ -309,6 +309,22 @@ static StringRef getCodeModel(ArgList &Args, DiagnosticsEngine &Diags) {
   return "default";
 }
 
+/// \brief Create a new Regex instance out of the string value in \p RpassArg.
+/// It returns a pointer to the newly generated Regex instance.
+static std::shared_ptr<llvm::Regex>
+GenerateOptimizationRemarkRegex(DiagnosticsEngine &Diags, ArgList &Args,
+                                Arg *RpassArg) {
+  StringRef Val = RpassArg->getValue();
+  std::string RegexError;
+  std::shared_ptr<llvm::Regex> Pattern = std::make_shared<llvm::Regex>(Val);
+  if (!Pattern->isValid(RegexError)) {
+    Diags.Report(diag::err_drv_optimization_remark_pattern)
+        << RegexError << RpassArg->getAsString(Args);
+    Pattern.reset();
+  }
+  return Pattern;
+}
+
 static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
                              DiagnosticsEngine &Diags,
                              const TargetOptions &TargetOpts) {
@@ -544,6 +560,18 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
       Opts.OptimizationRemarkPattern.reset();
     }
   }
+
+  if (Arg *A = Args.getLastArg(OPT_Rpass_EQ))
+    Opts.OptimizationRemarkPattern =
+        GenerateOptimizationRemarkRegex(Diags, Args, A);
+
+  if (Arg *A = Args.getLastArg(OPT_Rpass_missed_EQ))
+    Opts.OptimizationRemarkMissedPattern =
+        GenerateOptimizationRemarkRegex(Diags, Args, A);
+
+  if (Arg *A = Args.getLastArg(OPT_Rpass_analysis_EQ))
+    Opts.OptimizationRemarkAnalysisPattern =
+        GenerateOptimizationRemarkRegex(Diags, Args, A);
 
   return Success;
 }
@@ -1114,18 +1142,13 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
   Opts.ImplicitInt = Std.hasImplicitInt();
 
   // Set OpenCL Version.
-  if (LangStd == LangStandard::lang_opencl) {
-    Opts.OpenCL = 1;
+  Opts.OpenCL = LangStd == LangStandard::lang_opencl || IK == IK_OpenCL;
+  if (LangStd == LangStandard::lang_opencl)
     Opts.OpenCLVersion = 100;
-  }
-  else if (LangStd == LangStandard::lang_opencl11) {
-      Opts.OpenCL = 1;
+  else if (LangStd == LangStandard::lang_opencl11)
       Opts.OpenCLVersion = 110;
-  }
-  else if (LangStd == LangStandard::lang_opencl12) {
-    Opts.OpenCL = 1;
+  else if (LangStd == LangStandard::lang_opencl12)
     Opts.OpenCLVersion = 120;
-  }
   
   // OpenCL has some additional defaults.
   if (Opts.OpenCL) {
@@ -1136,8 +1159,7 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
     Opts.NativeHalfType = 1;
   }
 
-  if (LangStd == LangStandard::lang_cuda)
-    Opts.CUDA = 1;
+  Opts.CUDA = LangStd == LangStandard::lang_cuda || IK == IK_CUDA;
 
   // OpenCL and C++ both have bool, true, false keywords.
   Opts.Bool = Opts.OpenCL || Opts.CPlusPlus;
@@ -1949,13 +1971,13 @@ createVFSFromCompilerInvocation(const CompilerInvocation &CI,
   // earlier vfs files are on the bottom
   for (const std::string &File : CI.getHeaderSearchOpts().VFSOverlayFiles) {
     std::unique_ptr<llvm::MemoryBuffer> Buffer;
-    if (llvm::errc::success != llvm::MemoryBuffer::getFile(File, Buffer)) {
+    if (llvm::MemoryBuffer::getFile(File, Buffer)) {
       Diags.Report(diag::err_missing_vfs_overlay_file) << File;
       return IntrusiveRefCntPtr<vfs::FileSystem>();
     }
 
     IntrusiveRefCntPtr<vfs::FileSystem> FS =
-        vfs::getVFSFromYAML(Buffer.release(), /*DiagHandler*/0);
+        vfs::getVFSFromYAML(Buffer.release(), /*DiagHandler*/nullptr);
     if (!FS.getPtr()) {
       Diags.Report(diag::err_invalid_vfs_overlay) << File;
       return IntrusiveRefCntPtr<vfs::FileSystem>();

@@ -272,7 +272,7 @@ class SourceRange(Structure):
             return False
         if other.file is None and self.start.file is None:
             pass
-        elif ( self.start.file.name != other.file.name or 
+        elif ( self.start.file.name != other.file.name or
                other.file.name != self.end.file.name):
             # same file name
             return False
@@ -748,7 +748,7 @@ CursorKind.LABEL_REF = CursorKind(48)
 # that has not yet been resolved to a specific function or function template.
 CursorKind.OVERLOADED_DECL_REF = CursorKind(49)
 
-# A reference to a variable that occurs in some non-expression 
+# A reference to a variable that occurs in some non-expression
 # context, e.g., a C++ lambda capture list.
 CursorKind.VARIABLE_REF = CursorKind(50)
 
@@ -937,7 +937,7 @@ CursorKind.SIZE_OF_PACK_EXPR = CursorKind(143)
 
 # Represents a C++ lambda expression that produces a local function
 # object.
-# 
+#
 #  \code
 #  void abssort(float *x, unsigned N) {
 #    std::sort(x, x + N,
@@ -947,7 +947,7 @@ CursorKind.SIZE_OF_PACK_EXPR = CursorKind(143)
 #  }
 #  \endcode
 CursorKind.LAMBDA_EXPR = CursorKind(144)
-  
+
 # Objective-c Boolean Literal.
 CursorKind.OBJ_BOOL_LITERAL_EXPR = CursorKind(145)
 
@@ -1082,6 +1082,10 @@ CursorKind.PACKED_ATTR = CursorKind(408)
 CursorKind.PURE_ATTR = CursorKind(409)
 CursorKind.CONST_ATTR = CursorKind(410)
 CursorKind.NODUPLICATE_ATTR = CursorKind(411)
+CursorKind.CUDACONSTANT_ATTR = CursorKind(412)
+CursorKind.CUDADEVICE_ATTR = CursorKind(413)
+CursorKind.CUDAGLOBAL_ATTR = CursorKind(414)
+CursorKind.CUDAHOST_ATTR = CursorKind(415)
 
 ###
 # Preprocessing
@@ -1345,7 +1349,7 @@ class Cursor(Structure):
     @property
     def referenced(self):
         """
-        For a cursor that is a reference, returns a cursor 
+        For a cursor that is a reference, returns a cursor
         representing the entity that it references.
         """
         if not hasattr(self, '_referenced'):
@@ -1357,7 +1361,7 @@ class Cursor(Structure):
     def brief_comment(self):
         """Returns the brief comment text associated with that Cursor"""
         return conf.lib.clang_Cursor_getBriefCommentText(self)
-    
+
     @property
     def raw_comment(self):
         """Returns the raw comment text associated with that Cursor"""
@@ -1386,6 +1390,16 @@ class Cursor(Structure):
         conf.lib.clang_visitChildren(self, callbacks['cursor_visit'](visitor),
             children)
         return iter(children)
+
+    def walk_preorder(self):
+        """Depth-first preorder walk over the cursor and its descendants.
+
+        Yields cursors.
+        """
+        yield self
+        for child in self.get_children():
+            for descendant in child.walk_preorder():
+                yield descendant
 
     def get_tokens(self):
         """Obtain Token instances formulating that compose this Cursor.

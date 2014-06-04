@@ -511,16 +511,17 @@ llvm::GlobalValue *CodeGenModule::GetGlobalValue(StringRef Name) {
 
 /// AddGlobalCtor - Add a function to the list that will be called before
 /// main() runs.
-void CodeGenModule::AddGlobalCtor(llvm::Function * Ctor, int Priority) {
+void CodeGenModule::AddGlobalCtor(llvm::Function *Ctor, int Priority,
+                                  llvm::Constant *AssociatedData) {
   // FIXME: Type coercion of void()* types.
-  GlobalCtors.push_back(std::make_pair(Ctor, Priority));
+  GlobalCtors.push_back(Structor(Priority, Ctor, AssociatedData));
 }
 
 /// AddGlobalDtor - Add a function to the list that will be called
 /// when the module is unloaded.
-void CodeGenModule::AddGlobalDtor(llvm::Function * Dtor, int Priority) {
+void CodeGenModule::AddGlobalDtor(llvm::Function *Dtor, int Priority) {
   // FIXME: Type coercion of void()* types.
-  GlobalDtors.push_back(std::make_pair(Dtor, Priority));
+  GlobalDtors.push_back(Structor(Priority, Dtor, 0));
 }
 
 void CodeGenModule::EmitCtorList(const CtorList &Fns, const char *GlobalName) {
@@ -528,16 +529,19 @@ void CodeGenModule::EmitCtorList(const CtorList &Fns, const char *GlobalName) {
   llvm::FunctionType* CtorFTy = llvm::FunctionType::get(VoidTy, false);
   llvm::Type *CtorPFTy = llvm::PointerType::getUnqual(CtorFTy);
 
-  // Get the type of a ctor entry, { i32, void ()* }.
-  llvm::StructType *CtorStructTy =
-    llvm::StructType::get(Int32Ty, llvm::PointerType::getUnqual(CtorFTy), NULL);
+  // Get the type of a ctor entry, { i32, void ()*, i8* }.
+  llvm::StructType *CtorStructTy = llvm::StructType::get(
+      Int32Ty, llvm::PointerType::getUnqual(CtorFTy), VoidPtrTy, NULL);
 
   // Construct the constructor and destructor arrays.
   SmallVector<llvm::Constant*, 8> Ctors;
   for (CtorList::const_iterator I = Fns.begin(), E = Fns.end(); I != E; ++I) {
     llvm::Constant *S[] = {
-      llvm::ConstantInt::get(Int32Ty, I->second, false),
-      llvm::ConstantExpr::getBitCast(I->first, CtorPFTy)
+      llvm::ConstantInt::get(Int32Ty, I->Priority, false),
+      llvm::ConstantExpr::getBitCast(I->Initializer, CtorPFTy),
+      (I->AssociatedData
+           ? llvm::ConstantExpr::getBitCast(I->AssociatedData, VoidPtrTy)
+           : llvm::Constant::getNullValue(VoidPtrTy))
     };
     Ctors.push_back(llvm::ConstantStruct::get(CtorStructTy, S));
   }
@@ -557,13 +561,16 @@ CodeGenModule::getFunctionLinkage(GlobalDecl GD) {
 
   GVALinkage Linkage = getContext().GetGVALinkageForFunction(D);
 
-  bool UseThunkForDtorVariant =
-      isa<CXXDestructorDecl>(D) &&
+  if (isa<CXXDestructorDecl>(D) &&
       getCXXABI().useThunkForDtorVariant(cast<CXXDestructorDecl>(D),
-                                         GD.getDtorType());
+                                         GD.getDtorType())) {
+    // Destructor variants in the Microsoft C++ ABI are always internal or
+    // linkonce_odr thunks emitted on an as-needed basis.
+    return Linkage == GVA_Internal ? llvm::GlobalValue::InternalLinkage
+                                   : llvm::GlobalValue::LinkOnceODRLinkage;
+  }
 
-  return getLLVMLinkageForDeclarator(D, Linkage, /*isConstantVariable=*/false,
-                                     UseThunkForDtorVariant);
+  return getLLVMLinkageForDeclarator(D, Linkage, /*isConstantVariable=*/false);
 }
 
 void CodeGenModule::setFunctionDefinitionAttributes(const FunctionDecl *D,
@@ -775,6 +782,13 @@ void CodeGenModule::SetFunctionAttributes(GlobalDecl GD,
   // overridden by a definition.
 
   setLinkageAndVisibilityForGV(F, FD);
+
+  if (const auto *Dtor = dyn_cast_or_null<CXXDestructorDecl>(FD)) {
+    if (getCXXABI().useThunkForDtorVariant(Dtor, GD.getDtorType())) {
+      // Don't dllexport/import destructor thunks.
+      F->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+    }
+  }
 
   if (const SectionAttr *SA = FD->getAttr<SectionAttr>())
     F->setSection(SA->getName());
@@ -1533,8 +1547,7 @@ static bool isVarDeclInlineInitializedStaticDataMember(const VarDecl *VD) {
 llvm::Constant *
 CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName,
                                      llvm::PointerType *Ty,
-                                     const VarDecl *D,
-                                     bool UnnamedAddr) {
+                                     const VarDecl *D) {
   // Lookup the entry, lazily creating it if necessary.
   llvm::GlobalValue *Entry = GetGlobalValue(MangledName);
   if (Entry) {
@@ -1542,9 +1555,6 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName,
       if (D && !D->hasAttr<WeakAttr>())
         Entry->setLinkage(llvm::Function::ExternalLinkage);
     }
-
-    if (UnnamedAddr)
-      Entry->setUnnamedAddr(true);
 
     if (Entry->getType() == Ty)
       return Entry;
@@ -1671,8 +1681,7 @@ llvm::Constant *CodeGenModule::GetAddrOfGlobalVar(const VarDecl *D,
 llvm::Constant *
 CodeGenModule::CreateRuntimeVariable(llvm::Type *Ty,
                                      StringRef Name) {
-  return GetOrCreateLLVMGlobal(Name, llvm::PointerType::getUnqual(Ty), nullptr,
-                               true);
+  return GetOrCreateLLVMGlobal(Name, llvm::PointerType::getUnqual(Ty), nullptr);
 }
 
 void CodeGenModule::EmitTentativeDefinition(const VarDecl *D) {
@@ -1869,12 +1878,11 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
     EmitCXXGlobalVarDeclInitFunc(D, GV, NeedsGlobalCtor);
 
   // If we are compiling with ASan, add metadata indicating dynamically
-  // initialized globals.
-  if (SanOpts.Address && NeedsGlobalCtor) {
-    llvm::Module &M = getModule();
-
-    llvm::NamedMDNode *DynamicInitializers =
-        M.getOrInsertNamedMetadata("llvm.asan.dynamically_initialized_globals");
+  // initialized (and not blacklisted) globals.
+  if (SanOpts.Address && NeedsGlobalCtor &&
+      !SanitizerBlacklist->isIn(*GV, "init")) {
+    llvm::NamedMDNode *DynamicInitializers = TheModule.getOrInsertNamedMetadata(
+        "llvm.asan.dynamically_initialized_globals");
     llvm::Value *GlobalToAdd[] = { GV };
     llvm::MDNode *ThisGlobal = llvm::MDNode::get(VMContext, GlobalToAdd);
     DynamicInitializers->addOperand(ThisGlobal);
@@ -1915,8 +1923,7 @@ static bool isVarDeclStrongDefinition(const VarDecl *D, bool NoCommon) {
 }
 
 llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageForDeclarator(
-    const DeclaratorDecl *D, GVALinkage Linkage, bool IsConstantVariable,
-    bool UseThunkForDtorVariant) {
+    const DeclaratorDecl *D, GVALinkage Linkage, bool IsConstantVariable) {
   if (Linkage == GVA_Internal)
     return llvm::Function::InternalLinkage;
 
@@ -1955,17 +1962,17 @@ llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageForDeclarator(
     return !Context.getLangOpts().AppleKext ? llvm::Function::WeakODRLinkage
                                             : llvm::Function::ExternalLinkage;
 
-  // Destructor variants in the Microsoft C++ ABI are always linkonce_odr thunks
-  // emitted on an as-needed basis.
-  if (UseThunkForDtorVariant)
-    return llvm::GlobalValue::LinkOnceODRLinkage;
-
   // If required by the ABI, give definitions of static data members with inline
   // initializers at least linkonce_odr linkage.
+  auto const VD = dyn_cast<VarDecl>(D);
   if (getCXXABI().isInlineInitializedStaticDataMemberLinkOnce() &&
-      isa<VarDecl>(D) &&
-      isVarDeclInlineInitializedStaticDataMember(cast<VarDecl>(D)))
+      VD && isVarDeclInlineInitializedStaticDataMember(VD)) {
+    if (VD->hasAttr<DLLImportAttr>())
+      return llvm::GlobalValue::AvailableExternallyLinkage;
+    if (VD->hasAttr<DLLExportAttr>())
+      return llvm::GlobalValue::WeakODRLinkage;
     return llvm::GlobalValue::LinkOnceODRLinkage;
+  }
 
   // C++ doesn't have tentative definitions and thus cannot have common
   // linkage.
@@ -1988,8 +1995,7 @@ llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageForDeclarator(
 llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageVarDefinition(
     const VarDecl *VD, bool IsConstant) {
   GVALinkage Linkage = getContext().GetGVALinkageForVariable(VD);
-  return getLLVMLinkageForDeclarator(VD, Linkage, IsConstant,
-                                     /*UseThunkForDtorVariant=*/false);
+  return getLLVMLinkageForDeclarator(VD, Linkage, IsConstant);
 }
 
 /// Replace the uses of a function that was declared with a non-proto type.

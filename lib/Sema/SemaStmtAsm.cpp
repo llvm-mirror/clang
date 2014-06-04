@@ -166,7 +166,7 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
     if (Result.isInvalid())
       return StmtError();
 
-    Exprs[i] = Result.take();
+    Exprs[i] = Result.get();
     InputConstraintInfos.push_back(Info);
 
     const Type *Ty = Exprs[i]->getType().getTypePtr();
@@ -351,7 +351,7 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
         InputExpr->isEvaluatable(Context)) {
       CastKind castKind =
         (OutTy->isBooleanType() ? CK_IntegralToBoolean : CK_IntegralCast);
-      InputExpr = ImpCastExprToType(InputExpr, OutTy, castKind).take();
+      InputExpr = ImpCastExprToType(InputExpr, OutTy, castKind).get();
       Exprs[InputOpNo] = InputExpr;
       NS->setInputExpr(i, InputExpr);
       continue;
@@ -364,7 +364,7 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
     return StmtError();
   }
 
-  return Owned(NS);
+  return NS;
 }
 
 ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
@@ -381,7 +381,7 @@ ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
   ExprResult Result = ActOnIdExpression(getCurScope(), SS, TemplateKWLoc, Id,
                                         /*trailing lparen*/ false,
                                         /*is & operand*/ false,
-                                        /*CorrectionCandidateCallback=*/0,
+                                        /*CorrectionCandidateCallback=*/nullptr,
                                         /*IsInlineAsmIdentifier=*/ true);
 
   if (IsUnevaluatedContext)
@@ -389,7 +389,7 @@ ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
 
   if (!Result.isUsable()) return Result;
 
-  Result = CheckPlaceholderExpr(Result.take());
+  Result = CheckPlaceholderExpr(Result.get());
   if (!Result.isUsable()) return Result;
 
   QualType T = Result.get()->getType();
@@ -437,7 +437,7 @@ bool Sema::LookupInlineAsmField(StringRef Base, StringRef Member,
   if (!BaseResult.isSingleResult())
     return true;
 
-  const RecordType *RT = 0;
+  const RecordType *RT = nullptr;
   NamedDecl *FoundDecl = BaseResult.getFoundDecl();
   if (VarDecl *VD = dyn_cast<VarDecl>(FoundDecl))
     RT = VD->getType()->getAs<RecordType>();
@@ -484,5 +484,5 @@ StmtResult Sema::ActOnMSAsmStmt(SourceLocation AsmLoc, SourceLocation LBraceLoc,
                             /*IsVolatile*/ true, AsmToks, NumOutputs, NumInputs,
                             Constraints, Exprs, AsmString,
                             Clobbers, EndLoc);
-  return Owned(NS);
+  return NS;
 }

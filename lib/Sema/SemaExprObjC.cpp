@@ -93,7 +93,7 @@ ExprResult Sema::BuildObjCStringLiteral(SourceLocation AtLoc, StringLiteral *S){
   if (!Ty.isNull()) {
     Ty = Context.getObjCObjectPointerType(Ty);
   } else if (getLangOpts().NoConstantCFStrings) {
-    IdentifierInfo *NSIdent=0;
+    IdentifierInfo *NSIdent=nullptr;
     std::string StringClass(getLangOpts().ObjCConstantStringClass);
     
     if (StringClass.empty())
@@ -133,7 +133,7 @@ ExprResult Sema::BuildObjCStringLiteral(SourceLocation AtLoc, StringLiteral *S){
           ObjCInterfaceDecl::Create (Context, 
                                      Context.getTranslationUnitDecl(), 
                                      SourceLocation(), NSIdent, 
-                                     0, SourceLocation());
+                                     nullptr, SourceLocation());
         Ty = Context.getObjCInterfaceType(NSStringIDecl);
         Context.setObjCNSStringType(Ty);
       }
@@ -182,7 +182,7 @@ static ObjCMethodDecl *getNSNumberFactoryMethod(Sema &S, SourceLocation Loc,
       S.Diag(Loc, diag::err_invalid_nsnumber_type)
         << NumberType << R;
     }
-    return 0;
+    return nullptr;
   }
   
   // If we already looked up this method, we're done.
@@ -208,15 +208,15 @@ static ObjCMethodDecl *getNSNumberFactoryMethod(Sema &S, SourceLocation Loc,
         S.NSNumberDecl = ObjCInterfaceDecl::Create(CX,
                                                    CX.getTranslationUnitDecl(),
                                                    SourceLocation(), NSNumberId,
-                                                   0, SourceLocation());
+                                                   nullptr, SourceLocation());
       } else {
         // Otherwise, require a declaration of NSNumber.
         S.Diag(Loc, diag::err_undeclared_nsnumber);
-        return 0;
+        return nullptr;
       }
     } else if (!S.NSNumberDecl->hasDefinition()) {
       S.Diag(Loc, diag::err_undeclared_nsnumber);
-      return 0;
+      return nullptr;
     }
     
     // generate the pointer to NSNumber type.
@@ -228,7 +228,7 @@ static ObjCMethodDecl *getNSNumberFactoryMethod(Sema &S, SourceLocation Loc,
   ObjCMethodDecl *Method = S.NSNumberDecl->lookupClassMethod(Sel);
   if (!Method && S.getLangOpts().DebuggerObjCLiteral) {
     // create a stub definition this NSNumber factory method.
-    TypeSourceInfo *ReturnTInfo = 0;
+    TypeSourceInfo *ReturnTInfo = nullptr;
     Method =
         ObjCMethodDecl::Create(CX, SourceLocation(), SourceLocation(), Sel,
                                S.NSNumberPointer, ReturnTInfo, S.NSNumberDecl,
@@ -240,13 +240,13 @@ static ObjCMethodDecl *getNSNumberFactoryMethod(Sema &S, SourceLocation Loc,
     ParmVarDecl *value = ParmVarDecl::Create(S.Context, Method,
                                              SourceLocation(), SourceLocation(),
                                              &CX.Idents.get("value"),
-                                             NumberType, /*TInfo=*/0, SC_None,
-                                             0);
+                                             NumberType, /*TInfo=*/nullptr,
+                                             SC_None, nullptr);
     Method->setMethodParams(S.Context, value, None);
   }
 
   if (!validateBoxingMethod(S, Loc, S.NSNumberDecl, Sel, Method))
-    return 0;
+    return nullptr;
 
   // Note: if the parameter type is out-of-line, we'll catch it later in the
   // implicit conversion.
@@ -296,7 +296,7 @@ ExprResult Sema::BuildObjCNumericLiteral(SourceLocation AtLoc, Expr *Number) {
                                                                     ParamDecl);
   ExprResult ConvertedNumber = PerformCopyInitialization(Entity,
                                                          SourceLocation(),
-                                                         Owned(Number));
+                                                         Number);
   if (ConvertedNumber.isInvalid())
     return ExprError();
   Number = ConvertedNumber.get();
@@ -444,10 +444,10 @@ static ExprResult CheckObjCCollectionLiteralElement(Sema &S, Expr *Element,
 ExprResult Sema::BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr) {
   if (ValueExpr->isTypeDependent()) {
     ObjCBoxedExpr *BoxedExpr = 
-      new (Context) ObjCBoxedExpr(ValueExpr, Context.DependentTy, NULL, SR);
-    return Owned(BoxedExpr);
+      new (Context) ObjCBoxedExpr(ValueExpr, Context.DependentTy, nullptr, SR);
+    return BoxedExpr;
   }
-  ObjCMethodDecl *BoxingMethod = NULL;
+  ObjCMethodDecl *BoxingMethod = nullptr;
   QualType BoxedType;
   // Convert the expression to an RValue, so we can check for pointer types...
   ExprResult RValue = DefaultFunctionArrayLvalueConversion(ValueExpr);
@@ -473,7 +473,7 @@ ExprResult Sema::BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr) {
             NSStringDecl = ObjCInterfaceDecl::Create(Context, TU,
                                                      SourceLocation(),
                                                      NSStringId,
-                                                     0, SourceLocation());
+                                                     nullptr, SourceLocation());
           } else {
             Diag(SR.getBegin(), diag::err_undeclared_nsstring);
             return ExprError();
@@ -495,7 +495,7 @@ ExprResult Sema::BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr) {
         BoxingMethod = NSStringDecl->lookupClassMethod(stringWithUTF8String);
         if (!BoxingMethod && getLangOpts().DebuggerObjCLiteral) {
           // Debugger needs to work even if NSString hasn't been defined.
-          TypeSourceInfo *ReturnTInfo = 0;
+          TypeSourceInfo *ReturnTInfo = nullptr;
           ObjCMethodDecl *M = ObjCMethodDecl::Create(
               Context, SourceLocation(), SourceLocation(), stringWithUTF8String,
               NSStringPointer, ReturnTInfo, NSStringDecl,
@@ -510,8 +510,8 @@ ExprResult Sema::BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr) {
                                 SourceLocation(), SourceLocation(),
                                 &Context.Idents.get("value"),
                                 Context.getPointerType(ConstCharType),
-                                /*TInfo=*/0,
-                                SC_None, 0);
+                                /*TInfo=*/nullptr,
+                                SC_None, nullptr);
           M->setMethodParams(Context, value, None);
           BoxingMethod = M;
         }
@@ -586,7 +586,7 @@ ExprResult Sema::BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr) {
                                                                     ParamDecl);
   ExprResult ConvertedValueExpr = PerformCopyInitialization(Entity,
                                                             SourceLocation(),
-                                                            Owned(ValueExpr));
+                                                            ValueExpr);
   if (ConvertedValueExpr.isInvalid())
     return ExprError();
   ValueExpr = ConvertedValueExpr.get();
@@ -624,13 +624,9 @@ ExprResult Sema::BuildObjCSubscriptExpression(SourceLocation RB, Expr *BaseExpr,
   BaseExpr = Result.get();
 
   // Build the pseudo-object expression.
-  return Owned(ObjCSubscriptRefExpr::Create(Context, 
-                                            BaseExpr,
-                                            IndexExpr,
-                                            Context.PseudoObjectTy,
-                                            getterMethod,
-                                            setterMethod, RB));
-  
+  return ObjCSubscriptRefExpr::Create(Context, BaseExpr, IndexExpr,
+                                      Context.PseudoObjectTy, getterMethod,
+                                      setterMethod, RB);
 }
 
 ExprResult Sema::BuildObjCArrayLiteral(SourceRange SR, MultiExprArg Elements) {
@@ -646,7 +642,7 @@ ExprResult Sema::BuildObjCArrayLiteral(SourceRange SR, MultiExprArg Elements) {
                             Context.getTranslationUnitDecl(),
                             SourceLocation(),
                             NSAPIObj->getNSClassId(NSAPI::ClassId_NSArray),
-                            0, SourceLocation());
+                            nullptr, SourceLocation());
 
     if (!NSArrayDecl) {
       Diag(SR.getBegin(), diag::err_undeclared_nsarray);
@@ -661,7 +657,7 @@ ExprResult Sema::BuildObjCArrayLiteral(SourceRange SR, MultiExprArg Elements) {
       Sel = NSAPIObj->getNSArraySelector(NSAPI::NSArr_arrayWithObjectsCount);
     ObjCMethodDecl *Method = NSArrayDecl->lookupClassMethod(Sel);
     if (!Method && getLangOpts().DebuggerObjCLiteral) {
-      TypeSourceInfo *ReturnTInfo = 0;
+      TypeSourceInfo *ReturnTInfo = nullptr;
       Method = ObjCMethodDecl::Create(
           Context, SourceLocation(), SourceLocation(), Sel, IdT, ReturnTInfo,
           Context.getTranslationUnitDecl(), false /*Instance*/,
@@ -675,14 +671,16 @@ ExprResult Sema::BuildObjCArrayLiteral(SourceRange SR, MultiExprArg Elements) {
                                                  SourceLocation(),
                                                  &Context.Idents.get("objects"),
                                                  Context.getPointerType(IdT),
-                                                 /*TInfo=*/0, SC_None, 0);
+                                                 /*TInfo=*/nullptr,
+                                                 SC_None, nullptr);
       Params.push_back(objects);
       ParmVarDecl *cnt = ParmVarDecl::Create(Context, Method,
                                              SourceLocation(),
                                              SourceLocation(),
                                              &Context.Idents.get("cnt"),
                                              Context.UnsignedLongTy,
-                                             /*TInfo=*/0, SC_None, 0);
+                                             /*TInfo=*/nullptr, SC_None,
+                                             nullptr);
       Params.push_back(cnt);
       Method->setMethodParams(Context, Params, None);
     }
@@ -759,7 +757,7 @@ ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR,
                             Context.getTranslationUnitDecl(),
                             SourceLocation(),
                             NSAPIObj->getNSClassId(NSAPI::ClassId_NSDictionary),
-                            0, SourceLocation());
+                            nullptr, SourceLocation());
 
     if (!NSDictionaryDecl) {
       Diag(SR.getBegin(), diag::err_undeclared_nsdictionary);
@@ -778,7 +776,7 @@ ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR,
       Method = ObjCMethodDecl::Create(Context,  
                            SourceLocation(), SourceLocation(), Sel,
                            IdT,
-                           0 /*TypeSourceInfo */,
+                           nullptr /*TypeSourceInfo */,
                            Context.getTranslationUnitDecl(),
                            false /*Instance*/, false/*isVariadic*/,
                            /*isPropertyAccessor=*/false,
@@ -791,21 +789,24 @@ ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR,
                                                  SourceLocation(),
                                                  &Context.Idents.get("objects"),
                                                  Context.getPointerType(IdT),
-                                                 /*TInfo=*/0, SC_None, 0);
+                                                 /*TInfo=*/nullptr, SC_None,
+                                                 nullptr);
       Params.push_back(objects);
       ParmVarDecl *keys = ParmVarDecl::Create(Context, Method,
                                               SourceLocation(),
                                               SourceLocation(),
                                               &Context.Idents.get("keys"),
                                               Context.getPointerType(IdT),
-                                              /*TInfo=*/0, SC_None, 0);
+                                              /*TInfo=*/nullptr, SC_None,
+                                              nullptr);
       Params.push_back(keys);
       ParmVarDecl *cnt = ParmVarDecl::Create(Context, Method,
                                              SourceLocation(),
                                              SourceLocation(),
                                              &Context.Idents.get("cnt"),
                                              Context.UnsignedLongTy,
-                                             /*TInfo=*/0, SC_None, 0);
+                                             /*TInfo=*/nullptr, SC_None,
+                                             nullptr);
       Params.push_back(cnt);
       Method->setMethodParams(Context, Params, None);
     }
@@ -1115,7 +1116,7 @@ ObjCMethodDecl *Sema::tryCaptureObjCSelf(SourceLocation Loc) {
   // still have a 'self', and we really do still need to capture it!
   ObjCMethodDecl *method = dyn_cast<ObjCMethodDecl>(DC);
   if (!method)
-    return 0;
+    return nullptr;
 
   tryCaptureVariable(method->getSelfDecl(), Loc);
 
@@ -1200,7 +1201,7 @@ findExplicitInstancetypeDeclarer(const ObjCMethodDecl *MD,
       return result;
   }
 
-  return 0;
+  return nullptr;
 }
 
 void Sema::EmitRelatedResultTypeNoteForReturn(QualType destType) {
@@ -1291,7 +1292,7 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
       }
       if (result.isInvalid())
         return true;
-      Args[i] = result.take();
+      Args[i] = result.get();
     }
 
     unsigned DiagID;
@@ -1378,7 +1379,7 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
       if (argE.isInvalid()) {
         IsError = true;
       } else {
-        Args[i] = argE.take();
+        Args[i] = argE.get();
 
         // Update the parameter type in-place.
         param->setType(paramType);
@@ -1393,11 +1394,11 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
 
     InitializedEntity Entity = InitializedEntity::InitializeParameter(Context,
                                                                       param);
-    ExprResult ArgE = PerformCopyInitialization(Entity, SelLoc, Owned(argExpr));
+    ExprResult ArgE = PerformCopyInitialization(Entity, SelLoc, argExpr);
     if (ArgE.isInvalid())
       IsError = true;
     else
-      Args[i] = ArgE.takeAs<Expr>();
+      Args[i] = ArgE.getAs<Expr>();
   }
 
   // Promote additional arguments to variadic methods.
@@ -1407,9 +1408,9 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
         continue;
 
       ExprResult Arg = DefaultVariadicArgumentPromotion(Args[i], VariadicMethod,
-                                                        0);
+                                                        nullptr);
       IsError |= Arg.isInvalid();
-      Args[i] = Arg.take();
+      Args[i] = Arg.get();
     }
   } else {
     // Check for extra arguments to non-variadic methods.
@@ -1469,7 +1470,7 @@ ObjCMethodDecl *Sema::LookupMethodInObjectType(Selector sel, QualType type,
     if (ObjCMethodDecl *method = I->lookupMethod(sel, isInstance))
       return method;
 
-  return 0;
+  return nullptr;
 }
 
 /// LookupMethodInQualifiedType - Lookups up a method in protocol qualifier 
@@ -1478,13 +1479,13 @@ ObjCMethodDecl *Sema::LookupMethodInQualifiedType(Selector Sel,
                                               const ObjCObjectPointerType *OPT,
                                               bool Instance)
 {
-  ObjCMethodDecl *MD = 0;
+  ObjCMethodDecl *MD = nullptr;
   for (const auto *PROTO : OPT->quals()) {
     if ((MD = PROTO->lookupMethod(Sel, Instance))) {
       return MD;
     }
   }
-  return 0;
+  return nullptr;
 }
 
 static void DiagnoseARCUseOfWeakReceiver(Sema &S, Expr *Receiver) {
@@ -1497,8 +1498,8 @@ static void DiagnoseARCUseOfWeakReceiver(Sema &S, Expr *Receiver) {
   Expr *RExpr = Receiver->IgnoreParenImpCasts();
   SourceLocation Loc = RExpr->getLocStart();
   QualType T = RExpr->getType();
-  const ObjCPropertyDecl *PDecl = 0;
-  const ObjCMethodDecl *GDecl = 0;
+  const ObjCPropertyDecl *PDecl = nullptr;
+  const ObjCMethodDecl *GDecl = nullptr;
   if (PseudoObjectExpr *POE = dyn_cast<PseudoObjectExpr>(RExpr)) {
     RExpr = POE->getSyntacticForm();
     if (ObjCPropertyRefExpr *PRE = dyn_cast<ObjCPropertyRefExpr>(RExpr)) {
@@ -1578,14 +1579,13 @@ HandleExprPropertyRefExpr(const ObjCObjectPointerType *OPT,
     if (DiagnoseUseOfDecl(PD, MemberLoc))
       return ExprError();
     if (Super)
-      return Owned(new (Context) ObjCPropertyRefExpr(PD, Context.PseudoObjectTy,
-                                                     VK_LValue, OK_ObjCProperty,
-                                                     MemberLoc, 
-                                                     SuperLoc, SuperType));
+      return new (Context)
+          ObjCPropertyRefExpr(PD, Context.PseudoObjectTy, VK_LValue,
+                              OK_ObjCProperty, MemberLoc, SuperLoc, SuperType);
     else
-      return Owned(new (Context) ObjCPropertyRefExpr(PD, Context.PseudoObjectTy,
-                                                     VK_LValue, OK_ObjCProperty,
-                                                     MemberLoc, BaseExpr));
+      return new (Context)
+          ObjCPropertyRefExpr(PD, Context.PseudoObjectTy, VK_LValue,
+                              OK_ObjCProperty, MemberLoc, BaseExpr);
   }
   // Check protocols on qualified interfaces.
   for (const auto *I : OPT->quals())
@@ -1595,19 +1595,13 @@ HandleExprPropertyRefExpr(const ObjCObjectPointerType *OPT,
         return ExprError();
 
       if (Super)
-        return Owned(new (Context) ObjCPropertyRefExpr(PD,
-                                                       Context.PseudoObjectTy,
-                                                       VK_LValue,
-                                                       OK_ObjCProperty,
-                                                       MemberLoc, 
-                                                       SuperLoc, SuperType));
+        return new (Context) ObjCPropertyRefExpr(
+            PD, Context.PseudoObjectTy, VK_LValue, OK_ObjCProperty, MemberLoc,
+            SuperLoc, SuperType);
       else
-        return Owned(new (Context) ObjCPropertyRefExpr(PD,
-                                                       Context.PseudoObjectTy,
-                                                       VK_LValue,
-                                                       OK_ObjCProperty,
-                                                       MemberLoc,
-                                                       BaseExpr));
+        return new (Context)
+            ObjCPropertyRefExpr(PD, Context.PseudoObjectTy, VK_LValue,
+                                OK_ObjCProperty, MemberLoc, BaseExpr);
     }
   // If that failed, look for an "implicit" property by seeing if the nullary
   // selector is implemented.
@@ -1653,24 +1647,21 @@ HandleExprPropertyRefExpr(const ObjCObjectPointerType *OPT,
 
   if (Getter || Setter) {
     if (Super)
-      return Owned(new (Context) ObjCPropertyRefExpr(Getter, Setter,
-                                                     Context.PseudoObjectTy,
-                                                     VK_LValue, OK_ObjCProperty,
-                                                     MemberLoc,
-                                                     SuperLoc, SuperType));
+      return new (Context)
+          ObjCPropertyRefExpr(Getter, Setter, Context.PseudoObjectTy, VK_LValue,
+                              OK_ObjCProperty, MemberLoc, SuperLoc, SuperType);
     else
-      return Owned(new (Context) ObjCPropertyRefExpr(Getter, Setter,
-                                                     Context.PseudoObjectTy,
-                                                     VK_LValue, OK_ObjCProperty,
-                                                     MemberLoc, BaseExpr));
+      return new (Context)
+          ObjCPropertyRefExpr(Getter, Setter, Context.PseudoObjectTy, VK_LValue,
+                              OK_ObjCProperty, MemberLoc, BaseExpr);
 
   }
 
   // Attempt to correct for typos in property names.
   DeclFilterCCC<ObjCPropertyDecl> Validator;
   if (TypoCorrection Corrected = CorrectTypo(
-          DeclarationNameInfo(MemberName, MemberLoc), LookupOrdinaryName, NULL,
-          NULL, Validator, CTK_ErrorRecovery, IFace, false, OPT)) {
+          DeclarationNameInfo(MemberName, MemberLoc), LookupOrdinaryName,
+          nullptr, nullptr, Validator, CTK_ErrorRecovery, IFace, false, OPT)) {
     diagnoseTypo(Corrected, PDiag(diag::err_property_not_found_suggest)
                               << MemberName << QualType(OPT, 0));
     DeclarationName TypoResult = Corrected.getCorrection();
@@ -1717,7 +1708,7 @@ ActOnClassPropertyRefExpr(IdentifierInfo &receiverName,
                                                   receiverNameLoc);
 
   bool IsSuper = false;
-  if (IFace == 0) {
+  if (!IFace) {
     // If the "receiver" is 'super' in a method, handle it as an expression-like
     // property reference.
     if (receiverNamePtr->isStr("super")) {
@@ -1735,9 +1726,9 @@ ActOnClassPropertyRefExpr(IdentifierInfo &receiverName,
           }
           QualType T = Context.getObjCInterfaceType(Super);
           T = Context.getObjCObjectPointerType(T);
-        
+
           return HandleExprPropertyRefExpr(T->getAsObjCInterfacePointerType(),
-                                           /*BaseExpr*/0, 
+                                           /*BaseExpr*/nullptr,
                                            SourceLocation()/*OpLoc*/, 
                                            &propertyName,
                                            propertyNameLoc,
@@ -1749,8 +1740,8 @@ ActOnClassPropertyRefExpr(IdentifierInfo &receiverName,
         IFace = CurMethod->getClassInterface()->getSuperClass();
       }
     }
-    
-    if (IFace == 0) {
+
+    if (!IFace) {
       Diag(receiverNameLoc, diag::err_expected_either) << tok::identifier
                                                        << tok::l_paren;
       return ExprError();
@@ -1793,18 +1784,14 @@ ActOnClassPropertyRefExpr(IdentifierInfo &receiverName,
 
   if (Getter || Setter) {
     if (IsSuper)
-    return Owned(new (Context) ObjCPropertyRefExpr(Getter, Setter,
-                                                   Context.PseudoObjectTy,
-                                                   VK_LValue, OK_ObjCProperty,
-                                                   propertyNameLoc,
-                                                   receiverNameLoc, 
-                                          Context.getObjCInterfaceType(IFace)));
+      return new (Context)
+          ObjCPropertyRefExpr(Getter, Setter, Context.PseudoObjectTy, VK_LValue,
+                              OK_ObjCProperty, propertyNameLoc, receiverNameLoc,
+                              Context.getObjCInterfaceType(IFace));
 
-    return Owned(new (Context) ObjCPropertyRefExpr(Getter, Setter,
-                                                   Context.PseudoObjectTy,
-                                                   VK_LValue, OK_ObjCProperty,
-                                                   propertyNameLoc,
-                                                   receiverNameLoc, IFace));
+    return new (Context) ObjCPropertyRefExpr(
+        Getter, Setter, Context.PseudoObjectTy, VK_LValue, OK_ObjCProperty,
+        propertyNameLoc, receiverNameLoc, IFace);
   }
   return ExprError(Diag(propertyNameLoc, diag::err_property_not_found)
                      << &propertyName << Context.getObjCInterfaceType(IFace));
@@ -1902,8 +1889,8 @@ Sema::ObjCMessageKind Sema::getObjCMessageKind(Scope *S,
   ObjCInterfaceOrSuperCCC Validator(getCurMethodDecl());
   if (TypoCorrection Corrected =
           CorrectTypo(Result.getLookupNameInfo(), Result.getLookupKind(), S,
-                      NULL, Validator, CTK_ErrorRecovery, NULL, false, NULL,
-                      false)) {
+                      nullptr, Validator, CTK_ErrorRecovery, nullptr, false,
+                      nullptr, false)) {
     if (Corrected.isKeyword()) {
       // If we've found the keyword "super" (the only keyword that would be
       // returned by CorrectTypo), this is a send to super.
@@ -1966,16 +1953,16 @@ ExprResult Sema::ActOnSuperMessage(Scope *S,
     // message to the superclass instance.
     QualType SuperTy = Context.getObjCInterfaceType(Super);
     SuperTy = Context.getObjCObjectPointerType(SuperTy);
-    return BuildInstanceMessage(0, SuperTy, SuperLoc,
-                                Sel, /*Method=*/0,
+    return BuildInstanceMessage(nullptr, SuperTy, SuperLoc,
+                                Sel, /*Method=*/nullptr,
                                 LBracLoc, SelectorLocs, RBracLoc, Args);
   }
   
   // Since we are in a class method, this is a class message to
   // the superclass.
-  return BuildClassMessage(/*ReceiverTypeInfo=*/0,
+  return BuildClassMessage(/*ReceiverTypeInfo=*/nullptr,
                            Context.getObjCInterfaceType(Super),
-                           SuperLoc, Sel, /*Method=*/0,
+                           SuperLoc, Sel, /*Method=*/nullptr,
                            LBracLoc, SelectorLocs, RBracLoc, Args);
 }
 
@@ -1986,7 +1973,7 @@ ExprResult Sema::BuildClassMessageImplicit(QualType ReceiverType,
                                            Selector Sel,
                                            ObjCMethodDecl *Method,
                                            MultiExprArg Args) {
-  TypeSourceInfo *receiverTypeInfo = 0;
+  TypeSourceInfo *receiverTypeInfo = nullptr;
   if (!ReceiverType.isNull())
     receiverTypeInfo = Context.getTrivialTypeSourceInfo(ReceiverType);
 
@@ -2098,15 +2085,14 @@ ExprResult Sema::BuildClassMessage(TypeSourceInfo *ReceiverTypeInfo,
     unsigned NumArgs = ArgsIn.size();
     Expr **Args = ArgsIn.data();
     assert(SuperLoc.isInvalid() && "Message to super with dependent type");
-    return Owned(ObjCMessageExpr::Create(Context, ReceiverType,
-                                         VK_RValue, LBracLoc, ReceiverTypeInfo,
-                                         Sel, SelectorLocs, /*Method=*/0,
-                                         makeArrayRef(Args, NumArgs),RBracLoc,
-                                         isImplicit));
+    return ObjCMessageExpr::Create(
+        Context, ReceiverType, VK_RValue, LBracLoc, ReceiverTypeInfo, Sel,
+        SelectorLocs, /*Method=*/nullptr, makeArrayRef(Args, NumArgs), RBracLoc,
+        isImplicit);
   }
   
   // Find the class to which we are sending this message.
-  ObjCInterfaceDecl *Class = 0;
+  ObjCInterfaceDecl *Class = nullptr;
   const ObjCObjectType *ClassType = ReceiverType->getAs<ObjCObjectType>();
   if (!ClassType || !(Class = ClassType->getInterface())) {
     Diag(Loc, diag::err_invalid_receiver_class_message)
@@ -2202,8 +2188,9 @@ ExprResult Sema::ActOnClassMessage(Scope *S,
     ReceiverTypeInfo = Context.getTrivialTypeSourceInfo(ReceiverType, LBracLoc);
 
   return BuildClassMessage(ReceiverTypeInfo, ReceiverType, 
-                           /*SuperLoc=*/SourceLocation(), Sel, /*Method=*/0,
-                           LBracLoc, SelectorLocs, RBracLoc, Args);
+                           /*SuperLoc=*/SourceLocation(), Sel,
+                           /*Method=*/nullptr, LBracLoc, SelectorLocs, RBracLoc,
+                           Args);
 }
 
 ExprResult Sema::BuildInstanceMessageImplicit(Expr *Receiver,
@@ -2282,7 +2269,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
       else
         Result = CheckPlaceholderExpr(Receiver);
       if (Result.isInvalid()) return ExprError();
-      Receiver = Result.take();
+      Receiver = Result.get();
     }
 
     if (Receiver->isTypeDependent()) {
@@ -2291,11 +2278,10 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
       unsigned NumArgs = ArgsIn.size();
       Expr **Args = ArgsIn.data();
       assert(SuperLoc.isInvalid() && "Message to super with dependent type");
-      return Owned(ObjCMessageExpr::Create(Context, Context.DependentTy,
-                                           VK_RValue, LBracLoc, Receiver, Sel, 
-                                           SelectorLocs, /*Method=*/0,
-                                           makeArrayRef(Args, NumArgs),
-                                           RBracLoc, isImplicit));
+      return ObjCMessageExpr::Create(
+          Context, Context.DependentTy, VK_RValue, LBracLoc, Receiver, Sel,
+          SelectorLocs, /*Method=*/nullptr, makeArrayRef(Args, NumArgs),
+          RBracLoc, isImplicit);
     }
 
     // If necessary, apply function/array conversion to the receiver.
@@ -2303,7 +2289,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
     ExprResult Result = DefaultFunctionArrayLvalueConversion(Receiver);
     if (Result.isInvalid())
       return ExprError();
-    Receiver = Result.take();
+    Receiver = Result.get();
     ReceiverType = Receiver->getType();
 
     // If the receiver is an ObjC pointer, a block pointer, or an
@@ -2322,14 +2308,14 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
         << Receiver->getSourceRange();
       if (ReceiverType->isPointerType()) {
         Receiver = ImpCastExprToType(Receiver, Context.getObjCIdType(), 
-                                     CK_CPointerToObjCPointerCast).take();
+                                     CK_CPointerToObjCPointerCast).get();
       } else {
         // TODO: specialized warning on null receivers?
         bool IsNull = Receiver->isNullPointerConstant(Context,
                                               Expr::NPC_ValueDependentIsNull);
         CastKind Kind = IsNull ? CK_NullToPointer : CK_IntegralToPointer;
         Receiver = ImpCastExprToType(Receiver, Context.getObjCIdType(),
-                                     Kind).take();
+                                     Kind).get();
       }
       ReceiverType = Receiver->getType();
     } else if (getLangOpts().CPlusPlus) {
@@ -2340,7 +2326,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
 
       ExprResult result = PerformContextuallyConvertToObjCPointer(Receiver);
       if (result.isUsable()) {
-        Receiver = result.take();
+        Receiver = result.get();
         ReceiverType = Receiver->getType();
       }
     }
@@ -2417,7 +2403,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
         }
       }
     } else {
-      ObjCInterfaceDecl* ClassDecl = 0;
+      ObjCInterfaceDecl *ClassDecl = nullptr;
 
       // We allow sending a message to a qualified ID ("id<foo>"), which is ok as
       // long as one of the protocols implements the selector (if not, warn).
@@ -2437,7 +2423,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
 
         // Try to complete the type. Under ARC, this is a hard error from which
         // we don't try to recover.
-        const ObjCInterfaceDecl *forwardClass = 0;
+        const ObjCInterfaceDecl *forwardClass = nullptr;
         if (RequireCompleteType(Loc, OCIType->getPointeeType(),
               getLangOpts().ObjCAutoRefCount
                 ? diag::err_arc_receiver_forward_instance
@@ -2450,7 +2436,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
           forwardClass = OCIType->getInterfaceDecl();
           Diag(Receiver ? Receiver->getLocStart() 
                         : SuperLoc, diag::note_receiver_is_id);
-          Method = 0;
+          Method = nullptr;
         } else {
           Method = ClassDecl->lookupInstanceMethod(Sel);
         }
@@ -2497,8 +2483,8 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
 
   FunctionScopeInfo *DIFunctionScopeInfo =
     (Method && Method->getMethodFamily() == OMF_init)
-      ? getEnclosingFunction() : 0;
-  
+      ? getEnclosingFunction() : nullptr;
+
   if (DIFunctionScopeInfo &&
       DIFunctionScopeInfo->ObjCIsDesignatedInit &&
       (SuperLoc.isValid() || isSelfExpr(Receiver))) {
@@ -2518,7 +2504,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
       }
     }
     if (!isDesignatedInitChain) {
-      const ObjCMethodDecl *InitMethod = 0;
+      const ObjCMethodDecl *InitMethod = nullptr;
       bool isDesignated =
         getCurMethodDecl()->isDesignatedInitializerForTheInterface(&InitMethod);
       assert(isDesignated && InitMethod);
@@ -2668,7 +2654,7 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
         // The implicit assignment to self means we also don't want to
         // consume the result.
         Result->setDelegateInitCall(true);
-        return Owned(Result);
+        return Result;
       }
     }
 
@@ -2727,7 +2713,7 @@ ExprResult Sema::ActOnInstanceMessage(Scope *S,
   if (isa<ParenListExpr>(Receiver)) {
     ExprResult Result = MaybeConvertParenListExprToParenExpr(S, Receiver);
     if (Result.isInvalid()) return ExprError();
-    Receiver = Result.take();
+    Receiver = Result.get();
   }
   
   if (RespondsToSelectorSel.isNull()) {
@@ -2736,10 +2722,11 @@ ExprResult Sema::ActOnInstanceMessage(Scope *S,
   }
   if (Sel == RespondsToSelectorSel)
     RemoveSelectorFromWarningCache(*this, Args[0]);
-    
+
   return BuildInstanceMessage(Receiver, Receiver->getType(),
-                              /*SuperLoc=*/SourceLocation(), Sel, /*Method=*/0, 
-                              LBracLoc, SelectorLocs, RBracLoc, Args);
+                              /*SuperLoc=*/SourceLocation(), Sel,
+                              /*Method=*/nullptr, LBracLoc, SelectorLocs,
+                              RBracLoc, Args);
 }
 
 enum ARCConversionTypeClass {
@@ -3149,7 +3136,7 @@ static inline T *getObjCBridgeAttr(const TypedefType *TD) {
       if (RecordDecl *RD = RT->getDecl())
         return RD->getAttr<T>();
   }
-  return 0;
+  return nullptr;
 }
 
 static ObjCBridgeRelatedAttr *ObjCBridgeRelatedAttrFromType(QualType T,
@@ -3161,7 +3148,7 @@ static ObjCBridgeRelatedAttr *ObjCBridgeRelatedAttrFromType(QualType T,
       return ObjCBAttr;
     T = TDNDecl->getUnderlyingType();
   }
-  return 0;
+  return nullptr;
 }
 
 static void
@@ -3178,7 +3165,7 @@ diagnoseObjCARCConversion(Sema &S, SourceRange castRange,
     return;
 
   QualType castExprType = castExpr->getType();
-  TypedefNameDecl *TDNDecl = 0;
+  TypedefNameDecl *TDNDecl = nullptr;
   if ((castACTC == ACTC_coreFoundation &&  exprACTC == ACTC_retainable &&
        ObjCBridgeRelatedAttrFromType(castType, TDNDecl)) ||
       (exprACTC == ACTC_coreFoundation && castACTC == ACTC_retainable &&
@@ -3224,9 +3211,10 @@ diagnoseObjCARCConversion(Sema &S, SourceRange castRange,
       DiagnosticBuilder DiagB = 
         (CCK != Sema::CCK_OtherCast) ? S.Diag(noteLoc, diag::note_arc_bridge)
                               : S.Diag(noteLoc, diag::note_arc_cstyle_bridge);
-      
+
       addFixitForObjCARCConversion(S, DiagB, CCK, afterLParen,
-                                   castType, castExpr, realCast, "__bridge ", 0);
+                                   castType, castExpr, realCast, "__bridge ",
+                                   nullptr);
     }
     if (CreateRule != ACC_plusZero)
     {
@@ -3236,10 +3224,10 @@ diagnoseObjCARCConversion(Sema &S, SourceRange castRange,
           S.Diag(br ? castExpr->getExprLoc() : noteLoc,
                  diag::note_arc_bridge_transfer)
             << castExprType << br;
-      
+
       addFixitForObjCARCConversion(S, DiagB, CCK, afterLParen,
                                    castType, castExpr, realCast, "__bridge_transfer ",
-                                   br ? "CFBridgingRelease" : 0);
+                                   br ? "CFBridgingRelease" : nullptr);
     }
 
     return;
@@ -3265,7 +3253,8 @@ diagnoseObjCARCConversion(Sema &S, SourceRange castRange,
       (CCK != Sema::CCK_OtherCast) ? S.Diag(noteLoc, diag::note_arc_bridge)
                                : S.Diag(noteLoc, diag::note_arc_cstyle_bridge);
       addFixitForObjCARCConversion(S, DiagB, CCK, afterLParen,
-                                   castType, castExpr, realCast, "__bridge ", 0);
+                                   castType, castExpr, realCast, "__bridge ",
+                                   nullptr);
     }
     if (CreateRule != ACC_plusZero)
     {
@@ -3275,10 +3264,10 @@ diagnoseObjCARCConversion(Sema &S, SourceRange castRange,
           S.Diag(br ? castExpr->getExprLoc() : noteLoc,
                  diag::note_arc_bridge_retained)
             << castType << br;
-      
+
       addFixitForObjCARCConversion(S, DiagB, CCK, afterLParen,
                                    castType, castExpr, realCast, "__bridge_retained ",
-                                   br ? "CFBridgingRetain" : 0);
+                                   br ? "CFBridgingRetain" : nullptr);
     }
 
     return;
@@ -3297,7 +3286,7 @@ static void CheckObjCBridgeNSCast(Sema &S, QualType castType, Expr *castExpr) {
     TypedefNameDecl *TDNDecl = TD->getDecl();
     if (TB *ObjCBAttr = getObjCBridgeAttr<TB>(TD)) {
       if (IdentifierInfo *Parm = ObjCBAttr->getBridgedType()) {
-        NamedDecl *Target = 0;
+        NamedDecl *Target = nullptr;
         // Check for an existing type with this name.
         LookupResult R(S, DeclarationName(Parm), SourceLocation(),
                        Sema::LookupOrdinaryName);
@@ -3350,7 +3339,7 @@ static void CheckObjCBridgeCFCast(Sema &S, QualType castType, Expr *castExpr) {
     TypedefNameDecl *TDNDecl = TD->getDecl();
     if (TB *ObjCBAttr = getObjCBridgeAttr<TB>(TD)) {
       if (IdentifierInfo *Parm = ObjCBAttr->getBridgedType()) {
-        NamedDecl *Target = 0;
+        NamedDecl *Target = nullptr;
         // Check for an existing type with this name.
         LookupResult R(S, DeclarationName(Parm), SourceLocation(),
                        Sema::LookupOrdinaryName);
@@ -3447,7 +3436,7 @@ bool Sema::checkObjCBridgeRelatedComponents(SourceLocation Loc,
   IdentifierInfo *IMId = ObjCBAttr->getInstanceMethod();
   if (!RCId)
     return false;
-  NamedDecl *Target = 0;
+  NamedDecl *Target = nullptr;
   // Check for an existing type with this name.
   LookupResult R(*this, DeclarationName(RCId), SourceLocation(),
                  Sema::LookupOrdinaryName);
@@ -3507,9 +3496,9 @@ Sema::CheckObjCBridgeRelatedConversions(SourceLocation Loc,
     return false;
   
   ObjCInterfaceDecl *RelatedClass;
-  ObjCMethodDecl *ClassMethod = 0;
-  ObjCMethodDecl *InstanceMethod = 0;
-  TypedefNameDecl *TDNDecl = 0;
+  ObjCMethodDecl *ClassMethod = nullptr;
+  ObjCMethodDecl *InstanceMethod = nullptr;
+  TypedefNameDecl *TDNDecl = nullptr;
   if (!checkObjCBridgeRelatedComponents(Loc, DestType, SrcType, RelatedClass,
                                         ClassMethod, InstanceMethod, TDNDecl, CfToNs))
     return false;
@@ -3538,7 +3527,7 @@ Sema::CheckObjCBridgeRelatedConversions(SourceLocation Loc,
                                       ClassMethod->getLocation(),
                                       ClassMethod->getSelector(), ClassMethod,
                                       MultiExprArg(args, 1));
-      SrcExpr = msg.take();
+      SrcExpr = msg.get();
       return true;
     }
   }
@@ -3575,7 +3564,7 @@ Sema::CheckObjCBridgeRelatedConversions(SourceLocation Loc,
                                      InstanceMethod->getLocation(),
                                      InstanceMethod->getSelector(),
                                      InstanceMethod, None);
-      SrcExpr = msg.take();
+      SrcExpr = msg.get();
       return true;
     }
   }
@@ -3654,7 +3643,7 @@ Sema::CheckObjCARCConversion(SourceRange castRange, QualType castType,
   case ACC_plusOne:
     castExpr = ImplicitCastExpr::Create(Context, castExpr->getType(),
                                         CK_ARCConsumeObject, castExpr,
-                                        0, VK_RValue);
+                                        nullptr, VK_RValue);
     ExprNeedsCleanups = true;
     return ACR_okay;
   }
@@ -3797,7 +3786,7 @@ ExprResult Sema::BuildObjCBridgedCast(SourceLocation LParenLoc,
                                       Expr *SubExpr) {
   ExprResult SubResult = UsualUnaryConversions(SubExpr);
   if (SubResult.isInvalid()) return ExprError();
-  SubExpr = SubResult.take();
+  SubExpr = SubResult.get();
 
   QualType T = TSInfo->getType();
   QualType FromType = SubExpr->getType();
@@ -3856,7 +3845,7 @@ ExprResult Sema::BuildObjCBridgedCast(SourceLocation LParenLoc,
       // Produce the object before casting it.
       SubExpr = ImplicitCastExpr::Create(Context, FromType,
                                          CK_ARCProduceObject,
-                                         SubExpr, 0, VK_RValue);
+                                         SubExpr, nullptr, VK_RValue);
       break;
       
     case OBC_BridgeTransfer: {
@@ -3895,7 +3884,7 @@ ExprResult Sema::BuildObjCBridgedCast(SourceLocation LParenLoc,
   if (MustConsume) {
     ExprNeedsCleanups = true;
     Result = ImplicitCastExpr::Create(Context, T, CK_ARCConsumeObject, Result, 
-                                      0, VK_RValue);    
+                                      nullptr, VK_RValue);
   }
   
   return Result;
@@ -3908,7 +3897,7 @@ ExprResult Sema::ActOnObjCBridgedCast(Scope *S,
                                       ParsedType Type,
                                       SourceLocation RParenLoc,
                                       Expr *SubExpr) {
-  TypeSourceInfo *TSInfo = 0;
+  TypeSourceInfo *TSInfo = nullptr;
   QualType T = GetTypeFromParser(Type, &TSInfo);
   if (Kind == OBC_Bridge)
     CheckTollFreeBridgeCast(T, SubExpr);

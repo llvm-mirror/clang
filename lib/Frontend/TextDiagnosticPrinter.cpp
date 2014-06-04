@@ -43,7 +43,7 @@ void TextDiagnosticPrinter::BeginSourceFile(const LangOptions &LO,
 }
 
 void TextDiagnosticPrinter::EndSourceFile() {
-  TextDiag.reset(0);
+  TextDiag.reset(nullptr);
 }
 
 /// \brief Print any diagnostic option information to a raw_ostream.
@@ -154,8 +154,7 @@ void TextDiagnosticPrinter::HandleDiagnostic(DiagnosticsEngine::Level Level,
 
   TextDiag->emitDiagnostic(Info.getLocation(), Level, DiagMessageStream.str(),
                            Info.getRanges(),
-                           llvm::makeArrayRef(Info.getFixItHints(),
-                                              Info.getNumFixItHints()),
+                           Info.getFixItHints(),
                            &Info.getSourceManager());
 
   OS.flush();

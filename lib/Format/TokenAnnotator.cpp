@@ -298,6 +298,8 @@ private:
 
       ScopedContextCreator ContextCreator(*this, tok::l_brace, 1);
       Contexts.back().ColonIsDictLiteral = true;
+      if (Left->BlockKind == BK_BracedInit)
+        Contexts.back().IsExpression = true;
 
       while (CurrentToken) {
         if (CurrentToken->is(tok::r_brace)) {
@@ -390,7 +392,8 @@ private:
         Tok->Type = TT_RangeBasedForLoopColon;
       } else if (CurrentToken && CurrentToken->is(tok::numeric_constant)) {
         Tok->Type = TT_BitFieldColon;
-      } else if (Contexts.size() == 1 && Line.First->isNot(tok::kw_enum)) {
+      } else if (Contexts.size() == 1 &&
+                 !Line.First->isOneOf(tok::kw_enum, tok::kw_case)) {
         Tok->Type = TT_InheritanceColon;
       } else if (Contexts.back().ContextKind == tok::l_paren) {
         Tok->Type = TT_InlineASMColon;
@@ -924,6 +927,12 @@ private:
         (InTemplateArgument && NextToken->Tok.isAnyIdentifier()))
       return TT_BinaryOperator;
 
+    // This catches some cases where evaluation order is used as control flow:
+    //   aaa && aaa->f();
+    const FormatToken *NextNextToken = NextToken->getNextNonComment();
+    if (NextNextToken && NextNextToken->is(tok::arrow))
+      return TT_BinaryOperator;
+
     // It is very unlikely that we are going to find a pointer or reference type
     // definition on the RHS of an assignment.
     if (IsExpression)
@@ -1178,6 +1187,12 @@ void TokenAnnotator::annotate(AnnotatedLine &Line) {
 }
 
 void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) {
+  for (SmallVectorImpl<AnnotatedLine *>::iterator I = Line.Children.begin(),
+                                                  E = Line.Children.end();
+       I != E; ++I) {
+    calculateFormattingInformation(**I);
+  }
+
   Line.First->TotalLength =
       Line.First->IsMultiline ? Style.ColumnLimit : Line.First->ColumnWidth;
   if (!Line.First->Next)
@@ -1222,12 +1237,18 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) {
 
     Current->CanBreakBefore =
         Current->MustBreakBefore || canBreakBefore(Line, *Current);
-    if (Current->MustBreakBefore || !Current->Children.empty() ||
+    unsigned ChildSize = 0;
+    if (Current->Previous->Children.size() == 1) {
+      FormatToken &LastOfChild = *Current->Previous->Children[0]->Last;
+      ChildSize = LastOfChild.isTrailingComment() ? Style.ColumnLimit
+                                                  : LastOfChild.TotalLength + 1;
+    }
+    if (Current->MustBreakBefore || Current->Previous->Children.size() > 1 ||
         Current->IsMultiline)
       Current->TotalLength = Current->Previous->TotalLength + Style.ColumnLimit;
     else
       Current->TotalLength = Current->Previous->TotalLength +
-                             Current->ColumnWidth +
+                             Current->ColumnWidth + ChildSize +
                              Current->SpacesRequiredBefore;
 
     if (Current->Type == TT_CtorInitializerColon)
@@ -1249,12 +1270,6 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) {
   }
 
   DEBUG({ printDebugInfo(Line); });
-
-  for (SmallVectorImpl<AnnotatedLine *>::iterator I = Line.Children.begin(),
-                                                  E = Line.Children.end();
-       I != E; ++I) {
-    calculateFormattingInformation(**I);
-  }
 }
 
 void TokenAnnotator::calculateUnbreakableTailLengths(AnnotatedLine &Line) {
@@ -1320,8 +1335,8 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
     return 150;
   }
 
-  if (Right.Type == TT_TrailingAnnotation && Right.Next &&
-      Right.Next->isNot(tok::l_paren)) {
+  if (Right.Type == TT_TrailingAnnotation &&
+      (!Right.Next || Right.Next->isNot(tok::l_paren))) {
     // Generally, breaking before a trailing annotation is bad unless it is
     // function-like. It seems to be especially preferable to keep standard
     // annotations (i.e. "const", "final" and "override") on the same line.
@@ -1484,7 +1499,8 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
   if (Right.Type == TT_UnaryOperator)
     return !Left.isOneOf(tok::l_paren, tok::l_square, tok::at) &&
            (Left.isNot(tok::colon) || Left.Type != TT_ObjCMethodExpr);
-  if ((Left.isOneOf(tok::identifier, tok::greater, tok::r_square) ||
+  if ((Left.isOneOf(tok::identifier, tok::greater, tok::r_square,
+                    tok::r_paren) ||
        Left.isSimpleTypeSpecifier()) &&
       Right.is(tok::l_brace) && Right.getNextNonComment() &&
       Right.BlockKind != BK_Block)
@@ -1561,6 +1577,12 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
   return spaceRequiredBetween(Line, *Tok.Previous, Tok);
 }
 
+// Returns 'true' if 'Tok' is a brace we'd want to break before in Allman style.
+static bool isAllmanBrace(const FormatToken &Tok) {
+  return Tok.is(tok::l_brace) && Tok.BlockKind == BK_Block &&
+         Tok.Type != TT_ObjCBlockLBrace && Tok.Type != TT_DictLiteral;
+}
+
 bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
                                      const FormatToken &Right) {
   const FormatToken &Left = *Right.Previous;
@@ -1587,9 +1609,6 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
              Style.BreakConstructorInitializersBeforeComma &&
              !Style.ConstructorInitializerAllOnOneLineOrOnePerLine) {
     return true;
-  } else if (Right.is(tok::l_brace) && (Right.BlockKind == BK_Block)) {
-    return Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
-           Style.BreakBeforeBraces == FormatStyle::BS_GNU;
   } else if (Right.is(tok::string_literal) &&
              Right.TokenText.startswith("R\"")) {
     // Raw string literals are special wrt. line breaks. The author has made a
@@ -1600,6 +1619,9 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
              Style.Language == FormatStyle::LK_Proto) {
     // Don't enums onto single lines in protocol buffers.
     return true;
+  } else if (isAllmanBrace(Left) || isAllmanBrace(Right)) {
+    return Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
+           Style.BreakBeforeBraces == FormatStyle::BS_GNU;
   }
 
   // If the last token before a '}' is a comma or a comment, the intention is to
@@ -1613,6 +1635,13 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
   if (BeforeClosingBrace &&
       BeforeClosingBrace->isOneOf(tok::comma, tok::comment))
     return true;
+
+  if (Style.Language == FormatStyle::LK_JavaScript) {
+    // FIXME: This might apply to other languages and token kinds.
+    if (Right.is(tok::char_constant) && Left.is(tok::plus) && Left.Previous &&
+        Left.Previous->is(tok::char_constant))
+      return true;
+  }
 
   return false;
 }
@@ -1639,11 +1668,11 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
     return Style.BreakBeforeTernaryOperators;
   if (Left.Type == TT_ConditionalExpr || Left.is(tok::question))
     return !Style.BreakBeforeTernaryOperators;
-  if (Right.is(tok::colon) &&
-      (Right.Type == TT_DictLiteral || Right.Type == TT_ObjCMethodExpr))
-    return false;
   if (Right.Type == TT_InheritanceColon)
     return true;
+  if (Right.is(tok::colon) && (Right.Type != TT_CtorInitializerColon &&
+                               Right.Type != TT_InlineASMColon))
+    return false;
   if (Left.is(tok::colon) &&
       (Left.Type == TT_DictLiteral || Left.Type == TT_ObjCMethodExpr))
     return true;

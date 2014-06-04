@@ -1303,6 +1303,9 @@ void NamedDecl::printQualifiedName(raw_ostream &OS,
                                                             TemplateArgs.size(),
                                                             P);
     } else if (const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(*I)) {
+      if (P.SuppressUnwrittenScope &&
+          (ND->isAnonymousNamespace() || ND->isInline()))
+        continue;
       if (ND->isAnonymousNamespace())
         OS << "(anonymous namespace)";
       else
@@ -1676,7 +1679,7 @@ SourceRange VarDecl::getSourceRange() const {
 }
 
 template<typename T>
-static LanguageLinkage getLanguageLinkageTemplate(const T &D) {
+static LanguageLinkage getDeclLanguageLinkage(const T &D) {
   // C++ [dcl.link]p1: All function types, function names with external linkage,
   // and variable names with external linkage have a language linkage.
   if (!D.hasExternalFormalLinkage())
@@ -1704,7 +1707,7 @@ static LanguageLinkage getLanguageLinkageTemplate(const T &D) {
 }
 
 template<typename T>
-static bool isExternCTemplate(const T &D) {
+static bool isDeclExternC(const T &D) {
   // Since the context is ignored for class members, they can only have C++
   // language linkage or no language linkage.
   const DeclContext *DC = D.getDeclContext();
@@ -1717,11 +1720,11 @@ static bool isExternCTemplate(const T &D) {
 }
 
 LanguageLinkage VarDecl::getLanguageLinkage() const {
-  return getLanguageLinkageTemplate(*this);
+  return getDeclLanguageLinkage(*this);
 }
 
 bool VarDecl::isExternC() const {
-  return isExternCTemplate(*this);
+  return isDeclExternC(*this);
 }
 
 bool VarDecl::isInExternCContext() const {
@@ -2328,12 +2331,6 @@ bool FunctionDecl::isReservedGlobalPlacementOperator() const {
   return (proto->getParamType(1).getCanonicalType() == Context.VoidPtrTy);
 }
 
-static bool isNamespaceStd(const DeclContext *DC) {
-  const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(DC->getRedeclContext());
-  return ND && isNamed(ND, "std") &&
-         ND->getParent()->getRedeclContext()->isTranslationUnit();
-}
-
 bool FunctionDecl::isReplaceableGlobalAllocationFunction() const {
   if (getDeclName().getNameKind() != DeclarationName::CXXOperatorName)
     return false;
@@ -2371,9 +2368,8 @@ bool FunctionDecl::isReplaceableGlobalAllocationFunction() const {
   Ty = Ty->getPointeeType();
   if (Ty.getCVRQualifiers() != Qualifiers::Const)
     return false;
-  // FIXME: Recognise nothrow_t in an inline namespace inside std?
   const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
-  return RD && isNamed(RD, "nothrow_t") && isNamespaceStd(RD->getDeclContext());
+  return RD && isNamed(RD, "nothrow_t") && RD->isInStdNamespace();
 }
 
 FunctionDecl *
@@ -2410,11 +2406,11 @@ FunctionDecl::getCorrespondingUnsizedGlobalDeallocationFunction() const {
 }
 
 LanguageLinkage FunctionDecl::getLanguageLinkage() const {
-  return getLanguageLinkageTemplate(*this);
+  return getDeclLanguageLinkage(*this);
 }
 
 bool FunctionDecl::isExternC() const {
-  return isExternCTemplate(*this);
+  return isDeclExternC(*this);
 }
 
 bool FunctionDecl::isInExternCContext() const {
@@ -3240,7 +3236,7 @@ void TagDecl::startDefinition() {
     struct CXXRecordDecl::DefinitionData *Data =
       new (getASTContext()) struct CXXRecordDecl::DefinitionData(D);
     for (auto I : redecls())
-      cast<CXXRecordDecl>(I)->DefinitionData.setNotUpdated(Data);
+      cast<CXXRecordDecl>(I)->DefinitionData = Data;
   }
 }
 

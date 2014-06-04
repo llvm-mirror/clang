@@ -629,9 +629,11 @@ void ASTDumper::dumpAttr(const Attr *A) {
   }
   dumpPointer(A);
   dumpSourceRange(A->getRange());
-#include "clang/AST/AttrDump.inc"
+  if (A->isInherited())
+    OS << " Inherited";
   if (A->isImplicit())
     OS << " Implicit";
+#include "clang/AST/AttrDump.inc"
 }
 
 static void dumpPreviousDeclImpl(raw_ostream &OS, ...) {}
@@ -802,6 +804,8 @@ void ASTDumper::dumpDecl(const Decl *D) {
   if (const NamedDecl *ND = dyn_cast<NamedDecl>(D))
     if (ND->isHidden())
       OS << " hidden";
+  if (D->isImplicit())
+    OS << " implicit";
 
   bool HasAttrs = D->hasAttrs();
   const FullComment *Comment =

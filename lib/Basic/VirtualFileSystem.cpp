@@ -31,13 +31,13 @@ using llvm::sys::fs::UniqueID;
 Status::Status(const file_status &Status)
     : UID(Status.getUniqueID()), MTime(Status.getLastModificationTime()),
       User(Status.getUser()), Group(Status.getGroup()), Size(Status.getSize()),
-      Type(Status.type()), Perms(Status.permissions()) {}
+      Type(Status.type()), Perms(Status.permissions()), IsVFSMapped(false)  {}
 
 Status::Status(StringRef Name, StringRef ExternalName, UniqueID UID,
                sys::TimeValue MTime, uint32_t User, uint32_t Group,
                uint64_t Size, file_type Type, perms Perms)
     : Name(Name), UID(UID), MTime(MTime), User(User), Group(Group), Size(Size),
-      Type(Type), Perms(Perms) {}
+      Type(Type), Perms(Perms), IsVFSMapped(false) {}
 
 bool Status::equivalent(const Status &Other) const {
   return getUniqueID() == Other.getUniqueID();
@@ -142,7 +142,7 @@ error_code RealFile::close() {
   if (::close(FD))
     return error_code(errno, system_category());
   FD = -1;
-  return error_code::success();
+  return error_code();
 }
 
 void RealFile::setName(StringRef Name) {
@@ -175,7 +175,7 @@ error_code RealFileSystem::openFileForRead(const Twine &Name,
     return EC;
   Result.reset(new RealFile(FD));
   Result->setName(Name.str());
-  return error_code::success();
+  return error_code();
 }
 
 IntrusiveRefCntPtr<FileSystem> vfs::getRealFileSystem() {
@@ -201,7 +201,7 @@ ErrorOr<Status> OverlayFileSystem::status(const Twine &Path) {
     if (Status || Status.getError() != errc::no_such_file_or_directory)
       return Status;
   }
-  return error_code(errc::no_such_file_or_directory, system_category());
+  return make_error_code(errc::no_such_file_or_directory);
 }
 
 error_code OverlayFileSystem::openFileForRead(const llvm::Twine &Path,
@@ -212,7 +212,7 @@ error_code OverlayFileSystem::openFileForRead(const llvm::Twine &Path,
     if (!EC || EC != errc::no_such_file_or_directory)
       return EC;
   }
-  return error_code(errc::no_such_file_or_directory, system_category());
+  return make_error_code(errc::no_such_file_or_directory);
 }
 
 //===-----------------------------------------------------------------------===/
@@ -744,7 +744,7 @@ ErrorOr<Entry *> VFSFromYAML::lookupPath(const Twine &Path_) {
     return EC;
 
   if (Path.empty())
-    return error_code(errc::invalid_argument, system_category());
+    return make_error_code(errc::invalid_argument);
 
   sys::path::const_iterator Start = sys::path::begin(Path);
   sys::path::const_iterator End = sys::path::end(Path);
@@ -754,7 +754,7 @@ ErrorOr<Entry *> VFSFromYAML::lookupPath(const Twine &Path_) {
     if (Result || Result.getError() != errc::no_such_file_or_directory)
       return Result;
   }
-  return error_code(errc::no_such_file_or_directory, system_category());
+  return make_error_code(errc::no_such_file_or_directory);
 }
 
 ErrorOr<Entry *> VFSFromYAML::lookupPath(sys::path::const_iterator Start,
@@ -767,7 +767,7 @@ ErrorOr<Entry *> VFSFromYAML::lookupPath(sys::path::const_iterator Start,
   if (CaseSensitive ? !Start->equals(From->getName())
                     : !Start->equals_lower(From->getName()))
     // failure to match
-    return error_code(errc::no_such_file_or_directory, system_category());
+    return make_error_code(errc::no_such_file_or_directory);
 
   ++Start;
 
@@ -778,7 +778,7 @@ ErrorOr<Entry *> VFSFromYAML::lookupPath(sys::path::const_iterator Start,
 
   DirectoryEntry *DE = dyn_cast<DirectoryEntry>(From);
   if (!DE)
-    return error_code(errc::not_a_directory, system_category());
+    return make_error_code(errc::not_a_directory);
 
   for (DirectoryEntry::iterator I = DE->contents_begin(),
                                 E = DE->contents_end();
@@ -787,7 +787,7 @@ ErrorOr<Entry *> VFSFromYAML::lookupPath(sys::path::const_iterator Start,
     if (Result || Result.getError() != errc::no_such_file_or_directory)
       return Result;
   }
-  return error_code(errc::no_such_file_or_directory, system_category());
+  return make_error_code(errc::no_such_file_or_directory);
 }
 
 ErrorOr<Status> VFSFromYAML::status(const Twine &Path) {
@@ -801,6 +801,8 @@ ErrorOr<Status> VFSFromYAML::status(const Twine &Path) {
     assert(!S || S->getName() == F->getExternalContentsPath());
     if (S && !F->useExternalName(UseExternalNames))
       S->setName(PathStr);
+    if (S)
+      S->IsVFSMapped = true;
     return S;
   } else { // directory
     DirectoryEntry *DE = cast<DirectoryEntry>(*Result);
@@ -818,7 +820,7 @@ error_code VFSFromYAML::openFileForRead(const Twine &Path,
 
   FileEntry *F = dyn_cast<FileEntry>(*E);
   if (!F) // FIXME: errc::not_a_file?
-    return error_code(errc::invalid_argument, system_category());
+    return make_error_code(errc::invalid_argument);
 
   if (error_code EC = ExternalFS->openFileForRead(F->getExternalContentsPath(),
                                                   Result))
@@ -827,7 +829,7 @@ error_code VFSFromYAML::openFileForRead(const Twine &Path,
   if (!F->useExternalName(UseExternalNames))
     Result->setName(Path.str());
 
-  return error_code::success();
+  return error_code();
 }
 
 IntrusiveRefCntPtr<FileSystem>

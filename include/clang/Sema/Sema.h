@@ -333,6 +333,11 @@ public:
   /// VisContext - Manages the stack for \#pragma GCC visibility.
   void *VisContext; // Really a "PragmaVisStack*"
 
+  /// \brief This represents the last location of a "#pragma clang optimize off"
+  /// directive if such a directive has not been closed by an "on" yet. If
+  /// optimizations are currently "on", this is set to an invalid location.
+  SourceLocation OptimizeOffPragmaLocation;
+
   /// \brief Flag indicating if Sema is building a recovery call expression.
   ///
   /// This flag is used to avoid building recovery call expressions
@@ -1031,10 +1036,6 @@ public:
   /// \brief Retrieve the module loader associated with the preprocessor.
   ModuleLoader &getModuleLoader() const;
 
-  ExprResult Owned(Expr* E) { return E; }
-  ExprResult Owned(ExprResult R) { return R; }
-  StmtResult Owned(Stmt* S) { return S; }
-
   void ActOnEndOfTranslationUnit();
 
   void CheckDelegatingCtorCycles();
@@ -1665,6 +1666,7 @@ public:
   Decl *ActOnFinishFunctionBody(Decl *Decl, Stmt *Body);
   Decl *ActOnFinishFunctionBody(Decl *Decl, Stmt *Body, bool IsInstantiation);
   Decl *ActOnSkippedFunctionBody(Decl *Decl);
+  void ActOnFinishInlineMethodDef(CXXMethodDecl *D);
 
   /// ActOnFinishDelayedAttribute - Invoked when we have finished parsing an
   /// attribute for which parsing is delayed.
@@ -2944,13 +2946,13 @@ public:
     return MakeFullExpr(Arg, Arg ? Arg->getExprLoc() : SourceLocation());
   }
   FullExprArg MakeFullExpr(Expr *Arg, SourceLocation CC) {
-    return FullExprArg(ActOnFinishFullExpr(Arg, CC).release());
+    return FullExprArg(ActOnFinishFullExpr(Arg, CC).get());
   }
   FullExprArg MakeFullDiscardedValueExpr(Expr *Arg) {
     ExprResult FE =
       ActOnFinishFullExpr(Arg, Arg ? Arg->getExprLoc() : SourceLocation(),
                           /*DiscardedValue*/ true);
-    return FullExprArg(FE.release());
+    return FullExprArg(FE.get());
   }
 
   StmtResult ActOnExprStmt(ExprResult Arg);
@@ -3491,14 +3493,6 @@ public:
   ExprResult CreateBuiltinArraySubscriptExpr(Expr *Base, SourceLocation LLoc,
                                              Expr *Idx, SourceLocation RLoc);
 
-  ExprResult BuildMemberReferenceExpr(Expr *Base, QualType BaseType,
-                                      SourceLocation OpLoc, bool IsArrow,
-                                      CXXScopeSpec &SS,
-                                      SourceLocation TemplateKWLoc,
-                                      NamedDecl *FirstQualifierInScope,
-                                const DeclarationNameInfo &NameInfo,
-                                const TemplateArgumentListInfo *TemplateArgs);
-
   // This struct is for use by ActOnMemberAccess to allow
   // BuildMemberReferenceExpr to be able to reinvoke ActOnMemberAccess after
   // changing the access operator from a '.' to a '->' (to see if that is the
@@ -3511,6 +3505,13 @@ public:
     bool HasTrailingLParen;
   };
 
+  ExprResult BuildMemberReferenceExpr(
+      Expr *Base, QualType BaseType, SourceLocation OpLoc, bool IsArrow,
+      CXXScopeSpec &SS, SourceLocation TemplateKWLoc,
+      NamedDecl *FirstQualifierInScope, const DeclarationNameInfo &NameInfo,
+      const TemplateArgumentListInfo *TemplateArgs,
+      ActOnMemberAccessExtraArgs *ExtraArgs = nullptr);
+
   ExprResult
   BuildMemberReferenceExpr(Expr *Base, QualType BaseType, SourceLocation OpLoc,
                            bool IsArrow, const CXXScopeSpec &SS,
@@ -3521,11 +3522,6 @@ public:
                            ActOnMemberAccessExtraArgs *ExtraArgs = nullptr);
 
   ExprResult PerformMemberExprBaseConversion(Expr *Base, bool IsArrow);
-  ExprResult LookupMemberExpr(LookupResult &R, ExprResult &Base,
-                              bool &IsArrow, SourceLocation OpLoc,
-                              CXXScopeSpec &SS,
-                              Decl *ObjCImpDecl,
-                              bool HasTemplateArgs);
 
   bool CheckQualifiedMemberReference(Expr *BaseExpr, QualType BaseType,
                                      const CXXScopeSpec &SS,
@@ -3926,7 +3922,7 @@ public:
         ///   potential exceptions of the special member function contains "any"
         EPI.ExceptionSpecType = EST_ComputedNoexcept;
         EPI.NoexceptExpr = Self->ActOnCXXBoolLiteral(SourceLocation(),
-                                                     tok::kw_false).take();
+                                                     tok::kw_false).get();
       }
     }
     FunctionProtoType::ExtProtoInfo getEPI() const {
@@ -7231,6 +7227,25 @@ public:
   /// the appropriate attribute.
   void AddCFAuditedAttribute(Decl *D);
 
+  /// \brief Called on well formed \#pragma clang optimize.
+  void ActOnPragmaOptimize(bool On, SourceLocation PragmaLoc);
+
+  /// \brief Get the location for the currently active "\#pragma clang optimize
+  /// off". If this location is invalid, then the state of the pragma is "on".
+  SourceLocation getOptimizeOffPragmaLocation() const {
+    return OptimizeOffPragmaLocation;
+  }
+
+  /// \brief Only called on function definitions; if there is a pragma in scope
+  /// with the effect of a range-based optnone, consider marking the function
+  /// with attribute optnone.
+  void AddRangeBasedOptnone(FunctionDecl *FD);
+
+  /// \brief Adds the 'optnone' attribute to the function declaration if there
+  /// are no conflicts; Loc represents the location causing the 'optnone'
+  /// attribute to be added (usually because of a pragma).
+  void AddOptnoneAttributeIfNoConflicts(FunctionDecl *FD, SourceLocation Loc);
+
   /// AddAlignedAttr - Adds an aligned attribute to a particular declaration.
   void AddAlignedAttr(SourceRange AttrRange, Decl *D, Expr *E,
                       unsigned SpellingListIndex, bool IsPackExpansion);
@@ -7309,6 +7324,10 @@ public:
                                       SourceLocation StartLoc,
                                       SourceLocation LParenLoc,
                                       SourceLocation EndLoc);
+  /// \brief Called on well-formed 'collapse' clause.
+  OMPClause *ActOnOpenMPCollapseClause(Expr *Num, SourceLocation StartLoc,
+                                       SourceLocation LParenLoc,
+                                       SourceLocation EndLoc);
 
   OMPClause *ActOnOpenMPSimpleClause(OpenMPClauseKind Kind,
                                      unsigned Argument,
@@ -7358,6 +7377,13 @@ public:
                                      SourceLocation LParenLoc,
                                      SourceLocation ColonLoc,
                                      SourceLocation EndLoc);
+  /// \brief Called on well-formed 'aligned' clause.
+  OMPClause *ActOnOpenMPAlignedClause(ArrayRef<Expr *> VarList,
+                                      Expr *Alignment,
+                                      SourceLocation StartLoc,
+                                      SourceLocation LParenLoc,
+                                      SourceLocation ColonLoc,
+                                      SourceLocation EndLoc);
   /// \brief Called on well-formed 'copyin' clause.
   OMPClause *ActOnOpenMPCopyinClause(ArrayRef<Expr *> VarList,
                                      SourceLocation StartLoc,
@@ -7667,11 +7693,11 @@ public:
   QualType FindCompositePointerType(SourceLocation Loc,
                                     ExprResult &E1, ExprResult &E2,
                                     bool *NonStandardCompositeType = nullptr) {
-    Expr *E1Tmp = E1.take(), *E2Tmp = E2.take();
+    Expr *E1Tmp = E1.get(), *E2Tmp = E2.get();
     QualType Composite = FindCompositePointerType(Loc, E1Tmp, E2Tmp,
                                                   NonStandardCompositeType);
-    E1 = Owned(E1Tmp);
-    E2 = Owned(E2Tmp);
+    E1 = E1Tmp;
+    E2 = E2Tmp;
     return Composite;
   }
 
@@ -8100,7 +8126,6 @@ private:
   bool CheckNeonBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckARMBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
 
-  bool CheckARM64BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckAArch64BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckMipsBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckX86BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);

@@ -233,7 +233,18 @@ class CodeGenModule : public CodeGenTypeCache {
   CodeGenModule(const CodeGenModule &) LLVM_DELETED_FUNCTION;
   void operator=(const CodeGenModule &) LLVM_DELETED_FUNCTION;
 
-  typedef std::vector<std::pair<llvm::Constant*, int> > CtorList;
+  struct Structor {
+    Structor() : Priority(0), Initializer(nullptr), AssociatedData(nullptr) {}
+    Structor(int Priority, llvm::Constant *Initializer,
+             llvm::Constant *AssociatedData)
+        : Priority(Priority), Initializer(Initializer),
+          AssociatedData(AssociatedData) {}
+    int Priority;
+    llvm::Constant *Initializer;
+    llvm::Constant *AssociatedData;
+  };
+
+  typedef std::vector<Structor> CtorList;
 
   ASTContext &Context;
   const LangOptions &LangOpts;
@@ -528,10 +539,10 @@ public:
     AtomicGetterHelperFnMap[Ty] = Fn;
   }
 
-  llvm::Constant *getTypeDescriptor(QualType Ty) {
+  llvm::Constant *getTypeDescriptorFromMap(QualType Ty) {
     return TypeDescriptorMap[Ty];
   }
-  void setTypeDescriptor(QualType Ty, llvm::Constant *C) {
+  void setTypeDescriptorInMap(QualType Ty, llvm::Constant *C) {
     TypeDescriptorMap[Ty] = C;
   }
 
@@ -709,6 +720,12 @@ public:
 
   /// The type of a generic block literal.
   llvm::Type *getGenericBlockLiteralType();
+
+  /// \brief Gets or a creats a Microsoft TypeDescriptor.
+  llvm::Constant *getMSTypeDescriptor(QualType Ty);
+  /// \brief Gets or a creats a Microsoft CompleteObjectLocator.
+  llvm::GlobalVariable *getMSCompleteObjectLocator(const CXXRecordDecl *RD,
+                                                   const VPtrInfo *Info);
 
   /// Gets the address of a block which requires no captures.
   llvm::Constant *GetAddrOfGlobalBlock(const BlockExpr *BE, const char *);
@@ -945,6 +962,9 @@ public:
     F->setLinkage(getFunctionLinkage(GD));
   }
 
+  /// \brief Returns the appropriate linkage for the TypeInfo struct for a type.
+  llvm::GlobalVariable::LinkageTypes getTypeInfoLinkage(QualType Ty);
+
   /// Return the appropriate linkage for the vtable, VTT, and type information
   /// of the given class.
   llvm::GlobalVariable::LinkageTypes getVTableLinkage(const CXXRecordDecl *RD);
@@ -955,8 +975,7 @@ public:
   /// Returns LLVM linkage for a declarator.
   llvm::GlobalValue::LinkageTypes
   getLLVMLinkageForDeclarator(const DeclaratorDecl *D, GVALinkage Linkage,
-                              bool IsConstantVariable,
-                              bool UseThunkForDtorVariant);
+                              bool IsConstantVariable);
 
   /// Returns LLVM linkage for a declarator.
   llvm::GlobalValue::LinkageTypes
@@ -1013,8 +1032,7 @@ private:
 
   llvm::Constant *GetOrCreateLLVMGlobal(StringRef MangledName,
                                         llvm::PointerType *PTy,
-                                        const VarDecl *D,
-                                        bool UnnamedAddr = false);
+                                        const VarDecl *D);
 
   /// Set attributes which are common to any form of a global definition (alias,
   /// Objective-C method, function, global variable).
@@ -1073,8 +1091,9 @@ private:
                                     bool PerformInit);
 
   // FIXME: Hardcoding priority here is gross.
-  void AddGlobalCtor(llvm::Function *Ctor, int Priority=65535);
-  void AddGlobalDtor(llvm::Function *Dtor, int Priority=65535);
+  void AddGlobalCtor(llvm::Function *Ctor, int Priority = 65535,
+                     llvm::Constant *AssociatedData = 0);
+  void AddGlobalDtor(llvm::Function *Dtor, int Priority = 65535);
 
   /// Generates a global array of functions and priorities using the given list
   /// and name. This array will have appending linkage and is suitable for use

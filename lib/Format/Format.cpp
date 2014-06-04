@@ -223,6 +223,7 @@ template <> struct MappingTraits<FormatStyle> {
                      Style.SpaceBeforeParens);
     }
     IO.mapOptional("SpaceBeforeParens", Style.SpaceBeforeParens);
+    IO.mapOptional("DisableFormat", Style.DisableFormat);
   }
 };
 
@@ -313,6 +314,8 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.PenaltyExcessCharacter = 1000000;
   LLVMStyle.PenaltyReturnTypeOnItsOwnLine = 60;
   LLVMStyle.PenaltyBreakBeforeFirstCallParameter = 19;
+
+  LLVMStyle.DisableFormat = false;
 
   return LLVMStyle;
 }
@@ -409,6 +412,12 @@ FormatStyle getGNUStyle() {
   return Style;
 }
 
+FormatStyle getNoStyle() {
+  FormatStyle NoStyle = getLLVMStyle();
+  NoStyle.DisableFormat = true;
+  return NoStyle;
+}
+
 bool getPredefinedStyle(StringRef Name, FormatStyle::LanguageKind Language,
                         FormatStyle *Style) {
   if (Name.equals_lower("llvm")) {
@@ -423,6 +432,8 @@ bool getPredefinedStyle(StringRef Name, FormatStyle::LanguageKind Language,
     *Style = getWebKitStyle();
   } else if (Name.equals_lower("gnu")) {
     *Style = getGNUStyle();
+  } else if (Name.equals_lower("none")) {
+    *Style = getNoStyle();
   } else {
     return false;
   }
@@ -471,7 +482,7 @@ llvm::error_code parseConfiguration(StringRef Text, FormatStyle *Style) {
         Styles[i].Language == FormatStyle::LK_None) {
       *Style = Styles[i];
       Style->Language = Language;
-      return llvm::make_error_code(llvm::errc::success);
+      return llvm::error_code();
     }
   }
   return llvm::make_error_code(llvm::errc::not_supported);
@@ -690,8 +701,7 @@ private:
       if (I[1]->Last->Type == TT_LineComment)
         return 0;
       do {
-        if (Tok->isOneOf(tok::l_brace, tok::r_brace) &&
-            !Style.AllowShortBlocksOnASingleLine)
+        if (Tok->is(tok::l_brace) && Tok->BlockKind != BK_BracedInit)
           return 0;
         Tok = Tok->Next;
       } while (Tok);
@@ -828,8 +838,10 @@ public:
 
         if (TheLine.Last->TotalLength + Indent <= ColumnLimit) {
           LineState State = Indenter->getInitialState(Indent, &TheLine, DryRun);
-          while (State.NextToken)
+          while (State.NextToken) {
+            formatChildren(State, /*Newline=*/false, /*DryRun=*/false, Penalty);
             Indenter->addTokenToState(State, /*Newline=*/false, DryRun);
+          }
         } else if (Style.ColumnLimit == 0) {
           // FIXME: Implement nested blocks for ColumnLimit = 0.
           NoColumnLimitFormatter Formatter(Indenter);
@@ -1003,6 +1015,12 @@ private:
     return Style.ColumnLimit - (InPPDirective ? 2 : 0);
   }
 
+  struct CompareLineStatePointers {
+    bool operator()(LineState *obj1, LineState *obj2) const {
+      return *obj1 < *obj2;
+    }
+  };
+
   /// \brief Analyze the entire solution space starting from \p InitialState.
   ///
   /// This implements a variant of Dijkstra's algorithm on the graph that spans
@@ -1012,7 +1030,7 @@ private:
   ///
   /// If \p DryRun is \c false, directly applies the changes.
   unsigned analyzeSolutionSpace(LineState &InitialState, bool DryRun = false) {
-    std::set<LineState> Seen;
+    std::set<LineState *, CompareLineStatePointers> Seen;
 
     // Increasing count of \c StateNode items we have created. This is used to
     // create a deterministic order independent of the container.
@@ -1042,7 +1060,7 @@ private:
       if (Count > 10000)
         Node->State.IgnoreStackForComparison = true;
 
-      if (!Seen.insert(Node->State).second)
+      if (!Seen.insert(&Node->State).second)
         // State already examined with lower penalty.
         continue;
 
@@ -1902,6 +1920,11 @@ private:
 tooling::Replacements reformat(const FormatStyle &Style, Lexer &Lex,
                                SourceManager &SourceMgr,
                                std::vector<CharSourceRange> Ranges) {
+  if (Style.DisableFormat) {
+    tooling::Replacements EmptyResult;
+    return EmptyResult;
+  }
+
   Formatter formatter(Style, Lex, SourceMgr, Ranges);
   return formatter.format();
 }

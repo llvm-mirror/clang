@@ -140,22 +140,21 @@ bool Preprocessor::CheckMacroName(Token &MacroNameTok, char isDefineUndef) {
     std::string Spelling = getSpelling(MacroNameTok, &Invalid);
     if (Invalid)
       return Diag(MacroNameTok, diag::err_pp_macro_not_identifier);
+    II = getIdentifierInfo(Spelling);
 
-    const IdentifierInfo &Info = Identifiers.get(Spelling);
+    if (!II->isCPlusPlusOperatorKeyword())
+      return Diag(MacroNameTok, diag::err_pp_macro_not_identifier);
 
-    // Allow #defining |and| and friends in microsoft mode.
-    if (Info.isCPlusPlusOperatorKeyword() && getLangOpts().MSVCCompat) {
-      MacroNameTok.setIdentifierInfo(getIdentifierInfo(Spelling));
-      return false;
-    }
+    // C++ 2.5p2: Alternative tokens behave the same as its primary token
+    // except for their spellings.
+    Diag(MacroNameTok, getLangOpts().MicrosoftExt
+                           ? diag::ext_pp_operator_used_as_macro_name
+                           : diag::err_pp_operator_used_as_macro_name)
+        << II << MacroNameTok.getKind();
 
-    if (Info.isCPlusPlusOperatorKeyword())
-      // C++ 2.5p2: Alternative tokens behave the same as its primary token
-      // except for their spellings.
-      return Diag(MacroNameTok, diag::err_pp_operator_used_as_macro_name)
-             << Spelling << MacroNameTok.getKind();
-
-    return Diag(MacroNameTok, diag::err_pp_macro_not_identifier);
+    // Allow #defining |and| and friends for Microsoft compatibility or
+    // recovery when legacy C headers are included in C++.
+    MacroNameTok.setIdentifierInfo(II);
   }
 
   if (isDefineUndef && II->getPPKeywordID() == tok::pp_defined) {

@@ -3104,12 +3104,12 @@ PPC64TargetCodeGenInfo::initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
 }
 
 //===----------------------------------------------------------------------===//
-// ARM64 ABI Implementation
+// AArch64 ABI Implementation
 //===----------------------------------------------------------------------===//
 
 namespace {
 
-class ARM64ABIInfo : public ABIInfo {
+class AArch64ABIInfo : public ABIInfo {
 public:
   enum ABIKind {
     AAPCS = 0,
@@ -3120,7 +3120,7 @@ private:
   ABIKind Kind;
 
 public:
-  ARM64ABIInfo(CodeGenTypes &CGT, ABIKind Kind) : ABIInfo(CGT), Kind(Kind) {}
+  AArch64ABIInfo(CodeGenTypes &CGT, ABIKind Kind) : ABIInfo(CGT), Kind(Kind) {}
 
 private:
   ABIKind getABIKind() const { return Kind; }
@@ -3212,10 +3212,10 @@ private:
   }
 };
 
-class ARM64TargetCodeGenInfo : public TargetCodeGenInfo {
+class AArch64TargetCodeGenInfo : public TargetCodeGenInfo {
 public:
-  ARM64TargetCodeGenInfo(CodeGenTypes &CGT, ARM64ABIInfo::ABIKind Kind)
-      : TargetCodeGenInfo(new ARM64ABIInfo(CGT, Kind)) {}
+  AArch64TargetCodeGenInfo(CodeGenTypes &CGT, AArch64ABIInfo::ABIKind Kind)
+      : TargetCodeGenInfo(new AArch64ABIInfo(CGT, Kind)) {}
 
   StringRef getARCRetainAutoreleasedReturnValueMarker() const {
     return "mov\tfp, fp\t\t; marker for objc_retainAutoreleaseReturnValue";
@@ -3231,12 +3231,12 @@ static bool isHomogeneousAggregate(QualType Ty, const Type *&Base,
                                    ASTContext &Context,
                                    uint64_t *HAMembers = nullptr);
 
-ABIArgInfo ARM64ABIInfo::classifyArgumentType(QualType Ty,
-                                              unsigned &AllocatedVFP,
-                                              bool &IsHA,
-                                              unsigned &AllocatedGPR,
-                                              bool &IsSmallAggr,
-                                              bool IsNamedArg) const {
+ABIArgInfo AArch64ABIInfo::classifyArgumentType(QualType Ty,
+                                                unsigned &AllocatedVFP,
+                                                bool &IsHA,
+                                                unsigned &AllocatedGPR,
+                                                bool &IsSmallAggr,
+                                                bool IsNamedArg) const {
   // Handle illegal vector types here.
   if (isIllegalVectorType(Ty)) {
     uint64_t Size = getContext().getTypeSize(Ty);
@@ -3346,7 +3346,7 @@ ABIArgInfo ARM64ABIInfo::classifyArgumentType(QualType Ty,
   return ABIArgInfo::getIndirect(0, /*ByVal=*/false);
 }
 
-ABIArgInfo ARM64ABIInfo::classifyReturnType(QualType RetTy) const {
+ABIArgInfo AArch64ABIInfo::classifyReturnType(QualType RetTy) const {
   if (RetTy->isVoidType())
     return ABIArgInfo::getIgnore();
 
@@ -3382,8 +3382,8 @@ ABIArgInfo ARM64ABIInfo::classifyReturnType(QualType RetTy) const {
   return ABIArgInfo::getIndirect(0);
 }
 
-/// isIllegalVectorType - check whether the vector type is legal for ARM64.
-bool ARM64ABIInfo::isIllegalVectorType(QualType Ty) const {
+/// isIllegalVectorType - check whether the vector type is legal for AArch64.
+bool AArch64ABIInfo::isIllegalVectorType(QualType Ty) const {
   if (const VectorType *VT = Ty->getAs<VectorType>()) {
     // Check whether VT is legal.
     unsigned NumElements = VT->getNumElements();
@@ -3624,7 +3624,7 @@ static llvm::Value *EmitAArch64VAArg(llvm::Value *VAListAddr, QualType Ty,
   return ResAddr;
 }
 
-llvm::Value *ARM64ABIInfo::EmitAAPCSVAArg(llvm::Value *VAListAddr, QualType Ty,
+llvm::Value *AArch64ABIInfo::EmitAAPCSVAArg(llvm::Value *VAListAddr, QualType Ty,
                                           CodeGenFunction &CGF) const {
 
   unsigned AllocatedGPR = 0, AllocatedVFP = 0;
@@ -3636,7 +3636,7 @@ llvm::Value *ARM64ABIInfo::EmitAAPCSVAArg(llvm::Value *VAListAddr, QualType Ty,
                           AI.isIndirect(), CGF);
 }
 
-llvm::Value *ARM64ABIInfo::EmitDarwinVAArg(llvm::Value *VAListAddr, QualType Ty,
+llvm::Value *AArch64ABIInfo::EmitDarwinVAArg(llvm::Value *VAListAddr, QualType Ty,
                                            CodeGenFunction &CGF) const {
   // We do not support va_arg for aggregates or illegal vector types.
   // Lower VAArg here for these cases and use the LLVM va_arg instruction for
@@ -4509,221 +4509,6 @@ llvm::Value *NaClARMABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
   // Always use the native convention; calling pnacl-style varargs functions
   // is unsupported.
   return static_cast<const ABIInfo&>(NInfo).EmitVAArg(VAListAddr, Ty, CGF);
-}
-
-//===----------------------------------------------------------------------===//
-// AArch64 ABI Implementation
-//===----------------------------------------------------------------------===//
-
-namespace {
-
-class AArch64ABIInfo : public ABIInfo {
-public:
-  AArch64ABIInfo(CodeGenTypes &CGT) : ABIInfo(CGT) {}
-
-private:
-  // The AArch64 PCS is explicit about return types and argument types being
-  // handled identically, so we don't need to draw a distinction between
-  // Argument and Return classification.
-  ABIArgInfo classifyGenericType(QualType Ty, int &FreeIntRegs,
-                                 int &FreeVFPRegs) const;
-
-  ABIArgInfo tryUseRegs(QualType Ty, int &FreeRegs, int RegsNeeded, bool IsInt,
-                        llvm::Type *DirectTy = nullptr) const;
-
-  void computeInfo(CGFunctionInfo &FI) const override;
-
-  llvm::Value *EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
-                         CodeGenFunction &CGF) const override;
-};
-
-class AArch64TargetCodeGenInfo : public TargetCodeGenInfo {
-public:
-  AArch64TargetCodeGenInfo(CodeGenTypes &CGT)
-    :TargetCodeGenInfo(new AArch64ABIInfo(CGT)) {}
-
-  const AArch64ABIInfo &getABIInfo() const {
-    return static_cast<const AArch64ABIInfo&>(TargetCodeGenInfo::getABIInfo());
-  }
-
-  int getDwarfEHStackPointer(CodeGen::CodeGenModule &M) const override {
-    return 31;
-  }
-
-  bool initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
-                               llvm::Value *Address) const override {
-    // 0-31 are x0-x30 and sp: 8 bytes each
-    llvm::Value *Eight8 = llvm::ConstantInt::get(CGF.Int8Ty, 8);
-    AssignToArrayRange(CGF.Builder, Address, Eight8, 0, 31);
-
-    // 64-95 are v0-v31: 16 bytes each
-    llvm::Value *Sixteen8 = llvm::ConstantInt::get(CGF.Int8Ty, 16);
-    AssignToArrayRange(CGF.Builder, Address, Sixteen8, 64, 95);
-
-    return false;
-  }
-
-};
-
-}
-
-void AArch64ABIInfo::computeInfo(CGFunctionInfo &FI) const {
-  int FreeIntRegs = 8, FreeVFPRegs = 8;
-
-  FI.getReturnInfo() = classifyGenericType(FI.getReturnType(),
-                                           FreeIntRegs, FreeVFPRegs);
-
-  FreeIntRegs = FreeVFPRegs = 8;
-  for (auto &I : FI.arguments()) {
-    I.info = classifyGenericType(I.type, FreeIntRegs, FreeVFPRegs);
-
-  }
-}
-
-ABIArgInfo
-AArch64ABIInfo::tryUseRegs(QualType Ty, int &FreeRegs, int RegsNeeded,
-                           bool IsInt, llvm::Type *DirectTy) const {
-  if (FreeRegs >= RegsNeeded) {
-    FreeRegs -= RegsNeeded;
-    return ABIArgInfo::getDirect(DirectTy);
-  }
-
-  llvm::Type *Padding = nullptr;
-
-  // We need padding so that later arguments don't get filled in anyway. That
-  // wouldn't happen if only ByVal arguments followed in the same category, but
-  // a large structure will simply seem to be a pointer as far as LLVM is
-  // concerned.
-  if (FreeRegs > 0) {
-    if (IsInt)
-      Padding = llvm::Type::getInt64Ty(getVMContext());
-    else
-      Padding = llvm::Type::getFloatTy(getVMContext());
-
-    // Either [N x i64] or [N x float].
-    Padding = llvm::ArrayType::get(Padding, FreeRegs);
-    FreeRegs = 0;
-  }
-
-  return ABIArgInfo::getIndirect(getContext().getTypeAlign(Ty) / 8,
-                                 /*IsByVal=*/ true, /*Realign=*/ false,
-                                 Padding);
-}
-
-
-ABIArgInfo AArch64ABIInfo::classifyGenericType(QualType Ty,
-                                               int &FreeIntRegs,
-                                               int &FreeVFPRegs) const {
-  // Can only occurs for return, but harmless otherwise.
-  if (Ty->isVoidType())
-    return ABIArgInfo::getIgnore();
-
-  // Large vector types should be returned via memory. There's no such concept
-  // in the ABI, but they'd be over 16 bytes anyway so no matter how they're
-  // classified they'd go into memory (see B.3).
-  if (Ty->isVectorType() && getContext().getTypeSize(Ty) > 128) {
-    if (FreeIntRegs > 0)
-      --FreeIntRegs;
-    return ABIArgInfo::getIndirect(0, /*ByVal=*/false);
-  }
-
-  // All non-aggregate LLVM types have a concrete ABI representation so they can
-  // be passed directly. After this block we're guaranteed to be in a
-  // complicated case.
-  if (!isAggregateTypeForABI(Ty)) {
-    // Treat an enum type as its underlying type.
-    if (const EnumType *EnumTy = Ty->getAs<EnumType>())
-      Ty = EnumTy->getDecl()->getIntegerType();
-
-    if (Ty->isFloatingType() || Ty->isVectorType())
-      return tryUseRegs(Ty, FreeVFPRegs, /*RegsNeeded=*/ 1, /*IsInt=*/ false);
-
-    assert(getContext().getTypeSize(Ty) <= 128 &&
-           "unexpectedly large scalar type");
-
-    int RegsNeeded = getContext().getTypeSize(Ty) > 64 ? 2 : 1;
-
-    // If the type may need padding registers to ensure "alignment", we must be
-    // careful when this is accounted for. Increasing the effective size covers
-    // all cases.
-    if (getContext().getTypeAlign(Ty) == 128)
-      RegsNeeded += FreeIntRegs % 2 != 0;
-
-    return tryUseRegs(Ty, FreeIntRegs, RegsNeeded, /*IsInt=*/ true);
-  }
-
-  if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, getCXXABI())) {
-    if (FreeIntRegs > 0 && RAA == CGCXXABI::RAA_Indirect)
-      --FreeIntRegs;
-    return ABIArgInfo::getIndirect(0, RAA == CGCXXABI::RAA_DirectInMemory);
-  }
-
-  if (isEmptyRecord(getContext(), Ty, true)) {
-    if (!getContext().getLangOpts().CPlusPlus) {
-      // Empty structs outside C++ mode are a GNU extension, so no ABI can
-      // possibly tell us what to do. It turns out (I believe) that GCC ignores
-      // the object for parameter-passsing purposes.
-      return ABIArgInfo::getIgnore();
-    }
-
-    // The combination of C++98 9p5 (sizeof(struct) != 0) and the pseudocode
-    // description of va_arg in the PCS require that an empty struct does
-    // actually occupy space for parameter-passing. I'm hoping for a
-    // clarification giving an explicit paragraph to point to in future.
-    return tryUseRegs(Ty, FreeIntRegs, /*RegsNeeded=*/ 1, /*IsInt=*/ true,
-                      llvm::Type::getInt8Ty(getVMContext()));
-  }
-
-  // Homogeneous vector aggregates get passed in registers or on the stack.
-  const Type *Base = nullptr;
-  uint64_t NumMembers = 0;
-  if (isHomogeneousAggregate(Ty, Base, getContext(), &NumMembers)) {
-    assert(Base && "Base class should be set for homogeneous aggregate");
-    // Homogeneous aggregates are passed and returned directly.
-    return tryUseRegs(Ty, FreeVFPRegs, /*RegsNeeded=*/ NumMembers,
-                      /*IsInt=*/ false);
-  }
-
-  uint64_t Size = getContext().getTypeSize(Ty);
-  if (Size <= 128) {
-    // Small structs can use the same direct type whether they're in registers
-    // or on the stack.
-    llvm::Type *BaseTy;
-    unsigned NumBases;
-    int SizeInRegs = (Size + 63) / 64;
-
-    if (getContext().getTypeAlign(Ty) == 128) {
-      BaseTy = llvm::Type::getIntNTy(getVMContext(), 128);
-      NumBases = 1;
-
-      // If the type may need padding registers to ensure "alignment", we must
-      // be careful when this is accounted for. Increasing the effective size
-      // covers all cases.
-      SizeInRegs += FreeIntRegs % 2 != 0;
-    } else {
-      BaseTy = llvm::Type::getInt64Ty(getVMContext());
-      NumBases = SizeInRegs;
-    }
-    llvm::Type *DirectTy = llvm::ArrayType::get(BaseTy, NumBases);
-
-    return tryUseRegs(Ty, FreeIntRegs, /*RegsNeeded=*/ SizeInRegs,
-                      /*IsInt=*/ true, DirectTy);
-  }
-
-  // If the aggregate is > 16 bytes, it's passed and returned indirectly. In
-  // LLVM terms the return uses an "sret" pointer, but that's handled elsewhere.
-  --FreeIntRegs;
-  return ABIArgInfo::getIndirect(0, /* byVal = */ false);
-}
-
-llvm::Value *AArch64ABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
-                                       CodeGenFunction &CGF) const {
-  int FreeIntRegs = 8, FreeVFPRegs = 8;
-  Ty = CGF.getContext().getCanonicalType(Ty);
-  ABIArgInfo AI = classifyGenericType(Ty, FreeIntRegs, FreeVFPRegs);
-
-  return EmitAArch64VAArg(VAListAddr, Ty, 8 - FreeIntRegs, 8 - FreeVFPRegs,
-                          AI.isIndirect(), CGF);
 }
 
 //===----------------------------------------------------------------------===//
@@ -6684,18 +6469,16 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
   case llvm::Triple::mips64el:
     return *(TheTargetCodeGenInfo = new MIPSTargetCodeGenInfo(Types, false));
 
-  case llvm::Triple::arm64:
-  case llvm::Triple::arm64_be: {
-    ARM64ABIInfo::ABIKind Kind = ARM64ABIInfo::AAPCS;
-    if (strcmp(getTarget().getABI(), "darwinpcs") == 0)
-      Kind = ARM64ABIInfo::DarwinPCS;
-
-    return *(TheTargetCodeGenInfo = new ARM64TargetCodeGenInfo(Types, Kind));
-  }
-
   case llvm::Triple::aarch64:
   case llvm::Triple::aarch64_be:
-    return *(TheTargetCodeGenInfo = new AArch64TargetCodeGenInfo(Types));
+  case llvm::Triple::arm64:
+  case llvm::Triple::arm64_be: {
+    AArch64ABIInfo::ABIKind Kind = AArch64ABIInfo::AAPCS;
+    if (strcmp(getTarget().getABI(), "darwinpcs") == 0)
+      Kind = AArch64ABIInfo::DarwinPCS;
+
+    return *(TheTargetCodeGenInfo = new AArch64TargetCodeGenInfo(Types, Kind));
+  }
 
   case llvm::Triple::arm:
   case llvm::Triple::armeb:

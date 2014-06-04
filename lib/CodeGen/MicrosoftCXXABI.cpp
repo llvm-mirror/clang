@@ -50,7 +50,7 @@ public:
   // arbitrary.
   StringRef GetDeletedVirtualCallName() override { return "_purecall"; }
 
-  bool isInlineInitializedStaticDataMemberLinkOnce()  override{ return true; }
+  bool isInlineInitializedStaticDataMemberLinkOnce() override { return true; }
 
   llvm::Value *adjustToCompleteObject(CodeGenFunction &CGF,
                                       llvm::Value *ptr,
@@ -203,6 +203,9 @@ public:
 
   void setThunkLinkage(llvm::Function *Thunk, bool ForVTable) override {
     Thunk->setLinkage(llvm::GlobalValue::WeakAnyLinkage);
+
+    // Never dllimport/dllexport thunks.
+    Thunk->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
   }
 
   llvm::Value *performThisAdjustment(CodeGenFunction &CGF, llvm::Value *This,
@@ -897,14 +900,15 @@ void MicrosoftCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   VPtrInfoVector VFPtrs = VFTContext.getVFPtrOffsets(RD);
   llvm::GlobalVariable::LinkageTypes Linkage = CGM.getVTableLinkage(RD);
 
-  for (VPtrInfoVector::iterator I = VFPtrs.begin(), E = VFPtrs.end(); I != E;
-       ++I) {
-    llvm::GlobalVariable *VTable = getAddrOfVTable(RD, (*I)->FullOffsetInMDC);
+  for (VPtrInfo *Info : VFPtrs) {
+    llvm::GlobalVariable *VTable = getAddrOfVTable(RD, Info->FullOffsetInMDC);
     if (VTable->hasInitializer())
       continue;
+    if (getContext().getLangOpts().RTTI)
+      CGM.getMSCompleteObjectLocator(RD, Info);
 
     const VTableLayout &VTLayout =
-        VFTContext.getVFTableLayout(RD, (*I)->FullOffsetInMDC);
+      VFTContext.getVFTableLayout(RD, Info->FullOffsetInMDC);
     llvm::Constant *Init = CGVT.CreateVTableInitializer(
         RD, VTLayout.vtable_component_begin(),
         VTLayout.getNumVTableComponents(), VTLayout.vtable_thunk_begin(),
@@ -912,6 +916,7 @@ void MicrosoftCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
     VTable->setInitializer(Init);
 
     VTable->setLinkage(Linkage);
+
     CGM.setGlobalVisibility(VTable, RD);
   }
 }
@@ -993,6 +998,10 @@ llvm::GlobalVariable *MicrosoftCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
     VTable = CGM.CreateOrReplaceCXXRuntimeVariable(
         Name.str(), ArrayType, llvm::GlobalValue::ExternalLinkage);
     VTable->setUnnamedAddr(true);
+    if (RD->hasAttr<DLLImportAttr>())
+      VTable->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+    else if (RD->hasAttr<DLLExportAttr>())
+      VTable->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
     break;
   }
 
@@ -1168,6 +1177,12 @@ MicrosoftCXXABI::getAddrOfVBTable(const VPtrInfo &VBT, const CXXRecordDecl *RD,
   llvm::GlobalVariable *GV =
       CGM.CreateOrReplaceCXXRuntimeVariable(Name, VBTableType, Linkage);
   GV->setUnnamedAddr(true);
+
+  if (RD->hasAttr<DLLImportAttr>())
+    GV->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+  else if (RD->hasAttr<DLLExportAttr>())
+    GV->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+
   return GV;
 }
 
@@ -1348,6 +1363,15 @@ llvm::Value* MicrosoftCXXABI::InitializeArrayCookie(CodeGenFunction &CGF,
 void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
                                       llvm::GlobalVariable *GV,
                                       bool PerformInit) {
+  // MSVC only uses guards for static locals.
+  if (!D.isStaticLocal()) {
+    assert(GV->hasWeakLinkage() || GV->hasLinkOnceLinkage());
+    // GlobalOpt is allowed to discard the initializer, so use linkonce_odr.
+    CGF.CurFn->setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
+    CGF.EmitCXXGlobalVarDeclInit(D, GV, PerformInit);
+    return;
+  }
+
   // MSVC always uses an i32 bitfield to guard initialization, which is *not*
   // threadsafe.  Since the user may be linking in inline functions compiled by
   // cl.exe, there's no reason to provide a false sense of security by using
@@ -1361,11 +1385,7 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
   llvm::ConstantInt *Zero = llvm::ConstantInt::get(GuardTy, 0);
 
   // Get the guard variable for this function if we have one already.
-  GuardInfo EmptyGuardInfo;
-  GuardInfo *GI = &EmptyGuardInfo;
-  if (isa<FunctionDecl>(D.getDeclContext())) {
-    GI = &GuardVariableMap[D.getDeclContext()];
-  }
+  GuardInfo *GI = &GuardVariableMap[D.getDeclContext()];
 
   unsigned BitIndex;
   if (D.isStaticLocal() && D.isExternallyVisible()) {

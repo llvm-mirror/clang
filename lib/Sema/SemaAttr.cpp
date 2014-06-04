@@ -109,7 +109,7 @@ bool PragmaPackStack::pop(IdentifierInfo *Name, bool IsReset) {
 /// FreePackedContext - Deallocate and null out PackContext.
 void Sema::FreePackedContext() {
   delete static_cast<PragmaPackStack*>(PackContext);
-  PackContext = 0;
+  PackContext = nullptr;
 }
 
 void Sema::AddAlignmentAttributesForRecord(RecordDecl *RD) {
@@ -143,7 +143,7 @@ void Sema::AddMsStructLayoutForRecord(RecordDecl *RD) {
 
 void Sema::ActOnPragmaOptionsAlign(PragmaOptionsAlignKind Kind,
                                    SourceLocation PragmaLoc) {
-  if (PackContext == 0)
+  if (!PackContext)
     PackContext = new PragmaPackStack();
 
   PragmaPackStack *Context = static_cast<PragmaPackStack*>(PackContext);
@@ -155,14 +155,14 @@ void Sema::ActOnPragmaOptionsAlign(PragmaOptionsAlignKind Kind,
   case POAK_Native:
   case POAK_Power:
   case POAK_Natural:
-    Context->push(0);
+    Context->push(nullptr);
     Context->setAlignment(0);
     break;
 
     // Note that '#pragma options align=packed' is not equivalent to attribute
     // packed, it has a different precedence relative to attribute aligned.
   case POAK_Packed:
-    Context->push(0);
+    Context->push(nullptr);
     Context->setAlignment(1);
     break;
 
@@ -172,14 +172,14 @@ void Sema::ActOnPragmaOptionsAlign(PragmaOptionsAlignKind Kind,
       Diag(PragmaLoc, diag::err_pragma_options_align_mac68k_target_unsupported);
       return;
     }
-    Context->push(0);
+    Context->push(nullptr);
     Context->setAlignment(PackStackEntry::kMac68kAlignmentSentinel);
     break;
 
   case POAK_Reset:
     // Reset just pops the top of the stack, or resets the current alignment to
     // default.
-    if (!Context->pop(0, /*IsReset=*/true)) {
+    if (!Context->pop(nullptr, /*IsReset=*/true)) {
       Diag(PragmaLoc, diag::warn_pragma_options_align_reset_failed)
         << "stack empty";
     }
@@ -211,7 +211,7 @@ void Sema::ActOnPragmaPack(PragmaPackKind Kind, IdentifierInfo *Name,
     AlignmentVal = (unsigned) Val.getZExtValue();
   }
 
-  if (PackContext == 0)
+  if (!PackContext)
     PackContext = new PragmaPackStack();
 
   PragmaPackStack *Context = static_cast<PragmaPackStack*>(PackContext);
@@ -436,7 +436,7 @@ void Sema::ActOnPragmaUnused(const Token &IdTok, Scope *curScope,
 
   IdentifierInfo *Name = IdTok.getIdentifierInfo();
   LookupResult Lookup(*this, Name, IdTok.getLocation(), LookupOrdinaryName);
-  LookupParsedName(Lookup, curScope, NULL, true);
+  LookupParsedName(Lookup, curScope, nullptr, true);
 
   if (Lookup.empty()) {
     Diag(PragmaLoc, diag::warn_pragma_unused_undeclared_var)
@@ -470,6 +470,34 @@ void Sema::AddCFAuditedAttribute(Decl *D) {
   D->addAttr(CFAuditedTransferAttr::CreateImplicit(Context, Loc));
 }
 
+void Sema::ActOnPragmaOptimize(bool On, SourceLocation PragmaLoc) {
+  if(On)
+    OptimizeOffPragmaLocation = SourceLocation();
+  else
+    OptimizeOffPragmaLocation = PragmaLoc;
+}
+
+void Sema::AddRangeBasedOptnone(FunctionDecl *FD) {
+  // In the future, check other pragmas if they're implemented (e.g. pragma
+  // optimize 0 will probably map to this functionality too).
+  if(OptimizeOffPragmaLocation.isValid())
+    AddOptnoneAttributeIfNoConflicts(FD, OptimizeOffPragmaLocation);
+}
+
+void Sema::AddOptnoneAttributeIfNoConflicts(FunctionDecl *FD, 
+                                            SourceLocation Loc) {
+  // Don't add a conflicting attribute. No diagnostic is needed.
+  if (FD->hasAttr<MinSizeAttr>() || FD->hasAttr<AlwaysInlineAttr>())
+    return;
+
+  // Add attributes only if required. Optnone requires noinline as well, but if
+  // either is already present then don't bother adding them.
+  if (!FD->hasAttr<OptimizeNoneAttr>())
+    FD->addAttr(OptimizeNoneAttr::CreateImplicit(Context, Loc));
+  if (!FD->hasAttr<NoInlineAttr>())
+    FD->addAttr(NoInlineAttr::CreateImplicit(Context, Loc));
+}
+
 typedef std::vector<std::pair<unsigned, SourceLocation> > VisStack;
 enum : unsigned { NoVisibility = ~0U };
 
@@ -495,7 +523,7 @@ void Sema::AddPushedVisibilityAttribute(Decl *D) {
 /// FreeVisContext - Deallocate and null out VisContext.
 void Sema::FreeVisContext() {
   delete static_cast<VisStack*>(VisContext);
-  VisContext = 0;
+  VisContext = nullptr;
 }
 
 static void PushPragmaVisibility(Sema &S, unsigned type, SourceLocation loc) {

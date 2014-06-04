@@ -349,7 +349,7 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
                            (*Toks)[Toks->size() - 3].getLocation());
         }
         Actions.ActOnParamDefaultArgument(LM.DefaultArgs[I].Param, EqualLoc,
-                                          DefArgResult.take());
+                                          DefArgResult.get());
       }
 
       assert(!PP.getSourceManager().isBeforeInTranslationUnit(origLoc,
@@ -467,6 +467,9 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
       while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
         ConsumeAnyToken();
   }
+
+  if (CXXMethodDecl *MD = dyn_cast_or_null<CXXMethodDecl>(LM.D))
+    Actions.ActOnFinishInlineMethodDef(MD);
 }
 
 /// ParseLexedMemberInitializers - We finished parsing the member specification
@@ -532,7 +535,7 @@ void Parser::ParseLexedMemberInitializer(LateParsedMemberInitializer &MI) {
                                               EqualLoc);
 
   Actions.ActOnFinishCXXInClassMemberInitializer(MI.Field, EqualLoc,
-                                                 Init.release());
+                                                 Init.get());
 
   // The next token should be our artificial terminating EOF token.
   if (Tok.isNot(tok::eof)) {

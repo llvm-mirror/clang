@@ -1935,6 +1935,10 @@ void OMPClauseEnqueue::VisitOMPSafelenClause(const OMPSafelenClause *C) {
   Visitor->AddStmt(C->getSafelen());
 }
 
+void OMPClauseEnqueue::VisitOMPCollapseClause(const OMPCollapseClause *C) {
+  Visitor->AddStmt(C->getNumForLoops());
+}
+
 void OMPClauseEnqueue::VisitOMPDefaultClause(const OMPDefaultClause *C) { }
 
 void OMPClauseEnqueue::VisitOMPProcBindClause(const OMPProcBindClause *C) { }
@@ -1958,6 +1962,10 @@ void OMPClauseEnqueue::VisitOMPSharedClause(const OMPSharedClause *C) {
 void OMPClauseEnqueue::VisitOMPLinearClause(const OMPLinearClause *C) {
   VisitOMPClauseList(C);
   Visitor->AddStmt(C->getStep());
+}
+void OMPClauseEnqueue::VisitOMPAlignedClause(const OMPAlignedClause *C) {
+  VisitOMPClauseList(C);
+  Visitor->AddStmt(C->getAlignment());
 }
 void OMPClauseEnqueue::VisitOMPCopyinClause(const OMPCopyinClause *C) {
   VisitOMPClauseList(C);
@@ -3875,6 +3883,14 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("attribute(const)");
   case CXCursor_NoDuplicateAttr:
     return cxstring::createRef("attribute(noduplicate)");
+  case CXCursor_CUDAConstantAttr:
+    return cxstring::createRef("attribute(constant)");
+  case CXCursor_CUDADeviceAttr:
+    return cxstring::createRef("attribute(device)");
+  case CXCursor_CUDAGlobalAttr:
+    return cxstring::createRef("attribute(global)");
+  case CXCursor_CUDAHostAttr:
+    return cxstring::createRef("attribute(host)");
   case CXCursor_PreprocessingDirective:
     return cxstring::createRef("preprocessing directive");
   case CXCursor_MacroDefinition:

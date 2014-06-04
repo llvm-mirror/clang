@@ -49,7 +49,7 @@ ASTConsumer *ASTPrintAction::CreateASTConsumer(CompilerInstance &CI,
                                                StringRef InFile) {
   if (raw_ostream *OS = CI.createDefaultOutputFile(false, InFile))
     return CreateASTPrinter(OS, CI.getFrontendOpts().ASTDumpFilter);
-  return 0;
+  return nullptr;
 }
 
 ASTConsumer *ASTDumpAction::CreateASTConsumer(CompilerInstance &CI,
@@ -77,13 +77,14 @@ ASTConsumer *GeneratePCHAction::CreateASTConsumer(CompilerInstance &CI,
                                                   StringRef InFile) {
   std::string Sysroot;
   std::string OutputFile;
-  raw_ostream *OS = 0;
+  raw_ostream *OS = nullptr;
   if (ComputeASTConsumerArguments(CI, InFile, Sysroot, OutputFile, OS))
-    return 0;
+    return nullptr;
 
   if (!CI.getFrontendOpts().RelocatablePCH)
     Sysroot.clear();
-  return new PCHGenerator(CI.getPreprocessor(), OutputFile, 0, Sysroot, OS);
+  return new PCHGenerator(CI.getPreprocessor(), OutputFile, nullptr, Sysroot,
+                          OS);
 }
 
 bool GeneratePCHAction::ComputeASTConsumerArguments(CompilerInstance &CI,
@@ -114,10 +115,10 @@ ASTConsumer *GenerateModuleAction::CreateASTConsumer(CompilerInstance &CI,
                                                      StringRef InFile) {
   std::string Sysroot;
   std::string OutputFile;
-  raw_ostream *OS = 0;
+  raw_ostream *OS = nullptr;
   if (ComputeASTConsumerArguments(CI, InFile, Sysroot, OutputFile, OS))
-    return 0;
-  
+    return nullptr;
+
   return new PCHGenerator(CI.getPreprocessor(), OutputFile, Module, 
                           Sysroot, OS);
 }
@@ -152,7 +153,7 @@ static llvm::error_code addHeaderInclude(StringRef HeaderName,
   Includes += "\"\n";
   if (IsExternC && LangOpts.CPlusPlus)
     Includes += "}\n";
-  return llvm::error_code::success();
+  return llvm::error_code();
 }
 
 static llvm::error_code addHeaderInclude(const FileEntry *Header,
@@ -175,7 +176,7 @@ collectModuleHeaderIncludes(const LangOptions &LangOpts, FileManager &FileMgr,
                             SmallVectorImpl<char> &Includes) {
   // Don't collect any headers for unavailable modules.
   if (!Module->isAvailable())
-    return llvm::error_code::success();
+    return llvm::error_code();
 
   // Add includes for each of these headers.
   for (unsigned I = 0, N = Module->NormalHeaders.size(); I != N; ++I) {
@@ -236,7 +237,7 @@ collectModuleHeaderIncludes(const LangOptions &LangOpts, FileManager &FileMgr,
             LangOpts, FileMgr, ModMap, *Sub, Includes))
       return Err;
 
-  return llvm::error_code::success();
+  return llvm::error_code();
 }
 
 bool GenerateModuleAction::BeginSourceFileAction(CompilerInstance &CI, 
@@ -309,7 +310,7 @@ bool GenerateModuleAction::BeginSourceFileAction(CompilerInstance &CI,
 
   // Collect the set of #includes we need to build the module.
   SmallString<256> HeaderContents;
-  llvm::error_code Err = llvm::error_code::success();
+  llvm::error_code Err = llvm::error_code();
   if (const FileEntry *UmbrellaHeader = Module->getUmbrellaHeader())
     Err = addHeaderInclude(UmbrellaHeader, HeaderContents, CI.getLangOpts(),
                            Module->IsExternC);
