@@ -362,7 +362,7 @@ public:
 
   bool isKernelStatic() const override {
     return !isTargetIPhoneOS() || isIPhoneOSVersionLT(6, 0) ||
-           getTriple().getArch() == llvm::Triple::arm64;
+           getTriple().getArch() == llvm::Triple::aarch64;
   }
 
 protected:
@@ -426,6 +426,11 @@ public:
   /// }
   /// @name ToolChain Implementation
   /// {
+
+  // Darwin tools support multiple architecture (e.g., i386 and x86_64) and
+  // most development is done against SDKs, so compiling for a different
+  // architecture should not get any special treatment.
+  bool isCrossCompiling() const override { return false; }
 
   llvm::opt::DerivedArgList *
   TranslateArgs(const llvm::opt::DerivedArgList &Args,
@@ -535,6 +540,14 @@ public:
 
   unsigned GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
     return 2;
+  }
+
+  virtual bool IsIntegratedAssemblerDefault() const override {
+    if (getTriple().getArch() == llvm::Triple::ppc ||
+        getTriple().getArch() == llvm::Triple::sparc ||
+        getTriple().getArch() == llvm::Triple::sparcv9)
+      return true;
+    return Generic_ELF::IsIntegratedAssemblerDefault();
   }
 
 protected:

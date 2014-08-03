@@ -16,6 +16,7 @@
 
 #include "CGVTables.h"
 #include "CodeGenTypes.h"
+#include "SanitizerBlacklist.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
@@ -31,7 +32,6 @@
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ValueHandle.h"
-#include "llvm/Transforms/Utils/SpecialCaseList.h"
 
 namespace llvm {
 class Module;
@@ -71,7 +71,6 @@ class CodeGenOptions;
 class DiagnosticsEngine;
 class AnnotateAttr;
 class CXXDestructorDecl;
-class MangleBuffer;
 class Module;
 
 namespace CodeGen {
@@ -219,12 +218,36 @@ struct ARCEntrypoints {
 };
 
 /// This class records statistics on instrumentation based profiling.
-struct InstrProfStats {
-  InstrProfStats() : Visited(0), Missing(0), Mismatched(0) {}
-  bool isOutOfDate() { return Missing || Mismatched; }
+class InstrProfStats {
+  uint32_t VisitedInMainFile;
+  uint32_t MissingInMainFile;
   uint32_t Visited;
   uint32_t Missing;
   uint32_t Mismatched;
+
+public:
+  InstrProfStats()
+      : VisitedInMainFile(0), MissingInMainFile(0), Visited(0), Missing(0),
+        Mismatched(0) {}
+  /// Record that we've visited a function and whether or not that function was
+  /// in the main source file.
+  void addVisited(bool MainFile) {
+    if (MainFile)
+      ++VisitedInMainFile;
+    ++Visited;
+  }
+  /// Record that a function we've visited has no profile data.
+  void addMissing(bool MainFile) {
+    if (MainFile)
+      ++MissingInMainFile;
+    ++Missing;
+  }
+  /// Record that a function we've visited has mismatched profile data.
+  void addMismatched(bool MainFile) { ++Mismatched; }
+  /// Whether or not the stats we've gathered indicate any potential problems.
+  bool hasDiagnostics() { return Missing || Mismatched; }
+  /// Report potential problems we've found to \c Diags.
+  void reportDiagnostics(DiagnosticsEngine &Diags, StringRef MainFile);
 };
 
 /// This class organizes the cross-function state that is used while generating
@@ -288,7 +311,7 @@ class CodeGenModule : public CodeGenTypeCache {
   /// for emission and therefore should only be output if they are actually
   /// used. If a decl is in this, then it is known to have not been referenced
   /// yet.
-  llvm::StringMap<GlobalDecl> DeferredDecls;
+  std::map<StringRef, GlobalDecl> DeferredDecls;
 
   /// This is a list of deferred decls which we have seen that *are* actually
   /// referenced. These get code generated when the module is done.
@@ -326,10 +349,10 @@ class CodeGenModule : public CodeGenTypeCache {
   /// emitted when the translation unit is complete.
   CtorList GlobalDtors;
 
-  /// A map of canonical GlobalDecls to their mangled names.
-  llvm::DenseMap<GlobalDecl, StringRef> MangledDeclNames;
-  llvm::BumpPtrAllocator MangledNamesAllocator;
-  
+  /// An ordered map of canonical GlobalDecls to their mangled names.
+  llvm::MapVector<GlobalDecl, StringRef> MangledDeclNames;
+  llvm::StringMap<GlobalDecl, llvm::BumpPtrAllocator> Manglings;
+
   /// Global annotations.
   std::vector<llvm::Constant*> Annotations;
 
@@ -338,9 +361,7 @@ class CodeGenModule : public CodeGenTypeCache {
 
   llvm::StringMap<llvm::Constant*> CFConstantStringMap;
 
-  llvm::StringMap<llvm::GlobalVariable *> Constant1ByteStringMap;
-  llvm::StringMap<llvm::GlobalVariable *> Constant2ByteStringMap;
-  llvm::StringMap<llvm::GlobalVariable *> Constant4ByteStringMap;
+  llvm::DenseMap<llvm::Constant *, llvm::GlobalVariable *> ConstantStringMap;
   llvm::DenseMap<const Decl*, llvm::Constant *> StaticLocalDeclMap;
   llvm::DenseMap<const Decl*, llvm::GlobalVariable*> StaticLocalDeclGuardMap;
   llvm::DenseMap<const Expr*, llvm::Constant *> MaterializedGlobalTemporaryMap;
@@ -450,9 +471,7 @@ class CodeGenModule : public CodeGenTypeCache {
 
   GlobalDecl initializedGlobalDecl;
 
-  std::unique_ptr<llvm::SpecialCaseList> SanitizerBlacklist;
-
-  const SanitizerOptions &SanOpts;
+  SanitizerBlacklist SanitizerBL;
 
   /// @}
 public:
@@ -522,6 +541,9 @@ public:
                                       llvm::GlobalVariable *C) {
     StaticLocalDeclGuardMap[D] = C;
   }
+
+  bool lookupRepresentativeDecl(StringRef MangledName,
+                                GlobalDecl &Result) const;
 
   llvm::Constant *getAtomicSetterHelperFnMap(QualType Ty) {
     return AtomicSetterHelperFnMap[Ty];
@@ -721,12 +743,6 @@ public:
   /// The type of a generic block literal.
   llvm::Type *getGenericBlockLiteralType();
 
-  /// \brief Gets or a creats a Microsoft TypeDescriptor.
-  llvm::Constant *getMSTypeDescriptor(QualType Ty);
-  /// \brief Gets or a creats a Microsoft CompleteObjectLocator.
-  llvm::GlobalVariable *getMSCompleteObjectLocator(const CXXRecordDecl *RD,
-                                                   const VPtrInfo *Info);
-
   /// Gets the address of a block which requires no captures.
   llvm::Constant *GetAddrOfGlobalBlock(const BlockExpr *BE, const char *);
   
@@ -742,33 +758,22 @@ public:
   llvm::Constant *GetConstantArrayFromStringLiteral(const StringLiteral *E);
 
   /// Return a pointer to a constant array for the given string literal.
-  llvm::Constant *GetAddrOfConstantStringFromLiteral(const StringLiteral *S);
+  llvm::GlobalVariable *
+  GetAddrOfConstantStringFromLiteral(const StringLiteral *S);
 
   /// Return a pointer to a constant array for the given ObjCEncodeExpr node.
-  llvm::Constant *GetAddrOfConstantStringFromObjCEncode(const ObjCEncodeExpr *);
-
-  /// Returns a pointer to a character array containing the literal. This
-  /// contents are exactly that of the given string, i.e. it will not be null
-  /// terminated automatically; see GetAddrOfConstantCString. Note that whether
-  /// the result is actually a pointer to an LLVM constant depends on
-  /// Feature.WriteableStrings.
-  ///
-  /// The result has pointer to array type.
-  ///
-  /// \param GlobalName If provided, the name to use for the global
-  /// (if one is created).
-  llvm::Constant *GetAddrOfConstantString(StringRef Str,
-                                          const char *GlobalName=nullptr,
-                                          unsigned Alignment=0);
+  llvm::GlobalVariable *
+  GetAddrOfConstantStringFromObjCEncode(const ObjCEncodeExpr *);
 
   /// Returns a pointer to a character array containing the literal and a
   /// terminating '\0' character. The result has pointer to array type.
   ///
   /// \param GlobalName If provided, the name to use for the global (if one is
   /// created).
-  llvm::Constant *GetAddrOfConstantCString(const std::string &str,
-                                           const char *GlobalName=nullptr,
-                                           unsigned Alignment=0);
+  llvm::GlobalVariable *
+  GetAddrOfConstantCString(const std::string &Str,
+                           const char *GlobalName = nullptr,
+                           unsigned Alignment = 0);
 
   /// Returns a pointer to a constant global variable for the given file-scope
   /// compound literal expression.
@@ -937,8 +942,7 @@ public:
                               bool AttrOnCallSite);
 
   StringRef getMangledName(GlobalDecl GD);
-  void getBlockMangledName(GlobalDecl GD, MangleBuffer &Buffer,
-                           const BlockDecl *BD);
+  StringRef getBlockMangledName(GlobalDecl GD, const BlockDecl *BD);
 
   void EmitTentativeDefinition(const VarDecl *D);
 
@@ -961,9 +965,6 @@ public:
   void setFunctionLinkage(GlobalDecl GD, llvm::Function *F) {
     F->setLinkage(getFunctionLinkage(GD));
   }
-
-  /// \brief Returns the appropriate linkage for the TypeInfo struct for a type.
-  llvm::GlobalVariable::LinkageTypes getTypeInfoLinkage(QualType Ty);
 
   /// Return the appropriate linkage for the vtable, VTT, and type information
   /// of the given class.
@@ -1008,11 +1009,18 @@ public:
   /// annotations are emitted during finalization of the LLVM code.
   void AddGlobalAnnotations(const ValueDecl *D, llvm::GlobalValue *GV);
 
-  const llvm::SpecialCaseList &getSanitizerBlacklist() const {
-    return *SanitizerBlacklist;
+  const SanitizerBlacklist &getSanitizerBlacklist() const {
+    return SanitizerBL;
   }
 
-  const SanitizerOptions &getSanOpts() const { return SanOpts; }
+  void reportGlobalToASan(llvm::GlobalVariable *GV, const VarDecl &D,
+                          bool IsDynInit = false);
+  void reportGlobalToASan(llvm::GlobalVariable *GV, SourceLocation Loc,
+                          StringRef Name, bool IsDynInit = false,
+                          bool IsBlacklisted = false);
+
+  /// Disable sanitizer instrumentation for this global.
+  void disableSanitizerForGlobal(llvm::GlobalVariable *GV);
 
   void addDeferredVTable(const CXXRecordDecl *RD) {
     DeferredVTables.push_back(RD);
@@ -1090,6 +1098,9 @@ private:
                                     llvm::GlobalVariable *Addr,
                                     bool PerformInit);
 
+  void EmitPointerToInitFunc(const VarDecl *VD, llvm::GlobalVariable *Addr,
+                             llvm::Function *InitFunc, InitSegAttr *ISA);
+
   // FIXME: Hardcoding priority here is gross.
   void AddGlobalCtor(llvm::Function *Ctor, int Priority = 65535,
                      llvm::Constant *AssociatedData = 0);
@@ -1128,6 +1139,9 @@ private:
 
   /// \brief Emit the Clang version as llvm.ident metadata.
   void EmitVersionIdentMetadata();
+
+  /// Emits target specific Metadata for global declarations.
+  void EmitTargetMetadata();
 
   /// Emit the llvm.gcov metadata used to tell LLVM where to emit the .gcno and
   /// .gcda files in a way that persists in .bc files.

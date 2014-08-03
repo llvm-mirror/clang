@@ -97,6 +97,20 @@ struct ScalarEnumerationTraits<FormatStyle::NamespaceIndentationKind> {
 };
 
 template <>
+struct ScalarEnumerationTraits<FormatStyle::PointerAlignmentStyle> {
+  static void enumeration(IO &IO,
+                          FormatStyle::PointerAlignmentStyle &Value) {
+    IO.enumCase(Value, "Middle", FormatStyle::PAS_Middle);
+    IO.enumCase(Value, "Left", FormatStyle::PAS_Left);
+    IO.enumCase(Value, "Right", FormatStyle::PAS_Right);
+
+    // For backward compatibility.
+    IO.enumCase(Value, "true", FormatStyle::PAS_Left);
+    IO.enumCase(Value, "false", FormatStyle::PAS_Right);
+  }
+};
+
+template <>
 struct ScalarEnumerationTraits<FormatStyle::SpaceBeforeParensOptions> {
   static void enumeration(IO &IO,
                           FormatStyle::SpaceBeforeParensOptions &Value) {
@@ -173,10 +187,14 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("ColumnLimit", Style.ColumnLimit);
     IO.mapOptional("ConstructorInitializerAllOnOneLineOrOnePerLine",
                    Style.ConstructorInitializerAllOnOneLineOrOnePerLine);
-    IO.mapOptional("DerivePointerBinding", Style.DerivePointerBinding);
+    IO.mapOptional("DerivePointerAlignment", Style.DerivePointerAlignment);
     IO.mapOptional("ExperimentalAutoDetectBinPacking",
                    Style.ExperimentalAutoDetectBinPacking);
     IO.mapOptional("IndentCaseLabels", Style.IndentCaseLabels);
+    IO.mapOptional("IndentWrappedFunctionNames",
+                   Style.IndentWrappedFunctionNames);
+    IO.mapOptional("IndentFunctionDeclarationAfterType",
+                   Style.IndentWrappedFunctionNames);
     IO.mapOptional("MaxEmptyLinesToKeep", Style.MaxEmptyLinesToKeep);
     IO.mapOptional("KeepEmptyLinesAtTheStartOfBlocks",
                    Style.KeepEmptyLinesAtTheStartOfBlocks);
@@ -193,7 +211,7 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("PenaltyExcessCharacter", Style.PenaltyExcessCharacter);
     IO.mapOptional("PenaltyReturnTypeOnItsOwnLine",
                    Style.PenaltyReturnTypeOnItsOwnLine);
-    IO.mapOptional("PointerBindsToType", Style.PointerBindsToType);
+    IO.mapOptional("PointerAlignment", Style.PointerAlignment);
     IO.mapOptional("SpacesBeforeTrailingComments",
                    Style.SpacesBeforeTrailingComments);
     IO.mapOptional("Cpp11BracedListStyle", Style.Cpp11BracedListStyle);
@@ -202,8 +220,6 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("TabWidth", Style.TabWidth);
     IO.mapOptional("UseTab", Style.UseTab);
     IO.mapOptional("BreakBeforeBraces", Style.BreakBeforeBraces);
-    IO.mapOptional("IndentFunctionDeclarationAfterType",
-                   Style.IndentFunctionDeclarationAfterType);
     IO.mapOptional("SpacesInParentheses", Style.SpacesInParentheses);
     IO.mapOptional("SpacesInAngles", Style.SpacesInAngles);
     IO.mapOptional("SpaceInEmptyParentheses", Style.SpaceInEmptyParentheses);
@@ -221,6 +237,8 @@ template <> struct MappingTraits<FormatStyle> {
     if (!IO.outputting()) {
       IO.mapOptional("SpaceAfterControlStatementKeyword",
                      Style.SpaceBeforeParens);
+      IO.mapOptional("PointerBindsToType", Style.PointerAlignment);
+      IO.mapOptional("DerivePointerBinding", Style.DerivePointerAlignment);
     }
     IO.mapOptional("SpaceBeforeParens", Style.SpaceBeforeParens);
     IO.mapOptional("DisableFormat", Style.DisableFormat);
@@ -258,6 +276,30 @@ template <> struct DocumentListTraits<std::vector<FormatStyle> > {
 namespace clang {
 namespace format {
 
+const std::error_category &getParseCategory() {
+  static ParseErrorCategory C;
+  return C;
+}
+std::error_code make_error_code(ParseError e) {
+  return std::error_code(static_cast<int>(e), getParseCategory());
+}
+
+const char *ParseErrorCategory::name() const LLVM_NOEXCEPT {
+  return "clang-format.parse_error";
+}
+
+std::string ParseErrorCategory::message(int EV) const {
+  switch (static_cast<ParseError>(EV)) {
+  case ParseError::Success:
+    return "Success";
+  case ParseError::Error:
+    return "Invalid argument";
+  case ParseError::Unsuitable:
+    return "Unsuitable";
+  }
+  llvm_unreachable("unexpected parse error");
+}
+
 FormatStyle getLLVMStyle() {
   FormatStyle LLVMStyle;
   LLVMStyle.Language = FormatStyle::LK_Cpp;
@@ -282,13 +324,13 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.ConstructorInitializerIndentWidth = 4;
   LLVMStyle.ContinuationIndentWidth = 4;
   LLVMStyle.Cpp11BracedListStyle = true;
-  LLVMStyle.DerivePointerBinding = false;
+  LLVMStyle.DerivePointerAlignment = false;
   LLVMStyle.ExperimentalAutoDetectBinPacking = false;
   LLVMStyle.ForEachMacros.push_back("foreach");
   LLVMStyle.ForEachMacros.push_back("Q_FOREACH");
   LLVMStyle.ForEachMacros.push_back("BOOST_FOREACH");
   LLVMStyle.IndentCaseLabels = false;
-  LLVMStyle.IndentFunctionDeclarationAfterType = false;
+  LLVMStyle.IndentWrappedFunctionNames = false;
   LLVMStyle.IndentWidth = 2;
   LLVMStyle.TabWidth = 8;
   LLVMStyle.MaxEmptyLinesToKeep = 1;
@@ -296,7 +338,7 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.NamespaceIndentation = FormatStyle::NI_None;
   LLVMStyle.ObjCSpaceAfterProperty = false;
   LLVMStyle.ObjCSpaceBeforeProtocolList = true;
-  LLVMStyle.PointerBindsToType = false;
+  LLVMStyle.PointerAlignment = FormatStyle::PAS_Right;
   LLVMStyle.SpacesBeforeTrailingComments = 1;
   LLVMStyle.Standard = FormatStyle::LS_Cpp11;
   LLVMStyle.UseTab = FormatStyle::UT_Never;
@@ -331,13 +373,12 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
   GoogleStyle.AlwaysBreakBeforeMultilineStrings = true;
   GoogleStyle.AlwaysBreakTemplateDeclarations = true;
   GoogleStyle.ConstructorInitializerAllOnOneLineOrOnePerLine = true;
-  GoogleStyle.DerivePointerBinding = true;
+  GoogleStyle.DerivePointerAlignment = true;
   GoogleStyle.IndentCaseLabels = true;
-  GoogleStyle.IndentFunctionDeclarationAfterType = true;
   GoogleStyle.KeepEmptyLinesAtTheStartOfBlocks = false;
   GoogleStyle.ObjCSpaceAfterProperty = false;
   GoogleStyle.ObjCSpaceBeforeProtocolList = false;
-  GoogleStyle.PointerBindsToType = true;
+  GoogleStyle.PointerAlignment = FormatStyle::PAS_Left;
   GoogleStyle.SpacesBeforeTrailingComments = 2;
   GoogleStyle.Standard = FormatStyle::LS_Auto;
 
@@ -363,7 +404,7 @@ FormatStyle getChromiumStyle(FormatStyle::LanguageKind Language) {
   ChromiumStyle.AllowShortIfStatementsOnASingleLine = false;
   ChromiumStyle.AllowShortLoopsOnASingleLine = false;
   ChromiumStyle.BinPackParameters = false;
-  ChromiumStyle.DerivePointerBinding = false;
+  ChromiumStyle.DerivePointerAlignment = false;
   ChromiumStyle.Standard = FormatStyle::LS_Cpp03;
   return ChromiumStyle;
 }
@@ -373,12 +414,12 @@ FormatStyle getMozillaStyle() {
   MozillaStyle.AllowAllParametersOfDeclarationOnNextLine = false;
   MozillaStyle.Cpp11BracedListStyle = false;
   MozillaStyle.ConstructorInitializerAllOnOneLineOrOnePerLine = true;
-  MozillaStyle.DerivePointerBinding = true;
+  MozillaStyle.DerivePointerAlignment = true;
   MozillaStyle.IndentCaseLabels = true;
   MozillaStyle.ObjCSpaceAfterProperty = true;
   MozillaStyle.ObjCSpaceBeforeProtocolList = false;
   MozillaStyle.PenaltyReturnTypeOnItsOwnLine = 200;
-  MozillaStyle.PointerBindsToType = true;
+  MozillaStyle.PointerAlignment = FormatStyle::PAS_Left;
   MozillaStyle.Standard = FormatStyle::LS_Cpp03;
   return MozillaStyle;
 }
@@ -395,7 +436,7 @@ FormatStyle getWebKitStyle() {
   Style.IndentWidth = 4;
   Style.NamespaceIndentation = FormatStyle::NI_Inner;
   Style.ObjCSpaceAfterProperty = true;
-  Style.PointerBindsToType = true;
+  Style.PointerAlignment = FormatStyle::PAS_Left;
   Style.Standard = FormatStyle::LS_Cpp03;
   return Style;
 }
@@ -442,12 +483,12 @@ bool getPredefinedStyle(StringRef Name, FormatStyle::LanguageKind Language,
   return true;
 }
 
-llvm::error_code parseConfiguration(StringRef Text, FormatStyle *Style) {
+std::error_code parseConfiguration(StringRef Text, FormatStyle *Style) {
   assert(Style);
   FormatStyle::LanguageKind Language = Style->Language;
   assert(Language != FormatStyle::LK_None);
   if (Text.trim().empty())
-    return llvm::make_error_code(llvm::errc::invalid_argument);
+    return make_error_code(ParseError::Error);
 
   std::vector<FormatStyle> Styles;
   llvm::yaml::Input Input(Text);
@@ -463,14 +504,14 @@ llvm::error_code parseConfiguration(StringRef Text, FormatStyle *Style) {
   for (unsigned i = 0; i < Styles.size(); ++i) {
     // Ensures that only the first configuration can skip the Language option.
     if (Styles[i].Language == FormatStyle::LK_None && i != 0)
-      return llvm::make_error_code(llvm::errc::invalid_argument);
+      return make_error_code(ParseError::Error);
     // Ensure that each language is configured at most once.
     for (unsigned j = 0; j < i; ++j) {
       if (Styles[i].Language == Styles[j].Language) {
         DEBUG(llvm::dbgs()
               << "Duplicate languages in the config file on positions " << j
               << " and " << i << "\n");
-        return llvm::make_error_code(llvm::errc::invalid_argument);
+        return make_error_code(ParseError::Error);
       }
     }
   }
@@ -482,10 +523,10 @@ llvm::error_code parseConfiguration(StringRef Text, FormatStyle *Style) {
         Styles[i].Language == FormatStyle::LK_None) {
       *Style = Styles[i];
       Style->Language = Language;
-      return llvm::error_code();
+      return make_error_code(ParseError::Success);
     }
   }
-  return llvm::make_error_code(llvm::errc::not_supported);
+  return make_error_code(ParseError::Unsuitable);
 }
 
 std::string configurationAsText(const FormatStyle &Style) {
@@ -1164,7 +1205,8 @@ private:
       return true;
 
     if (NewLine) {
-      int AdditionalIndent = 0;
+      int AdditionalIndent =
+          State.FirstIndent - State.Line->Level * Style.IndentWidth;
       if (State.Stack.size() < 2 ||
           !State.Stack[State.Stack.size() - 2].JSFunctionInlined) {
         AdditionalIndent = State.Stack.back().Indent -
@@ -1881,11 +1923,11 @@ private:
         Tok = Tok->Next;
       }
     }
-    if (Style.DerivePointerBinding) {
+    if (Style.DerivePointerAlignment) {
       if (CountBoundToType > CountBoundToVariable)
-        Style.PointerBindsToType = true;
+        Style.PointerAlignment = FormatStyle::PAS_Left;
       else if (CountBoundToType < CountBoundToVariable)
-        Style.PointerBindsToType = false;
+        Style.PointerAlignment = FormatStyle::PAS_Right;
     }
     if (Style.Standard == FormatStyle::LS_Auto) {
       Style.Standard = HasCpp03IncompatibleFormat ? FormatStyle::LS_Cpp11
@@ -2001,7 +2043,7 @@ FormatStyle getStyle(StringRef StyleName, StringRef FileName,
 
   if (StyleName.startswith("{")) {
     // Parse YAML/JSON style from the command line.
-    if (llvm::error_code ec = parseConfiguration(StyleName, &Style)) {
+    if (std::error_code ec = parseConfiguration(StyleName, &Style)) {
       llvm::errs() << "Error parsing -style: " << ec.message() << ", using "
                    << FallbackStyle << " style\n";
     }
@@ -2041,14 +2083,15 @@ FormatStyle getStyle(StringRef StyleName, StringRef FileName,
     }
 
     if (IsFile) {
-      std::unique_ptr<llvm::MemoryBuffer> Text;
-      if (llvm::error_code ec =
-              llvm::MemoryBuffer::getFile(ConfigFile.c_str(), Text)) {
-        llvm::errs() << ec.message() << "\n";
+      llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> Text =
+          llvm::MemoryBuffer::getFile(ConfigFile.c_str());
+      if (std::error_code EC = Text.getError()) {
+        llvm::errs() << EC.message() << "\n";
         break;
       }
-      if (llvm::error_code ec = parseConfiguration(Text->getBuffer(), &Style)) {
-        if (ec == llvm::errc::not_supported) {
+      if (std::error_code ec =
+              parseConfiguration(Text.get()->getBuffer(), &Style)) {
+        if (ec == ParseError::Unsuitable) {
           if (!UnsuitableConfigFiles.empty())
             UnsuitableConfigFiles.append(", ");
           UnsuitableConfigFiles.append(ConfigFile);

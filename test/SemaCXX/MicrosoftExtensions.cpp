@@ -144,10 +144,13 @@ extern void static_func();
 void static_func(); // expected-note {{previous declaration is here}}
 
 
-static void static_func() // expected-warning {{static declaration of 'static_func' follows non-static declaration}}
+static void static_func() // expected-warning {{redeclaring non-static 'static_func' as static is a Microsoft extension}}
 {
 
 }
+
+extern const int static_var; // expected-note {{previous declaration is here}}
+static const int static_var = 3; // expected-warning {{redeclaring non-static 'static_var' as static is a Microsoft extension}}
 
 long function_prototype(int a);
 long (*function_ptr)(int a);
@@ -171,29 +174,6 @@ void pointer_to_integral_type_conv(char* ptr) {
 
    // This is bad.
    b = reinterpret_cast<bool>(ptr); // expected-error {{cast from pointer to smaller type 'bool' loses information}}
-}
-
-namespace friend_as_a_forward_decl {
-
-class A {
-  class Nested {
-    friend class B;
-    B* b;
-  };
-  B* b;
-};
-B* global_b;
-
-
-void f()
-{
-  class Local {
-    friend class Z;
-    Z* b;
-  };
-  Z* b;
-}
-
 }
 
 struct PR11150 {

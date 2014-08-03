@@ -19,7 +19,7 @@ MSVC.  There are multiple dimensions to compatibility.
 
 First, Clang attempts to be ABI-compatible, meaning that Clang-compiled code
 should be able to link against MSVC-compiled code successfully.  However, C++
-ABIs are particular large and complicated, and Clang's support for MSVC's C++
+ABIs are particularly large and complicated, and Clang's support for MSVC's C++
 ABI is a work in progress.  If you don't require MSVC ABI compatibility or don't
 want to use Microsoft's C and C++ runtimes, the mingw32 toolchain might be a
 better fit for your project.
@@ -43,14 +43,14 @@ ABI features
 
 The status of major ABI-impacting C++ features:
 
-* Record layout: :good:`Mostly complete`.  We've tested this with a fuzzer, and
-  most of the remaining failures involve ``#pragma pack``,
-  ``__declspec(align(N))``, or other pragmas.
+* Record layout: :good:`Complete`.  We've tested this with a fuzzer and have
+  fixed all known bugs.
 
 * Class inheritance: :good:`Mostly complete`.  This covers all of the standard
   OO features you would expect: virtual method inheritance, multiple
   inheritance, and virtual inheritance.  Every so often we uncover a bug where
-  our tables are incompatible, but this is pretty well in hand.
+  our tables are incompatible, but this is pretty well in hand.  This feature
+  has also been fuzz tested.
 
 * Name mangling: :good:`Ongoing`.  Every new C++ feature generally needs its own
   mangling.  For example, member pointer template arguments have an interesting
@@ -78,47 +78,64 @@ The status of major ABI-impacting C++ features:
   enabling stack traces in all modern Windows debuggers.  Clang does not emit
   any type info or description of variable layout.
 
-* `RTTI`_: :none:`Unstarted`.  See the bug for a discussion of what needs to
-  happen first.
-
-.. _RTTI: http://llvm.org/PR18951
+* RTTI: :good:`Complete`.  Generation of RTTI data structures has been
+  finished, along with support for the ``/GR`` flag.
 
 * Exceptions and SEH: :none:`Unstarted`.  Clang can parse both constructs, but
-  does not know how to emit compatible handlers.  This depends on RTTI.
+  does not know how to emit compatible handlers.
 
 * Thread-safe initialization of local statics: :none:`Unstarted`.  We are ABI
-  compatible with MSVC 2012, which does not support thread-safe local statics.
-  MSVC 2013 changed the ABI to make initialization of local statics thread safe,
+  compatible with MSVC 2013, which does not support thread-safe local statics.
+  MSVC "14" changed the ABI to make initialization of local statics thread safe,
   and we have not yet implemented this.
 
-* Lambdas in ABI boundaries: :none:`Infeasible`.  It is unlikely that we will
-  ever be fully ABI compatible with lambdas declared in inline functions due to
-  what appears to be a hash code in the name mangling.  Lambdas that are not
-  externally visible should work fine.
+* Lambdas: :good:`Mostly complete`.  Clang is compatible with Microsoft's
+  implementation of lambdas except for providing overloads for conversion to
+  function pointer for different calling conventions.  However, Microsoft's
+  extension is non-conforming.
 
 Template instantiation and name lookup
 ======================================
 
-In addition to the usual `dependent name lookup FAQs`_, Clang is often unable to
-parse certain invalid C++ constructs that MSVC allows.  As of this writing,
-Clang will reject code with missing ``typename`` annotations:
+MSVC allows many invalid constructs in class templates that Clang has
+historically rejected.  In order to parse widely distributed headers for
+libraries such as the Active Template Library (ATL) and Windows Runtime Library
+(WRL), some template rules have been relaxed or extended in Clang on Windows.
 
-.. _dependent name lookup FAQs:
+The first major semantic difference is that MSVC appears to defer all parsing
+an analysis of inline method bodies in class templates until instantiation
+time.  By default on Windows, Clang attempts to follow suit.  This behavior is
+controlled by the ``-fdelayed-template-parsing`` flag.  While Clang delays
+parsing of method bodies, it still parses the bodies *before* template argument
+substitution, which is not what MSVC does.  The following compatibility tweaks
+are necessary to parse the the template in those cases.
+
+MSVC allows some name lookup into dependent base classes.  Even on other
+platforms, this has been a `frequently asked question`_ for Clang users.  A
+dependent base class is a base class that depends on the value of a template
+parameter.  Clang cannot see any of the names inside dependent bases while it
+is parsing your template, so the user is sometimes required to use the
+``typename`` keyword to assist the parser.  On Windows, Clang attempts to
+follow the normal lookup rules, but if lookup fails, it will assume that the
+user intended to find the name in a dependent base.  While parsing the
+following program, Clang will recover as if the user had written the
+commented-out code:
+
+.. _frequently asked question:
   http://clang.llvm.org/compatibility.html#dep_lookup
 
 .. code-block:: c++
 
-  struct X {
-    typedef int type;
+  template <typename T>
+  struct Foo : T {
+    void f() {
+      /*typename*/ T::UnknownType x =  /*this->*/unknownMember;
+    }
   };
-  template<typename T> int f() {
-    // missing typename keyword
-    return sizeof(/*typename*/ T::type);
-  }
-  template void f<X>();
 
-Accepting code like this is ongoing work.  Ultimately, it may be cleaner to
-`implement a token-based template instantiation mode`_ than it is to add
-compatibility hacks to the existing AST-based instantiation.
+After recovery, Clang warns the user that this code is non-standard and issues
+a hint suggesting how to fix the problem.
 
-.. _implement a token-based template instantiation mode: http://llvm.org/PR18714
+As of this writing, Clang is able to compile a simple ATL hello world
+application.  There are still issues parsing WRL headers for modern Windows 8
+apps, but they should be addressed soon.

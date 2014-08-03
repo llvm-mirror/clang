@@ -1770,8 +1770,7 @@ static void CheckProtocolMethodDefs(Sema &S,
               if (C || MethodInClass->isPropertyAccessor())
                 continue;
             unsigned DIAG = diag::warn_unimplemented_protocol_method;
-            if (S.Diags.getDiagnosticLevel(DIAG, ImpLoc)
-                != DiagnosticsEngine::Ignored) {
+            if (!S.Diags.isIgnored(DIAG, ImpLoc)) {
               WarnUndefinedMethod(S, ImpLoc, method, IncompleteImpl, DIAG,
                                   PDecl);
             }
@@ -1794,8 +1793,7 @@ static void CheckProtocolMethodDefs(Sema &S,
         continue;
 
       unsigned DIAG = diag::warn_unimplemented_protocol_method;
-      if (S.Diags.getDiagnosticLevel(DIAG, ImpLoc) !=
-            DiagnosticsEngine::Ignored) {
+      if (!S.Diags.isIgnored(DIAG, ImpLoc)) {
         WarnUndefinedMethod(S, ImpLoc, method, IncompleteImpl, DIAG, PDecl);
       }
     }
@@ -2109,7 +2107,12 @@ static bool matchTypes(ASTContext &Context, Sema::MethodMatchStrategy strategy,
   // validate the basic, low-level compatibility of the two types.
 
   // As a minimum, require the sizes and alignments to match.
-  if (Context.getTypeInfo(left) != Context.getTypeInfo(right))
+  TypeInfo LeftTI = Context.getTypeInfo(left);
+  TypeInfo RightTI = Context.getTypeInfo(right);
+  if (LeftTI.Width != RightTI.Width)
+    return false;
+
+  if (LeftTI.Align != RightTI.Align)
     return false;
 
   // Consider all the kinds of non-dependent canonical types:
@@ -2161,7 +2164,13 @@ static bool tryMatchRecordTypes(ASTContext &Context,
     return false;
 
   // Require size and alignment to match.
-  if (Context.getTypeInfo(lt) != Context.getTypeInfo(rt)) return false;
+  TypeInfo LeftTI = Context.getTypeInfo(lt);
+  TypeInfo RightTI = Context.getTypeInfo(rt);
+  if (LeftTI.Width != RightTI.Width)
+    return false;
+
+  if (LeftTI.Align != RightTI.Align)
+    return false;
 
   // Require fields to match.
   RecordDecl::field_iterator li = left->field_begin(), le = left->field_end();
@@ -2349,10 +2358,8 @@ ObjCMethodDecl *Sema::LookupMethodInGlobalPool(Selector Sel, SourceRange R,
   // We support a warning which complains about *any* difference in
   // method signature.
   bool strictSelectorMatch =
-    (receiverIdOrClass && warn &&
-     (Diags.getDiagnosticLevel(diag::warn_strict_multiple_method_decl,
-                               R.getBegin())
-        != DiagnosticsEngine::Ignored));
+      receiverIdOrClass && warn &&
+      !Diags.isIgnored(diag::warn_strict_multiple_method_decl, R.getBegin());
   if (strictSelectorMatch) {
     for (unsigned I = 1, N = Methods.size(); I != N; ++I) {
       if (!MatchTwoMethodDeclarations(Methods[0], Methods[I], MMS_strict)) {
@@ -3527,7 +3534,7 @@ void Sema::DiagnoseUnusedBackingIvarInAccessor(Scope *S,
   for (const auto *CurMethod : ImplD->instance_methods()) {
     unsigned DIAG = diag::warn_unused_property_backing_ivar;
     SourceLocation Loc = CurMethod->getLocation();
-    if (Diags.getDiagnosticLevel(DIAG, Loc) == DiagnosticsEngine::Ignored)
+    if (Diags.isIgnored(DIAG, Loc))
       continue;
 
     const ObjCPropertyDecl *PDecl;

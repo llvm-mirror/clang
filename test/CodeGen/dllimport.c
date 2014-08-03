@@ -44,6 +44,14 @@ __declspec(dllimport) extern int GlobalRedecl3;
                       extern int GlobalRedecl3; // dllimport ignored
 USEVAR(GlobalRedecl3)
 
+// Redeclaration in local context.
+// CHECK: @GlobalRedecl4 = external dllimport global i32
+__declspec(dllimport) int GlobalRedecl4;
+int functionScope() {
+  extern int GlobalRedecl4; // still dllimport
+  return GlobalRedecl4;
+}
+
 
 
 //===----------------------------------------------------------------------===//
@@ -53,7 +61,10 @@ USEVAR(GlobalRedecl3)
 // Import function declaration.
 // CHECK-DAG: declare dllimport void @decl()
 __declspec(dllimport) void decl(void);
-USE(decl)
+
+// Initialize use_decl with the address of the thunk.
+// CHECK-DAG: @use_decl = global void ()* @decl
+void (*use_decl)(void) = &decl;
 
 // Import inline function.
 // CHECK-DAG: declare dllimport void @inlineFunc()

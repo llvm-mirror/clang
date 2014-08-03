@@ -245,9 +245,9 @@ def err_invalid_pth_file : Error<
 // Preprocessor Diagnostics
 //===----------------------------------------------------------------------===//
 
-let CategoryName = "User Defined Issues" in {
+let CategoryName = "User-Defined Issue" in {
 def pp_hash_warning : Warning<"%0">,
-  InGroup<PoundWarning>, DefaultWarnShowInSystemHeader;
+  InGroup<PoundWarning>, ShowInSystemHeader;
 def err_pp_hash_error : Error<"%0">;
 }
 
@@ -541,6 +541,10 @@ def err_pp_include_in_arc_cf_code_audited : Error<
   "cannot #include files inside '#pragma clang arc_cf_code_audited'">;
 def err_pp_eof_in_arc_cf_code_audited : Error<
   "'#pragma clang arc_cf_code_audited' was not ended within this file">;
+
+def warn_pp_date_time : Warning<
+  "expansion of date or time macro is not reproducible">,
+  ShowInSystemHeader, DefaultIgnore, InGroup<DiagGroup<"date-time">>;
 
 // Module map parsing
 def err_mmap_unknown_token : Error<"skipping stray token">;

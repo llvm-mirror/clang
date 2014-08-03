@@ -49,6 +49,21 @@ namespace {
       return M.get();
     }
 
+    const Decl *GetDeclForMangledName(StringRef MangledName) override {
+      GlobalDecl Result;
+      if (!Builder->lookupRepresentativeDecl(MangledName, Result))
+        return nullptr;
+      const Decl *D = Result.getCanonicalDecl().getDecl();
+      if (auto FD = dyn_cast<FunctionDecl>(D)) {
+        if (FD->hasBody(FD))
+          return FD;
+      } else if (auto TD = dyn_cast<TagDecl>(D)) {
+        if (auto Def = TD->getDefinition())
+          return Def;
+      }
+      return D;
+    }
+
     llvm::Module *ReleaseModule() override { return M.release(); }
 
     void Initialize(ASTContext &Context) override {
@@ -78,6 +93,12 @@ namespace {
       // Make sure to emit all elements of a Decl.
       for (DeclGroupRef::iterator I = DG.begin(), E = DG.end(); I != E; ++I)
         Builder->EmitTopLevelDecl(*I);
+
+      // Emit any deferred inline method definitions.
+      for (CXXMethodDecl *MD : DeferredInlineMethodDefinitions)
+        Builder->EmitTopLevelDecl(MD);
+      DeferredInlineMethodDefinitions.clear();
+
       return true;
     }
 
@@ -87,12 +108,15 @@ namespace {
 
       assert(D->doesThisDeclarationHaveABody());
 
-      // We may have member functions that need to be emitted at this point.
-      if (!D->isDependentContext() &&
-          (D->hasAttr<UsedAttr>() || D->hasAttr<ConstructorAttr>() ||
-           D->hasAttr<DLLExportAttr>())) {
-        Builder->EmitTopLevelDecl(D);
-      }
+      // We may want to emit this definition. However, that decision might be
+      // based on computing the linkage, and we have to defer that in case we
+      // are inside of something that will change the method's final linkage,
+      // e.g.
+      //   typedef struct {
+      //     void bar();
+      //     void foo() { bar(); }
+      //   } A;
+      DeferredInlineMethodDefinitions.push_back(D);
     }
 
     /// HandleTagDeclDefinition - This callback is invoked each time a TagDecl
@@ -104,6 +128,19 @@ namespace {
         return;
 
       Builder->UpdateCompletedType(D);
+
+      // For MSVC compatibility, treat declarations of static data members with
+      // inline initializers as definitions.
+      if (Ctx->getLangOpts().MSVCCompat) {
+        for (Decl *Member : D->decls()) {
+          if (VarDecl *VD = dyn_cast<VarDecl>(Member)) {
+            if (Ctx->isMSStaticDataMemberInlineDefinition(VD) &&
+                Ctx->DeclMustBeEmitted(VD)) {
+              Builder->EmitGlobal(VD);
+            }
+          }
+        }
+      }
     }
 
     void HandleTagDeclRequiredDefinition(const TagDecl *D) override {
@@ -153,6 +190,9 @@ namespace {
     void HandleDependentLibrary(llvm::StringRef Lib) override {
       Builder->AddDependentLib(Lib);
     }
+
+  private:
+    std::vector<CXXMethodDecl *> DeferredInlineMethodDefinitions;
   };
 }
 

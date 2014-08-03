@@ -45,7 +45,6 @@ add_clang_library(clangCodeGen
   CGObjCRuntime.cpp
   CGOpenCLRuntime.cpp
   CGOpenMPRuntime.cpp
-  CGRTTI.cpp
   CGRecordLayoutBuilder.cpp
   CGStmt.cpp
   CGStmtOpenMP.cpp
@@ -60,15 +59,15 @@ add_clang_library(clangCodeGen
   CodeGenTypes.cpp
   ItaniumCXXABI.cpp
   MicrosoftCXXABI.cpp
-  MicrosoftRTTI.cpp
   ModuleBuilder.cpp
+  SanitizerBlacklist.cpp
   TargetInfo.cpp
 
   DEPENDS
   intrinsics_gen
 
   LINK_LIBS
-  clangBasic
   clangAST
+  clangBasic
   clangFrontend
   )

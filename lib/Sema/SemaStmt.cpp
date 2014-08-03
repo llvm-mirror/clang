@@ -253,9 +253,15 @@ void Sema::DiagnoseUnusedExprResult(const Stmt *S) {
       return;
     }
     const ObjCMethodDecl *MD = ME->getMethodDecl();
-    if (MD && MD->hasAttr<WarnUnusedResultAttr>()) {
-      Diag(Loc, diag::warn_unused_result) << R1 << R2;
-      return;
+    if (MD) {
+      if (MD->hasAttr<WarnUnusedResultAttr>()) {
+        Diag(Loc, diag::warn_unused_result) << R1 << R2;
+        return;
+      }
+      if (MD->isPropertyAccessor()) {
+        Diag(Loc, diag::warn_unused_property_expr);
+        return;
+      }
     }
   } else if (const PseudoObjectExpr *POE = dyn_cast<PseudoObjectExpr>(E)) {
     const Expr *Source = POE->getSyntacticForm();
@@ -1157,9 +1163,7 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
 void
 Sema::DiagnoseAssignmentEnum(QualType DstType, QualType SrcType,
                              Expr *SrcExpr) {
-  if (Diags.getDiagnosticLevel(diag::warn_not_in_enum_assignment,
-                               SrcExpr->getExprLoc()) ==
-      DiagnosticsEngine::Ignored)
+  if (Diags.isIgnored(diag::warn_not_in_enum_assignment, SrcExpr->getExprLoc()))
     return;
 
   if (const EnumType *ET = DstType->getAs<EnumType>())
@@ -1406,9 +1410,8 @@ namespace {
     // Condition is empty
     if (!Second) return;
 
-    if (S.Diags.getDiagnosticLevel(diag::warn_variables_not_in_loop_body,
-                                   Second->getLocStart())
-        == DiagnosticsEngine::Ignored)
+    if (S.Diags.isIgnored(diag::warn_variables_not_in_loop_body,
+                          Second->getLocStart()))
       return;
 
     PartialDiagnostic PDiag = S.PDiag(diag::warn_variables_not_in_loop_body);
@@ -1535,9 +1538,8 @@ namespace {
     // Return when there is nothing to check.
     if (!Body || !Third) return;
 
-    if (S.Diags.getDiagnosticLevel(diag::warn_redundant_loop_iteration,
-                                   Third->getLocStart())
-        == DiagnosticsEngine::Ignored)
+    if (S.Diags.isIgnored(diag::warn_redundant_loop_iteration,
+                          Third->getLocStart()))
       return;
 
     // Get the last statement from the loop body.
@@ -1938,7 +1940,7 @@ Sema::ActOnCXXForRangeStmt(SourceLocation ForLoc,
 
   // Claim the type doesn't contain auto: we've already done the checking.
   DeclGroupPtrTy RangeGroup =
-      BuildDeclaratorGroup(llvm::MutableArrayRef<Decl *>((Decl **)&RangeVar, 1),
+      BuildDeclaratorGroup(MutableArrayRef<Decl *>((Decl **)&RangeVar, 1),
                            /*TypeMayContainAuto=*/ false);
   StmtResult RangeDecl = ActOnDeclStmt(RangeGroup, RangeLoc, RangeLoc);
   if (RangeDecl.isInvalid()) {
@@ -2255,7 +2257,7 @@ Sema::BuildCXXForRangeStmt(SourceLocation ForLoc, SourceLocation ColonLoc,
     Decl *BeginEndDecls[] = { BeginVar, EndVar };
     // Claim the type doesn't contain auto: we've already done the checking.
     DeclGroupPtrTy BeginEndGroup =
-        BuildDeclaratorGroup(llvm::MutableArrayRef<Decl *>(BeginEndDecls, 2),
+        BuildDeclaratorGroup(MutableArrayRef<Decl *>(BeginEndDecls, 2),
                              /*TypeMayContainAuto=*/ false);
     BeginEndDecl = ActOnDeclStmt(BeginEndGroup, ColonLoc, ColonLoc);
 
@@ -2417,6 +2419,9 @@ Sema::ActOnBreakStmt(SourceLocation BreakLoc, Scope *CurScope) {
     // C99 6.8.6.3p1: A break shall appear only in or as a switch/loop body.
     return StmtError(Diag(BreakLoc, diag::err_break_not_in_loop_or_switch));
   }
+  if (S->isOpenMPLoopScope())
+    return StmtError(Diag(BreakLoc, diag::err_omp_loop_cannot_use_stmt)
+                     << "break");
 
   return new (Context) BreakStmt(BreakLoc);
 }
@@ -3188,6 +3193,9 @@ StmtResult Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
       !getSourceManager().isInSystemHeader(TryLoc))
       Diag(TryLoc, diag::err_exceptions_disabled) << "try";
 
+  if (getCurScope() && getCurScope()->isOpenMPSimdDirectiveScope())
+    Diag(TryLoc, diag::err_omp_simd_region_cannot_use_stmt) << "try";
+
   const unsigned NumHandlers = Handlers.size();
   assert(NumHandlers > 0 &&
          "The parser shouldn't call this if there are no handlers.");
@@ -3273,6 +3281,17 @@ Sema::ActOnSEHFinallyBlock(SourceLocation Loc,
                            Stmt *Block) {
   assert(Block);
   return SEHFinallyStmt::Create(Context,Loc,Block);
+}
+
+StmtResult
+Sema::ActOnSEHLeaveStmt(SourceLocation Loc, Scope *CurScope) {
+  Scope *SEHTryParent = CurScope;
+  while (SEHTryParent && !SEHTryParent->isSEHTryScope())
+    SEHTryParent = SEHTryParent->getParent();
+  if (!SEHTryParent)
+    return StmtError(Diag(Loc, diag::err_ms___leave_not_in___try));
+
+  return new (Context) SEHLeaveStmt(Loc);
 }
 
 StmtResult Sema::BuildMSDependentExistsStmt(SourceLocation KeywordLoc,

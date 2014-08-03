@@ -58,8 +58,8 @@ def _SLASH_c : CLFlag<"c">, HelpText<"Compile only">, Alias<c>;
 def _SLASH_D : CLJoinedOrSeparate<"D">, HelpText<"Define macro">,
   MetaVarName<"<macro[=value]>">, Alias<D>;
 def _SLASH_E : CLFlag<"E">, HelpText<"Preprocess to stdout">, Alias<E>;
-def _SLASH_GR : CLFlag<"GR">, HelpText<"Enable RTTI">, Alias<frtti>;
-def _SLASH_GR_ : CLFlag<"GR-">, HelpText<"Disable RTTI">, Alias<fno_rtti>;
+def _SLASH_GR : CLFlag<"GR">, HelpText<"Enable emission of RTTI data">;
+def _SLASH_GR_ : CLFlag<"GR-">, HelpText<"Disable emission of RTTI data">;
 def _SLASH_GF_ : CLFlag<"GF-">, HelpText<"Disable string pooling">,
   Alias<fwritable_strings>;
 def _SLASH_Gy : CLFlag<"Gy">, HelpText<"Put each function in its own section">,
@@ -132,14 +132,26 @@ def _SLASH_vd : CLJoined<"vd">, HelpText<"Control vtordisp placement">,
 def _SLASH_Z7 : CLFlag<"Z7">, Alias<gline_tables_only>;
 def _SLASH_Zi : CLFlag<"Zi">, HelpText<"Enable debug information">,
   Alias<gline_tables_only>;
+def _SLASH_Zp : CLJoined<"Zp">,
+  HelpText<"Specify the default maximum struct packing alignment">,
+  Alias<fpack_struct_EQ>;
+def _SLASH_Zp_flag : CLFlag<"Zp">,
+  HelpText<"Set the default maximum struct packing alignment to 1">,
+  Alias<fpack_struct_EQ>, AliasArgs<["1"]>;
 def _SLASH_Zs : CLFlag<"Zs">, HelpText<"Syntax-check only">,
   Alias<fsyntax_only>;
 
 
 // Non-aliases:
 
+def _SLASH_arch : CLCompileJoined<"arch:">,
+  HelpText<"Set architecture for code generation">;
+
 def _SLASH_M_Group : OptionGroup<"</M group>">, Group<cl_compile_Group>;
 
+def _SLASH_EH : CLJoined<"EH">, HelpText<"Exception handling model">;
+def _SLASH_EP : CLFlag<"EP">,
+  HelpText<"Disable linemarker output and preprocess to stdout">;
 def _SLASH_FA : CLFlag<"FA">,
   HelpText<"Output assembly code file during compilation">;
 def _SLASH_Fa : CLJoined<"Fa">,
@@ -152,6 +164,9 @@ def _SLASH_FI : CLJoinedOrSeparate<"FI">,
 def _SLASH_Fe : CLJoined<"Fe">,
   HelpText<"Set output executable file or directory (ends in / or \\)">,
   MetaVarName<"<file or directory>">;
+def _SLASH_Fi : CLCompileJoined<"Fi">,
+  HelpText<"Set preprocess output file name">,
+  MetaVarName<"<file>">;
 def _SLASH_Fo : CLCompileJoined<"Fo">,
   HelpText<"Set output object file, or directory (ends in / or \\)">,
   MetaVarName<"<file or directory>">;
@@ -192,6 +207,8 @@ def _SLASH_sdl : CLIgnoredFlag<"sdl">;
 def _SLASH_sdl_ : CLIgnoredFlag<"sdl-">;
 def _SLASH_w : CLIgnoredJoined<"w">;
 def _SLASH_Zc_forScope : CLIgnoredFlag<"Zc:forScope">;
+def _SLASH_Zc_inline : CLIgnoredFlag<"Zc:inline">;
+def _SLASH_Zc_rvalueCast : CLIgnoredFlag<"Zc:rvalueCast">;
 def _SLASH_Zc_wchar_t : CLIgnoredFlag<"Zc:wchar_t">;
 def _SLASH_Zm : CLIgnoredJoined<"Zm">;
 
@@ -199,19 +216,15 @@ def _SLASH_Zm : CLIgnoredJoined<"Zm">;
 // Unsupported:
 
 def _SLASH_AI : CLJoined<"AI">;
-def _SLASH_arch : CLJoined<"arch:">;
 def _SLASH_bigobj : CLFlag<"bigobj">;
 def _SLASH_clr : CLJoined<"clr">;
 def _SLASH_d2Zi_PLUS : CLFlag<"d2Zi+">;
 def _SLASH_doc : CLJoined<"doc">;
-def _SLASH_EH : CLJoined<"EH">;
-def _SLASH_EP : CLFlag<"EP">;
 def _SLASH_FA_joined : CLJoined<"FA">;
 def _SLASH_favor : CLJoined<"favor">;
 def _SLASH_FC : CLFlag<"FC">;
 def _SLASH_F : CLFlag<"F">;
 def _SLASH_Fd : CLJoined<"Fd">;
-def _SLASH_Fi : CLJoined<"Fi">;
 def _SLASH_Fm : CLJoined<"Fm">;
 def _SLASH_fp : CLJoined<"fp">;
 def _SLASH_Fp : CLJoined<"Fp">;
@@ -267,5 +280,4 @@ def _SLASH_Ze : CLFlag<"Ze">;
 def _SLASH_Zg : CLFlag<"Zg">;
 def _SLASH_ZI : CLFlag<"ZI">;
 def _SLASH_Zl : CLFlag<"Zl">;
-def _SLASH_Zp : CLJoined<"Zp">;
 def _SLASH_ZW : CLJoined<"ZW">;

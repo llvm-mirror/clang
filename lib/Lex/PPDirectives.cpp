@@ -34,23 +34,10 @@ using namespace clang;
 //===----------------------------------------------------------------------===//
 
 MacroInfo *Preprocessor::AllocateMacroInfo() {
-  MacroInfoChain *MIChain;
-
-  if (MICache) {
-    MIChain = MICache;
-    MICache = MICache->Next;
-  }
-  else {
-    MIChain = BP.Allocate<MacroInfoChain>();
-  }
-
+  MacroInfoChain *MIChain = BP.Allocate<MacroInfoChain>();
   MIChain->Next = MIChainHead;
-  MIChain->Prev = nullptr;
-  if (MIChainHead)
-    MIChainHead->Prev = MIChain;
   MIChainHead = MIChain;
-
-  return &(MIChain->MI);
+  return &MIChain->MI;
 }
 
 MacroInfo *Preprocessor::AllocateMacroInfo(SourceLocation L) {
@@ -77,46 +64,37 @@ MacroInfo *Preprocessor::AllocateDeserializedMacroInfo(SourceLocation L,
 
 DefMacroDirective *
 Preprocessor::AllocateDefMacroDirective(MacroInfo *MI, SourceLocation Loc,
-                                        bool isImported) {
-  DefMacroDirective *MD = BP.Allocate<DefMacroDirective>();
-  new (MD) DefMacroDirective(MI, Loc, isImported);
-  return MD;
+                                        unsigned ImportedFromModuleID,
+                                        ArrayRef<unsigned> Overrides) {
+  unsigned NumExtra = (ImportedFromModuleID ? 1 : 0) + Overrides.size();
+  return new (BP.Allocate(sizeof(DefMacroDirective) +
+                              sizeof(unsigned) * NumExtra,
+                          llvm::alignOf<DefMacroDirective>()))
+      DefMacroDirective(MI, Loc, ImportedFromModuleID, Overrides);
 }
 
 UndefMacroDirective *
-Preprocessor::AllocateUndefMacroDirective(SourceLocation UndefLoc) {
-  UndefMacroDirective *MD = BP.Allocate<UndefMacroDirective>();
-  new (MD) UndefMacroDirective(UndefLoc);
-  return MD;
+Preprocessor::AllocateUndefMacroDirective(SourceLocation UndefLoc,
+                                          unsigned ImportedFromModuleID,
+                                          ArrayRef<unsigned> Overrides) {
+  unsigned NumExtra = (ImportedFromModuleID ? 1 : 0) + Overrides.size();
+  return new (BP.Allocate(sizeof(UndefMacroDirective) +
+                              sizeof(unsigned) * NumExtra,
+                          llvm::alignOf<UndefMacroDirective>()))
+      UndefMacroDirective(UndefLoc, ImportedFromModuleID, Overrides);
 }
 
 VisibilityMacroDirective *
 Preprocessor::AllocateVisibilityMacroDirective(SourceLocation Loc,
                                                bool isPublic) {
-  VisibilityMacroDirective *MD = BP.Allocate<VisibilityMacroDirective>();
-  new (MD) VisibilityMacroDirective(Loc, isPublic);
-  return MD;
+  return new (BP) VisibilityMacroDirective(Loc, isPublic);
 }
 
-/// \brief Release the specified MacroInfo to be reused for allocating
-/// new MacroInfo objects.
+/// \brief Clean up a MacroInfo that was allocated but not used due to an
+/// error in the macro definition.
 void Preprocessor::ReleaseMacroInfo(MacroInfo *MI) {
-  MacroInfoChain *MIChain = (MacroInfoChain*) MI;
-  if (MacroInfoChain *Prev = MIChain->Prev) {
-    MacroInfoChain *Next = MIChain->Next;
-    Prev->Next = Next;
-    if (Next)
-      Next->Prev = Prev;
-  }
-  else {
-    assert(MIChainHead == MIChain);
-    MIChainHead = MIChain->Next;
-    MIChainHead->Prev = nullptr;
-  }
-  MIChain->Next = MICache;
-  MICache = MIChain;
-
-  MI->Destroy();
+  // Don't try to reuse the storage; this only happens on error paths.
+  MI->~MacroInfo();
 }
 
 /// \brief Read and discard all tokens remaining on the current line until
@@ -956,7 +934,7 @@ void Preprocessor::HandleLineDirective(Token &Tok) {
     return DiscardUntilEndOfDirective();
   } else {
     // Parse and validate the string, converting it into a unique ID.
-    StringLiteralParser Literal(&StrTok, 1, *this);
+    StringLiteralParser Literal(StrTok, *this);
     assert(Literal.isAscii() && "Didn't allow wide strings in");
     if (Literal.hadError)
       return DiscardUntilEndOfDirective();
@@ -1092,7 +1070,7 @@ void Preprocessor::HandleDigitDirective(Token &DigitTok) {
     return DiscardUntilEndOfDirective();
   } else {
     // Parse and validate the string, converting it into a unique ID.
-    StringLiteralParser Literal(&StrTok, 1, *this);
+    StringLiteralParser Literal(StrTok, *this);
     assert(Literal.isAscii() && "Didn't allow wide strings in");
     if (Literal.hadError)
       return DiscardUntilEndOfDirective();
@@ -1540,7 +1518,9 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
 
   // If we are supposed to import a module rather than including the header,
   // do so now.
-  if (SuggestedModule && getLangOpts().Modules) {
+  if (SuggestedModule && getLangOpts().Modules &&
+      SuggestedModule.getModule()->getTopLevelModuleName() !=
+      getLangOpts().ImplementationOfModule) {
     // Compute the module access path corresponding to this module.
     // FIXME: Should we have a second loadModule() overload to avoid this
     // extra lookup step?
@@ -2123,8 +2103,7 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
   // If we need warning for not using the macro, add its location in the
   // warn-because-unused-macro set. If it gets used it will be removed from set.
   if (getSourceManager().isInMainFile(MI->getDefinitionLoc()) &&
-      Diags->getDiagnosticLevel(diag::pp_macro_not_used,
-          MI->getDefinitionLoc()) != DiagnosticsEngine::Ignored) {
+      !Diags->isIgnored(diag::pp_macro_not_used, MI->getDefinitionLoc())) {
     MI->setIsWarnIfUnused(true);
     WarnUnusedMacroLocs.insert(MI->getDefinitionLoc());
   }

@@ -15,6 +15,7 @@
 #include "clang/Driver/Options.h"
 #include "clang/Driver/SanitizerArgs.h"
 #include "clang/Driver/ToolChain.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
@@ -49,7 +50,7 @@ const SanitizerArgs& ToolChain::getSanitizerArgs() const {
   return *SanitizerArguments.get();
 }
 
-std::string ToolChain::getDefaultUniversalArchName() const {
+StringRef ToolChain::getDefaultUniversalArchName() const {
   // In universal driver terms, the arch name accepted by -arch isn't exactly
   // the same as the ones that appear in the triple. Roughly speaking, this is
   // an inverse of the darwin::getArchTypeForDarwinArchName() function, but the
@@ -147,6 +148,30 @@ std::string ToolChain::GetProgramPath(const char *Name) const {
   return D.GetProgramPath(Name, *this);
 }
 
+std::string ToolChain::GetLinkerPath() const {
+  if (Arg *A = Args.getLastArg(options::OPT_fuse_ld_EQ)) {
+    StringRef Suffix = A->getValue();
+
+    // If we're passed -fuse-ld= with no argument, or with the argument ld,
+    // then use whatever the default system linker is.
+    if (Suffix.empty() || Suffix == "ld")
+      return GetProgramPath("ld");
+
+    llvm::SmallString<8> LinkerName("ld.");
+    LinkerName.append(Suffix);
+
+    std::string LinkerPath(GetProgramPath(LinkerName.c_str()));
+    if (llvm::sys::fs::exists(LinkerPath))
+      return LinkerPath;
+
+    getDriver().Diag(diag::err_drv_invalid_linker_name) << A->getAsString(Args);
+    return "";
+  }
+
+  return GetProgramPath("ld");
+}
+
+
 types::ID ToolChain::LookupTypeForExtension(const char *Ext) const {
   return types::lookupTypeForExtension(Ext);
 }
@@ -194,6 +219,17 @@ std::string ToolChain::ComputeLLVMTriple(const ArgList &Args,
       if (MArch == "x86_64h")
         Triple.setArchName(MArch);
     }
+    return Triple.getTriple();
+  }
+  case llvm::Triple::aarch64: {
+    llvm::Triple Triple = getTriple();
+    if (!Triple.isOSBinFormatMachO())
+      return getTripleString();
+
+    // FIXME: older versions of ld64 expect the "arm64" component in the actual
+    // triple string and query it to determine whether an LTO file can be
+    // handled. Remove this when we don't care any more.
+    Triple.setArchName("arm64");
     return Triple.getTriple();
   }
   case llvm::Triple::arm:

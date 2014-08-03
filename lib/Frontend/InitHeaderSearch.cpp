@@ -380,7 +380,6 @@ AddDefaultCPlusPlusIncludePaths(const llvm::Triple &triple, const HeaderSearchOp
       break;
 
     case llvm::Triple::aarch64:
-    case llvm::Triple::arm64:
       AddGnuCPlusPlusIncludePaths("/usr/include/c++/4.2.1",
                                   "arm64-apple-darwin10", "", "", triple);
       break;
@@ -472,7 +471,8 @@ void InitHeaderSearch::AddDefaultIncludePaths(const LangOptions &Lang,
 
   case llvm::Triple::Win32:
     if (triple.getEnvironment() == llvm::Triple::MSVC ||
-        triple.getEnvironment() == llvm::Triple::Itanium)
+        triple.getEnvironment() == llvm::Triple::Itanium ||
+        triple.getObjectFormat() == llvm::Triple::MachO)
       return;
     break;
   }

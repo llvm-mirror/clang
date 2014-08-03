@@ -89,14 +89,95 @@ public:
   /// \brief Get the status of the file.
   virtual llvm::ErrorOr<Status> status() = 0;
   /// \brief Get the contents of the file as a \p MemoryBuffer.
-  virtual llvm::error_code
-  getBuffer(const Twine &Name, std::unique_ptr<llvm::MemoryBuffer> &Result,
-            int64_t FileSize = -1, bool RequiresNullTerminator = true,
-            bool IsVolatile = false) = 0;
+  virtual std::error_code getBuffer(const Twine &Name,
+                                    std::unique_ptr<llvm::MemoryBuffer> &Result,
+                                    int64_t FileSize = -1,
+                                    bool RequiresNullTerminator = true,
+                                    bool IsVolatile = false) = 0;
   /// \brief Closes the file.
-  virtual llvm::error_code close() = 0;
+  virtual std::error_code close() = 0;
   /// \brief Sets the name to use for this file.
   virtual void setName(StringRef Name) = 0;
+};
+
+namespace detail {
+/// \brief An interface for virtual file systems to provide an iterator over the
+/// (non-recursive) contents of a directory.
+struct DirIterImpl {
+  virtual ~DirIterImpl();
+  /// \brief Sets \c CurrentEntry to the next entry in the directory on success,
+  /// or returns a system-defined \c error_code.
+  virtual std::error_code increment() = 0;
+  Status CurrentEntry;
+};
+} // end namespace detail
+
+/// \brief An input iterator over the entries in a virtual path, similar to
+/// llvm::sys::fs::directory_iterator.
+class directory_iterator {
+  std::shared_ptr<detail::DirIterImpl> Impl; // Input iterator semantics on copy
+
+public:
+  directory_iterator(std::shared_ptr<detail::DirIterImpl> I) : Impl(I) {
+    assert(Impl.get() != nullptr && "requires non-null implementation");
+    if (!Impl->CurrentEntry.isStatusKnown())
+      Impl.reset(); // Normalize the end iterator to Impl == nullptr.
+  }
+
+  /// \brief Construct an 'end' iterator.
+  directory_iterator() { }
+
+  /// \brief Equivalent to operator++, with an error code.
+  directory_iterator &increment(std::error_code &EC) {
+    assert(Impl && "attempting to increment past end");
+    EC = Impl->increment();
+    if (EC || !Impl->CurrentEntry.isStatusKnown())
+      Impl.reset(); // Normalize the end iterator to Impl == nullptr.
+    return *this;
+  }
+
+  const Status &operator*() const { return Impl->CurrentEntry; }
+  const Status *operator->() const { return &Impl->CurrentEntry; }
+
+  bool operator==(const directory_iterator &RHS) const {
+    if (Impl && RHS.Impl)
+      return Impl->CurrentEntry.equivalent(RHS.Impl->CurrentEntry);
+    return !Impl && !RHS.Impl;
+  }
+  bool operator!=(const directory_iterator &RHS) const {
+    return !(*this == RHS);
+  }
+};
+
+class FileSystem;
+
+/// \brief An input iterator over the recursive contents of a virtual path,
+/// similar to llvm::sys::fs::recursive_directory_iterator.
+class recursive_directory_iterator {
+  typedef std::stack<directory_iterator, std::vector<directory_iterator>>
+      IterState;
+
+  FileSystem *FS;
+  std::shared_ptr<IterState> State; // Input iterator semantics on copy.
+
+public:
+  recursive_directory_iterator(FileSystem &FS, const Twine &Path,
+                               std::error_code &EC);
+  /// \brief Construct an 'end' iterator.
+  recursive_directory_iterator() { }
+
+  /// \brief Equivalent to operator++, with an error code.
+  recursive_directory_iterator &increment(std::error_code &EC);
+
+  const Status &operator*() const { return *State->top(); }
+  const Status *operator->() const { return &*State->top(); }
+
+  bool operator==(const recursive_directory_iterator &Other) const {
+    return State == Other.State; // identity
+  }
+  bool operator!=(const recursive_directory_iterator &RHS) const {
+    return !(*this == RHS);
+  }
 };
 
 /// \brief The virtual file system interface.
@@ -107,16 +188,21 @@ public:
   /// \brief Get the status of the entry at \p Path, if one exists.
   virtual llvm::ErrorOr<Status> status(const Twine &Path) = 0;
   /// \brief Get a \p File object for the file at \p Path, if one exists.
-  virtual llvm::error_code openFileForRead(const Twine &Path,
-                                           std::unique_ptr<File> &Result) = 0;
+  virtual std::error_code openFileForRead(const Twine &Path,
+                                          std::unique_ptr<File> &Result) = 0;
 
   /// This is a convenience method that opens a file, gets its content and then
   /// closes the file.
-  llvm::error_code getBufferForFile(const Twine &Name,
-                                    std::unique_ptr<llvm::MemoryBuffer> &Result,
-                                    int64_t FileSize = -1,
-                                    bool RequiresNullTerminator = true,
-                                    bool IsVolatile = false);
+  std::error_code getBufferForFile(const Twine &Name,
+                                   std::unique_ptr<llvm::MemoryBuffer> &Result,
+                                   int64_t FileSize = -1,
+                                   bool RequiresNullTerminator = true,
+                                   bool IsVolatile = false);
+
+  /// \brief Get a directory_iterator for \p Dir.
+  /// \note The 'end' iterator is directory_iterator().
+  virtual directory_iterator dir_begin(const Twine &Dir,
+                                       std::error_code &EC) = 0;
 };
 
 /// \brief Gets an \p vfs::FileSystem for the 'real' file system, as seen by
@@ -135,18 +221,9 @@ IntrusiveRefCntPtr<FileSystem> getRealFileSystem();
 /// system overrides the other(s).
 class OverlayFileSystem : public FileSystem {
   typedef SmallVector<IntrusiveRefCntPtr<FileSystem>, 1> FileSystemList;
-  typedef FileSystemList::reverse_iterator iterator;
-
   /// \brief The stack of file systems, implemented as a list in order of
   /// their addition.
   FileSystemList FSList;
-
-  /// \brief Get an iterator pointing to the most recently added file system.
-  iterator overlays_begin() { return FSList.rbegin(); }
-
-  /// \brief Get an iterator pointing one-past the least recently added file
-  /// system.
-  iterator overlays_end() { return FSList.rend(); }
 
 public:
   OverlayFileSystem(IntrusiveRefCntPtr<FileSystem> Base);
@@ -154,8 +231,18 @@ public:
   void pushOverlay(IntrusiveRefCntPtr<FileSystem> FS);
 
   llvm::ErrorOr<Status> status(const Twine &Path) override;
-  llvm::error_code openFileForRead(const Twine &Path,
-                                   std::unique_ptr<File> &Result) override;
+  std::error_code openFileForRead(const Twine &Path,
+                                  std::unique_ptr<File> &Result) override;
+  directory_iterator dir_begin(const Twine &Dir, std::error_code &EC) override;
+
+  typedef FileSystemList::reverse_iterator iterator;
+  
+  /// \brief Get an iterator pointing to the most recently added file system.
+  iterator overlays_begin() { return FSList.rbegin(); }
+
+  /// \brief Get an iterator pointing one-past the least recently added file
+  /// system.
+  iterator overlays_end() { return FSList.rend(); }
 };
 
 /// \brief Get a globally unique ID for a virtual file or directory.

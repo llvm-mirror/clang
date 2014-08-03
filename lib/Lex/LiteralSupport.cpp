@@ -522,7 +522,7 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
   isLongLong = false;
   isFloat = false;
   isImaginary = false;
-  isMicrosoftInteger = false;
+  MicrosoftInteger = 0;
   hadError = false;
 
   if (*s == '0') { // parse radix
@@ -606,7 +606,8 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
     case 'i':
     case 'I':
       if (PP.getLangOpts().MicrosoftExt) {
-        if (isLong || isLongLong) break;
+        if (isLong || isLongLong || MicrosoftInteger)
+          break;
 
         // Allow i8, i16, i32, i64, and i128.
         if (s + 1 != ThisTokEnd) {
@@ -614,20 +615,20 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
             case '8':
               if (isFPConstant) break;
               s += 2; // i8 suffix
-              isMicrosoftInteger = true;
+              MicrosoftInteger = 8;
               break;
             case '1':
               if (isFPConstant) break;
               if (s + 2 == ThisTokEnd) break;
               if (s[2] == '6') {
                 s += 3; // i16 suffix
-                isMicrosoftInteger = true;
+                MicrosoftInteger = 16;
               }
               else if (s[2] == '2') {
                 if (s + 3 == ThisTokEnd) break;
                 if (s[3] == '8') {
                   s += 4; // i128 suffix
-                  isMicrosoftInteger = true;
+                  MicrosoftInteger = 128;
                 }
               }
               break;
@@ -636,8 +637,7 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
               if (s + 2 == ThisTokEnd) break;
               if (s[2] == '2') {
                 s += 3; // i32 suffix
-                isLong = true;
-                isMicrosoftInteger = true;
+                MicrosoftInteger = 32;
               }
               break;
             case '6':
@@ -645,14 +645,13 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
               if (s + 2 == ThisTokEnd) break;
               if (s[2] == '4') {
                 s += 3; // i64 suffix
-                isLongLong = true;
-                isMicrosoftInteger = true;
+                MicrosoftInteger = 64;
               }
               break;
             default:
               break;
           }
-          if (isMicrosoftInteger)
+          if (MicrosoftInteger)
             break;
         }
       }
@@ -682,7 +681,7 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
       isLongLong = false;
       isFloat = false;
       isImaginary = false;
-      isMicrosoftInteger = false;
+      MicrosoftInteger = 0;
 
       saw_ud_suffix = true;
       return;
@@ -1256,26 +1255,26 @@ CharLiteralParser::CharLiteralParser(const char *begin, const char *end,
 /// \endverbatim
 ///
 StringLiteralParser::
-StringLiteralParser(const Token *StringToks, unsigned NumStringToks,
+StringLiteralParser(ArrayRef<Token> StringToks,
                     Preprocessor &PP, bool Complain)
   : SM(PP.getSourceManager()), Features(PP.getLangOpts()),
     Target(PP.getTargetInfo()), Diags(Complain ? &PP.getDiagnostics() :nullptr),
     MaxTokenLength(0), SizeBound(0), CharByteWidth(0), Kind(tok::unknown),
     ResultPtr(ResultBuf.data()), hadError(false), Pascal(false) {
-  init(StringToks, NumStringToks);
+  init(StringToks);
 }
 
-void StringLiteralParser::init(const Token *StringToks, unsigned NumStringToks){
+void StringLiteralParser::init(ArrayRef<Token> StringToks){
   // The literal token may have come from an invalid source location (e.g. due
   // to a PCH error), in which case the token length will be 0.
-  if (NumStringToks == 0 || StringToks[0].getLength() < 2)
+  if (StringToks.empty() || StringToks[0].getLength() < 2)
     return DiagnoseLexingError(SourceLocation());
 
   // Scan all of the string portions, remember the max individual token length,
   // computing a bound on the concatenated string length, and see whether any
   // piece is a wide-string.  If any of the string portions is a wide-string
   // literal, the result is a wide-string literal [C99 6.4.5p4].
-  assert(NumStringToks && "expected at least one token");
+  assert(!StringToks.empty() && "expected at least one token");
   MaxTokenLength = StringToks[0].getLength();
   assert(StringToks[0].getLength() >= 2 && "literal token is invalid!");
   SizeBound = StringToks[0].getLength()-2;  // -2 for "".
@@ -1285,7 +1284,7 @@ void StringLiteralParser::init(const Token *StringToks, unsigned NumStringToks){
 
   // Implement Translation Phase #6: concatenation of string literals
   /// (C99 5.1.1.2p1).  The common case is only one string fragment.
-  for (unsigned i = 1; i != NumStringToks; ++i) {
+  for (unsigned i = 1; i != StringToks.size(); ++i) {
     if (StringToks[i].getLength() < 2)
       return DiagnoseLexingError(StringToks[i].getLocation());
 
@@ -1341,7 +1340,7 @@ void StringLiteralParser::init(const Token *StringToks, unsigned NumStringToks){
 
   SourceLocation UDSuffixTokLoc;
 
-  for (unsigned i = 0, e = NumStringToks; i != e; ++i) {
+  for (unsigned i = 0, e = StringToks.size(); i != e; ++i) {
     const char *ThisTokBuf = &TokenBuf[0];
     // Get the spelling of the token, which eliminates trigraphs, etc.  We know
     // that ThisTokBuf points to a buffer that is big enough for the whole token
@@ -1515,10 +1514,10 @@ void StringLiteralParser::init(const Token *StringToks, unsigned NumStringToks){
     // Verify that pascal strings aren't too large.
     if (GetStringLength() > 256) {
       if (Diags)
-        Diags->Report(StringToks[0].getLocation(),
+        Diags->Report(StringToks.front().getLocation(),
                       diag::err_pascal_string_too_long)
-          << SourceRange(StringToks[0].getLocation(),
-                         StringToks[NumStringToks-1].getLocation());
+          << SourceRange(StringToks.front().getLocation(),
+                         StringToks.back().getLocation());
       hadError = true;
       return;
     }
@@ -1527,12 +1526,12 @@ void StringLiteralParser::init(const Token *StringToks, unsigned NumStringToks){
     unsigned MaxChars = Features.CPlusPlus? 65536 : Features.C99 ? 4095 : 509;
 
     if (GetNumStringChars() > MaxChars)
-      Diags->Report(StringToks[0].getLocation(),
+      Diags->Report(StringToks.front().getLocation(),
                     diag::ext_string_too_long)
         << GetNumStringChars() << MaxChars
         << (Features.CPlusPlus ? 2 : Features.C99 ? 1 : 0)
-        << SourceRange(StringToks[0].getLocation(),
-                       StringToks[NumStringToks-1].getLocation());
+        << SourceRange(StringToks.front().getLocation(),
+                       StringToks.back().getLocation());
   }
 }
 

@@ -116,12 +116,9 @@ public:
   StringRef getPlatform() const { return Triple.getVendorName(); }
   StringRef getOS() const { return Triple.getOSName(); }
 
-  /// \brief Returns true if the toolchain is targeting a non-native architecture.
-  bool isCrossCompiling() const;
-
   /// \brief Provide the default architecture name (as expected by -arch) for
   /// this toolchain. Note t
-  std::string getDefaultUniversalArchName() const;
+  StringRef getDefaultUniversalArchName() const;
 
   std::string getTripleString() const {
     return Triple.getTriple();
@@ -158,6 +155,10 @@ public:
   std::string GetFilePath(const char *Name) const;
   std::string GetProgramPath(const char *Name) const;
 
+  /// Returns the linker path, respecting the -fuse-ld= argument to determine
+  /// the linker suffix or name.
+  std::string GetLinkerPath() const;
+
   /// \brief Dispatch to the specific toolchain for verbose printing.
   ///
   /// This is used when handling the verbose option to print detailed,
@@ -166,6 +167,10 @@ public:
   virtual void printVerboseInfo(raw_ostream &OS) const {};
 
   // Platform defaults information
+
+  /// \brief Returns true if the toolchain is targeting a non-native
+  /// architecture.
+  virtual bool isCrossCompiling() const;
 
   /// HasNativeLTOLinker - Check whether the linker and related tools have
   /// native LLVM support.

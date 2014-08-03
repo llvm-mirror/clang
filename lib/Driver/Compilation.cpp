@@ -17,8 +17,6 @@
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
-#include <errno.h>
-#include <sys/stat.h>
 
 using namespace clang::driver;
 using namespace clang;
@@ -26,9 +24,9 @@ using namespace llvm::opt;
 
 Compilation::Compilation(const Driver &D, const ToolChain &_DefaultToolChain,
                          InputArgList *_Args, DerivedArgList *_TranslatedArgs)
-  : TheDriver(D), DefaultToolChain(_DefaultToolChain), Args(_Args),
-    TranslatedArgs(_TranslatedArgs), Redirects(nullptr) {
-}
+    : TheDriver(D), DefaultToolChain(_DefaultToolChain), Args(_Args),
+      TranslatedArgs(_TranslatedArgs), Redirects(nullptr),
+      ForDiagnostics(false) {}
 
 Compilation::~Compilation() {
   delete TranslatedArgs;
@@ -86,7 +84,7 @@ bool Compilation::CleanupFile(const char *File, bool IssueErrors) const {
   if (!llvm::sys::fs::can_write(File) || !llvm::sys::fs::is_regular_file(File))
     return true;
 
-  if (llvm::error_code EC = llvm::sys::fs::remove(File)) {
+  if (std::error_code EC = llvm::sys::fs::remove(File)) {
     // Failure is only failure if the file exists and is "regular". We checked
     // for it being regular before, and llvm::sys::fs::remove ignores ENOENT,
     // so we don't need to check again.
@@ -211,6 +209,8 @@ void Compilation::ExecuteJob(const Job &J,
 }
 
 void Compilation::initCompilationForDiagnostics() {
+  ForDiagnostics = true;
+
   // Free actions and jobs.
   DeleteContainerPointers(Actions);
   Jobs.clear();

@@ -9,24 +9,32 @@
 
 #include "clang-c/Index.h"
 #include "gtest/gtest.h"
+#include "llvm/Support/Debug.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Path.h"
+#include "llvm/Support/raw_ostream.h"
+#include <fstream>
+#include <set>
+#define DEBUG_TYPE "libclang-test"
 
 TEST(libclang, clang_parseTranslationUnit2_InvalidArgs) {
   EXPECT_EQ(CXError_InvalidArguments,
-            clang_parseTranslationUnit2(0, 0, 0, 0, 0, 0, 0, 0));
+            clang_parseTranslationUnit2(nullptr, nullptr, nullptr, 0, nullptr,
+                                        0, 0, nullptr));
 }
 
 TEST(libclang, clang_createTranslationUnit_InvalidArgs) {
-  EXPECT_EQ(0, clang_createTranslationUnit(0, 0));
+  EXPECT_EQ(nullptr, clang_createTranslationUnit(nullptr, nullptr));
 }
 
 TEST(libclang, clang_createTranslationUnit2_InvalidArgs) {
   EXPECT_EQ(CXError_InvalidArguments,
-            clang_createTranslationUnit2(0, 0, 0));
+            clang_createTranslationUnit2(nullptr, nullptr, nullptr));
 
   CXTranslationUnit TU = reinterpret_cast<CXTranslationUnit>(1);
   EXPECT_EQ(CXError_InvalidArguments,
-            clang_createTranslationUnit2(0, 0, &TU));
-  EXPECT_EQ(0, TU);
+            clang_createTranslationUnit2(nullptr, nullptr, &TU));
+  EXPECT_EQ(nullptr, TU);
 }
 
 namespace {
@@ -107,7 +115,7 @@ TEST(libclang, VirtualFileOverlay_Unicode) {
 }
 
 TEST(libclang, VirtualFileOverlay_InvalidArgs) {
-  TestVFO T(NULL);
+  TestVFO T(nullptr);
   T.mapError("/path/./virtual/../foo.h", "/real/foo.h",
              CXError_InvalidArguments);
 }
@@ -308,6 +316,16 @@ TEST(libclang, VirtualFileOverlay_TopLevel) {
   T.map("/foo.h", "/real/foo.h");
 }
 
+TEST(libclang, VirtualFileOverlay_Empty) {
+  const char *contents =
+      "{\n"
+      "  'version': 0,\n"
+      "  'roots': [\n"
+      "  ]\n"
+      "}\n";
+  TestVFO T(contents);
+}
+
 TEST(libclang, ModuleMapDescriptor) {
   const char *Contents =
     "framework module TestFrame {\n"
@@ -329,4 +347,121 @@ TEST(libclang, ModuleMapDescriptor) {
   EXPECT_STREQ(Contents, BufStr.c_str());
   free(BufPtr);
   clang_ModuleMapDescriptor_dispose(MMD);
+}
+
+class LibclangReparseTest : public ::testing::Test {
+  std::set<std::string> Files;
+public:
+  std::string TestDir;
+  CXIndex Index;
+  CXTranslationUnit ClangTU;
+  unsigned TUFlags;
+
+  void SetUp() {
+    llvm::SmallString<256> Dir;
+    ASSERT_FALSE(llvm::sys::fs::createUniqueDirectory("libclang-test", Dir));
+    TestDir = Dir.str();
+    TUFlags = CXTranslationUnit_DetailedPreprocessingRecord |
+              clang_defaultEditingTranslationUnitOptions();
+    Index = clang_createIndex(0, 0);
+  }
+  void TearDown() {
+    clang_disposeTranslationUnit(ClangTU);
+    clang_disposeIndex(Index);
+    for (const std::string &Path : Files)
+      llvm::sys::fs::remove(Path);
+    llvm::sys::fs::remove(TestDir);
+  }
+  void WriteFile(std::string &Filename, const std::string &Contents) {
+    if (!llvm::sys::path::is_absolute(Filename)) {
+      llvm::SmallString<256> Path(TestDir);
+      llvm::sys::path::append(Path, Filename);
+      Filename = Path.str();
+      Files.insert(Filename);
+    }
+    std::ofstream OS(Filename);
+    OS << Contents;
+  }
+  void DisplayDiagnostics() {
+    unsigned NumDiagnostics = clang_getNumDiagnostics(ClangTU);
+    for (unsigned i = 0; i < NumDiagnostics; ++i) {
+      auto Diag = clang_getDiagnostic(ClangTU, i);
+      DEBUG(llvm::dbgs() << clang_getCString(clang_formatDiagnostic(
+          Diag, clang_defaultDiagnosticDisplayOptions())) << "\n");
+      clang_disposeDiagnostic(Diag);
+    }
+  }
+  bool ReparseTU(unsigned num_unsaved_files, CXUnsavedFile* unsaved_files) {
+    if (clang_reparseTranslationUnit(ClangTU, num_unsaved_files, unsaved_files,
+                                     clang_defaultReparseOptions(ClangTU))) {
+      DEBUG(llvm::dbgs() << "Reparse failed\n");
+      return false;
+    }
+    DisplayDiagnostics();
+    return true;
+  }
+};
+
+
+TEST_F(LibclangReparseTest, Reparse) {
+  const char *HeaderTop = "#ifndef H\n#define H\nstruct Foo { int bar;";
+  const char *HeaderBottom = "\n};\n#endif\n";
+  const char *CppFile = "#include \"HeaderFile.h\"\nint main() {"
+                         " Foo foo; foo.bar = 7; foo.baz = 8; }\n";
+  std::string HeaderName = "HeaderFile.h";
+  std::string CppName = "CppFile.cpp";
+  WriteFile(CppName, CppFile);
+  WriteFile(HeaderName, std::string(HeaderTop) + HeaderBottom);
+
+  ClangTU = clang_parseTranslationUnit(Index, CppName.c_str(), nullptr, 0,
+                                       nullptr, 0, TUFlags);
+  EXPECT_EQ(1U, clang_getNumDiagnostics(ClangTU));
+  DisplayDiagnostics();
+
+  // Immedaitely reparse.
+  ASSERT_TRUE(ReparseTU(0, nullptr /* No unsaved files. */));
+  EXPECT_EQ(1U, clang_getNumDiagnostics(ClangTU));
+
+  std::string NewHeaderContents =
+      std::string(HeaderTop) + "int baz;" + HeaderBottom;
+  WriteFile(HeaderName, NewHeaderContents);
+
+  // Reparse after fix.
+  ASSERT_TRUE(ReparseTU(0, nullptr /* No unsaved files. */));
+  EXPECT_EQ(0U, clang_getNumDiagnostics(ClangTU));
+}
+
+TEST_F(LibclangReparseTest, ReparseWithModule) {
+  const char *HeaderTop = "#ifndef H\n#define H\nstruct Foo { int bar;";
+  const char *HeaderBottom = "\n};\n#endif\n";
+  const char *MFile = "#include \"HeaderFile.h\"\nint main() {"
+                         " struct Foo foo; foo.bar = 7; foo.baz = 8; }\n";
+  const char *ModFile = "module A { header \"HeaderFile.h\" }\n";
+  std::string HeaderName = "HeaderFile.h";
+  std::string MName = "MFile.m";
+  std::string ModName = "module.modulemap";
+  WriteFile(MName, MFile);
+  WriteFile(HeaderName, std::string(HeaderTop) + HeaderBottom);
+  WriteFile(ModName, ModFile);
+
+  std::string ModulesCache = std::string("-fmodules-cache-path=") + TestDir;
+  const char *Args[] = { "-fmodules", ModulesCache.c_str(),
+                         "-I", TestDir.c_str() };
+  int NumArgs = sizeof(Args) / sizeof(Args[0]);
+  ClangTU = clang_parseTranslationUnit(Index, MName.c_str(), Args, NumArgs,
+                                       nullptr, 0, TUFlags);
+  EXPECT_EQ(1U, clang_getNumDiagnostics(ClangTU));
+  DisplayDiagnostics();
+
+  // Immedaitely reparse.
+  ASSERT_TRUE(ReparseTU(0, nullptr /* No unsaved files. */));
+  EXPECT_EQ(1U, clang_getNumDiagnostics(ClangTU));
+
+  std::string NewHeaderContents =
+      std::string(HeaderTop) + "int baz;" + HeaderBottom;
+  WriteFile(HeaderName, NewHeaderContents);
+
+  // Reparse after fix.
+  ASSERT_TRUE(ReparseTU(0, nullptr /* No unsaved files. */));
+  EXPECT_EQ(0U, clang_getNumDiagnostics(ClangTU));
 }

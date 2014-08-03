@@ -128,6 +128,65 @@ bool Sema::isSimpleTypeSpecifier(tok::TokenKind Kind) const {
   return false;
 }
 
+static ParsedType recoverFromTypeInKnownDependentBase(Sema &S,
+                                                      const IdentifierInfo &II,
+                                                      SourceLocation NameLoc) {
+  // Find the first parent class template context, if any.
+  // FIXME: Perform the lookup in all enclosing class templates.
+  const CXXRecordDecl *RD = nullptr;
+  for (DeclContext *DC = S.CurContext; DC; DC = DC->getParent()) {
+    RD = dyn_cast<CXXRecordDecl>(DC);
+    if (RD && RD->getDescribedClassTemplate())
+      break;
+  }
+  if (!RD)
+    return ParsedType();
+
+  // Look for type decls in dependent base classes that have known primary
+  // templates.
+  bool FoundTypeDecl = false;
+  for (const auto &Base : RD->bases()) {
+    auto *TST = Base.getType()->getAs<TemplateSpecializationType>();
+    if (!TST || !TST->isDependentType())
+      continue;
+    auto *TD = TST->getTemplateName().getAsTemplateDecl();
+    if (!TD)
+      continue;
+    auto *BasePrimaryTemplate = cast<CXXRecordDecl>(TD->getTemplatedDecl());
+    // FIXME: Allow lookup into non-dependent bases of dependent bases, possibly
+    // by calling or integrating with the main LookupQualifiedName mechanism.
+    for (NamedDecl *ND : BasePrimaryTemplate->lookup(&II)) {
+      if (FoundTypeDecl)
+        return ParsedType();
+      FoundTypeDecl = isa<TypeDecl>(ND);
+      if (!FoundTypeDecl)
+        return ParsedType();
+    }
+  }
+  if (!FoundTypeDecl)
+    return ParsedType();
+
+  // We found some types in dependent base classes.  Recover as if the user
+  // wrote 'typename MyClass::II' instead of 'II'.  We'll fully resolve the
+  // lookup during template instantiation.
+  S.Diag(NameLoc, diag::ext_found_via_dependent_bases_lookup) << &II;
+
+  ASTContext &Context = S.Context;
+  auto *NNS = NestedNameSpecifier::Create(Context, nullptr, false,
+                                          cast<Type>(Context.getRecordType(RD)));
+  QualType T = Context.getDependentNameType(ETK_Typename, NNS, &II);
+
+  CXXScopeSpec SS;
+  SS.MakeTrivial(Context, NNS, SourceRange(NameLoc));
+
+  TypeLocBuilder Builder;
+  DependentNameTypeLoc DepTL = Builder.push<DependentNameTypeLoc>(T);
+  DepTL.setNameLoc(NameLoc);
+  DepTL.setElaboratedKeywordLoc(SourceLocation());
+  DepTL.setQualifierLoc(SS.getWithLocInContext(Context));
+  return S.CreateParsedType(T, Builder.getTypeSourceInfo(Context, T));
+}
+
 /// \brief If the identifier refers to a type name within this scope,
 /// return the declaration of that type.
 ///
@@ -209,6 +268,14 @@ ParsedType Sema::getTypeName(const IdentifierInfo &II, SourceLocation NameLoc,
   } else {
     // Perform unqualified name lookup.
     LookupName(Result, S);
+
+    // For unqualified lookup in a class template in MSVC mode, look into
+    // dependent base classes where the primary class template is known.
+    if (Result.empty() && getLangOpts().MSVCCompat && (!SS || SS->isEmpty())) {
+      if (ParsedType TypeInBase =
+              recoverFromTypeInKnownDependentBase(*this, II, NameLoc))
+        return TypeInBase;
+    }
   }
 
   NamedDecl *IIDecl = nullptr;
@@ -343,6 +410,50 @@ ParsedType Sema::getTypeName(const IdentifierInfo &II, SourceLocation NameLoc,
   return ParsedType::make(T);
 }
 
+// Builds a fake NNS for the given decl context.
+static NestedNameSpecifier *
+synthesizeCurrentNestedNameSpecifier(ASTContext &Context, DeclContext *DC) {
+  for (;; DC = DC->getLookupParent()) {
+    DC = DC->getPrimaryContext();
+    auto *ND = dyn_cast<NamespaceDecl>(DC);
+    if (ND && !ND->isInline() && !ND->isAnonymousNamespace())
+      return NestedNameSpecifier::Create(Context, nullptr, ND);
+    else if (auto *RD = dyn_cast<CXXRecordDecl>(DC))
+      return NestedNameSpecifier::Create(Context, nullptr, RD->isTemplateDecl(),
+                                         RD->getTypeForDecl());
+    else if (isa<TranslationUnitDecl>(DC))
+      return NestedNameSpecifier::GlobalSpecifier(Context);
+  }
+  llvm_unreachable("something isn't in TU scope?");
+}
+
+ParsedType Sema::ActOnDelayedDefaultTemplateArg(const IdentifierInfo &II,
+                                                SourceLocation NameLoc) {
+  // Accepting an undeclared identifier as a default argument for a template
+  // type parameter is a Microsoft extension.
+  Diag(NameLoc, diag::ext_ms_delayed_template_argument) << &II;
+
+  // Build a fake DependentNameType that will perform lookup into CurContext at
+  // instantiation time.  The name specifier isn't dependent, so template
+  // instantiation won't transform it.  It will retry the lookup, however.
+  NestedNameSpecifier *NNS =
+      synthesizeCurrentNestedNameSpecifier(Context, CurContext);
+  QualType T = Context.getDependentNameType(ETK_None, NNS, &II);
+
+  // Build type location information.  We synthesized the qualifier, so we have
+  // to build a fake NestedNameSpecifierLoc.
+  NestedNameSpecifierLocBuilder NNSLocBuilder;
+  NNSLocBuilder.MakeTrivial(Context, NNS, SourceRange(NameLoc));
+  NestedNameSpecifierLoc QualifierLoc = NNSLocBuilder.getWithLocInContext(Context);
+
+  TypeLocBuilder Builder;
+  DependentNameTypeLoc DepTL = Builder.push<DependentNameTypeLoc>(T);
+  DepTL.setNameLoc(NameLoc);
+  DepTL.setElaboratedKeywordLoc(SourceLocation());
+  DepTL.setQualifierLoc(QualifierLoc);
+  return CreateParsedType(T, Builder.getTypeSourceInfo(Context, T));
+}
+
 /// isTagName() - This method is called *for error recovery purposes only*
 /// to determine if the specified name is a valid tag name ("struct foo").  If
 /// so, this returns the TST for the tag corresponding to it (TST_enum,
@@ -394,7 +505,7 @@ bool Sema::isMicrosoftMissingTypename(const CXXScopeSpec *SS, Scope *S) {
   return CurContext->isFunctionOrMethod() || S->isFunctionPrototypeScope();
 }
 
-bool Sema::DiagnoseUnknownTypeName(IdentifierInfo *&II,
+void Sema::DiagnoseUnknownTypeName(IdentifierInfo *&II,
                                    SourceLocation IILoc,
                                    Scope *S,
                                    CXXScopeSpec *SS,
@@ -439,7 +550,7 @@ bool Sema::DiagnoseUnknownTypeName(IdentifierInfo *&II,
                                   /*IsCtorOrDtorName=*/false,
                                   /*NonTrivialTypeSourceInfo=*/true);
     }
-    return true;
+    return;
   }
 
   if (getLangOpts().CPlusPlus) {
@@ -458,7 +569,7 @@ bool Sema::DiagnoseUnknownTypeName(IdentifierInfo *&II,
         Diag(TplDecl->getLocation(), diag::note_template_decl_here)
           << TplDecl->getTemplateParameters()->getSourceRange();
       }
-      return true;
+      return;
     }
   }
 
@@ -473,7 +584,7 @@ bool Sema::DiagnoseUnknownTypeName(IdentifierInfo *&II,
   else if (isDependentScopeSpecifier(*SS)) {
     unsigned DiagID = diag::err_typename_missing;
     if (getLangOpts().MSVCCompat && isMicrosoftMissingTypename(SS, S))
-      DiagID = diag::warn_typename_missing;
+      DiagID = diag::ext_typename_missing;
 
     Diag(SS->getRange().getBegin(), DiagID)
       << SS->getScopeRep() << II->getName()
@@ -485,8 +596,6 @@ bool Sema::DiagnoseUnknownTypeName(IdentifierInfo *&II,
     assert(SS && SS->isInvalid() && 
            "Invalid scope specifier has already been diagnosed");
   }
-  
-  return true;
 }
 
 /// \brief Determine whether the given result set contains either a type name
@@ -587,6 +696,14 @@ Sema::NameClassification Sema::ClassifyName(Scope *S,
 
   LookupResult Result(*this, Name, NameLoc, LookupOrdinaryName);
   LookupParsedName(Result, S, &SS, !CurMethod);
+
+  // For unqualified lookup in a class template in MSVC mode, look into
+  // dependent base classes where the primary class template is known.
+  if (Result.empty() && SS.isEmpty() && getLangOpts().MSVCCompat) {
+    if (ParsedType TypeInBase =
+            recoverFromTypeInKnownDependentBase(*this, *Name, NameLoc))
+      return TypeInBase;
+  }
 
   // Perform lookup for Objective-C instance variables (including automatically 
   // synthesized instance variables), if we're in an Objective-C method.
@@ -1485,6 +1602,20 @@ static void LookupPredefedObjCSuperType(Sema &ThisSema, Scope *S,
       Context.setObjCSuperType(Context.getTagDeclType(TD));
 }
 
+static StringRef getHeaderName(ASTContext::GetBuiltinTypeError Error) {
+  switch (Error) {
+  case ASTContext::GE_None:
+    return "";
+  case ASTContext::GE_Missing_stdio:
+    return "stdio.h";
+  case ASTContext::GE_Missing_setjmp:
+    return "setjmp.h";
+  case ASTContext::GE_Missing_ucontext:
+    return "ucontext.h";
+  }
+  llvm_unreachable("unhandled error kind");
+}
+
 /// LazilyCreateBuiltin - The specified Builtin-ID was first used at
 /// file scope.  lazily create a decl for it. ForRedeclaration is true
 /// if we're creating this built-in in anticipation of redeclaring the
@@ -1498,27 +1629,11 @@ NamedDecl *Sema::LazilyCreateBuiltin(IdentifierInfo *II, unsigned bid,
 
   ASTContext::GetBuiltinTypeError Error;
   QualType R = Context.GetBuiltinType(BID, Error);
-  switch (Error) {
-  case ASTContext::GE_None:
-    // Okay
-    break;
-
-  case ASTContext::GE_Missing_stdio:
+  if (Error) {
     if (ForRedeclaration)
-      Diag(Loc, diag::warn_implicit_decl_requires_stdio)
-        << Context.BuiltinInfo.GetName(BID);
-    return nullptr;
-
-  case ASTContext::GE_Missing_setjmp:
-    if (ForRedeclaration)
-      Diag(Loc, diag::warn_implicit_decl_requires_setjmp)
-        << Context.BuiltinInfo.GetName(BID);
-    return nullptr;
-
-  case ASTContext::GE_Missing_ucontext:
-    if (ForRedeclaration)
-      Diag(Loc, diag::warn_implicit_decl_requires_ucontext)
-        << Context.BuiltinInfo.GetName(BID);
+      Diag(Loc, diag::warn_implicit_decl_requires_sysheader)
+          << getHeaderName(Error)
+          << Context.BuiltinInfo.GetName(BID);
     return nullptr;
   }
 
@@ -1527,11 +1642,10 @@ NamedDecl *Sema::LazilyCreateBuiltin(IdentifierInfo *II, unsigned bid,
       << Context.BuiltinInfo.GetName(BID)
       << R;
     if (Context.BuiltinInfo.getHeaderName(BID) &&
-        Diags.getDiagnosticLevel(diag::ext_implicit_lib_function_decl, Loc)
-          != DiagnosticsEngine::Ignored)
-      Diag(Loc, diag::note_please_include_header)
-        << Context.BuiltinInfo.getHeaderName(BID)
-        << Context.BuiltinInfo.GetName(BID);
+        !Diags.isIgnored(diag::ext_implicit_lib_function_decl, Loc))
+      Diag(Loc, diag::note_include_header_or_declare)
+          << Context.BuiltinInfo.getHeaderName(BID)
+          << Context.BuiltinInfo.GetName(BID);
   }
 
   DeclContext *Parent = Context.getTranslationUnitDecl();
@@ -1779,7 +1893,7 @@ void Sema::MergeTypedefNameDecl(TypedefNameDecl *New, LookupResult &OldDecls) {
        Context.getSourceManager().isInSystemHeader(New->getLocation())))
     return;
 
-  Diag(New->getLocation(), diag::warn_redefinition_of_typedef)
+  Diag(New->getLocation(), diag::ext_redefinition_of_typedef)
     << New->getDeclName();
   Diag(Old->getLocation(), diag::note_previous_definition);
   return;
@@ -1961,6 +2075,8 @@ static bool mergeDeclAttribute(Sema &S, NamedDecl *D,
   else if (isa<AlignedAttr>(Attr))
     // AlignedAttrs are handled separately, because we need to handle all
     // such attributes on a declaration at the same time.
+    NewAttr = nullptr;
+  else if (isa<DeprecatedAttr>(Attr) && Override)
     NewAttr = nullptr;
   else if (Attr->duplicatesAllowed() || !DeclHasAttr(D, Attr))
     NewAttr = cast<InheritableAttr>(Attr->clone(S.Context));
@@ -2210,6 +2326,24 @@ Sema::CXXSpecialMember Sema::getSpecialMember(const CXXMethodDecl *MD) {
   return Sema::CXXInvalid;
 }
 
+// Determine whether the previous declaration was a definition, implicit
+// declaration, or a declaration.
+template <typename T>
+static std::pair<diag::kind, SourceLocation>
+getNoteDiagForInvalidRedeclaration(const T *Old, const T *New) {
+  diag::kind PrevDiag;
+  SourceLocation OldLocation = Old->getLocation();
+  if (Old->isThisDeclarationADefinition())
+    PrevDiag = diag::note_previous_definition;
+  else if (Old->isImplicit()) {
+    PrevDiag = diag::note_previous_implicit_declaration;
+    if (OldLocation.isInvalid())
+      OldLocation = New->getLocation();
+  } else
+    PrevDiag = diag::note_previous_declaration;
+  return std::make_pair(PrevDiag, OldLocation);
+}
+
 /// canRedefineFunction - checks if a function can be redefined. Currently,
 /// only extern inline functions can be redefined, and even then only in
 /// GNU89 mode.
@@ -2302,18 +2436,10 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD,
   if (Old->isInvalidDecl())
     return true;
 
-  // Determine whether the previous declaration was a definition,
-  // implicit declaration, or a declaration.
   diag::kind PrevDiag;
-  SourceLocation OldLocation = Old->getLocation();
-  if (Old->isThisDeclarationADefinition())
-    PrevDiag = diag::note_previous_definition;
-  else if (Old->isImplicit()) {
-    PrevDiag = diag::note_previous_implicit_declaration;
-    if (OldLocation.isInvalid())
-      OldLocation = New->getLocation();
-  } else
-    PrevDiag = diag::note_previous_declaration;
+  SourceLocation OldLocation;
+  std::tie(PrevDiag, OldLocation) =
+      getNoteDiagForInvalidRedeclaration(Old, New);
 
   // Don't complain about this if we're in GNU89 mode and the old function
   // is an extern inline function.
@@ -2325,7 +2451,7 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD,
       !New->getTemplateSpecializationInfo() &&
       !canRedefineFunction(Old, getLangOpts())) {
     if (getLangOpts().MicrosoftExt) {
-      Diag(New->getLocation(), diag::warn_static_non_static) << New;
+      Diag(New->getLocation(), diag::ext_static_non_static) << New;
       Diag(OldLocation, PrevDiag);
     } else {
       Diag(New->getLocation(), diag::err_static_non_static) << New;
@@ -2468,11 +2594,13 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD,
         ResQT = Context.mergeObjCGCQualifiers(NewQType, OldQType);
       if (ResQT.isNull()) {
         if (New->isCXXClassMember() && New->isOutOfLine())
-          Diag(New->getLocation(),
-               diag::err_member_def_does_not_match_ret_type) << New;
+          Diag(New->getLocation(), diag::err_member_def_does_not_match_ret_type)
+              << New << New->getReturnTypeSourceRange();
         else
-          Diag(New->getLocation(), diag::err_ovl_diff_return_type);
-        Diag(OldLocation, PrevDiag) << Old << Old->getType();
+          Diag(New->getLocation(), diag::err_ovl_diff_return_type)
+              << New->getReturnTypeSourceRange();
+        Diag(OldLocation, PrevDiag) << Old << Old->getType()
+                                    << Old->getReturnTypeSourceRange();
         return true;
       }
       else
@@ -3026,13 +3154,25 @@ void Sema::MergeVarDecl(VarDecl *New, LookupResult &Previous) {
   if (New->isInvalidDecl())
     return;
 
+  diag::kind PrevDiag;
+  SourceLocation OldLocation;
+  std::tie(PrevDiag, OldLocation) =
+      getNoteDiagForInvalidRedeclaration(Old, New);
+
   // [dcl.stc]p8: Check if we have a non-static decl followed by a static.
   if (New->getStorageClass() == SC_Static &&
       !New->isStaticDataMember() &&
       Old->hasExternalFormalLinkage()) {
-    Diag(New->getLocation(), diag::err_static_non_static) << New->getDeclName();
-    Diag(Old->getLocation(), diag::note_previous_definition);
-    return New->setInvalidDecl();
+    if (getLangOpts().MicrosoftExt) {
+      Diag(New->getLocation(), diag::ext_static_non_static)
+          << New->getDeclName();
+      Diag(OldLocation, PrevDiag);
+    } else {
+      Diag(New->getLocation(), diag::err_static_non_static)
+          << New->getDeclName();
+      Diag(OldLocation, PrevDiag);
+      return New->setInvalidDecl();
+    }
   }
   // C99 6.2.2p4:
   //   For an identifier declared with the storage-class specifier
@@ -3049,7 +3189,7 @@ void Sema::MergeVarDecl(VarDecl *New, LookupResult &Previous) {
            !New->isStaticDataMember() &&
            Old->getCanonicalDecl()->getStorageClass() == SC_Static) {
     Diag(New->getLocation(), diag::err_non_static_static) << New->getDeclName();
-    Diag(Old->getLocation(), diag::note_previous_definition);
+    Diag(OldLocation, PrevDiag);
     return New->setInvalidDecl();
   }
 
@@ -3057,13 +3197,13 @@ void Sema::MergeVarDecl(VarDecl *New, LookupResult &Previous) {
   if (New->hasExternalStorage() &&
       !Old->hasLinkage() && Old->isLocalVarDecl()) {
     Diag(New->getLocation(), diag::err_extern_non_extern) << New->getDeclName();
-    Diag(Old->getLocation(), diag::note_previous_definition);
+    Diag(OldLocation, PrevDiag);
     return New->setInvalidDecl();
   }
   if (Old->hasLinkage() && New->isLocalVarDecl() &&
       !New->hasExternalStorage()) {
     Diag(New->getLocation(), diag::err_non_extern_extern) << New->getDeclName();
-    Diag(Old->getLocation(), diag::note_previous_definition);
+    Diag(OldLocation, PrevDiag);
     return New->setInvalidDecl();
   }
 
@@ -3076,17 +3216,17 @@ void Sema::MergeVarDecl(VarDecl *New, LookupResult &Previous) {
       !(Old->getLexicalDeclContext()->isRecord() &&
         !New->getLexicalDeclContext()->isRecord())) {
     Diag(New->getLocation(), diag::err_redefinition) << New->getDeclName();
-    Diag(Old->getLocation(), diag::note_previous_definition);
+    Diag(OldLocation, PrevDiag);
     return New->setInvalidDecl();
   }
 
   if (New->getTLSKind() != Old->getTLSKind()) {
     if (!Old->getTLSKind()) {
       Diag(New->getLocation(), diag::err_thread_non_thread) << New->getDeclName();
-      Diag(Old->getLocation(), diag::note_previous_declaration);
+      Diag(OldLocation, PrevDiag);
     } else if (!New->getTLSKind()) {
       Diag(New->getLocation(), diag::err_non_thread_thread) << New->getDeclName();
-      Diag(Old->getLocation(), diag::note_previous_declaration);
+      Diag(OldLocation, PrevDiag);
     } else {
       // Do not allow redeclaration to change the variable between requiring
       // static and dynamic initialization.
@@ -3094,7 +3234,7 @@ void Sema::MergeVarDecl(VarDecl *New, LookupResult &Previous) {
       // declaration to determine the kind. Do we need to be compatible here?
       Diag(New->getLocation(), diag::err_thread_thread_different_kind)
         << New->getDeclName() << (New->getTLSKind() == VarDecl::TLS_Dynamic);
-      Diag(Old->getLocation(), diag::note_previous_declaration);
+      Diag(OldLocation, PrevDiag);
     }
   }
 
@@ -3111,7 +3251,7 @@ void Sema::MergeVarDecl(VarDecl *New, LookupResult &Previous) {
 
   if (haveIncompatibleLanguageLinkages(Old, New)) {
     Diag(New->getLocation(), diag::err_different_language_linkage) << New;
-    Diag(Old->getLocation(), diag::note_previous_definition);
+    Diag(OldLocation, PrevDiag);
     New->setInvalidDecl();
     return;
   }
@@ -3691,6 +3831,8 @@ Decl *Sema::BuildAnonymousStructOrUnion(Scope *S, DeclSpec &DS,
         }
       } else if (isa<AccessSpecDecl>(Mem)) {
         // Any access specifier is fine.
+      } else if (isa<StaticAssertDecl>(Mem)) {
+        // In C++1z, static_assert declarations are also fine.
       } else {
         // We have something that isn't a non-static data
         // member. Complain about it.
@@ -4905,7 +5047,7 @@ static void checkDLLAttributeRedeclaration(Sema &S, NamedDecl *OldDecl,
   }
 
   // A redeclaration is not allowed to drop a dllimport attribute, the only
-  // exception being inline function definitions.
+  // exceptions being inline function definitions and local extern declarations.
   // NB: MSVC converts such a declaration to dllexport.
   bool IsInline = false, IsStaticDataMember = false;
   if (const auto *VD = dyn_cast<VarDecl>(NewDecl))
@@ -4915,7 +5057,8 @@ static void checkDLLAttributeRedeclaration(Sema &S, NamedDecl *OldDecl,
   else if (const auto *FD = dyn_cast<FunctionDecl>(NewDecl))
     IsInline = FD->isInlined();
 
-  if (OldImportAttr && !HasNewAttr && !IsInline && !IsStaticDataMember) {
+  if (OldImportAttr && !HasNewAttr && !IsInline && !IsStaticDataMember &&
+      !NewDecl->isLocalExternDecl()) {
     S.Diag(NewDecl->getLocation(),
            diag::warn_redeclaration_without_attribute_prev_attribute_ignored)
       << NewDecl << OldImportAttr;
@@ -5458,6 +5601,10 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
       // Global Named register
       if (!Context.getTargetInfo().isValidGCCRegisterName(Label))
         Diag(E->getExprLoc(), diag::err_asm_unknown_register_name) << Label;
+      if (!R->isIntegralType(Context) && !R->isPointerType()) {
+        Diag(D.getLocStart(), diag::err_asm_bad_register_type);
+        NewVD->setInvalidDecl(true);
+      }
     }
 
     NewVD->addAttr(::new (Context) AsmLabelAttr(SE->getStrTokenLoc(0),
@@ -5595,8 +5742,7 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
 ///
 void Sema::CheckShadow(Scope *S, VarDecl *D, const LookupResult& R) {
   // Return if warning is ignored.
-  if (Diags.getDiagnosticLevel(diag::warn_decl_shadow, R.getNameLoc()) ==
-        DiagnosticsEngine::Ignored)
+  if (Diags.isIgnored(diag::warn_decl_shadow, R.getNameLoc()))
     return;
 
   // Don't diagnose declarations at file scope.
@@ -5669,8 +5815,7 @@ void Sema::CheckShadow(Scope *S, VarDecl *D, const LookupResult& R) {
 
 /// \brief Check -Wshadow without the advantage of a previous lookup.
 void Sema::CheckShadow(Scope *S, VarDecl *D) {
-  if (Diags.getDiagnosticLevel(diag::warn_decl_shadow, D->getLocation()) ==
-        DiagnosticsEngine::Ignored)
+  if (Diags.isIgnored(diag::warn_decl_shadow, D->getLocation()))
     return;
 
   LookupResult R(*this, D->getDeclName(), D->getLocation(),
@@ -6965,12 +7110,10 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
     const FunctionProtoType *FPT = R->getAs<FunctionProtoType>();
     if ((Name.getCXXOverloadedOperator() == OO_Delete ||
          Name.getCXXOverloadedOperator() == OO_Array_Delete) &&
-        getLangOpts().CPlusPlus11 && FPT && !FPT->hasExceptionSpec()) {
-      FunctionProtoType::ExtProtoInfo EPI = FPT->getExtProtoInfo();
-      EPI.ExceptionSpecType = EST_BasicNoexcept;
-      NewFD->setType(Context.getFunctionType(FPT->getReturnType(),
-                                             FPT->getParamTypes(), EPI));
-    }
+        getLangOpts().CPlusPlus11 && FPT && !FPT->hasExceptionSpec())
+      NewFD->setType(Context.getFunctionType(
+          FPT->getReturnType(), FPT->getParamTypes(),
+          FPT->getExtProtoInfo().withExceptionSpec(EST_BasicNoexcept)));
   }
 
   // Filter out previous declarations that don't match the scope.
@@ -7427,8 +7570,10 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
     
     // OpenCL v1.2, s6.9 -- Kernels can only have return type void.
     if (!NewFD->getReturnType()->isVoidType()) {
-      Diag(D.getIdentifierLoc(),
-           diag::err_expected_kernel_void_return_type);
+      SourceRange RTRange = NewFD->getReturnTypeSourceRange();
+      Diag(D.getIdentifierLoc(), diag::err_expected_kernel_void_return_type)
+          << (RTRange.isValid() ? FixItHint::CreateReplacement(RTRange, "void")
+                                : FixItHint());
       D.setInvalidType();
     }
 
@@ -7675,6 +7820,18 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
   }
 
   // Semantic checking for this function declaration (in isolation).
+
+  // Diagnose the use of X86 fastcall on unprototyped functions.
+  QualType NewQType = Context.getCanonicalType(NewFD->getType());
+  const FunctionType *NewType = cast<FunctionType>(NewQType);
+  if (isa<FunctionNoProtoType>(NewType)) {
+    FunctionType::ExtInfo NewTypeInfo = NewType->getExtInfo();
+    if (NewTypeInfo.getCC() == CC_X86FastCall)
+      Diag(NewFD->getLocation(), diag::err_cconv_knr)
+          << FunctionType::getNameForCallConv(CC_X86FastCall);
+    // TODO: Also diagnose unprototyped stdcall functions?
+  }
+
   if (getLangOpts().CPlusPlus) {
     // C++-specific checks.
     if (CXXConstructorDecl *Constructor = dyn_cast<CXXConstructorDecl>(NewFD)) {
@@ -7768,23 +7925,6 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
   return Redeclaration;
 }
 
-static SourceRange getResultSourceRange(const FunctionDecl *FD) {
-  const TypeSourceInfo *TSI = FD->getTypeSourceInfo();
-  if (!TSI)
-    return SourceRange();
-
-  TypeLoc TL = TSI->getTypeLoc();
-  FunctionTypeLoc FunctionTL = TL.getAs<FunctionTypeLoc>();
-  if (!FunctionTL)
-    return SourceRange();
-
-  TypeLoc ResultTL = FunctionTL.getReturnLoc();
-  if (ResultTL.getUnqualifiedLoc().getAs<BuiltinTypeLoc>())
-    return ResultTL.getSourceRange();
-
-  return SourceRange();
-}
-
 void Sema::CheckMain(FunctionDecl* FD, const DeclSpec& DS) {
   // C++11 [basic.start.main]p3:
   //   A program that [...] declares main to be inline, static or
@@ -7824,34 +7964,37 @@ void Sema::CheckMain(FunctionDecl* FD, const DeclSpec& DS) {
   assert(T->isFunctionType() && "function decl is not of function type");
   const FunctionType* FT = T->castAs<FunctionType>();
 
-  // All the standards say that main() should should return 'int'.
-  if (Context.hasSameUnqualifiedType(FT->getReturnType(), Context.IntTy)) {
+  if (getLangOpts().GNUMode && !getLangOpts().CPlusPlus) {
+    // In C with GNU extensions we allow main() to have non-integer return
+    // type, but we should warn about the extension, and we disable the
+    // implicit-return-zero rule.
+
+    // GCC in C mode accepts qualified 'int'.
+    if (Context.hasSameUnqualifiedType(FT->getReturnType(), Context.IntTy))
+      FD->setHasImplicitReturnZero(true);
+    else {
+      Diag(FD->getTypeSpecStartLoc(), diag::ext_main_returns_nonint);
+      SourceRange RTRange = FD->getReturnTypeSourceRange();
+      if (RTRange.isValid())
+        Diag(RTRange.getBegin(), diag::note_main_change_return_type)
+            << FixItHint::CreateReplacement(RTRange, "int");
+    }
+  } else {
     // In C and C++, main magically returns 0 if you fall off the end;
     // set the flag which tells us that.
     // This is C++ [basic.start.main]p5 and C99 5.1.2.2.3.
-    FD->setHasImplicitReturnZero(true);
 
-  // In C with GNU extensions we allow main() to have non-integer return
-  // type, but we should warn about the extension, and we disable the
-  // implicit-return-zero rule.
-  } else if (getLangOpts().GNUMode && !getLangOpts().CPlusPlus) {
-    Diag(FD->getTypeSpecStartLoc(), diag::ext_main_returns_nonint);
-
-    SourceRange ResultRange = getResultSourceRange(FD);
-    if (ResultRange.isValid())
-      Diag(ResultRange.getBegin(), diag::note_main_change_return_type)
-          << FixItHint::CreateReplacement(ResultRange, "int");
-
-  // Otherwise, this is just a flat-out error.
-  } else {
-    SourceRange ResultRange = getResultSourceRange(FD);
-    if (ResultRange.isValid())
+    // All the standards say that main() should return 'int'.
+    if (Context.hasSameType(FT->getReturnType(), Context.IntTy))
+      FD->setHasImplicitReturnZero(true);
+    else {
+      // Otherwise, this is just a flat-out error.
+      SourceRange RTRange = FD->getReturnTypeSourceRange();
       Diag(FD->getTypeSpecStartLoc(), diag::err_main_returns_nonint)
-          << FixItHint::CreateReplacement(ResultRange, "int");
-    else
-      Diag(FD->getTypeSpecStartLoc(), diag::err_main_returns_nonint);
-
-    FD->setInvalidDecl(true);
+          << (RTRange.isValid() ? FixItHint::CreateReplacement(RTRange, "int")
+                                : FixItHint());
+      FD->setInvalidDecl(true);
+    }
   }
 
   // Treat protoless main() as nullary.
@@ -8400,13 +8543,10 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
     // we do not warn to warn spuriously when 'x' and 'y' are on separate
     // paths through the function. This should be revisited if
     // -Wrepeated-use-of-weak is made flow-sensitive.
-    if (VDecl->getType().getObjCLifetime() == Qualifiers::OCL_Strong) {
-      DiagnosticsEngine::Level Level =
-        Diags.getDiagnosticLevel(diag::warn_arc_repeated_use_of_weak,
-                                 Init->getLocStart());
-      if (Level != DiagnosticsEngine::Ignored)
+    if (VDecl->getType().getObjCLifetime() == Qualifiers::OCL_Strong &&
+        !Diags.isIgnored(diag::warn_arc_repeated_use_of_weak,
+                         Init->getLocStart()))
         getCurFunction()->markSafeWeakUse(Init);
-    }
   }
 
   // The initialization is usually a full-expression.
@@ -8768,11 +8908,13 @@ void Sema::ActOnUninitializedDecl(Decl *RealDecl,
     if (Var->isInvalidDecl())
       return;
 
-    if (RequireCompleteType(Var->getLocation(), 
-                            Context.getBaseElementType(Type),
-                            diag::err_typecheck_decl_incomplete_type)) {
-      Var->setInvalidDecl();
-      return;
+    if (!Var->hasAttr<AliasAttr>()) {
+      if (RequireCompleteType(Var->getLocation(),
+                              Context.getBaseElementType(Type),
+                              diag::err_typecheck_decl_incomplete_type)) {
+        Var->setInvalidDecl();
+        return;
+      }
     }
 
     // The variable can not have an abstract class type.
@@ -8879,6 +9021,37 @@ void Sema::ActOnCXXForRangeDecl(Decl *D) {
   }
 }
 
+StmtResult
+Sema::ActOnCXXForRangeIdentifier(Scope *S, SourceLocation IdentLoc,
+                                 IdentifierInfo *Ident,
+                                 ParsedAttributes &Attrs,
+                                 SourceLocation AttrEnd) {
+  // C++1y [stmt.iter]p1:
+  //   A range-based for statement of the form
+  //      for ( for-range-identifier : for-range-initializer ) statement
+  //   is equivalent to
+  //      for ( auto&& for-range-identifier : for-range-initializer ) statement
+  DeclSpec DS(Attrs.getPool().getFactory());
+
+  const char *PrevSpec;
+  unsigned DiagID;
+  DS.SetTypeSpecType(DeclSpec::TST_auto, IdentLoc, PrevSpec, DiagID,
+                     getPrintingPolicy());
+
+  Declarator D(DS, Declarator::ForContext);
+  D.SetIdentifier(Ident, IdentLoc);
+  D.takeAttributes(Attrs, AttrEnd);
+
+  ParsedAttributes EmptyAttrs(Attrs.getPool().getFactory());
+  D.AddTypeInfo(DeclaratorChunk::getReference(0, IdentLoc, /*lvalue*/false),
+                EmptyAttrs, IdentLoc);
+  Decl *Var = ActOnDeclarator(S, D);
+  cast<VarDecl>(Var)->setCXXForRangeDecl(true);
+  FinalizeDeclaration(Var);
+  return ActOnDeclStmt(FinalizeDeclaratorGroup(S, DS, Var), IdentLoc,
+                       AttrEnd.isValid() ? AttrEnd : IdentLoc);
+}
+
 void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
   if (var->isInvalidDecl()) return;
 
@@ -8907,9 +9080,8 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
   if (var->isThisDeclarationADefinition() &&
       var->getDeclContext()->getRedeclContext()->isFileContext() &&
       var->isExternallyVisible() && var->hasLinkage() &&
-      getDiagnostics().getDiagnosticLevel(
-                       diag::warn_missing_variable_declarations,
-                       var->getLocation())) {
+      !getDiagnostics().isIgnored(diag::warn_missing_variable_declarations,
+                                  var->getLocation())) {
     // Find a previous declaration that's not a definition.
     VarDecl *prev = var->getPreviousDecl();
     while (prev && prev->isThisDeclarationADefinition())
@@ -8964,6 +9136,13 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
     if (const SectionAttr *SA = var->getAttr<SectionAttr>())
       if (UnifySection(SA->getName(), SectionFlags, var))
         var->dropAttr<SectionAttr>();
+
+    // Apply the init_seg attribute if this has an initializer.  If the
+    // initializer turns out to not be dynamic, we'll end up ignoring this
+    // attribute.
+    if (CurInitSeg && var->getInit())
+      var->addAttr(InitSegAttr::CreateImplicit(Context, CurInitSeg->getString(),
+                                               CurInitSegLoc));
   }
 
   // All the following checks are C++ only.
@@ -9002,9 +9181,8 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
   if (!var->getDeclContext()->isDependentContext() &&
       Init && !Init->isValueDependent()) {
     if (IsGlobal && !var->isConstexpr() &&
-        getDiagnostics().getDiagnosticLevel(diag::warn_global_constructor,
-                                            var->getLocation())
-          != DiagnosticsEngine::Ignored) {
+        !getDiagnostics().isIgnored(diag::warn_global_constructor,
+                                    var->getLocation())) {
       // Warn about globals which don't have a constant initializer.  Don't
       // warn about globals with a non-trivial destructor because we already
       // warned about them.
@@ -9057,14 +9235,37 @@ Sema::FinalizeDeclaration(Decl *ThisDecl) {
 
   checkAttributesAfterMerging(*this, *VD);
 
+  // Static locals inherit dll attributes from their function.
+  if (VD->isStaticLocal()) {
+    if (FunctionDecl *FD =
+            dyn_cast<FunctionDecl>(VD->getParentFunctionOrMethod())) {
+      if (Attr *A = getDLLAttr(FD)) {
+        auto *NewAttr = cast<InheritableAttr>(A->clone(getASTContext()));
+        NewAttr->setInherited(true);
+        VD->addAttr(NewAttr);
+      }
+    }
+  }
+
   // Imported static data members cannot be defined out-of-line.
   if (const DLLImportAttr *IA = VD->getAttr<DLLImportAttr>()) {
     if (VD->isStaticDataMember() && VD->isOutOfLine() &&
         VD->isThisDeclarationADefinition()) {
+      // We allow definitions of dllimport class template static data members
+      // with a warning.
+      CXXRecordDecl *Context =
+        cast<CXXRecordDecl>(VD->getFirstDecl()->getDeclContext());
+      bool IsClassTemplateMember =
+          isa<ClassTemplatePartialSpecializationDecl>(Context) ||
+          Context->getDescribedClassTemplate();
+
       Diag(VD->getLocation(),
-           diag::err_attribute_dllimport_static_field_definition);
+           IsClassTemplateMember
+               ? diag::warn_attribute_dllimport_static_field_definition
+               : diag::err_attribute_dllimport_static_field_definition);
       Diag(IA->getLocation(), diag::note_attribute);
-      VD->setInvalidDecl();
+      if (!IsClassTemplateMember)
+        VD->setInvalidDecl();
     }
   }
 
@@ -9161,7 +9362,7 @@ Sema::DeclGroupPtrTy Sema::FinalizeDeclaratorGroup(Scope *S, const DeclSpec &DS,
 /// BuildDeclaratorGroup - convert a list of declarations into a declaration
 /// group, performing any necessary semantic checking.
 Sema::DeclGroupPtrTy
-Sema::BuildDeclaratorGroup(llvm::MutableArrayRef<Decl *> Group,
+Sema::BuildDeclaratorGroup(MutableArrayRef<Decl *> Group,
                            bool TypeMayContainAuto) {
   // C++0x [dcl.spec.auto]p7:
   //   If the type deduced for the template parameter U is not the same in each
@@ -9218,9 +9419,7 @@ void Sema::ActOnDocumentableDecls(ArrayRef<Decl *> Group) {
   if (Group.empty() || !Group[0])
    return;
 
-  if (Diags.getDiagnosticLevel(diag::warn_doc_param_not_found,
-                               Group[0]->getLocation())
-        == DiagnosticsEngine::Ignored)
+  if (Diags.isIgnored(diag::warn_doc_param_not_found, Group[0]->getLocation()))
     return;
 
   if (Group.size() >= 2) {
@@ -9940,7 +10139,7 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
     // MSVC permits the use of pure specifier (=0) on function definition,
     // defined at class scope, warn about this non-standard construct.
     if (getLangOpts().MicrosoftExt && FD->isPure() && FD->isCanonicalDecl())
-      Diag(FD->getLocation(), diag::warn_pure_function_definition);
+      Diag(FD->getLocation(), diag::ext_pure_function_definition);
 
     if (!FD->isInvalidDecl()) {
       // Don't diagnose unused parameters of defaulted or deleted functions.
@@ -10537,6 +10736,49 @@ bool Sema::isAcceptableTagRedeclaration(const TagDecl *Previous,
   return false;
 }
 
+/// Add a minimal nested name specifier fixit hint to allow lookup of a tag name
+/// from an outer enclosing namespace or file scope inside a friend declaration.
+/// This should provide the commented out code in the following snippet:
+///   namespace N {
+///     struct X;
+///     namespace M {
+///       struct Y { friend struct /*N::*/ X; };
+///     }
+///   }
+static FixItHint createFriendTagNNSFixIt(Sema &SemaRef, NamedDecl *ND, Scope *S,
+                                         SourceLocation NameLoc) {
+  // While the decl is in a namespace, do repeated lookup of that name and see
+  // if we get the same namespace back.  If we do not, continue until
+  // translation unit scope, at which point we have a fully qualified NNS.
+  SmallVector<IdentifierInfo *, 4> Namespaces;
+  DeclContext *DC = ND->getDeclContext()->getRedeclContext();
+  for (; !DC->isTranslationUnit(); DC = DC->getParent()) {
+    // This tag should be declared in a namespace, which can only be enclosed by
+    // other namespaces.  Bail if there's an anonymous namespace in the chain.
+    NamespaceDecl *Namespace = dyn_cast<NamespaceDecl>(DC);
+    if (!Namespace || Namespace->isAnonymousNamespace())
+      return FixItHint();
+    IdentifierInfo *II = Namespace->getIdentifier();
+    Namespaces.push_back(II);
+    NamedDecl *Lookup = SemaRef.LookupSingleName(
+        S, II, NameLoc, Sema::LookupNestedNameSpecifierName);
+    if (Lookup == Namespace)
+      break;
+  }
+
+  // Once we have all the namespaces, reverse them to go outermost first, and
+  // build an NNS.
+  SmallString<64> Insertion;
+  llvm::raw_svector_ostream OS(Insertion);
+  if (DC->isTranslationUnit())
+    OS << "::";
+  std::reverse(Namespaces.begin(), Namespaces.end());
+  for (auto *II : Namespaces)
+    OS << II->getName() << "::";
+  OS.flush();
+  return FixItHint::CreateInsertion(NameLoc, Insertion);
+}
+
 /// ActOnTag - This is invoked when we see 'struct foo' or 'struct {'.  In the
 /// former case, Name will be non-null.  In the later case, Name will be null.
 /// TagSpec indicates what kind of tag this is. TUK indicates whether this is a
@@ -10595,6 +10837,7 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
                                                SS, Name, NameLoc, Attr,
                                                TemplateParams, AS,
                                                ModulePrivateLoc,
+                                               /*FriendLoc*/SourceLocation(),
                                                TemplateParameterLists.size()-1,
                                                TemplateParameterLists.data());
         return Result.get();
@@ -10646,7 +10889,6 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
     Redecl = NotForRedeclaration;
 
   LookupResult Previous(*this, Name, NameLoc, LookupTagName, Redecl);
-  bool FriendSawTagOutsideEnclosingNamespace = false;
   if (Name && SS.isNotEmpty()) {
     // We have a nested-name tag ('struct foo::bar').
 
@@ -10731,23 +10973,38 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
     //   the entity has been previously declared shall not consider
     //   any scopes outside the innermost enclosing namespace.
     //
+    // MSVC doesn't implement the above rule for types, so a friend tag
+    // declaration may be a redeclaration of a type declared in an enclosing
+    // scope.  They do implement this rule for friend functions.
+    //
     // Does it matter that this should be by scope instead of by
     // semantic context?
     if (!Previous.empty() && TUK == TUK_Friend) {
       DeclContext *EnclosingNS = SearchDC->getEnclosingNamespaceContext();
       LookupResult::Filter F = Previous.makeFilter();
+      bool FriendSawTagOutsideEnclosingNamespace = false;
       while (F.hasNext()) {
         NamedDecl *ND = F.next();
         DeclContext *DC = ND->getDeclContext()->getRedeclContext();
         if (DC->isFileContext() &&
             !EnclosingNS->Encloses(ND->getDeclContext())) {
-          F.erase();
-          FriendSawTagOutsideEnclosingNamespace = true;
+          if (getLangOpts().MSVCCompat)
+            FriendSawTagOutsideEnclosingNamespace = true;
+          else
+            F.erase();
         }
       }
       F.done();
+
+      // Diagnose this MSVC extension in the easy case where lookup would have
+      // unambiguously found something outside the enclosing namespace.
+      if (Previous.isSingleResult() && FriendSawTagOutsideEnclosingNamespace) {
+        NamedDecl *ND = Previous.getFoundDecl();
+        Diag(NameLoc, diag::ext_friend_tag_redecl_outside_namespace)
+            << createFriendTagNNSFixIt(*this, ND, S, NameLoc);
+      }
     }
-    
+
     // Note:  there used to be some attempt at recovery here.
     if (Previous.isAmbiguous())
       return nullptr;
@@ -10760,11 +11017,6 @@ Decl *Sema::ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
       while (isa<RecordDecl>(SearchDC) || isa<EnumDecl>(SearchDC))
         SearchDC = SearchDC->getParent();
     }
-  } else if (S->isFunctionPrototypeScope()) {
-    // If this is an enum declaration in function prototype scope, set its
-    // initial context to the translation unit.
-    // FIXME: [citation needed]
-    SearchDC = Context.getTranslationUnitDecl();
   }
 
   if (Previous.isSingleResult() &&
@@ -11237,26 +11489,36 @@ CreateNewDecl:
     else if (!SearchDC->isFunctionOrMethod())
       New->setModulePrivate();
   }
-  
+
   // If this is a specialization of a member class (of a class template),
   // check the specialization.
   if (isExplicitSpecialization && CheckMemberSpecialization(New, Previous))
     Invalid = true;
-           
+
+  // If we're declaring or defining a tag in function prototype scope in C,
+  // note that this type can only be used within the function and add it to
+  // the list of decls to inject into the function definition scope.
+  if ((Name || Kind == TTK_Enum) &&
+      getNonFieldDeclScope(S)->isFunctionPrototypeScope()) {
+    if (getLangOpts().CPlusPlus) {
+      // C++ [dcl.fct]p6:
+      //   Types shall not be defined in return or parameter types.
+      if (TUK == TUK_Definition && !IsTypeSpecifier) {
+        Diag(Loc, diag::err_type_defined_in_param_type)
+            << Name;
+        Invalid = true;
+      }
+    } else {
+      Diag(Loc, diag::warn_decl_in_param_list) << Context.getTagDeclType(New);
+    }
+    DeclsInPrototypeScope.push_back(New);
+  }
+
   if (Invalid)
     New->setInvalidDecl();
 
   if (Attr)
     ProcessDeclAttributeList(S, New, Attr);
-
-  // If we're declaring or defining a tag in function prototype scope in C,
-  // note that this type can only be used within the function and add it to
-  // the list of decls to inject into the function definition scope.
-  if (!getLangOpts().CPlusPlus && (Name || Kind == TTK_Enum) &&
-      getNonFieldDeclScope(S)->isFunctionPrototypeScope()) {
-    Diag(Loc, diag::warn_decl_in_param_list) << Context.getTagDeclType(New);
-    DeclsInPrototypeScope.push_back(New);
-  }
 
   // Set the lexical context. If the tag has a C++ scope specifier, the
   // lexical context will be different from the semantic context.
@@ -11267,8 +11529,7 @@ CreateNewDecl:
   // declaration so we always pass true to setObjectOfFriendDecl to make
   // the tag name visible.
   if (TUK == TUK_Friend)
-    New->setObjectOfFriendDecl(!FriendSawTagOutsideEnclosingNamespace &&
-                               getLangOpts().MicrosoftExt);
+    New->setObjectOfFriendDecl(getLangOpts().MSVCCompat);
 
   // Set the access specifier.
   if (!Invalid && SearchDC->isRecord())
@@ -12799,9 +13060,7 @@ struct DenseMapInfoDupKey {
 static void CheckForDuplicateEnumValues(Sema &S, ArrayRef<Decl *> Elements,
                                         EnumDecl *Enum,
                                         QualType EnumType) {
-  if (S.Diags.getDiagnosticLevel(diag::warn_duplicate_enum_values,
-                                 Enum->getLocation()) ==
-      DiagnosticsEngine::Ignored)
+  if (S.Diags.isIgnored(diag::warn_duplicate_enum_values, Enum->getLocation()))
     return;
   // Avoid anonymous enums
   if (!Enum->getIdentifier())
@@ -13190,6 +13449,9 @@ DeclResult Sema::ActOnModuleImport(SourceLocation AtLoc,
   if (Mod->getTopLevelModuleName() == getLangOpts().CurrentModule)
     Diag(ImportLoc, diag::err_module_self_import)
         << Mod->getFullModuleName() << getLangOpts().CurrentModule;
+  else if (Mod->getTopLevelModuleName() == getLangOpts().ImplementationOfModule)
+    Diag(ImportLoc, diag::err_module_import_in_implementation)
+        << Mod->getFullModuleName() << getLangOpts().ImplementationOfModule;
 
   SmallVector<SourceLocation, 2> IdentifierLocs;
   Module *ModCheck = Mod;

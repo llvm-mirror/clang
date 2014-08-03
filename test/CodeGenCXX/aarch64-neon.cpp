@@ -1,8 +1,8 @@
-// REQUIRES: arm64-registered-target
+// REQUIRES: aarch64-registered-target
 // RUN: %clang_cc1 -triple arm64-none-linux-gnu -target-feature +neon \
 // RUN:   -ffp-contract=fast -S -O3 -o - %s | FileCheck %s
 
-// Test whether arm_neon.h can be used in .cpp file.
+// Test whether arm_neon.h works as expected in C++.
 
 #include "arm_neon.h"
 

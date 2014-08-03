@@ -22,6 +22,8 @@ def err_drv_unknown_stdin_type_clang_cl : Error<
 def err_drv_unknown_language : Error<"language not recognized: '%0'">;
 def err_drv_invalid_arch_name : Error<
   "invalid arch name '%0'">;
+def err_drv_invalid_linker_name : Error<
+  "invalid linker name in argument '%0'">;
 def err_drv_invalid_rtlib_name : Error<
   "invalid runtime library name in argument '%0'">;
 def err_drv_unsupported_rtlib_for_platform : Error<
@@ -116,10 +118,13 @@ def err_drv_emit_llvm_link : Error<
    "-emit-llvm cannot be used when linking">;
 def err_drv_optimization_remark_pattern : Error<
   "%0 in '%1'">;
+def err_drv_no_neon_modifier : Error<"[no]neon is not accepted as modifier, please use [no]simd instead">;
 
 def warn_O4_is_O3 : Warning<"-O4 is equivalent to -O3">, InGroup<Deprecated>;
-def warn_drv_optimization_value : Warning<"optimization level '%0' is unsupported; using '%1%2' instead">,
+def warn_drv_optimization_value : Warning<"optimization level '%0' is not supported; using '%1%2' instead">,
   InGroup<InvalidCommandLineArgument>;
+def warn_ignored_gcc_optimization : Warning<"optimization flag '%0' is not supported">,
+  InGroup<IgnoredOptimizationArgument>;
 def warn_c_kext : Warning<
   "ignoring -fapple-kext which is valid for C++ and Objective-C++ only">;
 def warn_drv_input_file_unused : Warning<
@@ -137,8 +142,6 @@ def warn_drv_unused_argument : Warning<
 def warn_drv_empty_joined_argument : Warning<
   "joined argument expects additional value: '%0'">,
   InGroup<UnusedCommandLineArgument>;
-def warn_drv_unused_sanitizer : Warning<"'%0' is ignored in absence of '%1'">,
-  InGroup<UnusedSanitizeArgument>;
 def warn_drv_clang_unsupported : Warning<
   "the clang compiler does not support '%0'">;
 def warn_drv_assuming_mfloat_abi_is : Warning<
@@ -175,8 +178,5 @@ def err_drv_modules_validate_once_requires_timestamp : Error<
   "'-fbuild-session-timestamp=<seconds since Epoch>'">;
 
 def warn_drv_invoking_fallback : Warning<"falling back to %0">,
-  InGroup<Fallback>;
-def warn_drv_rtti_fallback :
-  Warning<"cannot compile RTTI yet, falling back to %0">,
   InGroup<Fallback>;
 }

@@ -67,11 +67,11 @@ void clang::ProcessWarningOptions(DiagnosticsEngine &Diags,
   // extension diagnostics onto WARNING or ERROR unless the user has futz'd
   // around with them explicitly.
   if (Opts.PedanticErrors)
-    Diags.setExtensionHandlingBehavior(DiagnosticsEngine::Ext_Error);
+    Diags.setExtensionHandlingBehavior(diag::Severity::Error);
   else if (Opts.Pedantic)
-    Diags.setExtensionHandlingBehavior(DiagnosticsEngine::Ext_Warn);
+    Diags.setExtensionHandlingBehavior(diag::Severity::Warning);
   else
-    Diags.setExtensionHandlingBehavior(DiagnosticsEngine::Ext_Ignore);
+    Diags.setExtensionHandlingBehavior(diag::Severity::Ignored);
 
   SmallVector<diag::kind, 10> _Diags;
   const IntrusiveRefCntPtr< DiagnosticIDs > DiagIDs =
@@ -106,8 +106,9 @@ void clang::ProcessWarningOptions(DiagnosticsEngine &Diags,
 
       // Figure out how this option affects the warning.  If -Wfoo, map the
       // diagnostic to a warning, if -Wno-foo, map it to ignore.
-      diag::Mapping Mapping = isPositive ? diag::MAP_WARNING : diag::MAP_IGNORE;
-      
+      diag::Severity Mapping =
+          isPositive ? diag::Severity::Warning : diag::Severity::Ignored;
+
       // -Wsystem-headers is a special case, not driven by the option table.  It
       // cannot be controlled with -Werror.
       if (Opt == "system-headers") {
@@ -124,7 +125,7 @@ void clang::ProcessWarningOptions(DiagnosticsEngine &Diags,
             Diags.setEnableAllWarnings(true);
           } else {
             Diags.setEnableAllWarnings(false);
-            Diags.setMappingToAllDiagnostics(diag::MAP_IGNORE);
+            Diags.setSeverityForAll(diag::Severity::Ignored);
           }
         }
         continue;
@@ -193,7 +194,7 @@ void clang::ProcessWarningOptions(DiagnosticsEngine &Diags,
           EmitUnknownDiagWarning(Diags, isPositive ? "-W" : "-Wno-", Opt,
                                  isPositive);
       } else {
-        Diags.setDiagnosticGroupMapping(Opt, Mapping);
+        Diags.setSeverityForGroup(Opt, Mapping);
       }
     }
   }

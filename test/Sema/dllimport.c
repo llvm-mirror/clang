@@ -25,6 +25,9 @@ __declspec(dllimport) int GlobalDecl;
 int **__attribute__((dllimport))* GlobalDeclChunkAttr;
 int GlobalDeclAttr __attribute__((dllimport));
 
+// Address of variables can't be used for initialization in C language modes.
+int *VarForInit = &GlobalDecl; // expected-error{{initializer element is not a compile-time constant}}
+
 // Not allowed on definitions.
 __declspec(dllimport) extern int ExternGlobalInit = 1; // expected-error{{definition of dllimport data}}
 __declspec(dllimport) int GlobalInit1 = 1; // expected-error{{definition of dllimport data}}
@@ -71,6 +74,7 @@ __declspec(dllimport) static int StaticGlobal; // expected-error{{'StaticGlobal'
 __declspec(dllimport) float LocalRedecl1; // expected-note{{previous definition is here}}
 __declspec(dllimport) float LocalRedecl2; // expected-note{{previous definition is here}}
 __declspec(dllimport) float LocalRedecl3; // expected-note{{previous definition is here}}
+__declspec(dllimport) float LocalRedecl4;
 void functionScope() {
   __declspec(dllimport) int LocalRedecl1; // expected-error{{redefinition of 'LocalRedecl1' with a different type: 'int' vs 'float'}}
   int *__attribute__((dllimport)) LocalRedecl2; // expected-error{{redefinition of 'LocalRedecl2' with a different type: 'int *' vs 'float'}}
@@ -81,6 +85,9 @@ void functionScope() {
   __declspec(dllimport) extern int ExternLocalVarDecl;
   __declspec(dllimport) extern int ExternLocalVarDef = 1; // expected-error{{definition of dllimport data}}
   __declspec(dllimport) static int StaticLocalVar; // expected-error{{'StaticLocalVar' must have external linkage when declared 'dllimport'}}
+
+  // Local extern redeclaration does not drop the attribute.
+  extern float LocalRedecl4;
 }
 
 
@@ -95,6 +102,11 @@ __declspec(dllimport)      void decl1B();
 
 void __attribute__((dllimport)) decl2A();
 void __declspec(dllimport)      decl2B();
+
+// Address of functions can be used for initialization in C language modes.
+// However, the address of the thunk wrapping the function is used instead of
+// the address in the import address table.
+void (*FunForInit)() = &decl2A;
 
 // Not allowed on function definitions.
 __declspec(dllimport) void def() {} // expected-error{{dllimport cannot be applied to non-inline function definition}}

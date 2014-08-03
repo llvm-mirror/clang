@@ -103,7 +103,7 @@ static cl::list<std::string> FileNames(cl::Positional, cl::desc("[<file> ...]"),
 namespace clang {
 namespace format {
 
-static FileID createInMemoryFile(StringRef FileName, const MemoryBuffer *Source,
+static FileID createInMemoryFile(StringRef FileName, MemoryBuffer *Source,
                                  SourceManager &Sources, FileManager &Files) {
   const FileEntry *Entry = Files.getVirtualFile(FileName == "-" ? "<stdin>" :
                                                     FileName,
@@ -209,11 +209,13 @@ static bool format(StringRef FileName) {
       IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
       new DiagnosticOptions);
   SourceManager Sources(Diagnostics, Files);
-  std::unique_ptr<MemoryBuffer> Code;
-  if (error_code ec = MemoryBuffer::getFileOrSTDIN(FileName, Code)) {
-    llvm::errs() << ec.message() << "\n";
+  ErrorOr<std::unique_ptr<MemoryBuffer>> CodeOrErr =
+      MemoryBuffer::getFileOrSTDIN(FileName);
+  if (std::error_code EC = CodeOrErr.getError()) {
+    llvm::errs() << EC.message() << "\n";
     return true;
   }
+  std::unique_ptr<llvm::MemoryBuffer> Code = std::move(CodeOrErr.get());
   if (Code->getBufferSize() == 0)
     return false; // Empty files are formatted correctly.
   FileID ID = createInMemoryFile(FileName, Code.get(), Sources, Files);

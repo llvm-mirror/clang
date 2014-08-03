@@ -426,8 +426,8 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
     
     if (Next.is(tok::coloncolon)) {
       if (CheckForDestructor && GetLookAheadToken(2).is(tok::tilde) &&
-          !Actions.isNonTypeNestedNameSpecifier(getCurScope(), SS, Tok.getLocation(),
-                                                II, ObjectType)) {
+          !Actions.isNonTypeNestedNameSpecifier(
+              getCurScope(), SS, Tok.getLocation(), II, ObjectType)) {
         *MayBePseudoDestructor = true;
         return false;
       }
@@ -2195,7 +2195,7 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
       TokLocs.push_back(ConsumeStringToken());
     }
 
-    StringLiteralParser Literal(Toks.data(), Toks.size(), PP);
+    StringLiteralParser Literal(Toks, PP);
     if (Literal.hadError)
       return true;
 
@@ -2952,7 +2952,6 @@ Parser::ParseCXXAmbiguousParenExpression(ParenParseOption &ExprType,
     ParseAs = CompoundLiteral;
   } else {
     bool NotCastExpr;
-    // FIXME: Special-case ++ and --: "(S())++;" is not a cast-expression
     if (Tok.is(tok::l_paren) && NextToken().is(tok::r_paren)) {
       NotCastExpr = true;
     } else {

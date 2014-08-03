@@ -21,6 +21,7 @@
 #include "clang/Sema/ScopeInfo.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/MC/MCParser/MCAsmParser.h"
 using namespace clang;
 using namespace sema;
 
@@ -151,6 +152,12 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
                               diag::err_asm_invalid_lvalue_in_input)
                          << Info.getConstraintStr()
                          << InputExpr->getSourceRange());
+    } else {
+      ExprResult Result = DefaultFunctionArrayLvalueConversion(Exprs[i]);
+      if (Result.isInvalid())
+        return StmtError();
+
+      Exprs[i] = Result.get();
     }
 
     if (Info.allowsRegister()) {
@@ -162,11 +169,6 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
       }
     }
 
-    ExprResult Result = DefaultFunctionArrayLvalueConversion(Exprs[i]);
-    if (Result.isInvalid())
-      return StmtError();
-
-    Exprs[i] = Result.get();
     InputConstraintInfos.push_back(Info);
 
     const Type *Ty = Exprs[i]->getType().getTypePtr();
@@ -370,7 +372,7 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
 ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
                                            SourceLocation TemplateKWLoc,
                                            UnqualifiedId &Id,
-                                           InlineAsmIdentifierInfo &Info,
+                                           llvm::InlineAsmIdentifierInfo &Info,
                                            bool IsUnevaluatedContext) {
   Info.clear();
 

@@ -47,6 +47,9 @@ TEST_F(FormatTestProto, FormatsMessages) {
                "  required int32 field1 = 1;\n"
                "}");
   verifyFormat("message SomeMessage {\n"
+               "  required .absolute.Reference field1 = 1;\n"
+               "}");
+  verifyFormat("message SomeMessage {\n"
                "  required int32 field1 = 1;\n"
                "  optional string field2 = 2 [default = \"2\"]\n"
                "}");
@@ -95,8 +98,27 @@ TEST_F(FormatTestProto, MessageFieldAttributes) {
 }
 
 TEST_F(FormatTestProto, FormatsOptions) {
-  verifyFormat("option java_package = \"my.test.package\";");
-  verifyFormat("option (my_custom_option) = \"abc\";");
+  verifyFormat("option (MyProto.options) = {\n"
+               "  field_a: OK\n"
+               "  field_b: \"OK\"\n"
+               "  field_c: \"OK\"\n"
+               "  msg_field: {field_d: 123}\n"
+               "};");
+
+  verifyFormat("option (MyProto.options) = {\n"
+               "  field_a: OK\n"
+               "  field_b: \"OK\"\n"
+               "  field_c: \"OK\"\n"
+               "  msg_field: {field_d: 123\n"
+               "              field_e: OK}\n"
+               "};");
+
+  verifyFormat("option (MyProto.options) = {\n"
+               "  field_a: OK  // Comment\n"
+               "  field_b: \"OK\"\n"
+               "  field_c: \"OK\"\n"
+               "  msg_field: {field_d: 123}\n"
+               "};");
 }
 
 TEST_F(FormatTestProto, FormatsService) {

@@ -666,9 +666,7 @@ const FileEntry *HeaderSearch::LookupFile(
         // Otherwise, we found the path via MSVC header search rules.  If
         // -Wmsvc-include is enabled, we have to keep searching to see if we
         // would've found this header in -I or -isystem directories.
-        if (Diags.getDiagnosticLevel(diag::ext_pp_include_search_ms,
-                                     IncludeLoc) ==
-            DiagnosticsEngine::Ignored) {
+        if (Diags.isIgnored(diag::ext_pp_include_search_ms, IncludeLoc)) {
           return FE;
         } else {
           MSFE = FE;
@@ -1275,7 +1273,7 @@ void HeaderSearch::collectAllModules(SmallVectorImpl<Module *> &Modules) {
   for (unsigned Idx = 0, N = SearchDirs.size(); Idx != N; ++Idx) {
     bool IsSystem = SearchDirs[Idx].isSystemHeaderDirectory();
     if (SearchDirs[Idx].isFramework()) {
-      llvm::error_code EC;
+      std::error_code EC;
       SmallString<128> DirNative;
       llvm::sys::path::native(SearchDirs[Idx].getFrameworkDir()->getName(),
                               DirNative);
@@ -1335,8 +1333,8 @@ void HeaderSearch::loadTopLevelSystemModules() {
 void HeaderSearch::loadSubdirectoryModuleMaps(DirectoryLookup &SearchDir) {
   if (SearchDir.haveSearchedAllModuleMaps())
     return;
-  
-  llvm::error_code EC;
+
+  std::error_code EC;
   SmallString<128> DirNative;
   llvm::sys::path::native(SearchDir.getDir()->getName(), DirNative);
   for (llvm::sys::fs::directory_iterator Dir(DirNative.str(), EC), DirEnd;

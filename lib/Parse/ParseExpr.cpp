@@ -435,7 +435,8 @@ class CastExpressionIdValidator : public CorrectionCandidateCallback {
 
     if (isa<TypeDecl>(ND))
       return WantTypeSpecifiers;
-    return AllowNonTypes;
+    return AllowNonTypes &&
+           CorrectionCandidateCallback::ValidateCandidate(candidate);
   }
 
  private:
@@ -813,6 +814,7 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
     SourceLocation TemplateKWLoc;
     CastExpressionIdValidator Validator(isTypeCast != NotTypeCast,
                                         isTypeCast != IsTypeCast);
+    Validator.IsAddressOfOperand = isAddressOfOperand;
     Name.setIdentifier(&II, ILoc);
     Res = Actions.ActOnIdExpression(getCurScope(), ScopeSpec, TemplateKWLoc,
                                     Name, Tok.is(tok::l_paren),
@@ -861,7 +863,12 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
     //     ++ cast-expression
     //     -- cast-expression
     SourceLocation SavedLoc = ConsumeToken();
-    Res = ParseCastExpression(!getLangOpts().CPlusPlus);
+    // One special case is implicitly handled here: if the preceding tokens are
+    // an ambiguous cast expression, such as "(T())++", then we recurse to
+    // determine whether the '++' is prefix or postfix.
+    Res = ParseCastExpression(!getLangOpts().CPlusPlus,
+                              /*isAddressOfOperand*/false, NotCastExpr,
+                              NotTypeCast);
     if (!Res.isInvalid())
       Res = Actions.ActOnUnaryOp(getCurScope(), SavedLoc, SavedKind, Res.get());
     return Res;
@@ -2181,7 +2188,7 @@ ExprResult Parser::ParseStringLiteralExpression(bool AllowUserDefinedLiteral) {
   } while (isTokenStringLiteral());
 
   // Pass the set of string tokens, ready for concatenation, to the actions.
-  return Actions.ActOnStringLiteral(&StringToks[0], StringToks.size(),
+  return Actions.ActOnStringLiteral(StringToks,
                                     AllowUserDefinedLiteral ? getCurScope()
                                                             : nullptr);
 }
@@ -2307,6 +2314,7 @@ bool Parser::ParseExpressionList(SmallVectorImpl<Expr*> &Exprs,
                                                          Expr *Data,
                                                          ArrayRef<Expr *> Args),
                                  Expr *Data) {
+  bool SawError = false;
   while (1) {
     if (Tok.is(tok::code_completion)) {
       if (Completer)
@@ -2326,13 +2334,15 @@ bool Parser::ParseExpressionList(SmallVectorImpl<Expr*> &Exprs,
 
     if (Tok.is(tok::ellipsis))
       Expr = Actions.ActOnPackExpansion(Expr.get(), ConsumeToken());    
-    if (Expr.isInvalid())
-      return true;
-
-    Exprs.push_back(Expr.get());
+    if (Expr.isInvalid()) {
+      SkipUntil(tok::comma, tok::r_paren, StopBeforeMatch);
+      SawError = true;
+    } else {
+      Exprs.push_back(Expr.get());
+    }
 
     if (Tok.isNot(tok::comma))
-      return false;
+      return SawError;
     // Move to the next argument, remember where the comma was.
     CommaLocs.push_back(ConsumeToken());
   }

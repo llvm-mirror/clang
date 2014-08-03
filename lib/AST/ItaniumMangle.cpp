@@ -2301,9 +2301,7 @@ void CXXNameMangler::mangleType(const VectorType *T) {
     llvm::Triple::ArchType Arch =
         getASTContext().getTargetInfo().getTriple().getArch();
     if ((Arch == llvm::Triple::aarch64 ||
-         Arch == llvm::Triple::aarch64_be ||
-         Arch == llvm::Triple::arm64_be ||
-         Arch == llvm::Triple::arm64) && !Target.isOSDarwin())
+         Arch == llvm::Triple::aarch64_be) && !Target.isOSDarwin())
       mangleAArch64NeonVectorType(T);
     else
       mangleNeonVectorType(T);
@@ -2674,7 +2672,6 @@ recurse:
     llvm_unreachable("cannot mangle opaque value; mangling wrong thing?");
 
   case Expr::InitListExprClass: {
-    // Proposal by Jason Merrill, 2012-01-03
     Out << "il";
     const InitListExpr *InitList = cast<InitListExpr>(E);
     for (unsigned i = 0, e = InitList->getNumInits(); i != e; ++i)
@@ -2739,7 +2736,6 @@ recurse:
     Out << '_';
     mangleType(New->getAllocatedType());
     if (New->hasInitializer()) {
-      // Proposal by Jason Merrill, 2012-01-03
       if (New->getInitializationStyle() == CXXNewExpr::ListInit)
         Out << "il";
       else
@@ -2825,7 +2821,6 @@ recurse:
     const CXXConstructExpr *CE = cast<CXXConstructExpr>(E);
     unsigned N = CE->getNumArgs();
 
-    // Proposal by Jason Merrill, 2012-01-03
     if (CE->isListInitialization())
       Out << "tl";
     else
@@ -3399,10 +3394,8 @@ void CXXNameMangler::mangleTemplateArg(TemplateArgument A) {
   case TemplateArgument::Pack: {
     //  <template-arg> ::= J <template-arg>* E
     Out << 'J';
-    for (TemplateArgument::pack_iterator PA = A.pack_begin(),
-                                      PAEnd = A.pack_end();
-         PA != PAEnd; ++PA)
-      mangleTemplateArg(*PA);
+    for (const auto &P : A.pack_elements())
+      mangleTemplateArg(P);
     Out << 'E';
   }
   }
@@ -3425,8 +3418,8 @@ void CXXNameMangler::mangleSeqID(unsigned SeqID) {
 
     // <seq-id> is encoded in base-36, using digits and upper case letters.
     char Buffer[7]; // log(2**32) / log(36) ~= 7
-    llvm::MutableArrayRef<char> BufferRef(Buffer);
-    llvm::MutableArrayRef<char>::reverse_iterator I = BufferRef.rbegin();
+    MutableArrayRef<char> BufferRef(Buffer);
+    MutableArrayRef<char>::reverse_iterator I = BufferRef.rbegin();
 
     for (; SeqID != 0; SeqID /= 36) {
       unsigned C = SeqID % 36;

@@ -245,14 +245,42 @@ CreateGlobalInitOrDestructFunction(CodeGenModule &CGM,
   if (!CGM.getLangOpts().Exceptions)
     Fn->setDoesNotThrow();
 
-  if (CGM.getSanOpts().Address)
-    Fn->addFnAttr(llvm::Attribute::SanitizeAddress);
-  if (CGM.getSanOpts().Thread)
-    Fn->addFnAttr(llvm::Attribute::SanitizeThread);
-  if (CGM.getSanOpts().Memory)
-    Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
+  if (!CGM.getSanitizerBlacklist().isIn(*Fn)) {
+    if (CGM.getLangOpts().Sanitize.Address)
+      Fn->addFnAttr(llvm::Attribute::SanitizeAddress);
+    if (CGM.getLangOpts().Sanitize.Thread)
+      Fn->addFnAttr(llvm::Attribute::SanitizeThread);
+    if (CGM.getLangOpts().Sanitize.Memory)
+      Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
+  }
 
   return Fn;
+}
+
+/// Create a global pointer to a function that will initialize a global
+/// variable.  The user has requested that this pointer be emitted in a specific
+/// section.
+void CodeGenModule::EmitPointerToInitFunc(const VarDecl *D,
+                                          llvm::GlobalVariable *GV,
+                                          llvm::Function *InitFunc,
+                                          InitSegAttr *ISA) {
+  llvm::GlobalVariable *PtrArray = new llvm::GlobalVariable(
+      TheModule, InitFunc->getType(), /*isConstant=*/true,
+      llvm::GlobalValue::PrivateLinkage, InitFunc, "__cxx_init_fn_ptr");
+  PtrArray->setSection(ISA->getSection());
+  addUsedGlobal(PtrArray);
+
+  // If the GV is already in a comdat group, then we have to join it.
+  llvm::Comdat *C = GV->getComdat();
+
+  // LinkOnce and Weak linkage are lowered down to a single-member comdat group.
+  // Make an explicit group so we can join it.
+  if (!C && (GV->hasWeakLinkage() || GV->hasLinkOnceLinkage())) {
+    C = TheModule.getOrInsertComdat(GV->getName());
+    GV->setComdat(C);
+  }
+  if (C)
+    PtrArray->setComdat(C);
 }
 
 void
@@ -270,9 +298,9 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
   llvm::Function *Fn =
       CreateGlobalInitOrDestructFunction(*this, FTy, FnName.str());
 
+  auto *ISA = D->getAttr<InitSegAttr>();
   CodeGenFunction(*this).GenerateCXXGlobalVarDeclInitFunc(Fn, D, Addr,
                                                           PerformInit);
-
   if (D->getTLSKind()) {
     // FIXME: Should we support init_priority for thread_local?
     // FIXME: Ideally, initialization of instantiated thread_local static data
@@ -281,7 +309,10 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
     // FIXME: We only need to register one __cxa_thread_atexit function for the
     // entire TU.
     CXXThreadLocalInits.push_back(Fn);
-  } else if (const InitPriorityAttr *IPA = D->getAttr<InitPriorityAttr>()) {
+  } else if (PerformInit && ISA) {
+    EmitPointerToInitFunc(D, Addr, Fn, ISA);
+    DelayedCXXInitPosition.erase(D);
+  } else if (auto *IPA = D->getAttr<InitPriorityAttr>()) {
     OrderGlobalInits Key(IPA->getPriority(), PrioritizedCXXGlobalInits.size());
     PrioritizedCXXGlobalInits.push_back(std::make_pair(Key, Fn));
     DelayedCXXInitPosition.erase(D);

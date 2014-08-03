@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 #include "clang/AST/ASTDiagnostic.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTLambda.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclTemplate.h"
@@ -161,9 +162,8 @@ break; \
 /// diagnostic message
 static std::string
 ConvertTypeToDiagnosticString(ASTContext &Context, QualType Ty,
-                              const DiagnosticsEngine::ArgumentValue *PrevArgs,
-                              unsigned NumPrevArgs,
-                              ArrayRef<intptr_t> QualTypeVals) {
+                            ArrayRef<DiagnosticsEngine::ArgumentValue> PrevArgs,
+                            ArrayRef<intptr_t> QualTypeVals) {
   // FIXME: Playing with std::string is really slow.
   bool ForceAKA = false;
   QualType CanTy = Ty.getCanonicalType();
@@ -201,7 +201,7 @@ ConvertTypeToDiagnosticString(ASTContext &Context, QualType Ty,
   // Check to see if we already desugared this type in this
   // diagnostic.  If so, don't do it again.
   bool Repeated = false;
-  for (unsigned i = 0; i != NumPrevArgs; ++i) {
+  for (unsigned i = 0, e = PrevArgs.size(); i != e; ++i) {
     // TODO: Handle ak_declcontext case.
     if (PrevArgs[i].first == DiagnosticsEngine::ak_qualtype) {
       void *Ptr = (void*)PrevArgs[i].second;
@@ -256,12 +256,9 @@ static bool FormatTemplateTypeDiff(ASTContext &Context, QualType FromType,
 void clang::FormatASTNodeDiagnosticArgument(
     DiagnosticsEngine::ArgumentKind Kind,
     intptr_t Val,
-    const char *Modifier,
-    unsigned ModLen,
-    const char *Argument,
-    unsigned ArgLen,
-    const DiagnosticsEngine::ArgumentValue *PrevArgs,
-    unsigned NumPrevArgs,
+    StringRef Modifier,
+    StringRef Argument,
+    ArrayRef<DiagnosticsEngine::ArgumentValue> PrevArgs,
     SmallVectorImpl<char> &Output,
     void *Cookie,
     ArrayRef<intptr_t> QualTypeVals) {
@@ -296,28 +293,26 @@ void clang::FormatASTNodeDiagnosticArgument(
       // Attempting to do a template diff on non-templates.  Set the variables
       // and continue with regular type printing of the appropriate type.
       Val = TDT.PrintFromType ? TDT.FromType : TDT.ToType;
-      ModLen = 0;
-      ArgLen = 0;
+      Modifier = StringRef();
+      Argument = StringRef();
       // Fall through
     }
     case DiagnosticsEngine::ak_qualtype: {
-      assert(ModLen == 0 && ArgLen == 0 &&
+      assert(Modifier.empty() && Argument.empty() &&
              "Invalid modifier for QualType argument");
       
       QualType Ty(QualType::getFromOpaquePtr(reinterpret_cast<void*>(Val)));
-      OS << ConvertTypeToDiagnosticString(Context, Ty, PrevArgs, NumPrevArgs,
-                                          QualTypeVals);
+      OS << ConvertTypeToDiagnosticString(Context, Ty, PrevArgs, QualTypeVals);
       NeedQuotes = false;
       break;
     }
     case DiagnosticsEngine::ak_declarationname: {
-      if (ModLen == 9 && !memcmp(Modifier, "objcclass", 9) && ArgLen == 0)
+      if (Modifier == "objcclass" && Argument.empty())
         OS << '+';
-      else if (ModLen == 12 && !memcmp(Modifier, "objcinstance", 12)
-                && ArgLen==0)
+      else if (Modifier == "objcinstance" && Argument.empty())
         OS << '-';
       else
-        assert(ModLen == 0 && ArgLen == 0 &&
+        assert(Modifier.empty() && Argument.empty() &&
                "Invalid modifier for DeclarationName argument");
 
       OS << DeclarationName::getFromOpaqueInteger(Val);
@@ -325,10 +320,10 @@ void clang::FormatASTNodeDiagnosticArgument(
     }
     case DiagnosticsEngine::ak_nameddecl: {
       bool Qualified;
-      if (ModLen == 1 && Modifier[0] == 'q' && ArgLen == 0)
+      if (Modifier == "q" && Argument.empty())
         Qualified = true;
       else {
-        assert(ModLen == 0 && ArgLen == 0 &&
+        assert(Modifier.empty() && Argument.empty() &&
                "Invalid modifier for NamedDecl* argument");
         Qualified = false;
       }
@@ -345,7 +340,8 @@ void clang::FormatASTNodeDiagnosticArgument(
     case DiagnosticsEngine::ak_declcontext: {
       DeclContext *DC = reinterpret_cast<DeclContext *> (Val);
       assert(DC && "Should never have a null declaration context");
-      
+      NeedQuotes = false;
+
       if (DC->isTranslationUnit()) {
         // FIXME: Get these strings from some localized place
         if (Context.getLangOpts().CPlusPlus)
@@ -355,10 +351,17 @@ void clang::FormatASTNodeDiagnosticArgument(
       } else if (TypeDecl *Type = dyn_cast<TypeDecl>(DC)) {
         OS << ConvertTypeToDiagnosticString(Context,
                                             Context.getTypeDeclType(Type),
-                                            PrevArgs, NumPrevArgs,
-                                            QualTypeVals);
+                                            PrevArgs, QualTypeVals);
       } else {
         // FIXME: Get these strings from some localized place
+        if (isa<BlockDecl>(DC)) {
+          OS << "block literal";
+          break;
+        }
+        if (isLambdaCallOperator(DC)) {
+          OS << "lambda expression";
+          break;
+        }
         NamedDecl *ND = cast<NamedDecl>(DC);
         if (isa<NamespaceDecl>(ND))
           OS << "namespace ";
@@ -371,7 +374,6 @@ void clang::FormatASTNodeDiagnosticArgument(
         ND->getNameForDiagnostic(OS, Context.getPrintingPolicy(), true);
         OS << '\'';
       }
-      NeedQuotes = false;
       break;
     }
     case DiagnosticsEngine::ak_attr: {
@@ -470,6 +472,9 @@ class TemplateDiff {
       /// FromExpr, ToExpr - The expression arguments.
       Expr *FromExpr, *ToExpr;
 
+      /// FromNullPtr, ToNullPtr - If the template argument is a nullptr
+      bool FromNullPtr, ToNullPtr;
+
       /// FromTD, ToTD - The template decl for template template
       /// arguments or the type arguments that are templates.
       TemplateDecl *FromTD, *ToTD;
@@ -499,6 +504,7 @@ class TemplateDiff {
       DiffNode(unsigned ParentNode = 0)
         : Kind(Invalid), NextNode(0), ChildNode(0), ParentNode(ParentNode),
           FromType(), ToType(), FromExpr(nullptr), ToExpr(nullptr),
+          FromNullPtr(false), ToNullPtr(false),
           FromTD(nullptr), ToTD(nullptr), IsValidFromInt(false),
           IsValidToInt(false), FromValueDecl(nullptr), ToValueDecl(nullptr),
           FromAddressOf(false), ToAddressOf(false), FromDefault(false),
@@ -570,6 +576,12 @@ class TemplateDiff {
     /// SetSame - Sets the same flag of the current node.
     void SetSame(bool Same) {
       FlatTree[CurrentNode].Same = Same;
+    }
+
+    /// SetNullPtr - Sets the NullPtr flags of the current node.
+    void SetNullPtr(bool FromNullPtr, bool ToNullPtr) {
+      FlatTree[CurrentNode].FromNullPtr = FromNullPtr;
+      FlatTree[CurrentNode].ToNullPtr = ToNullPtr;
     }
 
     /// SetDefault - Sets FromDefault and ToDefault flags of the current node.
@@ -692,6 +704,16 @@ class TemplateDiff {
     /// HasNextSibling - Return true if the node has a next sibling.
     bool HasNextSibling() {
       return FlatTree[ReadNode].NextNode != 0;
+    }
+
+    /// FromNullPtr - Returns true if the from argument is null.
+    bool FromNullPtr() {
+      return FlatTree[ReadNode].FromNullPtr;
+    }
+
+    /// ToNullPtr - Returns true if the to argument is null.
+    bool ToNullPtr() {
+      return FlatTree[ReadNode].ToNullPtr;
     }
 
     /// FromDefault - Return true if the from argument is the default.
@@ -932,6 +954,10 @@ class TemplateDiff {
         bool HasToValueDecl =
             !ToIter.isEnd() &&
             ToIter->getKind() == TemplateArgument::Declaration;
+        bool FromNullPtr = !FromIter.isEnd() &&
+                           FromIter->getKind() == TemplateArgument::NullPtr;
+        bool ToNullPtr =
+            !ToIter.isEnd() && ToIter->getKind() == TemplateArgument::NullPtr;
 
         assert(((!HasFromInt && !HasToInt) ||
                 (!HasFromValueDecl && !HasToValueDecl)) &&
@@ -941,15 +967,24 @@ class TemplateDiff {
           FromInt = FromIter->getAsIntegral();
         else if (HasFromValueDecl)
           FromValueDecl = FromIter->getAsDecl();
-        else
+        else if (!FromNullPtr)
           FromExpr = GetExpr(FromIter, DefaultNTTPD);
 
         if (HasToInt)
           ToInt = ToIter->getAsIntegral();
         else if (HasToValueDecl)
           ToValueDecl = ToIter->getAsDecl();
-        else
+        else if (!ToNullPtr)
           ToExpr = GetExpr(ToIter, DefaultNTTPD);
+
+        bool TemplateArgumentIsPointerType =
+            DefaultNTTPD->getType()->isPointerType();
+        if (FromExpr && TemplateArgumentIsPointerType) {
+          FromNullPtr = CheckForNullPtr(FromExpr);
+        }
+        if (ToExpr && TemplateArgumentIsPointerType) {
+          ToNullPtr = CheckForNullPtr(ToExpr);
+        }
 
         if (!HasFromInt && !HasToInt && !HasFromValueDecl && !HasToValueDecl) {
           Tree.SetNode(FromExpr, ToExpr);
@@ -957,25 +992,29 @@ class TemplateDiff {
                           ToIter.isEnd() && ToExpr);
           if (DefaultNTTPD->getType()->isIntegralOrEnumerationType()) {
             if (FromExpr)
-              FromInt = GetInt(FromIter, FromExpr);
+              HasFromInt = GetInt(FromIter, FromExpr, FromInt);
             if (ToExpr)
-              ToInt = GetInt(ToIter, ToExpr);
-            Tree.SetNode(FromInt, ToInt, FromExpr, ToExpr);
+              HasToInt = GetInt(ToIter, ToExpr, ToInt);
+          }
+          if (HasFromInt && HasToInt) {
+            Tree.SetNode(FromInt, ToInt, HasFromInt, HasToInt);
             Tree.SetSame(IsSameConvertedInt(ParamWidth, FromInt, ToInt));
             Tree.SetKind(DiffTree::Integer);
+          } else if (HasFromInt || HasToInt) {
+            Tree.SetNode(FromInt, ToInt, HasFromInt, HasToInt);
+            Tree.SetSame(false);
+            Tree.SetKind(DiffTree::Integer);
           } else {
-            Tree.SetSame(IsEqualExpr(Context, ParamWidth, FromExpr, ToExpr));
+            Tree.SetSame(IsEqualExpr(Context, ParamWidth, FromExpr, ToExpr) ||
+                         (FromNullPtr && ToNullPtr));
+            Tree.SetNullPtr(FromNullPtr, ToNullPtr);
             Tree.SetKind(DiffTree::Expression);
           }
         } else if (HasFromInt || HasToInt) {
-          if (!HasFromInt && FromExpr) {
-            FromInt = GetInt(FromIter, FromExpr);
-            HasFromInt = true;
-          }
-          if (!HasToInt && ToExpr) {
-            ToInt = GetInt(ToIter, ToExpr);
-            HasToInt = true;
-          }
+          if (!HasFromInt && FromExpr)
+            HasFromInt = GetInt(FromIter, FromExpr, FromInt);
+          if (!HasToInt && ToExpr)
+            HasToInt = GetInt(ToIter, ToExpr, ToInt);
           Tree.SetNode(FromInt, ToInt, HasFromInt, HasToInt);
           Tree.SetSame(IsSameConvertedInt(ParamWidth, FromInt, ToInt));
           Tree.SetDefault(FromIter.isEnd() && HasFromInt,
@@ -987,12 +1026,36 @@ class TemplateDiff {
           if (!HasToValueDecl && ToExpr)
             ToValueDecl = GetValueDecl(ToIter, ToExpr);
           QualType ArgumentType = DefaultNTTPD->getType();
-          bool FromAddressOf = FromValueDecl &&
-                               !ArgumentType->isReferenceType() &&
-                               !FromValueDecl->getType()->isArrayType();
-          bool ToAddressOf = ToValueDecl &&
-                             !ArgumentType->isReferenceType() &&
-                             !ToValueDecl->getType()->isArrayType();
+          bool FromAddressOf = false;
+          if (FromValueDecl) {
+            if (FromExpr) {
+              if (UnaryOperator *UO =
+                      dyn_cast<UnaryOperator>(FromExpr->IgnoreParens())) {
+                if (UO->getOpcode() == UO_AddrOf)
+                  FromAddressOf = true;
+              }
+            } else {
+              if (!ArgumentType->isReferenceType()) {
+                FromAddressOf = true;
+              }
+            }
+          }
+          bool ToAddressOf = false;
+          if (ToValueDecl) {
+            if (ToExpr) {
+              if (UnaryOperator *UO =
+                      dyn_cast<UnaryOperator>(ToExpr->IgnoreParens())) {
+                if (UO->getOpcode() == UO_AddrOf) {
+                  ToAddressOf = true;
+                }
+              }
+            } else {
+              if (!ArgumentType->isReferenceType()) {
+                ToAddressOf = true;
+              }
+            }
+          }
+          Tree.SetNullPtr(FromNullPtr, ToNullPtr);
           Tree.SetNode(FromValueDecl, ToValueDecl, FromAddressOf, ToAddressOf);
           Tree.SetSame(FromValueDecl && ToValueDecl &&
                        FromValueDecl->getCanonicalDecl() ==
@@ -1013,6 +1076,7 @@ class TemplateDiff {
         Tree.SetSame(
             FromDecl && ToDecl &&
             FromDecl->getCanonicalDecl() == ToDecl->getCanonicalDecl());
+        Tree.SetDefault(FromIter.isEnd() && FromDecl, ToIter.isEnd() && ToDecl);
         Tree.SetKind(DiffTree::TemplateTemplate);
       }
 
@@ -1119,20 +1183,28 @@ class TemplateDiff {
 
   /// GetInt - Retrieves the template integer argument, including evaluating
   /// default arguments.
-  llvm::APInt GetInt(const TSTiterator &Iter, Expr *ArgExpr) {
+  bool GetInt(const TSTiterator &Iter, Expr *ArgExpr, llvm::APInt &Int) {
     // Default, value-depenedent expressions require fetching
-    // from the desugared TemplateArgument
-    if (Iter.isEnd() && ArgExpr->isValueDependent())
+    // from the desugared TemplateArgument, otherwise expression needs to
+    // be evaluatable.
+    if (Iter.isEnd() && ArgExpr->isValueDependent()) {
       switch (Iter.getDesugar().getKind()) {
         case TemplateArgument::Integral:
-          return Iter.getDesugar().getAsIntegral();
+          Int = Iter.getDesugar().getAsIntegral();
+          return true;
         case TemplateArgument::Expression:
           ArgExpr = Iter.getDesugar().getAsExpr();
-          return ArgExpr->EvaluateKnownConstInt(Context);
+          Int = ArgExpr->EvaluateKnownConstInt(Context);
+          return true;
         default:
-          assert(0 && "Unexpected template argument kind");
+          llvm_unreachable("Unexpected template argument kind");
       }
-    return ArgExpr->EvaluateKnownConstInt(Context);
+    } else if (ArgExpr->isEvaluatable(Context)) {
+      Int = ArgExpr->EvaluateKnownConstInt(Context);
+      return true;
+    }
+
+    return false;
   }
 
   /// GetValueDecl - Retrieves the template Decl argument, including
@@ -1148,14 +1220,38 @@ class TemplateDiff {
           ArgExpr = Iter.getDesugar().getAsExpr();
           return cast<DeclRefExpr>(ArgExpr)->getDecl();
         default:
-          assert(0 && "Unexpected template argument kind");
+          llvm_unreachable("Unexpected template argument kind");
       }
     DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(ArgExpr);
     if (!DRE) {
-      DRE = cast<DeclRefExpr>(cast<UnaryOperator>(ArgExpr)->getSubExpr());
+      UnaryOperator *UO = dyn_cast<UnaryOperator>(ArgExpr->IgnoreParens());
+      if (!UO)
+        return nullptr;
+      DRE = cast<DeclRefExpr>(UO->getSubExpr());
     }
 
     return DRE->getDecl();
+  }
+
+  /// CheckForNullPtr - returns true if the expression can be evaluated as
+  /// a null pointer
+  bool CheckForNullPtr(Expr *E) {
+    assert(E && "Expected expression");
+
+    E = E->IgnoreParenCasts();
+    if (E->isNullPointerConstant(Context, Expr::NPC_ValueDependentIsNull))
+      return true;
+
+    DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E);
+    if (!DRE)
+      return false;
+
+    VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl());
+    if (!VD || !VD->hasInit())
+      return false;
+
+    return VD->getInit()->IgnoreParenCasts()->isNullPointerConstant(
+        Context, Expr::NPC_ValueDependentIsNull);
   }
 
   /// GetTemplateDecl - Retrieves the template template arguments, including
@@ -1195,11 +1291,8 @@ class TemplateDiff {
     if (!FromExpr || !ToExpr)
       return false;
 
-    FromExpr = FromExpr->IgnoreParens();
-    ToExpr = ToExpr->IgnoreParens();
-
-    DeclRefExpr *FromDRE = dyn_cast<DeclRefExpr>(FromExpr),
-                *ToDRE = dyn_cast<DeclRefExpr>(ToExpr);
+    DeclRefExpr *FromDRE = dyn_cast<DeclRefExpr>(FromExpr->IgnoreParens()),
+                *ToDRE = dyn_cast<DeclRefExpr>(ToExpr->IgnoreParens());
 
     if (FromDRE || ToDRE) {
       if (!FromDRE || !ToDRE)
@@ -1209,8 +1302,12 @@ class TemplateDiff {
 
     Expr::EvalResult FromResult, ToResult;
     if (!FromExpr->EvaluateAsRValue(FromResult, Context) ||
-        !ToExpr->EvaluateAsRValue(ToResult, Context))
-      return false;
+        !ToExpr->EvaluateAsRValue(ToResult, Context)) {
+      llvm::FoldingSetNodeID FromID, ToID;
+      FromExpr->Profile(FromID, Context, true);
+      ToExpr->Profile(ToID, Context, true);
+      return FromID == ToID;
+    }
 
     APValue &FromVal = FromResult.Val;
     APValue &ToVal = ToResult.Val;
@@ -1264,8 +1361,8 @@ class TemplateDiff {
       case DiffTree::Expression: {
         Expr *FromExpr, *ToExpr;
         Tree.GetNode(FromExpr, ToExpr);
-        PrintExpr(FromExpr, ToExpr, Tree.FromDefault(), Tree.ToDefault(),
-                  Tree.NodeIsSame());
+        PrintExpr(FromExpr, ToExpr, Tree.FromNullPtr(), Tree.ToNullPtr(),
+                  Tree.FromDefault(), Tree.ToDefault(), Tree.NodeIsSame());
         return;
       }
       case DiffTree::TemplateTemplate: {
@@ -1291,7 +1388,8 @@ class TemplateDiff {
         bool FromAddressOf, ToAddressOf;
         Tree.GetNode(FromValueDecl, ToValueDecl, FromAddressOf, ToAddressOf);
         PrintValueDecl(FromValueDecl, ToValueDecl, FromAddressOf, ToAddressOf,
-                       Tree.FromDefault(), Tree.ToDefault(), Tree.NodeIsSame());
+                       Tree.FromNullPtr(), Tree.ToNullPtr(), Tree.FromDefault(),
+                       Tree.ToDefault(), Tree.NodeIsSame());
         return;
       }
       case DiffTree::Template: {
@@ -1370,7 +1468,7 @@ class TemplateDiff {
            "Only one template argument may be missing.");
 
     if (Same) {
-      OS << FromType.getAsString();
+      OS << FromType.getAsString(Policy);
       return;
     }
 
@@ -1385,14 +1483,15 @@ class TemplateDiff {
     }
 
     std::string FromTypeStr = FromType.isNull() ? "(no argument)"
-                                                : FromType.getAsString();
+                                                : FromType.getAsString(Policy);
     std::string ToTypeStr = ToType.isNull() ? "(no argument)"
-                                            : ToType.getAsString();
+                                            : ToType.getAsString(Policy);
     // Switch to canonical typename if it is better.
     // TODO: merge this with other aka printing above.
     if (FromTypeStr == ToTypeStr) {
-      std::string FromCanTypeStr = FromType.getCanonicalType().getAsString();
-      std::string ToCanTypeStr = ToType.getCanonicalType().getAsString();
+      std::string FromCanTypeStr =
+          FromType.getCanonicalType().getAsString(Policy);
+      std::string ToCanTypeStr = ToType.getCanonicalType().getAsString(Policy);
       if (FromCanTypeStr != ToCanTypeStr) {
         FromTypeStr = FromCanTypeStr;
         ToTypeStr = ToCanTypeStr;
@@ -1416,36 +1515,41 @@ class TemplateDiff {
 
   /// PrintExpr - Prints out the expr template arguments, highlighting argument
   /// differences.
-  void PrintExpr(const Expr *FromExpr, const Expr *ToExpr,
-                 bool FromDefault, bool ToDefault, bool Same) {
+  void PrintExpr(const Expr *FromExpr, const Expr *ToExpr, bool FromNullPtr,
+                 bool ToNullPtr, bool FromDefault, bool ToDefault, bool Same) {
     assert((FromExpr || ToExpr) &&
             "Only one template argument may be missing.");
     if (Same) {
-      PrintExpr(FromExpr);
+      PrintExpr(FromExpr, FromNullPtr);
     } else if (!PrintTree) {
       OS << (FromDefault ? "(default) " : "");
       Bold();
-      PrintExpr(FromExpr);
+      PrintExpr(FromExpr, FromNullPtr);
       Unbold();
     } else {
       OS << (FromDefault ? "[(default) " : "[");
       Bold();
-      PrintExpr(FromExpr);
+      PrintExpr(FromExpr, FromNullPtr);
       Unbold();
       OS << " != " << (ToDefault ? "(default) " : "");
       Bold();
-      PrintExpr(ToExpr);
+      PrintExpr(ToExpr, ToNullPtr);
       Unbold();
       OS << ']';
     }
   }
 
   /// PrintExpr - Actual formatting and printing of expressions.
-  void PrintExpr(const Expr *E) {
-    if (!E)
-      OS << "(no argument)";
-    else
+  void PrintExpr(const Expr *E, bool NullPtr = false) {
+    if (E) {
       E->printPretty(OS, nullptr, Policy);
+      return;
+    }
+    if (NullPtr) {
+      OS << "nullptr";
+      return;
+    }
+    OS << "(no argument)";
   }
 
   /// PrintTemplateTemplate - Handles printing of template template arguments,
@@ -1515,6 +1619,8 @@ class TemplateDiff {
         Bold();
       }
       OS << Val.toString(10);
+    } else if (E) {
+      PrintExpr(E);
     } else {
       OS << "(no argument)";
     }
@@ -1535,35 +1641,46 @@ class TemplateDiff {
     return true;
   }
 
+  void PrintValueDecl(ValueDecl *VD, bool AddressOf, bool NullPtr) {
+    if (VD) {
+      if (AddressOf)
+        OS << "&";
+      OS << VD->getName();
+      return;
+    }
+
+    if (NullPtr) {
+      OS << "nullptr";
+      return;
+    }
+
+    OS << "(no argument)";
+  }
+
   /// PrintDecl - Handles printing of Decl arguments, highlighting
   /// argument differences.
   void PrintValueDecl(ValueDecl *FromValueDecl, ValueDecl *ToValueDecl,
-                      bool FromAddressOf, bool ToAddressOf, bool FromDefault,
-                      bool ToDefault, bool Same) {
-    assert((FromValueDecl || ToValueDecl) &&
+                      bool FromAddressOf, bool ToAddressOf, bool FromNullPtr,
+                      bool ToNullPtr, bool FromDefault, bool ToDefault,
+                      bool Same) {
+    assert((FromValueDecl || FromNullPtr || ToValueDecl || ToNullPtr) &&
            "Only one Decl argument may be NULL");
 
     if (Same) {
-      OS << FromValueDecl->getName();
+      PrintValueDecl(FromValueDecl, FromAddressOf, FromNullPtr);
     } else if (!PrintTree) {
       OS << (FromDefault ? "(default) " : "");
       Bold();
-      if (FromAddressOf)
-        OS << "&";
-      OS << (FromValueDecl ? FromValueDecl->getName() : "(no argument)");
+      PrintValueDecl(FromValueDecl, FromAddressOf, FromNullPtr);
       Unbold();
     } else {
       OS << (FromDefault ? "[(default) " : "[");
       Bold();
-      if (FromAddressOf)
-        OS << "&";
-      OS << (FromValueDecl ? FromValueDecl->getName() : "(no argument)");
+      PrintValueDecl(FromValueDecl, FromAddressOf, FromNullPtr);
       Unbold();
       OS << " != " << (ToDefault ? "(default) " : "");
       Bold();
-      if (ToAddressOf)
-        OS << "&";
-      OS << (ToValueDecl ? ToValueDecl->getName() : "(no argument)");
+      PrintValueDecl(ToValueDecl, ToAddressOf, ToNullPtr);
       Unbold();
       OS << ']';
     }

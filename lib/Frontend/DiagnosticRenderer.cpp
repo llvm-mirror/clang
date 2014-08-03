@@ -190,6 +190,12 @@ void DiagnosticRenderer::emitStoredDiagnostic(StoredDiagnostic &Diag) {
                  &Diag);
 }
 
+void DiagnosticRenderer::emitBasicNote(StringRef Message) {
+  emitDiagnosticMessage(
+      SourceLocation(), PresumedLoc(), DiagnosticsEngine::Note, Message,
+      ArrayRef<CharSourceRange>(), nullptr, DiagOrStoredDiag());
+}
+
 /// \brief Prints an include stack when appropriate for a particular
 /// diagnostic level and location.
 ///
@@ -503,11 +509,6 @@ DiagnosticNoteRenderer::emitBuildingModuleLocation(SourceLocation Loc,
     Message << "while building module '" << ModuleName << "' imported from "
             << PLoc.getFilename() << ':' << PLoc.getLine() << ":";
   else
-    Message << "while building module '" << ModuleName << ":";
+    Message << "while building module '" << ModuleName << "':";
   emitNote(Loc, Message.str(), &SM);
-}
-
-
-void DiagnosticNoteRenderer::emitBasicNote(StringRef Message) {
-  emitNote(SourceLocation(), Message, nullptr);
 }

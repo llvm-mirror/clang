@@ -195,12 +195,12 @@ SourceLocation Expr::getExprLoc() const {
   case Stmt::NoStmtClass: llvm_unreachable("statement without class");
 #define ABSTRACT_STMT(type)
 #define STMT(type, base) \
-  case Stmt::type##Class: llvm_unreachable(#type " is not an Expr"); break;
+  case Stmt::type##Class: break;
 #define EXPR(type, base) \
   case Stmt::type##Class: return getExprLocImpl<type>(this, &type::getExprLoc);
 #include "clang/AST/StmtNodes.inc"
   }
-  llvm_unreachable("unknown statement kind");
+  llvm_unreachable("unknown expression kind");
 }
 
 //===----------------------------------------------------------------------===//
@@ -998,7 +998,7 @@ getLocationOfByte(unsigned ByteNo, const SourceManager &SM,
     TheLexer.LexFromRawLexer(TheTok);
     
     // Use the StringLiteralParser to compute the length of the string in bytes.
-    StringLiteralParser SLP(&TheTok, 1, SM, Features, Target);
+    StringLiteralParser SLP(TheTok, SM, Features, Target);
     unsigned TokNumBytes = SLP.GetStringLength();
     
     // If the byte is in this token, return the location of the byte.
@@ -2161,12 +2161,15 @@ bool Expr::isUnusedResultAWarning(const Expr *&WarnE, SourceLocation &Loc,
       return true;
     }
 
-    const ObjCMethodDecl *MD = ME->getMethodDecl();
-    if (MD && MD->hasAttr<WarnUnusedResultAttr>()) {
-      WarnE = this;
-      Loc = getExprLoc();
-      return true;
-    }
+    if (const ObjCMethodDecl *MD = ME->getMethodDecl())
+      if (MD->hasAttr<WarnUnusedResultAttr>() ||
+          (MD->isPropertyAccessor() && !MD->getReturnType()->isVoidType() &&
+           !ME->getReceiverType()->isObjCIdType())) {
+        WarnE = this;
+        Loc = getExprLoc();
+        return true;
+      }
+
     return false;
   }
 

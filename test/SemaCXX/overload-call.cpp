@@ -590,3 +590,21 @@ void test5() {
   } callable;
   callable();  // expected-error{{no matching function for call}}
 }
+
+namespace PR20218 {
+  void f(void (*const &)()); // expected-note 2{{candidate}}
+  void f(void (&&)()) = delete; // expected-note 2{{candidate}} expected-warning 2{{extension}}
+  void g(void (&&)()) = delete; // expected-note 2{{candidate}} expected-warning 2{{extension}}
+  void g(void (*const &)()); // expected-note 2{{candidate}}
+
+  void x();
+  typedef void (&fr)();
+  struct Y { operator fr(); } y;
+
+  void h() {
+    f(x); // expected-error {{ambiguous}}
+    g(x); // expected-error {{ambiguous}}
+    f(y); // expected-error {{ambiguous}}
+    g(y); // expected-error {{ambiguous}}
+  }
+}

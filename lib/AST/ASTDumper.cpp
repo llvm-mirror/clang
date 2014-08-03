@@ -315,6 +315,7 @@ namespace  {
     void VisitIntegerLiteral(const IntegerLiteral *Node);
     void VisitFloatingLiteral(const FloatingLiteral *Node);
     void VisitStringLiteral(const StringLiteral *Str);
+    void VisitInitListExpr(const InitListExpr *ILE);
     void VisitUnaryOperator(const UnaryOperator *Node);
     void VisitUnaryExprOrTypeTraitExpr(const UnaryExprOrTypeTraitExpr *Node);
     void VisitMemberExpr(const MemberExpr *Node);
@@ -806,6 +807,12 @@ void ASTDumper::dumpDecl(const Decl *D) {
       OS << " hidden";
   if (D->isImplicit())
     OS << " implicit";
+  if (D->isUsed())
+    OS << " used";
+  else if (D->isReferenced())
+    OS << " referenced";
+  if (D->isInvalidDecl())
+    OS << " invalid";
 
   bool HasAttrs = D->hasAttrs();
   const FullComment *Comment =
@@ -828,9 +835,6 @@ void ASTDumper::dumpDecl(const Decl *D) {
   setMoreChildren(HasDeclContext);
   lastChild();
   dumpFullComment(Comment);
-
-  if (D->isInvalidDecl())
-    OS << " invalid";
 
   setMoreChildren(false);
   if (HasDeclContext)
@@ -910,13 +914,13 @@ void ASTDumper::VisitFunctionDecl(const FunctionDecl *D) {
 
   if (const FunctionProtoType *FPT = D->getType()->getAs<FunctionProtoType>()) {
     FunctionProtoType::ExtProtoInfo EPI = FPT->getExtProtoInfo();
-    switch (EPI.ExceptionSpecType) {
+    switch (EPI.ExceptionSpec.Type) {
     default: break;
     case EST_Unevaluated:
-      OS << " noexcept-unevaluated " << EPI.ExceptionSpecDecl;
+      OS << " noexcept-unevaluated " << EPI.ExceptionSpec.SourceDecl;
       break;
     case EST_Uninstantiated:
-      OS << " noexcept-uninstantiated " << EPI.ExceptionSpecTemplate;
+      OS << " noexcept-uninstantiated " << EPI.ExceptionSpec.SourceTemplate;
       break;
     }
   }
@@ -1020,6 +1024,11 @@ void ASTDumper::VisitVarDecl(const VarDecl *D) {
   if (D->isNRVOVariable())
     OS << " nrvo";
   if (D->hasInit()) {
+    switch (D->getInitStyle()) {
+    case VarDecl::CInit: OS << " cinit"; break;
+    case VarDecl::CallInit: OS << " callinit"; break;
+    case VarDecl::ListInit: OS << " listinit"; break;
+    }
     lastChild();
     dumpStmt(D->getInit());
   }
@@ -1720,6 +1729,22 @@ void ASTDumper::VisitStringLiteral(const StringLiteral *Str) {
   ColorScope Color(*this, ValueColor);
   OS << " ";
   Str->outputString(OS);
+}
+
+void ASTDumper::VisitInitListExpr(const InitListExpr *ILE) {
+  VisitExpr(ILE);
+  if (auto *Filler = ILE->getArrayFiller()) {
+    if (!ILE->getNumInits())
+      lastChild();
+    IndentScope Indent(*this);
+    OS << "array filler";
+    lastChild();
+    dumpStmt(Filler);
+  }
+  if (auto *Field = ILE->getInitializedFieldInUnion()) {
+    OS << " field ";
+    dumpBareDeclRef(Field);
+  }
 }
 
 void ASTDumper::VisitUnaryOperator(const UnaryOperator *Node) {

@@ -20,7 +20,6 @@
 #include "clang/Lex/ModuleLoader.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/PreprocessorOptions.h"
-#include "llvm/Config/config.h"
 #include "gtest/gtest.h"
 
 using namespace llvm;
@@ -42,7 +41,7 @@ class VoidModuleLoader : public ModuleLoader {
                          bool Complain) override { }
 
   GlobalModuleIndex *loadGlobalModuleIndex(SourceLocation TriggerLoc) override
-    { return 0; }
+    { return nullptr; }
   bool lookupMissingImports(StringRef Name, SourceLocation TriggerLoc) override
     { return 0; };
 };
@@ -58,7 +57,7 @@ protected:
       TargetOpts(new TargetOptions) 
   {
     TargetOpts->Triple = "x86_64-apple-darwin11.1.0";
-    Target = TargetInfo::CreateTargetInfo(Diags, &*TargetOpts);
+    Target = TargetInfo::CreateTargetInfo(Diags, TargetOpts);
   }
 
   std::vector<Token> CheckLex(StringRef Source,
@@ -68,9 +67,9 @@ protected:
 
     VoidModuleLoader ModLoader;
     HeaderSearch HeaderInfo(new HeaderSearchOptions, SourceMgr, Diags, LangOpts,
-                            Target.getPtr());
+                            Target.get());
     Preprocessor PP(new PreprocessorOptions(), Diags, LangOpts, SourceMgr,
-                    HeaderInfo, ModLoader, /*IILookup =*/0,
+                    HeaderInfo, ModLoader, /*IILookup =*/nullptr,
                     /*OwnsHeaderSearch =*/false);
     PP.Initialize(*Target);
     PP.EnterMainSourceFile();
@@ -109,7 +108,7 @@ protected:
   DiagnosticsEngine Diags;
   SourceManager SourceMgr;
   LangOptions LangOpts;
-  IntrusiveRefCntPtr<TargetOptions> TargetOpts;
+  std::shared_ptr<TargetOptions> TargetOpts;
   IntrusiveRefCntPtr<TargetInfo> Target;
 };
 

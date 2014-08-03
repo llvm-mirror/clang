@@ -618,7 +618,10 @@ ExprResult Sema::BuildCXXThrow(SourceLocation OpLoc, Expr *Ex,
   if (!getLangOpts().CXXExceptions &&
       !getSourceManager().isInSystemHeader(OpLoc))
     Diag(OpLoc, diag::err_exceptions_disabled) << "throw";
-  
+
+  if (getCurScope() && getCurScope()->isOpenMPSimdDirectiveScope())
+    Diag(OpLoc, diag::err_omp_simd_region_cannot_use_stmt) << "throw";
+
   if (Ex && !Ex->isTypeDependent()) {
     ExprResult ExRes = CheckCXXThrowOperand(OpLoc, Ex, IsThrownVarInScope);
     if (ExRes.isInvalid())
@@ -1181,14 +1184,6 @@ Sema::BuildCXXNew(SourceRange Range, bool UseGlobal,
     NumInits = List->getNumExprs();
   }
 
-  // Determine whether we've already built the initializer.
-  bool HaveCompleteInit = false;
-  if (Initializer && isa<CXXConstructExpr>(Initializer) &&
-      !isa<CXXTemporaryObjectExpr>(Initializer))
-    HaveCompleteInit = true;
-  else if (Initializer && isa<ImplicitValueInitExpr>(Initializer))
-    HaveCompleteInit = true;
-
   // C++11 [dcl.spec.auto]p6. Deduce the type which 'auto' stands in for.
   if (TypeMayContainAuto && AllocType->isUndeducedType()) {
     if (initStyle == CXXNewExpr::NoInit || NumInits == 0)
@@ -1478,8 +1473,7 @@ Sema::BuildCXXNew(SourceRange Range, bool UseGlobal,
   // do it now.
   if (!AllocType->isDependentType() &&
       !Expr::hasAnyTypeDependentArguments(
-        llvm::makeArrayRef(Inits, NumInits)) &&
-      !HaveCompleteInit) {
+          llvm::makeArrayRef(Inits, NumInits))) {
     // C++11 [expr.new]p15:
     //   A new-expression that creates an object of type T initializes that
     //   object as follows:
@@ -2078,13 +2072,12 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
     if (!getLangOpts().CPlusPlus11) {
       BadAllocType = Context.getTypeDeclType(getStdBadAlloc());
       assert(StdBadAlloc && "Must have std::bad_alloc declared");
-      EPI.ExceptionSpecType = EST_Dynamic;
-      EPI.NumExceptions = 1;
-      EPI.Exceptions = &BadAllocType;
+      EPI.ExceptionSpec.Type = EST_Dynamic;
+      EPI.ExceptionSpec.Exceptions = llvm::makeArrayRef(BadAllocType);
     }
   } else {
-    EPI.ExceptionSpecType = getLangOpts().CPlusPlus11 ?
-                                EST_BasicNoexcept : EST_DynamicNone;
+    EPI.ExceptionSpec =
+        getLangOpts().CPlusPlus11 ? EST_BasicNoexcept : EST_DynamicNone;
   }
 
   QualType Params[] = { Param1, Param2 };
@@ -2557,11 +2550,11 @@ static ExprResult BuildCXXCastArgument(Sema &S,
                              InitializedEntity::InitializeTemporary(Ty),
                              Constructor->getAccess());
 
-    ExprResult Result
-      = S.BuildCXXConstructExpr(CastLoc, Ty, cast<CXXConstructorDecl>(Method),
-                                ConstructorArgs, HadMultipleCandidates,
-                                /*ListInit*/ false, /*ZeroInit*/ false,
-                                CXXConstructExpr::CK_Complete, SourceRange());
+    ExprResult Result = S.BuildCXXConstructExpr(
+        CastLoc, Ty, cast<CXXConstructorDecl>(Method),
+        ConstructorArgs, HadMultipleCandidates,
+        /*ListInit*/ false, /*StdInitListInit*/ false, /*ZeroInit*/ false,
+        CXXConstructExpr::CK_Complete, SourceRange());
     if (Result.isInvalid())
       return ExprError();
 
@@ -2706,20 +2699,17 @@ Sema::PerformImplicitConversion(Expr *From, QualType ToType,
                                   From, /*FIXME:ConstructLoc*/SourceLocation(),
                                   ConstructorArgs))
         return ExprError();
-      return BuildCXXConstructExpr(/*FIXME:ConstructLoc*/SourceLocation(),
-                                   ToType, SCS.CopyConstructor,
-                                   ConstructorArgs,
-                                   /*HadMultipleCandidates*/ false,
-                                   /*ListInit*/ false, /*ZeroInit*/ false,
-                                   CXXConstructExpr::CK_Complete,
-                                   SourceRange());
+      return BuildCXXConstructExpr(
+          /*FIXME:ConstructLoc*/ SourceLocation(), ToType, SCS.CopyConstructor,
+          ConstructorArgs, /*HadMultipleCandidates*/ false,
+          /*ListInit*/ false, /*StdInitListInit*/ false, /*ZeroInit*/ false,
+          CXXConstructExpr::CK_Complete, SourceRange());
     }
-    return BuildCXXConstructExpr(/*FIXME:ConstructLoc*/SourceLocation(),
-                                 ToType, SCS.CopyConstructor,
-                                 From, /*HadMultipleCandidates*/ false,
-                                 /*ListInit*/ false, /*ZeroInit*/ false,
-                                 CXXConstructExpr::CK_Complete,
-                                 SourceRange());
+    return BuildCXXConstructExpr(
+        /*FIXME:ConstructLoc*/ SourceLocation(), ToType, SCS.CopyConstructor,
+        From, /*HadMultipleCandidates*/ false,
+        /*ListInit*/ false, /*StdInitListInit*/ false, /*ZeroInit*/ false,
+        CXXConstructExpr::CK_Complete, SourceRange());
   }
 
   // Resolve overloaded function references.
@@ -3651,12 +3641,13 @@ static bool evaluateTypeTrait(Sema &S, TypeTrait Kind, SourceLocation KWLoc,
       if (T->isObjectType() || T->isFunctionType())
         T = S.Context.getRValueReferenceType(T);
       OpaqueArgExprs.push_back(
-        OpaqueValueExpr(Args[I]->getTypeLoc().getLocStart(), 
+        OpaqueValueExpr(Args[I]->getTypeLoc().getLocStart(),
                         T.getNonLValueExprType(S.Context),
                         Expr::getValueKindForType(T)));
-      ArgExprs.push_back(&OpaqueArgExprs.back());
     }
-    
+    for (Expr &E : OpaqueArgExprs)
+      ArgExprs.push_back(&E);
+
     // Perform the initialization in an unevaluated context within a SFINAE 
     // trap at translation unit scope.
     EnterExpressionEvaluationContext Unevaluated(S, Sema::Unevaluated);
@@ -5132,7 +5123,7 @@ ExprResult Sema::ActOnDecltypeExpression(Expr *E) {
 
 /// Note a set of 'operator->' functions that were used for a member access.
 static void noteOperatorArrows(Sema &S,
-                               llvm::ArrayRef<FunctionDecl *> OperatorArrows) {
+                               ArrayRef<FunctionDecl *> OperatorArrows) {
   unsigned SkipStart = OperatorArrows.size(), SkipCount = 0;
   // FIXME: Make this configurable?
   unsigned Limit = 9;

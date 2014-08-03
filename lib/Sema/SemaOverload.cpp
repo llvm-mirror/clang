@@ -1164,17 +1164,6 @@ TryUserDefinedConversion(Sema &S, Expr *From, QualType ToType,
           ICS.Standard.Second = ICK_Derived_To_Base;
       }
     }
-
-    // C++ [over.best.ics]p4:
-    //   However, when considering the argument of a user-defined
-    //   conversion function that is a candidate by 13.3.1.3 when
-    //   invoked for the copying of the temporary in the second step
-    //   of a class copy-initialization, or by 13.3.1.4, 13.3.1.5, or
-    //   13.3.1.6 in all cases, only standard conversion sequences and
-    //   ellipsis conversion sequences are allowed.
-    if (SuppressUserConversions && ICS.isUserDefined()) {
-      ICS.setBad(BadConversionSequence::suppressed_user, From, ToType);
-    }
   } else if (UserDefResult == OR_Ambiguous && !SuppressUserConversions) {
     ICS.setAmbiguous();
     ICS.Ambiguous.setFromType(From->getType());
@@ -1462,6 +1451,7 @@ static bool IsStandardConversion(Sema &S, Expr* From, QualType ToType,
       // We were able to resolve the address of the overloaded function,
       // so we can convert to the type of that function.
       FromType = Fn->getType();
+      SCS.setFromType(FromType);
 
       // we can sometimes resolve &foo<int> regardless of ToType, so check
       // if the type matches (identity) or we are converting to bool
@@ -3465,8 +3455,9 @@ compareStandardConversionSubsets(ASTContext &Context,
 
 /// \brief Determine whether one of the given reference bindings is better
 /// than the other based on what kind of bindings they are.
-static bool isBetterReferenceBindingKind(const StandardConversionSequence &SCS1,
-                                       const StandardConversionSequence &SCS2) {
+static bool
+isBetterReferenceBindingKind(const StandardConversionSequence &SCS1,
+                             const StandardConversionSequence &SCS2) {
   // C++0x [over.ics.rank]p3b4:
   //   -- S1 and S2 are reference bindings (8.5.3) and neither refers to an
   //      implicit object parameter of a non-static member function declared
@@ -3487,7 +3478,7 @@ static bool isBetterReferenceBindingKind(const StandardConversionSequence &SCS1,
   return (!SCS1.IsLvalueReference && SCS1.BindsToRvalue &&
           SCS2.IsLvalueReference) ||
          (SCS1.IsLvalueReference && SCS1.BindsToFunctionLvalue &&
-          !SCS2.IsLvalueReference);
+          !SCS2.IsLvalueReference && SCS2.BindsToFunctionLvalue);
 }
 
 /// CompareStandardConversionSequences - Compare two standard
@@ -4335,7 +4326,7 @@ TryReferenceInit(Sema &S, Expr *Init, QualType DeclType,
     // standard library implementors; therefore, we need the xvalue check here.
     ICS.Standard.DirectBinding =
       S.getLangOpts().CPlusPlus11 ||
-      (InitCategory.isPRValue() && !T2->isRecordType());
+      !(InitCategory.isPRValue() || T2->isRecordType());
     ICS.Standard.IsLvalueReference = !isRValRef;
     ICS.Standard.BindsToFunctionLvalue = T2->isFunctionType();
     ICS.Standard.BindsToRvalue = InitCategory.isRValue();
@@ -4371,6 +4362,10 @@ TryReferenceInit(Sema &S, Expr *Init, QualType DeclType,
 
     return ICS;
   }
+
+  // A temporary of function type cannot be created; don't even try.
+  if (T1->isFunctionType())
+    return ICS;
 
   //       -- Otherwise, a temporary of type "cv1 T1" is created and
   //          initialized from the initializer expression using the
@@ -4433,28 +4428,34 @@ TryReferenceInit(Sema &S, Expr *Init, QualType DeclType,
   if (ICS.isStandard()) {
     ICS.Standard.ReferenceBinding = true;
     ICS.Standard.IsLvalueReference = !isRValRef;
-    ICS.Standard.BindsToFunctionLvalue = T2->isFunctionType();
+    ICS.Standard.BindsToFunctionLvalue = false;
     ICS.Standard.BindsToRvalue = true;
     ICS.Standard.BindsImplicitObjectArgumentWithoutRefQualifier = false;
     ICS.Standard.ObjCLifetimeConversionBinding = false;
   } else if (ICS.isUserDefined()) {
-    // Don't allow rvalue references to bind to lvalues.
-    if (DeclType->isRValueReferenceType()) {
-      if (const ReferenceType *RefType =
-              ICS.UserDefined.ConversionFunction->getReturnType()
-                  ->getAs<LValueReferenceType>()) {
-        if (!RefType->getPointeeType()->isFunctionType()) {
-          ICS.setBad(BadConversionSequence::lvalue_ref_to_rvalue, Init, 
-                     DeclType);
-          return ICS;
-        }
-      }
+    const ReferenceType *LValRefType =
+        ICS.UserDefined.ConversionFunction->getReturnType()
+            ->getAs<LValueReferenceType>();
+
+    // C++ [over.ics.ref]p3:
+    //   Except for an implicit object parameter, for which see 13.3.1, a
+    //   standard conversion sequence cannot be formed if it requires [...]
+    //   binding an rvalue reference to an lvalue other than a function
+    //   lvalue.
+    // Note that the function case is not possible here.
+    if (DeclType->isRValueReferenceType() && LValRefType) {
+      // FIXME: This is the wrong BadConversionSequence. The problem is binding
+      // an rvalue reference to a (non-function) lvalue, not binding an lvalue
+      // reference to an rvalue!
+      ICS.setBad(BadConversionSequence::lvalue_ref_to_rvalue, Init, DeclType);
+      return ICS;
     }
+
     ICS.UserDefined.Before.setAsIdentityConversion();
     ICS.UserDefined.After.ReferenceBinding = true;
     ICS.UserDefined.After.IsLvalueReference = !isRValRef;
-    ICS.UserDefined.After.BindsToFunctionLvalue = T2->isFunctionType();
-    ICS.UserDefined.After.BindsToRvalue = true;
+    ICS.UserDefined.After.BindsToFunctionLvalue = false;
+    ICS.UserDefined.After.BindsToRvalue = !LValRefType;
     ICS.UserDefined.After.BindsImplicitObjectArgumentWithoutRefQualifier = false;
     ICS.UserDefined.After.ObjCLifetimeConversionBinding = false;
   }
@@ -5732,8 +5733,8 @@ EnableIfAttr *Sema::CheckEnableIf(FunctionDecl *Function, ArrayRef<Expr *> Args,
     EnableIfAttr *EIA = cast<EnableIfAttr>(*I);
     if (!EIA->getCond()->EvaluateWithSubstitution(
             Result, Context, Function,
-            llvm::ArrayRef<const Expr*>(ConvertedArgs.data(),
-                                        ConvertedArgs.size())) ||
+            ArrayRef<const Expr*>(ConvertedArgs.data(),
+                                  ConvertedArgs.size())) ||
         !Result.isInt() || !Result.getInt().getBoolValue()) {
       return EIA;
     }
@@ -10429,7 +10430,7 @@ static ExprResult
 BuildRecoveryCallExpr(Sema &SemaRef, Scope *S, Expr *Fn,
                       UnresolvedLookupExpr *ULE,
                       SourceLocation LParenLoc,
-                      llvm::MutableArrayRef<Expr *> Args,
+                      MutableArrayRef<Expr *> Args,
                       SourceLocation RParenLoc,
                       bool EmptyLookup, bool AllowTypoCorrection) {
   // Do not try to recover if it is already building a recovery call.

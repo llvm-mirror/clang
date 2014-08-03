@@ -15,6 +15,7 @@
 #ifndef LLVM_CLANG_SEMA_SCOPE_INFO_H
 #define LLVM_CLANG_SEMA_SCOPE_INFO_H
 
+#include "clang/AST/Expr.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/CapturedStmt.h"
 #include "clang/Basic/PartialDiagnostic.h"
@@ -41,8 +42,6 @@ class SwitchStmt;
 class TemplateTypeParmDecl;
 class TemplateParameterList;
 class VarDecl;
-class DeclRefExpr;
-class MemberExpr;
 class ObjCIvarRefExpr;
 class ObjCPropertyRefExpr;
 class ObjCMessageExpr;
@@ -187,8 +186,6 @@ public:
     /// Used to find the proper base profile for a given base expression.
     static BaseInfoTy getBaseInfo(const Expr *BaseE);
 
-    // For use in DenseMap.
-    friend class DenseMapInfo;
     inline WeakObjectProfileTy();
     static inline WeakObjectProfileTy getSentinel();
 

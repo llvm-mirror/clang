@@ -149,32 +149,27 @@ void CodeGenFunction::EmitVarDecl(const VarDecl &D) {
 static std::string GetStaticDeclName(CodeGenFunction &CGF, const VarDecl &D,
                                      const char *Separator) {
   CodeGenModule &CGM = CGF.CGM;
-  if (CGF.getLangOpts().CPlusPlus) {
-    StringRef Name = CGM.getMangledName(&D);
-    return Name.str();
-  }
 
-  std::string ContextName;
+  if (CGF.getLangOpts().CPlusPlus)
+    return CGM.getMangledName(&D).str();
+
+  StringRef ContextName;
   if (!CGF.CurFuncDecl) {
     // Better be in a block declared in global scope.
     const NamedDecl *ND = cast<NamedDecl>(&D);
     const DeclContext *DC = ND->getDeclContext();
-    if (const BlockDecl *BD = dyn_cast<BlockDecl>(DC)) {
-      MangleBuffer Name;
-      CGM.getBlockMangledName(GlobalDecl(), Name, BD);
-      ContextName = Name.getString();
-    }
+    if (const BlockDecl *BD = dyn_cast<BlockDecl>(DC))
+      ContextName = CGM.getBlockMangledName(GlobalDecl(), BD);
     else
       llvm_unreachable("Unknown context for block static var decl");
-  } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(CGF.CurFuncDecl)) {
-    StringRef Name = CGM.getMangledName(FD);
-    ContextName = Name.str();
-  } else if (isa<ObjCMethodDecl>(CGF.CurFuncDecl))
+  } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(CGF.CurFuncDecl))
+    ContextName = CGM.getMangledName(FD);
+  else if (isa<ObjCMethodDecl>(CGF.CurFuncDecl))
     ContextName = CGF.CurFn->getName();
   else
     llvm_unreachable("Unknown context for static var decl");
 
-  return ContextName + Separator + D.getNameAsString();
+  return ContextName.str() + Separator + D.getNameAsString();
 }
 
 llvm::Constant *
@@ -205,6 +200,13 @@ CodeGenFunction::CreateStaticVarDecl(const VarDecl &D,
 
   if (D.getTLSKind())
     CGM.setTLSMode(GV, D);
+
+  if (D.isExternallyVisible()) {
+    if (D.hasAttr<DLLImportAttr>())
+      GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
+    else if (D.hasAttr<DLLExportAttr>())
+      GV->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
+  }
 
   // Make sure the result is of the correct type.
   unsigned ExpectedAddrSpace = CGM.getContext().getTargetAddressSpace(Ty);
@@ -342,6 +344,8 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
     llvm::ConstantExpr::getPointerBitCastOrAddrSpaceCast(var, expectedType);
   DMEntry = castedAddr;
   CGM.setStaticLocalDeclAddress(&D, castedAddr);
+
+  CGM.reportGlobalToASan(var, D);
 
   // Emit global variable debug descriptor for static vars.
   CGDebugInfo *DI = getDebugInfo();
@@ -800,9 +804,6 @@ static bool shouldUseMemSetPlusStoresToInitialize(llvm::Constant *Init,
 /// Should we use the LLVM lifetime intrinsics for the given local variable?
 static bool shouldUseLifetimeMarkers(CodeGenFunction &CGF, const VarDecl &D,
                                      unsigned Size) {
-  // Always emit lifetime markers in -fsanitize=use-after-scope mode.
-  if (CGF.getLangOpts().Sanitize.UseAfterScope)
-    return true;
   // For now, only in optimized builds.
   if (CGF.CGM.getCodeGenOpts().OptimizationLevel == 0)
     return false;
@@ -1655,7 +1656,9 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg,
     DeclPtr = Arg->getType() == IRTy ? Arg : Builder.CreateBitCast(Arg, IRTy,
                                                                    D.getName());
     // Push a destructor cleanup for this parameter if the ABI requires it.
-    if (!IsScalar &&
+    // Don't push a cleanup in a thunk for a method that will also emit a
+    // cleanup.
+    if (!IsScalar && !CurFuncIsThunk &&
         getTarget().getCXXABI().areArgsDestroyedLeftToRightInCallee()) {
       const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
       if (RD && RD->hasNonTrivialDestructor())

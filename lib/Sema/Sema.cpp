@@ -87,7 +87,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
         LangOpts.getMSPointerToMemberRepresentationMethod()),
     VtorDispModeStack(1, MSVtorDispAttr::Mode(LangOpts.VtorDispMode)),
     DataSegStack(nullptr), BSSSegStack(nullptr), ConstSegStack(nullptr),
-    CodeSegStack(nullptr), VisContext(nullptr),
+    CodeSegStack(nullptr), CurInitSeg(nullptr), VisContext(nullptr),
     IsBuildingRecoveryCallExpr(false),
     ExprNeedsCleanups(false), LateTemplateParser(nullptr),
     OpaqueParser(nullptr), IdResolver(pp), StdInitializerList(nullptr),
@@ -313,7 +313,8 @@ ExprResult Sema::ImpCastExprToType(Expr *E, QualType Ty,
   if (VK == VK_RValue && !E->isRValue()) {
     switch (Kind) {
     default:
-      assert(0 && "can't implicitly cast lvalue to rvalue with this cast kind");
+      llvm_unreachable("can't implicitly cast lvalue to rvalue with this cast "
+                       "kind");
     case CK_LValueToRValue:
     case CK_ArrayToPointerDecay:
     case CK_FunctionToPointerDecay:
@@ -681,9 +682,7 @@ void Sema::ActOnEndOfTranslationUnit() {
   }
 
   if (LangOpts.CPlusPlus11 &&
-      Diags.getDiagnosticLevel(diag::warn_delegating_ctor_cycle,
-                               SourceLocation())
-        != DiagnosticsEngine::Ignored)
+      !Diags.isIgnored(diag::warn_delegating_ctor_cycle, SourceLocation()))
     CheckDelegatingCtorCycles();
 
   if (TUKind == TU_Module) {
@@ -789,8 +788,9 @@ void Sema::ActOnEndOfTranslationUnit() {
                 !FD->isInlineSpecified() &&
                 !SourceMgr.isInMainFile(
                    SourceMgr.getExpansionLoc(FD->getLocation())))
-              Diag(DiagD->getLocation(), diag::warn_unneeded_static_internal_decl)
-                << DiagD->getDeclName();
+              Diag(DiagD->getLocation(),
+                   diag::warn_unneeded_static_internal_decl)
+                  << DiagD->getDeclName();
             else
               Diag(DiagD->getLocation(), diag::warn_unneeded_internal_decl)
                    << /*function*/0 << DiagD->getDeclName();
@@ -823,9 +823,7 @@ void Sema::ActOnEndOfTranslationUnit() {
     checkUndefinedButUsed(*this);
   }
 
-  if (Diags.getDiagnosticLevel(diag::warn_unused_private_field,
-                               SourceLocation())
-        != DiagnosticsEngine::Ignored) {
+  if (!Diags.isIgnored(diag::warn_unused_private_field, SourceLocation())) {
     RecordCompleteMap RecordsComplete;
     RecordCompleteMap MNCComplete;
     for (NamedDeclSetType::iterator I = UnusedPrivateFields.begin(),
@@ -1435,8 +1433,8 @@ IdentifierInfo *Sema::getFloat128Identifier() const {
 
 void Sema::PushCapturedRegionScope(Scope *S, CapturedDecl *CD, RecordDecl *RD,
                                    CapturedRegionKind K) {
-  CapturingScopeInfo *CSI = new CapturedRegionScopeInfo(getDiagnostics(), S, CD, RD,
-                                                        CD->getContextParam(), K);
+  CapturingScopeInfo *CSI = new CapturedRegionScopeInfo(
+      getDiagnostics(), S, CD, RD, CD->getContextParam(), K);
   CSI->ReturnType = Context.VoidTy;
   FunctionScopes.push_back(CSI);
 }

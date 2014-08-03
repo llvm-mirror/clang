@@ -194,3 +194,19 @@ namespace dr525 { // dr525: yes
     }
   }
 }
+
+// PR8130
+namespace dr532 { // dr532: 3.5
+  struct A { };
+
+  template<class T> struct B {
+    template<class R> int &operator*(R&);
+  };
+
+  template<class T, class R> float &operator*(T&, R&);
+  void test() {
+    A a;
+    B<A> b;
+    int &ir = b * a;
+  }
+}

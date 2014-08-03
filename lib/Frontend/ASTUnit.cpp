@@ -47,7 +47,6 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
-#include <sys/stat.h>
 using namespace clang;
 
 using llvm::TimeRecord;
@@ -247,14 +246,10 @@ ASTUnit::~ASTUnit() {
   // perform this operation here because we explicitly request that the
   // compiler instance *not* free these buffers for each invocation of the
   // parser.
-  if (Invocation.getPtr() && OwnsRemappedFileBuffers) {
+  if (Invocation.get() && OwnsRemappedFileBuffers) {
     PreprocessorOptions &PPOpts = Invocation->getPreprocessorOpts();
-    for (PreprocessorOptions::remapped_file_buffer_iterator
-           FB = PPOpts.remapped_file_buffer_begin(),
-           FBEnd = PPOpts.remapped_file_buffer_end();
-         FB != FBEnd;
-         ++FB)
-      delete FB->second;
+    for (const auto &RB : PPOpts.RemappedFileBuffers)
+      delete RB.second;
   }
   
   delete SavedMainFileBuffer;
@@ -504,20 +499,17 @@ class ASTInfoCollector : public ASTReaderListener {
   Preprocessor &PP;
   ASTContext &Context;
   LangOptions &LangOpt;
-  IntrusiveRefCntPtr<TargetOptions> &TargetOpts;
+  std::shared_ptr<TargetOptions> &TargetOpts;
   IntrusiveRefCntPtr<TargetInfo> &Target;
   unsigned &Counter;
 
   bool InitializedLanguage;
 public:
-  ASTInfoCollector(Preprocessor &PP, ASTContext &Context, LangOptions &LangOpt, 
-                   IntrusiveRefCntPtr<TargetOptions> &TargetOpts,
-                   IntrusiveRefCntPtr<TargetInfo> &Target,
-                   unsigned &Counter)
-    : PP(PP), Context(Context), LangOpt(LangOpt),
-      TargetOpts(TargetOpts), Target(Target),
-      Counter(Counter),
-      InitializedLanguage(false) {}
+  ASTInfoCollector(Preprocessor &PP, ASTContext &Context, LangOptions &LangOpt,
+                   std::shared_ptr<TargetOptions> &TargetOpts,
+                   IntrusiveRefCntPtr<TargetInfo> &Target, unsigned &Counter)
+      : PP(PP), Context(Context), LangOpt(LangOpt), TargetOpts(TargetOpts),
+        Target(Target), Counter(Counter), InitializedLanguage(false) {}
 
   bool ReadLanguageOptions(const LangOptions &LangOpts,
                            bool Complain) override {
@@ -536,10 +528,10 @@ public:
     // If we've already initialized the target, don't do it again.
     if (Target)
       return false;
-    
-    this->TargetOpts = new TargetOptions(TargetOpts);
-    Target = TargetInfo::CreateTargetInfo(PP.getDiagnostics(),
-                                          &*this->TargetOpts);
+
+    this->TargetOpts = std::make_shared<TargetOptions>(TargetOpts);
+    Target =
+        TargetInfo::CreateTargetInfo(PP.getDiagnostics(), this->TargetOpts);
 
     updated();
     return false;
@@ -559,7 +551,7 @@ private:
     //
     // FIXME: We shouldn't need to do this, the target should be immutable once
     // created. This complexity should be lifted elsewhere.
-    Target->setForcedLangOptions(LangOpt);
+    Target->adjust(LangOpt);
 
     // Initialize the preprocessor.
     PP.Initialize(*Target);
@@ -656,7 +648,7 @@ llvm::MemoryBuffer *ASTUnit::getBufferForFile(StringRef Filename,
 void ASTUnit::ConfigureDiags(IntrusiveRefCntPtr<DiagnosticsEngine> &Diags,
                              const char **ArgBegin, const char **ArgEnd,
                              ASTUnit &AST, bool CaptureDiagnostics) {
-  if (!Diags.getPtr()) {
+  if (!Diags.get()) {
     // No diagnostics engine was provided, so create our own diagnostics object
     // with the default options.
     DiagnosticConsumer *Client = nullptr;
@@ -685,7 +677,7 @@ ASTUnit *ASTUnit::LoadFromASTFile(const std::string &Filename,
     ASTUnitCleanup(AST.get());
   llvm::CrashRecoveryContextCleanupRegistrar<DiagnosticsEngine,
     llvm::CrashRecoveryContextReleaseRefCleanup<DiagnosticsEngine> >
-    DiagCleanup(Diags.getPtr());
+    DiagCleanup(Diags.get());
 
   ConfigureDiags(Diags, nullptr, nullptr, *AST, CaptureDiagnostics);
 
@@ -1058,7 +1050,7 @@ bool ASTUnit::Parse(llvm::MemoryBuffer *OverrideMainBuffer) {
   IntrusiveRefCntPtr<CompilerInvocation>
     CCInvocation(new CompilerInvocation(*Invocation));
 
-  Clang->setInvocation(CCInvocation.getPtr());
+  Clang->setInvocation(CCInvocation.get());
   OriginalSourceFile = Clang->getFrontendOpts().Inputs[0].getFile();
     
   // Set up diagnostics, capturing any diagnostics that would
@@ -1066,8 +1058,8 @@ bool ASTUnit::Parse(llvm::MemoryBuffer *OverrideMainBuffer) {
   Clang->setDiagnostics(&getDiagnostics());
   
   // Create the target instance.
-  Clang->setTarget(TargetInfo::CreateTargetInfo(Clang->getDiagnostics(),
-                   &Clang->getTargetOpts()));
+  Clang->setTarget(TargetInfo::CreateTargetInfo(
+      Clang->getDiagnostics(), Clang->getInvocation().TargetOpts));
   if (!Clang->hasTarget()) {
     delete OverrideMainBuffer;
     return true;
@@ -1077,7 +1069,7 @@ bool ASTUnit::Parse(llvm::MemoryBuffer *OverrideMainBuffer) {
   //
   // FIXME: We shouldn't need to do this, the target should be immutable once
   // created. This complexity should be lifted elsewhere.
-  Clang->getTarget().setForcedLangOptions(Clang->getLangOpts());
+  Clang->getTarget().adjust(Clang->getLangOpts());
   
   assert(Clang->getFrontendOpts().Inputs.size() == 1 &&
          "Invocation must have exactly one source file!");
@@ -1087,9 +1079,15 @@ bool ASTUnit::Parse(llvm::MemoryBuffer *OverrideMainBuffer) {
          "IR inputs not support here!");
 
   // Configure the various subsystems.
-  LangOpts = &Clang->getLangOpts();
+  LangOpts = Clang->getInvocation().LangOpts;
   FileSystemOpts = Clang->getFileSystemOpts();
-  // Re-use the existing FileManager
+  IntrusiveRefCntPtr<vfs::FileSystem> VFS =
+      createVFSFromCompilerInvocation(Clang->getInvocation(), getDiagnostics());
+  if (!VFS) {
+    delete OverrideMainBuffer;
+    return true;
+  }
+  FileMgr = new FileManager(FileSystemOpts, VFS);
   SourceMgr = new SourceManager(getDiagnostics(), *FileMgr,
                                 UserFilesAreVolatile);
   TheSema.reset();
@@ -1211,12 +1209,8 @@ ASTUnit::ComputePreamble(CompilerInvocation &Invocation,
   llvm::sys::fs::UniqueID MainFileID;
   if (!llvm::sys::fs::getUniqueID(MainFilePath, MainFileID)) {
     // Check whether there is a file-file remapping of the main file
-    for (PreprocessorOptions::remapped_file_iterator
-          M = PreprocessorOpts.remapped_file_begin(),
-          E = PreprocessorOpts.remapped_file_end();
-         M != E;
-         ++M) {
-      std::string MPath(M->first);
+    for (const auto &RF : PreprocessorOpts.RemappedFiles) {
+      std::string MPath(RF.first);
       llvm::sys::fs::UniqueID MID;
       if (!llvm::sys::fs::getUniqueID(MPath, MID)) {
         if (MainFileID == MID) {
@@ -1225,8 +1219,8 @@ ASTUnit::ComputePreamble(CompilerInvocation &Invocation,
             delete Buffer;
             CreatedBuffer = false;
           }
-          
-          Buffer = getBufferForFile(M->second);
+
+          Buffer = getBufferForFile(RF.second);
           if (!Buffer)
             return std::make_pair(nullptr, std::make_pair(0, true));
           CreatedBuffer = true;
@@ -1236,12 +1230,8 @@ ASTUnit::ComputePreamble(CompilerInvocation &Invocation,
     
     // Check whether there is a file-buffer remapping. It supercedes the
     // file-file remapping.
-    for (PreprocessorOptions::remapped_file_buffer_iterator
-           M = PreprocessorOpts.remapped_file_buffer_begin(),
-           E = PreprocessorOpts.remapped_file_buffer_end();
-         M != E;
-         ++M) {
-      std::string MPath(M->first);
+    for (const auto &RB : PreprocessorOpts.RemappedFileBuffers) {
+      std::string MPath(RB.first);
       llvm::sys::fs::UniqueID MID;
       if (!llvm::sys::fs::getUniqueID(MPath, MID)) {
         if (MainFileID == MID) {
@@ -1250,8 +1240,8 @@ ASTUnit::ComputePreamble(CompilerInvocation &Invocation,
             delete Buffer;
             CreatedBuffer = false;
           }
-          
-          Buffer = const_cast<llvm::MemoryBuffer *>(M->second);
+
+          Buffer = const_cast<llvm::MemoryBuffer *>(RB.second);
         }
       }
     }
@@ -1417,29 +1407,27 @@ llvm::MemoryBuffer *ASTUnit::getMainBufferWithPrecompiledPreamble(
       // First, make a record of those files that have been overridden via
       // remapping or unsaved_files.
       llvm::StringMap<PreambleFileHash> OverriddenFiles;
-      for (PreprocessorOptions::remapped_file_iterator
-                R = PreprocessorOpts.remapped_file_begin(),
-             REnd = PreprocessorOpts.remapped_file_end();
-           !AnyFileChanged && R != REnd;
-           ++R) {
+      for (const auto &R : PreprocessorOpts.RemappedFiles) {
+        if (AnyFileChanged)
+          break;
+
         vfs::Status Status;
-        if (FileMgr->getNoncachedStatValue(R->second, Status)) {
+        if (FileMgr->getNoncachedStatValue(R.second, Status)) {
           // If we can't stat the file we're remapping to, assume that something
           // horrible happened.
           AnyFileChanged = true;
           break;
         }
 
-        OverriddenFiles[R->first] = PreambleFileHash::createForFile(
+        OverriddenFiles[R.first] = PreambleFileHash::createForFile(
             Status.getSize(), Status.getLastModificationTime().toEpochTime());
       }
-      for (PreprocessorOptions::remapped_file_buffer_iterator
-                R = PreprocessorOpts.remapped_file_buffer_begin(),
-             REnd = PreprocessorOpts.remapped_file_buffer_end();
-           !AnyFileChanged && R != REnd;
-           ++R) {
-        OverriddenFiles[R->first] =
-            PreambleFileHash::createForMemoryBuffer(R->second);
+
+      for (const auto &RB : PreprocessorOpts.RemappedFileBuffers) {
+        if (AnyFileChanged)
+          break;
+        OverriddenFiles[RB.first] =
+            PreambleFileHash::createForMemoryBuffer(RB.second);
       }
        
       // Check whether anything has changed.
@@ -1559,14 +1547,13 @@ llvm::MemoryBuffer *ASTUnit::getMainBufferWithPrecompiledPreamble(
   Clang->setDiagnostics(&getDiagnostics());
   
   // Create the target instance.
-  Clang->setTarget(TargetInfo::CreateTargetInfo(Clang->getDiagnostics(),
-                                                &Clang->getTargetOpts()));
+  Clang->setTarget(TargetInfo::CreateTargetInfo(
+      Clang->getDiagnostics(), Clang->getInvocation().TargetOpts));
   if (!Clang->hasTarget()) {
     llvm::sys::fs::remove(FrontendOpts.OutputFile);
     Preamble.clear();
     PreambleRebuildCounter = DefaultPreambleRebuildInterval;
-    PreprocessorOpts.eraseRemappedFile(
-                               PreprocessorOpts.remapped_file_buffer_end() - 1);
+    PreprocessorOpts.RemappedFileBuffers.pop_back();
     return nullptr;
   }
   
@@ -1574,7 +1561,7 @@ llvm::MemoryBuffer *ASTUnit::getMainBufferWithPrecompiledPreamble(
   //
   // FIXME: We shouldn't need to do this, the target should be immutable once
   // created. This complexity should be lifted elsewhere.
-  Clang->getTarget().setForcedLangOptions(Clang->getLangOpts());
+  Clang->getTarget().adjust(Clang->getLangOpts());
   
   assert(Clang->getFrontendOpts().Inputs.size() == 1 &&
          "Invocation must have exactly one source file!");
@@ -1603,14 +1590,16 @@ llvm::MemoryBuffer *ASTUnit::getMainBufferWithPrecompiledPreamble(
   Clang->setSourceManager(new SourceManager(getDiagnostics(),
                                             Clang->getFileManager()));
 
+  auto PreambleDepCollector = std::make_shared<DependencyCollector>();
+  Clang->addDependencyCollector(PreambleDepCollector);
+
   std::unique_ptr<PrecompilePreambleAction> Act;
   Act.reset(new PrecompilePreambleAction(*this));
   if (!Act->BeginSourceFile(*Clang.get(), Clang->getFrontendOpts().Inputs[0])) {
     llvm::sys::fs::remove(FrontendOpts.OutputFile);
     Preamble.clear();
     PreambleRebuildCounter = DefaultPreambleRebuildInterval;
-    PreprocessorOpts.eraseRemappedFile(
-                               PreprocessorOpts.remapped_file_buffer_end() - 1);
+    PreprocessorOpts.RemappedFileBuffers.pop_back();
     return nullptr;
   }
   
@@ -1638,8 +1627,7 @@ llvm::MemoryBuffer *ASTUnit::getMainBufferWithPrecompiledPreamble(
     Preamble.clear();
     TopLevelDeclsInPreamble.clear();
     PreambleRebuildCounter = DefaultPreambleRebuildInterval;
-    PreprocessorOpts.eraseRemappedFile(
-                               PreprocessorOpts.remapped_file_buffer_end() - 1);
+    PreprocessorOpts.RemappedFileBuffers.pop_back();
     return nullptr;
   }
   
@@ -1651,33 +1639,23 @@ llvm::MemoryBuffer *ASTUnit::getMainBufferWithPrecompiledPreamble(
   // so we can verify whether they have changed or not.
   FilesInPreamble.clear();
   SourceManager &SourceMgr = Clang->getSourceManager();
-  const llvm::MemoryBuffer *MainFileBuffer
-    = SourceMgr.getBuffer(SourceMgr.getMainFileID());
-  for (SourceManager::fileinfo_iterator F = SourceMgr.fileinfo_begin(),
-                                     FEnd = SourceMgr.fileinfo_end();
-       F != FEnd;
-       ++F) {
-    const FileEntry *File = F->second->OrigEntry;
-    if (!File)
+  for (auto &Filename : PreambleDepCollector->getDependencies()) {
+    const FileEntry *File = Clang->getFileManager().getFile(Filename);
+    if (!File || File == SourceMgr.getFileEntryForID(SourceMgr.getMainFileID()))
       continue;
-    const llvm::MemoryBuffer *Buffer = F->second->getRawBuffer();
-    if (Buffer == MainFileBuffer)
-      continue;
-
     if (time_t ModTime = File->getModificationTime()) {
       FilesInPreamble[File->getName()] = PreambleFileHash::createForFile(
-          F->second->getSize(), ModTime);
+          File->getSize(), ModTime);
     } else {
-      assert(F->second->getSize() == Buffer->getBufferSize());
+      llvm::MemoryBuffer *Buffer = SourceMgr.getMemoryBufferForFile(File);
       FilesInPreamble[File->getName()] =
           PreambleFileHash::createForMemoryBuffer(Buffer);
     }
   }
-  
+
   PreambleRebuildCounter = 1;
-  PreprocessorOpts.eraseRemappedFile(
-                               PreprocessorOpts.remapped_file_buffer_end() - 1);
-  
+  PreprocessorOpts.RemappedFileBuffers.pop_back();
+
   // If the hash of top-level entities differs from the hash of the top-level
   // entities the last time we rebuilt the preamble, clear out the completion
   // cache.
@@ -1709,7 +1687,7 @@ void ASTUnit::transferASTDataFromCompilerInstance(CompilerInstance &CI) {
   // Steal the created target, context, and preprocessor if they have been
   // created.
   assert(CI.hasInvocation() && "missing invocation");
-  LangOpts = CI.getInvocation().getLangOpts();
+  LangOpts = CI.getInvocation().LangOpts;
   TheSema.reset(CI.takeSema());
   Consumer.reset(CI.takeASTConsumer());
   if (CI.hasASTContext())
@@ -1810,7 +1788,7 @@ ASTUnit *ASTUnit::LoadFromCompilerInvocationAction(
     ASTUnitCleanup(OwnAST.get());
   llvm::CrashRecoveryContextCleanupRegistrar<DiagnosticsEngine,
     llvm::CrashRecoveryContextReleaseRefCleanup<DiagnosticsEngine> >
-    DiagCleanup(Diags.getPtr());
+    DiagCleanup(Diags.get());
 
   // We'll manage file buffers ourselves.
   CI->getPreprocessorOpts().RetainRemappedFileBuffers = true;
@@ -1832,8 +1810,8 @@ ASTUnit *ASTUnit::LoadFromCompilerInvocationAction(
   Clang->setDiagnostics(&AST->getDiagnostics());
   
   // Create the target instance.
-  Clang->setTarget(TargetInfo::CreateTargetInfo(Clang->getDiagnostics(),
-                                                &Clang->getTargetOpts()));
+  Clang->setTarget(TargetInfo::CreateTargetInfo(
+      Clang->getDiagnostics(), Clang->getInvocation().TargetOpts));
   if (!Clang->hasTarget())
     return nullptr;
 
@@ -1841,7 +1819,7 @@ ASTUnit *ASTUnit::LoadFromCompilerInvocationAction(
   //
   // FIXME: We shouldn't need to do this, the target should be immutable once
   // created. This complexity should be lifted elsewhere.
-  Clang->getTarget().setForcedLangOptions(Clang->getLangOpts());
+  Clang->getTarget().adjust(Clang->getLangOpts());
   
   assert(Clang->getFrontendOpts().Inputs.size() == 1 &&
          "Invocation must have exactly one source file!");
@@ -1966,7 +1944,7 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromCompilerInvocation(
     ASTUnitCleanup(AST.get());
   llvm::CrashRecoveryContextCleanupRegistrar<DiagnosticsEngine,
     llvm::CrashRecoveryContextReleaseRefCleanup<DiagnosticsEngine> >
-    DiagCleanup(Diags.getPtr());
+    DiagCleanup(Diags.get());
 
   if (AST->LoadFromCompilerInvocation(PrecompilePreamble))
     return nullptr;
@@ -1983,7 +1961,7 @@ ASTUnit *ASTUnit::LoadFromCommandLine(
     bool AllowPCHWithCompilerErrors, bool SkipFunctionBodies,
     bool UserFilesAreVolatile, bool ForSerialization,
     std::unique_ptr<ASTUnit> *ErrAST) {
-  if (!Diags.getPtr()) {
+  if (!Diags.get()) {
     // No diagnostics engine was provided, so create our own diagnostics object
     // with the default options.
     Diags = CompilerInstance::createDiagnostics(new DiagnosticOptions());
@@ -2073,13 +2051,9 @@ bool ASTUnit::Reparse(ArrayRef<RemappedFile> RemappedFiles) {
 
   // Remap files.
   PreprocessorOptions &PPOpts = Invocation->getPreprocessorOpts();
-  for (PreprocessorOptions::remapped_file_buffer_iterator 
-         R = PPOpts.remapped_file_buffer_begin(),
-         REnd = PPOpts.remapped_file_buffer_end();
-       R != REnd; 
-       ++R) {
-    delete R->second;
-  }
+  for (const auto &RB : PPOpts.RemappedFileBuffers)
+    delete RB.second;
+
   Invocation->getPreprocessorOpts().clearRemappedFiles();
   for (unsigned I = 0, N = RemappedFiles.size(); I != N; ++I) {
     Invocation->getPreprocessorOpts().addRemappedFile(RemappedFiles[I].first,
@@ -2409,8 +2383,8 @@ void ASTUnit::CodeComplete(StringRef File, unsigned Line, unsigned Column,
   ProcessWarningOptions(Diag, CCInvocation->getDiagnosticOpts());
   
   // Create the target instance.
-  Clang->setTarget(TargetInfo::CreateTargetInfo(Clang->getDiagnostics(),
-                                                &Clang->getTargetOpts()));
+  Clang->setTarget(TargetInfo::CreateTargetInfo(
+      Clang->getDiagnostics(), Clang->getInvocation().TargetOpts));
   if (!Clang->hasTarget()) {
     Clang->setInvocation(nullptr);
     return;
@@ -2420,7 +2394,7 @@ void ASTUnit::CodeComplete(StringRef File, unsigned Line, unsigned Column,
   //
   // FIXME: We shouldn't need to do this, the target should be immutable once
   // created. This complexity should be lifted elsewhere.
-  Clang->getTarget().setForcedLangOptions(Clang->getLangOpts());
+  Clang->getTarget().adjust(Clang->getLangOpts());
   
   assert(Clang->getFrontendOpts().Inputs.size() == 1 &&
          "Invocation must have exactly one source file!");

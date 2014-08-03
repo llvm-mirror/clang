@@ -153,7 +153,7 @@ clang_getCompletionChunkCompletionString(CXCompletionString completion_string,
                                          unsigned chunk_number) {
   CodeCompletionString *CCStr = (CodeCompletionString *)completion_string;
   if (!CCStr || chunk_number >= CCStr->size())
-    return 0;
+    return nullptr;
 
   switch ((*CCStr)[chunk_number].Kind) {
   case CodeCompletionString::CK_TypedText:
@@ -176,7 +176,7 @@ clang_getCompletionChunkCompletionString(CXCompletionString completion_string,
   case CodeCompletionString::CK_Equal:
   case CodeCompletionString::CK_HorizontalSpace:
   case CodeCompletionString::CK_VerticalSpace:
-    return 0;
+    return nullptr;
 
   case CodeCompletionString::CK_Optional:
     // Note: treated as an empty text block.
@@ -568,8 +568,8 @@ namespace {
       }
       
       QualType baseType = Context.getBaseType();
-      NamedDecl *D = NULL;
-      
+      NamedDecl *D = nullptr;
+
       if (!baseType.isNull()) {
         // Get the declaration for a class/struct/union/enum type
         if (const TagType *Tag = baseType->getAs<TagType>())
@@ -587,8 +587,8 @@ namespace {
                  baseType->getAs<InjectedClassNameType>())
           D = Injected->getDecl();
       }
-      
-      if (D != NULL) {
+
+      if (D != nullptr) {
         CXCursor cursor = cxcursor::MakeCXCursor(D, *TU);
 
         AllocatedResults.ContainerKind = clang_getCursorKind(cursor);
@@ -598,7 +598,7 @@ namespace {
         clang_disposeString(CursorUSR);
 
         const Type *type = baseType.getTypePtrOrNull();
-        if (type != NULL) {
+        if (type) {
           AllocatedResults.ContainerIsIncomplete = type->isIncompleteType();
         }
         else {
@@ -651,8 +651,7 @@ struct CodeCompleteAtInfo {
   const char *complete_filename;
   unsigned complete_line;
   unsigned complete_column;
-  struct CXUnsavedFile *unsaved_files;
-  unsigned num_unsaved_files;
+  ArrayRef<CXUnsavedFile> unsaved_files;
   unsigned options;
   CXCodeCompleteResults *result;
 };
@@ -662,11 +661,9 @@ void clang_codeCompleteAt_Impl(void *UserData) {
   const char *complete_filename = CCAI->complete_filename;
   unsigned complete_line = CCAI->complete_line;
   unsigned complete_column = CCAI->complete_column;
-  struct CXUnsavedFile *unsaved_files = CCAI->unsaved_files;
-  unsigned num_unsaved_files = CCAI->num_unsaved_files;
   unsigned options = CCAI->options;
   bool IncludeBriefComments = options & CXCodeComplete_IncludeBriefComments;
-  CCAI->result = 0;
+  CCAI->result = nullptr;
 
 #ifdef UDP_CODE_COMPLETION_LOGGER
 #ifdef UDP_CODE_COMPLETION_LOGGER_PORT
@@ -674,7 +671,7 @@ void clang_codeCompleteAt_Impl(void *UserData) {
 #endif
 #endif
 
-  bool EnableLogging = getenv("LIBCLANG_CODE_COMPLETION_LOGGING") != 0;
+  bool EnableLogging = getenv("LIBCLANG_CODE_COMPLETION_LOGGING") != nullptr;
 
   if (cxtu::isNotUsableTU(TU)) {
     LOG_BAD_TU(TU);
@@ -693,14 +690,13 @@ void clang_codeCompleteAt_Impl(void *UserData) {
 
   // Perform the remapping of source files.
   SmallVector<ASTUnit::RemappedFile, 4> RemappedFiles;
-  for (unsigned I = 0; I != num_unsaved_files; ++I) {
-    StringRef Data(unsaved_files[I].Contents, unsaved_files[I].Length);
-    const llvm::MemoryBuffer *Buffer
-      = llvm::MemoryBuffer::getMemBufferCopy(Data, unsaved_files[I].Filename);
-    RemappedFiles.push_back(std::make_pair(unsaved_files[I].Filename,
-                                           Buffer));
+
+  for (auto &UF : CCAI->unsaved_files) {
+    llvm::MemoryBuffer *MB =
+        llvm::MemoryBuffer::getMemBufferCopy(getContents(UF), UF.Filename);
+    RemappedFiles.push_back(std::make_pair(UF.Filename, MB));
   }
-  
+
   if (EnableLogging) {
     // FIXME: Add logging.
   }
@@ -708,7 +704,7 @@ void clang_codeCompleteAt_Impl(void *UserData) {
   // Parse the resulting source file to find code-completion results.
   AllocatedCXCodeCompleteResults *Results = new AllocatedCXCodeCompleteResults(
       &AST->getFileManager());
-  Results->Results = 0;
+  Results->Results = nullptr;
   Results->NumResults = 0;
   
   // Create a code-completion consumer to capture the results.
@@ -823,9 +819,12 @@ CXCodeCompleteResults *clang_codeCompleteAt(CXTranslationUnit TU,
          << complete_filename << ':' << complete_line << ':' << complete_column;
   }
 
-  CodeCompleteAtInfo CCAI = { TU, complete_filename, complete_line,
-                              complete_column, unsaved_files, num_unsaved_files,
-                              options, 0 };
+  if (num_unsaved_files && !unsaved_files)
+    return nullptr;
+
+  CodeCompleteAtInfo CCAI = {TU, complete_filename, complete_line,
+    complete_column, llvm::makeArrayRef(unsaved_files, num_unsaved_files),
+    options, nullptr};
 
   if (getenv("LIBCLANG_NOTHREADS")) {
     clang_codeCompleteAt_Impl(&CCAI);
@@ -837,7 +836,7 @@ CXCodeCompleteResults *clang_codeCompleteAt(CXTranslationUnit TU,
   if (!RunSafely(CRC, clang_codeCompleteAt_Impl, &CCAI)) {
     fprintf(stderr, "libclang: crash detected in code completion\n");
     cxtu::getASTUnit(TU)->setUnsafeToFree(true);
-    return 0;
+    return nullptr;
   } else if (getenv("LIBCLANG_RESOURCE_USAGE"))
     PrintLibclangResourceUsage(TU);
 
@@ -873,7 +872,7 @@ clang_codeCompleteGetDiagnostic(CXCodeCompleteResults *ResultsIn,
   AllocatedCXCodeCompleteResults *Results
     = static_cast<AllocatedCXCodeCompleteResults*>(ResultsIn);
   if (!Results || Index >= Results->Diagnostics.size())
-    return 0;
+    return nullptr;
 
   CXStoredDiagnostic *Diag = Results->DiagnosticsWrappers[Index];
   if (!Diag)
@@ -899,8 +898,8 @@ enum CXCursorKind clang_codeCompleteGetContainerKind(
     static_cast<AllocatedCXCodeCompleteResults *>(ResultsIn);
   if (!Results)
     return CXCursor_InvalidCode;
-  
-  if (IsIncomplete != NULL) {
+
+  if (IsIncomplete != nullptr) {
     *IsIncomplete = Results->ContainerIsIncomplete;
   }
   

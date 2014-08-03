@@ -2139,7 +2139,71 @@ enum CXCursorKind {
    */
   CXCursor_OMPSimdDirective              = 233,
 
-  CXCursor_LastStmt                      = CXCursor_OMPSimdDirective,
+  /** \brief OpenMP for directive.
+   */
+  CXCursor_OMPForDirective               = 234,
+
+  /** \brief OpenMP sections directive.
+   */
+  CXCursor_OMPSectionsDirective          = 235,
+
+  /** \brief OpenMP section directive.
+   */
+  CXCursor_OMPSectionDirective           = 236,
+
+  /** \brief OpenMP single directive.
+   */
+  CXCursor_OMPSingleDirective            = 237,
+
+  /** \brief OpenMP parallel for directive.
+   */
+  CXCursor_OMPParallelForDirective       = 238,
+
+  /** \brief OpenMP parallel sections directive.
+   */
+  CXCursor_OMPParallelSectionsDirective  = 239,
+
+  /** \brief OpenMP task directive.
+   */
+  CXCursor_OMPTaskDirective              = 240,
+
+  /** \brief OpenMP master directive.
+   */
+  CXCursor_OMPMasterDirective            = 241,
+
+  /** \brief OpenMP critical directive.
+   */
+  CXCursor_OMPCriticalDirective          = 242,
+
+  /** \brief OpenMP taskyield directive.
+   */
+  CXCursor_OMPTaskyieldDirective         = 243,
+
+  /** \brief OpenMP barrier directive.
+   */
+  CXCursor_OMPBarrierDirective           = 244,
+
+  /** \brief OpenMP taskwait directive.
+   */
+  CXCursor_OMPTaskwaitDirective          = 245,
+
+  /** \brief OpenMP flush directive.
+   */
+  CXCursor_OMPFlushDirective             = 246,
+
+  /** \brief Windows Structured Exception Handling's leave statement.
+   */
+  CXCursor_SEHLeaveStmt                  = 247,
+
+  /** \brief OpenMP ordered directive.
+   */
+  CXCursor_OMPOrderedDirective           = 248,
+
+  /** \brief OpenMP atomic directive.
+   */
+  CXCursor_OMPAtomicDirective            = 249,
+
+  CXCursor_LastStmt                      = CXCursor_OMPAtomicDirective,
 
   /**
    * \brief Cursor that represents the translation unit itself.
@@ -3570,6 +3634,20 @@ CINDEX_LINKAGE CXString clang_Cursor_getRawCommentText(CXCursor C);
  * first paragraph.
  */
 CINDEX_LINKAGE CXString clang_Cursor_getBriefCommentText(CXCursor C);
+
+/**
+ * @}
+ */
+
+/** \defgroup CINDEX_MANGLE Name Mangling API Functions
+ *
+ * @{
+ */
+
+/**
+ * \brief Retrieve the CXString representing the mangled name of the cursor.
+ */
+CINDEX_LINKAGE CXString clang_Cursor_getMangling(CXCursor);
 
 /**
  * @}

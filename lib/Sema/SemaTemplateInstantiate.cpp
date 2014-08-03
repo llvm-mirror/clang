@@ -1023,7 +1023,7 @@ TemplateInstantiator::RebuildElaboratedType(SourceLocation KeywordLoc,
 
 TemplateName TemplateInstantiator::TransformTemplateName(CXXScopeSpec &SS,
                                                          TemplateName Name,
-                                                         SourceLocation NameLoc,                                     
+                                                         SourceLocation NameLoc,
                                                          QualType ObjectType,
                                              NamedDecl *FirstQualifierInScope) {
   if (TemplateTemplateParmDecl *TTP
@@ -1255,8 +1255,8 @@ TemplateInstantiator::TransformFunctionParmPackRefExpr(DeclRefExpr *E,
 
   Decl *TransformedDecl;
   if (DeclArgumentPack *Pack = Found->dyn_cast<DeclArgumentPack *>()) {
-    // If this is a reference to a function parameter pack which we can substitute
-    // but can't yet expand, build a FunctionParmPackExpr for it.
+    // If this is a reference to a function parameter pack which we can
+    // substitute but can't yet expand, build a FunctionParmPackExpr for it.
     if (getSema().ArgumentPackSubstitutionIndex == -1) {
       QualType T = TransformType(E->getType());
       if (T.isNull())
@@ -2036,8 +2036,8 @@ Sema::InstantiateClass(SourceLocation PointOfInstantiation,
       Expr *Init = NewInit.get();
       assert((!Init || !isa<ParenListExpr>(Init)) &&
              "call-style init in class");
-      ActOnFinishCXXInClassMemberInitializer(NewField, Init->getLocStart(),
-                                             Init);
+      ActOnFinishCXXInClassMemberInitializer(NewField,
+        Init ? Init->getLocStart() : SourceLocation(), Init);
     }
   }
   // Instantiate late parsed attributes, and attach them to their decls.

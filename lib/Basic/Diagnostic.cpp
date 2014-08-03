@@ -24,15 +24,13 @@
 using namespace clang;
 
 static void DummyArgToStringFn(DiagnosticsEngine::ArgumentKind AK, intptr_t QT,
-                               const char *Modifier, unsigned ML,
-                               const char *Argument, unsigned ArgLen,
-                               const DiagnosticsEngine::ArgumentValue *PrevArgs,
-                               unsigned NumPrevArgs,
-                               SmallVectorImpl<char> &Output,
-                               void *Cookie,
-                               ArrayRef<intptr_t> QualTypeVals) {
-  const char *Str = "<can't format argument>";
-  Output.append(Str, Str+strlen(Str));
+                            StringRef Modifier, StringRef Argument,
+                            ArrayRef<DiagnosticsEngine::ArgumentValue> PrevArgs,
+                            SmallVectorImpl<char> &Output,
+                            void *Cookie,
+                            ArrayRef<intptr_t> QualTypeVals) {
+  StringRef Str = "<can't format argument>";
+  Output.append(Str.begin(), Str.end());
 }
 
 
@@ -56,7 +54,7 @@ DiagnosticsEngine::DiagnosticsEngine(
   PrintTemplateTree = false;
   ShowColors = false;
   ShowOverloads = Ovl_All;
-  ExtBehavior = Ext_Ignore;
+  ExtBehavior = diag::Severity::Ignored;
 
   ErrorLimit = 0;
   TemplateBacktraceLimit = 0;
@@ -162,12 +160,12 @@ DiagnosticsEngine::GetDiagStatePointForLoc(SourceLocation L) const {
   return Pos;
 }
 
-void DiagnosticsEngine::setDiagnosticMapping(diag::kind Diag, diag::Mapping Map,
-                                             SourceLocation L) {
+void DiagnosticsEngine::setSeverity(diag::kind Diag, diag::Severity Map,
+                                    SourceLocation L) {
   assert(Diag < diag::DIAG_UPPER_LIMIT &&
          "Can only map builtin diagnostics");
   assert((Diags->isBuiltinWarningOrExtension(Diag) ||
-          (Map == diag::MAP_FATAL || Map == diag::MAP_ERROR)) &&
+          (Map == diag::Severity::Fatal || Map == diag::Severity::Error)) &&
          "Cannot map errors into warnings!");
   assert(!DiagStatePoints.empty());
   assert((L.isInvalid() || SourceMgr) && "No SourceMgr for valid location");
@@ -175,17 +173,17 @@ void DiagnosticsEngine::setDiagnosticMapping(diag::kind Diag, diag::Mapping Map,
   FullSourceLoc Loc = SourceMgr? FullSourceLoc(L, *SourceMgr) : FullSourceLoc();
   FullSourceLoc LastStateChangePos = DiagStatePoints.back().Loc;
   // Don't allow a mapping to a warning override an error/fatal mapping.
-  if (Map == diag::MAP_WARNING) {
-    DiagnosticMappingInfo &Info = GetCurDiagState()->getOrAddMappingInfo(Diag);
-    if (Info.getMapping() == diag::MAP_ERROR ||
-        Info.getMapping() == diag::MAP_FATAL)
-      Map = Info.getMapping();
+  if (Map == diag::Severity::Warning) {
+    DiagnosticMapping &Info = GetCurDiagState()->getOrAddMapping(Diag);
+    if (Info.getSeverity() == diag::Severity::Error ||
+        Info.getSeverity() == diag::Severity::Fatal)
+      Map = Info.getSeverity();
   }
-  DiagnosticMappingInfo MappingInfo = makeMappingInfo(Map, L);
+  DiagnosticMapping Mapping = makeUserMapping(Map, L);
 
   // Common case; setting all the diagnostics of a group in one place.
   if (Loc.isInvalid() || Loc == LastStateChangePos) {
-    GetCurDiagState()->setMappingInfo(Diag, MappingInfo);
+    GetCurDiagState()->setMapping(Diag, Mapping);
     return;
   }
 
@@ -198,7 +196,7 @@ void DiagnosticsEngine::setDiagnosticMapping(diag::kind Diag, diag::Mapping Map,
     // the new state became active.
     DiagStates.push_back(*GetCurDiagState());
     PushDiagStatePoint(&DiagStates.back(), Loc);
-    GetCurDiagState()->setMappingInfo(Diag, MappingInfo);
+    GetCurDiagState()->setMapping(Diag, Mapping);
     return;
   }
 
@@ -211,12 +209,12 @@ void DiagnosticsEngine::setDiagnosticMapping(diag::kind Diag, diag::Mapping Map,
   // Update all diagnostic states that are active after the given location.
   for (DiagStatePointsTy::iterator
          I = Pos+1, E = DiagStatePoints.end(); I != E; ++I) {
-    GetCurDiagState()->setMappingInfo(Diag, MappingInfo);
+    GetCurDiagState()->setMapping(Diag, Mapping);
   }
 
   // If the location corresponds to an existing point, just update its state.
   if (Pos->Loc == Loc) {
-    GetCurDiagState()->setMappingInfo(Diag, MappingInfo);
+    GetCurDiagState()->setMapping(Diag, Mapping);
     return;
   }
 
@@ -225,14 +223,13 @@ void DiagnosticsEngine::setDiagnosticMapping(diag::kind Diag, diag::Mapping Map,
   assert(Pos->Loc.isBeforeInTranslationUnitThan(Loc));
   DiagStates.push_back(*Pos->State);
   DiagState *NewState = &DiagStates.back();
-  GetCurDiagState()->setMappingInfo(Diag, MappingInfo);
+  GetCurDiagState()->setMapping(Diag, Mapping);
   DiagStatePoints.insert(Pos+1, DiagStatePoint(NewState,
                                                FullSourceLoc(Loc, *SourceMgr)));
 }
 
-bool DiagnosticsEngine::setDiagnosticGroupMapping(
-  StringRef Group, diag::Mapping Map, SourceLocation Loc)
-{
+bool DiagnosticsEngine::setSeverityForGroup(StringRef Group, diag::Severity Map,
+                                            SourceLocation Loc) {
   // Get the diagnostics in this group.
   SmallVector<diag::kind, 8> GroupDiags;
   if (Diags->getDiagnosticsInGroup(Group, GroupDiags))
@@ -240,7 +237,7 @@ bool DiagnosticsEngine::setDiagnosticGroupMapping(
 
   // Set the mapping.
   for (unsigned i = 0, e = GroupDiags.size(); i != e; ++i)
-    setDiagnosticMapping(GroupDiags[i], Map, Loc);
+    setSeverity(GroupDiags[i], Map, Loc);
 
   return false;
 }
@@ -250,7 +247,7 @@ bool DiagnosticsEngine::setDiagnosticGroupWarningAsError(StringRef Group,
   // If we are enabling this feature, just set the diagnostic mappings to map to
   // errors.
   if (Enabled)
-    return setDiagnosticGroupMapping(Group, diag::MAP_ERROR);
+    return setSeverityForGroup(Group, diag::Severity::Error);
 
   // Otherwise, we want to set the diagnostic mapping's "no Werror" bit, and
   // potentially downgrade anything already mapped to be a warning.
@@ -262,12 +259,11 @@ bool DiagnosticsEngine::setDiagnosticGroupWarningAsError(StringRef Group,
 
   // Perform the mapping change.
   for (unsigned i = 0, e = GroupDiags.size(); i != e; ++i) {
-    DiagnosticMappingInfo &Info = GetCurDiagState()->getOrAddMappingInfo(
-      GroupDiags[i]);
+    DiagnosticMapping &Info = GetCurDiagState()->getOrAddMapping(GroupDiags[i]);
 
-    if (Info.getMapping() == diag::MAP_ERROR ||
-        Info.getMapping() == diag::MAP_FATAL)
-      Info.setMapping(diag::MAP_WARNING);
+    if (Info.getSeverity() == diag::Severity::Error ||
+        Info.getSeverity() == diag::Severity::Fatal)
+      Info.setSeverity(diag::Severity::Warning);
 
     Info.setNoWarningAsError(true);
   }
@@ -280,7 +276,7 @@ bool DiagnosticsEngine::setDiagnosticGroupErrorAsFatal(StringRef Group,
   // If we are enabling this feature, just set the diagnostic mappings to map to
   // fatal errors.
   if (Enabled)
-    return setDiagnosticGroupMapping(Group, diag::MAP_FATAL);
+    return setSeverityForGroup(Group, diag::Severity::Fatal);
 
   // Otherwise, we want to set the diagnostic mapping's "no Werror" bit, and
   // potentially downgrade anything already mapped to be an error.
@@ -292,11 +288,10 @@ bool DiagnosticsEngine::setDiagnosticGroupErrorAsFatal(StringRef Group,
 
   // Perform the mapping change.
   for (unsigned i = 0, e = GroupDiags.size(); i != e; ++i) {
-    DiagnosticMappingInfo &Info = GetCurDiagState()->getOrAddMappingInfo(
-      GroupDiags[i]);
+    DiagnosticMapping &Info = GetCurDiagState()->getOrAddMapping(GroupDiags[i]);
 
-    if (Info.getMapping() == diag::MAP_FATAL)
-      Info.setMapping(diag::MAP_ERROR);
+    if (Info.getSeverity() == diag::Severity::Fatal)
+      Info.setSeverity(diag::Severity::Error);
 
     Info.setNoErrorAsFatal(true);
   }
@@ -304,8 +299,8 @@ bool DiagnosticsEngine::setDiagnosticGroupErrorAsFatal(StringRef Group,
   return false;
 }
 
-void DiagnosticsEngine::setMappingToAllDiagnostics(diag::Mapping Map,
-                                                   SourceLocation Loc) {
+void DiagnosticsEngine::setSeverityForAll(diag::Severity Map,
+                                          SourceLocation Loc) {
   // Get all the diagnostics.
   SmallVector<diag::kind, 64> AllDiags;
   Diags->getAllDiagnostics(AllDiags);
@@ -313,7 +308,7 @@ void DiagnosticsEngine::setMappingToAllDiagnostics(diag::Mapping Map,
   // Set the mapping.
   for (unsigned i = 0, e = AllDiags.size(); i != e; ++i)
     if (Diags->isBuiltinWarningOrExtension(AllDiags[i]))
-      setDiagnosticMapping(AllDiags[i], Map, Loc);
+      setSeverity(AllDiags[i], Map, Loc);
 }
 
 void DiagnosticsEngine::Report(const StoredDiagnostic &storedDiag) {
@@ -829,9 +824,9 @@ FormatDiagnostic(const char *DiagStr, const char *DiagEnd,
     case DiagnosticsEngine::ak_declcontext:
     case DiagnosticsEngine::ak_attr:
       getDiags()->ConvertArgToString(Kind, getRawArg(ArgNo),
-                                     Modifier, ModifierLen,
-                                     Argument, ArgumentLen,
-                                     FormattedArgs.data(), FormattedArgs.size(),
+                                     StringRef(Modifier, ModifierLen),
+                                     StringRef(Argument, ArgumentLen),
+                                     FormattedArgs,
                                      OutStr, QualTypeVals);
       break;
     case DiagnosticsEngine::ak_qualtype_pair:
@@ -853,10 +848,9 @@ FormatDiagnostic(const char *DiagStr, const char *DiagEnd,
         TDT.PrintFromType = true;
         TDT.PrintTree = true;
         getDiags()->ConvertArgToString(Kind, val,
-                                       Modifier, ModifierLen,
-                                       Argument, ArgumentLen,
-                                       FormattedArgs.data(),
-                                       FormattedArgs.size(),
+                                       StringRef(Modifier, ModifierLen),
+                                       StringRef(Argument, ArgumentLen),
+                                       FormattedArgs,
                                        Tree, QualTypeVals);
         // If there is no tree information, fall back to regular printing.
         if (!Tree.empty()) {
@@ -877,9 +871,9 @@ FormatDiagnostic(const char *DiagStr, const char *DiagEnd,
       TDT.PrintTree = false;
       TDT.PrintFromType = true;
       getDiags()->ConvertArgToString(Kind, val,
-                                     Modifier, ModifierLen,
-                                     Argument, ArgumentLen,
-                                     FormattedArgs.data(), FormattedArgs.size(),
+                                     StringRef(Modifier, ModifierLen),
+                                     StringRef(Argument, ArgumentLen),
+                                     FormattedArgs,
                                      OutStr, QualTypeVals);
       if (!TDT.TemplateDiffUsed)
         FormattedArgs.push_back(std::make_pair(DiagnosticsEngine::ak_qualtype,
@@ -891,9 +885,9 @@ FormatDiagnostic(const char *DiagStr, const char *DiagEnd,
       // Append second type
       TDT.PrintFromType = false;
       getDiags()->ConvertArgToString(Kind, val,
-                                     Modifier, ModifierLen,
-                                     Argument, ArgumentLen,
-                                     FormattedArgs.data(), FormattedArgs.size(),
+                                     StringRef(Modifier, ModifierLen),
+                                     StringRef(Argument, ArgumentLen),
+                                     FormattedArgs,
                                      OutStr, QualTypeVals);
       if (!TDT.TemplateDiffUsed)
         FormattedArgs.push_back(std::make_pair(DiagnosticsEngine::ak_qualtype,

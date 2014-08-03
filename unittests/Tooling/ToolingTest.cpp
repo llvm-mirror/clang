@@ -17,7 +17,7 @@
 #include "clang/Tooling/CompilationDatabase.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Config/config.h"
+#include "llvm/Config/llvm-config.h"
 #include "gtest/gtest.h"
 #include <string>
 
@@ -121,12 +121,12 @@ TEST(newFrontendActionFactory, CreatesFrontendActionFactoryFromType) {
   std::unique_ptr<FrontendActionFactory> Factory(
       newFrontendActionFactory<SyntaxOnlyAction>());
   std::unique_ptr<FrontendAction> Action(Factory->create());
-  EXPECT_TRUE(Action.get() != NULL);
+  EXPECT_TRUE(Action.get() != nullptr);
 }
 
 struct IndependentFrontendActionCreator {
   ASTConsumer *newASTConsumer() {
-    return new FindTopLevelDeclConsumer(NULL);
+    return new FindTopLevelDeclConsumer(nullptr);
   }
 };
 
@@ -135,7 +135,7 @@ TEST(newFrontendActionFactory, CreatesFrontendActionFactoryFromFactoryType) {
   std::unique_ptr<FrontendActionFactory> Factory(
       newFrontendActionFactory(&Creator));
   std::unique_ptr<FrontendAction> Action(Factory->create());
-  EXPECT_TRUE(Action.get() != NULL);
+  EXPECT_TRUE(Action.get() != nullptr);
 }
 
 TEST(ToolInvocation, TestMapVirtualFile) {
@@ -147,7 +147,7 @@ TEST(ToolInvocation, TestMapVirtualFile) {
   Args.push_back("-fsyntax-only");
   Args.push_back("test.cpp");
   clang::tooling::ToolInvocation Invocation(Args, new SyntaxOnlyAction,
-                                            Files.getPtr());
+                                            Files.get());
   Invocation.mapVirtualFile("test.cpp", "#include <abc>\n");
   Invocation.mapVirtualFile("def/abc", "\n");
   EXPECT_TRUE(Invocation.run());
@@ -166,7 +166,7 @@ TEST(ToolInvocation, TestVirtualModulesCompilation) {
   Args.push_back("-fsyntax-only");
   Args.push_back("test.cpp");
   clang::tooling::ToolInvocation Invocation(Args, new SyntaxOnlyAction,
-                                            Files.getPtr());
+                                            Files.get());
   Invocation.mapVirtualFile("test.cpp", "#include <abc>\n");
   Invocation.mapVirtualFile("def/abc", "\n");
   // Add a module.map file in the include directory of our header, so we trigger

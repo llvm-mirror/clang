@@ -139,7 +139,7 @@ public:
   void PragmaDiagnosticPush(SourceLocation Loc, StringRef Namespace) override;
   void PragmaDiagnosticPop(SourceLocation Loc, StringRef Namespace) override;
   void PragmaDiagnostic(SourceLocation Loc, StringRef Namespace,
-                        diag::Mapping Map, StringRef Str) override;
+                        diag::Severity Map, StringRef Str) override;
   void PragmaWarning(SourceLocation Loc, StringRef WarningSpec,
                      ArrayRef<int> Ids) override;
   void PragmaWarningPush(SourceLocation Loc, int Level) override;
@@ -439,26 +439,27 @@ PragmaDiagnosticPop(SourceLocation Loc, StringRef Namespace) {
   setEmittedDirectiveOnThisLine();
 }
 
-void PrintPPOutputPPCallbacks::
-PragmaDiagnostic(SourceLocation Loc, StringRef Namespace,
-                 diag::Mapping Map, StringRef Str) {
+void PrintPPOutputPPCallbacks::PragmaDiagnostic(SourceLocation Loc,
+                                                StringRef Namespace,
+                                                diag::Severity Map,
+                                                StringRef Str) {
   startNewLineIfNeeded();
   MoveToLine(Loc);
   OS << "#pragma " << Namespace << " diagnostic ";
   switch (Map) {
-  case diag::MAP_REMARK:
+  case diag::Severity::Remark:
     OS << "remark";
     break;
-  case diag::MAP_WARNING:
+  case diag::Severity::Warning:
     OS << "warning";
     break;
-  case diag::MAP_ERROR:
+  case diag::Severity::Error:
     OS << "error";
     break;
-  case diag::MAP_IGNORE:
+  case diag::Severity::Ignored:
     OS << "ignored";
     break;
-  case diag::MAP_FATAL:
+  case diag::Severity::Fatal:
     OS << "fatal";
     break;
   }

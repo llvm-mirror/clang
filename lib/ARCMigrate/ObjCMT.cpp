@@ -1359,7 +1359,7 @@ void ObjCMigrateASTConsumer::AddCFAnnotations(ASTContext &Ctx,
       Editor->commit(commit);
     }
   }
-  llvm::ArrayRef<ArgEffect> AEArgs = CE.getArgs();
+  ArrayRef<ArgEffect> AEArgs = CE.getArgs();
   unsigned i = 0;
   for (FunctionDecl::param_const_iterator pi = FuncDecl->param_begin(),
        pe = FuncDecl->param_end(); pi != pe; ++pi, ++i) {
@@ -1411,7 +1411,7 @@ ObjCMigrateASTConsumer::CF_BRIDGING_KIND
   
   // At this point result type is audited for potential inclusion.
   // Now, how about argument types.
-  llvm::ArrayRef<ArgEffect> AEArgs = CE.getArgs();
+  ArrayRef<ArgEffect> AEArgs = CE.getArgs();
   unsigned i = 0;
   bool ArgCFAudited = false;
   for (FunctionDecl::param_const_iterator pi = FuncDecl->param_begin(),
@@ -1488,7 +1488,7 @@ void ObjCMigrateASTConsumer::AddCFAnnotations(ASTContext &Ctx,
       Editor->commit(commit);
     }
   }
-  llvm::ArrayRef<ArgEffect> AEArgs = CE.getArgs();
+  ArrayRef<ArgEffect> AEArgs = CE.getArgs();
   unsigned i = 0;
   for (ObjCMethodDecl::param_const_iterator pi = MethodDecl->param_begin(),
        pe = MethodDecl->param_end(); pi != pe; ++pi, ++i) {
@@ -1544,7 +1544,7 @@ void ObjCMigrateASTConsumer::migrateAddMethodAnnotation(
   
   // At this point result type is either annotated or audited.
   // Now, how about argument types.
-  llvm::ArrayRef<ArgEffect> AEArgs = CE.getArgs();
+  ArrayRef<ArgEffect> AEArgs = CE.getArgs();
   unsigned i = 0;
   for (ObjCMethodDecl::param_const_iterator pi = MethodDecl->param_begin(),
        pe = MethodDecl->param_end(); pi != pe; ++pi, ++i) {
@@ -1853,8 +1853,8 @@ static std::vector<std::string> getWhiteListFilenames(StringRef DirPath) {
   std::vector<std::string> Filenames;
   if (DirPath.empty() || !is_directory(DirPath))
     return Filenames;
-  
-  llvm::error_code EC;
+
+  std::error_code EC;
   directory_iterator DI = directory_iterator(DirPath, EC);
   directory_iterator DE;
   for (; !EC && DI != DE; DI = DI.increment(EC)) {
@@ -1943,12 +1943,13 @@ public:
   bool parse(StringRef File, SmallVectorImpl<EditEntry> &Entries) {
     using namespace llvm::yaml;
 
-    std::unique_ptr<llvm::MemoryBuffer> FileBuf;
-    if (llvm::MemoryBuffer::getFile(File, FileBuf))
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> FileBufOrErr =
+        llvm::MemoryBuffer::getFile(File);
+    if (!FileBufOrErr)
       return true;
 
     llvm::SourceMgr SM;
-    Stream YAMLStream(FileBuf.release(), SM);
+    Stream YAMLStream(FileBufOrErr.get().release(), SM);
     document_iterator I = YAMLStream.begin();
     if (I == YAMLStream.end())
       return true;

@@ -105,7 +105,14 @@ void g() {
 
   int &p = WithPartialSpecializationUse().f();
   int &q = WithExplicitSpecializationUse().inner_template<int>();
+  int *r = PartiallyInstantiatePartialSpec<int*>::bar();
 }
+
+static_assert(Outer<int>::Inner<int>::f() == 1, "");
+static_assert(Outer<int>::Inner<int>::g() == 2, "");
+
+static_assert(MergeTemplateDefinitions<int>::f() == 1, "");
+static_assert(MergeTemplateDefinitions<int>::g() == 2, "");
 
 RedeclaredAsFriend<int> raf1;
 RedeclareTemplateAsFriend<double> rtaf;

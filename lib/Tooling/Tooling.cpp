@@ -24,7 +24,7 @@
 #include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/Tooling/CompilationDatabase.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Config/config.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileSystem.h"
@@ -129,7 +129,7 @@ bool runToolOnCodeWithArgs(clang::FrontendAction *ToolAction, const Twine &Code,
   llvm::IntrusiveRefCntPtr<FileManager> Files(
       new FileManager(FileSystemOptions()));
   ToolInvocation Invocation(getSyntaxOnlyToolArgs(Args, FileNameRef), ToolAction,
-                            Files.getPtr());
+                            Files.get());
 
   SmallString<1024> CodeStorage;
   Invocation.mapVirtualFile(FileNameRef,
@@ -145,7 +145,7 @@ std::string getAbsolutePath(StringRef File) {
   }
 
   SmallString<1024> AbsolutePath = RelativePath;
-  llvm::error_code EC = llvm::sys::fs::make_absolute(AbsolutePath);
+  std::error_code EC = llvm::sys::fs::make_absolute(AbsolutePath);
   assert(!EC);
   (void)EC;
   llvm::sys::path::native(AbsolutePath);
@@ -352,7 +352,7 @@ int ClangTool::run(ToolAction *Action) {
     DEBUG({
       llvm::dbgs() << "Processing: " << Command.first << ".\n";
     });
-    ToolInvocation Invocation(std::move(CommandLine), Action, Files.getPtr());
+    ToolInvocation Invocation(std::move(CommandLine), Action, Files.get());
     Invocation.setDiagnosticConsumer(DiagConsumer);
     for (const auto &MappedFile : MappedFileContents) {
       Invocation.mapVirtualFile(MappedFile.first, MappedFile.second);

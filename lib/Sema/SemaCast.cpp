@@ -600,6 +600,11 @@ void CastOperation::CheckDynamicCast() {
     }
     SrcPointee = SrcType;
   } else {
+    // If we're dynamic_casting from a prvalue to an rvalue reference, we need
+    // to materialize the prvalue before we bind the reference to it.
+    if (SrcExpr.get()->isRValue())
+      SrcExpr = new (Self.Context) MaterializeTemporaryExpr(
+          SrcType, SrcExpr.get(), /*IsLValueReference*/false);
     SrcPointee = SrcType;
   }
 
@@ -648,7 +653,7 @@ void CastOperation::CheckDynamicCast() {
       SrcExpr = ExprError();
       return;
     }
-        
+
     Kind = CK_DerivedToBase;
 
     // If we are casting to or through a virtual base class, we need a
@@ -1156,6 +1161,9 @@ TryStaticReferenceDowncast(Sema &Self, Expr *SrcExpr, QualType DestType,
 
   QualType DestPointee = DestReference->getPointeeType();
 
+  // FIXME: If the source is a prvalue, we should issue a warning (because the
+  // cast always has undefined behavior), and for AST consistency, we should
+  // materialize a temporary.
   return TryStaticDowncast(Self, 
                            Self.Context.getCanonicalType(SrcExpr->getType()), 
                            Self.Context.getCanonicalType(DestPointee), CStyle,
@@ -1606,10 +1614,8 @@ void Sema::CheckCompatibleReinterpretCast(QualType SrcType, QualType DestType,
                         diag::warn_pointer_indirection_from_incompatible_type :
                         diag::warn_undefined_reinterpret_cast;
 
-  if (Diags.getDiagnosticLevel(DiagID, Range.getBegin()) ==
-          DiagnosticsEngine::Ignored) {
+  if (Diags.isIgnored(DiagID, Range.getBegin()))
     return;
-  }
 
   QualType SrcTy, DestTy;
   if (IsDereference) {
@@ -2127,9 +2133,8 @@ void CastOperation::CheckCXXCStyleCast(bool FunctionalStyle,
 /// pointer; etc. Cast to 'void' is an exception.
 static void DiagnoseBadFunctionCast(Sema &Self, const ExprResult &SrcExpr,
                                   QualType DestType) {
-  if (Self.Diags.getDiagnosticLevel(diag::warn_bad_function_cast,
-                                    SrcExpr.get()->getExprLoc()) 
-        == DiagnosticsEngine::Ignored)
+  if (Self.Diags.isIgnored(diag::warn_bad_function_cast,
+                           SrcExpr.get()->getExprLoc()))
     return;
   
   if (!isa<CallExpr>(SrcExpr.get()))

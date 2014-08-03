@@ -1230,8 +1230,7 @@ Decl *TemplateDeclInstantiator::VisitFunctionDecl(FunctionDecl *D,
 
     void *InsertPos = nullptr;
     FunctionDecl *SpecFunc
-      = FunctionTemplate->findSpecialization(Innermost.begin(), Innermost.size(),
-                                             InsertPos);
+      = FunctionTemplate->findSpecialization(Innermost, InsertPos);
 
     // If we already have a function template specialization, return it.
     if (SpecFunc)
@@ -1508,9 +1507,7 @@ TemplateDeclInstantiator::VisitCXXMethodDecl(CXXMethodDecl *D,
 
     void *InsertPos = nullptr;
     FunctionDecl *SpecFunc
-      = FunctionTemplate->findSpecialization(Innermost.begin(), 
-                                             Innermost.size(),
-                                             InsertPos);
+      = FunctionTemplate->findSpecialization(Innermost, InsertPos);
 
     // If we already have a function template specialization, return it.
     if (SpecFunc)
@@ -2386,8 +2383,7 @@ TemplateDeclInstantiator::VisitClassTemplateSpecializationDecl(
   // in the member template's set of class template explicit specializations.
   void *InsertPos = nullptr;
   ClassTemplateSpecializationDecl *PrevDecl =
-      InstClassTemplate->findSpecialization(Converted.data(), Converted.size(),
-                                            InsertPos);
+      InstClassTemplate->findSpecialization(Converted, InsertPos);
 
   // Check whether we've already seen a conflicting instantiation of this
   // declaration (for instance, if there was a prior implicit instantiation).
@@ -2509,7 +2505,7 @@ Decl *TemplateDeclInstantiator::VisitVarTemplateSpecializationDecl(
   // corresponds to these arguments.
   void *InsertPos = nullptr;
   if (VarTemplateSpecializationDecl *VarSpec = VarTemplate->findSpecialization(
-          Converted.data(), Converted.size(), InsertPos))
+          Converted, InsertPos))
     // If we already have a variable template specialization, return it.
     return VarSpec;
 
@@ -2520,7 +2516,7 @@ Decl *TemplateDeclInstantiator::VisitVarTemplateSpecializationDecl(
 Decl *TemplateDeclInstantiator::VisitVarTemplateSpecializationDecl(
     VarTemplateDecl *VarTemplate, VarDecl *D, void *InsertPos,
     const TemplateArgumentListInfo &TemplateArgsInfo,
-    llvm::ArrayRef<TemplateArgument> Converted) {
+    ArrayRef<TemplateArgument> Converted) {
 
   // If this is the variable for an anonymous struct or union,
   // instantiate the anonymous struct/union type first.
@@ -2674,8 +2670,7 @@ TemplateDeclInstantiator::InstantiateClassTemplatePartialSpecialization(
   // in the member template's set of class template partial specializations.
   void *InsertPos = nullptr;
   ClassTemplateSpecializationDecl *PrevDecl
-    = ClassTemplate->findPartialSpecialization(Converted.data(),
-                                               Converted.size(), InsertPos);
+    = ClassTemplate->findPartialSpecialization(Converted, InsertPos);
 
   // Build the canonical type that describes the converted template
   // arguments of the class template partial specialization.
@@ -2799,8 +2794,7 @@ TemplateDeclInstantiator::InstantiateVarTemplatePartialSpecialization(
   // in the member template's set of variable template partial specializations.
   void *InsertPos = nullptr;
   VarTemplateSpecializationDecl *PrevDecl =
-      VarTemplate->findPartialSpecialization(Converted.data(), Converted.size(),
-                                             InsertPos);
+      VarTemplate->findPartialSpecialization(Converted, InsertPos);
 
   // Build the canonical type that describes the converted template
   // arguments of the variable template partial specialization.
@@ -3137,13 +3131,12 @@ static void InstantiateExceptionSpec(Sema &SemaRef, FunctionDecl *New,
     }
   }
 
-  FunctionProtoType::ExtProtoInfo EPI;
-  EPI.ExceptionSpecType = Proto->getExceptionSpecType();
-  EPI.NumExceptions = Exceptions.size();
-  EPI.Exceptions = Exceptions.data();
-  EPI.NoexceptExpr = NoexceptExpr;
+  FunctionProtoType::ExceptionSpecInfo ESI;
+  ESI.Type = Proto->getExceptionSpecType();
+  ESI.Exceptions = Exceptions;
+  ESI.NoexceptExpr = NoexceptExpr;
 
-  SemaRef.UpdateExceptionSpec(New, EPI);
+  SemaRef.UpdateExceptionSpec(New, ESI);
 }
 
 void Sema::InstantiateExceptionSpec(SourceLocation PointOfInstantiation,
@@ -3157,9 +3150,7 @@ void Sema::InstantiateExceptionSpec(SourceLocation PointOfInstantiation,
   if (Inst.isInvalid()) {
     // We hit the instantiation depth limit. Clear the exception specification
     // so that our callers don't have to cope with EST_Uninstantiated.
-    FunctionProtoType::ExtProtoInfo EPI;
-    EPI.ExceptionSpecType = EST_None;
-    UpdateExceptionSpec(Decl, EPI);
+    UpdateExceptionSpec(Decl, EST_None);
     return;
   }
 
@@ -3224,14 +3215,14 @@ TemplateDeclInstantiator::InitFunctionInstantiation(FunctionDecl *New,
     // DR1330: In C++11, defer instantiation of a non-trivial
     // exception specification.
     if (SemaRef.getLangOpts().CPlusPlus11 &&
-        EPI.ExceptionSpecType != EST_None &&
-        EPI.ExceptionSpecType != EST_DynamicNone &&
-        EPI.ExceptionSpecType != EST_BasicNoexcept) {
+        EPI.ExceptionSpec.Type != EST_None &&
+        EPI.ExceptionSpec.Type != EST_DynamicNone &&
+        EPI.ExceptionSpec.Type != EST_BasicNoexcept) {
       FunctionDecl *ExceptionSpecTemplate = Tmpl;
-      if (EPI.ExceptionSpecType == EST_Uninstantiated)
-        ExceptionSpecTemplate = EPI.ExceptionSpecTemplate;
+      if (EPI.ExceptionSpec.Type == EST_Uninstantiated)
+        ExceptionSpecTemplate = EPI.ExceptionSpec.SourceTemplate;
       ExceptionSpecificationType NewEST = EST_Uninstantiated;
-      if (EPI.ExceptionSpecType == EST_Unevaluated)
+      if (EPI.ExceptionSpec.Type == EST_Unevaluated)
         NewEST = EST_Unevaluated;
 
       // Mark the function has having an uninstantiated exception specification.
@@ -3239,9 +3230,9 @@ TemplateDeclInstantiator::InitFunctionInstantiation(FunctionDecl *New,
         = New->getType()->getAs<FunctionProtoType>();
       assert(NewProto && "Template instantiation without function prototype?");
       EPI = NewProto->getExtProtoInfo();
-      EPI.ExceptionSpecType = NewEST;
-      EPI.ExceptionSpecDecl = New;
-      EPI.ExceptionSpecTemplate = ExceptionSpecTemplate;
+      EPI.ExceptionSpec.Type = NewEST;
+      EPI.ExceptionSpec.SourceDecl = New;
+      EPI.ExceptionSpec.SourceTemplate = ExceptionSpecTemplate;
       New->setType(SemaRef.Context.getFunctionType(
           NewProto->getReturnType(), NewProto->getParamTypes(), EPI));
     } else {
@@ -3683,9 +3674,15 @@ void Sema::InstantiateVariableInitializer(
                          OldVar->getInitStyle() == VarDecl::CallInit);
     if (!Init.isInvalid()) {
       bool TypeMayContainAuto = true;
-      if (Init.get()) {
+      Expr *InitExpr = Init.get();
+
+      if (Var->hasAttr<DLLImportAttr>() &&
+          (!InitExpr ||
+           !InitExpr->isConstantInitializer(getASTContext(), false))) {
+        // Do not dynamically initialize dllimport variables.
+      } else if (InitExpr) {
         bool DirectInit = OldVar->isDirectInit();
-        AddInitializerToDecl(Var, Init.get(), DirectInit, TypeMayContainAuto);
+        AddInitializerToDecl(Var, InitExpr, DirectInit, TypeMayContainAuto);
       } else
         ActOnUninitializedDecl(Var, TypeMayContainAuto);
     } else {
