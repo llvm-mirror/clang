@@ -149,32 +149,27 @@ void CodeGenFunction::EmitVarDecl(const VarDecl &D) {
 static std::string GetStaticDeclName(CodeGenFunction &CGF, const VarDecl &D,
                                      const char *Separator) {
   CodeGenModule &CGM = CGF.CGM;
-  if (CGF.getLangOpts().CPlusPlus) {
-    StringRef Name = CGM.getMangledName(&D);
-    return Name.str();
-  }
 
-  std::string ContextName;
+  if (CGF.getLangOpts().CPlusPlus)
+    return CGM.getMangledName(&D).str();
+
+  StringRef ContextName;
   if (!CGF.CurFuncDecl) {
     // Better be in a block declared in global scope.
     const NamedDecl *ND = cast<NamedDecl>(&D);
     const DeclContext *DC = ND->getDeclContext();
-    if (const BlockDecl *BD = dyn_cast<BlockDecl>(DC)) {
-      MangleBuffer Name;
-      CGM.getBlockMangledName(GlobalDecl(), Name, BD);
-      ContextName = Name.getString();
-    }
+    if (const BlockDecl *BD = dyn_cast<BlockDecl>(DC))
+      ContextName = CGM.getBlockMangledName(GlobalDecl(), BD);
     else
       llvm_unreachable("Unknown context for block static var decl");
-  } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(CGF.CurFuncDecl)) {
-    StringRef Name = CGM.getMangledName(FD);
-    ContextName = Name.str();
-  } else if (isa<ObjCMethodDecl>(CGF.CurFuncDecl))
+  } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(CGF.CurFuncDecl))
+    ContextName = CGM.getMangledName(FD);
+  else if (isa<ObjCMethodDecl>(CGF.CurFuncDecl))
     ContextName = CGF.CurFn->getName();
   else
     llvm_unreachable("Unknown context for static var decl");
 
-  return ContextName + Separator + D.getNameAsString();
+  return ContextName.str() + Separator + D.getNameAsString();
 }
 
 llvm::Constant *
@@ -197,7 +192,7 @@ CodeGenFunction::CreateStaticVarDecl(const VarDecl &D,
   llvm::GlobalVariable *GV =
     new llvm::GlobalVariable(CGM.getModule(), LTy,
                              Ty.isConstant(getContext()), Linkage,
-                             CGM.EmitNullConstant(D.getType()), Name, 0,
+                             CGM.EmitNullConstant(D.getType()), Name, nullptr,
                              llvm::GlobalVariable::NotThreadLocal,
                              AddrSpace);
   GV->setAlignment(getContext().getDeclAlign(&D).getQuantity());
@@ -205,6 +200,13 @@ CodeGenFunction::CreateStaticVarDecl(const VarDecl &D,
 
   if (D.getTLSKind())
     CGM.setTLSMode(GV, D);
+
+  if (D.isExternallyVisible()) {
+    if (D.hasAttr<DLLImportAttr>())
+      GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
+    else if (D.hasAttr<DLLExportAttr>())
+      GV->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
+  }
 
   // Make sure the result is of the correct type.
   unsigned ExpectedAddrSpace = CGM.getContext().getTargetAddressSpace(Ty);
@@ -291,7 +293,7 @@ CodeGenFunction::AddInitializerToStaticVarDecl(const VarDecl &D,
 void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
                                       llvm::GlobalValue::LinkageTypes Linkage) {
   llvm::Value *&DMEntry = LocalDeclMap[&D];
-  assert(DMEntry == 0 && "Decl already exists in localdeclmap!");
+  assert(!DMEntry && "Decl already exists in localdeclmap!");
 
   // Check to see if we already have a global variable for this
   // declaration.  This can happen when double-emitting function
@@ -343,6 +345,8 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
   DMEntry = castedAddr;
   CGM.setStaticLocalDeclAddress(&D, castedAddr);
 
+  CGM.reportGlobalToASan(var, D);
+
   // Emit global variable debug descriptor for static vars.
   CGDebugInfo *DI = getDebugInfo();
   if (DI &&
@@ -388,7 +392,7 @@ namespace {
       // Along the exceptions path we always execute the dtor.
       bool NRVO = flags.isForNormalCleanup() && NRVOFlag;
 
-      llvm::BasicBlock *SkipDtorBB = 0;
+      llvm::BasicBlock *SkipDtorBB = nullptr;
       if (NRVO) {
         // If we exited via NRVO, we skip the destructor call.
         llvm::BasicBlock *RunDtorBB = CGF.createBasicBlock("nrvo.unused");
@@ -615,7 +619,7 @@ void CodeGenFunction::EmitScalarInit(const Expr *init,
   }
 
   // Emit the initializer.
-  llvm::Value *value = 0;
+  llvm::Value *value = nullptr;
 
   switch (lifetime) {
   case Qualifiers::OCL_None:
@@ -800,9 +804,6 @@ static bool shouldUseMemSetPlusStoresToInitialize(llvm::Constant *Init,
 /// Should we use the LLVM lifetime intrinsics for the given local variable?
 static bool shouldUseLifetimeMarkers(CodeGenFunction &CGF, const VarDecl &D,
                                      unsigned Size) {
-  // Always emit lifetime markers in -fsanitize=use-after-scope mode.
-  if (CGF.getLangOpts().Sanitize.UseAfterScope)
-    return true;
   // For now, only in optimized builds.
   if (CGF.CGM.getCodeGenOpts().OptimizationLevel == 0)
     return false;
@@ -868,7 +869,7 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
           CGM.isTypeConstant(Ty, true)) {
         EmitStaticVarDecl(D, llvm::GlobalValue::InternalLinkage);
 
-        emission.Address = 0; // signal this condition to later callbacks
+        emission.Address = nullptr; // signal this condition to later callbacks
         assert(emission.wasEmittedAsGlobal());
         return emission;
       }
@@ -963,7 +964,7 @@ CodeGenFunction::EmitAutoVarAlloca(const VarDecl &D) {
   }
 
   llvm::Value *&DMEntry = LocalDeclMap[&D];
-  assert(DMEntry == 0 && "Decl already exists in localdeclmap!");
+  assert(!DMEntry && "Decl already exists in localdeclmap!");
   DMEntry = DeclPtr;
   emission.Address = DeclPtr;
 
@@ -1083,7 +1084,7 @@ void CodeGenFunction::EmitAutoVarInit(const AutoVarEmission &emission) {
   llvm::Value *Loc =
     capturedByInit ? emission.Address : emission.getObjectAddress(*this);
 
-  llvm::Constant *constant = 0;
+  llvm::Constant *constant = nullptr;
   if (emission.IsConstantAggregate || D.isConstexpr()) {
     assert(!capturedByInit && "constant init contains a capturing block?");
     constant = CGM.EmitConstantInit(D, this);
@@ -1210,7 +1211,7 @@ void CodeGenFunction::emitAutoVarTypeCleanup(
   QualType type = var->getType();
 
   CleanupKind cleanupKind = NormalAndEHCleanup;
-  CodeGenFunction::Destroyer *destroyer = 0;
+  CodeGenFunction::Destroyer *destroyer = nullptr;
 
   switch (dtorKind) {
   case QualType::DK_none:
@@ -1620,7 +1621,7 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg,
     // The only implicit argument a block has is its literal.
     if (BlockInfo) {
       LocalDeclMap[&D] = Arg;
-      llvm::Value *LocalAddr = 0;
+      llvm::Value *LocalAddr = nullptr;
       if (CGM.getCodeGenOpts().OptimizationLevel == 0) {
         // Allocate a stack slot to let the debug info survive the RA.
         llvm::AllocaInst *Alloc = CreateTempAlloca(ConvertTypeForMem(Ty),
@@ -1655,7 +1656,9 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg,
     DeclPtr = Arg->getType() == IRTy ? Arg : Builder.CreateBitCast(Arg, IRTy,
                                                                    D.getName());
     // Push a destructor cleanup for this parameter if the ABI requires it.
-    if (!IsScalar &&
+    // Don't push a cleanup in a thunk for a method that will also emit a
+    // cleanup.
+    if (!IsScalar && !CurFuncIsThunk &&
         getTarget().getCXXABI().areArgsDestroyedLeftToRightInCallee()) {
       const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
       if (RD && RD->hasNonTrivialDestructor())
@@ -1734,7 +1737,7 @@ void CodeGenFunction::EmitParmDecl(const VarDecl &D, llvm::Value *Arg,
     EmitStoreOfScalar(Arg, lv, /* isInitialization */ true);
 
   llvm::Value *&DMEntry = LocalDeclMap[&D];
-  assert(DMEntry == 0 && "Decl already exists in localdeclmap!");
+  assert(!DMEntry && "Decl already exists in localdeclmap!");
   DMEntry = DeclPtr;
 
   // Emit debug info for param declaration.

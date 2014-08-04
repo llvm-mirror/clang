@@ -15,8 +15,10 @@
 #define LLVM_CLANG_FRONTEND_UTILS_H
 
 #include "clang/Basic/Diagnostic.h"
+#include "clang/Basic/VirtualFileSystem.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Option/OptSpecifier.h"
 
 namespace llvm {
@@ -37,6 +39,7 @@ class Decl;
 class DependencyOutputOptions;
 class DiagnosticsEngine;
 class DiagnosticOptions;
+class ExternalSemaSource;
 class FileManager;
 class HeaderSearch;
 class HeaderSearchOptions;
@@ -60,12 +63,44 @@ void ApplyHeaderSearchOptions(HeaderSearch &HS,
 /// environment ready to process a single file.
 void InitializePreprocessor(Preprocessor &PP,
                             const PreprocessorOptions &PPOpts,
-                            const HeaderSearchOptions &HSOpts,
                             const FrontendOptions &FEOpts);
 
 /// DoPrintPreprocessedInput - Implement -E mode.
 void DoPrintPreprocessedInput(Preprocessor &PP, raw_ostream* OS,
                               const PreprocessorOutputOptions &Opts);
+
+/// An interface for collecting the dependencies of a compilation. Users should
+/// use \c attachToPreprocessor and \c attachToASTReader to get all of the
+/// dependencies.
+// FIXME: Migrate DependencyFileGen, DependencyGraphGen, ModuleDepCollectory to
+// use this interface.
+class DependencyCollector {
+public:
+  void attachToPreprocessor(Preprocessor &PP);
+  void attachToASTReader(ASTReader &R);
+  llvm::ArrayRef<std::string> getDependencies() const { return Dependencies; }
+
+  /// Called when a new file is seen. Return true if \p Filename should be added
+  /// to the list of dependencies.
+  ///
+  /// The default implementation ignores <built-in> and system files.
+  virtual bool sawDependency(StringRef Filename, bool FromModule,
+                             bool IsSystem, bool IsModuleFile, bool IsMissing);
+  /// Called when the end of the main file is reached.
+  virtual void finishedMainFile() { }
+  /// Return true if system files should be passed to sawDependency().
+  virtual bool needSystemDependencies() { return false; }
+  virtual ~DependencyCollector();
+
+public: // implementation detail
+  /// Add a dependency \p Filename if it has not been seen before and
+  /// sawDependency() returns true.
+  void maybeAddDependency(StringRef Filename, bool FromModule, bool IsSystem,
+                          bool IsModuleFile, bool IsMissing);
+private:
+  llvm::StringSet<> Seen;
+  std::vector<std::string> Dependencies;
+};
 
 /// Builds a depdenency file when attached to a Preprocessor (for includes) and
 /// ASTReader (for module imports), and writes it out at the end of processing
@@ -78,6 +113,30 @@ public:
   static DependencyFileGenerator *CreateAndAttachToPreprocessor(
     Preprocessor &PP, const DependencyOutputOptions &Opts);
   void AttachToASTReader(ASTReader &R);
+};
+
+/// Collects the dependencies for imported modules into a directory.  Users
+/// should attach to the AST reader whenever a module is loaded.
+class ModuleDependencyCollector {
+  std::string DestDir;
+  bool HasErrors;
+  llvm::StringSet<> Seen;
+  vfs::YAMLVFSWriter VFSWriter;
+
+public:
+  StringRef getDest() { return DestDir; }
+  bool insertSeen(StringRef Filename) { return Seen.insert(Filename); }
+  void setHasErrors() { HasErrors = true; }
+  void addFileMapping(StringRef VPath, StringRef RPath) {
+    VFSWriter.addFileMapping(VPath, RPath);
+  }
+
+  void attachToASTReader(ASTReader &R);
+  void writeFileMap();
+  bool hasErrors() { return HasErrors; }
+  ModuleDependencyCollector(std::string DestDir)
+      : DestDir(DestDir), HasErrors(false) {}
+  ~ModuleDependencyCollector() { writeFileMap(); }
 };
 
 /// AttachDependencyGraphGen - Create a dependency graph generator, and attach
@@ -103,6 +162,12 @@ void AttachHeaderIncludeGen(Preprocessor &PP, bool ShowAllHeaders = false,
 /// CacheTokens - Cache tokens for use with PCH. Note that this requires
 /// a seekable stream.
 void CacheTokens(Preprocessor &PP, llvm::raw_fd_ostream* OS);
+
+/// The ChainedIncludesSource class converts headers to chained PCHs in
+/// memory, mainly for testing.
+IntrusiveRefCntPtr<ExternalSemaSource>
+createChainedIncludesSource(CompilerInstance &CI,
+                            IntrusiveRefCntPtr<ExternalSemaSource> &Reader);
 
 /// createInvocationFromCommandLine - Construct a compiler invocation object for
 /// a command line argument vector.

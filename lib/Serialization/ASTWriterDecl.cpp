@@ -224,12 +224,9 @@ void ASTDeclWriter::VisitTypedefDecl(TypedefDecl *D) {
   VisitTypedefNameDecl(D);
   if (!D->hasAttrs() &&
       !D->isImplicit() &&
-      !D->isUsed(false) &&
       D->getFirstDecl() == D->getMostRecentDecl() &&
       !D->isInvalidDecl() &&
-      !D->isReferenced() &&
       !D->isTopLevelDeclInObjCContainer() &&
-      D->getAccess() == AS_none &&
       !D->isModulePrivate() &&
       D->getDeclName().getNameKind() == DeclarationName::Identifier)
     AbbrevToUse = Writer.getDeclTypedefAbbrev();
@@ -277,7 +274,7 @@ void ASTDeclWriter::VisitEnumDecl(EnumDecl *D) {
     Record.push_back(MemberInfo->getTemplateSpecializationKind());
     Writer.AddSourceLocation(MemberInfo->getPointOfInstantiation(), Record);
   } else {
-    Writer.AddDeclRef(0, Record);
+    Writer.AddDeclRef(nullptr, Record);
   }
 
   if (!D->hasAttrs() &&
@@ -349,7 +346,6 @@ void ASTDeclWriter::VisitDeclaratorDecl(DeclaratorDecl *D) {
 void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
   VisitRedeclarable(D);
   VisitDeclaratorDecl(D);
-
   Writer.AddDeclarationNameLoc(D->DNLoc, D->getDeclName(), Record);
   Record.push_back(D->getIdentifierNamespace());
   
@@ -398,7 +394,7 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
     Writer.AddTemplateArgumentList(FTSInfo->TemplateArguments, Record);
     
     // Template args as written.
-    Record.push_back(FTSInfo->TemplateArgumentsAsWritten != 0);
+    Record.push_back(FTSInfo->TemplateArgumentsAsWritten != nullptr);
     if (FTSInfo->TemplateArgumentsAsWritten) {
       Record.push_back(FTSInfo->TemplateArgumentsAsWritten->NumTemplateArgs);
       for (int i=0, e = FTSInfo->TemplateArgumentsAsWritten->NumTemplateArgs;
@@ -449,8 +445,8 @@ void ASTDeclWriter::VisitObjCMethodDecl(ObjCMethodDecl *D) {
   VisitNamedDecl(D);
   // FIXME: convert to LazyStmtPtr?
   // Unlike C/C++, method bodies will never be in header files.
-  bool HasBodyStuff = D->getBody() != 0     ||
-                      D->getSelfDecl() != 0 || D->getCmdDecl() != 0;
+  bool HasBodyStuff = D->getBody() != nullptr     ||
+                      D->getSelfDecl() != nullptr || D->getCmdDecl() != nullptr;
   Record.push_back(HasBodyStuff);
   if (HasBodyStuff) {
     Writer.AddStmt(D->getBody());
@@ -757,7 +753,7 @@ void ASTDeclWriter::VisitVarDecl(VarDecl *D) {
       !D->hasExtInfo() &&
       D->getFirstDecl() == D->getMostRecentDecl() &&
       D->getInitStyle() == VarDecl::CInit &&
-      D->getInit() == 0 &&
+      D->getInit() == nullptr &&
       !isa<ParmVarDecl>(D) &&
       !isa<VarTemplateSpecializationDecl>(D) &&
       !D->isConstexpr() &&
@@ -806,7 +802,7 @@ void ASTDeclWriter::VisitParmVarDecl(ParmVarDecl *D) {
       D->getObjCDeclQualifier() == 0 &&
       !D->isKNRPromoted() &&
       !D->hasInheritedDefaultArg() &&
-      D->getInit() == 0 &&
+      D->getInit() == nullptr &&
       !D->hasUninstantiatedDefaultArg())  // No default expr.
     AbbrevToUse = Writer.getDeclParmVarAbbrev();
 
@@ -815,7 +811,7 @@ void ASTDeclWriter::VisitParmVarDecl(ParmVarDecl *D) {
   assert(!D->getTSCSpec() && "PARM_VAR_DECL can't use TLS");
   assert(D->getAccess() == AS_none && "PARM_VAR_DECL can't be public/private");
   assert(!D->isExceptionVariable() && "PARM_VAR_DECL can't be exception var");
-  assert(D->getPreviousDecl() == 0 && "PARM_VAR_DECL can't be redecl");
+  assert(D->getPreviousDecl() == nullptr && "PARM_VAR_DECL can't be redecl");
   assert(!D->isStaticDataMember() &&
          "PARM_VAR_DECL can't be static data member");
 }
@@ -1027,6 +1023,17 @@ void ASTDeclWriter::VisitCXXMethodDecl(CXXMethodDecl *D) {
     // We only need to record overridden methods once for the canonical decl.
     Record.push_back(0);
   }
+
+  if (D->getFirstDecl() == D->getMostRecentDecl() &&
+      !D->isInvalidDecl() &&
+      !D->hasAttrs() &&
+      !D->isTopLevelDeclInObjCContainer() &&
+      D->getDeclName().getNameKind() == DeclarationName::Identifier &&
+      !D->hasExtInfo() &&
+      !D->hasInheritedPrototype() &&
+      D->hasWrittenPrototype())
+    AbbrevToUse = Writer.getDeclCXXMethodAbbrev();
+
   Code = serialization::DECL_CXX_METHOD;
 }
 
@@ -1104,7 +1111,7 @@ void ASTDeclWriter::VisitFriendTemplateDecl(FriendTemplateDecl *D) {
   Record.push_back(D->getNumTemplateParameters());
   for (unsigned i = 0, e = D->getNumTemplateParameters(); i != e; ++i)
     Writer.AddTemplateParameterList(D->getTemplateParameterList(i), Record);
-  Record.push_back(D->getFriendDecl() != 0);
+  Record.push_back(D->getFriendDecl() != nullptr);
   if (D->getFriendDecl())
     Writer.AddDeclRef(D->getFriendDecl(), Record);
   else
@@ -1156,8 +1163,6 @@ void ASTDeclWriter::VisitClassTemplateDecl(ClassTemplateDecl *D) {
       assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
       Writer.AddDeclRef(&*I, Record); 
     }
-
-    Writer.AddTypeRef(D->getCommonPtr()->InjectedClassNameType, Record);
   }
   Code = serialization::DECL_CLASS_TEMPLATE;
 }
@@ -1205,7 +1210,7 @@ void ASTDeclWriter::VisitClassTemplatePartialSpecializationDecl(
   Writer.AddASTTemplateArgumentListInfo(D->getTemplateArgsAsWritten(), Record);
 
   // These are read/set from/to the first declaration.
-  if (D->getPreviousDecl() == 0) {
+  if (D->getPreviousDecl() == nullptr) {
     Writer.AddDeclRef(D->getInstantiatedFromMember(), Record);
     Record.push_back(D->isMemberSpecialization());
   }
@@ -1281,7 +1286,7 @@ void ASTDeclWriter::VisitVarTemplatePartialSpecializationDecl(
   Writer.AddASTTemplateArgumentListInfo(D->getTemplateArgsAsWritten(), Record);
 
   // These are read/set from/to the first declaration.
-  if (D->getPreviousDecl() == 0) {
+  if (D->getPreviousDecl() == nullptr) {
     Writer.AddDeclRef(D->getInstantiatedFromMember(), Record);
     Record.push_back(D->isMemberSpecialization());
   }
@@ -1348,7 +1353,7 @@ void ASTDeclWriter::VisitNonTypeTemplateParmDecl(NonTypeTemplateParmDecl *D) {
   } else {
     // Rest of NonTypeTemplateParmDecl.
     Record.push_back(D->isParameterPack());
-    Record.push_back(D->getDefaultArgument() != 0);
+    Record.push_back(D->getDefaultArgument() != nullptr);
     if (D->getDefaultArgument()) {
       Writer.AddStmt(D->getDefaultArgument());
       Record.push_back(D->defaultArgumentWasInherited());
@@ -1451,7 +1456,7 @@ void ASTDeclWriter::VisitOMPThreadPrivateDecl(OMPThreadPrivateDecl *D) {
 // ASTWriter Implementation
 //===----------------------------------------------------------------------===//
 
-void ASTWriter::WriteDeclsBlockAbbrevs() {
+void ASTWriter::WriteDeclAbbrevs() {
   using namespace llvm;
 
   BitCodeAbbrev *Abv;
@@ -1517,8 +1522,6 @@ void ASTWriter::WriteDeclsBlockAbbrevs() {
   // ObjC Ivar
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // getAccessControl
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // getSynthesize
-  // getBackingIvarReferencedInAccessor
-  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));
   // Type Source Info
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Array));
@@ -1680,10 +1683,10 @@ void ASTWriter::WriteDeclsBlockAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(0));                       // isInvalidDecl
   Abv->Add(BitCodeAbbrevOp(0));                       // HasAttrs
   Abv->Add(BitCodeAbbrevOp(0));                       // isImplicit
-  Abv->Add(BitCodeAbbrevOp(0));                       // isUsed
-  Abv->Add(BitCodeAbbrevOp(0));                       // isReferenced
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // isUsed
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // isReferenced
   Abv->Add(BitCodeAbbrevOp(0));                   // TopLevelDeclInObjCContainer
-  Abv->Add(BitCodeAbbrevOp(AS_none));                 // C++ AccessSpecifier
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 2)); // C++ AccessSpecifier
   Abv->Add(BitCodeAbbrevOp(0));                       // ModulePrivate
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // SubmoduleID
   // NamedDecl
@@ -1742,6 +1745,63 @@ void ASTWriter::WriteDeclsBlockAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // TypeLoc
   DeclVarAbbrev = Stream.EmitAbbrev(Abv);
 
+  // Abbreviation for DECL_CXX_METHOD
+  Abv = new BitCodeAbbrev();
+  Abv->Add(BitCodeAbbrevOp(serialization::DECL_CXX_METHOD));
+  // RedeclarableDecl
+  Abv->Add(BitCodeAbbrevOp(0));                         // CanonicalDecl
+  // Decl
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // DeclContext
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // LexicalDeclContext
+  Abv->Add(BitCodeAbbrevOp(0));                         // Invalid
+  Abv->Add(BitCodeAbbrevOp(0));                         // HasAttrs
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Implicit
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Used
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Referenced
+  Abv->Add(BitCodeAbbrevOp(0));                         // InObjCContainer
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 2)); // Access
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // ModulePrivate
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // SubmoduleID
+  // NamedDecl
+  Abv->Add(BitCodeAbbrevOp(DeclarationName::Identifier)); // NameKind
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // Identifier
+  // ValueDecl
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // Type
+  // DeclaratorDecl
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // InnerLocStart
+  Abv->Add(BitCodeAbbrevOp(0));                         // HasExtInfo
+  // FunctionDecl
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 11)); // IDNS
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3)); // StorageClass
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Inline
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // InlineSpecified
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // VirtualAsWritten
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Pure
+  Abv->Add(BitCodeAbbrevOp(0));                         // HasInheritedProto
+  Abv->Add(BitCodeAbbrevOp(1));                         // HasWrittenProto
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // DeletedAsWritten
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Trivial
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Defaulted
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // ExplicitlyDefaulted
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // ImplicitReturnZero
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // Constexpr
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // SkippedBody
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // LateParsed
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3)); // Linkage
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // LocEnd
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3)); // TemplateKind
+  // This Array slurps the rest of the record. Fortunately we want to encode
+  // (nearly) all the remaining (variable number of) fields in the same way.
+  //
+  // This is the function template information if any, then
+  //         NumParams and Params[] from FunctionDecl, and
+  //         NumOverriddenMethods, OverriddenMethods[] from CXXMethodDecl.
+  //
+  //  Add an AbbrevOp for 'size then elements' and use it here.
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Array));
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));
+  DeclCXXMethodAbbrev = Stream.EmitAbbrev(Abv);
+
   // Abbreviation for EXPR_DECL_REF
   Abv = new BitCodeAbbrev();
   Abv->Add(BitCodeAbbrevOp(serialization::EXPR_DECL_REF));
@@ -1799,6 +1859,24 @@ void ASTWriter::WriteDeclsBlockAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Location
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 2)); // getKind
   CharacterLiteralAbbrev = Stream.EmitAbbrev(Abv);
+
+  // Abbreviation for EXPR_IMPLICIT_CAST
+  Abv = new BitCodeAbbrev();
+  Abv->Add(BitCodeAbbrevOp(serialization::EXPR_IMPLICIT_CAST));
+  // Stmt
+  // Expr
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6)); // Type
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); //TypeDependent
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); //ValueDependent
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); //InstantiationDependent
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); //UnexpandedParamPack
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3)); //GetValueKind
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3)); //GetObjectKind
+  // CastExpr
+  Abv->Add(BitCodeAbbrevOp(0)); // PathSize
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 6)); // CastKind
+  // ImplicitCastExpr
+  ExprImplicitCastAbbrev = Stream.EmitAbbrev(Abv);
 
   Abv = new BitCodeAbbrev();
   Abv->Add(BitCodeAbbrevOp(serialization::DECL_CONTEXT_LEXICAL));

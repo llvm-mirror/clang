@@ -19,8 +19,6 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/FileSystem.h"
 #include <memory>
-#include <sys/stat.h>
-#include <sys/types.h>
 
 namespace clang {
 
@@ -38,6 +36,10 @@ struct FileData {
   bool IsDirectory;
   bool IsNamedPipe;
   bool InPCH;
+  bool IsVFSMapped; // FIXME: remove this when files support multiple names
+  FileData()
+      : Size(0), ModTime(0), IsDirectory(false), IsNamedPipe(false),
+        InPCH(false), IsVFSMapped(false) {}
 };
 
 /// \brief Abstract interface for introducing a FileManager cache for 'stat'
@@ -67,7 +69,7 @@ public:
   /// implementation can optionally fill in \p F with a valid \p File object and
   /// the client guarantees that it will close it.
   static bool get(const char *Path, FileData &Data, bool isFile,
-                  vfs::File **F, FileSystemStatCache *Cache,
+                  std::unique_ptr<vfs::File> *F, FileSystemStatCache *Cache,
                   vfs::FileSystem &FS);
 
   /// \brief Sets the next stat call cache in the chain of stat caches.
@@ -85,11 +87,15 @@ public:
   FileSystemStatCache *takeNextStatCache() { return NextStatCache.release(); }
 
 protected:
+  // FIXME: The pointer here is a non-owning/optional reference to the
+  // unique_ptr. Optional<unique_ptr<vfs::File>&> might be nicer, but
+  // Optional needs some work to support references so this isn't possible yet.
   virtual LookupResult getStat(const char *Path, FileData &Data, bool isFile,
-                               vfs::File **F, vfs::FileSystem &FS) = 0;
+                               std::unique_ptr<vfs::File> *F,
+                               vfs::FileSystem &FS) = 0;
 
   LookupResult statChained(const char *Path, FileData &Data, bool isFile,
-                           vfs::File **F, vfs::FileSystem &FS) {
+                           std::unique_ptr<vfs::File> *F, vfs::FileSystem &FS) {
     if (FileSystemStatCache *Next = getNextStatCache())
       return Next->getStat(Path, Data, isFile, F, FS);
 
@@ -114,7 +120,8 @@ public:
   iterator end() const { return StatCalls.end(); }
 
   LookupResult getStat(const char *Path, FileData &Data, bool isFile,
-                       vfs::File **F, vfs::FileSystem &FS) override;
+                       std::unique_ptr<vfs::File> *F,
+                       vfs::FileSystem &FS) override;
 };
 
 } // end namespace clang

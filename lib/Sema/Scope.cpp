@@ -28,7 +28,7 @@ void Scope::Init(Scope *parent, unsigned flags) {
   } else {
     // Control scopes do not contain the contents of nested function scopes for
     // control flow purposes.
-    BreakParent = ContinueParent = 0;
+    BreakParent = ContinueParent = nullptr;
   }
 
   if (parent) {
@@ -39,12 +39,16 @@ void Scope::Init(Scope *parent, unsigned flags) {
     BlockParent    = parent->BlockParent;
     TemplateParamParent = parent->TemplateParamParent;
     MSLocalManglingParent = parent->MSLocalManglingParent;
+    if ((Flags & (FnScope | ClassScope | BlockScope | TemplateParamScope |
+                  FunctionPrototypeScope | AtCatchScope | ObjCMethodScope)) ==
+        0)
+      Flags |= parent->getFlags() & OpenMPSimdDirectiveScope;
   } else {
     Depth = 0;
     PrototypeDepth = 0;
     PrototypeIndex = 0;
-    MSLocalManglingParent = FnParent = BlockParent = 0;
-    TemplateParamParent = 0;
+    MSLocalManglingParent = FnParent = BlockParent = nullptr;
+    TemplateParamParent = nullptr;
     MSLocalManglingNumber = 1;
   }
 
@@ -63,6 +67,7 @@ void Scope::Init(Scope *parent, unsigned flags) {
 
   // If this is a prototype scope, record that.
   if (flags & FunctionPrototypeScope) PrototypeDepth++;
+
   if (flags & DeclScope) {
     if (flags & FunctionPrototypeScope)
       ; // Prototype scopes are uninteresting.
@@ -70,13 +75,15 @@ void Scope::Init(Scope *parent, unsigned flags) {
       ; // Nested class scopes aren't ambiguous.
     else if ((flags & ClassScope) && getParent()->getFlags() == DeclScope)
       ; // Classes inside of namespaces aren't ambiguous.
+    else if ((flags & EnumScope))
+      ; // Don't increment for enum scopes.
     else
       incrementMSLocalManglingNumber();
   }
 
   DeclsInScope.clear();
   UsingDirectives.clear();
-  Entity = 0;
+  Entity = nullptr;
   ErrorTrap.reset();
   NRVO.setPointerAndInt(nullptr, 0);
 }
@@ -175,9 +182,18 @@ void Scope::dumpImpl(raw_ostream &OS) const {
     } else if (Flags & FnTryCatchScope) {
       OS << "FnTryCatchScope";
       Flags &= ~FnTryCatchScope;
+    } else if (Flags & SEHTryScope) {
+      OS << "SEHTryScope";
+      Flags &= ~SEHTryScope;
     } else if (Flags & OpenMPDirectiveScope) {
       OS << "OpenMPDirectiveScope";
       Flags &= ~OpenMPDirectiveScope;
+    } else if (Flags & OpenMPLoopDirectiveScope) {
+      OS << "OpenMPLoopDirectiveScope";
+      Flags &= ~OpenMPLoopDirectiveScope;
+    } else if (Flags & OpenMPSimdDirectiveScope) {
+      OS << "OpenMPSimdDirectiveScope";
+      Flags &= ~OpenMPSimdDirectiveScope;
     }
 
     if (Flags)

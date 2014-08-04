@@ -26,7 +26,13 @@ template<typename T> struct TemplateInstantiationVisibility { typedef int type; 
 
 template<typename T> struct Outer {
   template<typename U> struct Inner {
-    void f();
-    void g();
+    static constexpr int f();
+    static constexpr int g();
   };
 };
+
+template<typename T> struct WithPartialSpecialization {};
+typedef WithPartialSpecialization<int*> WithPartialSpecializationUse;
+
+template<typename T> struct WithExplicitSpecialization;
+typedef WithExplicitSpecialization<int> WithExplicitSpecializationUse;

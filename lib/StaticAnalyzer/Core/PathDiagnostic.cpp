@@ -67,7 +67,7 @@ PathPieces::~PathPieces() {}
 void PathPieces::flattenTo(PathPieces &Primary, PathPieces &Current,
                            bool ShouldFlattenMacros) const {
   for (PathPieces::const_iterator I = begin(), E = end(); I != E; ++I) {
-    PathDiagnosticPiece *Piece = I->getPtr();
+    PathDiagnosticPiece *Piece = I->get();
 
     switch (Piece->getKind()) {
     case PathDiagnosticPiece::Call: {
@@ -129,7 +129,7 @@ getFirstStackedCallToHeaderFile(PathDiagnosticCallPiece *CP,
 
   // If the call is within a macro, don't do anything (for now).
   if (CallLoc.isMacroID())
-    return 0;
+    return nullptr;
 
   assert(SMgr.isInMainFile(CallLoc) &&
          "The call piece should be in the main file.");
@@ -140,7 +140,7 @@ getFirstStackedCallToHeaderFile(PathDiagnosticCallPiece *CP,
 
   const PathPieces &Path = CP->path;
   if (Path.empty())
-    return 0;
+    return nullptr;
 
   // Check if the last piece in the callee path is a call to a function outside
   // of the main file.
@@ -150,14 +150,14 @@ getFirstStackedCallToHeaderFile(PathDiagnosticCallPiece *CP,
   }
 
   // Otherwise, the last piece is in the main file.
-  return 0;
+  return nullptr;
 }
 
 void PathDiagnostic::resetDiagnosticLocationToMainFile() {
   if (path.empty())
     return;
 
-  PathDiagnosticPiece *LastP = path.back().getPtr();
+  PathDiagnosticPiece *LastP = path.back().get();
   assert(LastP);
   const SourceManager &SMgr = LastP->getLocation().getManager();
 
@@ -222,7 +222,7 @@ void PathDiagnosticConsumer::HandlePathDiagnostic(PathDiagnostic *D) {
 
       for (PathPieces::const_iterator I = path.begin(), E = path.end(); I != E;
            ++I) {
-        const PathDiagnosticPiece *piece = I->getPtr();
+        const PathDiagnosticPiece *piece = I->get();
         FullSourceLoc L = piece->getLocation().asLocation().getExpansionLoc();
       
         if (FID.isInvalid()) {
@@ -260,7 +260,7 @@ void PathDiagnosticConsumer::HandlePathDiagnostic(PathDiagnostic *D) {
   // Profile the node to see if we already have something matching it
   llvm::FoldingSetNodeID profile;
   D->Profile(profile);
-  void *InsertPos = 0;
+  void *InsertPos = nullptr;
 
   if (PathDiagnostic *orig = Diags.FindNodeOrInsertPos(profile, InsertPos)) {
     // Keep the PathDiagnostic with the shorter path.
@@ -486,7 +486,7 @@ PathDiagnosticConsumer::FilesMade::getFiles(const PathDiagnostic &PD) {
   void *InsertPos;
   PDFileEntry *Entry = FindNodeOrInsertPos(NodeID, InsertPos);
   if (!Entry)
-    return 0;
+    return nullptr;
   return &Entry->files;
 }
 
@@ -662,7 +662,7 @@ PathDiagnosticLocation
   PathDiagnosticLocation::create(const ProgramPoint& P,
                                  const SourceManager &SMng) {
 
-  const Stmt* S = 0;
+  const Stmt* S = nullptr;
   if (Optional<BlockEdge> BE = P.getAs<BlockEdge>()) {
     const CFGBlock *BSrc = BE->getSrc();
     S = BSrc->getTerminatorCondition();
@@ -703,7 +703,7 @@ const Stmt *PathDiagnosticLocation::getStmt(const ExplodedNode *N) {
   if (Optional<PostInitializer> PIPP = P.getAs<PostInitializer>())
     return PIPP->getInitializer()->getInit();
 
-  return 0;
+  return nullptr;
 }
 
 const Stmt *PathDiagnosticLocation::getNextStmt(const ExplodedNode *N) {
@@ -730,7 +730,7 @@ const Stmt *PathDiagnosticLocation::getNextStmt(const ExplodedNode *N) {
     }
   }
 
-  return 0;
+  return nullptr;
 }
 
 PathDiagnosticLocation
@@ -865,13 +865,13 @@ PathDiagnosticRange
 void PathDiagnosticLocation::flatten() {
   if (K == StmtK) {
     K = RangeK;
-    S = 0;
-    D = 0;
+    S = nullptr;
+    D = nullptr;
   }
   else if (K == DeclK) {
     K = SingleLocK;
-    S = 0;
-    D = 0;
+    S = nullptr;
+    D = nullptr;
   }
 }
 
@@ -981,7 +981,7 @@ static bool describeCodeDecl(raw_ostream &Out, const Decl *D,
 IntrusiveRefCntPtr<PathDiagnosticEventPiece>
 PathDiagnosticCallPiece::getCallEnterEvent() const {
   if (!Callee)
-    return 0;  
+    return nullptr;
 
   SmallString<256> buf;
   llvm::raw_svector_ostream Out(buf);
@@ -996,12 +996,12 @@ PathDiagnosticCallPiece::getCallEnterEvent() const {
 IntrusiveRefCntPtr<PathDiagnosticEventPiece>
 PathDiagnosticCallPiece::getCallEnterWithinCallerEvent() const {
   if (!callEnterWithin.asLocation().isValid())
-    return 0;
+    return nullptr;
   if (Callee->isImplicit() || !Callee->hasBody())
-    return 0;
+    return nullptr;
   if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(Callee))
     if (MD->isDefaulted())
-      return 0;
+      return nullptr;
 
   SmallString<256> buf;
   llvm::raw_svector_ostream Out(buf);
@@ -1015,7 +1015,7 @@ PathDiagnosticCallPiece::getCallEnterWithinCallerEvent() const {
 IntrusiveRefCntPtr<PathDiagnosticEventPiece>
 PathDiagnosticCallPiece::getCallExitEvent() const {
   if (NoExit)
-    return 0;
+    return nullptr;
 
   SmallString<256> buf;
   llvm::raw_svector_ostream Out(buf);
@@ -1037,7 +1037,7 @@ PathDiagnosticCallPiece::getCallExitEvent() const {
 static void compute_path_size(const PathPieces &pieces, unsigned &size) {
   for (PathPieces::const_iterator it = pieces.begin(),
                                   et = pieces.end(); it != et; ++it) {
-    const PathDiagnosticPiece *piece = it->getPtr();
+    const PathDiagnosticPiece *piece = it->get();
     if (const PathDiagnosticCallPiece *cp = 
         dyn_cast<PathDiagnosticCallPiece>(piece)) {
       compute_path_size(cp->path, size);

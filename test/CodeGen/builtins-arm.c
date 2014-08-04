@@ -19,36 +19,50 @@ void test_eh_return_data_regno()
   res = __builtin_eh_return_data_regno(1);  // CHECK: store volatile i32 1
 }
 
+void nop() {
+  __builtin_arm_nop();
+}
+
+// CHECK: call {{.*}} @llvm.arm.hint(i32 0)
+
 void yield() {
-  __yield();
+  __builtin_arm_yield();
 }
 
 // CHECK: call {{.*}} @llvm.arm.hint(i32 1)
 
 void wfe() {
-  __wfe();
+  __builtin_arm_wfe();
 }
 
 // CHECK: call {{.*}} @llvm.arm.hint(i32 2)
 
 void wfi() {
-  __wfi();
+  __builtin_arm_wfi();
 }
 
 // CHECK: call {{.*}} @llvm.arm.hint(i32 3)
 
 void sev() {
-  __sev();
+  __builtin_arm_sev();
 }
 
 // CHECK: call {{.*}} @llvm.arm.hint(i32 4)
 
 void sevl() {
-  __sevl();
+  __builtin_arm_sevl();
 }
+
 // CHECK: call {{.*}} @llvm.arm.hint(i32 5)
 
 void test_barrier() {
   __builtin_arm_dmb(1); //CHECK: call {{.*}} @llvm.arm.dmb(i32 1)
   __builtin_arm_dsb(2); //CHECK: call {{.*}} @llvm.arm.dsb(i32 2)
+  __builtin_arm_isb(3); //CHECK: call {{.*}} @llvm.arm.isb(i32 3)
+}
+
+// CHECK: call {{.*}} @llvm.arm.rbit(i32 %a)
+
+unsigned rbit(unsigned a) {
+  return __builtin_arm_rbit(a);
 }

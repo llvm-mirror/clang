@@ -189,12 +189,14 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(hasEitherOperand);
   REGISTER_MATCHER(hasElementType);
   REGISTER_MATCHER(hasFalseExpression);
+  REGISTER_MATCHER(hasGlobalStorage);
   REGISTER_MATCHER(hasImplicitDestinationType);
   REGISTER_MATCHER(hasIncrement);
   REGISTER_MATCHER(hasIndex);
   REGISTER_MATCHER(hasInitializer);
   REGISTER_MATCHER(hasLHS);
   REGISTER_MATCHER(hasLocalQualifiers);
+  REGISTER_MATCHER(hasLocalStorage);
   REGISTER_MATCHER(hasLoopInit);
   REGISTER_MATCHER(hasMethod);
   REGISTER_MATCHER(hasName);
@@ -361,7 +363,7 @@ struct ReverseSpecificityThenName {
 }
 
 std::vector<MatcherCompletion> Registry::getCompletions(
-    llvm::ArrayRef<std::pair<MatcherCtor, unsigned> > Context) {
+    ArrayRef<std::pair<MatcherCtor, unsigned> > Context) {
   ASTNodeKind InitialTypes[] = {
     ASTNodeKind::getFromNodeKind<Decl>(),
     ASTNodeKind::getFromNodeKind<QualType>(),
@@ -371,12 +373,12 @@ std::vector<MatcherCompletion> Registry::getCompletions(
     ASTNodeKind::getFromNodeKind<NestedNameSpecifierLoc>(),
     ASTNodeKind::getFromNodeKind<TypeLoc>()
   };
-  llvm::ArrayRef<ASTNodeKind> InitialTypesRef(InitialTypes);
+  ArrayRef<ASTNodeKind> InitialTypesRef(InitialTypes);
 
   // Starting with the above seed of acceptable top-level matcher types, compute
   // the acceptable type set for the argument indicated by each context element.
   std::set<ASTNodeKind> TypeSet(InitialTypesRef.begin(), InitialTypesRef.end());
-  for (llvm::ArrayRef<std::pair<MatcherCtor, unsigned> >::iterator
+  for (ArrayRef<std::pair<MatcherCtor, unsigned> >::iterator
            CtxI = Context.begin(),
            CtxE = Context.end();
        CtxI != CtxE; ++CtxI) {

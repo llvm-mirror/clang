@@ -39,6 +39,7 @@ static void copyStatusToFileData(const vfs::Status &Status,
   Data.IsDirectory = Status.isDirectory();
   Data.IsNamedPipe = Status.getType() == llvm::sys::fs::file_type::fifo_file;
   Data.InPCH = false;
+  Data.IsVFSMapped = Status.IsVFSMapped;
 }
 
 /// FileSystemStatCache::get - Get the 'stat' information for the specified
@@ -51,8 +52,8 @@ static void copyStatusToFileData(const vfs::Status &Status,
 /// implementation can optionally fill in FileDescriptor with a valid
 /// descriptor and the client guarantees that it will close it.
 bool FileSystemStatCache::get(const char *Path, FileData &Data, bool isFile,
-                              vfs::File **F, FileSystemStatCache *Cache,
-                              vfs::FileSystem &FS) {
+                              std::unique_ptr<vfs::File> *F,
+                              FileSystemStatCache *Cache, vfs::FileSystem &FS) {
   LookupResult R;
   bool isForDir = !isFile;
 
@@ -78,7 +79,7 @@ bool FileSystemStatCache::get(const char *Path, FileData &Data, bool isFile,
     // Because of this, check to see if the file exists with 'open'.  If the
     // open succeeds, use fstat to get the stat info.
     std::unique_ptr<vfs::File> OwnedFile;
-    llvm::error_code EC = FS.openFileForRead(Path, OwnedFile);
+    std::error_code EC = FS.openFileForRead(Path, OwnedFile);
 
     if (EC) {
       // If the open fails, our "stat" fails.
@@ -91,7 +92,7 @@ bool FileSystemStatCache::get(const char *Path, FileData &Data, bool isFile,
       if (Status) {
         R = CacheExists;
         copyStatusToFileData(*Status, Data);
-        *F = OwnedFile.release();
+        *F = std::move(OwnedFile);
       } else {
         // fstat rarely fails.  If it does, claim the initial open didn't
         // succeed.
@@ -108,10 +109,8 @@ bool FileSystemStatCache::get(const char *Path, FileData &Data, bool isFile,
   // demands.
   if (Data.IsDirectory != isForDir) {
     // If not, close the file if opened.
-    if (F && *F) {
-      (*F)->close();
+    if (F)
       *F = nullptr;
-    }
     
     return true;
   }
@@ -121,7 +120,7 @@ bool FileSystemStatCache::get(const char *Path, FileData &Data, bool isFile,
 
 MemorizeStatCalls::LookupResult
 MemorizeStatCalls::getStat(const char *Path, FileData &Data, bool isFile,
-                           vfs::File **F, vfs::FileSystem &FS) {
+                           std::unique_ptr<vfs::File> *F, vfs::FileSystem &FS) {
   LookupResult Result = statChained(Path, Data, isFile, F, FS);
 
   // Do not cache failed stats, it is easy to construct common inconsistent

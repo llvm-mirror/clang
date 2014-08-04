@@ -14,7 +14,6 @@
 
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticOptions.h"
-#include "clang/Driver/CC1AsOptions.h"
 #include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Options.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
@@ -53,10 +52,11 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/system_error.h"
 #include <memory>
+#include <system_error>
 using namespace clang;
 using namespace clang::driver;
+using namespace clang::driver::options;
 using namespace llvm;
 using namespace llvm::opt;
 
@@ -151,26 +151,29 @@ bool AssemblerInvocation::CreateFromArgs(AssemblerInvocation &Opts,
                                          const char **ArgBegin,
                                          const char **ArgEnd,
                                          DiagnosticsEngine &Diags) {
-  using namespace clang::driver::cc1asoptions;
   bool Success = true;
 
   // Parse the arguments.
-  std::unique_ptr<OptTable> OptTbl(createCC1AsOptTable());
+  std::unique_ptr<OptTable> OptTbl(createDriverOptTable());
+
+  const unsigned IncludedFlagsBitmask = options::CC1AsOption;
   unsigned MissingArgIndex, MissingArgCount;
   std::unique_ptr<InputArgList> Args(
-      OptTbl->ParseArgs(ArgBegin, ArgEnd, MissingArgIndex, MissingArgCount));
+      OptTbl->ParseArgs(ArgBegin, ArgEnd, MissingArgIndex, MissingArgCount,
+                        IncludedFlagsBitmask));
 
   // Check for missing argument error.
   if (MissingArgCount) {
     Diags.Report(diag::err_drv_missing_argument)
-      << Args->getArgString(MissingArgIndex) << MissingArgCount;
+        << Args->getArgString(MissingArgIndex) << MissingArgCount;
     Success = false;
   }
 
   // Issue errors on unknown arguments.
-  for (arg_iterator it = Args->filtered_begin(cc1asoptions::OPT_UNKNOWN),
-         ie = Args->filtered_end(); it != ie; ++it) {
-    Diags.Report(diag::err_drv_unknown_argument) << (*it) ->getAsString(*Args);
+  for (arg_iterator it = Args->filtered_begin(OPT_UNKNOWN),
+                    ie = Args->filtered_end();
+       it != ie; ++it) {
+    Diags.Report(diag::err_drv_unknown_argument) << (*it)->getAsString(*Args);
     Success = false;
   }
 
@@ -189,7 +192,7 @@ bool AssemblerInvocation::CreateFromArgs(AssemblerInvocation &Opts,
   Opts.IncludePaths = Args->getAllArgValues(OPT_I);
   Opts.NoInitialTextSection = Args->hasArg(OPT_n);
   Opts.SaveTemporaryLabels = Args->hasArg(OPT_msave_temp_labels);
-  Opts.GenDwarfForAssembly = Args->hasArg(OPT_g);
+  Opts.GenDwarfForAssembly = Args->hasArg(OPT_g_Flag);
   Opts.CompressDebugSections = Args->hasArg(OPT_compress_debug_sections);
   if (Args->hasArg(OPT_gdwarf_2))
     Opts.DwarfVersion = 2;
@@ -266,7 +269,8 @@ static formatted_raw_ostream *GetOutputStream(AssemblerInvocation &Opts,
   if (!Error.empty()) {
     Diags.Report(diag::err_fe_unable_to_open_output)
       << Opts.OutputPath << Error;
-    return 0;
+    delete Out;
+    return nullptr;
   }
 
   return new formatted_raw_ostream(*Out, formatted_raw_ostream::DELETE_STREAM);
@@ -276,24 +280,22 @@ static bool ExecuteAssembler(AssemblerInvocation &Opts,
                              DiagnosticsEngine &Diags) {
   // Get the target specific parser.
   std::string Error;
-  const Target *TheTarget(TargetRegistry::lookupTarget(Opts.Triple, Error));
-  if (!TheTarget) {
-    Diags.Report(diag::err_target_unknown_triple) << Opts.Triple;
-    return false;
-  }
+  const Target *TheTarget = TargetRegistry::lookupTarget(Opts.Triple, Error);
+  if (!TheTarget)
+    return Diags.Report(diag::err_target_unknown_triple) << Opts.Triple;
 
-  std::unique_ptr<MemoryBuffer> BufferPtr;
-  if (error_code ec = MemoryBuffer::getFileOrSTDIN(Opts.InputFile, BufferPtr)) {
-    Error = ec.message();
-    Diags.Report(diag::err_fe_error_reading) << Opts.InputFile;
-    return false;
+  ErrorOr<std::unique_ptr<MemoryBuffer>> Buffer =
+      MemoryBuffer::getFileOrSTDIN(Opts.InputFile);
+
+  if (std::error_code EC = Buffer.getError()) {
+    Error = EC.message();
+    return Diags.Report(diag::err_fe_error_reading) << Opts.InputFile;
   }
-  MemoryBuffer *Buffer = BufferPtr.release();
 
   SourceMgr SrcMgr;
 
   // Tell SrcMgr about this buffer, which is what the parser will pick up.
-  SrcMgr.AddNewSourceBuffer(Buffer, SMLoc());
+  SrcMgr.AddNewSourceBuffer(Buffer->release(), SMLoc());
 
   // Record the location of the include directories so that the lexer can find
   // it later.
@@ -311,9 +313,10 @@ static bool ExecuteAssembler(AssemblerInvocation &Opts,
     MAI->setCompressDebugSections(true);
 
   bool IsBinary = Opts.OutputType == AssemblerInvocation::FT_Obj;
-  formatted_raw_ostream *Out = GetOutputStream(Opts, Diags, IsBinary);
+  std::unique_ptr<formatted_raw_ostream> Out(
+      GetOutputStream(Opts, Diags, IsBinary));
   if (!Out)
-    return false;
+    return true;
 
   // FIXME: This is not pretty. MCContext has a ptr to MCObjectFileInfo and
   // MCObjectFileInfo needs a MCContext reference in order to initialize itself.
@@ -356,8 +359,8 @@ static bool ExecuteAssembler(AssemblerInvocation &Opts,
     MCInstPrinter *IP =
       TheTarget->createMCInstPrinter(Opts.OutputAsmVariant, *MAI, *MCII, *MRI,
                                      *STI);
-    MCCodeEmitter *CE = 0;
-    MCAsmBackend *MAB = 0;
+    MCCodeEmitter *CE = nullptr;
+    MCAsmBackend *MAB = nullptr;
     if (Opts.ShowEncoding) {
       CE = TheTarget->createMCCodeEmitter(*MCII, *MRI, *STI, Ctx);
       MAB = TheTarget->createMCAsmBackend(*MRI, Opts.Triple, Opts.CPU);
@@ -380,6 +383,8 @@ static bool ExecuteAssembler(AssemblerInvocation &Opts,
     Str.get()->InitSections();
   }
 
+  bool Failed = false;
+
   std::unique_ptr<MCAsmParser> Parser(
       createMCAsmParser(SrcMgr, Ctx, *Str.get(), *MAI));
 
@@ -387,23 +392,22 @@ static bool ExecuteAssembler(AssemblerInvocation &Opts,
   MCTargetOptions Options;
   std::unique_ptr<MCTargetAsmParser> TAP(
       TheTarget->createMCAsmParser(*STI, *Parser, *MCII, Options));
-  if (!TAP) {
-    Diags.Report(diag::err_target_unknown_triple) << Opts.Triple;
-    return false;
+  if (!TAP)
+    Failed = Diags.Report(diag::err_target_unknown_triple) << Opts.Triple;
+
+  if (!Failed) {
+    Parser->setTargetParser(*TAP.get());
+    Failed = Parser->Run(Opts.NoInitialTextSection);
   }
 
-  Parser->setTargetParser(*TAP.get());
+  // Close the output stream early.
+  Out.reset();
 
-  bool Success = !Parser->Run(Opts.NoInitialTextSection);
-
-  // Close the output.
-  delete Out;
-
-  // Delete output on errors.
-  if (!Success && Opts.OutputPath != "-")
+  // Delete output file if there were errors.
+  if (Failed && Opts.OutputPath != "-")
     sys::fs::remove(Opts.OutputPath);
 
-  return Success;
+  return Failed;
 }
 
 static void LLVMErrorHandler(void *UserData, const std::string &Message,
@@ -446,10 +450,10 @@ int cc1as_main(const char **ArgBegin, const char **ArgEnd,
   if (!AssemblerInvocation::CreateFromArgs(Asm, ArgBegin, ArgEnd, Diags))
     return 1;
 
-  // Honor -help.
   if (Asm.ShowHelp) {
-    std::unique_ptr<OptTable> Opts(driver::createCC1AsOptTable());
-    Opts->PrintHelp(llvm::outs(), "clang -cc1as", "Clang Integrated Assembler");
+    std::unique_ptr<OptTable> Opts(driver::createDriverOptTable());
+    Opts->PrintHelp(llvm::outs(), "clang -cc1as", "Clang Integrated Assembler",
+                    /*Include=*/driver::options::CC1AsOption, /*Exclude=*/0);
     return 0;
   }
 
@@ -470,18 +474,17 @@ int cc1as_main(const char **ArgBegin, const char **ArgEnd,
     Args[0] = "clang (LLVM option parsing)";
     for (unsigned i = 0; i != NumArgs; ++i)
       Args[i + 1] = Asm.LLVMArgs[i].c_str();
-    Args[NumArgs + 1] = 0;
+    Args[NumArgs + 1] = nullptr;
     llvm::cl::ParseCommandLineOptions(NumArgs + 1, Args);
   }
 
   // Execute the invocation, unless there were parsing errors.
-  bool Success = false;
-  if (!Diags.hasErrorOccurred())
-    Success = ExecuteAssembler(Asm, Diags);
+  bool Failed = Diags.hasErrorOccurred() || ExecuteAssembler(Asm, Diags);
 
   // If any timers were active but haven't been destroyed yet, print their
   // results now.
   TimerGroup::printAll(errs());
 
-  return !Success;
+  return !!Failed;
 }
+

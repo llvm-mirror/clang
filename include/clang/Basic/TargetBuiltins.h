@@ -1,4 +1,4 @@
-//===--- TargetBuiltins.h - Target specific builtin IDs -------------------===//
+//===--- TargetBuiltins.h - Target specific builtin IDs ---------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -30,16 +30,6 @@ namespace clang {
   };
   }
 
-  /// \brief AArch64 builtins
-  namespace AArch64 {
-    enum {
-      LastTIBuiltin = clang::Builtin::FirstTSBuiltin-1,
-      LastNEONBuiltin = NEON::FirstTSBuiltin - 1,
-#define BUILTIN(ID, TYPE, ATTRS) BI##ID,
-#include "clang/Basic/BuiltinsAArch64.def"
-      LastTSBuiltin
-    };
-  }
   /// \brief ARM builtins
   namespace ARM {
     enum {
@@ -51,13 +41,13 @@ namespace clang {
     };
   }
 
-  /// \brief ARM64 builtins
-  namespace ARM64 {
+  /// \brief AArch64 builtins
+  namespace AArch64 {
   enum {
     LastTIBuiltin = clang::Builtin::FirstTSBuiltin - 1,
     LastNEONBuiltin = NEON::FirstTSBuiltin - 1,
   #define BUILTIN(ID, TYPE, ATTRS) BI##ID,
-  #include "clang/Basic/BuiltinsARM64.def"
+  #include "clang/Basic/BuiltinsAArch64.def"
     LastTSBuiltin
   };
   }
@@ -82,6 +72,15 @@ namespace clang {
     };
   }
 
+  /// \brief R600 builtins
+  namespace R600 {
+  enum {
+    LastTIBuiltin = clang::Builtin::FirstTSBuiltin - 1,
+  #define BUILTIN(ID, TYPE, ATTRS) BI##ID,
+  #include "clang/Basic/BuiltinsR600.def"
+    LastTSBuiltin
+  };
+  }
 
   /// \brief X86 builtins
   namespace X86 {

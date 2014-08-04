@@ -70,7 +70,8 @@ CXXRecordDecl::DefinitionData::DefinitionData(CXXRecordDecl *D)
     ImplicitCopyAssignmentHasConstParam(true),
     HasDeclaredCopyConstructorWithConstParam(false),
     HasDeclaredCopyAssignmentWithConstParam(false),
-    IsLambda(false), NumBases(0), NumVBases(0), Bases(), VBases(),
+    IsLambda(false), IsParsingBaseSpecifiers(false), NumBases(0), NumVBases(0),
+    Bases(), VBases(),
     Definition(D), FirstFriend() {
 }
 
@@ -88,7 +89,7 @@ CXXRecordDecl::CXXRecordDecl(Kind K, TagKind TK, const ASTContext &C,
                              CXXRecordDecl *PrevDecl)
     : RecordDecl(K, TK, C, DC, StartLoc, IdLoc, Id, PrevDecl),
       DefinitionData(PrevDecl ? PrevDecl->DefinitionData
-                              : DefinitionDataPtr(C)),
+                              : DefinitionDataPtr(this)),
       TemplateOrInstantiation() {}
 
 CXXRecordDecl *CXXRecordDecl::Create(const ASTContext &C, TagKind TK,
@@ -115,9 +116,9 @@ CXXRecordDecl::CreateLambda(const ASTContext &C, DeclContext *DC,
       new (C, DC) CXXRecordDecl(CXXRecord, TTK_Class, C, DC, Loc, Loc,
                                 nullptr, nullptr);
   R->IsBeingDefined = true;
-  R->DefinitionData.setNotUpdated(
+  R->DefinitionData =
       new (C) struct LambdaDefinitionData(R, Info, Dependent, IsGeneric,
-                                          CaptureDefault));
+                                          CaptureDefault);
   R->MayHaveOutOfDateDef = false;
   R->setImplicit(true);
   C.getTypeDeclType(R, /*PrevDecl=*/nullptr);
@@ -334,8 +335,10 @@ CXXRecordDecl::setBases(CXXBaseSpecifier const * const *Bases,
     addedClassSubobject(BaseClassDecl);
   }
   
-  if (VBases.empty())
+  if (VBases.empty()) {
+    data().IsParsingBaseSpecifiers = false;
     return;
+  }
 
   // Create base specifier for any direct or indirect virtual bases.
   data().VBases = new (C) CXXBaseSpecifier[VBases.size()];
@@ -346,6 +349,8 @@ CXXRecordDecl::setBases(CXXBaseSpecifier const * const *Bases,
       addedClassSubobject(Type->getAsCXXRecordDecl());
     data().getVBases()[I] = *VBases[I];
   }
+
+  data().IsParsingBaseSpecifiers = false;
 }
 
 void CXXRecordDecl::addedClassSubobject(CXXRecordDecl *Subobj) {
@@ -1620,7 +1625,7 @@ CXXCtorInitializer::CXXCtorInitializer(ASTContext &Context,
                                        VarDecl **Indices,
                                        unsigned NumIndices)
   : Initializee(Member), MemberOrEllipsisLocation(MemberLoc), Init(Init), 
-    LParenLoc(L), RParenLoc(R), IsVirtual(false),
+    LParenLoc(L), RParenLoc(R), IsDelegating(false), IsVirtual(false),
     IsWritten(false), SourceOrderOrNumArrayIndices(NumIndices)
 {
   VarDecl **MyIndices = reinterpret_cast<VarDecl **> (this + 1);

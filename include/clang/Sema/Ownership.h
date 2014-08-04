@@ -161,10 +161,7 @@ namespace clang {
     bool isUnset() const { return !Invalid && !Val; }
 
     PtrTy get() const { return Val; }
-    // FIXME: Replace with get.
-    PtrTy release() const { return Val; }
-    PtrTy take() const { return Val; }
-    template <typename T> T *takeAs() { return static_cast<T*>(get()); }
+    template <typename T> T *getAs() { return static_cast<T*>(get()); }
 
     void set(PtrTy V) { Val = V; }
 
@@ -206,10 +203,7 @@ namespace clang {
       void *VP = reinterpret_cast<void *>(PtrWithInvalid & ~0x01);
       return PtrTraits::getFromVoidPointer(VP);
     }
-    // FIXME: Replace with get.
-    PtrTy take() const { return get(); }
-    PtrTy release() const { return get(); }
-    template <typename T> T *takeAs() { return static_cast<T*>(get()); }
+    template <typename T> T *getAs() { return static_cast<T*>(get()); }
 
     void set(PtrTy V) {
       void *VP = PtrTraits::getAsVoidPointer(V);
@@ -264,11 +258,11 @@ namespace clang {
   typedef ActionResult<Decl*> DeclResult;
   typedef OpaquePtr<TemplateName> ParsedTemplateTy;
 
-  typedef llvm::MutableArrayRef<Expr*> MultiExprArg;
-  typedef llvm::MutableArrayRef<Stmt*> MultiStmtArg;
-  typedef llvm::MutableArrayRef<ParsedTemplateArgument> ASTTemplateArgsPtr;
-  typedef llvm::MutableArrayRef<ParsedType> MultiTypeArg;
-  typedef llvm::MutableArrayRef<TemplateParameterList*> MultiTemplateParamsArg;
+  typedef MutableArrayRef<Expr*> MultiExprArg;
+  typedef MutableArrayRef<Stmt*> MultiStmtArg;
+  typedef MutableArrayRef<ParsedTemplateArgument> ASTTemplateArgsPtr;
+  typedef MutableArrayRef<ParsedType> MultiTypeArg;
+  typedef MutableArrayRef<TemplateParameterList*> MultiTemplateParamsArg;
 
   inline ExprResult ExprError() { return ExprResult(true); }
   inline StmtResult StmtError() { return StmtResult(true); }

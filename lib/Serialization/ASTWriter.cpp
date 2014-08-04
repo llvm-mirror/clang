@@ -83,6 +83,8 @@ namespace {
   public:
     /// \brief Type code that corresponds to the record generated.
     TypeCode Code;
+    /// \brief Abbreviation to use for the record, if any.
+    unsigned AbbrevToUse;
 
     ASTTypeWriter(ASTWriter &Writer, ASTWriter::RecordDataImpl &Record)
       : Writer(Writer), Record(Record), Code(TYPE_EXT_QUAL) { }
@@ -190,6 +192,9 @@ void ASTTypeWriter::VisitFunctionType(const FunctionType *T) {
   // FIXME: need to stabilize encoding of calling convention...
   Record.push_back(C.getCC());
   Record.push_back(C.getProducesResult());
+
+  if (C.getHasRegParm() || C.getRegParm() || C.getProducesResult())
+    AbbrevToUse = 0;
 }
 
 void ASTTypeWriter::VisitFunctionNoProtoType(const FunctionNoProtoType *T) {
@@ -216,14 +221,21 @@ static void addExceptionSpec(ASTWriter &Writer, const FunctionProtoType *T,
 
 void ASTTypeWriter::VisitFunctionProtoType(const FunctionProtoType *T) {
   VisitFunctionType(T);
-  Record.push_back(T->getNumParams());
-  for (unsigned I = 0, N = T->getNumParams(); I != N; ++I)
-    Writer.AddTypeRef(T->getParamType(I), Record);
+
   Record.push_back(T->isVariadic());
   Record.push_back(T->hasTrailingReturn());
   Record.push_back(T->getTypeQuals());
   Record.push_back(static_cast<unsigned>(T->getRefQualifier()));
   addExceptionSpec(Writer, T, Record);
+
+  Record.push_back(T->getNumParams());
+  for (unsigned I = 0, N = T->getNumParams(); I != N; ++I)
+    Writer.AddTypeRef(T->getParamType(I), Record);
+
+  if (T->isVariadic() || T->hasTrailingReturn() || T->getTypeQuals() ||
+      T->getRefQualifier() || T->getExceptionSpecType() != EST_None)
+    AbbrevToUse = 0;
+
   Code = TYPE_FUNCTION_PROTO;
 }
 
@@ -649,6 +661,40 @@ void TypeLocWriter::VisitAtomicTypeLoc(AtomicTypeLoc TL) {
   Writer.AddSourceLocation(TL.getRParenLoc(), Record);
 }
 
+void ASTWriter::WriteTypeAbbrevs() {
+  using namespace llvm;
+
+  BitCodeAbbrev *Abv;
+
+  // Abbreviation for TYPE_EXT_QUAL
+  Abv = new BitCodeAbbrev();
+  Abv->Add(BitCodeAbbrevOp(serialization::TYPE_EXT_QUAL));
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // Type
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 3));   // Quals
+  TypeExtQualAbbrev = Stream.EmitAbbrev(Abv);
+
+  // Abbreviation for TYPE_FUNCTION_PROTO
+  Abv = new BitCodeAbbrev();
+  Abv->Add(BitCodeAbbrevOp(serialization::TYPE_FUNCTION_PROTO));
+  // FunctionType
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // ReturnType
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // NoReturn
+  Abv->Add(BitCodeAbbrevOp(0));                         // HasRegParm
+  Abv->Add(BitCodeAbbrevOp(0));                         // RegParm
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 4)); // CC
+  Abv->Add(BitCodeAbbrevOp(0));                         // ProducesResult
+  // FunctionProtoType
+  Abv->Add(BitCodeAbbrevOp(0));                         // IsVariadic
+  Abv->Add(BitCodeAbbrevOp(0));                         // HasTrailingReturn
+  Abv->Add(BitCodeAbbrevOp(0));                         // TypeQuals
+  Abv->Add(BitCodeAbbrevOp(0));                         // RefQualifier
+  Abv->Add(BitCodeAbbrevOp(EST_None));                  // ExceptionSpec
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // NumParams
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Array));
+  Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::VBR, 6));   // Params
+  TypeFunctionProtoAbbrev = Stream.EmitAbbrev(Abv);
+}
+
 //===----------------------------------------------------------------------===//
 // ASTWriter Implementation
 //===----------------------------------------------------------------------===//
@@ -661,7 +707,8 @@ static void EmitBlockID(unsigned ID, const char *Name,
   Stream.EmitRecord(llvm::bitc::BLOCKINFO_CODE_SETBID, Record);
 
   // Emit the block name if present.
-  if (Name == 0 || Name[0] == 0) return;
+  if (!Name || Name[0] == 0)
+    return;
   Record.clear();
   while (*Name)
     Record.push_back(*Name++);
@@ -683,6 +730,7 @@ static void AddStmtsExprs(llvm::BitstreamWriter &Stream,
 #define RECORD(X) EmitRecordID(X, #X, Stream, Record)
   RECORD(STMT_STOP);
   RECORD(STMT_NULL_PTR);
+  RECORD(STMT_REF_PTR);
   RECORD(STMT_NULL);
   RECORD(STMT_COMPOUND);
   RECORD(STMT_CASE);
@@ -710,6 +758,7 @@ static void AddStmtsExprs(llvm::BitstreamWriter &Stream,
   RECORD(EXPR_STRING_LITERAL);
   RECORD(EXPR_CHARACTER_LITERAL);
   RECORD(EXPR_PAREN);
+  RECORD(EXPR_PAREN_LIST);
   RECORD(EXPR_UNARY_OPERATOR);
   RECORD(EXPR_SIZEOF_ALIGN_OF);
   RECORD(EXPR_ARRAY_SUBSCRIPT);
@@ -751,8 +800,13 @@ static void AddStmtsExprs(llvm::BitstreamWriter &Stream,
   RECORD(STMT_OBJC_AT_SYNCHRONIZED);
   RECORD(STMT_OBJC_AT_THROW);
   RECORD(EXPR_OBJC_BOOL_LITERAL);
+  RECORD(STMT_CXX_CATCH);
+  RECORD(STMT_CXX_TRY);
+  RECORD(STMT_CXX_FOR_RANGE);
   RECORD(EXPR_CXX_OPERATOR_CALL);
+  RECORD(EXPR_CXX_MEMBER_CALL);
   RECORD(EXPR_CXX_CONSTRUCT);
+  RECORD(EXPR_CXX_TEMPORARY_OBJECT);
   RECORD(EXPR_CXX_STATIC_CAST);
   RECORD(EXPR_CXX_DYNAMIC_CAST);
   RECORD(EXPR_CXX_REINTERPRET_CAST);
@@ -764,11 +818,10 @@ static void AddStmtsExprs(llvm::BitstreamWriter &Stream,
   RECORD(EXPR_CXX_NULL_PTR_LITERAL);
   RECORD(EXPR_CXX_TYPEID_EXPR);
   RECORD(EXPR_CXX_TYPEID_TYPE);
-  RECORD(EXPR_CXX_UUIDOF_EXPR);
-  RECORD(EXPR_CXX_UUIDOF_TYPE);
   RECORD(EXPR_CXX_THIS);
   RECORD(EXPR_CXX_THROW);
   RECORD(EXPR_CXX_DEFAULT_ARG);
+  RECORD(EXPR_CXX_DEFAULT_INIT);
   RECORD(EXPR_CXX_BIND_TEMPORARY);
   RECORD(EXPR_CXX_SCALAR_VALUE_INIT);
   RECORD(EXPR_CXX_NEW);
@@ -780,12 +833,22 @@ static void AddStmtsExprs(llvm::BitstreamWriter &Stream,
   RECORD(EXPR_CXX_UNRESOLVED_CONSTRUCT);
   RECORD(EXPR_CXX_UNRESOLVED_MEMBER);
   RECORD(EXPR_CXX_UNRESOLVED_LOOKUP);
+  RECORD(EXPR_CXX_EXPRESSION_TRAIT);
   RECORD(EXPR_CXX_NOEXCEPT);
   RECORD(EXPR_OPAQUE_VALUE);
+  RECORD(EXPR_BINARY_CONDITIONAL_OPERATOR);
+  RECORD(EXPR_TYPE_TRAIT);
+  RECORD(EXPR_ARRAY_TYPE_TRAIT);
   RECORD(EXPR_PACK_EXPANSION);
   RECORD(EXPR_SIZEOF_PACK);
+  RECORD(EXPR_SUBST_NON_TYPE_TEMPLATE_PARM);
   RECORD(EXPR_SUBST_NON_TYPE_TEMPLATE_PARM_PACK);
+  RECORD(EXPR_FUNCTION_PARM_PACK);
+  RECORD(EXPR_MATERIALIZE_TEMPORARY);
   RECORD(EXPR_CUDA_KERNEL_CALL);
+  RECORD(EXPR_CXX_UUIDOF_EXPR);
+  RECORD(EXPR_CXX_UUIDOF_TYPE);
+  RECORD(EXPR_LAMBDA);
 #undef RECORD
 }
 
@@ -865,6 +928,7 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(MACRO_OFFSET);
   RECORD(MACRO_TABLE);
   RECORD(LATE_PARSED_TEMPLATE);
+  RECORD(OPTIMIZE_PRAGMA_OPTIONS);
 
   // SourceManager Block.
   BLOCK(SOURCE_MANAGER_BLOCK);
@@ -893,15 +957,14 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(TYPE_VARIABLE_ARRAY);
   RECORD(TYPE_VECTOR);
   RECORD(TYPE_EXT_VECTOR);
-  RECORD(TYPE_FUNCTION_PROTO);
   RECORD(TYPE_FUNCTION_NO_PROTO);
+  RECORD(TYPE_FUNCTION_PROTO);
   RECORD(TYPE_TYPEDEF);
   RECORD(TYPE_TYPEOF_EXPR);
   RECORD(TYPE_TYPEOF);
   RECORD(TYPE_RECORD);
   RECORD(TYPE_ENUM);
   RECORD(TYPE_OBJC_INTERFACE);
-  RECORD(TYPE_OBJC_OBJECT);
   RECORD(TYPE_OBJC_OBJECT_POINTER);
   RECORD(TYPE_DECLTYPE);
   RECORD(TYPE_ELABORATED);
@@ -918,8 +981,13 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(TYPE_PACK_EXPANSION);
   RECORD(TYPE_ATTRIBUTED);
   RECORD(TYPE_SUBST_TEMPLATE_TYPE_PARM_PACK);
+  RECORD(TYPE_AUTO);
+  RECORD(TYPE_UNARY_TRANSFORM);
   RECORD(TYPE_ATOMIC);
+  RECORD(TYPE_DECAYED);
+  RECORD(TYPE_ADJUSTED);
   RECORD(DECL_TYPEDEF);
+  RECORD(DECL_TYPEALIAS);
   RECORD(DECL_ENUM);
   RECORD(DECL_RECORD);
   RECORD(DECL_ENUM_CONSTANT);
@@ -1898,6 +1966,10 @@ static bool shouldIgnoreMacro(MacroDirective *MD, bool IsModule,
       return true;
 
   if (IsModule) {
+    // Re-export any imported directives.
+    if (MD->isImported())
+      return false;
+
     SourceLocation Loc = MD->getLocation();
     if (Loc.isInvalid())
       return true;
@@ -1975,15 +2047,23 @@ void ASTWriter::WritePreprocessor(const Preprocessor &PP, bool IsModule) {
 
       AddSourceLocation(MD->getLocation(), Record);
       Record.push_back(MD->getKind());
-      if (DefMacroDirective *DefMD = dyn_cast<DefMacroDirective>(MD)) {
+      if (auto *DefMD = dyn_cast<DefMacroDirective>(MD)) {
         MacroID InfoID = getMacroRef(DefMD->getInfo(), Name);
         Record.push_back(InfoID);
-        Record.push_back(DefMD->isImported());
+        Record.push_back(DefMD->getOwningModuleID());
         Record.push_back(DefMD->isAmbiguous());
-
-      } else if (VisibilityMacroDirective *
-                   VisMD = dyn_cast<VisibilityMacroDirective>(MD)) {
+      } else if (auto *UndefMD = dyn_cast<UndefMacroDirective>(MD)) {
+        Record.push_back(UndefMD->getOwningModuleID());
+      } else {
+        auto *VisMD = cast<VisibilityMacroDirective>(MD);
         Record.push_back(VisMD->isPublic());
+      }
+
+      if (MD->isImported()) {
+        auto Overrides = MD->getOverriddenModules();
+        Record.push_back(Overrides.size());
+        for (auto Override : Overrides)
+          Record.push_back(Override);
       }
     }
     if (Record.empty())
@@ -2260,7 +2340,7 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
   }
   
   // Enter the submodule description block.
-  Stream.EnterSubblock(SUBMODULE_BLOCK_ID, NUM_ALLOWED_ABBREVS_SIZE);
+  Stream.EnterSubblock(SUBMODULE_BLOCK_ID, /*bits for abbreviations*/4);
   
   // Write the abbreviations needed for the submodules block.
   using namespace llvm;
@@ -2540,7 +2620,7 @@ void ASTWriter::WritePragmaDiagnosticMappings(const DiagnosticsEngine &Diag,
              I = point.State->begin(), E = point.State->end(); I != E; ++I) {
         if (I->second.isPragma()) {
           Record.push_back(I->first);
-          Record.push_back(I->second.getMapping());
+          Record.push_back((unsigned)I->second.getSeverity());
         }
       }
       Record.push_back(-1); // mark the end of the diag/map pairs for this
@@ -2600,12 +2680,14 @@ void ASTWriter::WriteType(QualType T) {
 
   // Emit the type's representation.
   ASTTypeWriter W(*this, Record);
+  W.AbbrevToUse = 0;
 
   if (T.hasLocalNonFastQualifiers()) {
     Qualifiers Qs = T.getLocalQualifiers();
     AddTypeRef(T.getLocalUnqualifiedType(), Record);
     Record.push_back(Qs.getAsOpaqueValue());
     W.Code = TYPE_EXT_QUAL;
+    W.AbbrevToUse = TypeExtQualAbbrev;
   } else {
     switch (T->getTypeClass()) {
       // For all of the concrete, non-dependent types, call the
@@ -2618,7 +2700,7 @@ void ASTWriter::WriteType(QualType T) {
   }
 
   // Emit the serialized record.
-  Stream.EmitRecord(W.Code, Record);
+  Stream.EmitRecord(W.Code, Record, W.AbbrevToUse);
 
   // Flush any expressions that were written as part of this type.
   FlushStmts();
@@ -2984,106 +3066,140 @@ class ASTIdentifierTableTrait {
     if (Macro || (Macro = PP.getMacroDirectiveHistory(II))) {
       if (!IsModule)
         return !shouldIgnoreMacro(Macro, IsModule, PP);
-      SubmoduleID ModID;
-      if (getFirstPublicSubmoduleMacro(Macro, ModID))
+
+      MacroState State;
+      if (getFirstPublicSubmoduleMacro(Macro, State))
         return true;
     }
 
     return false;
   }
 
-  typedef llvm::SmallVectorImpl<SubmoduleID> OverriddenList;
+  enum class SubmoduleMacroState {
+    /// We've seen nothing about this macro.
+    None,
+    /// We've seen a public visibility directive.
+    Public,
+    /// We've either exported a macro for this module or found that the
+    /// module's definition of this macro is private.
+    Done
+  };
+  typedef llvm::DenseMap<SubmoduleID, SubmoduleMacroState> MacroState;
 
   MacroDirective *
-  getFirstPublicSubmoduleMacro(MacroDirective *MD, SubmoduleID &ModID) {
-    ModID = 0;
-    llvm::SmallVector<SubmoduleID, 1> Overridden;
-    if (MacroDirective *NextMD = getPublicSubmoduleMacro(MD, ModID, Overridden))
-      if (!shouldIgnoreMacro(NextMD, IsModule, PP))
-        return NextMD;
-    return 0;
+  getFirstPublicSubmoduleMacro(MacroDirective *MD, MacroState &State) {
+    if (MacroDirective *NextMD = getPublicSubmoduleMacro(MD, State))
+      return NextMD;
+    return nullptr;
   }
 
   MacroDirective *
-  getNextPublicSubmoduleMacro(MacroDirective *MD, SubmoduleID &ModID,
-                              OverriddenList &Overridden) {
+  getNextPublicSubmoduleMacro(MacroDirective *MD, MacroState &State) {
     if (MacroDirective *NextMD =
-            getPublicSubmoduleMacro(MD->getPrevious(), ModID, Overridden))
-      if (!shouldIgnoreMacro(NextMD, IsModule, PP))
-        return NextMD;
-    return 0;
+            getPublicSubmoduleMacro(MD->getPrevious(), State))
+      return NextMD;
+    return nullptr;
   }
 
-  /// \brief Traverses the macro directives history and returns the latest
-  /// public macro definition or undefinition that is not in ModID.
+  /// \brief Traverses the macro directives history and returns the next
+  /// public macro definition or undefinition that has not been found so far.
+  ///
   /// A macro that is defined in submodule A and undefined in submodule B
   /// will still be considered as defined/exported from submodule A.
-  /// ModID is updated to the module containing the returned directive.
-  ///
-  /// FIXME: This process breaks down if a module defines a macro, imports
-  ///        another submodule that changes the macro, then changes the
-  ///        macro again itself.
   MacroDirective *getPublicSubmoduleMacro(MacroDirective *MD,
-                                          SubmoduleID &ModID,
-                                          OverriddenList &Overridden) {
+                                          MacroState &State) {
     if (!MD)
-      return 0;
+      return nullptr;
 
-    Overridden.clear();
-    SubmoduleID OrigModID = ModID;
     Optional<bool> IsPublic;
     for (; MD; MD = MD->getPrevious()) {
-      SubmoduleID ThisModID = getSubmoduleID(MD);
-      if (ThisModID == 0) {
-        IsPublic = Optional<bool>();
-        continue;
-      }
-      if (ThisModID != ModID) {
-        ModID = ThisModID;
-        IsPublic = Optional<bool>();
-      }
+      // Once we hit an ignored macro, we're done: the rest of the chain
+      // will all be ignored macros.
+      if (shouldIgnoreMacro(MD, IsModule, PP))
+        break;
 
-      // If this is a definition from a submodule import, that submodule's
-      // definition is overridden by the definition or undefinition that we
-      // started with.
-      // FIXME: This should only apply to macros defined in OrigModID.
-      // We can't do that currently, because a #include of a different submodule
-      // of the same module just leaks through macros instead of providing new
-      // DefMacroDirectives for them.
-      if (DefMacroDirective *DefMD = dyn_cast<DefMacroDirective>(MD)) {
-        // Figure out which submodule the macro was originally defined within.
-        SubmoduleID SourceID = DefMD->getInfo()->getOwningModuleID();
-        if (!SourceID) {
-          SourceLocation DefLoc = DefMD->getInfo()->getDefinitionLoc();
-          if (DefLoc == MD->getLocation())
-            SourceID = ThisModID;
-          else
-            SourceID = Writer.inferSubmoduleIDFromLocation(DefLoc);
-        }
-        if (SourceID != OrigModID)
-          Overridden.push_back(SourceID);
-      }
+      // If this macro was imported, re-export it.
+      if (MD->isImported())
+        return MD;
 
-      // We are looking for a definition in a different submodule than the one
-      // that we started with. If a submodule has re-definitions of the same
-      // macro, only the last definition will be used as the "exported" one.
-      if (ModID == OrigModID)
+      SubmoduleID ModID = getSubmoduleID(MD);
+      auto &S = State[ModID];
+      assert(ModID && "found macro in no submodule");
+
+      if (S == SubmoduleMacroState::Done)
         continue;
 
-      // The latest visibility directive for a name in a submodule affects all
-      // the directives that come before it.
-      if (VisibilityMacroDirective *VisMD =
-              dyn_cast<VisibilityMacroDirective>(MD)) {
-        if (!IsPublic.hasValue())
-          IsPublic = VisMD->isPublic();
-      } else if (!IsPublic.hasValue() || IsPublic.getValue()) {
-        // FIXME: If we find an imported macro, we should include its list of
-        // overrides in our export.
+      if (auto *VisMD = dyn_cast<VisibilityMacroDirective>(MD)) {
+        // The latest visibility directive for a name in a submodule affects all
+        // the directives that come before it.
+        if (S == SubmoduleMacroState::None)
+          S = VisMD->isPublic() ? SubmoduleMacroState::Public
+                                : SubmoduleMacroState::Done;
+      } else {
+        S = SubmoduleMacroState::Done;
         return MD;
       }
     }
 
-    return 0;
+    return nullptr;
+  }
+
+  ArrayRef<SubmoduleID>
+  getOverriddenSubmodules(MacroDirective *MD,
+                          SmallVectorImpl<SubmoduleID> &ScratchSpace) {
+    assert(!isa<VisibilityMacroDirective>(MD) &&
+           "only #define and #undef can override");
+    if (MD->isImported())
+      return MD->getOverriddenModules();
+
+    ScratchSpace.clear();
+    SubmoduleID ModID = getSubmoduleID(MD);
+    for (MD = MD->getPrevious(); MD; MD = MD->getPrevious()) {
+      if (shouldIgnoreMacro(MD, IsModule, PP))
+        break;
+
+      // If this is a definition from a submodule import, that submodule's
+      // definition is overridden by the definition or undefinition that we
+      // started with.
+      if (MD->isImported()) {
+        if (auto *DefMD = dyn_cast<DefMacroDirective>(MD)) {
+          SubmoduleID DefModuleID = DefMD->getInfo()->getOwningModuleID();
+          assert(DefModuleID && "imported macro has no owning module");
+          ScratchSpace.push_back(DefModuleID);
+        } else if (auto *UndefMD = dyn_cast<UndefMacroDirective>(MD)) {
+          // If we override a #undef, we override anything that #undef overrides.
+          // We don't need to override it, since an active #undef doesn't affect
+          // the meaning of a macro.
+          auto Overrides = UndefMD->getOverriddenModules();
+          ScratchSpace.insert(ScratchSpace.end(),
+                              Overrides.begin(), Overrides.end());
+        }
+      }
+
+      // Stop once we leave the original macro's submodule.
+      //
+      // Either this submodule #included another submodule of the same
+      // module or it just happened to be built after the other module.
+      // In the former case, we override the submodule's macro.
+      //
+      // FIXME: In the latter case, we shouldn't do so, but we can't tell
+      // these cases apart.
+      //
+      // FIXME: We can leave this submodule and re-enter it if it #includes a
+      // header within a different submodule of the same module. In such cases
+      // the overrides list will be incomplete.
+      SubmoduleID DirectiveModuleID = getSubmoduleID(MD);
+      if (DirectiveModuleID != ModID) {
+        if (DirectiveModuleID && !MD->isImported())
+          ScratchSpace.push_back(DirectiveModuleID);
+        break;
+      }
+    }
+
+    std::sort(ScratchSpace.begin(), ScratchSpace.end());
+    ScratchSpace.erase(std::unique(ScratchSpace.begin(), ScratchSpace.end()),
+                       ScratchSpace.end());
+    return ScratchSpace;
   }
 
   SubmoduleID getSubmoduleID(MacroDirective *MD) {
@@ -3112,34 +3228,30 @@ public:
   EmitKeyDataLength(raw_ostream& Out, IdentifierInfo* II, IdentID ID) {
     unsigned KeyLen = II->getLength() + 1;
     unsigned DataLen = 4; // 4 bytes for the persistent ID << 1
-    MacroDirective *Macro = 0;
+    MacroDirective *Macro = nullptr;
     if (isInterestingIdentifier(II, Macro)) {
       DataLen += 2; // 2 bytes for builtin ID
       DataLen += 2; // 2 bytes for flags
       if (hadMacroDefinition(II, Macro)) {
         DataLen += 4; // MacroDirectives offset.
         if (IsModule) {
-          SubmoduleID ModID;
-          llvm::SmallVector<SubmoduleID, 4> Overridden;
-          for (MacroDirective *
-                 MD = getFirstPublicSubmoduleMacro(Macro, ModID);
-                 MD; MD = getNextPublicSubmoduleMacro(MD, ModID, Overridden)) {
-            // Previous macro's overrides.
-            if (!Overridden.empty())
-              DataLen += 4 * (1 + Overridden.size());
+          MacroState State;
+          SmallVector<SubmoduleID, 16> Scratch;
+          for (MacroDirective *MD = getFirstPublicSubmoduleMacro(Macro, State);
+               MD; MD = getNextPublicSubmoduleMacro(MD, State)) {
             DataLen += 4; // MacroInfo ID or ModuleID.
+            if (unsigned NumOverrides =
+                    getOverriddenSubmodules(MD, Scratch).size())
+              DataLen += 4 * (1 + NumOverrides);
           }
-          // Previous macro's overrides.
-          if (!Overridden.empty())
-            DataLen += 4 * (1 + Overridden.size());
-          DataLen += 4;
+          DataLen += 4; // 0 terminator.
         }
       }
 
       for (IdentifierResolver::iterator D = IdResolver.begin(II),
                                      DEnd = IdResolver.end();
            D != DEnd; ++D)
-        DataLen += sizeof(DeclID);
+        DataLen += 4;
     }
     using namespace llvm::support;
     endian::Writer<little> LE(Out);
@@ -3161,13 +3273,15 @@ public:
   }
 
   static void emitMacroOverrides(raw_ostream &Out,
-                                 llvm::ArrayRef<SubmoduleID> Overridden) {
+                                 ArrayRef<SubmoduleID> Overridden) {
     if (!Overridden.empty()) {
       using namespace llvm::support;
       endian::Writer<little> LE(Out);
       LE.write<uint32_t>(Overridden.size() | 0x80000000U);
-      for (unsigned I = 0, N = Overridden.size(); I != N; ++I)
+      for (unsigned I = 0, N = Overridden.size(); I != N; ++I) {
+        assert(Overridden[I] && "zero module ID for override");
         LE.write<uint32_t>(Overridden[I]);
+      }
     }
   }
 
@@ -3175,7 +3289,7 @@ public:
                 IdentID ID, unsigned) {
     using namespace llvm::support;
     endian::Writer<little> LE(Out);
-    MacroDirective *Macro = 0;
+    MacroDirective *Macro = nullptr;
     if (!isInterestingIdentifier(II, Macro)) {
       LE.write<uint32_t>(ID << 1);
       return;
@@ -3199,24 +3313,28 @@ public:
       LE.write<uint32_t>(Writer.getMacroDirectivesOffset(II));
       if (IsModule) {
         // Write the IDs of macros coming from different submodules.
-        SubmoduleID ModID;
-        llvm::SmallVector<SubmoduleID, 4> Overridden;
-        for (MacroDirective *
-               MD = getFirstPublicSubmoduleMacro(Macro, ModID);
-               MD; MD = getNextPublicSubmoduleMacro(MD, ModID, Overridden)) {
-          MacroID InfoID = 0;
-          emitMacroOverrides(Out, Overridden);
+        MacroState State;
+        SmallVector<SubmoduleID, 16> Scratch;
+        for (MacroDirective *MD = getFirstPublicSubmoduleMacro(Macro, State);
+             MD; MD = getNextPublicSubmoduleMacro(MD, State)) {
           if (DefMacroDirective *DefMD = dyn_cast<DefMacroDirective>(MD)) {
-            InfoID = Writer.getMacroID(DefMD->getInfo());
+            // FIXME: If this macro directive was created by #pragma pop_macros,
+            // or if it was created implicitly by resolving conflicting macros,
+            // it may be for a different submodule from the one in the MacroInfo
+            // object. If so, we should write out its owning ModuleID.
+            MacroID InfoID = Writer.getMacroID(DefMD->getInfo());
             assert(InfoID);
             LE.write<uint32_t>(InfoID << 1);
           } else {
-            assert(isa<UndefMacroDirective>(MD));
-            LE.write<uint32_t>((ModID << 1) | 1);
+            auto *UndefMD = cast<UndefMacroDirective>(MD);
+            SubmoduleID Mod = UndefMD->isImported()
+                                  ? UndefMD->getOwningModuleID()
+                                  : getSubmoduleID(UndefMD);
+            LE.write<uint32_t>((Mod << 1) | 1);
           }
+          emitMacroOverrides(Out, getOverriddenSubmodules(MD, Scratch));
         }
-        emitMacroOverrides(Out, Overridden);
-        LE.write<uint32_t>(0);
+        LE.write<uint32_t>(0xdeadbeef);
       }
     }
 
@@ -3626,8 +3744,6 @@ uint64_t ASTWriter::WriteDeclContextVisibleBlock(ASTContext &Context,
   Record.push_back(BucketOffset);
   Stream.EmitRecordWithBlob(DeclContextVisibleLookupAbbrev, Record,
                             LookupTable.str());
-
-  Stream.EmitRecord(DECL_CONTEXT_VISIBLE, Record);
   ++NumVisibleDeclContexts;
   return Offset;
 }
@@ -3849,6 +3965,14 @@ void ASTWriter::WriteLateParsedTemplates(Sema &SemaRef) {
   Stream.EmitRecord(LATE_PARSED_TEMPLATE, Record);
 }
 
+/// \brief Write the state of 'pragma clang optimize' at the end of the module.
+void ASTWriter::WriteOptimizePragmaOptions(Sema &SemaRef) {
+  RecordData Record;
+  SourceLocation PragmaLoc = SemaRef.getOptimizeOffPragmaLocation();
+  AddSourceLocation(PragmaLoc, Record);
+  Stream.EmitRecord(OPTIMIZE_PRAGMA_OPTIONS, Record);
+}
+
 //===----------------------------------------------------------------------===//
 // General Serialization Routines
 //===----------------------------------------------------------------------===//
@@ -3922,29 +4046,26 @@ void ASTWriter::SetSelectorOffset(Selector Sel, uint32_t Offset) {
 }
 
 ASTWriter::ASTWriter(llvm::BitstreamWriter &Stream)
-  : Stream(Stream), Context(0), PP(0), Chain(0), WritingModule(0),
-    WritingAST(false), DoneWritingDeclsAndTypes(false),
-    ASTHasCompilerErrors(false),
-    FirstDeclID(NUM_PREDEF_DECL_IDS), NextDeclID(FirstDeclID),
-    FirstTypeID(NUM_PREDEF_TYPE_IDS), NextTypeID(FirstTypeID),
-    FirstIdentID(NUM_PREDEF_IDENT_IDS), NextIdentID(FirstIdentID),
-    FirstMacroID(NUM_PREDEF_MACRO_IDS), NextMacroID(FirstMacroID),
-    FirstSubmoduleID(NUM_PREDEF_SUBMODULE_IDS), 
-    NextSubmoduleID(FirstSubmoduleID),
-    FirstSelectorID(NUM_PREDEF_SELECTOR_IDS), NextSelectorID(FirstSelectorID),
-    CollectedStmts(&StmtsToEmit),
-    NumStatements(0), NumMacros(0), NumLexicalDeclContexts(0),
-    NumVisibleDeclContexts(0),
-    NextCXXBaseSpecifiersID(1),
-    DeclParmVarAbbrev(0), DeclContextLexicalAbbrev(0),
-    DeclContextVisibleLookupAbbrev(0), UpdateVisibleAbbrev(0),
-    DeclRefExprAbbrev(0), CharacterLiteralAbbrev(0),
-    DeclRecordAbbrev(0), IntegerLiteralAbbrev(0),
-    DeclTypedefAbbrev(0),
-    DeclVarAbbrev(0), DeclFieldAbbrev(0),
-    DeclEnumAbbrev(0), DeclObjCIvarAbbrev(0)
-{
-}
+    : Stream(Stream), Context(nullptr), PP(nullptr), Chain(nullptr),
+      WritingModule(nullptr), WritingAST(false),
+      DoneWritingDeclsAndTypes(false), ASTHasCompilerErrors(false),
+      FirstDeclID(NUM_PREDEF_DECL_IDS), NextDeclID(FirstDeclID),
+      FirstTypeID(NUM_PREDEF_TYPE_IDS), NextTypeID(FirstTypeID),
+      FirstIdentID(NUM_PREDEF_IDENT_IDS), NextIdentID(FirstIdentID),
+      FirstMacroID(NUM_PREDEF_MACRO_IDS), NextMacroID(FirstMacroID),
+      FirstSubmoduleID(NUM_PREDEF_SUBMODULE_IDS),
+      NextSubmoduleID(FirstSubmoduleID),
+      FirstSelectorID(NUM_PREDEF_SELECTOR_IDS), NextSelectorID(FirstSelectorID),
+      CollectedStmts(&StmtsToEmit), NumStatements(0), NumMacros(0),
+      NumLexicalDeclContexts(0), NumVisibleDeclContexts(0),
+      NextCXXBaseSpecifiersID(1), TypeExtQualAbbrev(0),
+      TypeFunctionProtoAbbrev(0), DeclParmVarAbbrev(0),
+      DeclContextLexicalAbbrev(0), DeclContextVisibleLookupAbbrev(0),
+      UpdateVisibleAbbrev(0), DeclRecordAbbrev(0), DeclTypedefAbbrev(0),
+      DeclVarAbbrev(0), DeclFieldAbbrev(0), DeclEnumAbbrev(0),
+      DeclObjCIvarAbbrev(0), DeclCXXMethodAbbrev(0), DeclRefExprAbbrev(0),
+      CharacterLiteralAbbrev(0), IntegerLiteralAbbrev(0),
+      ExprImplicitCastAbbrev(0) {}
 
 ASTWriter::~ASTWriter() {
   llvm::DeleteContainerSeconds(FileDeclIDs);
@@ -3970,18 +4091,18 @@ void ASTWriter::WriteAST(Sema &SemaRef,
   PP = &SemaRef.PP;
   this->WritingModule = WritingModule;
   WriteASTCore(SemaRef, isysroot, OutputFile, WritingModule);
-  Context = 0;
-  PP = 0;
-  this->WritingModule = 0;
-  
+  Context = nullptr;
+  PP = nullptr;
+  this->WritingModule = nullptr;
+
   WritingAST = false;
 }
 
 template<typename Vector>
 static void AddLazyVectorDecls(ASTWriter &Writer, Vector &Vec,
                                ASTWriter::RecordData &Record) {
-  for (typename Vector::iterator I = Vec.begin(0, true), E = Vec.end();
-       I != E; ++I)  {
+  for (typename Vector::iterator I = Vec.begin(nullptr, true), E = Vec.end();
+       I != E; ++I) {
     Writer.AddDeclRef(*I, Record);
   }
 }
@@ -3992,7 +4113,7 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
                              Module *WritingModule) {
   using namespace llvm;
 
-  bool isModule = WritingModule != 0;
+  bool isModule = WritingModule != nullptr;
 
   // Make sure that the AST reader knows to finalize itself.
   if (Chain)
@@ -4316,8 +4437,9 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
 
   // Keep writing types, declarations, and declaration update records
   // until we've emitted all of them.
-  Stream.EnterSubblock(DECLTYPES_BLOCK_ID, NUM_ALLOWED_ABBREVS_SIZE);
-  WriteDeclsBlockAbbrevs();
+  Stream.EnterSubblock(DECLTYPES_BLOCK_ID, /*bits for abbreviations*/5);
+  WriteTypeAbbrevs();
+  WriteDeclAbbrevs();
   for (DeclsToRewriteTy::iterator I = DeclsToRewrite.begin(),
                                   E = DeclsToRewrite.end();
        I != E; ++I)
@@ -4465,6 +4587,8 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
   WriteMergedDecls();
   WriteObjCCategories();
   WriteLateParsedTemplates(SemaRef);
+  if(!WritingModule)
+    WriteOptimizePragmaOptions(SemaRef);
 
   // Some simple statistics
   Record.clear();
@@ -4530,6 +4654,19 @@ void ASTWriter::WriteDeclUpdatesBlocks(RecordDataImpl &OffsetsRecord) {
           auto *Spec = cast<ClassTemplateSpecializationDecl>(RD);
           Record.push_back(Spec->getTemplateSpecializationKind());
           AddSourceLocation(Spec->getPointOfInstantiation(), Record);
+
+          // The instantiation might have been resolved to a partial
+          // specialization. If so, record which one.
+          auto From = Spec->getInstantiatedFrom();
+          if (auto PartialSpec =
+                From.dyn_cast<ClassTemplatePartialSpecializationDecl*>()) {
+            Record.push_back(true);
+            AddDeclRef(PartialSpec, Record);
+            AddTemplateArgumentList(&Spec->getTemplateInstantiationArgs(),
+                                    Record);
+          } else {
+            Record.push_back(false);
+          }
         }
         Record.push_back(RD->getTagKind());
         AddSourceLocation(RD->getLocation(), Record);
@@ -4631,7 +4768,7 @@ void ASTWriter::AddIdentifierRef(const IdentifierInfo *II, RecordDataImpl &Recor
 }
 
 IdentID ASTWriter::getIdentifierRef(const IdentifierInfo *II) {
-  if (II == 0)
+  if (!II)
     return 0;
 
   IdentID &ID = IdentifierIDs[II];
@@ -4644,7 +4781,7 @@ MacroID ASTWriter::getMacroRef(MacroInfo *MI, const IdentifierInfo *Name) {
   // Don't emit builtin macros like __LINE__ to the AST file unless they
   // have been redefined by the header (in which case they are not
   // isBuiltinMacro).
-  if (MI == 0 || MI->isBuiltinMacro())
+  if (!MI || MI->isBuiltinMacro())
     return 0;
 
   MacroID &ID = MacroIDs[MI];
@@ -4657,7 +4794,7 @@ MacroID ASTWriter::getMacroRef(MacroInfo *MI, const IdentifierInfo *Name) {
 }
 
 MacroID ASTWriter::getMacroID(MacroInfo *MI) {
-  if (MI == 0 || MI->isBuiltinMacro())
+  if (!MI || MI->isBuiltinMacro())
     return 0;
   
   assert(MacroIDs.find(MI) != MacroIDs.end() && "Macro not emitted!");
@@ -4674,7 +4811,7 @@ void ASTWriter::AddSelectorRef(const Selector SelRef, RecordDataImpl &Record) {
 }
 
 SelectorID ASTWriter::getSelectorRef(Selector Sel) {
-  if (Sel.getAsOpaquePtr() == 0) {
+  if (Sel.getAsOpaquePtr() == nullptr) {
     return 0;
   }
 
@@ -4752,7 +4889,7 @@ void ASTWriter::AddTemplateArgumentLoc(const TemplateArgumentLoc &Arg,
 
 void ASTWriter::AddTypeSourceInfo(TypeSourceInfo *TInfo, 
                                   RecordDataImpl &Record) {
-  if (TInfo == 0) {
+  if (!TInfo) {
     AddTypeRef(QualType(), Record);
     return;
   }
@@ -4820,8 +4957,8 @@ void ASTWriter::AddDeclRef(const Decl *D, RecordDataImpl &Record) {
 
 DeclID ASTWriter::GetDeclRef(const Decl *D) {
   assert(WritingAST && "Cannot request a declaration ID before AST writing");
-  
-  if (D == 0) {
+
+  if (!D) {
     return 0;
   }
   
@@ -4848,7 +4985,7 @@ DeclID ASTWriter::GetDeclRef(const Decl *D) {
 }
 
 DeclID ASTWriter::getDeclID(const Decl *D) {
-  if (D == 0)
+  if (!D)
     return 0;
 
   // If D comes from an AST file, its declaration ID is already known and
@@ -5167,9 +5304,8 @@ void ASTWriter::AddTemplateArgument(const TemplateArgument &Arg,
     break;
   case TemplateArgument::Pack:
     Record.push_back(Arg.pack_size());
-    for (TemplateArgument::pack_iterator I=Arg.pack_begin(), E=Arg.pack_end();
-           I != E; ++I)
-      AddTemplateArgument(*I, Record);
+    for (const auto &P : Arg.pack_elements())
+      AddTemplateArgument(P, Record);
     break;
   }
 }
@@ -5380,7 +5516,7 @@ void ASTWriter::AddCXXDefinitionData(const CXXRecordDecl *D, RecordDataImpl &Rec
       case LCK_ByCopy:
       case LCK_ByRef:
         VarDecl *Var =
-            Capture.capturesVariable() ? Capture.getCapturedVar() : 0;
+            Capture.capturesVariable() ? Capture.getCapturedVar() : nullptr;
         AddDeclRef(Var, Record);
         AddSourceLocation(Capture.isPackExpansion() ? Capture.getEllipsisLoc()
                                                     : SourceLocation(),

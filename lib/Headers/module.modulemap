@@ -7,6 +7,11 @@ module _Builtin_intrinsics [system] {
   explicit module arm {
     requires arm
 
+    explicit module acle {
+      header "arm_acle.h"
+      export *
+    }
+
     explicit module neon {
       requires neon
       header "arm_neon.h"
@@ -94,6 +99,17 @@ module _Builtin_intrinsics [system] {
       requires avx2
       export avx
       header "avx2intrin.h"
+    }
+
+    explicit module avx512f {
+      requires avx512f
+      export avx2
+      header "avx512fintrin.h"
+    }
+
+    explicit module avx512er {
+      requires avx512er
+      header "avx512erintrin.h"
     }
 
     explicit module bmi {

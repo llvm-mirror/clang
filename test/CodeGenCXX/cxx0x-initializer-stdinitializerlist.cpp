@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -std=c++11 -S -triple x86_64-none-linux-gnu -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -std=c++11 -triple x86_64-none-linux-gnu -emit-llvm -o - %s | FileCheck %s
 
 namespace std {
   typedef decltype(sizeof(int)) size_t;
@@ -430,4 +430,38 @@ namespace nested {
     // CHECK-NOT: call
     // CHECK: }
   }
+}
+
+namespace DR1070 {
+  struct A {
+    A(std::initializer_list<int>);
+  };
+  struct B {
+    int i;
+    A a;
+  };
+  B b = {1};
+  struct C {
+    std::initializer_list<int> a;
+    B b;
+    std::initializer_list<double> c;
+  };
+  C c = {};
+}
+
+namespace ArrayOfInitList {
+  struct S {
+    S(std::initializer_list<int>);
+  };
+  S x[1] = {};
+}
+
+namespace PR20445 {
+  struct vector { vector(std::initializer_list<int>); };
+  struct MyClass { explicit MyClass(const vector &v); };
+  template<int x> void f() { new MyClass({42, 43}); }
+  template void f<0>();
+  // CHECK-LABEL: define {{.*}} @_ZN7PR204451fILi0EEEvv(
+  // CHECK: call void @_ZN7PR204456vectorC1ESt16initializer_listIiE(
+  // CHECK: call void @_ZN7PR204457MyClassC1ERKNS_6vectorE(
 }

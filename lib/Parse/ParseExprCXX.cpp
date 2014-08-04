@@ -207,7 +207,7 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
   }
 
   if (LastII)
-    *LastII = 0;
+    *LastII = nullptr;
 
   bool HasScopeSpecifier = false;
 
@@ -426,8 +426,8 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
     
     if (Next.is(tok::coloncolon)) {
       if (CheckForDestructor && GetLookAheadToken(2).is(tok::tilde) &&
-          !Actions.isNonTypeNestedNameSpecifier(getCurScope(), SS, Tok.getLocation(),
-                                                II, ObjectType)) {
+          !Actions.isNonTypeNestedNameSpecifier(
+              getCurScope(), SS, Tok.getLocation(), II, ObjectType)) {
         *MayBePseudoDestructor = true;
         return false;
       }
@@ -462,7 +462,7 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
       CheckForLParenAfterColonColon();
 
       bool IsCorrectedToColon = false;
-      bool *CorrectionFlagPtr = ColonIsSacred ? &IsCorrectedToColon : 0;
+      bool *CorrectionFlagPtr = ColonIsSacred ? &IsCorrectedToColon : nullptr;
       if (Actions.ActOnCXXNestedNameSpecifier(getCurScope(), II, IdLoc, CCLoc,
                                               ObjectType, EnteringContext, SS,
                                               false, CorrectionFlagPtr)) {
@@ -793,7 +793,7 @@ Optional<unsigned> Parser::ParseLambdaIntroducer(LambdaIntroducer &Intro,
     // Parse capture.
     LambdaCaptureKind Kind = LCK_ByCopy;
     SourceLocation Loc;
-    IdentifierInfo* Id = 0;
+    IdentifierInfo *Id = nullptr;
     SourceLocation EllipsisLoc;
     ExprResult Init;
     
@@ -1092,7 +1092,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                                            DynamicExceptionRanges.data(),
                                            DynamicExceptions.size(),
                                            NoexceptExpr.isUsable() ?
-                                             NoexceptExpr.get() : 0,
+                                             NoexceptExpr.get() : nullptr,
                                            LParenLoc, FunLocalRangeEnd, D,
                                            TrailingReturnType),
                   Attr, DeclEndLoc);
@@ -1144,7 +1144,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     D.AddTypeInfo(DeclaratorChunk::getFunction(/*hasProto=*/true,
                                                /*isAmbiguous=*/false,
                                                /*LParenLoc=*/NoLoc,
-                                               /*Params=*/0,
+                                               /*Params=*/nullptr,
                                                /*NumParams=*/0,
                                                /*EllipsisLoc=*/NoLoc,
                                                /*RParenLoc=*/NoLoc,
@@ -1156,10 +1156,10 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                                                MutableLoc,
                                                EST_None,
                                                /*ESpecLoc=*/NoLoc,
-                                               /*Exceptions=*/0,
-                                               /*ExceptionRanges=*/0,
+                                               /*Exceptions=*/nullptr,
+                                               /*ExceptionRanges=*/nullptr,
                                                /*NumExceptions=*/0,
-                                               /*NoexceptExpr=*/0,
+                                               /*NoexceptExpr=*/nullptr,
                                                DeclLoc, DeclEndLoc, D,
                                                TrailingReturnType),
                   Attr, DeclEndLoc);
@@ -1184,7 +1184,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   BodyScope.Exit();
 
   if (!Stmt.isInvalid())
-    return Actions.ActOnLambdaExpr(LambdaBeginLoc, Stmt.take(), getCurScope());
+    return Actions.ActOnLambdaExpr(LambdaBeginLoc, Stmt.get(), getCurScope());
  
   Actions.ActOnLambdaError(LambdaBeginLoc, getCurScope());
   return ExprError();
@@ -1201,7 +1201,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
 ///
 ExprResult Parser::ParseCXXCasts() {
   tok::TokenKind Kind = Tok.getKind();
-  const char *CastName = 0;     // For error messages
+  const char *CastName = nullptr; // For error messages
 
   switch (Kind) {
   default: llvm_unreachable("Unknown C++ cast!");
@@ -1253,7 +1253,7 @@ ExprResult Parser::ParseCXXCasts() {
     Result = Actions.ActOnCXXNamedCast(OpLoc, Kind,
                                        LAngleBracketLoc, DeclaratorInfo,
                                        RAngleBracketLoc,
-                                       T.getOpenLocation(), Result.take(), 
+                                       T.getOpenLocation(), Result.get(), 
                                        T.getCloseLocation());
 
   return Result;
@@ -1319,7 +1319,7 @@ ExprResult Parser::ParseCXXTypeid() {
         return ExprError();
 
       Result = Actions.ActOnCXXTypeid(OpLoc, LParenLoc, /*isType=*/false,
-                                      Result.release(), RParenLoc);
+                                      Result.get(), RParenLoc);
     }
   }
 
@@ -1367,7 +1367,7 @@ ExprResult Parser::ParseCXXUuidof() {
 
       Result = Actions.ActOnCXXUuidof(OpLoc, T.getOpenLocation(),
                                       /*isType=*/false,
-                                      Result.release(), T.getCloseLocation());
+                                      Result.get(), T.getCloseLocation());
     }
   }
 
@@ -1417,7 +1417,7 @@ Parser::ParseCXXPseudoDestructor(ExprArg Base, SourceLocation OpLoc,
     assert(Tok.is(tok::coloncolon) &&"ParseOptionalCXXScopeSpecifier fail");
     CCLoc = ConsumeToken();
   } else {
-    FirstTypeName.setIdentifier(0, SourceLocation());
+    FirstTypeName.setIdentifier(nullptr, SourceLocation());
   }
 
   // Parse the tilde.
@@ -1489,12 +1489,12 @@ ExprResult Parser::ParseThrowExpression() {
   case tok::r_brace:
   case tok::colon:
   case tok::comma:
-    return Actions.ActOnCXXThrow(getCurScope(), ThrowLoc, 0);
+    return Actions.ActOnCXXThrow(getCurScope(), ThrowLoc, nullptr);
 
   default:
     ExprResult Expr(ParseAssignmentExpression());
     if (Expr.isInvalid()) return Expr;
-    return Actions.ActOnCXXThrow(getCurScope(), ThrowLoc, Expr.take());
+    return Actions.ActOnCXXThrow(getCurScope(), ThrowLoc, Expr.get());
   }
 }
 
@@ -1534,7 +1534,7 @@ Parser::ParseCXXTypeConstructExpression(const DeclSpec &DS) {
     ExprResult Init = ParseBraceInitializer();
     if (Init.isInvalid())
       return Init;
-    Expr *InitList = Init.take();
+    Expr *InitList = Init.get();
     return Actions.ActOnCXXTypeConstructExpr(TypeRep, SourceLocation(),
                                              MultiExprArg(&InitList, 1),
                                              SourceLocation());
@@ -1608,7 +1608,7 @@ bool Parser::ParseCXXCondition(ExprResult &ExprOut,
 
     // Parse the expression.
     ExprOut = ParseExpression(); // expression
-    DeclOut = 0;
+    DeclOut = nullptr;
     if (ExprOut.isInvalid())
       return true;
 
@@ -1636,7 +1636,7 @@ bool Parser::ParseCXXCondition(ExprResult &ExprOut,
       SkipUntil(tok::semi, StopAtSemi);
       return true;
     }
-    DeclaratorInfo.setAsmLabel(AsmLabel.release());
+    DeclaratorInfo.setAsmLabel(AsmLabel.get());
     DeclaratorInfo.SetRangeEnd(Loc);
   }
 
@@ -1676,7 +1676,7 @@ bool Parser::ParseCXXCondition(ExprResult &ExprOut,
   }
 
   if (!InitExpr.isInvalid())
-    Actions.AddInitializerToDecl(DeclOut, InitExpr.take(), !CopyInitialization,
+    Actions.AddInitializerToDecl(DeclOut, InitExpr.get(), !CopyInitialization,
                                  DS.containsPlaceholderType());
   else
     Actions.ActOnInitializerError(DeclOut);
@@ -1996,7 +1996,7 @@ bool Parser::ParseUnqualifiedIdTemplateId(CXXScopeSpec &SS,
       TemplateId->Operator = OO_None;
       TemplateId->TemplateNameLoc = Id.StartLocation;
     } else {
-      TemplateId->Name = 0;
+      TemplateId->Name = nullptr;
       TemplateId->Operator = Id.OperatorFunctionId.Operator;
       TemplateId->TemplateNameLoc = Id.StartLocation;
     }
@@ -2195,13 +2195,13 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
       TokLocs.push_back(ConsumeStringToken());
     }
 
-    StringLiteralParser Literal(Toks.data(), Toks.size(), PP);
+    StringLiteralParser Literal(Toks, PP);
     if (Literal.hadError)
       return true;
 
     // Grab the literal operator's suffix, which will be either the next token
     // or a ud-suffix from the string literal.
-    IdentifierInfo *II = 0;
+    IdentifierInfo *II = nullptr;
     SourceLocation SuffixLoc;
     if (!Literal.getUDSuffix().empty()) {
       II = &PP.getIdentifierTable().get(Literal.getUDSuffix());
@@ -2262,8 +2262,8 @@ bool Parser::ParseUnqualifiedIdOperator(CXXScopeSpec &SS, bool EnteringContext,
   // Parse the conversion-declarator, which is merely a sequence of
   // ptr-operators.
   Declarator D(DS, Declarator::ConversionIdContext);
-  ParseDeclaratorInternal(D, /*DirectDeclParser=*/0);
-  
+  ParseDeclaratorInternal(D, /*DirectDeclParser=*/nullptr);
+
   // Finish up the type.
   TypeResult Ty = Actions.ActOnTypeName(getCurScope(), D);
   if (Ty.isInvalid())
@@ -2419,10 +2419,10 @@ bool Parser::ParseUnqualifiedId(CXXScopeSpec &SS, bool EnteringContext,
          Result.getKind() == UnqualifiedId::IK_LiteralOperatorId) &&
         (TemplateSpecified || Tok.is(tok::less)))
       return ParseUnqualifiedIdTemplateId(SS, TemplateKWLoc,
-                                          0, SourceLocation(),
+                                          nullptr, SourceLocation(),
                                           EnteringContext, ObjectType,
                                           Result, TemplateSpecified);
-    
+
     return false;
   }
   
@@ -2617,7 +2617,7 @@ Parser::ParseCXXNewExpression(bool UseGlobal, SourceLocation Start) {
 
   return Actions.ActOnCXXNew(Start, UseGlobal, PlacementLParen,
                              PlacementArgs, PlacementRParen,
-                             TypeIdParens, DeclaratorInfo, Initializer.take());
+                             TypeIdParens, DeclaratorInfo, Initializer.get());
 }
 
 /// ParseDirectNewDeclarator - Parses a direct-new-declarator. Intended to be
@@ -2655,7 +2655,7 @@ void Parser::ParseDirectNewDeclarator(Declarator &D) {
 
     D.AddTypeInfo(DeclaratorChunk::getArray(0,
                                             /*static=*/false, /*star=*/false,
-                                            Size.release(),
+                                            Size.get(),
                                             T.getOpenLocation(),
                                             T.getCloseLocation()),
                   Attrs, T.getCloseLocation());
@@ -2732,7 +2732,7 @@ Parser::ParseCXXDeleteExpression(bool UseGlobal, SourceLocation Start) {
   if (Operand.isInvalid())
     return Operand;
 
-  return Actions.ActOnCXXDelete(Start, UseGlobal, ArrayDelete, Operand.take());
+  return Actions.ActOnCXXDelete(Start, UseGlobal, ArrayDelete, Operand.get());
 }
 
 static TypeTrait TypeTraitFromTokKind(tok::TokenKind kind) {
@@ -2861,7 +2861,7 @@ ExprResult Parser::ParseArrayTypeTrait() {
   switch (ATT) {
   case ATT_ArrayRank: {
     T.consumeClose();
-    return Actions.ActOnArrayTypeTrait(ATT, Loc, Ty.get(), NULL,
+    return Actions.ActOnArrayTypeTrait(ATT, Loc, Ty.get(), nullptr,
                                        T.getCloseLocation());
   }
   case ATT_ArrayExtent: {
@@ -2952,7 +2952,6 @@ Parser::ParseCXXAmbiguousParenExpression(ParenParseOption &ExprType,
     ParseAs = CompoundLiteral;
   } else {
     bool NotCastExpr;
-    // FIXME: Special-case ++ and --: "(S())++;" is not a cast-expression
     if (Tok.is(tok::l_paren) && NextToken().is(tok::r_paren)) {
       NotCastExpr = true;
     } else {
@@ -3017,7 +3016,7 @@ Parser::ParseCXXAmbiguousParenExpression(ParenParseOption &ExprType,
     if (!Result.isInvalid())
       Result = Actions.ActOnCastExpr(getCurScope(), Tracker.getOpenLocation(),
                                     DeclaratorInfo, CastTy,
-                                    Tracker.getCloseLocation(), Result.take());
+                                    Tracker.getCloseLocation(), Result.get());
     return Result;
   }
 
@@ -3028,7 +3027,7 @@ Parser::ParseCXXAmbiguousParenExpression(ParenParseOption &ExprType,
   Result = ParseExpression();
   if (!Result.isInvalid() && Tok.is(tok::r_paren))
     Result = Actions.ActOnParenExpr(Tracker.getOpenLocation(), 
-                                    Tok.getLocation(), Result.take());
+                                    Tok.getLocation(), Result.get());
 
   // Match the ')'.
   if (Result.isInvalid()) {

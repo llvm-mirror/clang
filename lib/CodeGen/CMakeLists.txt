@@ -38,13 +38,13 @@ add_clang_library(clangCodeGen
   CGExprComplex.cpp
   CGExprConstant.cpp
   CGExprScalar.cpp
+  CGLoopInfo.cpp
   CGObjC.cpp
   CGObjCGNU.cpp
   CGObjCMac.cpp
   CGObjCRuntime.cpp
   CGOpenCLRuntime.cpp
   CGOpenMPRuntime.cpp
-  CGRTTI.cpp
   CGRecordLayoutBuilder.cpp
   CGStmt.cpp
   CGStmtOpenMP.cpp
@@ -60,13 +60,14 @@ add_clang_library(clangCodeGen
   ItaniumCXXABI.cpp
   MicrosoftCXXABI.cpp
   ModuleBuilder.cpp
+  SanitizerBlacklist.cpp
   TargetInfo.cpp
 
   DEPENDS
   intrinsics_gen
 
   LINK_LIBS
-  clangBasic
   clangAST
+  clangBasic
   clangFrontend
   )

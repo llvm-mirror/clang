@@ -52,8 +52,7 @@ class VarTemplateDecl;
 /// A client can read the relevant info using TypeLoc wrappers, e.g:
 /// @code
 /// TypeLoc TL = TypeSourceInfo->getTypeLoc();
-/// if (PointerLoc *PL = dyn_cast<PointerLoc>(&TL))
-///   PL->getStarLoc().print(OS, SrcMgr);
+/// TL.getStartLoc().print(OS, SrcMgr);
 /// @endcode
 ///
 class TypeSourceInfo {
@@ -204,9 +203,8 @@ public:
     // C++0x [class.mem]p1:
     //   The enumerators of an unscoped enumeration defined in
     //   the class are members of the class.
-    // FIXME: support C++0x scoped enumerations.
     if (isa<EnumDecl>(DC))
-      DC = DC->getParent();
+      DC = DC->getRedeclContext();
 
     return DC->isRecord();
   }
@@ -1896,6 +1894,11 @@ public:
   QualType getReturnType() const {
     return getType()->getAs<FunctionType>()->getReturnType();
   }
+
+  /// \brief Attempt to compute an informative source range covering the
+  /// function return type. This may omit qualifiers and other information with
+  /// limited representation in the AST.
+  SourceRange getReturnTypeSourceRange() const;
 
   /// \brief Determine the type of an expression that calls this function.
   QualType getCallResultType() const {

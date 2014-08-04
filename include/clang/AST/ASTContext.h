@@ -74,6 +74,15 @@ namespace clang {
     class FullComment;
   }
 
+  struct TypeInfo {
+    uint64_t Width;
+    unsigned Align;
+    bool AlignIsRequired : 1;
+    TypeInfo() : Width(0), Align(0), AlignIsRequired(false) {}
+    TypeInfo(uint64_t Width, unsigned Align, bool AlignIsRequired)
+        : Width(Width), Align(Align), AlignIsRequired(AlignIsRequired) {}
+  };
+
 /// \brief Holds long-lived AST nodes (such as types and decls) that can be
 /// referred to throughout the semantic analysis of a file.
 class ASTContext : public RefCountedBase<ASTContext> {
@@ -144,8 +153,7 @@ class ASTContext : public RefCountedBase<ASTContext> {
     ObjCLayouts;
 
   /// \brief A cache from types to size and alignment information.
-  typedef llvm::DenseMap<const Type*,
-                         std::pair<uint64_t, unsigned> > TypeInfoMap;
+  typedef llvm::DenseMap<const Type *, struct TypeInfo> TypeInfoMap;
   mutable TypeInfoMap MemoizedTypeInfo;
 
   /// \brief A cache mapping from CXXRecordDecls to key functions.
@@ -421,10 +429,12 @@ public:
   ASTMutationListener *Listener;
 
   /// \brief Contains parents of a node.
-  typedef llvm::SmallVector<ast_type_traits::DynTypedNode, 1> ParentVector;
+  typedef llvm::SmallVector<ast_type_traits::DynTypedNode, 2> ParentVector;
 
   /// \brief Maps from a node to its parents.
-  typedef llvm::DenseMap<const void *, ParentVector> ParentMap;
+  typedef llvm::DenseMap<const void *,
+                         llvm::PointerUnion<ast_type_traits::DynTypedNode *,
+                                            ParentVector *>> ParentMap;
 
   /// \brief Returns the parents of the given node.
   ///
@@ -814,7 +824,7 @@ public:
   /// \brief Retrieve a pointer to the external AST source associated
   /// with this AST context, if any.
   ExternalASTSource *getExternalSource() const {
-    return ExternalSource.getPtr();
+    return ExternalSource.get();
   }
 
   /// \brief Attach an AST mutation listener to the AST context.
@@ -1371,6 +1381,10 @@ public:
   void getObjCEncodingForType(QualType T, std::string &S,
                               const FieldDecl *Field=nullptr) const;
 
+  /// \brief Emit the Objective-C property type encoding for the given
+  /// type \p T into \p S.
+  void getObjCEncodingForPropertyType(QualType T, std::string &S) const;
+
   void getLegacyIntegralTypeEncoding(QualType &t) const;
 
   /// \brief Put the string version of the type qualifiers \p QT into \p S.
@@ -1575,7 +1589,7 @@ public:
 
 private:
   CanQualType getFromTargetType(unsigned Type) const;
-  std::pair<uint64_t, unsigned> getTypeInfoImpl(const Type *T) const;
+  TypeInfo getTypeInfoImpl(const Type *T) const;
 
   //===--------------------------------------------------------------------===//
   //                         Type Predicates.
@@ -1608,18 +1622,12 @@ public:
   const llvm::fltSemantics &getFloatTypeSemantics(QualType T) const;
 
   /// \brief Get the size and alignment of the specified complete type in bits.
-  std::pair<uint64_t, unsigned> getTypeInfo(const Type *T) const;
-  std::pair<uint64_t, unsigned> getTypeInfo(QualType T) const {
-    return getTypeInfo(T.getTypePtr());
-  }
+  TypeInfo getTypeInfo(const Type *T) const;
+  TypeInfo getTypeInfo(QualType T) const { return getTypeInfo(T.getTypePtr()); }
 
   /// \brief Return the size of the specified (complete) type \p T, in bits.
-  uint64_t getTypeSize(QualType T) const {
-    return getTypeInfo(T).first;
-  }
-  uint64_t getTypeSize(const Type *T) const {
-    return getTypeInfo(T).first;
-  }
+  uint64_t getTypeSize(QualType T) const { return getTypeInfo(T).Width; }
+  uint64_t getTypeSize(const Type *T) const { return getTypeInfo(T).Width; }
 
   /// \brief Return the size of the character type, in bits.
   uint64_t getCharWidth() const {
@@ -1639,12 +1647,8 @@ public:
 
   /// \brief Return the ABI-specified alignment of a (complete) type \p T, in
   /// bits.
-  unsigned getTypeAlign(QualType T) const {
-    return getTypeInfo(T).second;
-  }
-  unsigned getTypeAlign(const Type *T) const {
-    return getTypeInfo(T).second;
-  }
+  unsigned getTypeAlign(QualType T) const { return getTypeInfo(T).Align; }
+  unsigned getTypeAlign(const Type *T) const { return getTypeInfo(T).Align; }
 
   /// \brief Return the ABI-specified alignment of a (complete) type \p T, in 
   /// characters.
@@ -1657,6 +1661,11 @@ public:
 
   std::pair<CharUnits, CharUnits> getTypeInfoInChars(const Type *T) const;
   std::pair<CharUnits, CharUnits> getTypeInfoInChars(QualType T) const;
+
+  /// \brief Determine if the alignment the type has was required using an
+  /// alignment attribute.
+  bool isAlignmentRequired(const Type *T) const;
+  bool isAlignmentRequired(QualType T) const;
 
   /// \brief Return the "preferred" alignment of the specified type \p T for
   /// the current target, in bits.
@@ -1773,6 +1782,10 @@ public:
 
   /// \brief Determine whether the given types \p T1 and \p T2 are equivalent.
   bool hasSameType(QualType T1, QualType T2) const {
+    return getCanonicalType(T1) == getCanonicalType(T2);
+  }
+
+  bool hasSameType(const Type *T1, const Type *T2) const {
     return getCanonicalType(T1) == getCanonicalType(T2);
   }
 
@@ -2273,6 +2286,10 @@ public:
   void getObjCEncodingForMethodParameter(Decl::ObjCDeclQualifier QT,
                                          QualType T, std::string& S,
                                          bool Extended) const;
+
+  /// \brief Returns true if this is an inline-initialized static data member
+  /// which is treated as a definition for MSVC compatibility.
+  bool isMSStaticDataMemberInlineDefinition(const VarDecl *VD) const;
   
 private:
   const ASTRecordLayout &
@@ -2293,6 +2310,7 @@ private:
   friend class DeclContext;
   friend class DeclarationNameTable;
   void ReleaseDeclContextMaps();
+  void ReleaseParentMapEntries();
 
   std::unique_ptr<ParentMap> AllParents;
 

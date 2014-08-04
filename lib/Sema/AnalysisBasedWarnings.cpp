@@ -241,7 +241,7 @@ static void checkRecursiveFunction(Sema &S, const FunctionDecl *FD,
     return;
 
   CFG *cfg = AC.getCFG();
-  if (cfg == 0) return;
+  if (!cfg) return;
 
   // If the exit block is unreachable, skip processing the function.
   if (cfg->getExit().pred_empty())
@@ -282,7 +282,7 @@ enum ControlFlowKind {
 /// will return.
 static ControlFlowKind CheckFallThrough(AnalysisDeclContext &AC) {
   CFG *cfg = AC.getCFG();
-  if (cfg == 0) return UnknownFallThrough;
+  if (!cfg) return UnknownFallThrough;
 
   // The CFG leaves in dead things, and we don't want the dead code paths to
   // confuse us, so we mark all live things first.
@@ -477,14 +477,13 @@ struct CheckFallThroughDiagnostics {
                         bool HasNoReturn) const {
     if (funMode == Function) {
       return (ReturnsVoid ||
-              D.getDiagnosticLevel(diag::warn_maybe_falloff_nonvoid_function,
-                                   FuncLoc) == DiagnosticsEngine::Ignored)
-        && (!HasNoReturn ||
-            D.getDiagnosticLevel(diag::warn_noreturn_function_has_return_expr,
-                                 FuncLoc) == DiagnosticsEngine::Ignored)
-        && (!ReturnsVoid ||
-            D.getDiagnosticLevel(diag::warn_suggest_noreturn_block, FuncLoc)
-              == DiagnosticsEngine::Ignored);
+              D.isIgnored(diag::warn_maybe_falloff_nonvoid_function,
+                          FuncLoc)) &&
+             (!HasNoReturn ||
+              D.isIgnored(diag::warn_noreturn_function_has_return_expr,
+                          FuncLoc)) &&
+             (!ReturnsVoid ||
+              D.isIgnored(diag::warn_suggest_noreturn_block, FuncLoc));
     }
 
     // For blocks / lambdas.
@@ -612,8 +611,9 @@ static bool SuggestInitializationFixit(Sema &S, const VarDecl *VD) {
   QualType VariableTy = VD->getType().getCanonicalType();
   if (VariableTy->isBlockPointerType() &&
       !VD->hasAttr<BlocksAttr>()) {
-    S.Diag(VD->getLocation(), diag::note_block_var_fixit_add_initialization) << VD->getDeclName()
-    << FixItHint::CreateInsertion(VD->getLocation(), "__block ");
+    S.Diag(VD->getLocation(), diag::note_block_var_fixit_add_initialization)
+        << VD->getDeclName()
+        << FixItHint::CreateInsertion(VD->getLocation(), "__block ");
     return true;
   }
 
@@ -1026,6 +1026,9 @@ namespace {
     // methods separately.
     bool TraverseDecl(Decl *D) { return true; }
 
+    // We analyze lambda bodies separately. Skip them here.
+    bool TraverseLambdaBody(LambdaExpr *LE) { return true; }
+
   private:
 
     static const AttributedStmt *asFallThroughAttr(const Stmt *S) {
@@ -1033,7 +1036,7 @@ namespace {
         if (hasSpecificAttr<FallThroughAttr>(AS->getAttrs()))
           return AS;
       }
-      return 0;
+      return nullptr;
     }
 
     static const Stmt *getLastStmt(const CFGBlock &B) {
@@ -1052,7 +1055,7 @@ namespace {
         if (!isa<SwitchCase>(SW->getSubStmt()))
           return SW->getSubStmt();
 
-      return 0;
+      return nullptr;
     }
 
     bool FoundSwitchStatements;
@@ -1335,7 +1338,7 @@ class UninitValsDiagReporter : public UninitVariablesHandler {
   UsesMap *uses;
   
 public:
-  UninitValsDiagReporter(Sema &S) : S(S), uses(0) {}
+  UninitValsDiagReporter(Sema &S) : S(S), uses(nullptr) {}
   ~UninitValsDiagReporter() { 
     flushDiagnostics();
   }
@@ -1441,9 +1444,9 @@ struct SortDiagBySourceLocation {
 // -Wthread-safety
 //===----------------------------------------------------------------------===//
 namespace clang {
-namespace thread_safety {
-namespace {
-class ThreadSafetyReporter : public clang::thread_safety::ThreadSafetyHandler {
+namespace threadSafety {
+
+class ThreadSafetyReporter : public clang::threadSafety::ThreadSafetyHandler {
   Sema &S;
   DiagList Warnings;
   SourceLocation FunLocation, FunEndLocation;
@@ -1605,7 +1608,7 @@ class ThreadSafetyReporter : public clang::thread_safety::ThreadSafetyHandler {
     Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
 };
-}
+
 }
 }
 
@@ -1713,8 +1716,7 @@ clang::sema::AnalysisBasedWarnings::Policy::Policy() {
 }
 
 static unsigned isEnabled(DiagnosticsEngine &D, unsigned diag) {
-  return (unsigned) D.getDiagnosticLevel(diag, SourceLocation()) !=
-                    DiagnosticsEngine::Ignored;
+  return (unsigned)!D.isIgnored(diag, SourceLocation());
 }
 
 clang::sema::AnalysisBasedWarnings::AnalysisBasedWarnings(Sema &s)
@@ -1783,7 +1785,7 @@ AnalysisBasedWarnings::IssueWarnings(sema::AnalysisBasedWarnings::Policy P,
   assert(Body);
 
   // Construct the analysis context with the specified CFG build options.
-  AnalysisDeclContext AC(/* AnalysisDeclContextManager */ 0, D);
+  AnalysisDeclContext AC(/* AnalysisDeclContextManager */ nullptr, D);
 
   // Don't generate EH edges for CallExprs as we'd like to avoid the n^2
   // explosion for destructors that can result and the compile time hit.
@@ -1819,8 +1821,8 @@ AnalysisBasedWarnings::IssueWarnings(sema::AnalysisBasedWarnings::Policy P,
 
   // Install the logical handler for -Wtautological-overlap-compare
   std::unique_ptr<LogicalErrorHandler> LEH;
-  if (Diags.getDiagnosticLevel(diag::warn_tautological_overlap_comparison,
-                               D->getLocStart())) {
+  if (!Diags.isIgnored(diag::warn_tautological_overlap_comparison,
+                       D->getLocStart())) {
     LEH.reset(new LogicalErrorHandler(S));
     AC.getCFGBuildOptions().Observer = LEH.get();
   }
@@ -1894,12 +1896,11 @@ AnalysisBasedWarnings::IssueWarnings(sema::AnalysisBasedWarnings::Policy P,
   if (P.enableThreadSafetyAnalysis) {
     SourceLocation FL = AC.getDecl()->getLocation();
     SourceLocation FEL = AC.getDecl()->getLocEnd();
-    thread_safety::ThreadSafetyReporter Reporter(S, FL, FEL);
-    if (Diags.getDiagnosticLevel(diag::warn_thread_safety_beta,D->getLocStart())
-        != DiagnosticsEngine::Ignored)
+    threadSafety::ThreadSafetyReporter Reporter(S, FL, FEL);
+    if (!Diags.isIgnored(diag::warn_thread_safety_beta, D->getLocStart()))
       Reporter.setIssueBetaWarnings(true);
 
-    thread_safety::runThreadSafetyAnalysis(AC, Reporter);
+    threadSafety::runThreadSafetyAnalysis(AC, Reporter);
     Reporter.emitDiagnostics();
   }
 
@@ -1910,12 +1911,9 @@ AnalysisBasedWarnings::IssueWarnings(sema::AnalysisBasedWarnings::Policy P,
     Analyzer.run(AC);
   }
 
-  if (Diags.getDiagnosticLevel(diag::warn_uninit_var, D->getLocStart())
-      != DiagnosticsEngine::Ignored ||
-      Diags.getDiagnosticLevel(diag::warn_sometimes_uninit_var,D->getLocStart())
-      != DiagnosticsEngine::Ignored ||
-      Diags.getDiagnosticLevel(diag::warn_maybe_uninit_var, D->getLocStart())
-      != DiagnosticsEngine::Ignored) {
+  if (!Diags.isIgnored(diag::warn_uninit_var, D->getLocStart()) ||
+      !Diags.isIgnored(diag::warn_sometimes_uninit_var, D->getLocStart()) ||
+      !Diags.isIgnored(diag::warn_maybe_uninit_var, D->getLocStart())) {
     if (CFG *cfg = AC.getCFG()) {
       UninitValsDiagReporter reporter(S);
       UninitVariablesAnalysisStats stats;
@@ -1938,25 +1936,21 @@ AnalysisBasedWarnings::IssueWarnings(sema::AnalysisBasedWarnings::Policy P,
   }
 
   bool FallThroughDiagFull =
-      Diags.getDiagnosticLevel(diag::warn_unannotated_fallthrough,
-                               D->getLocStart()) != DiagnosticsEngine::Ignored;
-  bool FallThroughDiagPerFunction =
-      Diags.getDiagnosticLevel(diag::warn_unannotated_fallthrough_per_function,
-                               D->getLocStart()) != DiagnosticsEngine::Ignored;
+      !Diags.isIgnored(diag::warn_unannotated_fallthrough, D->getLocStart());
+  bool FallThroughDiagPerFunction = !Diags.isIgnored(
+      diag::warn_unannotated_fallthrough_per_function, D->getLocStart());
   if (FallThroughDiagFull || FallThroughDiagPerFunction) {
     DiagnoseSwitchLabelsFallthrough(S, AC, !FallThroughDiagFull);
   }
 
   if (S.getLangOpts().ObjCARCWeak &&
-      Diags.getDiagnosticLevel(diag::warn_arc_repeated_use_of_weak,
-                               D->getLocStart()) != DiagnosticsEngine::Ignored)
+      !Diags.isIgnored(diag::warn_arc_repeated_use_of_weak, D->getLocStart()))
     diagnoseRepeatedUseOfWeak(S, fscope, D, AC.getParentMap());
 
 
   // Check for infinite self-recursion in functions
-  if (Diags.getDiagnosticLevel(diag::warn_infinite_recursive_function,
-                               D->getLocStart())
-      != DiagnosticsEngine::Ignored) {
+  if (!Diags.isIgnored(diag::warn_infinite_recursive_function,
+                       D->getLocStart())) {
     if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
       checkRecursiveFunction(S, FD, Body, AC);
     }
@@ -1964,7 +1958,7 @@ AnalysisBasedWarnings::IssueWarnings(sema::AnalysisBasedWarnings::Policy P,
 
   // If none of the previous checks caused a CFG build, trigger one here
   // for -Wtautological-overlap-compare
-  if (Diags.getDiagnosticLevel(diag::warn_tautological_overlap_comparison,
+  if (!Diags.isIgnored(diag::warn_tautological_overlap_comparison,
                                D->getLocStart())) {
     AC.getCFG();
   }

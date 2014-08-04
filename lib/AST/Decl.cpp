@@ -471,6 +471,58 @@ static void mergeTemplateLV(LinkageInfo &LV,
   LV.mergeExternalVisibility(argsLV);
 }
 
+/// Should we consider visibility associated with the template
+/// arguments and parameters of the given variable template
+/// specialization? As usual, follow class template specialization
+/// logic up to initialization.
+static bool shouldConsiderTemplateVisibility(
+                                 const VarTemplateSpecializationDecl *spec,
+                                 LVComputationKind computation) {
+  // Include visibility from the template parameters and arguments
+  // only if this is not an explicit instantiation or specialization
+  // with direct explicit visibility (and note that implicit
+  // instantiations won't have a direct attribute).
+  if (!spec->isExplicitInstantiationOrSpecialization())
+    return true;
+
+  // An explicit variable specialization is an independent, top-level
+  // declaration.  As such, if it has an explicit visibility attribute,
+  // that must directly express the user's intent, and we should honor
+  // it.
+  if (spec->isExplicitSpecialization() &&
+      hasExplicitVisibilityAlready(computation))
+    return false;
+
+  return !hasDirectVisibilityAttribute(spec, computation);
+}
+
+/// Merge in template-related linkage and visibility for the given
+/// variable template specialization. As usual, follow class template
+/// specialization logic up to initialization.
+static void mergeTemplateLV(LinkageInfo &LV,
+                            const VarTemplateSpecializationDecl *spec,
+                            LVComputationKind computation) {
+  bool considerVisibility = shouldConsiderTemplateVisibility(spec, computation);
+
+  // Merge information from the template parameters, but ignore
+  // visibility if we're only considering template arguments.
+
+  VarTemplateDecl *temp = spec->getSpecializedTemplate();
+  LinkageInfo tempLV =
+    getLVForTemplateParameterList(temp->getTemplateParameters(), computation);
+  LV.mergeMaybeWithVisibility(tempLV,
+           considerVisibility && !hasExplicitVisibilityAlready(computation));
+
+  // Merge information from the template arguments.  We ignore
+  // template-argument visibility if we've got an explicit
+  // instantiation with a visibility attribute.
+  const TemplateArgumentList &templateArgs = spec->getTemplateArgs();
+  LinkageInfo argsLV = getLVForTemplateArgumentList(templateArgs, computation);
+  if (considerVisibility)
+    LV.mergeVisibility(argsLV);
+  LV.mergeExternalVisibility(argsLV);
+}
+
 static bool useInlineVisibilityHidden(const NamedDecl *D) {
   // FIXME: we should warn if -fvisibility-inlines-hidden is used with c.
   const LangOptions &Opts = D->getASTContext().getLangOpts();
@@ -661,6 +713,14 @@ static LinkageInfo getLVForNamespaceScopeDecl(const NamedDecl *D,
     // Note that Sema::MergeVarDecl already takes care of implementing
     // C99 6.2.2p4 and propagating the visibility attribute, so we don't have
     // to do it here.
+
+    // As per function and class template specializations (below),
+    // consider LV for the template and template arguments.  We're at file
+    // scope, so we do not need to worry about nested specializations.
+    if (const VarTemplateSpecializationDecl *spec
+              = dyn_cast<VarTemplateSpecializationDecl>(Var)) {
+      mergeTemplateLV(LV, spec, computation);
+    }
 
   //     - a function, unless it has internal linkage; or
   } else if (const FunctionDecl *Function = dyn_cast<FunctionDecl>(D)) {
@@ -869,6 +929,10 @@ static LinkageInfo getLVForClassMember(const NamedDecl *D,
 
   // Static data members.
   } else if (const VarDecl *VD = dyn_cast<VarDecl>(D)) {
+    if (const VarTemplateSpecializationDecl *spec
+        = dyn_cast<VarTemplateSpecializationDecl>(VD))
+      mergeTemplateLV(LV, spec, computation);
+
     // Modify the variable's linkage by its type, but ignore the
     // type's visibility unless it's a definition.
     LinkageInfo typeLV = getLVForType(*VD->getType(), computation);
@@ -1303,6 +1367,9 @@ void NamedDecl::printQualifiedName(raw_ostream &OS,
                                                             TemplateArgs.size(),
                                                             P);
     } else if (const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(*I)) {
+      if (P.SuppressUnwrittenScope &&
+          (ND->isAnonymousNamespace() || ND->isInline()))
+        continue;
       if (ND->isAnonymousNamespace())
         OS << "(anonymous namespace)";
       else
@@ -1676,7 +1743,7 @@ SourceRange VarDecl::getSourceRange() const {
 }
 
 template<typename T>
-static LanguageLinkage getLanguageLinkageTemplate(const T &D) {
+static LanguageLinkage getDeclLanguageLinkage(const T &D) {
   // C++ [dcl.link]p1: All function types, function names with external linkage,
   // and variable names with external linkage have a language linkage.
   if (!D.hasExternalFormalLinkage())
@@ -1704,7 +1771,7 @@ static LanguageLinkage getLanguageLinkageTemplate(const T &D) {
 }
 
 template<typename T>
-static bool isExternCTemplate(const T &D) {
+static bool isDeclExternC(const T &D) {
   // Since the context is ignored for class members, they can only have C++
   // language linkage or no language linkage.
   const DeclContext *DC = D.getDeclContext();
@@ -1717,11 +1784,11 @@ static bool isExternCTemplate(const T &D) {
 }
 
 LanguageLinkage VarDecl::getLanguageLinkage() const {
-  return getLanguageLinkageTemplate(*this);
+  return getDeclLanguageLinkage(*this);
 }
 
 bool VarDecl::isExternC() const {
-  return isExternCTemplate(*this);
+  return isDeclExternC(*this);
 }
 
 bool VarDecl::isInExternCContext() const {
@@ -2328,12 +2395,6 @@ bool FunctionDecl::isReservedGlobalPlacementOperator() const {
   return (proto->getParamType(1).getCanonicalType() == Context.VoidPtrTy);
 }
 
-static bool isNamespaceStd(const DeclContext *DC) {
-  const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(DC->getRedeclContext());
-  return ND && isNamed(ND, "std") &&
-         ND->getParent()->getRedeclContext()->isTranslationUnit();
-}
-
 bool FunctionDecl::isReplaceableGlobalAllocationFunction() const {
   if (getDeclName().getNameKind() != DeclarationName::CXXOperatorName)
     return false;
@@ -2351,7 +2412,7 @@ bool FunctionDecl::isReplaceableGlobalAllocationFunction() const {
     return false;
 
   const FunctionProtoType *FPT = getType()->castAs<FunctionProtoType>();
-  if (FPT->getNumParams() > 2 || FPT->isVariadic())
+  if (FPT->getNumParams() == 0 || FPT->getNumParams() > 2 || FPT->isVariadic())
     return false;
 
   // If this is a single-parameter function, it must be a replaceable global
@@ -2371,9 +2432,8 @@ bool FunctionDecl::isReplaceableGlobalAllocationFunction() const {
   Ty = Ty->getPointeeType();
   if (Ty.getCVRQualifiers() != Qualifiers::Const)
     return false;
-  // FIXME: Recognise nothrow_t in an inline namespace inside std?
   const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
-  return RD && isNamed(RD, "nothrow_t") && isNamespaceStd(RD->getDeclContext());
+  return RD && isNamed(RD, "nothrow_t") && RD->isInStdNamespace();
 }
 
 FunctionDecl *
@@ -2410,11 +2470,11 @@ FunctionDecl::getCorrespondingUnsizedGlobalDeallocationFunction() const {
 }
 
 LanguageLinkage FunctionDecl::getLanguageLinkage() const {
-  return getLanguageLinkageTemplate(*this);
+  return getDeclLanguageLinkage(*this);
 }
 
 bool FunctionDecl::isExternC() const {
-  return isExternCTemplate(*this);
+  return isDeclExternC(*this);
 }
 
 bool FunctionDecl::isInExternCContext() const {
@@ -2548,6 +2608,18 @@ void FunctionDecl::setDeclsInPrototypeScope(ArrayRef<NamedDecl *> NewDecls) {
     NamedDecl **A = new (getASTContext()) NamedDecl*[NewDecls.size()];
     std::copy(NewDecls.begin(), NewDecls.end(), A);
     DeclsInPrototypeScope = ArrayRef<NamedDecl *>(A, NewDecls.size());
+    // Move declarations introduced in prototype to the function context.
+    for (auto I : NewDecls) {
+      DeclContext *DC = I->getDeclContext();
+      // Forward-declared reference to an enumeration is not added to
+      // declaration scope, so skip declaration that is absent from its
+      // declaration contexts.
+      if (DC->containsDecl(I)) {
+          DC->removeDecl(I);
+          I->setDeclContext(this);
+          addDecl(I);
+      }
+    }
   }
 }
 
@@ -2677,6 +2749,26 @@ bool FunctionDecl::doesDeclarationForceExternallyVisibleDefinition() const {
       return false;
   }
   return FoundBody;
+}
+
+SourceRange FunctionDecl::getReturnTypeSourceRange() const {
+  const TypeSourceInfo *TSI = getTypeSourceInfo();
+  if (!TSI)
+    return SourceRange();
+  FunctionTypeLoc FTL =
+      TSI->getTypeLoc().IgnoreParens().getAs<FunctionTypeLoc>();
+  if (!FTL)
+    return SourceRange();
+
+  // Skip self-referential return types.
+  const SourceManager &SM = getASTContext().getSourceManager();
+  SourceRange RTRange = FTL.getReturnLoc().getSourceRange();
+  SourceLocation Boundary = getNameInfo().getLocStart();
+  if (RTRange.isInvalid() || Boundary.isInvalid() ||
+      !SM.isBeforeInTranslationUnit(RTRange.getEnd(), Boundary))
+    return SourceRange();
+
+  return RTRange;
 }
 
 /// \brief For an inline function definition in C, or for a gnu_inline function
@@ -3240,7 +3332,7 @@ void TagDecl::startDefinition() {
     struct CXXRecordDecl::DefinitionData *Data =
       new (getASTContext()) struct CXXRecordDecl::DefinitionData(D);
     for (auto I : redecls())
-      cast<CXXRecordDecl>(I)->DefinitionData.setNotUpdated(Data);
+      cast<CXXRecordDecl>(I)->DefinitionData = Data;
   }
 }
 

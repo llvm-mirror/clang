@@ -346,7 +346,7 @@ class CFNumberCreateChecker : public Checker< check::PreStmt<CallExpr> > {
   mutable std::unique_ptr<APIMisuse> BT;
   mutable IdentifierInfo* II;
 public:
-  CFNumberCreateChecker() : II(0) {}
+  CFNumberCreateChecker() : II(nullptr) {}
 
   void checkPreStmt(const CallExpr *CE, CheckerContext &C) const;
 
@@ -523,15 +523,17 @@ void CFNumberCreateChecker::checkPreStmt(const CallExpr *CE,
 }
 
 //===----------------------------------------------------------------------===//
-// CFRetain/CFRelease/CFMakeCollectable checking for null arguments.
+// CFRetain/CFRelease/CFMakeCollectable/CFAutorelease checking for null arguments.
 //===----------------------------------------------------------------------===//
 
 namespace {
 class CFRetainReleaseChecker : public Checker< check::PreStmt<CallExpr> > {
   mutable std::unique_ptr<APIMisuse> BT;
-  mutable IdentifierInfo *Retain, *Release, *MakeCollectable;
+  mutable IdentifierInfo *Retain, *Release, *MakeCollectable, *Autorelease;
 public:
-  CFRetainReleaseChecker(): Retain(0), Release(0), MakeCollectable(0) {}
+  CFRetainReleaseChecker()
+      : Retain(nullptr), Release(nullptr), MakeCollectable(nullptr),
+        Autorelease(nullptr) {}
   void checkPreStmt(const CallExpr *CE, CheckerContext &C) const;
 };
 } // end anonymous namespace
@@ -553,13 +555,15 @@ void CFRetainReleaseChecker::checkPreStmt(const CallExpr *CE,
     Retain = &Ctx.Idents.get("CFRetain");
     Release = &Ctx.Idents.get("CFRelease");
     MakeCollectable = &Ctx.Idents.get("CFMakeCollectable");
+    Autorelease = &Ctx.Idents.get("CFAutorelease");
     BT.reset(new APIMisuse(
-        this, "null passed to CFRetain/CFRelease/CFMakeCollectable"));
+        this, "null passed to CF memory management function"));
   }
 
-  // Check if we called CFRetain/CFRelease/CFMakeCollectable.
+  // Check if we called CFRetain/CFRelease/CFMakeCollectable/CFAutorelease.
   const IdentifierInfo *FuncII = FD->getIdentifier();
-  if (!(FuncII == Retain || FuncII == Release || FuncII == MakeCollectable))
+  if (!(FuncII == Retain || FuncII == Release || FuncII == MakeCollectable ||
+        FuncII == Autorelease))
     return;
 
   // FIXME: The rest of this just checks that the argument is non-null.
@@ -596,6 +600,8 @@ void CFRetainReleaseChecker::checkPreStmt(const CallExpr *CE,
       description = "Null pointer argument in call to CFRelease";
     else if (FuncII == MakeCollectable)
       description = "Null pointer argument in call to CFMakeCollectable";
+    else if (FuncII == Autorelease)
+      description = "Null pointer argument in call to CFAutorelease";
     else
       llvm_unreachable("impossible case");
 
@@ -840,7 +846,7 @@ class ObjCLoopChecker
                                CheckerContext &C) const;
 
 public:
-  ObjCLoopChecker() : CountSelectorII(0) {}
+  ObjCLoopChecker() : CountSelectorII(nullptr) {}
   void checkPostStmt(const ObjCForCollectionStmt *FCS, CheckerContext &C) const;
   void checkPostObjCMessage(const ObjCMethodCall &M, CheckerContext &C) const;
   void checkDeadSymbols(SymbolReaper &SymReaper, CheckerContext &C) const;
@@ -880,7 +886,7 @@ static ProgramStateRef checkCollectionNonNil(CheckerContext &C,
                                              ProgramStateRef State,
                                              const ObjCForCollectionStmt *FCS) {
   if (!State)
-    return NULL;
+    return nullptr;
 
   SVal CollectionVal = C.getSVal(FCS->getCollection());
   Optional<DefinedSVal> KnownCollection = CollectionVal.getAs<DefinedSVal>();
@@ -891,7 +897,7 @@ static ProgramStateRef checkCollectionNonNil(CheckerContext &C,
   std::tie(StNonNil, StNil) = State->assume(*KnownCollection);
   if (StNil && !StNonNil) {
     // The collection is nil. This path is infeasible.
-    return NULL;
+    return nullptr;
   }
 
   return StNonNil;
@@ -905,7 +911,7 @@ static ProgramStateRef checkElementNonNil(CheckerContext &C,
                                           ProgramStateRef State,
                                           const ObjCForCollectionStmt *FCS) {
   if (!State)
-    return NULL;
+    return nullptr;
 
   // See if the collection is one where we /know/ the elements are non-nil.
   if (!isKnownNonNilCollectionType(FCS->getCollection()->getType()))
@@ -918,7 +924,7 @@ static ProgramStateRef checkElementNonNil(CheckerContext &C,
   Optional<Loc> ElementLoc;
   if (const DeclStmt *DS = dyn_cast<DeclStmt>(Element)) {
     const VarDecl *ElemDecl = cast<VarDecl>(DS->getSingleDecl());
-    assert(ElemDecl->getInit() == 0);
+    assert(ElemDecl->getInit() == nullptr);
     ElementLoc = State->getLValue(ElemDecl, LCtx);
   } else {
     ElementLoc = State->getSVal(Element, LCtx).getAs<Loc>();
@@ -945,7 +951,7 @@ assumeCollectionNonEmpty(CheckerContext &C, ProgramStateRef State,
     const bool *KnownNonEmpty = State->get<ContainerNonEmptyMap>(CollectionS);
     if (!KnownNonEmpty)
       return State->set<ContainerNonEmptyMap>(CollectionS, Assumption);
-    return (Assumption == *KnownNonEmpty) ? State : NULL;
+    return (Assumption == *KnownNonEmpty) ? State : nullptr;
   }
 
   SValBuilder &SvalBuilder = C.getSValBuilder();
@@ -970,7 +976,7 @@ assumeCollectionNonEmpty(CheckerContext &C, ProgramStateRef State,
                          const ObjCForCollectionStmt *FCS,
                          bool Assumption) {
   if (!State)
-    return NULL;
+    return nullptr;
 
   SymbolRef CollectionS =
     State->getSVal(FCS->getCollection(), C.getLocationContext()).getAsSymbol();
@@ -1085,11 +1091,11 @@ void ObjCLoopChecker::checkPostObjCMessage(const ObjCMethodCall &M,
 static SymbolRef getMethodReceiverIfKnownImmutable(const CallEvent *Call) {
   const ObjCMethodCall *Message = dyn_cast_or_null<ObjCMethodCall>(Call);
   if (!Message)
-    return 0;
+    return nullptr;
 
   const ObjCMethodDecl *MD = Message->getDecl();
   if (!MD)
-    return 0;
+    return nullptr;
 
   const ObjCInterfaceDecl *StaticClass;
   if (isa<ObjCProtocolDecl>(MD->getDeclContext())) {
@@ -1102,11 +1108,11 @@ static SymbolRef getMethodReceiverIfKnownImmutable(const CallEvent *Call) {
   }
 
   if (!StaticClass)
-    return 0;
+    return nullptr;
 
   switch (findKnownClass(StaticClass, /*IncludeSuper=*/false)) {
   case FC_None:
-    return 0;
+    return nullptr;
   case FC_NSArray:
   case FC_NSDictionary:
   case FC_NSEnumerator:

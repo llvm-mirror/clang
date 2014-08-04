@@ -401,6 +401,13 @@ public:
     return SourceLocation::getFromRawEncoding(LocAndNRVO.Location);
   }
 
+  /// \brief If this is an array, vector, or complex number element, get the
+  /// element's index.
+  unsigned getElementIndex() const {
+    assert(getKind() == EK_ArrayElement || getKind() == EK_VectorElement ||
+           getKind() == EK_ComplexElement);
+    return Index;
+  }
   /// \brief If this is already the initializer for an array or vector
   /// element, sets the element index.
   void setElementIndex(unsigned Index) {
@@ -656,22 +663,25 @@ public:
     SK_QualificationConversionXValue,
     /// \brief Perform a qualification conversion, producing an lvalue.
     SK_QualificationConversionLValue,
+    /// \brief Perform a conversion adding _Atomic to a type.
+    SK_AtomicConversion,
     /// \brief Perform a load from a glvalue, producing an rvalue.
     SK_LValueToRValue,
     /// \brief Perform an implicit conversion sequence.
     SK_ConversionSequence,
     /// \brief Perform an implicit conversion sequence without narrowing.
     SK_ConversionSequenceNoNarrowing,
-    /// \brief Perform list-initialization without a constructor
+    /// \brief Perform list-initialization without a constructor.
     SK_ListInitialization,
-    /// \brief Perform list-initialization with a constructor.
-    SK_ListConstructorCall,
     /// \brief Unwrap the single-element initializer list for a reference.
     SK_UnwrapInitList,
     /// \brief Rewrap the single-element initializer list for a reference.
     SK_RewrapInitList,
     /// \brief Perform initialization via a constructor.
     SK_ConstructorInitialization,
+    /// \brief Perform initialization via a constructor, taking arguments from
+    /// a single InitListExpr.
+    SK_ConstructorInitializationFromList,
     /// \brief Zero-initialize the object
     SK_ZeroInitialization,
     /// \brief C assignment
@@ -695,6 +705,9 @@ public:
     SK_ProduceObjCObject,
     /// \brief Construct a std::initializer_list from an initializer list.
     SK_StdInitializerList,
+    /// \brief Perform initialization via a constructor taking a single
+    /// std::initializer_list argument.
+    SK_StdInitializerListConstructorCall,
     /// \brief Initialize an OpenCL sampler from an integer.
     SK_OCLSamplerInit,
     /// \brief Passing zero to a function where OpenCL event_t is expected.
@@ -851,17 +864,17 @@ public:
   ///
   /// \param Args the argument(s) provided for initialization.
   ///
-  /// \param InInitList true if we are initializing from an expression within
-  ///        an initializer list. This disallows narrowing conversions in C++11
-  ///        onwards.
+  /// \param TopLevelOfInitList true if we are initializing from an expression
+  ///        at the top level inside an initializer list. This disallows
+  ///        narrowing conversions in C++11 onwards.
   InitializationSequence(Sema &S, 
                          const InitializedEntity &Entity,
                          const InitializationKind &Kind,
                          MultiExprArg Args,
-                         bool InInitList = false);
+                         bool TopLevelOfInitList = false);
   void InitializeFrom(Sema &S, const InitializedEntity &Entity,
                       const InitializationKind &Kind, MultiExprArg Args,
-                      bool InInitList);
+                      bool TopLevelOfInitList);
 
   ~InitializationSequence();
   
@@ -988,7 +1001,11 @@ public:
   /// given type.
   void AddQualificationConversionStep(QualType Ty,
                                      ExprValueKind Category);
-  
+
+  /// \brief Add a new step that performs conversion from non-atomic to atomic
+  /// type.
+  void AddAtomicConversionStep(QualType Ty);
+
   /// \brief Add a new step that performs a load of the given type.
   ///
   /// Although the term "LValueToRValue" is conventional, this applies to both

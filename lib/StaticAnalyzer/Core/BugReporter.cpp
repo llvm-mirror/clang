@@ -59,7 +59,7 @@ static const Stmt *GetPreviousStmt(const ExplodedNode *N) {
     if (const Stmt *S = PathDiagnosticLocation::getStmt(N))
       return S;
 
-  return 0;
+  return nullptr;
 }
 
 static inline const Stmt*
@@ -83,15 +83,15 @@ eventsDescribeSameCondition(PathDiagnosticEventPiece *X,
   const void *tagLesser = TrackConstraintBRVisitor::getTag();
   
   if (X->getLocation() != Y->getLocation())
-    return 0;
-  
+    return nullptr;
+
   if (X->getTag() == tagPreferred && Y->getTag() == tagLesser)
     return X;
   
   if (Y->getTag() == tagPreferred && X->getTag() == tagLesser)
     return Y;
-  
-  return 0;
+
+  return nullptr;
 }
 
 /// An optimization pass over PathPieces that removes redundant diagnostics
@@ -125,7 +125,7 @@ static void removeRedundantMsgs(PathPieces &path) {
           break;
         
         if (PathDiagnosticEventPiece *nextEvent =
-            dyn_cast<PathDiagnosticEventPiece>(path.front().getPtr())) {
+            dyn_cast<PathDiagnosticEventPiece>(path.front().get())) {
           PathDiagnosticEventPiece *event =
             cast<PathDiagnosticEventPiece>(piece);
           // Check to see if we should keep one of the two pieces.  If we
@@ -214,8 +214,9 @@ static bool hasImplicitBody(const Decl *D) {
 
 /// Recursively scan through a path and make sure that all call pieces have
 /// valid locations. 
-static void adjustCallLocations(PathPieces &Pieces,
-                                PathDiagnosticLocation *LastCallLocation = 0) {
+static void
+adjustCallLocations(PathPieces &Pieces,
+                    PathDiagnosticLocation *LastCallLocation = nullptr) {
   for (PathPieces::iterator I = Pieces.begin(), E = Pieces.end(); I != E; ++I) {
     PathDiagnosticCallPiece *Call = dyn_cast<PathDiagnosticCallPiece>(*I);
 
@@ -405,7 +406,7 @@ static const Stmt *getEnclosingParent(const Stmt *S, const ParentMap &PM) {
 
   const Stmt *Parent = PM.getParentIgnoreParens(S);
   if (!Parent)
-    return 0;
+    return nullptr;
 
   switch (Parent->getStmtClass()) {
   case Stmt::ForStmtClass:
@@ -418,7 +419,7 @@ static const Stmt *getEnclosingParent(const Stmt *S, const ParentMap &PM) {
     break;
   }
 
-  return 0;
+  return nullptr;
 }
 
 static PathDiagnosticLocation
@@ -564,7 +565,7 @@ static bool GenerateMinimalPathDiagnostic(PathDiagnostic& PD,
   SourceManager& SMgr = PDB.getSourceManager();
   const LocationContext *LC = PDB.LC;
   const ExplodedNode *NextNode = N->pred_empty()
-                                        ? NULL : *(N->pred_begin());
+                                        ? nullptr : *(N->pred_begin());
 
   StackDiagVector CallStack;
 
@@ -1351,11 +1352,11 @@ static const Stmt *getStmtBeforeCond(ParentMap &PM, const Stmt *Term,
     }
     N = N->getFirstPred();
   }
-  return 0;
+  return nullptr;
 }
 
 static bool isInLoopBody(ParentMap &PM, const Stmt *S, const Stmt *Term) {
-  const Stmt *LoopBody = 0;
+  const Stmt *LoopBody = nullptr;
   switch (Term->getStmtClass()) {
     case Stmt::CXXForRangeStmtClass: {
       const CXXForRangeStmt *FR = cast<CXXForRangeStmt>(Term);
@@ -1401,7 +1402,7 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
   StackDiagVector CallStack;
   InterestingExprs IE;
 
-  const ExplodedNode *NextNode = N->pred_empty() ? NULL : *(N->pred_begin());
+  const ExplodedNode *NextNode = N->pred_empty() ? nullptr : *(N->pred_begin());
   while (NextNode) {
     N = NextNode;
     NextNode = N->getFirstPred();
@@ -1411,7 +1412,7 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
       if (Optional<PostStmt> PS = P.getAs<PostStmt>()) {
         if (const Expr *Ex = PS->getStmtAs<Expr>())
           reversePropagateIntererstingSymbols(*PDB.getBugReport(), IE,
-                                              N->getState().getPtr(), Ex,
+                                              N->getState().get(), Ex,
                                               N->getLocationContext());
       }
       
@@ -1419,7 +1420,7 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
         const Stmt *S = CE->getCalleeContext()->getCallSite();
         if (const Expr *Ex = dyn_cast_or_null<Expr>(S)) {
             reversePropagateIntererstingSymbols(*PDB.getBugReport(), IE,
-                                                N->getState().getPtr(), Ex,
+                                                N->getState().get(), Ex,
                                                 N->getLocationContext());
         }
         
@@ -1490,7 +1491,7 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
           const LocationContext *CalleeCtx = PDB.LC;
           if (CallerCtx != CalleeCtx) {
             reversePropagateInterestingSymbols(*PDB.getBugReport(), IE,
-                                               N->getState().getPtr(),
+                                               N->getState().get(),
                                                CalleeCtx, CallerCtx);
           }
         }
@@ -1498,7 +1499,7 @@ static bool GenerateExtensivePathDiagnostic(PathDiagnostic& PD,
         // Are we jumping to the head of a loop?  Add a special diagnostic.
         if (const Stmt *Loop = BE->getSrc()->getLoopTarget()) {
           PathDiagnosticLocation L(Loop, SM, PDB.LC);
-          const CompoundStmt *CS = NULL;
+          const CompoundStmt *CS = nullptr;
 
           if (const ForStmt *FS = dyn_cast<ForStmt>(Loop))
             CS = dyn_cast<CompoundStmt>(FS->getBody());
@@ -1673,7 +1674,7 @@ GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
 
         PathDiagnosticCallPiece *C;
         if (VisitedEntireCall) {
-          PathDiagnosticPiece *P = PD.getActivePath().front().getPtr();
+          PathDiagnosticPiece *P = PD.getActivePath().front().get();
           C = cast<PathDiagnosticCallPiece>(P);
         } else {
           const Decl *Caller = CE->getLocationContext()->getDecl();
@@ -1683,11 +1684,11 @@ GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
           // reset the mapping from active to location context.
           assert(PD.getActivePath().size() == 1 &&
                  PD.getActivePath().front() == C);
-          LCM[&PD.getActivePath()] = 0;
+          LCM[&PD.getActivePath()] = nullptr;
 
           // Record the location context mapping for the path within
           // the call.
-          assert(LCM[&C->path] == 0 ||
+          assert(LCM[&C->path] == nullptr ||
                  LCM[&C->path] == CE->getCalleeContext());
           LCM[&C->path] = CE->getCalleeContext();
 
@@ -1727,7 +1728,7 @@ GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
         // Propagate the interesting symbols accordingly.
         if (const Expr *Ex = dyn_cast_or_null<Expr>(S)) {
           reversePropagateIntererstingSymbols(*PDB.getBugReport(), IE,
-                                              N->getState().getPtr(), Ex,
+                                              N->getState().get(), Ex,
                                               N->getLocationContext());
         }
 
@@ -1755,7 +1756,7 @@ GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
         // interesting symbols correctly.
         if (const Expr *Ex = PS->getStmtAs<Expr>())
           reversePropagateIntererstingSymbols(*PDB.getBugReport(), IE,
-                                              N->getState().getPtr(), Ex,
+                                              N->getState().get(), Ex,
                                               N->getLocationContext());
 
         // Add an edge.  If this is an ObjCForCollectionStmt do
@@ -1778,7 +1779,7 @@ GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
           const LocationContext *CalleeCtx = PDB.LC;
           if (CallerCtx != CalleeCtx) {
             reversePropagateInterestingSymbols(*PDB.getBugReport(), IE,
-                                               N->getState().getPtr(),
+                                               N->getState().get(),
                                                CalleeCtx, CallerCtx);
           }
         }
@@ -1786,7 +1787,7 @@ GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
         // Are we jumping to the head of a loop?  Add a special diagnostic.
         if (const Stmt *Loop = BE->getSrc()->getLoopTarget()) {
           PathDiagnosticLocation L(Loop, SM, PDB.LC);
-          const Stmt *Body = NULL;
+          const Stmt *Body = nullptr;
 
           if (const ForStmt *FS = dyn_cast<ForStmt>(Loop))
             Body = FS->getBody();
@@ -1827,7 +1828,7 @@ GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
             bool IsInLoopBody =
               isInLoopBody(PM, getStmtBeforeCond(PM, TermCond, N), Term);
 
-            const char *str = 0;
+            const char *str = nullptr;
 
             if (isJumpToFalseBranch(&*BE)) {
               if (!IsInLoopBody) {
@@ -1890,13 +1891,13 @@ GenerateAlternateExtensivePathDiagnostic(PathDiagnostic& PD,
 
 static const Stmt *getLocStmt(PathDiagnosticLocation L) {
   if (!L.isValid())
-    return 0;
+    return nullptr;
   return L.asStmt();
 }
 
 static const Stmt *getStmtParent(const Stmt *S, const ParentMap &PM) {
   if (!S)
-    return 0;
+    return nullptr;
 
   while (true) {
     S = PM.getParentIgnoreParens(S);
@@ -1988,7 +1989,7 @@ static void addContextEdges(PathPieces &pieces, SourceManager &SM,
     SmallVector<PathDiagnosticLocation, 4> SrcContexts;
 
     PathDiagnosticLocation NextSrcContext = SrcLoc;
-    const Stmt *InnerStmt = 0;
+    const Stmt *InnerStmt = nullptr;
     while (NextSrcContext.isValid() && NextSrcContext.asStmt() != InnerStmt) {
       SrcContexts.push_back(NextSrcContext);
       InnerStmt = NextSrcContext.asStmt();
@@ -2073,7 +2074,7 @@ static void simplifySimpleBranches(PathPieces &pieces) {
     if (NextI == E)
       break;
 
-    PathDiagnosticControlFlowPiece *PieceNextI = 0;
+    PathDiagnosticControlFlowPiece *PieceNextI = nullptr;
 
     while (true) {
       if (NextI == E)
@@ -2579,8 +2580,8 @@ const Decl *BugReport::getDeclWithIssue() const {
   
   const ExplodedNode *N = getErrorNode();
   if (!N)
-    return 0;
-  
+    return nullptr;
+
   const LocationContext *LC = N->getLocationContext();
   return LC->getCurrentStackFrame()->getDecl();
 }
@@ -2703,10 +2704,10 @@ void BugReport::popInterestingSymbolsAndRegions() {
 
 const Stmt *BugReport::getStmt() const {
   if (!ErrorNode)
-    return 0;
+    return nullptr;
 
   ProgramPoint ProgP = ErrorNode->getLocation();
-  const Stmt *S = NULL;
+  const Stmt *S = nullptr;
 
   if (Optional<BlockEntrance> BE = ProgP.getAs<BlockEntrance>()) {
     CFGBlock &Exit = ProgP.getLocationContext()->getCFG()->getExit();
@@ -2943,7 +2944,7 @@ bool TrimmedGraph::popNextReportGraph(ReportGraph &GraphWrapper) {
 
   // Now walk from the error node up the BFS path, always taking the
   // predeccessor with the lowest number.
-  ExplodedNode *Succ = 0;
+  ExplodedNode *Succ = nullptr;
   while (true) {
     // Create the equivalent node in the new graph with the same state
     // and location.
@@ -2994,7 +2995,7 @@ static void CompactPathDiagnostic(PathPieces &path, const SourceManager& SM) {
   for (PathPieces::const_iterator I = path.begin(), E = path.end();
        I!=E; ++I) {
     
-    PathDiagnosticPiece *piece = I->getPtr();
+    PathDiagnosticPiece *piece = I->get();
 
     // Recursively compact calls.
     if (PathDiagnosticCallPiece *call=dyn_cast<PathDiagnosticCallPiece>(piece)){
@@ -3091,7 +3092,7 @@ bool GRBugReporter::generatePathDiagnostic(PathDiagnostic& PD,
     } else {
       // Keep the errorNodes list in sync with the bugReports list.
       HasInvalid = true;
-      errorNodes.push_back(0);
+      errorNodes.push_back(nullptr);
     }
   }
 
@@ -3328,7 +3329,7 @@ FindReportInEquivalenceClass(BugReportEquivClass& EQ,
   // DFS traversal of the ExplodedGraph to find a non-sink node.  We could write
   // this as a recursive function, but we don't want to risk blowing out the
   // stack for very long paths.
-  BugReport *exampleReport = 0;
+  BugReport *exampleReport = nullptr;
 
   for (; I != E; ++I) {
     const ExplodedNode *errorNode = I->getErrorNode();

@@ -430,7 +430,16 @@ void TypePrinter::printConstantArrayBefore(const ConstantArrayType *T,
 }
 void TypePrinter::printConstantArrayAfter(const ConstantArrayType *T, 
                                           raw_ostream &OS) {
-  OS << '[' << T->getSize().getZExtValue() << ']';
+  OS << '[';
+  if (T->getIndexTypeQualifiers().hasQualifiers()) {
+    AppendTypeQualList(OS, T->getIndexTypeCVRQualifiers());
+    OS << ' ';
+  }
+
+  if (T->getSizeModifier() == ArrayType::Static)
+    OS << "static ";
+
+  OS << T->getSize().getZExtValue() << ']';
   printAfter(T->getElementType(), OS);
 }
 
@@ -461,7 +470,7 @@ void TypePrinter::printVariableArrayAfter(const VariableArrayType *T,
   }
 
   if (T->getSizeModifier() == VariableArrayType::Static)
-    OS << "static";
+    OS << "static ";
   else if (T->getSizeModifier() == VariableArrayType::Star)
     OS << '*';
 
@@ -593,7 +602,8 @@ FunctionProtoType::printExceptionSpecification(raw_ostream &OS,
     OS << " noexcept";
     if (getExceptionSpecType() == EST_ComputedNoexcept) {
       OS << '(';
-      getNoexceptExpr()->printPretty(OS, nullptr, Policy);
+      if (getNoexceptExpr())
+        getNoexceptExpr()->printPretty(OS, nullptr, Policy);
       OS << ')';
     }
   }
@@ -761,7 +771,8 @@ void TypePrinter::printTypedefAfter(const TypedefType *T, raw_ostream &OS) { }
 void TypePrinter::printTypeOfExprBefore(const TypeOfExprType *T,
                                         raw_ostream &OS) {
   OS << "typeof ";
-  T->getUnderlyingExpr()->printPretty(OS, nullptr, Policy);
+  if (T->getUnderlyingExpr())
+    T->getUnderlyingExpr()->printPretty(OS, nullptr, Policy);
   spaceBeforePlaceHolder(OS);
 }
 void TypePrinter::printTypeOfExprAfter(const TypeOfExprType *T,
@@ -777,7 +788,8 @@ void TypePrinter::printTypeOfAfter(const TypeOfType *T, raw_ostream &OS) { }
 
 void TypePrinter::printDecltypeBefore(const DecltypeType *T, raw_ostream &OS) { 
   OS << "decltype(";
-  T->getUnderlyingExpr()->printPretty(OS, nullptr, Policy);
+  if (T->getUnderlyingExpr())
+    T->getUnderlyingExpr()->printPretty(OS, nullptr, Policy);
   OS << ')';
   spaceBeforePlaceHolder(OS);
 }

@@ -40,7 +40,7 @@ public:
   }
 
   VariantMatcher constructMatcher(StringRef MatcherName,
-                                  Diagnostics *Error = NULL) {
+                                  Diagnostics *Error = nullptr) {
     Diagnostics DummyError;
     if (!Error) Error = &DummyError;
     llvm::Optional<MatcherCtor> Ctor = lookupMatcherCtor(MatcherName);
@@ -53,7 +53,7 @@ public:
 
   VariantMatcher constructMatcher(StringRef MatcherName,
                                   const VariantValue &Arg1,
-                                  Diagnostics *Error = NULL) {
+                                  Diagnostics *Error = nullptr) {
     Diagnostics DummyError;
     if (!Error) Error = &DummyError;
     llvm::Optional<MatcherCtor> Ctor = lookupMatcherCtor(MatcherName);
@@ -67,7 +67,7 @@ public:
   VariantMatcher constructMatcher(StringRef MatcherName,
                                   const VariantValue &Arg1,
                                   const VariantValue &Arg2,
-                                  Diagnostics *Error = NULL) {
+                                  Diagnostics *Error = nullptr) {
     Diagnostics DummyError;
     if (!Error) Error = &DummyError;
     llvm::Optional<MatcherCtor> Ctor = lookupMatcherCtor(MatcherName);
@@ -83,7 +83,7 @@ public:
 
   CompVector getCompletions() {
     return Registry::getCompletions(
-        llvm::ArrayRef<std::pair<MatcherCtor, unsigned> >());
+        ArrayRef<std::pair<MatcherCtor, unsigned> >());
   }
 
   CompVector getCompletions(StringRef MatcherName1, unsigned ArgNo1) {
@@ -110,7 +110,8 @@ public:
   }
 
   bool hasCompletion(const CompVector &Comps, StringRef TypedText,
-                     StringRef MatcherDecl = StringRef(), unsigned *Index = 0) {
+                     StringRef MatcherDecl = StringRef(),
+                     unsigned *Index = nullptr) {
     for (CompVector::const_iterator I = Comps.begin(), E = Comps.end(); I != E;
          ++I) {
       if (I->TypedText == TypedText &&

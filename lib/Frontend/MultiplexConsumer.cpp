@@ -226,6 +226,11 @@ bool MultiplexConsumer::HandleTopLevelDecl(DeclGroupRef D) {
   return Continue;
 }
 
+void MultiplexConsumer::HandleInlineMethodDefinition(CXXMethodDecl *D) {
+  for (size_t i = 0, e = Consumers.size(); i != e; ++i)
+    Consumers[i]->HandleInlineMethodDefinition(D);
+}
+
 void  MultiplexConsumer::HandleCXXStaticMemberVarInstantiation(VarDecl *VD) {
   for (size_t i = 0, e = Consumers.size(); i != e; ++i)
     Consumers[i]->HandleCXXStaticMemberVarInstantiation(VD);
@@ -246,6 +251,11 @@ void MultiplexConsumer::HandleTagDeclDefinition(TagDecl *D) {
     Consumers[i]->HandleTagDeclDefinition(D);
 }
 
+void MultiplexConsumer::HandleTagDeclRequiredDefinition(const TagDecl *D) {
+  for (size_t i = 0, e = Consumers.size(); i != e; ++i)
+    Consumers[i]->HandleTagDeclRequiredDefinition(D);
+}
+
 void MultiplexConsumer::HandleCXXImplicitFunctionInstantiation(FunctionDecl *D){
   for (size_t i = 0, e = Consumers.size(); i != e; ++i)
     Consumers[i]->HandleCXXImplicitFunctionInstantiation(D);
@@ -254,6 +264,26 @@ void MultiplexConsumer::HandleCXXImplicitFunctionInstantiation(FunctionDecl *D){
 void MultiplexConsumer::HandleTopLevelDeclInObjCContainer(DeclGroupRef D) {
   for (size_t i = 0, e = Consumers.size(); i != e; ++i)
     Consumers[i]->HandleTopLevelDeclInObjCContainer(D);
+}
+
+void MultiplexConsumer::HandleImplicitImportDecl(ImportDecl *D) {
+  for (size_t i = 0, e = Consumers.size(); i != e; ++i)
+    Consumers[i]->HandleImplicitImportDecl(D);
+}
+
+void MultiplexConsumer::HandleLinkerOptionPragma(llvm::StringRef Opts) {
+  for (size_t i = 0, e = Consumers.size(); i != e; ++i)
+    Consumers[i]->HandleLinkerOptionPragma(Opts);
+}
+
+void MultiplexConsumer::HandleDetectMismatch(llvm::StringRef Name, llvm::StringRef Value) {
+  for (size_t i = 0, e = Consumers.size(); i != e; ++i)
+    Consumers[i]->HandleDetectMismatch(Name, Value);
+}
+
+void MultiplexConsumer::HandleDependentLibrary(llvm::StringRef Lib) {
+  for (size_t i = 0, e = Consumers.size(); i != e; ++i)
+    Consumers[i]->HandleDependentLibrary(Lib);
 }
 
 void MultiplexConsumer::CompleteTentativeDefinition(VarDecl *D) {

@@ -45,20 +45,12 @@ static FrontendAction *CreateFrontendBaseAction(CompilerInstance &CI) {
   case DumpTokens:             return new DumpTokensAction();
   case EmitAssembly:           return new EmitAssemblyAction();
   case EmitBC:                 return new EmitBCAction();
-#ifdef CLANG_ENABLE_REWRITER
   case EmitHTML:               return new HTMLPrintAction();
-#else
-  case EmitHTML:               Action = "EmitHTML"; break;
-#endif
   case EmitLLVM:               return new EmitLLVMAction();
   case EmitLLVMOnly:           return new EmitLLVMOnlyAction();
   case EmitCodeGenOnly:        return new EmitCodeGenOnlyAction();
   case EmitObj:                return new EmitObjAction();
-#ifdef CLANG_ENABLE_REWRITER
   case FixIt:                  return new FixItAction();
-#else
-  case FixIt:                  Action = "FixIt"; break;
-#endif
   case GenerateModule:         return new GenerateModuleAction;
   case GeneratePCH:            return new GeneratePCHAction;
   case GeneratePTH:            return new GeneratePTHAction();
@@ -74,38 +66,30 @@ static FrontendAction *CreateFrontendBaseAction(CompilerInstance &CI) {
       if (it->getName() == CI.getFrontendOpts().ActionName) {
         std::unique_ptr<PluginASTAction> P(it->instantiate());
         if (!P->ParseArgs(CI, CI.getFrontendOpts().PluginArgs))
-          return 0;
+          return nullptr;
         return P.release();
       }
     }
 
     CI.getDiagnostics().Report(diag::err_fe_invalid_plugin_name)
       << CI.getFrontendOpts().ActionName;
-    return 0;
+    return nullptr;
   }
 
   case PrintDeclContext:       return new DeclContextPrintAction();
   case PrintPreamble:          return new PrintPreambleAction();
   case PrintPreprocessedInput: {
-    if (CI.getPreprocessorOutputOpts().RewriteIncludes) {
-#ifdef CLANG_ENABLE_REWRITER
+    if (CI.getPreprocessorOutputOpts().RewriteIncludes)
       return new RewriteIncludesAction();
-#else
-      Action = "RewriteIncludesAction";
-      break;
-#endif
-    }
     return new PrintPreprocessedAction();
   }
 
-#ifdef CLANG_ENABLE_REWRITER
   case RewriteMacros:          return new RewriteMacrosAction();
-  case RewriteObjC:            return new RewriteObjCAction();
   case RewriteTest:            return new RewriteTestAction();
+#ifdef CLANG_ENABLE_OBJC_REWRITER
+  case RewriteObjC:            return new RewriteObjCAction();
 #else
-  case RewriteMacros:          Action = "RewriteMacros"; break;
   case RewriteObjC:            Action = "RewriteObjC"; break;
-  case RewriteTest:            Action = "RewriteTest"; break;
 #endif
 #ifdef CLANG_ENABLE_ARCMT
   case MigrateSource:          return new arcmt::MigrateSourceAction();
@@ -121,7 +105,7 @@ static FrontendAction *CreateFrontendBaseAction(CompilerInstance &CI) {
   }
 
 #if !defined(CLANG_ENABLE_ARCMT) || !defined(CLANG_ENABLE_STATIC_ANALYZER) \
-  || !defined(CLANG_ENABLE_REWRITER)
+  || !defined(CLANG_ENABLE_OBJC_REWRITER)
   CI.getDiagnostics().Report(diag::err_fe_action_not_available) << Action;
   return 0;
 #else
@@ -133,15 +117,13 @@ static FrontendAction *CreateFrontendAction(CompilerInstance &CI) {
   // Create the underlying action.
   FrontendAction *Act = CreateFrontendBaseAction(CI);
   if (!Act)
-    return 0;
+    return nullptr;
 
   const FrontendOptions &FEOpts = CI.getFrontendOpts();
 
-#ifdef CLANG_ENABLE_REWRITER
   if (FEOpts.FixAndRecompile) {
     Act = new FixItRecompile(Act);
   }
-#endif
   
 #ifdef CLANG_ENABLE_ARCMT
   if (CI.getFrontendOpts().ProgramAction != frontend::MigrateSource &&
@@ -217,7 +199,7 @@ bool clang::ExecuteCompilerInvocation(CompilerInstance *Clang) {
     Args[0] = "clang (LLVM option parsing)";
     for (unsigned i = 0; i != NumArgs; ++i)
       Args[i + 1] = Clang->getFrontendOpts().LLVMArgs[i].c_str();
-    Args[NumArgs + 1] = 0;
+    Args[NumArgs + 1] = nullptr;
     llvm::cl::ParseCommandLineOptions(NumArgs + 1, Args.get());
   }
 

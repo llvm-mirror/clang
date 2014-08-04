@@ -207,6 +207,30 @@ public:
                                               llvm::Value *ptr,
                                               QualType type) = 0;
 
+  virtual llvm::Constant *getAddrOfRTTIDescriptor(QualType Ty) = 0;
+
+  virtual bool shouldTypeidBeNullChecked(bool IsDeref,
+                                         QualType SrcRecordTy) = 0;
+  virtual void EmitBadTypeidCall(CodeGenFunction &CGF) = 0;
+  virtual llvm::Value *EmitTypeid(CodeGenFunction &CGF, QualType SrcRecordTy,
+                                  llvm::Value *ThisPtr,
+                                  llvm::Type *StdTypeInfoPtrTy) = 0;
+
+  virtual bool shouldDynamicCastCallBeNullChecked(bool SrcIsPtr,
+                                                  QualType SrcRecordTy) = 0;
+
+  virtual llvm::Value *
+  EmitDynamicCastCall(CodeGenFunction &CGF, llvm::Value *Value,
+                      QualType SrcRecordTy, QualType DestTy,
+                      QualType DestRecordTy, llvm::BasicBlock *CastEnd) = 0;
+
+  virtual llvm::Value *EmitDynamicCastToVoid(CodeGenFunction &CGF,
+                                             llvm::Value *Value,
+                                             QualType SrcRecordTy,
+                                             QualType DestTy) = 0;
+
+  virtual bool EmitBadCastCall(CodeGenFunction &CGF) = 0;
+
   virtual llvm::Value *GetVirtualBaseClassOffset(CodeGenFunction &CGF,
                                                  llvm::Value *This,
                                                  const CXXRecordDecl *ClassDecl,
@@ -359,7 +383,8 @@ public:
   /// base tables.
   virtual void emitVirtualInheritanceTables(const CXXRecordDecl *RD) = 0;
 
-  virtual void setThunkLinkage(llvm::Function *Thunk, bool ForVTable) = 0;
+  virtual void setThunkLinkage(llvm::Function *Thunk, bool ForVTable,
+                               GlobalDecl GD, bool ReturnAdjustment) = 0;
 
   virtual llvm::Value *performThisAdjustment(CodeGenFunction &CGF,
                                              llvm::Value *This,
@@ -377,10 +402,6 @@ public:
 
   /// Gets the deleted virtual member call name.
   virtual StringRef GetDeletedVirtualCallName() = 0;
-
-  /// \brief Returns true iff static data members that are initialized in the
-  /// class definition should have linkonce linkage.
-  virtual bool isInlineInitializedStaticDataMemberLinkOnce() { return false; }
 
   /**************************** Array cookies ******************************/
 
@@ -484,7 +505,7 @@ public:
   ///        initialization or non-trivial destruction for thread_local
   ///        variables, a function to perform the initialization. Otherwise, 0.
   virtual void EmitThreadLocalInitFuncs(
-      llvm::ArrayRef<std::pair<const VarDecl *, llvm::GlobalVariable *> > Decls,
+      ArrayRef<std::pair<const VarDecl *, llvm::GlobalVariable *> > Decls,
       llvm::Function *InitFunc);
 
   /// Emit a reference to a non-local thread_local variable (including
@@ -493,36 +514,6 @@ public:
   virtual LValue EmitThreadLocalVarDeclLValue(CodeGenFunction &CGF,
                                               const VarDecl *VD,
                                               QualType LValType);
-
-  /**************************** RTTI Uniqueness ******************************/
-
-protected:
-  /// Returns true if the ABI requires RTTI type_info objects to be unique
-  /// across a program.
-  virtual bool shouldRTTIBeUnique() { return true; }
-
-public:
-  /// What sort of unique-RTTI behavior should we use?
-  enum RTTIUniquenessKind {
-    /// We are guaranteeing, or need to guarantee, that the RTTI string
-    /// is unique.
-    RUK_Unique,
-
-    /// We are not guaranteeing uniqueness for the RTTI string, so we
-    /// can demote to hidden visibility but must use string comparisons.
-    RUK_NonUniqueHidden,
-
-    /// We are not guaranteeing uniqueness for the RTTI string, so we
-    /// have to use string comparisons, but we also have to emit it with
-    /// non-hidden visibility.
-    RUK_NonUniqueVisible
-  };
-
-  /// Return the required visibility status for the given type and linkage in
-  /// the current ABI.
-  RTTIUniquenessKind
-  classifyRTTIUniqueness(QualType CanTy,
-                         llvm::GlobalValue::LinkageTypes Linkage);
 };
 
 // Create an instance of a C++ ABI class:

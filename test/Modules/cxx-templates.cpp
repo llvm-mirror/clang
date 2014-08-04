@@ -102,7 +102,17 @@ void g() {
   TemplateInstantiationVisibility<char[3]> tiv3; // expected-error {{must be imported from module 'cxx_templates_b_impl'}}
   // expected-note@cxx-templates-b-impl.h:10 {{previous definition is here}}
   TemplateInstantiationVisibility<char[4]> tiv4;
+
+  int &p = WithPartialSpecializationUse().f();
+  int &q = WithExplicitSpecializationUse().inner_template<int>();
+  int *r = PartiallyInstantiatePartialSpec<int*>::bar();
 }
+
+static_assert(Outer<int>::Inner<int>::f() == 1, "");
+static_assert(Outer<int>::Inner<int>::g() == 2, "");
+
+static_assert(MergeTemplateDefinitions<int>::f() == 1, "");
+static_assert(MergeTemplateDefinitions<int>::g() == 2, "");
 
 RedeclaredAsFriend<int> raf1;
 RedeclareTemplateAsFriend<double> rtaf;

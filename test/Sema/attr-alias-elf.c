@@ -35,6 +35,13 @@ void h9() __attribute__((alias("f9")));
 void f9() __attribute__((alias("g9")));
 void g9() {}
 
+void f10() __attribute__((alias("g10"))); // expected-error {{alias definition is part of a cycle}}
+void g10() __attribute__((alias("f10"))); // expected-error {{alias definition is part of a cycle}}
+
+// FIXME: This could be a bit better, h10 is not part of the cycle, it points
+// to it.
+void h10() __attribute__((alias("g10"))); // expected-error {{alias definition is part of a cycle}}
+
 extern int a1 __attribute__((alias("b1")));
 int b1 = 42;
 
@@ -57,3 +64,6 @@ void test3_foo() __attribute__((alias("test3_bar")));
 __attribute__((section("test"))) void test4_bar() { }
 void test4_foo() __attribute__((section("test")));
 void test4_foo() __attribute__((alias("test4_bar")));
+
+int test5_bar = 0;
+extern struct incomplete_type test5_foo __attribute__((alias("test5_bar")));

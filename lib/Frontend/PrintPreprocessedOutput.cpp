@@ -139,7 +139,7 @@ public:
   void PragmaDiagnosticPush(SourceLocation Loc, StringRef Namespace) override;
   void PragmaDiagnosticPop(SourceLocation Loc, StringRef Namespace) override;
   void PragmaDiagnostic(SourceLocation Loc, StringRef Namespace,
-                        diag::Mapping Map, StringRef Str) override;
+                        diag::Severity Map, StringRef Str) override;
   void PragmaWarning(SourceLocation Loc, StringRef WarningSpec,
                      ArrayRef<int> Ids) override;
   void PragmaWarningPush(SourceLocation Loc, int Level) override;
@@ -162,7 +162,8 @@ public:
                    const Token &Tok) {
     return ConcatInfo.AvoidConcat(PrevPrevTok, PrevTok, Tok);
   }
-  void WriteLineInfo(unsigned LineNo, const char *Extra=0, unsigned ExtraLen=0);
+  void WriteLineInfo(unsigned LineNo, const char *Extra=nullptr,
+                     unsigned ExtraLen=0);
   bool LineMarkersAreDisabled() const { return DisableLineMarkers; }
   void HandleNewlinesInToken(const char *TokStr, unsigned Len);
 
@@ -220,7 +221,7 @@ bool PrintPPOutputPPCallbacks::MoveToLine(unsigned LineNo) {
     }
   } else if (!DisableLineMarkers) {
     // Emit a #line or line marker.
-    WriteLineInfo(LineNo, 0, 0);
+    WriteLineInfo(LineNo, nullptr, 0);
   } else {
     // Okay, we're in -P mode, which turns off line markers.  However, we still
     // need to emit a newline between tokens on different lines.
@@ -438,26 +439,27 @@ PragmaDiagnosticPop(SourceLocation Loc, StringRef Namespace) {
   setEmittedDirectiveOnThisLine();
 }
 
-void PrintPPOutputPPCallbacks::
-PragmaDiagnostic(SourceLocation Loc, StringRef Namespace,
-                 diag::Mapping Map, StringRef Str) {
+void PrintPPOutputPPCallbacks::PragmaDiagnostic(SourceLocation Loc,
+                                                StringRef Namespace,
+                                                diag::Severity Map,
+                                                StringRef Str) {
   startNewLineIfNeeded();
   MoveToLine(Loc);
   OS << "#pragma " << Namespace << " diagnostic ";
   switch (Map) {
-  case diag::MAP_REMARK:
+  case diag::Severity::Remark:
     OS << "remark";
     break;
-  case diag::MAP_WARNING:
+  case diag::Severity::Warning:
     OS << "warning";
     break;
-  case diag::MAP_ERROR:
+  case diag::Severity::Error:
     OS << "error";
     break;
-  case diag::MAP_IGNORE:
+  case diag::Severity::Ignored:
     OS << "ignored";
     break;
-  case diag::MAP_FATAL:
+  case diag::Severity::Fatal:
     OS << "fatal";
     break;
   }

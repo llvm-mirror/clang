@@ -73,6 +73,18 @@ private:
   /// accordingly.
   unsigned moveStateToNextToken(LineState &State, bool DryRun, bool Newline);
 
+  /// \brief Update 'State' according to the next token's fake left parentheses.
+  void moveStatePastFakeLParens(LineState &State, bool Newline);
+  /// \brief Update 'State' according to the next token's fake r_parens.
+  void moveStatePastFakeRParens(LineState &State);
+
+  /// \brief Update 'State' according to the next token being one of "(<{[".
+  void moveStatePastScopeOpener(LineState &State, bool Newline);
+  /// \brief Update 'State' according to the next token being one of ")>}]".
+  void moveStatePastScopeCloser(LineState &State);
+  /// \brief Update 'State' with the next token opening a nested block.
+  void moveStateToNewBlock(LineState &State);
+
   /// \brief If the current token sticks out over the end of the line, break
   /// it if possible.
   ///
@@ -139,7 +151,8 @@ struct ParenState {
         StartOfFunctionCall(0), StartOfArraySubscripts(0),
         NestedNameSpecifierContinuation(0), CallContinuation(0), VariablePos(0),
         ContainsLineBreak(false), ContainsUnwrappedBuilder(0),
-        AlignColons(true), ObjCSelectorNameFound(false), LambdasFound(0) {}
+        AlignColons(true), ObjCSelectorNameFound(false),
+        HasMultipleNestedBlocks(false), JSFunctionInlined(false) {}
 
   /// \brief The position to which a specific parenthesis level needs to be
   /// indented.
@@ -234,11 +247,15 @@ struct ParenState {
   /// the same token.
   bool ObjCSelectorNameFound;
 
-  /// \brief Counts the number of lambda introducers found on this level.
+  /// \brief \c true if there are multiple nested blocks inside these parens.
   ///
   /// Not considered for memoization as it will always have the same value at
   /// the same token.
-  unsigned LambdasFound;
+  bool HasMultipleNestedBlocks;
+
+  // \brief The previous JavaScript 'function' keyword is not wrapped to a new
+  // line.
+  bool JSFunctionInlined;
 
   bool operator<(const ParenState &Other) const {
     if (Indent != Other.Indent)
@@ -273,6 +290,8 @@ struct ParenState {
       return ContainsLineBreak < Other.ContainsLineBreak;
     if (ContainsUnwrappedBuilder != Other.ContainsUnwrappedBuilder)
       return ContainsUnwrappedBuilder < Other.ContainsUnwrappedBuilder;
+    if (JSFunctionInlined != Other.JSFunctionInlined)
+      return JSFunctionInlined < Other.JSFunctionInlined;
     return false;
   }
 };

@@ -20,7 +20,7 @@
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Lex/PreprocessorOptions.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/Config/config.h"
+#include "llvm/Config/llvm-config.h"
 #include "gtest/gtest.h"
 
 using namespace llvm;
@@ -38,7 +38,7 @@ protected:
       SourceMgr(Diags, FileMgr),
       TargetOpts(new TargetOptions) {
     TargetOpts->Triple = "x86_64-apple-darwin11.1.0";
-    Target = TargetInfo::CreateTargetInfo(Diags, &*TargetOpts);
+    Target = TargetInfo::CreateTargetInfo(Diags, TargetOpts);
   }
 
   FileSystemOptions FileMgrOpts;
@@ -47,7 +47,7 @@ protected:
   DiagnosticsEngine Diags;
   SourceManager SourceMgr;
   LangOptions LangOpts;
-  IntrusiveRefCntPtr<TargetOptions> TargetOpts;
+  std::shared_ptr<TargetOptions> TargetOpts;
   IntrusiveRefCntPtr<TargetInfo> Target;
 };
 
@@ -65,7 +65,7 @@ class VoidModuleLoader : public ModuleLoader {
                          bool Complain) override { }
 
   GlobalModuleIndex *loadGlobalModuleIndex(SourceLocation TriggerLoc) override
-    { return 0; }
+    { return nullptr; }
   bool lookupMissingImports(StringRef Name, SourceLocation TriggerLoc) override
     { return 0; };
 };
@@ -75,14 +75,15 @@ TEST_F(SourceManagerTest, isBeforeInTranslationUnit) {
     "#define M(x) [x]\n"
     "M(foo)";
   MemoryBuffer *buf = MemoryBuffer::getMemBuffer(source);
-  FileID mainFileID = SourceMgr.createMainFileIDForMemBuffer(buf);
+  FileID mainFileID = SourceMgr.createFileID(buf);
+  SourceMgr.setMainFileID(mainFileID);
 
   VoidModuleLoader ModLoader;
   HeaderSearch HeaderInfo(new HeaderSearchOptions, SourceMgr, Diags, LangOpts, 
                           &*Target);
   Preprocessor PP(new PreprocessorOptions(), Diags, LangOpts, SourceMgr,
                   HeaderInfo, ModLoader,
-                  /*IILookup =*/0,
+                  /*IILookup =*/nullptr,
                   /*OwnsHeaderSearch =*/false);
   PP.Initialize(*Target);
   PP.EnterMainSourceFile();
@@ -127,7 +128,8 @@ TEST_F(SourceManagerTest, getColumnNumber) {
     "int y;";
 
   MemoryBuffer *Buf = MemoryBuffer::getMemBuffer(Source);
-  FileID MainFileID = SourceMgr.createMainFileIDForMemBuffer(Buf);
+  FileID MainFileID = SourceMgr.createFileID(Buf);
+  SourceMgr.setMainFileID(MainFileID);
 
   bool Invalid;
 
@@ -166,7 +168,7 @@ TEST_F(SourceManagerTest, getColumnNumber) {
   EXPECT_TRUE(Invalid);
 
   // Test with no invalid flag.
-  EXPECT_EQ(1U, SourceMgr.getColumnNumber(MainFileID, 0, NULL));
+  EXPECT_EQ(1U, SourceMgr.getColumnNumber(MainFileID, 0, nullptr));
 }
 
 #if defined(LLVM_ON_UNIX)
@@ -186,7 +188,8 @@ TEST_F(SourceManagerTest, getMacroArgExpandedLocation) {
 
   MemoryBuffer *headerBuf = MemoryBuffer::getMemBuffer(header);
   MemoryBuffer *mainBuf = MemoryBuffer::getMemBuffer(main);
-  FileID mainFileID = SourceMgr.createMainFileIDForMemBuffer(mainBuf);
+  FileID mainFileID = SourceMgr.createFileID(mainBuf);
+  SourceMgr.setMainFileID(mainFileID);
 
   const FileEntry *headerFile = FileMgr.getVirtualFile("/test-header.h",
                                                  headerBuf->getBufferSize(), 0);
@@ -197,7 +200,7 @@ TEST_F(SourceManagerTest, getMacroArgExpandedLocation) {
                           &*Target);
   Preprocessor PP(new PreprocessorOptions(), Diags, LangOpts, SourceMgr,
                   HeaderInfo, ModLoader,
-                  /*IILookup =*/0,
+                  /*IILookup =*/nullptr,
                   /*OwnsHeaderSearch =*/false);
   PP.Initialize(*Target);
   PP.EnterMainSourceFile();
@@ -284,7 +287,7 @@ TEST_F(SourceManagerTest, isBeforeInTranslationUnitWithMacroInInclude) {
 
   MemoryBuffer *headerBuf = MemoryBuffer::getMemBuffer(header);
   MemoryBuffer *mainBuf = MemoryBuffer::getMemBuffer(main);
-  SourceMgr.createMainFileIDForMemBuffer(mainBuf);
+  SourceMgr.setMainFileID(SourceMgr.createFileID(mainBuf));
 
   const FileEntry *headerFile = FileMgr.getVirtualFile("/test-header.h",
                                                  headerBuf->getBufferSize(), 0);
@@ -295,7 +298,7 @@ TEST_F(SourceManagerTest, isBeforeInTranslationUnitWithMacroInInclude) {
                           &*Target);
   Preprocessor PP(new PreprocessorOptions(), Diags, LangOpts, SourceMgr,
                   HeaderInfo, ModLoader,
-                  /*IILookup =*/0,
+                  /*IILookup =*/nullptr,
                   /*OwnsHeaderSearch =*/false);
   PP.Initialize(*Target);
 

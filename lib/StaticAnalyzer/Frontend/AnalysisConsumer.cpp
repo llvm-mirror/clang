@@ -185,8 +185,8 @@ public:
                    const std::string& outdir,
                    AnalyzerOptionsRef opts,
                    ArrayRef<std::string> plugins)
-    : RecVisitorMode(0), RecVisitorBR(0),
-      Ctx(0), PP(pp), OutDir(outdir), Opts(opts), Plugins(plugins) {
+    : RecVisitorMode(0), RecVisitorBR(nullptr),
+      Ctx(nullptr), PP(pp), OutDir(outdir), Opts(opts), Plugins(plugins) {
     DigestAnalyzerOptions();
     if (Opts->PrintStats) {
       llvm::EnableStatistics();
@@ -214,7 +214,7 @@ public:
         default:
 #define ANALYSIS_DIAGNOSTICS(NAME, CMDFLAG, DESC, CREATEFN)                    \
   case PD_##NAME:                                                              \
-    CREATEFN(*Opts.getPtr(), PathConsumers, OutDir, PP);                       \
+    CREATEFN(*Opts.get(), PathConsumers, OutDir, PP);                       \
     break;
 #include "clang/StaticAnalyzer/Core/Analyses.def"
         }
@@ -321,7 +321,7 @@ public:
   /// given root function.
   void HandleCode(Decl *D, AnalysisMode Mode,
                   ExprEngine::InliningModes IMode = ExprEngine::Inline_Minimal,
-                  SetOfConstDecls *VisitedCallees = 0);
+                  SetOfConstDecls *VisitedCallees = nullptr);
 
   void RunPathSensitiveChecks(Decl *D,
                               ExprEngine::InliningModes IMode,
@@ -390,7 +390,7 @@ private:
 //===----------------------------------------------------------------------===//
 // AnalysisConsumer implementation.
 //===----------------------------------------------------------------------===//
-llvm::Timer* AnalysisConsumer::TUTotalTimer = 0;
+llvm::Timer* AnalysisConsumer::TUTotalTimer = nullptr;
 
 bool AnalysisConsumer::HandleTopLevelDecl(DeclGroupRef DG) {
   storeTopLevelDecls(DG);
@@ -489,7 +489,7 @@ void AnalysisConsumer::HandleDeclsCallGraph(const unsigned LocalTUDeclsSize) {
     SetOfConstDecls VisitedCallees;
 
     HandleCode(D, AM_Path, getInliningModeForFunction(D, Visited),
-               (Mgr->options.InliningMode == All ? 0 : &VisitedCallees));
+               (Mgr->options.InliningMode == All ? nullptr : &VisitedCallees));
 
     // Add the visited callees to the global visited set.
     for (SetOfConstDecls::iterator I = VisitedCallees.begin(),
@@ -539,14 +539,14 @@ void AnalysisConsumer::HandleTranslationUnit(ASTContext &C) {
     // After all decls handled, run checkers on the entire TranslationUnit.
     checkerMgr->runCheckersOnEndOfTranslationUnit(TU, *Mgr, BR);
 
-    RecVisitorBR = 0;
+    RecVisitorBR = nullptr;
   }
 
   // Explicitly destroy the PathDiagnosticConsumer.  This will flush its output.
   // FIXME: This should be replaced with something that doesn't rely on
   // side-effects in PathDiagnosticConsumer's destructor. This is required when
   // used with option -disable-free.
-  Mgr.reset(NULL);
+  Mgr.reset();
 
   if (TUTotalTimer) TUTotalTimer->stopTimer();
 
@@ -653,7 +653,7 @@ void AnalysisConsumer::ActionExprEngine(Decl *D, bool ObjCGCEnabled,
 
   // Release the auditor (if any) so that it doesn't monitor the graph
   // created BugReporter.
-  ExplodedNode::SetAuditor(0);
+  ExplodedNode::SetAuditor(nullptr);
 
   // Visualize the exploded graph.
   if (Mgr->options.visualizeExplodedGraphWithGraphViz)
@@ -712,7 +712,7 @@ class UbigraphViz : public ExplodedNode::Auditor {
   VMap M;
 
 public:
-  UbigraphViz(raw_ostream *Out, StringRef Filename);
+  UbigraphViz(std::unique_ptr<raw_ostream> Out, StringRef Filename);
 
   ~UbigraphViz();
 
@@ -727,10 +727,9 @@ static ExplodedNode::Auditor* CreateUbiViz() {
   llvm::sys::fs::createTemporaryFile("llvm_ubi", "", FD, P);
   llvm::errs() << "Writing '" << P.str() << "'.\n";
 
-  std::unique_ptr<llvm::raw_fd_ostream> Stream;
-  Stream.reset(new llvm::raw_fd_ostream(FD, true));
+  auto Stream = llvm::make_unique<llvm::raw_fd_ostream>(FD, true);
 
-  return new UbigraphViz(Stream.release(), P);
+  return new UbigraphViz(std::move(Stream), P);
 }
 
 void UbigraphViz::AddEdge(ExplodedNode *Src, ExplodedNode *Dst) {
@@ -767,8 +766,8 @@ void UbigraphViz::AddEdge(ExplodedNode *Src, ExplodedNode *Dst) {
        << ", ('arrow','true'), ('oriented', 'true'))\n";
 }
 
-UbigraphViz::UbigraphViz(raw_ostream *Out, StringRef Filename)
-  : Out(Out), Filename(Filename), Cntr(0) {
+UbigraphViz::UbigraphViz(std::unique_ptr<raw_ostream> Out, StringRef Filename)
+    : Out(std::move(Out)), Filename(Filename), Cntr(0) {
 
   *Out << "('vertex_style_attribute', 0, ('shape', 'icosahedron'))\n";
   *Out << "('vertex_style', 1, 0, ('shape', 'sphere'), ('color', '#ffcc66'),"
@@ -776,16 +775,17 @@ UbigraphViz::UbigraphViz(raw_ostream *Out, StringRef Filename)
 }
 
 UbigraphViz::~UbigraphViz() {
-  Out.reset(0);
+  Out.reset();
   llvm::errs() << "Running 'ubiviz' program... ";
   std::string ErrMsg;
   std::string Ubiviz = llvm::sys::FindProgramByName("ubiviz");
   std::vector<const char*> args;
   args.push_back(Ubiviz.c_str());
   args.push_back(Filename.c_str());
-  args.push_back(0);
+  args.push_back(nullptr);
 
-  if (llvm::sys::ExecuteAndWait(Ubiviz, &args[0], 0, 0, 0, 0, &ErrMsg)) {
+  if (llvm::sys::ExecuteAndWait(Ubiviz, &args[0], nullptr, nullptr, 0, 0,
+                                &ErrMsg)) {
     llvm::errs() << "Error viewing graph: " << ErrMsg << "\n";
   }
 

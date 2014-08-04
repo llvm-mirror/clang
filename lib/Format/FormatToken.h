@@ -40,6 +40,7 @@ enum TokenType {
   TT_CtorInitializerComma,
   TT_DesignatedInitializerPeriod,
   TT_DictLiteral,
+  TT_FunctionDeclarationName,
   TT_FunctionLBrace,
   TT_FunctionTypeLParen,
   TT_ImplicitStringLiteral,
@@ -54,13 +55,13 @@ enum TokenType {
   TT_ObjCMethodExpr,
   TT_ObjCMethodSpecifier,
   TT_ObjCProperty,
-  TT_ObjCSelectorName,
   TT_OverloadedOperator,
   TT_OverloadedOperatorLParen,
   TT_PointerOrReference,
   TT_PureVirtualSpecifier,
   TT_RangeBasedForLoopColon,
   TT_RegexLiteral,
+  TT_SelectorName,
   TT_StartOfName,
   TT_TemplateCloser,
   TT_TemplateOpener,
@@ -103,9 +104,10 @@ struct FormatToken {
         IsFirst(false), MustBreakBefore(false), IsUnterminatedLiteral(false),
         BlockKind(BK_Unknown), Type(TT_Unknown), SpacesRequiredBefore(0),
         CanBreakBefore(false), ClosesTemplateDeclaration(false),
-        ParameterCount(0), PackingKind(PPK_Inconclusive), TotalLength(0),
-        UnbreakableTailLength(0), BindingStrength(0), NestingLevel(0),
-        SplitPenalty(0), LongestObjCSelectorName(0), FakeRParens(0),
+        ParameterCount(0), BlockParameterCount(0),
+        PackingKind(PPK_Inconclusive), TotalLength(0), UnbreakableTailLength(0),
+        BindingStrength(0), NestingLevel(0), SplitPenalty(0),
+        LongestObjCSelectorName(0), FakeRParens(0),
         StartsBinaryExpression(false), EndsBinaryExpression(false),
         OperatorIndex(0), LastOperator(false),
         PartOfMultiVariableDeclStmt(false), IsForEachMacro(false),
@@ -190,6 +192,10 @@ struct FormatToken {
   /// 0 parameters from functions with 1 parameter. Thus, we can simply count
   /// the number of commas.
   unsigned ParameterCount;
+
+  /// \brief Number of parameters that are nested blocks,
+  /// if this is "(", "[" or "<".
+  unsigned BlockParameterCount;
 
   /// \brief A token can have a special role that can carry extra information
   /// about the token's formatting.
@@ -318,7 +324,7 @@ struct FormatToken {
 
   /// \brief Returns \c true if this is a "." or "->" accessing a member.
   bool isMemberAccess() const {
-    return isOneOf(tok::arrow, tok::period) &&
+    return isOneOf(tok::arrow, tok::period, tok::arrowstar) &&
            Type != TT_DesignatedInitializerPeriod;
   }
 

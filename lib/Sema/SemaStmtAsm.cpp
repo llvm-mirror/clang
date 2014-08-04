@@ -21,6 +21,7 @@
 #include "clang/Sema/ScopeInfo.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/MC/MCParser/MCAsmParser.h"
 using namespace clang;
 using namespace sema;
 
@@ -151,6 +152,12 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
                               diag::err_asm_invalid_lvalue_in_input)
                          << Info.getConstraintStr()
                          << InputExpr->getSourceRange());
+    } else {
+      ExprResult Result = DefaultFunctionArrayLvalueConversion(Exprs[i]);
+      if (Result.isInvalid())
+        return StmtError();
+
+      Exprs[i] = Result.get();
     }
 
     if (Info.allowsRegister()) {
@@ -162,11 +169,6 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
       }
     }
 
-    ExprResult Result = DefaultFunctionArrayLvalueConversion(Exprs[i]);
-    if (Result.isInvalid())
-      return StmtError();
-
-    Exprs[i] = Result.take();
     InputConstraintInfos.push_back(Info);
 
     const Type *Ty = Exprs[i]->getType().getTypePtr();
@@ -351,7 +353,7 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
         InputExpr->isEvaluatable(Context)) {
       CastKind castKind =
         (OutTy->isBooleanType() ? CK_IntegralToBoolean : CK_IntegralCast);
-      InputExpr = ImpCastExprToType(InputExpr, OutTy, castKind).take();
+      InputExpr = ImpCastExprToType(InputExpr, OutTy, castKind).get();
       Exprs[InputOpNo] = InputExpr;
       NS->setInputExpr(i, InputExpr);
       continue;
@@ -364,13 +366,13 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
     return StmtError();
   }
 
-  return Owned(NS);
+  return NS;
 }
 
 ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
                                            SourceLocation TemplateKWLoc,
                                            UnqualifiedId &Id,
-                                           InlineAsmIdentifierInfo &Info,
+                                           llvm::InlineAsmIdentifierInfo &Info,
                                            bool IsUnevaluatedContext) {
   Info.clear();
 
@@ -381,7 +383,7 @@ ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
   ExprResult Result = ActOnIdExpression(getCurScope(), SS, TemplateKWLoc, Id,
                                         /*trailing lparen*/ false,
                                         /*is & operand*/ false,
-                                        /*CorrectionCandidateCallback=*/0,
+                                        /*CorrectionCandidateCallback=*/nullptr,
                                         /*IsInlineAsmIdentifier=*/ true);
 
   if (IsUnevaluatedContext)
@@ -389,7 +391,7 @@ ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
 
   if (!Result.isUsable()) return Result;
 
-  Result = CheckPlaceholderExpr(Result.take());
+  Result = CheckPlaceholderExpr(Result.get());
   if (!Result.isUsable()) return Result;
 
   QualType T = Result.get()->getType();
@@ -437,7 +439,7 @@ bool Sema::LookupInlineAsmField(StringRef Base, StringRef Member,
   if (!BaseResult.isSingleResult())
     return true;
 
-  const RecordType *RT = 0;
+  const RecordType *RT = nullptr;
   NamedDecl *FoundDecl = BaseResult.getFoundDecl();
   if (VarDecl *VD = dyn_cast<VarDecl>(FoundDecl))
     RT = VD->getType()->getAs<RecordType>();
@@ -484,5 +486,5 @@ StmtResult Sema::ActOnMSAsmStmt(SourceLocation AsmLoc, SourceLocation LBraceLoc,
                             /*IsVolatile*/ true, AsmToks, NumOutputs, NumInputs,
                             Constraints, Exprs, AsmString,
                             Clobbers, EndLoc);
-  return Owned(NS);
+  return NS;
 }

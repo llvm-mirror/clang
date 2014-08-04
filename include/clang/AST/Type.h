@@ -2844,33 +2844,51 @@ public:
 /// type.
 class FunctionProtoType : public FunctionType, public llvm::FoldingSetNode {
 public:
+  struct ExceptionSpecInfo {
+    ExceptionSpecInfo()
+        : Type(EST_None), NoexceptExpr(nullptr),
+          SourceDecl(nullptr), SourceTemplate(nullptr) {}
+
+    ExceptionSpecInfo(ExceptionSpecificationType EST)
+        : Type(EST), NoexceptExpr(nullptr), SourceDecl(nullptr),
+          SourceTemplate(nullptr) {}
+
+    /// The kind of exception specification this is.
+    ExceptionSpecificationType Type;
+    /// Explicitly-specified list of exception types.
+    ArrayRef<QualType> Exceptions;
+    /// Noexcept expression, if this is EST_ComputedNoexcept.
+    Expr *NoexceptExpr;
+    /// The function whose exception specification this is, for
+    /// EST_Unevaluated and EST_Uninstantiated.
+    FunctionDecl *SourceDecl;
+    /// The function template whose exception specification this is instantiated
+    /// from, for EST_Uninstantiated.
+    FunctionDecl *SourceTemplate;
+  };
+
   /// ExtProtoInfo - Extra information about a function prototype.
   struct ExtProtoInfo {
     ExtProtoInfo()
         : Variadic(false), HasTrailingReturn(false), TypeQuals(0),
-          ExceptionSpecType(EST_None), RefQualifier(RQ_None), NumExceptions(0),
-          Exceptions(nullptr), NoexceptExpr(nullptr),
-          ExceptionSpecDecl(nullptr), ExceptionSpecTemplate(nullptr),
-          ConsumedParameters(nullptr) {}
+          RefQualifier(RQ_None), ConsumedParameters(nullptr) {}
 
     ExtProtoInfo(CallingConv CC)
         : ExtInfo(CC), Variadic(false), HasTrailingReturn(false), TypeQuals(0),
-          ExceptionSpecType(EST_None), RefQualifier(RQ_None), NumExceptions(0),
-          Exceptions(nullptr), NoexceptExpr(nullptr),
-          ExceptionSpecDecl(nullptr), ExceptionSpecTemplate(nullptr),
-          ConsumedParameters(nullptr) {}
+          RefQualifier(RQ_None), ConsumedParameters(nullptr) {}
+
+    ExtProtoInfo withExceptionSpec(const ExceptionSpecInfo &O) {
+      ExtProtoInfo Result(*this);
+      Result.ExceptionSpec = O;
+      return Result;
+    }
 
     FunctionType::ExtInfo ExtInfo;
     bool Variadic : 1;
     bool HasTrailingReturn : 1;
     unsigned char TypeQuals;
-    ExceptionSpecificationType ExceptionSpecType;
     RefQualifierKind RefQualifier;
-    unsigned NumExceptions;
-    const QualType *Exceptions;
-    Expr *NoexceptExpr;
-    FunctionDecl *ExceptionSpecDecl;
-    FunctionDecl *ExceptionSpecTemplate;
+    ExceptionSpecInfo ExceptionSpec;
     const bool *ConsumedParameters;
   };
 
@@ -2960,19 +2978,18 @@ public:
     EPI.ExtInfo = getExtInfo();
     EPI.Variadic = isVariadic();
     EPI.HasTrailingReturn = hasTrailingReturn();
-    EPI.ExceptionSpecType = getExceptionSpecType();
+    EPI.ExceptionSpec.Type = getExceptionSpecType();
     EPI.TypeQuals = static_cast<unsigned char>(getTypeQuals());
     EPI.RefQualifier = getRefQualifier();
-    if (EPI.ExceptionSpecType == EST_Dynamic) {
-      EPI.NumExceptions = NumExceptions;
-      EPI.Exceptions = exception_begin();
-    } else if (EPI.ExceptionSpecType == EST_ComputedNoexcept) {
-      EPI.NoexceptExpr = getNoexceptExpr();
-    } else if (EPI.ExceptionSpecType == EST_Uninstantiated) {
-      EPI.ExceptionSpecDecl = getExceptionSpecDecl();
-      EPI.ExceptionSpecTemplate = getExceptionSpecTemplate();
-    } else if (EPI.ExceptionSpecType == EST_Unevaluated) {
-      EPI.ExceptionSpecDecl = getExceptionSpecDecl();
+    if (EPI.ExceptionSpec.Type == EST_Dynamic) {
+      EPI.ExceptionSpec.Exceptions = exceptions();
+    } else if (EPI.ExceptionSpec.Type == EST_ComputedNoexcept) {
+      EPI.ExceptionSpec.NoexceptExpr = getNoexceptExpr();
+    } else if (EPI.ExceptionSpec.Type == EST_Uninstantiated) {
+      EPI.ExceptionSpec.SourceDecl = getExceptionSpecDecl();
+      EPI.ExceptionSpec.SourceTemplate = getExceptionSpecTemplate();
+    } else if (EPI.ExceptionSpec.Type == EST_Unevaluated) {
+      EPI.ExceptionSpec.SourceDecl = getExceptionSpecDecl();
     }
     if (hasAnyConsumedParams())
       EPI.ConsumedParameters = getConsumedParamsBuffer();
@@ -3074,10 +3091,9 @@ public:
   }
 
   typedef const QualType *exception_iterator;
-  typedef llvm::iterator_range<exception_iterator> exception_range;
 
-  exception_range exceptions() const {
-    return exception_range(exception_begin(), exception_end());
+  ArrayRef<QualType> exceptions() const {
+    return llvm::makeArrayRef(exception_begin(), exception_end());
   }
   exception_iterator exception_begin() const {
     // exceptions begin where arguments end
@@ -4057,11 +4073,14 @@ public:
 /// dependent.
 ///
 /// DependentNameType represents a class of dependent types that involve a
-/// dependent nested-name-specifier (e.g., "T::") followed by a (dependent)
+/// possibly dependent nested-name-specifier (e.g., "T::") followed by a
 /// name of a type. The DependentNameType may start with a "typename" (for a
 /// typename-specifier), "class", "struct", "union", or "enum" (for a
 /// dependent elaborated-type-specifier), or nothing (in contexts where we
 /// know that we must be referring to a type, e.g., in a base class specifier).
+/// Typically the nested-name-specifier is dependent, but in MSVC compatibility
+/// mode, this type is used with non-dependent names to delay name lookup until
+/// instantiation.
 class DependentNameType : public TypeWithKeyword, public llvm::FoldingSetNode {
 
   /// \brief The nested name specifier containing the qualifier.
@@ -4076,10 +4095,7 @@ class DependentNameType : public TypeWithKeyword, public llvm::FoldingSetNode {
                       /*InstantiationDependent=*/true,
                       /*VariablyModified=*/false,
                       NNS->containsUnexpandedParameterPack()),
-      NNS(NNS), Name(Name) {
-    assert(NNS->isDependent() &&
-           "DependentNameType requires a dependent nested-name-specifier");
-  }
+      NNS(NNS), Name(Name) {}
 
   friend class ASTContext;  // ASTContext creates these
 

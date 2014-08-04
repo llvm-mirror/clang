@@ -45,13 +45,13 @@ private:
 
 public:
   CodeGenPGO(CodeGenModule &CGM)
-      : CGM(CGM), NumRegionCounters(0), FunctionHash(0), RegionCounters(0),
-        CurrentRegionCount(0) {}
+      : CGM(CGM), NumRegionCounters(0), FunctionHash(0),
+        RegionCounters(nullptr), CurrentRegionCount(0) {}
 
   /// Whether or not we have PGO region data for the current function. This is
   /// false both when we have no data at all and when our data has been
   /// discarded.
-  bool haveRegionCounts() const { return RegionCounts != 0; }
+  bool haveRegionCounts() const { return RegionCounts != nullptr; }
 
   /// Get the string used to identify this function in the profile data.
   /// For functions with local linkage, this includes the main file name.
@@ -118,7 +118,8 @@ private:
   void computeRegionCounts(const Decl *D);
   void applyFunctionAttributes(llvm::IndexedInstrProfReader *PGOReader,
                                llvm::Function *Fn);
-  void loadRegionCounts(llvm::IndexedInstrProfReader *PGOReader);
+  void loadRegionCounts(llvm::IndexedInstrProfReader *PGOReader,
+                        bool IsInMainFile);
   void emitCounterVariables();
   llvm::GlobalVariable *buildDataVar();
 
@@ -128,7 +129,7 @@ private:
   /// Return the region counter for the given statement. This should only be
   /// called on statements that have a dedicated counter.
   unsigned getRegionCounter(const Stmt *S) {
-    if (RegionCounterMap == 0)
+    if (!RegionCounterMap)
       return 0;
     return (*RegionCounterMap)[S];
   }

@@ -60,7 +60,7 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
                            ModuleLoader &TheModuleLoader,
                            IdentifierInfoLookup *IILookup, bool OwnsHeaders,
                            TranslationUnitKind TUKind)
-    : PPOpts(PPOpts), Diags(&diags), LangOpts(opts), Target(0),
+    : PPOpts(PPOpts), Diags(&diags), LangOpts(opts), Target(nullptr),
       FileMgr(Headers.getFileMgr()), SourceMgr(SM), HeaderInfo(Headers),
       TheModuleLoader(TheModuleLoader), ExternalSource(nullptr),
       Identifiers(opts, IILookup), IncrementalProcessing(false), TUKind(TUKind),
@@ -70,7 +70,7 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
       SkipMainFilePreamble(0, true), CurPPLexer(nullptr),
       CurDirLookup(nullptr), CurLexerKind(CLK_Lexer), CurSubmodule(nullptr),
       Callbacks(nullptr), MacroArgCache(nullptr), Record(nullptr),
-      MIChainHead(nullptr), MICache(nullptr), DeserialMIChainHead(0) {
+      MIChainHead(nullptr), DeserialMIChainHead(nullptr) {
   OwnsHeaderSearch = OwnsHeaders;
   
   ScratchBuf = new ScratchBuffer(SourceMgr);
@@ -141,9 +141,11 @@ Preprocessor::~Preprocessor() {
 
   IncludeMacroStack.clear();
 
-  // Free any macro definitions.
-  for (MacroInfoChain *I = MIChainHead ; I ; I = I->Next)
-    I->MI.Destroy();
+  // Destroy any macro definitions.
+  while (MacroInfoChain *I = MIChainHead) {
+    MIChainHead = I->Next;
+    I->~MacroInfoChain();
+  }
 
   // Free any cached macro expanders.
   // This populates MacroArgCache, so all TokenLexers need to be destroyed
@@ -152,8 +154,10 @@ Preprocessor::~Preprocessor() {
     delete TokenLexerCache[i];
   CurTokenLexer.reset();
 
-  for (DeserializedMacroInfoChain *I = DeserialMIChainHead ; I ; I = I->Next)
-    I->MI.Destroy();
+  while (DeserializedMacroInfoChain *I = DeserialMIChainHead) {
+    DeserialMIChainHead = I->Next;
+    I->~DeserializedMacroInfoChain();
+  }
 
   // Free any cached MacroArgs.
   for (MacroArgs *ArgList = MacroArgCache; ArgList;)
@@ -757,7 +761,7 @@ bool Preprocessor::FinishLexStringLiteral(Token &Result, std::string &String,
   } while (Result.is(tok::string_literal));
 
   // Concatenate and parse the strings.
-  StringLiteralParser Literal(&StrToks[0], StrToks.size(), *this);
+  StringLiteralParser Literal(StrToks, *this);
   assert(Literal.isAscii() && "Didn't allow wide strings in");
 
   if (Literal.hadError)

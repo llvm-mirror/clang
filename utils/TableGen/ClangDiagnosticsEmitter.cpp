@@ -358,8 +358,9 @@ bool InferPedantic::isExtension(const Record *Diag) {
 }
 
 bool InferPedantic::isOffByDefault(const Record *Diag) {
-  const std::string &DefMap = Diag->getValueAsDef("DefaultMapping")->getName();
-  return DefMap == "MAP_IGNORE";
+  const std::string &DefSeverity =
+      Diag->getValueAsDef("DefaultSeverity")->getValueAsString("Name");
+  return DefSeverity == "Ignored";
 }
 
 bool InferPedantic::groupInPedantic(const Record *Group, bool increment) {
@@ -538,7 +539,8 @@ void EmitClangDiagsDefs(RecordKeeper &Records, raw_ostream &OS,
 
     OS << "DIAG(" << R.getName() << ", ";
     OS << R.getValueAsDef("Class")->getName();
-    OS << ", diag::" << R.getValueAsDef("DefaultMapping")->getName();
+    OS << ", (unsigned)diag::Severity::"
+       << R.getValueAsDef("DefaultSeverity")->getValueAsString("Name");
 
     // Description string.
     OS << ", \"";
@@ -569,8 +571,7 @@ void EmitClangDiagsDefs(RecordKeeper &Records, raw_ostream &OS,
     else
       OS << ", false";
 
-    // Default warning show in system header bit.
-    if (R.getValueAsBit("WarningShowInSystemHeader"))
+    if (R.getValueAsBit("ShowInSystemHeader"))
       OS << ", true";
     else
       OS << ", false";

@@ -17,7 +17,7 @@
 #include "clang/Tooling/Tooling.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/system_error.h"
+#include <system_error>
 
 namespace clang {
 namespace tooling {
@@ -144,15 +144,14 @@ volatile int JSONAnchorSource = 0;
 JSONCompilationDatabase *
 JSONCompilationDatabase::loadFromFile(StringRef FilePath,
                                       std::string &ErrorMessage) {
-  std::unique_ptr<llvm::MemoryBuffer> DatabaseBuffer;
-  llvm::error_code Result =
-    llvm::MemoryBuffer::getFile(FilePath, DatabaseBuffer);
-  if (Result != nullptr) {
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> DatabaseBuffer =
+      llvm::MemoryBuffer::getFile(FilePath);
+  if (std::error_code Result = DatabaseBuffer.getError()) {
     ErrorMessage = "Error while opening JSON database: " + Result.message();
     return nullptr;
   }
   std::unique_ptr<JSONCompilationDatabase> Database(
-      new JSONCompilationDatabase(DatabaseBuffer.release()));
+      new JSONCompilationDatabase(DatabaseBuffer->release()));
   if (!Database->parse(ErrorMessage))
     return nullptr;
   return Database.release();

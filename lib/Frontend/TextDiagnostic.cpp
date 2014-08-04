@@ -689,8 +689,9 @@ TextDiagnostic::emitDiagnosticMessage(SourceLocation Loc,
   
   printDiagnosticLevel(OS, Level, DiagOpts->ShowColors,
                        DiagOpts->CLFallbackMode);
-  printDiagnosticMessage(OS, Level, Message,
-                         OS.tell() - StartOfLocationInfo,
+  printDiagnosticMessage(OS,
+                         /*IsSupplemental*/ Level == DiagnosticsEngine::Note,
+                         Message, OS.tell() - StartOfLocationInfo,
                          DiagOpts->MessageLength, DiagOpts->ShowColors);
 }
 
@@ -735,24 +736,18 @@ TextDiagnostic::printDiagnosticLevel(raw_ostream &OS,
     OS.resetColor();
 }
 
-/*static*/ void
-TextDiagnostic::printDiagnosticMessage(raw_ostream &OS,
-                                       DiagnosticsEngine::Level Level,
-                                       StringRef Message,
-                                       unsigned CurrentColumn, unsigned Columns,
-                                       bool ShowColors) {
+/*static*/
+void TextDiagnostic::printDiagnosticMessage(raw_ostream &OS,
+                                            bool IsSupplemental,
+                                            StringRef Message,
+                                            unsigned CurrentColumn,
+                                            unsigned Columns, bool ShowColors) {
   bool Bold = false;
-  if (ShowColors) {
-    // Print warnings, errors and fatal errors in bold, no color
-    switch (Level) {
-    case DiagnosticsEngine::Warning:
-    case DiagnosticsEngine::Error:
-    case DiagnosticsEngine::Fatal:
-      OS.changeColor(savedColor, true);
-      Bold = true;
-      break;
-    default: break; //don't bold notes
-    }
+  if (ShowColors && !IsSupplemental) {
+    // Print primary diagnostic messages in bold and without color, to visually
+    // indicate the transition from continuation notes and other output.
+    OS.changeColor(savedColor, true);
+    Bold = true;
   }
 
   if (Columns)
@@ -813,7 +808,8 @@ void TextDiagnostic::emitDiagnosticLoc(SourceLocation Loc, PresumedLoc PLoc,
       if (DiagOpts->getFormat() == DiagnosticOptions::Msvc) {
         OS << ',';
         // Visual Studio 2010 or earlier expects column number to be off by one
-        if (LangOpts.MSCVersion && LangOpts.MSCVersion < 1700)
+        if (LangOpts.MSCompatibilityVersion &&
+            LangOpts.MSCompatibilityVersion < 170000000)
           ColNo--;
       } else
         OS << ':';
@@ -873,12 +869,6 @@ void TextDiagnostic::emitDiagnosticLoc(SourceLocation Loc, PresumedLoc PLoc,
       OS << ':';
   }
   OS << ' ';
-}
-
-void TextDiagnostic::emitBasicNote(StringRef Message) {
-  // FIXME: Emit this as a real note diagnostic.
-  // FIXME: Format an actual diagnostic rather than a hard coded string.
-  OS << "note: " << Message << "\n";
 }
 
 void TextDiagnostic::emitIncludeLocation(SourceLocation Loc,
@@ -1141,7 +1131,7 @@ void TextDiagnostic::emitSnippetAndCaret(
   std::string FixItInsertionLine = buildFixItInsertionLine(LineNo,
                                                            sourceColMap,
                                                            Hints, SM,
-                                                           DiagOpts.getPtr());
+                                                           DiagOpts.get());
 
   // If the source line is too long for our terminal, select only the
   // "interesting" source region within that line.

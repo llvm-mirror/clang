@@ -50,6 +50,7 @@ LANGOPT(Borland           , 1, 0, "Borland extensions")
 LANGOPT(CPlusPlus         , 1, 0, "C++")
 LANGOPT(CPlusPlus11       , 1, 0, "C++11")
 LANGOPT(CPlusPlus1y       , 1, 0, "C++1y")
+LANGOPT(CPlusPlus1z       , 1, 0, "C++1z")
 LANGOPT(ObjC1             , 1, 0, "Objective-C 1")
 LANGOPT(ObjC2             , 1, 0, "Objective-C 2")
 BENIGN_LANGOPT(ObjCDefaultSynthProperties , 1, 0,
@@ -83,6 +84,7 @@ LANGOPT(CXXExceptions     , 1, 0, "C++ exceptions")
 LANGOPT(SjLjExceptions    , 1, 0, "setjmp-longjump exception handling")
 LANGOPT(TraditionalCPP    , 1, 0, "traditional CPP emulation")
 LANGOPT(RTTI              , 1, 1, "run-time type information")
+LANGOPT(RTTIData          , 1, 1, "emit run-time type information data")
 LANGOPT(MSBitfields       , 1, 0, "Microsoft-compatible structure layout")
 LANGOPT(Freestanding, 1, 0, "freestanding implementation")
 LANGOPT(NoBuiltin         , 1, 0, "disable builtin functions")
@@ -178,8 +180,7 @@ BENIGN_LANGOPT(BracketDepth, 32, 256,
                "maximum bracket nesting depth")
 BENIGN_LANGOPT(NumLargeByValueCopy, 32, 0,
         "if non-zero, warn about parameter or return Warn if parameter/return value is larger in bytes than this setting. 0 is no check.")
-VALUE_LANGOPT(MSCVersion, 32, 0,
-              "version of Microsoft Visual C/C++")
+VALUE_LANGOPT(MSCompatibilityVersion, 32, 0, "Microsoft Visual C/C++ Version")
 VALUE_LANGOPT(VtorDispMode, 2, 1, "How many vtordisps to insert")
 
 LANGOPT(ApplePragmaPack, 1, 0, "Apple gcc-compatible #pragma pack handling")

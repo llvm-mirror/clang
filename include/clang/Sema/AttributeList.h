@@ -80,7 +80,9 @@ public:
     /// __declspec(...)
     AS_Declspec,
     /// __ptr16, alignas(...), etc.
-    AS_Keyword
+    AS_Keyword,
+    /// #pragma ...
+    AS_Pragma
   };
 
 private:
@@ -453,6 +455,7 @@ public:
   bool hasCustomParsing() const;
   unsigned getMinArgs() const;
   unsigned getMaxArgs() const;
+  bool hasVariadicArg() const;
   bool diagnoseAppertainsTo(class Sema &S, const Decl *D) const;
   bool diagnoseLangOpts(class Sema &S) const;
   bool existsInTarget(const llvm::Triple &T) const;
@@ -839,7 +842,8 @@ enum AttributeDeclKind {
   ExpectedFunctionVariableOrClass,
   ExpectedObjectiveCProtocol,
   ExpectedFunctionGlobalVarMethodOrProperty,
-  ExpectedStructOrTypedef
+  ExpectedStructOrTypedef,
+  ExpectedObjectiveCInterfaceOrProtocol
 };
 
 }  // end namespace clang

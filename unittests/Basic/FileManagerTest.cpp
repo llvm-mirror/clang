@@ -11,7 +11,7 @@
 #include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/FileSystemStatCache.h"
 #include "gtest/gtest.h"
-#include "llvm/Config/config.h"
+#include "llvm/Config/llvm-config.h"
 
 using namespace llvm;
 using namespace clang;
@@ -51,8 +51,9 @@ public:
   }
 
   // Implement FileSystemStatCache::getStat().
-  virtual LookupResult getStat(const char *Path, FileData &Data, bool isFile,
-                               vfs::File **F, vfs::FileSystem &FS) {
+  LookupResult getStat(const char *Path, FileData &Data, bool isFile,
+                       std::unique_ptr<vfs::File> *F,
+                       vfs::FileSystem &FS) override {
     if (StatCalls.count(Path) != 0) {
       Data = StatCalls[Path];
       return CacheExists;
@@ -76,17 +77,17 @@ class FileManagerTest : public ::testing::Test {
 // (not NULL, correct name).
 TEST_F(FileManagerTest, getVirtualFileSetsTheDirFieldCorrectly) {
   const FileEntry *file = manager.getVirtualFile("foo.cpp", 42, 0);
-  ASSERT_TRUE(file != NULL);
+  ASSERT_TRUE(file != nullptr);
 
   const DirectoryEntry *dir = file->getDir();
-  ASSERT_TRUE(dir != NULL);
+  ASSERT_TRUE(dir != nullptr);
   EXPECT_STREQ(".", dir->getName());
 
   file = manager.getVirtualFile("x/y/z.cpp", 42, 0);
-  ASSERT_TRUE(file != NULL);
+  ASSERT_TRUE(file != nullptr);
 
   dir = file->getDir();
-  ASSERT_TRUE(dir != NULL);
+  ASSERT_TRUE(dir != nullptr);
   EXPECT_STREQ("x/y", dir->getName());
 }
 
@@ -98,9 +99,9 @@ TEST_F(FileManagerTest, NoVirtualDirectoryExistsBeforeAVirtualFileIsAdded) {
   // by what's in the real file system.
   manager.addStatCache(new FakeStatCache);
 
-  EXPECT_EQ(NULL, manager.getDirectory("virtual/dir/foo"));
-  EXPECT_EQ(NULL, manager.getDirectory("virtual/dir"));
-  EXPECT_EQ(NULL, manager.getDirectory("virtual"));
+  EXPECT_EQ(nullptr, manager.getDirectory("virtual/dir/foo"));
+  EXPECT_EQ(nullptr, manager.getDirectory("virtual/dir"));
+  EXPECT_EQ(nullptr, manager.getDirectory("virtual"));
 }
 
 // When a virtual file is added, all of its ancestors should be created.
@@ -109,14 +110,14 @@ TEST_F(FileManagerTest, getVirtualFileCreatesDirectoryEntriesForAncestors) {
   manager.addStatCache(new FakeStatCache);
 
   manager.getVirtualFile("virtual/dir/bar.h", 100, 0);
-  EXPECT_EQ(NULL, manager.getDirectory("virtual/dir/foo"));
+  EXPECT_EQ(nullptr, manager.getDirectory("virtual/dir/foo"));
 
   const DirectoryEntry *dir = manager.getDirectory("virtual/dir");
-  ASSERT_TRUE(dir != NULL);
+  ASSERT_TRUE(dir != nullptr);
   EXPECT_STREQ("virtual/dir", dir->getName());
 
   dir = manager.getDirectory("virtual");
-  ASSERT_TRUE(dir != NULL);
+  ASSERT_TRUE(dir != nullptr);
   EXPECT_STREQ("virtual", dir->getName());
 }
 
@@ -137,11 +138,11 @@ TEST_F(FileManagerTest, getFileReturnsValidFileEntryForExistingRealFile) {
   manager.addStatCache(statCache);
 
   const FileEntry *file = manager.getFile("/tmp/test");
-  ASSERT_TRUE(file != NULL);
+  ASSERT_TRUE(file != nullptr);
   EXPECT_STREQ("/tmp/test", file->getName());
 
   const DirectoryEntry *dir = file->getDir();
-  ASSERT_TRUE(dir != NULL);
+  ASSERT_TRUE(dir != nullptr);
   EXPECT_STREQ("/tmp", dir->getName());
 
 #ifdef LLVM_ON_WIN32
@@ -161,11 +162,11 @@ TEST_F(FileManagerTest, getFileReturnsValidFileEntryForExistingVirtualFile) {
 
   manager.getVirtualFile("virtual/dir/bar.h", 100, 0);
   const FileEntry *file = manager.getFile("virtual/dir/bar.h");
-  ASSERT_TRUE(file != NULL);
+  ASSERT_TRUE(file != nullptr);
   EXPECT_STREQ("virtual/dir/bar.h", file->getName());
 
   const DirectoryEntry *dir = file->getDir();
-  ASSERT_TRUE(dir != NULL);
+  ASSERT_TRUE(dir != nullptr);
   EXPECT_STREQ("virtual/dir", dir->getName());
 }
 
@@ -182,8 +183,8 @@ TEST_F(FileManagerTest, getFileReturnsDifferentFileEntriesForDifferentFiles) {
 
   const FileEntry *fileFoo = manager.getFile("foo.cpp");
   const FileEntry *fileBar = manager.getFile("bar.cpp");
-  ASSERT_TRUE(fileFoo != NULL);
-  ASSERT_TRUE(fileBar != NULL);
+  ASSERT_TRUE(fileFoo != nullptr);
+  ASSERT_TRUE(fileBar != nullptr);
   EXPECT_NE(fileFoo, fileBar);
 }
 
@@ -200,7 +201,7 @@ TEST_F(FileManagerTest, getFileReturnsNULLForNonexistentFile) {
   manager.getVirtualFile("bar.cpp", 200, 0);
 
   const FileEntry *file = manager.getFile("xyz.txt");
-  EXPECT_EQ(NULL, file);
+  EXPECT_EQ(nullptr, file);
 }
 
 // The following tests apply to Unix-like system only.

@@ -35,23 +35,23 @@ using namespace CodeGen;
 
 CodeGenFunction::CodeGenFunction(CodeGenModule &cgm, bool suppressNewContext)
     : CodeGenTypeCache(cgm), CGM(cgm), Target(cgm.getTarget()),
-      Builder(cgm.getModule().getContext()), CapturedStmtInfo(0),
-      SanitizePerformTypeCheck(CGM.getSanOpts().Null |
-                               CGM.getSanOpts().Alignment |
-                               CGM.getSanOpts().ObjectSize |
-                               CGM.getSanOpts().Vptr),
-      SanOpts(&CGM.getSanOpts()), AutoreleaseResult(false), BlockInfo(0),
-      BlockPointer(0), LambdaThisCaptureField(0), NormalCleanupDest(0),
-      NextCleanupDestIndex(1), FirstBlockInfo(0), EHResumeBlock(0),
-      ExceptionSlot(0), EHSelectorSlot(0), DebugInfo(CGM.getModuleDebugInfo()),
-      DisableDebugInfo(false), DidCallStackSave(false), IndirectBranch(0),
-      PGO(cgm), SwitchInsn(0), SwitchWeights(0),
-      CaseRangeBlock(0), UnreachableBlock(0), NumReturnExprs(0),
-      NumSimpleReturnExprs(0), CXXABIThisDecl(0), CXXABIThisValue(0),
-      CXXThisValue(0), CXXDefaultInitExprThis(0),
-      CXXStructorImplicitParamDecl(0), CXXStructorImplicitParamValue(0),
-      OutermostConditional(0), CurLexicalScope(0), TerminateLandingPad(0),
-      TerminateHandler(0), TrapBB(0) {
+      Builder(cgm.getModule().getContext(), llvm::ConstantFolder(),
+              CGBuilderInserterTy(this)),
+      CapturedStmtInfo(nullptr), SanOpts(&CGM.getLangOpts().Sanitize),
+      IsSanitizerScope(false), CurFuncIsThunk(false), AutoreleaseResult(false),
+      BlockInfo(nullptr), BlockPointer(nullptr),
+      LambdaThisCaptureField(nullptr), NormalCleanupDest(nullptr),
+      NextCleanupDestIndex(1), FirstBlockInfo(nullptr), EHResumeBlock(nullptr),
+      ExceptionSlot(nullptr), EHSelectorSlot(nullptr),
+      DebugInfo(CGM.getModuleDebugInfo()), DisableDebugInfo(false),
+      DidCallStackSave(false), IndirectBranch(nullptr), PGO(cgm),
+      SwitchInsn(nullptr), SwitchWeights(nullptr), CaseRangeBlock(nullptr),
+      UnreachableBlock(nullptr), NumReturnExprs(0), NumSimpleReturnExprs(0),
+      CXXABIThisDecl(nullptr), CXXABIThisValue(nullptr), CXXThisValue(nullptr),
+      CXXDefaultInitExprThis(nullptr), CXXStructorImplicitParamDecl(nullptr),
+      CXXStructorImplicitParamValue(nullptr), OutermostConditional(nullptr),
+      CurLexicalScope(nullptr), TerminateLandingPad(nullptr),
+      TerminateHandler(nullptr), TrapBB(nullptr) {
   if (!suppressNewContext)
     CGM.getCXXABI().getMangleContext().startNewFunction();
 
@@ -261,7 +261,7 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
 
   // Remove the AllocaInsertPt instruction, which is just a convenience for us.
   llvm::Instruction *Ptr = AllocaInsertPt;
-  AllocaInsertPt = 0;
+  AllocaInsertPt = nullptr;
   Ptr->eraseFromParent();
 
   // If someone took the address of a label but never did an indirect goto, we
@@ -358,6 +358,11 @@ static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
   SmallVector<llvm::Value*, 8> argTypeNames;
   argTypeNames.push_back(llvm::MDString::get(Context, "kernel_arg_type"));
 
+  // MDNode for the kernel argument base type names.
+  SmallVector<llvm::Value*, 8> argBaseTypeNames;
+  argBaseTypeNames.push_back(
+      llvm::MDString::get(Context, "kernel_arg_base_type"));
+
   // MDNode for the kernel argument type qualifiers.
   SmallVector<llvm::Value*, 8> argTypeQuals;
   argTypeQuals.push_back(llvm::MDString::get(Context, "kernel_arg_type_qual"));
@@ -384,10 +389,22 @@ static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
 
       // Turn "unsigned type" to "utype"
       std::string::size_type pos = typeName.find("unsigned");
-      if (pos != std::string::npos)
+      if (pointeeTy.isCanonical() && pos != std::string::npos)
         typeName.erase(pos+1, 8);
 
       argTypeNames.push_back(llvm::MDString::get(Context, typeName));
+
+      std::string baseTypeName =
+          pointeeTy.getUnqualifiedType().getCanonicalType().getAsString(
+              Policy) +
+          "*";
+
+      // Turn "unsigned type" to "utype"
+      pos = baseTypeName.find("unsigned");
+      if (pos != std::string::npos)
+        baseTypeName.erase(pos+1, 8);
+
+      argBaseTypeNames.push_back(llvm::MDString::get(Context, baseTypeName));
 
       // Get argument type qualifiers:
       if (ty.isRestrictQualified())
@@ -410,10 +427,20 @@ static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
 
       // Turn "unsigned type" to "utype"
       std::string::size_type pos = typeName.find("unsigned");
-      if (pos != std::string::npos)
+      if (ty.isCanonical() && pos != std::string::npos)
         typeName.erase(pos+1, 8);
 
       argTypeNames.push_back(llvm::MDString::get(Context, typeName));
+
+      std::string baseTypeName =
+          ty.getUnqualifiedType().getCanonicalType().getAsString(Policy);
+
+      // Turn "unsigned type" to "utype"
+      pos = baseTypeName.find("unsigned");
+      if (pos != std::string::npos)
+        baseTypeName.erase(pos+1, 8);
+
+      argBaseTypeNames.push_back(llvm::MDString::get(Context, baseTypeName));
 
       // Get argument type qualifiers:
       if (ty.isConstQualified())
@@ -442,6 +469,7 @@ static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
   kernelMDArgs.push_back(llvm::MDNode::get(Context, addressQuals));
   kernelMDArgs.push_back(llvm::MDNode::get(Context, accessQuals));
   kernelMDArgs.push_back(llvm::MDNode::get(Context, argTypeNames));
+  kernelMDArgs.push_back(llvm::MDNode::get(Context, argBaseTypeNames));
   kernelMDArgs.push_back(llvm::MDNode::get(Context, argTypeQuals));
   kernelMDArgs.push_back(llvm::MDNode::get(Context, argNames));
 }
@@ -530,16 +558,14 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
 
   DidCallStackSave = false;
   CurCodeDecl = D;
-  CurFuncDecl = (D ? D->getNonClosureContext() : 0);
+  CurFuncDecl = (D ? D->getNonClosureContext() : nullptr);
   FnRetTy = RetTy;
   CurFn = Fn;
   CurFnInfo = &FnInfo;
   assert(CurFn->isDeclaration() && "Function already has body?");
 
-  if (CGM.getSanitizerBlacklist().isIn(*Fn)) {
+  if (CGM.getSanitizerBlacklist().isIn(*Fn))
     SanOpts = &SanitizerOptions::Disabled;
-    SanitizePerformTypeCheck = false;
-  }
 
   // Pass inline keyword to optimizer if it appears explicitly on any
   // declaration. Also, in the case of -fno-inline attach NoInline
@@ -613,7 +639,7 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
 
   if (RetTy->isVoidType()) {
     // Void type; nothing to return.
-    ReturnValue = 0;
+    ReturnValue = nullptr;
 
     // Count the implicit return.
     if (!endsWithReturn(D))
@@ -712,7 +738,7 @@ void CodeGenFunction::EmitFunctionBody(FunctionArgList &Args,
 /// this just calls EmitBlock().
 void CodeGenFunction::EmitBlockWithFallThrough(llvm::BasicBlock *BB,
                                                RegionCounter &Cnt) {
-  llvm::BasicBlock *SkipCountBB = 0;
+  llvm::BasicBlock *SkipCountBB = nullptr;
   if (HaveInsertPoint() && CGM.getCodeGenOpts().ProfileInstrGenerate) {
     // When instrumenting for profiling, the fallthrough to certain
     // statements needs to skip over the instrumentation code so that we
@@ -763,7 +789,7 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
 
   // Check if we should generate debug info for this function.
   if (FD->hasAttr<NoDebugAttr>())
-    DebugInfo = NULL; // disable debug info indefinitely for this function
+    DebugInfo = nullptr; // disable debug info indefinitely for this function
 
   FunctionArgList Args;
   QualType ResTy = FD->getReturnType();
@@ -791,16 +817,13 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   // of the declaration as the location for the subprogram. A function
   // may lack a declaration in the source code if it is created by code
   // gen. (examples: _GLOBAL__I_a, __cxx_global_array_dtor, thunk).
-  SourceLocation Loc;
-  if (FD) {
-    Loc = FD->getLocation();
+  SourceLocation Loc = FD->getLocation();
 
-    // If this is a function specialization then use the pattern body
-    // as the location for the function.
-    if (const FunctionDecl *SpecDecl = FD->getTemplateInstantiationPattern())
-      if (SpecDecl->hasBody(SpecDecl))
-        Loc = SpecDecl->getLocation();
-  }
+  // If this is a function specialization then use the pattern body
+  // as the location for the function.
+  if (const FunctionDecl *SpecDecl = FD->getTemplateInstantiationPattern())
+    if (SpecDecl->hasBody(SpecDecl))
+      Loc = SpecDecl->getLocation();
 
   // Emit the standard function prologue.
   StartFunction(GD, ResTy, Fn, FnInfo, Args, Loc, BodyRange.getBegin());
@@ -849,11 +872,12 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   //   function call is used by the caller, the behavior is undefined.
   if (getLangOpts().CPlusPlus && !FD->hasImplicitReturnZero() &&
       !FD->getReturnType()->isVoidType() && Builder.GetInsertBlock()) {
-    if (SanOpts->Return)
+    if (SanOpts->Return) {
+      SanitizerScope SanScope(this);
       EmitCheck(Builder.getFalse(), "missing_return",
                 EmitCheckSourceLocation(FD->getLocation()),
                 ArrayRef<llvm::Value *>(), CRK_Unrecoverable);
-    else if (CGM.getCodeGenOpts().OptimizationLevel == 0)
+    } else if (CGM.getCodeGenOpts().OptimizationLevel == 0)
       Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::trap));
     Builder.CreateUnreachable();
     Builder.ClearInsertionPoint();
@@ -876,7 +900,7 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
 /// that we can just remove the code.
 bool CodeGenFunction::ContainsLabel(const Stmt *S, bool IgnoreCaseStmts) {
   // Null statement, not a label!
-  if (S == 0) return false;
+  if (!S) return false;
 
   // If this is a label, we have to emit the code, consider something like:
   // if (0) {  ...  foo:  bar(); }  goto foo;
@@ -908,7 +932,7 @@ bool CodeGenFunction::ContainsLabel(const Stmt *S, bool IgnoreCaseStmts) {
 /// inside of it, this is fine.
 bool CodeGenFunction::containsBreak(const Stmt *S) {
   // Null statement, not a label!
-  if (S == 0) return false;
+  if (!S) return false;
 
   // If this is a switch or loop that defines its own break scope, then we can
   // include it and anything inside of it.
@@ -1234,7 +1258,7 @@ CodeGenFunction::EmitNullInitialization(llvm::Value *DestPtr, QualType Ty) {
     }
   } else {
     SizeVal = CGM.getSize(Size);
-    vla = 0;
+    vla = nullptr;
   }
 
   // If the type contains a pointer to data member we can't memset it to zero.
@@ -1271,7 +1295,7 @@ CodeGenFunction::EmitNullInitialization(llvm::Value *DestPtr, QualType Ty) {
 
 llvm::BlockAddress *CodeGenFunction::GetAddrOfLabel(const LabelDecl *L) {
   // Make sure that there is a block for the indirect goto.
-  if (IndirectBranch == 0)
+  if (!IndirectBranch)
     GetIndirectGotoBlock();
 
   llvm::BasicBlock *BB = getJumpDestForLabel(L).getBlock();
@@ -1305,7 +1329,7 @@ llvm::Value *CodeGenFunction::emitArrayLength(const ArrayType *origArrayType,
 
   // If it's a VLA, we have to load the stored size.  Note that
   // this is the size of the VLA in bytes, not its size in elements.
-  llvm::Value *numVLAElements = 0;
+  llvm::Value *numVLAElements = nullptr;
   if (isa<VariableArrayType>(arrayType)) {
     numVLAElements = getVLASize(cast<VariableArrayType>(arrayType)).first;
 
@@ -1398,7 +1422,7 @@ CodeGenFunction::getVLASize(QualType type) {
 std::pair<llvm::Value*, QualType>
 CodeGenFunction::getVLASize(const VariableArrayType *type) {
   // The number of elements so far; always size_t.
-  llvm::Value *numElements = 0;
+  llvm::Value *numElements = nullptr;
 
   QualType elementType;
   do {
@@ -1505,6 +1529,7 @@ void CodeGenFunction::EmitVariablyModifiedType(QualType type) {
           //   greater than zero.
           if (SanOpts->VLABound &&
               size->getType()->isSignedIntegerType()) {
+            SanitizerScope SanScope(this);
             llvm::Value *Zero = llvm::Constant::getNullValue(Size->getType());
             llvm::Constant *StaticArgs[] = {
               EmitCheckSourceLocation(size->getLocStart()),
@@ -1642,3 +1667,45 @@ llvm::Value *CodeGenFunction::EmitFieldAnnotations(const FieldDecl *D,
 }
 
 CodeGenFunction::CGCapturedStmtInfo::~CGCapturedStmtInfo() { }
+
+CodeGenFunction::SanitizerScope::SanitizerScope(CodeGenFunction *CGF)
+    : CGF(CGF) {
+  assert(!CGF->IsSanitizerScope);
+  CGF->IsSanitizerScope = true;
+}
+
+CodeGenFunction::SanitizerScope::~SanitizerScope() {
+  CGF->IsSanitizerScope = false;
+}
+
+void CodeGenFunction::InsertHelper(llvm::Instruction *I,
+                                   const llvm::Twine &Name,
+                                   llvm::BasicBlock *BB,
+                                   llvm::BasicBlock::iterator InsertPt) const {
+  LoopStack.InsertHelper(I);
+  if (IsSanitizerScope) {
+    I->setMetadata(
+        CGM.getModule().getMDKindID("nosanitize"),
+        llvm::MDNode::get(CGM.getLLVMContext(), ArrayRef<llvm::Value *>()));
+  }
+}
+
+template <bool PreserveNames>
+void CGBuilderInserter<PreserveNames>::InsertHelper(
+    llvm::Instruction *I, const llvm::Twine &Name, llvm::BasicBlock *BB,
+    llvm::BasicBlock::iterator InsertPt) const {
+  llvm::IRBuilderDefaultInserter<PreserveNames>::InsertHelper(I, Name, BB,
+                                                              InsertPt);
+  if (CGF)
+    CGF->InsertHelper(I, Name, BB, InsertPt);
+}
+
+#ifdef NDEBUG
+#define PreserveNames false
+#else
+#define PreserveNames true
+#endif
+template void CGBuilderInserter<PreserveNames>::InsertHelper(
+    llvm::Instruction *I, const llvm::Twine &Name, llvm::BasicBlock *BB,
+    llvm::BasicBlock::iterator InsertPt) const;
+#undef PreserveNames

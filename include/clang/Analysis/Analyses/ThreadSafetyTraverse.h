@@ -19,6 +19,8 @@
 
 #include "ThreadSafetyTIL.h"
 
+#include <ostream>
+
 namespace clang {
 namespace threadSafety {
 namespace til {
@@ -45,33 +47,31 @@ namespace til {
 //       compute a result for a node of type X
 //
 // The reduceX methods control the kind of traversal (visitor, copy, etc.).
-// These are separated into a separate class R for the purpose of code reuse.
-// The full reducer interface also has methods to handle scopes
-template <class Self, class R> class Traversal : public R {
+// They are defined in derived classes.
+//
+// Class R defines the basic interface types (R_SExpr).
+template <class Self, class R>
+class Traversal {
 public:
-  Self *self() { return reinterpret_cast<Self *>(this); }
+  Self *self() { return static_cast<Self *>(this); }
 
   // Traverse an expression -- returning a result of type R_SExpr.
   // Override this method to do something for every expression, regardless
-  // of which kind it is.  TraversalKind indicates the context in which
-  // the expression occurs, and can be:
-  //   TRV_Normal
-  //   TRV_Lazy   -- e may need to be traversed lazily, using a Future.
-  //   TRV_Tail   -- e occurs in a tail position
-  typename R::R_SExpr traverse(SExprRef &E, TraversalKind K = TRV_Normal) {
-    return traverse(E.get(), K);
+  // of which kind it is.
+  typename R::R_SExpr traverse(SExprRef &E, typename R::R_Ctx Ctx) {
+    return traverse(E.get(), Ctx);
   }
 
-  typename R::R_SExpr traverse(SExpr *E, TraversalKind K = TRV_Normal) {
-    return traverseByCase(E);
+  typename R::R_SExpr traverse(SExpr *E, typename R::R_Ctx Ctx) {
+    return traverseByCase(E, Ctx);
   }
 
   // Helper method to call traverseX(e) on the appropriate type.
-  typename R::R_SExpr traverseByCase(SExpr *E) {
+  typename R::R_SExpr traverseByCase(SExpr *E, typename R::R_Ctx Ctx) {
     switch (E->opcode()) {
 #define TIL_OPCODE_DEF(X)                                                   \
     case COP_##X:                                                           \
-      return self()->traverse##X(cast<X>(E));
+      return self()->traverse##X(cast<X>(E), Ctx);
 #include "ThreadSafetyOps.def"
 #undef TIL_OPCODE_DEF
     }
@@ -80,40 +80,82 @@ public:
 // Traverse e, by static dispatch on the type "X" of e.
 // Override these methods to do something for a particular kind of term.
 #define TIL_OPCODE_DEF(X)                                                   \
-  typename R::R_SExpr traverse##X(X *e) { return e->traverse(*self()); }
+  typename R::R_SExpr traverse##X(X *e, typename R::R_Ctx Ctx) {            \
+    return e->traverse(*self(), Ctx);                                       \
+  }
 #include "ThreadSafetyOps.def"
 #undef TIL_OPCODE_DEF
 };
 
 
-// Implements a Reducer that makes a deep copy of an SExpr.
-// The default behavior of reduce##X(...) is to create a copy of the original.
-// Subclasses can override reduce##X to implement non-destructive rewriting
-// passes.
-class CopyReducer {
+// Base class for simple reducers that don't much care about the context.
+class SimpleReducerBase {
 public:
-  CopyReducer() {}
+  enum TraversalKind {
+    TRV_Normal,
+    TRV_Decl,
+    TRV_Lazy,
+    TRV_Type
+  };
 
-  void setArena(MemRegionRef A) { Arena = A; }
+  // R_Ctx defines a "context" for the traversal, which encodes information
+  // about where a term appears.  This can be used to encoding the
+  // "current continuation" for CPS transforms, or other information.
+  typedef TraversalKind R_Ctx;
 
+  // Create context for an ordinary subexpression.
+  R_Ctx subExprCtx(R_Ctx Ctx) { return TRV_Normal; }
+
+  // Create context for a subexpression that occurs in a declaration position
+  // (e.g. function body).
+  R_Ctx declCtx(R_Ctx Ctx) { return TRV_Decl; }
+
+  // Create context for a subexpression that occurs in a position that
+  // should be reduced lazily.  (e.g. code body).
+  R_Ctx lazyCtx(R_Ctx Ctx) { return TRV_Lazy; }
+
+  // Create context for a subexpression that occurs in a type position.
+  R_Ctx typeCtx(R_Ctx Ctx) { return TRV_Type; }
+};
+
+
+// Base class for traversals that rewrite an SExpr to another SExpr.
+class CopyReducerBase : public SimpleReducerBase {
+public:
   // R_SExpr is the result type for a traversal.
   // A copy or non-destructive rewrite returns a newly allocated term.
   typedef SExpr *R_SExpr;
+  typedef BasicBlock *R_BasicBlock;
 
   // Container is a minimal interface used to store results when traversing
   // SExprs of variable arity, such as Phi, Goto, and SCFG.
   template <class T> class Container {
   public:
     // Allocate a new container with a capacity for n elements.
-    Container(CopyReducer &R, unsigned N) : Elems(R.Arena, N) {}
+    Container(CopyReducerBase &S, unsigned N) : Elems(S.Arena, N) {}
 
     // Push a new element onto the container.
     void push_back(T E) { Elems.push_back(E); }
 
-  private:
-    friend class CopyReducer;
     SimpleArray<T> Elems;
   };
+
+  CopyReducerBase(MemRegionRef A) : Arena(A) {}
+
+protected:
+  MemRegionRef Arena;
+};
+
+
+// Implements a traversal that makes a deep copy of an SExpr.
+// The default behavior of reduce##X(...) is to create a copy of the original.
+// Subclasses can override reduce##X to implement non-destructive rewriting
+// passes.
+template<class Self>
+class CopyReducer : public Traversal<Self, CopyReducerBase>,
+                    public CopyReducerBase {
+public:
+  CopyReducer(MemRegionRef A) : CopyReducerBase(A) {}
 
 public:
   R_SExpr reduceNull() {
@@ -130,6 +172,10 @@ public:
 
   R_SExpr reduceLiteral(Literal &Orig) {
     return new (Arena) Literal(Orig);
+  }
+  template<class T>
+  R_SExpr reduceLiteralT(LiteralT<T> &Orig) {
+    return new (Arena) LiteralT<T>(Orig);
   }
   R_SExpr reduceLiteralPtr(LiteralPtr &Orig) {
     return new (Arena) LiteralPtr(Orig);
@@ -170,8 +216,8 @@ public:
   R_SExpr reduceStore(Store &Orig, R_SExpr E0, R_SExpr E1) {
     return new (Arena) Store(Orig, E0, E1);
   }
-  R_SExpr reduceArrayFirst(ArrayFirst &Orig, R_SExpr E0) {
-    return new (Arena) ArrayFirst(Orig, E0);
+  R_SExpr reduceArrayIndex(ArrayIndex &Orig, R_SExpr E0, R_SExpr E1) {
+    return new (Arena) ArrayIndex(Orig, E0, E1);
   }
   R_SExpr reduceArrayAdd(ArrayAdd &Orig, R_SExpr E0, R_SExpr E1) {
     return new (Arena) ArrayAdd(Orig, E0, E1);
@@ -187,16 +233,20 @@ public:
   }
 
   R_SExpr reduceSCFG(SCFG &Orig, Container<BasicBlock *> &Bbs) {
-    return new (Arena) SCFG(Orig, std::move(Bbs.Elems));
+    return nullptr;  // FIXME: implement CFG rewriting
+  }
+  R_BasicBlock reduceBasicBlock(BasicBlock &Orig, Container<Variable *> &As,
+                                Container<Variable *> &Is, R_SExpr T) {
+    return nullptr;  // FIXME: implement CFG rewriting
   }
   R_SExpr reducePhi(Phi &Orig, Container<R_SExpr> &As) {
     return new (Arena) Phi(Orig, std::move(As.Elems));
   }
-  R_SExpr reduceGoto(Goto &Orig, BasicBlock *B, unsigned Index) {
-    return new (Arena) Goto(Orig, B, Index);
+  R_SExpr reduceGoto(Goto &Orig, BasicBlock *B) {
+    return new (Arena) Goto(Orig, B, 0);  // FIXME: set index
   }
   R_SExpr reduceBranch(Branch &O, R_SExpr C, BasicBlock *B0, BasicBlock *B1) {
-    return new (Arena) Branch(O, C, B0, B1);
+    return new (Arena) Branch(O, C, B0, B1, 0, 0);  // FIXME: set indices
   }
 
   R_SExpr reduceIdentifier(Identifier &Orig) {
@@ -209,12 +259,6 @@ public:
     return new (Arena) Let(Orig, Nvd, B);
   }
 
-  BasicBlock *reduceBasicBlock(BasicBlock &Orig, Container<Variable *> &As,
-                               Container<Variable *> &Is, R_SExpr T) {
-    return new (Arena) BasicBlock(Orig, std::move(As.Elems),
-                                        std::move(Is.Elems), T);
-  }
-
   // Create a new variable from orig, and push it onto the lexical scope.
   Variable *enterScope(Variable &Orig, R_SExpr E0) {
     return new (Arena) Variable(Orig, E0);
@@ -224,49 +268,57 @@ public:
 
   void enterCFG(SCFG &Cfg) {}
   void exitCFG(SCFG &Cfg) {}
+  void enterBasicBlock(BasicBlock &BB) {}
+  void exitBasicBlock(BasicBlock &BB) {}
 
   // Map Variable references to their rewritten definitions.
   Variable *reduceVariableRef(Variable *Ovd) { return Ovd; }
 
-  // Map BasicBlock references to their rewritten defs.
+  // Map BasicBlock references to their rewritten definitions.
   BasicBlock *reduceBasicBlockRef(BasicBlock *Obb) { return Obb; }
-
-private:
-  MemRegionRef Arena;
 };
 
 
-class SExprCopier : public Traversal<SExprCopier, CopyReducer> {
+class SExprCopier : public CopyReducer<SExprCopier> {
 public:
-  SExprCopier(MemRegionRef A) { setArena(A); }
+  typedef SExpr *R_SExpr;
+
+  SExprCopier(MemRegionRef A) : CopyReducer(A) { }
 
   // Create a copy of e in region a.
   static SExpr *copy(SExpr *E, MemRegionRef A) {
     SExprCopier Copier(A);
-    return Copier.traverse(E);
+    return Copier.traverse(E, TRV_Normal);
   }
 };
 
 
-// Implements a Reducer that visits each subexpression, and returns either
-// true or false.
-class VisitReducer {
-public:
-  VisitReducer() {}
 
+// Base class for visit traversals.
+class VisitReducerBase : public SimpleReducerBase {
+public:
   // A visitor returns a bool, representing success or failure.
   typedef bool R_SExpr;
+  typedef bool R_BasicBlock;
 
   // A visitor "container" is a single bool, which accumulates success.
   template <class T> class Container {
   public:
-    Container(VisitReducer &R, unsigned N) : Success(true) {}
+    Container(VisitReducerBase &S, unsigned N) : Success(true) {}
     void push_back(bool E) { Success = Success && E; }
 
-  private:
-    friend class VisitReducer;
     bool Success;
   };
+};
+
+
+// Implements a traversal that visits each subexpression, and returns either
+// true or false.
+template <class Self>
+class VisitReducer : public Traversal<Self, VisitReducerBase>,
+                     public VisitReducerBase {
+public:
+  VisitReducer() {}
 
 public:
   R_SExpr reduceNull() { return true; }
@@ -274,6 +326,8 @@ public:
   R_SExpr reduceWildcard(Wildcard &Orig) { return true; }
 
   R_SExpr reduceLiteral(Literal &Orig) { return true; }
+  template<class T>
+  R_SExpr reduceLiteralT(LiteralT<T> &Orig) { return true; }
   R_SExpr reduceLiteralPtr(Literal &Orig) { return true; }
 
   R_SExpr reduceFunction(Function &Orig, Variable *Nvd, R_SExpr E0) {
@@ -299,7 +353,9 @@ public:
   R_SExpr reduceAlloc(Alloc &Orig, R_SExpr E0) { return E0; }
   R_SExpr reduceLoad(Load &Orig, R_SExpr E0) { return E0; }
   R_SExpr reduceStore(Store &Orig, R_SExpr E0, R_SExpr E1) { return E0 && E1; }
-  R_SExpr reduceArrayFirst(Store &Orig, R_SExpr E0) { return E0; }
+  R_SExpr reduceArrayIndex(Store &Orig, R_SExpr E0, R_SExpr E1) {
+    return E0 && E1;
+  }
   R_SExpr reduceArrayAdd(Store &Orig, R_SExpr E0, R_SExpr E1) {
     return E0 && E1;
   }
@@ -312,10 +368,14 @@ public:
   R_SExpr reduceSCFG(SCFG &Orig, Container<BasicBlock *> Bbs) {
     return Bbs.Success;
   }
-   R_SExpr reducePhi(Phi &Orig, Container<R_SExpr> &As) {
+  R_BasicBlock reduceBasicBlock(BasicBlock &Orig, Container<Variable *> &As,
+                                Container<Variable *> &Is, R_SExpr T) {
+    return (As.Success && Is.Success && T);
+  }
+  R_SExpr reducePhi(Phi &Orig, Container<R_SExpr> &As) {
     return As.Success;
   }
-  R_SExpr reduceGoto(Goto &Orig, BasicBlock *B, unsigned Index) {
+  R_SExpr reduceGoto(Goto &Orig, BasicBlock *B) {
     return true;
   }
   R_SExpr reduceBranch(Branch &O, R_SExpr C, BasicBlock *B0, BasicBlock *B1) {
@@ -332,39 +392,25 @@ public:
     return Nvd && B;
   }
 
-  BasicBlock *reduceBasicBlock(BasicBlock &Orig, Container<Variable *> &As,
-                               Container<Variable *> &Is, R_SExpr T) {
-    return (As.Success && Is.Success && T) ? &Orig : nullptr;
-  }
-
-  Variable *enterScope(Variable &Orig, R_SExpr E0) {
-    return E0 ? &Orig : nullptr;
-  }
+  Variable *enterScope(Variable &Orig, R_SExpr E0) { return &Orig; }
   void exitScope(const Variable &Orig) {}
-
   void enterCFG(SCFG &Cfg) {}
   void exitCFG(SCFG &Cfg) {}
+  void enterBasicBlock(BasicBlock &BB) {}
+  void exitBasicBlock(BasicBlock &BB) {}
 
-  Variable *reduceVariableRef(Variable *Ovd) { return Ovd; }
-
+  Variable   *reduceVariableRef  (Variable *Ovd)   { return Ovd; }
   BasicBlock *reduceBasicBlockRef(BasicBlock *Obb) { return Obb; }
-};
 
-
-// A visitor will visit each node, and halt if any reducer returns false.
-template <class Self>
-class SExprVisitor : public Traversal<Self, VisitReducer> {
 public:
-  SExprVisitor() : Success(true) {}
-
   bool traverse(SExpr *E, TraversalKind K = TRV_Normal) {
     Success = Success && this->traverseByCase(E);
     return Success;
   }
 
   static bool visit(SExpr *E) {
-    SExprVisitor Visitor;
-    return Visitor.traverse(E);
+    Self Visitor;
+    return Visitor.traverse(E, TRV_Normal);
   }
 
 private:
@@ -379,7 +425,7 @@ protected:
   Self *self() { return reinterpret_cast<Self *>(this); }
 
 public:
-  bool compareByCase(SExpr *E1, SExpr* E2) {
+  bool compareByCase(const SExpr *E1, const SExpr* E2) {
     switch (E1->opcode()) {
 #define TIL_OPCODE_DEF(X)                                                     \
     case COP_##X:                                                             \
@@ -387,6 +433,7 @@ public:
 #include "ThreadSafetyOps.def"
 #undef TIL_OPCODE_DEF
     }
+    llvm_unreachable("invalid enum");
   }
 };
 
@@ -405,37 +452,86 @@ public:
   bool compareStrings (StringRef s, StringRef r)     { return s == r; }
   bool comparePointers(const void* P, const void* Q) { return P == Q; }
 
-  bool compare(SExpr *E1, SExpr* E2) {
+  bool compare(const SExpr *E1, const SExpr* E2) {
     if (E1->opcode() != E2->opcode())
       return false;
     return compareByCase(E1, E2);
   }
 
   // TODO -- handle alpha-renaming of variables
-  void enterScope(Variable* V1, Variable* V2) { }
+  void enterScope(const Variable* V1, const Variable* V2) { }
   void leaveScope() { }
 
-  bool compareVariableRefs(Variable* V1, Variable* V2) {
+  bool compareVariableRefs(const Variable* V1, const Variable* V2) {
     return V1 == V2;
   }
 
-  static bool compareExprs(SExpr *E1, SExpr* E2) {
+  static bool compareExprs(const SExpr *E1, const SExpr* E2) {
     EqualsComparator Eq;
     return Eq.compare(E1, E2);
   }
 };
 
 
+
+class MatchComparator : public Comparator<MatchComparator> {
+public:
+  // Result type for the comparison, e.g. bool for simple equality,
+  // or int for lexigraphic comparison (-1, 0, 1).  Must have one value which
+  // denotes "true".
+  typedef bool CType;
+
+  CType trueResult() { return true; }
+  bool notTrue(CType ct) { return !ct; }
+
+  bool compareIntegers(unsigned i, unsigned j)       { return i == j; }
+  bool compareStrings (StringRef s, StringRef r)     { return s == r; }
+  bool comparePointers(const void* P, const void* Q) { return P == Q; }
+
+  bool compare(const SExpr *E1, const SExpr* E2) {
+    // Wildcards match anything.
+    if (E1->opcode() == COP_Wildcard || E2->opcode() == COP_Wildcard)
+      return true;
+    // otherwise normal equality.
+    if (E1->opcode() != E2->opcode())
+      return false;
+    return compareByCase(E1, E2);
+  }
+
+  // TODO -- handle alpha-renaming of variables
+  void enterScope(const Variable* V1, const Variable* V2) { }
+  void leaveScope() { }
+
+  bool compareVariableRefs(const Variable* V1, const Variable* V2) {
+    return V1 == V2;
+  }
+
+  static bool compareExprs(const SExpr *E1, const SExpr* E2) {
+    MatchComparator Matcher;
+    return Matcher.compare(E1, E2);
+  }
+};
+
+
+
+inline std::ostream& operator<<(std::ostream& SS, llvm::StringRef R) {
+  return SS.write(R.data(), R.size());
+}
+
 // Pretty printer for TIL expressions
 template <typename Self, typename StreamType>
 class PrettyPrinter {
 private:
   bool Verbose;  // Print out additional information
+  bool Cleanup;  // Omit redundant decls.
+  bool CStyle;   // Print exprs in C-like syntax.
 
 public:
-  PrettyPrinter(bool V = false) : Verbose(V) { }
+  PrettyPrinter(bool V = false, bool C = true, bool CS = true)
+     : Verbose(V), Cleanup(C), CStyle(CS)
+  {}
 
-  static void print(SExpr *E, StreamType &SS) {
+  static void print(const SExpr *E, StreamType &SS) {
     Self printer;
     printer.printSExpr(E, SS, Prec_MAX);
   }
@@ -445,15 +541,6 @@ protected:
 
   void newline(StreamType &SS) {
     SS << "\n";
-  }
-
-  void printBlockLabel(StreamType & SS, BasicBlock *BB, unsigned index) {
-    if (!BB) {
-      SS << "BB_null";
-      return;
-    }
-    SS << "BB_";
-    SS << BB->blockID();
   }
 
   // TODO: further distinguish between binary operations.
@@ -466,7 +553,7 @@ protected:
   static const unsigned Prec_MAX = 6;
 
   // Return the precedence of a given node, for use in pretty printing.
-  unsigned precedence(SExpr *E) {
+  unsigned precedence(const SExpr *E) {
     switch (E->opcode()) {
       case COP_Future:     return Prec_Atom;
       case COP_Undefined:  return Prec_Atom;
@@ -488,14 +575,15 @@ protected:
       case COP_Alloc:      return Prec_Other;
       case COP_Load:       return Prec_Postfix;
       case COP_Store:      return Prec_Other;
-      case COP_ArrayFirst: return Prec_Postfix;
+      case COP_ArrayIndex: return Prec_Postfix;
       case COP_ArrayAdd:   return Prec_Postfix;
 
       case COP_UnaryOp:    return Prec_Unary;
       case COP_BinaryOp:   return Prec_Binary;
-      case COP_Cast:       return Prec_Unary;
+      case COP_Cast:       return Prec_Atom;
 
       case COP_SCFG:       return Prec_Decl;
+      case COP_BasicBlock: return Prec_MAX;
       case COP_Phi:        return Prec_Atom;
       case COP_Goto:       return Prec_Atom;
       case COP_Branch:     return Prec_Atom;
@@ -507,7 +595,18 @@ protected:
     return Prec_MAX;
   }
 
-  void printSExpr(SExpr *E, StreamType &SS, unsigned P) {
+  void printBlockLabel(StreamType & SS, const BasicBlock *BB, unsigned index) {
+    if (!BB) {
+      SS << "BB_null";
+      return;
+    }
+    SS << "BB_";
+    SS << BB->blockID();
+    SS << ":";
+    SS << index;
+  }
+
+  void printSExpr(const SExpr *E, StreamType &SS, unsigned P) {
     if (!E) {
       self()->printNull(SS);
       return;
@@ -534,26 +633,32 @@ protected:
     SS << "#null";
   }
 
-  void printFuture(Future *E, StreamType &SS) {
+  void printFuture(const Future *E, StreamType &SS) {
     self()->printSExpr(E->maybeGetResult(), SS, Prec_Atom);
   }
 
-  void printUndefined(Undefined *E, StreamType &SS) {
+  void printUndefined(const Undefined *E, StreamType &SS) {
     SS << "#undefined";
   }
 
-  void printWildcard(Wildcard *E, StreamType &SS) {
-    SS << "_";
+  void printWildcard(const Wildcard *E, StreamType &SS) {
+    SS << "*";
   }
 
   template<class T>
-  void printLiteralT(LiteralT<T> *E, StreamType &SS) {
+  void printLiteralT(const LiteralT<T> *E, StreamType &SS) {
     SS << E->value();
   }
 
-  void printLiteral(Literal *E, StreamType &SS) {
-    if (E->clangExpr())
+  void printLiteralT(const LiteralT<uint8_t> *E, StreamType &SS) {
+    SS << "'" << E->value() << "'";
+  }
+
+  void printLiteral(const Literal *E, StreamType &SS) {
+    if (E->clangExpr()) {
       SS << getSourceLiteralString(E->clangExpr());
+      return;
+    }
     else {
       ValueType VT = E->valueType();
       switch (VT.Base) {
@@ -562,7 +667,7 @@ protected:
         return;
       }
       case ValueType::BT_Bool: {
-        if (reinterpret_cast<LiteralT<bool>*>(E)->value())
+        if (E->as<bool>().value())
           SS << "true";
         else
           SS << "false";
@@ -572,27 +677,27 @@ protected:
         switch (VT.Size) {
         case ValueType::ST_8:
           if (VT.Signed)
-            printLiteralT(reinterpret_cast<LiteralT<int8_t>*>(E), SS);
+            printLiteralT(&E->as<int8_t>(), SS);
           else
-            printLiteralT(reinterpret_cast<LiteralT<uint8_t>*>(E), SS);
+            printLiteralT(&E->as<uint8_t>(), SS);
           return;
         case ValueType::ST_16:
           if (VT.Signed)
-            printLiteralT(reinterpret_cast<LiteralT<int16_t>*>(E), SS);
+            printLiteralT(&E->as<int16_t>(), SS);
           else
-            printLiteralT(reinterpret_cast<LiteralT<uint16_t>*>(E), SS);
+            printLiteralT(&E->as<uint16_t>(), SS);
           return;
         case ValueType::ST_32:
           if (VT.Signed)
-            printLiteralT(reinterpret_cast<LiteralT<int32_t>*>(E), SS);
+            printLiteralT(&E->as<int32_t>(), SS);
           else
-            printLiteralT(reinterpret_cast<LiteralT<uint32_t>*>(E), SS);
+            printLiteralT(&E->as<uint32_t>(), SS);
           return;
         case ValueType::ST_64:
           if (VT.Signed)
-            printLiteralT(reinterpret_cast<LiteralT<int64_t>*>(E), SS);
+            printLiteralT(&E->as<int64_t>(), SS);
           else
-            printLiteralT(reinterpret_cast<LiteralT<uint64_t>*>(E), SS);
+            printLiteralT(&E->as<uint64_t>(), SS);
           return;
         default:
           break;
@@ -602,10 +707,10 @@ protected:
       case ValueType::BT_Float: {
         switch (VT.Size) {
         case ValueType::ST_32:
-          printLiteralT(reinterpret_cast<LiteralT<float>*>(E), SS);
+          printLiteralT(&E->as<float>(), SS);
           return;
         case ValueType::ST_64:
-          printLiteralT(reinterpret_cast<LiteralT<double>*>(E), SS);
+          printLiteralT(&E->as<double>(), SS);
           return;
         default:
           break;
@@ -614,7 +719,7 @@ protected:
       }
       case ValueType::BT_String: {
         SS << "\"";
-        printLiteralT(reinterpret_cast<LiteralT<bool>*>(E), SS);
+        printLiteralT(&E->as<StringRef>(), SS);
         SS << "\"";
         return;
       }
@@ -631,28 +736,27 @@ protected:
     SS << "#lit";
   }
 
-  void printLiteralPtr(LiteralPtr *E, StreamType &SS) {
+  void printLiteralPtr(const LiteralPtr *E, StreamType &SS) {
     SS << E->clangDecl()->getNameAsString();
   }
 
-  void printVariable(Variable *V, StreamType &SS, bool IsVarDecl = false) {
-    SExpr* E = nullptr;
-    if (!IsVarDecl) {
-      E = getCanonicalVal(V);
+  void printVariable(const Variable *V, StreamType &SS, bool IsVarDecl = false) {
+    if (!IsVarDecl && Cleanup) {
+      const SExpr* E = getCanonicalVal(V);
       if (E != V) {
         printSExpr(E, SS, Prec_Atom);
-        if (Verbose) {
-          SS << " /*";
-          SS << V->name() << V->getBlockID() << "_" << V->getID();
-          SS << "*/";
-        }
         return;
       }
     }
-    SS << V->name() << V->getBlockID() << "_" << V->getID();
+    if (V->kind() == Variable::VK_LetBB)
+      SS << V->name() << V->getBlockID() << "_" << V->getID();
+    else if (CStyle && V->kind() == Variable::VK_SFun)
+      SS << "this";
+    else
+      SS << V->name() << V->getID();
   }
 
-  void printFunction(Function *E, StreamType &SS, unsigned sugared = 0) {
+  void printFunction(const Function *E, StreamType &SS, unsigned sugared = 0) {
     switch (sugared) {
       default:
         SS << "\\(";   // Lambda
@@ -668,7 +772,7 @@ protected:
     SS << ": ";
     self()->printSExpr(E->variableDecl()->definition(), SS, Prec_MAX);
 
-    SExpr *B = E->body();
+    const SExpr *B = E->body();
     if (B && B->opcode() == COP_Function)
       self()->printFunction(cast<Function>(B), SS, 2);
     else {
@@ -677,29 +781,29 @@ protected:
     }
   }
 
-  void printSFunction(SFunction *E, StreamType &SS) {
+  void printSFunction(const SFunction *E, StreamType &SS) {
     SS << "@";
     self()->printVariable(E->variableDecl(), SS, true);
     SS << " ";
     self()->printSExpr(E->body(), SS, Prec_Decl);
   }
 
-  void printCode(Code *E, StreamType &SS) {
+  void printCode(const Code *E, StreamType &SS) {
     SS << ": ";
     self()->printSExpr(E->returnType(), SS, Prec_Decl-1);
     SS << " -> ";
     self()->printSExpr(E->body(), SS, Prec_Decl);
   }
 
-  void printField(Field *E, StreamType &SS) {
+  void printField(const Field *E, StreamType &SS) {
     SS << ": ";
     self()->printSExpr(E->range(), SS, Prec_Decl-1);
     SS << " = ";
     self()->printSExpr(E->body(), SS, Prec_Decl);
   }
 
-  void printApply(Apply *E, StreamType &SS, bool sugared = false) {
-    SExpr *F = E->fun();
+  void printApply(const Apply *E, StreamType &SS, bool sugared = false) {
+    const SExpr *F = E->fun();
     if (F->opcode() == COP_Apply) {
       printApply(cast<Apply>(F), SS, true);
       SS << ", ";
@@ -712,7 +816,7 @@ protected:
       SS << ")$";
   }
 
-  void printSApply(SApply *E, StreamType &SS) {
+  void printSApply(const SApply *E, StreamType &SS) {
     self()->printSExpr(E->sfun(), SS, Prec_Postfix);
     if (E->isDelegation()) {
       SS << "@(";
@@ -721,14 +825,36 @@ protected:
     }
   }
 
-  void printProject(Project *E, StreamType &SS) {
+  void printProject(const Project *E, StreamType &SS) {
+    if (CStyle) {
+      // Omit the  this->
+      if (const SApply *SAP = dyn_cast<SApply>(E->record())) {
+        if (const Variable *V = dyn_cast<Variable>(SAP->sfun())) {
+          if (!SAP->isDelegation() && V->kind() == Variable::VK_SFun) {
+            SS << E->slotName();
+            return;
+          }
+        }
+      }
+      if (isa<Wildcard>(E->record())) {
+        // handle existentials
+        SS << "&";
+        SS << E->clangDecl()->getQualifiedNameAsString();
+        return;
+      }
+    }
     self()->printSExpr(E->record(), SS, Prec_Postfix);
-    SS << ".";
+    if (CStyle && E->isArrow()) {
+      SS << "->";
+    }
+    else {
+      SS << ".";
+    }
     SS << E->slotName();
   }
 
-  void printCall(Call *E, StreamType &SS) {
-    SExpr *T = E->target();
+  void printCall(const Call *E, StreamType &SS) {
+    const SExpr *T = E->target();
     if (T->opcode() == COP_Apply) {
       self()->printApply(cast<Apply>(T), SS, true);
       SS << ")";
@@ -739,91 +865,101 @@ protected:
     }
   }
 
-  void printAlloc(Alloc *E, StreamType &SS) {
+  void printAlloc(const Alloc *E, StreamType &SS) {
     SS << "new ";
     self()->printSExpr(E->dataType(), SS, Prec_Other-1);
   }
 
-  void printLoad(Load *E, StreamType &SS) {
+  void printLoad(const Load *E, StreamType &SS) {
     self()->printSExpr(E->pointer(), SS, Prec_Postfix);
-    SS << "^";
+    if (!CStyle)
+      SS << "^";
   }
 
-  void printStore(Store *E, StreamType &SS) {
+  void printStore(const Store *E, StreamType &SS) {
     self()->printSExpr(E->destination(), SS, Prec_Other-1);
     SS << " := ";
     self()->printSExpr(E->source(), SS, Prec_Other-1);
   }
 
-  void printArrayFirst(ArrayFirst *E, StreamType &SS) {
+  void printArrayIndex(const ArrayIndex *E, StreamType &SS) {
     self()->printSExpr(E->array(), SS, Prec_Postfix);
-    if (ArrayAdd *A = dyn_cast_or_null<ArrayAdd>(E->array())) {
-      SS << "[";
-      printSExpr(A->index(), SS, Prec_MAX);
-      SS << "]";
-      return;
-    }
-    SS << "[0]";
+    SS << "[";
+    self()->printSExpr(E->index(), SS, Prec_MAX);
+    SS << "]";
   }
 
-  void printArrayAdd(ArrayAdd *E, StreamType &SS) {
+  void printArrayAdd(const ArrayAdd *E, StreamType &SS) {
     self()->printSExpr(E->array(), SS, Prec_Postfix);
     SS << " + ";
     self()->printSExpr(E->index(), SS, Prec_Atom);
   }
 
-  void printUnaryOp(UnaryOp *E, StreamType &SS) {
+  void printUnaryOp(const UnaryOp *E, StreamType &SS) {
     SS << getUnaryOpcodeString(E->unaryOpcode());
     self()->printSExpr(E->expr(), SS, Prec_Unary);
   }
 
-  void printBinaryOp(BinaryOp *E, StreamType &SS) {
+  void printBinaryOp(const BinaryOp *E, StreamType &SS) {
     self()->printSExpr(E->expr0(), SS, Prec_Binary-1);
     SS << " " << getBinaryOpcodeString(E->binaryOpcode()) << " ";
     self()->printSExpr(E->expr1(), SS, Prec_Binary-1);
   }
 
-  void printCast(Cast *E, StreamType &SS) {
-    SS << "%";
+  void printCast(const Cast *E, StreamType &SS) {
+    if (!CStyle) {
+      SS << "cast[";
+      SS << E->castOpcode();
+      SS << "](";
+      self()->printSExpr(E->expr(), SS, Prec_Unary);
+      SS << ")";
+      return;
+    }
     self()->printSExpr(E->expr(), SS, Prec_Unary);
   }
 
-  void printSCFG(SCFG *E, StreamType &SS) {
-    SS << "#CFG {\n";
+  void printSCFG(const SCFG *E, StreamType &SS) {
+    SS << "CFG {\n";
     for (auto BBI : *E) {
-      SS << "BB_" << BBI->blockID() << ":";
-      newline(SS);
-      for (auto A : BBI->arguments()) {
-        SS << "let ";
-        self()->printVariable(A, SS, true);
-        SS << " = ";
-        self()->printSExpr(A->definition(), SS, Prec_MAX);
-        SS << ";";
-        newline(SS);
-      }
-      for (auto I : BBI->instructions()) {
-        if (I->definition()->opcode() != COP_Store) {
-          SS << "let ";
-          self()->printVariable(I, SS, true);
-          SS << " = ";
-        }
-        self()->printSExpr(I->definition(), SS, Prec_MAX);
-        SS << ";";
-        newline(SS);
-      }
-      SExpr *T = BBI->terminator();
-      if (T) {
-        self()->printSExpr(T, SS, Prec_MAX);
-        SS << ";";
-        newline(SS);
-      }
-      newline(SS);
+      printBasicBlock(BBI, SS);
     }
     SS << "}";
     newline(SS);
   }
 
-  void printPhi(Phi *E, StreamType &SS) {
+  void printBasicBlock(const BasicBlock *E, StreamType &SS) {
+    SS << "BB_" << E->blockID() << ":";
+    if (E->parent())
+      SS << " BB_" << E->parent()->blockID();
+    newline(SS);
+    for (auto *A : E->arguments()) {
+      SS << "let ";
+      self()->printVariable(A, SS, true);
+      SS << " = ";
+      self()->printSExpr(A->definition(), SS, Prec_MAX);
+      SS << ";";
+      newline(SS);
+    }
+    for (auto *I : E->instructions()) {
+      if (I->definition()->opcode() != COP_Store) {
+        SS << "let ";
+        self()->printVariable(I, SS, true);
+        SS << " = ";
+      }
+      self()->printSExpr(I->definition(), SS, Prec_MAX);
+      SS << ";";
+      newline(SS);
+    }
+    const SExpr *T = E->terminator();
+    if (T) {
+      self()->printSExpr(T, SS, Prec_MAX);
+      SS << ";";
+      newline(SS);
+    }
+    newline(SS);
+  }
+
+  void printPhi(const Phi *E, StreamType &SS) {
     SS << "phi(";
     if (E->status() == Phi::PH_SingleVal)
       self()->printSExpr(E->values()[0], SS, Prec_MAX);
@@ -838,12 +974,12 @@ protected:
     SS << ")";
   }
 
-  void printGoto(Goto *E, StreamType &SS) {
+  void printGoto(const Goto *E, StreamType &SS) {
     SS << "goto ";
     printBlockLabel(SS, E->targetBlock(), E->index());
   }
 
-  void printBranch(Branch *E, StreamType &SS) {
+  void printBranch(const Branch *E, StreamType &SS) {
     SS << "branch (";
     self()->printSExpr(E->condition(), SS, Prec_MAX);
     SS << ") ";
@@ -852,11 +988,19 @@ protected:
     printBlockLabel(SS, E->elseBlock(), E->elseIndex());
   }
 
-  void printIdentifier(Identifier *E, StreamType &SS) {
+  void printIdentifier(const Identifier *E, StreamType &SS) {
     SS << E->name();
   }
 
-  void printIfThenElse(IfThenElse *E, StreamType &SS) {
+  void printIfThenElse(const IfThenElse *E, StreamType &SS) {
+    if (CStyle) {
+      printSExpr(E->condition(), SS, Prec_Unary);
+      SS << " ? ";
+      printSExpr(E->thenExpr(), SS, Prec_Unary);
+      SS << " : ";
+      printSExpr(E->elseExpr(), SS, Prec_Unary);
+      return;
+    }
     SS << "if (";
     printSExpr(E->condition(), SS, Prec_MAX);
     SS << ") then ";
@@ -865,7 +1009,7 @@ protected:
     printSExpr(E->elseExpr(), SS, Prec_Other);
   }
 
-  void printLet(Let *E, StreamType &SS) {
+  void printLet(const Let *E, StreamType &SS) {
     SS << "let ";
     printVariable(E->variableDecl(), SS, true);
     SS << " = ";
@@ -874,6 +1018,10 @@ protected:
     printSExpr(E->body(), SS, Prec_Decl-1);
   }
 };
+
+
+class StdPrinter : public PrettyPrinter<StdPrinter, std::ostream> { };
+
 
 
 } // end namespace til

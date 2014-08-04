@@ -25,7 +25,7 @@ USEDLIBS = clangIndex.a clangARCMigrate.a \
 	   clangSerialization.a \
 	   clangParse.a clangSema.a \
 	   clangStaticAnalyzerCheckers.a clangStaticAnalyzerCore.a \
-	   clangRewriteCore.a \
+	   clangRewrite.a \
 	   clangAnalysis.a clangEdit.a \
 	   clangASTMatchers.a \
 	   clangAST.a clangLex.a clangBasic.a \
@@ -35,6 +35,10 @@ include $(CLANG_LEVEL)/Makefile
 # Add soname to the library.
 ifeq ($(HOST_OS), $(filter $(HOST_OS), Linux FreeBSD GNU GNU/kFreeBSD))
         LLVMLibsOptions += -Wl,-soname,lib$(LIBRARYNAME)$(SHLIBEXT)
+endif
+
+ifeq ($(ENABLE_CLANG_ARCMT),1)
+  CXX.Flags += -DCLANG_ENABLE_ARCMT
 endif
 
 ##===----------------------------------------------------------------------===##

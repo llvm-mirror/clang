@@ -20,6 +20,7 @@
 #include "clang/Serialization/ASTReader.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
@@ -33,10 +34,10 @@
 #include "llvm/Support/Host.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
-#include "llvm/Support/system_error.h"
 #include <atomic>
 #include <memory>
 #include <sys/stat.h>
+#include <system_error>
 using namespace clang;
 
 //===----------------------------------------------------------------------===//
@@ -309,6 +310,22 @@ static StringRef getCodeModel(ArgList &Args, DiagnosticsEngine &Diags) {
   return "default";
 }
 
+/// \brief Create a new Regex instance out of the string value in \p RpassArg.
+/// It returns a pointer to the newly generated Regex instance.
+static std::shared_ptr<llvm::Regex>
+GenerateOptimizationRemarkRegex(DiagnosticsEngine &Diags, ArgList &Args,
+                                Arg *RpassArg) {
+  StringRef Val = RpassArg->getValue();
+  std::string RegexError;
+  std::shared_ptr<llvm::Regex> Pattern = std::make_shared<llvm::Regex>(Val);
+  if (!Pattern->isValid(RegexError)) {
+    Diags.Report(diag::err_drv_optimization_remark_pattern)
+        << RegexError << RpassArg->getAsString(Args);
+    Pattern.reset();
+  }
+  return Pattern;
+}
+
 static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
                              DiagnosticsEngine &Diags,
                              const TargetOptions &TargetOpts) {
@@ -533,17 +550,30 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   }
 
   Opts.DependentLibraries = Args.getAllArgValues(OPT_dependent_lib);
+  bool NeedLocTracking = false;
 
   if (Arg *A = Args.getLastArg(OPT_Rpass_EQ)) {
-    StringRef Val = A->getValue();
-    std::string RegexError;
-    Opts.OptimizationRemarkPattern = std::make_shared<llvm::Regex>(Val);
-    if (!Opts.OptimizationRemarkPattern->isValid(RegexError)) {
-      Diags.Report(diag::err_drv_optimization_remark_pattern)
-          << RegexError << A->getAsString(Args);
-      Opts.OptimizationRemarkPattern.reset();
-    }
+    Opts.OptimizationRemarkPattern =
+        GenerateOptimizationRemarkRegex(Diags, Args, A);
+    NeedLocTracking = true;
   }
+
+  if (Arg *A = Args.getLastArg(OPT_Rpass_missed_EQ)) {
+    Opts.OptimizationRemarkMissedPattern =
+        GenerateOptimizationRemarkRegex(Diags, Args, A);
+    NeedLocTracking = true;
+  }
+
+  if (Arg *A = Args.getLastArg(OPT_Rpass_analysis_EQ)) {
+    Opts.OptimizationRemarkAnalysisPattern =
+        GenerateOptimizationRemarkRegex(Diags, Args, A);
+    NeedLocTracking = true;
+  }
+
+  // If the user requested one of the flags in the -Rpass family, make sure
+  // that the backend tracks source location information.
+  if (NeedLocTracking && Opts.getDebugInfo() == CodeGenOptions::NoDebugInfo)
+    Opts.setDebugInfo(CodeGenOptions::LocTrackingOnly);
 
   return Success;
 }
@@ -561,6 +591,8 @@ static void ParseDependencyOutputArgs(DependencyOutputOptions &Opts,
   Opts.AddMissingHeaderDeps = Args.hasArg(OPT_MG);
   Opts.PrintShowIncludes = Args.hasArg(OPT_show_includes);
   Opts.DOTOutputFile = Args.getLastArgValue(OPT_dependency_dot);
+  Opts.ModuleDependencyOutputDir =
+      Args.getLastArgValue(OPT_module_dependency_dir);
 }
 
 bool clang::ParseDiagnosticArgs(DiagnosticOptions &Opts, ArgList &Args,
@@ -1107,6 +1139,7 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
   Opts.CPlusPlus = Std.isCPlusPlus();
   Opts.CPlusPlus11 = Std.isCPlusPlus11();
   Opts.CPlusPlus1y = Std.isCPlusPlus1y();
+  Opts.CPlusPlus1z = Std.isCPlusPlus1z();
   Opts.Digraphs = Std.hasDigraphs();
   Opts.GNUMode = Std.isGNUMode();
   Opts.GNUInline = !Std.isC99();
@@ -1114,18 +1147,13 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
   Opts.ImplicitInt = Std.hasImplicitInt();
 
   // Set OpenCL Version.
-  if (LangStd == LangStandard::lang_opencl) {
-    Opts.OpenCL = 1;
+  Opts.OpenCL = LangStd == LangStandard::lang_opencl || IK == IK_OpenCL;
+  if (LangStd == LangStandard::lang_opencl)
     Opts.OpenCLVersion = 100;
-  }
-  else if (LangStd == LangStandard::lang_opencl11) {
-      Opts.OpenCL = 1;
+  else if (LangStd == LangStandard::lang_opencl11)
       Opts.OpenCLVersion = 110;
-  }
-  else if (LangStd == LangStandard::lang_opencl12) {
-    Opts.OpenCL = 1;
+  else if (LangStd == LangStandard::lang_opencl12)
     Opts.OpenCLVersion = 120;
-  }
   
   // OpenCL has some additional defaults.
   if (Opts.OpenCL) {
@@ -1136,8 +1164,7 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
     Opts.NativeHalfType = 1;
   }
 
-  if (LangStd == LangStandard::lang_cuda)
-    Opts.CUDA = 1;
+  Opts.CUDA = LangStd == LangStandard::lang_cuda || IK == IK_CUDA;
 
   // OpenCL and C++ both have bool, true, false keywords.
   Opts.Bool = Opts.OpenCL || Opts.CPlusPlus;
@@ -1153,7 +1180,8 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
 
   // Mimicing gcc's behavior, trigraphs are only enabled if -trigraphs
   // is specified, or -std is set to a conforming mode.
-  Opts.Trigraphs = !Opts.GNUMode;
+  // Trigraphs are disabled by default in c++1z onwards.
+  Opts.Trigraphs = !Opts.GNUMode && !Opts.CPlusPlus1z;
 
   Opts.DollarIdents = !Opts.AsmPreprocessor;
 
@@ -1177,6 +1205,43 @@ static Visibility parseVisibility(Arg *arg, ArgList &args,
   diags.Report(diag::err_drv_invalid_value)
     << arg->getAsString(args) << value;
   return DefaultVisibility;
+}
+
+static unsigned parseMSCVersion(ArgList &Args, DiagnosticsEngine &Diags) {
+  auto Arg = Args.getLastArg(OPT_fms_compatibility_version);
+  if (!Arg)
+    return 0;
+
+  // The MSC versioning scheme involves four versioning components:
+  //  - Major
+  //  - Minor
+  //  - Build
+  //  - Patch
+  //
+  // We accept either the old style (_MSC_VER) value, or a _MSC_FULL_VER value.
+  // Additionally, the value may be provided in the form of a more readable
+  // MM.mm.bbbbb.pp version.
+  //
+  // Unfortunately, due to the bit-width limitations, we cannot currently encode
+  // the value for the patch level.
+
+  unsigned VC[4] = {0};
+  StringRef Value = Arg->getValue();
+  SmallVector<StringRef, 4> Components;
+
+  Value.split(Components, ".", llvm::array_lengthof(VC));
+  for (unsigned CI = 0,
+                CE = std::min(Components.size(), llvm::array_lengthof(VC));
+       CI < CE; ++CI) {
+    if (Components[CI].getAsInteger(10, VC[CI])) {
+      Diags.Report(diag::err_drv_invalid_value)
+        << Arg->getAsString(Args) << Value;
+      return 0;
+    }
+  }
+
+  // FIXME we cannot encode the patch level
+  return VC[0] * 10000000 + VC[1] * 100000 + VC[2];
 }
 
 static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
@@ -1348,7 +1413,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.MSVCCompat = Args.hasArg(OPT_fms_compatibility);
   Opts.MicrosoftExt = Opts.MSVCCompat || Args.hasArg(OPT_fms_extensions);
   Opts.AsmBlocks = Args.hasArg(OPT_fasm_blocks) || Opts.MicrosoftExt;
-  Opts.MSCVersion = getLastArgIntValue(Args, OPT_fmsc_version, 0, Diags);
+  Opts.MSCompatibilityVersion = parseMSCVersion(Args, Diags);
   Opts.VtorDispMode = getLastArgIntValue(Args, OPT_vtordisp_mode_EQ, 1, Diags);
   Opts.Borland = Args.hasArg(OPT_fborland_extensions);
   Opts.WritableStrings = Args.hasArg(OPT_fwritable_strings);
@@ -1365,6 +1430,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.TraditionalCPP = Args.hasArg(OPT_traditional_cpp);
 
   Opts.RTTI = !Args.hasArg(OPT_fno_rtti);
+  Opts.RTTIData = Opts.RTTI && !Args.hasArg(OPT_fno_rtti_data);
   Opts.Blocks = Args.hasArg(OPT_fblocks);
   Opts.BlocksRuntimeOptional = Args.hasArg(OPT_fblocks_runtime_optional);
   Opts.Modules = Args.hasArg(OPT_fmodules);
@@ -1429,6 +1495,14 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.DebuggerObjCLiteral = Args.hasArg(OPT_fdebugger_objc_literal);
   Opts.ApplePragmaPack = Args.hasArg(OPT_fapple_pragma_pack);
   Opts.CurrentModule = Args.getLastArgValue(OPT_fmodule_name);
+  Opts.ImplementationOfModule =
+      Args.getLastArgValue(OPT_fmodule_implementation_of);
+
+  if (!Opts.CurrentModule.empty() && !Opts.ImplementationOfModule.empty() &&
+      Opts.CurrentModule != Opts.ImplementationOfModule) {
+    Diags.Report(diag::err_conflicting_module_names)
+        << Opts.CurrentModule << Opts.ImplementationOfModule;
+  }
 
   if (Arg *A = Args.getLastArg(OPT_faddress_space_map_mangling_EQ)) {
     switch (llvm::StringSwitch<unsigned>(A->getValue())
@@ -1874,14 +1948,16 @@ std::string CompilerInvocation::getModuleHash() const {
   //   $sysroot/System/Library/CoreServices/SystemVersion.plist
   // as part of the module hash.
   if (!hsOpts.Sysroot.empty()) {
-    std::unique_ptr<llvm::MemoryBuffer> buffer;
     SmallString<128> systemVersionFile;
     systemVersionFile += hsOpts.Sysroot;
     llvm::sys::path::append(systemVersionFile, "System");
     llvm::sys::path::append(systemVersionFile, "Library");
     llvm::sys::path::append(systemVersionFile, "CoreServices");
     llvm::sys::path::append(systemVersionFile, "SystemVersion.plist");
-    if (!llvm::MemoryBuffer::getFile(systemVersionFile.str(), buffer)) {
+
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
+        llvm::MemoryBuffer::getFile(systemVersionFile.str());
+    if (buffer) {
       code = hash_combine(code, buffer.get()->getBuffer());
 
       struct stat statBuf;
@@ -1948,15 +2024,16 @@ createVFSFromCompilerInvocation(const CompilerInvocation &CI,
     Overlay(new vfs::OverlayFileSystem(vfs::getRealFileSystem()));
   // earlier vfs files are on the bottom
   for (const std::string &File : CI.getHeaderSearchOpts().VFSOverlayFiles) {
-    std::unique_ptr<llvm::MemoryBuffer> Buffer;
-    if (llvm::errc::success != llvm::MemoryBuffer::getFile(File, Buffer)) {
+    llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> Buffer =
+        llvm::MemoryBuffer::getFile(File);
+    if (!Buffer) {
       Diags.Report(diag::err_missing_vfs_overlay_file) << File;
       return IntrusiveRefCntPtr<vfs::FileSystem>();
     }
 
     IntrusiveRefCntPtr<vfs::FileSystem> FS =
-        vfs::getVFSFromYAML(Buffer.release(), /*DiagHandler*/0);
-    if (!FS.getPtr()) {
+        vfs::getVFSFromYAML(Buffer->release(), /*DiagHandler*/ nullptr);
+    if (!FS.get()) {
       Diags.Report(diag::err_invalid_vfs_overlay) << File;
       return IntrusiveRefCntPtr<vfs::FileSystem>();
     }

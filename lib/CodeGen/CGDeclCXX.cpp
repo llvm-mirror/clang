@@ -90,7 +90,7 @@ static void EmitDeclDestroy(CodeGenFunction &CGF, const VarDecl &D,
 
   // Special-case non-array C++ destructors, where there's a function
   // with the right signature that we can just call.
-  const CXXRecordDecl *record = 0;
+  const CXXRecordDecl *record = nullptr;
   if (dtorKind == QualType::DK_cxx_destructor &&
       (record = type->getAsCXXRecordDecl())) {
     assert(!record->hasTrivialDestructor());
@@ -245,14 +245,42 @@ CreateGlobalInitOrDestructFunction(CodeGenModule &CGM,
   if (!CGM.getLangOpts().Exceptions)
     Fn->setDoesNotThrow();
 
-  if (CGM.getSanOpts().Address)
-    Fn->addFnAttr(llvm::Attribute::SanitizeAddress);
-  if (CGM.getSanOpts().Thread)
-    Fn->addFnAttr(llvm::Attribute::SanitizeThread);
-  if (CGM.getSanOpts().Memory)
-    Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
+  if (!CGM.getSanitizerBlacklist().isIn(*Fn)) {
+    if (CGM.getLangOpts().Sanitize.Address)
+      Fn->addFnAttr(llvm::Attribute::SanitizeAddress);
+    if (CGM.getLangOpts().Sanitize.Thread)
+      Fn->addFnAttr(llvm::Attribute::SanitizeThread);
+    if (CGM.getLangOpts().Sanitize.Memory)
+      Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
+  }
 
   return Fn;
+}
+
+/// Create a global pointer to a function that will initialize a global
+/// variable.  The user has requested that this pointer be emitted in a specific
+/// section.
+void CodeGenModule::EmitPointerToInitFunc(const VarDecl *D,
+                                          llvm::GlobalVariable *GV,
+                                          llvm::Function *InitFunc,
+                                          InitSegAttr *ISA) {
+  llvm::GlobalVariable *PtrArray = new llvm::GlobalVariable(
+      TheModule, InitFunc->getType(), /*isConstant=*/true,
+      llvm::GlobalValue::PrivateLinkage, InitFunc, "__cxx_init_fn_ptr");
+  PtrArray->setSection(ISA->getSection());
+  addUsedGlobal(PtrArray);
+
+  // If the GV is already in a comdat group, then we have to join it.
+  llvm::Comdat *C = GV->getComdat();
+
+  // LinkOnce and Weak linkage are lowered down to a single-member comdat group.
+  // Make an explicit group so we can join it.
+  if (!C && (GV->hasWeakLinkage() || GV->hasLinkOnceLinkage())) {
+    C = TheModule.getOrInsertComdat(GV->getName());
+    GV->setComdat(C);
+  }
+  if (C)
+    PtrArray->setComdat(C);
 }
 
 void
@@ -270,9 +298,9 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
   llvm::Function *Fn =
       CreateGlobalInitOrDestructFunction(*this, FTy, FnName.str());
 
+  auto *ISA = D->getAttr<InitSegAttr>();
   CodeGenFunction(*this).GenerateCXXGlobalVarDeclInitFunc(Fn, D, Addr,
                                                           PerformInit);
-
   if (D->getTLSKind()) {
     // FIXME: Should we support init_priority for thread_local?
     // FIXME: Ideally, initialization of instantiated thread_local static data
@@ -281,7 +309,10 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
     // FIXME: We only need to register one __cxa_thread_atexit function for the
     // entire TU.
     CXXThreadLocalInits.push_back(Fn);
-  } else if (const InitPriorityAttr *IPA = D->getAttr<InitPriorityAttr>()) {
+  } else if (PerformInit && ISA) {
+    EmitPointerToInitFunc(D, Addr, Fn, ISA);
+    DelayedCXXInitPosition.erase(D);
+  } else if (auto *IPA = D->getAttr<InitPriorityAttr>()) {
     OrderGlobalInits Key(IPA->getPriority(), PrioritizedCXXGlobalInits.size());
     PrioritizedCXXGlobalInits.push_back(std::make_pair(Key, Fn));
     DelayedCXXInitPosition.erase(D);
@@ -294,10 +325,12 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
     //   have unordered initialization.
     //
     // As a consequence, we can put them into their own llvm.global_ctors entry.
-    // This should allow GlobalOpt to fire more often, and allow us to implement
-    // the Microsoft C++ ABI, which uses COMDAT elimination to avoid double
-    // initializaiton.
-    AddGlobalCtor(Fn);
+    //
+    // In addition, put the initializer into a COMDAT group with the global
+    // being initialized.  On most platforms, this is a minor startup time
+    // optimization.  In the MS C++ ABI, there are no guard variables, so this
+    // COMDAT key is required for correctness.
+    AddGlobalCtor(Fn, 65535, Addr);
     DelayedCXXInitPosition.erase(D);
   } else {
     llvm::DenseMap<const Decl *, unsigned>::iterator I =
@@ -305,7 +338,7 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
     if (I == DelayedCXXInitPosition.end()) {
       CXXGlobalInits.push_back(Fn);
     } else {
-      assert(CXXGlobalInits[I->second] == 0);
+      assert(CXXGlobalInits[I->second] == nullptr);
       CXXGlobalInits[I->second] = Fn;
       DelayedCXXInitPosition.erase(I);
     }
@@ -313,7 +346,7 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
 }
 
 void CodeGenModule::EmitCXXThreadLocalInitFunc() {
-  llvm::Function *InitFn = 0;
+  llvm::Function *InitFn = nullptr;
   if (!CXXThreadLocalInits.empty()) {
     // Generate a guarded initialization function.
     llvm::FunctionType *FTy = llvm::FunctionType::get(VoidTy, false);
@@ -420,7 +453,7 @@ void CodeGenFunction::GenerateCXXGlobalVarDeclInitFunc(llvm::Function *Fn,
                                                        bool PerformInit) {
   // Check if we need to emit debug info for variable initializer.
   if (D->hasAttr<NoDebugAttr>())
-    DebugInfo = NULL; // disable debug info indefinitely for this function
+    DebugInfo = nullptr; // disable debug info indefinitely for this function
 
   StartFunction(GlobalDecl(D), getContext().VoidTy, Fn,
                 getTypes().arrangeNullaryFunction(),
@@ -430,8 +463,7 @@ void CodeGenFunction::GenerateCXXGlobalVarDeclInitFunc(llvm::Function *Fn,
   // Use guarded initialization if the global variable is weak. This
   // occurs for, e.g., instantiated static data members and
   // definitions explicitly marked weak.
-  if (llvm::GlobalVariable::isWeakLinkage(Addr->getLinkage()) ||
-      llvm::GlobalVariable::isLinkOnceLinkage(Addr->getLinkage())) {
+  if (Addr->hasWeakLinkage() || Addr->hasLinkOnceLinkage()) {
     EmitCXXGuardedInit(*D, Addr, PerformInit);
   } else {
     EmitCXXGlobalVarDeclInit(*D, Addr, PerformInit);
@@ -451,7 +483,7 @@ CodeGenFunction::GenerateCXXGlobalInitFunc(llvm::Function *Fn,
     // Emit an artificial location for this function.
     AL.Emit();
 
-    llvm::BasicBlock *ExitBlock = 0;
+    llvm::BasicBlock *ExitBlock = nullptr;
     if (Guard) {
       // If we have a guard variable, check whether we've already performed
       // these initializations. This happens for TLS initialization functions.
@@ -522,7 +554,7 @@ llvm::Function *CodeGenFunction::generateDestroyHelper(
     llvm::Constant *addr, QualType type, Destroyer *destroyer,
     bool useEHCleanupForArray, const VarDecl *VD) {
   FunctionArgList args;
-  ImplicitParamDecl dst(getContext(), 0, SourceLocation(), 0,
+  ImplicitParamDecl dst(getContext(), nullptr, SourceLocation(), nullptr,
                         getContext().VoidPtrTy);
   args.push_back(&dst);
 

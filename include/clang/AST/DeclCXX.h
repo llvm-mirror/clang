@@ -257,10 +257,31 @@ public:
   TypeSourceInfo *getTypeSourceInfo() const { return BaseTypeInfo; }
 };
 
+/// \brief A lazy pointer to the definition data for a declaration.
+/// FIXME: This is a little CXXRecordDecl-specific that the moment.
+template<typename Decl, typename T> class LazyDefinitionDataPtr {
+  llvm::PointerUnion<T *, Decl *> DataOrCanonicalDecl;
+
+  LazyDefinitionDataPtr update() {
+    if (Decl *Canon = DataOrCanonicalDecl.template dyn_cast<Decl*>()) {
+      if (Canon->isCanonicalDecl())
+        Canon->getMostRecentDecl();
+      else
+        // Declaration isn't canonical any more;
+        // update it and perform path compression.
+        *this = Canon->getPreviousDecl()->DefinitionData.update();
+    }
+    return *this;
+  }
+
+public:
+  LazyDefinitionDataPtr(Decl *Canon) : DataOrCanonicalDecl(Canon) {}
+  LazyDefinitionDataPtr(T *Data) : DataOrCanonicalDecl(Data) {}
+  T *getNotUpdated() { return DataOrCanonicalDecl.template dyn_cast<T*>(); }
+  T *get() { return update().getNotUpdated(); }
+};
+
 /// \brief Represents a C++ struct/union/class.
-///
-/// FIXME: This class will disappear once we've properly taught RecordDecl
-/// to deal with C++-specific things.
 class CXXRecordDecl : public RecordDecl {
 
   friend void TagDecl::startDefinition();
@@ -441,6 +462,9 @@ class CXXRecordDecl : public RecordDecl {
     /// \brief Whether this class describes a C++ lambda.
     bool IsLambda : 1;
 
+    /// \brief Whether we are currently parsing base specifiers.
+    bool IsParsingBaseSpecifiers : 1;
+
     /// \brief The number of base class specifiers in Bases.
     unsigned NumBases;
 
@@ -496,9 +520,9 @@ class CXXRecordDecl : public RecordDecl {
     CXXBaseSpecifier *getVBasesSlowCase() const;
   };
 
-  typedef LazyGenerationalUpdatePtr<const Decl*, struct DefinitionData*,
-                                    &ExternalASTSource::CompleteRedeclChain>
+  typedef LazyDefinitionDataPtr<CXXRecordDecl, struct DefinitionData>
       DefinitionDataPtr;
+  friend class LazyDefinitionDataPtr<CXXRecordDecl, struct DefinitionData>;
 
   mutable DefinitionDataPtr DefinitionData;
 
@@ -558,7 +582,7 @@ class CXXRecordDecl : public RecordDecl {
   };
 
   struct DefinitionData &data() const {
-    auto *DD = DefinitionData.get(this);
+    auto *DD = DefinitionData.get();
     assert(DD && "queried property of class with no definition");
     return *DD;
   }
@@ -643,11 +667,11 @@ public:
   }
 
   CXXRecordDecl *getDefinition() const {
-    auto *DD = DefinitionData.get(this);
+    auto *DD = DefinitionData.get();
     return DD ? DD->Definition : nullptr;
   }
 
-  bool hasDefinition() const { return DefinitionData.get(this); }
+  bool hasDefinition() const { return DefinitionData.get(); }
 
   static CXXRecordDecl *Create(const ASTContext &C, TagKind TK, DeclContext *DC,
                                SourceLocation StartLoc, SourceLocation IdLoc,
@@ -662,6 +686,12 @@ public:
 
   bool isDynamicClass() const {
     return data().Polymorphic || data().NumVBases != 0;
+  }
+
+  void setIsParsingBaseSpecifiers() { data().IsParsingBaseSpecifiers = true; }
+
+  bool isParsingBaseSpecifiers() const {
+    return data().IsParsingBaseSpecifiers;
   }
 
   /// \brief Sets the base classes of this struct or class.

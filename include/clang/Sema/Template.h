@@ -319,7 +319,7 @@ namespace clang {
     /// \param D The declaration whose instantiation we are searching for.
     ///
     /// \returns A pointer to the declaration or argument pack of declarations
-    /// to which the declaration \c D is instantiataed, if found. Otherwise,
+    /// to which the declaration \c D is instantiated, if found. Otherwise,
     /// returns NULL.
     llvm::PointerUnion<Decl *, DeclArgumentPack *> *
     findInstantiationOf(const Decl *D);
@@ -493,7 +493,7 @@ namespace clang {
     Decl *VisitVarTemplateSpecializationDecl(
         VarTemplateDecl *VarTemplate, VarDecl *FromVar, void *InsertPos,
         const TemplateArgumentListInfo &TemplateArgsInfo,
-        llvm::ArrayRef<TemplateArgument> Converted);
+        ArrayRef<TemplateArgument> Converted);
 
     Decl *InstantiateTypedefNameDecl(TypedefNameDecl *D, bool IsTypeAlias);
     ClassTemplatePartialSpecializationDecl *

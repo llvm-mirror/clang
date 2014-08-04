@@ -35,7 +35,8 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
          "Current token not a '{', ':', '=', or 'try'!");
 
   MultiTemplateParamsArg TemplateParams(
-      TemplateInfo.TemplateParams ? TemplateInfo.TemplateParams->data() : 0,
+      TemplateInfo.TemplateParams ? TemplateInfo.TemplateParams->data()
+                                  : nullptr,
       TemplateInfo.TemplateParams ? TemplateInfo.TemplateParams->size() : 0);
 
   NamedDecl *FnD;
@@ -45,7 +46,7 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
                                           TemplateParams);
   else {
     FnD = Actions.ActOnCXXMemberDeclarator(getCurScope(), AS, D,
-                                           TemplateParams, 0,
+                                           TemplateParams, nullptr,
                                            VS, ICIS_NoInit);
     if (FnD) {
       Actions.ProcessDeclAttributeList(getCurScope(), FnD, AccessAttrs);
@@ -65,7 +66,7 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
   if (TryConsumeToken(tok::equal)) {
     if (!FnD) {
       SkipUntil(tok::semi);
-      return 0;
+      return nullptr;
     }
 
     bool Delete = false;
@@ -336,7 +337,8 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
       } else
         DefArgResult = ParseAssignmentExpression();
       if (DefArgResult.isInvalid())
-        Actions.ActOnParamDefaultArgumentError(LM.DefaultArgs[I].Param);
+        Actions.ActOnParamDefaultArgumentError(LM.DefaultArgs[I].Param,
+                                               EqualLoc);
       else {
         if (!TryConsumeToken(tok::cxx_defaultarg_end)) {
           // The last two tokens are the terminator and the saved value of
@@ -348,7 +350,7 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
                            (*Toks)[Toks->size() - 3].getLocation());
         }
         Actions.ActOnParamDefaultArgument(LM.DefaultArgs[I].Param, EqualLoc,
-                                          DefArgResult.take());
+                                          DefArgResult.get());
       }
 
       assert(!PP.getSourceManager().isBeforeInTranslationUnit(origLoc,
@@ -360,7 +362,7 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
         ConsumeAnyToken();
 
       delete Toks;
-      LM.DefaultArgs[I].Toks = 0;
+      LM.DefaultArgs[I].Toks = nullptr;
     }
   }
 
@@ -434,7 +436,7 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
     // Error recovery.
     if (!Tok.is(tok::l_brace)) {
       FnScope.Exit();
-      Actions.ActOnFinishFunctionBody(LM.D, 0);
+      Actions.ActOnFinishFunctionBody(LM.D, nullptr);
       while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
         ConsumeAnyToken();
       return;
@@ -466,6 +468,9 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
       while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
         ConsumeAnyToken();
   }
+
+  if (CXXMethodDecl *MD = dyn_cast_or_null<CXXMethodDecl>(LM.D))
+    Actions.ActOnFinishInlineMethodDef(MD);
 }
 
 /// ParseLexedMemberInitializers - We finished parsing the member specification
@@ -531,7 +536,7 @@ void Parser::ParseLexedMemberInitializer(LateParsedMemberInitializer &MI) {
                                               EqualLoc);
 
   Actions.ActOnFinishCXXInClassMemberInitializer(MI.Field, EqualLoc,
-                                                 Init.release());
+                                                 Init.get());
 
   // The next token should be our artificial terminating EOF token.
   if (Tok.isNot(tok::eof)) {
@@ -1009,6 +1014,7 @@ bool Parser::ConsumeAndStoreInitializer(CachedTokens &Toks,
         Toks.push_back(Tok);
         ConsumeToken();
         if (Tok.is(tok::less)) {
+          ++AngleCount;
           ++KnownTemplateCount;
           Toks.push_back(Tok);
           ConsumeToken();

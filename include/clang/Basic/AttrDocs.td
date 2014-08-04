@@ -33,6 +33,23 @@ def SectionDocs : Documentation {
 The ``section`` attribute allows you to specify a specific section a
 global variable or function should be in after translation.
   }];
+  let Heading = "section (gnu::section, __declspec(allocate))";
+}
+
+def InitSegDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The attribute applied by ``pragma init_seg()`` controls the section into
+which global initialization function pointers are emitted.  It is only
+available with ``-fms-extensions``.  Typically, this function pointer is
+emitted into ``.CRT$XCU`` on Windows.  The user can change the order of
+initialization by using a different section name with the same
+``.CRT$XC`` prefix and a suffix that sorts lexicographically before or
+after the standard ``.CRT$XCU`` sections.  See the init_seg_
+documentation on MSDN for more information.
+
+.. _init_seg: http://msdn.microsoft.com/en-us/library/7977wcck(v=vs.110).aspx
+  }];
 }
 
 def TLSModelDocs : Documentation {
@@ -166,7 +183,7 @@ the type.
 
 The enable_if expression is evaluated as if it were the body of a
 bool-returning constexpr function declared with the arguments of the function
-it is being applied to, then called with the parameters at the callsite. If the
+it is being applied to, then called with the parameters at the call site. If the
 result is false or could not be determined through constant expression
 evaluation, then this overload will not be chosen and the provided string may
 be used in a diagnostic if the compile fails as a result.
@@ -425,6 +442,27 @@ implementation of an override in a subclass does not call super.  For example:
   }];
 }
 
+def ObjCRuntimeNameDocs : Documentation {
+    let Category = DocCatFunction;
+    let Content = [{
+By default, the Objective-C interface or protocol identifier is used
+in the metadata name for that object. The `objc_runtime_name`
+attribute allows annotated interfaces or protocols to use the
+specified string argument in the object's metadata name instead of the
+default name.
+        
+**Usage**: ``__attribute__((objc_runtime_name("MyLocalName")))``.  This attribute
+can only be placed before an @protocol or @interface declaration:
+        
+.. code-block:: objc
+        
+  __attribute__((objc_runtime_name("MyLocalName")))
+  @interface Message
+  @end
+        
+    }];
+}
+
 def AvailabilityDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
@@ -633,7 +671,7 @@ def SetTypestateDocs : Documentation {
   let Category = DocCatConsumed;
   let Content = [{
 Annotate methods that transition an object into a new state with
-``__attribute__((set_typestate(new_state)))``.  The new new state must be
+``__attribute__((set_typestate(new_state)))``.  The new state must be
 unconsumed, consumed, or unknown.
   }];
 }
@@ -911,7 +949,7 @@ Clang implements two kinds of checks with this attribute.
    Clang implements this mostly the same way as GCC, but there is a difference
    for functions that accept a ``va_list`` argument (for example, ``vprintf``).
    GCC does not emit ``-Wformat-nonliteral`` warning for calls to such
-   fuctions.  Clang does not warn if the format string comes from a function
+   functions.  Clang does not warn if the format string comes from a function
    parameter, where the function is annotated with a compatible attribute,
    otherwise it warns.  For example:
 
@@ -1008,6 +1046,73 @@ specified function can improve the quality of the debugging information
 for that function.
 
 This attribute is incompatible with the ``always_inline`` attribute.
+  }];
+}
+
+def LoopHintDocs : Documentation {
+  let Category = DocCatStmt;
+  let Heading = "#pragma clang loop";
+  let Content = [{
+The ``#pragma clang loop`` directive allows loop optimization hints to be
+specified for the subsequent loop. The directive allows vectorization,
+interleaving, and unrolling to be enabled or disabled. Vector width as well
+as interleave and unrolling count can be manually specified. See
+`language extensions
+<http://clang.llvm.org/docs/LanguageExtensions.html#extensions-for-loop-hint-optimizations>`_
+for details.
+  }];
+}
+
+def UnrollHintDocs : Documentation {
+  let Category = DocCatStmt;
+  let Heading = "#pragma unroll, #pragma nounroll";
+  let Content = [{
+Loop unrolling optimization hints can be specified with ``#pragma unroll`` and
+``#pragma nounroll``. The pragma is placed immediately before a for, while,
+do-while, or c++11 range-based for loop.
+
+Specifying ``#pragma unroll`` without a parameter directs the loop unroller to
+attempt to fully unroll the loop if the trip count is known at compile time:
+
+.. code-block:: c++
+
+  #pragma unroll
+  for (...) {
+    ...
+  }
+
+Specifying the optional parameter, ``#pragma unroll _value_``, directs the
+unroller to unroll the loop ``_value_`` times.  The parameter may optionally be
+enclosed in parentheses:
+
+.. code-block:: c++
+
+  #pragma unroll 16
+  for (...) {
+    ...
+  }
+
+  #pragma unroll(16)
+  for (...) {
+    ...
+  }
+
+Specifying ``#pragma nounroll`` indicates that the loop should not be unrolled:
+
+.. code-block:: c++
+
+  #pragma nounroll
+  for (...) {
+    ...
+  }
+
+``#pragma unroll`` and ``#pragma unroll _value_`` have identical semantics to
+``#pragma clang loop unroll(full)`` and
+``#pragma clang loop unroll_count(_value_)`` respectively. ``#pragma nounroll``
+is equivalent to ``#pragma clang loop unroll(disable)``.  See
+`language extensions
+<http://clang.llvm.org/docs/LanguageExtensions.html#extensions-for-loop-hint-optimizations>`_
+for further details including limitations of the unroll hints.
   }];
 }
 

@@ -2446,6 +2446,9 @@ private:
 
   MethodVFTableLocationsTy MethodVFTableLocations;
 
+  /// \brief Does this class have an RTTI component?
+  bool HasRTTIComponent;
+
   /// MethodInfo - Contains information about a method in a vtable.
   /// (Used for computing 'this' pointer adjustment thunks.
   struct MethodInfo {
@@ -2574,6 +2577,13 @@ public:
         MostDerivedClassLayout(Context.getASTRecordLayout(MostDerivedClass)),
         WhichVFPtr(*Which),
         Overriders(MostDerivedClass, CharUnits(), MostDerivedClass) {
+    // Only include the RTTI component if we know that we will provide a
+    // definition of the vftable.
+    HasRTTIComponent = Context.getLangOpts().RTTIData &&
+                       !MostDerivedClass->hasAttr<DLLImportAttr>();
+    if (HasRTTIComponent)
+      Components.push_back(VTableComponent::MakeRTTI(MostDerivedClass));
+
     LayoutVFTable();
 
     if (Context.getLangOpts().DumpVTableLayouts)
@@ -2915,7 +2925,8 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
     // it requires return adjustment. Insert the method info for this method.
     unsigned VBIndex =
         LastVBase ? VTables.getVBTableIndex(MostDerivedClass, LastVBase) : 0;
-    MethodInfo MI(VBIndex, Components.size());
+    MethodInfo MI(VBIndex,
+                  HasRTTIComponent ? Components.size() - 1 : Components.size());
 
     assert(!MethodInfoMap.count(MD) &&
            "Should not have method info for this method yet!");
@@ -3120,9 +3131,8 @@ void VFTableBuilder::dumpLayout(raw_ostream &Out) {
 }
 
 static bool setsIntersect(const llvm::SmallPtrSet<const CXXRecordDecl *, 4> &A,
-                          const llvm::ArrayRef<const CXXRecordDecl *> &B) {
-  for (llvm::ArrayRef<const CXXRecordDecl *>::iterator I = B.begin(),
-                                                       E = B.end();
+                          const ArrayRef<const CXXRecordDecl *> &B) {
+  for (ArrayRef<const CXXRecordDecl *>::iterator I = B.begin(), E = B.end();
        I != E; ++I) {
     if (A.count(*I))
       return true;
