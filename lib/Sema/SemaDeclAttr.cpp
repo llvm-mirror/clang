@@ -88,21 +88,39 @@ static QualType getFunctionOrMethodParamType(const Decl *D, unsigned Idx) {
   return cast<ObjCMethodDecl>(D)->parameters()[Idx]->getType();
 }
 
+static SourceRange getFunctionOrMethodParamRange(const Decl *D, unsigned Idx) {
+  if (const auto *FD = dyn_cast<FunctionDecl>(D))
+    return FD->getParamDecl(Idx)->getSourceRange();
+  if (const auto *MD = dyn_cast<ObjCMethodDecl>(D))
+    return MD->parameters()[Idx]->getSourceRange();
+  if (const auto *BD = dyn_cast<BlockDecl>(D))
+    return BD->getParamDecl(Idx)->getSourceRange();
+  return SourceRange();
+}
+
 static QualType getFunctionOrMethodResultType(const Decl *D) {
   if (const FunctionType *FnTy = D->getFunctionType())
     return cast<FunctionType>(FnTy)->getReturnType();
   return cast<ObjCMethodDecl>(D)->getReturnType();
 }
 
+static SourceRange getFunctionOrMethodResultSourceRange(const Decl *D) {
+  if (const auto *FD = dyn_cast<FunctionDecl>(D))
+    return FD->getReturnTypeSourceRange();
+  if (const auto *MD = dyn_cast<ObjCMethodDecl>(D))
+    return MD->getReturnTypeSourceRange();
+  return SourceRange();
+}
+
 static bool isFunctionOrMethodVariadic(const Decl *D) {
   if (const FunctionType *FnTy = D->getFunctionType()) {
     const FunctionProtoType *proto = cast<FunctionProtoType>(FnTy);
     return proto->isVariadic();
-  } else if (const BlockDecl *BD = dyn_cast<BlockDecl>(D))
-    return BD->isVariadic();
-  else {
-    return cast<ObjCMethodDecl>(D)->isVariadic();
   }
+  if (const BlockDecl *BD = dyn_cast<BlockDecl>(D))
+    return BD->isVariadic();
+
+  return cast<ObjCMethodDecl>(D)->isVariadic();
 }
 
 static bool isInstanceMethod(const Decl *D) {
@@ -1122,15 +1140,17 @@ static void possibleTransparentUnionPointerType(QualType &T) {
 }
 
 static bool attrNonNullArgCheck(Sema &S, QualType T, const AttributeList &Attr,
-                                SourceRange R, bool isReturnValue = false) {
+                                SourceRange AttrParmRange,
+                                SourceRange NonNullTypeRange,
+                                bool isReturnValue = false) {
   T = T.getNonReferenceType();
   possibleTransparentUnionPointerType(T);
 
   if (!T->isAnyPointerType() && !T->isBlockPointerType()) {
-    S.Diag(Attr.getLoc(),
-           isReturnValue ? diag::warn_attribute_return_pointers_only
-                         : diag::warn_attribute_pointers_only)
-      << Attr.getName() << R;
+    S.Diag(Attr.getLoc(), isReturnValue
+                              ? diag::warn_attribute_return_pointers_only
+                              : diag::warn_attribute_pointers_only)
+        << Attr.getName() << AttrParmRange << NonNullTypeRange;
     return false;
   }
   return true;
@@ -1145,9 +1165,9 @@ static void handleNonNullAttr(Sema &S, Decl *D, const AttributeList &Attr) {
       return;
 
     // Is the function argument a pointer type?
-    // FIXME: Should also highlight argument in decl in the diagnostic.
     if (!attrNonNullArgCheck(S, getFunctionOrMethodParamType(D, Idx), Attr,
-                             Ex->getSourceRange()))
+                             Ex->getSourceRange(),
+                             getFunctionOrMethodParamRange(D, Idx)))
       continue;
 
     NonNullArgs.push_back(Idx);
@@ -1194,7 +1214,8 @@ static void handleNonNullAttrParameter(Sema &S, ParmVarDecl *D,
   }
 
   // Is the argument a pointer type?
-  if (!attrNonNullArgCheck(S, D->getType(), Attr, D->getSourceRange()))
+  if (!attrNonNullArgCheck(S, D->getType(), Attr, SourceRange(),
+                           D->getSourceRange()))
     return;
 
   D->addAttr(::new (S.Context)
@@ -1205,7 +1226,8 @@ static void handleNonNullAttrParameter(Sema &S, ParmVarDecl *D,
 static void handleReturnsNonNullAttr(Sema &S, Decl *D,
                                      const AttributeList &Attr) {
   QualType ResultType = getFunctionOrMethodResultType(D);
-  if (!attrNonNullArgCheck(S, ResultType, Attr, Attr.getRange(),
+  SourceRange SR = getFunctionOrMethodResultSourceRange(D);
+  if (!attrNonNullArgCheck(S, ResultType, Attr, SourceRange(), SR,
                            /* isReturnValue */ true))
     return;
 
@@ -2340,10 +2362,9 @@ static void handleFormatArgAttr(Sema &S, Decl *D, const AttributeList &Attr) {
       !isCFStringType(Ty, S.Context) &&
       (!Ty->isPointerType() ||
        !Ty->getAs<PointerType>()->getPointeeType()->isCharType())) {
-    // FIXME: Should highlight the actual expression that has the wrong type.
     S.Diag(Attr.getLoc(), diag::err_format_attribute_not)
-    << (not_nsstring_type ? "a string type" : "an NSString")
-       << IdxExpr->getSourceRange();
+        << (not_nsstring_type ? "a string type" : "an NSString")
+        << IdxExpr->getSourceRange() << getFunctionOrMethodParamRange(D, 0);
     return;
   }
   Ty = getFunctionOrMethodResultType(D);
@@ -2351,10 +2372,9 @@ static void handleFormatArgAttr(Sema &S, Decl *D, const AttributeList &Attr) {
       !isCFStringType(Ty, S.Context) &&
       (!Ty->isPointerType() ||
        !Ty->getAs<PointerType>()->getPointeeType()->isCharType())) {
-    // FIXME: Should highlight the actual expression that has the wrong type.
     S.Diag(Attr.getLoc(), diag::err_format_attribute_result_not)
-    << (not_nsstring_type ? "string type" : "NSString")
-       << IdxExpr->getSourceRange();
+        << (not_nsstring_type ? "string type" : "NSString")
+        << IdxExpr->getSourceRange() << getFunctionOrMethodParamRange(D, 0);
     return;
   }
 
@@ -2525,23 +2545,24 @@ static void handleFormatAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   if (Kind == CFStringFormat) {
     if (!isCFStringType(Ty, S.Context)) {
       S.Diag(Attr.getLoc(), diag::err_format_attribute_not)
-        << "a CFString" << IdxExpr->getSourceRange();
+        << "a CFString" << IdxExpr->getSourceRange()
+        << getFunctionOrMethodParamRange(D, ArgIdx);
       return;
     }
   } else if (Kind == NSStringFormat) {
     // FIXME: do we need to check if the type is NSString*?  What are the
     // semantics?
     if (!isNSStringType(Ty, S.Context)) {
-      // FIXME: Should highlight the actual expression that has the wrong type.
       S.Diag(Attr.getLoc(), diag::err_format_attribute_not)
-        << "an NSString" << IdxExpr->getSourceRange();
+        << "an NSString" << IdxExpr->getSourceRange()
+        << getFunctionOrMethodParamRange(D, ArgIdx);
       return;
     }
   } else if (!Ty->isPointerType() ||
              !Ty->getAs<PointerType>()->getPointeeType()->isCharType()) {
-    // FIXME: Should highlight the actual expression that has the wrong type.
     S.Diag(Attr.getLoc(), diag::err_format_attribute_not)
-      << "a string type" << IdxExpr->getSourceRange();
+      << "a string type" << IdxExpr->getSourceRange()
+      << getFunctionOrMethodParamRange(D, ArgIdx);
     return;
   }
 

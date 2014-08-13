@@ -167,6 +167,9 @@ def err_expected_fn_body : Error<
 def warn_attribute_on_function_definition : Warning<
   "GCC does not allow %0 attribute in this position on a function definition">, 
   InGroup<GccCompat>;
+def warn_gcc_attribute_location : Warning<
+  "GCC does not allow an attribute in this position on a function declaration">, 
+  InGroup<GccCompat>;
 def warn_attribute_no_decl : Warning<
   "attribute %0 ignored, because it is not attached to a declaration">, 
   InGroup<IgnoredAttributes>;
@@ -303,6 +306,8 @@ def err_expected_class_name_not_template :
   Error<"'typename' is redundant; base classes are implicitly types">;
 def err_unspecified_vla_size_with_static : Error<
   "'static' may not be used with an unspecified variable length array size">;
+def err_unspecified_size_with_static : Error<
+  "'static' may not be used without an array size">;
 def warn_deprecated_register : Warning<
   "'register' storage class specifier is deprecated">,
   InGroup<DeprecatedRegister>;
@@ -597,14 +602,16 @@ def warn_cxx11_right_shift_in_template_arg : Warning<
 def warn_cxx98_compat_two_right_angle_brackets : Warning<
   "consecutive right angle brackets are incompatible with C++98 (use '> >')">,
   InGroup<CXX98Compat>, DefaultIgnore;
+def err_templated_invalid_declaration : Error<
+  "a static_assert declaration cannot be a template">;
 def err_multiple_template_declarators : Error<
-    "%select{|a template declaration|an explicit template specialization|"
-    "an explicit template instantiation}0 can "
-    "only %select{|declare|declare|instantiate}0 a single entity">;
+  "%select{|a template declaration|an explicit template specialization|"
+  "an explicit template instantiation}0 can "
+  "only %select{|declare|declare|instantiate}0 a single entity">;
 def err_explicit_instantiation_with_definition : Error<
-    "explicit template instantiation cannot have a definition; if this "
-    "definition is meant to be an explicit specialization, add '<>' after the "
-    "'template' keyword">;
+  "explicit template instantiation cannot have a definition; if this "
+  "definition is meant to be an explicit specialization, add '<>' after the "
+  "'template' keyword">;
 def err_template_defn_explicit_instantiation : Error<
   "%select{function|class|variable}0 cannot be defined in an explicit instantiation; if this "
   "declaration is meant to be a %select{function|class|variable}0 definition, remove the 'template' keyword">;
@@ -612,7 +619,7 @@ def err_friend_explicit_instantiation : Error<
   "friend cannot be declared in an explicit instantiation; if this "
   "declaration is meant to be a friend declaration, remove the 'template' keyword">;
 def err_explicit_instantiation_enum : Error<
-    "enumerations cannot be explicitly instantiated">;
+  "enumerations cannot be explicitly instantiated">;
 def err_expected_template_parameter : Error<"expected template parameter">;
 
 def err_missing_dependent_template_keyword : Error<
@@ -699,7 +706,7 @@ def err_alias_declaration_not_identifier : Error<
   "name defined in alias declaration must be an identifier">;
 def err_alias_declaration_specialization : Error<
   "%select{partial specialization|explicit specialization|explicit instantiation}0 of alias templates is not permitted">;
-    
+
 // C++11 override control
 def ext_override_control_keyword : ExtWarn<
   "'%0' keyword is a C++11 extension">, InGroup<CXX11>;

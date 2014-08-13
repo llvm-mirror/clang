@@ -1399,8 +1399,13 @@ public:
 
   LValue MakeNaturalAlignAddrLValue(llvm::Value *V, QualType T) {
     CharUnits Alignment;
-    if (!T->isIncompleteType())
+    if (!T->isIncompleteType()) {
       Alignment = getContext().getTypeAlignInChars(T);
+      unsigned MaxAlign = getContext().getLangOpts().MaxTypeAlign;
+      if (MaxAlign && Alignment.getQuantity() > MaxAlign &&
+          !getContext().isAlignmentRequired(T))
+        Alignment = CharUnits::fromQuantity(MaxAlign);
+    }
     return LValue::MakeAddr(V, T, Alignment, getContext(),
                             CGM.getTBAAInfo(T));
   }
@@ -2299,7 +2304,8 @@ public:
   llvm::Value *EmitObjCArrayLiteral(const ObjCArrayLiteral *E);
   llvm::Value *EmitObjCDictionaryLiteral(const ObjCDictionaryLiteral *E);
   llvm::Value *EmitObjCCollectionLiteral(const Expr *E,
-                                const ObjCMethodDecl *MethodWithObjects);
+                                const ObjCMethodDecl *MethodWithObjects,
+                                const ObjCMethodDecl *AllocMethod);
   llvm::Value *EmitObjCSelectorExpr(const ObjCSelectorExpr *E);
   RValue EmitObjCMessageExpr(const ObjCMessageExpr *E,
                              ReturnValueSlot Return = ReturnValueSlot());
@@ -2425,7 +2431,6 @@ public:
   /// CreateStaticVarDecl - Create a zero-initialized LLVM global for
   /// a static local variable.
   llvm::Constant *CreateStaticVarDecl(const VarDecl &D,
-                                      const char *Separator,
                                       llvm::GlobalValue::LinkageTypes Linkage);
 
   /// AddInitializerToStaticVarDecl - Add the initializer for 'D' to the

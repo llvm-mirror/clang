@@ -146,6 +146,83 @@ void PR9412_f() {
     PR9412_t<PR9412_Exact>(); // expected-note {{in instantiation of function template specialization 'PR9412_t<0>' requested here}}
 }
 
+struct NoReturn {
+  ~NoReturn() __attribute__((noreturn));
+  operator bool() const;
+};
+struct Return {
+  ~Return();
+  operator bool() const;
+};
+
+int testTernaryUnconditionalNoreturn() {
+  true ? NoReturn() : NoReturn();
+}
+
+int testTernaryStaticallyConditionalNoretrunOnTrue() {
+  true ? NoReturn() : Return();
+}
+
+int testTernaryStaticallyConditionalRetrunOnTrue() {
+  true ? Return() : NoReturn();
+} // expected-warning {{control reaches end of non-void function}}
+
+int testTernaryStaticallyConditionalNoretrunOnFalse() {
+  false ? Return() : NoReturn();
+}
+
+int testTernaryStaticallyConditionalRetrunOnFalse() {
+  false ? NoReturn() : Return();
+} // expected-warning {{control reaches end of non-void function}}
+
+int testTernaryConditionalNoreturnTrueBranch(bool value) {
+  value ? (NoReturn() || NoReturn()) : Return();
+} // expected-warning {{control may reach end of non-void function}}
+
+int testTernaryConditionalNoreturnFalseBranch(bool value) {
+  value ? Return() : (NoReturn() || NoReturn());
+} // expected-warning {{control may reach end of non-void function}}
+
+int testConditionallyExecutedComplexTernaryTrueBranch(bool value) {
+  value || (true ? NoReturn() : true);
+} // expected-warning {{control may reach end of non-void function}}
+
+int testConditionallyExecutedComplexTernaryFalseBranch(bool value) {
+  value || (false ? true : NoReturn());
+} // expected-warning {{control may reach end of non-void function}}
+
+int testStaticallyExecutedLogicalOrBranch() {
+  false || NoReturn();
+}
+
+int testStaticallyExecutedLogicalAndBranch() {
+  true && NoReturn();
+}
+
+int testStaticallySkippedLogicalOrBranch() {
+  true || NoReturn();
+} // expected-warning {{control reaches end of non-void function}}
+
+int testStaticallySkppedLogicalAndBranch() {
+  false && NoReturn();
+} // expected-warning {{control reaches end of non-void function}}
+
+int testConditionallyExecutedComplexLogicalBranch(bool value) {
+  value || (true && NoReturn());
+} // expected-warning {{control may reach end of non-void function}}
+
+int testConditionallyExecutedComplexLogicalBranch2(bool value) {
+  (true && value) || (true && NoReturn());
+} // expected-warning {{control may reach end of non-void function}}
+
+int testConditionallyExecutedComplexLogicalBranch3(bool value) {
+  (false && (Return() || true)) || (true && NoReturn());
+}
+
+int testConditionallyExecutedComplexLogicalBranch4(bool value) {
+  false || ((Return() || true) && (true && NoReturn()));
+}
+
 #if __cplusplus >= 201103L
 namespace LambdaVsTemporaryDtor {
   struct Y { ~Y(); };

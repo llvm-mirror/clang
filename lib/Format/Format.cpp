@@ -173,6 +173,8 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.AllowShortLoopsOnASingleLine);
     IO.mapOptional("AllowShortFunctionsOnASingleLine",
                    Style.AllowShortFunctionsOnASingleLine);
+    IO.mapOptional("AlwaysBreakAfterDefinitionReturnType",
+                   Style.AlwaysBreakAfterDefinitionReturnType);
     IO.mapOptional("AlwaysBreakTemplateDeclarations",
                    Style.AlwaysBreakTemplateDeclarations);
     IO.mapOptional("AlwaysBreakBeforeMultilineStrings",
@@ -311,6 +313,7 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.AllowShortBlocksOnASingleLine = false;
   LLVMStyle.AllowShortIfStatementsOnASingleLine = false;
   LLVMStyle.AllowShortLoopsOnASingleLine = false;
+  LLVMStyle.AlwaysBreakAfterDefinitionReturnType = false;
   LLVMStyle.AlwaysBreakBeforeMultilineStrings = false;
   LLVMStyle.AlwaysBreakTemplateDeclarations = false;
   LLVMStyle.BinPackParameters = true;
@@ -443,6 +446,7 @@ FormatStyle getWebKitStyle() {
 
 FormatStyle getGNUStyle() {
   FormatStyle Style = getLLVMStyle();
+  Style.AlwaysBreakAfterDefinitionReturnType = true;
   Style.BreakBeforeBinaryOperators = true;
   Style.BreakBeforeBraces = FormatStyle::BS_GNU;
   Style.BreakBeforeTernaryOperators = true;
@@ -1270,7 +1274,7 @@ public:
       : FormatTok(nullptr), IsFirstToken(true), GreaterStashed(false),
         Column(0), TrailingWhitespace(0), Lex(Lex), SourceMgr(SourceMgr),
         Style(Style), IdentTable(getFormattingLangOpts()), Encoding(Encoding),
-        FirstInLineIndex(0) {
+        FirstInLineIndex(0), FormattingDisabled(false) {
     Lex.SetKeepWhitespaceMode(true);
 
     for (const std::string &ForEachMacro : Style.ForEachMacros)
@@ -1644,6 +1648,8 @@ private:
   SmallVector<FormatToken *, 16> Tokens;
   SmallVector<IdentifierInfo *, 8> ForEachMacros;
 
+  bool FormattingDisabled;
+
   void readRawToken(FormatToken &Tok) {
     Lex.LexFromRawLexer(Tok.Tok);
     Tok.TokenText = StringRef(SourceMgr.getCharacterData(Tok.Tok.getLocation()),
@@ -1659,6 +1665,11 @@ private:
         Tok.Tok.setKind(tok::char_constant);
       }
     }
+    if (Tok.is(tok::comment) && Tok.TokenText == "// clang-format on")
+      FormattingDisabled = false;
+    Tok.Finalized = FormattingDisabled;
+    if (Tok.is(tok::comment) && Tok.TokenText == "// clang-format off")
+      FormattingDisabled = true;
   }
 };
 

@@ -1111,6 +1111,37 @@ are listed below.
    This option restricts the generated code to use general registers
    only. This only applies to the AArch64 architecture.
 
+**-f[no-]max-unknown-pointer-align=[number]**
+   Instruct the code generator to not enforce a higher alignment than the given
+   number (of bytes) when accessing memory via an opaque pointer or reference.
+   This cap is ignored when directly accessing a variable or when the pointee
+   type has an explicit “aligned” attribute.
+
+   The value should usually be determined by the properties of the system allocator.
+   Some builtin types, especially vector types, have very high natural alignments;
+   when working with values of those types, Clang usually wants to use instructions
+   that take advantage of that alignment.  However, many system allocators do
+   not promise to return memory that is more than 8-byte or 16-byte-aligned.  Use
+   this option to limit the alignment that the compiler can assume for an arbitrary
+   pointer, which may point onto the heap.
+
+   This option does not affect the ABI alignment of types; the layout of structs and
+   unions and the value returned by the alignof operator remain the same.
+
+   This option can be overridden on a case-by-case basis by putting an explicit
+   “aligned” alignment on a struct, union, or typedef.  For example:
+
+   .. code-block:: console
+
+      #include <immintrin.h>
+      // Make an aligned typedef of the AVX-512 16-int vector type.
+      typedef __v16si __aligned_v16si __attribute__((aligned(64)));
+
+      void initialize_vector(__aligned_v16si *v) {
+        // The compiler may assume that ‘v’ is 64-byte aligned, regardless of the
+        // value of -fmax-unknown-pointer-align.
+      }
+
 
 Profile Guided Optimization
 ---------------------------
@@ -1806,55 +1837,94 @@ Execute ``clang-cl /?`` to see a list of supported options:
 
   ::
 
-    /?                     Display available options
-    /c                     Compile only
-    /D <macro[=value]>     Define macro
-    /fallback              Fall back to cl.exe if clang-cl fails to compile
-    /FA                    Output assembly code file during compilation
-    /Fa<file or directory> Output assembly code to this file during compilation
-    /Fe<file or directory> Set output executable file or directory (ends in / or \)
-    /FI<value>             Include file before parsing
-    /Fo<file or directory> Set output object file, or directory (ends in / or \)
-    /GF-                   Disable string pooling
-    /GR-                   Disable RTTI
-    /GR                    Enable RTTI
-    /help                  Display available options
-    /I <dir>               Add directory to include search path
-    /J                     Make char type unsigned
-    /LDd                   Create debug DLL
-    /LD                    Create DLL
-    /link <options>        Forward options to the linker
-    /MDd                   Use DLL debug run-time
-    /MD                    Use DLL run-time
-    /MTd                   Use static debug run-time
-    /MT                    Use static run-time
-    /Ob0                   Disable inlining
-    /Od                    Disable optimization
-    /Oi-                   Disable use of builtin functions
-    /Oi                    Enable use of builtin functions
-    /Os                    Optimize for size
-    /Ot                    Optimize for speed
-    /Ox                    Maximum optimization
-    /Oy-                   Disable frame pointer omission
-    /Oy                    Enable frame pointer omission
-    /O<n>                  Optimization level
-    /P                     Only run the preprocessor
-    /showIncludes          Print info about included files to stderr
-    /TC                    Treat all source files as C
-    /Tc <filename>         Specify a C source file
-    /TP                    Treat all source files as C++
-    /Tp <filename>         Specify a C++ source file
-    /U <macro>             Undefine macro
-    /W0                    Disable all warnings
-    /W1                    Enable -Wall
-    /W2                    Enable -Wall
-    /W3                    Enable -Wall
-    /W4                    Enable -Wall
-    /Wall                  Enable -Wall
-    /WX-                   Do not treat warnings as errors
-    /WX                    Treat warnings as errors
-    /w                     Disable all warnings
-    /Zs                    Syntax-check only
+    CL.EXE COMPATIBILITY OPTIONS:
+      /?                     Display available options
+      /arch:<value>          Set architecture for code generation
+      /C                     Don't discard comments when preprocessing
+      /c                     Compile only
+      /D <macro[=value]>     Define macro
+      /EH<value>             Exception handling model
+      /EP                    Disable linemarker output and preprocess to stdout
+      /E                     Preprocess to stdout
+      /fallback              Fall back to cl.exe if clang-cl fails to compile
+      /FA                    Output assembly code file during compilation
+      /Fa<file or directory> Output assembly code to this file during compilation
+      /Fe<file or directory> Set output executable file or directory (ends in / or \)
+      /FI <value>            Include file before parsing
+      /Fi<file>              Set preprocess output file name
+      /Fo<file or directory> Set output object file, or directory (ends in / or \)
+      /GF-                   Disable string pooling
+      /GR-                   Disable emission of RTTI data
+      /GR                    Enable emission of RTTI data
+      /Gw-                   Don't put each data item in its own section
+      /Gw                    Put each data item in its own section
+      /Gy-                   Don't put each function in its own section
+      /Gy                    Put each function in its own section
+      /help                  Display available options
+      /I <dir>               Add directory to include search path
+      /J                     Make char type unsigned
+      /LDd                   Create debug DLL
+      /LD                    Create DLL
+      /link <options>        Forward options to the linker
+      /MDd                   Use DLL debug run-time
+      /MD                    Use DLL run-time
+      /MTd                   Use static debug run-time
+      /MT                    Use static run-time
+      /Ob0                   Disable inlining
+      /Od                    Disable optimization
+      /Oi-                   Disable use of builtin functions
+      /Oi                    Enable use of builtin functions
+      /Os                    Optimize for size
+      /Ot                    Optimize for speed
+      /Ox                    Maximum optimization
+      /Oy-                   Disable frame pointer omission
+      /Oy                    Enable frame pointer omission
+      /O<n>                  Optimization level
+      /P                     Preprocess to file
+      /showIncludes          Print info about included files to stderr
+      /TC                    Treat all source files as C
+      /Tc <filename>         Specify a C source file
+      /TP                    Treat all source files as C++
+      /Tp <filename>         Specify a C++ source file
+      /U <macro>             Undefine macro
+      /vd<value>             Control vtordisp placement
+      /vmb                   Use a best-case representation method for member pointers
+      /vmg                   Use a most-general representation for member pointers
+      /vmm                   Set the default most-general representation to multiple inheritance
+      /vms                   Set the default most-general representation to single inheritance
+      /vmv                   Set the default most-general representation to virtual inheritance
+      /W0                    Disable all warnings
+      /W1                    Enable -Wall
+      /W2                    Enable -Wall
+      /W3                    Enable -Wall
+      /W4                    Enable -Wall
+      /Wall                  Enable -Wall
+      /WX-                   Do not treat warnings as errors
+      /WX                    Treat warnings as errors
+      /w                     Disable all warnings
+      /Zi                    Enable debug information
+      /Zp                    Set the default maximum struct packing alignment to 1
+      /Zp<value>             Specify the default maximum struct packing alignment
+      /Zs                    Syntax-check only
+
+    OPTIONS:
+      -###                  Print (but do not run) the commands to run for this compilation
+      -fms-compatibility-version=<value>
+                            Dot-separated value representing the Microsoft compiler version
+                            number to report in _MSC_VER (0 = don't define it (default))
+      -fmsc-version=<value> Microsoft compiler version number to report in _MSC_VER (0 = don't
+                            define it (default))
+      -fsanitize-blacklist=<value>
+                            Path to blacklist file for sanitizers
+      -fsanitize=<check>    Enable runtime instrumentation for bug detection: address (memory
+                            errors) | thread (race detection) | undefined (miscellaneous
+                            undefined behavior)
+      -mllvm <value>        Additional arguments to forward to LLVM's option processing
+      -Qunused-arguments    Don't emit warning for unused driver arguments
+      --target=<value>      Generate code for the given target
+      -v                    Show commands to run and use verbose output
+      -W<warning>           Enable the specified warning
+      -Xclang <arg>         Pass <arg> to the clang compiler
 
 The /fallback Option
 ^^^^^^^^^^^^^^^^^^^^

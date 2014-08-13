@@ -1288,6 +1288,11 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) {
     Current->MustBreakBefore =
         Current->MustBreakBefore || mustBreakBefore(Line, *Current);
 
+    if (Style.AlwaysBreakAfterDefinitionReturnType &&
+        InFunctionDecl && Current->Type == TT_FunctionDeclarationName &&
+        Line.Last->is(tok::l_brace))  // Only for definitions.
+      Current->MustBreakBefore = true;
+
     Current->CanBreakBefore =
         Current->MustBreakBefore || canBreakBefore(Line, *Current);
     unsigned ChildSize = 0;
@@ -1480,7 +1485,7 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
   if (Right.isOneOf(tok::semi, tok::comma))
     return false;
   if (Right.is(tok::less) &&
-      (Left.is(tok::kw_template) ||
+      (Left.isOneOf(tok::kw_template, tok::r_paren) ||
        (Line.Type == LT_ObjCDecl && Style.ObjCSpaceBeforeProtocolList)))
     return true;
   if (Left.is(tok::arrow) || Right.is(tok::arrow))
@@ -1509,13 +1514,14 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
            ((Left.Type != TT_PointerOrReference) && Left.isNot(tok::l_paren) &&
             Style.PointerAlignment != FormatStyle::PAS_Left);
   if (Right.Type == TT_FunctionTypeLParen && Left.isNot(tok::l_paren) &&
-      (Left.Type != TT_PointerOrReference || Style.PointerAlignment != FormatStyle::PAS_Right))
+      (Left.Type != TT_PointerOrReference ||
+       Style.PointerAlignment != FormatStyle::PAS_Right))
     return true;
   if (Left.Type == TT_PointerOrReference)
     return Right.Tok.isLiteral() || Right.Type == TT_BlockComment ||
            ((Right.Type != TT_PointerOrReference) &&
-            Right.isNot(tok::l_paren) && Style.PointerAlignment != FormatStyle::PAS_Right &&
-            Left.Previous &&
+            Right.isNot(tok::l_paren) &&
+            Style.PointerAlignment != FormatStyle::PAS_Right && Left.Previous &&
             !Left.Previous->isOneOf(tok::l_paren, tok::coloncolon));
   if (Right.is(tok::star) && Left.is(tok::l_paren))
     return false;
@@ -1543,7 +1549,7 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
                           tok::kw_switch, tok::kw_catch, tok::kw_case) ||
              Left.IsForEachMacro)) ||
            (Style.SpaceBeforeParens == FormatStyle::SBPO_Always &&
-            Left.isOneOf(tok::identifier, tok::kw___attribute) &&
+            (Left.is(tok::identifier) || Left.isFunctionLikeKeyword()) &&
             Line.Type != LT_PreprocessorDirective);
   }
   if (Left.is(tok::at) && Right.Tok.getObjCKeywordID() != tok::objc_not_keyword)
@@ -1624,7 +1630,7 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
       Tok.Previous->Type == TT_ConditionalExpr)
     return true;
   if (Tok.Previous->Type == TT_TemplateCloser && Tok.is(tok::l_paren))
-    return false;
+    return Style.SpaceBeforeParens == FormatStyle::SBPO_Always;
   if (Tok.is(tok::less) && Tok.Previous->isNot(tok::l_paren) &&
       Line.First->is(tok::hash))
     return true;

@@ -2105,7 +2105,8 @@ static void addClangRTLinux(
 
 static void addProfileRT(
     const ToolChain &TC, const ArgList &Args, ArgStringList &CmdArgs) {
-  if (!(Args.hasArg(options::OPT_fprofile_arcs) ||
+  if (!(Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
+                     false) ||
         Args.hasArg(options::OPT_fprofile_generate) ||
         Args.hasArg(options::OPT_fprofile_instr_generate) ||
         Args.hasArg(options::OPT_fcreate_profile) ||
@@ -3226,9 +3227,18 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasArg(options::OPT_ftest_coverage) ||
       Args.hasArg(options::OPT_coverage))
     CmdArgs.push_back("-femit-coverage-notes");
-  if (Args.hasArg(options::OPT_fprofile_arcs) ||
+  if (Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
+                   false) ||
       Args.hasArg(options::OPT_coverage))
     CmdArgs.push_back("-femit-coverage-data");
+
+  if (Args.hasArg(options::OPT_fcoverage_mapping) &&
+      !Args.hasArg(options::OPT_fprofile_instr_generate))
+    D.Diag(diag::err_drv_argument_only_allowed_with)
+      << "-fcoverage-mapping" << "-fprofile-instr-generate";
+
+  if (Args.hasArg(options::OPT_fcoverage_mapping))
+    CmdArgs.push_back("-fcoverage-mapping");
 
   if (C.getArgs().hasArg(options::OPT_c) ||
       C.getArgs().hasArg(options::OPT_S)) {
@@ -3366,6 +3376,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // precompiling.
   Args.ClaimAllArgs(options::OPT_flto);
 
+  Args.AddAllArgs(CmdArgs, options::OPT_R_Group);
   Args.AddAllArgs(CmdArgs, options::OPT_W_Group);
   if (Args.hasFlag(options::OPT_pedantic, options::OPT_no_pedantic, false))
     CmdArgs.push_back("-pedantic");
@@ -3727,15 +3738,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       A->render(Args, CmdArgs);
   }
 
-  if (Arg *A = Args.getLastArg(options::OPT_Rpass_EQ))
-    A->render(Args, CmdArgs);
-
-  if (Arg *A = Args.getLastArg(options::OPT_Rpass_missed_EQ))
-    A->render(Args, CmdArgs);
-
-  if (Arg *A = Args.getLastArg(options::OPT_Rpass_analysis_EQ))
-    A->render(Args, CmdArgs);
-
   if (Args.hasArg(options::OPT_mkernel)) {
     if (!Args.hasArg(options::OPT_fapple_kext) && types::isCXX(InputType))
       CmdArgs.push_back("-fapple-kext");
@@ -3855,8 +3857,23 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   Args.AddLastArg(CmdArgs, options::OPT_fbuild_session_timestamp);
 
+  if (Arg *A = Args.getLastArg(options::OPT_fbuild_session_file)) {
+    if (Args.hasArg(options::OPT_fbuild_session_timestamp))
+      D.Diag(diag::err_drv_argument_not_allowed_with)
+          << A->getAsString(Args) << "-fbuild-session-timestamp";
+
+    llvm::sys::fs::file_status Status;
+    if (llvm::sys::fs::status(A->getValue(), Status))
+      D.Diag(diag::err_drv_no_such_file) << A->getValue();
+    char TimeStamp[48];
+    snprintf(TimeStamp, sizeof(TimeStamp), "-fbuild-session-timestamp=%" PRIu64,
+             (uint64_t)Status.getLastModificationTime().toEpochTime());
+    CmdArgs.push_back(Args.MakeArgString(TimeStamp));
+  }
+
   if (Args.getLastArg(options::OPT_fmodules_validate_once_per_build_session)) {
-    if (!Args.getLastArg(options::OPT_fbuild_session_timestamp))
+    if (!Args.getLastArg(options::OPT_fbuild_session_timestamp,
+                         options::OPT_fbuild_session_file))
       D.Diag(diag::err_drv_modules_validate_once_requires_timestamp);
 
     Args.AddLastArg(CmdArgs,
@@ -4109,6 +4126,21 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   } else if (Args.hasFlag(options::OPT_fpack_struct,
                           options::OPT_fno_pack_struct, false)) {
     CmdArgs.push_back("-fpack-struct=1");
+  }
+
+  // Handle -fmax-type-align=N and -fno-type-align
+  bool SkipMaxTypeAlign = Args.hasArg(options::OPT_fno_max_type_align);
+  if (Arg *A = Args.getLastArg(options::OPT_fmax_type_align_EQ)) {
+    if (!SkipMaxTypeAlign) {
+      std::string MaxTypeAlignStr = "-fmax-type-align=";
+      MaxTypeAlignStr += A->getValue();
+      CmdArgs.push_back(Args.MakeArgString(MaxTypeAlignStr));
+    }
+  } else if (getToolChain().getTriple().isOSDarwin()) {
+    if (!SkipMaxTypeAlign) {
+      std::string MaxTypeAlignStr = "-fmax-type-align=16";
+      CmdArgs.push_back(Args.MakeArgString(MaxTypeAlignStr));
+    }
   }
 
   if (KernelOrKext || isNoCommonDefault(getToolChain().getTriple())) {
@@ -7202,8 +7234,8 @@ static void AddLibgcc(const llvm::Triple &Triple, const Driver &D,
     CmdArgs.push_back("-ldl");
 }
 
-static StringRef getLinuxDynamicLinker(const ArgList &Args,
-                                       const toolchains::Linux &ToolChain) {
+static std::string getLinuxDynamicLinker(const ArgList &Args,
+                                         const toolchains::Linux &ToolChain) {
   if (ToolChain.getTriple().getEnvironment() == llvm::Triple::Android) {
     if (ToolChain.getTriple().isArch64Bit())
       return "/system/bin/linker64";
@@ -7229,17 +7261,22 @@ static StringRef getLinuxDynamicLinker(const ArgList &Args,
     else
       return "/lib/ld-linux.so.3";              /* TODO: check which dynamic linker name.  */
   } else if (ToolChain.getArch() == llvm::Triple::mips ||
-             ToolChain.getArch() == llvm::Triple::mipsel) {
-    if (mips::isNaN2008(Args, ToolChain.getTriple()))
-      return "/lib/ld-linux-mipsn8.so.1";
-    return "/lib/ld.so.1";
-  } else if (ToolChain.getArch() == llvm::Triple::mips64 ||
+             ToolChain.getArch() == llvm::Triple::mipsel ||
+             ToolChain.getArch() == llvm::Triple::mips64 ||
              ToolChain.getArch() == llvm::Triple::mips64el) {
-    if (mips::hasMipsAbiArg(Args, "n32"))
-      return mips::isNaN2008(Args, ToolChain.getTriple())
-                 ? "/lib32/ld-linux-mipsn8.so.1" : "/lib32/ld.so.1";
-    return mips::isNaN2008(Args, ToolChain.getTriple())
-               ? "/lib64/ld-linux-mipsn8.so.1" : "/lib64/ld.so.1";
+    StringRef CPUName;
+    StringRef ABIName;
+    mips::getMipsCPUAndABI(Args, ToolChain.getTriple(), CPUName, ABIName);
+    bool IsNaN2008 = mips::isNaN2008(Args, ToolChain.getTriple());
+
+    StringRef LibDir = llvm::StringSwitch<llvm::StringRef>(ABIName)
+                           .Case("o32", "/lib")
+                           .Case("n32", "/lib32")
+                           .Case("n64", "/lib64")
+                           .Default("/lib");
+    StringRef LibName = IsNaN2008 ? "ld-linux-mipsn8.so.1" : "ld.so.1";
+
+    return (LibDir + "/" + LibName).str();
   } else if (ToolChain.getArch() == llvm::Triple::ppc)
     return "/lib/ld.so.1";
   else if (ToolChain.getArch() == llvm::Triple::ppc64) {
