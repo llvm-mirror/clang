@@ -672,12 +672,21 @@ public:
 
   /// \brief The declaration of the arrayWithObjects:count: method.
   ObjCMethodDecl *ArrayWithObjectsMethod;
+    
+  /// \brief The declaration of the initWithObjects:count: method.
+  ObjCMethodDecl *InitArrayWithObjectsMethod;
 
   /// \brief The declaration of the Objective-C NSDictionary class.
   ObjCInterfaceDecl *NSDictionaryDecl;
 
   /// \brief The declaration of the dictionaryWithObjects:forKeys:count: method.
   ObjCMethodDecl *DictionaryWithObjectsMethod;
+    
+  /// \brief The declaration of the initWithObjects:forKeys:count: method.
+  ObjCMethodDecl *InitDictionaryWithObjectsMethod;
+    
+  /// \brief The declaration for + (id) alloc method used in [NSDictionary alloc]
+  ObjCMethodDecl *DictAllocObjectsMethod;
 
   /// \brief id<NSCopying> type.
   QualType QIDNSCopying;
@@ -2936,11 +2945,6 @@ public:
   class FullExprArg {
   public:
     FullExprArg(Sema &actions) : E(nullptr) { }
-
-    // FIXME: The const_cast here is ugly. RValue references would make this
-    // much nicer (or we could duplicate a bunch of the move semantics
-    // emulation code from Ownership.h).
-    FullExprArg(const FullExprArg& Other) : E(Other.E) {}
 
     ExprResult release() {
       return E;

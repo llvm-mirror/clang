@@ -2007,6 +2007,8 @@ def err_undeclared_nsarray : Error<
 def err_undeclared_nsdictionary : Error<
   "NSDictionary must be available to use Objective-C dictionary "
   "literals">;
+def err_undeclared_alloc : Error<
+  "alloc must be available to use Objective-C literals">;
 def err_undeclared_boxing_method : Error<
   "declaration of %0 is missing in %1 class">;
 def err_objc_literal_method_sig : Error<
@@ -2316,6 +2318,11 @@ def warn_fun_excludes_mutex : Warning<
 def warn_cannot_resolve_lock : Warning<
   "cannot resolve lock expression">,
   InGroup<ThreadSafetyAnalysis>, DefaultIgnore;
+
+// Thread safety warnings negative capabilities
+def warn_acquire_requires_negative_cap : Warning<
+  "acquiring %0 '%1' requires negative capability '%2'">,
+  InGroup<ThreadSafetyNegative>, DefaultIgnore;
 
 // Imprecise thread safety warnings
 def warn_variable_requires_lock : Warning<

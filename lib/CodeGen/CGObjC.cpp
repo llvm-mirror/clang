@@ -88,7 +88,8 @@ CodeGenFunction::EmitObjCBoxedExpr(const ObjCBoxedExpr *E) {
 }
 
 llvm::Value *CodeGenFunction::EmitObjCCollectionLiteral(const Expr *E,
-                                    const ObjCMethodDecl *MethodWithObjects) {
+                                    const ObjCMethodDecl *MethodWithObjects,
+                                    const ObjCMethodDecl *AllocMethod) {
   ASTContext &Context = CGM.getContext();
   const ObjCDictionaryLiteral *DLE = nullptr;
   const ObjCArrayLiteral *ALE = dyn_cast<ObjCArrayLiteral>(E);
@@ -184,6 +185,15 @@ llvm::Value *CodeGenFunction::EmitObjCCollectionLiteral(const Expr *E,
     = InterfacePointerType->getObjectType()->getInterface();
   CGObjCRuntime &Runtime = CGM.getObjCRuntime();
   llvm::Value *Receiver = Runtime.GetClass(*this, Class);
+  if (AllocMethod) {
+    // Generate the "alloc" message send.
+    CallArgList Args;
+    Selector AllocMethodSel = AllocMethod->getSelector();
+    RValue result = Runtime.GenerateMessageSend(
+      *this, ReturnValueSlot(), AllocMethod->getReturnType(), AllocMethodSel,
+      Receiver, Args, Class, AllocMethod);
+    Receiver = result.getScalarVal();
+  }
 
   // Generate the message send.
   RValue result = Runtime.GenerateMessageSend(
@@ -203,12 +213,14 @@ llvm::Value *CodeGenFunction::EmitObjCCollectionLiteral(const Expr *E,
 }
 
 llvm::Value *CodeGenFunction::EmitObjCArrayLiteral(const ObjCArrayLiteral *E) {
-  return EmitObjCCollectionLiteral(E, E->getArrayWithObjectsMethod());
+  return EmitObjCCollectionLiteral(E, E->getArrayWithObjectsMethod(),
+                                      E->getArrayAllocMethod());
 }
 
 llvm::Value *CodeGenFunction::EmitObjCDictionaryLiteral(
                                             const ObjCDictionaryLiteral *E) {
-  return EmitObjCCollectionLiteral(E, E->getDictWithObjectsMethod());
+  return EmitObjCCollectionLiteral(E, E->getDictWithObjectsMethod(),
+                                      E->getDictAllocMethod());
 }
 
 /// Emit a selector.

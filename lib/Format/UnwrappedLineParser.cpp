@@ -354,7 +354,7 @@ void UnwrappedLineParser::calculateBraceTypes() {
             ProbablyBracedList =
                 NextTok->isOneOf(tok::comma, tok::semi, tok::period, tok::colon,
                                  tok::r_paren, tok::r_square, tok::l_brace,
-                                 tok::l_paren) ||
+                                 tok::l_paren, tok::ellipsis) ||
                 (NextTok->isBinaryOperator() && !NextIsObjCMethod);
           }
           if (ProbablyBracedList) {
@@ -1080,6 +1080,8 @@ void UnwrappedLineParser::parseIfThenElse() {
     --Line->Level;
   }
   if (FormatTok->Tok.is(tok::kw_else)) {
+    if (Style.BreakBeforeBraces == FormatStyle::BS_Stroustrup)
+      addUnwrappedLine();
     nextToken();
     if (FormatTok->Tok.is(tok::l_brace)) {
       CompoundStatementIndenter Indenter(this, Style, Line->Level);

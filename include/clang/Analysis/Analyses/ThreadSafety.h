@@ -38,9 +38,9 @@ enum ProtectedOperationKind {
 /// example, it is an error to write a variable protected by shared version of a
 /// mutex.
 enum LockKind {
-  LK_Shared, ///< Shared/reader lock of a mutex.
+  LK_Shared,    ///< Shared/reader lock of a mutex.
   LK_Exclusive, ///< Exclusive/writer lock of a mutex.
-  LK_Generic  ///<  Can be either Shared or Exclusive
+  LK_Generic    ///< Can be either Shared or Exclusive
 };
 
 /// This enum distinguishes between different ways to access (read or write) a
@@ -160,6 +160,16 @@ public:
                                   ProtectedOperationKind POK, Name LockName,
                                   LockKind LK, SourceLocation Loc,
                                   Name *PossibleMatch = nullptr) {}
+
+  /// Warn when acquiring a lock that the negative capability is not held.
+  /// \param Kind -- the capability's name parameter (role, mutex, etc).
+  /// \param LockName -- The name for the lock expression, to be printed in the
+  /// diagnostic.
+  /// \param Neg -- The name of the negative capability to be printed in the
+  /// diagnostic.
+  /// \param Loc -- The location of the protected operation.
+  virtual void handleNegativeNotHeld(StringRef Kind, Name LockName, Name Neg,
+                                     SourceLocation Loc) {}
 
   /// Warn when a function is called while an excluded mutex is locked. For
   /// example, the mutex may be locked inside the function.

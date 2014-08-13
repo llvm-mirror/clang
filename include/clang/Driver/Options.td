@@ -64,7 +64,9 @@ def M_Group               : OptionGroup<"<M group>">, Group<CompileOnly_Group>;
 def T_Group               : OptionGroup<"<T group>">;
 def O_Group               : OptionGroup<"<O group>">, Group<CompileOnly_Group>;
 def R_Group               : OptionGroup<"<R group>">, Group<CompileOnly_Group>;
+def R_value_Group         : OptionGroup<"<R (with value) group>">, Group<R_Group>;
 def W_Group               : OptionGroup<"<W group>">, Group<CompileOnly_Group>;
+def W_value_Group         : OptionGroup<"<W (with value) group>">, Group<W_Group>;
 def d_Group               : OptionGroup<"<d group>">;
 def f_Group               : OptionGroup<"<f group>">, Group<CompileOnly_Group>;
 def f_clang_Group         : OptionGroup<"<f (clang-only) group>">, Group<CompileOnly_Group>;
@@ -261,17 +263,19 @@ def Qn : Flag<["-"], "Qn">;
 def Qunused_arguments : Flag<["-"], "Qunused-arguments">, Flags<[DriverOption, CoreOption]>,
   HelpText<"Don't emit warning for unused driver arguments">;
 def Q : Flag<["-"], "Q">;
-def Rpass_EQ : Joined<["-"], "Rpass=">, Group<R_Group>, Flags<[CC1Option]>,
+def Rpass_EQ : Joined<["-"], "Rpass=">, Group<R_value_Group>, Flags<[CC1Option]>,
   HelpText<"Report transformations performed by optimization passes whose "
            "name matches the given POSIX regular expression">;
-def Rpass_missed_EQ : Joined<["-"], "Rpass-missed=">, Group<R_Group>,
+def Rpass_missed_EQ : Joined<["-"], "Rpass-missed=">, Group<R_value_Group>,
   Flags<[CC1Option]>,
   HelpText<"Report missed transformations by optimization passes whose "
            "name matches the given POSIX regular expression">;
-def Rpass_analysis_EQ : Joined<["-"], "Rpass-analysis=">, Group<R_Group>,
+def Rpass_analysis_EQ : Joined<["-"], "Rpass-analysis=">, Group<R_value_Group>,
   Flags<[CC1Option]>,
   HelpText<"Report transformation analysis from optimization passes whose "
            "name matches the given POSIX regular expression">;
+def R_Joined : Joined<["-"], "R">, Group<R_Group>, Flags<[CC1Option, CoreOption]>,
+  MetaVarName<"<remark>">, HelpText<"Enable the specified remark">;
 def S : Flag<["-"], "S">, Flags<[DriverOption,CC1Option]>, Group<Action_Group>,
   HelpText<"Only run preprocess and compilation steps">;
 def Tbss : JoinedOrSeparate<["-"], "Tbss">, Group<T_Group>;
@@ -290,6 +294,7 @@ def Wextra : Flag<["-"], "Wextra">, Group<W_Group>, Flags<[CC1Option]>;
 def Wl_COMMA : CommaJoined<["-"], "Wl,">, Flags<[LinkerInput, RenderAsInput]>,
   HelpText<"Pass the comma separated arguments in <arg> to the linker">,
   MetaVarName<"<arg>">;
+// FIXME: This is broken; these should not be Joined arguments.
 def Wno_nonportable_cfstrings : Joined<["-"], "Wno-nonportable-cfstrings">, Group<W_Group>,
   Flags<[CC1Option]>;
 def Wnonportable_cfstrings : Joined<["-"], "Wnonportable-cfstrings">, Group<W_Group>,
@@ -408,6 +413,9 @@ def fprofile_instr_use : Flag<["-"], "fprofile-instr-use">, Group<f_Group>;
 def fprofile_instr_use_EQ : Joined<["-"], "fprofile-instr-use=">,
     Group<f_Group>, Flags<[CC1Option]>,
     HelpText<"Use instrumentation data for profile-guided optimization">;
+def fcoverage_mapping : Flag<["-"], "fcoverage-mapping">,
+    Group<f_Group>, Flags<[CC1Option]>,
+    HelpText<"Generate coverage mapping to enable code coverage analysis">;
 
 def fblocks : Flag<["-"], "fblocks">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Enable the 'blocks' language feature">;
@@ -473,8 +481,11 @@ def femit_all_decls : Flag<["-"], "femit-all-decls">, Group<f_Group>, Flags<[CC1
   HelpText<"Emit all declarations, even if unused">;
 def fencoding_EQ : Joined<["-"], "fencoding=">, Group<f_Group>;
 def ferror_limit_EQ : Joined<["-"], "ferror-limit=">, Group<f_Group>, Flags<[CoreOption]>;
+def fexec_charset_EQ : Joined<["-"], "fexec-charset=">, Group<clang_ignored_f_Group>;
 def fexceptions : Flag<["-"], "fexceptions">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Enable support for exception handling">;
+def fexcess_precision_EQ : Joined<["-"], "fexcess-precision=">,
+    Group<clang_ignored_gcc_optimization_f_Group>;
 def : Flag<["-"], "fexpensive-optimizations">, Group<clang_ignored_gcc_optimization_f_Group>;
 def : Flag<["-"], "fno-expensive-optimizations">, Group<clang_ignored_gcc_optimization_f_Group>;
 def fextdirs_EQ : Joined<["-"], "fextdirs=">, Group<f_Group>;
@@ -576,6 +587,7 @@ def finstrument_functions : Flag<["-"], "finstrument-functions">, Group<f_Group>
 def flat__namespace : Flag<["-"], "flat_namespace">;
 def flax_vector_conversions : Flag<["-"], "flax-vector-conversions">, Group<f_Group>;
 def flimited_precision_EQ : Joined<["-"], "flimited-precision=">, Group<f_Group>;
+def flto_EQ : Joined<["-"], "flto=">, Group<clang_ignored_gcc_optimization_f_Group>;
 def flto : Flag<["-"], "flto">, Group<f_Group>;
 def fno_lto : Flag<["-"], "fno-lto">, Group<f_Group>;
 def fmacro_backtrace_limit_EQ : Joined<["-"], "fmacro-backtrace-limit=">,
@@ -617,6 +629,9 @@ def fmodules_search_all : Flag <["-"], "fmodules-search-all">, Group<f_Group>,
 def fbuild_session_timestamp : Joined<["-"], "fbuild-session-timestamp=">,
   Group<i_Group>, Flags<[CC1Option]>, MetaVarName<"<time since Epoch in seconds>">,
   HelpText<"Time when the current build session started">;
+def fbuild_session_file : Joined<["-"], "fbuild-session-file=">,
+  Group<i_Group>, MetaVarName<"<file>">,
+  HelpText<"Use the last modification time of <file> as the build session timestamp">;
 def fmodules_validate_once_per_build_session : Flag<["-"], "fmodules-validate-once-per-build-session">,
   Group<i_Group>, Flags<[CC1Option]>,
   HelpText<"Don't verify input files for the modules if the module has been "
@@ -788,11 +803,15 @@ def foptimize_sibling_calls : Flag<["-"], "foptimize-sibling-calls">, Group<f_Gr
 def force__cpusubtype__ALL : Flag<["-"], "force_cpusubtype_ALL">;
 def force__flat__namespace : Flag<["-"], "force_flat_namespace">;
 def force__load : Separate<["-"], "force_load">;
+def force_addr : Joined<["-"], "fforce-addr">, Group<clang_ignored_f_Group>;
 def foutput_class_dir_EQ : Joined<["-"], "foutput-class-dir=">, Group<f_Group>;
 def fpack_struct : Flag<["-"], "fpack-struct">, Group<f_Group>;
 def fno_pack_struct : Flag<["-"], "fno-pack-struct">, Group<f_Group>;
 def fpack_struct_EQ : Joined<["-"], "fpack-struct=">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Specify the default maximum struct packing alignment">;
+def fmax_type_align_EQ : Joined<["-"], "fmax-type-align=">, Group<f_Group>, Flags<[CC1Option]>,
+  HelpText<"Specify the maximum alignment to enforce on pointers lacking an explicit alignment">;
+def fno_max_type_align : Flag<["-"], "fno-max-type-align">, Group<f_Group>;
 def fpascal_strings : Flag<["-"], "fpascal-strings">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Recognize and construct Pascal-style string literals">;
 def fpcc_struct_return : Flag<["-"], "fpcc-struct-return">, Group<f_Group>, Flags<[CC1Option]>,
@@ -803,6 +822,7 @@ def fno_pic : Flag<["-"], "fno-pic">, Group<f_Group>;
 def fpie : Flag<["-"], "fpie">, Group<f_Group>;
 def fno_pie : Flag<["-"], "fno-pie">, Group<f_Group>;
 def fprofile_arcs : Flag<["-"], "fprofile-arcs">, Group<f_Group>;
+def fno_profile_arcs : Flag<["-"], "fno-profile-arcs">, Group<f_Group>;
 def fprofile_generate : Flag<["-"], "fprofile-generate">, Group<f_Group>;
 def framework : Separate<["-"], "framework">, Flags<[LinkerInput]>;
 def frandom_seed_EQ : Joined<["-"], "frandom-seed=">, Group<clang_ignored_f_Group>;
@@ -812,7 +832,6 @@ def frtti : Flag<["-"], "frtti">, Group<f_Group>;
 def : Flag<["-"], "fsched-interblock">, Group<clang_ignored_f_Group>;
 def fshort_enums : Flag<["-"], "fshort-enums">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Allocate to an enum type only as many bytes as it needs for the declared range of possible values">;
-def : Flag<["-"], "freorder-blocks">, Group<clang_ignored_gcc_optimization_f_Group>;
 def fshort_wchar : Flag<["-"], "fshort-wchar">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Force wchar_t to be a short unsigned int">;
 def fno_short_wchar : Flag<["-"], "fno-short-wchar">, Group<f_Group>, Flags<[CC1Option]>,
@@ -907,8 +926,7 @@ def funwind_tables : Flag<["-"], "funwind-tables">, Group<f_Group>;
 def fuse_cxa_atexit : Flag<["-"], "fuse-cxa-atexit">, Group<f_Group>;
 def fuse_init_array : Flag<["-"], "fuse-init-array">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Use .init_array instead of .ctors">;
-def fno_var_tracking : Flag<["-"], "fno-var-tracking">,
-  Group<clang_ignored_f_Group>;
+def fno_var_tracking : Flag<["-"], "fno-var-tracking">, Group<clang_ignored_f_Group>;
 def fverbose_asm : Flag<["-"], "fverbose-asm">, Group<f_Group>;
 def fvisibility_EQ : Joined<["-"], "fvisibility=">, Group<f_Group>,
   HelpText<"Set the default symbol visibility for all global declarations">;
@@ -1032,6 +1050,10 @@ def m3dnow : Flag<["-"], "m3dnow">, Group<m_x86_Features_Group>;
 def m64 : Flag<["-"], "m64">, Group<m_Group>, Flags<[DriverOption, CoreOption]>;
 def mx32 : Flag<["-"], "mx32">, Group<m_Group>, Flags<[DriverOption, CoreOption]>;
 def mabi_EQ : Joined<["-"], "mabi=">, Group<m_Group>;
+def malign_functions_EQ : Joined<["-"], "malign-functions=">, Group<clang_ignored_m_Group>;
+def malign_loops_EQ : Joined<["-"], "malign-loops=">, Group<clang_ignored_m_Group>;
+def malign_jumps_EQ : Joined<["-"], "malign-jumps=">, Group<clang_ignored_m_Group>;
+def mfancy_math_387 : Flag<["-"], "mfancy-math-387">, Group<clang_ignored_m_Group>;
 def march_EQ : Joined<["-"], "march=">, Group<m_Group>;
 def masm_EQ : Joined<["-"], "masm=">, Group<m_Group>, Flags<[DriverOption]>;
 def mcmodel_EQ : Joined<["-"], "mcmodel=">, Group<m_Group>;
@@ -1602,22 +1624,52 @@ def fuse_ld_EQ : Joined<["-"], "fuse-ld=">, Group<f_Group>;
 
 defm align_functions : BooleanFFlag<"align-functions">, Group<clang_ignored_gcc_optimization_f_Group>;
 def falign_functions_EQ : Joined<["-"], "falign-functions=">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm align_labels : BooleanFFlag<"align-labels">, Group<clang_ignored_gcc_optimization_f_Group>;
+def falign_labels_EQ : Joined<["-"], "falign-labels=">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm align_loops : BooleanFFlag<"align-loops">, Group<clang_ignored_gcc_optimization_f_Group>;
+def falign_loops_EQ : Joined<["-"], "falign-loops=">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm align_jumps : BooleanFFlag<"align-jumps">, Group<clang_ignored_gcc_optimization_f_Group>;
+def falign_jumps_EQ : Joined<["-"], "falign-jumps=">, Group<clang_ignored_gcc_optimization_f_Group>;
 
 // FIXME: This option should be supported and wired up to our diognostics, but
 // ignore it for now to avoid breaking builds that use it.
 def fdiagnostics_show_location_EQ : Joined<["-"], "fdiagnostics-show-location=">, Group<clang_ignored_f_Group>;
 
+defm fcheck_new : BooleanFFlag<"check-new">, Group<clang_ignored_f_Group>;
+defm caller_saves : BooleanFFlag<"caller-saves">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm reorder_blocks : BooleanFFlag<"reorder-blocks">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm eliminate_unused_debug_types : BooleanFFlag<"eliminate-unused-debug-types">, Group<clang_ignored_f_Group>;
+defm branch_count_reg : BooleanFFlag<"branch-count-reg">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm default_inline : BooleanFFlag<"default-inline">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm delete_null_pointer_checks : BooleanFFlag<"delete-null-pointer-checks">,
+    Group<clang_ignored_gcc_optimization_f_Group>;
+defm fat_lto_objects : BooleanFFlag<"fat-lto-objects">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm float_store : BooleanFFlag<"float-store">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm friend_injection : BooleanFFlag<"friend-injection">, Group<clang_ignored_f_Group>;
 defm function_attribute_list : BooleanFFlag<"function-attribute-list">, Group<clang_ignored_f_Group>;
 defm gcse : BooleanFFlag<"gcse">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm gcse_after_reload: BooleanFFlag<"gcse-after-reload">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm gcse_las: BooleanFFlag<"gcse-las">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm gcse_sm: BooleanFFlag<"gcse-sm">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm gnu : BooleanFFlag<"gnu">, Group<clang_ignored_f_Group>;
 defm ident : BooleanFFlag<"ident">, Group<clang_ignored_f_Group>;
 defm implicit_templates : BooleanFFlag<"implicit-templates">, Group<clang_ignored_f_Group>;
+defm implement_inlines : BooleanFFlag<"implement-inlines">, Group<clang_ignored_f_Group>;
+defm merge_constants : BooleanFFlag<"merge-constants">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm modulo_sched : BooleanFFlag<"modulo-sched">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm modulo_sched_allow_regmoves : BooleanFFlag<"modulo-sched-allow-regmoves">,
+    Group<clang_ignored_gcc_optimization_f_Group>;
+defm inline_functions_called_once : BooleanFFlag<"inline-functions-called-once">,
+    Group<clang_ignored_gcc_optimization_f_Group>;
 def finline_limit_EQ : Joined<["-"], "finline-limit=">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm finline_limit : BooleanFFlag<"inline-limit">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm inline_small_functions : BooleanFFlag<"inline-small-functions">,
+    Group<clang_ignored_gcc_optimization_f_Group>;
+defm ipa_cp : BooleanFFlag<"ipa-cp">,
+    Group<clang_ignored_gcc_optimization_f_Group>;
 defm ivopts : BooleanFFlag<"ivopts">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm non_call_exceptions : BooleanFFlag<"non-call-exceptions">, Group<clang_ignored_f_Group>;
+defm peel_loops : BooleanFFlag<"peel-loops">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm permissive : BooleanFFlag<"permissive">, Group<clang_ignored_f_Group>;
 defm prefetch_loop_arrays : BooleanFFlag<"prefetch-loop-arrays">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm printf : BooleanFFlag<"printf">, Group<clang_ignored_f_Group>;
@@ -1627,21 +1679,39 @@ defm profile_generate_sampling : BooleanFFlag<"profile-generate-sampling">, Grou
 defm profile_reusedist : BooleanFFlag<"profile-reusedist">, Group<clang_ignored_f_Group>;
 defm profile_values : BooleanFFlag<"profile-values">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm regs_graph : BooleanFFlag<"regs-graph">, Group<clang_ignored_f_Group>;
+defm rename_registers : BooleanFFlag<"rename-registers">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm ripa : BooleanFFlag<"ripa">, Group<clang_ignored_f_Group>;
 defm rounding_math : BooleanFFlag<"rounding-math">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm schedule_insns : BooleanFFlag<"schedule-insns">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm schedule_insns2 : BooleanFFlag<"schedule-insns2">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm see : BooleanFFlag<"see">, Group<clang_ignored_f_Group>;
 defm signaling_nans : BooleanFFlag<"signaling-nans">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm single_precision_constant : BooleanFFlag<"single-precision-constant">,
+    Group<clang_ignored_gcc_optimization_f_Group>;
 defm spec_constr_count : BooleanFFlag<"spec-constr-count">, Group<clang_ignored_f_Group>;
+defm stack_check : BooleanFFlag<"stack-check">, Group<clang_ignored_f_Group>;
 defm strength_reduce :
     BooleanFFlag<"strength-reduce">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm tls_model : BooleanFFlag<"tls-model">, Group<clang_ignored_f_Group>;
 defm tracer : BooleanFFlag<"tracer">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm tree_dce : BooleanFFlag<"tree-dce">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm tree_loop_im : BooleanFFlag<"tree_loop_im">,  Group<clang_ignored_gcc_optimization_f_Group>;
+defm tree_loop_ivcanon : BooleanFFlag<"tree_loop_ivcanon">,  Group<clang_ignored_gcc_optimization_f_Group>;
+defm tree_loop_linear : BooleanFFlag<"tree_loop_linear">,  Group<clang_ignored_gcc_optimization_f_Group>;
 defm tree_salias : BooleanFFlag<"tree-salias">, Group<clang_ignored_f_Group>;
+defm tree_ter : BooleanFFlag<"tree-ter">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm tree_vectorizer_verbose : BooleanFFlag<"tree-vectorizer-verbose">, Group<clang_ignored_f_Group>;
+defm tree_vrp : BooleanFFlag<"tree-vrp">, Group<clang_ignored_gcc_optimization_f_Group>;
 defm unroll_all_loops : BooleanFFlag<"unroll-all-loops">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm unsafe_loop_optimizations : BooleanFFlag<"unsafe-loop-optimizations">,
+    Group<clang_ignored_gcc_optimization_f_Group>;
 defm unswitch_loops : BooleanFFlag<"unswitch-loops">, Group<clang_ignored_gcc_optimization_f_Group>;
-
+defm use_linker_plugin : BooleanFFlag<"use-linker-plugin">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm vect_cost_model : BooleanFFlag<"vect-cost-model">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm variable_expansion_in_unroller : BooleanFFlag<"variable-expansion-in-unroller">,
+    Group<clang_ignored_gcc_optimization_f_Group>;
+defm web : BooleanFFlag<"web">, Group<clang_ignored_gcc_optimization_f_Group>;
+defm whole_program : BooleanFFlag<"whole-program">, Group<clang_ignored_gcc_optimization_f_Group>;
 
 // gfortran options that we recognize in the driver and pass along when
 // invoking GCC to compile Fortran code.

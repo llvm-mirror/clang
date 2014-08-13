@@ -21,6 +21,7 @@
 #include "CGOpenMPRuntime.h"
 #include "CodeGenFunction.h"
 #include "CodeGenPGO.h"
+#include "CoverageMappingGen.h"
 #include "CodeGenTBAA.h"
 #include "TargetInfo.h"
 #include "clang/AST/ASTContext.h"
@@ -74,7 +75,8 @@ static CGCXXABI *createCXXABI(CodeGenModule &CGM) {
 
 CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
                              llvm::Module &M, const llvm::DataLayout &TD,
-                             DiagnosticsEngine &diags)
+                             DiagnosticsEngine &diags,
+                             CoverageSourceInfo *CoverageInfo)
     : Context(C), LangOpts(C.getLangOpts()), CodeGenOpts(CGO), TheModule(M),
       Diags(diags), TheDataLayout(TD), Target(C.getTargetInfo()),
       ABI(createCXXABI(*this)), VMContext(M.getContext()), TBAA(nullptr),
@@ -88,7 +90,8 @@ CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
       BlockObjectDispose(nullptr), BlockDescriptorType(nullptr),
       GenericBlockLiteralType(nullptr), LifetimeStartFn(nullptr),
       LifetimeEndFn(nullptr), SanitizerBL(llvm::SpecialCaseList::createOrDie(
-                                  CGO.SanitizerBlacklistFile)) {
+                                  CGO.SanitizerBlacklistFile)),
+      SanitizerMD(new SanitizerMetadata(*this)) {
 
   // Initialize the type cache.
   llvm::LLVMContext &LLVMContext = M.getContext();
@@ -145,6 +148,11 @@ CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
       getDiags().Report(DiagID) << EC.message();
     }
   }
+
+  // If coverage mapping generation is enabled, create the
+  // CoverageMappingModuleGen object.
+  if (CodeGenOpts.CoverageMapping)
+    CoverageMapping.reset(new CoverageMappingModuleGen(*this, *CoverageInfo));
 }
 
 CodeGenModule::~CodeGenModule() {
@@ -343,6 +351,9 @@ void CodeGenModule::Release() {
   EmitCtorList(GlobalDtors, "llvm.global_dtors");
   EmitGlobalAnnotations();
   EmitStaticExternCAliases();
+  EmitDeferredUnusedCoverageMappings();
+  if (CoverageMapping)
+    CoverageMapping->emit();
   emitLLVMUsed();
 
   if (CodeGenOpts.Autolink &&
@@ -548,9 +559,9 @@ StringRef CodeGenModule::getMangledName(GlobalDecl GD) {
     Str = II->getName();
   }
 
-  auto &Mangled = Manglings.GetOrCreateValue(Str);
-  Mangled.second = GD;
-  return FoundStr = Mangled.first();
+  // Keep the first result in the case of a mangling collision.
+  auto Result = Manglings.insert(std::make_pair(Str, GD));
+  return FoundStr = Result.first->first();
 }
 
 StringRef CodeGenModule::getBlockMangledName(GlobalDecl GD,
@@ -570,9 +581,8 @@ StringRef CodeGenModule::getBlockMangledName(GlobalDecl GD,
   else
     MangleCtx.mangleBlock(cast<DeclContext>(D), BD, Out);
 
-  auto &Mangled = Manglings.GetOrCreateValue(Out.str());
-  Mangled.second = BD;
-  return Mangled.first();
+  auto Result = Manglings.insert(std::make_pair(Out.str(), BD));
+  return Result.first->first();
 }
 
 llvm::GlobalValue *CodeGenModule::GetGlobalValue(StringRef Name) {
@@ -1933,7 +1943,7 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
   if (NeedsGlobalCtor || NeedsGlobalDtor)
     EmitCXXGlobalVarDeclInitFunc(D, GV, NeedsGlobalCtor);
 
-  reportGlobalToASan(GV, *D, NeedsGlobalCtor);
+  SanitizerMD->reportGlobalToASan(GV, *D, NeedsGlobalCtor);
 
   // Emit global variable debug information.
   if (CGDebugInfo *DI = getModuleDebugInfo())
@@ -1941,73 +1951,8 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
       DI->EmitGlobalVariable(GV, D);
 }
 
-void CodeGenModule::reportGlobalToASan(llvm::GlobalVariable *GV,
-                                       SourceLocation Loc, StringRef Name,
-                                       bool IsDynInit, bool IsBlacklisted) {
-  if (!LangOpts.Sanitize.Address)
-    return;
-  IsDynInit &= !SanitizerBL.isIn(*GV, "init");
-  IsBlacklisted |= SanitizerBL.isIn(*GV);
-
-  llvm::GlobalVariable *LocDescr = nullptr;
-  llvm::GlobalVariable *GlobalName = nullptr;
-  if (!IsBlacklisted) {
-    // Don't generate source location and global name if it is blacklisted -
-    // it won't be instrumented anyway.
-    PresumedLoc PLoc = Context.getSourceManager().getPresumedLoc(Loc);
-    if (PLoc.isValid()) {
-      llvm::Constant *LocData[] = {
-          GetAddrOfConstantCString(PLoc.getFilename()),
-          llvm::ConstantInt::get(llvm::Type::getInt32Ty(VMContext),
-                                 PLoc.getLine()),
-          llvm::ConstantInt::get(llvm::Type::getInt32Ty(VMContext),
-                                 PLoc.getColumn()),
-      };
-      auto LocStruct = llvm::ConstantStruct::getAnon(LocData);
-      LocDescr = new llvm::GlobalVariable(TheModule, LocStruct->getType(), true,
-                                          llvm::GlobalValue::PrivateLinkage,
-                                          LocStruct, ".asan_loc_descr");
-      LocDescr->setUnnamedAddr(true);
-      // Add LocDescr to llvm.compiler.used, so that it won't be removed by
-      // the optimizer before the ASan instrumentation pass.
-      addCompilerUsedGlobal(LocDescr);
-    }
-    if (!Name.empty()) {
-      GlobalName = GetAddrOfConstantCString(Name);
-      // GlobalName shouldn't be removed by the optimizer.
-      addCompilerUsedGlobal(GlobalName);
-    }
-  }
-
-  llvm::Value *GlobalMetadata[] = {
-      GV, LocDescr, GlobalName,
-      llvm::ConstantInt::get(llvm::Type::getInt1Ty(VMContext), IsDynInit),
-      llvm::ConstantInt::get(llvm::Type::getInt1Ty(VMContext), IsBlacklisted)};
-
-  llvm::MDNode *ThisGlobal = llvm::MDNode::get(VMContext, GlobalMetadata);
-  llvm::NamedMDNode *AsanGlobals =
-      TheModule.getOrInsertNamedMetadata("llvm.asan.globals");
-  AsanGlobals->addOperand(ThisGlobal);
-}
-
-void CodeGenModule::reportGlobalToASan(llvm::GlobalVariable *GV,
-                                       const VarDecl &D, bool IsDynInit) {
-  if (!LangOpts.Sanitize.Address)
-    return;
-  std::string QualName;
-  llvm::raw_string_ostream OS(QualName);
-  D.printQualifiedName(OS);
-  reportGlobalToASan(GV, D.getLocation(), OS.str(), IsDynInit);
-}
-
-void CodeGenModule::disableSanitizerForGlobal(llvm::GlobalVariable *GV) {
-  // For now, just make sure the global is not modified by the ASan
-  // instrumentation.
-  if (LangOpts.Sanitize.Address)
-    reportGlobalToASan(GV, SourceLocation(), "", false, true);
-}
-
-static bool isVarDeclStrongDefinition(const VarDecl *D, bool NoCommon) {
+static bool isVarDeclStrongDefinition(const ASTContext &Context,
+                                      const VarDecl *D, bool NoCommon) {
   // Don't give variables common linkage if -fno-common was specified unless it
   // was overridden by a NoCommon attribute.
   if ((NoCommon || D->hasAttr<NoCommonAttr>()) && !D->hasAttr<CommonAttr>())
@@ -2030,6 +1975,12 @@ static bool isVarDeclStrongDefinition(const VarDecl *D, bool NoCommon) {
 
   // Tentative definitions marked with WeakImportAttr are true definitions.
   if (D->hasAttr<WeakImportAttr>())
+    return true;
+
+  // Declarations with a required alignment do not have common linakge in MSVC
+  // mode.
+  if (Context.getLangOpts().MSVCCompat &&
+      (Context.isAlignmentRequired(D->getType()) || D->hasAttr<AlignedAttr>()))
     return true;
 
   return false;
@@ -2078,7 +2029,8 @@ llvm::GlobalValue::LinkageTypes CodeGenModule::getLLVMLinkageForDeclarator(
   // C++ doesn't have tentative definitions and thus cannot have common
   // linkage.
   if (!getLangOpts().CPlusPlus && isa<VarDecl>(D) &&
-      !isVarDeclStrongDefinition(cast<VarDecl>(D), CodeGenOpts.NoCommon))
+      !isVarDeclStrongDefinition(Context, cast<VarDecl>(D),
+                                 CodeGenOpts.NoCommon))
     return llvm::GlobalVariable::CommonLinkage;
 
   // selectany symbols are externally visible, so use weak instead of
@@ -2257,6 +2209,9 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
 
   if (!GV->isDeclaration()) {
     getDiags().Report(D->getLocation(), diag::err_duplicate_mangled_name);
+    GlobalDecl OldGD = Manglings.lookup(GV->getName());
+    if (auto *Prev = OldGD.getDecl())
+      getDiags().Report(Prev->getLocation(), diag::note_previous_definition);
     return;
   }
 
@@ -2800,7 +2755,7 @@ CodeGenModule::GetAddrOfConstantStringFromLiteral(const StringLiteral *S) {
   if (Entry)
     *Entry = GV;
 
-  reportGlobalToASan(GV, S->getStrTokenLoc(0), "<string literal>");
+  SanitizerMD->reportGlobalToASan(GV, S->getStrTokenLoc(0), "<string literal>");
   return GV;
 }
 
@@ -3052,6 +3007,9 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
       return;
 
     EmitGlobal(cast<FunctionDecl>(D));
+    // Always provide some coverage mapping
+    // even for the functions that aren't emitted.
+    AddDeferredUnusedCoverageMapping(D);
     break;
 
   case Decl::Var:
@@ -3201,6 +3159,80 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
   }
 }
 
+void CodeGenModule::AddDeferredUnusedCoverageMapping(Decl *D) {
+  // Do we need to generate coverage mapping?
+  if (!CodeGenOpts.CoverageMapping)
+    return;
+  switch (D->getKind()) {
+  case Decl::CXXConversion:
+  case Decl::CXXMethod:
+  case Decl::Function:
+  case Decl::ObjCMethod:
+  case Decl::CXXConstructor:
+  case Decl::CXXDestructor: {
+    if (!cast<FunctionDecl>(D)->hasBody())
+      return;
+    auto I = DeferredEmptyCoverageMappingDecls.find(D);
+    if (I == DeferredEmptyCoverageMappingDecls.end())
+      DeferredEmptyCoverageMappingDecls[D] = true;
+    break;
+  }
+  default:
+    break;
+  };
+}
+
+void CodeGenModule::ClearUnusedCoverageMapping(const Decl *D) {
+  // Do we need to generate coverage mapping?
+  if (!CodeGenOpts.CoverageMapping)
+    return;
+  if (const auto *Fn = dyn_cast<FunctionDecl>(D)) {
+    if (Fn->isTemplateInstantiation())
+      ClearUnusedCoverageMapping(Fn->getTemplateInstantiationPattern());
+  }
+  auto I = DeferredEmptyCoverageMappingDecls.find(D);
+  if (I == DeferredEmptyCoverageMappingDecls.end())
+    DeferredEmptyCoverageMappingDecls[D] = false;
+  else
+    I->second = false;
+}
+
+void CodeGenModule::EmitDeferredUnusedCoverageMappings() {
+  for (const auto I : DeferredEmptyCoverageMappingDecls) {
+    if (!I.second)
+      continue;
+    const auto *D = I.first;
+    switch (D->getKind()) {
+    case Decl::CXXConversion:
+    case Decl::CXXMethod:
+    case Decl::Function:
+    case Decl::ObjCMethod: {
+      CodeGenPGO PGO(*this);
+      GlobalDecl GD(cast<FunctionDecl>(D));
+      PGO.emitEmptyCounterMapping(D, getMangledName(GD),
+                                  getFunctionLinkage(GD));
+      break;
+    }
+    case Decl::CXXConstructor: {
+      CodeGenPGO PGO(*this);
+      GlobalDecl GD(cast<CXXConstructorDecl>(D), Ctor_Base);
+      PGO.emitEmptyCounterMapping(D, getMangledName(GD),
+                                  getFunctionLinkage(GD));
+      break;
+    }
+    case Decl::CXXDestructor: {
+      CodeGenPGO PGO(*this);
+      GlobalDecl GD(cast<CXXDestructorDecl>(D), Dtor_Base);
+      PGO.emitEmptyCounterMapping(D, getMangledName(GD),
+                                  getFunctionLinkage(GD));
+      break;
+    }
+    default:
+      break;
+    };
+  }
+}
+
 /// Turns the given pointer into a constant.
 static llvm::Constant *GetPointerConstant(llvm::LLVMContext &Context,
                                           const void *Ptr) {
@@ -3305,9 +3337,16 @@ void CodeGenModule::EmitVersionIdentMetadata() {
 }
 
 void CodeGenModule::EmitTargetMetadata() {
-  for (auto &I : MangledDeclNames) {
-    const Decl *D = I.first.getDecl()->getMostRecentDecl();
-    llvm::GlobalValue *GV = GetGlobalValue(I.second);
+  // Warning, new MangledDeclNames may be appended within this loop.
+  // We rely on MapVector insertions adding new elements to the end
+  // of the container.
+  // FIXME: Move this loop into the one target that needs it, and only
+  // loop over those declarations for which we couldn't emit the target
+  // metadata when we emitted the declaration.
+  for (unsigned I = 0; I != MangledDeclNames.size(); ++I) {
+    auto Val = *(MangledDeclNames.begin() + I);
+    const Decl *D = Val.first.getDecl()->getMostRecentDecl();
+    llvm::GlobalValue *GV = GetGlobalValue(Val.second);
     getTargetCodeGenInfo().emitTargetMD(D, GV, *this);
   }
 }

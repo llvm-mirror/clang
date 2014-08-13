@@ -1970,6 +1970,7 @@ void PragmaUnrollHintHandler::HandlePragma(Preprocessor &PP,
     // nounroll or unroll pragma without an argument.
     Info->PragmaName = PragmaName;
     Info->HasValue = false;
+    Info->Option.startToken();
   } else if (PragmaName.getIdentifierInfo()->getName() == "nounroll") {
     PP.Diag(Tok.getLocation(), diag::warn_pragma_extra_tokens_at_eol)
         << "nounroll";
@@ -1982,7 +1983,9 @@ void PragmaUnrollHintHandler::HandlePragma(Preprocessor &PP,
     if (ValueInParens)
       PP.Lex(Tok);
 
-    if (ParseLoopHintValue(PP, Tok, PragmaName, Token(), ValueInParens, *Info))
+    Token Option;
+    Option.startToken();
+    if (ParseLoopHintValue(PP, Tok, PragmaName, Option, ValueInParens, *Info))
       return;
 
     // In CUDA, the argument to '#pragma unroll' should not be contained in

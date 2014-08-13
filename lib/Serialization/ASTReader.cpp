@@ -4639,9 +4639,10 @@ bool ASTReader::ParseDiagnosticOptions(const RecordData &Record, bool Complain,
   DiagOpts->set##Name(static_cast<Type>(Record[Idx++]));
 #include "clang/Basic/DiagnosticOptions.def"
 
-  for (unsigned N = Record[Idx++]; N; --N) {
+  for (unsigned N = Record[Idx++]; N; --N)
     DiagOpts->Warnings.push_back(ReadString(Record, Idx));
-  }
+  for (unsigned N = Record[Idx++]; N; --N)
+    DiagOpts->Remarks.push_back(ReadString(Record, Idx));
 
   return Listener.ReadDiagnosticOptions(DiagOpts, Complain);
 }
@@ -8124,10 +8125,7 @@ void ASTReader::finishPendingActions() {
     }
 
     // Perform any pending declaration updates.
-    //
-    // Don't do this if we have known-incomplete redecl chains: it relies on
-    // being able to walk redeclaration chains.
-    while (PendingDeclChains.empty() && !PendingUpdateRecords.empty()) {
+    while (!PendingUpdateRecords.empty()) {
       auto Update = PendingUpdateRecords.pop_back_val();
       ReadingKindTracker ReadingKind(Read_Decl, *this);
       loadDeclUpdateRecords(Update.first, Update.second);

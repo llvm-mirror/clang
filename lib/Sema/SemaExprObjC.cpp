@@ -740,12 +740,13 @@ ExprResult Sema::BuildObjCArrayLiteral(SourceRange SR, MultiExprArg Elements) {
 
   return MaybeBindToTemporary(
            ObjCArrayLiteral::Create(Context, Elements, Ty,
-                                    ArrayWithObjectsMethod, SR));
+                                    ArrayWithObjectsMethod, nullptr, SR));
 }
 
 ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR, 
                                             ObjCDictionaryElement *Elements,
                                             unsigned NumElements) {
+  bool Arc = getLangOpts().ObjCAutoRefCount;
   // Look up the NSDictionary class, if we haven't done so already.
   if (!NSDictionaryDecl) {
     NamedDecl *IF = LookupSingleName(TUScope,
@@ -765,20 +766,48 @@ ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR,
     }
   }
   
-  // Find the dictionaryWithObjects:forKeys:count: method, if we haven't done
-  // so already.
   QualType IdT = Context.getObjCIdType();
+  if (Arc && !DictAllocObjectsMethod) {
+    // Find +[NSDictionary alloc] method.
+    IdentifierInfo *II = &Context.Idents.get("alloc");
+    Selector AllocSel = Context.Selectors.getSelector(0, &II);
+    DictAllocObjectsMethod = NSDictionaryDecl->lookupClassMethod(AllocSel);
+    if (!DictAllocObjectsMethod && getLangOpts().DebuggerObjCLiteral) {
+        DictAllocObjectsMethod = ObjCMethodDecl::Create(Context,
+                                        SourceLocation(), SourceLocation(), AllocSel,
+                                        IdT,
+                                        nullptr /*TypeSourceInfo */,
+                                        Context.getTranslationUnitDecl(),
+                                        false /*Instance*/, false/*isVariadic*/,
+                                        /*isPropertyAccessor=*/false,
+                                        /*isImplicitlyDeclared=*/true, /*isDefined=*/false,
+                                        ObjCMethodDecl::Required,
+                                        false);
+        SmallVector<ParmVarDecl *, 1> Params;
+        DictAllocObjectsMethod->setMethodParams(Context, Params, None);
+    }
+    if (!DictAllocObjectsMethod) {
+      Diag(SR.getBegin(), diag::err_undeclared_alloc);
+      return ExprError();
+    }
+  }
+    
+  // Find the dictionaryWithObjects:forKeys:count: or initWithObjects:forKeys:count:
+  // (for arc) method, if we haven't done so already.
   if (!DictionaryWithObjectsMethod) {
-    Selector Sel = NSAPIObj->getNSDictionarySelector(
-                               NSAPI::NSDict_dictionaryWithObjectsForKeysCount);
-    ObjCMethodDecl *Method = NSDictionaryDecl->lookupClassMethod(Sel);
+    Selector Sel =
+      NSAPIObj->getNSDictionarySelector(Arc? NSAPI::NSDict_initWithObjectsForKeysCount
+                                           : NSAPI::NSDict_dictionaryWithObjectsForKeysCount);
+      ObjCMethodDecl *Method =
+        Arc ? NSDictionaryDecl->lookupInstanceMethod(Sel)
+            : NSDictionaryDecl->lookupClassMethod(Sel);
     if (!Method && getLangOpts().DebuggerObjCLiteral) {
       Method = ObjCMethodDecl::Create(Context,  
                            SourceLocation(), SourceLocation(), Sel,
                            IdT,
                            nullptr /*TypeSourceInfo */,
                            Context.getTranslationUnitDecl(),
-                           false /*Instance*/, false/*isVariadic*/,
+                           Arc /*Instance for Arc, Class for MRR*/, false/*isVariadic*/,
                            /*isPropertyAccessor=*/false,
                            /*isImplicitlyDeclared=*/true, /*isDefined=*/false,
                            ObjCMethodDecl::Required,
@@ -925,7 +954,7 @@ ExprResult Sema::BuildObjCDictionaryLiteral(SourceRange SR,
                                 Context.getObjCInterfaceType(NSDictionaryDecl));
   return MaybeBindToTemporary(ObjCDictionaryLiteral::Create(
       Context, makeArrayRef(Elements, NumElements), HasPackExpansions, Ty,
-      DictionaryWithObjectsMethod, SR));
+      DictionaryWithObjectsMethod, DictAllocObjectsMethod, SR));
 }
 
 ExprResult Sema::BuildObjCEncodeExpression(SourceLocation AtLoc,
@@ -1224,12 +1253,8 @@ void Sema::EmitRelatedResultTypeNoteForReturn(QualType destType) {
   // 'instancetype'.
   if (const ObjCMethodDecl *overridden =
         findExplicitInstancetypeDeclarer(MD, Context.getObjCInstanceType())) {
-    SourceLocation loc;
-    SourceRange range;
-    if (TypeSourceInfo *TSI = overridden->getReturnTypeSourceInfo()) {
-      range = TSI->getTypeLoc().getSourceRange();
-      loc = range.getBegin();
-    }
+    SourceRange range = overridden->getReturnTypeSourceRange();
+    SourceLocation loc = range.getBegin();
     if (loc.isInvalid())
       loc = overridden->getLocation();
     Diag(loc, diag::note_related_result_type_explicit)

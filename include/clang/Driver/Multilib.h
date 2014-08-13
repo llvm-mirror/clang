@@ -13,6 +13,8 @@
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Option/Option.h"
+
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -97,6 +99,10 @@ public:
   typedef multilib_list::iterator iterator;
   typedef multilib_list::const_iterator const_iterator;
 
+  typedef std::function<std::vector<std::string>(
+      StringRef InstallDir, StringRef Triple, const Multilib &M)>
+  IncludeDirsFunc;
+
   struct FilterCallback {
     virtual ~FilterCallback() {};
     /// \return true iff the filter should remove the Multilib from the set
@@ -105,6 +111,7 @@ public:
 
 private:
   multilib_list Multilibs;
+  IncludeDirsFunc IncludeCallback;
 
 public:
   MultilibSet() {}
@@ -149,6 +156,12 @@ public:
   unsigned size() const { return Multilibs.size(); }
 
   void print(raw_ostream &OS) const;
+
+  MultilibSet &setIncludeDirsCallback(IncludeDirsFunc F) {
+    IncludeCallback = F;
+    return *this;
+  }
+  IncludeDirsFunc includeDirsCallback() const { return IncludeCallback; }
 
 private:
   /// Apply the filter to Multilibs and return the subset that remains
