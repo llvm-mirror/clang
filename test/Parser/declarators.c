@@ -113,6 +113,7 @@ enum E1 { e1 }: // expected-error {{expected ';'}}
 struct EnumBitfield { // expected-warning {{struct without named members is a GNU extension}}
   enum E2 { e2 } : 4; // ok
   struct S { int n; }: // expected-error {{expected ';'}}
+                       // expected-warning@-1 {{declaration does not declare anything}}
 
 };
 
@@ -149,3 +150,5 @@ enum E16 {
   A6;  // expected-error{{expected '= constant-expression' or end of enumerator definition}}
   A6a
 };
+
+int PR20634 = sizeof(struct { int n; } [5]);

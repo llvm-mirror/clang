@@ -16,8 +16,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_THREADSAFETY_H
-#define LLVM_CLANG_THREADSAFETY_H
+#ifndef LLVM_CLANG_ANALYSIS_ANALYSES_THREADSAFETY_H
+#define LLVM_CLANG_ANALYSIS_ANALYSES_THREADSAFETY_H
 
 #include "clang/Analysis/AnalysisContext.h"
 #include "clang/Basic/SourceLocation.h"
@@ -180,6 +180,13 @@ public:
   /// \param Loc -- The location of the function call.
   virtual void handleFunExcludesLock(StringRef Kind, Name FunName,
                                      Name LockName, SourceLocation Loc) {}
+
+  /// Called by the analysis when starting analysis of a function.
+  /// Used to issue suggestions for changes to annotations.
+  virtual void enterFunction(const FunctionDecl *FD) {}
+
+  /// Called by the analysis when finishing analysis of a function.
+  virtual void leaveFunction(const FunctionDecl *FD) {}
 
   bool issueBetaWarnings() { return IssueBetaWarnings; }
   void setIssueBetaWarnings(bool b) { IssueBetaWarnings = b; }

@@ -83,6 +83,9 @@ void Driver::ParseDriverMode(ArrayRef<const char *> Args) {
     getOpts().getOption(options::OPT_driver_mode).getPrefixedName();
 
   for (size_t I = 0, E = Args.size(); I != E; ++I) {
+    // Ingore nullptrs, they are response file's EOL markers
+    if (Args[I] == nullptr)
+      continue;
     const StringRef Arg = Args[I];
     if (!Arg.startswith(OptName))
       continue;
@@ -102,7 +105,7 @@ void Driver::ParseDriverMode(ArrayRef<const char *> Args) {
   }
 }
 
-InputArgList *Driver::ParseArgStrings(ArrayRef<const char *> ArgList) {
+InputArgList *Driver::ParseArgStrings(ArrayRef<const char *> ArgStrings) {
   llvm::PrettyStackTraceString CrashInfo("Command line argument parsing");
 
   unsigned IncludedFlagsBitmask;
@@ -111,7 +114,7 @@ InputArgList *Driver::ParseArgStrings(ArrayRef<const char *> ArgList) {
     getIncludeExcludeOptionFlagMasks();
 
   unsigned MissingArgIndex, MissingArgCount;
-  InputArgList *Args = getOpts().ParseArgs(ArgList.begin(), ArgList.end(),
+  InputArgList *Args = getOpts().ParseArgs(ArgStrings.begin(), ArgStrings.end(),
                                            MissingArgIndex, MissingArgCount,
                                            IncludedFlagsBitmask,
                                            ExcludedFlagsBitmask);
@@ -530,12 +533,12 @@ void Driver::generateCompilationDiagnostics(Compilation &C,
         llvm::sys::path::append(VFS, "vfs", "vfs.yaml");
       }
 
-      std::string Err;
+      std::error_code EC;
       Script += ".sh";
-      llvm::raw_fd_ostream ScriptOS(Script.c_str(), Err, llvm::sys::fs::F_Excl);
-      if (!Err.empty()) {
+      llvm::raw_fd_ostream ScriptOS(Script, EC, llvm::sys::fs::F_Excl);
+      if (EC) {
         Diag(clang::diag::note_drv_command_failed_diag_msg)
-          << "Error generating run script: " + Script + " " + Err;
+            << "Error generating run script: " + Script + " " + EC.message();
       } else {
         // Replace the original filename with the preprocessed one.
         size_t I, E;
@@ -1906,9 +1909,7 @@ static llvm::Triple computeTargetTriple(StringRef DefaultTargetTriple,
   }
 
   // Skip further flag support on OSes which don't support '-m32' or '-m64'.
-  if (Target.getArchName() == "tce" ||
-      Target.getOS() == llvm::Triple::AuroraUX ||
-      Target.getOS() == llvm::Triple::Minix)
+  if (Target.getArchName() == "tce" || Target.getOS() == llvm::Triple::Minix)
     return Target;
 
   // Handle pseudo-target flags '-m64', '-mx32', '-m32' and '-m16'.
@@ -1916,15 +1917,19 @@ static llvm::Triple computeTargetTriple(StringRef DefaultTargetTriple,
                                options::OPT_m32, options::OPT_m16)) {
     llvm::Triple::ArchType AT = llvm::Triple::UnknownArch;
 
-    if (A->getOption().matches(options::OPT_m64))
+    if (A->getOption().matches(options::OPT_m64)) {
       AT = Target.get64BitArchVariant().getArch();
-    else if (A->getOption().matches(options::OPT_mx32) &&
+      if (Target.getEnvironment() == llvm::Triple::GNUX32)
+        Target.setEnvironment(llvm::Triple::GNU);
+    } else if (A->getOption().matches(options::OPT_mx32) &&
              Target.get64BitArchVariant().getArch() == llvm::Triple::x86_64) {
       AT = llvm::Triple::x86_64;
       Target.setEnvironment(llvm::Triple::GNUX32);
-    } else if (A->getOption().matches(options::OPT_m32))
+    } else if (A->getOption().matches(options::OPT_m32)) {
       AT = Target.get32BitArchVariant().getArch();
-    else if (A->getOption().matches(options::OPT_m16) &&
+      if (Target.getEnvironment() == llvm::Triple::GNUX32)
+        Target.setEnvironment(llvm::Triple::GNU);
+    } else if (A->getOption().matches(options::OPT_m16) &&
              Target.get32BitArchVariant().getArch() == llvm::Triple::x86) {
       AT = llvm::Triple::x86;
       Target.setEnvironment(llvm::Triple::CODE16);
@@ -1945,9 +1950,6 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
   ToolChain *&TC = ToolChains[Target.str()];
   if (!TC) {
     switch (Target.getOS()) {
-    case llvm::Triple::AuroraUX:
-      TC = new toolchains::AuroraUX(*this, Target, Args);
-      break;
     case llvm::Triple::Darwin:
     case llvm::Triple::MacOSX:
     case llvm::Triple::IOS:

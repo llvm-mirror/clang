@@ -1860,6 +1860,7 @@ public:
   void VisitOpaqueValueExpr(const OpaqueValueExpr *E);
   void VisitLambdaExpr(const LambdaExpr *E);
   void VisitOMPExecutableDirective(const OMPExecutableDirective *D);
+  void VisitOMPLoopDirective(const OMPLoopDirective *D);
   void VisitOMPParallelDirective(const OMPParallelDirective *D);
   void VisitOMPSimdDirective(const OMPSimdDirective *D);
   void VisitOMPForDirective(const OMPForDirective *D);
@@ -2325,16 +2326,20 @@ void EnqueueVisitor::VisitOMPExecutableDirective(
     EnqueueChildren(*I);
 }
 
+void EnqueueVisitor::VisitOMPLoopDirective(const OMPLoopDirective *D) {
+  VisitOMPExecutableDirective(D);
+}
+
 void EnqueueVisitor::VisitOMPParallelDirective(const OMPParallelDirective *D) {
   VisitOMPExecutableDirective(D);
 }
 
 void EnqueueVisitor::VisitOMPSimdDirective(const OMPSimdDirective *D) {
-  VisitOMPExecutableDirective(D);
+  VisitOMPLoopDirective(D);
 }
 
 void EnqueueVisitor::VisitOMPForDirective(const OMPForDirective *D) {
-  VisitOMPExecutableDirective(D);
+  VisitOMPLoopDirective(D);
 }
 
 void EnqueueVisitor::VisitOMPSectionsDirective(const OMPSectionsDirective *D) {
@@ -2360,7 +2365,7 @@ void EnqueueVisitor::VisitOMPCriticalDirective(const OMPCriticalDirective *D) {
 
 void
 EnqueueVisitor::VisitOMPParallelForDirective(const OMPParallelForDirective *D) {
-  VisitOMPExecutableDirective(D);
+  VisitOMPLoopDirective(D);
 }
 
 void EnqueueVisitor::VisitOMPParallelSectionsDirective(
@@ -2780,12 +2785,12 @@ enum CXErrorCode clang_createTranslationUnit2(CXIndex CIdx,
   FileSystemOptions FileSystemOpts;
 
   IntrusiveRefCntPtr<DiagnosticsEngine> Diags;
-  ASTUnit *AU = ASTUnit::LoadFromASTFile(ast_filename, Diags, FileSystemOpts,
-                                         CXXIdx->getOnlyLocalDecls(), None,
-                                         /*CaptureDiagnostics=*/true,
-                                         /*AllowPCHWithCompilerErrors=*/true,
-                                         /*UserFilesAreVolatile=*/true);
-  *out_TU = MakeCXTranslationUnit(CXXIdx, AU);
+  std::unique_ptr<ASTUnit> AU = ASTUnit::LoadFromASTFile(
+      ast_filename, Diags, FileSystemOpts, CXXIdx->getOnlyLocalDecls(), None,
+      /*CaptureDiagnostics=*/true,
+      /*AllowPCHWithCompilerErrors=*/true,
+      /*UserFilesAreVolatile=*/true);
+  *out_TU = MakeCXTranslationUnit(CXXIdx, AU.release());
   return *out_TU ? CXError_Success : CXError_Failure;
 }
 
@@ -2871,9 +2876,9 @@ static void clang_parseTranslationUnit_Impl(void *UserData) {
     std::vector<ASTUnit::RemappedFile> > RemappedCleanup(RemappedFiles.get());
 
   for (auto &UF : PTUI->unsaved_files) {
-    llvm::MemoryBuffer *MB =
+    std::unique_ptr<llvm::MemoryBuffer> MB =
         llvm::MemoryBuffer::getMemBufferCopy(getContents(UF), UF.Filename);
-    RemappedFiles->push_back(std::make_pair(UF.Filename, MB));
+    RemappedFiles->push_back(std::make_pair(UF.Filename, MB.release()));
   }
 
   std::unique_ptr<std::vector<const char *>> Args(
@@ -3155,9 +3160,9 @@ static void clang_reparseTranslationUnit_Impl(void *UserData) {
     std::vector<ASTUnit::RemappedFile> > RemappedCleanup(RemappedFiles.get());
 
   for (auto &UF : RTUI->unsaved_files) {
-    llvm::MemoryBuffer *MB =
+    std::unique_ptr<llvm::MemoryBuffer> MB =
         llvm::MemoryBuffer::getMemBufferCopy(getContents(UF), UF.Filename);
-    RemappedFiles->push_back(std::make_pair(UF.Filename, MB));
+    RemappedFiles->push_back(std::make_pair(UF.Filename, MB.release()));
   }
 
   if (!CXXUnit->Reparse(*RemappedFiles.get()))
@@ -3281,6 +3286,18 @@ int clang_getFileUniqueID(CXFile file, CXFileUniqueID *outID) {
   outID->data[1] = ID.getFile();
   outID->data[2] = FEnt->getModificationTime();
   return 0;
+}
+
+int clang_File_isEqual(CXFile file1, CXFile file2) {
+  if (file1 == file2)
+    return true;
+
+  if (!file1 || !file2)
+    return false;
+
+  FileEntry *FEnt1 = static_cast<FileEntry *>(file1);
+  FileEntry *FEnt2 = static_cast<FileEntry *>(file2);
+  return FEnt1->getUniqueID() == FEnt2->getUniqueID();
 }
 
 } // end: extern "C"
@@ -3648,6 +3665,18 @@ CXSourceRange clang_Cursor_getSpellingNameRange(CXCursor C,
       if (!Locs.empty())
         return cxloc::translateSourceRange(Ctx,
                                          SourceRange(Locs.front(), Locs.back()));
+    }
+    return clang_getNullRange();
+  }
+
+  if (C.kind == CXCursor_CXXMethod || C.kind == CXCursor_Destructor ||
+      C.kind == CXCursor_ConversionFunction) {
+    if (pieceIndex > 0)
+      return clang_getNullRange();
+    if (const FunctionDecl *FD =
+            dyn_cast_or_null<FunctionDecl>(getCursorDecl(C))) {
+      DeclarationNameInfo FunctionName = FD->getNameInfo();
+      return cxloc::translateSourceRange(Ctx, FunctionName.getSourceRange());
     }
     return clang_getNullRange();
   }
@@ -4052,6 +4081,8 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("attribute(global)");
   case CXCursor_CUDAHostAttr:
     return cxstring::createRef("attribute(host)");
+  case CXCursor_CUDASharedAttr:
+    return cxstring::createRef("attribute(shared)");
   case CXCursor_PreprocessingDirective:
     return cxstring::createRef("preprocessing directive");
   case CXCursor_MacroDefinition:

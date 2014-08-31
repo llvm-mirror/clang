@@ -78,7 +78,13 @@ static llvm::Constant *buildBlockDescriptor(CodeGenModule &CGM,
   ASTContext &C = CGM.getContext();
 
   llvm::Type *ulong = CGM.getTypes().ConvertType(C.UnsignedLongTy);
-  llvm::Type *i8p = CGM.getTypes().ConvertType(C.VoidPtrTy);
+  llvm::Type *i8p = NULL;
+  if (CGM.getLangOpts().OpenCL)
+    i8p = 
+      llvm::Type::getInt8PtrTy(
+           CGM.getLLVMContext(), C.getTargetAddressSpace(LangAS::opencl_constant));
+  else
+    i8p = CGM.getTypes().ConvertType(C.VoidPtrTy);
 
   SmallVector<llvm::Constant*, 6> elements;
 
@@ -539,6 +545,16 @@ static void computeBlockInfo(CodeGenModule &CGM, CodeGenFunction *CGF,
   // multiple of alignment.
   for (SmallVectorImpl<BlockLayoutChunk>::iterator
          li = layout.begin(), le = layout.end(); li != le; ++li) {
+    if (endAlign < li->Alignment) {
+      // size may not be multiple of alignment. This can only happen with
+      // an over-aligned variable. We will be adding a padding field to
+      // make the size be multiple of alignment.
+      CharUnits padding = li->Alignment - endAlign;
+      elementTypes.push_back(llvm::ArrayType::get(CGM.Int8Ty,
+                                                  padding.getQuantity()));
+      blockSize += padding;
+      endAlign = getLowBit(blockSize);
+    }
     assert(endAlign >= li->Alignment);
     li->setIndex(info, elementTypes.size());
     elementTypes.push_back(li->Type);

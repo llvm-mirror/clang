@@ -46,6 +46,8 @@ void use_some_template_b() {
   SomeTemplate<char[1]> a;
   SomeTemplate<char[2]> b, c;
   b = c;
+
+  WithImplicitSpecialMembers<int> wism1, wism2(wism1);
 }
 
 auto enum_b_from_b = CommonTemplate<int>::b;
@@ -54,6 +56,8 @@ const auto enum_c_from_b = CommonTemplate<int>::c;
 template<int> struct UseInt;
 template<typename T> void UseRedeclaredEnum(UseInt<T() + CommonTemplate<char>::a>);
 constexpr void (*UseRedeclaredEnumB)(UseInt<1>) = UseRedeclaredEnum<int>;
+
+typedef WithPartialSpecialization<void(int)>::type WithPartialSpecializationInstantiate3;
 
 template<typename> struct MergeSpecializations;
 template<typename T> struct MergeSpecializations<T&> {
@@ -65,6 +69,8 @@ template<> struct MergeSpecializations<double> {
 
 template<typename U> using AliasTemplate = U;
 
+void InstantiateWithAliasTemplate(WithAliasTemplate<int>::X<char>);
+
 @import cxx_templates_a;
 template<typename T> void UseDefinedInBImplIndirectly(T &v) {
   PerformDelayedLookup(v);
@@ -74,4 +80,5 @@ void TriggerInstantiation() {
   UseDefinedInBImpl<void>();
   Std::f<int>();
   PartiallyInstantiatePartialSpec<int*>::foo();
+  WithPartialSpecialization<void(int)>::type x;
 }

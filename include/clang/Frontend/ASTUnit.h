@@ -272,12 +272,12 @@ private:
   /// \brief When non-NULL, this is the buffer used to store the contents of
   /// the main file when it has been padded for use with the precompiled
   /// preamble.
-  llvm::MemoryBuffer *SavedMainFileBuffer;
+  std::unique_ptr<llvm::MemoryBuffer> SavedMainFileBuffer;
 
   /// \brief When non-NULL, this is the buffer used to store the
   /// contents of the preamble when it has been padded to build the
   /// precompiled preamble.
-  llvm::MemoryBuffer *PreambleBuffer;
+  std::unique_ptr<llvm::MemoryBuffer> PreambleBuffer;
 
   /// \brief The number of warnings that occurred while parsing the preamble.
   ///
@@ -423,16 +423,15 @@ private:
   explicit ASTUnit(bool MainFileIsAST);
 
   void CleanTemporaryFiles();
-  bool Parse(llvm::MemoryBuffer *OverrideMainBuffer);
+  bool Parse(std::unique_ptr<llvm::MemoryBuffer> OverrideMainBuffer);
   
   std::pair<llvm::MemoryBuffer *, std::pair<unsigned, bool> >
   ComputePreamble(CompilerInvocation &Invocation, 
                   unsigned MaxLines, bool &CreatedBuffer);
-  
-  llvm::MemoryBuffer *getMainBufferWithPrecompiledPreamble(
-                               const CompilerInvocation &PreambleInvocationIn,
-                                                     bool AllowRebuild = true,
-                                                        unsigned MaxLines = 0);
+
+  std::unique_ptr<llvm::MemoryBuffer> getMainBufferWithPrecompiledPreamble(
+      const CompilerInvocation &PreambleInvocationIn, bool AllowRebuild = true,
+      unsigned MaxLines = 0);
   void RealizeTopLevelDeclsFromPreamble();
 
   /// \brief Transfers ownership of the objects (like SourceManager) from
@@ -684,8 +683,8 @@ public:
   /// module file.
   bool isModuleFile();
 
-  llvm::MemoryBuffer *getBufferForFile(StringRef Filename,
-                                       std::string *ErrorStr = nullptr);
+  std::unique_ptr<llvm::MemoryBuffer>
+  getBufferForFile(StringRef Filename, std::string *ErrorStr = nullptr);
 
   /// \brief Determine what kind of translation unit this AST represents.
   TranslationUnitKind getTranslationUnitKind() const { return TUKind; }
@@ -708,14 +707,12 @@ public:
   /// lifetime is expected to extend past that of the returned ASTUnit.
   ///
   /// \returns - The initialized ASTUnit or null if the AST failed to load.
-  static ASTUnit *LoadFromASTFile(const std::string &Filename,
-                              IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
-                                  const FileSystemOptions &FileSystemOpts,
-                                  bool OnlyLocalDecls = false,
-                                  ArrayRef<RemappedFile> RemappedFiles = None,
-                                  bool CaptureDiagnostics = false,
-                                  bool AllowPCHWithCompilerErrors = false,
-                                  bool UserFilesAreVolatile = false);
+  static std::unique_ptr<ASTUnit> LoadFromASTFile(
+      const std::string &Filename, IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
+      const FileSystemOptions &FileSystemOpts, bool OnlyLocalDecls = false,
+      ArrayRef<RemappedFile> RemappedFiles = None,
+      bool CaptureDiagnostics = false, bool AllowPCHWithCompilerErrors = false,
+      bool UserFilesAreVolatile = false);
 
 private:
   /// \brief Helper function for \c LoadFromCompilerInvocation() and

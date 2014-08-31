@@ -2429,6 +2429,9 @@ llvm::DICompositeType CGDebugInfo::getOrCreateFunctionType(const Decl *D,
     // Get rest of the arguments.
     for (const auto *PI : OMethod->params())
       Elts.push_back(getOrCreateType(PI->getType(), F));
+    // Variadic methods need a special marker at the end of the type list.
+    if (OMethod->isVariadic())
+      Elts.push_back(DBuilder.createUnspecifiedParameter());
 
     llvm::DITypeArray EltTypeArray = DBuilder.getOrCreateTypeArray(Elts);
     return DBuilder.createSubroutineType(F, EltTypeArray);
@@ -2593,8 +2596,7 @@ void CGDebugInfo::CreateLexicalBlock(SourceLocation Loc) {
   llvm::DIDescriptor D = DBuilder.createLexicalBlock(
       llvm::DIDescriptor(LexicalBlockStack.empty() ? nullptr
                                                    : LexicalBlockStack.back()),
-      getOrCreateFile(CurLoc), getLineNumber(CurLoc), getColumnNumber(CurLoc),
-      0);
+      getOrCreateFile(CurLoc), getLineNumber(CurLoc), getColumnNumber(CurLoc));
   llvm::MDNode *DN = D;
   LexicalBlockStack.push_back(DN);
 }
@@ -2947,6 +2949,7 @@ namespace {
 
 void CGDebugInfo::EmitDeclareOfBlockLiteralArgVariable(const CGBlockInfo &block,
                                                        llvm::Value *Arg,
+                                                       unsigned ArgNo,
                                                        llvm::Value *LocalAddr,
                                                        CGBuilderTy &Builder) {
   assert(DebugKind >= CodeGenOptions::LimitedDebugInfo);
@@ -3078,7 +3081,7 @@ void CGDebugInfo::EmitDeclareOfBlockLiteralArgVariable(const CGBlockInfo &block,
                                  llvm::DIDescriptor(scope),
                                  Arg->getName(), tunit, line, type,
                                  CGM.getLangOpts().Optimize, flags,
-                                 cast<llvm::Argument>(Arg)->getArgNo() + 1);
+                                 ArgNo);
 
   if (LocalAddr) {
     // Insert an llvm.dbg.value into the current block.

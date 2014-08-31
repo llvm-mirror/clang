@@ -591,6 +591,8 @@ def note_class_declared : Note<
   "class is declared here">;
 def note_receiver_class_declared : Note<
   "receiver is instance of class declared here">;
+def note_receiver_expr_here : Note<
+  "receiver expression is here">;
 def note_receiver_is_id : Note<
   "receiver is treated with 'id' type for purpose of method lookup">;
 def note_suppressed_class_declare : Note<
@@ -936,7 +938,7 @@ def err_static_assert_expression_is_not_constant : Error<
 def err_static_assert_failed : Error<"static_assert failed%select{ %1|}0">;
 def ext_static_assert_no_message : ExtWarn<
   "static_assert with no message is a C++1z extension">, InGroup<CXX1z>;
-def warn_cxx1y_compat_static_assert_no_message : Warning<
+def warn_cxx14_compat_static_assert_no_message : Warning<
   "static_assert with no message is incompatible with C++ standards before C++1z">,
   DefaultIgnore, InGroup<CXXPre1zCompat>;
 
@@ -1603,9 +1605,9 @@ def err_auto_new_ctor_multiple_expressions : Error<
   "new expression for type %0 contains multiple constructor arguments">;
 def err_auto_missing_trailing_return : Error<
   "'auto' return without trailing return type; deduced return types are a "
-  "C++1y extension">;
+  "C++14 extension">;
 def err_deduced_return_type : Error<
-  "deduced return types are a C++1y extension">;
+  "deduced return types are a C++14 extension">;
 def err_trailing_return_without_auto : Error<
   "function with trailing return type must specify return type 'auto', not %0">;
 def err_trailing_return_in_parens : Error<
@@ -1754,10 +1756,10 @@ def note_for_range_begin_end : Note<
 def warn_cxx98_compat_constexpr : Warning<
   "'constexpr' specifier is incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
-// FIXME: Maybe this should also go in -Wc++1y-compat?
-def warn_cxx1y_compat_constexpr_not_const : Warning<
+// FIXME: Maybe this should also go in -Wc++14-compat?
+def warn_cxx14_compat_constexpr_not_const : Warning<
   "'constexpr' non-static member function will not be implicitly 'const' "
-  "in C++1y; add 'const' to avoid a change in behavior">,
+  "in C++14; add 'const' to avoid a change in behavior">,
   InGroup<DiagGroup<"constexpr-not-const">>;
 def err_invalid_constexpr : Error<
   "%select{function parameter|typedef|non-static data member}0 "
@@ -1799,28 +1801,28 @@ def err_constexpr_body_invalid_stmt : Error<
   "statement not allowed in constexpr %select{function|constructor}0">;
 def ext_constexpr_body_invalid_stmt : ExtWarn<
   "use of this statement in a constexpr %select{function|constructor}0 "
-  "is a C++1y extension">, InGroup<CXX1y>;
+  "is a C++14 extension">, InGroup<CXX14>;
 def warn_cxx11_compat_constexpr_body_invalid_stmt : Warning<
   "use of this statement in a constexpr %select{function|constructor}0 "
-  "is incompatible with C++ standards before C++1y">,
-  InGroup<CXXPre1yCompat>, DefaultIgnore;
+  "is incompatible with C++ standards before C++14">,
+  InGroup<CXXPre14Compat>, DefaultIgnore;
 def ext_constexpr_type_definition : ExtWarn<
   "type definition in a constexpr %select{function|constructor}0 "
-  "is a C++1y extension">, InGroup<CXX1y>;
+  "is a C++14 extension">, InGroup<CXX14>;
 def warn_cxx11_compat_constexpr_type_definition : Warning<
   "type definition in a constexpr %select{function|constructor}0 "
-  "is incompatible with C++ standards before C++1y">,
-  InGroup<CXXPre1yCompat>, DefaultIgnore;
+  "is incompatible with C++ standards before C++14">,
+  InGroup<CXXPre14Compat>, DefaultIgnore;
 def err_constexpr_vla : Error<
   "variably-modified type %0 cannot be used in a constexpr "
   "%select{function|constructor}1">;
 def ext_constexpr_local_var : ExtWarn<
   "variable declaration in a constexpr %select{function|constructor}0 "
-  "is a C++1y extension">, InGroup<CXX1y>;
+  "is a C++14 extension">, InGroup<CXX14>;
 def warn_cxx11_compat_constexpr_local_var : Warning<
   "variable declaration in a constexpr %select{function|constructor}0 "
-  "is incompatible with C++ standards before C++1y">,
-  InGroup<CXXPre1yCompat>, DefaultIgnore;
+  "is incompatible with C++ standards before C++14">,
+  InGroup<CXXPre14Compat>, DefaultIgnore;
 def err_constexpr_local_var_static : Error<
   "%select{static|thread_local}1 variable not permitted in a constexpr "
   "%select{function|constructor}0">;
@@ -1839,14 +1841,14 @@ def err_constexpr_body_no_return : Error<
   "no return statement in constexpr function">;
 def warn_cxx11_compat_constexpr_body_no_return : Warning<
   "constexpr function with no return statements is incompatible with C++ "
-  "standards before C++1y">, InGroup<CXXPre1yCompat>, DefaultIgnore;
+  "standards before C++14">, InGroup<CXXPre14Compat>, DefaultIgnore;
 def ext_constexpr_body_multiple_return : ExtWarn<
-  "multiple return statements in constexpr function is a C++1y extension">,
-  InGroup<CXX1y>;
+  "multiple return statements in constexpr function is a C++14 extension">,
+  InGroup<CXX14>;
 def warn_cxx11_compat_constexpr_body_multiple_return : Warning<
   "multiple return statements in constexpr function "
-  "is incompatible with C++ standards before C++1y">,
-  InGroup<CXXPre1yCompat>, DefaultIgnore;
+  "is incompatible with C++ standards before C++14">,
+  InGroup<CXXPre14Compat>, DefaultIgnore;
 def note_constexpr_body_previous_return : Note<
   "previous return statement is here">;
 def err_constexpr_function_try_block : Error<
@@ -2074,7 +2076,8 @@ def err_attribute_aligned_not_power_of_two : Error<
 def err_attribute_aligned_too_great : Error<
   "requested alignment must be %0 bytes or smaller">;
 def warn_redeclaration_without_attribute_prev_attribute_ignored : Warning<
-  "%q0 redeclared without %1 attribute: previous %1 ignored">;
+  "%q0 redeclared without %1 attribute: previous %1 ignored">,
+  InGroup<DiagGroup<"inconsistent-dllimport">>;
 def warn_attribute_ignored : Warning<"%0 attribute ignored">,
   InGroup<IgnoredAttributes>;
 def warn_attribute_after_definition_ignored : Warning<
@@ -2130,6 +2133,9 @@ def warn_attribute_invalid_on_definition : Warning<
   InGroup<IgnoredAttributes>;
 def err_attribute_dll_redeclaration : Error<
   "redeclaration of %q0 cannot add %q1 attribute">;
+def warn_attribute_dll_redeclaration : Warning<
+  "redeclaration of %q0 should not add %q1 attribute">,
+  InGroup<DiagGroup<"dll-attribute-on-redeclaration">>;
 def err_attribute_dllimport_function_definition : Error<
   "dllimport cannot be applied to non-inline function definition">;
 def err_attribute_dll_deleted : Error<
@@ -2151,7 +2157,7 @@ def warn_attribute_dll_instantiated_base_class : Warning<
   "propagating dll attribute to %select{already instantiated|explicitly specialized}0 "
   "base class template "
   "%select{without dll attribute|with different dll attribute}1 is not supported">,
-  InGroup<DiagGroup<"unsupported-dll-base-class-template">>;
+  InGroup<DiagGroup<"unsupported-dll-base-class-template">>, DefaultIgnore;
 def err_attribute_weakref_not_static : Error<
   "weakref declaration must have internal linkage">;
 def err_attribute_weakref_not_global_context : Error<
@@ -2192,6 +2198,9 @@ def warn_type_attribute_wrong_type : Warning<
   "'%0' only applies to %select{function|pointer|"
   "Objective-C object or block pointer}1 types; type here is %2">,
   InGroup<IgnoredAttributes>;
+def warn_incomplete_encoded_type : Warning<
+  "encoding of %0 type is incomplete because %1 component has unknown encoding">,
+  InGroup<DiagGroup<"encode-type">>;
 def warn_attribute_requires_functions_or_static_globals : Warning<
   "%0 only applies to variables with static storage duration and functions">,
   InGroup<IgnoredAttributes>;
@@ -2349,9 +2358,15 @@ def warn_fun_requires_lock_precise :
   InGroup<ThreadSafetyPrecise>, DefaultIgnore;
 def note_found_mutex_near_match : Note<"found near match '%0'">;
 
+// Verbose thread safety warnings
+def warn_thread_safety_verbose : Warning<"Thread safety verbose warning.">, 
+  InGroup<ThreadSafetyVerbose>, DefaultIgnore;
+def note_thread_warning_in_fun : Note<"Thread warning in function '%0'">;
+def note_guarded_by_declared_here : Note<"Guarded_by declared here.">;
+
 // Dummy warning that will trigger "beta" warnings from the analysis if enabled. 
-def warn_thread_safety_beta : Warning<
-  "Thread safety beta warning.">, InGroup<ThreadSafetyBeta>, DefaultIgnore;
+def warn_thread_safety_beta : Warning<"Thread safety beta warning.">, 
+  InGroup<ThreadSafetyBeta>, DefaultIgnore;
 
 // Consumed warnings
 def warn_use_in_invalid_state : Warning<
@@ -2773,7 +2788,7 @@ def note_ovl_candidate_instantiation_depth : Note<
     "candidate template ignored: substitution exceeded maximum template "
     "instantiation depth">;
 def note_ovl_candidate_underqualified : Note<
-    "candidate template ignored: can't deduce a type for %0 which would "
+    "candidate template ignored: can't deduce a type for %0 that would "
     "make %2 equal %1">;
 def note_ovl_candidate_substitution_failure : Note<
     "candidate template ignored: substitution failure%0%1">;
@@ -3120,11 +3135,11 @@ def err_template_parameter_default_friend_template : Error<
 def err_template_template_parm_no_parms : Error<
   "template template parameter must have its own template parameters">;
 
-def ext_variable_template : ExtWarn<"variable templates are a C++1y extension">,
-  InGroup<CXX1y>;
+def ext_variable_template : ExtWarn<"variable templates are a C++14 extension">,
+  InGroup<CXX14>;
 def warn_cxx11_compat_variable_template : Warning<
-  "variable templates are incompatible with C++ standards before C++1y">,
-  InGroup<CXXPre1yCompat>, DefaultIgnore;
+  "variable templates are incompatible with C++ standards before C++14">,
+  InGroup<CXXPre14Compat>, DefaultIgnore;
 def err_template_variable_noparams : Error<
   "extraneous 'template<>' in declaration of variable %0">;
 def err_template_member : Error<"member %0 declared as a template">;
@@ -5380,12 +5395,12 @@ let CategoryName = "Lambda Issue" in {
     "implicit capture of lambda object due to conversion to block pointer "
     "here">;
 
-  // C++1y lambda init-captures.
+  // C++14 lambda init-captures.
   def warn_cxx11_compat_init_capture : Warning<
     "initialized lambda captures are incompatible with C++ standards "
-    "before C++1y">, InGroup<CXXPre1yCompat>, DefaultIgnore;
+    "before C++14">, InGroup<CXXPre14Compat>, DefaultIgnore;
   def ext_init_capture : ExtWarn<
-    "initialized lambda captures are a C++1y extension">, InGroup<CXX1y>;
+    "initialized lambda captures are a C++14 extension">, InGroup<CXX14>;
   def err_init_capture_no_expression : Error<
     "initializer missing for lambda capture %0">;
   def err_init_capture_multiple_expressions : Error<
@@ -6029,6 +6044,9 @@ let CategoryName = "Inline Assembly Issue" in {
     "value size does not match register size specified by the constraint "
     "and modifier">,
     InGroup<ASMOperandWidths>;
+
+  def note_asm_missing_constraint_modifier : Note<
+    "use constraint modifier \"%0\"">;
 }
 
 let CategoryName = "Semantic Issue" in {
@@ -6149,8 +6167,9 @@ def err_anonymous_record_bad_member : Error<
 def err_anonymous_record_nonpublic_member : Error<
   "anonymous %select{struct|union}0 cannot contain a "
   "%select{private|protected}1 data member">;
-def ext_ms_anonymous_struct : ExtWarn<
-  "anonymous structs are a Microsoft extension">, InGroup<Microsoft>;
+def ext_ms_anonymous_record : ExtWarn<
+  "anonymous %select{structs|unions}0 are a Microsoft extension">,
+  InGroup<Microsoft>;
 
 // C++ local classes
 def err_reference_to_local_var_in_enclosing_function : Error<
@@ -6454,7 +6473,7 @@ def note_format_fix_specifier : Note<"did you mean to use '%0'?">;
 def note_printf_c_str: Note<"did you mean to call the %0 method?">;
 
 def warn_null_arg : Warning<
-  "null passed to a callee which requires a non-null argument">,
+  "null passed to a callee that requires a non-null argument">,
   InGroup<NonNull>;
 def warn_null_ret : Warning<
   "null returned from %select{function|method}0 that requires a non-null return value">,
@@ -6861,6 +6880,13 @@ def err_invalid_protocol_qualifiers : Error<
 def warn_ivar_use_hidden : Warning<
   "local declaration of %0 hides instance variable">,
    InGroup<DiagGroup<"shadow-ivar">>;
+def warn_direct_initialize_call : Warning<
+  "explicit call to +initialize results in duplicate call to +initialize">,
+   InGroup<ExplicitInitializeCall>;
+def warn_direct_super_initialize_call : Warning<
+  "explicit call to [super initialize] should only be in implementation "
+  "of +initialize">,
+   InGroup<ExplicitInitializeCall>;
 def error_ivar_use_in_class_method : Error<
   "instance variable %0 accessed in class method">;
 def error_implicit_ivar_access : Error<
@@ -6910,6 +6936,9 @@ def err_property_not_found_suggest : Error<
   "property %0 not found on object of type %1; did you mean %2?">;
 def err_ivar_access_using_property_syntax_suggest : Error<
   "property %0 not found on object of type %1; did you mean to access instance variable %2?">;
+def warn_property_access_suggest : Warning<
+"property %0 not found on object of type %1; did you mean to access property %2?">,
+InGroup<PropertyAccessDotSyntax>;
 def err_property_found_suggest : Error<
   "property %0 found on object of type %1; did you mean to access "
   "it with the \".\" operator?">;

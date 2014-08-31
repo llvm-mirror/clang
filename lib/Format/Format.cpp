@@ -223,6 +223,7 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("UseTab", Style.UseTab);
     IO.mapOptional("BreakBeforeBraces", Style.BreakBeforeBraces);
     IO.mapOptional("SpacesInParentheses", Style.SpacesInParentheses);
+    IO.mapOptional("SpacesInSquareBrackets", Style.SpacesInSquareBrackets);
     IO.mapOptional("SpacesInAngles", Style.SpacesInAngles);
     IO.mapOptional("SpaceInEmptyParentheses", Style.SpaceInEmptyParentheses);
     IO.mapOptional("SpacesInCStyleCastParentheses",
@@ -346,6 +347,7 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.Standard = FormatStyle::LS_Cpp11;
   LLVMStyle.UseTab = FormatStyle::UT_Never;
   LLVMStyle.SpacesInParentheses = false;
+  LLVMStyle.SpacesInSquareBrackets = false;
   LLVMStyle.SpaceInEmptyParentheses = false;
   LLVMStyle.SpacesInContainerLiterals = true;
   LLVMStyle.SpacesInCStyleCastParentheses = false;
@@ -1990,10 +1992,11 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
       IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
       new DiagnosticOptions);
   SourceManager SourceMgr(Diagnostics, Files);
-  llvm::MemoryBuffer *Buf = llvm::MemoryBuffer::getMemBuffer(Code, FileName);
+  std::unique_ptr<llvm::MemoryBuffer> Buf =
+      llvm::MemoryBuffer::getMemBuffer(Code, FileName);
   const clang::FileEntry *Entry =
       Files.getVirtualFile(FileName, Buf->getBufferSize(), 0);
-  SourceMgr.overrideFileContents(Entry, Buf);
+  SourceMgr.overrideFileContents(Entry, std::move(Buf));
   FileID ID =
       SourceMgr.createFileID(Entry, SourceLocation(), clang::SrcMgr::C_User);
   Lexer Lex(ID, SourceMgr.getBuffer(ID), SourceMgr,
@@ -2012,7 +2015,7 @@ LangOptions getFormattingLangOpts(FormatStyle::LanguageStandard Standard) {
   LangOptions LangOpts;
   LangOpts.CPlusPlus = 1;
   LangOpts.CPlusPlus11 = Standard == FormatStyle::LS_Cpp03 ? 0 : 1;
-  LangOpts.CPlusPlus1y = Standard == FormatStyle::LS_Cpp03 ? 0 : 1;
+  LangOpts.CPlusPlus14 = Standard == FormatStyle::LS_Cpp03 ? 0 : 1;
   LangOpts.LineComment = 1;
   LangOpts.CXXOperatorNames = 1;
   LangOpts.Bool = 1;

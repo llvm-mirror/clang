@@ -194,8 +194,8 @@ public:
 
   void EmitVirtualDestructorCall(CodeGenFunction &CGF,
                                  const CXXDestructorDecl *Dtor,
-                                 CXXDtorType DtorType, SourceLocation CallLoc,
-                                 llvm::Value *This) override;
+                                 CXXDtorType DtorType, llvm::Value *This,
+                                 const CXXMemberCallExpr *CE) override;
 
   void emitVirtualInheritanceTables(const CXXRecordDecl *RD) override;
 
@@ -1203,9 +1203,8 @@ void ItaniumCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
   if (!Callee)
     Callee = CGM.GetAddrOfCXXDestructor(DD, Type);
 
-  // FIXME: Provide a source location here.
-  CGF.EmitCXXMemberCall(DD, SourceLocation(), Callee, ReturnValueSlot(), This,
-                        VTT, VTTTy, nullptr, nullptr);
+  CGF.EmitCXXMemberOrOperatorCall(DD, Callee, ReturnValueSlot(), This, VTT,
+                                  VTTTy, nullptr);
 }
 
 void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
@@ -1342,8 +1341,9 @@ llvm::Value *ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
 void ItaniumCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
                                               const CXXDestructorDecl *Dtor,
                                               CXXDtorType DtorType,
-                                              SourceLocation CallLoc,
-                                              llvm::Value *This) {
+                                              llvm::Value *This,
+                                              const CXXMemberCallExpr *CE) {
+  assert(CE == nullptr || CE->arg_begin() == CE->arg_end());
   assert(DtorType == Dtor_Deleting || DtorType == Dtor_Complete);
 
   const CGFunctionInfo *FInfo
@@ -1352,9 +1352,8 @@ void ItaniumCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
   llvm::Value *Callee =
       getVirtualFunctionPointer(CGF, GlobalDecl(Dtor, DtorType), This, Ty);
 
-  CGF.EmitCXXMemberCall(Dtor, CallLoc, Callee, ReturnValueSlot(), This,
-                        /*ImplicitParam=*/nullptr, QualType(), nullptr,
-                        nullptr);
+  CGF.EmitCXXMemberOrOperatorCall(Dtor, Callee, ReturnValueSlot(), This,
+                                  /*ImplicitParam=*/nullptr, QualType(), CE);
 }
 
 void ItaniumCXXABI::emitVirtualInheritanceTables(const CXXRecordDecl *RD) {
@@ -1473,10 +1472,19 @@ llvm::Value *ItaniumCXXABI::InitializeArrayCookie(CodeGenFunction &CGF,
                                                  CookieOffset.getQuantity());
 
   // Write the number of elements into the appropriate slot.
-  llvm::Value *NumElementsPtr
-    = CGF.Builder.CreateBitCast(CookiePtr,
-                                CGF.ConvertType(SizeTy)->getPointerTo(AS));
-  CGF.Builder.CreateStore(NumElements, NumElementsPtr);
+  llvm::Type *NumElementsTy = CGF.ConvertType(SizeTy)->getPointerTo(AS);
+  llvm::Value *NumElementsPtr =
+      CGF.Builder.CreateBitCast(CookiePtr, NumElementsTy);
+  llvm::Instruction *SI = CGF.Builder.CreateStore(NumElements, NumElementsPtr);
+  if (CGM.getLangOpts().Sanitize.Address &&
+      expr->getOperatorNew()->isReplaceableGlobalAllocationFunction()) {
+    CGM.getSanitizerMetadata()->disableSanitizerForInstruction(SI);
+    llvm::FunctionType *FTy =
+        llvm::FunctionType::get(CGM.VoidTy, NumElementsTy, false);
+    llvm::Constant *F =
+        CGM.CreateRuntimeFunction(FTy, "__asan_poison_cxx_array_cookie");
+    CGF.Builder.CreateCall(F, NumElementsPtr);
+  }
 
   // Finally, compute a pointer to the actual data buffer by skipping
   // over the cookie completely.
@@ -1499,7 +1507,10 @@ llvm::Value *ItaniumCXXABI::readArrayCookieImpl(CodeGenFunction &CGF,
   unsigned AS = allocPtr->getType()->getPointerAddressSpace();
   numElementsPtr = 
     CGF.Builder.CreateBitCast(numElementsPtr, CGF.SizeTy->getPointerTo(AS));
-  return CGF.Builder.CreateLoad(numElementsPtr);
+  llvm::Instruction *LI = CGF.Builder.CreateLoad(numElementsPtr);
+  if (CGM.getLangOpts().Sanitize.Address)
+    CGM.getSanitizerMetadata()->disableSanitizerForInstruction(LI);
+  return LI;
 }
 
 CharUnits ARMCXXABI::getArrayCookieSizeImpl(QualType elementType) {

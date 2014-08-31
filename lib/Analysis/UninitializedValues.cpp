@@ -300,10 +300,25 @@ void ClassifyRefs::classify(const Expr *E, Class C) {
   // The result of a ?: could also be an lvalue.
   E = E->IgnoreParens();
   if (const ConditionalOperator *CO = dyn_cast<ConditionalOperator>(E)) {
-    const Expr *TrueExpr = CO->getTrueExpr();
-    if (!isa<OpaqueValueExpr>(TrueExpr))
-      classify(TrueExpr, C);
+    classify(CO->getTrueExpr(), C);
     classify(CO->getFalseExpr(), C);
+    return;
+  }
+
+  if (const BinaryConditionalOperator *BCO =
+          dyn_cast<BinaryConditionalOperator>(E)) {
+    classify(BCO->getFalseExpr(), C);
+    return;
+  }
+
+  if (const OpaqueValueExpr *OVE = dyn_cast<OpaqueValueExpr>(E)) {
+    classify(OVE->getSourceExpr(), C);
+    return;
+  }
+
+  if (const BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
+    if (BO->getOpcode() == BO_Comma)
+      classify(BO->getRHS(), C);
     return;
   }
 
@@ -341,6 +356,16 @@ void ClassifyRefs::VisitUnaryOperator(UnaryOperator *UO) {
 }
 
 void ClassifyRefs::VisitCallExpr(CallExpr *CE) {
+  // Classify arguments to std::move as used.
+  if (CE->getNumArgs() == 1) {
+    if (FunctionDecl *FD = CE->getDirectCallee()) {
+      if (FD->getIdentifier() && FD->getIdentifier()->isStr("move")) {
+        classify(CE->getArg(0), Use);
+        return;
+      }
+    }
+  }
+
   // If a value is passed by const reference to a function, we should not assume
   // that it is initialized by the call, and we conservatively do not assume
   // that it is used.
@@ -771,7 +796,7 @@ void clang::runUninitializedVariablesAnalysis(
   }
 
   // Proceed with the workist.
-  DataflowWorklist worklist(cfg, ac);
+  ForwardDataflowWorklist worklist(cfg, ac);
   llvm::BitVector previouslyVisited(cfg.getNumBlockIDs());
   worklist.enqueueSuccessors(&cfg.getEntry());
   llvm::BitVector wasAnalyzed(cfg.getNumBlockIDs(), false);

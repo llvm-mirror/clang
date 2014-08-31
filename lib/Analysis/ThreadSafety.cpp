@@ -1215,7 +1215,7 @@ class BuildLockset : public StmtVisitor<BuildLockset> {
   // helper functions
   void warnIfMutexNotHeld(const NamedDecl *D, const Expr *Exp, AccessKind AK,
                           Expr *MutexExp, ProtectedOperationKind POK,
-                          StringRef DiagKind);
+                          StringRef DiagKind, SourceLocation Loc);
   void warnIfMutexHeld(const NamedDecl *D, const Expr *Exp, Expr *MutexExp,
                        StringRef DiagKind);
 
@@ -1247,7 +1247,7 @@ public:
 void BuildLockset::warnIfMutexNotHeld(const NamedDecl *D, const Expr *Exp,
                                       AccessKind AK, Expr *MutexExp,
                                       ProtectedOperationKind POK,
-                                      StringRef DiagKind) {
+                                      StringRef DiagKind, SourceLocation Loc) {
   LockKind LK = getLockKindFromAccessKind(AK);
 
   CapabilityExpr Cp = Analyzer->SxBuilder.translateAttrExpr(MutexExp, D, Exp);
@@ -1263,7 +1263,7 @@ void BuildLockset::warnIfMutexNotHeld(const NamedDecl *D, const Expr *Exp,
     FactEntry *LDat = FSet.findLock(Analyzer->FactMan, !Cp);
     if (LDat) {
       Analyzer->Handler.handleFunExcludesLock(
-          DiagKind, D->getNameAsString(), (!Cp).toString(), Exp->getExprLoc());
+          DiagKind, D->getNameAsString(), (!Cp).toString(), Loc);
       return;
     }
 
@@ -1276,7 +1276,7 @@ void BuildLockset::warnIfMutexNotHeld(const NamedDecl *D, const Expr *Exp,
     LDat = FSet.findLock(Analyzer->FactMan, Cp);
     if (!LDat) {
       Analyzer->Handler.handleMutexNotHeld("", D, POK, Cp.toString(),
-                                           LK_Shared, Exp->getExprLoc());
+                                           LK_Shared, Loc);
     }
     return;
   }
@@ -1290,30 +1290,25 @@ void BuildLockset::warnIfMutexNotHeld(const NamedDecl *D, const Expr *Exp,
       // Warn that there's no precise match.
       std::string PartMatchStr = LDat->toString();
       StringRef   PartMatchName(PartMatchStr);
-      Analyzer->Handler.handleMutexNotHeld(DiagKind, D, POK,
-                                           Cp.toString(),
-                                           LK, Exp->getExprLoc(),
-                                           &PartMatchName);
+      Analyzer->Handler.handleMutexNotHeld(DiagKind, D, POK, Cp.toString(),
+                                           LK, Loc, &PartMatchName);
     } else {
       // Warn that there's no match at all.
-      Analyzer->Handler.handleMutexNotHeld(DiagKind, D, POK,
-                                           Cp.toString(),
-                                           LK, Exp->getExprLoc());
+      Analyzer->Handler.handleMutexNotHeld(DiagKind, D, POK, Cp.toString(),
+                                           LK, Loc);
     }
     NoError = false;
   }
   // Make sure the mutex we found is the right kind.
   if (NoError && LDat && !LDat->isAtLeast(LK)) {
-    Analyzer->Handler.handleMutexNotHeld(DiagKind, D, POK,
-                                         Cp.toString(),
-                                         LK, Exp->getExprLoc());
+    Analyzer->Handler.handleMutexNotHeld(DiagKind, D, POK, Cp.toString(),
+                                         LK, Loc);
   }
 }
 
 /// \brief Warn if the LSet contains the given lock.
 void BuildLockset::warnIfMutexHeld(const NamedDecl *D, const Expr *Exp,
-                                   Expr *MutexExp,
-                                   StringRef DiagKind) {
+                                   Expr *MutexExp, StringRef DiagKind) {
   CapabilityExpr Cp = Analyzer->SxBuilder.translateAttrExpr(MutexExp, D, Exp);
   if (Cp.isInvalid()) {
     warnInvalidLock(Analyzer->Handler, MutexExp, D, Exp, DiagKind);
@@ -1336,6 +1331,23 @@ void BuildLockset::warnIfMutexHeld(const NamedDecl *D, const Expr *Exp,
 /// a pointer marked with pt_guarded_by.
 void BuildLockset::checkAccess(const Expr *Exp, AccessKind AK) {
   Exp = Exp->IgnoreParenCasts();
+
+  SourceLocation Loc = Exp->getExprLoc();
+
+  if (Analyzer->Handler.issueBetaWarnings()) {
+    // Local variables of reference type cannot be re-assigned;
+    // map them to their initializer.
+    while (const auto *DRE = dyn_cast<DeclRefExpr>(Exp)) {
+      const auto *VD = dyn_cast<VarDecl>(DRE->getDecl()->getCanonicalDecl());
+      if (VD && VD->isLocalVarDecl() && VD->getType()->isReferenceType()) {
+        if (const auto *E = VD->getInit()) {
+          Exp = E;
+          continue;
+        }
+      }
+      break;
+    }
+  }
 
   if (const UnaryOperator *UO = dyn_cast<UnaryOperator>(Exp)) {
     // For dereferences
@@ -1362,13 +1374,14 @@ void BuildLockset::checkAccess(const Expr *Exp, AccessKind AK) {
 
   if (D->hasAttr<GuardedVarAttr>() && FSet.isEmpty(Analyzer->FactMan)) {
     Analyzer->Handler.handleNoMutexHeld("mutex", D, POK_VarAccess, AK,
-                                        Exp->getExprLoc());
+                                        Loc);
   }
 
   for (const auto *I : D->specific_attrs<GuardedByAttr>())
     warnIfMutexNotHeld(D, Exp, AK, I->getArg(), POK_VarAccess,
-                       ClassifyDiagnostic(I));
+                       ClassifyDiagnostic(I), Loc);
 }
+
 
 /// \brief Checks pt_guarded_by and pt_guarded_var attributes.
 void BuildLockset::checkPtAccess(const Expr *Exp, AccessKind AK) {
@@ -1400,7 +1413,7 @@ void BuildLockset::checkPtAccess(const Expr *Exp, AccessKind AK) {
 
   for (auto const *I : D->specific_attrs<PtGuardedByAttr>())
     warnIfMutexNotHeld(D, Exp, AK, I->getArg(), POK_VarDereference,
-                       ClassifyDiagnostic(I));
+                       ClassifyDiagnostic(I), Exp->getExprLoc());
 }
 
 /// \brief Process a function call, method call, constructor call,
@@ -1480,7 +1493,8 @@ void BuildLockset::handleCall(Expr *Exp, const NamedDecl *D, VarDecl *VD) {
         RequiresCapabilityAttr *A = cast<RequiresCapabilityAttr>(At);
         for (auto *Arg : A->args())
           warnIfMutexNotHeld(D, Exp, A->isShared() ? AK_Read : AK_Written, Arg,
-                             POK_FunctionCall, ClassifyDiagnostic(A));
+                             POK_FunctionCall, ClassifyDiagnostic(A),
+                             Exp->getExprLoc());
         break;
       }
 
@@ -1796,6 +1810,7 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
 
   CFG *CFGraph = walker.getGraph();
   const NamedDecl *D = walker.getDecl();
+  const FunctionDecl *CurrentFunction = dyn_cast<FunctionDecl>(D);
   CurrentMethod = dyn_cast<CXXMethodDecl>(D);
 
   if (D->hasAttr<NoThreadSafetyAnalysisAttr>())
@@ -1809,6 +1824,8 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
     return;  // Don't check inside constructors.
   if (isa<CXXDestructorDecl>(D))
     return;  // Don't check inside destructors.
+
+  Handler.enterFunction(CurrentFunction);
 
   BlockInfo.resize(CFGraph->getNumBlockIDs(),
     CFGBlockInfo::getEmptyBlockInfo(LocalVarMap));
@@ -2065,6 +2082,8 @@ void ThreadSafetyAnalyzer::runAnalysis(AnalysisDeclContext &AC) {
                    LEK_LockedAtEndOfFunction,
                    LEK_NotLockedAtEndOfFunction,
                    false);
+
+  Handler.leaveFunction(CurrentFunction);
 }
 
 

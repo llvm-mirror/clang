@@ -10,8 +10,8 @@
 /// \brief Defines the virtual file system interface vfs::FileSystem.
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_BASIC_VIRTUAL_FILE_SYSTEM_H
-#define LLVM_CLANG_BASIC_VIRTUAL_FILE_SYSTEM_H
+#ifndef LLVM_CLANG_BASIC_VIRTUALFILESYSTEM_H
+#define LLVM_CLANG_BASIC_VIRTUALFILESYSTEM_H
 
 #include "clang/Basic/LLVM.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
@@ -250,10 +250,8 @@ llvm::sys::fs::UniqueID getNextVirtualUniqueID();
 
 /// \brief Gets a \p FileSystem for a virtual file system described in YAML
 /// format.
-///
-/// Takes ownership of \p Buffer.
 IntrusiveRefCntPtr<FileSystem>
-getVFSFromYAML(llvm::MemoryBuffer *Buffer,
+getVFSFromYAML(std::unique_ptr<llvm::MemoryBuffer> Buffer,
                llvm::SourceMgr::DiagHandlerTy DiagHandler,
                void *DiagContext = nullptr,
                IntrusiveRefCntPtr<FileSystem> ExternalFS = getRealFileSystem());
@@ -280,4 +278,4 @@ public:
 
 } // end namespace vfs
 } // end namespace clang
-#endif // LLVM_CLANG_BASIC_VIRTUAL_FILE_SYSTEM_H
+#endif

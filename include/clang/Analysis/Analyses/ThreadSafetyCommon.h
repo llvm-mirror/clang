@@ -19,8 +19,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_THREAD_SAFETY_COMMON_H
-#define LLVM_CLANG_THREAD_SAFETY_COMMON_H
+#ifndef LLVM_CLANG_ANALYSIS_ANALYSES_THREADSAFETYCOMMON_H
+#define LLVM_CLANG_ANALYSIS_ANALYSES_THREADSAFETYCOMMON_H
 
 #include "clang/Analysis/Analyses/PostOrderCFGView.h"
 #include "clang/Analysis/Analyses/ThreadSafetyTIL.h"
@@ -142,7 +142,7 @@ public:
     if (!dyn_cast_or_null<NamedDecl>(AC.getDecl()))
       return false;
 
-    SortedGraph = AC.getAnalysis<PostOrderCFGView>();
+    SortedGraph = AC.getAnalysis<ReversePostOrderCFGView>();
     if (!SortedGraph)
       return false;
 

@@ -273,11 +273,11 @@ static FullSourceLoc ConvertBackendLocation(const llvm::SMDiagnostic &D,
 
   // Create the copy and transfer ownership to clang::SourceManager.
   // TODO: Avoid copying files into memory.
-  llvm::MemoryBuffer *CBuf =
-  llvm::MemoryBuffer::getMemBufferCopy(LBuf->getBuffer(),
-                                       LBuf->getBufferIdentifier());
+  std::unique_ptr<llvm::MemoryBuffer> CBuf =
+      llvm::MemoryBuffer::getMemBufferCopy(LBuf->getBuffer(),
+                                           LBuf->getBufferIdentifier());
   // FIXME: Keep a file ID map instead of creating new IDs for each location.
-  FileID FID = CSM.createFileID(CBuf);
+  FileID FID = CSM.createFileID(CBuf.release());
 
   // Translate the offset into the file.
   unsigned Offset = D.getLoc().getPointer() - LBuf->getBufferStart();
@@ -579,7 +579,9 @@ void CodeGenAction::EndSourceFileAction() {
   TheModule.reset(BEConsumer->takeModule());
 }
 
-llvm::Module *CodeGenAction::takeModule() { return TheModule.release(); }
+std::unique_ptr<llvm::Module> CodeGenAction::takeModule() {
+  return std::move(TheModule);
+}
 
 llvm::LLVMContext *CodeGenAction::takeLLVMContext() {
   OwnsVMContext = false;
@@ -607,8 +609,8 @@ static raw_ostream *GetOutputStream(CompilerInstance &CI,
   llvm_unreachable("Invalid action!");
 }
 
-ASTConsumer *CodeGenAction::CreateASTConsumer(CompilerInstance &CI,
-                                              StringRef InFile) {
+std::unique_ptr<ASTConsumer>
+CodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   BackendAction BA = static_cast<BackendAction>(Act);
   std::unique_ptr<raw_ostream> OS(GetOutputStream(CI, InFile, BA));
   if (BA != Backend_EmitNothing && !OS)
@@ -622,7 +624,7 @@ ASTConsumer *CodeGenAction::CreateASTConsumer(CompilerInstance &CI,
   if (!LinkModuleToUse && !LinkBCFile.empty()) {
     std::string ErrorStr;
 
-    llvm::MemoryBuffer *BCBuf =
+    std::unique_ptr<llvm::MemoryBuffer> BCBuf =
       CI.getFileManager().getBufferForFile(LinkBCFile, &ErrorStr);
     if (!BCBuf) {
       CI.getDiagnostics().Report(diag::err_cannot_open_file)
@@ -646,12 +648,12 @@ ASTConsumer *CodeGenAction::CreateASTConsumer(CompilerInstance &CI,
     CoverageInfo = new CoverageSourceInfo;
     CI.getPreprocessor().addPPCallbacks(CoverageInfo);
   }
-  BEConsumer = new BackendConsumer(BA, CI.getDiagnostics(), CI.getCodeGenOpts(),
-                                   CI.getTargetOpts(), CI.getLangOpts(),
-                                   CI.getFrontendOpts().ShowTimers, InFile,
-                                   LinkModuleToUse, OS.release(), *VMContext,
-                                   CoverageInfo);
-  return BEConsumer;
+  std::unique_ptr<BackendConsumer> Result(new BackendConsumer(
+      BA, CI.getDiagnostics(), CI.getCodeGenOpts(), CI.getTargetOpts(),
+      CI.getLangOpts(), CI.getFrontendOpts().ShowTimers, InFile,
+      LinkModuleToUse, OS.release(), *VMContext, CoverageInfo));
+  BEConsumer = Result.get();
+  return std::move(Result);
 }
 
 void CodeGenAction::ExecuteAction() {
@@ -671,7 +673,7 @@ void CodeGenAction::ExecuteAction() {
       return;
 
     llvm::SMDiagnostic Err;
-    TheModule.reset(ParseIR(MainFile, Err, *VMContext));
+    TheModule = parseIR(MainFile->getMemBufferRef(), Err, *VMContext);
     if (!TheModule) {
       // Translate from the diagnostic info to the SourceManager location if
       // available.

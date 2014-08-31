@@ -12,8 +12,8 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_FILEMANAGER_H
-#define LLVM_CLANG_FILEMANAGER_H
+#ifndef LLVM_CLANG_BASIC_FILEMANAGER_H
+#define LLVM_CLANG_BASIC_FILEMANAGER_H
 
 #include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/LLVM.h"
@@ -194,7 +194,8 @@ public:
   /// \param AtBeginning whether this new stat cache must be installed at the
   /// beginning of the chain of stat caches. Otherwise, it will be added to
   /// the end of the chain.
-  void addStatCache(FileSystemStatCache *statCache, bool AtBeginning = false);
+  void addStatCache(std::unique_ptr<FileSystemStatCache> statCache,
+                    bool AtBeginning = false);
 
   /// \brief Removes the specified FileSystemStatCache object from the manager.
   void removeStatCache(FileSystemStatCache *statCache);
@@ -240,12 +241,11 @@ public:
 
   /// \brief Open the specified file as a MemoryBuffer, returning a new
   /// MemoryBuffer if successful, otherwise returning null.
-  llvm::MemoryBuffer *getBufferForFile(const FileEntry *Entry,
-                                       std::string *ErrorStr = nullptr,
-                                       bool isVolatile = false,
-                                       bool ShouldCloseOpenFile = true);
-  llvm::MemoryBuffer *getBufferForFile(StringRef Filename,
-                                       std::string *ErrorStr = nullptr);
+  std::unique_ptr<llvm::MemoryBuffer>
+  getBufferForFile(const FileEntry *Entry, std::string *ErrorStr = nullptr,
+                   bool isVolatile = false, bool ShouldCloseOpenFile = true);
+  std::unique_ptr<llvm::MemoryBuffer>
+  getBufferForFile(StringRef Filename, std::string *ErrorStr = nullptr);
 
   /// \brief Get the 'stat' information for the given \p Path.
   ///

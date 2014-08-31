@@ -23,3 +23,15 @@ void *operator new[](__SIZE_TYPE__);
 
 extern int mergeUsedFlag;
 inline int getMergeUsedFlag() { return mergeUsedFlag; }
+
+typedef struct {
+  int n;
+  int m;
+} NameForLinkage;
+
+struct HasVirtualFunctions {
+  virtual void f();
+};
+struct OverridesVirtualFunctions : HasVirtualFunctions {
+  void f();
+};

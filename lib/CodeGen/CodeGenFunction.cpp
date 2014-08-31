@@ -801,9 +801,8 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
       ResTy = MD->getThisType(getContext());
     CGM.getCXXABI().buildThisParam(*this, Args);
   }
-
-  for (unsigned i = 0, e = FD->getNumParams(); i != e; ++i)
-    Args.push_back(FD->getParamDecl(i));
+  
+  Args.append(FD->param_begin(), FD->param_end());
 
   if (MD && (isa<CXXConstructorDecl>(MD) || isa<CXXDestructorDecl>(MD)))
     CGM.getCXXABI().addImplicitStructorParams(*this, ResTy, Args);
@@ -877,7 +876,7 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
       SanitizerScope SanScope(this);
       EmitCheck(Builder.getFalse(), "missing_return",
                 EmitCheckSourceLocation(FD->getLocation()),
-                ArrayRef<llvm::Value *>(), CRK_Unrecoverable);
+                None, CRK_Unrecoverable);
     } else if (CGM.getCodeGenOpts().OptimizationLevel == 0)
       Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::trap));
     Builder.CreateUnreachable();
@@ -1684,11 +1683,8 @@ void CodeGenFunction::InsertHelper(llvm::Instruction *I,
                                    llvm::BasicBlock *BB,
                                    llvm::BasicBlock::iterator InsertPt) const {
   LoopStack.InsertHelper(I);
-  if (IsSanitizerScope) {
-    I->setMetadata(
-        CGM.getModule().getMDKindID("nosanitize"),
-        llvm::MDNode::get(CGM.getLLVMContext(), ArrayRef<llvm::Value *>()));
-  }
+  if (IsSanitizerScope)
+    CGM.getSanitizerMetadata()->disableSanitizerForInstruction(I);
 }
 
 template <bool PreserveNames>

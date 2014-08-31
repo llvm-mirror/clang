@@ -573,7 +573,7 @@ void CodeGenFunction::EmitIfStmt(const IfStmt &S) {
 
 void CodeGenFunction::EmitCondBrHints(llvm::LLVMContext &Context,
                                       llvm::BranchInst *CondBr,
-                                      const ArrayRef<const Attr *> &Attrs) {
+                                      ArrayRef<const Attr *> Attrs) {
   // Return if there are no hints.
   if (Attrs.empty())
     return;
@@ -656,7 +656,7 @@ void CodeGenFunction::EmitCondBrHints(llvm::LLVMContext &Context,
 }
 
 void CodeGenFunction::EmitWhileStmt(const WhileStmt &S,
-                                    const ArrayRef<const Attr *> &WhileAttrs) {
+                                    ArrayRef<const Attr *> WhileAttrs) {
   RegionCounter Cnt = getPGORegionCounter(&S);
 
   // Emit the header for the loop, which will also become
@@ -730,6 +730,7 @@ void CodeGenFunction::EmitWhileStmt(const WhileStmt &S,
   // Immediately force cleanup.
   ConditionScope.ForceCleanup();
 
+  EmitStopPoint(&S);
   // Branch to the loop header again.
   EmitBranch(LoopHeader.getBlock());
 
@@ -745,7 +746,7 @@ void CodeGenFunction::EmitWhileStmt(const WhileStmt &S,
 }
 
 void CodeGenFunction::EmitDoStmt(const DoStmt &S,
-                                 const ArrayRef<const Attr *> &DoAttrs) {
+                                 ArrayRef<const Attr *> DoAttrs) {
   JumpDest LoopExit = getJumpDestInCurrentScope("do.end");
   JumpDest LoopCond = getJumpDestInCurrentScope("do.cond");
 
@@ -806,14 +807,10 @@ void CodeGenFunction::EmitDoStmt(const DoStmt &S,
 }
 
 void CodeGenFunction::EmitForStmt(const ForStmt &S,
-                                  const ArrayRef<const Attr *> &ForAttrs) {
+                                  ArrayRef<const Attr *> ForAttrs) {
   JumpDest LoopExit = getJumpDestInCurrentScope("for.end");
 
-  RunCleanupsScope ForScope(*this);
-
-  CGDebugInfo *DI = getDebugInfo();
-  if (DI)
-    DI->EmitLexicalBlockStart(Builder, S.getSourceRange().getBegin());
+  LexicalScope ForScope(*this, S.getSourceRange());
 
   // Evaluate the first part before the loop.
   if (S.getInit())
@@ -841,7 +838,7 @@ void CodeGenFunction::EmitForStmt(const ForStmt &S,
   BreakContinueStack.push_back(BreakContinue(LoopExit, Continue));
 
   // Create a cleanup scope for the condition variable cleanups.
-  RunCleanupsScope ConditionScope(*this);
+  LexicalScope ConditionScope(*this, S.getSourceRange());
 
   if (S.getCond()) {
     // If the for statement has a condition scope, emit the local variable
@@ -897,12 +894,11 @@ void CodeGenFunction::EmitForStmt(const ForStmt &S,
   BreakContinueStack.pop_back();
 
   ConditionScope.ForceCleanup();
+
+  EmitStopPoint(&S);
   EmitBranch(CondBlock);
 
   ForScope.ForceCleanup();
-
-  if (DI)
-    DI->EmitLexicalBlockEnd(Builder, S.getSourceRange().getEnd());
 
   LoopStack.pop();
 
@@ -912,14 +908,10 @@ void CodeGenFunction::EmitForStmt(const ForStmt &S,
 
 void
 CodeGenFunction::EmitCXXForRangeStmt(const CXXForRangeStmt &S,
-                                     const ArrayRef<const Attr *> &ForAttrs) {
+                                     ArrayRef<const Attr *> ForAttrs) {
   JumpDest LoopExit = getJumpDestInCurrentScope("for.end");
 
-  RunCleanupsScope ForScope(*this);
-
-  CGDebugInfo *DI = getDebugInfo();
-  if (DI)
-    DI->EmitLexicalBlockStart(Builder, S.getSourceRange().getBegin());
+  LexicalScope ForScope(*this, S.getSourceRange());
 
   // Evaluate the first pieces before the loop.
   EmitStmt(S.getRangeStmt());
@@ -969,11 +961,12 @@ CodeGenFunction::EmitCXXForRangeStmt(const CXXForRangeStmt &S,
 
   {
     // Create a separate cleanup scope for the loop variable and body.
-    RunCleanupsScope BodyScope(*this);
+    LexicalScope BodyScope(*this, S.getSourceRange());
     EmitStmt(S.getLoopVarStmt());
     EmitStmt(S.getBody());
   }
 
+  EmitStopPoint(&S);
   // If there is an increment, emit it next.
   EmitBlock(Continue.getBlock());
   EmitStmt(S.getInc());
@@ -983,9 +976,6 @@ CodeGenFunction::EmitCXXForRangeStmt(const CXXForRangeStmt &S,
   EmitBranch(CondBlock);
 
   ForScope.ForceCleanup();
-
-  if (DI)
-    DI->EmitLexicalBlockEnd(Builder, S.getSourceRange().getEnd());
 
   LoopStack.pop();
 
@@ -2091,7 +2081,7 @@ static LValue InitCapturedStruct(CodeGenFunction &CGF, const CapturedStmt &S) {
                                            E = S.capture_init_end();
        I != E; ++I, ++CurField) {
     LValue LV = CGF.EmitLValueForFieldInitialization(SlotLV, *CurField);
-    CGF.EmitInitializerForField(*CurField, LV, *I, ArrayRef<VarDecl *>());
+    CGF.EmitInitializerForField(*CurField, LV, *I, None);
   }
 
   return SlotLV;

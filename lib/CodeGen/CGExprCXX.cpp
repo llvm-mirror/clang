@@ -24,21 +24,21 @@
 using namespace clang;
 using namespace CodeGen;
 
-RValue CodeGenFunction::EmitCXXMemberCall(const CXXMethodDecl *MD,
-                                          SourceLocation CallLoc,
-                                          llvm::Value *Callee,
-                                          ReturnValueSlot ReturnValue,
-                                          llvm::Value *This,
-                                          llvm::Value *ImplicitParam,
-                                          QualType ImplicitParamTy,
-                                          CallExpr::const_arg_iterator ArgBeg,
-                                          CallExpr::const_arg_iterator ArgEnd) {
+RValue CodeGenFunction::EmitCXXMemberOrOperatorCall(
+    const CXXMethodDecl *MD, llvm::Value *Callee, ReturnValueSlot ReturnValue,
+    llvm::Value *This, llvm::Value *ImplicitParam, QualType ImplicitParamTy,
+    const CallExpr *CE) {
+  assert(CE == nullptr || isa<CXXMemberCallExpr>(CE) ||
+         isa<CXXOperatorCallExpr>(CE));
   assert(MD->isInstance() &&
-         "Trying to emit a member call expr on a static method!");
+         "Trying to emit a member or operator call expr on a static method!");
 
   // C++11 [class.mfct.non-static]p2:
   //   If a non-static member function of a class X is called for an object that
   //   is not of type X, or of a type derived from X, the behavior is undefined.
+  SourceLocation CallLoc;
+  if (CE)
+    CallLoc = CE->getExprLoc();
   EmitTypeCheck(isa<CXXConstructorDecl>(MD) ? TCK_ConstructorCall
                                             : TCK_MemberCall,
                 CallLoc, This, getContext().getRecordType(MD->getParent()));
@@ -57,6 +57,17 @@ RValue CodeGenFunction::EmitCXXMemberCall(const CXXMethodDecl *MD,
   RequiredArgs required = RequiredArgs::forPrototypePlus(FPT, Args.size());
   
   // And the rest of the call args.
+  CallExpr::const_arg_iterator ArgBeg, ArgEnd;
+  if (CE == nullptr) {
+    ArgBeg = ArgEnd = nullptr;
+  } else if (auto OCE = dyn_cast<CXXOperatorCallExpr>(CE)) {
+    // Special case: skip first argument of CXXOperatorCall (it is "this").
+    ArgBeg = OCE->arg_begin() + 1;
+    ArgEnd = OCE->arg_end();
+  } else {
+    ArgBeg = CE->arg_begin();
+    ArgEnd = CE->arg_end();
+  }
   EmitCallArgs(Args, FPT, ArgBeg, ArgEnd);
 
   return EmitCall(CGM.getTypes().arrangeCXXMethodCall(Args, FPT, required),
@@ -86,9 +97,8 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
   if (MD->isStatic()) {
     // The method is static, emit it as we would a regular call.
     llvm::Value *Callee = CGM.GetAddrOfFunction(MD);
-    return EmitCall(getContext().getPointerType(MD->getType()), Callee,
-                    CE->getLocStart(), ReturnValue, CE->arg_begin(),
-                    CE->arg_end());
+    return EmitCall(getContext().getPointerType(MD->getType()), Callee, CE,
+                    ReturnValue);
   }
 
   // Compute the object pointer.
@@ -144,13 +154,13 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
       EmitAggregateAssign(This, RHS, CE->getType());
       return RValue::get(This);
     }
-    
-    if (isa<CXXConstructorDecl>(MD) && 
+
+    if (isa<CXXConstructorDecl>(MD) &&
         cast<CXXConstructorDecl>(MD)->isCopyOrMoveConstructor()) {
       // Trivial move and copy ctor are the same.
+      assert(CE->getNumArgs() == 1 && "unexpected argcount for trivial ctor");
       llvm::Value *RHS = EmitLValue(*CE->arg_begin()).getAddress();
-      EmitSynthesizedCXXCopyCtorCall(cast<CXXConstructorDecl>(MD), This, RHS,
-                                     CE->arg_begin(), CE->arg_end());
+      EmitAggregateCopy(This, RHS, CE->arg_begin()->getType());
       return RValue::get(This);
     }
     llvm_unreachable("unknown trivial member function");
@@ -185,7 +195,7 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
     assert(ReturnValue.isNull() && "Destructor shouldn't have return value");
     if (UseVirtualCall) {
       CGM.getCXXABI().EmitVirtualDestructorCall(*this, Dtor, Dtor_Complete,
-                                                CE->getExprLoc(), This);
+                                                This, CE);
     } else {
       if (getLangOpts().AppleKext &&
           MD->isVirtual() &&
@@ -198,8 +208,8 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
           cast<CXXDestructorDecl>(DevirtualizedMethod);
         Callee = CGM.GetAddrOfFunction(GlobalDecl(DDtor, Dtor_Complete), Ty);
       }
-      EmitCXXMemberCall(MD, CE->getExprLoc(), Callee, ReturnValue, This,
-                        /*ImplicitParam=*/nullptr, QualType(), nullptr,nullptr);
+      EmitCXXMemberOrOperatorCall(MD, Callee, ReturnValue, This,
+                                  /*ImplicitParam=*/nullptr, QualType(), CE);
     }
     return RValue::get(nullptr);
   }
@@ -225,9 +235,8 @@ RValue CodeGenFunction::EmitCXXMemberCallExpr(const CXXMemberCallExpr *CE,
         *this, MD, This, UseVirtualCall);
   }
 
-  return EmitCXXMemberCall(MD, CE->getExprLoc(), Callee, ReturnValue, This,
-                           /*ImplicitParam=*/nullptr, QualType(),
-                           CE->arg_begin(), CE->arg_end());
+  return EmitCXXMemberOrOperatorCall(MD, Callee, ReturnValue, This,
+                                     /*ImplicitParam=*/nullptr, QualType(), CE);
 }
 
 RValue
@@ -298,9 +307,8 @@ CodeGenFunction::EmitCXXOperatorMemberCallExpr(const CXXOperatorCallExpr *E,
   }
 
   llvm::Value *Callee = EmitCXXOperatorMemberCallee(E, MD, This);
-  return EmitCXXMemberCall(MD, E->getExprLoc(), Callee, ReturnValue, This,
-                           /*ImplicitParam=*/nullptr, QualType(),
-                           E->arg_begin() + 1, E->arg_end());
+  return EmitCXXMemberOrOperatorCall(MD, Callee, ReturnValue, This,
+                                     /*ImplicitParam=*/nullptr, QualType(), E);
 }
 
 RValue CodeGenFunction::EmitCUDAKernelCallExpr(const CUDAKernelCallExpr *E,
@@ -392,8 +400,7 @@ CodeGenFunction::EmitCXXConstructExpr(const CXXConstructExpr *E,
   
   if (const ConstantArrayType *arrayType 
         = getContext().getAsConstantArrayType(E->getType())) {
-    EmitCXXAggrConstructorCall(CD, arrayType, Dest.getAddr(), 
-                               E->arg_begin(), E->arg_end());
+    EmitCXXAggrConstructorCall(CD, arrayType, Dest.getAddr(), E);
   } else {
     CXXCtorType Type = Ctor_Complete;
     bool ForVirtualBase = false;
@@ -420,7 +427,7 @@ CodeGenFunction::EmitCXXConstructExpr(const CXXConstructExpr *E,
     
     // Call the constructor.
     EmitCXXConstructorCall(CD, Type, ForVirtualBase, Delegating, Dest.getAddr(),
-                           E->arg_begin(), E->arg_end());
+                           E);
   }
 }
 
@@ -445,7 +452,7 @@ CodeGenFunction::EmitSynthesizedCXXCopyCtor(llvm::Value *Dest,
   
   assert(!getContext().getAsConstantArrayType(E->getType())
          && "EmitSynthesizedCXXCopyCtor - Copied-in Array");
-  EmitSynthesizedCXXCopyCtorCall(CD, Dest, Src, E->arg_begin(), E->arg_end());
+  EmitSynthesizedCXXCopyCtorCall(CD, Dest, Src, E);
 }
 
 static CharUnits CalculateCookiePadding(CodeGenFunction &CGF,
@@ -895,8 +902,7 @@ CodeGenFunction::EmitNewArrayInitializer(const CXXNewExpr *E,
       NumElements = Builder.CreateSub(
           NumElements,
           llvm::ConstantInt::get(NumElements->getType(), InitListElements));
-    EmitCXXAggrConstructorCall(Ctor, NumElements, CurPtr,
-                               CCE->arg_begin(), CCE->arg_end(),
+    EmitCXXAggrConstructorCall(Ctor, NumElements, CurPtr, CCE,
                                CCE->requiresZeroInitialization());
     return;
   }
@@ -1415,15 +1421,16 @@ static void EmitObjectDelete(CodeGenFunction &CGF,
                                                     ElementType);
         }
 
-        // FIXME: Provide a source location here.
+        // FIXME: Provide a source location here even though there's no
+        // CXXMemberCallExpr for dtor call.
         CXXDtorType DtorType = UseGlobalDelete ? Dtor_Complete : Dtor_Deleting;
-        CGF.CGM.getCXXABI().EmitVirtualDestructorCall(CGF, Dtor, DtorType,
-                                                      SourceLocation(), Ptr);
+        CGF.CGM.getCXXABI().EmitVirtualDestructorCall(CGF, Dtor, DtorType, Ptr,
+                                                      nullptr);
 
         if (UseGlobalDelete) {
           CGF.PopCleanupBlock();
         }
-        
+
         return;
       }
     }

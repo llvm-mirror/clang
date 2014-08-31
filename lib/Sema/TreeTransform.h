@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_SEMA_TREETRANSFORM_H
-#define LLVM_CLANG_SEMA_TREETRANSFORM_H
+#ifndef LLVM_CLANG_LIB_SEMA_TREETRANSFORM_H
+#define LLVM_CLANG_LIB_SEMA_TREETRANSFORM_H
 
 #include "TypeLocBuilder.h"
 #include "clang/AST/Decl.h"
@@ -5821,7 +5821,8 @@ TreeTransform<Derived>::TransformBreakStmt(BreakStmt *S) {
 template<typename Derived>
 StmtResult
 TreeTransform<Derived>::TransformReturnStmt(ReturnStmt *S) {
-  ExprResult Result = getDerived().TransformExpr(S->getRetValue());
+  ExprResult Result = getDerived().TransformInitializer(S->getRetValue(),
+                                                        /*NotCopyInit*/false);
   if (Result.isInvalid())
     return StmtError();
 
@@ -10444,4 +10445,4 @@ TreeTransform<Derived>::TransformCapturedStmt(CapturedStmt *S) {
 
 } // end namespace clang
 
-#endif // LLVM_CLANG_SEMA_TREETRANSFORM_H
+#endif

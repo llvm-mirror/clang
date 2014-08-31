@@ -59,7 +59,7 @@ bool Sema::CanUseDecl(NamedDecl *D) {
 
     // If the function has a deduced return type, and we can't deduce it,
     // then we can't use it either.
-    if (getLangOpts().CPlusPlus1y && FD->getReturnType()->isUndeducedType() &&
+    if (getLangOpts().CPlusPlus14 && FD->getReturnType()->isUndeducedType() &&
         DeduceReturnType(FD, SourceLocation(), /*Diagnose*/ false))
       return false;
   }
@@ -302,7 +302,7 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
 
     // If the function has a deduced return type, and we can't deduce it,
     // then we can't use it either.
-    if (getLangOpts().CPlusPlus1y && FD->getReturnType()->isUndeducedType() &&
+    if (getLangOpts().CPlusPlus14 && FD->getReturnType()->isUndeducedType() &&
         DeduceReturnType(FD, Loc))
       return true;
   }
@@ -9515,7 +9515,7 @@ static void DiagnoseBitwisePrecedence(Sema &Self, BinaryOperatorKind Opc,
   StringRef OpStr = isLeftComp ? LHSBO->getOpcodeStr() : RHSBO->getOpcodeStr();
   SourceRange ParensRange = isLeftComp ?
       SourceRange(LHSBO->getRHS()->getLocStart(), RHSExpr->getLocEnd())
-    : SourceRange(LHSExpr->getLocStart(), RHSBO->getLHS()->getLocStart());
+    : SourceRange(LHSExpr->getLocStart(), RHSBO->getLHS()->getLocEnd());
 
   Self.Diag(OpLoc, diag::warn_precedence_bitwise_rel)
     << DiagRange << BinaryOperator::getOpcodeStr(Opc) << OpStr;
@@ -11398,7 +11398,8 @@ static bool IsPotentiallyEvaluatedContext(Sema &SemaRef) {
 
 /// \brief Mark a function referenced, and check whether it is odr-used
 /// (C++ [basic.def.odr]p2, C99 6.9p3)
-void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func) {
+void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
+                                  bool OdrUse) {
   assert(Func && "No function?");
 
   Func->setReferenced();
@@ -11496,6 +11497,8 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func) {
   const FunctionProtoType *FPT = Func->getType()->getAs<FunctionProtoType>();
   if (FPT && isUnresolvedExceptionSpec(FPT->getExceptionSpecType()))
     ResolveExceptionSpec(Loc, FPT);
+
+  if (!OdrUse) return;
 
   // Implicit instantiation of function templates and member functions of
   // class templates.
@@ -12623,14 +12626,14 @@ void Sema::MarkMemberReferenced(MemberExpr *E) {
 /// normal expression which refers to a variable.
 void Sema::MarkAnyDeclReferenced(SourceLocation Loc, Decl *D, bool OdrUse) {
   if (OdrUse) {
-    if (VarDecl *VD = dyn_cast<VarDecl>(D)) {
+    if (auto *VD = dyn_cast<VarDecl>(D)) {
       MarkVariableReferenced(Loc, VD);
       return;
     }
-    if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
-      MarkFunctionReferenced(Loc, FD);
-      return;
-    }
+  }
+  if (auto *FD = dyn_cast<FunctionDecl>(D)) {
+    MarkFunctionReferenced(Loc, FD, OdrUse);
+    return;
   }
   D->setReferenced();
 }

@@ -1105,9 +1105,13 @@ Sema::CheckClassTemplate(Scope *S, unsigned TagSpec, TagUseKind TUK,
 
   AddPushedVisibilityAttribute(NewClass);
 
-  if (TUK != TUK_Friend)
-    PushOnScopeChains(NewTemplate, S);
-  else {
+  if (TUK != TUK_Friend) {
+    // Per C++ [basic.scope.temp]p2, skip the template parameter scopes.
+    Scope *Outer = S;
+    while ((Outer->getFlags() & Scope::TemplateParamScope) != 0)
+      Outer = Outer->getParent();
+    PushOnScopeChains(NewTemplate, Outer);
+  } else {
     if (PrevClassTemplate && PrevClassTemplate->getAccess() != AS_none) {
       NewTemplate->setAccess(PrevClassTemplate->getAccess());
       NewClass->setAccess(PrevClassTemplate->getAccess());
@@ -4189,7 +4193,7 @@ isNullPointerValueTemplateArgument(Sema &S, NonTypeTemplateParmDecl *Param,
   if (Arg->isValueDependent() || Arg->isTypeDependent())
     return NPV_NotNullPointer;
   
-  if (!S.getLangOpts().CPlusPlus11 || S.getLangOpts().MSVCCompat)
+  if (!S.getLangOpts().CPlusPlus11)
     return NPV_NotNullPointer;
   
   // Determine whether we have a constant expression.

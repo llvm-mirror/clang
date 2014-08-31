@@ -561,7 +561,7 @@ Parser::ParseTemplateTemplateParameter(unsigned Depth, unsigned Position) {
     if (Tok.is(tok::kw_typename)) {
       Diag(Tok.getLocation(),
            getLangOpts().CPlusPlus1z
-               ? diag::warn_cxx1y_compat_template_template_param_typename
+               ? diag::warn_cxx14_compat_template_template_param_typename
                : diag::ext_template_template_param_typename)
         << (!getLangOpts().CPlusPlus1z
                 ? FixItHint::CreateReplacement(Tok.getLocation(), "class")
@@ -1335,7 +1335,8 @@ void Parser::ParseLateTemplatedFuncDef(LateParsedTemplate &LPT) {
   ParseScope FnScope(this, Scope::FnScope|Scope::DeclScope);
 
   // Recreate the containing function DeclContext.
-  Sema::ContextRAII FunctionSavedContext(Actions, Actions.getContainingDC(FunD));
+  Sema::ContextRAII FunctionSavedContext(Actions,
+                                         Actions.getContainingDC(FunD));
 
   Actions.ActOnStartOfFunctionDef(getCurScope(), FunD);
 

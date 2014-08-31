@@ -122,14 +122,13 @@ class ScopedLineState {
 public:
   ScopedLineState(UnwrappedLineParser &Parser,
                   bool SwitchToPreprocessorLines = false)
-      : Parser(Parser) {
-    OriginalLines = Parser.CurrentLines;
+      : Parser(Parser), OriginalLines(Parser.CurrentLines) {
     if (SwitchToPreprocessorLines)
       Parser.CurrentLines = &Parser.PreprocessorDirectives;
     else if (!Parser.Line->Tokens.empty())
       Parser.CurrentLines = &Parser.Line->Tokens.back().Children;
-    PreBlockLine = Parser.Line.release();
-    Parser.Line.reset(new UnwrappedLine());
+    PreBlockLine = std::move(Parser.Line);
+    Parser.Line = llvm::make_unique<UnwrappedLine>();
     Parser.Line->Level = PreBlockLine->Level;
     Parser.Line->InPPDirective = PreBlockLine->InPPDirective;
   }
@@ -139,7 +138,7 @@ public:
       Parser.addUnwrappedLine();
     }
     assert(Parser.Line->Tokens.empty());
-    Parser.Line.reset(PreBlockLine);
+    Parser.Line = std::move(PreBlockLine);
     if (Parser.CurrentLines == &Parser.PreprocessorDirectives)
       Parser.MustBreakBeforeNextToken = true;
     Parser.CurrentLines = OriginalLines;
@@ -148,7 +147,7 @@ public:
 private:
   UnwrappedLineParser &Parser;
 
-  UnwrappedLine *PreBlockLine;
+  std::unique_ptr<UnwrappedLine> PreBlockLine;
   SmallVectorImpl<UnwrappedLine> *OriginalLines;
 };
 
@@ -435,6 +434,19 @@ static bool IsGoogScope(const UnwrappedLine &Line) {
   return I->Tok->is(tok::l_paren);
 }
 
+static bool ShouldBreakBeforeBrace(const FormatStyle &Style,
+                                   const FormatToken &InitialToken) {
+  switch (Style.BreakBeforeBraces) {
+  case FormatStyle::BS_Linux:
+    return InitialToken.isOneOf(tok::kw_namespace, tok::kw_class);
+  case FormatStyle::BS_Allman:
+  case FormatStyle::BS_GNU:
+    return true;
+  default:
+    return false;
+  }
+}
+
 void UnwrappedLineParser::parseChildBlock() {
   FormatTok->BlockKind = BK_Block;
   nextToken();
@@ -644,6 +656,20 @@ void UnwrappedLineParser::parseStructuralElement() {
       return;
     default:
       break;
+    }
+    break;
+  case tok::kw_asm:
+    FormatTok->Finalized = true;
+    nextToken();
+    if (FormatTok->is(tok::l_brace)) {
+      while (FormatTok && FormatTok->isNot(tok::eof)) {
+        FormatTok->Finalized = true;
+        if (FormatTok->is(tok::r_brace)) {
+          nextToken();
+          break;
+        }
+        nextToken();
+      }
     }
     break;
   case tok::kw_namespace:
@@ -1168,13 +1194,13 @@ void UnwrappedLineParser::parseTryCatch() {
 
 void UnwrappedLineParser::parseNamespace() {
   assert(FormatTok->Tok.is(tok::kw_namespace) && "'namespace' expected");
+
+  const FormatToken &InitialToken = *FormatTok;
   nextToken();
   if (FormatTok->Tok.is(tok::identifier))
     nextToken();
   if (FormatTok->Tok.is(tok::l_brace)) {
-    if (Style.BreakBeforeBraces == FormatStyle::BS_Linux ||
-        Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
-        Style.BreakBeforeBraces == FormatStyle::BS_GNU)
+    if (ShouldBreakBeforeBrace(Style, InitialToken))
       addUnwrappedLine();
 
     bool AddLevel = Style.NamespaceIndentation == FormatStyle::NI_All ||
@@ -1328,6 +1354,7 @@ void UnwrappedLineParser::parseEnum() {
 }
 
 void UnwrappedLineParser::parseRecord() {
+  const FormatToken &InitialToken = *FormatTok;
   nextToken();
   if (FormatTok->isOneOf(tok::identifier, tok::coloncolon, tok::kw___attribute,
                          tok::kw___declspec, tok::kw_alignas)) {
@@ -1362,9 +1389,7 @@ void UnwrappedLineParser::parseRecord() {
     }
   }
   if (FormatTok->Tok.is(tok::l_brace)) {
-    if (Style.BreakBeforeBraces == FormatStyle::BS_Linux ||
-        Style.BreakBeforeBraces == FormatStyle::BS_Allman ||
-        Style.BreakBeforeBraces == FormatStyle::BS_GNU)
+    if (ShouldBreakBeforeBrace(Style, InitialToken))
       addUnwrappedLine();
 
     parseBlock(/*MustBeDeclaration=*/true, /*AddLevel=*/true,
