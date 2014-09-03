@@ -43,6 +43,7 @@ class Stmt;
 class StringLiteral;
 class TemplateArgumentList;
 class TemplateParameterList;
+class TypeAliasTemplateDecl;
 class TypeLoc;
 class UnresolvedSetImpl;
 class VarTemplateDecl;
@@ -1880,7 +1881,7 @@ public:
     return llvm::makeArrayRef(ParamInfo, getNumParams());
   }
 
-  const ArrayRef<NamedDecl *> &getDeclsInPrototypeScope() const {
+  ArrayRef<NamedDecl *> getDeclsInPrototypeScope() const {
     return DeclsInPrototypeScope;
   }
   void setDeclsInPrototypeScope(ArrayRef<NamedDecl *> NewDecls);
@@ -2492,9 +2493,13 @@ public:
 /// TypeAliasDecl - Represents the declaration of a typedef-name via a C++0x
 /// alias-declaration.
 class TypeAliasDecl : public TypedefNameDecl {
+  /// The template for which this is the pattern, if any.
+  TypeAliasTemplateDecl *Template;
+
   TypeAliasDecl(ASTContext &C, DeclContext *DC, SourceLocation StartLoc,
                 SourceLocation IdLoc, IdentifierInfo *Id, TypeSourceInfo *TInfo)
-      : TypedefNameDecl(TypeAlias, C, DC, StartLoc, IdLoc, Id, TInfo) {}
+      : TypedefNameDecl(TypeAlias, C, DC, StartLoc, IdLoc, Id, TInfo),
+        Template(nullptr) {}
 
 public:
   static TypeAliasDecl *Create(ASTContext &C, DeclContext *DC,
@@ -2503,6 +2508,9 @@ public:
   static TypeAliasDecl *CreateDeserialized(ASTContext &C, unsigned ID);
 
   SourceRange getSourceRange() const override LLVM_READONLY;
+
+  TypeAliasTemplateDecl *getDescribedAliasTemplate() const { return Template; }
+  void setDescribedAliasTemplate(TypeAliasTemplateDecl *TAT) { Template = TAT; }
 
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
@@ -2647,7 +2655,7 @@ public:
   }
 
   /// isThisDeclarationADefinition() - Return true if this declaration
-  /// is a completion definintion of the type.  Provided for consistency.
+  /// is a completion definition of the type.  Provided for consistency.
   bool isThisDeclarationADefinition() const {
     return isCompleteDefinition();
   }

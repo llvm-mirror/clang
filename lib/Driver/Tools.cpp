@@ -806,8 +806,12 @@ void Clang::AddARMTargetArgs(const ArgList &Args,
       CmdArgs.push_back("-backend-option");
       if (A->getOption().matches(options::OPT_mno_unaligned_access))
         CmdArgs.push_back("-arm-strict-align");
-      else
+      else {
+        if (getToolChain().getTriple().getSubArch() ==
+            llvm::Triple::SubArchType::ARMSubArch_v6m)
+          D.Diag(diag::err_target_unsupported_unaligned) << "v6m";
         CmdArgs.push_back("-arm-no-strict-align");
+      }
     }
   }
 
@@ -1039,6 +1043,9 @@ static void getMIPSTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   Features.push_back("-o32");
   Features.push_back("-n64");
   Features.push_back(Args.MakeArgString(ABIFeature));
+
+  AddTargetFeature(Args, Features, options::OPT_mno_abicalls,
+                   options::OPT_mabicalls, "noabicalls");
 
   StringRef FloatABI = getMipsFloatABI(D, Args);
   if (FloatABI == "soft") {
@@ -1291,7 +1298,7 @@ static std::string getR600TargetGPU(const ArgList &Args) {
 }
 
 static void getSparcTargetFeatures(const ArgList &Args,
-                                   std::vector<const char *> Features) {
+                                   std::vector<const char *> &Features) {
   bool SoftFloatABI = true;
   if (Arg *A =
           Args.getLastArg(options::OPT_msoft_float, options::OPT_mhard_float)) {
@@ -1794,6 +1801,7 @@ static void getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
     getPPCTargetFeatures(Args, Features);
     break;
   case llvm::Triple::sparc:
+  case llvm::Triple::sparcv9:
     getSparcTargetFeatures(Args, Features);
     break;
   case llvm::Triple::aarch64:
@@ -2035,8 +2043,7 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
         } else if (Value == "-L") {
           CmdArgs.push_back("-msave-temp-labels");
         } else if (Value == "--fatal-warnings") {
-          CmdArgs.push_back("-mllvm");
-          CmdArgs.push_back("-fatal-assembler-warnings");
+          CmdArgs.push_back("-massembler-fatal-warnings");
         } else if (Value == "--noexecstack") {
           CmdArgs.push_back("-mnoexecstack");
         } else if (Value == "-compress-debug-sections" ||
@@ -2145,9 +2152,7 @@ static SmallString<128> getSanitizerRTLibName(const ToolChain &TC,
 static void addSanitizerRTLinkFlags(const ToolChain &TC, const ArgList &Args,
                                     ArgStringList &CmdArgs,
                                     const StringRef Sanitizer,
-                                    bool BeforeLibStdCXX,
-                                    bool ExportSymbols = true,
-                                    bool LinkDeps = true) {
+                                    bool ExportSymbols, bool LinkDeps) {
   SmallString<128> LibSanitizer =
       getSanitizerRTLibName(TC, Sanitizer, /*Shared*/ false);
 
@@ -2157,34 +2162,34 @@ static void addSanitizerRTLinkFlags(const ToolChain &TC, const ArgList &Args,
   // strategy of inserting it at the front of the link command. It also
   // needs to be forced to end up in the executable, so wrap it in
   // whole-archive.
-  SmallVector<const char *, 3> LibSanitizerArgs;
+  SmallVector<const char *, 8> LibSanitizerArgs;
   LibSanitizerArgs.push_back("-whole-archive");
   LibSanitizerArgs.push_back(Args.MakeArgString(LibSanitizer));
   LibSanitizerArgs.push_back("-no-whole-archive");
-
-  CmdArgs.insert(BeforeLibStdCXX ? CmdArgs.begin() : CmdArgs.end(),
-                 LibSanitizerArgs.begin(), LibSanitizerArgs.end());
-
   if (LinkDeps) {
-    // Link sanitizer dependencies explicitly
-    CmdArgs.push_back("-lpthread");
-    CmdArgs.push_back("-lrt");
-    CmdArgs.push_back("-lm");
+    // Link sanitizer dependencies explicitly. These libraries should be added
+    // at the front of the link command, so that they will definitely
+    // participate in link even if user specified -Wl,-as-needed (see PR15823).
+    LibSanitizerArgs.push_back("-lpthread");
+    LibSanitizerArgs.push_back("-lrt");
+    LibSanitizerArgs.push_back("-lm");
     // There's no libdl on FreeBSD.
     if (TC.getTriple().getOS() != llvm::Triple::FreeBSD)
-      CmdArgs.push_back("-ldl");
+      LibSanitizerArgs.push_back("-ldl");
   }
-
   // If possible, use a dynamic symbols file to export the symbols from the
   // runtime library. If we can't do so, use -export-dynamic instead to export
   // all symbols from the binary.
   if (ExportSymbols) {
     if (llvm::sys::fs::exists(LibSanitizer + ".syms"))
-      CmdArgs.push_back(
+      LibSanitizerArgs.push_back(
           Args.MakeArgString("--dynamic-list=" + LibSanitizer + ".syms"));
     else
-      CmdArgs.push_back("-export-dynamic");
+      LibSanitizerArgs.push_back("-export-dynamic");
   }
+
+  CmdArgs.insert(CmdArgs.begin(), LibSanitizerArgs.begin(),
+                 LibSanitizerArgs.end());
 }
 
 /// If AddressSanitizer is enabled, add appropriate linker flags (Linux).
@@ -2193,8 +2198,7 @@ static void addAsanRT(const ToolChain &TC, const ArgList &Args,
                       ArgStringList &CmdArgs, bool Shared, bool IsCXX) {
   if (Shared) {
     // Link dynamic runtime if necessary.
-    SmallString<128> LibSanitizer =
-        getSanitizerRTLibName(TC, "asan", Shared);
+    SmallString<128> LibSanitizer = getSanitizerRTLibName(TC, "asan", Shared);
     CmdArgs.insert(CmdArgs.begin(), Args.MakeArgString(LibSanitizer));
   }
 
@@ -2205,12 +2209,14 @@ static void addAsanRT(const ToolChain &TC, const ArgList &Args,
 
   if (Shared) {
     addSanitizerRTLinkFlags(TC, Args, CmdArgs, "asan-preinit",
-                            /*BeforeLibStdCXX*/ true, /*ExportSymbols*/ false,
+                            /*ExportSymbols*/ false,
                             /*LinkDeps*/ false);
   } else {
-    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "asan", true);
+    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "asan", /*ExportSymbols*/ true,
+                            /*LinkDeps*/ true);
     if (IsCXX)
-      addSanitizerRTLinkFlags(TC, Args, CmdArgs, "asan_cxx", true);
+      addSanitizerRTLinkFlags(TC, Args, CmdArgs, "asan_cxx",
+                              /*ExportSymbols*/ true, /*LinkDeps*/ false);
   }
 }
 
@@ -2219,7 +2225,8 @@ static void addAsanRT(const ToolChain &TC, const ArgList &Args,
 static void addTsanRT(const ToolChain &TC, const ArgList &Args,
                       ArgStringList &CmdArgs) {
   if (!Args.hasArg(options::OPT_shared))
-    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "tsan", true);
+    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "tsan", /*ExportSymbols*/ true,
+                            /*LinkDeps*/ true);
 }
 
 /// If MemorySanitizer is enabled, add appropriate linker flags (Linux).
@@ -2227,7 +2234,8 @@ static void addTsanRT(const ToolChain &TC, const ArgList &Args,
 static void addMsanRT(const ToolChain &TC, const ArgList &Args,
                       ArgStringList &CmdArgs) {
   if (!Args.hasArg(options::OPT_shared))
-    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "msan", true);
+    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "msan", /*ExportSymbols*/ true,
+                            /*LinkDeps*/ true);
 }
 
 /// If LeakSanitizer is enabled, add appropriate linker flags (Linux).
@@ -2235,7 +2243,8 @@ static void addMsanRT(const ToolChain &TC, const ArgList &Args,
 static void addLsanRT(const ToolChain &TC, const ArgList &Args,
                       ArgStringList &CmdArgs) {
   if (!Args.hasArg(options::OPT_shared))
-    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "lsan", true);
+    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "lsan", /*ExportSymbols */ true,
+                            /*LinkDeps*/ true);
 }
 
 /// If UndefinedBehaviorSanitizer is enabled, add appropriate linker flags
@@ -2250,33 +2259,37 @@ static void addUbsanRT(const ToolChain &TC, const ArgList &Args,
   // Need a copy of sanitizer_common. This could come from another sanitizer
   // runtime; if we're not including one, include our own copy.
   if (!HasOtherSanitizerRt)
-    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "san", true, false);
+    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "san", /*ExportSymbols*/ false,
+                            /*LinkDeps*/ false);
 
-  addSanitizerRTLinkFlags(TC, Args, CmdArgs, "ubsan", false, true);
+  addSanitizerRTLinkFlags(TC, Args, CmdArgs, "ubsan", /*ExportSymbols*/ true,
+                          /*LinkDeps*/ true);
 
   // Only include the bits of the runtime which need a C++ ABI library if
   // we're linking in C++ mode.
   if (IsCXX)
-    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "ubsan_cxx", false, true);
+    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "ubsan_cxx",
+                            /*ExportSymbols*/ true, /*LinkDeps*/ false);
 }
 
 static void addDfsanRT(const ToolChain &TC, const ArgList &Args,
                        ArgStringList &CmdArgs) {
   if (!Args.hasArg(options::OPT_shared))
-    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "dfsan", true);
+    addSanitizerRTLinkFlags(TC, Args, CmdArgs, "dfsan", /*ExportSymbols*/ true,
+                            /*LinkDeps*/ true);
 }
 
 // Should be called before we add C++ ABI library.
 static void addSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
                                  ArgStringList &CmdArgs) {
   const SanitizerArgs &Sanitize = TC.getSanitizerArgs();
-  const Driver &D = TC.getDriver();
   if (Sanitize.needsUbsanRt())
-    addUbsanRT(TC, Args, CmdArgs, D.CCCIsCXX(),
-                    Sanitize.needsAsanRt() || Sanitize.needsTsanRt() ||
-                    Sanitize.needsMsanRt() || Sanitize.needsLsanRt());
+    addUbsanRT(TC, Args, CmdArgs, Sanitize.linkCXXRuntimes(),
+               Sanitize.needsAsanRt() || Sanitize.needsTsanRt() ||
+                   Sanitize.needsMsanRt() || Sanitize.needsLsanRt());
   if (Sanitize.needsAsanRt())
-    addAsanRT(TC, Args, CmdArgs, Sanitize.needsSharedAsanRt(), D.CCCIsCXX());
+    addAsanRT(TC, Args, CmdArgs, Sanitize.needsSharedAsanRt(),
+              Sanitize.linkCXXRuntimes());
   if (Sanitize.needsTsanRt())
     addTsanRT(TC, Args, CmdArgs);
   if (Sanitize.needsMsanRt())
@@ -3701,6 +3714,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString("-mstack-alignment=" + alignment));
   }
 
+  if (getToolChain().getTriple().getArch() == llvm::Triple::aarch64 ||
+      getToolChain().getTriple().getArch() == llvm::Triple::aarch64_be)
+    CmdArgs.push_back("-fallow-half-arguments-and-returns");
+
   if (Arg *A = Args.getLastArg(options::OPT_mrestrict_it,
                                options::OPT_mno_restrict_it)) {
     if (A->getOption().matches(options::OPT_mrestrict_it)) {
@@ -4172,6 +4189,14 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       StringRef value = inputCharset->getValue();
       if (value != "UTF-8")
           D.Diag(diag::err_drv_invalid_value) << inputCharset->getAsString(Args) << value;
+  }
+
+  // -fexec_charset=UTF-8 is default. Reject others
+  if (Arg *execCharset = Args.getLastArg(
+          options::OPT_fexec_charset_EQ)) {
+      StringRef value = execCharset->getValue();
+      if (value != "UTF-8")
+          D.Diag(diag::err_drv_invalid_value) << execCharset->getAsString(Args) << value;
   }
 
   // -fcaret-diagnostics is default.
@@ -5362,6 +5387,11 @@ bool mips::hasMipsAbiArg(const ArgList &Args, const char *Value) {
   return A && (A->getValue() == StringRef(Value));
 }
 
+bool mips::isUCLibc(const ArgList &Args) {
+  Arg *A = Args.getLastArg(options::OPT_m_libc_Group);
+  return A && A->getOption().matches(options::OPT_muclibc);
+}
+
 bool mips::isNaN2008(const ArgList &Args, const llvm::Triple &Triple) {
   if (Arg *NaNArg = Args.getLastArg(options::OPT_mnan_EQ))
     return llvm::StringSwitch<bool>(NaNArg->getValue())
@@ -6048,114 +6078,6 @@ void solaris::Link::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(GCCLibPath + "crtend.o"));
   }
   CmdArgs.push_back(Args.MakeArgString(LibPath + "crtn.o"));
-
-  addProfileRT(getToolChain(), Args, CmdArgs);
-
-  const char *Exec =
-    Args.MakeArgString(getToolChain().GetLinkerPath());
-  C.addCommand(new Command(JA, *this, Exec, CmdArgs));
-}
-
-void auroraux::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
-                                      const InputInfo &Output,
-                                      const InputInfoList &Inputs,
-                                      const ArgList &Args,
-                                      const char *LinkingOutput) const {
-  ArgStringList CmdArgs;
-
-  Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA,
-                       options::OPT_Xassembler);
-
-  CmdArgs.push_back("-o");
-  CmdArgs.push_back(Output.getFilename());
-
-  for (const auto &II : Inputs)
-    CmdArgs.push_back(II.getFilename());
-
-  const char *Exec = Args.MakeArgString(getToolChain().GetProgramPath("gas"));
-  C.addCommand(new Command(JA, *this, Exec, CmdArgs));
-}
-
-void auroraux::Link::ConstructJob(Compilation &C, const JobAction &JA,
-                                  const InputInfo &Output,
-                                  const InputInfoList &Inputs,
-                                  const ArgList &Args,
-                                  const char *LinkingOutput) const {
-  ArgStringList CmdArgs;
-
-  if ((!Args.hasArg(options::OPT_nostdlib)) &&
-      (!Args.hasArg(options::OPT_shared))) {
-    CmdArgs.push_back("-e");
-    CmdArgs.push_back("_start");
-  }
-
-  if (Args.hasArg(options::OPT_static)) {
-    CmdArgs.push_back("-Bstatic");
-    CmdArgs.push_back("-dn");
-  } else {
-//    CmdArgs.push_back("--eh-frame-hdr");
-    CmdArgs.push_back("-Bdynamic");
-    if (Args.hasArg(options::OPT_shared)) {
-      CmdArgs.push_back("-shared");
-    } else {
-      CmdArgs.push_back("--dynamic-linker");
-      CmdArgs.push_back("/lib/ld.so.1"); // 64Bit Path /lib/amd64/ld.so.1
-    }
-  }
-
-  if (Output.isFilename()) {
-    CmdArgs.push_back("-o");
-    CmdArgs.push_back(Output.getFilename());
-  } else {
-    assert(Output.isNothing() && "Invalid output.");
-  }
-
-  if (!Args.hasArg(options::OPT_nostdlib) &&
-      !Args.hasArg(options::OPT_nostartfiles)) {
-    if (!Args.hasArg(options::OPT_shared)) {
-      CmdArgs.push_back(Args.MakeArgString(
-                                getToolChain().GetFilePath("crt1.o")));
-      CmdArgs.push_back(Args.MakeArgString(
-                                getToolChain().GetFilePath("crti.o")));
-      CmdArgs.push_back(Args.MakeArgString(
-                                getToolChain().GetFilePath("crtbegin.o")));
-    } else {
-      CmdArgs.push_back(Args.MakeArgString(
-                                getToolChain().GetFilePath("crti.o")));
-    }
-    CmdArgs.push_back(Args.MakeArgString(
-                                getToolChain().GetFilePath("crtn.o")));
-  }
-
-  CmdArgs.push_back(Args.MakeArgString("-L/opt/gcc4/lib/gcc/"
-                                       + getToolChain().getTripleString()
-                                       + "/4.2.4"));
-
-  Args.AddAllArgs(CmdArgs, options::OPT_L);
-  Args.AddAllArgs(CmdArgs, options::OPT_T_Group);
-  Args.AddAllArgs(CmdArgs, options::OPT_e);
-
-  AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs);
-
-  if (!Args.hasArg(options::OPT_nostdlib) &&
-      !Args.hasArg(options::OPT_nodefaultlibs)) {
-    // FIXME: For some reason GCC passes -lgcc before adding
-    // the default system libraries. Just mimic this for now.
-    CmdArgs.push_back("-lgcc");
-
-    if (Args.hasArg(options::OPT_pthread))
-      CmdArgs.push_back("-pthread");
-    if (!Args.hasArg(options::OPT_shared))
-      CmdArgs.push_back("-lc");
-    CmdArgs.push_back("-lgcc");
-  }
-
-  if (!Args.hasArg(options::OPT_nostdlib) &&
-      !Args.hasArg(options::OPT_nostartfiles)) {
-    if (!Args.hasArg(options::OPT_shared))
-      CmdArgs.push_back(Args.MakeArgString(
-                                getToolChain().GetFilePath("crtend.o")));
-  }
 
   addProfileRT(getToolChain(), Args, CmdArgs);
 
@@ -6873,9 +6795,7 @@ void netbsd::Link::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("elf_i386");
     break;
   case llvm::Triple::arm:
-  case llvm::Triple::armeb:
   case llvm::Triple::thumb:
-  case llvm::Triple::thumbeb:
     CmdArgs.push_back("-m");
     switch (getToolChain().getTriple().getEnvironment()) {
     case llvm::Triple::EABI:
@@ -6888,6 +6808,23 @@ void netbsd::Link::ConstructJob(Compilation &C, const JobAction &JA,
       break;
     default:
       CmdArgs.push_back("armelf_nbsd");
+      break;
+    }
+    break;
+  case llvm::Triple::armeb:
+  case llvm::Triple::thumbeb:
+    CmdArgs.push_back("-m");
+    switch (getToolChain().getTriple().getEnvironment()) {
+    case llvm::Triple::EABI:
+    case llvm::Triple::GNUEABI:
+      CmdArgs.push_back("armelfb_nbsd_eabi");
+      break;
+    case llvm::Triple::EABIHF:
+    case llvm::Triple::GNUEABIHF:
+      CmdArgs.push_back("armelfb_nbsd_eabihf");
+      break;
+    default:
+      CmdArgs.push_back("armelfb_nbsd");
       break;
     }
     break;
@@ -6907,6 +6844,16 @@ void netbsd::Link::ConstructJob(Compilation &C, const JobAction &JA,
        CmdArgs.push_back("elf64ltsmip");
    }
    break;
+  case llvm::Triple::ppc:
+    CmdArgs.push_back("-m");
+    CmdArgs.push_back("elf32ppc_nbsd");
+    break;
+
+  case llvm::Triple::ppc64:
+  case llvm::Triple::ppc64le:
+    CmdArgs.push_back("-m");
+    CmdArgs.push_back("elf64ppc");
+    break;
 
   case llvm::Triple::sparc:
     CmdArgs.push_back("-m");
@@ -6961,11 +6908,14 @@ void netbsd::Link::ConstructJob(Compilation &C, const JobAction &JA,
   bool useLibgcc = true;
   if (Major >= 7 || (Major == 6 && Minor == 99 && Micro >= 49) || Major == 0) {
     switch(getToolChain().getArch()) {
+    case llvm::Triple::aarch64:
     case llvm::Triple::arm:
     case llvm::Triple::armeb:
     case llvm::Triple::thumb:
     case llvm::Triple::thumbeb:
     case llvm::Triple::ppc:
+    case llvm::Triple::ppc64:
+    case llvm::Triple::ppc64le:
     case llvm::Triple::x86:
     case llvm::Triple::x86_64:
       useLibgcc = false;
@@ -7274,7 +7224,11 @@ static std::string getLinuxDynamicLinker(const ArgList &Args,
                            .Case("n32", "/lib32")
                            .Case("n64", "/lib64")
                            .Default("/lib");
-    StringRef LibName = IsNaN2008 ? "ld-linux-mipsn8.so.1" : "ld.so.1";
+    StringRef LibName;
+    if (mips::isUCLibc(Args))
+      LibName = IsNaN2008 ? "ld-uClibc-mipsn8.so.0" : "ld-uClibc.so.0";
+    else
+      LibName = IsNaN2008 ? "ld-linux-mipsn8.so.1" : "ld.so.1";
 
     return (LibDir + "/" + LibName).str();
   } else if (ToolChain.getArch() == llvm::Triple::ppc)
@@ -7310,6 +7264,53 @@ static void AddRunTimeLibs(const ToolChain &TC, const Driver &D,
   case ToolChain::RLT_Libgcc:
     AddLibgcc(TC.getTriple(), D, CmdArgs, Args);
     break;
+  }
+}
+
+static const char *getLDMOption(const llvm::Triple &T, const ArgList &Args) {
+  switch (T.getArch()) {
+  case llvm::Triple::x86:
+    return "elf_i386";
+  case llvm::Triple::aarch64:
+    return "aarch64linux";
+  case llvm::Triple::aarch64_be:
+    return "aarch64_be_linux";
+  case llvm::Triple::arm:
+  case llvm::Triple::thumb:
+    return "armelf_linux_eabi";
+  case llvm::Triple::armeb:
+  case llvm::Triple::thumbeb:
+    return "armebelf_linux_eabi"; /* TODO: check which NAME.  */
+  case llvm::Triple::ppc:
+    return "elf32ppclinux";
+  case llvm::Triple::ppc64:
+    return "elf64ppc";
+  case llvm::Triple::ppc64le:
+    return "elf64lppc";
+  case llvm::Triple::sparc:
+    return "elf32_sparc";
+  case llvm::Triple::sparcv9:
+    return "elf64_sparc";
+  case llvm::Triple::mips:
+    return "elf32btsmip";
+  case llvm::Triple::mipsel:
+    return "elf32ltsmip";
+  case llvm::Triple::mips64:
+    if (mips::hasMipsAbiArg(Args, "n32"))
+      return "elf32btsmipn32";
+    return "elf64btsmip";
+  case llvm::Triple::mips64el:
+    if (mips::hasMipsAbiArg(Args, "n32"))
+      return "elf32ltsmipn32";
+    return "elf64ltsmip";
+  case llvm::Triple::systemz:
+    return "elf64_s390";
+  case llvm::Triple::x86_64:
+    if (T.getEnvironment() == llvm::Triple::GNUX32)
+      return "elf32_x86_64";
+    return "elf_x86_64";
+  default:
+    llvm_unreachable("Unexpected arch");
   }
 }
 
@@ -7362,51 +7363,7 @@ void gnutools::Link::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   CmdArgs.push_back("-m");
-  if (ToolChain.getArch() == llvm::Triple::x86)
-    CmdArgs.push_back("elf_i386");
-  else if (ToolChain.getArch() == llvm::Triple::aarch64)
-    CmdArgs.push_back("aarch64linux");
-  else if (ToolChain.getArch() == llvm::Triple::aarch64_be)
-    CmdArgs.push_back("aarch64_be_linux");
-  else if (ToolChain.getArch() == llvm::Triple::arm
-           ||  ToolChain.getArch() == llvm::Triple::thumb)
-    CmdArgs.push_back("armelf_linux_eabi");
-  else if (ToolChain.getArch() == llvm::Triple::armeb
-           ||  ToolChain.getArch() == llvm::Triple::thumbeb)
-    CmdArgs.push_back("armebelf_linux_eabi"); /* TODO: check which NAME.  */
-  else if (ToolChain.getArch() == llvm::Triple::ppc)
-    CmdArgs.push_back("elf32ppclinux");
-  else if (ToolChain.getArch() == llvm::Triple::ppc64)
-    CmdArgs.push_back("elf64ppc");
-  else if (ToolChain.getArch() == llvm::Triple::ppc64le)
-    CmdArgs.push_back("elf64lppc");
-  else if (ToolChain.getArch() == llvm::Triple::sparc)
-    CmdArgs.push_back("elf32_sparc");
-  else if (ToolChain.getArch() == llvm::Triple::sparcv9)
-    CmdArgs.push_back("elf64_sparc");
-  else if (ToolChain.getArch() == llvm::Triple::mips)
-    CmdArgs.push_back("elf32btsmip");
-  else if (ToolChain.getArch() == llvm::Triple::mipsel)
-    CmdArgs.push_back("elf32ltsmip");
-  else if (ToolChain.getArch() == llvm::Triple::mips64) {
-    if (mips::hasMipsAbiArg(Args, "n32"))
-      CmdArgs.push_back("elf32btsmipn32");
-    else
-      CmdArgs.push_back("elf64btsmip");
-  }
-  else if (ToolChain.getArch() == llvm::Triple::mips64el) {
-    if (mips::hasMipsAbiArg(Args, "n32"))
-      CmdArgs.push_back("elf32ltsmipn32");
-    else
-      CmdArgs.push_back("elf64ltsmip");
-  }
-  else if (ToolChain.getArch() == llvm::Triple::systemz)
-    CmdArgs.push_back("elf64_s390");
-  else if (ToolChain.getArch() == llvm::Triple::x86_64 &&
-           ToolChain.getTriple().getEnvironment() == llvm::Triple::GNUX32)
-    CmdArgs.push_back("elf32_x86_64");
-  else
-    CmdArgs.push_back("elf_x86_64");
+  CmdArgs.push_back(getLDMOption(ToolChain.getTriple(), Args));
 
   if (Args.hasArg(options::OPT_static)) {
     if (ToolChain.getArch() == llvm::Triple::arm ||
@@ -7865,7 +7822,10 @@ void visualstudio::Link::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString("-debug"));
     CmdArgs.push_back(Args.MakeArgString("-incremental:no"));
     // FIXME: Handle 64-bit.
-    if (DLL) {
+    if (Args.hasArg(options::OPT__SLASH_MD, options::OPT__SLASH_MDd)) {
+      addSanitizerRTWindows(getToolChain(), Args, CmdArgs, "asan_dynamic-i386");
+      addSanitizerRTWindows(getToolChain(), Args, CmdArgs, "asan_uar_thunk-i386");
+    } else if (DLL) {
       addSanitizerRTWindows(getToolChain(), Args, CmdArgs,
                             "asan_dll_thunk-i386");
     } else {

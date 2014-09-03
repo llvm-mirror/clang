@@ -13,8 +13,8 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_FORMAT_FORMAT_TOKEN_H
-#define LLVM_CLANG_FORMAT_FORMAT_TOKEN_H
+#ifndef LLVM_CLANG_LIB_FORMAT_FORMATTOKEN_H
+#define LLVM_CLANG_LIB_FORMAT_FORMATTOKEN_H
 
 #include "clang/Basic/OperatorPrecedence.h"
 #include "clang/Format/Format.h"
@@ -350,7 +350,8 @@ struct FormatToken {
   }
 
   bool isTrailingComment() const {
-    return is(tok::comment) && (!Next || Next->NewlinesBefore > 0);
+    return is(tok::comment) &&
+           (Type == TT_LineComment || !Next || Next->NewlinesBefore > 0);
   }
 
   /// \brief Returns \c true if this is a keyword that can be used
@@ -522,4 +523,4 @@ private:
 } // namespace format
 } // namespace clang
 
-#endif // LLVM_CLANG_FORMAT_FORMAT_TOKEN_H
+#endif

@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_SERIALIZATION_MODULE_MANAGER_H
-#define LLVM_CLANG_SERIALIZATION_MODULE_MANAGER_H
+#ifndef LLVM_CLANG_SERIALIZATION_MODULEMANAGER_H
+#define LLVM_CLANG_SERIALIZATION_MODULEMANAGER_H
 
 #include "clang/Basic/FileManager.h"
 #include "clang/Serialization/Module.h"
@@ -41,7 +41,8 @@ class ModuleManager {
   FileManager &FileMgr;
   
   /// \brief A lookup of in-memory (virtual file) buffers
-  llvm::DenseMap<const FileEntry *, llvm::MemoryBuffer *> InMemoryBuffers;
+  llvm::DenseMap<const FileEntry *, std::unique_ptr<llvm::MemoryBuffer>>
+      InMemoryBuffers;
 
   /// \brief The visitation order.
   SmallVector<ModuleFile *, 4> VisitOrder;
@@ -141,7 +142,7 @@ public:
   ModuleFile *lookup(const FileEntry *File);
 
   /// \brief Returns the in-memory (virtual file) buffer with the given name
-  llvm::MemoryBuffer *lookupBuffer(StringRef Name);
+  std::unique_ptr<llvm::MemoryBuffer> lookupBuffer(StringRef Name);
   
   /// \brief Number of modules loaded
   unsigned size() const { return Chain.size(); }
@@ -199,7 +200,8 @@ public:
                      ModuleMap *modMap);
 
   /// \brief Add an in-memory buffer the list of known buffers
-  void addInMemoryBuffer(StringRef FileName, llvm::MemoryBuffer *Buffer);
+  void addInMemoryBuffer(StringRef FileName,
+                         std::unique_ptr<llvm::MemoryBuffer> Buffer);
 
   /// \brief Set the global module index.
   void setGlobalIndex(GlobalModuleIndex *Index);
@@ -232,7 +234,7 @@ public:
   /// Any module that is known to both the global module index and the module
   /// manager that is *not* in this set can be skipped.
   void visit(bool (*Visitor)(ModuleFile &M, void *UserData), void *UserData,
-             llvm::SmallPtrSet<ModuleFile *, 4> *ModuleFilesHit = nullptr);
+             llvm::SmallPtrSetImpl<ModuleFile *> *ModuleFilesHit = nullptr);
   
   /// \brief Visit each of the modules with a depth-first traversal.
   ///

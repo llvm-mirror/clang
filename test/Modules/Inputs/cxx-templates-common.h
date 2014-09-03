@@ -32,7 +32,17 @@ template<typename T> struct Outer {
 };
 
 template<typename T> struct WithPartialSpecialization {};
+template<typename T> struct WithPartialSpecialization<void(T)> { typedef int type; };
 typedef WithPartialSpecialization<int*> WithPartialSpecializationUse;
+typedef WithPartialSpecialization<void(int)> WithPartialSpecializationUse2;
 
 template<typename T> struct WithExplicitSpecialization;
 typedef WithExplicitSpecialization<int> WithExplicitSpecializationUse;
+
+template<typename T> struct WithImplicitSpecialMembers { int n; };
+
+template<typename T> struct WithAliasTemplate {
+  template<typename> using X = T;
+};
+
+#include "cxx-templates-textual.h"

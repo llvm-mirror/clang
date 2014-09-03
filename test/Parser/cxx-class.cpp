@@ -139,6 +139,27 @@ namespace CtorErrors {
   };
 }
 
+namespace BadFriend {
+  struct A {
+    friend int : 3; // expected-error {{friends can only be classes or functions}}
+    friend void f() = 123; // expected-error {{illegal initializer}}
+    friend virtual void f(); // expected-error {{'virtual' is invalid in friend declarations}}
+    friend void f() final; // expected-error {{'final' is invalid in friend declarations}}
+    friend void f() override; // expected-error {{'override' is invalid in friend declarations}}
+  };
+}
+
+class PR20760_a {
+  int a = ); // expected-warning {{extension}} expected-error {{expected expression}}
+  int b = }; // expected-warning {{extension}} expected-error {{expected expression}}
+  int c = ]; // expected-warning {{extension}} expected-error {{expected expression}}
+};
+class PR20760_b {
+  int d = d); // expected-warning {{extension}} expected-error {{expected ';'}}
+  int e = d]; // expected-warning {{extension}} expected-error {{expected ';'}}
+  int f = d // expected-warning {{extension}} expected-error {{expected ';'}}
+};
+
 // PR11109 must appear at the end of the source file
 class pr11109r3 { // expected-note{{to match this '{'}}
   public // expected-error{{expected ':'}} expected-error{{expected '}'}} expected-error{{expected ';' after class}}

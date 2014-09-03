@@ -12,8 +12,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef CLANG_CODEGEN_CXXABI_H
-#define CLANG_CODEGEN_CXXABI_H
+#ifndef LLVM_CLANG_LIB_CODEGEN_CGCXXABI_H
+#define LLVM_CLANG_LIB_CODEGEN_CGCXXABI_H
 
 #include "CodeGenFunction.h"
 #include "clang/Basic/LLVM.h"
@@ -376,8 +376,8 @@ public:
   virtual void EmitVirtualDestructorCall(CodeGenFunction &CGF,
                                          const CXXDestructorDecl *Dtor,
                                          CXXDtorType DtorType,
-                                         SourceLocation CallLoc,
-                                         llvm::Value *This) = 0;
+                                         llvm::Value *This,
+                                         const CXXMemberCallExpr *CE) = 0;
 
   virtual void adjustCallArgsForDestructorThunk(CodeGenFunction &CGF,
                                                 GlobalDecl GD,

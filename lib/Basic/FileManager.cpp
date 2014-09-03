@@ -64,20 +64,20 @@ FileManager::~FileManager() {
     delete VirtualDirectoryEntries[i];
 }
 
-void FileManager::addStatCache(FileSystemStatCache *statCache,
+void FileManager::addStatCache(std::unique_ptr<FileSystemStatCache> statCache,
                                bool AtBeginning) {
   assert(statCache && "No stat cache provided?");
   if (AtBeginning || !StatCache.get()) {
-    statCache->setNextStatCache(StatCache.release());
-    StatCache.reset(statCache);
+    statCache->setNextStatCache(std::move(StatCache));
+    StatCache = std::move(statCache);
     return;
   }
   
   FileSystemStatCache *LastCache = StatCache.get();
   while (LastCache->getNextStatCache())
     LastCache = LastCache->getNextStatCache();
-  
-  LastCache->setNextStatCache(statCache);
+
+  LastCache->setNextStatCache(std::move(statCache));
 }
 
 void FileManager::removeStatCache(FileSystemStatCache *statCache) {
@@ -86,7 +86,7 @@ void FileManager::removeStatCache(FileSystemStatCache *statCache) {
   
   if (StatCache.get() == statCache) {
     // This is the first stat cache.
-    StatCache.reset(StatCache->takeNextStatCache());
+    StatCache = StatCache->takeNextStatCache();
     return;
   }
   
@@ -96,7 +96,7 @@ void FileManager::removeStatCache(FileSystemStatCache *statCache) {
     PrevCache = PrevCache->getNextStatCache();
   
   assert(PrevCache && "Stat cache not found for removal");
-  PrevCache->setNextStatCache(statCache->getNextStatCache());
+  PrevCache->setNextStatCache(statCache->takeNextStatCache());
 }
 
 void FileManager::clearStatCaches() {
@@ -281,6 +281,13 @@ const FileEntry *FileManager::getFile(StringRef Filename, bool openFile,
     if (DirInfo != UFE.Dir && Data.IsVFSMapped)
       UFE.Dir = DirInfo;
 
+    // Always update the name to use the last name by which a file was accessed.
+    // FIXME: Neither this nor always using the first name is correct; we want
+    // to switch towards a design where we return a FileName object that
+    // encapsulates both the name by which the file was accessed and the
+    // corresponding FileEntry.
+    UFE.Name = Data.Name;
+
     return &UFE;
   }
 
@@ -379,9 +386,9 @@ void FileManager::FixupRelativePath(SmallVectorImpl<char> &path) const {
   path = NewPath;
 }
 
-llvm::MemoryBuffer *FileManager::
-getBufferForFile(const FileEntry *Entry, std::string *ErrorStr,
-                 bool isVolatile, bool ShouldCloseOpenFile) {
+std::unique_ptr<llvm::MemoryBuffer>
+FileManager::getBufferForFile(const FileEntry *Entry, std::string *ErrorStr,
+                              bool isVolatile, bool ShouldCloseOpenFile) {
   std::unique_ptr<llvm::MemoryBuffer> Result;
   std::error_code ec;
 
@@ -402,7 +409,7 @@ getBufferForFile(const FileEntry *Entry, std::string *ErrorStr,
     // FileEntry is open or not.
     if (ShouldCloseOpenFile)
       Entry->closeFile();
-    return Result.release();
+    return Result;
   }
 
   // Otherwise, open the file.
@@ -412,7 +419,7 @@ getBufferForFile(const FileEntry *Entry, std::string *ErrorStr,
                               /*RequiresNullTerminator=*/true, isVolatile);
     if (ec && ErrorStr)
       *ErrorStr = ec.message();
-    return Result.release();
+    return Result;
   }
 
   SmallString<128> FilePath(Entry->getName());
@@ -421,18 +428,18 @@ getBufferForFile(const FileEntry *Entry, std::string *ErrorStr,
                             /*RequiresNullTerminator=*/true, isVolatile);
   if (ec && ErrorStr)
     *ErrorStr = ec.message();
-  return Result.release();
+  return Result;
 }
 
-llvm::MemoryBuffer *FileManager::
-getBufferForFile(StringRef Filename, std::string *ErrorStr) {
+std::unique_ptr<llvm::MemoryBuffer>
+FileManager::getBufferForFile(StringRef Filename, std::string *ErrorStr) {
   std::unique_ptr<llvm::MemoryBuffer> Result;
   std::error_code ec;
   if (FileSystemOpts.WorkingDir.empty()) {
     ec = FS->getBufferForFile(Filename, Result);
     if (ec && ErrorStr)
       *ErrorStr = ec.message();
-    return Result.release();
+    return Result;
   }
 
   SmallString<128> FilePath(Filename);
@@ -440,7 +447,7 @@ getBufferForFile(StringRef Filename, std::string *ErrorStr) {
   ec = FS->getBufferForFile(FilePath.c_str(), Result);
   if (ec && ErrorStr)
     *ErrorStr = ec.message();
-  return Result.release();
+  return Result;
 }
 
 /// getStatValue - Get the 'stat' information for the specified path,

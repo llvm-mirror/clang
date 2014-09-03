@@ -1134,17 +1134,28 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
 
   // Module map file
   if (WritingModule) {
-    BitCodeAbbrev *Abbrev = new BitCodeAbbrev();
-    Abbrev->Add(BitCodeAbbrevOp(MODULE_MAP_FILE));
-    Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob)); // Filename
-    unsigned AbbrevCode = Stream.EmitAbbrev(Abbrev);
+    Record.clear();
+    auto addModMap = [&](const FileEntry *F) {
+      SmallString<128> ModuleMap(F->getName());
+      llvm::sys::fs::make_absolute(ModuleMap);
+      AddString(ModuleMap.str(), Record);
+    };
 
-    assert(WritingModule->ModuleMap && "missing module map");
-    SmallString<128> ModuleMap(WritingModule->ModuleMap->getName());
-    llvm::sys::fs::make_absolute(ModuleMap);
-    RecordData Record;
-    Record.push_back(MODULE_MAP_FILE);
-    Stream.EmitRecordWithBlob(AbbrevCode, Record, ModuleMap.str());
+    auto &Map = PP.getHeaderSearchInfo().getModuleMap();
+
+    // Primary module map file.
+    addModMap(Map.getModuleMapFileForUniquing(WritingModule));
+
+    // Additional module map files.
+    if (auto *AdditionalModMaps = Map.getAdditionalModuleMapFiles(WritingModule)) {
+      Record.push_back(AdditionalModMaps->size());
+      for (const FileEntry *F : *AdditionalModMaps)
+        addModMap(F);
+    } else {
+      Record.push_back(0);
+    }
+
+    Stream.EmitRecord(MODULE_MAP_FILE, Record);
   }
 
   // Imports
@@ -3468,6 +3479,31 @@ void ASTWriter::WriteIdentifierTable(Preprocessor &PP,
 // DeclContext's Name Lookup Table Serialization
 //===----------------------------------------------------------------------===//
 
+/// Determine the declaration that should be put into the name lookup table to
+/// represent the given declaration in this module. This is usually D itself,
+/// but if D was imported and merged into a local declaration, we want the most
+/// recent local declaration instead. The chosen declaration will be the most
+/// recent declaration in any module that imports this one.
+static NamedDecl *getDeclForLocalLookup(NamedDecl *D) {
+  if (!D->isFromASTFile())
+    return D;
+
+  if (Decl *Redecl = D->getPreviousDecl()) {
+    // For Redeclarable decls, a prior declaration might be local.
+    for (; Redecl; Redecl = Redecl->getPreviousDecl())
+      if (!Redecl->isFromASTFile())
+        return cast<NamedDecl>(Redecl);
+  } else if (Decl *First = D->getCanonicalDecl()) {
+    // For Mergeable decls, the first decl might be local.
+    if (!First->isFromASTFile())
+      return cast<NamedDecl>(First);
+  }
+
+  // All declarations are imported. Our most recent declaration will also be
+  // the most recent one in anyone who imports us.
+  return D;
+}
+
 namespace {
 // Trait used for the on-disk hash table used in the method pool.
 class ASTDeclContextNameLookupTrait {
@@ -3585,7 +3621,7 @@ public:
     LE.write<uint16_t>(Lookup.size());
     for (DeclContext::lookup_iterator I = Lookup.begin(), E = Lookup.end();
          I != E; ++I)
-      LE.write<uint32_t>(Writer.GetDeclRef(*I));
+      LE.write<uint32_t>(Writer.GetDeclRef(getDeclForLocalLookup(*I)));
 
     assert(Out.tell() - Start == DataLen && "Data length is wrong");
   }
@@ -3631,7 +3667,7 @@ void ASTWriter::AddUpdatedDeclContext(const DeclContext *DC) {
                             [&](DeclarationName Name,
                                 DeclContext::lookup_const_result Result) {
       for (auto *Decl : Result)
-        GetDeclRef(Decl);
+        GetDeclRef(getDeclForLocalLookup(Decl));
     });
   }
 }
@@ -3828,6 +3864,8 @@ void ASTWriter::WriteRedeclarations() {
           FirstFromAST = Prev;
       }
 
+      // FIXME: Do we need to do this for the first declaration from each
+      // redeclaration chain that was merged into this one?
       Chain->MergedDecls[FirstFromAST].push_back(getDeclID(First));
     }
 
@@ -4420,6 +4458,9 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
         StringRef FileName = (*M)->FileName;
         LE.write<uint16_t>(FileName.size());
         Out.write(FileName.data(), FileName.size());
+
+        // These values should be unique within a chain, since they will be read
+        // as keys into ContinuousRangeMaps.
         LE.write<uint32_t>((*M)->SLocEntryBaseOffset);
         LE.write<uint32_t>((*M)->BaseIdentifierID);
         LE.write<uint32_t>((*M)->BaseMacroID);

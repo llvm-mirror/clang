@@ -38,7 +38,7 @@ public:
 }
 
 void ModuleDependencyCollector::attachToASTReader(ASTReader &R) {
-  R.addListener(new ModuleDependencyListener(*this));
+  R.addListener(llvm::make_unique<ModuleDependencyListener>(*this));
 }
 
 void ModuleDependencyCollector::writeFileMap() {
@@ -48,9 +48,9 @@ void ModuleDependencyCollector::writeFileMap() {
   SmallString<256> Dest = getDest();
   llvm::sys::path::append(Dest, "vfs.yaml");
 
-  std::string ErrorInfo;
-  llvm::raw_fd_ostream OS(Dest.c_str(), ErrorInfo, llvm::sys::fs::F_Text);
-  if (!ErrorInfo.empty()) {
+  std::error_code EC;
+  llvm::raw_fd_ostream OS(Dest, EC, llvm::sys::fs::F_Text);
+  if (EC) {
     setHasErrors();
     return;
   }

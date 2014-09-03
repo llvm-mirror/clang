@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef CLANG_CODEGEN_CODEGENMODULE_H
-#define CLANG_CODEGEN_CODEGENMODULE_H
+#ifndef LLVM_CLANG_LIB_CODEGEN_CODEGENMODULE_H
+#define LLVM_CLANG_LIB_CODEGEN_CODEGENMODULE_H
 
 #include "CGVTables.h"
 #include "CodeGenTypes.h"
@@ -936,7 +936,7 @@ public:
                                  llvm::Function *F);
 
   /// Set the LLVM function attributes which only apply to a function
-  /// definintion.
+  /// definition.
   void SetLLVMFunctionAttributesForDefinition(const Decl *D, llvm::Function *F);
 
   /// Return true iff the given type uses 'sret' when used as a return type.

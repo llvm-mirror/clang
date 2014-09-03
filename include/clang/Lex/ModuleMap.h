@@ -107,6 +107,8 @@ public:
     }
   };
 
+  typedef llvm::SmallPtrSet<const FileEntry *, 1> AdditionalModMapsSet;
+
 private:
   typedef llvm::DenseMap<const FileEntry *, SmallVector<KnownHeader, 1> >
   HeadersMap;
@@ -145,6 +147,12 @@ private:
   /// \brief A mapping from directories to information about inferring
   /// framework modules from within those directories.
   llvm::DenseMap<const DirectoryEntry *, InferredDirectory> InferredDirectories;
+
+  /// A mapping from an inferred module to the module map that allowed the
+  /// inference.
+  llvm::DenseMap<const Module *, const FileEntry *> InferredModuleAllowedBy;
+
+  llvm::DenseMap<const Module *, AdditionalModMapsSet> AdditionalModMaps;
 
   /// \brief Describes whether we haved parsed a particular file as a module
   /// map.
@@ -306,9 +314,6 @@ public:
   /// \param Parent The module that will act as the parent of this submodule,
   /// or NULL to indicate that this is a top-level module.
   ///
-  /// \param ModuleMap The module map that defines or allows the inference of
-  /// this module.
-  ///
   /// \param IsFramework Whether this is a framework module.
   ///
   /// \param IsExplicit Whether this is an explicit submodule.
@@ -316,7 +321,6 @@ public:
   /// \returns The found or newly-created module, along with a boolean value
   /// that will be true if the module is newly-created.
   std::pair<Module *, bool> findOrCreateModule(StringRef Name, Module *Parent,
-                                               const FileEntry *ModuleMap,
                                                bool IsFramework,
                                                bool IsExplicit);
 
@@ -349,7 +353,35 @@ public:
   ///
   /// \returns The file entry for the module map file containing the given
   /// module, or NULL if the module definition was inferred.
-  const FileEntry *getContainingModuleMapFile(Module *Module) const;
+  const FileEntry *getContainingModuleMapFile(const Module *Module) const;
+
+  /// \brief Get the module map file that (along with the module name) uniquely
+  /// identifies this module.
+  ///
+  /// The particular module that \c Name refers to may depend on how the module
+  /// was found in header search. However, the combination of \c Name and
+  /// this module map will be globally unique for top-level modules. In the case
+  /// of inferred modules, returns the module map that allowed the inference
+  /// (e.g. contained 'module *'). Otherwise, returns
+  /// getContainingModuleMapFile().
+  const FileEntry *getModuleMapFileForUniquing(const Module *M) const;
+
+  void setInferredModuleAllowedBy(Module *M, const FileEntry *ModuleMap);
+
+  /// \brief Get any module map files other than getModuleMapFileForUniquing(M)
+  /// that define submodules of a top-level module \p M. This is cheaper than
+  /// getting the module map file for each submodule individually, since the
+  /// expected number of results is very small.
+  AdditionalModMapsSet *getAdditionalModuleMapFiles(const Module *M) {
+    auto I = AdditionalModMaps.find(M);
+    if (I == AdditionalModMaps.end())
+      return nullptr;
+    return &I->second;
+  }
+
+  void addAdditionalModuleMapFile(const Module *M, const FileEntry *ModuleMap) {
+    AdditionalModMaps[M].insert(ModuleMap);
+  }
 
   /// \brief Resolve all of the unresolved exports in the given module.
   ///

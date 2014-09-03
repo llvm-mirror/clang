@@ -1243,13 +1243,13 @@ namespace {
   // the evaluated decls into a vector.  Simple is set to true if none
   // of the excluded constructs are used.
   class DeclExtractor : public EvaluatedExprVisitor<DeclExtractor> {
-    llvm::SmallPtrSet<VarDecl*, 8> &Decls;
+    llvm::SmallPtrSetImpl<VarDecl*> &Decls;
     SmallVectorImpl<SourceRange> &Ranges;
     bool Simple;
   public:
     typedef EvaluatedExprVisitor<DeclExtractor> Inherited;
 
-    DeclExtractor(Sema &S, llvm::SmallPtrSet<VarDecl*, 8> &Decls,
+    DeclExtractor(Sema &S, llvm::SmallPtrSetImpl<VarDecl*> &Decls,
                   SmallVectorImpl<SourceRange> &Ranges) :
         Inherited(S.Context),
         Decls(Decls),
@@ -1321,13 +1321,13 @@ namespace {
   // DeclMatcher checks to see if the decls are used in a non-evauluated
   // context.
   class DeclMatcher : public EvaluatedExprVisitor<DeclMatcher> {
-    llvm::SmallPtrSet<VarDecl*, 8> &Decls;
+    llvm::SmallPtrSetImpl<VarDecl*> &Decls;
     bool FoundDecl;
 
   public:
     typedef EvaluatedExprVisitor<DeclMatcher> Inherited;
 
-    DeclMatcher(Sema &S, llvm::SmallPtrSet<VarDecl*, 8> &Decls,
+    DeclMatcher(Sema &S, llvm::SmallPtrSetImpl<VarDecl*> &Decls,
                 Stmt *Statement) :
         Inherited(S.Context), Decls(Decls), FoundDecl(false) {
       if (!Statement) return;
@@ -1410,8 +1410,8 @@ namespace {
     if (Decls.size() == 0) return;
 
     // Don't warn on volatile, static, or global variables.
-    for (llvm::SmallPtrSet<VarDecl*, 8>::iterator I = Decls.begin(),
-                                                  E = Decls.end();
+    for (llvm::SmallPtrSetImpl<VarDecl*>::iterator I = Decls.begin(),
+                                                   E = Decls.end();
          I != E; ++I)
       if ((*I)->getType().isVolatileQualified() ||
           (*I)->hasGlobalStorage()) return;
@@ -1426,8 +1426,8 @@ namespace {
       PDiag << 0;
     else {
       PDiag << Decls.size();
-      for (llvm::SmallPtrSet<VarDecl*, 8>::iterator I = Decls.begin(),
-                                                    E = Decls.end();
+      for (llvm::SmallPtrSetImpl<VarDecl*>::iterator I = Decls.begin(),
+                                                     E = Decls.end();
            I != E; ++I)
         PDiag << (*I)->getDeclName();
     }
@@ -2855,7 +2855,7 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
 
   // FIXME: Add a flag to the ScopeInfo to indicate whether we're performing
   // deduction.
-  if (getLangOpts().CPlusPlus1y) {
+  if (getLangOpts().CPlusPlus14) {
     if (AutoType *AT = FnRetType->getContainedAutoType()) {
       FunctionDecl *FD = cast<FunctionDecl>(CurContext);
       if (DeduceFunctionTypeFromReturnExpr(FD, ReturnLoc, RetValExp, AT)) {
@@ -3102,9 +3102,24 @@ Sema::ActOnObjCAtSynchronizedOperand(SourceLocation atLoc, Expr *operand) {
   if (!type->isDependentType() &&
       !type->isObjCObjectPointerType()) {
     const PointerType *pointerType = type->getAs<PointerType>();
-    if (!pointerType || !pointerType->getPointeeType()->isVoidType())
-      return Diag(atLoc, diag::error_objc_synchronized_expects_object)
-               << type << operand->getSourceRange();
+    if (!pointerType || !pointerType->getPointeeType()->isVoidType()) {
+      if (getLangOpts().CPlusPlus) {
+        if (RequireCompleteType(atLoc, type,
+                                diag::err_incomplete_receiver_type))
+          return Diag(atLoc, diag::error_objc_synchronized_expects_object)
+                   << type << operand->getSourceRange();
+
+        ExprResult result = PerformContextuallyConvertToObjCPointer(operand);
+        if (!result.isUsable())
+          return Diag(atLoc, diag::error_objc_synchronized_expects_object)
+                   << type << operand->getSourceRange();
+
+        operand = result.get();
+      } else {
+          return Diag(atLoc, diag::error_objc_synchronized_expects_object)
+                   << type << operand->getSourceRange();
+      }
+    }
   }
 
   // The operand to @synchronized is a full-expression.

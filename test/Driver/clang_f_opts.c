@@ -139,6 +139,9 @@
 // RUN: %clang -### -S -finput-charset=iso-8859-1 -o /dev/null %s 2>&1 | FileCheck -check-prefix=CHECK-INVALID-CHARSET %s
 // CHECK-INVALID-CHARSET: error: invalid value 'iso-8859-1' in '-finput-charset=iso-8859-1'
 
+// RUN: %clang -### -S -fexec-charset=iso-8859-1 -o /dev/null %s 2>&1 | FileCheck -check-prefix=CHECK-INVALID-INPUT-CHARSET %s
+// CHECK-INVALID-INPUT-CHARSET: error: invalid value 'iso-8859-1' in '-fexec-charset=iso-8859-1'
+
 // Test that we don't error on these.
 // RUN: %clang -### -S -Werror                                                \
 // RUN:     -falign-functions -falign-functions=2 -fno-align-functions        \
@@ -151,6 +154,7 @@
 // RUN:     -fident -fno-ident                                                \
 // RUN:     -fimplicit-templates -fno-implicit-templates                      \
 // RUN:     -finput-charset=UTF-8                                             \
+// RUN:     -fexec-charset=UTF-8                                             \
 // RUN:     -fivopts -fno-ivopts                                              \
 // RUN:     -fnon-call-exceptions -fno-non-call-exceptions                    \
 // RUN:     -fpermissive -fno-permissive                                      \
@@ -219,7 +223,6 @@
 // RUN:     -ffriend-injection                                                \
 // RUN:     -fno-implement-inlines -fimplement-inlines                        \
 // RUN:     -fstack-check                                                     \
-// RUN:     -fexec-charset=UTF-8                                              \
 // RUN:     -fforce-addr                                                      \
 // RUN:     -malign-functions=100                                             \
 // RUN:     -malign-loops=100                                                 \
@@ -235,6 +238,7 @@
 // RUN: -fno-expensive-optimizations                                          \
 // RUN: -fno-defer-pop                                                        \
 // RUN: -finline-functions                                                    \
+// RUN: -fkeep-inline-functions                                               \
 // RUN: -fno-keep-inline-functions                                            \
 // RUN: -freorder-blocks                                                      \
 // RUN: -fprofile-dir=/rand/dir                                               \
@@ -295,6 +299,8 @@
 // RUN: -ftree-dce                                                            \
 // RUN: -ftree-ter                                                            \
 // RUN: -ftree-vrp                                                            \
+// RUN: -fno-devirtualize                                                     \
+// RUN: -fno-devirtualize-speculatively                                       \
 // RUN: %s 2>&1 | FileCheck --check-prefix=CHECK-WARNING %s
 // CHECK-WARNING-DAG: optimization flag '-finline-limit=1000' is not supported
 // CHECK-WARNING-DAG: optimization flag '-finline-limit' is not supported
@@ -302,6 +308,7 @@
 // CHECK-WARNING-DAG: optimization flag '-fno-expensive-optimizations' is not supported
 // CHECK-WARNING-DAG: optimization flag '-fno-defer-pop' is not supported
 // CHECK-WARNING-DAG: optimization flag '-finline-functions' is not supported
+// CHECK-WARNING-DAG: optimization flag '-fkeep-inline-functions' is not supported
 // CHECK-WARNING-DAG: optimization flag '-fno-keep-inline-functions' is not supported
 // CHECK-WARNING-DAG: optimization flag '-freorder-blocks' is not supported
 // CHECK-WARNING-DAG: optimization flag '-fprofile-dir=/rand/dir' is not supported
@@ -362,6 +369,8 @@
 // CHECK-WARNING-DAG: optimization flag '-ftree-dce' is not supported
 // CHECK-WARNING-DAG: optimization flag '-ftree-ter' is not supported
 // CHECK-WARNING-DAG: optimization flag '-ftree-vrp' is not supported
+// CHECK-WARNING-DAG: optimization flag '-fno-devirtualize' is not supported
+// CHECK-WARNING-DAG: optimization flag '-fno-devirtualize-speculatively' is not supported
 
 // Test that we mute the warning on these
 // RUN: %clang -### -finline-limit=1000 -Wno-invalid-command-line-argument              \

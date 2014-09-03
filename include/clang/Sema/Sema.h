@@ -129,7 +129,6 @@ namespace clang {
   class ModuleLoader;
   class MultiLevelTemplateArgumentList;
   class NamedDecl;
-  class NonNullAttr;
   class ObjCCategoryDecl;
   class ObjCCategoryImplDecl;
   class ObjCCompatibleAliasDecl;
@@ -684,6 +683,9 @@ public:
     
   /// \brief The declaration of the initWithObjects:forKeys:count: method.
   ObjCMethodDecl *InitDictionaryWithObjectsMethod;
+    
+  /// \brief The declaration for + (id) alloc method used in [NSArray alloc]
+  ObjCMethodDecl *ArrayAllocObjectsMethod;
     
   /// \brief The declaration for + (id) alloc method used in [NSDictionary alloc]
   ObjCMethodDecl *DictAllocObjectsMethod;
@@ -2703,6 +2705,9 @@ public:
 
   void checkUnusedDeclAttributes(Declarator &D);
 
+  /// Determine if type T is a valid subject for a nonnull attribute.
+  bool isValidNonNullAttrType(QualType T);
+
   bool CheckRegparmAttr(const AttributeList &attr, unsigned &value);
   bool CheckCallingConvAttr(const AttributeList &attr, CallingConv &CC, 
                             const FunctionDecl *FD = nullptr);
@@ -2880,6 +2885,19 @@ private:
   ObjCMethodDecl *LookupMethodInGlobalPool(Selector Sel, SourceRange R,
                                            bool receiverIdOrClass,
                                            bool warn, bool instance);
+  
+  /// \brief - Returns instance or factory methods in global method pool for
+  /// given selector. If no such method or only one method found, function returns
+  /// false; otherwise, it returns true
+  bool CollectMultipleMethodsInGlobalPool(Selector Sel,
+                                          SmallVectorImpl<ObjCMethodDecl*>& Methods,
+                                          bool instance);
+    
+  /// \brief - Returns a selector which best matches given argument list or
+  /// nullptr if none could be found
+  ObjCMethodDecl *SelectBestMethod(Selector Sel, MultiExprArg Args,
+                                   bool IsInstance);
+    
 
   /// \brief Record the typo correction failure and return an empty correction.
   TypoCorrection FailedCorrection(IdentifierInfo *Typo, SourceLocation TypoLoc,
@@ -3275,7 +3293,8 @@ public:
   // needs to be delayed for some constant variables when we build one of the
   // named expressions.
   void MarkAnyDeclReferenced(SourceLocation Loc, Decl *D, bool OdrUse);
-  void MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func);
+  void MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
+                              bool OdrUse = true);
   void MarkVariableReferenced(SourceLocation Loc, VarDecl *Var);
   void MarkDeclRefReferenced(DeclRefExpr *E);
   void MarkMemberReferenced(MemberExpr *E);
@@ -5582,6 +5601,10 @@ public:
   // C++ Variadic Templates (C++0x [temp.variadic])
   //===--------------------------------------------------------------------===//
 
+  /// Determine whether an unexpanded parameter pack might be permitted in this
+  /// location. Useful for error recovery.
+  bool isUnexpandedParameterPackPermitted();
+
   /// \brief The context in which an unexpanded parameter pack is
   /// being diagnosed.
   ///
@@ -6547,6 +6570,31 @@ public:
   /// \brief The queue of implicit template instantiations that are required
   /// but have not yet been performed.
   std::deque<PendingImplicitInstantiation> PendingInstantiations;
+
+  class SavePendingInstantiationsAndVTableUsesRAII {
+  public:
+    SavePendingInstantiationsAndVTableUsesRAII(Sema &S): S(S) {
+      SavedPendingInstantiations.swap(S.PendingInstantiations);
+      SavedVTableUses.swap(S.VTableUses);
+    }
+
+    ~SavePendingInstantiationsAndVTableUsesRAII() {
+      // Restore the set of pending vtables.
+      assert(S.VTableUses.empty() &&
+             "VTableUses should be empty before it is discarded.");
+      S.VTableUses.swap(SavedVTableUses);
+
+      // Restore the set of pending implicit instantiations.
+      assert(S.PendingInstantiations.empty() &&
+             "PendingInstantiations should be empty before it is discarded.");
+      S.PendingInstantiations.swap(SavedPendingInstantiations);
+    }
+
+  private:
+    Sema &S;
+    SmallVector<VTableUse, 16> SavedVTableUses;
+    std::deque<PendingImplicitInstantiation> SavedPendingInstantiations;
+  };
 
   /// \brief The queue of implicit template instantiations that are required
   /// and must be performed within the current local scope.
@@ -8000,6 +8048,7 @@ public:
                                  ObjCMethodDecl *Method, bool isClassMessage,
                                  bool isSuperMessage,
                                  SourceLocation lbrac, SourceLocation rbrac,
+                                 SourceRange RecRange,
                                  QualType &ReturnType, ExprValueKind &VK);
 
   /// \brief Determine the result of a message send expression based on

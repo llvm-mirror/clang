@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef CLANG_DRIVER_TOOLCHAIN_H_
-#define CLANG_DRIVER_TOOLCHAIN_H_
+#ifndef LLVM_CLANG_DRIVER_TOOLCHAIN_H
+#define LLVM_CLANG_DRIVER_TOOLCHAIN_H
 
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Multilib.h"
@@ -41,7 +41,7 @@ namespace driver {
 /// ToolChain - Access to tools for a single platform.
 class ToolChain {
 public:
-  typedef SmallVector<std::string, 4> path_list;
+  typedef SmallVector<std::string, 16> path_list;
 
   enum CXXStdlibType {
     CST_Libcxx,

@@ -61,8 +61,8 @@ std::string GetExecutablePath(const char *Argv0, bool CanonicalPrefixes) {
   return llvm::sys::fs::getMainExecutable(Argv0, P);
 }
 
-static const char *SaveStringInSet(std::set<std::string> &SavedStrings,
-                                   StringRef S) {
+static const char *GetStableCStr(std::set<std::string> &SavedStrings,
+                                 StringRef S) {
   return SavedStrings.insert(S).first->c_str();
 }
 
@@ -101,12 +101,12 @@ static void ApplyOneQAOverride(raw_ostream &OS,
 
   if (Edit[0] == '^') {
     const char *Str =
-      SaveStringInSet(SavedStrings, Edit.substr(1));
+      GetStableCStr(SavedStrings, Edit.substr(1));
     OS << "### Adding argument " << Str << " at beginning\n";
     Args.insert(Args.begin() + 1, Str);
   } else if (Edit[0] == '+') {
     const char *Str =
-      SaveStringInSet(SavedStrings, Edit.substr(1));
+      GetStableCStr(SavedStrings, Edit.substr(1));
     OS << "### Adding argument " << Str << " at end\n";
     Args.push_back(Str);
   } else if (Edit[0] == 's' && Edit[1] == '/' && Edit.endswith("/") &&
@@ -116,11 +116,14 @@ static void ApplyOneQAOverride(raw_ostream &OS,
     ReplPattern = ReplPattern.slice(0, ReplPattern.size()-1);
 
     for (unsigned i = 1, e = Args.size(); i != e; ++i) {
+      // Ignore end-of-line response file markers
+      if (Args[i] == nullptr)
+        continue;
       std::string Repl = llvm::Regex(MatchPattern).sub(ReplPattern, Args[i]);
 
       if (Repl != Args[i]) {
         OS << "### Replacing '" << Args[i] << "' with '" << Repl << "'\n";
-        Args[i] = SaveStringInSet(SavedStrings, Repl);
+        Args[i] = GetStableCStr(SavedStrings, Repl);
       }
     }
   } else if (Edit[0] == 'x' || Edit[0] == 'X') {
@@ -142,6 +145,9 @@ static void ApplyOneQAOverride(raw_ostream &OS,
   } else if (Edit[0] == 'O') {
     for (unsigned i = 1; i < Args.size();) {
       const char *A = Args[i];
+      // Ignore end-of-line response file markers
+      if (A == nullptr)
+        continue;
       if (A[0] == '-' && A[1] == 'O' &&
           (A[2] == '\0' ||
            (A[3] == '\0' && (A[2] == 's' || A[2] == 'z' ||
@@ -152,7 +158,7 @@ static void ApplyOneQAOverride(raw_ostream &OS,
         ++i;
     }
     OS << "### Adding argument " << Edit << " at end\n";
-    Args.push_back(SaveStringInSet(SavedStrings, '-' + Edit.str()));
+    Args.push_back(GetStableCStr(SavedStrings, '-' + Edit.str()));
   } else {
     OS << "### Unrecognized edit: " << Edit << "\n";
   }
@@ -187,10 +193,10 @@ static void ApplyQAOverride(SmallVectorImpl<const char*> &Args,
   }
 }
 
-extern int cc1_main(const char **ArgBegin, const char **ArgEnd,
-                    const char *Argv0, void *MainAddr);
-extern int cc1as_main(const char **ArgBegin, const char **ArgEnd,
-                      const char *Argv0, void *MainAddr);
+extern int cc1_main(ArrayRef<const char *> Argv, const char *Argv0,
+                    void *MainAddr);
+extern int cc1as_main(ArrayRef<const char *> Argv, const char *Argv0,
+                      void *MainAddr);
 
 static void ParseProgName(SmallVectorImpl<const char *> &ArgVector,
                           std::set<std::string> &SavedStrings,
@@ -275,8 +281,8 @@ static void ParseProgName(SmallVectorImpl<const char *> &ArgVector,
     if (it != ArgVector.end())
       ++it;
     const char* Strings[] =
-      { SaveStringInSet(SavedStrings, std::string("-target")),
-        SaveStringInSet(SavedStrings, Prefix) };
+      { GetStableCStr(SavedStrings, std::string("-target")),
+        GetStableCStr(SavedStrings, Prefix) };
     ArgVector.insert(it, Strings, Strings + llvm::array_lengthof(Strings));
   }
 }
@@ -286,11 +292,87 @@ namespace {
   public:
     StringSetSaver(std::set<std::string> &Storage) : Storage(Storage) {}
     const char *SaveString(const char *Str) override {
-      return SaveStringInSet(Storage, Str);
+      return GetStableCStr(Storage, Str);
     }
   private:
     std::set<std::string> &Storage;
   };
+}
+
+static void SetBackdoorDriverOutputsFromEnvVars(Driver &TheDriver) {
+  // Handle CC_PRINT_OPTIONS and CC_PRINT_OPTIONS_FILE.
+  TheDriver.CCPrintOptions = !!::getenv("CC_PRINT_OPTIONS");
+  if (TheDriver.CCPrintOptions)
+    TheDriver.CCPrintOptionsFilename = ::getenv("CC_PRINT_OPTIONS_FILE");
+
+  // Handle CC_PRINT_HEADERS and CC_PRINT_HEADERS_FILE.
+  TheDriver.CCPrintHeaders = !!::getenv("CC_PRINT_HEADERS");
+  if (TheDriver.CCPrintHeaders)
+    TheDriver.CCPrintHeadersFilename = ::getenv("CC_PRINT_HEADERS_FILE");
+
+  // Handle CC_LOG_DIAGNOSTICS and CC_LOG_DIAGNOSTICS_FILE.
+  TheDriver.CCLogDiagnostics = !!::getenv("CC_LOG_DIAGNOSTICS");
+  if (TheDriver.CCLogDiagnostics)
+    TheDriver.CCLogDiagnosticsFilename = ::getenv("CC_LOG_DIAGNOSTICS_FILE");
+}
+
+static void FixupDiagPrefixExeName(TextDiagnosticPrinter *DiagClient,
+                                   const std::string &Path) {
+  // If the clang binary happens to be named cl.exe for compatibility reasons,
+  // use clang-cl.exe as the prefix to avoid confusion between clang and MSVC.
+  StringRef ExeBasename(llvm::sys::path::filename(Path));
+  if (ExeBasename.equals_lower("cl.exe"))
+    ExeBasename = "clang-cl.exe";
+  DiagClient->setPrefix(ExeBasename);
+}
+
+// This lets us create the DiagnosticsEngine with a properly-filled-out
+// DiagnosticOptions instance.
+static DiagnosticOptions *
+CreateAndPopulateDiagOpts(SmallVectorImpl<const char *> &argv) {
+  auto *DiagOpts = new DiagnosticOptions;
+  std::unique_ptr<OptTable> Opts(createDriverOptTable());
+  unsigned MissingArgIndex, MissingArgCount;
+  std::unique_ptr<InputArgList> Args(Opts->ParseArgs(
+      argv.begin() + 1, argv.end(), MissingArgIndex, MissingArgCount));
+  // We ignore MissingArgCount and the return value of ParseDiagnosticArgs.
+  // Any errors that would be diagnosed here will also be diagnosed later,
+  // when the DiagnosticsEngine actually exists.
+  (void) ParseDiagnosticArgs(*DiagOpts, *Args);
+  return DiagOpts;
+}
+
+static void SetInstallDir(SmallVectorImpl<const char *> &argv,
+                          Driver &TheDriver) {
+  // Attempt to find the original path used to invoke the driver, to determine
+  // the installed path. We do this manually, because we want to support that
+  // path being a symlink.
+  SmallString<128> InstalledPath(argv[0]);
+
+  // Do a PATH lookup, if there are no directory components.
+  if (llvm::sys::path::filename(InstalledPath) == InstalledPath) {
+    std::string Tmp = llvm::sys::FindProgramByName(
+      llvm::sys::path::filename(InstalledPath.str()));
+    if (!Tmp.empty())
+      InstalledPath = Tmp;
+  }
+  llvm::sys::fs::make_absolute(InstalledPath);
+  InstalledPath = llvm::sys::path::parent_path(InstalledPath);
+  bool exists;
+  if (!llvm::sys::fs::exists(InstalledPath.str(), exists) && exists)
+    TheDriver.setInstalledDir(InstalledPath);
+}
+
+static int ExecuteCC1Tool(ArrayRef<const char *> argv, StringRef Tool) {
+  void *GetExecutablePathVP = (void *)(intptr_t) GetExecutablePath;
+  if (Tool == "")
+    return cc1_main(argv.slice(2), argv[0], GetExecutablePathVP);
+  if (Tool == "as")
+    return cc1as_main(argv.slice(2), argv[0], GetExecutablePathVP);
+
+  // Reject unknown tools.
+  llvm::errs() << "error: unknown integrated tool '" << Tool << "'\n";
+  return 1;
 }
 
 int main(int argc_, const char **argv_) {
@@ -308,26 +390,33 @@ int main(int argc_, const char **argv_) {
 
   std::set<std::string> SavedStrings;
   StringSetSaver Saver(SavedStrings);
-  llvm::cl::ExpandResponseFiles(Saver, llvm::cl::TokenizeGNUCommandLine, argv);
 
-  // Handle -cc1 integrated tools.
-  if (argv.size() > 1 && StringRef(argv[1]).startswith("-cc1")) {
-    StringRef Tool = argv[1] + 4;
+  // Determines whether we want nullptr markers in argv to indicate response
+  // files end-of-lines. We only use this for the /LINK driver argument.
+  bool MarkEOLs = true;
+  if (argv.size() > 1 && StringRef(argv[1]).startswith("-cc1"))
+    MarkEOLs = false;
+  llvm::cl::ExpandResponseFiles(Saver, llvm::cl::TokenizeGNUCommandLine, argv,
+                                MarkEOLs);
 
-    if (Tool == "")
-      return cc1_main(argv.data()+2, argv.data()+argv.size(), argv[0],
-                      (void*) (intptr_t) GetExecutablePath);
-    if (Tool == "as")
-      return cc1as_main(argv.data()+2, argv.data()+argv.size(), argv[0],
-                      (void*) (intptr_t) GetExecutablePath);
-
-    // Reject unknown tools.
-    llvm::errs() << "error: unknown integrated tool '" << Tool << "'\n";
-    return 1;
+  // Handle -cc1 integrated tools, even if -cc1 was expanded from a response
+  // file.
+  auto FirstArg = std::find_if(argv.begin() + 1, argv.end(),
+                               [](const char *A) { return A != nullptr; });
+  if (FirstArg != argv.end() && StringRef(*FirstArg).startswith("-cc1")) {
+    // If -cc1 came from a response file, remove the EOL sentinels.
+    if (MarkEOLs) {
+      auto newEnd = std::remove(argv.begin(), argv.end(), nullptr);
+      argv.resize(newEnd - argv.begin());
+    }
+    return ExecuteCC1Tool(argv, argv[1] + 4);
   }
 
   bool CanonicalPrefixes = true;
   for (int i = 1, size = argv.size(); i < size; ++i) {
+    // Skip end-of-line response file markers
+    if (argv[i] == nullptr)
+      continue;
     if (StringRef(argv[i]) == "-no-canonical-prefixes") {
       CanonicalPrefixes = false;
       break;
@@ -343,28 +432,12 @@ int main(int argc_, const char **argv_) {
 
   std::string Path = GetExecutablePath(argv[0], CanonicalPrefixes);
 
-  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions;
-  {
-    std::unique_ptr<OptTable> Opts(createDriverOptTable());
-    unsigned MissingArgIndex, MissingArgCount;
-    std::unique_ptr<InputArgList> Args(Opts->ParseArgs(
-        argv.begin() + 1, argv.end(), MissingArgIndex, MissingArgCount));
-    // We ignore MissingArgCount and the return value of ParseDiagnosticArgs.
-    // Any errors that would be diagnosed here will also be diagnosed later,
-    // when the DiagnosticsEngine actually exists.
-    (void) ParseDiagnosticArgs(*DiagOpts, *Args);
-  }
-  // Now we can create the DiagnosticsEngine with a properly-filled-out
-  // DiagnosticOptions instance.
+  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts =
+      CreateAndPopulateDiagOpts(argv);
+
   TextDiagnosticPrinter *DiagClient
     = new TextDiagnosticPrinter(llvm::errs(), &*DiagOpts);
-
-  // If the clang binary happens to be named cl.exe for compatibility reasons,
-  // use clang-cl.exe as the prefix to avoid confusion between clang and MSVC.
-  StringRef ExeBasename(llvm::sys::path::filename(Path));
-  if (ExeBasename.equals_lower("cl.exe"))
-    ExeBasename = "clang-cl.exe";
-  DiagClient->setPrefix(ExeBasename);
+  FixupDiagPrefixExeName(DiagClient, Path);
 
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
 
@@ -372,44 +445,12 @@ int main(int argc_, const char **argv_) {
   ProcessWarningOptions(Diags, *DiagOpts, /*ReportDiags=*/false);
 
   Driver TheDriver(Path, llvm::sys::getDefaultTargetTriple(), Diags);
-
-  // Attempt to find the original path used to invoke the driver, to determine
-  // the installed path. We do this manually, because we want to support that
-  // path being a symlink.
-  {
-    SmallString<128> InstalledPath(argv[0]);
-
-    // Do a PATH lookup, if there are no directory components.
-    if (llvm::sys::path::filename(InstalledPath) == InstalledPath) {
-      std::string Tmp = llvm::sys::FindProgramByName(
-        llvm::sys::path::filename(InstalledPath.str()));
-      if (!Tmp.empty())
-        InstalledPath = Tmp;
-    }
-    llvm::sys::fs::make_absolute(InstalledPath);
-    InstalledPath = llvm::sys::path::parent_path(InstalledPath);
-    bool exists;
-    if (!llvm::sys::fs::exists(InstalledPath.str(), exists) && exists)
-      TheDriver.setInstalledDir(InstalledPath);
-  }
+  SetInstallDir(argv, TheDriver);
 
   llvm::InitializeAllTargets();
   ParseProgName(argv, SavedStrings, TheDriver);
 
-  // Handle CC_PRINT_OPTIONS and CC_PRINT_OPTIONS_FILE.
-  TheDriver.CCPrintOptions = !!::getenv("CC_PRINT_OPTIONS");
-  if (TheDriver.CCPrintOptions)
-    TheDriver.CCPrintOptionsFilename = ::getenv("CC_PRINT_OPTIONS_FILE");
-
-  // Handle CC_PRINT_HEADERS and CC_PRINT_HEADERS_FILE.
-  TheDriver.CCPrintHeaders = !!::getenv("CC_PRINT_HEADERS");
-  if (TheDriver.CCPrintHeaders)
-    TheDriver.CCPrintHeadersFilename = ::getenv("CC_PRINT_HEADERS_FILE");
-
-  // Handle CC_LOG_DIAGNOSTICS and CC_LOG_DIAGNOSTICS_FILE.
-  TheDriver.CCLogDiagnostics = !!::getenv("CC_LOG_DIAGNOSTICS");
-  if (TheDriver.CCLogDiagnostics)
-    TheDriver.CCLogDiagnosticsFilename = ::getenv("CC_LOG_DIAGNOSTICS_FILE");
+  SetBackdoorDriverOutputsFromEnvVars(TheDriver);
 
   std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(argv));
   int Res = 0;
@@ -424,10 +465,9 @@ int main(int argc_, const char **argv_) {
     FailingCommands.push_back(std::make_pair(-1, FailingCommand));
   }
 
-  for (SmallVectorImpl< std::pair<int, const Command *> >::iterator it =
-         FailingCommands.begin(), ie = FailingCommands.end(); it != ie; ++it) {
-    int CommandRes = it->first;
-    const Command *FailingCommand = it->second;
+  for (const auto &P : FailingCommands) {
+    int CommandRes = P.first;
+    const Command *FailingCommand = P.second;
     if (!Res)
       Res = CommandRes;
 

@@ -414,8 +414,8 @@ public:
     : IndexCtx(clientData, indexCallbacks, indexOptions, cxTU),
       CXTU(cxTU), SKData(skData) { }
 
-  ASTConsumer *CreateASTConsumer(CompilerInstance &CI,
-                                 StringRef InFile) override {
+  std::unique_ptr<ASTConsumer> CreateASTConsumer(CompilerInstance &CI,
+                                                 StringRef InFile) override {
     PreprocessorOptions &PPOpts = CI.getPreprocessorOpts();
 
     if (!PPOpts.ImplicitPCHInclude.empty()) {
@@ -429,13 +429,12 @@ public:
     IndexCtx.setPreprocessor(PP);
 
     if (SKData) {
-      PPConditionalDirectiveRecord *
-        PPRec = new PPConditionalDirectiveRecord(PP.getSourceManager());
+      auto *PPRec = new PPConditionalDirectiveRecord(PP.getSourceManager());
       PP.addPPCallbacks(PPRec);
-      SKCtrl.reset(new TUSkipBodyControl(*SKData, *PPRec, PP));
+      SKCtrl = llvm::make_unique<TUSkipBodyControl>(*SKData, *PPRec, PP);
     }
 
-    return new IndexingConsumer(IndexCtx, SKCtrl.get());
+    return llvm::make_unique<IndexingConsumer>(IndexCtx, SKCtrl.get());
   }
 
   void EndSourceFileAction() override {
@@ -576,10 +575,10 @@ static void clang_indexSourceFile_Impl(void *UserData) {
       BufOwner.get());
 
   for (auto &UF : ITUI->unsaved_files) {
-    llvm::MemoryBuffer *MB =
+    std::unique_ptr<llvm::MemoryBuffer> MB =
         llvm::MemoryBuffer::getMemBufferCopy(getContents(UF), UF.Filename);
-    BufOwner->push_back(std::unique_ptr<llvm::MemoryBuffer>(MB));
-    CInvok->getPreprocessorOpts().addRemappedFile(UF.Filename, MB);
+    CInvok->getPreprocessorOpts().addRemappedFile(UF.Filename, MB.get());
+    BufOwner->push_back(std::move(MB));
   }
 
   // Since libclang is primarily used by batch tools dealing with

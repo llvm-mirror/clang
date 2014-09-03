@@ -679,11 +679,26 @@ USEMEMFUNC(PartiallySpecializedClassTemplate<void*>, f);
 // M32-DAG: define linkonce_odr x86_thiscallcc void @"\01?f@?$PartiallySpecializedClassTemplate@PAX@@QAEXXZ"
 // G32-DAG: {{declare|define available_externally}} dllimport x86_thiscallcc void @_ZN33PartiallySpecializedClassTemplateIPvE1fEv
 
+// Attributes on explicit specializations are honored.
 template <typename T> struct ExplicitlySpecializedClassTemplate {};
 template <> struct __declspec(dllimport) ExplicitlySpecializedClassTemplate<void*> { void f() {} };
 USEMEMFUNC(ExplicitlySpecializedClassTemplate<void*>, f);
 // M32-DAG: {{declare|define available_externally}} dllimport x86_thiscallcc void @"\01?f@?$ExplicitlySpecializedClassTemplate@PAX@@QAEXXZ"
 // G32-DAG: {{declare|define available_externally}} dllimport x86_thiscallcc void @_ZN34ExplicitlySpecializedClassTemplateIPvE1fEv
+
+// MS inherits DLL attributes to partial specializations.
+template <typename T> struct __declspec(dllimport) PartiallySpecializedImportedClassTemplate {};
+template <typename T> struct PartiallySpecializedImportedClassTemplate<T*> { void f() {} };
+USEMEMFUNC(PartiallySpecializedImportedClassTemplate<void*>, f);
+// M32-DAG: {{declare|define available_externally}} dllimport x86_thiscallcc void @"\01?f@?$PartiallySpecializedImportedClassTemplate@PAX@@QAEXXZ"
+// G32-DAG: define linkonce_odr x86_thiscallcc void @_ZN41PartiallySpecializedImportedClassTemplateIPvE1fEv
+
+// Attributes on the instantiation take precedence over attributes on the template.
+template <typename T> struct __declspec(dllexport) ExplicitlyInstantiatedWithDifferentAttr { void f() {} };
+template struct __declspec(dllimport) ExplicitlyInstantiatedWithDifferentAttr<int>;
+USEMEMFUNC(ExplicitlyInstantiatedWithDifferentAttr<int>, f);
+// M32-DAG: {{declare|define available_externally}} dllimport x86_thiscallcc void @"\01?f@?$ExplicitlyInstantiatedWithDifferentAttr@H@@QAEXXZ"
+
 
 //===----------------------------------------------------------------------===//
 // Classes with template base classes

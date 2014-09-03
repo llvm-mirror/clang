@@ -1220,8 +1220,8 @@ Generic_GCC::GCCInstallationDetector::init(
   // The library directories which may contain GCC installations.
   SmallVector<StringRef, 4> CandidateLibDirs, CandidateBiarchLibDirs;
   // The compatible GCC triples for this particular architecture.
-  SmallVector<StringRef, 10> CandidateTripleAliases;
-  SmallVector<StringRef, 10> CandidateBiarchTripleAliases;
+  SmallVector<StringRef, 16> CandidateTripleAliases;
+  SmallVector<StringRef, 16> CandidateBiarchTripleAliases;
   CollectLibDirsAndTriples(TargetTriple, BiarchVariantTriple, CandidateLibDirs,
                            CandidateTripleAliases, CandidateBiarchLibDirs,
                            CandidateBiarchTripleAliases);
@@ -1696,6 +1696,9 @@ static bool findMIPSMultilibs(const llvm::Triple &TargetTriple, StringRef Path,
     auto Mips16 = makeMultilib("/mips16")
       .flag("+mips16");
 
+    auto UCLibc = makeMultilib("/uclibc")
+      .flag("+muclibc");
+
     auto MAbi64 = makeMultilib("/64")
       .flag("+mabi=n64").flag("-mabi=n32").flag("-m32");
 
@@ -1714,6 +1717,7 @@ static bool findMIPSMultilibs(const llvm::Triple &TargetTriple, StringRef Path,
     FSFMipsMultilibs = MultilibSet()
       .Either(MArchMips32, MArchMicroMips, 
               MArchMips64r2, MArchMips64, MArchDefault)
+      .Maybe(UCLibc)
       .Maybe(Mips16)
       .FilterOut("/mips64/mips16")
       .FilterOut("/mips64r2/mips16")
@@ -1732,7 +1736,11 @@ static bool findMIPSMultilibs(const llvm::Triple &TargetTriple, StringRef Path,
           StringRef InstallDir, StringRef TripleStr, const Multilib &M) {
         std::vector<std::string> Dirs;
         Dirs.push_back((InstallDir + "/include").str());
-        Dirs.push_back((InstallDir + "/../../../../sysroot/usr/include").str());
+        std::string SysRootInc = InstallDir.str() + "/../../../../sysroot";
+        if (StringRef(M.includeSuffix()).startswith("/uclibc"))
+          Dirs.push_back(SysRootInc + "/uclibc/usr/include");
+        else
+          Dirs.push_back(SysRootInc + "/usr/include");
         return Dirs;
       });
   }
@@ -1748,6 +1756,9 @@ static bool findMIPSMultilibs(const llvm::Triple &TargetTriple, StringRef Path,
 
     auto MArchDefault = makeMultilib("")
       .flag("-mips16").flag("-mmicromips");
+
+    auto UCLibc = makeMultilib("/uclibc")
+      .flag("+muclibc");
 
     auto SoftFloat = makeMultilib("/soft-float")
       .flag("+msoft-float");
@@ -1772,6 +1783,7 @@ static bool findMIPSMultilibs(const llvm::Triple &TargetTriple, StringRef Path,
 
     CSMipsMultilibs = MultilibSet()
       .Either(MArchMips16, MArchMicroMips, MArchDefault)
+      .Maybe(UCLibc)
       .Either(SoftFloat, Nan2008, DefaultFloat)
       .FilterOut("/micromips/nan2008")
       .FilterOut("/mips16/nan2008")
@@ -1784,8 +1796,12 @@ static bool findMIPSMultilibs(const llvm::Triple &TargetTriple, StringRef Path,
           StringRef InstallDir, StringRef TripleStr, const Multilib &M) {
         std::vector<std::string> Dirs;
         Dirs.push_back((InstallDir + "/include").str());
-        Dirs.push_back((InstallDir + "/../../../../" + TripleStr +
-                        "/libc/usr/include").str());
+        std::string SysRootInc =
+            InstallDir.str() + "/../../../../" + TripleStr.str();
+        if (StringRef(M.includeSuffix()).startswith("/uclibc"))
+          Dirs.push_back(SysRootInc + "/libc/uclibc/usr/include");
+        else
+          Dirs.push_back(SysRootInc + "/libc/usr/include");
         return Dirs;
       });
   }
@@ -1855,6 +1871,7 @@ static bool findMIPSMultilibs(const llvm::Triple &TargetTriple, StringRef Path,
   addMultilibFlag(CPUName == "mips64r2" || CPUName == "octeon",
                   "march=mips64r2", Flags);
   addMultilibFlag(isMicroMips(Args), "mmicromips", Flags);
+  addMultilibFlag(tools::mips::isUCLibc(Args), "muclibc", Flags);
   addMultilibFlag(tools::mips::isNaN2008(Args, TargetTriple), "mnan=2008",
                   Flags);
   addMultilibFlag(ABIName == "n32", "mabi=n32", Flags);
@@ -2590,10 +2607,12 @@ NetBSD::NetBSD(const Driver &D, const llvm::Triple& Triple, const ArgList &Args)
     case llvm::Triple::thumbeb:
       switch (Triple.getEnvironment()) {
       case llvm::Triple::EABI:
-      case llvm::Triple::EABIHF:
       case llvm::Triple::GNUEABI:
-      case llvm::Triple::GNUEABIHF:
         getFilePaths().push_back("=/usr/lib/eabi");
+        break;
+      case llvm::Triple::EABIHF:
+      case llvm::Triple::GNUEABIHF:
+        getFilePaths().push_back("=/usr/lib/eabihf");
         break;
       default:
         getFilePaths().push_back("=/usr/lib/oabi");
@@ -2606,6 +2625,9 @@ NetBSD::NetBSD(const Driver &D, const llvm::Triple& Triple, const ArgList &Args)
         getFilePaths().push_back("=/usr/lib/o32");
       else if (tools::mips::hasMipsAbiArg(Args, "64"))
         getFilePaths().push_back("=/usr/lib/64");
+      break;
+    case llvm::Triple::ppc:
+      getFilePaths().push_back("=/usr/lib/powerpc");
       break;
     case llvm::Triple::sparc:
       getFilePaths().push_back("=/usr/lib/sparc");
@@ -2643,11 +2665,14 @@ NetBSD::GetCXXStdlibType(const ArgList &Args) const {
   getTriple().getOSVersion(Major, Minor, Micro);
   if (Major >= 7 || (Major == 6 && Minor == 99 && Micro >= 49) || Major == 0) {
     switch (getArch()) {
+    case llvm::Triple::aarch64:
     case llvm::Triple::arm:
     case llvm::Triple::armeb:
     case llvm::Triple::thumb:
     case llvm::Triple::thumbeb:
     case llvm::Triple::ppc:
+    case llvm::Triple::ppc64:
+    case llvm::Triple::ppc64le:
     case llvm::Triple::x86:
     case llvm::Triple::x86_64:
       return ToolChain::CST_Libcxx;
@@ -2692,32 +2717,6 @@ Tool *Minix::buildAssembler() const {
 
 Tool *Minix::buildLinker() const {
   return new tools::minix::Link(*this);
-}
-
-/// AuroraUX - AuroraUX tool chain which can call as(1) and ld(1) directly.
-
-AuroraUX::AuroraUX(const Driver &D, const llvm::Triple& Triple,
-                   const ArgList &Args)
-  : Generic_GCC(D, Triple, Args) {
-
-  getProgramPaths().push_back(getDriver().getInstalledDir());
-  if (getDriver().getInstalledDir() != getDriver().Dir)
-    getProgramPaths().push_back(getDriver().Dir);
-
-  getFilePaths().push_back(getDriver().Dir + "/../lib");
-  getFilePaths().push_back("/usr/lib");
-  getFilePaths().push_back("/usr/sfw/lib");
-  getFilePaths().push_back("/opt/gcc4/lib");
-  getFilePaths().push_back("/opt/gcc4/lib/gcc/i386-pc-solaris2.11/4.2.4");
-
-}
-
-Tool *AuroraUX::buildAssembler() const {
-  return new tools::auroraux::Assemble(*this);
-}
-
-Tool *AuroraUX::buildLinker() const {
-  return new tools::auroraux::Link(*this);
 }
 
 /// Solaris - Solaris tool chain which can call as(1) and ld(1) directly.
@@ -2793,7 +2792,7 @@ static Distro DetectDistro(llvm::Triple::ArchType Arch) {
       llvm::MemoryBuffer::getFile("/etc/lsb-release");
   if (File) {
     StringRef Data = File.get()->getBuffer();
-    SmallVector<StringRef, 8> Lines;
+    SmallVector<StringRef, 16> Lines;
     Data.split(Lines, "\n");
     Distro Version = UnknownDistro;
     for (unsigned i = 0, s = Lines.size(); i != s; ++i)
@@ -3346,32 +3345,39 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   addExternCSystemInclude(DriverArgs, CC1Args, SysRoot + "/usr/include");
 }
 
-/// \brief Helper to add the three variant paths for a libstdc++ installation.
-/*static*/ bool Linux::addLibStdCXXIncludePaths(Twine Base, Twine TargetArchDir,
-                                                const ArgList &DriverArgs,
-                                                ArgStringList &CC1Args) {
-  if (!llvm::sys::fs::exists(Base))
-    return false;
-  addSystemInclude(DriverArgs, CC1Args, Base);
-  addSystemInclude(DriverArgs, CC1Args, Base + "/" + TargetArchDir);
-  addSystemInclude(DriverArgs, CC1Args, Base + "/backward");
-  return true;
-}
-
-/// \brief Helper to add an extra variant path for an (Ubuntu) multilib
-/// libstdc++ installation.
+/// \brief Helper to add the variant paths of a libstdc++ installation.
 /*static*/ bool Linux::addLibStdCXXIncludePaths(Twine Base, Twine Suffix,
-                                                Twine TargetArchDir,
+                                                StringRef GCCTriple,
+                                                StringRef GCCMultiarchTriple,
+                                                StringRef TargetMultiarchTriple,
                                                 Twine IncludeSuffix,
                                                 const ArgList &DriverArgs,
                                                 ArgStringList &CC1Args) {
-  if (!addLibStdCXXIncludePaths(Base + Suffix,
-                                TargetArchDir + IncludeSuffix,
-                                DriverArgs, CC1Args))
+  if (!llvm::sys::fs::exists(Base + Suffix))
     return false;
 
-  addSystemInclude(DriverArgs, CC1Args, Base + "/" + TargetArchDir + Suffix
-                   + IncludeSuffix);
+  addSystemInclude(DriverArgs, CC1Args, Base + Suffix);
+
+  // The vanilla GCC layout of libstdc++ headers uses a triple subdirectory. If
+  // that path exists or we have neither a GCC nor target multiarch triple, use
+  // this vanilla search path.
+  if ((GCCMultiarchTriple.empty() && TargetMultiarchTriple.empty()) ||
+      llvm::sys::fs::exists(Base + Suffix + "/" + GCCTriple + IncludeSuffix)) {
+    addSystemInclude(DriverArgs, CC1Args,
+                     Base + Suffix + "/" + GCCTriple + IncludeSuffix);
+  } else {
+    // Otherwise try to use multiarch naming schemes which have normalized the
+    // triples and put the triple before the suffix.
+    //
+    // GCC surprisingly uses *both* the GCC triple with a multilib suffix and
+    // the target triple, so we support that here.
+    addSystemInclude(DriverArgs, CC1Args,
+                     Base + "/" + GCCMultiarchTriple + Suffix + IncludeSuffix);
+    addSystemInclude(DriverArgs, CC1Args,
+                     Base + "/" + TargetMultiarchTriple + Suffix);
+  }
+
+  addSystemInclude(DriverArgs, CC1Args, Base + Suffix + "/backward");
   return true;
 }
 
@@ -3415,13 +3421,21 @@ void Linux::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
   StringRef InstallDir = GCCInstallation.getInstallPath();
   StringRef TripleStr = GCCInstallation.getTriple().str();
   const Multilib &Multilib = GCCInstallation.getMultilib();
+  const std::string GCCMultiarchTriple =
+      getMultiarchTriple(GCCInstallation.getTriple(), getDriver().SysRoot);
+  const std::string TargetMultiarchTriple =
+      getMultiarchTriple(getTriple(), getDriver().SysRoot);
   const GCCVersion &Version = GCCInstallation.getVersion();
 
+  // The primary search for libstdc++ supports multiarch variants.
   if (addLibStdCXXIncludePaths(LibDir.str() + "/../include",
-                               "/c++/" + Version.Text, TripleStr,
+                               "/c++/" + Version.Text, TripleStr, GCCMultiarchTriple,
+                               TargetMultiarchTriple,
                                Multilib.includeSuffix(), DriverArgs, CC1Args))
     return;
 
+  // Otherwise, fall back on a bunch of options which don't use multiarch
+  // layouts for simplicity.
   const std::string LibStdCXXIncludePathCandidates[] = {
     // Gentoo is weird and places its headers inside the GCC install, so if the
     // first attempt to find the headers fails, try these patterns.
@@ -3436,9 +3450,10 @@ void Linux::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
   };
 
   for (const auto &IncludePath : LibStdCXXIncludePathCandidates) {
-    if (addLibStdCXXIncludePaths(IncludePath,
-                                 TripleStr + Multilib.includeSuffix(),
-                                 DriverArgs, CC1Args))
+    if (addLibStdCXXIncludePaths(IncludePath, /*Suffix*/ "", TripleStr,
+                                 /*GCCMultiarchTriple*/ "",
+                                 /*TargetMultiarchTriple*/ "",
+                                 Multilib.includeSuffix(), DriverArgs, CC1Args))
       break;
   }
 }

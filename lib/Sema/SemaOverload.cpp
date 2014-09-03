@@ -1067,7 +1067,7 @@ bool Sema::IsOverload(FunctionDecl *New, FunctionDecl *Old,
     // is a redeclaration of OldMethod.
     unsigned OldQuals = OldMethod->getTypeQualifiers();
     unsigned NewQuals = NewMethod->getTypeQualifiers();
-    if (!getLangOpts().CPlusPlus1y && NewMethod->isConstexpr() &&
+    if (!getLangOpts().CPlusPlus14 && NewMethod->isConstexpr() &&
         !isa<CXXConstructorDecl>(NewMethod))
       NewQuals |= Qualifiers::Const;
 
@@ -5365,14 +5365,14 @@ ExprResult Sema::PerformContextualImplicitConversion(
     CXXConversionDecl *Conversion;
     FunctionTemplateDecl *ConvTemplate = dyn_cast<FunctionTemplateDecl>(D);
     if (ConvTemplate) {
-      if (getLangOpts().CPlusPlus1y)
+      if (getLangOpts().CPlusPlus14)
         Conversion = cast<CXXConversionDecl>(ConvTemplate->getTemplatedDecl());
       else
         continue; // C++11 does not consider conversion operator templates(?).
     } else
       Conversion = cast<CXXConversionDecl>(D);
 
-    assert((!ConvTemplate || getLangOpts().CPlusPlus1y) &&
+    assert((!ConvTemplate || getLangOpts().CPlusPlus14) &&
            "Conversion operator templates are considered potentially "
            "viable in C++1y");
 
@@ -5385,7 +5385,7 @@ ExprResult Sema::PerformContextualImplicitConversion(
         if (!ConvTemplate)
           ExplicitConversions.addDecl(I.getDecl(), I.getAccess());
       } else {
-        if (!ConvTemplate && getLangOpts().CPlusPlus1y) {
+        if (!ConvTemplate && getLangOpts().CPlusPlus14) {
           if (ToType.isNull())
             ToType = CurToType.getUnqualifiedType();
           else if (HasUniqueTargetType &&
@@ -5397,7 +5397,7 @@ ExprResult Sema::PerformContextualImplicitConversion(
     }
   }
 
-  if (getLangOpts().CPlusPlus1y) {
+  if (getLangOpts().CPlusPlus14) {
     // C++1y [conv]p6:
     // ... An expression e of class type E appearing in such a context
     // is said to be contextually implicitly converted to a specified
@@ -5675,6 +5675,93 @@ Sema::AddOverloadCandidate(FunctionDecl *Function,
     Candidate.DeductionFailure.Data = FailedAttr;
     return;
   }
+}
+
+ObjCMethodDecl *Sema::SelectBestMethod(Selector Sel, MultiExprArg Args,
+                                       bool IsInstance) {
+  SmallVector<ObjCMethodDecl*, 4> Methods;
+  if (!CollectMultipleMethodsInGlobalPool(Sel, Methods, IsInstance))
+    return nullptr;
+    
+  for (unsigned b = 0, e = Methods.size(); b < e; b++) {
+    bool Match = true;
+    ObjCMethodDecl *Method = Methods[b];
+    unsigned NumNamedArgs = Sel.getNumArgs();
+    // Method might have more arguments than selector indicates. This is due
+    // to addition of c-style arguments in method.
+    if (Method->param_size() > NumNamedArgs)
+      NumNamedArgs = Method->param_size();
+    if (Args.size() < NumNamedArgs)
+      continue;
+            
+    for (unsigned i = 0; i < NumNamedArgs; i++) {
+      // We can't do any type-checking on a type-dependent argument.
+      if (Args[i]->isTypeDependent()) {
+        Match = false;
+        break;
+      }
+        
+      ParmVarDecl *param = Method->parameters()[i];
+      Expr *argExpr = Args[i];
+      assert(argExpr && "SelectBestMethod(): missing expression");
+                
+      // Strip the unbridged-cast placeholder expression off unless it's
+      // a consumed argument.
+      if (argExpr->hasPlaceholderType(BuiltinType::ARCUnbridgedCast) &&
+          !param->hasAttr<CFConsumedAttr>())
+        argExpr = stripARCUnbridgedCast(argExpr);
+                
+      // If the parameter is __unknown_anytype, move on to the next method.
+      if (param->getType() == Context.UnknownAnyTy) {
+        Match = false;
+        break;
+      }
+                
+      ImplicitConversionSequence ConversionState
+        = TryCopyInitialization(*this, argExpr, param->getType(),
+                                /*SuppressUserConversions*/false,
+                                /*InOverloadResolution=*/true,
+                                /*AllowObjCWritebackConversion=*/
+                                getLangOpts().ObjCAutoRefCount,
+                                /*AllowExplicit*/false);
+        if (ConversionState.isBad()) {
+          Match = false;
+          break;
+        }
+    }
+    // Promote additional arguments to variadic methods.
+    if (Match && Method->isVariadic()) {
+      for (unsigned i = NumNamedArgs, e = Args.size(); i < e; ++i) {
+        if (Args[i]->isTypeDependent()) {
+          Match = false;
+          break;
+        }
+        ExprResult Arg = DefaultVariadicArgumentPromotion(Args[i], VariadicMethod,
+                                                          nullptr);
+        if (Arg.isInvalid()) {
+          Match = false;
+          break;
+        }
+      }
+    } else {
+      // Check for extra arguments to non-variadic methods.
+      if (Args.size() != NumNamedArgs)
+        Match = false;
+      else if (Match && NumNamedArgs == 0 && Methods.size() > 1) {
+        // Special case when selectors have no argument. In this case, select
+        // one with the most general result type of 'id'.
+        for (unsigned b = 0, e = Methods.size(); b < e; b++) {
+          QualType ReturnT = Methods[b]->getReturnType();
+          if (ReturnT->isObjCIdType())
+            return Methods[b];
+        }
+      }
+    }
+
+    if (Match)
+      return Method;
+  }
+  return nullptr;
 }
 
 static bool IsNotEnableIfAttr(Attr *A) { return !isa<EnableIfAttr>(A); }
@@ -6088,7 +6175,7 @@ Sema::AddConversionCandidate(CXXConversionDecl *Conversion,
 
   // If the conversion function has an undeduced return type, trigger its
   // deduction now.
-  if (getLangOpts().CPlusPlus1y && ConvType->isUndeducedType()) {
+  if (getLangOpts().CPlusPlus14 && ConvType->isUndeducedType()) {
     if (DeduceReturnType(Conversion, From->getExprLoc()))
       return;
     ConvType = Conversion->getConversionType().getNonReferenceType();
@@ -6227,7 +6314,7 @@ Sema::AddConversionCandidate(CXXConversionDecl *Conversion,
            "Can only end up with a standard conversion sequence or failure");
   }
 
-  if (EnableIfAttr *FailedAttr = CheckEnableIf(Conversion, ArrayRef<Expr*>())) {
+  if (EnableIfAttr *FailedAttr = CheckEnableIf(Conversion, None)) {
     Candidate.Viable = false;
     Candidate.FailureKind = ovl_fail_enable_if;
     Candidate.DeductionFailure.Data = FailedAttr;
@@ -6380,7 +6467,7 @@ void Sema::AddSurrogateCandidate(CXXConversionDecl *Conversion,
     }
   }
 
-  if (EnableIfAttr *FailedAttr = CheckEnableIf(Conversion, ArrayRef<Expr*>())) {
+  if (EnableIfAttr *FailedAttr = CheckEnableIf(Conversion, None)) {
     Candidate.Viable = false;
     Candidate.FailureKind = ovl_fail_enable_if;
     Candidate.DeductionFailure.Data = FailedAttr;
@@ -9788,7 +9875,7 @@ private:
 
       // If any candidate has a placeholder return type, trigger its deduction
       // now.
-      if (S.getLangOpts().CPlusPlus1y &&
+      if (S.getLangOpts().CPlusPlus14 &&
           FunDecl->getReturnType()->isUndeducedType() &&
           S.DeduceReturnType(FunDecl, SourceExpr->getLocStart(), Complain))
         return false;
@@ -10093,7 +10180,7 @@ Sema::ResolveSingleFunctionTemplateSpecialization(OverloadExpr *ovl,
     if (FoundResult) *FoundResult = I.getPair();    
   }
 
-  if (Matched && getLangOpts().CPlusPlus1y &&
+  if (Matched && getLangOpts().CPlusPlus14 &&
       Matched->getReturnType()->isUndeducedType() &&
       DeduceReturnType(Matched, ovl->getExprLoc(), Complain))
     return nullptr;

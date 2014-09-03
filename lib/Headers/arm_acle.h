@@ -66,6 +66,41 @@ static __inline__ void __attribute__((always_inline, nodebug)) __yield(void) {
 }
 #endif
 
+#if __ARM_32BIT_STATE
+#define __dbg(t) __builtin_arm_dbg(t)
+#endif
+
+/* 8.5 Swap */
+static __inline__ uint32_t __attribute__((always_inline, nodebug))
+  __swp(uint32_t x, volatile uint32_t *p) {
+  uint32_t v;
+  do v = __builtin_arm_ldrex(p); while (__builtin_arm_strex(x, p));
+  return v;
+}
+
+/* 8.6 Memory prefetch intrinsics */
+/* 8.6.1 Data prefetch */
+#define __pld(addr) __pldx(0, 0, 0, addr)
+
+#if __ARM_32BIT_STATE
+#define __pldx(access_kind, cache_level, retention_policy, addr) \
+  __builtin_arm_prefetch(addr, access_kind, 1)
+#else
+#define __pldx(access_kind, cache_level, retention_policy, addr) \
+  __builtin_arm_prefetch(addr, access_kind, cache_level, retention_policy, 1)
+#endif
+
+/* 8.6.2 Instruction prefetch */
+#define __pli(addr) __plix(0, 0, addr)
+
+#if __ARM_32BIT_STATE
+#define __plix(cache_level, retention_policy, addr) \
+  __builtin_arm_prefetch(addr, 0, 0)
+#else
+#define __plix(cache_level, retention_policy, addr) \
+  __builtin_arm_prefetch(addr, 0, cache_level, retention_policy, 0)
+#endif
+
 /* 8.7 NOP */
 static __inline__ void __attribute__((always_inline, nodebug)) __nop(void) {
   __builtin_arm_nop();
@@ -85,11 +120,7 @@ static __inline__ unsigned long __attribute__((always_inline, nodebug))
 
 static __inline__ uint64_t __attribute__((always_inline, nodebug))
   __clzll(uint64_t t) {
-#if __SIZEOF_LONG_LONG__ == 8
   return __builtin_clzll(t);
-#else
-  return __builtin_clzl(t);
-#endif
 }
 
 static __inline__ uint32_t __attribute__((always_inline, nodebug))

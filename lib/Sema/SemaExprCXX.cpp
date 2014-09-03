@@ -1083,7 +1083,7 @@ Sema::ActOnCXXNew(SourceLocation StartLoc, bool UseGlobal,
       DeclaratorChunk::ArrayTypeInfo &Array = D.getTypeObject(I).Arr;
       if (Expr *NumElts = (Expr *)Array.NumElts) {
         if (!NumElts->isTypeDependent() && !NumElts->isValueDependent()) {
-          if (getLangOpts().CPlusPlus1y) {
+          if (getLangOpts().CPlusPlus14) {
 	    // C++1y [expr.new]p6: Every constant-expression in a noptr-new-declarator
 	    //   shall be a converted constant expression (5.19) of type std::size_t
 	    //   and shall evaluate to a strictly positive value.
@@ -1257,7 +1257,7 @@ Sema::BuildCXXNew(SourceRange Range, bool UseGlobal,
   //   std::size_t.
   if (ArraySize && !ArraySize->isTypeDependent()) {
     ExprResult ConvertedSize;
-    if (getLangOpts().CPlusPlus1y) {
+    if (getLangOpts().CPlusPlus14) {
       assert(Context.getTargetInfo().getIntWidth() && "Builtin type of size 0?");
 
       ConvertedSize = PerformImplicitConversion(ArraySize, Context.getSizeType(),
@@ -2083,7 +2083,7 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
   QualType Params[] = { Param1, Param2 };
 
   QualType FnType = Context.getFunctionType(
-      Return, ArrayRef<QualType>(Params, NumParams), EPI);
+      Return, llvm::makeArrayRef(Params, NumParams), EPI);
   FunctionDecl *Alloc =
     FunctionDecl::Create(Context, GlobalCtx, SourceLocation(),
                          SourceLocation(), Name,
@@ -2101,7 +2101,7 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
                                         SC_None, nullptr);
     ParamDecls[I]->setImplicit();
   }
-  Alloc->setParams(ArrayRef<ParmVarDecl*>(ParamDecls, NumParams));
+  Alloc->setParams(llvm::makeArrayRef(ParamDecls, NumParams));
 
   Context.getTranslationUnitDecl()->addDecl(Alloc);
   IdResolver.tryAddTopLevelDecl(Alloc, Name);
@@ -5001,9 +5001,8 @@ Expr *Sema::MaybeCreateExprWithCleanups(Expr *SubExpr) {
   if (!ExprNeedsCleanups)
     return SubExpr;
 
-  ArrayRef<ExprWithCleanups::CleanupObject> Cleanups
-    = llvm::makeArrayRef(ExprCleanupObjects.begin() + FirstCleanup,
-                         ExprCleanupObjects.size() - FirstCleanup);
+  auto Cleanups = llvm::makeArrayRef(ExprCleanupObjects.begin() + FirstCleanup,
+                                     ExprCleanupObjects.size() - FirstCleanup);
 
   Expr *E = ExprWithCleanups::Create(Context, SubExpr, Cleanups);
   DiscardCleanupsInEvaluationContext();

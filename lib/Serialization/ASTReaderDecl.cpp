@@ -234,7 +234,7 @@ namespace clang {
     void VisitUsingDirectiveDecl(UsingDirectiveDecl *D);
     void VisitNamespaceAliasDecl(NamespaceAliasDecl *D);
     void VisitTypeDecl(TypeDecl *TD);
-    void VisitTypedefNameDecl(TypedefNameDecl *TD);
+    RedeclarableResult VisitTypedefNameDecl(TypedefNameDecl *TD);
     void VisitTypedefDecl(TypedefDecl *TD);
     void VisitTypeAliasDecl(TypeAliasDecl *TD);
     void VisitUnresolvedUsingTypenameDecl(UnresolvedUsingTypenameDecl *D);
@@ -456,7 +456,8 @@ void ASTDeclReader::VisitTypeDecl(TypeDecl *TD) {
   TypeIDForTypeDecl = Reader.getGlobalTypeID(F, Record[Idx++]);
 }
 
-void ASTDeclReader::VisitTypedefNameDecl(TypedefNameDecl *TD) {
+ASTDeclReader::RedeclarableResult
+ASTDeclReader::VisitTypedefNameDecl(TypedefNameDecl *TD) {
   RedeclarableResult Redecl = VisitRedeclarable(TD);
   VisitTypeDecl(TD);
   TypeSourceInfo *TInfo = GetTypeSourceInfo(Record, Idx);
@@ -465,15 +466,21 @@ void ASTDeclReader::VisitTypedefNameDecl(TypedefNameDecl *TD) {
     TD->setModedTypeSourceInfo(TInfo, modedT);
   } else
     TD->setTypeSourceInfo(TInfo);
-  mergeRedeclarable(TD, Redecl);
+  return Redecl;
 }
 
 void ASTDeclReader::VisitTypedefDecl(TypedefDecl *TD) {
-  VisitTypedefNameDecl(TD);
+  RedeclarableResult Redecl = VisitTypedefNameDecl(TD);
+  mergeRedeclarable(TD, Redecl);
 }
 
 void ASTDeclReader::VisitTypeAliasDecl(TypeAliasDecl *TD) {
-  VisitTypedefNameDecl(TD);
+  RedeclarableResult Redecl = VisitTypedefNameDecl(TD);
+  if (auto *Template = ReadDeclAs<TypeAliasTemplateDecl>(Record, Idx))
+    // Merged when we merge the template.
+    TD->setDescribedAliasTemplate(Template);
+  else
+    mergeRedeclarable(TD, Redecl);
 }
 
 ASTDeclReader::RedeclarableResult ASTDeclReader::VisitTagDecl(TagDecl *TD) {
@@ -1301,8 +1308,11 @@ void ASTDeclReader::MergeDefinitionData(
 
   // If the new definition has new special members, let the name lookup
   // code know that it needs to look in the new definition too.
-  if ((MergeDD.DeclaredSpecialMembers & ~DD.DeclaredSpecialMembers) &&
-      DD.Definition != MergeDD.Definition) {
+  //
+  // FIXME: We only need to do this if the merged definition declares members
+  // that this definition did not declare, or if it defines members that this
+  // definition did not define.
+  if (MergeDD.DeclaredSpecialMembers && DD.Definition != MergeDD.Definition) {
     Reader.MergedLookups[DD.Definition].push_back(MergeDD.Definition);
     DD.Definition->setHasExternalVisibleStorage();
   }
@@ -1494,12 +1504,19 @@ ASTDeclReader::VisitCXXRecordDeclImpl(CXXRecordDecl *D) {
 
 void ASTDeclReader::VisitCXXMethodDecl(CXXMethodDecl *D) {
   VisitFunctionDecl(D);
+
   unsigned NumOverridenMethods = Record[Idx++];
-  while (NumOverridenMethods--) {
-    // Avoid invariant checking of CXXMethodDecl::addOverriddenMethod,
-    // MD may be initializing.
-    if (CXXMethodDecl *MD = ReadDeclAs<CXXMethodDecl>(Record, Idx))
-      Reader.getContext().addOverriddenMethod(D, MD);
+  if (D->isCanonicalDecl()) {
+    while (NumOverridenMethods--) {
+      // Avoid invariant checking of CXXMethodDecl::addOverriddenMethod,
+      // MD may be initializing.
+      if (CXXMethodDecl *MD = ReadDeclAs<CXXMethodDecl>(Record, Idx))
+        Reader.getContext().addOverriddenMethod(D, MD->getCanonicalDecl());
+    }
+  } else {
+    // We don't care about which declarations this used to override; we get
+    // the relevant information from the canonical declaration.
+    Idx += NumOverridenMethods;
   }
 }
 
@@ -2016,6 +2033,8 @@ void ASTDeclReader::mergeRedeclarable(Redeclarable<T> *DBase,
   T *D = static_cast<T*>(DBase);
   T *DCanon = D->getCanonicalDecl();
   if (D != DCanon &&
+      // IDs < NUM_PREDEF_DECL_IDS are not loaded from an AST file.
+      Redecl.getFirstID() >= NUM_PREDEF_DECL_IDS &&
       (!Reader.getContext().getLangOpts().Modules ||
        Reader.getOwningModuleFile(DCanon) == Reader.getOwningModuleFile(D))) {
     // All redeclarations between this declaration and its originally-canonical
@@ -2391,8 +2410,14 @@ static DeclContext *getPrimaryContextForMerging(DeclContext *DC) {
   if (NamespaceDecl *ND = dyn_cast<NamespaceDecl>(DC))
     return ND->getOriginalNamespace();
 
+  // There is one tricky case here: if DC is a class with no definition, then
+  // we're merging a declaration whose definition is added by an update record,
+  // but we've not yet loaded that update record. In this case, we use the
+  // canonical declaration for merging until we get a real definition.
+  // FIXME: When we add a definition, we may need to move the partial lookup
+  // information from the canonical declaration onto the chosen definition.
   if (CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(DC))
-    return RD->getDefinition();
+    return RD->getPrimaryContext();
 
   if (EnumDecl *ED = dyn_cast<EnumDecl>(DC))
     return ED->getASTContext().getLangOpts().CPlusPlus? ED->getDefinition()
@@ -2401,13 +2426,38 @@ static DeclContext *getPrimaryContextForMerging(DeclContext *DC) {
   return nullptr;
 }
 
+static DeclarationName
+getNameForMerging(NamedDecl *D, bool &IsTypedefNameForLinkage) {
+  DeclarationName Name = D->getDeclName();
+
+  if (!Name) {
+    // If this declaration has a typedef name for linkage purposes,
+    // look that name up when merging. We may be able to find another
+    // typedef that names a matching TagDecl.
+    if (auto *TD = dyn_cast<TagDecl>(D)) {
+      if (auto *Typedef = TD->getTypedefNameForAnonDecl()) {
+        Name = Typedef->getDeclName();
+        IsTypedefNameForLinkage = true;
+      }
+    }
+  }
+
+  return Name;
+}
+
 ASTDeclReader::FindExistingResult::~FindExistingResult() {
   if (!AddResult || Existing)
     return;
 
+  bool IsTypedefNameForLinkage = false;
+  DeclarationName Name = getNameForMerging(New, IsTypedefNameForLinkage);
+
   DeclContext *DC = New->getDeclContext()->getRedeclContext();
-  if (DC->isTranslationUnit() && Reader.SemaObj) {
-    Reader.SemaObj->IdResolver.tryAddTopLevelDecl(New, New->getDeclName());
+  if (IsTypedefNameForLinkage) {
+    Reader.ImportedTypedefNamesForLinkage.insert(
+        std::make_pair(std::make_pair(DC, Name.getAsIdentifierInfo()), New));
+  } else if (DC->isTranslationUnit() && Reader.SemaObj) {
+    Reader.SemaObj->IdResolver.tryAddTopLevelDecl(New, Name);
   } else if (DeclContext *MergeDC = getPrimaryContextForMerging(DC)) {
     // Add the declaration to its redeclaration context so later merging
     // lookups will find it.
@@ -2415,8 +2465,31 @@ ASTDeclReader::FindExistingResult::~FindExistingResult() {
   }
 }
 
+/// Find the declaration that should be merged into, given the declaration found
+/// by name lookup. If we're merging an anonymous declaration within a typedef,
+/// we need a matching typedef, and we merge with the type inside it.
+static NamedDecl *getDeclForMerging(NamedDecl *Found,
+                                    bool IsTypedefNameForLinkage) {
+  if (!IsTypedefNameForLinkage)
+    return Found;
+
+  // If we found a typedef declaration that gives a name to some other
+  // declaration, then we want that inner declaration. Declarations from
+  // AST files are handled via ImportedTypedefNamesForLinkage.
+  if (Found->isFromASTFile()) return 0;
+  if (auto *TND = dyn_cast<TypedefNameDecl>(Found)) {
+    if (auto *TT = TND->getTypeSourceInfo()->getType()->getAs<TagType>())
+      if (TT->getDecl()->getTypedefNameForAnonDecl() == TND)
+        return TT->getDecl();
+  }
+
+  return 0;
+}
+
 ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
-  DeclarationName Name = D->getDeclName();
+  bool IsTypedefNameForLinkage = false;
+  DeclarationName Name = getNameForMerging(D, IsTypedefNameForLinkage);
+
   if (!Name) {
     // Don't bother trying to find unnamed declarations.
     FindExistingResult Result(Reader, D, /*Existing=*/nullptr);
@@ -2430,6 +2503,15 @@ ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
   // necessary merging already.
 
   DeclContext *DC = D->getDeclContext()->getRedeclContext();
+  if (IsTypedefNameForLinkage) {
+    auto It = Reader.ImportedTypedefNamesForLinkage.find(
+        std::make_pair(DC, Name.getAsIdentifierInfo()));
+    if (It != Reader.ImportedTypedefNamesForLinkage.end())
+      if (isSameEntity(It->second, D))
+        return FindExistingResult(Reader, D, It->second);
+    // Go on to check in other places in case an existing typedef name
+    // was not imported.
+  }
   if (DC->isTranslationUnit() && Reader.SemaObj) {
     IdentifierResolver &IdResolver = Reader.SemaObj->IdResolver;
 
@@ -2459,14 +2541,16 @@ ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
     for (IdentifierResolver::iterator I = IdResolver.begin(Name), 
                                    IEnd = IdResolver.end();
          I != IEnd; ++I) {
-      if (isSameEntity(*I, D))
-        return FindExistingResult(Reader, D, *I);
+      if (NamedDecl *Existing = getDeclForMerging(*I, IsTypedefNameForLinkage))
+        if (isSameEntity(Existing, D))
+          return FindExistingResult(Reader, D, Existing);
     }
   } else if (DeclContext *MergeDC = getPrimaryContextForMerging(DC)) {
     DeclContext::lookup_result R = MergeDC->noload_lookup(Name);
     for (DeclContext::lookup_iterator I = R.begin(), E = R.end(); I != E; ++I) {
-      if (isSameEntity(*I, D))
-        return FindExistingResult(Reader, D, *I);
+      if (NamedDecl *Existing = getDeclForMerging(*I, IsTypedefNameForLinkage))
+        if (isSameEntity(Existing, D))
+          return FindExistingResult(Reader, D, Existing);
     }
   } else {
     // Not in a mergeable context.
@@ -2478,7 +2562,9 @@ ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
   //
   // FIXME: We should do something similar if we merge two definitions of the
   // same template specialization into the same CXXRecordDecl.
-  if (Reader.MergedDeclContexts.count(D->getLexicalDeclContext()))
+  auto MergedDCIt = Reader.MergedDeclContexts.find(D->getLexicalDeclContext());
+  if (MergedDCIt != Reader.MergedDeclContexts.end() &&
+      MergedDCIt->second == D->getDeclContext())
     Reader.PendingOdrMergeChecks.push_back(D);
 
   return FindExistingResult(Reader, D, /*Existing=*/nullptr);
@@ -2619,11 +2705,11 @@ ASTReader::combineStoredMergedDecls(Decl *Canon, GlobalDeclID CanonID) {
   // Append the stored merged declarations to the merged declarations set.
   MergedDeclsMap::iterator Pos = MergedDecls.find(Canon);
   if (Pos == MergedDecls.end())
-    Pos = MergedDecls.insert(std::make_pair(Canon, 
+    Pos = MergedDecls.insert(std::make_pair(Canon,
                                             SmallVector<DeclID, 2>())).first;
   Pos->second.append(StoredPos->second.begin(), StoredPos->second.end());
   StoredMergedDecls.erase(StoredPos);
-  
+
   // Sort and uniquify the set of merged declarations.
   llvm::array_pod_sort(Pos->second.begin(), Pos->second.end());
   Pos->second.erase(std::unique(Pos->second.begin(), Pos->second.end()),
@@ -2953,13 +3039,13 @@ namespace {
   class RedeclChainVisitor {
     ASTReader &Reader;
     SmallVectorImpl<DeclID> &SearchDecls;
-    llvm::SmallPtrSet<Decl *, 16> &Deserialized;
+    llvm::SmallPtrSetImpl<Decl *> &Deserialized;
     GlobalDeclID CanonID;
     SmallVector<Decl *, 4> Chain;
     
   public:
     RedeclChainVisitor(ASTReader &Reader, SmallVectorImpl<DeclID> &SearchDecls,
-                       llvm::SmallPtrSet<Decl *, 16> &Deserialized,
+                       llvm::SmallPtrSetImpl<Decl *> &Deserialized,
                        GlobalDeclID CanonID)
       : Reader(Reader), SearchDecls(SearchDecls), Deserialized(Deserialized),
         CanonID(CanonID) { 
@@ -3078,7 +3164,7 @@ namespace {
     ASTReader &Reader;
     serialization::GlobalDeclID InterfaceID;
     ObjCInterfaceDecl *Interface;
-    llvm::SmallPtrSet<ObjCCategoryDecl *, 16> &Deserialized;
+    llvm::SmallPtrSetImpl<ObjCCategoryDecl *> &Deserialized;
     unsigned PreviousGeneration;
     ObjCCategoryDecl *Tail;
     llvm::DenseMap<DeclarationName, ObjCCategoryDecl *> NameCategoryMap;
@@ -3126,7 +3212,7 @@ namespace {
     ObjCCategoriesVisitor(ASTReader &Reader,
                           serialization::GlobalDeclID InterfaceID,
                           ObjCInterfaceDecl *Interface,
-                        llvm::SmallPtrSet<ObjCCategoryDecl *, 16> &Deserialized,
+                        llvm::SmallPtrSetImpl<ObjCCategoryDecl *> &Deserialized,
                           unsigned PreviousGeneration)
       : Reader(Reader), InterfaceID(InterfaceID), Interface(Interface),
         Deserialized(Deserialized), PreviousGeneration(PreviousGeneration),
@@ -3361,7 +3447,12 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
           Reader.ReadTemplateArgumentList(TemplArgs, F, Record, Idx);
           auto *TemplArgList = TemplateArgumentList::CreateCopy(
               Reader.getContext(), TemplArgs.data(), TemplArgs.size());
-          Spec->setInstantiationOf(PartialSpec, TemplArgList);
+
+          // FIXME: If we already have a partial specialization set,
+          // check that it matches.
+          if (!Spec->getSpecializedTemplateOrPartial()
+                   .is<ClassTemplatePartialSpecializationDecl *>())
+            Spec->setInstantiationOf(PartialSpec, TemplArgList);
         }
       }
 

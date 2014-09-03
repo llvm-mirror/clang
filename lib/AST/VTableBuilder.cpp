@@ -2464,11 +2464,18 @@ private:
     /// or used for vcalls in the most derived class.
     bool Shadowed;
 
-    MethodInfo(uint64_t VBTableIndex, uint64_t VFTableIndex)
-        : VBTableIndex(VBTableIndex), VFTableIndex(VFTableIndex),
-          Shadowed(false) {}
+    /// UsesExtraSlot - Indicates if this vftable slot was created because
+    /// any of the overridden slots required a return adjusting thunk.
+    bool UsesExtraSlot;
 
-    MethodInfo() : VBTableIndex(0), VFTableIndex(0), Shadowed(false) {}
+    MethodInfo(uint64_t VBTableIndex, uint64_t VFTableIndex,
+               bool UsesExtraSlot = false)
+        : VBTableIndex(VBTableIndex), VFTableIndex(VFTableIndex),
+          Shadowed(false), UsesExtraSlot(UsesExtraSlot) {}
+
+    MethodInfo()
+        : VBTableIndex(0), VFTableIndex(0), Shadowed(false),
+          UsesExtraSlot(false) {}
   };
 
   typedef llvm::DenseMap<const CXXMethodDecl *, MethodInfo> MethodInfoMapTy;
@@ -2524,8 +2531,6 @@ private:
       Components.push_back(VTableComponent::MakeFunction(MD));
     }
   }
-
-  bool NeedsReturnAdjustingThunk(const CXXMethodDecl *MD);
 
   /// AddMethods - Add the methods of this base subobject and the relevant
   /// subbases to the vftable we're currently laying out.
@@ -2789,24 +2794,6 @@ static void GroupNewVirtualOverloads(
     VirtualMethods.append(Groups[I].rbegin(), Groups[I].rend());
 }
 
-/// We need a return adjusting thunk for this method if its return type is
-/// not trivially convertible to the return type of any of its overridden
-/// methods.
-bool VFTableBuilder::NeedsReturnAdjustingThunk(const CXXMethodDecl *MD) {
-  OverriddenMethodsSetTy OverriddenMethods;
-  ComputeAllOverriddenMethods(MD, OverriddenMethods);
-  for (OverriddenMethodsSetTy::iterator I = OverriddenMethods.begin(),
-                                        E = OverriddenMethods.end();
-       I != E; ++I) {
-    const CXXMethodDecl *OverriddenMD = *I;
-    BaseOffset Adjustment =
-        ComputeReturnAdjustmentBaseOffset(Context, MD, OverriddenMD);
-    if (!Adjustment.isEmpty())
-      return true;
-  }
-  return false;
-}
-
 static bool isDirectVBase(const CXXRecordDecl *Base, const CXXRecordDecl *RD) {
   for (const auto &B : RD->bases()) {
     if (B.isVirtual() && B.getType()->getAsCXXRecordDecl() == Base)
@@ -2873,7 +2860,7 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
         FindNearestOverriddenMethod(MD, VisitedBases);
 
     ThisAdjustment ThisAdjustmentOffset;
-    bool ReturnAdjustingThunk = false;
+    bool ReturnAdjustingThunk = false, ForceReturnAdjustmentMangling = false;
     CharUnits ThisOffset = ComputeThisOffset(Overrider);
     ThisAdjustmentOffset.NonVirtual =
         (ThisOffset - WhichVFPtr.FullOffsetInMDC).getQuantity();
@@ -2892,7 +2879,16 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
 
       MethodInfo &OverriddenMethodInfo = OverriddenMDIterator->second;
 
-      if (!NeedsReturnAdjustingThunk(MD)) {
+      // Let's check if the overrider requires any return adjustments.
+      // We must create a new slot if the MD's return type is not trivially
+      // convertible to the OverriddenMD's one.
+      // Once a chain of method overrides adds a return adjusting vftable slot,
+      // all subsequent overrides will also use an extra method slot.
+      ReturnAdjustingThunk = !ComputeReturnAdjustmentBaseOffset(
+                                  Context, MD, OverriddenMD).isEmpty() ||
+                             OverriddenMethodInfo.UsesExtraSlot;
+
+      if (!ReturnAdjustingThunk) {
         // No return adjustment needed - just replace the overridden method info
         // with the current info.
         MethodInfo MI(OverriddenMethodInfo.VBTableIndex,
@@ -2911,7 +2907,7 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
 
       // Force a special name mangling for a return-adjusting thunk
       // unless the method is the final overrider without this adjustment.
-      ReturnAdjustingThunk =
+      ForceReturnAdjustmentMangling =
           !(MD == OverriderMD && ThisAdjustmentOffset.isEmpty());
     } else if (Base.getBaseOffset() != WhichVFPtr.FullOffsetInMDC ||
                MD->size_overridden_methods()) {
@@ -2926,7 +2922,8 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
     unsigned VBIndex =
         LastVBase ? VTables.getVBTableIndex(MostDerivedClass, LastVBase) : 0;
     MethodInfo MI(VBIndex,
-                  HasRTTIComponent ? Components.size() - 1 : Components.size());
+                  HasRTTIComponent ? Components.size() - 1 : Components.size(),
+                  ReturnAdjustingThunk);
 
     assert(!MethodInfoMap.count(MD) &&
            "Should not have method info for this method yet!");
@@ -2941,7 +2938,7 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
           ComputeReturnAdjustmentBaseOffset(Context, OverriderMD, MD);
     }
     if (!ReturnAdjustmentOffset.isEmpty()) {
-      ReturnAdjustingThunk = true;
+      ForceReturnAdjustmentMangling = true;
       ReturnAdjustment.NonVirtual =
           ReturnAdjustmentOffset.NonVirtualOffset.getQuantity();
       if (ReturnAdjustmentOffset.VirtualBase) {
@@ -2955,8 +2952,9 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
       }
     }
 
-    AddMethod(OverriderMD, ThunkInfo(ThisAdjustmentOffset, ReturnAdjustment,
-                                     ReturnAdjustingThunk ? MD : nullptr));
+    AddMethod(OverriderMD,
+              ThunkInfo(ThisAdjustmentOffset, ReturnAdjustment,
+                        ForceReturnAdjustmentMangling ? MD : nullptr));
   }
 }
 
@@ -3131,7 +3129,7 @@ void VFTableBuilder::dumpLayout(raw_ostream &Out) {
 }
 
 static bool setsIntersect(const llvm::SmallPtrSet<const CXXRecordDecl *, 4> &A,
-                          const ArrayRef<const CXXRecordDecl *> &B) {
+                          ArrayRef<const CXXRecordDecl *> B) {
   for (ArrayRef<const CXXRecordDecl *>::iterator I = B.begin(), E = B.end();
        I != E; ++I) {
     if (A.count(*I))
@@ -3174,9 +3172,16 @@ void MicrosoftVTableContext::computeVTablePaths(bool ForVBTables,
     Paths.push_back(new VPtrInfo(RD));
 
   // Recursive case: get all the vbtables from our bases and remove anything
-  // that shares a virtual base.
+  // that shares a virtual base.  Look at non-virtual bases first so we get
+  // longer inheritance paths from the derived class to the virtual bases.
+  llvm::SmallVector<CXXBaseSpecifier, 10> Bases;
+  std::copy_if(RD->bases_begin(), RD->bases_end(), std::back_inserter(Bases),
+               [](CXXBaseSpecifier bs) { return !bs.isVirtual(); });
+  std::copy_if(RD->bases_begin(), RD->bases_end(), std::back_inserter(Bases),
+               [](CXXBaseSpecifier bs) { return bs.isVirtual(); });
+
   llvm::SmallPtrSet<const CXXRecordDecl*, 4> VBasesSeen;
-  for (const auto &B : RD->bases()) {
+  for (const auto &B : Bases) {
     const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
     if (B.isVirtual() && VBasesSeen.count(Base))
       continue;

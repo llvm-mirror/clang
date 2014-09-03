@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef CLANG_CODEGEN_COVERAGEMAPPINGGEN_H
-#define CLANG_CODEGEN_COVERAGEMAPPINGGEN_H
+#ifndef LLVM_CLANG_LIB_CODEGEN_COVERAGEMAPPINGGEN_H
+#define LLVM_CLANG_LIB_CODEGEN_COVERAGEMAPPINGGEN_H
 
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/SourceLocation.h"
@@ -68,7 +68,8 @@ public:
   /// \brief Add a function's coverage mapping record to the collection of the
   /// function mapping records.
   void addFunctionMappingRecord(llvm::GlobalVariable *FunctionName,
-                                unsigned FunctionNameSize,
+                                StringRef FunctionNameValue,
+                                uint64_t FunctionHash,
                                 const std::string &CoverageMapping);
 
   /// \brief Emit the coverage mapping data for a translation unit.

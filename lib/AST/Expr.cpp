@@ -1252,7 +1252,7 @@ SourceLocation CallExpr::getLocStart() const {
     return cast<CXXOperatorCallExpr>(this)->getLocStart();
 
   SourceLocation begin = getCallee()->getLocStart();
-  if (begin.isInvalid() && getNumArgs() > 0)
+  if (begin.isInvalid() && getNumArgs() > 0 && getArg(0))
     begin = getArg(0)->getLocStart();
   return begin;
 }
@@ -1261,7 +1261,7 @@ SourceLocation CallExpr::getLocEnd() const {
     return cast<CXXOperatorCallExpr>(this)->getLocEnd();
 
   SourceLocation end = getRParenLoc();
-  if (end.isInvalid() && getNumArgs() > 0)
+  if (end.isInvalid() && getNumArgs() > 0 && getArg(getNumArgs() - 1))
     end = getArg(getNumArgs() - 1)->getLocEnd();
   return end;
 }
@@ -2734,10 +2734,9 @@ bool Expr::isConstantInitializer(ASTContext &Ctx, bool IsForRef,
     if (ILE->getType()->isRecordType()) {
       unsigned ElementNo = 0;
       RecordDecl *RD = ILE->getType()->getAs<RecordType>()->getDecl();
-      for (RecordDecl::field_iterator Field = RD->field_begin(),
-           FieldEnd = RD->field_end(); Field != FieldEnd; ++Field) {
+      for (const auto *Field : RD->fields()) {
         // If this is a union, skip all the fields that aren't being initialized.
-        if (RD->isUnion() && ILE->getInitializedFieldInUnion() != *Field)
+        if (RD->isUnion() && ILE->getInitializedFieldInUnion() != Field)
           continue;
 
         // Don't emit anonymous bitfields, they just affect layout.

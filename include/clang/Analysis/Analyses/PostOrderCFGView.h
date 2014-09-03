@@ -7,12 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file implements post order view of the blocks in a CFG.
+// This file implements post order views of the blocks in a CFG.
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_POSTORDER_CFGVIEW
-#define LLVM_CLANG_POSTORDER_CFGVIEW
+#ifndef LLVM_CLANG_ANALYSIS_ANALYSES_POSTORDERCFGVIEW_H
+#define LLVM_CLANG_ANALYSIS_ANALYSES_POSTORDERCFGVIEW_H
 
 #include <vector>
 //#include <algorithm>
@@ -68,8 +68,7 @@ public:
     }
   };
 
-private:
-  typedef llvm::po_iterator<const CFG*, CFGBlockSet, true>  po_iterator;
+protected:
   std::vector<const CFGBlock*> Blocks;
 
   typedef llvm::DenseMap<const CFGBlock *, unsigned> BlockOrderTy;
@@ -107,6 +106,15 @@ public:
   static const void *getTag();
 
   static PostOrderCFGView *create(AnalysisDeclContext &analysisContext);
+
+protected:
+  PostOrderCFGView() {}
+};
+
+class ReversePostOrderCFGView : public PostOrderCFGView {
+public:
+  ReversePostOrderCFGView(const CFG *cfg);
+  static ReversePostOrderCFGView *create(AnalysisDeclContext &analysisContext);
 };
 
 } // end clang namespace

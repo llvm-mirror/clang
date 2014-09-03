@@ -811,6 +811,8 @@ static LinkageInfo getLVForNamespaceScopeDecl(const NamedDecl *D,
 
   // Everything not covered here has no linkage.
   } else {
+    // FIXME: A typedef declaration has linkage if it gives a type a name for
+    // linkage purposes.
     return LinkageInfo::none();
   }
 
@@ -2607,7 +2609,7 @@ void FunctionDecl::setDeclsInPrototypeScope(ArrayRef<NamedDecl *> NewDecls) {
   if (!NewDecls.empty()) {
     NamedDecl **A = new (getASTContext()) NamedDecl*[NewDecls.size()];
     std::copy(NewDecls.begin(), NewDecls.end(), A);
-    DeclsInPrototypeScope = ArrayRef<NamedDecl *>(A, NewDecls.size());
+    DeclsInPrototypeScope = llvm::makeArrayRef(A, NewDecls.size());
     // Move declarations introduced in prototype to the function context.
     for (auto I : NewDecls) {
       DeclContext *DC = I->getDeclContext();
@@ -3275,9 +3277,10 @@ unsigned FieldDecl::getFieldIndex() const {
   unsigned Index = 0;
   const RecordDecl *RD = getParent();
 
-  for (RecordDecl::field_iterator I = RD->field_begin(), E = RD->field_end();
-       I != E; ++I, ++Index)
-    I->getCanonicalDecl()->CachedFieldIndex = Index + 1;
+  for (auto *Field : RD->fields()) {
+    Field->getCanonicalDecl()->CachedFieldIndex = Index + 1;
+    ++Index;
+  }
 
   assert(CachedFieldIndex && "failed to find field in parent");
   return CachedFieldIndex - 1;
@@ -3892,8 +3895,8 @@ ArrayRef<SourceLocation> ImportDecl::getIdentifierLocs() const {
 
   const SourceLocation *StoredLocs
     = reinterpret_cast<const SourceLocation *>(this + 1);
-  return ArrayRef<SourceLocation>(StoredLocs, 
-                                  getNumModuleIdentifiers(getImportedModule()));
+  return llvm::makeArrayRef(StoredLocs,
+                            getNumModuleIdentifiers(getImportedModule()));
 }
 
 SourceRange ImportDecl::getSourceRange() const {

@@ -271,10 +271,10 @@ def ext_auto_storage_class : ExtWarn<
   "'auto' storage class specifier is not permitted in C++11, and will not "
   "be supported in future releases">, InGroup<DiagGroup<"auto-storage-class">>;
 def ext_decltype_auto_type_specifier : ExtWarn<
-  "'decltype(auto)' type specifier is a C++1y extension">, InGroup<CXX1y>;
+  "'decltype(auto)' type specifier is a C++14 extension">, InGroup<CXX14>;
 def warn_cxx11_compat_decltype_auto_type_specifier : Warning<
   "'decltype(auto)' type specifier is incompatible with C++ standards before "
-  "C++1y">, InGroup<CXXPre1yCompat>, DefaultIgnore;
+  "C++14">, InGroup<CXXPre14Compat>, DefaultIgnore;
 def ext_for_range : ExtWarn<
   "range-based for loop is a C++11 extension">, InGroup<CXX11>;
 def warn_cxx98_compat_for_range : Warning<
@@ -283,7 +283,7 @@ def warn_cxx98_compat_for_range : Warning<
 def ext_for_range_identifier : ExtWarn<
   "range-based for loop with implicit deduced type is a C++1z extension">,
   InGroup<CXX1z>;
-def warn_cxx1y_compat_for_range_identifier : Warning<
+def warn_cxx14_compat_for_range_identifier : Warning<
   "range-based for loop with implicit deduced type is incompatible with "
   "C++ standards before C++1z">,
   InGroup<CXXPre1zCompat>, DefaultIgnore;
@@ -503,6 +503,17 @@ def note_bracket_depth : Note<
 def err_misplaced_ellipsis_in_declaration : Error<
   "'...' must %select{immediately precede declared identifier|"
   "be innermost component of anonymous pack declaration}0">;
+def warn_misplaced_ellipsis_vararg : Warning<
+  "'...' in this location creates a C-style varargs function"
+  "%select{, not a function parameter pack|}0">,
+  InGroup<DiagGroup<"ambiguous-ellipsis">>;
+def note_misplaced_ellipsis_vararg_existing_ellipsis : Note<
+  "preceding '...' declares a function parameter pack">;
+def note_misplaced_ellipsis_vararg_add_ellipsis : Note<
+  "place '...' %select{immediately before declared identifier|here}0 "
+  "to declare a function parameter pack">;
+def note_misplaced_ellipsis_vararg_add_comma : Note<
+  "insert ',' before '...' to silence this warning">;
 def ext_abstract_pack_declarator_parens : ExtWarn<
   "ISO C++11 requires a parenthesized pack declaration to have a name">,
   InGroup<DiagGroup<"anonymous-pack-parens">>;
@@ -581,7 +592,7 @@ def err_class_on_template_template_param : Error<
 def ext_template_template_param_typename : ExtWarn<
   "template template parameter using 'typename' is a C++1z extension">,
   InGroup<CXX1z>;
-def warn_cxx1y_compat_template_template_param_typename : Warning<
+def warn_cxx14_compat_template_template_param_typename : Warning<
   "template template parameter using 'typename' is "
   "incompatible with C++ standards before C++1z">,
   InGroup<CXXPre1zCompat>, DefaultIgnore;
@@ -855,6 +866,11 @@ def warn_pragma_pack_malformed : Warning<
 // - #pragma unused
 def warn_pragma_unused_expected_var : Warning<
   "expected '#pragma unused' argument to be a variable name">,
+  InGroup<IgnoredPragmas>;
+// - #pragma init_seg
+def warn_pragma_init_seg_unsupported_target : Warning<
+  "'#pragma init_seg' is only supported when targeting a "
+  "Microsoft environment">,
   InGroup<IgnoredPragmas>;
 // - #pragma fp_contract
 def err_pragma_fp_contract_scope : Error<

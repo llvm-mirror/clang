@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_CLANG_PTHMANAGER_H
-#define LLVM_CLANG_PTHMANAGER_H
+#ifndef LLVM_CLANG_LEX_PTHMANAGER_H
+#define LLVM_CLANG_LEX_PTHMANAGER_H
 
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/IdentifierTable.h"
@@ -131,7 +131,7 @@ public:
   ///  FileManager objects.  These objects use the PTH data to speed up
   ///  calls to stat by memoizing their results from when the PTH file
   ///  was generated.
-  FileSystemStatCache *createStatCache();
+  std::unique_ptr<FileSystemStatCache> createStatCache();
 };
 
 }  // end namespace clang

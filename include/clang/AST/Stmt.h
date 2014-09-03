@@ -1580,18 +1580,21 @@ public:
     Kind MyKind;
     std::string Str;
     unsigned OperandNo;
+
+    // Source range for operand references.
+    CharSourceRange Range;
   public:
     AsmStringPiece(const std::string &S) : MyKind(String), Str(S) {}
-    AsmStringPiece(unsigned OpNo, char Modifier)
-      : MyKind(Operand), Str(), OperandNo(OpNo) {
-      Str += Modifier;
+    AsmStringPiece(unsigned OpNo, const std::string &S, SourceLocation Begin,
+                   SourceLocation End)
+      : MyKind(Operand), Str(S), OperandNo(OpNo),
+        Range(CharSourceRange::getCharRange(Begin, End)) {
     }
 
     bool isString() const { return MyKind == String; }
     bool isOperand() const { return MyKind == Operand; }
 
     const std::string &getString() const {
-      assert(isString());
       return Str;
     }
 
@@ -1600,12 +1603,14 @@ public:
       return OperandNo;
     }
 
+    CharSourceRange getRange() const {
+      assert(isOperand() && "Range is currently used only for Operands.");
+      return Range;
+    }
+
     /// getModifier - Get the modifier for this operand, if present.  This
     /// returns '\0' if there was no modifier.
-    char getModifier() const {
-      assert(isOperand());
-      return Str[0];
-    }
+    char getModifier() const;
   };
 
   /// AnalyzeAsmString - Analyze the asm string of the current asm, decomposing
@@ -1780,14 +1785,14 @@ public:
   //===--- Other ---===//
 
   ArrayRef<StringRef> getAllConstraints() const {
-    return ArrayRef<StringRef>(Constraints, NumInputs + NumOutputs);
+    return llvm::makeArrayRef(Constraints, NumInputs + NumOutputs);
   }
   ArrayRef<StringRef> getClobbers() const {
-    return ArrayRef<StringRef>(Clobbers, NumClobbers);
+    return llvm::makeArrayRef(Clobbers, NumClobbers);
   }
   ArrayRef<Expr*> getAllExprs() const {
-    return ArrayRef<Expr*>(reinterpret_cast<Expr**>(Exprs),
-                           NumInputs + NumOutputs);
+    return llvm::makeArrayRef(reinterpret_cast<Expr**>(Exprs),
+                              NumInputs + NumOutputs);
   }
 
   StringRef getClobber(unsigned i) const { return getClobbers()[i]; }
