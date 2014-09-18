@@ -443,6 +443,11 @@ private:
   llvm::DenseMap<std::pair<DeclContext*, IdentifierInfo*>, NamedDecl*>
       ImportedTypedefNamesForLinkage;
 
+  /// \brief Mergeable declaration contexts that have anonymous declarations
+  /// within them, and those anonymous declarations.
+  llvm::DenseMap<DeclContext*, llvm::SmallVector<NamedDecl*, 2>>
+    AnonymousDeclarationsForMerging;
+
   struct FileDeclsInfo {
     ModuleFile *Mod;
     ArrayRef<serialization::LocalDeclID> Decls;
@@ -753,6 +758,11 @@ private:
   /// Sema tracks these because it checks for the key functions being defined
   /// at the end of the TU, in which case it directs CodeGen to emit the VTable.
   SmallVector<uint64_t, 16> DynamicClasses;
+
+  /// \brief The IDs of all potentially unused typedef names in the chain.
+  ///
+  /// Sema tracks these to emit warnings.
+  SmallVector<uint64_t, 16> UnusedLocalTypedefNameCandidates;
 
   /// \brief The IDs of the declarations Sema stores directly.
   ///
@@ -1784,6 +1794,9 @@ public:
 
   void ReadDynamicClasses(SmallVectorImpl<CXXRecordDecl *> &Decls) override;
 
+  void ReadUnusedLocalTypedefNameCandidates(
+      llvm::SmallSetVector<const TypedefNameDecl *, 4> &Decls) override;
+
   void ReadLocallyScopedExternCDecls(
                                   SmallVectorImpl<NamedDecl *> &Decls) override;
 
@@ -2063,9 +2076,9 @@ public:
   /// \brief Retrieve the AST context that this AST reader supplements.
   ASTContext &getContext() { return Context; }
 
-  // \brief Contains declarations that were loaded before we have
+  // \brief Contains the IDs for declarations that were requested before we have
   // access to a Sema object.
-  SmallVector<NamedDecl *, 16> PreloadedDecls;
+  SmallVector<uint64_t, 16> PreloadedDeclIDs;
 
   /// \brief Retrieve the semantic analysis object used to analyze the
   /// translation unit in which the precompiled header is being

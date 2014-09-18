@@ -566,6 +566,12 @@ namespace references {
   int &e = d ?: e; // expected-warning{{reference 'e' is not yet bound to a value when used within its own initialization}}
   int &f = f ?: d; // expected-warning{{reference 'f' is not yet bound to a value when used within its own initialization}}
 
+  int &return_ref1(int);
+  int &return_ref2(int&);
+
+  int &g = return_ref1(g); // expected-warning{{reference 'g' is not yet bound to a value when used within its own initialization}}
+  int &h = return_ref2(h); // expected-warning{{reference 'h' is not yet bound to a value when used within its own initialization}}
+
   struct S {
     S() : a(a) {} // expected-warning{{reference 'a' is not yet bound to a value when used here}}
     int &a;
@@ -823,6 +829,20 @@ namespace cross_field_warnings {
     int d = a + b + c;
     R() : a(c = 5), b(c), c(a) {}
   };
+
+  // FIXME: Use the CFG-based analysis to give a sometimes uninitialized
+  // warning on y.
+  struct T {
+    int x;
+    int y;
+    T(bool b)
+        : x(b ? (y = 5) : (1 + y)),  // expected-warning{{field 'y' is uninitialized when used here}}
+          y(y + 1) {}
+    T(int b)
+        : x(!b ? (1 + y) : (y = 5)),  // expected-warning{{field 'y' is uninitialized when used here}}
+          y(y + 1) {}
+  };
+
 }
 
 namespace base_class {
@@ -839,5 +859,21 @@ namespace base_class {
     int x;
     int y;
     C() : A(y = 4), x(y) {}
+  };
+}
+
+namespace delegating_constructor {
+  struct A {
+    A(int);
+    A(int&, int);
+
+    A(char (*)[1]) : A(x) {}
+    // expected-warning@-1 {{field 'x' is uninitialized when used here}}
+    A(char (*)[2]) : A(x, x) {}
+    // expected-warning@-1 {{field 'x' is uninitialized when used here}}
+
+    A(char (*)[3]) : A(x, 0) {}
+
+    int x;
   };
 }

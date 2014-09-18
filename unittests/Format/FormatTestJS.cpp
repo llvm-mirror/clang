@@ -83,6 +83,14 @@ TEST_F(FormatTestJS, UnderstandsJavaScriptOperators) {
   verifyFormat("var b = a.map((x) => x + 1);");
 }
 
+TEST_F(FormatTestJS, UnderstandsAmpAmp) {
+  verifyFormat("e && e.SomeFunction();");
+}
+
+TEST_F(FormatTestJS, LiteralOperatorsCanBeKeywords) {
+  verifyFormat("not.and.or.not_eq = 1;");
+}
+
 TEST_F(FormatTestJS, ES6DestructuringAssignment) {
   verifyFormat("var [a, b, c] = [1, 2, 3];");
   verifyFormat("var {a, b} = {a: 1, b: 2};");
@@ -102,14 +110,25 @@ TEST_F(FormatTestJS, ContainerLiterals) {
                "};");
   verifyFormat("return {\n"
                "  a: a,\n"
-               "  link:\n"
-               "      function() {\n"
-               "        f();  //\n"
-               "      },\n"
-               "  link:\n"
-               "      function() {\n"
-               "        f();  //\n"
-               "      }\n"
+               "  link: function() {\n"
+               "    f();  //\n"
+               "  },\n"
+               "  link: function() {\n"
+               "    f();  //\n"
+               "  }\n"
+               "};");
+  verifyFormat("var stuff = {\n"
+               "  // comment for update\n"
+               "  update: false,\n"
+               "  // comment for modules\n"
+               "  modules: false,\n"
+               "  // comment for tasks\n"
+               "  tasks: false\n"
+               "};");
+  verifyFormat("return {\n"
+               "  'finish':\n"
+               "      //\n"
+               "      a\n"
                "};");
 }
 
@@ -150,6 +169,7 @@ TEST_F(FormatTestJS, FormatsFreestandingFunctions) {
 }
 
 TEST_F(FormatTestJS, FunctionLiterals) {
+  verifyFormat("doFoo(function() {});");
   verifyFormat("doFoo(function() { return 1; });");
   verifyFormat("var func = function() { return 1; };");
   verifyFormat("return {\n"
@@ -246,6 +266,9 @@ TEST_F(FormatTestJS, TryCatch) {
                "} finally {\n"
                "  h();\n"
                "}");
+
+  // But, of course, "catch" is a perfectly fine function name in JavaScript.
+  verifyFormat("someObject.catch();");
 }
 
 TEST_F(FormatTestJS, StringLiteralConcatenation) {
@@ -307,6 +330,8 @@ TEST_F(FormatTestJS, RegexLiteralSpecialCharacters) {
   verifyFormat("var regex = /\\\\/g;");
   verifyFormat("var regex = /\\a\\\\/g;");
   verifyFormat("var regex = /\a\\//g;");
+  verifyFormat("var regex = /a\\//;\n"
+               "var x = 0;");
 }
 
 TEST_F(FormatTestJS, RegexLiteralModifiers) {

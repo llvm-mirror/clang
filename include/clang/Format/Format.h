@@ -47,6 +47,8 @@ struct FormatStyle {
     LK_None,
     /// Should be used for C, C++, ObjectiveC, ObjectiveC++.
     LK_Cpp,
+    /// Should be used for Java.
+    LK_Java,
     /// Should be used for JavaScript.
     LK_JavaScript,
     /// Should be used for Protocol Buffers
@@ -195,6 +197,9 @@ struct FormatStyle {
   /// single line.
   bool AllowShortLoopsOnASingleLine;
 
+  /// \brief If \c true, short case labels will be contracted to a single line.
+  bool AllowShortCaseLabelsOnASingleLine;
+
   /// \brief Different styles for merging short functions containing at most one
   /// statement.
   enum ShortFunctionStyle {
@@ -263,8 +268,18 @@ struct FormatStyle {
   /// \brief The way to use tab characters in the resulting file.
   UseTabStyle UseTab;
 
-  /// \brief If \c true, binary operators will be placed after line breaks.
-  bool BreakBeforeBinaryOperators;
+  /// \brief The style of breaking before or after binary operators.
+  enum BinaryOperatorStyle {
+    /// Break after operators.
+    BOS_None,
+    /// Break before operators that aren't assignments.
+    BOS_NonAssignment,
+    /// Break before operators.
+    BOS_All,
+  };
+
+  /// \brief The way to wrap binary operators.
+  BinaryOperatorStyle BreakBeforeBinaryOperators;
 
   /// \brief If \c true, ternary operators will be placed after line breaks.
   bool BreakBeforeTernaryOperators;
@@ -323,6 +338,9 @@ struct FormatStyle {
 
   /// \brief If \c true, spaces may be inserted into C style casts.
   bool SpacesInCStyleCastParentheses;
+
+  /// \brief If \c true, a space may be inserted after C style casts.
+  bool SpaceAfterCStyleCast;
 
   /// \brief Different ways to put a space before opening parentheses.
   enum SpaceBeforeParensOptions {
@@ -422,6 +440,7 @@ struct FormatStyle {
            SpaceInEmptyParentheses == R.SpaceInEmptyParentheses &&
            SpacesInContainerLiterals == R.SpacesInContainerLiterals &&
            SpacesInCStyleCastParentheses == R.SpacesInCStyleCastParentheses &&
+           SpaceAfterCStyleCast == R.SpaceAfterCStyleCast &&
            SpaceBeforeParens == R.SpaceBeforeParens &&
            SpaceBeforeAssignmentOperators == R.SpaceBeforeAssignmentOperators &&
            ContinuationIndentWidth == R.ContinuationIndentWidth &&
@@ -483,14 +502,21 @@ std::string configurationAsText(const FormatStyle &Style);
 /// \brief Reformats the given \p Ranges in the token stream coming out of
 /// \c Lex.
 ///
+/// DEPRECATED: Do not use.
+tooling::Replacements reformat(const FormatStyle &Style, Lexer &Lex,
+                               SourceManager &SourceMgr,
+                               std::vector<CharSourceRange> Ranges);
+
+/// \brief Reformats the given \p Ranges in the file \p ID.
+///
 /// Each range is extended on either end to its next bigger logic unit, i.e.
 /// everything that might influence its formatting or might be influenced by its
 /// formatting.
 ///
 /// Returns the \c Replacements necessary to make all \p Ranges comply with
 /// \p Style.
-tooling::Replacements reformat(const FormatStyle &Style, Lexer &Lex,
-                               SourceManager &SourceMgr,
+tooling::Replacements reformat(const FormatStyle &Style,
+                               SourceManager &SourceMgr, FileID ID,
                                std::vector<CharSourceRange> Ranges);
 
 /// \brief Reformats the given \p Ranges in \p Code.
@@ -502,10 +528,8 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
 
 /// \brief Returns the \c LangOpts that the formatter expects you to set.
 ///
-/// \param Standard determines lexing mode: LC_Cpp11 and LS_Auto turn on C++11
-/// lexing mode, LS_Cpp03 - C++03 mode.
-LangOptions getFormattingLangOpts(
-    FormatStyle::LanguageStandard Standard = FormatStyle::LS_Cpp11);
+/// \param Style determines specific settings for lexing mode.
+LangOptions getFormattingLangOpts(const FormatStyle &Style = getLLVMStyle());
 
 /// \brief Description to be used for help text for a llvm::cl option for
 /// specifying format style. The description is closely related to the operation

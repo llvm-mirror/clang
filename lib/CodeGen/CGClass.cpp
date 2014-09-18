@@ -914,11 +914,12 @@ namespace {
   private:
 
     /// Get source argument for copy constructor. Returns null if not a copy
-    /// constructor. 
-    static const VarDecl* getTrivialCopySource(const CXXConstructorDecl *CD,
+    /// constructor.
+    static const VarDecl *getTrivialCopySource(CodeGenFunction &CGF,
+                                               const CXXConstructorDecl *CD,
                                                FunctionArgList &Args) {
       if (CD->isCopyOrMoveConstructor() && CD->isDefaulted())
-        return Args[Args.size() - 1];
+        return Args[CGF.CGM.getCXXABI().getSrcArgforCopyCtor(CD, Args)];
       return nullptr;
     }
 
@@ -949,7 +950,7 @@ namespace {
   public:
     ConstructorMemcpyizer(CodeGenFunction &CGF, const CXXConstructorDecl *CD,
                           FunctionArgList &Args)
-      : FieldMemcpyizer(CGF, CD->getParent(), getTrivialCopySource(CD, Args)),
+      : FieldMemcpyizer(CGF, CD->getParent(), getTrivialCopySource(CGF, CD, Args)),
         ConstructorDecl(CD),
         MemcpyableCtor(CD->isDefaulted() &&
                        CD->isCopyOrMoveConstructor() &&
@@ -1674,14 +1675,14 @@ void CodeGenFunction::EmitCXXConstructorCall(const CXXConstructorDecl *D,
 
   // Add the rest of the user-supplied arguments.
   const FunctionProtoType *FPT = D->getType()->castAs<FunctionProtoType>();
-  EmitCallArgs(Args, FPT, E->arg_begin(), E->arg_end());
+  EmitCallArgs(Args, FPT, E->arg_begin(), E->arg_end(), E->getConstructor());
 
   // Insert any ABI-specific implicit constructor arguments.
   unsigned ExtraArgs = CGM.getCXXABI().addImplicitConstructorArgs(
       *this, D, Type, ForVirtualBase, Delegating, Args);
 
   // Emit the call.
-  llvm::Value *Callee = CGM.GetAddrOfCXXConstructor(D, Type);
+  llvm::Value *Callee = CGM.getAddrOfCXXStructor(D, getFromCtorType(Type));
   const CGFunctionInfo &Info =
       CGM.getTypes().arrangeCXXConstructorCall(Args, D, Type, ExtraArgs);
   EmitCall(Info, Callee, ReturnValueSlot(), Args, D);
@@ -1698,7 +1699,7 @@ CodeGenFunction::EmitSynthesizedCXXCopyCtorCall(const CXXConstructorDecl *D,
     EmitAggregateCopy(This, Src, E->arg_begin()->getType());
     return;
   }
-  llvm::Value *Callee = CGM.GetAddrOfCXXConstructor(D, clang::Ctor_Complete);
+  llvm::Value *Callee = CGM.getAddrOfCXXStructor(D, StructorType::Complete);
   assert(D->isInstance() &&
          "Trying to emit a member call expr on a static method!");
   
@@ -1716,8 +1717,8 @@ CodeGenFunction::EmitSynthesizedCXXCopyCtorCall(const CXXConstructorDecl *D,
   Args.add(RValue::get(Src), QT);
 
   // Skip over first argument (Src).
-  EmitCallArgs(Args, FPT->isVariadic(), FPT->param_type_begin() + 1,
-               FPT->param_type_end(), E->arg_begin() + 1, E->arg_end());
+  EmitCallArgs(Args, FPT, E->arg_begin() + 1, E->arg_end(), E->getConstructor(),
+               /*ParamsToSkip*/ 1);
 
   EmitCall(CGM.getTypes().arrangeCXXMethodCall(Args, FPT, RequiredArgs::All),
            Callee, ReturnValueSlot(), Args, D);
@@ -1758,8 +1759,10 @@ CodeGenFunction::EmitDelegateCXXConstructorCall(const CXXConstructorDecl *Ctor,
     EmitDelegateCallArg(DelegateArgs, param, Loc);
   }
 
-  llvm::Value *Callee = CGM.GetAddrOfCXXConstructor(Ctor, CtorType);
-  EmitCall(CGM.getTypes().arrangeCXXConstructorDeclaration(Ctor, CtorType),
+  llvm::Value *Callee =
+      CGM.getAddrOfCXXStructor(Ctor, getFromCtorType(CtorType));
+  EmitCall(CGM.getTypes()
+               .arrangeCXXStructorDeclaration(Ctor, getFromCtorType(CtorType)),
            Callee, ReturnValueSlot(), DelegateArgs, Ctor);
 }
 

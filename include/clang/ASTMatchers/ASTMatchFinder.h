@@ -173,11 +173,23 @@ public:
   /// Each call to FindAll(...) will call the closure once.
   void registerTestCallbackAfterParsing(ParsingDoneTestCallback *ParsingDone);
 
-private:
-  /// \brief For each \c DynTypedMatcher a \c MatchCallback that will be called
+  /// \brief For each \c Matcher<> a \c MatchCallback that will be called
   /// when it matches.
-  std::vector<std::pair<internal::DynTypedMatcher, MatchCallback *> >
-    MatcherCallbackPairs;
+  struct MatchersByType {
+    std::vector<std::pair<DeclarationMatcher, MatchCallback *>> Decl;
+    std::vector<std::pair<TypeMatcher, MatchCallback *>> Type;
+    std::vector<std::pair<StatementMatcher, MatchCallback *>> Stmt;
+    std::vector<std::pair<NestedNameSpecifierMatcher, MatchCallback *>>
+        NestedNameSpecifier;
+    std::vector<std::pair<NestedNameSpecifierLocMatcher, MatchCallback *>>
+        NestedNameSpecifierLoc;
+    std::vector<std::pair<TypeLocMatcher, MatchCallback *>> TypeLoc;
+    /// \brief All the callbacks in one container to simplify iteration.
+    std::vector<MatchCallback *> AllCallbacks;
+  };
+
+private:
+  MatchersByType Matchers;
 
   /// \brief Called when parsing is done.
   ParsingDoneTestCallback *ParsingDone;
@@ -241,7 +253,7 @@ match(MatcherT Matcher, const ast_type_traits::DynTypedNode &Node,
   MatchFinder Finder;
   Finder.addMatcher(Matcher, &Callback);
   Finder.match(Node, Context);
-  return Callback.Nodes;
+  return std::move(Callback.Nodes);
 }
 
 template <typename MatcherT, typename NodeT>

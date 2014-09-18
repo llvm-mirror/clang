@@ -72,7 +72,7 @@ namespace clang {
       llvm::TimePassesIsEnabled = TimePasses;
     }
 
-    llvm::Module *takeModule() { return TheModule.release(); }
+    std::unique_ptr<llvm::Module> takeModule() { return std::move(TheModule); }
     llvm::Module *takeLinkModule() { return LinkModule.release(); }
 
     void HandleCXXStaticMemberVarInstantiation(VarDecl *VD) override {
@@ -277,7 +277,7 @@ static FullSourceLoc ConvertBackendLocation(const llvm::SMDiagnostic &D,
       llvm::MemoryBuffer::getMemBufferCopy(LBuf->getBuffer(),
                                            LBuf->getBufferIdentifier());
   // FIXME: Keep a file ID map instead of creating new IDs for each location.
-  FileID FID = CSM.createFileID(CBuf.release());
+  FileID FID = CSM.createFileID(std::move(CBuf));
 
   // Translate the offset into the file.
   unsigned Offset = D.getLoc().getPointer() - LBuf->getBufferStart();
@@ -576,7 +576,7 @@ void CodeGenAction::EndSourceFileAction() {
     BEConsumer->takeLinkModule();
 
   // Steal the module from the consumer.
-  TheModule.reset(BEConsumer->takeModule());
+  TheModule = BEConsumer->takeModule();
 }
 
 std::unique_ptr<llvm::Module> CodeGenAction::takeModule() {
@@ -633,7 +633,7 @@ CodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
     }
 
     ErrorOr<llvm::Module *> ModuleOrErr =
-        getLazyBitcodeModule(BCBuf, *VMContext);
+        getLazyBitcodeModule(std::move(BCBuf), *VMContext);
     if (std::error_code EC = ModuleOrErr.getError()) {
       CI.getDiagnostics().Report(diag::err_cannot_open_file)
         << LinkBCFile << EC.message();
@@ -646,7 +646,8 @@ CodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   // Add the preprocessor callback only when the coverage mapping is generated.
   if (CI.getCodeGenOpts().CoverageMapping) {
     CoverageInfo = new CoverageSourceInfo;
-    CI.getPreprocessor().addPPCallbacks(CoverageInfo);
+    CI.getPreprocessor().addPPCallbacks(
+                                    std::unique_ptr<PPCallbacks>(CoverageInfo));
   }
   std::unique_ptr<BackendConsumer> Result(new BackendConsumer(
       BA, CI.getDiagnostics(), CI.getCodeGenOpts(), CI.getTargetOpts(),

@@ -2786,7 +2786,7 @@ void Sema::AddAlignedAttr(SourceRange AttrRange, Decl *D, Expr *E,
   //   An alignment specification of zero has no effect.
   if (!(TmpAttr.isAlignas() && !Alignment) &&
       !llvm::isPowerOf2_64(Alignment.getZExtValue())) {
-    Diag(AttrLoc, diag::err_attribute_aligned_not_power_of_two)
+    Diag(AttrLoc, diag::err_alignment_not_power_of_two)
       << E->getSourceRange();
     return;
   }
@@ -3052,7 +3052,7 @@ static void handleGlobalAttr(Sema &S, Decl *D, const AttributeList &Attr) {
 
   D->addAttr(::new (S.Context)
               CUDAGlobalAttr(Attr.getRange(), S.Context,
-                            Attr.getAttributeSpellingListIndex()));
+                             Attr.getAttributeSpellingListIndex()));
 }
 
 static void handleGNUInlineAttr(Sema &S, Decl *D, const AttributeList &Attr) {

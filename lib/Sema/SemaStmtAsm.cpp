@@ -405,6 +405,19 @@ ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
   Result = CheckPlaceholderExpr(Result.get());
   if (!Result.isUsable()) return Result;
 
+  // Referring to parameters is not allowed in naked functions.
+  if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Result.get())) {
+    if (ParmVarDecl *Parm = dyn_cast<ParmVarDecl>(DRE->getDecl())) {
+      if (FunctionDecl *Func = dyn_cast<FunctionDecl>(Parm->getDeclContext())) {
+        if (Func->hasAttr<NakedAttr>()) {
+          Diag(Id.getLocStart(), diag::err_asm_naked_parm_ref);
+          Diag(Func->getAttr<NakedAttr>()->getLocation(), diag::note_attribute);
+          return ExprError();
+        }
+      }
+    }
+  }
+
   QualType T = Result.get()->getType();
 
   // For now, reject dependent types.
@@ -454,9 +467,10 @@ bool Sema::LookupInlineAsmField(StringRef Base, StringRef Member,
   NamedDecl *FoundDecl = BaseResult.getFoundDecl();
   if (VarDecl *VD = dyn_cast<VarDecl>(FoundDecl))
     RT = VD->getType()->getAs<RecordType>();
-  else if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(FoundDecl))
+  else if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(FoundDecl)) {
+    MarkAnyDeclReferenced(TD->getLocation(), TD, /*OdrUse=*/false);
     RT = TD->getUnderlyingType()->getAs<RecordType>();
-  else if (TypeDecl *TD = dyn_cast<TypeDecl>(FoundDecl))
+  } else if (TypeDecl *TD = dyn_cast<TypeDecl>(FoundDecl))
     RT = TD->getTypeForDecl()->getAs<RecordType>();
   if (!RT)
     return true;

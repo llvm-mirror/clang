@@ -45,7 +45,6 @@ std::string GetExecutablePath(const char *Argv0) {
 static llvm::ExecutionEngine *
 createExecutionEngine(std::unique_ptr<llvm::Module> M, std::string *ErrorStr) {
   return llvm::EngineBuilder(std::move(M))
-      .setUseMCJIT(true)
       .setEngineKind(llvm::EngineKind::Either)
       .setErrorStr(ErrorStr)
       .create();
@@ -112,7 +111,7 @@ int main(int argc, const char **argv, char * const *envp) {
   // We expect to get back exactly one command job, if we didn't something
   // failed. Extract that job from the compilation.
   const driver::JobList &Jobs = C->getJobs();
-  if (Jobs.size() != 1 || !isa<driver::Command>(*Jobs.begin())) {
+  if (Jobs.size() != 1 || !isa<driver::Command>(**Jobs.begin())) {
     SmallString<256> Msg;
     llvm::raw_svector_ostream OS(Msg);
     Jobs.Print(OS, "; ", true);
@@ -120,14 +119,14 @@ int main(int argc, const char **argv, char * const *envp) {
     return 1;
   }
 
-  const driver::Command *Cmd = cast<driver::Command>(*Jobs.begin());
-  if (llvm::StringRef(Cmd->getCreator().getName()) != "clang") {
+  const driver::Command &Cmd = cast<driver::Command>(**Jobs.begin());
+  if (llvm::StringRef(Cmd.getCreator().getName()) != "clang") {
     Diags.Report(diag::err_fe_expected_clang_command);
     return 1;
   }
 
   // Initialize a compiler invocation object from the clang (-cc1) arguments.
-  const driver::ArgStringList &CCArgs = Cmd->getArguments();
+  const driver::ArgStringList &CCArgs = Cmd.getArguments();
   std::unique_ptr<CompilerInvocation> CI(new CompilerInvocation);
   CompilerInvocation::CreateFromArgs(*CI,
                                      const_cast<const char **>(CCArgs.data()),

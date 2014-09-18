@@ -138,15 +138,10 @@ public:
                               const CXXRecordDecl *ClassDecl,
                               const CXXRecordDecl *BaseClassDecl) override;
 
-  void BuildConstructorSignature(const CXXConstructorDecl *Ctor,
-                                 CXXCtorType T, CanQualType &ResTy,
-                                 SmallVectorImpl<CanQualType> &ArgTys) override;
-
   void EmitCXXConstructors(const CXXConstructorDecl *D) override;
 
-  void BuildDestructorSignature(const CXXDestructorDecl *Dtor,
-                                CXXDtorType T, CanQualType &ResTy,
-                                SmallVectorImpl<CanQualType> &ArgTys) override;
+  void buildStructorSignature(const CXXMethodDecl *MD, StructorType T,
+                              SmallVectorImpl<CanQualType> &ArgTys) override;
 
   bool useThunkForDtorVariant(const CXXDestructorDecl *Dtor,
                               CXXDtorType DT) const override {
@@ -213,6 +208,12 @@ public:
   llvm::Value *performReturnAdjustment(CodeGenFunction &CGF, llvm::Value *Ret,
                                        const ReturnAdjustment &RA) override;
 
+  size_t getSrcArgforCopyCtor(const CXXConstructorDecl *,
+                              FunctionArgList &Args) const override {
+    assert(!Args.empty() && "expected the arglist to not be empty!");
+    return Args.size() - 1;
+  }
+
   StringRef GetPureVirtualCallName() override { return "__cxa_pure_virtual"; }
   StringRef GetDeletedVirtualCallName() override
     { return "__cxa_deleted_virtual"; }
@@ -273,6 +274,8 @@ public:
   classifyRTTIUniqueness(QualType CanTy,
                          llvm::GlobalValue::LinkageTypes Linkage) const;
   friend class ItaniumRTTIBuilder;
+
+  void emitCXXStructor(const CXXMethodDecl *MD, StructorType Type) override;
 };
 
 class ARMCXXABI : public ItaniumCXXABI {
@@ -1066,23 +1069,6 @@ ItaniumCXXABI::GetVirtualBaseClassOffset(CodeGenFunction &CGF,
   return VBaseOffset;
 }
 
-/// The generic ABI passes 'this', plus a VTT if it's initializing a
-/// base subobject.
-void
-ItaniumCXXABI::BuildConstructorSignature(const CXXConstructorDecl *Ctor,
-                                         CXXCtorType Type, CanQualType &ResTy,
-                                         SmallVectorImpl<CanQualType> &ArgTys) {
-  ASTContext &Context = getContext();
-
-  // All parameters are already in place except VTT, which goes after 'this'.
-  // These are Clang types, so we don't need to worry about sret yet.
-
-  // Check if we need to add a VTT parameter (which has type void **).
-  if (Type == Ctor_Base && Ctor->getParent()->getNumVBases() != 0)
-    ArgTys.insert(ArgTys.begin() + 1,
-                  Context.getPointerType(Context.VoidPtrTy));
-}
-
 void ItaniumCXXABI::EmitCXXConstructors(const CXXConstructorDecl *D) {
   // Just make sure we're in sync with TargetCXXABI.
   assert(CGM.getTarget().getCXXABI().hasConstructorVariants());
@@ -1099,20 +1085,18 @@ void ItaniumCXXABI::EmitCXXConstructors(const CXXConstructorDecl *D) {
   }
 }
 
-/// The generic ABI passes 'this', plus a VTT if it's destroying a
-/// base subobject.
-void ItaniumCXXABI::BuildDestructorSignature(const CXXDestructorDecl *Dtor,
-                                             CXXDtorType Type,
-                                             CanQualType &ResTy,
-                                SmallVectorImpl<CanQualType> &ArgTys) {
+void
+ItaniumCXXABI::buildStructorSignature(const CXXMethodDecl *MD, StructorType T,
+                                      SmallVectorImpl<CanQualType> &ArgTys) {
   ASTContext &Context = getContext();
 
-  // 'this' parameter is already there, as well as 'this' return if
-  // HasThisReturn(GlobalDecl(Dtor, Type)) is true
+  // All parameters are already in place except VTT, which goes after 'this'.
+  // These are Clang types, so we don't need to worry about sret yet.
 
   // Check if we need to add a VTT parameter (which has type void **).
-  if (Type == Dtor_Base && Dtor->getParent()->getNumVBases() != 0)
-    ArgTys.push_back(Context.getPointerType(Context.VoidPtrTy));
+  if (T == StructorType::Base && MD->getParent()->getNumVBases() != 0)
+    ArgTys.insert(ArgTys.begin() + 1,
+                  Context.getPointerType(Context.VoidPtrTy));
 }
 
 void ItaniumCXXABI::EmitCXXDestructors(const CXXDestructorDecl *D) {
@@ -1201,7 +1185,7 @@ void ItaniumCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
     Callee = CGF.BuildAppleKextVirtualDestructorCall(DD, Type, DD->getParent());
 
   if (!Callee)
-    Callee = CGM.GetAddrOfCXXDestructor(DD, Type);
+    Callee = CGM.getAddrOfCXXStructor(DD, getFromDtorType(Type));
 
   CGF.EmitCXXMemberOrOperatorCall(DD, Callee, ReturnValueSlot(), This, VTT,
                                   VTTTy, nullptr);
@@ -1230,6 +1214,12 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
 
   // Set the right visibility.
   CGM.setGlobalVisibility(VTable, RD);
+
+  // Use pointer alignment for the vtable. Otherwise we would align them based
+  // on the size of the initializer which doesn't make sense as only single
+  // values are read.
+  unsigned PAlign = CGM.getTarget().getPointerAlign(0);
+  VTable->setAlignment(getContext().toCharUnitsFromBits(PAlign).getQuantity());
 
   // If this is the magic class __cxxabiv1::__fundamental_type_info,
   // we will emit the typeinfo for the fundamental types. This is the
@@ -1346,8 +1336,8 @@ void ItaniumCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
   assert(CE == nullptr || CE->arg_begin() == CE->arg_end());
   assert(DtorType == Dtor_Deleting || DtorType == Dtor_Complete);
 
-  const CGFunctionInfo *FInfo
-    = &CGM.getTypes().arrangeCXXDestructor(Dtor, DtorType);
+  const CGFunctionInfo *FInfo = &CGM.getTypes().arrangeCXXStructorDeclaration(
+      Dtor, getFromDtorType(DtorType));
   llvm::Type *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
   llvm::Value *Callee =
       getVirtualFunctionPointer(CGF, GlobalDecl(Dtor, DtorType), This, Ty);
@@ -1476,8 +1466,9 @@ llvm::Value *ItaniumCXXABI::InitializeArrayCookie(CodeGenFunction &CGF,
   llvm::Value *NumElementsPtr =
       CGF.Builder.CreateBitCast(CookiePtr, NumElementsTy);
   llvm::Instruction *SI = CGF.Builder.CreateStore(NumElements, NumElementsPtr);
-  if (CGM.getLangOpts().Sanitize.Address &&
+  if (CGM.getLangOpts().Sanitize.Address && AS == 0 &&
       expr->getOperatorNew()->isReplaceableGlobalAllocationFunction()) {
+    // The store to the CookiePtr does not need to be instrumented.
     CGM.getSanitizerMetadata()->disableSanitizerForInstruction(SI);
     llvm::FunctionType *FTy =
         llvm::FunctionType::get(CGM.VoidTy, NumElementsTy, false);
@@ -1507,10 +1498,18 @@ llvm::Value *ItaniumCXXABI::readArrayCookieImpl(CodeGenFunction &CGF,
   unsigned AS = allocPtr->getType()->getPointerAddressSpace();
   numElementsPtr = 
     CGF.Builder.CreateBitCast(numElementsPtr, CGF.SizeTy->getPointerTo(AS));
-  llvm::Instruction *LI = CGF.Builder.CreateLoad(numElementsPtr);
-  if (CGM.getLangOpts().Sanitize.Address)
-    CGM.getSanitizerMetadata()->disableSanitizerForInstruction(LI);
-  return LI;
+  if (!CGM.getLangOpts().Sanitize.Address || AS != 0)
+    return CGF.Builder.CreateLoad(numElementsPtr);
+  // In asan mode emit a function call instead of a regular load and let the
+  // run-time deal with it: if the shadow is properly poisoned return the
+  // cookie, otherwise return 0 to avoid an infinite loop calling DTORs.
+  // We can't simply ignore this load using nosanitize metadata because
+  // the metadata may be lost.
+  llvm::FunctionType *FTy =
+      llvm::FunctionType::get(CGF.SizeTy, CGF.SizeTy->getPointerTo(0), false);
+  llvm::Constant *F =
+      CGM.CreateRuntimeFunction(FTy, "__asan_load_cxx_array_cookie");
+  return CGF.Builder.CreateCall(F, numElementsPtr);
 }
 
 CharUnits ARMCXXABI::getArrayCookieSizeImpl(QualType elementType) {
@@ -2998,4 +2997,55 @@ ItaniumCXXABI::RTTIUniquenessKind ItaniumCXXABI::classifyRTTIUniqueness(
   // enable string-comparisons.
   assert(Linkage == llvm::GlobalValue::WeakODRLinkage);
   return RUK_NonUniqueVisible;
+}
+
+static void emitCXXConstructor(CodeGenModule &CGM,
+                               const CXXConstructorDecl *ctor,
+                               StructorType ctorType) {
+  if (!ctor->getParent()->getNumVBases() &&
+      (ctorType == StructorType::Complete || ctorType == StructorType::Base)) {
+    // The complete constructor is equivalent to the base constructor
+    // for classes with no virtual bases.  Try to emit it as an alias.
+    bool ProducedAlias = !CGM.TryEmitDefinitionAsAlias(
+        GlobalDecl(ctor, Ctor_Complete), GlobalDecl(ctor, Ctor_Base), true);
+    if (ctorType == StructorType::Complete && ProducedAlias)
+      return;
+  }
+
+  CGM.codegenCXXStructor(ctor, ctorType);
+}
+
+static void emitCXXDestructor(CodeGenModule &CGM, const CXXDestructorDecl *dtor,
+                              StructorType dtorType) {
+  // The complete destructor is equivalent to the base destructor for
+  // classes with no virtual bases, so try to emit it as an alias.
+  if (!dtor->getParent()->getNumVBases() &&
+      (dtorType == StructorType::Complete || dtorType == StructorType::Base)) {
+    bool ProducedAlias = !CGM.TryEmitDefinitionAsAlias(
+        GlobalDecl(dtor, Dtor_Complete), GlobalDecl(dtor, Dtor_Base), true);
+    if (ProducedAlias) {
+      if (dtorType == StructorType::Complete)
+        return;
+      if (dtor->isVirtual())
+        CGM.getVTables().EmitThunks(GlobalDecl(dtor, Dtor_Complete));
+    }
+  }
+
+  // The base destructor is equivalent to the base destructor of its
+  // base class if there is exactly one non-virtual base class with a
+  // non-trivial destructor, there are no fields with a non-trivial
+  // destructor, and the body of the destructor is trivial.
+  if (dtorType == StructorType::Base && !CGM.TryEmitBaseDestructorAsAlias(dtor))
+    return;
+
+  CGM.codegenCXXStructor(dtor, dtorType);
+}
+
+void ItaniumCXXABI::emitCXXStructor(const CXXMethodDecl *MD,
+                                    StructorType Type) {
+  if (auto *CD = dyn_cast<CXXConstructorDecl>(MD)) {
+    emitCXXConstructor(CGM, CD, Type);
+    return;
+  }
+  emitCXXDestructor(CGM, cast<CXXDestructorDecl>(MD), Type);
 }

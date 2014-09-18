@@ -357,23 +357,27 @@ The table below shows the support for each operation by vector extension.  A
 dash indicates that an operation is not accepted according to a corresponding
 specification.
 
-============================== ====== ======= === ====
-         Opeator               OpenCL AltiVec GCC NEON
-============================== ====== ======= === ====
-[]                              yes     yes   yes  --
-unary operators +, --           yes     yes   yes  --
-++, -- --                       yes     yes   yes  --
-+,--,*,/,%                      yes     yes   yes  --
-bitwise operators &,|,^,~       yes     yes   yes  --
->>,<<                           yes     yes   yes  --
-!, &&, ||                       no      --    --   --
-==, !=, >, <, >=, <=            yes     yes   --   --
-=                               yes     yes   yes yes
-:?                              yes     --    --   --
-sizeof                          yes     yes   yes yes
-============================== ====== ======= === ====
+============================== ======= ======= ======= =======
+         Opeator               OpenCL  AltiVec   GCC    NEON
+============================== ======= ======= ======= =======
+[]                               yes     yes     yes     --
+unary operators +, --            yes     yes     yes     --
+++, -- --                        yes     yes     yes     --
++,--,*,/,%                       yes     yes     yes     --
+bitwise operators &,|,^,~        yes     yes     yes     --
+>>,<<                            yes     yes     yes     --
+!, &&, ||                        yes     --      --      --
+==, !=, >, <, >=, <=             yes     yes     --      --
+=                                yes     yes     yes     yes
+:?                               yes     --      --      --
+sizeof                           yes     yes     yes     yes
+C-style cast                     yes     yes     yes     no
+reinterpret_cast                 yes     no      yes     no
+static_cast                      yes     no      yes     no
+const_cast                       no      no      no      no
+============================== ======= ======= ======= =======
 
-See also :ref:`langext-__builtin_shufflevector`.
+See also :ref:`langext-__builtin_shufflevector`, :ref:`langext-__builtin_convertvector`.
 
 Messages on ``deprecated`` and ``unavailable`` Attributes
 =========================================================
@@ -1224,8 +1228,9 @@ Builtin Functions
 Clang supports a number of builtin library functions with the same syntax as
 GCC, including things like ``__builtin_nan``, ``__builtin_constant_p``,
 ``__builtin_choose_expr``, ``__builtin_types_compatible_p``,
-``__sync_fetch_and_add``, etc.  In addition to the GCC builtins, Clang supports
-a number of builtins that GCC does not, which are listed here.
+``__builtin_assume_aligned``, ``__sync_fetch_and_add``, etc.  In addition to
+the GCC builtins, Clang supports a number of builtins that GCC does not, which
+are listed here.
 
 Please note that Clang does not and will not support all of the GCC builtins
 for vector operations.  Instead of using builtins, you should use the functions
@@ -1234,6 +1239,42 @@ portable wrappers for these.  Many of the Clang versions of these functions are
 implemented directly in terms of :ref:`extended vector support
 <langext-vectors>` instead of builtins, in order to reduce the number of
 builtins that we need to implement.
+
+``__builtin_assume``
+------------------------------
+
+``__builtin_assume`` is used to provide the optimizer with a boolean
+invariant that is defined to be true.
+
+**Syntax**:
+
+.. code-block:: c++
+
+  __builtin_assume(bool)
+
+**Example of Use**:
+
+.. code-block:: c++
+
+  int foo(int x) {
+    __builtin_assume(x != 0);
+
+    // The optimizer may short-circuit this check using the invariant.
+    if (x == 0)
+      return do_something();
+
+    return do_something_else();
+  }
+
+**Description**:
+
+The boolean argument to this function is defined to be true. The optimizer may
+analyze the form of the expression provided as the argument and deduce from
+that information used to optimize the program. If the condition is violated
+during execution, the behavior is undefined. The argument itself is never
+evaluated, so any side effects of the expression will be discarded.
+
+Query for this feature with ``__has_builtin(__builtin_assume)``.
 
 ``__builtin_readcyclecounter``
 ------------------------------
@@ -1324,6 +1365,8 @@ indices specified.
 
 Query for this feature with ``__has_builtin(__builtin_shufflevector)``.
 
+.. _langext-__builtin_convertvector:
+
 ``__builtin_convertvector``
 ---------------------------
 
@@ -1354,7 +1397,7 @@ type must have the same number of elements.
   // convert from a vector of 4 shorts to a vector of 4 floats.
   __builtin_convertvector(vs, vector4float)
   // equivalent to:
-  (vector4float) { (float) vf[0], (float) vf[1], (float) vf[2], (float) vf[3] }
+  (vector4float) { (float) vs[0], (float) vs[1], (float) vs[2], (float) vs[3] }
 
 **Description**:
 

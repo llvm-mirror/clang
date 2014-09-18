@@ -2210,15 +2210,16 @@ namespace {
     // List of Decls to generate a warning on.  Also remove Decls that become
     // initialized.
     llvm::SmallPtrSetImpl<ValueDecl*> &Decls;
+    // Vector of decls to be removed from the Decl set prior to visiting the
+    // nodes.  These Decls may have been initialized in the prior initializer.
+    llvm::SmallVector<ValueDecl*, 4> DeclsToRemove;
     // If non-null, add a note to the warning pointing back to the constructor.
     const CXXConstructorDecl *Constructor;
   public:
     typedef EvaluatedExprVisitor<UninitializedFieldVisitor> Inherited;
     UninitializedFieldVisitor(Sema &S,
-                              llvm::SmallPtrSetImpl<ValueDecl*> &Decls,
-                              const CXXConstructorDecl *Constructor)
-      : Inherited(S.Context), S(S), Decls(Decls),
-        Constructor(Constructor) { }
+                              llvm::SmallPtrSetImpl<ValueDecl*> &Decls)
+      : Inherited(S.Context), S(S), Decls(Decls) { }
 
     void HandleMemberExpr(MemberExpr *ME, bool CheckReferenceOnly) {
       if (isa<EnumConstantDecl>(ME->getMemberDecl()))
@@ -2307,6 +2308,20 @@ namespace {
       }
     }
 
+    void CheckInitializer(Expr *E, const CXXConstructorDecl *FieldConstructor,
+                          FieldDecl *Field) {
+      // Remove Decls that may have been initialized in the previous
+      // initializer.
+      for (ValueDecl* VD : DeclsToRemove)
+        Decls.erase(VD);
+
+      DeclsToRemove.clear();
+      Constructor = FieldConstructor;
+      Visit(E);
+      if (Field)
+        Decls.erase(Field);
+    }
+
     void VisitMemberExpr(MemberExpr *ME) {
       // All uses of unbounded reference fields will warn.
       HandleMemberExpr(ME, true /*CheckReferenceOnly*/);
@@ -2365,30 +2380,11 @@ namespace {
         if (MemberExpr *ME = dyn_cast<MemberExpr>(E->getLHS()))
           if (FieldDecl *FD = dyn_cast<FieldDecl>(ME->getMemberDecl()))
             if (!FD->getType()->isReferenceType())
-              Decls.erase(FD);
+              DeclsToRemove.push_back(FD);
 
       Inherited::VisitBinaryOperator(E);
     }
   };
-  static void CheckInitExprContainsUninitializedFields(
-      Sema &S, Expr *E, llvm::SmallPtrSetImpl<ValueDecl*> &Decls,
-      const CXXConstructorDecl *Constructor) {
-    if (Decls.size() == 0)
-      return;
-
-    if (!E)
-      return;
-
-    if (CXXDefaultInitExpr *Default = dyn_cast<CXXDefaultInitExpr>(E)) {
-      E = Default->getExpr();
-      if (!E)
-        return;
-      // In class initializers will point to the constructor.
-      UninitializedFieldVisitor(S, Decls, Constructor).Visit(E);
-    } else {
-      UninitializedFieldVisitor(S, Decls, nullptr).Visit(E);
-    }
-  }
 
   // Diagnose value-uses of fields to initialize themselves, e.g.
   //   foo(foo)
@@ -2421,14 +2417,32 @@ namespace {
       }
     }
 
+    if (UninitializedFields.empty())
+      return;
+
+    UninitializedFieldVisitor UninitializedChecker(SemaRef,
+                                                   UninitializedFields);
+
     for (const auto *FieldInit : Constructor->inits()) {
+      if (UninitializedFields.empty())
+        break;
+
       Expr *InitExpr = FieldInit->getInit();
+      if (!InitExpr)
+        continue;
 
-      CheckInitExprContainsUninitializedFields(
-          SemaRef, InitExpr, UninitializedFields, Constructor);
-
-      if (FieldDecl *Field = FieldInit->getAnyMember())
-        UninitializedFields.erase(Field);
+      if (CXXDefaultInitExpr *Default =
+              dyn_cast<CXXDefaultInitExpr>(InitExpr)) {
+        InitExpr = Default->getExpr();
+        if (!InitExpr)
+          continue;
+        // In class initializers will point to the constructor.
+        UninitializedChecker.CheckInitializer(InitExpr, Constructor,
+                                              FieldInit->getAnyMember());
+      } else {
+        UninitializedChecker.CheckInitializer(InitExpr, nullptr,
+                                              FieldInit->getAnyMember());
+      }
     }
   }
 } // namespace
@@ -3608,6 +3622,8 @@ Sema::SetDelegatingInitializer(CXXConstructorDecl *Constructor,
   }
 
   DelegatingCtorDecls.push_back(Constructor);
+
+  DiagnoseUninitializedFields(*this, Constructor);
 
   return false;
 }
@@ -8250,42 +8266,15 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
   return NewND;
 }
 
-Decl *Sema::ActOnNamespaceAliasDef(Scope *S,
-                                             SourceLocation NamespaceLoc,
-                                             SourceLocation AliasLoc,
-                                             IdentifierInfo *Alias,
-                                             CXXScopeSpec &SS,
-                                             SourceLocation IdentLoc,
-                                             IdentifierInfo *Ident) {
+Decl *Sema::ActOnNamespaceAliasDef(Scope *S, SourceLocation NamespaceLoc,
+                                   SourceLocation AliasLoc,
+                                   IdentifierInfo *Alias, CXXScopeSpec &SS,
+                                   SourceLocation IdentLoc,
+                                   IdentifierInfo *Ident) {
 
   // Lookup the namespace name.
   LookupResult R(*this, Ident, IdentLoc, LookupNamespaceName);
   LookupParsedName(R, S, &SS);
-
-  // Check if we have a previous declaration with the same name.
-  NamedDecl *PrevDecl
-    = LookupSingleName(S, Alias, AliasLoc, LookupOrdinaryName, 
-                       ForRedeclaration);
-  if (PrevDecl && !isDeclInScope(PrevDecl, CurContext, S))
-    PrevDecl = nullptr;
-
-  if (PrevDecl) {
-    if (NamespaceAliasDecl *AD = dyn_cast<NamespaceAliasDecl>(PrevDecl)) {
-      // We already have an alias with the same name that points to the same
-      // namespace, so don't create a new one.
-      // FIXME: At some point, we'll want to create the (redundant)
-      // declaration to maintain better source information.
-      if (!R.isAmbiguous() && !R.empty() &&
-          AD->getNamespace()->Equals(getNamespaceDecl(R.getFoundDecl())))
-        return nullptr;
-    }
-
-    unsigned DiagID = isa<NamespaceDecl>(PrevDecl) ? diag::err_redefinition :
-      diag::err_redefinition_different_kind;
-    Diag(AliasLoc, DiagID) << Alias;
-    Diag(PrevDecl->getLocation(), diag::note_previous_definition);
-    return nullptr;
-  }
 
   if (R.isAmbiguous())
     return nullptr;
@@ -8296,11 +8285,41 @@ Decl *Sema::ActOnNamespaceAliasDef(Scope *S,
       return nullptr;
     }
   }
+  assert(!R.isAmbiguous() && !R.empty());
+
+  // Check if we have a previous declaration with the same name.
+  NamedDecl *PrevDecl = LookupSingleName(S, Alias, AliasLoc, LookupOrdinaryName,
+                                         ForRedeclaration);
+  if (PrevDecl && !isDeclInScope(PrevDecl, CurContext, S))
+    PrevDecl = nullptr;
+
+  if (PrevDecl) {
+    if (NamespaceAliasDecl *AD = dyn_cast<NamespaceAliasDecl>(PrevDecl)) {
+      // We already have an alias with the same name that points to the same
+      // namespace; check that it matches.
+      if (!AD->getNamespace()->Equals(getNamespaceDecl(R.getFoundDecl()))) {
+        Diag(AliasLoc, diag::err_redefinition_different_namespace_alias)
+          << Alias;
+        Diag(PrevDecl->getLocation(), diag::note_previous_namespace_alias)
+          << AD->getNamespace();
+        return nullptr;
+      }
+    } else {
+      unsigned DiagID = isa<NamespaceDecl>(PrevDecl)
+                            ? diag::err_redefinition
+                            : diag::err_redefinition_different_kind;
+      Diag(AliasLoc, DiagID) << Alias;
+      Diag(PrevDecl->getLocation(), diag::note_previous_definition);
+      return nullptr;
+    }
+  }
 
   NamespaceAliasDecl *AliasDecl =
     NamespaceAliasDecl::Create(Context, CurContext, NamespaceLoc, AliasLoc,
                                Alias, SS.getWithLocInContext(Context),
                                IdentLoc, R.getFoundDecl());
+  if (PrevDecl)
+    AliasDecl->setPreviousDecl(cast<NamespaceAliasDecl>(PrevDecl));
 
   PushOnScopeChains(AliasDecl, S);
   return AliasDecl;
@@ -10899,8 +10918,7 @@ Sema::CompleteConstructorCall(CXXConstructorDecl *Constructor,
   DiagnoseSentinelCalls(Constructor, Loc, AllArgs);
 
   CheckConstructorCall(Constructor,
-                       llvm::makeArrayRef<const Expr *>(AllArgs.data(),
-                                                        AllArgs.size()),
+                       llvm::makeArrayRef(AllArgs.data(), AllArgs.size()),
                        Proto, Loc);
 
   return Invalid;
@@ -13086,46 +13104,6 @@ Sema::checkExceptionSpecification(ExceptionSpecificationType EST,
     }
     return;
   }
-}
-
-/// IdentifyCUDATarget - Determine the CUDA compilation target for this function
-Sema::CUDAFunctionTarget Sema::IdentifyCUDATarget(const FunctionDecl *D) {
-  // Implicitly declared functions (e.g. copy constructors) are
-  // __host__ __device__
-  if (D->isImplicit())
-    return CFT_HostDevice;
-
-  if (D->hasAttr<CUDAGlobalAttr>())
-    return CFT_Global;
-
-  if (D->hasAttr<CUDADeviceAttr>()) {
-    if (D->hasAttr<CUDAHostAttr>())
-      return CFT_HostDevice;
-    return CFT_Device;
-  }
-
-  return CFT_Host;
-}
-
-bool Sema::CheckCUDATarget(CUDAFunctionTarget CallerTarget,
-                           CUDAFunctionTarget CalleeTarget) {
-  // CUDA B.1.1 "The __device__ qualifier declares a function that is...
-  // Callable from the device only."
-  if (CallerTarget == CFT_Host && CalleeTarget == CFT_Device)
-    return true;
-
-  // CUDA B.1.2 "The __global__ qualifier declares a function that is...
-  // Callable from the host only."
-  // CUDA B.1.3 "The __host__ qualifier declares a function that is...
-  // Callable from the host only."
-  if ((CallerTarget == CFT_Device || CallerTarget == CFT_Global) &&
-      (CalleeTarget == CFT_Host || CalleeTarget == CFT_Global))
-    return true;
-
-  if (CallerTarget == CFT_HostDevice && CalleeTarget != CFT_HostDevice)
-    return true;
-
-  return false;
 }
 
 /// HandleMSProperty - Analyze a __delcspec(property) field of a C++ class.

@@ -389,6 +389,10 @@ public:
   /// \brief Set containing all declared private fields that are not used.
   NamedDeclSetType UnusedPrivateFields;
 
+  /// \brief Set containing all typedefs that are likely unused.
+  llvm::SmallSetVector<const TypedefNameDecl *, 4>
+      UnusedLocalTypedefNameCandidates;
+
   typedef llvm::SmallPtrSet<const CXXRecordDecl*, 8> RecordDeclSetTy;
 
   /// PureVirtualClassDiagSet - a set of class declarations which we have
@@ -1047,6 +1051,8 @@ public:
 
   /// \brief Retrieve the module loader associated with the preprocessor.
   ModuleLoader &getModuleLoader() const;
+
+  void emitAndClearUnusedLocalTypedefWarnings();
 
   void ActOnEndOfTranslationUnit();
 
@@ -3209,6 +3215,7 @@ public:
   /// DiagnoseUnusedExprResult - If the statement passed in is an expression
   /// whose result is unused, warn.
   void DiagnoseUnusedExprResult(const Stmt *S);
+  void DiagnoseUnusedNestedTypedefs(const RecordDecl *D);
   void DiagnoseUnusedDecl(const NamedDecl *ND);
 
   /// Emit \p DiagID if statement located on \p StmtLoc has a suspicious null
@@ -7213,10 +7220,10 @@ public:
   };
 
   llvm::StringMap<SectionInfo> SectionInfos;
-  bool UnifySection(const StringRef &SectionName, 
+  bool UnifySection(StringRef SectionName,
                     int SectionFlags,
                     DeclaratorDecl *TheDecl);
-  bool UnifySection(const StringRef &SectionName,
+  bool UnifySection(StringRef SectionName,
                     int SectionFlags,
                     SourceLocation PragmaSectionLocation);
 
@@ -8368,6 +8375,7 @@ public:
 private:
   bool SemaBuiltinPrefetch(CallExpr *TheCall);
   bool SemaBuiltinAssume(CallExpr *TheCall);
+  bool SemaBuiltinAssumeAligned(CallExpr *TheCall);
   bool SemaBuiltinLongjmp(CallExpr *TheCall);
   ExprResult SemaBuiltinAtomicOverloaded(ExprResult TheCallResult);
   ExprResult SemaAtomicOpsOverloaded(ExprResult TheCallResult,
@@ -8395,6 +8403,10 @@ public:
                          FormatStringType Type, bool inFunctionCall,
                          VariadicCallType CallType,
                          llvm::SmallBitVector &CheckedVarArgs);
+  
+  bool FormatStringHasSArg(const StringLiteral *FExpr);
+  
+  bool GetFormatNSStringIdx(const FormatAttr *Format, unsigned &Idx);
 
 private:
   bool CheckFormatArguments(const FormatAttr *Format,

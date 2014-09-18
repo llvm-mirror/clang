@@ -661,11 +661,11 @@ public:
 
   llvm::Constant *GetAddrOfGlobal(GlobalDecl GD) {
     if (isa<CXXConstructorDecl>(GD.getDecl()))
-      return GetAddrOfCXXConstructor(cast<CXXConstructorDecl>(GD.getDecl()),
-                                     GD.getCtorType());
+      return getAddrOfCXXStructor(cast<CXXConstructorDecl>(GD.getDecl()),
+                                  getFromCtorType(GD.getCtorType()));
     else if (isa<CXXDestructorDecl>(GD.getDecl()))
-      return GetAddrOfCXXDestructor(cast<CXXDestructorDecl>(GD.getDecl()),
-                                     GD.getDtorType());
+      return getAddrOfCXXStructor(cast<CXXDestructorDecl>(GD.getDecl()),
+                                  getFromDtorType(GD.getDtorType()));
     else if (isa<FunctionDecl>(GD.getDecl()))
       return GetAddrOfFunction(GD);
     else
@@ -801,20 +801,19 @@ public:
   /// \brief Retrieve the record type that describes the state of an
   /// Objective-C fast enumeration loop (for..in).
   QualType getObjCFastEnumerationStateType();
-  
-  /// Return the address of the constructor of the given type.
-  llvm::GlobalValue *
-  GetAddrOfCXXConstructor(const CXXConstructorDecl *ctor, CXXCtorType ctorType,
-                          const CGFunctionInfo *fnInfo = nullptr,
-                          bool DontDefer = false);
 
-  /// Return the address of the constructor of the given type.
+  // Produce code for this constructor/destructor. This method doesn't try
+  // to apply any ABI rules about which other constructors/destructors
+  // are needed or if they are alias to each other.
+  llvm::Function *codegenCXXStructor(const CXXMethodDecl *MD,
+                                     StructorType Type);
+
+  /// Return the address of the constructor/destructor of the given type.
   llvm::GlobalValue *
-  GetAddrOfCXXDestructor(const CXXDestructorDecl *dtor,
-                         CXXDtorType dtorType,
-                         const CGFunctionInfo *fnInfo = nullptr,
-                         llvm::FunctionType *fnType = nullptr,
-                         bool DontDefer = false);
+  getAddrOfCXXStructor(const CXXMethodDecl *MD, StructorType Type,
+                       const CGFunctionInfo *FnInfo = nullptr,
+                       llvm::FunctionType *FnType = nullptr,
+                       bool DontDefer = false);
 
   /// Given a builtin id for a function like "__builtin_fabsf", return a
   /// Function* for "fabsf".
@@ -1051,6 +1050,14 @@ public:
   /// are emitted lazily.
   void EmitGlobal(GlobalDecl D);
 
+  bool TryEmitDefinitionAsAlias(GlobalDecl Alias, GlobalDecl Target,
+                                bool InEveryTU);
+  bool TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D);
+
+  /// Set attributes for a global definition.
+  void setFunctionDefinitionAttributes(const FunctionDecl *D,
+                                       llvm::Function *F);
+
 private:
   llvm::GlobalValue *GetGlobalValue(StringRef Ref);
 
@@ -1071,10 +1078,6 @@ private:
 
   void setNonAliasAttributes(const Decl *D, llvm::GlobalObject *GO);
 
-  /// Set attributes for a global definition.
-  void setFunctionDefinitionAttributes(const FunctionDecl *D,
-                                       llvm::Function *F);
-
   /// Set function attributes for a function declaration.
   void SetFunctionAttributes(GlobalDecl GD,
                              llvm::Function *F,
@@ -1090,19 +1093,9 @@ private:
   
   // C++ related functions.
 
-  bool TryEmitDefinitionAsAlias(GlobalDecl Alias, GlobalDecl Target,
-                                bool InEveryTU);
-  bool TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D);
-
   void EmitNamespace(const NamespaceDecl *D);
   void EmitLinkageSpec(const LinkageSpecDecl *D);
   void CompleteDIClassType(const CXXMethodDecl* D);
-
-  /// Emit a single constructor with the given type from a C++ constructor Decl.
-  void EmitCXXConstructor(const CXXConstructorDecl *D, CXXCtorType Type);
-
-  /// Emit a single destructor with the given type from a C++ destructor Decl.
-  void EmitCXXDestructor(const CXXDestructorDecl *D, CXXDtorType Type);
 
   /// \brief Emit the function that initializes C++ thread_local variables.
   void EmitCXXThreadLocalInitFunc();
@@ -1169,7 +1162,7 @@ private:
   void EmitCoverageFile();
 
   /// Emits the initializer for a uuidof string.
-  llvm::Constant *EmitUuidofInitializer(StringRef uuidstr, QualType IIDType);
+  llvm::Constant *EmitUuidofInitializer(StringRef uuidstr);
 
   /// Determine if the given decl can be emitted lazily; this is only relevant
   /// for definitions. The given decl must be either a function or var decl.

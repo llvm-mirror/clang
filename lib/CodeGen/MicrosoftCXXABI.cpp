@@ -50,9 +50,19 @@ public:
 
   bool isSRetParameterAfterThis() const override { return true; }
 
+  size_t getSrcArgforCopyCtor(const CXXConstructorDecl *CD,
+                              FunctionArgList &Args) const override {
+    assert(Args.size() >= 2 &&
+           "expected the arglist to have at least two args!");
+    // The 'most_derived' parameter goes second if the ctor is variadic and
+    // has v-bases.
+    if (CD->getParent()->getNumVBases() > 0 &&
+        CD->getType()->castAs<FunctionProtoType>()->isVariadic())
+      return 2;
+    return 1;
+  }
+
   StringRef GetPureVirtualCallName() override { return "_purecall"; }
-  // No known support for deleted functions in MSVC yet, so this choice is
-  // arbitrary.
   StringRef GetDeletedVirtualCallName() override { return "_purecall"; }
 
   llvm::Value *adjustToCompleteObject(CodeGenFunction &CGF,
@@ -88,10 +98,6 @@ public:
   GetVirtualBaseClassOffset(CodeGenFunction &CGF, llvm::Value *This,
                             const CXXRecordDecl *ClassDecl,
                             const CXXRecordDecl *BaseClassDecl) override;
-
-  void BuildConstructorSignature(const CXXConstructorDecl *Ctor,
-                                 CXXCtorType Type, CanQualType &ResTy,
-                                 SmallVectorImpl<CanQualType> &ArgTys) override;
 
   llvm::BasicBlock *
   EmitCtorCompleteObjectHandler(CodeGenFunction &CGF,
@@ -134,10 +140,8 @@ public:
   // lacks a definition for the destructor, non-base destructors must always
   // delegate to or alias the base destructor.
 
-  void BuildDestructorSignature(const CXXDestructorDecl *Dtor,
-                                CXXDtorType Type,
-                                CanQualType &ResTy,
-                                SmallVectorImpl<CanQualType> &ArgTys) override;
+  void buildStructorSignature(const CXXMethodDecl *MD, StructorType T,
+                              SmallVectorImpl<CanQualType> &ArgTys) override;
 
   /// Non-base dtors should be emitted as delegating thunks in this ABI.
   bool useThunkForDtorVariant(const CXXDestructorDecl *Dtor,
@@ -521,6 +525,8 @@ public:
                                   llvm::Value *&This, llvm::Value *MemPtr,
                                   const MemberPointerType *MPT) override;
 
+  void emitCXXStructor(const CXXMethodDecl *MD, StructorType Type) override;
+
 private:
   typedef std::pair<const CXXRecordDecl *, CharUnits> VFTableIdTy;
   typedef llvm::DenseMap<VFTableIdTy, llvm::GlobalVariable *> VTablesMapTy;
@@ -740,11 +746,9 @@ bool MicrosoftCXXABI::EmitBadCastCall(CodeGenFunction &CGF) {
   return false;
 }
 
-llvm::Value *
-MicrosoftCXXABI::GetVirtualBaseClassOffset(CodeGenFunction &CGF,
-                                           llvm::Value *This,
-                                           const CXXRecordDecl *ClassDecl,
-                                           const CXXRecordDecl *BaseClassDecl) {
+llvm::Value *MicrosoftCXXABI::GetVirtualBaseClassOffset(
+    CodeGenFunction &CGF, llvm::Value *This, const CXXRecordDecl *ClassDecl,
+    const CXXRecordDecl *BaseClassDecl) {
   int64_t VBPtrChars =
       getContext().getASTRecordLayout(ClassDecl).getVBPtrOffset().getQuantity();
   llvm::Value *VBPtrOffset = llvm::ConstantInt::get(CGM.PtrDiffTy, VBPtrChars);
@@ -753,12 +757,12 @@ MicrosoftCXXABI::GetVirtualBaseClassOffset(CodeGenFunction &CGF,
       IntSize *
       CGM.getMicrosoftVTableContext().getVBTableIndex(ClassDecl, BaseClassDecl);
   llvm::Value *VBTableOffset =
-    llvm::ConstantInt::get(CGM.IntTy, VBTableChars.getQuantity());
+      llvm::ConstantInt::get(CGM.IntTy, VBTableChars.getQuantity());
 
   llvm::Value *VBPtrToNewBase =
-    GetVBaseOffsetFromVBPtr(CGF, This, VBPtrOffset, VBTableOffset);
+      GetVBaseOffsetFromVBPtr(CGF, This, VBPtrOffset, VBTableOffset);
   VBPtrToNewBase =
-    CGF.Builder.CreateSExtOrBitCast(VBPtrToNewBase, CGM.PtrDiffTy);
+      CGF.Builder.CreateSExtOrBitCast(VBPtrToNewBase, CGM.PtrDiffTy);
   return CGF.Builder.CreateNSWAdd(VBPtrOffset, VBPtrToNewBase);
 }
 
@@ -785,23 +789,6 @@ bool MicrosoftCXXABI::classifyReturnType(CGFunctionInfo &FI) const {
 
   // Otherwise, use the C ABI rules.
   return false;
-}
-
-void MicrosoftCXXABI::BuildConstructorSignature(
-    const CXXConstructorDecl *Ctor, CXXCtorType Type, CanQualType &ResTy,
-    SmallVectorImpl<CanQualType> &ArgTys) {
-
-  // All parameters are already in place except is_most_derived, which goes
-  // after 'this' if it's variadic and last if it's not.
-
-  const CXXRecordDecl *Class = Ctor->getParent();
-  const FunctionProtoType *FPT = Ctor->getType()->castAs<FunctionProtoType>();
-  if (Class->getNumVBases()) {
-    if (FPT->isVariadic())
-      ArgTys.insert(ArgTys.begin() + 1, CGM.getContext().IntTy);
-    else
-      ArgTys.push_back(CGM.getContext().IntTy);
-  }
 }
 
 llvm::BasicBlock *
@@ -912,17 +899,28 @@ void MicrosoftCXXABI::EmitVBPtrStores(CodeGenFunction &CGF,
   }
 }
 
-void MicrosoftCXXABI::BuildDestructorSignature(const CXXDestructorDecl *Dtor,
-                                               CXXDtorType Type,
-                                               CanQualType &ResTy,
+void
+MicrosoftCXXABI::buildStructorSignature(const CXXMethodDecl *MD, StructorType T,
                                         SmallVectorImpl<CanQualType> &ArgTys) {
-  // 'this' is already in place
-
   // TODO: 'for base' flag
-
-  if (Type == Dtor_Deleting) {
+  if (T == StructorType::Deleting) {
     // The scalar deleting destructor takes an implicit int parameter.
     ArgTys.push_back(CGM.getContext().IntTy);
+  }
+  auto *CD = dyn_cast<CXXConstructorDecl>(MD);
+  if (!CD)
+    return;
+
+  // All parameters are already in place except is_most_derived, which goes
+  // after 'this' if it's variadic and last if it's not.
+
+  const CXXRecordDecl *Class = CD->getParent();
+  const FunctionProtoType *FPT = CD->getType()->castAs<FunctionProtoType>();
+  if (Class->getNumVBases()) {
+    if (FPT->isVariadic())
+      ArgTys.insert(ArgTys.begin() + 1, CGM.getContext().IntTy);
+    else
+      ArgTys.push_back(CGM.getContext().IntTy);
   }
 }
 
@@ -1159,7 +1157,7 @@ void MicrosoftCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
                                          const CXXDestructorDecl *DD,
                                          CXXDtorType Type, bool ForVirtualBase,
                                          bool Delegating, llvm::Value *This) {
-  llvm::Value *Callee = CGM.GetAddrOfCXXDestructor(DD, Type);
+  llvm::Value *Callee = CGM.getAddrOfCXXStructor(DD, getFromDtorType(Type));
 
   if (DD->isVirtual()) {
     assert(Type != CXXDtorType::Dtor_Deleting &&
@@ -1176,7 +1174,7 @@ void MicrosoftCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
 void MicrosoftCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
                                             const CXXRecordDecl *RD) {
   MicrosoftVTableContext &VFTContext = CGM.getMicrosoftVTableContext();
-  VPtrInfoVector VFPtrs = VFTContext.getVFPtrOffsets(RD);
+  const VPtrInfoVector &VFPtrs = VFTContext.getVFPtrOffsets(RD);
 
   for (VPtrInfo *Info : VFPtrs) {
     llvm::GlobalVariable *VTable = getAddrOfVTable(RD, Info->FullOffsetInMDC);
@@ -1389,8 +1387,8 @@ void MicrosoftCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
   // We have only one destructor in the vftable but can get both behaviors
   // by passing an implicit int parameter.
   GlobalDecl GD(Dtor, Dtor_Deleting);
-  const CGFunctionInfo *FInfo =
-      &CGM.getTypes().arrangeCXXDestructor(Dtor, Dtor_Deleting);
+  const CGFunctionInfo *FInfo = &CGM.getTypes().arrangeCXXStructorDeclaration(
+      Dtor, StructorType::Deleting);
   llvm::Type *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
   llvm::Value *Callee = getVirtualFunctionPointer(CGF, GD, This, Ty);
 
@@ -1434,6 +1432,9 @@ MicrosoftCXXABI::enumerateVBTables(const CXXRecordDecl *RD) {
 llvm::Function *MicrosoftCXXABI::EmitVirtualMemPtrThunk(
     const CXXMethodDecl *MD,
     const MicrosoftVTableContext::MethodVFTableLocation &ML) {
+  assert(!isa<CXXConstructorDecl>(MD) && !isa<CXXDestructorDecl>(MD) &&
+         "can't form pointers to ctors or virtual dtors");
+
   // Calculate the mangled name.
   SmallString<256> ThunkName;
   llvm::raw_svector_ostream Out(ThunkName);
@@ -1445,7 +1446,7 @@ llvm::Function *MicrosoftCXXABI::EmitVirtualMemPtrThunk(
     return cast<llvm::Function>(GV);
 
   // Create the llvm::Function.
-  const CGFunctionInfo &FnInfo = CGM.getTypes().arrangeGlobalDeclaration(MD);
+  const CGFunctionInfo &FnInfo = CGM.getTypes().arrangeMSMemberPointerThunk(MD);
   llvm::FunctionType *ThunkTy = CGM.getTypes().GetFunctionType(FnInfo);
   llvm::Function *ThunkFn =
       llvm::Function::Create(ThunkTy, llvm::Function::ExternalLinkage,
@@ -1464,18 +1465,28 @@ llvm::Function *MicrosoftCXXABI::EmitVirtualMemPtrThunk(
 
   // Start codegen.
   CodeGenFunction CGF(CGM);
-  CGF.StartThunk(ThunkFn, MD, FnInfo);
+  CGF.CurGD = GlobalDecl(MD);
+  CGF.CurFuncIsThunk = true;
+
+  // Build FunctionArgs, but only include the implicit 'this' parameter
+  // declaration.
+  FunctionArgList FunctionArgs;
+  buildThisParam(CGF, FunctionArgs);
+
+  // Start defining the function.
+  CGF.StartFunction(GlobalDecl(), FnInfo.getReturnType(), ThunkFn, FnInfo,
+                    FunctionArgs, MD->getLocation(), SourceLocation());
+  EmitThisParam(CGF);
 
   // Load the vfptr and then callee from the vftable.  The callee should have
   // adjusted 'this' so that the vfptr is at offset zero.
-  llvm::Value *This = CGF.LoadCXXThis();
-  llvm::Value *VTable =
-      CGF.GetVTablePtr(This, ThunkTy->getPointerTo()->getPointerTo());
+  llvm::Value *VTable = CGF.GetVTablePtr(
+      getThisValue(CGF), ThunkTy->getPointerTo()->getPointerTo());
   llvm::Value *VFuncPtr =
       CGF.Builder.CreateConstInBoundsGEP1_64(VTable, ML.Index, "vfn");
   llvm::Value *Callee = CGF.Builder.CreateLoad(VFuncPtr);
 
-  CGF.EmitCallAndReturnForThunk(Callee, 0);
+  CGF.EmitMustTailThunk(MD, getThisValue(CGF), Callee);
 
   return ThunkFn;
 }
@@ -1935,8 +1946,8 @@ MicrosoftCXXABI::BuildMemberPointer(const CXXRecordDecl *RD,
   CodeGenTypes &Types = CGM.getTypes();
 
   llvm::Constant *FirstField;
+  const FunctionProtoType *FPT = MD->getType()->castAs<FunctionProtoType>();
   if (!MD->isVirtual()) {
-    const FunctionProtoType *FPT = MD->getType()->castAs<FunctionProtoType>();
     llvm::Type *Ty;
     // Check whether the function has a computable LLVM signature.
     if (Types.isFuncTypeConvertible(FPT)) {
@@ -1952,13 +1963,13 @@ MicrosoftCXXABI::BuildMemberPointer(const CXXRecordDecl *RD,
   } else {
     MicrosoftVTableContext::MethodVFTableLocation ML =
         CGM.getMicrosoftVTableContext().getMethodVFTableLocation(MD);
-    if (MD->isVariadic()) {
-      CGM.ErrorUnsupported(MD, "pointer to variadic virtual member function");
-      FirstField = llvm::Constant::getNullValue(CGM.VoidPtrTy);
-    } else if (!CGM.getTypes().isFuncTypeConvertible(
-                    MD->getType()->castAs<FunctionType>())) {
+    if (!CGM.getTypes().isFuncTypeConvertible(
+            MD->getType()->castAs<FunctionType>())) {
       CGM.ErrorUnsupported(MD, "pointer to virtual member function with "
                                "incomplete return or parameter type");
+      FirstField = llvm::Constant::getNullValue(CGM.VoidPtrTy);
+    } else if (FPT->getCallConv() == CC_X86FastCall) {
+      CGM.ErrorUnsupported(MD, "pointer to fastcall virtual member function");
       FirstField = llvm::Constant::getNullValue(CGM.VoidPtrTy);
     } else if (ML.VBase) {
       CGM.ErrorUnsupported(MD, "pointer to virtual member function overriding "
@@ -2860,4 +2871,46 @@ llvm::GlobalVariable *
 MicrosoftCXXABI::getMSCompleteObjectLocator(const CXXRecordDecl *RD,
                                             const VPtrInfo *Info) {
   return MSRTTIBuilder(*this, RD).getCompleteObjectLocator(Info);
+}
+
+static void emitCXXConstructor(CodeGenModule &CGM,
+                               const CXXConstructorDecl *ctor,
+                               StructorType ctorType) {
+  // There are no constructor variants, always emit the complete destructor.
+  CGM.codegenCXXStructor(ctor, StructorType::Complete);
+}
+
+static void emitCXXDestructor(CodeGenModule &CGM, const CXXDestructorDecl *dtor,
+                              StructorType dtorType) {
+  // The complete destructor is equivalent to the base destructor for
+  // classes with no virtual bases, so try to emit it as an alias.
+  if (!dtor->getParent()->getNumVBases() &&
+      (dtorType == StructorType::Complete || dtorType == StructorType::Base)) {
+    bool ProducedAlias = !CGM.TryEmitDefinitionAsAlias(
+        GlobalDecl(dtor, Dtor_Complete), GlobalDecl(dtor, Dtor_Base), true);
+    if (ProducedAlias) {
+      if (dtorType == StructorType::Complete)
+        return;
+      if (dtor->isVirtual())
+        CGM.getVTables().EmitThunks(GlobalDecl(dtor, Dtor_Complete));
+    }
+  }
+
+  // The base destructor is equivalent to the base destructor of its
+  // base class if there is exactly one non-virtual base class with a
+  // non-trivial destructor, there are no fields with a non-trivial
+  // destructor, and the body of the destructor is trivial.
+  if (dtorType == StructorType::Base && !CGM.TryEmitBaseDestructorAsAlias(dtor))
+    return;
+
+  CGM.codegenCXXStructor(dtor, dtorType);
+}
+
+void MicrosoftCXXABI::emitCXXStructor(const CXXMethodDecl *MD,
+                                      StructorType Type) {
+  if (auto *CD = dyn_cast<CXXConstructorDecl>(MD)) {
+    emitCXXConstructor(CGM, CD, Type);
+    return;
+  }
+  emitCXXDestructor(CGM, cast<CXXDestructorDecl>(MD), Type);
 }

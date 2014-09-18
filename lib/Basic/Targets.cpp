@@ -3983,6 +3983,10 @@ public:
 
     // __ARM_ARCH is defined as an integer value indicating the current ARM ISA
     Builder.defineMacro("__ARM_ARCH", CPUArch.substr(0, 1));
+    if (CPUArch[0] >= '8') {                                                    
+      Builder.defineMacro("__ARM_FEATURE_NUMERIC_MAXMIN");                      
+      Builder.defineMacro("__ARM_FEATURE_DIRECTED_ROUNDING");                   
+    }
 
     // __ARM_ARCH_ISA_ARM is defined to 1 if the core supports the ARM ISA.  It
     // is not defined for the M-profile.
@@ -4478,6 +4482,10 @@ public:
     Builder.defineMacro("__ARM_FEATURE_CLZ");
     Builder.defineMacro("__ARM_FEATURE_FMA");
     Builder.defineMacro("__ARM_FEATURE_DIV");
+    Builder.defineMacro("__ARM_FEATURE_IDIV"); // As specified in ACLE
+    Builder.defineMacro("__ARM_FEATURE_DIV");  // For backwards compatibility
+    Builder.defineMacro("__ARM_FEATURE_NUMERIC_MAXMIN");
+    Builder.defineMacro("__ARM_FEATURE_DIRECTED_ROUNDING");
 
     Builder.defineMacro("__ARM_ALIGN_MAX_STACK_PWR", "4");
 
@@ -5962,6 +5970,60 @@ void PNaClTargetInfo::getGCCRegAliases(const GCCRegAlias *&Aliases,
 } // end anonymous namespace.
 
 namespace {
+class Le64TargetInfo : public TargetInfo {
+  static const Builtin::Info BuiltinInfo[];
+
+public:
+  Le64TargetInfo(const llvm::Triple &Triple) : TargetInfo(Triple) {
+    BigEndian = false;
+    NoAsmVariants = true;
+    LongWidth = LongAlign = PointerWidth = PointerAlign = 64;
+    MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 64;
+    DescriptionString =
+        "e-S128-p:64:64-v16:16-v32:32-v64:64-v96:32-v128:32-m:e-n8:16:32:64";
+  }
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
+    DefineStd(Builder, "unix", Opts);
+    defineCPUMacros(Builder, "le64", /*Tuning=*/false);
+    Builder.defineMacro("__ELF__");
+  }
+  void getTargetBuiltins(const Builtin::Info *&Records,
+                         unsigned &NumRecords) const override {
+    Records = BuiltinInfo;
+    NumRecords = clang::Le64::LastTSBuiltin - Builtin::FirstTSBuiltin;
+  }
+  BuiltinVaListKind getBuiltinVaListKind() const override {
+    return TargetInfo::PNaClABIBuiltinVaList;
+  }
+  const char *getClobbers() const override { return ""; }
+  void getGCCRegNames(const char *const *&Names,
+                      unsigned &NumNames) const override {
+    Names = nullptr;
+    NumNames = 0;
+  }
+  void getGCCRegAliases(const GCCRegAlias *&Aliases,
+                        unsigned &NumAliases) const override {
+    Aliases = nullptr;
+    NumAliases = 0;
+  }
+  bool validateAsmConstraint(const char *&Name,
+                             TargetInfo::ConstraintInfo &Info) const override {
+    return false;
+  }
+
+  bool hasProtectedVisibility() const override { return false; }
+};
+} // end anonymous namespace.
+
+const Builtin::Info Le64TargetInfo::BuiltinInfo[] = {
+#define BUILTIN(ID, TYPE, ATTRS)                                               \
+  { #ID, TYPE, ATTRS, 0, ALL_LANGUAGES },
+#include "clang/Basic/BuiltinsLe64.def"
+};
+
+namespace {
   static const unsigned SPIRAddrSpaceMap[] = {
     1,    // opencl_global
     3,    // opencl_local
@@ -6281,6 +6343,9 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
       default:
         return nullptr;
     }
+
+  case llvm::Triple::le64:
+    return new Le64TargetInfo(Triple);
 
   case llvm::Triple::ppc:
     if (Triple.isOSDarwin())

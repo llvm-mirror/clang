@@ -135,39 +135,41 @@ static void SetUpDiagnosticLog(DiagnosticOptions *DiagOpts,
                                const CodeGenOptions *CodeGenOpts,
                                DiagnosticsEngine &Diags) {
   std::error_code EC;
-  bool OwnsStream = false;
+  std::unique_ptr<raw_ostream> StreamOwner;
   raw_ostream *OS = &llvm::errs();
   if (DiagOpts->DiagnosticLogFile != "-") {
     // Create the output stream.
-    llvm::raw_fd_ostream *FileOS(new llvm::raw_fd_ostream(
+    auto FileOS = llvm::make_unique<llvm::raw_fd_ostream>(
         DiagOpts->DiagnosticLogFile, EC,
-        llvm::sys::fs::F_Append | llvm::sys::fs::F_Text));
+        llvm::sys::fs::F_Append | llvm::sys::fs::F_Text);
     if (EC) {
       Diags.Report(diag::warn_fe_cc_log_diagnostics_failure)
           << DiagOpts->DiagnosticLogFile << EC.message();
     } else {
       FileOS->SetUnbuffered();
       FileOS->SetUseAtomicWrites(true);
-      OS = FileOS;
-      OwnsStream = true;
+      OS = FileOS.get();
+      StreamOwner = std::move(FileOS);
     }
   }
 
   // Chain in the diagnostic client which will log the diagnostics.
-  LogDiagnosticPrinter *Logger = new LogDiagnosticPrinter(*OS, DiagOpts,
-                                                          OwnsStream);
+  auto Logger = llvm::make_unique<LogDiagnosticPrinter>(*OS, DiagOpts,
+                                                        std::move(StreamOwner));
   if (CodeGenOpts)
     Logger->setDwarfDebugFlags(CodeGenOpts->DwarfDebugFlags);
-  Diags.setClient(new ChainedDiagnosticConsumer(Diags.takeClient(), Logger));
+  assert(Diags.ownsClient());
+  Diags.setClient(new ChainedDiagnosticConsumer(
+      std::unique_ptr<DiagnosticConsumer>(Diags.takeClient()),
+      std::move(Logger)));
 }
 
 static void SetupSerializedDiagnostics(DiagnosticOptions *DiagOpts,
                                        DiagnosticsEngine &Diags,
                                        StringRef OutputFile) {
   std::error_code EC;
-  std::unique_ptr<llvm::raw_fd_ostream> OS;
-  OS.reset(
-      new llvm::raw_fd_ostream(OutputFile.str(), EC, llvm::sys::fs::F_None));
+  auto OS = llvm::make_unique<llvm::raw_fd_ostream>(OutputFile.str(), EC,
+                                                    llvm::sys::fs::F_None);
 
   if (EC) {
     Diags.Report(diag::warn_fe_serialized_diag_failure) << OutputFile
@@ -175,11 +177,13 @@ static void SetupSerializedDiagnostics(DiagnosticOptions *DiagOpts,
     return;
   }
 
-  DiagnosticConsumer *SerializedConsumer =
-      clang::serialized_diags::create(OS.release(), DiagOpts);
+  auto SerializedConsumer =
+      clang::serialized_diags::create(std::move(OS), DiagOpts);
 
-  Diags.setClient(new ChainedDiagnosticConsumer(Diags.takeClient(),
-                                                SerializedConsumer));
+  assert(Diags.ownsClient());
+  Diags.setClient(new ChainedDiagnosticConsumer(
+      std::unique_ptr<DiagnosticConsumer>(Diags.takeClient()),
+      std::move(SerializedConsumer)));
 }
 
 void CompilerInstance::createDiagnostics(DiagnosticConsumer *Client,
@@ -700,7 +704,8 @@ bool CompilerInstance::InitializeSourceManager(const FrontendInputFile &Input,
     Kind = Input.isSystem() ? SrcMgr::C_System : SrcMgr::C_User;
 
   if (Input.isBuffer()) {
-    SourceMgr.setMainFileID(SourceMgr.createFileID(Input.getBuffer(), Kind));
+    SourceMgr.setMainFileID(SourceMgr.createFileID(
+        std::unique_ptr<llvm::MemoryBuffer>(Input.getBuffer()), Kind));
     assert(!SourceMgr.getMainFileID().isInvalid() &&
            "Couldn't establish MainFileID!");
     return true;
@@ -1604,3 +1609,4 @@ CompilerInstance::lookupMissingImports(StringRef Name,
 
   return false;
 }
+void CompilerInstance::resetAndLeakSema() { BuryPointer(takeSema()); }

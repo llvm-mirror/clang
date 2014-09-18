@@ -241,20 +241,6 @@ public:
                                                  const CXXRecordDecl *ClassDecl,
                                         const CXXRecordDecl *BaseClassDecl) = 0;
 
-  /// Build the signature of the given constructor variant by adding
-  /// any required parameters.  For convenience, ArgTys has been initialized
-  /// with the type of 'this' and ResTy has been initialized with the type of
-  /// 'this' if HasThisReturn(GlobalDecl(Ctor, T)) is true or 'void' otherwise
-  /// (although both may be changed by the ABI).
-  ///
-  /// If there are ever any ABIs where the implicit parameters are
-  /// intermixed with the formal parameters, we can address those
-  /// then.
-  virtual void BuildConstructorSignature(const CXXConstructorDecl *Ctor,
-                                         CXXCtorType T,
-                                         CanQualType &ResTy,
-                               SmallVectorImpl<CanQualType> &ArgTys) = 0;
-
   virtual llvm::BasicBlock *EmitCtorCompleteObjectHandler(CodeGenFunction &CGF,
                                                           const CXXRecordDecl *RD);
 
@@ -267,15 +253,11 @@ public:
   /// Emit constructor variants required by this ABI.
   virtual void EmitCXXConstructors(const CXXConstructorDecl *D) = 0;
 
-  /// Build the signature of the given destructor variant by adding
-  /// any required parameters.  For convenience, ArgTys has been initialized
-  /// with the type of 'this' and ResTy has been initialized with the type of
-  /// 'this' if HasThisReturn(GlobalDecl(Dtor, T)) is true or 'void' otherwise
-  /// (although both may be changed by the ABI).
-  virtual void BuildDestructorSignature(const CXXDestructorDecl *Dtor,
-                                        CXXDtorType T,
-                                        CanQualType &ResTy,
-                               SmallVectorImpl<CanQualType> &ArgTys) = 0;
+  /// Build the signature of the given constructor or destructor variant by
+  /// adding any required parameters.  For convenience, ArgTys has been
+  /// initialized with the type of 'this'.
+  virtual void buildStructorSignature(const CXXMethodDecl *MD, StructorType T,
+                                      SmallVectorImpl<CanQualType> &ArgTys) = 0;
 
   /// Returns true if the given destructor type should be emitted as a linkonce
   /// delegating thunk, regardless of whether the dtor is defined in this TU or
@@ -402,6 +384,9 @@ public:
   virtual void EmitReturnFromThunk(CodeGenFunction &CGF,
                                    RValue RV, QualType ResultType);
 
+  virtual size_t getSrcArgforCopyCtor(const CXXConstructorDecl *,
+                                      FunctionArgList &Args) const = 0;
+
   /// Gets the pure virtual member call function.
   virtual StringRef GetPureVirtualCallName() = 0;
 
@@ -519,6 +504,10 @@ public:
   virtual LValue EmitThreadLocalVarDeclLValue(CodeGenFunction &CGF,
                                               const VarDecl *VD,
                                               QualType LValType);
+
+  /// Emit a single constructor/destructor with the given type from a C++
+  /// constructor Decl.
+  virtual void emitCXXStructor(const CXXMethodDecl *MD, StructorType Type) = 0;
 };
 
 // Create an instance of a C++ ABI class:

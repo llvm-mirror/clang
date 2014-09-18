@@ -96,7 +96,7 @@ static void EmitDeclDestroy(CodeGenFunction &CGF, const VarDecl &D,
     assert(!record->hasTrivialDestructor());
     CXXDestructorDecl *dtor = record->getDestructor();
 
-    function = CGM.GetAddrOfCXXDestructor(dtor, Dtor_Complete);
+    function = CGM.getAddrOfCXXStructor(dtor, StructorType::Complete);
     argument = llvm::ConstantExpr::getBitCast(
         addr, CGF.getTypes().ConvertType(type)->getPointerTo());
 
@@ -330,6 +330,11 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
     // being initialized.  On most platforms, this is a minor startup time
     // optimization.  In the MS C++ ABI, there are no guard variables, so this
     // COMDAT key is required for correctness.
+    AddGlobalCtor(Fn, 65535, Addr);
+    DelayedCXXInitPosition.erase(D);
+  } else if (D->hasAttr<SelectAnyAttr>()) {
+    // SelectAny globals will be comdat-folded. Put the initializer into a COMDAT
+    // group associated with the global, so the initializers get folded too.
     AddGlobalCtor(Fn, 65535, Addr);
     DelayedCXXInitPosition.erase(D);
   } else {

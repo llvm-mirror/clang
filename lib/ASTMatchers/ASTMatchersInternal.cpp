@@ -26,6 +26,17 @@ void BoundNodesTreeBuilder::visitMatches(Visitor *ResultVisitor) {
   }
 }
 
+bool DynTypedMatcher::canConvertTo(ast_type_traits::ASTNodeKind To) const {
+  const auto From = getSupportedKind();
+  auto QualKind = ast_type_traits::ASTNodeKind::getFromNodeKind<QualType>();
+  auto TypeKind = ast_type_traits::ASTNodeKind::getFromNodeKind<Type>();
+  /// Mimic the implicit conversions of Matcher<>.
+  /// - From Matcher<Type> to Matcher<QualType>
+  if (From.isSame(TypeKind) && To.isSame(QualKind)) return true;
+  /// - From Matcher<Base> to Matcher<Derived>
+  return From.isBaseOf(To);
+}
+
 DynTypedMatcher::MatcherStorage::~MatcherStorage() {}
 
 void BoundNodesTreeBuilder::addMatch(const BoundNodesTreeBuilder &Other) {
@@ -81,7 +92,7 @@ bool EachOfVariadicOperator(const ast_type_traits::DynTypedNode DynNode,
       Result.addMatch(BuilderInner);
     }
   }
-  *Builder = Result;
+  *Builder = std::move(Result);
   return Matched;
 }
 
@@ -92,7 +103,7 @@ bool AnyOfVariadicOperator(const ast_type_traits::DynTypedNode DynNode,
   for (size_t i = 0, e = InnerMatchers.size(); i != e; ++i) {
     BoundNodesTreeBuilder Result = *Builder;
     if (InnerMatchers[i].matches(DynNode, Finder, &Result)) {
-      *Builder = Result;
+      *Builder = std::move(Result);
       return true;
     }
   }

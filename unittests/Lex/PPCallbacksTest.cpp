@@ -161,7 +161,7 @@ protected:
   CharSourceRange InclusionDirectiveFilenameRange(const char* SourceText, 
       const char* HeaderPath, bool SystemHeader) {
     std::unique_ptr<MemoryBuffer> Buf = MemoryBuffer::getMemBuffer(SourceText);
-    SourceMgr.setMainFileID(SourceMgr.createFileID(Buf.release()));
+    SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(Buf)));
 
     VoidModuleLoader ModLoader;
 
@@ -176,7 +176,7 @@ protected:
                     /*OwnsHeaderSearch =*/false);
     PP.Initialize(*Target);
     InclusionDirectiveCallbacks* Callbacks = new InclusionDirectiveCallbacks;
-    PP.addPPCallbacks(Callbacks); // Takes ownership.
+    PP.addPPCallbacks(std::unique_ptr<PPCallbacks>(Callbacks));
 
     // Lex source text.
     PP.EnterMainSourceFile();
@@ -199,7 +199,7 @@ protected:
 
     std::unique_ptr<MemoryBuffer> SourceBuf =
         MemoryBuffer::getMemBuffer(SourceText, "test.cl");
-    SourceMgr.setMainFileID(SourceMgr.createFileID(SourceBuf.release()));
+    SourceMgr.setMainFileID(SourceMgr.createFileID(std::move(SourceBuf)));
 
     VoidModuleLoader ModLoader;
     HeaderSearch HeaderInfo(new HeaderSearchOptions, SourceMgr, Diags, 
@@ -222,7 +222,7 @@ protected:
     Sema S(PP, Context, Consumer);
     Parser P(PP, S, false);
     PragmaOpenCLExtensionCallbacks* Callbacks = new PragmaOpenCLExtensionCallbacks;
-    PP.addPPCallbacks(Callbacks); // Takes ownership.
+    PP.addPPCallbacks(std::unique_ptr<PPCallbacks>(Callbacks));
 
     // Lex source text.
     PP.EnterMainSourceFile();
