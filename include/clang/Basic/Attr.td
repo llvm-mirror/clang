@@ -541,6 +541,13 @@ def CUDAHost : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def CUDAInvalidTarget : InheritableAttr {
+  let Spellings = [];
+  let Subjects = SubjectList<[Function]>;
+  let LangOpts = [CUDA];
+  let Documentation = [Undocumented];
+}
+
 def CUDALaunchBounds : InheritableAttr {
   let Spellings = [GNU<"launch_bounds">];
   let Args = [IntArgument<"MaxThreads">, DefaultIntArgument<"MinBlocks", 0>];
@@ -862,6 +869,13 @@ def ReturnsNonNull : InheritableAttr {
   let Subjects = SubjectList<[ObjCMethod, Function], WarnDiag,
                              "ExpectedFunctionOrMethod">;
   let Documentation = [Undocumented];
+}
+
+def AssumeAligned : InheritableAttr {
+  let Spellings = [GCC<"assume_aligned">];
+  let Subjects = SubjectList<[ObjCMethod, Function]>;
+  let Args = [ExprArgument<"Alignment">, ExprArgument<"Offset", 1>];
+  let Documentation = [AssumeAlignedDocs];
 }
 
 def NoReturn : InheritableAttr {

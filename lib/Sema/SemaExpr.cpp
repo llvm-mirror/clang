@@ -800,6 +800,9 @@ Sema::VarArgKind Sema::isValidVarArgType(const QualType &Ty) {
   if (Ty->isObjCObjectType())
     return VAK_Invalid;
 
+  if (getLangOpts().MSVCCompat)
+    return VAK_MSVCUndefined;
+
   // FIXME: In C++11, these cases are conditionally-supported, meaning we're
   // permitted to reject them. We should consider doing so.
   return VAK_Undefined;
@@ -829,6 +832,7 @@ void Sema::checkVariadicArgument(const Expr *E, VariadicCallType CT) {
     break;
 
   case VAK_Undefined:
+  case VAK_MSVCUndefined:
     DiagRuntimeBehavior(
         E->getLocStart(), nullptr,
         PDiag(diag::warn_cannot_pass_non_pod_arg_to_vararg)
@@ -4665,7 +4669,7 @@ Sema::BuildResolvedCallExpr(Expr *Fn, NamedDecl *NDecl,
 
   // Bail out early if calling a builtin with custom typechecking.
   if (BuiltinID && Context.BuiltinInfo.hasCustomTypechecking(BuiltinID))
-    return CheckBuiltinFunctionCall(BuiltinID, TheCall);
+    return CheckBuiltinFunctionCall(FDecl, BuiltinID, TheCall);
 
  retry:
   const FunctionType *FuncT;
@@ -4793,7 +4797,7 @@ Sema::BuildResolvedCallExpr(Expr *Fn, NamedDecl *NDecl,
       return ExprError();
 
     if (BuiltinID)
-      return CheckBuiltinFunctionCall(BuiltinID, TheCall);
+      return CheckBuiltinFunctionCall(FDecl, BuiltinID, TheCall);
   } else if (NDecl) {
     if (CheckPointerCall(NDecl, TheCall, Proto))
       return ExprError();
@@ -9704,7 +9708,7 @@ static ExprResult BuildOverloadedBinOp(Sema &S, Scope *Sc, SourceLocation OpLoc,
   UnresolvedSet<16> Functions;
   OverloadedOperatorKind OverOp
     = BinaryOperator::getOverloadedOperator(Opc);
-  if (Sc && OverOp != OO_None)
+  if (Sc && OverOp != OO_None && OverOp != OO_Equal)
     S.LookupOverloadedOperatorName(OverOp, Sc, LHS->getType(),
                                    RHS->getType(), Functions);
 
@@ -12580,6 +12584,10 @@ static void MarkExprReferenced(Sema &SemaRef, SourceLocation Loc,
     return;
   CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(ME->getMemberDecl());
   if (!MD)
+    return;
+  // Only attempt to devirtualize if this is truly a virtual call.
+  bool IsVirtualCall = MD->isVirtual() && !ME->hasQualifier();
+  if (!IsVirtualCall)
     return;
   const Expr *Base = ME->getBase();
   const CXXRecordDecl *MostDerivedClassDecl = Base->getBestDynamicClassType();

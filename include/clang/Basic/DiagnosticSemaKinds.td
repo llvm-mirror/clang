@@ -454,6 +454,10 @@ def warn_assume_side_effects : Warning<
   "the argument to %0 has side effects that will be discarded">,
   InGroup<DiagGroup<"assume">>;
 
+def warn_memcpy_chk_overflow : Warning<
+  "%0 will always overflow destination buffer">,
+  InGroup<DiagGroup<"builtin-memcpy-chk-size">>;
+
 /// main()
 // static main() is not an error in C, just in C++.
 def warn_static_main : Warning<"'main' should not be declared static">,
@@ -527,6 +531,11 @@ def warn_cxx_ms_struct :
           "with base classes or virtual functions">,
   DefaultError, InGroup<IncompatibleMSStruct>;
 def err_section_conflict : Error<"%0 causes a section type conflict with %1">;
+def err_no_base_classes : Error<"invalid use of '__super', %0 has no base classes">;
+def err_invalid_super_scope : Error<"invalid use of '__super', "
+  "this keyword can only be used inside class or member function scope">;
+def err_super_in_lambda_unsupported : Error<
+  "use of '__super' inside a lambda is unsupported">;
 
 def warn_pragma_unused_undeclared_var : Warning<
   "undeclared variable %0 used as an argument for '#pragma unused'">,
@@ -577,7 +586,8 @@ def warn_property_attribute : Warning<
   "'%1' attribute on property %0 does not match the property inherited from %2">,
   InGroup<PropertyAttr>;
 def warn_property_types_are_incompatible : Warning<
-  "property type %0 is incompatible with type %1 inherited from %2">;
+  "property type %0 is incompatible with type %1 inherited from %2">,
+  InGroup<DiagGroup<"incompatible-property-type">>;
 def warn_protocol_property_mismatch : Warning<
   "property of type %0 was selected for synthesis">,
   InGroup<DiagGroup<"protocol-property-synthesis-ambiguity">>;
@@ -1118,7 +1128,7 @@ def ext_ms_using_declaration_inaccessible : ExtWarn<
 def err_access_ctor : Error<
   "calling a %select{private|protected}0 constructor of class %2">, 
   AccessControl;
-def ext_rvalue_to_reference_access_ctor : ExtWarn<
+def ext_rvalue_to_reference_access_ctor : Extension<
   "C++98 requires an accessible copy constructor for class %2 when binding "
   "a reference to a temporary; was %select{private|protected}0">,
   AccessControl, InGroup<BindToTemporaryCopy>;
@@ -1545,7 +1555,7 @@ def err_temp_copy_no_viable : Error<
   "returning object|throwing object|copying member subobject|copying array "
   "element|allocating object|copying temporary|initializing base subobject|"
   "initializing vector element|capturing value}0 of type %1">;
-def ext_rvalue_to_reference_temp_copy_no_viable : ExtWarn<
+def ext_rvalue_to_reference_temp_copy_no_viable : Extension<
   "no viable constructor %select{copying variable|copying parameter|"
   "returning object|throwing object|copying member subobject|copying array "
   "element|allocating object|copying temporary|initializing base subobject|"
@@ -1957,6 +1967,9 @@ def err_attribute_pointers_only : Error<warn_attribute_pointers_only.Text>;
 def warn_attribute_return_pointers_only : Warning<
   "%0 attribute only applies to return values that are pointers">,
   InGroup<IgnoredAttributes>;
+def warn_attribute_return_pointers_refs_only : Warning<
+  "%0 attribute only applies to return values that are pointers or references">,
+  InGroup<IgnoredAttributes>;
 def err_attribute_no_member_pointers : Error<
   "%0 attribute cannot be used with pointers to members">;
 def err_attribute_invalid_implicit_this_argument : Error<
@@ -2231,7 +2244,10 @@ def err_cconv_change : Error<
 def warn_cconv_ignored : Warning<
   "calling convention %0 ignored for this target">, InGroup<IgnoredAttributes>;
 def err_cconv_knr : Error<
-  "function with no prototype cannot use %0 calling convention">;
+  "function with no prototype cannot use the callee-cleanup %0 calling convention">;
+def warn_cconv_knr : Warning<
+  "function with no prototype cannot use the callee-cleanup %0 calling convention">,
+  InGroup<DiagGroup<"missing-prototype-for-cc">>;
 def err_cconv_varargs : Error<
   "variadic function cannot use %0 calling convention">;
 def warn_cconv_varargs : Warning<
@@ -2345,6 +2361,16 @@ def warn_cannot_resolve_lock : Warning<
 def warn_acquire_requires_negative_cap : Warning<
   "acquiring %0 '%1' requires negative capability '%2'">,
   InGroup<ThreadSafetyNegative>, DefaultIgnore;
+
+// Thread safety warnings on pass by reference
+def warn_guarded_pass_by_reference : Warning<
+  "passing variable '%1' by reference requires holding %0 "
+  "%select{'%2'|'%2' exclusively}3">,
+  InGroup<ThreadSafetyReference>, DefaultIgnore;
+def warn_pt_guarded_pass_by_reference : Warning<
+  "passing the value that '%1' points to by reference requires holding %0 "
+  "%select{'%2'|'%2' exclusively}3">,
+  InGroup<ThreadSafetyReference>, DefaultIgnore;
 
 // Imprecise thread safety warnings
 def warn_variable_requires_lock : Warning<
@@ -3007,8 +3033,18 @@ def note_ovl_candidate_bad_target : Note<
     "function (the implicit copy assignment operator)|"
     "function (the implicit move assignment operator)|"
     "constructor (inherited)}0 not viable: call to "
-    "%select{__device__|__global__|__host__|__host__ __device__}1 function from"
-    " %select{__device__|__global__|__host__|__host__ __device__}2 function">;
+    "%select{__device__|__global__|__host__|__host__ __device__|invalid}1 function from"
+    " %select{__device__|__global__|__host__|__host__ __device__|invalid}2 function">;
+def note_implicit_member_target_infer_collision : Note<
+    "implicit %select{"
+    "default constructor|"
+    "copy constructor|"
+    "move constructor|"
+    "copy assignment operator|"
+    "move assignment operator|"
+    "destructor}0 inferred target collision: call to both "
+    "%select{__device__|__global__|__host__|__host__ __device__}1 and "
+    "%select{__device__|__global__|__host__|__host__ __device__}2 members">;
 
 def note_ambiguous_type_conversion: Note<
     "because of ambiguity in conversion %diff{of $ to $|between types}0,1">;
@@ -4116,6 +4152,10 @@ def warn_missing_braces : Warning<
 
 def err_redefinition_of_label : Error<"redefinition of label %0">;
 def err_undeclared_label_use : Error<"use of undeclared label %0">;
+def err_goto_ms_asm_label : Error<
+  "cannot jump from this goto statement to label %0 inside an inline assembly block">;
+def note_goto_ms_asm_label : Note<
+  "inline assembly label %0 declared here">;
 def warn_unused_label : Warning<"unused label %0">,
   InGroup<UnusedLabel>, DefaultIgnore;
 
@@ -6047,6 +6087,8 @@ let CategoryName = "Inline Assembly Issue" in {
   def err_asm_bad_register_type : Error<"bad type for named register variable">;
   def err_asm_invalid_input_size : Error<
     "invalid input size for constraint '%0'">;
+  def err_asm_invalid_output_size : Error<
+    "invalid output size for constraint '%0'">;
   def err_invalid_asm_cast_lvalue : Error<
     "invalid use of a cast in a inline asm context requiring an l-value: "
     "remove the cast or build with -fheinous-gnu-extensions">;
@@ -7144,6 +7186,9 @@ def err_omp_linear_expected_int_or_ptr : Error<
   "type, not %0">;
 def warn_omp_linear_step_zero : Warning<
   "zero linear step (%0 %select{|and other variables in clause }1should probably be const)">,
+  InGroup<OpenMPClauses>;
+def warn_omp_alignment_not_power_of_two : Warning<
+  "aligned clause will be ignored because the requested alignment is not a power of 2">,
   InGroup<OpenMPClauses>;
 def err_omp_aligned_expected_array_or_ptr : Error<
   "argument of aligned clause should be array"

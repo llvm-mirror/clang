@@ -133,14 +133,14 @@ def CXX98CompatUnnamedTypeTemplateArgs :
   DiagGroup<"c++98-compat-unnamed-type-template-args">;
 
 def CXX98Compat : DiagGroup<"c++98-compat",
-                            [CXX98CompatBindToTemporaryCopy,
-                             CXX98CompatLocalTypeTemplateArgs,
+                            [CXX98CompatLocalTypeTemplateArgs,
                              CXX98CompatUnnamedTypeTemplateArgs,
                              CXXPre14Compat,
                              CXXPre1zCompat]>;
 // Warnings for C++11 features which are Extensions in C++98 mode.
 def CXX98CompatPedantic : DiagGroup<"c++98-compat-pedantic",
                                     [CXX98Compat,
+                                     CXX98CompatBindToTemporaryCopy,
                                      CXXPre14CompatPedantic,
                                      CXXPre1zCompatPedantic]>;
 
@@ -593,11 +593,13 @@ def Most : DiagGroup<"most", [
 def ThreadSafetyAttributes : DiagGroup<"thread-safety-attributes">;
 def ThreadSafetyAnalysis   : DiagGroup<"thread-safety-analysis">;
 def ThreadSafetyPrecise    : DiagGroup<"thread-safety-precise">;
+def ThreadSafetyReference  : DiagGroup<"thread-safety-reference">;
 def ThreadSafetyNegative   : DiagGroup<"thread-safety-negative">;
 def ThreadSafety : DiagGroup<"thread-safety",
                              [ThreadSafetyAttributes, 
                               ThreadSafetyAnalysis,
-                              ThreadSafetyPrecise]>;
+                              ThreadSafetyPrecise,
+                              ThreadSafetyReference]>;
 def ThreadSafetyVerbose : DiagGroup<"thread-safety-verbose">;
 def ThreadSafetyBeta : DiagGroup<"thread-safety-beta">;
 

@@ -493,6 +493,12 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
   if (TryConsumeToken(tok::kw_typename, TypenameLoc))
     HasTypenameKeyword = true;
 
+  if (Tok.is(tok::kw___super)) {
+    Diag(Tok.getLocation(), diag::err_super_in_using_declaration);
+    SkipUntil(tok::semi);
+    return nullptr;
+  }
+
   // Parse nested-name-specifier.
   IdentifierInfo *LastII = nullptr;
   ParseOptionalCXXScopeSpecifier(SS, ParsedType(), /*EnteringContext=*/false,
@@ -1226,17 +1232,64 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
   // C++11 attributes
   SourceLocation AttrFixitLoc = Tok.getLocation();
 
-  // GNU libstdc++ and libc++ use certain intrinsic names as the
-  // name of struct templates, but some are keywords in GCC >= 4.3
-  // MSVC and Clang. For compatibility, convert the token to an identifier
-  // and issue a warning diagnostic.
-  if (TagType == DeclSpec::TST_struct && !Tok.is(tok::identifier) &&
-      !Tok.isAnnotation()) {
-    const IdentifierInfo *II = Tok.getIdentifierInfo();
-    // We rarely end up here so the following check is efficient.
-    if (II && II->getName().startswith("__is_"))
-      TryKeywordIdentFallback(true);
-  }
+  if (TagType == DeclSpec::TST_struct &&
+      !Tok.is(tok::identifier) &&
+      Tok.getIdentifierInfo() &&
+      (Tok.is(tok::kw___is_abstract) ||
+       Tok.is(tok::kw___is_arithmetic) ||
+       Tok.is(tok::kw___is_array) ||
+       Tok.is(tok::kw___is_base_of) ||
+       Tok.is(tok::kw___is_class) ||
+       Tok.is(tok::kw___is_complete_type) ||
+       Tok.is(tok::kw___is_compound) ||
+       Tok.is(tok::kw___is_const) ||
+       Tok.is(tok::kw___is_constructible) ||
+       Tok.is(tok::kw___is_convertible) ||
+       Tok.is(tok::kw___is_convertible_to) ||
+       Tok.is(tok::kw___is_destructible) ||
+       Tok.is(tok::kw___is_empty) ||
+       Tok.is(tok::kw___is_enum) ||
+       Tok.is(tok::kw___is_floating_point) ||
+       Tok.is(tok::kw___is_final) ||
+       Tok.is(tok::kw___is_function) ||
+       Tok.is(tok::kw___is_fundamental) ||
+       Tok.is(tok::kw___is_integral) ||
+       Tok.is(tok::kw___is_interface_class) ||
+       Tok.is(tok::kw___is_literal) ||
+       Tok.is(tok::kw___is_lvalue_expr) ||
+       Tok.is(tok::kw___is_lvalue_reference) ||
+       Tok.is(tok::kw___is_member_function_pointer) ||
+       Tok.is(tok::kw___is_member_object_pointer) ||
+       Tok.is(tok::kw___is_member_pointer) ||
+       Tok.is(tok::kw___is_nothrow_assignable) ||
+       Tok.is(tok::kw___is_nothrow_constructible) ||
+       Tok.is(tok::kw___is_nothrow_destructible) ||
+       Tok.is(tok::kw___is_object) ||
+       Tok.is(tok::kw___is_pod) ||
+       Tok.is(tok::kw___is_pointer) ||
+       Tok.is(tok::kw___is_polymorphic) ||
+       Tok.is(tok::kw___is_reference) ||
+       Tok.is(tok::kw___is_rvalue_expr) ||
+       Tok.is(tok::kw___is_rvalue_reference) ||
+       Tok.is(tok::kw___is_same) ||
+       Tok.is(tok::kw___is_scalar) ||
+       Tok.is(tok::kw___is_sealed) ||
+       Tok.is(tok::kw___is_signed) ||
+       Tok.is(tok::kw___is_standard_layout) ||
+       Tok.is(tok::kw___is_trivial) ||
+       Tok.is(tok::kw___is_trivially_assignable) ||
+       Tok.is(tok::kw___is_trivially_constructible) ||
+       Tok.is(tok::kw___is_trivially_copyable) ||
+       Tok.is(tok::kw___is_union) ||
+       Tok.is(tok::kw___is_unsigned) ||
+       Tok.is(tok::kw___is_void) ||
+       Tok.is(tok::kw___is_volatile)))
+    // GNU libstdc++ 4.2 and libc++ use certain intrinsic names as the
+    // name of struct templates, but some are keywords in GCC >= 4.3
+    // and Clang. Therefore, when we see the token sequence "struct
+    // X", make X into a normal identifier rather than a keyword, to
+    // allow libstdc++ 4.2 and libc++ to work properly.
+    TryKeywordIdentFallback(true);
 
   // Parse the (optional) nested-name-specifier.
   CXXScopeSpec &SS = DS.getTypeSpecScope();
@@ -2054,7 +2107,8 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
   // Access declarations.
   bool MalformedTypeSpec = false;
   if (!TemplateInfo.Kind &&
-      (Tok.is(tok::identifier) || Tok.is(tok::coloncolon))) {
+      (Tok.is(tok::identifier) || Tok.is(tok::coloncolon) ||
+       Tok.is(tok::kw___super))) {
     if (TryAnnotateCXXScopeToken())
       MalformedTypeSpec = true;
 
@@ -2623,13 +2677,43 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
 
   if (Tok.is(tok::colon)) {
     ParseBaseClause(TagDecl);
-
     if (!Tok.is(tok::l_brace)) {
-      Diag(Tok, diag::err_expected_lbrace_after_base_specifiers);
-
-      if (TagDecl)
-        Actions.ActOnTagDefinitionError(getCurScope(), TagDecl);
-      return;
+      bool SuggestFixIt = false;
+      SourceLocation BraceLoc = PP.getLocForEndOfToken(PrevTokLocation);
+      if (Tok.isAtStartOfLine()) {
+        switch (Tok.getKind()) {
+        case tok::kw_private:
+        case tok::kw_protected:
+        case tok::kw_public:
+          SuggestFixIt = NextToken().getKind() == tok::colon;
+          break;
+        case tok::kw_static_assert:
+        case tok::r_brace:
+        case tok::kw_using:
+        // base-clause can have simple-template-id; 'template' can't be there
+        case tok::kw_template:
+          SuggestFixIt = true;
+          break;
+        case tok::identifier:
+          SuggestFixIt = isConstructorDeclarator(true);
+          break;
+        default:
+          SuggestFixIt = isCXXSimpleDeclaration(/*AllowForRangeDecl=*/false);
+          break;
+        }
+      }
+      DiagnosticBuilder LBraceDiag =
+          Diag(BraceLoc, diag::err_expected_lbrace_after_base_specifiers);
+      if (SuggestFixIt) {
+        LBraceDiag << FixItHint::CreateInsertion(BraceLoc, " {");
+        // Try recovering from missing { after base-clause.
+        PP.EnterToken(Tok);
+        Tok.setKind(tok::l_brace);
+      } else {
+        if (TagDecl)
+          Actions.ActOnTagDefinitionError(getCurScope(), TagDecl);
+        return;
+      }
     }
   }
 

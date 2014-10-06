@@ -527,6 +527,9 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::OMPForDirectiveClass:
     K = CXCursor_OMPForDirective;
     break;
+  case Stmt::OMPForSimdDirectiveClass:
+    K = CXCursor_OMPForSimdDirective;
+    break;
   case Stmt::OMPSectionsDirectiveClass:
     K = CXCursor_OMPSectionsDirective;
     break;
@@ -544,6 +547,9 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
     break;
   case Stmt::OMPParallelForDirectiveClass:
     K = CXCursor_OMPParallelForDirective;
+    break;
+  case Stmt::OMPParallelForSimdDirectiveClass:
+    K = CXCursor_OMPParallelForSimdDirective;
     break;
   case Stmt::OMPParallelSectionsDirectiveClass:
     K = CXCursor_OMPParallelSectionsDirective;
@@ -568,6 +574,9 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
     break;
   case Stmt::OMPAtomicDirectiveClass:
     K = CXCursor_OMPAtomicDirective;
+    break;
+  case Stmt::OMPTargetDirectiveClass:
+    K = CXCursor_OMPTargetDirective;
     break;
   }
 

@@ -2243,6 +2243,10 @@ collectSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
 // C runtime, etc). Returns true if sanitizer system deps need to be linked in.
 static bool addSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
                                  ArgStringList &CmdArgs) {
+  // Don't link in any sanitizer runtimes if we have no system libraries.
+  if (Args.hasArg(options::OPT_nostdlib) ||
+      Args.hasArg(options::OPT_nodefaultlibs))
+    return false;
   SmallVector<StringRef, 4> SharedRuntimes, StaticRuntimes,
       HelperStaticRuntimes;
   collectSanitizerRuntimes(TC, Args, SharedRuntimes, StaticRuntimes,
@@ -7825,15 +7829,33 @@ void visualstudio::Link::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
-  Args.AddAllArgValues(CmdArgs, options::OPT_l);
   Args.AddAllArgValues(CmdArgs, options::OPT__SLASH_link);
 
-  // Add filenames immediately.
-  for (const auto &Input : Inputs)
-    if (Input.isFilename())
+  // Add filenames, libraries, and other linker inputs.
+  for (const auto &Input : Inputs) {
+    if (Input.isFilename()) {
       CmdArgs.push_back(Input.getFilename());
-    else
-      Input.getInputArg().renderAsInput(Args, CmdArgs);
+      continue;
+    }
+
+    const Arg &A = Input.getInputArg();
+
+    // Render -l options differently for the MSVC linker.
+    if (A.getOption().matches(options::OPT_l)) {
+      StringRef Lib = A.getValue();
+      const char *LinkLibArg;
+      if (Lib.endswith(".lib"))
+        LinkLibArg = Args.MakeArgString(Lib);
+      else
+        LinkLibArg = Args.MakeArgString(Lib + ".lib");
+      CmdArgs.push_back(LinkLibArg);
+      continue;
+    }
+
+    // Otherwise, this is some other kind of linker input option like -Wl, -z,
+    // or -L. Render it, even if MSVC doesn't understand it.
+    A.renderAsInput(Args, CmdArgs);
+  }
 
   const char *Exec =
     Args.MakeArgString(getToolChain().GetProgramPath("link.exe"));

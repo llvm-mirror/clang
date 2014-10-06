@@ -80,8 +80,8 @@ inline StructorType getFromCtorType(CXXCtorType T) {
     return StructorType::Complete;
   case Ctor_Base:
     return StructorType::Base;
-  case Ctor_CompleteAllocating:
-    llvm_unreachable("invalid enum");
+  case Ctor_Comdat:
+    llvm_unreachable("not expecting a COMDAT");
   }
   llvm_unreachable("not a CXXCtorType");
 }
@@ -106,6 +106,8 @@ inline StructorType getFromDtorType(CXXDtorType T) {
     return StructorType::Complete;
   case Dtor_Base:
     return StructorType::Base;
+  case Dtor_Comdat:
+    llvm_unreachable("not expecting a COMDAT");
   }
   llvm_unreachable("not a CXXDtorType");
 }
@@ -290,11 +292,10 @@ public:  // These are internal details of CGT that shouldn't be used externally.
   /// ConvertRecordDeclType - Lay out a tagged decl type like struct or union.
   llvm::StructType *ConvertRecordDeclType(const RecordDecl *TD);
 
-  /// GetExpandedTypes - Expand the type \arg Ty into the LLVM
-  /// argument types it would be passed as on the provided vector \arg
-  /// ArgTys. See ABIArgInfo::Expand.
-  void GetExpandedTypes(QualType type,
-                        SmallVectorImpl<llvm::Type*> &expanded);
+  /// getExpandedTypes - Expand the type \arg Ty into the LLVM
+  /// argument types it would be passed as. See ABIArgInfo::Expand.
+  void getExpandedTypes(QualType Ty,
+                        SmallVectorImpl<llvm::Type *>::iterator &TI);
 
   /// IsZeroInitializable - Return whether a type can be
   /// zero-initialized (in the C++ sense) with an LLVM zeroinitializer.

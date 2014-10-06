@@ -498,6 +498,9 @@ DeclSpec::TST Sema::isTagName(IdentifierInfo &II, Scope *S) {
 /// @endcode
 bool Sema::isMicrosoftMissingTypename(const CXXScopeSpec *SS, Scope *S) {
   if (CurContext->isRecord()) {
+    if (SS->getScopeRep()->getKind() == NestedNameSpecifier::Super)
+      return true;
+
     const Type *Ty = SS->getScopeRep()->getAsType();
 
     CXXRecordDecl *RD = cast<CXXRecordDecl>(CurContext);
@@ -699,7 +702,11 @@ Sema::NameClassification Sema::ClassifyName(Scope *S,
   }
 
   LookupResult Result(*this, Name, NameLoc, LookupOrdinaryName);
-  LookupParsedName(Result, S, &SS, !CurMethod);
+  NestedNameSpecifier *NNS = SS.getScopeRep();
+  if (NNS && NNS->getKind() == NestedNameSpecifier::Super)
+    LookupInSuper(Result, NNS->getAsRecordDecl());
+  else
+    LookupParsedName(Result, S, &SS, !CurMethod);
 
   // For unqualified lookup in a class template in MSVC mode, look into
   // dependent base classes where the primary class template is known.
@@ -1517,8 +1524,14 @@ void Sema::DiagnoseUnusedDecl(const NamedDecl *D) {
 static void CheckPoppedLabel(LabelDecl *L, Sema &S) {
   // Verify that we have no forward references left.  If so, there was a goto
   // or address of a label taken, but no definition of it.  Label fwd
-  // definitions are indicated with a null substmt.
-  if (L->getStmt() == nullptr)
+  // definitions are indicated with a null substmt which is also not a resolved
+  // MS inline assembly label name.
+  bool Diagnose = false;
+  if (L->isMSAsmLabel())
+    Diagnose = !L->isResolvedMSAsmLabel();
+  else
+    Diagnose = L->getStmt() == nullptr;
+  if (Diagnose)
     S.Diag(L->getLocation(), diag::err_undeclared_label_use) <<L->getDeclName();
 }
 
@@ -4066,13 +4079,16 @@ Decl *Sema::BuildMicrosoftCAnonymousStruct(Scope *S, DeclSpec &DS,
   TypeSourceInfo *TInfo = GetTypeForDeclarator(Dc, S);
   assert(TInfo && "couldn't build declarator info for anonymous struct");
 
+  auto *ParentDecl = cast<RecordDecl>(CurContext);
+  QualType RecTy = Context.getTypeDeclType(Record);
+
   // Create a declaration for this anonymous struct.
   NamedDecl *Anon = FieldDecl::Create(Context,
-                             cast<RecordDecl>(CurContext),
+                             ParentDecl,
                              DS.getLocStart(),
                              DS.getLocStart(),
                              /*IdentifierInfo=*/nullptr,
-                             Context.getTypeDeclType(Record),
+                             RecTy,
                              TInfo,
                              /*BitWidth=*/nullptr, /*Mutable=*/false,
                              /*InitStyle=*/ICIS_NoInit);
@@ -4088,10 +4104,13 @@ Decl *Sema::BuildMicrosoftCAnonymousStruct(Scope *S, DeclSpec &DS,
   Chain.push_back(Anon);
 
   RecordDecl *RecordDef = Record->getDefinition();
-  if (!RecordDef || InjectAnonymousStructOrUnionMembers(*this, S, CurContext,
-                                                        RecordDef, AS_none,
-                                                        Chain, true))
+  if (RequireCompleteType(Anon->getLocation(), RecTy,
+                          diag::err_field_incomplete) ||
+      InjectAnonymousStructOrUnionMembers(*this, S, CurContext, RecordDef,
+                                          AS_none, Chain, true)) {
     Anon->setInvalidDecl();
+    ParentDecl->setInvalidDecl();
+  }
 
   return Anon;
 }
@@ -7931,15 +7950,19 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
 
   // Semantic checking for this function declaration (in isolation).
 
-  // Diagnose the use of X86 fastcall on unprototyped functions.
+  // Diagnose the use of callee-cleanup calls on unprototyped functions.
   QualType NewQType = Context.getCanonicalType(NewFD->getType());
   const FunctionType *NewType = cast<FunctionType>(NewQType);
   if (isa<FunctionNoProtoType>(NewType)) {
     FunctionType::ExtInfo NewTypeInfo = NewType->getExtInfo();
-    if (NewTypeInfo.getCC() == CC_X86FastCall)
-      Diag(NewFD->getLocation(), diag::err_cconv_knr)
-          << FunctionType::getNameForCallConv(CC_X86FastCall);
-    // TODO: Also diagnose unprototyped stdcall functions?
+    if (isCalleeCleanup(NewTypeInfo.getCC())) {
+      // Windows system headers sometimes accidentally use stdcall without
+      // (void) parameters, so use a default-error warning in this case :-/
+      int DiagID = NewTypeInfo.getCC() == CC_X86StdCall
+          ? diag::warn_cconv_knr : diag::err_cconv_knr;
+      Diag(NewFD->getLocation(), DiagID)
+          << FunctionType::getNameForCallConv(NewTypeInfo.getCC());
+    }
   }
 
   if (getLangOpts().CPlusPlus) {
@@ -8224,6 +8247,8 @@ namespace {
     bool isPODType;
     bool isReferenceType;
 
+    bool isInitList;
+    llvm::SmallVector<unsigned, 4> InitFieldIndex;
   public:
     typedef EvaluatedExprVisitor<SelfReferenceChecker> Inherited;
 
@@ -8232,11 +8257,84 @@ namespace {
       isPODType = false;
       isRecordType = false;
       isReferenceType = false;
+      isInitList = false;
       if (ValueDecl *VD = dyn_cast<ValueDecl>(OrigDecl)) {
         isPODType = VD->getType().isPODType(S.Context);
         isRecordType = VD->getType()->isRecordType();
         isReferenceType = VD->getType()->isReferenceType();
       }
+    }
+
+    // For most expressions, just call the visitor.  For initializer lists,
+    // track the index of the field being initialized since fields are
+    // initialized in order allowing use of previously initialized fields.
+    void CheckExpr(Expr *E) {
+      InitListExpr *InitList = dyn_cast<InitListExpr>(E);
+      if (!InitList) {
+        Visit(E);
+        return;
+      }
+
+      // Track and increment the index here.
+      isInitList = true;
+      InitFieldIndex.push_back(0);
+      for (auto Child : InitList->children()) {
+        CheckExpr(cast<Expr>(Child));
+        ++InitFieldIndex.back();
+      }
+      InitFieldIndex.pop_back();
+    }
+
+    // Returns true if MemberExpr is checked and no futher checking is needed.
+    // Returns false if additional checking is required.
+    bool CheckInitListMemberExpr(MemberExpr *E, bool CheckReference) {
+      llvm::SmallVector<FieldDecl*, 4> Fields;
+      Expr *Base = E;
+      bool ReferenceField = false;
+
+      // Get the field memebers used.
+      while (MemberExpr *ME = dyn_cast<MemberExpr>(Base)) {
+        FieldDecl *FD = dyn_cast<FieldDecl>(ME->getMemberDecl());
+        if (!FD)
+          return false;
+        Fields.push_back(FD);
+        if (FD->getType()->isReferenceType())
+          ReferenceField = true;
+        Base = ME->getBase()->IgnoreParenImpCasts();
+      }
+
+      // Keep checking only if the base Decl is the same.
+      DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Base);
+      if (!DRE || DRE->getDecl() != OrigDecl)
+        return false;
+
+      // A reference field can be bound to an unininitialized field.
+      if (CheckReference && !ReferenceField)
+        return true;
+
+      // Convert FieldDecls to their index number.
+      llvm::SmallVector<unsigned, 4> UsedFieldIndex;
+      for (auto I = Fields.rbegin(), E = Fields.rend(); I != E; ++I) {
+        UsedFieldIndex.push_back((*I)->getFieldIndex());
+      }
+
+      // See if a warning is needed by checking the first difference in index
+      // numbers.  If field being used has index less than the field being
+      // initialized, then the use is safe.
+      for (auto UsedIter = UsedFieldIndex.begin(),
+                UsedEnd = UsedFieldIndex.end(),
+                OrigIter = InitFieldIndex.begin(),
+                OrigEnd = InitFieldIndex.end();
+           UsedIter != UsedEnd && OrigIter != OrigEnd; ++UsedIter, ++OrigIter) {
+        if (*UsedIter < *OrigIter)
+          return true;
+        if (*UsedIter > *OrigIter)
+          break;
+      }
+
+      // TODO: Add a different warning which will print the field names.
+      HandleDeclRefExpr(DRE);
+      return true;
     }
 
     // For most expressions, the cast is directly above the DeclRefExpr.
@@ -8250,6 +8348,7 @@ namespace {
       }
 
       if (ConditionalOperator *CO = dyn_cast<ConditionalOperator>(E)) {
+        Visit(CO->getCond());
         HandleValue(CO->getTrueExpr());
         HandleValue(CO->getFalseExpr());
         return;
@@ -8268,12 +8367,20 @@ namespace {
       }
 
       if (BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
-        if (BO->getOpcode() == BO_Comma)
+        if (BO->getOpcode() == BO_Comma) {
+          Visit(BO->getLHS());
           HandleValue(BO->getRHS());
-        return;
+          return;
+        }
       }
 
       if (isa<MemberExpr>(E)) {
+        if (isInitList) {
+          if (CheckInitListMemberExpr(cast<MemberExpr>(E),
+                                      false /*CheckReference*/))
+            return;
+        }
+
         Expr *Base = E->IgnoreParenImpCasts();
         while (MemberExpr *ME = dyn_cast<MemberExpr>(Base)) {
           // Check for static member variables and don't warn on them.
@@ -8307,6 +8414,11 @@ namespace {
     }
 
     void VisitMemberExpr(MemberExpr *E) {
+      if (isInitList) {
+        if (CheckInitListMemberExpr(E, true /*CheckReference*/))
+          return;
+      }
+
       // Don't warn on arrays since they can be treated as pointers.
       if (E->getType()->canDecayToPointerType()) return;
 
@@ -8348,6 +8460,12 @@ namespace {
           HandleValue(E->getSubExpr());
         return;
       }
+
+      if (E->isIncrementDecrementOp()) {
+        HandleValue(E->getSubExpr());
+        return;
+      }
+
       Inherited::VisitUnaryOperator(E);
     }
 
@@ -8374,6 +8492,16 @@ namespace {
       }
 
       Inherited::VisitCallExpr(E);
+    }
+
+    void VisitBinaryOperator(BinaryOperator *E) {
+      if (E->isCompoundAssignmentOp()) {
+        HandleValue(E->getLHS());
+        Visit(E->getRHS());
+        return;
+      }
+
+      Inherited::VisitBinaryOperator(E);
     }
 
     // A custom visitor for BinaryConditionalOperator is needed because the
@@ -8423,7 +8551,7 @@ namespace {
             if (DRE->getDecl() == OrigDecl)
               return;
 
-    SelfReferenceChecker(S, OrigDecl).Visit(E);
+    SelfReferenceChecker(S, OrigDecl).CheckExpr(E);
   }
 }
 
@@ -12600,8 +12728,7 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
         continue;
       }
       // Okay, we have a legal flexible array member at the end of the struct.
-      if (Record)
-        Record->setHasFlexibleArrayMember(true);
+      Record->setHasFlexibleArrayMember(true);
     } else if (!FDTy->isDependentType() &&
                RequireCompleteType(FD->getLocation(), FD->getType(),
                                    diag::err_field_incomplete)) {
@@ -12610,11 +12737,11 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
       EnclosingDecl->setInvalidDecl();
       continue;
     } else if (const RecordType *FDTTy = FDTy->getAs<RecordType>()) {
-      if (FDTTy->getDecl()->hasFlexibleArrayMember()) {
-        // If this is a member of a union, then entire union becomes "flexible".
-        if (Record && Record->isUnion()) {
-          Record->setHasFlexibleArrayMember(true);
-        } else {
+      if (Record && FDTTy->getDecl()->hasFlexibleArrayMember()) {
+        // A type which contains a flexible array member is considered to be a
+        // flexible array member.
+        Record->setHasFlexibleArrayMember(true);
+        if (!Record->isUnion()) {
           // If this is a struct/class and this is not the last element, reject
           // it.  Note that GCC supports variable sized arrays in the middle of
           // structures.
@@ -12626,8 +12753,6 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
             // other structs as an extension.
             Diag(FD->getLocation(), diag::ext_flexible_array_in_struct)
               << FD->getDeclName();
-            if (Record)
-              Record->setHasFlexibleArrayMember(true);
           }
         }
       }

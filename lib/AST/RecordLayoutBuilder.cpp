@@ -2097,7 +2097,7 @@ static bool isMsLayout(const RecordDecl* D) {
 // * There is a distinction between alignment and required alignment.
 //   __declspec(align) changes the required alignment of a struct.  This
 //   alignment is _always_ obeyed, even in the presence of #pragma pack. A
-//   record inherites required alignment from all of its fields an bases.
+//   record inherites required alignment from all of its fields and bases.
 // * __declspec(align) on bitfields has the effect of changing the bitfield's
 //   alignment instead of its required alignment.  This is the only known way
 //   to make the alignment of a struct bigger than 8.  Interestingly enough
@@ -2181,8 +2181,9 @@ public:
     FieldOffsets.push_back(FieldOffset);
   }
   /// \brief Compute the set of virtual bases for which vtordisps are required.
-  llvm::SmallPtrSet<const CXXRecordDecl *, 2>
-  computeVtorDispSet(const CXXRecordDecl *RD);
+  void computeVtorDispSet(
+      llvm::SmallPtrSetImpl<const CXXRecordDecl *> &HasVtorDispSet,
+      const CXXRecordDecl *RD) const;
   const ASTContext &Context;
   /// \brief The size of the record being laid out.
   CharUnits Size;
@@ -2203,6 +2204,8 @@ public:
   CharUnits CurrentBitfieldSize;
   /// \brief Offset to the virtual base table pointer (if one exists).
   CharUnits VBPtrOffset;
+  /// \brief Minimum record size possible.
+  CharUnits MinEmptyStructSize;
   /// \brief The size and alignment info of a pointer.
   ElementInfo PointerInfo;
   /// \brief The primary base class (if one exists).
@@ -2298,6 +2301,8 @@ MicrosoftRecordLayoutBuilder::getAdjustedElementInfo(
 }
 
 void MicrosoftRecordLayoutBuilder::layout(const RecordDecl *RD) {
+  // For C record layout, zero-sized records always have size 4.
+  MinEmptyStructSize = CharUnits::fromQuantity(4);
   initializeLayout(RD);
   layoutFields(RD);
   DataSize = Size = Size.RoundUpToAlignment(Alignment);
@@ -2307,6 +2312,8 @@ void MicrosoftRecordLayoutBuilder::layout(const RecordDecl *RD) {
 }
 
 void MicrosoftRecordLayoutBuilder::cxxLayout(const CXXRecordDecl *RD) {
+  // The C++ standard says that empty structs have size 1.
+  MinEmptyStructSize = CharUnits::One();
   initializeLayout(RD);
   initializeCXXLayout(RD);
   layoutNonVirtualBases(RD);
@@ -2605,14 +2612,14 @@ void MicrosoftRecordLayoutBuilder::layoutVirtualBases(const CXXRecordDecl *RD) {
   }
   VtorDispAlignment = std::max(VtorDispAlignment, RequiredAlignment);
   // Compute the vtordisp set.
-  llvm::SmallPtrSet<const CXXRecordDecl *, 2> HasVtordispSet =
-      computeVtorDispSet(RD);
+  llvm::SmallPtrSet<const CXXRecordDecl *, 2> HasVtorDispSet;
+  computeVtorDispSet(HasVtorDispSet, RD);
   // Iterate through the virtual bases and lay them out.
   const ASTRecordLayout *PreviousBaseLayout = nullptr;
   for (const CXXBaseSpecifier &VBase : RD->vbases()) {
     const CXXRecordDecl *BaseDecl = VBase.getType()->getAsCXXRecordDecl();
     const ASTRecordLayout &BaseLayout = Context.getASTRecordLayout(BaseDecl);
-    bool HasVtordisp = HasVtordispSet.count(BaseDecl);
+    bool HasVtordisp = HasVtorDispSet.count(BaseDecl) > 0;
     // Insert padding between two bases if the left first one is zero sized or
     // contains a zero sized subobject and the right is zero sized or one leads
     // with a zero sized base.  The padding between virtual bases is 4
@@ -2635,7 +2642,7 @@ void MicrosoftRecordLayoutBuilder::layoutVirtualBases(const CXXRecordDecl *RD) {
 
 void MicrosoftRecordLayoutBuilder::finalizeLayout(const RecordDecl *RD) {
   // Respect required alignment.  Note that in 32-bit mode Required alignment
-  // may be 0 nad cause size not to be updated.
+  // may be 0 and cause size not to be updated.
   DataSize = Size;
   if (!RequiredAlignment.isZero()) {
     Alignment = std::max(Alignment, RequiredAlignment);
@@ -2645,11 +2652,15 @@ void MicrosoftRecordLayoutBuilder::finalizeLayout(const RecordDecl *RD) {
     RoundingAlignment = std::max(RoundingAlignment, RequiredAlignment);
     Size = Size.RoundUpToAlignment(RoundingAlignment);
   }
-  // Zero-sized structures have size equal to their alignment.
   if (Size.isZero()) {
     EndsWithZeroSizedObject = true;
     LeadsWithZeroSizedBase = true;
-    Size = Alignment;
+    // Zero-sized structures have size equal to their alignment if a
+    // __declspec(align) came into play.
+    if (RequiredAlignment >= MinEmptyStructSize)
+      Size = Alignment;
+    else
+      Size = MinEmptyStructSize;
   }
 }
 
@@ -2671,10 +2682,9 @@ RequiresVtordisp(const llvm::SmallPtrSetImpl<const CXXRecordDecl *> &
   return false;
 }
 
-llvm::SmallPtrSet<const CXXRecordDecl *, 2>
-MicrosoftRecordLayoutBuilder::computeVtorDispSet(const CXXRecordDecl *RD) {
-  llvm::SmallPtrSet<const CXXRecordDecl *, 2> HasVtordispSet;
-
+void MicrosoftRecordLayoutBuilder::computeVtorDispSet(
+    llvm::SmallPtrSetImpl<const CXXRecordDecl *> &HasVtordispSet,
+    const CXXRecordDecl *RD) const {
   // /vd2 or #pragma vtordisp(2): Always use vtordisps for virtual bases with
   // vftables.
   if (RD->getMSVtorDispMode() == MSVtorDispAttr::ForVFTable) {
@@ -2684,7 +2694,7 @@ MicrosoftRecordLayoutBuilder::computeVtorDispSet(const CXXRecordDecl *RD) {
       if (Layout.hasExtendableVFPtr())
         HasVtordispSet.insert(BaseDecl);
     }
-    return HasVtordispSet;
+    return;
   }
 
   // If any of our bases need a vtordisp for this type, so do we.  Check our
@@ -2701,7 +2711,7 @@ MicrosoftRecordLayoutBuilder::computeVtorDispSet(const CXXRecordDecl *RD) {
   // * #pragma vtordisp(0) or the /vd0 flag are in use.
   if ((!RD->hasUserDeclaredConstructor() && !RD->hasUserDeclaredDestructor()) ||
       RD->getMSVtorDispMode() == MSVtorDispAttr::Never)
-    return HasVtordispSet;
+    return;
   // /vd1 or #pragma vtordisp(1): Try to guess based on whether we think it's
   // possible for a partially constructed object with virtual base overrides to
   // escape a non-trivial constructor.
@@ -2712,9 +2722,9 @@ MicrosoftRecordLayoutBuilder::computeVtorDispSet(const CXXRecordDecl *RD) {
   // vtordisp.
   llvm::SmallPtrSet<const CXXMethodDecl *, 8> Work;
   llvm::SmallPtrSet<const CXXRecordDecl *, 2> BasesWithOverriddenMethods;
-  // Seed the working set with our non-destructor virtual methods.
+  // Seed the working set with our non-destructor, non-pure virtual methods.
   for (const CXXMethodDecl *MD : RD->methods())
-    if (MD->isVirtual() && !isa<CXXDestructorDecl>(MD))
+    if (MD->isVirtual() && !isa<CXXDestructorDecl>(MD) && !MD->isPure())
       Work.insert(MD);
   while (!Work.empty()) {
     const CXXMethodDecl *MD = *Work.begin();
@@ -2736,7 +2746,6 @@ MicrosoftRecordLayoutBuilder::computeVtorDispSet(const CXXRecordDecl *RD) {
         RequiresVtordisp(BasesWithOverriddenMethods, BaseDecl))
       HasVtordispSet.insert(BaseDecl);
   }
-  return HasVtordispSet;
 }
 
 /// \brief Get or compute information about the layout of the specified record

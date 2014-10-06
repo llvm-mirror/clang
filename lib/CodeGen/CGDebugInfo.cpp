@@ -3149,7 +3149,7 @@ CGDebugInfo::CollectAnonRecordDecls(const RecordDecl *RD, llvm::DIFile Unit,
       continue;
     }
     // Use VarDecl's Tag, Scope and Line number.
-    GV = DBuilder.createStaticVariable(DContext, FieldName, LinkageName, Unit,
+    GV = DBuilder.createGlobalVariable(DContext, FieldName, LinkageName, Unit,
                                        LineNo, FieldTy,
                                        Var->hasInternalLinkage(), Var,
                                        llvm::DIDerivedType());
@@ -3201,7 +3201,7 @@ void CGDebugInfo::EmitGlobalVariable(llvm::GlobalVariable *Var,
     assert(RD->isAnonymousStructOrUnion() && "unnamed non-anonymous struct or union?");
     GV = CollectAnonRecordDecls(RD, Unit, LineNo, LinkageName, Var, DContext);
   } else {
-      GV = DBuilder.createStaticVariable(
+      GV = DBuilder.createGlobalVariable(
         DContext, DeclName, LinkageName, Unit, LineNo, getOrCreateType(T, Unit),
         Var->hasInternalLinkage(), Var,
         getOrCreateStaticDataMemberDeclarationOrNull(D));
@@ -3234,7 +3234,7 @@ void CGDebugInfo::EmitGlobalVariable(const ValueDecl *VD,
     return;
   llvm::DIDescriptor DContext =
       getContextDescriptor(dyn_cast<Decl>(VD->getDeclContext()));
-  llvm::DIGlobalVariable GV = DBuilder.createStaticVariable(
+  llvm::DIGlobalVariable GV = DBuilder.createGlobalVariable(
       DContext, Name, StringRef(), Unit, getLineNumber(VD->getLocation()), Ty,
       true, Init,
       getOrCreateStaticDataMemberDeclarationOrNull(cast<VarDecl>(VD)));
@@ -3346,4 +3346,12 @@ void CGDebugInfo::finalize() {
     DBuilder.retainType(llvm::DIType(cast<llvm::MDNode>(TypeCache[*RI])));
 
   DBuilder.finalize();
+}
+
+void CGDebugInfo::EmitExplicitCastType(QualType Ty) {
+  if (CGM.getCodeGenOpts().getDebugInfo() < CodeGenOptions::LimitedDebugInfo)
+    return;
+  llvm::DIType DieTy = getOrCreateType(Ty, getOrCreateMainFile());
+  // Don't ignore in case of explicit cast where it is referenced indirectly.
+  DBuilder.retainType(DieTy);
 }

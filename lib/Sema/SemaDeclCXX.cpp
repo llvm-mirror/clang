@@ -2382,7 +2382,18 @@ namespace {
             if (!FD->getType()->isReferenceType())
               DeclsToRemove.push_back(FD);
 
+      if (E->isCompoundAssignmentOp()) {
+        HandleValue(E->getLHS());
+      }
+
       Inherited::VisitBinaryOperator(E);
+    }
+
+    void VisitUnaryOperator(UnaryOperator *E) {
+      if (E->isIncrementDecrementOp())
+        HandleValue(E->getSubExpr());
+
+      Inherited::VisitUnaryOperator(E);
     }
   };
 
@@ -5564,6 +5575,13 @@ bool Sema::ShouldDeleteSpecialMember(CXXMethodDecl *MD, CXXSpecialMember CSM,
   if (SMI.shouldDeleteForAllConstMembers())
     return true;
 
+  if (getLangOpts().CUDA) {
+    // We should delete the special member in CUDA mode if target inference
+    // failed.
+    return inferCUDATargetForImplicitSpecialMember(RD, CSM, MD, SMI.ConstArg,
+                                                   Diagnose);
+  }
+
   return false;
 }
 
@@ -6973,7 +6991,7 @@ NamespaceDecl *Sema::getOrCreateStdNamespace() {
                                          /*PrevDecl=*/nullptr);
     getStdNamespace()->setImplicit(true);
   }
-  
+
   return getStdNamespace();
 }
 
@@ -8505,7 +8523,7 @@ CXXConstructorDecl *Sema::DeclareImplicitDefaultConstructor(
   //   user-declared constructor for class X, a default constructor is
   //   implicitly declared. An implicitly-declared default constructor
   //   is an inline public member of its class.
-  assert(ClassDecl->needsImplicitDefaultConstructor() && 
+  assert(ClassDecl->needsImplicitDefaultConstructor() &&
          "Should not build implicit default constructor!");
 
   DeclaringSpecialMember DSM(*this, ClassDecl, CXXDefaultConstructor);
@@ -8529,7 +8547,13 @@ CXXConstructorDecl *Sema::DeclareImplicitDefaultConstructor(
       /*isImplicitlyDeclared=*/true, Constexpr);
   DefaultCon->setAccess(AS_public);
   DefaultCon->setDefaulted();
-  DefaultCon->setImplicit();
+
+  if (getLangOpts().CUDA) {
+    inferCUDATargetForImplicitSpecialMember(ClassDecl, CXXDefaultConstructor,
+                                            DefaultCon,
+                                            /* ConstRHS */ false,
+                                            /* Diagnose */ false);
+  }
 
   // Build an exception specification pointing back at this constructor.
   FunctionProtoType::ExtProtoInfo EPI = getImplicitMethodEPI(*this, DefaultCon);
@@ -8571,6 +8595,11 @@ void Sema::DefineImplicitDefaultConstructor(SourceLocation CurrentLocation,
     Constructor->setInvalidDecl();
     return;
   }
+
+  // The exception specification is needed because we are defining the
+  // function.
+  ResolveExceptionSpec(CurrentLocation,
+                       Constructor->getType()->castAs<FunctionProtoType>());
 
   SourceLocation Loc = Constructor->getLocEnd().isValid()
                            ? Constructor->getLocEnd()
@@ -8984,7 +9013,13 @@ CXXDestructorDecl *Sema::DeclareImplicitDestructor(CXXRecordDecl *ClassDecl) {
                                   /*isImplicitlyDeclared=*/true);
   Destructor->setAccess(AS_public);
   Destructor->setDefaulted();
-  Destructor->setImplicit();
+
+  if (getLangOpts().CUDA) {
+    inferCUDATargetForImplicitSpecialMember(ClassDecl, CXXDestructor,
+                                            Destructor,
+                                            /* ConstRHS */ false,
+                                            /* Diagnose */ false);
+  }
 
   // Build an exception specification pointing back at this destructor.
   FunctionProtoType::ExtProtoInfo EPI = getImplicitMethodEPI(*this, Destructor);
@@ -9035,6 +9070,11 @@ void Sema::DefineImplicitDestructor(SourceLocation CurrentLocation,
     Destructor->setInvalidDecl();
     return;
   }
+
+  // The exception specification is needed because we are defining the
+  // function.
+  ResolveExceptionSpec(CurrentLocation,
+                       Destructor->getType()->castAs<FunctionProtoType>());
 
   SourceLocation Loc = Destructor->getLocEnd().isValid()
                            ? Destructor->getLocEnd()
@@ -9605,6 +9645,13 @@ CXXMethodDecl *Sema::DeclareImplicitCopyAssignment(CXXRecordDecl *ClassDecl) {
   CopyAssignment->setDefaulted();
   CopyAssignment->setImplicit();
 
+  if (getLangOpts().CUDA) {
+    inferCUDATargetForImplicitSpecialMember(ClassDecl, CXXCopyAssignment,
+                                            CopyAssignment,
+                                            /* ConstRHS */ Const,
+                                            /* Diagnose */ false);
+  }
+
   // Build an exception specification pointing back at this member.
   FunctionProtoType::ExtProtoInfo EPI =
       getImplicitMethodEPI(*this, CopyAssignment);
@@ -9879,6 +9926,11 @@ void Sema::DefineImplicitCopyAssignment(SourceLocation CurrentLocation,
     }
   }
 
+  // The exception specification is needed because we are defining the
+  // function.
+  ResolveExceptionSpec(CurrentLocation,
+                       CopyAssignOperator->getType()->castAs<FunctionProtoType>());
+
   if (Invalid) {
     CopyAssignOperator->setInvalidDecl();
     return;
@@ -9981,6 +10033,13 @@ CXXMethodDecl *Sema::DeclareImplicitMoveAssignment(CXXRecordDecl *ClassDecl) {
   MoveAssignment->setAccess(AS_public);
   MoveAssignment->setDefaulted();
   MoveAssignment->setImplicit();
+
+  if (getLangOpts().CUDA) {
+    inferCUDATargetForImplicitSpecialMember(ClassDecl, CXXMoveAssignment,
+                                            MoveAssignment,
+                                            /* ConstRHS */ false,
+                                            /* Diagnose */ false);
+  }
 
   // Build an exception specification pointing back at this member.
   FunctionProtoType::ExtProtoInfo EPI =
@@ -10301,6 +10360,11 @@ void Sema::DefineImplicitMoveAssignment(SourceLocation CurrentLocation,
     }
   }
 
+  // The exception specification is needed because we are defining the
+  // function.
+  ResolveExceptionSpec(CurrentLocation,
+                       MoveAssignOperator->getType()->castAs<FunctionProtoType>());
+
   if (Invalid) {
     MoveAssignOperator->setInvalidDecl();
     return;
@@ -10403,6 +10467,13 @@ CXXConstructorDecl *Sema::DeclareImplicitCopyConstructor(
   CopyConstructor->setAccess(AS_public);
   CopyConstructor->setDefaulted();
 
+  if (getLangOpts().CUDA) {
+    inferCUDATargetForImplicitSpecialMember(ClassDecl, CXXCopyConstructor,
+                                            CopyConstructor,
+                                            /* ConstRHS */ Const,
+                                            /* Diagnose */ false);
+  }
+
   // Build an exception specification pointing back at this member.
   FunctionProtoType::ExtProtoInfo EPI =
       getImplicitMethodEPI(*this, CopyConstructor);
@@ -10469,6 +10540,11 @@ void Sema::DefineImplicitCopyConstructor(SourceLocation CurrentLocation,
     CopyConstructor->setBody(
         ActOnCompoundStmt(Loc, Loc, None, /*isStmtExpr=*/false).getAs<Stmt>());
   }
+
+  // The exception specification is needed because we are defining the
+  // function.
+  ResolveExceptionSpec(CurrentLocation,
+                       CopyConstructor->getType()->castAs<FunctionProtoType>());
 
   CopyConstructor->markUsed(Context);
   MarkVTableUsed(CurrentLocation, ClassDecl);
@@ -10568,6 +10644,13 @@ CXXConstructorDecl *Sema::DeclareImplicitMoveConstructor(
   MoveConstructor->setAccess(AS_public);
   MoveConstructor->setDefaulted();
 
+  if (getLangOpts().CUDA) {
+    inferCUDATargetForImplicitSpecialMember(ClassDecl, CXXMoveConstructor,
+                                            MoveConstructor,
+                                            /* ConstRHS */ false,
+                                            /* Diagnose */ false);
+  }
+
   // Build an exception specification pointing back at this member.
   FunctionProtoType::ExtProtoInfo EPI =
       getImplicitMethodEPI(*this, MoveConstructor);
@@ -10629,6 +10712,11 @@ void Sema::DefineImplicitMoveConstructor(SourceLocation CurrentLocation,
     MoveConstructor->setBody(ActOnCompoundStmt(
         Loc, Loc, None, /*isStmtExpr=*/ false).getAs<Stmt>());
   }
+
+  // The exception specification is needed because we are defining the
+  // function.
+  ResolveExceptionSpec(CurrentLocation,
+                       MoveConstructor->getType()->castAs<FunctionProtoType>());
 
   MoveConstructor->markUsed(Context);
   MarkVTableUsed(CurrentLocation, ClassDecl);
@@ -12201,8 +12289,12 @@ NamedDecl *Sema::ActOnFriendFunctionDecl(Scope *S, Declarator &D,
     }
 
     // Mark templated-scope function declarations as unsupported.
-    if (FD->getNumTemplateParameterLists())
+    if (FD->getNumTemplateParameterLists() && SS.isValid()) {
+      Diag(FD->getLocation(), diag::warn_template_qualified_friend_unsupported)
+        << SS.getScopeRep() << SS.getRange()
+        << cast<CXXRecordDecl>(CurContext);
       FrD->setUnsupportedFriend(true);
+    }
   }
 
   return ND;
@@ -12302,11 +12394,6 @@ void Sema::SetDeclDefaulted(Decl *Dcl, SourceLocation DefaultLoc) {
       return;
 
     CheckExplicitlyDefaultedSpecialMember(MD);
-
-    // The exception specification is needed because we are defining the
-    // function.
-    ResolveExceptionSpec(DefaultLoc,
-                         MD->getType()->castAs<FunctionProtoType>());
 
     if (MD->isInvalidDecl())
       return;

@@ -3100,6 +3100,14 @@ TreeTransform<Derived>::TransformNestedNameSpecifierLoc(
       SS.MakeGlobal(SemaRef.Context, Q.getBeginLoc());
       break;
 
+    case NestedNameSpecifier::Super: {
+      CXXRecordDecl *RD =
+          cast_or_null<CXXRecordDecl>(getDerived().TransformDecl(
+              SourceLocation(), QNNS->getAsRecordDecl()));
+      SS.MakeSuper(SemaRef.Context, RD, Q.getBeginLoc(), Q.getEndLoc());
+      break;
+    }
+
     case NestedNameSpecifier::TypeSpecWithTemplate:
     case NestedNameSpecifier::TypeSpec: {
       TypeLoc TL = TransformTypeInObjectScope(Q.getTypeLoc(), ObjectType,
@@ -6501,6 +6509,17 @@ TreeTransform<Derived>::TransformOMPForDirective(OMPForDirective *D) {
 
 template <typename Derived>
 StmtResult
+TreeTransform<Derived>::TransformOMPForSimdDirective(OMPForSimdDirective *D) {
+  DeclarationNameInfo DirName;
+  getDerived().getSema().StartOpenMPDSABlock(OMPD_for_simd, DirName, nullptr,
+                                             D->getLocStart());
+  StmtResult Res = getDerived().TransformOMPExecutableDirective(D);
+  getDerived().getSema().EndOpenMPDSABlock(Res.get());
+  return Res;
+}
+
+template <typename Derived>
+StmtResult
 TreeTransform<Derived>::TransformOMPSectionsDirective(OMPSectionsDirective *D) {
   DeclarationNameInfo DirName;
   getDerived().getSema().StartOpenMPDSABlock(OMPD_sections, DirName, nullptr,
@@ -6558,6 +6577,17 @@ StmtResult TreeTransform<Derived>::TransformOMPParallelForDirective(
     OMPParallelForDirective *D) {
   DeclarationNameInfo DirName;
   getDerived().getSema().StartOpenMPDSABlock(OMPD_parallel_for, DirName,
+                                             nullptr, D->getLocStart());
+  StmtResult Res = getDerived().TransformOMPExecutableDirective(D);
+  getDerived().getSema().EndOpenMPDSABlock(Res.get());
+  return Res;
+}
+
+template <typename Derived>
+StmtResult TreeTransform<Derived>::TransformOMPParallelForSimdDirective(
+    OMPParallelForSimdDirective *D) {
+  DeclarationNameInfo DirName;
+  getDerived().getSema().StartOpenMPDSABlock(OMPD_parallel_for_simd, DirName,
                                              nullptr, D->getLocStart());
   StmtResult Res = getDerived().TransformOMPExecutableDirective(D);
   getDerived().getSema().EndOpenMPDSABlock(Res.get());
@@ -6646,6 +6676,17 @@ StmtResult
 TreeTransform<Derived>::TransformOMPAtomicDirective(OMPAtomicDirective *D) {
   DeclarationNameInfo DirName;
   getDerived().getSema().StartOpenMPDSABlock(OMPD_atomic, DirName, nullptr,
+                                             D->getLocStart());
+  StmtResult Res = getDerived().TransformOMPExecutableDirective(D);
+  getDerived().getSema().EndOpenMPDSABlock(Res.get());
+  return Res;
+}
+
+template <typename Derived>
+StmtResult
+TreeTransform<Derived>::TransformOMPTargetDirective(OMPTargetDirective *D) {
+  DeclarationNameInfo DirName;
+  getDerived().getSema().StartOpenMPDSABlock(OMPD_target, DirName, nullptr,
                                              D->getLocStart());
   StmtResult Res = getDerived().TransformOMPExecutableDirective(D);
   getDerived().getSema().EndOpenMPDSABlock(Res.get());

@@ -414,6 +414,7 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
     GoogleStyle.BreakBeforeTernaryOperators = false;
     GoogleStyle.MaxEmptyLinesToKeep = 3;
     GoogleStyle.SpacesInContainerLiterals = false;
+    GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_Inline;
   } else if (Language == FormatStyle::LK_Proto) {
     GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_None;
     GoogleStyle.SpacesInContainerLiterals = false;
@@ -430,7 +431,6 @@ FormatStyle getChromiumStyle(FormatStyle::LanguageKind Language) {
   ChromiumStyle.AllowShortLoopsOnASingleLine = false;
   ChromiumStyle.BinPackParameters = false;
   ChromiumStyle.DerivePointerAlignment = false;
-  ChromiumStyle.Standard = FormatStyle::LS_Cpp03;
   return ChromiumStyle;
 }
 

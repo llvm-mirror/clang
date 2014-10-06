@@ -1,6 +1,7 @@
 // RUN: %clang_cc1 -std=c++98 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 // RUN: %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
-// RUN: %clang_cc1 -std=c++1y %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++14 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++1z %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 
 // PR13819 -- __SIZE_TYPE__ is incompatible.
 typedef __SIZE_TYPE__ size_t; // expected-error 0-1 {{extension}}
@@ -195,8 +196,8 @@ namespace dr218 { // dr218: yes
 // dr220: na
 
 namespace dr221 { // dr221: yes
-  struct A {
-    A &operator=(int&);
+  struct A { // expected-note 2-4{{candidate}}
+    A &operator=(int&); // expected-note 2{{candidate}}
     A &operator+=(int&);
     static A &operator=(A&, double&); // expected-error {{cannot be a static member}}
     static A &operator+=(A&, double&); // expected-error {{cannot be a static member}}
@@ -209,9 +210,9 @@ namespace dr221 { // dr221: yes
   void test(A a, int n, char c, float f) {
     a = n;
     a += n;
-    a = c;
+    a = c; // expected-error {{no viable}}
     a += c;
-    a = f;
+    a = f; // expected-error {{no viable}}
     a += f;
   }
 }

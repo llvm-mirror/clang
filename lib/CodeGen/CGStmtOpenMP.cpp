@@ -16,6 +16,7 @@
 #include "CodeGenModule.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/StmtOpenMP.h"
+#include "TargetInfo.h"
 using namespace clang;
 using namespace CodeGen;
 
@@ -48,6 +49,32 @@ void CodeGenFunction::EmitOMPParallelDirective(const OMPParallelDirective &S) {
   EmitRuntimeCall(RTLFn, Args);
 }
 
+static void EmitOMPAlignedClause(CodeGenFunction &CGF, CodeGenModule &CGM,
+                                 const OMPAlignedClause &Clause) {
+  unsigned ClauseAlignment = 0;
+  if (auto AlignmentExpr = Clause.getAlignment()) {
+    auto AlignmentCI =
+        cast<llvm::ConstantInt>(CGF.EmitScalarExpr(AlignmentExpr));
+    ClauseAlignment = static_cast<unsigned>(AlignmentCI->getZExtValue());
+  }
+  for (auto E : Clause.varlists()) {
+    unsigned Alignment = ClauseAlignment;
+    if (Alignment == 0) {
+      // OpenMP [2.8.1, Description]
+      // If no optional parameter isspecified, implementation-defined default
+      // alignments for SIMD instructions on the target platforms are assumed.
+      Alignment = CGM.getTargetCodeGenInfo().getOpenMPSimdDefaultAlignment(
+          E->getType());
+    }
+    assert((Alignment == 0 || llvm::isPowerOf2_32(Alignment)) &&
+           "alignment is not power of 2");
+    if (Alignment != 0) {
+      llvm::Value *PtrValue = CGF.EmitScalarExpr(E);
+      CGF.EmitAlignmentAssumption(PtrValue, Alignment);
+    }
+  }
+}
+
 void CodeGenFunction::EmitOMPSimdDirective(const OMPSimdDirective &S) {
   const CapturedStmt *CS = cast<CapturedStmt>(S.getAssociatedStmt());
   const Stmt *Body = CS->getCapturedStmt();
@@ -66,6 +93,9 @@ void CodeGenFunction::EmitOMPSimdDirective(const OMPSimdDirective &S) {
       LoopStack.setParallel(false);
       break;
     }
+    case OMPC_aligned:
+      EmitOMPAlignedClause(*this, CGM, cast<OMPAlignedClause>(*C));
+      break;
     default:
       // Not handled yet
       ;
@@ -76,6 +106,10 @@ void CodeGenFunction::EmitOMPSimdDirective(const OMPSimdDirective &S) {
 
 void CodeGenFunction::EmitOMPForDirective(const OMPForDirective &) {
   llvm_unreachable("CodeGen for 'omp for' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPForSimdDirective(const OMPForSimdDirective &) {
+  llvm_unreachable("CodeGen for 'omp for simd' is not supported yet.");
 }
 
 void CodeGenFunction::EmitOMPSectionsDirective(const OMPSectionsDirective &) {
@@ -94,13 +128,32 @@ void CodeGenFunction::EmitOMPMasterDirective(const OMPMasterDirective &) {
   llvm_unreachable("CodeGen for 'omp master' is not supported yet.");
 }
 
-void CodeGenFunction::EmitOMPCriticalDirective(const OMPCriticalDirective &) {
-  llvm_unreachable("CodeGen for 'omp critical' is not supported yet.");
+void CodeGenFunction::EmitOMPCriticalDirective(const OMPCriticalDirective &S) {
+  // __kmpc_critical();
+  // <captured_body>
+  // __kmpc_end_critical();
+  //
+
+  auto Lock = CGM.getOpenMPRuntime().GetCriticalRegionLock(
+      S.getDirectiveName().getAsString());
+  CGM.getOpenMPRuntime().EmitOMPCriticalRegionStart(*this, Lock,
+                                                    S.getLocStart());
+  {
+    RunCleanupsScope Scope(*this);
+    EmitStmt(cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
+    EnsureInsertPoint();
+  }
+  CGM.getOpenMPRuntime().EmitOMPCriticalRegionEnd(*this, Lock, S.getLocEnd());
 }
 
 void
 CodeGenFunction::EmitOMPParallelForDirective(const OMPParallelForDirective &) {
   llvm_unreachable("CodeGen for 'omp parallel for' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPParallelForSimdDirective(
+    const OMPParallelForSimdDirective &) {
+  llvm_unreachable("CodeGen for 'omp parallel for simd' is not supported yet.");
 }
 
 void CodeGenFunction::EmitOMPParallelSectionsDirective(
@@ -134,5 +187,9 @@ void CodeGenFunction::EmitOMPOrderedDirective(const OMPOrderedDirective &) {
 
 void CodeGenFunction::EmitOMPAtomicDirective(const OMPAtomicDirective &) {
   llvm_unreachable("CodeGen for 'omp atomic' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPTargetDirective(const OMPTargetDirective &) {
+  llvm_unreachable("CodeGen for 'omp target' is not supported yet.");
 }
 
