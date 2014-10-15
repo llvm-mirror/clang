@@ -1157,34 +1157,28 @@ CollectCXXMemberFunctions(const CXXRecordDecl *RD, llvm::DIFile Unit,
   // have templated functions iterate over every declaration to gather
   // the functions.
   for(const auto *I : RD->decls()) {
-    if (const auto *Method = dyn_cast<CXXMethodDecl>(I)) {
-      // Reuse the existing member function declaration if it exists.
-      // It may be associated with the declaration of the type & should be
-      // reused as we're building the definition.
-      //
-      // This situation can arise in the vtable-based debug info reduction where
-      // implicit members are emitted in a non-vtable TU.
-      llvm::DenseMap<const FunctionDecl *, llvm::WeakVH>::iterator MI =
-          SPCache.find(Method->getCanonicalDecl());
-      if (MI == SPCache.end()) {
-        // If the member is implicit, lazily create it when we see the
-        // definition, not before. (an ODR-used implicit default ctor that's
-        // never actually code generated should not produce debug info)
-        if (!Method->isImplicit())
-          EltTys.push_back(CreateCXXMemberFunction(Method, Unit, RecordTy));
-      } else
-        EltTys.push_back(MI->second);
-    } else if (const auto *FTD = dyn_cast<FunctionTemplateDecl>(I)) {
-      // Add any template specializations that have already been seen. Like
-      // implicit member functions, these may have been added to a declaration
-      // in the case of vtable-based debug info reduction.
-      for (const auto *SI : FTD->specializations()) {
-        llvm::DenseMap<const FunctionDecl *, llvm::WeakVH>::iterator MI =
-            SPCache.find(cast<CXXMethodDecl>(SI)->getCanonicalDecl());
-        if (MI != SPCache.end())
-          EltTys.push_back(MI->second);
-      }
-    }
+    const auto *Method = dyn_cast<CXXMethodDecl>(I);
+    // If the member is implicit, don't add it to the member list. This avoids
+    // the member being added to type units by LLVM, while still allowing it
+    // to be emitted into the type declaration/reference inside the compile
+    // unit.
+    // FIXME: Handle Using(Shadow?)Decls here to create
+    // DW_TAG_imported_declarations inside the class for base decls brought into
+    // derived classes. GDB doesn't seem to notice/leverage these when I tried
+    // it, so I'm not rushing to fix this. (GCC seems to produce them, if
+    // referenced)
+    if (!Method || Method->isImplicit())
+      continue;
+    // Reuse the existing member function declaration if it exists.
+    // It may be associated with the declaration of the type & should be
+    // reused as we're building the definition.
+    //
+    // This situation can arise in the vtable-based debug info reduction where
+    // implicit members are emitted in a non-vtable TU.
+    auto MI = SPCache.find(Method->getCanonicalDecl());
+    EltTys.push_back(MI == SPCache.end()
+                         ? CreateCXXMemberFunction(Method, Unit, RecordTy)
+                         : static_cast<llvm::Value *>(MI->second));
   }
 }
 
@@ -2781,29 +2775,27 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::dwarf::LLVMConstants Tag,
   if (!Name.empty()) {
     if (VD->hasAttr<BlocksAttr>()) {
       CharUnits offset = CharUnits::fromQuantity(32);
-      SmallVector<llvm::Value *, 9> addr;
-      llvm::Type *Int64Ty = CGM.Int64Ty;
-      addr.push_back(llvm::ConstantInt::get(Int64Ty, llvm::DIBuilder::OpPlus));
+      SmallVector<int64_t, 9> addr;
+      addr.push_back(llvm::dwarf::DW_OP_plus);
       // offset of __forwarding field
       offset = CGM.getContext().toCharUnitsFromBits(
         CGM.getTarget().getPointerWidth(0));
-      addr.push_back(llvm::ConstantInt::get(Int64Ty, offset.getQuantity()));
-      addr.push_back(llvm::ConstantInt::get(Int64Ty, llvm::DIBuilder::OpDeref));
-      addr.push_back(llvm::ConstantInt::get(Int64Ty, llvm::DIBuilder::OpPlus));
+      addr.push_back(offset.getQuantity());
+      addr.push_back(llvm::dwarf::DW_OP_deref);
+      addr.push_back(llvm::dwarf::DW_OP_plus);
       // offset of x field
       offset = CGM.getContext().toCharUnitsFromBits(XOffset);
-      addr.push_back(llvm::ConstantInt::get(Int64Ty, offset.getQuantity()));
+      addr.push_back(offset.getQuantity());
 
       // Create the descriptor for the variable.
       llvm::DIVariable D =
-        DBuilder.createComplexVariable(Tag,
-                                       llvm::DIDescriptor(Scope),
-                                       VD->getName(), Unit, Line, Ty,
-                                       addr, ArgNo);
+        DBuilder.createLocalVariable(Tag, llvm::DIDescriptor(Scope),
+                                     VD->getName(), Unit, Line, Ty, ArgNo);
 
       // Insert an llvm.dbg.declare into the current block.
       llvm::Instruction *Call =
-        DBuilder.insertDeclare(Storage, D, Builder.GetInsertBlock());
+        DBuilder.insertDeclare(Storage, D, DBuilder.createExpression(addr),
+                               Builder.GetInsertBlock());
       Call->setDebugLoc(llvm::DebugLoc::get(Line, Column, Scope));
       return;
     } else if (isa<VariableArrayType>(VD->getType()))
@@ -2830,7 +2822,8 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::dwarf::LLVMConstants Tag,
 
         // Insert an llvm.dbg.declare into the current block.
         llvm::Instruction *Call =
-          DBuilder.insertDeclare(Storage, D, Builder.GetInsertBlock());
+          DBuilder.insertDeclare(Storage, D, DBuilder.createExpression(),
+                                 Builder.GetInsertBlock());
         Call->setDebugLoc(llvm::DebugLoc::get(Line, Column, Scope));
       }
       return;
@@ -2845,7 +2838,8 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::dwarf::LLVMConstants Tag,
 
   // Insert an llvm.dbg.declare into the current block.
   llvm::Instruction *Call =
-    DBuilder.insertDeclare(Storage, D, Builder.GetInsertBlock());
+    DBuilder.insertDeclare(Storage, D, DBuilder.createExpression(),
+                           Builder.GetInsertBlock());
   Call->setDebugLoc(llvm::DebugLoc::get(Line, Column, Scope));
 }
 
@@ -2904,35 +2898,35 @@ void CGDebugInfo::EmitDeclareOfBlockDeclRefVariable(const VarDecl *VD,
     target.getStructLayout(blockInfo.StructureType)
           ->getElementOffset(blockInfo.getCapture(VD).getIndex()));
 
-  SmallVector<llvm::Value *, 9> addr;
-  llvm::Type *Int64Ty = CGM.Int64Ty;
+  SmallVector<int64_t, 9> addr;
   if (isa<llvm::AllocaInst>(Storage))
-    addr.push_back(llvm::ConstantInt::get(Int64Ty, llvm::DIBuilder::OpDeref));
-  addr.push_back(llvm::ConstantInt::get(Int64Ty, llvm::DIBuilder::OpPlus));
-  addr.push_back(llvm::ConstantInt::get(Int64Ty, offset.getQuantity()));
+    addr.push_back(llvm::dwarf::DW_OP_deref);
+  addr.push_back(llvm::dwarf::DW_OP_plus);
+  addr.push_back(offset.getQuantity());
   if (isByRef) {
-    addr.push_back(llvm::ConstantInt::get(Int64Ty, llvm::DIBuilder::OpDeref));
-    addr.push_back(llvm::ConstantInt::get(Int64Ty, llvm::DIBuilder::OpPlus));
+    addr.push_back(llvm::dwarf::DW_OP_deref);
+    addr.push_back(llvm::dwarf::DW_OP_plus);
     // offset of __forwarding field
     offset = CGM.getContext()
                 .toCharUnitsFromBits(target.getPointerSizeInBits(0));
-    addr.push_back(llvm::ConstantInt::get(Int64Ty, offset.getQuantity()));
-    addr.push_back(llvm::ConstantInt::get(Int64Ty, llvm::DIBuilder::OpDeref));
-    addr.push_back(llvm::ConstantInt::get(Int64Ty, llvm::DIBuilder::OpPlus));
+    addr.push_back(offset.getQuantity());
+    addr.push_back(llvm::dwarf::DW_OP_deref);
+    addr.push_back(llvm::dwarf::DW_OP_plus);
     // offset of x field
     offset = CGM.getContext().toCharUnitsFromBits(XOffset);
-    addr.push_back(llvm::ConstantInt::get(Int64Ty, offset.getQuantity()));
+    addr.push_back(offset.getQuantity());
   }
 
   // Create the descriptor for the variable.
   llvm::DIVariable D =
-    DBuilder.createComplexVariable(llvm::dwarf::DW_TAG_auto_variable,
-                                   llvm::DIDescriptor(LexicalBlockStack.back()),
-                                   VD->getName(), Unit, Line, Ty, addr);
+    DBuilder.createLocalVariable(llvm::dwarf::DW_TAG_auto_variable,
+                                 llvm::DIDescriptor(LexicalBlockStack.back()),
+                                 VD->getName(), Unit, Line, Ty);
 
   // Insert an llvm.dbg.declare into the current block.
   llvm::Instruction *Call =
-    DBuilder.insertDeclare(Storage, D, Builder.GetInsertPoint());
+    DBuilder.insertDeclare(Storage, D, DBuilder.createExpression(addr),
+                           Builder.GetInsertPoint());
   Call->setDebugLoc(llvm::DebugLoc::get(Line, Column,
                                         LexicalBlockStack.back()));
 }
@@ -3096,13 +3090,15 @@ void CGDebugInfo::EmitDeclareOfBlockLiteralArgVariable(const CGBlockInfo &block,
     // Insert an llvm.dbg.value into the current block.
     llvm::Instruction *DbgVal =
       DBuilder.insertDbgValueIntrinsic(LocalAddr, 0, debugVar,
+                                       DBuilder.createExpression(),
                                        Builder.GetInsertBlock());
     DbgVal->setDebugLoc(llvm::DebugLoc::get(line, column, scope));
   }
 
   // Insert an llvm.dbg.declare into the current block.
   llvm::Instruction *DbgDecl =
-    DBuilder.insertDeclare(Arg, debugVar, Builder.GetInsertBlock());
+    DBuilder.insertDeclare(Arg, debugVar, DBuilder.createExpression(),
+                           Builder.GetInsertBlock());
   DbgDecl->setDebugLoc(llvm::DebugLoc::get(line, column, scope));
 }
 

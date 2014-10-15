@@ -766,10 +766,12 @@ W::W() {}
 }
 
 namespace Test13 {
-struct __declspec(dllexport) A {
-  // CHECK-LABEL: VFTable for 'Test13::A' (1 entry).
-  // CHECK-NEXT:   0 | void Test13::A::f() [deleted]
-  virtual void f() = delete;
+struct A {
+  virtual void f();
+};
+struct __declspec(dllexport) B : virtual A {
+  virtual void f() = 0;
+  // MANGLING-DAG: @"\01??_7B@Test13@@6B@" = weak_odr dllexport unnamed_addr constant [1 x i8*] [i8* bitcast (void ()* @_purecall to i8*)]
 };
 }
 

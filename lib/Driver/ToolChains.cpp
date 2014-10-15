@@ -137,7 +137,7 @@ static const char *GetArmArchForMCpu(StringRef Value) {
     .Cases("cortex-a9", "cortex-a12", "cortex-a15", "krait", "armv7")
     .Cases("cortex-r4", "cortex-r5", "armv7r")
     .Case("cortex-m3", "armv7m")
-    .Case("cortex-m4", "armv7em")
+    .Cases("cortex-m4", "cortex-m7", "armv7em")
     .Case("swift", "armv7s")
     .Default(nullptr);
 }
@@ -2150,7 +2150,9 @@ bool Generic_GCC::IsIntegratedAssemblerDefault() const {
          getTriple().getArch() == llvm::Triple::arm ||
          getTriple().getArch() == llvm::Triple::armeb ||
          getTriple().getArch() == llvm::Triple::thumb ||
-         getTriple().getArch() == llvm::Triple::thumbeb;
+         getTriple().getArch() == llvm::Triple::thumbeb ||
+         getTriple().getArch() == llvm::Triple::ppc64 ||
+         getTriple().getArch() == llvm::Triple::ppc64le;
 }
 
 void Generic_ELF::addClangTargetOptions(const ArgList &DriverArgs,

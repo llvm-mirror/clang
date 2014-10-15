@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsyntax-only -fopenmp=libiomp5 -verify %s
+// RUN: %clang_cc1 -fsyntax-only -fopenmp=libiomp5 -triple x86_64-unknown-unknown -verify %s
 
 // expected-error@+1 {{unexpected OpenMP directive '#pragma omp for'}}
 #pragma omp for
@@ -368,6 +368,12 @@ void test_loop_messages() {
 #pragma omp for
   for (double fi = 0; fi < 10.0; fi++) {
     c[(int)fi] = a[(int)fi] + b[(int)fi];
+  }
+
+  // expected-warning@+2 {{OpenMP loop iteration variable cannot have more than 64 bits size and will be narrowed}}
+  #pragma omp for
+  for (__int128 ii = 0; ii < 10; ii++) {
+    c[ii] = a[ii] + b[ii];
   }
 }
 

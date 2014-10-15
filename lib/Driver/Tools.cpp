@@ -544,6 +544,18 @@ static void getARMFPUFeatures(const Driver &D, const Arg *A,
     Features.push_back("+d16");
     Features.push_back("+fp-only-sp");
     Features.push_back("-neon");
+  } else if (FPU == "fp5-sp-d16" || FPU == "fpv5-sp-d16") {
+    Features.push_back("+fp-armv8");
+    Features.push_back("+fp-only-sp");
+    Features.push_back("+d16");
+    Features.push_back("-neon");
+    Features.push_back("-crypto");
+  } else if (FPU == "fp5-dp-d16" || FPU == "fpv5-dp-d16" ||
+             FPU == "fp5-d16" || FPU == "fpv5-d16") {
+    Features.push_back("+fp-armv8");
+    Features.push_back("+d16");
+    Features.push_back("-neon");
+    Features.push_back("-crypto");
   } else if (FPU == "fp-armv8") {
     Features.push_back("+fp-armv8");
     Features.push_back("-neon");
@@ -811,8 +823,7 @@ void Clang::AddARMTargetArgs(const ArgList &Args,
       if (A->getOption().matches(options::OPT_mno_unaligned_access))
         CmdArgs.push_back("-arm-strict-align");
       else {
-        if (getToolChain().getTriple().getSubArch() ==
-            llvm::Triple::SubArchType::ARMSubArch_v6m)
+        if (Triple.getSubArch() == llvm::Triple::SubArchType::ARMSubArch_v6m)
           D.Diag(diag::err_target_unsupported_unaligned) << "v6m";
         CmdArgs.push_back("-arm-no-strict-align");
       }
@@ -2741,6 +2752,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
+  CmdArgs.push_back("-mthread-model");
+  if (Arg *A = Args.getLastArg(options::OPT_mthread_model))
+    CmdArgs.push_back(A->getValue());
+  else
+    CmdArgs.push_back(Args.MakeArgString(getToolChain().getThreadModel()));
+
   if (!Args.hasFlag(options::OPT_fmerge_all_constants,
                     options::OPT_fno_merge_all_constants))
     CmdArgs.push_back("-fno-merge-all-constants");
@@ -3750,14 +3767,14 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-fblocks-runtime-optional");
   }
 
-  // -fmodules enables modules (off by default). However, for C++/Objective-C++,
-  // users must also pass -fcxx-modules. The latter flag will disappear once the
-  // modules implementation is solid for C++/Objective-C++ programs as well.
+  // -fmodules enables modules (off by default).
+  // Users can pass -fno-cxx-modules to turn off modules support for
+  // C++/Objective-C++ programs, which is a little less mature.
   bool HaveModules = false;
   if (Args.hasFlag(options::OPT_fmodules, options::OPT_fno_modules, false)) {
     bool AllowedInCXX = Args.hasFlag(options::OPT_fcxx_modules, 
                                      options::OPT_fno_cxx_modules, 
-                                     false);
+                                     true);
     if (AllowedInCXX || !types::isCXX(InputType)) {
       CmdArgs.push_back("-fmodules");
       HaveModules = true;
@@ -5340,7 +5357,7 @@ const char *arm::getLLVMArchSuffixForARM(StringRef CPU) {
     .Cases("cortex-r4", "cortex-r5", "v7r")
     .Case("cortex-m0", "v6m")
     .Case("cortex-m3", "v7m")
-    .Case("cortex-m4", "v7em")
+    .Cases("cortex-m4", "cortex-m7", "v7em")
     .Case("swift", "v7s")
     .Case("cyclone", "v8")
     .Cases("cortex-a53", "cortex-a57", "v8")

@@ -627,6 +627,10 @@ void Parser::ParseOpenCLQualifiers(ParsedAttributes &Attrs) {
                AttributeList::AS_Keyword);
 }
 
+static bool VersionNumberSeparator(const char Separator) {
+  return (Separator == '.' || Separator == '_');
+}
+
 /// \brief Parse a version number.
 ///
 /// version:
@@ -684,7 +688,9 @@ VersionTuple Parser::ParseVersionTuple(SourceRange &Range) {
     return VersionTuple(Major);
   }
 
-  if (ThisTokBegin[AfterMajor] != '.' || (AfterMajor + 1 == ActualLength)) {
+  const char AfterMajorSeparator = ThisTokBegin[AfterMajor];
+  if (!VersionNumberSeparator(AfterMajorSeparator)
+      || (AfterMajor + 1 == ActualLength)) {
     Diag(Tok, diag::err_expected_version);
     SkipUntil(tok::comma, tok::r_paren,
               StopAtSemi | StopBeforeMatch | StopAtCodeCompletion);
@@ -708,16 +714,21 @@ VersionTuple Parser::ParseVersionTuple(SourceRange &Range) {
       return VersionTuple();
     }
 
-    return VersionTuple(Major, Minor);
+    return VersionTuple(Major, Minor, (AfterMajorSeparator == '_'));
   }
 
-  // If what follows is not a '.', we have a problem.
-  if (ThisTokBegin[AfterMinor] != '.') {
+  const char AfterMinorSeparator = ThisTokBegin[AfterMinor];
+  // If what follows is not a '.' or '_', we have a problem.
+  if (!VersionNumberSeparator(AfterMinorSeparator)) {
     Diag(Tok, diag::err_expected_version);
     SkipUntil(tok::comma, tok::r_paren,
               StopAtSemi | StopBeforeMatch | StopAtCodeCompletion);
     return VersionTuple();
   }
+  
+  // Warn if separators, be it '.' or '_', do not match.
+  if (AfterMajorSeparator != AfterMinorSeparator)
+    Diag(Tok, diag::warn_expected_consistent_version_separator);
 
   // Parse the subminor version.
   unsigned AfterSubminor = AfterMinor + 1;
@@ -734,7 +745,7 @@ VersionTuple Parser::ParseVersionTuple(SourceRange &Range) {
     return VersionTuple();
   }
   ConsumeToken();
-  return VersionTuple(Major, Minor, Subminor);
+  return VersionTuple(Major, Minor, Subminor, (AfterMajorSeparator == '_'));
 }
 
 /// \brief Parse the contents of the "availability" attribute.

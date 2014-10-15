@@ -1854,6 +1854,14 @@ void OMPClauseReader::VisitOMPFirstprivateClause(OMPFirstprivateClause *C) {
   for (unsigned i = 0; i != NumVars; ++i)
     Vars.push_back(Reader->Reader.ReadSubExpr());
   C->setVarRefs(Vars);
+  Vars.clear();
+  for (unsigned i = 0; i != NumVars; ++i)
+    Vars.push_back(Reader->Reader.ReadSubExpr());
+  C->setPrivateCopies(Vars);
+  Vars.clear();
+  for (unsigned i = 0; i != NumVars; ++i)
+    Vars.push_back(Reader->Reader.ReadSubExpr());
+  C->setInits(Vars);
 }
 
 void OMPClauseReader::VisitOMPLastprivateClause(OMPLastprivateClause *C) {
@@ -1968,6 +1976,29 @@ void ASTStmtReader::VisitOMPLoopDirective(OMPLoopDirective *D) {
   // Two fields (NumClauses and CollapsedNum) were read in ReadStmtFromStream.
   Idx += 2;
   VisitOMPExecutableDirective(D);
+  D->setIterationVariable(Reader.ReadSubExpr());
+  D->setLastIteration(Reader.ReadSubExpr());
+  D->setCalcLastIteration(Reader.ReadSubExpr());
+  D->setPreCond(Reader.ReadSubExpr());
+  auto Fst = Reader.ReadSubExpr();
+  auto Snd = Reader.ReadSubExpr();
+  D->setCond(Fst, Snd);
+  D->setInit(Reader.ReadSubExpr());
+  D->setInc(Reader.ReadSubExpr());
+  SmallVector<Expr *, 4> Sub;
+  unsigned CollapsedNum = D->getCollapsedNumber();
+  Sub.reserve(CollapsedNum);
+  for (unsigned i = 0; i < CollapsedNum; ++i)
+    Sub.push_back(Reader.ReadSubExpr());
+  D->setCounters(Sub);
+  Sub.clear();
+  for (unsigned i = 0; i < CollapsedNum; ++i)
+    Sub.push_back(Reader.ReadSubExpr());
+  D->setUpdates(Sub);
+  Sub.clear();
+  for (unsigned i = 0; i < CollapsedNum; ++i)
+    Sub.push_back(Reader.ReadSubExpr());
+  D->setFinals(Sub);
 }
 
 void ASTStmtReader::VisitOMPParallelDirective(OMPParallelDirective *D) {
@@ -2078,6 +2109,13 @@ void ASTStmtReader::VisitOMPAtomicDirective(OMPAtomicDirective *D) {
 }
 
 void ASTStmtReader::VisitOMPTargetDirective(OMPTargetDirective *D) {
+  VisitStmt(D);
+  // The NumClauses field was read in ReadStmtFromStream.
+  ++Idx;
+  VisitOMPExecutableDirective(D);
+}
+
+void ASTStmtReader::VisitOMPTeamsDirective(OMPTeamsDirective *D) {
   VisitStmt(D);
   // The NumClauses field was read in ReadStmtFromStream.
   ++Idx;
@@ -2666,6 +2704,11 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
 
     case STMT_OMP_TARGET_DIRECTIVE:
       S = OMPTargetDirective::CreateEmpty(
+          Context, Record[ASTStmtReader::NumStmtFields], Empty);
+      break;
+
+    case STMT_OMP_TEAMS_DIRECTIVE:
+      S = OMPTeamsDirective::CreateEmpty(
           Context, Record[ASTStmtReader::NumStmtFields], Empty);
       break;
 

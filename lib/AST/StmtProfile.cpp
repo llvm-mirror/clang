@@ -329,9 +329,15 @@ void OMPClauseProfiler::VisitOMPClauseList(T *Node) {
 void OMPClauseProfiler::VisitOMPPrivateClause(const OMPPrivateClause *C) {
   VisitOMPClauseList(C);
 }
-void OMPClauseProfiler::VisitOMPFirstprivateClause(
-                                         const OMPFirstprivateClause *C) {
+void
+OMPClauseProfiler::VisitOMPFirstprivateClause(const OMPFirstprivateClause *C) {
   VisitOMPClauseList(C);
+  for (auto *E : C->private_copies()) {
+    Profiler->VisitStmt(E);
+  }
+  for (auto *E : C->inits()) {
+    Profiler->VisitStmt(E);
+  }
 }
 void
 OMPClauseProfiler::VisitOMPLastprivateClause(const OMPLastprivateClause *C) {
@@ -463,6 +469,10 @@ void StmtProfiler::VisitOMPAtomicDirective(const OMPAtomicDirective *S) {
 }
 
 void StmtProfiler::VisitOMPTargetDirective(const OMPTargetDirective *S) {
+  VisitOMPExecutableDirective(S);
+}
+
+void StmtProfiler::VisitOMPTeamsDirective(const OMPTeamsDirective *S) {
   VisitOMPExecutableDirective(S);
 }
 

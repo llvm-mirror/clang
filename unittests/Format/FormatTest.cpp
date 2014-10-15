@@ -832,6 +832,12 @@ TEST_F(FormatTest, UnderstandsSingleLineComments) {
   verifyFormat("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa =\n"
                "    // Comment inside a statement.\n"
                "    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;");
+  verifyFormat("SomeFunction(a,\n"
+               "             // comment\n"
+               "             b + x);");
+  verifyFormat("SomeFunction(a, a,\n"
+               "             // comment\n"
+               "             b + x);");
   verifyFormat(
       "bool aaaaaaaaaaaaa = // comment\n"
       "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa || aaaaaaaaaaaaaaaaaaaaaaaaaaaa ||\n"
@@ -5116,6 +5122,7 @@ TEST_F(FormatTest, FormatsCasts) {
   verifyFormat("my_int a = (my_int)sizeof(int);");
   verifyFormat("return (my_int)aaa;");
   verifyFormat("#define x ((int)-1)");
+  verifyFormat("#define LENGTH(x, y) (x) - (y) + 1");
   verifyFormat("#define p(q) ((int *)&q)");
   verifyFormat("fn(a)(b) + 1;");
 
@@ -5123,7 +5130,7 @@ TEST_F(FormatTest, FormatsCasts) {
   verifyFormat("void f() { return P ? (my_int)*P : (my_int)0; }");
   verifyFormat("my_int a = (my_int)~0;");
   verifyFormat("my_int a = (my_int)++a;");
-  verifyFormat("my_int a = (my_int)+2;");
+  verifyFormat("my_int a = (my_int)-2;");
   verifyFormat("my_int a = (my_int)1;");
   verifyFormat("my_int a = (my_int *)1;");
   verifyFormat("my_int a = (const my_int)-1;");
