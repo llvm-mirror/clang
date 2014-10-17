@@ -79,14 +79,14 @@ static const llvm::opt::ArgStringList *getCC1Arguments(
   }
 
   // The one job we find should be to invoke clang again.
-  const clang::driver::Command *Cmd =
+  const clang::driver::Command &Cmd =
       cast<clang::driver::Command>(*Jobs.begin());
-  if (StringRef(Cmd->getCreator().getName()) != "clang") {
+  if (StringRef(Cmd.getCreator().getName()) != "clang") {
     Diagnostics->Report(clang::diag::err_fe_expected_clang_command);
     return nullptr;
   }
 
-  return &Cmd->getArguments();
+  return &Cmd.getArguments();
 }
 
 /// \brief Returns a clang build invocation initialized from the CC1 flags.
@@ -186,10 +186,6 @@ ToolInvocation::~ToolInvocation() {
     delete Action;
 }
 
-void ToolInvocation::setDiagnosticConsumer(DiagnosticConsumer *D) {
-  DiagConsumer = D;
-}
-
 void ToolInvocation::mapVirtualFile(StringRef FilePath, StringRef Content) {
   SmallString<1024> PathStorage;
   llvm::sys::path::native(FilePath, PathStorage);
@@ -275,30 +271,21 @@ ClangTool::ClangTool(const CompilationDatabase &Compilations,
                      ArrayRef<std::string> SourcePaths)
     : Compilations(Compilations), SourcePaths(SourcePaths),
       Files(new FileManager(FileSystemOptions())), DiagConsumer(nullptr) {
-  ArgsAdjusters.push_back(new ClangStripOutputAdjuster());
-  ArgsAdjusters.push_back(new ClangSyntaxOnlyAdjuster());
+  appendArgumentsAdjuster(new ClangStripOutputAdjuster());
+  appendArgumentsAdjuster(new ClangSyntaxOnlyAdjuster());
 }
 
-void ClangTool::setDiagnosticConsumer(DiagnosticConsumer *D) {
-  DiagConsumer = D;
-}
+ClangTool::~ClangTool() {}
 
 void ClangTool::mapVirtualFile(StringRef FilePath, StringRef Content) {
   MappedFileContents.push_back(std::make_pair(FilePath, Content));
 }
 
-void ClangTool::setArgumentsAdjuster(ArgumentsAdjuster *Adjuster) {
-  clearArgumentsAdjusters();
-  appendArgumentsAdjuster(Adjuster);
-}
-
 void ClangTool::appendArgumentsAdjuster(ArgumentsAdjuster *Adjuster) {
-  ArgsAdjusters.push_back(Adjuster);
+  ArgsAdjusters.push_back(std::unique_ptr<ArgumentsAdjuster>(Adjuster));
 }
 
 void ClangTool::clearArgumentsAdjusters() {
-  for (unsigned I = 0, E = ArgsAdjusters.size(); I != E; ++I)
-    delete ArgsAdjusters[I];
   ArgsAdjusters.clear();
 }
 
@@ -341,7 +328,7 @@ int ClangTool::run(ToolAction *Action) {
         llvm::report_fatal_error("Cannot chdir into \"" +
                                  Twine(CompileCommand.Directory) + "\n!");
       std::vector<std::string> CommandLine = CompileCommand.CommandLine;
-      for (ArgumentsAdjuster *Adjuster : ArgsAdjusters)
+      for (const auto &Adjuster : ArgsAdjusters)
         CommandLine = Adjuster->Adjust(CommandLine);
       assert(!CommandLine.empty());
       CommandLine[0] = MainExecutable;

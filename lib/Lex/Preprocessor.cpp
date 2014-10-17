@@ -62,9 +62,12 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
                            IdentifierInfoLookup *IILookup, bool OwnsHeaders,
                            TranslationUnitKind TUKind)
     : PPOpts(PPOpts), Diags(&diags), LangOpts(opts), Target(nullptr),
-      FileMgr(Headers.getFileMgr()), SourceMgr(SM), HeaderInfo(Headers),
+      FileMgr(Headers.getFileMgr()), SourceMgr(SM),
+      ScratchBuf(new ScratchBuffer(SourceMgr)),HeaderInfo(Headers),
       TheModuleLoader(TheModuleLoader), ExternalSource(nullptr),
-      Identifiers(opts, IILookup), IncrementalProcessing(false), TUKind(TUKind),
+      Identifiers(opts, IILookup),
+      PragmaHandlers(new PragmaNamespace(StringRef())),
+      IncrementalProcessing(false), TUKind(TUKind),
       CodeComplete(nullptr), CodeCompletionFile(nullptr),
       CodeCompletionOffset(0), LastTokenWasAt(false),
       ModuleImportExpectsIdentifier(false), CodeCompletionReached(0),
@@ -74,7 +77,6 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
       MIChainHead(nullptr), DeserialMIChainHead(nullptr) {
   OwnsHeaderSearch = OwnsHeaders;
   
-  ScratchBuf = new ScratchBuffer(SourceMgr);
   CounterValue = 0; // __COUNTER__ starts at 0.
   
   // Clear stats.
@@ -112,7 +114,6 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
   SetPoisonReason(Ident__VA_ARGS__,diag::ext_pp_bad_vaargs_use);
   
   // Initialize the pragma handlers.
-  PragmaHandlers = new PragmaNamespace(StringRef());
   RegisterBuiltinPragmas();
   
   // Initialize builtin macros like __LINE__ and friends.
@@ -151,8 +152,7 @@ Preprocessor::~Preprocessor() {
   // Free any cached macro expanders.
   // This populates MacroArgCache, so all TokenLexers need to be destroyed
   // before the code below that frees up the MacroArgCache list.
-  for (unsigned i = 0, e = NumCachedTokenLexers; i != e; ++i)
-    delete TokenLexerCache[i];
+  std::fill(TokenLexerCache, TokenLexerCache + NumCachedTokenLexers, nullptr);
   CurTokenLexer.reset();
 
   while (DeserializedMacroInfoChain *I = DeserialMIChainHead) {
@@ -164,17 +164,9 @@ Preprocessor::~Preprocessor() {
   for (MacroArgs *ArgList = MacroArgCache; ArgList;)
     ArgList = ArgList->deallocate();
 
-  // Release pragma information.
-  delete PragmaHandlers;
-
-  // Delete the scratch buffer info.
-  delete ScratchBuf;
-
   // Delete the header search info, if we own it.
   if (OwnsHeaderSearch)
     delete &HeaderInfo;
-
-  delete Callbacks;
 }
 
 void Preprocessor::Initialize(const TargetInfo &Target) {
@@ -191,8 +183,8 @@ void Preprocessor::InitializeForModelFile() {
   NumEnteredSourceFiles = 0;
 
   // Reset pragmas
-  PragmaHandlersBackup = PragmaHandlers;
-  PragmaHandlers = new PragmaNamespace(StringRef());
+  PragmaHandlersBackup = std::move(PragmaHandlers);
+  PragmaHandlers = llvm::make_unique<PragmaNamespace>(StringRef());
   RegisterBuiltinPragmas();
 
   // Reset PredefinesFileID
@@ -202,8 +194,7 @@ void Preprocessor::InitializeForModelFile() {
 void Preprocessor::FinalizeForModelFile() {
   NumEnteredSourceFiles = 1;
 
-  delete PragmaHandlers;
-  PragmaHandlers = PragmaHandlersBackup;
+  PragmaHandlers = std::move(PragmaHandlersBackup);
 }
 
 void Preprocessor::setPTHManager(PTHManager* pm) {
@@ -506,7 +497,7 @@ void Preprocessor::EnterMainSourceFile() {
   std::unique_ptr<llvm::MemoryBuffer> SB =
     llvm::MemoryBuffer::getMemBufferCopy(Predefines, "<built-in>");
   assert(SB && "Cannot create predefined source buffer");
-  FileID FID = SourceMgr.createFileID(SB.release());
+  FileID FID = SourceMgr.createFileID(std::move(SB));
   assert(!FID.isInvalid() && "Could not create FileID for predefines?");
   setPredefinesFileID(FID);
 
@@ -854,5 +845,5 @@ void Preprocessor::createPreprocessingRecord() {
     return;
   
   Record = new PreprocessingRecord(getSourceManager());
-  addPPCallbacks(Record);
+  addPPCallbacks(std::unique_ptr<PPCallbacks>(Record));
 }

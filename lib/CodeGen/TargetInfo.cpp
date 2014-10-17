@@ -15,6 +15,7 @@
 #include "TargetInfo.h"
 #include "ABIInfo.h"
 #include "CGCXXABI.h"
+#include "CGValue.h"
 #include "CodeGenFunction.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
@@ -593,6 +594,14 @@ public:
     return X86AdjustInlineAsmType(CGF, Constraint, Ty);
   }
 
+  void addReturnRegisterOutputs(CodeGenFunction &CGF, LValue ReturnValue,
+                                std::string &Constraints,
+                                std::vector<llvm::Type *> &ResultRegTypes,
+                                std::vector<llvm::Type *> &ResultTruncRegTypes,
+                                std::vector<LValue> &ResultRegDests,
+                                std::string &AsmString,
+                                unsigned NumOutputs) const override;
+
   llvm::Constant *
   getUBSanFunctionSignature(CodeGen::CodeGenModule &CGM) const override {
     unsigned Sig = (0xeb << 0) |  // jmp rel8
@@ -604,6 +613,85 @@ public:
 
 };
 
+}
+
+/// Rewrite input constraint references after adding some output constraints.
+/// In the case where there is one output and one input and we add one output,
+/// we need to replace all operand references greater than or equal to 1:
+///     mov $0, $1
+///     mov eax, $1
+/// The result will be:
+///     mov $0, $2
+///     mov eax, $2
+static void rewriteInputConstraintReferences(unsigned FirstIn,
+                                             unsigned NumNewOuts,
+                                             std::string &AsmString) {
+  std::string Buf;
+  llvm::raw_string_ostream OS(Buf);
+  size_t Pos = 0;
+  while (Pos < AsmString.size()) {
+    size_t DollarStart = AsmString.find('$', Pos);
+    if (DollarStart == std::string::npos)
+      DollarStart = AsmString.size();
+    size_t DollarEnd = AsmString.find_first_not_of('$', DollarStart);
+    if (DollarEnd == std::string::npos)
+      DollarEnd = AsmString.size();
+    OS << StringRef(&AsmString[Pos], DollarEnd - Pos);
+    Pos = DollarEnd;
+    size_t NumDollars = DollarEnd - DollarStart;
+    if (NumDollars % 2 != 0 && Pos < AsmString.size()) {
+      // We have an operand reference.
+      size_t DigitStart = Pos;
+      size_t DigitEnd = AsmString.find_first_not_of("0123456789", DigitStart);
+      if (DigitEnd == std::string::npos)
+        DigitEnd = AsmString.size();
+      StringRef OperandStr(&AsmString[DigitStart], DigitEnd - DigitStart);
+      unsigned OperandIndex;
+      if (!OperandStr.getAsInteger(10, OperandIndex)) {
+        if (OperandIndex >= FirstIn)
+          OperandIndex += NumNewOuts;
+        OS << OperandIndex;
+      } else {
+        OS << OperandStr;
+      }
+      Pos = DigitEnd;
+    }
+  }
+  AsmString = std::move(OS.str());
+}
+
+/// Add output constraints for EAX:EDX because they are return registers.
+void X86_32TargetCodeGenInfo::addReturnRegisterOutputs(
+    CodeGenFunction &CGF, LValue ReturnSlot, std::string &Constraints,
+    std::vector<llvm::Type *> &ResultRegTypes,
+    std::vector<llvm::Type *> &ResultTruncRegTypes,
+    std::vector<LValue> &ResultRegDests, std::string &AsmString,
+    unsigned NumOutputs) const {
+  uint64_t RetWidth = CGF.getContext().getTypeSize(ReturnSlot.getType());
+
+  // Use the EAX constraint if the width is 32 or smaller and EAX:EDX if it is
+  // larger.
+  if (!Constraints.empty())
+    Constraints += ',';
+  if (RetWidth <= 32) {
+    Constraints += "={eax}";
+    ResultRegTypes.push_back(CGF.Int32Ty);
+  } else {
+    // Use the 'A' constraint for EAX:EDX.
+    Constraints += "=A";
+    ResultRegTypes.push_back(CGF.Int64Ty);
+  }
+
+  // Truncate EAX or EAX:EDX to an integer of the appropriate size.
+  llvm::Type *CoerceTy = llvm::IntegerType::get(CGF.getLLVMContext(), RetWidth);
+  ResultTruncRegTypes.push_back(CoerceTy);
+
+  // Coerce the integer by bitcasting the return slot pointer.
+  ReturnSlot.setAddress(CGF.Builder.CreateBitCast(ReturnSlot.getAddress(),
+                                                  CoerceTy->getPointerTo()));
+  ResultRegDests.push_back(ReturnSlot);
+
+  rewriteInputConstraintReferences(NumOutputs, 1, AsmString);
 }
 
 /// shouldReturnTypeInRegister - Determine if the given type should be
@@ -1349,9 +1437,10 @@ public:
 };
 
 class X86_64TargetCodeGenInfo : public TargetCodeGenInfo {
+  bool HasAVX;
 public:
   X86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, bool HasAVX)
-      : TargetCodeGenInfo(new X86_64ABIInfo(CGT, HasAVX)) {}
+      : TargetCodeGenInfo(new X86_64ABIInfo(CGT, HasAVX)), HasAVX(HasAVX) {}
 
   const X86_64ABIInfo &getABIInfo() const {
     return static_cast<const X86_64ABIInfo&>(TargetCodeGenInfo::getABIInfo());
@@ -1411,6 +1500,9 @@ public:
     return llvm::ConstantInt::get(CGM.Int32Ty, Sig);
   }
 
+  unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
+    return HasAVX ? 32 : 16;
+  }
 };
 
 static std::string qualifyWindowsLibrary(llvm::StringRef Lib) {
@@ -1442,9 +1534,10 @@ public:
 };
 
 class WinX86_64TargetCodeGenInfo : public TargetCodeGenInfo {
+  bool HasAVX;
 public:
-  WinX86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT)
-    : TargetCodeGenInfo(new WinX86_64ABIInfo(CGT)) {}
+  WinX86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, bool HasAVX)
+    : TargetCodeGenInfo(new WinX86_64ABIInfo(CGT)), HasAVX(HasAVX) {}
 
   int getDwarfEHStackPointer(CodeGen::CodeGenModule &CGM) const override {
     return 7;
@@ -1470,6 +1563,10 @@ public:
                                llvm::StringRef Value,
                                llvm::SmallString<32> &Opt) const override {
     Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
+  }
+
+  unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
+    return HasAVX ? 32 : 16;
   }
 };
 
@@ -1598,10 +1695,25 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
   }
 
   if (Ty->isMemberPointerType()) {
-    if (Ty->isMemberFunctionPointerType() && Has64BitPointers)
-      Lo = Hi = Integer;
-    else
+    if (Ty->isMemberFunctionPointerType()) {
+      if (Has64BitPointers) {
+        // If Has64BitPointers, this is an {i64, i64}, so classify both
+        // Lo and Hi now.
+        Lo = Hi = Integer;
+      } else {
+        // Otherwise, with 32-bit pointers, this is an {i32, i32}. If that
+        // straddles an eightbyte boundary, Hi should be classified as well.
+        uint64_t EB_FuncPtr = (OffsetBase) / 64;
+        uint64_t EB_ThisAdj = (OffsetBase + 64 - 1) / 64;
+        if (EB_FuncPtr != EB_ThisAdj) {
+          Lo = Hi = Integer;
+        } else {
+          Current = Integer;
+        }
+      }
+    } else {
       Current = Integer;
+    }
     return;
   }
 
@@ -2480,23 +2592,17 @@ void X86_64ABIInfo::computeInfo(CGFunctionInfo &FI) const {
   if (FI.getReturnInfo().isIndirect())
     --freeIntRegs;
 
-  bool isVariadic = FI.isVariadic();
-  unsigned numRequiredArgs = 0;
-  if (isVariadic)
-    numRequiredArgs = FI.getRequiredArgs().getNumRequiredArgs();
-
+  unsigned NumRequiredArgs = FI.getNumRequiredArgs();
   // AMD64-ABI 3.2.3p3: Once arguments are classified, the registers
   // get assigned (in left-to-right order) for passing as follows...
+  unsigned ArgNo = 0;
   for (CGFunctionInfo::arg_iterator it = FI.arg_begin(), ie = FI.arg_end();
-       it != ie; ++it) {
-    bool isNamedArg = true;
-    if (isVariadic)
-      isNamedArg = (it - FI.arg_begin()) < 
-                    static_cast<signed>(numRequiredArgs);
+       it != ie; ++it, ++ArgNo) {
+    bool IsNamedArg = ArgNo < NumRequiredArgs;
 
     unsigned neededInt, neededSSE;
     it->info = classifyArgumentType(it->type, freeIntRegs, neededInt,
-                                    neededSSE, isNamedArg);
+                                    neededSSE, IsNamedArg);
 
     // AMD64-ABI 3.2.3p3: If there are no registers available for any
     // eightbyte of an argument, the whole argument is passed on the
@@ -2827,9 +2933,14 @@ class NaClX86_64ABIInfo : public ABIInfo {
 };
 
 class NaClX86_64TargetCodeGenInfo : public TargetCodeGenInfo  {
+  bool HasAVX;
  public:
-  NaClX86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, bool HasAVX)
-      : TargetCodeGenInfo(new NaClX86_64ABIInfo(CGT, HasAVX)) {}
+   NaClX86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, bool HasAVX)
+       : TargetCodeGenInfo(new NaClX86_64ABIInfo(CGT, HasAVX)), HasAVX(HasAVX) {
+   }
+   unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
+     return HasAVX ? 32 : 16;
+   }
 };
 
 }
@@ -2863,6 +2974,10 @@ public:
 
   bool initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
                                llvm::Value *Address) const override;
+
+  unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
+    return 16; // Natural alignment for Altivec vectors.
+  }
 };
 
 }
@@ -2979,6 +3094,10 @@ public:
 
   bool initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
                                llvm::Value *Address) const override;
+
+  unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
+    return 16; // Natural alignment for Altivec and VSX vectors.
+  }
 };
 
 class PPC64TargetCodeGenInfo : public DefaultTargetCodeGenInfo {
@@ -2992,6 +3111,10 @@ public:
 
   bool initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
                                llvm::Value *Address) const override;
+
+  unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
+    return 16; // Natural alignment for Altivec vectors.
+  }
 };
 
 }
@@ -3466,20 +3589,18 @@ private:
 
     // Find the number of named arguments. Variadic arguments get special
     // treatment with the Darwin ABI.
-    unsigned NumRequiredArgs = (FI.isVariadic() ?
-                                FI.getRequiredArgs().getNumRequiredArgs() :
-                                FI.arg_size());
+    unsigned NumRequiredArgs = FI.getNumRequiredArgs();
 
     if (!getCXXABI().classifyReturnType(FI))
       FI.getReturnInfo() = classifyReturnType(FI.getReturnType());
+    unsigned ArgNo = 0;
     for (CGFunctionInfo::arg_iterator it = FI.arg_begin(), ie = FI.arg_end();
-         it != ie; ++it) {
+         it != ie; ++it, ++ArgNo) {
       unsigned PreAllocation = AllocatedVFP, PreGPR = AllocatedGPR;
       bool IsHA = false, IsSmallAggr = false;
       const unsigned NumVFPs = 8;
       const unsigned NumGPRs = 8;
-      bool IsNamedArg = ((it - FI.arg_begin()) <
-                         static_cast<signed>(NumRequiredArgs));
+      bool IsNamedArg = ArgNo < NumRequiredArgs;
       it->info = classifyArgumentType(it->type, AllocatedVFP, IsHA,
                                       AllocatedGPR, IsSmallAggr, IsNamedArg);
 
@@ -5548,7 +5669,12 @@ MipsABIInfo::returnAggregateInRegs(QualType RetTy, uint64_t Size) const {
 ABIArgInfo MipsABIInfo::classifyReturnType(QualType RetTy) const {
   uint64_t Size = getContext().getTypeSize(RetTy);
 
-  if (RetTy->isVoidType() || Size == 0)
+  if (RetTy->isVoidType())
+    return ABIArgInfo::getIgnore();
+
+  // O32 doesn't treat zero-sized structs differently from other structs.
+  // However, N32/N64 ignores zero sized return values.
+  if (!IsO32 && Size == 0)
     return ABIArgInfo::getIgnore();
 
   if (isAggregateTypeForABI(RetTy) || RetTy->isVectorType()) {
@@ -5556,12 +5682,15 @@ ABIArgInfo MipsABIInfo::classifyReturnType(QualType RetTy) const {
       if (RetTy->isAnyComplexType())
         return ABIArgInfo::getDirect();
 
-      // O32 returns integer vectors in registers.
-      if (IsO32 && RetTy->isVectorType() && !RetTy->hasFloatingRepresentation())
-        return ABIArgInfo::getDirect(returnAggregateInRegs(RetTy, Size));
-
-      if (!IsO32)
-        return ABIArgInfo::getDirect(returnAggregateInRegs(RetTy, Size));
+      // O32 returns integer vectors in registers and N32/N64 returns all small
+      // aggregates in registers.
+      if (!IsO32 ||
+          (RetTy->isVectorType() && !RetTy->hasFloatingRepresentation())) {
+        ABIArgInfo ArgInfo =
+            ABIArgInfo::getDirect(returnAggregateInRegs(RetTy, Size));
+        ArgInfo.setInReg(true);
+        return ArgInfo;
+      }
     }
 
     return ABIArgInfo::getIndirect(0);
@@ -5595,7 +5724,8 @@ llvm::Value* MipsABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
   CGBuilderTy &Builder = CGF.Builder;
   llvm::Value *VAListAddrAsBPP = Builder.CreateBitCast(VAListAddr, BPP, "ap");
   llvm::Value *Addr = Builder.CreateLoad(VAListAddrAsBPP, "ap.cur");
-  int64_t TypeAlign = getContext().getTypeAlign(Ty) / 8;
+  int64_t TypeAlign =
+      std::min(getContext().getTypeAlign(Ty) / 8, StackAlignInBytes);
   llvm::Type *PTy = llvm::PointerType::getUnqual(CGF.ConvertType(Ty));
   llvm::Value *AddrTyped;
   unsigned PtrWidth = getTarget().getPointerWidth(0);
@@ -6772,6 +6902,14 @@ static bool getTypeString(SmallStringEnc &Enc, const Decl *D,
 // Driver code
 //===----------------------------------------------------------------------===//
 
+const llvm::Triple &CodeGenModule::getTriple() const {
+  return getTarget().getTriple();
+}
+
+bool CodeGenModule::supportsCOMDAT() const {
+  return !getTriple().isOSBinFormatMachO();
+}
+
 const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
   if (TheTargetCodeGenInfo)
     return *TheTargetCodeGenInfo;
@@ -6884,13 +7022,14 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
 
     switch (Triple.getOS()) {
     case llvm::Triple::Win32:
-      return *(TheTargetCodeGenInfo = new WinX86_64TargetCodeGenInfo(Types));
+      return *(TheTargetCodeGenInfo =
+                   new WinX86_64TargetCodeGenInfo(Types, HasAVX));
     case llvm::Triple::NaCl:
-      return *(TheTargetCodeGenInfo = new NaClX86_64TargetCodeGenInfo(Types,
-                                                                      HasAVX));
+      return *(TheTargetCodeGenInfo =
+                   new NaClX86_64TargetCodeGenInfo(Types, HasAVX));
     default:
-      return *(TheTargetCodeGenInfo = new X86_64TargetCodeGenInfo(Types,
-                                                                  HasAVX));
+      return *(TheTargetCodeGenInfo =
+                   new X86_64TargetCodeGenInfo(Types, HasAVX));
     }
   }
   case llvm::Triple::hexagon:

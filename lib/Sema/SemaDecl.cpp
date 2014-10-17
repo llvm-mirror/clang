@@ -380,6 +380,7 @@ ParsedType Sema::getTypeName(const IdentifierInfo &II, SourceLocation NameLoc,
     DiagnoseUseOfDecl(IIDecl, NameLoc);
 
     T = Context.getTypeDeclType(TD);
+    MarkAnyDeclReferenced(TD->getLocation(), TD, /*OdrUse=*/false);
 
     // NOTE: avoid constructing an ElaboratedType(Loc) if this is a
     // constructor or destructor name (in such a case, the scope specifier
@@ -497,6 +498,9 @@ DeclSpec::TST Sema::isTagName(IdentifierInfo &II, Scope *S) {
 /// @endcode
 bool Sema::isMicrosoftMissingTypename(const CXXScopeSpec *SS, Scope *S) {
   if (CurContext->isRecord()) {
+    if (SS->getScopeRep()->getKind() == NestedNameSpecifier::Super)
+      return true;
+
     const Type *Ty = SS->getScopeRep()->getAsType();
 
     CXXRecordDecl *RD = cast<CXXRecordDecl>(CurContext);
@@ -928,6 +932,7 @@ Corrected:
   NamedDecl *FirstDecl = (*Result.begin())->getUnderlyingDecl();
   if (TypeDecl *Type = dyn_cast<TypeDecl>(FirstDecl)) {
     DiagnoseUseOfDecl(Type, NameLoc);
+    MarkAnyDeclReferenced(Type->getLocation(), Type, /*OdrUse=*/false);
     QualType T = Context.getTypeDeclType(Type);
     if (SS.isNotEmpty())
       return buildNestedType(*this, SS, T, NameLoc);
@@ -1395,10 +1400,22 @@ static bool ShouldDiagnoseUnusedDecl(const NamedDecl *D) {
 
   if (isa<LabelDecl>(D))
     return true;
+
+  // Except for labels, we only care about unused decls that are local to
+  // functions.
+  bool WithinFunction = D->getDeclContext()->isFunctionOrMethod();
+  if (const auto *R = dyn_cast<CXXRecordDecl>(D->getDeclContext()))
+    // For dependent types, the diagnostic is deferred.
+    WithinFunction =
+        WithinFunction || (R->isLocalClass() && !R->isDependentType());
+  if (!WithinFunction)
+    return false;
+
+  if (isa<TypedefNameDecl>(D))
+    return true;
   
   // White-list anything that isn't a local variable.
-  if (!isa<VarDecl>(D) || isa<ParmVarDecl>(D) || isa<ImplicitParamDecl>(D) ||
-      !D->getDeclContext()->isFunctionOrMethod())
+  if (!isa<VarDecl>(D) || isa<ParmVarDecl>(D) || isa<ImplicitParamDecl>(D))
     return false;
 
   // Types of valid local variables should be complete, so this should succeed.
@@ -1461,11 +1478,30 @@ static void GenerateFixForUnusedDecl(const NamedDecl *D, ASTContext &Ctx,
   return;
 }
 
+void Sema::DiagnoseUnusedNestedTypedefs(const RecordDecl *D) {
+  if (D->getTypeForDecl()->isDependentType())
+    return;
+
+  for (auto *TmpD : D->decls()) {
+    if (const auto *T = dyn_cast<TypedefNameDecl>(TmpD))
+      DiagnoseUnusedDecl(T);
+    else if(const auto *R = dyn_cast<RecordDecl>(TmpD))
+      DiagnoseUnusedNestedTypedefs(R);
+  }
+}
+
 /// DiagnoseUnusedDecl - Emit warnings about declarations that are not used
 /// unless they are marked attr(unused).
 void Sema::DiagnoseUnusedDecl(const NamedDecl *D) {
   if (!ShouldDiagnoseUnusedDecl(D))
     return;
+
+  if (auto *TD = dyn_cast<TypedefNameDecl>(D)) {
+    // typedefs can be referenced later on, so the diagnostics are emitted
+    // at end-of-translation-unit.
+    UnusedLocalTypedefNameCandidates.insert(TD);
+    return;
+  }
   
   FixItHint Hint;
   GenerateFixForUnusedDecl(D, Context, Hint);
@@ -1484,8 +1520,14 @@ void Sema::DiagnoseUnusedDecl(const NamedDecl *D) {
 static void CheckPoppedLabel(LabelDecl *L, Sema &S) {
   // Verify that we have no forward references left.  If so, there was a goto
   // or address of a label taken, but no definition of it.  Label fwd
-  // definitions are indicated with a null substmt.
-  if (L->getStmt() == nullptr)
+  // definitions are indicated with a null substmt which is also not a resolved
+  // MS inline assembly label name.
+  bool Diagnose = false;
+  if (L->isMSAsmLabel())
+    Diagnose = !L->isResolvedMSAsmLabel();
+  else
+    Diagnose = L->getStmt() == nullptr;
+  if (Diagnose)
     S.Diag(L->getLocation(), diag::err_undeclared_label_use) <<L->getDeclName();
 }
 
@@ -1505,8 +1547,11 @@ void Sema::ActOnPopScope(SourceLocation Loc, Scope *S) {
     if (!D->getDeclName()) continue;
 
     // Diagnose unused variables in this scope.
-    if (!S->hasUnrecoverableErrorOccurred())
+    if (!S->hasUnrecoverableErrorOccurred()) {
       DiagnoseUnusedDecl(D);
+      if (const auto *RD = dyn_cast<RecordDecl>(D))
+        DiagnoseUnusedNestedTypedefs(RD);
+    }
     
     // If this was a forward reference to a label, verify it was defined.
     if (LabelDecl *LD = dyn_cast<LabelDecl>(D))
@@ -1623,32 +1668,30 @@ static StringRef getHeaderName(ASTContext::GetBuiltinTypeError Error) {
 /// file scope.  lazily create a decl for it. ForRedeclaration is true
 /// if we're creating this built-in in anticipation of redeclaring the
 /// built-in.
-NamedDecl *Sema::LazilyCreateBuiltin(IdentifierInfo *II, unsigned bid,
+NamedDecl *Sema::LazilyCreateBuiltin(IdentifierInfo *II, unsigned ID,
                                      Scope *S, bool ForRedeclaration,
                                      SourceLocation Loc) {
   LookupPredefedObjCSuperType(*this, S, II);
-  
-  Builtin::ID BID = (Builtin::ID)bid;
 
   ASTContext::GetBuiltinTypeError Error;
-  QualType R = Context.GetBuiltinType(BID, Error);
+  QualType R = Context.GetBuiltinType(ID, Error);
   if (Error) {
     if (ForRedeclaration)
       Diag(Loc, diag::warn_implicit_decl_requires_sysheader)
           << getHeaderName(Error)
-          << Context.BuiltinInfo.GetName(BID);
+          << Context.BuiltinInfo.GetName(ID);
     return nullptr;
   }
 
-  if (!ForRedeclaration && Context.BuiltinInfo.isPredefinedLibFunction(BID)) {
+  if (!ForRedeclaration && Context.BuiltinInfo.isPredefinedLibFunction(ID)) {
     Diag(Loc, diag::ext_implicit_lib_function_decl)
-      << Context.BuiltinInfo.GetName(BID)
+      << Context.BuiltinInfo.GetName(ID)
       << R;
-    if (Context.BuiltinInfo.getHeaderName(BID) &&
+    if (Context.BuiltinInfo.getHeaderName(ID) &&
         !Diags.isIgnored(diag::ext_implicit_lib_function_decl, Loc))
       Diag(Loc, diag::note_include_header_or_declare)
-          << Context.BuiltinInfo.getHeaderName(BID)
-          << Context.BuiltinInfo.GetName(BID);
+          << Context.BuiltinInfo.getHeaderName(ID)
+          << Context.BuiltinInfo.GetName(ID);
   }
 
   DeclContext *Parent = Context.getTranslationUnitDecl();
@@ -4032,13 +4075,16 @@ Decl *Sema::BuildMicrosoftCAnonymousStruct(Scope *S, DeclSpec &DS,
   TypeSourceInfo *TInfo = GetTypeForDeclarator(Dc, S);
   assert(TInfo && "couldn't build declarator info for anonymous struct");
 
+  auto *ParentDecl = cast<RecordDecl>(CurContext);
+  QualType RecTy = Context.getTypeDeclType(Record);
+
   // Create a declaration for this anonymous struct.
   NamedDecl *Anon = FieldDecl::Create(Context,
-                             cast<RecordDecl>(CurContext),
+                             ParentDecl,
                              DS.getLocStart(),
                              DS.getLocStart(),
                              /*IdentifierInfo=*/nullptr,
-                             Context.getTypeDeclType(Record),
+                             RecTy,
                              TInfo,
                              /*BitWidth=*/nullptr, /*Mutable=*/false,
                              /*InitStyle=*/ICIS_NoInit);
@@ -4054,10 +4100,13 @@ Decl *Sema::BuildMicrosoftCAnonymousStruct(Scope *S, DeclSpec &DS,
   Chain.push_back(Anon);
 
   RecordDecl *RecordDef = Record->getDefinition();
-  if (!RecordDef || InjectAnonymousStructOrUnionMembers(*this, S, CurContext,
-                                                        RecordDef, AS_none,
-                                                        Chain, true))
+  if (RequireCompleteType(Anon->getLocation(), RecTy,
+                          diag::err_field_incomplete) ||
+      InjectAnonymousStructOrUnionMembers(*this, S, CurContext, RecordDef,
+                                          AS_none, Chain, true)) {
     Anon->setInvalidDecl();
+    ParentDecl->setInvalidDecl();
+  }
 
   return Anon;
 }
@@ -5050,14 +5099,7 @@ static void checkAttributesAfterMerging(Sema &S, NamedDecl &ND) {
   }
 
   // dll attributes require external linkage.
-  if (const DLLImportAttr *Attr = ND.getAttr<DLLImportAttr>()) {
-    if (!ND.isExternallyVisible()) {
-      S.Diag(ND.getLocation(), diag::err_attribute_dll_not_extern)
-        << &ND << Attr;
-      ND.setInvalidDecl();
-    }
-  }
-  if (const DLLExportAttr *Attr = ND.getAttr<DLLExportAttr>()) {
+  if (const InheritableAttr *Attr = getDLLAttr(&ND)) {
     if (!ND.isExternallyVisible()) {
       S.Diag(ND.getLocation(), diag::err_attribute_dll_not_extern)
         << &ND << Attr;
@@ -7897,15 +7939,19 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
 
   // Semantic checking for this function declaration (in isolation).
 
-  // Diagnose the use of X86 fastcall on unprototyped functions.
+  // Diagnose the use of callee-cleanup calls on unprototyped functions.
   QualType NewQType = Context.getCanonicalType(NewFD->getType());
   const FunctionType *NewType = cast<FunctionType>(NewQType);
   if (isa<FunctionNoProtoType>(NewType)) {
     FunctionType::ExtInfo NewTypeInfo = NewType->getExtInfo();
-    if (NewTypeInfo.getCC() == CC_X86FastCall)
-      Diag(NewFD->getLocation(), diag::err_cconv_knr)
-          << FunctionType::getNameForCallConv(CC_X86FastCall);
-    // TODO: Also diagnose unprototyped stdcall functions?
+    if (isCalleeCleanup(NewTypeInfo.getCC())) {
+      // Windows system headers sometimes accidentally use stdcall without
+      // (void) parameters, so use a default-error warning in this case :-/
+      int DiagID = NewTypeInfo.getCC() == CC_X86StdCall
+          ? diag::warn_cconv_knr : diag::err_cconv_knr;
+      Diag(NewFD->getLocation(), DiagID)
+          << FunctionType::getNameForCallConv(NewTypeInfo.getCC());
+    }
   }
 
   if (getLangOpts().CPlusPlus) {
@@ -8190,6 +8236,8 @@ namespace {
     bool isPODType;
     bool isReferenceType;
 
+    bool isInitList;
+    llvm::SmallVector<unsigned, 4> InitFieldIndex;
   public:
     typedef EvaluatedExprVisitor<SelfReferenceChecker> Inherited;
 
@@ -8198,6 +8246,7 @@ namespace {
       isPODType = false;
       isRecordType = false;
       isReferenceType = false;
+      isInitList = false;
       if (ValueDecl *VD = dyn_cast<ValueDecl>(OrigDecl)) {
         isPODType = VD->getType().isPODType(S.Context);
         isRecordType = VD->getType()->isRecordType();
@@ -8205,12 +8254,82 @@ namespace {
       }
     }
 
+    // For most expressions, just call the visitor.  For initializer lists,
+    // track the index of the field being initialized since fields are
+    // initialized in order allowing use of previously initialized fields.
+    void CheckExpr(Expr *E) {
+      InitListExpr *InitList = dyn_cast<InitListExpr>(E);
+      if (!InitList) {
+        Visit(E);
+        return;
+      }
+
+      // Track and increment the index here.
+      isInitList = true;
+      InitFieldIndex.push_back(0);
+      for (auto Child : InitList->children()) {
+        CheckExpr(cast<Expr>(Child));
+        ++InitFieldIndex.back();
+      }
+      InitFieldIndex.pop_back();
+    }
+
+    // Returns true if MemberExpr is checked and no futher checking is needed.
+    // Returns false if additional checking is required.
+    bool CheckInitListMemberExpr(MemberExpr *E, bool CheckReference) {
+      llvm::SmallVector<FieldDecl*, 4> Fields;
+      Expr *Base = E;
+      bool ReferenceField = false;
+
+      // Get the field memebers used.
+      while (MemberExpr *ME = dyn_cast<MemberExpr>(Base)) {
+        FieldDecl *FD = dyn_cast<FieldDecl>(ME->getMemberDecl());
+        if (!FD)
+          return false;
+        Fields.push_back(FD);
+        if (FD->getType()->isReferenceType())
+          ReferenceField = true;
+        Base = ME->getBase()->IgnoreParenImpCasts();
+      }
+
+      // Keep checking only if the base Decl is the same.
+      DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Base);
+      if (!DRE || DRE->getDecl() != OrigDecl)
+        return false;
+
+      // A reference field can be bound to an unininitialized field.
+      if (CheckReference && !ReferenceField)
+        return true;
+
+      // Convert FieldDecls to their index number.
+      llvm::SmallVector<unsigned, 4> UsedFieldIndex;
+      for (auto I = Fields.rbegin(), E = Fields.rend(); I != E; ++I) {
+        UsedFieldIndex.push_back((*I)->getFieldIndex());
+      }
+
+      // See if a warning is needed by checking the first difference in index
+      // numbers.  If field being used has index less than the field being
+      // initialized, then the use is safe.
+      for (auto UsedIter = UsedFieldIndex.begin(),
+                UsedEnd = UsedFieldIndex.end(),
+                OrigIter = InitFieldIndex.begin(),
+                OrigEnd = InitFieldIndex.end();
+           UsedIter != UsedEnd && OrigIter != OrigEnd; ++UsedIter, ++OrigIter) {
+        if (*UsedIter < *OrigIter)
+          return true;
+        if (*UsedIter > *OrigIter)
+          break;
+      }
+
+      // TODO: Add a different warning which will print the field names.
+      HandleDeclRefExpr(DRE);
+      return true;
+    }
+
     // For most expressions, the cast is directly above the DeclRefExpr.
     // For conditional operators, the cast can be outside the conditional
     // operator if both expressions are DeclRefExpr's.
     void HandleValue(Expr *E) {
-      if (isReferenceType)
-        return;
       E = E->IgnoreParens();
       if (DeclRefExpr* DRE = dyn_cast<DeclRefExpr>(E)) {
         HandleDeclRefExpr(DRE);
@@ -8218,6 +8337,7 @@ namespace {
       }
 
       if (ConditionalOperator *CO = dyn_cast<ConditionalOperator>(E)) {
+        Visit(CO->getCond());
         HandleValue(CO->getTrueExpr());
         HandleValue(CO->getFalseExpr());
         return;
@@ -8225,6 +8345,7 @@ namespace {
 
       if (BinaryConditionalOperator *BCO =
               dyn_cast<BinaryConditionalOperator>(E)) {
+        Visit(BCO->getCond());
         HandleValue(BCO->getFalseExpr());
         return;
       }
@@ -8235,12 +8356,20 @@ namespace {
       }
 
       if (BinaryOperator *BO = dyn_cast<BinaryOperator>(E)) {
-        if (BO->getOpcode() == BO_Comma)
+        if (BO->getOpcode() == BO_Comma) {
+          Visit(BO->getLHS());
           HandleValue(BO->getRHS());
-        return;
+          return;
+        }
       }
 
       if (isa<MemberExpr>(E)) {
+        if (isInitList) {
+          if (CheckInitListMemberExpr(cast<MemberExpr>(E),
+                                      false /*CheckReference*/))
+            return;
+        }
+
         Expr *Base = E->IgnoreParenImpCasts();
         while (MemberExpr *ME = dyn_cast<MemberExpr>(Base)) {
           // Check for static member variables and don't warn on them.
@@ -8252,24 +8381,32 @@ namespace {
           HandleDeclRefExpr(DRE);
         return;
       }
+
+      Visit(E);
     }
 
-    // Reference types are handled here since all uses of references are
-    // bad, not just r-value uses.
+    // Reference types not handled in HandleValue are handled here since all
+    // uses of references are bad, not just r-value uses.
     void VisitDeclRefExpr(DeclRefExpr *E) {
       if (isReferenceType)
         HandleDeclRefExpr(E);
     }
 
     void VisitImplicitCastExpr(ImplicitCastExpr *E) {
-      if (E->getCastKind() == CK_LValueToRValue ||
-          (isRecordType && E->getCastKind() == CK_NoOp))
+      if (E->getCastKind() == CK_LValueToRValue) {
         HandleValue(E->getSubExpr());
+        return;
+      }
 
       Inherited::VisitImplicitCastExpr(E);
     }
 
     void VisitMemberExpr(MemberExpr *E) {
+      if (isInitList) {
+        if (CheckInitListMemberExpr(E, true /*CheckReference*/))
+          return;
+      }
+
       // Don't warn on arrays since they can be treated as pointers.
       if (E->getType()->canDecayToPointerType()) return;
 
@@ -8311,6 +8448,12 @@ namespace {
           HandleValue(E->getSubExpr());
         return;
       }
+
+      if (E->isIncrementDecrementOp()) {
+        HandleValue(E->getSubExpr());
+        return;
+      }
+
       Inherited::VisitUnaryOperator(E);
     }
 
@@ -8318,9 +8461,15 @@ namespace {
 
     void VisitCXXConstructExpr(CXXConstructExpr *E) {
       if (E->getConstructor()->isCopyConstructor()) {
-        if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E->getArg(0))) {
-          HandleDeclRefExpr(DRE);
-        }
+        Expr *ArgExpr = E->getArg(0);
+        if (InitListExpr *ILE = dyn_cast<InitListExpr>(ArgExpr))
+          if (ILE->getNumInits() == 1)
+            ArgExpr = ILE->getInit(0);
+        if (ImplicitCastExpr *ICE = dyn_cast<ImplicitCastExpr>(ArgExpr))
+          if (ICE->getCastKind() == CK_NoOp)
+            ArgExpr = ICE->getSubExpr();
+        HandleValue(ArgExpr);
+        return;
       }
       Inherited::VisitCXXConstructExpr(E);
     }
@@ -8331,11 +8480,30 @@ namespace {
         if (FunctionDecl *FD = E->getDirectCallee()) {
           if (FD->getIdentifier() && FD->getIdentifier()->isStr("move")) {
             HandleValue(E->getArg(0));
+            return;
           }
         }
       }
 
       Inherited::VisitCallExpr(E);
+    }
+
+    void VisitBinaryOperator(BinaryOperator *E) {
+      if (E->isCompoundAssignmentOp()) {
+        HandleValue(E->getLHS());
+        Visit(E->getRHS());
+        return;
+      }
+
+      Inherited::VisitBinaryOperator(E);
+    }
+
+    // A custom visitor for BinaryConditionalOperator is needed because the
+    // regular visitor would check the condition and true expression separately
+    // but both point to the same place giving duplicate diagnostics.
+    void VisitBinaryConditionalOperator(BinaryConditionalOperator *E) {
+      Visit(E->getCond());
+      Visit(E->getFalseExpr());
     }
 
     void HandleDeclRefExpr(DeclRefExpr *DRE) {
@@ -8377,7 +8545,7 @@ namespace {
             if (DRE->getDecl() == OrigDecl)
               return;
 
-    SelfReferenceChecker(S, OrigDecl).Visit(E);
+    SelfReferenceChecker(S, OrigDecl).CheckExpr(E);
   }
 }
 
@@ -9362,8 +9530,11 @@ Sema::FinalizeDeclaration(Decl *ThisDecl) {
     }
   }
 
+  // Grab the dllimport or dllexport attribute off of the VarDecl.
+  const InheritableAttr *DLLAttr = getDLLAttr(VD);
+
   // Imported static data members cannot be defined out-of-line.
-  if (const DLLImportAttr *IA = VD->getAttr<DLLImportAttr>()) {
+  if (const auto *IA = dyn_cast_or_null<DLLImportAttr>(DLLAttr)) {
     if (VD->isStaticDataMember() && VD->isOutOfLine() &&
         VD->isThisDeclarationADefinition()) {
       // We allow definitions of dllimport class template static data members
@@ -9382,6 +9553,14 @@ Sema::FinalizeDeclaration(Decl *ThisDecl) {
       if (!IsClassTemplateMember)
         VD->setInvalidDecl();
     }
+  }
+
+  // dllimport/dllexport variables cannot be thread local, their TLS index
+  // isn't exported with the variable.
+  if (DLLAttr && VD->getTLSKind()) {
+    Diag(VD->getLocation(), diag::err_attribute_dll_thread_local) << VD
+                                                                  << DLLAttr;
+    VD->setInvalidDecl();
   }
 
   if (UsedAttr *Attr = VD->getAttr<UsedAttr>()) {
@@ -9959,6 +10138,7 @@ static void RebuildLambdaScopeInfo(CXXMethodDecl *CallOperator,
 
   // Add the captures to the LSI so they can be noted as already
   // captured within tryCaptureVar. 
+  auto I = LambdaClass->field_begin();
   for (const auto &C : LambdaClass->captures()) {
     if (C.capturesVariable()) {
       VarDecl *VD = C.getCapturedVar();
@@ -9975,7 +10155,10 @@ static void RebuildLambdaScopeInfo(CXXMethodDecl *CallOperator,
     } else if (C.capturesThis()) {
       LSI->addThisCapture(/*Nested*/ false, C.getLocation(), 
                               S.getCurrentThisType(), /*Expr*/ nullptr);
+    } else {
+      LSI->addVLATypeCapture(C.getLocation(), I->getType());
     }
+    ++I;
   }
 }
 
@@ -10373,6 +10556,17 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
         (!CheckConstexprFunctionDecl(FD) ||
          !CheckConstexprFunctionBody(FD, Body)))
       FD->setInvalidDecl();
+
+    if (FD && FD->hasAttr<NakedAttr>()) {
+      for (const Stmt *S : Body->children()) {
+        if (!isa<AsmStmt>(S) && !isa<NullStmt>(S)) {
+          Diag(S->getLocStart(), diag::err_non_asm_stmt_in_naked_function);
+          Diag(FD->getAttr<NakedAttr>()->getLocation(), diag::note_attribute);
+          FD->setInvalidDecl();
+          break;
+        }
+      }
+    }
 
     assert(ExprCleanupObjects.empty() && "Leftover temporaries in function");
     assert(!ExprNeedsCleanups && "Unaccounted cleanups in function");
@@ -12539,8 +12733,7 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
         continue;
       }
       // Okay, we have a legal flexible array member at the end of the struct.
-      if (Record)
-        Record->setHasFlexibleArrayMember(true);
+      Record->setHasFlexibleArrayMember(true);
     } else if (!FDTy->isDependentType() &&
                RequireCompleteType(FD->getLocation(), FD->getType(),
                                    diag::err_field_incomplete)) {
@@ -12549,11 +12742,11 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
       EnclosingDecl->setInvalidDecl();
       continue;
     } else if (const RecordType *FDTTy = FDTy->getAs<RecordType>()) {
-      if (FDTTy->getDecl()->hasFlexibleArrayMember()) {
-        // If this is a member of a union, then entire union becomes "flexible".
-        if (Record && Record->isUnion()) {
-          Record->setHasFlexibleArrayMember(true);
-        } else {
+      if (Record && FDTTy->getDecl()->hasFlexibleArrayMember()) {
+        // A type which contains a flexible array member is considered to be a
+        // flexible array member.
+        Record->setHasFlexibleArrayMember(true);
+        if (!Record->isUnion()) {
           // If this is a struct/class and this is not the last element, reject
           // it.  Note that GCC supports variable sized arrays in the middle of
           // structures.
@@ -12565,8 +12758,6 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
             // other structs as an extension.
             Diag(FD->getLocation(), diag::ext_flexible_array_in_struct)
               << FD->getDeclName();
-            if (Record)
-              Record->setHasFlexibleArrayMember(true);
           }
         }
       }

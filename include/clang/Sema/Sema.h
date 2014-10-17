@@ -389,6 +389,10 @@ public:
   /// \brief Set containing all declared private fields that are not used.
   NamedDeclSetType UnusedPrivateFields;
 
+  /// \brief Set containing all typedefs that are likely unused.
+  llvm::SmallSetVector<const TypedefNameDecl *, 4>
+      UnusedLocalTypedefNameCandidates;
+
   typedef llvm::SmallPtrSet<const CXXRecordDecl*, 8> RecordDeclSetTy;
 
   /// PureVirtualClassDiagSet - a set of class declarations which we have
@@ -695,7 +699,10 @@ public:
 
   /// \brief will hold 'respondsToSelector:'
   Selector RespondsToSelectorSel;
-  
+
+  /// \brief counter for internal MS Asm label names.
+  unsigned MSAsmLabelNameCounter;
+
   /// A flag to remember whether the implicit forms of operator new and delete
   /// have been declared.
   bool GlobalNewDeleteDeclared;
@@ -1047,6 +1054,8 @@ public:
 
   /// \brief Retrieve the module loader associated with the preprocessor.
   ModuleLoader &getModuleLoader() const;
+
+  void emitAndClearUnusedLocalTypedefWarnings();
 
   void ActOnEndOfTranslationUnit();
 
@@ -2607,6 +2616,7 @@ public:
   ObjCProtocolDecl *LookupProtocol(IdentifierInfo *II, SourceLocation IdLoc,
                                    RedeclarationKind Redecl
                                      = NotForRedeclaration);
+  bool LookupInSuper(LookupResult &R, CXXRecordDecl *Class);
 
   void LookupOverloadedOperatorName(OverloadedOperatorKind Op, Scope *S,
                                     QualType T1, QualType T2,
@@ -2705,8 +2715,11 @@ public:
 
   void checkUnusedDeclAttributes(Declarator &D);
 
-  /// Determine if type T is a valid subject for a nonnull attribute.
-  bool isValidNonNullAttrType(QualType T);
+  /// Determine if type T is a valid subject for a nonnull and similar
+  /// attributes. By default, we look through references (the behavior used by
+  /// nonnull), but if the second parameter is true, then we treat a reference
+  /// type as valid.
+  bool isValidPointerAttrType(QualType T, bool RefOkay = false);
 
   bool CheckRegparmAttr(const AttributeList &attr, unsigned &value);
   bool CheckCallingConvAttr(const AttributeList &attr, CallingConv &CC, 
@@ -3150,6 +3163,9 @@ public:
                             ArrayRef<StringRef> Clobbers,
                             ArrayRef<Expr*> Exprs,
                             SourceLocation EndLoc);
+  LabelDecl *GetOrCreateMSAsmLabel(StringRef ExternalLabelName,
+                                   SourceLocation Location,
+                                   bool AlwaysCreate);
 
   VarDecl *BuildObjCExceptionDecl(TypeSourceInfo *TInfo, QualType ExceptionType,
                                   SourceLocation StartLoc,
@@ -3209,6 +3225,7 @@ public:
   /// DiagnoseUnusedExprResult - If the statement passed in is an expression
   /// whose result is unused, warn.
   void DiagnoseUnusedExprResult(const Stmt *S);
+  void DiagnoseUnusedNestedTypedefs(const RecordDecl *D);
   void DiagnoseUnusedDecl(const NamedDecl *ND);
 
   /// Emit \p DiagID if statement located on \p StmtLoc has a suspicious null
@@ -4469,16 +4486,26 @@ public:
 
   /// \brief The parser has parsed a global nested-name-specifier '::'.
   ///
-  /// \param S The scope in which this nested-name-specifier occurs.
-  ///
   /// \param CCLoc The location of the '::'.
   ///
   /// \param SS The nested-name-specifier, which will be updated in-place
   /// to reflect the parsed nested-name-specifier.
   ///
   /// \returns true if an error occurred, false otherwise.
-  bool ActOnCXXGlobalScopeSpecifier(Scope *S, SourceLocation CCLoc,
-                                    CXXScopeSpec &SS);
+  bool ActOnCXXGlobalScopeSpecifier(SourceLocation CCLoc, CXXScopeSpec &SS);
+
+  /// \brief The parser has parsed a '__super' nested-name-specifier.
+  ///
+  /// \param SuperLoc The location of the '__super' keyword.
+  ///
+  /// \param ColonColonLoc The location of the '::'.
+  ///
+  /// \param SS The nested-name-specifier, which will be updated in-place
+  /// to reflect the parsed nested-name-specifier.
+  ///
+  /// \returns true if an error occurred, false otherwise.
+  bool ActOnSuperScopeSpecifier(SourceLocation SuperLoc,
+                                SourceLocation ColonColonLoc, CXXScopeSpec &SS);
 
   bool isAcceptableNestedNameSpecifier(const NamedDecl *SD);
   NamedDecl *FindFirstQualifierInScope(Scope *S, NestedNameSpecifier *NNS);
@@ -7213,10 +7240,10 @@ public:
   };
 
   llvm::StringMap<SectionInfo> SectionInfos;
-  bool UnifySection(const StringRef &SectionName, 
+  bool UnifySection(StringRef SectionName,
                     int SectionFlags,
                     DeclaratorDecl *TheDecl);
-  bool UnifySection(const StringRef &SectionName,
+  bool UnifySection(StringRef SectionName,
                     int SectionFlags,
                     SourceLocation PragmaSectionLocation);
 
@@ -7331,6 +7358,16 @@ public:
   void AddAlignedAttr(SourceRange AttrRange, Decl *D, TypeSourceInfo *T,
                       unsigned SpellingListIndex, bool IsPackExpansion);
 
+  /// AddAssumeAlignedAttr - Adds an assume_aligned attribute to a particular
+  /// declaration.
+  void AddAssumeAlignedAttr(SourceRange AttrRange, Decl *D, Expr *E, Expr *OE,
+                            unsigned SpellingListIndex);
+
+  /// AddAlignValueAttr - Adds an align_value attribute to a particular
+  /// declaration.
+  void AddAlignValueAttr(SourceRange AttrRange, Decl *D, Expr *E,
+                         unsigned SpellingListIndex);
+
   // OpenMP directives and clauses.
 private:
   void *VarDataSharingAttributesStack;
@@ -7390,6 +7427,12 @@ public:
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
       SourceLocation EndLoc,
       llvm::DenseMap<VarDecl *, Expr *> &VarsWithImplicitDSA);
+  /// \brief Called on well-formed '\#pragma omp for simd' after parsing
+  /// of the associated statement.
+  StmtResult ActOnOpenMPForSimdDirective(
+      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
+      SourceLocation EndLoc,
+      llvm::DenseMap<VarDecl *, Expr *> &VarsWithImplicitDSA);
   /// \brief Called on well-formed '\#pragma omp sections' after parsing
   /// of the associated statement.
   StmtResult ActOnOpenMPSectionsDirective(ArrayRef<OMPClause *> Clauses,
@@ -7416,6 +7459,12 @@ public:
   /// \brief Called on well-formed '\#pragma omp parallel for' after parsing
   /// of the  associated statement.
   StmtResult ActOnOpenMPParallelForDirective(
+      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
+      SourceLocation EndLoc,
+      llvm::DenseMap<VarDecl *, Expr *> &VarsWithImplicitDSA);
+  /// \brief Called on well-formed '\#pragma omp parallel for simd' after
+  /// parsing of the  associated statement.
+  StmtResult ActOnOpenMPParallelForSimdDirective(
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
       SourceLocation EndLoc,
       llvm::DenseMap<VarDecl *, Expr *> &VarsWithImplicitDSA);
@@ -7452,6 +7501,16 @@ public:
   StmtResult ActOnOpenMPAtomicDirective(ArrayRef<OMPClause *> Clauses,
                                         Stmt *AStmt, SourceLocation StartLoc,
                                         SourceLocation EndLoc);
+  /// \brief Called on well-formed '\#pragma omp target' after parsing of the
+  /// associated statement.
+  StmtResult ActOnOpenMPTargetDirective(ArrayRef<OMPClause *> Clauses,
+                                        Stmt *AStmt, SourceLocation StartLoc,
+                                        SourceLocation EndLoc);
+  /// \brief Called on well-formed '\#pragma omp teams' after parsing of the
+  /// associated statement.
+  StmtResult ActOnOpenMPTeamsDirective(ArrayRef<OMPClause *> Clauses,
+                                       Stmt *AStmt, SourceLocation StartLoc,
+                                       SourceLocation EndLoc);
 
   OMPClause *ActOnOpenMPSingleExprClause(OpenMPClauseKind Kind,
                                          Expr *Expr,
@@ -7687,6 +7746,7 @@ public:
     VAK_Valid,
     VAK_ValidInCXX11,
     VAK_Undefined,
+    VAK_MSVCUndefined,
     VAK_Invalid
   };
 
@@ -8140,7 +8200,8 @@ public:
     CFT_Device,
     CFT_Global,
     CFT_Host,
-    CFT_HostDevice
+    CFT_HostDevice,
+    CFT_InvalidTarget
   };
 
   CUDAFunctionTarget IdentifyCUDATarget(const FunctionDecl *D);
@@ -8148,10 +8209,24 @@ public:
   bool CheckCUDATarget(CUDAFunctionTarget CallerTarget,
                        CUDAFunctionTarget CalleeTarget);
 
-  bool CheckCUDATarget(const FunctionDecl *Caller, const FunctionDecl *Callee) {
-    return CheckCUDATarget(IdentifyCUDATarget(Caller),
-                           IdentifyCUDATarget(Callee));
-  }
+  bool CheckCUDATarget(const FunctionDecl *Caller, const FunctionDecl *Callee);
+
+  /// Given a implicit special member, infer its CUDA target from the
+  /// calls it needs to make to underlying base/field special members.
+  /// \param ClassDecl the class for which the member is being created.
+  /// \param CSM the kind of special member.
+  /// \param MemberDecl the special member itself.
+  /// \param ConstRHS true if this is a copy operation with a const object on
+  ///        its RHS.
+  /// \param Diagnose true if this call should emit diagnostics.
+  /// \return true if there was an error inferring.
+  /// The result of this call is implicit CUDA target attribute(s) attached to
+  /// the member declaration.
+  bool inferCUDATargetForImplicitSpecialMember(CXXRecordDecl *ClassDecl,
+                                               CXXSpecialMember CSM,
+                                               CXXMethodDecl *MemberDecl,
+                                               bool ConstRHS,
+                                               bool Diagnose);
 
   /// \name Code completion
   //@{
@@ -8342,7 +8417,8 @@ private:
 
   bool CheckObjCString(Expr *Arg);
 
-  ExprResult CheckBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
+  ExprResult CheckBuiltinFunctionCall(FunctionDecl *FDecl,
+		                      unsigned BuiltinID, CallExpr *TheCall);
 
   bool CheckARMBuiltinExclusiveCall(unsigned BuiltinID, CallExpr *TheCall,
                                     unsigned MaxWidth);
@@ -8368,6 +8444,7 @@ public:
 private:
   bool SemaBuiltinPrefetch(CallExpr *TheCall);
   bool SemaBuiltinAssume(CallExpr *TheCall);
+  bool SemaBuiltinAssumeAligned(CallExpr *TheCall);
   bool SemaBuiltinLongjmp(CallExpr *TheCall);
   ExprResult SemaBuiltinAtomicOverloaded(ExprResult TheCallResult);
   ExprResult SemaAtomicOpsOverloaded(ExprResult TheCallResult,
@@ -8395,6 +8472,10 @@ public:
                          FormatStringType Type, bool inFunctionCall,
                          VariadicCallType CallType,
                          llvm::SmallBitVector &CheckedVarArgs);
+  
+  bool FormatStringHasSArg(const StringLiteral *FExpr);
+  
+  bool GetFormatNSStringIdx(const FormatAttr *Format, unsigned &Idx);
 
 private:
   bool CheckFormatArguments(const FormatAttr *Format,

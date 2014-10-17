@@ -54,7 +54,7 @@ using llvm::SmallPtrSet;
 
 #define DEBUG_TYPE "AnalysisConsumer"
 
-static ExplodedNode::Auditor* CreateUbiViz();
+static std::unique_ptr<ExplodedNode::Auditor> CreateUbiViz();
 
 STATISTIC(NumFunctionTopLevel, "The # of functions at top level.");
 STATISTIC(NumFunctionsAnalyzed,
@@ -289,18 +289,12 @@ public:
 
   void Initialize(ASTContext &Context) override {
     Ctx = &Context;
-    checkerMgr.reset(createCheckerManager(*Opts, PP.getLangOpts(), Plugins,
-                                          PP.getDiagnostics()));
+    checkerMgr = createCheckerManager(*Opts, PP.getLangOpts(), Plugins,
+                                      PP.getDiagnostics());
 
-    Mgr.reset(new AnalysisManager(*Ctx,
-                                  PP.getDiagnostics(),
-                                  PP.getLangOpts(),
-                                  PathConsumers,
-                                  CreateStoreMgr,
-                                  CreateConstraintMgr,
-                                  checkerMgr.get(),
-                                  *Opts,
-                                  Injector));
+    Mgr = llvm::make_unique<AnalysisManager>(
+        *Ctx, PP.getDiagnostics(), PP.getLangOpts(), PathConsumers,
+        CreateStoreMgr, CreateConstraintMgr, checkerMgr.get(), *Opts, Injector);
   }
 
   /// \brief Store the top level decls in the set to be processed later on.
@@ -314,7 +308,7 @@ public:
   /// analyzed. This allows to redefine the default inlining policies when
   /// analyzing a given function.
   ExprEngine::InliningModes
-  getInliningModeForFunction(const Decl *D, const SetOfConstDecls &Visited);
+    getInliningModeForFunction(const Decl *D, const SetOfConstDecls &Visited);
 
   /// \brief Build the call graph for all the top level decls of this TU and
   /// use it to define the order in which the functions should be visited.
@@ -513,6 +507,11 @@ void AnalysisConsumer::HandleTranslationUnit(ASTContext &C) {
   if (Diags.hasErrorOccurred() || Diags.hasFatalErrorOccurred())
     return;
 
+  // Don't analyze if the user explicitly asked for no checks to be performed
+  // on this file.
+  if (Opts->DisableAllChecks)
+    return;
+
   {
     if (TUTotalTimer) TUTotalTimer->startTimer();
 
@@ -650,7 +649,7 @@ void AnalysisConsumer::ActionExprEngine(Decl *D, bool ObjCGCEnabled,
   // Set the graph auditor.
   std::unique_ptr<ExplodedNode::Auditor> Auditor;
   if (Mgr->options.visualizeExplodedGraphWithUbiGraph) {
-    Auditor.reset(CreateUbiViz());
+    Auditor = CreateUbiViz();
     ExplodedNode::SetAuditor(Auditor.get());
   }
 
@@ -732,7 +731,7 @@ public:
 
 } // end anonymous namespace
 
-static ExplodedNode::Auditor* CreateUbiViz() {
+static std::unique_ptr<ExplodedNode::Auditor> CreateUbiViz() {
   SmallString<128> P;
   int FD;
   llvm::sys::fs::createTemporaryFile("llvm_ubi", "", FD, P);
@@ -740,7 +739,7 @@ static ExplodedNode::Auditor* CreateUbiViz() {
 
   auto Stream = llvm::make_unique<llvm::raw_fd_ostream>(FD, true);
 
-  return new UbigraphViz(std::move(Stream), P);
+  return llvm::make_unique<UbigraphViz>(std::move(Stream), P);
 }
 
 void UbigraphViz::AddEdge(ExplodedNode *Src, ExplodedNode *Dst) {

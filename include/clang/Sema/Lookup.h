@@ -424,13 +424,20 @@ public:
         Paths = nullptr;
       }
     } else {
-      AmbiguityKind SavedAK = Ambiguity;
+      AmbiguityKind SavedAK;
+      bool WasAmbiguous = false;
+      if (ResultKind == Ambiguous) {
+        SavedAK = Ambiguity;
+        WasAmbiguous = true;
+      }
       ResultKind = Found;
       resolveKind();
 
       // If we didn't make the lookup unambiguous, restore the old
       // ambiguity kind.
       if (ResultKind == Ambiguous) {
+        (void)WasAmbiguous;
+        assert(WasAmbiguous);
         Ambiguity = SavedAK;
       } else if (Paths) {
         deletePaths(Paths);

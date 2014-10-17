@@ -39,7 +39,7 @@ CodeGenFunction::CodeGenFunction(CodeGenModule &cgm, bool suppressNewContext)
               CGBuilderInserterTy(this)),
       CapturedStmtInfo(nullptr), SanOpts(&CGM.getLangOpts().Sanitize),
       IsSanitizerScope(false), CurFuncIsThunk(false), AutoreleaseResult(false),
-      BlockInfo(nullptr), BlockPointer(nullptr),
+      SawAsmBlock(false), BlockInfo(nullptr), BlockPointer(nullptr),
       LambdaThisCaptureField(nullptr), NormalCleanupDest(nullptr),
       NextCleanupDestIndex(1), FirstBlockInfo(nullptr), EHResumeBlock(nullptr),
       ExceptionSlot(nullptr), EHSelectorSlot(nullptr),
@@ -79,6 +79,17 @@ CodeGenFunction::~CodeGenFunction() {
   }
 }
 
+LValue CodeGenFunction::MakeNaturalAlignAddrLValue(llvm::Value *V, QualType T) {
+  CharUnits Alignment;
+  if (CGM.getCXXABI().isTypeInfoCalculable(T)) {
+    Alignment = getContext().getTypeAlignInChars(T);
+    unsigned MaxAlign = getContext().getLangOpts().MaxTypeAlign;
+    if (MaxAlign && Alignment.getQuantity() > MaxAlign &&
+        !getContext().isAlignmentRequired(T))
+      Alignment = CharUnits::fromQuantity(MaxAlign);
+  }
+  return LValue::MakeAddr(V, T, Alignment, getContext(), CGM.getTBAAInfo(T));
+}
 
 llvm::Type *CodeGenFunction::ConvertTypeForMem(QualType T) {
   return CGM.getTypes().ConvertTypeForMem(T);
@@ -217,6 +228,11 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
     else
       DI->EmitLocation(Builder, EndLoc);
   }
+
+  // Some top level lifetime extended variables may still need
+  // to have their cleanups called.
+  if (!LifetimeExtendedCleanupStack.empty())
+    MoveDeferedCleanups(0);
 
   // Pop any cleanups that might have been associated with the
   // parameters.  Do this in whatever block we're currently in; it's
@@ -691,6 +707,14 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
         CXXThisValue = EmitLoadOfLValue(ThisLValue,
                                         SourceLocation()).getScalarVal();
       }
+      for (auto *FD : MD->getParent()->fields()) {
+        if (FD->hasCapturedVLAType()) {
+          auto *ExprArg = EmitLoadOfLValue(EmitLValueForLambdaField(FD),
+                                           SourceLocation()).getScalarVal();
+          auto VAT = FD->getCapturedVLAType();
+          VLASizeMap[VAT->getSizeExpr()] = ExprArg;
+        }
+      }
     } else {
       // Not in a lambda; just use 'this' from the method.
       // FIXME: Should we generate a new load for each use of 'this'?  The
@@ -870,7 +894,7 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   // C11 6.9.1p12:
   //   If the '}' that terminates a function is reached, and the value of the
   //   function call is used by the caller, the behavior is undefined.
-  if (getLangOpts().CPlusPlus && !FD->hasImplicitReturnZero() &&
+  if (getLangOpts().CPlusPlus && !FD->hasImplicitReturnZero() && !SawAsmBlock &&
       !FD->getReturnType()->isVoidType() && Builder.GetInsertBlock()) {
     if (SanOpts->Return) {
       SanitizerScope SanScope(this);

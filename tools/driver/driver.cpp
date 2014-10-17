@@ -358,8 +358,7 @@ static void SetInstallDir(SmallVectorImpl<const char *> &argv,
   }
   llvm::sys::fs::make_absolute(InstalledPath);
   InstalledPath = llvm::sys::path::parent_path(InstalledPath);
-  bool exists;
-  if (!llvm::sys::fs::exists(InstalledPath.str(), exists) && exists)
+  if (llvm::sys::fs::exists(InstalledPath.c_str()))
     TheDriver.setInstalledDir(InstalledPath);
 }
 
@@ -379,10 +378,13 @@ int main(int argc_, const char **argv_) {
   llvm::sys::PrintStackTraceOnErrorSignal();
   llvm::PrettyStackTraceProgram X(argc_, argv_);
 
+  if (llvm::sys::Process::FixupStandardFileDescriptors())
+    return 1;
+
   SmallVector<const char *, 256> argv;
   llvm::SpecificBumpPtrAllocator<char> ArgAllocator;
   std::error_code EC = llvm::sys::Process::GetArgumentVector(
-      argv, ArrayRef<const char *>(argv_, argc_), ArgAllocator);
+      argv, llvm::makeArrayRef(argv_, argc_), ArgAllocator);
   if (EC) {
     llvm::errs() << "error: couldn't get arguments: " << EC.message() << '\n';
     return 1;

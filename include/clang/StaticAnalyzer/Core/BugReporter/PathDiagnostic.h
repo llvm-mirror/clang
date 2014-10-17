@@ -94,8 +94,8 @@ public:
                                     FilesMade *filesMade) = 0;
 
   virtual StringRef getName() const = 0;
-  
-  void HandlePathDiagnostic(PathDiagnostic *D);
+
+  void HandlePathDiagnostic(std::unique_ptr<PathDiagnostic> D);
 
   enum PathGenerationScheme { None, Minimal, Extensive, AlternateExtensive };
   virtual PathGenerationScheme getGenerationScheme() const { return Minimal; }
@@ -762,11 +762,11 @@ public:
 
   bool isWithinCall() const { return !pathStack.empty(); }
 
-  void setEndOfPath(PathDiagnosticPiece *EndPiece) {
+  void setEndOfPath(std::unique_ptr<PathDiagnosticPiece> EndPiece) {
     assert(!Loc.isValid() && "End location already set!");
     Loc = EndPiece->getLocation();
     assert(Loc.isValid() && "Invalid location for end-of-path piece");
-    getActivePath().push_back(EndPiece);
+    getActivePath().push_back(EndPiece.release());
   }
 
   void appendToDesc(StringRef S) {

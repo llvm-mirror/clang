@@ -233,6 +233,10 @@ module cxx_templates_c {
   header "cxx-templates-c.h"
 }
 
+module cxx_templates_d {
+  header "cxx-templates-d.h"
+}
+
 module cxx_decls {
   module unimported {
     header "cxx-decls-unimported.h"
@@ -240,6 +244,10 @@ module cxx_decls {
   module imported {
     header "cxx-decls-imported.h"
   }
+}
+
+module cxx_decls_premerged {
+  header "cxx-decls-premerged.h"
 }
 
 module cxx_decls_merged {
@@ -282,6 +290,10 @@ module incomplete_mod {
 
 module warning {
   header "warning.h"
+}
+
+module warn_unused_local_typedef {
+  header "warn-unused-local-typedef.h"
 }
 
 module initializer_list {

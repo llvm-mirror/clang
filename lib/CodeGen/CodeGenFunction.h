@@ -113,6 +113,7 @@ class CodeGenFunction : public CodeGenTypeCache {
   void operator=(const CodeGenFunction &) LLVM_DELETED_FUNCTION;
 
   friend class CGCXXABI;
+  friend class CGOpenMPRegionInfo;
 public:
   /// A jump destination is an abstract label, branching to which may
   /// require a jump out through normal cleanups.
@@ -264,6 +265,10 @@ public:
 
   /// In ARC, whether we should autorelease the return value.
   bool AutoreleaseResult;
+
+  /// Whether we processed a Microsoft-style asm block during CodeGen. These can
+  /// potentially set the return value.
+  bool SawAsmBlock;
 
   const CodeGen::CGBlockInfo *BlockInfo;
   llvm::Value *BlockPointer;
@@ -440,6 +445,23 @@ public:
     new (Buffer + sizeof(Header)) T(a0, a1, a2, a3);
   }
 
+  /// \brief Queue a cleanup to be pushed after finishing the current
+  /// full-expression.
+  template <class T, class A0, class A1>
+  void pushCleanupAfterFullExpr(CleanupKind Kind, A0 a0, A1 a1) {
+    assert(!isInConditionalBranch() && "can't defer conditional cleanup");
+
+    LifetimeExtendedCleanupHeader Header = { sizeof(T), Kind };
+
+    size_t OldSize = LifetimeExtendedCleanupStack.size();
+    LifetimeExtendedCleanupStack.resize(
+        LifetimeExtendedCleanupStack.size() + sizeof(Header) + Header.Size);
+
+    char *Buffer = &LifetimeExtendedCleanupStack[OldSize];
+    new (Buffer) LifetimeExtendedCleanupHeader(Header);
+    new (Buffer + sizeof(Header)) T(a0, a1);
+  }
+
   /// Set up the last cleaup that was pushed as a conditional
   /// full-expression cleanup.
   void initFullExprCleanup();
@@ -591,6 +613,10 @@ public:
   /// the given position to the stack.
   void PopCleanupBlocks(EHScopeStack::stable_iterator OldCleanupStackSize,
                         size_t OldLifetimeExtendedStackSize);
+
+  /// \brief Moves deferred cleanups from lifetime-extended variables from
+  /// the given position on top of the stack
+  void MoveDeferedCleanups(size_t OldLifetimeExtendedSize);
 
   void ResolveBranchFixups(llvm::BasicBlock *Target);
 
@@ -862,6 +888,48 @@ private:
   };
   SmallVector<BreakContinue, 8> BreakContinueStack;
 
+  /// \brief The scope used to remap some variables as private in the OpenMP
+  /// loop body (or other captured region emitted without outlining), and to
+  /// restore old vars back on exit.
+  class OMPPrivateScope : public RunCleanupsScope {
+    DeclMapTy SavedLocals;
+
+  private:
+    OMPPrivateScope(const OMPPrivateScope &) LLVM_DELETED_FUNCTION;
+    void operator=(const OMPPrivateScope &) LLVM_DELETED_FUNCTION;
+
+  public:
+    /// \brief Enter a new OpenMP private scope.
+    explicit OMPPrivateScope(CodeGenFunction &CGF) : RunCleanupsScope(CGF) {}
+
+    /// \brief Add and remap private variables (without initialization).
+    /// \param Vars - a range of DeclRefExprs for the private variables.
+    template <class IT> void addPrivates(IT Vars) {
+      assert(PerformCleanup && "adding private to dead scope");
+      for (auto E : Vars) {
+        auto D = cast<VarDecl>(cast<DeclRefExpr>(E)->getDecl());
+        assert(!SavedLocals.lookup(D) && "remapping a var twice");
+        SavedLocals[D] = CGF.LocalDeclMap.lookup(D);
+        CGF.LocalDeclMap.erase(D);
+        // Emit var without initialization.
+        auto VarEmission = CGF.EmitAutoVarAlloca(*D);
+        CGF.EmitAutoVarCleanups(VarEmission);
+      }
+    }
+
+    void ForceCleanup() {
+      RunCleanupsScope::ForceCleanup();
+      // Remap vars back to the original values.
+      for (auto I : SavedLocals) {
+        CGF.LocalDeclMap[I.first] = I.second;
+      }
+      SavedLocals.clear();
+    }
+
+    /// \brief Exit scope - all the mapped variables are restored.
+    ~OMPPrivateScope() { ForceCleanup(); }
+  };
+
   CodeGenPGO PGO;
 
 public:
@@ -1066,6 +1134,9 @@ public:
   void pushLifetimeExtendedDestroy(CleanupKind kind, llvm::Value *addr,
                                    QualType type, Destroyer *destroyer,
                                    bool useEHCleanupForArray);
+  void pushLifetimeEndMarker(StorageDuration SD,
+                             llvm::Value *ReferenceTemporary,
+                             llvm::Value *SizeForLifeTimeMarkers);
   void pushStackRestore(CleanupKind kind, llvm::Value *SPMem);
   void emitDestroy(llvm::Value *addr, QualType type, Destroyer *destroyer,
                    bool useEHCleanupForArray);
@@ -1397,18 +1468,7 @@ public:
                             CGM.getTBAAInfo(T));
   }
 
-  LValue MakeNaturalAlignAddrLValue(llvm::Value *V, QualType T) {
-    CharUnits Alignment;
-    if (!T->isIncompleteType()) {
-      Alignment = getContext().getTypeAlignInChars(T);
-      unsigned MaxAlign = getContext().getLangOpts().MaxTypeAlign;
-      if (MaxAlign && Alignment.getQuantity() > MaxAlign &&
-          !getContext().isAlignmentRequired(T))
-        Alignment = CharUnits::fromQuantity(MaxAlign);
-    }
-    return LValue::MakeAddr(V, T, Alignment, getContext(),
-                            CGM.getTBAAInfo(T));
-  }
+  LValue MakeNaturalAlignAddrLValue(llvm::Value *V, QualType T);
 
   /// CreateTempAlloca - This creates a alloca and inserts it into the entry
   /// block. The caller is responsible for setting an appropriate alignment on
@@ -1680,6 +1740,9 @@ public:
   void EmitCXXTemporary(const CXXTemporary *Temporary, QualType TempType,
                         llvm::Value *Ptr);
 
+  llvm::Value *EmitLifetimeStart(uint64_t Size, llvm::Value *Addr);
+  void EmitLifetimeEnd(llvm::Value *Size, llvm::Value *Addr);
+
   llvm::Value *EmitCXXNewExpr(const CXXNewExpr *E);
   void EmitCXXDeleteExpr(const CXXDeleteExpr *E);
 
@@ -1739,6 +1802,10 @@ public:
                                        bool isInc, bool isPre);
   ComplexPairTy EmitComplexPrePostIncDec(const UnaryOperator *E, LValue LV,
                                          bool isInc, bool isPre);
+
+  void EmitAlignmentAssumption(llvm::Value *PtrValue, unsigned Alignment,
+                               llvm::Value *OffsetValue = nullptr);
+
   //===--------------------------------------------------------------------===//
   //                            Declaration Emission
   //===--------------------------------------------------------------------===//
@@ -1759,6 +1826,10 @@ public:
 
   typedef void SpecialInitFn(CodeGenFunction &Init, const VarDecl &D,
                              llvm::Value *Address);
+
+  /// \brief Determine whether the given initializer is trivial in the sense
+  /// that it requires no code to be generated.
+  bool isTrivialInitializer(const Expr *Init);
 
   /// EmitAutoVarDecl - Emit an auto variable declaration.
   ///
@@ -1925,18 +1996,28 @@ public:
                            ArrayRef<const Attr *> Attrs = None);
 
   llvm::Function *EmitCapturedStmt(const CapturedStmt &S, CapturedRegionKind K);
+  void GenerateCapturedStmtFunctionProlog(const CapturedStmt &S);
+  llvm::Function *GenerateCapturedStmtFunctionEpilog(const CapturedStmt &S);
   llvm::Function *GenerateCapturedStmtFunction(const CapturedStmt &S);
   llvm::Value *GenerateCapturedStmtArgument(const CapturedStmt &S);
+  typedef llvm::DenseMap<const Decl *, llvm::Value *> OuterDeclMapTy;
+  void EmitOMPAggregateAssign(LValue OriginalAddr, llvm::Value *PrivateAddr,
+                              const Expr *AssignExpr, QualType Type,
+                              const VarDecl *VDInit);
+  void EmitOMPFirstprivateClause(const OMPExecutableDirective &D,
+                                 OuterDeclMapTy &OuterDeclMap);
 
   void EmitOMPParallelDirective(const OMPParallelDirective &S);
   void EmitOMPSimdDirective(const OMPSimdDirective &S);
   void EmitOMPForDirective(const OMPForDirective &S);
+  void EmitOMPForSimdDirective(const OMPForSimdDirective &S);
   void EmitOMPSectionsDirective(const OMPSectionsDirective &S);
   void EmitOMPSectionDirective(const OMPSectionDirective &S);
   void EmitOMPSingleDirective(const OMPSingleDirective &S);
   void EmitOMPMasterDirective(const OMPMasterDirective &S);
   void EmitOMPCriticalDirective(const OMPCriticalDirective &S);
   void EmitOMPParallelForDirective(const OMPParallelForDirective &S);
+  void EmitOMPParallelForSimdDirective(const OMPParallelForSimdDirective &S);
   void EmitOMPParallelSectionsDirective(const OMPParallelSectionsDirective &S);
   void EmitOMPTaskDirective(const OMPTaskDirective &S);
   void EmitOMPTaskyieldDirective(const OMPTaskyieldDirective &S);
@@ -1945,6 +2026,15 @@ public:
   void EmitOMPFlushDirective(const OMPFlushDirective &S);
   void EmitOMPOrderedDirective(const OMPOrderedDirective &S);
   void EmitOMPAtomicDirective(const OMPAtomicDirective &S);
+  void EmitOMPTargetDirective(const OMPTargetDirective &S);
+  void EmitOMPTeamsDirective(const OMPTeamsDirective &S);
+
+  /// Helpers for 'omp simd' directive.
+  void EmitOMPLoopBody(const OMPLoopDirective &Directive,
+                       bool SeparateIter = false);
+  void EmitOMPInnerLoop(const OMPLoopDirective &S, OMPPrivateScope &LoopScope,
+                        bool SeparateIter = false);
+  void EmitOMPSimdFinal(const OMPLoopDirective &S);
 
   //===--------------------------------------------------------------------===//
   //                         LValue Expression Emission
@@ -2418,11 +2508,6 @@ public:
   /// EmitLoadOfComplex - Load a complex number from the specified l-value.
   ComplexPairTy EmitLoadOfComplex(LValue src, SourceLocation loc);
 
-  /// CreateStaticVarDecl - Create a zero-initialized LLVM global for
-  /// a static local variable.
-  llvm::Constant *CreateStaticVarDecl(const VarDecl &D,
-                                      llvm::GlobalValue::LinkageTypes Linkage);
-
   /// AddInitializerToStaticVarDecl - Add the initializer for 'D' to the
   /// global variable that has already been created for it.  If the initializer
   /// has a different type than GV does, this may free GV and return a different
@@ -2436,6 +2521,9 @@ public:
   /// variable with global storage.
   void EmitCXXGlobalVarDeclInit(const VarDecl &D, llvm::Constant *DeclPtr,
                                 bool PerformInit);
+
+  llvm::Constant *createAtExitStub(const VarDecl &VD, llvm::Constant *Dtor,
+                                   llvm::Constant *Addr);
 
   /// Call atexit() with a function that passes the given argument to
   /// the given function.
@@ -2453,7 +2541,7 @@ public:
   /// GenerateCXXGlobalInitFunc - Generates code for initializing global
   /// variables.
   void GenerateCXXGlobalInitFunc(llvm::Function *Fn,
-                                 ArrayRef<llvm::Constant *> Decls,
+                                 ArrayRef<llvm::Function *> CXXThreadLocals,
                                  llvm::GlobalVariable *Guard = nullptr);
 
   /// GenerateCXXGlobalDtorsFunc - Generates code for destroying global
@@ -2617,74 +2705,64 @@ public:
   void EmitCallArgs(CallArgList &Args, const T *CallArgTypeInfo,
                     CallExpr::const_arg_iterator ArgBeg,
                     CallExpr::const_arg_iterator ArgEnd,
-                    bool ForceColumnInfo = false) {
-    if (CallArgTypeInfo) {
-      EmitCallArgs(Args, CallArgTypeInfo->isVariadic(),
-                   CallArgTypeInfo->param_type_begin(),
-                   CallArgTypeInfo->param_type_end(), ArgBeg, ArgEnd,
-                   ForceColumnInfo);
-    } else {
-      // T::param_type_iterator might not have a default ctor.
-      const QualType *NoIter = nullptr;
-      EmitCallArgs(Args, /*AllowExtraArguments=*/true, NoIter, NoIter, ArgBeg,
-                   ArgEnd, ForceColumnInfo);
-    }
-  }
-
-  template<typename ArgTypeIterator>
-  void EmitCallArgs(CallArgList& Args,
-                    bool AllowExtraArguments,
-                    ArgTypeIterator ArgTypeBeg,
-                    ArgTypeIterator ArgTypeEnd,
-                    CallExpr::const_arg_iterator ArgBeg,
-                    CallExpr::const_arg_iterator ArgEnd,
-                    bool ForceColumnInfo = false) {
+                    const FunctionDecl *CalleeDecl = nullptr,
+                    unsigned ParamsToSkip = 0, bool ForceColumnInfo = false) {
     SmallVector<QualType, 16> ArgTypes;
     CallExpr::const_arg_iterator Arg = ArgBeg;
 
-    // First, use the argument types that the type info knows about
-    for (ArgTypeIterator I = ArgTypeBeg, E = ArgTypeEnd; I != E; ++I, ++Arg) {
-      assert(Arg != ArgEnd && "Running over edge of argument list!");
+    assert((ParamsToSkip == 0 || CallArgTypeInfo) &&
+           "Can't skip parameters if type info is not provided");
+    if (CallArgTypeInfo) {
+      // First, use the argument types that the type info knows about
+      for (auto I = CallArgTypeInfo->param_type_begin() + ParamsToSkip,
+                E = CallArgTypeInfo->param_type_end();
+           I != E; ++I, ++Arg) {
+        assert(Arg != ArgEnd && "Running over edge of argument list!");
 #ifndef NDEBUG
-      QualType ArgType = *I;
-      QualType ActualArgType = Arg->getType();
-      if (ArgType->isPointerType() && ActualArgType->isPointerType()) {
-        QualType ActualBaseType =
-            ActualArgType->getAs<PointerType>()->getPointeeType();
-        QualType ArgBaseType =
-            ArgType->getAs<PointerType>()->getPointeeType();
-        if (ArgBaseType->isVariableArrayType()) {
-          if (const VariableArrayType *VAT =
-              getContext().getAsVariableArrayType(ActualBaseType)) {
-            if (!VAT->getSizeExpr())
-              ActualArgType = ArgType;
+        QualType ArgType = *I;
+        QualType ActualArgType = Arg->getType();
+        if (ArgType->isPointerType() && ActualArgType->isPointerType()) {
+          QualType ActualBaseType =
+              ActualArgType->getAs<PointerType>()->getPointeeType();
+          QualType ArgBaseType =
+              ArgType->getAs<PointerType>()->getPointeeType();
+          if (ArgBaseType->isVariableArrayType()) {
+            if (const VariableArrayType *VAT =
+                    getContext().getAsVariableArrayType(ActualBaseType)) {
+              if (!VAT->getSizeExpr())
+                ActualArgType = ArgType;
+            }
           }
         }
-      }
-      assert(getContext().getCanonicalType(ArgType.getNonReferenceType()).
-             getTypePtr() ==
-             getContext().getCanonicalType(ActualArgType).getTypePtr() &&
-             "type mismatch in call argument!");
+        assert(getContext()
+                       .getCanonicalType(ArgType.getNonReferenceType())
+                       .getTypePtr() ==
+                   getContext().getCanonicalType(ActualArgType).getTypePtr() &&
+               "type mismatch in call argument!");
 #endif
-      ArgTypes.push_back(*I);
+        ArgTypes.push_back(*I);
+      }
     }
 
     // Either we've emitted all the call args, or we have a call to variadic
-    // function or some other call that allows extra arguments.
-    assert((Arg == ArgEnd || AllowExtraArguments) &&
-           "Extra arguments in non-variadic function!");
+    // function.
+    assert(
+        (Arg == ArgEnd || !CallArgTypeInfo || CallArgTypeInfo->isVariadic()) &&
+        "Extra arguments in non-variadic function!");
 
     // If we still have any arguments, emit them using the type of the argument.
     for (; Arg != ArgEnd; ++Arg)
       ArgTypes.push_back(Arg->getType());
 
-    EmitCallArgs(Args, ArgTypes, ArgBeg, ArgEnd, ForceColumnInfo);
+    EmitCallArgs(Args, ArgTypes, ArgBeg, ArgEnd, CalleeDecl, ParamsToSkip,
+                 ForceColumnInfo);
   }
 
   void EmitCallArgs(CallArgList &Args, ArrayRef<QualType> ArgTypes,
                     CallExpr::const_arg_iterator ArgBeg,
                     CallExpr::const_arg_iterator ArgEnd,
-                    bool ForceColumnInfo = false);
+                    const FunctionDecl *CalleeDecl = nullptr,
+                    unsigned ParamsToSkip = 0, bool ForceColumnInfo = false);
 
 private:
   const TargetCodeGenInfo &getTargetHooks() const {

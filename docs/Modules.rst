@@ -2,10 +2,6 @@
 Modules
 =======
 
-.. warning::
-   The functionality described on this page is supported for C and
-   Objective-C. C++ support is experimental.
-
 .. contents::
    :local:
 
@@ -104,7 +100,7 @@ Many programming languages have a module or package system, and because of the v
 
 Using Modules
 =============
-To enable modules, pass the command-line flag ``-fmodules`` [#]_. This will make any modules-enabled software libraries available as modules as well as introducing any modules-specific syntax. Additional `command-line parameters`_ are described in a separate section later.
+To enable modules, pass the command-line flag ``-fmodules``. This will make any modules-enabled software libraries available as modules as well as introducing any modules-specific syntax. Additional `command-line parameters`_ are described in a separate section later.
 
 Objective-C Import declaration
 ------------------------------
@@ -114,7 +110,7 @@ Objective-C provides syntax for importing a module via an *@import declaration*,
 
   @import std;
 
-The @import declaration above imports the entire contents of the ``std`` module (which would contain, e.g., the entire C or C++ standard library) and make its API available within the current translation unit. To import only part of a module, one may use dot syntax to specific a particular submodule, e.g.,
+The ``@import`` declaration above imports the entire contents of the ``std`` module (which would contain, e.g., the entire C or C++ standard library) and make its API available within the current translation unit. To import only part of a module, one may use dot syntax to specific a particular submodule, e.g.,
 
 .. parsed-literal::
 
@@ -163,13 +159,10 @@ Modules maintain references to each of the headers that were part of the module 
 Command-line parameters
 -----------------------
 ``-fmodules``
-  Enable the modules feature (EXPERIMENTAL).
-
-``-fcxx-modules``
-  Enable the modules feature for C++ (EXPERIMENTAL and VERY BROKEN).
+  Enable the modules feature.
 
 ``-fmodule-maps``
-  Enable interpretation of module maps (EXPERIMENTAL). This option is implied by ``-fmodules``.
+  Enable interpretation of module maps. This option is implied by ``-fmodules``.
 
 ``-fmodules-cache-path=<directory>``
   Specify the path to the modules cache. If not provided, Clang will select a system-appropriate default.
@@ -239,6 +232,10 @@ The ``#undef`` overrides the ``#define``, and a source file that imports both mo
 
 Module Map Language
 ===================
+
+.. warning::
+
+  The module map language is not currently guaranteed to be stable between major revisions of Clang.
 
 The module map language describes the mapping from header files to the
 logical structure of modules. To enable support for using a library as
@@ -826,19 +823,16 @@ To detect and help address some of these problems, the ``clang-tools-extra`` rep
 
 Future Directions
 =================
-Modules is an experimental feature, and there is much work left to do to make it both real and useful. Here are a few ideas:
+Modules support is under active development, and there are many opportunities remaining to improve it. Here are a few ideas:
 
 **Detect unused module imports**
   Unlike with ``#include`` directives, it should be fairly simple to track whether a directly-imported module has ever been used. By doing so, Clang can emit ``unused import`` or ``unused #include`` diagnostics, including Fix-Its to remove the useless imports/includes.
 
 **Fix-Its for missing imports**
-  It's fairly common for one to make use of some API while writing code, only to get a compiler error about "unknown type" or "no function named" because the corresponding header has not been included. Clang should detect such cases and auto-import the required module (with a Fix-It!).
+  It's fairly common for one to make use of some API while writing code, only to get a compiler error about "unknown type" or "no function named" because the corresponding header has not been included. Clang can detect such cases and auto-import the required module, but should provide a Fix-It to add the import.
 
 **Improve modularize**
   The modularize tool is both extremely important (for deployment) and extremely crude. It needs better UI, better detection of problems (especially for C++), and perhaps an assistant mode to help write module maps for you.
-
-**C++ Support**
-  Modules clearly has to work for C++, or we'll never get to use it for the Clang code base.
 
 Where To Learn More About Modules
 =================================
@@ -860,8 +854,6 @@ PCHInternals_
   Information about the serialized AST format used for precompiled headers and modules. The actual implementation is in the ``clangSerialization`` library.
 
 .. [#] Automatic linking against the libraries of modules requires specific linker support, which is not widely available.
-
-.. [#] Modules are only available in C and Objective-C; a separate flag ``-fcxx-modules`` enables modules support for C++, which is even more experimental and broken.
 
 .. [#] There are certain anti-patterns that occur in headers, particularly system headers, that cause problems for modules. The section `Modularizing a Platform`_ describes some of them.
 

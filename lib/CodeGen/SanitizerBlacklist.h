@@ -32,12 +32,13 @@ class SanitizerBlacklist {
   std::unique_ptr<llvm::SpecialCaseList> SCL;
 
 public:
-  SanitizerBlacklist(llvm::SpecialCaseList *SCL) : SCL(SCL) {}
+  SanitizerBlacklist(std::unique_ptr<llvm::SpecialCaseList> SCL)
+      : SCL(std::move(SCL)) {}
   bool isIn(const llvm::Module &M,
-            const StringRef Category = StringRef()) const;
+            StringRef Category = StringRef()) const;
   bool isIn(const llvm::Function &F) const;
   bool isIn(const llvm::GlobalVariable &G,
-            const StringRef Category = StringRef()) const;
+            StringRef Category = StringRef()) const;
   bool isBlacklistedType(StringRef MangledTypeName) const;
 };
 }  // end namespace CodeGen

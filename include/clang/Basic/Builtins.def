@@ -412,6 +412,7 @@ BUILTIN(__builtin_va_start, "vA.", "nt")
 BUILTIN(__builtin_va_end, "vA", "n")
 BUILTIN(__builtin_va_copy, "vAA", "n")
 BUILTIN(__builtin_stdarg_start, "vA.", "n")
+BUILTIN(__builtin_assume_aligned, "v*vC*z.", "nc")
 BUILTIN(__builtin_bcmp, "iv*v*z", "n")
 BUILTIN(__builtin_bcopy, "vv*v*z", "n")
 BUILTIN(__builtin_bzero, "vv*z", "nF")
@@ -540,6 +541,12 @@ BUILTIN(__sync_fetch_and_xor_4, "iiD*i.", "tn")
 BUILTIN(__sync_fetch_and_xor_8, "LLiLLiD*LLi.", "tn")
 BUILTIN(__sync_fetch_and_xor_16, "LLLiLLLiD*LLLi.", "tn")
 
+BUILTIN(__sync_fetch_and_nand, "v.", "t")
+BUILTIN(__sync_fetch_and_nand_1, "ccD*c.", "tn")
+BUILTIN(__sync_fetch_and_nand_2, "ssD*s.", "tn")
+BUILTIN(__sync_fetch_and_nand_4, "iiD*i.", "tn")
+BUILTIN(__sync_fetch_and_nand_8, "LLiLLiD*LLi.", "tn")
+BUILTIN(__sync_fetch_and_nand_16, "LLLiLLLiD*LLLi.", "tn")
 
 BUILTIN(__sync_add_and_fetch, "v.", "t")
 BUILTIN(__sync_add_and_fetch_1, "ccD*c.", "tn")
@@ -575,6 +582,13 @@ BUILTIN(__sync_xor_and_fetch_2, "ssD*s.", "tn")
 BUILTIN(__sync_xor_and_fetch_4, "iiD*i.", "tn")
 BUILTIN(__sync_xor_and_fetch_8, "LLiLLiD*LLi.", "tn")
 BUILTIN(__sync_xor_and_fetch_16, "LLLiLLLiD*LLLi.", "tn")
+
+BUILTIN(__sync_nand_and_fetch, "v.", "t")
+BUILTIN(__sync_nand_and_fetch_1, "ccD*c.", "tn")
+BUILTIN(__sync_nand_and_fetch_2, "ssD*s.", "tn")
+BUILTIN(__sync_nand_and_fetch_4, "iiD*i.", "tn")
+BUILTIN(__sync_nand_and_fetch_8, "LLiLLiD*LLi.", "tn")
+BUILTIN(__sync_nand_and_fetch_16, "LLLiLLLiD*LLLi.", "tn")
 
 BUILTIN(__sync_bool_compare_and_swap, "v.", "t")
 BUILTIN(__sync_bool_compare_and_swap_1, "bcD*cc.", "tn")
@@ -1172,6 +1186,9 @@ LIBBUILTIN(_Block_object_dispose, "vvC*iC", "f", "Blocks.h", ALL_LANGUAGES)
 
 // Annotation function
 BUILTIN(__builtin_annotation, "v.", "tn")
+
+// Invariants
+BUILTIN(__builtin_assume, "vb", "n")
 
 // Multiprecision Arithmetic Builtins.
 BUILTIN(__builtin_addcb, "UcUcCUcCUcCUc*", "n")

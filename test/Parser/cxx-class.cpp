@@ -139,6 +139,20 @@ namespace CtorErrors {
   };
 }
 
+namespace DtorErrors {
+  struct A { ~A(); } a;
+  ~A::A() {} // expected-error {{'~' in destructor name should be after nested name specifier}} expected-note {{previous}}
+  A::~A() {} // expected-error {{redefinition}}
+
+  struct B { ~B(); } *b;
+  DtorErrors::~B::B() {} // expected-error {{'~' in destructor name should be after nested name specifier}}
+
+  void f() {
+    a.~A::A(); // expected-error {{'~' in destructor name should be after nested name specifier}}
+    b->~DtorErrors::~B::B(); // expected-error {{'~' in destructor name should be after nested name specifier}}
+  }
+}
+
 namespace BadFriend {
   struct A {
     friend int : 3; // expected-error {{friends can only be classes or functions}}
@@ -159,6 +173,11 @@ class PR20760_b {
   int e = d]; // expected-warning {{extension}} expected-error {{expected ';'}}
   int f = d // expected-warning {{extension}} expected-error {{expected ';'}}
 };
+
+namespace PR20887 {
+class X1 { a::operator=; }; // expected-error {{undeclared identifier 'a'}}
+class X2 { a::a; }; // expected-error {{undeclared identifier 'a'}}
+}
 
 // PR11109 must appear at the end of the source file
 class pr11109r3 { // expected-note{{to match this '{'}}

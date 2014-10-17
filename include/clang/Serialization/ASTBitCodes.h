@@ -545,7 +545,10 @@ namespace clang {
       LATE_PARSED_TEMPLATE = 50,
 
       /// \brief Record code for \#pragma optimize options.
-      OPTIMIZE_PRAGMA_OPTIONS = 51
+      OPTIMIZE_PRAGMA_OPTIONS = 51,
+
+      /// \brief Record code for potentially unused local typedef names.
+      UNUSED_LOCAL_TYPEDEF_NAME_CANDIDATES = 52,
     };
 
     /// \brief Record types used within a source manager block.
@@ -1336,16 +1339,18 @@ namespace clang {
       STMT_SEH_FINALLY,           // SEHFinallyStmt
       STMT_SEH_TRY,               // SEHTryStmt
 
-      // OpenMP drectives
+      // OpenMP directives
       STMT_OMP_PARALLEL_DIRECTIVE,
       STMT_OMP_SIMD_DIRECTIVE,
       STMT_OMP_FOR_DIRECTIVE,
+      STMT_OMP_FOR_SIMD_DIRECTIVE,
       STMT_OMP_SECTIONS_DIRECTIVE,
       STMT_OMP_SECTION_DIRECTIVE,
       STMT_OMP_SINGLE_DIRECTIVE,
       STMT_OMP_MASTER_DIRECTIVE,
       STMT_OMP_CRITICAL_DIRECTIVE,
       STMT_OMP_PARALLEL_FOR_DIRECTIVE,
+      STMT_OMP_PARALLEL_FOR_SIMD_DIRECTIVE,
       STMT_OMP_PARALLEL_SECTIONS_DIRECTIVE,
       STMT_OMP_TASK_DIRECTIVE,
       STMT_OMP_TASKYIELD_DIRECTIVE,
@@ -1354,6 +1359,8 @@ namespace clang {
       STMT_OMP_FLUSH_DIRECTIVE,
       STMT_OMP_ORDERED_DIRECTIVE,
       STMT_OMP_ATOMIC_DIRECTIVE,
+      STMT_OMP_TARGET_DIRECTIVE,
+      STMT_OMP_TEAMS_DIRECTIVE,
 
       // ARC
       EXPR_OBJC_BRIDGED_CAST,     // ObjCBridgedCastExpr

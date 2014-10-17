@@ -119,7 +119,7 @@ public:
 
   void ExecuteAction() override {
     Preprocessor &PP = getCompilerInstance().getPreprocessor();
-    PP.addPPCallbacks(Callbacks);
+    PP.addPPCallbacks(std::unique_ptr<TestPPCallbacks>(Callbacks));
     PP.EnterMainSourceFile();
   }
   void EndSourceFileAction() override { SeenEnd = Callbacks->SeenEnd; }

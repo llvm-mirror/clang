@@ -1,11 +1,15 @@
 set(files
+  adxintrin.h
   altivec.h
   ammintrin.h
   arm_acle.h
   avxintrin.h
   avx2intrin.h
+  avx512bwintrin.h
   avx512fintrin.h
   avx512erintrin.h
+  avx512vlbwintrin.h
+  avx512vlintrin.h
   bmiintrin.h
   bmi2intrin.h
   emmintrin.h
@@ -32,8 +36,10 @@ set(files
   smmintrin.h
   stdalign.h
   stdarg.h
+  stdatomic.h
   stdbool.h
   stddef.h
+  __stddef_max_align_t.h
   stdint.h
   stdnoreturn.h
   tbmintrin.h

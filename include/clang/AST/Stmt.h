@@ -393,6 +393,10 @@ public:
   /// statement, such as ExprWithCleanups or ImplicitCastExpr nodes.
   Stmt *IgnoreImplicit();
 
+  /// \brief Skip no-op (attributed, compound) container stmts and skip captured
+  /// stmt at the top, if \a IgnoreCaptured is true.
+  Stmt *IgnoreContainers(bool IgnoreCaptured = false);
+
   const Stmt *stripLabelLikeStatements() const;
   Stmt *stripLabelLikeStatements() {
     return const_cast<Stmt*>(
@@ -846,7 +850,7 @@ public:
 
   SourceLocation getAttrLoc() const { return AttrLoc; }
   ArrayRef<const Attr*> getAttrs() const {
-    return ArrayRef<const Attr*>(getAttrArrayPtr(), NumAttrs);
+    return llvm::makeArrayRef(getAttrArrayPtr(), NumAttrs);
   }
   Stmt *getSubStmt() { return SubStmt; }
   const Stmt *getSubStmt() const { return SubStmt; }

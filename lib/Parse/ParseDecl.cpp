@@ -627,6 +627,10 @@ void Parser::ParseOpenCLQualifiers(ParsedAttributes &Attrs) {
                AttributeList::AS_Keyword);
 }
 
+static bool VersionNumberSeparator(const char Separator) {
+  return (Separator == '.' || Separator == '_');
+}
+
 /// \brief Parse a version number.
 ///
 /// version:
@@ -684,7 +688,9 @@ VersionTuple Parser::ParseVersionTuple(SourceRange &Range) {
     return VersionTuple(Major);
   }
 
-  if (ThisTokBegin[AfterMajor] != '.' || (AfterMajor + 1 == ActualLength)) {
+  const char AfterMajorSeparator = ThisTokBegin[AfterMajor];
+  if (!VersionNumberSeparator(AfterMajorSeparator)
+      || (AfterMajor + 1 == ActualLength)) {
     Diag(Tok, diag::err_expected_version);
     SkipUntil(tok::comma, tok::r_paren,
               StopAtSemi | StopBeforeMatch | StopAtCodeCompletion);
@@ -708,16 +714,21 @@ VersionTuple Parser::ParseVersionTuple(SourceRange &Range) {
       return VersionTuple();
     }
 
-    return VersionTuple(Major, Minor);
+    return VersionTuple(Major, Minor, (AfterMajorSeparator == '_'));
   }
 
-  // If what follows is not a '.', we have a problem.
-  if (ThisTokBegin[AfterMinor] != '.') {
+  const char AfterMinorSeparator = ThisTokBegin[AfterMinor];
+  // If what follows is not a '.' or '_', we have a problem.
+  if (!VersionNumberSeparator(AfterMinorSeparator)) {
     Diag(Tok, diag::err_expected_version);
     SkipUntil(tok::comma, tok::r_paren,
               StopAtSemi | StopBeforeMatch | StopAtCodeCompletion);
     return VersionTuple();
   }
+  
+  // Warn if separators, be it '.' or '_', do not match.
+  if (AfterMajorSeparator != AfterMinorSeparator)
+    Diag(Tok, diag::warn_expected_consistent_version_separator);
 
   // Parse the subminor version.
   unsigned AfterSubminor = AfterMinor + 1;
@@ -734,7 +745,7 @@ VersionTuple Parser::ParseVersionTuple(SourceRange &Range) {
     return VersionTuple();
   }
   ConsumeToken();
-  return VersionTuple(Major, Minor, Subminor);
+  return VersionTuple(Major, Minor, Subminor, (AfterMajorSeparator == '_'));
 }
 
 /// \brief Parse the contents of the "availability" attribute.
@@ -2731,6 +2742,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       goto DoneWithDeclSpec;
 
       // typedef-name
+    case tok::kw___super:
     case tok::kw_decltype:
     case tok::identifier: {
       // This identifier can only be a typedef name if we haven't already seen
@@ -3235,14 +3247,15 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
 ///         declarator[opt] ':' constant-expression
 /// [GNU]   declarator[opt] ':' constant-expression attributes[opt]
 ///
-void Parser::
-ParseStructDeclaration(ParsingDeclSpec &DS, FieldCallback &Fields) {
+void Parser::ParseStructDeclaration(
+    ParsingDeclSpec &DS,
+    llvm::function_ref<void(ParsingFieldDeclarator &)> FieldsCallback) {
 
   if (Tok.is(tok::kw___extension__)) {
     // __extension__ silences extension warnings in the subexpression.
     ExtensionRAIIObject O(Diags);  // Use RAII to do this.
     ConsumeToken();
-    return ParseStructDeclaration(DS, Fields);
+    return ParseStructDeclaration(DS, FieldsCallback);
   }
 
   // Parse the common specifier-qualifiers-list piece.
@@ -3289,7 +3302,7 @@ ParseStructDeclaration(ParsingDeclSpec &DS, FieldCallback &Fields) {
     MaybeParseGNUAttributes(DeclaratorInfo.D);
 
     // We're done with this declarator;  invoke the callback.
-    Fields.invoke(DeclaratorInfo);
+    FieldsCallback(DeclaratorInfo);
 
     // If we don't have a comma, it is either the end of the list (a ';')
     // or an error, bail out.
@@ -3353,28 +3366,19 @@ void Parser::ParseStructUnionBody(SourceLocation RecordLoc,
     }
 
     if (!Tok.is(tok::at)) {
-      struct CFieldCallback : FieldCallback {
-        Parser &P;
-        Decl *TagDecl;
-        SmallVectorImpl<Decl *> &FieldDecls;
-
-        CFieldCallback(Parser &P, Decl *TagDecl,
-                       SmallVectorImpl<Decl *> &FieldDecls) :
-          P(P), TagDecl(TagDecl), FieldDecls(FieldDecls) {}
-
-        void invoke(ParsingFieldDeclarator &FD) override {
-          // Install the declarator into the current TagDecl.
-          Decl *Field = P.Actions.ActOnField(P.getCurScope(), TagDecl,
-                              FD.D.getDeclSpec().getSourceRange().getBegin(),
-                                                 FD.D, FD.BitfieldSize);
-          FieldDecls.push_back(Field);
-          FD.complete(Field);
-        }
-      } Callback(*this, TagDecl, FieldDecls);
+      auto CFieldCallback = [&](ParsingFieldDeclarator &FD) {
+        // Install the declarator into the current TagDecl.
+        Decl *Field =
+            Actions.ActOnField(getCurScope(), TagDecl,
+                               FD.D.getDeclSpec().getSourceRange().getBegin(),
+                               FD.D, FD.BitfieldSize);
+        FieldDecls.push_back(Field);
+        FD.complete(Field);
+      };
 
       // Parse all the comma separated declarators.
       ParsingDeclSpec DS(*this);
-      ParseStructDeclaration(DS, Callback);
+      ParseStructDeclaration(DS, CFieldCallback);
     } else { // Handle @defs
       ConsumeToken();
       if (!Tok.isObjCAtKeyword(tok::objc_defs)) {

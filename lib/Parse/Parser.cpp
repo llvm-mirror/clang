@@ -1431,31 +1431,13 @@ Parser::TryAnnotateName(bool IsAddressOfOperand,
 }
 
 bool Parser::TryKeywordIdentFallback(bool DisableKeyword) {
-  assert(!Tok.is(tok::identifier) && !Tok.isAnnotation());
+  assert(Tok.isNot(tok::identifier));
   Diag(Tok, diag::ext_keyword_as_ident)
     << PP.getSpelling(Tok)
     << DisableKeyword;
-  if (DisableKeyword) {
-    IdentifierInfo *II = Tok.getIdentifierInfo();
-    ContextualKeywords[II] = Tok.getKind();
-    II->RevertTokenIDToIdentifier();
-  }
+  if (DisableKeyword)
+    Tok.getIdentifierInfo()->RevertTokenIDToIdentifier();
   Tok.setKind(tok::identifier);
-  return true;
-}
-
-bool Parser::TryIdentKeywordUpgrade() {
-  assert(Tok.is(tok::identifier));
-  const IdentifierInfo *II = Tok.getIdentifierInfo();
-  assert(II->hasRevertedTokenIDToIdentifier());
-  // If we find that this is in fact the name of a type trait,
-  // update the token kind in place and parse again to treat it as
-  // the appropriate kind of type trait.
-  llvm::SmallDenseMap<const IdentifierInfo *, tok::TokenKind>::iterator Known =
-      ContextualKeywords.find(II);
-  if (Known == ContextualKeywords.end())
-    return false;
-  Tok.setKind(Known->second);
   return true;
 }
 
@@ -1482,10 +1464,11 @@ bool Parser::TryIdentKeywordUpgrade() {
 /// Note that this routine emits an error if you call it with ::new or ::delete
 /// as the current tokens, so only call it in contexts where these are invalid.
 bool Parser::TryAnnotateTypeOrScopeToken(bool EnteringContext, bool NeedType) {
-  assert((Tok.is(tok::identifier) || Tok.is(tok::coloncolon)
-          || Tok.is(tok::kw_typename) || Tok.is(tok::annot_cxxscope)
-          || Tok.is(tok::kw_decltype) || Tok.is(tok::annot_template_id))
-          && "Cannot be a type or scope token!");
+  assert((Tok.is(tok::identifier) || Tok.is(tok::coloncolon) ||
+          Tok.is(tok::kw_typename) || Tok.is(tok::annot_cxxscope) ||
+          Tok.is(tok::kw_decltype) || Tok.is(tok::annot_template_id) ||
+          Tok.is(tok::kw___super)) &&
+         "Cannot be a type or scope token!");
 
   if (Tok.is(tok::kw_typename)) {
     // MSVC lets you do stuff like:
@@ -1694,7 +1677,8 @@ bool Parser::TryAnnotateCXXScopeToken(bool EnteringContext) {
          "Call sites of this function should be guarded by checking for C++");
   assert((Tok.is(tok::identifier) || Tok.is(tok::coloncolon) ||
           (Tok.is(tok::annot_template_id) && NextToken().is(tok::coloncolon)) ||
-         Tok.is(tok::kw_decltype)) && "Cannot be a type or scope token!");
+          Tok.is(tok::kw_decltype) || Tok.is(tok::kw___super)) &&
+         "Cannot be a type or scope token!");
 
   CXXScopeSpec SS;
   if (ParseOptionalCXXScopeSpecifier(SS, ParsedType(), EnteringContext))
@@ -1754,13 +1738,6 @@ SourceLocation Parser::handleUnexpectedCodeCompletionToken() {
   Actions.CodeCompleteOrdinaryName(getCurScope(), Sema::PCC_Namespace);
   cutOffParsing();
   return PrevTokLocation;
-}
-
-// Anchor the Parser::FieldCallback vtable to this translation unit.
-// We use a spurious method instead of the destructor because
-// destroying FieldCallbacks can actually be slightly
-// performance-sensitive.
-void Parser::FieldCallback::_anchor() {
 }
 
 // Code-completion pass-through functions

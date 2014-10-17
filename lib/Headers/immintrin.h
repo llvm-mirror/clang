@@ -80,6 +80,18 @@
 #include <avx512fintrin.h>
 #endif
 
+#ifdef __AVX512VL__
+#include <avx512vlintrin.h>
+#endif
+
+#ifdef __AVX512BW__
+#include <avx512bwintrin.h>
+#endif
+
+#if defined (__AVX512VL__) && defined (__AVX512BW__)
+#include <avx512vlbwintrin.h>
+#endif
+
 #ifdef __AVX512ER__
 #include <avx512erintrin.h>
 #endif
@@ -122,5 +134,9 @@ _xtest(void)
 #ifdef __SHA__
 #include <shaintrin.h>
 #endif
+
+/* Some intrinsics inside adxintrin.h are available only if __ADX__ defined,
+ * whereas others are also available if __ADX__ undefined */
+#include <adxintrin.h>
 
 #endif /* __IMMINTRIN_H */

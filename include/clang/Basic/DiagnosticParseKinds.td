@@ -368,6 +368,8 @@ def err_function_definition_not_allowed : Error<
   "function definition is not allowed here">;
 def err_expected_end_of_enumerator : Error<
   "expected '= constant-expression' or end of enumerator definition">;
+def err_expected_coloncolon_after_super : Error<
+  "expected '::' after '__super'">;
 
 /// Objective-C parser diagnostics
 def err_expected_minus_or_plus : Error<
@@ -492,6 +494,8 @@ def err_constructor_bad_name : Error<
   "missing return type for function %0; did you mean the constructor name %1?">;
 def err_destructor_tilde_identifier : Error<
   "expected a class name after '~' to name a destructor">;
+def err_destructor_tilde_scope : Error<
+  "'~' in destructor name should be after nested name specifier">;
 def err_destructor_template_id : Error<
   "destructor name %0 does not refer to a template">;
 def err_default_arg_unparsed : Error<
@@ -519,6 +523,8 @@ def ext_abstract_pack_declarator_parens : ExtWarn<
   InGroup<DiagGroup<"anonymous-pack-parens">>;
 def err_function_is_not_record : Error<
   "unexpected %0 in function call; perhaps remove the %0?">;
+def err_super_in_using_declaration : Error<
+  "'__super' cannot be used with a using declaration">;
 
 // C++ derived classes
 def err_dup_virtual : Error<"duplicate 'virtual' in base specifier">;
@@ -769,6 +775,9 @@ def err_lambda_missing_parens : Error<
 // Availability attribute
 def err_expected_version : Error<
   "expected a version of the form 'major[.minor[.subminor]]'">;
+def warn_expected_consistent_version_separator : Warning<
+  "use same version number separators '_' or '.'; as in "
+  "'major[.minor[.subminor]]'">, InGroup<Availability>;
 def err_zero_version : Error<
   "version number must have non-zero major, minor, or sub-minor version">;
 def err_availability_expected_platform : Error<

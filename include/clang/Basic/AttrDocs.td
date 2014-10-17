@@ -154,6 +154,30 @@ def ReleaseCapabilityDocs : Documentation {
 Marks a function as releasing a capability.
   }];
 }
+
+def AssumeAlignedDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Use ``__attribute__((assume_aligned(<alignment>[,<offset>]))`` on a function
+declaration to specify that the return value of the function (which must be a
+pointer type) has the specified offset, in bytes, from an address with the
+specified alignment. The offset is taken to be zero if omitted.
+
+.. code-block:: c++
+
+  // The returned pointer value has 32-byte alignment.
+  void *a() __attribute__((assume_aligned (32)));
+
+  // The returned pointer value is 4 bytes greater than an address having
+  // 32-byte alignment.
+  void *b() __attribute__((assume_aligned (32, 4)));
+
+Note that this attribute provides information to the compiler regarding a
+condition that the code already ensures is true. It does not cause the compiler
+to enforce the provided alignment assumption.
+  }];
+}
+
 def EnableIfDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
@@ -984,6 +1008,26 @@ Clang implements two kinds of checks with this attribute.
    In this case Clang does not warn because the format string ``s`` and
    the corresponding arguments are annotated.  If the arguments are
    incorrect, the caller of ``foo`` will receive a warning.
+  }];
+}
+
+def AlignValueDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{
+The align_value attribute can be added to the typedef of a pointer type or the
+declaration of a variable of pointer or reference type. It specifies that the
+pointer will point to, or the reference will bind to, only objects with at
+least the provided alignment. This alignment value must be some positive power
+of 2.
+
+   .. code-block:: c
+
+     typedef double * aligned_double_ptr __attribute__((align_value(64)));
+     void foo(double & x  __attribute__((align_value(128)),
+              aligned_double_ptr y) { ... }
+
+If the pointer value does not have the specified alignment at runtime, the
+behavior of the program is undefined.
   }];
 }
 

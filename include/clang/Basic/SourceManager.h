@@ -205,10 +205,10 @@ namespace SrcMgr {
     /// this content cache.  This is used for performance analysis.
     llvm::MemoryBuffer::BufferKind getMemoryBufferKind() const;
 
-    void setBuffer(llvm::MemoryBuffer *B) {
+    void setBuffer(std::unique_ptr<llvm::MemoryBuffer> B) {
       assert(!Buffer.getPointer() && "MemoryBuffer already set.");
-      Buffer.setPointer(B);
-      Buffer.setInt(false);
+      Buffer.setPointer(B.release());
+      Buffer.setInt(0);
     }
 
     /// \brief Get the underlying buffer, returning NULL if the buffer is not
@@ -788,12 +788,12 @@ public:
   ///
   /// This does no caching of the buffer and takes ownership of the
   /// MemoryBuffer, so only pass a MemoryBuffer to this once.
-  FileID createFileID(llvm::MemoryBuffer *Buffer,
+  FileID createFileID(std::unique_ptr<llvm::MemoryBuffer> Buffer,
                       SrcMgr::CharacteristicKind FileCharacter = SrcMgr::C_User,
                       int LoadedID = 0, unsigned LoadedOffset = 0,
                       SourceLocation IncludeLoc = SourceLocation()) {
-    return createFileID(createMemBufferContentCache(Buffer), IncludeLoc,
-                        FileCharacter, LoadedID, LoadedOffset);
+    return createFileID(createMemBufferContentCache(std::move(Buffer)),
+                        IncludeLoc, FileCharacter, LoadedID, LoadedOffset);
   }
 
   /// \brief Return a new SourceLocation that encodes the
@@ -1627,7 +1627,7 @@ private:
 
   /// \brief Create a new ContentCache for the specified  memory buffer.
   const SrcMgr::ContentCache *
-  createMemBufferContentCache(llvm::MemoryBuffer *Buf);
+  createMemBufferContentCache(std::unique_ptr<llvm::MemoryBuffer> Buf);
 
   FileID getFileIDSlow(unsigned SLocOffset) const;
   FileID getFileIDLocal(unsigned SLocOffset) const;
@@ -1677,7 +1677,7 @@ class BeforeThanCompare<SourceRange> {
 public:
   explicit BeforeThanCompare(SourceManager &SM) : SM(SM) { }
 
-  bool operator()(SourceRange LHS, SourceRange RHS) {
+  bool operator()(SourceRange LHS, SourceRange RHS) const {
     return SM.isBeforeInTranslationUnit(LHS.getBegin(), RHS.getBegin());
   }
 };

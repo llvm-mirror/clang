@@ -302,6 +302,18 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
   if (startsSegmentOfBuilderTypeCall(Current))
     State.Stack.back().ContainsUnwrappedBuilder = true;
 
+  if (Current.isMemberAccess() && Previous.is(tok::r_paren) &&
+      (Previous.MatchingParen &&
+       (Previous.TotalLength - Previous.MatchingParen->TotalLength > 10))) {
+    // If there is a function call with long parameters, break before trailing
+    // calls. This prevents things like:
+    //   EXPECT_CALL(SomeLongParameter).Times(
+    //       2);
+    // We don't want to do this for short parameters as they can just be
+    // indexes.
+    State.Stack.back().NoLineBreak = true;
+  }
+
   State.Column += Spaces;
   if (Current.isNot(tok::comment) && Previous.is(tok::l_paren) &&
       Previous.Previous && Previous.Previous->isOneOf(tok::kw_if, tok::kw_for))
@@ -475,7 +487,7 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
   if (!State.NextToken || !State.NextToken->Previous)
     return 0;
   FormatToken &Current = *State.NextToken;
-  const FormatToken &Previous = *State.NextToken->Previous;
+  const FormatToken &Previous = *Current.Previous;
   // If we are continuing an expression, we want to use the continuation indent.
   unsigned ContinuationIndent =
       std::max(State.Stack.back().LastSpace, State.Stack.back().Indent) +
@@ -643,7 +655,11 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
       State.Stack[State.Stack.size() - 2].JSFunctionInlined = false;
     }
     if (Current.TokenText == "function")
-      State.Stack.back().JSFunctionInlined = !Newline;
+      State.Stack.back().JSFunctionInlined =
+          !Newline && Previous && Previous->Type != TT_DictLiteral &&
+          // If the unnamed function is the only parameter to another function,
+          // we can likely inline it and come up with a good format.
+          (Previous->isNot(tok::l_paren) || Previous->ParameterCount > 1);
   }
 
   moveStatePastFakeLParens(State, Newline);
@@ -701,7 +717,8 @@ void ContinuationIndenter::moveStatePastFakeLParens(LineState &State,
     // Indent from 'LastSpace' unless this the fake parentheses encapsulating a
     // builder type call after 'return'. If such a call is line-wrapped, we
     // commonly just want to indent from the start of the line.
-    if (!Previous || Previous->isNot(tok::kw_return) || *I > 0)
+    if (!Current.isTrailingComment() &&
+        (!Previous || Previous->isNot(tok::kw_return) || *I > 0))
       NewParenState.Indent =
           std::max(std::max(State.Column, NewParenState.Indent),
                    State.Stack.back().LastSpace);
@@ -740,7 +757,7 @@ void ContinuationIndenter::moveStatePastFakeLParens(LineState &State,
     // other expression, unless the indentation needs to be skipped.
     if (*I == prec::Conditional ||
         (!SkipFirstExtraIndent && *I > prec::Assignment &&
-         !Style.BreakBeforeBinaryOperators))
+         !Current.isTrailingComment() && !Style.BreakBeforeBinaryOperators))
       NewParenState.Indent += Style.ContinuationIndentWidth;
     if ((Previous && !Previous->opensScope()) || *I > prec::Comma)
       NewParenState.BreakBeforeParameter = false;
@@ -854,10 +871,9 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
             getColumnLimit(State))
       BreakBeforeParameter = true;
   }
-  bool NoLineBreak =
-      State.Stack.back().NoLineBreak ||
-      ((Current.NestingLevel != 0 || Current.Type == TT_TemplateOpener) &&
-       State.Stack.back().ContainsUnwrappedBuilder);
+  bool NoLineBreak = State.Stack.back().NoLineBreak ||
+                     (Current.Type == TT_TemplateOpener &&
+                      State.Stack.back().ContainsUnwrappedBuilder);
   State.Stack.push_back(ParenState(NewIndent, NewIndentLevel,
                                    State.Stack.back().LastSpace,
                                    AvoidBinPacking, NoLineBreak));

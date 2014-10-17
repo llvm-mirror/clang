@@ -4127,6 +4127,7 @@ bool UnnamedLocalNoLinkageFinder::VisitNestedNameSpecifier(
   case NestedNameSpecifier::Namespace:
   case NestedNameSpecifier::NamespaceAlias:
   case NestedNameSpecifier::Global:
+  case NestedNameSpecifier::Super:
     return false;
 
   case NestedNameSpecifier::TypeSpec:
@@ -7900,7 +7901,11 @@ Sema::CheckTypenameType(ElaboratedTypeKeyword Keyword,
 
   DeclarationName Name(&II);
   LookupResult Result(*this, Name, IILoc, LookupOrdinaryName);
-  LookupQualifiedName(Result, Ctx);
+  NestedNameSpecifier *NNS = SS.getScopeRep();
+  if (NNS->getKind() == NestedNameSpecifier::Super)
+    LookupInSuper(Result, NNS->getAsRecordDecl());
+  else
+    LookupQualifiedName(Result, Ctx);
   unsigned DiagID = 0;
   Decl *Referenced = nullptr;
   switch (Result.getResultKind()) {
@@ -7945,6 +7950,7 @@ Sema::CheckTypenameType(ElaboratedTypeKeyword Keyword,
     if (TypeDecl *Type = dyn_cast<TypeDecl>(Result.getFoundDecl())) {
       // We found a type. Build an ElaboratedType, since the
       // typename-specifier was just sugar.
+      MarkAnyDeclReferenced(Type->getLocation(), Type, /*OdrUse=*/false);
       return Context.getElaboratedType(ETK_Typename, 
                                        QualifierLoc.getNestedNameSpecifier(),
                                        Context.getTypeDeclType(Type));

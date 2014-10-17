@@ -360,7 +360,7 @@ void Sema::PragmaStack<ValueType>::Act(SourceLocation PragmaLocation,
   }
 }
 
-bool Sema::UnifySection(const StringRef &SectionName,
+bool Sema::UnifySection(StringRef SectionName,
                         int SectionFlags,
                         DeclaratorDecl *Decl) {
   auto Section = SectionInfos.find(SectionName);
@@ -384,10 +384,10 @@ bool Sema::UnifySection(const StringRef &SectionName,
   if (auto A = OtherDecl->getAttr<SectionAttr>())
     if (A->isImplicit())
       Diag(A->getLocation(), diag::note_pragma_entered_here);
-  return false;
+  return true;
 }
 
-bool Sema::UnifySection(const StringRef &SectionName,
+bool Sema::UnifySection(StringRef SectionName,
                         int SectionFlags,
                         SourceLocation PragmaSectionLocation) {
   auto Section = SectionInfos.find(SectionName);

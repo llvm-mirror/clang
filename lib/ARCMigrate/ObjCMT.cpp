@@ -81,6 +81,8 @@ class ObjCMigrateASTConsumer : public ASTConsumer {
 
   void inferDesignatedInitializers(ASTContext &Ctx,
                                    const ObjCImplementationDecl *ImplD);
+  
+  bool InsertFoundation(ASTContext &Ctx, SourceLocation Loc);
 
 public:
   std::string MigrateDir;
@@ -95,6 +97,7 @@ public:
   const PPConditionalDirectiveRecord *PPRec;
   Preprocessor &PP;
   bool IsOutputFile;
+  bool FoundationIncluded;
   llvm::SmallPtrSet<ObjCProtocolDecl *, 32> ObjCProtocolDecls;
   llvm::SmallVector<const Decl *, 8> CFFunctionIBCandidates;
   llvm::StringMap<char> WhiteListFilenames;
@@ -111,7 +114,8 @@ public:
     ASTMigrateActions(astMigrateActions),
     NSIntegerTypedefed(nullptr), NSUIntegerTypedefed(nullptr),
     Remapper(remapper), FileMgr(fileMgr), PPRec(PPRec), PP(PP),
-    IsOutputFile(isOutputFile) {
+    IsOutputFile(isOutputFile),
+    FoundationIncluded(false){
 
     for (ArrayRef<std::string>::iterator
            I = WhiteList.begin(), E = WhiteList.end(); I != E; ++I) {
@@ -189,7 +193,7 @@ std::unique_ptr<ASTConsumer>
 ObjCMigrateAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   PPConditionalDirectiveRecord *
     PPRec = new PPConditionalDirectiveRecord(CompInst->getSourceManager());
-  CompInst->getPreprocessor().addPPCallbacks(PPRec);
+  CI.getPreprocessor().addPPCallbacks(std::unique_ptr<PPCallbacks>(PPRec));
   std::vector<std::unique_ptr<ASTConsumer>> Consumers;
   Consumers.push_back(WrapperFrontendAction::CreateASTConsumer(CI, InFile));
   Consumers.push_back(llvm::make_unique<ObjCMigrateASTConsumer>(
@@ -584,18 +588,32 @@ static bool rewriteToObjCInterfaceDecl(const ObjCInterfaceDecl *IDecl,
   return true;
 }
 
+static StringRef GetUnsignedName(StringRef NSIntegerName) {
+  StringRef UnsignedName = llvm::StringSwitch<StringRef>(NSIntegerName)
+    .Case("int8_t", "uint8_t")
+    .Case("int16_t", "uint16_t")
+    .Case("int32_t", "uint32_t")
+    .Case("NSInteger", "NSUInteger")
+    .Case("int64_t", "uint64_t")
+    .Default(NSIntegerName);
+  return UnsignedName;
+}
+
 static bool rewriteToNSEnumDecl(const EnumDecl *EnumDcl,
                                 const TypedefDecl *TypedefDcl,
                                 const NSAPI &NS, edit::Commit &commit,
-                                bool IsNSIntegerType,
+                                StringRef NSIntegerName,
                                 bool NSOptions) {
   std::string ClassString;
-  if (NSOptions)
-    ClassString = "typedef NS_OPTIONS(NSUInteger, ";
-  else
-    ClassString =
-      IsNSIntegerType ? "typedef NS_ENUM(NSInteger, "
-                      : "typedef NS_ENUM(NSUInteger, ";
+  if (NSOptions) {
+    ClassString = "typedef NS_OPTIONS(";
+    ClassString += GetUnsignedName(NSIntegerName);
+  }
+  else {
+    ClassString = "typedef NS_ENUM(";
+    ClassString += NSIntegerName;
+  }
+  ClassString += ", ";
   
   ClassString += TypedefDcl->getIdentifier()->getName();
   ClassString += ')';
@@ -644,8 +662,12 @@ static void rewriteToNSMacroDecl(const EnumDecl *EnumDcl,
   ClassString += ')';
   SourceRange R(EnumDcl->getLocStart(), EnumDcl->getLocStart());
   commit.replace(R, ClassString);
-  SourceLocation TypedefLoc = TypedefDcl->getLocEnd();
-  commit.remove(SourceRange(TypedefLoc, TypedefLoc));
+  // This is to remove spaces between '}' and typedef name.
+  SourceLocation StartTypedefLoc = EnumDcl->getLocEnd();
+  StartTypedefLoc = StartTypedefLoc.getLocWithOffset(+1);
+  SourceLocation EndTypedefLoc = TypedefDcl->getLocEnd();
+  
+  commit.remove(SourceRange(StartTypedefLoc, EndTypedefLoc));
 }
 
 static bool UseNSOptionsMacro(Preprocessor &PP, ASTContext &Ctx,
@@ -760,7 +782,7 @@ bool ObjCMigrateASTConsumer::migrateNSEnumDecl(ASTContext &Ctx,
                                            const EnumDecl *EnumDcl,
                                            const TypedefDecl *TypedefDcl) {
   if (!EnumDcl->isCompleteDefinition() || EnumDcl->getIdentifier() ||
-      EnumDcl->isDeprecated())
+      EnumDcl->isDeprecated() || EnumDcl->getIntegerTypeSourceInfo())
     return false;
   if (!TypedefDcl) {
     if (NSIntegerTypedefed) {
@@ -784,19 +806,15 @@ bool ObjCMigrateASTConsumer::migrateNSEnumDecl(ASTContext &Ctx,
     return false;
   
   QualType qt = TypedefDcl->getTypeSourceInfo()->getType();
-  bool IsNSIntegerType = NSAPIObj->isObjCNSIntegerType(qt);
-  bool IsNSUIntegerType = !IsNSIntegerType && NSAPIObj->isObjCNSUIntegerType(qt);
+  StringRef NSIntegerName = NSAPIObj->GetNSIntegralKind(qt);
   
-  if (!IsNSIntegerType && !IsNSUIntegerType) {
+  if (NSIntegerName.empty()) {
     // Also check for typedef enum {...} TD;
     if (const EnumType *EnumTy = qt->getAs<EnumType>()) {
       if (EnumTy->getDecl() == EnumDcl) {
         bool NSOptions = UseNSOptionsMacro(PP, Ctx, EnumDcl);
-        if (NSOptions) {
-          if (!Ctx.Idents.get("NS_OPTIONS").hasMacroDefinition())
-            return false;
-        }
-        else if (!Ctx.Idents.get("NS_ENUM").hasMacroDefinition())
+        if (!Ctx.Idents.get("NS_ENUM").hasMacroDefinition() &&
+            !InsertFoundation(Ctx, TypedefDcl->getLocStart()))
           return false;
         edit::Commit commit(*Editor);
         rewriteToNSMacroDecl(EnumDcl, TypedefDcl, *NSAPIObj, commit, !NSOptions);
@@ -809,15 +827,13 @@ bool ObjCMigrateASTConsumer::migrateNSEnumDecl(ASTContext &Ctx,
   
   // We may still use NS_OPTIONS based on what we find in the enumertor list.
   bool NSOptions = UseNSOptionsMacro(PP, Ctx, EnumDcl);
-  // NS_ENUM must be available.
-  if (IsNSIntegerType && !Ctx.Idents.get("NS_ENUM").hasMacroDefinition())
-    return false;
-  // NS_OPTIONS must be available.
-  if (IsNSUIntegerType && !Ctx.Idents.get("NS_OPTIONS").hasMacroDefinition())
+  // For sanity check, see if macro NS_ENUM can be seen.
+  if (!Ctx.Idents.get("NS_ENUM").hasMacroDefinition()
+        && !InsertFoundation(Ctx, TypedefDcl->getLocStart()))
     return false;
   edit::Commit commit(*Editor);
   bool Res = rewriteToNSEnumDecl(EnumDcl, TypedefDcl, *NSAPIObj,
-                                 commit, IsNSIntegerType, NSOptions);
+                                 commit, NSIntegerName, NSOptions);
   Editor->commit(commit);
   return Res;
 }
@@ -1598,6 +1614,22 @@ void ObjCMigrateASTConsumer::inferDesignatedInitializers(
   }
 }
 
+bool ObjCMigrateASTConsumer::InsertFoundation(ASTContext &Ctx,
+                                              SourceLocation  Loc) {
+  if (FoundationIncluded)
+    return true;
+  if (Loc.isInvalid())
+    return false;
+  edit::Commit commit(*Editor);
+  if (Ctx.getLangOpts().Modules)
+    commit.insert(Loc, "@import Foundation;\n");
+  else
+    commit.insert(Loc, "#import <Foundation/Foundation.h>\n");
+  Editor->commit(commit);
+  FoundationIncluded = true;
+  return true;
+}
+
 namespace {
 
 class RewritesReceiver : public edit::EditsReceiver {
@@ -1873,7 +1905,7 @@ MigrateSourceAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
     ObjCMTAction |= FrontendOptions::ObjCMT_Literals |
                     FrontendOptions::ObjCMT_Subscripting;
   }
-  CI.getPreprocessor().addPPCallbacks(PPRec);
+  CI.getPreprocessor().addPPCallbacks(std::unique_ptr<PPCallbacks>(PPRec));
   std::vector<std::string> WhiteList =
     getWhiteListFilenames(CI.getFrontendOpts().ObjCMTWhiteListPath);
   return llvm::make_unique<ObjCMigrateASTConsumer>(

@@ -1547,25 +1547,6 @@ void Sema::DefaultSynthesizeProperties(Scope *S, ObjCImplDecl* IMPDecl,
       if (IMPDecl->getInstanceMethod(Prop->getSetterName()))
         continue;
     }
-    // If property to be implemented in the super class, ignore.
-    if (SuperPropMap[Prop->getIdentifier()]) {
-      ObjCPropertyDecl *PropInSuperClass = SuperPropMap[Prop->getIdentifier()];
-      if ((Prop->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_readwrite) &&
-          (PropInSuperClass->getPropertyAttributes() &
-           ObjCPropertyDecl::OBJC_PR_readonly) &&
-          !IMPDecl->getInstanceMethod(Prop->getSetterName()) &&
-          !IDecl->HasUserDeclaredSetterMethod(Prop)) {
-        Diag(Prop->getLocation(), diag::warn_no_autosynthesis_property)
-          << Prop->getIdentifier();
-        Diag(PropInSuperClass->getLocation(), diag::note_property_declare);
-      }
-      else {
-        Diag(Prop->getLocation(), diag::warn_autosynthesis_property_in_superclass)
-          << Prop->getIdentifier();
-        Diag(IMPDecl->getLocation(), diag::note_while_in_implementation);
-      }
-      continue;
-    }
     if (ObjCPropertyImplDecl *PID =
         IMPDecl->FindPropertyImplIvarDecl(Prop->getIdentifier())) {
       Diag(Prop->getLocation(), diag::warn_no_autosynthesis_shared_ivar_property)
@@ -1574,12 +1555,14 @@ void Sema::DefaultSynthesizeProperties(Scope *S, ObjCImplDecl* IMPDecl,
         Diag(PID->getLocation(), diag::note_property_synthesize);
       continue;
     }
+    ObjCPropertyDecl *PropInSuperClass = SuperPropMap[Prop->getIdentifier()];
     if (ObjCProtocolDecl *Proto =
           dyn_cast<ObjCProtocolDecl>(Prop->getDeclContext())) {
       // We won't auto-synthesize properties declared in protocols.
       // Suppress the warning if class's superclass implements property's
       // getter and implements property's setter (if readwrite property).
-      if (!SuperClassImplementsProperty(IDecl, Prop)) {
+      // Or, if property is going to be implemented in its super class.
+      if (!SuperClassImplementsProperty(IDecl, Prop) && !PropInSuperClass) {
         Diag(IMPDecl->getLocation(),
              diag::warn_auto_synthesizing_protocol_property)
           << Prop << Proto;
@@ -1587,7 +1570,24 @@ void Sema::DefaultSynthesizeProperties(Scope *S, ObjCImplDecl* IMPDecl,
       }
       continue;
     }
-
+    // If property to be implemented in the super class, ignore.
+    if (PropInSuperClass) {
+      if ((Prop->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_readwrite) &&
+          (PropInSuperClass->getPropertyAttributes() &
+           ObjCPropertyDecl::OBJC_PR_readonly) &&
+          !IMPDecl->getInstanceMethod(Prop->getSetterName()) &&
+          !IDecl->HasUserDeclaredSetterMethod(Prop)) {
+        Diag(Prop->getLocation(), diag::warn_no_autosynthesis_property)
+        << Prop->getIdentifier();
+        Diag(PropInSuperClass->getLocation(), diag::note_property_declare);
+      }
+      else {
+        Diag(Prop->getLocation(), diag::warn_autosynthesis_property_in_superclass)
+        << Prop->getIdentifier();
+        Diag(IMPDecl->getLocation(), diag::note_while_in_implementation);
+      }
+      continue;
+    }
     // We use invalid SourceLocations for the synthesized ivars since they
     // aren't really synthesized at a particular location; they just exist.
     // Saying that they are located at the @implementation isn't really going

@@ -1,9 +1,19 @@
-// RUN: %clang_cc1 -std=c++11 -fno-rtti -emit-llvm %s -o - -triple=i386-pc-win32 -fms-extensions | FileCheck %s
-// RUN: %clang_cc1 -std=c++11 -fno-rtti -emit-llvm %s -o - -triple=x86_64-pc-win32 -fms-extensions | FileCheck %s -check-prefix=X64
-// RUN: %clang_cc1 -std=c++11 -fno-rtti -emit-llvm %s -o - -triple=i386-pc-win32 -DINCOMPLETE_VIRTUAL -fms-extensions -verify
-// RUN: %clang_cc1 -std=c++11 -fno-rtti -emit-llvm %s -o - -triple=i386-pc-win32 -DINCOMPLETE_VIRTUAL -DMEMFUN -fms-extensions -verify
-// FIXME: Test x86_64 member pointers when codegen no longer asserts on records
-// with virtual bases.
+// RUN: %clang_cc1 -std=c++11 -Wno-uninitialized -fno-rtti -emit-llvm %s -o - -triple=i386-pc-win32 -fms-extensions | FileCheck %s
+// RUN: %clang_cc1 -std=c++11 -Wno-uninitialized -fno-rtti -emit-llvm %s -o - -triple=x86_64-pc-win32 -fms-extensions | FileCheck %s -check-prefix=X64
+// RUN: %clang_cc1 -std=c++11 -Wno-uninitialized -fno-rtti -emit-llvm %s -o - -triple=i386-pc-win32 -DINCOMPLETE_VIRTUAL -fms-extensions -verify
+// RUN: %clang_cc1 -std=c++11 -Wno-uninitialized -fno-rtti -emit-llvm %s -o - -triple=i386-pc-win32 -DINCOMPLETE_VIRTUAL -DMEMFUN -fms-extensions -verify
+
+namespace PR20947 {
+struct A;
+int A::**a = nullptr;
+// CHECK: %[[opaque0:.*]] = type opaque
+// CHECK: %[[opaque1:.*]] = type opaque
+// CHECK: @"\01?a@PR20947@@3PAPQA@1@HA" = global %[[opaque0]]* null, align 4
+
+struct B;
+int B::*&b = b;
+// CHECK: @"\01?b@PR20947@@3AAPQB@1@HA" = global %[[opaque1]]* null, align 4
+}
 
 #ifndef INCOMPLETE_VIRTUAL
 struct B1 {
@@ -595,15 +605,15 @@ void (C::*getmp())() {
   return &C::g;
 }
 // CHECK-LABEL: define i64 @"\01?getmp@Test4@@YAP8C@1@AEXXZXZ"()
-// CHECK: store { i8*, i32 } { i8* bitcast (void (i8*)* @"\01??_9C@Test4@@$BA@AE" to i8*), i32 4 }, { i8*, i32 }* %{{.*}}
+// CHECK: store { i8*, i32 } { i8* bitcast (void (%"struct.Test4::C"*, ...)* @"\01??_9C@Test4@@$BA@AE" to i8*), i32 4 }, { i8*, i32 }* %{{.*}}
 //
 
-// CHECK-LABEL: define linkonce_odr x86_thiscallcc void @"\01??_9C@Test4@@$BA@AE"(i8*)
+// CHECK-LABEL: define linkonce_odr x86_thiscallcc void @"\01??_9C@Test4@@$BA@AE"(%"struct.Test4::C"* %this, ...)
 // CHECK-NOT:  getelementptr
-// CHECK:  load void (i8*)*** %{{.*}}
-// CHECK:  getelementptr inbounds void (i8*)** %{{.*}}, i64 0
+// CHECK:  load void (%"struct.Test4::C"*, ...)*** %{{.*}}
+// CHECK:  getelementptr inbounds void (%"struct.Test4::C"*, ...)** %{{.*}}, i64 0
 // CHECK-NOT:  getelementptr
-// CHECK:  call x86_thiscallcc void %
+// CHECK:  musttail call x86_thiscallcc void (%"struct.Test4::C"*, ...)* %
 
 }
 

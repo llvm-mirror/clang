@@ -66,7 +66,7 @@ int t8() {
   __asm int 4
   return 10;
 // CHECK: t8
-// CHECK: call void asm sideeffect inteldialect "int $$4\0A\09int $$4", "~{dirflag},~{fpsr},~{flags}"()
+// CHECK: call i32 asm sideeffect inteldialect "int $$4\0A\09int $$4", "={eax},~{dirflag},~{fpsr},~{flags}"()
 // CHECK: ret i32 10
 }
 
@@ -88,10 +88,11 @@ unsigned t10(void) {
   }
   return j;
 // CHECK: t10
+// CHECK: [[r:%[a-zA-Z0-9]+]] = alloca i32, align 4
 // CHECK: [[I:%[a-zA-Z0-9]+]] = alloca i32, align 4
 // CHECK: [[J:%[a-zA-Z0-9]+]] = alloca i32, align 4
 // CHECK: store i32 1, i32* [[I]], align 4
-// CHECK: call void asm sideeffect inteldialect "mov eax, dword ptr $1\0A\09mov dword ptr $0, eax", "=*m,*m,~{eax},~{dirflag},~{fpsr},~{flags}"(i32* %{{.*}}, i32* %{{.*}})
+// CHECK: call i32 asm sideeffect inteldialect "mov eax, dword ptr $2\0A\09mov dword ptr $0, eax", "=*m,={eax},*m,~{eax},~{dirflag},~{fpsr},~{flags}"(i32* %{{.*}}, i32* %{{.*}})
 // CHECK: [[RET:%[a-zA-Z0-9]+]] = load i32* [[J]], align 4
 // CHECK: ret i32 [[RET]]
 }
@@ -112,7 +113,7 @@ unsigned t12(void) {
   }
   return j + m;
 // CHECK: t12
-// CHECK: call void asm sideeffect inteldialect "mov eax, dword ptr $2\0A\09mov dword ptr $0, eax\0A\09mov eax, dword ptr $3\0A\09mov dword ptr $1, eax", "=*m,=*m,*m,*m,~{eax},~{dirflag},~{fpsr},~{flags}"(i32* %{{.*}}, i32* %{{.*}}, i32* %{{.*}}, i32* %{{.*}})
+// CHECK: call i32 asm sideeffect inteldialect "mov eax, dword ptr $3\0A\09mov dword ptr $0, eax\0A\09mov eax, dword ptr $4\0A\09mov dword ptr $1, eax", "=*m,=*m,={eax},*m,*m,~{eax},~{dirflag},~{fpsr},~{flags}"(i32* %{{.*}}, i32* %{{.*}}, i32* %{{.*}}, i32* %{{.*}})
 }
 
 void t13() {
@@ -239,7 +240,7 @@ void t23() {
   the_label:
   }
 // CHECK: t23
-// CHECK: call void asm sideeffect inteldialect "the_label:", "~{dirflag},~{fpsr},~{flags}"()
+// CHECK: call void asm sideeffect inteldialect "{{.*}}__MSASMLABEL_.0__the_label:", "~{dirflag},~{fpsr},~{flags}"()
 }
 
 void t24_helper(void) {}
@@ -319,11 +320,11 @@ int *t30()
 {
   int *res;
   __asm lea edi, results
-// CHECK: lea edi, dword ptr $1
+// CHECK: lea edi, dword ptr $2
   __asm mov res, edi
 // CHECK: mov dword ptr $0, edi
   return res;
-// CHECK: "=*m,*m,~{edi},~{dirflag},~{fpsr},~{flags}"(i32** %{{.*}}, [2 x i32]* @{{.*}})
+// CHECK: "=*m,={eax},*m,~{edi},~{dirflag},~{fpsr},~{flags}"(i32** %{{.*}}, [2 x i32]* @{{.*}})
 }
 
 void t31() {
@@ -509,4 +510,46 @@ void call_clobber() {
   __asm call t41
   // CHECK-LABEL: define void @call_clobber
   // CHECK: call void asm sideeffect inteldialect "call dword ptr $0", "*m,~{dirflag},~{fpsr},~{flags}"(void (i16)* @t41)
+}
+
+void xgetbv() {
+  __asm xgetbv
+}
+// CHECK-LABEL: define void @xgetbv()
+// CHECK: call void asm sideeffect inteldialect "xgetbv", "~{eax},~{edx},~{dirflag},~{fpsr},~{flags}"()
+
+void label1() {
+  __asm {
+    label:
+    jmp label
+  }
+  // CHECK-LABEL: define void @label1
+  // CHECK: call void asm sideeffect inteldialect "{{.*}}__MSASMLABEL_.1__label:\0A\09jmp {{.*}}__MSASMLABEL_.1__label", "~{dirflag},~{fpsr},~{flags}"()
+}
+
+void label2() {
+  __asm {
+    jmp label
+    label:
+  }
+  // CHECK-LABEL: define void @label2
+  // CHECK: call void asm sideeffect inteldialect "jmp {{.*}}__MSASMLABEL_.2__label\0A\09{{.*}}__MSASMLABEL_.2__label:", "~{dirflag},~{fpsr},~{flags}"()
+}
+
+void label3() {
+  __asm {
+    label:
+    mov eax, label
+  }
+  // CHECK-LABEL: define void @label3
+  // CHECK: call void asm sideeffect inteldialect "{{.*}}__MSASMLABEL_.3__label:\0A\09mov eax, {{.*}}__MSASMLABEL_.3__label", "~{eax},~{dirflag},~{fpsr},~{flags}"()
+}
+
+void label4() {
+  __asm {
+    label:
+    mov eax, [label]
+  }
+  // CHECK-LABEL: define void @label4
+  // CHECK: call void asm sideeffect inteldialect "{{.*}}__MSASMLABEL_.4__label:\0A\09mov eax, {{.*}}__MSASMLABEL_.4__label", "~{eax},~{dirflag},~{fpsr},~{flags}"()
 }

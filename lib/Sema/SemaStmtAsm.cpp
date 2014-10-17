@@ -15,6 +15,7 @@
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/TypeLoc.h"
 #include "clang/Basic/TargetInfo.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Initialization.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/Scope.h"
@@ -74,6 +75,32 @@ static bool isOperandMentioned(unsigned OpNo,
   return false;
 }
 
+static bool CheckNakedParmReference(Expr *E, Sema &S) {
+  FunctionDecl *Func = dyn_cast<FunctionDecl>(S.CurContext);
+  if (!Func)
+    return false;
+  if (!Func->hasAttr<NakedAttr>())
+    return false;
+
+  SmallVector<Expr*, 4> WorkList;
+  WorkList.push_back(E);
+  while (WorkList.size()) {
+    Expr *E = WorkList.pop_back_val();
+    if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E)) {
+      if (isa<ParmVarDecl>(DRE->getDecl())) {
+        S.Diag(DRE->getLocStart(), diag::err_asm_naked_parm_ref);
+        S.Diag(Func->getAttr<NakedAttr>()->getLocation(), diag::note_attribute);
+        return true;
+      }
+    }
+    for (Stmt *Child : E->children()) {
+      if (Expr *E = dyn_cast_or_null<Expr>(Child))
+        WorkList.push_back(E);
+    }
+  }
+  return false;
+}
+
 StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
                                  bool IsVolatile, unsigned NumOutputs,
                                  unsigned NumInputs, IdentifierInfo **Names,
@@ -116,11 +143,29 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
                             diag::err_asm_invalid_lvalue_in_output)
                        << OutputExpr->getSourceRange());
 
+    // Referring to parameters is not allowed in naked functions.
+    if (CheckNakedParmReference(OutputExpr, *this))
+      return StmtError();
+
     if (RequireCompleteType(OutputExpr->getLocStart(), Exprs[i]->getType(),
                             diag::err_dereference_incomplete_type))
       return StmtError();
 
     OutputConstraintInfos.push_back(Info);
+
+    const Type *Ty = OutputExpr->getType().getTypePtr();
+
+    // If this is a dependent type, just continue. We don't know the size of a
+    // dependent type.
+    if (Ty->isDependentType())
+      continue;
+
+    unsigned Size = Context.getTypeSize(Ty);
+    if (!Context.getTargetInfo().validateOutputSize(Literal->getString(),
+                                                    Size))
+      return StmtError(Diag(OutputExpr->getLocStart(),
+                            diag::err_asm_invalid_output_size)
+                       << Info.getConstraintStr());
   }
 
   SmallVector<TargetInfo::ConstraintInfo, 4> InputConstraintInfos;
@@ -144,6 +189,10 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
     }
 
     Expr *InputExpr = Exprs[i];
+
+    // Referring to parameters is not allowed in naked functions.
+    if (CheckNakedParmReference(InputExpr, *this))
+      return StmtError();
 
     // Only allow void types for memory constraints.
     if (Info.allowsMemory() && !Info.allowsRegister()) {
@@ -405,6 +454,10 @@ ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
   Result = CheckPlaceholderExpr(Result.get());
   if (!Result.isUsable()) return Result;
 
+  // Referring to parameters is not allowed in naked functions.
+  if (CheckNakedParmReference(Result.get(), *this))
+    return ExprError();
+
   QualType T = Result.get()->getType();
 
   // For now, reject dependent types.
@@ -454,9 +507,10 @@ bool Sema::LookupInlineAsmField(StringRef Base, StringRef Member,
   NamedDecl *FoundDecl = BaseResult.getFoundDecl();
   if (VarDecl *VD = dyn_cast<VarDecl>(FoundDecl))
     RT = VD->getType()->getAs<RecordType>();
-  else if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(FoundDecl))
+  else if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(FoundDecl)) {
+    MarkAnyDeclReferenced(TD->getLocation(), TD, /*OdrUse=*/false);
     RT = TD->getUnderlyingType()->getAs<RecordType>();
-  else if (TypeDecl *TD = dyn_cast<TypeDecl>(FoundDecl))
+  } else if (TypeDecl *TD = dyn_cast<TypeDecl>(FoundDecl))
     RT = TD->getTypeForDecl()->getAs<RecordType>();
   if (!RT)
     return true;
@@ -492,10 +546,42 @@ StmtResult Sema::ActOnMSAsmStmt(SourceLocation AsmLoc, SourceLocation LBraceLoc,
                                 ArrayRef<Expr*> Exprs,
                                 SourceLocation EndLoc) {
   bool IsSimple = (NumOutputs != 0 || NumInputs != 0);
+  getCurFunction()->setHasBranchProtectedScope();
   MSAsmStmt *NS =
     new (Context) MSAsmStmt(Context, AsmLoc, LBraceLoc, IsSimple,
                             /*IsVolatile*/ true, AsmToks, NumOutputs, NumInputs,
                             Constraints, Exprs, AsmString,
                             Clobbers, EndLoc);
   return NS;
+}
+
+LabelDecl *Sema::GetOrCreateMSAsmLabel(StringRef ExternalLabelName,
+                                       SourceLocation Location,
+                                       bool AlwaysCreate) {
+  LabelDecl* Label = LookupOrCreateLabel(PP.getIdentifierInfo(ExternalLabelName),
+                                         Location);
+
+  if (Label->isMSAsmLabel()) {
+    // If we have previously created this label implicitly, mark it as used.
+    Label->markUsed(Context);
+  } else {
+    // Otherwise, insert it, but only resolve it if we have seen the label itself.
+    std::string InternalName;
+    llvm::raw_string_ostream OS(InternalName);
+    // Create an internal name for the label.  The name should not be a valid mangled
+    // name, and should be unique.  We use a dot to make the name an invalid mangled
+    // name.
+    OS << "__MSASMLABEL_." << MSAsmLabelNameCounter++ << "__" << ExternalLabelName;
+    Label->setMSAsmLabel(OS.str());
+  }
+  if (AlwaysCreate) {
+    // The label might have been created implicitly from a previously encountered
+    // goto statement.  So, for both newly created and looked up labels, we mark
+    // them as resolved.
+    Label->setMSAsmLabelResolved();
+  }
+  // Adjust their location for being able to generate accurate diagnostics.
+  Label->setLocation(Location);
+
+  return Label;
 }

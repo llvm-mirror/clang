@@ -173,9 +173,10 @@ void CodeGenFunction::EmitAnyExprToMem(const Expr *E,
   llvm_unreachable("bad evaluation kind");
 }
 
-static void
-pushTemporaryCleanup(CodeGenFunction &CGF, const MaterializeTemporaryExpr *M,
-                     const Expr *E, llvm::Value *ReferenceTemporary) {
+static void pushTemporaryCleanup(CodeGenFunction &CGF,
+                                 const MaterializeTemporaryExpr *M,
+                                 const Expr *E, llvm::Value *ReferenceTemporary,
+                                 llvm::Value *SizeForLifeTimeMarkers) {
   // Objective-C++ ARC:
   //   If we are binding a reference to a temporary that has ownership, we
   //   need to perform retain/release operations on the temporary.
@@ -242,6 +243,10 @@ pushTemporaryCleanup(CodeGenFunction &CGF, const MaterializeTemporaryExpr *M,
     }
   }
 
+  // Call @llvm.lifetime.end marker for the temporary.
+  CGF.pushLifetimeEndMarker(M->getStorageDuration(), ReferenceTemporary,
+                            SizeForLifeTimeMarkers);
+
   CXXDestructorDecl *ReferenceTemporaryDtor = nullptr;
   if (const RecordType *RT =
           E->getType()->getBaseElementTypeUnsafe()->getAs<RecordType>()) {
@@ -267,8 +272,8 @@ pushTemporaryCleanup(CodeGenFunction &CGF, const MaterializeTemporaryExpr *M,
           dyn_cast_or_null<VarDecl>(M->getExtendingDecl()));
       CleanupArg = llvm::Constant::getNullValue(CGF.Int8PtrTy);
     } else {
-      CleanupFn =
-        CGF.CGM.GetAddrOfCXXDestructor(ReferenceTemporaryDtor, Dtor_Complete);
+      CleanupFn = CGF.CGM.getAddrOfCXXStructor(ReferenceTemporaryDtor,
+                                               StructorType::Complete);
       CleanupArg = cast<llvm::Constant>(ReferenceTemporary);
     }
     CGF.CGM.getCXXABI().registerGlobalDtor(
@@ -296,11 +301,18 @@ pushTemporaryCleanup(CodeGenFunction &CGF, const MaterializeTemporaryExpr *M,
 
 static llvm::Value *
 createReferenceTemporary(CodeGenFunction &CGF,
-                         const MaterializeTemporaryExpr *M, const Expr *Inner) {
+                         const MaterializeTemporaryExpr *M, const Expr *Inner,
+                         llvm::Value *&SizeForLifeTimeMarkers) {
+  SizeForLifeTimeMarkers = nullptr;
   switch (M->getStorageDuration()) {
   case SD_FullExpression:
-  case SD_Automatic:
-    return CGF.CreateMemTemp(Inner->getType(), "ref.tmp");
+  case SD_Automatic: {
+    llvm::Value *RefTemp = CGF.CreateMemTemp(Inner->getType(), "ref.tmp");
+    uint64_t TempSize = CGF.CGM.getDataLayout().getTypeStoreSize(
+        CGF.ConvertTypeForMem(Inner->getType()));
+    SizeForLifeTimeMarkers = CGF.EmitLifetimeStart(TempSize, RefTemp);
+    return RefTemp;
+  }
 
   case SD_Thread:
   case SD_Static:
@@ -321,7 +333,8 @@ LValue CodeGenFunction::EmitMaterializeTemporaryExpr(
       M->getType().getObjCLifetime() != Qualifiers::OCL_None &&
       M->getType().getObjCLifetime() != Qualifiers::OCL_ExplicitNone) {
     // FIXME: Fold this into the general case below.
-    llvm::Value *Object = createReferenceTemporary(*this, M, E);
+    llvm::Value *ObjectSize;
+    llvm::Value *Object = createReferenceTemporary(*this, M, E, ObjectSize);
     LValue RefTempDst = MakeAddrLValue(Object, M->getType());
 
     if (auto *Var = dyn_cast<llvm::GlobalVariable>(Object)) {
@@ -333,7 +346,7 @@ LValue CodeGenFunction::EmitMaterializeTemporaryExpr(
 
     EmitScalarInit(E, M->getExtendingDecl(), RefTempDst, false);
 
-    pushTemporaryCleanup(*this, M, E, Object);
+    pushTemporaryCleanup(*this, M, E, Object, ObjectSize);
     return RefTempDst;
   }
 
@@ -351,8 +364,10 @@ LValue CodeGenFunction::EmitMaterializeTemporaryExpr(
     }
   }
 
-  // Create and initialize the reference temporary.
-  llvm::Value *Object = createReferenceTemporary(*this, M, E);
+  // Create and initialize the reference temporary and get the temporary size
+  llvm::Value *ObjectSize;
+  llvm::Value *Object = createReferenceTemporary(*this, M, E, ObjectSize);
+
   if (auto *Var = dyn_cast<llvm::GlobalVariable>(Object)) {
     // If the temporary is a global and has a constant initializer, we may
     // have already initialized it.
@@ -363,7 +378,8 @@ LValue CodeGenFunction::EmitMaterializeTemporaryExpr(
   } else {
     EmitAnyExprToMem(E, Object, Qualifiers(), /*IsInit*/true);
   }
-  pushTemporaryCleanup(*this, M, E, Object);
+
+  pushTemporaryCleanup(*this, M, E, Object, ObjectSize);
 
   // Perform derived-to-base casts and/or field accesses, to get from the
   // temporary object we created (and, potentially, for which we extended
@@ -711,6 +727,34 @@ EmitComplexPrePostIncDec(const UnaryOperator *E, LValue LV,
   return isPre ? IncVal : InVal;
 }
 
+void CodeGenFunction::EmitAlignmentAssumption(llvm::Value *PtrValue,
+                                              unsigned Alignment,
+                                              llvm::Value *OffsetValue) {
+  llvm::Value *PtrIntValue =
+    Builder.CreatePtrToInt(PtrValue, IntPtrTy, "ptrint");
+
+  llvm::Value *Mask = llvm::ConstantInt::get(IntPtrTy,
+    Alignment > 0 ? Alignment - 1 : 0);
+  if (OffsetValue) {
+    bool IsOffsetZero = false;
+    if (llvm::ConstantInt *CI = dyn_cast<llvm::ConstantInt>(OffsetValue))
+      IsOffsetZero = CI->isZero();
+
+    if (!IsOffsetZero) {
+      if (OffsetValue->getType() != IntPtrTy)
+        OffsetValue = Builder.CreateIntCast(OffsetValue, IntPtrTy,
+                        /*isSigned*/true, "offsetcast");
+      PtrIntValue = Builder.CreateSub(PtrIntValue, OffsetValue, "offsetptr");
+    }
+  }
+
+  llvm::Value *Zero = llvm::ConstantInt::get(IntPtrTy, 0);
+  llvm::Value *MaskedPtr = Builder.CreateAnd(PtrIntValue, Mask, "maskedptr");
+  llvm::Value *InvCond = Builder.CreateICmpEQ(MaskedPtr, Zero, "maskcond");
+
+  llvm::Value *FnAssume = CGM.getIntrinsic(llvm::Intrinsic::assume);
+  Builder.CreateCall(FnAssume, InvCond);
+}
 
 //===----------------------------------------------------------------------===//
 //                         LValue Expression Emission
@@ -1778,7 +1822,8 @@ static LValue EmitGlobalVarDeclLValue(CodeGenFunction &CGF,
   QualType T = E->getType();
 
   // If it's thread_local, emit a call to its wrapper function instead.
-  if (VD->getTLSKind() == VarDecl::TLS_Dynamic)
+  if (VD->getTLSKind() == VarDecl::TLS_Dynamic &&
+      CGF.CGM.getCXXABI().usesThreadWrapperFunction())
     return CGF.CGM.getCXXABI().EmitThreadLocalVarDeclLValue(CGF, VD, T);
 
   llvm::Value *V = CGF.CGM.GetAddrOfGlobalVar(VD);
@@ -1896,7 +1941,8 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
 
     llvm::Value *V = LocalDeclMap.lookup(VD);
     if (!V && VD->isStaticLocal())
-      V = CGM.getStaticLocalDeclAddress(VD);
+      V = CGM.getOrCreateStaticVarDecl(
+          *VD, CGM.getLLVMLinkageVarDefinition(VD, /*isConstant=*/false));
 
     // Use special handling for lambdas.
     if (!V) {
@@ -3320,7 +3366,8 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
 
   CallArgList Args;
   EmitCallArgs(Args, dyn_cast<FunctionProtoType>(FnType), E->arg_begin(),
-               E->arg_end(), ForceColumnInfo);
+               E->arg_end(), E->getDirectCallee(), /*ParamsToSkip*/ 0,
+               ForceColumnInfo);
 
   const CGFunctionInfo &FnInfo =
     CGM.getTypes().arrangeFreeFunctionCall(Args, FnType);

@@ -92,7 +92,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   const TargetInfo  *Target;
   FileManager       &FileMgr;
   SourceManager     &SourceMgr;
-  ScratchBuffer     *ScratchBuf;
+  std::unique_ptr<ScratchBuffer> ScratchBuf;
   HeaderSearch      &HeaderInfo;
   ModuleLoader      &TheModuleLoader;
 
@@ -192,11 +192,11 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
 
   /// \brief Tracks all of the pragmas that the client registered
   /// with this preprocessor.
-  PragmaNamespace *PragmaHandlers;
+  std::unique_ptr<PragmaNamespace> PragmaHandlers;
 
   /// \brief Pragma handlers of the original source is stored here during the
   /// parsing of a model file.
-  PragmaNamespace *PragmaHandlersBackup;
+  std::unique_ptr<PragmaNamespace> PragmaHandlersBackup;
 
   /// \brief Tracks all of the comment handlers that the client registered
   /// with this preprocessor.
@@ -338,7 +338,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
 
   /// \brief Actions invoked when some preprocessor activity is
   /// encountered (e.g. a file is \#included, etc).
-  PPCallbacks *Callbacks;
+  std::unique_ptr<PPCallbacks> Callbacks;
 
   struct MacroExpandsInfo {
     Token Tok;
@@ -395,7 +395,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   /// \brief Cache of macro expanders to reduce malloc traffic.
   enum { TokenLexerCacheSize = 8 };
   unsigned NumCachedTokenLexers;
-  TokenLexer *TokenLexerCache[TokenLexerCacheSize];
+  std::unique_ptr<TokenLexer> TokenLexerCache[TokenLexerCacheSize];
   /// \}
 
   /// \brief Keeps macro expanded tokens for TokenLexers.
@@ -575,11 +575,12 @@ public:
   ///
   /// Note that this class takes ownership of any PPCallbacks object given to
   /// it.
-  PPCallbacks *getPPCallbacks() const { return Callbacks; }
-  void addPPCallbacks(PPCallbacks *C) {
+  PPCallbacks *getPPCallbacks() const { return Callbacks.get(); }
+  void addPPCallbacks(std::unique_ptr<PPCallbacks> C) {
     if (Callbacks)
-      C = new PPChainedCallbacks(C, Callbacks);
-    Callbacks = C;
+      C = llvm::make_unique<PPChainedCallbacks>(std::move(C),
+                                                std::move(Callbacks));
+    Callbacks = std::move(C);
   }
   /// \}
 
@@ -1360,6 +1361,7 @@ public:
 private:
 
   void PushIncludeMacroStack() {
+    assert(CurLexerKind != CLK_CachingLexer && "cannot push a caching lexer");
     IncludeMacroStack.push_back(IncludeStackInfo(
         CurLexerKind, CurSubmodule, std::move(CurLexer), std::move(CurPTHLexer),
         CurPPLexer, std::move(CurTokenLexer), CurDirLookup));

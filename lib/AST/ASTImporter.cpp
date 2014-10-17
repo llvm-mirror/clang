@@ -4760,6 +4760,13 @@ NestedNameSpecifier *ASTImporter::Import(NestedNameSpecifier *FromNNS) {
   case NestedNameSpecifier::Global:
     return NestedNameSpecifier::GlobalSpecifier(ToContext);
 
+  case NestedNameSpecifier::Super:
+    if (CXXRecordDecl *RD =
+            cast<CXXRecordDecl>(Import(FromNNS->getAsRecordDecl()))) {
+      return NestedNameSpecifier::SuperSpecifier(ToContext, RD);
+    }
+    return nullptr;
+
   case NestedNameSpecifier::TypeSpec:
   case NestedNameSpecifier::TypeSpecWithTemplate: {
       QualType T = Import(QualType(FromNNS->getAsType(), 0u));
@@ -4922,7 +4929,7 @@ FileID ASTImporter::Import(FileID FromID) {
     std::unique_ptr<llvm::MemoryBuffer> ToBuf
       = llvm::MemoryBuffer::getMemBufferCopy(FromBuf->getBuffer(),
                                              FromBuf->getBufferIdentifier());
-    ToID = ToSM.createFileID(ToBuf.release(),
+    ToID = ToSM.createFileID(std::move(ToBuf),
                              FromSLoc.getFile().getFileCharacteristic());
   }
   

@@ -198,6 +198,10 @@ void CodeGenModule::createCUDARuntime() {
   CUDARuntime = CreateNVCUDARuntime(*this);
 }
 
+void CodeGenModule::addReplacement(StringRef Name, llvm::Constant *C) {
+  Replacements[Name] = C;
+}
+
 void CodeGenModule::applyReplacements() {
   for (ReplacementsTy::iterator I = Replacements.begin(),
                                 E = Replacements.end();
@@ -782,6 +786,16 @@ void CodeGenModule::SetCommonAttributes(const Decl *D,
     addUsedGlobal(GV);
 }
 
+void CodeGenModule::setAliasAttributes(const Decl *D,
+                                       llvm::GlobalValue *GV) {
+  SetCommonAttributes(D, GV);
+
+  // Process the dllexport attribute based on whether the original definition
+  // (not necessarily the aliasee) was exported.
+  if (D->hasAttr<DLLExportAttr>())
+    GV->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+}
+
 void CodeGenModule::setNonAliasAttributes(const Decl *D,
                                           llvm::GlobalObject *GO) {
   SetCommonAttributes(D, GO);
@@ -1177,7 +1191,7 @@ llvm::Constant *CodeGenModule::GetAddrOfUuidDescriptor(
   if (llvm::GlobalVariable *GV = getModule().getNamedGlobal(Name))
     return GV;
 
-  llvm::Constant *Init = EmitUuidofInitializer(Uuid, E->getType());
+  llvm::Constant *Init = EmitUuidofInitializer(Uuid);
   assert(Init && "failed to initialize as constant");
 
   auto *GV = new llvm::GlobalVariable(
@@ -1404,9 +1418,9 @@ void CodeGenModule::EmitGlobalDefinition(GlobalDecl GD, llvm::GlobalValue *GV) {
       // Make sure to emit the definition(s) before we emit the thunks.
       // This is necessary for the generation of certain thunks.
       if (const auto *CD = dyn_cast<CXXConstructorDecl>(Method))
-        EmitCXXConstructor(CD, GD.getCtorType());
+        ABI->emitCXXStructor(CD, getFromCtorType(GD.getCtorType()));
       else if (const auto *DD = dyn_cast<CXXDestructorDecl>(Method))
-        EmitCXXDestructor(DD, GD.getDtorType());
+        ABI->emitCXXStructor(DD, getFromDtorType(GD.getDtorType()));
       else
         EmitGlobalFunctionDefinition(GD, GV);
 
@@ -1448,6 +1462,10 @@ CodeGenModule::GetOrCreateLLVMFunction(StringRef MangledName,
       if (FD && !FD->hasAttr<WeakAttr>())
         Entry->setLinkage(llvm::Function::ExternalLinkage);
     }
+
+    // Handle dropped DLL attributes.
+    if (D && !D->hasAttr<DLLImportAttr>() && !D->hasAttr<DLLExportAttr>())
+      Entry->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
 
     if (Entry->getType()->getElementType() == Ty)
       return Entry;
@@ -1613,6 +1631,10 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName,
       if (D && !D->hasAttr<WeakAttr>())
         Entry->setLinkage(llvm::Function::ExternalLinkage);
     }
+
+    // Handle dropped DLL attributes.
+    if (D && !D->hasAttr<DLLImportAttr>() && !D->hasAttr<DLLExportAttr>())
+      Entry->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
 
     if (Entry->getType() == Ty)
       return Entry;
@@ -2340,21 +2362,12 @@ void CodeGenModule::EmitAliasDefinition(GlobalDecl GD) {
   // Set attributes which are particular to an alias; this is a
   // specialization of the attributes which may be set on a global
   // variable/function.
-  if (D->hasAttr<DLLExportAttr>()) {
-    if (const auto *FD = dyn_cast<FunctionDecl>(D)) {
-      // The dllexport attribute is ignored for undefined symbols.
-      if (FD->hasBody())
-        GA->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
-    } else {
-      GA->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
-    }
-  } else if (D->hasAttr<WeakAttr>() ||
-             D->hasAttr<WeakRefAttr>() ||
-             D->isWeakImported()) {
+  if (D->hasAttr<WeakAttr>() || D->hasAttr<WeakRefAttr>() ||
+      D->isWeakImported()) {
     GA->setLinkage(llvm::Function::WeakAnyLinkage);
   }
 
-  SetCommonAttributes(D, GA);
+  setAliasAttributes(D, GA);
 }
 
 llvm::Function *CodeGenModule::getIntrinsic(unsigned IID,
@@ -3378,8 +3391,7 @@ void CodeGenModule::EmitCoverageFile() {
   }
 }
 
-llvm::Constant *CodeGenModule::EmitUuidofInitializer(StringRef Uuid,
-                                                     QualType GuidType) {
+llvm::Constant *CodeGenModule::EmitUuidofInitializer(StringRef Uuid) {
   // Sema has checked that all uuid strings are of the form
   // "12345678-1234-1234-1234-1234567890ab".
   assert(Uuid.size() == 36);
@@ -3388,6 +3400,7 @@ llvm::Constant *CodeGenModule::EmitUuidofInitializer(StringRef Uuid,
     else                                         assert(isHexDigit(Uuid[i]));
   }
 
+  // The starts of all bytes of Field3 in Uuid. Field 3 is "1234-1234567890ab".
   const unsigned Field3ValueOffsets[8] = { 19, 21, 24, 26, 28, 30, 32, 34 };
 
   llvm::Constant *Field3[8];
