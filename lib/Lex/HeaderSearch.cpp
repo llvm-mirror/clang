@@ -575,15 +575,9 @@ const FileEntry *HeaderSearch::LookupFile(
     // that they describe. These cannot be loaded lazily upon encountering a
     // header file, as there is no other known mapping from a header file to its
     // module map file.
-    for (llvm::SetVector<std::string>::iterator
-             I = HSOpts->ModuleMapFiles.begin(),
-             E = HSOpts->ModuleMapFiles.end();
-         I != E; ++I) {
-      const FileEntry *File = FileMgr.getFile(*I);
-      if (!File)
-        continue;
-      loadModuleMapFile(File, /*IsSystem=*/false);
-    }
+    for (const auto &Filename : HSOpts->ModuleMapFiles)
+      if (const FileEntry *File = FileMgr.getFile(Filename))
+        loadModuleMapFile(File, /*IsSystem=*/false);
     HSOpts->ModuleMapFiles.clear();
   }
 
@@ -1152,27 +1146,27 @@ HeaderSearch::LoadModuleMapResult
 HeaderSearch::loadModuleMapFileImpl(const FileEntry *File, bool IsSystem) {
   assert(File && "expected FileEntry");
 
-  const DirectoryEntry *Dir = File->getDir();
-  auto KnownDir = DirectoryHasModuleMap.find(Dir);
-  if (KnownDir != DirectoryHasModuleMap.end())
-    return KnownDir->second ? LMM_AlreadyLoaded : LMM_InvalidModuleMap;
+  // Check whether we've already loaded this module map, and mark it as being
+  // loaded in case we recursively try to load it from itself.
+  auto AddResult = LoadedModuleMaps.insert(std::make_pair(File, true));
+  if (!AddResult.second)
+    return AddResult.first->second ? LMM_AlreadyLoaded : LMM_InvalidModuleMap;
 
   if (ModMap.parseModuleMapFile(File, IsSystem)) {
-    DirectoryHasModuleMap[Dir] = false;
+    LoadedModuleMaps[File] = false;
     return LMM_InvalidModuleMap;
   }
 
   // Try to load a corresponding private module map.
   if (const FileEntry *PMMFile =
-        getPrivateModuleMap(File->getName(), Dir, FileMgr)) {
+          getPrivateModuleMap(File->getName(), File->getDir(), FileMgr)) {
     if (ModMap.parseModuleMapFile(PMMFile, IsSystem)) {
-      DirectoryHasModuleMap[Dir] = false;
+      LoadedModuleMaps[File] = false;
       return LMM_InvalidModuleMap;
     }
   }
 
   // This directory has a module map.
-  DirectoryHasModuleMap[Dir] = true;
   return LMM_NewlyLoaded;
 }
 
@@ -1232,7 +1226,7 @@ HeaderSearch::loadModuleMapFile(const DirectoryEntry *Dir, bool IsSystem,
                                 bool IsFramework) {
   auto KnownDir = DirectoryHasModuleMap.find(Dir);
   if (KnownDir != DirectoryHasModuleMap.end())
-    return KnownDir->second? LMM_AlreadyLoaded : LMM_InvalidModuleMap;
+    return KnownDir->second ? LMM_AlreadyLoaded : LMM_InvalidModuleMap;
 
   if (const FileEntry *ModuleMapFile = lookupModuleMapFile(Dir, IsFramework)) {
     LoadModuleMapResult Result = loadModuleMapFileImpl(ModuleMapFile, IsSystem);
@@ -1241,6 +1235,8 @@ HeaderSearch::loadModuleMapFile(const DirectoryEntry *Dir, bool IsSystem,
     //      ^Dir                  ^ModuleMapFile
     if (Result == LMM_NewlyLoaded)
       DirectoryHasModuleMap[Dir] = true;
+    else if (Result == LMM_InvalidModuleMap)
+      DirectoryHasModuleMap[Dir] = false;
     return Result;
   }
   return LMM_InvalidModuleMap;

@@ -134,12 +134,11 @@ ApplyNonVirtualAndVirtualOffset(CodeGenFunction &CGF, llvm::Value *ptr,
   return ptr;
 }
 
-llvm::Value *
-CodeGenFunction::GetAddressOfBaseClass(llvm::Value *Value, 
-                                       const CXXRecordDecl *Derived,
-                                       CastExpr::path_const_iterator PathBegin,
-                                       CastExpr::path_const_iterator PathEnd,
-                                       bool NullCheckValue) {
+llvm::Value *CodeGenFunction::GetAddressOfBaseClass(
+    llvm::Value *Value, const CXXRecordDecl *Derived,
+    CastExpr::path_const_iterator PathBegin,
+    CastExpr::path_const_iterator PathEnd, bool NullCheckValue,
+    SourceLocation Loc) {
   assert(PathBegin != PathEnd && "Base path should not be empty!");
 
   CastExpr::path_const_iterator Start = PathBegin;
@@ -176,9 +175,16 @@ CodeGenFunction::GetAddressOfBaseClass(llvm::Value *Value,
   llvm::Type *BasePtrTy = 
     ConvertType((PathEnd[-1])->getType())->getPointerTo();
 
+  QualType DerivedTy = getContext().getRecordType(Derived);
+  CharUnits DerivedAlign = getContext().getTypeAlignInChars(DerivedTy);
+
   // If the static offset is zero and we don't have a virtual step,
   // just do a bitcast; null checks are unnecessary.
   if (NonVirtualOffset.isZero() && !VBase) {
+    if (sanitizePerformTypeCheck()) {
+      EmitTypeCheck(TCK_Upcast, Loc, Value, DerivedTy, DerivedAlign,
+                    !NullCheckValue);
+    }
     return Builder.CreateBitCast(Value, BasePtrTy);
   }
 
@@ -195,6 +201,11 @@ CodeGenFunction::GetAddressOfBaseClass(llvm::Value *Value,
     llvm::Value *isNull = Builder.CreateIsNull(Value);
     Builder.CreateCondBr(isNull, endBB, notNullBB);
     EmitBlock(notNullBB);
+  }
+
+  if (sanitizePerformTypeCheck()) {
+    EmitTypeCheck(VBase ? TCK_UpcastToVirtualBase : TCK_Upcast, Loc, Value,
+                  DerivedTy, DerivedAlign, true);
   }
 
   // Compute the virtual offset.
@@ -569,9 +580,8 @@ static void EmitMemberInitializer(CodeGenFunction &CGF,
     CXXConstructExpr *CE = dyn_cast<CXXConstructExpr>(MemberInit->getInit());
     if (BaseElementTy.isPODType(CGF.getContext()) ||
         (CE && CE->getConstructor()->isTrivial())) {
-      // Find the source pointer. We know it's the last argument because
-      // we know we're in an implicit copy constructor.
-      unsigned SrcArgIndex = Args.size() - 1;
+      unsigned SrcArgIndex =
+          CGF.CGM.getCXXABI().getSrcArgforCopyCtor(Constructor, Args);
       llvm::Value *SrcPtr
         = CGF.Builder.CreateLoad(CGF.GetAddrOfLocalVar(Args[SrcArgIndex]));
       LValue ThisRHSLV = CGF.MakeNaturalAlignAddrLValue(SrcPtr, RecordTy);
@@ -692,8 +702,74 @@ static bool IsConstructorDelegationValid(const CXXConstructorDecl *Ctor) {
   return true;
 }
 
+// Emit code in ctor (Prologue==true) or dtor (Prologue==false)
+// to poison the extra field paddings inserted under
+// -fsanitize-address-field-padding=1|2.
+void CodeGenFunction::EmitAsanPrologueOrEpilogue(bool Prologue) {
+  ASTContext &Context = getContext();
+  const CXXRecordDecl *ClassDecl =
+      Prologue ? cast<CXXConstructorDecl>(CurGD.getDecl())->getParent()
+               : cast<CXXDestructorDecl>(CurGD.getDecl())->getParent();
+  if (!ClassDecl->mayInsertExtraPadding()) return;
+
+  struct SizeAndOffset {
+    uint64_t Size;
+    uint64_t Offset;
+  };
+
+  unsigned PtrSize = CGM.getDataLayout().getPointerSizeInBits();
+  const ASTRecordLayout &Info = Context.getASTRecordLayout(ClassDecl);
+
+  // Populate sizes and offsets of fields.
+  SmallVector<SizeAndOffset, 16> SSV(Info.getFieldCount());
+  for (unsigned i = 0, e = Info.getFieldCount(); i != e; ++i)
+    SSV[i].Offset =
+        Context.toCharUnitsFromBits(Info.getFieldOffset(i)).getQuantity();
+
+  size_t NumFields = 0;
+  for (const auto *Field : ClassDecl->fields()) {
+    const FieldDecl *D = Field;
+    std::pair<CharUnits, CharUnits> FieldInfo =
+        Context.getTypeInfoInChars(D->getType());
+    CharUnits FieldSize = FieldInfo.first;
+    assert(NumFields < SSV.size());
+    SSV[NumFields].Size = D->isBitField() ? 0 : FieldSize.getQuantity();
+    NumFields++;
+  }
+  assert(NumFields == SSV.size());
+  if (SSV.size() <= 1) return;
+
+  // We will insert calls to __asan_* run-time functions.
+  // LLVM AddressSanitizer pass may decide to inline them later.
+  llvm::Type *Args[2] = {IntPtrTy, IntPtrTy};
+  llvm::FunctionType *FTy =
+      llvm::FunctionType::get(CGM.VoidTy, Args, false);
+  llvm::Constant *F = CGM.CreateRuntimeFunction(
+      FTy, Prologue ? "__asan_poison_intra_object_redzone"
+                    : "__asan_unpoison_intra_object_redzone");
+
+  llvm::Value *ThisPtr = LoadCXXThis();
+  ThisPtr = Builder.CreatePtrToInt(ThisPtr, IntPtrTy);
+  uint64_t TypeSize = Info.getNonVirtualSize().getQuantity();
+  // For each field check if it has sufficient padding,
+  // if so (un)poison it with a call.
+  for (size_t i = 0; i < SSV.size(); i++) {
+    uint64_t AsanAlignment = 8;
+    uint64_t NextField = i == SSV.size() - 1 ? TypeSize : SSV[i + 1].Offset;
+    uint64_t PoisonSize = NextField - SSV[i].Offset - SSV[i].Size;
+    uint64_t EndOffset = SSV[i].Offset + SSV[i].Size;
+    if (PoisonSize < AsanAlignment || !SSV[i].Size ||
+        (NextField % AsanAlignment) != 0)
+      continue;
+    Builder.CreateCall2(
+        F, Builder.CreateAdd(ThisPtr, Builder.getIntN(PtrSize, EndOffset)),
+        Builder.getIntN(PtrSize, PoisonSize));
+  }
+}
+
 /// EmitConstructorBody - Emits the body of the current constructor.
 void CodeGenFunction::EmitConstructorBody(FunctionArgList &Args) {
+  EmitAsanPrologueOrEpilogue(true);
   const CXXConstructorDecl *Ctor = cast<CXXConstructorDecl>(CurGD.getDecl());
   CXXCtorType CtorType = CurGD.getCtorType();
 
@@ -782,7 +858,10 @@ namespace {
         FirstField(nullptr), LastField(nullptr), FirstFieldOffset(0),
         LastFieldOffset(0), LastAddedFieldIndex(0) {}
 
-    static bool isMemcpyableField(FieldDecl *F) {
+    bool isMemcpyableField(FieldDecl *F) const {
+      // Never memcpy fields when we are adding poisoned paddings.
+      if (CGF.getContext().getLangOpts().Sanitize.SanitizeAddressFieldPadding)
+        return false;
       Qualifiers Qual = F->getType().getQualifiers();
       if (Qual.hasVolatile() || Qual.hasObjCLifetime())
         return false;
@@ -796,13 +875,13 @@ namespace {
         addNextField(F);
     }
 
-    CharUnits getMemcpySize() const {
+    CharUnits getMemcpySize(uint64_t FirstByteOffset) const {
       unsigned LastFieldSize =
         LastField->isBitField() ?
           LastField->getBitWidthValue(CGF.getContext()) :
           CGF.getContext().getTypeSize(LastField->getType()); 
       uint64_t MemcpySizeBits =
-        LastFieldOffset + LastFieldSize - FirstFieldOffset +
+        LastFieldOffset + LastFieldSize - FirstByteOffset +
         CGF.getContext().getCharWidth() - 1;
       CharUnits MemcpySize =
         CGF.getContext().toCharUnitsFromBits(MemcpySizeBits);
@@ -818,19 +897,31 @@ namespace {
 
       CharUnits Alignment;
 
+      uint64_t FirstByteOffset;
       if (FirstField->isBitField()) {
         const CGRecordLayout &RL =
           CGF.getTypes().getCGRecordLayout(FirstField->getParent());
         const CGBitFieldInfo &BFInfo = RL.getBitFieldInfo(FirstField);
         Alignment = CharUnits::fromQuantity(BFInfo.StorageAlignment);
+        // FirstFieldOffset is not appropriate for bitfields,
+        // it won't tell us what the storage offset should be and thus might not
+        // be properly aligned.
+        //
+        // Instead calculate the storage offset using the offset of the field in
+        // the struct type.
+        const llvm::DataLayout &DL = CGF.CGM.getDataLayout();
+        FirstByteOffset =
+            DL.getStructLayout(RL.getLLVMType())
+                ->getElementOffsetInBits(RL.getLLVMFieldNo(FirstField));
       } else {
         Alignment = CGF.getContext().getDeclAlign(FirstField);
+        FirstByteOffset = FirstFieldOffset;
       }
 
-      assert((CGF.getContext().toCharUnitsFromBits(FirstFieldOffset) %
+      assert((CGF.getContext().toCharUnitsFromBits(FirstByteOffset) %
               Alignment) == 0 && "Bad field alignment.");
 
-      CharUnits MemcpySize = getMemcpySize();
+      CharUnits MemcpySize = getMemcpySize(FirstByteOffset);
       QualType RecordTy = CGF.getContext().getTypeDeclType(ClassDecl);
       llvm::Value *ThisPtr = CGF.LoadCXXThis();
       LValue DestLV = CGF.MakeNaturalAlignAddrLValue(ThisPtr, RecordTy);
@@ -1282,6 +1373,7 @@ void CodeGenFunction::EmitDestructorBody(FunctionArgList &Args) {
   bool isTryBody = (Body && isa<CXXTryStmt>(Body));
   if (isTryBody)
     EnterCXXTryStmt(*cast<CXXTryStmt>(Body), true);
+  EmitAsanPrologueOrEpilogue(false);
 
   // Enter the epilogue cleanups.
   RunCleanupsScope DtorEpilogue(*this);

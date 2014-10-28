@@ -45,6 +45,7 @@ namespace clang {
   class ObjCPropertyRefExpr;
   class OpaqueValueExpr;
   class ParmVarDecl;
+  class StringLiteral;
   class TargetInfo;
   class ValueDecl;
 
@@ -124,8 +125,7 @@ public:
   QualType getType() const { return TR; }
   void setType(QualType t) {
     // In C++, the type of an expression is always adjusted so that it
-    // will not have reference type an expression will never have
-    // reference type (C++ [expr]p6). Use
+    // will not have reference type (C++ [expr]p6). Use
     // QualType::getNonReferenceType() to retrieve the non-reference
     // type. Additionally, inspect Expr::isLvalue to determine whether
     // an expression that is adjusted in this manner should be
@@ -1161,7 +1161,7 @@ public:
   friend class ASTStmtWriter;
 };
 
-/// PredefinedExpr - [C99 6.4.2.2] - A predefined identifier such as __func__.
+/// \brief [C99 6.4.2.2] - A predefined identifier such as __func__.
 class PredefinedExpr : public Expr {
 public:
   enum IdentType {
@@ -1171,7 +1171,7 @@ public:
     FuncDName,
     FuncSig,
     PrettyFunction,
-    /// PrettyFunctionNoVirtual - The same as PrettyFunction, except that the
+    /// \brief The same as PrettyFunction, except that the
     /// 'virtual' keyword is omitted for virtual member functions.
     PrettyFunctionNoVirtual
   };
@@ -1179,24 +1179,27 @@ public:
 private:
   SourceLocation Loc;
   IdentType Type;
+  Stmt *FnName;
+
 public:
-  PredefinedExpr(SourceLocation l, QualType type, IdentType IT)
-    : Expr(PredefinedExprClass, type, VK_LValue, OK_Ordinary,
-           type->isDependentType(), type->isDependentType(),
-           type->isInstantiationDependentType(),
-           /*ContainsUnexpandedParameterPack=*/false),
-      Loc(l), Type(IT) {}
+  PredefinedExpr(SourceLocation L, QualType FNTy, IdentType IT,
+                 StringLiteral *SL);
 
   /// \brief Construct an empty predefined expression.
   explicit PredefinedExpr(EmptyShell Empty)
-    : Expr(PredefinedExprClass, Empty) { }
+      : Expr(PredefinedExprClass, Empty), Loc(), Type(Func), FnName(nullptr) {}
 
   IdentType getIdentType() const { return Type; }
-  void setIdentType(IdentType IT) { Type = IT; }
 
   SourceLocation getLocation() const { return Loc; }
   void setLocation(SourceLocation L) { Loc = L; }
 
+  StringLiteral *getFunctionName();
+  const StringLiteral *getFunctionName() const {
+    return const_cast<PredefinedExpr *>(this)->getFunctionName();
+  }
+
+  static StringRef getIdentTypeName(IdentType IT);
   static std::string ComputeName(IdentType IT, const Decl *CurrentDecl);
 
   SourceLocation getLocStart() const LLVM_READONLY { return Loc; }
@@ -1207,7 +1210,9 @@ public:
   }
 
   // Iterators
-  child_range children() { return child_range(); }
+  child_range children() { return child_range(&FnName, &FnName + 1); }
+
+  friend class ASTStmtReader;
 };
 
 /// \brief Used by IntegerLiteral/FloatingLiteral to store the numeric without

@@ -2094,7 +2094,7 @@ ASTNodeImporter::ImportTemplateArgument(const TemplateArgument &From) {
   case TemplateArgument::Declaration: {
     ValueDecl *FromD = From.getAsDecl();
     if (ValueDecl *To = cast_or_null<ValueDecl>(Importer.Import(FromD)))
-      return TemplateArgument(To, From.isDeclForReferenceParam());
+      return TemplateArgument(To, From.getParamTypeForDecl());
     return TemplateArgument();
   }
 
@@ -2958,9 +2958,12 @@ Decl *ASTNodeImporter::VisitIndirectFieldDecl(IndirectFieldDecl *D) {
   }
 
   IndirectFieldDecl *ToIndirectField = IndirectFieldDecl::Create(
-                                         Importer.getToContext(), DC,
-                                         Loc, Name.getAsIdentifierInfo(), T,
-                                         NamedChain, D->getChainingSize());
+      Importer.getToContext(), DC, Loc, Name.getAsIdentifierInfo(), T,
+      NamedChain, D->getChainingSize());
+
+  for (const auto *Attr : D->attrs())
+    ToIndirectField->addAttr(Attr->clone(Importer.getToContext()));
+
   ToIndirectField->setAccess(D->getAccess());
   ToIndirectField->setLexicalDeclContext(LexicalDC);
   Importer.Imported(D, ToIndirectField);

@@ -29,6 +29,7 @@
 #include "clang/Basic/Module.h"
 #include "clang/Basic/Specifiers.h"
 #include "clang/Basic/TargetInfo.h"
+#include "clang/Frontend/FrontendDiagnostic.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
 
@@ -3282,18 +3283,9 @@ bool FieldDecl::isAnonymousStructOrUnion() const {
   return false;
 }
 
-bool FieldDecl::isBitField() const {
-  if (getInClassInitStyle() == ICIS_NoInit &&
-      InitializerOrBitWidth.getPointer()) {
-    assert(getDeclContext() && "No parent context for FieldDecl");
-    return !getDeclContext()->isRecord() || !getParent()->isLambda();
-  }
-  return false;
-}
-
 unsigned FieldDecl::getBitWidthValue(const ASTContext &Ctx) const {
   assert(isBitField() && "not a bitfield");
-  Expr *BitWidth = static_cast<Expr *>(InitializerOrBitWidth.getPointer());
+  Expr *BitWidth = static_cast<Expr *>(InitStorage.getPointer());
   return BitWidth->EvaluateKnownConstInt(Ctx).getZExtValue();
 }
 
@@ -3317,34 +3309,28 @@ unsigned FieldDecl::getFieldIndex() const {
 }
 
 SourceRange FieldDecl::getSourceRange() const {
-  if (const Expr *E =
-          static_cast<const Expr *>(InitializerOrBitWidth.getPointer()))
-    return SourceRange(getInnerLocStart(), E->getLocEnd());
-  return DeclaratorDecl::getSourceRange();
-}
+  switch (InitStorage.getInt()) {
+  // All three of these cases store an optional Expr*.
+  case ISK_BitWidthOrNothing:
+  case ISK_InClassCopyInit:
+  case ISK_InClassListInit:
+    if (const Expr *E = static_cast<const Expr *>(InitStorage.getPointer()))
+      return SourceRange(getInnerLocStart(), E->getLocEnd());
+    // FALLTHROUGH
 
-void FieldDecl::setBitWidth(Expr *Width) {
-  assert(!InitializerOrBitWidth.getPointer() && !hasInClassInitializer() &&
-         "bit width, initializer or captured type already set");
-  InitializerOrBitWidth.setPointer(Width);
-}
-
-void FieldDecl::setInClassInitializer(Expr *Init) {
-  assert(!InitializerOrBitWidth.getPointer() && hasInClassInitializer() &&
-         "bit width, initializer or captured expr already set");
-  InitializerOrBitWidth.setPointer(Init);
-}
-
-bool FieldDecl::hasCapturedVLAType() const {
-  return getDeclContext()->isRecord() && getParent()->isLambda() &&
-         InitializerOrBitWidth.getPointer();
+  case ISK_CapturedVLAType:
+    return DeclaratorDecl::getSourceRange();
+  }
+  llvm_unreachable("bad init storage kind");
 }
 
 void FieldDecl::setCapturedVLAType(const VariableArrayType *VLAType) {
   assert(getParent()->isLambda() && "capturing type in non-lambda.");
-  assert(!InitializerOrBitWidth.getPointer() && !hasInClassInitializer() &&
+  assert(InitStorage.getInt() == ISK_BitWidthOrNothing &&
+         InitStorage.getPointer() == nullptr &&
          "bit width, initializer or captured type already set");
-  InitializerOrBitWidth.setPointer(const_cast<VariableArrayType *>(VLAType));
+  InitStorage.setPointerAndInt(const_cast<VariableArrayType *>(VLAType),
+                               ISK_CapturedVLAType);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3628,6 +3614,48 @@ void RecordDecl::LoadFieldsFromExternalStorage() const {
 
   std::tie(FirstDecl, LastDecl) = BuildDeclChain(Decls,
                                                  /*FieldsAlreadyLoaded=*/false);
+}
+
+bool RecordDecl::mayInsertExtraPadding(bool EmitRemark) const {
+  ASTContext &Context = getASTContext();
+  if (!Context.getLangOpts().Sanitize.Address ||
+      !Context.getLangOpts().Sanitize.SanitizeAddressFieldPadding)
+    return false;
+  const auto &Blacklist = Context.getSanitizerBlacklist();
+  const CXXRecordDecl *CXXRD = dyn_cast<CXXRecordDecl>(this);
+  // We may be able to relax some of these requirements.
+  int ReasonToReject = -1;
+  if (!CXXRD || CXXRD->isExternCContext())
+    ReasonToReject = 0;  // is not C++.
+  else if (CXXRD->hasAttr<PackedAttr>())
+    ReasonToReject = 1;  // is packed.
+  else if (CXXRD->isUnion())
+    ReasonToReject = 2;  // is a union.
+  else if (CXXRD->isTriviallyCopyable())
+    ReasonToReject = 3;  // is trivially copyable.
+  else if (CXXRD->hasTrivialDestructor())
+    ReasonToReject = 4;  // has trivial destructor.
+  else if (CXXRD->isStandardLayout())
+    ReasonToReject = 5;  // is standard layout.
+  else if (Blacklist.isBlacklistedLocation(getLocation(), "field-padding"))
+    ReasonToReject = 6;  // is in a blacklisted file.
+  else if (Blacklist.isBlacklistedType(getQualifiedNameAsString(),
+                                       "field-padding"))
+    ReasonToReject = 7;  // is blacklisted.
+
+  if (EmitRemark) {
+    if (ReasonToReject >= 0)
+      Context.getDiagnostics().Report(
+          getLocation(),
+          diag::remark_sanitize_address_insert_extra_padding_rejected)
+          << getQualifiedNameAsString() << ReasonToReject;
+    else
+      Context.getDiagnostics().Report(
+          getLocation(),
+          diag::remark_sanitize_address_insert_extra_padding_accepted)
+          << getQualifiedNameAsString();
+  }
+  return ReasonToReject < 0;
 }
 
 //===----------------------------------------------------------------------===//

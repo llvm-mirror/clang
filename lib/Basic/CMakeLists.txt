@@ -1,4 +1,5 @@
 set(LLVM_LINK_COMPONENTS
+  Core
   MC
   Support
   )
@@ -17,6 +18,7 @@ add_clang_library(clangBasic
   ObjCRuntime.cpp
   OpenMPKinds.cpp
   OperatorPrecedence.cpp
+  SanitizerBlacklist.cpp
   SourceLocation.cpp
   SourceManager.cpp
   TargetInfo.cpp
