@@ -535,7 +535,7 @@ ASTDeclReader::RedeclarableResult ASTDeclReader::VisitTagDecl(TagDecl *TD) {
     TypedefNameForLinkage = Reader.GetIdentifierInfo(F, Record, Idx);
     break;
   case 3: // DeclaratorForAnonDecl
-    TD->NamedDeclOrQualifier = ReadDeclAs<NamedDecl>(Record, Idx);
+    NamedDeclForTagDecl = ReadDeclID(Record, Idx);
     break;
   default:
     llvm_unreachable("unexpected tag info kind");
@@ -1000,13 +1000,14 @@ void ASTDeclReader::VisitFieldDecl(FieldDecl *FD) {
   VisitDeclaratorDecl(FD);
   FD->Mutable = Record[Idx++];
   if (int BitWidthOrInitializer = Record[Idx++]) {
-    FD->InitializerOrBitWidth.setInt(BitWidthOrInitializer - 1);
-    if (FD->getDeclContext()->isRecord() && FD->getParent()->isLambda()) {
+    FD->InitStorage.setInt(
+          static_cast<FieldDecl::InitStorageKind>(BitWidthOrInitializer - 1));
+    if (FD->InitStorage.getInt() == FieldDecl::ISK_CapturedVLAType) {
       // Read captured variable length array.
-      FD->InitializerOrBitWidth.setPointer(
+      FD->InitStorage.setPointer(
           Reader.readType(F, Record, Idx).getAsOpaquePtr());
     } else {
-      FD->InitializerOrBitWidth.setPointer(Reader.ReadExpr(F));
+      FD->InitStorage.setPointer(Reader.ReadExpr(F));
     }
   }
   if (!FD->getDeclName()) {
@@ -1223,6 +1224,7 @@ void ASTDeclReader::VisitUsingDecl(UsingDecl *D) {
   D->setTypename(Record[Idx++]);
   if (NamedDecl *Pattern = ReadDeclAs<NamedDecl>(Record, Idx))
     Reader.getContext().setInstantiatedFromUsingDecl(D, Pattern);
+  mergeMergeable(D);
 }
 
 void ASTDeclReader::VisitUsingShadowDecl(UsingShadowDecl *D) {
@@ -1250,6 +1252,7 @@ void ASTDeclReader::VisitUnresolvedUsingValueDecl(UnresolvedUsingValueDecl *D) {
   D->setUsingLoc(ReadSourceLocation(Record, Idx));
   D->QualifierLoc = Reader.ReadNestedNameSpecifierLoc(F, Record, Idx);
   ReadDeclarationNameLoc(D->DNLoc, D->getDeclName(), Record, Idx);
+  mergeMergeable(D);
 }
 
 void ASTDeclReader::VisitUnresolvedUsingTypenameDecl(
@@ -1257,6 +1260,7 @@ void ASTDeclReader::VisitUnresolvedUsingTypenameDecl(
   VisitTypeDecl(D);
   D->TypenameLocation = ReadSourceLocation(Record, Idx);
   D->QualifierLoc = Reader.ReadNestedNameSpecifierLoc(F, Record, Idx);
+  mergeMergeable(D);
 }
 
 void ASTDeclReader::ReadCXXDefinitionData(
@@ -2340,6 +2344,53 @@ static bool isSameTemplateParameter(const NamedDecl *X,
                                      TY->getTemplateParameters());
 }
 
+static NamespaceDecl *getNamespace(const NestedNameSpecifier *X) {
+  if (auto *NS = X->getAsNamespace())
+    return NS;
+  if (auto *NAS = X->getAsNamespaceAlias())
+    return NAS->getNamespace();
+  return nullptr;
+}
+
+static bool isSameQualifier(const NestedNameSpecifier *X,
+                            const NestedNameSpecifier *Y) {
+  if (auto *NSX = getNamespace(X)) {
+    auto *NSY = getNamespace(Y);
+    if (!NSY || NSX->getCanonicalDecl() != NSY->getCanonicalDecl())
+      return false;
+  } else if (X->getKind() != Y->getKind())
+    return false;
+
+  // FIXME: For namespaces and types, we're permitted to check that the entity
+  // is named via the same tokens. We should probably do so.
+  switch (X->getKind()) {
+  case NestedNameSpecifier::Identifier:
+    if (X->getAsIdentifier() != Y->getAsIdentifier())
+      return false;
+    break;
+  case NestedNameSpecifier::Namespace:
+  case NestedNameSpecifier::NamespaceAlias:
+    // We've already checked that we named the same namespace.
+    break;
+  case NestedNameSpecifier::TypeSpec:
+  case NestedNameSpecifier::TypeSpecWithTemplate:
+    if (X->getAsType()->getCanonicalTypeInternal() !=
+        Y->getAsType()->getCanonicalTypeInternal())
+      return false;
+    break;
+  case NestedNameSpecifier::Global:
+  case NestedNameSpecifier::Super:
+    return true;
+  }
+
+  // Recurse into earlier portion of NNS, if any.
+  auto *PX = X->getPrefix();
+  auto *PY = Y->getPrefix();
+  if (PX && PY)
+    return isSameQualifier(PX, PY);
+  return !PX && !PY;
+}
+
 /// \brief Determine whether two template parameter lists are similar enough
 /// that they may be used in declarations of the same template.
 static bool isSameTemplateParameterList(const TemplateParameterList *X,
@@ -2446,6 +2497,24 @@ static bool isSameEntity(NamedDecl *X, NamedDecl *Y) {
     UsingShadowDecl *USY = cast<UsingShadowDecl>(Y);
     return USX->getTargetDecl() == USY->getTargetDecl();
   }
+
+  // Using declarations with the same qualifier match. (We already know that
+  // the name matches.)
+  if (auto *UX = dyn_cast<UsingDecl>(X)) {
+    auto *UY = cast<UsingDecl>(Y);
+    return isSameQualifier(UX->getQualifier(), UY->getQualifier()) &&
+           UX->hasTypename() == UY->hasTypename() &&
+           UX->isAccessDeclaration() == UY->isAccessDeclaration();
+  }
+  if (auto *UX = dyn_cast<UnresolvedUsingValueDecl>(X)) {
+    auto *UY = cast<UnresolvedUsingValueDecl>(Y);
+    return isSameQualifier(UX->getQualifier(), UY->getQualifier()) &&
+           UX->isAccessDeclaration() == UY->isAccessDeclaration();
+  }
+  if (auto *UX = dyn_cast<UnresolvedUsingTypenameDecl>(X))
+    return isSameQualifier(
+        UX->getQualifier(),
+        cast<UnresolvedUsingTypenameDecl>(Y)->getQualifier());
 
   // Namespace alias definitions with the same target match.
   if (auto *NAX = dyn_cast<NamespaceAliasDecl>(X)) {

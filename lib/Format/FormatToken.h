@@ -46,6 +46,7 @@ enum TokenType {
   TT_ImplicitStringLiteral,
   TT_InheritanceColon,
   TT_InlineASMColon,
+  TT_JavaAnnotation,
   TT_LambdaLSquare,
   TT_LineComment,
   TT_ObjCBlockLBrace,
@@ -325,7 +326,8 @@ struct FormatToken {
   /// \brief Returns \c true if this is a "." or "->" accessing a member.
   bool isMemberAccess() const {
     return isOneOf(tok::arrow, tok::period, tok::arrowstar) &&
-           Type != TT_DesignatedInitializerPeriod;
+           Type != TT_DesignatedInitializerPeriod &&
+           Type != TT_TrailingReturnArrow;
   }
 
   bool isUnaryOperator() const {

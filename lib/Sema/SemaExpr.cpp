@@ -42,6 +42,7 @@
 #include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/SemaFixItUtils.h"
 #include "clang/Sema/Template.h"
+#include "llvm/Support/ConvertUTF.h"
 using namespace clang;
 using namespace sema;
 
@@ -937,68 +938,6 @@ static bool handleIntegerToComplexFloatConversion(Sema &S, ExprResult &IntExpr,
   return false;
 }
 
-/// \brief Takes two complex float types and converts them to the same type.
-/// Helper function of UsualArithmeticConversions()
-static QualType
-handleComplexFloatToComplexFloatConverstion(Sema &S, ExprResult &LHS,
-                                            ExprResult &RHS, QualType LHSType,
-                                            QualType RHSType,
-                                            bool IsCompAssign) {
-  int order = S.Context.getFloatingTypeOrder(LHSType, RHSType);
-
-  if (order < 0) {
-    // _Complex float -> _Complex double
-    if (!IsCompAssign)
-      LHS = S.ImpCastExprToType(LHS.get(), RHSType, CK_FloatingComplexCast);
-    return RHSType;
-  }
-  if (order > 0)
-    // _Complex float -> _Complex double
-    RHS = S.ImpCastExprToType(RHS.get(), LHSType, CK_FloatingComplexCast);
-  return LHSType;
-}
-
-/// \brief Converts otherExpr to complex float and promotes complexExpr if
-/// necessary.  Helper function of UsualArithmeticConversions()
-static QualType handleOtherComplexFloatConversion(Sema &S,
-                                                  ExprResult &ComplexExpr,
-                                                  ExprResult &OtherExpr,
-                                                  QualType ComplexTy,
-                                                  QualType OtherTy,
-                                                  bool ConvertComplexExpr,
-                                                  bool ConvertOtherExpr) {
-  int order = S.Context.getFloatingTypeOrder(ComplexTy, OtherTy);
-
-  // If just the complexExpr is complex, the otherExpr needs to be converted,
-  // and the complexExpr might need to be promoted.
-  if (order > 0) { // complexExpr is wider
-    // float -> _Complex double
-    if (ConvertOtherExpr) {
-      QualType fp = cast<ComplexType>(ComplexTy)->getElementType();
-      OtherExpr = S.ImpCastExprToType(OtherExpr.get(), fp, CK_FloatingCast);
-      OtherExpr = S.ImpCastExprToType(OtherExpr.get(), ComplexTy,
-                                      CK_FloatingRealToComplex);
-    }
-    return ComplexTy;
-  }
-
-  // otherTy is at least as wide.  Find its corresponding complex type.
-  QualType result = (order == 0 ? ComplexTy :
-                                  S.Context.getComplexType(OtherTy));
-
-  // double -> _Complex double
-  if (ConvertOtherExpr)
-    OtherExpr = S.ImpCastExprToType(OtherExpr.get(), result,
-                                    CK_FloatingRealToComplex);
-
-  // _Complex float -> _Complex double
-  if (ConvertComplexExpr && order < 0)
-    ComplexExpr = S.ImpCastExprToType(ComplexExpr.get(), result,
-                                      CK_FloatingComplexCast);
-
-  return result;
-}
-
 /// \brief Handle arithmetic conversion with complex types.  Helper function of
 /// UsualArithmeticConversions()
 static QualType handleComplexFloatConversion(Sema &S, ExprResult &LHS,
@@ -1024,26 +963,35 @@ static QualType handleComplexFloatConversion(Sema &S, ExprResult &LHS,
   // when combining a "long double" with a "double _Complex", the
   // "double _Complex" is promoted to "long double _Complex".
 
-  bool LHSComplexFloat = LHSType->isComplexType();
-  bool RHSComplexFloat = RHSType->isComplexType();
+  // Compute the rank of the two types, regardless of whether they are complex.
+  int Order = S.Context.getFloatingTypeOrder(LHSType, RHSType);
 
-  // If both are complex, just cast to the more precise type.
-  if (LHSComplexFloat && RHSComplexFloat)
-    return handleComplexFloatToComplexFloatConverstion(S, LHS, RHS,
-                                                       LHSType, RHSType,
-                                                       IsCompAssign);
+  auto *LHSComplexType = dyn_cast<ComplexType>(LHSType);
+  auto *RHSComplexType = dyn_cast<ComplexType>(RHSType);
+  QualType LHSElementType =
+      LHSComplexType ? LHSComplexType->getElementType() : LHSType;
+  QualType RHSElementType =
+      RHSComplexType ? RHSComplexType->getElementType() : RHSType;
 
-  // If only one operand is complex, promote it if necessary and convert the
-  // other operand to complex.
-  if (LHSComplexFloat)
-    return handleOtherComplexFloatConversion(
-        S, LHS, RHS, LHSType, RHSType, /*convertComplexExpr*/!IsCompAssign,
-        /*convertOtherExpr*/ true);
-
-  assert(RHSComplexFloat);
-  return handleOtherComplexFloatConversion(
-      S, RHS, LHS, RHSType, LHSType, /*convertComplexExpr*/true,
-      /*convertOtherExpr*/ !IsCompAssign);
+  QualType ResultType = S.Context.getComplexType(LHSElementType);
+  if (Order < 0) {
+    // Promote the precision of the LHS if not an assignment.
+    ResultType = S.Context.getComplexType(RHSElementType);
+    if (!IsCompAssign) {
+      if (LHSComplexType)
+        LHS =
+            S.ImpCastExprToType(LHS.get(), ResultType, CK_FloatingComplexCast);
+      else
+        LHS = S.ImpCastExprToType(LHS.get(), RHSElementType, CK_FloatingCast);
+    }
+  } else if (Order > 0) {
+    // Promote the precision of the RHS.
+    if (RHSComplexType)
+      RHS = S.ImpCastExprToType(RHS.get(), ResultType, CK_FloatingComplexCast);
+    else
+      RHS = S.ImpCastExprToType(RHS.get(), LHSElementType, CK_FloatingCast);
+  }
+  return ResultType;
 }
 
 /// \brief Hande arithmetic conversion from integer to float.  Helper function
@@ -2905,6 +2853,17 @@ ExprResult Sema::BuildDeclarationNameExpr(
   }
 }
 
+static void ConvertUTF8ToWideString(unsigned CharByteWidth, StringRef Source,
+                                    SmallString<32> &Target) {
+  Target.resize(CharByteWidth * (Source.size() + 1));
+  char *ResultPtr = &Target[0];
+  const UTF8 *ErrorPtr;
+  bool success = ConvertUTF8toWide(CharByteWidth, Source, ResultPtr, ErrorPtr);
+  (void)success;
+  assert(success);
+  Target.resize(ResultPtr - &Target[0]);
+}
+
 ExprResult Sema::BuildPredefinedExpr(SourceLocation Loc,
                                      PredefinedExpr::IdentType IT) {
   // Pick the current block, lambda, captured statement or function.
@@ -2924,22 +2883,35 @@ ExprResult Sema::BuildPredefinedExpr(SourceLocation Loc,
   }
 
   QualType ResTy;
+  StringLiteral *SL = nullptr;
   if (cast<DeclContext>(currentDecl)->isDependentContext())
     ResTy = Context.DependentTy;
   else {
     // Pre-defined identifiers are of type char[x], where x is the length of
     // the string.
-    unsigned Length = PredefinedExpr::ComputeName(IT, currentDecl).length();
+    auto Str = PredefinedExpr::ComputeName(IT, currentDecl);
+    unsigned Length = Str.length();
 
     llvm::APInt LengthI(32, Length + 1);
-    if (IT == PredefinedExpr::LFunction)
+    if (IT == PredefinedExpr::LFunction) {
       ResTy = Context.WideCharTy.withConst();
-    else
+      SmallString<32> RawChars;
+      ConvertUTF8ToWideString(Context.getTypeSizeInChars(ResTy).getQuantity(),
+                              Str, RawChars);
+      ResTy = Context.getConstantArrayType(ResTy, LengthI, ArrayType::Normal,
+                                           /*IndexTypeQuals*/ 0);
+      SL = StringLiteral::Create(Context, RawChars, StringLiteral::Wide,
+                                 /*Pascal*/ false, ResTy, Loc);
+    } else {
       ResTy = Context.CharTy.withConst();
-    ResTy = Context.getConstantArrayType(ResTy, LengthI, ArrayType::Normal, 0);
+      ResTy = Context.getConstantArrayType(ResTy, LengthI, ArrayType::Normal,
+                                           /*IndexTypeQuals*/ 0);
+      SL = StringLiteral::Create(Context, Str, StringLiteral::Ascii,
+                                 /*Pascal*/ false, ResTy, Loc);
+    }
   }
 
-  return new (Context) PredefinedExpr(Loc, ResTy, IT);
+  return new (Context) PredefinedExpr(Loc, ResTy, IT, SL);
 }
 
 ExprResult Sema::ActOnPredefinedExpr(SourceLocation Loc, tok::TokenKind Kind) {
@@ -3047,6 +3019,34 @@ static Expr *BuildFloatingLiteral(Sema &S, NumericLiteralParser &Literal,
 
   bool isExact = (result == APFloat::opOK);
   return FloatingLiteral::Create(S.Context, Val, isExact, Ty, Loc);
+}
+
+bool Sema::CheckLoopHintExpr(Expr *E, SourceLocation Loc) {
+  assert(E && "Invalid expression");
+
+  if (E->isValueDependent())
+    return false;
+
+  QualType QT = E->getType();
+  if (!QT->isIntegerType() || QT->isBooleanType() || QT->isCharType()) {
+    Diag(E->getExprLoc(), diag::err_pragma_loop_invalid_argument_type) << QT;
+    return true;
+  }
+
+  llvm::APSInt ValueAPS;
+  ExprResult R = VerifyIntegerConstantExpression(E, &ValueAPS);
+
+  if (R.isInvalid())
+    return true;
+
+  bool ValueIsPositive = ValueAPS.isStrictlyPositive();
+  if (!ValueIsPositive || ValueAPS.getActiveBits() > 31) {
+    Diag(E->getExprLoc(), diag::err_pragma_loop_invalid_argument_value)
+        << ValueAPS.toString(10) << ValueIsPositive;
+    return true;
+  }
+
+  return false;
 }
 
 ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
@@ -11301,19 +11301,14 @@ void Sema::PopExpressionEvaluationContext() {
         //   evaluate [...] a lambda-expression.
         D = diag::err_lambda_in_constant_expression;
       }
-      for (unsigned I = 0, N = Rec.Lambdas.size(); I != N; ++I)
-        Diag(Rec.Lambdas[I]->getLocStart(), D);
+      for (const auto *L : Rec.Lambdas)
+        Diag(L->getLocStart(), D);
     } else {
       // Mark the capture expressions odr-used. This was deferred
       // during lambda expression creation.
-      for (unsigned I = 0, N = Rec.Lambdas.size(); I != N; ++I) {
-        LambdaExpr *Lambda = Rec.Lambdas[I];
-        for (LambdaExpr::capture_init_iterator 
-                  C = Lambda->capture_init_begin(),
-               CEnd = Lambda->capture_init_end();
-             C != CEnd; ++C) {
-          MarkDeclarationsReferencedInExpr(*C);
-        }
+      for (auto *Lambda : Rec.Lambdas) {
+        for (auto *C : Lambda->capture_inits())
+          MarkDeclarationsReferencedInExpr(C);
       }
     }
   }

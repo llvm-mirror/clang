@@ -13,6 +13,8 @@
 
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/ASTMatchers/ASTMatchersInternal.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/Support/ManagedStatic.h"
 
 namespace clang {
 namespace ast_matchers {
@@ -64,23 +66,48 @@ class IdDynMatcher : public DynMatcherInterface {
   const IntrusiveRefCntPtr<DynMatcherInterface> InnerMatcher;
 };
 
+/// \brief A matcher that always returns true.
+///
+/// We only ever need one instance of this matcher, so we create a global one
+/// and reuse it to reduce the overhead of the matcher and increase the chance
+/// of cache hits.
+struct TrueMatcherImpl {
+  TrueMatcherImpl() : Instance(new Impl) {}
+  const IntrusiveRefCntPtr<DynMatcherInterface> Instance;
+
+  class Impl : public DynMatcherInterface {
+   public:
+    bool dynMatches(const ast_type_traits::DynTypedNode &, ASTMatchFinder *,
+                    BoundNodesTreeBuilder *) const override {
+      return true;
+    }
+  };
+};
+static llvm::ManagedStatic<TrueMatcherImpl> TrueMatcherInstance;
+
 }  // namespace
 
 DynTypedMatcher DynTypedMatcher::constructVariadic(
     VariadicOperatorFunction Func, std::vector<DynTypedMatcher> InnerMatchers) {
   assert(InnerMatchers.size() > 0 && "Array must not be empty.");
-  DynTypedMatcher Result = InnerMatchers[0];
-  // Use the least derived type as the restriction for the wrapper.
-  // This allows mismatches to be resolved on the inner matchers.
-  for (const DynTypedMatcher &M : InnerMatchers) {
-    assert(Result.SupportedKind.isSame(M.SupportedKind) &&
-           "SupportedKind must match!");
-    Result.RestrictKind =
-        ast_type_traits::ASTNodeKind::getMostDerivedCommonAncestor(
-            Result.RestrictKind, M.RestrictKind);
-  }
-  Result.Implementation = new VariadicMatcher(Func, std::move(InnerMatchers));
-  return Result;
+  assert(std::all_of(InnerMatchers.begin(), InnerMatchers.end(),
+                     [&InnerMatchers](const DynTypedMatcher &M) {
+           return InnerMatchers[0].SupportedKind.isSame(M.SupportedKind);
+         }) &&
+         "SupportedKind must match!");
+
+  // We must relax the restrict kind here.
+  // The different operators might deal differently with a mismatch.
+  // Make it the same as SupportedKind, since that is the broadest type we are
+  // allowed to accept.
+  auto SupportedKind = InnerMatchers[0].SupportedKind;
+  return DynTypedMatcher(SupportedKind, SupportedKind,
+                         new VariadicMatcher(Func, std::move(InnerMatchers)));
+}
+
+DynTypedMatcher DynTypedMatcher::trueMatcher(
+    ast_type_traits::ASTNodeKind NodeKind) {
+  return DynTypedMatcher(NodeKind, NodeKind, TrueMatcherInstance->Instance);
 }
 
 DynTypedMatcher DynTypedMatcher::dynCastTo(
@@ -193,6 +220,52 @@ bool AnyOfVariadicOperator(const ast_type_traits::DynTypedNode DynNode,
     }
   }
   return false;
+}
+
+HasNameMatcher::HasNameMatcher(StringRef NameRef)
+    : UseUnqualifiedMatch(NameRef.find("::") == NameRef.npos), Name(NameRef) {
+  assert(!Name.empty());
+}
+
+bool HasNameMatcher::matchesNodeUnqualified(const NamedDecl &Node) const {
+  assert(UseUnqualifiedMatch);
+  if (Node.getIdentifier()) {
+    // Simple name.
+    return Name == Node.getName();
+  }
+  if (Node.getDeclName()) {
+    // Name needs to be constructed.
+    llvm::SmallString<128> NodeName;
+    llvm::raw_svector_ostream OS(NodeName);
+    Node.printName(OS);
+    return Name == OS.str();
+  }
+  return false;
+}
+
+bool HasNameMatcher::matchesNodeFull(const NamedDecl &Node) const {
+  llvm::SmallString<128> NodeName = StringRef("::");
+  llvm::raw_svector_ostream OS(NodeName);
+  Node.printQualifiedName(OS);
+  const StringRef FullName = OS.str();
+  const StringRef Pattern = Name;
+
+  if (Pattern.startswith("::"))
+    return FullName == Pattern;
+
+  return FullName.endswith(Pattern) &&
+         FullName.drop_back(Pattern.size()).endswith("::");
+}
+
+bool HasNameMatcher::matchesNode(const NamedDecl &Node) const {
+  // FIXME: There is still room for improvement, but it would require copying a
+  // lot of the logic from NamedDecl::printQualifiedName(). The benchmarks do
+  // not show like that extra complexity is needed right now.
+  if (UseUnqualifiedMatch) {
+    assert(matchesNodeUnqualified(Node) == matchesNodeFull(Node));
+    return matchesNodeUnqualified(Node);
+  }
+  return matchesNodeFull(Node);
 }
 
 } // end namespace internal

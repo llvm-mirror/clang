@@ -37,12 +37,6 @@ protected:
     return format(Code, 0, Code.size(), Style);
   }
 
-  static FormatStyle getGoogleJSStyleWithColumns(unsigned ColumnLimit) {
-    FormatStyle Style = getGoogleStyle(FormatStyle::LK_Java);
-    Style.ColumnLimit = ColumnLimit;
-    return Style;
-  }
-
   static void verifyFormat(
       llvm::StringRef Code,
       const FormatStyle &Style = getGoogleStyle(FormatStyle::LK_Java)) {
@@ -63,6 +57,39 @@ TEST_F(FormatTestJava, ClassDeclarations) {
                "    int j;\n"
                "  }\n"
                "}");
+  verifyFormat("public class A extends B.C {}");
+}
+
+TEST_F(FormatTestJava, ThrowsDeclarations) {
+  verifyFormat("public void doSooooooooooooooooooooooooooomething()\n"
+               "    throws LooooooooooooooooooooooooooooongException {}");
+}
+
+TEST_F(FormatTestJava, Annotations) {
+  verifyFormat("@Override\n"
+               "public String toString() {\n}");
+  verifyFormat("@Override\n"
+               "@Nullable\n"
+               "public String getNameIfPresent() {\n}");
+
+  verifyFormat("@SuppressWarnings(value = \"unchecked\")\n"
+               "public void doSomething() {\n}");
+
+  verifyFormat("DoSomething(new A() {\n"
+               "  @Override\n"
+               "  public String toString() {\n"
+               "  }\n"
+               "});");
+
+  verifyFormat("@Partial @Mock DataLoader loader;");
+  verifyFormat("@SuppressWarnings(value = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\")\n"
+               "public static int iiiiiiiiiiiiiiiiiiiiiiii;");
+}
+
+TEST_F(FormatTestJava, Generics) {
+  verifyFormat("Iterable<?> a;");
+  verifyFormat("Iterable<?> a;");
+  verifyFormat("Iterable<? extends SomeObject> a;");
 }
 
 } // end namespace tooling

@@ -30,6 +30,7 @@
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/OperatorKinds.h"
 #include "clang/Basic/PartialDiagnostic.h"
+#include "clang/Basic/SanitizerBlacklist.h"
 #include "clang/Basic/VersionTuple.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FoldingSet.h"
@@ -392,6 +393,10 @@ private:
   ///  this ASTContext object.
   LangOptions &LangOpts;
 
+  /// \brief Blacklist object that is used by sanitizers to decide which
+  /// entities should not be instrumented.
+  std::unique_ptr<SanitizerBlacklist> SanitizerBL;
+
   /// \brief The allocator used to create AST objects.
   ///
   /// AST objects are never destructed; rather, all memory associated with the
@@ -516,6 +521,10 @@ public:
   bool AtomicUsesUnsupportedLibcall(const AtomicExpr *E) const;
   
   const LangOptions& getLangOpts() const { return LangOpts; }
+
+  const SanitizerBlacklist &getSanitizerBlacklist() const {
+    return *SanitizerBL;
+  }
 
   DiagnosticsEngine &getDiagnostics() const;
 
@@ -2319,6 +2328,31 @@ private:
   std::unique_ptr<ParentMap> AllParents;
 
   std::unique_ptr<VTableContextBase> VTContext;
+
+public:
+  enum PragmaSectionFlag : unsigned {
+    PSF_None = 0,
+    PSF_Read = 0x1,
+    PSF_Write = 0x2,
+    PSF_Execute = 0x4,
+    PSF_Implicit = 0x8,
+    PSF_Invalid = 0x80000000U,
+  };
+
+  struct SectionInfo {
+    DeclaratorDecl *Decl;
+    SourceLocation PragmaSectionLocation;
+    int SectionFlags;
+    SectionInfo() {}
+    SectionInfo(DeclaratorDecl *Decl,
+                SourceLocation PragmaSectionLocation,
+                int SectionFlags)
+      : Decl(Decl),
+        PragmaSectionLocation(PragmaSectionLocation),
+        SectionFlags(SectionFlags) {}
+  };
+
+  llvm::StringMap<SectionInfo> SectionInfos;
 };
 
 /// \brief Utility function for constructing a nullary selector.

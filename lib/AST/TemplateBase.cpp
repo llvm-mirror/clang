@@ -90,7 +90,8 @@ bool TemplateArgument::isDependent() const {
     llvm_unreachable("Should not have a NULL template argument");
 
   case Type:
-    return getAsType()->isDependentType();
+    return getAsType()->isDependentType() ||
+           isa<PackExpansionType>(getAsType());
 
   case Template:
     return getAsTemplate().isDependent();
@@ -111,7 +112,8 @@ bool TemplateArgument::isDependent() const {
     return false;
 
   case Expression:
-    return (getAsExpr()->isTypeDependent() || getAsExpr()->isValueDependent());
+    return (getAsExpr()->isTypeDependent() || getAsExpr()->isValueDependent() ||
+            isa<PackExpansionExpr>(getAsExpr()));
 
   case Pack:
     for (const auto &P : pack_elements())
@@ -294,8 +296,7 @@ bool TemplateArgument::structurallyEquals(const TemplateArgument &Other) const {
     return TypeOrValue.V == Other.TypeOrValue.V;
 
   case Declaration:
-    return getAsDecl() == Other.getAsDecl() && 
-           isDeclForReferenceParam() && Other.isDeclForReferenceParam();
+    return getAsDecl() == Other.getAsDecl();
 
   case Integral:
     return getIntegralType() == Other.getIntegralType() &&

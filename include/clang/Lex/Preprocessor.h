@@ -254,7 +254,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   /// of bytes will place the lexer at the start of a line.
   ///
   /// This is used when loading a precompiled preamble.
-  std::pair<unsigned, bool> SkipMainFilePreamble;
+  std::pair<int, bool> SkipMainFilePreamble;
 
   /// \brief The current top of the stack that we're lexing from if
   /// not expanding a macro and we are lexing directly from source code.
@@ -566,6 +566,9 @@ public:
   /// Note that this ignores any potentially active macro expansions and _Pragma
   /// expansions going on at the time.
   PreprocessorLexer *getCurrentFileLexer() const;
+
+  /// \brief Return the submodule owning the file being lexed.
+  Module *getCurrentSubmodule() const { return CurSubmodule; }
 
   /// \brief Returns the FileID for the preprocessor predefines.
   FileID getPredefinesFileID() const { return PredefinesFileID; }
@@ -1320,6 +1323,7 @@ public:
   /// reference is for system \#include's or not (i.e. using <> instead of "").
   const FileEntry *LookupFile(SourceLocation FilenameLoc, StringRef Filename,
                               bool isAngled, const DirectoryLookup *FromDir,
+                              const FileEntry *FromFile,
                               const DirectoryLookup *&CurDir,
                               SmallVectorImpl<char> *SearchPath,
                               SmallVectorImpl<char> *RelativePath,
@@ -1534,6 +1538,7 @@ private:
   void HandleIncludeDirective(SourceLocation HashLoc,
                               Token &Tok,
                               const DirectoryLookup *LookupFrom = nullptr,
+                              const FileEntry *LookupFromFile = nullptr,
                               bool isImport = false);
   void HandleIncludeNextDirective(SourceLocation HashLoc, Token &Tok);
   void HandleIncludeMacrosDirective(SourceLocation HashLoc, Token &Tok);

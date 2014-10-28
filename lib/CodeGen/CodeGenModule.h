@@ -16,7 +16,6 @@
 
 #include "CGVTables.h"
 #include "CodeGenTypes.h"
-#include "SanitizerBlacklist.h"
 #include "SanitizerMetadata.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
@@ -26,6 +25,7 @@
 #include "clang/Basic/ABI.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/Module.h"
+#include "clang/Basic/SanitizerBlacklist.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -475,8 +475,6 @@ class CodeGenModule : public CodeGenTypeCache {
 
   GlobalDecl initializedGlobalDecl;
 
-  SanitizerBlacklist SanitizerBL;
-
   std::unique_ptr<SanitizerMetadata> SanitizerMD;
 
   /// @}
@@ -654,9 +652,9 @@ public:
   /// Set the visibility for the given LLVM GlobalValue.
   void setGlobalVisibility(llvm::GlobalValue *GV, const NamedDecl *D) const;
 
-  /// Set the TLS mode for the given LLVM GlobalVariable for the thread-local
+  /// Set the TLS mode for the given LLVM GlobalValue for the thread-local
   /// variable declaration D.
-  void setTLSMode(llvm::GlobalVariable *GV, const VarDecl &D) const;
+  void setTLSMode(llvm::GlobalValue *GV, const VarDecl &D) const;
 
   static llvm::GlobalValue::VisibilityTypes GetLLVMVisibility(Visibility V) {
     switch (V) {
@@ -688,9 +686,10 @@ public:
   CreateOrReplaceCXXRuntimeVariable(StringRef Name, llvm::Type *Ty,
                                     llvm::GlobalValue::LinkageTypes Linkage);
 
-  llvm::Function *CreateGlobalInitOrDestructFunction(llvm::FunctionType *ty,
-                                                     const Twine &name,
-                                                     bool TLS = false);
+  llvm::Function *
+  CreateGlobalInitOrDestructFunction(llvm::FunctionType *ty, const Twine &name,
+                                     SourceLocation Loc = SourceLocation(),
+                                     bool TLS = false);
 
   /// Return the address space of the underlying global variable for D, as
   /// determined by its declaration. Normally this is the same as the address
@@ -785,7 +784,8 @@ public:
 
   /// Return a pointer to a constant array for the given string literal.
   llvm::GlobalVariable *
-  GetAddrOfConstantStringFromLiteral(const StringLiteral *S);
+  GetAddrOfConstantStringFromLiteral(const StringLiteral *S,
+                                     StringRef Name = ".str");
 
   /// Return a pointer to a constant array for the given ObjCEncodeExpr node.
   llvm::GlobalVariable *
@@ -1046,9 +1046,11 @@ public:
   /// annotations are emitted during finalization of the LLVM code.
   void AddGlobalAnnotations(const ValueDecl *D, llvm::GlobalValue *GV);
 
-  const SanitizerBlacklist &getSanitizerBlacklist() const {
-    return SanitizerBL;
-  }
+  bool isInSanitizerBlacklist(llvm::Function *Fn, SourceLocation Loc) const;
+
+  bool isInSanitizerBlacklist(llvm::GlobalVariable *GV, SourceLocation Loc,
+                              QualType Ty,
+                              StringRef Category = StringRef()) const;
 
   SanitizerMetadata *getSanitizerMetadata() {
     return SanitizerMD.get();

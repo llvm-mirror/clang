@@ -636,23 +636,12 @@ protected:
       HasOwnVFPtr(false),
       FirstNearlyEmptyVBase(nullptr) {}
 
-  /// Reset this RecordLayoutBuilder to a fresh state, using the given
-  /// alignment as the initial alignment.  This is used for the
-  /// correct layout of vb-table pointers in MSVC.
-  void resetWithTargetAlignment(CharUnits TargetAlignment) {
-    const ASTContext &Context = this->Context;
-    EmptySubobjectMap *EmptySubobjects = this->EmptySubobjects;
-    this->~RecordLayoutBuilder();
-    new (this) RecordLayoutBuilder(Context, EmptySubobjects);
-    Alignment = UnpackedAlignment = TargetAlignment;
-  }
-
   void Layout(const RecordDecl *D);
   void Layout(const CXXRecordDecl *D);
   void Layout(const ObjCInterfaceDecl *D);
 
   void LayoutFields(const RecordDecl *D);
-  void LayoutField(const FieldDecl *D);
+  void LayoutField(const FieldDecl *D, bool InsertExtraPadding);
   void LayoutWideBitField(uint64_t FieldSize, uint64_t TypeSize,
                           bool FieldPacked, const FieldDecl *D);
   void LayoutBitField(const FieldDecl *D);
@@ -1331,7 +1320,7 @@ void RecordLayoutBuilder::Layout(const ObjCInterfaceDecl *D) {
   // Layout each ivar sequentially.
   for (const ObjCIvarDecl *IVD = D->all_declared_ivar_begin(); IVD;
        IVD = IVD->getNextIvar())
-    LayoutField(IVD);
+    LayoutField(IVD, false);
 
   // Finally, round the size of the total struct up to the alignment of the
   // struct itself.
@@ -1341,8 +1330,17 @@ void RecordLayoutBuilder::Layout(const ObjCInterfaceDecl *D) {
 void RecordLayoutBuilder::LayoutFields(const RecordDecl *D) {
   // Layout each field, for now, just sequentially, respecting alignment.  In
   // the future, this will need to be tweakable by targets.
+  bool InsertExtraPadding = D->mayInsertExtraPadding(/*EmitRemark=*/true);
   for (const auto *Field : D->fields())
-    LayoutField(Field);
+    LayoutField(Field, InsertExtraPadding);
+}
+
+// Rounds the specified size to have it a multiple of the char size.
+static uint64_t
+roundUpSizeToCharAlignment(uint64_t Size,
+                           const ASTContext &Context) {
+  uint64_t CharAlignment = Context.getTargetInfo().getCharAlign();
+  return llvm::RoundUpToAlignment(Size, CharAlignment);
 }
 
 void RecordLayoutBuilder::LayoutWideBitField(uint64_t FieldSize,
@@ -1382,7 +1380,9 @@ void RecordLayoutBuilder::LayoutWideBitField(uint64_t FieldSize,
   uint64_t UnpaddedFieldOffset = getDataSizeInBits() - UnfilledBitsInLastUnit;
 
   if (IsUnion) {
-    setDataSize(std::max(getDataSizeInBits(), FieldSize));
+    uint64_t RoundedFieldSize = roundUpSizeToCharAlignment(FieldSize,
+                                                           Context);
+    setDataSize(std::max(getDataSizeInBits(), RoundedFieldSize));
     FieldOffset = 0;
   } else {
     // The bitfield is allocated starting at the next offset aligned 
@@ -1607,9 +1607,9 @@ void RecordLayoutBuilder::LayoutBitField(const FieldDecl *D) {
 
   // For unions, this is just a max operation, as usual.
   if (IsUnion) {
-    // FIXME: I think FieldSize should be TypeSize here.
-    setDataSize(std::max(getDataSizeInBits(), FieldSize));
-
+    uint64_t RoundedFieldSize = roundUpSizeToCharAlignment(FieldSize,
+                                                           Context);
+    setDataSize(std::max(getDataSizeInBits(), RoundedFieldSize));
   // For non-zero-width bitfields in ms_struct structs, allocate a new
   // storage unit if necessary.
   } else if (IsMsStruct && FieldSize) {
@@ -1645,7 +1645,8 @@ void RecordLayoutBuilder::LayoutBitField(const FieldDecl *D) {
                   Context.toCharUnitsFromBits(UnpackedFieldAlign));
 }
 
-void RecordLayoutBuilder::LayoutField(const FieldDecl *D) {  
+void RecordLayoutBuilder::LayoutField(const FieldDecl *D,
+                                      bool InsertExtraPadding) {
   if (D->isBitField()) {
     LayoutBitField(D);
     return;
@@ -1748,6 +1749,15 @@ void RecordLayoutBuilder::LayoutField(const FieldDecl *D) {
     CheckFieldPadding(Context.toBits(FieldOffset), UnpaddedFieldOffset, 
                       Context.toBits(UnpackedFieldOffset),
                       Context.toBits(UnpackedFieldAlign), FieldPacked, D);
+
+  if (InsertExtraPadding && !FieldSize.isZero()) {
+    CharUnits ASanAlignment = CharUnits::fromQuantity(8);
+    CharUnits ExtraSizeForAsan = ASanAlignment;
+    if (FieldSize % ASanAlignment)
+      ExtraSizeForAsan +=
+          ASanAlignment - CharUnits::fromQuantity(FieldSize % ASanAlignment);
+    FieldSize += ExtraSizeForAsan;
+  }
 
   // Reserve space for this field.
   uint64_t FieldSizeInBits = Context.toBits(FieldSize);

@@ -3267,8 +3267,6 @@ public:
                                const ObjCPropertyDecl  *ObjCProperty,
                                bool ObjCPropertyAccess);
 
-  void HandleDelayedAvailabilityCheck(sema::DelayedDiagnostic &DD, Decl *Ctx);
-
   bool makeUnavailableInSystemHeader(SourceLocation loc,
                                      StringRef message);
 
@@ -3486,6 +3484,9 @@ public:
                                  PredefinedExpr::IdentType IT);
   ExprResult ActOnPredefinedExpr(SourceLocation Loc, tok::TokenKind Kind);
   ExprResult ActOnIntegerConstant(SourceLocation Loc, uint64_t Val);
+
+  bool CheckLoopHintExpr(Expr *E, SourceLocation Loc);
+
   ExprResult ActOnNumericConstant(const Token &Tok, Scope *UDLScope = nullptr);
   ExprResult ActOnCharacterConstant(const Token &Tok,
                                     Scope *UDLScope = nullptr);
@@ -6103,6 +6104,8 @@ public:
   bool DeduceReturnType(FunctionDecl *FD, SourceLocation Loc,
                         bool Diagnose = true);
 
+  TypeLoc getReturnTypeLoc(FunctionDecl *FD) const;
+
   bool DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
                                         SourceLocation ReturnLoc,
                                         Expr *&RetExpr, AutoType *AT);
@@ -7217,29 +7220,6 @@ public:
     PSK_CodeSeg,
   };
 
-  enum PragmaSectionFlag : unsigned {
-    PSF_None = 0,
-    PSF_Read = 0x1,
-    PSF_Write = 0x2,
-    PSF_Execute = 0x4,
-    PSF_Implicit = 0x8,
-    PSF_Invalid = 0x80000000U,
-  };
-
-  struct SectionInfo {
-    DeclaratorDecl *Decl;
-    SourceLocation PragmaSectionLocation;
-    int SectionFlags;
-    SectionInfo() {}
-    SectionInfo(DeclaratorDecl *Decl,
-                SourceLocation PragmaSectionLocation,
-                int SectionFlags)
-      : Decl(Decl),
-        PragmaSectionLocation(PragmaSectionLocation),
-        SectionFlags(SectionFlags) {}
-  };
-
-  llvm::StringMap<SectionInfo> SectionInfos;
   bool UnifySection(StringRef SectionName,
                     int SectionFlags,
                     DeclaratorDecl *TheDecl);

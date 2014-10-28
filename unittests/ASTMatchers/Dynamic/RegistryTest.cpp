@@ -380,6 +380,13 @@ TEST_F(RegistryTest, VariadicOp) {
 
   EXPECT_FALSE(matches("class Bar{ int Foo; };", D));
   EXPECT_TRUE(matches("class OtherBar{ int Foo; };", D));
+
+  D = constructMatcher(
+          "namedDecl", constructMatcher("hasName", std::string("Foo")),
+          constructMatcher("unless", constructMatcher("recordDecl")))
+          .getTypedMatcher<Decl>();
+  EXPECT_TRUE(matches("void Foo(){}", D));
+  EXPECT_TRUE(notMatches("struct Foo {};", D));
 }
 
 TEST_F(RegistryTest, Errors) {
@@ -438,10 +445,18 @@ TEST_F(RegistryTest, Errors) {
 
 TEST_F(RegistryTest, Completion) {
   CompVector Comps = getCompletions();
+  // Overloaded
   EXPECT_TRUE(hasCompletion(
       Comps, "hasParent(", "Matcher<Decl|Stmt> hasParent(Matcher<Decl|Stmt>)"));
+  // Variadic.
   EXPECT_TRUE(hasCompletion(Comps, "whileStmt(",
                             "Matcher<Stmt> whileStmt(Matcher<WhileStmt>...)"));
+  // Polymorphic.
+  EXPECT_TRUE(hasCompletion(
+      Comps, "hasDescendant(",
+      "Matcher<NestedNameSpecifier|NestedNameSpecifierLoc|QualType|...> "
+      "hasDescendant(Matcher<CXXCtorInitializer|NestedNameSpecifier|"
+      "NestedNameSpecifierLoc|...>)"));
 
   CompVector WhileComps = getCompletions("whileStmt", 0);
 
@@ -470,6 +485,12 @@ TEST_F(RegistryTest, Completion) {
       hasCompletion(NamedDeclComps, "isPublic()", "Matcher<Decl> isPublic()"));
   EXPECT_TRUE(hasCompletion(NamedDeclComps, "hasName(\"",
                             "Matcher<NamedDecl> hasName(string)"));
+
+  // Heterogeneous overloads.
+  Comps = getCompletions("classTemplateSpecializationDecl", 0);
+  EXPECT_TRUE(hasCompletion(
+      Comps, "isSameOrDerivedFrom(",
+      "Matcher<CXXRecordDecl> isSameOrDerivedFrom(string|Matcher<NamedDecl>)"));
 }
 
 TEST_F(RegistryTest, HasArgs) {
