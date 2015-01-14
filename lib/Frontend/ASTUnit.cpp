@@ -508,8 +508,8 @@ public:
       : PP(PP), Context(Context), LangOpt(LangOpt), TargetOpts(TargetOpts),
         Target(Target), Counter(Counter), InitializedLanguage(false) {}
 
-  bool ReadLanguageOptions(const LangOptions &LangOpts,
-                           bool Complain) override {
+  bool ReadLanguageOptions(const LangOptions &LangOpts, bool Complain,
+                           bool AllowCompatibleDifferences) override {
     if (InitializedLanguage)
       return false;
     
@@ -589,6 +589,7 @@ class CaptureDroppedDiagnostics {
   DiagnosticsEngine &Diags;
   StoredDiagnosticConsumer Client;
   DiagnosticConsumer *PreviousClient;
+  std::unique_ptr<DiagnosticConsumer> OwningPreviousClient;
 
 public:
   CaptureDroppedDiagnostics(bool RequestCapture, DiagnosticsEngine &Diags,
@@ -596,16 +597,15 @@ public:
     : Diags(Diags), Client(StoredDiags), PreviousClient(nullptr)
   {
     if (RequestCapture || Diags.getClient() == nullptr) {
-      PreviousClient = Diags.takeClient();
-      Diags.setClient(&Client);
+      OwningPreviousClient = Diags.takeClient();
+      PreviousClient = Diags.getClient();
+      Diags.setClient(&Client, false);
     }
   }
 
   ~CaptureDroppedDiagnostics() {
-    if (Diags.getClient() == &Client) {
-      Diags.takeClient();
-      Diags.setClient(PreviousClient);
-    }
+    if (Diags.getClient() == &Client)
+      Diags.setClient(PreviousClient, !!OwningPreviousClient.release());
   }
 };
 
@@ -638,7 +638,12 @@ ASTDeserializationListener *ASTUnit::getDeserializationListener() {
 std::unique_ptr<llvm::MemoryBuffer>
 ASTUnit::getBufferForFile(StringRef Filename, std::string *ErrorStr) {
   assert(FileMgr);
-  return FileMgr->getBufferForFile(Filename, ErrorStr);
+  auto Buffer = FileMgr->getBufferForFile(Filename);
+  if (Buffer)
+    return std::move(*Buffer);
+  if (ErrorStr)
+    *ErrorStr = Buffer.getError().message();
+  return nullptr;
 }
 
 /// \brief Configure the diagnostics object for use with ASTUnit.
@@ -2321,6 +2326,10 @@ void ASTUnit::CodeComplete(StringRef File, unsigned Line, unsigned Column,
   // Set the language options appropriately.
   LangOpts = *CCInvocation->getLangOpts();
 
+  // Spell-checking and warnings are wasteful during code-completion.
+  LangOpts.SpellChecking = false;
+  CCInvocation->getDiagnosticOpts().IgnoreWarnings = true;
+
   std::unique_ptr<CompilerInstance> Clang(new CompilerInstance());
 
   // Recover resources if we crash before exiting this method.
@@ -2776,7 +2785,8 @@ struct PCHLocatorInfo {
 static bool PCHLocator(serialization::ModuleFile &M, void *UserData) {
   PCHLocatorInfo &Info = *static_cast<PCHLocatorInfo*>(UserData);
   switch (M.Kind) {
-  case serialization::MK_Module:
+  case serialization::MK_ImplicitModule:
+  case serialization::MK_ExplicitModule:
     return true; // skip dependencies.
   case serialization::MK_PCH:
     Info.Mod = &M;

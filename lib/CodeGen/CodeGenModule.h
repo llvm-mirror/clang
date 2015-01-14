@@ -1087,11 +1087,16 @@ public:
   void setAliasAttributes(const Decl *D, llvm::GlobalValue *GV);
 
   void addReplacement(StringRef Name, llvm::Constant *C);
-private:
 
+  /// \brief Emit a code for threadprivate directive.
+  /// \param D Threadprivate declaration.
+  void EmitOMPThreadPrivateDecl(const OMPThreadPrivateDecl *D);
+
+private:
   llvm::Constant *
   GetOrCreateLLVMFunction(StringRef MangledName, llvm::Type *Ty, GlobalDecl D,
                           bool ForVTable, bool DontDefer = false,
+                          bool IsThunk = false,
                           llvm::AttributeSet ExtraAttrs = llvm::AttributeSet());
 
   llvm::Constant *GetOrCreateLLVMGlobal(StringRef MangledName,
@@ -1101,9 +1106,8 @@ private:
   void setNonAliasAttributes(const Decl *D, llvm::GlobalObject *GO);
 
   /// Set function attributes for a function declaration.
-  void SetFunctionAttributes(GlobalDecl GD,
-                             llvm::Function *F,
-                             bool IsIncompleteFunction);
+  void SetFunctionAttributes(GlobalDecl GD, llvm::Function *F,
+                             bool IsIncompleteFunction, bool IsThunk);
 
   void EmitGlobalDefinition(GlobalDecl D, llvm::GlobalValue *GV = nullptr);
 

@@ -169,6 +169,8 @@ def no_implicit_float : Flag<["-"], "no-implicit-float">,
   HelpText<"Don't generate implicit floating point instructions">;
 def fdump_vtable_layouts : Flag<["-"], "fdump-vtable-layouts">,
   HelpText<"Dump the layouts of all vtables that will be emitted in a translation unit">;
+def fmerge_functions : Flag<["-"], "fmerge-functions">,
+  HelpText<"Permit merging of identical functions when optimizing.">;
 def femit_coverage_notes : Flag<["-"], "femit-coverage-notes">,
   HelpText<"Emit a gcov coverage notes file when compiling.">;
 def femit_coverage_data: Flag<["-"], "femit-coverage-data">,
@@ -435,8 +437,6 @@ def fblocks_runtime_optional : Flag<["-"], "fblocks-runtime-optional">,
   HelpText<"Weakly link in the blocks runtime">;
 def fsjlj_exceptions : Flag<["-"], "fsjlj-exceptions">,
   HelpText<"Use SjLj style exceptions">;
-def fseh_exceptions : Flag<["-"], "fseh-exceptions">,
-  HelpText<"Use SEH style exceptions">;
 def split_dwarf_file : Separate<["-"], "split-dwarf-file">,
   HelpText<"File name to use for split dwarf debug info output">;
 def fno_wchar : Flag<["-"], "fno-wchar">,

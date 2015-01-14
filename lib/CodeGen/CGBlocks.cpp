@@ -915,7 +915,7 @@ llvm::Type *CodeGenModule::getBlockDescriptorType() {
   // };
   BlockDescriptorType =
     llvm::StructType::create("struct.__block_descriptor",
-                             UnsignedLongTy, UnsignedLongTy, NULL);
+                             UnsignedLongTy, UnsignedLongTy, nullptr);
 
   // Now form a pointer to that.
   BlockDescriptorType = llvm::PointerType::getUnqual(BlockDescriptorType);
@@ -938,7 +938,7 @@ llvm::Type *CodeGenModule::getGenericBlockLiteralType() {
   GenericBlockLiteralType =
     llvm::StructType::create("struct.__block_literal_generic",
                              VoidPtrTy, IntTy, IntTy, VoidPtrTy,
-                             BlockDescPtrTy, NULL);
+                             BlockDescPtrTy, nullptr);
 
   return GenericBlockLiteralType;
 }
@@ -1243,7 +1243,9 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
         }
 
         DI->EmitDeclareOfBlockDeclRefVariable(variable, BlockPointerDbgLoc,
-                                              Builder, blockInfo);
+                                              Builder, blockInfo,
+                                              entry_ptr == entry->end()
+                                              ? nullptr : entry_ptr);
       }
     }
     // Recover location if it was changed in the above loop.

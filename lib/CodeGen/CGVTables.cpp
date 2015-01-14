@@ -48,7 +48,7 @@ llvm::Constant *CodeGenModule::GetAddrOfThunk(GlobalDecl GD,
 
   llvm::Type *Ty = getTypes().GetFunctionTypeForVTable(GD);
   return GetOrCreateLLVMFunction(Name, Ty, GD, /*ForVTable=*/true,
-                                 /*DontDefer*/ true);
+                                 /*DontDefer=*/true, /*IsThunk=*/true);
 }
 
 static void setThunkVisibility(CodeGenModule &CGM, const CXXMethodDecl *MD,
@@ -200,8 +200,11 @@ void CodeGenFunction::StartThunk(llvm::Function *Fn, GlobalDecl GD,
   const CXXMethodDecl *MD = cast<CXXMethodDecl>(GD.getDecl());
   QualType ThisType = MD->getThisType(getContext());
   const FunctionProtoType *FPT = MD->getType()->getAs<FunctionProtoType>();
-  QualType ResultType =
-      CGM.getCXXABI().HasThisReturn(GD) ? ThisType : FPT->getReturnType();
+  QualType ResultType = CGM.getCXXABI().HasThisReturn(GD)
+                            ? ThisType
+                            : CGM.getCXXABI().hasMostDerivedReturn(GD)
+                                  ? CGM.getContext().VoidPtrTy
+                                  : FPT->getReturnType();
   FunctionArgList FunctionArgs;
 
   // Create the implicit 'this' parameter declaration.
@@ -278,8 +281,11 @@ void CodeGenFunction::EmitCallAndReturnForThunk(llvm::Value *Callee,
 #endif
 
   // Determine whether we have a return value slot to use.
-  QualType ResultType =
-      CGM.getCXXABI().HasThisReturn(CurGD) ? ThisType : FPT->getReturnType();
+  QualType ResultType = CGM.getCXXABI().HasThisReturn(CurGD)
+                            ? ThisType
+                            : CGM.getCXXABI().hasMostDerivedReturn(CurGD)
+                                  ? CGM.getContext().VoidPtrTy
+                                  : FPT->getReturnType();
   ReturnValueSlot Slot;
   if (!ResultType->isVoidType() &&
       CurFnInfo->getReturnInfo().getKind() == ABIArgInfo::Indirect &&
@@ -677,7 +683,8 @@ CodeGenModule::getVTableLinkage(const CXXRecordDecl *RD) {
 
   // We're at the end of the translation unit, so the current key
   // function is fully correct.
-  if (const CXXMethodDecl *keyFunction = Context.getCurrentKeyFunction(RD)) {
+  const CXXMethodDecl *keyFunction = Context.getCurrentKeyFunction(RD);
+  if (keyFunction && !RD->hasAttr<DLLImportAttr>()) {
     // If this class has a key function, use that to determine the
     // linkage of the vtable.
     const FunctionDecl *def = nullptr;

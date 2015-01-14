@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Sema/SemaInternal.h"
+#include "TreeTransform.h"
 #include "TypeLocBuilder.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTLambda.h"
@@ -199,6 +200,7 @@ ParsedType Sema::getDestructorName(SourceLocation TildeLoc,
 
     if (TypeDecl *Type = Found.getAsSingle<TypeDecl>()) {
       QualType T = Context.getTypeDeclType(Type);
+      MarkAnyDeclReferenced(Type->getLocation(), Type, /*OdrUse=*/false);
 
       if (SearchType.isNull() || SearchType->isDependentType() ||
           Context.hasSameUnqualifiedType(T, SearchType)) {
@@ -382,6 +384,9 @@ ExprResult Sema::BuildCXXTypeId(QualType TypeInfoType,
       RequireCompleteType(TypeidLoc, T, diag::err_incomplete_typeid))
     return ExprError();
 
+  if (T->isVariablyModifiedType())
+    return ExprError(Diag(TypeidLoc, diag::err_variably_modified_typeid) << T);
+
   return new (Context) CXXTypeidExpr(TypeInfoType.withConst(), Operand,
                                      SourceRange(TypeidLoc, RParenLoc));
 }
@@ -435,6 +440,10 @@ ExprResult Sema::BuildCXXTypeId(QualType TypeInfoType,
       E = ImpCastExprToType(E, UnqualT, CK_NoOp, E->getValueKind()).get();
     }
   }
+
+  if (E->getType()->isVariablyModifiedType())
+    return ExprError(Diag(TypeidLoc, diag::err_variably_modified_typeid)
+                     << E->getType());
 
   return new (Context) CXXTypeidExpr(TypeInfoType.withConst(), E,
                                      SourceRange(TypeidLoc, RParenLoc));
@@ -582,15 +591,15 @@ Sema::ActOnCXXThrow(Scope *S, SourceLocation OpLoc, Expr *Ex) {
   bool IsThrownVarInScope = false;
   if (Ex) {
     // C++0x [class.copymove]p31:
-    //   When certain criteria are met, an implementation is allowed to omit the 
+    //   When certain criteria are met, an implementation is allowed to omit the
     //   copy/move construction of a class object [...]
     //
-    //     - in a throw-expression, when the operand is the name of a 
+    //     - in a throw-expression, when the operand is the name of a
     //       non-volatile automatic object (other than a function or catch-
-    //       clause parameter) whose scope does not extend beyond the end of the 
-    //       innermost enclosing try-block (if there is one), the copy/move 
-    //       operation from the operand to the exception object (15.1) can be 
-    //       omitted by constructing the automatic object directly into the 
+    //       clause parameter) whose scope does not extend beyond the end of the
+    //       innermost enclosing try-block (if there is one), the copy/move
+    //       operation from the operand to the exception object (15.1) can be
+    //       omitted by constructing the automatic object directly into the
     //       exception object
     if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Ex->IgnoreParens()))
       if (VarDecl *Var = dyn_cast<VarDecl>(DRE->getDecl())) {
@@ -2623,8 +2632,8 @@ Sema::PerformImplicitConversion(Expr *From, QualType ToType,
         // Do no conversion if dealing with ... for the first conversion.
         if (!ICS.UserDefined.EllipsisConversion) {
           // If the user-defined conversion is specified by a constructor, the
-          // initial standard conversion sequence converts the source type to the
-          // type required by the argument of the constructor
+          // initial standard conversion sequence converts the source type to
+          // the type required by the argument of the constructor
           BeforeToType = Ctor->getParamDecl(0)->getType().getNonReferenceType();
         }
       }
@@ -2771,10 +2780,29 @@ Sema::PerformImplicitConversion(Expr *From, QualType ToType,
   // Perform the second implicit conversion
   switch (SCS.Second) {
   case ICK_Identity:
-    // If both sides are functions (or pointers/references to them), there could
-    // be incompatible exception declarations.
-    if (CheckExceptionSpecCompatibility(From, ToType))
-      return ExprError();
+    // C++ [except.spec]p5:
+    //   [For] assignment to and initialization of pointers to functions,
+    //   pointers to member functions, and references to functions: the
+    //   target entity shall allow at least the exceptions allowed by the
+    //   source value in the assignment or initialization.
+    switch (Action) {
+    case AA_Assigning:
+    case AA_Initializing:
+      // Note, function argument passing and returning are initialization.
+    case AA_Passing:
+    case AA_Returning:
+    case AA_Sending:
+    case AA_Passing_CFAudited:
+      if (CheckExceptionSpecCompatibility(From, ToType))
+        return ExprError();
+      break;
+
+    case AA_Casting:
+    case AA_Converting:
+      // Casts and implicit conversions are not initialization, so are not
+      // checked for exception specification mismatches.
+      break;
+    }
     // Nothing else to do.
     break;
 
@@ -4559,10 +4587,14 @@ QualType Sema::CXXCheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
   //      the usual arithmetic conversions are performed to bring them to a
   //      common type, and the result is of that type.
   if (LTy->isArithmeticType() && RTy->isArithmeticType()) {
-    UsualArithmeticConversions(LHS, RHS);
+    QualType ResTy = UsualArithmeticConversions(LHS, RHS);
     if (LHS.isInvalid() || RHS.isInvalid())
       return QualType();
-    return LHS.get()->getType();
+
+    LHS = ImpCastExprToType(LHS.get(), ResTy, PrepareScalarCast(LHS, ResTy));
+    RHS = ImpCastExprToType(RHS.get(), ResTy, PrepareScalarCast(RHS, ResTy));
+
+    return ResTy;
   }
 
   //   -- The second and third operands have pointer type, or one has pointer
@@ -5240,7 +5272,7 @@ Sema::ActOnStartCXXMemberReference(Scope *S, Expr *Base, SourceLocation OpLoc,
         OperatorArrows.push_back(OpCall->getDirectCallee());
       BaseType = Base->getType();
       CanQualType CBaseType = Context.getCanonicalType(BaseType);
-      if (!CTypes.insert(CBaseType)) {
+      if (!CTypes.insert(CBaseType).second) {
         Diag(OpLoc, diag::err_operator_arrow_circular) << StartingType;
         noteOperatorArrows(*this, OperatorArrows);
         return ExprError();
@@ -5914,6 +5946,269 @@ static void CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(
   CurrentLSI->clearPotentialCaptures();
 }
 
+static ExprResult attemptRecovery(Sema &SemaRef,
+                                  const TypoCorrectionConsumer &Consumer,
+                                  TypoCorrection TC) {
+  LookupResult R(SemaRef, Consumer.getLookupResult().getLookupNameInfo(),
+                 Consumer.getLookupResult().getLookupKind());
+  const CXXScopeSpec *SS = Consumer.getSS();
+  CXXScopeSpec NewSS;
+
+  // Use an approprate CXXScopeSpec for building the expr.
+  if (auto *NNS = TC.getCorrectionSpecifier())
+    NewSS.MakeTrivial(SemaRef.Context, NNS, TC.getCorrectionRange());
+  else if (SS && !TC.WillReplaceSpecifier())
+    NewSS = *SS;
+
+  if (auto *ND = TC.getCorrectionDecl()) {
+    R.addDecl(ND);
+    if (ND->isCXXClassMember()) {
+      // Figure out the correct naming class to ad to the LookupResult.
+      CXXRecordDecl *Record = nullptr;
+      if (auto *NNS = TC.getCorrectionSpecifier())
+        Record = NNS->getAsType()->getAsCXXRecordDecl();
+      if (!Record)
+        Record = cast<CXXRecordDecl>(ND->getDeclContext()->getRedeclContext());
+      R.setNamingClass(Record);
+
+      // Detect and handle the case where the decl might be an implicit
+      // member.
+      bool MightBeImplicitMember;
+      if (!Consumer.isAddressOfOperand())
+        MightBeImplicitMember = true;
+      else if (!NewSS.isEmpty())
+        MightBeImplicitMember = false;
+      else if (R.isOverloadedResult())
+        MightBeImplicitMember = false;
+      else if (R.isUnresolvableResult())
+        MightBeImplicitMember = true;
+      else
+        MightBeImplicitMember = isa<FieldDecl>(ND) ||
+                                isa<IndirectFieldDecl>(ND) ||
+                                isa<MSPropertyDecl>(ND);
+
+      if (MightBeImplicitMember)
+        return SemaRef.BuildPossibleImplicitMemberExpr(
+            NewSS, /*TemplateKWLoc*/ SourceLocation(), R,
+            /*TemplateArgs*/ nullptr);
+    } else if (auto *Ivar = dyn_cast<ObjCIvarDecl>(ND)) {
+      return SemaRef.LookupInObjCMethod(R, Consumer.getScope(),
+                                        Ivar->getIdentifier());
+    }
+  }
+
+  return SemaRef.BuildDeclarationNameExpr(NewSS, R, /*NeedsADL*/ false,
+                                          /*AcceptInvalidDecl*/ true);
+}
+
+namespace {
+class FindTypoExprs : public RecursiveASTVisitor<FindTypoExprs> {
+  llvm::SmallSetVector<TypoExpr *, 2> &TypoExprs;
+
+public:
+  explicit FindTypoExprs(llvm::SmallSetVector<TypoExpr *, 2> &TypoExprs)
+      : TypoExprs(TypoExprs) {}
+  bool VisitTypoExpr(TypoExpr *TE) {
+    TypoExprs.insert(TE);
+    return true;
+  }
+};
+
+class TransformTypos : public TreeTransform<TransformTypos> {
+  typedef TreeTransform<TransformTypos> BaseTransform;
+
+  llvm::function_ref<ExprResult(Expr *)> ExprFilter;
+  llvm::SmallSetVector<TypoExpr *, 2> TypoExprs, AmbiguousTypoExprs;
+  llvm::SmallDenseMap<TypoExpr *, ExprResult, 2> TransformCache;
+  llvm::SmallDenseMap<OverloadExpr *, Expr *, 4> OverloadResolution;
+
+  /// \brief Emit diagnostics for all of the TypoExprs encountered.
+  /// If the TypoExprs were successfully corrected, then the diagnostics should
+  /// suggest the corrections. Otherwise the diagnostics will not suggest
+  /// anything (having been passed an empty TypoCorrection).
+  void EmitAllDiagnostics() {
+    for (auto E : TypoExprs) {
+      TypoExpr *TE = cast<TypoExpr>(E);
+      auto &State = SemaRef.getTypoExprState(TE);
+      if (State.DiagHandler) {
+        TypoCorrection TC = State.Consumer->getCurrentCorrection();
+        ExprResult Replacement = TransformCache[TE];
+
+        // Extract the NamedDecl from the transformed TypoExpr and add it to the
+        // TypoCorrection, replacing the existing decls. This ensures the right
+        // NamedDecl is used in diagnostics e.g. in the case where overload
+        // resolution was used to select one from several possible decls that
+        // had been stored in the TypoCorrection.
+        if (auto *ND = getDeclFromExpr(
+                Replacement.isInvalid() ? nullptr : Replacement.get()))
+          TC.setCorrectionDecl(ND);
+
+        State.DiagHandler(TC);
+      }
+      SemaRef.clearDelayedTypo(TE);
+    }
+  }
+
+  /// \brief If corrections for the first TypoExpr have been exhausted for a
+  /// given combination of the other TypoExprs, retry those corrections against
+  /// the next combination of substitutions for the other TypoExprs by advancing
+  /// to the next potential correction of the second TypoExpr. For the second
+  /// and subsequent TypoExprs, if its stream of corrections has been exhausted,
+  /// the stream is reset and the next TypoExpr's stream is advanced by one (a
+  /// TypoExpr's correction stream is advanced by removing the TypoExpr from the
+  /// TransformCache). Returns true if there is still any untried combinations
+  /// of corrections.
+  bool CheckAndAdvanceTypoExprCorrectionStreams() {
+    for (auto TE : TypoExprs) {
+      auto &State = SemaRef.getTypoExprState(TE);
+      TransformCache.erase(TE);
+      if (!State.Consumer->finished())
+        return true;
+      State.Consumer->resetCorrectionStream();
+    }
+    return false;
+  }
+
+  NamedDecl *getDeclFromExpr(Expr *E) {
+    if (auto *OE = dyn_cast_or_null<OverloadExpr>(E))
+      E = OverloadResolution[OE];
+
+    if (!E)
+      return nullptr;
+    if (auto *DRE = dyn_cast<DeclRefExpr>(E))
+      return DRE->getDecl();
+    if (auto *ME = dyn_cast<MemberExpr>(E))
+      return ME->getMemberDecl();
+    // FIXME: Add any other expr types that could be be seen by the delayed typo
+    // correction TreeTransform for which the corresponding TypoCorrection could
+    // contain multple decls.
+    return nullptr;
+  }
+
+  ExprResult TryTransform(Expr *E) {
+    Sema::SFINAETrap Trap(SemaRef);
+    ExprResult Res = TransformExpr(E);
+    if (Trap.hasErrorOccurred() || Res.isInvalid())
+      return ExprError();
+
+    return ExprFilter(Res.get());
+  }
+
+public:
+  TransformTypos(Sema &SemaRef, llvm::function_ref<ExprResult(Expr *)> Filter)
+      : BaseTransform(SemaRef), ExprFilter(Filter) {}
+
+  ExprResult RebuildCallExpr(Expr *Callee, SourceLocation LParenLoc,
+                                   MultiExprArg Args,
+                                   SourceLocation RParenLoc,
+                                   Expr *ExecConfig = nullptr) {
+    auto Result = BaseTransform::RebuildCallExpr(Callee, LParenLoc, Args,
+                                                 RParenLoc, ExecConfig);
+    if (auto *OE = dyn_cast<OverloadExpr>(Callee)) {
+      if (!Result.isInvalid() && Result.get())
+        OverloadResolution[OE] = cast<CallExpr>(Result.get())->getCallee();
+    }
+    return Result;
+  }
+
+  ExprResult TransformLambdaExpr(LambdaExpr *E) { return Owned(E); }
+
+  ExprResult Transform(Expr *E) {
+    ExprResult Res;
+    while (true) {
+      Res = TryTransform(E);
+
+      // Exit if either the transform was valid or if there were no TypoExprs
+      // to transform that still have any untried correction candidates..
+      if (!Res.isInvalid() ||
+          !CheckAndAdvanceTypoExprCorrectionStreams())
+        break;
+    }
+
+    // Ensure none of the TypoExprs have multiple typo correction candidates
+    // with the same edit length that pass all the checks and filters.
+    // TODO: Properly handle various permutations of possible corrections when
+    // there is more than one potentially ambiguous typo correction.
+    while (!AmbiguousTypoExprs.empty()) {
+      auto TE  = AmbiguousTypoExprs.back();
+      auto Cached = TransformCache[TE];
+      AmbiguousTypoExprs.pop_back();
+      TransformCache.erase(TE);
+      if (!TryTransform(E).isInvalid()) {
+        SemaRef.getTypoExprState(TE).Consumer->resetCorrectionStream();
+        TransformCache.erase(TE);
+        Res = ExprError();
+        break;
+      } else
+        TransformCache[TE] = Cached;
+    }
+
+    // Ensure that all of the TypoExprs within the current Expr have been found.
+    if (!Res.isUsable())
+      FindTypoExprs(TypoExprs).TraverseStmt(E);
+
+    EmitAllDiagnostics();
+
+    return Res;
+  }
+
+  ExprResult TransformTypoExpr(TypoExpr *E) {
+    // If the TypoExpr hasn't been seen before, record it. Otherwise, return the
+    // cached transformation result if there is one and the TypoExpr isn't the
+    // first one that was encountered.
+    auto &CacheEntry = TransformCache[E];
+    if (!TypoExprs.insert(E) && !CacheEntry.isUnset()) {
+      return CacheEntry;
+    }
+
+    auto &State = SemaRef.getTypoExprState(E);
+    assert(State.Consumer && "Cannot transform a cleared TypoExpr");
+
+    // For the first TypoExpr and an uncached TypoExpr, find the next likely
+    // typo correction and return it.
+    while (TypoCorrection TC = State.Consumer->getNextCorrection()) {
+      ExprResult NE = State.RecoveryHandler ?
+          State.RecoveryHandler(SemaRef, E, TC) :
+          attemptRecovery(SemaRef, *State.Consumer, TC);
+      if (!NE.isInvalid()) {
+        // Check whether there may be a second viable correction with the same
+        // edit distance; if so, remember this TypoExpr may have an ambiguous
+        // correction so it can be more thoroughly vetted later.
+        TypoCorrection Next;
+        if ((Next = State.Consumer->peekNextCorrection()) &&
+            Next.getEditDistance(false) == TC.getEditDistance(false)) {
+          AmbiguousTypoExprs.insert(E);
+        } else {
+          AmbiguousTypoExprs.remove(E);
+        }
+        assert(!NE.isUnset() &&
+               "Typo was transformed into a valid-but-null ExprResult");
+        return CacheEntry = NE;
+      }
+    }
+    return CacheEntry = ExprError();
+  }
+};
+}
+
+ExprResult Sema::CorrectDelayedTyposInExpr(
+    Expr *E, llvm::function_ref<ExprResult(Expr *)> Filter) {
+  // If the current evaluation context indicates there are uncorrected typos
+  // and the current expression isn't guaranteed to not have typos, try to
+  // resolve any TypoExpr nodes that might be in the expression.
+  if (!ExprEvalContexts.empty() && ExprEvalContexts.back().NumTypos &&
+      (E->isTypeDependent() || E->isValueDependent() ||
+       E->isInstantiationDependent())) {
+    auto TyposResolved = DelayedTypos.size();
+    auto Result = TransformTypos(*this, Filter).Transform(E);
+    TyposResolved -= DelayedTypos.size();
+    if (TyposResolved) {
+      ExprEvalContexts.back().NumTypos -= TyposResolved;
+      return Result;
+    }
+  }
+  return E;
+}
 
 ExprResult Sema::ActOnFinishFullExpr(Expr *FE, SourceLocation CC,
                                      bool DiscardedValue,
@@ -5960,6 +6255,10 @@ ExprResult Sema::ActOnFinishFullExpr(Expr *FE, SourceLocation CC,
     if (FullExpr.isInvalid())
       return ExprError();
   }
+
+  FullExpr = CorrectDelayedTyposInExpr(FullExpr.get());
+  if (FullExpr.isInvalid())
+    return ExprError();
 
   CheckCompletedExpr(FullExpr.get(), CC, IsConstexpr);
 

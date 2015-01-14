@@ -107,7 +107,7 @@ void Sema::FilterAcceptableTemplateNames(LookupResult &R,
       //   template itself and not a specialization thereof, and is not
       //   ambiguous.
       if (ClassTemplateDecl *ClassTmpl = dyn_cast<ClassTemplateDecl>(Repl))
-        if (!ClassTemplates.insert(ClassTmpl)) {
+        if (!ClassTemplates.insert(ClassTmpl).second) {
           filter.erase();
           continue;
         }
@@ -318,15 +318,14 @@ void Sema::LookupTemplateName(LookupResult &Found,
     DeclarationName Name = Found.getLookupName();
     Found.clear();
     // Simple filter callback that, for keywords, only accepts the C++ *_cast
-    CorrectionCandidateCallback FilterCCC;
-    FilterCCC.WantTypeSpecifiers = false;
-    FilterCCC.WantExpressionKeywords = false;
-    FilterCCC.WantRemainingKeywords = false;
-    FilterCCC.WantCXXNamedCasts = true;
-    if (TypoCorrection Corrected = CorrectTypo(Found.getLookupNameInfo(),
-                                               Found.getLookupKind(), S, &SS,
-                                               FilterCCC, CTK_ErrorRecovery,
-                                               LookupCtx)) {
+    auto FilterCCC = llvm::make_unique<CorrectionCandidateCallback>();
+    FilterCCC->WantTypeSpecifiers = false;
+    FilterCCC->WantExpressionKeywords = false;
+    FilterCCC->WantRemainingKeywords = false;
+    FilterCCC->WantCXXNamedCasts = true;
+    if (TypoCorrection Corrected = CorrectTypo(
+            Found.getLookupNameInfo(), Found.getLookupKind(), S, &SS,
+            std::move(FilterCCC), CTK_ErrorRecovery, LookupCtx)) {
       Found.setLookupName(Corrected.getCorrection());
       if (Corrected.getCorrectionDecl())
         Found.addDecl(Corrected.getCorrectionDecl());
@@ -2400,7 +2399,7 @@ makeTemplateArgumentListInfo(Sema &S, TemplateIdAnnotation &TemplateId) {
 
 DeclResult Sema::ActOnVarTemplateSpecialization(
     Scope *S, Declarator &D, TypeSourceInfo *DI, SourceLocation TemplateKWLoc,
-    TemplateParameterList *TemplateParams, VarDecl::StorageClass SC,
+    TemplateParameterList *TemplateParams, StorageClass SC,
     bool IsPartialSpecialization) {
   // D must be variable template id.
   assert(D.getName().getKind() == UnqualifiedId::IK_TemplateId &&
@@ -3696,12 +3695,12 @@ bool Sema::CheckTemplateArgumentList(TemplateDecl *Template,
                                 ArgumentPack.size(), Converted))
         return true;
 
-      if (TemplateArgs[ArgIdx].getArgument().isPackExpansion() &&
-          isa<TypeAliasTemplateDecl>(Template) &&
-          !(Param + 1 == ParamEnd && (*Param)->isTemplateParameterPack() &&
-            !getExpandedPackSize(*Param))) {
+      bool PackExpansionIntoNonPack =
+          TemplateArgs[ArgIdx].getArgument().isPackExpansion() &&
+          (!(*Param)->isTemplateParameterPack() || getExpandedPackSize(*Param));
+      if (PackExpansionIntoNonPack && isa<TypeAliasTemplateDecl>(Template)) {
         // Core issue 1430: we have a pack expansion as an argument to an
-        // alias template, and it's not part of a final parameter pack. This
+        // alias template, and it's not part of a parameter pack. This
         // can't be canonicalized, so reject it now.
         Diag(TemplateArgs[ArgIdx].getLocation(),
              diag::err_alias_template_expansion_into_fixed_list)
@@ -3724,16 +3723,11 @@ bool Sema::CheckTemplateArgumentList(TemplateDecl *Template,
         ++Param;
       }
 
-      // If we just saw a pack expansion, then directly convert the remaining
-      // arguments, because we don't know what parameters they'll match up
-      // with.
-      if (TemplateArgs[ArgIdx-1].getArgument().isPackExpansion()) {
-        bool InFinalParameterPack = Param != ParamEnd &&
-                                    Param + 1 == ParamEnd &&
-                                    (*Param)->isTemplateParameterPack() &&
-                                    !getExpandedPackSize(*Param);
-
-        if (!InFinalParameterPack && !ArgumentPack.empty()) {
+      // If we just saw a pack expansion into a non-pack, then directly convert
+      // the remaining arguments, because we don't know what parameters they'll
+      // match up with.
+      if (PackExpansionIntoNonPack) {
+        if (!ArgumentPack.empty()) {
           // If we were part way through filling in an expanded parameter pack,
           // fall back to just producing individual arguments.
           Converted.insert(Converted.end(),
@@ -3742,20 +3736,8 @@ bool Sema::CheckTemplateArgumentList(TemplateDecl *Template,
         }
 
         while (ArgIdx < NumArgs) {
-          if (InFinalParameterPack)
-            ArgumentPack.push_back(TemplateArgs[ArgIdx].getArgument());
-          else
-            Converted.push_back(TemplateArgs[ArgIdx].getArgument());
+          Converted.push_back(TemplateArgs[ArgIdx].getArgument());
           ++ArgIdx;
-        }
-
-        // Push the argument pack onto the list of converted arguments.
-        if (InFinalParameterPack) {
-          Converted.push_back(
-            TemplateArgument::CreatePackCopy(Context,
-                                             ArgumentPack.data(),
-                                             ArgumentPack.size()));
-          ArgumentPack.clear();
         }
 
         return false;
@@ -4777,13 +4759,111 @@ ExprResult Sema::CheckTemplateArgument(NonTypeTemplateParmDecl *Param,
     return Arg;
   }
 
+  QualType ParamType = InstantiatedParamType;
+  if (getLangOpts().CPlusPlus1z) {
+    // FIXME: We can do some limited checking for a value-dependent but not
+    // type-dependent argument.
+    if (Arg->isValueDependent()) {
+      Converted = TemplateArgument(Arg);
+      return Arg;
+    }
+
+    // C++1z [temp.arg.nontype]p1:
+    //   A template-argument for a non-type template parameter shall be
+    //   a converted constant expression of the type of the template-parameter.
+    APValue Value;
+    ExprResult ArgResult = CheckConvertedConstantExpression(
+        Arg, ParamType, Value, CCEK_TemplateArg);
+    if (ArgResult.isInvalid())
+      return ExprError();
+
+    // Convert the APValue to a TemplateArgument.
+    switch (Value.getKind()) {
+    case APValue::Uninitialized:
+      assert(ParamType->isNullPtrType());
+      Converted = TemplateArgument(ParamType, /*isNullPtr*/true);
+      break;
+    case APValue::Int:
+      assert(ParamType->isIntegralOrEnumerationType());
+      Converted = TemplateArgument(Context, Value.getInt(), ParamType);
+      break;
+    case APValue::MemberPointer: {
+      assert(ParamType->isMemberPointerType());
+
+      // FIXME: We need TemplateArgument representation and mangling for these.
+      if (!Value.getMemberPointerPath().empty()) {
+        Diag(Arg->getLocStart(),
+             diag::err_template_arg_member_ptr_base_derived_not_supported)
+            << Value.getMemberPointerDecl() << ParamType
+            << Arg->getSourceRange();
+        return ExprError();
+      }
+
+      auto *VD = const_cast<ValueDecl*>(Value.getMemberPointerDecl());
+      Converted = VD ? TemplateArgument(VD, ParamType)
+                     : TemplateArgument(ParamType, /*isNullPtr*/true);
+      break;
+    }
+    case APValue::LValue: {
+      //   For a non-type template-parameter of pointer or reference type,
+      //   the value of the constant expression shall not refer to
+      assert(ParamType->isPointerType() || ParamType->isReferenceType());
+      // -- a temporary object
+      // -- a string literal
+      // -- the result of a typeid expression, or
+      // -- a predefind __func__ variable
+      if (auto *E = Value.getLValueBase().dyn_cast<const Expr*>()) {
+        if (isa<CXXUuidofExpr>(E)) {
+          Converted = TemplateArgument(const_cast<Expr*>(E));
+          break;
+        }
+        Diag(Arg->getLocStart(), diag::err_template_arg_not_decl_ref)
+          << Arg->getSourceRange();
+        return ExprError();
+      }
+      auto *VD = const_cast<ValueDecl *>(
+          Value.getLValueBase().dyn_cast<const ValueDecl *>());
+      // -- a subobject
+      if (Value.hasLValuePath() && Value.getLValuePath().size() == 1 &&
+          VD && VD->getType()->isArrayType() &&
+          Value.getLValuePath()[0].ArrayIndex == 0 &&
+          !Value.isLValueOnePastTheEnd() && ParamType->isPointerType()) {
+        // Per defect report (no number yet):
+        //   ... other than a pointer to the first element of a complete array
+        //       object.
+      } else if (!Value.hasLValuePath() || Value.getLValuePath().size() ||
+                 Value.isLValueOnePastTheEnd()) {
+        Diag(StartLoc, diag::err_non_type_template_arg_subobject)
+          << Value.getAsString(Context, ParamType);
+        return ExprError();
+      }
+      assert((VD || ParamType->isPointerType()) &&
+             "null reference should not be a constant expression");
+      Converted = VD ? TemplateArgument(VD, ParamType)
+                     : TemplateArgument(ParamType, /*isNullPtr*/true);
+      break;
+    }
+    case APValue::AddrLabelDiff:
+      return Diag(StartLoc, diag::err_non_type_template_arg_addr_label_diff);
+    case APValue::Float:
+    case APValue::ComplexInt:
+    case APValue::ComplexFloat:
+    case APValue::Vector:
+    case APValue::Array:
+    case APValue::Struct:
+    case APValue::Union:
+      llvm_unreachable("invalid kind for template argument");
+    }
+
+    return ArgResult.get();
+  }
+
   // C++ [temp.arg.nontype]p5:
   //   The following conversions are performed on each expression used
   //   as a non-type template-argument. If a non-type
   //   template-argument cannot be converted to the type of the
   //   corresponding template-parameter then the program is
   //   ill-formed.
-  QualType ParamType = InstantiatedParamType;
   if (ParamType->isIntegralOrEnumerationType()) {
     // C++11:
     //   -- for a non-type template-parameter of integral or
@@ -7628,6 +7708,29 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
   // Ignore access control bits, we don't need them for redeclaration checking.
   FunctionDecl *Specialization = cast<FunctionDecl>(*Result);
 
+  // C++11 [except.spec]p4
+  // In an explicit instantiation an exception-specification may be specified,
+  // but is not required.
+  // If an exception-specification is specified in an explicit instantiation
+  // directive, it shall be compatible with the exception-specifications of
+  // other declarations of that function.
+  if (auto *FPT = R->getAs<FunctionProtoType>())
+    if (FPT->hasExceptionSpec()) {
+      unsigned DiagID =
+          diag::err_mismatched_exception_spec_explicit_instantiation;
+      if (getLangOpts().MicrosoftExt)
+        DiagID = diag::ext_mismatched_exception_spec_explicit_instantiation;
+      bool Result = CheckEquivalentExceptionSpec(
+          PDiag(DiagID) << Specialization->getType(),
+          PDiag(diag::note_explicit_instantiation_here),
+          Specialization->getType()->getAs<FunctionProtoType>(),
+          Specialization->getLocation(), FPT, D.getLocStart());
+      // In Microsoft mode, mismatching exception specifications just cause a
+      // warning.
+      if (!getLangOpts().MicrosoftExt && Result)
+        return true;
+    }
+
   if (Specialization->getTemplateSpecializationKind() == TSK_Undeclared) {
     Diag(D.getIdentifierLoc(),
          diag::err_explicit_instantiation_member_function_not_instantiated)
@@ -7901,11 +8004,7 @@ Sema::CheckTypenameType(ElaboratedTypeKeyword Keyword,
 
   DeclarationName Name(&II);
   LookupResult Result(*this, Name, IILoc, LookupOrdinaryName);
-  NestedNameSpecifier *NNS = SS.getScopeRep();
-  if (NNS->getKind() == NestedNameSpecifier::Super)
-    LookupInSuper(Result, NNS->getAsRecordDecl());
-  else
-    LookupQualifiedName(Result, Ctx);
+  LookupQualifiedName(Result, Ctx, SS);
   unsigned DiagID = 0;
   Decl *Referenced = nullptr;
   switch (Result.getResultKind()) {

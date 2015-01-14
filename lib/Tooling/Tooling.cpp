@@ -123,17 +123,25 @@ getSyntaxOnlyToolArgs(const std::vector<std::string> &ExtraArgs,
 
 bool runToolOnCodeWithArgs(clang::FrontendAction *ToolAction, const Twine &Code,
                            const std::vector<std::string> &Args,
-                           const Twine &FileName) {
+                           const Twine &FileName,
+                           const FileContentMappings &VirtualMappedFiles) {
+
   SmallString<16> FileNameStorage;
   StringRef FileNameRef = FileName.toNullTerminatedStringRef(FileNameStorage);
   llvm::IntrusiveRefCntPtr<FileManager> Files(
       new FileManager(FileSystemOptions()));
-  ToolInvocation Invocation(getSyntaxOnlyToolArgs(Args, FileNameRef), ToolAction,
-                            Files.get());
+  ToolInvocation Invocation(getSyntaxOnlyToolArgs(Args, FileNameRef),
+                            ToolAction, Files.get());
 
   SmallString<1024> CodeStorage;
   Invocation.mapVirtualFile(FileNameRef,
                             Code.toNullTerminatedStringRef(CodeStorage));
+
+  for (auto &FilenameWithContent : VirtualMappedFiles) {
+    Invocation.mapVirtualFile(FilenameWithContent.first,
+                              FilenameWithContent.second);
+  }
+
   return Invocation.run();
 }
 
@@ -301,10 +309,21 @@ int ClangTool::run(ToolAction *Action) {
   std::string MainExecutable =
       llvm::sys::fs::getMainExecutable("clang_tool", &StaticSymbol);
 
+  llvm::SmallString<128> InitialDirectory;
+  if (std::error_code EC = llvm::sys::fs::current_path(InitialDirectory))
+    llvm::report_fatal_error("Cannot detect current path: " +
+                             Twine(EC.message()));
   bool ProcessingFailed = false;
   for (const auto &SourcePath : SourcePaths) {
     std::string File(getAbsolutePath(SourcePath));
 
+    // Currently implementations of CompilationDatabase::getCompileCommands can
+    // change the state of the file system (e.g.  prepare generated headers), so
+    // this method needs to run right before we invoke the tool, as the next
+    // file may require a different (incompatible) state of the file system.
+    //
+    // FIXME: Make the compilation database interface more explicit about the
+    // requirements to the order of invocation of its members.
     std::vector<CompileCommand> CompileCommandsForFile =
         Compilations.getCompileCommands(File);
     if (CompileCommandsForFile.empty()) {
@@ -337,14 +356,18 @@ int ClangTool::run(ToolAction *Action) {
       DEBUG({ llvm::dbgs() << "Processing: " << File << ".\n"; });
       ToolInvocation Invocation(std::move(CommandLine), Action, Files.get());
       Invocation.setDiagnosticConsumer(DiagConsumer);
-      for (const auto &MappedFile : MappedFileContents) {
+      for (const auto &MappedFile : MappedFileContents)
         Invocation.mapVirtualFile(MappedFile.first, MappedFile.second);
-      }
       if (!Invocation.run()) {
         // FIXME: Diagnostics should be used instead.
         llvm::errs() << "Error while processing " << File << ".\n";
         ProcessingFailed = true;
       }
+      // Return to the initial directory to correctly resolve next file by
+      // relative path.
+      if (chdir(InitialDirectory.c_str()))
+        llvm::report_fatal_error("Cannot chdir into \"" +
+                                 Twine(InitialDirectory) + "\n!");
     }
   }
   return ProcessingFailed ? 1 : 0;

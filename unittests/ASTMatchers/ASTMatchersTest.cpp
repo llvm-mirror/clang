@@ -375,6 +375,8 @@ TEST(DeclarationMatcher, hasDeclContext) {
                       "}",
                       recordDecl(hasDeclContext(namespaceDecl(
                           hasName("M"), hasDeclContext(namespaceDecl()))))));
+
+  EXPECT_TRUE(matches("class D{};", decl(hasDeclContext(decl()))));
 }
 
 TEST(DeclarationMatcher, LinkageSpecification) {
@@ -823,6 +825,13 @@ TEST(Has, MatchesChildTypes) {
   EXPECT_TRUE(notMatches(
       "int* i;",
       varDecl(hasName("i"), hasType(qualType(has(pointerType()))))));
+}
+
+TEST(ValueDecl, Matches) {
+  EXPECT_TRUE(matches("enum EnumType { EnumValue };",
+                      valueDecl(hasType(asString("enum EnumType")))));
+  EXPECT_TRUE(matches("void FunctionDecl();",
+                      valueDecl(hasType(asString("void (void)")))));
 }
 
 TEST(Enum, DoesNotMatchClasses) {
@@ -4421,6 +4430,25 @@ TEST(IsEqualTo, MatchesNodesByIdentity) {
       new VerifyAncestorHasChildIsEqual<IfStmt>()));
 }
 
+TEST(MatchFinder, CheckProfiling) {
+  MatchFinder::MatchFinderOptions Options;
+  llvm::StringMap<llvm::TimeRecord> Records;
+  Options.CheckProfiling.emplace(Records);
+  MatchFinder Finder(std::move(Options));
+
+  struct NamedCallback : public MatchFinder::MatchCallback {
+    void run(const MatchFinder::MatchResult &Result) override {}
+    StringRef getID() const override { return "MyID"; }
+  } Callback;
+  Finder.addMatcher(decl(), &Callback);
+  std::unique_ptr<FrontendActionFactory> Factory(
+      newFrontendActionFactory(&Finder));
+  ASSERT_TRUE(tooling::runToolOnCode(Factory->create(), "int x;"));
+
+  EXPECT_EQ(1u, Records.size());
+  EXPECT_EQ("MyID", Records.begin()->getKey());
+}
+
 class VerifyStartOfTranslationUnit : public MatchFinder::MatchCallback {
 public:
   VerifyStartOfTranslationUnit() : Called(false) {}
@@ -4596,6 +4624,59 @@ TEST(EqualsBoundNodeMatcher, UnlessDescendantsOfAncestorsMatch) {
               on(declRefExpr(to(varDecl(equalsBoundNode("var")))))))))))
           .bind("data")));
 }
+
+TEST(TypeDefDeclMatcher, Match) {
+  EXPECT_TRUE(matches("typedef int typedefDeclTest;",
+                      typedefDecl(hasName("typedefDeclTest"))));
+}
+
+// FIXME: Figure out how to specify paths so the following tests pass on Windows.
+#ifndef LLVM_ON_WIN32
+
+TEST(Matcher, IsExpansionInMainFileMatcher) {
+  EXPECT_TRUE(matches("class X {};",
+                      recordDecl(hasName("X"), isExpansionInMainFile())));
+  EXPECT_TRUE(notMatches("", recordDecl(isExpansionInMainFile())));
+  FileContentMappings M;
+  M.push_back(std::make_pair("/other", "class X {};"));
+  EXPECT_TRUE(matchesConditionally("#include <other>\n",
+                                   recordDecl(isExpansionInMainFile()), false,
+                                   "-isystem/", M));
+}
+
+TEST(Matcher, IsExpansionInSystemHeader) {
+  FileContentMappings M;
+  M.push_back(std::make_pair("/other", "class X {};"));
+  EXPECT_TRUE(matchesConditionally(
+      "#include \"other\"\n", recordDecl(isExpansionInSystemHeader()), true,
+      "-isystem/", M));
+  EXPECT_TRUE(matchesConditionally("#include \"other\"\n",
+                                   recordDecl(isExpansionInSystemHeader()),
+                                   false, "-I/", M));
+  EXPECT_TRUE(notMatches("class X {};",
+                         recordDecl(isExpansionInSystemHeader())));
+  EXPECT_TRUE(notMatches("", recordDecl(isExpansionInSystemHeader())));
+}
+
+TEST(Matcher, IsExpansionInFileMatching) {
+  FileContentMappings M;
+  M.push_back(std::make_pair("/foo", "class A {};"));
+  M.push_back(std::make_pair("/bar", "class B {};"));
+  EXPECT_TRUE(matchesConditionally(
+      "#include <foo>\n"
+      "#include <bar>\n"
+      "class X {};",
+      recordDecl(isExpansionInFileMatching("b.*"), hasName("B")), true,
+      "-isystem/", M));
+  EXPECT_TRUE(matchesConditionally(
+      "#include <foo>\n"
+      "#include <bar>\n"
+      "class X {};",
+      recordDecl(isExpansionInFileMatching("f.*"), hasName("X")), false,
+      "-isystem/", M));
+}
+
+#endif // LLVM_ON_WIN32
 
 } // end namespace ast_matchers
 } // end namespace clang

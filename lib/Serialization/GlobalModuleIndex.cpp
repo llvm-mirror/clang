@@ -494,19 +494,16 @@ namespace {
 bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
   // Open the module file.
 
-  std::string ErrorStr;
-  std::unique_ptr<llvm::MemoryBuffer> Buffer =
-      FileMgr.getBufferForFile(File, &ErrorStr, /*isVolatile=*/true);
+  auto Buffer = FileMgr.getBufferForFile(File, /*isVolatile=*/true);
   if (!Buffer) {
     return true;
   }
 
   // Initialize the input stream
   llvm::BitstreamReader InStreamFile;
-  llvm::BitstreamCursor InStream;
-  InStreamFile.init((const unsigned char *)Buffer->getBufferStart(),
-                  (const unsigned char *)Buffer->getBufferEnd());
-  InStream.init(InStreamFile);
+  InStreamFile.init((const unsigned char *)(*Buffer)->getBufferStart(),
+                    (const unsigned char *)(*Buffer)->getBufferEnd());
+  llvm::BitstreamCursor InStream(InStreamFile);
 
   // Sniff for the signature.
   if (InStream.Read(8) != 'C' ||
@@ -590,6 +587,10 @@ bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
         // Load stored size/modification time. 
         off_t StoredSize = (off_t)Record[Idx++];
         time_t StoredModTime = (time_t)Record[Idx++];
+
+        // Skip the stored signature.
+        // FIXME: we could read the signature out of the import and validate it.
+        Idx++;
 
         // Retrieve the imported file name.
         unsigned Length = Record[Idx++];

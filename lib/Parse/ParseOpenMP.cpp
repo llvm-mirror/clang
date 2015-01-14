@@ -715,7 +715,8 @@ OMPClause *Parser::ParseOpenMPVarListClause(OpenMPClauseKind Kind) {
                      Tok.isNot(tok::annot_pragma_openmp_end))) {
     ColonProtectionRAIIObject ColonRAII(*this, MayHaveTail);
     // Parse variable
-    ExprResult VarExpr = ParseAssignmentExpression();
+    ExprResult VarExpr =
+        Actions.CorrectDelayedTyposInExpr(ParseAssignmentExpression());
     if (VarExpr.isUsable()) {
       Vars.push_back(VarExpr.get());
     } else {
@@ -741,7 +742,8 @@ OMPClause *Parser::ParseOpenMPVarListClause(OpenMPClauseKind Kind) {
   if (MustHaveTail) {
     ColonLoc = Tok.getLocation();
     ConsumeToken();
-    ExprResult Tail = ParseAssignmentExpression();
+    ExprResult Tail =
+        Actions.CorrectDelayedTyposInExpr(ParseAssignmentExpression());
     if (Tail.isUsable())
       TailExpr = Tail.get();
     else

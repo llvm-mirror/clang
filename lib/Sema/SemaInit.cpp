@@ -466,11 +466,15 @@ void InitListChecker::FillInEmptyInitForField(unsigned Init, FieldDecl *Field,
     //   members in the aggregate, then each member not explicitly initialized
     //   shall be initialized from its brace-or-equal-initializer [...]
     if (Field->hasInClassInitializer()) {
-      Expr *DIE = CXXDefaultInitExpr::Create(SemaRef.Context, Loc, Field);
+      ExprResult DIE = SemaRef.BuildCXXDefaultInitExpr(Loc, Field);
+      if (DIE.isInvalid()) {
+        hadError = true;
+        return;
+      }
       if (Init < NumInits)
-        ILE->setInit(Init, DIE);
+        ILE->setInit(Init, DIE.get());
       else {
-        ILE->updateInit(SemaRef.Context, Init, DIE);
+        ILE->updateInit(SemaRef.Context, Init, DIE.get());
         RequiresSecondPass = true;
       }
       return;
@@ -1555,10 +1559,11 @@ void InitListChecker::CheckStructUnionTypes(const InitializedEntity &Entity,
       }
     }
 
-    // Value-initialize the first named member of the union.
+    // Value-initialize the first member of the union that isn't an unnamed
+    // bitfield.
     for (RecordDecl::field_iterator FieldEnd = RD->field_end();
          Field != FieldEnd; ++Field) {
-      if (Field->getDeclName()) {
+      if (!Field->isUnnamedBitfield()) {
         if (VerifyOnly)
           CheckEmptyInitializable(
               InitializedEntity::InitializeMember(*Field, &Entity),
@@ -1911,11 +1916,11 @@ InitListChecker::CheckDesignatedInitializer(const InitializedEntity &Entity,
 
         // Name lookup didn't find anything.
         // Determine whether this was a typo for another field name.
-        FieldInitializerValidatorCCC Validator(RT->getDecl());
         if (TypoCorrection Corrected = SemaRef.CorrectTypo(
                 DeclarationNameInfo(FieldName, D->getFieldLoc()),
                 Sema::LookupMemberName, /*Scope=*/nullptr, /*SS=*/nullptr,
-                Validator, Sema::CTK_ErrorRecovery, RT->getDecl())) {
+                llvm::make_unique<FieldInitializerValidatorCCC>(RT->getDecl()),
+                Sema::CTK_ErrorRecovery, RT->getDecl())) {
           SemaRef.diagnoseTypo(
               Corrected,
               SemaRef.PDiag(diag::err_field_designator_unknown_suggest)

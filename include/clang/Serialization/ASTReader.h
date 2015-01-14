@@ -115,7 +115,8 @@ public:
   ///
   /// \returns true to indicate the options are invalid or false otherwise.
   virtual bool ReadLanguageOptions(const LangOptions &LangOpts,
-                                   bool Complain) {
+                                   bool Complain,
+                                   bool AllowCompatibleDifferences) {
     return false;
   }
 
@@ -193,6 +194,13 @@ public:
                               bool isOverridden) {
     return true;
   }
+
+  /// \brief Returns true if this \c ASTReaderListener wants to receive the
+  /// imports of the AST file via \c visitImport, false otherwise.
+  virtual bool needsImportVisitation() const { return false; }
+  /// \brief If needsImportVisitation returns \c true, this is called for each
+  /// AST file imported by this AST file.
+  virtual void visitImport(StringRef Filename) {}
 };
 
 /// \brief Simple wrapper class for chaining listeners.
@@ -206,10 +214,14 @@ public:
                            std::unique_ptr<ASTReaderListener> Second)
       : First(std::move(First)), Second(std::move(Second)) {}
 
+  std::unique_ptr<ASTReaderListener> takeFirst() { return std::move(First); }
+  std::unique_ptr<ASTReaderListener> takeSecond() { return std::move(Second); }
+
   bool ReadFullVersionInformation(StringRef FullVersion) override;
   void ReadModuleName(StringRef ModuleName) override;
   void ReadModuleMapFile(StringRef ModuleMapPath) override;
-  bool ReadLanguageOptions(const LangOptions &LangOpts, bool Complain) override;
+  bool ReadLanguageOptions(const LangOptions &LangOpts, bool Complain,
+                           bool AllowCompatibleDifferences) override;
   bool ReadTargetOptions(const TargetOptions &TargetOpts,
                          bool Complain) override;
   bool ReadDiagnosticOptions(IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts,
@@ -241,8 +253,8 @@ public:
   PCHValidator(Preprocessor &PP, ASTReader &Reader)
     : PP(PP), Reader(Reader) {}
 
-  bool ReadLanguageOptions(const LangOptions &LangOpts,
-                           bool Complain) override;
+  bool ReadLanguageOptions(const LangOptions &LangOpts, bool Complain,
+                           bool AllowCompatibleDifferences) override;
   bool ReadTargetOptions(const TargetOptions &TargetOpts,
                          bool Complain) override;
   bool ReadDiagnosticOptions(IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts,
@@ -1122,6 +1134,7 @@ private:
                             SourceLocation ImportLoc, ModuleFile *ImportedBy,
                             SmallVectorImpl<ImportedModule> &Loaded,
                             off_t ExpectedSize, time_t ExpectedModTime,
+                            serialization::ASTFileSignature ExpectedSignature,
                             unsigned ClientLoadCapabilities);
   ASTReadResult ReadControlBlock(ModuleFile &F,
                                  SmallVectorImpl<ImportedModule> &Loaded,
@@ -1138,7 +1151,8 @@ private:
   ASTReadResult ReadSubmoduleBlock(ModuleFile &F,
                                    unsigned ClientLoadCapabilities);
   static bool ParseLanguageOptions(const RecordData &Record, bool Complain,
-                                   ASTReaderListener &Listener);
+                                   ASTReaderListener &Listener,
+                                   bool AllowCompatibleDifferences);
   static bool ParseTargetOptions(const RecordData &Record, bool Complain,
                                  ASTReaderListener &Listener);
   static bool ParseDiagnosticOptions(const RecordData &Record, bool Complain,
@@ -1389,12 +1403,17 @@ public:
   void makeNamesVisible(const HiddenNames &Names, Module *Owner,
                         bool FromFinalization);
 
+  /// \brief Take the AST callbacks listener.
+  std::unique_ptr<ASTReaderListener> takeListener() {
+    return std::move(Listener);
+  }
+
   /// \brief Set the AST callbacks listener.
   void setListener(std::unique_ptr<ASTReaderListener> Listener) {
     this->Listener = std::move(Listener);
   }
 
-  /// \brief Add an AST callbak listener.
+  /// \brief Add an AST callback listener.
   ///
   /// Takes ownership of \p L.
   void addListener(std::unique_ptr<ASTReaderListener> L) {
@@ -1403,6 +1422,30 @@ public:
                                                       std::move(Listener));
     Listener = std::move(L);
   }
+
+  /// RAII object to temporarily add an AST callback listener.
+  class ListenerScope {
+    ASTReader &Reader;
+    bool Chained;
+
+  public:
+    ListenerScope(ASTReader &Reader, std::unique_ptr<ASTReaderListener> L)
+        : Reader(Reader), Chained(false) {
+      auto Old = Reader.takeListener();
+      if (Old) {
+        Chained = true;
+        L = llvm::make_unique<ChainedASTReaderListener>(std::move(L),
+                                                        std::move(Old));
+      }
+      Reader.setListener(std::move(L));
+    }
+    ~ListenerScope() {
+      auto New = Reader.takeListener();
+      if (Chained)
+        Reader.setListener(static_cast<ChainedASTReaderListener *>(New.get())
+                               ->takeSecond());
+    }
+  };
 
   /// \brief Set the AST deserialization listener.
   void setDeserializationListener(ASTDeserializationListener *Listener,
@@ -2104,6 +2147,10 @@ public:
 
   //RIDErief Loads comments ranges.
   void ReadComments() override;
+
+  /// Return all input files for the given module file.
+  void getInputFiles(ModuleFile &F,
+                     SmallVectorImpl<serialization::InputFile> &Files);
 };
 
 /// \brief Helper class that saves the current stream position and

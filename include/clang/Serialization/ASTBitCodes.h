@@ -288,7 +288,10 @@ namespace clang {
 
       /// \brief Record code for the module map file that was used to build this
       /// AST file.
-      MODULE_MAP_FILE = 14
+      MODULE_MAP_FILE = 14,
+
+      /// \brief Record code for the signature that identifiers this AST file.
+      SIGNATURE = 15
     };
 
     /// \brief Record types that occur within the input-files block
@@ -638,7 +641,13 @@ namespace clang {
       /// \brief Specifies a conflict with another module.
       SUBMODULE_CONFLICT = 12,
       /// \brief Specifies a header that is private to this submodule.
-      SUBMODULE_PRIVATE_HEADER = 13
+      SUBMODULE_PRIVATE_HEADER = 13,
+      /// \brief Specifies a header that is part of the module but must be
+      /// textually included.
+      SUBMODULE_TEXTUAL_HEADER = 14,
+      /// \brief Specifies a header that is private to this submodule but
+      /// must be textually included.
+      SUBMODULE_PRIVATE_TEXTUAL_HEADER = 15,
     };
 
     /// \brief Record types used within a comments block.
@@ -1323,7 +1332,8 @@ namespace clang {
       EXPR_SUBST_NON_TYPE_TEMPLATE_PARM_PACK,// SubstNonTypeTemplateParmPackExpr
       EXPR_FUNCTION_PARM_PACK,    // FunctionParmPackExpr
       EXPR_MATERIALIZE_TEMPORARY, // MaterializeTemporaryExpr
-      
+      EXPR_CXX_FOLD,              // CXXFoldExpr
+
       // CUDA
       EXPR_CUDA_KERNEL_CALL,       // CUDAKernelCallExpr      
 

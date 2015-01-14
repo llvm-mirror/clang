@@ -21,9 +21,138 @@
 using namespace clang::driver;
 using namespace llvm::opt;
 
+namespace {
+/// Assign ordinals to possible values of -fsanitize= flag.
+/// We use the ordinal values as bit positions within \c SanitizeKind.
+enum SanitizeOrdinal {
+#define SANITIZER(NAME, ID) SO_##ID,
+#define SANITIZER_GROUP(NAME, ID, ALIAS) SO_##ID##Group,
+#include "clang/Basic/Sanitizers.def"
+  SO_Count
+};
+
+/// Represents a set of sanitizer kinds. It is also used to define:
+/// 1) set of sanitizers each sanitizer group expands into.
+/// 2) set of sanitizers sharing a specific property (e.g.
+///    all sanitizers with zero-base shadow).
+enum SanitizeKind {
+#define SANITIZER(NAME, ID) ID = 1 << SO_##ID,
+#define SANITIZER_GROUP(NAME, ID, ALIAS)                                       \
+ID = ALIAS, ID##Group = 1 << SO_##ID##Group,
+#include "clang/Basic/Sanitizers.def"
+  NeedsUbsanRt = Undefined | Integer,
+  NotAllowedWithTrap = Vptr,
+  RequiresPIE = Memory | DataFlow,
+  NeedsUnwindTables = Address | Thread | Memory | DataFlow
+};
+}
+
+/// Returns true if set of \p Sanitizers contain at least one sanitizer from
+/// \p Kinds.
+static bool hasOneOf(const clang::SanitizerSet &Sanitizers, unsigned Kinds) {
+#define SANITIZER(NAME, ID)                                                    \
+  if (Sanitizers.has(clang::SanitizerKind::ID) && (Kinds & ID))                \
+    return true;
+#include "clang/Basic/Sanitizers.def"
+  return false;
+}
+
+/// Adds all sanitizers from \p Kinds to \p Sanitizers.
+static void addAllOf(clang::SanitizerSet &Sanitizers, unsigned Kinds) {
+#define SANITIZER(NAME, ID) \
+  if (Kinds & ID) \
+    Sanitizers.set(clang::SanitizerKind::ID, true);
+#include "clang/Basic/Sanitizers.def"
+}
+
+static unsigned toSanitizeKind(clang::SanitizerKind K) {
+#define SANITIZER(NAME, ID) \
+  if (K == clang::SanitizerKind::ID) \
+    return ID;
+#include "clang/Basic/Sanitizers.def"
+  llvm_unreachable("Invalid SanitizerKind!");
+}
+
+/// Parse a single value from a -fsanitize= or -fno-sanitize= value list.
+/// Returns a member of the \c SanitizeKind enumeration, or \c 0
+/// if \p Value is not known.
+static unsigned parseValue(const char *Value);
+
+/// Parse a -fsanitize= or -fno-sanitize= argument's values, diagnosing any
+/// invalid components. Returns OR of members of \c SanitizeKind enumeration.
+static unsigned parseArgValues(const Driver &D, const llvm::opt::Arg *A,
+                               bool DiagnoseErrors);
+
+/// Parse a single flag of the form -f[no]sanitize=.
+/// Sets the masks defining required change of the set of sanitizers.
+/// Returns true if the flag was parsed successfully.
+static bool parseArgument(const Driver &D, const llvm::opt::Arg *A,
+                          unsigned &Add, unsigned &Remove, bool DiagnoseErrors);
+
+/// Produce an argument string from ArgList \p Args, which shows how it
+/// provides some sanitizer kind from \p Mask. For example, the argument list
+/// "-fsanitize=thread,vptr -fsanitize=address" with mask \c NeedsUbsanRt
+/// would produce "-fsanitize=vptr".
+static std::string lastArgumentForMask(const Driver &D,
+                                       const llvm::opt::ArgList &Args,
+                                       unsigned Mask);
+
+static std::string lastArgumentForKind(const Driver &D,
+                                       const llvm::opt::ArgList &Args,
+                                       clang::SanitizerKind K) {
+  return lastArgumentForMask(D, Args, toSanitizeKind(K));
+}
+
+/// Produce an argument string from argument \p A, which shows how it provides
+/// a value in \p Mask. For instance, the argument
+/// "-fsanitize=address,alignment" with mask \c NeedsUbsanRt would produce
+/// "-fsanitize=alignment".
+static std::string describeSanitizeArg(const llvm::opt::Arg *A, unsigned Mask);
+
+/// Produce a string containing comma-separated names of sanitizers in \p
+/// Sanitizers set.
+static std::string toString(const clang::SanitizerSet &Sanitizers);
+
+/// For each sanitizer group bit set in \p Kinds, set the bits for sanitizers
+/// this group enables.
+static unsigned expandGroups(unsigned Kinds);
+
+static unsigned getToolchainUnsupportedKinds(const ToolChain &TC) {
+  bool IsFreeBSD = TC.getTriple().getOS() == llvm::Triple::FreeBSD;
+  bool IsLinux = TC.getTriple().getOS() == llvm::Triple::Linux;
+  bool IsX86 = TC.getTriple().getArch() == llvm::Triple::x86;
+  bool IsX86_64 = TC.getTriple().getArch() == llvm::Triple::x86_64;
+
+  unsigned Unsupported = 0;
+  if (!(IsLinux && IsX86_64)) {
+    Unsupported |= Memory | DataFlow;
+  }
+  if (!((IsLinux || IsFreeBSD) && IsX86_64)) {
+    Unsupported |= Thread;
+  }
+  if (!(IsLinux && (IsX86 || IsX86_64))) {
+    Unsupported |= Function;
+  }
+  return Unsupported;
+}
+
+bool SanitizerArgs::needsUbsanRt() const {
+  return !UbsanTrapOnError && hasOneOf(Sanitizers, NeedsUbsanRt);
+}
+
+bool SanitizerArgs::requiresPIE() const {
+  return AsanZeroBaseShadow || hasOneOf(Sanitizers, RequiresPIE);
+}
+
+bool SanitizerArgs::needsUnwindTables() const {
+  return hasOneOf(Sanitizers, NeedsUnwindTables);
+}
+
 void SanitizerArgs::clear() {
-  Kind = 0;
+  Sanitizers.clear();
+  SanitizeRecover = false;
   BlacklistFile = "";
+  SanitizeCoverage = 0;
   MsanTrackOrigins = 0;
   AsanFieldPadding = 0;
   AsanZeroBaseShadow = false;
@@ -35,77 +164,87 @@ void SanitizerArgs::clear() {
 SanitizerArgs::SanitizerArgs(const ToolChain &TC,
                              const llvm::opt::ArgList &Args) {
   clear();
-  unsigned AllAdd = 0;  // All kinds of sanitizers that were turned on
-                        // at least once (possibly, disabled further).
   unsigned AllRemove = 0;  // During the loop below, the accumulated set of
                            // sanitizers disabled by the current sanitizer
                            // argument or any argument after it.
   unsigned DiagnosedKinds = 0;  // All Kinds we have diagnosed up to now.
                                 // Used to deduplicate diagnostics.
+  unsigned Kinds = 0;
+  unsigned NotSupported = getToolchainUnsupportedKinds(TC);
   const Driver &D = TC.getDriver();
   for (ArgList::const_reverse_iterator I = Args.rbegin(), E = Args.rend();
        I != E; ++I) {
     unsigned Add, Remove;
-    if (!parse(D, Args, *I, Add, Remove, true))
+    if (!parseArgument(D, *I, Add, Remove, true))
       continue;
     (*I)->claim();
 
-    AllAdd |= expandGroups(Add);
     AllRemove |= expandGroups(Remove);
 
     // Avoid diagnosing any sanitizer which is disabled later.
     Add &= ~AllRemove;
+
     // At this point we have not expanded groups, so any unsupported sanitizers
     // in Add are those which have been explicitly enabled. Diagnose them.
-    Add = filterUnsupportedKinds(TC, Add, Args, *I, /*DiagnoseErrors=*/true,
-                                 DiagnosedKinds);
+    if (unsigned KindsToDiagnose = Add & NotSupported & ~DiagnosedKinds) {
+      // Only diagnose the new kinds.
+      std::string Desc = describeSanitizeArg(*I, KindsToDiagnose);
+      D.Diag(diag::err_drv_unsupported_opt_for_target) << Desc
+                                                       << TC.getTriple().str();
+      DiagnosedKinds |= KindsToDiagnose;
+    }
+    Add &= ~NotSupported;
+
     Add = expandGroups(Add);
     // Group expansion may have enabled a sanitizer which is disabled later.
     Add &= ~AllRemove;
     // Silently discard any unsupported sanitizers implicitly enabled through
     // group expansion.
-    Add = filterUnsupportedKinds(TC, Add, Args, *I, /*DiagnoseErrors=*/false,
-                                 DiagnosedKinds);
+    Add &= ~NotSupported;
 
-    Kind |= Add;
+    Kinds |= Add;
   }
+  addAllOf(Sanitizers, Kinds);
+
+  SanitizeRecover = Args.hasFlag(options::OPT_fsanitize_recover,
+                                 options::OPT_fno_sanitize_recover, true);
 
   UbsanTrapOnError =
     Args.hasFlag(options::OPT_fsanitize_undefined_trap_on_error,
                  options::OPT_fno_sanitize_undefined_trap_on_error, false);
 
   // Warn about undefined sanitizer options that require runtime support.
-  if (UbsanTrapOnError && notAllowedWithTrap()) {
-    D.Diag(diag::err_drv_argument_not_allowed_with)
-      << lastArgumentForKind(D, Args, NotAllowedWithTrap)
+  if (UbsanTrapOnError && hasOneOf(Sanitizers, NotAllowedWithTrap)) {
+    D.Diag(clang::diag::err_drv_argument_not_allowed_with)
+      << lastArgumentForMask(D, Args, NotAllowedWithTrap)
       << "-fsanitize-undefined-trap-on-error";
   }
 
-  // Only one runtime library can be used at once.
-  bool NeedsAsan = needsAsanRt();
-  bool NeedsTsan = needsTsanRt();
-  bool NeedsMsan = needsMsanRt();
-  bool NeedsLsan = needsLeakDetection();
+  // Check for incompatible sanitizers.
+  bool NeedsAsan = Sanitizers.has(SanitizerKind::Address);
+  bool NeedsTsan = Sanitizers.has(SanitizerKind::Thread);
+  bool NeedsMsan = Sanitizers.has(SanitizerKind::Memory);
+  bool NeedsLsan = Sanitizers.has(SanitizerKind::Leak);
   if (NeedsAsan && NeedsTsan)
-    D.Diag(diag::err_drv_argument_not_allowed_with)
-      << lastArgumentForKind(D, Args, NeedsAsanRt)
-      << lastArgumentForKind(D, Args, NeedsTsanRt);
+    D.Diag(clang::diag::err_drv_argument_not_allowed_with)
+      << lastArgumentForKind(D, Args, SanitizerKind::Address)
+      << lastArgumentForKind(D, Args, SanitizerKind::Thread);
   if (NeedsAsan && NeedsMsan)
-    D.Diag(diag::err_drv_argument_not_allowed_with)
-      << lastArgumentForKind(D, Args, NeedsAsanRt)
-      << lastArgumentForKind(D, Args, NeedsMsanRt);
+    D.Diag(clang::diag::err_drv_argument_not_allowed_with)
+      << lastArgumentForKind(D, Args, SanitizerKind::Address)
+      << lastArgumentForKind(D, Args, SanitizerKind::Memory);
   if (NeedsTsan && NeedsMsan)
-    D.Diag(diag::err_drv_argument_not_allowed_with)
-      << lastArgumentForKind(D, Args, NeedsTsanRt)
-      << lastArgumentForKind(D, Args, NeedsMsanRt);
+    D.Diag(clang::diag::err_drv_argument_not_allowed_with)
+      << lastArgumentForKind(D, Args, SanitizerKind::Thread)
+      << lastArgumentForKind(D, Args, SanitizerKind::Memory);
   if (NeedsLsan && NeedsTsan)
-    D.Diag(diag::err_drv_argument_not_allowed_with)
-      << lastArgumentForKind(D, Args, NeedsLeakDetection)
-      << lastArgumentForKind(D, Args, NeedsTsanRt);
+    D.Diag(clang::diag::err_drv_argument_not_allowed_with)
+      << lastArgumentForKind(D, Args, SanitizerKind::Leak)
+      << lastArgumentForKind(D, Args, SanitizerKind::Thread);
   if (NeedsLsan && NeedsMsan)
-    D.Diag(diag::err_drv_argument_not_allowed_with)
-      << lastArgumentForKind(D, Args, NeedsLeakDetection)
-      << lastArgumentForKind(D, Args, NeedsMsanRt);
+    D.Diag(clang::diag::err_drv_argument_not_allowed_with)
+      << lastArgumentForKind(D, Args, SanitizerKind::Leak)
+      << lastArgumentForKind(D, Args, SanitizerKind::Memory);
   // FIXME: Currently -fsanitize=leak is silently ignored in the presence of
   // -fsanitize=address. Perhaps it should print an error, or perhaps
   // -f(-no)sanitize=leak should change whether leak detection is enabled by
@@ -122,19 +261,18 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
         std::unique_ptr<llvm::SpecialCaseList> SCL(
             llvm::SpecialCaseList::create(BLPath, BLError));
         if (!SCL.get())
-          D.Diag(diag::err_drv_malformed_sanitizer_blacklist) << BLError;
+          D.Diag(clang::diag::err_drv_malformed_sanitizer_blacklist) << BLError;
         else
           BlacklistFile = BLPath;
       } else {
-        D.Diag(diag::err_drv_no_such_file) << BLPath;
+        D.Diag(clang::diag::err_drv_no_such_file) << BLPath;
       }
     }
   } else {
     // If no -fsanitize-blacklist option is specified, try to look up for
     // blacklist in the resource directory.
     std::string BLPath;
-    if (getDefaultBlacklistForKind(D, Kind, BLPath) &&
-        llvm::sys::fs::exists(BLPath))
+    if (getDefaultBlacklist(D, BLPath) && llvm::sys::fs::exists(BLPath))
       BlacklistFile = BLPath;
   }
 
@@ -153,9 +291,20 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
         StringRef S = A->getValue();
         if (S.getAsInteger(0, MsanTrackOrigins) || MsanTrackOrigins < 0 ||
             MsanTrackOrigins > 2) {
-          D.Diag(diag::err_drv_invalid_value) << A->getAsString(Args) << S;
+          D.Diag(clang::diag::err_drv_invalid_value) << A->getAsString(Args) << S;
         }
       }
+    }
+  }
+
+  // Parse -fsanitize-coverage=N
+  if (NeedsAsan) {  // Currently asan is required.
+    if (Arg *A = Args.getLastArg(options::OPT_fsanitize_coverage)) {
+      StringRef S = A->getValue();
+      // Legal values are 0..4.
+      if (S.getAsInteger(0, SanitizeCoverage) || SanitizeCoverage < 0 ||
+          SanitizeCoverage > 4)
+        D.Diag(clang::diag::err_drv_invalid_value) << A->getAsString(Args) << S;
     }
   }
 
@@ -171,7 +320,7 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
         // Legal values are 0 and 1, 2, but in future we may add more levels.
         if (S.getAsInteger(0, AsanFieldPadding) || AsanFieldPadding < 0 ||
             AsanFieldPadding > 2) {
-          D.Diag(diag::err_drv_invalid_value) << A->getAsString(Args) << S;
+          D.Diag(clang::diag::err_drv_invalid_value) << A->getAsString(Args) << S;
         }
     }
 
@@ -183,10 +332,10 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
       case options::OPT__SLASH_MTd:
       case options::OPT__SLASH_MDd:
       case options::OPT__SLASH_LDd:
-        D.Diag(diag::err_drv_argument_not_allowed_with)
+        D.Diag(clang::diag::err_drv_argument_not_allowed_with)
             << WindowsDebugRTArg->getAsString(Args)
-            << lastArgumentForKind(D, Args, NeedsAsanRt);
-        D.Diag(diag::note_drv_address_sanitizer_debug_runtime);
+            << lastArgumentForKind(D, Args, SanitizerKind::Address);
+        D.Diag(clang::diag::note_drv_address_sanitizer_debug_runtime);
       }
     }
   }
@@ -196,17 +345,30 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
       Args.hasArg(options::OPT_fsanitize_link_cxx_runtime) || D.CCCIsCXX();
 }
 
+static std::string toString(const clang::SanitizerSet &Sanitizers) {
+  std::string Res;
+#define SANITIZER(NAME, ID)                                                    \
+  if (Sanitizers.has(clang::SanitizerKind::ID)) {                              \
+    if (!Res.empty())                                                          \
+      Res += ",";                                                              \
+    Res += NAME;                                                               \
+  }
+#include "clang/Basic/Sanitizers.def"
+  return Res;
+}
+
 void SanitizerArgs::addArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const {
-  if (!Kind)
+  if (Sanitizers.empty())
     return;
-  SmallString<256> SanitizeOpt("-fsanitize=");
-#define SANITIZER(NAME, ID) \
-  if (Kind & ID) \
-    SanitizeOpt += NAME ",";
-#include "clang/Basic/Sanitizers.def"
-  SanitizeOpt.pop_back();
-  CmdArgs.push_back(Args.MakeArgString(SanitizeOpt));
+  CmdArgs.push_back(Args.MakeArgString("-fsanitize=" + toString(Sanitizers)));
+
+  if (!SanitizeRecover)
+    CmdArgs.push_back("-fno-sanitize-recover");
+
+  if (UbsanTrapOnError)
+    CmdArgs.push_back("-fsanitize-undefined-trap-on-error");
+
   if (!BlacklistFile.empty()) {
     SmallString<64> BlacklistOpt("-fsanitize-blacklist=");
     BlacklistOpt += BlacklistFile;
@@ -219,141 +381,23 @@ void SanitizerArgs::addArgs(const llvm::opt::ArgList &Args,
   if (AsanFieldPadding)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-address-field-padding=" +
                                          llvm::utostr(AsanFieldPadding)));
+  if (SanitizeCoverage)
+    CmdArgs.push_back(Args.MakeArgString("-fsanitize-coverage=" +
+                                         llvm::utostr(SanitizeCoverage)));
   // Workaround for PR16386.
-  if (needsMsanRt())
+  if (Sanitizers.has(SanitizerKind::Memory))
     CmdArgs.push_back(Args.MakeArgString("-fno-assume-sane-operator-new"));
 }
 
-unsigned SanitizerArgs::parse(const char *Value) {
-  unsigned ParsedKind = llvm::StringSwitch<SanitizeKind>(Value)
-#define SANITIZER(NAME, ID) .Case(NAME, ID)
-#define SANITIZER_GROUP(NAME, ID, ALIAS) .Case(NAME, ID##Group)
-#include "clang/Basic/Sanitizers.def"
-    .Default(SanitizeKind());
-  return ParsedKind;
-}
-
-unsigned SanitizerArgs::expandGroups(unsigned Kinds) {
-#define SANITIZER(NAME, ID)
-#define SANITIZER_GROUP(NAME, ID, ALIAS) if (Kinds & ID##Group) Kinds |= ID;
-#include "clang/Basic/Sanitizers.def"
-  return Kinds;
-}
-
-void SanitizerArgs::filterUnsupportedMask(const ToolChain &TC, unsigned &Kinds,
-                                          unsigned Mask,
-                                          const llvm::opt::ArgList &Args,
-                                          const llvm::opt::Arg *A,
-                                          bool DiagnoseErrors,
-                                          unsigned &DiagnosedKinds) {
-  unsigned MaskedKinds = Kinds & Mask;
-  if (!MaskedKinds)
-    return;
-  Kinds &= ~Mask;
-  // Do we have new kinds to diagnose?
-  if (DiagnoseErrors && (DiagnosedKinds & MaskedKinds) != MaskedKinds) {
-    // Only diagnose the new kinds.
-    std::string Desc =
-        describeSanitizeArg(Args, A, MaskedKinds & ~DiagnosedKinds);
-    TC.getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
-        << Desc << TC.getTriple().str();
-    DiagnosedKinds |= MaskedKinds;
-  }
-}
-
-unsigned SanitizerArgs::filterUnsupportedKinds(const ToolChain &TC,
-                                               unsigned Kinds,
-                                               const llvm::opt::ArgList &Args,
-                                               const llvm::opt::Arg *A,
-                                               bool DiagnoseErrors,
-                                               unsigned &DiagnosedKinds) {
-  bool IsLinux = TC.getTriple().getOS() == llvm::Triple::Linux;
-  bool IsX86 = TC.getTriple().getArch() == llvm::Triple::x86;
-  bool IsX86_64 = TC.getTriple().getArch() == llvm::Triple::x86_64;
-  if (!(IsLinux && IsX86_64)) {
-    filterUnsupportedMask(TC, Kinds, Thread | Memory | DataFlow, Args, A,
-                          DiagnoseErrors, DiagnosedKinds);
-  }
-  if (!(IsLinux && (IsX86 || IsX86_64))) {
-    filterUnsupportedMask(TC, Kinds, Function, Args, A, DiagnoseErrors,
-                          DiagnosedKinds);
-  }
-  return Kinds;
-}
-
-unsigned SanitizerArgs::parse(const Driver &D, const llvm::opt::Arg *A,
-                              bool DiagnoseErrors) {
-  unsigned Kind = 0;
-  for (unsigned I = 0, N = A->getNumValues(); I != N; ++I) {
-    if (unsigned K = parse(A->getValue(I)))
-      Kind |= K;
-    else if (DiagnoseErrors)
-      D.Diag(diag::err_drv_unsupported_option_argument)
-        << A->getOption().getName() << A->getValue(I);
-  }
-  return Kind;
-}
-
-bool SanitizerArgs::parse(const Driver &D, const llvm::opt::ArgList &Args,
-                          const llvm::opt::Arg *A, unsigned &Add,
-                          unsigned &Remove, bool DiagnoseErrors) {
-  Add = 0;
-  Remove = 0;
-  if (A->getOption().matches(options::OPT_fsanitize_EQ)) {
-    Add = parse(D, A, DiagnoseErrors);
-  } else if (A->getOption().matches(options::OPT_fno_sanitize_EQ)) {
-    Remove = parse(D, A, DiagnoseErrors);
-  } else {
-    // Flag is not relevant to sanitizers.
-    return false;
-  }
-  return true;
-}
-
-std::string SanitizerArgs::lastArgumentForKind(const Driver &D,
-                                               const llvm::opt::ArgList &Args,
-                                               unsigned Kind) {
-  for (llvm::opt::ArgList::const_reverse_iterator I = Args.rbegin(),
-                                                  E = Args.rend();
-       I != E; ++I) {
-    unsigned Add, Remove;
-    if (parse(D, Args, *I, Add, Remove, false) &&
-        (expandGroups(Add) & Kind))
-      return describeSanitizeArg(Args, *I, Kind);
-    Kind &= ~Remove;
-  }
-  llvm_unreachable("arg list didn't provide expected value");
-}
-
-std::string SanitizerArgs::describeSanitizeArg(const llvm::opt::ArgList &Args,
-                                               const llvm::opt::Arg *A,
-                                               unsigned Mask) {
-  if (!A->getOption().matches(options::OPT_fsanitize_EQ))
-    return A->getAsString(Args);
-
-  std::string Sanitizers;
-  for (unsigned I = 0, N = A->getNumValues(); I != N; ++I) {
-    if (expandGroups(parse(A->getValue(I))) & Mask) {
-      if (!Sanitizers.empty())
-        Sanitizers += ",";
-      Sanitizers += A->getValue(I);
-    }
-  }
-
-  assert(!Sanitizers.empty() && "arg didn't provide expected value");
-  return "-fsanitize=" + Sanitizers;
-}
-
-bool SanitizerArgs::getDefaultBlacklistForKind(const Driver &D, unsigned Kind,
-                                               std::string &BLPath) {
+bool SanitizerArgs::getDefaultBlacklist(const Driver &D, std::string &BLPath) {
   const char *BlacklistFile = nullptr;
-  if (Kind & NeedsAsanRt)
+  if (Sanitizers.has(SanitizerKind::Address))
     BlacklistFile = "asan_blacklist.txt";
-  else if (Kind & NeedsMsanRt)
+  else if (Sanitizers.has(SanitizerKind::Memory))
     BlacklistFile = "msan_blacklist.txt";
-  else if (Kind & NeedsTsanRt)
+  else if (Sanitizers.has(SanitizerKind::Thread))
     BlacklistFile = "tsan_blacklist.txt";
-  else if (Kind & NeedsDfsanRt)
+  else if (Sanitizers.has(SanitizerKind::DataFlow))
     BlacklistFile = "dfsan_abilist.txt";
 
   if (BlacklistFile) {
@@ -363,4 +407,79 @@ bool SanitizerArgs::getDefaultBlacklistForKind(const Driver &D, unsigned Kind,
     return true;
   }
   return false;
+}
+
+unsigned parseValue(const char *Value) {
+  unsigned ParsedKind = llvm::StringSwitch<SanitizeKind>(Value)
+#define SANITIZER(NAME, ID) .Case(NAME, ID)
+#define SANITIZER_GROUP(NAME, ID, ALIAS) .Case(NAME, ID##Group)
+#include "clang/Basic/Sanitizers.def"
+    .Default(SanitizeKind());
+  return ParsedKind;
+}
+
+unsigned expandGroups(unsigned Kinds) {
+#define SANITIZER(NAME, ID)
+#define SANITIZER_GROUP(NAME, ID, ALIAS) if (Kinds & ID##Group) Kinds |= ID;
+#include "clang/Basic/Sanitizers.def"
+  return Kinds;
+}
+
+unsigned parseArgValues(const Driver &D, const llvm::opt::Arg *A,
+                        bool DiagnoseErrors) {
+  unsigned Kind = 0;
+  for (unsigned I = 0, N = A->getNumValues(); I != N; ++I) {
+    if (unsigned K = parseValue(A->getValue(I)))
+      Kind |= K;
+    else if (DiagnoseErrors)
+      D.Diag(clang::diag::err_drv_unsupported_option_argument)
+        << A->getOption().getName() << A->getValue(I);
+  }
+  return Kind;
+}
+
+bool parseArgument(const Driver &D, const llvm::opt::Arg *A, unsigned &Add,
+                   unsigned &Remove, bool DiagnoseErrors) {
+  Add = 0;
+  Remove = 0;
+  if (A->getOption().matches(options::OPT_fsanitize_EQ)) {
+    Add = parseArgValues(D, A, DiagnoseErrors);
+    return true;
+  }
+  if (A->getOption().matches(options::OPT_fno_sanitize_EQ)) {
+    Remove = parseArgValues(D, A, DiagnoseErrors);
+    return true;
+  }
+  return false;
+}
+
+std::string lastArgumentForMask(const Driver &D, const llvm::opt::ArgList &Args,
+                                unsigned Mask) {
+  for (llvm::opt::ArgList::const_reverse_iterator I = Args.rbegin(),
+                                                  E = Args.rend();
+       I != E; ++I) {
+    unsigned Add, Remove;
+    if (parseArgument(D, *I, Add, Remove, false) &&
+        (expandGroups(Add) & Mask))
+      return describeSanitizeArg(*I, Mask);
+    Mask &= ~Remove;
+  }
+  llvm_unreachable("arg list didn't provide expected value");
+}
+
+std::string describeSanitizeArg(const llvm::opt::Arg *A, unsigned Mask) {
+  assert(A->getOption().matches(options::OPT_fsanitize_EQ)
+         && "Invalid argument in describeSanitizerArg!");
+
+  std::string Sanitizers;
+  for (unsigned I = 0, N = A->getNumValues(); I != N; ++I) {
+    if (expandGroups(parseValue(A->getValue(I))) & Mask) {
+      if (!Sanitizers.empty())
+        Sanitizers += ",";
+      Sanitizers += A->getValue(I);
+    }
+  }
+
+  assert(!Sanitizers.empty() && "arg didn't provide expected value");
+  return "-fsanitize=" + Sanitizers;
 }

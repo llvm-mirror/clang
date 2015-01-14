@@ -20,7 +20,11 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/RecursiveASTVisitor.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/StringMap.h"
+#include "llvm/Support/Timer.h"
 #include <deque>
+#include <memory>
 #include <set>
 
 namespace clang {
@@ -292,17 +296,34 @@ private:
 class MatchASTVisitor : public RecursiveASTVisitor<MatchASTVisitor>,
                         public ASTMatchFinder {
 public:
- MatchASTVisitor(const MatchFinder::MatchersByType *Matchers)
-     : Matchers(Matchers), ActiveASTContext(nullptr) {}
+  MatchASTVisitor(const MatchFinder::MatchersByType *Matchers,
+                  const MatchFinder::MatchFinderOptions &Options)
+      : Matchers(Matchers), Options(Options), ActiveASTContext(nullptr) {}
+
+  ~MatchASTVisitor() {
+    if (Options.CheckProfiling) {
+      Options.CheckProfiling->Records = std::move(TimeByBucket);
+    }
+  }
 
   void onStartOfTranslationUnit() {
-    for (MatchCallback *MC : Matchers->AllCallbacks)
+    const bool EnableCheckProfiling = Options.CheckProfiling.hasValue();
+    TimeBucketRegion Timer;
+    for (MatchCallback *MC : Matchers->AllCallbacks) {
+      if (EnableCheckProfiling)
+        Timer.setBucket(&TimeByBucket[MC->getID()]);
       MC->onStartOfTranslationUnit();
+    }
   }
 
   void onEndOfTranslationUnit() {
-    for (MatchCallback *MC : Matchers->AllCallbacks)
+    const bool EnableCheckProfiling = Options.CheckProfiling.hasValue();
+    TimeBucketRegion Timer;
+    for (MatchCallback *MC : Matchers->AllCallbacks) {
+      if (EnableCheckProfiling)
+        Timer.setBucket(&TimeByBucket[MC->getID()]);
       MC->onEndOfTranslationUnit();
+    }
   }
 
   void set_active_ast_context(ASTContext *NewActiveASTContext) {
@@ -471,12 +492,44 @@ public:
   bool shouldUseDataRecursionFor(clang::Stmt *S) const { return false; }
 
 private:
+  class TimeBucketRegion {
+  public:
+    TimeBucketRegion() : Bucket(nullptr) {}
+    ~TimeBucketRegion() { setBucket(nullptr); }
+
+    /// \brief Start timing for \p NewBucket.
+    ///
+    /// If there was a bucket already set, it will finish the timing for that
+    /// other bucket.
+    /// \p NewBucket will be timed until the next call to \c setBucket() or
+    /// until the \c TimeBucketRegion is destroyed.
+    /// If \p NewBucket is the same as the currently timed bucket, this call
+    /// does nothing.
+    void setBucket(llvm::TimeRecord *NewBucket) {
+      if (Bucket != NewBucket) {
+        auto Now = llvm::TimeRecord::getCurrentTime(true);
+        if (Bucket)
+          *Bucket += Now;
+        if (NewBucket)
+          *NewBucket -= Now;
+        Bucket = NewBucket;
+      }
+    }
+
+  private:
+    llvm::TimeRecord *Bucket;
+  };
+
   /// \brief Runs all the \p Matchers on \p Node.
   ///
   /// Used by \c matchDispatch() below.
   template <typename T, typename MC>
-  void matchImpl(const T &Node, const MC &Matchers) {
+  void matchWithoutFilter(const T &Node, const MC &Matchers) {
+    const bool EnableCheckProfiling = Options.CheckProfiling.hasValue();
+    TimeBucketRegion Timer;
     for (const auto &MP : Matchers) {
+      if (EnableCheckProfiling)
+        Timer.setBucket(&TimeByBucket[MP.second->getID()]);
       BoundNodesTreeBuilder Builder;
       if (MP.first.matches(Node, this, &Builder)) {
         MatchVisitor Visitor(ActiveASTContext, MP.second);
@@ -485,22 +538,66 @@ private:
     }
   }
 
+  void matchWithFilter(const ast_type_traits::DynTypedNode &DynNode) {
+    auto Kind = DynNode.getNodeKind();
+    auto it = MatcherFiltersMap.find(Kind);
+    const auto &Filter =
+        it != MatcherFiltersMap.end() ? it->second : getFilterForKind(Kind);
+
+    if (Filter.empty())
+      return;
+
+    const bool EnableCheckProfiling = Options.CheckProfiling.hasValue();
+    TimeBucketRegion Timer;
+    auto &Matchers = this->Matchers->DeclOrStmt;
+    for (unsigned short I : Filter) {
+      auto &MP = Matchers[I];
+      if (EnableCheckProfiling)
+        Timer.setBucket(&TimeByBucket[MP.second->getID()]);
+      BoundNodesTreeBuilder Builder;
+      if (MP.first.matchesNoKindCheck(DynNode, this, &Builder)) {
+        MatchVisitor Visitor(ActiveASTContext, MP.second);
+        Builder.visitMatches(&Visitor);
+      }
+    }
+  }
+
+  const std::vector<unsigned short> &
+  getFilterForKind(ast_type_traits::ASTNodeKind Kind) {
+    auto &Filter = MatcherFiltersMap[Kind];
+    auto &Matchers = this->Matchers->DeclOrStmt;
+    assert((Matchers.size() < USHRT_MAX) && "Too many matchers.");
+    for (unsigned I = 0, E = Matchers.size(); I != E; ++I) {
+      if (Matchers[I].first.canMatchNodesOfKind(Kind)) {
+        Filter.push_back(I);
+      }
+    }
+    return Filter;
+  }
+
   /// @{
   /// \brief Overloads to pair the different node types to their matchers.
-  void matchDispatch(const Decl *Node) { matchImpl(*Node, Matchers->Decl); }
-  void matchDispatch(const Stmt *Node) { matchImpl(*Node, Matchers->Stmt); }
+  void matchDispatch(const Decl *Node) {
+    return matchWithFilter(ast_type_traits::DynTypedNode::create(*Node));
+  }
+  void matchDispatch(const Stmt *Node) {
+    return matchWithFilter(ast_type_traits::DynTypedNode::create(*Node));
+  }
+
   void matchDispatch(const Type *Node) {
-    matchImpl(QualType(Node, 0), Matchers->Type);
+    matchWithoutFilter(QualType(Node, 0), Matchers->Type);
   }
   void matchDispatch(const TypeLoc *Node) {
-    matchImpl(*Node, Matchers->TypeLoc);
+    matchWithoutFilter(*Node, Matchers->TypeLoc);
   }
-  void matchDispatch(const QualType *Node) { matchImpl(*Node, Matchers->Type); }
+  void matchDispatch(const QualType *Node) {
+    matchWithoutFilter(*Node, Matchers->Type);
+  }
   void matchDispatch(const NestedNameSpecifier *Node) {
-    matchImpl(*Node, Matchers->NestedNameSpecifier);
+    matchWithoutFilter(*Node, Matchers->NestedNameSpecifier);
   }
   void matchDispatch(const NestedNameSpecifierLoc *Node) {
-    matchImpl(*Node, Matchers->NestedNameSpecifierLoc);
+    matchWithoutFilter(*Node, Matchers->NestedNameSpecifierLoc);
   }
   void matchDispatch(const void *) { /* Do nothing. */ }
   /// @}
@@ -627,7 +724,25 @@ private:
     return false;
   }
 
+  /// \brief Bucket to record map.
+  ///
+  /// Used to get the appropriate bucket for each matcher.
+  llvm::StringMap<llvm::TimeRecord> TimeByBucket;
+
   const MatchFinder::MatchersByType *Matchers;
+
+  /// \brief Filtered list of matcher indices for each matcher kind.
+  ///
+  /// \c Decl and \c Stmt toplevel matchers usually apply to a specific node
+  /// kind (and derived kinds) so it is a waste to try every matcher on every
+  /// node.
+  /// We precalculate a list of matchers that pass the toplevel restrict check.
+  /// This also allows us to skip the restrict check at matching time. See
+  /// use \c matchesNoKindCheck() above.
+  llvm::DenseMap<ast_type_traits::ASTNodeKind, std::vector<unsigned short>>
+      MatcherFiltersMap;
+
+  const MatchFinder::MatchFinderOptions &Options;
   ASTContext *ActiveASTContext;
 
   // Maps a canonical type to its TypedefDecls.
@@ -790,13 +905,14 @@ MatchFinder::MatchResult::MatchResult(const BoundNodes &Nodes,
 MatchFinder::MatchCallback::~MatchCallback() {}
 MatchFinder::ParsingDoneTestCallback::~ParsingDoneTestCallback() {}
 
-MatchFinder::MatchFinder() : ParsingDone(nullptr) {}
+MatchFinder::MatchFinder(MatchFinderOptions Options)
+    : Options(std::move(Options)), ParsingDone(nullptr) {}
 
 MatchFinder::~MatchFinder() {}
 
 void MatchFinder::addMatcher(const DeclarationMatcher &NodeMatch,
                              MatchCallback *Action) {
-  Matchers.Decl.push_back(std::make_pair(NodeMatch, Action));
+  Matchers.DeclOrStmt.push_back(std::make_pair(NodeMatch, Action));
   Matchers.AllCallbacks.push_back(Action);
 }
 
@@ -808,7 +924,7 @@ void MatchFinder::addMatcher(const TypeMatcher &NodeMatch,
 
 void MatchFinder::addMatcher(const StatementMatcher &NodeMatch,
                              MatchCallback *Action) {
-  Matchers.Stmt.push_back(std::make_pair(NodeMatch, Action));
+  Matchers.DeclOrStmt.push_back(std::make_pair(NodeMatch, Action));
   Matchers.AllCallbacks.push_back(Action);
 }
 
@@ -860,13 +976,13 @@ std::unique_ptr<ASTConsumer> MatchFinder::newASTConsumer() {
 
 void MatchFinder::match(const clang::ast_type_traits::DynTypedNode &Node,
                         ASTContext &Context) {
-  internal::MatchASTVisitor Visitor(&Matchers);
+  internal::MatchASTVisitor Visitor(&Matchers, Options);
   Visitor.set_active_ast_context(&Context);
   Visitor.match(Node);
 }
 
 void MatchFinder::matchAST(ASTContext &Context) {
-  internal::MatchASTVisitor Visitor(&Matchers);
+  internal::MatchASTVisitor Visitor(&Matchers, Options);
   Visitor.set_active_ast_context(&Context);
   Visitor.onStartOfTranslationUnit();
   Visitor.TraverseDecl(Context.getTranslationUnitDecl());
@@ -877,6 +993,8 @@ void MatchFinder::registerTestCallbackAfterParsing(
     MatchFinder::ParsingDoneTestCallback *NewParsingDone) {
   ParsingDone = NewParsingDone;
 }
+
+StringRef MatchFinder::MatchCallback::getID() const { return "<unknown>"; }
 
 } // end namespace ast_matchers
 } // end namespace clang

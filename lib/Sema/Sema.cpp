@@ -88,16 +88,13 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     CodeSegStack(nullptr), CurInitSeg(nullptr), VisContext(nullptr),
     IsBuildingRecoveryCallExpr(false),
     ExprNeedsCleanups(false), LateTemplateParser(nullptr),
+    LateTemplateParserCleanup(nullptr),
     OpaqueParser(nullptr), IdResolver(pp), StdInitializerList(nullptr),
     CXXTypeInfoDecl(nullptr), MSVCGuidDecl(nullptr),
     NSNumberDecl(nullptr),
     NSStringDecl(nullptr), StringWithUTF8StringMethod(nullptr),
     NSArrayDecl(nullptr), ArrayWithObjectsMethod(nullptr),
-    InitArrayWithObjectsMethod(nullptr),
     NSDictionaryDecl(nullptr), DictionaryWithObjectsMethod(nullptr),
-    InitDictionaryWithObjectsMethod(nullptr),
-    ArrayAllocObjectsMethod(nullptr),
-    DictAllocObjectsMethod(nullptr),
     MSAsmLabelNameCounter(0),
     GlobalNewDeleteDeclared(false),
     TUKind(TUKind),
@@ -248,6 +245,8 @@ Sema::~Sema() {
 
   // Destroys data sharing attributes stack for OpenMP
   DestroyDataSharingAttributesStack();
+
+  assert(DelayedTypos.empty() && "Uncorrected typos!");
 }
 
 /// makeUnavailableInSystemHeader - There is an error in the current
@@ -672,13 +671,16 @@ void Sema::ActOnEndOfTranslationUnit() {
     }
     PerformPendingInstantiations();
 
+    if (LateTemplateParserCleanup)
+      LateTemplateParserCleanup(OpaqueParser);
+
     CheckDelayedMemberExceptionSpecs();
   }
 
   // All delayed member exception specs should be checked or we end up accepting
   // incompatible declarations.
   assert(DelayedDefaultedMemberExceptionSpecs.empty());
-  assert(DelayedDestructorExceptionSpecChecks.empty());
+  assert(DelayedExceptionSpecChecks.empty());
 
   // Remove file scoped decls that turned out to be used.
   UnusedFileScopedDecls.erase(
@@ -769,7 +771,7 @@ void Sema::ActOnEndOfTranslationUnit() {
     // If the tentative definition was completed, getActingDefinition() returns
     // null. If we've already seen this variable before, insert()'s second
     // return value is false.
-    if (!VD || VD->isInvalidDecl() || !Seen.insert(VD))
+    if (!VD || VD->isInvalidDecl() || !Seen.insert(VD).second)
       continue;
 
     if (const IncompleteArrayType *ArrayT

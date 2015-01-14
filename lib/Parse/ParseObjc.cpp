@@ -2170,7 +2170,10 @@ bool Parser::ParseObjCXXMessageReceiver(bool &IsExpr, void *&TypeOrExpr) {
   if (!Actions.isSimpleTypeSpecifier(Tok.getKind())) {
     //   objc-receiver:
     //     expression
-    ExprResult Receiver = ParseExpression();
+    // Make sure any typos in the receiver are corrected or diagnosed, so that
+    // proper recovery can happen. FIXME: Perhaps filter the corrected expr to
+    // only the things that are valid ObjC receivers?
+    ExprResult Receiver = Actions.CorrectDelayedTyposInExpr(ParseExpression());
     if (Receiver.isInvalid())
       return true;
 
@@ -2347,7 +2350,7 @@ ExprResult Parser::ParseObjCMessageExpression() {
   }
   
   // Otherwise, an arbitrary expression can be the receiver of a send.
-  ExprResult Res(ParseExpression());
+  ExprResult Res = Actions.CorrectDelayedTyposInExpr(ParseExpression());
   if (Res.isInvalid()) {
     SkipUntil(tok::r_square, StopAtSemi);
     return Res;
@@ -2399,7 +2402,7 @@ ExprResult
 Parser::ParseObjCMessageExpressionBody(SourceLocation LBracLoc,
                                        SourceLocation SuperLoc,
                                        ParsedType ReceiverType,
-                                       ExprArg ReceiverExpr) {
+                                       Expr *ReceiverExpr) {
   InMessageExpressionRAIIObject InMessage(*this, true);
 
   if (Tok.is(tok::code_completion)) {
@@ -2506,6 +2509,8 @@ Parser::ParseObjCMessageExpressionBody(SourceLocation LBracLoc,
       SourceLocation commaLoc = ConsumeToken(); // Eat the ','.
       ///  Parse the expression after ','
       ExprResult Res(ParseAssignmentExpression());
+      if (Tok.is(tok::colon))
+        Res = Actions.CorrectDelayedTyposInExpr(Res);
       if (Res.isInvalid()) {
         if (Tok.is(tok::colon)) {
           Diag(commaLoc, diag::note_extra_comma_message_arg) <<

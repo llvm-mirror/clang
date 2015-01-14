@@ -1834,6 +1834,7 @@ public:
   void VisitCXXUnresolvedConstructExpr(const CXXUnresolvedConstructExpr *E);
   void VisitCXXUuidofExpr(const CXXUuidofExpr *E);
   void VisitCXXCatchStmt(const CXXCatchStmt *S);
+  void VisitCXXForRangeStmt(const CXXForRangeStmt *S);
   void VisitDeclRefExpr(const DeclRefExpr *D);
   void VisitDeclStmt(const DeclStmt *S);
   void VisitDependentScopeDeclRefExpr(const DependentScopeDeclRefExpr *E);
@@ -2152,6 +2153,12 @@ void EnqueueVisitor::VisitCXXUuidofExpr(const CXXUuidofExpr *E) {
 void EnqueueVisitor::VisitCXXCatchStmt(const CXXCatchStmt *S) {
   EnqueueChildren(S);
   AddDecl(S->getExceptionDecl());
+}
+
+void EnqueueVisitor::VisitCXXForRangeStmt(const CXXForRangeStmt *S) {
+  AddStmt(S->getBody());
+  AddStmt(S->getRangeInit());
+  AddDecl(S->getLoopVariable());
 }
 
 void EnqueueVisitor::VisitDeclRefExpr(const DeclRefExpr *DR) {
@@ -6650,11 +6657,7 @@ CXModule clang_getModuleForFile(CXTranslationUnit TU, CXFile File) {
   HeaderSearch &HS = Unit.getPreprocessor().getHeaderSearchInfo();
   ModuleMap::KnownHeader Header = HS.findModuleForHeader(FE);
   
-  if (Module *Mod = Header.getModule()) {
-    if (Header.getRole() != ModuleMap::ExcludedHeader)
-      return Mod;
-  }
-  return nullptr;
+  return Header.getModule();
 }
 
 CXFile clang_Module_getASTFile(CXModule CXMod) {

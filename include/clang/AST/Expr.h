@@ -2658,9 +2658,6 @@ public:
 /// representation in the source code (ExplicitCastExpr's derived
 /// classes).
 class CastExpr : public Expr {
-public:
-  typedef clang::CastKind CastKind;
-
 private:
   Stmt *Op;
 
@@ -2678,20 +2675,23 @@ private:
   }
 
 protected:
-  CastExpr(StmtClass SC, QualType ty, ExprValueKind VK,
-           const CastKind kind, Expr *op, unsigned BasePathSize) :
-    Expr(SC, ty, VK, OK_Ordinary,
-         // Cast expressions are type-dependent if the type is
-         // dependent (C++ [temp.dep.expr]p3).
-         ty->isDependentType(),
-         // Cast expressions are value-dependent if the type is
-         // dependent or if the subexpression is value-dependent.
-         ty->isDependentType() || (op && op->isValueDependent()),
-         (ty->isInstantiationDependentType() ||
-          (op && op->isInstantiationDependent())),
-         (ty->containsUnexpandedParameterPack() ||
-          (op && op->containsUnexpandedParameterPack()))),
-    Op(op) {
+  CastExpr(StmtClass SC, QualType ty, ExprValueKind VK, const CastKind kind,
+           Expr *op, unsigned BasePathSize)
+      : Expr(SC, ty, VK, OK_Ordinary,
+             // Cast expressions are type-dependent if the type is
+             // dependent (C++ [temp.dep.expr]p3).
+             ty->isDependentType(),
+             // Cast expressions are value-dependent if the type is
+             // dependent or if the subexpression is value-dependent.
+             ty->isDependentType() || (op && op->isValueDependent()),
+             (ty->isInstantiationDependentType() ||
+              (op && op->isInstantiationDependent())),
+             // An implicit cast expression doesn't (lexically) contain an
+             // unexpanded pack, even if its target type does.
+             ((SC != ImplicitCastExprClass &&
+               ty->containsUnexpandedParameterPack()) ||
+              (op && op->containsUnexpandedParameterPack()))),
+        Op(op) {
     assert(kind != CK_Invalid && "creating cast with invalid cast kind");
     CastExprBits.Kind = kind;
     setBasePathSize(BasePathSize);
@@ -4845,6 +4845,24 @@ public:
   child_range children() {
     return child_range(SubExprs, SubExprs+NumSubExprs);
   }
+};
+
+/// TypoExpr - Internal placeholder for expressions where typo correction
+/// still needs to be performed and/or an error diagnostic emitted.
+class TypoExpr : public Expr {
+public:
+  TypoExpr(QualType T)
+      : Expr(TypoExprClass, T, VK_LValue, OK_Ordinary,
+             /*isTypeDependent*/ true,
+             /*isValueDependent*/ true,
+             /*isInstantiationDependent*/ true,
+             /*containsUnexpandedParameterPack*/ false) {
+    assert(T->isDependentType() && "TypoExpr given a non-dependent type");
+  }
+
+  child_range children() { return child_range(); }
+  SourceLocation getLocStart() const LLVM_READONLY { return SourceLocation(); }
+  SourceLocation getLocEnd() const LLVM_READONLY { return SourceLocation(); }
 };
 }  // end namespace clang
 

@@ -159,31 +159,23 @@ static void SetUpDiagnosticLog(DiagnosticOptions *DiagOpts,
   if (CodeGenOpts)
     Logger->setDwarfDebugFlags(CodeGenOpts->DwarfDebugFlags);
   assert(Diags.ownsClient());
-  Diags.setClient(new ChainedDiagnosticConsumer(
-      std::unique_ptr<DiagnosticConsumer>(Diags.takeClient()),
-      std::move(Logger)));
+  Diags.setClient(
+      new ChainedDiagnosticConsumer(Diags.takeClient(), std::move(Logger)));
 }
 
 static void SetupSerializedDiagnostics(DiagnosticOptions *DiagOpts,
                                        DiagnosticsEngine &Diags,
                                        StringRef OutputFile) {
-  std::error_code EC;
-  auto OS = llvm::make_unique<llvm::raw_fd_ostream>(OutputFile.str(), EC,
-                                                    llvm::sys::fs::F_None);
-
-  if (EC) {
-    Diags.Report(diag::warn_fe_serialized_diag_failure) << OutputFile
-                                                        << EC.message();
-    return;
-  }
-
   auto SerializedConsumer =
-      clang::serialized_diags::create(std::move(OS), DiagOpts);
+      clang::serialized_diags::create(OutputFile, DiagOpts);
 
-  assert(Diags.ownsClient());
-  Diags.setClient(new ChainedDiagnosticConsumer(
-      std::unique_ptr<DiagnosticConsumer>(Diags.takeClient()),
-      std::move(SerializedConsumer)));
+  if (Diags.ownsClient()) {
+    Diags.setClient(new ChainedDiagnosticConsumer(
+        Diags.takeClient(), std::move(SerializedConsumer)));
+  } else {
+    Diags.setClient(new ChainedDiagnosticConsumer(
+        Diags.getClient(), std::move(SerializedConsumer)));
+  }
 }
 
 void CompilerInstance::createDiagnostics(DiagnosticConsumer *Client,
@@ -727,14 +719,14 @@ bool CompilerInstance::InitializeSourceManager(const FrontendInputFile &Input,
     // pick up the correct size, and simply override their contents as we do for
     // STDIN.
     if (File->isNamedPipe()) {
-      std::string ErrorStr;
-      if (std::unique_ptr<llvm::MemoryBuffer> MB =
-              FileMgr.getBufferForFile(File, &ErrorStr, /*isVolatile=*/true)) {
+      auto MB = FileMgr.getBufferForFile(File, /*isVolatile=*/true);
+      if (MB) {
         // Create a new virtual file that will have the correct size.
-        File = FileMgr.getVirtualFile(InputFile, MB->getBufferSize(), 0);
-        SourceMgr.overrideFileContents(File, std::move(MB));
+        File = FileMgr.getVirtualFile(InputFile, (*MB)->getBufferSize(), 0);
+        SourceMgr.overrideFileContents(File, std::move(*MB));
       } else {
-        Diags.Report(diag::err_cannot_open_file) << InputFile << ErrorStr;
+        Diags.Report(diag::err_cannot_open_file) << InputFile
+                                                 << MB.getError().message();
         return false;
       }
     }
@@ -1040,7 +1032,7 @@ static bool compileAndLoadModule(CompilerInstance &ImportingInstance,
     // Try to read the module file, now that we've compiled it.
     ASTReader::ASTReadResult ReadResult =
         ImportingInstance.getModuleManager()->ReadAST(
-            ModuleFileName, serialization::MK_Module, ImportLoc,
+            ModuleFileName, serialization::MK_ImplicitModule, ImportLoc,
             ModuleLoadCapabilities);
 
     if (ReadResult == ASTReader::OutOfDate &&
@@ -1267,6 +1259,63 @@ void CompilerInstance::createModuleManager() {
   }
 }
 
+bool CompilerInstance::loadModuleFile(StringRef FileName) {
+  // Helper to recursively read the module names for all modules we're adding.
+  // We mark these as known and redirect any attempt to load that module to
+  // the files we were handed.
+  struct ReadModuleNames : ASTReaderListener {
+    CompilerInstance &CI;
+    std::vector<StringRef> ModuleFileStack;
+    bool Failed;
+    bool TopFileIsModule;
+
+    ReadModuleNames(CompilerInstance &CI)
+        : CI(CI), Failed(false), TopFileIsModule(false) {}
+
+    bool needsImportVisitation() const override { return true; }
+
+    void visitImport(StringRef FileName) override {
+      ModuleFileStack.push_back(FileName);
+      if (ASTReader::readASTFileControlBlock(FileName, CI.getFileManager(),
+                                             *this)) {
+        CI.getDiagnostics().Report(SourceLocation(),
+                                   diag::err_module_file_not_found)
+            << FileName;
+        // FIXME: Produce a note stack explaining how we got here.
+        Failed = true;
+      }
+      ModuleFileStack.pop_back();
+    }
+
+    void ReadModuleName(StringRef ModuleName) override {
+      if (ModuleFileStack.size() == 1)
+        TopFileIsModule = true;
+
+      auto &ModuleFile = CI.ModuleFileOverrides[ModuleName];
+      if (!ModuleFile.empty() && ModuleFile != ModuleFileStack.back())
+        CI.getDiagnostics().Report(SourceLocation(),
+                                   diag::err_conflicting_module_files)
+            << ModuleName << ModuleFile << ModuleFileStack.back();
+      ModuleFile = ModuleFileStack.back();
+    }
+  } RMN(*this);
+
+  RMN.visitImport(FileName);
+
+  if (RMN.Failed)
+    return false;
+
+  // If we never found a module name for the top file, then it's not a module,
+  // it's a PCH or preamble or something.
+  if (!RMN.TopFileIsModule) {
+    getDiagnostics().Report(SourceLocation(), diag::err_module_file_not_module)
+      << FileName;
+    return false;
+  }
+
+  return true;
+}
+
 ModuleLoadResult
 CompilerInstance::loadModule(SourceLocation ImportLoc,
                              ModuleIdPath Path,
@@ -1312,8 +1361,12 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
       return ModuleLoadResult();
     }
 
+    auto Override = ModuleFileOverrides.find(ModuleName);
+    bool Explicit = Override != ModuleFileOverrides.end();
+
     std::string ModuleFileName =
-        PP->getHeaderSearchInfo().getModuleFileName(Module);
+        Explicit ? Override->second
+                 : PP->getHeaderSearchInfo().getModuleFileName(Module);
 
     // If we don't already have an ASTReader, create one now.
     if (!ModuleManager)
@@ -1329,14 +1382,24 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
       Listener->attachToASTReader(*ModuleManager);
 
     // Try to load the module file.
-    unsigned ARRFlags = ASTReader::ARR_OutOfDate | ASTReader::ARR_Missing;
-    switch (ModuleManager->ReadAST(ModuleFileName, serialization::MK_Module,
+    unsigned ARRFlags =
+        Explicit ? 0 : ASTReader::ARR_OutOfDate | ASTReader::ARR_Missing;
+    switch (ModuleManager->ReadAST(ModuleFileName,
+                                   Explicit ? serialization::MK_ExplicitModule
+                                            : serialization::MK_ImplicitModule,
                                    ImportLoc, ARRFlags)) {
     case ASTReader::Success:
       break;
 
     case ASTReader::OutOfDate:
     case ASTReader::Missing: {
+      if (Explicit) {
+        // ReadAST has already complained for us.
+        ModuleLoader::HadFatalFailure = true;
+        KnownModules[Path[0].first] = nullptr;
+        return ModuleLoadResult();
+      }
+
       // The module file is missing or out-of-date. Build it.
       assert(Module && "missing module file");
       // Check whether there is a cycle in the module graph.
@@ -1489,7 +1552,7 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
 
     // Check whether this module is available.
     clang::Module::Requirement Requirement;
-    clang::Module::HeaderDirective MissingHeader;
+    clang::Module::UnresolvedHeaderDirective MissingHeader;
     if (!Module->isAvailable(getLangOpts(), getTarget(), Requirement,
                              MissingHeader)) {
       if (MissingHeader.FileNameLoc.isValid()) {
@@ -1518,9 +1581,16 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
                      Module, ImportLoc);
   }
 
+  // Determine whether we're in the #include buffer for a module. The #includes
+  // in that buffer do not qualify as module imports; they're just an
+  // implementation detail of us building the module.
+  bool IsInModuleIncludes = !getLangOpts().CurrentModule.empty() &&
+                            getSourceManager().getFileID(ImportLoc) ==
+                                getSourceManager().getMainFileID();
+
   // If this module import was due to an inclusion directive, create an 
   // implicit import declaration to capture it in the AST.
-  if (IsInclusionDirective && hasASTContext()) {
+  if (IsInclusionDirective && hasASTContext() && !IsInModuleIncludes) {
     TranslationUnitDecl *TU = getASTContext().getTranslationUnitDecl();
     ImportDecl *ImportD = ImportDecl::CreateImplicit(getASTContext(), TU,
                                                      ImportLoc, Module,

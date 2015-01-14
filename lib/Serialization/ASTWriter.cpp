@@ -51,6 +51,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/OnDiskHashTable.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include <algorithm>
 #include <cstdio>
 #include <string.h>
@@ -862,6 +863,7 @@ void ASTWriter::WriteBlockInfoBlock() {
   // Control Block.
   BLOCK(CONTROL_BLOCK);
   RECORD(METADATA);
+  RECORD(SIGNATURE);
   RECORD(MODULE_NAME);
   RECORD(MODULE_MAP_FILE);
   RECORD(IMPORTS);
@@ -1092,6 +1094,14 @@ adjustFilenameForRelocatablePCH(const char *Filename, StringRef isysroot) {
   return Filename + Pos;
 }
 
+static ASTFileSignature getSignature() {
+  while (1) {
+    if (ASTFileSignature S = llvm::sys::Process::GetRandomNumber())
+      return S;
+    // Rely on GetRandomNumber to eventually return non-zero...
+  }
+}
+
 /// \brief Write the control block.
 void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
                                   StringRef isysroot,
@@ -1120,6 +1130,11 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
   Record.push_back(ASTHasCompilerErrors);
   Stream.EmitRecordWithBlob(MetadataAbbrevCode, Record,
                             getClangFullRepositoryVersion());
+
+  // Signature
+  Record.clear();
+  Record.push_back(getSignature());
+  Stream.EmitRecord(SIGNATURE, Record);
 
   // Module name
   if (WritingModule) {
@@ -1173,6 +1188,7 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
       AddSourceLocation((*M)->ImportLoc, Record);
       Record.push_back((*M)->File->getSize());
       Record.push_back((*M)->File->getModificationTime());
+      Record.push_back((*M)->Signature);
       const std::string &FileName = (*M)->FileName;
       Record.push_back(FileName.size());
       Record.append(FileName.begin(), FileName.end());
@@ -1187,8 +1203,9 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
   Record.push_back(LangOpts.Name);
 #define ENUM_LANGOPT(Name, Type, Bits, Default, Description) \
   Record.push_back(static_cast<unsigned>(LangOpts.get##Name()));
-#include "clang/Basic/LangOptions.def"  
-#define SANITIZER(NAME, ID) Record.push_back(LangOpts.Sanitize.ID);
+#include "clang/Basic/LangOptions.def"
+#define SANITIZER(NAME, ID)                                                    \
+  Record.push_back(LangOpts.Sanitize.has(SanitizerKind::ID));
 #include "clang/Basic/Sanitizers.def"
 
   Record.push_back((unsigned) LangOpts.ObjCRuntime.getKind());
@@ -2354,7 +2371,7 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
   }
   
   // Enter the submodule description block.
-  Stream.EnterSubblock(SUBMODULE_BLOCK_ID, /*bits for abbreviations*/4);
+  Stream.EnterSubblock(SUBMODULE_BLOCK_ID, /*bits for abbreviations*/5);
   
   // Write the abbreviations needed for the submodules block.
   using namespace llvm;
@@ -2405,9 +2422,19 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
   unsigned ExcludedHeaderAbbrev = Stream.EmitAbbrev(Abbrev);
 
   Abbrev = new BitCodeAbbrev();
+  Abbrev->Add(BitCodeAbbrevOp(SUBMODULE_TEXTUAL_HEADER));
+  Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob)); // Name
+  unsigned TextualHeaderAbbrev = Stream.EmitAbbrev(Abbrev);
+
+  Abbrev = new BitCodeAbbrev();
   Abbrev->Add(BitCodeAbbrevOp(SUBMODULE_PRIVATE_HEADER));
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob)); // Name
   unsigned PrivateHeaderAbbrev = Stream.EmitAbbrev(Abbrev);
+
+  Abbrev = new BitCodeAbbrev();
+  Abbrev->Add(BitCodeAbbrevOp(SUBMODULE_PRIVATE_TEXTUAL_HEADER));
+  Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob)); // Name
+  unsigned PrivateTextualHeaderAbbrev = Stream.EmitAbbrev(Abbrev);
 
   Abbrev = new BitCodeAbbrev();
   Abbrev->Add(BitCodeAbbrevOp(SUBMODULE_LINK_LIBRARY));
@@ -2481,35 +2508,34 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
       Stream.EmitRecordWithBlob(UmbrellaDirAbbrev, Record, 
                                 UmbrellaDir->getName());      
     }
-    
+
     // Emit the headers.
-    for (unsigned I = 0, N = Mod->NormalHeaders.size(); I != N; ++I) {
+    struct {
+      unsigned RecordKind;
+      unsigned Abbrev;
+      Module::HeaderKind HeaderKind;
+    } HeaderLists[] = {
+      {SUBMODULE_HEADER, HeaderAbbrev, Module::HK_Normal},
+      {SUBMODULE_TEXTUAL_HEADER, TextualHeaderAbbrev, Module::HK_Textual},
+      {SUBMODULE_PRIVATE_HEADER, PrivateHeaderAbbrev, Module::HK_Private},
+      {SUBMODULE_PRIVATE_TEXTUAL_HEADER, PrivateTextualHeaderAbbrev,
+        Module::HK_PrivateTextual},
+      {SUBMODULE_EXCLUDED_HEADER, ExcludedHeaderAbbrev, Module::HK_Excluded}
+    };
+    for (auto &HL : HeaderLists) {
       Record.clear();
-      Record.push_back(SUBMODULE_HEADER);
-      Stream.EmitRecordWithBlob(HeaderAbbrev, Record, 
-                                Mod->NormalHeaders[I]->getName());
+      Record.push_back(HL.RecordKind);
+      for (auto &H : Mod->Headers[HL.HeaderKind])
+        Stream.EmitRecordWithBlob(HL.Abbrev, Record, H.NameAsWritten);
     }
-    // Emit the excluded headers.
-    for (unsigned I = 0, N = Mod->ExcludedHeaders.size(); I != N; ++I) {
-      Record.clear();
-      Record.push_back(SUBMODULE_EXCLUDED_HEADER);
-      Stream.EmitRecordWithBlob(ExcludedHeaderAbbrev, Record, 
-                                Mod->ExcludedHeaders[I]->getName());
-    }
-    // Emit the private headers.
-    for (unsigned I = 0, N = Mod->PrivateHeaders.size(); I != N; ++I) {
-      Record.clear();
-      Record.push_back(SUBMODULE_PRIVATE_HEADER);
-      Stream.EmitRecordWithBlob(PrivateHeaderAbbrev, Record, 
-                                Mod->PrivateHeaders[I]->getName());
-    }
-    ArrayRef<const FileEntry *>
-      TopHeaders = Mod->getTopHeaders(PP->getFileManager());
-    for (unsigned I = 0, N = TopHeaders.size(); I != N; ++I) {
+
+    // Emit the top headers.
+    {
+      auto TopHeaders = Mod->getTopHeaders(PP->getFileManager());
       Record.clear();
       Record.push_back(SUBMODULE_TOPHEADER);
-      Stream.EmitRecordWithBlob(TopHeaderAbbrev, Record,
-                                TopHeaders[I]->getName());
+      for (auto *H : TopHeaders)
+        Stream.EmitRecordWithBlob(TopHeaderAbbrev, Record, H->getName());
     }
 
     // Emit the imports. 
@@ -3661,7 +3687,7 @@ static void visitLocalLookupResults(const DeclContext *ConstDC,
 }
 
 void ASTWriter::AddUpdatedDeclContext(const DeclContext *DC) {
-  if (UpdatedDeclContexts.insert(DC) && WritingAST) {
+  if (UpdatedDeclContexts.insert(DC).second && WritingAST) {
     // Ensure we emit all the visible declarations.
     visitLocalLookupResults(DC, DC->NeedToReconcileExternalVisibleStorage,
                             [&](DeclarationName Name,
@@ -4769,6 +4795,10 @@ void ASTWriter::WriteDeclUpdatesBlocks(RecordDataImpl &OffsetsRecord) {
       case UPD_STATIC_LOCAL_NUMBER:
         Record.push_back(Update.getNumber());
         break;
+      case UPD_DECL_MARKED_OPENMP_THREADPRIVATE:
+        AddSourceRange(D->getAttr<OMPThreadPrivateDeclAttr>()->getRange(),
+                       Record);
+        break;
       }
     }
 
@@ -5861,4 +5891,12 @@ void ASTWriter::DeclarationMarkedUsed(const Decl *D) {
     return;
 
   DeclUpdates[D].push_back(DeclUpdate(UPD_DECL_MARKED_USED));
+}
+
+void ASTWriter::DeclarationMarkedOpenMPThreadPrivate(const Decl *D) {
+  assert(!WritingAST && "Already writing the AST!");
+  if (!D->isFromASTFile())
+    return;
+
+  DeclUpdates[D].push_back(DeclUpdate(UPD_DECL_MARKED_OPENMP_THREADPRIVATE));
 }

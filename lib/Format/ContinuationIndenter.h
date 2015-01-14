@@ -17,6 +17,7 @@
 #define LLVM_CLANG_LIB_FORMAT_CONTINUATIONINDENTER_H
 
 #include "Encoding.h"
+#include "FormatToken.h"
 #include "clang/Format/Format.h"
 #include "llvm/Support/Regex.h"
 
@@ -35,8 +36,9 @@ class ContinuationIndenter {
 public:
   /// \brief Constructs a \c ContinuationIndenter to format \p Line starting in
   /// column \p FirstIndent.
-  ContinuationIndenter(const FormatStyle &Style, SourceManager &SourceMgr,
-                       WhitespaceManager &Whitespaces,
+  ContinuationIndenter(const FormatStyle &Style,
+                       const AdditionalKeywords &Keywords,
+                       SourceManager &SourceMgr, WhitespaceManager &Whitespaces,
                        encoding::Encoding Encoding,
                        bool BinPackInconclusiveFunctions);
 
@@ -134,6 +136,7 @@ private:
   bool nextIsMultilineString(const LineState &State);
 
   FormatStyle Style;
+  const AdditionalKeywords &Keywords;
   SourceManager &SourceMgr;
   WhitespaceManager &Whitespaces;
   encoding::Encoding Encoding;
@@ -152,7 +155,7 @@ struct ParenState {
         NestedNameSpecifierContinuation(0), CallContinuation(0), VariablePos(0),
         ContainsLineBreak(false), ContainsUnwrappedBuilder(0),
         AlignColons(true), ObjCSelectorNameFound(false),
-        HasMultipleNestedBlocks(false), JSFunctionInlined(false) {}
+        HasMultipleNestedBlocks(false), NestedBlockInlined(false) {}
 
   /// \brief The position to which a specific parenthesis level needs to be
   /// indented.
@@ -253,9 +256,9 @@ struct ParenState {
   /// the same token.
   bool HasMultipleNestedBlocks;
 
-  // \brief The previous JavaScript 'function' keyword is not wrapped to a new
-  // line.
-  bool JSFunctionInlined;
+  // \brief The start of a nested block (e.g. lambda introducer in C++ or
+  // "function" in JavaScript) is not wrapped to a new line.
+  bool NestedBlockInlined;
 
   bool operator<(const ParenState &Other) const {
     if (Indent != Other.Indent)
@@ -290,8 +293,8 @@ struct ParenState {
       return ContainsLineBreak < Other.ContainsLineBreak;
     if (ContainsUnwrappedBuilder != Other.ContainsUnwrappedBuilder)
       return ContainsUnwrappedBuilder < Other.ContainsUnwrappedBuilder;
-    if (JSFunctionInlined != Other.JSFunctionInlined)
-      return JSFunctionInlined < Other.JSFunctionInlined;
+    if (NestedBlockInlined != Other.NestedBlockInlined)
+      return NestedBlockInlined < Other.NestedBlockInlined;
     return false;
   }
 };

@@ -398,8 +398,8 @@ void Sema::DiagnoseSentinelCalls(NamedDecl *D, SourceLocation Loc,
   if (sentinelExpr->isValueDependent()) return;
   if (Context.isSentinelNullExpr(sentinelExpr)) return;
 
-  // Pick a reasonable string to insert.  Optimistically use 'nil' or
-  // 'NULL' if those are actually defined in the context.  Only use
+  // Pick a reasonable string to insert.  Optimistically use 'nil', 'nullptr',
+  // or 'NULL' if those are actually defined in the context.  Only use
   // 'nil' for ObjC methods, where it's much more likely that the
   // variadic arguments form a list of object pointers.
   SourceLocation MissingNilLoc
@@ -408,6 +408,8 @@ void Sema::DiagnoseSentinelCalls(NamedDecl *D, SourceLocation Loc,
   if (calleeType == CT_Method &&
       PP.getIdentifierInfo("nil")->hasMacroDefinition())
     NullValue = "nil";
+  else if (getLangOpts().CPlusPlus11)
+    NullValue = "nullptr";
   else if (PP.getIdentifierInfo("NULL")->hasMacroDefinition())
     NullValue = "NULL";
   else
@@ -1671,13 +1673,48 @@ Sema::DecomposeUnqualifiedId(const UnqualifiedId &Id,
   }
 }
 
+static void emitEmptyLookupTypoDiagnostic(
+    const TypoCorrection &TC, Sema &SemaRef, const CXXScopeSpec &SS,
+    DeclarationName Typo, SourceLocation TypoLoc, ArrayRef<Expr *> Args,
+    unsigned DiagnosticID, unsigned DiagnosticSuggestID) {
+  DeclContext *Ctx =
+      SS.isEmpty() ? nullptr : SemaRef.computeDeclContext(SS, false);
+  if (!TC) {
+    // Emit a special diagnostic for failed member lookups.
+    // FIXME: computing the declaration context might fail here (?)
+    if (Ctx)
+      SemaRef.Diag(TypoLoc, diag::err_no_member) << Typo << Ctx
+                                                 << SS.getRange();
+    else
+      SemaRef.Diag(TypoLoc, DiagnosticID) << Typo;
+    return;
+  }
+
+  std::string CorrectedStr = TC.getAsString(SemaRef.getLangOpts());
+  bool DroppedSpecifier =
+      TC.WillReplaceSpecifier() && Typo.getAsString() == CorrectedStr;
+  unsigned NoteID =
+      (TC.getCorrectionDecl() && isa<ImplicitParamDecl>(TC.getCorrectionDecl()))
+          ? diag::note_implicit_param_decl
+          : diag::note_previous_decl;
+  if (!Ctx)
+    SemaRef.diagnoseTypo(TC, SemaRef.PDiag(DiagnosticSuggestID) << Typo,
+                         SemaRef.PDiag(NoteID));
+  else
+    SemaRef.diagnoseTypo(TC, SemaRef.PDiag(diag::err_no_member_suggest)
+                                 << Typo << Ctx << DroppedSpecifier
+                                 << SS.getRange(),
+                         SemaRef.PDiag(NoteID));
+}
+
 /// Diagnose an empty lookup.
 ///
 /// \return false if new lookup candidates were found
-bool Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
-                               CorrectionCandidateCallback &CCC,
-                               TemplateArgumentListInfo *ExplicitTemplateArgs,
-                               ArrayRef<Expr *> Args) {
+bool
+Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
+                          std::unique_ptr<CorrectionCandidateCallback> CCC,
+                          TemplateArgumentListInfo *ExplicitTemplateArgs,
+                          ArrayRef<Expr *> Args, TypoExpr **Out) {
   DeclarationName Name = R.getLookupName();
 
   unsigned diagnostic = diag::err_undeclared_var_use;
@@ -1794,8 +1831,22 @@ bool Sema::DiagnoseEmptyLookup(Scope *S, CXXScopeSpec &SS, LookupResult &R,
 
   // We didn't find anything, so try to correct for a typo.
   TypoCorrection Corrected;
-  if (S && (Corrected = CorrectTypo(R.getLookupNameInfo(), R.getLookupKind(),
-                                    S, &SS, CCC, CTK_ErrorRecovery))) {
+  if (S && Out) {
+    SourceLocation TypoLoc = R.getNameLoc();
+    assert(!ExplicitTemplateArgs &&
+           "Diagnosing an empty lookup with explicit template args!");
+    *Out = CorrectTypoDelayed(
+        R.getLookupNameInfo(), R.getLookupKind(), S, &SS, std::move(CCC),
+        [=](const TypoCorrection &TC) {
+          emitEmptyLookupTypoDiagnostic(TC, *this, SS, Name, TypoLoc, Args,
+                                        diagnostic, diagnostic_suggest);
+        },
+        nullptr, CTK_ErrorRecovery);
+    if (*Out)
+      return true;
+  } else if (S && (Corrected =
+                       CorrectTypo(R.getLookupNameInfo(), R.getLookupKind(), S,
+                                   &SS, std::move(CCC), CTK_ErrorRecovery))) {
     std::string CorrectedStr(Corrected.getAsString(getLangOpts()));
     bool DroppedSpecifier =
         Corrected.WillReplaceSpecifier() && Name.getAsString() == CorrectedStr;
@@ -1942,14 +1993,12 @@ recoverFromMSUnqualifiedLookup(Sema &S, ASTContext &Context,
       TemplateArgs);
 }
 
-ExprResult Sema::ActOnIdExpression(Scope *S,
-                                   CXXScopeSpec &SS,
-                                   SourceLocation TemplateKWLoc,
-                                   UnqualifiedId &Id,
-                                   bool HasTrailingLParen,
-                                   bool IsAddressOfOperand,
-                                   CorrectionCandidateCallback *CCC,
-                                   bool IsInlineAsmIdentifier) {
+ExprResult
+Sema::ActOnIdExpression(Scope *S, CXXScopeSpec &SS,
+                        SourceLocation TemplateKWLoc, UnqualifiedId &Id,
+                        bool HasTrailingLParen, bool IsAddressOfOperand,
+                        std::unique_ptr<CorrectionCandidateCallback> CCC,
+                        bool IsInlineAsmIdentifier, Token *KeywordReplacement) {
   assert(!(IsAddressOfOperand && HasTrailingLParen) &&
          "cannot be direct & operand and have a trailing lparen");
   if (SS.isInvalid())
@@ -2061,12 +2110,43 @@ ExprResult Sema::ActOnIdExpression(Scope *S,
 
     // If this name wasn't predeclared and if this is not a function
     // call, diagnose the problem.
-    CorrectionCandidateCallback DefaultValidator;
-    DefaultValidator.IsAddressOfOperand = IsAddressOfOperand;
+    TypoExpr *TE = nullptr;
+    auto DefaultValidator = llvm::make_unique<CorrectionCandidateCallback>(
+        II, SS.isValid() ? SS.getScopeRep() : nullptr);
+    DefaultValidator->IsAddressOfOperand = IsAddressOfOperand;
     assert((!CCC || CCC->IsAddressOfOperand == IsAddressOfOperand) &&
            "Typo correction callback misconfigured");
-    if (DiagnoseEmptyLookup(S, SS, R, CCC ? *CCC : DefaultValidator))
-      return ExprError();
+    if (CCC) {
+      // Make sure the callback knows what the typo being diagnosed is.
+      CCC->setTypoName(II);
+      if (SS.isValid())
+        CCC->setTypoNNS(SS.getScopeRep());
+    }
+    if (DiagnoseEmptyLookup(S, SS, R,
+                            CCC ? std::move(CCC) : std::move(DefaultValidator),
+                            nullptr, None, &TE)) {
+      if (TE && KeywordReplacement) {
+        auto &State = getTypoExprState(TE);
+        auto BestTC = State.Consumer->getNextCorrection();
+        if (BestTC.isKeyword()) {
+          auto *II = BestTC.getCorrectionAsIdentifierInfo();
+          if (State.DiagHandler)
+            State.DiagHandler(BestTC);
+          KeywordReplacement->startToken();
+          KeywordReplacement->setKind(II->getTokenID());
+          KeywordReplacement->setIdentifierInfo(II);
+          KeywordReplacement->setLocation(BestTC.getCorrectionRange().getBegin());
+          // Clean up the state associated with the TypoExpr, since it has
+          // now been diagnosed (without a call to CorrectDelayedTyposInExpr).
+          clearDelayedTypo(TE);
+          // Signal that a correction to a keyword was performed by returning a
+          // valid-but-null ExprResult.
+          return (Expr*)nullptr;
+        }
+        State.Consumer->resetCorrectionStream();
+      }
+      return TE ? TE : ExprError();
+    }
 
     assert(!R.empty() &&
            "DiagnoseEmptyLookup returned false but added no results");
@@ -2611,15 +2691,15 @@ static bool CheckDeclInExpr(Sema &S, SourceLocation Loc, NamedDecl *D) {
   return false;
 }
 
-ExprResult
-Sema::BuildDeclarationNameExpr(const CXXScopeSpec &SS,
-                               LookupResult &R,
-                               bool NeedsADL) {
+ExprResult Sema::BuildDeclarationNameExpr(const CXXScopeSpec &SS,
+                                          LookupResult &R, bool NeedsADL,
+                                          bool AcceptInvalidDecl) {
   // If this is a single, fully-resolved result and we don't need ADL,
   // just build an ordinary singleton decl ref.
   if (!NeedsADL && R.isSingleResult() && !R.getAsSingle<FunctionTemplateDecl>())
     return BuildDeclarationNameExpr(SS, R.getLookupNameInfo(), R.getFoundDecl(),
-                                    R.getRepresentativeDecl());
+                                    R.getRepresentativeDecl(), nullptr,
+                                    AcceptInvalidDecl);
 
   // We only need to check the declaration if there's exactly one
   // result, because in the overloaded case the results can only be
@@ -2646,7 +2726,8 @@ Sema::BuildDeclarationNameExpr(const CXXScopeSpec &SS,
 /// \brief Complete semantic analysis for a reference to the given declaration.
 ExprResult Sema::BuildDeclarationNameExpr(
     const CXXScopeSpec &SS, const DeclarationNameInfo &NameInfo, NamedDecl *D,
-    NamedDecl *FoundD, const TemplateArgumentListInfo *TemplateArgs) {
+    NamedDecl *FoundD, const TemplateArgumentListInfo *TemplateArgs,
+    bool AcceptInvalidDecl) {
   assert(D && "Cannot refer to a NULL declaration");
   assert(!isa<FunctionTemplateDecl>(D) &&
          "Cannot refer unambiguously to a function template");
@@ -2681,7 +2762,7 @@ ExprResult Sema::BuildDeclarationNameExpr(
     return ExprError();
 
   // Only create DeclRefExpr's for valid Decl's.
-  if (VD->isInvalidDecl())
+  if (VD->isInvalidDecl() && !AcceptInvalidDecl)
     return ExprError();
 
   // Handle members of anonymous structs and unions.  If we got here,
@@ -4088,11 +4169,12 @@ static TypoCorrection TryTypoCorrectionForCall(Sema &S, Expr *Fn,
   MemberExpr *ME = dyn_cast<MemberExpr>(Fn);
   DeclarationName FuncName = FDecl->getDeclName();
   SourceLocation NameLoc = ME ? ME->getMemberLoc() : Fn->getLocStart();
-  FunctionCallCCC CCC(S, FuncName.getAsIdentifierInfo(), Args.size(), ME);
 
   if (TypoCorrection Corrected = S.CorrectTypo(
           DeclarationNameInfo(FuncName, NameLoc), Sema::LookupOrdinaryName,
-          S.getScopeForContext(S.CurContext), nullptr, CCC,
+          S.getScopeForContext(S.CurContext), nullptr,
+          llvm::make_unique<FunctionCallCCC>(S, FuncName.getAsIdentifierInfo(),
+                                             Args.size(), ME),
           Sema::CTK_ErrorRecovery)) {
     if (NamedDecl *ND = Corrected.getCorrectionDecl()) {
       if (Corrected.isOverloaded()) {
@@ -4459,6 +4541,8 @@ static bool checkArgsForPlaceholders(Sema &S, MultiExprArg args) {
       ExprResult result = S.CheckPlaceholderExpr(args[i]);
       if (result.isInvalid()) hasInvalid = true;
       else args[i] = result.get();
+    } else if (hasInvalid) {
+      (void)S.CorrectDelayedTyposInExpr(args[i]);
     }
   }
   return hasInvalid;
@@ -4668,8 +4752,12 @@ Sema::BuildResolvedCallExpr(Expr *Fn, NamedDecl *NDecl,
                                      VK_RValue, RParenLoc);
 
   // Bail out early if calling a builtin with custom typechecking.
-  if (BuiltinID && Context.BuiltinInfo.hasCustomTypechecking(BuiltinID))
-    return CheckBuiltinFunctionCall(FDecl, BuiltinID, TheCall);
+  if (BuiltinID && Context.BuiltinInfo.hasCustomTypechecking(BuiltinID)) {
+    ExprResult Res = CorrectDelayedTyposInExpr(TheCall);
+    if (!Res.isUsable() || !isa<CallExpr>(Res.get()))
+      return Res;
+    return CheckBuiltinFunctionCall(FDecl, BuiltinID, cast<CallExpr>(Res.get()));
+  }
 
  retry:
   const FunctionType *FuncT;
@@ -5215,6 +5303,12 @@ Sema::ActOnCastExpr(Scope *S, SourceLocation LParenLoc,
   if (getLangOpts().CPlusPlus) {
     // Check that there are no default arguments (C++ only).
     CheckExtraCXXDefaultArguments(D);
+  } else {
+    // Make sure any TypoExprs have been dealt with.
+    ExprResult Res = CorrectDelayedTyposInExpr(CastExpr);
+    if (!Res.isUsable())
+      return ExprError();
+    CastExpr = Res.get();
   }
 
   checkUnusedDeclAttributes(D);
@@ -5681,6 +5775,15 @@ QualType Sema::CheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
                                         ExprObjectKind &OK,
                                         SourceLocation QuestionLoc) {
 
+  if (!getLangOpts().CPlusPlus) {
+    // C cannot handle TypoExpr nodes on either side of a binop because it
+    // doesn't handle dependent types properly, so make sure any TypoExprs have
+    // been dealt with before checking the operands.
+    ExprResult CondResult = CorrectDelayedTyposInExpr(Cond);
+    if (!CondResult.isUsable()) return QualType();
+    Cond = CondResult;
+  }
+
   ExprResult LHSResult = CheckPlaceholderExpr(LHS.get());
   if (!LHSResult.isUsable()) return QualType();
   LHS = LHSResult;
@@ -5708,7 +5811,7 @@ QualType Sema::CheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
       RHS.get()->getType()->isVectorType())
     return CheckVectorOperands(LHS, RHS, QuestionLoc, /*isCompAssign*/false);
 
-  UsualArithmeticConversions(LHS, RHS);
+  QualType ResTy = UsualArithmeticConversions(LHS, RHS);
   if (LHS.isInvalid() || RHS.isInvalid())
     return QualType();
 
@@ -5725,8 +5828,12 @@ QualType Sema::CheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
   
   // If both operands have arithmetic type, do the usual arithmetic conversions
   // to find a common type: C99 6.5.15p3,5.
-  if (LHSTy->isArithmeticType() && RHSTy->isArithmeticType())
-    return LHS.get()->getType();
+  if (LHSTy->isArithmeticType() && RHSTy->isArithmeticType()) {
+    LHS = ImpCastExprToType(LHS.get(), ResTy, PrepareScalarCast(LHS, ResTy));
+    RHS = ImpCastExprToType(RHS.get(), ResTy, PrepareScalarCast(RHS, ResTy));
+
+    return ResTy;
+  }
 
   // If both operands are the same structure or union type, the result is that
   // type.
@@ -6149,7 +6256,7 @@ checkPointerTypesForAssignment(Sema &S, QualType LHSType, QualType RHSType) {
 
   if (!lhq.compatiblyIncludes(rhq)) {
     // Treat address-space mismatches as fatal.  TODO: address subspaces
-    if (lhq.getAddressSpace() != rhq.getAddressSpace())
+    if (!lhq.isAddressSpaceSupersetOf(rhq))
       ConvTy = Sema::IncompatiblePointerDiscardsQualifiers;
 
     // It's okay to add or remove GC or lifetime qualifiers when converting to
@@ -6434,7 +6541,9 @@ Sema::CheckAssignmentConstraints(QualType LHSType, ExprResult &RHS,
   if (const PointerType *LHSPointer = dyn_cast<PointerType>(LHSType)) {
     // U* -> T*
     if (isa<PointerType>(RHSType)) {
-      Kind = CK_BitCast;
+      unsigned AddrSpaceL = LHSPointer->getPointeeType().getAddressSpace();
+      unsigned AddrSpaceR = RHSType->getPointeeType().getAddressSpace();
+      Kind = AddrSpaceL != AddrSpaceR ? CK_AddressSpaceConversion : CK_BitCast;
       return checkPointerTypesForAssignment(*this, LHSType, RHSType);
     }
 
@@ -7116,6 +7225,19 @@ static bool checkArithmeticBinOpPointerOperands(Sema &S, SourceLocation Loc,
   QualType LHSPointeeTy, RHSPointeeTy;
   if (isLHSPointer) LHSPointeeTy = LHSExpr->getType()->getPointeeType();
   if (isRHSPointer) RHSPointeeTy = RHSExpr->getType()->getPointeeType();
+
+  // if both are pointers check if operation is valid wrt address spaces
+  if (isLHSPointer && isRHSPointer) {
+    const PointerType *lhsPtr = LHSExpr->getType()->getAs<PointerType>();
+    const PointerType *rhsPtr = RHSExpr->getType()->getAs<PointerType>();
+    if (!lhsPtr->isAddressSpaceOverlapping(*rhsPtr)) {
+      S.Diag(Loc,
+             diag::err_typecheck_op_on_nonoverlapping_address_space_pointers)
+          << LHSExpr->getType() << RHSExpr->getType() << 1 /*arithmetic op*/
+          << LHSExpr->getSourceRange() << RHSExpr->getSourceRange();
+      return false;
+    }
+  }
 
   // Check for arithmetic on pointers to incomplete types.
   bool isLHSVoidPtr = isLHSPointer && LHSPointeeTy->isVoidType();
@@ -8045,6 +8167,13 @@ QualType Sema::CheckCompareOperands(ExprResult &LHS, ExprResult &RHS,
       diagnoseDistinctPointerComparison(*this, Loc, LHS, RHS, /*isError*/false);
     }
     if (LCanPointeeTy != RCanPointeeTy) {
+      const PointerType *lhsPtr = LHSType->getAs<PointerType>();
+      if (!lhsPtr->isAddressSpaceOverlapping(*RHSType->getAs<PointerType>())) {
+        Diag(Loc,
+             diag::err_typecheck_op_on_nonoverlapping_address_space_pointers)
+            << LHSType << RHSType << 0 /* comparison */
+            << LHS.get()->getSourceRange() << RHS.get()->getSourceRange();
+      }
       unsigned AddrSpaceL = LCanPointeeTy.getAddressSpace();
       unsigned AddrSpaceR = RCanPointeeTy.getAddressSpace();
       CastKind Kind = AddrSpaceL != AddrSpaceR ? CK_AddressSpaceConversion
@@ -9103,6 +9232,24 @@ QualType Sema::CheckAddressOfOperand(ExprResult &OrigOp, SourceLocation OpLoc) {
   return Context.getPointerType(op->getType());
 }
 
+static void RecordModifiableNonNullParam(Sema &S, const Expr *Exp) {
+  const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Exp);
+  if (!DRE)
+    return;
+  const Decl *D = DRE->getDecl();
+  if (!D)
+    return;
+  const ParmVarDecl *Param = dyn_cast<ParmVarDecl>(D);
+  if (!Param)
+    return;
+  if (const FunctionDecl* FD = dyn_cast<FunctionDecl>(Param->getDeclContext()))
+    if (!FD->hasAttr<NonNullAttr>())
+      return;
+  if (FunctionScopeInfo *FD = S.getCurFunction())
+    if (!FD->ModifiedNonNullParams.count(Param))
+      FD->ModifiedNonNullParams.insert(Param);
+}
+
 /// CheckIndirectionOperand - Type check unary indirection (prefix '*').
 static QualType CheckIndirectionOperand(Sema &S, Expr *Op, ExprValueKind &VK,
                                         SourceLocation OpLoc) {
@@ -9163,8 +9310,7 @@ static QualType CheckIndirectionOperand(Sema &S, Expr *Op, ExprValueKind &VK,
   return Result;
 }
 
-static inline BinaryOperatorKind ConvertTokenKindToBinaryOpcode(
-  tok::TokenKind Kind) {
+BinaryOperatorKind Sema::ConvertTokenKindToBinaryOpcode(tok::TokenKind Kind) {
   BinaryOperatorKind Opc;
   switch (Kind) {
   default: llvm_unreachable("Unknown binop!");
@@ -9333,6 +9479,16 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
   ExprValueKind VK = VK_RValue;
   ExprObjectKind OK = OK_Ordinary;
 
+  if (!getLangOpts().CPlusPlus) {
+    // C cannot handle TypoExpr nodes on either side of a binop because it
+    // doesn't handle dependent types properly, so make sure any TypoExprs have
+    // been dealt with before checking the operands.
+    LHS = CorrectDelayedTyposInExpr(LHSExpr);
+    RHS = CorrectDelayedTyposInExpr(RHSExpr);
+    if (!LHS.isUsable() || !RHS.isUsable())
+      return ExprError();
+  }
+
   switch (Opc) {
   case BO_Assign:
     ResultTy = CheckAssignmentOperands(LHS.get(), RHS, OpLoc, QualType());
@@ -9343,6 +9499,7 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
     }
     if (!ResultTy.isNull())
       DiagnoseSelfAssignment(*this, LHS.get(), RHS.get(), OpLoc);
+    RecordModifiableNonNullParam(*this, LHS.get());
     break;
   case BO_PtrMemD:
   case BO_PtrMemI:
@@ -9816,6 +9973,7 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
     break;
   case UO_AddrOf:
     resultType = CheckAddressOfOperand(Input, OpLoc);
+    RecordModifiableNonNullParam(*this, InputExpr);
     break;
   case UO_Deref: {
     Input = DefaultFunctionArrayLvalueConversion(Input.get());
@@ -11285,6 +11443,7 @@ Sema::PushExpressionEvaluationContext(ExpressionEvaluationContext NewContext,
 
 void Sema::PopExpressionEvaluationContext() {
   ExpressionEvaluationContextRecord& Rec = ExprEvalContexts.back();
+  unsigned NumTypos = Rec.NumTypos;
 
   if (!Rec.Lambdas.empty()) {
     if (Rec.isUnevaluated() || Rec.Context == ConstantEvaluated) {
@@ -11332,6 +11491,12 @@ void Sema::PopExpressionEvaluationContext() {
 
   // Pop the current expression evaluation context off the stack.
   ExprEvalContexts.pop_back();
+
+  if (!ExprEvalContexts.empty())
+    ExprEvalContexts.back().NumTypos += NumTypos;
+  else
+    assert(NumTypos == 0 && "There are outstanding typos after popping the "
+                            "last ExpressionEvaluationContextRecord");
 }
 
 void Sema::DiscardCleanupsInEvaluationContext() {
@@ -12211,29 +12376,29 @@ bool Sema::tryCaptureVariable(VarDecl *Var, SourceLocation ExprLoc,
           // Unknown size indication requires no size computation.
           // Otherwise, evaluate and record it.
           if (auto Size = VAT->getSizeExpr()) {
-            if (auto LSI = dyn_cast<LambdaScopeInfo>(CSI)) {
-              if (!LSI->isVLATypeCaptured(VAT)) {
+            if (!CSI->isVLATypeCaptured(VAT)) {
+              RecordDecl *CapRecord = nullptr;
+              if (auto LSI = dyn_cast<LambdaScopeInfo>(CSI)) {
+                CapRecord = LSI->Lambda;
+              } else if (auto CRSI = dyn_cast<CapturedRegionScopeInfo>(CSI)) {
+                CapRecord = CRSI->TheRecordDecl;
+              }
+              if (CapRecord) {
                 auto ExprLoc = Size->getExprLoc();
                 auto SizeType = Context.getSizeType();
-                auto Lambda = LSI->Lambda;
-
                 // Build the non-static data member.
                 auto Field = FieldDecl::Create(
-                    Context, Lambda, ExprLoc, ExprLoc,
+                    Context, CapRecord, ExprLoc, ExprLoc,
                     /*Id*/ nullptr, SizeType, /*TInfo*/ nullptr,
                     /*BW*/ nullptr, /*Mutable*/ false,
                     /*InitStyle*/ ICIS_NoInit);
                 Field->setImplicit(true);
                 Field->setAccess(AS_private);
                 Field->setCapturedVLAType(VAT);
-                Lambda->addDecl(Field);
+                CapRecord->addDecl(Field);
 
-                LSI->addVLATypeCapture(ExprLoc, SizeType);
+                CSI->addVLATypeCapture(ExprLoc, SizeType);
               }
-            } else {
-              // Immediately mark all referenced vars for CapturedStatements,
-              // they all are captured by reference.
-              MarkDeclarationsReferencedInExpr(Size);
             }
           }
           QTy = VAT->getElementType();
@@ -12405,6 +12570,8 @@ void Sema::UpdateMarkingForLValueToRValue(Expr *E) {
 }
 
 ExprResult Sema::ActOnConstantExpression(ExprResult Res) {
+  Res = CorrectDelayedTyposInExpr(Res);
+
   if (!Res.isUsable())
     return Res;
 
@@ -12964,6 +13131,7 @@ ExprResult Sema::CheckBooleanCondition(Expr *E, SourceLocation Loc) {
         << T << E->getSourceRange();
       return ExprError();
     }
+    CheckBoolLikeConversion(E, Loc);
   }
 
   return E;
@@ -13335,6 +13503,39 @@ ExprResult RebuildUnknownAnyExpr::resolveDecl(Expr *E, ValueDecl *VD) {
         << VD << E->getSourceRange();
       return ExprError();
     }
+    if (const FunctionProtoType *FT = Type->getAs<FunctionProtoType>()) {
+      // We must match the FunctionDecl's type to the hack introduced in
+      // RebuildUnknownAnyExpr::VisitCallExpr to vararg functions of unknown
+      // type. See the lengthy commentary in that routine.
+      QualType FDT = FD->getType();
+      const FunctionType *FnType = FDT->castAs<FunctionType>();
+      const FunctionProtoType *Proto = dyn_cast_or_null<FunctionProtoType>(FnType);
+      DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E);
+      if (DRE && Proto && Proto->getParamTypes().empty() && Proto->isVariadic()) {
+        SourceLocation Loc = FD->getLocation();
+        FunctionDecl *NewFD = FunctionDecl::Create(FD->getASTContext(),
+                                      FD->getDeclContext(),
+                                      Loc, Loc, FD->getNameInfo().getName(),
+                                      DestType, FD->getTypeSourceInfo(),
+                                      SC_None, false/*isInlineSpecified*/,
+                                      FD->hasPrototype(),
+                                      false/*isConstexprSpecified*/);
+          
+        if (FD->getQualifier())
+          NewFD->setQualifierInfo(FD->getQualifierLoc());
+
+        SmallVector<ParmVarDecl*, 16> Params;
+        for (const auto &AI : FT->param_types()) {
+          ParmVarDecl *Param =
+            S.BuildParmVarDeclForTypedef(FD, Loc, AI);
+          Param->setScopeInfo(0, Params.size());
+          Params.push_back(Param);
+        }
+        NewFD->setParams(Params);
+        DRE->setDecl(NewFD);
+        VD = DRE->getDecl();
+      }
+    }
 
     if (CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD))
       if (MD->isInstance()) {
@@ -13460,6 +13661,15 @@ static ExprResult diagnoseUnknownAnyExpr(Sema &S, Expr *E) {
 /// Check for operands with placeholder types and complain if found.
 /// Returns true if there was an error and no recovery was possible.
 ExprResult Sema::CheckPlaceholderExpr(Expr *E) {
+  if (!getLangOpts().CPlusPlus) {
+    // C cannot handle TypoExpr nodes on either side of a binop because it
+    // doesn't handle dependent types properly, so make sure any TypoExprs have
+    // been dealt with before checking the operands.
+    ExprResult Result = CorrectDelayedTyposInExpr(E);
+    if (!Result.isUsable()) return ExprError();
+    E = Result.get();
+  }
+
   const BuiltinType *placeholderType = E->getType()->getAsPlaceholderType();
   if (!placeholderType) return E;
 

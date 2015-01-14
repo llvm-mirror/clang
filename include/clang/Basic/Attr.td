@@ -186,10 +186,11 @@ class Spelling<string name, string variety> {
 
 class GNU<string name> : Spelling<name, "GNU">;
 class Declspec<string name> : Spelling<name, "Declspec">;
-class CXX11<string namespace, string name> : Spelling<name, "CXX11"> {
+class CXX11<string namespace, string name, int version = 1>
+    : Spelling<name, "CXX11"> {
   string Namespace = namespace;
-}
-class Keyword<string name> : Spelling<name, "Keyword">;
+  int Version = version;
+} class Keyword<string name> : Spelling<name, "Keyword">;
 class Pragma<string namespace, string name> : Spelling<name, "Pragma"> {
   string Namespace = namespace;
 }
@@ -219,12 +220,14 @@ class SubjectList<list<AttrSubject> subjects, SubjectDiag diag = WarnDiag,
   string CustomDiag = customDiag;
 }
 
-class LangOpt<string name> {
+class LangOpt<string name, bit negated = 0> {
   string Name = name;
+  bit Negated = negated;
 }
 def MicrosoftExt : LangOpt<"MicrosoftExt">;
 def Borland : LangOpt<"Borland">;
 def CUDA : LangOpt<"CUDA">;
+def COnly : LangOpt<"CPlusPlus", 1>;
 
 // Defines targets for target-specific attributes. The list of strings should
 // specify architectures for which the target applies, based off the ArchType
@@ -452,7 +455,8 @@ def Bounded : IgnoredAttr {
 }
 
 def CarriesDependency : InheritableParamAttr {
-  let Spellings = [GNU<"carries_dependency">, CXX11<"","carries_dependency">];
+  let Spellings = [GNU<"carries_dependency">,
+                   CXX11<"","carries_dependency", 200809>];
   let Subjects = SubjectList<[ParmVar, ObjCMethod, Function], ErrorDiag>;
   let Documentation = [CarriesDependencyDocs];
 }
@@ -593,7 +597,7 @@ def C11NoReturn : InheritableAttr {
 }
 
 def CXX11NoReturn : InheritableAttr {
-  let Spellings = [CXX11<"","noreturn">];
+  let Spellings = [CXX11<"","noreturn", 200809>];
   let Subjects = SubjectList<[Function], ErrorDiag>;
   let Documentation = [CXX11NoReturnDocs];
 }
@@ -622,27 +626,32 @@ def OpenCLImageAccess : Attr {
 
 def OpenCLPrivateAddressSpace : TypeAttr {
   let Spellings = [Keyword<"__private">, Keyword<"private">];
-  let Documentation = [Undocumented];
+  let Documentation = [OpenCLAddressSpacePrivateDocs];
 }
 
 def OpenCLGlobalAddressSpace : TypeAttr {
   let Spellings = [Keyword<"__global">, Keyword<"global">];
-  let Documentation = [Undocumented];
+  let Documentation = [OpenCLAddressSpaceGlobalDocs];
 }
 
 def OpenCLLocalAddressSpace : TypeAttr {
   let Spellings = [Keyword<"__local">, Keyword<"local">];
-  let Documentation = [Undocumented];
+  let Documentation = [OpenCLAddressSpaceLocalDocs];
 }
 
 def OpenCLConstantAddressSpace : TypeAttr {
   let Spellings = [Keyword<"__constant">, Keyword<"constant">];
-  let Documentation = [Undocumented];
+  let Documentation = [OpenCLAddressSpaceConstantDocs];
+}
+
+def OpenCLGenericAddressSpace : TypeAttr {
+  let Spellings = [Keyword<"__generic">, Keyword<"generic">];
+  let Documentation = [OpenCLAddressSpaceGenericDocs];
 }
 
 def Deprecated : InheritableAttr {
   let Spellings = [GCC<"deprecated">, Declspec<"deprecated">,
-                   CXX11<"","deprecated">];
+                   CXX11<"","deprecated", 201309>];
   let Args = [StringArgument<"Message", 1>];
   let Documentation = [Undocumented];
 }
@@ -680,7 +689,7 @@ def FastCall : InheritableAttr {
   let Spellings = [GCC<"fastcall">, Keyword<"__fastcall">,
                    Keyword<"_fastcall">];
 //  let Subjects = [Function, ObjCMethod];
-  let Documentation = [Undocumented];
+  let Documentation = [FastCallDocs];
 }
 
 def Final : InheritableAttr {
@@ -694,6 +703,25 @@ def MinSize : InheritableAttr {
   let Spellings = [GNU<"minsize">];
   let Subjects = SubjectList<[Function, ObjCMethod], ErrorDiag>;
   let Documentation = [Undocumented];
+}
+
+def FlagEnum : InheritableAttr {
+  let Spellings = [GNU<"flag_enum">];
+  let Subjects = SubjectList<[Enum]>;
+  let Documentation = [FlagEnumDocs];
+  let LangOpts = [COnly];
+  let AdditionalMembers = [{
+private:
+    llvm::APInt FlagBits;
+public:
+    llvm::APInt &getFlagBits() {
+      return FlagBits;
+    }
+
+    const llvm::APInt &getFlagBits() const {
+      return FlagBits;
+    }
+}];
 }
 
 def Flatten : InheritableAttr {
@@ -779,7 +807,7 @@ def MayAlias : InheritableAttr {
 def MSABI : InheritableAttr {
   let Spellings = [GCC<"ms_abi">];
 //  let Subjects = [Function, ObjCMethod];
-  let Documentation = [Undocumented];
+  let Documentation = [MSABIDocs];
 }
 
 def MSP430Interrupt : InheritableAttr, TargetSpecificAttr<TargetMSP430> {
@@ -835,7 +863,7 @@ def NoCommon : InheritableAttr {
 }
 
 def NoDebug : InheritableAttr {
-  let Spellings = [GNU<"nodebug">];
+  let Spellings = [GCC<"nodebug">];
   let Documentation = [Undocumented];
 }
 
@@ -1104,7 +1132,7 @@ def Pure : InheritableAttr {
 def Regparm : TypeAttr {
   let Spellings = [GCC<"regparm">];
   let Args = [UnsignedArgument<"NumParams">];
-  let Documentation = [Undocumented];
+  let Documentation = [RegparmDocs];
 }
 
 def ReqdWorkGroupSize : InheritableAttr {
@@ -1151,7 +1179,7 @@ def Sentinel : InheritableAttr {
 def StdCall : InheritableAttr {
   let Spellings = [GCC<"stdcall">, Keyword<"__stdcall">, Keyword<"_stdcall">];
 //  let Subjects = [Function, ObjCMethod];
-  let Documentation = [Undocumented];
+  let Documentation = [StdCallDocs];
 }
 
 def SysVABI : InheritableAttr {
@@ -1164,7 +1192,14 @@ def ThisCall : InheritableAttr {
   let Spellings = [GCC<"thiscall">, Keyword<"__thiscall">,
                    Keyword<"_thiscall">];
 //  let Subjects = [Function, ObjCMethod];
-  let Documentation = [Undocumented];
+  let Documentation = [ThisCallDocs];
+}
+
+def VectorCall : InheritableAttr {
+  let Spellings = [GNU<"vectorcall">, Keyword<"__vectorcall">,
+                   Keyword<"_vectorcall">];
+//  let Subjects = [Function, ObjCMethod];
+  let Documentation = [VectorCallDocs];
 }
 
 def Pascal : InheritableAttr {
@@ -1910,4 +1945,18 @@ def LoopHint : Attr {
   }];
 
   let Documentation = [LoopHintDocs, UnrollHintDocs];
+}
+
+def CapturedRecord : InheritableAttr {
+  // This attribute has no spellings as it is only ever created implicitly.
+  let Spellings = [];
+  let SemaHandler = 0;
+  let Documentation = [Undocumented];
+}
+
+def OMPThreadPrivateDecl : InheritableAttr {
+  // This attribute has no spellings as it is only ever created implicitly.
+  let Spellings = [];
+  let SemaHandler = 0;
+  let Documentation = [Undocumented];
 }

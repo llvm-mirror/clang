@@ -321,7 +321,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     // FIXME: should not overwrite ASTMutationListener when parsing model files?
     if (!isModelParsingAction())
       CI.getASTContext().setASTMutationListener(Consumer->GetASTMutationListener());
-    
+
     if (!CI.getPreprocessorOpts().ChainedIncludes.empty()) {
       // Convert headers to PCH and chain them.
       IntrusiveRefCntPtr<ExternalSemaSource> source, FinalReader;
@@ -382,6 +382,11 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
            "modules enabled but created an external source that "
            "doesn't support modules");
   }
+
+  // If we were asked to load any module files, do so now.
+  for (const auto &ModuleFile : CI.getFrontendOpts().ModuleFiles)
+    if (!CI.loadModuleFile(ModuleFile))
+      goto failure;
 
   // If there is a layout overrides file, attach an external AST source that
   // provides the layouts from that file.

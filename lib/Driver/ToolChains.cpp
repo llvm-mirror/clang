@@ -133,7 +133,7 @@ static const char *GetArmArchForMCpu(StringRef Value) {
     .Case("xscale", "xscale")
     .Cases("arm1136j-s", "arm1136jf-s", "arm1176jz-s", "arm1176jzf-s", "armv6")
     .Case("cortex-m0", "armv6m")
-    .Cases("cortex-a5", "cortex-a7", "cortex-a8", "cortex-a9-mp", "armv7")
+    .Cases("cortex-a5", "cortex-a7", "cortex-a8", "armv7")
     .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait", "armv7")
     .Cases("cortex-r4", "cortex-r5", "armv7r")
     .Case("cortex-m3", "armv7m")
@@ -291,17 +291,37 @@ void DarwinClang::AddLinkARCArgs(const ArgList &Args,
 }
 
 void MachO::AddLinkRuntimeLib(const ArgList &Args, ArgStringList &CmdArgs,
-                              StringRef DarwinStaticLib, bool AlwaysLink,
-                              bool IsEmbedded) const {
-  SmallString<128> P(getDriver().ResourceDir);
-  llvm::sys::path::append(P, "lib", IsEmbedded ? "macho_embedded" : "darwin",
-                          DarwinStaticLib);
+                              StringRef DarwinLibName, bool AlwaysLink,
+                              bool IsEmbedded, bool AddRPath) const {
+  SmallString<128> Dir(getDriver().ResourceDir);
+  llvm::sys::path::append(Dir, "lib", IsEmbedded ? "macho_embedded" : "darwin");
+
+  SmallString<128> P(Dir);
+  llvm::sys::path::append(P, DarwinLibName);
 
   // For now, allow missing resource libraries to support developers who may
   // not have compiler-rt checked out or integrated into their build (unless
   // we explicitly force linking with this library).
   if (AlwaysLink || llvm::sys::fs::exists(P.str()))
     CmdArgs.push_back(Args.MakeArgString(P.str()));
+
+  // Adding the rpaths might negatively interact when other rpaths are involved,
+  // so we should make sure we add the rpaths last, after all user-specified
+  // rpaths. This is currently true from this place, but we need to be
+  // careful if this function is ever called before user's rpaths are emitted.
+  if (AddRPath) {
+    assert(DarwinLibName.endswith(".dylib") && "must be a dynamic library");
+
+    // Add @executable_path to rpath to support having the dylib copied with
+    // the executable.
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back("@executable_path");
+
+    // Add the path to the resource dir to rpath to support using the dylib
+    // from the default location without copying.
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(Dir.str()));
+  }
 }
 
 void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
@@ -379,12 +399,14 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
       if (isTargetMacOS()) {
         AddLinkRuntimeLib(Args, CmdArgs,
                           "libclang_rt.asan_osx_dynamic.dylib",
-                          true);
+                          /*AlwaysLink*/ true, /*IsEmbedded*/ false,
+                          /*AddRPath*/ true);
       } else {
         if (isTargetIOSSimulator()) {
           AddLinkRuntimeLib(Args, CmdArgs,
                             "libclang_rt.asan_iossim_dynamic.dylib",
-                            true);
+                            /*AlwaysLink*/ true, /*IsEmbedded*/ false,
+                            /*AddRPath*/ true);
         }
       }
     }
@@ -880,8 +902,7 @@ DerivedArgList *Darwin::TranslateArgs(const DerivedArgList &Args,
   // FIXME: It would be far better to avoid inserting those -static arguments,
   // but we can't check the deployment target in the translation code until
   // it is set here.
-  if (isTargetIOSBased() && !isIPhoneOSVersionLT(6, 0) &&
-      getTriple().getArch() != llvm::Triple::aarch64) {
+  if (isTargetIOSBased() && !isIPhoneOSVersionLT(6, 0)) {
     for (ArgList::iterator it = DAL->begin(), ie = DAL->end(); it != ie; ) {
       Arg *A = *it;
       ++it;
@@ -2069,11 +2090,14 @@ void Generic_ELF::addClangTargetOptions(const ArgList &DriverArgs,
 
 /// Hexagon Toolchain
 
-std::string Hexagon_TC::GetGnuDir(const std::string &InstalledDir) {
+std::string Hexagon_TC::GetGnuDir(const std::string &InstalledDir,
+                                  const ArgList &Args) {
 
   // Locate the rest of the toolchain ...
-  if (strlen(GCC_INSTALL_PREFIX))
-    return std::string(GCC_INSTALL_PREFIX);
+  std::string GccToolchain = getGCCToolchainDir(Args);
+
+  if (!GccToolchain.empty())
+    return GccToolchain;
 
   std::string InstallRelDir = InstalledDir + "/../../gnu";
   if (llvm::sys::fs::exists(InstallRelDir))
@@ -2088,8 +2112,8 @@ std::string Hexagon_TC::GetGnuDir(const std::string &InstalledDir) {
 
 static void GetHexagonLibraryPaths(
   const ArgList &Args,
-  const std::string Ver,
-  const std::string MarchString,
+  const std::string &Ver,
+  const std::string &MarchString,
   const std::string &InstalledDir,
   ToolChain::path_list *LibPaths)
 {
@@ -2113,7 +2137,7 @@ static void GetHexagonLibraryPaths(
   const std::string MarchSuffix = "/" + MarchString;
   const std::string G0Suffix = "/G0";
   const std::string MarchG0Suffix = MarchSuffix + G0Suffix;
-  const std::string RootDir = Hexagon_TC::GetGnuDir(InstalledDir) + "/";
+  const std::string RootDir = Hexagon_TC::GetGnuDir(InstalledDir, Args) + "/";
 
   // lib/gcc/hexagon/...
   std::string LibGCCHexagonDir = RootDir + "lib/gcc/hexagon/";
@@ -2141,7 +2165,7 @@ Hexagon_TC::Hexagon_TC(const Driver &D, const llvm::Triple &Triple,
                        const ArgList &Args)
   : Linux(D, Triple, Args) {
   const std::string InstalledDir(getDriver().getInstalledDir());
-  const std::string GnuDir = Hexagon_TC::GetGnuDir(InstalledDir);
+  const std::string GnuDir = Hexagon_TC::GetGnuDir(InstalledDir, Args);
 
   // Note: Generic_GCC::Generic_GCC adds InstalledDir and getDriver().Dir to
   // program paths
@@ -2196,7 +2220,7 @@ void Hexagon_TC::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     return;
 
   std::string Ver(GetGCCLibAndIncVersion());
-  std::string GnuDir = Hexagon_TC::GetGnuDir(D.InstalledDir);
+  std::string GnuDir = Hexagon_TC::GetGnuDir(D.InstalledDir, DriverArgs);
   std::string HexagonDir(GnuDir + "/lib/gcc/hexagon/" + Ver);
   addExternCSystemInclude(DriverArgs, CC1Args, HexagonDir + "/include");
   addExternCSystemInclude(DriverArgs, CC1Args, HexagonDir + "/include-fixed");
@@ -2212,7 +2236,8 @@ void Hexagon_TC::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
 
   const Driver &D = getDriver();
   std::string Ver(GetGCCLibAndIncVersion());
-  SmallString<128> IncludeDir(Hexagon_TC::GetGnuDir(D.InstalledDir));
+  SmallString<128> IncludeDir(
+      Hexagon_TC::GetGnuDir(D.InstalledDir, DriverArgs));
 
   llvm::sys::path::append(IncludeDir, "hexagon/include/c++/");
   llvm::sys::path::append(IncludeDir, Ver);
@@ -2481,7 +2506,7 @@ bool FreeBSD::HasNativeLLVMSupport() const {
 }
 
 bool FreeBSD::isPIEDefault() const {
-  return getSanitizerArgs().hasZeroBaseShadow();
+  return getSanitizerArgs().requiresPIE();
 }
 
 /// NetBSD - NetBSD tool chain which can call as(1) and ld(1) directly.
@@ -3357,7 +3382,7 @@ void Linux::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
 }
 
 bool Linux::isPIEDefault() const {
-  return getSanitizerArgs().hasZeroBaseShadow();
+  return getSanitizerArgs().requiresPIE();
 }
 
 /// DragonFly - DragonFly tool chain which can call as(1) and ld(1) directly.

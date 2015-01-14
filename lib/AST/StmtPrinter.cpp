@@ -2022,6 +2022,20 @@ void StmtPrinter::VisitMaterializeTemporaryExpr(MaterializeTemporaryExpr *Node){
   PrintExpr(Node->GetTemporaryExpr());
 }
 
+void StmtPrinter::VisitCXXFoldExpr(CXXFoldExpr *E) {
+  OS << "(";
+  if (E->getLHS()) {
+    PrintExpr(E->getLHS());
+    OS << " " << BinaryOperator::getOpcodeStr(E->getOperator()) << " ";
+  }
+  OS << "...";
+  if (E->getRHS()) {
+    OS << " " << BinaryOperator::getOpcodeStr(E->getOperator()) << " ";
+    PrintExpr(E->getRHS());
+  }
+  OS << ")";
+}
+
 // Obj-C
 
 void StmtPrinter::VisitObjCStringLiteral(ObjCStringLiteral *Node) {
@@ -2164,6 +2178,11 @@ void StmtPrinter::VisitBlockExpr(BlockExpr *Node) {
 
 void StmtPrinter::VisitOpaqueValueExpr(OpaqueValueExpr *Node) { 
   PrintExpr(Node->getSourceExpr());
+}
+
+void StmtPrinter::VisitTypoExpr(TypoExpr *Node) {
+  // TODO: Print something reasonable for a TypoExpr, if necessary.
+  assert(false && "Cannot print TypoExpr nodes");
 }
 
 void StmtPrinter::VisitAsTypeExpr(AsTypeExpr *Node) {

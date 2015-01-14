@@ -2,9 +2,9 @@
 // RUN: echo 'type:SomeNamespace::BlacklistedByName=field-padding' > %t.type.blacklist
 // RUN: echo 'src:*sanitize-address-field-padding.cpp=field-padding' > %t.file.blacklist
 // RUN: %clang_cc1 -triple x86_64-unknown-unknown -fsanitize=address -fsanitize-address-field-padding=1 -fsanitize-blacklist=%t.type.blacklist -Rsanitize-address -emit-llvm -o - %s 2>&1 | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-unknown -fsanitize=address -fsanitize-address-field-padding=1 -fsanitize-blacklist=%t.type.blacklist -Rsanitize-address -emit-llvm -o - %s -O1 -mconstructor-aliases 2>&1 | FileCheck %s --check-prefix=WITH_CTOR_ALIASES
 // RUN: %clang_cc1 -triple x86_64-unknown-unknown -fsanitize=address -fsanitize-address-field-padding=1 -fsanitize-blacklist=%t.file.blacklist -Rsanitize-address -emit-llvm -o - %s 2>&1 | FileCheck %s --check-prefix=FILE_BLACKLIST
 // RUN: %clang_cc1 -fsanitize=address -emit-llvm -o - %s 2>&1 | FileCheck %s --check-prefix=NO_PADDING
-// REQUIRES: shell
 //
 
 // The reasons to ignore a particular class are not set in stone and will change.
@@ -54,6 +54,36 @@ class ClassWithVirtualBase : public virtual VirtualBase {
 };
 
 ClassWithVirtualBase class_with_virtual_base;
+
+class WithFlexibleArray1 {
+ public:
+  WithFlexibleArray1() {}
+  ~WithFlexibleArray1() {}
+  int make_it_non_standard_layout;
+ private:
+  char private1[33];
+  int flexible[];  // Don't insert padding after this field.
+};
+
+WithFlexibleArray1 with_flexible_array1;
+// CHECK: %class.WithFlexibleArray1 = type { i32, [12 x i8], [33 x i8], [15 x i8], [0 x i32] }
+
+class WithFlexibleArray2 {
+ public:
+  char x[21];
+  WithFlexibleArray1 flex1;  // Don't insert padding after this field.
+};
+
+WithFlexibleArray2 with_flexible_array2;
+// CHECK: %class.WithFlexibleArray2 = type { [21 x i8], [11 x i8], %class.WithFlexibleArray1 }
+
+class WithFlexibleArray3 {
+ public:
+  char x[13];
+  WithFlexibleArray2 flex2;  // Don't insert padding after this field.
+};
+
+WithFlexibleArray3 with_flexible_array3;
 
 
 class Negative1 {
@@ -163,3 +193,44 @@ ExternCStruct extern_C_struct;
 // CHECK-NOT: __asan_poison_intra_object_redzone
 // CHECK: ret void
 //
+
+struct WithVirtualDtor {
+  virtual ~WithVirtualDtor();
+  int x, y;
+};
+struct InheritsFrom_WithVirtualDtor: WithVirtualDtor {
+  int a, b;
+  InheritsFrom_WithVirtualDtor() {}
+  ~InheritsFrom_WithVirtualDtor() {}
+};
+
+void Create_InheritsFrom_WithVirtualDtor() {
+  InheritsFrom_WithVirtualDtor x;
+}
+
+
+// Make sure the dtor of InheritsFrom_WithVirtualDtor remains in the code,
+// i.e. we ignore -mconstructor-aliases when field paddings are added
+// because the paddings in InheritsFrom_WithVirtualDtor needs to be unpoisoned
+// in the dtor.
+// WITH_CTOR_ALIASES-LABEL: define void @_Z35Create_InheritsFrom_WithVirtualDtor
+// WITH_CTOR_ALIASES-NOT: call void @_ZN15WithVirtualDtorD2Ev
+// WITH_CTOR_ALIASES: call void @_ZN28InheritsFrom_WithVirtualDtorD2Ev
+// WITH_CTOR_ALIASES: ret void
+
+// Make sure we don't emit memcpy for operator= if paddings are inserted.
+struct ClassWithTrivialCopy {
+  ClassWithTrivialCopy();
+  ~ClassWithTrivialCopy();
+  void *a;
+ private:
+  void *c;
+};
+
+void MakeTrivialCopy(ClassWithTrivialCopy *s1, ClassWithTrivialCopy *s2) {
+  *s1 = *s2;
+}
+
+// CHECK-LABEL: define void @_Z15MakeTrivialCopyP20ClassWithTrivialCopyS0_
+// CHECK-NOT: memcpy
+// CHECK: ret void

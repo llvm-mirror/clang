@@ -57,6 +57,9 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
                          SourceLocation ImportLoc, ModuleFile *ImportedBy,
                          unsigned Generation,
                          off_t ExpectedSize, time_t ExpectedModTime,
+                         ASTFileSignature ExpectedSignature,
+                         std::function<ASTFileSignature(llvm::BitstreamReader &)>
+                             ReadSignature,
                          ModuleFile *&Module,
                          std::string &ErrorStr) {
   Module = nullptr;
@@ -64,6 +67,13 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
   // Look for the file entry. This only fails if the expected size or
   // modification time differ.
   const FileEntry *Entry;
+  if (Type == MK_ExplicitModule) {
+    // If we're not expecting to pull this file out of the module cache, it
+    // might have a different mtime due to being moved across filesystems in
+    // a distributed build. The size must still match, though. (As must the
+    // contents, but we can't check that.)
+    ExpectedModTime = 0;
+  }
   if (lookupModuleFile(FileName, ExpectedSize, ExpectedModTime, Entry)) {
     ErrorStr = "module file out of date";
     return OutOfDate;
@@ -89,7 +99,7 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
     ModuleEntry = New;
 
     New->InputFilesValidationTimestamp = 0;
-    if (New->Kind == MK_Module) {
+    if (New->Kind == MK_ImplicitModule) {
       std::string TimestampFilename = New->getTimestampFilename();
       vfs::Status Status;
       // A cached stat value would be fine as well.
@@ -104,32 +114,53 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
       New->Buffer = std::move(Buffer);
     } else {
       // Open the AST file.
-      std::error_code ec;
+      llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> Buf(
+          (std::error_code()));
       if (FileName == "-") {
-        llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> Buf =
-            llvm::MemoryBuffer::getSTDIN();
-        ec = Buf.getError();
-        if (ec)
-          ErrorStr = ec.message();
-        else
-          New->Buffer = std::move(Buf.get());
+        Buf = llvm::MemoryBuffer::getSTDIN();
       } else {
         // Leave the FileEntry open so if it gets read again by another
         // ModuleManager it must be the same underlying file.
         // FIXME: Because FileManager::getFile() doesn't guarantee that it will
         // give us an open file, this may not be 100% reliable.
-        New->Buffer = FileMgr.getBufferForFile(New->File, &ErrorStr,
-                                               /*IsVolatile*/ false,
-                                               /*ShouldClose*/ false);
+        Buf = FileMgr.getBufferForFile(New->File,
+                                       /*IsVolatile=*/false,
+                                       /*ShouldClose=*/false);
       }
-      
-      if (!New->Buffer)
+
+      if (!Buf) {
+        ErrorStr = Buf.getError().message();
         return Missing;
+      }
+
+      New->Buffer = std::move(*Buf);
     }
     
     // Initialize the stream
     New->StreamFile.init((const unsigned char *)New->Buffer->getBufferStart(),
                          (const unsigned char *)New->Buffer->getBufferEnd());
+  }
+
+  if (ExpectedSignature) {
+    if (NewModule)
+      ModuleEntry->Signature = ReadSignature(ModuleEntry->StreamFile);
+    else
+      assert(ModuleEntry->Signature == ReadSignature(ModuleEntry->StreamFile));
+
+    if (ModuleEntry->Signature != ExpectedSignature) {
+      ErrorStr = ModuleEntry->Signature ? "signature mismatch"
+                                        : "could not read module signature";
+
+      if (NewModule) {
+        // Remove the module file immediately, since removeModules might try to
+        // invalidate the file cache for Entry, and that is not safe if this
+        // module is *itself* up to date, but has an out-of-date importer.
+        Modules.erase(Entry);
+        Chain.pop_back();
+        delete ModuleEntry;
+      }
+      return OutOfDate;
+    }
   }
   
   if (ImportedBy) {

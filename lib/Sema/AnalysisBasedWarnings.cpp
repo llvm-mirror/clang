@@ -530,44 +530,37 @@ static void CheckFallThroughForBody(Sema &S, const Decl *D, const Stmt *Body,
   if (CD.checkDiagnostics(Diags, ReturnsVoid, HasNoReturn))
       return;
 
-  // FIXME: Function try block
-  if (const CompoundStmt *Compound = dyn_cast<CompoundStmt>(Body)) {
-    switch (CheckFallThrough(AC)) {
-      case UnknownFallThrough:
-        break;
+  SourceLocation LBrace = Body->getLocStart(), RBrace = Body->getLocEnd();
+  // Either in a function body compound statement, or a function-try-block.
+  switch (CheckFallThrough(AC)) {
+    case UnknownFallThrough:
+      break;
 
-      case MaybeFallThrough:
-        if (HasNoReturn)
-          S.Diag(Compound->getRBracLoc(),
-                 CD.diag_MaybeFallThrough_HasNoReturn);
-        else if (!ReturnsVoid)
-          S.Diag(Compound->getRBracLoc(),
-                 CD.diag_MaybeFallThrough_ReturnsNonVoid);
-        break;
-      case AlwaysFallThrough:
-        if (HasNoReturn)
-          S.Diag(Compound->getRBracLoc(),
-                 CD.diag_AlwaysFallThrough_HasNoReturn);
-        else if (!ReturnsVoid)
-          S.Diag(Compound->getRBracLoc(),
-                 CD.diag_AlwaysFallThrough_ReturnsNonVoid);
-        break;
-      case NeverFallThroughOrReturn:
-        if (ReturnsVoid && !HasNoReturn && CD.diag_NeverFallThroughOrReturn) {
-          if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
-            S.Diag(Compound->getLBracLoc(), CD.diag_NeverFallThroughOrReturn)
-              << 0 << FD;
-          } else if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(D)) {
-            S.Diag(Compound->getLBracLoc(), CD.diag_NeverFallThroughOrReturn)
-              << 1 << MD;
-          } else {
-            S.Diag(Compound->getLBracLoc(), CD.diag_NeverFallThroughOrReturn);
-          }
+    case MaybeFallThrough:
+      if (HasNoReturn)
+        S.Diag(RBrace, CD.diag_MaybeFallThrough_HasNoReturn);
+      else if (!ReturnsVoid)
+        S.Diag(RBrace, CD.diag_MaybeFallThrough_ReturnsNonVoid);
+      break;
+    case AlwaysFallThrough:
+      if (HasNoReturn)
+        S.Diag(RBrace, CD.diag_AlwaysFallThrough_HasNoReturn);
+      else if (!ReturnsVoid)
+        S.Diag(RBrace, CD.diag_AlwaysFallThrough_ReturnsNonVoid);
+      break;
+    case NeverFallThroughOrReturn:
+      if (ReturnsVoid && !HasNoReturn && CD.diag_NeverFallThroughOrReturn) {
+        if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
+          S.Diag(LBrace, CD.diag_NeverFallThroughOrReturn) << 0 << FD;
+        } else if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(D)) {
+          S.Diag(LBrace, CD.diag_NeverFallThroughOrReturn) << 1 << MD;
+        } else {
+          S.Diag(LBrace, CD.diag_NeverFallThroughOrReturn);
         }
-        break;
-      case NeverFallThrough:
-        break;
-    }
+      }
+      break;
+    case NeverFallThrough:
+      break;
   }
 }
 
@@ -923,7 +916,7 @@ namespace {
       // issue a warn_fallthrough_attr_unreachable for them.
       for (const auto *B : *Cfg) {
         const Stmt *L = B->getLabel();
-        if (L && isa<SwitchCase>(L) && ReachableBlocks.insert(B))
+        if (L && isa<SwitchCase>(L) && ReachableBlocks.insert(B).second)
           BlockQueue.push_back(B);
       }
 
@@ -933,7 +926,7 @@ namespace {
         for (CFGBlock::const_succ_iterator I = P->succ_begin(),
                                            E = P->succ_end();
              I != E; ++I) {
-          if (*I && ReachableBlocks.insert(*I))
+          if (*I && ReachableBlocks.insert(*I).second)
             BlockQueue.push_back(*I);
         }
       }

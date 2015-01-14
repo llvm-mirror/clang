@@ -73,7 +73,15 @@ Decl *Parser::ParseNamespace(unsigned Context,
   std::vector<IdentifierInfo*> ExtraIdent;
   std::vector<SourceLocation> ExtraNamespaceLoc;
 
-  Token attrTok;
+  ParsedAttributesWithRange attrs(AttrFactory);
+  SourceLocation attrLoc;
+  if (getLangOpts().CPlusPlus11 && isCXX11AttributeSpecifier()) {
+    if (!getLangOpts().CPlusPlus1z)
+      Diag(Tok.getLocation(), diag::warn_cxx14_compat_attribute)
+          << 0 /*namespace*/;
+    attrLoc = Tok.getLocation();
+    ParseCXX11Attributes(attrs);
+  }
 
   if (Tok.is(tok::identifier)) {
     Ident = Tok.getIdentifierInfo();
@@ -85,10 +93,13 @@ Decl *Parser::ParseNamespace(unsigned Context,
     }
   }
 
+  // A nested namespace definition cannot have attributes.
+  if (!ExtraNamespaceLoc.empty() && attrLoc.isValid())
+    Diag(attrLoc, diag::err_unexpected_nested_namespace_attribute);
+
   // Read label attributes, if present.
-  ParsedAttributes attrs(AttrFactory);
   if (Tok.is(tok::kw___attribute)) {
-    attrTok = Tok;
+    attrLoc = Tok.getLocation();
     ParseGNUAttributes(attrs);
   }
 
@@ -99,8 +110,8 @@ Decl *Parser::ParseNamespace(unsigned Context,
       SkipUntil(tok::semi);
       return nullptr;
     }
-    if (!attrs.empty())
-      Diag(attrTok, diag::err_unexpected_namespace_attributes_alias);
+    if (attrLoc.isValid())
+      Diag(attrLoc, diag::err_unexpected_namespace_attributes_alias);
     if (InlineLoc.isValid())
       Diag(InlineLoc, diag::err_inline_namespace_alias)
           << FixItHint::CreateRemoval(InlineLoc);
@@ -110,39 +121,36 @@ Decl *Parser::ParseNamespace(unsigned Context,
 
   BalancedDelimiterTracker T(*this, tok::l_brace);
   if (T.consumeOpen()) {
-    if (!ExtraIdent.empty()) {
-      Diag(ExtraNamespaceLoc[0], diag::err_nested_namespaces_with_double_colon)
-          << SourceRange(ExtraNamespaceLoc.front(), ExtraIdentLoc.back());
-    }
-
     if (Ident)
       Diag(Tok, diag::err_expected) << tok::l_brace;
     else
       Diag(Tok, diag::err_expected_either) << tok::identifier << tok::l_brace;
-
     return nullptr;
   }
 
   if (getCurScope()->isClassScope() || getCurScope()->isTemplateParamScope() || 
       getCurScope()->isInObjcMethodScope() || getCurScope()->getBlockParent() || 
       getCurScope()->getFnParent()) {
-    if (!ExtraIdent.empty()) {
-      Diag(ExtraNamespaceLoc[0], diag::err_nested_namespaces_with_double_colon)
-          << SourceRange(ExtraNamespaceLoc.front(), ExtraIdentLoc.back());
-    }
     Diag(T.getOpenLocation(), diag::err_namespace_nonnamespace_scope);
     SkipUntil(tok::r_brace);
     return nullptr;
   }
 
-  if (!ExtraIdent.empty()) {
+  if (ExtraIdent.empty()) {
+    // Normal namespace definition, not a nested-namespace-definition.
+  } else if (InlineLoc.isValid()) {
+    Diag(InlineLoc, diag::err_inline_nested_namespace_definition);
+  } else if (getLangOpts().CPlusPlus1z) {
+    Diag(ExtraNamespaceLoc[0],
+         diag::warn_cxx14_compat_nested_namespace_definition);
+  } else {
     TentativeParsingAction TPA(*this);
     SkipUntil(tok::r_brace, StopBeforeMatch);
     Token rBraceToken = Tok;
     TPA.Revert();
 
     if (!rBraceToken.is(tok::r_brace)) {
-      Diag(ExtraNamespaceLoc[0], diag::err_nested_namespaces_with_double_colon)
+      Diag(ExtraNamespaceLoc[0], diag::ext_nested_namespace_definition)
           << SourceRange(ExtraNamespaceLoc.front(), ExtraIdentLoc.back());
     } else {
       std::string NamespaceFix;
@@ -156,7 +164,7 @@ Decl *Parser::ParseNamespace(unsigned Context,
       for (unsigned i = 0, e = ExtraIdent.size(); i != e; ++i)
         RBraces +=  "} ";
 
-      Diag(ExtraNamespaceLoc[0], diag::err_nested_namespaces_with_double_colon)
+      Diag(ExtraNamespaceLoc[0], diag::ext_nested_namespace_definition)
           << FixItHint::CreateReplacement(SourceRange(ExtraNamespaceLoc.front(),
                                                       ExtraIdentLoc.back()),
                                           NamespaceFix)
@@ -195,11 +203,11 @@ Decl *Parser::ParseNamespace(unsigned Context,
 }
 
 /// ParseInnerNamespace - Parse the contents of a namespace.
-void Parser::ParseInnerNamespace(std::vector<SourceLocation>& IdentLoc,
-                                 std::vector<IdentifierInfo*>& Ident,
-                                 std::vector<SourceLocation>& NamespaceLoc,
-                                 unsigned int index, SourceLocation& InlineLoc,
-                                 ParsedAttributes& attrs,
+void Parser::ParseInnerNamespace(std::vector<SourceLocation> &IdentLoc,
+                                 std::vector<IdentifierInfo *> &Ident,
+                                 std::vector<SourceLocation> &NamespaceLoc,
+                                 unsigned int index, SourceLocation &InlineLoc,
+                                 ParsedAttributes &attrs,
                                  BalancedDelimiterTracker &Tracker) {
   if (index == Ident.size()) {
     while (Tok.isNot(tok::r_brace) && !isEofOrEom()) {
@@ -216,7 +224,9 @@ void Parser::ParseInnerNamespace(std::vector<SourceLocation>& IdentLoc,
     return;
   }
 
-  // Parse improperly nested namespaces.
+  // Handle a nested namespace definition.
+  // FIXME: Preserve the source information through to the AST rather than
+  // desugaring it here.
   ParseScope NamespaceScope(this, Scope::DeclScope);
   Decl *NamespcDecl =
     Actions.ActOnStartNamespaceDef(getCurScope(), SourceLocation(),
@@ -786,7 +796,7 @@ SourceLocation Parser::ParseDecltypeSpecifier(DeclSpec &DS) {
       //   The operand of the decltype specifier is an unevaluated operand.
       EnterExpressionEvaluationContext Unevaluated(Actions, Sema::Unevaluated,
                                                    nullptr,/*IsDecltype=*/true);
-      Result = ParseExpression();
+      Result = Actions.CorrectDelayedTyposInExpr(ParseExpression());
       if (Result.isInvalid()) {
         DS.SetTypeSpecError();
         if (SkipUntil(tok::r_paren, StopAtSemi | StopBeforeMatch)) {
@@ -909,8 +919,8 @@ void Parser::ParseUnderlyingTypeSpecifier(DeclSpec &DS) {
 /// In C++98, instead of base-type-specifier, we have:
 ///
 ///         ::[opt] nested-name-specifier[opt] class-name
-Parser::TypeResult Parser::ParseBaseTypeSpecifier(SourceLocation &BaseLoc,
-                                                  SourceLocation &EndLocation) {
+TypeResult Parser::ParseBaseTypeSpecifier(SourceLocation &BaseLoc,
+                                          SourceLocation &EndLocation) {
   // Ignore attempts to use typename
   if (Tok.is(tok::kw_typename)) {
     Diag(Tok, diag::err_expected_class_name_not_template)
@@ -1790,7 +1800,7 @@ void Parser::ParseBaseClause(Decl *ClassDecl) {
 ///                 base-type-specifier
 ///         attribute-specifier-seq[opt] access-specifier 'virtual'[opt]
 ///                 base-type-specifier
-Parser::BaseResult Parser::ParseBaseSpecifier(Decl *ClassDecl) {
+BaseResult Parser::ParseBaseSpecifier(Decl *ClassDecl) {
   bool IsVirtual = false;
   SourceLocation StartLoc = Tok.getLocation();
 
@@ -1865,15 +1875,33 @@ AccessSpecifier Parser::getAccessSpecifierIfPresent() const {
 }
 
 /// \brief If the given declarator has any parts for which parsing has to be
-/// delayed, e.g., default arguments, create a late-parsed method declaration
-/// record to handle the parsing at the end of the class definition.
+/// delayed, e.g., default arguments or an exception-specification, create a
+/// late-parsed method declaration record to handle the parsing at the end of
+/// the class definition.
 void Parser::HandleMemberFunctionDeclDelays(Declarator& DeclaratorInfo,
                                             Decl *ThisDecl) {
   // We just declared a member function. If this member function
-  // has any default arguments, we'll need to parse them later.
+  // has any default arguments or an exception-specification, we'll need to
+  // parse them later.
   LateParsedMethodDeclaration *LateMethod = nullptr;
   DeclaratorChunk::FunctionTypeInfo &FTI
     = DeclaratorInfo.getFunctionTypeInfo();
+
+  // If there was a late-parsed exception-specification, hold onto its tokens.
+  if (FTI.getExceptionSpecType() == EST_Unparsed) {
+    // Push this method onto the stack of late-parsed method
+    // declarations.
+    LateMethod = new LateParsedMethodDeclaration(this, ThisDecl);
+    getCurrentClass().LateParsedDeclarations.push_back(LateMethod);
+    LateMethod->TemplateScope = getCurScope()->isTemplateParamScope();
+
+    // Stash the exception-specification tokens in the late-pased mthod.
+    LateMethod->ExceptionSpecTokens = FTI.ExceptionSpecTokens;
+    FTI.ExceptionSpecTokens = 0;
+
+    // Reserve space for the parameters.
+    LateMethod->DefaultArgs.reserve(FTI.NumParams);
+  }
 
   for (unsigned ParamIdx = 0; ParamIdx < FTI.NumParams; ++ParamIdx) {
     if (LateMethod || FTI.Params[ParamIdx].DefaultArgTokens) {
@@ -2847,7 +2875,7 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
 
   // C++11 [class.mem]p2:
   //   Within the class member-specification, the class is regarded as complete
-  //   within function bodies, default arguments, and
+  //   within function bodies, default arguments, exception-specifications, and
   //   brace-or-equal-initializers for non-static data members (including such
   //   things in nested classes).
   if (TagDecl && NonNestedClass) {
@@ -2976,7 +3004,7 @@ void Parser::ParseConstructorInitializer(Decl *ConstructorDecl) {
 /// [C++] mem-initializer-id:
 ///         '::'[opt] nested-name-specifier[opt] class-name
 ///         identifier
-Parser::MemInitResult Parser::ParseMemInitializer(Decl *ConstructorDecl) {
+MemInitResult Parser::ParseMemInitializer(Decl *ConstructorDecl) {
   // parse '::'[opt] nested-name-specifier[opt]
   CXXScopeSpec SS;
   ParseOptionalCXXScopeSpecifier(SS, ParsedType(), /*EnteringContext=*/false);
@@ -3066,13 +3094,63 @@ Parser::MemInitResult Parser::ParseMemInitializer(Decl *ConstructorDecl) {
 ///         'noexcept'
 ///         'noexcept' '(' constant-expression ')'
 ExceptionSpecificationType
-Parser::tryParseExceptionSpecification(
+Parser::tryParseExceptionSpecification(bool Delayed,
                     SourceRange &SpecificationRange,
                     SmallVectorImpl<ParsedType> &DynamicExceptions,
                     SmallVectorImpl<SourceRange> &DynamicExceptionRanges,
-                    ExprResult &NoexceptExpr) {
+                    ExprResult &NoexceptExpr,
+                    CachedTokens *&ExceptionSpecTokens) {
   ExceptionSpecificationType Result = EST_None;
+  ExceptionSpecTokens = 0;
+  
+  // Handle delayed parsing of exception-specifications.
+  if (Delayed) {
+    if (Tok.isNot(tok::kw_throw) && Tok.isNot(tok::kw_noexcept))
+      return EST_None;
 
+    // Consume and cache the starting token.
+    bool IsNoexcept = Tok.is(tok::kw_noexcept);
+    Token StartTok = Tok;
+    SpecificationRange = SourceRange(ConsumeToken());
+
+    // Check for a '('.
+    if (!Tok.is(tok::l_paren)) {
+      // If this is a bare 'noexcept', we're done.
+      if (IsNoexcept) {
+        Diag(Tok, diag::warn_cxx98_compat_noexcept_decl);
+        NoexceptExpr = 0;
+        return EST_BasicNoexcept;
+      }
+      
+      Diag(Tok, diag::err_expected_lparen_after) << "throw";
+      return EST_DynamicNone;
+    }
+    
+    // Cache the tokens for the exception-specification.
+    ExceptionSpecTokens = new CachedTokens;
+    ExceptionSpecTokens->push_back(StartTok); // 'throw' or 'noexcept'
+    ExceptionSpecTokens->push_back(Tok); // '('
+    SpecificationRange.setEnd(ConsumeParen()); // '('
+    
+    if (!ConsumeAndStoreUntil(tok::r_paren, *ExceptionSpecTokens,
+                              /*StopAtSemi=*/true,
+                              /*ConsumeFinalToken=*/true)) {
+      NoexceptExpr = 0;
+      delete ExceptionSpecTokens;
+      ExceptionSpecTokens = 0;
+      return IsNoexcept? EST_BasicNoexcept : EST_DynamicNone;
+    }
+    SpecificationRange.setEnd(Tok.getLocation());
+    
+    // Add the 'stop' token.
+    Token End;
+    End.startToken();
+    End.setKind(tok::cxx_exceptspec_end);
+    End.setLocation(Tok.getLocation());
+    ExceptionSpecTokens->push_back(End);
+    return EST_Unparsed;
+  }
+  
   // See if there's a dynamic specification.
   if (Tok.is(tok::kw_throw)) {
     Result = ParseDynamicExceptionSpecification(SpecificationRange,

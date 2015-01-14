@@ -229,6 +229,7 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::CXXBindTemporaryExprClass:
   case Stmt::CXXDefaultArgExprClass:
   case Stmt::CXXDefaultInitExprClass:
+  case Stmt::CXXFoldExprClass:
   case Stmt::CXXStdInitializerListExprClass:
   case Stmt::CXXScalarValueInitExprClass:
   case Stmt::CXXUuidofExprClass:
@@ -469,6 +470,7 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::SubstNonTypeTemplateParmPackExprClass:
   case Stmt::FunctionParmPackExprClass:
   case Stmt::UnresolvedLookupExprClass:
+  case Stmt::TypoExprClass: // A typo could actually be a DeclRef or a MemberRef
     K = CXCursor_DeclRefExpr;
     break;
       
@@ -1415,8 +1417,16 @@ int clang_Cursor_isDynamicCall(CXCursor C) {
   if (!E)
     return 0;
 
-  if (const ObjCMessageExpr *MsgE = dyn_cast<ObjCMessageExpr>(E))
-    return MsgE->getReceiverKind() == ObjCMessageExpr::Instance;
+  if (const ObjCMessageExpr *MsgE = dyn_cast<ObjCMessageExpr>(E)) {
+    if (MsgE->getReceiverKind() != ObjCMessageExpr::Instance)
+      return false;
+    if (auto *RecE = dyn_cast<ObjCMessageExpr>(
+            MsgE->getInstanceReceiver()->IgnoreParenCasts())) {
+      if (RecE->getMethodFamily() == OMF_alloc)
+        return false;
+    }
+    return true;
+  }
 
   const MemberExpr *ME = nullptr;
   if (isa<MemberExpr>(E))

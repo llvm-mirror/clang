@@ -135,6 +135,7 @@ def SubstNonTypeTemplateParmPackExpr : DStmt<Expr>;
 def FunctionParmPackExpr : DStmt<Expr>;
 def MaterializeTemporaryExpr : DStmt<Expr>;
 def LambdaExpr : DStmt<Expr>;
+def CXXFoldExpr : DStmt<Expr>;
 
 // Obj-C Expressions.
 def ObjCStringLiteral : DStmt<Expr>;
@@ -163,6 +164,7 @@ def ShuffleVectorExpr : DStmt<Expr>;
 def ConvertVectorExpr : DStmt<Expr>;
 def BlockExpr : DStmt<Expr>;
 def OpaqueValueExpr : DStmt<Expr>;
+def TypoExpr : DStmt<Expr>;
 
 // Microsoft Extensions.
 def MSPropertyRefExpr : DStmt<Expr>;

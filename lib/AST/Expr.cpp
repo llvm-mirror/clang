@@ -546,6 +546,7 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
       case CC_X86StdCall: POut << "__stdcall "; break;
       case CC_X86FastCall: POut << "__fastcall "; break;
       case CC_X86ThisCall: POut << "__thiscall "; break;
+      case CC_X86VectorCall: POut << "__vectorcall "; break;
       // Only bother printing the conventions that MSVC knows about.
       default: break;
       }
@@ -2885,6 +2886,8 @@ bool Expr::HasSideEffects(const ASTContext &Ctx) const {
   case PackExpansionExprClass:
   case SubstNonTypeTemplateParmPackExprClass:
   case FunctionParmPackExprClass:
+  case TypoExprClass:
+  case CXXFoldExprClass:
     llvm_unreachable("shouldn't see dependent / unresolved nodes here");
 
   case DeclRefExprClass:
@@ -2982,11 +2985,13 @@ bool Expr::HasSideEffects(const ASTContext &Ctx) const {
   case CXXDefaultArgExprClass:
     return cast<CXXDefaultArgExpr>(this)->getExpr()->HasSideEffects(Ctx);
 
-  case CXXDefaultInitExprClass:
-    if (const Expr *E = cast<CXXDefaultInitExpr>(this)->getExpr())
+  case CXXDefaultInitExprClass: {
+    const FieldDecl *FD = cast<CXXDefaultInitExpr>(this)->getField();
+    if (const Expr *E = FD->getInClassInitializer())
       return E->HasSideEffects(Ctx);
     // If we've not yet parsed the initializer, assume it has side-effects.
     return true;
+  }
 
   case CXXDynamicCastExprClass: {
     // A dynamic_cast expression has side-effects if it can throw.
@@ -4080,12 +4085,10 @@ Stmt::child_range ObjCMessageExpr::children() {
 
 ObjCArrayLiteral::ObjCArrayLiteral(ArrayRef<Expr *> Elements, 
                                    QualType T, ObjCMethodDecl *Method,
-                                   ObjCMethodDecl *AllocMethod,
                                    SourceRange SR)
   : Expr(ObjCArrayLiteralClass, T, VK_RValue, OK_Ordinary, 
          false, false, false, false), 
-    NumElements(Elements.size()), Range(SR), ArrayWithObjectsMethod(Method),
-    ArrayAllocMethod(AllocMethod)
+    NumElements(Elements.size()), Range(SR), ArrayWithObjectsMethod(Method)
 {
   Expr **SaveElements = getElements();
   for (unsigned I = 0, N = Elements.size(); I != N; ++I) {
@@ -4103,11 +4106,10 @@ ObjCArrayLiteral::ObjCArrayLiteral(ArrayRef<Expr *> Elements,
 ObjCArrayLiteral *ObjCArrayLiteral::Create(const ASTContext &C,
                                            ArrayRef<Expr *> Elements,
                                            QualType T, ObjCMethodDecl * Method,
-                                           ObjCMethodDecl *allocMethod,
                                            SourceRange SR) {
   void *Mem = C.Allocate(sizeof(ObjCArrayLiteral) 
                          + Elements.size() * sizeof(Expr *));
-  return new (Mem) ObjCArrayLiteral(Elements, T, Method, allocMethod, SR);
+  return new (Mem) ObjCArrayLiteral(Elements, T, Method, SR);
 }
 
 ObjCArrayLiteral *ObjCArrayLiteral::CreateEmpty(const ASTContext &C,
@@ -4122,13 +4124,11 @@ ObjCDictionaryLiteral::ObjCDictionaryLiteral(
                                              ArrayRef<ObjCDictionaryElement> VK, 
                                              bool HasPackExpansions,
                                              QualType T, ObjCMethodDecl *method,
-                                             ObjCMethodDecl *allocMethod,
                                              SourceRange SR)
   : Expr(ObjCDictionaryLiteralClass, T, VK_RValue, OK_Ordinary, false, false,
          false, false),
     NumElements(VK.size()), HasPackExpansions(HasPackExpansions), Range(SR), 
-    DictWithObjectsMethod(method),
-    DictAllocMethod(allocMethod)
+    DictWithObjectsMethod(method)
 {
   KeyValuePair *KeyValues = getKeyValues();
   ExpansionData *Expansions = getExpansionData();
@@ -4161,7 +4161,6 @@ ObjCDictionaryLiteral::Create(const ASTContext &C,
                               ArrayRef<ObjCDictionaryElement> VK, 
                               bool HasPackExpansions,
                               QualType T, ObjCMethodDecl *method,
-                              ObjCMethodDecl *allocMethod,
                               SourceRange SR) {
   unsigned ExpansionsSize = 0;
   if (HasPackExpansions)
@@ -4169,8 +4168,7 @@ ObjCDictionaryLiteral::Create(const ASTContext &C,
     
   void *Mem = C.Allocate(sizeof(ObjCDictionaryLiteral) + 
                          sizeof(KeyValuePair) * VK.size() + ExpansionsSize);
-  return new (Mem) ObjCDictionaryLiteral(VK, HasPackExpansions, T,
-                                         method, allocMethod, SR);
+  return new (Mem) ObjCDictionaryLiteral(VK, HasPackExpansions, T, method, SR);
 }
 
 ObjCDictionaryLiteral *

@@ -95,9 +95,12 @@ def err_fe_no_pch_in_dir : Error<
 def err_fe_action_not_available : Error<
     "action %0 not compiled in">;
 
+def warn_fe_serialized_diag_merge_failure : Warning<
+    "unable to merge a subprocess's serialized diagnostics">,
+    InGroup<SerializedDiagnostics>;
 def warn_fe_serialized_diag_failure : Warning<
     "unable to open file %0 for serializing diagnostics (%1)">,
-    InGroup<DiagGroup<"serialized-diagnostics">>;
+    InGroup<SerializedDiagnostics>;
 
 def err_verify_missing_line : Error<
     "missing or invalid line number following '@' in expected %0">;
@@ -153,7 +156,7 @@ def warn_incompatible_analyzer_plugin_api : Warning<
     InGroup<DiagGroup<"analyzer-incompatible-plugin"> >;
 def note_incompatible_analyzer_plugin_api : Note<
     "current API version is '%0', but plugin was compiled with version '%1'">;
-    
+
 def err_module_map_not_found : Error<"module map file '%0' not found">, 
   DefaultFatal;
 def err_missing_module_name : Error<
@@ -187,6 +190,12 @@ def remark_module_build_done : Remark<"finished building module '%0'">,
 def err_conflicting_module_names : Error<
   "conflicting module names specified: '-fmodule-name=%0' and "
   "'-fmodule-implementation-of %1'">;
+def err_conflicting_module_files : Error<
+  "module '%0' is defined in both '%1' and '%2'">;
+def err_module_file_not_found : Error<
+  "file '%0' is not a precompiled module file">, DefaultFatal;
+def err_module_file_not_module : Error<
+  "AST file '%0' was not built as a module">, DefaultFatal;
 
 def err_missing_vfs_overlay_file : Error<
   "virtual filesystem overlay file '%0' not found">, DefaultFatal;

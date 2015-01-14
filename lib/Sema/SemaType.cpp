@@ -107,6 +107,7 @@ static void diagnoseBadTypeAttribute(Sema &S, const AttributeList &attr,
     case AttributeList::AT_StdCall: \
     case AttributeList::AT_ThisCall: \
     case AttributeList::AT_Pascal: \
+    case AttributeList::AT_VectorCall: \
     case AttributeList::AT_MSABI: \
     case AttributeList::AT_SysVABI: \
     case AttributeList::AT_Regparm: \
@@ -660,27 +661,27 @@ static void maybeSynthesizeBlockSignature(TypeProcessingState &state,
   // ...and *prepend* it to the declarator.
   SourceLocation NoLoc;
   declarator.AddInnermostTypeInfo(DeclaratorChunk::getFunction(
-                             /*HasProto=*/true,
-                             /*IsAmbiguous=*/false,
-                             /*LParenLoc=*/NoLoc,
-                             /*ArgInfo=*/nullptr,
-                             /*NumArgs=*/0,
-                             /*EllipsisLoc=*/NoLoc,
-                             /*RParenLoc=*/NoLoc,
-                             /*TypeQuals=*/0,
-                             /*RefQualifierIsLvalueRef=*/true,
-                             /*RefQualifierLoc=*/NoLoc,
-                             /*ConstQualifierLoc=*/NoLoc,
-                             /*VolatileQualifierLoc=*/NoLoc,
-                             /*RestrictQualifierLoc=*/NoLoc,
-                             /*MutableLoc=*/NoLoc,
-                             EST_None,
-                             /*ESpecLoc=*/NoLoc,
-                             /*Exceptions=*/nullptr,
-                             /*ExceptionRanges=*/nullptr,
-                             /*NumExceptions=*/0,
-                             /*NoexceptExpr=*/nullptr,
-                             loc, loc, declarator));
+      /*HasProto=*/true,
+      /*IsAmbiguous=*/false,
+      /*LParenLoc=*/NoLoc,
+      /*ArgInfo=*/nullptr,
+      /*NumArgs=*/0,
+      /*EllipsisLoc=*/NoLoc,
+      /*RParenLoc=*/NoLoc,
+      /*TypeQuals=*/0,
+      /*RefQualifierIsLvalueRef=*/true,
+      /*RefQualifierLoc=*/NoLoc,
+      /*ConstQualifierLoc=*/NoLoc,
+      /*VolatileQualifierLoc=*/NoLoc,
+      /*RestrictQualifierLoc=*/NoLoc,
+      /*MutableLoc=*/NoLoc, EST_None,
+      /*ESpecLoc=*/NoLoc,
+      /*Exceptions=*/nullptr,
+      /*ExceptionRanges=*/nullptr,
+      /*NumExceptions=*/0,
+      /*NoexceptExpr=*/nullptr,
+      /*ExceptionSpecTokens=*/nullptr,
+      loc, loc, declarator));
 
   // For consistency, make sure the state still has us as processing
   // the decl spec.
@@ -1034,7 +1035,7 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
       LSI->AutoTemplateParams.push_back(CorrespondingTemplateParam);
       // Replace the 'auto' in the function parameter with this invented 
       // template type parameter.
-      Result = QualType(CorrespondingTemplateParam->getTypeForDecl(), 0);  
+      Result = QualType(CorrespondingTemplateParam->getTypeForDecl(), 0);
     } else {
       Result = Context.getAutoType(QualType(), /*decltype(auto)*/false, false);
     }
@@ -2990,7 +2991,8 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
           NoexceptExpr = FTI.NoexceptExpr;
         }
 
-        S.checkExceptionSpecification(FTI.getExceptionSpecType(),
+        S.checkExceptionSpecification(D.isFunctionDeclarationContext(),
+                                      FTI.getExceptionSpecType(),
                                       DynamicExceptions,
                                       DynamicExceptionRanges,
                                       NoexceptExpr,
@@ -3418,6 +3420,8 @@ static AttributeList::Kind getAttrListKind(AttributedType::Kind kind) {
     return AttributeList::AT_ThisCall;
   case AttributedType::attr_pascal:
     return AttributeList::AT_Pascal;
+  case AttributedType::attr_vectorcall:
+    return AttributeList::AT_VectorCall;
   case AttributedType::attr_pcs:
   case AttributedType::attr_pcs_vfp:
     return AttributeList::AT_Pcs;
@@ -3977,6 +3981,8 @@ static void HandleAddressSpaceTypeAttribute(QualType &Type,
       ASIdx = LangAS::opencl_local; break;
     case AttributeList::AT_OpenCLConstantAddressSpace:
       ASIdx = LangAS::opencl_constant; break;
+    case AttributeList::AT_OpenCLGenericAddressSpace:
+      ASIdx = LangAS::opencl_generic; break;
     default:
       assert(Attr.getKind() == AttributeList::AT_OpenCLPrivateAddressSpace);
       ASIdx = 0; break;
@@ -4434,6 +4440,8 @@ static AttributedType::Kind getCCTypeAttrKind(AttributeList &Attr) {
     return AttributedType::attr_thiscall;
   case AttributeList::AT_Pascal:
     return AttributedType::attr_pascal;
+  case AttributeList::AT_VectorCall:
+    return AttributedType::attr_vectorcall;
   case AttributeList::AT_Pcs: {
     // The attribute may have had a fixit applied where we treated an
     // identifier as a string literal.  The contents of the string are valid,
@@ -4551,7 +4559,7 @@ static bool handleFunctionTypeAttr(TypeProcessingState &state,
   }
 
   // Diagnose use of callee-cleanup calling convention on variadic functions.
-  if (isCalleeCleanup(CC)) {
+  if (!supportsVariadicCall(CC)) {
     const FunctionProtoType *FnP = dyn_cast<FunctionProtoType>(fn);
     if (FnP && FnP->isVariadic()) {
       unsigned DiagID = diag::err_cconv_varargs;
@@ -4886,6 +4894,7 @@ static void processTypeAttrs(TypeProcessingState &state, QualType &type,
     case AttributeList::AT_OpenCLGlobalAddressSpace:
     case AttributeList::AT_OpenCLLocalAddressSpace:
     case AttributeList::AT_OpenCLConstantAddressSpace:
+    case AttributeList::AT_OpenCLGenericAddressSpace:
     case AttributeList::AT_AddressSpace:
       HandleAddressSpaceTypeAttribute(type, attr, state.getSema());
       attr.setUsedAsTypeAttr();
@@ -5467,6 +5476,8 @@ static QualType getDecltypeForExpr(Sema &S, Expr *E) {
   } else if (const ObjCPropertyRefExpr *PR = dyn_cast<ObjCPropertyRefExpr>(E)) {
     if (PR->isExplicitProperty())
       return PR->getExplicitProperty()->getType();
+  } else if (auto *PE = dyn_cast<PredefinedExpr>(E)) {
+    return PE->getType();
   }
   
   // C++11 [expr.lambda.prim]p18:

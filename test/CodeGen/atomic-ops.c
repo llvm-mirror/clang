@@ -383,14 +383,23 @@ struct foo structAtomicExchange() {
 }
 int structAtomicCmpExchange() {
   // CHECK-LABEL: @structAtomicCmpExchange
+  // CHECK: %[[x_mem:.*]] = alloca i8
   _Bool x = __atomic_compare_exchange(&smallThing, &thing1, &thing2, 1, 5, 5);
-  // CHECK: call zeroext i1 @__atomic_compare_exchange(i32 3, {{.*}} @smallThing{{.*}} @thing1{{.*}} @thing2
+  // CHECK: %[[call1:.*]] = call zeroext i1 @__atomic_compare_exchange(i32 3, {{.*}} @smallThing{{.*}} @thing1{{.*}} @thing2
+  // CHECK: %[[zext1:.*]] = zext i1 %[[call1]] to i8
+  // CHECK: store i8 %[[zext1]], i8* %[[x_mem]], align 1
+  // CHECK: %[[x:.*]] = load i8* %[[x_mem]]
+  // CHECK: %[[x_bool:.*]] = trunc i8 %[[x]] to i1
+  // CHECK: %[[conv1:.*]] = zext i1 %[[x_bool]] to i32
 
   struct foo f = {0};
   struct foo g = {0};
   g.big[12] = 12;
   return x & __c11_atomic_compare_exchange_strong(&bigAtomic, &f, g, 5, 5);
-  // CHECK: call zeroext i1 @__atomic_compare_exchange(i32 512, i8* bitcast ({{.*}} @bigAtomic to i8*),
+  // CHECK: %[[call2:.*]] = call zeroext i1 @__atomic_compare_exchange(i32 512, i8* bitcast ({{.*}} @bigAtomic to i8*),
+  // CHECK: %[[conv2:.*]] = zext i1 %[[call2]] to i32
+  // CHECK: %[[and:.*]] = and i32 %[[conv1]], %[[conv2]]
+  // CHECK: ret i32 %[[and]]
 }
 
 // Check that no atomic operations are used in any initialisation of _Atomic
@@ -541,6 +550,21 @@ void EMIT_ALL_THE_THINGS(int *ptr, int *ptr2, int new, _Bool weak, int success, 
   // CHECK: = cmpxchg weak {{.*}} seq_cst monotonic
   // CHECK: = cmpxchg weak {{.*}} seq_cst acquire
   // CHECK: = cmpxchg weak {{.*}} seq_cst seq_cst
+}
+
+int PR21643() {
+  return __atomic_or_fetch((int __attribute__((address_space(257))) *)0x308, 1,
+                           __ATOMIC_RELAXED);
+  // CHECK: %[[atomictmp:.*]] = alloca i32, align 4
+  // CHECK: %[[atomicdst:.*]] = alloca i32, align 4
+  // CHECK: store i32 1, i32* %[[atomictmp]]
+  // CHECK: %[[one:.*]] = load i32* %[[atomictmp]], align 4
+  // CHECK: %[[old:.*]] = atomicrmw or i32 addrspace(257)* inttoptr (i32 776 to i32 addrspace(257)*), i32 %[[one]] monotonic
+  // CHECK: %[[new:.*]] = or i32 %[[old]], %[[one]]
+  // CHECK: store i32 %[[new]], i32* %[[atomicdst]], align 4
+  // CHECK: %[[ret:.*]] = load i32* %[[atomicdst]], align 4
+  // CHECK: ret i32 %[[ret]]
+
 }
 
 #endif

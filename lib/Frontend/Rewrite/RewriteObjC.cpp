@@ -198,27 +198,16 @@ namespace {
     void HandleTranslationUnit(ASTContext &C) override;
 
     void ReplaceStmt(Stmt *Old, Stmt *New) {
-      Stmt *ReplacingStmt = ReplacedNodes[Old];
-
-      if (ReplacingStmt)
-        return; // We can't rewrite the same node twice.
-
-      if (DisableReplaceStmt)
-        return;
-
-      // If replacement succeeded or warning disabled return with no warning.
-      if (!Rewrite.ReplaceStmt(Old, New)) {
-        ReplacedNodes[Old] = New;
-        return;
-      }
-      if (SilenceRewriteMacroWarning)
-        return;
-      Diags.Report(Context->getFullLoc(Old->getLocStart()), RewriteFailedDiag)
-                   << Old->getSourceRange();
+      ReplaceStmtWithRange(Old, New, Old->getSourceRange());
     }
 
     void ReplaceStmtWithRange(Stmt *Old, Stmt *New, SourceRange SrcRange) {
       assert(Old != nullptr && New != nullptr && "Expected non-null Stmt's");
+
+      Stmt *ReplacingStmt = ReplacedNodes[Old];
+      if (ReplacingStmt)
+        return; // We can't rewrite the same node twice.
+
       if (DisableReplaceStmt)
         return;
 
@@ -332,7 +321,7 @@ namespace {
     void RewriteObjCInternalStruct(ObjCInterfaceDecl *CDecl,
                                       std::string &Result);
 
-    virtual void Initialize(ASTContext &context) override = 0;
+    void Initialize(ASTContext &context) override = 0;
 
     // Metadata Rewriting.
     virtual void RewriteMetaDataIntoBuffer(std::string &Result) = 0;
@@ -524,7 +513,7 @@ namespace {
                                                      silenceMacroWarn) {}
     
     ~RewriteObjCFragileABI() {}
-    virtual void Initialize(ASTContext &context) override;
+    void Initialize(ASTContext &context) override;
 
     // Rewriting metadata
     template<typename MethodIterator>
@@ -3238,7 +3227,7 @@ void RewriteObjC::RewriteObjCInternalStruct(ObjCInterfaceDecl *CDecl,
     ReplaceText(LocStart, endBuf-startBuf, Result);
   }
   // Mark this struct as having been generated.
-  if (!ObjCSynthesizedStructs.insert(CDecl))
+  if (!ObjCSynthesizedStructs.insert(CDecl).second)
     llvm_unreachable("struct already synthesize- SynthesizeObjCInternalStruct");
 }
 
@@ -5271,7 +5260,7 @@ void RewriteObjCFragileABI::RewriteObjCProtocolMetaData(
   Result += "};\n";
   
   // Mark this protocol as having been generated.
-  if (!ObjCSynthesizedProtocols.insert(PDecl->getCanonicalDecl()))
+  if (!ObjCSynthesizedProtocols.insert(PDecl->getCanonicalDecl()).second)
     llvm_unreachable("protocol already synthesized");
   
 }

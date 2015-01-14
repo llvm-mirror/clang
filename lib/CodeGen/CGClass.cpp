@@ -833,18 +833,16 @@ namespace {
   class CopyingValueRepresentation {
   public:
     explicit CopyingValueRepresentation(CodeGenFunction &CGF)
-        : CGF(CGF), SO(*CGF.SanOpts), OldSanOpts(CGF.SanOpts) {
-      SO.Bool = false;
-      SO.Enum = false;
-      CGF.SanOpts = &SO;
+        : CGF(CGF), OldSanOpts(CGF.SanOpts) {
+      CGF.SanOpts.set(SanitizerKind::Bool, false);
+      CGF.SanOpts.set(SanitizerKind::Enum, false);
     }
     ~CopyingValueRepresentation() {
       CGF.SanOpts = OldSanOpts;
     }
   private:
     CodeGenFunction &CGF;
-    SanitizerOptions SO;
-    const SanitizerOptions *OldSanOpts;
+    SanitizerSet OldSanOpts;
   };
 }
 
@@ -860,7 +858,7 @@ namespace {
 
     bool isMemcpyableField(FieldDecl *F) const {
       // Never memcpy fields when we are adding poisoned paddings.
-      if (CGF.getContext().getLangOpts().Sanitize.SanitizeAddressFieldPadding)
+      if (CGF.getContext().getLangOpts().SanitizeAddressFieldPadding)
         return false;
       Qualifiers Qual = F->getType().getQualifiers();
       if (Qual.hasVolatile() || Qual.hasObjCLifetime())
@@ -2024,7 +2022,7 @@ CodeGenFunction::InitializeVTablePointers(BaseSubobject Base,
 
     if (I.isVirtual()) {
       // Check if we've visited this virtual base before.
-      if (!VBases.insert(BaseDecl))
+      if (!VBases.insert(BaseDecl).second)
         continue;
 
       const ASTRecordLayout &Layout = 

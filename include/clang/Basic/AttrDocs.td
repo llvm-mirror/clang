@@ -72,9 +72,9 @@ def ThreadDocs : Documentation {
   let Content = [{
 The ``__declspec(thread)`` attribute declares a variable with thread local
 storage.  It is available under the ``-fms-extensions`` flag for MSVC
-compatibility.  Documentation for the Visual C++ attribute is available on MSDN_.
+compatibility.  See the documentation for `__declspec(thread)`_ on MSDN.
 
-.. _MSDN: http://msdn.microsoft.com/en-us/library/9w1sdazb.aspx
+.. _`__declspec(thread)`: http://msdn.microsoft.com/en-us/library/9w1sdazb.aspx
 
 In Clang, ``__declspec(thread)`` is generally equivalent in functionality to the
 GNU ``__thread`` keyword.  The variable must not have a destructor and must have
@@ -673,12 +673,117 @@ The semantics are as follows:
   }];
 }
 
-def PcsDocs : Documentation {
-  let Category = DocCatFunction;
+def DocCatCallingConvs : DocumentationCategory<"Calling Conventions"> {
   let Content = [{
-On ARM targets, this can attribute can be used to select calling conventions,
+Clang supports several different calling conventions, depending on the target
+platform and architecture. The calling convention used for a function determines
+how parameters are passed, how results are returned to the caller, and other
+low-level details of calling a function.
+  }];
+}
+
+def PcsDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On ARM targets, this attribute can be used to select calling conventions
 similar to ``stdcall`` on x86. Valid parameter values are "aapcs" and
 "aapcs-vfp".
+  }];
+}
+
+def RegparmDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On 32-bit x86 targets, the regparm attribute causes the compiler to pass
+the first three integer parameters in EAX, EDX, and ECX instead of on the
+stack. This attribute has no effect on variadic functions, and all parameters
+are passed via the stack as normal.
+  }];
+}
+
+def SysVABIDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On Windows x86_64 targets, this attribute changes the calling convention of a
+function to match the default convention used on Sys V targets such as Linux,
+Mac, and BSD. This attribute has no effect on other targets.
+  }];
+}
+
+def MSABIDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On non-Windows x86_64 targets, this attribute changes the calling convention of
+a function to match the default convention used on Windows x86_64. This
+attribute has no effect on Windows targets or non-x86_64 targets.
+  }];
+}
+
+def StdCallDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On 32-bit x86 targets, this attribute changes the calling convention of a
+function to clear parameters off of the stack on return. This convention does
+not support variadic calls or unprototyped functions in C, and has no effect on
+x86_64 targets. This calling convention is used widely by the Windows API and
+COM applications.  See the documentation for `__stdcall`_ on MSDN.
+
+.. _`__stdcall`: http://msdn.microsoft.com/en-us/library/zxk0tw93.aspx
+  }];
+}
+
+def FastCallDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On 32-bit x86 targets, this attribute changes the calling convention of a
+function to use ECX and EDX as register parameters and clear parameters off of
+the stack on return. This convention does not support variadic calls or
+unprototyped functions in C, and has no effect on x86_64 targets. This calling
+convention is supported primarily for compatibility with existing code. Users
+seeking register parameters should use the ``regparm`` attribute, which does
+not require callee-cleanup.  See the documentation for `__fastcall`_ on MSDN.
+
+.. _`__fastcall`: http://msdn.microsoft.com/en-us/library/6xa169sk.aspx
+  }];
+}
+
+def ThisCallDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On 32-bit x86 targets, this attribute changes the calling convention of a
+function to use ECX for the first parameter (typically the implicit ``this``
+parameter of C++ methods) and clear parameters off of the stack on return. This
+convention does not support variadic calls or unprototyped functions in C, and
+has no effect on x86_64 targets. See the documentation for `__thiscall`_ on
+MSDN.
+
+.. _`__thiscall`: http://msdn.microsoft.com/en-us/library/ek8tkfbw.aspx
+  }];
+}
+
+def VectorCallDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On 32-bit x86 *and* x86_64 targets, this attribute changes the calling
+convention of a function to pass vector parameters in SSE registers.
+
+On 32-bit x86 targets, this calling convention is similar to ``__fastcall``.
+The first two integer parameters are passed in ECX and EDX. Subsequent integer
+parameters are passed in memory, and callee clears the stack.  On x86_64
+targets, the callee does *not* clear the stack, and integer parameters are
+passed in RCX, RDX, R8, and R9 as is done for the default Windows x64 calling
+convention.
+
+On both 32-bit x86 and x86_64 targets, vector and floating point arguments are
+passed in XMM0-XMM5. Homogenous vector aggregates of up to four elements are
+passed in sequential SSE registers if enough are available. If AVX is enabled,
+256 bit vectors are passed in YMM0-YMM5. Any vector or aggregate type that
+cannot be passed in registers for any reason is passed by reference, which
+allows the caller to align the parameter memory.
+
+See the documentation for `__vectorcall`_ on MSDN for more details.
+
+.. _`__vectorcall`: http://msdn.microsoft.com/en-us/library/dn375768.aspx
   }];
 }
 
@@ -1031,6 +1136,16 @@ behavior of the program is undefined.
   }];
 }
 
+def FlagEnumDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{
+This attribute can be added to an enumerator to signal to the compiler that it
+is intended to be used as a flag type. This will cause the compiler to assume
+that the range of the type includes all of the values that you can get by
+manipulating bits of the enumerator when issuing warnings.
+  }];
+}
+
 def MSInheritanceDocs : Documentation {
   let Category = DocCatType;
   let Heading = "__single_inhertiance, __multiple_inheritance, __virtual_inheritance";
@@ -1160,3 +1275,88 @@ for further details including limitations of the unroll hints.
   }];
 }
 
+def DocOpenCLAddressSpaces : DocumentationCategory<"OpenCL Address Spaces"> {
+  let Content = [{
+The address space qualifier may be used to specify the region of memory that is
+used to allocate the object. OpenCL supports the following address spaces:
+__generic(generic), __global(global), __local(local), __private(private),
+__constant(constant).
+
+  .. code-block:: c
+
+    __constant int c = ...;
+
+    __generic int* foo(global int* g) {
+      __local int* l;
+      private int p;
+      ...
+      return l;
+    }
+
+More details can be found in the OpenCL C language Spec v2.0, Section 6.5.
+  }];
+}
+
+def OpenCLAddressSpaceGenericDocs : Documentation {
+  let Category = DocOpenCLAddressSpaces;
+  let Heading = "__generic(generic)";
+  let Content = [{
+The generic address space attribute is only available with OpenCL v2.0 and later.
+It can be used with pointer types. Variables in global and local scope and
+function parameters in non-kernel functions can have the generic address space
+type attribute. It is intended to be a placeholder for any other address space
+except for '__constant' in OpenCL code which can be used with multiple address
+spaces.
+  }];
+}
+
+def OpenCLAddressSpaceConstantDocs : Documentation {
+  let Category = DocOpenCLAddressSpaces;
+  let Heading = "__constant(constant)";
+  let Content = [{
+The constant address space attribute signals that an object is located in
+a constant (non-modifiable) memory region. It is available to all work items.
+Any type can be annotated with the constant address space attribute. Objects
+with the constant address space qualifier can be declared in any scope and must
+have an initializer.
+  }];
+}
+
+def OpenCLAddressSpaceGlobalDocs : Documentation {
+  let Category = DocOpenCLAddressSpaces;
+  let Heading = "__global(global)";
+  let Content = [{
+The global address space attribute specifies that an object is allocated in
+global memory, which is accessible by all work items. The content stored in this
+memory area persists between kernel executions. Pointer types to the global
+address space are allowed as function parameters or local variables. Starting
+with OpenCL v2.0, the global address space can be used with global (program
+scope) variables and static local variable as well.
+  }];
+}
+
+def OpenCLAddressSpaceLocalDocs : Documentation {
+  let Category = DocOpenCLAddressSpaces;
+  let Heading = "__local(local)";
+  let Content = [{
+The local address space specifies that an object is allocated in the local (work
+group) memory area, which is accessible to all work items in the same work
+group. The content stored in this memory region is not accessible after
+the kernel execution ends. In a kernel function scope, any variable can be in
+the local address space. In other scopes, only pointer types to the local address
+space are allowed. Local address space variables cannot have an initializer.
+  }];
+}
+
+def OpenCLAddressSpacePrivateDocs : Documentation {
+  let Category = DocOpenCLAddressSpaces;
+  let Heading = "__private(private)";
+  let Content = [{
+The private address space specifies that an object is allocated in the private
+(work item) memory. Other work items cannot access the same memory area and its
+content is destroyed after work item execution ends. Local variables can be
+declared in the private address space. Function arguments are always in the
+private address space. Kernel function arguments of a pointer or an array type
+cannot point to the private address space.
+  }];
+}

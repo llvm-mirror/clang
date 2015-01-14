@@ -516,10 +516,11 @@ ActOnStartClassInterface(SourceLocation AtInterfaceLoc,
     if (!PrevDecl) {
       // Try to correct for a typo in the superclass name without correcting
       // to the class we're defining.
-      ObjCInterfaceValidatorCCC Validator(IDecl);
-      if (TypoCorrection Corrected = CorrectTypo(
-          DeclarationNameInfo(SuperName, SuperLoc), LookupOrdinaryName, TUScope,
-          nullptr, Validator, CTK_ErrorRecovery)) {
+      if (TypoCorrection Corrected =
+              CorrectTypo(DeclarationNameInfo(SuperName, SuperLoc),
+                          LookupOrdinaryName, TUScope, nullptr,
+                          llvm::make_unique<ObjCInterfaceValidatorCCC>(IDecl),
+                          CTK_ErrorRecovery)) {
         diagnoseTypo(Corrected, PDiag(diag::err_undef_superclass_suggest)
                                     << SuperName << ClassName);
         PrevDecl = Corrected.getCorrectionDeclAs<ObjCInterfaceDecl>();
@@ -786,10 +787,10 @@ Sema::FindProtocolDeclaration(bool WarnOnDeclarations,
     ObjCProtocolDecl *PDecl = LookupProtocol(ProtocolId[i].first,
                                              ProtocolId[i].second);
     if (!PDecl) {
-      DeclFilterCCC<ObjCProtocolDecl> Validator;
       TypoCorrection Corrected = CorrectTypo(
           DeclarationNameInfo(ProtocolId[i].first, ProtocolId[i].second),
-          LookupObjCProtocolName, TUScope, nullptr, Validator,
+          LookupObjCProtocolName, TUScope, nullptr,
+          llvm::make_unique<DeclFilterCCC<ObjCProtocolDecl>>(),
           CTK_ErrorRecovery);
       if ((PDecl = Corrected.getCorrectionDeclAs<ObjCProtocolDecl>()))
         diagnoseTypo(Corrected, PDiag(diag::err_undeclared_protocol_suggest)
@@ -1027,11 +1028,9 @@ Decl *Sema::ActOnStartClassImplementation(
   } else {
     // We did not find anything with the name ClassName; try to correct for
     // typos in the class name.
-    ObjCInterfaceValidatorCCC Validator;
-    TypoCorrection Corrected =
-            CorrectTypo(DeclarationNameInfo(ClassName, ClassLoc),
-                        LookupOrdinaryName, TUScope, nullptr, Validator,
-                        CTK_NonError);
+    TypoCorrection Corrected = CorrectTypo(
+        DeclarationNameInfo(ClassName, ClassLoc), LookupOrdinaryName, TUScope,
+        nullptr, llvm::make_unique<ObjCInterfaceValidatorCCC>(), CTK_NonError);
     if (Corrected.getCorrectionDeclAs<ObjCInterfaceDecl>()) {
       // Suggest the (potentially) correct interface name. Don't provide a
       // code-modification hint or use the typo name for recovery, because
@@ -1816,7 +1815,7 @@ void Sema::MatchAllMethodDeclarations(const SelectorSet &InsMap,
   // Check and see if instance methods in class interface have been
   // implemented in the implementation class. If so, their types match.
   for (auto *I : CDecl->instance_methods()) {
-    if (!InsMapSeen.insert(I->getSelector()))
+    if (!InsMapSeen.insert(I->getSelector()).second)
       continue;
     if (!I->isPropertyAccessor() &&
         !InsMap.count(I->getSelector())) {
@@ -1843,7 +1842,7 @@ void Sema::MatchAllMethodDeclarations(const SelectorSet &InsMap,
   // Check and see if class methods in class interface have been
   // implemented in the implementation class. If so, their types match.
   for (auto *I : CDecl->class_methods()) {
-    if (!ClsMapSeen.insert(I->getSelector()))
+    if (!ClsMapSeen.insert(I->getSelector()).second)
       continue;
     if (!ClsMap.count(I->getSelector())) {
       if (ImmediateClass)
@@ -2230,6 +2229,7 @@ void Sema::addMethodToGlobalList(ObjCMethodList *List, ObjCMethodDecl *Method) {
   if (List->Method == nullptr) {
     List->Method = Method;
     List->setNext(nullptr);
+      List->Count = Method->isDefined() ? 0 : 1;
     return;
   }
   
@@ -2243,12 +2243,14 @@ void Sema::addMethodToGlobalList(ObjCMethodList *List, ObjCMethodDecl *Method) {
 
     if (!MatchTwoMethodDeclarations(Method, List->Method))
       continue;
-    
+      
     ObjCMethodDecl *PrevObjCMethod = List->Method;
 
     // Propagate the 'defined' bit.
     if (Method->isDefined())
       PrevObjCMethod->setDefined(true);
+    else
+      ++List->Count;
     
     // If a method is deprecated, push it in the global pool.
     // This is used for better diagnostics.
@@ -2269,7 +2271,7 @@ void Sema::addMethodToGlobalList(ObjCMethodList *List, ObjCMethodDecl *Method) {
   // We have a new signature for an existing method - add it.
   // This is extremely rare. Only 1% of Cocoa selectors are "overloaded".
   ObjCMethodList *Mem = BumpAlloc.Allocate<ObjCMethodList>();
-  Previous->setNext(new (Mem) ObjCMethodList(Method, nullptr));
+  Previous->setNext(new (Mem) ObjCMethodList(Method, 0, nullptr));
 }
 
 /// \brief Read the contents of the method pool for a given selector from
@@ -2333,6 +2335,16 @@ bool Sema::CollectMultipleMethodsInGlobalPool(Selector Sel,
     if (M->Method && !M->Method->isHidden())
       Methods.push_back(M->Method);
   return (Methods.size() > 1);
+}
+
+bool Sema::AreMultipleMethodsInGlobalPool(Selector Sel,
+                                          bool instance) {
+  GlobalMethodPool::iterator Pos = MethodPool.find(Sel);
+  // Test for no method in the pool which should not trigger any warning by caller.
+  if (Pos == MethodPool.end())
+    return true;
+  ObjCMethodList &MethList = instance ? Pos->second.first : Pos->second.second;
+  return MethList.Count > 1;
 }
 
 ObjCMethodDecl *Sema::LookupMethodInGlobalPool(Selector Sel, SourceRange R,

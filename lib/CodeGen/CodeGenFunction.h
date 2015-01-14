@@ -113,7 +113,6 @@ class CodeGenFunction : public CodeGenTypeCache {
   void operator=(const CodeGenFunction &) LLVM_DELETED_FUNCTION;
 
   friend class CGCXXABI;
-  friend class CGOpenMPRegionInfo;
 public:
   /// A jump destination is an abstract label, branching to which may
   /// require a jump out through normal cleanups.
@@ -194,7 +193,7 @@ public:
            I != E; ++I, ++Field) {
         if (I->capturesThis())
           CXXThisFieldDecl = *Field;
-        else
+        else if (I->capturesVariable())
           CaptureFields[I->getCapturedVar()] = *Field;
       }
     }
@@ -249,8 +248,8 @@ public:
   /// potentially higher performance penalties.
   unsigned char BoundsChecking;
 
-  /// \brief Sanitizer options to use for this function.
-  const SanitizerOptions *SanOpts;
+  /// \brief Sanitizers enabled for this function.
+  SanitizerSet SanOpts;
 
   /// \brief True if CodeGen currently emits code implementing sanitizer checks.
   bool IsSanitizerScope;
@@ -290,11 +289,11 @@ public:
   /// Header for data within LifetimeExtendedCleanupStack.
   struct LifetimeExtendedCleanupHeader {
     /// The size of the following cleanup object.
-    size_t Size : 29;
+    unsigned Size : 29;
     /// The kind of cleanup to push: a value from the CleanupKind enumeration.
     unsigned Kind : 3;
 
-    size_t getSize() const { return Size; }
+    size_t getSize() const { return size_t(Size); }
     CleanupKind getKind() const { return static_cast<CleanupKind>(Kind); }
   };
 
@@ -1137,6 +1136,9 @@ public:
   void pushLifetimeExtendedDestroy(CleanupKind kind, llvm::Value *addr,
                                    QualType type, Destroyer *destroyer,
                                    bool useEHCleanupForArray);
+  void pushCallObjectDeleteCleanup(const FunctionDecl *OperatorDelete,
+                                   llvm::Value *CompletePtr,
+                                   QualType ElementType);
   void pushStackRestore(CleanupKind kind, llvm::Value *SPMem);
   void emitDestroy(llvm::Value *addr, QualType type, Destroyer *destroyer,
                    bool useEHCleanupForArray);
@@ -2003,6 +2005,7 @@ public:
   void EmitCXXForRangeStmt(const CXXForRangeStmt &S,
                            ArrayRef<const Attr *> Attrs = None);
 
+  LValue InitCapturedStruct(const CapturedStmt &S);
   llvm::Function *EmitCapturedStmt(const CapturedStmt &S, CapturedRegionKind K);
   void GenerateCapturedStmtFunctionProlog(const CapturedStmt &S);
   llvm::Function *GenerateCapturedStmtFunctionEpilog(const CapturedStmt &S);
@@ -2319,6 +2322,11 @@ public:
                               ReturnValueSlot ReturnValue, llvm::Value *This,
                               llvm::Value *ImplicitParam,
                               QualType ImplicitParamTy, const CallExpr *E);
+  RValue EmitCXXStructorCall(const CXXMethodDecl *MD, llvm::Value *Callee,
+                             ReturnValueSlot ReturnValue, llvm::Value *This,
+                             llvm::Value *ImplicitParam,
+                             QualType ImplicitParamTy, const CallExpr *E,
+                             StructorType Type);
   RValue EmitCXXMemberCallExpr(const CXXMemberCallExpr *E,
                                ReturnValueSlot ReturnValue);
   RValue EmitCXXMemberPointerCallExpr(const CXXMemberCallExpr *E,
@@ -2393,8 +2401,7 @@ public:
   llvm::Value *EmitObjCArrayLiteral(const ObjCArrayLiteral *E);
   llvm::Value *EmitObjCDictionaryLiteral(const ObjCDictionaryLiteral *E);
   llvm::Value *EmitObjCCollectionLiteral(const Expr *E,
-                                const ObjCMethodDecl *MethodWithObjects,
-                                const ObjCMethodDecl *AllocMethod);
+                                const ObjCMethodDecl *MethodWithObjects);
   llvm::Value *EmitObjCSelectorExpr(const ObjCSelectorExpr *E);
   RValue EmitObjCMessageExpr(const ObjCMessageExpr *E,
                              ReturnValueSlot Return = ReturnValueSlot());
@@ -2642,23 +2649,12 @@ public:
   /// passing to a runtime sanitizer handler.
   llvm::Constant *EmitCheckSourceLocation(SourceLocation Loc);
 
-  /// \brief Specify under what conditions this check can be recovered
-  enum CheckRecoverableKind {
-    /// Always terminate program execution if this check fails
-    CRK_Unrecoverable,
-    /// Check supports recovering, allows user to specify which
-    CRK_Recoverable,
-    /// Runtime conditionally aborts, always need to support recovery.
-    CRK_AlwaysRecoverable
-  };
-
   /// \brief Create a basic block that will call a handler function in a
   /// sanitizer runtime with the provided arguments, and create a conditional
   /// branch to it.
-  void EmitCheck(llvm::Value *Checked, StringRef CheckName,
-                 ArrayRef<llvm::Constant *> StaticArgs,
-                 ArrayRef<llvm::Value *> DynamicArgs,
-                 CheckRecoverableKind Recoverable);
+  void EmitCheck(ArrayRef<std::pair<llvm::Value *, SanitizerKind>> Checked,
+                 StringRef CheckName, ArrayRef<llvm::Constant *> StaticArgs,
+                 ArrayRef<llvm::Value *> DynamicArgs);
 
   /// \brief Create a basic block that will call the trap intrinsic, and emit a
   /// conditional branch to it, for the -ftrapv checks.

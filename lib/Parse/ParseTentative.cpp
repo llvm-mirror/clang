@@ -837,6 +837,7 @@ Parser::TPResult Parser::TryParseDeclarator(bool mayBeAbstract,
           Tok.is(tok::kw___stdcall) ||
           Tok.is(tok::kw___fastcall) ||
           Tok.is(tok::kw___thiscall) ||
+          Tok.is(tok::kw___vectorcall) ||
           Tok.is(tok::kw___unaligned))
         return TPResult::True; // attributes indicate declaration
       TPResult TPR = TryParseDeclarator(mayBeAbstract, mayHaveIdentifier);
@@ -891,6 +892,7 @@ Parser::isExpressionOrTypeSpecifierSimple(tok::TokenKind Kind) {
   case tok::numeric_constant:
   case tok::char_constant:
   case tok::wide_char_constant:
+  case tok::utf8_char_constant:
   case tok::utf16_char_constant:
   case tok::utf32_char_constant:
   case tok::string_literal:
@@ -984,6 +986,7 @@ Parser::isExpressionOrTypeSpecifierSimple(tok::TokenKind Kind) {
   case tok::kw___stdcall:
   case tok::kw___fastcall:
   case tok::kw___thiscall:
+  case tok::kw___vectorcall:
   case tok::kw___unaligned:
   case tok::kw___vector:
   case tok::kw___pixel:
@@ -1004,6 +1007,28 @@ bool Parser::isTentativelyDeclared(IdentifierInfo *II) {
       != TentativelyDeclaredIdentifiers.end();
 }
 
+namespace {
+class TentativeParseCCC : public CorrectionCandidateCallback {
+public:
+  TentativeParseCCC(const Token &Next) {
+    WantRemainingKeywords = false;
+    WantTypeSpecifiers = Next.is(tok::l_paren) || Next.is(tok::r_paren) ||
+                         Next.is(tok::greater) || Next.is(tok::l_brace) ||
+                         Next.is(tok::identifier);
+  }
+
+  bool ValidateCandidate(const TypoCorrection &Candidate) override {
+    // Reject any candidate that only resolves to instance members since they
+    // aren't viable as standalone identifiers instead of member references.
+    if (Candidate.isResolved() && !Candidate.isKeyword() &&
+        std::all_of(Candidate.begin(), Candidate.end(),
+                    [](NamedDecl *ND) { return ND->isCXXInstanceMember(); }))
+      return false;
+
+    return CorrectionCandidateCallback::ValidateCandidate(Candidate);
+  }
+};
+}
 /// isCXXDeclarationSpecifier - Returns TPResult::True if it is a declaration
 /// specifier, TPResult::False if it is not, TPResult::Ambiguous if it could
 /// be either a decl-specifier or a function-style cast, and TPResult::Error
@@ -1129,14 +1154,8 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
       // a parse error one way or another. In that case, tell the caller that
       // this is ambiguous. Typo-correct to type and expression keywords and
       // to types and identifiers, in order to try to recover from errors.
-      CorrectionCandidateCallback TypoCorrection;
-      TypoCorrection.WantRemainingKeywords = false;
-      TypoCorrection.WantTypeSpecifiers =
-          Next.is(tok::l_paren) || Next.is(tok::r_paren) ||
-          Next.is(tok::greater) || Next.is(tok::l_brace) ||
-          Next.is(tok::identifier);
       switch (TryAnnotateName(false /* no nested name specifier */,
-                              &TypoCorrection)) {
+                              llvm::make_unique<TentativeParseCCC>(Next))) {
       case ANK_Error:
         return TPResult::Error;
       case ANK_TentativeDecl:
@@ -1254,6 +1273,7 @@ Parser::isCXXDeclarationSpecifier(Parser::TPResult BracedCastResult,
   case tok::kw___stdcall:
   case tok::kw___fastcall:
   case tok::kw___thiscall:
+  case tok::kw___vectorcall:
   case tok::kw___w64:
   case tok::kw___sptr:
   case tok::kw___uptr:

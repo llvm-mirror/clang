@@ -179,6 +179,14 @@ static void addBoundsCheckingPass(const PassManagerBuilder &Builder,
   PM.add(createBoundsCheckingPass());
 }
 
+static void addSanitizerCoveragePass(const PassManagerBuilder &Builder,
+                                     PassManagerBase &PM) {
+  const PassManagerBuilderWrapper &BuilderWrapper =
+      static_cast<const PassManagerBuilderWrapper&>(Builder);
+  const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
+  PM.add(createSanitizerCoverageModulePass(CGOpts.SanitizeCoverage));
+}
+
 static void addAddressSanitizerPasses(const PassManagerBuilder &Builder,
                                       PassManagerBase &PM) {
   PM.add(createAddressSanitizerFunctionPass());
@@ -215,7 +223,7 @@ static void addDataFlowSanitizerPass(const PassManagerBuilder &Builder,
   const PassManagerBuilderWrapper &BuilderWrapper =
       static_cast<const PassManagerBuilderWrapper&>(Builder);
   const LangOptions &LangOpts = BuilderWrapper.getLangOpts();
-  PM.add(createDataFlowSanitizerPass(LangOpts.Sanitize.BlacklistFile));
+  PM.add(createDataFlowSanitizerPass(LangOpts.SanitizerBlacklistFile));
 }
 
 static TargetLibraryInfo *createTLI(llvm::Triple &TargetTriple,
@@ -247,6 +255,7 @@ void EmitAssemblyHelper::CreatePasses() {
   PMBuilder.DisableTailCalls = CodeGenOpts.DisableTailCalls;
   PMBuilder.DisableUnitAtATime = !CodeGenOpts.UnitAtATime;
   PMBuilder.DisableUnrollLoops = !CodeGenOpts.UnrollLoops;
+  PMBuilder.MergeFunctions = CodeGenOpts.MergeFunctions;
   PMBuilder.RerollLoops = CodeGenOpts.RerollLoops;
 
   PMBuilder.addExtension(PassManagerBuilder::EP_EarlyAsPossible,
@@ -266,35 +275,42 @@ void EmitAssemblyHelper::CreatePasses() {
                            addObjCARCOptPass);
   }
 
-  if (LangOpts.Sanitize.LocalBounds) {
+  if (LangOpts.Sanitize.has(SanitizerKind::LocalBounds)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_ScalarOptimizerLate,
                            addBoundsCheckingPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addBoundsCheckingPass);
   }
 
-  if (LangOpts.Sanitize.Address) {
+  if (CodeGenOpts.SanitizeCoverage) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
+                           addSanitizerCoveragePass);
+    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                           addSanitizerCoveragePass);
+  }
+
+  if (LangOpts.Sanitize.has(SanitizerKind::Address)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addAddressSanitizerPasses);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addAddressSanitizerPasses);
   }
 
-  if (LangOpts.Sanitize.Memory) {
+  if (LangOpts.Sanitize.has(SanitizerKind::Memory)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addMemorySanitizerPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addMemorySanitizerPass);
   }
 
-  if (LangOpts.Sanitize.Thread) {
+  if (LangOpts.Sanitize.has(SanitizerKind::Thread)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addThreadSanitizerPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addThreadSanitizerPass);
   }
 
-  if (LangOpts.Sanitize.DataFlow) {
+  if (LangOpts.Sanitize.has(SanitizerKind::DataFlow)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addDataFlowSanitizerPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,

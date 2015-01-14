@@ -64,6 +64,9 @@ def err_typecheck_converted_constant_expression : Error<
   "value of type %0 is not implicitly convertible to %1">;
 def err_typecheck_converted_constant_expression_disallowed : Error<
   "conversion from %0 to %1 is not allowed in a converted constant expression">;
+def err_typecheck_converted_constant_expression_indirect : Error<
+  "conversion from %0 to %1 in converted constant expression would "
+  "bind reference to a temporary">;
 def err_expr_not_cce : Error<
   "%select{case value|enumerator value|non-type template argument|array size}0 "
   "is not a constant expression">;
@@ -1117,6 +1120,8 @@ def warn_missing_exception_specification : Warning<
   "%0 is missing exception specification '%1'">;
 def err_noexcept_needs_constant_expression : Error<
   "argument to noexcept specifier must be a constant expression">;
+def err_exception_spec_not_parsed : Error<
+  "exception specification is not available until end of class definition">;
 
 // C++ access checking
 def err_class_redeclared_with_different_access : Error<
@@ -1494,6 +1499,9 @@ def note_uninit_reference_member : Note<
   "uninitialized reference member is here">;
 def warn_field_is_uninit : Warning<"field %0 is uninitialized when used here">,
   InGroup<Uninitialized>;
+def warn_base_class_is_uninit : Warning<
+  "base class %0 is uninitialized when used here to access %q1">,
+  InGroup<Uninitialized>;
 def warn_reference_field_is_uninit : Warning<
   "reference %0 is not yet bound to a value when used here">,
   InGroup<Uninitialized>;
@@ -1691,6 +1699,9 @@ def override_keyword_hides_virtual_member_function : Error<
   "%select{function|functions}1">;
 def err_function_marked_override_not_overriding : Error<
   "%0 marked 'override' but does not override any member functions">;
+def warn_function_marked_not_override_overriding : Warning <
+  "%0 overrides a member function but is not marked 'override'">,
+  InGroup<CXX11WarnOverrideMethod>;
 def err_class_marked_final_used_as_base : Error<
   "base %0 is marked '%select{final|sealed}1'">;
 def warn_abstract_final_class : Warning<
@@ -2043,8 +2054,6 @@ def err_undeclared_nsarray : Error<
 def err_undeclared_nsdictionary : Error<
   "NSDictionary must be available to use Objective-C dictionary "
   "literals">;
-def err_undeclared_alloc : Error<
-  "alloc must be available to use Objective-C literals">;
 def err_undeclared_boxing_method : Error<
   "declaration of %0 is missing in %1 class">;
 def err_objc_literal_method_sig : Error<
@@ -2113,7 +2122,13 @@ def err_attribute_aligned_too_great : Error<
 def warn_redeclaration_without_attribute_prev_attribute_ignored : Warning<
   "%q0 redeclared without %1 attribute: previous %1 ignored">,
   InGroup<DiagGroup<"inconsistent-dllimport">>;
+def warn_dllimport_dropped_from_inline_function : Warning<
+  "%q0 redeclared inline; %1 attribute ignored">,
+  InGroup<IgnoredAttributes>;
 def warn_attribute_ignored : Warning<"%0 attribute ignored">,
+  InGroup<IgnoredAttributes>;
+def warn_attribute_ignored_on_inline :
+  Warning<"%0 attribute ignored on inline function">,
   InGroup<IgnoredAttributes>;
 def warn_attribute_after_definition_ignored : Warning<
   "attribute %0 after definition is ignored">,
@@ -2219,7 +2234,7 @@ def warn_attribute_wrong_decl_type : Warning<
   "%0 attribute only applies to %select{functions|unions|"
   "variables and functions|functions and methods|parameters|"
   "functions, methods and blocks|functions, methods, and classes|"
-  "functions, methods, and parameters|classes|variables|methods|"
+  "functions, methods, and parameters|classes|enums|variables|methods|"
   "variables, functions and labels|fields and global variables|structs|"
   "variables and typedefs|thread-local variables|"
   "variables and fields|variables, data members and tag types|"
@@ -2255,9 +2270,9 @@ def err_cconv_change : Error<
 def warn_cconv_ignored : Warning<
   "calling convention %0 ignored for this target">, InGroup<IgnoredAttributes>;
 def err_cconv_knr : Error<
-  "function with no prototype cannot use the callee-cleanup %0 calling convention">;
+  "function with no prototype cannot use the %0 calling convention">;
 def warn_cconv_knr : Warning<
-  "function with no prototype cannot use the callee-cleanup %0 calling convention">,
+  err_cconv_knr.Text>,
   InGroup<DiagGroup<"missing-prototype-for-cc">>;
 def err_cconv_varargs : Error<
   "variadic function cannot use %0 calling convention">;
@@ -2500,6 +2515,10 @@ def warn_impcast_pointer_to_bool : Warning<
     "address of%select{| function| array}0 '%1' will always evaluate to "
     "'true'">,
     InGroup<PointerBoolConversion>;
+def warn_cast_nonnull_to_bool : Warning<
+    "nonnull parameter '%0' will evaluate to "
+    "'true' on first encounter">,
+    InGroup<PointerBoolConversion>;
 def warn_this_bool_conversion : Warning<
   "'this' pointer cannot be null in well-defined C++ code; pointer may be "
   "assumed to always convert to true">, InGroup<UndefinedBoolConversion>;
@@ -2511,6 +2530,10 @@ def warn_address_of_reference_bool_conversion : Warning<
 def warn_null_pointer_compare : Warning<
     "comparison of %select{address of|function|array}0 '%1' %select{not |}2"
     "equal to a null pointer is always %select{true|false}2">,
+    InGroup<TautologicalPointerCompare>;
+def warn_nonnull_parameter_compare : Warning<
+    "comparison of nonnull parameter '%0' %select{not |}1"
+    "equal to a null pointer is %select{true|false}1 on first encounter">,
     InGroup<TautologicalPointerCompare>;
 def warn_this_null_compare : Warning<
   "'this' pointer cannot be null in well-defined C++ code; comparison may be "
@@ -3273,6 +3296,10 @@ def err_template_arg_wrongtype_null_constant : Error<
 def err_deduced_non_type_template_arg_type_mismatch : Error<
   "deduced non-type template argument does not have the same type as the "
   "its corresponding template parameter%diff{ ($ vs $)|}0,1">;
+def err_non_type_template_arg_subobject : Error<
+  "non-type template argument refers to subobject '%0'">;
+def err_non_type_template_arg_addr_label_diff : Error<
+  "template argument / label address difference / what did you expect?">;
 def err_template_arg_not_convertible : Error<
   "non-type template argument of type %0 cannot be converted to a value "
   "of type %1">;
@@ -3324,6 +3351,9 @@ def err_template_arg_not_object_or_func : Error<
   "non-type template argument does not refer to an object or function">;
 def err_template_arg_not_pointer_to_member_form : Error<
   "non-type template argument is not a pointer to member constant">;
+def err_template_arg_member_ptr_base_derived_not_supported : Error<
+  "sorry, non-type template argument of pointer-to-member type %1 that refers "
+  "to member %q0 of a different class is not supported yet">;
 def ext_template_arg_extra_parens : ExtWarn<
   "address non-type template argument cannot be surrounded by parentheses">;
 def warn_cxx98_compat_template_arg_extra_parens : Warning<
@@ -3527,6 +3557,8 @@ def note_template_variable_def_here : Note<
   "in instantiation of variable template specialization %q0 requested here">;
 def note_template_enum_def_here : Note<
   "in instantiation of enumeration %q0 requested here">;
+def note_template_nsdmi_here : Note<
+  "in instantiation of default member initializer %q0 requested here">;
 def note_template_type_alias_instantiation_here : Note<
   "in instantiation of template type alias %0 requested here">;
 def note_template_exception_spec_instantiation_here : Note<
@@ -3651,6 +3683,11 @@ def err_invalid_var_template_spec_type : Error<"type %2 "
   "of %select{explicit instantiation|explicit specialization|"
   "partial specialization|redeclaration}0 of %1 does not match"
   " expected type %3">;
+def err_mismatched_exception_spec_explicit_instantiation : Error<
+  "exception specification in explicit instantiation does not match instantiated one">;
+def ext_mismatched_exception_spec_explicit_instantiation : ExtWarn<
+  "exception specification in explicit instantiation does not match instantiated one">,
+  InGroup<Microsoft>;
   
 // C++ typename-specifiers
 def err_typename_nested_not_found : Error<"no type named %0 in %1">;
@@ -3772,6 +3809,14 @@ def err_ellipsis_in_declarator_not_parameter : Error<
 def err_sizeof_pack_no_pack_name : Error<
   "%0 does not refer to the name of a parameter pack">;
 
+def err_fold_expression_packs_both_sides : Error<
+  "binary fold expression has unexpanded parameter packs in both operands">;
+def err_fold_expression_empty : Error<
+  "unary fold expression has empty expansion for operator '%0' "
+  "with no fallback value">;
+def err_fold_expression_bad_operand : Error<
+  "expression not permitted as operand of fold expression">;
+
 def err_unexpected_typedef : Error<
   "unexpected type name %0: expected expression">;
 def err_unexpected_namespace : Error<
@@ -3798,6 +3843,9 @@ def warn_property_method_deprecated :
     InGroup<DeprecatedDeclarations>;
 def warn_deprecated_message : Warning<"%0 is deprecated: %1">,
     InGroup<DeprecatedDeclarations>;
+def warn_deprecated_anonymous_namespace : Warning<
+  "'deprecated' attribute on anonymous namespace ignored">,
+  InGroup<IgnoredAttributes>;
 def warn_deprecated_fwdclass_message : Warning<
     "%0 may be deprecated because the receiver type is unknown">,
     InGroup<DeprecatedDeclarations>;
@@ -4005,6 +4053,9 @@ def ext_enum_too_large : ExtWarn<
 def ext_enumerator_increment_too_large : ExtWarn<
   "incremented enumerator value %0 is not representable in the "
   "largest integer type">, InGroup<EnumTooLarge>;
+def warn_flag_enum_constant_out_of_range : Warning<
+  "enumeration value %0 is out of range of flags in enumeration type %1">,
+  InGroup<FlagEnum>;
   
 def warn_illegal_constant_array_size : Extension<
   "size of static array must be an integer constant expression">;
@@ -4631,7 +4682,7 @@ def warn_logical_and_in_logical_or : Warning<
   "'&&' within '||'">, InGroup<LogicalOpParentheses>;
 
 def warn_overloaded_shift_in_comparison :Warning<
-  "overloaded operator %select{>>|<<}0 has lower precedence than "
+  "overloaded operator %select{>>|<<}0 has higher precedence than "
   "comparison operator">,
   InGroup<OverloadedShiftOpParentheses>;
 def note_evaluate_comparison_first :Note<
@@ -4922,6 +4973,10 @@ def err_typecheck_comparison_of_distinct_pointers : Error<
 def ext_typecheck_comparison_of_distinct_pointers_nonstandard : ExtWarn<
   "comparison of distinct pointer types (%0 and %1) uses non-standard "
   "composite pointer type %2">, InGroup<CompareDistinctPointerType>;
+def err_typecheck_op_on_nonoverlapping_address_space_pointers : Error<
+  "%select{comparison between %diff{ ($ and $)|}0,1"
+  "|arithmetic operation with operands of type %diff{ ($ and $)|}0,1}2"
+  " which are pointers to non-overlapping address spaces">;
 def err_typecheck_assign_const : Error<"read-only variable is not assignable">;
 def err_stmtexpr_file_scope : Error<
   "statement expression not allowed at file scope">;
@@ -5231,7 +5286,7 @@ def err_bad_cxx_cast_member_pointer_size : Error<
   "cannot %select{||reinterpret_cast||C-style cast|}0 from member pointer "
   "type %1 to member pointer type %2 of different size">;
 def err_bad_reinterpret_cast_reference : Error<
-  "reinterpret_cast of a %0 to %1 needs its address which is not allowed">;
+  "reinterpret_cast of a %0 to %1 needs its address, which is not allowed">;
 def warn_undefined_reinterpret_cast : Warning<
   "reinterpret_cast from %0 to %1 has undefined behavior">,
   InGroup<UndefinedReinterpretCast>, DefaultIgnore;
@@ -5265,6 +5320,7 @@ def err_uuidof_without_guid : Error<
 def err_uuidof_with_multiple_guids : Error<
   "cannot call operator __uuidof on a type with multiple GUIDs">;
 def err_incomplete_typeid : Error<"'typeid' of incomplete type %0">;
+def err_variably_modified_typeid : Error<"'typeid' of variably modified type %0">;
 def err_static_illegal_in_new : Error<
   "the 'static' modifier for the array size is not legal in new expressions">;
 def err_array_new_needs_size : Error<
@@ -5314,12 +5370,13 @@ def note_add_initializer : Note<
   "add an explicit initializer to initialize %0">;
 def err_delete_operand : Error<"cannot delete expression of type %0">;
 def ext_delete_void_ptr_operand : ExtWarn<
-  "cannot delete expression with pointer-to-'void' type %0">;
+  "cannot delete expression with pointer-to-'void' type %0">,
+  InGroup<DeleteIncomplete>;
 def err_ambiguous_delete_operand : Error<
   "ambiguous conversion of delete expression of type %0 to a pointer">;
 def warn_delete_incomplete : Warning<
   "deleting pointer to incomplete type %0 may cause undefined behavior">,
-  InGroup<DiagGroup<"delete-incomplete">>;
+  InGroup<DeleteIncomplete>;
 def err_delete_incomplete_class_type : Error<
   "deleting incomplete class type %0; no conversions to pointer type">;
 def err_delete_explicit_conversion : Error<
@@ -6076,6 +6133,11 @@ def warn_zero_size_struct_union_compat : Warning<"%select{|empty }0"
 def warn_zero_size_struct_union_in_extern_c : Warning<"%select{|empty }0"
   "%select{struct|union}1 has size 0 in C, %select{size 1|non-zero size}2 in C++">,
   InGroup<ExternCCompat>;
+def warn_cast_qual : Warning<"cast from %0 to %1 drops %select{const and "
+  "volatile qualifiers|const qualifier|volatile qualifier}2">,
+  InGroup<CastQual>, DefaultIgnore;
+def warn_cast_qual2 : Warning<"cast from %0 to %1 must have all intermediate "
+  "pointers const qualified to be safe">, InGroup<CastQual>, DefaultIgnore;
 } // End of general sema category.
 
 // inline asm.
@@ -6187,9 +6249,12 @@ def err_in_class_initializer_literal_type : Error<
   "'constexpr' specifier">;
 def err_in_class_initializer_non_constant : Error<
   "in-class initializer for static data member is not a constant expression">;
-def err_in_class_initializer_references_def_ctor : Error<
-  "defaulted default constructor of %0 cannot be used by non-static data "
-  "member initializer which appears before end of class definition">;
+def err_in_class_initializer_not_yet_parsed
+    : Error<"cannot use defaulted default constructor of %0 within the class "
+            "outside of member functions because %1 has an initializer">;
+def err_in_class_initializer_not_yet_parsed_outer_class
+    : Error<"cannot use defaulted default constructor of %0 within "
+            "%1 outside of member functions because %2 has an initializer">;
 
 def ext_in_class_initializer_non_constant : Extension<
   "in-class initializer for static data member is not a constant expression; "
@@ -7172,6 +7237,8 @@ def note_omp_implicit_dsa : Note<
   "implicitly determined as %0">;
 def err_omp_loop_var_dsa : Error<
   "loop iteration variable in the associated loop of 'omp %1' directive may not be %0, predetermined as %2">;
+def err_omp_global_loop_var_dsa : Error<
+  "loop iteration variable in the associated loop of 'omp %1' directive may not be a variable with global storage without being explicitly marked as %0">;
 def err_omp_not_for : Error<
   "%select{statement after '#pragma omp %1' must be a for loop|"
   "expected %2 for loops after '#pragma omp %1'%select{|, but found only %4}3}0">;
@@ -7289,10 +7356,12 @@ def err_omp_parallel_reduction_in_task_firstprivate : Error<
   "argument of a reduction clause of a %0 construct must not appear in a firstprivate clause on a task construct">;
 def err_omp_atomic_read_not_expression_statement : Error<
   "the statement for 'atomic read' must be an expression statement of form 'v = x;',"
-  " where v and x are both l-value expressions with scalar type">;
+  " where v and x are both lvalue expressions with scalar type">;
+def note_omp_atomic_read_write: Note<
+  "%select{expected an expression statement|expected built-in assignment operator|expected expression of scalar type|expected lvalue expression}0">;
 def err_omp_atomic_write_not_expression_statement : Error<
   "the statement for 'atomic write' must be an expression statement of form 'x = expr;',"
-  " where x is an l-value expression with scalar type">;
+  " where x is a lvalue expression with scalar type">;
 def err_omp_atomic_update_not_expression_statement : Error<
   "the statement for 'atomic%select{| update}0' must be an expression statement of form '++x;', '--x;', 'x++;', 'x--;', 'x binop= expr;', 'x = x binop expr' or 'x = expr binop x',"
   " where x is an l-value expression with scalar type">;

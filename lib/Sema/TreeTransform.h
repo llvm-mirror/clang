@@ -563,10 +563,17 @@ public:
   QualType Transform##CLASS##Type(TypeLocBuilder &TLB, CLASS##TypeLoc T);
 #include "clang/AST/TypeLocNodes.def"
 
+  template<typename Fn>
   QualType TransformFunctionProtoType(TypeLocBuilder &TLB,
                                       FunctionProtoTypeLoc TL,
                                       CXXRecordDecl *ThisContext,
-                                      unsigned ThisTypeQuals);
+                                      unsigned ThisTypeQuals,
+                                      Fn TransformExceptionSpec);
+
+  bool TransformExceptionSpec(SourceLocation Loc,
+                              FunctionProtoType::ExceptionSpecInfo &ESI,
+                              SmallVectorImpl<QualType> &Exceptions,
+                              bool &Changed);
 
   StmtResult TransformSEHHandler(Stmt *Handler);
 
@@ -2784,6 +2791,27 @@ public:
     return getSema().CheckPackExpansion(Pattern, EllipsisLoc, NumExpansions);
   }
 
+  /// \brief Build a new C++1z fold-expression.
+  ///
+  /// By default, performs semantic analysis in order to build a new fold
+  /// expression.
+  ExprResult RebuildCXXFoldExpr(SourceLocation LParenLoc, Expr *LHS,
+                                BinaryOperatorKind Operator,
+                                SourceLocation EllipsisLoc, Expr *RHS,
+                                SourceLocation RParenLoc) {
+    return getSema().BuildCXXFoldExpr(LParenLoc, LHS, Operator, EllipsisLoc,
+                                      RHS, RParenLoc);
+  }
+
+  /// \brief Build an empty C++1z fold-expression with the given operator.
+  ///
+  /// By default, produces the fallback value for the fold-expression, or
+  /// produce an error if there is no fallback value.
+  ExprResult RebuildEmptyCXXFoldExpr(SourceLocation EllipsisLoc,
+                                     BinaryOperatorKind Operator) {
+    return getSema().BuildEmptyCXXFoldExpr(EllipsisLoc, Operator);
+  }
+
   /// \brief Build a new atomic operation expression.
   ///
   /// By default, performs semantic analysis to build the new expression.
@@ -4550,15 +4578,20 @@ template<typename Derived>
 QualType
 TreeTransform<Derived>::TransformFunctionProtoType(TypeLocBuilder &TLB,
                                                    FunctionProtoTypeLoc TL) {
-  return getDerived().TransformFunctionProtoType(TLB, TL, nullptr, 0);
+  SmallVector<QualType, 4> ExceptionStorage;
+  TreeTransform *This = this; // Work around gcc.gnu.org/PR56135.
+  return getDerived().TransformFunctionProtoType(
+      TLB, TL, nullptr, 0,
+      [&](FunctionProtoType::ExceptionSpecInfo &ESI, bool &Changed) {
+        return This->TransformExceptionSpec(TL.getBeginLoc(), ESI,
+                                            ExceptionStorage, Changed);
+      });
 }
 
-template<typename Derived>
-QualType
-TreeTransform<Derived>::TransformFunctionProtoType(TypeLocBuilder &TLB,
-                                                   FunctionProtoTypeLoc TL,
-                                                   CXXRecordDecl *ThisContext,
-                                                   unsigned ThisTypeQuals) {
+template<typename Derived> template<typename Fn>
+QualType TreeTransform<Derived>::TransformFunctionProtoType(
+    TypeLocBuilder &TLB, FunctionProtoTypeLoc TL, CXXRecordDecl *ThisContext,
+    unsigned ThisTypeQuals, Fn TransformExceptionSpec) {
   // Transform the parameters and return type.
   //
   // We are required to instantiate the params and return type in source order.
@@ -4603,15 +4636,21 @@ TreeTransform<Derived>::TransformFunctionProtoType(TypeLocBuilder &TLB,
       return QualType();
   }
 
-  // FIXME: Need to transform the exception-specification too.
+  FunctionProtoType::ExtProtoInfo EPI = T->getExtProtoInfo();
+
+  bool EPIChanged = false;
+  if (TransformExceptionSpec(EPI.ExceptionSpec, EPIChanged))
+    return QualType();
+
+  // FIXME: Need to transform ConsumedParameters for variadic template
+  // expansion.
 
   QualType Result = TL.getType();
   if (getDerived().AlwaysRebuild() || ResultType != T->getReturnType() ||
       T->getNumParams() != ParamTypes.size() ||
       !std::equal(T->param_type_begin(), T->param_type_end(),
-                  ParamTypes.begin())) {
-    Result = getDerived().RebuildFunctionProtoType(ResultType, ParamTypes,
-                                                   T->getExtProtoInfo());
+                  ParamTypes.begin()) || EPIChanged) {
+    Result = getDerived().RebuildFunctionProtoType(ResultType, ParamTypes, EPI);
     if (Result.isNull())
       return QualType();
   }
@@ -4625,6 +4664,107 @@ TreeTransform<Derived>::TransformFunctionProtoType(TypeLocBuilder &TLB,
     NewTL.setParam(i, ParamDecls[i]);
 
   return Result;
+}
+
+template<typename Derived>
+bool TreeTransform<Derived>::TransformExceptionSpec(
+    SourceLocation Loc, FunctionProtoType::ExceptionSpecInfo &ESI,
+    SmallVectorImpl<QualType> &Exceptions, bool &Changed) {
+  assert(ESI.Type != EST_Uninstantiated && ESI.Type != EST_Unevaluated);
+
+  // Instantiate a dynamic noexcept expression, if any.
+  if (ESI.Type == EST_ComputedNoexcept) {
+    EnterExpressionEvaluationContext Unevaluated(getSema(),
+                                                 Sema::ConstantEvaluated);
+    ExprResult NoexceptExpr = getDerived().TransformExpr(ESI.NoexceptExpr);
+    if (NoexceptExpr.isInvalid())
+      return true;
+
+    NoexceptExpr = getSema().CheckBooleanCondition(
+        NoexceptExpr.get(), NoexceptExpr.get()->getLocStart());
+    if (NoexceptExpr.isInvalid())
+      return true;
+
+    if (!NoexceptExpr.get()->isValueDependent()) {
+      NoexceptExpr = getSema().VerifyIntegerConstantExpression(
+          NoexceptExpr.get(), nullptr,
+          diag::err_noexcept_needs_constant_expression,
+          /*AllowFold*/false);
+      if (NoexceptExpr.isInvalid())
+        return true;
+    }
+
+    if (ESI.NoexceptExpr != NoexceptExpr.get())
+      Changed = true;
+    ESI.NoexceptExpr = NoexceptExpr.get();
+  }
+
+  if (ESI.Type != EST_Dynamic)
+    return false;
+
+  // Instantiate a dynamic exception specification's type.
+  for (QualType T : ESI.Exceptions) {
+    if (const PackExpansionType *PackExpansion =
+            T->getAs<PackExpansionType>()) {
+      Changed = true;
+
+      // We have a pack expansion. Instantiate it.
+      SmallVector<UnexpandedParameterPack, 2> Unexpanded;
+      SemaRef.collectUnexpandedParameterPacks(PackExpansion->getPattern(),
+                                              Unexpanded);
+      assert(!Unexpanded.empty() && "Pack expansion without parameter packs?");
+
+      // Determine whether the set of unexpanded parameter packs can and
+      // should
+      // be expanded.
+      bool Expand = false;
+      bool RetainExpansion = false;
+      Optional<unsigned> NumExpansions = PackExpansion->getNumExpansions();
+      // FIXME: Track the location of the ellipsis (and track source location
+      // information for the types in the exception specification in general).
+      if (getDerived().TryExpandParameterPacks(
+              Loc, SourceRange(), Unexpanded, Expand,
+              RetainExpansion, NumExpansions))
+        return true;
+
+      if (!Expand) {
+        // We can't expand this pack expansion into separate arguments yet;
+        // just substitute into the pattern and create a new pack expansion
+        // type.
+        Sema::ArgumentPackSubstitutionIndexRAII SubstIndex(getSema(), -1);
+        QualType U = getDerived().TransformType(PackExpansion->getPattern());
+        if (U.isNull())
+          return true;
+
+        U = SemaRef.Context.getPackExpansionType(U, NumExpansions);
+        Exceptions.push_back(U);
+        continue;
+      }
+
+      // Substitute into the pack expansion pattern for each slice of the
+      // pack.
+      for (unsigned ArgIdx = 0; ArgIdx != *NumExpansions; ++ArgIdx) {
+        Sema::ArgumentPackSubstitutionIndexRAII SubstIndex(getSema(), ArgIdx);
+
+        QualType U = getDerived().TransformType(PackExpansion->getPattern());
+        if (U.isNull() || SemaRef.CheckSpecifiedExceptionType(U, Loc))
+          return true;
+
+        Exceptions.push_back(U);
+      }
+    } else {
+      QualType U = getDerived().TransformType(T);
+      if (U.isNull() || SemaRef.CheckSpecifiedExceptionType(U, Loc))
+        return true;
+      if (T != U)
+        Changed = true;
+
+      Exceptions.push_back(U);
+    }
+  }
+
+  ESI.Exceptions = Exceptions;
+  return false;
 }
 
 template<typename Derived>
@@ -7323,6 +7463,12 @@ TreeTransform<Derived>::TransformOpaqueValueExpr(OpaqueValueExpr *E) {
 
 template<typename Derived>
 ExprResult
+TreeTransform<Derived>::TransformTypoExpr(TypoExpr *E) {
+  return E;
+}
+
+template<typename Derived>
+ExprResult
 TreeTransform<Derived>::TransformPseudoObjectExpr(PseudoObjectExpr *E) {
   // Rebuild the syntactic form.  The original syntactic form has
   // opaque-value expressions in it, so strip those away and rebuild
@@ -8944,37 +9090,34 @@ TreeTransform<Derived>::TransformCXXTemporaryObjectExpr(
 template<typename Derived>
 ExprResult
 TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
-   
-  // Transform any init-capture expressions before entering the scope of the 
+  // Transform any init-capture expressions before entering the scope of the
   // lambda body, because they are not semantically within that scope.
   SmallVector<InitCaptureInfoTy, 8> InitCaptureExprsAndTypes;
   InitCaptureExprsAndTypes.resize(E->explicit_capture_end() -
       E->explicit_capture_begin());
-  
   for (LambdaExpr::capture_iterator C = E->capture_begin(),
-      CEnd = E->capture_end();
-      C != CEnd; ++C) {
+                                    CEnd = E->capture_end();
+       C != CEnd; ++C) {
     if (!C->isInitCapture())
       continue;
-    EnterExpressionEvaluationContext  EEEC(getSema(), 
-        Sema::PotentiallyEvaluated);    
+    EnterExpressionEvaluationContext EEEC(getSema(),
+                                          Sema::PotentiallyEvaluated);
     ExprResult NewExprInitResult = getDerived().TransformInitializer(
         C->getCapturedVar()->getInit(),
         C->getCapturedVar()->getInitStyle() == VarDecl::CallInit);
-    
+
     if (NewExprInitResult.isInvalid())
       return ExprError();
     Expr *NewExprInit = NewExprInitResult.get();
-      
+
     VarDecl *OldVD = C->getCapturedVar();
-    QualType NewInitCaptureType = 
-        getSema().performLambdaInitCaptureInitialization(C->getLocation(), 
-            OldVD->getType()->isReferenceType(), OldVD->getIdentifier(), 
+    QualType NewInitCaptureType =
+        getSema().performLambdaInitCaptureInitialization(C->getLocation(),
+            OldVD->getType()->isReferenceType(), OldVD->getIdentifier(),
             NewExprInit);
     NewExprInitResult = NewExprInit;
     InitCaptureExprsAndTypes[C - E->capture_begin()] =
         std::make_pair(NewExprInitResult, NewInitCaptureType);
-
   }
 
   LambdaScopeInfo *LSI = getSema().PushLambdaScope();
@@ -8983,74 +9126,30 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   LSI->GLTemplateParameterList = getDerived().TransformTemplateParameterList(
       E->getTemplateParameterList());
 
-  // Check to see if the TypeSourceInfo of the call operator needs to
-  // be transformed, and if so do the transformation in the 
-  // CurrentInstantiationScope.
-
-  TypeSourceInfo *OldCallOpTSI = E->getCallOperator()->getTypeSourceInfo();
-  FunctionProtoTypeLoc OldCallOpFPTL = 
-      OldCallOpTSI->getTypeLoc().getAs<FunctionProtoTypeLoc>();
+  // Transform the type of the original lambda's call operator.
+  // The transformation MUST be done in the CurrentInstantiationScope since
+  // it introduces a mapping of the original to the newly created
+  // transformed parameters.
   TypeSourceInfo *NewCallOpTSI = nullptr;
-
-  const bool CallOpWasAlreadyTransformed = 
-      getDerived().AlreadyTransformed(OldCallOpTSI->getType()); 
-  
-  // Use the Old Call Operator's TypeSourceInfo if it is already transformed.
-  if (CallOpWasAlreadyTransformed)  
-    NewCallOpTSI = OldCallOpTSI;  
-  else {
-    // Transform the TypeSourceInfo of the Original Lambda's Call Operator.
-    // The transformation MUST be done in the CurrentInstantiationScope since
-    // it introduces a mapping of the original to the newly created 
-    // transformed parameters.
+  {
+    TypeSourceInfo *OldCallOpTSI = E->getCallOperator()->getTypeSourceInfo();
+    FunctionProtoTypeLoc OldCallOpFPTL = 
+        OldCallOpTSI->getTypeLoc().getAs<FunctionProtoTypeLoc>();
 
     TypeLocBuilder NewCallOpTLBuilder;
-    QualType NewCallOpType = TransformFunctionProtoType(NewCallOpTLBuilder, 
-                                                        OldCallOpFPTL, 
-                                                        nullptr, 0);
+    SmallVector<QualType, 4> ExceptionStorage;
+    TreeTransform *This = this; // Work around gcc.gnu.org/PR56135.
+    QualType NewCallOpType = TransformFunctionProtoType(
+        NewCallOpTLBuilder, OldCallOpFPTL, nullptr, 0,
+        [&](FunctionProtoType::ExceptionSpecInfo &ESI, bool &Changed) {
+          return This->TransformExceptionSpec(OldCallOpFPTL.getBeginLoc(), ESI,
+                                              ExceptionStorage, Changed);
+        });
     NewCallOpTSI = NewCallOpTLBuilder.getTypeSourceInfo(getSema().Context,
                                                         NewCallOpType);
+    if (!NewCallOpTSI)
+      return ExprError();
   }
-  // Extract the ParmVarDecls from the NewCallOpTSI and add them to
-  // the vector below - this will be used to synthesize the 
-  // NewCallOperator.  Additionally, add the parameters of the untransformed 
-  // lambda call operator to the CurrentInstantiationScope.
-  SmallVector<ParmVarDecl *, 4> Params;  
-  {
-    FunctionProtoTypeLoc NewCallOpFPTL = 
-        NewCallOpTSI->getTypeLoc().castAs<FunctionProtoTypeLoc>();
-    ParmVarDecl **NewParamDeclArray = NewCallOpFPTL.getParmArray();
-    const unsigned NewNumArgs = NewCallOpFPTL.getNumParams();
-
-    for (unsigned I = 0; I < NewNumArgs; ++I) {
-      // If this call operator's type does not require transformation, 
-      // the parameters do not get added to the current instantiation scope, 
-      // - so ADD them! This allows the following to compile when the enclosing
-      // template is specialized and the entire lambda expression has to be
-      // transformed. 
-      // template<class T> void foo(T t) {
-      //   auto L = [](auto a) {
-      //       auto M = [](char b) { <-- note: non-generic lambda
-      //         auto N = [](auto c) {
-      //            int x = sizeof(a);
-      //            x = sizeof(b); <-- specifically this line
-      //            x = sizeof(c);
-      //          };
-      //        };
-      //      };
-      //    }
-      // foo('a')
-      if (CallOpWasAlreadyTransformed)
-        getDerived().transformedLocalDecl(NewParamDeclArray[I],
-                                          NewParamDeclArray[I]);
-      // Add to Params array, so these parameters can be used to create
-      // the newly transformed call operator.
-      Params.push_back(NewParamDeclArray[I]);
-    }
-  }
-
-  if (!NewCallOpTSI)
-    return ExprError();
 
   // Create the local class that will describe the lambda.
   CXXRecordDecl *Class
@@ -9058,15 +9157,13 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
                                         NewCallOpTSI,
                                         /*KnownDependent=*/false,
                                         E->getCaptureDefault());
-
   getDerived().transformedLocalDecl(E->getLambdaClass(), Class);
 
   // Build the call operator.
-  CXXMethodDecl *NewCallOperator
-    = getSema().startLambdaDefinition(Class, E->getIntroducerRange(),
-                                      NewCallOpTSI,
-                                      E->getCallOperator()->getLocEnd(),
-                                      Params);
+  CXXMethodDecl *NewCallOperator = getSema().startLambdaDefinition(
+      Class, E->getIntroducerRange(), NewCallOpTSI,
+      E->getCallOperator()->getLocEnd(),
+      NewCallOpTSI->getTypeLoc().castAs<FunctionProtoTypeLoc>().getParams());
   LSI->CallOperator = NewCallOperator;
 
   getDerived().transformAttrs(E->getCallOperator(), NewCallOperator);
@@ -9556,6 +9653,128 @@ ExprResult
 TreeTransform<Derived>::TransformMaterializeTemporaryExpr(
                                                   MaterializeTemporaryExpr *E) {
   return getDerived().TransformExpr(E->GetTemporaryExpr());
+}
+
+template<typename Derived>
+ExprResult
+TreeTransform<Derived>::TransformCXXFoldExpr(CXXFoldExpr *E) {
+  Expr *Pattern = E->getPattern();
+
+  SmallVector<UnexpandedParameterPack, 2> Unexpanded;
+  getSema().collectUnexpandedParameterPacks(Pattern, Unexpanded);
+  assert(!Unexpanded.empty() && "Pack expansion without parameter packs?");
+
+  // Determine whether the set of unexpanded parameter packs can and should
+  // be expanded.
+  bool Expand = true;
+  bool RetainExpansion = false;
+  Optional<unsigned> NumExpansions;
+  if (getDerived().TryExpandParameterPacks(E->getEllipsisLoc(),
+                                           Pattern->getSourceRange(),
+                                           Unexpanded,
+                                           Expand, RetainExpansion,
+                                           NumExpansions))
+    return true;
+
+  if (!Expand) {
+    // Do not expand any packs here, just transform and rebuild a fold
+    // expression.
+    Sema::ArgumentPackSubstitutionIndexRAII SubstIndex(getSema(), -1);
+
+    ExprResult LHS =
+        E->getLHS() ? getDerived().TransformExpr(E->getLHS()) : ExprResult();
+    if (LHS.isInvalid())
+      return true;
+
+    ExprResult RHS =
+        E->getRHS() ? getDerived().TransformExpr(E->getRHS()) : ExprResult();
+    if (RHS.isInvalid())
+      return true;
+
+    if (!getDerived().AlwaysRebuild() &&
+        LHS.get() == E->getLHS() && RHS.get() == E->getRHS())
+      return E;
+
+    return getDerived().RebuildCXXFoldExpr(
+        E->getLocStart(), LHS.get(), E->getOperator(), E->getEllipsisLoc(),
+        RHS.get(), E->getLocEnd());
+  }
+
+  // The transform has determined that we should perform an elementwise
+  // expansion of the pattern. Do so.
+  ExprResult Result = getDerived().TransformExpr(E->getInit());
+  if (Result.isInvalid())
+    return true;
+  bool LeftFold = E->isLeftFold();
+
+  // If we're retaining an expansion for a right fold, it is the innermost
+  // component and takes the init (if any).
+  if (!LeftFold && RetainExpansion) {
+    ForgetPartiallySubstitutedPackRAII Forget(getDerived());
+
+    ExprResult Out = getDerived().TransformExpr(Pattern);
+    if (Out.isInvalid())
+      return true;
+
+    Result = getDerived().RebuildCXXFoldExpr(
+        E->getLocStart(), Out.get(), E->getOperator(), E->getEllipsisLoc(),
+        Result.get(), E->getLocEnd());
+    if (Result.isInvalid())
+      return true;
+  }
+
+  for (unsigned I = 0; I != *NumExpansions; ++I) {
+    Sema::ArgumentPackSubstitutionIndexRAII SubstIndex(
+        getSema(), LeftFold ? I : *NumExpansions - I - 1);
+    ExprResult Out = getDerived().TransformExpr(Pattern);
+    if (Out.isInvalid())
+      return true;
+
+    if (Out.get()->containsUnexpandedParameterPack()) {
+      // We still have a pack; retain a pack expansion for this slice.
+      Result = getDerived().RebuildCXXFoldExpr(
+          E->getLocStart(),
+          LeftFold ? Result.get() : Out.get(),
+          E->getOperator(), E->getEllipsisLoc(),
+          LeftFold ? Out.get() : Result.get(),
+          E->getLocEnd());
+    } else if (Result.isUsable()) {
+      // We've got down to a single element; build a binary operator.
+      Result = getDerived().RebuildBinaryOperator(
+          E->getEllipsisLoc(), E->getOperator(),
+          LeftFold ? Result.get() : Out.get(),
+          LeftFold ? Out.get() : Result.get());
+    } else
+      Result = Out;
+
+    if (Result.isInvalid())
+      return true;
+  }
+
+  // If we're retaining an expansion for a left fold, it is the outermost
+  // component and takes the complete expansion so far as its init (if any).
+  if (LeftFold && RetainExpansion) {
+    ForgetPartiallySubstitutedPackRAII Forget(getDerived());
+
+    ExprResult Out = getDerived().TransformExpr(Pattern);
+    if (Out.isInvalid())
+      return true;
+
+    Result = getDerived().RebuildCXXFoldExpr(
+        E->getLocStart(), Result.get(),
+        E->getOperator(), E->getEllipsisLoc(),
+        Out.get(), E->getLocEnd());
+    if (Result.isInvalid())
+      return true;
+  }
+
+  // If we had no init and an empty pack, and we're not retaining an expansion,
+  // then produce a fallback value or error.
+  if (Result.isUnset())
+    return getDerived().RebuildEmptyCXXFoldExpr(E->getEllipsisLoc(),
+                                                E->getOperator());
+
+  return Result;
 }
 
 template<typename Derived>
@@ -10454,7 +10673,7 @@ TreeTransform<Derived>::RebuildCXXOperatorCallExpr(OverloadedOperatorKind Op,
     SourceLocation RBrace;
 
     if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Callee)) {
-        DeclarationNameLoc &NameLoc = DRE->getNameInfo().getInfo();
+        DeclarationNameLoc NameLoc = DRE->getNameInfo().getInfo();
         LBrace = SourceLocation::getFromRawEncoding(
                     NameLoc.CXXOperatorName.BeginOpNameLoc);
         RBrace = SourceLocation::getFromRawEncoding(

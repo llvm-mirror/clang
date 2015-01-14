@@ -79,6 +79,13 @@ public:
   }
 };
 
+/// \brief Context in which macro name is used.
+enum MacroUse {
+  MU_Other  = 0,  // other than #define or #undef
+  MU_Define = 1,  // macro name specified in #define
+  MU_Undef  = 2   // macro name specified in #undef
+};
+
 /// \brief Engages in a tight little dance with the lexer to efficiently
 /// preprocess tokens.
 ///
@@ -128,6 +135,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   IdentifierInfo *Ident__is_identifier;            // __is_identifier
   IdentifierInfo *Ident__building_module;          // __building_module
   IdentifierInfo *Ident__MODULE__;                 // __MODULE__
+  IdentifierInfo *Ident__has_cpp_attribute;        // __has_cpp_attribute
 
   SourceLocation DATELoc, TIMELoc;
   unsigned CounterValue;  // Next __COUNTER__ value.
@@ -248,6 +256,11 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
 
   /// \brief True if we hit the code-completion point.
   bool CodeCompletionReached;
+
+  /// \brief The directory that the main file should be considered to occupy,
+  /// if it does not correspond to a real file (as happens when building a
+  /// module).
+  const DirectoryEntry *MainFileDir;
 
   /// \brief The number of bytes that we will initially skip when entering the
   /// main file, along with a flag that indicates whether skipping this number
@@ -1006,6 +1019,12 @@ public:
     PragmaARCCFCodeAuditedLoc = Loc;
   }
 
+  /// \brief Set the directory in which the main file should be considered
+  /// to have been found, if it is not a real file.
+  void setMainFileDir(const DirectoryEntry *Dir) {
+    MainFileDir = Dir;
+  }
+
   /// \brief Instruct the preprocessor to skip part of the main source file.
   ///
   /// \param Bytes The number of bytes in the preamble to skip.
@@ -1360,7 +1379,7 @@ public:
   /// followed by EOD.  Return true if the token is not a valid on-off-switch.
   bool LexOnOffSwitch(tok::OnOffSwitch &OOS);
 
-  bool CheckMacroName(Token &MacroNameTok, char isDefineUndef);
+  bool CheckMacroName(Token &MacroNameTok, MacroUse isDefineUndef);
 
 private:
 
@@ -1404,7 +1423,7 @@ private:
   ///
   /// This emits a diagnostic, sets the token kind to eod,
   /// and discards the rest of the macro line if the macro name is invalid.
-  void ReadMacroName(Token &MacroNameTok, char isDefineUndef = 0);
+  void ReadMacroName(Token &MacroNameTok, MacroUse isDefineUndef = MU_Other);
 
   /// The ( starting an argument list of a macro definition has just been read.
   /// Lex the rest of the arguments and the closing ), updating \p MI with

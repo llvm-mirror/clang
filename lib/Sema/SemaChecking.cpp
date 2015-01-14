@@ -3392,6 +3392,61 @@ static bool requiresParensToAddCast(const Expr *E) {
   }
 }
 
+static std::pair<QualType, StringRef>
+shouldNotPrintDirectly(const ASTContext &Context,
+                       QualType IntendedTy,
+                       const Expr *E) {
+  // Use a 'while' to peel off layers of typedefs.
+  QualType TyTy = IntendedTy;
+  while (const TypedefType *UserTy = TyTy->getAs<TypedefType>()) {
+    StringRef Name = UserTy->getDecl()->getName();
+    QualType CastTy = llvm::StringSwitch<QualType>(Name)
+      .Case("NSInteger", Context.LongTy)
+      .Case("NSUInteger", Context.UnsignedLongTy)
+      .Case("SInt32", Context.IntTy)
+      .Case("UInt32", Context.UnsignedIntTy)
+      .Default(QualType());
+
+    if (!CastTy.isNull())
+      return std::make_pair(CastTy, Name);
+
+    TyTy = UserTy->desugar();
+  }
+
+  // Strip parens if necessary.
+  if (const ParenExpr *PE = dyn_cast<ParenExpr>(E))
+    return shouldNotPrintDirectly(Context,
+                                  PE->getSubExpr()->getType(),
+                                  PE->getSubExpr());
+
+  // If this is a conditional expression, then its result type is constructed
+  // via usual arithmetic conversions and thus there might be no necessary
+  // typedef sugar there.  Recurse to operands to check for NSInteger &
+  // Co. usage condition.
+  if (const ConditionalOperator *CO = dyn_cast<ConditionalOperator>(E)) {
+    QualType TrueTy, FalseTy;
+    StringRef TrueName, FalseName;
+
+    std::tie(TrueTy, TrueName) =
+      shouldNotPrintDirectly(Context,
+                             CO->getTrueExpr()->getType(),
+                             CO->getTrueExpr());
+    std::tie(FalseTy, FalseName) =
+      shouldNotPrintDirectly(Context,
+                             CO->getFalseExpr()->getType(),
+                             CO->getFalseExpr());
+
+    if (TrueTy == FalseTy)
+      return std::make_pair(TrueTy, TrueName);
+    else if (TrueTy.isNull())
+      return std::make_pair(FalseTy, FalseName);
+    else if (FalseTy.isNull())
+      return std::make_pair(TrueTy, TrueName);
+  }
+
+  return std::make_pair(QualType(), StringRef());
+}
+
 bool
 CheckPrintfHandler::checkFormatExpr(const analyze_printf::PrintfSpecifier &FS,
                                     const char *StartSpecifier,
@@ -3483,25 +3538,13 @@ CheckPrintfHandler::checkFormatExpr(const analyze_printf::PrintfSpecifier &FS,
 
   // Special-case some of Darwin's platform-independence types by suggesting
   // casts to primitive types that are known to be large enough.
-  bool ShouldNotPrintDirectly = false;
+  bool ShouldNotPrintDirectly = false; StringRef CastTyName;
   if (S.Context.getTargetInfo().getTriple().isOSDarwin()) {
-    // Use a 'while' to peel off layers of typedefs.
-    QualType TyTy = IntendedTy;
-    while (const TypedefType *UserTy = TyTy->getAs<TypedefType>()) {
-      StringRef Name = UserTy->getDecl()->getName();
-      QualType CastTy = llvm::StringSwitch<QualType>(Name)
-        .Case("NSInteger", S.Context.LongTy)
-        .Case("NSUInteger", S.Context.UnsignedLongTy)
-        .Case("SInt32", S.Context.IntTy)
-        .Case("UInt32", S.Context.UnsignedIntTy)
-        .Default(QualType());
-
-      if (!CastTy.isNull()) {
-        ShouldNotPrintDirectly = true;
-        IntendedTy = CastTy;
-        break;
-      }
-      TyTy = UserTy->desugar();
+    QualType CastTy;
+    std::tie(CastTy, CastTyName) = shouldNotPrintDirectly(S.Context, IntendedTy, E);
+    if (!CastTy.isNull()) {
+      IntendedTy = CastTy;
+      ShouldNotPrintDirectly = true;
     }
   }
 
@@ -3518,7 +3561,7 @@ CheckPrintfHandler::checkFormatExpr(const analyze_printf::PrintfSpecifier &FS,
 
     CharSourceRange SpecRange = getSpecifierRange(StartSpecifier, SpecifierLen);
 
-    if (IntendedTy == ExprTy) {
+    if (IntendedTy == ExprTy && !ShouldNotPrintDirectly) {
       // In this case, the specifier is wrong and should be changed to match
       // the argument.
       EmitFormatDiagnostic(
@@ -3572,8 +3615,11 @@ CheckPrintfHandler::checkFormatExpr(const analyze_printf::PrintfSpecifier &FS,
         // The expression has a type that should not be printed directly.
         // We extract the name from the typedef because we don't want to show
         // the underlying type in the diagnostic.
-        StringRef Name = cast<TypedefType>(ExprTy)->getDecl()->getName();
-
+        StringRef Name;
+        if (const TypedefType *TypedefTy = dyn_cast<TypedefType>(ExprTy))
+          Name = TypedefTy->getDecl()->getName();
+        else
+          Name = CastTyName;
         EmitFormatDiagnostic(S.PDiag(diag::warn_format_argument_needs_cast)
                                << Name << IntendedTy << IsEnum
                                << E->getSourceRange(),
@@ -6480,6 +6526,14 @@ void CheckConditionalOperator(Sema &S, ConditionalOperator *E,
                             E->getType(), CC, &Suspicious);
 }
 
+/// CheckBoolLikeConversion - Check conversion of given expression to boolean.
+/// Input argument E is a logical expression.
+static void CheckBoolLikeConversion(Sema &S, Expr *E, SourceLocation CC) {
+  if (S.getLangOpts().Bool)
+    return;
+  CheckImplicitConversion(S, E->IgnoreParenImpCasts(), S.Context.BoolTy, CC);
+}
+
 /// AnalyzeImplicitConversions - Find and report any interesting
 /// implicit conversions in the given expression.  There are a couple
 /// of competing diagnostics here, -Wconversion and -Wsign-compare.
@@ -6559,6 +6613,20 @@ void AnalyzeImplicitConversions(Sema &S, Expr *OrigE, SourceLocation CC) {
       continue;
     AnalyzeImplicitConversions(S, ChildExpr, CC);
   }
+
+  if (BO && BO->isLogicalOp()) {
+    Expr *SubExpr = BO->getLHS()->IgnoreParenImpCasts();
+    if (!IsLogicalAndOperator || !isa<StringLiteral>(SubExpr))
+      ::CheckBoolLikeConversion(S, SubExpr, SubExpr->getExprLoc());
+
+    SubExpr = BO->getRHS()->IgnoreParenImpCasts();
+    if (!IsLogicalAndOperator || !isa<StringLiteral>(SubExpr))
+      ::CheckBoolLikeConversion(S, SubExpr, SubExpr->getExprLoc());
+  }
+
+  if (const UnaryOperator *U = dyn_cast<UnaryOperator>(E))
+    if (U->getOpcode() == UO_LNot)
+      ::CheckBoolLikeConversion(S, U->getSubExpr(), CC);
 }
 
 } // end anonymous namespace
@@ -6678,7 +6746,39 @@ void Sema::DiagnoseAlwaysNonNullPointer(Expr *E,
   // Weak Decls can be null.
   if (!D || D->isWeak())
     return;
-
+  
+  // Check for parameter decl with nonnull attribute
+  if (const ParmVarDecl* PV = dyn_cast<ParmVarDecl>(D)) {
+    if (getCurFunction() && !getCurFunction()->ModifiedNonNullParams.count(PV))
+      if (const FunctionDecl* FD = dyn_cast<FunctionDecl>(PV->getDeclContext())) {
+        unsigned NumArgs = FD->getNumParams();
+        llvm::SmallBitVector AttrNonNull(NumArgs);
+        for (const auto *NonNull : FD->specific_attrs<NonNullAttr>()) {
+          if (!NonNull->args_size()) {
+            AttrNonNull.set(0, NumArgs);
+            break;
+          }
+          for (unsigned Val : NonNull->args()) {
+            if (Val >= NumArgs)
+              continue;
+            AttrNonNull.set(Val);
+          }
+        }
+        if (!AttrNonNull.empty())
+          for (unsigned i = 0; i < NumArgs; ++i)
+            if (FD->getParamDecl(i) == PV && AttrNonNull[i]) {
+              std::string Str;
+              llvm::raw_string_ostream S(Str);
+              E->printPretty(S, nullptr, getPrintingPolicy());
+              unsigned DiagID = IsCompare ? diag::warn_nonnull_parameter_compare
+                                          : diag::warn_cast_nonnull_to_bool;
+              Diag(E->getExprLoc(), DiagID) << S.str() << E->getSourceRange()
+                << Range << IsEqual;
+              return;
+            }
+      }
+    }
+  
   QualType T = D->getType();
   const bool IsArray = T->isArrayType();
   const bool IsFunction = T->isFunctionType();
@@ -6772,6 +6872,12 @@ void Sema::CheckImplicitConversions(Expr *E, SourceLocation CC) {
 
   // This is not the right CC for (e.g.) a variable initialization.
   AnalyzeImplicitConversions(*this, E, CC);
+}
+
+/// CheckBoolLikeConversion - Check conversion of given expression to boolean.
+/// Input argument E is a logical expression.
+void Sema::CheckBoolLikeConversion(Expr *E, SourceLocation CC) {
+  ::CheckBoolLikeConversion(*this, E, CC);
 }
 
 /// Diagnose when expression is an integer constant expression and its evaluation

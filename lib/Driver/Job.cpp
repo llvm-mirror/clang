@@ -73,12 +73,6 @@ static int skipArgs(const char *Flag) {
   return 0;
 }
 
-static bool quoteNextArg(const char *flag) {
-  return llvm::StringSwitch<bool>(flag)
-    .Case("-D", true)
-    .Default(false);
-}
-
 static void PrintArg(raw_ostream &OS, const char *Arg, bool Quote) {
   const bool Escape = std::strpbrk(Arg, "\"\\$");
 
@@ -151,7 +145,7 @@ void Command::buildArgvForResponseFile(
 }
 
 void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
-                    bool CrashReport) const {
+                    CrashReportInfo *CrashInfo) const {
   // Always quote the exe.
   OS << ' ';
   PrintArg(OS, Executable, /*Quote=*/true);
@@ -163,23 +157,39 @@ void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
     Args = ArrayRef<const char *>(ArgsRespFile).slice(1); // no executable name
   }
 
+  StringRef MainFilename;
+  // We'll need the argument to -main-file-name to find the input file name.
+  if (CrashInfo)
+    for (size_t I = 0, E = Args.size(); I + 1 < E; ++I)
+      if (StringRef(Args[I]).equals("-main-file-name"))
+        MainFilename = Args[I + 1];
+
   for (size_t i = 0, e = Args.size(); i < e; ++i) {
     const char *const Arg = Args[i];
 
-    if (CrashReport) {
+    if (CrashInfo) {
       if (int Skip = skipArgs(Arg)) {
         i += Skip - 1;
+        continue;
+      } else if (llvm::sys::path::filename(Arg) == MainFilename &&
+                 (i == 0 || StringRef(Args[i - 1]) != "-main-file-name")) {
+        // Replace the input file name with the crashinfo's file name.
+        OS << ' ';
+        StringRef ShortName = llvm::sys::path::filename(CrashInfo->Filename);
+        PrintArg(OS, ShortName.str().c_str(), Quote);
         continue;
       }
     }
 
     OS << ' ';
     PrintArg(OS, Arg, Quote);
+  }
 
-    if (CrashReport && quoteNextArg(Arg) && i + 1 < e) {
-      OS << ' ';
-      PrintArg(OS, Args[++i], true);
-    }
+  if (CrashInfo && !CrashInfo->VFSPath.empty()) {
+    OS << ' ';
+    PrintArg(OS, "-ivfsoverlay", Quote);
+    OS << ' ';
+    PrintArg(OS, CrashInfo->VFSPath.str().c_str(), Quote);
   }
 
   if (ResponseFile != nullptr) {
@@ -251,10 +261,10 @@ FallbackCommand::FallbackCommand(const Action &Source_, const Tool &Creator_,
       Fallback(std::move(Fallback_)) {}
 
 void FallbackCommand::Print(raw_ostream &OS, const char *Terminator,
-                            bool Quote, bool CrashReport) const {
-  Command::Print(OS, "", Quote, CrashReport);
+                            bool Quote, CrashReportInfo *CrashInfo) const {
+  Command::Print(OS, "", Quote, CrashInfo);
   OS << " ||";
-  Fallback->Print(OS, Terminator, Quote, CrashReport);
+  Fallback->Print(OS, Terminator, Quote, CrashInfo);
 }
 
 static bool ShouldFallback(int ExitCode) {
@@ -286,9 +296,9 @@ int FallbackCommand::Execute(const StringRef **Redirects, std::string *ErrMsg,
 JobList::JobList() : Job(JobListClass) {}
 
 void JobList::Print(raw_ostream &OS, const char *Terminator, bool Quote,
-                    bool CrashReport) const {
+                    CrashReportInfo *CrashInfo) const {
   for (const auto &Job : *this)
-    Job.Print(OS, Terminator, Quote, CrashReport);
+    Job.Print(OS, Terminator, Quote, CrashInfo);
 }
 
 void JobList::clear() { Jobs.clear(); }

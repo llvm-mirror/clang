@@ -20,6 +20,7 @@
 #include "clang/Basic/IdentifierTable.h"
 #include "clang/Format/Format.h"
 #include <list>
+#include <stack>
 
 namespace clang {
 namespace format {
@@ -59,7 +60,9 @@ class FormatTokenSource;
 
 class UnwrappedLineParser {
 public:
-  UnwrappedLineParser(const FormatStyle &Style, ArrayRef<FormatToken *> Tokens,
+  UnwrappedLineParser(const FormatStyle &Style,
+                      const AdditionalKeywords &Keywords,
+                      ArrayRef<FormatToken *> Tokens,
                       UnwrappedLineConsumer &Callback);
 
   /// Returns true in case of a structural error.
@@ -94,6 +97,7 @@ private:
   void parseNamespace();
   void parseAccessSpecifier();
   void parseEnum();
+  void parseJavaEnumBody();
   void parseRecord();
   void parseObjCProtocolList();
   void parseObjCUntilAtEnd();
@@ -157,6 +161,8 @@ private:
   bool StructuralError;
 
   const FormatStyle &Style;
+  const AdditionalKeywords &Keywords;
+
   FormatTokenSource *Tokens;
   UnwrappedLineConsumer &Callback;
 

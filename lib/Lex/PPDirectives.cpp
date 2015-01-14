@@ -100,7 +100,7 @@ void Preprocessor::DiscardUntilEndOfDirective() {
   } while (Tmp.isNot(tok::eod));
 }
 
-bool Preprocessor::CheckMacroName(Token &MacroNameTok, char isDefineUndef) {
+bool Preprocessor::CheckMacroName(Token &MacroNameTok, MacroUse isDefineUndef) {
   // Missing macro name?
   if (MacroNameTok.is(tok::eod))
     return Diag(MacroNameTok, diag::err_pp_missing_macro_name);
@@ -128,12 +128,12 @@ bool Preprocessor::CheckMacroName(Token &MacroNameTok, char isDefineUndef) {
     MacroNameTok.setIdentifierInfo(II);
   }
 
-  if (isDefineUndef && II->getPPKeywordID() == tok::pp_defined) {
+  if ((isDefineUndef != MU_Other) && II->getPPKeywordID() == tok::pp_defined) {
     // Error if defining "defined": C99 6.10.8/4, C++ [cpp.predefined]p4.
     return Diag(MacroNameTok, diag::err_defined_macro_name);
   }
 
-  if (isDefineUndef == 2 && II->hasMacroDefinition() &&
+  if (isDefineUndef == MU_Undef && II->hasMacroDefinition() &&
       getMacroInfo(II)->isBuiltinMacro()) {
     // Warn if undefining "__LINE__" and other builtins, per C99 6.10.8/4
     // and C++ [cpp.predefined]p4], but allow it as an extension.
@@ -147,17 +147,18 @@ bool Preprocessor::CheckMacroName(Token &MacroNameTok, char isDefineUndef) {
 /// \brief Lex and validate a macro name, which occurs after a
 /// \#define or \#undef.
 ///
-/// This sets the token kind to eod and discards the rest
-/// of the macro line if the macro name is invalid.  \p isDefineUndef is 1 if
-/// this is due to a a \#define, 2 if \#undef directive, 0 if it is something
-/// else (e.g. \#ifdef).
-void Preprocessor::ReadMacroName(Token &MacroNameTok, char isDefineUndef) {
+/// This sets the token kind to eod and discards the rest of the macro line if
+/// the macro name is invalid.
+///
+/// \param MacroNameTok Token that is expected to be a macro name.
+/// \papam isDefineUndef Context in which macro is used.
+void Preprocessor::ReadMacroName(Token &MacroNameTok, MacroUse isDefineUndef) {
   // Read the token, don't allow macro expansion on it.
   LexUnexpandedToken(MacroNameTok);
 
   if (MacroNameTok.is(tok::code_completion)) {
     if (CodeComplete)
-      CodeComplete->CodeCompleteMacroName(isDefineUndef == 1);
+      CodeComplete->CodeCompleteMacroName(isDefineUndef == MU_Define);
     setCodeCompletionReached();
     LexUnexpandedToken(MacroNameTok);
   }
@@ -549,14 +550,22 @@ const FileEntry *Preprocessor::LookupFile(
     const FileEntry *FileEnt = SourceMgr.getFileEntryForID(FID);
 
     // If there is no file entry associated with this file, it must be the
-    // predefines buffer.  Any other file is not lexed with a normal lexer, so
-    // it won't be scanned for preprocessor directives.   If we have the
-    // predefines buffer, resolve #include references (which come from the
-    // -include command line argument) from the current working directory
-    // instead of relative to the main file.
+    // predefines buffer or the module includes buffer. Any other file is not
+    // lexed with a normal lexer, so it won't be scanned for preprocessor
+    // directives.
+    //
+    // If we have the predefines buffer, resolve #include references (which come
+    // from the -include command line argument) from the current working
+    // directory instead of relative to the main file.
+    //
+    // If we have the module includes buffer, resolve #include references (which
+    // come from header declarations in the module map) relative to the module
+    // map file.
     if (!FileEnt) {
-      FileEnt = SourceMgr.getFileEntryForID(SourceMgr.getMainFileID());
-      if (FileEnt)
+      if (FID == SourceMgr.getMainFileID() && MainFileDir)
+        Includers.push_back(std::make_pair(nullptr, MainFileDir));
+      else if ((FileEnt =
+                    SourceMgr.getFileEntryForID(SourceMgr.getMainFileID())))
         Includers.push_back(std::make_pair(FileEnt, FileMgr.getDirectory(".")));
     } else {
       Includers.push_back(std::make_pair(FileEnt, FileEnt->getDir()));
@@ -1194,7 +1203,7 @@ void Preprocessor::HandleIdentSCCSDirective(Token &Tok) {
 /// \brief Handle a #public directive.
 void Preprocessor::HandleMacroPublicDirective(Token &Tok) {
   Token MacroNameTok;
-  ReadMacroName(MacroNameTok, 2);
+  ReadMacroName(MacroNameTok, MU_Undef);
   
   // Error reading macro name?  If so, diagnostic already issued.
   if (MacroNameTok.is(tok::eod))
@@ -1221,7 +1230,7 @@ void Preprocessor::HandleMacroPublicDirective(Token &Tok) {
 /// \brief Handle a #private directive.
 void Preprocessor::HandleMacroPrivateDirective(Token &Tok) {
   Token MacroNameTok;
-  ReadMacroName(MacroNameTok, 2);
+  ReadMacroName(MacroNameTok, MU_Undef);
   
   // Error reading macro name?  If so, diagnostic already issued.
   if (MacroNameTok.is(tok::eod))
@@ -1897,7 +1906,7 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
   ++NumDefined;
 
   Token MacroNameTok;
-  ReadMacroName(MacroNameTok, 1);
+  ReadMacroName(MacroNameTok, MU_Define);
 
   // Error reading macro name?  If so, diagnostic already issued.
   if (MacroNameTok.is(tok::eod))
@@ -2145,7 +2154,7 @@ void Preprocessor::HandleUndefDirective(Token &UndefTok) {
   ++NumUndefined;
 
   Token MacroNameTok;
-  ReadMacroName(MacroNameTok, 2);
+  ReadMacroName(MacroNameTok, MU_Undef);
 
   // Error reading macro name?  If so, diagnostic already issued.
   if (MacroNameTok.is(tok::eod))

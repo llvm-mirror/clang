@@ -752,6 +752,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::CXXTryStmtClass:
     case Stmt::CXXTypeidExprClass:
     case Stmt::CXXUuidofExprClass:
+    case Stmt::CXXFoldExprClass:
     case Stmt::MSPropertyRefExprClass:
     case Stmt::CXXUnresolvedConstructExprClass:
     case Stmt::DependentScopeDeclRefExprClass:
@@ -760,6 +761,7 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::ExpressionTraitExprClass:
     case Stmt::UnresolvedLookupExprClass:
     case Stmt::UnresolvedMemberExprClass:
+    case Stmt::TypoExprClass:
     case Stmt::CXXNoexceptExprClass:
     case Stmt::PackExpansionExprClass:
     case Stmt::SubstNonTypeTemplateParmPackExprClass:

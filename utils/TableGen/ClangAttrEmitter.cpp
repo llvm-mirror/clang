@@ -12,8 +12,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/TableGen/Error.h"
 #include "llvm/TableGen/Record.h"
@@ -495,10 +496,9 @@ namespace {
     void writeDump(raw_ostream &OS) const override {
     }
     void writeDumpChildren(raw_ostream &OS) const override {
-      OS << "    if (SA->is" << getUpperName() << "Expr()) {\n";
-      OS << "      lastChild();\n";
+      OS << "    if (SA->is" << getUpperName() << "Expr())\n";
       OS << "      dumpStmt(SA->get" << getUpperName() << "Expr());\n";
-      OS << "    } else\n";
+      OS << "    else\n";
       OS << "      dumpType(SA->get" << getUpperName()
          << "Type()->getType());\n";
     }
@@ -921,7 +921,6 @@ namespace {
     void writeDump(raw_ostream &OS) const override {}
 
     void writeDumpChildren(raw_ostream &OS) const override {
-      OS << "    lastChild();\n";
       OS << "    dumpStmt(SA->get" << getUpperName() << "());\n";
     }
     void writeHasChildren(raw_ostream &OS) const override { OS << "true"; }
@@ -976,11 +975,8 @@ namespace {
     void writeDumpChildren(raw_ostream &OS) const override {
       OS << "    for (" << getAttrName() << "Attr::" << getLowerName()
          << "_iterator I = SA->" << getLowerName() << "_begin(), E = SA->"
-         << getLowerName() << "_end(); I != E; ++I) {\n";
-      OS << "      if (I + 1 == E)\n";
-      OS << "        lastChild();\n";
+         << getLowerName() << "_end(); I != E; ++I)\n";
       OS << "      dumpStmt(*I);\n";
-      OS << "    }\n";
     }
 
     void writeHasChildren(raw_ostream &OS) const override {
@@ -1825,6 +1821,27 @@ static void GenerateHasAttrSpellingStringSwitch(
     const std::vector<Record *> &Attrs, raw_ostream &OS,
     const std::string &Variety = "", const std::string &Scope = "") {
   for (const auto *Attr : Attrs) {
+    // C++11-style attributes have specific version information associated with
+    // them. If the attribute has no scope, the version information must not
+    // have the default value (1), as that's incorrect. Instead, the unscoped
+    // attribute version information should be taken from the SD-6 standing
+    // document, which can be found at: 
+    // https://isocpp.org/std/standing-documents/sd-6-sg10-feature-test-recommendations
+    int Version = 1;
+
+    if (Variety == "CXX11") {
+        std::vector<Record *> Spellings = Attr->getValueAsListOfDefs("Spellings");
+        for (const auto &Spelling : Spellings) {
+          if (Spelling->getValueAsString("Variety") == "CXX11") {
+            Version = static_cast<int>(Spelling->getValueAsInt("Version"));
+            if (Scope.empty() && Version == 1)
+              PrintError(Spelling->getLoc(), "C++ standard attributes must "
+              "have valid version information.");
+            break;
+          }
+      }
+    }
+
     // It is assumed that there will be an llvm::Triple object named T within
     // scope that can be used to determine whether the attribute exists in
     // a given target.
@@ -1863,16 +1880,16 @@ static void GenerateHasAttrSpellingStringSwitch(
       // C++11 mode should be checked against LangOpts, which is presumed to be
       // present in the caller.
       Test = "LangOpts.CPlusPlus11";
-    else
-      Test = "true";
 
+    std::string TestStr =
+        !Test.empty() ? Test + " ? " + llvm::itostr(Version) + " : 0" : "1";
     std::vector<FlattenedSpelling> Spellings = GetFlattenedSpellings(*Attr);
     for (const auto &S : Spellings)
       if (Variety.empty() || (Variety == S.variety() &&
                               (Scope.empty() || Scope == S.nameSpace())))
-        OS << "    .Case(\"" << S.name() << "\", " << Test << ")\n";
+        OS << "    .Case(\"" << S.name() << "\", " << TestStr << ")\n";
   }
-  OS << "    .Default(false);\n";
+  OS << "    .Default(0);\n";
 }
 
 // Emits the list of spellings for attributes.
@@ -1904,16 +1921,16 @@ void EmitClangAttrHasAttrImpl(RecordKeeper &Records, raw_ostream &OS) {
 
   OS << "switch (Syntax) {\n";
   OS << "case AttrSyntax::Generic:\n";
-  OS << "  return llvm::StringSwitch<bool>(Name)\n";
+  OS << "  return llvm::StringSwitch<int>(Name)\n";
   GenerateHasAttrSpellingStringSwitch(Attrs, OS);
   OS << "case AttrSyntax::GNU:\n";
-  OS << "  return llvm::StringSwitch<bool>(Name)\n";
+  OS << "  return llvm::StringSwitch<int>(Name)\n";
   GenerateHasAttrSpellingStringSwitch(GNU, OS, "GNU");
   OS << "case AttrSyntax::Declspec:\n";
-  OS << "  return llvm::StringSwitch<bool>(Name)\n";
+  OS << "  return llvm::StringSwitch<int>(Name)\n";
   GenerateHasAttrSpellingStringSwitch(Declspec, OS, "Declspec");
   OS << "case AttrSyntax::Pragma:\n";
-  OS << "  return llvm::StringSwitch<bool>(Name)\n";
+  OS << "  return llvm::StringSwitch<int>(Name)\n";
   GenerateHasAttrSpellingStringSwitch(Pragma, OS, "Pragma");
   OS << "case AttrSyntax::CXX: {\n";
   // C++11-style attributes are further split out based on the Scope.
@@ -1926,7 +1943,7 @@ void EmitClangAttrHasAttrImpl(RecordKeeper &Records, raw_ostream &OS) {
       OS << "if (!Scope || Scope->getName() == \"\") {\n";
     else
       OS << "if (Scope->getName() == \"" << I->first << "\") {\n";
-    OS << "  return llvm::StringSwitch<bool>(Name)\n";
+    OS << "  return llvm::StringSwitch<int>(Name)\n";
     GenerateHasAttrSpellingStringSwitch(I->second, OS, "CXX11", I->first);
     OS << "}";
   }
@@ -2170,7 +2187,8 @@ static std::string CalculateDiagnostic(const Record &S) {
     Namespace = 1U << 11,
     Field = 1U << 12,
     CXXMethod = 1U << 13,
-    ObjCProtocol = 1U << 14
+    ObjCProtocol = 1U << 14,
+    Enum = 1U << 15
   };
   uint32_t SubMask = 0;
 
@@ -2204,6 +2222,7 @@ static std::string CalculateDiagnostic(const Record &S) {
                    .Case("Namespace", Namespace)
                    .Case("Field", Field)
                    .Case("CXXMethod", CXXMethod)
+                   .Case("Enum", Enum)
                    .Default(0);
     if (!V) {
       // Something wasn't in our mapping, so be helpful and let the developer
@@ -2222,6 +2241,7 @@ static std::string CalculateDiagnostic(const Record &S) {
     case Var:   return "ExpectedVariable";
     case Param: return "ExpectedParameter";
     case Class: return "ExpectedClass";
+    case Enum:  return "ExpectedEnum";
     case CXXMethod:
       // FIXME: Currently, this maps to ExpectedMethod based on existing code,
       // but should map to something a bit more accurate at some point.
@@ -2375,6 +2395,8 @@ static std::string GenerateLangOptRequirements(const Record &R,
   std::string FnName = "check", Test;
   for (auto I = LangOpts.begin(), E = LangOpts.end(); I != E; ++I) {
     std::string Part = (*I)->getValueAsString("Name");
+    if ((*I)->getValueAsBit("Negated"))
+      Test += "!";
     Test += "S.LangOpts." + Part;
     if (I + 1 != E)
       Test += " || ";
@@ -2698,25 +2720,8 @@ void EmitClangAttrDump(RecordKeeper &Records, raw_ostream &OS) {
       for (const auto *Arg : Args)
         createArgument(*Arg, R.getName())->writeDump(OS);
 
-      // Code for detecting the last child.
-      OS << "    bool OldMoreChildren = hasMoreChildren();\n";
-      OS << "    bool MoreChildren;\n";
-
-      for (auto AI = Args.begin(), AE = Args.end(); AI != AE; ++AI) {
-        // More code for detecting the last child.
-        OS << "    MoreChildren = OldMoreChildren";
-        for (auto Next = AI + 1; Next != AE; ++Next) {
-          OS << " || ";
-          createArgument(**Next, R.getName())->writeHasChildren(OS);
-        }
-        OS << ";\n";
-        OS << "    setMoreChildren(MoreChildren);\n";
-
+      for (auto AI = Args.begin(), AE = Args.end(); AI != AE; ++AI)
         createArgument(**AI, R.getName())->writeDumpChildren(OS);
-      }
-
-      // Reset the last child.
-      OS << "    setMoreChildren(OldMoreChildren);\n";
     }
     OS <<
       "    break;\n"

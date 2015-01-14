@@ -567,6 +567,28 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
   return false;
 }
 
+ExprResult Parser::tryParseCXXIdExpression(CXXScopeSpec &SS, bool isAddressOfOperand,
+                                           Token &Replacement) {
+  SourceLocation TemplateKWLoc;
+  UnqualifiedId Name;
+  if (ParseUnqualifiedId(SS,
+                         /*EnteringContext=*/false,
+                         /*AllowDestructorName=*/false,
+                         /*AllowConstructorName=*/false,
+                         /*ObjectType=*/ParsedType(), TemplateKWLoc, Name))
+    return ExprError();
+
+  // This is only the direct operand of an & operator if it is not
+  // followed by a postfix-expression suffix.
+  if (isAddressOfOperand && isPostfixExpressionSuffixStart())
+    isAddressOfOperand = false;
+
+  return Actions.ActOnIdExpression(getCurScope(), SS, TemplateKWLoc, Name,
+                                   Tok.is(tok::l_paren), isAddressOfOperand,
+                                   nullptr, /*IsInlineAsmIdentifier=*/false,
+                                   &Replacement);
+}
+
 /// ParseCXXIdExpression - Handle id-expression.
 ///
 ///       id-expression:
@@ -617,24 +639,17 @@ ExprResult Parser::ParseCXXIdExpression(bool isAddressOfOperand) {
   CXXScopeSpec SS;
   ParseOptionalCXXScopeSpecifier(SS, ParsedType(), /*EnteringContext=*/false);
 
-  SourceLocation TemplateKWLoc;
-  UnqualifiedId Name;
-  if (ParseUnqualifiedId(SS,
-                         /*EnteringContext=*/false,
-                         /*AllowDestructorName=*/false,
-                         /*AllowConstructorName=*/false,
-                         /*ObjectType=*/ ParsedType(),
-                         TemplateKWLoc,
-                         Name))
-    return ExprError();
-
-  // This is only the direct operand of an & operator if it is not
-  // followed by a postfix-expression suffix.
-  if (isAddressOfOperand && isPostfixExpressionSuffixStart())
-    isAddressOfOperand = false;
-
-  return Actions.ActOnIdExpression(getCurScope(), SS, TemplateKWLoc, Name,
-                                   Tok.is(tok::l_paren), isAddressOfOperand);
+  Token Replacement;
+  ExprResult Result = tryParseCXXIdExpression(SS, isAddressOfOperand, Replacement);
+  if (Result.isUnset()) {
+    // If the ExprResult is valid but null, then typo correction suggested a
+    // keyword replacement that needs to be reparsed.
+    UnconsumeToken(Replacement);
+    Result = tryParseCXXIdExpression(SS, isAddressOfOperand, Replacement);
+  }
+  assert(!Result.isUnset() && "Typo correction suggested a keyword replacement "
+                              "for a previous keyword suggestion");
+  return Result;
 }
 
 /// ParseLambdaExpression - Parse a C++11 lambda expression.
@@ -1061,10 +1076,13 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     SmallVector<ParsedType, 2> DynamicExceptions;
     SmallVector<SourceRange, 2> DynamicExceptionRanges;
     ExprResult NoexceptExpr;
-    ESpecType = tryParseExceptionSpecification(ESpecRange,
+    CachedTokens *ExceptionSpecTokens;
+    ESpecType = tryParseExceptionSpecification(/*Delayed=*/false,
+                                               ESpecRange,
                                                DynamicExceptions,
                                                DynamicExceptionRanges,
-                                               NoexceptExpr);
+                                               NoexceptExpr,
+                                               ExceptionSpecTokens);
 
     if (ESpecType != EST_None)
       DeclEndLoc = ESpecRange.getEnd();
@@ -1105,6 +1123,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                                            DynamicExceptions.size(),
                                            NoexceptExpr.isUsable() ?
                                              NoexceptExpr.get() : nullptr,
+                                           /*ExceptionSpecTokens*/nullptr,
                                            LParenLoc, FunLocalRangeEnd, D,
                                            TrailingReturnType),
                   Attr, DeclEndLoc);
@@ -1173,6 +1192,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                                                /*ExceptionRanges=*/nullptr,
                                                /*NumExceptions=*/0,
                                                /*NoexceptExpr=*/nullptr,
+                                               /*ExceptionSpecTokens=*/nullptr,
                                                DeclLoc, DeclEndLoc, D,
                                                TrailingReturnType),
                   Attr, DeclEndLoc);
@@ -1402,7 +1422,7 @@ ExprResult Parser::ParseCXXUuidof() {
 ///         ::[opt] nested-name-specifier[opt] ~type-name
 ///       
 ExprResult 
-Parser::ParseCXXPseudoDestructor(ExprArg Base, SourceLocation OpLoc,
+Parser::ParseCXXPseudoDestructor(Expr *Base, SourceLocation OpLoc,
                                  tok::TokenKind OpKind,
                                  CXXScopeSpec &SS,
                                  ParsedType ObjectType) {

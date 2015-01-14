@@ -14,6 +14,7 @@
 #include "CodeGenFunction.h"
 #include "CGCXXABI.h"
 #include "CGObjCRuntime.h"
+#include "CGOpenMPRuntime.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/Intrinsics.h"
@@ -139,6 +140,10 @@ void CodeGenFunction::EmitCXXGlobalVarDeclInit(const VarDecl &D,
   QualType T = D.getType();
 
   if (!T->isReferenceType()) {
+    if (getLangOpts().OpenMP && D.hasAttr<OMPThreadPrivateDeclAttr>())
+      (void)CGM.getOpenMPRuntime().EmitOMPThreadPrivateVarDefinition(
+          &D, DeclPtr, D.getAttr<OMPThreadPrivateDeclAttr>()->getLocation(),
+          PerformInit, this);
     if (PerformInit)
       EmitDeclInit(*this, D, DeclPtr);
     if (CGM.isTypeConstant(D.getType(), true))
@@ -237,11 +242,11 @@ llvm::Function *CodeGenModule::CreateGlobalInitOrDestructFunction(
     Fn->setDoesNotThrow();
 
   if (!isInSanitizerBlacklist(Fn, Loc)) {
-    if (getLangOpts().Sanitize.Address)
+    if (getLangOpts().Sanitize.has(SanitizerKind::Address))
       Fn->addFnAttr(llvm::Attribute::SanitizeAddress);
-    if (getLangOpts().Sanitize.Thread)
+    if (getLangOpts().Sanitize.has(SanitizerKind::Thread))
       Fn->addFnAttr(llvm::Attribute::SanitizeThread);
-    if (getLangOpts().Sanitize.Memory)
+    if (getLangOpts().Sanitize.has(SanitizerKind::Memory))
       Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
   }
 

@@ -129,20 +129,20 @@ void FileManager::addAncestorsAsVirtualDirs(StringRef Path) {
   if (DirName.empty())
     return;
 
-  llvm::StringMapEntry<DirectoryEntry *> &NamedDirEnt =
-    SeenDirEntries.GetOrCreateValue(DirName);
+  auto &NamedDirEnt =
+      *SeenDirEntries.insert(std::make_pair(DirName, nullptr)).first;
 
   // When caching a virtual directory, we always cache its ancestors
   // at the same time.  Therefore, if DirName is already in the cache,
   // we don't need to recurse as its ancestors must also already be in
   // the cache.
-  if (NamedDirEnt.getValue())
+  if (NamedDirEnt.second)
     return;
 
   // Add the virtual directory to the cache.
   DirectoryEntry *UDE = new DirectoryEntry;
-  UDE->Name = NamedDirEnt.getKeyData();
-  NamedDirEnt.setValue(UDE);
+  UDE->Name = NamedDirEnt.first().data();
+  NamedDirEnt.second = UDE;
   VirtualDirectoryEntries.push_back(UDE);
 
   // Recursively add the other ancestors.
@@ -170,23 +170,23 @@ const DirectoryEntry *FileManager::getDirectory(StringRef DirName,
 #endif
 
   ++NumDirLookups;
-  llvm::StringMapEntry<DirectoryEntry *> &NamedDirEnt =
-    SeenDirEntries.GetOrCreateValue(DirName);
+  auto &NamedDirEnt =
+      *SeenDirEntries.insert(std::make_pair(DirName, nullptr)).first;
 
   // See if there was already an entry in the map.  Note that the map
   // contains both virtual and real directories.
-  if (NamedDirEnt.getValue())
-    return NamedDirEnt.getValue() == NON_EXISTENT_DIR ? nullptr
-                                                      : NamedDirEnt.getValue();
+  if (NamedDirEnt.second)
+    return NamedDirEnt.second == NON_EXISTENT_DIR ? nullptr
+                                                  : NamedDirEnt.second;
 
   ++NumDirCacheMisses;
 
   // By default, initialize it to invalid.
-  NamedDirEnt.setValue(NON_EXISTENT_DIR);
+  NamedDirEnt.second = NON_EXISTENT_DIR;
 
   // Get the null-terminated directory name as stored as the key of the
   // SeenDirEntries map.
-  const char *InterndDirName = NamedDirEnt.getKeyData();
+  const char *InterndDirName = NamedDirEnt.first().data();
 
   // Check to see if the directory exists.
   FileData Data;
@@ -203,7 +203,7 @@ const DirectoryEntry *FileManager::getDirectory(StringRef DirName,
   // Windows).
   DirectoryEntry &UDE = UniqueRealDirs[Data.UniqueID];
 
-  NamedDirEnt.setValue(&UDE);
+  NamedDirEnt.second = &UDE;
   if (!UDE.getName()) {
     // We don't have this directory yet, add it.  We use the string
     // key from the SeenDirEntries map as the string.
@@ -218,22 +218,22 @@ const FileEntry *FileManager::getFile(StringRef Filename, bool openFile,
   ++NumFileLookups;
 
   // See if there is already an entry in the map.
-  llvm::StringMapEntry<FileEntry *> &NamedFileEnt =
-    SeenFileEntries.GetOrCreateValue(Filename);
+  auto &NamedFileEnt =
+      *SeenFileEntries.insert(std::make_pair(Filename, nullptr)).first;
 
   // See if there is already an entry in the map.
-  if (NamedFileEnt.getValue())
-    return NamedFileEnt.getValue() == NON_EXISTENT_FILE
-                 ? nullptr : NamedFileEnt.getValue();
+  if (NamedFileEnt.second)
+    return NamedFileEnt.second == NON_EXISTENT_FILE ? nullptr
+                                                    : NamedFileEnt.second;
 
   ++NumFileCacheMisses;
 
   // By default, initialize it to invalid.
-  NamedFileEnt.setValue(NON_EXISTENT_FILE);
+  NamedFileEnt.second = NON_EXISTENT_FILE;
 
   // Get the null-terminated file name as stored as the key of the
   // SeenFileEntries map.
-  const char *InterndFileName = NamedFileEnt.getKeyData();
+  const char *InterndFileName = NamedFileEnt.first().data();
 
   // Look up the directory for the file.  When looking up something like
   // sys/foo.h we'll discover all of the search directories that have a 'sys'
@@ -269,18 +269,19 @@ const FileEntry *FileManager::getFile(StringRef Filename, bool openFile,
   // This occurs when one dir is symlinked to another, for example.
   FileEntry &UFE = UniqueRealFiles[Data.UniqueID];
 
-  NamedFileEnt.setValue(&UFE);
+  NamedFileEnt.second = &UFE;
 
   // If the name returned by getStatValue is different than Filename, re-intern
   // the name.
   if (Data.Name != Filename) {
-    auto &NamedFileEnt = SeenFileEntries.GetOrCreateValue(Data.Name);
-    if (!NamedFileEnt.getValue())
-      NamedFileEnt.setValue(&UFE);
+    auto &NamedFileEnt =
+        *SeenFileEntries.insert(std::make_pair(Data.Name, nullptr)).first;
+    if (!NamedFileEnt.second)
+      NamedFileEnt.second = &UFE;
     else
-      assert(NamedFileEnt.getValue() == &UFE &&
+      assert(NamedFileEnt.second == &UFE &&
              "filename from getStatValue() refers to wrong file");
-    InterndFileName = NamedFileEnt.getKeyData();
+    InterndFileName = NamedFileEnt.first().data();
   }
 
   if (UFE.isValid()) { // Already have an entry with this inode, return it.
@@ -324,17 +325,17 @@ FileManager::getVirtualFile(StringRef Filename, off_t Size,
   ++NumFileLookups;
 
   // See if there is already an entry in the map.
-  llvm::StringMapEntry<FileEntry *> &NamedFileEnt =
-    SeenFileEntries.GetOrCreateValue(Filename);
+  auto &NamedFileEnt =
+      *SeenFileEntries.insert(std::make_pair(Filename, nullptr)).first;
 
   // See if there is already an entry in the map.
-  if (NamedFileEnt.getValue() && NamedFileEnt.getValue() != NON_EXISTENT_FILE)
-    return NamedFileEnt.getValue();
+  if (NamedFileEnt.second && NamedFileEnt.second != NON_EXISTENT_FILE)
+    return NamedFileEnt.second;
 
   ++NumFileCacheMisses;
 
   // By default, initialize it to invalid.
-  NamedFileEnt.setValue(NON_EXISTENT_FILE);
+  NamedFileEnt.second = NON_EXISTENT_FILE;
 
   addAncestorsAsVirtualDirs(Filename);
   FileEntry *UFE = nullptr;
@@ -349,13 +350,13 @@ FileManager::getVirtualFile(StringRef Filename, off_t Size,
 
   // Check to see if the file exists. If so, drop the virtual file
   FileData Data;
-  const char *InterndFileName = NamedFileEnt.getKeyData();
+  const char *InterndFileName = NamedFileEnt.first().data();
   if (getStatValue(InterndFileName, Data, true, nullptr) == 0) {
     Data.Size = Size;
     Data.ModTime = ModificationTime;
     UFE = &UniqueRealFiles[Data.UniqueID];
 
-    NamedFileEnt.setValue(UFE);
+    NamedFileEnt.second = UFE;
 
     // If we had already opened this file, close it now so we don't
     // leak the descriptor. We're not going to use the file
@@ -375,7 +376,7 @@ FileManager::getVirtualFile(StringRef Filename, off_t Size,
   if (!UFE) {
     UFE = new FileEntry();
     VirtualFileEntries.push_back(UFE);
-    NamedFileEnt.setValue(UFE);
+    NamedFileEnt.second = UFE;
   }
 
   UFE->Name    = InterndFileName;
@@ -399,12 +400,9 @@ void FileManager::FixupRelativePath(SmallVectorImpl<char> &path) const {
   path = NewPath;
 }
 
-std::unique_ptr<llvm::MemoryBuffer>
-FileManager::getBufferForFile(const FileEntry *Entry, std::string *ErrorStr,
-                              bool isVolatile, bool ShouldCloseOpenFile) {
-  std::unique_ptr<llvm::MemoryBuffer> Result;
-  std::error_code ec;
-
+llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
+FileManager::getBufferForFile(const FileEntry *Entry, bool isVolatile,
+                              bool ShouldCloseOpenFile) {
   uint64_t FileSize = Entry->getSize();
   // If there's a high enough chance that the file have changed since we
   // got its size, force a stat before opening it.
@@ -414,10 +412,9 @@ FileManager::getBufferForFile(const FileEntry *Entry, std::string *ErrorStr,
   const char *Filename = Entry->getName();
   // If the file is already open, use the open file descriptor.
   if (Entry->File) {
-    ec = Entry->File->getBuffer(Filename, Result, FileSize,
-                                /*RequiresNullTerminator=*/true, isVolatile);
-    if (ErrorStr)
-      *ErrorStr = ec.message();
+    auto Result =
+        Entry->File->getBuffer(Filename, FileSize,
+                               /*RequiresNullTerminator=*/true, isVolatile);
     // FIXME: we need a set of APIs that can make guarantees about whether a
     // FileEntry is open or not.
     if (ShouldCloseOpenFile)
@@ -427,40 +424,24 @@ FileManager::getBufferForFile(const FileEntry *Entry, std::string *ErrorStr,
 
   // Otherwise, open the file.
 
-  if (FileSystemOpts.WorkingDir.empty()) {
-    ec = FS->getBufferForFile(Filename, Result, FileSize,
-                              /*RequiresNullTerminator=*/true, isVolatile);
-    if (ec && ErrorStr)
-      *ErrorStr = ec.message();
-    return Result;
-  }
+  if (FileSystemOpts.WorkingDir.empty())
+    return FS->getBufferForFile(Filename, FileSize,
+                                /*RequiresNullTerminator=*/true, isVolatile);
 
   SmallString<128> FilePath(Entry->getName());
   FixupRelativePath(FilePath);
-  ec = FS->getBufferForFile(FilePath.str(), Result, FileSize,
-                            /*RequiresNullTerminator=*/true, isVolatile);
-  if (ec && ErrorStr)
-    *ErrorStr = ec.message();
-  return Result;
+  return FS->getBufferForFile(FilePath.str(), FileSize,
+                              /*RequiresNullTerminator=*/true, isVolatile);
 }
 
-std::unique_ptr<llvm::MemoryBuffer>
-FileManager::getBufferForFile(StringRef Filename, std::string *ErrorStr) {
-  std::unique_ptr<llvm::MemoryBuffer> Result;
-  std::error_code ec;
-  if (FileSystemOpts.WorkingDir.empty()) {
-    ec = FS->getBufferForFile(Filename, Result);
-    if (ec && ErrorStr)
-      *ErrorStr = ec.message();
-    return Result;
-  }
+llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
+FileManager::getBufferForFile(StringRef Filename) {
+  if (FileSystemOpts.WorkingDir.empty())
+    return FS->getBufferForFile(Filename);
 
   SmallString<128> FilePath(Filename);
   FixupRelativePath(FilePath);
-  ec = FS->getBufferForFile(FilePath.c_str(), Result);
-  if (ec && ErrorStr)
-    *ErrorStr = ec.message();
-  return Result;
+  return FS->getBufferForFile(FilePath.c_str());
 }
 
 /// getStatValue - Get the 'stat' information for the specified path,

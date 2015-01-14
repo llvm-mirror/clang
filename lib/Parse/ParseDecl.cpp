@@ -302,7 +302,8 @@ unsigned Parser::ParseAttributeArgsCommon(
         Unevaluated.reset(
             new EnterExpressionEvaluationContext(Actions, Sema::Unevaluated));
 
-      ExprResult ArgExpr(ParseAssignmentExpression());
+      ExprResult ArgExpr(
+          Actions.CorrectDelayedTyposInExpr(ParseAssignmentExpression()));
       if (ArgExpr.isInvalid()) {
         SkipUntil(tok::r_paren, StopAtSemi);
         return 0;
@@ -588,15 +589,28 @@ void Parser::ParseMicrosoftDeclSpec(ParsedAttributes &Attrs) {
 
 void Parser::ParseMicrosoftTypeAttributes(ParsedAttributes &attrs) {
   // Treat these like attributes
-  while (Tok.is(tok::kw___fastcall) || Tok.is(tok::kw___stdcall) ||
-         Tok.is(tok::kw___thiscall) || Tok.is(tok::kw___cdecl)   ||
-         Tok.is(tok::kw___ptr64) || Tok.is(tok::kw___w64) ||
-         Tok.is(tok::kw___ptr32) || Tok.is(tok::kw___unaligned) ||
-         Tok.is(tok::kw___sptr) || Tok.is(tok::kw___uptr)) {
-    IdentifierInfo *AttrName = Tok.getIdentifierInfo();
-    SourceLocation AttrNameLoc = ConsumeToken();
-    attrs.addNew(AttrName, AttrNameLoc, nullptr, AttrNameLoc, nullptr, 0,
-                 AttributeList::AS_Keyword);
+  while (true) {
+    switch (Tok.getKind()) {
+    case tok::kw___fastcall:
+    case tok::kw___stdcall:
+    case tok::kw___thiscall:
+    case tok::kw___cdecl:
+    case tok::kw___vectorcall:
+    case tok::kw___ptr64:
+    case tok::kw___w64:
+    case tok::kw___ptr32:
+    case tok::kw___unaligned:
+    case tok::kw___sptr:
+    case tok::kw___uptr: {
+      IdentifierInfo *AttrName = Tok.getIdentifierInfo();
+      SourceLocation AttrNameLoc = ConsumeToken();
+      attrs.addNew(AttrName, AttrNameLoc, nullptr, AttrNameLoc, nullptr, 0,
+                   AttributeList::AS_Keyword);
+      break;
+    }
+    default:
+      return;
+    }
   }
 }
 
@@ -857,6 +871,19 @@ void Parser::ParseAvailabilityAttribute(IdentifierInfo &Availability,
       break;
     }
 
+    // Special handling of 'NA' only when applied to introduced or
+    // deprecated.
+    if ((Keyword == Ident_introduced || Keyword == Ident_deprecated) &&
+        Tok.is(tok::identifier)) {
+      IdentifierInfo *NA = Tok.getIdentifierInfo();
+      if (NA->getName() == "NA") {
+        ConsumeToken();
+        if (Keyword == Ident_introduced)
+          UnavailableLoc = KeywordLoc;
+        continue;
+      }
+    }
+    
     SourceRange VersionRange;
     VersionTuple Version = ParseVersionTuple(VersionRange);
 
@@ -1308,8 +1335,7 @@ void Parser::ProhibitCXX11Attributes(ParsedAttributesWithRange &attrs) {
 /// [C++11/C11] static_assert-declaration
 ///         others... [FIXME]
 ///
-Parser::DeclGroupPtrTy Parser::ParseDeclaration(StmtVector &Stmts,
-                                                unsigned Context,
+Parser::DeclGroupPtrTy Parser::ParseDeclaration(unsigned Context,
                                                 SourceLocation &DeclEnd,
                                           ParsedAttributesWithRange &attrs) {
   ParenBraceBracketBalancer BalancerRAIIObj(*this);
@@ -1333,7 +1359,7 @@ Parser::DeclGroupPtrTy Parser::ParseDeclaration(StmtVector &Stmts,
       SingleDecl = ParseNamespace(Context, DeclEnd, InlineLoc);
       break;
     }
-    return ParseSimpleDeclaration(Stmts, Context, DeclEnd, attrs,
+    return ParseSimpleDeclaration(Context, DeclEnd, attrs,
                                   true);
   case tok::kw_namespace:
     ProhibitAttributes(attrs);
@@ -1349,7 +1375,7 @@ Parser::DeclGroupPtrTy Parser::ParseDeclaration(StmtVector &Stmts,
     SingleDecl = ParseStaticAssertDeclaration(DeclEnd);
     break;
   default:
-    return ParseSimpleDeclaration(Stmts, Context, DeclEnd, attrs, true);
+    return ParseSimpleDeclaration(Context, DeclEnd, attrs, true);
   }
 
   // This routine returns a DeclGroup, if the thing we parsed only contains a
@@ -1375,7 +1401,7 @@ Parser::DeclGroupPtrTy Parser::ParseDeclaration(StmtVector &Stmts,
 /// of a simple-declaration. If we find that we are, we also parse the
 /// for-range-initializer, and place it here.
 Parser::DeclGroupPtrTy
-Parser::ParseSimpleDeclaration(StmtVector &Stmts, unsigned Context,
+Parser::ParseSimpleDeclaration(unsigned Context,
                                SourceLocation &DeclEnd,
                                ParsedAttributesWithRange &Attrs,
                                bool RequireSemi, ForRangeInit *FRI) {
@@ -1576,8 +1602,29 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
   // appropriate function scope after the function Decl has been constructed.
   // These will be parsed in ParseFunctionDefinition or ParseLexedAttrList.
   LateParsedAttrList LateParsedAttrs(true);
-  if (D.isFunctionDeclarator())
+  if (D.isFunctionDeclarator()) {
     MaybeParseGNUAttributes(D, &LateParsedAttrs);
+
+    // The _Noreturn keyword can't appear here, unlike the GNU noreturn
+    // attribute. If we find the keyword here, tell the user to put it
+    // at the start instead.
+    if (Tok.is(tok::kw__Noreturn)) {
+      SourceLocation Loc = ConsumeToken();
+      const char *PrevSpec;
+      unsigned DiagID;
+
+      // We can offer a fixit if it's valid to mark this function as _Noreturn
+      // and we don't have any other declarators in this declaration.
+      bool Fixit = !DS.setFunctionSpecNoreturn(Loc, PrevSpec, DiagID);
+      MaybeParseGNUAttributes(D, &LateParsedAttrs);
+      Fixit &= Tok.is(tok::semi) || Tok.is(tok::l_brace) || Tok.is(tok::kw_try);
+
+      Diag(Loc, diag::err_c11_noreturn_misplaced)
+          << (Fixit ? FixItHint::CreateRemoval(Loc) : FixItHint())
+          << (Fixit ? FixItHint::CreateInsertion(D.getLocStart(), "_Noreturn ")
+                    : FixItHint());
+    }
+  }
 
   // Check to see if we have a function *definition* which must have a body.
   if (D.isFunctionDeclarator() &&
@@ -2473,6 +2520,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
   const PrintingPolicy &Policy = Actions.getASTContext().getPrintingPolicy();
   while (1) {
     bool isInvalid = false;
+    bool isStorageClass = false;
     const char *PrevSpec = nullptr;
     unsigned DiagID = 0;
 
@@ -2877,6 +2925,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
     case tok::kw___stdcall:
     case tok::kw___fastcall:
     case tok::kw___thiscall:
+    case tok::kw___vectorcall:
     case tok::kw___unaligned:
       ParseMicrosoftTypeAttributes(DS.getAttributes());
       continue;
@@ -2895,22 +2944,26 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
     case tok::kw_typedef:
       isInvalid = DS.SetStorageClassSpec(Actions, DeclSpec::SCS_typedef, Loc,
                                          PrevSpec, DiagID, Policy);
+      isStorageClass = true;
       break;
     case tok::kw_extern:
       if (DS.getThreadStorageClassSpec() == DeclSpec::TSCS___thread)
         Diag(Tok, diag::ext_thread_before) << "extern";
       isInvalid = DS.SetStorageClassSpec(Actions, DeclSpec::SCS_extern, Loc,
                                          PrevSpec, DiagID, Policy);
+      isStorageClass = true;
       break;
     case tok::kw___private_extern__:
       isInvalid = DS.SetStorageClassSpec(Actions, DeclSpec::SCS_private_extern,
                                          Loc, PrevSpec, DiagID, Policy);
+      isStorageClass = true;
       break;
     case tok::kw_static:
       if (DS.getThreadStorageClassSpec() == DeclSpec::TSCS___thread)
         Diag(Tok, diag::ext_thread_before) << "static";
       isInvalid = DS.SetStorageClassSpec(Actions, DeclSpec::SCS_static, Loc,
                                          PrevSpec, DiagID, Policy);
+      isStorageClass = true;
       break;
     case tok::kw_auto:
       if (getLangOpts().CPlusPlus11) {
@@ -2926,18 +2979,22 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       } else
         isInvalid = DS.SetStorageClassSpec(Actions, DeclSpec::SCS_auto, Loc,
                                            PrevSpec, DiagID, Policy);
+      isStorageClass = true;
       break;
     case tok::kw_register:
       isInvalid = DS.SetStorageClassSpec(Actions, DeclSpec::SCS_register, Loc,
                                          PrevSpec, DiagID, Policy);
+      isStorageClass = true;
       break;
     case tok::kw_mutable:
       isInvalid = DS.SetStorageClassSpec(Actions, DeclSpec::SCS_mutable, Loc,
                                          PrevSpec, DiagID, Policy);
+      isStorageClass = true;
       break;
     case tok::kw___thread:
       isInvalid = DS.SetStorageClassSpecThread(DeclSpec::TSCS___thread, Loc,
                                                PrevSpec, DiagID);
+      isStorageClass = true;
       break;
     case tok::kw_thread_local:
       isInvalid = DS.SetStorageClassSpecThread(DeclSpec::TSCS_thread_local, Loc,
@@ -2946,6 +3003,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
     case tok::kw__Thread_local:
       isInvalid = DS.SetStorageClassSpecThread(DeclSpec::TSCS__Thread_local,
                                                Loc, PrevSpec, DiagID);
+      isStorageClass = true;
       break;
 
     // function-specifier
@@ -3184,6 +3242,15 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       break;
 
     // OpenCL qualifiers:
+    case tok::kw___generic:
+      // generic address space is introduced only in OpenCL v2.0
+      // see OpenCL C Spec v2.0 s6.5.5
+      if (Actions.getLangOpts().OpenCLVersion < 200) {
+        DiagID = diag::err_opencl_unknown_type_specifier;
+        PrevSpec = Tok.getIdentifierInfo()->getNameStart();
+        isInvalid = true;
+        break;
+      };
     case tok::kw___private:
     case tok::kw___global:
     case tok::kw___local:
@@ -3218,6 +3285,8 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       if (DiagID == diag::ext_duplicate_declspec)
         Diag(Tok, DiagID)
           << PrevSpec << FixItHint::CreateRemoval(Tok.getLocation());
+      else if (DiagID == diag::err_opencl_unknown_type_specifier)
+        Diag(Tok, DiagID) << PrevSpec << isStorageClass;
       else
         Diag(Tok, DiagID) << PrevSpec;
     }
@@ -3786,8 +3855,8 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
 ///         enumerator
 ///         enumerator-list ',' enumerator
 ///       enumerator:
-///         enumeration-constant
-///         enumeration-constant '=' constant-expression
+///         enumeration-constant attributes[opt]
+///         enumeration-constant attributes[opt] '=' constant-expression
 ///       enumeration-constant:
 ///         identifier
 ///
@@ -3824,8 +3893,13 @@ void Parser::ParseEnumBody(SourceLocation StartLoc, Decl *EnumDecl) {
     // If attributes exist after the enumerator, parse them.
     ParsedAttributesWithRange attrs(AttrFactory);
     MaybeParseGNUAttributes(attrs);
-    MaybeParseCXX11Attributes(attrs);
-    ProhibitAttributes(attrs);
+    ProhibitAttributes(attrs); // GNU-style attributes are prohibited.
+    if (getLangOpts().CPlusPlus11 && isCXX11AttributeSpecifier()) {
+      if (!getLangOpts().CPlusPlus1z)
+        Diag(Tok.getLocation(), diag::warn_cxx14_compat_attribute)
+            << 1 /*enumerator*/;
+      ParseCXX11Attributes(attrs);
+    }
 
     SourceLocation EqualLoc;
     ExprResult AssignedVal;
@@ -3929,6 +4003,7 @@ bool Parser::isTypeQualifier() const {
   case tok::kw___local:
   case tok::kw___global:
   case tok::kw___constant:
+  case tok::kw___generic:
   case tok::kw___read_only:
   case tok::kw___read_write:
   case tok::kw___write_only:
@@ -4067,6 +4142,7 @@ bool Parser::isTypeSpecifierQualifier() {
   case tok::kw___stdcall:
   case tok::kw___fastcall:
   case tok::kw___thiscall:
+  case tok::kw___vectorcall:
   case tok::kw___w64:
   case tok::kw___ptr64:
   case tok::kw___ptr32:
@@ -4077,6 +4153,7 @@ bool Parser::isTypeSpecifierQualifier() {
   case tok::kw___local:
   case tok::kw___global:
   case tok::kw___constant:
+  case tok::kw___generic:
   case tok::kw___read_only:
   case tok::kw___read_write:
   case tok::kw___write_only:
@@ -4235,6 +4312,7 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
   case tok::kw___stdcall:
   case tok::kw___fastcall:
   case tok::kw___thiscall:
+  case tok::kw___vectorcall:
   case tok::kw___w64:
   case tok::kw___sptr:
   case tok::kw___uptr:
@@ -4248,6 +4326,7 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
   case tok::kw___local:
   case tok::kw___global:
   case tok::kw___constant:
+  case tok::kw___generic:
   case tok::kw___read_only:
   case tok::kw___read_write:
   case tok::kw___write_only:
@@ -4436,6 +4515,7 @@ void Parser::ParseTypeQualifierListOpt(DeclSpec &DS, unsigned AttrReqs,
     case tok::kw___global:
     case tok::kw___local:
     case tok::kw___constant:
+    case tok::kw___generic:
     case tok::kw___read_only:
     case tok::kw___write_only:
     case tok::kw___read_write:
@@ -4458,6 +4538,7 @@ void Parser::ParseTypeQualifierListOpt(DeclSpec &DS, unsigned AttrReqs,
     case tok::kw___stdcall:
     case tok::kw___fastcall:
     case tok::kw___thiscall:
+    case tok::kw___vectorcall:
     case tok::kw___unaligned:
       if (AttrReqs & AR_DeclspecAttributesParsed) {
         ParseMicrosoftTypeAttributes(DS.getAttributes());
@@ -4511,15 +4592,27 @@ void Parser::ParseDeclarator(Declarator &D) {
   ParseDeclaratorInternal(D, &Parser::ParseDirectDeclarator);
 }
 
-static bool isPtrOperatorToken(tok::TokenKind Kind, const LangOptions &Lang) {
+static bool isPtrOperatorToken(tok::TokenKind Kind, const LangOptions &Lang,
+                               unsigned TheContext) {
   if (Kind == tok::star || Kind == tok::caret)
     return true;
 
-  // We parse rvalue refs in C++03, because otherwise the errors are scary.
   if (!Lang.CPlusPlus)
     return false;
 
-  return Kind == tok::amp || Kind == tok::ampamp;
+  if (Kind == tok::amp)
+    return true;
+
+  // We parse rvalue refs in C++03, because otherwise the errors are scary.
+  // But we must not parse them in conversion-type-ids and new-type-ids, since
+  // those can be legitimately followed by a && operator.
+  // (The same thing can in theory happen after a trailing-return-type, but
+  // since those are a C++11 feature, there is no rejects-valid issue there.)
+  if (Kind == tok::ampamp)
+    return Lang.CPlusPlus11 || (TheContext != Declarator::ConversionIdContext &&
+                                TheContext != Declarator::CXXNewContext);
+
+  return false;
 }
 
 /// ParseDeclaratorInternal - Parse a C or C++ declarator. The direct-declarator
@@ -4599,7 +4692,7 @@ void Parser::ParseDeclaratorInternal(Declarator &D,
 
   tok::TokenKind Kind = Tok.getKind();
   // Not a pointer, C++ reference, or block.
-  if (!isPtrOperatorToken(Kind, getLangOpts())) {
+  if (!isPtrOperatorToken(Kind, getLangOpts(), D.getContext())) {
     if (DirectDeclParser)
       (this->*DirectDeclParser)(D);
     return;
@@ -4794,7 +4887,7 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
           !D.hasGroupingParens() &&
           !Actions.containsUnexpandedParameterPacks(D))) {
       SourceLocation EllipsisLoc = ConsumeToken();
-      if (isPtrOperatorToken(Tok.getKind(), getLangOpts())) {
+      if (isPtrOperatorToken(Tok.getKind(), getLangOpts(), D.getContext())) {
         // The ellipsis was put in the wrong place. Recover, and explain to
         // the user what they should have done.
         ParseDeclarator(D);
@@ -5126,6 +5219,7 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
   SmallVector<ParsedType, 2> DynamicExceptions;
   SmallVector<SourceRange, 2> DynamicExceptionRanges;
   ExprResult NoexceptExpr;
+  CachedTokens *ExceptionSpecTokens = 0;
   ParsedAttributes FnAttrs(AttrFactory);
   TypeResult TrailingReturnType;
 
@@ -5212,10 +5306,31 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
                                IsCXX11MemberFunction);
 
       // Parse exception-specification[opt].
-      ESpecType = tryParseExceptionSpecification(ESpecRange,
+      bool Delayed = D.isFirstDeclarationOfMember() &&
+                     D.isFunctionDeclaratorAFunctionDeclaration();
+      if (Delayed && Actions.isLibstdcxxEagerExceptionSpecHack(D) &&
+          GetLookAheadToken(0).is(tok::kw_noexcept) &&
+          GetLookAheadToken(1).is(tok::l_paren) &&
+          GetLookAheadToken(2).is(tok::kw_noexcept) &&
+          GetLookAheadToken(3).is(tok::l_paren) &&
+          GetLookAheadToken(4).is(tok::identifier) &&
+          GetLookAheadToken(4).getIdentifierInfo()->isStr("swap")) {
+        // HACK: We've got an exception-specification
+        //   noexcept(noexcept(swap(...)))
+        // or
+        //   noexcept(noexcept(swap(...)) && noexcept(swap(...)))
+        // on a 'swap' member function. This is a libstdc++ bug; the lookup
+        // for 'swap' will only find the function we're currently declaring,
+        // whereas it expects to find a non-member swap through ADL. Turn off
+        // delayed parsing to give it a chance to find what it expects.
+        Delayed = false;
+      }
+      ESpecType = tryParseExceptionSpecification(Delayed,
+                                                 ESpecRange,
                                                  DynamicExceptions,
                                                  DynamicExceptionRanges,
-                                                 NoexceptExpr);
+                                                 NoexceptExpr,
+                                                 ExceptionSpecTokens);
       if (ESpecType != EST_None)
         EndLoc = ESpecRange.getEnd();
 
@@ -5255,6 +5370,7 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
                                              DynamicExceptions.size(),
                                              NoexceptExpr.isUsable() ?
                                                NoexceptExpr.get() : nullptr,
+                                             ExceptionSpecTokens,
                                              StartLoc, LocalEndLoc, D,
                                              TrailingReturnType),
                 FnAttrs, EndLoc);
@@ -5326,7 +5442,7 @@ void Parser::ParseFunctionDeclaratorIdentifierList(
       Diag(Tok, diag::err_unexpected_typedef_ident) << ParmII;
 
     // Verify that the argument identifier has not already been mentioned.
-    if (!ParamsSoFar.insert(ParmII)) {
+    if (!ParamsSoFar.insert(ParmII).second) {
       Diag(Tok, diag::err_param_redefinition) << ParmII;
     } else {
       // Remember this identifier in ParamInfo.
@@ -5492,6 +5608,7 @@ void Parser::ParseParameterDeclarationClause(
             DefArgResult = ParseBraceInitializer();
           } else
             DefArgResult = ParseAssignmentExpression();
+          DefArgResult = Actions.CorrectDelayedTyposInExpr(DefArgResult);
           if (DefArgResult.isInvalid()) {
             Actions.ActOnParamDefaultArgumentError(Param, EqualLoc);
             SkipUntil(tok::comma, tok::r_paren, StopAtSemi | StopBeforeMatch);
@@ -5632,7 +5749,8 @@ void Parser::ParseBracketDeclarator(Declarator &D) {
     } else {
       EnterExpressionEvaluationContext Unevaluated(Actions,
                                                    Sema::ConstantEvaluated);
-      NumElements = ParseAssignmentExpression();
+      NumElements =
+          Actions.CorrectDelayedTyposInExpr(ParseAssignmentExpression());
     }
   } else {
     if (StaticLoc.isValid()) {

@@ -185,9 +185,9 @@ Retry:
     if (Next.isNot(tok::coloncolon)) {
       // Try to limit which sets of keywords should be included in typo
       // correction based on what the next token is.
-      StatementFilterCCC Validator(Next);
-      if (TryAnnotateName(/*IsAddressOfOperand*/false, &Validator)
-            == ANK_Error) {
+      if (TryAnnotateName(/*IsAddressOfOperand*/ false,
+                          llvm::make_unique<StatementFilterCCC>(Next)) ==
+          ANK_Error) {
         // Handle errors here by skipping up to the next semicolon or '}', and
         // eat the semicolon if that's what stopped us.
         SkipUntil(tok::r_brace, StopAtSemi | StopBeforeMatch);
@@ -207,7 +207,7 @@ Retry:
   default: {
     if ((getLangOpts().CPlusPlus || !OnlyStatement) && isDeclarationStatement()) {
       SourceLocation DeclStart = Tok.getLocation(), DeclEnd;
-      DeclGroupPtrTy Decl = ParseDeclaration(Stmts, Declarator::BlockContext,
+      DeclGroupPtrTy Decl = ParseDeclaration(Declarator::BlockContext,
                                              DeclEnd, Attrs);
       return Actions.ActOnDeclStmt(Decl, DeclStart, DeclEnd);
     }
@@ -642,6 +642,11 @@ StmtResult Parser::ParseCaseStatement(bool MissingCase, ExprResult Expr) {
     ExprResult LHS;
     if (!MissingCase) {
       LHS = ParseConstantExpression();
+      if (!getLangOpts().CPlusPlus11) {
+        LHS = Actions.CorrectDelayedTyposInExpr(LHS, [this](class Expr *E) {
+          return Actions.VerifyIntegerConstantExpression(E);
+        });
+      }
       if (LHS.isInvalid()) {
         // If constant-expression is parsed unsuccessfully, recover by skipping
         // current case statement (moving to the colon that ends it).
@@ -956,8 +961,7 @@ StmtResult Parser::ParseCompoundStatementBody(bool isStmtExpr) {
         ExtensionRAIIObject O(Diags);
 
         SourceLocation DeclStart = Tok.getLocation(), DeclEnd;
-        DeclGroupPtrTy Res = ParseDeclaration(Stmts,
-                                              Declarator::BlockContext, DeclEnd,
+        DeclGroupPtrTy Res = ParseDeclaration(Declarator::BlockContext, DeclEnd,
                                               attrs);
         R = Actions.ActOnDeclStmt(Res, DeclStart, DeclEnd);
       } else {
@@ -1516,9 +1520,7 @@ StmtResult Parser::ParseForStatement(SourceLocation *TrailingElseLoc) {
     else
       ForRangeInit.RangeExpr = ParseExpression();
 
-    Diag(Loc, getLangOpts().CPlusPlus1z
-                  ? diag::warn_cxx14_compat_for_range_identifier
-                  : diag::ext_for_range_identifier)
+    Diag(Loc, diag::err_for_range_identifier)
       << ((getLangOpts().CPlusPlus11 && !getLangOpts().CPlusPlus1z)
               ? FixItHint::CreateInsertion(Loc, "auto &&")
               : FixItHint());
@@ -1536,9 +1538,8 @@ StmtResult Parser::ParseForStatement(SourceLocation *TrailingElseLoc) {
     ColonProtectionRAIIObject ColonProtection(*this, MightBeForRangeStmt);
 
     SourceLocation DeclStart = Tok.getLocation(), DeclEnd;
-    StmtVector Stmts;
     DeclGroupPtrTy DG = ParseSimpleDeclaration(
-        Stmts, Declarator::ForContext, DeclEnd, attrs, false,
+        Declarator::ForContext, DeclEnd, attrs, false,
         MightBeForRangeStmt ? &ForRangeInit : nullptr);
     FirstPart = Actions.ActOnDeclStmt(DG, DeclStart, Tok.getLocation());
     if (ForRangeInit.ParsedForRangeDecl()) {
@@ -1564,7 +1565,7 @@ StmtResult Parser::ParseForStatement(SourceLocation *TrailingElseLoc) {
     }
   } else {
     ProhibitAttributes(attrs);
-    Value = ParseExpression();
+    Value = Actions.CorrectDelayedTyposInExpr(ParseExpression());
 
     ForEach = isTokIdentifier_in();
 

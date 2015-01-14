@@ -47,7 +47,10 @@ static unsigned ClangCallConvToLLVMCallConv(CallingConv CC) {
   case CC_AAPCS: return llvm::CallingConv::ARM_AAPCS;
   case CC_AAPCS_VFP: return llvm::CallingConv::ARM_AAPCS_VFP;
   case CC_IntelOclBicc: return llvm::CallingConv::Intel_OCL_BI;
-  // TODO: add support for CC_X86Pascal to llvm
+  // TODO: Add support for __pascal to LLVM.
+  case CC_X86Pascal: return llvm::CallingConv::C;
+  // TODO: Add support for __vectorcall to LLVM.
+  case CC_X86VectorCall: return llvm::CallingConv::X86_VectorCall;
   }
 }
 
@@ -117,6 +120,9 @@ static CallingConv getCallingConventionForDecl(const Decl *D, bool IsWindows) {
 
   if (D->hasAttr<ThisCallAttr>())
     return CC_X86ThisCall;
+
+  if (D->hasAttr<VectorCallAttr>())
+    return CC_X86VectorCall;
 
   if (D->hasAttr<PascalAttr>())
     return CC_X86Pascal;
@@ -208,8 +214,11 @@ CodeGenTypes::arrangeCXXStructorDeclaration(const CXXMethodDecl *MD,
       (MD->isVariadic() ? RequiredArgs(argTypes.size()) : RequiredArgs::All);
 
   FunctionType::ExtInfo extInfo = FTP->getExtInfo();
-  CanQualType resultType =
-      TheCXXABI.HasThisReturn(GD) ? argTypes.front() : Context.VoidTy;
+  CanQualType resultType = TheCXXABI.HasThisReturn(GD)
+                               ? argTypes.front()
+                               : TheCXXABI.hasMostDerivedReturn(GD)
+                                     ? CGM.getContext().VoidPtrTy
+                                     : Context.VoidTy;
   return arrangeLLVMFunctionInfo(resultType, true, argTypes, extInfo, required);
 }
 
@@ -227,8 +236,11 @@ CodeGenTypes::arrangeCXXConstructorCall(const CallArgList &args,
   CanQual<FunctionProtoType> FPT = GetFormalType(D);
   RequiredArgs Required = RequiredArgs::forPrototypePlus(FPT, 1 + ExtraArgs);
   GlobalDecl GD(D, CtorKind);
-  CanQualType ResultType =
-      TheCXXABI.HasThisReturn(GD) ? ArgTypes.front() : Context.VoidTy;
+  CanQualType ResultType = TheCXXABI.HasThisReturn(GD)
+                               ? ArgTypes.front()
+                               : TheCXXABI.hasMostDerivedReturn(GD)
+                                     ? CGM.getContext().VoidPtrTy
+                                     : Context.VoidTy;
 
   FunctionType::ExtInfo Info = FPT->getExtInfo();
   return arrangeLLVMFunctionInfo(ResultType, true, ArgTypes, Info, Required);
@@ -434,11 +446,8 @@ CodeGenTypes::arrangeLLVMFunctionInfo(CanQualType resultType,
                                       ArrayRef<CanQualType> argTypes,
                                       FunctionType::ExtInfo info,
                                       RequiredArgs required) {
-#ifndef NDEBUG
-  for (ArrayRef<CanQualType>::const_iterator
-         I = argTypes.begin(), E = argTypes.end(); I != E; ++I)
-    assert(I->isCanonicalAsParam());
-#endif
+  assert(std::all_of(argTypes.begin(), argTypes.end(),
+                     std::mem_fun_ref(&CanQualType::isCanonicalAsParam)));
 
   unsigned CC = ClangCallConvToLLVMCallConv(info.getCC());
 
@@ -457,7 +466,8 @@ CodeGenTypes::arrangeLLVMFunctionInfo(CanQualType resultType,
                               required);
   FunctionInfos.InsertNode(FI, insertPos);
 
-  bool inserted = FunctionsBeingProcessed.insert(FI); (void)inserted;
+  bool inserted = FunctionsBeingProcessed.insert(FI).second;
+  (void)inserted;
   assert(inserted && "Recursively being processed?");
   
   // Compute ABI information.
@@ -543,10 +553,13 @@ struct ConstantArrayExpansion : TypeExpansion {
 };
 
 struct RecordExpansion : TypeExpansion {
+  SmallVector<const CXXBaseSpecifier *, 1> Bases;
+
   SmallVector<const FieldDecl *, 1> Fields;
 
-  RecordExpansion(SmallVector<const FieldDecl *, 1> &&Fields)
-      : TypeExpansion(TEK_Record), Fields(Fields) {}
+  RecordExpansion(SmallVector<const CXXBaseSpecifier *, 1> &&Bases,
+                  SmallVector<const FieldDecl *, 1> &&Fields)
+      : TypeExpansion(TEK_Record), Bases(Bases), Fields(Fields) {}
   static bool classof(const TypeExpansion *TE) {
     return TE->Kind == TEK_Record;
   }
@@ -576,6 +589,7 @@ getTypeExpansion(QualType Ty, const ASTContext &Context) {
         AT->getElementType(), AT->getSize().getZExtValue());
   }
   if (const RecordType *RT = Ty->getAs<RecordType>()) {
+    SmallVector<const CXXBaseSpecifier *, 1> Bases;
     SmallVector<const FieldDecl *, 1> Fields;
     const RecordDecl *RD = RT->getDecl();
     assert(!RD->hasFlexibleArrayMember() &&
@@ -587,6 +601,9 @@ getTypeExpansion(QualType Ty, const ASTContext &Context) {
       CharUnits UnionSize = CharUnits::Zero();
 
       for (const auto *FD : RD->fields()) {
+        // Skip zero length bitfields.
+        if (FD->isBitField() && FD->getBitWidthValue(Context) == 0)
+          continue;
         assert(!FD->isBitField() &&
                "Cannot expand structure with bit-field members.");
         CharUnits FieldSize = Context.getTypeSizeInChars(FD->getType());
@@ -598,13 +615,24 @@ getTypeExpansion(QualType Ty, const ASTContext &Context) {
       if (LargestFD)
         Fields.push_back(LargestFD);
     } else {
+      if (const auto *CXXRD = dyn_cast<CXXRecordDecl>(RD)) {
+        assert(!CXXRD->isDynamicClass() &&
+               "cannot expand vtable pointers in dynamic classes");
+        for (const CXXBaseSpecifier &BS : CXXRD->bases())
+          Bases.push_back(&BS);
+      }
+
       for (const auto *FD : RD->fields()) {
+        // Skip zero length bitfields.
+        if (FD->isBitField() && FD->getBitWidthValue(Context) == 0)
+          continue;
         assert(!FD->isBitField() &&
                "Cannot expand structure with bit-field members.");
         Fields.push_back(FD);
       }
     }
-    return llvm::make_unique<RecordExpansion>(std::move(Fields));
+    return llvm::make_unique<RecordExpansion>(std::move(Bases),
+                                              std::move(Fields));
   }
   if (const ComplexType *CT = Ty->getAs<ComplexType>()) {
     return llvm::make_unique<ComplexExpansion>(CT->getElementType());
@@ -619,6 +647,8 @@ static int getExpansionSize(QualType Ty, const ASTContext &Context) {
   }
   if (auto RExp = dyn_cast<RecordExpansion>(Exp.get())) {
     int Res = 0;
+    for (auto BS : RExp->Bases)
+      Res += getExpansionSize(BS->getType(), Context);
     for (auto FD : RExp->Fields)
       Res += getExpansionSize(FD->getType(), Context);
     return Res;
@@ -638,9 +668,10 @@ CodeGenTypes::getExpandedTypes(QualType Ty,
       getExpandedTypes(CAExp->EltTy, TI);
     }
   } else if (auto RExp = dyn_cast<RecordExpansion>(Exp.get())) {
-    for (auto FD : RExp->Fields) {
+    for (auto BS : RExp->Bases)
+      getExpandedTypes(BS->getType(), TI);
+    for (auto FD : RExp->Fields)
       getExpandedTypes(FD->getType(), TI);
-    }
   } else if (auto CExp = dyn_cast<ComplexExpansion>(Exp.get())) {
     llvm::Type *EltTy = ConvertType(CExp->EltTy);
     *TI++ = EltTy;
@@ -664,6 +695,17 @@ void CodeGenFunction::ExpandTypeFromArgs(
       ExpandTypeFromArgs(CAExp->EltTy, LV, AI);
     }
   } else if (auto RExp = dyn_cast<RecordExpansion>(Exp.get())) {
+    llvm::Value *This = LV.getAddress();
+    for (const CXXBaseSpecifier *BS : RExp->Bases) {
+      // Perform a single step derived-to-base conversion.
+      llvm::Value *Base =
+          GetAddressOfBaseClass(This, Ty->getAsCXXRecordDecl(), &BS, &BS + 1,
+                                /*NullCheckValue=*/false, SourceLocation());
+      LValue SubLV = MakeAddrLValue(Base, BS->getType());
+
+      // Recurse onto bases.
+      ExpandTypeFromArgs(BS->getType(), SubLV, AI);
+    }
     for (auto FD : RExp->Fields) {
       // FIXME: What are the right qualifiers here?
       LValue SubLV = EmitLValueForField(LV, FD);
@@ -695,7 +737,20 @@ void CodeGenFunction::ExpandTypeToArgs(
       ExpandTypeToArgs(CAExp->EltTy, EltRV, IRFuncTy, IRCallArgs, IRCallArgPos);
     }
   } else if (auto RExp = dyn_cast<RecordExpansion>(Exp.get())) {
-    LValue LV = MakeAddrLValue(RV.getAggregateAddr(), Ty);
+    llvm::Value *This = RV.getAggregateAddr();
+    for (const CXXBaseSpecifier *BS : RExp->Bases) {
+      // Perform a single step derived-to-base conversion.
+      llvm::Value *Base =
+          GetAddressOfBaseClass(This, Ty->getAsCXXRecordDecl(), &BS, &BS + 1,
+                                /*NullCheckValue=*/false, SourceLocation());
+      RValue BaseRV = RValue::getAggregate(Base);
+
+      // Recurse onto bases.
+      ExpandTypeToArgs(BS->getType(), BaseRV, IRFuncTy, IRCallArgs,
+                       IRCallArgPos);
+    }
+
+    LValue LV = MakeAddrLValue(This, Ty);
     for (auto FD : RExp->Fields) {
       RValue FldRV = EmitRValueForField(LV, FD, SourceLocation());
       ExpandTypeToArgs(FD->getType(), FldRV, IRFuncTy, IRCallArgs,
@@ -1145,7 +1200,8 @@ llvm::FunctionType *CodeGenTypes::GetFunctionType(GlobalDecl GD) {
 llvm::FunctionType *
 CodeGenTypes::GetFunctionType(const CGFunctionInfo &FI) {
 
-  bool Inserted = FunctionsBeingProcessed.insert(&FI); (void)Inserted;
+  bool Inserted = FunctionsBeingProcessed.insert(&FI).second;
+  (void)Inserted;
   assert(Inserted && "Recursively being processed?");
 
   llvm::Type *resultType = nullptr;
@@ -2234,7 +2290,7 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
 
   llvm::Instruction *Ret;
   if (RV) {
-    if (SanOpts->ReturnsNonnullAttribute) {
+    if (SanOpts.has(SanitizerKind::ReturnsNonnullAttribute)) {
       if (auto RetNNAttr = CurGD.getDecl()->getAttr<ReturnsNonNullAttr>()) {
         SanitizerScope SanScope(this);
         llvm::Value *Cond = Builder.CreateICmpNE(
@@ -2243,7 +2299,8 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
             EmitCheckSourceLocation(EndLoc),
             EmitCheckSourceLocation(RetNNAttr->getLocation()),
         };
-        EmitCheck(Cond, "nonnull_return", StaticData, None, CRK_Recoverable);
+        EmitCheck(std::make_pair(Cond, SanitizerKind::ReturnsNonnullAttribute),
+                  "nonnull_return", StaticData, None);
       }
     }
     Ret = Builder.CreateRet(RV);
@@ -2561,7 +2618,7 @@ void CallArgList::freeArgumentMemory(CodeGenFunction &CGF) const {
 static void emitNonNullArgCheck(CodeGenFunction &CGF, RValue RV,
                                 QualType ArgType, SourceLocation ArgLoc,
                                 const FunctionDecl *FD, unsigned ParmNum) {
-  if (!CGF.SanOpts->NonnullAttribute || !FD)
+  if (!CGF.SanOpts.has(SanitizerKind::NonnullAttribute) || !FD)
     return;
   auto PVD = ParmNum < FD->getNumParams() ? FD->getParamDecl(ParmNum) : nullptr;
   unsigned ArgNo = PVD ? PVD->getFunctionScopeIndex() : ParmNum;
@@ -2578,8 +2635,8 @@ static void emitNonNullArgCheck(CodeGenFunction &CGF, RValue RV,
       CGF.EmitCheckSourceLocation(NNAttr->getLocation()),
       llvm::ConstantInt::get(CGF.Int32Ty, ArgNo + 1),
   };
-  CGF.EmitCheck(Cond, "nonnull_arg", StaticData, None,
-                CodeGenFunction::CRK_Recoverable);
+  CGF.EmitCheck(std::make_pair(Cond, SanitizerKind::NonnullAttribute),
+                "nonnull_arg", StaticData, None);
 }
 
 void CodeGenFunction::EmitCallArgs(CallArgList &Args,

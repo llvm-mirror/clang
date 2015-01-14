@@ -55,6 +55,11 @@ __declspec(dllexport) extern int GlobalRedecl2;
                       extern int GlobalRedecl3; // expected-note{{previous declaration is here}}
 __declspec(dllexport) extern int GlobalRedecl3; // expected-warning{{redeclaration of 'GlobalRedecl3' should not add 'dllexport' attribute}}
 
+extern "C" {
+                      extern int GlobalRedecl4; // expected-note{{previous declaration is here}}
+__declspec(dllexport) extern int GlobalRedecl4; // expected-warning{{redeclaration of 'GlobalRedecl4' should not add 'dllexport' attribute}}
+}
+
 // External linkage is required.
 __declspec(dllexport) static int StaticGlobal; // expected-error{{'StaticGlobal' must have external linkage when declared 'dllexport'}}
 __declspec(dllexport) Internal InternalTypeGlobal; // expected-error{{'InternalTypeGlobal' must have external linkage when declared 'dllexport'}}
@@ -191,8 +196,13 @@ __declspec(dllexport) void redecl2();
                       void redecl3(); // expected-note{{previous declaration is here}}
 __declspec(dllexport) void redecl3(); // expected-warning{{redeclaration of 'redecl3' should not add 'dllexport' attribute}}
 
+extern "C" {
                       void redecl4(); // expected-note{{previous declaration is here}}
-__declspec(dllexport) inline void redecl4() {} // expected-warning{{redeclaration of 'redecl4' should not add 'dllexport' attribute}}
+__declspec(dllexport) void redecl4(); // expected-warning{{redeclaration of 'redecl4' should not add 'dllexport' attribute}}
+}
+
+                      void redecl5(); // expected-note{{previous declaration is here}}
+__declspec(dllexport) inline void redecl5() {} // expected-warning{{redeclaration of 'redecl5' should not add 'dllexport' attribute}}
 
 // Friend functions
 struct FuncFriend {
@@ -316,6 +326,10 @@ template<> __declspec(dllexport) inline void funcTmpl<ExplicitSpec_InlineDef_Exp
 //===----------------------------------------------------------------------===//
 // Classes
 //===----------------------------------------------------------------------===//
+
+namespace {
+  struct __declspec(dllexport) AnonymousClass {}; // expected-error{{(anonymous namespace)::AnonymousClass' must have external linkage when declared 'dllexport'}}
+}
 
 class __declspec(dllexport) ClassDecl;
 

@@ -46,6 +46,11 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
 
   const CXXRecordDecl *Class = D->getParent();
 
+  // We are going to instrument this destructor, so give up even if it is
+  // currently empty.
+  if (Class->mayInsertExtraPadding())
+    return true;
+
   // If we need to manipulate a VTT parameter, give up.
   if (Class->getNumVBases()) {
     // Extra Credit:  passing extra parameters is perfectly safe
@@ -117,6 +122,11 @@ bool CodeGenModule::TryEmitDefinitionAsAlias(GlobalDecl AliasDecl,
 
   // We can't use an alias if the linkage is not valid for one.
   if (!llvm::GlobalAlias::isValidLinkage(Linkage))
+    return true;
+
+  // Don't create a weak alias for a dllexport'd symbol.
+  if (AliasDecl.getDecl()->hasAttr<DLLExportAttr>() &&
+      llvm::GlobalValue::isWeakForLinker(Linkage))
     return true;
 
   llvm::GlobalValue::LinkageTypes TargetLinkage =

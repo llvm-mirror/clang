@@ -1093,7 +1093,7 @@ RecordLayoutBuilder::LayoutVirtualBases(const CXXRecordDecl *RD,
         // Only lay out the virtual base if it's not an indirect primary base.
         if (!IndirectPrimaryBase) {
           // Only visit virtual bases once.
-          if (!VisitedVirtualBases.insert(BaseDecl))
+          if (!VisitedVirtualBases.insert(BaseDecl).second)
             continue;
 
           const BaseSubobjectInfo *BaseInfo = VirtualBaseInfo.lookup(BaseDecl);
@@ -1331,8 +1331,13 @@ void RecordLayoutBuilder::LayoutFields(const RecordDecl *D) {
   // Layout each field, for now, just sequentially, respecting alignment.  In
   // the future, this will need to be tweakable by targets.
   bool InsertExtraPadding = D->mayInsertExtraPadding(/*EmitRemark=*/true);
-  for (const auto *Field : D->fields())
-    LayoutField(Field, InsertExtraPadding);
+  bool HasFlexibleArrayMember = D->hasFlexibleArrayMember();
+  for (auto I = D->field_begin(), End = D->field_end(); I != End; ++I) {
+    auto Next(I);
+    ++Next;
+    LayoutField(*I,
+                InsertExtraPadding && (Next != End || !HasFlexibleArrayMember));
+  }
 }
 
 // Rounds the specified size to have it a multiple of the char size.
@@ -1750,7 +1755,7 @@ void RecordLayoutBuilder::LayoutField(const FieldDecl *D,
                       Context.toBits(UnpackedFieldOffset),
                       Context.toBits(UnpackedFieldAlign), FieldPacked, D);
 
-  if (InsertExtraPadding && !FieldSize.isZero()) {
+  if (InsertExtraPadding) {
     CharUnits ASanAlignment = CharUnits::fromQuantity(8);
     CharUnits ExtraSizeForAsan = ASanAlignment;
     if (FieldSize % ASanAlignment)

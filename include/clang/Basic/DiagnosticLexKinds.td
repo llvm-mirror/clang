@@ -201,6 +201,9 @@ def warn_c99_compat_unicode_literal : Warning<
 def warn_cxx98_compat_unicode_literal : Warning<
   "unicode literals are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
+def warn_cxx14_compat_u8_character_literal : Warning<
+  "unicode literals are incompatible with C++ standards before C++1z">,
+  InGroup<CXXPre1zCompat>, DefaultIgnore;
 def warn_cxx11_compat_user_defined_literal : Warning<
   "identifier after literal will be treated as a user-defined literal suffix "
   "in C++11">, InGroup<CXX11Compat>, DefaultIgnore;
@@ -615,9 +618,6 @@ def warn_auto_module_import : Warning<
 def warn_uncovered_module_header : Warning<
   "umbrella header for module '%0' does not include header '%1'">, 
   InGroup<IncompleteUmbrella>;
-def warn_forgotten_module_header : Warning<
-  "header '%0' is included in module '%1' but not listed in module map">,
-  InGroup<IncompleteModule>, DefaultIgnore;
 def err_expected_id_building_module : Error<
   "expected a module name in '__building_module' expression">;
 def error_use_of_private_header_outside_module : Error<

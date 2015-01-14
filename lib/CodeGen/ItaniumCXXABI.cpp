@@ -106,8 +106,11 @@ public:
                                          llvm::Value *Addr,
                                          const MemberPointerType *MPT) override;
 
-  llvm::Value *adjustToCompleteObject(CodeGenFunction &CGF, llvm::Value *ptr,
-                                      QualType type) override;
+  void emitVirtualObjectDelete(CodeGenFunction &CGF, const CXXDeleteExpr *DE,
+                               llvm::Value *Ptr, QualType ElementType,
+                               const CXXDestructorDecl *Dtor) override;
+
+  void emitRethrow(CodeGenFunction &CGF, bool isNoReturn) override;
 
   void EmitFundamentalRTTIDescriptor(QualType Type);
   void EmitFundamentalRTTIDescriptors();
@@ -187,10 +190,11 @@ public:
                                          llvm::Value *This,
                                          llvm::Type *Ty) override;
 
-  void EmitVirtualDestructorCall(CodeGenFunction &CGF,
-                                 const CXXDestructorDecl *Dtor,
-                                 CXXDtorType DtorType, llvm::Value *This,
-                                 const CXXMemberCallExpr *CE) override;
+  llvm::Value *EmitVirtualDestructorCall(CodeGenFunction &CGF,
+                                         const CXXDestructorDecl *Dtor,
+                                         CXXDtorType DtorType,
+                                         llvm::Value *This,
+                                         const CXXMemberCallExpr *CE) override;
 
   void emitVirtualInheritanceTables(const CXXRecordDecl *RD) override;
 
@@ -356,7 +360,7 @@ llvm::Type *
 ItaniumCXXABI::ConvertMemberPointerType(const MemberPointerType *MPT) {
   if (MPT->isMemberDataPointer())
     return CGM.PtrDiffTy;
-  return llvm::StructType::get(CGM.PtrDiffTy, CGM.PtrDiffTy, NULL);
+  return llvm::StructType::get(CGM.PtrDiffTy, CGM.PtrDiffTy, nullptr);
 }
 
 /// In the Itanium and ARM ABIs, method pointers have the form:
@@ -847,21 +851,56 @@ bool ItaniumCXXABI::isZeroInitializable(const MemberPointerType *MPT) {
 
 /// The Itanium ABI always places an offset to the complete object
 /// at entry -2 in the vtable.
-llvm::Value *ItaniumCXXABI::adjustToCompleteObject(CodeGenFunction &CGF,
-                                                   llvm::Value *ptr,
-                                                   QualType type) {
-  // Grab the vtable pointer as an intptr_t*.
-  llvm::Value *vtable = CGF.GetVTablePtr(ptr, CGF.IntPtrTy->getPointerTo());
+void ItaniumCXXABI::emitVirtualObjectDelete(CodeGenFunction &CGF,
+                                            const CXXDeleteExpr *DE,
+                                            llvm::Value *Ptr,
+                                            QualType ElementType,
+                                            const CXXDestructorDecl *Dtor) {
+  bool UseGlobalDelete = DE->isGlobalDelete();
+  if (UseGlobalDelete) {
+    // Derive the complete-object pointer, which is what we need
+    // to pass to the deallocation function.
 
-  // Track back to entry -2 and pull out the offset there.
-  llvm::Value *offsetPtr = 
-    CGF.Builder.CreateConstInBoundsGEP1_64(vtable, -2, "complete-offset.ptr");
-  llvm::LoadInst *offset = CGF.Builder.CreateLoad(offsetPtr);
-  offset->setAlignment(CGF.PointerAlignInBytes);
+    // Grab the vtable pointer as an intptr_t*.
+    llvm::Value *VTable = CGF.GetVTablePtr(Ptr, CGF.IntPtrTy->getPointerTo());
 
-  // Apply the offset.
-  ptr = CGF.Builder.CreateBitCast(ptr, CGF.Int8PtrTy);
-  return CGF.Builder.CreateInBoundsGEP(ptr, offset);
+    // Track back to entry -2 and pull out the offset there.
+    llvm::Value *OffsetPtr = CGF.Builder.CreateConstInBoundsGEP1_64(
+        VTable, -2, "complete-offset.ptr");
+    llvm::LoadInst *Offset = CGF.Builder.CreateLoad(OffsetPtr);
+    Offset->setAlignment(CGF.PointerAlignInBytes);
+
+    // Apply the offset.
+    llvm::Value *CompletePtr = CGF.Builder.CreateBitCast(Ptr, CGF.Int8PtrTy);
+    CompletePtr = CGF.Builder.CreateInBoundsGEP(CompletePtr, Offset);
+
+    // If we're supposed to call the global delete, make sure we do so
+    // even if the destructor throws.
+    CGF.pushCallObjectDeleteCleanup(DE->getOperatorDelete(), CompletePtr,
+                                    ElementType);
+  }
+
+  // FIXME: Provide a source location here even though there's no
+  // CXXMemberCallExpr for dtor call.
+  CXXDtorType DtorType = UseGlobalDelete ? Dtor_Complete : Dtor_Deleting;
+  EmitVirtualDestructorCall(CGF, Dtor, DtorType, Ptr, /*CE=*/nullptr);
+
+  if (UseGlobalDelete)
+    CGF.PopCleanupBlock();
+}
+
+void ItaniumCXXABI::emitRethrow(CodeGenFunction &CGF, bool isNoReturn) {
+  // void __cxa_rethrow();
+
+  llvm::FunctionType *FTy =
+    llvm::FunctionType::get(CGM.VoidTy, /*IsVarArgs=*/false);
+
+  llvm::Constant *Fn = CGM.CreateRuntimeFunction(FTy, "__cxa_rethrow");
+
+  if (isNoReturn)
+    CGF.EmitNoreturnRuntimeCallOrInvoke(Fn, None);
+  else
+    CGF.EmitRuntimeCallOrInvoke(Fn);
 }
 
 static llvm::Constant *getItaniumDynamicCastFn(CodeGenFunction &CGF) {
@@ -1333,11 +1372,9 @@ llvm::Value *ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
   return CGF.Builder.CreateLoad(VFuncPtr);
 }
 
-void ItaniumCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
-                                              const CXXDestructorDecl *Dtor,
-                                              CXXDtorType DtorType,
-                                              llvm::Value *This,
-                                              const CXXMemberCallExpr *CE) {
+llvm::Value *ItaniumCXXABI::EmitVirtualDestructorCall(
+    CodeGenFunction &CGF, const CXXDestructorDecl *Dtor, CXXDtorType DtorType,
+    llvm::Value *This, const CXXMemberCallExpr *CE) {
   assert(CE == nullptr || CE->arg_begin() == CE->arg_end());
   assert(DtorType == Dtor_Deleting || DtorType == Dtor_Complete);
 
@@ -1349,6 +1386,7 @@ void ItaniumCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
 
   CGF.EmitCXXMemberOrOperatorCall(Dtor, Callee, ReturnValueSlot(), This,
                                   /*ImplicitParam=*/nullptr, QualType(), CE);
+  return nullptr;
 }
 
 void ItaniumCXXABI::emitVirtualInheritanceTables(const CXXRecordDecl *RD) {
@@ -1471,7 +1509,7 @@ llvm::Value *ItaniumCXXABI::InitializeArrayCookie(CodeGenFunction &CGF,
   llvm::Value *NumElementsPtr =
       CGF.Builder.CreateBitCast(CookiePtr, NumElementsTy);
   llvm::Instruction *SI = CGF.Builder.CreateStore(NumElements, NumElementsPtr);
-  if (CGM.getLangOpts().Sanitize.Address && AS == 0 &&
+  if (CGM.getLangOpts().Sanitize.has(SanitizerKind::Address) && AS == 0 &&
       expr->getOperatorNew()->isReplaceableGlobalAllocationFunction()) {
     // The store to the CookiePtr does not need to be instrumented.
     CGM.getSanitizerMetadata()->disableSanitizerForInstruction(SI);
@@ -1503,7 +1541,7 @@ llvm::Value *ItaniumCXXABI::readArrayCookieImpl(CodeGenFunction &CGF,
   unsigned AS = allocPtr->getType()->getPointerAddressSpace();
   numElementsPtr = 
     CGF.Builder.CreateBitCast(numElementsPtr, CGF.SizeTy->getPointerTo(AS));
-  if (!CGM.getLangOpts().Sanitize.Address || AS != 0)
+  if (!CGM.getLangOpts().Sanitize.has(SanitizerKind::Address) || AS != 0)
     return CGF.Builder.CreateLoad(numElementsPtr);
   // In asan mode emit a function call instead of a regular load and let the
   // run-time deal with it: if the shadow is properly poisoned return the
@@ -2168,6 +2206,11 @@ ItaniumRTTIBuilder::GetAddrOfExternalRTTIDescriptor(QualType Ty) {
                                   /*Constant=*/true,
                                   llvm::GlobalValue::ExternalLinkage, nullptr,
                                   Name);
+    if (const RecordType *RecordTy = dyn_cast<RecordType>(Ty)) {
+      const CXXRecordDecl *RD = cast<CXXRecordDecl>(RecordTy->getDecl());
+      if (RD->hasAttr<DLLImportAttr>())
+        GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
+    }
   }
 
   return llvm::ConstantExpr::getBitCast(GV, CGM.Int8PtrTy);
@@ -2290,7 +2333,11 @@ static bool ShouldUseExternalRTTIDescriptor(CodeGenModule &CGM,
 
     // FIXME: this may need to be reconsidered if the key function
     // changes.
-    return CGM.getVTables().isVTableExternal(RD);
+    if (CGM.getVTables().isVTableExternal(RD))
+      return true;
+
+    if (RD->hasAttr<DLLImportAttr>())
+      return true;
   }
 
   return false;
@@ -2785,7 +2832,7 @@ static unsigned ComputeVMIClassTypeInfoFlags(const CXXBaseSpecifier *Base,
 
   if (Base->isVirtual()) {
     // Mark the virtual base as seen.
-    if (!Bases.VirtualBases.insert(BaseDecl)) {
+    if (!Bases.VirtualBases.insert(BaseDecl).second) {
       // If this virtual base has been seen before, then the class is diamond
       // shaped.
       Flags |= ItaniumRTTIBuilder::VMI_DiamondShaped;
@@ -2795,7 +2842,7 @@ static unsigned ComputeVMIClassTypeInfoFlags(const CXXBaseSpecifier *Base,
     }
   } else {
     // Mark the non-virtual base as seen.
-    if (!Bases.NonVirtualBases.insert(BaseDecl)) {
+    if (!Bases.NonVirtualBases.insert(BaseDecl).second) {
       // If this non-virtual base has been seen before, then the class has non-
       // diamond shaped repeated inheritance.
       Flags |= ItaniumRTTIBuilder::VMI_NonDiamondRepeat;

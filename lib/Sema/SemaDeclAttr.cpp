@@ -3226,6 +3226,11 @@ static void handleCallConvAttr(Sema &S, Decl *D, const AttributeList &Attr) {
                PascalAttr(Attr.getRange(), S.Context,
                           Attr.getAttributeSpellingListIndex()));
     return;
+  case AttributeList::AT_VectorCall:
+    D->addAttr(::new (S.Context)
+               VectorCallAttr(Attr.getRange(), S.Context,
+                              Attr.getAttributeSpellingListIndex()));
+    return;
   case AttributeList::AT_MSABI:
     D->addAttr(::new (S.Context)
                MSABIAttr(Attr.getRange(), S.Context,
@@ -3288,6 +3293,7 @@ bool Sema::CheckCallingConvAttr(const AttributeList &attr, CallingConv &CC,
   case AttributeList::AT_StdCall: CC = CC_X86StdCall; break;
   case AttributeList::AT_ThisCall: CC = CC_X86ThisCall; break;
   case AttributeList::AT_Pascal: CC = CC_X86Pascal; break;
+  case AttributeList::AT_VectorCall: CC = CC_X86VectorCall; break;
   case AttributeList::AT_MSABI:
     CC = Context.getTargetInfo().getTriple().isOSWindows() ? CC_C :
                                                              CC_X86_64Win64;
@@ -3993,6 +3999,16 @@ static void handleDLLAttr(Sema &S, Decl *D, const AttributeList &A) {
     return;
   }
 
+  if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
+    if (FD->isInlined() && A.getKind() == AttributeList::AT_DLLImport &&
+        !S.Context.getTargetInfo().getCXXABI().isMicrosoft()) {
+      // MinGW doesn't allow dllimport on inline functions.
+      S.Diag(A.getRange().getBegin(), diag::warn_attribute_ignored_on_inline)
+          << A.getName();
+      return;
+    }
+  }
+
   unsigned Index = A.getAttributeSpellingListIndex();
   Attr *NewAttr = A.getKind() == AttributeList::AT_DLLExport
                       ? (Attr *)S.mergeDLLExportAttr(D, A.getRange(), Index)
@@ -4121,6 +4137,19 @@ static void handleRequiresCapabilityAttr(Sema &S, Decl *D,
                            Args.size(), Attr.getAttributeSpellingListIndex());
 
   D->addAttr(RCA);
+}
+
+static void handleDeprecatedAttr(Sema &S, Decl *D, const AttributeList &Attr) {
+  if (auto *NSD = dyn_cast<NamespaceDecl>(D)) {
+    if (NSD->isAnonymousNamespace()) {
+      S.Diag(Attr.getLoc(), diag::warn_deprecated_anonymous_namespace);
+      // Do not want to attach the attribute to the namespace because that will
+      // cause confusing diagnostic reports for uses of declarations within the
+      // namespace.
+      return;
+    }
+  }
+  handleAttrWithMessage<DeprecatedAttr>(S, D, Attr);
 }
 
 /// Handles semantic checking for features that are common to all attributes,
@@ -4267,7 +4296,7 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     handleSimpleAttribute<CXX11NoReturnAttr>(S, D, Attr);
     break;
   case AttributeList::AT_Deprecated:
-    handleAttrWithMessage<DeprecatedAttr>(S, D, Attr);
+    handleDeprecatedAttr(S, D, Attr);
     break;
   case AttributeList::AT_Destructor:
     handleDestructorAttr(S, D, Attr);
@@ -4283,6 +4312,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
   case AttributeList::AT_OptimizeNone:
     handleOptimizeNoneAttr(S, D, Attr);
+    break;
+  case AttributeList::AT_FlagEnum:
+    handleSimpleAttribute<FlagEnumAttr>(S, D, Attr);
     break;
   case AttributeList::AT_Flatten:
     handleSimpleAttribute<FlattenAttr>(S, D, Attr);
@@ -4529,6 +4561,7 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_FastCall:
   case AttributeList::AT_ThisCall:
   case AttributeList::AT_Pascal:
+  case AttributeList::AT_VectorCall:
   case AttributeList::AT_MSABI:
   case AttributeList::AT_SysVABI:
   case AttributeList::AT_Pcs:
@@ -4977,19 +5010,18 @@ static void DoEmitAvailabilityWarning(Sema &S, DelayedDiagnostic::DDKind K,
     llvm_unreachable("Neither a deprecation or unavailable kind");
   }
 
-  DeclarationName Name = D->getDeclName();
   if (!Message.empty()) {
-    S.Diag(Loc, diag_message) << Name << Message;
+    S.Diag(Loc, diag_message) << D << Message;
     if (ObjCProperty)
       S.Diag(ObjCProperty->getLocation(), diag::note_property_attribute)
           << ObjCProperty->getDeclName() << property_note_select;
   } else if (!UnknownObjCClass) {
-    S.Diag(Loc, diag) << Name;
+    S.Diag(Loc, diag) << D;
     if (ObjCProperty)
       S.Diag(ObjCProperty->getLocation(), diag::note_property_attribute)
           << ObjCProperty->getDeclName() << property_note_select;
   } else {
-    S.Diag(Loc, diag_fwdclass_message) << Name;
+    S.Diag(Loc, diag_fwdclass_message) << D;
     S.Diag(UnknownObjCClass->getLocation(), diag::note_forward_class);
   }
 

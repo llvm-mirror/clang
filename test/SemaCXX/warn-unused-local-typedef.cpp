@@ -213,5 +213,30 @@ void sneaky_memfun_h() {
   sneaky_memfun_g(sneaky_memfun());
 }
 
+void typedefs_in_constructors() {
+  struct A {};
+  struct B : public A {
+    // Neither of these two should warn:
+    typedef A INHERITED;
+    B() : INHERITED() {}
+
+    typedef B SELF;
+    B(int) : SELF() {}
+  };
+}
+
+void *operator new(__SIZE_TYPE__, void *p) throw() { return p; }
+void placement_new_and_delete() {
+  struct MyStruct { };
+  char memory[sizeof(MyStruct)];
+  void *p = memory;
+
+  typedef MyStruct A_t1;
+  MyStruct *a = new (p) A_t1();
+
+  typedef MyStruct A_t2;
+  a->~A_t2();
+}
+
 // This should not disable any warnings:
 #pragma clang diagnostic ignored "-Wunused-local-typedef"

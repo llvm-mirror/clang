@@ -29,6 +29,7 @@
 #include "clang/Rewrite/Core/Rewriter.h"
 #include "clang/StaticAnalyzer/Checkers/ObjCRetainCount.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/YAMLParser.h"
@@ -100,8 +101,8 @@ public:
   bool FoundationIncluded;
   llvm::SmallPtrSet<ObjCProtocolDecl *, 32> ObjCProtocolDecls;
   llvm::SmallVector<const Decl *, 8> CFFunctionIBCandidates;
-  llvm::StringMap<char> WhiteListFilenames;
-  
+  llvm::StringSet<> WhiteListFilenames;
+
   ObjCMigrateASTConsumer(StringRef migrateDir,
                          unsigned astMigrateActions,
                          FileRemapper &remapper,
@@ -117,10 +118,9 @@ public:
     IsOutputFile(isOutputFile),
     FoundationIncluded(false){
 
-    for (ArrayRef<std::string>::iterator
-           I = WhiteList.begin(), E = WhiteList.end(); I != E; ++I) {
-      WhiteListFilenames.GetOrCreateValue(*I);
-    }
+    // FIXME: StringSet should have insert(iter, iter) to use here.
+    for (const std::string &Val : WhiteList)
+      WhiteListFilenames.insert(Val);
   }
 
 protected:
@@ -333,7 +333,7 @@ public:
       Consumer.Editor->commit(commit);
     }
 
-    if (Consumer.ASTMigrateActions & FrontendOptions::ObjCMT_Property) {
+    if (Consumer.ASTMigrateActions & FrontendOptions::ObjCMT_PropertyDotSyntax) {
       edit::Commit commit(*Consumer.Editor);
       rewriteToPropertyDotSyntax(E, Consumer.PP, *Consumer.NSAPIObj,
                                  commit, &PMap);

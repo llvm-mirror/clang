@@ -39,6 +39,7 @@ void FunctionScopeInfo::Clear() {
   ErrorTrap.reset();
   PossiblyUnreachableDiags.clear();
   WeakObjectUses.clear();
+  ModifiedNonNullParams.clear();
 }
 
 static const NamedDecl *getBestPropertyDecl(const ObjCPropertyRefExpr *PropE) {
@@ -95,8 +96,14 @@ FunctionScopeInfo::WeakObjectProfileTy::getBaseInfo(const Expr *E) {
 }
 
 bool CapturingScopeInfo::isVLATypeCaptured(const VariableArrayType *VAT) const {
+  RecordDecl *RD = nullptr;
   if (auto *LSI = dyn_cast<LambdaScopeInfo>(this))
-    for (auto *FD : LSI->Lambda->fields()) {
+    RD = LSI->Lambda;
+  else if (auto CRSI = dyn_cast<CapturedRegionScopeInfo>(this))
+    RD = CRSI->TheRecordDecl;
+
+  if (RD)
+    for (auto *FD : RD->fields()) {
       if (FD->hasCapturedVLAType() && FD->getCapturedVLAType() == VAT)
         return true;
     }
@@ -169,6 +176,8 @@ void FunctionScopeInfo::markSafeWeakUse(const Expr *E) {
   // Has this weak object been seen before?
   FunctionScopeInfo::WeakObjectUseMap::iterator Uses;
   if (const ObjCPropertyRefExpr *RefExpr = dyn_cast<ObjCPropertyRefExpr>(E)) {
+    if (!RefExpr->isObjectReceiver())
+      return;
     if (isa<OpaqueValueExpr>(RefExpr->getBase()))
      Uses = WeakObjectUses.find(WeakObjectProfileTy(RefExpr));
     else {

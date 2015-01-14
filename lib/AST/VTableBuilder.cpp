@@ -64,7 +64,7 @@ public:
     /// Method - The method decl of the overrider.
     const CXXMethodDecl *Method;
 
-    /// VirtualBase - The virtual base class subobject of this overridder.
+    /// VirtualBase - The virtual base class subobject of this overrider.
     /// Note that this records the closest derived virtual base class subobject.
     const CXXRecordDecl *VirtualBase;
 
@@ -389,7 +389,7 @@ void FinalOverriders::dump(raw_ostream &Out, BaseSubobject Base,
 
     CharUnits BaseOffset;
     if (B.isVirtual()) {
-      if (!VisitedVirtualBases.insert(BaseDecl)) {
+      if (!VisitedVirtualBases.insert(BaseDecl).second) {
         // We've visited this base before.
         continue;
       }
@@ -748,7 +748,7 @@ VCallAndVBaseOffsetBuilder::AddVBaseOffsets(const CXXRecordDecl *RD,
     const CXXRecordDecl *BaseDecl = B.getType()->getAsCXXRecordDecl();
 
     // Check if this is a virtual base that we haven't visited before.
-    if (B.isVirtual() && VisitedVirtualBases.insert(BaseDecl)) {
+    if (B.isVirtual() && VisitedVirtualBases.insert(BaseDecl).second) {
       CharUnits Offset = 
         LayoutClassLayout.getVBaseClassOffset(BaseDecl) - OffsetInLayoutClass;
 
@@ -1105,7 +1105,7 @@ namespace {
 
     bool visit(const CXXMethodDecl *MD) {
       // Don't recurse on this method if we've already collected it.
-      return Methods->insert(MD);
+      return Methods->insert(MD).second;
     }
   };
 }
@@ -1842,7 +1842,7 @@ void ItaniumVTableBuilder::DeterminePrimaryVirtualBases(
     CharUnits BaseOffsetInLayoutClass;
     
     if (B.isVirtual()) {
-      if (!VBases.insert(BaseDecl))
+      if (!VBases.insert(BaseDecl).second)
         continue;
       
       const ASTRecordLayout &LayoutClassLayout =
@@ -1870,8 +1870,9 @@ void ItaniumVTableBuilder::LayoutVTablesForVirtualBases(
 
     // Check if this base needs a vtable. (If it's virtual, not a primary base
     // of some other class, and we haven't visited it before).
-    if (B.isVirtual() && BaseDecl->isDynamicClass() && 
-        !PrimaryVirtualBases.count(BaseDecl) && VBases.insert(BaseDecl)) {
+    if (B.isVirtual() && BaseDecl->isDynamicClass() &&
+        !PrimaryVirtualBases.count(BaseDecl) &&
+        VBases.insert(BaseDecl).second) {
       const ASTRecordLayout &MostDerivedClassLayout =
         Context.getASTRecordLayout(MostDerivedClass);
       CharUnits BaseOffset = 
@@ -2390,6 +2391,7 @@ namespace {
 //     first vfptr whose table provides a compatible overridden method.  In many
 //     cases, this permits the original vf-table entry to directly call
 //     the method instead of passing through a thunk.
+//     See example before VFTableBuilder::ComputeThisOffset below.
 //
 //     A compatible overridden method is one which does not have a non-trivial
 //     covariant-return adjustment.
@@ -2412,6 +2414,9 @@ namespace {
 //      a) a user-defined ctor/dtor
 //     and
 //      b) a method overriding a method in a virtual base.
+//
+//  To get a better understanding of this code,
+//  you might want to see examples in test/CodeGenCXX/microsoft-abi-vtables-*.cpp
 
 class VFTableBuilder {
 public:
@@ -2632,7 +2637,7 @@ struct InitialOverriddenDefinitionCollector {
     if (OverriddenMD->size_overridden_methods() == 0)
       Bases.insert(OverriddenMD->getParent());
     // Don't recurse on this method if we've already collected it.
-    return VisitedOverriddenMethods.insert(OverriddenMD);
+    return VisitedOverriddenMethods.insert(OverriddenMD).second;
   }
 };
 
@@ -2642,6 +2647,60 @@ static bool BaseInSet(const CXXBaseSpecifier *Specifier,
   return Bases->count(Specifier->getType()->getAsCXXRecordDecl());
 }
 
+// Let's study one class hierarchy as an example:
+//   struct A {
+//     virtual void f();
+//     int x;
+//   };
+//
+//   struct B : virtual A {
+//     virtual void f();
+//   };
+//
+// Record layouts:
+//   struct A:
+//   0 |   (A vftable pointer)
+//   4 |   int x
+//
+//   struct B:
+//   0 |   (B vbtable pointer)
+//   4 |   struct A (virtual base)
+//   4 |     (A vftable pointer)
+//   8 |     int x
+//
+// Let's assume we have a pointer to the A part of an object of dynamic type B:
+//   B b;
+//   A *a = (A*)&b;
+//   a->f();
+//
+// In this hierarchy, f() belongs to the vftable of A, so B::f() expects
+// "this" parameter to point at the A subobject, which is B+4.
+// In the B::f() prologue, it adjusts "this" back to B by subtracting 4,
+// performed as a *static* adjustment.
+//
+// Interesting thing happens when we alter the relative placement of A and B
+// subobjects in a class:
+//   struct C : virtual B { };
+//
+//   C c;
+//   A *a = (A*)&c;
+//   a->f();
+//
+// Respective record layout is:
+//   0 |   (C vbtable pointer)
+//   4 |   struct A (virtual base)
+//   4 |     (A vftable pointer)
+//   8 |     int x
+//  12 |   struct B (virtual base)
+//  12 |     (B vbtable pointer)
+//
+// The final overrider of f() in class C is still B::f(), so B+4 should be
+// passed as "this" to that code.  However, "a" points at B-8, so the respective
+// vftable entry should hold a thunk that adds 12 to the "this" argument before
+// performing a tail call to B::f().
+//
+// With this example in mind, we can now calculate the 'this' argument offset
+// for the given method, relative to the beginning of the MostDerivedClass.
 CharUnits
 VFTableBuilder::ComputeThisOffset(FinalOverriders::OverriderInfo Overrider) {
   InitialOverriddenDefinitionCollector Collector;
@@ -2721,6 +2780,104 @@ VFTableBuilder::ComputeThisOffset(FinalOverriders::OverriderInfo Overrider) {
   return Ret;
 }
 
+// Things are getting even more complex when the "this" adjustment has to
+// use a dynamic offset instead of a static one, or even two dynamic offsets.
+// This is sometimes required when a virtual call happens in the middle of
+// a non-most-derived class construction or destruction.
+//
+// Let's take a look at the following example:
+//   struct A {
+//     virtual void f();
+//   };
+//
+//   void foo(A *a) { a->f(); }  // Knows nothing about siblings of A.
+//
+//   struct B : virtual A {
+//     virtual void f();
+//     B() {
+//       foo(this);
+//     }
+//   };
+//
+//   struct C : virtual B {
+//     virtual void f();
+//   };
+//
+// Record layouts for these classes are:
+//   struct A
+//   0 |   (A vftable pointer)
+//
+//   struct B
+//   0 |   (B vbtable pointer)
+//   4 |   (vtordisp for vbase A)
+//   8 |   struct A (virtual base)
+//   8 |     (A vftable pointer)
+//
+//   struct C
+//   0 |   (C vbtable pointer)
+//   4 |   (vtordisp for vbase A)
+//   8 |   struct A (virtual base)  // A precedes B!
+//   8 |     (A vftable pointer)
+//  12 |   struct B (virtual base)
+//  12 |     (B vbtable pointer)
+//
+// When one creates an object of type C, the C constructor:
+// - initializes all the vbptrs, then
+// - calls the A subobject constructor
+//   (initializes A's vfptr with an address of A vftable), then
+// - calls the B subobject constructor
+//   (initializes A's vfptr with an address of B vftable and vtordisp for A),
+//   that in turn calls foo(), then
+// - initializes A's vfptr with an address of C vftable and zeroes out the
+//   vtordisp
+//   FIXME: if a structor knows it belongs to MDC, why doesn't it use a vftable
+//   without vtordisp thunks?
+//   FIXME: how are vtordisp handled in the presence of nooverride/final?
+//
+// When foo() is called, an object with a layout of class C has a vftable
+// referencing B::f() that assumes a B layout, so the "this" adjustments are
+// incorrect, unless an extra adjustment is done.  This adjustment is called
+// "vtordisp adjustment".  Vtordisp basically holds the difference between the
+// actual location of a vbase in the layout class and the location assumed by
+// the vftable of the class being constructed/destructed.  Vtordisp is only
+// needed if "this" escapes a
+// structor (or we can't prove otherwise).
+// [i.e. vtordisp is a dynamic adjustment for a static adjustment, which is an
+// estimation of a dynamic adjustment]
+//
+// foo() gets a pointer to the A vbase and doesn't know anything about B or C,
+// so it just passes that pointer as "this" in a virtual call.
+// If there was no vtordisp, that would just dispatch to B::f().
+// However, B::f() assumes B+8 is passed as "this",
+// yet the pointer foo() passes along is B-4 (i.e. C+8).
+// An extra adjustment is needed, so we emit a thunk into the B vftable.
+// This vtordisp thunk subtracts the value of vtordisp
+// from the "this" argument (-12) before making a tailcall to B::f().
+//
+// Let's consider an even more complex example:
+//   struct D : virtual B, virtual C {
+//     D() {
+//       foo(this);
+//     }
+//   };
+//
+//   struct D
+//   0 |   (D vbtable pointer)
+//   4 |   (vtordisp for vbase A)
+//   8 |   struct A (virtual base)  // A precedes both B and C!
+//   8 |     (A vftable pointer)
+//  12 |   struct B (virtual base)  // B precedes C!
+//  12 |     (B vbtable pointer)
+//  16 |   struct C (virtual base)
+//  16 |     (C vbtable pointer)
+//
+// When D::D() calls foo(), we find ourselves in a thunk that should tailcall
+// to C::f(), which assumes C+8 as its "this" parameter.  This time, foo()
+// passes along A, which is C-8.  The A vtordisp holds
+//   "D.vbptr[index_of_A] - offset_of_A_in_D"
+// and we statically know offset_of_A_in_D, so can get a pointer to D.
+// When we know it, we can make an extra vbtable lookup to locate the C vbase
+// and one extra static adjustment to calculate the expected value of C+8.
 void VFTableBuilder::CalculateVtordispAdjustment(
     FinalOverriders::OverriderInfo Overrider, CharUnits ThisOffset,
     ThisAdjustment &TA) {
@@ -2738,9 +2895,9 @@ void VFTableBuilder::CalculateVtordispAdjustment(
 
   // OK, now we know we need to use a vtordisp thunk.
   // The implicit vtordisp field is located right before the vbase.
-  CharUnits VFPtrVBaseOffset = VBaseMapEntry->second.VBaseOffset;
+  CharUnits OffsetOfVBaseWithVFPtr = VBaseMapEntry->second.VBaseOffset;
   TA.Virtual.Microsoft.VtordispOffset =
-      (VFPtrVBaseOffset - WhichVFPtr.FullOffsetInMDC).getQuantity() - 4;
+      (OffsetOfVBaseWithVFPtr - WhichVFPtr.FullOffsetInMDC).getQuantity() - 4;
 
   // A simple vtordisp thunk will suffice if the final overrider is defined
   // in either the most derived class or its non-virtual base.
@@ -2751,7 +2908,7 @@ void VFTableBuilder::CalculateVtordispAdjustment(
   // Otherwise, we need to do use the dynamic offset of the final overrider
   // in order to get "this" adjustment right.
   TA.Virtual.Microsoft.VBPtrOffset =
-      (VFPtrVBaseOffset + WhichVFPtr.NonVirtualOffset -
+      (OffsetOfVBaseWithVFPtr + WhichVFPtr.NonVirtualOffset -
        MostDerivedClassLayout.getVBPtrOffset()).getQuantity();
   TA.Virtual.Microsoft.VBOffsetOffset =
       Context.getTypeSizeInChars(Context.IntTy).getQuantity() *
@@ -2846,20 +3003,21 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
   for (unsigned I = 0, E = VirtualMethods.size(); I != E; ++I) {
     const CXXMethodDecl *MD = VirtualMethods[I];
 
-    FinalOverriders::OverriderInfo Overrider =
+    FinalOverriders::OverriderInfo FinalOverrider =
         Overriders.getOverrider(MD, Base.getBaseOffset());
-    const CXXMethodDecl *OverriderMD = Overrider.Method;
+    const CXXMethodDecl *FinalOverriderMD = FinalOverrider.Method;
     const CXXMethodDecl *OverriddenMD =
         FindNearestOverriddenMethod(MD, VisitedBases);
 
     ThisAdjustment ThisAdjustmentOffset;
     bool ReturnAdjustingThunk = false, ForceReturnAdjustmentMangling = false;
-    CharUnits ThisOffset = ComputeThisOffset(Overrider);
+    CharUnits ThisOffset = ComputeThisOffset(FinalOverrider);
     ThisAdjustmentOffset.NonVirtual =
         (ThisOffset - WhichVFPtr.FullOffsetInMDC).getQuantity();
-    if ((OverriddenMD || OverriderMD != MD) &&
+    if ((OverriddenMD || FinalOverriderMD != MD) &&
         WhichVFPtr.getVBaseWithVPtr())
-      CalculateVtordispAdjustment(Overrider, ThisOffset, ThisAdjustmentOffset);
+      CalculateVtordispAdjustment(FinalOverrider, ThisOffset,
+                                  ThisAdjustmentOffset);
 
     if (OverriddenMD) {
       // If MD overrides anything in this vftable, we need to update the entries.
@@ -2901,7 +3059,7 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
       // Force a special name mangling for a return-adjusting thunk
       // unless the method is the final overrider without this adjustment.
       ForceReturnAdjustmentMangling =
-          !(MD == OverriderMD && ThisAdjustmentOffset.isEmpty());
+          !(MD == FinalOverriderMD && ThisAdjustmentOffset.isEmpty());
     } else if (Base.getBaseOffset() != WhichVFPtr.FullOffsetInMDC ||
                MD->size_overridden_methods()) {
       // Skip methods that don't belong to the vftable of the current class,
@@ -2926,9 +3084,9 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
     // We don't want to do this for pure virtual member functions.
     BaseOffset ReturnAdjustmentOffset;
     ReturnAdjustment ReturnAdjustment;
-    if (!OverriderMD->isPure()) {
+    if (!FinalOverriderMD->isPure()) {
       ReturnAdjustmentOffset =
-          ComputeReturnAdjustmentBaseOffset(Context, OverriderMD, MD);
+          ComputeReturnAdjustmentBaseOffset(Context, FinalOverriderMD, MD);
     }
     if (!ReturnAdjustmentOffset.isEmpty()) {
       ForceReturnAdjustmentMangling = true;
@@ -2945,7 +3103,7 @@ void VFTableBuilder::AddMethods(BaseSubobject Base, unsigned BaseDepth,
       }
     }
 
-    AddMethod(OverriderMD,
+    AddMethod(FinalOverriderMD,
               ThunkInfo(ThisAdjustmentOffset, ReturnAdjustment,
                         ForceReturnAdjustmentMangling ? MD : nullptr));
   }
@@ -3302,7 +3460,7 @@ findPathForVPtr(ASTContext &Context, const ASTRecordLayout &MostDerivedLayout,
     if (!B.isVirtual())
       NewOffset = Offset + Layout.getBaseClassOffset(Base);
     else {
-      if (!VBasesSeen.insert(Base))
+      if (!VBasesSeen.insert(Base).second)
         return false;
       NewOffset = MostDerivedLayout.getVBaseClassOffset(Base);
     }

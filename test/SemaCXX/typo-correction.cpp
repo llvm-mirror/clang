@@ -209,11 +209,12 @@ namespace PR13051 {
   };
 
   void foo(); // expected-note{{'foo' declared here}}
-  void g(void(*)());
-  void g(bool(S<int>::*)() const);
+  void g(void(*)()); // expected-note{{candidate function not viable}}
+  void g(bool(S<int>::*)() const); // expected-note{{candidate function not viable}}
 
   void test() {
-    g(&S<int>::tempalte f<int>); // expected-error{{did you mean 'template'?}}
+    g(&S<int>::tempalte f<int>); // expected-error{{did you mean 'template'?}} \
+                                 // expected-error{{no matching function for call to 'g'}}
     g(&S<int>::opeartor bool); // expected-error{{did you mean 'operator'?}}
     g(&S<int>::foo); // expected-error{{no member named 'foo' in 'PR13051::S<int>'; did you mean simply 'foo'?}}
   }
@@ -247,7 +248,7 @@ namespace b6956809_test1 {
 
   struct S1 {
     void method(A*);  // no note here
-    void method(B*);
+    void method(B*);  // expected-note{{'method' declared here}}
   };
 
   void test1() {
@@ -258,15 +259,15 @@ namespace b6956809_test1 {
 
   struct S2 {
     S2();
-    void method(A*) const;  // expected-note{{candidate function not viable}}
+    void method(A*) const;
    private:
-    void method(B*);  // expected-note{{candidate function not viable}}
+    void method(B*);
   };
 
   void test2() {
     B b;
     const S2 s;
-    s.methodd(&b);  // expected-error{{no member named 'methodd' in 'b6956809_test1::S2'; did you mean 'method'}}  expected-error{{no matching member function for call to 'method'}}
+    s.methodd(&b);  // expected-error-re{{no member named 'methodd' in 'b6956809_test1::S2'{{$}}}}
   }
 }
 
@@ -274,7 +275,7 @@ namespace b6956809_test2 {
   template<typename T> struct Err { typename T::error n; };  // expected-error{{type 'void *' cannot be used prior to '::' because it has no members}}
   struct S {
     template<typename T> typename Err<T>::type method(T);  // expected-note{{in instantiation of template class 'b6956809_test2::Err<void *>' requested here}}
-    template<typename T> int method(T *);
+    template<typename T> int method(T *);  // expected-note{{'method' declared here}}
   };
 
   void test() {

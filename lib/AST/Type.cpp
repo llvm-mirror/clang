@@ -1578,6 +1578,7 @@ StringRef FunctionType::getNameForCallConv(CallingConv CC) {
   case CC_X86FastCall: return "fastcall";
   case CC_X86ThisCall: return "thiscall";
   case CC_X86Pascal: return "pascal";
+  case CC_X86VectorCall: return "vectorcall";
   case CC_X86_64Win64: return "ms_abi";
   case CC_X86_64SysV: return "sysv_abi";
   case CC_AAPCS: return "aapcs";
@@ -1592,7 +1593,7 @@ StringRef FunctionType::getNameForCallConv(CallingConv CC) {
 FunctionProtoType::FunctionProtoType(QualType result, ArrayRef<QualType> params,
                                      QualType canonical,
                                      const ExtProtoInfo &epi)
-    : FunctionType(FunctionProto, result, epi.TypeQuals, canonical,
+    : FunctionType(FunctionProto, result, canonical,
                    result->isDependentType(),
                    result->isInstantiationDependentType(),
                    result->isVariablyModifiedType(),
@@ -1601,9 +1602,11 @@ FunctionProtoType::FunctionProtoType(QualType result, ArrayRef<QualType> params,
       NumExceptions(epi.ExceptionSpec.Exceptions.size()),
       ExceptionSpecType(epi.ExceptionSpec.Type),
       HasAnyConsumedParams(epi.ConsumedParameters != nullptr),
-      Variadic(epi.Variadic), HasTrailingReturn(epi.HasTrailingReturn),
-      RefQualifier(epi.RefQualifier) {
+      Variadic(epi.Variadic), HasTrailingReturn(epi.HasTrailingReturn) {
   assert(NumParams == params.size() && "function has too many parameters");
+
+  FunctionTypeBits.TypeQuals = epi.TypeQuals;
+  FunctionTypeBits.RefQualifier = epi.RefQualifier;
 
   // Fill in the trailing argument array.
   QualType *argSlot = reinterpret_cast<QualType*>(this+1);
@@ -1624,9 +1627,9 @@ FunctionProtoType::FunctionProtoType(QualType result, ArrayRef<QualType> params,
     QualType *exnSlot = argSlot + NumParams;
     unsigned I = 0;
     for (QualType ExceptionType : epi.ExceptionSpec.Exceptions) {
-      if (ExceptionType->isDependentType())
-        setDependent();
-      else if (ExceptionType->isInstantiationDependentType())
+      // Note that a dependent exception specification does *not* make
+      // a type dependent; it's not even part of the C++ type system.
+      if (ExceptionType->isInstantiationDependentType())
         setInstantiationDependent();
 
       if (ExceptionType->containsUnexpandedParameterPack())
@@ -1640,11 +1643,12 @@ FunctionProtoType::FunctionProtoType(QualType result, ArrayRef<QualType> params,
     *noexSlot = epi.ExceptionSpec.NoexceptExpr;
 
     if (epi.ExceptionSpec.NoexceptExpr) {
-      if (epi.ExceptionSpec.NoexceptExpr->isValueDependent() 
-          || epi.ExceptionSpec.NoexceptExpr->isTypeDependent())
-        setDependent();
-      else if (epi.ExceptionSpec.NoexceptExpr->isInstantiationDependent())
+      if (epi.ExceptionSpec.NoexceptExpr->isValueDependent() ||
+          epi.ExceptionSpec.NoexceptExpr->isInstantiationDependent())
         setInstantiationDependent();
+
+      if (epi.ExceptionSpec.NoexceptExpr->containsUnexpandedParameterPack())
+        setContainsUnexpandedParameterPack();
     }
   } else if (getExceptionSpecType() == EST_Uninstantiated) {
     // Store the function decl from which we will resolve our
@@ -1668,6 +1672,18 @@ FunctionProtoType::FunctionProtoType(QualType result, ArrayRef<QualType> params,
     for (unsigned i = 0; i != NumParams; ++i)
       consumedParams[i] = epi.ConsumedParameters[i];
   }
+}
+
+bool FunctionProtoType::hasDependentExceptionSpec() const {
+  if (Expr *NE = getNoexceptExpr())
+    return NE->isValueDependent();
+  for (QualType ET : exceptions())
+    // A pack expansion with a non-dependent pattern is still dependent,
+    // because we don't know whether the pattern is in the exception spec
+    // or not (that depends on whether the pack has 0 expansions).
+    if (ET->isDependentType() || ET->getAs<PackExpansionType>())
+      return true;
+  return false;
 }
 
 FunctionProtoType::NoexceptResult
@@ -1758,7 +1774,7 @@ void FunctionProtoType::Profile(llvm::FoldingSetNodeID &ID, QualType Result,
   assert(!(unsigned(epi.Variadic) & ~1) &&
          !(unsigned(epi.TypeQuals) & ~255) &&
          !(unsigned(epi.RefQualifier) & ~3) &&
-         !(unsigned(epi.ExceptionSpec.Type) & ~7) &&
+         !(unsigned(epi.ExceptionSpec.Type) & ~15) &&
          "Values larger than expected.");
   ID.AddInteger(unsigned(epi.Variadic) +
                 (epi.TypeQuals << 1) +
@@ -1913,6 +1929,7 @@ bool AttributedType::isCallingConv() const {
   case attr_fastcall:
   case attr_stdcall:
   case attr_thiscall:
+  case attr_vectorcall:
   case attr_pascal:
   case attr_ms_abi:
   case attr_sysv_abi:

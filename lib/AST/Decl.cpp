@@ -3325,7 +3325,8 @@ SourceRange FieldDecl::getSourceRange() const {
 }
 
 void FieldDecl::setCapturedVLAType(const VariableArrayType *VLAType) {
-  assert(getParent()->isLambda() && "capturing type in non-lambda.");
+  assert((getParent()->isLambda() || getParent()->isCapturedRecord()) &&
+         "capturing type in non-lambda or captured record.");
   assert(InitStorage.getInt() == ISK_BitWidthOrNothing &&
          InitStorage.getPointer() == nullptr &&
          "bit width, initializer or captured type already set");
@@ -3559,6 +3560,14 @@ bool RecordDecl::isLambda() const {
   return false;
 }
 
+bool RecordDecl::isCapturedRecord() const {
+  return hasAttr<CapturedRecordAttr>();
+}
+
+void RecordDecl::setCapturedRecord() {
+  addAttr(CapturedRecordAttr::CreateImplicit(getASTContext()));
+}
+
 RecordDecl::field_iterator RecordDecl::field_begin() const {
   if (hasExternalLexicalStorage() && !LoadedFieldsFromExternalStorage)
     LoadFieldsFromExternalStorage();
@@ -3618,8 +3627,8 @@ void RecordDecl::LoadFieldsFromExternalStorage() const {
 
 bool RecordDecl::mayInsertExtraPadding(bool EmitRemark) const {
   ASTContext &Context = getASTContext();
-  if (!Context.getLangOpts().Sanitize.Address ||
-      !Context.getLangOpts().Sanitize.SanitizeAddressFieldPadding)
+  if (!Context.getLangOpts().Sanitize.has(SanitizerKind::Address) ||
+      !Context.getLangOpts().SanitizeAddressFieldPadding)
     return false;
   const auto &Blacklist = Context.getSanitizerBlacklist();
   const CXXRecordDecl *CXXRD = dyn_cast<CXXRecordDecl>(this);
