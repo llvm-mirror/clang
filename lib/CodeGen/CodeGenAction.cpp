@@ -8,19 +8,19 @@
 //===----------------------------------------------------------------------===//
 
 #include "CoverageMappingGen.h"
-#include "clang/CodeGen/CodeGenAction.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
-#include "clang/AST/DeclGroup.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/DeclGroup.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
-#include "clang/Lex/Preprocessor.h"
 #include "clang/CodeGen/BackendUtil.h"
+#include "clang/CodeGen/CodeGenAction.h"
 #include "clang/CodeGen/ModuleBuilder.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
+#include "clang/Lex/Preprocessor.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Bitcode/ReaderWriter.h"
 #include "llvm/IR/DebugInfo.h"
@@ -65,9 +65,8 @@ namespace clang {
                     CoverageSourceInfo *CoverageInfo = nullptr)
         : Diags(_Diags), Action(action), CodeGenOpts(compopts),
           TargetOpts(targetopts), LangOpts(langopts), AsmOutStream(OS),
-          Context(), LLVMIRGeneration("LLVM IR Generation Time"),
-          Gen(CreateLLVMCodeGen(Diags, infile, compopts,
-                                targetopts, C, CoverageInfo)),
+          Context(nullptr), LLVMIRGeneration("LLVM IR Generation Time"),
+          Gen(CreateLLVMCodeGen(Diags, infile, compopts, C, CoverageInfo)),
           LinkModule(LinkModule) {
       llvm::TimePassesIsEnabled = TimePasses;
     }
@@ -153,13 +152,10 @@ namespace clang {
 
       // Link LinkModule into this module if present, preserving its validity.
       if (LinkModule) {
-        std::string ErrorMsg;
-        if (Linker::LinkModules(M, LinkModule.get(), Linker::PreserveSource,
-                                &ErrorMsg)) {
-          Diags.Report(diag::err_fe_cannot_link_module)
-            << LinkModule->getModuleIdentifier() << ErrorMsg;
+        if (Linker::LinkModules(
+                M, LinkModule.get(),
+                [=](const DiagnosticInfo &DI) { linkerDiagnosticHandler(DI); }))
           return;
-        }
       }
 
       // Install an inline asm handler so that diagnostics get printed through
@@ -199,8 +195,8 @@ namespace clang {
       Gen->CompleteTentativeDefinition(D);
     }
 
-    void HandleVTable(CXXRecordDecl *RD, bool DefinitionRequired) override {
-      Gen->HandleVTable(RD, DefinitionRequired);
+    void HandleVTable(CXXRecordDecl *RD) override {
+      Gen->HandleVTable(RD);
     }
 
     void HandleLinkerOptionPragma(llvm::StringRef Opts) override {
@@ -221,6 +217,8 @@ namespace clang {
       SourceLocation Loc = SourceLocation::getFromRawEncoding(LocCookie);
       ((BackendConsumer*)Context)->InlineAsmDiagHandler2(SM, Loc);
     }
+
+    void linkerDiagnosticHandler(const llvm::DiagnosticInfo &DI);
 
     static void DiagnosticHandler(const llvm::DiagnosticInfo &DI,
                                   void *Context) {
@@ -497,6 +495,21 @@ void BackendConsumer::OptimizationFailureHandler(
   EmitOptimizationMessage(D, diag::warn_fe_backend_optimization_failure);
 }
 
+void BackendConsumer::linkerDiagnosticHandler(const DiagnosticInfo &DI) {
+  if (DI.getSeverity() != DS_Error)
+    return;
+
+  std::string MsgStorage;
+  {
+    raw_string_ostream Stream(MsgStorage);
+    DiagnosticPrinterRawOStream DP(Stream);
+    DI.print(DP);
+  }
+
+  Diags.Report(diag::err_fe_cannot_link_module)
+      << LinkModule->getModuleIdentifier() << MsgStorage;
+}
+
 /// \brief This function is invoked when the backend needs
 /// to report something to the user.
 void BackendConsumer::DiagnosticHandlerImpl(const DiagnosticInfo &DI) {
@@ -622,18 +635,15 @@ CodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   // loaded from bitcode, do so now.
   const std::string &LinkBCFile = CI.getCodeGenOpts().LinkBitcodeFile;
   if (!LinkModuleToUse && !LinkBCFile.empty()) {
-    std::string ErrorStr;
-
-    std::unique_ptr<llvm::MemoryBuffer> BCBuf =
-      CI.getFileManager().getBufferForFile(LinkBCFile, &ErrorStr);
+    auto BCBuf = CI.getFileManager().getBufferForFile(LinkBCFile);
     if (!BCBuf) {
       CI.getDiagnostics().Report(diag::err_cannot_open_file)
-        << LinkBCFile << ErrorStr;
+          << LinkBCFile << BCBuf.getError().message();
       return nullptr;
     }
 
     ErrorOr<llvm::Module *> ModuleOrErr =
-        getLazyBitcodeModule(std::move(BCBuf), *VMContext);
+        getLazyBitcodeModule(std::move(*BCBuf), *VMContext);
     if (std::error_code EC = ModuleOrErr.getError()) {
       CI.getDiagnostics().Report(diag::err_cannot_open_file)
         << LinkBCFile << EC.message();
@@ -655,6 +665,12 @@ CodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
       LinkModuleToUse, OS.release(), *VMContext, CoverageInfo));
   BEConsumer = Result.get();
   return std::move(Result);
+}
+
+static void BitcodeInlineAsmDiagHandler(const llvm::SMDiagnostic &SM,
+                                         void *Context,
+                                         unsigned LocCookie) {
+  SM.print(nullptr, llvm::errs());
 }
 
 void CodeGenAction::ExecuteAction() {
@@ -699,14 +715,14 @@ void CodeGenAction::ExecuteAction() {
     }
     const TargetOptions &TargetOpts = CI.getTargetOpts();
     if (TheModule->getTargetTriple() != TargetOpts.Triple) {
-      unsigned DiagID = CI.getDiagnostics().getCustomDiagID(
-          DiagnosticsEngine::Warning,
-          "overriding the module target triple with %0");
-
-      CI.getDiagnostics().Report(SourceLocation(), DiagID) << TargetOpts.Triple;
+      CI.getDiagnostics().Report(SourceLocation(),
+                                 diag::warn_fe_override_module)
+          << TargetOpts.Triple;
       TheModule->setTargetTriple(TargetOpts.Triple);
     }
 
+    LLVMContext &Ctx = TheModule->getContext();
+    Ctx.setInlineAsmDiagnosticHandler(BitcodeInlineAsmDiagHandler);
     EmitBackendOutput(CI.getDiagnostics(), CI.getCodeGenOpts(), TargetOpts,
                       CI.getLangOpts(), CI.getTarget().getTargetDescription(),
                       TheModule.get(), BA, OS);

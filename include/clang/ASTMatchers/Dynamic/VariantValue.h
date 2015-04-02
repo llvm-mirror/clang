@@ -106,9 +106,9 @@ class VariantMatcher {
     /// \brief Constructs a variadic typed matcher from \p InnerMatchers.
     /// Will try to convert each inner matcher to the destination type and
     /// return llvm::None if it fails to do so.
-    llvm::Optional<DynTypedMatcher> constructVariadicOperator(
-        ast_matchers::internal::VariadicOperatorFunction Func,
-        ArrayRef<VariantMatcher> InnerMatchers) const;
+    llvm::Optional<DynTypedMatcher>
+    constructVariadicOperator(DynTypedMatcher::VariadicOperator Op,
+                              ArrayRef<VariantMatcher> InnerMatchers) const;
 
   protected:
     ~MatcherOps() {}
@@ -147,9 +147,9 @@ public:
   /// \brief Creates a 'variadic' operator matcher.
   ///
   /// It will bind to the appropriate type on getTypedMatcher<T>().
-  static VariantMatcher VariadicOperatorMatcher(
-      ast_matchers::internal::VariadicOperatorFunction Func,
-      std::vector<VariantMatcher> Args);
+  static VariantMatcher
+  VariadicOperatorMatcher(DynTypedMatcher::VariadicOperator Op,
+                          std::vector<VariantMatcher> Args);
 
   /// \brief Makes the matcher the "null" matcher.
   void reset();
@@ -258,7 +258,7 @@ public:
   VariantValue(const VariantMatcher &Matchers);
 
   /// \brief Returns true iff this is not an empty value.
-  LLVM_EXPLICIT operator bool() const { return hasValue(); }
+  explicit operator bool() const { return hasValue(); }
   bool hasValue() const { return Type != VT_Nothing; }
 
   /// \brief Unsigned value functions.

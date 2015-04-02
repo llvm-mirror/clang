@@ -615,6 +615,11 @@ StmtResult Parser::ParseAsmStatement(bool &msAsm) {
     msAsm = true;
     return ParseMicrosoftAsmStatement(AsmLoc);
   }
+
+  // Check if GNU-style inline Asm is disabled.
+  if (!getLangOpts().GNUAsm)
+    Diag(AsmLoc, diag::err_gnu_inline_asm_disabled);
+
   DeclSpec DS(AttrFactory);
   SourceLocation Loc = Tok.getLocation();
   ParseTypeQualifierListOpt(DS, AR_VendorAttributesParsed);
@@ -774,7 +779,7 @@ bool Parser::ParseAsmOperandsOpt(SmallVectorImpl<IdentifierInfo *> &Names,
     // Read the parenthesized expression.
     BalancedDelimiterTracker T(*this, tok::l_paren);
     T.consumeOpen();
-    ExprResult Res(ParseExpression());
+    ExprResult Res = Actions.CorrectDelayedTyposInExpr(ParseExpression());
     T.consumeClose();
     if (Res.isInvalid()) {
       SkipUntil(tok::r_paren, StopAtSemi);

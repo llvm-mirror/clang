@@ -68,6 +68,9 @@ public:
 
   /// \brief Return the TypeLoc wrapper for the type source info.
   TypeLoc getTypeLoc() const; // implemented in TypeLoc.h
+  
+  /// \brief Override the type stored in this TypeSourceInfo. Use with caution!
+  void overrideType(QualType T) { Ty = T; }
 };
 
 /// TranslationUnitDecl - The top declaration context.
@@ -98,6 +101,43 @@ public:
   }
   static TranslationUnitDecl *castFromDeclContext(const DeclContext *DC) {
     return static_cast<TranslationUnitDecl *>(const_cast<DeclContext*>(DC));
+  }
+};
+
+/// \brief Declaration context for names declared as extern "C" in C++. This
+/// is neither the semantic nor lexical context for such declarations, but is
+/// used to check for conflicts with other extern "C" declarations. Example:
+///
+/// \code
+///   namespace N { extern "C" void f(); } // #1
+///   void N::f() {}                       // #2
+///   namespace M { extern "C" void f(); } // #3
+/// \endcode
+///
+/// The semantic context of #1 is namespace N and its lexical context is the
+/// LinkageSpecDecl; the semantic context of #2 is namespace N and its lexical
+/// context is the TU. However, both declarations are also visible in the
+/// extern "C" context.
+///
+/// The declaration at #3 finds it is a redeclaration of \c N::f through
+/// lookup in the extern "C" context.
+class ExternCContextDecl : public Decl, public DeclContext {
+  virtual void anchor();
+
+  explicit ExternCContextDecl(TranslationUnitDecl *TU)
+    : Decl(ExternCContext, TU, SourceLocation()),
+      DeclContext(ExternCContext) {}
+public:
+  static ExternCContextDecl *Create(const ASTContext &C,
+                                    TranslationUnitDecl *TU);
+  // Implement isa/cast/dyncast/etc.
+  static bool classof(const Decl *D) { return classofKind(D->getKind()); }
+  static bool classofKind(Kind K) { return K == ExternCContext; }
+  static DeclContext *castToDeclContext(const ExternCContextDecl *D) {
+    return static_cast<DeclContext *>(const_cast<ExternCContextDecl*>(D));
+  }
+  static ExternCContextDecl *castFromDeclContext(const DeclContext *DC) {
+    return static_cast<ExternCContextDecl *>(const_cast<DeclContext*>(DC));
   }
 };
 
@@ -176,14 +216,17 @@ public:
                                     const PrintingPolicy &Policy,
                                     bool Qualified) const;
 
-  /// declarationReplaces - Determine whether this declaration, if
+  /// \brief Determine whether this declaration, if
   /// known to be well-formed within its context, will replace the
   /// declaration OldD if introduced into scope. A declaration will
   /// replace another declaration if, for example, it is a
   /// redeclaration of the same variable or function, but not if it is
   /// a declaration of a different kind (function vs. class) or an
   /// overloaded function.
-  bool declarationReplaces(NamedDecl *OldD) const;
+  ///
+  /// \param IsKnownNewer \c true if this declaration is known to be newer
+  /// than \p OldD (for instance, if this declaration is newly-created).
+  bool declarationReplaces(NamedDecl *OldD, bool IsKnownNewer = true) const;
 
   /// \brief Determine whether this declaration has linkage.
   bool hasLinkage() const;
@@ -532,8 +575,8 @@ struct QualifierInfo {
 
 private:
   // Copy constructor and copy assignment are disabled.
-  QualifierInfo(const QualifierInfo&) LLVM_DELETED_FUNCTION;
-  QualifierInfo& operator=(const QualifierInfo&) LLVM_DELETED_FUNCTION;
+  QualifierInfo(const QualifierInfo&) = delete;
+  QualifierInfo& operator=(const QualifierInfo&) = delete;
 };
 
 /// \brief Represents a ValueDecl that came out of a declarator.
@@ -662,8 +705,6 @@ struct EvaluatedStmt {
 /// declaration or definition.
 class VarDecl : public DeclaratorDecl, public Redeclarable<VarDecl> {
 public:
-  typedef clang::StorageClass StorageClass;
-
   /// getStorageClassSpecifierString - Return the string used to
   /// specify the storage class \p SC.
   ///
@@ -839,7 +880,7 @@ public:
       return !isFileVarDecl() && getTSCSpec() == TSCS_unspecified;
 
     // Global Named Register (GNU extension)
-    if (getStorageClass() == SC_Register && !isLocalVarDecl())
+    if (getStorageClass() == SC_Register && !isLocalVarDeclOrParm())
       return false;
 
     // Return true for:  Auto, Register.
@@ -903,6 +944,11 @@ public:
     if (const DeclContext *DC = getLexicalDeclContext())
       return DC->getRedeclContext()->isFunctionOrMethod();
     return false;
+  }
+
+  /// \brief Similar to isLocalVarDecl but also includes parameters.
+  bool isLocalVarDeclOrParm() const {
+    return isLocalVarDecl() || getKind() == Decl::ParmVar;
   }
 
   /// isFunctionOrMethodVarDecl - Similar to isLocalVarDecl, but
@@ -1437,8 +1483,6 @@ private:
 class FunctionDecl : public DeclaratorDecl, public DeclContext,
                      public Redeclarable<FunctionDecl> {
 public:
-  typedef clang::StorageClass StorageClass;
-
   /// \brief The kind of templated function a FunctionDecl can be.
   enum TemplatedKind {
     TK_NonTemplate,
@@ -1477,6 +1521,9 @@ private:
   bool HasImplicitReturnZero : 1;
   bool IsLateTemplateParsed : 1;
   bool IsConstexpr : 1;
+
+  /// \brief Indicates if the function uses __try.
+  bool UsesSEHTry : 1;
 
   /// \brief Indicates if the function was a definition but its body was
   /// skipped.
@@ -1566,8 +1613,8 @@ protected:
       HasWrittenPrototype(true), IsDeleted(false), IsTrivial(false),
       IsDefaulted(false), IsExplicitlyDefaulted(false),
       HasImplicitReturnZero(false), IsLateTemplateParsed(false),
-      IsConstexpr(isConstexprSpecified), HasSkippedBody(false),
-      EndRangeLoc(NameInfo.getEndLoc()),
+      IsConstexpr(isConstexprSpecified), UsesSEHTry(false),
+      HasSkippedBody(false), EndRangeLoc(NameInfo.getEndLoc()),
       TemplateOrSpecialization(),
       DNLoc(NameInfo.getInfo()) {}
 
@@ -1747,6 +1794,10 @@ public:
   bool isConstexpr() const { return IsConstexpr; }
   void setConstexpr(bool IC) { IsConstexpr = IC; }
 
+  /// Whether this is a (C++11) constexpr function or constexpr constructor.
+  bool usesSEHTry() const { return UsesSEHTry; }
+  void setUsesSEHTry(bool UST) { UsesSEHTry = UST; }
+
   /// \brief Whether this function has been deleted.
   ///
   /// A function that is "deleted" (via the C++0x "= delete" syntax)
@@ -1809,11 +1860,6 @@ public:
   ///    An implementation is allowed to omit a call to a replaceable global
   ///    allocation function. [...]
   bool isReplaceableGlobalAllocationFunction() const;
-
-  /// \brief Determine whether this function is a sized global deallocation
-  /// function in C++1y. If so, find and return the corresponding unsized
-  /// deallocation function.
-  FunctionDecl *getCorrespondingUnsizedGlobalDeallocationFunction() const;
 
   /// Compute the language linkage.
   LanguageLinkage getLanguageLinkage() const;
@@ -2533,6 +2579,10 @@ public:
   TypedefNameDecl *getCanonicalDecl() override { return getFirstDecl(); }
   const TypedefNameDecl *getCanonicalDecl() const { return getFirstDecl(); }
 
+  /// Retrieves the tag declaration for which this is the typedef name for
+  /// linkage purposes, if any.
+  TagDecl *getAnonDeclWithTypedefName() const;
+
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) {
@@ -3218,6 +3268,13 @@ public:
   /// function object.
   bool isLambda() const;
 
+  /// \brief Determine whether this record is a record for captured variables in
+  /// CapturedStmt construct.
+  bool isCapturedRecord() const;
+  /// \brief Mark the record as a record for captured variables in CapturedStmt
+  /// construct.
+  void setCapturedRecord();
+
   /// getDefinition - Returns the RecordDecl that actually defines
   ///  this struct/union/class.  When determining whether or not a
   ///  struct/union/class is completely defined, one should use this
@@ -3267,6 +3324,10 @@ public:
   /// These padding are added to help AddressSanitizer detect
   /// intra-object-overflow bugs.
   bool mayInsertExtraPadding(bool EmitRemark = false) const;
+
+  /// Finds the first data member which has a name.
+  /// nullptr is returned if no named data member exists.
+  const FieldDecl *findFirstNamedDataMember() const;  
 
 private:
   /// \brief Deserialize just the fields.
@@ -3680,8 +3741,6 @@ void Redeclarable<decl_type>::setPreviousDecl(decl_type *PrevDecl) {
   // and Redeclarable to be defined.
   assert(RedeclLink.NextIsLatest() &&
          "setPreviousDecl on a decl already in a redeclaration chain");
-
-  decl_type *First;
 
   if (PrevDecl) {
     // Point to previous. Make sure that this is actually the most recent

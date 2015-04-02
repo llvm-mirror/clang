@@ -73,11 +73,7 @@ class FileEntry {
   mutable std::unique_ptr<vfs::File> File;
   friend class FileManager;
 
-  void closeFile() const {
-    File.reset(); // rely on destructor to close File
-  }
-
-  void operator=(const FileEntry &) LLVM_DELETED_FUNCTION;
+  void operator=(const FileEntry &) = delete;
 
 public:
   FileEntry()
@@ -109,6 +105,10 @@ public:
   /// \brief Check whether the file is a named pipe (and thus can't be opened by
   /// the native FileManager methods).
   bool isNamedPipe() const { return IsNamedPipe; }
+
+  void closeFile() const {
+    File.reset(); // rely on destructor to close File
+  }
 };
 
 struct FileData;
@@ -241,11 +241,11 @@ public:
 
   /// \brief Open the specified file as a MemoryBuffer, returning a new
   /// MemoryBuffer if successful, otherwise returning null.
-  std::unique_ptr<llvm::MemoryBuffer>
-  getBufferForFile(const FileEntry *Entry, std::string *ErrorStr = nullptr,
-                   bool isVolatile = false, bool ShouldCloseOpenFile = true);
-  std::unique_ptr<llvm::MemoryBuffer>
-  getBufferForFile(StringRef Filename, std::string *ErrorStr = nullptr);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
+  getBufferForFile(const FileEntry *Entry, bool isVolatile = false,
+                   bool ShouldCloseOpenFile = true);
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
+  getBufferForFile(StringRef Filename);
 
   /// \brief Get the 'stat' information for the given \p Path.
   ///
@@ -273,6 +273,9 @@ public:
   /// FileEntry. Use with caution.
   static void modifyFileEntry(FileEntry *File, off_t Size,
                               time_t ModificationTime);
+
+  /// \brief Remove any './' components from a path.
+  static bool removeDotPaths(SmallVectorImpl<char> &Path);
 
   /// \brief Retrieve the canonical name for a given directory.
   ///

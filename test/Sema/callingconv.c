@@ -10,7 +10,7 @@ void __attribute__((stdcall)) bar(float *a) {
 void __attribute__((fastcall(1))) baz(float *a) { // expected-error {{'fastcall' attribute takes no arguments}}
 }
 
-void __attribute__((fastcall)) test0() { // expected-error {{function with no prototype cannot use the callee-cleanup fastcall calling convention}}
+void __attribute__((fastcall)) test0() {
 }
 
 void __attribute__((fastcall)) test1(void) {
@@ -58,8 +58,6 @@ void __attribute__((cdecl)) ctest3() {}
 // PR6408
 typedef __attribute__((stdcall)) void (*PROC)();
 PROC __attribute__((cdecl)) ctest4(const char *x) {}
-
-void __attribute__((pnaclcall)) pnaclfunc(float *a) {} // expected-warning {{calling convention 'pnaclcall' ignored for this target}}
 
 void __attribute__((intel_ocl_bicc)) inteloclbifunc(float *a) {}
 

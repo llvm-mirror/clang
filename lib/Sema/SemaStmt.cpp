@@ -265,10 +265,6 @@ void Sema::DiagnoseUnusedExprResult(const Stmt *S) {
         Diag(Loc, diag::warn_unused_result) << R1 << R2;
         return;
       }
-      if (MD->isPropertyAccessor()) {
-        Diag(Loc, diag::warn_unused_property_expr);
-        return;
-      }
     }
   } else if (const PseudoObjectExpr *POE = dyn_cast<PseudoObjectExpr>(E)) {
     const Expr *Source = POE->getSyntacticForm();
@@ -371,6 +367,23 @@ Sema::ActOnCaseStmt(SourceLocation CaseLoc, Expr *LHSVal,
     return StmtError();
   }
 
+  ExprResult LHS =
+      CorrectDelayedTyposInExpr(LHSVal, [this](class Expr *E) {
+        if (!getLangOpts().CPlusPlus11)
+          return VerifyIntegerConstantExpression(E);
+        if (Expr *CondExpr =
+                getCurFunction()->SwitchStack.back()->getCond()) {
+          QualType CondType = CondExpr->getType();
+          llvm::APSInt TempVal;
+          return CheckConvertedConstantExpression(E, CondType, TempVal,
+                                                        CCEK_CaseValue);
+        }
+        return ExprError();
+      });
+  if (LHS.isInvalid())
+    return StmtError();
+  LHSVal = LHS.get();
+
   if (!getLangOpts().CPlusPlus11) {
     // C99 6.8.4.2p3: The expression shall be an integer constant.
     // However, GCC allows any evaluatable integer expression.
@@ -388,14 +401,19 @@ Sema::ActOnCaseStmt(SourceLocation CaseLoc, Expr *LHSVal,
     }
   }
 
-  LHSVal = ActOnFinishFullExpr(LHSVal, LHSVal->getExprLoc(), false,
-                               getLangOpts().CPlusPlus11).get();
-  if (RHSVal)
-    RHSVal = ActOnFinishFullExpr(RHSVal, RHSVal->getExprLoc(), false,
-                                 getLangOpts().CPlusPlus11).get();
+  LHS = ActOnFinishFullExpr(LHSVal, LHSVal->getExprLoc(), false,
+                                 getLangOpts().CPlusPlus11);
+  if (LHS.isInvalid())
+    return StmtError();
 
-  CaseStmt *CS = new (Context) CaseStmt(LHSVal, RHSVal, CaseLoc, DotDotDotLoc,
-                                        ColonLoc);
+  auto RHS = RHSVal ? ActOnFinishFullExpr(RHSVal, RHSVal->getExprLoc(), false,
+                                          getLangOpts().CPlusPlus11)
+                    : ExprResult();
+  if (RHS.isInvalid())
+    return StmtError();
+
+  CaseStmt *CS = new (Context)
+      CaseStmt(LHS.get(), RHS.get(), CaseLoc, DotDotDotLoc, ColonLoc);
   getCurFunction()->SwitchStack.back()->addSwitchCase(CS);
   return CS;
 }
@@ -665,26 +683,39 @@ static void checkCaseValue(Sema &S, SourceLocation Loc, const llvm::APSInt &Val,
   }
 }
 
+typedef SmallVector<std::pair<llvm::APSInt, EnumConstantDecl*>, 64> EnumValsTy;
+
 /// Returns true if we should emit a diagnostic about this case expression not
 /// being a part of the enum used in the switch controlling expression.
-static bool ShouldDiagnoseSwitchCaseNotInEnum(const ASTContext &Ctx,
+static bool ShouldDiagnoseSwitchCaseNotInEnum(const Sema &S,
                                               const EnumDecl *ED,
-                                              const Expr *CaseExpr) {
-  // Don't warn if the 'case' expression refers to a static const variable of
-  // the enum type.
-  CaseExpr = CaseExpr->IgnoreParenImpCasts();
-  if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(CaseExpr)) {
+                                              const Expr *CaseExpr,
+                                              EnumValsTy::iterator &EI,
+                                              EnumValsTy::iterator &EIEnd,
+                                              const llvm::APSInt &Val) {
+  bool FlagType = ED->hasAttr<FlagEnumAttr>();
+
+  if (const DeclRefExpr *DRE =
+          dyn_cast<DeclRefExpr>(CaseExpr->IgnoreParenImpCasts())) {
     if (const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl())) {
-      if (!VD->hasGlobalStorage())
-        return true;
       QualType VarType = VD->getType();
-      if (!VarType.isConstQualified())
-        return true;
-      QualType EnumType = Ctx.getTypeDeclType(ED);
-      if (Ctx.hasSameUnqualifiedType(EnumType, VarType))
+      QualType EnumType = S.Context.getTypeDeclType(ED);
+      if (VD->hasGlobalStorage() && VarType.isConstQualified() &&
+          S.Context.hasSameUnqualifiedType(EnumType, VarType))
         return false;
     }
   }
+
+  if (FlagType) {
+    return !S.IsValueInFlagEnum(ED, Val, false);
+  } else {
+    while (EI != EIEnd && EI->first < Val)
+      EI++;
+
+    if (EI != EIEnd && EI->first == Val)
+      return false;
+  }
+
   return true;
 }
 
@@ -695,9 +726,10 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
   assert(SS == getCurFunction()->SwitchStack.back() &&
          "switch stack missing push/pop!");
 
+  getCurFunction()->SwitchStack.pop_back();
+
   if (!BodyStmt) return StmtError();
   SS->setBody(BodyStmt, SwitchLoc);
-  getCurFunction()->SwitchStack.pop_back();
 
   Expr *CondExpr = SS->getCond();
   if (!CondExpr) return StmtError();
@@ -874,12 +906,12 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
           if (PrevString == CurrString)
             Diag(CaseVals[i].second->getLHS()->getLocStart(),
                  diag::err_duplicate_case) <<
-                 (PrevString.empty() ? CaseValStr.str() : PrevString);
+                 (PrevString.empty() ? StringRef(CaseValStr) : PrevString);
           else
             Diag(CaseVals[i].second->getLHS()->getLocStart(),
                  diag::err_duplicate_case_differing_expr) <<
-                 (PrevString.empty() ? CaseValStr.str() : PrevString) <<
-                 (CurrString.empty() ? CaseValStr.str() : CurrString) <<
+                 (PrevString.empty() ? StringRef(CaseValStr) : PrevString) <<
+                 (CurrString.empty() ? StringRef(CaseValStr) : CurrString) <<
                  CaseValStr;
 
           Diag(CaseVals[i-1].second->getLHS()->getLocStart(),
@@ -1023,8 +1055,6 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
     // If switch has default case, then ignore it.
     if (!CaseListIsErroneous  && !HasConstantCond && ET) {
       const EnumDecl *ED = ET->getDecl();
-      typedef SmallVector<std::pair<llvm::APSInt, EnumConstantDecl*>, 64>
-        EnumValsTy;
       EnumValsTy EnumVals;
 
       // Gather all enum values, set their type and sort them,
@@ -1035,57 +1065,48 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
         EnumVals.push_back(std::make_pair(Val, EDI));
       }
       std::stable_sort(EnumVals.begin(), EnumVals.end(), CmpEnumVals);
-      EnumValsTy::iterator EIend =
+      auto EI = EnumVals.begin(), EIEnd =
         std::unique(EnumVals.begin(), EnumVals.end(), EqEnumVals);
 
       // See which case values aren't in enum.
-      EnumValsTy::const_iterator EI = EnumVals.begin();
       for (CaseValsTy::const_iterator CI = CaseVals.begin();
-           CI != CaseVals.end(); CI++) {
-        while (EI != EIend && EI->first < CI->first)
-          EI++;
-        if (EI == EIend || EI->first > CI->first) {
-          Expr *CaseExpr = CI->second->getLHS();
-          if (ShouldDiagnoseSwitchCaseNotInEnum(Context, ED, CaseExpr))
-            Diag(CaseExpr->getExprLoc(), diag::warn_not_in_enum)
-              << CondTypeBeforePromotion;
-        }
+          CI != CaseVals.end(); CI++) {
+        Expr *CaseExpr = CI->second->getLHS();
+        if (ShouldDiagnoseSwitchCaseNotInEnum(*this, ED, CaseExpr, EI, EIEnd,
+                                              CI->first))
+          Diag(CaseExpr->getExprLoc(), diag::warn_not_in_enum)
+            << CondTypeBeforePromotion;
       }
+
       // See which of case ranges aren't in enum
       EI = EnumVals.begin();
       for (CaseRangesTy::const_iterator RI = CaseRanges.begin();
-           RI != CaseRanges.end() && EI != EIend; RI++) {
-        while (EI != EIend && EI->first < RI->first)
-          EI++;
-
-        if (EI == EIend || EI->first != RI->first) {
-          Expr *CaseExpr = RI->second->getLHS();
-          if (ShouldDiagnoseSwitchCaseNotInEnum(Context, ED, CaseExpr))
-            Diag(CaseExpr->getExprLoc(), diag::warn_not_in_enum)
-              << CondTypeBeforePromotion;
-        }
+          RI != CaseRanges.end(); RI++) {
+        Expr *CaseExpr = RI->second->getLHS();
+        if (ShouldDiagnoseSwitchCaseNotInEnum(*this, ED, CaseExpr, EI, EIEnd,
+                                              RI->first))
+          Diag(CaseExpr->getExprLoc(), diag::warn_not_in_enum)
+            << CondTypeBeforePromotion;
 
         llvm::APSInt Hi =
           RI->second->getRHS()->EvaluateKnownConstInt(Context);
         AdjustAPSInt(Hi, CondWidth, CondIsSigned);
-        while (EI != EIend && EI->first < Hi)
-          EI++;
-        if (EI == EIend || EI->first != Hi) {
-          Expr *CaseExpr = RI->second->getRHS();
-          if (ShouldDiagnoseSwitchCaseNotInEnum(Context, ED, CaseExpr))
-            Diag(CaseExpr->getExprLoc(), diag::warn_not_in_enum)
-              << CondTypeBeforePromotion;
-        }
+
+        CaseExpr = RI->second->getRHS();
+        if (ShouldDiagnoseSwitchCaseNotInEnum(*this, ED, CaseExpr, EI, EIEnd,
+                                              Hi))
+          Diag(CaseExpr->getExprLoc(), diag::warn_not_in_enum)
+            << CondTypeBeforePromotion;
       }
 
       // Check which enum vals aren't in switch
-      CaseValsTy::const_iterator CI = CaseVals.begin();
-      CaseRangesTy::const_iterator RI = CaseRanges.begin();
+      auto CI = CaseVals.begin();
+      auto RI = CaseRanges.begin();
       bool hasCasesNotInSwitch = false;
 
       SmallVector<DeclarationName,8> UnhandledNames;
 
-      for (EI = EnumVals.begin(); EI != EIend; EI++){
+      for (EI = EnumVals.begin(); EI != EIEnd; EI++){
         // Drop unneeded case values
         while (CI != CaseVals.end() && CI->first < EI->first)
           CI++;
@@ -1172,30 +1193,37 @@ Sema::DiagnoseAssignmentEnum(QualType DstType, QualType SrcType,
         llvm::APSInt RhsVal = SrcExpr->EvaluateKnownConstInt(Context);
         AdjustAPSInt(RhsVal, DstWidth, DstIsSigned);
         const EnumDecl *ED = ET->getDecl();
-        typedef SmallVector<std::pair<llvm::APSInt, EnumConstantDecl *>, 64>
-            EnumValsTy;
-        EnumValsTy EnumVals;
 
-        // Gather all enum values, set their type and sort them,
-        // allowing easier comparison with rhs constant.
-        for (auto *EDI : ED->enumerators()) {
-          llvm::APSInt Val = EDI->getInitVal();
-          AdjustAPSInt(Val, DstWidth, DstIsSigned);
-          EnumVals.push_back(std::make_pair(Val, EDI));
-        }
-        if (EnumVals.empty())
-          return;
-        std::stable_sort(EnumVals.begin(), EnumVals.end(), CmpEnumVals);
-        EnumValsTy::iterator EIend =
-            std::unique(EnumVals.begin(), EnumVals.end(), EqEnumVals);
-
-        // See which values aren't in the enum.
-        EnumValsTy::const_iterator EI = EnumVals.begin();
-        while (EI != EIend && EI->first < RhsVal)
-          EI++;
-        if (EI == EIend || EI->first != RhsVal) {
-          Diag(SrcExpr->getExprLoc(), diag::warn_not_in_enum_assignment)
+        if (ED->hasAttr<FlagEnumAttr>()) {
+          if (!IsValueInFlagEnum(ED, RhsVal, true))
+            Diag(SrcExpr->getExprLoc(), diag::warn_not_in_enum_assignment)
               << DstType.getUnqualifiedType();
+        } else {
+          typedef SmallVector<std::pair<llvm::APSInt, EnumConstantDecl *>, 64>
+              EnumValsTy;
+          EnumValsTy EnumVals;
+
+          // Gather all enum values, set their type and sort them,
+          // allowing easier comparison with rhs constant.
+          for (auto *EDI : ED->enumerators()) {
+            llvm::APSInt Val = EDI->getInitVal();
+            AdjustAPSInt(Val, DstWidth, DstIsSigned);
+            EnumVals.push_back(std::make_pair(Val, EDI));
+          }
+          if (EnumVals.empty())
+            return;
+          std::stable_sort(EnumVals.begin(), EnumVals.end(), CmpEnumVals);
+          EnumValsTy::iterator EIend =
+              std::unique(EnumVals.begin(), EnumVals.end(), EqEnumVals);
+
+          // See which values aren't in the enum.
+          EnumValsTy::const_iterator EI = EnumVals.begin();
+          while (EI != EIend && EI->first < RhsVal)
+            EI++;
+          if (EI == EIend || EI->first != RhsVal) {
+            Diag(SrcExpr->getExprLoc(), diag::warn_not_in_enum_assignment)
+                << DstType.getUnqualifiedType();
+          }
         }
       }
     }
@@ -1654,11 +1682,16 @@ Sema::CheckObjCForCollectionOperand(SourceLocation forLoc, Expr *collection) {
   if (!collection)
     return ExprError();
 
+  ExprResult result = CorrectDelayedTyposInExpr(collection);
+  if (!result.isUsable())
+    return ExprError();
+  collection = result.get();
+
   // Bail out early if we've got a type-dependent expression.
   if (collection->isTypeDependent()) return collection;
 
   // Perform normal l-value conversion.
-  ExprResult result = DefaultFunctionArrayLvalueConversion(collection);
+  result = DefaultFunctionArrayLvalueConversion(collection);
   if (result.isInvalid())
     return ExprError();
   collection = result.get();
@@ -2395,6 +2428,14 @@ Sema::ActOnIndirectGotoStmt(SourceLocation GotoLoc, SourceLocation StarLoc,
   return new (Context) IndirectGotoStmt(GotoLoc, StarLoc, E);
 }
 
+static void CheckJumpOutOfSEHFinally(Sema &S, SourceLocation Loc,
+                                     const Scope &DestScope) {
+  if (!S.CurrentSEHFinally.empty() &&
+      DestScope.Contains(*S.CurrentSEHFinally.back())) {
+    S.Diag(Loc, diag::warn_jump_out_of_seh_finally);
+  }
+}
+
 StmtResult
 Sema::ActOnContinueStmt(SourceLocation ContinueLoc, Scope *CurScope) {
   Scope *S = CurScope->getContinueParent();
@@ -2402,6 +2443,7 @@ Sema::ActOnContinueStmt(SourceLocation ContinueLoc, Scope *CurScope) {
     // C99 6.8.6.2p1: A break shall appear only in or as a loop body.
     return StmtError(Diag(ContinueLoc, diag::err_continue_not_in_loop));
   }
+  CheckJumpOutOfSEHFinally(*this, ContinueLoc, *S);
 
   return new (Context) ContinueStmt(ContinueLoc);
 }
@@ -2416,6 +2458,7 @@ Sema::ActOnBreakStmt(SourceLocation BreakLoc, Scope *CurScope) {
   if (S->isOpenMPLoopScope())
     return StmtError(Diag(BreakLoc, diag::err_omp_loop_cannot_use_stmt)
                      << "break");
+  CheckJumpOutOfSEHFinally(*this, BreakLoc, *S);
 
   return new (Context) BreakStmt(BreakLoc);
 }
@@ -2447,7 +2490,7 @@ VarDecl *Sema::getCopyElisionCandidate(QualType ReturnType,
   // - in a return statement in a function [where] ...
   // ... the expression is the name of a non-volatile automatic object ...
   DeclRefExpr *DR = dyn_cast<DeclRefExpr>(E->IgnoreParens());
-  if (!DR || DR->refersToEnclosingLocal())
+  if (!DR || DR->refersToEnclosingVariableOrCapture())
     return nullptr;
   VarDecl *VD = dyn_cast<VarDecl>(DR->getDecl());
   if (!VD)
@@ -2615,8 +2658,12 @@ Sema::ActOnCapScopeReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
         return StmtError();
       RetValExp = Result.get();
 
+      // DR1048: even prior to C++14, we should use the 'auto' deduction rules
+      // when deducing a return type for a lambda-expression (or by extension
+      // for a block). These rules differ from the stated C++11 rules only in
+      // that they remove top-level cv-qualifiers.
       if (!CurContext->isDependentContext())
-        FnRetType = RetValExp->getType();
+        FnRetType = RetValExp->getType().getUnqualifiedType();
       else
         FnRetType = CurCap->ReturnType = Context.DependentTy;
     } else {
@@ -2871,6 +2918,8 @@ Sema::ActOnReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp,
     CurScope->setNoNRVO();
   }
 
+  CheckJumpOutOfSEHFinally(*this, ReturnLoc, *CurScope->getFnParent());
+
   return R;
 }
 
@@ -3003,14 +3052,26 @@ StmtResult Sema::BuildReturnStmt(SourceLocation ReturnLoc, Expr *RetValExp) {
 
     Result = new (Context) ReturnStmt(ReturnLoc, RetValExp, nullptr);
   } else if (!RetValExp && !HasDependentReturnType) {
-    unsigned DiagID = diag::warn_return_missing_expr;  // C90 6.6.6.4p4
-    // C99 6.8.6.4p1 (ext_ since GCC warns)
-    if (getLangOpts().C99) DiagID = diag::ext_return_missing_expr;
+    FunctionDecl *FD = getCurFunctionDecl();
 
-    if (FunctionDecl *FD = getCurFunctionDecl())
+    unsigned DiagID;
+    if (getLangOpts().CPlusPlus11 && FD && FD->isConstexpr()) {
+      // C++11 [stmt.return]p2
+      DiagID = diag::err_constexpr_return_missing_expr;
+      FD->setInvalidDecl();
+    } else if (getLangOpts().C99) {
+      // C99 6.8.6.4p1 (ext_ since GCC warns)
+      DiagID = diag::ext_return_missing_expr;
+    } else {
+      // C90 6.6.6.4p4
+      DiagID = diag::warn_return_missing_expr;
+    }
+
+    if (FD)
       Diag(ReturnLoc, DiagID) << FD->getIdentifier() << 0/*fn*/;
     else
       Diag(ReturnLoc, DiagID) << getCurMethodDecl()->getDeclName() << 1/*meth*/;
+
     Result = new (Context) ReturnStmt(ReturnLoc);
   } else {
     assert(RetValExp || HasDependentReturnType);
@@ -3135,7 +3196,7 @@ Sema::ActOnObjCAtThrowStmt(SourceLocation AtLoc, Expr *Throw,
     Diag(AtLoc, diag::err_objc_exceptions_disabled) << "@throw";
 
   if (!Throw) {
-    // @throw without an expression designates a rethrow (which much occur
+    // @throw without an expression designates a rethrow (which must occur
     // in the context of an @catch clause).
     Scope *AtCatchParent = CurScope;
     while (AtCatchParent && !AtCatchParent->isAtCatchScope())
@@ -3250,6 +3311,14 @@ StmtResult Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
   if (getCurScope() && getCurScope()->isOpenMPSimdDirectiveScope())
     Diag(TryLoc, diag::err_omp_simd_region_cannot_use_stmt) << "try";
 
+  sema::FunctionScopeInfo *FSI = getCurFunction();
+
+  // C++ try is incompatible with SEH __try.
+  if (!getLangOpts().Borland && FSI->FirstSEHTryLoc.isValid()) {
+    Diag(TryLoc, diag::err_mixing_cxx_try_seh_try);
+    Diag(FSI->FirstSEHTryLoc, diag::note_conflicting_try_here) << "'__try'";
+  }
+
   const unsigned NumHandlers = Handlers.size();
   assert(NumHandlers > 0 &&
          "The parser shouldn't call this if there are no handlers.");
@@ -3292,7 +3361,7 @@ StmtResult Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
     }
   }
 
-  getCurFunction()->setHasBranchProtectedScope();
+  FSI->setHasCXXTry(TryLoc);
 
   // FIXME: We should detect handlers that cannot catch anything because an
   // earlier handler catches a superclass. Need to find a method that is not
@@ -3303,16 +3372,35 @@ StmtResult Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
   return CXXTryStmt::Create(Context, TryLoc, TryBlock, Handlers);
 }
 
-StmtResult
-Sema::ActOnSEHTryBlock(bool IsCXXTry,
-                       SourceLocation TryLoc,
-                       Stmt *TryBlock,
-                       Stmt *Handler) {
+StmtResult Sema::ActOnSEHTryBlock(bool IsCXXTry, SourceLocation TryLoc,
+                                  Stmt *TryBlock, Stmt *Handler) {
   assert(TryBlock && Handler);
 
-  getCurFunction()->setHasBranchProtectedScope();
+  sema::FunctionScopeInfo *FSI = getCurFunction();
 
-  return SEHTryStmt::Create(Context,IsCXXTry,TryLoc,TryBlock,Handler);
+  // SEH __try is incompatible with C++ try. Borland appears to support this,
+  // however.
+  if (!getLangOpts().Borland) {
+    if (FSI->FirstCXXTryLoc.isValid()) {
+      Diag(TryLoc, diag::err_mixing_cxx_try_seh_try);
+      Diag(FSI->FirstCXXTryLoc, diag::note_conflicting_try_here) << "'try'";
+    }
+  }
+
+  FSI->setHasSEHTry(TryLoc);
+
+  // Reject __try in Obj-C methods, blocks, and captured decls, since we don't
+  // track if they use SEH.
+  DeclContext *DC = CurContext;
+  while (DC && !DC->isFunctionOrMethod())
+    DC = DC->getParent();
+  FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(DC);
+  if (FD)
+    FD->setUsesSEHTry(true);
+  else
+    Diag(TryLoc, diag::err_seh_try_outside_functions);
+
+  return SEHTryStmt::Create(Context, IsCXXTry, TryLoc, TryBlock, Handler);
 }
 
 StmtResult
@@ -3330,11 +3418,18 @@ Sema::ActOnSEHExceptBlock(SourceLocation Loc,
   return SEHExceptStmt::Create(Context,Loc,FilterExpr,Block);
 }
 
-StmtResult
-Sema::ActOnSEHFinallyBlock(SourceLocation Loc,
-                           Stmt *Block) {
+void Sema::ActOnStartSEHFinallyBlock() {
+  CurrentSEHFinally.push_back(CurScope);
+}
+
+void Sema::ActOnAbortSEHFinallyBlock() {
+  CurrentSEHFinally.pop_back();
+}
+
+StmtResult Sema::ActOnFinishSEHFinallyBlock(SourceLocation Loc, Stmt *Block) {
   assert(Block);
-  return SEHFinallyStmt::Create(Context,Loc,Block);
+  CurrentSEHFinally.pop_back();
+  return SEHFinallyStmt::Create(Context, Loc, Block);
 }
 
 StmtResult
@@ -3344,6 +3439,7 @@ Sema::ActOnSEHLeaveStmt(SourceLocation Loc, Scope *CurScope) {
     SEHTryParent = SEHTryParent->getParent();
   if (!SEHTryParent)
     return StmtError(Diag(Loc, diag::err_ms___leave_not_in___try));
+  CheckJumpOutOfSEHFinally(*this, Loc, *SEHTryParent);
 
   return new (Context) SEHLeaveStmt(Loc);
 }
@@ -3385,6 +3481,7 @@ Sema::CreateCapturedStmtRecordDecl(CapturedDecl *&CD, SourceLocation Loc,
   else
     RD = RecordDecl::Create(Context, TTK_Struct, DC, Loc, Loc, /*Id=*/nullptr);
 
+  RD->setCapturedRecord();
   DC->addDecl(RD);
   RD->setImplicit();
   RD->startDefinition();
@@ -3407,6 +3504,11 @@ static void buildCapturedStmtCaptureList(
       Captures.push_back(CapturedStmt::Capture(Cap->getLocation(),
                                                CapturedStmt::VCK_This));
       CaptureInits.push_back(Cap->getInitExpr());
+      continue;
+    } else if (Cap->isVLATypeCapture()) {
+      Captures.push_back(
+          CapturedStmt::Capture(Cap->getLocation(), CapturedStmt::VCK_VLAType));
+      CaptureInits.push_back(nullptr);
       continue;
     }
 

@@ -103,7 +103,7 @@ static bool EvaluateDefined(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
   }
 
   // If we don't have a pp-identifier now, this is an error.
-  if (PP.CheckMacroName(PeekTok, 0))
+  if (PP.CheckMacroName(PeekTok, MU_Other))
     return true;
 
   // Otherwise, we got an identifier, is it defined to something?
@@ -273,6 +273,7 @@ static bool EvaluateValue(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
   }
   case tok::char_constant:          // 'x'
   case tok::wide_char_constant:     // L'x'
+  case tok::utf8_char_constant:     // u8'x'
   case tok::utf16_char_constant:    // u'x'
   case tok::utf32_char_constant: {  // U'x'
     // Complain about, and drop, any ud-suffix.
@@ -309,7 +310,9 @@ static bool EvaluateValue(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
     // Set the value.
     Val = Literal.getValue();
     // Set the signedness. UTF-16 and UTF-32 are always unsigned
-    if (!Literal.isUTF16() && !Literal.isUTF32())
+    if (Literal.isWide())
+      Val.setIsUnsigned(!TargetInfo::isTypeSigned(TI.getWCharType()));
+    else if (!Literal.isUTF16() && !Literal.isUTF32())
       Val.setIsUnsigned(!PP.getLangOpts().CharIsSigned);
 
     if (Result.Val.getBitWidth() > Val.getBitWidth()) {

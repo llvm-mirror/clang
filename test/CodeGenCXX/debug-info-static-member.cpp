@@ -33,18 +33,91 @@ int main()
 // why the definition of "a" comes before the declarations while
 // "b" and "c" come after.
 
-// CHECK: metadata !"_ZTS1X"} ; [ DW_TAG_enumeration_type ] [X]
-// CHECK: metadata !"_ZTS1C"} ; [ DW_TAG_class_type ] [C]
-// CHECK: ![[DECL_A:[0-9]+]] = metadata {{.*}} [ DW_TAG_member ] [a] [line {{.*}}, size 0, align 0, offset 0] [static]
-// CHECK: metadata !"0xd\00const_a\00{{.*}}", {{.*}}, i1 true} ; [ DW_TAG_member ] [const_a] [line {{.*}}, size 0, align 0, offset 0] [static]
-// CHECK: ![[DECL_B:[0-9]+]] = metadata !{metadata !"0xd\00b\00{{.*}}", {{.*}} [ DW_TAG_member ] [b] [line {{.*}}, size 0, align 0, offset 0] [protected] [static]
-// CHECK: metadata !"0xd\00const_b\00{{.*}}", {{.*}}, float 0x{{.*}}} ; [ DW_TAG_member ] [const_b] [line {{.*}}, size 0, align 0, offset 0] [protected] [static]
-// CHECK: ![[DECL_C:[0-9]+]] = metadata !{metadata !"0xd\00c\00{{.*}}", {{.*}} [ DW_TAG_member ] [c] [line {{.*}}, size 0, align 0, offset 0] [public] [static]
-// CHECK: metadata !"0xd\00const_c\00{{.*}}", {{.*}} [ DW_TAG_member ] [const_c] [line {{.*}}, size 0, align 0, offset 0] [public] [static]
-// CHECK: metadata !"0xd\00x_a\00{{.*}}", {{.*}} [ DW_TAG_member ] [x_a] {{.*}} [public] [static]
-// CHECK: metadata !{metadata !"0x34\00a\00{{.*}}", {{.*}} @_ZN1C1aE, metadata ![[DECL_A]]} ; [ DW_TAG_variable ] [a] {{.*}} [def]
-// CHECK: metadata !{metadata !"0x34\00b\00{{.*}}", {{.*}} @_ZN1C1bE, metadata ![[DECL_B]]} ; [ DW_TAG_variable ] [b] {{.*}} [def]
-// CHECK: metadata !{metadata !"0x34\00c\00{{.*}}", {{.*}} @_ZN1C1cE, metadata ![[DECL_C]]} ; [ DW_TAG_variable ] [c] {{.*}} [def]
+// CHECK: !MDCompositeType(tag: DW_TAG_enumeration_type, name: "X"{{.*}}, identifier: "_ZTS1X")
+// CHECK: !MDCompositeType(tag: DW_TAG_class_type, name: "C"{{.*}}, identifier: "_ZTS1C")
+//
+// CHECK: ![[DECL_A:[0-9]+]] = !MDDerivedType(tag: DW_TAG_member, name: "a"
+// CHECK-NOT:                                 size:
+// CHECK-NOT:                                 align:
+// CHECK-NOT:                                 offset:
+// CHECK-SAME:                                flags: DIFlagStaticMember)
+//
+// CHECK: !MDDerivedType(tag: DW_TAG_member, name: "const_a"
+// CHECK-NOT:            size:
+// CHECK-NOT:            align:
+// CHECK-NOT:            offset:
+// CHECK-SAME:           flags: DIFlagStaticMember,
+// CHECK-SAME:           extraData: i1 true)
+//
+// CHECK: ![[DECL_B:[0-9]+]] = !MDDerivedType(tag: DW_TAG_member, name: "b"
+// CHECK-NOT:                                 size:
+// CHECK-NOT:                                 align:
+// CHECK-NOT:                                 offset:
+// CHECK-SAME:                                flags: DIFlagProtected | DIFlagStaticMember)
+//
+// CHECK: !MDDerivedType(tag: DW_TAG_member, name: "const_b"
+// CHECK-NOT:            size:
+// CHECK-NOT:            align:
+// CHECK-NOT:            offset:
+// CHECK-SAME:           flags: DIFlagProtected | DIFlagStaticMember,
+// CHECK-SAME:           extraData: float 0x{{.*}})
+//
+// CHECK: ![[DECL_C:[0-9]+]] = !MDDerivedType(tag: DW_TAG_member, name: "c"
+// CHECK-NOT:                                 size:
+// CHECK-NOT:                                 align:
+// CHECK-NOT:                                 offset:
+// CHECK-SAME:                                flags: DIFlagPublic | DIFlagStaticMember)
+//
+// CHECK: !MDDerivedType(tag: DW_TAG_member, name: "const_c"
+// CHECK-NOT:            size:
+// CHECK-NOT:            align:
+// CHECK-NOT:            offset:
+// CHECK-SAME:           flags: DIFlagPublic | DIFlagStaticMember,
+// CHECK-SAME:           extraData: i32 18)
+//
+// CHECK: !MDDerivedType(tag: DW_TAG_member, name: "x_a"
+// CHECK-SAME:           flags: DIFlagPublic | DIFlagStaticMember)
+
+// CHECK: !MDCompositeType(tag: DW_TAG_structure_type, name: "static_decl_templ<int>"
+// CHECK-NOT:              DIFlagFwdDecl
+// CHECK-SAME:             ){{$}}
+// CHECK: !MDDerivedType(tag: DW_TAG_member, name: "static_decl_templ_var"
+
+// CHECK: [[NS_X:![0-9]+]] = !MDNamespace(name: "x"
+
+// Test this in an anonymous namespace to ensure the type is retained even when
+// it doesn't get automatically retained by the string type reference machinery.
+namespace {
+struct anon_static_decl_struct {
+  static const int anon_static_decl_var = 117;
+};
+}
+
+
+// CHECK: !MDCompositeType(tag: DW_TAG_structure_type, name: "anon_static_decl_struct"
+// CHECK: !MDDerivedType(tag: DW_TAG_member, name: "anon_static_decl_var"
+
+int ref() {
+  return anon_static_decl_struct::anon_static_decl_var;
+}
+
+template<typename T>
+struct static_decl_templ {
+  static const int static_decl_templ_var = 7;
+};
+
+template<typename T>
+const int static_decl_templ<T>::static_decl_templ_var;
+
+int static_decl_templ_ref() {
+  return static_decl_templ<int>::static_decl_templ_var;
+}
+
+// CHECK: !MDGlobalVariable(name: "a", {{.*}}variable: i32* @_ZN1C1aE, declaration: ![[DECL_A]])
+// CHECK: !MDGlobalVariable(name: "b", {{.*}}variable: i32* @_ZN1C1bE, declaration: ![[DECL_B]])
+// CHECK: !MDGlobalVariable(name: "c", {{.*}}variable: i32* @_ZN1C1cE, declaration: ![[DECL_C]])
+
+// CHECK-NOT: !MDGlobalVariable(name: "anon_static_decl_var"
 
 // Verify that even when a static member declaration is created lazily when
 // creating the definition, the declaration line is that of the canonical
@@ -55,5 +128,17 @@ struct V {
   virtual ~V(); // cause the definition of 'V' to be omitted by no-standalone-debug optimization
   static const int const_va = 42;
 };
-// CHECK: i32 42} ; [ DW_TAG_member ] [const_va] [line [[@LINE-2]],
+// CHECK: !MDDerivedType(tag: DW_TAG_member, name: "const_va",
+// CHECK-SAME:           line: [[@LINE-3]]
+// CHECK-SAME:           extraData: i32 42
 const int V::const_va;
+
+namespace x {
+struct y {
+  static int z;
+};
+int y::z;
+}
+
+// CHECK: !MDGlobalVariable(name: "z",
+// CHECK-SAME:              scope: [[NS_X]]

@@ -1,11 +1,11 @@
-// RUN: %clang_cc1 -fsyntax-only -verify -Wno-objc-root-class %s
-// RUN: %clang_cc1 -x objective-c++ -fsyntax-only -verify -Wno-objc-root-class %s
+// RUN: %clang_cc1 -fsyntax-only -triple x86_64-apple-darwin10.4 -verify -Wno-objc-root-class %s
+// RUN: %clang_cc1 -x objective-c++ -fsyntax-only -triple x86_64-apple-darwin10.4 -verify -Wno-objc-root-class %s
 
 @interface A {
   int X __attribute__((deprecated)); // expected-note 2 {{'X' has been explicitly marked deprecated here}}
 }
 + (void)F __attribute__((deprecated)); // expected-note 2 {{'F' has been explicitly marked deprecated here}}
-- (void)f __attribute__((deprecated)); // expected-note 4 {{'f' has been explicitly marked deprecated here}}
+- (void)f __attribute__((deprecated)); // expected-note 5 {{'f' has been explicitly marked deprecated here}}
 @end
 
 @implementation A
@@ -54,7 +54,7 @@ void t1(A *a)
 
 void t2(id a)
 {
-  [a f];
+  [a f]; // expected-warning {{'f' is deprecated}}
 }
 
 void t3(A<P>* a)
@@ -228,3 +228,70 @@ expected-note {{property declared here}}
 
 @end
 
+// rdar://18848183
+@interface NSString
+- (const char *)cString __attribute__((availability(macosx,introduced=10.0 ,deprecated=10.4,message="" ))); // expected-note {{'cString' has been explicitly marked deprecated here}}
+@end
+
+id PID = 0;
+const char * func() {
+  return [PID cString]; // expected-warning {{'cString' is deprecated: first deprecated in OS X 10.4}}
+}
+
+// rdar://18960378
+@interface NSObject
++ (instancetype)alloc;
+- (instancetype)init;
+@end
+
+@interface NSLocale
+- (instancetype)init __attribute__((unavailable));
+@end
+
+@interface PLBatteryProperties : NSObject
++ (id)properties;
+@end
+
+@implementation PLBatteryProperties
++ (id)properties {
+    return [[self alloc] init];
+}
+@end
+
+@implementation UndeclaredImpl // expected-warning{{cannot find interface declaration}}
+- (void)partiallyUnavailableMethod {}
+@end
+
+@interface InterfaceWithSameMethodAsUndeclaredImpl
+- (void)partiallyUnavailableMethod __attribute__((unavailable));
+@end
+
+void f(id a) {
+  [a partiallyUnavailableMethod]; // no warning, `a` could be an UndeclaredImpl.
+}
+
+@interface InterfaceWithImplementation
+- (void)anotherPartiallyUnavailableMethod;
+@end
+@implementation InterfaceWithImplementation
+- (void)anotherPartiallyUnavailableMethod {}
+@end
+
+@interface InterfaceWithSameMethodAsInterfaceWithImplementation
+- (void)anotherPartiallyUnavailableMethod __attribute__((unavailable));
+@end
+
+void g(id a) {
+  [a anotherPartiallyUnavailableMethod]; // no warning, `a` could be an InterfaceWithImplementation.
+}
+
+typedef struct {} S1 __attribute__((unavailable)); // expected-note2{{marked unavailable here}}
+typedef struct {} S2 __attribute__((deprecated)); // expected-note2{{marked deprecated here}}
+@interface ExtensionForMissingInterface() // expected-error{{cannot find interface declaration}}
+- (void)method1:(S1) x; // expected-error{{is unavailable}}
+- (void)method2:(S2) x; // expected-warning{{is deprecated}}
+@end
+@interface CategoryForMissingInterface(Cat) // expected-error{{cannot find interface declaration}}
+- (void)method1:(S1) x; // expected-error{{is unavailable}}
+- (void)method2:(S2) x; // expected-warning{{is deprecated}}
+@end

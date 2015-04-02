@@ -249,27 +249,16 @@ namespace {
     void HandleTranslationUnit(ASTContext &C) override;
 
     void ReplaceStmt(Stmt *Old, Stmt *New) {
-      Stmt *ReplacingStmt = ReplacedNodes[Old];
-
-      if (ReplacingStmt)
-        return; // We can't rewrite the same node twice.
-
-      if (DisableReplaceStmt)
-        return;
-
-      // If replacement succeeded or warning disabled return with no warning.
-      if (!Rewrite.ReplaceStmt(Old, New)) {
-        ReplacedNodes[Old] = New;
-        return;
-      }
-      if (SilenceRewriteMacroWarning)
-        return;
-      Diags.Report(Context->getFullLoc(Old->getLocStart()), RewriteFailedDiag)
-                   << Old->getSourceRange();
+      ReplaceStmtWithRange(Old, New, Old->getSourceRange());
     }
 
     void ReplaceStmtWithRange(Stmt *Old, Stmt *New, SourceRange SrcRange) {
       assert(Old != nullptr && New != nullptr && "Expected non-null Stmt's");
+
+      Stmt *ReplacingStmt = ReplacedNodes[Old];
+      if (ReplacingStmt)
+        return; // We can't rewrite the same node twice.
+
       if (DisableReplaceStmt)
         return;
 
@@ -900,9 +889,9 @@ RewriteModernObjC::getIvarAccessString(ObjCIvarDecl *D) {
                                         IvarT, nullptr,
                                         /*BitWidth=*/nullptr, /*Mutable=*/true,
                                         ICIS_NoInit);
-      MemberExpr *ME = new (Context) MemberExpr(PE, true, FD, SourceLocation(),
-                                                FD->getType(), VK_LValue,
-                                                OK_Ordinary);
+      MemberExpr *ME = new (Context)
+          MemberExpr(PE, true, SourceLocation(), FD, SourceLocation(),
+                     FD->getType(), VK_LValue, OK_Ordinary);
       IvarT = Context->getDecltypeType(ME, ME->getType());
     }
   }
@@ -2778,11 +2767,9 @@ Stmt *RewriteModernObjC::RewriteObjCArrayLiteralExpr(ObjCArrayLiteral *Exp) {
                                     Context->getPointerType(Context->VoidPtrTy),
                                     nullptr, /*BitWidth=*/nullptr,
                                     /*Mutable=*/true, ICIS_NoInit);
-  MemberExpr *ArrayLiteralME = 
-    new (Context) MemberExpr(NSArrayCallExpr, false, ARRFD, 
-                             SourceLocation(),
-                             ARRFD->getType(), VK_LValue,
-                             OK_Ordinary);
+  MemberExpr *ArrayLiteralME = new (Context)
+      MemberExpr(NSArrayCallExpr, false, SourceLocation(), ARRFD,
+                 SourceLocation(), ARRFD->getType(), VK_LValue, OK_Ordinary);
   QualType ConstIdT = Context->getObjCIdType().withConst();
   CStyleCastExpr * ArrayLiteralObjects = 
     NoTypeInfoCStyleCastExpr(Context, 
@@ -2915,11 +2902,9 @@ Stmt *RewriteModernObjC::RewriteObjCDictionaryLiteralExpr(ObjCDictionaryLiteral 
                                        Context->getPointerType(Context->VoidPtrTy),
                                        nullptr, /*BitWidth=*/nullptr,
                                        /*Mutable=*/true, ICIS_NoInit);
-  MemberExpr *DictLiteralValueME = 
-    new (Context) MemberExpr(NSValueCallExpr, false, ARRFD, 
-                             SourceLocation(),
-                             ARRFD->getType(), VK_LValue,
-                             OK_Ordinary);
+  MemberExpr *DictLiteralValueME = new (Context)
+      MemberExpr(NSValueCallExpr, false, SourceLocation(), ARRFD,
+                 SourceLocation(), ARRFD->getType(), VK_LValue, OK_Ordinary);
   QualType ConstIdT = Context->getObjCIdType().withConst();
   CStyleCastExpr * DictValueObjects = 
     NoTypeInfoCStyleCastExpr(Context, 
@@ -2930,13 +2915,11 @@ Stmt *RewriteModernObjC::RewriteObjCDictionaryLiteralExpr(ObjCDictionaryLiteral 
   Expr *NSKeyCallExpr = 
     new (Context) CallExpr(*Context, NSDictDRE, KeyExprs,
                            NSDictFType, VK_LValue, SourceLocation());
-  
-  MemberExpr *DictLiteralKeyME = 
-    new (Context) MemberExpr(NSKeyCallExpr, false, ARRFD, 
-                             SourceLocation(),
-                             ARRFD->getType(), VK_LValue,
-                             OK_Ordinary);
-  
+
+  MemberExpr *DictLiteralKeyME = new (Context)
+      MemberExpr(NSKeyCallExpr, false, SourceLocation(), ARRFD,
+                 SourceLocation(), ARRFD->getType(), VK_LValue, OK_Ordinary);
+
   CStyleCastExpr * DictKeyObjects = 
     NoTypeInfoCStyleCastExpr(Context, 
                              Context->getPointerType(ConstIdT),
@@ -3245,9 +3228,9 @@ Expr *RewriteModernObjC::SynthMsgSendStretCallExpr(FunctionDecl *MsgSendStretFla
                                     returnType, nullptr,
                                     /*BitWidth=*/nullptr,
                                     /*Mutable=*/true, ICIS_NoInit);
-  MemberExpr *ME = new (Context) MemberExpr(STCE, false, FieldD, SourceLocation(),
-                                            FieldD->getType(), VK_LValue,
-                                            OK_Ordinary);
+  MemberExpr *ME = new (Context)
+      MemberExpr(STCE, false, SourceLocation(), FieldD, SourceLocation(),
+                 FieldD->getType(), VK_LValue, OK_Ordinary);
 
   return ME;
 }
@@ -4052,7 +4035,7 @@ void RewriteModernObjC::RewriteObjCInternalStruct(ObjCInterfaceDecl *CDecl,
   endBuf += Lexer::MeasureTokenLength(LocEnd, *SM, LangOpts);
   ReplaceText(LocStart, endBuf-startBuf, Result);
   // Mark this struct as having been generated.
-  if (!ObjCSynthesizedStructs.insert(CDecl))
+  if (!ObjCSynthesizedStructs.insert(CDecl).second)
     llvm_unreachable("struct already synthesize- RewriteObjCInternalStruct");
 }
 
@@ -4574,16 +4557,12 @@ void RewriteModernObjC::GetBlockDeclRefExprs(Stmt *S) {
         GetBlockDeclRefExprs(*CI);
     }
   // Handle specific things.
-  if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
-    if (DRE->refersToEnclosingLocal()) {
+  if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S))
+    if (DRE->refersToEnclosingVariableOrCapture() ||
+        HasLocalVariableExternalStorage(DRE->getDecl()))
       // FIXME: Handle enums.
-      if (!isa<FunctionDecl>(DRE->getDecl()))
-        BlockDeclRefs.push_back(DRE);
-      if (HasLocalVariableExternalStorage(DRE->getDecl()))
-        BlockDeclRefs.push_back(DRE);
-    }
-  }
-  
+      BlockDeclRefs.push_back(DRE);
+
   return;
 }
 
@@ -4606,11 +4585,11 @@ void RewriteModernObjC::GetInnerBlockDeclRefExprs(Stmt *S,
     }
   // Handle specific things.
   if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(S)) {
-    if (DRE->refersToEnclosingLocal()) {
-      if (!isa<FunctionDecl>(DRE->getDecl()) &&
-          !InnerContexts.count(DRE->getDecl()->getDeclContext()))
+    if (DRE->refersToEnclosingVariableOrCapture() ||
+        HasLocalVariableExternalStorage(DRE->getDecl())) {
+      if (!InnerContexts.count(DRE->getDecl()->getDeclContext()))
         InnerBlockDeclRefs.push_back(DRE);
-      if (VarDecl *Var = dyn_cast<VarDecl>(DRE->getDecl()))
+      if (VarDecl *Var = cast<VarDecl>(DRE->getDecl()))
         if (Var->isFunctionOrMethodVarDecl())
           ImportedLocalExternalDecls.insert(Var);
     }
@@ -4747,11 +4726,10 @@ Stmt *RewriteModernObjC::SynthesizeBlockCall(CallExpr *Exp, const Expr *BlockExp
                                     Context->VoidPtrTy, nullptr,
                                     /*BitWidth=*/nullptr, /*Mutable=*/true,
                                     ICIS_NoInit);
-  MemberExpr *ME = new (Context) MemberExpr(PE, true, FD, SourceLocation(),
-                                            FD->getType(), VK_LValue,
-                                            OK_Ordinary);
+  MemberExpr *ME =
+      new (Context) MemberExpr(PE, true, SourceLocation(), FD, SourceLocation(),
+                               FD->getType(), VK_LValue, OK_Ordinary);
 
-  
   CastExpr *FunkCast = NoTypeInfoCStyleCastExpr(Context, PtrToFuncCastType,
                                                 CK_BitCast, ME);
   PE = new (Context) ParenExpr(SourceLocation(), SourceLocation(), FunkCast);
@@ -4787,7 +4765,8 @@ Stmt *RewriteModernObjC::RewriteBlockDeclRefExpr(DeclRefExpr *DeclRefExp) {
   // Rewrite the byref variable into BYREFVAR->__forwarding->BYREFVAR 
   // for each DeclRefExp where BYREFVAR is name of the variable.
   ValueDecl *VD = DeclRefExp->getDecl();
-  bool isArrow = DeclRefExp->refersToEnclosingLocal();
+  bool isArrow = DeclRefExp->refersToEnclosingVariableOrCapture() ||
+                 HasLocalVariableExternalStorage(DeclRefExp->getDecl());
 
   FieldDecl *FD = FieldDecl::Create(*Context, nullptr, SourceLocation(),
                                     SourceLocation(),
@@ -4795,10 +4774,9 @@ Stmt *RewriteModernObjC::RewriteBlockDeclRefExpr(DeclRefExpr *DeclRefExp) {
                                     Context->VoidPtrTy, nullptr,
                                     /*BitWidth=*/nullptr, /*Mutable=*/true,
                                     ICIS_NoInit);
-  MemberExpr *ME = new (Context) MemberExpr(DeclRefExp, isArrow,
-                                            FD, SourceLocation(),
-                                            FD->getType(), VK_LValue,
-                                            OK_Ordinary);
+  MemberExpr *ME = new (Context)
+      MemberExpr(DeclRefExp, isArrow, SourceLocation(), FD, SourceLocation(),
+                 FD->getType(), VK_LValue, OK_Ordinary);
 
   StringRef Name = VD->getName();
   FD = FieldDecl::Create(*Context, nullptr, SourceLocation(), SourceLocation(),
@@ -4806,11 +4784,10 @@ Stmt *RewriteModernObjC::RewriteBlockDeclRefExpr(DeclRefExpr *DeclRefExp) {
                          Context->VoidPtrTy, nullptr,
                          /*BitWidth=*/nullptr, /*Mutable=*/true,
                          ICIS_NoInit);
-  ME = new (Context) MemberExpr(ME, true, FD, SourceLocation(),
-                                DeclRefExp->getType(), VK_LValue, OK_Ordinary);
-  
-  
-  
+  ME =
+      new (Context) MemberExpr(ME, true, SourceLocation(), FD, SourceLocation(),
+                               DeclRefExp->getType(), VK_LValue, OK_Ordinary);
+
   // Need parens to enforce precedence.
   ParenExpr *PE = new (Context) ParenExpr(DeclRefExp->getExprLoc(), 
                                           DeclRefExp->getExprLoc(), 
@@ -5537,6 +5514,10 @@ Stmt *RewriteModernObjC::SynthBlockInitExpr(BlockExpr *Exp,
                              VK_RValue, OK_Ordinary, SourceLocation());
   NewRep = NoTypeInfoCStyleCastExpr(Context, FType, CK_BitCast,
                                     NewRep);
+  // Put Paren around the call.
+  NewRep = new (Context) ParenExpr(SourceLocation(), SourceLocation(),
+                                   NewRep);
+  
   BlockDeclRefs.clear();
   BlockByRefDecls.clear();
   BlockByRefDeclsPtrSet.clear();
@@ -7112,7 +7093,7 @@ void RewriteModernObjC::RewriteObjCProtocolMetaData(ObjCProtocolDecl *PDecl,
   Result += ";\n";
     
   // Mark this protocol as having been generated.
-  if (!ObjCSynthesizedProtocols.insert(PDecl->getCanonicalDecl()))
+  if (!ObjCSynthesizedProtocols.insert(PDecl->getCanonicalDecl()).second)
     llvm_unreachable("protocol already synthesized");
   
 }
@@ -7704,9 +7685,9 @@ Stmt *RewriteModernObjC::RewriteObjCIvarRefExpr(ObjCIvarRefExpr *IV) {
                                             IvarT, nullptr,
                                             /*BitWidth=*/nullptr,
                                             /*Mutable=*/true, ICIS_NoInit);
-          MemberExpr *ME = new (Context) MemberExpr(PE, true, FD, SourceLocation(),
-                                                    FD->getType(), VK_LValue,
-                                                    OK_Ordinary);
+          MemberExpr *ME = new (Context)
+              MemberExpr(PE, true, SourceLocation(), FD, SourceLocation(),
+                         FD->getType(), VK_LValue, OK_Ordinary);
           IvarT = Context->getDecltypeType(ME, ME->getType());
         }
       }
@@ -7733,9 +7714,9 @@ Stmt *RewriteModernObjC::RewriteObjCIvarRefExpr(ObjCIvarRefExpr *IV) {
                                           D->getType(), nullptr,
                                           /*BitWidth=*/D->getBitWidth(),
                                           /*Mutable=*/true, ICIS_NoInit);
-        MemberExpr *ME = new (Context) MemberExpr(PE, /*isArrow*/false, FD, SourceLocation(),
-                                                  FD->getType(), VK_LValue,
-                                                  OK_Ordinary);
+        MemberExpr *ME = new (Context)
+            MemberExpr(PE, /*isArrow*/ false, SourceLocation(), FD,
+                       SourceLocation(), FD->getType(), VK_LValue, OK_Ordinary);
         Replacement = ME;
 
       }

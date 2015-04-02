@@ -73,8 +73,8 @@ class IdentifierInfo {
   void *FETokenInfo;               // Managed by the language front-end.
   llvm::StringMapEntry<IdentifierInfo*> *Entry;
 
-  IdentifierInfo(const IdentifierInfo&) LLVM_DELETED_FUNCTION;
-  void operator=(const IdentifierInfo&) LLVM_DELETED_FUNCTION;
+  IdentifierInfo(const IdentifierInfo&) = delete;
+  void operator=(const IdentifierInfo&) = delete;
 
   friend class IdentifierTable;
   
@@ -249,6 +249,9 @@ public:
   }
   bool isCPlusPlusOperatorKeyword() const { return IsCPPOperatorKeyword; }
 
+  /// \brief Return true if this token is a keyword in the specified language.
+  bool isKeyword(const LangOptions &LangOpts);
+
   /// getFETokenInfo/setFETokenInfo - The language front-end is allowed to
   /// associate arbitrary metadata with this token.
   template<typename T>
@@ -305,7 +308,12 @@ public:
     else
       RecomputeNeedsHandleIdentifier();
   }
-  
+
+  /// \brief Provide less than operator for lexicographical sorting.
+  bool operator<(const IdentifierInfo &RHS) const {
+    return getName() < RHS.getName();
+  }
+
 private:
   /// The Preprocessor::HandleIdentifier does several special (but rare)
   /// things to identifiers of various sorts.  For example, it changes the
@@ -353,8 +361,8 @@ public:
 /// actual functionality.
 class IdentifierIterator {
 private:
-  IdentifierIterator(const IdentifierIterator &) LLVM_DELETED_FUNCTION;
-  void operator=(const IdentifierIterator &) LLVM_DELETED_FUNCTION;
+  IdentifierIterator(const IdentifierIterator &) = delete;
+  void operator=(const IdentifierIterator &) = delete;
 
 protected:
   IdentifierIterator() { }
@@ -444,26 +452,21 @@ public:
   /// \brief Return the identifier token info for the specified named
   /// identifier.
   IdentifierInfo &get(StringRef Name) {
-    llvm::StringMapEntry<IdentifierInfo*> &Entry =
-      HashTable.GetOrCreateValue(Name);
+    auto &Entry = *HashTable.insert(std::make_pair(Name, nullptr)).first;
 
-    IdentifierInfo *II = Entry.getValue();
+    IdentifierInfo *&II = Entry.second;
     if (II) return *II;
 
     // No entry; if we have an external lookup, look there first.
     if (ExternalLookup) {
       II = ExternalLookup->get(Name);
-      if (II) {
-        // Cache in the StringMap for subsequent lookups.
-        Entry.setValue(II);
+      if (II)
         return *II;
-      }
     }
 
     // Lookups failed, make a new IdentifierInfo.
     void *Mem = getAllocator().Allocate<IdentifierInfo>();
     II = new (Mem) IdentifierInfo();
-    Entry.setValue(II);
 
     // Make sure getName() knows how to find the IdentifierInfo
     // contents.
@@ -486,25 +489,23 @@ public:
   /// introduce or modify an identifier. If they called get(), they would
   /// likely end up in a recursion.
   IdentifierInfo &getOwn(StringRef Name) {
-    llvm::StringMapEntry<IdentifierInfo*> &Entry =
-      HashTable.GetOrCreateValue(Name);
+    auto &Entry = *HashTable.insert(std::make_pair(Name, nullptr)).first;
 
-    IdentifierInfo *II = Entry.getValue();
-    if (!II) {
+    IdentifierInfo *&II = Entry.second;
+    if (II)
+      return *II;
 
-      // Lookups failed, make a new IdentifierInfo.
-      void *Mem = getAllocator().Allocate<IdentifierInfo>();
-      II = new (Mem) IdentifierInfo();
-      Entry.setValue(II);
+    // Lookups failed, make a new IdentifierInfo.
+    void *Mem = getAllocator().Allocate<IdentifierInfo>();
+    II = new (Mem) IdentifierInfo();
 
-      // Make sure getName() knows how to find the IdentifierInfo
-      // contents.
-      II->Entry = &Entry;
-      
-      // If this is the 'import' contextual keyword, mark it as such.
-      if (Name.equals("import"))
-        II->setModulesImport(true);
-    }
+    // Make sure getName() knows how to find the IdentifierInfo
+    // contents.
+    II->Entry = &Entry;
+
+    // If this is the 'import' contextual keyword, mark it as such.
+    if (Name.equals("import"))
+      II->setModulesImport(true);
 
     return *II;
   }
@@ -731,8 +732,8 @@ public:
 /// multi-keyword caching.
 class SelectorTable {
   void *Impl;  // Actually a SelectorTableImpl
-  SelectorTable(const SelectorTable &) LLVM_DELETED_FUNCTION;
-  void operator=(const SelectorTable &) LLVM_DELETED_FUNCTION;
+  SelectorTable(const SelectorTable &) = delete;
+  void operator=(const SelectorTable &) = delete;
 public:
   SelectorTable();
   ~SelectorTable();

@@ -94,10 +94,10 @@ private:
 
   /// The number of expression arguments this attribute has.
   /// The expressions themselves are stored after the object.
-  unsigned NumArgs : 16;
+  unsigned NumArgs : 15;
 
   /// Corresponds to the Syntax enum.
-  unsigned SyntaxUsed : 2;
+  unsigned SyntaxUsed : 3;
 
   /// True if already diagnosed as invalid.
   mutable unsigned Invalid : 1;
@@ -204,10 +204,10 @@ private:
     return *reinterpret_cast<const PropertyData*>(this + 1);
   }
 
-  AttributeList(const AttributeList &) LLVM_DELETED_FUNCTION;
-  void operator=(const AttributeList &) LLVM_DELETED_FUNCTION;
-  void operator delete(void *) LLVM_DELETED_FUNCTION;
-  ~AttributeList() LLVM_DELETED_FUNCTION;
+  AttributeList(const AttributeList &) = delete;
+  void operator=(const AttributeList &) = delete;
+  void operator delete(void *) = delete;
+  ~AttributeList() = delete;
 
   size_t allocated_size() const;
 
@@ -670,7 +670,7 @@ public:
     : pool(factory), list(nullptr) {
   }
 
-  ParsedAttributes(const ParsedAttributes &) LLVM_DELETED_FUNCTION;
+  ParsedAttributes(const ParsedAttributes &) = delete;
 
   AttributePool &getPool() const { return pool; }
 
@@ -822,6 +822,7 @@ enum AttributeDeclKind {
   ExpectedFunctionMethodOrClass,
   ExpectedFunctionMethodOrParameter,
   ExpectedClass,
+  ExpectedEnum,
   ExpectedVariable,
   ExpectedMethod,
   ExpectedVariableFunctionOrLabel,
@@ -842,8 +843,10 @@ enum AttributeDeclKind {
   ExpectedFunctionVariableOrClass,
   ExpectedObjectiveCProtocol,
   ExpectedFunctionGlobalVarMethodOrProperty,
+  ExpectedStructOrUnionOrTypedef,
   ExpectedStructOrTypedef,
-  ExpectedObjectiveCInterfaceOrProtocol
+  ExpectedObjectiveCInterfaceOrProtocol,
+  ExpectedKernelFunction
 };
 
 }  // end namespace clang

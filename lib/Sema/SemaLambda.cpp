@@ -617,7 +617,7 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
   // If it was ever a placeholder, it had to been deduced to DependentTy.
   assert(CSI.ReturnType.isNull() || !CSI.ReturnType->isUndeducedType()); 
 
-  // C++ Core Issue #975, proposed resolution:
+  // C++ core issue 975:
   //   If a lambda-expression does not include a trailing-return-type,
   //   it is as if the trailing-return-type denotes the following type:
   //     - if there are no return statements in the compound-statement,
@@ -630,6 +630,10 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
   //       function-to-pointer conversion (4.3 [conv.func]) are the
   //       same, that common type;
   //     - otherwise, the program is ill-formed.
+  //
+  // C++ core issue 1048 additionally removes top-level cv-qualifiers
+  // from the types of returned expressions to match the C++14 auto
+  // deduction rules.
   //
   // In addition, in blocks in non-C++ modes, if all of the return
   // statements are enumerator-like expressions of some type T, where
@@ -679,7 +683,8 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
     const ReturnStmt *RS = *I;
     const Expr *RetE = RS->getRetValue();
 
-    QualType ReturnType = (RetE ? RetE->getType() : Context.VoidTy);
+    QualType ReturnType =
+        (RetE ? RetE->getType() : Context.VoidTy).getUnqualifiedType();
     if (Context.hasSameType(ReturnType, CSI.ReturnType))
       continue;
 
@@ -1049,8 +1054,8 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
       if (R.empty()) {
         // FIXME: Disable corrections that would add qualification?
         CXXScopeSpec ScopeSpec;
-        DeclFilterCCC<VarDecl> Validator;
-        if (DiagnoseEmptyLookup(CurScope, ScopeSpec, R, Validator))
+        if (DiagnoseEmptyLookup(CurScope, ScopeSpec, R,
+                                llvm::make_unique<DeclFilterCCC<VarDecl>>()))
           continue;
       }
 
@@ -1062,7 +1067,7 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
     // C++11 [expr.prim.lambda]p8:
     //   An identifier or this shall not appear more than once in a
     //   lambda-capture.
-    if (!CaptureNames.insert(C->Id)) {
+    if (!CaptureNames.insert(C->Id).second) {
       if (Var && LSI->isCaptured(Var)) {
         Diag(C->Loc, diag::err_capture_more_than_once)
             << C->Id << SourceRange(LSI->getCapture(Var).getLocation())

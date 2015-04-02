@@ -116,7 +116,6 @@ TOK(eof)                 // End of file.
 TOK(eod)                 // End of preprocessing directive (end of line inside a
                          // directive).
 TOK(code_completion)     // Code completion marker
-TOK(cxx_defaultarg_end)  // C++ default argument end marker
 
 // C99 6.4.9: Comments.
 TOK(comment)             // Comment (only in -E -C[C] mode)
@@ -132,6 +131,9 @@ TOK(numeric_constant)    // 0x123
 // C99 6.4.4: Character Constants
 TOK(char_constant)       // 'a'
 TOK(wide_char_constant)  // L'b'
+
+// C++1z Character Constants
+TOK(utf8_char_constant)  // u8'a'
 
 // C++11 Character Constants
 TOK(utf16_char_constant) // u'a'
@@ -223,9 +225,10 @@ PUNCTUATOR(greatergreatergreater, ">>>")
 //   KEYCXX11 - This is a C++ keyword introduced to C++ in C++11
 //   KEYGNU   - This is a keyword if GNU extensions are enabled
 //   KEYMS    - This is a keyword if Microsoft extensions are enabled
-//   KEYNOMS  - This is a keyword that must never be enabled under
-//              Microsoft mode
+//   KEYNOMS18 - This is a keyword that must never be enabled under
+//               MSVC <= v18.
 //   KEYOPENCL  - This is a keyword in OpenCL
+//   KEYNOOPENCL  - This is a keyword that is not supported in OpenCL
 //   KEYALTIVEC - This is a keyword in AltiVec
 //   KEYBORLAND - This is a keyword if Borland extensions are enabled
 //   BOOLSUPPORT - This is a keyword if 'bool' is a built-in type
@@ -268,7 +271,7 @@ KEYWORD(volatile                    , KEYALL)
 KEYWORD(while                       , KEYALL)
 KEYWORD(_Alignas                    , KEYALL)
 KEYWORD(_Alignof                    , KEYALL)
-KEYWORD(_Atomic                     , KEYALL|KEYNOMS)
+KEYWORD(_Atomic                     , KEYALL|KEYNOMS18|KEYNOOPENCL)
 KEYWORD(_Bool                       , KEYNOCXX)
 KEYWORD(_Complex                    , KEYALL)
 KEYWORD(_Generic                    , KEYALL)
@@ -329,8 +332,8 @@ CXX_KEYWORD_OPERATOR(xor_eq  , caretequal)
 // C++11 keywords
 KEYWORD(alignas                     , KEYCXX11)
 KEYWORD(alignof                     , KEYCXX11)
-KEYWORD(char16_t                    , KEYCXX11|KEYNOMS)
-KEYWORD(char32_t                    , KEYCXX11|KEYNOMS)
+KEYWORD(char16_t                    , KEYCXX11|KEYNOMS18)
+KEYWORD(char32_t                    , KEYCXX11|KEYNOMS18)
 KEYWORD(constexpr                   , KEYCXX11)
 KEYWORD(decltype                    , KEYCXX11)
 KEYWORD(noexcept                    , KEYCXX11)
@@ -457,6 +460,7 @@ KEYWORD(__cdecl                     , KEYALL)
 KEYWORD(__stdcall                   , KEYALL)
 KEYWORD(__fastcall                  , KEYALL)
 KEYWORD(__thiscall                  , KEYALL)
+KEYWORD(__vectorcall                , KEYALL)
 KEYWORD(__forceinline               , KEYMS)
 KEYWORD(__unaligned                 , KEYMS)
 KEYWORD(__super                     , KEYMS)
@@ -466,10 +470,12 @@ KEYWORD(__global                    , KEYOPENCL)
 KEYWORD(__local                     , KEYOPENCL)
 KEYWORD(__constant                  , KEYOPENCL)
 KEYWORD(__private                   , KEYOPENCL)
+KEYWORD(__generic                   , KEYOPENCL)
 ALIAS("global", __global            , KEYOPENCL)
 ALIAS("local", __local              , KEYOPENCL)
 ALIAS("constant", __constant        , KEYOPENCL)
 ALIAS("private", __private          , KEYOPENCL)
+ALIAS("generic", __generic          , KEYOPENCL)
 // OpenCL function qualifiers
 KEYWORD(__kernel                    , KEYOPENCL)
 ALIAS("kernel", __kernel            , KEYOPENCL)
@@ -490,6 +496,7 @@ KEYWORD(__pascal                    , KEYALL)
 // Altivec Extension.
 KEYWORD(__vector                    , KEYALTIVEC)
 KEYWORD(__pixel                     , KEYALTIVEC)
+KEYWORD(__bool                      , KEYALTIVEC)
 
 // ARM NEON extensions.
 ALIAS("__fp16", half                , KEYALL)
@@ -560,6 +567,7 @@ ALIAS("_cdecl"           , __cdecl    , KEYMS | KEYBORLAND)
 ALIAS("_fastcall"        , __fastcall , KEYMS | KEYBORLAND)
 ALIAS("_stdcall"         , __stdcall  , KEYMS | KEYBORLAND)
 ALIAS("_thiscall"        , __thiscall , KEYMS)
+ALIAS("_vectorcall"      , __vectorcall, KEYMS)
 ALIAS("_uuidof"          , __uuidof   , KEYMS | KEYBORLAND)
 ALIAS("_inline"          , inline     , KEYMS)
 ALIAS("_declspec"        , __declspec , KEYMS)

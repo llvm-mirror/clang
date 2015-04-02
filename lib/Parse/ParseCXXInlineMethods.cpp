@@ -26,8 +26,7 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
                                       AttributeList *AccessAttrs,
                                       ParsingDeclarator &D,
                                       const ParsedTemplateInfo &TemplateInfo,
-                                      const VirtSpecifiers& VS, 
-                                      FunctionDefinitionKind DefinitionKind,
+                                      const VirtSpecifiers& VS,
                                       ExprResult& Init) {
   assert(D.isFunctionDeclarator() && "This isn't a function declarator!");
   assert((Tok.is(tok::l_brace) || Tok.is(tok::colon) || Tok.is(tok::kw_try) ||
@@ -40,7 +39,6 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
       TemplateInfo.TemplateParams ? TemplateInfo.TemplateParams->size() : 0);
 
   NamedDecl *FnD;
-  D.setFunctionDefinitionKind(DefinitionKind);
   if (D.getDeclSpec().isFriendSpecified())
     FnD = Actions.ActOnFriendFunctionDecl(getCurScope(), D,
                                           TemplateParams);
@@ -71,17 +69,24 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
 
     bool Delete = false;
     SourceLocation KWLoc;
+    SourceLocation KWEndLoc = Tok.getEndLoc().getLocWithOffset(-1);
     if (TryConsumeToken(tok::kw_delete, KWLoc)) {
       Diag(KWLoc, getLangOpts().CPlusPlus11
                       ? diag::warn_cxx98_compat_deleted_function
                       : diag::ext_deleted_function);
       Actions.SetDeclDeleted(FnD, KWLoc);
       Delete = true;
+      if (auto *DeclAsFunction = dyn_cast<FunctionDecl>(FnD)) {
+        DeclAsFunction->setRangeEnd(KWEndLoc);
+      }
     } else if (TryConsumeToken(tok::kw_default, KWLoc)) {
       Diag(KWLoc, getLangOpts().CPlusPlus11
                       ? diag::warn_cxx98_compat_defaulted_function
                       : diag::ext_defaulted_function);
       Actions.SetDeclDefaulted(FnD, KWLoc);
+      if (auto *DeclAsFunction = dyn_cast<FunctionDecl>(FnD)) {
+        DeclAsFunction->setRangeEnd(KWEndLoc);
+      }
     } else {
       llvm_unreachable("function definition after = not 'delete' or 'default'");
     }
@@ -97,12 +102,12 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
 
     return FnD;
   }
-  
+
   // In delayed template parsing mode, if we are within a class template
   // or if we are about to parse function member template then consume
   // the tokens and store them for parsing at the end of the translation unit.
   if (getLangOpts().DelayedTemplateParsing &&
-      DefinitionKind == FDK_Definition &&
+      D.getFunctionDefinitionKind() == FDK_Definition &&
       !D.getDeclSpec().isConstexprSpecified() &&
       !(FnD && FnD->getAsFunction() &&
         FnD->getAsFunction()->getReturnType()->getContainedAutoType()) &&
@@ -218,6 +223,7 @@ void Parser::ParseCXXNonStaticMemberInitializer(Decl *VarD) {
   Eof.startToken();
   Eof.setKind(tok::eof);
   Eof.setLocation(Tok.getLocation());
+  Eof.setEofData(VarD);
   Toks.push_back(Eof);
 }
 
@@ -305,13 +311,20 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
   ParseScope PrototypeScope(this, Scope::FunctionPrototypeScope |
                             Scope::FunctionDeclarationScope | Scope::DeclScope);
   for (unsigned I = 0, N = LM.DefaultArgs.size(); I != N; ++I) {
+    auto Param = cast<ParmVarDecl>(LM.DefaultArgs[I].Param);
     // Introduce the parameter into scope.
-    Actions.ActOnDelayedCXXMethodParameter(getCurScope(),
-                                           LM.DefaultArgs[I].Param);
-
+    bool HasUnparsed = Param->hasUnparsedDefaultArg();
+    Actions.ActOnDelayedCXXMethodParameter(getCurScope(), Param);
     if (CachedTokens *Toks = LM.DefaultArgs[I].Toks) {
-      // Save the current token position.
-      SourceLocation origLoc = Tok.getLocation();
+      // Mark the end of the default argument so that we know when to stop when
+      // we parse it later on.
+      Token LastDefaultArgToken = Toks->back();
+      Token DefArgEnd;
+      DefArgEnd.startToken();
+      DefArgEnd.setKind(tok::eof);
+      DefArgEnd.setLocation(LastDefaultArgToken.getEndLoc());
+      DefArgEnd.setEofData(Param);
+      Toks->push_back(DefArgEnd);
 
       // Parse the default argument from its saved token stream.
       Toks->push_back(Tok); // So that the current token doesn't get lost
@@ -328,7 +341,7 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
       // used.
       EnterExpressionEvaluationContext Eval(Actions,
                                             Sema::PotentiallyEvaluatedIfUsed,
-                                            LM.DefaultArgs[I].Param);
+                                            Param);
 
       ExprResult DefArgResult;
       if (getLangOpts().CPlusPlus11 && Tok.is(tok::l_brace)) {
@@ -336,11 +349,11 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
         DefArgResult = ParseBraceInitializer();
       } else
         DefArgResult = ParseAssignmentExpression();
-      if (DefArgResult.isInvalid())
-        Actions.ActOnParamDefaultArgumentError(LM.DefaultArgs[I].Param,
-                                               EqualLoc);
-      else {
-        if (!TryConsumeToken(tok::cxx_defaultarg_end)) {
+      DefArgResult = Actions.CorrectDelayedTyposInExpr(DefArgResult);
+      if (DefArgResult.isInvalid()) {
+        Actions.ActOnParamDefaultArgumentError(Param, EqualLoc);
+      } else {
+        if (Tok.isNot(tok::eof) || Tok.getEofData() != Param) {
           // The last two tokens are the terminator and the saved value of
           // Tok; the last token in the default argument is the one before
           // those.
@@ -349,21 +362,103 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
             << SourceRange(Tok.getLocation(),
                            (*Toks)[Toks->size() - 3].getLocation());
         }
-        Actions.ActOnParamDefaultArgument(LM.DefaultArgs[I].Param, EqualLoc,
+        Actions.ActOnParamDefaultArgument(Param, EqualLoc,
                                           DefArgResult.get());
       }
 
-      assert(!PP.getSourceManager().isBeforeInTranslationUnit(origLoc,
-                                                         Tok.getLocation()) &&
-             "ParseAssignmentExpression went over the default arg tokens!");
       // There could be leftover tokens (e.g. because of an error).
-      // Skip through until we reach the original token position.
-      while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
+      // Skip through until we reach the 'end of default argument' token.
+      while (Tok.isNot(tok::eof))
+        ConsumeAnyToken();
+
+      if (Tok.is(tok::eof) && Tok.getEofData() == Param)
         ConsumeAnyToken();
 
       delete Toks;
       LM.DefaultArgs[I].Toks = nullptr;
+    } else if (HasUnparsed) {
+      assert(Param->hasInheritedDefaultArg());
+      FunctionDecl *Old = cast<FunctionDecl>(LM.Method)->getPreviousDecl();
+      ParmVarDecl *OldParam = Old->getParamDecl(I);
+      assert (!OldParam->hasUnparsedDefaultArg());
+      if (OldParam->hasUninstantiatedDefaultArg())
+        Param->setUninstantiatedDefaultArg(
+                                      Param->getUninstantiatedDefaultArg());
+      else
+        Param->setDefaultArg(OldParam->getInit());
     }
+  }
+
+  // Parse a delayed exception-specification, if there is one.
+  if (CachedTokens *Toks = LM.ExceptionSpecTokens) {
+    // Add the 'stop' token.
+    Token LastExceptionSpecToken = Toks->back();
+    Token ExceptionSpecEnd;
+    ExceptionSpecEnd.startToken();
+    ExceptionSpecEnd.setKind(tok::eof);
+    ExceptionSpecEnd.setLocation(LastExceptionSpecToken.getEndLoc());
+    ExceptionSpecEnd.setEofData(LM.Method);
+    Toks->push_back(ExceptionSpecEnd);
+
+    // Parse the default argument from its saved token stream.
+    Toks->push_back(Tok); // So that the current token doesn't get lost
+    PP.EnterTokenStream(&Toks->front(), Toks->size(), true, false);
+
+    // Consume the previously-pushed token.
+    ConsumeAnyToken();
+
+    // C++11 [expr.prim.general]p3:
+    //   If a declaration declares a member function or member function
+    //   template of a class X, the expression this is a prvalue of type
+    //   "pointer to cv-qualifier-seq X" between the optional cv-qualifer-seq
+    //   and the end of the function-definition, member-declarator, or
+    //   declarator.
+    CXXMethodDecl *Method;
+    if (FunctionTemplateDecl *FunTmpl
+          = dyn_cast<FunctionTemplateDecl>(LM.Method))
+      Method = cast<CXXMethodDecl>(FunTmpl->getTemplatedDecl());
+    else
+      Method = cast<CXXMethodDecl>(LM.Method);
+
+    Sema::CXXThisScopeRAII ThisScope(Actions, Method->getParent(),
+                                     Method->getTypeQualifiers(),
+                                     getLangOpts().CPlusPlus11);
+
+    // Parse the exception-specification.
+    SourceRange SpecificationRange;
+    SmallVector<ParsedType, 4> DynamicExceptions;
+    SmallVector<SourceRange, 4> DynamicExceptionRanges;
+    ExprResult NoexceptExpr;
+    CachedTokens *ExceptionSpecTokens;
+
+    ExceptionSpecificationType EST
+      = tryParseExceptionSpecification(/*Delayed=*/false, SpecificationRange,
+                                       DynamicExceptions,
+                                       DynamicExceptionRanges, NoexceptExpr,
+                                       ExceptionSpecTokens);
+
+    if (Tok.isNot(tok::eof) || Tok.getEofData() != LM.Method)
+      Diag(Tok.getLocation(), diag::err_except_spec_unparsed);
+
+    // Attach the exception-specification to the method.
+    Actions.actOnDelayedExceptionSpecification(LM.Method, EST,
+                                               SpecificationRange,
+                                               DynamicExceptions,
+                                               DynamicExceptionRanges,
+                                               NoexceptExpr.isUsable()?
+                                                 NoexceptExpr.get() : nullptr);
+
+    // There could be leftover tokens (e.g. because of an error).
+    // Skip through until we reach the original token position.
+    while (Tok.isNot(tok::eof))
+      ConsumeAnyToken();
+
+    // Clean up the remaining EOF token.
+    if (Tok.is(tok::eof) && Tok.getEofData() == LM.Method)
+      ConsumeAnyToken();
+
+    delete Toks;
+    LM.ExceptionSpecTokens = nullptr;
   }
 
   PrototypeScope.Exit();
@@ -400,10 +495,15 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
     Actions.ActOnReenterTemplateScope(getCurScope(), LM.D);
     ++CurTemplateDepthTracker;
   }
-  // Save the current token position.
-  SourceLocation origLoc = Tok.getLocation();
 
   assert(!LM.Toks.empty() && "Empty body!");
+  Token LastBodyToken = LM.Toks.back();
+  Token BodyEnd;
+  BodyEnd.startToken();
+  BodyEnd.setKind(tok::eof);
+  BodyEnd.setLocation(LastBodyToken.getEndLoc());
+  BodyEnd.setEofData(LM.D);
+  LM.Toks.push_back(BodyEnd);
   // Append the current token at the end of the new token stream so that it
   // doesn't get lost.
   LM.Toks.push_back(Tok);
@@ -421,12 +521,11 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
 
   if (Tok.is(tok::kw_try)) {
     ParseFunctionTryBlock(LM.D, FnScope);
-    assert(!PP.getSourceManager().isBeforeInTranslationUnit(origLoc,
-                                                         Tok.getLocation()) &&
-           "ParseFunctionTryBlock went over the cached tokens!");
-    // There could be leftover tokens (e.g. because of an error).
-    // Skip through until we reach the original token position.
-    while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
+
+    while (Tok.isNot(tok::eof))
+      ConsumeAnyToken();
+
+    if (Tok.is(tok::eof) && Tok.getEofData() == LM.D)
       ConsumeAnyToken();
     return;
   }
@@ -437,7 +536,11 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
     if (!Tok.is(tok::l_brace)) {
       FnScope.Exit();
       Actions.ActOnFinishFunctionBody(LM.D, nullptr);
-      while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
+
+      while (Tok.isNot(tok::eof))
+        ConsumeAnyToken();
+
+      if (Tok.is(tok::eof) && Tok.getEofData() == LM.D)
         ConsumeAnyToken();
       return;
     }
@@ -457,17 +560,11 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
   if (LM.D)
     LM.D->getAsFunction()->setLateTemplateParsed(false);
 
-  if (Tok.getLocation() != origLoc) {
-    // Due to parsing error, we either went over the cached tokens or
-    // there are still cached tokens left. If it's the latter case skip the
-    // leftover tokens.
-    // Since this is an uncommon situation that should be avoided, use the
-    // expensive isBeforeInTranslationUnit call.
-    if (PP.getSourceManager().isBeforeInTranslationUnit(Tok.getLocation(),
-                                                        origLoc))
-      while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
-        ConsumeAnyToken();
-  }
+  while (Tok.isNot(tok::eof))
+    ConsumeAnyToken();
+
+  if (Tok.is(tok::eof) && Tok.getEofData() == LM.D)
+    ConsumeAnyToken();
 
   if (CXXMethodDecl *MD = dyn_cast_or_null<CXXMethodDecl>(LM.D))
     Actions.ActOnFinishInlineMethodDef(MD);
@@ -552,7 +649,9 @@ void Parser::ParseLexedMemberInitializer(LateParsedMemberInitializer &MI) {
     while (Tok.isNot(tok::eof))
       ConsumeAnyToken();
   }
-  ConsumeAnyToken();
+  // Make sure this is *our* artificial EOF token.
+  if (Tok.getEofData() == MI.Field)
+    ConsumeAnyToken();
 }
 
 /// ConsumeAndStoreUntil - Consume and store the token at the passed token
@@ -946,7 +1045,7 @@ bool Parser::ConsumeAndStoreInitializer(CachedTokens &Toks,
         case CIK_DefaultArgument:
           bool InvalidAsDeclaration = false;
           Result = TryParseParameterDeclarationClause(
-              &InvalidAsDeclaration, /*VersusTemplateArgument*/true);
+              &InvalidAsDeclaration, /*VersusTemplateArgument=*/true);
           // If this is an expression or a declaration with a missing
           // 'typename', assume it's not a declaration.
           if (Result == TPResult::Ambiguous && InvalidAsDeclaration)

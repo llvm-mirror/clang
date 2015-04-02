@@ -878,6 +878,9 @@ DEF_TRAVERSE_TYPE(FunctionProtoType, {
   for (const auto &E : T->exceptions()) {
     TRY_TO(TraverseType(E));
   }
+
+  if (Expr *NE = T->getNoexceptExpr())
+    TRY_TO(TraverseStmt(NE));
 })
 
 DEF_TRAVERSE_TYPE(UnresolvedUsingType, {})
@@ -1086,6 +1089,9 @@ DEF_TRAVERSE_TYPELOC(FunctionProtoType, {
   for (const auto &E : T->exceptions()) {
     TRY_TO(TraverseType(E));
   }
+
+  if (Expr *NE = T->getNoexceptExpr())
+    TRY_TO(TraverseStmt(NE));
 })
 
 DEF_TRAVERSE_TYPELOC(UnresolvedUsingType, {})
@@ -1277,6 +1283,8 @@ DEF_TRAVERSE_DECL(
      // decls_begin()/decls_end().  Thus we don't need to recurse on
      // D->getAnonymousNamespace().
     })
+
+DEF_TRAVERSE_DECL(ExternCContextDecl, {})
 
 DEF_TRAVERSE_DECL(NamespaceAliasDecl, {
   // We shouldn't traverse an aliased namespace, since it will be
@@ -2125,21 +2133,29 @@ bool RecursiveASTVisitor<Derived>::TraverseLambdaExpr(LambdaExpr *S) {
     TRY_TO(TraverseLambdaCapture(S, C));
   }
 
-  if (S->hasExplicitParameters() || S->hasExplicitResultType()) {
-    TypeLoc TL = S->getCallOperator()->getTypeSourceInfo()->getTypeLoc();
-    if (S->hasExplicitParameters() && S->hasExplicitResultType()) {
-      // Visit the whole type.
-      TRY_TO(TraverseTypeLoc(TL));
-    } else if (FunctionProtoTypeLoc Proto = TL.getAs<FunctionProtoTypeLoc>()) {
-      if (S->hasExplicitParameters()) {
-        // Visit parameters.
-        for (unsigned I = 0, N = Proto.getNumParams(); I != N; ++I) {
-          TRY_TO(TraverseDecl(Proto.getParam(I)));
-        }
-      } else {
-        TRY_TO(TraverseTypeLoc(Proto.getReturnLoc()));
+  TypeLoc TL = S->getCallOperator()->getTypeSourceInfo()->getTypeLoc();
+  FunctionProtoTypeLoc Proto = TL.castAs<FunctionProtoTypeLoc>();
+
+  if (S->hasExplicitParameters() && S->hasExplicitResultType()) {
+    // Visit the whole type.
+    TRY_TO(TraverseTypeLoc(TL));
+  } else {
+    if (S->hasExplicitParameters()) {
+      // Visit parameters.
+      for (unsigned I = 0, N = Proto.getNumParams(); I != N; ++I) {
+        TRY_TO(TraverseDecl(Proto.getParam(I)));
       }
+    } else if (S->hasExplicitResultType()) {
+      TRY_TO(TraverseTypeLoc(Proto.getReturnLoc()));
     }
+
+    auto *T = Proto.getTypePtr();
+    for (const auto &E : T->exceptions()) {
+      TRY_TO(TraverseType(E));
+    }
+
+    if (Expr *NE = T->getNoexceptExpr())
+      TRY_TO(TraverseStmt(NE));
   }
 
   TRY_TO(TraverseLambdaBody(S));
@@ -2240,6 +2256,7 @@ DEF_TRAVERSE_STMT(CapturedStmt, { TRY_TO(TraverseDecl(S->getCapturedDecl())); })
 
 DEF_TRAVERSE_STMT(CXXOperatorCallExpr, {})
 DEF_TRAVERSE_STMT(OpaqueValueExpr, {})
+DEF_TRAVERSE_STMT(TypoExpr, {})
 DEF_TRAVERSE_STMT(CUDAKernelCallExpr, {})
 
 // These operators (all of them) do not need any action except
@@ -2256,6 +2273,7 @@ DEF_TRAVERSE_STMT(SubstNonTypeTemplateParmPackExpr, {})
 DEF_TRAVERSE_STMT(SubstNonTypeTemplateParmExpr, {})
 DEF_TRAVERSE_STMT(FunctionParmPackExpr, {})
 DEF_TRAVERSE_STMT(MaterializeTemporaryExpr, {})
+DEF_TRAVERSE_STMT(CXXFoldExpr, {})
 DEF_TRAVERSE_STMT(AtomicExpr, {})
 
 // These literals (all of them) do not need any action.
@@ -2513,7 +2531,17 @@ bool RecursiveASTVisitor<Derived>::VisitOMPSharedClause(OMPSharedClause *C) {
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPLinearClause(OMPLinearClause *C) {
   TRY_TO(TraverseStmt(C->getStep()));
+  TRY_TO(TraverseStmt(C->getCalcStep()));
   TRY_TO(VisitOMPClauseList(C));
+  for (auto *E : C->inits()) {
+    TRY_TO(TraverseStmt(E));
+  }
+  for (auto *E : C->updates()) {
+    TRY_TO(TraverseStmt(E));
+  }
+  for (auto *E : C->finals()) {
+    TRY_TO(TraverseStmt(E));
+  }
   return true;
 }
 
@@ -2534,6 +2562,15 @@ template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPCopyprivateClause(
     OMPCopyprivateClause *C) {
   TRY_TO(VisitOMPClauseList(C));
+  for (auto *E : C->source_exprs()) {
+    TRY_TO(TraverseStmt(E));
+  }
+  for (auto *E : C->destination_exprs()) {
+    TRY_TO(TraverseStmt(E));
+  }
+  for (auto *E : C->assignment_ops()) {
+    TRY_TO(TraverseStmt(E));
+  }
   return true;
 }
 

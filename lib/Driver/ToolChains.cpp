@@ -132,11 +132,11 @@ static const char *GetArmArchForMCpu(StringRef Value) {
     .Cases("arm1020t", "arm1020e", "arm1022e", "arm1026ej-s", "armv5")
     .Case("xscale", "xscale")
     .Cases("arm1136j-s", "arm1136jf-s", "arm1176jz-s", "arm1176jzf-s", "armv6")
-    .Case("cortex-m0", "armv6m")
-    .Cases("cortex-a5", "cortex-a7", "cortex-a8", "cortex-a9-mp", "armv7")
+    .Cases("sc000", "cortex-m0", "cortex-m0plus", "cortex-m1", "armv6m")
+    .Cases("cortex-a5", "cortex-a7", "cortex-a8", "armv7")
     .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait", "armv7")
-    .Cases("cortex-r4", "cortex-r5", "armv7r")
-    .Case("cortex-m3", "armv7m")
+    .Cases("cortex-r4", "cortex-r5", "cortex-r7", "armv7r")
+    .Cases("sc300", "cortex-m3", "armv7m")
     .Cases("cortex-m4", "cortex-m7", "armv7em")
     .Case("swift", "armv7s")
     .Default(nullptr);
@@ -291,17 +291,53 @@ void DarwinClang::AddLinkARCArgs(const ArgList &Args,
 }
 
 void MachO::AddLinkRuntimeLib(const ArgList &Args, ArgStringList &CmdArgs,
-                              StringRef DarwinStaticLib, bool AlwaysLink,
-                              bool IsEmbedded) const {
-  SmallString<128> P(getDriver().ResourceDir);
-  llvm::sys::path::append(P, "lib", IsEmbedded ? "macho_embedded" : "darwin",
-                          DarwinStaticLib);
+                              StringRef DarwinLibName, bool AlwaysLink,
+                              bool IsEmbedded, bool AddRPath) const {
+  SmallString<128> Dir(getDriver().ResourceDir);
+  llvm::sys::path::append(Dir, "lib", IsEmbedded ? "macho_embedded" : "darwin");
+
+  SmallString<128> P(Dir);
+  llvm::sys::path::append(P, DarwinLibName);
 
   // For now, allow missing resource libraries to support developers who may
   // not have compiler-rt checked out or integrated into their build (unless
   // we explicitly force linking with this library).
-  if (AlwaysLink || llvm::sys::fs::exists(P.str()))
-    CmdArgs.push_back(Args.MakeArgString(P.str()));
+  if (AlwaysLink || llvm::sys::fs::exists(P))
+    CmdArgs.push_back(Args.MakeArgString(P));
+
+  // Adding the rpaths might negatively interact when other rpaths are involved,
+  // so we should make sure we add the rpaths last, after all user-specified
+  // rpaths. This is currently true from this place, but we need to be
+  // careful if this function is ever called before user's rpaths are emitted.
+  if (AddRPath) {
+    assert(DarwinLibName.endswith(".dylib") && "must be a dynamic library");
+
+    // Add @executable_path to rpath to support having the dylib copied with
+    // the executable.
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back("@executable_path");
+
+    // Add the path to the resource dir to rpath to support using the dylib
+    // from the default location without copying.
+    CmdArgs.push_back("-rpath");
+    CmdArgs.push_back(Args.MakeArgString(Dir));
+  }
+}
+
+void DarwinClang::AddLinkSanitizerLibArgs(const ArgList &Args,
+                                          ArgStringList &CmdArgs,
+                                          StringRef Sanitizer) const {
+  if (!Args.hasArg(options::OPT_dynamiclib) &&
+      !Args.hasArg(options::OPT_bundle)) {
+    // Sanitizer runtime libraries requires C++.
+    AddCXXStdlibLibArgs(Args, CmdArgs);
+  }
+  assert(isTargetMacOS() || isTargetIOSSimulator());
+  StringRef OS = isTargetMacOS() ? "osx" : "iossim";
+  AddLinkRuntimeLib(Args, CmdArgs, (Twine("libclang_rt.") + Sanitizer + "_" +
+                                    OS + "_dynamic.dylib").str(),
+                    /*AlwaysLink*/ true, /*IsEmbedded*/ false,
+                    /*AddRPath*/ true);
 }
 
 void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
@@ -348,45 +384,26 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
 
   const SanitizerArgs &Sanitize = getSanitizerArgs();
 
-  // Add Ubsan runtime library, if required.
-  if (Sanitize.needsUbsanRt()) {
-    // FIXME: Move this check to SanitizerArgs::filterUnsupportedKinds.
-    if (isTargetIOSBased()) {
+  if (Sanitize.needsAsanRt()) {
+    if (!isTargetMacOS() && !isTargetIOSSimulator()) {
+      // FIXME: Move this check to SanitizerArgs::filterUnsupportedKinds.
       getDriver().Diag(diag::err_drv_clang_unsupported_per_platform)
-        << "-fsanitize=undefined";
+          << "-fsanitize=address";
     } else {
-      assert(isTargetMacOS() && "unexpected non OS X target");
-      AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.ubsan_osx.a", true);
-
-      // The Ubsan runtime library requires C++.
-      AddCXXStdlibLibArgs(Args, CmdArgs);
+      AddLinkSanitizerLibArgs(Args, CmdArgs, "asan");
     }
   }
 
-  // Add ASAN runtime library, if required. Dynamic libraries and bundles
-  // should not be linked with the runtime library.
-  if (Sanitize.needsAsanRt()) {
-    // FIXME: Move this check to SanitizerArgs::filterUnsupportedKinds.
-    if (isTargetIPhoneOS()) {
+  if (Sanitize.needsUbsanRt()) {
+    if (!isTargetMacOS() && !isTargetIOSSimulator()) {
+      // FIXME: Move this check to SanitizerArgs::filterUnsupportedKinds.
       getDriver().Diag(diag::err_drv_clang_unsupported_per_platform)
-        << "-fsanitize=address";
+          << "-fsanitize=undefined";
     } else {
-      if (!Args.hasArg(options::OPT_dynamiclib) &&
-          !Args.hasArg(options::OPT_bundle)) {
-        // The ASAN runtime library requires C++.
-        AddCXXStdlibLibArgs(Args, CmdArgs);
-      }
-      if (isTargetMacOS()) {
-        AddLinkRuntimeLib(Args, CmdArgs,
-                          "libclang_rt.asan_osx_dynamic.dylib",
-                          true);
-      } else {
-        if (isTargetIOSSimulator()) {
-          AddLinkRuntimeLib(Args, CmdArgs,
-                            "libclang_rt.asan_iossim_dynamic.dylib",
-                            true);
-        }
-      }
+      AddLinkSanitizerLibArgs(Args, CmdArgs, "ubsan");
+      // Add explicit dependcy on -lc++abi, as -lc++ doesn't re-export
+      // all RTTI-related symbols that UBSan uses.
+      CmdArgs.push_back("-lc++abi");
     }
   }
 
@@ -577,11 +594,11 @@ void DarwinClang::AddCXXStdlibLibArgs(const ArgList &Args,
       SmallString<128> P(A->getValue());
       llvm::sys::path::append(P, "usr", "lib", "libstdc++.dylib");
 
-      if (!llvm::sys::fs::exists(P.str())) {
+      if (!llvm::sys::fs::exists(P)) {
         llvm::sys::path::remove_filename(P);
         llvm::sys::path::append(P, "libstdc++.6.dylib");
-        if (llvm::sys::fs::exists(P.str())) {
-          CmdArgs.push_back(Args.MakeArgString(P.str()));
+        if (llvm::sys::fs::exists(P)) {
+          CmdArgs.push_back(Args.MakeArgString(P));
           return;
         }
       }
@@ -624,8 +641,8 @@ void DarwinClang::AddCCKextLibArgs(const ArgList &Args,
 
   // For now, allow missing resource libraries to support developers who may
   // not have compiler-rt checked out or integrated into their build.
-  if (llvm::sys::fs::exists(P.str()))
-    CmdArgs.push_back(Args.MakeArgString(P.str()));
+  if (llvm::sys::fs::exists(P))
+    CmdArgs.push_back(Args.MakeArgString(P));
 }
 
 DerivedArgList *MachO::TranslateArgs(const DerivedArgList &Args,
@@ -880,8 +897,7 @@ DerivedArgList *Darwin::TranslateArgs(const DerivedArgList &Args,
   // FIXME: It would be far better to avoid inserting those -static arguments,
   // but we can't check the deployment target in the translation code until
   // it is set here.
-  if (isTargetIOSBased() && !isIPhoneOSVersionLT(6, 0) &&
-      getTriple().getArch() != llvm::Triple::aarch64) {
+  if (isTargetIOSBased() && !isIPhoneOSVersionLT(6, 0)) {
     for (ArgList::iterator it = DAL->begin(), ie = DAL->end(); it != ie; ) {
       Arg *A = *it;
       ++it;
@@ -1477,11 +1493,12 @@ bool Generic_GCC::GCCInstallationDetector::getBiarchSibling(Multilib &M) const {
 
 namespace {
 // Filter to remove Multilibs that don't exist as a suffix to Path
-class FilterNonExistent : public MultilibSet::FilterCallback {
-  std::string Base;
+class FilterNonExistent {
+  StringRef Base;
+
 public:
-  FilterNonExistent(std::string Base) : Base(Base) {}
-  bool operator()(const Multilib &M) const override {
+  FilterNonExistent(StringRef Base) : Base(Base) {}
+  bool operator()(const Multilib &M) {
     return !llvm::sys::fs::exists(Base + M.gccSuffix() + "/crtbegin.o");
   }
 };
@@ -1703,6 +1720,7 @@ static bool findMIPSMultilibs(const llvm::Triple &TargetTriple, StringRef Path,
 
   MultilibSet AndroidMipsMultilibs = MultilibSet()
     .Maybe(Multilib("/mips-r2").flag("+march=mips32r2"))
+    .Maybe(Multilib("/mips-r6").flag("+march=mips32r6"))
     .FilterOut(NonExistent);
 
   MultilibSet DebianMipsMultilibs;
@@ -1761,9 +1779,13 @@ static bool findMIPSMultilibs(const llvm::Triple &TargetTriple, StringRef Path,
   addMultilibFlag(isMips64(TargetArch), "m64", Flags);
   addMultilibFlag(isMips16(Args), "mips16", Flags);
   addMultilibFlag(CPUName == "mips32", "march=mips32", Flags);
-  addMultilibFlag(CPUName == "mips32r2", "march=mips32r2", Flags);
+  addMultilibFlag(CPUName == "mips32r2" || CPUName == "mips32r3" ||
+                      CPUName == "mips32r5",
+                  "march=mips32r2", Flags);
+  addMultilibFlag(CPUName == "mips32r6", "march=mips32r6", Flags);
   addMultilibFlag(CPUName == "mips64", "march=mips64", Flags);
-  addMultilibFlag(CPUName == "mips64r2" || CPUName == "octeon",
+  addMultilibFlag(CPUName == "mips64r2" || CPUName == "mips64r3" ||
+                      CPUName == "mips64r5" || CPUName == "octeon",
                   "march=mips64r2", Flags);
   addMultilibFlag(isMicroMips(Args), "mmicromips", Flags);
   addMultilibFlag(tools::mips::isUCLibc(Args), "muclibc", Flags);
@@ -2046,8 +2068,11 @@ bool Generic_GCC::IsIntegratedAssemblerDefault() const {
          getTriple().getArch() == llvm::Triple::armeb ||
          getTriple().getArch() == llvm::Triple::thumb ||
          getTriple().getArch() == llvm::Triple::thumbeb ||
+         getTriple().getArch() == llvm::Triple::ppc ||
          getTriple().getArch() == llvm::Triple::ppc64 ||
          getTriple().getArch() == llvm::Triple::ppc64le ||
+         getTriple().getArch() == llvm::Triple::sparc ||
+         getTriple().getArch() == llvm::Triple::sparcv9 ||
          getTriple().getArch() == llvm::Triple::systemz;
 }
 
@@ -2069,11 +2094,14 @@ void Generic_ELF::addClangTargetOptions(const ArgList &DriverArgs,
 
 /// Hexagon Toolchain
 
-std::string Hexagon_TC::GetGnuDir(const std::string &InstalledDir) {
+std::string Hexagon_TC::GetGnuDir(const std::string &InstalledDir,
+                                  const ArgList &Args) {
 
   // Locate the rest of the toolchain ...
-  if (strlen(GCC_INSTALL_PREFIX))
-    return std::string(GCC_INSTALL_PREFIX);
+  std::string GccToolchain = getGCCToolchainDir(Args);
+
+  if (!GccToolchain.empty())
+    return GccToolchain;
 
   std::string InstallRelDir = InstalledDir + "/../../gnu";
   if (llvm::sys::fs::exists(InstallRelDir))
@@ -2088,8 +2116,8 @@ std::string Hexagon_TC::GetGnuDir(const std::string &InstalledDir) {
 
 static void GetHexagonLibraryPaths(
   const ArgList &Args,
-  const std::string Ver,
-  const std::string MarchString,
+  const std::string &Ver,
+  const std::string &MarchString,
   const std::string &InstalledDir,
   ToolChain::path_list *LibPaths)
 {
@@ -2113,7 +2141,7 @@ static void GetHexagonLibraryPaths(
   const std::string MarchSuffix = "/" + MarchString;
   const std::string G0Suffix = "/G0";
   const std::string MarchG0Suffix = MarchSuffix + G0Suffix;
-  const std::string RootDir = Hexagon_TC::GetGnuDir(InstalledDir) + "/";
+  const std::string RootDir = Hexagon_TC::GetGnuDir(InstalledDir, Args) + "/";
 
   // lib/gcc/hexagon/...
   std::string LibGCCHexagonDir = RootDir + "lib/gcc/hexagon/";
@@ -2141,7 +2169,7 @@ Hexagon_TC::Hexagon_TC(const Driver &D, const llvm::Triple &Triple,
                        const ArgList &Args)
   : Linux(D, Triple, Args) {
   const std::string InstalledDir(getDriver().getInstalledDir());
-  const std::string GnuDir = Hexagon_TC::GetGnuDir(InstalledDir);
+  const std::string GnuDir = Hexagon_TC::GetGnuDir(InstalledDir, Args);
 
   // Note: Generic_GCC::Generic_GCC adds InstalledDir and getDriver().Dir to
   // program paths
@@ -2196,7 +2224,7 @@ void Hexagon_TC::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     return;
 
   std::string Ver(GetGCCLibAndIncVersion());
-  std::string GnuDir = Hexagon_TC::GetGnuDir(D.InstalledDir);
+  std::string GnuDir = Hexagon_TC::GetGnuDir(D.InstalledDir, DriverArgs);
   std::string HexagonDir(GnuDir + "/lib/gcc/hexagon/" + Ver);
   addExternCSystemInclude(DriverArgs, CC1Args, HexagonDir + "/include");
   addExternCSystemInclude(DriverArgs, CC1Args, HexagonDir + "/include-fixed");
@@ -2212,11 +2240,12 @@ void Hexagon_TC::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
 
   const Driver &D = getDriver();
   std::string Ver(GetGCCLibAndIncVersion());
-  SmallString<128> IncludeDir(Hexagon_TC::GetGnuDir(D.InstalledDir));
+  SmallString<128> IncludeDir(
+      Hexagon_TC::GetGnuDir(D.InstalledDir, DriverArgs));
 
   llvm::sys::path::append(IncludeDir, "hexagon/include/c++/");
   llvm::sys::path::append(IncludeDir, Ver);
-  addSystemInclude(DriverArgs, CC1Args, IncludeDir.str());
+  addSystemInclude(DriverArgs, CC1Args, IncludeDir);
 }
 
 ToolChain::CXXStdlibType
@@ -2310,6 +2339,36 @@ bool TCEToolChain::isPIEDefault() const {
 bool TCEToolChain::isPICDefaultForced() const {
   return false;
 }
+
+// CloudABI - CloudABI tool chain which can call ld(1) directly.
+
+CloudABI::CloudABI(const Driver &D, const llvm::Triple &Triple,
+                   const ArgList &Args)
+    : Generic_ELF(D, Triple, Args) {
+  SmallString<128> P(getDriver().Dir);
+  llvm::sys::path::append(P, "..", getTriple().str(), "lib");
+  getFilePaths().push_back(P.str());
+}
+
+void CloudABI::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
+                                            ArgStringList &CC1Args) const {
+  if (DriverArgs.hasArg(options::OPT_nostdlibinc) &&
+      DriverArgs.hasArg(options::OPT_nostdincxx))
+    return;
+
+  SmallString<128> P(getDriver().Dir);
+  llvm::sys::path::append(P, "..", getTriple().str(), "include/c++/v1");
+  addSystemInclude(DriverArgs, CC1Args, P.str());
+}
+
+void CloudABI::AddCXXStdlibLibArgs(const ArgList &Args,
+                                   ArgStringList &CmdArgs) const {
+  CmdArgs.push_back("-lc++");
+  CmdArgs.push_back("-lc++abi");
+  CmdArgs.push_back("-lunwind");
+}
+
+Tool *CloudABI::buildLinker() const { return new tools::cloudabi::Link(*this); }
 
 /// OpenBSD - OpenBSD tool chain which can call as(1) and ld(1) directly.
 
@@ -2481,7 +2540,7 @@ bool FreeBSD::HasNativeLLVMSupport() const {
 }
 
 bool FreeBSD::isPIEDefault() const {
-  return getSanitizerArgs().hasZeroBaseShadow();
+  return getSanitizerArgs().requiresPIE();
 }
 
 /// NetBSD - NetBSD tool chain which can call as(1) and ld(1) directly.
@@ -3114,7 +3173,7 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
     SmallString<128> P(D.ResourceDir);
     llvm::sys::path::append(P, "include");
-    addSystemInclude(DriverArgs, CC1Args, P.str());
+    addSystemInclude(DriverArgs, CC1Args, P);
   }
 
   if (DriverArgs.hasArg(options::OPT_nostdlibinc))
@@ -3126,7 +3185,8 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     SmallVector<StringRef, 5> dirs;
     CIncludeDirs.split(dirs, ":");
     for (StringRef dir : dirs) {
-      StringRef Prefix = llvm::sys::path::is_absolute(dir) ? SysRoot : "";
+      StringRef Prefix =
+          llvm::sys::path::is_absolute(dir) ? StringRef(SysRoot) : "";
       addExternCSystemInclude(DriverArgs, CC1Args, Prefix + dir);
     }
     return;
@@ -3137,7 +3197,7 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
 
   // Add include directories specific to the selected multilib set and multilib.
   if (GCCInstallation.isValid()) {
-    auto Callback = Multilibs.includeDirsCallback();
+    const auto &Callback = Multilibs.includeDirsCallback();
     if (Callback) {
       const auto IncludePaths = Callback(GCCInstallation.getInstallPath(),
                                          GCCInstallation.getTriple().str(),
@@ -3357,7 +3417,7 @@ void Linux::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
 }
 
 bool Linux::isPIEDefault() const {
-  return getSanitizerArgs().hasZeroBaseShadow();
+  return getSanitizerArgs().requiresPIE();
 }
 
 /// DragonFly - DragonFly tool chain which can call as(1) and ld(1) directly.

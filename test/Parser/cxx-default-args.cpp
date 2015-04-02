@@ -36,3 +36,8 @@ struct T {
 struct S { 
   void f(int &r = error);  // expected-error {{use of undeclared identifier 'error'}}
 };
+
+struct U {
+  void i(int x = ) {} // expected-error{{expected expression}}
+  typedef int *fp(int x = ); // expected-error{{default arguments can only be specified for parameters in a function declaration}}
+};

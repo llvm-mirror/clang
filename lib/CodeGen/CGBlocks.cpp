@@ -792,9 +792,10 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
       // emission.
       src = LocalDeclMap.lookup(variable);
       if (!src) {
-        DeclRefExpr declRef(const_cast<VarDecl *>(variable),
-                            /*refersToEnclosing*/ CI.isNested(), type,
-                            VK_LValue, SourceLocation());
+        DeclRefExpr declRef(
+            const_cast<VarDecl *>(variable),
+            /*RefersToEnclosingVariableOrCapture*/ CI.isNested(), type,
+            VK_LValue, SourceLocation());
         src = EmitDeclRefLValue(&declRef).getAddress();
       }
     }
@@ -863,12 +864,15 @@ llvm::Value *CodeGenFunction::EmitBlockLiteral(const CGBlockInfo &blockInfo) {
 
       // We use one of these or the other depending on whether the
       // reference is nested.
-      DeclRefExpr declRef(const_cast<VarDecl*>(variable),
-                          /*refersToEnclosing*/ CI.isNested(), type,
-                          VK_LValue, SourceLocation());
+      DeclRefExpr declRef(const_cast<VarDecl *>(variable),
+                          /*RefersToEnclosingVariableOrCapture*/ CI.isNested(),
+                          type, VK_LValue, SourceLocation());
 
       ImplicitCastExpr l2r(ImplicitCastExpr::OnStack, type, CK_LValueToRValue,
                            &declRef, VK_RValue);
+      // FIXME: Pass a specific location for the expr init so that the store is
+      // attributed to a reasonable location - otherwise it may be attributed to
+      // locations of subexpressions in the initialization.
       EmitExprAsInit(&l2r, &blockFieldPseudoVar,
                      MakeAddrLValue(blockField, type, align),
                      /*captured by init*/ false);
@@ -915,7 +919,7 @@ llvm::Type *CodeGenModule::getBlockDescriptorType() {
   // };
   BlockDescriptorType =
     llvm::StructType::create("struct.__block_descriptor",
-                             UnsignedLongTy, UnsignedLongTy, NULL);
+                             UnsignedLongTy, UnsignedLongTy, nullptr);
 
   // Now form a pointer to that.
   BlockDescriptorType = llvm::PointerType::getUnqual(BlockDescriptorType);
@@ -938,7 +942,7 @@ llvm::Type *CodeGenModule::getGenericBlockLiteralType() {
   GenericBlockLiteralType =
     llvm::StructType::create("struct.__block_literal_generic",
                              VoidPtrTy, IntTy, IntTy, VoidPtrTy,
-                             BlockDescPtrTy, NULL);
+                             BlockDescPtrTy, nullptr);
 
   return GenericBlockLiteralType;
 }
@@ -1103,6 +1107,8 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
   const BlockDecl *blockDecl = blockInfo.getBlockDecl();
 
   CurGD = GD;
+
+  CurEHLocation = blockInfo.getBlockExpr()->getLocEnd();
   
   BlockInfo = &blockInfo;
 
@@ -1130,8 +1136,7 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
   args.push_back(&selfDecl);
 
   // Now add the rest of the parameters.
-  for (auto i : blockDecl->params())
-    args.push_back(i);
+  args.append(blockDecl->param_begin(), blockDecl->param_end());
 
   // Create the function declaration.
   const FunctionProtoType *fnType = blockInfo.getBlockExpr()->getFunctionType();
@@ -1172,7 +1177,7 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
     Alloca->setAlignment(Align);
     // Set the DebugLocation to empty, so the store is recognized as a
     // frame setup instruction by llvm::DwarfDebug::beginFunction().
-    NoLocation NL(*this, Builder);
+    auto NL = ApplyDebugLocation::CreateEmpty(*this);
     Builder.CreateAlignedStore(BlockPointer, Alloca, Align);
     BlockPointerDbgLoc = Alloca;
   }
@@ -1215,8 +1220,6 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
     RegionCounter Cnt = getPGORegionCounter(blockDecl->getBody());
     Cnt.beginRegion(Builder);
     EmitStmt(blockDecl->getBody());
-    PGO.emitInstrumentationData();
-    PGO.destroyRegionCounters();
   }
 
   // Remember where we were...
@@ -1243,7 +1246,9 @@ CodeGenFunction::GenerateBlockFunction(GlobalDecl GD,
         }
 
         DI->EmitDeclareOfBlockDeclRefVariable(variable, BlockPointerDbgLoc,
-                                              Builder, blockInfo);
+                                              Builder, blockInfo,
+                                              entry_ptr == entry->end()
+                                              ? nullptr : entry_ptr);
       }
     }
     // Recover location if it was changed in the above loop.
@@ -1322,11 +1327,10 @@ CodeGenFunction::GenerateCopyHelperFunction(const CGBlockInfo &blockInfo) {
                                           nullptr, SC_Static,
                                           false,
                                           false);
-  // Create a scope with an artificial location for the body of this function.
-  ArtificialLocation AL(*this, Builder);
+  auto NL = ApplyDebugLocation::CreateEmpty(*this);
   StartFunction(FD, C.VoidTy, Fn, FI, args);
-  AL.Emit();
-
+  // Create a scope with an artificial location for the body of this function.
+  auto AL = ApplyDebugLocation::CreateArtificial(*this);
   llvm::Type *structPtrTy = blockInfo.StructureType->getPointerTo();
 
   llvm::Value *src = GetAddrOfLocalVar(&srcDecl);
@@ -1494,9 +1498,9 @@ CodeGenFunction::GenerateDestroyHelperFunction(const CGBlockInfo &blockInfo) {
                                           nullptr, SC_Static,
                                           false, false);
   // Create a scope with an artificial location for the body of this function.
-  ArtificialLocation AL(*this, Builder);
+  auto NL = ApplyDebugLocation::CreateEmpty(*this);
   StartFunction(FD, C.VoidTy, Fn, FI, args);
-  AL.Emit();
+  auto AL = ApplyDebugLocation::CreateArtificial(*this);
 
   llvm::Type *structPtrTy = blockInfo.StructureType->getPointerTo();
 

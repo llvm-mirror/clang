@@ -95,6 +95,7 @@ public:
   /// This iterator visits only those declarations that meet some run-time
   /// criteria.
   template <class FilterPredicate> class filtered_clause_iterator {
+  protected:
     ArrayRef<OMPClause *>::const_iterator Current;
     ArrayRef<OMPClause *>::const_iterator End;
     FilterPredicate Pred;
@@ -126,6 +127,27 @@ public:
 
     bool operator!() { return Current == End; }
     operator bool() { return Current != End; }
+    bool empty() const { return Current == End; }
+  };
+
+  /// \brief A filter to iterate over 'linear' clauses using a C++ range
+  /// for loop.
+  struct linear_filter : public filtered_clause_iterator<
+                             std::function<bool(const OMPClause *)> > {
+    linear_filter(ArrayRef<OMPClause *> Arr)
+        : filtered_clause_iterator(Arr, [](const OMPClause *C)->bool {
+            return C->getClauseKind() == OMPC_linear;
+          }) {}
+    const OMPLinearClause *operator*() const {
+      return cast<OMPLinearClause>(*Current);
+    }
+    const OMPLinearClause *operator->() const {
+      return cast<OMPLinearClause>(*Current);
+    }
+    friend linear_filter begin(const linear_filter &range) { return range; }
+    friend linear_filter end(const linear_filter &range) {
+      return linear_filter(ArrayRef<OMPClause *>(range.End, range.End));
+    }
   };
 
   /// \brief Gets a single clause of the specified kind \a K associated with the
@@ -254,6 +276,13 @@ class OMPLoopDirective : public OMPExecutableDirective {
   unsigned CollapsedNum;
 
   /// \brief Offsets to the stored exprs.
+  /// This enumeration contains offsets to all the pointers to children
+  /// expressions stored in OMPLoopDirective.
+  /// The first 9 children are nesessary for all the loop directives, and
+  /// the next 7 are specific to the worksharing ones.
+  /// After the fixed children, three arrays of length CollapsedNum are
+  /// allocated: loop counters, their updates and final values.
+  ///
   enum {
     AssociatedStmtOffset = 0,
     IterationVariableOffset = 1,
@@ -264,27 +293,43 @@ class OMPLoopDirective : public OMPExecutableDirective {
     SeparatedCondOffset = 6,
     InitOffset = 7,
     IncOffset = 8,
-    ArraysOffset = 9
+    // The '...End' enumerators do not correspond to child expressions - they
+    // specify the offset to the end (and start of the following counters/
+    // updates/finals arrays).
+    DefaultEnd = 9,
+    // The following 7 exprs are used by worksharing loops only.
+    IsLastIterVariableOffset = 9,
+    LowerBoundVariableOffset = 10,
+    UpperBoundVariableOffset = 11,
+    StrideVariableOffset = 12,
+    EnsureUpperBoundOffset = 13,
+    NextLowerBoundOffset = 14,
+    NextUpperBoundOffset = 15,
+    // Offset to the end (and start of the following counters/updates/finals
+    // arrays) for worksharing loop directives.
+    WorksharingEnd = 16,
   };
 
   /// \brief Get the counters storage.
   MutableArrayRef<Expr *> getCounters() {
-    Expr **Storage =
-        reinterpret_cast<Expr **>(&(*(std::next(child_begin(), ArraysOffset))));
+    Expr **Storage = reinterpret_cast<Expr **>(
+        &(*(std::next(child_begin(), getArraysOffset(getDirectiveKind())))));
     return MutableArrayRef<Expr *>(Storage, CollapsedNum);
   }
 
   /// \brief Get the updates storage.
   MutableArrayRef<Expr *> getUpdates() {
     Expr **Storage = reinterpret_cast<Expr **>(
-        &*std::next(child_begin(), ArraysOffset + CollapsedNum));
+        &*std::next(child_begin(),
+                    getArraysOffset(getDirectiveKind()) + CollapsedNum));
     return MutableArrayRef<Expr *>(Storage, CollapsedNum);
   }
 
   /// \brief Get the final counter updates storage.
   MutableArrayRef<Expr *> getFinals() {
     Expr **Storage = reinterpret_cast<Expr **>(
-        &*std::next(child_begin(), ArraysOffset + 2 * CollapsedNum));
+        &*std::next(child_begin(),
+                    getArraysOffset(getDirectiveKind()) + 2 * CollapsedNum));
     return MutableArrayRef<Expr *>(Storage, CollapsedNum);
   }
 
@@ -305,13 +350,21 @@ protected:
                    unsigned CollapsedNum, unsigned NumClauses,
                    unsigned NumSpecialChildren = 0)
       : OMPExecutableDirective(That, SC, Kind, StartLoc, EndLoc, NumClauses,
-                               numLoopChildren(CollapsedNum) +
+                               numLoopChildren(CollapsedNum, Kind) +
                                    NumSpecialChildren),
         CollapsedNum(CollapsedNum) {}
 
+  /// \brief Offset to the start of children expression arrays.
+  static unsigned getArraysOffset(OpenMPDirectiveKind Kind) {
+    return isOpenMPWorksharingDirective(Kind) ? WorksharingEnd
+                                              : DefaultEnd;
+  }
+
   /// \brief Children number.
-  static unsigned numLoopChildren(unsigned CollapsedNum) {
-    return ArraysOffset + 3 * CollapsedNum; // Counters, Updates and Finals
+  static unsigned numLoopChildren(unsigned CollapsedNum,
+                                  OpenMPDirectiveKind Kind) {
+    return getArraysOffset(Kind) +
+           3 * CollapsedNum; // Counters, Updates and Finals
   }
 
   void setIterationVariable(Expr *IV) {
@@ -332,11 +385,126 @@ protected:
   }
   void setInit(Expr *Init) { *std::next(child_begin(), InitOffset) = Init; }
   void setInc(Expr *Inc) { *std::next(child_begin(), IncOffset) = Inc; }
+  void setIsLastIterVariable(Expr *IL) {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    *std::next(child_begin(), IsLastIterVariableOffset) = IL;
+  }
+  void setLowerBoundVariable(Expr *LB) {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    *std::next(child_begin(), LowerBoundVariableOffset) = LB;
+  }
+  void setUpperBoundVariable(Expr *UB) {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    *std::next(child_begin(), UpperBoundVariableOffset) = UB;
+  }
+  void setStrideVariable(Expr *ST) {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    *std::next(child_begin(), StrideVariableOffset) = ST;
+  }
+  void setEnsureUpperBound(Expr *EUB) {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    *std::next(child_begin(), EnsureUpperBoundOffset) = EUB;
+  }
+  void setNextLowerBound(Expr *NLB) {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    *std::next(child_begin(), NextLowerBoundOffset) = NLB;
+  }
+  void setNextUpperBound(Expr *NUB) {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    *std::next(child_begin(), NextUpperBoundOffset) = NUB;
+  }
   void setCounters(ArrayRef<Expr *> A);
   void setUpdates(ArrayRef<Expr *> A);
   void setFinals(ArrayRef<Expr *> A);
 
 public:
+  /// \brief The expressions built for the OpenMP loop CodeGen for the
+  /// whole collapsed loop nest.
+  struct HelperExprs {
+    /// \brief Loop iteration variable.
+    Expr *IterationVarRef;
+    /// \brief Loop last iteration number.
+    Expr *LastIteration;
+    /// \brief Loop number of iterations.
+    Expr *NumIterations;
+    /// \brief Calculation of last iteration.
+    Expr *CalcLastIteration;
+    /// \brief Loop pre-condition.
+    Expr *PreCond;
+    /// \brief Loop condition.
+    Expr *Cond;
+    /// \brief A condition with 1 iteration separated.
+    Expr *SeparatedCond;
+    /// \brief Loop iteration variable init.
+    Expr *Init;
+    /// \brief Loop increment.
+    Expr *Inc;
+    /// \brief IsLastIteration - local flag variable passed to runtime.
+    Expr *IL;
+    /// \brief LowerBound - local variable passed to runtime.
+    Expr *LB;
+    /// \brief UpperBound - local variable passed to runtime.
+    Expr *UB;
+    /// \brief Stride - local variable passed to runtime.
+    Expr *ST;
+    /// \brief EnsureUpperBound -- expression LB = min(LB, NumIterations).
+    Expr *EUB;
+    /// \brief Update of LowerBound for statically sheduled 'omp for' loops.
+    Expr *NLB;
+    /// \brief Update of UpperBound for statically sheduled 'omp for' loops.
+    Expr *NUB;
+    /// \brief Counters Loop counters.
+    SmallVector<Expr *, 4> Counters;
+    /// \brief Expressions for loop counters update for CodeGen.
+    SmallVector<Expr *, 4> Updates;
+    /// \brief Final loop counter values for GodeGen.
+    SmallVector<Expr *, 4> Finals;
+
+    /// \brief Check if all the expressions are built (does not check the
+    /// worksharing ones).
+    bool builtAll() {
+      return IterationVarRef != nullptr && LastIteration != nullptr &&
+             NumIterations != nullptr && PreCond != nullptr &&
+             Cond != nullptr && SeparatedCond != nullptr && Init != nullptr &&
+             Inc != nullptr;
+    }
+
+    /// \brief Initialize all the fields to null.
+    /// \param Size Number of elements in the counters/finals/updates arrays.
+    void clear(unsigned Size) {
+      IterationVarRef = nullptr;
+      LastIteration = nullptr;
+      CalcLastIteration = nullptr;
+      PreCond = nullptr;
+      Cond = nullptr;
+      SeparatedCond = nullptr;
+      Init = nullptr;
+      Inc = nullptr;
+      IL = nullptr;
+      LB = nullptr;
+      UB = nullptr;
+      ST = nullptr;
+      EUB = nullptr;
+      NLB = nullptr;
+      NUB = nullptr;
+      Counters.resize(Size);
+      Updates.resize(Size);
+      Finals.resize(Size);
+      for (unsigned i = 0; i < Size; ++i) {
+        Counters[i] = nullptr;
+        Updates[i] = nullptr;
+        Finals[i] = nullptr;
+      }
+    }
+  };
+
   /// \brief Get number of collapsed loops.
   unsigned getCollapsedNumber() const { return CollapsedNum; }
 
@@ -368,6 +536,48 @@ public:
   Expr *getInc() const {
     return const_cast<Expr *>(
         reinterpret_cast<const Expr *>(*std::next(child_begin(), IncOffset)));
+  }
+  Expr *getIsLastIterVariable() const {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    return const_cast<Expr *>(reinterpret_cast<const Expr *>(
+        *std::next(child_begin(), IsLastIterVariableOffset)));
+  }
+  Expr *getLowerBoundVariable() const {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    return const_cast<Expr *>(reinterpret_cast<const Expr *>(
+        *std::next(child_begin(), LowerBoundVariableOffset)));
+  }
+  Expr *getUpperBoundVariable() const {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    return const_cast<Expr *>(reinterpret_cast<const Expr *>(
+        *std::next(child_begin(), UpperBoundVariableOffset)));
+  }
+  Expr *getStrideVariable() const {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    return const_cast<Expr *>(reinterpret_cast<const Expr *>(
+        *std::next(child_begin(), StrideVariableOffset)));
+  }
+  Expr *getEnsureUpperBound() const {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    return const_cast<Expr *>(reinterpret_cast<const Expr *>(
+        *std::next(child_begin(), EnsureUpperBoundOffset)));
+  }
+  Expr *getNextLowerBound() const {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    return const_cast<Expr *>(reinterpret_cast<const Expr *>(
+        *std::next(child_begin(), NextLowerBoundOffset)));
+  }
+  Expr *getNextUpperBound() const {
+    assert(isOpenMPWorksharingDirective(getDirectiveKind()) &&
+           "expected worksharing loop directive");
+    return const_cast<Expr *>(reinterpret_cast<const Expr *>(
+        *std::next(child_begin(), NextUpperBoundOffset)));
   }
   const Stmt *getBody() const {
     // This relies on the loop form is already checked by Sema.
@@ -449,24 +659,13 @@ public:
   /// \param CollapsedNum Number of collapsed loops.
   /// \param Clauses List of clauses.
   /// \param AssociatedStmt Statement, associated with the directive.
-  /// \param IV Loop iteration variable for CodeGen.
-  /// \param LastIteration Loop last iteration number for CodeGen.
-  /// \param CalcLastIteration Calculation of last iteration.
-  /// \param PreCond Pre-condition.
-  /// \param Cond Condition.
-  /// \param SeparatedCond Condition with 1 iteration separated.
-  /// \param Inc Loop increment.
-  /// \param Counters Loop counters.
-  /// \param Updates Expressions for loop counters update for CodeGen.
-  /// \param Finals Final loop counter values for GodeGen.
+  /// \param Exprs Helper expressions for CodeGen.
   ///
-  static OMPSimdDirective *
-  Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation EndLoc,
-         unsigned CollapsedNum, ArrayRef<OMPClause *> Clauses,
-         Stmt *AssociatedStmt, Expr *IV, Expr *LastIteration,
-         Expr *CalcLastIteration, Expr *PreCond, Expr *Cond,
-         Expr *SeparatedCond, Expr *Init, Expr *Inc, ArrayRef<Expr *> Counters,
-         ArrayRef<Expr *> Updates, ArrayRef<Expr *> Finals);
+  static OMPSimdDirective *Create(const ASTContext &C, SourceLocation StartLoc,
+                                  SourceLocation EndLoc, unsigned CollapsedNum,
+                                  ArrayRef<OMPClause *> Clauses,
+                                  Stmt *AssociatedStmt,
+                                  const HelperExprs &Exprs);
 
   /// \brief Creates an empty directive with the place
   /// for \a NumClauses clauses.
@@ -524,24 +723,13 @@ public:
   /// \param CollapsedNum Number of collapsed loops.
   /// \param Clauses List of clauses.
   /// \param AssociatedStmt Statement, associated with the directive.
-  /// \param IV Loop iteration variable for CodeGen.
-  /// \param LastIteration Loop last iteration number for CodeGen.
-  /// \param CalcLastIteration Calculation of last iteration.
-  /// \param PreCond Pre-condition.
-  /// \param Cond Condition.
-  /// \param SeparatedCond Condition with 1 iteration separated.
-  /// \param Inc Loop increment.
-  /// \param Counters Loop counters.
-  /// \param Updates Expressions for loop counters update for CodeGen.
-  /// \param Finals Final loop counter values for GodeGen.
+  /// \param Exprs Helper expressions for CodeGen.
   ///
-  static OMPForDirective *
-  Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation EndLoc,
-         unsigned CollapsedNum, ArrayRef<OMPClause *> Clauses,
-         Stmt *AssociatedStmt, Expr *IV, Expr *LastIteration,
-         Expr *CalcLastIteration, Expr *PreCond, Expr *Cond,
-         Expr *SeparatedCond, Expr *Init, Expr *Inc, ArrayRef<Expr *> Counters,
-         ArrayRef<Expr *> Updates, ArrayRef<Expr *> Finals);
+  static OMPForDirective *Create(const ASTContext &C, SourceLocation StartLoc,
+                                 SourceLocation EndLoc, unsigned CollapsedNum,
+                                 ArrayRef<OMPClause *> Clauses,
+                                 Stmt *AssociatedStmt,
+                                 const HelperExprs &Exprs);
 
   /// \brief Creates an empty directive with the place
   /// for \a NumClauses clauses.
@@ -600,24 +788,12 @@ public:
   /// \param CollapsedNum Number of collapsed loops.
   /// \param Clauses List of clauses.
   /// \param AssociatedStmt Statement, associated with the directive.
-  /// \param IV Loop iteration variable for CodeGen.
-  /// \param LastIteration Loop last iteration number for CodeGen.
-  /// \param CalcLastIteration Calculation of last iteration.
-  /// \param PreCond Pre-condition.
-  /// \param Cond Condition.
-  /// \param SeparatedCond Condition with 1 iteration separated.
-  /// \param Inc Loop increment.
-  /// \param Counters Loop counters.
-  /// \param Updates Expressions for loop counters update for CodeGen.
-  /// \param Finals Final loop counter values for GodeGen.
+  /// \param Exprs Helper expressions for CodeGen.
   ///
   static OMPForSimdDirective *
   Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation EndLoc,
          unsigned CollapsedNum, ArrayRef<OMPClause *> Clauses,
-         Stmt *AssociatedStmt, Expr *IV, Expr *LastIteration,
-         Expr *CalcLastIteration, Expr *PreCond, Expr *Cond,
-         Expr *SeparatedCond, Expr *Init, Expr *Inc, ArrayRef<Expr *> Counters,
-         ArrayRef<Expr *> Updates, ArrayRef<Expr *> Finals);
+         Stmt *AssociatedStmt, const HelperExprs &Exprs);
 
   /// \brief Creates an empty directive with the place
   /// for \a NumClauses clauses.
@@ -949,24 +1125,12 @@ public:
   /// \param CollapsedNum Number of collapsed loops.
   /// \param Clauses List of clauses.
   /// \param AssociatedStmt Statement, associated with the directive.
-  /// \param IV Loop iteration variable for CodeGen.
-  /// \param LastIteration Loop last iteration number for CodeGen.
-  /// \param CalcLastIteration Calculation of last iteration.
-  /// \param PreCond Pre-condition.
-  /// \param Cond Condition.
-  /// \param SeparatedCond Condition with 1 iteration separated.
-  /// \param Inc Loop increment.
-  /// \param Counters Loop counters.
-  /// \param Updates Expressions for loop counters update for CodeGen.
-  /// \param Finals Final loop counter values for GodeGen.
+  /// \param Exprs Helper expressions for CodeGen.
   ///
   static OMPParallelForDirective *
   Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation EndLoc,
          unsigned CollapsedNum, ArrayRef<OMPClause *> Clauses,
-         Stmt *AssociatedStmt, Expr *IV, Expr *LastIteration,
-         Expr *CalcLastIteration, Expr *PreCond, Expr *Cond,
-         Expr *SeparatedCond, Expr *Init, Expr *Inc, ArrayRef<Expr *> Counters,
-         ArrayRef<Expr *> Updates, ArrayRef<Expr *> Finals);
+         Stmt *AssociatedStmt, const HelperExprs &Exprs);
 
   /// \brief Creates an empty directive with the place
   /// for \a NumClauses clauses.
@@ -1030,24 +1194,12 @@ public:
   /// \param CollapsedNum Number of collapsed loops.
   /// \param Clauses List of clauses.
   /// \param AssociatedStmt Statement, associated with the directive.
-  /// \param IV Loop iteration variable for CodeGen.
-  /// \param LastIteration Loop last iteration number for CodeGen.
-  /// \param CalcLastIteration Calculation of last iteration.
-  /// \param PreCond Pre-condition.
-  /// \param Cond Condition.
-  /// \param SeparatedCond Condition with 1 iteration separated.
-  /// \param Inc Loop increment.
-  /// \param Counters Loop counters.
-  /// \param Updates Expressions for loop counters update for CodeGen.
-  /// \param Finals Final loop counter values for GodeGen.
+  /// \param Exprs Helper expressions for CodeGen.
   ///
   static OMPParallelForSimdDirective *
   Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation EndLoc,
          unsigned CollapsedNum, ArrayRef<OMPClause *> Clauses,
-         Stmt *AssociatedStmt, Expr *IV, Expr *LastIteration,
-         Expr *CalcLastIteration, Expr *PreCond, Expr *Cond,
-         Expr *SeparatedCond, Expr *Init, Expr *Inc, ArrayRef<Expr *> Counters,
-         ArrayRef<Expr *> Updates, ArrayRef<Expr *> Finals);
+         Stmt *AssociatedStmt, const HelperExprs &Exprs);
 
   /// \brief Creates an empty directive with the place
   /// for \a NumClauses clauses.
@@ -1430,6 +1582,8 @@ public:
 ///
 class OMPAtomicDirective : public OMPExecutableDirective {
   friend class ASTStmtReader;
+  /// \brief Binary operator for update and capture constructs.
+  BinaryOperatorKind OpKind;
   /// \brief Build directive with the given start and end location.
   ///
   /// \param StartLoc Starting location of the directive kind.
@@ -1439,7 +1593,7 @@ class OMPAtomicDirective : public OMPExecutableDirective {
   OMPAtomicDirective(SourceLocation StartLoc, SourceLocation EndLoc,
                      unsigned NumClauses)
       : OMPExecutableDirective(this, OMPAtomicDirectiveClass, OMPD_atomic,
-                               StartLoc, EndLoc, NumClauses, 1) {}
+                               StartLoc, EndLoc, NumClauses, 5) {}
 
   /// \brief Build an empty directive.
   ///
@@ -1448,20 +1602,43 @@ class OMPAtomicDirective : public OMPExecutableDirective {
   explicit OMPAtomicDirective(unsigned NumClauses)
       : OMPExecutableDirective(this, OMPAtomicDirectiveClass, OMPD_atomic,
                                SourceLocation(), SourceLocation(), NumClauses,
-                               1) {}
+                               5) {}
+
+  /// \brief Set operator kind for update and capture atomic constructs.
+  void setOpKind(const BinaryOperatorKind BOK) { OpKind = BOK; }
+  /// \brief Set 'x' part of the associated expression/statement.
+  void setX(Expr *X) { *std::next(child_begin()) = X; }
+  /// \brief Set 'x' rvalue used in update and capture atomic constructs for
+  /// proper update expression generation.
+  void setXRVal(Expr *XRVal) { *std::next(child_begin(), 2) = XRVal; }
+  /// \brief Set 'v' part of the associated expression/statement.
+  void setV(Expr *V) { *std::next(child_begin(), 3) = V; }
+  /// \brief Set 'expr' part of the associated expression/statement.
+  void setExpr(Expr *E) { *std::next(child_begin(), 4) = E; }
 
 public:
-  /// \brief Creates directive with a list of \a Clauses.
+  /// \brief Creates directive with a list of \a Clauses and 'x', 'v' and 'expr'
+  /// parts of the atomic construct (see Section 2.12.6, atomic Construct, for
+  /// detailed description of 'x', 'v' and 'expr').
   ///
   /// \param C AST context.
   /// \param StartLoc Starting location of the directive kind.
   /// \param EndLoc Ending Location of the directive.
   /// \param Clauses List of clauses.
   /// \param AssociatedStmt Statement, associated with the directive.
+  /// \param OpKind Binary operator used for updating of 'x' part of the
+  /// expression in update and capture atomic constructs.
+  /// \param X 'x' part of the associated expression/statement.
+  /// \param XRVal 'x' rvalue expression used in update and capture constructs
+  /// for proper update expression generation. Used to read original value of
+  /// the 'x' part of the expression.
+  /// \param V 'v' part of the associated expression/statement.
+  /// \param E 'expr' part of the associated expression/statement.
   ///
   static OMPAtomicDirective *
   Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation EndLoc,
-         ArrayRef<OMPClause *> Clauses, Stmt *AssociatedStmt);
+         ArrayRef<OMPClause *> Clauses, Stmt *AssociatedStmt,
+         BinaryOperatorKind OpKind, Expr *X, Expr *XRVal, Expr *V, Expr *E);
 
   /// \brief Creates an empty directive with the place for \a NumClauses
   /// clauses.
@@ -1471,6 +1648,30 @@ public:
   ///
   static OMPAtomicDirective *CreateEmpty(const ASTContext &C,
                                          unsigned NumClauses, EmptyShell);
+
+  /// \brief Get binary operation for update or capture atomic constructs.
+  BinaryOperatorKind getOpKind() const { return OpKind; }
+  /// \brief Get 'x' part of the associated expression/statement.
+  Expr *getX() { return cast_or_null<Expr>(*std::next(child_begin())); }
+  const Expr *getX() const {
+    return cast_or_null<Expr>(*std::next(child_begin()));
+  }
+  /// \brief Get 'x' rvalue used in update and capture atomic constructs for
+  /// proper update expression generation.
+  Expr *getXRVal() { return cast_or_null<Expr>(*std::next(child_begin(), 2)); }
+  const Expr *getXRVal() const {
+    return cast_or_null<Expr>(*std::next(child_begin(), 2));
+  }
+  /// \brief Get 'v' part of the associated expression/statement.
+  Expr *getV() { return cast_or_null<Expr>(*std::next(child_begin(), 3)); }
+  const Expr *getV() const {
+    return cast_or_null<Expr>(*std::next(child_begin(), 3));
+  }
+  /// \brief Get 'expr' part of the associated expression/statement.
+  Expr *getExpr() { return cast_or_null<Expr>(*std::next(child_begin(), 4)); }
+  const Expr *getExpr() const {
+    return cast_or_null<Expr>(*std::next(child_begin(), 4));
+  }
 
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == OMPAtomicDirectiveClass;

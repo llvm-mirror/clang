@@ -1,5 +1,9 @@
 // RUN: %clang_cc1 %s -emit-llvm -O1 -o - -triple=i686-apple-darwin9 -std=c++11 | FileCheck %s
 
+// CHECK-DAG: @PR22043 = global i32 0, align 4
+typedef _Atomic(int) AtomicInt;
+AtomicInt PR22043 = AtomicInt();
+
 // CHECK-DAG: @_ZN7PR180978constant1aE = global { i16, i8 } { i16 1, i8 6 }, align 4
 // CHECK-DAG: @_ZN7PR180978constant1bE = global { i16, i8 } { i16 2, i8 6 }, align 4
 // CHECK-DAG: @_ZN7PR180978constant1cE = global { i16, i8 } { i16 3, i8 6 }, align 4
@@ -77,8 +81,8 @@ namespace PR18097 {
       _Atomic(int) b;
     };
     // CHECK-LABEL: define {{.*}} @__cxx_global_var_init
-    // CHECK: call void @_ZN7PR180977dynamic1XC1Ei({{.*}}* getelementptr inbounds ({{.*}}* @_ZN7PR180977dynamic1yE, i32 0, i32 0), i32 4)
-    // CHECK: store i32 5, i32* getelementptr inbounds ({{.*}}* @_ZN7PR180977dynamic1yE, i32 0, i32 1)
+    // CHECK: call void @_ZN7PR180977dynamic1XC1Ei({{.*}}* getelementptr inbounds ({{.*}}, {{.*}}* @_ZN7PR180977dynamic1yE, i32 0, i32 0), i32 4)
+    // CHECK: store i32 5, i32* getelementptr inbounds ({{.*}}, {{.*}}* @_ZN7PR180977dynamic1yE, i32 0, i32 1)
     Y y = { X(4), 5 };
   }
 

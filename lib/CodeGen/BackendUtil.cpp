@@ -15,22 +15,23 @@
 #include "clang/Frontend/FrontendDiagnostic.h"
 #include "clang/Frontend/Utils.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/SchedulerRegistry.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/IRPrintingPasses.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/MC/SubtargetFeature.h"
-#include "llvm/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetLibraryInfo.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
@@ -39,6 +40,7 @@
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/ObjCARC.h"
 #include "llvm/Transforms/Scalar.h"
+#include "llvm/Transforms/Utils/SymbolRewriter.h"
 #include <memory>
 using namespace clang;
 using namespace llvm;
@@ -54,37 +56,41 @@ class EmitAssemblyHelper {
 
   Timer CodeGenerationTime;
 
-  mutable PassManager *CodeGenPasses;
-  mutable PassManager *PerModulePasses;
-  mutable FunctionPassManager *PerFunctionPasses;
+  mutable legacy::PassManager *CodeGenPasses;
+  mutable legacy::PassManager *PerModulePasses;
+  mutable legacy::FunctionPassManager *PerFunctionPasses;
 
 private:
-  PassManager *getCodeGenPasses() const {
+  TargetIRAnalysis getTargetIRAnalysis() const {
+    if (TM)
+      return TM->getTargetIRAnalysis();
+
+    return TargetIRAnalysis();
+  }
+
+  legacy::PassManager *getCodeGenPasses() const {
     if (!CodeGenPasses) {
-      CodeGenPasses = new PassManager();
-      CodeGenPasses->add(new DataLayoutPass());
-      if (TM)
-        TM->addAnalysisPasses(*CodeGenPasses);
+      CodeGenPasses = new legacy::PassManager();
+      CodeGenPasses->add(
+          createTargetTransformInfoWrapperPass(getTargetIRAnalysis()));
     }
     return CodeGenPasses;
   }
 
-  PassManager *getPerModulePasses() const {
+  legacy::PassManager *getPerModulePasses() const {
     if (!PerModulePasses) {
-      PerModulePasses = new PassManager();
-      PerModulePasses->add(new DataLayoutPass());
-      if (TM)
-        TM->addAnalysisPasses(*PerModulePasses);
+      PerModulePasses = new legacy::PassManager();
+      PerModulePasses->add(
+          createTargetTransformInfoWrapperPass(getTargetIRAnalysis()));
     }
     return PerModulePasses;
   }
 
-  FunctionPassManager *getPerFunctionPasses() const {
+  legacy::FunctionPassManager *getPerFunctionPasses() const {
     if (!PerFunctionPasses) {
-      PerFunctionPasses = new FunctionPassManager(TheModule);
-      PerFunctionPasses->add(new DataLayoutPass());
-      if (TM)
-        TM->addAnalysisPasses(*PerFunctionPasses);
+      PerFunctionPasses = new legacy::FunctionPassManager(TheModule);
+      PerFunctionPasses->add(
+          createTargetTransformInfoWrapperPass(getTargetIRAnalysis()));
     }
     return PerFunctionPasses;
   }
@@ -162,7 +168,7 @@ static void addObjCARCOptPass(const PassManagerBuilder &Builder, PassManagerBase
 }
 
 static void addSampleProfileLoaderPass(const PassManagerBuilder &Builder,
-                                       PassManagerBase &PM) {
+                                       legacy::PassManagerBase &PM) {
   const PassManagerBuilderWrapper &BuilderWrapper =
       static_cast<const PassManagerBuilderWrapper &>(Builder);
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
@@ -170,23 +176,31 @@ static void addSampleProfileLoaderPass(const PassManagerBuilder &Builder,
 }
 
 static void addAddDiscriminatorsPass(const PassManagerBuilder &Builder,
-                                     PassManagerBase &PM) {
+                                     legacy::PassManagerBase &PM) {
   PM.add(createAddDiscriminatorsPass());
 }
 
 static void addBoundsCheckingPass(const PassManagerBuilder &Builder,
-                                    PassManagerBase &PM) {
+                                    legacy::PassManagerBase &PM) {
   PM.add(createBoundsCheckingPass());
 }
 
+static void addSanitizerCoveragePass(const PassManagerBuilder &Builder,
+                                     legacy::PassManagerBase &PM) {
+  const PassManagerBuilderWrapper &BuilderWrapper =
+      static_cast<const PassManagerBuilderWrapper&>(Builder);
+  const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
+  PM.add(createSanitizerCoverageModulePass(CGOpts.SanitizeCoverage));
+}
+
 static void addAddressSanitizerPasses(const PassManagerBuilder &Builder,
-                                      PassManagerBase &PM) {
+                                      legacy::PassManagerBase &PM) {
   PM.add(createAddressSanitizerFunctionPass());
   PM.add(createAddressSanitizerModulePass());
 }
 
 static void addMemorySanitizerPass(const PassManagerBuilder &Builder,
-                                   PassManagerBase &PM) {
+                                   legacy::PassManagerBase &PM) {
   const PassManagerBuilderWrapper &BuilderWrapper =
       static_cast<const PassManagerBuilderWrapper&>(Builder);
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
@@ -206,24 +220,43 @@ static void addMemorySanitizerPass(const PassManagerBuilder &Builder,
 }
 
 static void addThreadSanitizerPass(const PassManagerBuilder &Builder,
-                                   PassManagerBase &PM) {
+                                   legacy::PassManagerBase &PM) {
   PM.add(createThreadSanitizerPass());
 }
 
 static void addDataFlowSanitizerPass(const PassManagerBuilder &Builder,
-                                     PassManagerBase &PM) {
+                                     legacy::PassManagerBase &PM) {
   const PassManagerBuilderWrapper &BuilderWrapper =
       static_cast<const PassManagerBuilderWrapper&>(Builder);
   const LangOptions &LangOpts = BuilderWrapper.getLangOpts();
-  PM.add(createDataFlowSanitizerPass(LangOpts.Sanitize.BlacklistFile));
+  PM.add(createDataFlowSanitizerPass(LangOpts.SanitizerBlacklistFiles));
 }
 
-static TargetLibraryInfo *createTLI(llvm::Triple &TargetTriple,
-                                    const CodeGenOptions &CodeGenOpts) {
-  TargetLibraryInfo *TLI = new TargetLibraryInfo(TargetTriple);
+static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
+                                         const CodeGenOptions &CodeGenOpts) {
+  TargetLibraryInfoImpl *TLII = new TargetLibraryInfoImpl(TargetTriple);
   if (!CodeGenOpts.SimplifyLibCalls)
-    TLI->disableAllFunctions();
-  return TLI;
+    TLII->disableAllFunctions();
+
+  switch (CodeGenOpts.getVecLib()) {
+  case CodeGenOptions::Accelerate:
+    TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::Accelerate);
+    break;
+  default:
+    break;
+  }
+  return TLII;
+}
+
+static void addSymbolRewriterPass(const CodeGenOptions &Opts,
+                                  legacy::PassManager *MPM) {
+  llvm::SymbolRewriter::RewriteDescriptorList DL;
+
+  llvm::SymbolRewriter::RewriteMapParser MapParser;
+  for (const auto &MapFile : Opts.RewriteMapFiles)
+    MapParser.parse(MapFile, &DL);
+
+  MPM->add(createRewriteSymbolsPass(DL));
 }
 
 void EmitAssemblyHelper::CreatePasses() {
@@ -247,6 +280,7 @@ void EmitAssemblyHelper::CreatePasses() {
   PMBuilder.DisableTailCalls = CodeGenOpts.DisableTailCalls;
   PMBuilder.DisableUnitAtATime = !CodeGenOpts.UnitAtATime;
   PMBuilder.DisableUnrollLoops = !CodeGenOpts.UnrollLoops;
+  PMBuilder.MergeFunctions = CodeGenOpts.MergeFunctions;
   PMBuilder.RerollLoops = CodeGenOpts.RerollLoops;
 
   PMBuilder.addExtension(PassManagerBuilder::EP_EarlyAsPossible,
@@ -266,35 +300,42 @@ void EmitAssemblyHelper::CreatePasses() {
                            addObjCARCOptPass);
   }
 
-  if (LangOpts.Sanitize.LocalBounds) {
+  if (LangOpts.Sanitize.has(SanitizerKind::LocalBounds)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_ScalarOptimizerLate,
                            addBoundsCheckingPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addBoundsCheckingPass);
   }
 
-  if (LangOpts.Sanitize.Address) {
+  if (CodeGenOpts.SanitizeCoverage) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
+                           addSanitizerCoveragePass);
+    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                           addSanitizerCoveragePass);
+  }
+
+  if (LangOpts.Sanitize.has(SanitizerKind::Address)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addAddressSanitizerPasses);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addAddressSanitizerPasses);
   }
 
-  if (LangOpts.Sanitize.Memory) {
+  if (LangOpts.Sanitize.has(SanitizerKind::Memory)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addMemorySanitizerPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addMemorySanitizerPass);
   }
 
-  if (LangOpts.Sanitize.Thread) {
+  if (LangOpts.Sanitize.has(SanitizerKind::Thread)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addThreadSanitizerPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addThreadSanitizerPass);
   }
 
-  if (LangOpts.Sanitize.DataFlow) {
+  if (LangOpts.Sanitize.has(SanitizerKind::DataFlow)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addDataFlowSanitizerPass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
@@ -303,7 +344,7 @@ void EmitAssemblyHelper::CreatePasses() {
 
   // Figure out TargetLibraryInfo.
   Triple TargetTriple(TheModule->getTargetTriple());
-  PMBuilder.LibraryInfo = createTLI(TargetTriple, CodeGenOpts);
+  PMBuilder.LibraryInfo = createTLII(TargetTriple, CodeGenOpts);
 
   switch (Inlining) {
   case CodeGenOptions::NoInlining: break;
@@ -323,15 +364,15 @@ void EmitAssemblyHelper::CreatePasses() {
   }
 
   // Set up the per-function pass manager.
-  FunctionPassManager *FPM = getPerFunctionPasses();
+  legacy::FunctionPassManager *FPM = getPerFunctionPasses();
   if (CodeGenOpts.VerifyModule)
     FPM->add(createVerifierPass());
   PMBuilder.populateFunctionPassManager(*FPM);
 
   // Set up the per-module pass manager.
-  PassManager *MPM = getPerModulePasses();
-  if (CodeGenOpts.VerifyModule)
-    MPM->add(createDebugInfoVerifierPass());
+  legacy::PassManager *MPM = getPerModulePasses();
+  if (!CodeGenOpts.RewriteMapFiles.empty())
+    addSymbolRewriterPass(CodeGenOpts, MPM);
 
   if (!CodeGenOpts.DisableGCov &&
       (CodeGenOpts.EmitGcovArcs || CodeGenOpts.EmitGcovNotes)) {
@@ -345,9 +386,16 @@ void EmitAssemblyHelper::CreatePasses() {
     Options.NoRedZone = CodeGenOpts.DisableRedZone;
     Options.FunctionNamesInData =
         !CodeGenOpts.CoverageNoFunctionNamesInData;
+    Options.ExitBlockBeforeBody = CodeGenOpts.CoverageExitBlockBeforeBody;
     MPM->add(createGCOVProfilerPass(Options));
     if (CodeGenOpts.getDebugInfo() == CodeGenOptions::NoDebugInfo)
       MPM->add(createStripSymbolsPass(true));
+  }
+
+  if (CodeGenOpts.ProfileInstrGenerate) {
+    InstrProfOptions Options;
+    Options.NoRedZone = CodeGenOpts.DisableRedZone;
+    MPM->add(createInstrProfilingPass(Options));
   }
 
   PMBuilder.populateModulePassManager(*MPM);
@@ -396,7 +444,7 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
                                     BackendArgs.data());
 
   std::string FeaturesStr;
-  if (TargetOpts.Features.size()) {
+  if (!TargetOpts.Features.empty()) {
     SubtargetFeatures Features;
     for (std::vector<std::string>::const_iterator
            it = TargetOpts.Features.begin(),
@@ -483,6 +531,7 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   Options.PositionIndependentExecutable = LangOpts.PIELevel != 0;
   Options.FunctionSections = CodeGenOpts.FunctionSections;
   Options.DataSections = CodeGenOpts.DataSections;
+  Options.UniqueSectionNames = CodeGenOpts.UniqueSectionNames;
 
   Options.MCOptions.MCRelaxAll = CodeGenOpts.RelaxAll;
   Options.MCOptions.MCSaveTempLabels = CodeGenOpts.SaveTempLabels;
@@ -490,6 +539,7 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   Options.MCOptions.MCNoExecStack = CodeGenOpts.NoExecStack;
   Options.MCOptions.MCFatalWarnings = CodeGenOpts.FatalWarnings;
   Options.MCOptions.AsmVerbose = CodeGenOpts.AsmVerbose;
+  Options.MCOptions.ABIName = TargetOpts.ABI;
 
   TargetMachine *TM = TheTarget->createTargetMachine(Triple, TargetOpts.CPU,
                                                      FeaturesStr, Options,
@@ -502,14 +552,13 @@ bool EmitAssemblyHelper::AddEmitPasses(BackendAction Action,
                                        formatted_raw_ostream &OS) {
 
   // Create the code generator passes.
-  PassManager *PM = getCodeGenPasses();
+  legacy::PassManager *PM = getCodeGenPasses();
 
   // Add LibraryInfo.
   llvm::Triple TargetTriple(TheModule->getTargetTriple());
-  PM->add(createTLI(TargetTriple, CodeGenOpts));
-
-  // Add Target specific analysis passes.
-  TM->addAnalysisPasses(*PM);
+  std::unique_ptr<TargetLibraryInfoImpl> TLII(
+      createTLII(TargetTriple, CodeGenOpts));
+  PM->add(new TargetLibraryInfoWrapperPass(*TLII));
 
   // Normal mode, emit a .s or .o file by running the code generator. Note,
   // this also adds codegenerator level optimization passes.
@@ -610,9 +659,8 @@ void clang::EmitBackendOutput(DiagnosticsEngine &Diags,
   // If an optional clang TargetInfo description string was passed in, use it to
   // verify the LLVM TargetMachine's DataLayout.
   if (AsmHelper.TM && !TDesc.empty()) {
-    std::string DLDesc = AsmHelper.TM->getSubtargetImpl()
-                             ->getDataLayout()
-                             ->getStringRepresentation();
+    std::string DLDesc =
+        AsmHelper.TM->getDataLayout()->getStringRepresentation();
     if (DLDesc != TDesc) {
       unsigned DiagID = Diags.getCustomDiagID(
           DiagnosticsEngine::Error, "backend data layout '%0' does not match "

@@ -25,6 +25,8 @@ def err_msasm_unsupported_arch : Error<
   "Unsupported architecture '%0' for MS-style inline assembly">;
 def err_msasm_unable_to_create_target : Error<
   "MS-style inline assembly is not available: %0">;
+def err_gnu_inline_asm_disabled : Error<
+  "GNU-style inline assembly is disabled">;
 }
 
 let CategoryName = "Parse Issue" in {
@@ -108,6 +110,9 @@ def ext_alignof_expr : ExtWarn<
 def warn_microsoft_dependent_exists : Warning<
   "dependent %select{__if_not_exists|__if_exists}0 declarations are ignored">, 
   InGroup<DiagGroup<"microsoft-exists">>;
+def warn_microsoft_qualifiers_ignored : Warning<
+  "qualifiers after comma in declarator list are ignored">,
+  InGroup<IgnoredAttributes>;
 
 def ext_c11_generic_selection : Extension<
   "generic selections are a C11-specific feature">, InGroup<C11>;
@@ -121,11 +126,15 @@ def ext_c11_alignment : Extension<
 
 def ext_c11_noreturn : Extension<
   "_Noreturn functions are a C11-specific feature">, InGroup<C11>;
+def err_c11_noreturn_misplaced : Error<
+  "'_Noreturn' keyword must precede function declarator">;
 
 def ext_gnu_indirect_goto : Extension<
   "use of GNU indirect-goto extension">, InGroup<GNULabelsAsValue>;
 def ext_gnu_address_of_label : Extension<
   "use of GNU address-of-label extension">, InGroup<GNULabelsAsValue>;
+def err_stmtexpr_file_scope : Error<
+  "statement expression not allowed at file scope">;
 def ext_gnu_statement_expr : Extension<
   "use of GNU statement expression extension">, InGroup<GNUStatementExpression>;
 def ext_gnu_conditional_expr : Extension<
@@ -174,6 +183,8 @@ def warn_attribute_no_decl : Warning<
   "attribute %0 ignored, because it is not attached to a declaration">, 
   InGroup<IgnoredAttributes>;
 def err_expected_method_body : Error<"expected method body">;
+def err_declspec_after_virtspec : Error<
+  "'%0' qualifier may not appear after the virtual specifier '%1'">;
 def err_invalid_token_after_toplevel_declarator : Error<
   "expected ';' after top level declarator">;
 def err_invalid_token_after_declarator_suggest_equal : Error<
@@ -197,11 +208,19 @@ def err_expected_semi_after_namespace_name : Error<
   "expected ';' after namespace name">;
 def err_unexpected_namespace_attributes_alias : Error<
   "attributes cannot be specified on namespace alias">;
+def err_unexpected_nested_namespace_attribute : Error<
+  "attributes cannot be specified on a nested namespace definition">;
 def err_inline_namespace_alias : Error<"namespace alias cannot be inline">;
 def err_namespace_nonnamespace_scope : Error<
   "namespaces can only be defined in global or namespace scope">;
-def err_nested_namespaces_with_double_colon : Error<
-  "nested namespace definition must define each namespace separately">;
+def ext_nested_namespace_definition : ExtWarn<
+  "nested namespace definition is a C++1z extension; "
+  "define each namespace separately">, InGroup<CXX1z>;
+def warn_cxx14_compat_nested_namespace_definition : Warning<
+  "nested namespace definition is incompatible with C++ standards before C++1z">,
+  InGroup<CXXPre1zCompat>, DefaultIgnore;
+def err_inline_nested_namespace_definition : Error<
+  "nested namespace definition cannot be 'inline'">;
 def err_expected_semi_after_attribute_list : Error<
   "expected ';' after attribute list">;
 def err_expected_semi_after_static_assert : Error<
@@ -280,13 +299,8 @@ def ext_for_range : ExtWarn<
 def warn_cxx98_compat_for_range : Warning<
   "range-based for loop is incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
-def ext_for_range_identifier : ExtWarn<
-  "range-based for loop with implicit deduced type is a C++1z extension">,
-  InGroup<CXX1z>;
-def warn_cxx14_compat_for_range_identifier : Warning<
-  "range-based for loop with implicit deduced type is incompatible with "
-  "C++ standards before C++1z">,
-  InGroup<CXXPre1zCompat>, DefaultIgnore;
+def err_for_range_identifier : Error<
+  "range-based for loop requires type for loop variable">;
 def err_for_range_expected_decl : Error<
   "for range declaration must declare a variable">;
 def err_argument_required_after_attribute : Error<
@@ -337,10 +351,17 @@ def err_invalid_vector_decl_spec_combination : Error<
 def err_invalid_pixel_decl_spec_combination : Error<
   "'__pixel' must be preceded by '__vector'.  "
   "'%0' declaration specifier not allowed here">;
-def err_invalid_vector_decl_spec : Error<
-  "cannot use '%0' with '__vector'">;
 def err_invalid_vector_bool_decl_spec : Error<
   "cannot use '%0' with '__vector bool'">;
+def err_invalid_vector_double_decl_spec : Error <
+  "use of 'double' with '__vector' requires VSX support to be enabled "
+  "(available on POWER7 or later)">;
+def err_invalid_vector_long_long_decl_spec : Error <
+  "use of 'long long' with '__vector bool' requires VSX support (available on "
+  "POWER7 or later) or extended Altivec support (available on POWER8 or later) " 
+  "to be enabled">;
+def err_invalid_vector_long_double_decl_spec : Error<
+  "cannot use 'long double' with '__vector'">;
 def warn_vector_long_decl_spec_combination : Warning<
   "Use of 'long' with '__vector' is deprecated">, InGroup<Deprecated>;
 def err_friend_invalid_in_context : Error<
@@ -484,6 +505,8 @@ def ext_ellipsis_exception_spec : Extension<
   InGroup<Microsoft>;
 def err_dynamic_and_noexcept_specification : Error<
   "cannot have both throw() and noexcept() clause on the same function">;
+def err_except_spec_unparsed : Error<
+  "unexpected end of exception specification">;
 def warn_cxx98_compat_noexcept_decl : Warning<
   "noexcept specifications are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
@@ -551,6 +574,10 @@ def warn_cxx98_compat_noexcept_expr : Warning<
 def warn_cxx98_compat_nullptr : Warning<
   "'nullptr' is incompatible with C++98">, InGroup<CXX98Compat>, DefaultIgnore;
 
+def warn_cxx14_compat_attribute : Warning<
+  "attributes on %select{a namespace|an enumerator}0 declaration are "
+  "incompatible with C++ standards before C++1z">,
+  InGroup<CXXPre1zCompat>, DefaultIgnore;
 def warn_cxx98_compat_alignas : Warning<"'alignas' is incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
 def warn_cxx98_compat_attribute : Warning<
@@ -586,6 +613,8 @@ def err_ms_property_expected_accessor_name : Error<
   "expected name of accessor method">;
 def err_ms_property_expected_comma_or_rparen : Error<
   "expected ',' or ')' at end of property accessor list">;
+def err_ms_property_initializer : Error<
+  "property declaration cannot have an in-class initializer">;
 
 /// C++ Templates
 def err_expected_template : Error<"expected template">;
@@ -678,7 +707,18 @@ def err_explicit_spec_non_template : Error<
 def err_default_template_template_parameter_not_template : Error<
   "default template argument for a template template parameter must be a class "
   "template">;
-  
+
+def ext_fold_expression : ExtWarn<
+  "pack fold expression is a C++1z extension">,
+  InGroup<CXX1z>;
+def warn_cxx14_compat_fold_expression : Warning<
+  "pack fold expression is incompatible with C++ standards before C++1z">,
+  InGroup<CXXPre1zCompat>, DefaultIgnore;
+def err_expected_fold_operator : Error<
+  "expected a foldable binary operator in fold expression">;
+def err_fold_operator_mismatch : Error<
+  "operators in fold expression must be the same">;
+
 def err_ctor_init_missing_comma : Error<
   "missing ',' between base or member initializers">;
 
@@ -771,6 +811,10 @@ def warn_cxx98_compat_lambda : Warning<
 def err_lambda_missing_parens : Error<
   "lambda requires '()' before %select{'mutable'|return type|"
   "attribute specifier}0">;
+def warn_init_capture_direct_list_init : Warning<
+  "direct list initialization of a lambda init-capture will change meaning in "
+  "a future version of Clang; insert an '=' to avoid a change in behavior">,
+  InGroup<FutureCompat>;
 
 // Availability attribute
 def err_expected_version : Error<
@@ -889,6 +933,9 @@ def err_pragma_fp_contract_scope : Error<
 def err_pragma_comment_malformed : Error<
   "pragma comment requires parenthesized identifier and optional string">;
 def err_pragma_comment_unknown_kind : Error<"unknown kind of pragma comment">;
+// PS4 recognizes only #pragma comment(lib)
+def warn_pragma_comment_ignored : Warning<"'#pragma comment %0' ignored">,
+  InGroup<Microsoft>;
 // - #pragma detect_mismatch
 def err_pragma_detect_mismatch_malformed : Error<
   "pragma detect_mismatch is malformed; it requires two comma-separated "
@@ -905,8 +952,8 @@ def err_pragma_optimize_extra_argument : Error<
   "unexpected extra argument '%0' to '#pragma clang optimize'">;
 
 // OpenCL Section 6.8.g
-def err_not_opencl_storage_class_specifier : Error<
-  "OpenCL does not support the '%0' storage class specifier">;
+def err_opencl_unknown_type_specifier : Error<
+  "OpenCL does not support the '%0' %select{type qualifier|storage class specifier}1">;
 
 // OpenCL EXTENSION pragma (OpenCL 1.1 [9.1])
 def warn_pragma_expected_colon : Warning<
@@ -915,18 +962,6 @@ def warn_pragma_expected_enable_disable : Warning<
   "expected 'enable' or 'disable' - ignoring">, InGroup<IgnoredPragmas>;
 def warn_pragma_unknown_extension : Warning<
   "unknown OpenCL extension %0 - ignoring">, InGroup<IgnoredPragmas>;
-
-def err_seh_expected_handler : Error<
-  "expected '__except' or '__finally' block">;
-
-def err_seh___except_block : Error<
-  "%0 only allowed in __except block">;
-
-def err_seh___except_filter : Error<
-  "%0 only allowed in __except filter expression">;
-
-def err_seh___finally_block : Error<
-  "%0 only allowed in __finally block">;
 
 // OpenMP support.
 def warn_pragma_omp_ignored : Warning<

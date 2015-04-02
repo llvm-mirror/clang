@@ -88,16 +88,13 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     CodeSegStack(nullptr), CurInitSeg(nullptr), VisContext(nullptr),
     IsBuildingRecoveryCallExpr(false),
     ExprNeedsCleanups(false), LateTemplateParser(nullptr),
+    LateTemplateParserCleanup(nullptr),
     OpaqueParser(nullptr), IdResolver(pp), StdInitializerList(nullptr),
     CXXTypeInfoDecl(nullptr), MSVCGuidDecl(nullptr),
     NSNumberDecl(nullptr),
     NSStringDecl(nullptr), StringWithUTF8StringMethod(nullptr),
     NSArrayDecl(nullptr), ArrayWithObjectsMethod(nullptr),
-    InitArrayWithObjectsMethod(nullptr),
     NSDictionaryDecl(nullptr), DictionaryWithObjectsMethod(nullptr),
-    InitDictionaryWithObjectsMethod(nullptr),
-    ArrayAllocObjectsMethod(nullptr),
-    DictAllocObjectsMethod(nullptr),
     MSAsmLabelNameCounter(0),
     GlobalNewDeleteDeclared(false),
     TUKind(TUKind),
@@ -105,7 +102,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     AccessCheckingSFINAE(false), InNonInstantiationSFINAEContext(false),
     NonInstantiationEntries(0), ArgumentPackSubstitutionIndex(-1),
     CurrentInstantiationScope(nullptr), DisableTypoCorrection(false),
-    TyposCorrected(0), AnalysisWarnings(*this),
+    TyposCorrected(0), AnalysisWarnings(*this), ThreadSafetyDeclCache(nullptr),
     VarDataSharingAttributesStack(nullptr), CurScope(nullptr),
     Ident_super(nullptr), Ident___float128(nullptr)
 {
@@ -125,9 +122,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
   PP.getDiagnostics().SetArgToStringFn(&FormatASTNodeDiagnosticArgument,
                                        &Context);
 
-  ExprEvalContexts.push_back(
-        ExpressionEvaluationContextRecord(PotentiallyEvaluated, 0,
-                                          false, nullptr, false));
+  ExprEvalContexts.emplace_back(PotentiallyEvaluated, 0, false, nullptr, false);
 
   FunctionScopes.push_back(new FunctionScopeInfo(Diags));
 
@@ -198,8 +193,9 @@ void Sema::Initialize() {
   }
 
   // Initialize Microsoft "predefined C++ types".
-  if (PP.getLangOpts().MSVCCompat && PP.getLangOpts().CPlusPlus) {
-    if (IdResolver.begin(&Context.Idents.get("type_info")) == IdResolver.end())
+  if (PP.getLangOpts().MSVCCompat) {
+    if (PP.getLangOpts().CPlusPlus &&
+        IdResolver.begin(&Context.Idents.get("type_info")) == IdResolver.end())
       PushOnScopeChains(Context.buildImplicitRecord("type_info", TTK_Class),
                         TUScope);
 
@@ -216,6 +212,29 @@ void Sema::Initialize() {
     addImplicitTypedef("image3d_t", Context.OCLImage3dTy);
     addImplicitTypedef("sampler_t", Context.OCLSamplerTy);
     addImplicitTypedef("event_t", Context.OCLEventTy);
+    if (getLangOpts().OpenCLVersion >= 200) {
+      addImplicitTypedef("atomic_int", Context.getAtomicType(Context.IntTy));
+      addImplicitTypedef("atomic_uint",
+                         Context.getAtomicType(Context.UnsignedIntTy));
+      addImplicitTypedef("atomic_long", Context.getAtomicType(Context.LongTy));
+      addImplicitTypedef("atomic_ulong",
+                         Context.getAtomicType(Context.UnsignedLongTy));
+      addImplicitTypedef("atomic_float",
+                         Context.getAtomicType(Context.FloatTy));
+      addImplicitTypedef("atomic_double",
+                         Context.getAtomicType(Context.DoubleTy));
+      // OpenCLC v2.0, s6.13.11.6 requires that atomic_flag is implemented as
+      // 32-bit integer and OpenCLC v2.0, s6.1.1 int is always 32-bit wide.
+      addImplicitTypedef("atomic_flag", Context.getAtomicType(Context.IntTy));
+      addImplicitTypedef("atomic_intptr_t",
+                         Context.getAtomicType(Context.getIntPtrType()));
+      addImplicitTypedef("atomic_uintptr_t",
+                         Context.getAtomicType(Context.getUIntPtrType()));
+      addImplicitTypedef("atomic_size_t",
+                         Context.getAtomicType(Context.getSizeType()));
+      addImplicitTypedef("atomic_ptrdiff_t",
+                         Context.getAtomicType(Context.getPointerDiffType()));
+    }
   }
 
   DeclarationName BuiltinVaList = &Context.Idents.get("__builtin_va_list");
@@ -246,8 +265,12 @@ Sema::~Sema() {
   if (isMultiplexExternalSource)
     delete ExternalSource;
 
+  threadSafety::threadSafetyCleanup(ThreadSafetyDeclCache);
+
   // Destroys data sharing attributes stack for OpenMP
   DestroyDataSharingAttributesStack();
+
+  assert(DelayedTypos.empty() && "Uncorrected typos!");
 }
 
 /// makeUnavailableInSystemHeader - There is an error in the current
@@ -337,18 +360,6 @@ ExprResult Sema::ImpCastExprToType(Expr *E, QualType Ty,
 
   if (ExprTy == TypeTy)
     return E;
-
-  // If this is a derived-to-base cast to a through a virtual base, we
-  // need a vtable.
-  if (Kind == CK_DerivedToBase &&
-      BasePathInvolvesVirtualBase(*BasePath)) {
-    QualType T = E->getType();
-    if (const PointerType *Pointer = T->getAs<PointerType>())
-      T = Pointer->getPointeeType();
-    if (const RecordType *RecordTy = T->getAs<RecordType>())
-      MarkVTableUsed(E->getLocStart(),
-                     cast<CXXRecordDecl>(RecordTy->getDecl()));
-  }
 
   if (ImplicitCastExpr *ImpCast = dyn_cast<ImplicitCastExpr>(E)) {
     if (ImpCast->getCastKind() == Kind && (!BasePath || BasePath->empty())) {
@@ -513,14 +524,8 @@ void Sema::LoadExternalWeakUndeclaredIdentifiers() {
 
   SmallVector<std::pair<IdentifierInfo *, WeakInfo>, 4> WeakIDs;
   ExternalSource->ReadWeakUndeclaredIdentifiers(WeakIDs);
-  for (unsigned I = 0, N = WeakIDs.size(); I != N; ++I) {
-    llvm::DenseMap<IdentifierInfo*,WeakInfo>::iterator Pos
-      = WeakUndeclaredIdentifiers.find(WeakIDs[I].first);
-    if (Pos != WeakUndeclaredIdentifiers.end())
-      continue;
-
-    WeakUndeclaredIdentifiers.insert(WeakIDs[I]);
-  }
+  for (auto &WeakID : WeakIDs)
+    WeakUndeclaredIdentifiers.insert(WeakID);
 }
 
 
@@ -633,22 +638,6 @@ void Sema::ActOnEndOfTranslationUnit() {
   if (TUKind != TU_Prefix) {
     DiagnoseUseOfUnimplementedSelectors();
 
-    // If any dynamic classes have their key function defined within
-    // this translation unit, then those vtables are considered "used" and must
-    // be emitted.
-    for (DynamicClassesType::iterator I = DynamicClasses.begin(ExternalSource),
-                                      E = DynamicClasses.end();
-         I != E; ++I) {
-      assert(!(*I)->isDependentType() &&
-             "Should not see dependent types here!");
-      if (const CXXMethodDecl *KeyFunction =
-              Context.getCurrentKeyFunction(*I)) {
-        const FunctionDecl *Definition = nullptr;
-        if (KeyFunction->hasBody(Definition))
-          MarkVTableUsed(Definition->getLocation(), *I, true);
-      }
-    }
-
     // If DefinedUsedVTables ends up marking any virtual member functions it
     // might lead to more pending template instantiations, which we then need
     // to instantiate.
@@ -672,13 +661,18 @@ void Sema::ActOnEndOfTranslationUnit() {
     }
     PerformPendingInstantiations();
 
+    if (LateTemplateParserCleanup)
+      LateTemplateParserCleanup(OpaqueParser);
+
     CheckDelayedMemberExceptionSpecs();
   }
 
   // All delayed member exception specs should be checked or we end up accepting
   // incompatible declarations.
+  // FIXME: This is wrong for TUKind == TU_Prefix. In that case, we need to
+  // write out the lists to the AST file (if any).
   assert(DelayedDefaultedMemberExceptionSpecs.empty());
-  assert(DelayedDestructorExceptionSpecChecks.empty());
+  assert(DelayedExceptionSpecChecks.empty());
 
   // Remove file scoped decls that turned out to be used.
   UnusedFileScopedDecls.erase(
@@ -694,16 +688,13 @@ void Sema::ActOnEndOfTranslationUnit() {
   }
 
   // Check for #pragma weak identifiers that were never declared
-  // FIXME: This will cause diagnostics to be emitted in a non-determinstic
-  // order!  Iterating over a densemap like this is bad.
   LoadExternalWeakUndeclaredIdentifiers();
-  for (llvm::DenseMap<IdentifierInfo*,WeakInfo>::iterator
-       I = WeakUndeclaredIdentifiers.begin(),
-       E = WeakUndeclaredIdentifiers.end(); I != E; ++I) {
-    if (I->second.getUsed()) continue;
+  for (auto WeakID : WeakUndeclaredIdentifiers) {
+    if (WeakID.second.getUsed())
+      continue;
 
-    Diag(I->second.getLocation(), diag::warn_weak_identifier_undeclared)
-      << I->first;
+    Diag(WeakID.second.getLocation(), diag::warn_weak_identifier_undeclared)
+        << WeakID.first;
   }
 
   if (LangOpts.CPlusPlus11 &&
@@ -769,7 +760,7 @@ void Sema::ActOnEndOfTranslationUnit() {
     // If the tentative definition was completed, getActingDefinition() returns
     // null. If we've already seen this variable before, insert()'s second
     // return value is false.
-    if (!VD || VD->isInvalidDecl() || !Seen.insert(VD))
+    if (!VD || VD->isInvalidDecl() || !Seen.insert(VD).second)
       continue;
 
     if (const IncompleteArrayType *ArrayT

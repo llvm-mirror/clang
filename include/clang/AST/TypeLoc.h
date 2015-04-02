@@ -93,7 +93,7 @@ public:
   }
 
   bool isNull() const { return !Ty; }
-  LLVM_EXPLICIT operator bool() const { return Ty; }
+  explicit operator bool() const { return Ty; }
 
   /// \brief Returns the size of type source info data block for the given type.
   static unsigned getFullDataSizeForType(QualType Ty);
@@ -1567,6 +1567,8 @@ public:
   void setUnderlyingTInfo(TypeSourceInfo* TI) const {
     this->getLocalData()->UnderlyingTInfo = TI;
   }
+
+  void initializeLocal(ASTContext &Context, SourceLocation Loc);
 };
 
 // FIXME: location of the 'decltype' and parens.

@@ -9,10 +9,10 @@ void f(_Bool *x, _Bool *y) {
 }
 
 // CHECK-LABEL: define void @f(
-// CHECK: [[FROMMEM:%.*]] = load i32* %
+// CHECK: [[FROMMEM:%.*]] = load i32, i32* %
 // CHECK: [[BOOLVAL:%.*]] = trunc i32 [[FROMMEM]] to i1
 // CHECK: [[TOMEM:%.*]] = zext i1 [[BOOLVAL]] to i32
 // CHECK: store i32 [[TOMEM]]
 // CHECK: ret void
 
-// CHECK: metadata !{i32 0, i32 2}
+// CHECK:  i32 0, i32 2}

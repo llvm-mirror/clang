@@ -10,8 +10,9 @@
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemOptions.h"
 #include "clang/Basic/FileSystemStatCache.h"
-#include "gtest/gtest.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Config/llvm-config.h"
+#include "gtest/gtest.h"
 
 using namespace llvm;
 using namespace clang;

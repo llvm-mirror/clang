@@ -231,7 +231,7 @@ namespace SrcMgr {
 
   private:
     // Disable assignments.
-    ContentCache &operator=(const ContentCache& RHS) LLVM_DELETED_FUNCTION;
+    ContentCache &operator=(const ContentCache& RHS) = delete;
   };
 
   // Assert that the \c ContentCache objects will always be 8-byte aligned so
@@ -705,8 +705,8 @@ class SourceManager : public RefCountedBase<SourceManager> {
   SmallVector<std::pair<std::string, FullSourceLoc>, 2> StoredModuleBuildStack;
 
   // SourceManager doesn't support copy construction.
-  explicit SourceManager(const SourceManager&) LLVM_DELETED_FUNCTION;
-  void operator=(const SourceManager&) LLVM_DELETED_FUNCTION;
+  explicit SourceManager(const SourceManager&) = delete;
+  void operator=(const SourceManager&) = delete;
 public:
   SourceManager(DiagnosticsEngine &Diag, FileManager &FileMgr,
                 bool UserFilesAreVolatile = false);
@@ -1057,10 +1057,16 @@ public:
   getImmediateExpansionRange(SourceLocation Loc) const;
 
   /// \brief Given a SourceLocation object, return the range of
-  /// tokens covered by the expansion the ultimate file.
+  /// tokens covered by the expansion in the ultimate file.
   std::pair<SourceLocation,SourceLocation>
   getExpansionRange(SourceLocation Loc) const;
 
+  /// \brief Given a SourceRange object, return the range of
+  /// tokens covered by the expansion in the ultimate file.
+  SourceRange getExpansionRange(SourceRange Range) const {
+    return SourceRange(getExpansionRange(Range.getBegin()).first,
+                       getExpansionRange(Range.getEnd()).second);
+  }
 
   /// \brief Given a SourceLocation object, return the spelling
   /// location referenced by the ID.

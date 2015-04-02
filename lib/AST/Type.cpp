@@ -170,15 +170,7 @@ DependentSizedExtVectorType::Profile(llvm::FoldingSetNodeID &ID,
 
 VectorType::VectorType(QualType vecType, unsigned nElements, QualType canonType,
                        VectorKind vecKind)
-  : Type(Vector, canonType, vecType->isDependentType(),
-         vecType->isInstantiationDependentType(),
-         vecType->isVariablyModifiedType(),
-         vecType->containsUnexpandedParameterPack()),
-    ElementType(vecType) 
-{
-  VectorTypeBits.VecKind = vecKind;
-  VectorTypeBits.NumElements = nElements;
-}
+    : VectorType(Vector, vecType, nElements, canonType, vecKind) {}
 
 VectorType::VectorType(TypeClass tc, QualType vecType, unsigned nElements,
                        QualType canonType, VectorKind vecKind)
@@ -541,10 +533,13 @@ const CXXRecordDecl *Type::getPointeeCXXRecordDecl() const {
 }
 
 CXXRecordDecl *Type::getAsCXXRecordDecl() const {
-  if (const RecordType *RT = getAs<RecordType>())
-    return dyn_cast<CXXRecordDecl>(RT->getDecl());
-  else if (const InjectedClassNameType *Injected
-                                  = getAs<InjectedClassNameType>())
+  return dyn_cast_or_null<CXXRecordDecl>(getAsTagDecl());
+}
+
+TagDecl *Type::getAsTagDecl() const {
+  if (const auto *TT = getAs<TagType>())
+    return cast<TagDecl>(TT->getDecl());
+  if (const auto *Injected = getAs<InjectedClassNameType>())
     return Injected->getDecl();
 
   return nullptr;
@@ -637,12 +632,13 @@ bool Type::hasIntegerRepresentation() const {
 bool Type::isIntegralType(ASTContext &Ctx) const {
   if (const BuiltinType *BT = dyn_cast<BuiltinType>(CanonicalType))
     return BT->getKind() >= BuiltinType::Bool &&
-    BT->getKind() <= BuiltinType::Int128;
-  
+           BT->getKind() <= BuiltinType::Int128;
+
+  // Complete enum types are integral in C.
   if (!Ctx.getLangOpts().CPlusPlus)
     if (const EnumType *ET = dyn_cast<EnumType>(CanonicalType))
-      return ET->getDecl()->isComplete(); // Complete enum types are integral in C.
-  
+      return ET->getDecl()->isComplete();
+
   return false;
 }
 
@@ -1086,7 +1082,7 @@ bool QualType::isTrivialType(ASTContext &Context) const {
 
 bool QualType::isTriviallyCopyableType(ASTContext &Context) const {
   if ((*this)->isArrayType())
-    return Context.getBaseElementType(*this).isTrivialType(Context);
+    return Context.getBaseElementType(*this).isTriviallyCopyableType(Context);
 
   if (Context.getLangOpts().ObjCAutoRefCount) {
     switch (getObjCLifetime()) {
@@ -1578,12 +1574,14 @@ StringRef FunctionType::getNameForCallConv(CallingConv CC) {
   case CC_X86FastCall: return "fastcall";
   case CC_X86ThisCall: return "thiscall";
   case CC_X86Pascal: return "pascal";
+  case CC_X86VectorCall: return "vectorcall";
   case CC_X86_64Win64: return "ms_abi";
   case CC_X86_64SysV: return "sysv_abi";
   case CC_AAPCS: return "aapcs";
   case CC_AAPCS_VFP: return "aapcs-vfp";
-  case CC_PnaclCall: return "pnaclcall";
   case CC_IntelOclBicc: return "intel_ocl_bicc";
+  case CC_SpirFunction: return "spir_function";
+  case CC_SpirKernel: return "spir_kernel";
   }
 
   llvm_unreachable("Invalid calling convention.");
@@ -1592,7 +1590,7 @@ StringRef FunctionType::getNameForCallConv(CallingConv CC) {
 FunctionProtoType::FunctionProtoType(QualType result, ArrayRef<QualType> params,
                                      QualType canonical,
                                      const ExtProtoInfo &epi)
-    : FunctionType(FunctionProto, result, epi.TypeQuals, canonical,
+    : FunctionType(FunctionProto, result, canonical,
                    result->isDependentType(),
                    result->isInstantiationDependentType(),
                    result->isVariablyModifiedType(),
@@ -1601,9 +1599,11 @@ FunctionProtoType::FunctionProtoType(QualType result, ArrayRef<QualType> params,
       NumExceptions(epi.ExceptionSpec.Exceptions.size()),
       ExceptionSpecType(epi.ExceptionSpec.Type),
       HasAnyConsumedParams(epi.ConsumedParameters != nullptr),
-      Variadic(epi.Variadic), HasTrailingReturn(epi.HasTrailingReturn),
-      RefQualifier(epi.RefQualifier) {
+      Variadic(epi.Variadic), HasTrailingReturn(epi.HasTrailingReturn) {
   assert(NumParams == params.size() && "function has too many parameters");
+
+  FunctionTypeBits.TypeQuals = epi.TypeQuals;
+  FunctionTypeBits.RefQualifier = epi.RefQualifier;
 
   // Fill in the trailing argument array.
   QualType *argSlot = reinterpret_cast<QualType*>(this+1);
@@ -1624,9 +1624,9 @@ FunctionProtoType::FunctionProtoType(QualType result, ArrayRef<QualType> params,
     QualType *exnSlot = argSlot + NumParams;
     unsigned I = 0;
     for (QualType ExceptionType : epi.ExceptionSpec.Exceptions) {
-      if (ExceptionType->isDependentType())
-        setDependent();
-      else if (ExceptionType->isInstantiationDependentType())
+      // Note that a dependent exception specification does *not* make
+      // a type dependent; it's not even part of the C++ type system.
+      if (ExceptionType->isInstantiationDependentType())
         setInstantiationDependent();
 
       if (ExceptionType->containsUnexpandedParameterPack())
@@ -1640,11 +1640,12 @@ FunctionProtoType::FunctionProtoType(QualType result, ArrayRef<QualType> params,
     *noexSlot = epi.ExceptionSpec.NoexceptExpr;
 
     if (epi.ExceptionSpec.NoexceptExpr) {
-      if (epi.ExceptionSpec.NoexceptExpr->isValueDependent() 
-          || epi.ExceptionSpec.NoexceptExpr->isTypeDependent())
-        setDependent();
-      else if (epi.ExceptionSpec.NoexceptExpr->isInstantiationDependent())
+      if (epi.ExceptionSpec.NoexceptExpr->isValueDependent() ||
+          epi.ExceptionSpec.NoexceptExpr->isInstantiationDependent())
         setInstantiationDependent();
+
+      if (epi.ExceptionSpec.NoexceptExpr->containsUnexpandedParameterPack())
+        setContainsUnexpandedParameterPack();
     }
   } else if (getExceptionSpecType() == EST_Uninstantiated) {
     // Store the function decl from which we will resolve our
@@ -1668,6 +1669,18 @@ FunctionProtoType::FunctionProtoType(QualType result, ArrayRef<QualType> params,
     for (unsigned i = 0; i != NumParams; ++i)
       consumedParams[i] = epi.ConsumedParameters[i];
   }
+}
+
+bool FunctionProtoType::hasDependentExceptionSpec() const {
+  if (Expr *NE = getNoexceptExpr())
+    return NE->isValueDependent();
+  for (QualType ET : exceptions())
+    // A pack expansion with a non-dependent pattern is still dependent,
+    // because we don't know whether the pattern is in the exception spec
+    // or not (that depends on whether the pack has 0 expansions).
+    if (ET->isDependentType() || ET->getAs<PackExpansionType>())
+      return true;
+  return false;
 }
 
 FunctionProtoType::NoexceptResult
@@ -1701,7 +1714,7 @@ bool FunctionProtoType::isNothrow(const ASTContext &Ctx,
   if (EST == EST_DynamicNone || EST == EST_BasicNoexcept)
     return true;
 
-  if (EST == EST_Dynamic && ResultIfDependent == true) {
+  if (EST == EST_Dynamic && ResultIfDependent) {
     // A dynamic exception specification is throwing unless every exception
     // type is an (unexpanded) pack expansion type.
     for (unsigned I = 0, N = NumExceptions; I != N; ++I)
@@ -1758,7 +1771,7 @@ void FunctionProtoType::Profile(llvm::FoldingSetNodeID &ID, QualType Result,
   assert(!(unsigned(epi.Variadic) & ~1) &&
          !(unsigned(epi.TypeQuals) & ~255) &&
          !(unsigned(epi.RefQualifier) & ~3) &&
-         !(unsigned(epi.ExceptionSpec.Type) & ~7) &&
+         !(unsigned(epi.ExceptionSpec.Type) & ~15) &&
          "Values larger than expected.");
   ID.AddInteger(unsigned(epi.Variadic) +
                 (epi.TypeQuals << 1) +
@@ -1913,10 +1926,10 @@ bool AttributedType::isCallingConv() const {
   case attr_fastcall:
   case attr_stdcall:
   case attr_thiscall:
+  case attr_vectorcall:
   case attr_pascal:
   case attr_ms_abi:
   case attr_sysv_abi:
-  case attr_pnaclcall:
   case attr_inteloclbicc:
     return true;
   }

@@ -9,28 +9,30 @@ typedef struct __attribute__((objc_bridge(12))) __CFMyColor  *CFMyColorRef; // e
 
 typedef struct __attribute__ ((objc_bridge)) __CFArray *CFArrayRef; // expected-error {{'objc_bridge' attribute takes one argument}}
 
-typedef void *  __attribute__ ((objc_bridge(NSURL))) CFURLRef;  // expected-error {{'objc_bridge' attribute only applies to struct or union}}
+typedef void *  __attribute__ ((objc_bridge(NSURL))) CFURLRef;  // expected-error {{parameter of 'objc_bridge' attribute must be 'id' when used on a typedef}}
 
-typedef void * CFStringRef __attribute__ ((objc_bridge(NSString))); // expected-error {{'objc_bridge' attribute only applies to struct or union}}
+typedef void * CFStringRef __attribute__ ((objc_bridge(NSString))); // expected-error {{parameter of 'objc_bridge' attribute must be 'id' when used on a typedef}}
 
 typedef struct __attribute__((objc_bridge(NSLocale, NSError))) __CFLocale *CFLocaleRef;// expected-error {{use of undeclared identifier 'NSError'}}
 
-typedef struct __CFData __attribute__((objc_bridge(NSData))) CFDataRef; // expected-error {{'objc_bridge' attribute only applies to struct or union}}
+typedef struct __CFData __attribute__((objc_bridge(NSData))) CFDataRef; // expected-error {{parameter of 'objc_bridge' attribute must be 'id' when used on a typedef}}
 
 typedef struct __attribute__((objc_bridge(NSDictionary))) __CFDictionary * CFDictionaryRef;
 
-typedef struct __CFSetRef * CFSetRef __attribute__((objc_bridge(NSSet))); // expected-error {{'objc_bridge' attribute only applies to struct or union}};
+typedef struct __CFSetRef * CFSetRef __attribute__((objc_bridge(NSSet))); // expected-error {{parameter of 'objc_bridge' attribute must be 'id' when used on a typedef}}
 
-typedef union __CFUColor __attribute__((objc_bridge(NSUColor))) * CFUColorRef; // expected-error {{'objc_bridge' attribute only applies to struct or union}};
+typedef union __CFUColor __attribute__((objc_bridge(NSUColor))) * CFUColorRef; // expected-error {{parameter of 'objc_bridge' attribute must be 'id' when used on a typedef}}
 
-typedef union __CFUColor __attribute__((objc_bridge(NSUColor))) *CFUColor1Ref; // expected-error {{'objc_bridge' attribute only applies to struct or union}};
+typedef union __CFUColor __attribute__((objc_bridge(NSUColor))) * CFUColorRef; // expected-error {{parameter of 'objc_bridge' attribute must be 'id' when used on a typedef}}
+
+typedef union __CFUColor __attribute__((objc_bridge(NSUColor))) *CFUColor1Ref; // expected-error {{parameter of 'objc_bridge' attribute must be 'id' when used on a typedef}}
 
 typedef union __attribute__((objc_bridge(NSUColor))) __CFUPrimeColor XXX;
 typedef XXX *CFUColor2Ref;
 
 @interface I
 {
-   __attribute__((objc_bridge(NSError))) void * color; // expected-error {{'objc_bridge' attribute only applies to struct or union}};
+   __attribute__((objc_bridge(NSError))) void * color; // expected-error {{'objc_bridge' attribute only applies to structs, unions, and typedefs}};
 }
 @end
 
@@ -220,4 +222,20 @@ void Test9(CFErrorRef2 cf, NSError *ns, NSString *str, Class c, CFUColor2Ref cf2
   (void)(__bridge CFErrorRef)str;  // expected-warning {{'NSString' cannot bridge to 'CFErrorRef' (aka 'struct __CFErrorRef *')}}
   (void)(__bridge Class)cf; // expected-warning {{'CFErrorRef2' (aka 'struct __CFErrorRef *') bridges to NSError, not 'Class'}}
   (void)(__bridge CFErrorRef)c; // expected-warning {{'__unsafe_unretained Class' cannot bridge to 'CFErrorRef' (aka 'struct __CFErrorRef *')}}
+}
+
+// rdar://19157264
+#if __has_feature(objc_bridge_id)
+typedef struct __attribute__((objc_bridge(id))) __CFFoo *CFFooRef;
+#endif
+
+id convert(CFFooRef obj) {
+  (void)(NSError *)obj; // expected-error {{cast of C pointer type 'CFFooRef' (aka 'struct __CFFoo *') to Objective-C pointer type 'NSError *' requires a bridged cast}} \
+                        // expected-note {{use __bridge to convert directly (no change in ownership)}} \
+                        // expected-note {{use __bridge_transfer to transfer ownership of a +1 'CFFooRef' (aka 'struct __CFFoo *') into ARC}}
+  (void) (__bridge NSError *)obj;
+  (void) (id)obj;       // expected-error {{cast of C pointer type 'CFFooRef' (aka 'struct __CFFoo *') to Objective-C pointer type 'id' requires a bridged cast}} \
+                        // expected-note {{use __bridge to convert directly (no change in ownership)}} \
+                        // expected-note {{use __bridge_transfer to transfer ownership of a +1 'CFFooRef' (aka 'struct __CFFoo *') into ARC}}
+  return (__bridge id)obj;
 }

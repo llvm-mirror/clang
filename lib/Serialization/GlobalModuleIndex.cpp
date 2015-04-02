@@ -494,19 +494,16 @@ namespace {
 bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
   // Open the module file.
 
-  std::string ErrorStr;
-  std::unique_ptr<llvm::MemoryBuffer> Buffer =
-      FileMgr.getBufferForFile(File, &ErrorStr, /*isVolatile=*/true);
+  auto Buffer = FileMgr.getBufferForFile(File, /*isVolatile=*/true);
   if (!Buffer) {
     return true;
   }
 
   // Initialize the input stream
   llvm::BitstreamReader InStreamFile;
-  llvm::BitstreamCursor InStream;
-  InStreamFile.init((const unsigned char *)Buffer->getBufferStart(),
-                  (const unsigned char *)Buffer->getBufferEnd());
-  InStream.init(InStreamFile);
+  InStreamFile.init((const unsigned char *)(*Buffer)->getBufferStart(),
+                    (const unsigned char *)(*Buffer)->getBufferEnd());
+  llvm::BitstreamCursor InStream(InStreamFile);
 
   // Sniff for the signature.
   if (InStream.Read(8) != 'C' ||
@@ -590,6 +587,10 @@ bool GlobalModuleIndexBuilder::loadModuleFile(const FileEntry *File) {
         // Load stored size/modification time. 
         off_t StoredSize = (off_t)Record[Idx++];
         time_t StoredModTime = (time_t)Record[Idx++];
+
+        // Skip the stored signature.
+        // FIXME: we could read the signature out of the import and validate it.
+        Idx++;
 
         // Retrieve the imported file name.
         unsigned Length = Record[Idx++];
@@ -756,7 +757,7 @@ void GlobalModuleIndexBuilder::writeIndex(llvm::BitstreamWriter &Stream) {
     Record.clear();
     Record.push_back(IDENTIFIER_INDEX);
     Record.push_back(BucketOffset);
-    Stream.EmitRecordWithBlob(IDTableAbbrev, Record, IdentifierTable.str());
+    Stream.EmitRecordWithBlob(IDTableAbbrev, Record, IdentifierTable);
   }
 
   Stream.ExitBlock();
@@ -840,12 +841,12 @@ GlobalModuleIndex::writeIndex(FileManager &FileMgr, StringRef Path) {
     return EC_IOError;
 
   // Remove the old index file. It isn't relevant any more.
-  llvm::sys::fs::remove(IndexPath.str());
+  llvm::sys::fs::remove(IndexPath);
 
   // Rename the newly-written index file to the proper name.
-  if (llvm::sys::fs::rename(IndexTmpPath.str(), IndexPath.str())) {
+  if (llvm::sys::fs::rename(IndexTmpPath, IndexPath)) {
     // Rename failed; just remove the 
-    llvm::sys::fs::remove(IndexTmpPath.str());
+    llvm::sys::fs::remove(IndexTmpPath);
     return EC_IOError;
   }
 

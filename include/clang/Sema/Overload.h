@@ -86,21 +86,6 @@ namespace clang {
     ICK_Num_Conversion_Kinds   ///< The number of conversion kinds
   };
 
-  /// ImplicitConversionCategory - The category of an implicit
-  /// conversion kind. The enumerator values match with Table 9 of
-  /// (C++ 13.3.3.1.1) and are listed such that better conversion
-  /// categories have smaller values.
-  enum ImplicitConversionCategory {
-    ICC_Identity = 0,              ///< Identity
-    ICC_Lvalue_Transformation,     ///< Lvalue transformation
-    ICC_Qualification_Adjustment,  ///< Qualification adjustment
-    ICC_Promotion,                 ///< Promotion
-    ICC_Conversion                 ///< Conversion
-  };
-
-  ImplicitConversionCategory
-  GetConversionCategory(ImplicitConversionKind Kind);
-
   /// ImplicitConversionRank - The rank of an implicit conversion
   /// kind. The enumerator values match with Table 9 of (C++
   /// 13.3.3.1.1) and are listed such that better conversion ranks
@@ -568,6 +553,17 @@ namespace clang {
     /// conversion.
     ovl_fail_trivial_conversion,
 
+    /// This conversion candidate was not considered because it is
+    /// an illegal instantiation of a constructor temploid: it is
+    /// callable with one argument, we only have one argument, and
+    /// its first parameter type is exactly the type of the class.
+    ///
+    /// Defining such a constructor directly is illegal, and
+    /// template-argument deduction is supposed to ignore such
+    /// instantiations, but we can still get one with the right
+    /// kind of implicit instantiation.
+    ovl_fail_illegal_constructor,
+
     /// This conversion candidate is not viable because its result
     /// type is not implicitly convertible to the desired type.
     ovl_fail_bad_final_conversion,
@@ -722,8 +718,8 @@ namespace clang {
     llvm::AlignedCharArray<llvm::AlignOf<ImplicitConversionSequence>::Alignment,
                            16 * sizeof(ImplicitConversionSequence)> InlineSpace;
 
-    OverloadCandidateSet(const OverloadCandidateSet &) LLVM_DELETED_FUNCTION;
-    void operator=(const OverloadCandidateSet &) LLVM_DELETED_FUNCTION;
+    OverloadCandidateSet(const OverloadCandidateSet &) = delete;
+    void operator=(const OverloadCandidateSet &) = delete;
 
     void destroyCandidates();
 
@@ -737,8 +733,8 @@ namespace clang {
 
     /// \brief Determine when this overload candidate will be new to the
     /// overload set.
-    bool isNewCandidate(Decl *F) { 
-      return Functions.insert(F->getCanonicalDecl()); 
+    bool isNewCandidate(Decl *F) {
+      return Functions.insert(F->getCanonicalDecl()).second;
     }
 
     /// \brief Clear out all of the candidates.

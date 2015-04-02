@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -emit-llvm -fobjc-runtime-has-weak -fblocks -fobjc-arc -O2 -disable-llvm-optzns -o - %s | FileCheck %s
+// RUN: %clang_cc1 -std=c++11 -triple x86_64-apple-darwin10 -emit-llvm -fobjc-runtime-has-weak -fblocks -fobjc-arc -O2 -disable-llvm-optzns -o - %s | FileCheck %s
 
 @interface A
 @end
@@ -67,7 +67,7 @@ void test5(__strong id &x) {
   // CHECK-NEXT: store [[A]]* [[OBJ_A]], [[A]]** [[REFTMP:%[a-zA-Z0-9]+]]
   // CHECK-NEXT: call void @_Z4sinkOU8__strongP1A
   sink(x);  
-  // CHECK-NEXT: [[OBJ_A:%[a-zA-Z0-9]+]] = load [[A]]** [[REFTMP]]
+  // CHECK-NEXT: [[OBJ_A:%[a-zA-Z0-9]+]] = load [[A]]*, [[A]]** [[REFTMP]]
   // CHECK-NEXT: [[OBJ_ID:%[a-zA-Z0-9]+]] = bitcast [[A]]* [[OBJ_A]] to i8*
   // CHECK-NEXT: call void @objc_release
   // CHECK-NEXT: store i32 17, i32

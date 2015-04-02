@@ -218,6 +218,7 @@ bool Sema::RequireCompleteDeclContext(CXXScopeSpec &SS,
   // Fixed enum types are complete, but they aren't valid as scopes
   // until we see a definition, so awkwardly pull out this special
   // case.
+  // FIXME: The definition might not be visible; complain if it is not.
   const EnumType *enumType = dyn_cast_or_null<EnumType>(tagType);
   if (!enumType || enumType->getDecl()->isCompleteDefinition())
     return false;
@@ -282,7 +283,11 @@ bool Sema::ActOnSuperScopeSpecifier(SourceLocation SuperLoc,
 
 /// \brief Determines whether the given declaration is an valid acceptable
 /// result for name lookup of a nested-name-specifier.
-bool Sema::isAcceptableNestedNameSpecifier(const NamedDecl *SD) {
+/// \param SD Declaration checked for nested-name-specifier.
+/// \param IsExtension If not null and the declaration is accepted as an
+/// extension, the pointed variable is assigned true.
+bool Sema::isAcceptableNestedNameSpecifier(const NamedDecl *SD,
+                                           bool *IsExtension) {
   if (!SD)
     return false;
 
@@ -298,14 +303,23 @@ bool Sema::isAcceptableNestedNameSpecifier(const NamedDecl *SD) {
   QualType T = Context.getTypeDeclType(cast<TypeDecl>(SD));
   if (T->isDependentType())
     return true;
-  else if (const TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(SD)) {
-    if (TD->getUnderlyingType()->isRecordType() ||
-        (Context.getLangOpts().CPlusPlus11 &&
-         TD->getUnderlyingType()->isEnumeralType()))
+  if (const TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(SD)) {
+    if (TD->getUnderlyingType()->isRecordType())
       return true;
-  } else if (isa<RecordDecl>(SD) ||
-             (Context.getLangOpts().CPlusPlus11 && isa<EnumDecl>(SD)))
+    if (TD->getUnderlyingType()->isEnumeralType()) {
+      if (Context.getLangOpts().CPlusPlus11)
+        return true;
+      if (IsExtension)
+        *IsExtension = true;
+    }
+  } else if (isa<RecordDecl>(SD)) {
     return true;
+  } else if (isa<EnumDecl>(SD)) {
+    if (Context.getLangOpts().CPlusPlus11)
+      return true;
+    if (IsExtension)
+      *IsExtension = true;
+  }
 
   return false;
 }
@@ -409,9 +423,6 @@ class NestedNameSpecifierValidatorCCC : public CorrectionCandidateCallback {
 
 /// \brief Build a new nested-name-specifier for "identifier::", as described
 /// by ActOnCXXNestedNameSpecifier.
-///
-/// This routine differs only slightly from ActOnCXXNestedNameSpecifier, in
-/// that it contains an extra parameter \p ScopeLookupResult.
 ///
 /// \param S Scope in which the nested-name-specifier occurs.
 /// \param Identifier Identifier in the sequence "identifier" "::".
@@ -575,12 +586,11 @@ bool Sema::BuildCXXNestedNameSpecifier(Scope *S,
     // We haven't found anything, and we're not recovering from a
     // different kind of error, so look for typos.
     DeclarationName Name = Found.getLookupName();
-    NestedNameSpecifierValidatorCCC Validator(*this);
     Found.clear();
-    if (TypoCorrection Corrected =
-            CorrectTypo(Found.getLookupNameInfo(), Found.getLookupKind(), S,
-                        &SS, Validator, CTK_ErrorRecovery, LookupCtx,
-                        EnteringContext)) {
+    if (TypoCorrection Corrected = CorrectTypo(
+            Found.getLookupNameInfo(), Found.getLookupKind(), S, &SS,
+            llvm::make_unique<NestedNameSpecifierValidatorCCC>(*this),
+            CTK_ErrorRecovery, LookupCtx, EnteringContext)) {
       if (LookupCtx) {
         bool DroppedSpecifier =
             Corrected.WillReplaceSpecifier() &&
@@ -603,7 +613,13 @@ bool Sema::BuildCXXNestedNameSpecifier(Scope *S,
   }
 
   NamedDecl *SD = Found.getAsSingle<NamedDecl>();
-  if (isAcceptableNestedNameSpecifier(SD)) {
+  bool IsExtension = false;
+  bool AcceptSpec = isAcceptableNestedNameSpecifier(SD, &IsExtension);
+  if (!AcceptSpec && IsExtension) {
+    AcceptSpec = true;
+    Diag(IdentifierLoc, diag::ext_nested_name_spec_is_enum);
+  }
+  if (AcceptSpec) {
     if (!ObjectType.isNull() && !ObjectTypeSearchedInScope &&
         !getLangOpts().CPlusPlus11) {
       // C++03 [basic.lookup.classref]p4:
@@ -653,6 +669,10 @@ bool Sema::BuildCXXNestedNameSpecifier(Scope *S,
     // don't extend the nested-name-specifier. Just return now.
     if (ErrorRecoveryLookup)
       return false;
+
+    // The use of a nested name specifier may trigger deprecation warnings.
+    DiagnoseUseOfDecl(SD, CCLoc);
+
     
     if (NamespaceDecl *Namespace = dyn_cast<NamespaceDecl>(SD)) {
       SS.Extend(Context, Namespace, IdentifierLoc, CCLoc);

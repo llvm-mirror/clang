@@ -99,6 +99,8 @@ public:
   void AddedCXXTemplateSpecialization(const FunctionTemplateDecl *TD,
                                       const FunctionDecl *D) override;
   void DeducedReturnType(const FunctionDecl *FD, QualType ReturnType) override;
+  void ResolvedOperatorDelete(const CXXDestructorDecl *DD,
+                              const FunctionDecl *Delete) override;
   void CompletedImplicitDefinition(const FunctionDecl *D) override;
   void StaticDataMemberInstantiated(const VarDecl *D) override;
   void AddedObjCCategoryToInterface(const ObjCCategoryDecl *CatD,
@@ -107,6 +109,9 @@ public:
                                     const ObjCPropertyDecl *OrigProp,
                                     const ObjCCategoryDecl *ClassExt) override;
   void DeclarationMarkedUsed(const Decl *D) override;
+  void DeclarationMarkedOpenMPThreadPrivate(const Decl *D) override;
+  void RedefinedHiddenDefinition(const NamedDecl *D,
+                                 SourceLocation Loc) override;
 
 private:
   std::vector<ASTMutationListener*> Listeners;
@@ -153,6 +158,11 @@ void MultiplexASTMutationListener::DeducedReturnType(const FunctionDecl *FD,
   for (size_t i = 0, e = Listeners.size(); i != e; ++i)
     Listeners[i]->DeducedReturnType(FD, ReturnType);
 }
+void MultiplexASTMutationListener::ResolvedOperatorDelete(
+    const CXXDestructorDecl *DD, const FunctionDecl *Delete) {
+  for (auto *L : Listeners)
+    L->ResolvedOperatorDelete(DD, Delete);
+}
 void MultiplexASTMutationListener::CompletedImplicitDefinition(
                                                         const FunctionDecl *D) {
   for (size_t i = 0, e = Listeners.size(); i != e; ++i)
@@ -179,6 +189,16 @@ void MultiplexASTMutationListener::AddedObjCPropertyInClassExtension(
 void MultiplexASTMutationListener::DeclarationMarkedUsed(const Decl *D) {
   for (size_t i = 0, e = Listeners.size(); i != e; ++i)
     Listeners[i]->DeclarationMarkedUsed(D);
+}
+void MultiplexASTMutationListener::DeclarationMarkedOpenMPThreadPrivate(
+    const Decl *D) {
+  for (size_t i = 0, e = Listeners.size(); i != e; ++i)
+    Listeners[i]->DeclarationMarkedOpenMPThreadPrivate(D);
+}
+void MultiplexASTMutationListener::RedefinedHiddenDefinition(
+    const NamedDecl *D, SourceLocation Loc) {
+  for (auto *L : Listeners)
+    L->RedefinedHiddenDefinition(D, Loc);
 }
 
 }  // end namespace clang
@@ -286,10 +306,9 @@ void MultiplexConsumer::CompleteTentativeDefinition(VarDecl *D) {
     Consumer->CompleteTentativeDefinition(D);
 }
 
-void MultiplexConsumer::HandleVTable(
-    CXXRecordDecl *RD, bool DefinitionRequired) {
+void MultiplexConsumer::HandleVTable(CXXRecordDecl *RD) {
   for (auto &Consumer : Consumers)
-    Consumer->HandleVTable(RD, DefinitionRequired);
+    Consumer->HandleVTable(RD);
 }
 
 ASTMutationListener *MultiplexConsumer::GetASTMutationListener() {

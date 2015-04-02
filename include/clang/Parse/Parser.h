@@ -245,8 +245,8 @@ public:
 
   const Token &getCurToken() const { return Tok; }
   Scope *getCurScope() const { return Actions.getCurScope(); }
-  void incrementMSLocalManglingNumber() const {
-    return Actions.incrementMSLocalManglingNumber();
+  void incrementMSManglingNumber() const {
+    return Actions.incrementMSManglingNumber();
   }
 
   Decl  *getObjCDeclContext() const { return Actions.getObjCDeclContext(); }
@@ -258,23 +258,7 @@ public:
 
   typedef SmallVector<TemplateParameterList *, 4> TemplateParameterLists;
 
-  typedef clang::ExprResult        ExprResult;
-  typedef clang::StmtResult        StmtResult;
-  typedef clang::BaseResult        BaseResult;
-  typedef clang::MemInitResult     MemInitResult;
-  typedef clang::TypeResult        TypeResult;
-
-  typedef Expr *ExprArg;
-  typedef MutableArrayRef<Stmt*> MultiStmtArg;
   typedef Sema::FullExprArg FullExprArg;
-
-  ExprResult ExprError() { return ExprResult(true); }
-  StmtResult StmtError() { return StmtResult(true); }
-
-  ExprResult ExprError(const DiagnosticBuilder &) { return ExprError(); }
-  StmtResult StmtError(const DiagnosticBuilder &) { return StmtError(); }
-
-  ExprResult ExprEmpty() { return ExprResult(false); }
 
   // Parsing methods.
 
@@ -349,6 +333,15 @@ private:
   /// \brief Returns true if the current token is '=' or is a type of '='.
   /// For typos, give a fixit to '='
   bool isTokenEqualOrEqualTypo();
+
+  /// \brief Return the current token to the token stream and make the given
+  /// token the current token.
+  void UnconsumeToken(Token &Consumed) {
+      Token Next = Tok;
+      PP.EnterToken(Consumed);
+      PP.Lex(Tok);
+      PP.EnterToken(Next);
+  }
 
   /// ConsumeAnyToken - Dispatch to the right Consume* method based on the
   /// current token type.  This should only be used in cases where the type of
@@ -591,8 +584,9 @@ private:
     /// Annotation was successful.
     ANK_Success
   };
-  AnnotatedNameKind TryAnnotateName(bool IsAddressOfOperand,
-                                    CorrectionCandidateCallback *CCC = nullptr);
+  AnnotatedNameKind
+  TryAnnotateName(bool IsAddressOfOperand,
+                  std::unique_ptr<CorrectionCandidateCallback> CCC = nullptr);
 
   /// Push a tok::annot_cxxscope token onto the token stream.
   void AnnotateScopeToken(CXXScopeSpec &SS, bool IsNewAnnotation);
@@ -751,8 +745,8 @@ public:
   /// the parser will exit the scope.
   class ParseScope {
     Parser *Self;
-    ParseScope(const ParseScope &) LLVM_DELETED_FUNCTION;
-    void operator=(const ParseScope &) LLVM_DELETED_FUNCTION;
+    ParseScope(const ParseScope &) = delete;
+    void operator=(const ParseScope &) = delete;
 
   public:
     // ParseScope - Construct a new object to manage a scope in the
@@ -765,7 +759,7 @@ public:
         Self->EnterScope(ScopeFlags);
       else {
         if (BeforeCompoundStmt)
-          Self->incrementMSLocalManglingNumber();
+          Self->incrementMSManglingNumber();
 
         this->Self = nullptr;
       }
@@ -796,8 +790,8 @@ private:
   class ParseScopeFlags {
     Scope *CurScope;
     unsigned OldFlags;
-    ParseScopeFlags(const ParseScopeFlags &) LLVM_DELETED_FUNCTION;
-    void operator=(const ParseScopeFlags &) LLVM_DELETED_FUNCTION;
+    ParseScopeFlags(const ParseScopeFlags &) = delete;
+    void operator=(const ParseScopeFlags &) = delete;
 
   public:
     ParseScopeFlags(Parser *Self, unsigned ScopeFlags, bool ManageFlags = true);
@@ -1155,6 +1149,7 @@ private:
   void ParseLateTemplatedFuncDef(LateParsedTemplate &LPT);
 
   static void LateTemplateParserCallback(void *P, LateParsedTemplate &LPT);
+  static void LateTemplateParserCleanupCallback(void *P);
 
   Sema::ParsingClassState
   PushParsingClass(Decl *TagOrTemplate, bool TopLevelClass, bool IsInterface);
@@ -1171,7 +1166,6 @@ private:
                                 ParsingDeclarator &D,
                                 const ParsedTemplateInfo &TemplateInfo,
                                 const VirtSpecifiers& VS,
-                                FunctionDefinitionKind DefinitionKind,
                                 ExprResult& Init);
   void ParseCXXNonStaticMemberInitializer(Decl *VarD);
   void ParseLexedAttributes(ParsingClass &Class);
@@ -1367,12 +1361,9 @@ private:
   typedef SmallVector<SourceLocation, 20> CommaLocsTy;
 
   /// ParseExpressionList - Used for C/C++ (argument-)expression-list.
-  bool
-  ParseExpressionList(SmallVectorImpl<Expr *> &Exprs,
-                      SmallVectorImpl<SourceLocation> &CommaLocs,
-                      void (Sema::*Completer)(Scope *S, Expr *Data,
-                                              ArrayRef<Expr *> Args) = nullptr,
-                      Expr *Data = nullptr);
+  bool ParseExpressionList(SmallVectorImpl<Expr *> &Exprs,
+                           SmallVectorImpl<SourceLocation> &CommaLocs,
+                           std::function<void()> Completer = nullptr);
 
   /// ParseSimpleExpressionList - A simple comma-separated list of expressions,
   /// used for misc language extensions.
@@ -1406,8 +1397,12 @@ private:
   
   ExprResult ParseObjCBoolLiteral();
 
+  ExprResult ParseFoldExpression(ExprResult LHS, BalancedDelimiterTracker &T);
+
   //===--------------------------------------------------------------------===//
   // C++ Expressions
+  ExprResult tryParseCXXIdExpression(CXXScopeSpec &SS, bool isAddressOfOperand,
+                                     Token &Replacement);
   ExprResult ParseCXXIdExpression(bool isAddressOfOperand = false);
 
   bool areTokensAdjacent(const Token &A, const Token &B);
@@ -1451,7 +1446,7 @@ private:
 
   //===--------------------------------------------------------------------===//
   // C++ 5.2.4: C++ Pseudo-Destructor Expressions
-  ExprResult ParseCXXPseudoDestructor(ExprArg Base, SourceLocation OpLoc,
+  ExprResult ParseCXXPseudoDestructor(Expr *Base, SourceLocation OpLoc,
                                             tok::TokenKind OpKind,
                                             CXXScopeSpec &SS,
                                             ParsedType ObjectType);
@@ -1465,10 +1460,12 @@ private:
   ExprResult ParseThrowExpression();
 
   ExceptionSpecificationType tryParseExceptionSpecification(
+                    bool Delayed,
                     SourceRange &SpecificationRange,
                     SmallVectorImpl<ParsedType> &DynamicExceptions,
                     SmallVectorImpl<SourceRange> &DynamicExceptionRanges,
-                    ExprResult &NoexceptExpr);
+                    ExprResult &NoexceptExpr,
+                    CachedTokens *&ExceptionSpecTokens);
 
   // EndLoc is filled with the location of the last token of the specification.
   ExceptionSpecificationType ParseDynamicExceptionSpecification(
@@ -1551,10 +1548,10 @@ private:
   ExprResult ParseObjCMessageExpressionBody(SourceLocation LBracloc,
                                             SourceLocation SuperLoc,
                                             ParsedType ReceiverType,
-                                            ExprArg ReceiverExpr);
+                                            Expr *ReceiverExpr);
   ExprResult ParseAssignmentExprWithObjCMessageExprStart(
       SourceLocation LBracloc, SourceLocation SuperLoc,
-      ParsedType ReceiverType, ExprArg ReceiverExpr);
+      ParsedType ReceiverType, Expr *ReceiverExpr);
   bool ParseObjCXXMessageReceiver(bool &IsExpr, void *&TypeOrExpr);
     
   //===--------------------------------------------------------------------===//
@@ -1660,7 +1657,6 @@ private:
   // MS: SEH Statements and Blocks
 
   StmtResult ParseSEHTryBlock();
-  StmtResult ParseSEHTryBlockCommon(SourceLocation Loc);
   StmtResult ParseSEHExceptBlock(SourceLocation Loc);
   StmtResult ParseSEHFinallyBlock(SourceLocation Loc);
   StmtResult ParseSEHLeaveStatement();
@@ -1718,18 +1714,15 @@ private:
     bool ParsedForRangeDecl() { return !ColonLoc.isInvalid(); }
   };
 
-  DeclGroupPtrTy ParseDeclaration(StmtVector &Stmts,
-                                  unsigned Context, SourceLocation &DeclEnd,
+  DeclGroupPtrTy ParseDeclaration(unsigned Context, SourceLocation &DeclEnd,
                                   ParsedAttributesWithRange &attrs);
-  DeclGroupPtrTy ParseSimpleDeclaration(StmtVector &Stmts,
-                                        unsigned Context,
+  DeclGroupPtrTy ParseSimpleDeclaration(unsigned Context,
                                         SourceLocation &DeclEnd,
                                         ParsedAttributesWithRange &attrs,
                                         bool RequireSemi,
                                         ForRangeInit *FRI = nullptr);
   bool MightBeDeclarator(unsigned Context);
   DeclGroupPtrTy ParseDeclGroup(ParsingDeclSpec &DS, unsigned Context,
-                                bool AllowFunctionDefinitions,
                                 SourceLocation *DeclEnd = nullptr,
                                 ForRangeInit *FRI = nullptr);
   Decl *ParseDeclarationAfterDeclarator(Declarator &D,
@@ -2095,6 +2088,8 @@ private:
                                   SourceLocation AttrNameLoc,
                                   ParsedAttributes &Attrs);
   void ParseMicrosoftTypeAttributes(ParsedAttributes &attrs);
+  void DiagnoseAndSkipExtendedMicrosoftTypeAttributes();
+  SourceLocation SkipExtendedMicrosoftTypeAttributes();
   void ParseMicrosoftInheritanceClassAttributes(ParsedAttributes &attrs);
   void ParseBorlandTypeAttributes(ParsedAttributes &attrs);
   void ParseOpenCLAttributes(ParsedAttributes &attrs);
@@ -2219,6 +2214,8 @@ private:
                                BalancedDelimiterTracker &Tracker,
                                bool IsAmbiguous,
                                bool RequiresArg = false);
+  bool ParseRefQualifier(bool &RefQualifierIsLValueRef,
+                         SourceLocation &RefQualifierLoc);
   bool isFunctionDeclaratorIdentifierList();
   void ParseFunctionDeclaratorIdentifierList(
          Declarator &D,
@@ -2287,6 +2284,10 @@ private:
                            AccessSpecifier AS, bool EnteringContext,
                            DeclSpecContext DSC, 
                            ParsedAttributesWithRange &Attributes);
+  void SkipCXXMemberSpecification(SourceLocation StartLoc,
+                                  SourceLocation AttrFixitLoc,
+                                  unsigned TagType,
+                                  Decl *TagDecl);
   void ParseCXXMemberSpecification(SourceLocation StartLoc,
                                    SourceLocation AttrFixitLoc,
                                    ParsedAttributesWithRange &Attrs,
@@ -2294,10 +2295,12 @@ private:
                                    Decl *TagDecl);
   ExprResult ParseCXXMemberInitializer(Decl *D, bool IsFunction,
                                        SourceLocation &EqualLoc);
-  void ParseCXXMemberDeclaratorBeforeInitializer(Declarator &DeclaratorInfo,
+  bool ParseCXXMemberDeclaratorBeforeInitializer(Declarator &DeclaratorInfo,
                                                  VirtSpecifiers &VS,
                                                  ExprResult &BitfieldSize,
                                                  LateParsedAttrList &LateAttrs);
+  void MaybeParseAndDiagnoseDeclSpecAfterCXX11VirtSpecifierSeq(Declarator &D,
+                                                               VirtSpecifiers &VS);
   void ParseCXXClassMemberDeclaration(AccessSpecifier AS, AttributeList *Attr,
                   const ParsedTemplateInfo &TemplateInfo = ParsedTemplateInfo(),
                   ParsingDeclRAIIObject *DiagsFromTParams = nullptr);

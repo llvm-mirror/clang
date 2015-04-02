@@ -15,9 +15,9 @@
 
 using namespace clang;
 
-SanitizerBlacklist::SanitizerBlacklist(StringRef BlacklistPath,
-                                       SourceManager &SM)
-    : SCL(llvm::SpecialCaseList::createOrDie(BlacklistPath)), SM(SM) {}
+SanitizerBlacklist::SanitizerBlacklist(
+    const std::vector<std::string> &BlacklistPaths, SourceManager &SM)
+    : SCL(llvm::SpecialCaseList::createOrDie(BlacklistPaths)), SM(SM) {}
 
 bool SanitizerBlacklist::isBlacklistedGlobal(StringRef GlobalName,
                                              StringRef Category) const {
@@ -40,6 +40,7 @@ bool SanitizerBlacklist::isBlacklistedFile(StringRef FileName,
 
 bool SanitizerBlacklist::isBlacklistedLocation(SourceLocation Loc,
                                                StringRef Category) const {
-  return !Loc.isInvalid() && isBlacklistedFile(SM.getFilename(Loc), Category);
+  return !Loc.isInvalid() &&
+         isBlacklistedFile(SM.getFilename(SM.getFileLoc(Loc)), Category);
 }
 

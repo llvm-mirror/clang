@@ -33,8 +33,8 @@ class ObjCPropertyImplDecl;
 class CXXCtorInitializer;
 
 class ObjCListBase {
-  ObjCListBase(const ObjCListBase &) LLVM_DELETED_FUNCTION;
-  void operator=(const ObjCListBase &) LLVM_DELETED_FUNCTION;
+  ObjCListBase(const ObjCListBase &) = delete;
+  void operator=(const ObjCListBase &) = delete;
 protected:
   /// List is an array of pointers to objects that are not owned by this object.
   void **List;
@@ -591,7 +591,8 @@ public:
   bool HasUserDeclaredSetterMethod(const ObjCPropertyDecl *P) const;
   ObjCIvarDecl *getIvarDecl(IdentifierInfo *Id) const;
 
-  ObjCPropertyDecl *FindPropertyDeclaration(IdentifierInfo *PropertyId) const;
+  ObjCPropertyDecl *
+  FindPropertyDeclaration(const IdentifierInfo *PropertyId) const;
 
   typedef llvm::DenseMap<IdentifierInfo*, ObjCPropertyDecl*> PropertyMap;
   
@@ -819,8 +820,8 @@ public:
   ObjCMethodDecl *getCategoryInstanceMethod(Selector Sel) const;
   ObjCMethodDecl *getCategoryClassMethod(Selector Sel) const;
   ObjCMethodDecl *getCategoryMethod(Selector Sel, bool isInstance) const {
-    return isInstance ? getInstanceMethod(Sel)
-                      : getClassMethod(Sel);
+    return isInstance ? getCategoryInstanceMethod(Sel)
+                      : getCategoryClassMethod(Sel);
   }
 
   typedef ObjCProtocolList::iterator protocol_iterator;
@@ -2001,8 +2002,8 @@ class ObjCImplementationDecl : public ObjCImplDecl {
   SourceLocation IvarRBraceLoc;
   
   /// Support for ivar initialization.
-  /// IvarInitializers - The arguments used to initialize the ivars
-  CXXCtorInitializer **IvarInitializers;
+  /// \brief The arguments used to initialize the ivars
+  LazyCXXCtorInitializersPtr IvarInitializers;
   unsigned NumIvarInitializers;
 
   /// Do the ivars of this class require initialization other than
@@ -2051,17 +2052,20 @@ public:
   }
 
   /// init_begin() - Retrieve an iterator to the first initializer.
-  init_iterator       init_begin()       { return IvarInitializers; }
+  init_iterator init_begin() {
+    const auto *ConstThis = this;
+    return const_cast<init_iterator>(ConstThis->init_begin());
+  }
   /// begin() - Retrieve an iterator to the first initializer.
-  init_const_iterator init_begin() const { return IvarInitializers; }
+  init_const_iterator init_begin() const;
 
   /// init_end() - Retrieve an iterator past the last initializer.
   init_iterator       init_end()       {
-    return IvarInitializers + NumIvarInitializers;
+    return init_begin() + NumIvarInitializers;
   }
   /// end() - Retrieve an iterator past the last initializer.
   init_const_iterator init_end() const {
-    return IvarInitializers + NumIvarInitializers;
+    return init_begin() + NumIvarInitializers;
   }
   /// getNumArgs - Number of ivars which must be initialized.
   unsigned getNumIvarInitializers() const {
@@ -2354,7 +2358,7 @@ public:
 
   /// Lookup a property by name in the specified DeclContext.
   static ObjCPropertyDecl *findPropertyDecl(const DeclContext *DC,
-                                            IdentifierInfo *propertyID);
+                                            const IdentifierInfo *propertyID);
 
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == ObjCProperty; }

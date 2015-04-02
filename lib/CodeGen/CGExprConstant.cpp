@@ -383,14 +383,19 @@ bool ConstStructBuilder::Build(InitListExpr *ILE) {
 
     if (!EltInit)
       return false;
-    
+
     if (!Field->isBitField()) {
       // Handle non-bitfield members.
       AppendField(*Field, Layout.getFieldOffset(FieldNo), EltInit);
     } else {
       // Otherwise we have a bitfield.
-      AppendBitField(*Field, Layout.getFieldOffset(FieldNo),
-                     cast<llvm::ConstantInt>(EltInit));
+      if (auto *CI = dyn_cast<llvm::ConstantInt>(EltInit)) {
+        AppendBitField(*Field, Layout.getFieldOffset(FieldNo), CI);
+      } else {
+        // We are trying to initialize a bitfield with a non-trivial constant,
+        // this must require run-time code.
+        return false;
+      }
     }
   }
 
@@ -750,6 +755,20 @@ public:
     // initialise any elements that have not been initialised explicitly
     unsigned NumInitableElts = std::min(NumInitElements, NumElements);
 
+    // Initialize remaining array elements.
+    // FIXME: This doesn't handle member pointers correctly!
+    llvm::Constant *fillC;
+    if (Expr *filler = ILE->getArrayFiller())
+      fillC = CGM.EmitConstantExpr(filler, filler->getType(), CGF);
+    else
+      fillC = llvm::Constant::getNullValue(ElemTy);
+    if (!fillC)
+      return nullptr;
+
+    // Try to use a ConstantAggregateZero if we can.
+    if (fillC->isNullValue() && !NumInitableElts)
+      return llvm::ConstantAggregateZero::get(AType);
+
     // Copy initializer elements.
     std::vector<llvm::Constant*> Elts;
     Elts.reserve(NumInitableElts + NumElements);
@@ -764,15 +783,6 @@ public:
       Elts.push_back(C);
     }
 
-    // Initialize remaining array elements.
-    // FIXME: This doesn't handle member pointers correctly!
-    llvm::Constant *fillC;
-    if (Expr *filler = ILE->getArrayFiller())
-      fillC = CGM.EmitConstantExpr(filler, filler->getType(), CGF);
-    else
-      fillC = llvm::Constant::getNullValue(ElemTy);
-    if (!fillC)
-      return nullptr;
     RewriteType |= (fillC->getType() != ElemTy);
     Elts.resize(NumElements, fillC);
 
@@ -1143,7 +1153,7 @@ llvm::Constant *CodeGenModule::EmitConstantValue(const APValue &Value,
     // FIXME: the target may want to specify that this is packed.
     llvm::StructType *STy = llvm::StructType::get(Complex[0]->getType(),
                                                   Complex[1]->getType(),
-                                                  NULL);
+                                                  nullptr);
     return llvm::ConstantStruct::get(STy, Complex);
   }
   case APValue::Float: {
@@ -1166,7 +1176,7 @@ llvm::Constant *CodeGenModule::EmitConstantValue(const APValue &Value,
     // FIXME: the target may want to specify that this is packed.
     llvm::StructType *STy = llvm::StructType::get(Complex[0]->getType(),
                                                   Complex[1]->getType(),
-                                                  NULL);
+                                                  nullptr);
     return llvm::ConstantStruct::get(STy, Complex);
   }
   case APValue::Vector: {
@@ -1207,9 +1217,6 @@ llvm::Constant *CodeGenModule::EmitConstantValue(const APValue &Value,
     unsigned NumElements = Value.getArraySize();
     unsigned NumInitElts = Value.getArrayInitializedElts();
 
-    std::vector<llvm::Constant*> Elts;
-    Elts.reserve(NumElements);
-
     // Emit array filler, if there is one.
     llvm::Constant *Filler = nullptr;
     if (Value.hasArrayFiller())
@@ -1217,7 +1224,18 @@ llvm::Constant *CodeGenModule::EmitConstantValue(const APValue &Value,
                                           CAT->getElementType(), CGF);
 
     // Emit initializer elements.
-    llvm::Type *CommonElementType = nullptr;
+    llvm::Type *CommonElementType =
+        getTypes().ConvertType(CAT->getElementType());
+
+    // Try to use a ConstantAggregateZero if we can.
+    if (Filler && Filler->isNullValue() && !NumInitElts) {
+      llvm::ArrayType *AType =
+          llvm::ArrayType::get(CommonElementType, NumElements);
+      return llvm::ConstantAggregateZero::get(AType);
+    }
+
+    std::vector<llvm::Constant*> Elts;
+    Elts.reserve(NumElements);
     for (unsigned I = 0; I < NumElements; ++I) {
       llvm::Constant *C = Filler;
       if (I < NumInitElts)

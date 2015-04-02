@@ -2,7 +2,7 @@
 // RUN: mkdir %t
 
 // RUN: not env FORCE_CLANG_DIAGNOSTICS_CRASH= TMPDIR=%t TEMP=%t TMP=%t \
-// RUN: %clang -fsyntax-only %s -I %S/Inputs/module                     \
+// RUN: %clang -fsyntax-only %s -I %S/Inputs/module -isysroot /tmp/     \
 // RUN: -fmodules -fmodules-cache-path=/tmp/ -DFOO=BAR 2>&1 | FileCheck %s
 
 // RUN: FileCheck --check-prefix=CHECKSRC %s -input-file %t/crash-report-*.m
@@ -25,8 +25,11 @@ const int x = MODULE_MACRO;
 // CHECKSRC: @import simple;
 // CHECKSRC: const int x = 10;
 
-// CHECKSH: -cc1
-// CHECKSH: -D "FOO=BAR"
-// CHECKSH-NOT: -fmodules-cache-path=/tmp/
-// CHECKSH: crash-report-modules-{{[^ ]*}}.m
-// CHECKSH: -ivfsoverlay crash-report-modules-{{[^ ]*}}.cache/vfs/vfs.yaml
+// CHECKSH: # Crash reproducer
+// CHECKSH-NEXT: # Original command: {{.*$}}
+// CHECKSH-NEXT: "-cc1"
+// CHECKSH: "-isysroot" "/tmp/"
+// CHECKSH: "-D" "FOO=BAR"
+// CHECKSH-NOT: "-fmodules-cache-path=/tmp/"
+// CHECKSH: "crash-report-modules-{{[^ ]*}}.m"
+// CHECKSH: "-ivfsoverlay" "crash-report-modules-{{[^ ]*}}.cache/vfs/vfs.yaml"

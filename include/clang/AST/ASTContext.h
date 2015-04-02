@@ -273,8 +273,6 @@ class ASTContext : public RefCountedBase<ASTContext> {
   /// \brief Declaration for the CUDA cudaConfigureCall function.
   FunctionDecl *cudaConfigureCallDecl;
 
-  TypeSourceInfo NullTypeSourceInfo;
-
   /// \brief Keeps track of all declaration attributes.
   ///
   /// Since so few decls have attrs, we keep them in a hash map instead of
@@ -385,6 +383,7 @@ private:
   ImportDecl *LastLocalImport;
   
   TranslationUnitDecl *TUDecl;
+  mutable ExternCContextDecl *ExternCContext;
 
   /// \brief The associated SourceManager object.a
   SourceManager &SourceMgr;
@@ -784,6 +783,7 @@ public:
 
   TranslationUnitDecl *getTranslationUnitDecl() const { return TUDecl; }
 
+  ExternCContextDecl *getExternCContextDecl() const;
 
   // Builtin Types.
   CanQualType VoidTy;
@@ -929,6 +929,12 @@ public:
 
   /// \brief Change the result type of a function type once it is deduced.
   void adjustDeducedFunctionResultType(FunctionDecl *FD, QualType ResultType);
+
+  /// \brief Change the exception specification on a function once it is
+  /// delay-parsed, instantiated, or computed.
+  void adjustExceptionSpec(FunctionDecl *FD,
+                           const FunctionProtoType::ExceptionSpecInfo &ESI,
+                           bool AsWritten = false);
 
   /// \brief Return the uniqued reference to the type for a complex
   /// number with the specified element type.
@@ -1932,6 +1938,8 @@ public:
   /// cv-qualifiers.
   QualType getSignatureParameterType(QualType T) const;
   
+  QualType getExceptionObjectType(QualType T) const;
+  
   /// \brief Return the properly qualified result of decaying the specified
   /// array type to a pointer.
   ///
@@ -2167,8 +2175,6 @@ public:
   getTrivialTypeSourceInfo(QualType T, 
                            SourceLocation Loc = SourceLocation()) const;
 
-  TypeSourceInfo *getNullTypeSourceInfo() { return &NullTypeSourceInfo; }
-
   /// \brief Add a deallocation callback that will be invoked when the 
   /// ASTContext is destroyed.
   ///
@@ -2188,6 +2194,18 @@ public:
   /// \returns true if the function/var must be CodeGen'ed/deserialized even if
   /// it is not used.
   bool DeclMustBeEmitted(const Decl *D);
+
+  const CXXConstructorDecl *
+  getCopyConstructorForExceptionObject(CXXRecordDecl *RD);
+
+  void addCopyConstructorForExceptionObject(CXXRecordDecl *RD,
+                                            CXXConstructorDecl *CD);
+
+  void addDefaultArgExprForConstructor(const CXXConstructorDecl *CD,
+                                       unsigned ParmIdx, Expr *DAE);
+
+  Expr *getDefaultArgExprForConstructor(const CXXConstructorDecl *CD,
+                                        unsigned ParmIdx);
 
   void setManglingNumber(const NamedDecl *ND, unsigned Number);
   unsigned getManglingNumber(const NamedDecl *ND) const;
@@ -2261,8 +2279,8 @@ public:
   static unsigned NumImplicitDestructorsDeclared;
   
 private:
-  ASTContext(const ASTContext &) LLVM_DELETED_FUNCTION;
-  void operator=(const ASTContext &) LLVM_DELETED_FUNCTION;
+  ASTContext(const ASTContext &) = delete;
+  void operator=(const ASTContext &) = delete;
 
 public:
   /// \brief Initialize built-in types.

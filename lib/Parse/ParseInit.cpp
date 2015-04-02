@@ -148,7 +148,7 @@ ExprResult Parser::ParseInitializerWithPotentialDesignator() {
 
     Diag(NameLoc, diag::ext_gnu_old_style_field_designator)
       << FixItHint::CreateReplacement(SourceRange(NameLoc, ColonLoc),
-                                      NewSyntax.str());
+                                      NewSyntax);
 
     Designation D;
     D.AddDesignator(Designator::getField(FieldName, SourceLocation(), NameLoc));
@@ -423,9 +423,11 @@ ExprResult Parser::ParseBraceInitializer() {
 
     if (Tok.is(tok::ellipsis))
       SubElt = Actions.ActOnPackExpansion(SubElt.get(), ConsumeToken());
-    
+
+    SubElt = Actions.CorrectDelayedTyposInExpr(SubElt.get());
+
     // If we couldn't parse the subelement, bail out.
-    if (!SubElt.isInvalid()) {
+    if (SubElt.isUsable()) {
       InitExprs.push_back(SubElt.get());
     } else {
       InitExprsOk = false;

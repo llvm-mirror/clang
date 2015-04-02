@@ -18,8 +18,8 @@ void test(X x) {
   // X64: alloca %struct.X
 
   // X64: %[[agg:[^ ]*]] = alloca %struct.X
-  // X64: %[[valptr:[^ ]*]] = getelementptr %struct.X* %[[agg]], i32 0, i32 0
-  // X64: %[[val:[^ ]*]] = load i32* %[[valptr]]
+  // X64: %[[valptr:[^ ]*]] = getelementptr %struct.X, %struct.X* %[[agg]], i32 0, i32 0
+  // X64: %[[val:[^ ]*]] = load i32, i32* %[[valptr]]
   // X64: call void (...)* @"\01?vararg@@YAXZZ"(i32 %[[val]])
 
   // CHECK-NOT: llvm.trap

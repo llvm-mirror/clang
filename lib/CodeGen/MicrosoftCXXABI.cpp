@@ -17,12 +17,16 @@
 #include "CGCXXABI.h"
 #include "CGVTables.h"
 #include "CodeGenModule.h"
+#include "CodeGenTypes.h"
+#include "TargetInfo.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
+#include "clang/AST/StmtCXX.h"
 #include "clang/AST/VTableBuilder.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/IR/CallSite.h"
+#include "llvm/IR/Intrinsics.h"
 
 using namespace clang;
 using namespace CodeGen;
@@ -40,9 +44,11 @@ public:
   MicrosoftCXXABI(CodeGenModule &CGM)
       : CGCXXABI(CGM), BaseClassDescriptorType(nullptr),
         ClassHierarchyDescriptorType(nullptr),
-        CompleteObjectLocatorType(nullptr) {}
+        CompleteObjectLocatorType(nullptr), CatchableTypeType(nullptr),
+        ThrowInfoType(nullptr), HandlerMapEntryType(nullptr) {}
 
   bool HasThisReturn(GlobalDecl GD) const override;
+  bool hasMostDerivedReturn(GlobalDecl GD) const override;
 
   bool classifyReturnType(CGFunctionInfo &FI) const override;
 
@@ -65,14 +71,21 @@ public:
   StringRef GetPureVirtualCallName() override { return "_purecall"; }
   StringRef GetDeletedVirtualCallName() override { return "_purecall"; }
 
-  llvm::Value *adjustToCompleteObject(CodeGenFunction &CGF,
-                                      llvm::Value *ptr,
-                                      QualType type) override;
+  void emitVirtualObjectDelete(CodeGenFunction &CGF, const CXXDeleteExpr *DE,
+                               llvm::Value *Ptr, QualType ElementType,
+                               const CXXDestructorDecl *Dtor) override;
+
+  void emitRethrow(CodeGenFunction &CGF, bool isNoReturn) override;
+  void emitThrow(CodeGenFunction &CGF, const CXXThrowExpr *E) override;
+
+  void emitBeginCatch(CodeGenFunction &CGF, const CXXCatchStmt *C) override;
 
   llvm::GlobalVariable *getMSCompleteObjectLocator(const CXXRecordDecl *RD,
                                                    const VPtrInfo *Info);
 
   llvm::Constant *getAddrOfRTTIDescriptor(QualType Ty) override;
+  llvm::Constant *
+  getAddrOfCXXHandlerMapEntry(QualType Ty, QualType CatchHandlerType) override;
 
   bool shouldTypeidBeNullChecked(bool IsDeref, QualType SrcRecordTy) override;
   void EmitBadTypeidCall(CodeGenFunction &CGF) override;
@@ -211,17 +224,18 @@ public:
                                          llvm::Value *This,
                                          llvm::Type *Ty) override;
 
-  void EmitVirtualDestructorCall(CodeGenFunction &CGF,
-                                 const CXXDestructorDecl *Dtor,
-                                 CXXDtorType DtorType, llvm::Value *This,
-                                 const CXXMemberCallExpr *CE) override;
+  llvm::Value *EmitVirtualDestructorCall(CodeGenFunction &CGF,
+                                         const CXXDestructorDecl *Dtor,
+                                         CXXDtorType DtorType,
+                                         llvm::Value *This,
+                                         const CXXMemberCallExpr *CE) override;
 
   void adjustCallArgsForDestructorThunk(CodeGenFunction &CGF, GlobalDecl GD,
                                         CallArgList &CallArgs) override {
     assert(GD.getDtorType() == Dtor_Deleting &&
            "Only deleting destructor thunks are available in this ABI");
     CallArgs.add(RValue::get(getStructorImplicitParamValue(CGF)),
-                             CGM.getContext().IntTy);
+                 getContext().IntTy);
   }
 
   void emitVirtualInheritanceTables(const CXXRecordDecl *RD) override;
@@ -406,6 +420,9 @@ public:
     if (!isImageRelative())
       return PtrVal;
 
+    if (PtrVal->isNullValue())
+      return llvm::Constant::getNullValue(CGM.IntTy);
+
     llvm::Constant *ImageBaseAsInt =
         llvm::ConstantExpr::getPtrToInt(getImageBase(), CGM.IntPtrTy);
     llvm::Constant *PtrValAsInt =
@@ -457,10 +474,15 @@ private:
                                        int32_t VBPtrOffset,
                                        int32_t VBTableOffset,
                                        llvm::Value **VBPtr = nullptr) {
+    assert(VBTableOffset % 4 == 0 && "should be byte offset into table of i32s");
     llvm::Value *VBPOffset = llvm::ConstantInt::get(CGM.IntTy, VBPtrOffset),
                 *VBTOffset = llvm::ConstantInt::get(CGM.IntTy, VBTableOffset);
     return GetVBaseOffsetFromVBPtr(CGF, Base, VBPOffset, VBTOffset, VBPtr);
   }
+
+  std::pair<llvm::Value *, llvm::Value *>
+  performBaseAdjustment(CodeGenFunction &CGF, llvm::Value *Value,
+                        QualType SrcRecordTy);
 
   /// \brief Performs a full virtual base adjustment.  Used to dereference
   /// pointers to members of virtual bases.
@@ -504,7 +526,7 @@ public:
     return RD->hasAttr<MSInheritanceAttr>();
   }
 
-  virtual bool isTypeInfoCalculable(QualType Ty) const override {
+  bool isTypeInfoCalculable(QualType Ty) const override {
     if (!CGCXXABI::isTypeInfoCalculable(Ty))
       return false;
     if (const auto *MPT = Ty->getAs<MemberPointerType>()) {
@@ -551,6 +573,94 @@ public:
 
   void emitCXXStructor(const CXXMethodDecl *MD, StructorType Type) override;
 
+  llvm::StructType *getHandlerMapEntryType() {
+    if (!HandlerMapEntryType) {
+      llvm::Type *FieldTypes[] = {
+        CGM.IntTy,                           // Flags
+        getImageRelativeType(CGM.Int8PtrTy), // TypeDescriptor
+      };
+      HandlerMapEntryType = llvm::StructType::create(
+          CGM.getLLVMContext(), FieldTypes, "eh.HandlerMapEntry");
+    }
+    return HandlerMapEntryType;
+  }
+
+  llvm::StructType *getCatchableTypeType() {
+    if (CatchableTypeType)
+      return CatchableTypeType;
+    llvm::Type *FieldTypes[] = {
+        CGM.IntTy,                           // Flags
+        getImageRelativeType(CGM.Int8PtrTy), // TypeDescriptor
+        CGM.IntTy,                           // NonVirtualAdjustment
+        CGM.IntTy,                           // OffsetToVBPtr
+        CGM.IntTy,                           // VBTableIndex
+        CGM.IntTy,                           // Size
+        getImageRelativeType(CGM.Int8PtrTy)  // CopyCtor
+    };
+    CatchableTypeType = llvm::StructType::create(
+        CGM.getLLVMContext(), FieldTypes, "eh.CatchableType");
+    return CatchableTypeType;
+  }
+
+  llvm::StructType *getCatchableTypeArrayType(uint32_t NumEntries) {
+    llvm::StructType *&CatchableTypeArrayType =
+        CatchableTypeArrayTypeMap[NumEntries];
+    if (CatchableTypeArrayType)
+      return CatchableTypeArrayType;
+
+    llvm::SmallString<23> CTATypeName("eh.CatchableTypeArray.");
+    CTATypeName += llvm::utostr(NumEntries);
+    llvm::Type *CTType =
+        getImageRelativeType(getCatchableTypeType()->getPointerTo());
+    llvm::Type *FieldTypes[] = {
+        CGM.IntTy,                               // NumEntries
+        llvm::ArrayType::get(CTType, NumEntries) // CatchableTypes
+    };
+    CatchableTypeArrayType =
+        llvm::StructType::create(CGM.getLLVMContext(), FieldTypes, CTATypeName);
+    return CatchableTypeArrayType;
+  }
+
+  llvm::StructType *getThrowInfoType() {
+    if (ThrowInfoType)
+      return ThrowInfoType;
+    llvm::Type *FieldTypes[] = {
+        CGM.IntTy,                           // Flags
+        getImageRelativeType(CGM.Int8PtrTy), // CleanupFn
+        getImageRelativeType(CGM.Int8PtrTy), // ForwardCompat
+        getImageRelativeType(CGM.Int8PtrTy)  // CatchableTypeArray
+    };
+    ThrowInfoType = llvm::StructType::create(CGM.getLLVMContext(), FieldTypes,
+                                             "eh.ThrowInfo");
+    return ThrowInfoType;
+  }
+
+  llvm::Constant *getThrowFn() {
+    // _CxxThrowException is passed an exception object and a ThrowInfo object
+    // which describes the exception.
+    llvm::Type *Args[] = {CGM.Int8PtrTy, getThrowInfoType()->getPointerTo()};
+    llvm::FunctionType *FTy =
+        llvm::FunctionType::get(CGM.VoidTy, Args, /*IsVarArgs=*/false);
+    auto *Fn = cast<llvm::Function>(
+        CGM.CreateRuntimeFunction(FTy, "_CxxThrowException"));
+    // _CxxThrowException is stdcall on 32-bit x86 platforms.
+    if (CGM.getTarget().getTriple().getArch() == llvm::Triple::x86)
+      Fn->setCallingConv(llvm::CallingConv::X86_StdCall);
+    return Fn;
+  }
+
+  llvm::Function *getAddrOfCXXCtorClosure(const CXXConstructorDecl *CD,
+                                          CXXCtorType CT);
+
+  llvm::Constant *getCatchableType(QualType T,
+                                   uint32_t NVOffset = 0,
+                                   int32_t VBPtrOffset = -1,
+                                   uint32_t VBIndex = 0);
+
+  llvm::GlobalVariable *getCatchableTypeArray(QualType T);
+
+  llvm::GlobalVariable *getThrowInfo(QualType T) override;
+
 private:
   typedef std::pair<const CXXRecordDecl *, CharUnits> VFTableIdTy;
   typedef llvm::DenseMap<VFTableIdTy, llvm::GlobalVariable *> VTablesMapTy;
@@ -582,6 +692,13 @@ private:
   llvm::StructType *BaseClassDescriptorType;
   llvm::StructType *ClassHierarchyDescriptorType;
   llvm::StructType *CompleteObjectLocatorType;
+
+  llvm::DenseMap<QualType, llvm::GlobalVariable *> CatchableTypeArrays;
+
+  llvm::StructType *CatchableTypeType;
+  llvm::DenseMap<uint32_t, llvm::StructType *> CatchableTypeArrayTypeMap;
+  llvm::StructType *ThrowInfoType;
+  llvm::StructType *HandlerMapEntryType;
 };
 
 }
@@ -612,8 +729,15 @@ MicrosoftCXXABI::getRecordArgABI(const CXXRecordDecl *RD) const {
     if (RD->hasNonTrivialCopyConstructor())
       return RAA_Indirect;
 
-    // Win64 passes objects larger than 8 bytes indirectly.
-    if (getContext().getTypeSize(RD->getTypeForDecl()) > 64)
+    // If an object has a destructor, we'd really like to pass it indirectly
+    // because it allows us to elide copies.  Unfortunately, MSVC makes that
+    // impossible for small types, which it will pass in a single register or
+    // stack slot. Most objects with dtors are large-ish, so handle that early.
+    // We can't call out all large objects as being indirect because there are
+    // multiple x64 calling conventions and the C++ ABI code shouldn't dictate
+    // how we pass large POD types.
+    if (RD->hasNonTrivialDestructor() &&
+        getContext().getTypeSize(RD->getTypeForDecl()) > 64)
       return RAA_Indirect;
 
     // We have a trivial copy constructor or no copy constructors, but we have
@@ -640,38 +764,87 @@ MicrosoftCXXABI::getRecordArgABI(const CXXRecordDecl *RD) const {
   llvm_unreachable("invalid enum");
 }
 
-llvm::Value *MicrosoftCXXABI::adjustToCompleteObject(CodeGenFunction &CGF,
-                                                     llvm::Value *ptr,
-                                                     QualType type) {
-  // FIXME: implement
-  return ptr;
+void MicrosoftCXXABI::emitVirtualObjectDelete(CodeGenFunction &CGF,
+                                              const CXXDeleteExpr *DE,
+                                              llvm::Value *Ptr,
+                                              QualType ElementType,
+                                              const CXXDestructorDecl *Dtor) {
+  // FIXME: Provide a source location here even though there's no
+  // CXXMemberCallExpr for dtor call.
+  bool UseGlobalDelete = DE->isGlobalDelete();
+  CXXDtorType DtorType = UseGlobalDelete ? Dtor_Complete : Dtor_Deleting;
+  llvm::Value *MDThis =
+      EmitVirtualDestructorCall(CGF, Dtor, DtorType, Ptr, /*CE=*/nullptr);
+  if (UseGlobalDelete)
+    CGF.EmitDeleteCall(DE->getOperatorDelete(), MDThis, ElementType);
 }
 
-/// \brief Gets the offset to the virtual base that contains the vfptr for
-/// MS-ABI polymorphic types.
-static llvm::Value *getPolymorphicOffset(CodeGenFunction &CGF,
-                                         const CXXRecordDecl *RD,
-                                         llvm::Value *Value) {
-  const ASTContext &Context = RD->getASTContext();
-  for (const CXXBaseSpecifier &Base : RD->vbases())
-    if (Context.getASTRecordLayout(Base.getType()->getAsCXXRecordDecl())
-            .hasExtendableVFPtr())
-      return CGF.CGM.getCXXABI().GetVirtualBaseClassOffset(
-          CGF, Value, RD, Base.getType()->getAsCXXRecordDecl());
-  llvm_unreachable("One of our vbases should be polymorphic.");
+void MicrosoftCXXABI::emitRethrow(CodeGenFunction &CGF, bool isNoReturn) {
+  llvm::Value *Args[] = {
+      llvm::ConstantPointerNull::get(CGM.Int8PtrTy),
+      llvm::ConstantPointerNull::get(getThrowInfoType()->getPointerTo())};
+  auto *Fn = getThrowFn();
+  if (isNoReturn)
+    CGF.EmitNoreturnRuntimeCallOrInvoke(Fn, Args);
+  else
+    CGF.EmitRuntimeCallOrInvoke(Fn, Args);
 }
 
-static std::pair<llvm::Value *, llvm::Value *>
-performBaseAdjustment(CodeGenFunction &CGF, llvm::Value *Value,
-                      QualType SrcRecordTy) {
+namespace {
+struct CallEndCatchMSVC : EHScopeStack::Cleanup {
+  CallEndCatchMSVC() {}
+  void Emit(CodeGenFunction &CGF, Flags flags) override {
+    CGF.EmitNounwindRuntimeCall(
+        CGF.CGM.getIntrinsic(llvm::Intrinsic::eh_endcatch));
+  }
+};
+}
+
+void MicrosoftCXXABI::emitBeginCatch(CodeGenFunction &CGF,
+                                     const CXXCatchStmt *S) {
+  // In the MS ABI, the runtime handles the copy, and the catch handler is
+  // responsible for destruction.
+  VarDecl *CatchParam = S->getExceptionDecl();
+  llvm::Value *Exn = CGF.getExceptionFromSlot();
+  llvm::Function *BeginCatch =
+      CGF.CGM.getIntrinsic(llvm::Intrinsic::eh_begincatch);
+
+  if (!CatchParam) {
+    llvm::Value *Args[2] = {Exn, llvm::Constant::getNullValue(CGF.Int8PtrTy)};
+    CGF.EmitNounwindRuntimeCall(BeginCatch, Args);
+    CGF.EHStack.pushCleanup<CallEndCatchMSVC>(NormalAndEHCleanup);
+    return;
+  }
+
+  CodeGenFunction::AutoVarEmission var = CGF.EmitAutoVarAlloca(*CatchParam);
+  llvm::Value *ParamAddr =
+      CGF.Builder.CreateBitCast(var.getObjectAddress(CGF), CGF.Int8PtrTy);
+  llvm::Value *Args[2] = {Exn, ParamAddr};
+  CGF.EmitNounwindRuntimeCall(BeginCatch, Args);
+  // FIXME: Do we really need exceptional endcatch cleanups?
+  CGF.EHStack.pushCleanup<CallEndCatchMSVC>(NormalAndEHCleanup);
+  CGF.EmitAutoVarCleanups(var);
+}
+
+std::pair<llvm::Value *, llvm::Value *>
+MicrosoftCXXABI::performBaseAdjustment(CodeGenFunction &CGF, llvm::Value *Value,
+                                       QualType SrcRecordTy) {
   Value = CGF.Builder.CreateBitCast(Value, CGF.Int8PtrTy);
   const CXXRecordDecl *SrcDecl = SrcRecordTy->getAsCXXRecordDecl();
+  const ASTContext &Context = getContext();
 
-  if (CGF.getContext().getASTRecordLayout(SrcDecl).hasExtendableVFPtr())
+  if (Context.getASTRecordLayout(SrcDecl).hasExtendableVFPtr())
     return std::make_pair(Value, llvm::ConstantInt::get(CGF.Int32Ty, 0));
 
   // Perform a base adjustment.
-  llvm::Value *Offset = getPolymorphicOffset(CGF, SrcDecl, Value);
+  const CXXBaseSpecifier *PolymorphicBase = std::find_if(
+      SrcDecl->vbases_begin(), SrcDecl->vbases_end(),
+      [&](const CXXBaseSpecifier &Base) {
+        const CXXRecordDecl *BaseDecl = Base.getType()->getAsCXXRecordDecl();
+        return Context.getASTRecordLayout(BaseDecl).hasExtendableVFPtr();
+      });
+  llvm::Value *Offset = GetVirtualBaseClassOffset(
+      CGF, Value, SrcDecl, PolymorphicBase->getType()->getAsCXXRecordDecl());
   Value = CGF.Builder.CreateInBoundsGEP(Value, Offset);
   Offset = CGF.Builder.CreateTrunc(Offset, CGF.Int32Ty);
   return std::make_pair(Value, Offset);
@@ -681,7 +854,7 @@ bool MicrosoftCXXABI::shouldTypeidBeNullChecked(bool IsDeref,
                                                 QualType SrcRecordTy) {
   const CXXRecordDecl *SrcDecl = SrcRecordTy->getAsCXXRecordDecl();
   return IsDeref &&
-         !CGM.getContext().getASTRecordLayout(SrcDecl).hasExtendableVFPtr();
+         !getContext().getASTRecordLayout(SrcDecl).hasExtendableVFPtr();
 }
 
 static llvm::CallSite emitRTtypeidCall(CodeGenFunction &CGF,
@@ -715,7 +888,7 @@ bool MicrosoftCXXABI::shouldDynamicCastCallBeNullChecked(bool SrcIsPtr,
                                                          QualType SrcRecordTy) {
   const CXXRecordDecl *SrcDecl = SrcRecordTy->getAsCXXRecordDecl();
   return SrcIsPtr &&
-         !CGM.getContext().getASTRecordLayout(SrcDecl).hasExtendableVFPtr();
+         !getContext().getASTRecordLayout(SrcDecl).hasExtendableVFPtr();
 }
 
 llvm::Value *MicrosoftCXXABI::EmitDynamicCastCall(
@@ -773,10 +946,11 @@ bool MicrosoftCXXABI::EmitBadCastCall(CodeGenFunction &CGF) {
 llvm::Value *MicrosoftCXXABI::GetVirtualBaseClassOffset(
     CodeGenFunction &CGF, llvm::Value *This, const CXXRecordDecl *ClassDecl,
     const CXXRecordDecl *BaseClassDecl) {
+  const ASTContext &Context = getContext();
   int64_t VBPtrChars =
-      getContext().getASTRecordLayout(ClassDecl).getVBPtrOffset().getQuantity();
+      Context.getASTRecordLayout(ClassDecl).getVBPtrOffset().getQuantity();
   llvm::Value *VBPtrOffset = llvm::ConstantInt::get(CGM.PtrDiffTy, VBPtrChars);
-  CharUnits IntSize = getContext().getTypeSizeInChars(getContext().IntTy);
+  CharUnits IntSize = Context.getTypeSizeInChars(Context.IntTy);
   CharUnits VBTableChars =
       IntSize *
       CGM.getMicrosoftVTableContext().getVBTableIndex(ClassDecl, BaseClassDecl);
@@ -792,6 +966,15 @@ llvm::Value *MicrosoftCXXABI::GetVirtualBaseClassOffset(
 
 bool MicrosoftCXXABI::HasThisReturn(GlobalDecl GD) const {
   return isa<CXXConstructorDecl>(GD.getDecl());
+}
+
+static bool isDeletingDtor(GlobalDecl GD) {
+  return isa<CXXDestructorDecl>(GD.getDecl()) &&
+         GD.getDtorType() == Dtor_Deleting;
+}
+
+bool MicrosoftCXXABI::hasMostDerivedReturn(GlobalDecl GD) const {
+  return isDeletingDtor(GD);
 }
 
 bool MicrosoftCXXABI::classifyReturnType(CGFunctionInfo &FI) const {
@@ -894,32 +1077,54 @@ void MicrosoftCXXABI::initializeHiddenVirtualInheritanceMembers(
   }
 }
 
+static bool hasDefaultCXXMethodCC(ASTContext &Context,
+                                  const CXXMethodDecl *MD) {
+  CallingConv ExpectedCallingConv = Context.getDefaultCallingConvention(
+      /*IsVariadic=*/false, /*IsCXXMethod=*/true);
+  CallingConv ActualCallingConv =
+      MD->getType()->getAs<FunctionProtoType>()->getCallConv();
+  return ExpectedCallingConv == ActualCallingConv;
+}
+
 void MicrosoftCXXABI::EmitCXXConstructors(const CXXConstructorDecl *D) {
   // There's only one constructor type in this ABI.
   CGM.EmitGlobal(GlobalDecl(D, Ctor_Complete));
+
+  // Exported default constructors either have a simple call-site where they use
+  // the typical calling convention and have a single 'this' pointer for an
+  // argument -or- they get a wrapper function which appropriately thunks to the
+  // real default constructor.  This thunk is the default constructor closure.
+  if (D->hasAttr<DLLExportAttr>() && D->isDefaultConstructor())
+    if (!hasDefaultCXXMethodCC(getContext(), D) || D->getNumParams() != 0) {
+      llvm::Function *Fn = getAddrOfCXXCtorClosure(D, Ctor_DefaultClosure);
+      Fn->setLinkage(llvm::GlobalValue::WeakODRLinkage);
+      Fn->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+    }
 }
 
 void MicrosoftCXXABI::EmitVBPtrStores(CodeGenFunction &CGF,
                                       const CXXRecordDecl *RD) {
   llvm::Value *ThisInt8Ptr =
     CGF.Builder.CreateBitCast(getThisValue(CGF), CGM.Int8PtrTy, "this.int8");
-  const ASTRecordLayout &Layout = CGM.getContext().getASTRecordLayout(RD);
+  const ASTContext &Context = getContext();
+  const ASTRecordLayout &Layout = Context.getASTRecordLayout(RD);
 
   const VBTableGlobals &VBGlobals = enumerateVBTables(RD);
   for (unsigned I = 0, E = VBGlobals.VBTables->size(); I != E; ++I) {
     const VPtrInfo *VBT = (*VBGlobals.VBTables)[I];
     llvm::GlobalVariable *GV = VBGlobals.Globals[I];
     const ASTRecordLayout &SubobjectLayout =
-        CGM.getContext().getASTRecordLayout(VBT->BaseWithVPtr);
+        Context.getASTRecordLayout(VBT->BaseWithVPtr);
     CharUnits Offs = VBT->NonVirtualOffset;
     Offs += SubobjectLayout.getVBPtrOffset();
     if (VBT->getVBaseWithVPtr())
       Offs += Layout.getVBaseClassOffset(VBT->getVBaseWithVPtr());
     llvm::Value *VBPtr =
         CGF.Builder.CreateConstInBoundsGEP1_64(ThisInt8Ptr, Offs.getQuantity());
-    VBPtr = CGF.Builder.CreateBitCast(VBPtr, GV->getType()->getPointerTo(0),
+    llvm::Value *GVPtr = CGF.Builder.CreateConstInBoundsGEP2_32(GV, 0, 0);
+    VBPtr = CGF.Builder.CreateBitCast(VBPtr, GVPtr->getType()->getPointerTo(0),
                                       "vbptr." + VBT->ReusingBase->getName());
-    CGF.Builder.CreateStore(GV, VBPtr);
+    CGF.Builder.CreateStore(GVPtr, VBPtr);
   }
 }
 
@@ -929,7 +1134,7 @@ MicrosoftCXXABI::buildStructorSignature(const CXXMethodDecl *MD, StructorType T,
   // TODO: 'for base' flag
   if (T == StructorType::Deleting) {
     // The scalar deleting destructor takes an implicit int parameter.
-    ArgTys.push_back(CGM.getContext().IntTy);
+    ArgTys.push_back(getContext().IntTy);
   }
   auto *CD = dyn_cast<CXXConstructorDecl>(MD);
   if (!CD)
@@ -942,9 +1147,9 @@ MicrosoftCXXABI::buildStructorSignature(const CXXMethodDecl *MD, StructorType T,
   const FunctionProtoType *FPT = CD->getType()->castAs<FunctionProtoType>();
   if (Class->getNumVBases()) {
     if (FPT->isVariadic())
-      ArgTys.insert(ArgTys.begin() + 1, CGM.getContext().IntTy);
+      ArgTys.insert(ArgTys.begin() + 1, getContext().IntTy);
     else
-      ArgTys.push_back(CGM.getContext().IntTy);
+      ArgTys.push_back(getContext().IntTy);
   }
 }
 
@@ -984,7 +1189,7 @@ MicrosoftCXXABI::getVirtualFunctionPrologueThisAdjustment(GlobalDecl GD) {
 
   if (ML.VBase) {
     const ASTRecordLayout &DerivedLayout =
-        CGM.getContext().getASTRecordLayout(MD->getParent());
+        getContext().getASTRecordLayout(MD->getParent());
     Adjustment += DerivedLayout.getVBaseClassOffset(ML.VBase);
   }
 
@@ -1057,14 +1262,6 @@ llvm::Value *MicrosoftCXXABI::adjustThisArgumentForVirtualFunctionCall(
   return This;
 }
 
-static bool IsDeletingDtor(GlobalDecl GD) {
-  const CXXMethodDecl* MD = cast<CXXMethodDecl>(GD.getDecl());
-  if (isa<CXXDestructorDecl>(MD)) {
-    return GD.getDtorType() == Dtor_Deleting;
-  }
-  return false;
-}
-
 void MicrosoftCXXABI::addImplicitStructorParams(CodeGenFunction &CGF,
                                                 QualType &ResTy,
                                                 FunctionArgList &Params) {
@@ -1085,7 +1282,7 @@ void MicrosoftCXXABI::addImplicitStructorParams(CodeGenFunction &CGF,
     else
       Params.push_back(IsMostDerived);
     getStructorImplicitParamDecl(CGF) = IsMostDerived;
-  } else if (IsDeletingDtor(CGF.CurGD)) {
+  } else if (isDeletingDtor(CGF.CurGD)) {
     ImplicitParamDecl *ShouldDelete
       = ImplicitParamDecl::Create(Context, nullptr,
                                   CGF.CurGD.getDecl()->getLocation(),
@@ -1131,6 +1328,9 @@ void MicrosoftCXXABI::EmitInstanceFunctionProlog(CodeGenFunction &CGF) {
   ///    HasThisReturn only specifies a contract, not the implementation    
   if (HasThisReturn(CGF.CurGD))
     CGF.Builder.CreateStore(getThisValue(CGF), CGF.ReturnValue);
+  else if (hasMostDerivedReturn(CGF.CurGD))
+    CGF.Builder.CreateStore(CGF.EmitCastToVoidPtr(getThisValue(CGF)),
+                            CGF.ReturnValue);
 
   const CXXMethodDecl *MD = cast<CXXMethodDecl>(CGF.CurGD.getDecl());
   if (isa<CXXConstructorDecl>(MD) && MD->getParent()->getNumVBases()) {
@@ -1142,7 +1342,7 @@ void MicrosoftCXXABI::EmitInstanceFunctionProlog(CodeGenFunction &CGF) {
           "is_most_derived");
   }
 
-  if (IsDeletingDtor(CGF.CurGD)) {
+  if (isDeletingDtor(CGF.CurGD)) {
     assert(getStructorImplicitParamDecl(CGF) &&
            "no implicit parameter for a deleting destructor?");
     getStructorImplicitParamValue(CGF)
@@ -1190,9 +1390,10 @@ void MicrosoftCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
                                                     This, false);
   }
 
-  CGF.EmitCXXMemberOrOperatorCall(DD, Callee, ReturnValueSlot(), This,
-                                  /*ImplicitParam=*/nullptr,
-                                  /*ImplicitParamTy=*/QualType(), nullptr);
+  CGF.EmitCXXStructorCall(DD, Callee, ReturnValueSlot(), This,
+                          /*ImplicitParam=*/nullptr,
+                          /*ImplicitParamTy=*/QualType(), nullptr,
+                          getFromDtorType(Type));
 }
 
 void MicrosoftCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
@@ -1230,7 +1431,7 @@ llvm::Value *MicrosoftCXXABI::getVTableAddressPointInStructor(
   llvm::GlobalValue *VTableAddressPoint = VFTablesMap[ID];
   if (!VTableAddressPoint) {
     assert(Base.getBase()->getNumVBases() &&
-           !CGM.getContext().getASTRecordLayout(Base.getBase()).hasOwnVFPtr());
+           !getContext().getASTRecordLayout(Base.getBase()).hasOwnVFPtr());
   }
   return VTableAddressPoint;
 }
@@ -1268,7 +1469,7 @@ llvm::GlobalVariable *MicrosoftCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
   MicrosoftVTableContext &VTContext = CGM.getMicrosoftVTableContext();
   const VPtrInfoVector &VFPtrs = VTContext.getVFPtrOffsets(RD);
 
-  if (DeferredVFTables.insert(RD)) {
+  if (DeferredVFTables.insert(RD).second) {
     // We haven't processed this record type before.
     // Queue up this v-table for possible deferred emission.
     CGM.addDeferredVTable(RD);
@@ -1280,104 +1481,103 @@ llvm::GlobalVariable *MicrosoftCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
     for (size_t J = 0, F = VFPtrs.size(); J != F; ++J) {
       SmallString<256> Name;
       mangleVFTableName(getMangleContext(), RD, VFPtrs[J], Name);
-      if (!ObservedMangledNames.insert(Name.str()))
+      if (!ObservedMangledNames.insert(Name.str()).second)
         llvm_unreachable("Already saw this mangling before?");
     }
 #endif
   }
 
-  for (size_t J = 0, F = VFPtrs.size(); J != F; ++J) {
-    if (VFPtrs[J]->FullOffsetInMDC != VPtrOffset)
-      continue;
-    SmallString<256> VFTableName;
-    mangleVFTableName(getMangleContext(), RD, VFPtrs[J], VFTableName);
-    StringRef VTableName = VFTableName;
+  VPtrInfo *const *VFPtrI =
+      std::find_if(VFPtrs.begin(), VFPtrs.end(), [&](VPtrInfo *VPI) {
+        return VPI->FullOffsetInMDC == VPtrOffset;
+      });
+  if (VFPtrI == VFPtrs.end()) {
+    VFTablesMap[ID] = nullptr;
+    return nullptr;
+  }
+  VPtrInfo *VFPtr = *VFPtrI;
 
-    uint64_t NumVTableSlots =
-        VTContext.getVFTableLayout(RD, VFPtrs[J]->FullOffsetInMDC)
-            .getNumVTableComponents();
-    llvm::GlobalValue::LinkageTypes VTableLinkage =
-        llvm::GlobalValue::ExternalLinkage;
-    llvm::ArrayType *VTableType =
-        llvm::ArrayType::get(CGM.Int8PtrTy, NumVTableSlots);
-    if (getContext().getLangOpts().RTTIData) {
-      VTableLinkage = llvm::GlobalValue::PrivateLinkage;
-      VTableName = "";
-    }
+  SmallString<256> VFTableName;
+  mangleVFTableName(getMangleContext(), RD, VFPtr, VFTableName);
 
-    VTable = CGM.getModule().getNamedGlobal(VFTableName);
-    if (!VTable) {
-      // Create a backing variable for the contents of VTable.  The VTable may
-      // or may not include space for a pointer to RTTI data.
-      llvm::GlobalValue *VFTable = VTable = new llvm::GlobalVariable(
-          CGM.getModule(), VTableType, /*isConstant=*/true, VTableLinkage,
-          /*Initializer=*/nullptr, VTableName);
-      VTable->setUnnamedAddr(true);
+  llvm::GlobalValue::LinkageTypes VFTableLinkage = CGM.getVTableLinkage(RD);
+  bool VFTableComesFromAnotherTU =
+      llvm::GlobalValue::isAvailableExternallyLinkage(VFTableLinkage) ||
+      llvm::GlobalValue::isExternalLinkage(VFTableLinkage);
+  bool VTableAliasIsRequred =
+      !VFTableComesFromAnotherTU && getContext().getLangOpts().RTTIData;
 
-      // Only insert a pointer into the VFTable for RTTI data if we are not
-      // importing it.  We never reference the RTTI data directly so there is no
-      // need to make room for it.
-      if (getContext().getLangOpts().RTTIData &&
-          !RD->hasAttr<DLLImportAttr>()) {
-        llvm::Value *GEPIndices[] = {llvm::ConstantInt::get(CGM.IntTy, 0),
-                                     llvm::ConstantInt::get(CGM.IntTy, 1)};
-        // Create a GEP which points just after the first entry in the VFTable,
-        // this should be the location of the first virtual method.
-        llvm::Constant *VTableGEP =
-            llvm::ConstantExpr::getInBoundsGetElementPtr(VTable, GEPIndices);
-        // The symbol for the VFTable is an alias to the GEP.  It is
-        // transparent, to other modules, what the nature of this symbol is; all
-        // that matters is that the alias be the address of the first virtual
-        // method.
-        VFTable = llvm::GlobalAlias::create(
-            cast<llvm::SequentialType>(VTableGEP->getType())->getElementType(),
-            /*AddressSpace=*/0, llvm::GlobalValue::ExternalLinkage,
-            VFTableName.str(), VTableGEP, &CGM.getModule());
-      } else {
-        // We don't need a GlobalAlias to be a symbol for the VTable if we won't
-        // be referencing any RTTI data.  The GlobalVariable will end up being
-        // an appropriate definition of the VFTable.
-        VTable->setName(VFTableName.str());
-      }
-
-      VFTable->setUnnamedAddr(true);
-      if (RD->hasAttr<DLLImportAttr>())
-        VFTable->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
-      else if (RD->hasAttr<DLLExportAttr>())
-        VFTable->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
-
-      llvm::GlobalValue::LinkageTypes VFTableLinkage = CGM.getVTableLinkage(RD);
-      if (VFTable != VTable) {
-        if (llvm::GlobalValue::isAvailableExternallyLinkage(VFTableLinkage)) {
-          // AvailableExternally implies that we grabbed the data from another
-          // executable.  No need to stick the alias in a Comdat.
-        } else if (llvm::GlobalValue::isInternalLinkage(VFTableLinkage) ||
-                   llvm::GlobalValue::isWeakODRLinkage(VFTableLinkage) ||
-                   llvm::GlobalValue::isLinkOnceODRLinkage(VFTableLinkage)) {
-          // The alias is going to be dropped into a Comdat, no need to make it
-          // weak.
-          if (!llvm::GlobalValue::isInternalLinkage(VFTableLinkage))
-            VFTableLinkage = llvm::GlobalValue::ExternalLinkage;
-          llvm::Comdat *C =
-              CGM.getModule().getOrInsertComdat(VFTable->getName());
-          // We must indicate which VFTable is larger to support linking between
-          // translation units which do and do not have RTTI data.  The largest
-          // VFTable contains the RTTI data; translation units which reference
-          // the smaller VFTable always reference it relative to the first
-          // virtual method.
-          C->setSelectionKind(llvm::Comdat::Largest);
-          VTable->setComdat(C);
-        } else {
-          llvm_unreachable("unexpected linkage for vftable!");
-        }
-      }
-      VFTable->setLinkage(VFTableLinkage);
-      CGM.setGlobalVisibility(VFTable, RD);
-      VFTablesMap[ID] = VFTable;
-    }
-    break;
+  if (llvm::GlobalValue *VFTable =
+          CGM.getModule().getNamedGlobal(VFTableName)) {
+    VFTablesMap[ID] = VFTable;
+    return VTableAliasIsRequred
+               ? cast<llvm::GlobalVariable>(
+                     cast<llvm::GlobalAlias>(VFTable)->getBaseObject())
+               : cast<llvm::GlobalVariable>(VFTable);
   }
 
+  uint64_t NumVTableSlots =
+      VTContext.getVFTableLayout(RD, VFPtr->FullOffsetInMDC)
+          .getNumVTableComponents();
+  llvm::GlobalValue::LinkageTypes VTableLinkage =
+      VTableAliasIsRequred ? llvm::GlobalValue::PrivateLinkage : VFTableLinkage;
+
+  StringRef VTableName = VTableAliasIsRequred ? StringRef() : VFTableName.str();
+
+  llvm::ArrayType *VTableType =
+      llvm::ArrayType::get(CGM.Int8PtrTy, NumVTableSlots);
+
+  // Create a backing variable for the contents of VTable.  The VTable may
+  // or may not include space for a pointer to RTTI data.
+  llvm::GlobalValue *VFTable;
+  VTable = new llvm::GlobalVariable(CGM.getModule(), VTableType,
+                                    /*isConstant=*/true, VTableLinkage,
+                                    /*Initializer=*/nullptr, VTableName);
+  VTable->setUnnamedAddr(true);
+
+  llvm::Comdat *C = nullptr;
+  if (!VFTableComesFromAnotherTU &&
+      (llvm::GlobalValue::isWeakForLinker(VFTableLinkage) ||
+       (llvm::GlobalValue::isLocalLinkage(VFTableLinkage) &&
+        VTableAliasIsRequred)))
+    C = CGM.getModule().getOrInsertComdat(VFTableName.str());
+
+  // Only insert a pointer into the VFTable for RTTI data if we are not
+  // importing it.  We never reference the RTTI data directly so there is no
+  // need to make room for it.
+  if (VTableAliasIsRequred) {
+    llvm::Value *GEPIndices[] = {llvm::ConstantInt::get(CGM.IntTy, 0),
+                                 llvm::ConstantInt::get(CGM.IntTy, 1)};
+    // Create a GEP which points just after the first entry in the VFTable,
+    // this should be the location of the first virtual method.
+    llvm::Constant *VTableGEP =
+        llvm::ConstantExpr::getInBoundsGetElementPtr(VTable, GEPIndices);
+    if (llvm::GlobalValue::isWeakForLinker(VFTableLinkage)) {
+      VFTableLinkage = llvm::GlobalValue::ExternalLinkage;
+      if (C)
+        C->setSelectionKind(llvm::Comdat::Largest);
+    }
+    VFTable = llvm::GlobalAlias::create(
+        cast<llvm::SequentialType>(VTableGEP->getType())->getElementType(),
+        /*AddressSpace=*/0, VFTableLinkage, VFTableName.str(), VTableGEP,
+        &CGM.getModule());
+    VFTable->setUnnamedAddr(true);
+  } else {
+    // We don't need a GlobalAlias to be a symbol for the VTable if we won't
+    // be referencing any RTTI data.
+    // The GlobalVariable will end up being an appropriate definition of the
+    // VFTable.
+    VFTable = VTable;
+  }
+  if (C)
+    VTable->setComdat(C);
+
+  if (RD->hasAttr<DLLImportAttr>())
+    VFTable->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+  else if (RD->hasAttr<DLLExportAttr>())
+    VFTable->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+
+  VFTablesMap[ID] = VFTable;
   return VTable;
 }
 
@@ -1400,11 +1600,9 @@ llvm::Value *MicrosoftCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
   return Builder.CreateLoad(VFuncPtr);
 }
 
-void MicrosoftCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
-                                                const CXXDestructorDecl *Dtor,
-                                                CXXDtorType DtorType,
-                                                llvm::Value *This,
-                                                const CXXMemberCallExpr *CE) {
+llvm::Value *MicrosoftCXXABI::EmitVirtualDestructorCall(
+    CodeGenFunction &CGF, const CXXDestructorDecl *Dtor, CXXDtorType DtorType,
+    llvm::Value *This, const CXXMemberCallExpr *CE) {
   assert(CE == nullptr || CE->arg_begin() == CE->arg_end());
   assert(DtorType == Dtor_Deleting || DtorType == Dtor_Complete);
 
@@ -1416,14 +1614,16 @@ void MicrosoftCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
   llvm::Type *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
   llvm::Value *Callee = getVirtualFunctionPointer(CGF, GD, This, Ty);
 
-  ASTContext &Context = CGF.getContext();
-  llvm::Value *ImplicitParam =
-      llvm::ConstantInt::get(llvm::IntegerType::getInt32Ty(CGF.getLLVMContext()),
-                             DtorType == Dtor_Deleting);
+  ASTContext &Context = getContext();
+  llvm::Value *ImplicitParam = llvm::ConstantInt::get(
+      llvm::IntegerType::getInt32Ty(CGF.getLLVMContext()),
+      DtorType == Dtor_Deleting);
 
   This = adjustThisArgumentForVirtualFunctionCall(CGF, GD, This, true);
-  CGF.EmitCXXMemberOrOperatorCall(Dtor, Callee, ReturnValueSlot(), This,
-                                  ImplicitParam, Context.IntTy, CE);
+  RValue RV = CGF.EmitCXXStructorCall(Dtor, Callee, ReturnValueSlot(), This,
+                                      ImplicitParam, Context.IntTy, CE,
+                                      StructorType::Deleting);
+  return RV.getScalarVal();
 }
 
 const VBTableGlobals &
@@ -1480,9 +1680,17 @@ llvm::Function *MicrosoftCXXABI::EmitVirtualMemPtrThunk(
   ThunkFn->setLinkage(MD->isExternallyVisible()
                           ? llvm::GlobalValue::LinkOnceODRLinkage
                           : llvm::GlobalValue::InternalLinkage);
+  if (MD->isExternallyVisible())
+    ThunkFn->setComdat(CGM.getModule().getOrInsertComdat(ThunkFn->getName()));
 
   CGM.SetLLVMFunctionAttributes(MD, FnInfo, ThunkFn);
   CGM.SetLLVMFunctionAttributesForDefinition(MD, ThunkFn);
+
+  // Add the "thunk" attribute so that LLVM knows that the return type is
+  // meaningless. These thunks can be used to call functions with differing
+  // return types, and the caller is required to cast the prototype
+  // appropriately to extract the correct value.
+  ThunkFn->addFnAttr("thunk");
 
   // These thunks can be compared, so they are not unnamed.
   ThunkFn->setUnnamedAddr(false);
@@ -1520,7 +1728,8 @@ void MicrosoftCXXABI::emitVirtualInheritanceTables(const CXXRecordDecl *RD) {
   for (unsigned I = 0, E = VBGlobals.VBTables->size(); I != E; ++I) {
     const VPtrInfo *VBT = (*VBGlobals.VBTables)[I];
     llvm::GlobalVariable *GV = VBGlobals.Globals[I];
-    emitVBTableDefinition(*VBT, RD, GV);
+    if (GV->isDeclaration())
+      emitVBTableDefinition(*VBT, RD, GV);
   }
 }
 
@@ -1547,6 +1756,9 @@ MicrosoftCXXABI::getAddrOfVBTable(const VPtrInfo &VBT, const CXXRecordDecl *RD,
   else if (RD->hasAttr<DLLExportAttr>())
     GV->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
 
+  if (!GV->hasExternalLinkage())
+    emitVBTableDefinition(VBT, RD, GV);
+
   return GV;
 }
 
@@ -1559,9 +1771,8 @@ void MicrosoftCXXABI::emitVBTableDefinition(const VPtrInfo &VBT,
          "should only emit vbtables for classes with vbtables");
 
   const ASTRecordLayout &BaseLayout =
-      CGM.getContext().getASTRecordLayout(VBT.BaseWithVPtr);
-  const ASTRecordLayout &DerivedLayout =
-    CGM.getContext().getASTRecordLayout(RD);
+      getContext().getASTRecordLayout(VBT.BaseWithVPtr);
+  const ASTRecordLayout &DerivedLayout = getContext().getASTRecordLayout(RD);
 
   SmallVector<llvm::Constant *, 4> Offsets(1 + ReusingBase->getNumVBases(),
                                            nullptr);
@@ -1595,9 +1806,6 @@ void MicrosoftCXXABI::emitVBTableDefinition(const VPtrInfo &VBT,
     llvm::ArrayType::get(CGM.IntTy, Offsets.size());
   llvm::Constant *Init = llvm::ConstantArray::get(VBTableType, Offsets);
   GV->setInitializer(Init);
-
-  // Set the right visibility.
-  CGM.setGlobalVisibility(GV, RD);
 }
 
 llvm::Value *MicrosoftCXXABI::performThisAdjustment(CodeGenFunction &CGF,
@@ -1653,8 +1861,8 @@ MicrosoftCXXABI::performReturnAdjustment(CodeGenFunction &CGF, llvm::Value *Ret,
 
   if (RA.Virtual.Microsoft.VBIndex) {
     assert(RA.Virtual.Microsoft.VBIndex > 0);
-    int32_t IntSize =
-        getContext().getTypeSizeInChars(getContext().IntTy).getQuantity();
+    const ASTContext &Context = getContext();
+    int32_t IntSize = Context.getTypeSizeInChars(Context.IntTy).getQuantity();
     llvm::Value *VBPtr;
     llvm::Value *VBaseOffset =
         GetVBaseOffsetFromVBPtr(CGF, V, RA.Virtual.Microsoft.VBPtrOffset,
@@ -1779,18 +1987,10 @@ void MicrosoftCXXABI::EmitThreadLocalInitFuncs(
     llvm::Function *F = CXXThreadLocalInits[I];
 
     // If the GV is already in a comdat group, then we have to join it.
-    llvm::Comdat *C = GV->getComdat();
-
-    // LinkOnce and Weak linkage are lowered down to a single-member comdat
-    // group.
-    // Make an explicit group so we can join it.
-    if (!C && (GV->hasWeakLinkage() || GV->hasLinkOnceLinkage())) {
-      C = CGM.getModule().getOrInsertComdat(GV->getName());
-      GV->setComdat(C);
+    if (llvm::Comdat *C = GV->getComdat())
       AddToXDU(F)->setComdat(C);
-    } else {
+    else
       NonComdatInits.push_back(F);
-    }
   }
 
   if (!NonComdatInits.empty()) {
@@ -1819,7 +2019,9 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
   if (!D.isStaticLocal()) {
     assert(GV->hasWeakLinkage() || GV->hasLinkOnceLinkage());
     // GlobalOpt is allowed to discard the initializer, so use linkonce_odr.
-    CGF.CurFn->setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
+    llvm::Function *F = CGF.CurFn;
+    F->setLinkage(llvm::GlobalValue::LinkOnceODRLinkage);
+    F->setComdat(CGM.getModule().getOrInsertComdat(F->getName()));
     CGF.EmitCXXGlobalVarDeclInit(D, GV, PerformInit);
     return;
   }
@@ -1875,6 +2077,9 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
                                  GV->getLinkage(), Zero, GuardName.str());
     GI->Guard->setVisibility(GV->getVisibility());
     GI->Guard->setDLLStorageClass(GV->getDLLStorageClass());
+    if (GI->Guard->isWeakForLinker())
+      GI->Guard->setComdat(
+          CGM.getModule().getOrInsertComdat(GI->Guard->getName()));
   } else {
     assert(GI->Guard->getLinkage() == GV->getLinkage() &&
            "static local from the same function had different linkage");
@@ -2237,11 +2442,17 @@ MicrosoftCXXABI::GetVBaseOffsetFromVBPtr(CodeGenFunction &CGF,
   llvm::Value *VBPtr =
     Builder.CreateInBoundsGEP(This, VBPtrOffset, "vbptr");
   if (VBPtrOut) *VBPtrOut = VBPtr;
-  VBPtr = Builder.CreateBitCast(VBPtr, CGM.Int8PtrTy->getPointerTo(0));
+  VBPtr = Builder.CreateBitCast(VBPtr,
+                                CGM.Int32Ty->getPointerTo(0)->getPointerTo(0));
   llvm::Value *VBTable = Builder.CreateLoad(VBPtr, "vbtable");
 
+  // Translate from byte offset to table index. It improves analyzability.
+  llvm::Value *VBTableIndex = Builder.CreateAShr(
+      VBTableOffset, llvm::ConstantInt::get(VBTableOffset->getType(), 2),
+      "vbtindex", /*isExact=*/true);
+
   // Load an i32 offset from the vb-table.
-  llvm::Value *VBaseOffs = Builder.CreateInBoundsGEP(VBTable, VBTableOffset);
+  llvm::Value *VBaseOffs = Builder.CreateInBoundsGEP(VBTable, VBTableIndex);
   VBaseOffs = Builder.CreateBitCast(VBaseOffs, CGM.Int32Ty->getPointerTo(0));
   return Builder.CreateLoad(VBaseOffs, "vbase_offs");
 }
@@ -2754,11 +2965,11 @@ detectAmbiguousBases(SmallVectorImpl<MSRTTIClass> &Classes) {
   llvm::SmallPtrSet<const CXXRecordDecl *, 8> AmbiguousBases;
   for (MSRTTIClass *Class = &Classes.front(); Class <= &Classes.back();) {
     if ((Class->Flags & MSRTTIClass::IsVirtual) &&
-        !VirtualBases.insert(Class->RD)) {
+        !VirtualBases.insert(Class->RD).second) {
       Class = MSRTTIClass::getNextChild(Class);
       continue;
     }
-    if (!UniqueBases.insert(Class->RD))
+    if (!UniqueBases.insert(Class->RD).second)
       AmbiguousBases.insert(Class->RD);
     Class++;
   }
@@ -2805,7 +3016,9 @@ llvm::GlobalVariable *MSRTTIBuilder::getClassHierarchyDescriptor() {
   auto Type = ABI.getClassHierarchyDescriptorType();
   auto CHD = new llvm::GlobalVariable(Module, Type, /*Constant=*/true, Linkage,
                                       /*Initializer=*/nullptr,
-                                      MangledName.c_str());
+                                      StringRef(MangledName));
+  if (CHD->isWeakForLinker())
+    CHD->setComdat(CGM.getModule().getOrInsertComdat(CHD->getName()));
 
   // Initialize the base class ClassHierarchyDescriptor.
   llvm::Constant *Fields[] = {
@@ -2836,9 +3049,12 @@ MSRTTIBuilder::getBaseClassArray(SmallVectorImpl<MSRTTIClass> &Classes) {
   llvm::Type *PtrType = ABI.getImageRelativeType(
       ABI.getBaseClassDescriptorType()->getPointerTo());
   auto *ArrType = llvm::ArrayType::get(PtrType, Classes.size() + 1);
-  auto *BCA = new llvm::GlobalVariable(
-      Module, ArrType,
-      /*Constant=*/true, Linkage, /*Initializer=*/nullptr, MangledName.c_str());
+  auto *BCA =
+      new llvm::GlobalVariable(Module, ArrType,
+                               /*Constant=*/true, Linkage,
+                               /*Initializer=*/nullptr, StringRef(MangledName));
+  if (BCA->isWeakForLinker())
+    BCA->setComdat(CGM.getModule().getOrInsertComdat(BCA->getName()));
 
   // Initialize the BaseClassArray.
   SmallVector<llvm::Constant *, 8> BaseClassArrayData;
@@ -2876,9 +3092,11 @@ MSRTTIBuilder::getBaseClassDescriptor(const MSRTTIClass &Class) {
 
   // Forward-declare the base class descriptor.
   auto Type = ABI.getBaseClassDescriptorType();
-  auto BCD = new llvm::GlobalVariable(Module, Type, /*Constant=*/true, Linkage,
-                                      /*Initializer=*/nullptr,
-                                      MangledName.c_str());
+  auto BCD =
+      new llvm::GlobalVariable(Module, Type, /*Constant=*/true, Linkage,
+                               /*Initializer=*/nullptr, StringRef(MangledName));
+  if (BCD->isWeakForLinker())
+    BCD->setComdat(CGM.getModule().getOrInsertComdat(BCD->getName()));
 
   // Initialize the BaseClassDescriptor.
   llvm::Constant *Fields[] = {
@@ -2922,7 +3140,7 @@ MSRTTIBuilder::getCompleteObjectLocator(const VPtrInfo *Info) {
   // Forward-declare the complete object locator.
   llvm::StructType *Type = ABI.getCompleteObjectLocatorType();
   auto COL = new llvm::GlobalVariable(Module, Type, /*Constant=*/true, Linkage,
-    /*Initializer=*/nullptr, MangledName.c_str());
+    /*Initializer=*/nullptr, StringRef(MangledName));
 
   // Initialize the CompleteObjectLocator.
   llvm::Constant *Fields[] = {
@@ -2938,7 +3156,84 @@ MSRTTIBuilder::getCompleteObjectLocator(const VPtrInfo *Info) {
   if (!ABI.isImageRelative())
     FieldsRef = FieldsRef.drop_back();
   COL->setInitializer(llvm::ConstantStruct::get(Type, FieldsRef));
+  if (COL->isWeakForLinker())
+    COL->setComdat(CGM.getModule().getOrInsertComdat(COL->getName()));
   return COL;
+}
+
+static QualType decomposeTypeForEH(ASTContext &Context, QualType T,
+                                   bool &IsConst, bool &IsVolatile) {
+  T = Context.getExceptionObjectType(T);
+
+  // C++14 [except.handle]p3:
+  //   A handler is a match for an exception object of type E if [...]
+  //     - the handler is of type cv T or const T& where T is a pointer type and
+  //       E is a pointer type that can be converted to T by [...]
+  //         - a qualification conversion
+  IsConst = false;
+  IsVolatile = false;
+  QualType PointeeType = T->getPointeeType();
+  if (!PointeeType.isNull()) {
+    IsConst = PointeeType.isConstQualified();
+    IsVolatile = PointeeType.isVolatileQualified();
+  }
+
+  // Member pointer types like "const int A::*" are represented by having RTTI
+  // for "int A::*" and separately storing the const qualifier.
+  if (const auto *MPTy = T->getAs<MemberPointerType>())
+    T = Context.getMemberPointerType(PointeeType.getUnqualifiedType(),
+                                     MPTy->getClass());
+
+  // Pointer types like "const int * const *" are represented by having RTTI
+  // for "const int **" and separately storing the const qualifier.
+  if (T->isPointerType())
+    T = Context.getPointerType(PointeeType.getUnqualifiedType());
+
+  return T;
+}
+
+llvm::Constant *
+MicrosoftCXXABI::getAddrOfCXXHandlerMapEntry(QualType Type,
+                                             QualType CatchHandlerType) {
+  // TypeDescriptors for exceptions never have qualified pointer types,
+  // qualifiers are stored seperately in order to support qualification
+  // conversions.
+  bool IsConst, IsVolatile;
+  Type = decomposeTypeForEH(getContext(), Type, IsConst, IsVolatile);
+
+  bool IsReference = CatchHandlerType->isReferenceType();
+
+  SmallString<256> MangledName;
+  {
+    llvm::raw_svector_ostream Out(MangledName);
+    getMangleContext().mangleCXXHandlerMapEntry(Type, IsConst, IsVolatile,
+                                                IsReference, Out);
+  }
+
+  if (llvm::GlobalVariable *GV = CGM.getModule().getNamedGlobal(MangledName))
+    return llvm::ConstantExpr::getBitCast(GV, CGM.Int8PtrTy);
+
+  uint32_t Flags = 0;
+  if (IsConst)
+    Flags |= 1;
+  if (IsVolatile)
+    Flags |= 2;
+  if (IsReference)
+    Flags |= 8;
+
+  llvm::Constant *Fields[] = {
+      llvm::ConstantInt::get(CGM.IntTy, Flags),                // Flags
+      getImageRelativeConstant(getAddrOfRTTIDescriptor(Type)), // TypeDescriptor
+  };
+  llvm::StructType *HandlerMapEntryType = getHandlerMapEntryType();
+  auto *Var = new llvm::GlobalVariable(
+      CGM.getModule(), HandlerMapEntryType, /*Constant=*/true,
+      llvm::GlobalValue::PrivateLinkage,
+      llvm::ConstantStruct::get(HandlerMapEntryType, Fields),
+      StringRef(MangledName));
+  Var->setUnnamedAddr(true);
+  Var->setSection("llvm.metadata");
+  return Var;
 }
 
 /// \brief Gets a TypeDescriptor.  Returns a llvm::Constant * rather than a
@@ -2946,7 +3241,7 @@ MSRTTIBuilder::getCompleteObjectLocator(const VPtrInfo *Info) {
 /// types, and need to be abstracted.  They are abstracting by casting the
 /// address to an Int8PtrTy.
 llvm::Constant *MicrosoftCXXABI::getAddrOfRTTIDescriptor(QualType Type) {
-  SmallString<256> MangledName, TypeInfoString;
+  SmallString<256> MangledName;
   {
     llvm::raw_svector_ostream Out(MangledName);
     getMangleContext().mangleCXXRTTI(Type, Out);
@@ -2957,6 +3252,7 @@ llvm::Constant *MicrosoftCXXABI::getAddrOfRTTIDescriptor(QualType Type) {
     return llvm::ConstantExpr::getBitCast(GV, CGM.Int8PtrTy);
 
   // Compute the fields for the TypeDescriptor.
+  SmallString<256> TypeInfoString;
   {
     llvm::raw_svector_ostream Out(TypeInfoString);
     getMangleContext().mangleCXXRTTIName(Type, Out);
@@ -2969,13 +3265,14 @@ llvm::Constant *MicrosoftCXXABI::getAddrOfRTTIDescriptor(QualType Type) {
     llvm::ConstantDataArray::getString(CGM.getLLVMContext(), TypeInfoString)};
   llvm::StructType *TypeDescriptorType =
       getTypeDescriptorType(TypeInfoString);
-  return llvm::ConstantExpr::getBitCast(
-      new llvm::GlobalVariable(
-          CGM.getModule(), TypeDescriptorType, /*Constant=*/false,
-          getLinkageForRTTI(Type),
-          llvm::ConstantStruct::get(TypeDescriptorType, Fields),
-          MangledName.c_str()),
-      CGM.Int8PtrTy);
+  auto *Var = new llvm::GlobalVariable(
+      CGM.getModule(), TypeDescriptorType, /*Constant=*/false,
+      getLinkageForRTTI(Type),
+      llvm::ConstantStruct::get(TypeDescriptorType, Fields),
+      StringRef(MangledName));
+  if (Var->isWeakForLinker())
+    Var->setComdat(CGM.getModule().getOrInsertComdat(Var->getName()));
+  return llvm::ConstantExpr::getBitCast(Var, CGM.Int8PtrTy);
 }
 
 /// \brief Gets or a creates a Microsoft CompleteObjectLocator.
@@ -2989,7 +3286,8 @@ static void emitCXXConstructor(CodeGenModule &CGM,
                                const CXXConstructorDecl *ctor,
                                StructorType ctorType) {
   // There are no constructor variants, always emit the complete destructor.
-  CGM.codegenCXXStructor(ctor, StructorType::Complete);
+  llvm::Function *Fn = CGM.codegenCXXStructor(ctor, StructorType::Complete);
+  CGM.maybeSetTrivialComdat(*ctor, *Fn);
 }
 
 static void emitCXXDestructor(CodeGenModule &CGM, const CXXDestructorDecl *dtor,
@@ -3015,7 +3313,9 @@ static void emitCXXDestructor(CodeGenModule &CGM, const CXXDestructorDecl *dtor,
   if (dtorType == StructorType::Base && !CGM.TryEmitBaseDestructorAsAlias(dtor))
     return;
 
-  CGM.codegenCXXStructor(dtor, dtorType);
+  llvm::Function *Fn = CGM.codegenCXXStructor(dtor, dtorType);
+  if (Fn->isWeakForLinker())
+    Fn->setComdat(CGM.getModule().getOrInsertComdat(Fn->getName()));
 }
 
 void MicrosoftCXXABI::emitCXXStructor(const CXXMethodDecl *MD,
@@ -3025,4 +3325,400 @@ void MicrosoftCXXABI::emitCXXStructor(const CXXMethodDecl *MD,
     return;
   }
   emitCXXDestructor(CGM, cast<CXXDestructorDecl>(MD), Type);
+}
+
+llvm::Function *
+MicrosoftCXXABI::getAddrOfCXXCtorClosure(const CXXConstructorDecl *CD,
+                                         CXXCtorType CT) {
+  assert(CT == Ctor_CopyingClosure || CT == Ctor_DefaultClosure);
+
+  // Calculate the mangled name.
+  SmallString<256> ThunkName;
+  llvm::raw_svector_ostream Out(ThunkName);
+  getMangleContext().mangleCXXCtor(CD, CT, Out);
+  Out.flush();
+
+  // If the thunk has been generated previously, just return it.
+  if (llvm::GlobalValue *GV = CGM.getModule().getNamedValue(ThunkName))
+    return cast<llvm::Function>(GV);
+
+  // Create the llvm::Function.
+  const CGFunctionInfo &FnInfo = CGM.getTypes().arrangeMSCtorClosure(CD, CT);
+  llvm::FunctionType *ThunkTy = CGM.getTypes().GetFunctionType(FnInfo);
+  const CXXRecordDecl *RD = CD->getParent();
+  QualType RecordTy = getContext().getRecordType(RD);
+  llvm::Function *ThunkFn = llvm::Function::Create(
+      ThunkTy, getLinkageForRTTI(RecordTy), ThunkName.str(), &CGM.getModule());
+  ThunkFn->setCallingConv(static_cast<llvm::CallingConv::ID>(
+      FnInfo.getEffectiveCallingConvention()));
+  bool IsCopy = CT == Ctor_CopyingClosure;
+
+  // Start codegen.
+  CodeGenFunction CGF(CGM);
+  CGF.CurGD = GlobalDecl(CD, Ctor_Complete);
+
+  // Build FunctionArgs.
+  FunctionArgList FunctionArgs;
+
+  // A constructor always starts with a 'this' pointer as its first argument.
+  buildThisParam(CGF, FunctionArgs);
+
+  // Following the 'this' pointer is a reference to the source object that we
+  // are copying from.
+  ImplicitParamDecl SrcParam(
+      getContext(), nullptr, SourceLocation(), &getContext().Idents.get("src"),
+      getContext().getLValueReferenceType(RecordTy,
+                                          /*SpelledAsLValue=*/true));
+  if (IsCopy)
+    FunctionArgs.push_back(&SrcParam);
+
+  // Constructors for classes which utilize virtual bases have an additional
+  // parameter which indicates whether or not it is being delegated to by a more
+  // derived constructor.
+  ImplicitParamDecl IsMostDerived(getContext(), nullptr, SourceLocation(),
+                                  &getContext().Idents.get("is_most_derived"),
+                                  getContext().IntTy);
+  // Only add the parameter to the list if thie class has virtual bases.
+  if (RD->getNumVBases() > 0)
+    FunctionArgs.push_back(&IsMostDerived);
+
+  // Start defining the function.
+  CGF.StartFunction(GlobalDecl(), FnInfo.getReturnType(), ThunkFn, FnInfo,
+                    FunctionArgs, CD->getLocation(), SourceLocation());
+  EmitThisParam(CGF);
+  llvm::Value *This = getThisValue(CGF);
+
+  llvm::Value *SrcVal =
+      IsCopy ? CGF.Builder.CreateLoad(CGF.GetAddrOfLocalVar(&SrcParam), "src")
+             : nullptr;
+
+  CallArgList Args;
+
+  // Push the this ptr.
+  Args.add(RValue::get(This), CD->getThisType(getContext()));
+
+  // Push the src ptr.
+  if (SrcVal)
+    Args.add(RValue::get(SrcVal), SrcParam.getType());
+
+  // Add the rest of the default arguments.
+  std::vector<Stmt *> ArgVec;
+  for (unsigned I = IsCopy ? 1 : 0, E = CD->getNumParams(); I != E; ++I) {
+    Stmt *DefaultArg = getContext().getDefaultArgExprForConstructor(CD, I);
+    assert(DefaultArg && "sema forgot to instantiate default args");
+    ArgVec.push_back(DefaultArg);
+  }
+
+  CodeGenFunction::RunCleanupsScope Cleanups(CGF);
+
+  const auto *FPT = CD->getType()->castAs<FunctionProtoType>();
+  ConstExprIterator ArgBegin(ArgVec.data()),
+      ArgEnd(ArgVec.data() + ArgVec.size());
+  CGF.EmitCallArgs(Args, FPT, ArgBegin, ArgEnd, CD, IsCopy ? 1 : 0);
+
+  // Insert any ABI-specific implicit constructor arguments.
+  unsigned ExtraArgs = addImplicitConstructorArgs(CGF, CD, Ctor_Complete,
+                                                  /*ForVirtualBase=*/false,
+                                                  /*Delegating=*/false, Args);
+
+  // Call the destructor with our arguments.
+  llvm::Value *CalleeFn = CGM.getAddrOfCXXStructor(CD, StructorType::Complete);
+  const CGFunctionInfo &CalleeInfo = CGM.getTypes().arrangeCXXConstructorCall(
+      Args, CD, Ctor_Complete, ExtraArgs);
+  CGF.EmitCall(CalleeInfo, CalleeFn, ReturnValueSlot(), Args, CD);
+
+  Cleanups.ForceCleanup();
+
+  // Emit the ret instruction, remove any temporary instructions created for the
+  // aid of CodeGen.
+  CGF.FinishFunction(SourceLocation());
+
+  return ThunkFn;
+}
+
+llvm::Constant *MicrosoftCXXABI::getCatchableType(QualType T,
+                                                  uint32_t NVOffset,
+                                                  int32_t VBPtrOffset,
+                                                  uint32_t VBIndex) {
+  assert(!T->isReferenceType());
+
+  CXXRecordDecl *RD = T->getAsCXXRecordDecl();
+  const CXXConstructorDecl *CD =
+      RD ? CGM.getContext().getCopyConstructorForExceptionObject(RD) : nullptr;
+  CXXCtorType CT = Ctor_Complete;
+  if (CD)
+    if (!hasDefaultCXXMethodCC(getContext(), CD) || CD->getNumParams() != 1)
+      CT = Ctor_CopyingClosure;
+
+  uint32_t Size = getContext().getTypeSizeInChars(T).getQuantity();
+  SmallString<256> MangledName;
+  {
+    llvm::raw_svector_ostream Out(MangledName);
+    getMangleContext().mangleCXXCatchableType(T, CD, CT, Size, NVOffset,
+                                              VBPtrOffset, VBIndex, Out);
+  }
+  if (llvm::GlobalVariable *GV = CGM.getModule().getNamedGlobal(MangledName))
+    return getImageRelativeConstant(GV);
+
+  // The TypeDescriptor is used by the runtime to determine if a catch handler
+  // is appropriate for the exception object.
+  llvm::Constant *TD = getImageRelativeConstant(getAddrOfRTTIDescriptor(T));
+
+  // The runtime is responsible for calling the copy constructor if the
+  // exception is caught by value.
+  llvm::Constant *CopyCtor;
+  if (CD) {
+    if (CT == Ctor_CopyingClosure)
+      CopyCtor = getAddrOfCXXCtorClosure(CD, Ctor_CopyingClosure);
+    else
+      CopyCtor = CGM.getAddrOfCXXStructor(CD, StructorType::Complete);
+
+    CopyCtor = llvm::ConstantExpr::getBitCast(CopyCtor, CGM.Int8PtrTy);
+  } else {
+    CopyCtor = llvm::Constant::getNullValue(CGM.Int8PtrTy);
+  }
+  CopyCtor = getImageRelativeConstant(CopyCtor);
+
+  bool IsScalar = !RD;
+  bool HasVirtualBases = false;
+  bool IsStdBadAlloc = false; // std::bad_alloc is special for some reason.
+  QualType PointeeType = T;
+  if (T->isPointerType())
+    PointeeType = T->getPointeeType();
+  if (const CXXRecordDecl *RD = PointeeType->getAsCXXRecordDecl()) {
+    HasVirtualBases = RD->getNumVBases() > 0;
+    if (IdentifierInfo *II = RD->getIdentifier())
+      IsStdBadAlloc = II->isStr("bad_alloc") && RD->isInStdNamespace();
+  }
+
+  // Encode the relevant CatchableType properties into the Flags bitfield.
+  // FIXME: Figure out how bits 2 or 8 can get set.
+  uint32_t Flags = 0;
+  if (IsScalar)
+    Flags |= 1;
+  if (HasVirtualBases)
+    Flags |= 4;
+  if (IsStdBadAlloc)
+    Flags |= 16;
+
+  llvm::Constant *Fields[] = {
+      llvm::ConstantInt::get(CGM.IntTy, Flags),       // Flags
+      TD,                                             // TypeDescriptor
+      llvm::ConstantInt::get(CGM.IntTy, NVOffset),    // NonVirtualAdjustment
+      llvm::ConstantInt::get(CGM.IntTy, VBPtrOffset), // OffsetToVBPtr
+      llvm::ConstantInt::get(CGM.IntTy, VBIndex),     // VBTableIndex
+      llvm::ConstantInt::get(CGM.IntTy, Size),        // Size
+      CopyCtor                                        // CopyCtor
+  };
+  llvm::StructType *CTType = getCatchableTypeType();
+  auto *GV = new llvm::GlobalVariable(
+      CGM.getModule(), CTType, /*Constant=*/true, getLinkageForRTTI(T),
+      llvm::ConstantStruct::get(CTType, Fields), StringRef(MangledName));
+  GV->setUnnamedAddr(true);
+  GV->setSection(".xdata");
+  if (GV->isWeakForLinker())
+    GV->setComdat(CGM.getModule().getOrInsertComdat(GV->getName()));
+  return getImageRelativeConstant(GV);
+}
+
+llvm::GlobalVariable *MicrosoftCXXABI::getCatchableTypeArray(QualType T) {
+  assert(!T->isReferenceType());
+
+  // See if we've already generated a CatchableTypeArray for this type before.
+  llvm::GlobalVariable *&CTA = CatchableTypeArrays[T];
+  if (CTA)
+    return CTA;
+
+  // Ensure that we don't have duplicate entries in our CatchableTypeArray by
+  // using a SmallSetVector.  Duplicates may arise due to virtual bases
+  // occurring more than once in the hierarchy.
+  llvm::SmallSetVector<llvm::Constant *, 2> CatchableTypes;
+
+  // C++14 [except.handle]p3:
+  //   A handler is a match for an exception object of type E if [...]
+  //     - the handler is of type cv T or cv T& and T is an unambiguous public
+  //       base class of E, or
+  //     - the handler is of type cv T or const T& where T is a pointer type and
+  //       E is a pointer type that can be converted to T by [...]
+  //         - a standard pointer conversion (4.10) not involving conversions to
+  //           pointers to private or protected or ambiguous classes
+  const CXXRecordDecl *MostDerivedClass = nullptr;
+  bool IsPointer = T->isPointerType();
+  if (IsPointer)
+    MostDerivedClass = T->getPointeeType()->getAsCXXRecordDecl();
+  else
+    MostDerivedClass = T->getAsCXXRecordDecl();
+
+  // Collect all the unambiguous public bases of the MostDerivedClass.
+  if (MostDerivedClass) {
+    const ASTContext &Context = getContext();
+    const ASTRecordLayout &MostDerivedLayout =
+        Context.getASTRecordLayout(MostDerivedClass);
+    MicrosoftVTableContext &VTableContext = CGM.getMicrosoftVTableContext();
+    SmallVector<MSRTTIClass, 8> Classes;
+    serializeClassHierarchy(Classes, MostDerivedClass);
+    Classes.front().initialize(/*Parent=*/nullptr, /*Specifier=*/nullptr);
+    detectAmbiguousBases(Classes);
+    for (const MSRTTIClass &Class : Classes) {
+      // Skip any ambiguous or private bases.
+      if (Class.Flags &
+          (MSRTTIClass::IsPrivateOnPath | MSRTTIClass::IsAmbiguous))
+        continue;
+      // Write down how to convert from a derived pointer to a base pointer.
+      uint32_t OffsetInVBTable = 0;
+      int32_t VBPtrOffset = -1;
+      if (Class.VirtualRoot) {
+        OffsetInVBTable =
+          VTableContext.getVBTableIndex(MostDerivedClass, Class.VirtualRoot)*4;
+        VBPtrOffset = MostDerivedLayout.getVBPtrOffset().getQuantity();
+      }
+
+      // Turn our record back into a pointer if the exception object is a
+      // pointer.
+      QualType RTTITy = QualType(Class.RD->getTypeForDecl(), 0);
+      if (IsPointer)
+        RTTITy = Context.getPointerType(RTTITy);
+      CatchableTypes.insert(getCatchableType(RTTITy, Class.OffsetInVBase,
+                                             VBPtrOffset, OffsetInVBTable));
+    }
+  }
+
+  // C++14 [except.handle]p3:
+  //   A handler is a match for an exception object of type E if
+  //     - The handler is of type cv T or cv T& and E and T are the same type
+  //       (ignoring the top-level cv-qualifiers)
+  CatchableTypes.insert(getCatchableType(T));
+
+  // C++14 [except.handle]p3:
+  //   A handler is a match for an exception object of type E if
+  //     - the handler is of type cv T or const T& where T is a pointer type and
+  //       E is a pointer type that can be converted to T by [...]
+  //         - a standard pointer conversion (4.10) not involving conversions to
+  //           pointers to private or protected or ambiguous classes
+  //
+  // All pointers are convertible to pointer-to-void so ensure that it is in the
+  // CatchableTypeArray.
+  if (IsPointer)
+    CatchableTypes.insert(getCatchableType(getContext().VoidPtrTy));
+
+  // C++14 [except.handle]p3:
+  //   A handler is a match for an exception object of type E if [...]
+  //     - the handler is of type cv T or const T& where T is a pointer or
+  //       pointer to member type and E is std::nullptr_t.
+  //
+  // We cannot possibly list all possible pointer types here, making this
+  // implementation incompatible with the standard.  However, MSVC includes an
+  // entry for pointer-to-void in this case.  Let's do the same.
+  if (T->isNullPtrType())
+    CatchableTypes.insert(getCatchableType(getContext().VoidPtrTy));
+
+  uint32_t NumEntries = CatchableTypes.size();
+  llvm::Type *CTType =
+      getImageRelativeType(getCatchableTypeType()->getPointerTo());
+  llvm::ArrayType *AT = llvm::ArrayType::get(CTType, NumEntries);
+  llvm::StructType *CTAType = getCatchableTypeArrayType(NumEntries);
+  llvm::Constant *Fields[] = {
+      llvm::ConstantInt::get(CGM.IntTy, NumEntries),    // NumEntries
+      llvm::ConstantArray::get(
+          AT, llvm::makeArrayRef(CatchableTypes.begin(),
+                                 CatchableTypes.end())) // CatchableTypes
+  };
+  SmallString<256> MangledName;
+  {
+    llvm::raw_svector_ostream Out(MangledName);
+    getMangleContext().mangleCXXCatchableTypeArray(T, NumEntries, Out);
+  }
+  CTA = new llvm::GlobalVariable(
+      CGM.getModule(), CTAType, /*Constant=*/true, getLinkageForRTTI(T),
+      llvm::ConstantStruct::get(CTAType, Fields), StringRef(MangledName));
+  CTA->setUnnamedAddr(true);
+  CTA->setSection(".xdata");
+  if (CTA->isWeakForLinker())
+    CTA->setComdat(CGM.getModule().getOrInsertComdat(CTA->getName()));
+  return CTA;
+}
+
+llvm::GlobalVariable *MicrosoftCXXABI::getThrowInfo(QualType T) {
+  bool IsConst, IsVolatile;
+  T = decomposeTypeForEH(getContext(), T, IsConst, IsVolatile);
+
+  // The CatchableTypeArray enumerates the various (CV-unqualified) types that
+  // the exception object may be caught as.
+  llvm::GlobalVariable *CTA = getCatchableTypeArray(T);
+  // The first field in a CatchableTypeArray is the number of CatchableTypes.
+  // This is used as a component of the mangled name which means that we need to
+  // know what it is in order to see if we have previously generated the
+  // ThrowInfo.
+  uint32_t NumEntries =
+      cast<llvm::ConstantInt>(CTA->getInitializer()->getAggregateElement(0U))
+          ->getLimitedValue();
+
+  SmallString<256> MangledName;
+  {
+    llvm::raw_svector_ostream Out(MangledName);
+    getMangleContext().mangleCXXThrowInfo(T, IsConst, IsVolatile, NumEntries,
+                                          Out);
+  }
+
+  // Reuse a previously generated ThrowInfo if we have generated an appropriate
+  // one before.
+  if (llvm::GlobalVariable *GV = CGM.getModule().getNamedGlobal(MangledName))
+    return GV;
+
+  // The RTTI TypeDescriptor uses an unqualified type but catch clauses must
+  // be at least as CV qualified.  Encode this requirement into the Flags
+  // bitfield.
+  uint32_t Flags = 0;
+  if (IsConst)
+    Flags |= 1;
+  if (IsVolatile)
+    Flags |= 2;
+
+  // The cleanup-function (a destructor) must be called when the exception
+  // object's lifetime ends.
+  llvm::Constant *CleanupFn = llvm::Constant::getNullValue(CGM.Int8PtrTy);
+  if (const CXXRecordDecl *RD = T->getAsCXXRecordDecl())
+    if (CXXDestructorDecl *DtorD = RD->getDestructor())
+      if (!DtorD->isTrivial())
+        CleanupFn = llvm::ConstantExpr::getBitCast(
+            CGM.getAddrOfCXXStructor(DtorD, StructorType::Complete),
+            CGM.Int8PtrTy);
+  // This is unused as far as we can tell, initialize it to null.
+  llvm::Constant *ForwardCompat =
+      getImageRelativeConstant(llvm::Constant::getNullValue(CGM.Int8PtrTy));
+  llvm::Constant *PointerToCatchableTypes = getImageRelativeConstant(
+      llvm::ConstantExpr::getBitCast(CTA, CGM.Int8PtrTy));
+  llvm::StructType *TIType = getThrowInfoType();
+  llvm::Constant *Fields[] = {
+      llvm::ConstantInt::get(CGM.IntTy, Flags), // Flags
+      getImageRelativeConstant(CleanupFn),      // CleanupFn
+      ForwardCompat,                            // ForwardCompat
+      PointerToCatchableTypes                   // CatchableTypeArray
+  };
+  auto *GV = new llvm::GlobalVariable(
+      CGM.getModule(), TIType, /*Constant=*/true, getLinkageForRTTI(T),
+      llvm::ConstantStruct::get(TIType, Fields), StringRef(MangledName));
+  GV->setUnnamedAddr(true);
+  GV->setSection(".xdata");
+  if (GV->isWeakForLinker())
+    GV->setComdat(CGM.getModule().getOrInsertComdat(GV->getName()));
+  return GV;
+}
+
+void MicrosoftCXXABI::emitThrow(CodeGenFunction &CGF, const CXXThrowExpr *E) {
+  const Expr *SubExpr = E->getSubExpr();
+  QualType ThrowType = SubExpr->getType();
+  // The exception object lives on the stack and it's address is passed to the
+  // runtime function.
+  llvm::AllocaInst *AI = CGF.CreateMemTemp(ThrowType);
+  CGF.EmitAnyExprToMem(SubExpr, AI, ThrowType.getQualifiers(),
+                       /*IsInit=*/true);
+
+  // The so-called ThrowInfo is used to describe how the exception object may be
+  // caught.
+  llvm::GlobalVariable *TI = getThrowInfo(ThrowType);
+
+  // Call into the runtime to throw the exception.
+  llvm::Value *Args[] = {CGF.Builder.CreateBitCast(AI, CGM.Int8PtrTy), TI};
+  CGF.EmitNoreturnRuntimeCallOrInvoke(getThrowFn(), Args);
 }

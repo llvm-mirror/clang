@@ -98,6 +98,11 @@ public:
   //                            Visitor Methods
   //===--------------------------------------------------------------------===//
 
+  void Visit(Expr *E) {
+    ApplyDebugLocation DL(CGF, E);
+    StmtVisitor<AggExprEmitter>::Visit(E);
+  }
+
   void VisitStmt(Stmt *S) {
     CGF.ErrorUnsupported(S, "aggregate expression");
   }
@@ -207,7 +212,7 @@ void AggExprEmitter::EmitAggLoadOfLValue(const Expr *E) {
   LValue LV = CGF.EmitLValue(E);
 
   // If the type of the l-value is atomic, then do an atomic load.
-  if (LV.getType()->isAtomicType()) {
+  if (LV.getType()->isAtomicType() || CGF.LValueIsSuitableForInlineAtomic(LV)) {
     CGF.EmitAtomicLoad(LV, E->getExprLoc(), Dest);
     return;
   }
@@ -736,7 +741,7 @@ void AggExprEmitter::VisitCastExpr(CastExpr *E) {
 }
 
 void AggExprEmitter::VisitCallExpr(const CallExpr *E) {
-  if (E->getCallReturnType()->isReferenceType()) {
+  if (E->getCallReturnType(CGF.getContext())->isReferenceType()) {
     EmitAggLoadOfLValue(E);
     return;
   }
@@ -860,7 +865,8 @@ void AggExprEmitter::VisitBinAssign(const BinaryOperator *E) {
     LValue LHS = CGF.EmitCheckedLValue(E->getLHS(), CodeGenFunction::TCK_Store);
 
     // That copy is an atomic copy if the LHS is atomic.
-    if (LHS.getType()->isAtomicType()) {
+    if (LHS.getType()->isAtomicType() ||
+        CGF.LValueIsSuitableForInlineAtomic(LHS)) {
       CGF.EmitAtomicStore(Dest.asRValue(), LHS, /*isInit*/ false);
       return;
     }
@@ -877,7 +883,8 @@ void AggExprEmitter::VisitBinAssign(const BinaryOperator *E) {
 
   // If we have an atomic type, evaluate into the destination and then
   // do an atomic copy.
-  if (LHS.getType()->isAtomicType()) {
+  if (LHS.getType()->isAtomicType() ||
+      CGF.LValueIsSuitableForInlineAtomic(LHS)) {
     EnsureDest(E->getRHS()->getType());
     Visit(E->getRHS());
     CGF.EmitAtomicStore(Dest.asRValue(), LHS, /*isInit*/ false);

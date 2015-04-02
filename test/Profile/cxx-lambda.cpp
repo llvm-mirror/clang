@@ -9,9 +9,9 @@
 // RUN: FileCheck --input-file=%tuse -check-prefix=PGOUSE %s
 // RUN: FileCheck --input-file=%tuse -check-prefix=LMBUSE %s
 
-// PGOGEN: @[[LWC:__llvm_profile_counters__Z7lambdasv]] = hidden global [4 x i64] zeroinitializer
-// PGOGEN: @[[MAC:__llvm_profile_counters_main]] = hidden global [1 x i64] zeroinitializer
-// LMBGEN: @[[LFC:"__llvm_profile_counters__ZZ7lambdasvENK3\$_0clEi"]] = internal global [3 x i64] zeroinitializer
+// PGOGEN: @[[LWC:__llvm_profile_counters__Z7lambdasv]] = private global [4 x i64] zeroinitializer
+// PGOGEN: @[[MAC:__llvm_profile_counters_main]] = private global [1 x i64] zeroinitializer
+// LMBGEN: @[[LFC:"__llvm_profile_counters_cxx-lambda.cpp:_ZZ7lambdasvENK3\$_0clEi"]] = private global [3 x i64] zeroinitializer
 
 // PGOGEN-LABEL: define void @_Z7lambdasv()
 // PGOUSE-LABEL: define void @_Z7lambdasv()
@@ -45,12 +45,12 @@ void lambdas() {
   if (i) {}
 }
 
-// PGOUSE-DAG: ![[LW1]] = metadata !{metadata !"branch_weights", i32 2, i32 1}
-// PGOUSE-DAG: ![[LW2]] = metadata !{metadata !"branch_weights", i32 11, i32 2}
-// PGOUSE-DAG: ![[LW3]] = metadata !{metadata !"branch_weights", i32 2, i32 1}
+// PGOUSE-DAG: ![[LW1]] = !{!"branch_weights", i32 2, i32 1}
+// PGOUSE-DAG: ![[LW2]] = !{!"branch_weights", i32 11, i32 2}
+// PGOUSE-DAG: ![[LW3]] = !{!"branch_weights", i32 2, i32 1}
 
-// LMBUSE-DAG: ![[LF1]] = metadata !{metadata !"branch_weights", i32 10, i32 2}
-// LMBUSE-DAG: ![[LF2]] = metadata !{metadata !"branch_weights", i32 10, i32 2}
+// LMBUSE-DAG: ![[LF1]] = !{!"branch_weights", i32 10, i32 2}
+// LMBUSE-DAG: ![[LF2]] = !{!"branch_weights", i32 10, i32 2}
 
 int main(int argc, const char *argv[]) {
   lambdas();

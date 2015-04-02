@@ -25,13 +25,13 @@ void SanitizerMetadata::reportGlobalToASan(llvm::GlobalVariable *GV,
                                            SourceLocation Loc, StringRef Name,
                                            QualType Ty, bool IsDynInit,
                                            bool IsBlacklisted) {
-  if (!CGM.getLangOpts().Sanitize.Address)
+  if (!CGM.getLangOpts().Sanitize.has(SanitizerKind::Address))
     return;
   IsDynInit &= !CGM.isInSanitizerBlacklist(GV, Loc, Ty, "init");
   IsBlacklisted |= CGM.isInSanitizerBlacklist(GV, Loc, Ty);
 
-  llvm::Value *LocDescr = nullptr;
-  llvm::Value *GlobalName = nullptr;
+  llvm::Metadata *LocDescr = nullptr;
+  llvm::Metadata *GlobalName = nullptr;
   llvm::LLVMContext &VMContext = CGM.getLLVMContext();
   if (!IsBlacklisted) {
     // Don't generate source location and global name if it is blacklisted -
@@ -41,10 +41,12 @@ void SanitizerMetadata::reportGlobalToASan(llvm::GlobalVariable *GV,
       GlobalName = llvm::MDString::get(VMContext, Name);
   }
 
-  llvm::Value *GlobalMetadata[] = {
-      GV, LocDescr, GlobalName,
-      llvm::ConstantInt::get(llvm::Type::getInt1Ty(VMContext), IsDynInit),
-      llvm::ConstantInt::get(llvm::Type::getInt1Ty(VMContext), IsBlacklisted)};
+  llvm::Metadata *GlobalMetadata[] = {
+      llvm::ConstantAsMetadata::get(GV), LocDescr, GlobalName,
+      llvm::ConstantAsMetadata::get(
+          llvm::ConstantInt::get(llvm::Type::getInt1Ty(VMContext), IsDynInit)),
+      llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+          llvm::Type::getInt1Ty(VMContext), IsBlacklisted))};
 
   llvm::MDNode *ThisGlobal = llvm::MDNode::get(VMContext, GlobalMetadata);
   llvm::NamedMDNode *AsanGlobals =
@@ -54,7 +56,7 @@ void SanitizerMetadata::reportGlobalToASan(llvm::GlobalVariable *GV,
 
 void SanitizerMetadata::reportGlobalToASan(llvm::GlobalVariable *GV,
                                            const VarDecl &D, bool IsDynInit) {
-  if (!CGM.getLangOpts().Sanitize.Address)
+  if (!CGM.getLangOpts().Sanitize.has(SanitizerKind::Address))
     return;
   std::string QualName;
   llvm::raw_string_ostream OS(QualName);
@@ -65,14 +67,13 @@ void SanitizerMetadata::reportGlobalToASan(llvm::GlobalVariable *GV,
 void SanitizerMetadata::disableSanitizerForGlobal(llvm::GlobalVariable *GV) {
   // For now, just make sure the global is not modified by the ASan
   // instrumentation.
-  if (CGM.getLangOpts().Sanitize.Address)
+  if (CGM.getLangOpts().Sanitize.has(SanitizerKind::Address))
     reportGlobalToASan(GV, SourceLocation(), "", QualType(), false, true);
 }
 
 void SanitizerMetadata::disableSanitizerForInstruction(llvm::Instruction *I) {
-  I->setMetadata(
-      CGM.getModule().getMDKindID("nosanitize"),
-      llvm::MDNode::get(CGM.getLLVMContext(), ArrayRef<llvm::Value *>()));
+  I->setMetadata(CGM.getModule().getMDKindID("nosanitize"),
+                 llvm::MDNode::get(CGM.getLLVMContext(), None));
 }
 
 llvm::MDNode *SanitizerMetadata::getLocationMetadata(SourceLocation Loc) {
@@ -80,11 +81,12 @@ llvm::MDNode *SanitizerMetadata::getLocationMetadata(SourceLocation Loc) {
   if (!PLoc.isValid())
     return nullptr;
   llvm::LLVMContext &VMContext = CGM.getLLVMContext();
-  llvm::Value *LocMetadata[] = {
+  llvm::Metadata *LocMetadata[] = {
       llvm::MDString::get(VMContext, PLoc.getFilename()),
-      llvm::ConstantInt::get(llvm::Type::getInt32Ty(VMContext), PLoc.getLine()),
-      llvm::ConstantInt::get(llvm::Type::getInt32Ty(VMContext),
-                             PLoc.getColumn()),
+      llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+          llvm::Type::getInt32Ty(VMContext), PLoc.getLine())),
+      llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
+          llvm::Type::getInt32Ty(VMContext), PLoc.getColumn())),
   };
   return llvm::MDNode::get(VMContext, LocMetadata);
 }

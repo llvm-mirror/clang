@@ -212,7 +212,7 @@ protected:
     unsigned HasTemplateKWAndArgsInfo : 1;
     unsigned HasFoundDecl : 1;
     unsigned HadMultipleCandidates : 1;
-    unsigned RefersToEnclosingLocal : 1;
+    unsigned RefersToEnclosingVariableOrCapture : 1;
   };
 
   class CastExprBitfields {
@@ -374,6 +374,7 @@ public:
   void dump() const;
   void dump(SourceManager &SM) const;
   void dump(raw_ostream &OS, SourceManager &SM) const;
+  void dump(raw_ostream &OS) const;
 
   /// dumpColor - same as dump(), but forces color highlighting.
   void dumpColor() const;
@@ -552,14 +553,17 @@ public:
 ///
 class CompoundStmt : public Stmt {
   Stmt** Body;
-  SourceLocation LBracLoc, RBracLoc;
+  SourceLocation LBraceLoc, RBraceLoc;
+
+  friend class ASTStmtReader;
+
 public:
   CompoundStmt(const ASTContext &C, ArrayRef<Stmt*> Stmts,
                SourceLocation LB, SourceLocation RB);
 
   // \brief Build an empty compound statement with a location.
   explicit CompoundStmt(SourceLocation Loc)
-    : Stmt(CompoundStmtClass), Body(nullptr), LBracLoc(Loc), RBracLoc(Loc) {
+    : Stmt(CompoundStmtClass), Body(nullptr), LBraceLoc(Loc), RBraceLoc(Loc) {
     CompoundStmtBits.NumStmts = 0;
   }
 
@@ -580,6 +584,7 @@ public:
   body_range body() { return body_range(body_begin(), body_end()); }
   body_iterator body_begin() { return Body; }
   body_iterator body_end() { return Body + size(); }
+  Stmt *body_front() { return !body_empty() ? Body[0] : nullptr; }
   Stmt *body_back() { return !body_empty() ? Body[size()-1] : nullptr; }
 
   void setLastStmt(Stmt *S) {
@@ -595,6 +600,9 @@ public:
   }
   const_body_iterator body_begin() const { return Body; }
   const_body_iterator body_end() const { return Body + size(); }
+  const Stmt *body_front() const {
+    return !body_empty() ? Body[0] : nullptr;
+  }
   const Stmt *body_back() const {
     return !body_empty() ? Body[size() - 1] : nullptr;
   }
@@ -618,13 +626,11 @@ public:
     return const_reverse_body_iterator(body_begin());
   }
 
-  SourceLocation getLocStart() const LLVM_READONLY { return LBracLoc; }
-  SourceLocation getLocEnd() const LLVM_READONLY { return RBracLoc; }
+  SourceLocation getLocStart() const LLVM_READONLY { return LBraceLoc; }
+  SourceLocation getLocEnd() const LLVM_READONLY { return RBraceLoc; }
 
-  SourceLocation getLBracLoc() const { return LBracLoc; }
-  void setLBracLoc(SourceLocation L) { LBracLoc = L; }
-  SourceLocation getRBracLoc() const { return RBracLoc; }
-  void setRBracLoc(SourceLocation L) { RBracLoc = L; }
+  SourceLocation getLBracLoc() const { return LBraceLoc; }
+  SourceLocation getRBracLoc() const { return RBraceLoc; }
 
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CompoundStmtClass;
@@ -1014,7 +1020,7 @@ public:
 
   SourceLocation getLocStart() const LLVM_READONLY { return SwitchLoc; }
   SourceLocation getLocEnd() const LLVM_READONLY {
-    return SubExprs[BODY]->getLocEnd();
+    return SubExprs[BODY] ? SubExprs[BODY]->getLocEnd() : SubExprs[COND]->getLocEnd();
   }
 
   // Iterators
@@ -1981,15 +1987,18 @@ public:
 /// @endcode
 class CapturedStmt : public Stmt {
 public:
-  /// \brief The different capture forms: by 'this' or by reference, etc.
+  /// \brief The different capture forms: by 'this', by reference, capture for
+  /// variable-length array type etc.
   enum VariableCaptureKind {
     VCK_This,
-    VCK_ByRef
+    VCK_ByRef,
+    VCK_VLAType,
   };
 
-  /// \brief Describes the capture of either a variable or 'this'.
+  /// \brief Describes the capture of either a variable, or 'this', or
+  /// variable-length array type.
   class Capture {
-    llvm::PointerIntPair<VarDecl *, 1, VariableCaptureKind> VarAndKind;
+    llvm::PointerIntPair<VarDecl *, 2, VariableCaptureKind> VarAndKind;
     SourceLocation Loc;
 
   public:
@@ -2011,6 +2020,10 @@ public:
       case VCK_ByRef:
         assert(Var && "capturing by reference must have a variable!");
         break;
+      case VCK_VLAType:
+        assert(!Var &&
+               "Variable-length array type capture cannot have a variable!");
+        break;
       }
     }
 
@@ -2025,13 +2038,20 @@ public:
     bool capturesThis() const { return getCaptureKind() == VCK_This; }
 
     /// \brief Determine whether this capture handles a variable.
-    bool capturesVariable() const { return getCaptureKind() != VCK_This; }
+    bool capturesVariable() const { return getCaptureKind() == VCK_ByRef; }
+
+    /// \brief Determine whether this capture handles a variable-length array
+    /// type.
+    bool capturesVariableArrayType() const {
+      return getCaptureKind() == VCK_VLAType;
+    }
 
     /// \brief Retrieve the declaration of the variable being captured.
     ///
-    /// This operation is only valid if this capture does not capture 'this'.
+    /// This operation is only valid if this capture captures a variable.
     VarDecl *getCapturedVar() const {
-      assert(!capturesThis() && "No variable available for 'this' capture");
+      assert(capturesVariable() &&
+             "No variable available for 'this' or VAT capture");
       return VarAndKind.getPointer();
     }
     friend class ASTStmtReader;

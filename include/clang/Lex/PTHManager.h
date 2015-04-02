@@ -19,6 +19,7 @@
 #include "clang/Basic/LangOptions.h"
 #include "clang/Lex/PTHLexer.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/OnDiskHashTable.h"
 #include <string>
@@ -91,8 +92,8 @@ class PTHManager : public IdentifierInfoLookup {
              std::unique_ptr<PTHStringIdLookup> stringIdLookup, unsigned numIds,
              const unsigned char *spellingBase, const char *originalSourceFile);
 
-  PTHManager(const PTHManager &) LLVM_DELETED_FUNCTION;
-  void operator=(const PTHManager &) LLVM_DELETED_FUNCTION;
+  PTHManager(const PTHManager &) = delete;
+  void operator=(const PTHManager &) = delete;
 
   /// getSpellingAtPTHOffset - Used by PTHLexer classes to get the cached
   ///  spelling for a token.

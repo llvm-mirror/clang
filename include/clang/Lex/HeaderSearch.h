@@ -252,11 +252,11 @@ class HeaderSearch {
   unsigned NumMultiIncludeFileOptzn;
   unsigned NumFrameworkLookups, NumSubFrameworkLookups;
 
-  bool EnabledModules;
+  const LangOptions &LangOpts;
 
   // HeaderSearch doesn't support default or copy construction.
-  HeaderSearch(const HeaderSearch&) LLVM_DELETED_FUNCTION;
-  void operator=(const HeaderSearch&) LLVM_DELETED_FUNCTION;
+  HeaderSearch(const HeaderSearch&) = delete;
+  void operator=(const HeaderSearch&) = delete;
 
   friend class DirectoryLookup;
   
@@ -411,7 +411,7 @@ public:
   /// \brief Look up the specified framework name in our framework cache.
   /// \returns The DirectoryEntry it is in if we know, null otherwise.
   FrameworkCacheEntry &LookupFrameworkCache(StringRef FWName) {
-    return FrameworkMap.GetOrCreateValue(FWName).getValue();
+    return FrameworkMap[FWName];
   }
 
   /// \brief Mark the specified file as a target of of a \#include,
@@ -479,7 +479,7 @@ public:
   const HeaderMap *CreateHeaderMap(const FileEntry *FE);
 
   /// Returns true if modules are enabled.
-  bool enabledModules() const { return EnabledModules; }
+  bool enabledModules() const { return LangOpts.Modules; }
 
   /// \brief Retrieve the name of the module file that should be used to 
   /// load the given module.
@@ -640,7 +640,8 @@ private:
   };
 
   LoadModuleMapResult loadModuleMapFileImpl(const FileEntry *File,
-                                            bool IsSystem);
+                                            bool IsSystem,
+                                            const DirectoryEntry *Dir);
 
   /// \brief Try to load the module map file in the given directory.
   ///

@@ -132,8 +132,8 @@ public:
 /// the user. DiagnosticsEngine is tied to one translation unit and one
 /// SourceManager.
 class DiagnosticsEngine : public RefCountedBase<DiagnosticsEngine> {
-  DiagnosticsEngine(const DiagnosticsEngine &) LLVM_DELETED_FUNCTION;
-  void operator=(const DiagnosticsEngine &) LLVM_DELETED_FUNCTION;
+  DiagnosticsEngine(const DiagnosticsEngine &) = delete;
+  void operator=(const DiagnosticsEngine &) = delete;
 
 public:
   /// \brief The level of the diagnostic, after it has been through mapping.
@@ -187,7 +187,7 @@ private:
   IntrusiveRefCntPtr<DiagnosticIDs> Diags;
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts;
   DiagnosticConsumer *Client;
-  bool OwnsDiagClient;
+  std::unique_ptr<DiagnosticConsumer> Owner;
   SourceManager *SourceMgr;
 
   /// \brief Mapping information for diagnostics.
@@ -302,7 +302,6 @@ private:
 
   unsigned NumWarnings;         ///< Number of warnings reported
   unsigned NumErrors;           ///< Number of errors reported
-  unsigned NumErrorsSuppressed; ///< Number of errors suppressed
 
   /// \brief A function pointer that converts an opaque diagnostic
   /// argument to a strings.
@@ -369,14 +368,11 @@ public:
   const DiagnosticConsumer *getClient() const { return Client; }
 
   /// \brief Determine whether this \c DiagnosticsEngine object own its client.
-  bool ownsClient() const { return OwnsDiagClient; }
-  
+  bool ownsClient() const { return Owner != nullptr; }
+
   /// \brief Return the current diagnostic client along with ownership of that
   /// client.
-  DiagnosticConsumer *takeClient() {
-    OwnsDiagClient = false;
-    return Client;
-  }
+  std::unique_ptr<DiagnosticConsumer> takeClient() { return std::move(Owner); }
 
   bool hasSourceManager() const { return SourceMgr != nullptr; }
   SourceManager &getSourceManager() const {
@@ -881,7 +877,7 @@ class DiagnosticBuilder {
   /// call to ForceEmit.
   mutable bool IsForceEmit;
 
-  void operator=(const DiagnosticBuilder &) LLVM_DELETED_FUNCTION;
+  void operator=(const DiagnosticBuilder &) = delete;
   friend class DiagnosticsEngine;
 
   DiagnosticBuilder()
@@ -995,7 +991,8 @@ public:
 
   void AddFixItHint(const FixItHint &Hint) const {
     assert(isActive() && "Clients must not add to cleared diagnostic!");
-    DiagObj->DiagFixItHints.push_back(Hint);
+    if (!Hint.isNull())
+      DiagObj->DiagFixItHints.push_back(Hint);
   }
 
   void addFlagValue(StringRef V) const { DiagObj->FlagValue = V; }
@@ -1099,7 +1096,13 @@ inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
 
 inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
                                            const FixItHint &Hint) {
-  if (!Hint.isNull())
+  DB.AddFixItHint(Hint);
+  return DB;
+}
+
+inline const DiagnosticBuilder &operator<<(const DiagnosticBuilder &DB,
+                                           ArrayRef<FixItHint> Hints) {
+  for (const FixItHint &Hint : Hints)
     DB.AddFixItHint(Hint);
   return DB;
 }
@@ -1264,7 +1267,7 @@ public:
   ~StoredDiagnostic();
 
   /// \brief Evaluates true when this object stores a diagnostic.
-  LLVM_EXPLICIT operator bool() const { return Message.size() > 0; }
+  explicit operator bool() const { return Message.size() > 0; }
 
   unsigned getID() const { return ID; }
   DiagnosticsEngine::Level getLevel() const { return Level; }

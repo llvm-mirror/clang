@@ -143,14 +143,8 @@ Lexer::Lexer(SourceLocation fileloc, const LangOptions &langOpts,
 /// range will outlive it, so it doesn't take ownership of it.
 Lexer::Lexer(FileID FID, const llvm::MemoryBuffer *FromFile,
              const SourceManager &SM, const LangOptions &langOpts)
-  : FileLoc(SM.getLocForStartOfFile(FID)), LangOpts(langOpts) {
-
-  InitLexer(FromFile->getBufferStart(), FromFile->getBufferStart(),
-            FromFile->getBufferEnd());
-
-  // We *are* in raw mode.
-  LexingRawMode = true;
-}
+    : Lexer(SM.getLocForStartOfFile(FID), langOpts, FromFile->getBufferStart(),
+            FromFile->getBufferStart(), FromFile->getBufferEnd()) {}
 
 /// Create_PragmaLexer: Lexer constructor - Create a new lexer object for
 /// _Pragma expansion.  This has a variety of magic semantics that this method
@@ -1889,17 +1883,20 @@ bool Lexer::LexAngledStringLiteral(Token &Result, const char *CurPtr) {
 
 
 /// LexCharConstant - Lex the remainder of a character constant, after having
-/// lexed either ' or L' or u' or U'.
+/// lexed either ' or L' or u8' or u' or U'.
 bool Lexer::LexCharConstant(Token &Result, const char *CurPtr,
                             tok::TokenKind Kind) {
   // Does this character contain the \0 character?
   const char *NulCharacter = nullptr;
 
-  if (!isLexingRawMode() &&
-      (Kind == tok::utf16_char_constant || Kind == tok::utf32_char_constant))
-    Diag(BufferPtr, getLangOpts().CPlusPlus
-           ? diag::warn_cxx98_compat_unicode_literal
-           : diag::warn_c99_compat_unicode_literal);
+  if (!isLexingRawMode()) {
+    if (Kind == tok::utf16_char_constant || Kind == tok::utf32_char_constant)
+      Diag(BufferPtr, getLangOpts().CPlusPlus
+                          ? diag::warn_cxx98_compat_unicode_literal
+                          : diag::warn_c99_compat_unicode_literal);
+    else if (Kind == tok::utf8_char_constant)
+      Diag(BufferPtr, diag::warn_cxx14_compat_u8_character_literal);
+  }
 
   char C = getAndAdvanceChar(CurPtr, Result);
   if (C == '\'') {
@@ -2319,7 +2316,7 @@ bool Lexer::SkipBlockComment(Token &Result, const char *CurPtr,
         '/', '/', '/', '/',  '/', '/', '/', '/'
       };
       while (CurPtr+16 <= BufferEnd &&
-             !vec_any_eq(*(vector unsigned char*)CurPtr, Slashes))
+             !vec_any_eq(*(const vector unsigned char*)CurPtr, Slashes))
         CurPtr += 16;
 #else
       // Scan for '/' quickly.  Many block comments are very large.
@@ -2585,8 +2582,8 @@ static const char *FindConflictEnd(const char *CurPtr, const char *BufferEnd,
   size_t Pos = RestOfBuffer.find(Terminator);
   while (Pos != StringRef::npos) {
     // Must occur at start of line.
-    if (RestOfBuffer[Pos-1] != '\r' &&
-        RestOfBuffer[Pos-1] != '\n') {
+    if (Pos == 0 ||
+        (RestOfBuffer[Pos - 1] != '\r' && RestOfBuffer[Pos - 1] != '\n')) {
       RestOfBuffer = RestOfBuffer.substr(Pos+TermLen);
       Pos = RestOfBuffer.find(Terminator);
       continue;
@@ -3068,6 +3065,11 @@ LexNextToken:
                                ConsumeChar(ConsumeChar(CurPtr, SizeTmp, Result),
                                            SizeTmp2, Result),
                                tok::utf8_string_literal);
+        if (Char2 == '\'' && LangOpts.CPlusPlus1z)
+          return LexCharConstant(
+              Result, ConsumeChar(ConsumeChar(CurPtr, SizeTmp, Result),
+                                  SizeTmp2, Result),
+              tok::utf8_char_constant);
 
         if (Char2 == 'R' && LangOpts.CPlusPlus11) {
           unsigned SizeTmp3;

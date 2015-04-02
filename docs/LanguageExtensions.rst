@@ -109,12 +109,42 @@ following ``__`` (double underscore) to avoid interference from a macro with
 the same name.  For instance, ``__cxx_rvalue_references__`` can be used instead
 of ``cxx_rvalue_references``.
 
+``__has_cpp_attribute``
+-----------------------
+
+This function-like macro takes a single argument that is the name of a
+C++11-style attribute. The argument can either be a single identifier, or a
+scoped identifier. If the attribute is supported, a nonzero value is returned.
+If the attribute is a standards-based attribute, this macro returns a nonzero
+value based on the year and month in which the attribute was voted into the
+working draft. If the attribute is not supported by the current compliation
+target, this macro evaluates to 0.  It can be used like this:
+
+.. code-block:: c++
+
+  #ifndef __has_cpp_attribute         // Optional of course.
+    #define __has_cpp_attribute(x) 0  // Compatibility with non-clang compilers.
+  #endif
+
+  ...
+  #if __has_cpp_attribute(clang::fallthrough)
+  #define FALLTHROUGH [[clang::fallthrough]]
+  #else
+  #define FALLTHROUGH
+  #endif
+  ...
+
+The attribute identifier (but not scope) can also be specified with a preceding
+and following ``__`` (double underscore) to avoid interference from a macro with
+the same name.  For instance, ``gnu::__const__`` can be used instead of
+``gnu::const``.
+
 ``__has_attribute``
 -------------------
 
 This function-like macro takes a single identifier argument that is the name of
-an attribute.  It evaluates to 1 if the attribute is supported by the current
-compilation target, or 0 if not.  It can be used like this:
+a GNU-style attribute.  It evaluates to 1 if the attribute is supported by the
+current compilation target, or 0 if not.  It can be used like this:
 
 .. code-block:: c++
 
@@ -133,6 +163,33 @@ compilation target, or 0 if not.  It can be used like this:
 The attribute name can also be specified with a preceding and following ``__``
 (double underscore) to avoid interference from a macro with the same name.  For
 instance, ``__always_inline__`` can be used instead of ``always_inline``.
+
+
+``__has_declspec_attribute``
+----------------------------
+
+This function-like macro takes a single identifier argument that is the name of
+an attribute implemented as a Microsoft-style ``__declspec`` attribute.  It
+evaluates to 1 if the attribute is supported by the current compilation target,
+or 0 if not.  It can be used like this:
+
+.. code-block:: c++
+
+  #ifndef __has_declspec_attribute         // Optional of course.
+    #define __has_declspec_attribute(x) 0  // Compatibility with non-clang compilers.
+  #endif
+
+  ...
+  #if __has_declspec_attribute(dllexport)
+  #define DLLEXPORT __declspec(dllexport)
+  #else
+  #define DLLEXPORT
+  #endif
+  ...
+
+The attribute name can also be specified with a preceding and following ``__``
+(double underscore) to avoid interference from a macro with the same name.  For
+instance, ``__dllexport__`` can be used instead of ``dllexport``.
 
 ``__is_identifier``
 -------------------
@@ -458,6 +515,13 @@ features are enabled.  The ``__has_extension`` macro can be used to query if
 language features are available as an extension when compiling for a standard
 which does not provide them.  The features which can be tested are listed here.
 
+Since Clang 3.4, the C++ SD-6 feature test macros are also supported.
+These are macros with names of the form ``__cpp_<feature_name>``, and are
+intended to be a portable way to query the supported features of the compiler.
+See `the C++ status page <http://clang.llvm.org/cxx_status.html#ts>`_ for
+information on the version of SD-6 supported by each Clang release, and the
+macros provided by that revision of the recommendations.
+
 C++98
 -----
 
@@ -505,6 +569,9 @@ C++11 alignment specifiers
 
 Use ``__has_feature(cxx_alignas)`` or ``__has_extension(cxx_alignas)`` to
 determine if support for alignment specifiers using ``alignas`` is enabled.
+
+Use ``__has_feature(cxx_alignof)`` or ``__has_extension(cxx_alignof)`` to
+determine if support for the ``alignof`` keyword is enabled.
 
 C++11 attributes
 ^^^^^^^^^^^^^^^^
@@ -751,6 +818,13 @@ Use ``__has_feature(cxx_aggregate_nsdmi)`` or
 ``__has_extension(cxx_aggregate_nsdmi)`` to determine if support
 for default initializers in aggregate members is enabled.
 
+C++1y digit separators
+^^^^^^^^^^^^^^^^^^^^^^
+
+Use ``__cpp_digit_separators`` to determine if support for digit separators
+using single quotes (for instance, ``10'000``) is enabled. At this time, there
+is no corresponding ``__has_feature`` name
+
 C++1y generalized lambda capture
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -813,6 +887,9 @@ C11 alignment specifiers
 Use ``__has_feature(c_alignas)`` or ``__has_extension(c_alignas)`` to determine
 if support for alignment specifiers using ``_Alignas`` is enabled.
 
+Use ``__has_feature(c_alignof)`` or ``__has_extension(c_alignof)`` to determine
+if support for the ``_Alignof`` keyword is enabled.
+
 C11 atomic operations
 ^^^^^^^^^^^^^^^^^^^^^
 
@@ -857,6 +934,14 @@ C11 ``_Thread_local``
 
 Use ``__has_feature(c_thread_local)`` or ``__has_extension(c_thread_local)``
 to determine if support for ``_Thread_local`` variables is enabled.
+
+Modules
+-------
+
+Use ``__has_feature(modules)`` to determine if Modules have been enabled.
+For example, compiling code with ``-fmodules`` enables the use of Modules.
+
+More information could be found `here <http://clang.llvm.org/docs/Modules.html>`_.
 
 Checks for Type Trait Primitives
 ================================

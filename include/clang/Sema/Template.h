@@ -239,8 +239,8 @@ namespace clang {
 
     // This class is non-copyable
     LocalInstantiationScope(
-      const LocalInstantiationScope &) LLVM_DELETED_FUNCTION;
-    void operator=(const LocalInstantiationScope &) LLVM_DELETED_FUNCTION;
+      const LocalInstantiationScope &) = delete;
+    void operator=(const LocalInstantiationScope &) = delete;
 
   public:
     LocalInstantiationScope(Sema &SemaRef, bool CombineWithOuterScope = false)
@@ -273,6 +273,11 @@ namespace clang {
     /// outermost scope.
     LocalInstantiationScope *cloneScopes(LocalInstantiationScope *Outermost) {
       if (this == Outermost) return this;
+
+      // Save the current scope from SemaRef since the LocalInstantiationScope
+      // will overwrite it on construction
+      LocalInstantiationScope *oldScope = SemaRef.CurrentInstantiationScope;
+
       LocalInstantiationScope *newScope =
         new LocalInstantiationScope(SemaRef, CombineWithOuterScope);
 
@@ -299,6 +304,8 @@ namespace clang {
           newScope->ArgumentPacks.push_back(NewPack);
         }
       }
+      // Restore the saved scope to SemaRef
+      SemaRef.CurrentInstantiationScope = oldScope;
       return newScope;
     }
 

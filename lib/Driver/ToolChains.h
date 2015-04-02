@@ -234,9 +234,10 @@ public:
 
   void AddLinkRuntimeLib(const llvm::opt::ArgList &Args,
                          llvm::opt::ArgStringList &CmdArgs,
-                         StringRef DarwinStaticLib,
+                         StringRef DarwinLibName,
                          bool AlwaysLink = false,
-                         bool IsEmbedded = false) const;
+                         bool IsEmbedded = false,
+                         bool AddRPath = false) const;
 
   /// }
   /// @name ToolChain Implementation
@@ -255,7 +256,7 @@ public:
 
   bool IsBlocksDefault() const override {
     // Always allow blocks on Apple; users interested in versioning are
-    // expected to use /usr/include/Blocks.h.
+    // expected to use /usr/include/Block.h.
     return true;
   }
   bool IsIntegratedAssemblerDefault() const override {
@@ -361,8 +362,7 @@ public:
                          llvm::opt::ArgStringList &CmdArgs) const override;
 
   bool isKernelStatic() const override {
-    return !isTargetIPhoneOS() || isIPhoneOSVersionLT(6, 0) ||
-           getTriple().getArch() == llvm::Triple::aarch64;
+    return !isTargetIPhoneOS() || isIPhoneOSVersionLT(6, 0);
   }
 
 protected:
@@ -494,6 +494,11 @@ public:
   AddLinkARCArgs(const llvm::opt::ArgList &Args,
                  llvm::opt::ArgStringList &CmdArgs) const override;
   /// }
+
+private:
+  void AddLinkSanitizerLibArgs(const llvm::opt::ArgList &Args,
+                               llvm::opt::ArgStringList &CmdArgs,
+                               StringRef Sanitizer) const;
 };
 
 class LLVM_LIBRARY_VISIBILITY Generic_ELF : public Generic_GCC {
@@ -505,6 +510,31 @@ public:
 
   void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
                              llvm::opt::ArgStringList &CC1Args) const override;
+};
+
+class LLVM_LIBRARY_VISIBILITY CloudABI : public Generic_ELF {
+public:
+  CloudABI(const Driver &D, const llvm::Triple &Triple,
+           const llvm::opt::ArgList &Args);
+  bool HasNativeLLVMSupport() const override { return true; }
+
+  bool IsMathErrnoDefault() const override { return false; }
+  bool IsObjCNonFragileABIDefault() const override { return true; }
+
+  CXXStdlibType GetCXXStdlibType(const llvm::opt::ArgList &Args)
+      const override {
+    return ToolChain::CST_Libcxx;
+  }
+  void AddClangCXXStdlibIncludeArgs(
+      const llvm::opt::ArgList &DriverArgs,
+      llvm::opt::ArgStringList &CC1Args) const override;
+  void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &CmdArgs) const override;
+
+  bool isPIEDefault() const override { return false; }
+
+protected:
+  Tool *buildLinker() const override;
 };
 
 class LLVM_LIBRARY_VISIBILITY Solaris : public Generic_GCC {
@@ -531,17 +561,6 @@ public:
 
   unsigned GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
     return 2;
-  }
-
-  virtual bool IsIntegratedAssemblerDefault() const override {
-    switch (getTriple().getArch()) {
-    case llvm::Triple::ppc:
-    case llvm::Triple::sparc:
-    case llvm::Triple::sparcv9:
-      return true;
-    default:
-      return Generic_ELF::IsIntegratedAssemblerDefault();
-    }
   }
 
 protected:
@@ -585,14 +604,6 @@ public:
   void
   AddClangCXXStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                                llvm::opt::ArgStringList &CC1Args) const override;
-  bool IsIntegratedAssemblerDefault() const override {
-    switch (getTriple().getArch()) {
-    case llvm::Triple::ppc:
-      return true;
-    default:
-      return Generic_ELF::IsIntegratedAssemblerDefault();
-    }
-  }
 
   bool UseSjLjExceptions() const override;
   bool isPIEDefault() const override;
@@ -616,14 +627,6 @@ public:
                               llvm::opt::ArgStringList &CC1Args) const override;
   bool IsUnwindTablesDefault() const override {
     return true;
-  }
-  bool IsIntegratedAssemblerDefault() const override {
-    switch (getTriple().getArch()) {
-    case llvm::Triple::ppc:
-      return true;
-    default:
-      return Generic_ELF::IsIntegratedAssemblerDefault();
-    }
   }
 
 protected:
@@ -708,7 +711,8 @@ public:
 
   StringRef GetGCCLibAndIncVersion() const { return GCCLibAndIncVersion.Text; }
 
-  static std::string GetGnuDir(const std::string &InstalledDir);
+  static std::string GetGnuDir(const std::string &InstalledDir,
+                               const llvm::opt::ArgList &Args);
 
   static StringRef GetTargetCPU(const llvm::opt::ArgList &Args);
 };
@@ -727,10 +731,10 @@ public:
   bool isPICDefaultForced() const override;
 };
 
-class LLVM_LIBRARY_VISIBILITY Windows : public ToolChain {
+class LLVM_LIBRARY_VISIBILITY MSVCToolChain : public ToolChain {
 public:
-  Windows(const Driver &D, const llvm::Triple &Triple,
-          const llvm::opt::ArgList &Args);
+  MSVCToolChain(const Driver &D, const llvm::Triple &Triple,
+                const llvm::opt::ArgList &Args);
 
   bool IsIntegratedAssemblerDefault() const override;
   bool IsUnwindTablesDefault() const override;
@@ -745,11 +749,50 @@ public:
   AddClangCXXStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                                llvm::opt::ArgStringList &CC1Args) const override;
 
+  bool getWindowsSDKDir(std::string &path, int &major, int &minor) const;
+  bool getWindowsSDKLibraryPath(std::string &path) const;
+  bool getVisualStudioInstallDir(std::string &path) const;
+  bool getVisualStudioBinariesFolder(const char *clangProgramPath,
+                                     std::string &path) const;
+
 protected:
+  void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,
+                                     llvm::opt::ArgStringList &CC1Args,
+                                     const std::string &folder,
+                                     const char *subfolder) const;
+
   Tool *buildLinker() const override;
   Tool *buildAssembler() const override;
 };
 
+class LLVM_LIBRARY_VISIBILITY CrossWindowsToolChain : public Generic_GCC {
+public:
+  CrossWindowsToolChain(const Driver &D, const llvm::Triple &T,
+                        const llvm::opt::ArgList &Args);
+
+  bool IsIntegratedAssemblerDefault() const override { return true; }
+  bool IsUnwindTablesDefault() const override;
+  bool isPICDefault() const override;
+  bool isPIEDefault() const override;
+  bool isPICDefaultForced() const override;
+
+  unsigned int GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
+    return 0;
+  }
+
+  void AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                                 llvm::opt::ArgStringList &CC1Args)
+      const override;
+  void AddClangCXXStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                                    llvm::opt::ArgStringList &CC1Args)
+      const override;
+  void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &CmdArgs) const override;
+
+protected:
+  Tool *buildLinker() const override;
+  Tool *buildAssembler() const override;
+};
 
 class LLVM_LIBRARY_VISIBILITY XCore : public ToolChain {
 public:

@@ -510,6 +510,13 @@ namespace {
   };
 }
 
+void Parser::LateTemplateParserCleanupCallback(void *P) {
+  // While this RAII helper doesn't bracket any actual work, the destructor will
+  // clean up annotations that were created during ActOnEndOfTranslationUnit
+  // when incremental processing is enabled.
+  DestroyTemplateIdAnnotationsRAIIObj CleanupRAII(((Parser *)P)->TemplateIds);
+}
+
 /// ParseTopLevelDecl - Parse one top-level declaration, return whatever the
 /// action tells us to.  This returns true if the EOF was encountered.
 bool Parser::ParseTopLevelDecl(DeclGroupPtrTy &Result) {
@@ -542,7 +549,10 @@ bool Parser::ParseTopLevelDecl(DeclGroupPtrTy &Result) {
   case tok::eof:
     // Late template parsing can begin.
     if (getLangOpts().DelayedTemplateParsing)
-      Actions.SetLateTemplateParser(LateTemplateParserCallback, this);
+      Actions.SetLateTemplateParser(LateTemplateParserCallback,
+                                    PP.isIncrementalProcessingEnabled() ?
+                                    LateTemplateParserCleanupCallback : nullptr,
+                                    this);
     if (!PP.isIncrementalProcessingEnabled())
       Actions.ActOnEndOfTranslationUnit();
     //else don't tell Sema that we ended parsing: more input might come.
@@ -624,8 +634,7 @@ Parser::ParseExternalDeclaration(ParsedAttributesWithRange &attrs,
     HandlePragmaOpenCLExtension();
     return DeclGroupPtrTy();
   case tok::annot_pragma_openmp:
-    ParseOpenMPDeclarativeDirective();
-    return DeclGroupPtrTy();
+    return ParseOpenMPDeclarativeDirective();
   case tok::annot_pragma_ms_pointers_to_members:
     HandlePragmaMSPointersToMembers();
     return DeclGroupPtrTy();
@@ -697,8 +706,7 @@ Parser::ParseExternalDeclaration(ParsedAttributesWithRange &attrs,
     // A function definition cannot start with any of these keywords.
     {
       SourceLocation DeclEnd;
-      StmtVector Stmts;
-      return ParseDeclaration(Stmts, Declarator::FileContext, DeclEnd, attrs);
+      return ParseDeclaration(Declarator::FileContext, DeclEnd, attrs);
     }
 
   case tok::kw_static:
@@ -708,8 +716,7 @@ Parser::ParseExternalDeclaration(ParsedAttributesWithRange &attrs,
       Diag(ConsumeToken(), diag::warn_static_inline_explicit_inst_ignored)
         << 0;
       SourceLocation DeclEnd;
-      StmtVector Stmts;
-      return ParseDeclaration(Stmts, Declarator::FileContext, DeclEnd, attrs);  
+      return ParseDeclaration(Declarator::FileContext, DeclEnd, attrs);
     }
     goto dont_know;
       
@@ -720,8 +727,7 @@ Parser::ParseExternalDeclaration(ParsedAttributesWithRange &attrs,
       // Inline namespaces. Allowed as an extension even in C++03.
       if (NextKind == tok::kw_namespace) {
         SourceLocation DeclEnd;
-        StmtVector Stmts;
-        return ParseDeclaration(Stmts, Declarator::FileContext, DeclEnd, attrs);
+        return ParseDeclaration(Declarator::FileContext, DeclEnd, attrs);
       }
       
       // Parse (then ignore) 'inline' prior to a template instantiation. This is
@@ -730,8 +736,7 @@ Parser::ParseExternalDeclaration(ParsedAttributesWithRange &attrs,
         Diag(ConsumeToken(), diag::warn_static_inline_explicit_inst_ignored)
           << 1;
         SourceLocation DeclEnd;
-        StmtVector Stmts;
-        return ParseDeclaration(Stmts, Declarator::FileContext, DeclEnd, attrs);  
+        return ParseDeclaration(Declarator::FileContext, DeclEnd, attrs);
       }
     }
     goto dont_know;
@@ -885,7 +890,7 @@ Parser::ParseDeclOrFunctionDefInternal(ParsedAttributesWithRange &attrs,
     return Actions.ConvertDeclToDeclGroup(TheDecl);
   }
 
-  return ParseDeclGroup(DS, Declarator::FileContext, true);
+  return ParseDeclGroup(DS, Declarator::FileContext);
 }
 
 Parser::DeclGroupPtrTy
@@ -922,7 +927,7 @@ Parser::ParseDeclarationOrFunctionDefinition(ParsedAttributesWithRange &attrs,
 Decl *Parser::ParseFunctionDefinition(ParsingDeclarator &D,
                                       const ParsedTemplateInfo &TemplateInfo,
                                       LateParsedAttrList *LateParsedAttrs) {
-  // Poison the SEH identifiers so they are flagged as illegal in function bodies
+  // Poison SEH identifiers so they are flagged as illegal in function bodies.
   PoisonSEHIdentifiersRAIIObject PoisonSEHIdentifiers(*this, true);
   const DeclaratorChunk::FunctionTypeInfo &FTI = D.getFunctionTypeInfo();
 
@@ -1043,7 +1048,6 @@ Decl *Parser::ParseFunctionDefinition(ParsingDeclarator &D,
 
   if (TryConsumeToken(tok::equal)) {
     assert(getLangOpts().CPlusPlus && "Only C++ function definitions have '='");
-    Actions.ActOnFinishFunctionBody(Res, nullptr, false);
 
     bool Delete = false;
     SourceLocation KWLoc;
@@ -1071,6 +1075,8 @@ Decl *Parser::ParseFunctionDefinition(ParsingDeclarator &D,
       SkipUntil(tok::semi);
     }
 
+    Stmt *GeneratedBody = Res ? Res->getBody() : nullptr;
+    Actions.ActOnFinishFunctionBody(Res, GeneratedBody, false);
     return Res;
   }
 
@@ -1218,27 +1224,24 @@ void Parser::ParseKNRParamDeclarations(Declarator &D) {
 /// [GNU] asm-string-literal:
 ///         string-literal
 ///
-Parser::ExprResult Parser::ParseAsmStringLiteral() {
-  switch (Tok.getKind()) {
-    case tok::string_literal:
-      break;
-    case tok::utf8_string_literal:
-    case tok::utf16_string_literal:
-    case tok::utf32_string_literal:
-    case tok::wide_string_literal: {
-      SourceLocation L = Tok.getLocation();
-      Diag(Tok, diag::err_asm_operand_wide_string_literal)
-        << (Tok.getKind() == tok::wide_string_literal)
-        << SourceRange(L, L);
-      return ExprError();
-    }
-    default:
-      Diag(Tok, diag::err_expected_string_literal)
-        << /*Source='in...'*/0 << "'asm'";
-      return ExprError();
+ExprResult Parser::ParseAsmStringLiteral() {
+  if (!isTokenStringLiteral()) {
+    Diag(Tok, diag::err_expected_string_literal)
+      << /*Source='in...'*/0 << "'asm'";
+    return ExprError();
   }
 
-  return ParseStringLiteralExpression();
+  ExprResult AsmString(ParseStringLiteralExpression());
+  if (!AsmString.isInvalid()) {
+    const auto *SL = cast<StringLiteral>(AsmString.get());
+    if (!SL->isAscii()) {
+      Diag(Tok, diag::err_asm_operand_wide_string_literal)
+        << SL->isWide()
+        << SL->getSourceRange();
+      return ExprError();
+    }
+  }
+  return AsmString;
 }
 
 /// ParseSimpleAsm
@@ -1246,7 +1249,7 @@ Parser::ExprResult Parser::ParseAsmStringLiteral() {
 /// [GNU] simple-asm-expr:
 ///         'asm' '(' asm-string-literal ')'
 ///
-Parser::ExprResult Parser::ParseSimpleAsm(SourceLocation *EndLoc) {
+ExprResult Parser::ParseSimpleAsm(SourceLocation *EndLoc) {
   assert(Tok.is(tok::kw_asm) && "Not an asm!");
   SourceLocation Loc = ConsumeToken();
 
@@ -1321,7 +1324,7 @@ void Parser::AnnotateScopeToken(CXXScopeSpec &SS, bool IsNewAnnotation) {
 ///        no typo correction will be performed.
 Parser::AnnotatedNameKind
 Parser::TryAnnotateName(bool IsAddressOfOperand,
-                        CorrectionCandidateCallback *CCC) {
+                        std::unique_ptr<CorrectionCandidateCallback> CCC) {
   assert(Tok.is(tok::identifier) || Tok.is(tok::annot_cxxscope));
 
   const bool EnteringContext = false;
@@ -1359,9 +1362,9 @@ Parser::TryAnnotateName(bool IsAddressOfOperand,
   // after a scope specifier, because in general we can't recover from typos
   // there (eg, after correcting 'A::tempalte B<X>::C' [sic], we would need to
   // jump back into scope specifier parsing).
-  Sema::NameClassification Classification
-    = Actions.ClassifyName(getCurScope(), SS, Name, NameLoc, Next,
-                           IsAddressOfOperand, SS.isEmpty() ? CCC : nullptr);
+  Sema::NameClassification Classification = Actions.ClassifyName(
+      getCurScope(), SS, Name, NameLoc, Next, IsAddressOfOperand,
+      SS.isEmpty() ? std::move(CCC) : nullptr);
 
   switch (Classification.getKind()) {
   case Sema::NC_Error:
@@ -1723,7 +1726,8 @@ SourceLocation Parser::handleUnexpectedCodeCompletionToken() {
 
   for (Scope *S = getCurScope(); S; S = S->getParent()) {
     if (S->getFlags() & Scope::FnScope) {
-      Actions.CodeCompleteOrdinaryName(getCurScope(), Sema::PCC_RecoveryInFunction);
+      Actions.CodeCompleteOrdinaryName(getCurScope(),
+                                       Sema::PCC_RecoveryInFunction);
       cutOffParsing();
       return PrevTokLocation;
     }
@@ -1761,7 +1765,7 @@ void Parser::CodeCompletePreprocessorExpression() {
 void Parser::CodeCompleteMacroArgument(IdentifierInfo *Macro,
                                        MacroInfo *MacroInfo,
                                        unsigned ArgumentIndex) {
-  Actions.CodeCompletePreprocessorMacroArgument(getCurScope(), Macro, MacroInfo, 
+  Actions.CodeCompletePreprocessorMacroArgument(getCurScope(), Macro, MacroInfo,
                                                 ArgumentIndex);
 }
 
@@ -1783,8 +1787,9 @@ bool Parser::ParseMicrosoftIfExistsCondition(IfExistsCondition& Result) {
   }
   
   // Parse nested-name-specifier.
-  ParseOptionalCXXScopeSpecifier(Result.SS, ParsedType(), 
-                                 /*EnteringContext=*/false);
+  if (getLangOpts().CPlusPlus)
+    ParseOptionalCXXScopeSpecifier(Result.SS, ParsedType(),
+                                   /*EnteringContext=*/false);
 
   // Check nested-name specifier.
   if (Result.SS.isInvalid()) {
@@ -1805,7 +1810,7 @@ bool Parser::ParseMicrosoftIfExistsCondition(IfExistsCondition& Result) {
   
   // Check if the symbol exists.
   switch (Actions.CheckMicrosoftIfExistsSymbol(getCurScope(), Result.KeywordLoc,
-                                               Result.IsIfExists, Result.SS, 
+                                               Result.IsIfExists, Result.SS,
                                                Result.Name)) {
   case Sema::IER_Exists:
     Result.Behavior = Result.IsIfExists ? IEB_Parse : IEB_Skip;

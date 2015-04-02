@@ -23,8 +23,7 @@ Typical slowdown introduced by AddressSanitizer is **2x**.
 How to build
 ============
 
-Follow the `clang build instructions <../get_started.html>`_. CMake build is
-supported.
+Build LLVM/Clang with `CMake <http://llvm.org/docs/CMake.html>`_.
 
 Usage
 =====
@@ -187,6 +186,7 @@ AddressSanitizer is supported on
 * Linux i386/x86\_64 (tested on Ubuntu 12.04);
 * MacOS 10.6 - 10.9 (i386/x86\_64).
 * Android ARM
+* FreeBSD i386/x86\_64 (tested on FreeBSD 11-current)
 
 Ports to various other platforms are in progress.
 

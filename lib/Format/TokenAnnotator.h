@@ -27,12 +27,13 @@ namespace format {
 
 enum LineType {
   LT_Invalid,
-  LT_Other,
-  LT_PreprocessorDirective,
-  LT_VirtualFunctionDecl,
+  LT_ImportStatement,
   LT_ObjCDecl, // An @interface, @implementation, or @protocol line.
   LT_ObjCMethodDecl,
-  LT_ObjCProperty // An @property line.
+  LT_ObjCProperty, // An @property line.
+  LT_Other,
+  LT_PreprocessorDirective,
+  LT_VirtualFunctionDecl
 };
 
 class AnnotatedLine {
@@ -41,8 +42,8 @@ public:
       : First(Line.Tokens.front().Tok), Level(Line.Level),
         InPPDirective(Line.InPPDirective),
         MustBeDeclaration(Line.MustBeDeclaration), MightBeFunctionDecl(false),
-        Affected(false), LeadingEmptyLinesAffected(false),
-        ChildrenAffected(false) {
+        IsMultiVariableDeclStmt(false), Affected(false),
+        LeadingEmptyLinesAffected(false), ChildrenAffected(false) {
     assert(!Line.Tokens.empty());
 
     // Calculate Next and Previous for all tokens. Note that we must overwrite
@@ -58,11 +59,8 @@ public:
       I->Tok->Previous = Current;
       Current = Current->Next;
       Current->Children.clear();
-      for (SmallVectorImpl<UnwrappedLine>::const_iterator
-               I = Node.Children.begin(),
-               E = Node.Children.end();
-           I != E; ++I) {
-        Children.push_back(new AnnotatedLine(*I));
+      for (const auto& Child : Node.Children) {
+        Children.push_back(new AnnotatedLine(Child));
         Current->Children.push_back(Children.back());
       }
     }
@@ -73,6 +71,12 @@ public:
   ~AnnotatedLine() {
     for (unsigned i = 0, e = Children.size(); i != e; ++i) {
       delete Children[i];
+    }
+    FormatToken *Current = First;
+    while (Current) {
+      Current->Children.clear();
+      Current->Role.reset();
+      Current = Current->Next;
     }
   }
 
@@ -86,6 +90,7 @@ public:
   bool InPPDirective;
   bool MustBeDeclaration;
   bool MightBeFunctionDecl;
+  bool IsMultiVariableDeclStmt;
 
   /// \c True if this line should be formatted, i.e. intersects directly or
   /// indirectly with one of the input ranges.
@@ -100,16 +105,16 @@ public:
 
 private:
   // Disallow copying.
-  AnnotatedLine(const AnnotatedLine &) LLVM_DELETED_FUNCTION;
-  void operator=(const AnnotatedLine &) LLVM_DELETED_FUNCTION;
+  AnnotatedLine(const AnnotatedLine &) = delete;
+  void operator=(const AnnotatedLine &) = delete;
 };
 
 /// \brief Determines extra information about the tokens comprising an
 /// \c UnwrappedLine.
 class TokenAnnotator {
 public:
-  TokenAnnotator(const FormatStyle &Style, IdentifierInfo &Ident_in)
-      : Style(Style), Ident_in(Ident_in) {}
+  TokenAnnotator(const FormatStyle &Style, const AdditionalKeywords &Keywords)
+      : Style(Style), Keywords(Keywords) {}
 
   /// \brief Adapts the indent levels of comment lines to the indent of the
   /// subsequent line.
@@ -139,8 +144,7 @@ private:
 
   const FormatStyle &Style;
 
-  // Contextual keywords:
-  IdentifierInfo &Ident_in;
+  const AdditionalKeywords &Keywords;
 };
 
 } // end namespace format

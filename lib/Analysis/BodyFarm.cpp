@@ -13,11 +13,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "BodyFarm.h"
-#include "clang/Analysis/CodeInjector.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprObjC.h"
+#include "clang/Analysis/CodeInjector.h"
 #include "llvm/ADT/StringSwitch.h"
 
 using namespace clang;
@@ -115,7 +115,7 @@ DeclRefExpr *ASTMaker::makeDeclRefExpr(const VarDecl *D) {
                         /* QualifierLoc = */ NestedNameSpecifierLoc(),
                         /* TemplateKWLoc = */ SourceLocation(),
                         /* D = */ const_cast<VarDecl*>(D),
-                        /* isEnclosingLocal = */ false,
+                        /* RefersToEnclosingVariableOrCapture = */ false,
                         /* NameLoc = */ SourceLocation(),
                         /* T = */ D->getType(),
                         /* VK = */ VK_LValue);

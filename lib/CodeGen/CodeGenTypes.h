@@ -82,6 +82,9 @@ inline StructorType getFromCtorType(CXXCtorType T) {
     return StructorType::Base;
   case Ctor_Comdat:
     llvm_unreachable("not expecting a COMDAT");
+  case Ctor_CopyingClosure:
+  case Ctor_DefaultClosure:
+    llvm_unreachable("not expecting a closure");
   }
   llvm_unreachable("not a CXXCtorType");
 }
@@ -248,7 +251,8 @@ public:
                                                   CXXCtorType CtorKind,
                                                   unsigned ExtraArgs);
   const CGFunctionInfo &arrangeFreeFunctionCall(const CallArgList &Args,
-                                                const FunctionType *Ty);
+                                                const FunctionType *Ty,
+                                                bool ChainCall);
   const CGFunctionInfo &arrangeFreeFunctionCall(QualType ResTy,
                                                 const CallArgList &args,
                                                 FunctionType::ExtInfo info,
@@ -260,6 +264,8 @@ public:
                                              const FunctionProtoType *type,
                                              RequiredArgs required);
   const CGFunctionInfo &arrangeMSMemberPointerThunk(const CXXMethodDecl *MD);
+  const CGFunctionInfo &arrangeMSCtorClosure(const CXXConstructorDecl *CD,
+                                                 CXXCtorType CT);
 
   const CGFunctionInfo &arrangeFreeFunctionType(CanQual<FunctionProtoType> Ty);
   const CGFunctionInfo &arrangeFreeFunctionType(CanQual<FunctionNoProtoType> Ty);
@@ -273,7 +279,8 @@ public:
   ///
   /// \param argTypes - must all actually be canonical as params
   const CGFunctionInfo &arrangeLLVMFunctionInfo(CanQualType returnType,
-                                                bool IsInstanceMethod,
+                                                bool instanceMethod,
+                                                bool chainCall,
                                                 ArrayRef<CanQualType> argTypes,
                                                 FunctionType::ExtInfo info,
                                                 RequiredArgs args);

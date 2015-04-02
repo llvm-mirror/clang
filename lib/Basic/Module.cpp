@@ -26,7 +26,7 @@ using namespace clang;
 
 Module::Module(StringRef Name, SourceLocation DefinitionLoc, Module *Parent,
                bool IsFramework, bool IsExplicit)
-    : Name(Name), DefinitionLoc(DefinitionLoc), Parent(Parent),
+    : Name(Name), DefinitionLoc(DefinitionLoc), Parent(Parent), Directory(),
       Umbrella(), ASTFile(nullptr), IsMissingRequirement(false),
       IsAvailable(true), IsFromModuleFile(false), IsFramework(IsFramework),
       IsExplicit(IsExplicit), IsSystem(false), IsExternC(false),
@@ -58,21 +58,26 @@ Module::~Module() {
 /// language options has the given feature.
 static bool hasFeature(StringRef Feature, const LangOptions &LangOpts,
                        const TargetInfo &Target) {
-  return llvm::StringSwitch<bool>(Feature)
-           .Case("altivec", LangOpts.AltiVec)
-           .Case("blocks", LangOpts.Blocks)
-           .Case("cplusplus", LangOpts.CPlusPlus)
-           .Case("cplusplus11", LangOpts.CPlusPlus11)
-           .Case("objc", LangOpts.ObjC1)
-           .Case("objc_arc", LangOpts.ObjCAutoRefCount)
-           .Case("opencl", LangOpts.OpenCL)
-           .Case("tls", Target.isTLSSupported())
-           .Default(Target.hasFeature(Feature));
+  bool HasFeature = llvm::StringSwitch<bool>(Feature)
+                        .Case("altivec", LangOpts.AltiVec)
+                        .Case("blocks", LangOpts.Blocks)
+                        .Case("cplusplus", LangOpts.CPlusPlus)
+                        .Case("cplusplus11", LangOpts.CPlusPlus11)
+                        .Case("objc", LangOpts.ObjC1)
+                        .Case("objc_arc", LangOpts.ObjCAutoRefCount)
+                        .Case("opencl", LangOpts.OpenCL)
+                        .Case("tls", Target.isTLSSupported())
+                        .Default(Target.hasFeature(Feature));
+  if (!HasFeature)
+    HasFeature = std::find(LangOpts.ModuleFeatures.begin(),
+                           LangOpts.ModuleFeatures.end(),
+                           Feature) != LangOpts.ModuleFeatures.end();
+  return HasFeature;
 }
 
-bool
-Module::isAvailable(const LangOptions &LangOpts, const TargetInfo &Target,
-                    Requirement &Req, HeaderDirective &MissingHeader) const {
+bool Module::isAvailable(const LangOptions &LangOpts, const TargetInfo &Target,
+                         Requirement &Req,
+                         UnresolvedHeaderDirective &MissingHeader) const {
   if (IsAvailable)
     return true;
 
@@ -151,6 +156,19 @@ ArrayRef<const FileEntry *> Module::getTopHeaders(FileManager &FileMgr) {
   }
 
   return llvm::makeArrayRef(TopHeaders.begin(), TopHeaders.end());
+}
+
+bool Module::directlyUses(const Module *Requested) const {
+  auto *Top = getTopLevelModule();
+
+  // A top-level module implicitly uses itself.
+  if (Requested->isSubModuleOf(Top))
+    return true;
+
+  for (auto *Use : Top->DirectUses)
+    if (Requested->isSubModuleOf(Use))
+      return true;
+  return false;
 }
 
 void Module::addRequirement(StringRef Feature, bool RequiredState,
@@ -293,9 +311,12 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS << "explicit ";
   OS << "module " << Name;
 
-  if (IsSystem) {
+  if (IsSystem || IsExternC) {
     OS.indent(Indent + 2);
-    OS << " [system]";
+    if (IsSystem)
+      OS << " [system]";
+    if (IsExternC)
+      OS << " [extern_c]";
   }
 
   OS << " {\n";
@@ -338,27 +359,24 @@ void Module::print(raw_ostream &OS, unsigned Indent) const {
     OS << "\n";
   }
 
-  for (unsigned I = 0, N = NormalHeaders.size(); I != N; ++I) {
-    OS.indent(Indent + 2);
-    OS << "header \"";
-    OS.write_escaped(NormalHeaders[I]->getName());
-    OS << "\"\n";
+  struct {
+    StringRef Prefix;
+    HeaderKind Kind;
+  } Kinds[] = {{"", HK_Normal},
+               {"textual ", HK_Textual},
+               {"private ", HK_Private},
+               {"private textual ", HK_PrivateTextual},
+               {"exclude ", HK_Excluded}};
+
+  for (auto &K : Kinds) {
+    for (auto &H : Headers[K.Kind]) {
+      OS.indent(Indent + 2);
+      OS << K.Prefix << "header \"";
+      OS.write_escaped(H.NameAsWritten);
+      OS << "\"\n";
+    }
   }
 
-  for (unsigned I = 0, N = ExcludedHeaders.size(); I != N; ++I) {
-    OS.indent(Indent + 2);
-    OS << "exclude header \"";
-    OS.write_escaped(ExcludedHeaders[I]->getName());
-    OS << "\"\n";
-  }
-
-  for (unsigned I = 0, N = PrivateHeaders.size(); I != N; ++I) {
-    OS.indent(Indent + 2);
-    OS << "private header \"";
-    OS.write_escaped(PrivateHeaders[I]->getName());
-    OS << "\"\n";
-  }
-  
   for (submodule_const_iterator MI = submodule_begin(), MIEnd = submodule_end();
        MI != MIEnd; ++MI)
     // Print inferred subframework modules so that we don't need to re-infer

@@ -19,29 +19,22 @@ void test_array() {
   // CHECK: [[OBJECTS:%[a-zA-Z0-9.]+]] = alloca [2 x i8*]
 
   // Initializing first element
-  // CHECK: [[ELEMENT0:%[a-zA-Z0-9.]+]] = getelementptr inbounds [2 x i8*]* [[OBJECTS]], i32 0, i32 0
+  // CHECK: [[ELEMENT0:%[a-zA-Z0-9.]+]] = getelementptr inbounds [2 x i8*], [2 x i8*]* [[OBJECTS]], i32 0, i32 0
   // CHECK-NEXT: call void @_ZN1XC1Ev
   // CHECK-NEXT: [[OBJECT0:%[a-zA-Z0-9.]+]] = invoke i8* @_ZNK1XcvP11objc_objectEv
   // CHECK: [[RET0:%[a-zA-Z0-9.]+]] = call i8* @objc_retainAutoreleasedReturnValue(i8* [[OBJECT0]])
   // CHECK: store i8* [[RET0]], i8** [[ELEMENT0]]
   
   // Initializing the second element
-  // CHECK: [[ELEMENT1:%[a-zA-Z0-9.]+]] = getelementptr inbounds [2 x i8*]* [[OBJECTS]], i32 0, i32 1
+  // CHECK: [[ELEMENT1:%[a-zA-Z0-9.]+]] = getelementptr inbounds [2 x i8*], [2 x i8*]* [[OBJECTS]], i32 0, i32 1
   // CHECK-NEXT: invoke void @_ZN1YC1Ev
   // CHECK: [[OBJECT1:%[a-zA-Z0-9.]+]] = invoke i8* @_ZNK1YcvP11objc_objectEv
   // CHECK: [[RET1:%[a-zA-Z0-9.]+]] = call i8* @objc_retainAutoreleasedReturnValue(i8* [[OBJECT1]])
   // CHECK: store i8* [[RET1]], i8** [[ELEMENT1]]
 
   // Build the array
-  // CHECK: [[T4:%.*]] = load [[CLASS:%.*]]** @"\01L_OBJC_CLASSLIST_REFERENCES_$_"
-  // CHECK-NEXT: [[T5:%.*]] = load i8** @"\01L_OBJC_SELECTOR_REFERENCES_
-  // CHECK-NEXT: [[T6:%.*]] = bitcast [[CLASS]]* [[T4]] to i8*
-  // CHECK-NEXT: [[ALLOC:%.*]] = {{invoke.*@objc_msgSend}}
-
-  // CHECK: [[T7:%.*]] = load i8** @"\01L_OBJC_SELECTOR_REFERENCES_
-  // CHECK-NEXT: [[T8:%.*]] = bitcast [2 x i8*]* [[OBJECTS]] to i8**
-  // CHECK-NEXT: [[INIT:%.*]]  = {{invoke.*@objc_msgSend}}
-
+  // CHECK: {{invoke.*@objc_msgSend}}
+  // CHECK: call i8* @objc_retainAutoreleasedReturnValue
   id arr = @[ X(), Y() ];
 
   // Destroy temporaries
@@ -73,14 +66,14 @@ void test_array_instantiation() {
   // CHECK: [[OBJECTS:%[a-zA-Z0-9.]+]] = alloca [2 x i8*]
 
   // Initializing first element
-  // CHECK: [[ELEMENT0:%[a-zA-Z0-9.]+]] = getelementptr inbounds [2 x i8*]* [[OBJECTS]], i32 0, i32 0
+  // CHECK: [[ELEMENT0:%[a-zA-Z0-9.]+]] = getelementptr inbounds [2 x i8*], [2 x i8*]* [[OBJECTS]], i32 0, i32 0
   // CHECK-NEXT: call void @_ZN1XC1Ev
   // CHECK-NEXT: [[OBJECT0:%[a-zA-Z0-9.]+]] = invoke i8* @_ZNK1XcvP11objc_objectEv
   // CHECK: [[RET0:%[a-zA-Z0-9.]+]] = call i8* @objc_retainAutoreleasedReturnValue(i8* [[OBJECT0]])
   // CHECK: store i8* [[RET0]], i8** [[ELEMENT0]]
   
   // Initializing the second element
-  // CHECK: [[ELEMENT1:%[a-zA-Z0-9.]+]] = getelementptr inbounds [2 x i8*]* [[OBJECTS]], i32 0, i32 1
+  // CHECK: [[ELEMENT1:%[a-zA-Z0-9.]+]] = getelementptr inbounds [2 x i8*], [2 x i8*]* [[OBJECTS]], i32 0, i32 1
   // CHECK-NEXT: invoke void @_ZN1YC1Ev
   // CHECK: [[OBJECT1:%[a-zA-Z0-9.]+]] = invoke i8* @_ZNK1YcvP11objc_objectEv
   // CHECK: [[RET1:%[a-zA-Z0-9.]+]] = call i8* @objc_retainAutoreleasedReturnValue(i8* [[OBJECT1]])
@@ -88,7 +81,7 @@ void test_array_instantiation() {
 
   // Build the array
   // CHECK: {{invoke.*@objc_msgSend}}
-
+  // CHECK: call i8* @objc_retainAutoreleasedReturnValue
   id arr = @[ X(), Y() ];
 
   // Destroy temporaries

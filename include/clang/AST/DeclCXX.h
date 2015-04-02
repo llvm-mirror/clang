@@ -826,7 +826,11 @@ public:
   /// This value is used for lazy creation of default constructors.
   bool needsImplicitDefaultConstructor() const {
     return !data().UserDeclaredConstructor &&
-           !(data().DeclaredSpecialMembers & SMF_DefaultConstructor);
+           !(data().DeclaredSpecialMembers & SMF_DefaultConstructor) &&
+           // C++14 [expr.prim.lambda]p20:
+           //   The closure type associated with a lambda-expression has no
+           //   default constructor.
+           !isLambda();
   }
 
   /// \brief Determine whether this class has any user-declared constructors.
@@ -1089,8 +1093,7 @@ public:
 
   /// \brief Get all conversion functions visible in current class,
   /// including conversion function templates.
-  std::pair<conversion_iterator, conversion_iterator>
-    getVisibleConversionFunctions();
+  llvm::iterator_range<conversion_iterator> getVisibleConversionFunctions();
 
   /// Determine whether this class is an aggregate (C++ [dcl.init.aggr]),
   /// which is a class with no user-declared constructors, no private
@@ -2146,7 +2149,7 @@ class CXXConstructorDecl : public CXXMethodDecl {
   /// \name Support for base and member initializers.
   /// \{
   /// \brief The arguments used to initialize the base or member.
-  CXXCtorInitializer **CtorInitializers;
+  LazyCXXCtorInitializersPtr CtorInitializers;
   unsigned NumCtorInitializers;
   /// \}
 
@@ -2185,7 +2188,7 @@ public:
   typedef CXXCtorInitializer **init_iterator;
 
   /// \brief Iterates through the member/base initializer list.
-  typedef CXXCtorInitializer * const * init_const_iterator;
+  typedef CXXCtorInitializer *const *init_const_iterator;
 
   typedef llvm::iterator_range<init_iterator> init_range;
   typedef llvm::iterator_range<init_const_iterator> init_const_range;
@@ -2196,17 +2199,20 @@ public:
   }
 
   /// \brief Retrieve an iterator to the first initializer.
-  init_iterator       init_begin()       { return CtorInitializers; }
+  init_iterator init_begin() {
+    const auto *ConstThis = this;
+    return const_cast<init_iterator>(ConstThis->init_begin());
+  }
   /// \brief Retrieve an iterator to the first initializer.
-  init_const_iterator init_begin() const { return CtorInitializers; }
+  init_const_iterator init_begin() const;
 
   /// \brief Retrieve an iterator past the last initializer.
   init_iterator       init_end()       {
-    return CtorInitializers + NumCtorInitializers;
+    return init_begin() + NumCtorInitializers;
   }
   /// \brief Retrieve an iterator past the last initializer.
   init_const_iterator init_end() const {
-    return CtorInitializers + NumCtorInitializers;
+    return init_begin() + NumCtorInitializers;
   }
 
   typedef std::reverse_iterator<init_iterator> init_reverse_iterator;
@@ -2237,14 +2243,14 @@ public:
     NumCtorInitializers = numCtorInitializers;
   }
 
-  void setCtorInitializers(CXXCtorInitializer ** initializers) {
-    CtorInitializers = initializers;
+  void setCtorInitializers(CXXCtorInitializer **Initializers) {
+    CtorInitializers = Initializers;
   }
 
   /// \brief Determine whether this constructor is a delegating constructor.
   bool isDelegatingConstructor() const {
     return (getNumCtorInitializers() == 1) &&
-      CtorInitializers[0]->isDelegatingInitializer();
+           init_begin()[0]->isDelegatingInitializer();
   }
 
   /// \brief When this constructor delegates to another, retrieve the target.
@@ -2369,9 +2375,7 @@ public:
                                    bool isImplicitlyDeclared);
   static CXXDestructorDecl *CreateDeserialized(ASTContext & C, unsigned ID);
 
-  void setOperatorDelete(FunctionDecl *OD) {
-    cast<CXXDestructorDecl>(getFirstDecl())->OperatorDelete = OD;
-  }
+  void setOperatorDelete(FunctionDecl *OD);
   const FunctionDecl *getOperatorDelete() const {
     return cast<CXXDestructorDecl>(getFirstDecl())->OperatorDelete;
   }

@@ -201,6 +201,9 @@ def warn_c99_compat_unicode_literal : Warning<
 def warn_cxx98_compat_unicode_literal : Warning<
   "unicode literals are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
+def warn_cxx14_compat_u8_character_literal : Warning<
+  "unicode literals are incompatible with C++ standards before C++1z">,
+  InGroup<CXXPre1zCompat>, DefaultIgnore;
 def warn_cxx11_compat_user_defined_literal : Warning<
   "identifier after literal will be treated as a user-defined literal suffix "
   "in C++11">, InGroup<CXX11Compat>, DefaultIgnore;
@@ -287,6 +290,11 @@ def note_pp_ambiguous_macro_chosen : Note<
   "expanding this definition of %0">;
 def note_pp_ambiguous_macro_other : Note<
   "other definition of %0">;
+def warn_pp_macro_hides_keyword : Extension<
+  "keyword is hidden by macro definition">, InGroup<KeywordAsMacro>;
+def warn_pp_macro_is_reserved_id : Warning<
+  "macro name is a reserved identifier">, DefaultIgnore,
+  InGroup<ReservedIdAsMacro>;
 
 def pp_invalid_string_literal : Warning<
   "invalid string literal, ignoring final '\\'">;
@@ -324,7 +332,7 @@ def warn_cxx98_compat_variadic_macro : Warning<
   InGroup<CXX98CompatPedantic>, DefaultIgnore;
 def ext_named_variadic_macro : Extension<
   "named variadic macros are a GNU extension">, InGroup<VariadicMacros>;
-def err_embedded_include : Error<
+def err_embedded_directive : Error<
   "embedding a #%0 directive within macro arguments is not supported">;
 def ext_embedded_directive : Extension<
   "embedding a directive within macro arguments has undefined behavior">,
@@ -571,7 +579,9 @@ def err_mmap_module_id : Error<
 def err_mmap_expected_library_name : Error<
   "expected %select{library|framework}0 name as a string">;
 def err_mmap_config_macro_submodule : Error<
-  "configuration macros are only allowed on top-level modules">;
+  "configuration macros are only allowed in top-level modules">;
+def err_mmap_use_decl_submodule : Error<
+  "use declarations are only allowed in top-level modules">;
 def err_mmap_expected_config_macro : Error<
   "expected configuration macro name after ','">;
 def err_mmap_expected_conflicts_comma : Error<
@@ -615,14 +625,12 @@ def warn_auto_module_import : Warning<
 def warn_uncovered_module_header : Warning<
   "umbrella header for module '%0' does not include header '%1'">, 
   InGroup<IncompleteUmbrella>;
-def warn_forgotten_module_header : Warning<
-  "header '%0' is included in module '%1' but not listed in module map">,
-  InGroup<IncompleteModule>, DefaultIgnore;
 def err_expected_id_building_module : Error<
   "expected a module name in '__building_module' expression">;
-def error_use_of_private_header_outside_module : Error<
-  "use of private header from outside its module: '%0'">;
-def error_undeclared_use_of_module : Error<
+def warn_use_of_private_header_outside_module : Warning<
+  "use of private header from outside its module: '%0'">,
+  InGroup<DiagGroup<"private-header">>, DefaultError;
+def err_undeclared_use_of_module : Error<
   "module %0 does not depend on a module exporting '%1'">;
 def warn_non_modular_include_in_framework_module : Warning<
   "include of non-modular header inside framework module '%0'">,

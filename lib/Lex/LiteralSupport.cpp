@@ -28,6 +28,7 @@ static unsigned getCharWidth(tok::TokenKind kind, const TargetInfo &Target) {
   default: llvm_unreachable("Unknown token type!");
   case tok::char_constant:
   case tok::string_literal:
+  case tok::utf8_char_constant:
   case tok::utf8_string_literal:
     return Target.getCharWidth();
   case tok::wide_char_constant:
@@ -143,7 +144,8 @@ static unsigned ProcessCharEscape(const char *ThisTokBegin,
       int CharVal = llvm::hexDigitValue(ThisTokBuf[0]);
       if (CharVal == -1) break;
       // About to shift out a digit?
-      Overflow |= (ResultChar & 0xF0000000) ? true : false;
+      if (ResultChar & 0xF0000000)
+        Overflow = true;
       ResultChar <<= 4;
       ResultChar |= CharVal;
     }
@@ -1031,9 +1033,10 @@ CharLiteralParser::CharLiteralParser(const char *begin, const char *end,
   const char *TokBegin = begin;
 
   // Skip over wide character determinant.
-  if (Kind != tok::char_constant) {
+  if (Kind != tok::char_constant)
     ++begin;
-  }
+  if (Kind == tok::utf8_char_constant)
+    ++begin;
 
   // Skip over the entry quote.
   assert(begin[0] == '\'' && "Invalid token lexed");
@@ -1077,6 +1080,8 @@ CharLiteralParser::CharLiteralParser(const char *begin, const char *end,
   if (tok::wide_char_constant == Kind) {
     largest_character_for_kind =
         0xFFFFFFFFu >> (32-PP.getTargetInfo().getWCharWidth());
+  } else if (tok::utf8_char_constant == Kind) {
+    largest_character_for_kind = 0x7F;
   } else if (tok::utf16_char_constant == Kind) {
     largest_character_for_kind = 0xFFFF;
   } else if (tok::utf32_char_constant == Kind) {

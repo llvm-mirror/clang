@@ -184,6 +184,28 @@ struct v4f32wrapper f27(struct v4f32wrapper X) {
   return X;
 }
 
+// PR22563 - We should unwrap simple structs and arrays to pass
+// and return them in the appropriate vector registers if possible.
+
+typedef float v8f32 __attribute__((__vector_size__(32)));
+struct v8f32wrapper {
+  v8f32 v;
+};
+
+struct v8f32wrapper f27a(struct v8f32wrapper X) {
+  // AVX-LABEL: define <8 x float> @f27a(<8 x float> %X.coerce)
+  return X;
+}
+
+struct v8f32wrapper_wrapper {
+  v8f32 v[1];
+};
+
+struct v8f32wrapper_wrapper f27b(struct v8f32wrapper_wrapper X) {
+  // AVX-LABEL: define <8 x float> @f27b(<8 x float> %X.coerce)
+  return X;
+}
+
 // rdar://5711709
 struct f28c {
   double x;
@@ -380,8 +402,8 @@ void test49(double d, double e) {
   test49_helper(d, e);
 }
 // CHECK-LABEL:    define void @test49(
-// CHECK:      [[T0:%.*]] = load double*
-// CHECK-NEXT: [[T1:%.*]] = load double*
+// CHECK:      [[T0:%.*]] = load double, double*
+// CHECK-NEXT: [[T1:%.*]] = load double, double*
 // CHECK-NEXT: call void (double, ...)* @test49_helper(double [[T0]], double [[T1]])
 
 void test50_helper();
@@ -389,8 +411,8 @@ void test50(double d, double e) {
   test50_helper(d, e);
 }
 // CHECK-LABEL:    define void @test50(
-// CHECK:      [[T0:%.*]] = load double*
-// CHECK-NEXT: [[T1:%.*]] = load double*
+// CHECK:      [[T0:%.*]] = load double, double*
+// CHECK-NEXT: [[T1:%.*]] = load double, double*
 // CHECK-NEXT: call void (double, double, ...)* bitcast (void (...)* @test50_helper to void (double, double, ...)*)(double [[T0]], double [[T1]])
 
 struct test51_s { __uint128_t intval; };
@@ -402,8 +424,8 @@ void test51(struct test51_s *s, __builtin_va_list argList) {
 // CHECK: [[TMP_ADDR:%.*]] = alloca [[STRUCT_TEST51:%.*]], align 16
 // CHECK: br i1
 // CHECK: [[REG_SAVE_AREA_PTR:%.*]] = getelementptr inbounds {{.*}}, i32 0, i32 3
-// CHECK-NEXT: [[REG_SAVE_AREA:%.*]] = load i8** [[REG_SAVE_AREA_PTR]]
-// CHECK-NEXT: [[VALUE_ADDR:%.*]] = getelementptr i8* [[REG_SAVE_AREA]], i32 {{.*}}
+// CHECK-NEXT: [[REG_SAVE_AREA:%.*]] = load i8*, i8** [[REG_SAVE_AREA_PTR]]
+// CHECK-NEXT: [[VALUE_ADDR:%.*]] = getelementptr i8, i8* [[REG_SAVE_AREA]], i32 {{.*}}
 // CHECK-NEXT: [[CASTED_VALUE_ADDR:%.*]] = bitcast i8* [[VALUE_ADDR]] to [[STRUCT_TEST51]]
 // CHECK-NEXT: [[CASTED_TMP_ADDR:%.*]] = bitcast [[STRUCT_TEST51]]* [[TMP_ADDR]] to i8*
 // CHECK-NEXT: [[RECASTED_VALUE_ADDR:%.*]] = bitcast [[STRUCT_TEST51]]* [[CASTED_VALUE_ADDR]] to i8*

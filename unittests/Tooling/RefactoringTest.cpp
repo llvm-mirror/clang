@@ -237,7 +237,8 @@ public:
     const FileEntry *File = Context.Files.getFile(Path);
     assert(File != nullptr);
 
-    StringRef Found = TemporaryFiles.GetOrCreateValue(Name, Path.str()).second;
+    StringRef Found =
+        TemporaryFiles.insert(std::make_pair(Name, Path.str())).first->second;
     assert(Found == Path);
     (void)Found;
     return Context.Sources.createFileID(File, SourceLocation(), SrcMgr::C_User);
@@ -251,9 +252,8 @@ public:
     // descriptor, which might not see the changes made.
     // FIXME: Figure out whether there is a way to get the SourceManger to
     // reopen the file.
-    std::unique_ptr<const llvm::MemoryBuffer> FileBuffer(
-        Context.Files.getBufferForFile(Path, nullptr));
-    return FileBuffer->getBuffer();
+    auto FileBuffer = Context.Files.getBufferForFile(Path);
+    return (*FileBuffer)->getBuffer();
   }
 
   llvm::StringMap<std::string> TemporaryFiles;

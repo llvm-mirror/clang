@@ -86,10 +86,14 @@ public:
   /// stream into an array of specifiers.
   CXXBaseSpecifier *GetExternalCXXBaseSpecifiers(uint64_t Offset) override;
 
+  /// \brief Resolve a handle to a list of ctor initializers into the list of
+  /// initializers themselves.
+  CXXCtorInitializer **GetExternalCXXCtorInitializers(uint64_t Offset) override;
+
   /// \brief Find all declarations with the given name in the
   /// given context.
-  bool
-  FindExternalVisibleDeclsByName(const DeclContext *DC, DeclarationName Name) override;
+  bool FindExternalVisibleDeclsByName(const DeclContext *DC,
+                                      DeclarationName Name) override;
 
   /// \brief Ensures that the table of all visible declarations inside this
   /// context is up to date.
@@ -274,14 +278,6 @@ public:
   /// introduce the same declarations repeatedly.
   void ReadExtVectorDecls(SmallVectorImpl<TypedefNameDecl*> &Decls) override;
 
-  /// \brief Read the set of dynamic classes known to the external Sema source.
-  ///
-  /// The external source should append its own dynamic classes to
-  /// the given vector of declarations. Note that this routine may be
-  /// invoked multiple times; the external source should take care not to
-  /// introduce the same declarations repeatedly.
-  void ReadDynamicClasses(SmallVectorImpl<CXXRecordDecl*> &Decls) override;
-
   /// \brief Read the set of potentially unused typedefs known to the source.
   ///
   /// The external source should append its own potentially unused local
@@ -290,16 +286,6 @@ public:
   /// introduce the same declarations repeatedly.
   void ReadUnusedLocalTypedefNameCandidates(
       llvm::SmallSetVector<const TypedefNameDecl *, 4> &Decls) override;
-
-  /// \brief Read the set of locally-scoped extern "C" declarations known to the
-  /// external Sema source.
-  ///
-  /// The external source should append its own locally-scoped external
-  /// declarations to the given vector of declarations. Note that this routine
-  /// may be invoked multiple times; the external source should take care not
-  /// to introduce the same declarations repeatedly.
-  void ReadLocallyScopedExternCDecls(
-                                   SmallVectorImpl<NamedDecl*> &Decls) override;
 
   /// \brief Read the set of referenced selectors known to the
   /// external Sema source.
@@ -345,8 +331,8 @@ public:
   /// external source should take care not to introduce the same map entries
   /// repeatedly.
   void ReadLateParsedTemplates(
-                         llvm::DenseMap<const FunctionDecl *,
-                                        LateParsedTemplate *> &LPTMap) override;
+      llvm::MapVector<const FunctionDecl *, LateParsedTemplate *> &LPTMap)
+      override;
 
   /// \copydoc ExternalSemaSource::CorrectTypo
   /// \note Returns the first nonempty correction.

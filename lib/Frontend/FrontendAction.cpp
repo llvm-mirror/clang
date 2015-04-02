@@ -262,18 +262,20 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     FileManager &FileMgr = CI.getFileManager();
     PreprocessorOptions &PPOpts = CI.getPreprocessorOpts();
     StringRef PCHInclude = PPOpts.ImplicitPCHInclude;
+    std::string SpecificModuleCachePath = CI.getSpecificModuleCachePath();
     if (const DirectoryEntry *PCHDir = FileMgr.getDirectory(PCHInclude)) {
       std::error_code EC;
       SmallString<128> DirNative;
       llvm::sys::path::native(PCHDir->getName(), DirNative);
       bool Found = false;
-      for (llvm::sys::fs::directory_iterator Dir(DirNative.str(), EC), DirEnd;
+      for (llvm::sys::fs::directory_iterator Dir(DirNative, EC), DirEnd;
            Dir != DirEnd && !EC; Dir.increment(EC)) {
         // Check whether this is an acceptable AST file.
         if (ASTReader::isAcceptableASTFile(Dir->path(), FileMgr,
                                            CI.getLangOpts(),
                                            CI.getTargetOpts(),
-                                           CI.getPreprocessorOpts())) {
+                                           CI.getPreprocessorOpts(),
+                                           SpecificModuleCachePath)) {
           PPOpts.ImplicitPCHInclude = Dir->path();
           Found = true;
           break;
@@ -321,7 +323,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     // FIXME: should not overwrite ASTMutationListener when parsing model files?
     if (!isModelParsingAction())
       CI.getASTContext().setASTMutationListener(Consumer->GetASTMutationListener());
-    
+
     if (!CI.getPreprocessorOpts().ChainedIncludes.empty()) {
       // Convert headers to PCH and chain them.
       IntrusiveRefCntPtr<ExternalSemaSource> source, FinalReader;
@@ -382,6 +384,20 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
            "modules enabled but created an external source that "
            "doesn't support modules");
   }
+
+  // If we were asked to load any module map files, do so now.
+  for (const auto &Filename : CI.getFrontendOpts().ModuleMapFiles) {
+    if (auto *File = CI.getFileManager().getFile(Filename))
+      CI.getPreprocessor().getHeaderSearchInfo().loadModuleMapFile(
+          File, /*IsSystem*/false);
+    else
+      CI.getDiagnostics().Report(diag::err_module_map_not_found) << Filename;
+  }
+
+  // If we were asked to load any module files, do so now.
+  for (const auto &ModuleFile : CI.getFrontendOpts().ModuleFiles)
+    if (!CI.loadModuleFile(ModuleFile))
+      goto failure;
 
   // If there is a layout overrides file, attach an external AST source that
   // provides the layouts from that file.

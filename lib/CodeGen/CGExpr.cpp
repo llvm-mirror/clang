@@ -16,12 +16,13 @@
 #include "CGCall.h"
 #include "CGDebugInfo.h"
 #include "CGObjCRuntime.h"
+#include "CGOpenMPRuntime.h"
 #include "CGRecordLayout.h"
 #include "CodeGenModule.h"
 #include "TargetInfo.h"
 #include "clang/AST/ASTContext.h"
-#include "clang/AST/DeclObjC.h"
 #include "clang/AST/Attr.h"
+#include "clang/AST/DeclObjC.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/StringExtras.h"
@@ -210,7 +211,6 @@ pushTemporaryCleanup(CodeGenFunction &CGF, const MaterializeTemporaryExpr *M,
 
       case SD_Automatic:
       case SD_FullExpression:
-        assert(!ObjCARCReferenceLifetimeType->isArrayType());
         CodeGenFunction::Destroyer *Destroy;
         CleanupKind CleanupKind;
         if (Lifetime == Qualifiers::OCL_Strong) {
@@ -301,6 +301,23 @@ createReferenceTemporary(CodeGenFunction &CGF,
   switch (M->getStorageDuration()) {
   case SD_FullExpression:
   case SD_Automatic:
+    // If we have a constant temporary array or record try to promote it into a
+    // constant global under the same rules a normal constant would've been
+    // promoted. This is easier on the optimizer and generally emits fewer
+    // instructions.
+    if (CGF.CGM.getCodeGenOpts().MergeAllConstants &&
+        (M->getType()->isArrayType() || M->getType()->isRecordType()) &&
+        CGF.CGM.isTypeConstant(M->getType(), true))
+      if (llvm::Constant *Init =
+              CGF.CGM.EmitConstantExpr(Inner, M->getType(), &CGF)) {
+        auto *GV = new llvm::GlobalVariable(
+            CGF.CGM.getModule(), Init->getType(), /*isConstant=*/true,
+            llvm::GlobalValue::PrivateLinkage, Init, ".ref.tmp");
+        GV->setAlignment(
+            CGF.getContext().getTypeAlignInChars(M->getType()).getQuantity());
+        // FIXME: Should we put the new global into a COMDAT?
+        return GV;
+      }
     return CGF.CreateMemTemp(Inner->getType(), "ref.tmp");
 
   case SD_Thread:
@@ -313,26 +330,42 @@ createReferenceTemporary(CodeGenFunction &CGF,
   llvm_unreachable("unknown storage duration");
 }
 
-LValue CodeGenFunction::EmitMaterializeTemporaryExpr(
-                                           const MaterializeTemporaryExpr *M) {
+LValue CodeGenFunction::
+EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
   const Expr *E = M->GetTemporaryExpr();
 
+    // FIXME: ideally this would use EmitAnyExprToMem, however, we cannot do so
+    // as that will cause the lifetime adjustment to be lost for ARC
   if (getLangOpts().ObjCAutoRefCount &&
       M->getType()->isObjCLifetimeType() &&
       M->getType().getObjCLifetime() != Qualifiers::OCL_None &&
       M->getType().getObjCLifetime() != Qualifiers::OCL_ExplicitNone) {
-    // FIXME: Fold this into the general case below.
     llvm::Value *Object = createReferenceTemporary(*this, M, E);
-    LValue RefTempDst = MakeAddrLValue(Object, M->getType());
-
     if (auto *Var = dyn_cast<llvm::GlobalVariable>(Object)) {
+      Object = llvm::ConstantExpr::getBitCast(
+          Var, ConvertTypeForMem(E->getType())->getPointerTo());
       // We should not have emitted the initializer for this temporary as a
       // constant.
       assert(!Var->hasInitializer());
       Var->setInitializer(CGM.EmitNullConstant(E->getType()));
     }
+    LValue RefTempDst = MakeAddrLValue(Object, M->getType());
 
-    EmitScalarInit(E, M->getExtendingDecl(), RefTempDst, false);
+    switch (getEvaluationKind(E->getType())) {
+    default: llvm_unreachable("expected scalar or aggregate expression");
+    case TEK_Scalar:
+      EmitScalarInit(E, M->getExtendingDecl(), RefTempDst, false);
+      break;
+    case TEK_Aggregate: {
+      CharUnits Alignment = getContext().getTypeAlignInChars(E->getType());
+      EmitAggExpr(E, AggValueSlot::forAddr(Object, Alignment,
+                                           E->getType().getQualifiers(),
+                                           AggValueSlot::IsDestructed,
+                                           AggValueSlot::DoesNotNeedGCBarriers,
+                                           AggValueSlot::IsNotAliased));
+      break;
+    }
+    }
 
     pushTemporaryCleanup(*this, M, E, Object);
     return RefTempDst;
@@ -342,8 +375,8 @@ LValue CodeGenFunction::EmitMaterializeTemporaryExpr(
   SmallVector<SubobjectAdjustment, 2> Adjustments;
   E = E->skipRValueSubobjectAdjustments(CommaLHSs, Adjustments);
 
-  for (unsigned I = 0, N = CommaLHSs.size(); I != N; ++I)
-    EmitIgnoredExpr(CommaLHSs[I]);
+  for (const auto &Ignored : CommaLHSs)
+    EmitIgnoredExpr(Ignored);
 
   if (const auto *opaque = dyn_cast<OpaqueValueExpr>(E)) {
     if (opaque->getType()->isRecordType()) {
@@ -355,8 +388,11 @@ LValue CodeGenFunction::EmitMaterializeTemporaryExpr(
   // Create and initialize the reference temporary.
   llvm::Value *Object = createReferenceTemporary(*this, M, E);
   if (auto *Var = dyn_cast<llvm::GlobalVariable>(Object)) {
-    // If the temporary is a global and has a constant initializer, we may
-    // have already initialized it.
+    Object = llvm::ConstantExpr::getBitCast(
+        Var, ConvertTypeForMem(E->getType())->getPointerTo());
+    // If the temporary is a global and has a constant initializer or is a
+    // constant temporary that we promoted to a global, we may have already
+    // initialized it.
     if (!Var->hasInitializer()) {
       Var->setInitializer(CGM.EmitNullConstant(E->getType()));
       EmitAnyExprToMem(E, Object, Qualifiers(), /*IsInit*/true);
@@ -443,8 +479,10 @@ static llvm::Value *emitHash16Bytes(CGBuilderTy &Builder, llvm::Value *Low,
 }
 
 bool CodeGenFunction::sanitizePerformTypeCheck() const {
-  return SanOpts->Null | SanOpts->Alignment | SanOpts->ObjectSize |
-         SanOpts->Vptr;
+  return SanOpts.has(SanitizerKind::Null) |
+         SanOpts.has(SanitizerKind::Alignment) |
+         SanOpts.has(SanitizerKind::ObjectSize) |
+         SanOpts.has(SanitizerKind::Vptr);
 }
 
 void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
@@ -461,14 +499,15 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
 
   SanitizerScope SanScope(this);
 
-  llvm::Value *Cond = nullptr;
+  SmallVector<std::pair<llvm::Value *, SanitizerKind>, 3> Checks;
   llvm::BasicBlock *Done = nullptr;
 
   bool AllowNullPointers = TCK == TCK_DowncastPointer || TCK == TCK_Upcast ||
                            TCK == TCK_UpcastToVirtualBase;
-  if ((SanOpts->Null || AllowNullPointers) && !SkipNullCheck) {
+  if ((SanOpts.has(SanitizerKind::Null) || AllowNullPointers) &&
+      !SkipNullCheck) {
     // The glvalue must not be an empty glvalue.
-    Cond = Builder.CreateICmpNE(
+    llvm::Value *IsNonNull = Builder.CreateICmpNE(
         Address, llvm::Constant::getNullValue(Address->getType()));
 
     if (AllowNullPointers) {
@@ -476,13 +515,14 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
       // Skip the remaining checks in that case.
       Done = createBasicBlock("null");
       llvm::BasicBlock *Rest = createBasicBlock("not.null");
-      Builder.CreateCondBr(Cond, Rest, Done);
+      Builder.CreateCondBr(IsNonNull, Rest, Done);
       EmitBlock(Rest);
-      Cond = nullptr;
+    } else {
+      Checks.push_back(std::make_pair(IsNonNull, SanitizerKind::Null));
     }
   }
 
-  if (SanOpts->ObjectSize && !Ty->isIncompleteType()) {
+  if (SanOpts.has(SanitizerKind::ObjectSize) && !Ty->isIncompleteType()) {
     uint64_t Size = getContext().getTypeSizeInChars(Ty).getQuantity();
 
     // The glvalue must refer to a large enough storage region.
@@ -496,12 +536,12 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
     llvm::Value *LargeEnough =
         Builder.CreateICmpUGE(Builder.CreateCall2(F, CastAddr, Min),
                               llvm::ConstantInt::get(IntPtrTy, Size));
-    Cond = Cond ? Builder.CreateAnd(Cond, LargeEnough) : LargeEnough;
+    Checks.push_back(std::make_pair(LargeEnough, SanitizerKind::ObjectSize));
   }
 
   uint64_t AlignVal = 0;
 
-  if (SanOpts->Alignment) {
+  if (SanOpts.has(SanitizerKind::Alignment)) {
     AlignVal = Alignment.getQuantity();
     if (!Ty->isIncompleteType() && !AlignVal)
       AlignVal = getContext().getTypeAlignInChars(Ty).getQuantity();
@@ -513,18 +553,18 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
                             llvm::ConstantInt::get(IntPtrTy, AlignVal - 1));
       llvm::Value *Aligned =
         Builder.CreateICmpEQ(Align, llvm::ConstantInt::get(IntPtrTy, 0));
-      Cond = Cond ? Builder.CreateAnd(Cond, Aligned) : Aligned;
+      Checks.push_back(std::make_pair(Aligned, SanitizerKind::Alignment));
     }
   }
 
-  if (Cond) {
+  if (Checks.size() > 0) {
     llvm::Constant *StaticData[] = {
       EmitCheckSourceLocation(Loc),
       EmitCheckTypeDescriptor(Ty),
       llvm::ConstantInt::get(SizeTy, AlignVal),
       llvm::ConstantInt::get(Int8Ty, TCK)
     };
-    EmitCheck(Cond, "type_mismatch", StaticData, Address, CRK_Recoverable);
+    EmitCheck(Checks, "type_mismatch", StaticData, Address);
   }
 
   // If possible, check that the vptr indicates that there is a subobject of
@@ -536,7 +576,7 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
   //    -- the [pointer or glvalue] is used to access a non-static data member
   //       or call a non-static member function
   CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
-  if (SanOpts->Vptr &&
+  if (SanOpts.has(SanitizerKind::Vptr) &&
       (TCK == TCK_MemberAccess || TCK == TCK_MemberCall ||
        TCK == TCK_DowncastPointer || TCK == TCK_DowncastReference ||
        TCK == TCK_UpcastToVirtualBase) &&
@@ -582,6 +622,7 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
       // hard work of checking whether the vptr is for an object of the right
       // type. This will either fill in the cache and return, or produce a
       // diagnostic.
+      llvm::Value *EqualHash = Builder.CreateICmpEQ(CacheVal, Hash);
       llvm::Constant *StaticData[] = {
         EmitCheckSourceLocation(Loc),
         EmitCheckTypeDescriptor(Ty),
@@ -589,9 +630,8 @@ void CodeGenFunction::EmitTypeCheck(TypeCheckKind TCK, SourceLocation Loc,
         llvm::ConstantInt::get(Int8Ty, TCK)
       };
       llvm::Value *DynamicData[] = { Address, Hash };
-      EmitCheck(Builder.CreateICmpEQ(CacheVal, Hash),
-                "dynamic_type_cache_miss", StaticData, DynamicData,
-                CRK_AlwaysRecoverable);
+      EmitCheck(std::make_pair(EqualHash, SanitizerKind::Vptr),
+                "dynamic_type_cache_miss", StaticData, DynamicData);
     }
   }
 
@@ -659,7 +699,7 @@ static llvm::Value *getArrayIndexingBound(
 void CodeGenFunction::EmitBoundsCheck(const Expr *E, const Expr *Base,
                                       llvm::Value *Index, QualType IndexType,
                                       bool Accessed) {
-  assert(SanOpts->ArrayBounds &&
+  assert(SanOpts.has(SanitizerKind::ArrayBounds) &&
          "should not be called unless adding bounds checks");
   SanitizerScope SanScope(this);
 
@@ -679,7 +719,8 @@ void CodeGenFunction::EmitBoundsCheck(const Expr *E, const Expr *Base,
   };
   llvm::Value *Check = Accessed ? Builder.CreateICmpULT(IndexVal, BoundVal)
                                 : Builder.CreateICmpULE(IndexVal, BoundVal);
-  EmitCheck(Check, "out_of_bounds", StaticData, Index, CRK_Recoverable);
+  EmitCheck(std::make_pair(Check, SanitizerKind::ArrayBounds), "out_of_bounds",
+            StaticData, Index);
 }
 
 
@@ -761,7 +802,7 @@ LValue CodeGenFunction::EmitUnsupportedLValue(const Expr *E,
 
 LValue CodeGenFunction::EmitCheckedLValue(const Expr *E, TypeCheckKind TCK) {
   LValue LV;
-  if (SanOpts->ArrayBounds && isa<ArraySubscriptExpr>(E))
+  if (SanOpts.has(SanitizerKind::ArrayBounds) && isa<ArraySubscriptExpr>(E))
     LV = EmitArraySubscriptExpr(cast<ArraySubscriptExpr>(E), /*Accessed*/true);
   else
     LV = EmitLValue(E);
@@ -787,6 +828,7 @@ LValue CodeGenFunction::EmitCheckedLValue(const Expr *E, TypeCheckKind TCK) {
 /// length type, this is not possible.
 ///
 LValue CodeGenFunction::EmitLValue(const Expr *E) {
+  ApplyDebugLocation DL(*this, E);
   switch (E->getStmtClass()) {
   default: return EmitUnsupportedLValue(E, "l-value expression");
 
@@ -799,10 +841,14 @@ LValue CodeGenFunction::EmitLValue(const Expr *E) {
     return EmitObjCIsaExpr(cast<ObjCIsaExpr>(E));
   case Expr::BinaryOperatorClass:
     return EmitBinaryOperatorLValue(cast<BinaryOperator>(E));
-  case Expr::CompoundAssignOperatorClass:
-    if (!E->getType()->isAnyComplexType())
+  case Expr::CompoundAssignOperatorClass: {
+    QualType Ty = E->getType();
+    if (const AtomicType *AT = Ty->getAs<AtomicType>())
+      Ty = AT->getValueType();
+    if (!Ty->isAnyComplexType())
       return EmitCompoundAssignmentLValue(cast<CompoundAssignOperator>(E));
     return EmitComplexCompoundAssignmentLValue(cast<CompoundAssignOperator>(E));
+  }
   case Expr::CallExprClass:
   case Expr::CXXMemberCallExprClass:
   case Expr::CXXOperatorCallExprClass:
@@ -1115,7 +1161,7 @@ llvm::Value *CodeGenFunction::EmitLoadOfScalar(llvm::Value *Addr, bool Volatile,
   }
 
   // Atomic operations have to be done on integral types.
-  if (Ty->isAtomicType()) {
+  if (Ty->isAtomicType() || typeIsSuitableForInlineAtomic(Ty, Volatile)) {
     LValue lvalue = LValue::MakeAddr(Addr, Ty,
                                      CharUnits::fromQuantity(Alignment),
                                      getContext(), TBAAInfo);
@@ -1134,8 +1180,11 @@ llvm::Value *CodeGenFunction::EmitLoadOfScalar(llvm::Value *Addr, bool Volatile,
       CGM.DecorateInstruction(Load, TBAAPath, false/*ConvertTypeToTag*/);
   }
 
-  if ((SanOpts->Bool && hasBooleanRepresentation(Ty)) ||
-      (SanOpts->Enum && Ty->getAs<EnumType>())) {
+  bool NeedsBoolCheck =
+      SanOpts.has(SanitizerKind::Bool) && hasBooleanRepresentation(Ty);
+  bool NeedsEnumCheck =
+      SanOpts.has(SanitizerKind::Enum) && Ty->getAs<EnumType>();
+  if (NeedsBoolCheck || NeedsEnumCheck) {
     SanitizerScope SanScope(this);
     llvm::APInt Min, End;
     if (getRangeForType(*this, Ty, Min, End, true)) {
@@ -1155,8 +1204,9 @@ llvm::Value *CodeGenFunction::EmitLoadOfScalar(llvm::Value *Addr, bool Volatile,
         EmitCheckSourceLocation(Loc),
         EmitCheckTypeDescriptor(Ty)
       };
-      EmitCheck(Check, "load_invalid_value", StaticArgs, EmitCheckValue(Load),
-                CRK_Recoverable);
+      SanitizerKind Kind = NeedsEnumCheck ? SanitizerKind::Enum : SanitizerKind::Bool;
+      EmitCheck(std::make_pair(Check, Kind), "load_invalid_value", StaticArgs,
+                EmitCheckValue(Load));
     }
   } else if (CGM.getCodeGenOpts().OptimizationLevel > 0)
     if (llvm::MDNode *RangeInfo = getRangeForLoadFromType(Ty))
@@ -1230,7 +1280,8 @@ void CodeGenFunction::EmitStoreOfScalar(llvm::Value *Value, llvm::Value *Addr,
 
   Value = EmitToMemory(Value, Ty);
 
-  if (Ty->isAtomicType()) {
+  if (Ty->isAtomicType() ||
+      (!isInit && typeIsSuitableForInlineAtomic(Ty, Volatile))) {
     EmitAtomicStore(RValue::get(Value),
                     LValue::MakeAddr(Addr, Ty,
                                      CharUnits::fromQuantity(Alignment),
@@ -1391,8 +1442,8 @@ llvm::Value *CodeGenFunction::EmitExtVectorElementLValue(LValue LV) {
 RValue CodeGenFunction::EmitLoadOfGlobalRegLValue(LValue LV) {
   assert((LV.getType()->isIntegerType() || LV.getType()->isPointerType()) &&
          "Bad type for register variable");
-  llvm::MDNode *RegName = dyn_cast<llvm::MDNode>(LV.getGlobalReg());
-  assert(RegName && "Register LValue is not metadata");
+  llvm::MDNode *RegName = cast<llvm::MDNode>(
+      cast<llvm::MetadataAsValue>(LV.getGlobalReg())->getMetadata());
 
   // We accept integer and pointer types only
   llvm::Type *OrigTy = CGM.getTypes().ConvertType(LV.getType());
@@ -1402,7 +1453,8 @@ RValue CodeGenFunction::EmitLoadOfGlobalRegLValue(LValue LV) {
   llvm::Type *Types[] = { Ty };
 
   llvm::Value *F = CGM.getIntrinsic(llvm::Intrinsic::read_register, Types);
-  llvm::Value *Call = Builder.CreateCall(F, RegName);
+  llvm::Value *Call = Builder.CreateCall(
+      F, llvm::MetadataAsValue::get(Ty->getContext(), RegName));
   if (OrigTy->isPointerTy())
     Call = Builder.CreateIntToPtr(Call, OrigTy);
   return RValue::get(Call);
@@ -1652,7 +1704,8 @@ void CodeGenFunction::EmitStoreThroughExtVectorComponentLValue(RValue Src,
 void CodeGenFunction::EmitStoreThroughGlobalRegLValue(RValue Src, LValue Dst) {
   assert((Dst.getType()->isIntegerType() || Dst.getType()->isPointerType()) &&
          "Bad type for register variable");
-  llvm::MDNode *RegName = dyn_cast<llvm::MDNode>(Dst.getGlobalReg());
+  llvm::MDNode *RegName = cast<llvm::MDNode>(
+      cast<llvm::MetadataAsValue>(Dst.getGlobalReg())->getMetadata());
   assert(RegName && "Register LValue is not metadata");
 
   // We accept integer and pointer types only
@@ -1666,7 +1719,8 @@ void CodeGenFunction::EmitStoreThroughGlobalRegLValue(RValue Src, LValue Dst) {
   llvm::Value *Value = Src.getScalarVal();
   if (OrigTy->isPointerTy())
     Value = Builder.CreatePtrToInt(Value, Ty);
-  Builder.CreateCall2(F, RegName, Value);
+  Builder.CreateCall2(F, llvm::MetadataAsValue::get(Ty->getContext(), RegName),
+                      Value);
 }
 
 // setObjCGCLValueClass - sets class of the lvalue for the purpose of
@@ -1777,6 +1831,14 @@ EmitBitCastOfLValueToProperType(CodeGenFunction &CGF,
   return CGF.Builder.CreateBitCast(V, IRType->getPointerTo(AS), Name);
 }
 
+static LValue EmitThreadPrivateVarDeclLValue(
+    CodeGenFunction &CGF, const VarDecl *VD, QualType T, llvm::Value *V,
+    llvm::Type *RealVarTy, CharUnits Alignment, SourceLocation Loc) {
+  V = CGF.CGM.getOpenMPRuntime().getAddrOfThreadPrivate(CGF, VD, V, Loc);
+  V = EmitBitCastOfLValueToProperType(CGF, V, RealVarTy);
+  return CGF.MakeAddrLValue(V, T, Alignment);
+}
+
 static LValue EmitGlobalVarDeclLValue(CodeGenFunction &CGF,
                                       const Expr *E, const VarDecl *VD) {
   QualType T = E->getType();
@@ -1791,6 +1853,11 @@ static LValue EmitGlobalVarDeclLValue(CodeGenFunction &CGF,
   V = EmitBitCastOfLValueToProperType(CGF, V, RealVarTy);
   CharUnits Alignment = CGF.getContext().getDeclAlign(VD);
   LValue LV;
+  // Emit reference to the private copy of the variable if it is an OpenMP
+  // threadprivate variable.
+  if (CGF.getLangOpts().OpenMP && VD->hasAttr<OMPThreadPrivateDeclAttr>())
+    return EmitThreadPrivateVarDeclLValue(CGF, VD, T, V, RealVarTy, Alignment,
+                                          E->getExprLoc());
   if (VD->getType()->isReferenceType()) {
     llvm::LoadInst *LI = CGF.Builder.CreateLoad(V);
     LI->setAlignment(Alignment.getQuantity());
@@ -1848,10 +1915,12 @@ static LValue EmitGlobalNamedRegister(const VarDecl *VD,
   if (M->getNumOperands() == 0) {
     llvm::MDString *Str = llvm::MDString::get(CGM.getLLVMContext(),
                                               Asm->getLabel());
-    llvm::Value *Ops[] = { Str };
+    llvm::Metadata *Ops[] = {Str};
     M->addOperand(llvm::MDNode::get(CGM.getLLVMContext(), Ops));
   }
-  return LValue::MakeGlobalReg(M->getOperand(0), VD->getType(), Alignment);
+  return LValue::MakeGlobalReg(
+      llvm::MetadataAsValue::get(CGM.getLLVMContext(), M->getOperand(0)),
+      VD->getType(), Alignment);
 }
 
 LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
@@ -1876,6 +1945,22 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
       assert(Val && "failed to emit reference constant expression");
       // FIXME: Eventually we will want to emit vector element references.
       return MakeAddrLValue(Val, T, Alignment);
+    }
+
+    // Check for captured variables.
+    if (E->refersToEnclosingVariableOrCapture()) {
+      if (auto *FD = LambdaCaptureFields.lookup(VD))
+        return EmitCapturedFieldLValue(*this, FD, CXXABIThisValue);
+      else if (CapturedStmtInfo) {
+        if (auto *V = LocalDeclMap.lookup(VD))
+          return MakeAddrLValue(V, T, Alignment);
+        else
+          return EmitCapturedFieldLValue(*this, CapturedStmtInfo->lookup(VD),
+                                         CapturedStmtInfo->getContextValue());
+      }
+      assert(isa<BlockDecl>(CurCodeDecl));
+      return MakeAddrLValue(GetAddrOfBlockDecl(VD, VD->hasAttr<BlocksAttr>()),
+                            T, Alignment);
     }
   }
 
@@ -1904,20 +1989,11 @@ LValue CodeGenFunction::EmitDeclRefLValue(const DeclRefExpr *E) {
       V = CGM.getOrCreateStaticVarDecl(
           *VD, CGM.getLLVMLinkageVarDefinition(VD, /*isConstant=*/false));
 
-    // Use special handling for lambdas.
-    if (!V) {
-      if (FieldDecl *FD = LambdaCaptureFields.lookup(VD)) {
-        return EmitCapturedFieldLValue(*this, FD, CXXABIThisValue);
-      } else if (CapturedStmtInfo) {
-        if (const FieldDecl *FD = CapturedStmtInfo->lookup(VD))
-          return EmitCapturedFieldLValue(*this, FD,
-                                         CapturedStmtInfo->getContextValue());
-      }
-
-      assert(isa<BlockDecl>(CurCodeDecl) && E->refersToEnclosingLocal());
-      return MakeAddrLValue(GetAddrOfBlockDecl(VD, isBlockVariable),
-                            T, Alignment);
-    }
+    // Check if variable is threadprivate.
+    if (V && getLangOpts().OpenMP && VD->hasAttr<OMPThreadPrivateDeclAttr>())
+      return EmitThreadPrivateVarDeclLValue(
+          *this, VD, T, V, getTypes().ConvertTypeForMem(VD->getType()),
+          Alignment, E->getExprLoc());
 
     assert(V && "DeclRefExpr not entered in LocalDeclMap?");
 
@@ -2038,7 +2114,10 @@ LValue CodeGenFunction::EmitPredefinedLValue(const PredefinedExpr *E) {
   StringRef NameItems[] = {
       PredefinedExpr::getIdentTypeName(E->getIdentType()), FnName};
   std::string GVName = llvm::join(NameItems, NameItems + 2, ".");
-
+  if (CurCodeDecl && isa<BlockDecl>(CurCodeDecl)) {
+    auto C = CGM.GetAddrOfConstantCString(FnName, GVName.c_str(), 1);
+    return MakeAddrLValue(C, E->getType());
+  }
   auto C = CGM.GetAddrOfConstantStringFromLiteral(SL, GVName);
   return MakeAddrLValue(C, E->getType());
 }
@@ -2152,33 +2231,120 @@ llvm::Constant *CodeGenFunction::EmitCheckSourceLocation(SourceLocation Loc) {
   return llvm::ConstantStruct::getAnon(Data);
 }
 
-void CodeGenFunction::EmitCheck(llvm::Value *Checked, StringRef CheckName,
-                                ArrayRef<llvm::Constant *> StaticArgs,
-                                ArrayRef<llvm::Value *> DynamicArgs,
-                                CheckRecoverableKind RecoverKind) {
-  assert(SanOpts != &SanitizerOptions::Disabled);
+namespace {
+/// \brief Specify under what conditions this check can be recovered
+enum class CheckRecoverableKind {
+  /// Always terminate program execution if this check fails.
+  Unrecoverable,
+  /// Check supports recovering, runtime has both fatal (noreturn) and
+  /// non-fatal handlers for this check.
+  Recoverable,
+  /// Runtime conditionally aborts, always need to support recovery.
+  AlwaysRecoverable
+};
+}
+
+static CheckRecoverableKind getRecoverableKind(SanitizerKind Kind) {
+  switch (Kind) {
+  case SanitizerKind::Vptr:
+    return CheckRecoverableKind::AlwaysRecoverable;
+  case SanitizerKind::Return:
+  case SanitizerKind::Unreachable:
+    return CheckRecoverableKind::Unrecoverable;
+  default:
+    return CheckRecoverableKind::Recoverable;
+  }
+}
+
+static void emitCheckHandlerCall(CodeGenFunction &CGF,
+                                 llvm::FunctionType *FnType,
+                                 ArrayRef<llvm::Value *> FnArgs,
+                                 StringRef CheckName,
+                                 CheckRecoverableKind RecoverKind, bool IsFatal,
+                                 llvm::BasicBlock *ContBB) {
+  assert(IsFatal || RecoverKind != CheckRecoverableKind::Unrecoverable);
+  bool NeedsAbortSuffix =
+      IsFatal && RecoverKind != CheckRecoverableKind::Unrecoverable;
+  std::string FnName = ("__ubsan_handle_" + CheckName +
+                        (NeedsAbortSuffix ? "_abort" : "")).str();
+  bool MayReturn =
+      !IsFatal || RecoverKind == CheckRecoverableKind::AlwaysRecoverable;
+
+  llvm::AttrBuilder B;
+  if (!MayReturn) {
+    B.addAttribute(llvm::Attribute::NoReturn)
+        .addAttribute(llvm::Attribute::NoUnwind);
+  }
+  B.addAttribute(llvm::Attribute::UWTable);
+
+  llvm::Value *Fn = CGF.CGM.CreateRuntimeFunction(
+      FnType, FnName,
+      llvm::AttributeSet::get(CGF.getLLVMContext(),
+                              llvm::AttributeSet::FunctionIndex, B));
+  llvm::CallInst *HandlerCall = CGF.EmitNounwindRuntimeCall(Fn, FnArgs);
+  if (!MayReturn) {
+    HandlerCall->setDoesNotReturn();
+    CGF.Builder.CreateUnreachable();
+  } else {
+    CGF.Builder.CreateBr(ContBB);
+  }
+}
+
+void CodeGenFunction::EmitCheck(
+    ArrayRef<std::pair<llvm::Value *, SanitizerKind>> Checked,
+    StringRef CheckName, ArrayRef<llvm::Constant *> StaticArgs,
+    ArrayRef<llvm::Value *> DynamicArgs) {
   assert(IsSanitizerScope);
+  assert(Checked.size() > 0);
+
+  llvm::Value *FatalCond = nullptr;
+  llvm::Value *RecoverableCond = nullptr;
+  for (int i = 0, n = Checked.size(); i < n; ++i) {
+    llvm::Value *Check = Checked[i].first;
+    llvm::Value *&Cond =
+        CGM.getCodeGenOpts().SanitizeRecover.has(Checked[i].second)
+            ? RecoverableCond
+            : FatalCond;
+    Cond = Cond ? Builder.CreateAnd(Cond, Check) : Check;
+  }
+
+  llvm::Value *JointCond;
+  if (FatalCond && RecoverableCond)
+    JointCond = Builder.CreateAnd(FatalCond, RecoverableCond);
+  else
+    JointCond = FatalCond ? FatalCond : RecoverableCond;
+  assert(JointCond);
+
+  CheckRecoverableKind RecoverKind = getRecoverableKind(Checked[0].second);
+  assert(SanOpts.has(Checked[0].second));
+#ifndef NDEBUG
+  for (int i = 1, n = Checked.size(); i < n; ++i) {
+    assert(RecoverKind == getRecoverableKind(Checked[i].second) &&
+           "All recoverable kinds in a single check must be same!");
+    assert(SanOpts.has(Checked[i].second));
+  }
+#endif
 
   if (CGM.getCodeGenOpts().SanitizeUndefinedTrapOnError) {
-    assert (RecoverKind != CRK_AlwaysRecoverable &&
-            "Runtime call required for AlwaysRecoverable kind!");
-    return EmitTrapCheck(Checked);
+    assert(RecoverKind != CheckRecoverableKind::AlwaysRecoverable &&
+           "Runtime call required for AlwaysRecoverable kind!");
+    // Assume that -fsanitize-undefined-trap-on-error overrides
+    // -fsanitize-recover= options, as we can only print meaningful error
+    // message and recover if we have a runtime support.
+    return EmitTrapCheck(JointCond);
   }
 
   llvm::BasicBlock *Cont = createBasicBlock("cont");
-
-  llvm::BasicBlock *Handler = createBasicBlock("handler." + CheckName);
-
-  llvm::Instruction *Branch = Builder.CreateCondBr(Checked, Cont, Handler);
-
+  llvm::BasicBlock *Handlers = createBasicBlock("handler." + CheckName);
+  llvm::Instruction *Branch = Builder.CreateCondBr(JointCond, Cont, Handlers);
   // Give hint that we very much don't expect to execute the handler
   // Value chosen to match UR_NONTAKEN_WEIGHT, see BranchProbabilityInfo.cpp
   llvm::MDBuilder MDHelper(getLLVMContext());
   llvm::MDNode *Node = MDHelper.createBranchWeights((1U << 20) - 1, 1);
   Branch->setMetadata(llvm::LLVMContext::MD_prof, Node);
+  EmitBlock(Handlers);
 
-  EmitBlock(Handler);
-
+  // Emit handler arguments and create handler function type.
   llvm::Constant *Info = llvm::ConstantStruct::getAnon(StaticArgs);
   auto *InfoPtr =
       new llvm::GlobalVariable(CGM.getModule(), Info->getType(), false,
@@ -2201,34 +2367,27 @@ void CodeGenFunction::EmitCheck(llvm::Value *Checked, StringRef CheckName,
     ArgTypes.push_back(IntPtrTy);
   }
 
-  bool Recover = RecoverKind == CRK_AlwaysRecoverable ||
-                 (RecoverKind == CRK_Recoverable &&
-                  CGM.getCodeGenOpts().SanitizeRecover);
-
   llvm::FunctionType *FnType =
     llvm::FunctionType::get(CGM.VoidTy, ArgTypes, false);
-  llvm::AttrBuilder B;
-  if (!Recover) {
-    B.addAttribute(llvm::Attribute::NoReturn)
-     .addAttribute(llvm::Attribute::NoUnwind);
-  }
-  B.addAttribute(llvm::Attribute::UWTable);
 
-  // Checks that have two variants use a suffix to differentiate them
-  bool NeedsAbortSuffix = RecoverKind != CRK_Unrecoverable &&
-                          !CGM.getCodeGenOpts().SanitizeRecover;
-  std::string FunctionName = ("__ubsan_handle_" + CheckName +
-                              (NeedsAbortSuffix? "_abort" : "")).str();
-  llvm::Value *Fn = CGM.CreateRuntimeFunction(
-      FnType, FunctionName,
-      llvm::AttributeSet::get(getLLVMContext(),
-                              llvm::AttributeSet::FunctionIndex, B));
-  llvm::CallInst *HandlerCall = EmitNounwindRuntimeCall(Fn, Args);
-  if (Recover) {
-    Builder.CreateBr(Cont);
+  if (!FatalCond || !RecoverableCond) {
+    // Simple case: we need to generate a single handler call, either
+    // fatal, or non-fatal.
+    emitCheckHandlerCall(*this, FnType, Args, CheckName, RecoverKind,
+                         (FatalCond != nullptr), Cont);
   } else {
-    HandlerCall->setDoesNotReturn();
-    Builder.CreateUnreachable();
+    // Emit two handler calls: first one for set of unrecoverable checks,
+    // another one for recoverable.
+    llvm::BasicBlock *NonFatalHandlerBB =
+        createBasicBlock("non_fatal." + CheckName);
+    llvm::BasicBlock *FatalHandlerBB = createBasicBlock("fatal." + CheckName);
+    Builder.CreateCondBr(FatalCond, NonFatalHandlerBB, FatalHandlerBB);
+    EmitBlock(FatalHandlerBB);
+    emitCheckHandlerCall(*this, FnType, Args, CheckName, RecoverKind, true,
+                         NonFatalHandlerBB);
+    EmitBlock(NonFatalHandlerBB);
+    emitCheckHandlerCall(*this, FnType, Args, CheckName, RecoverKind, false,
+                         Cont);
   }
 
   EmitBlock(Cont);
@@ -2278,7 +2437,7 @@ LValue CodeGenFunction::EmitArraySubscriptExpr(const ArraySubscriptExpr *E,
   QualType IdxTy  = E->getIdx()->getType();
   bool IdxSigned = IdxTy->isSignedIntegerOrEnumerationType();
 
-  if (SanOpts->ArrayBounds)
+  if (SanOpts.has(SanitizerKind::ArrayBounds))
     EmitBoundsCheck(E, E->getBase(), Idx, IdxTy, Accessed);
 
   // If the base is a vector type, then we are forming a vector element lvalue
@@ -2875,6 +3034,9 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
       EmitTypeCheck(TCK_DowncastReference, E->getExprLoc(),
                     Derived, E->getType());
 
+    if (SanOpts.has(SanitizerKind::CFIDerivedCast))
+      EmitVTablePtrCheckForCast(E->getType(), Derived, /*MayBeNull=*/false);
+
     return MakeAddrLValue(Derived, E->getType());
   }
   case CK_LValueBitCast: {
@@ -2884,6 +3046,10 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
     LValue LV = EmitLValue(E->getSubExpr());
     llvm::Value *V = Builder.CreateBitCast(LV.getAddress(),
                                            ConvertType(CE->getTypeAsWritten()));
+
+    if (SanOpts.has(SanitizerKind::CFIUnrelatedCast))
+      EmitVTablePtrCheckForCast(E->getType(), V, /*MayBeNull=*/false);
+
     return MakeAddrLValue(V, E->getType());
   }
   case CK_ObjCObjectLValueCast: {
@@ -2927,19 +3093,6 @@ RValue CodeGenFunction::EmitRValueForField(LValue LV,
 
 RValue CodeGenFunction::EmitCallExpr(const CallExpr *E,
                                      ReturnValueSlot ReturnValue) {
-  if (CGDebugInfo *DI = getDebugInfo()) {
-    SourceLocation Loc = E->getLocStart();
-    // Force column info to be generated so we can differentiate
-    // multiple call sites on the same line in the debug info.
-    // FIXME: This is insufficient. Two calls coming from the same macro
-    // expansion will still get the same line/column and break debug info. It's
-    // possible that LLVM can be fixed to not rely on this uniqueness, at which
-    // point this workaround can be removed.
-    const FunctionDecl* Callee = E->getDirectCallee();
-    bool ForceColumnInfo = Callee && Callee->isInlineSpecified();
-    DI->EmitLocation(Builder, Loc, ForceColumnInfo);
-  }
-
   // Builtins never have block type.
   if (E->getCallee()->getType()->isBlockPointerType())
     return EmitBlockCallExpr(E, ReturnValue);
@@ -2953,7 +3106,7 @@ RValue CodeGenFunction::EmitCallExpr(const CallExpr *E,
   const Decl *TargetDecl = E->getCalleeDecl();
   if (const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(TargetDecl)) {
     if (unsigned builtinID = FD->getBuiltinID())
-      return EmitBuiltinExpr(FD, builtinID, E);
+      return EmitBuiltinExpr(FD, builtinID, E, ReturnValue);
   }
 
   if (const auto *CE = dyn_cast<CXXOperatorCallExpr>(E))
@@ -3073,7 +3226,7 @@ LValue CodeGenFunction::EmitCallExprLValue(const CallExpr *E) {
   if (!RV.isScalar())
     return MakeAddrLValue(RV.getAggregateAddr(), E->getType());
 
-  assert(E->getCallReturnType()->isReferenceType() &&
+  assert(E->getCallReturnType(getContext())->isReferenceType() &&
          "Can't have a scalar return unless the return type is a "
          "reference type!");
 
@@ -3188,7 +3341,7 @@ LValue CodeGenFunction::EmitStmtExprLValue(const StmtExpr *E) {
 
 RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
                                  const CallExpr *E, ReturnValueSlot ReturnValue,
-                                 const Decl *TargetDecl) {
+                                 const Decl *TargetDecl, llvm::Value *Chain) {
   // Get the actual function type. The callee type will always be a pointer to
   // function type or a block pointer type.
   assert(CalleeType->isFunctionPointerType() &&
@@ -3199,17 +3352,7 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
   const auto *FnType =
       cast<FunctionType>(cast<PointerType>(CalleeType)->getPointeeType());
 
-  // Force column info to differentiate multiple inlined call sites on
-  // the same line, analoguous to EmitCallExpr.
-  // FIXME: This is insufficient. Two calls coming from the same macro expansion
-  // will still get the same line/column and break debug info. It's possible
-  // that LLVM can be fixed to not rely on this uniqueness, at which point this
-  // workaround can be removed.
-  bool ForceColumnInfo = false;
-  if (const FunctionDecl* FD = dyn_cast_or_null<const FunctionDecl>(TargetDecl))
-    ForceColumnInfo = FD->isInlineSpecified();
-
-  if (getLangOpts().CPlusPlus && SanOpts->Function &&
+  if (getLangOpts().CPlusPlus && SanOpts.has(SanitizerKind::Function) &&
       (!TargetDecl || !isa<FunctionDecl>(TargetDecl))) {
     if (llvm::Constant *PrefixSig =
             CGM.getTargetCodeGenInfo().getUBSanFunctionSignature(CGM)) {
@@ -3244,11 +3387,8 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
         EmitCheckSourceLocation(E->getLocStart()),
         EmitCheckTypeDescriptor(CalleeType)
       };
-      EmitCheck(CalleeRTTIMatch,
-                "function_type_mismatch",
-                StaticData,
-                Callee,
-                CRK_Recoverable);
+      EmitCheck(std::make_pair(CalleeRTTIMatch, SanitizerKind::Function),
+                "function_type_mismatch", StaticData, Callee);
 
       Builder.CreateBr(Cont);
       EmitBlock(Cont);
@@ -3256,12 +3396,14 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
   }
 
   CallArgList Args;
+  if (Chain)
+    Args.add(RValue::get(Builder.CreateBitCast(Chain, CGM.VoidPtrTy)),
+             CGM.getContext().VoidPtrTy);
   EmitCallArgs(Args, dyn_cast<FunctionProtoType>(FnType), E->arg_begin(),
-               E->arg_end(), E->getDirectCallee(), /*ParamsToSkip*/ 0,
-               ForceColumnInfo);
+               E->arg_end(), E->getDirectCallee(), /*ParamsToSkip*/ 0);
 
-  const CGFunctionInfo &FnInfo =
-    CGM.getTypes().arrangeFreeFunctionCall(Args, FnType);
+  const CGFunctionInfo &FnInfo = CGM.getTypes().arrangeFreeFunctionCall(
+      Args, FnType, /*isChainCall=*/Chain);
 
   // C99 6.5.2.2p6:
   //   If the expression that denotes the called function has a type
@@ -3280,7 +3422,10 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
   // through an unprototyped function type works like a *non-variadic*
   // call.  The way we make this work is to cast to the exact type
   // of the promoted arguments.
-  if (isa<FunctionNoProtoType>(FnType)) {
+  //
+  // Chain calls use this same code path to add the invisible chain parameter
+  // to the function type.
+  if (isa<FunctionNoProtoType>(FnType) || Chain) {
     llvm::Type *CalleeTy = getTypes().GetFunctionType(FnInfo);
     CalleeTy = CalleeTy->getPointerTo();
     Callee = Builder.CreateBitCast(Callee, CalleeTy, "callee.knr.cast");

@@ -124,6 +124,12 @@ public:
   /// false if there is an invocation of an initializer on 'self'.
   bool ObjCWarnForNoInitDelegation;
 
+  /// First C++ 'try' statement in the current function.
+  SourceLocation FirstCXXTryLoc;
+
+  /// First SEH '__try' statement in the current function.
+  SourceLocation FirstSEHTryLoc;
+
   /// \brief Used to determine if errors occurred in this function or block.
   DiagnosticErrorTrap ErrorTrap;
 
@@ -144,6 +150,10 @@ public:
   /// current function scope.  These diagnostics are vetted for reachability
   /// prior to being emitted.
   SmallVector<PossiblyUnreachableDiag, 4> PossiblyUnreachableDiags;
+  
+  /// \brief A list of parameters which have the nonnull attribute and are
+  /// modified in the function.
+  llvm::SmallPtrSet<const ParmVarDecl*, 8>  ModifiedNonNullParams;
 
 public:
   /// Represents a simple identification of a weak object.
@@ -315,6 +325,16 @@ public:
 
   void setHasDroppedStmt() {
     HasDroppedStmt = true;
+  }
+
+  void setHasCXXTry(SourceLocation TryLoc) {
+    setHasBranchProtectedScope();
+    FirstCXXTryLoc = TryLoc;
+  }
+
+  void setHasSEHTry(SourceLocation TryLoc) {
+    setHasBranchProtectedScope();
+    FirstSEHTryLoc = TryLoc;
   }
 
   bool NeedsScopeChecking() const {

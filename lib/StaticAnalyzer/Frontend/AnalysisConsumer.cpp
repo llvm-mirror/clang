@@ -12,18 +12,20 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/StaticAnalyzer/Frontend/AnalysisConsumer.h"
+#include "ModelInjector.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/DataRecursiveASTVisitor.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/ParentMap.h"
-#include "clang/Analysis/CodeInjector.h"
 #include "clang/Analysis/Analyses/LiveVariables.h"
 #include "clang/Analysis/CFG.h"
 #include "clang/Analysis/CallGraph.h"
+#include "clang/Analysis/CodeInjector.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Frontend/CompilerInstance.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/StaticAnalyzer/Checkers/LocalCheckers.h"
 #include "clang/StaticAnalyzer/Core/AnalyzerOptions.h"
@@ -34,7 +36,6 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "clang/StaticAnalyzer/Frontend/CheckerRegistration.h"
-#include "clang/Frontend/CompilerInstance.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -44,7 +45,6 @@
 #include "llvm/Support/Program.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
-#include "ModelInjector.h"
 #include <memory>
 #include <queue>
 
@@ -590,7 +590,7 @@ AnalysisConsumer::getModeForDecl(Decl *D, AnalysisMode Mode) {
   // - System headers: don't run any checks.
   SourceManager &SM = Ctx->getSourceManager();
   SourceLocation SL = SM.getExpansionLoc(D->getLocation());
-  if (!Opts->AnalyzeAll && !SM.isInMainFile(SL)) {
+  if (!Opts->AnalyzeAll && !SM.isWrittenInMainFile(SL)) {
     if (SL.isInvalid() || SM.isInSystemHeader(SL))
       return AM_None;
     return Mode & ~AM_Path;
@@ -735,7 +735,7 @@ static std::unique_ptr<ExplodedNode::Auditor> CreateUbiViz() {
   SmallString<128> P;
   int FD;
   llvm::sys::fs::createTemporaryFile("llvm_ubi", "", FD, P);
-  llvm::errs() << "Writing '" << P.str() << "'.\n";
+  llvm::errs() << "Writing '" << P << "'.\n";
 
   auto Stream = llvm::make_unique<llvm::raw_fd_ostream>(FD, true);
 
@@ -788,7 +788,9 @@ UbigraphViz::~UbigraphViz() {
   Out.reset();
   llvm::errs() << "Running 'ubiviz' program... ";
   std::string ErrMsg;
-  std::string Ubiviz = llvm::sys::FindProgramByName("ubiviz");
+  std::string Ubiviz;
+  if (auto Path = llvm::sys::findProgramByName("ubiviz"))
+    Ubiviz = *Path;
   std::vector<const char*> args;
   args.push_back(Ubiviz.c_str());
   args.push_back(Filename.c_str());

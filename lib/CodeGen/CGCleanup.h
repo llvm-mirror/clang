@@ -284,15 +284,13 @@ public:
     delete ExtInfo;
   }
   // Objects of EHCleanupScope are not destructed. Use Destroy().
-  ~EHCleanupScope() LLVM_DELETED_FUNCTION;
+  ~EHCleanupScope() = delete;
 
   bool isNormalCleanup() const { return CleanupBits.IsNormalCleanup; }
   llvm::BasicBlock *getNormalBlock() const { return NormalBlock; }
   void setNormalBlock(llvm::BasicBlock *BB) { NormalBlock = BB; }
 
   bool isEHCleanup() const { return CleanupBits.IsEHCleanup; }
-  llvm::BasicBlock *getEHBlock() const { return getCachedEHDispatchBlock(); }
-  void setEHBlock(llvm::BasicBlock *BB) { setCachedEHDispatchBlock(BB); }
 
   bool isActive() const { return CleanupBits.IsActive; }
   void setActive(bool A) { CleanupBits.IsActive = A; }
@@ -343,7 +341,7 @@ public:
   void addBranchAfter(llvm::ConstantInt *Index,
                       llvm::BasicBlock *Block) {
     struct ExtInfo &ExtInfo = getExtInfo();
-    if (ExtInfo.Branches.insert(Block))
+    if (ExtInfo.Branches.insert(Block).second)
       ExtInfo.BranchAfters.push_back(std::make_pair(Block, Index));
   }
 
@@ -378,7 +376,7 @@ public:
   ///
   /// \return true if the branch-through was new to this scope
   bool addBranchThrough(llvm::BasicBlock *Block) {
-    return getExtInfo().Branches.insert(Block);
+    return getExtInfo().Branches.insert(Block).second;
   }
 
   /// Determines if this cleanup scope has any branch throughs.
