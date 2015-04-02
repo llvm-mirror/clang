@@ -7834,6 +7834,9 @@ TreeTransform<Derived>::TransformExtVectorElementExpr(ExtVectorElementExpr *E) {
 template<typename Derived>
 ExprResult
 TreeTransform<Derived>::TransformInitListExpr(InitListExpr *E) {
+  if (InitListExpr *Syntactic = E->getSyntacticForm())
+    E = Syntactic;
+
   bool InitChanged = false;
 
   SmallVector<Expr*, 4> Inits;
@@ -7841,8 +7844,12 @@ TreeTransform<Derived>::TransformInitListExpr(InitListExpr *E) {
                                   Inits, &InitChanged))
     return ExprError();
 
-  if (!getDerived().AlwaysRebuild() && !InitChanged)
-    return E;
+  if (!getDerived().AlwaysRebuild() && !InitChanged) {
+    // FIXME: Attempt to reuse the existing syntactic form of the InitListExpr
+    // in some cases. We can't reuse it in general, because the syntactic and
+    // semantic forms are linked, and we can't know that semantic form will
+    // match even if the syntactic form does.
+  }
 
   return getDerived().RebuildInitList(E->getLBraceLoc(), Inits,
                                       E->getRBraceLoc(), E->getType());
@@ -9121,6 +9128,8 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   }
 
   LambdaScopeInfo *LSI = getSema().PushLambdaScope();
+  Sema::FunctionScopeRAII FuncScopeCleanup(getSema());
+
   // Transform the template parameters, and add them to the current
   // instantiation scope. The null case is handled correctly.
   LSI->GLTemplateParameterList = getDerived().TransformTemplateParameterList(
@@ -9145,10 +9154,10 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
           return This->TransformExceptionSpec(OldCallOpFPTL.getBeginLoc(), ESI,
                                               ExceptionStorage, Changed);
         });
+    if (NewCallOpType.isNull())
+      return ExprError();
     NewCallOpTSI = NewCallOpTLBuilder.getTypeSourceInfo(getSema().Context,
                                                         NewCallOpType);
-    if (!NewCallOpTSI)
-      return ExprError();
   }
 
   // Create the local class that will describe the lambda.
@@ -9167,6 +9176,10 @@ TreeTransform<Derived>::TransformLambdaExpr(LambdaExpr *E) {
   LSI->CallOperator = NewCallOperator;
 
   getDerived().transformAttrs(E->getCallOperator(), NewCallOperator);
+
+  // TransformLambdaScope will manage the function scope, so we can disable the
+  // cleanup.
+  FuncScopeCleanup.disable();
 
   return getDerived().TransformLambdaScope(E, NewCallOperator, 
       InitCaptureExprsAndTypes);
@@ -10714,11 +10727,9 @@ TreeTransform<Derived>::RebuildCXXPseudoDestructorExpr(Expr *Base,
        !BaseType->getAs<PointerType>()->getPointeeType()
                                               ->template getAs<RecordType>())){
     // This pseudo-destructor expression is still a pseudo-destructor.
-    return SemaRef.BuildPseudoDestructorExpr(Base, OperatorLoc,
-                                             isArrow? tok::arrow : tok::period,
-                                             SS, ScopeType, CCLoc, TildeLoc,
-                                             Destroyed,
-                                             /*FIXME?*/true);
+    return SemaRef.BuildPseudoDestructorExpr(
+        Base, OperatorLoc, isArrow ? tok::arrow : tok::period, SS, ScopeType,
+        CCLoc, TildeLoc, Destroyed);
   }
 
   TypeSourceInfo *DestroyedType = Destroyed.getTypeSourceInfo();

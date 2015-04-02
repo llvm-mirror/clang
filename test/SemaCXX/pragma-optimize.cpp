@@ -1,4 +1,6 @@
 // RUN: %clang_cc1 -I %S/Inputs -x c++ -std=c++11 -triple x86_64-unknown-linux -emit-llvm -O2 < %s | FileCheck %s
+// RUN: %clang_cc1 -I %S/Inputs -x c++ -std=c++11 -triple x86_64-unknown-linux -emit-llvm -Os < %s | FileCheck %s
+// RUN: %clang_cc1 -I %S/Inputs -x c++ -std=c++11 -triple x86_64-unknown-linux -emit-llvm -Oz < %s | FileCheck %s
 
 #pragma clang optimize off
 
@@ -54,6 +56,13 @@ int __attribute__((always_inline)) baz(int z) {
     return foo(z, 2);
 }
 // CHECK-DAG: @_Z3bazi{{.*}} [[ATTRBAZ:#[0-9]+]]
+
+// This function definition will not be decorated with `optnone` because the
+// attribute would conflict with `minsize`.
+int __attribute__((minsize)) bax(int z) {
+    return foo(z, 2);
+}
+// CHECK-DAG: @_Z3baxi{{.*}} [[ATTRBAX:#[0-9]+]]
 
 #pragma clang optimize on
 
@@ -144,6 +153,7 @@ int yet_another_normal(int x) {
 // Check that the other functions do NOT have optnone.
 // CHECK-DAG-NOT: attributes [[ATTRFOO]] = { {{.*}}optnone{{.*}} }
 // CHECK-DAG-NOT: attributes [[ATTRBAZ]] = { {{.*}}optnone{{.*}} }
+// CHECK-DAG-NOT: attributes [[ATTRBAX]] = { {{.*}}optnone{{.*}} }
 // CHECK-DAG-NOT: attributes [[ATTRWOMBAT]] = { {{.*}}optnone{{.*}} }
 // CHECK-DAG-NOT: attributes [[ATTRCONTAINER]] = { {{.*}}optnone{{.*}} }
 // CHECK-DAG-NOT: attributes [[ATTRTWICE]] = { {{.*}}optnone{{.*}} }

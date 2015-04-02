@@ -104,7 +104,7 @@ public:
 
     // \brief Whether this known header is valid (i.e., it has an
     // associated module).
-    LLVM_EXPLICIT operator bool() const {
+    explicit operator bool() const {
       return Storage.getPointer() != nullptr;
     }
   };
@@ -127,15 +127,29 @@ private:
   /// header.
   llvm::DenseMap<const DirectoryEntry *, Module *> UmbrellaDirs;
 
+  /// \brief The set of attributes that can be attached to a module.
+  struct Attributes {
+    Attributes() : IsSystem(), IsExternC(), IsExhaustive() {}
+
+    /// \brief Whether this is a system module.
+    unsigned IsSystem : 1;
+
+    /// \brief Whether this is an extern "C" module.
+    unsigned IsExternC : 1;
+
+    /// \brief Whether this is an exhaustive set of configuration macros.
+    unsigned IsExhaustive : 1;
+  };
+
   /// \brief A directory for which framework modules can be inferred.
   struct InferredDirectory {
-    InferredDirectory() : InferModules(), InferSystemModules() { }
+    InferredDirectory() : InferModules() {}
 
     /// \brief Whether to infer modules from this directory.
     unsigned InferModules : 1;
 
-    /// \brief Whether the modules we infer are [system] modules.
-    unsigned InferSystemModules : 1;
+    /// \brief The attributes to use for inferred modules.
+    Attributes Attrs;
 
     /// \brief If \c InferModules is non-zero, the module map file that allowed
     /// inferred modules.  Otherwise, nullptr.
@@ -213,6 +227,10 @@ private:
     SmallVector<const DirectoryEntry *, 2> IntermediateDirs;
     return static_cast<bool>(findHeaderInUmbrellaDirs(File, IntermediateDirs));
   }
+
+  Module *inferFrameworkModule(StringRef ModuleName,
+                               const DirectoryEntry *FrameworkDir,
+                               Attributes Attrs, Module *Parent);
 
 public:
   /// \brief Construct a new module map.
@@ -331,22 +349,6 @@ public:
                                                bool IsFramework,
                                                bool IsExplicit);
 
-  /// \brief Determine whether we can infer a framework module a framework
-  /// with the given name in the given
-  ///
-  /// \param ParentDir The directory that is the parent of the framework
-  /// directory.
-  ///
-  /// \param Name The name of the module.
-  ///
-  /// \param IsSystem Will be set to 'true' if the inferred module must be a
-  /// system module.
-  ///
-  /// \returns true if we are allowed to infer a framework module, and false
-  /// otherwise.
-  bool canInferFrameworkModule(const DirectoryEntry *ParentDir,
-                               StringRef Name, bool &IsSystem) const;
-
   /// \brief Infer the contents of a framework module map from the given
   /// framework directory.
   Module *inferFrameworkModule(StringRef ModuleName, 
@@ -454,8 +456,12 @@ public:
   /// \param IsSystem Whether this module map file is in a system header
   /// directory, and therefore should be considered a system module.
   ///
+  /// \param HomeDir The directory in which relative paths within this module
+  ///        map file will be resolved.
+  ///
   /// \returns true if an error occurred, false otherwise.
-  bool parseModuleMapFile(const FileEntry *File, bool IsSystem);
+  bool parseModuleMapFile(const FileEntry *File, bool IsSystem,
+                          const DirectoryEntry *HomeDir);
     
   /// \brief Dump the contents of the module map, for debugging purposes.
   void dump();

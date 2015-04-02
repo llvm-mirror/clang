@@ -143,8 +143,8 @@ the same name.  For instance, ``gnu::__const__`` can be used instead of
 -------------------
 
 This function-like macro takes a single identifier argument that is the name of
-an attribute.  It evaluates to 1 if the attribute is supported by the current
-compilation target, or 0 if not.  It can be used like this:
+a GNU-style attribute.  It evaluates to 1 if the attribute is supported by the
+current compilation target, or 0 if not.  It can be used like this:
 
 .. code-block:: c++
 
@@ -163,6 +163,33 @@ compilation target, or 0 if not.  It can be used like this:
 The attribute name can also be specified with a preceding and following ``__``
 (double underscore) to avoid interference from a macro with the same name.  For
 instance, ``__always_inline__`` can be used instead of ``always_inline``.
+
+
+``__has_declspec_attribute``
+----------------------------
+
+This function-like macro takes a single identifier argument that is the name of
+an attribute implemented as a Microsoft-style ``__declspec`` attribute.  It
+evaluates to 1 if the attribute is supported by the current compilation target,
+or 0 if not.  It can be used like this:
+
+.. code-block:: c++
+
+  #ifndef __has_declspec_attribute         // Optional of course.
+    #define __has_declspec_attribute(x) 0  // Compatibility with non-clang compilers.
+  #endif
+
+  ...
+  #if __has_declspec_attribute(dllexport)
+  #define DLLEXPORT __declspec(dllexport)
+  #else
+  #define DLLEXPORT
+  #endif
+  ...
+
+The attribute name can also be specified with a preceding and following ``__``
+(double underscore) to avoid interference from a macro with the same name.  For
+instance, ``__dllexport__`` can be used instead of ``dllexport``.
 
 ``__is_identifier``
 -------------------
@@ -543,6 +570,9 @@ C++11 alignment specifiers
 Use ``__has_feature(cxx_alignas)`` or ``__has_extension(cxx_alignas)`` to
 determine if support for alignment specifiers using ``alignas`` is enabled.
 
+Use ``__has_feature(cxx_alignof)`` or ``__has_extension(cxx_alignof)`` to
+determine if support for the ``alignof`` keyword is enabled.
+
 C++11 attributes
 ^^^^^^^^^^^^^^^^
 
@@ -856,6 +886,9 @@ C11 alignment specifiers
 
 Use ``__has_feature(c_alignas)`` or ``__has_extension(c_alignas)`` to determine
 if support for alignment specifiers using ``_Alignas`` is enabled.
+
+Use ``__has_feature(c_alignof)`` or ``__has_extension(c_alignof)`` to determine
+if support for the ``_Alignof`` keyword is enabled.
 
 C11 atomic operations
 ^^^^^^^^^^^^^^^^^^^^^

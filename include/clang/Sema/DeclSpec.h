@@ -57,7 +57,7 @@ namespace clang {
 /// These can be in 3 states:
 ///   1) Not present, identified by isEmpty()
 ///   2) Present, identified by isNotEmpty()
-///      2.a) Valid, idenified by isValid()
+///      2.a) Valid, identified by isValid()
 ///      2.b) Invalid, identified by isInvalid().
 ///
 /// isSet() is deprecated because it mostly corresponded to "valid" but was
@@ -407,8 +407,8 @@ private:
     return (T == TST_typeofExpr || T == TST_decltype);
   }
 
-  DeclSpec(const DeclSpec &) LLVM_DELETED_FUNCTION;
-  void operator=(const DeclSpec &) LLVM_DELETED_FUNCTION;
+  DeclSpec(const DeclSpec &) = delete;
+  void operator=(const DeclSpec &) = delete;
 public:
   static bool isDeclRep(TST T) {
     return (T == TST_enum || T == TST_struct ||
@@ -845,8 +845,8 @@ private:
 /// \brief Represents a C++ unqualified-id that has been parsed. 
 class UnqualifiedId {
 private:
-  UnqualifiedId(const UnqualifiedId &Other) LLVM_DELETED_FUNCTION;
-  const UnqualifiedId &operator=(const UnqualifiedId &) LLVM_DELETED_FUNCTION;
+  UnqualifiedId(const UnqualifiedId &Other) = delete;
+  const UnqualifiedId &operator=(const UnqualifiedId &) = delete;
 
 public:
   /// \brief Describes the kind of unqualified-id parsed.
@@ -1069,6 +1069,12 @@ struct DeclaratorChunk {
   SourceLocation Loc;
   /// EndLoc - If valid, the place where this chunck ends.
   SourceLocation EndLoc;
+
+  SourceRange getSourceRange() const {
+    if (EndLoc.isInvalid())
+      return SourceRange(Loc, Loc);
+    return SourceRange(Loc, EndLoc);
+  }
 
   struct TypeInfoCommon {
     AttributeList *AttrList;
@@ -1493,7 +1499,8 @@ struct DeclaratorChunk {
                                           SourceLocation Loc) {
     DeclaratorChunk I;
     I.Kind          = MemberPointer;
-    I.Loc           = Loc;
+    I.Loc           = SS.getBeginLoc();
+    I.EndLoc        = Loc;
     I.Mem.TypeQuals = TypeQuals;
     I.Mem.AttrList  = nullptr;
     new (I.Mem.ScopeMem.Mem) CXXScopeSpec(SS);
@@ -1914,6 +1921,14 @@ public:
   DeclaratorChunk &getTypeObject(unsigned i) {
     assert(i < DeclTypeInfo.size() && "Invalid type chunk");
     return DeclTypeInfo[i];
+  }
+
+  typedef SmallVectorImpl<DeclaratorChunk>::const_iterator type_object_iterator;
+  typedef llvm::iterator_range<type_object_iterator> type_object_range;
+
+  /// Returns the range of type objects, from the identifier outwards.
+  type_object_range type_objects() const {
+    return type_object_range(DeclTypeInfo.begin(), DeclTypeInfo.end());
   }
 
   void DropFirstTypeObject() {

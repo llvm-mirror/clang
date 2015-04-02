@@ -17,8 +17,8 @@
 #include "clang/AST/DeclTemplate.h"
 #include "clang/Basic/Attributes.h"
 #include "clang/Basic/CharInfo.h"
-#include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/OperatorKinds.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ParsedTemplate.h"
@@ -1095,6 +1095,7 @@ bool Parser::isValidAfterTypeSpecifier(bool CouldBeBitfield) {
   case tok::kw_volatile:        // struct foo {...} volatile  x;
   case tok::kw_restrict:        // struct foo {...} restrict  x;
   case tok::kw__Atomic:         // struct foo {...} _Atomic   x;
+  case tok::kw___unaligned:     // struct foo {...} __unaligned *x;
   // Function specifiers
   // Note, no 'explicit'. An explicit function must be either a conversion
   // operator or a constructor. Either way, it can't have a return type.
@@ -1243,7 +1244,8 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
   SourceLocation AttrFixitLoc = Tok.getLocation();
 
   if (TagType == DeclSpec::TST_struct &&
-      !Tok.is(tok::identifier) &&
+      Tok.isNot(tok::identifier) &&
+      !Tok.isAnnotation() &&
       Tok.getIdentifierInfo() &&
       (Tok.is(tok::kw___is_abstract) ||
        Tok.is(tok::kw___is_arithmetic) ||
@@ -1308,11 +1310,19 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
     // is a base-specifier-list.
     ColonProtectionRAIIObject X(*this);
 
-    if (ParseOptionalCXXScopeSpecifier(SS, ParsedType(), EnteringContext))
+    CXXScopeSpec Spec;
+    bool HasValidSpec = true;
+    if (ParseOptionalCXXScopeSpecifier(Spec, ParsedType(), EnteringContext)) {
       DS.SetTypeSpecError();
-    if (SS.isSet())
-      if (Tok.isNot(tok::identifier) && Tok.isNot(tok::annot_template_id))
+      HasValidSpec = false;
+    }
+    if (Spec.isSet())
+      if (Tok.isNot(tok::identifier) && Tok.isNot(tok::annot_template_id)) {
         Diag(Tok, diag::err_expected) << tok::identifier;
+        HasValidSpec = false;
+      }
+    if (HasValidSpec)
+      SS = Spec;
   }
 
   TemplateParameterLists *TemplateParams = TemplateInfo.TemplateParams;
@@ -1880,51 +1890,40 @@ AccessSpecifier Parser::getAccessSpecifierIfPresent() const {
 /// the class definition.
 void Parser::HandleMemberFunctionDeclDelays(Declarator& DeclaratorInfo,
                                             Decl *ThisDecl) {
-  // We just declared a member function. If this member function
-  // has any default arguments or an exception-specification, we'll need to
-  // parse them later.
-  LateParsedMethodDeclaration *LateMethod = nullptr;
   DeclaratorChunk::FunctionTypeInfo &FTI
     = DeclaratorInfo.getFunctionTypeInfo();
+  // If there was a late-parsed exception-specification, we'll need a
+  // late parse
+  bool NeedLateParse = FTI.getExceptionSpecType() == EST_Unparsed;
 
-  // If there was a late-parsed exception-specification, hold onto its tokens.
-  if (FTI.getExceptionSpecType() == EST_Unparsed) {
+  if (!NeedLateParse) {
+    // Look ahead to see if there are any default args
+    for (unsigned ParamIdx = 0; ParamIdx < FTI.NumParams; ++ParamIdx) {
+      auto Param = cast<ParmVarDecl>(FTI.Params[ParamIdx].Param);
+      if (Param->hasUnparsedDefaultArg()) {
+        NeedLateParse = true;
+        break;
+      }
+    }
+  }
+
+  if (NeedLateParse) {
     // Push this method onto the stack of late-parsed method
     // declarations.
-    LateMethod = new LateParsedMethodDeclaration(this, ThisDecl);
+    auto LateMethod = new LateParsedMethodDeclaration(this, ThisDecl);
     getCurrentClass().LateParsedDeclarations.push_back(LateMethod);
     LateMethod->TemplateScope = getCurScope()->isTemplateParamScope();
 
-    // Stash the exception-specification tokens in the late-pased mthod.
+    // Stash the exception-specification tokens in the late-pased method.
     LateMethod->ExceptionSpecTokens = FTI.ExceptionSpecTokens;
     FTI.ExceptionSpecTokens = 0;
 
-    // Reserve space for the parameters.
+    // Push tokens for each parameter.  Those that do not have
+    // defaults will be NULL.
     LateMethod->DefaultArgs.reserve(FTI.NumParams);
-  }
-
-  for (unsigned ParamIdx = 0; ParamIdx < FTI.NumParams; ++ParamIdx) {
-    if (LateMethod || FTI.Params[ParamIdx].DefaultArgTokens) {
-      if (!LateMethod) {
-        // Push this method onto the stack of late-parsed method
-        // declarations.
-        LateMethod = new LateParsedMethodDeclaration(this, ThisDecl);
-        getCurrentClass().LateParsedDeclarations.push_back(LateMethod);
-        LateMethod->TemplateScope = getCurScope()->isTemplateParamScope();
-
-        // Add all of the parameters prior to this one (they don't
-        // have default arguments).
-        LateMethod->DefaultArgs.reserve(FTI.NumParams);
-        for (unsigned I = 0; I < ParamIdx; ++I)
-          LateMethod->DefaultArgs.push_back(
-              LateParsedDefaultArgument(FTI.Params[I].Param));
-      }
-
-      // Add this parameter to the list of parameters (it may or may
-      // not have a default argument).
+    for (unsigned ParamIdx = 0; ParamIdx < FTI.NumParams; ++ParamIdx)
       LateMethod->DefaultArgs.push_back(LateParsedDefaultArgument(
-          FTI.Params[ParamIdx].Param, FTI.Params[ParamIdx].DefaultArgTokens));
-    }
+        FTI.Params[ParamIdx].Param, FTI.Params[ParamIdx].DefaultArgTokens));
   }
 }
 
@@ -2017,7 +2016,7 @@ bool Parser::isCXX11FinalKeyword() const {
 
 /// \brief Parse a C++ member-declarator up to, but not including, the optional
 /// brace-or-equal-initializer or pure-specifier.
-void Parser::ParseCXXMemberDeclaratorBeforeInitializer(
+bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
     Declarator &DeclaratorInfo, VirtSpecifiers &VS, ExprResult &BitfieldSize,
     LateParsedAttrList &LateParsedAttrs) {
   // member-declarator:
@@ -2071,6 +2070,15 @@ void Parser::ParseCXXMemberDeclaratorBeforeInitializer(
       }
     }
   }
+
+  // If this has neither a name nor a bit width, something has gone seriously
+  // wrong. Skip until the semi-colon or }.
+  if (!DeclaratorInfo.hasName() && BitfieldSize.isUnset()) {
+    // If so, skip until the semi-colon or a }.
+    SkipUntil(tok::r_brace, StopAtSemi | StopBeforeMatch);
+    return true;
+  }
+  return false;
 }
 
 /// ParseCXXClassMemberDeclaration - Parse a C++ class member declaration.
@@ -2296,14 +2304,8 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
   bool ExpectSemi = true;
 
   // Parse the first declarator.
-  ParseCXXMemberDeclaratorBeforeInitializer(DeclaratorInfo, VS, BitfieldSize,
-                                            LateParsedAttrs);
-
-  // If this has neither a name nor a bit width, something has gone seriously
-  // wrong. Skip until the semi-colon or }.
-  if (!DeclaratorInfo.hasName() && BitfieldSize.isUnset()) {
-    // If so, skip until the semi-colon or a }.
-    SkipUntil(tok::r_brace, StopAtSemi | StopBeforeMatch);
+  if (ParseCXXMemberDeclaratorBeforeInitializer(
+          DeclaratorInfo, VS, BitfieldSize, LateParsedAttrs)) {
     TryConsumeToken(tok::semi);
     return;
   }
@@ -2352,7 +2354,7 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
       ProhibitAttributes(FnAttrs);
     }
 
-    if (DefinitionKind) {
+    if (DefinitionKind != FDK_Declaration) {
       if (!DeclaratorInfo.isFunctionDeclarator()) {
         Diag(DeclaratorInfo.getIdentifierLoc(), diag::err_func_def_no_params);
         ConsumeBrace();
@@ -2528,16 +2530,17 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
     // Parse the next declarator.
     DeclaratorInfo.clear();
     VS.clear();
-    BitfieldSize = true;
-    Init = true;
+    BitfieldSize = ExprResult(/*Invalid=*/false);
+    Init = ExprResult(/*Invalid=*/false);
     HasInitializer = false;
     DeclaratorInfo.setCommaLoc(CommaLoc);
 
     // GNU attributes are allowed before the second and subsequent declarator.
     MaybeParseGNUAttributes(DeclaratorInfo);
 
-    ParseCXXMemberDeclaratorBeforeInitializer(DeclaratorInfo, VS, BitfieldSize,
-                                              LateParsedAttrs);
+    if (ParseCXXMemberDeclaratorBeforeInitializer(
+            DeclaratorInfo, VS, BitfieldSize, LateParsedAttrs))
+      break;
   }
 
   if (ExpectSemi &&
@@ -2607,7 +2610,10 @@ ExprResult Parser::ParseCXXMemberInitializer(Decl *D, bool IsFunction,
         Diag(ConsumeToken(), diag::err_default_special_members);
       return ExprError();
     }
-
+  }
+  if (const auto *PD = dyn_cast_or_null<MSPropertyDecl>(D)) {
+    Diag(Tok, diag::err_ms_property_initializer) << PD;
+    return ExprError();
   }
   return ParseInitializer();
 }
@@ -2701,6 +2707,19 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
     // and the only possible place for them to appertain
     // to the class would be between class-key and class-name.
     CheckMisplacedCXX11Attribute(Attrs, AttrFixitLoc);
+
+    // ParseClassSpecifier() does only a superficial check for attributes before
+    // deciding to call this method.  For example, for
+    // `class C final alignas ([l) {` it will decide that this looks like a
+    // misplaced attribute since it sees `alignas '(' ')'`.  But the actual
+    // attribute parsing code will try to parse the '[' as a constexpr lambda
+    // and consume enough tokens that the alignas parsing code will eat the
+    // opening '{'.  So bail out if the next token isn't one we expect.
+    if (!Tok.is(tok::colon) && !Tok.is(tok::l_brace)) {
+      if (TagDecl)
+        Actions.ActOnTagDefinitionError(getCurScope(), TagDecl);
+      return;
+    }
   }
 
   if (Tok.is(tok::colon)) {
@@ -3131,23 +3150,11 @@ Parser::tryParseExceptionSpecification(bool Delayed,
     ExceptionSpecTokens->push_back(StartTok); // 'throw' or 'noexcept'
     ExceptionSpecTokens->push_back(Tok); // '('
     SpecificationRange.setEnd(ConsumeParen()); // '('
-    
-    if (!ConsumeAndStoreUntil(tok::r_paren, *ExceptionSpecTokens,
-                              /*StopAtSemi=*/true,
-                              /*ConsumeFinalToken=*/true)) {
-      NoexceptExpr = 0;
-      delete ExceptionSpecTokens;
-      ExceptionSpecTokens = 0;
-      return IsNoexcept? EST_BasicNoexcept : EST_DynamicNone;
-    }
+
+    ConsumeAndStoreUntil(tok::r_paren, *ExceptionSpecTokens,
+                         /*StopAtSemi=*/true,
+                         /*ConsumeFinalToken=*/true);
     SpecificationRange.setEnd(Tok.getLocation());
-    
-    // Add the 'stop' token.
-    Token End;
-    End.startToken();
-    End.setKind(tok::cxx_exceptspec_end);
-    End.setLocation(Tok.getLocation());
-    ExceptionSpecTokens->push_back(End);
     return EST_Unparsed;
   }
   
@@ -3368,9 +3375,11 @@ IdentifierInfo *Parser::TryParseCXX11AttributeIdentifier(SourceLocation &Loc) {
   switch (Tok.getKind()) {
   default:
     // Identifiers and keywords have identifier info attached.
-    if (IdentifierInfo *II = Tok.getIdentifierInfo()) {
-      Loc = ConsumeToken();
-      return II;
+    if (!Tok.isAnnotation()) {
+      if (IdentifierInfo *II = Tok.getIdentifierInfo()) {
+        Loc = ConsumeToken();
+        return II;
+      }
     }
     return nullptr;
 
@@ -3465,16 +3474,14 @@ bool Parser::ParseCXX11AttributeArgs(IdentifierInfo *AttrName,
       if (Attr->getMaxArgs() && !NumArgs) {
         // The attribute was allowed to have arguments, but none were provided
         // even though the attribute parsed successfully. This is an error.
-        // FIXME: This is a good place for a fixit which removes the parens.
         Diag(LParenLoc, diag::err_attribute_requires_arguments) << AttrName;
-        return false;
       } else if (!Attr->getMaxArgs()) {
         // The attribute parsed successfully, but was not allowed to have any
         // arguments. It doesn't matter whether any were provided -- the
         // presence of the argument list (even if empty) is diagnosed.
         Diag(LParenLoc, diag::err_cxx11_attribute_forbids_arguments)
-            << AttrName;
-        return false;
+            << AttrName
+            << FixItHint::CreateRemoval(SourceRange(LParenLoc, *EndLoc));
       }
     }
   }

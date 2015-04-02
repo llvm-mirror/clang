@@ -14,10 +14,11 @@
 #ifndef LLVM_CLANG_FRONTEND_CODEGENOPTIONS_H
 #define LLVM_CLANG_FRONTEND_CODEGENOPTIONS_H
 
+#include "clang/Basic/Sanitizers.h"
+#include "llvm/Support/Regex.h"
 #include <memory>
 #include <string>
 #include <vector>
-#include "llvm/Support/Regex.h"
 
 namespace clang {
 
@@ -175,6 +176,13 @@ public:
   /// a given transformation. This is enabled by the -Rpass-analysis=regexp
   /// flag.
   std::shared_ptr<llvm::Regex> OptimizationRemarkAnalysisPattern;
+
+  /// Set of files definining the rules for the symbol rewriting.
+  std::vector<std::string> RewriteMapFiles;
+
+  /// Set of sanitizer checks that are non-fatal (i.e. execution should be
+  /// continued when possible).
+  SanitizerSet SanitizeRecover;
 
 public:
   // Define accessors/mutators for code generation options of enumeration type.

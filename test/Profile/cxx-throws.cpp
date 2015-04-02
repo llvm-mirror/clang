@@ -3,12 +3,12 @@
 // FIXME: Don't seek bb labels, like "if.else"
 // REQUIRES: asserts
 
-// RUN: %clangxx %s -o - -emit-llvm -S -fprofile-instr-generate -target %itanium_abi_triple | FileCheck -check-prefix=PGOGEN %s
-// RUN: %clangxx %s -o - -emit-llvm -S -fprofile-instr-generate -target %itanium_abi_triple | FileCheck -check-prefix=PGOGEN-EXC %s
+// RUN: %clangxx %s -o - -emit-llvm -S -fprofile-instr-generate -fexceptions -target %itanium_abi_triple | FileCheck -check-prefix=PGOGEN %s
+// RUN: %clangxx %s -o - -emit-llvm -S -fprofile-instr-generate -fexceptions -target %itanium_abi_triple | FileCheck -check-prefix=PGOGEN-EXC %s
 
 // RUN: llvm-profdata merge %S/Inputs/cxx-throws.proftext -o %t.profdata
-// RUN: %clang %s -o - -emit-llvm -S -fprofile-instr-use=%t.profdata -target %itanium_abi_triple | FileCheck -check-prefix=PGOUSE %s
-// RUN: %clang %s -o - -emit-llvm -S -fprofile-instr-use=%t.profdata -target %itanium_abi_triple | FileCheck -check-prefix=PGOUSE-EXC %s
+// RUN: %clang %s -o - -emit-llvm -S -fprofile-instr-use=%t.profdata -fcxx-exceptions -target %itanium_abi_triple | FileCheck -check-prefix=PGOUSE %s
+// RUN: %clang %s -o - -emit-llvm -S -fprofile-instr-use=%t.profdata -fcxx-exceptions -target %itanium_abi_triple | FileCheck -check-prefix=PGOUSE-EXC %s
 
 // PGOGEN: @[[THC:__llvm_profile_counters__Z6throwsv]] = hidden global [9 x i64] zeroinitializer
 // PGOGEN-EXC: @[[THC:__llvm_profile_counters__Z6throwsv]] = hidden global [9 x i64] zeroinitializer
@@ -60,12 +60,12 @@ void throws() {
   // PGOUSE: ret void
 }
 
-// PGOUSE-DAG: ![[TH1]] = metadata !{metadata !"branch_weights", i32 101, i32 2}
-// PGOUSE-DAG: ![[TH2]] = metadata !{metadata !"branch_weights", i32 67, i32 35}
-// PGOUSE-DAG: ![[TH3]] = metadata !{metadata !"branch_weights", i32 34, i32 34}
-// PGOUSE-DAG: ![[TH4]] = metadata !{metadata !"branch_weights", i32 18, i32 18}
-// PGOUSE-EXC: ![[TH5]] = metadata !{metadata !"branch_weights", i32 34, i32 18}
-// PGOUSE-DAG: ![[TH6]] = metadata !{metadata !"branch_weights", i32 101, i32 1}
+// PGOUSE-DAG: ![[TH1]] = !{!"branch_weights", i32 101, i32 2}
+// PGOUSE-DAG: ![[TH2]] = !{!"branch_weights", i32 67, i32 35}
+// PGOUSE-DAG: ![[TH3]] = !{!"branch_weights", i32 34, i32 34}
+// PGOUSE-DAG: ![[TH4]] = !{!"branch_weights", i32 18, i32 18}
+// PGOUSE-EXC: ![[TH5]] = !{!"branch_weights", i32 34, i32 18}
+// PGOUSE-DAG: ![[TH6]] = !{!"branch_weights", i32 101, i32 1}
 
 int main(int argc, const char *argv[]) {
   throws();

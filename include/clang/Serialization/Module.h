@@ -125,6 +125,9 @@ public:
   /// \brief The name of the module.
   std::string ModuleName;
 
+  /// \brief The base directory of the module.
+  std::string BaseDirectory;
+
   std::string getTimestampFilename() const {
     return FileName + ".timestamp";
   }
@@ -203,7 +206,7 @@ public:
   llvm::BitstreamCursor InputFilesCursor;
 
   /// \brief Offsets for all of the input file entries in the AST file.
-  const uint32_t *InputFileOffsets;
+  const uint64_t *InputFileOffsets;
 
   /// \brief The input files that have been loaded from this AST file.
   std::vector<InputFile> InputFilesLoaded;

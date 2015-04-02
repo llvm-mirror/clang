@@ -10,11 +10,11 @@
 #ifndef LLVM_CLANG_FRONTEND_COMPILERINSTANCE_H_
 #define LLVM_CLANG_FRONTEND_COMPILERINSTANCE_H_
 
+#include "clang/AST/ASTConsumer.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Frontend/CompilerInvocation.h"
 #include "clang/Frontend/Utils.h"
-#include "clang/AST/ASTConsumer.h"
 #include "clang/Lex/ModuleLoader.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
@@ -121,6 +121,10 @@ class CompilerInstance : public ModuleLoader {
   /// \brief Module names that have an override for the target file.
   llvm::StringMap<std::string> ModuleFileOverrides;
 
+  /// \brief Module files that we've explicitly loaded via \ref loadModuleFile,
+  /// and their dependencies.
+  llvm::StringSet<> ExplicitlyLoadedModuleFiles;
+
   /// \brief The location of the module-import keyword for the last module
   /// import. 
   SourceLocation LastModuleImportLoc;
@@ -157,8 +161,8 @@ class CompilerInstance : public ModuleLoader {
   /// The list of active output files.
   std::list<OutputFile> OutputFiles;
 
-  CompilerInstance(const CompilerInstance &) LLVM_DELETED_FUNCTION;
-  void operator=(const CompilerInstance &) LLVM_DELETED_FUNCTION;
+  CompilerInstance(const CompilerInstance &) = delete;
+  void operator=(const CompilerInstance &) = delete;
 public:
   explicit CompilerInstance(bool BuildingModule = false);
   ~CompilerInstance();
@@ -250,6 +254,9 @@ public:
     return Invocation->getDiagnosticOpts();
   }
 
+  FileSystemOptions &getFileSystemOpts() {
+    return Invocation->getFileSystemOpts();
+  }
   const FileSystemOptions &getFileSystemOpts() const {
     return Invocation->getFileSystemOpts();
   }
@@ -572,6 +579,8 @@ public:
   /// and replace any existing one with it.
   void createPreprocessor(TranslationUnitKind TUKind);
 
+  std::string getSpecificModuleCachePath();
+
   /// Create the AST context.
   void createASTContext();
 
@@ -585,7 +594,7 @@ public:
   /// Create an external AST source to read a PCH file.
   ///
   /// \return - The new object on success, or null on failure.
-  static ExternalASTSource *createPCHExternalASTSource(
+  static IntrusiveRefCntPtr<ASTReader> createPCHExternalASTSource(
       StringRef Path, const std::string &Sysroot, bool DisablePCHValidation,
       bool AllowPCHWithCompilerErrors, Preprocessor &PP, ASTContext &Context,
       void *DeserializationListener, bool OwnDeserializationListener,

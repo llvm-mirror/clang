@@ -34,11 +34,11 @@
 #include "llvm/TableGen/Record.h"
 #include "llvm/TableGen/SetTheory.h"
 #include "llvm/TableGen/TableGenBackend.h"
-#include <string>
-#include <sstream>
-#include <vector>
-#include <map>
 #include <algorithm>
+#include <map>
+#include <sstream>
+#include <string>
+#include <vector>
 using namespace llvm;
 
 namespace {
@@ -1393,7 +1393,7 @@ void Intrinsic::emitBody(StringRef CallPrefix) {
     }
   }
 
-  assert(Lines.size() && "Empty def?");
+  assert(!Lines.empty() && "Empty def?");
   if (!RetVar.getType().isVoid())
     Lines.back().insert(0, RetVar.getName() + " = ");
 

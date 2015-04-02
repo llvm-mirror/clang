@@ -76,6 +76,10 @@ SANITIZER("unsigned-integer-overflow", UnsignedIntegerOverflow)
 // DataFlowSanitizer
 SANITIZER("dataflow", DataFlow)
 
+// Control Flow Integrity
+SANITIZER("cfi-vptr", CFIVptr)
+SANITIZER_GROUP("cfi", CFI, CFIVptr)
+
 // -fsanitize=undefined includes all the sanitizers which have low overhead, no
 // ABI or address space layout implications, and only catch undefined behavior.
 SANITIZER_GROUP("undefined", Undefined,
@@ -101,6 +105,10 @@ SANITIZER_GROUP("integer", Integer,
 
 SANITIZER("local-bounds", LocalBounds)
 SANITIZER_GROUP("bounds", Bounds, ArrayBounds | LocalBounds)
+
+// Magic group, containing all sanitizers. For example, "-fno-sanitize=all"
+// can be used to disable all the sanitizers.
+SANITIZER_GROUP("all", All, ~0)
 
 #undef SANITIZER
 #undef SANITIZER_GROUP

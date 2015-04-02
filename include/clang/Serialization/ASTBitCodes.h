@@ -35,7 +35,7 @@ namespace clang {
     /// Version 4 of AST files also requires that the version control branch and
     /// revision match exactly, since there is no backward compatibility of
     /// AST files at this time.
-    const unsigned VERSION_MAJOR = 5;
+    const unsigned VERSION_MAJOR = 6;
 
     /// \brief AST file minor version number supported by this version of
     /// Clang.
@@ -291,7 +291,10 @@ namespace clang {
       MODULE_MAP_FILE = 14,
 
       /// \brief Record code for the signature that identifiers this AST file.
-      SIGNATURE = 15
+      SIGNATURE = 15,
+
+      /// \brief Record code for the module build directory.
+      MODULE_DIRECTORY = 16,
     };
 
     /// \brief Record types that occur within the input-files block
@@ -1091,13 +1094,13 @@ namespace clang {
     ///
     /// These constants describe the records that describe statements
     /// or expressions. These records  occur within type and declarations
-    /// block, so they begin with record values of 100.  Each constant 
+    /// block, so they begin with record values of 128.  Each constant 
     /// describes a record for a specific statement or expression class in the
     /// AST.
     enum StmtCode {
       /// \brief A marker record that indicates that we are at the end
       /// of an expression.
-      STMT_STOP = 100,
+      STMT_STOP = 128,
       /// \brief A NULL expression.
       STMT_NULL_PTR,
       /// \brief A reference to a previously [de]serialized Stmt record.

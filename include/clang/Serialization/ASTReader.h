@@ -153,6 +153,7 @@ public:
   /// \returns true to indicate the header search options are invalid, or false
   /// otherwise.
   virtual bool ReadHeaderSearchOptions(const HeaderSearchOptions &HSOpts,
+                                       StringRef SpecificModuleCachePath,
                                        bool Complain) {
     return false;
   }
@@ -230,6 +231,7 @@ public:
                              bool Complain) override;
 
   bool ReadHeaderSearchOptions(const HeaderSearchOptions &HSOpts,
+                               StringRef SpecificModuleCachePath,
                                bool Complain) override;
   bool ReadPreprocessorOptions(const PreprocessorOptions &PPOpts,
                                bool Complain,
@@ -261,6 +263,9 @@ public:
                              bool Complain) override;
   bool ReadPreprocessorOptions(const PreprocessorOptions &PPOpts, bool Complain,
                                std::string &SuggestedPredefines) override;
+  bool ReadHeaderSearchOptions(const HeaderSearchOptions &HSOpts,
+                               StringRef SpecificModuleCachePath,
+                               bool Complain) override;
   void ReadCounter(const serialization::ModuleFile &M, unsigned Value) override;
 
 private:
@@ -434,6 +439,12 @@ private:
   /// to apply once we finish processing an import.
   llvm::SmallVector<std::pair<serialization::GlobalDeclID, Decl*>, 16>
       PendingUpdateRecords;
+
+  enum class PendingFakeDefinitionKind { NotFake, Fake, FakeLoaded };
+
+  /// \brief The DefinitionData pointers that we faked up for class definitions
+  /// that we needed but hadn't loaded yet.
+  llvm::DenseMap<void *, PendingFakeDefinitionKind> PendingFakeDefinitionData;
 
   struct ReplacedDeclInfo {
     ModuleFile *Mod;
@@ -1071,8 +1082,8 @@ private:
     ASTReader &Reader;
     enum ReadingKind PrevKind;
 
-    ReadingKindTracker(const ReadingKindTracker &) LLVM_DELETED_FUNCTION;
-    void operator=(const ReadingKindTracker &) LLVM_DELETED_FUNCTION;
+    ReadingKindTracker(const ReadingKindTracker &) = delete;
+    void operator=(const ReadingKindTracker &) = delete;
 
   public:
     ReadingKindTracker(enum ReadingKind newKind, ASTReader &reader)
@@ -1113,12 +1124,11 @@ private:
   serialization::InputFile getInputFile(ModuleFile &F, unsigned ID,
                                         bool Complain = true);
 
-  /// \brief Get a FileEntry out of stored-in-PCH filename, making sure we take
-  /// into account all the necessary relocations.
-  const FileEntry *getFileEntry(StringRef filename);
+public:
+  void ResolveImportedPath(ModuleFile &M, std::string &Filename);
+  static void ResolveImportedPath(std::string &Filename, StringRef Prefix);
 
-  void MaybeAddSystemRootToFilename(ModuleFile &M, std::string &Filename);
-
+private:
   struct ImportedModule {
     ModuleFile *Mod;
     ModuleFile *ImportedBy;
@@ -1141,7 +1151,7 @@ private:
                                  const ModuleFile *ImportedBy,
                                  unsigned ClientLoadCapabilities);
   ASTReadResult ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities);
-  bool ParseLineTable(ModuleFile &F, SmallVectorImpl<uint64_t> &Record);
+  bool ParseLineTable(ModuleFile &F, const RecordData &Record);
   bool ReadSourceManagerBlock(ModuleFile &F);
   llvm::BitstreamCursor &SLocCursorForID(int ID);
   SourceLocation getImportLocation(ModuleFile *F);
@@ -1213,66 +1223,38 @@ private:
 
   /// \brief Returns (begin, end) pair for the preprocessed entities of a
   /// particular module.
-  std::pair<PreprocessingRecord::iterator, PreprocessingRecord::iterator>
-    getModulePreprocessedEntities(ModuleFile &Mod) const;
+  llvm::iterator_range<PreprocessingRecord::iterator>
+  getModulePreprocessedEntities(ModuleFile &Mod) const;
 
-  class ModuleDeclIterator {
+  class ModuleDeclIterator
+      : public llvm::iterator_adaptor_base<
+            ModuleDeclIterator, const serialization::LocalDeclID *,
+            std::random_access_iterator_tag, const Decl *, ptrdiff_t,
+            const Decl *, const Decl *> {
     ASTReader *Reader;
     ModuleFile *Mod;
-    const serialization::LocalDeclID *Pos;
 
   public:
-    typedef const Decl *value_type;
-    typedef value_type&         reference;
-    typedef value_type*         pointer;
-
-    ModuleDeclIterator() : Reader(nullptr), Mod(nullptr), Pos(nullptr) { }
+    ModuleDeclIterator()
+        : iterator_adaptor_base(nullptr), Reader(nullptr), Mod(nullptr) {}
 
     ModuleDeclIterator(ASTReader *Reader, ModuleFile *Mod,
                        const serialization::LocalDeclID *Pos)
-      : Reader(Reader), Mod(Mod), Pos(Pos) { }
+        : iterator_adaptor_base(Pos), Reader(Reader), Mod(Mod) {}
 
     value_type operator*() const {
-      return Reader->GetDecl(Reader->getGlobalDeclID(*Mod, *Pos));
+      return Reader->GetDecl(Reader->getGlobalDeclID(*Mod, *I));
     }
+    value_type operator->() const { return **this; }
 
-    ModuleDeclIterator &operator++() {
-      ++Pos;
-      return *this;
-    }
-
-    ModuleDeclIterator operator++(int) {
-      ModuleDeclIterator Prev(*this);
-      ++Pos;
-      return Prev;
-    }
-
-    ModuleDeclIterator &operator--() {
-      --Pos;
-      return *this;
-    }
-
-    ModuleDeclIterator operator--(int) {
-      ModuleDeclIterator Prev(*this);
-      --Pos;
-      return Prev;
-    }
-
-    friend bool operator==(const ModuleDeclIterator &LHS,
-                           const ModuleDeclIterator &RHS) {
-      assert(LHS.Reader == RHS.Reader && LHS.Mod == RHS.Mod);
-      return LHS.Pos == RHS.Pos;
-    }
-
-    friend bool operator!=(const ModuleDeclIterator &LHS,
-                           const ModuleDeclIterator &RHS) {
-      assert(LHS.Reader == RHS.Reader && LHS.Mod == RHS.Mod);
-      return LHS.Pos != RHS.Pos;
+    bool operator==(const ModuleDeclIterator &RHS) const {
+      assert(Reader == RHS.Reader && Mod == RHS.Mod);
+      return I == RHS.I;
     }
   };
 
-  std::pair<ModuleDeclIterator, ModuleDeclIterator>
-    getModuleFileLevelDecls(ModuleFile &Mod);
+  llvm::iterator_range<ModuleDeclIterator>
+  getModuleFileLevelDecls(ModuleFile &Mod);
 
   void PassInterestingDeclsToConsumer();
   void PassInterestingDeclToConsumer(Decl *D);
@@ -1298,8 +1280,8 @@ private:
   void Error(unsigned DiagID, StringRef Arg1 = StringRef(),
              StringRef Arg2 = StringRef());
 
-  ASTReader(const ASTReader &) LLVM_DELETED_FUNCTION;
-  void operator=(const ASTReader &) LLVM_DELETED_FUNCTION;
+  ASTReader(const ASTReader &) = delete;
+  void operator=(const ASTReader &) = delete;
 public:
   /// \brief Load the AST file and validate its contents against the given
   /// Preprocessor.
@@ -1519,7 +1501,8 @@ public:
                                   FileManager &FileMgr,
                                   const LangOptions &LangOpts,
                                   const TargetOptions &TargetOpts,
-                                  const PreprocessorOptions &PPOpts);
+                                  const PreprocessorOptions &PPOpts,
+                                  std::string ExistingModuleCachePath);
 
   /// \brief Returns the suggested contents of the predefines buffer,
   /// which contains a (typically-empty) subset of the predefines
@@ -2044,6 +2027,9 @@ public:
 
   // \brief Read a string
   static std::string ReadString(const RecordData &Record, unsigned &Idx);
+
+  // \brief Read a path
+  std::string ReadPath(ModuleFile &F, const RecordData &Record, unsigned &Idx);
 
   /// \brief Read a version tuple.
   static VersionTuple ReadVersionTuple(const RecordData &Record, unsigned &Idx);

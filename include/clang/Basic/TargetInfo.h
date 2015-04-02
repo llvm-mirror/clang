@@ -370,6 +370,15 @@ public:
   /// \brief Return the maximum width lock-free atomic operation which can be
   /// inlined given the supported features of the given target.
   unsigned getMaxAtomicInlineWidth() const { return MaxAtomicInlineWidth; }
+  /// \brief Returns true if the given target supports lock-free atomic
+  /// operations at the specified width and alignment.
+  virtual bool hasBuiltinAtomic(uint64_t AtomicSizeInBits,
+                                uint64_t AlignmentInBits) const {
+    return AtomicSizeInBits <= AlignmentInBits &&
+           AtomicSizeInBits <= getMaxAtomicInlineWidth() &&
+           (AtomicSizeInBits <= getCharWidth() ||
+            llvm::isPowerOf2_64(AtomicSizeInBits / getCharWidth()));
+  }
 
   /// \brief Return the maximum vector alignment supported for the given target.
   unsigned getMaxVectorAlign() const { return MaxVectorAlign; }
@@ -519,22 +528,31 @@ public:
       CI_None = 0x00,
       CI_AllowsMemory = 0x01,
       CI_AllowsRegister = 0x02,
-      CI_ReadWrite = 0x04,       // "+r" output constraint (read and write).
-      CI_HasMatchingInput = 0x08 // This output operand has a matching input.
+      CI_ReadWrite = 0x04,         // "+r" output constraint (read and write).
+      CI_HasMatchingInput = 0x08,  // This output operand has a matching input.
+      CI_ImmediateConstant = 0x10, // This operand must be an immediate constant
+      CI_EarlyClobber = 0x20,      // "&" output constraint (early clobber).
     };
     unsigned Flags;
     int TiedOperand;
+    struct {
+      int Min;
+      int Max;
+    } ImmRange;
 
     std::string ConstraintStr;  // constraint: "=rm"
     std::string Name;           // Operand name: [foo] with no []'s.
   public:
     ConstraintInfo(StringRef ConstraintStr, StringRef Name)
-      : Flags(0), TiedOperand(-1), ConstraintStr(ConstraintStr.str()),
-      Name(Name.str()) {}
+        : Flags(0), TiedOperand(-1), ConstraintStr(ConstraintStr.str()),
+          Name(Name.str()) {
+      ImmRange.Min = ImmRange.Max = 0;
+    }
 
     const std::string &getConstraintStr() const { return ConstraintStr; }
     const std::string &getName() const { return Name; }
     bool isReadWrite() const { return (Flags & CI_ReadWrite) != 0; }
+    bool earlyClobber() { return (Flags & CI_EarlyClobber) != 0; }
     bool allowsRegister() const { return (Flags & CI_AllowsRegister) != 0; }
     bool allowsMemory() const { return (Flags & CI_AllowsMemory) != 0; }
 
@@ -553,10 +571,22 @@ public:
       return (unsigned)TiedOperand;
     }
 
+    bool requiresImmediateConstant() const {
+      return (Flags & CI_ImmediateConstant) != 0;
+    }
+    int getImmConstantMin() const { return ImmRange.Min; }
+    int getImmConstantMax() const { return ImmRange.Max; }
+
     void setIsReadWrite() { Flags |= CI_ReadWrite; }
+    void setEarlyClobber() { Flags |= CI_EarlyClobber; }
     void setAllowsMemory() { Flags |= CI_AllowsMemory; }
     void setAllowsRegister() { Flags |= CI_AllowsRegister; }
     void setHasMatchingInput() { Flags |= CI_HasMatchingInput; }
+    void setRequiresImmediate(int Min, int Max) {
+      Flags |= CI_ImmediateConstant;
+      ImmRange.Min = Min;
+      ImmRange.Max = Max;
+    }
 
     /// \brief Indicate that this is an input operand that is tied to
     /// the specified output operand. 
@@ -606,6 +636,12 @@ public:
     if (*Constraint == 'p')
       return std::string("r");
     return std::string(1, *Constraint);
+  }
+
+  /// \brief Returns true if NaN encoding is IEEE 754-2008.
+  /// Only MIPS allows a different encoding.
+  virtual bool isNan2008() const {
+    return true;
   }
 
   /// \brief Returns a string of target-specific clobbers, in LLVM format.
@@ -806,7 +842,8 @@ public:
 
   enum CallingConvCheckResult {
     CCCR_OK,
-    CCCR_Warning
+    CCCR_Warning,
+    CCCR_Ignore,
   };
 
   /// \brief Determines whether a given calling convention is valid for the

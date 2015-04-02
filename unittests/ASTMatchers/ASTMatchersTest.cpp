@@ -379,6 +379,21 @@ TEST(DeclarationMatcher, hasDeclContext) {
   EXPECT_TRUE(matches("class D{};", decl(hasDeclContext(decl()))));
 }
 
+TEST(DeclarationMatcher, translationUnitDecl) {
+  const std::string Code = "int MyVar1;\n"
+                           "namespace NameSpace {\n"
+                           "int MyVar2;\n"
+                           "}  // namespace NameSpace\n";
+  EXPECT_TRUE(matches(
+      Code, varDecl(hasName("MyVar1"), hasDeclContext(translationUnitDecl()))));
+  EXPECT_FALSE(matches(
+      Code, varDecl(hasName("MyVar2"), hasDeclContext(translationUnitDecl()))));
+  EXPECT_TRUE(matches(
+      Code,
+      varDecl(hasName("MyVar2"),
+              hasDeclContext(decl(hasDeclContext(translationUnitDecl()))))));
+}
+
 TEST(DeclarationMatcher, LinkageSpecification) {
   EXPECT_TRUE(matches("extern \"C\" { void foo() {}; }", linkageSpecDecl()));
   EXPECT_TRUE(notMatches("void foo() {};", linkageSpecDecl()));
@@ -2104,8 +2119,16 @@ TEST(Matcher, FloatLiterals) {
   EXPECT_TRUE(matches("double i = 10.0;", HasFloatLiteral));
   EXPECT_TRUE(matches("double i = 10.0L;", HasFloatLiteral));
   EXPECT_TRUE(matches("double i = 1e10;", HasFloatLiteral));
+  EXPECT_TRUE(matches("double i = 5.0;", floatLiteral(equals(5.0))));
+  EXPECT_TRUE(matches("double i = 5.0;", floatLiteral(equals(5.0f))));
+  EXPECT_TRUE(
+      matches("double i = 5.0;", floatLiteral(equals(llvm::APFloat(5.0)))));
 
   EXPECT_TRUE(notMatches("float i = 10;", HasFloatLiteral));
+  EXPECT_TRUE(notMatches("double i = 5.0;", floatLiteral(equals(6.0))));
+  EXPECT_TRUE(notMatches("double i = 5.0;", floatLiteral(equals(6.0f))));
+  EXPECT_TRUE(
+      notMatches("double i = 5.0;", floatLiteral(equals(llvm::APFloat(6.0)))));
 }
 
 TEST(Matcher, NullPtrLiteral) {
@@ -3136,6 +3159,12 @@ TEST(InitListExpression, MatchesInitListExpression) {
                       initListExpr(hasType(asString("int [2]")))));
   EXPECT_TRUE(matches("struct B { int x, y; }; B b = { 5, 6 };",
                       initListExpr(hasType(recordDecl(hasName("B"))))));
+  EXPECT_TRUE(matches("struct S { S(void (*a)()); };"
+                      "void f();"
+                      "S s[1] = { &f };",
+                      declRefExpr(to(functionDecl(hasName("f"))))));
+  EXPECT_TRUE(
+      matches("int i[1] = {42, [0] = 43};", integerLiteral(equals(42))));
 }
 
 TEST(UsingDeclaration, MatchesUsingDeclarations) {
@@ -3855,6 +3884,11 @@ TEST(HasParent, NoDuplicateParents) {
 
 TEST(TypeMatching, MatchesTypes) {
   EXPECT_TRUE(matches("struct S {};", qualType().bind("loc")));
+}
+
+TEST(TypeMatching, MatchesVoid) {
+  EXPECT_TRUE(
+      matches("struct S { void func(); };", methodDecl(returns(voidType()))));
 }
 
 TEST(TypeMatching, MatchesArrayTypes) {

@@ -42,6 +42,13 @@
 // RUN: %clang_cl /Gy /Gy- -### -- %s 2>&1 | FileCheck -check-prefix=Gy_ %s
 // Gy_-NOT: -ffunction-sections
 
+// RUN: %clang_cl /Gs -### -- %s 2>&1 | FileCheck -check-prefix=Gs %s
+// Gs: "-mstack-probe-size=0"
+// RUN: %clang_cl /Gs0 -### -- %s 2>&1 | FileCheck -check-prefix=Gs0 %s
+// Gs0: "-mstack-probe-size=0"
+// RUN: %clang_cl /Gs4096 -### -- %s 2>&1 | FileCheck -check-prefix=Gs4096 %s
+// Gs4096: "-mstack-probe-size=4096"
+
 // RUN: %clang_cl /Gw -### -- %s 2>&1 | FileCheck -check-prefix=Gw %s
 // Gw: -fdata-sections
 
@@ -116,6 +123,12 @@
 // RUN: %clang_cl /vmg /vmm /vms -### -- %s 2>&1 | FileCheck -check-prefix=VMX %s
 // VMX: '/vms' not allowed with '/vmm'
 
+// RUN: %clang_cl /volatile:iso -### -- %s 2>&1 | FileCheck -check-prefix=VOLATILE-ISO %s
+// VOLATILE-ISO-NOT: "-fms-volatile"
+
+// RUN: %clang_cl /volatile:ms -### -- %s 2>&1 | FileCheck -check-prefix=VOLATILE-MS %s
+// VOLATILE-MS: "-fms-volatile"
+
 // RUN: %clang_cl /W0 -### -- %s 2>&1 | FileCheck -check-prefix=W0 %s
 // W0: -w
 
@@ -164,17 +177,22 @@
 // NOSTRICT: "-relaxed-aliasing"
 
 // For some warning ids, we can map from MSVC warning to Clang warning.
-// RUN: %clang_cl -wd4005 -### -- %s 2>&1 | FileCheck -check-prefix=wd4005 %s
-// wd4005: "-cc1"
-// wd4005: "-Wno-macro-redefined"
+// RUN: %clang_cl -wd4005 -wd4996 -### -- %s 2>&1 | FileCheck -check-prefix=Wno %s
+// Wno: "-cc1"
+// Wno: "-Wno-macro-redefined"
+// Wno: "-Wno-deprecated-declarations"
 
 // Ignored options. Check that we don't get "unused during compilation" errors.
 // (/Zs is for syntax-only)
 // RUN: %clang_cl /Zs \
 // RUN:    /analyze- \
+// RUN:    /cgthreads4 \
+// RUN:    /cgthreads8 \
 // RUN:    /d2Zi+ \
 // RUN:    /errorReport:foo \
+// RUN:    /Fdfoo \
 // RUN:    /FS \
+// RUN:    /Gd \
 // RUN:    /GF \
 // RUN:    /GS- \
 // RUN:    /kernel- \
@@ -185,12 +203,9 @@
 // RUN:    /sdl \
 // RUN:    /sdl- \
 // RUN:    /vmg \
+// RUN:    /volatile:iso \
 // RUN:    /w12345 \
 // RUN:    /wd1234 \
-// RUN:    /Zc:forScope \
-// RUN:    /Zc:wchar_t \
-// RUN:    /Zc:inline \
-// RUN:    /Zc:rvalueCast \
 // RUN:    /Zo \
 // RUN:    /Zo- \
 // RUN:    -### -- %s 2>&1 | FileCheck -check-prefix=IGNORED %s
@@ -223,7 +238,6 @@
 // RUN:     /FAu \
 // RUN:     /favor:blend \
 // RUN:     /FC \
-// RUN:     /Fdfoo \
 // RUN:     /Fifoo \
 // RUN:     /Fmfoo \
 // RUN:     /FpDebug\main.pch \
@@ -245,9 +259,9 @@
 // RUN:     /Gm- \
 // RUN:     /Gr \
 // RUN:     /GS \
-// RUN:     /Gs1000 \
 // RUN:     /GT \
 // RUN:     /GX \
+// RUN:     /Gv \
 // RUN:     /Gz \
 // RUN:     /GZ \
 // RUN:     /H \
@@ -266,7 +280,7 @@
 // RUN:     /Qvec-report:2 \
 // RUN:     /u \
 // RUN:     /V \
-// RUN:     /volatile \
+// RUN:     /volatile:ms \
 // RUN:     /wfoo \
 // RUN:     /WL \
 // RUN:     /Wp64 \
@@ -280,8 +294,6 @@
 // RUN:     /Yustdafx.h \
 // RUN:     /Z7 \
 // RUN:     /Za \
-// RUN:     /Zc:auto \
-// RUN:     /Zc:wchar_t- \
 // RUN:     /Ze \
 // RUN:     /Zg \
 // RUN:     /Zi \

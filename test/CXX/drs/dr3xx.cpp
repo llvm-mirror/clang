@@ -206,7 +206,7 @@ namespace dr313 { // dr313: dup 299 c++11
 #endif
 }
 
-namespace dr314 { // dr314: dup 1710
+namespace dr314 { // FIXME 314: dup 1710
   template<typename T> struct A {
     template<typename U> struct B {};
   };
@@ -505,7 +505,7 @@ namespace dr341 {
 
 // dr342: na
 
-namespace dr343 { // dr343: no
+namespace dr343 { // FIXME 343: no
   // FIXME: dup 1710
   template<typename T> struct A {
     template<typename U> struct B {};
@@ -1219,7 +1219,7 @@ namespace dr391 { // dr391: yes c++11
 
 namespace dr395 { // dr395: yes
   struct S {
-    template <typename T, int N>(&operator T())[N]; // expected-error {{must use a typedef}}
+    template <typename T, int N>(&operator T())[N]; // expected-error {{cannot specify any part of a return type}}
     template <typename T, int N> operator(T (&)[N])(); // expected-error {{expected ')'}} expected-note {{to match this '('}} expected-error +{{}}
     template <typename T> operator T *() const { return 0; }
     template <typename T, typename U> operator T U::*() const { return 0; }

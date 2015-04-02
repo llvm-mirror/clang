@@ -1,5 +1,6 @@
 // REQUIRES: r600-registered-target
 // RUN: %clang_cc1 -triple r600-unknown-unknown -S -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple amdgcn-unknown-unknown -S -emit-llvm -o - %s | FileCheck %s
 
 #pragma OPENCL EXTENSION cl_khr_fp64 : enable
 
@@ -125,4 +126,18 @@ void test_ldexp_f32(global float* out, float a, int b)
 void test_ldexp_f64(global double* out, double a, int b)
 {
   *out = __builtin_amdgpu_ldexp(a, b);
+}
+
+// CHECK-LABEL: @test_class_f32
+// CHECK: call i1 @llvm.AMDGPU.class.f32
+void test_class_f32(global float* out, float a, int b)
+{
+  *out = __builtin_amdgpu_classf(a, b);
+}
+
+// CHECK-LABEL: @test_class_f64
+// CHECK: call i1 @llvm.AMDGPU.class.f64
+void test_class_f64(global double* out, double a, int b)
+{
+  *out = __builtin_amdgpu_class(a, b);
 }

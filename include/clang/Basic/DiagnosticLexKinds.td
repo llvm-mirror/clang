@@ -290,6 +290,11 @@ def note_pp_ambiguous_macro_chosen : Note<
   "expanding this definition of %0">;
 def note_pp_ambiguous_macro_other : Note<
   "other definition of %0">;
+def warn_pp_macro_hides_keyword : Extension<
+  "keyword is hidden by macro definition">, InGroup<KeywordAsMacro>;
+def warn_pp_macro_is_reserved_id : Warning<
+  "macro name is a reserved identifier">, DefaultIgnore,
+  InGroup<ReservedIdAsMacro>;
 
 def pp_invalid_string_literal : Warning<
   "invalid string literal, ignoring final '\\'">;
@@ -327,7 +332,7 @@ def warn_cxx98_compat_variadic_macro : Warning<
   InGroup<CXX98CompatPedantic>, DefaultIgnore;
 def ext_named_variadic_macro : Extension<
   "named variadic macros are a GNU extension">, InGroup<VariadicMacros>;
-def err_embedded_include : Error<
+def err_embedded_directive : Error<
   "embedding a #%0 directive within macro arguments is not supported">;
 def ext_embedded_directive : Extension<
   "embedding a directive within macro arguments has undefined behavior">,
@@ -620,9 +625,10 @@ def warn_uncovered_module_header : Warning<
   InGroup<IncompleteUmbrella>;
 def err_expected_id_building_module : Error<
   "expected a module name in '__building_module' expression">;
-def error_use_of_private_header_outside_module : Error<
-  "use of private header from outside its module: '%0'">;
-def error_undeclared_use_of_module : Error<
+def warn_use_of_private_header_outside_module : Warning<
+  "use of private header from outside its module: '%0'">,
+  InGroup<DiagGroup<"private-header">>, DefaultError;
+def err_undeclared_use_of_module : Error<
   "module %0 does not depend on a module exporting '%1'">;
 def warn_non_modular_include_in_framework_module : Warning<
   "include of non-modular header inside framework module '%0'">,

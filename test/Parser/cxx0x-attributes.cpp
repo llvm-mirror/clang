@@ -86,6 +86,10 @@ class [[]] [[]] final_class_another
   [[]] [[]] alignas(16) final // expected-error {{an attribute list cannot appear here}}
   [[]] [[]] alignas(16) [[]]{}; // expected-error {{an attribute list cannot appear here}}
 
+// The diagnostics here don't matter much, this just shouldn't crash:
+class C final [[deprecated(l]] {}); // expected-error {{use of undeclared identifier}} expected-error {{expected ']'}} expected-error {{an attribute list cannot appear here}} expected-error {{expected unqualified-id}}
+class D final alignas ([l) {}]{}); // expected-error {{expected ',' or ']' in lambda capture list}} expected-error {{an attribute list cannot appear here}}
+
 [[]] struct with_init_declarators {} init_declarator;
 [[]] struct no_init_declarators; // expected-error {{an attribute list cannot appear here}}
 template<typename> [[]] struct no_init_declarators_template; // expected-error {{an attribute list cannot appear here}}
@@ -284,6 +288,7 @@ namespace arguments {
   void f[[gnu::format(printf, 1, 2)]](const char*, ...);
   void g() [[unknown::foo(ignore arguments for unknown attributes, even with symbols!)]]; // expected-warning {{unknown attribute 'foo' ignored}}
   [[deprecated("with argument")]] int i;
+  // expected-warning@-1 {{use of the 'deprecated' attribute is a C++14 extension}}
 }
 
 // Forbid attributes on decl specifiers.
@@ -326,7 +331,18 @@ namespace GccASan {
 
 namespace {
   [[deprecated]] void bar();
+  // expected-warning@-1 {{use of the 'deprecated' attribute is a C++14 extension}}
   [[deprecated("hello")]] void baz();
-  [[deprecated()]] void foo(); // expected-error {{parentheses must be omitted if 'deprecated' attribute's argument list is empty}}
+  // expected-warning@-1 {{use of the 'deprecated' attribute is a C++14 extension}}
+  [[deprecated()]] void foo();
+  // expected-error@-1 {{parentheses must be omitted if 'deprecated' attribute's argument list is empty}}
+  // expected-warning@-2 {{use of the 'deprecated' attribute is a C++14 extension}}
   [[gnu::deprecated()]] void quux();
+}
+
+namespace {
+[[ // expected-error {{expected ']'}}
+#pragma pack(pop)
+deprecated
+]] void bad();
 }

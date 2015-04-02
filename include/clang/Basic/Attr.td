@@ -115,6 +115,10 @@ def DeclBase : AttrSubject;
 def FunctionLike : SubsetSubject<DeclBase,
                                   [{S->getFunctionType(false) != NULL}]>;
 
+def OpenCLKernelFunction : SubsetSubject<Function, [{
+  S->hasAttr<OpenCLKernelAttr>()
+}]>;
+
 // HasFunctionProto is a more strict version of FunctionLike, so it should
 // never be specified in a Subjects list along with FunctionLike (due to the
 // inclusive nature of subject testing).
@@ -341,6 +345,8 @@ def AddressSpace : TypeAttr {
 def Alias : Attr {
   let Spellings = [GCC<"alias">];
   let Args = [StringArgument<"Aliasee">];
+  let Subjects = SubjectList<[Function, GlobalVar], ErrorDiag,
+                             "ExpectedFunctionGlobalVarMethodOrProperty">;
   let Documentation = [Undocumented];
 }
 
@@ -784,9 +790,9 @@ def IBOutletCollection : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
-def Malloc : InheritableAttr {
-  let Spellings = [GCC<"malloc">];
-//  let Subjects = [Function];
+def Restrict : InheritableAttr {
+  let Spellings = [Declspec<"restrict">, GCC<"malloc">];
+  let Subjects = SubjectList<[Function]>;
   let Documentation = [Undocumented];
 }
 
@@ -885,6 +891,38 @@ def NoMips16 : InheritableAttr, TargetSpecificAttr<TargetMips> {
   let Documentation = [Undocumented];
 }
 
+// This is not a TargetSpecificAttr so that is silently accepted and
+// ignored on other targets as encouraged by the OpenCL spec.
+//
+// See OpenCL 1.2 6.11.5: "It is our intention that a particular
+// implementation of OpenCL be free to ignore all attributes and the
+// resulting executable binary will produce the same result."
+//
+// However, only AMD GPU targets will emit the corresponding IR
+// attribute.
+//
+// FIXME: This provides a sub-optimal error message if you attempt to
+// use this in CUDA, since CUDA does not use the same terminology.
+def AMDGPUNumVGPR : InheritableAttr {
+  let Spellings = [GNU<"amdgpu_num_vgpr">];
+  let Args = [UnsignedArgument<"NumVGPR">];
+  let Documentation = [AMDGPUNumVGPRDocs];
+
+// FIXME: This should be for OpenCLKernelFunction, but is not to
+// workaround needing to see kernel attribute before others to know if
+// this should be rejected on non-kernels.
+  let Subjects = SubjectList<[Function], ErrorDiag,
+                             "ExpectedKernelFunction">;
+}
+
+def AMDGPUNumSGPR : InheritableAttr {
+  let Spellings = [GNU<"amdgpu_num_sgpr">];
+  let Args = [UnsignedArgument<"NumSGPR">];
+  let Documentation = [AMDGPUNumSGPRDocs];
+  let Subjects = SubjectList<[Function], ErrorDiag,
+                              "ExpectedKernelFunction">;
+}
+
 def NoSplitStack : InheritableAttr {
   let Spellings = [GCC<"no_split_stack">];
   let Subjects = SubjectList<[Function], ErrorDiag>;
@@ -943,7 +981,8 @@ def NoThrow : InheritableAttr {
 
 def ObjCBridge : InheritableAttr {
   let Spellings = [GNU<"objc_bridge">];
-  let Subjects = SubjectList<[Record], ErrorDiag>;
+  let Subjects = SubjectList<[Record, TypedefName], ErrorDiag,
+                             "ExpectedStructOrUnionOrTypedef">;
   let Args = [IdentifierArgument<"BridgedType">];
   let Documentation = [Undocumented];
 }
@@ -1100,12 +1139,6 @@ def Ownership : InheritableAttr {
 def Packed : InheritableAttr {
   let Spellings = [GCC<"packed">];
 //  let Subjects = [Tag, Field];
-  let Documentation = [Undocumented];
-}
-
-def PnaclCall : InheritableAttr {
-  let Spellings = [GNU<"pnaclcall">];
-//  let Subjects = [Function, ObjCMethod];
   let Documentation = [Undocumented];
 }
 
@@ -1728,11 +1761,17 @@ def TypeTagForDatatype : InheritableAttr {
 
 // Microsoft-related attributes
 
-def MsProperty : IgnoredAttr {
+def MSNoVTable : InheritableAttr {
+  let Spellings = [Declspec<"novtable">];
+  let Subjects = SubjectList<[CXXRecord]>;
+  let Documentation = [MSNoVTableDocs];
+}
+
+def : IgnoredAttr {
   let Spellings = [Declspec<"property">];
 }
 
-def MsStruct : InheritableAttr {
+def MSStruct : InheritableAttr {
   let Spellings = [GCC<"ms_struct">];
   let Subjects = SubjectList<[Record]>;
   let Documentation = [Undocumented];

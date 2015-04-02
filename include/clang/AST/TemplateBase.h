@@ -18,8 +18,8 @@
 #include "clang/AST/TemplateName.h"
 #include "clang/AST/Type.h"
 #include "llvm/ADT/APSInt.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -114,7 +114,7 @@ private:
     struct TV TypeOrValue;
   };
 
-  TemplateArgument(TemplateName, bool) LLVM_DELETED_FUNCTION;
+  TemplateArgument(TemplateName, bool) = delete;
   
 public:
   /// \brief Construct an empty, invalid template argument.

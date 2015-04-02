@@ -315,6 +315,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(throughUsingDecl);
   REGISTER_MATCHER(throwExpr);
   REGISTER_MATCHER(to);
+  REGISTER_MATCHER(translationUnitDecl);
   REGISTER_MATCHER(tryStmt);
   REGISTER_MATCHER(type);
   REGISTER_MATCHER(typedefDecl);
@@ -332,6 +333,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(valueDecl);
   REGISTER_MATCHER(varDecl);
   REGISTER_MATCHER(variableArrayType);
+  REGISTER_MATCHER(voidType);
   REGISTER_MATCHER(whileStmt);
   REGISTER_MATCHER(withInitializer);
 }

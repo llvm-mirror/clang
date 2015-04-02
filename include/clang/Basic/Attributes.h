@@ -10,16 +10,14 @@
 #ifndef LLVM_CLANG_BASIC_ATTRIBUTES_H
 #define LLVM_CLANG_BASIC_ATTRIBUTES_H
 
-#include "llvm/ADT/Triple.h"
 #include "clang/Basic/LangOptions.h"
+#include "llvm/ADT/Triple.h"
 
 namespace clang {
 
 class IdentifierInfo;
 
 enum class AttrSyntax {
-  /// Is the attribute identifier generally known for any syntax?
-  Generic,
   /// Is the identifier known as a GNU-style attribute?
   GNU,
   /// Is the identifier known as a __declspec-style attribute?

@@ -13,9 +13,9 @@
 #ifndef LLVM_CLANG_LIB_CODEGEN_SANITIZERMETADATA_H
 #define LLVM_CLANG_LIB_CODEGEN_SANITIZERMETADATA_H
 
+#include "clang/AST/Type.h"
 #include "clang/Basic/LLVM.h"
 #include "clang/Basic/SourceLocation.h"
-#include "clang/AST/Type.h"
 
 namespace llvm {
 class GlobalVariable;
@@ -31,8 +31,8 @@ namespace CodeGen {
 class CodeGenModule;
 
 class SanitizerMetadata {
-  SanitizerMetadata(const SanitizerMetadata &) LLVM_DELETED_FUNCTION;
-  void operator=(const SanitizerMetadata &) LLVM_DELETED_FUNCTION;
+  SanitizerMetadata(const SanitizerMetadata &) = delete;
+  void operator=(const SanitizerMetadata &) = delete;
 
   CodeGenModule &CGM;
 public:

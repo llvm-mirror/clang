@@ -446,8 +446,8 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
 namespace {
 class CastExpressionIdValidator : public CorrectionCandidateCallback {
  public:
-  CastExpressionIdValidator(bool AllowTypes, bool AllowNonTypes)
-      : AllowNonTypes(AllowNonTypes) {
+  CastExpressionIdValidator(Token Next, bool AllowTypes, bool AllowNonTypes)
+      : NextToken(Next), AllowNonTypes(AllowNonTypes) {
     WantTypeSpecifiers = WantFunctionLikeCasts = AllowTypes;
   }
 
@@ -458,11 +458,24 @@ class CastExpressionIdValidator : public CorrectionCandidateCallback {
 
     if (isa<TypeDecl>(ND))
       return WantTypeSpecifiers;
-    return AllowNonTypes &&
-           CorrectionCandidateCallback::ValidateCandidate(candidate);
+
+    if (!AllowNonTypes || !CorrectionCandidateCallback::ValidateCandidate(candidate))
+      return false;
+
+    if (!(NextToken.is(tok::equal) || NextToken.is(tok::arrow) ||
+          NextToken.is(tok::period)))
+      return true;
+
+    for (auto *C : candidate) {
+      NamedDecl *ND = C->getUnderlyingDecl();
+      if (isa<ValueDecl>(ND) && !isa<FunctionDecl>(ND))
+        return true;
+    }
+    return false;
   }
 
  private:
+  Token NextToken;
   bool AllowNonTypes;
 };
 }
@@ -908,7 +921,7 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
     SourceLocation TemplateKWLoc;
     Token Replacement;
     auto Validator = llvm::make_unique<CastExpressionIdValidator>(
-        isTypeCast != NotTypeCast, isTypeCast != IsTypeCast);
+        Tok, isTypeCast != NotTypeCast, isTypeCast != IsTypeCast);
     Validator->IsAddressOfOperand = isAddressOfOperand;
     Validator->WantRemainingKeywords = Tok.isNot(tok::r_paren);
     Name.setIdentifier(&II, ILoc);
@@ -1364,8 +1377,12 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
       if (!LHS.isInvalid() && !Idx.isInvalid() && Tok.is(tok::r_square)) {
         LHS = Actions.ActOnArraySubscriptExpr(getCurScope(), LHS.get(), Loc,
                                               Idx.get(), RLoc);
-      } else
+      } else {
+        (void)Actions.CorrectDelayedTyposInExpr(LHS);
+        (void)Actions.CorrectDelayedTyposInExpr(Idx);
         LHS = ExprError();
+        Idx = ExprError();
+      }
 
       // Match the ']'.
       T.consumeClose();
@@ -1388,6 +1405,7 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
         SourceLocation OpenLoc = ConsumeToken();
 
         if (ParseSimpleExpressionList(ExecConfigExprs, ExecConfigCommaLocs)) {
+          (void)Actions.CorrectDelayedTyposInExpr(LHS);
           LHS = ExprError();
         }
 
@@ -1436,8 +1454,10 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
 
       if (OpKind == tok::l_paren || !LHS.isInvalid()) {
         if (Tok.isNot(tok::r_paren)) {
-          if (ParseExpressionList(ArgExprs, CommaLocs, &Sema::CodeCompleteCall,
-                                  LHS.get())) {
+          if (ParseExpressionList(ArgExprs, CommaLocs, [&] {
+                Actions.CodeCompleteCall(getCurScope(), LHS.get(), ArgExprs);
+             })) {
+            (void)Actions.CorrectDelayedTyposInExpr(LHS);
             LHS = ExprError();
           }
         }
@@ -1504,14 +1524,14 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
         cutOffParsing();
         return ExprError();
       }
-      
+
       if (MayBePseudoDestructor && !LHS.isInvalid()) {
         LHS = ParseCXXPseudoDestructor(LHS.get(), OpLoc, OpKind, SS, 
                                        ObjectType);
         break;
       }
 
-      // Either the action has told is that this cannot be a
+      // Either the action has told us that this cannot be a
       // pseudo-destructor expression (based on the type of base
       // expression), or we didn't see a '~' in the right place. We
       // can still parse a destructor name here, but in that case it
@@ -1520,7 +1540,8 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
       // FIXME: Add support for explicit call of template constructor.
       SourceLocation TemplateKWLoc;
       UnqualifiedId Name;
-      if (getLangOpts().ObjC2 && OpKind == tok::period && Tok.is(tok::kw_class)) {
+      if (getLangOpts().ObjC2 && OpKind == tok::period &&
+          Tok.is(tok::kw_class)) {
         // Objective-C++:
         //   After a '.' in a member access expression, treat the keyword
         //   'class' as if it were an identifier.
@@ -1536,15 +1557,16 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
                                     /*AllowDestructorName=*/true,
                                     /*AllowConstructorName=*/
                                       getLangOpts().MicrosoftExt, 
-                                    ObjectType, TemplateKWLoc, Name))
+                                    ObjectType, TemplateKWLoc, Name)) {
+        (void)Actions.CorrectDelayedTyposInExpr(LHS);
         LHS = ExprError();
+      }
       
       if (!LHS.isInvalid())
         LHS = Actions.ActOnMemberAccessExpr(getCurScope(), LHS.get(), OpLoc, 
                                             OpKind, SS, TemplateKWLoc, Name,
                                  CurParsedObjCImpl ? CurParsedObjCImpl->Dcl
-                                                   : nullptr,
-                                            Tok.is(tok::l_paren));
+                                                   : nullptr);
       break;
     }
     case tok::plusplus:    // postfix-expression: postfix-expression '++'
@@ -2076,16 +2098,21 @@ Parser::ParseParenExpression(ParenParseOption &ExprType, bool stopIfCastExpr,
   // unless they've already reported an error.
   if (ExprType >= CompoundStmt && Tok.is(tok::l_brace)) {
     Diag(Tok, diag::ext_gnu_statement_expr);
-    Actions.ActOnStartStmtExpr();
 
-    StmtResult Stmt(ParseCompoundStatement(true));
-    ExprType = CompoundStmt;
-
-    // If the substmt parsed correctly, build the AST node.
-    if (!Stmt.isInvalid()) {
-      Result = Actions.ActOnStmtExpr(OpenLoc, Stmt.get(), Tok.getLocation());
+    if (!getCurScope()->getFnParent() && !getCurScope()->getBlockParent()) {
+      Result = ExprError(Diag(OpenLoc, diag::err_stmtexpr_file_scope));
     } else {
-      Actions.ActOnStmtExprError();
+      Actions.ActOnStartStmtExpr();
+
+      StmtResult Stmt(ParseCompoundStatement(true));
+      ExprType = CompoundStmt;
+
+      // If the substmt parsed correctly, build the AST node.
+      if (!Stmt.isInvalid()) {
+        Result = Actions.ActOnStmtExpr(OpenLoc, Stmt.get(), Tok.getLocation());
+      } else {
+        Actions.ActOnStmtExprError();
+      }
     }
   } else if (ExprType >= CompoundLiteral && BridgeCast) {
     tok::TokenKind tokenKind = Tok.getKind();
@@ -2480,17 +2507,14 @@ ExprResult Parser::ParseFoldExpression(ExprResult LHS,
 /// [C++0x]   assignment-expression
 /// [C++0x]   braced-init-list
 /// \endverbatim
-bool Parser::ParseExpressionList(SmallVectorImpl<Expr*> &Exprs,
+bool Parser::ParseExpressionList(SmallVectorImpl<Expr *> &Exprs,
                                  SmallVectorImpl<SourceLocation> &CommaLocs,
-                                 void (Sema::*Completer)(Scope *S,
-                                                         Expr *Data,
-                                                         ArrayRef<Expr *> Args),
-                                 Expr *Data) {
+                                 std::function<void()> Completer) {
   bool SawError = false;
   while (1) {
     if (Tok.is(tok::code_completion)) {
       if (Completer)
-        (Actions.*Completer)(getCurScope(), Data, Exprs);
+        Completer();
       else
         Actions.CodeCompleteOrdinaryName(getCurScope(), Sema::PCC_Expression);
       cutOffParsing();

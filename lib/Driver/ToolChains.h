@@ -256,7 +256,7 @@ public:
 
   bool IsBlocksDefault() const override {
     // Always allow blocks on Apple; users interested in versioning are
-    // expected to use /usr/include/Blocks.h.
+    // expected to use /usr/include/Block.h.
     return true;
   }
   bool IsIntegratedAssemblerDefault() const override {
@@ -362,8 +362,7 @@ public:
                          llvm::opt::ArgStringList &CmdArgs) const override;
 
   bool isKernelStatic() const override {
-    return !isTargetIPhoneOS() || isIPhoneOSVersionLT(6, 0) ||
-           getTriple().getArch() == llvm::Triple::aarch64;
+    return !isTargetIPhoneOS() || isIPhoneOSVersionLT(6, 0);
   }
 
 protected:
@@ -534,17 +533,6 @@ public:
     return 2;
   }
 
-  virtual bool IsIntegratedAssemblerDefault() const override {
-    switch (getTriple().getArch()) {
-    case llvm::Triple::ppc:
-    case llvm::Triple::sparc:
-    case llvm::Triple::sparcv9:
-      return true;
-    default:
-      return Generic_ELF::IsIntegratedAssemblerDefault();
-    }
-  }
-
 protected:
   Tool *buildAssembler() const override;
   Tool *buildLinker() const override;
@@ -586,14 +574,6 @@ public:
   void
   AddClangCXXStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                                llvm::opt::ArgStringList &CC1Args) const override;
-  bool IsIntegratedAssemblerDefault() const override {
-    switch (getTriple().getArch()) {
-    case llvm::Triple::ppc:
-      return true;
-    default:
-      return Generic_ELF::IsIntegratedAssemblerDefault();
-    }
-  }
 
   bool UseSjLjExceptions() const override;
   bool isPIEDefault() const override;
@@ -617,14 +597,6 @@ public:
                               llvm::opt::ArgStringList &CC1Args) const override;
   bool IsUnwindTablesDefault() const override {
     return true;
-  }
-  bool IsIntegratedAssemblerDefault() const override {
-    switch (getTriple().getArch()) {
-    case llvm::Triple::ppc:
-      return true;
-    default:
-      return Generic_ELF::IsIntegratedAssemblerDefault();
-    }
   }
 
 protected:

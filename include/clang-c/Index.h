@@ -2126,7 +2126,7 @@ enum CXCursorKind {
    */
   CXCursor_MSAsmStmt                     = 229,
 
-  /** \brief The null satement ";": C99 6.8.3p3.
+  /** \brief The null statement ";": C99 6.8.3p3.
    *
    * This cursor kind is used to describe the null statement.
    */
@@ -2141,7 +2141,7 @@ enum CXCursorKind {
    */
   CXCursor_OMPParallelDirective          = 232,
 
-  /** \brief OpenMP simd directive.
+  /** \brief OpenMP SIMD directive.
    */
   CXCursor_OMPSimdDirective              = 233,
 
@@ -2209,11 +2209,11 @@ enum CXCursorKind {
    */
   CXCursor_OMPAtomicDirective            = 249,
 
-  /** \brief OpenMP for simd directive.
+  /** \brief OpenMP for SIMD directive.
    */
   CXCursor_OMPForSimdDirective           = 250,
 
-  /** \brief OpenMP parallel for simd directive.
+  /** \brief OpenMP parallel for SIMD directive.
    */
   CXCursor_OMPParallelForSimdDirective   = 251,
 
@@ -2276,7 +2276,12 @@ enum CXCursorKind {
    */
   CXCursor_ModuleImportDecl              = 600,
   CXCursor_FirstExtraDecl                = CXCursor_ModuleImportDecl,
-  CXCursor_LastExtraDecl                 = CXCursor_ModuleImportDecl
+  CXCursor_LastExtraDecl                 = CXCursor_ModuleImportDecl,
+
+  /**
+   * \brief A code completion overload candidate.
+   */
+  CXCursor_OverloadCandidate             = 700
 };
 
 /**
@@ -2849,7 +2854,7 @@ enum CXCallingConv {
   CXCallingConv_X86Pascal = 5,
   CXCallingConv_AAPCS = 6,
   CXCallingConv_AAPCS_VFP = 7,
-  CXCallingConv_PnaclCall = 8,
+  /* Value 8 was PnaclCall, but it was never used, so it could safely be re-used. */
   CXCallingConv_IntelOclBicc = 9,
   CXCallingConv_X86_64Win64 = 10,
   CXCallingConv_X86_64SysV = 11,
@@ -3345,7 +3350,7 @@ CINDEX_LINKAGE enum CX_CXXAccessSpecifier clang_getCXXAccessSpecifier(CXCursor);
 
 /**
  * \brief Represents the storage classes as declared in the source. CX_SC_Invalid
- * was added for the clase that the passed cursor in not a declaration.
+ * was added for the case that the passed cursor in not a declaration.
  */
 enum CX_StorageClass {
   CX_SC_Invalid,

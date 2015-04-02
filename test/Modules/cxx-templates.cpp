@@ -28,14 +28,8 @@ void g() {
   f<double>(1.0);
   f<int>();
   f(); // expected-error {{no matching function}}
-#ifdef EARLY_IMPORT
-  // FIXME: The textual inclusion above shouldn't affect this!
-  // expected-note@Inputs/cxx-templates-a.h:3 {{couldn't infer template argument}}
-  // expected-note@Inputs/cxx-templates-a.h:4 {{requires 1 argument}}
-#else
   // expected-note@Inputs/cxx-templates-b.h:3 {{couldn't infer template argument}}
   // expected-note@Inputs/cxx-templates-b.h:4 {{requires single argument}}
-#endif
 
   N::f(0);
   N::f<double>(1.0);
@@ -195,11 +189,11 @@ namespace Std {
 // CHECK-NAMESPACE-N-NEXT: `-FunctionTemplate {{.*}} 'f'
 
 // CHECK-DUMP:      ClassTemplateDecl {{.*}} <{{.*[/\\]}}cxx-templates-common.h:1:1, {{.*}}>  col:{{.*}} in cxx_templates_common SomeTemplate
-// CHECK-DUMP:        ClassTemplateSpecializationDecl {{.*}} prev [[CHAR2:[^ ]*]] {{.*}} SomeTemplate
+// CHECK-DUMP:        ClassTemplateSpecializationDecl {{.*}} prev {{.*}} SomeTemplate
 // CHECK-DUMP-NEXT:     TemplateArgument type 'char [2]'
-// CHECK-DUMP:        ClassTemplateSpecializationDecl [[CHAR2]] {{.*}} SomeTemplate definition
+// CHECK-DUMP:        ClassTemplateSpecializationDecl {{.*}} SomeTemplate definition
 // CHECK-DUMP-NEXT:     TemplateArgument type 'char [2]'
-// CHECK-DUMP:        ClassTemplateSpecializationDecl {{.*}} prev [[CHAR1:[^ ]*]] {{.*}} SomeTemplate
+// CHECK-DUMP:        ClassTemplateSpecializationDecl {{.*}} prev {{.*}} SomeTemplate
 // CHECK-DUMP-NEXT:     TemplateArgument type 'char [1]'
-// CHECK-DUMP:        ClassTemplateSpecializationDecl [[CHAR1]] {{.*}} SomeTemplate definition
+// CHECK-DUMP:        ClassTemplateSpecializationDecl {{.*}} SomeTemplate definition
 // CHECK-DUMP-NEXT:     TemplateArgument type 'char [1]'

@@ -846,6 +846,10 @@ bool DeclContext::isDependentContext() const {
       return getLexicalParent()->isDependentContext();
   }
 
+  // FIXME: A variable template is a dependent context, but is not a
+  // DeclContext. A context within it (such as a lambda-expression)
+  // should be considered dependent.
+
   return getParent() && getParent()->isDependentContext();
 }
 
@@ -1078,7 +1082,7 @@ ExternalASTSource::SetExternalVisibleDeclsForName(const DeclContext *DC,
     // first.
     llvm::SmallVector<unsigned, 8> Skip;
     for (unsigned I = 0, N = Decls.size(); I != N; ++I)
-      if (List.HandleRedeclaration(Decls[I]))
+      if (List.HandleRedeclaration(Decls[I], /*IsKnownNewer*/false))
         Skip.push_back(I);
     Skip.push_back(Decls.size());
 
@@ -1251,7 +1255,7 @@ StoredDeclsMap *DeclContext::buildLookup() {
   collectAllContexts(Contexts);
   for (unsigned I = 0, N = Contexts.size(); I != N; ++I)
     buildLookupImpl<&DeclContext::decls_begin,
-                    &DeclContext::decls_end>(Contexts[I]);
+                    &DeclContext::decls_end>(Contexts[I], false);
 
   // We no longer have any lazy decls.
   LookupPtr.setInt(false);
@@ -1264,7 +1268,7 @@ StoredDeclsMap *DeclContext::buildLookup() {
 /// nested within it.
 template<DeclContext::decl_iterator (DeclContext::*Begin)() const,
          DeclContext::decl_iterator (DeclContext::*End)() const>
-void DeclContext::buildLookupImpl(DeclContext *DCtx) {
+void DeclContext::buildLookupImpl(DeclContext *DCtx, bool Internal) {
   for (decl_iterator I = (DCtx->*Begin)(), E = (DCtx->*End)();
        I != E; ++I) {
     Decl *D = *I;
@@ -1282,39 +1286,46 @@ void DeclContext::buildLookupImpl(DeclContext *DCtx) {
           (!ND->isFromASTFile() ||
            (isTranslationUnit() &&
             !getParentASTContext().getLangOpts().CPlusPlus)))
-        makeDeclVisibleInContextImpl(ND, false);
+        makeDeclVisibleInContextImpl(ND, Internal);
 
     // If this declaration is itself a transparent declaration context
     // or inline namespace, add the members of this declaration of that
     // context (recursively).
     if (DeclContext *InnerCtx = dyn_cast<DeclContext>(D))
       if (InnerCtx->isTransparentContext() || InnerCtx->isInlineNamespace())
-        buildLookupImpl<Begin, End>(InnerCtx);
+        buildLookupImpl<Begin, End>(InnerCtx, Internal);
   }
 }
 
+NamedDecl *const DeclContextLookupResult::SingleElementDummyList = nullptr;
+
 DeclContext::lookup_result
-DeclContext::lookup(DeclarationName Name) {
+DeclContext::lookup(DeclarationName Name) const {
   assert(DeclKind != Decl::LinkageSpec &&
          "Should not perform lookups into linkage specs!");
 
-  DeclContext *PrimaryContext = getPrimaryContext();
+  const DeclContext *PrimaryContext = getPrimaryContext();
   if (PrimaryContext != this)
     return PrimaryContext->lookup(Name);
 
-  // If this is a namespace, ensure that any later redeclarations of it have
-  // been loaded, since they may add names to the result of this lookup.
-  if (auto *ND = dyn_cast<NamespaceDecl>(this))
-    (void)ND->getMostRecentDecl();
+  // If we have an external source, ensure that any later redeclarations of this
+  // context have been loaded, since they may add names to the result of this
+  // lookup (or add external visible storage).
+  ExternalASTSource *Source = getParentASTContext().getExternalSource();
+  if (Source)
+    (void)cast<Decl>(this)->getMostRecentDecl();
 
   if (hasExternalVisibleStorage()) {
+    assert(Source && "external visible storage but no external source?");
+
     if (NeedToReconcileExternalVisibleStorage)
       reconcileExternalVisibleStorage();
 
     StoredDeclsMap *Map = LookupPtr.getPointer();
 
     if (LookupPtr.getInt())
-      Map = buildLookup();
+      // FIXME: Make buildLookup const?
+      Map = const_cast<DeclContext*>(this)->buildLookup();
 
     if (!Map)
       Map = CreateStoredDeclsMap(getParentASTContext());
@@ -1325,7 +1336,6 @@ DeclContext::lookup(DeclarationName Name) {
     if (!R.second && !R.first->second.hasExternalDecls())
       return R.first->second.getLookupResult();
 
-    ExternalASTSource *Source = getParentASTContext().getExternalSource();
     if (Source->FindExternalVisibleDeclsByName(this, Name) || !R.second) {
       if (StoredDeclsMap *Map = LookupPtr.getPointer()) {
         StoredDeclsMap::iterator I = Map->find(Name);
@@ -1334,19 +1344,19 @@ DeclContext::lookup(DeclarationName Name) {
       }
     }
 
-    return lookup_result(lookup_iterator(nullptr), lookup_iterator(nullptr));
+    return lookup_result();
   }
 
   StoredDeclsMap *Map = LookupPtr.getPointer();
   if (LookupPtr.getInt())
-    Map = buildLookup();
+    Map = const_cast<DeclContext*>(this)->buildLookup();
 
   if (!Map)
-    return lookup_result(lookup_iterator(nullptr), lookup_iterator(nullptr));
+    return lookup_result();
 
   StoredDeclsMap::iterator I = Map->find(Name);
   if (I == Map->end())
-    return lookup_result(lookup_iterator(nullptr), lookup_iterator(nullptr));
+    return lookup_result();
 
   return I->second.getLookupResult();
 }
@@ -1369,7 +1379,7 @@ DeclContext::noload_lookup(DeclarationName Name) {
     collectAllContexts(Contexts);
     for (unsigned I = 0, N = Contexts.size(); I != N; ++I)
       buildLookupImpl<&DeclContext::noload_decls_begin,
-                      &DeclContext::noload_decls_end>(Contexts[I]);
+                      &DeclContext::noload_decls_end>(Contexts[I], true);
 
     // We no longer have any lazy decls.
     LookupPtr.setInt(false);
@@ -1383,12 +1393,11 @@ DeclContext::noload_lookup(DeclarationName Name) {
   }
 
   if (!Map)
-    return lookup_result(lookup_iterator(nullptr), lookup_iterator(nullptr));
+    return lookup_result();
 
   StoredDeclsMap::iterator I = Map->find(Name);
   return I != Map->end() ? I->second.getLookupResult()
-                         : lookup_result(lookup_iterator(nullptr),
-                                         lookup_iterator(nullptr));
+                         : lookup_result();
 }
 
 void DeclContext::localUncachedLookup(DeclarationName Name,
@@ -1555,12 +1564,12 @@ void DeclContext::makeDeclVisibleInContextImpl(NamedDecl *D, bool Internal) {
     return;
   }
 
-  else if (DeclNameEntries.isNull()) {
+  if (DeclNameEntries.isNull()) {
     DeclNameEntries.setOnlyValue(D);
     return;
   }
 
-  if (DeclNameEntries.HandleRedeclaration(D)) {
+  if (DeclNameEntries.HandleRedeclaration(D, /*IsKnownNewer*/!Internal)) {
     // This declaration has replaced an existing one for which
     // declarationReplaces returns true.
     return;
@@ -1570,15 +1579,17 @@ void DeclContext::makeDeclVisibleInContextImpl(NamedDecl *D, bool Internal) {
   DeclNameEntries.AddSubsequentDecl(D);
 }
 
+UsingDirectiveDecl *DeclContext::udir_iterator::operator*() const {
+  return cast<UsingDirectiveDecl>(*I);
+}
+
 /// Returns iterator range [First, Last) of UsingDirectiveDecls stored within
 /// this context.
 DeclContext::udir_range DeclContext::using_directives() const {
   // FIXME: Use something more efficient than normal lookup for using
   // directives. In C++, using directives are looked up more than anything else.
-  lookup_const_result Result = lookup(UsingDirectiveDecl::getName());
-  return udir_range(
-      reinterpret_cast<UsingDirectiveDecl *const *>(Result.begin()),
-      reinterpret_cast<UsingDirectiveDecl *const *>(Result.end()));
+  lookup_result Result = lookup(UsingDirectiveDecl::getName());
+  return udir_range(Result.begin(), Result.end());
 }
 
 //===----------------------------------------------------------------------===//

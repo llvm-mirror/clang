@@ -289,6 +289,7 @@ void _WriteBarrier(void);
 unsigned __int32 xbegin(void);
 void _xend(void);
 static __inline__
+#define _XCR_XFEATURE_ENABLED_MASK 0
 unsigned __int64 __cdecl _xgetbv(unsigned int);
 void __cdecl _xrstor(void const *, unsigned __int64);
 void __cdecl _xsave(void *, unsigned __int64);
@@ -330,7 +331,6 @@ unsigned __int64 __shiftright128(unsigned __int64 _LowPart,
                                  unsigned char _Shift);
 static __inline__
 void __stosq(unsigned __int64 *, unsigned __int64, size_t);
-unsigned __int64 __umulh(unsigned __int64, unsigned __int64);
 unsigned char __vmx_on(unsigned __int64 *);
 unsigned char __vmx_vmclear(unsigned __int64 *);
 unsigned char __vmx_vmlaunch(void);
@@ -416,10 +416,25 @@ __int64 _sarx_i64(__int64, unsigned int);
 int __cdecl _setjmpex(jmp_buf);
 #endif
 unsigned __int64 _shlx_u64(unsigned __int64, unsigned int);
-unsigned __int64 shrx_u64(unsigned __int64, unsigned int);
-unsigned __int64 _umul128(unsigned __int64 _Multiplier,
-                          unsigned __int64 _Multiplicand,
-                          unsigned __int64 *_HighProduct);
+unsigned __int64 _shrx_u64(unsigned __int64, unsigned int);
+/*
+ * Multiply two 64-bit integers and obtain a 64-bit result.
+ * The low-half is returned directly and the high half is in an out parameter.
+ */
+static __inline__ unsigned __int64 __attribute__((__always_inline__, __nodebug__))
+_umul128(unsigned __int64 _Multiplier, unsigned __int64 _Multiplicand,
+         unsigned __int64 *_HighProduct) {
+  unsigned __int128 _FullProduct =
+      (unsigned __int128)_Multiplier * (unsigned __int128)_Multiplicand;
+  *_HighProduct = _FullProduct >> 64;
+  return _FullProduct;
+}
+static __inline__ unsigned __int64 __attribute__((__always_inline__, __nodebug__))
+__umulh(unsigned __int64 _Multiplier, unsigned __int64 _Multiplicand) {
+  unsigned __int128 _FullProduct =
+      (unsigned __int128)_Multiplier * (unsigned __int128)_Multiplicand;
+  return _FullProduct >> 64;
+}
 void __cdecl _xrstor64(void const *, unsigned __int64);
 void __cdecl _xsave64(void *, unsigned __int64);
 void __cdecl _xsaveopt64(void *, unsigned __int64);
@@ -766,17 +781,17 @@ _InterlockedCompareExchange64(__int64 volatile *_Destination,
 \*----------------------------------------------------------------------------*/
 #if defined(__i386__) || defined(__x86_64__)
 static __inline__ void __attribute__((__always_inline__, __nodebug__))
-__attribute__((deprecated("use other intrinsics or C++11 atomics instead")))
+__attribute__((__deprecated__("use other intrinsics or C++11 atomics instead")))
 _ReadWriteBarrier(void) {
   __asm__ volatile ("" : : : "memory");
 }
 static __inline__ void __attribute__((__always_inline__, __nodebug__))
-__attribute__((deprecated("use other intrinsics or C++11 atomics instead")))
+__attribute__((__deprecated__("use other intrinsics or C++11 atomics instead")))
 _ReadBarrier(void) {
   __asm__ volatile ("" : : : "memory");
 }
 static __inline__ void __attribute__((__always_inline__, __nodebug__))
-__attribute__((deprecated("use other intrinsics or C++11 atomics instead")))
+__attribute__((__deprecated__("use other intrinsics or C++11 atomics instead")))
 _WriteBarrier(void) {
   __asm__ volatile ("" : : : "memory");
 }
@@ -929,14 +944,14 @@ __readmsr(unsigned long __register) {
   return (((unsigned __int64)__edx) << 32) | (unsigned __int64)__eax;
 }
 
-static __inline__ unsigned long __attribute__((always_inline, __nodebug__))
+static __inline__ unsigned long __attribute__((__always_inline__, __nodebug__))
 __readcr3(void) {
   unsigned long __cr3_val;
   __asm__ __volatile__ ("mov %%cr3, %0" : "=q"(__cr3_val) : : "memory");
   return __cr3_val;
 }
 
-static __inline__ void __attribute__((always_inline, __nodebug__))
+static __inline__ void __attribute__((__always_inline__, __nodebug__))
 __writecr3(unsigned int __cr3_val) {
   __asm__ ("mov %0, %%cr3" : : "q"(__cr3_val) : "memory");
 }

@@ -21,6 +21,7 @@
 #include "clang/Basic/Sanitizers.h"
 #include "clang/Basic/Visibility.h"
 #include <string>
+#include <vector>
 
 namespace clang {
 
@@ -70,9 +71,9 @@ public:
   /// \brief Set of enabled sanitizers.
   SanitizerSet Sanitize;
 
-  /// \brief Path to blacklist file specifying which objects
+  /// \brief Paths to blacklist files specifying which objects
   /// (files, functions, variables) should not be instrumented.
-  std::string SanitizerBlacklistFile;
+  std::vector<std::string> SanitizerBlacklistFiles;
 
   clang::ObjCRuntime ObjCRuntime;
 
@@ -91,6 +92,10 @@ public:
   /// implementation of. Prevents semantic imports, but does not otherwise
   /// treat this as the CurrentModule.
   std::string ImplementationOfModule;
+
+  /// \brief The names of any features to enable in module 'requires' decls
+  /// in addition to the hard-coded list in Module.cpp and the target features.
+  std::vector<std::string> ModuleFeatures;
 
   /// \brief Options for parsing comments.
   CommentOptions CommentOpts;

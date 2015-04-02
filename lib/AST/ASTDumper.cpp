@@ -516,6 +516,7 @@ namespace  {
       VisitExpr(Node);
       dumpDecl(Node->getLambdaClass());
     }
+    void VisitSizeOfPackExpr(const SizeOfPackExpr *Node);
 
     // ObjC
     void VisitObjCAtCatchStmt(const ObjCAtCatchStmt *Node);
@@ -987,6 +988,10 @@ void ASTDumper::dumpDecl(const Decl *D) {
       OS << " referenced";
     if (D->isInvalidDecl())
       OS << " invalid";
+    if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
+      if (FD->isConstexpr())
+        OS << " constexpr";
+
 
     ConstDeclVisitor<ASTDumper>::Visit(D);
 
@@ -1095,10 +1100,13 @@ void ASTDumper::VisitFunctionDecl(const FunctionDecl *D) {
        E = D->getDeclsInPrototypeScope().end(); I != E; ++I)
     dumpDecl(*I);
 
-  for (FunctionDecl::param_const_iterator I = D->param_begin(),
-                                          E = D->param_end();
-       I != E; ++I)
-    dumpDecl(*I);
+  if (!D->param_begin() && D->getNumParams())
+    dumpChild([=] { OS << "<<NULL params x " << D->getNumParams() << ">>"; });
+  else
+    for (FunctionDecl::param_const_iterator I = D->param_begin(),
+                                            E = D->param_end();
+         I != E; ++I)
+      dumpDecl(*I);
 
   if (const CXXConstructorDecl *C = dyn_cast<CXXConstructorDecl>(D))
     for (CXXConstructorDecl::init_const_iterator I = C->init_begin(),
@@ -1929,6 +1937,13 @@ void ASTDumper::dumpCXXTemporary(const CXXTemporary *Temporary) {
   dumpPointer(Temporary);
   OS << ")";
 }
+
+void ASTDumper::VisitSizeOfPackExpr(const SizeOfPackExpr *Node) {
+  VisitExpr(Node);
+  dumpPointer(Node->getPack());
+  dumpName(Node->getPack());
+}
+
 
 //===----------------------------------------------------------------------===//
 // Obj-C Expressions

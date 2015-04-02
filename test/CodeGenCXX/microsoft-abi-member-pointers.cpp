@@ -15,6 +15,16 @@ int B::*&b = b;
 // CHECK: @"\01?b@PR20947@@3AAPQB@1@HA" = global %[[opaque1]]* null, align 4
 }
 
+namespace PR20017 {
+template <typename T>
+struct A {
+  int T::*m_fn1() { return nullptr; }
+};
+struct B;
+auto a = &A<B>::m_fn1;
+// CHECK-DAG: @"\01?a@PR20017@@3P8?$A@UB@PR20017@@@1@AEPQB@1@HXZQ21@" = global i8* bitcast ({ i32, i32, i32 } ({{.*}}*)* @"\01?m_fn1@?$A@UB@PR20017@@@PR20017@@QAEPQB@2@HXZ" to i8*), align 4
+}
+
 #ifndef INCOMPLETE_VIRTUAL
 struct B1 {
   void foo();
@@ -608,7 +618,7 @@ void (C::*getmp())() {
 // CHECK: store { i8*, i32 } { i8* bitcast (void (%"struct.Test4::C"*, ...)* @"\01??_9C@Test4@@$BA@AE" to i8*), i32 4 }, { i8*, i32 }* %{{.*}}
 //
 
-// CHECK-LABEL: define linkonce_odr x86_thiscallcc void @"\01??_9C@Test4@@$BA@AE"(%"struct.Test4::C"* %this, ...)
+// CHECK-LABEL: define linkonce_odr x86_thiscallcc void @"\01??_9C@Test4@@$BA@AE"(%"struct.Test4::C"* %this, ...) {{.*}} comdat
 // CHECK-NOT:  getelementptr
 // CHECK:  load void (%"struct.Test4::C"*, ...)*** %{{.*}}
 // CHECK:  getelementptr inbounds void (%"struct.Test4::C"*, ...)** %{{.*}}, i64 0

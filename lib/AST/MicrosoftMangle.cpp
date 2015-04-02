@@ -89,6 +89,7 @@ class MicrosoftMangleContextImpl : public MicrosoftMangleContext {
   llvm::DenseMap<DiscriminatorKeyTy, unsigned> Discriminator;
   llvm::DenseMap<const NamedDecl *, unsigned> Uniquifier;
   llvm::DenseMap<const CXXRecordDecl *, unsigned> LambdaIds;
+  llvm::DenseMap<const NamedDecl *, unsigned> SEHFilterIds;
 
 public:
   MicrosoftMangleContextImpl(ASTContext &Context, DiagnosticsEngine &Diags)
@@ -134,7 +135,11 @@ public:
   void mangleDynamicInitializer(const VarDecl *D, raw_ostream &Out) override;
   void mangleDynamicAtExitDestructor(const VarDecl *D,
                                      raw_ostream &Out) override;
+  void mangleSEHFilterExpression(const NamedDecl *EnclosingDecl,
+                                 raw_ostream &Out) override;
   void mangleStringLiteral(const StringLiteral *SL, raw_ostream &Out) override;
+  void mangleCXXVTableBitSet(const CXXRecordDecl *RD,
+                             raw_ostream &Out) override;
   bool getNextDiscriminator(const NamedDecl *ND, unsigned &disc) {
     // Lambda closure types are already numbered.
     if (isLambda(ND))
@@ -1040,8 +1045,10 @@ void MicrosoftCXXNameMangler::mangleIntegerLiteral(const llvm::APSInt &Value,
   // Make sure booleans are encoded as 0/1.
   if (IsBoolean && Value.getBoolValue())
     mangleNumber(1);
-  else
+  else if (Value.isSigned())
     mangleNumber(Value.getSExtValue());
+  else
+    mangleNumber(Value.getZExtValue());
 }
 
 void MicrosoftCXXNameMangler::mangleExpression(const Expr *E) {
@@ -2316,6 +2323,17 @@ void MicrosoftMangleContextImpl::mangleCXXRTTICompleteObjectLocator(
   Mangler.getStream() << '@';
 }
 
+void MicrosoftMangleContextImpl::mangleSEHFilterExpression(
+    const NamedDecl *EnclosingDecl, raw_ostream &Out) {
+  MicrosoftCXXNameMangler Mangler(*this, Out);
+  // The function body is in the same comdat as the function with the handler,
+  // so the numbering here doesn't have to be the same across TUs.
+  //
+  // <mangled-name> ::= ?filt$ <filter-number> @0
+  Mangler.getStream() << "\01?filt$" << SEHFilterIds[EnclosingDecl]++ << "@0@";
+  Mangler.mangleName(EnclosingDecl);
+}
+
 void MicrosoftMangleContextImpl::mangleTypeName(QualType T, raw_ostream &Out) {
   // This is just a made up unique string for the purposes of tbaa.  undname
   // does *not* know how to demangle it.
@@ -2519,42 +2537,16 @@ void MicrosoftMangleContextImpl::mangleStringLiteral(const StringLiteral *SL,
     } else if (isLetter(Byte & 0x7f)) {
       Mangler.getStream() << '?' << static_cast<char>(Byte & 0x7f);
     } else {
-      switch (Byte) {
-        case ',':
-          Mangler.getStream() << "?0";
-          break;
-        case '/':
-          Mangler.getStream() << "?1";
-          break;
-        case '\\':
-          Mangler.getStream() << "?2";
-          break;
-        case ':':
-          Mangler.getStream() << "?3";
-          break;
-        case '.':
-          Mangler.getStream() << "?4";
-          break;
-        case ' ':
-          Mangler.getStream() << "?5";
-          break;
-        case '\n':
-          Mangler.getStream() << "?6";
-          break;
-        case '\t':
-          Mangler.getStream() << "?7";
-          break;
-        case '\'':
-          Mangler.getStream() << "?8";
-          break;
-        case '-':
-          Mangler.getStream() << "?9";
-          break;
-        default:
-          Mangler.getStream() << "?$";
-          Mangler.getStream() << static_cast<char>('A' + ((Byte >> 4) & 0xf));
-          Mangler.getStream() << static_cast<char>('A' + (Byte & 0xf));
-          break;
+      const char SpecialChars[] = {',', '/',  '\\', ':',  '.',
+                                   ' ', '\n', '\t', '\'', '-'};
+      const char *Pos =
+          std::find(std::begin(SpecialChars), std::end(SpecialChars), Byte);
+      if (Pos != std::end(SpecialChars)) {
+        Mangler.getStream() << '?' << (Pos - std::begin(SpecialChars));
+      } else {
+        Mangler.getStream() << "?$";
+        Mangler.getStream() << static_cast<char>('A' + ((Byte >> 4) & 0xf));
+        Mangler.getStream() << static_cast<char>('A' + (Byte & 0xf));
       }
     }
   };
@@ -2575,6 +2567,11 @@ void MicrosoftMangleContextImpl::mangleStringLiteral(const StringLiteral *SL,
       MangleByte(0);
 
   Mangler.getStream() << '@';
+}
+
+void MicrosoftMangleContextImpl::mangleCXXVTableBitSet(const CXXRecordDecl *RD,
+                                                       raw_ostream &Out) {
+  llvm::report_fatal_error("Cannot mangle bitsets yet");
 }
 
 MicrosoftMangleContext *

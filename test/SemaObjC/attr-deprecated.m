@@ -258,3 +258,40 @@ const char * func() {
 }
 @end
 
+@implementation UndeclaredImpl // expected-warning{{cannot find interface declaration}}
+- (void)partiallyUnavailableMethod {}
+@end
+
+@interface InterfaceWithSameMethodAsUndeclaredImpl
+- (void)partiallyUnavailableMethod __attribute__((unavailable));
+@end
+
+void f(id a) {
+  [a partiallyUnavailableMethod]; // no warning, `a` could be an UndeclaredImpl.
+}
+
+@interface InterfaceWithImplementation
+- (void)anotherPartiallyUnavailableMethod;
+@end
+@implementation InterfaceWithImplementation
+- (void)anotherPartiallyUnavailableMethod {}
+@end
+
+@interface InterfaceWithSameMethodAsInterfaceWithImplementation
+- (void)anotherPartiallyUnavailableMethod __attribute__((unavailable));
+@end
+
+void g(id a) {
+  [a anotherPartiallyUnavailableMethod]; // no warning, `a` could be an InterfaceWithImplementation.
+}
+
+typedef struct {} S1 __attribute__((unavailable)); // expected-note2{{marked unavailable here}}
+typedef struct {} S2 __attribute__((deprecated)); // expected-note2{{marked deprecated here}}
+@interface ExtensionForMissingInterface() // expected-error{{cannot find interface declaration}}
+- (void)method1:(S1) x; // expected-error{{is unavailable}}
+- (void)method2:(S2) x; // expected-warning{{is deprecated}}
+@end
+@interface CategoryForMissingInterface(Cat) // expected-error{{cannot find interface declaration}}
+- (void)method1:(S1) x; // expected-error{{is unavailable}}
+- (void)method2:(S2) x; // expected-warning{{is deprecated}}
+@end

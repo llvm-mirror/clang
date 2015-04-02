@@ -27,13 +27,14 @@ enum OverloadsShown : unsigned {
 /// \brief Options for controlling the compiler diagnostics engine.
 class DiagnosticOptions : public RefCountedBase<DiagnosticOptions>{
 public:
-  enum TextDiagnosticFormat { Clang, Msvc, Vi };
+  enum TextDiagnosticFormat { Clang, MSVC, Vi };
 
   // Default values.
   enum { DefaultTabStop = 8, MaxTabStop = 100,
     DefaultMacroBacktraceLimit = 6,
     DefaultTemplateBacktraceLimit = 10,
-    DefaultConstexprBacktraceLimit = 10 };
+    DefaultConstexprBacktraceLimit = 10,
+    DefaultSpellCheckingLimit = 50 };
 
   // Define simple diagnostic options (with no accessors).
 #define DIAGOPT(Name, Bits, Default) unsigned Name : Bits;

@@ -242,8 +242,13 @@ namespace {
                                   const NSAPI &NS, edit::Commit &commit,
                                   const ParentMap *PMap) {
     if (!Msg || Msg->isImplicit() ||
-        Msg->getReceiverKind() != ObjCMessageExpr::Instance)
+        (Msg->getReceiverKind() != ObjCMessageExpr::Instance &&
+         Msg->getReceiverKind() != ObjCMessageExpr::SuperInstance))
       return false;
+    if (const Expr *Receiver = Msg->getInstanceReceiver())
+      if (Receiver->getType()->isObjCBuiltinType())
+        return false;
+      
     const ObjCMethodDecl *Method = Msg->getMethodDecl();
     if (!Method)
       return false;
@@ -260,12 +265,17 @@ namespace {
       return false;
     
     SourceRange MsgRange = Msg->getSourceRange();
+    bool ReceiverIsSuper =
+      (Msg->getReceiverKind() == ObjCMessageExpr::SuperInstance);
+    // for 'super' receiver is nullptr.
     const Expr *receiver = Msg->getInstanceReceiver();
-    bool NeedsParen = subscriptOperatorNeedsParens(receiver);
+    bool NeedsParen =
+      ReceiverIsSuper ? false : subscriptOperatorNeedsParens(receiver);
     bool IsGetter = (Msg->getNumArgs() == 0);
     if (IsGetter) {
       // Find space location range between receiver expression and getter method.
-      SourceLocation BegLoc = receiver->getLocEnd();
+      SourceLocation BegLoc =
+        ReceiverIsSuper ? Msg->getSuperLoc() : receiver->getLocEnd();
       BegLoc = PP.getLocForEndOfToken(BegLoc);
       SourceLocation EndLoc = Msg->getSelectorLoc(0);
       SourceRange SpaceRange(BegLoc, EndLoc);
@@ -285,9 +295,8 @@ namespace {
       commit.replace(SourceRange(MsgRange.getBegin(), MsgRange.getBegin()), "");
       commit.replace(SourceRange(MsgRange.getEnd(), MsgRange.getEnd()), "");
     } else {
-      SourceRange ReceiverRange = receiver->getSourceRange();
       if (NeedsParen)
-        commit.insertWrap("(", ReceiverRange, ")");
+        commit.insertWrap("(", receiver->getSourceRange(), ")");
       std::string PropertyDotString = ".";
       PropertyDotString += Prop->getName();
       PropertyDotString += " =";
@@ -295,10 +304,15 @@ namespace {
       const Expr *RHS = Args[0];
       if (!RHS)
         return false;
-      SourceLocation BegLoc = ReceiverRange.getEnd();
+      SourceLocation BegLoc =
+        ReceiverIsSuper ? Msg->getSuperLoc() : receiver->getLocEnd();
       BegLoc = PP.getLocForEndOfToken(BegLoc);
       SourceLocation EndLoc = RHS->getLocStart();
       EndLoc = EndLoc.getLocWithOffset(-1);
+      const char *colon = PP.getSourceManager().getCharacterData(EndLoc);
+      // Add a space after '=' if there is no space between RHS and '='
+      if (colon && colon[0] == ':')
+        PropertyDotString += " ";
       SourceRange Range(BegLoc, EndLoc);
       commit.replace(Range, PropertyDotString);
       // remove '[' ']'
@@ -610,7 +624,7 @@ ClassImplementsAllMethodsAndProperties(ASTContext &Ctx,
       if (Property->getPropertyImplementation() == ObjCPropertyDecl::Optional)
         continue;
       HasAtleastOneRequiredProperty = true;
-      DeclContext::lookup_const_result R = IDecl->lookup(Property->getDeclName());
+      DeclContext::lookup_result R = IDecl->lookup(Property->getDeclName());
       if (R.size() == 0) {
         // Relax the rule and look into class's implementation for a synthesize
         // or dynamic declaration. Class is implementing a property coming from
@@ -641,7 +655,7 @@ ClassImplementsAllMethodsAndProperties(ASTContext &Ctx,
         continue;
       if (MD->getImplementationControl() == ObjCMethodDecl::Optional)
         continue;
-      DeclContext::lookup_const_result R = ImpDecl->lookup(MD->getDeclName());
+      DeclContext::lookup_result R = ImpDecl->lookup(MD->getDeclName());
       if (R.size() == 0)
         return false;
       bool match = false;
@@ -757,15 +771,39 @@ static bool rewriteToNSEnumDecl(const EnumDecl *EnumDcl,
   return false;
 }
 
-static void rewriteToNSMacroDecl(const EnumDecl *EnumDcl,
+static void rewriteToNSMacroDecl(ASTContext &Ctx,
+                                 const EnumDecl *EnumDcl,
                                 const TypedefDecl *TypedefDcl,
                                 const NSAPI &NS, edit::Commit &commit,
                                  bool IsNSIntegerType) {
-  std::string ClassString =
-    IsNSIntegerType ? "NS_ENUM(NSInteger, " : "NS_OPTIONS(NSUInteger, ";
+  QualType EnumUnderlyingT = EnumDcl->getPromotionType();
+  assert(!EnumUnderlyingT.isNull()
+         && "rewriteToNSMacroDecl - underlying enum type is null");
+  
+  PrintingPolicy Policy(Ctx.getPrintingPolicy());
+  std::string TypeString = EnumUnderlyingT.getAsString(Policy);
+  std::string ClassString = IsNSIntegerType ? "NS_ENUM(" : "NS_OPTIONS(";
+  ClassString += TypeString;
+  ClassString += ", ";
+  
   ClassString += TypedefDcl->getIdentifier()->getName();
   ClassString += ')';
-  SourceRange R(EnumDcl->getLocStart(), EnumDcl->getLocStart());
+  SourceLocation EndLoc;
+  if (EnumDcl->getIntegerTypeSourceInfo()) {
+    TypeSourceInfo *TSourceInfo = EnumDcl->getIntegerTypeSourceInfo();
+    TypeLoc TLoc = TSourceInfo->getTypeLoc();
+    EndLoc = TLoc.getLocEnd();
+    const char *lbrace = Ctx.getSourceManager().getCharacterData(EndLoc);
+    unsigned count = 0;
+    if (lbrace)
+      while (lbrace[count] != '{')
+        ++count;
+    if (count > 0)
+      EndLoc = EndLoc.getLocWithOffset(count-1);
+  }
+  else
+    EndLoc = EnumDcl->getLocStart();
+  SourceRange R(EnumDcl->getLocStart(), EndLoc);
   commit.replace(R, ClassString);
   // This is to remove spaces between '}' and typedef name.
   SourceLocation StartTypedefLoc = EnumDcl->getLocEnd();
@@ -887,7 +925,7 @@ bool ObjCMigrateASTConsumer::migrateNSEnumDecl(ASTContext &Ctx,
                                            const EnumDecl *EnumDcl,
                                            const TypedefDecl *TypedefDcl) {
   if (!EnumDcl->isCompleteDefinition() || EnumDcl->getIdentifier() ||
-      EnumDcl->isDeprecated() || EnumDcl->getIntegerTypeSourceInfo())
+      EnumDcl->isDeprecated())
     return false;
   if (!TypedefDcl) {
     if (NSIntegerTypedefed) {
@@ -921,7 +959,7 @@ bool ObjCMigrateASTConsumer::migrateNSEnumDecl(ASTContext &Ctx,
         if (!InsertFoundation(Ctx, TypedefDcl->getLocStart()))
           return false;
         edit::Commit commit(*Editor);
-        rewriteToNSMacroDecl(EnumDcl, TypedefDcl, *NSAPIObj, commit, !NSOptions);
+        rewriteToNSMacroDecl(Ctx, EnumDcl, TypedefDcl, *NSAPIObj, commit, !NSOptions);
         Editor->commit(commit);
         return true;
       }

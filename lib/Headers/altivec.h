@@ -2270,7 +2270,7 @@ vec_vlogefp(vector float __a)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsl(int __a, const signed char *__b)
 {
@@ -2289,7 +2289,7 @@ vec_lvsl(int __a, const signed char *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsl(int __a, const unsigned char *__b)
 {
@@ -2308,7 +2308,7 @@ vec_lvsl(int __a, const unsigned char *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsl(int __a, const short *__b)
 {
@@ -2327,7 +2327,7 @@ vec_lvsl(int __a, const short *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsl(int __a, const unsigned short *__b)
 {
@@ -2346,7 +2346,7 @@ vec_lvsl(int __a, const unsigned short *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsl(int __a, const int *__b)
 {
@@ -2365,7 +2365,7 @@ vec_lvsl(int __a, const int *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsl(int __a, const unsigned int *__b)
 {
@@ -2384,7 +2384,7 @@ vec_lvsl(int __a, const unsigned int *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsl(int __a, const float *__b)
 {
@@ -2405,7 +2405,7 @@ vec_lvsl(int __a, const float *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsr(int __a, const signed char *__b)
 {
@@ -2424,7 +2424,7 @@ vec_lvsr(int __a, const signed char *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsr(int __a, const unsigned char *__b)
 {
@@ -2443,7 +2443,7 @@ vec_lvsr(int __a, const unsigned char *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsr(int __a, const short *__b)
 {
@@ -2462,7 +2462,7 @@ vec_lvsr(int __a, const short *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsr(int __a, const unsigned short *__b)
 {
@@ -2481,7 +2481,7 @@ vec_lvsr(int __a, const unsigned short *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsr(int __a, const int *__b)
 {
@@ -2500,7 +2500,7 @@ vec_lvsr(int __a, const int *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsr(int __a, const unsigned int *__b)
 {
@@ -2519,7 +2519,7 @@ vec_lvsr(int __a, const unsigned int *__b)
 
 #ifdef __LITTLE_ENDIAN__
 static vector unsigned char __ATTRS_o_ai
-__attribute__((deprecated("use assignment for unaligned little endian \
+__attribute__((__deprecated__("use assignment for unaligned little endian \
 loads/stores")))
 vec_lvsr(int __a, const float *__b)
 {
@@ -4735,7 +4735,7 @@ vec_vpkswus(vector unsigned int __a, vector unsigned int __b)
 // in that the vec_xor can be recognized as a vec_nor (and for P8 and
 // later, possibly a vec_nand).
 
-vector signed char __ATTRS_o_ai
+static vector signed char __ATTRS_o_ai
 vec_perm(vector signed char __a, vector signed char __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -4750,7 +4750,7 @@ vec_perm(vector signed char __a, vector signed char __b, vector unsigned char __
 #endif
 }
 
-vector unsigned char __ATTRS_o_ai
+static vector unsigned char __ATTRS_o_ai
 vec_perm(vector unsigned char __a,
          vector unsigned char __b,
          vector unsigned char __c)
@@ -4767,7 +4767,7 @@ vec_perm(vector unsigned char __a,
 #endif
 }
 
-vector bool char __ATTRS_o_ai
+static vector bool char __ATTRS_o_ai
 vec_perm(vector bool char __a, vector bool char __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -4782,7 +4782,7 @@ vec_perm(vector bool char __a, vector bool char __b, vector unsigned char __c)
 #endif
 }
 
-vector short __ATTRS_o_ai
+static vector short __ATTRS_o_ai
 vec_perm(vector short __a, vector short __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -4797,7 +4797,7 @@ vec_perm(vector short __a, vector short __b, vector unsigned char __c)
 #endif
 }
 
-vector unsigned short __ATTRS_o_ai
+static vector unsigned short __ATTRS_o_ai
 vec_perm(vector unsigned short __a,
          vector unsigned short __b,
          vector unsigned char __c)
@@ -4814,7 +4814,7 @@ vec_perm(vector unsigned short __a,
 #endif
 }
 
-vector bool short __ATTRS_o_ai
+static vector bool short __ATTRS_o_ai
 vec_perm(vector bool short __a, vector bool short __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -4829,7 +4829,7 @@ vec_perm(vector bool short __a, vector bool short __b, vector unsigned char __c)
 #endif
 }
 
-vector pixel __ATTRS_o_ai
+static vector pixel __ATTRS_o_ai
 vec_perm(vector pixel __a, vector pixel __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -4844,7 +4844,7 @@ vec_perm(vector pixel __a, vector pixel __b, vector unsigned char __c)
 #endif
 }
 
-vector int __ATTRS_o_ai
+static vector int __ATTRS_o_ai
 vec_perm(vector int __a, vector int __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -4857,7 +4857,7 @@ vec_perm(vector int __a, vector int __b, vector unsigned char __c)
 #endif
 }
 
-vector unsigned int __ATTRS_o_ai
+static vector unsigned int __ATTRS_o_ai
 vec_perm(vector unsigned int __a, vector unsigned int __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -4872,7 +4872,7 @@ vec_perm(vector unsigned int __a, vector unsigned int __b, vector unsigned char 
 #endif
 }
 
-vector bool int __ATTRS_o_ai
+static vector bool int __ATTRS_o_ai
 vec_perm(vector bool int __a, vector bool int __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -4887,7 +4887,7 @@ vec_perm(vector bool int __a, vector bool int __b, vector unsigned char __c)
 #endif
 }
 
-vector float __ATTRS_o_ai
+static vector float __ATTRS_o_ai
 vec_perm(vector float __a, vector float __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -4903,7 +4903,7 @@ vec_perm(vector float __a, vector float __b, vector unsigned char __c)
 }
 
 #ifdef __VSX__
-vector long long __ATTRS_o_ai
+static vector long long __ATTRS_o_ai
 vec_perm(vector long long __a, vector long long __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -4916,7 +4916,7 @@ vec_perm(vector long long __a, vector long long __b, vector unsigned char __c)
 #endif
 }
 
-vector unsigned long long __ATTRS_o_ai
+static vector unsigned long long __ATTRS_o_ai
 vec_perm(vector unsigned long long __a, vector unsigned long long __b,
          vector unsigned char __c)
 {
@@ -4932,7 +4932,7 @@ vec_perm(vector unsigned long long __a, vector unsigned long long __b,
 #endif
 }
 
-vector double __ATTRS_o_ai
+static vector double __ATTRS_o_ai
 vec_perm(vector double __a, vector double __b, vector unsigned char __c)
 {
 #ifdef __LITTLE_ENDIAN__
@@ -8664,11 +8664,11 @@ vec_sum2s(vector int __a, vector int __b)
 #ifdef __LITTLE_ENDIAN__
   vector int __c = (vector signed int)
     vec_perm(__b, __b, (vector unsigned char)
-	     (4,5,6,7,0,1,2,3,12,13,14,15,8,9,10,11));
+             (4,5,6,7,0,1,2,3,12,13,14,15,8,9,10,11));
   __c = __builtin_altivec_vsum2sws(__a, __c);
   return (vector signed int)
     vec_perm(__c, __c, (vector unsigned char)
-	     (4,5,6,7,0,1,2,3,12,13,14,15,8,9,10,11));
+             (4,5,6,7,0,1,2,3,12,13,14,15,8,9,10,11));
 #else
   return __builtin_altivec_vsum2sws(__a, __b);
 #endif
@@ -8682,11 +8682,11 @@ vec_vsum2sws(vector int __a, vector int __b)
 #ifdef __LITTLE_ENDIAN__
   vector int __c = (vector signed int)
     vec_perm(__b, __b, (vector unsigned char)
-	     (4,5,6,7,0,1,2,3,12,13,14,15,8,9,10,11));
+             (4,5,6,7,0,1,2,3,12,13,14,15,8,9,10,11));
   __c = __builtin_altivec_vsum2sws(__a, __c);
   return (vector signed int)
     vec_perm(__c, __c, (vector unsigned char)
-	     (4,5,6,7,0,1,2,3,12,13,14,15,8,9,10,11));
+             (4,5,6,7,0,1,2,3,12,13,14,15,8,9,10,11));
 #else
   return __builtin_altivec_vsum2sws(__a, __b);
 #endif

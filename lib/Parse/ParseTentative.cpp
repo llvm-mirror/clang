@@ -195,7 +195,9 @@ Parser::TPResult Parser::TryConsumeDeclarationSpecifier() {
       }
     }
 
-    if (TryAnnotateCXXScopeToken())
+    if ((Tok.is(tok::identifier) || Tok.is(tok::coloncolon) ||
+         Tok.is(tok::kw_decltype) || Tok.is(tok::annot_template_id)) &&
+        TryAnnotateCXXScopeToken())
       return TPResult::Error;
     if (Tok.is(tok::annot_cxxscope))
       ConsumeToken();
@@ -990,6 +992,7 @@ Parser::isExpressionOrTypeSpecifierSimple(tok::TokenKind Kind) {
   case tok::kw___unaligned:
   case tok::kw___vector:
   case tok::kw___pixel:
+  case tok::kw___bool:
   case tok::kw__Atomic:
   case tok::kw___unknown_anytype:
     return TPResult::False;

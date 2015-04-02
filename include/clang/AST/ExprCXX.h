@@ -17,10 +17,10 @@
 
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/LambdaCapture.h"
 #include "clang/AST/TemplateBase.h"
 #include "clang/AST/UnresolvedSet.h"
 #include "clang/Basic/ExpressionTraits.h"
-#include "clang/AST/LambdaCapture.h"
 #include "clang/Basic/TypeTraits.h"
 #include "llvm/Support/Compiler.h"
 
@@ -85,6 +85,13 @@ public:
   /// parentheses; when \c getOperator()==OO_Subscript, this is the location
   /// of the right bracket.
   SourceLocation getOperatorLoc() const { return getRParenLoc(); }
+
+  SourceLocation getExprLoc() const LLVM_READONLY {
+    return (Operator < OO_Plus || Operator >= OO_Arrow ||
+            Operator == OO_PlusPlus || Operator == OO_MinusMinus)
+               ? getLocStart()
+               : getOperatorLoc();
+  }
 
   SourceLocation getLocStart() const LLVM_READONLY { return Range.getBegin(); }
   SourceLocation getLocEnd() const LLVM_READONLY { return Range.getEnd(); }
@@ -1127,7 +1134,7 @@ public:
                                   ConstructionKind ConstructKind,
                                   SourceRange ParenOrBraceRange);
 
-  CXXConstructorDecl* getConstructor() const { return Constructor; }
+  CXXConstructorDecl *getConstructor() const { return Constructor; }
   void setConstructor(CXXConstructorDecl *C) { Constructor = C; }
 
   SourceLocation getLocation() const { return Loc; }
@@ -1404,14 +1411,13 @@ class LambdaExpr : public Expr {
   unsigned *getArrayIndexStarts() const {
     return reinterpret_cast<unsigned *>(getStoredStmts() + NumCaptures + 1);
   }
-  
+
   /// \brief Retrieve the complete set of array-index variables.
   VarDecl **getArrayIndexVars() const {
-    unsigned ArrayIndexSize =
-        llvm::RoundUpToAlignment(sizeof(unsigned) * (NumCaptures + 1),
-                                 llvm::alignOf<VarDecl*>());
+    unsigned ArrayIndexSize = llvm::RoundUpToAlignment(
+        sizeof(unsigned) * (NumCaptures + 1), llvm::alignOf<VarDecl *>());
     return reinterpret_cast<VarDecl **>(
-        reinterpret_cast<char*>(getArrayIndexStarts()) + ArrayIndexSize);
+        reinterpret_cast<char *>(getArrayIndexStarts()) + ArrayIndexSize);
   }
 
 public:
@@ -1685,6 +1691,10 @@ public:
   ///   If the allocation function returns null, initialization shall
   ///   not be done, the deallocation function shall not be called,
   ///   and the value of the new-expression shall be null.
+  ///
+  /// C++ DR1748:
+  ///   If the allocation function is a reserved placement allocation
+  ///   function that returns null, the behavior is undefined.
   ///
   /// An allocation function is not allowed to return null unless it
   /// has a non-throwing exception-specification.  The '03 rule is
@@ -2915,8 +2925,9 @@ public:
 
   SourceLocation getLocStart() const LLVM_READONLY;
   SourceLocation getLocEnd() const LLVM_READONLY {
-    assert(RParenLoc.isValid() || NumArgs == 1);
-    return RParenLoc.isValid() ? RParenLoc : getArg(0)->getLocEnd();
+    if (!RParenLoc.isValid() && NumArgs > 0)
+      return getArg(NumArgs - 1)->getLocEnd();
+    return RParenLoc;
   }
 
   static bool classof(const Stmt *T) {

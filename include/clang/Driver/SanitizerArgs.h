@@ -13,6 +13,7 @@
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include <string>
+#include <vector>
 
 namespace clang {
 namespace driver {
@@ -22,9 +23,9 @@ class ToolChain;
 
 class SanitizerArgs {
   SanitizerSet Sanitizers;
-  bool SanitizeRecover;
+  SanitizerSet RecoverableSanitizers;
 
-  std::string BlacklistFile;
+  std::vector<std::string> BlacklistFiles;
   int SanitizeCoverage;
   int MsanTrackOrigins;
   int AsanFieldPadding;
@@ -48,9 +49,9 @@ class SanitizerArgs {
   bool needsUbsanRt() const;
   bool needsDfsanRt() const { return Sanitizers.has(SanitizerKind::DataFlow); }
 
-  bool sanitizesVptr() const { return Sanitizers.has(SanitizerKind::Vptr); }
   bool requiresPIE() const;
   bool needsUnwindTables() const;
+  bool needsLTO() const;
   bool linkCXXRuntimes() const { return LinkCXXRuntimes; }
   void addArgs(const llvm::opt::ArgList &Args,
                llvm::opt::ArgStringList &CmdArgs) const;

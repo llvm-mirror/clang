@@ -218,6 +218,7 @@ void Parser::ParseCXXNonStaticMemberInitializer(Decl *VarD) {
   Eof.startToken();
   Eof.setKind(tok::eof);
   Eof.setLocation(Tok.getLocation());
+  Eof.setEofData(VarD);
   Toks.push_back(Eof);
 }
 
@@ -305,13 +306,21 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
   ParseScope PrototypeScope(this, Scope::FunctionPrototypeScope |
                             Scope::FunctionDeclarationScope | Scope::DeclScope);
   for (unsigned I = 0, N = LM.DefaultArgs.size(); I != N; ++I) {
+    auto Param = cast<ParmVarDecl>(LM.DefaultArgs[I].Param);
     // Introduce the parameter into scope.
-    Actions.ActOnDelayedCXXMethodParameter(getCurScope(),
-                                           LM.DefaultArgs[I].Param);
-
+    bool HasUnparsed = Param->hasUnparsedDefaultArg();
+    Actions.ActOnDelayedCXXMethodParameter(getCurScope(), Param);
     if (CachedTokens *Toks = LM.DefaultArgs[I].Toks) {
-      // Save the current token position.
-      SourceLocation origLoc = Tok.getLocation();
+      // Mark the end of the default argument so that we know when to stop when
+      // we parse it later on.
+      Token LastDefaultArgToken = Toks->back();
+      Token DefArgEnd;
+      DefArgEnd.startToken();
+      DefArgEnd.setKind(tok::eof);
+      DefArgEnd.setLocation(LastDefaultArgToken.getLocation().getLocWithOffset(
+          LastDefaultArgToken.getLength()));
+      DefArgEnd.setEofData(Param);
+      Toks->push_back(DefArgEnd);
 
       // Parse the default argument from its saved token stream.
       Toks->push_back(Tok); // So that the current token doesn't get lost
@@ -328,7 +337,7 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
       // used.
       EnterExpressionEvaluationContext Eval(Actions,
                                             Sema::PotentiallyEvaluatedIfUsed,
-                                            LM.DefaultArgs[I].Param);
+                                            Param);
 
       ExprResult DefArgResult;
       if (getLangOpts().CPlusPlus11 && Tok.is(tok::l_brace)) {
@@ -337,11 +346,10 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
       } else
         DefArgResult = ParseAssignmentExpression();
       DefArgResult = Actions.CorrectDelayedTyposInExpr(DefArgResult);
-      if (DefArgResult.isInvalid())
-        Actions.ActOnParamDefaultArgumentError(LM.DefaultArgs[I].Param,
-                                               EqualLoc);
-      else {
-        if (!TryConsumeToken(tok::cxx_defaultarg_end)) {
+      if (DefArgResult.isInvalid()) {
+        Actions.ActOnParamDefaultArgumentError(Param, EqualLoc);
+      } else {
+        if (Tok.isNot(tok::eof) || Tok.getEofData() != Param) {
           // The last two tokens are the terminator and the saved value of
           // Tok; the last token in the default argument is the one before
           // those.
@@ -350,27 +358,45 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
             << SourceRange(Tok.getLocation(),
                            (*Toks)[Toks->size() - 3].getLocation());
         }
-        Actions.ActOnParamDefaultArgument(LM.DefaultArgs[I].Param, EqualLoc,
+        Actions.ActOnParamDefaultArgument(Param, EqualLoc,
                                           DefArgResult.get());
       }
 
-      assert(!PP.getSourceManager().isBeforeInTranslationUnit(origLoc,
-                                                         Tok.getLocation()) &&
-             "ParseAssignmentExpression went over the default arg tokens!");
       // There could be leftover tokens (e.g. because of an error).
-      // Skip through until we reach the original token position.
-      while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
+      // Skip through until we reach the 'end of default argument' token.
+      while (Tok.isNot(tok::eof))
+        ConsumeAnyToken();
+
+      if (Tok.is(tok::eof) && Tok.getEofData() == Param)
         ConsumeAnyToken();
 
       delete Toks;
       LM.DefaultArgs[I].Toks = nullptr;
+    } else if (HasUnparsed) {
+      assert(Param->hasInheritedDefaultArg());
+      FunctionDecl *Old = cast<FunctionDecl>(LM.Method)->getPreviousDecl();
+      ParmVarDecl *OldParam = Old->getParamDecl(I);
+      assert (!OldParam->hasUnparsedDefaultArg());
+      if (OldParam->hasUninstantiatedDefaultArg())
+        Param->setUninstantiatedDefaultArg(
+                                      Param->getUninstantiatedDefaultArg());
+      else
+        Param->setDefaultArg(OldParam->getInit());
     }
   }
 
   // Parse a delayed exception-specification, if there is one.
   if (CachedTokens *Toks = LM.ExceptionSpecTokens) {
-    // Save the current token position.
-    SourceLocation origLoc = Tok.getLocation();
+    // Add the 'stop' token.
+    Token LastExceptionSpecToken = Toks->back();
+    Token ExceptionSpecEnd;
+    ExceptionSpecEnd.startToken();
+    ExceptionSpecEnd.setKind(tok::eof);
+    ExceptionSpecEnd.setLocation(
+        LastExceptionSpecToken.getLocation().getLocWithOffset(
+            LastExceptionSpecToken.getLength()));
+    ExceptionSpecEnd.setEofData(LM.Method);
+    Toks->push_back(ExceptionSpecEnd);
 
     // Parse the default argument from its saved token stream.
     Toks->push_back(Tok); // So that the current token doesn't get lost
@@ -409,10 +435,7 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
                                        DynamicExceptionRanges, NoexceptExpr,
                                        ExceptionSpecTokens);
 
-    // Clean up the remaining tokens.
-    if (Tok.is(tok::cxx_exceptspec_end))
-      ConsumeToken();
-    else if (EST != EST_None)
+    if (Tok.isNot(tok::eof) || Tok.getEofData() != LM.Method)
       Diag(Tok.getLocation(), diag::err_except_spec_unparsed);
 
     // Attach the exception-specification to the method.
@@ -423,13 +446,13 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
                                                NoexceptExpr.isUsable()?
                                                  NoexceptExpr.get() : nullptr);
 
-    assert(!PP.getSourceManager().isBeforeInTranslationUnit(origLoc,
-                                                            Tok.getLocation()) &&
-           "tryParseExceptionSpecification went over the exception tokens!");
-
     // There could be leftover tokens (e.g. because of an error).
     // Skip through until we reach the original token position.
-    while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
+    while (Tok.isNot(tok::eof))
+      ConsumeAnyToken();
+
+    // Clean up the remaining EOF token.
+    if (Tok.is(tok::eof) && Tok.getEofData() == LM.Method)
       ConsumeAnyToken();
 
     delete Toks;
@@ -470,10 +493,16 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
     Actions.ActOnReenterTemplateScope(getCurScope(), LM.D);
     ++CurTemplateDepthTracker;
   }
-  // Save the current token position.
-  SourceLocation origLoc = Tok.getLocation();
 
   assert(!LM.Toks.empty() && "Empty body!");
+  Token LastBodyToken = LM.Toks.back();
+  Token BodyEnd;
+  BodyEnd.startToken();
+  BodyEnd.setKind(tok::eof);
+  BodyEnd.setLocation(
+      LastBodyToken.getLocation().getLocWithOffset(LastBodyToken.getLength()));
+  BodyEnd.setEofData(LM.D);
+  LM.Toks.push_back(BodyEnd);
   // Append the current token at the end of the new token stream so that it
   // doesn't get lost.
   LM.Toks.push_back(Tok);
@@ -491,12 +520,11 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
 
   if (Tok.is(tok::kw_try)) {
     ParseFunctionTryBlock(LM.D, FnScope);
-    assert(!PP.getSourceManager().isBeforeInTranslationUnit(origLoc,
-                                                         Tok.getLocation()) &&
-           "ParseFunctionTryBlock went over the cached tokens!");
-    // There could be leftover tokens (e.g. because of an error).
-    // Skip through until we reach the original token position.
-    while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
+
+    while (Tok.isNot(tok::eof))
+      ConsumeAnyToken();
+
+    if (Tok.is(tok::eof) && Tok.getEofData() == LM.D)
       ConsumeAnyToken();
     return;
   }
@@ -507,7 +535,11 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
     if (!Tok.is(tok::l_brace)) {
       FnScope.Exit();
       Actions.ActOnFinishFunctionBody(LM.D, nullptr);
-      while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
+
+      while (Tok.isNot(tok::eof))
+        ConsumeAnyToken();
+
+      if (Tok.is(tok::eof) && Tok.getEofData() == LM.D)
         ConsumeAnyToken();
       return;
     }
@@ -527,17 +559,11 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
   if (LM.D)
     LM.D->getAsFunction()->setLateTemplateParsed(false);
 
-  if (Tok.getLocation() != origLoc) {
-    // Due to parsing error, we either went over the cached tokens or
-    // there are still cached tokens left. If it's the latter case skip the
-    // leftover tokens.
-    // Since this is an uncommon situation that should be avoided, use the
-    // expensive isBeforeInTranslationUnit call.
-    if (PP.getSourceManager().isBeforeInTranslationUnit(Tok.getLocation(),
-                                                        origLoc))
-      while (Tok.getLocation() != origLoc && Tok.isNot(tok::eof))
-        ConsumeAnyToken();
-  }
+  while (Tok.isNot(tok::eof))
+    ConsumeAnyToken();
+
+  if (Tok.is(tok::eof) && Tok.getEofData() == LM.D)
+    ConsumeAnyToken();
 
   if (CXXMethodDecl *MD = dyn_cast_or_null<CXXMethodDecl>(LM.D))
     Actions.ActOnFinishInlineMethodDef(MD);
@@ -622,7 +648,9 @@ void Parser::ParseLexedMemberInitializer(LateParsedMemberInitializer &MI) {
     while (Tok.isNot(tok::eof))
       ConsumeAnyToken();
   }
-  ConsumeAnyToken();
+  // Make sure this is *our* artificial EOF token.
+  if (Tok.getEofData() == MI.Field)
+    ConsumeAnyToken();
 }
 
 /// ConsumeAndStoreUntil - Consume and store the token at the passed token
@@ -1016,7 +1044,7 @@ bool Parser::ConsumeAndStoreInitializer(CachedTokens &Toks,
         case CIK_DefaultArgument:
           bool InvalidAsDeclaration = false;
           Result = TryParseParameterDeclarationClause(
-              &InvalidAsDeclaration, /*VersusTemplateArgument*/true);
+              &InvalidAsDeclaration, /*VersusTemplateArgument=*/true);
           // If this is an expression or a declaration with a missing
           // 'typename', assume it's not a declaration.
           if (Result == TPResult::Ambiguous && InvalidAsDeclaration)

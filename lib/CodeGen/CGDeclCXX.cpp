@@ -141,7 +141,7 @@ void CodeGenFunction::EmitCXXGlobalVarDeclInit(const VarDecl &D,
 
   if (!T->isReferenceType()) {
     if (getLangOpts().OpenMP && D.hasAttr<OMPThreadPrivateDeclAttr>())
-      (void)CGM.getOpenMPRuntime().EmitOMPThreadPrivateVarDefinition(
+      (void)CGM.getOpenMPRuntime().emitThreadPrivateVarDefinition(
           &D, DeclPtr, D.getAttr<OMPThreadPrivateDeclAttr>()->getLocation(),
           PerformInit, this);
     if (PerformInit)
@@ -267,15 +267,7 @@ void CodeGenModule::EmitPointerToInitFunc(const VarDecl *D,
   addUsedGlobal(PtrArray);
 
   // If the GV is already in a comdat group, then we have to join it.
-  llvm::Comdat *C = GV->getComdat();
-
-  // LinkOnce and Weak linkage are lowered down to a single-member comdat group.
-  // Make an explicit group so we can join it.
-  if (!C && (GV->hasWeakLinkage() || GV->hasLinkOnceLinkage())) {
-    C = TheModule.getOrInsertComdat(GV->getName());
-    GV->setComdat(C);
-  }
-  if (C)
+  if (llvm::Comdat *C = GV->getComdat())
     PtrArray->setComdat(C);
 }
 
@@ -333,8 +325,9 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
     AddGlobalCtor(Fn, 65535, COMDATKey);
     DelayedCXXInitPosition.erase(D);
   } else if (D->hasAttr<SelectAnyAttr>()) {
-    // SelectAny globals will be comdat-folded. Put the initializer into a COMDAT
-    // group associated with the global, so the initializers get folded too.
+    // SelectAny globals will be comdat-folded. Put the initializer into a
+    // COMDAT group associated with the global, so the initializers get folded
+    // too.
     AddGlobalCtor(Fn, 65535, COMDATKey);
     DelayedCXXInitPosition.erase(D);
   } else {
@@ -452,6 +445,8 @@ void CodeGenFunction::GenerateCXXGlobalVarDeclInitFunc(llvm::Function *Fn,
   if (D->hasAttr<NoDebugAttr>())
     DebugInfo = nullptr; // disable debug info indefinitely for this function
 
+  CurEHLocation = D->getLocStart();
+
   StartFunction(GlobalDecl(D), getContext().VoidTy, Fn,
                 getTypes().arrangeNullaryFunction(),
                 FunctionArgList(), D->getLocation(),
@@ -474,11 +469,11 @@ CodeGenFunction::GenerateCXXGlobalInitFunc(llvm::Function *Fn,
                                            ArrayRef<llvm::Function *> Decls,
                                            llvm::GlobalVariable *Guard) {
   {
-    ArtificialLocation AL(*this, Builder);
+    auto NL = ApplyDebugLocation::CreateEmpty(*this);
     StartFunction(GlobalDecl(), getContext().VoidTy, Fn,
                   getTypes().arrangeNullaryFunction(), FunctionArgList());
     // Emit an artificial location for this function.
-    AL.Emit();
+    auto AL = ApplyDebugLocation::CreateArtificial(*this);
 
     llvm::BasicBlock *ExitBlock = nullptr;
     if (Guard) {
@@ -525,11 +520,11 @@ void CodeGenFunction::GenerateCXXGlobalDtorsFunc(llvm::Function *Fn,
                   const std::vector<std::pair<llvm::WeakVH, llvm::Constant*> >
                                                 &DtorsAndObjects) {
   {
-    ArtificialLocation AL(*this, Builder);
+    auto NL = ApplyDebugLocation::CreateEmpty(*this);
     StartFunction(GlobalDecl(), getContext().VoidTy, Fn,
                   getTypes().arrangeNullaryFunction(), FunctionArgList());
     // Emit an artificial location for this function.
-    AL.Emit();
+    auto AL = ApplyDebugLocation::CreateArtificial(*this);
 
     // Emit the dtors, in reverse order from construction.
     for (unsigned i = 0, e = DtorsAndObjects.size(); i != e; ++i) {
@@ -560,6 +555,8 @@ llvm::Function *CodeGenFunction::generateDestroyHelper(
   llvm::FunctionType *FTy = CGM.getTypes().GetFunctionType(FI);
   llvm::Function *fn = CGM.CreateGlobalInitOrDestructFunction(
       FTy, "__cxx_global_array_dtor", VD->getLocation());
+
+  CurEHLocation = VD->getLocStart();
 
   StartFunction(VD, getContext().VoidTy, fn, FI, args);
 

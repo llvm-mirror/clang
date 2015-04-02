@@ -14,17 +14,16 @@
 #ifndef LLVM_CLANG_ANALYSIS_ANALYSES_THREADSAFETYUTIL_H
 #define LLVM_CLANG_ANALYSIS_ANALYSES_THREADSAFETYUTIL_H
 
+#include "clang/AST/ExprCXX.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/AlignOf.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Compiler.h"
-#include "clang/AST/ExprCXX.h"
-
 #include <cassert>
 #include <cstddef>
-#include <vector>
-#include <utility>
 #include <ostream>
+#include <utility>
+#include <vector>
 
 namespace clang {
 namespace threadSafety {
@@ -227,7 +226,7 @@ private:
 
   static const size_t InitialCapacity = 4;
 
-  SimpleArray(const SimpleArray<T> &A) LLVM_DELETED_FUNCTION;
+  SimpleArray(const SimpleArray<T> &A) = delete;
 
   T *Data;
   size_t Size;
@@ -256,8 +255,8 @@ class CopyOnWriteVector {
   };
 
   // No copy constructor or copy assignment.  Use clone() with move assignment.
-  CopyOnWriteVector(const CopyOnWriteVector &V) LLVM_DELETED_FUNCTION;
-  void operator=(const CopyOnWriteVector &V) LLVM_DELETED_FUNCTION;
+  CopyOnWriteVector(const CopyOnWriteVector &V) = delete;
+  void operator=(const CopyOnWriteVector &V) = delete;
 
 public:
   CopyOnWriteVector() : Data(nullptr) {}

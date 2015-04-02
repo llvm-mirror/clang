@@ -240,10 +240,8 @@ Sema::BuildCXXNamedCast(SourceLocation OpLoc, tok::TokenKind Kind,
   QualType DestType = DestTInfo->getType();
 
   // If the type is dependent, we won't do the semantic analysis now.
-  // FIXME: should we check this in a more fine-grained manner?
-  bool TypeDependent = DestType->isDependentType() ||
-                       Ex.get()->isTypeDependent() ||
-                       Ex.get()->isValueDependent();
+  bool TypeDependent =
+      DestType->isDependentType() || Ex.get()->isTypeDependent();
 
   CastOperation Op(*this, DestType, E);
   Op.OpRange = SourceRange(OpLoc, Parens.getEnd());
@@ -391,6 +389,33 @@ static void diagnoseBadCast(Sema &S, unsigned msg, CastType castType,
 
   S.Diag(opRange.getBegin(), msg) << castType
     << src->getType() << destType << opRange << src->getSourceRange();
+
+  // Detect if both types are (ptr to) class, and note any incompleteness.
+  int DifferentPtrness = 0;
+  QualType From = destType;
+  if (auto Ptr = From->getAs<PointerType>()) {
+    From = Ptr->getPointeeType();
+    DifferentPtrness++;
+  }
+  QualType To = src->getType();
+  if (auto Ptr = To->getAs<PointerType>()) {
+    To = Ptr->getPointeeType();
+    DifferentPtrness--;
+  }
+  if (!DifferentPtrness) {
+    auto RecFrom = From->getAs<RecordType>();
+    auto RecTo = To->getAs<RecordType>();
+    if (RecFrom && RecTo) {
+      auto DeclFrom = RecFrom->getAsCXXRecordDecl();
+      if (!DeclFrom->isCompleteDefinition())
+        S.Diag(DeclFrom->getLocation(), diag::note_type_incomplete)
+          << DeclFrom->getDeclName();
+      auto DeclTo = RecTo->getAsCXXRecordDecl();
+      if (!DeclTo->isCompleteDefinition())
+        S.Diag(DeclTo->getLocation(), diag::note_type_incomplete)
+          << DeclTo->getDeclName();
+    }
+  }
 }
 
 /// UnwrapDissimilarPointerTypes - Like Sema::UnwrapSimilarPointerTypes,
@@ -667,12 +692,6 @@ void CastOperation::CheckDynamicCast() {
     }
 
     Kind = CK_DerivedToBase;
-
-    // If we are casting to or through a virtual base class, we need a
-    // vtable.
-    if (Self.BasePathInvolvesVirtualBase(BasePath))
-      Self.MarkVTableUsed(OpRange.getBegin(), 
-                          cast<CXXRecordDecl>(SrcRecord->getDecl()));
     return;
   }
 
@@ -684,8 +703,6 @@ void CastOperation::CheckDynamicCast() {
       << SrcPointee.getUnqualifiedType() << SrcExpr.get()->getSourceRange();
     SrcExpr = ExprError();
   }
-  Self.MarkVTableUsed(OpRange.getBegin(), 
-                      cast<CXXRecordDecl>(SrcRecord->getDecl()));
 
   // dynamic_cast is not available with -fno-rtti.
   // As an exception, dynamic_cast to void* is available because it doesn't
@@ -1089,6 +1106,14 @@ static TryCastResult TryStaticCast(Sema &Self, ExprResult &SrcExpr,
   if (!CStyle &&
       Self.CheckTollFreeBridgeStaticCast(DestType, SrcExpr.get(), Kind))
     return TC_Success;
+
+  // See if it looks like the user is trying to convert between
+  // related record types, and select a better diagnostic if so.
+  if (auto SrcPointer = SrcType->getAs<PointerType>())
+    if (auto DestPointer = DestType->getAs<PointerType>())
+      if (SrcPointer->getPointeeType()->getAs<RecordType>() &&
+          DestPointer->getPointeeType()->getAs<RecordType>())
+       msg = diag::err_bad_cxx_cast_unrelated_class;
   
   // We tried everything. Everything! Nothing works! :-(
   return TC_NotApplicable;

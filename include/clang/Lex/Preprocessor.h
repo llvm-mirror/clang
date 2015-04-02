@@ -136,6 +136,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   IdentifierInfo *Ident__building_module;          // __building_module
   IdentifierInfo *Ident__MODULE__;                 // __MODULE__
   IdentifierInfo *Ident__has_cpp_attribute;        // __has_cpp_attribute
+  IdentifierInfo *Ident__has_declspec;             // __has_declspec_attribute
 
   SourceLocation DATELoc, TIMELoc;
   unsigned CounterValue;  // Next __COUNTER__ value.
@@ -1379,7 +1380,8 @@ public:
   /// followed by EOD.  Return true if the token is not a valid on-off-switch.
   bool LexOnOffSwitch(tok::OnOffSwitch &OOS);
 
-  bool CheckMacroName(Token &MacroNameTok, MacroUse isDefineUndef);
+  bool CheckMacroName(Token &MacroNameTok, MacroUse isDefineUndef,
+                      bool *ShadowFlag = nullptr);
 
 private:
 
@@ -1419,11 +1421,17 @@ private:
                                                              bool isPublic);
 
   /// \brief Lex and validate a macro name, which occurs after a
-  /// \#define or \#undef. 
+  /// \#define or \#undef.
+  ///
+  /// \param MacroNameTok Token that represents the name defined or undefined.
+  /// \param IsDefineUndef Kind if preprocessor directive.
+  /// \param ShadowFlag Points to flag that is set if macro name shadows
+  ///                   a keyword.
   ///
   /// This emits a diagnostic, sets the token kind to eod,
   /// and discards the rest of the macro line if the macro name is invalid.
-  void ReadMacroName(Token &MacroNameTok, MacroUse isDefineUndef = MU_Other);
+  void ReadMacroName(Token &MacroNameTok, MacroUse IsDefineUndef = MU_Other,
+                     bool *ShadowFlag = nullptr);
 
   /// The ( starting an argument list of a macro definition has just been read.
   /// Lex the rest of the arguments and the closing ), updating \p MI with

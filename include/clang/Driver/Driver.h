@@ -61,6 +61,12 @@ class Driver {
     CLMode
   } Mode;
 
+  enum SaveTempsMode {
+    SaveTempsNone,
+    SaveTempsCwd,
+    SaveTempsObj
+  } SaveTemps;
+
 public:
   // Diag - Forwarding function for diagnostics.
   DiagnosticBuilder Diag(unsigned DiagID) const {
@@ -103,9 +109,6 @@ public:
 
   /// Default target triple.
   std::string DefaultTargetTriple;
-
-  /// Default name for linked images (e.g., "a.out").
-  std::string DefaultImageName;
 
   /// Driver title to use with help.
   std::string DriverTitle;
@@ -235,6 +238,9 @@ public:
     InstalledDir = Value;
   }
 
+  bool isSaveTempsEnabled() const { return SaveTemps != SaveTempsNone; }
+  bool isSaveTempsObj() const { return SaveTemps == SaveTempsObj; }
+
   /// @}
   /// @name Primary Functionality
   /// @{
@@ -351,8 +357,8 @@ public:
   /// \p Phase on the \p Input, taking in to account arguments
   /// like -fsyntax-only or --analyze.
   std::unique_ptr<Action>
-  ConstructPhaseAction(const llvm::opt::ArgList &Args, phases::ID Phase,
-                       std::unique_ptr<Action> Input) const;
+  ConstructPhaseAction(const ToolChain &TC, const llvm::opt::ArgList &Args,
+                       phases::ID Phase, std::unique_ptr<Action> Input) const;
 
   /// BuildJobsForAction - Construct the jobs to perform for the
   /// action \p A.
@@ -364,6 +370,9 @@ public:
                           bool MultipleArchs,
                           const char *LinkingOutput,
                           InputInfo &Result) const;
+
+  /// Returns the default name for linked images (e.g., "a.out").
+  const char *getDefaultImageName() const;
 
   /// GetNamedOutputPath - Return the name to use for the output of
   /// the action \p JA. The result is appended to the compilation's
@@ -393,7 +402,7 @@ public:
   /// handle this action.
   bool ShouldUseClangCompiler(const JobAction &JA) const;
 
-  bool IsUsingLTO(const llvm::opt::ArgList &Args) const;
+  bool IsUsingLTO(const ToolChain &TC, const llvm::opt::ArgList &Args) const;
 
 private:
   /// \brief Retrieves a ToolChain for a particular target triple.

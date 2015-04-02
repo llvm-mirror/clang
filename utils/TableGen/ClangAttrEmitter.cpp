@@ -12,8 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/TableGen/Error.h"
@@ -1207,7 +1207,7 @@ writePrettyPrintFunction(Record &R,
 static unsigned
 getSpellingListIndex(const std::vector<FlattenedSpelling> &SpellingList,
                      const FlattenedSpelling &Spelling) {
-  assert(SpellingList.size() && "Spelling list is empty!");
+  assert(!SpellingList.empty() && "Spelling list is empty!");
 
   for (unsigned Index = 0; Index < SpellingList.size(); ++Index) {
     const FlattenedSpelling &S = SpellingList[Index];
@@ -1231,7 +1231,7 @@ static void writeAttrAccessorDefinition(const Record &R, raw_ostream &OS) {
     std::vector<FlattenedSpelling> Spellings = 
       GetFlattenedSpellings(*Accessor);
     std::vector<FlattenedSpelling> SpellingList = GetFlattenedSpellings(R);
-    assert(SpellingList.size() &&
+    assert(!SpellingList.empty() &&
            "Attribute with empty spelling list can't have accessors!");
 
     OS << "  bool " << Name << "() const { return SpellingListIndex == ";
@@ -1387,6 +1387,7 @@ static bool isIdentifierArgument(Record *Arg) {
     llvm::StringSwitch<bool>(Arg->getSuperClasses().back()->getName())
     .Case("IdentifierArgument", true)
     .Case("EnumArgument", true)
+    .Case("VariadicEnumArgument", true)
     .Default(false);
 }
 
@@ -1920,9 +1921,6 @@ void EmitClangAttrHasAttrImpl(RecordKeeper &Records, raw_ostream &OS) {
   }
 
   OS << "switch (Syntax) {\n";
-  OS << "case AttrSyntax::Generic:\n";
-  OS << "  return llvm::StringSwitch<int>(Name)\n";
-  GenerateHasAttrSpellingStringSwitch(Attrs, OS);
   OS << "case AttrSyntax::GNU:\n";
   OS << "  return llvm::StringSwitch<int>(Name)\n";
   GenerateHasAttrSpellingStringSwitch(GNU, OS, "GNU");

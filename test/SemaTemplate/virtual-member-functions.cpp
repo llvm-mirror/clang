@@ -3,19 +3,17 @@
 
 namespace PR5557 {
 template <class T> struct A {
-  A();
-  virtual void anchor();
+  A(); // expected-note{{instantiation}}
   virtual int a(T x);
 };
 template<class T> A<T>::A() {}
-template<class T> void A<T>::anchor() { }
 
 template<class T> int A<T>::a(T x) { 
   return *x; // expected-error{{requires pointer operand}}
 }
 
-void f(A<int> x) {
-  x.anchor(); // expected-note{{instantiation}}
+void f() {
+  A<int> x; // expected-note{{instantiation}}
 }
 
 template<typename T>
@@ -25,6 +23,24 @@ struct X {
 
 template<>
 void X<int>::f() { }
+}
+
+// Like PR5557, but with a defined destructor instead of a defined constructor.
+namespace PR5557_dtor {
+template <class T> struct A {
+  A(); // Don't have an implicit constructor.
+  ~A(); // expected-note{{instantiation}}
+  virtual int a(T x);
+};
+template<class T> A<T>::~A() {}
+
+template<class T> int A<T>::a(T x) { 
+  return *x; // expected-error{{requires pointer operand}}
+}
+
+void f() {
+  A<int> x; // expected-note{{instantiation}}
+}
 }
 
 template<typename T>
@@ -94,12 +110,12 @@ namespace PR7114 {
 namespace DynamicCast {
   struct Y {};
   template<typename T> struct X : virtual Y {
-    virtual void foo() { T x; } // expected-error {{variable has incomplete type 'void'}}
+    virtual void foo() { T x; }
   };
   template<typename T> struct X2 : virtual Y {
     virtual void foo() { T x; }
   };
-  Y* f(X<void>* x) { return dynamic_cast<Y*>(x); } // expected-note {{in instantiation of member function 'DynamicCast::X<void>::foo' requested here}}
+  Y* f(X<void>* x) { return dynamic_cast<Y*>(x); }
   Y* f2(X<void>* x) { return dynamic_cast<Y*>(x); }
 }
 

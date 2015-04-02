@@ -95,6 +95,7 @@ using llvm::opt::ArgStringList;
     bool hasGoodDiagnostics() const override { return true; }
     bool hasIntegratedAssembler() const override { return true; }
     bool hasIntegratedCPP() const override { return true; }
+    bool canEmitIR() const override { return true; }
 
     void ConstructJob(Compilation &C, const JobAction &JA,
                       const InputInfo &Output, const InputInfoList &Inputs,
@@ -108,7 +109,8 @@ using llvm::opt::ArgStringList;
     ClangAs(const ToolChain &TC) : Tool("clang::as",
                                         "clang integrated assembler", TC,
                                         RF_Full) {}
-
+    void AddMIPSTargetArgs(const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &CmdArgs) const;
     bool hasGoodDiagnostics() const override { return true; }
     bool hasIntegratedAssembler() const override { return false; }
     bool hasIntegratedCPP() const override { return false; }
@@ -227,6 +229,8 @@ namespace arm {
   const char* getARMCPUForMArch(const llvm::opt::ArgList &Args,
                                 const llvm::Triple &Triple);
   const char* getLLVMArchSuffixForARM(StringRef CPU);
+
+  void appendEBLinkFlags(const llvm::opt::ArgList &Args, ArgStringList &CmdArgs, const llvm::Triple &Triple);
 }
 
 namespace mips {

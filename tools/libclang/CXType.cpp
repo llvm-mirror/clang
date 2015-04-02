@@ -525,8 +525,10 @@ CXCallingConv clang_getFunctionTypeCallingConv(CXType X) {
       TCALLINGCONV(X86_64SysV);
       TCALLINGCONV(AAPCS);
       TCALLINGCONV(AAPCS_VFP);
-      TCALLINGCONV(PnaclCall);
       TCALLINGCONV(IntelOclBicc);
+    case CC_SpirFunction: return CXCallingConv_Unexposed;
+    case CC_SpirKernel: return CXCallingConv_Unexposed;
+      break;
     }
 #undef TCALLINGCONV
   }
@@ -802,7 +804,7 @@ long long clang_Type_getOffsetOf(CXType PT, const char *S) {
   ASTContext &Ctx = cxtu::getASTUnit(GetTU(PT))->getASTContext();
   IdentifierInfo *II = &Ctx.Idents.get(S);
   DeclarationName FieldName(II);
-  RecordDecl::lookup_const_result Res = RD->lookup(FieldName);
+  RecordDecl::lookup_result Res = RD->lookup(FieldName);
   // If a field of the parent record is incomplete, lookup will fail.
   // and we would return InvalidFieldName instead of Incomplete.
   // But this erroneous results does protects again a hidden assertion failure

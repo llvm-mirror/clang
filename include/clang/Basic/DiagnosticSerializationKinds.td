@@ -41,6 +41,8 @@ def err_pch_langopt_value_mismatch : Error<
   "%0 differs in PCH file vs. current file">;
 def err_pch_diagopt_mismatch : Error<"%0 is currently enabled, but was not in "
   "the PCH file">;
+def err_pch_modulecache_mismatch : Error<"PCH was compiled with module cache "
+  "path '%0', but the path is currently '%1'">;
   
 def err_pch_version_too_old : Error<
     "PCH file uses an older PCH format that is no longer supported">;
@@ -58,6 +60,9 @@ def err_imported_module_not_found : Error<
 def err_imported_module_modmap_changed : Error<
     "module '%0' imported by AST file '%1' found in a different module map file"
     " (%2) than when the importing AST file was built (%3)">, DefaultFatal;
+def err_imported_module_relocated : Error<
+    "module '%0' was built in directory '%1' but now resides in "
+    "directory '%2'">, DefaultFatal;
 def err_module_different_modmap : Error<
     "module '%0' %select{uses|does not use}1 additional module map '%2'"
     "%select{| not}1 used when the module was built">;
