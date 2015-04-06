@@ -1,3 +1,4 @@
+// XFAIL: hexagon
 // RUN: %clang_cc1 -emit-llvm %s -o - | FileCheck %s
 // RUN: %clang_cc1 -triple mips-linux-gnu -emit-llvm %s -o - | FileCheck %s
 
@@ -22,7 +23,7 @@ extern _Atomic _Bool b;
 
 _Bool bar() {
 // CHECK-LABEL: @bar
-// CHECK: %[[load:.*]] = load atomic i8* @b seq_cst
+// CHECK: %[[load:.*]] = load atomic i8, i8* @b seq_cst
 // CHECK: %[[tobool:.*]] = trunc i8 %[[load]] to i1
 // CHECK: ret i1 %[[tobool]]
   return b;

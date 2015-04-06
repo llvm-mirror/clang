@@ -73,11 +73,8 @@ static bool isPreprocessedEntityIfInFileID(PreprocessedEntity *PPE, FileID FID,
   SourceLocation Loc = PPE->getSourceRange().getBegin();
   if (Loc.isInvalid())
     return false;
-  
-  if (SM.isInFileID(SM.getFileLoc(Loc), FID))
-    return true;
-  else
-    return false;
+
+  return SM.isInFileID(SM.getFileLoc(Loc), FID);
 }
 
 /// \brief Returns true if the preprocessed entity that \arg PPEI iterator
@@ -91,7 +88,7 @@ bool PreprocessingRecord::isEntityInFileID(iterator PPEI, FileID FID) {
   if (FID.isInvalid())
     return false;
 
-  int Pos = PPEI.Position;
+  int Pos = std::distance(iterator(this, 0), PPEI);
   if (Pos < 0) {
     if (unsigned(-Pos-1) >= LoadedPreprocessedEntities.size()) {
       assert(0 && "Out-of bounds loaded preprocessed entity");

@@ -25,11 +25,11 @@ def target_feature : Separate<["-"], "target-feature">,
   HelpText<"Target specific attributes">;
 def triple : Separate<["-"], "triple">,
   HelpText<"Specify target triple (e.g. i686-apple-darwin9)">;
+def target_abi : Separate<["-"], "target-abi">,
+  HelpText<"Target a particular ABI type">;
 
 }
 
-def target_abi : Separate<["-"], "target-abi">,
-  HelpText<"Target a particular ABI type">;
 def target_linker_version : Separate<["-"], "target-linker-version">,
   HelpText<"Target linker version">;
 def triple_EQ : Joined<["-"], "triple=">, Alias<triple>;
@@ -182,6 +182,8 @@ def coverage_cfg_checksum : Flag<["-"], "coverage-cfg-checksum">,
   HelpText<"Emit CFG checksum for functions in .gcno files.">;
 def coverage_no_function_names_in_data : Flag<["-"], "coverage-no-function-names-in-data">,
   HelpText<"Emit function names in .gcda files.">;
+def coverage_exit_block_before_body : Flag<["-"], "coverage-exit-block-before-body">,
+  HelpText<"Emit the exit block before the body blocks in .gcno files.">;
 def coverage_version_EQ : Joined<["-"], "coverage-version=">,
   HelpText<"Four-byte version string for gcov files.">;
 def test_coverage : Flag<["-"], "test-coverage">,
@@ -516,12 +518,6 @@ def fdeprecated_macro : Flag<["-"], "fdeprecated-macro">,
   HelpText<"Defines the __DEPRECATED macro">;
 def fno_deprecated_macro : Flag<["-"], "fno-deprecated-macro">,
   HelpText<"Undefines the __DEPRECATED macro">;
-def fsized_deallocation : Flag<["-"], "fsized-deallocation">,
-  HelpText<"Enable C++14 sized global deallocation functions">;
-def fno_sized_deallocation: Flag<["-"], "fno-sized-deallocation">,
-  HelpText<"Disable sized deallocation functions">;
-def fdefine_sized_deallocation: Flag<["-"], "fdefine-sized-deallocation">,
-  HelpText<"Allow compiler-generated definition of sized deallocation functions">;
 def fobjc_subscripting_legacy_runtime : Flag<["-"], "fobjc-subscripting-legacy-runtime">,
   HelpText<"Allow Objective-C array and dictionary subscripting in legacy runtime">;
 def vtordisp_mode_EQ : Joined<["-"], "vtordisp-mode=">,

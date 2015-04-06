@@ -118,6 +118,7 @@ void Parser::CheckForLParenAfterColonColon() {
   // Eat the '('.
   ConsumeParen();
   Token RParen;
+  RParen.setLocation(SourceLocation());
   // Do we have a ')' ?
   NextTok = StarTok.is(tok::star) ? GetLookAheadToken(2) : GetLookAheadToken(1);
   if (NextTok.is(tok::r_paren)) {
@@ -2534,7 +2535,7 @@ bool Parser::ParseUnqualifiedId(CXXScopeSpec &SS, bool EnteringContext,
       if (SS.isNotEmpty())
         ObjectType = ParsedType();
       if (Tok.isNot(tok::identifier) || NextToken().is(tok::coloncolon) ||
-          SS.isInvalid()) {
+          !SS.isSet()) {
         Diag(TildeLoc, diag::err_destructor_tilde_scope);
         return true;
       }

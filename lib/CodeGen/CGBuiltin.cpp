@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CodeGenFunction.h"
+#include "CGCXXABI.h"
 #include "CGObjCRuntime.h"
 #include "CodeGenModule.h"
 #include "TargetInfo.h"
@@ -25,6 +26,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Intrinsics.h"
+#include <sstream>
 
 using namespace clang;
 using namespace CodeGen;
@@ -155,6 +157,27 @@ static Value *EmitFAbs(CodeGenFunction &CGF, Value *V) {
   llvm::CallInst *Call = CGF.Builder.CreateCall(F, V);
   Call->setDoesNotAccessMemory();
   return Call;
+}
+
+/// Emit the computation of the sign bit for a floating point value. Returns
+/// the i1 sign bit value.
+static Value *EmitSignBit(CodeGenFunction &CGF, Value *V) {
+  LLVMContext &C = CGF.CGM.getLLVMContext();
+
+  llvm::Type *Ty = V->getType();
+  int Width = Ty->getPrimitiveSizeInBits();
+  llvm::Type *IntTy = llvm::IntegerType::get(C, Width);
+  V = CGF.Builder.CreateBitCast(V, IntTy);
+  if (Ty->isPPC_FP128Ty()) {
+    // The higher-order double comes first, and so we need to truncate the
+    // pair to extract the overall sign. The order of the pair is the same
+    // in both little- and big-Endian modes.
+    Width >>= 1;
+    IntTy = llvm::IntegerType::get(C, Width);
+    V = CGF.Builder.CreateTrunc(V, IntTy);
+  }
+  Value *Zero = llvm::Constant::getNullValue(IntTy);
+  return CGF.Builder.CreateICmpSLT(V, Zero);
 }
 
 static RValue emitLibraryCall(CodeGenFunction &CGF, const FunctionDecl *Fn,
@@ -557,8 +580,22 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
     return RValue::get(Builder.CreateZExt(V, ConvertType(E->getType())));
   }
 
-  // TODO: BI__builtin_isinf_sign
-  //   isinf_sign(x) -> isinf(x) ? (signbit(x) ? -1 : 1) : 0
+  case Builtin::BI__builtin_isinf_sign: {
+    // isinf_sign(x) -> fabs(x) == infinity ? (signbit(x) ? -1 : 1) : 0
+    Value *Arg = EmitScalarExpr(E->getArg(0));
+    Value *AbsArg = EmitFAbs(*this, Arg);
+    Value *IsInf = Builder.CreateFCmpOEQ(
+        AbsArg, ConstantFP::getInfinity(Arg->getType()), "isinf");
+    Value *IsNeg = EmitSignBit(*this, Arg);
+
+    llvm::Type *IntTy = ConvertType(E->getType());
+    Value *Zero = Constant::getNullValue(IntTy);
+    Value *One = ConstantInt::get(IntTy, 1);
+    Value *NegativeOne = ConstantInt::get(IntTy, -1);
+    Value *SignResult = Builder.CreateSelect(IsNeg, NegativeOne, One);
+    Value *Result = Builder.CreateSelect(IsInf, SignResult, Zero);
+    return RValue::get(Result);
+  }
 
   case Builtin::BI__builtin_isnormal: {
     // isnormal(x) --> x == x && fabsf(x) < infinity && fabsf(x) >= float_min
@@ -859,8 +896,6 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
       return RValue::get(Builder.CreateZExt(Result, Int64Ty, "extend.zext"));
   }
   case Builtin::BI__builtin_setjmp: {
-    if (!getTargetHooks().hasSjLjLowering(*this))
-      break;
     // Buffer is a void**.
     Value *Buf = EmitScalarExpr(E->getArg(0));
 
@@ -883,8 +918,6 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
     return RValue::get(Builder.CreateCall(F, Buf));
   }
   case Builtin::BI__builtin_longjmp: {
-    if (!getTargetHooks().hasSjLjLowering(*this))
-      break;
     Value *Buf = EmitScalarExpr(E->getArg(0));
     Buf = Builder.CreateBitCast(Buf, Int8PtrTy);
 
@@ -1401,24 +1434,9 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
   case Builtin::BI__builtin_signbit:
   case Builtin::BI__builtin_signbitf:
   case Builtin::BI__builtin_signbitl: {
-    LLVMContext &C = CGM.getLLVMContext();
-
-    Value *Arg = EmitScalarExpr(E->getArg(0));
-    llvm::Type *ArgTy = Arg->getType();
-    int ArgWidth = ArgTy->getPrimitiveSizeInBits();
-    llvm::Type *ArgIntTy = llvm::IntegerType::get(C, ArgWidth);
-    Value *BCArg = Builder.CreateBitCast(Arg, ArgIntTy);
-    if (ArgTy->isPPC_FP128Ty()) {
-      // The higher-order double comes first, and so we need to truncate the
-      // pair to extract the overall sign. The order of the pair is the same
-      // in both little- and big-Endian modes.
-      ArgWidth >>= 1;
-      ArgIntTy = llvm::IntegerType::get(C, ArgWidth);
-      BCArg = Builder.CreateTrunc(BCArg, ArgIntTy);
-    }
-    Value *ZeroCmp = llvm::Constant::getNullValue(ArgIntTy);
-    Value *Result = Builder.CreateICmpSLT(BCArg, ZeroCmp);
-    return RValue::get(Builder.CreateZExt(Result, ConvertType(E->getType())));
+    return RValue::get(
+        Builder.CreateZExt(EmitSignBit(*this, EmitScalarExpr(E->getArg(0))),
+                           ConvertType(E->getType())));
   }
   case Builtin::BI__builtin_annotation: {
     llvm::Value *AnnVal = EmitScalarExpr(E->getArg(0));
@@ -1682,8 +1700,8 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
       llvm::Constant *SetJmpEx = CGM.CreateRuntimeFunction(
           llvm::FunctionType::get(IntTy, ArgTypes, /*isVarArg=*/false),
           "_setjmpex", ReturnsTwiceAttr);
-      llvm::Value *Buf =
-          Builder.CreateBitCast(EmitScalarExpr(E->getArg(0)), Int8PtrTy);
+      llvm::Value *Buf = Builder.CreateBitOrPointerCast(
+          EmitScalarExpr(E->getArg(0)), Int8PtrTy);
       llvm::Value *FrameAddr =
           Builder.CreateCall(CGM.getIntrinsic(Intrinsic::frameaddress),
                              ConstantInt::get(Int32Ty, 0));
@@ -1692,14 +1710,15 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
       CS.setAttributes(ReturnsTwiceAttr);
       return RValue::get(CS.getInstruction());
     }
+    break;
   }
   case Builtin::BI_setjmp: {
     if (getTarget().getTriple().isOSMSVCRT()) {
       llvm::AttributeSet ReturnsTwiceAttr =
           AttributeSet::get(getLLVMContext(), llvm::AttributeSet::FunctionIndex,
                             llvm::Attribute::ReturnsTwice);
-      llvm::Value *Buf =
-          Builder.CreateBitCast(EmitScalarExpr(E->getArg(0)), Int8PtrTy);
+      llvm::Value *Buf = Builder.CreateBitOrPointerCast(
+          EmitScalarExpr(E->getArg(0)), Int8PtrTy);
       llvm::CallSite CS;
       if (getTarget().getTriple().getArch() == llvm::Triple::x86) {
         llvm::Type *ArgTypes[] = {Int8PtrTy, IntTy};
@@ -1723,6 +1742,14 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
       CS.setAttributes(ReturnsTwiceAttr);
       return RValue::get(CS.getInstruction());
     }
+    break;
+  }
+
+  case Builtin::BI__GetExceptionInfo: {
+    if (llvm::GlobalVariable *GV =
+            CGM.getCXXABI().getThrowInfo(FD->getParamDecl(0)->getType()))
+      return RValue::get(llvm::ConstantExpr::getBitCast(GV, CGM.Int8PtrTy));
+    break;
   }
   }
 
@@ -6090,13 +6117,6 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
     Builder.CreateStore(Builder.CreateExtractValue(Call, 0), Ops[0]);
     return Builder.CreateExtractValue(Call, 1);
   }
-  // AVX2 broadcast
-  case X86::BI__builtin_ia32_vbroadcastsi256: {
-    Value *VecTmp = CreateMemTemp(E->getArg(0)->getType());
-    Builder.CreateStore(Ops[0], VecTmp);
-    Value *F = CGM.getIntrinsic(Intrinsic::x86_avx2_vbroadcasti128);
-    return Builder.CreateCall(F, Builder.CreateBitCast(VecTmp, Int8PtrTy));
-  }
   // SSE comparison intrisics
   case X86::BI__builtin_ia32_cmpeqps:
   case X86::BI__builtin_ia32_cmpltps:
@@ -6351,6 +6371,119 @@ Value *CodeGenFunction::EmitPPCBuiltinExpr(unsigned BuiltinID,
     llvm::Function *F = CGM.getIntrinsic(ID);
     return Builder.CreateCall(F, Ops, "");
   }
+
+  // P8 Crypto builtins
+  case PPC::BI__builtin_altivec_crypto_vshasigmaw:
+  case PPC::BI__builtin_altivec_crypto_vshasigmad:
+  {
+    ConstantInt *CI1 = dyn_cast<ConstantInt>(Ops[1]);
+    ConstantInt *CI2 = dyn_cast<ConstantInt>(Ops[2]);
+    assert(CI1 && CI2);
+    if (CI1->getZExtValue() > 1) {
+      CGM.Error(E->getArg(1)->getExprLoc(),
+                "argument out of range (should be 0-1).");
+      return llvm::UndefValue::get(Ops[0]->getType());
+    }
+    if (CI2->getZExtValue() > 15) {
+      CGM.Error(E->getArg(2)->getExprLoc(),
+                "argument out of range (should be 0-15).");
+      return llvm::UndefValue::get(Ops[0]->getType());
+    }
+    switch (BuiltinID) {
+    default: llvm_unreachable("Unsupported sigma intrinsic!");
+    case PPC::BI__builtin_altivec_crypto_vshasigmaw:
+      ID = Intrinsic::ppc_altivec_crypto_vshasigmaw;
+      break;
+    case PPC::BI__builtin_altivec_crypto_vshasigmad:
+      ID = Intrinsic::ppc_altivec_crypto_vshasigmad;
+      break;
+    }
+    llvm::Function *F = CGM.getIntrinsic(ID);
+    return Builder.CreateCall(F, Ops, "");
+  }
+
+  // HTM builtins
+  case PPC::BI__builtin_tbegin:
+  case PPC::BI__builtin_tend:
+  case PPC::BI__builtin_tsr: {
+    unsigned int MaxValue;
+    // The HTM instructions only accept one argument and with limited range.
+    ConstantInt *CI = dyn_cast<ConstantInt>(Ops[0]);
+    assert(CI);
+    switch (BuiltinID) {
+    case PPC::BI__builtin_tbegin:
+      ID = Intrinsic::ppc_tbegin;
+      MaxValue = 1;
+      break;
+    case PPC::BI__builtin_tend:
+      ID = Intrinsic::ppc_tend;
+      MaxValue = 1;
+      break;
+    case PPC::BI__builtin_tsr:
+      ID = Intrinsic::ppc_tsr;
+      MaxValue = 7;
+      break;
+    }
+    if (CI->getZExtValue() > MaxValue) {
+      std::stringstream ss;
+      ss << "argument out of range (should be 0 or " << MaxValue << ")";
+      CGM.Error(E->getArg(0)->getExprLoc(), ss.str());
+      return llvm::UndefValue::get(Ops[0]->getType());
+    }
+
+    llvm::Function *F = CGM.getIntrinsic(ID);
+    return Builder.CreateCall(F, Ops, "");
+  }
+  case PPC::BI__builtin_tabortdc:
+  case PPC::BI__builtin_tabortwc: {
+    // For wd and dc variant of tabort first argument must be a 5-bit constant
+    // integer
+    ConstantInt *CI = dyn_cast<ConstantInt>(Ops[0]);
+    assert(CI);
+    if (CI->getZExtValue() > 31) {
+      CGM.ErrorUnsupported(E->getArg(0), "argument out of range (should be 0-31)");
+      return llvm::UndefValue::get(Ops[0]->getType());
+    }
+    switch (BuiltinID) {
+    case PPC::BI__builtin_tabortdc:
+      ID = Intrinsic::ppc_tabortdc;
+      break;
+    case PPC::BI__builtin_tabortwc:
+      ID = Intrinsic::ppc_tabortwc;
+      break;
+    }
+    llvm::Function *F = CGM.getIntrinsic(ID);
+    return Builder.CreateCall(F, Ops, "");
+  }
+  case PPC::BI__builtin_tabortdci:
+  case PPC::BI__builtin_tabortwci: {
+    // For wd and dc variant of tabort first and third argument must be a
+    // 5-bit constant integer
+    ConstantInt *CI = dyn_cast<ConstantInt>(Ops[0]);
+    assert(CI);
+    if (CI->getZExtValue() > 31) {
+      CGM.ErrorUnsupported(E->getArg(0), "argument out of range (should be 0-31)");
+      return llvm::UndefValue::get(Ops[0]->getType());
+    }
+    CI = dyn_cast<ConstantInt>(Ops[2]);
+    assert(CI);
+    if (CI->getZExtValue() > 31) {
+      CGM.ErrorUnsupported(E->getArg(2), "argument out of range (should be 0-31)");
+      return llvm::UndefValue::get(Ops[2]->getType());
+    }
+    switch (BuiltinID) {
+    default: llvm_unreachable("Unsupported htm intrinsic!");
+    case PPC::BI__builtin_tabortdci:
+      ID = Intrinsic::ppc_tabortdci;
+      break;
+    case PPC::BI__builtin_tabortwci:
+      ID = Intrinsic::ppc_tabortwci;
+      break;
+    }
+    llvm::Function *F = CGM.getIntrinsic(ID);
+    return Builder.CreateCall(F, Ops, "");
+  }
+
   }
 }
 

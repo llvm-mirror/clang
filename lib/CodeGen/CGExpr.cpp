@@ -301,6 +301,23 @@ createReferenceTemporary(CodeGenFunction &CGF,
   switch (M->getStorageDuration()) {
   case SD_FullExpression:
   case SD_Automatic:
+    // If we have a constant temporary array or record try to promote it into a
+    // constant global under the same rules a normal constant would've been
+    // promoted. This is easier on the optimizer and generally emits fewer
+    // instructions.
+    if (CGF.CGM.getCodeGenOpts().MergeAllConstants &&
+        (M->getType()->isArrayType() || M->getType()->isRecordType()) &&
+        CGF.CGM.isTypeConstant(M->getType(), true))
+      if (llvm::Constant *Init =
+              CGF.CGM.EmitConstantExpr(Inner, M->getType(), &CGF)) {
+        auto *GV = new llvm::GlobalVariable(
+            CGF.CGM.getModule(), Init->getType(), /*isConstant=*/true,
+            llvm::GlobalValue::PrivateLinkage, Init, ".ref.tmp");
+        GV->setAlignment(
+            CGF.getContext().getTypeAlignInChars(M->getType()).getQuantity());
+        // FIXME: Should we put the new global into a COMDAT?
+        return GV;
+      }
     return CGF.CreateMemTemp(Inner->getType(), "ref.tmp");
 
   case SD_Thread:
@@ -324,14 +341,15 @@ EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
       M->getType().getObjCLifetime() != Qualifiers::OCL_None &&
       M->getType().getObjCLifetime() != Qualifiers::OCL_ExplicitNone) {
     llvm::Value *Object = createReferenceTemporary(*this, M, E);
-    LValue RefTempDst = MakeAddrLValue(Object, M->getType());
-
     if (auto *Var = dyn_cast<llvm::GlobalVariable>(Object)) {
+      Object = llvm::ConstantExpr::getBitCast(
+          Var, ConvertTypeForMem(E->getType())->getPointerTo());
       // We should not have emitted the initializer for this temporary as a
       // constant.
       assert(!Var->hasInitializer());
       Var->setInitializer(CGM.EmitNullConstant(E->getType()));
     }
+    LValue RefTempDst = MakeAddrLValue(Object, M->getType());
 
     switch (getEvaluationKind(E->getType())) {
     default: llvm_unreachable("expected scalar or aggregate expression");
@@ -370,8 +388,11 @@ EmitMaterializeTemporaryExpr(const MaterializeTemporaryExpr *M) {
   // Create and initialize the reference temporary.
   llvm::Value *Object = createReferenceTemporary(*this, M, E);
   if (auto *Var = dyn_cast<llvm::GlobalVariable>(Object)) {
-    // If the temporary is a global and has a constant initializer, we may
-    // have already initialized it.
+    Object = llvm::ConstantExpr::getBitCast(
+        Var, ConvertTypeForMem(E->getType())->getPointerTo());
+    // If the temporary is a global and has a constant initializer or is a
+    // constant temporary that we promoted to a global, we may have already
+    // initialized it.
     if (!Var->hasInitializer()) {
       Var->setInitializer(CGM.EmitNullConstant(E->getType()));
       EmitAnyExprToMem(E, Object, Qualifiers(), /*IsInit*/true);
@@ -3013,6 +3034,9 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
       EmitTypeCheck(TCK_DowncastReference, E->getExprLoc(),
                     Derived, E->getType());
 
+    if (SanOpts.has(SanitizerKind::CFIDerivedCast))
+      EmitVTablePtrCheckForCast(E->getType(), Derived, /*MayBeNull=*/false);
+
     return MakeAddrLValue(Derived, E->getType());
   }
   case CK_LValueBitCast: {
@@ -3022,6 +3046,10 @@ LValue CodeGenFunction::EmitCastLValue(const CastExpr *E) {
     LValue LV = EmitLValue(E->getSubExpr());
     llvm::Value *V = Builder.CreateBitCast(LV.getAddress(),
                                            ConvertType(CE->getTypeAsWritten()));
+
+    if (SanOpts.has(SanitizerKind::CFIUnrelatedCast))
+      EmitVTablePtrCheckForCast(E->getType(), V, /*MayBeNull=*/false);
+
     return MakeAddrLValue(V, E->getType());
   }
   case CK_ObjCObjectLValueCast: {

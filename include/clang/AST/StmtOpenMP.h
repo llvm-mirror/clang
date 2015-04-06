@@ -95,6 +95,7 @@ public:
   /// This iterator visits only those declarations that meet some run-time
   /// criteria.
   template <class FilterPredicate> class filtered_clause_iterator {
+  protected:
     ArrayRef<OMPClause *>::const_iterator Current;
     ArrayRef<OMPClause *>::const_iterator End;
     FilterPredicate Pred;
@@ -126,6 +127,27 @@ public:
 
     bool operator!() { return Current == End; }
     operator bool() { return Current != End; }
+    bool empty() const { return Current == End; }
+  };
+
+  /// \brief A filter to iterate over 'linear' clauses using a C++ range
+  /// for loop.
+  struct linear_filter : public filtered_clause_iterator<
+                             std::function<bool(const OMPClause *)> > {
+    linear_filter(ArrayRef<OMPClause *> Arr)
+        : filtered_clause_iterator(Arr, [](const OMPClause *C)->bool {
+            return C->getClauseKind() == OMPC_linear;
+          }) {}
+    const OMPLinearClause *operator*() const {
+      return cast<OMPLinearClause>(*Current);
+    }
+    const OMPLinearClause *operator->() const {
+      return cast<OMPLinearClause>(*Current);
+    }
+    friend linear_filter begin(const linear_filter &range) { return range; }
+    friend linear_filter end(const linear_filter &range) {
+      return linear_filter(ArrayRef<OMPClause *>(range.End, range.End));
+    }
   };
 
   /// \brief Gets a single clause of the specified kind \a K associated with the
@@ -410,6 +432,8 @@ public:
     Expr *IterationVarRef;
     /// \brief Loop last iteration number.
     Expr *LastIteration;
+    /// \brief Loop number of iterations.
+    Expr *NumIterations;
     /// \brief Calculation of last iteration.
     Expr *CalcLastIteration;
     /// \brief Loop pre-condition.
@@ -447,8 +471,9 @@ public:
     /// worksharing ones).
     bool builtAll() {
       return IterationVarRef != nullptr && LastIteration != nullptr &&
-             PreCond != nullptr && Cond != nullptr &&
-             SeparatedCond != nullptr && Init != nullptr && Inc != nullptr;
+             NumIterations != nullptr && PreCond != nullptr &&
+             Cond != nullptr && SeparatedCond != nullptr && Init != nullptr &&
+             Inc != nullptr;
     }
 
     /// \brief Initialize all the fields to null.
@@ -1557,6 +1582,17 @@ public:
 ///
 class OMPAtomicDirective : public OMPExecutableDirective {
   friend class ASTStmtReader;
+  /// \brief Used for 'atomic update' or 'atomic capture' constructs. They may
+  /// have atomic expressions of forms
+  /// \code
+  /// x = x binop expr;
+  /// x = expr binop x;
+  /// \endcode
+  /// This field is true for the first form of the expression and false for the
+  /// second. Required for correct codegen of non-associative operations (like
+  /// << or >>).
+  bool IsXLHSInRHSPart;
+
   /// \brief Build directive with the given start and end location.
   ///
   /// \param StartLoc Starting location of the directive kind.
@@ -1566,7 +1602,8 @@ class OMPAtomicDirective : public OMPExecutableDirective {
   OMPAtomicDirective(SourceLocation StartLoc, SourceLocation EndLoc,
                      unsigned NumClauses)
       : OMPExecutableDirective(this, OMPAtomicDirectiveClass, OMPD_atomic,
-                               StartLoc, EndLoc, NumClauses, 4) {}
+                               StartLoc, EndLoc, NumClauses, 5),
+        IsXLHSInRHSPart(false) {}
 
   /// \brief Build an empty directive.
   ///
@@ -1575,14 +1612,19 @@ class OMPAtomicDirective : public OMPExecutableDirective {
   explicit OMPAtomicDirective(unsigned NumClauses)
       : OMPExecutableDirective(this, OMPAtomicDirectiveClass, OMPD_atomic,
                                SourceLocation(), SourceLocation(), NumClauses,
-                               4) {}
+                               5),
+        IsXLHSInRHSPart(false) {}
 
   /// \brief Set 'x' part of the associated expression/statement.
   void setX(Expr *X) { *std::next(child_begin()) = X; }
+  /// \brief Set helper expression of the form
+  /// 'OpaqueValueExpr(x) binop OpaqueValueExpr(expr)' or
+  /// 'OpaqueValueExpr(expr) binop OpaqueValueExpr(x)'.
+  void setUpdateExpr(Expr *UE) { *std::next(child_begin(), 2) = UE; }
   /// \brief Set 'v' part of the associated expression/statement.
-  void setV(Expr *V) { *std::next(child_begin(), 2) = V; }
+  void setV(Expr *V) { *std::next(child_begin(), 3) = V; }
   /// \brief Set 'expr' part of the associated expression/statement.
-  void setExpr(Expr *E) { *std::next(child_begin(), 3) = E; }
+  void setExpr(Expr *E) { *std::next(child_begin(), 4) = E; }
 
 public:
   /// \brief Creates directive with a list of \a Clauses and 'x', 'v' and 'expr'
@@ -1597,11 +1639,15 @@ public:
   /// \param X 'x' part of the associated expression/statement.
   /// \param V 'v' part of the associated expression/statement.
   /// \param E 'expr' part of the associated expression/statement.
-  ///
+  /// \param UE Helper expression of the form
+  /// 'OpaqueValueExpr(x) binop OpaqueValueExpr(expr)' or
+  /// 'OpaqueValueExpr(expr) binop OpaqueValueExpr(x)'.
+  /// \param IsXLHSInRHSPart true if \a UE has the first form and false if the
+  /// second.
   static OMPAtomicDirective *
   Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation EndLoc,
          ArrayRef<OMPClause *> Clauses, Stmt *AssociatedStmt, Expr *X, Expr *V,
-         Expr *E);
+         Expr *E, Expr *UE, bool IsXLHSInRHSPart);
 
   /// \brief Creates an empty directive with the place for \a NumClauses
   /// clauses.
@@ -1617,15 +1663,28 @@ public:
   const Expr *getX() const {
     return cast_or_null<Expr>(*std::next(child_begin()));
   }
-  /// \brief Get 'v' part of the associated expression/statement.
-  Expr *getV() { return cast_or_null<Expr>(*std::next(child_begin(), 2)); }
-  const Expr *getV() const {
+  /// \brief Get helper expression of the form
+  /// 'OpaqueValueExpr(x) binop OpaqueValueExpr(expr)' or
+  /// 'OpaqueValueExpr(expr) binop OpaqueValueExpr(x)'.
+  Expr *getUpdateExpr() {
     return cast_or_null<Expr>(*std::next(child_begin(), 2));
   }
-  /// \brief Get 'expr' part of the associated expression/statement.
-  Expr *getExpr() { return cast_or_null<Expr>(*std::next(child_begin(), 3)); }
-  const Expr *getExpr() const {
+  const Expr *getUpdateExpr() const {
+    return cast_or_null<Expr>(*std::next(child_begin(), 2));
+  }
+  /// \brief Return true if helper update expression has form
+  /// 'OpaqueValueExpr(x) binop OpaqueValueExpr(expr)' and false if it has form
+  /// 'OpaqueValueExpr(expr) binop OpaqueValueExpr(x)'.
+  bool isXLHSInRHSPart() const { return IsXLHSInRHSPart; }
+  /// \brief Get 'v' part of the associated expression/statement.
+  Expr *getV() { return cast_or_null<Expr>(*std::next(child_begin(), 3)); }
+  const Expr *getV() const {
     return cast_or_null<Expr>(*std::next(child_begin(), 3));
+  }
+  /// \brief Get 'expr' part of the associated expression/statement.
+  Expr *getExpr() { return cast_or_null<Expr>(*std::next(child_begin(), 4)); }
+  const Expr *getExpr() const {
+    return cast_or_null<Expr>(*std::next(child_begin(), 4));
   }
 
   static bool classof(const Stmt *T) {

@@ -719,6 +719,9 @@ public:
   /// Get the address of the RTTI descriptor for the given type.
   llvm::Constant *GetAddrOfRTTIDescriptor(QualType Ty, bool ForEH = false);
 
+  llvm::Constant *getAddrOfCXXCatchHandlerType(QualType Ty,
+                                               QualType CatchHandlerType);
+
   /// Get the address of a uuid descriptor .
   llvm::Constant *GetAddrOfUuidDescriptor(const CXXUuidofExpr* E);
 
@@ -1107,6 +1110,9 @@ public:
   /// vptr CFI is enabled.
   void EmitVTableBitSetEntries(llvm::GlobalVariable *VTable,
                                const VTableLayout &VTLayout);
+
+  /// \breif Get the declaration of std::terminate for the platform.
+  llvm::Constant *getTerminateFn();
 
 private:
   llvm::Constant *

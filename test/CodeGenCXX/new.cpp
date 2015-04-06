@@ -196,7 +196,7 @@ namespace test15 {
   struct A { A(); ~A(); };
 
   // CHECK-LABEL:    define void @_ZN6test156test0aEPv(
-  // CHECK:      [[P:%.*]] = load i8**
+  // CHECK:      [[P:%.*]] = load i8*, i8**
   // CHECK-NOT:  icmp eq i8* [[P]], null
   // CHECK-NOT:  br i1
   // CHECK:      [[T0:%.*]] = bitcast i8* [[P]] to [[A:%.*]]*
@@ -206,7 +206,7 @@ namespace test15 {
   }
 
   // CHECK-LABEL:    define void @_ZN6test156test0bEPv(
-  // CHECK:      [[P0:%.*]] = load i8**
+  // CHECK:      [[P0:%.*]] = load i8*, i8**
   // CHECK:      [[P:%.*]] = call i8* @_ZnwmPvb(i64 1, i8* [[P0]]
   // CHECK-NEXT: icmp eq i8* [[P]], null
   // CHECK-NEXT: br i1
@@ -217,15 +217,15 @@ namespace test15 {
   }
 
   // CHECK-LABEL:    define void @_ZN6test156test1aEPv(
-  // CHECK:      [[P:%.*]] = load i8**
+  // CHECK:      [[P:%.*]] = load i8*, i8**
   // CHECK-NOT:  icmp eq i8* [[P]], null
   // CHECK-NOT:  br i1
   // CHECK:      [[BEGIN:%.*]] = bitcast i8* [[P]] to [[A:%.*]]*
-  // CHECK-NEXT: [[END:%.*]] = getelementptr inbounds [[A]]* [[BEGIN]], i64 5
+  // CHECK-NEXT: [[END:%.*]] = getelementptr inbounds [[A]], [[A]]* [[BEGIN]], i64 5
   // CHECK-NEXT: br label
   // CHECK:      [[CUR:%.*]] = phi [[A]]* [ [[BEGIN]], {{%.*}} ], [ [[NEXT:%.*]], {{%.*}} ]
   // CHECK-NEXT: call void @_ZN6test151AC1Ev([[A]]* [[CUR]])
-  // CHECK-NEXT: [[NEXT]] = getelementptr inbounds [[A]]* [[CUR]], i64 1
+  // CHECK-NEXT: [[NEXT]] = getelementptr inbounds [[A]], [[A]]* [[CUR]], i64 1
   // CHECK-NEXT: [[DONE:%.*]] = icmp eq [[A]]* [[NEXT]], [[END]]
   // CHECK-NEXT: br i1 [[DONE]]
   void test1a(void *p) {
@@ -233,17 +233,17 @@ namespace test15 {
   }
 
   // CHECK-LABEL:    define void @_ZN6test156test1bEPv(
-  // CHECK:      [[P0:%.*]] = load i8**
+  // CHECK:      [[P0:%.*]] = load i8*, i8**
   // CHECK:      [[P:%.*]] = call i8* @_ZnamPvb(i64 13, i8* [[P0]]
   // CHECK-NEXT: icmp eq i8* [[P]], null
   // CHECK-NEXT: br i1
-  // CHECK:      [[AFTER_COOKIE:%.*]] = getelementptr inbounds i8* [[P]], i64 8
+  // CHECK:      [[AFTER_COOKIE:%.*]] = getelementptr inbounds i8, i8* [[P]], i64 8
   // CHECK:      [[BEGIN:%.*]] = bitcast i8* [[AFTER_COOKIE]] to [[A:%.*]]*
-  // CHECK-NEXT: [[END:%.*]] = getelementptr inbounds [[A]]* [[BEGIN]], i64 5
+  // CHECK-NEXT: [[END:%.*]] = getelementptr inbounds [[A]], [[A]]* [[BEGIN]], i64 5
   // CHECK-NEXT: br label
   // CHECK:      [[CUR:%.*]] = phi [[A]]* [ [[BEGIN]], {{%.*}} ], [ [[NEXT:%.*]], {{%.*}} ]
   // CHECK-NEXT: call void @_ZN6test151AC1Ev([[A]]* [[CUR]])
-  // CHECK-NEXT: [[NEXT]] = getelementptr inbounds [[A]]* [[CUR]], i64 1
+  // CHECK-NEXT: [[NEXT]] = getelementptr inbounds [[A]], [[A]]* [[CUR]], i64 1
   // CHECK-NEXT: [[DONE:%.*]] = icmp eq [[A]]* [[NEXT]], [[END]]
   // CHECK-NEXT: br i1 [[DONE]]
   void test1b(void *p) {
@@ -253,15 +253,15 @@ namespace test15 {
   // TODO: it's okay if all these size calculations get dropped.
   // FIXME: maybe we should try to throw on overflow?
   // CHECK-LABEL:    define void @_ZN6test155test2EPvi(
-  // CHECK:      [[N:%.*]] = load i32*
+  // CHECK:      [[N:%.*]] = load i32, i32*
   // CHECK-NEXT: [[T0:%.*]] = sext i32 [[N]] to i64
   // CHECK-NEXT: [[T1:%.*]] = icmp slt i64 [[T0]], 0
   // CHECK-NEXT: [[T2:%.*]] = select i1 [[T1]], i64 -1, i64 [[T0]]
-  // CHECK-NEXT: [[P:%.*]] = load i8**
+  // CHECK-NEXT: [[P:%.*]] = load i8*, i8**
   // CHECK:      [[BEGIN:%.*]] = bitcast i8* [[P]] to [[A:%.*]]*
   // CHECK-NEXT: [[ISEMPTY:%.*]] = icmp eq i64 [[T0]], 0
   // CHECK-NEXT: br i1 [[ISEMPTY]],
-  // CHECK:      [[END:%.*]] = getelementptr inbounds [[A]]* [[BEGIN]], i64 [[T0]]
+  // CHECK:      [[END:%.*]] = getelementptr inbounds [[A]], [[A]]* [[BEGIN]], i64 [[T0]]
   // CHECK-NEXT: br label
   // CHECK:      [[CUR:%.*]] = phi [[A]]* [ [[BEGIN]],
   // CHECK-NEXT: call void @_ZN6test151AC1Ev([[A]]* [[CUR]])

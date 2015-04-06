@@ -36,7 +36,9 @@ WhitespaceManager::Change::Change(
       PreviousLinePostfix(PreviousLinePostfix),
       CurrentLinePrefix(CurrentLinePrefix), Kind(Kind),
       ContinuesPPDirective(ContinuesPPDirective), IndentLevel(IndentLevel),
-      Spaces(Spaces) {}
+      Spaces(Spaces), IsTrailingComment(false), TokenLength(0),
+      PreviousEndOfTokenColumn(0), EscapedNewlineColumn(0),
+      StartOfBlockComment(nullptr), IndentationOffset(0) {}
 
 void WhitespaceManager::reset() {
   Changes.clear();

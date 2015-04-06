@@ -2589,7 +2589,9 @@ public:
     // Only include the RTTI component if we know that we will provide a
     // definition of the vftable.
     HasRTTIComponent = Context.getLangOpts().RTTIData &&
-                       !MostDerivedClass->hasAttr<DLLImportAttr>();
+                       !MostDerivedClass->hasAttr<DLLImportAttr>() &&
+                       MostDerivedClass->getTemplateSpecializationKind() !=
+                           TSK_ExplicitInstantiationDeclaration;
 
     LayoutVFTable();
 
@@ -2629,8 +2631,6 @@ public:
   void dumpLayout(raw_ostream &);
 };
 
-} // end namespace
-
 /// InitialOverriddenDefinitionCollector - Finds the set of least derived bases
 /// that define the given method.
 struct InitialOverriddenDefinitionCollector {
@@ -2644,6 +2644,8 @@ struct InitialOverriddenDefinitionCollector {
     return VisitedOverriddenMethods.insert(OverriddenMD).second;
   }
 };
+
+} // end namespace
 
 static bool BaseInSet(const CXXBaseSpecifier *Specifier,
                       CXXBasePath &Path, void *BasesSet) {

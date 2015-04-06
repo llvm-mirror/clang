@@ -94,10 +94,7 @@ TEST_F(FormatTestJS, LiteralOperatorsCanBeKeywords) {
 
 TEST_F(FormatTestJS, ES6DestructuringAssignment) {
   verifyFormat("var [a, b, c] = [1, 2, 3];");
-  verifyFormat("var {a, b} = {\n"
-               "  a: 1,\n"
-               "  b: 2\n"
-               "};");
+  verifyFormat("var {a, b} = {a: 1, b: 2};");
 }
 
 TEST_F(FormatTestJS, ContainerLiterals) {
@@ -139,6 +136,12 @@ TEST_F(FormatTestJS, ContainerLiterals) {
                "    return x.zIsTooLongForOneLineWithTheDeclarationLine();\n"
                "  }\n"
                "};");
+  // Simple object literal, as opposed to enum style below.
+  verifyFormat("var obj = {a: 123};");
+  // Enum style top level assignment.
+  verifyFormat("X = {\n  a: 123\n};");
+  verifyFormat("X.Y = {\n  a: 123\n};");
+  verifyFormat("x = foo && {a: 123};");
 }
 
 TEST_F(FormatTestJS, SpacesInContainerLiterals) {
@@ -164,6 +167,11 @@ TEST_F(FormatTestJS, GoogScopes) {
                "var x = a.b;\n"
                "var y = c.d;\n"
                "});  // goog.scope");
+  verifyFormat("goog.scope(function() {\n"
+               "// test\n"
+               "var x = 0;\n"
+               "// test\n"
+               "});");
 }
 
 TEST_F(FormatTestJS, GoogModules) {
@@ -545,7 +553,7 @@ TEST_F(FormatTestJS, Modules) {
                getGoogleJSStyleWithColumns(20));
   verifyFormat("import {X as myLocalX, Y as myLocalY} from 'some/module.js';");
   verifyFormat("import * as lib from 'some/module.js';");
-  verifyFormat("var x = {\n  import: 1\n};\nx.import = 2;");
+  verifyFormat("var x = {import: 1};\nx.import = 2;");
 
   verifyFormat("export function fn() {\n"
                "  return 'fn';\n"
@@ -611,6 +619,18 @@ TEST_F(FormatTestJS, TemplateStrings) {
 
   // Two template strings.
   verifyFormat("var x = `hello` == `hello`;");
+}
+
+TEST_F(FormatTestJS, CastSyntax) {
+  verifyFormat("var x = <type>foo;");
+}
+
+TEST_F(FormatTestJS, TypeArguments) {
+  verifyFormat("class X<Y> {}");
+  verifyFormat("new X<Y>();");
+  verifyFormat("foo<Y>(a);");
+  verifyFormat("var x: X<Y>[];");
+  verifyFormat("class C extends D<E> implements F<G>, H<I> {}");
 }
 
 } // end namespace tooling

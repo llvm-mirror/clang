@@ -1415,7 +1415,8 @@ struct DeclaratorChunk {
   static DeclaratorChunk getPointer(unsigned TypeQuals, SourceLocation Loc,
                                     SourceLocation ConstQualLoc,
                                     SourceLocation VolatileQualLoc,
-                                    SourceLocation RestrictQualLoc) {
+                                    SourceLocation RestrictQualLoc,
+                                    SourceLocation AtomicQualLoc) {
     DeclaratorChunk I;
     I.Kind                = Pointer;
     I.Loc                 = Loc;
@@ -1423,6 +1424,7 @@ struct DeclaratorChunk {
     I.Ptr.ConstQualLoc    = ConstQualLoc.getRawEncoding();
     I.Ptr.VolatileQualLoc = VolatileQualLoc.getRawEncoding();
     I.Ptr.RestrictQualLoc = RestrictQualLoc.getRawEncoding();
+    I.Ptr.AtomicQualLoc   = AtomicQualLoc.getRawEncoding();
     I.Ptr.AttrList        = nullptr;
     return I;
   }
@@ -2180,7 +2182,7 @@ public:
     VS_Sealed = 4
   };
 
-  VirtSpecifiers() : Specifiers(0) { }
+  VirtSpecifiers() : Specifiers(0), LastSpecifier(VS_None) { }
 
   bool SetSpecifier(Specifier VS, SourceLocation Loc,
                     const char *&PrevSpec);
@@ -2198,12 +2200,16 @@ public:
 
   static const char *getSpecifierName(Specifier VS);
 
+  SourceLocation getFirstLocation() const { return FirstLocation; }
   SourceLocation getLastLocation() const { return LastLocation; }
+  Specifier getLastSpecifier() const { return LastSpecifier; }
   
 private:
   unsigned Specifiers;
+  Specifier LastSpecifier;
 
   SourceLocation VS_overrideLoc, VS_finalLoc;
+  SourceLocation FirstLocation;
   SourceLocation LastLocation;
 };
 

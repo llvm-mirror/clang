@@ -367,6 +367,16 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.setInlining(Args.hasArg(OPT_fno_inline_functions) ?
                      CodeGenOptions::OnlyAlwaysInlining : Opts.getInlining());
 
+  if (Arg *A = Args.getLastArg(OPT_fveclib)) {
+    StringRef Name = A->getValue();
+    if (Name == "Accelerate")
+      Opts.setVecLib(CodeGenOptions::Accelerate);
+    else if (Name == "none")
+      Opts.setVecLib(CodeGenOptions::NoLibrary);
+    else
+      Diags.Report(diag::err_drv_invalid_value) << A->getAsString(Args) << Name;
+  }
+
   if (Args.hasArg(OPT_gline_tables_only)) {
     Opts.setDebugInfo(CodeGenOptions::DebugLineTablesOnly);
   } else if (Args.hasArg(OPT_g_Flag) || Args.hasArg(OPT_gdwarf_2) ||
@@ -423,7 +433,6 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.DumpCoverageMapping = Args.hasArg(OPT_dump_coverage_mapping);
   Opts.AsmVerbose = Args.hasArg(OPT_masm_verbose);
   Opts.ObjCAutoRefCountExceptions = Args.hasArg(OPT_fobjc_arc_exceptions);
-  Opts.CUDAIsDevice = Args.hasArg(OPT_fcuda_is_device);
   Opts.CXAAtExit = !Args.hasArg(OPT_fno_use_cxa_atexit);
   Opts.CXXCtorDtorAliases = Args.hasArg(OPT_mconstructor_aliases);
   Opts.CodeModel = getCodeModel(Args, Diags);
@@ -494,6 +503,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
     Opts.CoverageExtraChecksum = Args.hasArg(OPT_coverage_cfg_checksum);
     Opts.CoverageNoFunctionNamesInData =
         Args.hasArg(OPT_coverage_no_function_names_in_data);
+    Opts.CoverageExitBlockBeforeBody =
+        Args.hasArg(OPT_coverage_exit_block_before_body);
     if (Args.hasArg(OPT_coverage_version_EQ)) {
       StringRef CoverageVersion = Args.getLastArgValue(OPT_coverage_version_EQ);
       if (CoverageVersion.size() != 4) {
@@ -978,6 +989,7 @@ static InputKind ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
       .Case("cpp-output", IK_PreprocessedC)
       .Case("assembler-with-cpp", IK_Asm)
       .Case("c++-cpp-output", IK_PreprocessedCXX)
+      .Case("cuda-cpp-output", IK_PreprocessedCuda)
       .Case("objective-c-cpp-output", IK_PreprocessedObjC)
       .Case("objc-cpp-output", IK_PreprocessedObjC)
       .Case("objective-c++-cpp-output", IK_PreprocessedObjCXX)
@@ -1181,6 +1193,7 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
       LangStd = LangStandard::lang_opencl;
       break;
     case IK_CUDA:
+    case IK_PreprocessedCuda:
       LangStd = LangStandard::lang_cuda;
       break;
     case IK_Asm:
@@ -1233,7 +1246,8 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
     Opts.NativeHalfType = 1;
   }
 
-  Opts.CUDA = LangStd == LangStandard::lang_cuda || IK == IK_CUDA;
+  Opts.CUDA = IK == IK_CUDA || IK == IK_PreprocessedCuda ||
+              LangStd == LangStandard::lang_cuda;
 
   // OpenCL and C++ both have bool, true, false keywords.
   Opts.Bool = Opts.OpenCL || Opts.CPlusPlus;
@@ -1248,9 +1262,6 @@ void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
   Opts.CXXOperatorNames = Opts.CPlusPlus;
 
   Opts.DollarIdents = !Opts.AsmPreprocessor;
-
-  // C++14 onwards has sized global deallocation functions.
-  Opts.SizedDeallocation = Opts.CPlusPlus14;
 }
 
 /// Attempt to parse a visibility value out of the given argument.
@@ -1269,43 +1280,6 @@ static Visibility parseVisibility(Arg *arg, ArgList &args,
   diags.Report(diag::err_drv_invalid_value)
     << arg->getAsString(args) << value;
   return DefaultVisibility;
-}
-
-static unsigned parseMSCVersion(ArgList &Args, DiagnosticsEngine &Diags) {
-  auto Arg = Args.getLastArg(OPT_fms_compatibility_version);
-  if (!Arg)
-    return 0;
-
-  // The MSC versioning scheme involves four versioning components:
-  //  - Major
-  //  - Minor
-  //  - Build
-  //  - Patch
-  //
-  // We accept either the old style (_MSC_VER) value, or a _MSC_FULL_VER value.
-  // Additionally, the value may be provided in the form of a more readable
-  // MM.mm.bbbbb.pp version.
-  //
-  // Unfortunately, due to the bit-width limitations, we cannot currently encode
-  // the value for the patch level.
-
-  unsigned VC[4] = {0};
-  StringRef Value = Arg->getValue();
-  SmallVector<StringRef, 4> Components;
-
-  Value.split(Components, ".", llvm::array_lengthof(VC));
-  for (unsigned CI = 0,
-                CE = std::min(Components.size(), llvm::array_lengthof(VC));
-       CI < CE; ++CI) {
-    if (Components[CI].getAsInteger(10, VC[CI])) {
-      Diags.Report(diag::err_drv_invalid_value)
-        << Arg->getAsString(Args) << Value;
-      return 0;
-    }
-  }
-
-  // FIXME we cannot encode the patch level
-  return VC[0] * 10000000 + VC[1] * 100000 + VC[2];
 }
 
 static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
@@ -1348,6 +1322,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
             << A->getAsString(Args) << "OpenCL";
         break;
       case IK_CUDA:
+      case IK_PreprocessedCuda:
         if (!Std.isCPlusPlus())
           Diags.Report(diag::err_drv_argument_not_allowed_with)
             << A->getAsString(Args) << "CUDA";
@@ -1477,7 +1452,16 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.MSVCCompat = Args.hasArg(OPT_fms_compatibility);
   Opts.MicrosoftExt = Opts.MSVCCompat || Args.hasArg(OPT_fms_extensions);
   Opts.AsmBlocks = Args.hasArg(OPT_fasm_blocks) || Opts.MicrosoftExt;
-  Opts.MSCompatibilityVersion = parseMSCVersion(Args, Diags);
+  Opts.MSCompatibilityVersion = 0;
+  if (const Arg *A = Args.getLastArg(OPT_fms_compatibility_version)) {
+    VersionTuple VT;
+    if (VT.tryParse(A->getValue()))
+      Diags.Report(diag::err_drv_invalid_value) << A->getAsString(Args)
+                                                << A->getValue();
+    Opts.MSCompatibilityVersion = VT.getMajor() * 10000000 +
+                                  VT.getMinor().getValueOr(0) * 100000 +
+                                  VT.getSubminor().getValueOr(0);
+  }
 
   // Mimicing gcc's behavior, trigraphs are only enabled if -trigraphs
   // is specified, or -std is set to a conforming mode.
@@ -1528,10 +1512,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.NoBuiltin = Args.hasArg(OPT_fno_builtin) || Opts.Freestanding;
   Opts.NoMathBuiltin = Args.hasArg(OPT_fno_math_builtin);
   Opts.AssumeSaneOperatorNew = !Args.hasArg(OPT_fno_assume_sane_operator_new);
-  Opts.SizedDeallocation |= Args.hasArg(OPT_fsized_deallocation);
-  Opts.SizedDeallocation &= !Args.hasArg(OPT_fno_sized_deallocation);
-  Opts.DefineSizedDeallocation = Opts.SizedDeallocation &&
-      Args.hasArg(OPT_fdefine_sized_deallocation);
+  Opts.SizedDeallocation = Args.hasArg(OPT_fsized_deallocation);
   Opts.HeinousExtensions = Args.hasArg(OPT_fheinous_gnu_extensions);
   Opts.AccessControl = !Args.hasArg(OPT_fno_access_control);
   Opts.ElideConstructors = !Args.hasArg(OPT_fno_elide_constructors);
@@ -1578,6 +1559,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.DebuggerObjCLiteral = Args.hasArg(OPT_fdebugger_objc_literal);
   Opts.ApplePragmaPack = Args.hasArg(OPT_fapple_pragma_pack);
   Opts.CurrentModule = Args.getLastArgValue(OPT_fmodule_name);
+  Opts.AppExt = Args.hasArg(OPT_fapplication_extension);
   Opts.ImplementationOfModule =
       Args.getLastArgValue(OPT_fmodule_implementation_of);
   Opts.ModuleFeatures = Args.getAllArgValues(OPT_fmodule_feature);
@@ -2024,7 +2006,7 @@ std::string CompilerInvocation::getModuleHash() const {
     llvm::sys::path::append(systemVersionFile, "SystemVersion.plist");
 
     llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> buffer =
-        llvm::MemoryBuffer::getFile(systemVersionFile.str());
+        llvm::MemoryBuffer::getFile(systemVersionFile);
     if (buffer) {
       code = hash_combine(code, buffer.get()->getBuffer());
 

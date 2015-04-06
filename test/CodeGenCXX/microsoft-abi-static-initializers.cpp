@@ -1,9 +1,9 @@
 // RUN: %clang_cc1 -fms-extensions -emit-llvm %s -o - -mconstructor-aliases -triple=i386-pc-win32 | FileCheck %s
 
 // CHECK: @llvm.global_ctors = appending global [5 x { i32, void ()*, i8* }] [
-// CHECK: { i32, void ()*, i8* } { i32 65535, void ()* @"\01??__Eselectany1@@YAXXZ", i8* getelementptr inbounds (%struct.S* @"\01?selectany1@@3US@@A", i32 0, i32 0) },
-// CHECK: { i32, void ()*, i8* } { i32 65535, void ()* @"\01??__Eselectany2@@YAXXZ", i8* getelementptr inbounds (%struct.S* @"\01?selectany2@@3US@@A", i32 0, i32 0) },
-// CHECK: { i32, void ()*, i8* } { i32 65535, void ()* @"\01??__Es@?$ExportedTemplate@H@@2US@@A@YAXXZ", i8* getelementptr inbounds (%struct.S* @"\01?s@?$ExportedTemplate@H@@2US@@A", i32 0, i32 0) },
+// CHECK: { i32, void ()*, i8* } { i32 65535, void ()* @"\01??__Eselectany1@@YAXXZ", i8* getelementptr inbounds (%struct.S, %struct.S* @"\01?selectany1@@3US@@A", i32 0, i32 0) },
+// CHECK: { i32, void ()*, i8* } { i32 65535, void ()* @"\01??__Eselectany2@@YAXXZ", i8* getelementptr inbounds (%struct.S, %struct.S* @"\01?selectany2@@3US@@A", i32 0, i32 0) },
+// CHECK: { i32, void ()*, i8* } { i32 65535, void ()* @"\01??__Es@?$ExportedTemplate@H@@2US@@A@YAXXZ", i8* getelementptr inbounds (%struct.S, %struct.S* @"\01?s@?$ExportedTemplate@H@@2US@@A", i32 0, i32 0) },
 // CHECK: { i32, void ()*, i8* } { i32 65535, void ()* @"\01??__Efoo@?$B@H@@2VA@@A@YAXXZ", i8* bitcast (%class.A* @"\01?foo@?$B@H@@2VA@@A" to i8*) },
 // CHECK: { i32, void ()*, i8* } { i32 65535, void ()* @_GLOBAL__sub_I_microsoft_abi_static_initializers.cpp, i8* null }
 // CHECK: ]
@@ -52,7 +52,7 @@ void StaticLocal() {
 }
 
 // CHECK-LABEL: define void @"\01?StaticLocal@@YAXXZ"()
-// CHECK: load i32* @"\01?$S1@?1??StaticLocal@@YAXXZ@4IA"
+// CHECK: load i32, i32* @"\01?$S1@?1??StaticLocal@@YAXXZ@4IA"
 // CHECK: store i32 {{.*}}, i32* @"\01?$S1@?1??StaticLocal@@YAXXZ@4IA"
 // CHECK: ret
 
@@ -94,7 +94,7 @@ void MultipleStatics() {
   static S S35;
 }
 // CHECK-LABEL: define void @"\01?MultipleStatics@@YAXXZ"()
-// CHECK: load i32* @"\01?$S1@?1??MultipleStatics@@YAXXZ@4IA"
+// CHECK: load i32, i32* @"\01?$S1@?1??MultipleStatics@@YAXXZ@4IA"
 // CHECK: and i32 {{.*}}, 1
 // CHECK: and i32 {{.*}}, 2
 // CHECK: and i32 {{.*}}, 4
@@ -102,7 +102,7 @@ void MultipleStatics() {
 // CHECK: and i32 {{.*}}, 16
 //   ...
 // CHECK: and i32 {{.*}}, -2147483648
-// CHECK: load i32* @"\01?$S1@?1??MultipleStatics@@YAXXZ@4IA1"
+// CHECK: load i32, i32* @"\01?$S1@?1??MultipleStatics@@YAXXZ@4IA1"
 // CHECK: and i32 {{.*}}, 1
 // CHECK: and i32 {{.*}}, 2
 // CHECK: and i32 {{.*}}, 4
@@ -144,7 +144,7 @@ inline S &getS() {
 }
 
 // CHECK-LABEL: define linkonce_odr dereferenceable({{[0-9]+}}) %struct.S* @"\01?getS@@YAAAUS@@XZ"() {{.*}} comdat
-// CHECK: load i32* @"\01??_B?1??getS@@YAAAUS@@XZ@51"
+// CHECK: load i32, i32* @"\01??_B?1??getS@@YAAAUS@@XZ@51"
 // CHECK: and i32 {{.*}}, 1
 // CHECK: icmp ne i32 {{.*}}, 0
 // CHECK: br i1

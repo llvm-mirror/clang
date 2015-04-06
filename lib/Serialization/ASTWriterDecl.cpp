@@ -133,10 +133,65 @@ namespace clang {
 
     void AddFunctionDefinition(const FunctionDecl *FD) {
       assert(FD->doesThisDeclarationHaveABody());
-      if (auto *CD = dyn_cast<CXXConstructorDecl>(FD))
-        Writer.AddCXXCtorInitializers(CD->CtorInitializers,
-                                      CD->NumCtorInitializers, Record);
+      if (auto *CD = dyn_cast<CXXConstructorDecl>(FD)) {
+        Record.push_back(CD->NumCtorInitializers);
+        if (CD->NumCtorInitializers)
+          Writer.AddCXXCtorInitializersRef(
+              llvm::makeArrayRef(CD->init_begin(), CD->init_end()), Record);
+      }
       Writer.AddStmt(FD->getBody());
+    }
+
+    /// Get the specialization decl from an entry in the specialization list.
+    template <typename EntryType>
+    typename RedeclarableTemplateDecl::SpecEntryTraits<EntryType>::DeclType *
+    getSpecializationDecl(EntryType &T) {
+      return RedeclarableTemplateDecl::SpecEntryTraits<EntryType>::getDecl(&T);
+    }
+
+    /// Get the list of partial specializations from a template's common ptr.
+    template<typename T>
+    decltype(T::PartialSpecializations) &getPartialSpecializations(T *Common) {
+      return Common->PartialSpecializations;
+    }
+    ArrayRef<Decl> getPartialSpecializations(FunctionTemplateDecl::Common *) {
+      return None;
+    }
+
+    template<typename Decl>
+    void AddTemplateSpecializations(Decl *D) {
+      auto *Common = D->getCommonPtr();
+
+      // If we have any lazy specializations, and the external AST source is
+      // our chained AST reader, we can just write out the DeclIDs. Otherwise,
+      // we need to resolve them to actual declarations.
+      if (Writer.Chain != Writer.Context->getExternalSource() &&
+          Common->LazySpecializations) {
+        D->LoadLazySpecializations();
+        assert(!Common->LazySpecializations);
+      }
+
+      auto &Specializations = Common->Specializations;
+      auto &&PartialSpecializations = getPartialSpecializations(Common);
+      ArrayRef<DeclID> LazySpecializations;
+      if (auto *LS = Common->LazySpecializations)
+        LazySpecializations = ArrayRef<DeclID>(LS + 1, LS + 1 + LS[0]);
+
+      Record.push_back(Specializations.size() +
+                       PartialSpecializations.size() +
+                       LazySpecializations.size());
+      for (auto &Entry : Specializations) {
+        auto *D = getSpecializationDecl(Entry);
+        assert(D->isCanonicalDecl() && "non-canonical decl in set");
+        Writer.AddDeclRef(D, Record);
+      }
+      for (auto &Entry : PartialSpecializations) {
+        auto *D = getSpecializationDecl(Entry);
+        assert(D->isCanonicalDecl() && "non-canonical decl in set");
+        Writer.AddDeclRef(D, Record);
+      }
+      for (DeclID ID : LazySpecializations)
+        Record.push_back(ID);
     }
   };
 }
@@ -157,7 +212,7 @@ void ASTDeclWriter::Visit(Decl *D) {
   if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
     Record.push_back(FD->doesThisDeclarationHaveABody());
     if (FD->doesThisDeclarationHaveABody())
-      Writer.AddStmt(FD->getBody());
+      AddFunctionDefinition(FD);
   }
 }
 
@@ -188,7 +243,7 @@ void ASTDeclWriter::VisitDecl(Decl *D) {
     while (auto *NS = dyn_cast<NamespaceDecl>(DC->getRedeclContext())) {
       if (!NS->isFromASTFile())
         break;
-      Writer.AddUpdatedDeclContext(NS->getPrimaryContext());
+      Writer.UpdatedDeclContexts.insert(NS->getPrimaryContext());
       if (!NS->isInlineNamespace())
         break;
       DC = NS->getParent();
@@ -659,8 +714,10 @@ void ASTDeclWriter::VisitObjCImplementationDecl(ObjCImplementationDecl *D) {
   Writer.AddSourceLocation(D->getIvarRBraceLoc(), Record);
   Record.push_back(D->hasNonZeroConstructors());
   Record.push_back(D->hasDestructors());
-  Writer.AddCXXCtorInitializers(D->IvarInitializers, D->NumIvarInitializers,
-                                Record);
+  Record.push_back(D->NumIvarInitializers);
+  if (D->NumIvarInitializers)
+    Writer.AddCXXCtorInitializersRef(
+        llvm::makeArrayRef(D->init_begin(), D->init_end()), Record);
   Code = serialization::DECL_OBJC_IMPLEMENTATION;
 }
 
@@ -921,17 +978,34 @@ void ASTDeclWriter::VisitNamespaceDecl(NamespaceDecl *D) {
   if (Writer.hasChain() && !D->isOriginalNamespace() &&
       D->getOriginalNamespace()->isFromASTFile()) {
     NamespaceDecl *NS = D->getOriginalNamespace();
-    Writer.AddUpdatedDeclContext(NS);
+    Writer.UpdatedDeclContexts.insert(NS);
 
-    // Make sure all visible decls are written. They will be recorded later.
-    if (StoredDeclsMap *Map = NS->buildLookup()) {
-      for (StoredDeclsMap::iterator D = Map->begin(), DEnd = Map->end();
-           D != DEnd; ++D) {
-        DeclContext::lookup_result R = D->second.getLookupResult();
-        for (DeclContext::lookup_iterator I = R.begin(), E = R.end(); I != E;
-             ++I)
-          Writer.GetDeclRef(*I);
+    // Make sure all visible decls are written. They will be recorded later. We
+    // do this using a side data structure so we can sort the names into
+    // a deterministic order.
+    StoredDeclsMap *Map = NS->buildLookup();
+    SmallVector<std::pair<DeclarationName, DeclContext::lookup_result>, 16>
+        LookupResults;
+    LookupResults.reserve(Map->size());
+    for (auto &Entry : *Map)
+      LookupResults.push_back(
+          std::make_pair(Entry.first, Entry.second.getLookupResult()));
+
+    std::sort(LookupResults.begin(), LookupResults.end(), llvm::less_first());
+    for (auto &NameAndResult : LookupResults) {
+      DeclarationName Name = NameAndResult.first;
+      DeclContext::lookup_result Result = NameAndResult.second;
+      if (Name.getNameKind() == DeclarationName::CXXConstructorName ||
+          Name.getNameKind() == DeclarationName::CXXConversionFunctionName) {
+        // We have to work around a name lookup bug here where negative lookup
+        // results for these names get cached in namespace lookup tables.
+        assert(Result.empty() && "Cannot have a constructor or conversion "
+                                 "function name in a namespace!");
+        continue;
       }
+
+      for (NamedDecl *ND : Result)
+        Writer.GetDeclRef(ND);
     }
   }
 
@@ -1068,8 +1142,6 @@ void ASTDeclWriter::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
 
   Writer.AddDeclRef(D->getInheritedConstructor(), Record);
   Record.push_back(D->IsExplicitSpecified);
-  Writer.AddCXXCtorInitializers(D->CtorInitializers, D->NumCtorInitializers,
-                                Record);
 
   Code = serialization::DECL_CXX_CONSTRUCTOR;
 }
@@ -1077,7 +1149,7 @@ void ASTDeclWriter::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
 void ASTDeclWriter::VisitCXXDestructorDecl(CXXDestructorDecl *D) {
   VisitCXXMethodDecl(D);
 
-  Writer.AddDeclRef(D->OperatorDelete, Record);
+  Writer.AddDeclRef(D->getOperatorDelete(), Record);
 
   Code = serialization::DECL_CXX_DESTRUCTOR;
 }
@@ -1172,24 +1244,8 @@ void ASTDeclWriter::VisitRedeclarableTemplateDecl(RedeclarableTemplateDecl *D) {
 void ASTDeclWriter::VisitClassTemplateDecl(ClassTemplateDecl *D) {
   VisitRedeclarableTemplateDecl(D);
 
-  if (D->isFirstDecl()) {
-    typedef llvm::FoldingSetVector<ClassTemplateSpecializationDecl> CTSDSetTy;
-    CTSDSetTy &CTSDSet = D->getSpecializations();
-    Record.push_back(CTSDSet.size());
-    for (CTSDSetTy::iterator I=CTSDSet.begin(), E = CTSDSet.end(); I!=E; ++I) {
-      assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
-      Writer.AddDeclRef(&*I, Record);
-    }
-
-    typedef llvm::FoldingSetVector<ClassTemplatePartialSpecializationDecl>
-      CTPSDSetTy;
-    CTPSDSetTy &CTPSDSet = D->getPartialSpecializations();
-    Record.push_back(CTPSDSet.size());
-    for (CTPSDSetTy::iterator I=CTPSDSet.begin(), E=CTPSDSet.end(); I!=E; ++I) {
-      assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
-      Writer.AddDeclRef(&*I, Record); 
-    }
-  }
+  if (D->isFirstDecl())
+    AddTemplateSpecializations(D);
   Code = serialization::DECL_CLASS_TEMPLATE;
 }
 
@@ -1247,26 +1303,8 @@ void ASTDeclWriter::VisitClassTemplatePartialSpecializationDecl(
 void ASTDeclWriter::VisitVarTemplateDecl(VarTemplateDecl *D) {
   VisitRedeclarableTemplateDecl(D);
 
-  if (D->isFirstDecl()) {
-    typedef llvm::FoldingSetVector<VarTemplateSpecializationDecl> VTSDSetTy;
-    VTSDSetTy &VTSDSet = D->getSpecializations();
-    Record.push_back(VTSDSet.size());
-    for (VTSDSetTy::iterator I = VTSDSet.begin(), E = VTSDSet.end(); I != E;
-         ++I) {
-      assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
-      Writer.AddDeclRef(&*I, Record);
-    }
-
-    typedef llvm::FoldingSetVector<VarTemplatePartialSpecializationDecl>
-    VTPSDSetTy;
-    VTPSDSetTy &VTPSDSet = D->getPartialSpecializations();
-    Record.push_back(VTPSDSet.size());
-    for (VTPSDSetTy::iterator I = VTPSDSet.begin(), E = VTPSDSet.end(); I != E;
-         ++I) {
-      assert(I->isCanonicalDecl() && "Expected only canonical decls in set");
-      Writer.AddDeclRef(&*I, Record);
-    }
-  }
+  if (D->isFirstDecl())
+    AddTemplateSpecializations(D);
   Code = serialization::DECL_VAR_TEMPLATE;
 }
 
@@ -1331,19 +1369,8 @@ void ASTDeclWriter::VisitClassScopeFunctionSpecializationDecl(
 void ASTDeclWriter::VisitFunctionTemplateDecl(FunctionTemplateDecl *D) {
   VisitRedeclarableTemplateDecl(D);
 
-  if (D->isFirstDecl()) {
-    // This FunctionTemplateDecl owns the CommonPtr; write it.
-
-    // Write the function specialization declarations.
-    Record.push_back(D->getSpecializations().size());
-    for (llvm::FoldingSetVector<FunctionTemplateSpecializationInfo>::iterator
-           I = D->getSpecializations().begin(),
-           E = D->getSpecializations().end()   ; I != E; ++I) {
-      assert(I->Function->isCanonicalDecl() &&
-             "Expected only canonical decls in set");
-      Writer.AddDeclRef(I->Function, Record);
-    }
-  }
+  if (D->isFirstDecl())
+    AddTemplateSpecializations(D);
   Code = serialization::DECL_FUNCTION_TEMPLATE;
 }
 
@@ -1454,24 +1481,41 @@ void ASTDeclWriter::VisitRedeclarable(Redeclarable<T> *D) {
     assert(isRedeclarableDeclKind(static_cast<T *>(D)->getKind()) &&
            "Not considered redeclarable?");
 
+    // There is more than one declaration of this entity, so we will need to
+    // write a redeclaration chain.
+    Writer.AddDeclRef(First, Record);
+    Writer.Redeclarations.insert(First);
+
     auto *Previous = D->getPreviousDecl();
-    auto *FirstToEmit = First;
-    if (Context.getLangOpts().Modules && Writer.Chain && !Previous) {
-      // In a modules build, we can have imported declarations after a local
-      // canonical declaration. If we do, we want to treat the first imported
-      // declaration as our canonical declaration on reload, in order to
-      // rebuild the redecl chain in the right order.
+
+    // In a modules build, we can have imported declarations after a local
+    // canonical declaration. If this is the first local declaration, emit
+    // a list of all such imported declarations so that we can ensure they
+    // are loaded before we are. This allows us to rebuild the redecl chain
+    // in the right order on reload (all declarations imported by a module
+    // should be before all declarations provided by that module).
+    bool EmitImportedMergedCanonicalDecls = false;
+    if (Context.getLangOpts().Modules && Writer.Chain) {
+      auto *PreviousLocal = Previous;
+      while (PreviousLocal && PreviousLocal->isFromASTFile())
+        PreviousLocal = PreviousLocal->getPreviousDecl();
+      if (!PreviousLocal)
+        EmitImportedMergedCanonicalDecls = true;
+    }
+    if (EmitImportedMergedCanonicalDecls) {
+      llvm::SmallMapVector<ModuleFile*, Decl*, 16> FirstInModule;
       for (auto *Redecl = MostRecent; Redecl;
            Redecl = Redecl->getPreviousDecl())
         if (Redecl->isFromASTFile())
-          FirstToEmit = Redecl;
-    }
-
-    // There is more than one declaration of this entity, so we will need to
-    // write a redeclaration chain.
-    Writer.AddDeclRef(FirstToEmit, Record);
-    Record.push_back(FirstToEmit != First);
-    Writer.Redeclarations.insert(First);
+          FirstInModule[Writer.Chain->getOwningModuleFile(Redecl)] = Redecl;
+      // FIXME: If FirstInModule has entries for modules A and B, and B imports
+      // A (directly or indirectly), we don't need to write the entry for A.
+      Record.push_back(FirstInModule.size());
+      for (auto I = FirstInModule.rbegin(), E = FirstInModule.rend();
+           I != E; ++I)
+        Writer.AddDeclRef(I->second, Record);
+    } else
+      Record.push_back(0);
 
     // Make sure that we serialize both the previous and the most-recent 
     // declarations, which (transitively) ensures that all declarations in the
@@ -2042,12 +2086,10 @@ void ASTWriter::WriteDecl(ASTContext &Context, Decl *D) {
                             D->getDeclKindName() + "'");
   Stream.EmitRecord(W.Code, Record, W.AbbrevToUse);
 
-  // Flush any expressions that were written as part of this declaration.
-  FlushStmts();
-  
-  // Flush C++ base specifiers, if there are any.
-  FlushCXXBaseSpecifiers();
-  
+  // Flush any expressions, base specifiers, and ctor initializers that
+  // were written as part of this declaration.
+  FlushPendingAfterDecl();
+
   // Note declarations that should be deserialized eagerly so that we can add
   // them to a record in the AST file later.
   if (isRequiredDecl(D, Context))

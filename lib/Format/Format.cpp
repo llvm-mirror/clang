@@ -642,11 +642,12 @@ private:
       if (tryMergeTemplateString())
         return;
 
-      static tok::TokenKind JSIdentity[] = {tok::equalequal, tok::equal};
-      static tok::TokenKind JSNotIdentity[] = {tok::exclaimequal, tok::equal};
-      static tok::TokenKind JSShiftEqual[] = {tok::greater, tok::greater,
-                                              tok::greaterequal};
-      static tok::TokenKind JSRightArrow[] = {tok::equal, tok::greater};
+      static const tok::TokenKind JSIdentity[] = {tok::equalequal, tok::equal};
+      static const tok::TokenKind JSNotIdentity[] = {tok::exclaimequal,
+                                                     tok::equal};
+      static const tok::TokenKind JSShiftEqual[] = {tok::greater, tok::greater,
+                                                    tok::greaterequal};
+      static const tok::TokenKind JSRightArrow[] = {tok::equal, tok::greater};
       // FIXME: We probably need to change token type to mimic operator with the
       // correct priority.
       if (tryMergeTokens(JSIdentity))
@@ -861,6 +862,8 @@ private:
     String->OriginalColumn = Macro->OriginalColumn;
     String->ColumnWidth = encoding::columnWidthWithTabs(
         String->TokenText, String->OriginalColumn, Style.TabWidth, Encoding);
+    String->NewlinesBefore = Macro->NewlinesBefore;
+    String->HasUnescapedNewline = Macro->HasUnescapedNewline;
 
     Tokens.pop_back();
     Tokens.pop_back();
@@ -1527,7 +1530,8 @@ const char *StyleOptionHelpDescription =
 static FormatStyle::LanguageKind getLanguageByFileName(StringRef FileName) {
   if (FileName.endswith(".java")) {
     return FormatStyle::LK_Java;
-  } else if (FileName.endswith_lower(".js")) {
+  } else if (FileName.endswith_lower(".js") || FileName.endswith_lower(".ts")) {
+    // JavaScript or TypeScript.
     return FormatStyle::LK_JavaScript;
   } else if (FileName.endswith_lower(".proto") ||
              FileName.endswith_lower(".protodevel")) {

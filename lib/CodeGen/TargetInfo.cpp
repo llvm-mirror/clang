@@ -238,7 +238,7 @@ static bool isEmptyRecord(ASTContext &Context, QualType T, bool AllowArrays) {
 /// \return The field declaration for the single non-empty field, if
 /// it exists.
 static const Type *isSingleElementStruct(QualType T, ASTContext &Context) {
-  const RecordType *RT = T->getAsStructureType();
+  const RecordType *RT = T->getAs<RecordType>();
   if (!RT)
     return nullptr;
 
@@ -663,10 +663,6 @@ public:
                    ('F' << 16) |
                    ('T' << 24);
     return llvm::ConstantInt::get(CGM.Int32Ty, Sig);
-  }
-
-  bool hasSjLjLowering(CodeGen::CodeGenFunction &CGF) const override {
-    return true;
   }
 };
 
@@ -1613,10 +1609,6 @@ public:
   unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
     return HasAVX ? 32 : 16;
   }
-
-  bool hasSjLjLowering(CodeGen::CodeGenFunction &CGF) const override {
-    return true;
-  }
 };
 
 class PS4TargetCodeGenInfo : public X86_64TargetCodeGenInfo {
@@ -2210,20 +2202,9 @@ llvm::Type *X86_64ABIInfo::GetByteVectorType(QualType Ty) const {
     Ty = QualType(InnerTy, 0);
 
   llvm::Type *IRType = CGT.ConvertType(Ty);
-
-  // If the preferred type is a 16-byte vector, prefer to pass it.
-  if (llvm::VectorType *VT = dyn_cast<llvm::VectorType>(IRType)){
-    llvm::Type *EltTy = VT->getElementType();
-    unsigned BitWidth = VT->getBitWidth();
-    if ((BitWidth >= 128 && BitWidth <= 256) &&
-        (EltTy->isFloatTy() || EltTy->isDoubleTy() ||
-         EltTy->isIntegerTy(8) || EltTy->isIntegerTy(16) ||
-         EltTy->isIntegerTy(32) || EltTy->isIntegerTy(64) ||
-         EltTy->isIntegerTy(128)))
-      return VT;
-  }
-
-  return llvm::VectorType::get(llvm::Type::getDoubleTy(getVMContext()), 2);
+  assert(isa<llvm::VectorType>(IRType) &&
+         "Trying to return a non-vector type in a vector register!");
+  return IRType;
 }
 
 /// BitsContainNoUserData - Return true if the specified [start,end) bit range
@@ -3134,10 +3115,6 @@ public:
   unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
     return 16; // Natural alignment for Altivec vectors.
   }
-
-  bool hasSjLjLowering(CodeGen::CodeGenFunction &CGF) const override {
-    return true;
-  }
 };
 
 }
@@ -3287,13 +3264,42 @@ public:
 private:
   static const unsigned GPRBits = 64;
   ABIKind Kind;
+  bool HasQPX;
+
+  // A vector of float or double will be promoted to <4 x f32> or <4 x f64> and
+  // will be passed in a QPX register.
+  bool IsQPXVectorTy(const Type *Ty) const {
+    if (!HasQPX)
+      return false;
+
+    if (const VectorType *VT = Ty->getAs<VectorType>()) {
+      unsigned NumElements = VT->getNumElements();
+      if (NumElements == 1)
+        return false;
+
+      if (VT->getElementType()->isSpecificBuiltinType(BuiltinType::Double)) {
+        if (getContext().getTypeSize(Ty) <= 256)
+          return true;
+      } else if (VT->getElementType()->
+                   isSpecificBuiltinType(BuiltinType::Float)) {
+        if (getContext().getTypeSize(Ty) <= 128)
+          return true;
+      }
+    }
+
+    return false;
+  }
+
+  bool IsQPXVectorTy(QualType Ty) const {
+    return IsQPXVectorTy(Ty.getTypePtr());
+  }
 
 public:
-  PPC64_SVR4_ABIInfo(CodeGen::CodeGenTypes &CGT, ABIKind Kind)
-    : DefaultABIInfo(CGT), Kind(Kind) {}
+  PPC64_SVR4_ABIInfo(CodeGen::CodeGenTypes &CGT, ABIKind Kind, bool HasQPX)
+    : DefaultABIInfo(CGT), Kind(Kind), HasQPX(HasQPX) {}
 
   bool isPromotableTypeForABI(QualType Ty) const;
-  bool isAlignedParamType(QualType Ty) const;
+  bool isAlignedParamType(QualType Ty, bool &Align32) const;
 
   ABIArgInfo classifyReturnType(QualType RetTy) const;
   ABIArgInfo classifyArgumentType(QualType Ty) const;
@@ -3318,7 +3324,8 @@ public:
       const Type *T = isSingleElementStruct(I.type, getContext());
       if (T) {
         const BuiltinType *BT = T->getAs<BuiltinType>();
-        if ((T->isVectorType() && getContext().getTypeSize(T) == 128) ||
+        if (IsQPXVectorTy(T) ||
+            (T->isVectorType() && getContext().getTypeSize(T) == 128) ||
             (BT && BT->isFloatingPoint())) {
           QualType QT(T, 0);
           I.info = ABIArgInfo::getDirectInReg(CGT.ConvertType(QT));
@@ -3334,10 +3341,13 @@ public:
 };
 
 class PPC64_SVR4_TargetCodeGenInfo : public TargetCodeGenInfo {
+  bool HasQPX;
+
 public:
   PPC64_SVR4_TargetCodeGenInfo(CodeGenTypes &CGT,
-                               PPC64_SVR4_ABIInfo::ABIKind Kind)
-    : TargetCodeGenInfo(new PPC64_SVR4_ABIInfo(CGT, Kind)) {}
+                               PPC64_SVR4_ABIInfo::ABIKind Kind, bool HasQPX)
+    : TargetCodeGenInfo(new PPC64_SVR4_ABIInfo(CGT, Kind, HasQPX)),
+      HasQPX(HasQPX) {}
 
   int getDwarfEHStackPointer(CodeGen::CodeGenModule &M) const override {
     // This is recovered from gcc output.
@@ -3347,12 +3357,13 @@ public:
   bool initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
                                llvm::Value *Address) const override;
 
-  unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
-    return 16; // Natural alignment for Altivec and VSX vectors.
-  }
+  unsigned getOpenMPSimdDefaultAlignment(QualType QT) const override {
+    if (HasQPX)
+      if (const PointerType *PT = QT->getAs<PointerType>())
+        if (PT->getPointeeType()->isSpecificBuiltinType(BuiltinType::Double))
+          return 32; // Natural alignment for QPX doubles.
 
-  bool hasSjLjLowering(CodeGen::CodeGenFunction &CGF) const override {
-    return true;
+    return 16; // Natural alignment for Altivec and VSX vectors.
   }
 };
 
@@ -3370,10 +3381,6 @@ public:
 
   unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
     return 16; // Natural alignment for Altivec vectors.
-  }
-
-  bool hasSjLjLowering(CodeGen::CodeGenFunction &CGF) const override {
-    return true;
   }
 };
 
@@ -3408,15 +3415,23 @@ PPC64_SVR4_ABIInfo::isPromotableTypeForABI(QualType Ty) const {
 /// isAlignedParamType - Determine whether a type requires 16-byte
 /// alignment in the parameter area.
 bool
-PPC64_SVR4_ABIInfo::isAlignedParamType(QualType Ty) const {
+PPC64_SVR4_ABIInfo::isAlignedParamType(QualType Ty, bool &Align32) const {
+  Align32 = false;
+
   // Complex types are passed just like their elements.
   if (const ComplexType *CTy = Ty->getAs<ComplexType>())
     Ty = CTy->getElementType();
 
   // Only vector types of size 16 bytes need alignment (larger types are
   // passed via reference, smaller types are not aligned).
-  if (Ty->isVectorType())
+  if (IsQPXVectorTy(Ty)) {
+    if (getContext().getTypeSize(Ty) > 128)
+      Align32 = true;
+
+    return true;
+  } else if (Ty->isVectorType()) {
     return getContext().getTypeSize(Ty) == 128;
+  }
 
   // For single-element float/vector structs, we consider the whole type
   // to have the same alignment requirements as its single element.
@@ -3424,7 +3439,7 @@ PPC64_SVR4_ABIInfo::isAlignedParamType(QualType Ty) const {
   const Type *EltType = isSingleElementStruct(Ty, getContext());
   if (EltType) {
     const BuiltinType *BT = EltType->getAs<BuiltinType>();
-    if ((EltType->isVectorType() &&
+    if (IsQPXVectorTy(EltType) || (EltType->isVectorType() &&
          getContext().getTypeSize(EltType) == 128) ||
         (BT && BT->isFloatingPoint()))
       AlignAsType = EltType;
@@ -3438,13 +3453,22 @@ PPC64_SVR4_ABIInfo::isAlignedParamType(QualType Ty) const {
     AlignAsType = Base;
 
   // With special case aggregates, only vector base types need alignment.
-  if (AlignAsType)
+  if (AlignAsType && IsQPXVectorTy(AlignAsType)) {
+    if (getContext().getTypeSize(AlignAsType) > 128)
+      Align32 = true;
+
+    return true;
+  } else if (AlignAsType) {
     return AlignAsType->isVectorType();
+  }
 
   // Otherwise, we only need alignment for any aggregate type that
   // has an alignment requirement of >= 16 bytes.
-  if (isAggregateTypeForABI(Ty) && getContext().getTypeAlign(Ty) >= 128)
+  if (isAggregateTypeForABI(Ty) && getContext().getTypeAlign(Ty) >= 128) {
+    if (HasQPX && getContext().getTypeAlign(Ty) >= 256)
+      Align32 = true;
     return true;
+  }
 
   return false;
 }
@@ -3550,7 +3574,7 @@ bool PPC64_SVR4_ABIInfo::isHomogeneousAggregateBaseType(QualType Ty) const {
       return true;
   }
   if (const VectorType *VT = Ty->getAs<VectorType>()) {
-    if (getContext().getTypeSize(VT) == 128)
+    if (getContext().getTypeSize(VT) == 128 || IsQPXVectorTy(Ty))
       return true;
   }
   return false;
@@ -3576,7 +3600,7 @@ PPC64_SVR4_ABIInfo::classifyArgumentType(QualType Ty) const {
 
   // Non-Altivec vector types are passed in GPRs (smaller than 16 bytes)
   // or via reference (larger than 16 bytes).
-  if (Ty->isVectorType()) {
+  if (Ty->isVectorType() && !IsQPXVectorTy(Ty)) {
     uint64_t Size = getContext().getTypeSize(Ty);
     if (Size > 128)
       return ABIArgInfo::getIndirect(0, /*ByVal=*/false);
@@ -3590,7 +3614,9 @@ PPC64_SVR4_ABIInfo::classifyArgumentType(QualType Ty) const {
     if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, getCXXABI()))
       return ABIArgInfo::getIndirect(0, RAA == CGCXXABI::RAA_DirectInMemory);
 
-    uint64_t ABIAlign = isAlignedParamType(Ty)? 16 : 8;
+    bool Align32;
+    uint64_t ABIAlign = isAlignedParamType(Ty, Align32) ?
+                          (Align32 ? 32 : 16) : 8;
     uint64_t TyAlign = getContext().getTypeAlign(Ty) / 8;
 
     // ELFv2 homogeneous aggregates are passed as array types.
@@ -3647,7 +3673,7 @@ PPC64_SVR4_ABIInfo::classifyReturnType(QualType RetTy) const {
 
   // Non-Altivec vector types are returned in GPRs (smaller than 16 bytes)
   // or via reference (larger than 16 bytes).
-  if (RetTy->isVectorType()) {
+  if (RetTy->isVectorType() && !IsQPXVectorTy(RetTy)) {
     uint64_t Size = getContext().getTypeSize(RetTy);
     if (Size > 128)
       return ABIArgInfo::getIndirect(0);
@@ -3704,10 +3730,13 @@ llvm::Value *PPC64_SVR4_ABIInfo::EmitVAArg(llvm::Value *VAListAddr,
   llvm::Value *Addr = Builder.CreateLoad(VAListAddrAsBPP, "ap.cur");
 
   // Handle types that require 16-byte alignment in the parameter save area.
-  if (isAlignedParamType(Ty)) {
+  bool Align32;
+  if (isAlignedParamType(Ty, Align32)) {
     llvm::Value *AddrAsInt = Builder.CreatePtrToInt(Addr, CGF.Int64Ty);
-    AddrAsInt = Builder.CreateAdd(AddrAsInt, Builder.getInt64(15));
-    AddrAsInt = Builder.CreateAnd(AddrAsInt, Builder.getInt64(-16));
+    AddrAsInt = Builder.CreateAdd(AddrAsInt,
+                                  Builder.getInt64(Align32 ? 31 : 15));
+    AddrAsInt = Builder.CreateAnd(AddrAsInt,
+                                  Builder.getInt64(Align32 ? -32 : -16));
     Addr = Builder.CreateIntToPtr(AddrAsInt, BP, "ap.align");
   }
 
@@ -4480,12 +4509,6 @@ public:
                                               llvm::AttributeSet::FunctionIndex,
                                               B));
   }
-
-  bool hasSjLjLowering(CodeGen::CodeGenFunction &CGF) const override {
-    return false;
-    // FIXME: backend implementation too restricted, even on Darwin.
-    // return CGF.getTarget().getTriple().isOSDarwin();
-  }
 };
 
 class WindowsARMTargetCodeGenInfo : public ARMTargetCodeGenInfo {
@@ -4641,14 +4664,11 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty,
   uint64_t ABIAlign = 4;
   uint64_t TyAlign = getContext().getTypeAlign(Ty) / 8;
   if (getABIKind() == ARMABIInfo::AAPCS_VFP ||
-      getABIKind() == ARMABIInfo::AAPCS)
+       getABIKind() == ARMABIInfo::AAPCS)
     ABIAlign = std::min(std::max(TyAlign, (uint64_t)4), (uint64_t)8);
+
   if (getContext().getTypeSizeInChars(Ty) > CharUnits::fromQuantity(64)) {
-    // Update Allocated GPRs. Since this is only used when the size of the
-    // argument is greater than 64 bytes, this will always use up any available
-    // registers (of which there are 4). We also don't care about getting the
-    // alignment right, because general-purpose registers cannot be back-filled.
-    return ABIArgInfo::getIndirect(TyAlign, /*ByVal=*/true,
+    return ABIArgInfo::getIndirect(ABIAlign, /*ByVal=*/true,
            /*Realign=*/TyAlign > ABIAlign);
   }
 
@@ -5149,7 +5169,9 @@ bool SystemZABIInfo::isPromotableIntegerType(QualType Ty) const {
 }
 
 bool SystemZABIInfo::isCompoundType(QualType Ty) const {
-  return Ty->isAnyComplexType() || isAggregateTypeForABI(Ty);
+  return (Ty->isAnyComplexType() ||
+          Ty->isVectorType() ||
+          isAggregateTypeForABI(Ty));
 }
 
 bool SystemZABIInfo::isFPArgumentType(QualType Ty) const {
@@ -5184,11 +5206,12 @@ bool SystemZABIInfo::isFPArgumentType(QualType Ty) const {
 
     // Check the fields.
     for (const auto *FD : RD->fields()) {
-      // Empty bitfields don't affect things either way.
+      // For compatibility with GCC, ignore empty bitfields in C++ mode.
       // Unlike isSingleElementStruct(), empty structure and array fields
       // do count.  So do anonymous bitfields that aren't zero-sized.
-      if (FD->isBitField() && FD->getBitWidthValue(getContext()) == 0)
-        return true;
+      if (getContext().getLangOpts().CPlusPlus &&
+          FD->isBitField() && FD->getBitWidthValue(getContext()) == 0)
+        continue;
 
       // Unlike isSingleElementStruct(), arrays do not count.
       // Nested isFPArgumentType structures still do though.
@@ -5220,17 +5243,21 @@ llvm::Value *SystemZABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
   // Every argument occupies 8 bytes and is passed by preference in either
   // GPRs or FPRs.
   Ty = CGF.getContext().getCanonicalType(Ty);
+  llvm::Type *ArgTy = CGF.ConvertTypeForMem(Ty);
+  llvm::Type *APTy = llvm::PointerType::getUnqual(ArgTy);
   ABIArgInfo AI = classifyArgumentType(Ty);
-  bool InFPRs = isFPArgumentType(Ty);
-
-  llvm::Type *APTy = llvm::PointerType::getUnqual(CGF.ConvertTypeForMem(Ty));
   bool IsIndirect = AI.isIndirect();
+  bool InFPRs = false;
   unsigned UnpaddedBitSize;
   if (IsIndirect) {
     APTy = llvm::PointerType::getUnqual(APTy);
     UnpaddedBitSize = 64;
-  } else
+  } else {
+    if (AI.getCoerceToType())
+      ArgTy = AI.getCoerceToType();
+    InFPRs = ArgTy->isFloatTy() || ArgTy->isDoubleTy();
     UnpaddedBitSize = getContext().getTypeSize(Ty);
+  }
   unsigned PaddedBitSize = 64;
   assert((UnpaddedBitSize <= PaddedBitSize) && "Invalid argument size.");
 
@@ -6131,12 +6158,7 @@ private:
 
     // Check if Ty is a usable substitute for the coercion type.
     bool isUsableType(llvm::StructType *Ty) const {
-      if (Ty->getNumElements() != Elems.size())
-        return false;
-      for (unsigned i = 0, e = Elems.size(); i != e; ++i)
-        if (Elems[i] != Ty->getElementType(i))
-          return false;
-      return true;
+      return llvm::makeArrayRef(Elems) == Ty->elements();
     }
 
     // Get the coercion type as a literal struct type.
@@ -6993,19 +7015,21 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
       PPC64_SVR4_ABIInfo::ABIKind Kind = PPC64_SVR4_ABIInfo::ELFv1;
       if (getTarget().getABI() == "elfv2")
         Kind = PPC64_SVR4_ABIInfo::ELFv2;
+      bool HasQPX = getTarget().getABI() == "elfv1-qpx";
 
       return *(TheTargetCodeGenInfo =
-               new PPC64_SVR4_TargetCodeGenInfo(Types, Kind));
+               new PPC64_SVR4_TargetCodeGenInfo(Types, Kind, HasQPX));
     } else
       return *(TheTargetCodeGenInfo = new PPC64TargetCodeGenInfo(Types));
   case llvm::Triple::ppc64le: {
     assert(Triple.isOSBinFormatELF() && "PPC64 LE non-ELF not supported!");
     PPC64_SVR4_ABIInfo::ABIKind Kind = PPC64_SVR4_ABIInfo::ELFv2;
-    if (getTarget().getABI() == "elfv1")
+    if (getTarget().getABI() == "elfv1" || getTarget().getABI() == "elfv1-qpx")
       Kind = PPC64_SVR4_ABIInfo::ELFv1;
+    bool HasQPX = getTarget().getABI() == "elfv1-qpx";
 
     return *(TheTargetCodeGenInfo =
-             new PPC64_SVR4_TargetCodeGenInfo(Types, Kind));
+             new PPC64_SVR4_TargetCodeGenInfo(Types, Kind, HasQPX));
   }
 
   case llvm::Triple::nvptx:

@@ -871,7 +871,8 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
     if (S.getLangOpts().OpenCL &&
         !((S.getLangOpts().OpenCLVersion >= 120) ||
           S.getOpenCLOptions().cl_khr_fp64)) {
-      S.Diag(DS.getTypeSpecTypeLoc(), diag::err_double_requires_fp64);
+      S.Diag(DS.getTypeSpecTypeLoc(), diag::err_type_requires_extension)
+          << Result << "cl_khr_fp64";
       declarator.setInvalidType(true);
     }
     break;
@@ -946,6 +947,30 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
         S.Diag(DeclLoc, diag::err_invalid_protocol_qualifiers)
           << DS.getSourceRange();
         declarator.setInvalidType(true);
+      }
+    } else if (S.getLangOpts().OpenCL) {
+      if (const AtomicType *AT = Result->getAs<AtomicType>()) {
+        const BuiltinType *BT = AT->getValueType()->getAs<BuiltinType>();
+        bool NoExtTypes = BT && (BT->getKind() == BuiltinType::Int ||
+                                 BT->getKind() == BuiltinType::UInt ||
+                                 BT->getKind() == BuiltinType::Float);
+        if (!S.getOpenCLOptions().cl_khr_int64_base_atomics && !NoExtTypes) {
+          S.Diag(DS.getTypeSpecTypeLoc(), diag::err_type_requires_extension)
+              << Result << "cl_khr_int64_base_atomics";
+          declarator.setInvalidType(true);
+        }
+        if (!S.getOpenCLOptions().cl_khr_int64_extended_atomics &&
+            !NoExtTypes) {
+          S.Diag(DS.getTypeSpecTypeLoc(), diag::err_type_requires_extension)
+              << Result << "cl_khr_int64_extended_atomics";
+          declarator.setInvalidType(true);
+        }
+        if (!S.getOpenCLOptions().cl_khr_fp64 && BT &&
+            BT->getKind() == BuiltinType::Double) {
+          S.Diag(DS.getTypeSpecTypeLoc(), diag::err_type_requires_extension)
+              << Result << "cl_khr_fp64";
+          declarator.setInvalidType(true);
+        }
       }
     }
 
@@ -5101,9 +5126,9 @@ bool Sema::RequireCompleteType(SourceLocation Loc, QualType T,
 /// \param D The definition of the entity.
 /// \param Suggested Filled in with the declaration that should be made visible
 ///        in order to provide a definition of this entity.
-static bool hasVisibleDefinition(Sema &S, NamedDecl *D, NamedDecl **Suggested) {
+bool Sema::hasVisibleDefinition(NamedDecl *D, NamedDecl **Suggested) {
   // Easy case: if we don't have modules, all declarations are visible.
-  if (!S.getLangOpts().Modules)
+  if (!getLangOpts().Modules)
     return true;
 
   // If this definition was instantiated from a template, map back to the
@@ -5119,7 +5144,7 @@ static bool hasVisibleDefinition(Sema &S, NamedDecl *D, NamedDecl **Suggested) {
       // If the enum has a fixed underlying type, any declaration of it will do.
       *Suggested = nullptr;
       for (auto *Redecl : ED->redecls()) {
-        if (LookupResult::isVisible(S, Redecl))
+        if (LookupResult::isVisible(*this, Redecl))
           return true;
         if (Redecl->isThisDeclarationADefinition() ||
             (Redecl->isCanonicalDecl() && !*Suggested))
@@ -5134,7 +5159,7 @@ static bool hasVisibleDefinition(Sema &S, NamedDecl *D, NamedDecl **Suggested) {
   // FIXME: If we merged any other decl into D, and that declaration is visible,
   // then we should consider a definition to be visible.
   *Suggested = D;
-  return LookupResult::isVisible(S, D);
+  return LookupResult::isVisible(*this, D);
 }
 
 /// Locks in the inheritance model for the given class and all of its bases.
@@ -5185,7 +5210,7 @@ bool Sema::RequireCompleteTypeImpl(SourceLocation Loc, QualType T,
     // If we know about the definition but it is not visible, complain.
     NamedDecl *SuggestedDef = nullptr;
     if (!Diagnoser.Suppressed && Def &&
-        !hasVisibleDefinition(*this, Def, &SuggestedDef)) {
+        !hasVisibleDefinition(Def, &SuggestedDef)) {
       // Suppress this error outside of a SFINAE context if we've already
       // emitted the error once for this type. There's no usefulness in
       // repeating the diagnostic.

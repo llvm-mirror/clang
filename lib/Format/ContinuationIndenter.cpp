@@ -221,8 +221,7 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
 
   if (startsSegmentOfBuilderTypeCall(Current) &&
       (State.Stack.back().CallContinuation != 0 ||
-       (State.Stack.back().BreakBeforeParameter &&
-        State.Stack.back().ContainsUnwrappedBuilder)))
+       State.Stack.back().BreakBeforeParameter))
     return true;
 
   // The following could be precomputed as they do not depend on the state.
@@ -307,7 +306,9 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
     else if (State.Stack.back().Indent + Current.LongestObjCSelectorName >
              State.Column + Spaces + Current.ColumnWidth)
       State.Stack.back().ColonPos =
-          State.Stack.back().Indent + Current.LongestObjCSelectorName;
+          std::max(State.FirstIndent + Style.ContinuationIndentWidth,
+                   State.Stack.back().Indent) +
+          Current.LongestObjCSelectorName;
     else
       State.Stack.back().ColonPos = State.Column + Spaces + Current.ColumnWidth;
   }
@@ -321,6 +322,8 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
   if (startsSegmentOfBuilderTypeCall(Current))
     State.Stack.back().ContainsUnwrappedBuilder = true;
 
+  if (Current.is(TT_LambdaArrow))
+    State.Stack.back().NoLineBreak = true;
   if (Current.isMemberAccess() && Previous.is(tok::r_paren) &&
       (Previous.MatchingParen &&
        (Previous.TotalLength - Previous.MatchingParen->TotalLength > 10))) {
@@ -580,7 +583,7 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
       return State.Stack.back().StartOfArraySubscripts;
     return ContinuationIndent;
   }
-  if (NextNonComment->is(TT_StartOfName) ||
+  if (NextNonComment->isOneOf(TT_StartOfName, TT_PointerOrReference) ||
       Previous.isOneOf(tok::coloncolon, tok::equal)) {
     return ContinuationIndent;
   }
@@ -647,12 +650,6 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
       State.Stack.back().AvoidBinPacking = true;
     State.Stack.back().BreakBeforeParameter = false;
   }
-
-  // In ObjC method declaration we align on the ":" of parameters, but we need
-  // to ensure that we indent parameters on subsequent lines by at least our
-  // continuation indent width.
-  if (Current.is(TT_ObjCMethodSpecifier))
-    State.Stack.back().Indent += Style.ContinuationIndentWidth;
 
   // Insert scopes created by fake parenthesis.
   const FormatToken *Previous = Current.getPreviousNonComment();
@@ -722,7 +719,8 @@ void ContinuationIndenter::moveStatePastFakeLParens(LineState &State,
   // 'return', assignments or opening <({[. The indentation for these cases
   // is special cased.
   bool SkipFirstExtraIndent =
-      (Previous && (Previous->opensScope() || Previous->is(tok::kw_return) ||
+      (Previous && (Previous->opensScope() ||
+                    Previous->isOneOf(tok::semi, tok::kw_return) ||
                     (Previous->getPrecedence() == prec::Assignment &&
                      Style.AlignOperands) ||
                     Previous->is(TT_ObjCMethodExpr)));

@@ -359,7 +359,17 @@ void OMPClauseProfiler::VisitOMPReductionClause(
 }
 void OMPClauseProfiler::VisitOMPLinearClause(const OMPLinearClause *C) {
   VisitOMPClauseList(C);
+  for (auto *E : C->inits()) {
+    Profiler->VisitStmt(E);
+  }
+  for (auto *E : C->updates()) {
+    Profiler->VisitStmt(E);
+  }
+  for (auto *E : C->finals()) {
+    Profiler->VisitStmt(E);
+  }
   Profiler->VisitStmt(C->getStep());
+  Profiler->VisitStmt(C->getCalcStep());
 }
 void OMPClauseProfiler::VisitOMPAlignedClause(const OMPAlignedClause *C) {
   VisitOMPClauseList(C);
@@ -371,6 +381,15 @@ void OMPClauseProfiler::VisitOMPCopyinClause(const OMPCopyinClause *C) {
 void
 OMPClauseProfiler::VisitOMPCopyprivateClause(const OMPCopyprivateClause *C) {
   VisitOMPClauseList(C);
+  for (auto *E : C->source_exprs()) {
+    Profiler->VisitStmt(E);
+  }
+  for (auto *E : C->destination_exprs()) {
+    Profiler->VisitStmt(E);
+  }
+  for (auto *E : C->assignment_ops()) {
+    Profiler->VisitStmt(E);
+  }
 }
 void OMPClauseProfiler::VisitOMPFlushClause(const OMPFlushClause *C) {
   VisitOMPClauseList(C);

@@ -48,7 +48,7 @@ static ToolChain::RTTIMode CalculateRTTIMode(const ArgList &Args,
 
   // On the PS4, turning on c++ exceptions turns on rtti.
   // We're assuming that, if we see -fexceptions, rtti gets turned on.
-  Arg *Exceptions = Args.getLastArg(
+  Arg *Exceptions = Args.getLastArgNoClaim(
       options::OPT_fcxx_exceptions, options::OPT_fno_cxx_exceptions,
       options::OPT_fexceptions, options::OPT_fno_exceptions);
   if (Exceptions &&
@@ -297,10 +297,7 @@ std::string ToolChain::ComputeLLVMTriple(const ArgList &Args,
     // '-mbig-endian'/'-EB'.
     if (Arg *A = Args.getLastArg(options::OPT_mlittle_endian,
                                  options::OPT_mbig_endian)) {
-      if (A->getOption().matches(options::OPT_mlittle_endian))
-        IsBigEndian = false;
-      else
-        IsBigEndian = true;
+      IsBigEndian = !A->getOption().matches(options::OPT_mlittle_endian);
     }
 
     // Thumb2 is the default for V7 on Darwin.

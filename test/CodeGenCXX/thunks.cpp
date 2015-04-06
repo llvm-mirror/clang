@@ -227,7 +227,7 @@ namespace Test8 {
   void C::helper(NonPOD var) {}
 
   // CHECK-LABEL: define void @_ZThn8_N5Test81C3barENS_6NonPODE(
-  // CHECK-NOT: load [[NONPODTYPE]]*
+  // CHECK-NOT: load [[NONPODTYPE]], [[NONPODTYPE]]*
   // CHECK-NOT: memcpy
   // CHECK: ret void
   void C::bar(NonPOD var) {}
@@ -295,8 +295,8 @@ namespace Test12 {
   // Varargs thunk; check that both the this and covariant adjustments
   // are generated.
   // CHECK: define {{.*}} @_ZTchn8_h8_N6Test121C1fEiz
-  // CHECK: getelementptr inbounds i8* {{.*}}, i64 -8
-  // CHECK: getelementptr inbounds i8* {{.*}}, i64 8
+  // CHECK: getelementptr inbounds i8, i8* {{.*}}, i64 -8
+  // CHECK: getelementptr inbounds i8, i8* {{.*}}, i64 8
 }
 
 // PR13832
@@ -318,10 +318,10 @@ namespace Test13 {
     return *this;
   }
   // CHECK: define {{.*}} @_ZTcvn8_n32_v8_n24_N6Test131D4foo1Ev
-  // CHECK: getelementptr inbounds i8* {{.*}}, i64 -8
-  // CHECK: getelementptr inbounds i8* {{.*}}, i64 -32
-  // CHECK: getelementptr inbounds i8* {{.*}}, i64 -24
-  // CHECK: getelementptr inbounds i8* {{.*}}, i64 8
+  // CHECK: getelementptr inbounds i8, i8* {{.*}}, i64 -8
+  // CHECK: getelementptr inbounds i8, i8* {{.*}}, i64 -32
+  // CHECK: getelementptr inbounds i8, i8* {{.*}}, i64 -24
+  // CHECK: getelementptr inbounds i8, i8* {{.*}}, i64 8
   // CHECK: ret %"struct.Test13::D"*
 }
 

@@ -415,7 +415,9 @@ void LookupResult::resolveKind() {
       // If it's not unique, pull something off the back (and
       // continue at this index).
       // FIXME: This is wrong. We need to take the more recent declaration in
-      // order to get the right type, default arguments, etc.
+      // order to get the right type, default arguments, etc. We also need to
+      // prefer visible declarations to hidden ones (for redeclaration lookup
+      // in modules builds).
       Decls[I] = Decls[--N];
       continue;
     }
@@ -1215,10 +1217,25 @@ llvm::DenseSet<Module*> &Sema::getLookupModules() {
 /// path (by instantiating a template, you allow it to see the declarations that
 /// your module can see, including those later on in your module).
 bool LookupResult::isVisibleSlow(Sema &SemaRef, NamedDecl *D) {
-  assert(D->isHidden() && !SemaRef.ActiveTemplateInstantiations.empty() &&
-         "should not call this: not in slow case");
+  assert(D->isHidden() && "should not call this: not in slow case");
   Module *DeclModule = D->getOwningModule();
   assert(DeclModule && "hidden decl not from a module");
+
+  // If this declaration is not at namespace scope nor module-private,
+  // then it is visible if its lexical parent has a visible definition.
+  DeclContext *DC = D->getLexicalDeclContext();
+  if (!D->isModulePrivate() &&
+      DC && !DC->isFileContext() && !isa<LinkageSpecDecl>(DC)) {
+    if (SemaRef.hasVisibleDefinition(cast<NamedDecl>(DC))) {
+      if (SemaRef.ActiveTemplateInstantiations.empty()) {
+        // Cache the fact that this declaration is implicitly visible because
+        // its parent has a visible definition.
+        D->setHidden(false);
+      }
+      return true;
+    }
+    return false;
+  }
 
   // Find the extra places where we need to look.
   llvm::DenseSet<Module*> &LookupModules = SemaRef.getLookupModules();
@@ -3019,17 +3036,45 @@ static void LookupVisibleDecls(DeclContext *Ctx, LookupResult &Result,
   if (Visited.visitedContext(Ctx->getPrimaryContext()))
     return;
 
+  // Outside C++, lookup results for the TU live on identifiers.
+  if (isa<TranslationUnitDecl>(Ctx) &&
+      !Result.getSema().getLangOpts().CPlusPlus) {
+    auto &S = Result.getSema();
+    auto &Idents = S.Context.Idents;
+
+    // Ensure all external identifiers are in the identifier table.
+    if (IdentifierInfoLookup *External = Idents.getExternalIdentifierLookup()) {
+      std::unique_ptr<IdentifierIterator> Iter(External->getIdentifiers());
+      for (StringRef Name = Iter->Next(); !Name.empty(); Name = Iter->Next())
+        Idents.get(Name);
+    }
+
+    // Walk all lookup results in the TU for each identifier.
+    for (const auto &Ident : Idents) {
+      for (auto I = S.IdResolver.begin(Ident.getValue()),
+                E = S.IdResolver.end();
+           I != E; ++I) {
+        if (S.IdResolver.isDeclInScope(*I, Ctx)) {
+          if (NamedDecl *ND = Result.getAcceptableDecl(*I)) {
+            Consumer.FoundDecl(ND, Visited.checkHidden(ND), Ctx, InBaseClass);
+            Visited.add(ND);
+          }
+        }
+      }
+    }
+
+    return;
+  }
+
   if (CXXRecordDecl *Class = dyn_cast<CXXRecordDecl>(Ctx))
     Result.getSema().ForceDeclarationOfImplicitMembers(Class);
 
   // Enumerate all of the results in this context.
   for (const auto &R : Ctx->lookups()) {
-    for (auto *I : R) {
-      if (NamedDecl *ND = dyn_cast<NamedDecl>(I)) {
-        if ((ND = Result.getAcceptableDecl(ND))) {
-          Consumer.FoundDecl(ND, Visited.checkHidden(ND), Ctx, InBaseClass);
-          Visited.add(ND);
-        }
+    for (auto *D : R) {
+      if (auto *ND = Result.getAcceptableDecl(D)) {
+        Consumer.FoundDecl(ND, Visited.checkHidden(ND), Ctx, InBaseClass);
+        Visited.add(ND);
       }
     }
   }
@@ -3683,8 +3728,7 @@ void TypoCorrectionConsumer::performQualifiedLookups() {
 
 TypoCorrectionConsumer::NamespaceSpecifierSet::NamespaceSpecifierSet(
     ASTContext &Context, DeclContext *CurContext, CXXScopeSpec *CurScopeSpec)
-    : Context(Context), CurContextChain(buildContextChain(CurContext)),
-      isSorted(false) {
+    : Context(Context), CurContextChain(buildContextChain(CurContext)) {
   if (NestedNameSpecifier *NNS =
           CurScopeSpec ? CurScopeSpec->getScopeRep() : nullptr) {
     llvm::raw_string_ostream SpecifierOStream(CurNameSpecifier);
@@ -3703,7 +3747,6 @@ TypoCorrectionConsumer::NamespaceSpecifierSet::NamespaceSpecifierSet(
   }
 
   // Add the global context as a NestedNameSpecifier
-  Distances.insert(1);
   SpecifierInfo SI = {cast<DeclContext>(Context.getTranslationUnitDecl()),
                       NestedNameSpecifier::GlobalSpecifier(Context), 1};
   DistanceMap[1].push_back(SI);
@@ -3721,22 +3764,6 @@ auto TypoCorrectionConsumer::NamespaceSpecifierSet::buildContextChain(
       Chain.push_back(DC->getPrimaryContext());
   }
   return Chain;
-}
-
-void TypoCorrectionConsumer::NamespaceSpecifierSet::sortNamespaces() {
-  SmallVector<unsigned, 4> sortedDistances;
-  sortedDistances.append(Distances.begin(), Distances.end());
-
-  if (sortedDistances.size() > 1)
-    std::sort(sortedDistances.begin(), sortedDistances.end());
-
-  Specifiers.clear();
-  for (auto D : sortedDistances) {
-    SpecifierInfoList &SpecList = DistanceMap[D];
-    Specifiers.append(SpecList.begin(), SpecList.end());
-  }
-
-  isSorted = true;
 }
 
 unsigned
@@ -3819,8 +3846,6 @@ void TypoCorrectionConsumer::NamespaceSpecifierSet::addNameSpecifier(
         llvm::makeArrayRef(NewNameSpecifierIdentifiers));
   }
 
-  isSorted = false;
-  Distances.insert(NumSpecifiers);
   SpecifierInfo SI = {Ctx, NNS, NumSpecifiers};
   DistanceMap[NumSpecifiers].push_back(SI);
 }
