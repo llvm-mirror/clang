@@ -1737,8 +1737,7 @@ QualifierInfo::setTemplateParameterListsInfo(ASTContext &Context,
   if (NumTPLists > 0) {
     TemplParamLists = new (Context) TemplateParameterList*[NumTPLists];
     NumTemplParamLists = NumTPLists;
-    for (unsigned i = NumTPLists; i-- > 0; )
-      TemplParamLists[i] = TPLists[i];
+    std::copy(TPLists, TPLists + NumTPLists, TemplParamLists);
   }
 }
 
@@ -1878,9 +1877,8 @@ bool VarDecl::isInExternCXXContext() const {
 
 VarDecl *VarDecl::getCanonicalDecl() { return getFirstDecl(); }
 
-VarDecl::DefinitionKind VarDecl::isThisDeclarationADefinition(
-  ASTContext &C) const
-{
+VarDecl::DefinitionKind
+VarDecl::isThisDeclarationADefinition(ASTContext &C) const {
   // C++ [basic.def]p2:
   //   A declaration is a definition unless [...] it contains the 'extern'
   //   specifier or a linkage-specification and neither an initializer [...],
@@ -1917,7 +1915,7 @@ VarDecl::DefinitionKind VarDecl::isThisDeclarationADefinition(
   if (hasInit())
     return Definition;
 
-  if (hasAttr<AliasAttr>())
+  if (hasAttr<AliasAttr>() || hasAttr<SelectAnyAttr>())
     return Definition;
 
   // A variable template specialization (other than a static data member
@@ -2823,6 +2821,18 @@ SourceRange FunctionDecl::getReturnTypeSourceRange() const {
   return RTRange;
 }
 
+bool FunctionDecl::hasUnusedResultAttr() const {
+  QualType RetType = getReturnType();
+  if (RetType->isRecordType()) {
+    const CXXRecordDecl *Ret = RetType->getAsCXXRecordDecl();
+    const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(this);
+    if (Ret && Ret->hasAttr<WarnUnusedResultAttr>() &&
+        !(MD && MD->getCorrespondingMethodInClass(Ret, true)))
+      return true;
+  }
+  return hasAttr<WarnUnusedResultAttr>();
+}
+
 /// \brief For an inline function definition in C, or for a gnu_inline function
 /// in C++, determine whether the definition will be externally visible.
 ///
@@ -3104,6 +3114,8 @@ DependentFunctionTemplateSpecializationInfo::
 DependentFunctionTemplateSpecializationInfo(const UnresolvedSetImpl &Ts,
                                       const TemplateArgumentListInfo &TArgs)
   : AngleLocs(TArgs.getLAngleLoc(), TArgs.getRAngleLoc()) {
+  static_assert(sizeof(*this) % llvm::AlignOf<void *>::Alignment == 0,
+                "Trailing data is unaligned!");
 
   d.NumTemplates = Ts.size();
   d.NumArgs = TArgs.size();

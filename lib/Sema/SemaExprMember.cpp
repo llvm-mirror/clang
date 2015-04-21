@@ -109,9 +109,8 @@ static IMAKind ClassifyImplicitMemberAccess(Sema &SemaRef,
     NamedDecl *D = *I;
 
     if (D->isCXXInstanceMember()) {
-      if (dyn_cast<FieldDecl>(D) || dyn_cast<MSPropertyDecl>(D)
-          || dyn_cast<IndirectFieldDecl>(D))
-        isField = true;
+      isField |= isa<FieldDecl>(D) || isa<MSPropertyDecl>(D) ||
+                 isa<IndirectFieldDecl>(D);
 
       CXXRecordDecl *R = cast<CXXRecordDecl>(D->getDeclContext());
       Classes.insert(R->getCanonicalDecl());
@@ -1519,7 +1518,15 @@ static ExprResult LookupMemberExpr(Sema &S, LookupResult &R,
   if (BaseType->isExtVectorType()) {
     // FIXME: this expr should store IsArrow.
     IdentifierInfo *Member = MemberName.getAsIdentifierInfo();
-    ExprValueKind VK = (IsArrow ? VK_LValue : BaseExpr.get()->getValueKind());
+    ExprValueKind VK;
+    if (IsArrow)
+      VK = VK_LValue;
+    else {
+      if (PseudoObjectExpr *POE = dyn_cast<PseudoObjectExpr>(BaseExpr.get()))
+        VK = POE->getSyntacticForm()->getValueKind();
+      else
+        VK = BaseExpr.get()->getValueKind();
+    }
     QualType ret = CheckExtVectorComponent(S, BaseType, VK, OpLoc,
                                            Member, MemberLoc);
     if (ret.isNull())

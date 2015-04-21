@@ -734,7 +734,8 @@ void CodeGenFunction::ExpandTypeFromArgs(
   auto Exp = getTypeExpansion(Ty, getContext());
   if (auto CAExp = dyn_cast<ConstantArrayExpansion>(Exp.get())) {
     for (int i = 0, n = CAExp->NumElts; i < n; i++) {
-      llvm::Value *EltAddr = Builder.CreateConstGEP2_32(LV.getAddress(), 0, i);
+      llvm::Value *EltAddr =
+          Builder.CreateConstGEP2_32(nullptr, LV.getAddress(), 0, i);
       LValue LV = MakeAddrLValue(EltAddr, CAExp->EltTy);
       ExpandTypeFromArgs(CAExp->EltTy, LV, AI);
     }
@@ -756,10 +757,12 @@ void CodeGenFunction::ExpandTypeFromArgs(
       ExpandTypeFromArgs(FD->getType(), SubLV, AI);
     }
   } else if (auto CExp = dyn_cast<ComplexExpansion>(Exp.get())) {
-    llvm::Value *RealAddr = Builder.CreateStructGEP(LV.getAddress(), 0, "real");
+    llvm::Value *RealAddr =
+        Builder.CreateStructGEP(nullptr, LV.getAddress(), 0, "real");
     EmitStoreThroughLValue(RValue::get(*AI++),
                            MakeAddrLValue(RealAddr, CExp->EltTy));
-    llvm::Value *ImagAddr = Builder.CreateStructGEP(LV.getAddress(), 1, "imag");
+    llvm::Value *ImagAddr =
+        Builder.CreateStructGEP(nullptr, LV.getAddress(), 1, "imag");
     EmitStoreThroughLValue(RValue::get(*AI++),
                            MakeAddrLValue(ImagAddr, CExp->EltTy));
   } else {
@@ -775,7 +778,7 @@ void CodeGenFunction::ExpandTypeToArgs(
   if (auto CAExp = dyn_cast<ConstantArrayExpansion>(Exp.get())) {
     llvm::Value *Addr = RV.getAggregateAddr();
     for (int i = 0, n = CAExp->NumElts; i < n; i++) {
-      llvm::Value *EltAddr = Builder.CreateConstGEP2_32(Addr, 0, i);
+      llvm::Value *EltAddr = Builder.CreateConstGEP2_32(nullptr, Addr, 0, i);
       RValue EltRV =
           convertTempToRValue(EltAddr, CAExp->EltTy, SourceLocation());
       ExpandTypeToArgs(CAExp->EltTy, EltRV, IRFuncTy, IRCallArgs, IRCallArgPos);
@@ -843,7 +846,7 @@ EnterStructPointerForCoercedAccess(llvm::Value *SrcPtr,
     return SrcPtr;
 
   // GEP into the first element.
-  SrcPtr = CGF.Builder.CreateConstGEP2_32(SrcPtr, 0, 0, "coerce.dive");
+  SrcPtr = CGF.Builder.CreateConstGEP2_32(SrcSTy, SrcPtr, 0, 0, "coerce.dive");
 
   // If the first element is a struct, recurse.
   llvm::Type *SrcTy =
@@ -981,7 +984,7 @@ static void BuildAggStore(CodeGenFunction &CGF, llvm::Value *Val,
   if (llvm::StructType *STy =
         dyn_cast<llvm::StructType>(Val->getType())) {
     for (unsigned i = 0, e = STy->getNumElements(); i != e; ++i) {
-      llvm::Value *EltPtr = CGF.Builder.CreateConstGEP2_32(DestPtr, 0, i);
+      llvm::Value *EltPtr = CGF.Builder.CreateConstGEP2_32(STy, DestPtr, 0, i);
       llvm::Value *Elt = CGF.Builder.CreateExtractValue(Val, i);
       llvm::StoreInst *SI = CGF.Builder.CreateStore(Elt, EltPtr,
                                                     DestIsVolatile);
@@ -1772,8 +1775,9 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
     switch (ArgI.getKind()) {
     case ABIArgInfo::InAlloca: {
       assert(NumIRArgs == 0);
-      llvm::Value *V = Builder.CreateStructGEP(
-          ArgStruct, ArgI.getInAllocaFieldIndex(), Arg->getName());
+      llvm::Value *V =
+          Builder.CreateStructGEP(FI.getArgStruct(), ArgStruct,
+                                  ArgI.getInAllocaFieldIndex(), Arg->getName());
       ArgVals.push_back(ValueAndIsPtr(V, HavePointer));
       break;
     }
@@ -1939,7 +1943,7 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
       // If the value is offset in memory, apply the offset now.
       if (unsigned Offs = ArgI.getDirectOffset()) {
         Ptr = Builder.CreateBitCast(Ptr, Builder.getInt8PtrTy());
-        Ptr = Builder.CreateConstGEP1_32(Ptr, Offs);
+        Ptr = Builder.CreateConstGEP1_32(Builder.getInt8Ty(), Ptr, Offs);
         Ptr = Builder.CreateBitCast(Ptr,
                           llvm::PointerType::getUnqual(ArgI.getCoerceToType()));
       }
@@ -1961,7 +1965,7 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
           for (unsigned i = 0, e = STy->getNumElements(); i != e; ++i) {
             auto AI = FnArgs[FirstIRArg + i];
             AI->setName(Arg->getName() + ".coerce" + Twine(i));
-            llvm::Value *EltPtr = Builder.CreateConstGEP2_32(Ptr, 0, i);
+            llvm::Value *EltPtr = Builder.CreateConstGEP2_32(STy, Ptr, 0, i);
             Builder.CreateStore(AI, EltPtr);
           }
         } else {
@@ -1974,7 +1978,8 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
           for (unsigned i = 0, e = STy->getNumElements(); i != e; ++i) {
             auto AI = FnArgs[FirstIRArg + i];
             AI->setName(Arg->getName() + ".coerce" + Twine(i));
-            llvm::Value *EltPtr = Builder.CreateConstGEP2_32(TempV, 0, i);
+            llvm::Value *EltPtr =
+                Builder.CreateConstGEP2_32(ArgI.getCoerceToType(), TempV, 0, i);
             Builder.CreateStore(AI, EltPtr);
           }
 
@@ -2269,8 +2274,8 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
       llvm::Function::arg_iterator EI = CurFn->arg_end();
       --EI;
       llvm::Value *ArgStruct = EI;
-      llvm::Value *SRet =
-          Builder.CreateStructGEP(ArgStruct, RetAI.getInAllocaFieldIndex());
+      llvm::Value *SRet = Builder.CreateStructGEP(
+          nullptr, ArgStruct, RetAI.getInAllocaFieldIndex());
       RV = Builder.CreateLoad(SRet, "sret");
     }
     break;
@@ -2334,7 +2339,7 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
       // If the value is offset in memory, apply the offset now.
       if (unsigned Offs = RetAI.getDirectOffset()) {
         V = Builder.CreateBitCast(V, Builder.getInt8PtrTy());
-        V = Builder.CreateConstGEP1_32(V, Offs);
+        V = Builder.CreateConstGEP1_32(Builder.getInt8Ty(), V, Offs);
         V = Builder.CreateBitCast(V,
                          llvm::PointerType::getUnqual(RetAI.getCoerceToType()));
       }
@@ -2380,7 +2385,7 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
     Ret = Builder.CreateRetVoid();
   }
 
-  if (!RetDbgLoc.isUnknown())
+  if (RetDbgLoc)
     Ret->setDebugLoc(std::move(RetDbgLoc));
 }
 
@@ -2992,7 +2997,7 @@ CodeGenFunction::EmitCallOrInvoke(llvm::Value *Callee,
   if (CGM.getLangOpts().ObjCAutoRefCount)
     AddObjCARCExceptionMetadata(Inst);
 
-  return Inst;
+  return llvm::CallSite(Inst);
 }
 
 /// \brief Store a non-aggregate value to an address to initialize it.  For
@@ -3029,7 +3034,7 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
 
   // If we're using inalloca, insert the allocation after the stack save.
   // FIXME: Do this earlier rather than hacking it in here!
-  llvm::Value *ArgMemory = nullptr;
+  llvm::AllocaInst *ArgMemory = nullptr;
   if (llvm::StructType *ArgStruct = CallInfo.getArgStruct()) {
     llvm::Instruction *IP = CallArgs.getStackBase();
     llvm::AllocaInst *AI;
@@ -3058,7 +3063,8 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
       IRCallArgs[IRFunctionArgs.getSRetArgNo()] = SRetPtr;
     } else {
       llvm::Value *Addr =
-          Builder.CreateStructGEP(ArgMemory, RetAI.getInAllocaFieldIndex());
+          Builder.CreateStructGEP(ArgMemory->getAllocatedType(), ArgMemory,
+                                  RetAI.getInAllocaFieldIndex());
       Builder.CreateStore(SRetPtr, Addr);
     }
   }
@@ -3092,14 +3098,16 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
             cast<llvm::Instruction>(RV.getAggregateAddr());
         CGBuilderTy::InsertPoint IP = Builder.saveIP();
         Builder.SetInsertPoint(Placeholder);
-        llvm::Value *Addr = Builder.CreateStructGEP(
-            ArgMemory, ArgInfo.getInAllocaFieldIndex());
+        llvm::Value *Addr =
+            Builder.CreateStructGEP(ArgMemory->getAllocatedType(), ArgMemory,
+                                    ArgInfo.getInAllocaFieldIndex());
         Builder.restoreIP(IP);
         deferPlaceholderReplacement(Placeholder, Addr);
       } else {
         // Store the RValue into the argument struct.
         llvm::Value *Addr =
-            Builder.CreateStructGEP(ArgMemory, ArgInfo.getInAllocaFieldIndex());
+            Builder.CreateStructGEP(ArgMemory->getAllocatedType(), ArgMemory,
+                                    ArgInfo.getInAllocaFieldIndex());
         unsigned AS = Addr->getType()->getPointerAddressSpace();
         llvm::Type *MemType = ConvertTypeForMem(I->Ty)->getPointerTo(AS);
         // There are some cases where a trivial bitcast is not avoidable.  The
@@ -3201,7 +3209,7 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
       // If the value is offset in memory, apply the offset now.
       if (unsigned Offs = ArgInfo.getDirectOffset()) {
         SrcPtr = Builder.CreateBitCast(SrcPtr, Builder.getInt8PtrTy());
-        SrcPtr = Builder.CreateConstGEP1_32(SrcPtr, Offs);
+        SrcPtr = Builder.CreateConstGEP1_32(Builder.getInt8Ty(), SrcPtr, Offs);
         SrcPtr = Builder.CreateBitCast(SrcPtr,
                        llvm::PointerType::getUnqual(ArgInfo.getCoerceToType()));
 
@@ -3233,7 +3241,7 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
 
         assert(NumIRArgs == STy->getNumElements());
         for (unsigned i = 0, e = STy->getNumElements(); i != e; ++i) {
-          llvm::Value *EltPtr = Builder.CreateConstGEP2_32(SrcPtr, 0, i);
+          llvm::Value *EltPtr = Builder.CreateConstGEP2_32(STy, SrcPtr, 0, i);
           llvm::LoadInst *LI = Builder.CreateLoad(EltPtr);
           // We don't know what we're loading from.
           LI->setAlignment(1);
@@ -3463,7 +3471,8 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
       llvm::Value *StorePtr = DestPtr;
       if (unsigned Offs = RetAI.getDirectOffset()) {
         StorePtr = Builder.CreateBitCast(StorePtr, Builder.getInt8PtrTy());
-        StorePtr = Builder.CreateConstGEP1_32(StorePtr, Offs);
+        StorePtr =
+            Builder.CreateConstGEP1_32(Builder.getInt8Ty(), StorePtr, Offs);
         StorePtr = Builder.CreateBitCast(StorePtr,
                            llvm::PointerType::getUnqual(RetAI.getCoerceToType()));
       }

@@ -43,7 +43,10 @@ namespace CodeGen {
 class CodeGenFunction;
 class CodeGenModule;
 
+typedef llvm::function_ref<void(CodeGenFunction &)> RegionCodeGenTy;
+
 class CGOpenMPRuntime {
+private:
   enum OpenMPRTLFunction {
     /// \brief Call to void __kmpc_fork_call(ident_t *loc, kmp_int32 argc,
     /// kmpc_micro microtask, ...);
@@ -100,6 +103,21 @@ class CGOpenMPRuntime {
     // kmp_int32 cpy_size, void *cpy_data, void(*cpy_func)(void *, void *),
     // kmp_int32 didit);
     OMPRTL__kmpc_copyprivate,
+    // Call to kmp_int32 __kmpc_reduce(ident_t *loc, kmp_int32 global_tid,
+    // kmp_int32 num_vars, size_t reduce_size, void *reduce_data, void
+    // (*reduce_func)(void *lhs_data, void *rhs_data), kmp_critical_name *lck);
+    OMPRTL__kmpc_reduce,
+    // Call to kmp_int32 __kmpc_reduce_nowait(ident_t *loc, kmp_int32
+    // global_tid, kmp_int32 num_vars, size_t reduce_size, void *reduce_data,
+    // void (*reduce_func)(void *lhs_data, void *rhs_data), kmp_critical_name
+    // *lck);
+    OMPRTL__kmpc_reduce_nowait,
+    // Call to void __kmpc_end_reduce(ident_t *loc, kmp_int32 global_tid,
+    // kmp_critical_name *lck);
+    OMPRTL__kmpc_end_reduce,
+    // Call to void __kmpc_end_reduce_nowait(ident_t *loc, kmp_int32 global_tid,
+    // kmp_critical_name *lck);
+    OMPRTL__kmpc_end_reduce_nowait,
   };
 
   /// \brief Values for bit flags used in the ident_t to describe the fields.
@@ -284,25 +302,27 @@ public:
   virtual ~CGOpenMPRuntime() {}
   virtual void clear();
 
-  /// \brief Emits outlined function for the specified OpenMP directive \a D.
-  /// This outlined function has type void(*)(kmp_int32 *ThreadID, kmp_int32
-  /// BoundID, struct context_vars*).
+  /// \brief Emits outlined function for the specified OpenMP parallel directive
+  /// \a D. This outlined function has type void(*)(kmp_int32 *ThreadID,
+  /// kmp_int32 BoundID, struct context_vars*).
   /// \param D OpenMP directive.
   /// \param ThreadIDVar Variable for thread id in the current OpenMP region.
-  ///
-  virtual llvm::Value *emitOutlinedFunction(const OMPExecutableDirective &D,
-                                            const VarDecl *ThreadIDVar);
+  /// \param CodeGen Code generation sequence for the \a D directive.
+  virtual llvm::Value *
+  emitParallelOutlinedFunction(const OMPExecutableDirective &D,
+                               const VarDecl *ThreadIDVar,
+                               const RegionCodeGenTy &CodeGen);
 
   /// \brief Emits outlined function for the OpenMP task directive \a D. This
   /// outlined function has type void(*)(kmp_int32 ThreadID, kmp_int32
   /// PartID, struct context_vars*).
   /// \param D OpenMP directive.
   /// \param ThreadIDVar Variable for thread id in the current OpenMP region.
-  /// \param PartIDVar If not nullptr - variable used for part id in tasks.
+  /// \param CodeGen Code generation sequence for the \a D directive.
   ///
   virtual llvm::Value *emitTaskOutlinedFunction(const OMPExecutableDirective &D,
                                                 const VarDecl *ThreadIDVar,
-                                                const VarDecl *PartIDVar);
+                                                const RegionCodeGenTy &CodeGen);
 
   /// \brief Cleans up references to the objects in finished function.
   ///
@@ -334,14 +354,14 @@ public:
   /// \param CriticalOpGen Generator for the statement associated with the given
   /// critical region.
   virtual void emitCriticalRegion(CodeGenFunction &CGF, StringRef CriticalName,
-                                  const std::function<void()> &CriticalOpGen,
+                                  const RegionCodeGenTy &CriticalOpGen,
                                   SourceLocation Loc);
 
   /// \brief Emits a master region.
   /// \param MasterOpGen Generator for the statement associated with the given
   /// master region.
   virtual void emitMasterRegion(CodeGenFunction &CGF,
-                                const std::function<void()> &MasterOpGen,
+                                const RegionCodeGenTy &MasterOpGen,
                                 SourceLocation Loc);
 
   /// \brief Emits code for a taskyield directive.
@@ -351,11 +371,11 @@ public:
   /// \param SingleOpGen Generator for the statement associated with the given
   /// single region.
   virtual void emitSingleRegion(CodeGenFunction &CGF,
-                                const std::function<void()> &SingleOpGen,
+                                const RegionCodeGenTy &SingleOpGen,
                                 SourceLocation Loc,
                                 ArrayRef<const Expr *> CopyprivateVars,
+                                ArrayRef<const Expr *> DestExprs,
                                 ArrayRef<const Expr *> SrcExprs,
-                                ArrayRef<const Expr *> DstExprs,
                                 ArrayRef<const Expr *> AssignmentOps);
 
   /// \brief Emit an implicit/explicit barrier for OpenMP threads.
@@ -506,17 +526,56 @@ public:
                             llvm::PointerIntPair<llvm::Value *, 1, bool> Final,
                             llvm::Value *TaskFunction, QualType SharedsTy,
                             llvm::Value *Shareds);
+
+  /// \brief Emit code for the directive that does not require outlining.
+  ///
+  /// \param CodeGen Code generation sequence for the \a D directive.
+  virtual void emitInlinedDirective(CodeGenFunction &CGF,
+                                    const RegionCodeGenTy &CodeGen);
+  /// \brief Emit a code for reduction clause. Next code should be emitted for
+  /// reduction:
+  /// \code
+  ///
+  /// static kmp_critical_name lock = { 0 };
+  ///
+  /// void reduce_func(void *lhs[<n>], void *rhs[<n>]) {
+  ///  ...
+  ///  *(Type<i>*)lhs[i] = RedOp<i>(*(Type<i>*)lhs[i], *(Type<i>*)rhs[i]);
+  ///  ...
+  /// }
+  ///
+  /// ...
+  /// void *RedList[<n>] = {&<RHSExprs>[0], ..., &<RHSExprs>[<n>-1]};
+  /// switch (__kmpc_reduce{_nowait}(<loc>, <gtid>, <n>, sizeof(RedList),
+  /// RedList, reduce_func, &<lock>)) {
+  /// case 1:
+  ///  ...
+  ///  <LHSExprs>[i] = RedOp<i>(*<LHSExprs>[i], *<RHSExprs>[i]);
+  ///  ...
+  /// __kmpc_end_reduce{_nowait}(<loc>, <gtid>, &<lock>);
+  /// break;
+  /// case 2:
+  ///  ...
+  ///  Atomic(<LHSExprs>[i] = RedOp<i>(*<LHSExprs>[i], *<RHSExprs>[i]));
+  ///  ...
+  /// break;
+  /// default:;
+  /// }
+  /// \endcode
+  ///
+  /// \param LHSExprs List of LHS in \a ReductionOps reduction operations.
+  /// \param RHSExprs List of RHS in \a ReductionOps reduction operations.
+  /// \param ReductionOps List of reduction operations in form 'LHS binop RHS'
+  /// or 'operator binop(LHS, RHS)'.
+  /// \param WithNowait true if parent directive has also nowait clause, false
+  /// otherwise.
+  virtual void emitReduction(CodeGenFunction &CGF, SourceLocation Loc,
+                             ArrayRef<const Expr *> LHSExprs,
+                             ArrayRef<const Expr *> RHSExprs,
+                             ArrayRef<const Expr *> ReductionOps,
+                             bool WithNowait);
 };
 
-/// \brief RAII for emitting code of CapturedStmt without function outlining.
-class InlinedOpenMPRegionRAII {
-  CodeGenFunction &CGF;
-
-public:
-  InlinedOpenMPRegionRAII(CodeGenFunction &CGF,
-                          const OMPExecutableDirective &D);
-  ~InlinedOpenMPRegionRAII();
-};
 } // namespace CodeGen
 } // namespace clang
 

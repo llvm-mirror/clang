@@ -151,12 +151,20 @@ class CompilerInstance : public ModuleLoader {
   struct OutputFile {
     std::string Filename;
     std::string TempFilename;
-    raw_ostream *OS;
+    std::unique_ptr<raw_ostream> OS;
 
     OutputFile(const std::string &filename, const std::string &tempFilename,
-               raw_ostream *os)
-      : Filename(filename), TempFilename(tempFilename), OS(os) { }
+               std::unique_ptr<raw_ostream> OS)
+        : Filename(filename), TempFilename(tempFilename), OS(std::move(OS)) {}
+    OutputFile(OutputFile &&O)
+        : Filename(std::move(O.Filename)),
+          TempFilename(std::move(O.TempFilename)), OS(std::move(O.OS)) {}
   };
+
+  /// If the output doesn't support seeking (terminal, pipe). we switch
+  /// the stream to a buffer_ostream. These are the buffer and the original
+  /// stream.
+  std::unique_ptr<llvm::raw_fd_ostream> NonSeekStream;
 
   /// The list of active output files.
   std::list<OutputFile> OutputFiles;
@@ -165,7 +173,7 @@ class CompilerInstance : public ModuleLoader {
   void operator=(const CompilerInstance &) = delete;
 public:
   explicit CompilerInstance(bool BuildingModule = false);
-  ~CompilerInstance();
+  ~CompilerInstance() override;
 
   /// @name High-Level Operations
   /// {
@@ -518,7 +526,7 @@ public:
   /// addOutputFile - Add an output file onto the list of tracked output files.
   ///
   /// \param OutFile - The output file info.
-  void addOutputFile(const OutputFile &OutFile);
+  void addOutputFile(OutputFile &&OutFile);
 
   /// clearOutputFiles - Clear the output file list, destroying the contained
   /// output streams.
@@ -628,21 +636,19 @@ public:
   /// atomically replace the target output on success).
   ///
   /// \return - Null on error.
-  llvm::raw_fd_ostream *
-  createDefaultOutputFile(bool Binary = true, StringRef BaseInput = "",
-                          StringRef Extension = "");
+  raw_pwrite_stream *createDefaultOutputFile(bool Binary = true,
+                                             StringRef BaseInput = "",
+                                             StringRef Extension = "");
 
   /// Create a new output file and add it to the list of tracked output files,
   /// optionally deriving the output path name.
   ///
   /// \return - Null on error.
-  llvm::raw_fd_ostream *
-  createOutputFile(StringRef OutputPath,
-                   bool Binary, bool RemoveFileOnSignal,
-                   StringRef BaseInput,
-                   StringRef Extension,
-                   bool UseTemporary,
-                   bool CreateMissingDirectories = false);
+  raw_pwrite_stream *createOutputFile(StringRef OutputPath, bool Binary,
+                                      bool RemoveFileOnSignal,
+                                      StringRef BaseInput, StringRef Extension,
+                                      bool UseTemporary,
+                                      bool CreateMissingDirectories = false);
 
   /// Create a new output file, optionally deriving the output path name.
   ///
@@ -669,7 +675,7 @@ public:
   /// stored here on success.
   /// \param TempPathName [out] - If given, the temporary file path name
   /// will be stored here on success.
-  static llvm::raw_fd_ostream *
+  std::unique_ptr<raw_pwrite_stream>
   createOutputFile(StringRef OutputPath, std::error_code &Error, bool Binary,
                    bool RemoveFileOnSignal, StringRef BaseInput,
                    StringRef Extension, bool UseTemporary,

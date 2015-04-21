@@ -144,6 +144,35 @@ TEST_F(FormatTestJS, ContainerLiterals) {
   verifyFormat("x = foo && {a: 123};");
 }
 
+TEST_F(FormatTestJS, MethodsInObjectLiterals) {
+  verifyFormat("var o = {\n"
+               "  value: 'test',\n"
+               "  get value() {  // getter\n"
+               "    return this.value;\n"
+               "  }\n"
+               "};");
+  verifyFormat("var o = {\n"
+               "  value: 'test',\n"
+               "  set value(val) {  // setter\n"
+               "    this.value = val;\n"
+               "  }\n"
+               "};");
+  verifyFormat("var o = {\n"
+               "  value: 'test',\n"
+               "  someMethod(val) {  // method\n"
+               "    doSomething(this.value + val);\n"
+               "  }\n"
+               "};");
+  verifyFormat("var o = {\n"
+               "  someMethod(val) {  // method\n"
+               "    doSomething(this.value + val);\n"
+               "  },\n"
+               "  someOtherMethod(val) {  // method\n"
+               "    doSomething(this.value + val);\n"
+               "  }\n"
+               "};");
+}
+
 TEST_F(FormatTestJS, SpacesInContainerLiterals) {
   verifyFormat("var arr = [1, 2, 3];");
   verifyFormat("f({a: 1, b: 2, c: 3});");
@@ -379,10 +408,9 @@ TEST_F(FormatTestJS, MultipleFunctionLiterals) {
                "      body();\n"
                "    });");
 
-  // FIXME: This is bad, but it used to be formatted correctly by accident.
-  verifyFormat("getSomeLongPromise().then(function(value) {\n"
-               "  body();\n"
-               "}).thenCatch(function(error) { body(); });");
+  verifyFormat("getSomeLongPromise()\n"
+               "    .then(function(value) { body(); })\n"
+               "    .thenCatch(function(error) { body(); });");
 }
 
 TEST_F(FormatTestJS, ReturnStatements) {
@@ -516,6 +544,7 @@ TEST_F(FormatTestJS, ClassDeclarations) {
   verifyFormat("class C {\n  private static x: string = 12;\n}");
   verifyFormat("class C {\n  static x(): string { return 'asd'; }\n}");
   verifyFormat("class C extends P implements I {}");
+  verifyFormat("class C extends p.P implements i.I {}");
 }
 
 TEST_F(FormatTestJS, MetadataAnnotations) {
@@ -619,6 +648,33 @@ TEST_F(FormatTestJS, TemplateStrings) {
 
   // Two template strings.
   verifyFormat("var x = `hello` == `hello`;");
+
+  // Comments in template strings.
+  EXPECT_EQ("var x = `//a`;\n"
+            "var y;",
+            format("var x =\n `//a`;\n"
+                   "var y  ;"));
+  EXPECT_EQ("var x = `/*a`;\n"
+            "var y;",
+            format("var x =\n `/*a`;\n"
+                   "var y;"));
+  // Backticks in a comment - not a template string.
+  EXPECT_EQ("var x = 1  // `/*a`;\n"
+            "    ;",
+            format("var x =\n 1  // `/*a`;\n"
+                   "    ;"));
+  EXPECT_EQ("/* ` */ var x = 1; /* ` */",
+            format("/* ` */ var x\n= 1; /* ` */"));
+  // Comment spans multiple template strings.
+  EXPECT_EQ("var x = `/*a`;\n"
+            "var y = ` */ `;",
+            format("var x =\n `/*a`;\n"
+                   "var y =\n ` */ `;"));
+  // Escaped backtick.
+  EXPECT_EQ("var x = ` \\` a`;\n"
+            "var y;",
+            format("var x = ` \\` a`;\n"
+                   "var y;"));
 }
 
 TEST_F(FormatTestJS, CastSyntax) {
@@ -631,6 +687,18 @@ TEST_F(FormatTestJS, TypeArguments) {
   verifyFormat("foo<Y>(a);");
   verifyFormat("var x: X<Y>[];");
   verifyFormat("class C extends D<E> implements F<G>, H<I> {}");
+}
+
+TEST_F(FormatTestJS, OptionalTypes) {
+  verifyFormat("function x(a?: b, c?, d?) {\n}");
+  verifyFormat("class X {\n"
+               "  y?: z;\n"
+               "  z?;\n"
+               "}");
+}
+
+TEST_F(FormatTestJS, IndexSignature) {
+  verifyFormat("var x: {[k: string]: v};");
 }
 
 } // end namespace tooling

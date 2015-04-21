@@ -809,7 +809,9 @@ void MicrosoftCXXABI::emitBeginCatch(CodeGenFunction &CGF,
   llvm::Function *BeginCatch =
       CGF.CGM.getIntrinsic(llvm::Intrinsic::eh_begincatch);
 
-  if (!CatchParam) {
+  // If this is a catch-all or the catch parameter is unnamed, we don't need to
+  // emit an alloca to the object.
+  if (!CatchParam || !CatchParam->getDeclName()) {
     llvm::Value *Args[2] = {Exn, llvm::Constant::getNullValue(CGF.Int8PtrTy)};
     CGF.EmitNounwindRuntimeCall(BeginCatch, Args);
     CGF.EHStack.pushCleanup<CallEndCatchMSVC>(NormalAndEHCleanup);
@@ -1121,7 +1123,8 @@ void MicrosoftCXXABI::EmitVBPtrStores(CodeGenFunction &CGF,
       Offs += Layout.getVBaseClassOffset(VBT->getVBaseWithVPtr());
     llvm::Value *VBPtr =
         CGF.Builder.CreateConstInBoundsGEP1_64(ThisInt8Ptr, Offs.getQuantity());
-    llvm::Value *GVPtr = CGF.Builder.CreateConstInBoundsGEP2_32(GV, 0, 0);
+    llvm::Value *GVPtr =
+        CGF.Builder.CreateConstInBoundsGEP2_32(GV->getValueType(), GV, 0, 0);
     VBPtr = CGF.Builder.CreateBitCast(VBPtr, GVPtr->getType()->getPointerTo(0),
                                       "vbptr." + VBT->ReusingBase->getName());
     CGF.Builder.CreateStore(GVPtr, VBPtr);
@@ -1255,7 +1258,7 @@ llvm::Value *MicrosoftCXXABI::adjustThisArgumentForVirtualFunctionCall(
       // FIXME: Update the code that emits this adjustment in thunks prologues.
       This = CGF.Builder.CreateConstGEP1_32(This, StaticOffset.getQuantity());
     } else {
-      This = CGF.Builder.CreateConstInBoundsGEP1_32(This,
+      This = CGF.Builder.CreateConstInBoundsGEP1_32(CGF.Int8Ty, This,
                                                     StaticOffset.getQuantity());
     }
   }
@@ -1310,8 +1313,8 @@ llvm::Value *MicrosoftCXXABI::adjustThisParameterInVirtualFunctionPrologue(
 
   This = CGF.Builder.CreateBitCast(This, charPtrTy);
   assert(Adjustment.isPositive());
-  This =
-      CGF.Builder.CreateConstInBoundsGEP1_32(This, -Adjustment.getQuantity());
+  This = CGF.Builder.CreateConstInBoundsGEP1_32(CGF.Int8Ty, This,
+                                                -Adjustment.getQuantity());
   return CGF.Builder.CreateBitCast(This, thisTy);
 }
 
@@ -1550,8 +1553,8 @@ llvm::GlobalVariable *MicrosoftCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
                                  llvm::ConstantInt::get(CGM.IntTy, 1)};
     // Create a GEP which points just after the first entry in the VFTable,
     // this should be the location of the first virtual method.
-    llvm::Constant *VTableGEP =
-        llvm::ConstantExpr::getInBoundsGetElementPtr(VTable, GEPIndices);
+    llvm::Constant *VTableGEP = llvm::ConstantExpr::getInBoundsGetElementPtr(
+        VTable->getValueType(), VTable, GEPIndices);
     if (llvm::GlobalValue::isWeakForLinker(VFTableLinkage)) {
       VFTableLinkage = llvm::GlobalValue::ExternalLinkage;
       if (C)
@@ -1871,7 +1874,7 @@ MicrosoftCXXABI::performReturnAdjustment(CodeGenFunction &CGF, llvm::Value *Ret,
   }
 
   if (RA.NonVirtual)
-    V = CGF.Builder.CreateConstInBoundsGEP1_32(V, RA.NonVirtual);
+    V = CGF.Builder.CreateConstInBoundsGEP1_32(CGF.Int8Ty, V, RA.NonVirtual);
 
   // Cast back to the original type.
   return CGF.Builder.CreateBitCast(V, Ret->getType());
@@ -3020,13 +3023,15 @@ llvm::GlobalVariable *MSRTTIBuilder::getClassHierarchyDescriptor() {
   if (CHD->isWeakForLinker())
     CHD->setComdat(CGM.getModule().getOrInsertComdat(CHD->getName()));
 
+  auto *Bases = getBaseClassArray(Classes);
+
   // Initialize the base class ClassHierarchyDescriptor.
   llvm::Constant *Fields[] = {
       llvm::ConstantInt::get(CGM.IntTy, 0), // Unknown
       llvm::ConstantInt::get(CGM.IntTy, Flags),
       llvm::ConstantInt::get(CGM.IntTy, Classes.size()),
       ABI.getImageRelativeConstant(llvm::ConstantExpr::getInBoundsGetElementPtr(
-          getBaseClassArray(Classes),
+          Bases->getValueType(), Bases,
           llvm::ArrayRef<llvm::Value *>(GEPIndices))),
   };
   CHD->setInitializer(llvm::ConstantStruct::get(Type, Fields));
@@ -3595,9 +3600,10 @@ llvm::GlobalVariable *MicrosoftCXXABI::getCatchableTypeArray(QualType T) {
   //         - a standard pointer conversion (4.10) not involving conversions to
   //           pointers to private or protected or ambiguous classes
   //
-  // All pointers are convertible to pointer-to-void so ensure that it is in the
-  // CatchableTypeArray.
-  if (IsPointer)
+  // C++14 [conv.ptr]p2:
+  //   A prvalue of type "pointer to cv T," where T is an object type, can be
+  //   converted to a prvalue of type "pointer to cv void".
+  if (IsPointer && T->getPointeeType()->isObjectType())
     CatchableTypes.insert(getCatchableType(getContext().VoidPtrTy));
 
   // C++14 [except.handle]p3:

@@ -79,3 +79,33 @@ namespace reference {
   }
 
 }
+
+namespace PR23165 {
+struct AbstractClass {
+  virtual void foo() const = 0;
+};
+
+struct ChildClass : public AbstractClass {
+  virtual void foo() const {}
+};
+
+void helper(const AbstractClass &param) {
+  param.foo();
+}
+
+void foo() {
+// CHECK-LABEL: @_ZN7PR231653fooEv
+// CHECK: call {{.*}} @_ZN7PR2316510ChildClassC1Ev
+// CHECK: call void @_ZN7PR231656helperERKNS_13AbstractClassE
+  helper(ChildClass());
+}
+
+struct S { struct T { int a; } t; mutable int b; };
+void f() {
+// CHECK-LABEL: _ZN7PR231651fEv
+// CHECK: alloca
+// CHECK: alloca
+// CHECK: store
+  const S::T &r = S().t;
+}
+}

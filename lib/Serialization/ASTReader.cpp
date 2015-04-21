@@ -3354,11 +3354,6 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       break;
     }
 
-    case MACRO_TABLE: {
-      // FIXME: Not used yet.
-      break;
-    }
-
     case LATE_PARSED_TEMPLATE: {
       LateParsedTemplates.append(Record.begin(), Record.end());
       break;
@@ -8673,7 +8668,10 @@ void ASTReader::pushExternalDeclIntoScope(NamedDecl *D, DeclarationName Name) {
     if (It != PendingFakeLookupResults.end()) {
       for (auto *ND : PendingFakeLookupResults[II])
         SemaObj->IdResolver.RemoveDecl(ND);
-      PendingFakeLookupResults.erase(It);
+      // FIXME: this works around module+PCH performance issue.
+      // Rather than erase the result from the map, which is O(n), just clear
+      // the vector of NamedDecls.
+      It->second.clear();
     }
   }
 

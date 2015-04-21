@@ -366,7 +366,7 @@ private:
   /// Map used to get unique annotation strings.
   llvm::StringMap<llvm::Constant*> AnnotationStrings;
 
-  llvm::StringMap<llvm::Constant*> CFConstantStringMap;
+  llvm::StringMap<llvm::GlobalVariable *> CFConstantStringMap;
 
   llvm::DenseMap<llvm::Constant *, llvm::GlobalVariable *> ConstantStringMap;
   llvm::DenseMap<const Decl*, llvm::Constant *> StaticLocalDeclMap;
@@ -400,7 +400,8 @@ private:
   /// When a C++ decl with an initializer is deferred, null is
   /// appended to CXXGlobalInits, and the index of that null is placed
   /// here so that the initializer will be performed in the correct
-  /// order.
+  /// order. Once the decl is emitted, the index is replaced with ~0U to ensure
+  /// that we don't re-emit the initializer.
   llvm::DenseMap<const Decl*, unsigned> DelayedCXXInitPosition;
   
   typedef std::pair<OrderGlobalInits, llvm::Function*> GlobalInitData;
@@ -786,7 +787,7 @@ public:
   /// Return a pointer to a constant NSString object for the given string. Or a
   /// user defined String object as defined via
   /// -fconstant-string-class=class_name option.
-  llvm::Constant *GetAddrOfConstantString(const StringLiteral *Literal);
+  llvm::GlobalVariable *GetAddrOfConstantString(const StringLiteral *Literal);
 
   /// Return a constant array for the given string.
   llvm::Constant *GetConstantArrayFromStringLiteral(const StringLiteral *E);

@@ -2623,6 +2623,31 @@ public:
                                         RBracLoc, Args);
   }
 
+  /// \brief Build a new Objective-C instance/class message to 'super'.
+  ExprResult RebuildObjCMessageExpr(SourceLocation SuperLoc,
+                                    Selector Sel,
+                                    ArrayRef<SourceLocation> SelectorLocs,
+                                    ObjCMethodDecl *Method,
+                                    SourceLocation LBracLoc,
+                                    MultiExprArg Args,
+                                    SourceLocation RBracLoc) {
+    ObjCInterfaceDecl *Class = Method->getClassInterface();
+    QualType ReceiverTy = SemaRef.Context.getObjCInterfaceType(Class);
+    
+    return Method->isInstanceMethod() ? SemaRef.BuildInstanceMessage(nullptr,
+                                          ReceiverTy,
+                                          SuperLoc,
+                                          Sel, Method, LBracLoc, SelectorLocs,
+                                          RBracLoc, Args)
+                                      : SemaRef.BuildClassMessage(nullptr,
+                                          ReceiverTy,
+                                          SuperLoc,
+                                          Sel, Method, LBracLoc, SelectorLocs,
+                                          RBracLoc, Args);
+
+      
+  }
+
   /// \brief Build a new Objective-C ivar reference expression.
   ///
   /// By default, performs semantic analysis to build the new expression.
@@ -6645,7 +6670,16 @@ StmtResult TreeTransform<Derived>::TransformOMPExecutableDirective(
     if (!D->getAssociatedStmt()) {
       return StmtError();
     }
-    AssociatedStmt = getDerived().TransformStmt(D->getAssociatedStmt());
+    getDerived().getSema().ActOnOpenMPRegionStart(D->getDirectiveKind(),
+                                                  /*CurScope=*/nullptr);
+    StmtResult Body;
+    {
+      Sema::CompoundScopeRAII CompoundScope(getSema());
+      Body = getDerived().TransformStmt(
+          cast<CapturedStmt>(D->getAssociatedStmt())->getCapturedStmt());
+    }
+    AssociatedStmt =
+        getDerived().getSema().ActOnOpenMPRegionEnd(Body, TClauses);
     if (AssociatedStmt.isInvalid()) {
       return StmtError();
     }
@@ -10040,6 +10074,19 @@ TreeTransform<Derived>::TransformObjCMessageExpr(ObjCMessageExpr *E) {
     SmallVector<SourceLocation, 16> SelLocs;
     E->getSelectorLocs(SelLocs);
     return getDerived().RebuildObjCMessageExpr(ReceiverTypeInfo,
+                                               E->getSelector(),
+                                               SelLocs,
+                                               E->getMethodDecl(),
+                                               E->getLeftLoc(),
+                                               Args,
+                                               E->getRightLoc());
+  }
+  else if (E->getReceiverKind() == ObjCMessageExpr::SuperClass ||
+           E->getReceiverKind() == ObjCMessageExpr::SuperInstance) {
+    // Build a new class message send to 'super'.
+    SmallVector<SourceLocation, 16> SelLocs;
+    E->getSelectorLocs(SelLocs);
+    return getDerived().RebuildObjCMessageExpr(E->getSuperLoc(),
                                                E->getSelector(),
                                                SelLocs,
                                                E->getMethodDecl(),

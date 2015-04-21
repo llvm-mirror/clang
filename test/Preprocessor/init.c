@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -E -dM -x assembler-with-cpp < /dev/null | FileCheck -check-prefix ASM %s
+/PtrDiffType / RUN: %clang_cc1 -E -dM -x assembler-with-cpp < /dev/null | FileCheck -check-prefix ASM %s
 //
 // ASM:#define __ASSEMBLER__ 1
 //
@@ -4416,10 +4416,15 @@
 // RUN:   | FileCheck -check-prefix MIPS-MSA %s
 // MIPS-MSA:#define __mips_msa 1
 //
-// RUN: %clang_cc1 -target-feature +nan2008 \
+// RUN: %clang_cc1 -target-cpu mips32r3 -target-feature +nan2008 \
 // RUN:   -E -dM -triple=mips-none-none < /dev/null \
 // RUN:   | FileCheck -check-prefix MIPS-NAN2008 %s
 // MIPS-NAN2008:#define __mips_nan2008 1
+//
+// RUN: %clang_cc1 -target-cpu mips32r3 -target-feature -nan2008 \
+// RUN:   -E -dM -triple=mips-none-none < /dev/null \
+// RUN:   | FileCheck -check-prefix NOMIPS-NAN2008 %s
+// NOMIPS-NAN2008-NOT:#define __mips_nan2008 1
 //
 // RUN: %clang_cc1 -target-feature -fp64 \
 // RUN:   -E -dM -triple=mips-none-none < /dev/null \
@@ -4769,7 +4774,7 @@
 // NVPTX32:#define __NVPTX__ 1
 // NVPTX32:#define __POINTER_WIDTH__ 32
 // NVPTX32:#define __PRAGMA_REDEFINE_EXTNAME 1
-// NVPTX32:#define __PTRDIFF_TYPE__ unsigned int
+// NVPTX32:#define __PTRDIFF_TYPE__ int
 // NVPTX32:#define __PTRDIFF_WIDTH__ 32
 // NVPTX32:#define __PTX__ 1
 // NVPTX32:#define __SCHAR_MAX__ 127
@@ -4898,10 +4903,10 @@
 // NVPTX64:#define __INTMAX_MAX__ 9223372036854775807LL
 // NVPTX64:#define __INTMAX_TYPE__ long long int
 // NVPTX64:#define __INTMAX_WIDTH__ 64
-// NVPTX64:#define __INTPTR_FMTd__ "lld"
-// NVPTX64:#define __INTPTR_FMTi__ "lli"
-// NVPTX64:#define __INTPTR_MAX__ 9223372036854775807LL
-// NVPTX64:#define __INTPTR_TYPE__ long long int
+// NVPTX64:#define __INTPTR_FMTd__ "ld"
+// NVPTX64:#define __INTPTR_FMTi__ "li"
+// NVPTX64:#define __INTPTR_MAX__ 9223372036854775807L
+// NVPTX64:#define __INTPTR_TYPE__ long int
 // NVPTX64:#define __INTPTR_WIDTH__ 64
 // NVPTX64:#define __INT_FAST16_FMTd__ "hd"
 // NVPTX64:#define __INT_FAST16_FMTi__ "hi"
@@ -4956,7 +4961,7 @@
 // NVPTX64:#define __NVPTX__ 1
 // NVPTX64:#define __POINTER_WIDTH__ 64
 // NVPTX64:#define __PRAGMA_REDEFINE_EXTNAME 1
-// NVPTX64:#define __PTRDIFF_TYPE__ long long unsigned int
+// NVPTX64:#define __PTRDIFF_TYPE__ long int
 // NVPTX64:#define __PTRDIFF_WIDTH__ 64
 // NVPTX64:#define __PTX__ 1
 // NVPTX64:#define __SCHAR_MAX__ 127
@@ -4976,7 +4981,7 @@
 // NVPTX64:#define __SIZEOF_WCHAR_T__ 4
 // NVPTX64:#define __SIZEOF_WINT_T__ 4
 // NVPTX64:#define __SIZE_MAX__ 18446744073709551615UL
-// NVPTX64:#define __SIZE_TYPE__ long long unsigned int
+// NVPTX64:#define __SIZE_TYPE__ long unsigned int
 // NVPTX64:#define __SIZE_WIDTH__ 64
 // NVPTX64:#define __UINT16_C_SUFFIX__ {{$}}
 // NVPTX64:#define __UINT16_MAX__ 65535
@@ -4994,8 +4999,8 @@
 // NVPTX64:#define __UINTMAX_MAX__ 18446744073709551615ULL
 // NVPTX64:#define __UINTMAX_TYPE__ long long unsigned int
 // NVPTX64:#define __UINTMAX_WIDTH__ 64
-// NVPTX64:#define __UINTPTR_MAX__ 18446744073709551615ULL
-// NVPTX64:#define __UINTPTR_TYPE__ long long unsigned int
+// NVPTX64:#define __UINTPTR_MAX__ 18446744073709551615UL
+// NVPTX64:#define __UINTPTR_TYPE__ long unsigned int
 // NVPTX64:#define __UINTPTR_WIDTH__ 64
 // NVPTX64:#define __UINT_FAST16_MAX__ 65535
 // NVPTX64:#define __UINT_FAST16_TYPE__ unsigned short
