@@ -2062,6 +2062,9 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
       else
         TC = new toolchains::Linux(*this, Target, Args);
       break;
+    case llvm::Triple::NaCl:
+      TC = new toolchains::NaCl_TC(*this, Target, Args);
+      break;
     case llvm::Triple::Solaris:
       TC = new toolchains::Solaris(*this, Target, Args);
       break;
@@ -2149,7 +2152,7 @@ bool Driver::GetReleaseVersion(const char *Str, unsigned &Major,
 
   Major = Minor = Micro = 0;
   if (*Str == '\0')
-    return true;
+    return false;
 
   char *End;
   Major = (unsigned) strtol(Str, &End, 10);

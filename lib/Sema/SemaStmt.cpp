@@ -15,6 +15,7 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTDiagnostic.h"
 #include "clang/AST/CharUnits.h"
+#include "clang/AST/CXXInheritance.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/EvaluatedExprVisitor.h"
 #include "clang/AST/ExprCXX.h"
@@ -23,12 +24,14 @@
 #include "clang/AST/StmtCXX.h"
 #include "clang/AST/StmtObjC.h"
 #include "clang/AST/TypeLoc.h"
+#include "clang/AST/TypeOrdering.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Initialization.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/ScopeInfo.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
@@ -236,7 +239,9 @@ void Sema::DiagnoseUnusedExprResult(const Stmt *S) {
     // is written in a macro body, only warn if it has the warn_unused_result
     // attribute.
     if (const Decl *FD = CE->getCalleeDecl()) {
-      if (FD->hasAttr<WarnUnusedResultAttr>()) {
+      const FunctionDecl *Func = dyn_cast<FunctionDecl>(FD);
+      if (Func ? Func->hasUnusedResultAttr()
+               : FD->hasAttr<WarnUnusedResultAttr>()) {
         Diag(Loc, diag::warn_unused_result) << R1 << R2;
         return;
       }
@@ -2359,6 +2364,156 @@ StmtResult Sema::FinishObjCForCollectionStmt(Stmt *S, Stmt *B) {
   return S;
 }
 
+// Warn when the loop variable is a const reference that creates a copy.
+// Suggest using the non-reference type for copies.  If a copy can be prevented
+// suggest the const reference type that would do so.
+// For instance, given "for (const &Foo : Range)", suggest
+// "for (const Foo : Range)" to denote a copy is made for the loop.  If
+// possible, also suggest "for (const &Bar : Range)" if this type prevents
+// the copy altogether.
+static void DiagnoseForRangeReferenceVariableCopies(Sema &SemaRef,
+                                                    const VarDecl *VD,
+                                                    QualType RangeInitType) {
+  const Expr *InitExpr = VD->getInit();
+  if (!InitExpr)
+    return;
+
+  QualType VariableType = VD->getType();
+
+  const MaterializeTemporaryExpr *MTE =
+      dyn_cast<MaterializeTemporaryExpr>(InitExpr);
+
+  // No copy made.
+  if (!MTE)
+    return;
+
+  const Expr *E = MTE->GetTemporaryExpr()->IgnoreImpCasts();
+
+  // Searching for either UnaryOperator for dereference of a pointer or
+  // CXXOperatorCallExpr for handling iterators.
+  while (!isa<CXXOperatorCallExpr>(E) && !isa<UnaryOperator>(E)) {
+    if (const CXXConstructExpr *CCE = dyn_cast<CXXConstructExpr>(E)) {
+      E = CCE->getArg(0);
+    } else if (const CXXMemberCallExpr *Call = dyn_cast<CXXMemberCallExpr>(E)) {
+      const MemberExpr *ME = cast<MemberExpr>(Call->getCallee());
+      E = ME->getBase();
+    } else {
+      const MaterializeTemporaryExpr *MTE = cast<MaterializeTemporaryExpr>(E);
+      E = MTE->GetTemporaryExpr();
+    }
+    E = E->IgnoreImpCasts();
+  }
+
+  bool ReturnsReference = false;
+  if (isa<UnaryOperator>(E)) {
+    ReturnsReference = true;
+  } else {
+    const CXXOperatorCallExpr *Call = cast<CXXOperatorCallExpr>(E);
+    const FunctionDecl *FD = Call->getDirectCallee();
+    QualType ReturnType = FD->getReturnType();
+    ReturnsReference = ReturnType->isReferenceType();
+  }
+
+  if (ReturnsReference) {
+    // Loop variable creates a temporary.  Suggest either to go with
+    // non-reference loop variable to indiciate a copy is made, or
+    // the correct time to bind a const reference.
+    SemaRef.Diag(VD->getLocation(), diag::warn_for_range_const_reference_copy)
+        << VD << VariableType << E->getType();
+    QualType NonReferenceType = VariableType.getNonReferenceType();
+    NonReferenceType.removeLocalConst();
+    QualType NewReferenceType =
+        SemaRef.Context.getLValueReferenceType(E->getType().withConst());
+    SemaRef.Diag(VD->getLocStart(), diag::note_use_type_or_non_reference)
+        << NonReferenceType << NewReferenceType << VD->getSourceRange();
+  } else {
+    // The range always returns a copy, so a temporary is always created.
+    // Suggest removing the reference from the loop variable.
+    SemaRef.Diag(VD->getLocation(), diag::warn_for_range_variable_always_copy)
+        << VD << RangeInitType;
+    QualType NonReferenceType = VariableType.getNonReferenceType();
+    NonReferenceType.removeLocalConst();
+    SemaRef.Diag(VD->getLocStart(), diag::note_use_non_reference_type)
+        << NonReferenceType << VD->getSourceRange();
+  }
+}
+
+// Warns when the loop variable can be changed to a reference type to
+// prevent a copy.  For instance, if given "for (const Foo x : Range)" suggest
+// "for (const Foo &x : Range)" if this form does not make a copy.
+static void DiagnoseForRangeConstVariableCopies(Sema &SemaRef,
+                                                const VarDecl *VD) {
+  const Expr *InitExpr = VD->getInit();
+  if (!InitExpr)
+    return;
+
+  QualType VariableType = VD->getType();
+
+  if (const CXXConstructExpr *CE = dyn_cast<CXXConstructExpr>(InitExpr)) {
+    if (!CE->getConstructor()->isCopyConstructor())
+      return;
+  } else if (const CastExpr *CE = dyn_cast<CastExpr>(InitExpr)) {
+    if (CE->getCastKind() != CK_LValueToRValue)
+      return;
+  } else {
+    return;
+  }
+
+  // TODO: Determine a maximum size that a POD type can be before a diagnostic
+  // should be emitted.  Also, only ignore POD types with trivial copy
+  // constructors.
+  if (VariableType.isPODType(SemaRef.Context))
+    return;
+
+  // Suggest changing from a const variable to a const reference variable
+  // if doing so will prevent a copy.
+  SemaRef.Diag(VD->getLocation(), diag::warn_for_range_copy)
+      << VD << VariableType << InitExpr->getType();
+  SemaRef.Diag(VD->getLocStart(), diag::note_use_reference_type)
+      << SemaRef.Context.getLValueReferenceType(VariableType)
+      << VD->getSourceRange();
+}
+
+/// DiagnoseForRangeVariableCopies - Diagnose three cases and fixes for them.
+/// 1) for (const foo &x : foos) where foos only returns a copy.  Suggest
+///    using "const foo x" to show that a copy is made
+/// 2) for (const bar &x : foos) where bar is a temporary intialized by bar.
+///    Suggest either "const bar x" to keep the copying or "const foo& x" to
+///    prevent the copy.
+/// 3) for (const foo x : foos) where x is constructed from a reference foo.
+///    Suggest "const foo &x" to prevent the copy.
+static void DiagnoseForRangeVariableCopies(Sema &SemaRef,
+                                           const CXXForRangeStmt *ForStmt) {
+  if (SemaRef.Diags.isIgnored(diag::warn_for_range_const_reference_copy,
+                              ForStmt->getLocStart()) &&
+      SemaRef.Diags.isIgnored(diag::warn_for_range_variable_always_copy,
+                              ForStmt->getLocStart()) &&
+      SemaRef.Diags.isIgnored(diag::warn_for_range_copy,
+                              ForStmt->getLocStart())) {
+    return;
+  }
+
+  const VarDecl *VD = ForStmt->getLoopVariable();
+  if (!VD)
+    return;
+
+  QualType VariableType = VD->getType();
+
+  if (VariableType->isIncompleteType())
+    return;
+
+  const Expr *InitExpr = VD->getInit();
+  if (!InitExpr)
+    return;
+
+  if (VariableType->isReferenceType()) {
+    DiagnoseForRangeReferenceVariableCopies(SemaRef, VD,
+                                            ForStmt->getRangeInit()->getType());
+  } else if (VariableType.isConstQualified()) {
+    DiagnoseForRangeConstVariableCopies(SemaRef, VD);
+  }
+}
+
 /// FinishCXXForRangeStmt - Attach the body to a C++0x for-range statement.
 /// This is a separate step from ActOnCXXForRangeStmt because analysis of the
 /// body cannot be performed until after the type of the range variable is
@@ -2375,6 +2530,8 @@ StmtResult Sema::FinishCXXForRangeStmt(Stmt *S, Stmt *B) {
 
   DiagnoseEmptyStmtBody(ForStmt->getRParenLoc(), B,
                         diag::warn_empty_range_based_for_body);
+
+  DiagnoseForRangeVariableCopies(*this, ForStmt);
 
   return S;
 }
@@ -3253,36 +3410,111 @@ Sema::ActOnObjCAutoreleasePoolStmt(SourceLocation AtLoc, Stmt *Body) {
   return new (Context) ObjCAutoreleasePoolStmt(AtLoc, Body);
 }
 
-namespace {
+class CatchHandlerType {
+  QualType QT;
+  unsigned IsPointer : 1;
 
-class TypeWithHandler {
-  QualType t;
-  CXXCatchStmt *stmt;
+  // This is a special constructor to be used only with DenseMapInfo's
+  // getEmptyKey() and getTombstoneKey() functions.
+  friend struct llvm::DenseMapInfo<CatchHandlerType>;
+  enum Unique { ForDenseMap };
+  CatchHandlerType(QualType QT, Unique) : QT(QT), IsPointer(false) {}
+
 public:
-  TypeWithHandler(const QualType &type, CXXCatchStmt *statement)
-  : t(type), stmt(statement) {}
+  /// Used when creating a CatchHandlerType from a handler type; will determine
+  /// whether the type is a pointer or reference and will strip off the the top
+  /// level pointer and cv-qualifiers.
+  CatchHandlerType(QualType Q) : QT(Q), IsPointer(false) {
+    if (QT->isPointerType())
+      IsPointer = true;
 
-  // An arbitrary order is fine as long as it places identical
-  // types next to each other.
-  bool operator<(const TypeWithHandler &y) const {
-    if (t.getAsOpaquePtr() < y.t.getAsOpaquePtr())
-      return true;
-    if (t.getAsOpaquePtr() > y.t.getAsOpaquePtr())
+    if (IsPointer || QT->isReferenceType())
+      QT = QT->getPointeeType();
+    QT = QT.getUnqualifiedType();
+  }
+
+  /// Used when creating a CatchHandlerType from a base class type; pretends the
+  /// type passed in had the pointer qualifier, does not need to get an
+  /// unqualified type.
+  CatchHandlerType(QualType QT, bool IsPointer)
+      : QT(QT), IsPointer(IsPointer) {}
+
+  QualType underlying() const { return QT; }
+  bool isPointer() const { return IsPointer; }
+
+  friend bool operator==(const CatchHandlerType &LHS,
+                         const CatchHandlerType &RHS) {
+    // If the pointer qualification does not match, we can return early.
+    if (LHS.IsPointer != RHS.IsPointer)
       return false;
-    else
-      return getTypeSpecStartLoc() < y.getTypeSpecStartLoc();
-  }
-
-  bool operator==(const TypeWithHandler& other) const {
-    return t == other.t;
-  }
-
-  CXXCatchStmt *getCatchStmt() const { return stmt; }
-  SourceLocation getTypeSpecStartLoc() const {
-    return stmt->getExceptionDecl()->getTypeSpecStartLoc();
+    // Otherwise, check the underlying type without cv-qualifiers.
+    return LHS.QT == RHS.QT;
   }
 };
 
+namespace llvm {
+template <> struct DenseMapInfo<CatchHandlerType> {
+  static CatchHandlerType getEmptyKey() {
+    return CatchHandlerType(DenseMapInfo<QualType>::getEmptyKey(),
+                       CatchHandlerType::ForDenseMap);
+  }
+
+  static CatchHandlerType getTombstoneKey() {
+    return CatchHandlerType(DenseMapInfo<QualType>::getTombstoneKey(),
+                       CatchHandlerType::ForDenseMap);
+  }
+
+  static unsigned getHashValue(const CatchHandlerType &Base) {
+    return DenseMapInfo<QualType>::getHashValue(Base.underlying());
+  }
+
+  static bool isEqual(const CatchHandlerType &LHS,
+                      const CatchHandlerType &RHS) {
+    return LHS == RHS;
+  }
+};
+
+// It's OK to treat CatchHandlerType as a POD type.
+template <> struct isPodLike<CatchHandlerType> {
+  static const bool value = true;
+};
+}
+
+namespace {
+class CatchTypePublicBases {
+  ASTContext &Ctx;
+  const llvm::DenseMap<CatchHandlerType, CXXCatchStmt *> &TypesToCheck;
+  const bool CheckAgainstPointer;
+
+  CXXCatchStmt *FoundHandler;
+  CanQualType FoundHandlerType;
+
+public:
+  CatchTypePublicBases(
+      ASTContext &Ctx,
+      const llvm::DenseMap<CatchHandlerType, CXXCatchStmt *> &T, bool C)
+      : Ctx(Ctx), TypesToCheck(T), CheckAgainstPointer(C),
+        FoundHandler(nullptr) {}
+
+  CXXCatchStmt *getFoundHandler() const { return FoundHandler; }
+  CanQualType getFoundHandlerType() const { return FoundHandlerType; }
+
+  static bool FindPublicBasesOfType(const CXXBaseSpecifier *S, CXXBasePath &,
+                                    void *User) {
+    auto &PBOT = *reinterpret_cast<CatchTypePublicBases *>(User);
+    if (S->getAccessSpecifier() == AccessSpecifier::AS_public) {
+      CatchHandlerType Check(S->getType(), PBOT.CheckAgainstPointer);
+      auto M = PBOT.TypesToCheck;
+      auto I = M.find(Check);
+      if (I != M.end()) {
+        PBOT.FoundHandler = I->second;
+        PBOT.FoundHandlerType = PBOT.Ctx.getCanonicalType(S->getType());
+        return true;
+      }
+    }
+    return false;
+  }
+};
 }
 
 /// ActOnCXXTryBlock - Takes a try compound-statement and a number of
@@ -3292,7 +3524,7 @@ StmtResult Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
   // Don't report an error if 'try' is used in system headers.
   if (!getLangOpts().CXXExceptions &&
       !getSourceManager().isInSystemHeader(TryLoc))
-      Diag(TryLoc, diag::err_exceptions_disabled) << "try";
+    Diag(TryLoc, diag::err_exceptions_disabled) << "try";
 
   if (getCurScope() && getCurScope()->isOpenMPSimdDirectiveScope())
     Diag(TryLoc, diag::err_omp_simd_region_cannot_use_stmt) << "try";
@@ -3306,54 +3538,73 @@ StmtResult Sema::ActOnCXXTryBlock(SourceLocation TryLoc, Stmt *TryBlock,
   }
 
   const unsigned NumHandlers = Handlers.size();
-  assert(NumHandlers > 0 &&
+  assert(!Handlers.empty() &&
          "The parser shouldn't call this if there are no handlers.");
 
-  SmallVector<TypeWithHandler, 8> TypesWithHandlers;
-
+  llvm::DenseMap<CatchHandlerType, CXXCatchStmt *> HandledTypes;
   for (unsigned i = 0; i < NumHandlers; ++i) {
-    CXXCatchStmt *Handler = cast<CXXCatchStmt>(Handlers[i]);
-    if (!Handler->getExceptionDecl()) {
-      if (i < NumHandlers - 1)
-        return StmtError(Diag(Handler->getLocStart(),
-                              diag::err_early_catch_all));
+    CXXCatchStmt *H = cast<CXXCatchStmt>(Handlers[i]);
 
+    // Diagnose when the handler is a catch-all handler, but it isn't the last
+    // handler for the try block. [except.handle]p5. Also, skip exception
+    // declarations that are invalid, since we can't usefully report on them.
+    if (!H->getExceptionDecl()) {
+      if (i < NumHandlers - 1)
+        return StmtError(Diag(H->getLocStart(), diag::err_early_catch_all));
       continue;
+    } else if (H->getExceptionDecl()->isInvalidDecl())
+      continue;
+
+    // Walk the type hierarchy to diagnose when this type has already been
+    // handled (duplication), or cannot be handled (derivation inversion). We
+    // ignore top-level cv-qualifiers, per [except.handle]p3
+    CatchHandlerType HandlerCHT =
+        (QualType)Context.getCanonicalType(H->getCaughtType());
+
+    // We can ignore whether the type is a reference or a pointer; we need the
+    // underlying declaration type in order to get at the underlying record
+    // decl, if there is one.
+    QualType Underlying = HandlerCHT.underlying();
+    if (auto *RD = Underlying->getAsCXXRecordDecl()) {
+      if (!RD->hasDefinition())
+        continue;
+      // Check that none of the public, unambiguous base classes are in the
+      // map ([except.handle]p1). Give the base classes the same pointer
+      // qualification as the original type we are basing off of. This allows
+      // comparison against the handler type using the same top-level pointer
+      // as the original type.
+      CXXBasePaths Paths;
+      Paths.setOrigin(RD);
+      CatchTypePublicBases CTPB(Context, HandledTypes, HandlerCHT.isPointer());
+      if (RD->lookupInBases(CatchTypePublicBases::FindPublicBasesOfType, &CTPB,
+                            Paths)) {
+        const CXXCatchStmt *Problem = CTPB.getFoundHandler();
+        if (!Paths.isAmbiguous(CTPB.getFoundHandlerType())) {
+          Diag(H->getExceptionDecl()->getTypeSpecStartLoc(),
+               diag::warn_exception_caught_by_earlier_handler)
+              << H->getCaughtType();
+          Diag(Problem->getExceptionDecl()->getTypeSpecStartLoc(),
+                diag::note_previous_exception_handler)
+              << Problem->getCaughtType();
+        }
+      }
     }
 
-    const QualType CaughtType = Handler->getCaughtType();
-    const QualType CanonicalCaughtType = Context.getCanonicalType(CaughtType);
-    TypesWithHandlers.push_back(TypeWithHandler(CanonicalCaughtType, Handler));
-  }
-
-  // Detect handlers for the same type as an earlier one.
-  if (NumHandlers > 1) {
-    llvm::array_pod_sort(TypesWithHandlers.begin(), TypesWithHandlers.end());
-
-    TypeWithHandler prev = TypesWithHandlers[0];
-    for (unsigned i = 1; i < TypesWithHandlers.size(); ++i) {
-      TypeWithHandler curr = TypesWithHandlers[i];
-
-      if (curr == prev) {
-        Diag(curr.getTypeSpecStartLoc(),
-             diag::warn_exception_caught_by_earlier_handler)
-          << curr.getCatchStmt()->getCaughtType().getAsString();
-        Diag(prev.getTypeSpecStartLoc(),
-             diag::note_previous_exception_handler)
-          << prev.getCatchStmt()->getCaughtType().getAsString();
-      }
-
-      prev = curr;
+    // Add the type the list of ones we have handled; diagnose if we've already
+    // handled it.
+    auto R = HandledTypes.insert(std::make_pair(H->getCaughtType(), H));
+    if (!R.second) {
+      const CXXCatchStmt *Problem = R.first->second;
+      Diag(H->getExceptionDecl()->getTypeSpecStartLoc(),
+           diag::warn_exception_caught_by_earlier_handler)
+          << H->getCaughtType();
+      Diag(Problem->getExceptionDecl()->getTypeSpecStartLoc(),
+           diag::note_previous_exception_handler)
+          << Problem->getCaughtType();
     }
   }
 
   FSI->setHasCXXTry(TryLoc);
-
-  // FIXME: We should detect handlers that cannot catch anything because an
-  // earlier handler catches a superclass. Need to find a method that is not
-  // quadratic for this.
-  // Neither of these are explicitly forbidden, but every compiler detects them
-  // and warns.
 
   return CXXTryStmt::Create(Context, TryLoc, TryBlock, Handlers);
 }

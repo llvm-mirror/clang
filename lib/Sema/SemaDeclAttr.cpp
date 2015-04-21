@@ -51,6 +51,11 @@ namespace AttributeLangSupport {
 static bool isFunctionOrMethod(const Decl *D) {
   return (D->getFunctionType() != nullptr) || isa<ObjCMethodDecl>(D);
 }
+/// \brief Return true if the given decl has function type (function or
+/// function-typed variable) or an Objective-C method or a block.
+static bool isFunctionOrMethodOrBlock(const Decl *D) {
+  return isFunctionOrMethod(D) || isa<BlockDecl>(D);
+}
 
 /// Return true if the given decl has a declarator that should have
 /// been processed by Sema::GetTypeForDeclarator.
@@ -257,7 +262,7 @@ static bool checkFunctionOrMethodParameterIndex(Sema &S, const Decl *D,
                                                 unsigned AttrArgNum,
                                                 const Expr *IdxExpr,
                                                 uint64_t &Idx) {
-  assert(isFunctionOrMethod(D));
+  assert(isFunctionOrMethodOrBlock(D));
 
   // In C++ the implicit 'this' function parameter also counts.
   // Parameters are counted from one.
@@ -1601,7 +1606,7 @@ static void handleAnalyzerNoReturnAttr(Sema &S, Decl *D,
   
   // The checking path for 'noreturn' and 'analyzer_noreturn' are different
   // because 'analyzer_noreturn' does not impact the type.
-  if (!isFunctionOrMethod(D) && !isa<BlockDecl>(D)) {
+  if (!isFunctionOrMethodOrBlock(D)) {
     ValueDecl *VD = dyn_cast<ValueDecl>(D);
     if (!VD || (!VD->getType()->isBlockPointerType() &&
                 !VD->getType()->isFunctionPointerType())) {
@@ -2114,6 +2119,22 @@ static void handleObjCNSObject(Sema &S, Decl *D, const AttributeList &Attr) {
   }
   D->addAttr(::new (S.Context)
              ObjCNSObjectAttr(Attr.getRange(), S.Context,
+                              Attr.getAttributeSpellingListIndex()));
+}
+
+static void handleObjCIndependentClass(Sema &S, Decl *D, const AttributeList &Attr) {
+  if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(D)) {
+    QualType T = TD->getUnderlyingType();
+    if (!T->isObjCObjectPointerType()) {
+      S.Diag(TD->getLocation(), diag::warn_ptr_independentclass_attribute);
+      return;
+    }
+  } else {
+    S.Diag(D->getLocation(), diag::warn_independentclass_attribute);
+    return;
+  }
+  D->addAttr(::new (S.Context)
+             ObjCIndependentClassAttr(Attr.getRange(), S.Context,
                               Attr.getAttributeSpellingListIndex()));
 }
 
@@ -2862,6 +2883,16 @@ static void handleAlignedAttr(Sema &S, Decl *D, const AttributeList &Attr) {
 
   if (!Attr.isPackExpansion() && S.DiagnoseUnexpandedParameterPack(E))
     return;
+
+  if (E->isValueDependent()) {
+    if (const auto *TND = dyn_cast<TypedefNameDecl>(D)) {
+      if (!TND->getUnderlyingType()->isDependentType()) {
+        S.Diag(Attr.getLoc(), diag::err_alignment_dependent_typedef_name)
+            << E->getSourceRange();
+        return;
+      }
+    }
+  }
 
   S.AddAlignedAttr(Attr.getRange(), D, E, Attr.getAttributeSpellingListIndex(),
                    Attr.isPackExpansion());
@@ -4662,6 +4693,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
   case AttributeList::AT_ObjCNSObject:
     handleObjCNSObject(S, D, Attr);
+    break;
+  case AttributeList::AT_ObjCIndependentClass:
+    handleObjCIndependentClass(S, D, Attr);
     break;
   case AttributeList::AT_Blocks:
     handleBlocksAttr(S, D, Attr);

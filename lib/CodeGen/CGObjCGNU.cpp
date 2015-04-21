@@ -171,8 +171,9 @@ protected:
   /// where the C code specifies const char*.  
   llvm::Constant *MakeConstantString(const std::string &Str,
                                      const std::string &Name="") {
-    llvm::Constant *ConstStr = CGM.GetAddrOfConstantCString(Str, Name.c_str());
-    return llvm::ConstantExpr::getGetElementPtr(ConstStr, Zeros);
+    auto *ConstStr = CGM.GetAddrOfConstantCString(Str, Name.c_str());
+    return llvm::ConstantExpr::getGetElementPtr(ConstStr->getValueType(),
+                                                ConstStr, Zeros);
   }
   /// Emits a linkonce_odr string, whose name is the prefix followed by the
   /// string value.  This allows the linker to combine the strings between
@@ -181,13 +182,14 @@ protected:
   llvm::Constant *ExportUniqueString(const std::string &Str,
                                      const std::string prefix) {
     std::string name = prefix + Str;
-    llvm::Constant *ConstStr = TheModule.getGlobalVariable(name);
+    auto *ConstStr = TheModule.getGlobalVariable(name);
     if (!ConstStr) {
       llvm::Constant *value = llvm::ConstantDataArray::getString(VMContext,Str);
       ConstStr = new llvm::GlobalVariable(TheModule, value->getType(), true,
               llvm::GlobalValue::LinkOnceODRLinkage, value, prefix + Str);
     }
-    return llvm::ConstantExpr::getGetElementPtr(ConstStr, Zeros);
+    return llvm::ConstantExpr::getGetElementPtr(ConstStr->getValueType(),
+                                                ConstStr, Zeros);
   }
   /// Generates a global structure, initialized by the elements in the vector.
   /// The element types must match the types of the structure elements in the
@@ -237,8 +239,9 @@ protected:
       NameAndAttributes += TypeStr;
       NameAndAttributes += '\0';
       NameAndAttributes += PD->getNameAsString();
-      return llvm::ConstantExpr::getGetElementPtr(
-          CGM.GetAddrOfConstantCString(NameAndAttributes), Zeros);
+      auto *ConstStr = CGM.GetAddrOfConstantCString(NameAndAttributes);
+      return llvm::ConstantExpr::getGetElementPtr(ConstStr->getValueType(),
+                                                  ConstStr, Zeros);
     }
     return MakeConstantString(PD->getNameAsString());
   }
@@ -672,8 +675,8 @@ class CGObjCGNUstep : public CGObjCGNU {
       slot->setMetadata(msgSendMDKind, node);
 
       // Load the imp from the slot
-      llvm::Value *imp =
-        Builder.CreateLoad(Builder.CreateStructGEP(slot.getInstruction(), 4));
+      llvm::Value *imp = Builder.CreateLoad(
+          Builder.CreateStructGEP(nullptr, slot.getInstruction(), 4));
 
       // The lookup function may have changed the receiver, so make sure we use
       // the new one.
@@ -690,7 +693,7 @@ class CGObjCGNUstep : public CGObjCGNU {
         CGF.EmitNounwindRuntimeCall(SlotLookupSuperFn, lookupArgs);
       slot->setOnlyReadsMemory();
 
-      return Builder.CreateLoad(Builder.CreateStructGEP(slot, 4));
+      return Builder.CreateLoad(Builder.CreateStructGEP(nullptr, slot, 4));
     }
   public:
     CGObjCGNUstep(CodeGenModule &Mod) : CGObjCGNU(Mod, 9, 3) {
@@ -1013,7 +1016,7 @@ CGObjCGNU::CGObjCGNU(CodeGenModule &cgm, unsigned runtimeABIVersion,
 llvm::Value *CGObjCGNU::GetClassNamed(CodeGenFunction &CGF,
                                       const std::string &Name,
                                       bool isWeak) {
-  llvm::Value *ClassName = CGM.GetAddrOfConstantCString(Name);
+  llvm::GlobalVariable *ClassNameGV = CGM.GetAddrOfConstantCString(Name);
   // With the incompatible ABI, this will need to be replaced with a direct
   // reference to the class symbol.  For the compatible nonfragile ABI we are
   // still performing this lookup at run time but emitting the symbol for the
@@ -1023,7 +1026,8 @@ llvm::Value *CGObjCGNU::GetClassNamed(CodeGenFunction &CGF,
   // with memoized versions or with static references if it's safe to do so.
   if (!isWeak)
     EmitClassRef(Name);
-  ClassName = CGF.Builder.CreateStructGEP(ClassName, 0);
+  llvm::Value *ClassName =
+      CGF.Builder.CreateStructGEP(ClassNameGV->getValueType(), ClassNameGV, 0);
 
   llvm::Constant *ClassLookupFn =
     CGM.CreateRuntimeFunction(llvm::FunctionType::get(IdTy, PtrToInt8Ty, true),
@@ -1143,21 +1147,22 @@ llvm::Constant *CGObjCGNUstep::GetEHType(QualType T) {
   // It's quite ugly hard-coding this.  Ideally we'd generate it using the host
   // platform's name mangling.
   const char *vtableName = "_ZTVN7gnustep7libobjc22__objc_class_type_infoE";
-  llvm::Constant *Vtable = TheModule.getGlobalVariable(vtableName);
+  auto *Vtable = TheModule.getGlobalVariable(vtableName);
   if (!Vtable) {
     Vtable = new llvm::GlobalVariable(TheModule, PtrToInt8Ty, true,
                                       llvm::GlobalValue::ExternalLinkage,
                                       nullptr, vtableName);
   }
   llvm::Constant *Two = llvm::ConstantInt::get(IntTy, 2);
-  Vtable = llvm::ConstantExpr::getGetElementPtr(Vtable, Two);
-  Vtable = llvm::ConstantExpr::getBitCast(Vtable, PtrToInt8Ty);
+  auto *BVtable = llvm::ConstantExpr::getBitCast(
+      llvm::ConstantExpr::getGetElementPtr(Vtable->getValueType(), Vtable, Two),
+      PtrToInt8Ty);
 
   llvm::Constant *typeName =
     ExportUniqueString(className, "__objc_eh_typename_");
 
   std::vector<llvm::Constant*> fields;
-  fields.push_back(Vtable);
+  fields.push_back(BVtable);
   fields.push_back(typeName);
   llvm::Constant *TI = 
       MakeGlobal(llvm::StructType::get(PtrToInt8Ty, PtrToInt8Ty,
@@ -1275,11 +1280,11 @@ CGObjCGNU::GenerateMessageSendSuper(CodeGenFunction &CGF,
     }
   }
   // Cast the pointer to a simplified version of the class structure
+  llvm::Type *CastTy = llvm::StructType::get(IdTy, IdTy, nullptr);
   ReceiverClass = Builder.CreateBitCast(ReceiverClass,
-      llvm::PointerType::getUnqual(
-        llvm::StructType::get(IdTy, IdTy, nullptr)));
+                                        llvm::PointerType::getUnqual(CastTy));
   // Get the superclass pointer
-  ReceiverClass = Builder.CreateStructGEP(ReceiverClass, 1);
+  ReceiverClass = Builder.CreateStructGEP(CastTy, ReceiverClass, 1);
   // Load the superclass pointer
   ReceiverClass = Builder.CreateLoad(ReceiverClass);
   // Construct the structure used to look up the IMP
@@ -1287,8 +1292,10 @@ CGObjCGNU::GenerateMessageSendSuper(CodeGenFunction &CGF,
       Receiver->getType(), IdTy, nullptr);
   llvm::Value *ObjCSuper = Builder.CreateAlloca(ObjCSuperTy);
 
-  Builder.CreateStore(Receiver, Builder.CreateStructGEP(ObjCSuper, 0));
-  Builder.CreateStore(ReceiverClass, Builder.CreateStructGEP(ObjCSuper, 1));
+  Builder.CreateStore(Receiver,
+                      Builder.CreateStructGEP(ObjCSuperTy, ObjCSuper, 0));
+  Builder.CreateStore(ReceiverClass,
+                      Builder.CreateStructGEP(ObjCSuperTy, ObjCSuper, 1));
 
   ObjCSuper = EnforceType(Builder, ObjCSuper, PtrToObjCSuperTy);
 
@@ -2294,7 +2301,8 @@ void CGObjCGNU::GenerateClass(const ObjCImplementationDecl *OID) {
       offsetPointerIndexes[2] = llvm::ConstantInt::get(IndexTy, ivarIndex);
       // Get the correct ivar field
       llvm::Constant *offsetValue = llvm::ConstantExpr::getGetElementPtr(
-              IvarList, offsetPointerIndexes);
+          cast<llvm::GlobalVariable>(IvarList)->getValueType(), IvarList,
+          offsetPointerIndexes);
       // Get the existing variable, if one exists.
       llvm::GlobalVariable *offset = TheModule.getNamedGlobal(Name);
       if (offset) {
@@ -2439,8 +2447,8 @@ llvm::Function *CGObjCGNU::ModuleInitFunction() {
 
   // Number of static selectors
   Elements.push_back(llvm::ConstantInt::get(LongTy, SelectorCount));
-  llvm::Constant *SelectorList = MakeGlobalArray(SelStructTy, Selectors,
-          ".objc_selector_list");
+  llvm::GlobalVariable *SelectorList =
+      MakeGlobalArray(SelStructTy, Selectors, ".objc_selector_list");
   Elements.push_back(llvm::ConstantExpr::getBitCast(SelectorList,
     SelStructPtrTy));
 
@@ -2450,8 +2458,8 @@ llvm::Function *CGObjCGNU::ModuleInitFunction() {
     llvm::Constant *Idxs[] = {Zeros[0],
       llvm::ConstantInt::get(Int32Ty, i), Zeros[0]};
     // FIXME: We're generating redundant loads and stores here!
-    llvm::Constant *SelPtr = llvm::ConstantExpr::getGetElementPtr(SelectorList,
-        makeArrayRef(Idxs, 2));
+    llvm::Constant *SelPtr = llvm::ConstantExpr::getGetElementPtr(
+        SelectorList->getValueType(), SelectorList, makeArrayRef(Idxs, 2));
     // If selectors are defined as an opaque type, cast the pointer to this
     // type.
     SelPtr = llvm::ConstantExpr::getBitCast(SelPtr, SelectorTy);

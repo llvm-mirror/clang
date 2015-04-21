@@ -152,7 +152,7 @@ protected:
 public:
   Generic_GCC(const Driver &D, const llvm::Triple &Triple,
               const llvm::opt::ArgList &Args);
-  ~Generic_GCC();
+  ~Generic_GCC() override;
 
   void printVerboseInfo(raw_ostream &OS) const override;
 
@@ -196,7 +196,7 @@ private:
 public:
   MachO(const Driver &D, const llvm::Triple &Triple,
              const llvm::opt::ArgList &Args);
-  ~MachO();
+  ~MachO() override;
 
   /// @name MachO specific toolchain API
   /// {
@@ -345,7 +345,7 @@ private:
 public:
   Darwin(const Driver &D, const llvm::Triple &Triple,
          const llvm::opt::ArgList &Args);
-  ~Darwin();
+  ~Darwin() override;
 
   std::string ComputeEffectiveClangTriple(const llvm::opt::ArgList &Args,
                                           types::ID InputType) const override;
@@ -487,8 +487,7 @@ public:
   AddCCKextLibArgs(const llvm::opt::ArgList &Args,
                    llvm::opt::ArgStringList &CmdArgs) const override;
 
-  virtual void addClangWarningOptions(llvm::opt::ArgStringList &CC1Args)
-                                                      const override;
+  void addClangWarningOptions(llvm::opt::ArgStringList &CC1Args) const override;
 
   void
   AddLinkARCArgs(const llvm::opt::ArgList &Args,
@@ -699,7 +698,7 @@ protected:
 public:
   Hexagon_TC(const Driver &D, const llvm::Triple &Triple,
              const llvm::opt::ArgList &Args);
-  ~Hexagon_TC();
+  ~Hexagon_TC() override;
 
   void
   AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
@@ -717,13 +716,52 @@ public:
   static StringRef GetTargetCPU(const llvm::opt::ArgList &Args);
 };
 
+class LLVM_LIBRARY_VISIBILITY NaCl_TC : public Generic_ELF {
+public:
+  NaCl_TC(const Driver &D, const llvm::Triple &Triple,
+          const llvm::opt::ArgList &Args);
+
+  void
+  AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                            llvm::opt::ArgStringList &CC1Args) const override;
+  void
+  AddClangCXXStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                               llvm::opt::ArgStringList &CC1Args) const override;
+
+  CXXStdlibType
+  GetCXXStdlibType(const llvm::opt::ArgList &Args) const override;
+
+  void
+  AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
+                      llvm::opt::ArgStringList &CmdArgs) const override;
+
+  bool
+  IsIntegratedAssemblerDefault() const override { return false; }
+
+  // Get the path to the file containing NaCl's ARM macros. It lives in NaCl_TC
+  // because the AssembleARM tool needs a const char * that it can pass around
+  // and the toolchain outlives all the jobs.
+  const char *GetNaClArmMacrosPath() const { return NaClArmMacrosPath.c_str(); }
+
+  std::string ComputeEffectiveClangTriple(const llvm::opt::ArgList &Args,
+                                          types::ID InputType) const override;
+  std::string Linker;
+
+protected:
+  Tool *buildLinker() const override;
+  Tool *buildAssembler() const override;
+
+private:
+  std::string NaClArmMacrosPath;
+};
+
 /// TCEToolChain - A tool chain using the llvm bitcode tools to perform
 /// all subcommands. See http://tce.cs.tut.fi for our peculiar target.
 class LLVM_LIBRARY_VISIBILITY TCEToolChain : public ToolChain {
 public:
   TCEToolChain(const Driver &D, const llvm::Triple &Triple,
                const llvm::opt::ArgList &Args);
-  ~TCEToolChain();
+  ~TCEToolChain() override;
 
   bool IsMathErrnoDefault() const override;
   bool isPICDefault() const override;

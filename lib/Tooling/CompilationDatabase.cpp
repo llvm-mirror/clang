@@ -156,8 +156,8 @@ public:
   // recording for our own purposes.
   UnusedInputDiagConsumer(DiagnosticConsumer *Other) : Other(Other) {}
 
-  virtual void HandleDiagnostic(DiagnosticsEngine::Level DiagLevel,
-                                const Diagnostic &Info) override {
+  void HandleDiagnostic(DiagnosticsEngine::Level DiagLevel,
+                        const Diagnostic &Info) override {
     if (Info.getID() == clang::diag::warn_drv_input_file_unused) {
       // Arg 1 for this diagnostic is the option that didn't get used.
       UnusedInputs.push_back(Info.getArgStdStr(0));
@@ -283,11 +283,9 @@ static bool stripPositionalArgs(std::vector<const char *> Args,
   return true;
 }
 
-FixedCompilationDatabase *
-FixedCompilationDatabase::loadFromCommandLine(int &Argc,
-                                              const char **Argv,
-                                              Twine Directory) {
-  const char **DoubleDash = std::find(Argv, Argv + Argc, StringRef("--"));
+FixedCompilationDatabase *FixedCompilationDatabase::loadFromCommandLine(
+    int &Argc, const char *const *Argv, Twine Directory) {
+  const char *const *DoubleDash = std::find(Argv, Argv + Argc, StringRef("--"));
   if (DoubleDash == Argv + Argc)
     return nullptr;
   std::vector<const char *> CommandLine(DoubleDash + 1, Argv + Argc);

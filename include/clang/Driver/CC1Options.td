@@ -403,6 +403,11 @@ def migrate : Flag<["-"], "migrate">,
   HelpText<"Migrate source code">;
 }
 
+def emit_llvm_uselists : Flag<["-"], "emit-llvm-uselists">,
+  HelpText<"Preserve order of LLVM use-lists when serializing">;
+def no_emit_llvm_uselists : Flag<["-"], "no-emit-llvm-uselists">,
+  HelpText<"Don't preserve order of LLVM use-lists when serializing">;
+
 def mt_migrate_directory : Separate<["-"], "mt-migrate-directory">,
   HelpText<"Directory for temporary files produced during ARC or ObjC migration">;
 def arcmt_check : Flag<["-"], "arcmt-check">,
@@ -585,8 +590,6 @@ def cl_finite_math_only : Flag<["-"], "cl-finite-math-only">,
   HelpText<"OpenCL only. Allow floating-point optimizations that assume arguments and results are not NaNs or +-Inf.">;
 def cl_kernel_arg_info : Flag<["-"], "cl-kernel-arg-info">,
   HelpText<"OpenCL only. Generate kernel argument metadata.">;
-def : Flag<["-"], "cl-no-signed-zeros">, Alias<fno_signed_zeros>,
-  HelpText<"OpenCL only. Allow optimizations to ignore the signedness of the floating-point zero.">;
 def cl_unsafe_math_optimizations : Flag<["-"], "cl-unsafe-math-optimizations">,
   HelpText<"OpenCL only. Allow unsafe floating-point optimizations.  Also implies -cl-no-signed-zeros and -cl-mad-enable">;
 def cl_fast_relaxed_math : Flag<["-"], "cl-fast-relaxed-math">,
@@ -607,6 +610,9 @@ def fcuda_is_device : Flag<["-"], "fcuda-is-device">,
 def fcuda_allow_host_calls_from_host_device : Flag<["-"],
     "fcuda-allow-host-calls-from-host-device">,
   HelpText<"Allow host device functions to call host functions">;
+def fcuda_disable_target_call_checks : Flag<["-"],
+    "fcuda-disable-target-call-checks">,
+  HelpText<"Disable all cross-target (host, device, etc.) call checks in CUDA">;
 
 } // let Flags = [CC1Option]
 

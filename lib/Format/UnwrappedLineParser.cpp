@@ -68,7 +68,7 @@ public:
     Line.InPPDirective = true;
   }
 
-  ~ScopedMacroState() {
+  ~ScopedMacroState() override {
     TokenSource = PreviousTokenSource;
     ResetToken = Token;
     Line.InPPDirective = false;
@@ -753,6 +753,10 @@ void UnwrappedLineParser::parseStructuralElement() {
       parseJavaScriptEs6ImportExport();
       return;
     }
+    if (FormatTok->is(Keywords.kw_signals)) {
+      parseAccessSpecifier();
+      return;
+    }
     // In all other cases, parse the declaration.
     break;
   default:
@@ -841,9 +845,8 @@ void UnwrappedLineParser::parseStructuralElement() {
       if (Line->Tokens.size() == 1 &&
           // JS doesn't have macros, and within classes colons indicate fields,
           // not labels.
-          (Style.Language != FormatStyle::LK_JavaScript ||
-           !Line->MustBeDeclaration)) {
-        if (FormatTok->Tok.is(tok::colon)) {
+          Style.Language != FormatStyle::LK_JavaScript) {
+        if (FormatTok->Tok.is(tok::colon) && !Line->MustBeDeclaration) {
           parseLabel();
           return;
         }
@@ -1035,6 +1038,17 @@ bool UnwrappedLineParser::parseBracedList(bool ContinueOnSemicolons) {
       // from the ones we explicitly parse out (like lambdas).
       FormatTok->BlockKind = BK_BracedInit;
       parseBracedList();
+      break;
+    case tok::r_paren:
+      // JavaScript can just have free standing methods and getters/setters in
+      // object literals. Detect them by a "{" following ")".
+      if (Style.Language == FormatStyle::LK_JavaScript) {
+        nextToken();
+        if (FormatTok->is(tok::l_brace))
+          parseChildBlock();
+        break;
+      }
+      nextToken();
       break;
     case tok::r_brace:
       nextToken();
@@ -1400,8 +1414,7 @@ void UnwrappedLineParser::parseSwitch() {
 void UnwrappedLineParser::parseAccessSpecifier() {
   nextToken();
   // Understand Qt's slots.
-  if (FormatTok->is(tok::identifier) &&
-      (FormatTok->TokenText == "slots" || FormatTok->TokenText == "Q_SLOTS"))
+  if (FormatTok->isOneOf(Keywords.kw_slots, Keywords.kw_qslots))
     nextToken();
   // Otherwise, we don't know what it is, and we'd better keep the next token.
   if (FormatTok->Tok.is(tok::colon))
@@ -1528,7 +1541,8 @@ void UnwrappedLineParser::parseRecord() {
     // it is often token-pasted.
     while (FormatTok->is(tok::identifier) || FormatTok->is(tok::coloncolon) ||
            FormatTok->is(tok::hashhash) ||
-           (Style.Language == FormatStyle::LK_Java &&
+           ((Style.Language == FormatStyle::LK_Java ||
+             Style.Language == FormatStyle::LK_JavaScript) &&
             FormatTok->isOneOf(tok::period, tok::comma)))
       nextToken();
 

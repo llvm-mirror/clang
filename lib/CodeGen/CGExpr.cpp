@@ -300,26 +300,26 @@ createReferenceTemporary(CodeGenFunction &CGF,
                          const MaterializeTemporaryExpr *M, const Expr *Inner) {
   switch (M->getStorageDuration()) {
   case SD_FullExpression:
-  case SD_Automatic:
+  case SD_Automatic: {
     // If we have a constant temporary array or record try to promote it into a
     // constant global under the same rules a normal constant would've been
     // promoted. This is easier on the optimizer and generally emits fewer
     // instructions.
+    QualType Ty = Inner->getType();
     if (CGF.CGM.getCodeGenOpts().MergeAllConstants &&
-        (M->getType()->isArrayType() || M->getType()->isRecordType()) &&
-        CGF.CGM.isTypeConstant(M->getType(), true))
-      if (llvm::Constant *Init =
-              CGF.CGM.EmitConstantExpr(Inner, M->getType(), &CGF)) {
+        (Ty->isArrayType() || Ty->isRecordType()) &&
+        CGF.CGM.isTypeConstant(Ty, true))
+      if (llvm::Constant *Init = CGF.CGM.EmitConstantExpr(Inner, Ty, &CGF)) {
         auto *GV = new llvm::GlobalVariable(
             CGF.CGM.getModule(), Init->getType(), /*isConstant=*/true,
             llvm::GlobalValue::PrivateLinkage, Init, ".ref.tmp");
         GV->setAlignment(
-            CGF.getContext().getTypeAlignInChars(M->getType()).getQuantity());
+            CGF.getContext().getTypeAlignInChars(Ty).getQuantity());
         // FIXME: Should we put the new global into a COMDAT?
         return GV;
       }
-    return CGF.CreateMemTemp(Inner->getType(), "ref.tmp");
-
+    return CGF.CreateMemTemp(Ty, "ref.tmp");
+  }
   case SD_Thread:
   case SD_Static:
     return CGF.CGM.GetAddrOfGlobalTemporary(M, Inner);
@@ -2077,9 +2077,8 @@ LValue CodeGenFunction::EmitUnaryOpLValue(const UnaryOperator *E) {
     assert(E->getSubExpr()->getType()->isAnyComplexType());
 
     unsigned Idx = E->getOpcode() == UO_Imag;
-    return MakeAddrLValue(Builder.CreateStructGEP(LV.getAddress(),
-                                                  Idx, "idx"),
-                          ExprTy);
+    return MakeAddrLValue(
+        Builder.CreateStructGEP(nullptr, LV.getAddress(), Idx, "idx"), ExprTy);
   }
   case UO_PreInc:
   case UO_PreDec: {
@@ -2675,7 +2674,7 @@ LValue CodeGenFunction::EmitLValueForField(LValue base,
     unsigned Idx = RL.getLLVMFieldNo(field);
     if (Idx != 0)
       // For structs, we GEP to the field that the record layout suggests.
-      Addr = Builder.CreateStructGEP(Addr, Idx, field->getName());
+      Addr = Builder.CreateStructGEP(nullptr, Addr, Idx, field->getName());
     // Get the access type.
     llvm::Type *PtrTy = llvm::Type::getIntNPtrTy(
       getLLVMContext(), Info.StorageSize,
@@ -2710,7 +2709,7 @@ LValue CodeGenFunction::EmitLValueForField(LValue base,
   } else {
     // For structs, we GEP to the field that the record layout suggests.
     unsigned idx = CGM.getTypes().getCGRecordLayout(rec).getLLVMFieldNo(field);
-    addr = Builder.CreateStructGEP(addr, idx, field->getName());
+    addr = Builder.CreateStructGEP(nullptr, addr, idx, field->getName());
 
     // If this is a reference field, load the reference right now.
     if (const ReferenceType *refType = type->getAs<ReferenceType>()) {
@@ -2789,7 +2788,7 @@ CodeGenFunction::EmitLValueForFieldInitialization(LValue Base,
   const CGRecordLayout &RL =
     CGM.getTypes().getCGRecordLayout(Field->getParent());
   unsigned idx = RL.getLLVMFieldNo(Field);
-  llvm::Value *V = Builder.CreateStructGEP(Base.getAddress(), idx);
+  llvm::Value *V = Builder.CreateStructGEP(nullptr, Base.getAddress(), idx);
   assert(!FieldType.getObjCGCAttr() && "fields cannot have GC attrs");
 
   // Make sure that the address is pointing to the right type.  This is critical
@@ -3369,7 +3368,7 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
       llvm::Value *CalleePrefixStruct = Builder.CreateBitCast(
           Callee, llvm::PointerType::getUnqual(PrefixStructTy));
       llvm::Value *CalleeSigPtr =
-          Builder.CreateConstGEP2_32(CalleePrefixStruct, 0, 0);
+          Builder.CreateConstGEP2_32(PrefixStructTy, CalleePrefixStruct, 0, 0);
       llvm::Value *CalleeSig = Builder.CreateLoad(CalleeSigPtr);
       llvm::Value *CalleeSigMatch = Builder.CreateICmpEQ(CalleeSig, PrefixSig);
 
@@ -3379,7 +3378,7 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
 
       EmitBlock(TypeCheck);
       llvm::Value *CalleeRTTIPtr =
-          Builder.CreateConstGEP2_32(CalleePrefixStruct, 0, 1);
+          Builder.CreateConstGEP2_32(PrefixStructTy, CalleePrefixStruct, 0, 1);
       llvm::Value *CalleeRTTI = Builder.CreateLoad(CalleeRTTIPtr);
       llvm::Value *CalleeRTTIMatch =
           Builder.CreateICmpEQ(CalleeRTTI, FTRTTIConst);

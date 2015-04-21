@@ -27,7 +27,6 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/FormattedStream.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/Timer.h"
@@ -97,7 +96,7 @@ private:
 
   void CreatePasses();
 
-  /// CreateTargetMachine - Generates the TargetMachine.
+  /// Generates the TargetMachine.
   /// Returns Null if it is unable to create the target machine.
   /// Some of our clang tests specify triples which are not built
   /// into clang. This is okay because these tests check the generated
@@ -107,10 +106,10 @@ private:
   /// the requested target.
   TargetMachine *CreateTargetMachine(bool MustCreateTM);
 
-  /// AddEmitPasses - Add passes necessary to emit assembly or LLVM IR.
+  /// Add passes necessary to emit assembly or LLVM IR.
   ///
   /// \return True on success.
-  bool AddEmitPasses(BackendAction Action, formatted_raw_ostream &OS);
+  bool AddEmitPasses(BackendAction Action, raw_pwrite_stream &OS);
 
 public:
   EmitAssemblyHelper(DiagnosticsEngine &_Diags,
@@ -133,7 +132,7 @@ public:
 
   std::unique_ptr<TargetMachine> TM;
 
-  void EmitAssembly(BackendAction Action, raw_ostream *OS);
+  void EmitAssembly(BackendAction Action, raw_pwrite_stream *OS);
 };
 
 // We need this wrapper to access LangOpts and CGOpts from extension functions
@@ -437,8 +436,6 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
     BackendArgs.push_back("-time-passes");
   for (unsigned i = 0, e = CodeGenOpts.BackendOptions.size(); i != e; ++i)
     BackendArgs.push_back(CodeGenOpts.BackendOptions[i].c_str());
-  if (CodeGenOpts.NoGlobalMerge)
-    BackendArgs.push_back("-enable-global-merge=false");
   BackendArgs.push_back(nullptr);
   llvm::cl::ParseCommandLineOptions(BackendArgs.size() - 1,
                                     BackendArgs.data());
@@ -549,7 +546,7 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
 }
 
 bool EmitAssemblyHelper::AddEmitPasses(BackendAction Action,
-                                       formatted_raw_ostream &OS) {
+                                       raw_pwrite_stream &OS) {
 
   // Create the code generator passes.
   legacy::PassManager *PM = getCodeGenPasses();
@@ -586,9 +583,9 @@ bool EmitAssemblyHelper::AddEmitPasses(BackendAction Action,
   return true;
 }
 
-void EmitAssemblyHelper::EmitAssembly(BackendAction Action, raw_ostream *OS) {
+void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
+                                      raw_pwrite_stream *OS) {
   TimeRegion Region(llvm::TimePassesIsEnabled ? &CodeGenerationTime : nullptr);
-  llvm::formatted_raw_ostream FormattedOS;
 
   bool UsesCodeGen = (Action != Backend_EmitNothing &&
                       Action != Backend_EmitBC &&
@@ -604,17 +601,17 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action, raw_ostream *OS) {
     break;
 
   case Backend_EmitBC:
-    getPerModulePasses()->add(createBitcodeWriterPass(*OS));
+    getPerModulePasses()->add(
+        createBitcodeWriterPass(*OS, CodeGenOpts.EmitLLVMUseLists));
     break;
 
   case Backend_EmitLL:
-    FormattedOS.setStream(*OS, formatted_raw_ostream::PRESERVE_STREAM);
-    getPerModulePasses()->add(createPrintModulePass(FormattedOS));
+    getPerModulePasses()->add(
+        createPrintModulePass(*OS, "", CodeGenOpts.EmitLLVMUseLists));
     break;
 
   default:
-    FormattedOS.setStream(*OS, formatted_raw_ostream::PRESERVE_STREAM);
-    if (!AddEmitPasses(Action, FormattedOS))
+    if (!AddEmitPasses(Action, *OS))
       return;
   }
 
@@ -651,7 +648,7 @@ void clang::EmitBackendOutput(DiagnosticsEngine &Diags,
                               const clang::TargetOptions &TOpts,
                               const LangOptions &LOpts, StringRef TDesc,
                               Module *M, BackendAction Action,
-                              raw_ostream *OS) {
+                              raw_pwrite_stream *OS) {
   EmitAssemblyHelper AsmHelper(Diags, CGOpts, TOpts, LOpts, M);
 
   AsmHelper.EmitAssembly(Action, OS);
