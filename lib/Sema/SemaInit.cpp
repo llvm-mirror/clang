@@ -3101,6 +3101,28 @@ void InitializationSequence::SetOverloadFailure(FailureKind Failure,
 // Attempt initialization
 //===----------------------------------------------------------------------===//
 
+/// Tries to add a zero initializer. Returns true if that worked.
+static bool
+maybeRecoverWithZeroInitialization(Sema &S, InitializationSequence &Sequence,
+                                   const InitializedEntity &Entity) {
+  if (Entity.getKind() != InitializedEntity::EK_Variable)
+    return false;
+
+  VarDecl *VD = cast<VarDecl>(Entity.getDecl());
+  if (VD->getInit() || VD->getLocEnd().isMacroID())
+    return false;
+
+  QualType VariableTy = VD->getType().getCanonicalType();
+  SourceLocation Loc = S.getLocForEndOfToken(VD->getLocEnd());
+  std::string Init = S.getFixItZeroInitializerForType(VariableTy, Loc);
+  if (!Init.empty()) {
+    Sequence.AddZeroInitializationStep(Entity.getType());
+    Sequence.SetZeroInitializationFixit(Init, Loc);
+    return true;
+  }
+  return false;
+}
+
 static void MaybeProduceObjCObject(Sema &S,
                                    InitializationSequence &Sequence,
                                    const InitializedEntity &Entity) {
@@ -3339,7 +3361,8 @@ static void TryConstructorInitialization(Sema &S,
   if (Kind.getKind() == InitializationKind::IK_Default &&
       Entity.getType().isConstQualified() &&
       !cast<CXXConstructorDecl>(Best->Function)->isUserProvided()) {
-    Sequence.SetFailed(InitializationSequence::FK_DefaultInitOfConst);
+    if (!maybeRecoverWithZeroInitialization(S, Sequence, Entity))
+      Sequence.SetFailed(InitializationSequence::FK_DefaultInitOfConst);
     return;
   }
 
@@ -3412,6 +3435,11 @@ static void TryReferenceListInitialization(Sema &S,
                                            InitializationSequence &Sequence) {
   // First, catch C++03 where this isn't possible.
   if (!S.getLangOpts().CPlusPlus11) {
+    Sequence.SetFailed(InitializationSequence::FK_ReferenceBindingToInitList);
+    return;
+  }
+  // Can't reference initialize a compound literal.
+  if (Entity.getKind() == InitializedEntity::EK_CompoundLiteralInit) {
     Sequence.SetFailed(InitializationSequence::FK_ReferenceBindingToInitList);
     return;
   }
@@ -4231,7 +4259,8 @@ static void TryDefaultInitialization(Sema &S,
   //   a const-qualified type T, T shall be a class type with a user-provided
   //   default constructor.
   if (DestType.isConstQualified() && S.getLangOpts().CPlusPlus) {
-    Sequence.SetFailed(InitializationSequence::FK_DefaultInitOfConst);
+    if (!maybeRecoverWithZeroInitialization(S, Sequence, Entity))
+      Sequence.SetFailed(InitializationSequence::FK_DefaultInitOfConst);
     return;
   }
 
@@ -5739,6 +5768,115 @@ static void DiagnoseNarrowingInInitList(Sema &S,
                                         QualType EntityType,
                                         const Expr *PostInit);
 
+/// Provide warnings when std::move is used on construction.
+static void CheckMoveOnConstruction(Sema &S, const Expr *InitExpr,
+                                    bool IsReturnStmt) {
+  if (!InitExpr)
+    return;
+
+  QualType DestType = InitExpr->getType();
+  if (!DestType->isRecordType())
+    return;
+
+  unsigned DiagID = 0;
+  if (IsReturnStmt) {
+    const CXXConstructExpr *CCE =
+        dyn_cast<CXXConstructExpr>(InitExpr->IgnoreParens());
+    if (!CCE || CCE->getNumArgs() != 1)
+      return;
+
+    if (!CCE->getConstructor()->isCopyOrMoveConstructor())
+      return;
+
+    InitExpr = CCE->getArg(0)->IgnoreImpCasts();
+
+    // Remove implicit temporary and constructor nodes.
+    if (const MaterializeTemporaryExpr *MTE =
+            dyn_cast<MaterializeTemporaryExpr>(InitExpr)) {
+      InitExpr = MTE->GetTemporaryExpr()->IgnoreImpCasts();
+      while (const CXXConstructExpr *CCE =
+                 dyn_cast<CXXConstructExpr>(InitExpr)) {
+        if (isa<CXXTemporaryObjectExpr>(CCE))
+          return;
+        if (CCE->getNumArgs() == 0)
+          return;
+        if (CCE->getNumArgs() > 1 && !isa<CXXDefaultArgExpr>(CCE->getArg(1)))
+          return;
+        InitExpr = CCE->getArg(0);
+      }
+      InitExpr = InitExpr->IgnoreImpCasts();
+      DiagID = diag::warn_redundant_move_on_return;
+    }
+  }
+
+  // Find the std::move call and get the argument.
+  const CallExpr *CE = dyn_cast<CallExpr>(InitExpr->IgnoreParens());
+  if (!CE || CE->getNumArgs() != 1)
+    return;
+
+  const FunctionDecl *MoveFunction = CE->getDirectCallee();
+  if (!MoveFunction || !MoveFunction->isInStdNamespace() ||
+      !MoveFunction->getIdentifier() ||
+      !MoveFunction->getIdentifier()->isStr("move"))
+    return;
+
+  const Expr *Arg = CE->getArg(0)->IgnoreImplicit();
+
+  if (IsReturnStmt) {
+    const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Arg->IgnoreParenImpCasts());
+    if (!DRE || DRE->refersToEnclosingVariableOrCapture())
+      return;
+
+    const VarDecl *VD = dyn_cast<VarDecl>(DRE->getDecl());
+    if (!VD || !VD->hasLocalStorage())
+      return;
+
+    if (!VD->getType()->isRecordType())
+      return;
+
+    if (DiagID == 0) {
+      DiagID = S.Context.hasSameUnqualifiedType(DestType, VD->getType())
+                   ? diag::warn_pessimizing_move_on_return
+                   : diag::warn_redundant_move_on_return;
+    }
+  } else {
+    DiagID = diag::warn_pessimizing_move_on_initialization;
+    const Expr *ArgStripped = Arg->IgnoreImplicit()->IgnoreParens();
+    if (!ArgStripped->isRValue() || !ArgStripped->getType()->isRecordType())
+      return;
+  }
+
+  S.Diag(CE->getLocStart(), DiagID);
+
+  // Get all the locations for a fix-it.  Don't emit the fix-it if any location
+  // is within a macro.
+  SourceLocation CallBegin = CE->getCallee()->getLocStart();
+  if (CallBegin.isMacroID())
+    return;
+  SourceLocation RParen = CE->getRParenLoc();
+  if (RParen.isMacroID())
+    return;
+  SourceLocation LParen;
+  SourceLocation ArgLoc = Arg->getLocStart();
+
+  // Special testing for the argument location.  Since the fix-it needs the
+  // location right before the argument, the argument location can be in a
+  // macro only if it is at the beginning of the macro.
+  while (ArgLoc.isMacroID() &&
+         S.getSourceManager().isAtStartOfImmediateMacroExpansion(ArgLoc)) {
+    ArgLoc = S.getSourceManager().getImmediateExpansionRange(ArgLoc).first;
+  }
+
+  if (LParen.isMacroID())
+    return;
+
+  LParen = ArgLoc.getLocWithOffset(-1);
+
+  S.Diag(CE->getLocStart(), diag::note_remove_move)
+      << FixItHint::CreateRemoval(SourceRange(CallBegin, LParen))
+      << FixItHint::CreateRemoval(SourceRange(RParen, RParen));
+}
+
 ExprResult
 InitializationSequence::Perform(Sema &S,
                                 const InitializedEntity &Entity,
@@ -5748,6 +5886,21 @@ InitializationSequence::Perform(Sema &S,
   if (Failed()) {
     Diagnose(S, Entity, Kind, Args);
     return ExprError();
+  }
+  if (!ZeroInitializationFixit.empty()) {
+    unsigned DiagID = diag::err_default_init_const;
+    if (Decl *D = Entity.getDecl())
+      if (S.getLangOpts().MSVCCompat && D->hasAttr<SelectAnyAttr>())
+        DiagID = diag::ext_default_init_const;
+
+    // The initialization would have succeeded with this fixit. Since the fixit
+    // is on the error, we need to build a valid AST in this case, so this isn't
+    // handled in the Failed() branch above.
+    QualType DestType = Entity.getType();
+    S.Diag(Kind.getLocation(), DiagID)
+        << DestType << (bool)DestType->getAs<RecordType>()
+        << FixItHint::CreateInsertion(ZeroInitializationFixitLoc,
+                                      ZeroInitializationFixit);
   }
 
   if (getKind() == DependentSequence) {
@@ -6453,6 +6606,12 @@ InitializationSequence::Perform(Sema &S,
                                   cast<FieldDecl>(Entity.getDecl()),
                                   CurInit.get());
 
+  // Check for std::move on construction.
+  if (const Expr *E = CurInit.get()) {
+    CheckMoveOnConstruction(S, E,
+                            Entity.getKind() == InitializedEntity::EK_Result);
+  }
+
   return CurInit;
 }
 
@@ -6547,26 +6706,6 @@ static void diagnoseListInit(Sema &S, const InitializedEntity &Entity,
                                    /*VerifyOnly=*/false);
   assert(DiagnoseInitList.HadError() &&
          "Inconsistent init list check result.");
-}
-
-/// Prints a fixit for adding a null initializer for |Entity|. Call this only
-/// right after emitting a diagnostic.
-static void maybeEmitZeroInitializationFixit(Sema &S,
-                                             InitializationSequence &Sequence,
-                                             const InitializedEntity &Entity) {
-  if (Entity.getKind() != InitializedEntity::EK_Variable)
-    return;
-
-  VarDecl *VD = cast<VarDecl>(Entity.getDecl());
-  if (VD->getInit() || VD->getLocEnd().isMacroID())
-    return;
-
-  QualType VariableTy = VD->getType().getCanonicalType();
-  SourceLocation Loc = S.getLocForEndOfToken(VD->getLocEnd());
-  std::string Init = S.getFixItZeroInitializerForType(VariableTy, Loc);
-
-  S.Diag(Loc, diag::note_add_initializer)
-      << VD << FixItHint::CreateInsertion(Loc, Init);
 }
 
 bool InitializationSequence::Diagnose(Sema &S,
@@ -6716,12 +6855,19 @@ bool InitializationSequence::Diagnose(Sema &S,
       << Args[0]->getSourceRange();
     break;
 
-  case FK_ReferenceInitDropsQualifiers:
+  case FK_ReferenceInitDropsQualifiers: {
+    QualType SourceType = Args[0]->getType();
+    QualType NonRefType = DestType.getNonReferenceType();
+    Qualifiers DroppedQualifiers =
+        SourceType.getQualifiers() - NonRefType.getQualifiers();
+
     S.Diag(Kind.getLocation(), diag::err_reference_bind_drops_quals)
-      << DestType.getNonReferenceType()
-      << Args[0]->getType()
+      << SourceType
+      << NonRefType
+      << DroppedQualifiers.getCVRQualifiers()
       << Args[0]->getSourceRange();
     break;
+  }
 
   case FK_ReferenceInitFailed:
     S.Diag(Kind.getLocation(), diag::err_reference_bind_failed)
@@ -6900,7 +7046,6 @@ bool InitializationSequence::Diagnose(Sema &S,
     } else {
       S.Diag(Kind.getLocation(), diag::err_default_init_const)
           << DestType << (bool)DestType->getAs<RecordType>();
-      maybeEmitZeroInitializationFixit(S, *this, Entity);
     }
     break;
 

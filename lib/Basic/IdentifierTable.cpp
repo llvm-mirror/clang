@@ -35,7 +35,7 @@ IdentifierInfo::IdentifierInfo() {
   HasMacro = false;
   HadMacro = false;
   IsExtension = false;
-  IsCXX11CompatKeyword = false;
+  IsFutureCompatKeyword = false;
   IsPoisoned = false;
   IsCPPOperatorKeyword = false;
   NeedsHandleIdentifier = false;
@@ -157,7 +157,7 @@ static void AddKeyword(StringRef Keyword,
 
   // Don't add this keyword under MSVCCompat.
   if (LangOpts.MSVCCompat && (Flags & KEYNOMS18) &&
-      !LangOpts.isCompatibleWithMSVC(19))
+      !LangOpts.isCompatibleWithMSVC(LangOptions::MSVC2015))
     return;
 
   // Don't add this keyword under OpenCL.
@@ -170,7 +170,7 @@ static void AddKeyword(StringRef Keyword,
   IdentifierInfo &Info =
       Table.get(Keyword, AddResult == KS_Future ? tok::identifier : TokenCode);
   Info.setIsExtensionToken(AddResult == KS_Extension);
-  Info.setIsCXX11CompatKeyword(AddResult == KS_Future);
+  Info.setIsFutureCompatKeyword(AddResult == KS_Future);
 }
 
 /// AddCXXOperatorKeyword - Register a C++ operator keyword alternative
@@ -215,6 +215,12 @@ void IdentifierTable::AddKeywords(const LangOptions &LangOpts) {
   if (LangOpts.ParseUnknownAnytype)
     AddKeyword("__unknown_anytype", tok::kw___unknown_anytype, KEYALL,
                LangOpts, *this);
+
+  // FIXME: __declspec isn't really a CUDA extension, however it is required for
+  // supporting cuda_builtin_vars.h, which uses __declspec(property). Once that
+  // has been rewritten in terms of something more generic, remove this code.
+  if (LangOpts.CUDA)
+    AddKeyword("__declspec", tok::kw___declspec, KEYALL, LangOpts, *this);
 }
 
 /// \brief Checks if the specified token kind represents a keyword in the

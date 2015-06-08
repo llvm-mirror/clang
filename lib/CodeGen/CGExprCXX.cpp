@@ -173,7 +173,7 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
     This = EmitLValue(Base).getAddress();
 
 
-  if (MD->isTrivial()) {
+  if (MD->isTrivial() || (MD->isDefaulted() && MD->getParent()->isUnion())) {
     if (isa<CXXDestructorDecl>(MD)) return RValue::get(nullptr);
     if (isa<CXXConstructorDecl>(MD) && 
         cast<CXXConstructorDecl>(MD)->isDefaultConstructor())
@@ -690,7 +690,7 @@ static llvm::Value *EmitCXXNewAllocSize(CodeGenFunction &CGF,
       llvm::Value *tsmV =
         llvm::ConstantInt::get(CGF.SizeTy, typeSizeMultiplier);
       llvm::Value *result =
-        CGF.Builder.CreateCall2(umul_with_overflow, size, tsmV);
+          CGF.Builder.CreateCall(umul_with_overflow, {size, tsmV});
 
       llvm::Value *overflowed = CGF.Builder.CreateExtractValue(result, 1);
       if (hasOverflow)
@@ -729,7 +729,7 @@ static llvm::Value *EmitCXXNewAllocSize(CodeGenFunction &CGF,
 
       llvm::Value *cookieSizeV = llvm::ConstantInt::get(CGF.SizeTy, cookieSize);
       llvm::Value *result =
-        CGF.Builder.CreateCall2(uadd_with_overflow, size, cookieSizeV);
+          CGF.Builder.CreateCall(uadd_with_overflow, {size, cookieSizeV});
 
       llvm::Value *overflowed = CGF.Builder.CreateExtractValue(result, 1);
       if (hasOverflow)

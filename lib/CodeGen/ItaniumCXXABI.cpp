@@ -865,7 +865,7 @@ bool ItaniumCXXABI::classifyReturnType(CGFunctionInfo &FI) const {
 /// The Itanium ABI requires non-zero initialization only for data
 /// member pointers, for which '0' is a valid offset.
 bool ItaniumCXXABI::isZeroInitializable(const MemberPointerType *MPT) {
-  return MPT->getPointeeType()->isFunctionType();
+  return MPT->isMemberFunctionPointer();
 }
 
 /// The Itanium ABI always places an offset to the complete object
@@ -2090,7 +2090,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     CGBuilderTy Builder(Entry);
     if (InitIsInitFunc) {
       if (Init)
-        Builder.CreateCall(Init);
+        Builder.CreateCall(Init, {});
     } else {
       // Don't know whether we have an init function. Call it if it exists.
       llvm::Value *Have = Builder.CreateIsNotNull(Init);
@@ -2099,7 +2099,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       Builder.CreateCondBr(Have, InitBB, ExitBB);
 
       Builder.SetInsertPoint(InitBB);
-      Builder.CreateCall(Init);
+      Builder.CreateCall(Init, {});
       Builder.CreateBr(ExitBB);
 
       Builder.SetInsertPoint(ExitBB);
@@ -2128,7 +2128,7 @@ LValue ItaniumCXXABI::EmitThreadLocalVarDeclLValue(CodeGenFunction &CGF,
   llvm::Value *Val = CGF.CGM.GetAddrOfGlobalVar(VD, Ty);
   llvm::Function *Wrapper = getOrCreateThreadLocalWrapper(VD, Val);
 
-  Val = CGF.Builder.CreateCall(Wrapper);
+  Val = CGF.Builder.CreateCall(Wrapper, {});
 
   LValue LV;
   if (VD->getType()->isReferenceType())
@@ -3220,8 +3220,8 @@ static void emitConstructorDestructorAlias(CodeGenModule &CGM,
   llvm::PointerType *AliasType = Aliasee->getType();
 
   // Create the alias with no name.
-  auto *Alias = llvm::GlobalAlias::create(
-      AliasType->getElementType(), 0, Linkage, "", Aliasee, &CGM.getModule());
+  auto *Alias = llvm::GlobalAlias::create(AliasType, Linkage, "", Aliasee,
+                                          &CGM.getModule());
 
   // Switch any previous uses to the alias.
   if (Entry) {
@@ -3615,7 +3615,7 @@ static llvm::Constant *getClangCallTerminateFn(CodeGenModule &CGM) {
     catchCall->setCallingConv(CGM.getRuntimeCC());
 
     // Call std::terminate().
-    llvm::CallInst *termCall = builder.CreateCall(CGM.getTerminateFn());
+    llvm::CallInst *termCall = builder.CreateCall(CGM.getTerminateFn(), {});
     termCall->setDoesNotThrow();
     termCall->setDoesNotReturn();
     termCall->setCallingConv(CGM.getRuntimeCC());

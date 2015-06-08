@@ -29,6 +29,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
+#include "llvm/Support/TargetParser.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib> // ::getenv
 #include <system_error>
@@ -108,8 +109,12 @@ bool Darwin::hasBlocksRuntime() const {
   }
 }
 
-static const char *GetArmArchForMArch(StringRef Value) {
-  return llvm::StringSwitch<const char*>(Value)
+// This is just a MachO name translation routine and there's no
+// way to join this into ARMTargetParser without breaking all
+// other assumptions. Maybe MachO should consider standardising
+// their nomenclature.
+static const char *ArmMachOArchName(StringRef Arch) {
+  return llvm::StringSwitch<const char*>(Arch)
     .Case("armv6k", "armv6")
     .Case("armv6m", "armv6m")
     .Case("armv5tej", "armv5")
@@ -125,21 +130,23 @@ static const char *GetArmArchForMArch(StringRef Value) {
     .Default(nullptr);
 }
 
-static const char *GetArmArchForMCpu(StringRef Value) {
-  return llvm::StringSwitch<const char *>(Value)
-    .Cases("arm9e", "arm946e-s", "arm966e-s", "arm968e-s", "arm926ej-s","armv5")
-    .Cases("arm10e", "arm10tdmi", "armv5")
-    .Cases("arm1020t", "arm1020e", "arm1022e", "arm1026ej-s", "armv5")
-    .Case("xscale", "xscale")
-    .Cases("arm1136j-s", "arm1136jf-s", "arm1176jz-s", "arm1176jzf-s", "armv6")
-    .Cases("sc000", "cortex-m0", "cortex-m0plus", "cortex-m1", "armv6m")
-    .Cases("cortex-a5", "cortex-a7", "cortex-a8", "armv7")
-    .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait", "armv7")
-    .Cases("cortex-r4", "cortex-r4f", "cortex-r5", "cortex-r7", "armv7r")
-    .Cases("sc300", "cortex-m3", "armv7m")
-    .Cases("cortex-m4", "cortex-m7", "armv7em")
-    .Case("swift", "armv7s")
-    .Default(nullptr);
+static const char *ArmMachOArchNameCPU(StringRef CPU) {
+  unsigned ArchKind = llvm::ARMTargetParser::parseCPUArch(CPU);
+  if (ArchKind == llvm::ARM::AK_INVALID)
+    return nullptr;
+  StringRef Arch = llvm::ARMTargetParser::getArchName(ArchKind);
+
+  // FIXME: Make sure this MachO triple mangling is really necessary.
+  // ARMv5* normalises to ARMv5.
+  if (Arch.startswith("armv5"))
+    Arch = Arch.substr(0, 5);
+  // ARMv6*, except ARMv6M, normalises to ARMv6.
+  else if (Arch.startswith("armv6") && !Arch.endswith("6m"))
+    Arch = Arch.substr(0, 5);
+  // ARMv7A normalises to ARMv7.
+  else if (Arch.endswith("v7a"))
+    Arch = Arch.substr(0, 5);
+  return Arch.data();
 }
 
 static bool isSoftFloatABI(const ArgList &Args) {
@@ -164,11 +171,11 @@ StringRef MachO::getMachOArchName(const ArgList &Args) const {
   case llvm::Triple::thumb:
   case llvm::Triple::arm: {
     if (const Arg *A = Args.getLastArg(options::OPT_march_EQ))
-      if (const char *Arch = GetArmArchForMArch(A->getValue()))
+      if (const char *Arch = ArmMachOArchName(A->getValue()))
         return Arch;
 
     if (const Arg *A = Args.getLastArg(options::OPT_mcpu_EQ))
-      if (const char *Arch = GetArmArchForMCpu(A->getValue()))
+      if (const char *Arch = ArmMachOArchNameCPU(A->getValue()))
         return Arch;
 
     return "arm";
@@ -324,6 +331,26 @@ void MachO::AddLinkRuntimeLib(const ArgList &Args, ArgStringList &CmdArgs,
   }
 }
 
+void Darwin::addProfileRTLibs(const ArgList &Args,
+                             ArgStringList &CmdArgs) const {
+  if (!(Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
+                     false) ||
+        Args.hasArg(options::OPT_fprofile_generate) ||
+        Args.hasArg(options::OPT_fprofile_instr_generate) ||
+        Args.hasArg(options::OPT_fprofile_instr_generate_EQ) ||
+        Args.hasArg(options::OPT_fcreate_profile) ||
+        Args.hasArg(options::OPT_coverage)))
+    return;
+
+  // Select the appropriate runtime library for the target.
+  if (isTargetIOSBased())
+    AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.profile_ios.a",
+                      /*AlwaysLink*/ true);
+  else
+    AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.profile_osx.a",
+                      /*AlwaysLink*/ true);
+}
+
 void DarwinClang::AddLinkSanitizerLibArgs(const ArgList &Args,
                                           ArgStringList &CmdArgs,
                                           StringRef Sanitizer) const {
@@ -374,19 +401,6 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
     return;
   }
 
-  // If we are building profile support, link that library in.
-  if (Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
-                   false) ||
-      Args.hasArg(options::OPT_fprofile_generate) ||
-      Args.hasArg(options::OPT_fprofile_instr_generate) ||
-      Args.hasArg(options::OPT_fcreate_profile) ||
-      Args.hasArg(options::OPT_coverage)) {
-    // Select the appropriate runtime library for the target.
-    if (isTargetIOSBased())
-      AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.profile_ios.a");
-    else
-      AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.profile_osx.a");
-  }
 
   const SanitizerArgs &Sanitize = getSanitizerArgs();
 
@@ -2075,6 +2089,7 @@ bool Generic_GCC::IsIntegratedAssemblerDefault() const {
          getTriple().getArch() == llvm::Triple::ppc64 ||
          getTriple().getArch() == llvm::Triple::ppc64le ||
          getTriple().getArch() == llvm::Triple::sparc ||
+         getTriple().getArch() == llvm::Triple::sparcel ||
          getTriple().getArch() == llvm::Triple::sparcv9 ||
          getTriple().getArch() == llvm::Triple::systemz;
 }
@@ -2116,6 +2131,30 @@ std::string Hexagon_TC::GetGnuDir(const std::string &InstalledDir,
     return PrefixRelDir;
 
   return InstallRelDir;
+}
+
+const char *Hexagon_TC::GetSmallDataThreshold(const ArgList &Args)
+{
+  Arg *A;
+
+  A = Args.getLastArg(options::OPT_G,
+                      options::OPT_G_EQ,
+                      options::OPT_msmall_data_threshold_EQ);
+  if (A)
+    return A->getValue();
+
+  A = Args.getLastArg(options::OPT_shared,
+                      options::OPT_fpic,
+                      options::OPT_fPIC);
+  if (A)
+    return "0";
+
+  return 0;
+}
+
+bool Hexagon_TC::UsesG0(const char* smallDataThreshold)
+{
+  return smallDataThreshold && smallDataThreshold[0] == '0';
 }
 
 static void GetHexagonLibraryPaths(

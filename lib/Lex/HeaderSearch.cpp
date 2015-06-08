@@ -18,6 +18,7 @@
 #include "clang/Lex/HeaderSearchOptions.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/Lexer.h"
+#include "clang/Lex/Preprocessor.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallString.h"
@@ -594,7 +595,13 @@ const FileEntry *HeaderSearch::LookupFile(
       RelativePath->append(Filename.begin(), Filename.end());
     }
     // Otherwise, just return the file.
-    return FileMgr.getFile(Filename, /*openFile=*/true);
+    const FileEntry *File = FileMgr.getFile(Filename, /*openFile=*/true);
+    if (File && SuggestedModule) {
+      // If there is a module that corresponds to this header, suggest it.
+      hasModuleMap(Filename, File->getDir(), /*SystemHeaderDir*/false);
+      *SuggestedModule = findModuleForHeader(File);
+    }
+    return File;
   }
 
   // This is the header that MSVC's header search would have found.
@@ -1016,7 +1023,9 @@ void HeaderSearch::MarkFileModuleHeader(const FileEntry *FE,
   HFI.setHeaderRole(Role);
 }
 
-bool HeaderSearch::ShouldEnterIncludeFile(const FileEntry *File, bool isImport){
+bool HeaderSearch::ShouldEnterIncludeFile(Preprocessor &PP,
+                                          const FileEntry *File,
+                                          bool isImport) {
   ++NumIncluded; // Count # of attempted #includes.
 
   // Get information about this file.
@@ -1041,7 +1050,7 @@ bool HeaderSearch::ShouldEnterIncludeFile(const FileEntry *File, bool isImport){
   // if the macro that guards it is defined, we know the #include has no effect.
   if (const IdentifierInfo *ControllingMacro
       = FileInfo.getControllingMacro(ExternalLookup))
-    if (ControllingMacro->hasMacroDefinition()) {
+    if (PP.isMacroDefined(ControllingMacro)) {
       ++NumMultiIncludeFileOptzn;
       return false;
     }
@@ -1067,7 +1076,7 @@ StringRef HeaderSearch::getUniqueFrameworkName(StringRef Framework) {
 bool HeaderSearch::hasModuleMap(StringRef FileName, 
                                 const DirectoryEntry *Root,
                                 bool IsSystem) {
-  if (!enabledModules() || !LangOpts.ModulesImplicitMaps)
+  if (!HSOpts->ModuleMaps || !LangOpts.ModulesImplicitMaps)
     return false;
 
   SmallVector<const DirectoryEntry *, 2> FixUpDirectories;

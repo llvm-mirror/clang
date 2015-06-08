@@ -25,6 +25,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -336,9 +337,9 @@ public:
     // Modify the TypeSpec per-argument to get a concrete Type, and create
     // known variables for each.
     // Types[0] is the return value.
-    Types.push_back(Type(OutTS, Proto[0]));
+    Types.emplace_back(OutTS, Proto[0]);
     for (unsigned I = 1; I < Proto.size(); ++I)
-      Types.push_back(Type(InTS, Proto[I]));
+      Types.emplace_back(InTS, Proto[I]);
   }
 
   /// Get the Record that this intrinsic is based off.
@@ -1629,15 +1630,13 @@ std::pair<Type, std::string> Intrinsic::DagEmitter::emitDagShuffle(DagInit *DI){
                   "Different types in arguments to shuffle!");
 
   SetTheory ST;
-  LowHalf LH;
-  HighHalf HH;
-  MaskExpander ME(Arg1.first.getNumElements());
-  Rev R(Arg1.first.getElementSizeInBits());
   SetTheory::RecSet Elts;
-  ST.addOperator("lowhalf", &LH);
-  ST.addOperator("highhalf", &HH);
-  ST.addOperator("rev", &R);
-  ST.addExpander("MaskExpand", &ME);
+  ST.addOperator("lowhalf", llvm::make_unique<LowHalf>());
+  ST.addOperator("highhalf", llvm::make_unique<HighHalf>());
+  ST.addOperator("rev",
+                 llvm::make_unique<Rev>(Arg1.first.getElementSizeInBits()));
+  ST.addExpander("MaskExpand",
+                 llvm::make_unique<MaskExpander>(Arg1.first.getNumElements()));
   ST.evaluate(DI->getArg(2), Elts, None);
 
   std::string S = "__builtin_shufflevector(" + Arg1.second + ", " + Arg2.second;

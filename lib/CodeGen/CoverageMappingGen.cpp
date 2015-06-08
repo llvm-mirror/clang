@@ -134,18 +134,23 @@ public:
                            : SM.getIncludeLoc(SM.getFileID(Loc));
   }
 
-  /// \brief Get the start of \c S ignoring macro argument locations.
+  /// \brief Return true if \c Loc is a location in a built-in macro.
+  bool isInBuiltin(SourceLocation Loc) {
+    return strcmp(SM.getBufferName(SM.getSpellingLoc(Loc)), "<built-in>") == 0;
+  }
+
+  /// \brief Get the start of \c S ignoring macro arguments and builtin macros.
   SourceLocation getStart(const Stmt *S) {
     SourceLocation Loc = S->getLocStart();
-    while (SM.isMacroArgExpansion(Loc))
+    while (SM.isMacroArgExpansion(Loc) || isInBuiltin(Loc))
       Loc = SM.getImmediateExpansionRange(Loc).first;
     return Loc;
   }
 
-  /// \brief Get the end of \c S ignoring macro argument locations.
+  /// \brief Get the end of \c S ignoring macro arguments and builtin macros.
   SourceLocation getEnd(const Stmt *S) {
     SourceLocation Loc = S->getLocEnd();
-    while (SM.isMacroArgExpansion(Loc))
+    while (SM.isMacroArgExpansion(Loc) || isInBuiltin(Loc))
       Loc = SM.getImmediateExpansionRange(Loc).first;
     return getPreciseTokenLocEnd(Loc);
   }
@@ -447,7 +452,10 @@ struct CounterCoverageMappingBuilder
   /// This should be used after visiting any statements in non-source order.
   void adjustForOutOfOrderTraversal(SourceLocation EndLoc) {
     MostRecentLocation = EndLoc;
-    if (MostRecentLocation == getEndOfFileOrMacro(MostRecentLocation))
+    // Avoid adding duplicate regions if we have a completed region on the top
+    // of the stack and are adjusting to the end of a virtual file.
+    if (getRegion().hasEndLoc() &&
+        MostRecentLocation == getEndOfFileOrMacro(MostRecentLocation))
       MostRecentLocation = getIncludeOrExpansionLoc(MostRecentLocation);
   }
 
@@ -592,6 +600,13 @@ struct CounterCoverageMappingBuilder
     terminateRegion(S);
   }
 
+  void VisitCXXThrowExpr(const CXXThrowExpr *E) {
+    extendRegion(E);
+    if (E->getSubExpr())
+      Visit(E->getSubExpr());
+    terminateRegion(E);
+  }
+
   void VisitGotoStmt(const GotoStmt *S) { terminateRegion(S); }
 
   void VisitLabelStmt(const LabelStmt *S) {
@@ -707,8 +722,10 @@ struct CounterCoverageMappingBuilder
     Counter BackedgeCount = propagateCounts(BodyCount, S->getBody());
     BreakContinue BC = BreakContinueStack.pop_back_val();
 
-    Counter OutCount = addCounters(ParentCount, BC.BreakCount, BC.ContinueCount,
-                                   subtractCounters(BodyCount, BackedgeCount));
+    Counter LoopCount =
+        addCounters(ParentCount, BackedgeCount, BC.ContinueCount);
+    Counter OutCount =
+        addCounters(BC.BreakCount, subtractCounters(LoopCount, BodyCount));
     if (OutCount != ParentCount)
       pushRegion(OutCount);
   }
@@ -725,8 +742,10 @@ struct CounterCoverageMappingBuilder
     Counter BackedgeCount = propagateCounts(BodyCount, S->getBody());
     BreakContinue BC = BreakContinueStack.pop_back_val();
 
-    Counter OutCount = addCounters(ParentCount, BC.BreakCount, BC.ContinueCount,
-                                   subtractCounters(BodyCount, BackedgeCount));
+    Counter LoopCount =
+        addCounters(ParentCount, BackedgeCount, BC.ContinueCount);
+    Counter OutCount =
+        addCounters(BC.BreakCount, subtractCounters(LoopCount, BodyCount));
     if (OutCount != ParentCount)
       pushRegion(OutCount);
   }
@@ -830,7 +849,13 @@ struct CounterCoverageMappingBuilder
     Counter ParentCount = getRegion().getCounter();
     Counter TrueCount = getRegionCounter(E);
 
-    propagateCounts(TrueCount, E->getTrueExpr());
+    Visit(E->getCond());
+
+    if (!isa<BinaryConditionalOperator>(E)) {
+      extendRegion(E->getTrueExpr());
+      propagateCounts(TrueCount, E->getTrueExpr());
+    }
+    extendRegion(E->getFalseExpr());
     propagateCounts(subtractCounters(ParentCount, TrueCount),
                     E->getFalseExpr());
   }
@@ -952,7 +977,7 @@ void CoverageMappingModuleGen::emit() {
     llvm::sys::fs::make_absolute(Path);
 
     auto I = Entry.second;
-    FilenameStrs[I] = std::move(std::string(Path.begin(), Path.end()));
+    FilenameStrs[I] = std::string(Path.begin(), Path.end());
     FilenameRefs[I] = FilenameStrs[I];
   }
 

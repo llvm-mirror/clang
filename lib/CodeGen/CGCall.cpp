@@ -30,6 +30,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include <sstream>
 using namespace clang;
@@ -1482,15 +1483,15 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
 
     // Add target-cpu and target-features work if they differ from the defaults.
     std::string &CPU = getTarget().getTargetOpts().CPU;
-    if (CPU != "" && CPU != getTarget().getTriple().getArchName())
-      FuncAttrs.addAttribute("target-cpu", getTarget().getTargetOpts().CPU);
+    if (CPU != "")
+      FuncAttrs.addAttribute("target-cpu", CPU);
 
-    // TODO: FeaturesAsWritten gets us the features on the command line,
-    // for canonicalization purposes we might want to avoid putting features
-    // in the target-features set if we know it'll be one of the default
-    // features in the backend, e.g. corei7-avx and +avx.
-    std::vector<std::string> &Features =
-        getTarget().getTargetOpts().FeaturesAsWritten;
+    // TODO: Features gets us the features on the command line including
+    // feature dependencies. For canonicalization purposes we might want to
+    // avoid putting features in the target-features set if we know it'll be one
+    // of the default features in the backend, e.g. corei7-avx and +avx or figure
+    // out non-explicit dependencies.
+    std::vector<std::string> &Features = getTarget().getTargetOpts().Features;
     if (!Features.empty()) {
       std::stringstream S;
       std::copy(Features.begin(), Features.end(),
@@ -1587,8 +1588,12 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
     case ABIArgInfo::Extend:
       if (ParamType->isSignedIntegerOrEnumerationType())
         Attrs.addAttribute(llvm::Attribute::SExt);
-      else if (ParamType->isUnsignedIntegerOrEnumerationType())
-        Attrs.addAttribute(llvm::Attribute::ZExt);
+      else if (ParamType->isUnsignedIntegerOrEnumerationType()) {
+        if (getTypes().getABIInfo().shouldSignExtUnsignedType(ParamType))
+          Attrs.addAttribute(llvm::Attribute::SExt);
+        else
+          Attrs.addAttribute(llvm::Attribute::ZExt);
+      }
       // FALL THROUGH
     case ABIArgInfo::Direct:
       if (ArgNo == 0 && FI.isChainCall())
@@ -1812,8 +1817,7 @@ void CodeGenFunction::EmitFunctionProlog(const CGFunctionInfo &FI,
         ArgVals.push_back(ValueAndIsPtr(V, HavePointer));
       } else {
         // Load scalar value from indirect argument.
-        CharUnits Alignment = getContext().getTypeAlignInChars(Ty);
-        V = EmitLoadOfScalar(V, false, Alignment.getQuantity(), Ty,
+        V = EmitLoadOfScalar(V, false, ArgI.getIndirectAlign(), Ty,
                              Arg->getLocStart());
 
         if (isPromoted)
@@ -2216,7 +2220,29 @@ static llvm::StoreInst *findDominatingStoreToReturnValue(CodeGenFunction &CGF) {
   if (!CGF.ReturnValue->hasOneUse()) {
     llvm::BasicBlock *IP = CGF.Builder.GetInsertBlock();
     if (IP->empty()) return nullptr;
-    llvm::StoreInst *store = dyn_cast<llvm::StoreInst>(&IP->back());
+    llvm::Instruction *I = &IP->back();
+
+    // Skip lifetime markers
+    for (llvm::BasicBlock::reverse_iterator II = IP->rbegin(),
+                                            IE = IP->rend();
+         II != IE; ++II) {
+      if (llvm::IntrinsicInst *Intrinsic =
+              dyn_cast<llvm::IntrinsicInst>(&*II)) {
+        if (Intrinsic->getIntrinsicID() == llvm::Intrinsic::lifetime_end) {
+          const llvm::Value *CastAddr = Intrinsic->getArgOperand(1);
+          ++II;
+          if (isa<llvm::BitCastInst>(&*II)) {
+            if (CastAddr == &*II) {
+              continue;
+            }
+          }
+        }
+      }
+      I = &*II;
+      break;
+    }
+
+    llvm::StoreInst *store = dyn_cast<llvm::StoreInst>(I);
     if (!store) return nullptr;
     if (store->getPointerOperand() != CGF.ReturnValue) return nullptr;
     assert(!store->isAtomic() && !store->isVolatile()); // see below
@@ -2314,7 +2340,8 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
 
       // If there is a dominating store to ReturnValue, we can elide
       // the load, zap the store, and usually zap the alloca.
-      if (llvm::StoreInst *SI = findDominatingStoreToReturnValue(*this)) {
+      if (llvm::StoreInst *SI =
+              findDominatingStoreToReturnValue(*this)) {
         // Reuse the debug location from the store unless there is
         // cleanup code to be emitted between the store and return
         // instruction.
@@ -2669,7 +2696,7 @@ void CallArgList::allocateArgumentMemory(CodeGenFunction &CGF) {
 
   // Save the stack.
   llvm::Function *F = CGF.CGM.getIntrinsic(llvm::Intrinsic::stacksave);
-  StackBase = CGF.Builder.CreateCall(F, "inalloca.save");
+  StackBase = CGF.Builder.CreateCall(F, {}, "inalloca.save");
 
   // Control gets really tied up in landing pads, so we have to spill the
   // stacksave to an alloca to avoid violating SSA form.
@@ -2692,27 +2719,28 @@ void CallArgList::freeArgumentMemory(CodeGenFunction &CGF) const {
   }
 }
 
-static void emitNonNullArgCheck(CodeGenFunction &CGF, RValue RV,
-                                QualType ArgType, SourceLocation ArgLoc,
-                                const FunctionDecl *FD, unsigned ParmNum) {
-  if (!CGF.SanOpts.has(SanitizerKind::NonnullAttribute) || !FD)
+void CodeGenFunction::EmitNonNullArgCheck(RValue RV, QualType ArgType,
+                                          SourceLocation ArgLoc,
+                                          const FunctionDecl *FD,
+                                          unsigned ParmNum) {
+  if (!SanOpts.has(SanitizerKind::NonnullAttribute) || !FD)
     return;
   auto PVD = ParmNum < FD->getNumParams() ? FD->getParamDecl(ParmNum) : nullptr;
   unsigned ArgNo = PVD ? PVD->getFunctionScopeIndex() : ParmNum;
   auto NNAttr = getNonNullAttr(FD, PVD, ArgType, ArgNo);
   if (!NNAttr)
     return;
-  CodeGenFunction::SanitizerScope SanScope(&CGF);
+  SanitizerScope SanScope(this);
   assert(RV.isScalar());
   llvm::Value *V = RV.getScalarVal();
   llvm::Value *Cond =
-      CGF.Builder.CreateICmpNE(V, llvm::Constant::getNullValue(V->getType()));
+      Builder.CreateICmpNE(V, llvm::Constant::getNullValue(V->getType()));
   llvm::Constant *StaticData[] = {
-      CGF.EmitCheckSourceLocation(ArgLoc),
-      CGF.EmitCheckSourceLocation(NNAttr->getLocation()),
-      llvm::ConstantInt::get(CGF.Int32Ty, ArgNo + 1),
+      EmitCheckSourceLocation(ArgLoc),
+      EmitCheckSourceLocation(NNAttr->getLocation()),
+      llvm::ConstantInt::get(Int32Ty, ArgNo + 1),
   };
-  CGF.EmitCheck(std::make_pair(Cond, SanitizerKind::NonnullAttribute),
+  EmitCheck(std::make_pair(Cond, SanitizerKind::NonnullAttribute),
                 "nonnull_arg", StaticData, None);
 }
 
@@ -2740,7 +2768,7 @@ void CodeGenFunction::EmitCallArgs(CallArgList &Args,
     for (int I = ArgTypes.size() - 1; I >= 0; --I) {
       CallExpr::const_arg_iterator Arg = ArgBeg + I;
       EmitCallArg(Args, *Arg, ArgTypes[I]);
-      emitNonNullArgCheck(*this, Args.back().RV, ArgTypes[I], Arg->getExprLoc(),
+      EmitNonNullArgCheck(Args.back().RV, ArgTypes[I], Arg->getExprLoc(),
                           CalleeDecl, ParamsToSkip + I);
     }
 
@@ -2754,7 +2782,7 @@ void CodeGenFunction::EmitCallArgs(CallArgList &Args,
     CallExpr::const_arg_iterator Arg = ArgBeg + I;
     assert(Arg != ArgEnd);
     EmitCallArg(Args, *Arg, ArgTypes[I]);
-    emitNonNullArgCheck(*this, Args.back().RV, ArgTypes[I], Arg->getExprLoc(),
+    EmitNonNullArgCheck(Args.back().RV, ArgTypes[I], Arg->getExprLoc(),
                         CalleeDecl, ParamsToSkip + I);
   }
 }
@@ -2948,7 +2976,6 @@ void CodeGenFunction::EmitNoreturnRuntimeCallOrInvoke(llvm::Value *callee,
     call->setCallingConv(getRuntimeCC());
     Builder.CreateUnreachable();
   }
-  PGO.setCurrentRegionUnreachable();
 }
 
 /// Emits a call or invoke instruction to the given nullary runtime

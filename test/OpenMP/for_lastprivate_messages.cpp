@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 %s
+// RUN: %clang_cc1 -verify -fopenmp %s
 
 void foo() {
 }
@@ -140,6 +140,13 @@ int foomain(int argc, char **argv) {
   for (int k = 0; k < argc; ++k)
     ++k;
   return 0;
+}
+
+void bar(S4 a[2]) {
+#pragma omp parallel
+#pragma omp for lastprivate(a)
+  for (int i = 0; i < 2; ++i)
+    foo();
 }
 
 namespace A {

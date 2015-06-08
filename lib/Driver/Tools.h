@@ -40,7 +40,7 @@ using llvm::opt::ArgStringList;
   class LLVM_LIBRARY_VISIBILITY Clang : public Tool {
   public:
     static const char *getBaseInputName(const llvm::opt::ArgList &Args,
-                                        const InputInfoList &Inputs);
+                                        const InputInfo &Input);
     static const char *getBaseInputStem(const llvm::opt::ArgList &Args,
                                         const InputInfoList &Inputs);
     static const char *getDependencyFileName(const llvm::opt::ArgList &Args,
@@ -226,9 +226,11 @@ namespace hexagon {
 namespace arm {
   StringRef getARMTargetCPU(const llvm::opt::ArgList &Args,
                             const llvm::Triple &Triple);
+  const StringRef getARMArch(const llvm::opt::ArgList &Args,
+                             const llvm::Triple &Triple);
   const char* getARMCPUForMArch(const llvm::opt::ArgList &Args,
                                 const llvm::Triple &Triple);
-  const char* getLLVMArchSuffixForARM(StringRef CPU);
+  const char* getLLVMArchSuffixForARM(StringRef CPU, StringRef Arch);
 
   void appendEBLinkFlags(const llvm::opt::ArgList &Args, ArgStringList &CmdArgs, const llvm::Triple &Triple);
 }

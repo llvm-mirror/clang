@@ -1,9 +1,11 @@
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -x c++ -triple %itanium_abi_triple -emit-llvm %s -o - | FileCheck %s
-// RUN: %clang_cc1 -fopenmp=libiomp5 -x c++ -std=c++11 -triple %itanium_abi_triple -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp=libiomp5 -x c++ -triple %itanium_abi_triple -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -x c++ -std=c++11 -DLAMBDA -triple %itanium_abi_triple -emit-llvm %s -o - | FileCheck -check-prefix=LAMBDA %s
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -x c++ -fblocks -DBLOCKS -triple %itanium_abi_triple -emit-llvm %s -o - | FileCheck -check-prefix=BLOCKS %s
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -triple %itanium_abi_triple -emit-llvm %s -o - | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -triple %itanium_abi_triple -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp -x c++ -triple %itanium_abi_triple -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -std=c++11 -DLAMBDA -triple %itanium_abi_triple -emit-llvm %s -o - | FileCheck -check-prefix=LAMBDA %s
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -fblocks -DBLOCKS -triple %itanium_abi_triple -emit-llvm %s -o - | FileCheck -check-prefix=BLOCKS %s
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -std=c++11 -DARRAY -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=ARRAY %s
 // expected-no-diagnostics
+#ifndef ARRAY
 #ifndef HEADER
 #define HEADER
 
@@ -237,5 +239,33 @@ int main() {
 // CHECK-DAG: call {{.*}} [[S_INT_TY_DESTR]]([[S_INT_TY]]* [[VAR_PRIV]])
 // CHECK-DAG: call {{.*}} [[S_INT_TY_DESTR]]([[S_INT_TY]]*
 // CHECK: ret void
+
 #endif
+#else
+// ARRAY-LABEL: array_func
+struct St {
+  int a, b;
+  St() : a(0), b(0) {}
+  St(const St &) { }
+  ~St() {}
+};
+
+void array_func(float a[3], St s[2], int n, long double vla1[n]) {
+  double vla2[n];
+// ARRAY: @__kmpc_fork_call(
+// ARRAY: [[PRIV_A:%.+]] = alloca float*
+// ARRAY: [[PRIV_S:%.+]] = alloca %struct.St*
+// ARRAY: [[PRIV_VLA1:%.+]] = alloca x86_fp80*
+// ARRAY: store float* %{{.+}}, float** [[PRIV_A]],
+// ARRAY: store %struct.St* %{{.+}}, %struct.St** [[PRIV_S]],
+// ARRAY: store x86_fp80* %{{.+}}, x86_fp80** [[PRIV_VLA1]],
+// ARRAY: call i8* @llvm.stacksave()
+// ARRAY: [[SIZE:%.+]] = mul nuw i64 %{{.+}}, 8
+// ARRAY: call void @llvm.memcpy.p0i8.p0i8.i64(i8* %{{.+}}, i8* %{{.+}}, i64 [[SIZE]], i32 8, i1 false)
+// ARRAY: call void @llvm.stackrestore(i8*
+#pragma omp parallel firstprivate(a, s, vla1, vla2)
+  ;
+}
+#endif
+
 

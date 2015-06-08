@@ -259,6 +259,8 @@ llvm::Function *CodeGenModule::CreateGlobalInitOrDestructFunction(
       Fn->setSection(Section);
   }
 
+  SetLLVMFunctionAttributes(nullptr, getTypes().arrangeNullaryFunction(), Fn);
+
   Fn->setCallingConv(getRuntimeCC());
 
   if (!getLangOpts().Exceptions)
@@ -429,7 +431,7 @@ CodeGenModule::EmitCXXGlobalInitFunc() {
     // priority emitted above.
     FileName = llvm::sys::path::filename(MainFile->getName());
   } else {
-    FileName = SmallString<128>("<null>");
+    FileName = "<null>";
   }
 
   for (size_t i = 0; i < FileName.size(); ++i) {

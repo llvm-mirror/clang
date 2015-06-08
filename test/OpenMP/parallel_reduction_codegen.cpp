@@ -1,8 +1,8 @@
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -x c++ -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck %s
-// RUN: %clang_cc1 -fopenmp=libiomp5 -x c++ -std=c++11 -triple x86_64-apple-darwin10 -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp=libiomp5 -x c++ -triple x86_64-apple-darwin10 -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -x c++ -std=c++11 -DLAMBDA -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=LAMBDA %s
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -x c++ -fblocks -DBLOCKS -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=BLOCKS %s
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -triple x86_64-apple-darwin10 -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp -x c++ -triple x86_64-apple-darwin10 -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -std=c++11 -DLAMBDA -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=LAMBDA %s
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -fblocks -DBLOCKS -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=BLOCKS %s
 // expected-no-diagnostics
 #ifndef HEADER
 #define HEADER
@@ -267,17 +267,15 @@ int main() {
 // var1 = var1.operator &&(var1_reduction);
 // CHECK: [[TO_FLOAT:%.+]] = call float @{{.+}}([[S_FLOAT_TY]]* [[VAR1_REF]])
 // CHECK: [[VAR1_BOOL:%.+]] = fcmp une float [[TO_FLOAT]], 0.0
-// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[FALSE:.+]]
+// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[END2:.+]]
 // CHECK: [[TRUE]]
 // CHECK: [[TO_FLOAT:%.+]] = call float @{{.+}}([[S_FLOAT_TY]]* [[VAR1_PRIV]])
 // CHECK: [[VAR1_REDUCTION_BOOL:%.+]] = fcmp une float [[TO_FLOAT]], 0.0
-// CHECK: br i1 [[VAR1_REDUCTION_BOOL]], label %[[TRUE2:.+]], label %[[FALSE2:.+]]
-// CHECK: [[TRUE2]]
-// CHECK: br label %[[END2:.+]]
-// CHECK: [[FALSE2]]
 // CHECK: br label %[[END2]]
 // CHECK: [[END2]]
-// CHECK: [[COND_LVALUE:%.+]] = phi [[S_FLOAT_TY]]* [ [[VAR1_REF]], %[[TRUE2]] ], [ [[VAR1_PRIV]], %[[FALSE2]] ]
+// CHECK: [[COND_LVALUE:%.+]] = phi i1 [ false, %{{.+}} ], [ [[VAR1_REDUCTION_BOOL]], %[[TRUE]] ]
+// CHECK: [[CONV:%.+]] = uitofp i1 [[COND_LVALUE]] to float
+// CHECK:  call void @{{.+}}([[S_FLOAT_TY]]* [[COND_LVALUE:%.+]], float [[CONV]])
 // CHECK: [[BC1:%.+]] = bitcast [[S_FLOAT_TY]]* [[VAR1_REF]] to i8*
 // CHECK: [[BC2:%.+]] = bitcast [[S_FLOAT_TY]]* [[COND_LVALUE]] to i8*
 // CHECK: call void @llvm.memcpy.p0i8.p0i8.i64(i8* [[BC1]], i8* [[BC2]], i64 4, i32 4, i1 false)
@@ -286,7 +284,8 @@ int main() {
 // CHECK: [[T_VAR1_VAL:%.+]] = load float, float* [[T_VAR1_REF]],
 // CHECK: [[T_VAR1_PRIV_VAL:%.+]] = load float, float* [[T_VAR1_PRIV]],
 // CHECK: [[CMP:%.+]] = fcmp olt float [[T_VAR1_VAL]], [[T_VAR1_PRIV_VAL]]
-// CHECK: [[UP:%.+]] = uitofp i1 [[CMP]] to float
+// CHECK: br i1 [[CMP]]
+// CHECK: [[UP:%.+]] = phi float
 // CHECK: store float [[UP]], float* [[T_VAR1_REF]],
 
 // __kmpc_end_reduce_nowait(<loc>, <gtid>, &<lock>);
@@ -299,19 +298,16 @@ int main() {
 // t_var += t_var_reduction;
 // CHECK: load float, float* [[T_VAR_PRIV]]
 // CHECK: [[T_VAR_REF_INT:%.+]] = bitcast float* [[T_VAR_REF]] to i32*
-// CHECK: load atomic i32, i32* [[T_VAR_REF_INT]] monotonic,
-// CHECK: [[OLD1:%.+]] = bitcast i32 %{{.+}} to float
+// CHECK: [[OLD1:%.+]] = load atomic i32, i32* [[T_VAR_REF_INT]] monotonic,
 // CHECK: br label %[[CONT:.+]]
 // CHECK: [[CONT]]
-// CHECK: [[ORIG_OLD:%.+]] = phi float [ [[OLD1]], %{{.+}} ], [ [[OLD2:%.+]], %[[CONT]] ]
-// CHECK: [[UP:%.+]] = fadd float
-// CHECK: [[ORIG_OLD_INT:%.+]] = bitcast float [[ORIG_OLD]] to i32
-// CHECK: [[UP_INT:%.+]] = bitcast float [[UP]] to i32
+// CHECK: [[ORIG_OLD_INT:%.+]] = phi i32 [ [[OLD1]], %{{.+}} ], [ [[OLD2:%.+]], %[[CONT]] ]
+// CHECK: fadd float
+// CHECK: [[UP_INT:%.+]] = load i32
 // CHECK: [[T_VAR_REF_INT:%.+]] = bitcast float* [[T_VAR_REF]] to i32*
 // CHECK: [[RES:%.+]] = cmpxchg i32* [[T_VAR_REF_INT]], i32 [[ORIG_OLD_INT]], i32 [[UP_INT]] monotonic monotonic
-// CHECK: [[OLD_VAL_INT:%.+]] = extractvalue { i32, i1 } [[RES]], 0
+// CHECK: [[OLD2:%.+]] = extractvalue { i32, i1 } [[RES]], 0
 // CHECK: [[SUCCESS_FAIL:%.+]] = extractvalue { i32, i1 } [[RES]], 1
-// CHECK: [[OLD2]] = bitcast i32 [[OLD_VAL_INT]] to float
 // CHECK: br i1 [[SUCCESS_FAIL]], label %[[ATOMIC_DONE:.+]], label %[[CONT]]
 // CHECK: [[ATOMIC_DONE]]
 
@@ -327,17 +323,15 @@ int main() {
 // CHECK: call void @__kmpc_critical(
 // CHECK: [[TO_FLOAT:%.+]] = call float @{{.+}}([[S_FLOAT_TY]]* [[VAR1_REF]])
 // CHECK: [[VAR1_BOOL:%.+]] = fcmp une float [[TO_FLOAT]], 0.0
-// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[FALSE:.+]]
+// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[END2:.+]]
 // CHECK: [[TRUE]]
 // CHECK: [[TO_FLOAT:%.+]] = call float @{{.+}}([[S_FLOAT_TY]]* [[VAR1_PRIV]])
 // CHECK: [[VAR1_REDUCTION_BOOL:%.+]] = fcmp une float [[TO_FLOAT]], 0.0
-// CHECK: br i1 [[VAR1_REDUCTION_BOOL]], label %[[TRUE2:.+]], label %[[FALSE2:.+]]
-// CHECK: [[TRUE2]]
-// CHECK: br label %[[END2:.+]]
-// CHECK: [[FALSE2]]
 // CHECK: br label %[[END2]]
 // CHECK: [[END2]]
-// CHECK: [[COND_LVALUE:%.+]] = phi [[S_FLOAT_TY]]* [ [[VAR1_REF]], %[[TRUE2]] ], [ [[VAR1_PRIV]], %[[FALSE2]] ]
+// CHECK: [[COND_LVALUE:%.+]] = phi i1 [ false, %{{.+}} ], [ [[VAR1_REDUCTION_BOOL]], %[[TRUE]] ]
+// CHECK: [[CONV:%.+]] = uitofp i1 [[COND_LVALUE]] to float
+// CHECK:  call void @{{.+}}([[S_FLOAT_TY]]* [[COND_LVALUE:%.+]], float [[CONV]])
 // CHECK: [[BC1:%.+]] = bitcast [[S_FLOAT_TY]]* [[VAR1_REF]] to i8*
 // CHECK: [[BC2:%.+]] = bitcast [[S_FLOAT_TY]]* [[COND_LVALUE]] to i8*
 // CHECK: call void @llvm.memcpy.p0i8.p0i8.i64(i8* [[BC1]], i8* [[BC2]], i64 4, i32 4, i1 false)
@@ -346,20 +340,18 @@ int main() {
 // t_var1 = min(t_var1, t_var1_reduction);
 // CHECK: load float, float* [[T_VAR1_PRIV]]
 // CHECK: [[T_VAR1_REF_INT:%.+]] = bitcast float* [[T_VAR1_REF]] to i32*
-// CHECK: load atomic i32, i32* [[T_VAR1_REF_INT]] monotonic,
-// CHECK: [[OLD1:%.+]] = bitcast i32 %{{.+}} to float
+// CHECK: [[OLD1:%.+]] = load atomic i32, i32* [[T_VAR1_REF_INT]] monotonic,
 // CHECK: br label %[[CONT:.+]]
 // CHECK: [[CONT]]
-// CHECK: [[ORIG_OLD:%.+]] = phi float [ [[OLD1]], %{{.+}} ], [ [[OLD2:%.+]], %[[CONT]] ]
+// CHECK: [[ORIG_OLD_INT:%.+]] = phi i32 [ [[OLD1]], %{{.+}} ], [ [[OLD2:%.+]], %{{.+}} ]
 // CHECK: [[CMP:%.+]] = fcmp olt float
-// CHECK: [[UP:%.+]] = uitofp i1 [[CMP]] to float
-// CHECK: [[ORIG_OLD_INT:%.+]] = bitcast float [[ORIG_OLD]] to i32
-// CHECK: [[UP_INT:%.+]] = bitcast float [[UP]] to i32
+// CHECK: br i1 [[CMP]]
+// CHECK: [[UP:%.+]] = phi float
+// CHECK: [[UP_INT:%.+]] = load i32
 // CHECK: [[T_VAR1_REF_INT:%.+]] = bitcast float* [[T_VAR1_REF]] to i32*
 // CHECK: [[RES:%.+]] = cmpxchg i32* [[T_VAR1_REF_INT]], i32 [[ORIG_OLD_INT]], i32 [[UP_INT]] monotonic monotonic
-// CHECK: [[OLD_VAL_INT:%.+]] = extractvalue { i32, i1 } [[RES]], 0
+// CHECK: [[OLD2:%.+]] = extractvalue { i32, i1 } [[RES]], 0
 // CHECK: [[SUCCESS_FAIL:%.+]] = extractvalue { i32, i1 } [[RES]], 1
-// CHECK: [[OLD2]] = bitcast i32 [[OLD_VAL_INT]] to float
 // CHECK: br i1 [[SUCCESS_FAIL]], label %[[ATOMIC_DONE:.+]], label %[[CONT]]
 // CHECK: [[ATOMIC_DONE]]
 
@@ -430,17 +422,15 @@ int main() {
 // var1_lhs = var1_lhs.operator &&(var1_rhs);
 // CHECK: [[TO_FLOAT:%.+]] = call float @{{.+}}([[S_FLOAT_TY]]* [[VAR1_LHS]])
 // CHECK: [[VAR1_BOOL:%.+]] = fcmp une float [[TO_FLOAT]], 0.0
-// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[FALSE:.+]]
+// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[END2:.+]]
 // CHECK: [[TRUE]]
 // CHECK: [[TO_FLOAT:%.+]] = call float @{{.+}}([[S_FLOAT_TY]]* [[VAR1_RHS]])
 // CHECK: [[VAR1_REDUCTION_BOOL:%.+]] = fcmp une float [[TO_FLOAT]], 0.0
-// CHECK: br i1 [[VAR1_REDUCTION_BOOL]], label %[[TRUE2:.+]], label %[[FALSE2:.+]]
-// CHECK: [[TRUE2]]
-// CHECK: br label %[[END2:.+]]
-// CHECK: [[FALSE2]]
 // CHECK: br label %[[END2]]
 // CHECK: [[END2]]
-// CHECK: [[COND_LVALUE:%.+]] = phi [[S_FLOAT_TY]]* [ [[VAR1_LHS]], %[[TRUE2]] ], [ [[VAR1_RHS]], %[[FALSE2]] ]
+// CHECK: [[COND_LVALUE:%.+]] = phi i1 [ false, %{{.+}} ], [ [[VAR1_REDUCTION_BOOL]], %[[TRUE]] ]
+// CHECK: [[CONV:%.+]] = uitofp i1 [[COND_LVALUE]] to float
+// CHECK:  call void @{{.+}}([[S_FLOAT_TY]]* [[COND_LVALUE:%.+]], float [[CONV]])
 // CHECK: [[BC1:%.+]] = bitcast [[S_FLOAT_TY]]* [[VAR1_LHS]] to i8*
 // CHECK: [[BC2:%.+]] = bitcast [[S_FLOAT_TY]]* [[COND_LVALUE]] to i8*
 // CHECK: call void @llvm.memcpy.p0i8.p0i8.i64(i8* [[BC1]], i8* [[BC2]], i64 4, i32 4, i1 false)
@@ -449,7 +439,8 @@ int main() {
 // CHECK: [[T_VAR1_LHS_VAL:%.+]] = load float, float* [[T_VAR1_LHS]],
 // CHECK: [[T_VAR1_RHS_VAL:%.+]] = load float, float* [[T_VAR1_RHS]],
 // CHECK: [[CMP:%.+]] = fcmp olt float [[T_VAR1_LHS_VAL]], [[T_VAR1_RHS_VAL]]
-// CHECK: [[UP:%.+]] = uitofp i1 [[CMP]] to float
+// CHECK: br i1 [[CMP]]
+// CHECK: [[UP:%.+]] = phi float
 // CHECK: store float [[UP]], float* [[T_VAR1_LHS]],
 // CHECK: ret void
 
@@ -538,17 +529,14 @@ int main() {
 // var1 = var1.operator &&(var1_reduction);
 // CHECK: [[TO_INT:%.+]] = call i{{[0-9]+}} @{{.+}}([[S_INT_TY]]* [[VAR1_REF]])
 // CHECK: [[VAR1_BOOL:%.+]] = icmp ne i{{[0-9]+}} [[TO_INT]], 0
-// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[FALSE:.+]]
+// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[END2:.+]]
 // CHECK: [[TRUE]]
 // CHECK: [[TO_INT:%.+]] = call i{{[0-9]+}} @{{.+}}([[S_INT_TY]]* [[VAR1_PRIV]])
 // CHECK: [[VAR1_REDUCTION_BOOL:%.+]] = icmp ne i{{[0-9]+}} [[TO_INT]], 0
-// CHECK: br i1 [[VAR1_REDUCTION_BOOL]], label %[[TRUE2:.+]], label %[[FALSE2:.+]]
-// CHECK: [[TRUE2]]
-// CHECK: br label %[[END2:.+]]
-// CHECK: [[FALSE2]]
-// CHECK: br label %[[END2]]
 // CHECK: [[END2]]
-// CHECK: [[COND_LVALUE:%.+]] = phi [[S_INT_TY]]* [ [[VAR1_REF]], %[[TRUE2]] ], [ [[VAR1_PRIV]], %[[FALSE2]] ]
+// CHECK: [[COND_LVALUE:%.+]] = phi i1 [ false, %{{.+}} ], [ [[VAR1_REDUCTION_BOOL]], %[[TRUE]] ]
+// CHECK: [[CONV:%.+]] = zext i1 [[COND_LVALUE]] to i32
+// CHECK:  call void @{{.+}}([[S_INT_TY]]* [[COND_LVALUE:%.+]], i32 [[CONV]])
 // CHECK: [[BC1:%.+]] = bitcast [[S_INT_TY]]* [[VAR1_REF]] to i8*
 // CHECK: [[BC2:%.+]] = bitcast [[S_INT_TY]]* [[COND_LVALUE]] to i8*
 // CHECK: call void @llvm.memcpy.p0i8.p0i8.i64(i8* [[BC1]], i8* [[BC2]], i64 4, i32 4, i1 false)
@@ -557,7 +545,8 @@ int main() {
 // CHECK: [[T_VAR1_VAL:%.+]] = load i{{[0-9]+}}, i{{[0-9]+}}* [[T_VAR1_REF]],
 // CHECK: [[T_VAR1_PRIV_VAL:%.+]] = load i{{[0-9]+}}, i{{[0-9]+}}* [[T_VAR1_PRIV]],
 // CHECK: [[CMP:%.+]] = icmp slt i{{[0-9]+}} [[T_VAR1_VAL]], [[T_VAR1_PRIV_VAL]]
-// CHECK: [[UP:%.+]] = zext i1 [[CMP]] to i{{[0-9]+}}
+// CHECK: br i1 [[CMP]]
+// CHECK: [[UP:%.+]] = phi i32
 // CHECK: store i{{[0-9]+}} [[UP]], i{{[0-9]+}}* [[T_VAR1_REF]],
 
 // __kmpc_end_reduce_nowait(<loc>, <gtid>, &<lock>);
@@ -583,17 +572,15 @@ int main() {
 // CHECK: call void @__kmpc_critical(
 // CHECK: [[TO_INT:%.+]] = call i{{[0-9]+}} @{{.+}}([[S_INT_TY]]* [[VAR1_REF]])
 // CHECK: [[VAR1_BOOL:%.+]] = icmp ne i{{[0-9]+}} [[TO_INT]], 0
-// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[FALSE:.+]]
+// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[END2:.+]]
 // CHECK: [[TRUE]]
 // CHECK: [[TO_INT:%.+]] = call i{{[0-9]+}} @{{.+}}([[S_INT_TY]]* [[VAR1_PRIV]])
 // CHECK: [[VAR1_REDUCTION_BOOL:%.+]] = icmp ne i{{[0-9]+}} [[TO_INT]], 0
-// CHECK: br i1 [[VAR1_REDUCTION_BOOL]], label %[[TRUE2:.+]], label %[[FALSE2:.+]]
-// CHECK: [[TRUE2]]
-// CHECK: br label %[[END2:.+]]
-// CHECK: [[FALSE2]]
 // CHECK: br label %[[END2]]
 // CHECK: [[END2]]
-// CHECK: [[COND_LVALUE:%.+]] = phi [[S_INT_TY]]* [ [[VAR1_REF]], %[[TRUE2]] ], [ [[VAR1_PRIV]], %[[FALSE2]] ]
+// CHECK: [[COND_LVALUE:%.+]] = phi i1 [ false, %{{.+}} ], [ [[VAR1_REDUCTION_BOOL]], %[[TRUE]] ]
+// CHECK: [[CONV:%.+]] = zext i1 [[COND_LVALUE]] to i32
+// CHECK:  call void @{{.+}}([[S_INT_TY]]* [[COND_LVALUE:%.+]], i32 [[CONV]])
 // CHECK: [[BC1:%.+]] = bitcast [[S_INT_TY]]* [[VAR1_REF]] to i8*
 // CHECK: [[BC2:%.+]] = bitcast [[S_INT_TY]]* [[COND_LVALUE]] to i8*
 // CHECK: call void @llvm.memcpy.p0i8.p0i8.i64(i8* [[BC1]], i8* [[BC2]], i64 4, i32 4, i1 false)
@@ -670,17 +657,15 @@ int main() {
 // var1_lhs = var1_lhs.operator &&(var1_rhs);
 // CHECK: [[TO_INT:%.+]] = call i{{[0-9]+}} @{{.+}}([[S_INT_TY]]* [[VAR1_LHS]])
 // CHECK: [[VAR1_BOOL:%.+]] = icmp ne i{{[0-9]+}} [[TO_INT]], 0
-// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[FALSE:.+]]
+// CHECK: br i1 [[VAR1_BOOL]], label %[[TRUE:.+]], label %[[END2:.+]]
 // CHECK: [[TRUE]]
 // CHECK: [[TO_INT:%.+]] = call i{{[0-9]+}} @{{.+}}([[S_INT_TY]]* [[VAR1_RHS]])
 // CHECK: [[VAR1_REDUCTION_BOOL:%.+]] = icmp ne i{{[0-9]+}} [[TO_INT]], 0
-// CHECK: br i1 [[VAR1_REDUCTION_BOOL]], label %[[TRUE2:.+]], label %[[FALSE2:.+]]
-// CHECK: [[TRUE2]]
-// CHECK: br label %[[END2:.+]]
-// CHECK: [[FALSE2]]
 // CHECK: br label %[[END2]]
 // CHECK: [[END2]]
-// CHECK: [[COND_LVALUE:%.+]] = phi [[S_INT_TY]]* [ [[VAR1_LHS]], %[[TRUE2]] ], [ [[VAR1_RHS]], %[[FALSE2]] ]
+// CHECK: [[COND_LVALUE:%.+]] = phi i1 [ false, %{{.+}} ], [ [[VAR1_REDUCTION_BOOL]], %[[TRUE]] ]
+// CHECK: [[CONV:%.+]] = zext i1 [[COND_LVALUE]] to i32
+// CHECK:  call void @{{.+}}([[S_INT_TY]]* [[COND_LVALUE:%.+]], i32 [[CONV]])
 // CHECK: [[BC1:%.+]] = bitcast [[S_INT_TY]]* [[VAR1_LHS]] to i8*
 // CHECK: [[BC2:%.+]] = bitcast [[S_INT_TY]]* [[COND_LVALUE]] to i8*
 // CHECK: call void @llvm.memcpy.p0i8.p0i8.i64(i8* [[BC1]], i8* [[BC2]], i64 4, i32 4, i1 false)
@@ -689,7 +674,8 @@ int main() {
 // CHECK: [[T_VAR1_LHS_VAL:%.+]] = load i{{[0-9]+}}, i{{[0-9]+}}* [[T_VAR1_LHS]],
 // CHECK: [[T_VAR1_RHS_VAL:%.+]] = load i{{[0-9]+}}, i{{[0-9]+}}* [[T_VAR1_RHS]],
 // CHECK: [[CMP:%.+]] = icmp slt i{{[0-9]+}} [[T_VAR1_LHS_VAL]], [[T_VAR1_RHS_VAL]]
-// CHECK: [[UP:%.+]] = zext i1 [[CMP]] to i{{[0-9]+}}
+// CHECK: br i1 [[CMP]]
+// CHECK: [[UP:%.+]] = phi i32
 // CHECK: store i{{[0-9]+}} [[UP]], i{{[0-9]+}}* [[T_VAR1_LHS]],
 // CHECK: ret void
 

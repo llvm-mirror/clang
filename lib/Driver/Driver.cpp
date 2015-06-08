@@ -989,7 +989,8 @@ static bool DiagnoseInputExistence(const Driver &D, const DerivedArgList &Args,
   if (llvm::sys::fs::exists(Twine(Path)))
     return true;
 
-  if (D.IsCLMode() && llvm::sys::Process::FindInEnvPath("LIB", Value))
+  if (D.IsCLMode() && !llvm::sys::path::is_absolute(Twine(Path)) &&
+      llvm::sys::Process::FindInEnvPath("LIB", Value))
     return true;
 
   D.Diag(clang::diag::err_drv_no_such_file) << Path;
@@ -1877,8 +1878,8 @@ void
 Driver::generatePrefixedToolNames(const char *Tool, const ToolChain &TC,
                                   SmallVectorImpl<std::string> &Names) const {
   // FIXME: Needs a better variable than DefaultTargetTriple
-  Names.push_back(DefaultTargetTriple + "-" + Tool);
-  Names.push_back(Tool);
+  Names.emplace_back(DefaultTargetTriple + "-" + Tool);
+  Names.emplace_back(Tool);
 }
 
 static bool ScanDirForExecutable(SmallString<128> &Dir,
@@ -2024,8 +2025,8 @@ static llvm::Triple computeTargetTriple(StringRef DefaultTargetTriple,
 
 const ToolChain &Driver::getToolChain(const ArgList &Args,
                                       StringRef DarwinArchName) const {
-  llvm::Triple Target = computeTargetTriple(DefaultTargetTriple, Args,
-                                            DarwinArchName);
+  llvm::Triple Target =
+      computeTargetTriple(DefaultTargetTriple, Args, DarwinArchName);
 
   ToolChain *&TC = ToolChains[Target.str()];
   if (!TC) {
@@ -2096,29 +2097,20 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
       }
       break;
     default:
-      // TCE is an OSless target
-      if (Target.getArchName() == "tce") {
+      // Of these targets, Hexagon is the only one that might have
+      // an OS of Linux, in which case it got handled above already.
+      if (Target.getArchName() == "tce")
         TC = new toolchains::TCEToolChain(*this, Target, Args);
-        break;
-      }
-      // If Hexagon is configured as an OSless target
-      if (Target.getArch() == llvm::Triple::hexagon) {
+      else if (Target.getArch() == llvm::Triple::hexagon)
         TC = new toolchains::Hexagon_TC(*this, Target, Args);
-        break;
-      }
-      if (Target.getArch() == llvm::Triple::xcore) {
+      else if (Target.getArch() == llvm::Triple::xcore)
         TC = new toolchains::XCore(*this, Target, Args);
-        break;
-      }
-      if (Target.isOSBinFormatELF()) {
+      else if (Target.isOSBinFormatELF())
         TC = new toolchains::Generic_ELF(*this, Target, Args);
-        break;
-      }
-      if (Target.isOSBinFormatMachO()) {
+      else if (Target.isOSBinFormatMachO())
         TC = new toolchains::MachO(*this, Target, Args);
-        break;
-      }
-      TC = new toolchains::Generic_GCC(*this, Target, Args);
+      else
+        TC = new toolchains::Generic_GCC(*this, Target, Args);
       break;
     }
   }

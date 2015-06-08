@@ -438,6 +438,45 @@ bool Sema::MergeCXXFunctionDecl(FunctionDecl *New, FunctionDecl *Old,
                                 Scope *S) {
   bool Invalid = false;
 
+  // The declaration context corresponding to the scope is the semantic
+  // parent, unless this is a local function declaration, in which case
+  // it is that surrounding function.
+  DeclContext *ScopeDC = New->isLocalExternDecl()
+                             ? New->getLexicalDeclContext()
+                             : New->getDeclContext();
+
+  // Find the previous declaration for the purpose of default arguments.
+  FunctionDecl *PrevForDefaultArgs = Old;
+  for (/**/; PrevForDefaultArgs;
+       // Don't bother looking back past the latest decl if this is a local
+       // extern declaration; nothing else could work.
+       PrevForDefaultArgs = New->isLocalExternDecl()
+                                ? nullptr
+                                : PrevForDefaultArgs->getPreviousDecl()) {
+    // Ignore hidden declarations.
+    if (!LookupResult::isVisible(*this, PrevForDefaultArgs))
+      continue;
+
+    if (S && !isDeclInScope(PrevForDefaultArgs, ScopeDC, S) &&
+        !New->isCXXClassMember()) {
+      // Ignore default arguments of old decl if they are not in
+      // the same scope and this is not an out-of-line definition of
+      // a member function.
+      continue;
+    }
+
+    if (PrevForDefaultArgs->isLocalExternDecl() != New->isLocalExternDecl()) {
+      // If only one of these is a local function declaration, then they are
+      // declared in different scopes, even though isDeclInScope may think
+      // they're in the same scope. (If both are local, the scope check is
+      // sufficent, and if neither is local, then they are in the same scope.)
+      continue;
+    }
+
+    // We found our guy.
+    break;
+  }
+
   // C++ [dcl.fct.default]p4:
   //   For non-template functions, default arguments can be added in
   //   later declarations of a function in the same
@@ -456,34 +495,17 @@ bool Sema::MergeCXXFunctionDecl(FunctionDecl *New, FunctionDecl *Old,
   //   in a member function definition that appears outside of the class
   //   definition are added to the set of default arguments provided by the
   //   member function declaration in the class definition.
-  for (unsigned p = 0, NumParams = Old->getNumParams(); p < NumParams; ++p) {
-    ParmVarDecl *OldParam = Old->getParamDecl(p);
+  for (unsigned p = 0, NumParams = PrevForDefaultArgs
+                                       ? PrevForDefaultArgs->getNumParams()
+                                       : 0;
+       p < NumParams; ++p) {
+    ParmVarDecl *OldParam = PrevForDefaultArgs->getParamDecl(p);
     ParmVarDecl *NewParam = New->getParamDecl(p);
 
-    bool OldParamHasDfl = OldParam->hasDefaultArg();
+    bool OldParamHasDfl = OldParam ? OldParam->hasDefaultArg() : false;
     bool NewParamHasDfl = NewParam->hasDefaultArg();
 
-    // The declaration context corresponding to the scope is the semantic
-    // parent, unless this is a local function declaration, in which case
-    // it is that surrounding function.
-    DeclContext *ScopeDC = New->isLocalExternDecl()
-                               ? New->getLexicalDeclContext()
-                               : New->getDeclContext();
-    if (S && !isDeclInScope(Old, ScopeDC, S) &&
-        !New->getDeclContext()->isRecord())
-      // Ignore default parameters of old decl if they are not in
-      // the same scope and this is not an out-of-line definition of
-      // a member function.
-      OldParamHasDfl = false;
-    if (New->isLocalExternDecl() != Old->isLocalExternDecl())
-      // If only one of these is a local function declaration, then they are
-      // declared in different scopes, even though isDeclInScope may think
-      // they're in the same scope. (If both are local, the scope check is
-      // sufficent, and if neither is local, then they are in the same scope.)
-      OldParamHasDfl = false;
-
     if (OldParamHasDfl && NewParamHasDfl) {
-
       unsigned DiagDefaultParamID =
         diag::err_param_default_argument_redefinition;
 
@@ -491,7 +513,7 @@ bool Sema::MergeCXXFunctionDecl(FunctionDecl *New, FunctionDecl *Old,
       // of template class. The new default parameter's value is ignored.
       Invalid = true;
       if (getLangOpts().MicrosoftExt) {
-        CXXMethodDecl* MD = dyn_cast<CXXMethodDecl>(New);
+        CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(New);
         if (MD && MD->getParent()->getDescribedClassTemplate()) {
           // Merge the old default argument into the new parameter.
           NewParam->setHasInheritedDefaultArg();
@@ -518,7 +540,8 @@ bool Sema::MergeCXXFunctionDecl(FunctionDecl *New, FunctionDecl *Old,
       
       // Look for the function declaration where the default argument was
       // actually written, which may be a declaration prior to Old.
-      for (auto Older = Old; OldParam->hasInheritedDefaultArg();) {
+      for (auto Older = PrevForDefaultArgs;
+           OldParam->hasInheritedDefaultArg(); /**/) {
         Older = Older->getPreviousDecl();
         OldParam = Older->getParamDecl(p);
       }
@@ -543,8 +566,9 @@ bool Sema::MergeCXXFunctionDecl(FunctionDecl *New, FunctionDecl *Old,
         Diag(NewParam->getLocation(),
              diag::err_param_default_argument_template_redecl)
           << NewParam->getDefaultArgRange();
-        Diag(Old->getLocation(), diag::note_template_prev_declaration)
-          << false;
+        Diag(PrevForDefaultArgs->getLocation(),
+             diag::note_template_prev_declaration)
+            << false;
       } else if (New->getTemplateSpecializationKind()
                    != TSK_ImplicitInstantiation &&
                  New->getTemplateSpecializationKind() != TSK_Undeclared) {
@@ -804,7 +828,8 @@ bool Sema::CheckConstexprFunctionDecl(const FunctionDecl *NewFD) {
     // - it shall not be virtual;
     const CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(NewFD);
     if (Method && Method->isVirtual()) {
-      Diag(NewFD->getLocation(), diag::err_constexpr_virtual);
+      Method = Method->getCanonicalDecl();
+      Diag(Method->getLocation(), diag::err_constexpr_virtual);
 
       // If it's not obvious why this function is virtual, find an overridden
       // function which uses the 'virtual' keyword.
@@ -4714,15 +4739,15 @@ static void CheckAbstractClassUsage(AbstractUsageInfo &Info,
 }
 
 /// \brief Check class-level dllimport/dllexport attribute.
-static void checkDLLAttribute(Sema &S, CXXRecordDecl *Class) {
+void Sema::checkClassLevelDLLAttribute(CXXRecordDecl *Class) {
   Attr *ClassAttr = getDLLAttr(Class);
 
   // MSVC inherits DLL attributes to partial class template specializations.
-  if (S.Context.getTargetInfo().getCXXABI().isMicrosoft() && !ClassAttr) {
+  if (Context.getTargetInfo().getCXXABI().isMicrosoft() && !ClassAttr) {
     if (auto *Spec = dyn_cast<ClassTemplatePartialSpecializationDecl>(Class)) {
       if (Attr *TemplateAttr =
               getDLLAttr(Spec->getSpecializedTemplate()->getTemplatedDecl())) {
-        auto *A = cast<InheritableAttr>(TemplateAttr->clone(S.getASTContext()));
+        auto *A = cast<InheritableAttr>(TemplateAttr->clone(getASTContext()));
         A->setInherited(true);
         ClassAttr = A;
       }
@@ -4733,12 +4758,12 @@ static void checkDLLAttribute(Sema &S, CXXRecordDecl *Class) {
     return;
 
   if (!Class->isExternallyVisible()) {
-    S.Diag(Class->getLocation(), diag::err_attribute_dll_not_extern)
+    Diag(Class->getLocation(), diag::err_attribute_dll_not_extern)
         << Class << ClassAttr;
     return;
   }
 
-  if (S.Context.getTargetInfo().getCXXABI().isMicrosoft() &&
+  if (Context.getTargetInfo().getCXXABI().isMicrosoft() &&
       !ClassAttr->isInherited()) {
     // Diagnose dll attributes on members of class with dll attribute.
     for (Decl *Member : Class->decls()) {
@@ -4748,10 +4773,10 @@ static void checkDLLAttribute(Sema &S, CXXRecordDecl *Class) {
       if (!MemberAttr || MemberAttr->isInherited() || Member->isInvalidDecl())
         continue;
 
-      S.Diag(MemberAttr->getLocation(),
+      Diag(MemberAttr->getLocation(),
              diag::err_attribute_dll_member_of_dll_class)
           << MemberAttr << ClassAttr;
-      S.Diag(ClassAttr->getLocation(), diag::note_previous_attribute);
+      Diag(ClassAttr->getLocation(), diag::note_previous_attribute);
       Member->setInvalidDecl();
     }
   }
@@ -4773,7 +4798,7 @@ static void checkDLLAttribute(Sema &S, CXXRecordDecl *Class) {
   }
 
   // Force declaration of implicit members so they can inherit the attribute.
-  S.ForceDeclarationOfImplicitMembers(Class);
+  ForceDeclarationOfImplicitMembers(Class);
 
   // FIXME: MSVC's docs say all bases must be exportable, but this doesn't
   // seem to be true in practice?
@@ -4791,22 +4816,25 @@ static void checkDLLAttribute(Sema &S, CXXRecordDecl *Class) {
       if (MD->isDeleted())
         continue;
 
-      if (MD->isMoveAssignmentOperator() && ClassImported && MD->isInlined()) {
-        // Current MSVC versions don't export the move assignment operators, so
-        // don't attempt to import them if we have a definition.
-        continue;
-      }
-
-      if (MD->isInlined() &&
-          !S.Context.getTargetInfo().getCXXABI().isMicrosoft()) {
+      if (MD->isInlined()) {
         // MinGW does not import or export inline methods.
-        continue;
+        if (!Context.getTargetInfo().getCXXABI().isMicrosoft())
+          continue;
+
+        // MSVC versions before 2015 don't export the move assignment operators,
+        // so don't attempt to import them if we have a definition.
+        if (ClassImported && MD->isMoveAssignmentOperator() &&
+            !getLangOpts().isCompatibleWithMSVC(LangOptions::MSVC2015))
+          continue;
       }
     }
 
+    if (!cast<NamedDecl>(Member)->isExternallyVisible())
+      continue;
+
     if (!getDLLAttr(Member)) {
       auto *NewAttr =
-          cast<InheritableAttr>(ClassAttr->clone(S.getASTContext()));
+          cast<InheritableAttr>(ClassAttr->clone(getASTContext()));
       NewAttr->setInherited(true);
       Member->addAttr(NewAttr);
     }
@@ -4821,7 +4849,7 @@ static void checkDLLAttribute(Sema &S, CXXRecordDecl *Class) {
         if (TSK == TSK_ImplicitInstantiation && !ClassAttr->isInherited())
           continue;
 
-        S.MarkFunctionReferenced(Class->getLocation(), MD);
+        MarkFunctionReferenced(Class->getLocation(), MD);
 
         // The function will be passed to the consumer when its definition is
         // encountered.
@@ -4832,17 +4860,17 @@ static void checkDLLAttribute(Sema &S, CXXRecordDecl *Class) {
         // defaulted methods, and the copy and move assignment operators. The
         // latter are exported even if they are trivial, because the address of
         // an operator can be taken and should compare equal accross libraries.
-        DiagnosticErrorTrap Trap(S.Diags);
-        S.MarkFunctionReferenced(Class->getLocation(), MD);
+        DiagnosticErrorTrap Trap(Diags);
+        MarkFunctionReferenced(Class->getLocation(), MD);
         if (Trap.hasErrorOccurred()) {
-          S.Diag(ClassAttr->getLocation(), diag::note_due_to_dllexported_class)
-              << Class->getName() << !S.getLangOpts().CPlusPlus11;
+          Diag(ClassAttr->getLocation(), diag::note_due_to_dllexported_class)
+              << Class->getName() << !getLangOpts().CPlusPlus11;
           break;
         }
 
         // There is no later point when we will see the definition of this
         // function, so pass it to the consumer now.
-        S.Consumer.HandleTopLevelDecl(DeclGroupRef(MD));
+        Consumer.HandleTopLevelDecl(DeclGroupRef(MD));
       }
     }
   }
@@ -4986,7 +5014,7 @@ void Sema::CheckCompletedCXXClass(CXXRecordDecl *Record) {
   //   have inheriting constructors.
   DeclareInheritingConstructors(Record);
 
-  checkDLLAttribute(*this, Record);
+  checkClassLevelDLLAttribute(Record);
 }
 
 /// Look up the special member function that would be called by a special
@@ -10211,7 +10239,9 @@ void Sema::DefineImplicitCopyAssignment(SourceLocation CurrentLocation,
   
   // Assign non-static members.
   for (auto *Field : ClassDecl->fields()) {
-    if (Field->isUnnamedBitfield())
+    // FIXME: We should form some kind of AST representation for the implied
+    // memcpy in a union copy operation.
+    if (Field->isUnnamedBitfield() || Field->getParent()->isUnion())
       continue;
 
     if (Field->isInvalidDecl()) {
@@ -10641,7 +10671,9 @@ void Sema::DefineImplicitMoveAssignment(SourceLocation CurrentLocation,
 
   // Assign non-static members.
   for (auto *Field : ClassDecl->fields()) {
-    if (Field->isUnnamedBitfield())
+    // FIXME: We should form some kind of AST representation for the implied
+    // memcpy in a union copy operation.
+    if (Field->isUnnamedBitfield() || Field->getParent()->isUnion())
       continue;
 
     if (Field->isInvalidDecl()) {

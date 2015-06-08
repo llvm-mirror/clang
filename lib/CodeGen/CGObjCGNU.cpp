@@ -46,54 +46,49 @@ namespace {
 /// avoids constructing the type more than once if it's used more than once.
 class LazyRuntimeFunction {
   CodeGenModule *CGM;
-  std::vector<llvm::Type*> ArgTys;
+  llvm::FunctionType *FTy;
   const char *FunctionName;
   llvm::Constant *Function;
-  public:
-    /// Constructor leaves this class uninitialized, because it is intended to
-    /// be used as a field in another class and not all of the types that are
-    /// used as arguments will necessarily be available at construction time.
-    LazyRuntimeFunction()
+
+public:
+  /// Constructor leaves this class uninitialized, because it is intended to
+  /// be used as a field in another class and not all of the types that are
+  /// used as arguments will necessarily be available at construction time.
+  LazyRuntimeFunction()
       : CGM(nullptr), FunctionName(nullptr), Function(nullptr) {}
 
-    /// Initialises the lazy function with the name, return type, and the types
-    /// of the arguments.
-    LLVM_END_WITH_NULL
-    void init(CodeGenModule *Mod, const char *name,
-        llvm::Type *RetTy, ...) {
-       CGM =Mod;
-       FunctionName = name;
-       Function = nullptr;
-       ArgTys.clear();
-       va_list Args;
-       va_start(Args, RetTy);
-         while (llvm::Type *ArgTy = va_arg(Args, llvm::Type*))
-           ArgTys.push_back(ArgTy);
-       va_end(Args);
-       // Push the return type on at the end so we can pop it off easily
-       ArgTys.push_back(RetTy);
-   }
-   /// Overloaded cast operator, allows the class to be implicitly cast to an
-   /// LLVM constant.
-   operator llvm::Constant*() {
-     if (!Function) {
-       if (!FunctionName) return nullptr;
-       // We put the return type on the end of the vector, so pop it back off
-       llvm::Type *RetTy = ArgTys.back();
-       ArgTys.pop_back();
-       llvm::FunctionType *FTy = llvm::FunctionType::get(RetTy, ArgTys, false);
-       Function =
-         cast<llvm::Constant>(CGM->CreateRuntimeFunction(FTy, FunctionName));
-       // We won't need to use the types again, so we may as well clean up the
-       // vector now
-       ArgTys.resize(0);
-     }
-     return Function;
-   }
-   operator llvm::Function*() {
-     return cast<llvm::Function>((llvm::Constant*)*this);
-   }
+  /// Initialises the lazy function with the name, return type, and the types
+  /// of the arguments.
+  LLVM_END_WITH_NULL
+  void init(CodeGenModule *Mod, const char *name, llvm::Type *RetTy, ...) {
+    CGM = Mod;
+    FunctionName = name;
+    Function = nullptr;
+    std::vector<llvm::Type *> ArgTys;
+    va_list Args;
+    va_start(Args, RetTy);
+    while (llvm::Type *ArgTy = va_arg(Args, llvm::Type *))
+      ArgTys.push_back(ArgTy);
+    va_end(Args);
+    FTy = llvm::FunctionType::get(RetTy, ArgTys, false);
+  }
 
+  llvm::FunctionType *getType() { return FTy; }
+
+  /// Overloaded cast operator, allows the class to be implicitly cast to an
+  /// LLVM constant.
+  operator llvm::Constant *() {
+    if (!Function) {
+      if (!FunctionName)
+        return nullptr;
+      Function =
+          cast<llvm::Constant>(CGM->CreateRuntimeFunction(FTy, FunctionName));
+    }
+    return Function;
+  }
+  operator llvm::Function *() {
+    return cast<llvm::Function>((llvm::Constant *)*this);
+  }
 };
 
 
@@ -1060,9 +1055,9 @@ llvm::Value *CGObjCGNU::GetSelector(CodeGenFunction &CGF, Selector Sel,
   }
   if (!SelValue) {
     SelValue = llvm::GlobalAlias::create(
-        SelectorTy->getElementType(), 0, llvm::GlobalValue::PrivateLinkage,
+        SelectorTy, llvm::GlobalValue::PrivateLinkage,
         ".objc_selector_" + Sel.getAsString(), &TheModule);
-    Types.push_back(TypedSelector(TypeEncoding, SelValue));
+    Types.emplace_back(TypeEncoding, SelValue);
   }
 
   if (lval) {
@@ -1266,14 +1261,14 @@ CGObjCGNU::GenerateMessageSendSuper(CodeGenFunction &CGF,
     if (IsClassMessage)  {
       if (!MetaClassPtrAlias) {
         MetaClassPtrAlias = llvm::GlobalAlias::create(
-            IdTy->getElementType(), 0, llvm::GlobalValue::InternalLinkage,
+            IdTy, llvm::GlobalValue::InternalLinkage,
             ".objc_metaclass_ref" + Class->getNameAsString(), &TheModule);
       }
       ReceiverClass = MetaClassPtrAlias;
     } else {
       if (!ClassPtrAlias) {
         ClassPtrAlias = llvm::GlobalAlias::create(
-            IdTy->getElementType(), 0, llvm::GlobalValue::InternalLinkage,
+            IdTy, llvm::GlobalValue::InternalLinkage,
             ".objc_class_ref" + Class->getNameAsString(), &TheModule);
       }
       ReceiverClass = ClassPtrAlias;
@@ -2126,9 +2121,8 @@ void CGObjCGNU::RegisterAlias(const ObjCCompatibleAliasDecl *OAD) {
   // Get the class declaration for which the alias is specified.
   ObjCInterfaceDecl *ClassDecl =
     const_cast<ObjCInterfaceDecl *>(OAD->getClassInterface());
-  std::string ClassName = ClassDecl->getNameAsString();
-  std::string AliasName = OAD->getNameAsString();
-  ClassAliases.push_back(ClassAliasPair(ClassName,AliasName));
+  ClassAliases.emplace_back(ClassDecl->getNameAsString(),
+                            OAD->getNameAsString());
 }
 
 void CGObjCGNU::GenerateClass(const ObjCImplementationDecl *OID) {
@@ -2570,8 +2564,8 @@ llvm::Function *CGObjCGNU::ModuleInitFunction() {
             true);
        if (TheClass) {
          TheClass = llvm::ConstantExpr::getBitCast(TheClass, PtrTy);
-         Builder.CreateCall2(RegisterAlias, TheClass,
-            MakeConstantString(iter->second));
+         Builder.CreateCall(RegisterAlias,
+                            {TheClass, MakeConstantString(iter->second)});
        }
     }
     // Jump to end:
@@ -2687,7 +2681,7 @@ llvm::Value * CGObjCGNU::EmitObjCWeakRead(CodeGenFunction &CGF,
                                           llvm::Value *AddrWeakObj) {
   CGBuilderTy &B = CGF.Builder;
   AddrWeakObj = EnforceType(B, AddrWeakObj, PtrToIdTy);
-  return B.CreateCall(WeakReadFn, AddrWeakObj);
+  return B.CreateCall(WeakReadFn.getType(), WeakReadFn, AddrWeakObj);
 }
 
 void CGObjCGNU::EmitObjCWeakAssign(CodeGenFunction &CGF,
@@ -2695,7 +2689,7 @@ void CGObjCGNU::EmitObjCWeakAssign(CodeGenFunction &CGF,
   CGBuilderTy &B = CGF.Builder;
   src = EnforceType(B, src, IdTy);
   dst = EnforceType(B, dst, PtrToIdTy);
-  B.CreateCall2(WeakAssignFn, src, dst);
+  B.CreateCall(WeakAssignFn.getType(), WeakAssignFn, {src, dst});
 }
 
 void CGObjCGNU::EmitObjCGlobalAssign(CodeGenFunction &CGF,
@@ -2704,11 +2698,9 @@ void CGObjCGNU::EmitObjCGlobalAssign(CodeGenFunction &CGF,
   CGBuilderTy &B = CGF.Builder;
   src = EnforceType(B, src, IdTy);
   dst = EnforceType(B, dst, PtrToIdTy);
-  if (!threadlocal)
-    B.CreateCall2(GlobalAssignFn, src, dst);
-  else
-    // FIXME. Add threadloca assign API
-    llvm_unreachable("EmitObjCGlobalAssign - Threal Local API NYI");
+  // FIXME. Add threadloca assign API
+  assert(!threadlocal && "EmitObjCGlobalAssign - Threal Local API NYI");
+  B.CreateCall(GlobalAssignFn.getType(), GlobalAssignFn, {src, dst});
 }
 
 void CGObjCGNU::EmitObjCIvarAssign(CodeGenFunction &CGF,
@@ -2717,7 +2709,7 @@ void CGObjCGNU::EmitObjCIvarAssign(CodeGenFunction &CGF,
   CGBuilderTy &B = CGF.Builder;
   src = EnforceType(B, src, IdTy);
   dst = EnforceType(B, dst, IdTy);
-  B.CreateCall3(IvarAssignFn, src, dst, ivarOffset);
+  B.CreateCall(IvarAssignFn.getType(), IvarAssignFn, {src, dst, ivarOffset});
 }
 
 void CGObjCGNU::EmitObjCStrongCastAssign(CodeGenFunction &CGF,
@@ -2725,7 +2717,7 @@ void CGObjCGNU::EmitObjCStrongCastAssign(CodeGenFunction &CGF,
   CGBuilderTy &B = CGF.Builder;
   src = EnforceType(B, src, IdTy);
   dst = EnforceType(B, dst, PtrToIdTy);
-  B.CreateCall2(StrongCastAssignFn, src, dst);
+  B.CreateCall(StrongCastAssignFn.getType(), StrongCastAssignFn, {src, dst});
 }
 
 void CGObjCGNU::EmitGCMemmoveCollectable(CodeGenFunction &CGF,
@@ -2736,7 +2728,7 @@ void CGObjCGNU::EmitGCMemmoveCollectable(CodeGenFunction &CGF,
   DestPtr = EnforceType(B, DestPtr, PtrTy);
   SrcPtr = EnforceType(B, SrcPtr, PtrTy);
 
-  B.CreateCall3(MemMoveFn, DestPtr, SrcPtr, Size);
+  B.CreateCall(MemMoveFn.getType(), MemMoveFn, {DestPtr, SrcPtr, Size});
 }
 
 llvm::GlobalVariable *CGObjCGNU::ObjCIvarOffsetVariable(

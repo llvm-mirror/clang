@@ -757,6 +757,15 @@ const internal::VariadicDynCastAllOfMatcher<
 /// \endcode
 const internal::VariadicDynCastAllOfMatcher<Decl, CXXMethodDecl> methodDecl;
 
+/// \brief Matches conversion operator declarations.
+///
+/// Example matches the operator.
+/// \code
+///   class X { operator int() const; };
+/// \endcode
+const internal::VariadicDynCastAllOfMatcher<Decl, CXXConversionDecl>
+    conversionDecl;
+
 /// \brief Matches variable declarations.
 ///
 /// Note: this does not match declarations of member variables, which are
@@ -1431,6 +1440,11 @@ const internal::VariadicDynCastAllOfMatcher<
 const internal::VariadicDynCastAllOfMatcher<
   Stmt,
   CXXNullPtrLiteralExpr> nullPtrLiteralExpr;
+
+/// \brief Matches GNU __null expression.
+const internal::VariadicDynCastAllOfMatcher<
+  Stmt,
+  GNUNullExpr> gnuNullExpr;
 
 /// \brief Matches binary operator expressions.
 ///
@@ -2693,6 +2707,23 @@ AST_MATCHER(FunctionDecl, isExternC) {
 ///   matches the declaration of DeletedFunc, but not Func.
 AST_MATCHER(FunctionDecl, isDeleted) {
   return Node.isDeleted();
+}
+
+/// \brief Matches constexpr variable and function declarations.
+///
+/// Given:
+/// \code
+///   constexpr int foo = 42;
+///   constexpr int bar();
+/// \endcode
+/// varDecl(isConstexpr())
+///   matches the declaration of foo.
+/// functionDecl(isConstexpr())
+///   matches the declaration of bar.
+AST_POLYMORPHIC_MATCHER(isConstexpr,
+                        AST_POLYMORPHIC_SUPPORTED_TYPES(VarDecl,
+                                                        FunctionDecl)) {
+  return Node.isConstexpr();
 }
 
 /// \brief Matches the condition expression of an if statement, for loop,

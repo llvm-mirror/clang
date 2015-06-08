@@ -64,12 +64,11 @@ static void PrintMacroDefinition(const IdentifierInfo &II, const MacroInfo &MI,
     OS << ' ';
 
   SmallString<128> SpellingBuffer;
-  for (MacroInfo::tokens_iterator I = MI.tokens_begin(), E = MI.tokens_end();
-       I != E; ++I) {
-    if (I->hasLeadingSpace())
+  for (const auto &T : MI.tokens()) {
+    if (T.hasLeadingSpace())
       OS << ' ';
 
-    OS << PP.getSpelling(*I, SpellingBuffer);
+    OS << PP.getSpelling(T, SpellingBuffer);
   }
 }
 
@@ -129,7 +128,7 @@ public:
                           CharSourceRange FilenameRange, const FileEntry *File,
                           StringRef SearchPath, StringRef RelativePath,
                           const Module *Imported) override;
-  void Ident(SourceLocation Loc, const std::string &str) override;
+  void Ident(SourceLocation Loc, StringRef str) override;
   void PragmaMessage(SourceLocation Loc, StringRef Namespace,
                      PragmaMessageKind Kind, StringRef Str) override;
   void PragmaDebug(SourceLocation Loc, StringRef DebugType) override;
@@ -170,7 +169,7 @@ public:
 
   /// MacroUndefined - This hook is called whenever a macro #undef is seen.
   void MacroUndefined(const Token &MacroNameTok,
-                      const MacroDirective *MD) override;
+                      const MacroDefinition &MD) override;
 };
 }  // end anonymous namespace
 
@@ -338,11 +337,11 @@ void PrintPPOutputPPCallbacks::InclusionDirective(SourceLocation HashLoc,
 
 /// Ident - Handle #ident directives when read by the preprocessor.
 ///
-void PrintPPOutputPPCallbacks::Ident(SourceLocation Loc, const std::string &S) {
+void PrintPPOutputPPCallbacks::Ident(SourceLocation Loc, StringRef S) {
   MoveToLine(Loc);
 
   OS.write("#ident ", strlen("#ident "));
-  OS.write(&S[0], S.size());
+  OS.write(S.begin(), S.size());
   EmittedTokensOnThisLine = true;
 }
 
@@ -361,7 +360,7 @@ void PrintPPOutputPPCallbacks::MacroDefined(const Token &MacroNameTok,
 }
 
 void PrintPPOutputPPCallbacks::MacroUndefined(const Token &MacroNameTok,
-                                              const MacroDirective *MD) {
+                                              const MacroDefinition &MD) {
   // Only print out macro definitions in -dD mode.
   if (!DumpDefines) return;
 
@@ -686,8 +685,9 @@ static void DoPrintMacros(Preprocessor &PP, raw_ostream *OS) {
   SmallVector<id_macro_pair, 128> MacrosByID;
   for (Preprocessor::macro_iterator I = PP.macro_begin(), E = PP.macro_end();
        I != E; ++I) {
-    if (I->first->hasMacroDefinition())
-      MacrosByID.push_back(id_macro_pair(I->first, I->second->getMacroInfo()));
+    auto *MD = I->second.getLatest();
+    if (MD && MD->isDefined())
+      MacrosByID.push_back(id_macro_pair(I->first, MD->getMacroInfo()));
   }
   llvm::array_pod_sort(MacrosByID.begin(), MacrosByID.end(), MacroIDCompare);
 

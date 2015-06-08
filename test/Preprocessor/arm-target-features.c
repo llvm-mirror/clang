@@ -7,6 +7,7 @@
 // CHECK: __ARM_FEATURE_NUMERIC_MAXMIN 1
 
 // RUN: %clang -target armv7a-none-linux-gnu -x c -E -dM %s -o - | FileCheck --check-prefix=CHECK-V7 %s
+// RUN: %clang -target x86_64-apple-macosx10.10 -arch armv7s -x c -E -dM %s -o - | FileCheck --check-prefix=CHECK-V7 %s
 // CHECK-V7: __ARMEL__ 1
 // CHECK-V7: __ARM_ARCH 7
 // CHECK-V7: __ARM_ARCH_7A__ 1
@@ -334,3 +335,8 @@
 // KRAIT-THUMB:#define __ARM_ARCH_EXT_IDIV__ 1
 // KRAIT-THUMB:#define __ARM_FEATURE_DSP
 // KRAIT-THUMB:#define  __ARM_VFPV4__ 1
+
+// RUN: %clang -target armv8.1a-none-none-eabi -x c -E -dM %s -o - | FileCheck --check-prefix=CHECK-V81A %s
+// CHECK-V81A: __ARM_ARCH 8
+// CHECK-V81A: __ARM_ARCH_8_1A__ 1
+// CHECK-V81A: #define __ARM_ARCH_PROFILE 'A'

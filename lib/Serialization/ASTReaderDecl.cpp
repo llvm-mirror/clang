@@ -458,24 +458,28 @@ void ASTDeclReader::VisitDecl(Decl *D) {
   D->FromASTFile = true;
   D->setModulePrivate(Record[Idx++]);
   D->Hidden = D->isModulePrivate();
-  
+
   // Determine whether this declaration is part of a (sub)module. If so, it
   // may not yet be visible.
   if (unsigned SubmoduleID = readSubmoduleID(Record, Idx)) {
     // Store the owning submodule ID in the declaration.
     D->setOwningModuleID(SubmoduleID);
-    
-    // Module-private declarations are never visible, so there is no work to do.
-    if (!D->isModulePrivate()) {
-      if (Module *Owner = Reader.getSubmodule(SubmoduleID)) {
-        if (Owner->NameVisibility != Module::AllVisible) {
-          // The owning module is not visible. Mark this declaration as hidden.
-          D->Hidden = true;
-          
-          // Note that this declaration was hidden because its owning module is 
-          // not yet visible.
-          Reader.HiddenNamesMap[Owner].HiddenDecls.push_back(D);
-        }
+
+    if (D->Hidden) {
+      // Module-private declarations are never visible, so there is no work to do.
+    } else if (Reader.getContext().getLangOpts().ModulesLocalVisibility) {
+      // If local visibility is being tracked, this declaration will become
+      // hidden and visible as the owning module does. Inform Sema that this
+      // declaration might not be visible.
+      D->Hidden = true;
+    } else if (Module *Owner = Reader.getSubmodule(SubmoduleID)) {
+      if (Owner->NameVisibility != Module::AllVisible) {
+        // The owning module is not visible. Mark this declaration as hidden.
+        D->Hidden = true;
+        
+        // Note that this declaration was hidden because its owning module is 
+        // not yet visible.
+        Reader.HiddenNamesMap[Owner].push_back(D);
       }
     }
   }
@@ -1059,13 +1063,15 @@ ASTDeclReader::RedeclarableResult ASTDeclReader::VisitVarDeclImpl(VarDecl *VD) {
   VD->VarDeclBits.SClass = (StorageClass)Record[Idx++];
   VD->VarDeclBits.TSCSpec = Record[Idx++];
   VD->VarDeclBits.InitStyle = Record[Idx++];
-  VD->VarDeclBits.ExceptionVar = Record[Idx++];
-  VD->VarDeclBits.NRVOVariable = Record[Idx++];
-  VD->VarDeclBits.CXXForRangeDecl = Record[Idx++];
-  VD->VarDeclBits.ARCPseudoStrong = Record[Idx++];
-  VD->VarDeclBits.IsConstexpr = Record[Idx++];
-  VD->VarDeclBits.IsInitCapture = Record[Idx++];
-  VD->VarDeclBits.PreviousDeclInSameBlockScope = Record[Idx++];
+  if (!isa<ParmVarDecl>(VD)) {
+    VD->NonParmVarDeclBits.ExceptionVar = Record[Idx++];
+    VD->NonParmVarDeclBits.NRVOVariable = Record[Idx++];
+    VD->NonParmVarDeclBits.CXXForRangeDecl = Record[Idx++];
+    VD->NonParmVarDeclBits.ARCPseudoStrong = Record[Idx++];
+    VD->NonParmVarDeclBits.IsConstexpr = Record[Idx++];
+    VD->NonParmVarDeclBits.IsInitCapture = Record[Idx++];
+    VD->NonParmVarDeclBits.PreviousDeclInSameBlockScope = Record[Idx++];
+  }
   Linkage VarLinkage = Linkage(Record[Idx++]);
   VD->setCachedLinkage(VarLinkage);
 
@@ -1399,11 +1405,16 @@ void ASTDeclReader::MergeDefinitionData(
       // If MergeDD is visible or becomes visible, make the definition visible.
       if (!MergeDD.Definition->isHidden())
         DD.Definition->Hidden = false;
-      else {
+      else if (Reader.getContext().getLangOpts().ModulesLocalVisibility) {
+        Reader.getContext().mergeDefinitionIntoModule(
+            DD.Definition, MergeDD.Definition->getImportedOwningModule(),
+            /*NotifyListeners*/ false);
+        Reader.PendingMergedDefinitionsToDeduplicate.insert(DD.Definition);
+      } else {
         auto SubmoduleID = MergeDD.Definition->getOwningModuleID();
         assert(SubmoduleID && "hidden definition in no module");
-        Reader.HiddenNamesMap[Reader.getSubmodule(SubmoduleID)]
-              .HiddenDecls.push_back(DD.Definition);
+        Reader.HiddenNamesMap[Reader.getSubmodule(SubmoduleID)].push_back(
+            DD.Definition);
       }
     }
   }
@@ -3300,11 +3311,13 @@ namespace {
       addToChain(Reader.GetDecl(CanonID));
     }
 
-    static bool visit(ModuleFile &M, bool Preorder, void *UserData) {
-      if (Preorder)
-        return false;
+    static ModuleManager::DFSPreorderControl
+    visitPreorder(ModuleFile &M, void *UserData) {
+      return static_cast<RedeclChainVisitor *>(UserData)->visitPreorder(M);
+    }
 
-      return static_cast<RedeclChainVisitor *>(UserData)->visit(M);
+    static bool visitPostorder(ModuleFile &M, void *UserData) {
+      return static_cast<RedeclChainVisitor *>(UserData)->visitPostorder(M);
     }
 
     void addToChain(Decl *D) {
@@ -3357,8 +3370,36 @@ namespace {
       for (unsigned I = 0; I != N; ++I)
         addToChain(Reader.GetLocalDecl(M, M.RedeclarationChains[Offset++]));
     }
-    
-    bool visit(ModuleFile &M) {
+
+    bool needsToVisitImports(ModuleFile &M, GlobalDeclID GlobalID) {
+      DeclID ID = Reader.mapGlobalIDToModuleFileGlobalID(M, GlobalID);
+      if (!ID)
+        return false;
+
+      const LocalRedeclarationsInfo Compare = {ID, 0};
+      const LocalRedeclarationsInfo *Result = std::lower_bound(
+          M.RedeclarationsMap,
+          M.RedeclarationsMap + M.LocalNumRedeclarationsInMap, Compare);
+      if (Result == M.RedeclarationsMap + M.LocalNumRedeclarationsInMap ||
+          Result->FirstID != ID) {
+        return true;
+      }
+      unsigned Offset = Result->Offset;
+      unsigned N = M.RedeclarationChains[Offset];
+      // We don't need to visit a module or any of its imports if we've already
+      // deserialized the redecls from this module.
+      return N != 0;
+    }
+
+    ModuleManager::DFSPreorderControl visitPreorder(ModuleFile &M) {
+      for (unsigned I = 0, N = SearchDecls.size(); I != N; ++I) {
+        if (needsToVisitImports(M, SearchDecls[I]))
+          return ModuleManager::Continue;
+      }
+      return ModuleManager::SkipImports;
+    }
+
+    bool visitPostorder(ModuleFile &M) {
       // Visit each of the declarations.
       for (unsigned I = 0, N = SearchDecls.size(); I != N; ++I)
         searchForID(M, SearchDecls[I]);
@@ -3390,11 +3431,12 @@ void ASTReader::loadPendingDeclChain(Decl *CanonDecl) {
 
   // Build up the list of redeclarations.
   RedeclChainVisitor Visitor(*this, SearchDecls, RedeclsDeserialized, CanonID);
-  ModuleMgr.visitDepthFirst(&RedeclChainVisitor::visit, &Visitor);
+  ModuleMgr.visitDepthFirst(&RedeclChainVisitor::visitPreorder,
+                            &RedeclChainVisitor::visitPostorder, &Visitor);
 
   // Retrieve the chains.
   ArrayRef<Decl *> Chain = Visitor.getChain();
-  if (Chain.empty())
+  if (Chain.empty() || (Chain.size() == 1 && Chain[0] == CanonDecl))
     return;
 
   // Hook up the chains.
@@ -3813,10 +3855,16 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
     case UPD_DECL_EXPORTED:
       unsigned SubmoduleID = readSubmoduleID(Record, Idx);
       Module *Owner = SubmoduleID ? Reader.getSubmodule(SubmoduleID) : nullptr;
-      if (Owner && Owner->NameVisibility != Module::AllVisible) {
+      if (Reader.getContext().getLangOpts().ModulesLocalVisibility) {
+        // FIXME: This doesn't send the right notifications if there are
+        // ASTMutationListeners other than an ASTWriter.
+        Reader.getContext().mergeDefinitionIntoModule(cast<NamedDecl>(D), Owner,
+                                                      /*NotifyListeners*/false);
+        Reader.PendingMergedDefinitionsToDeduplicate.insert(cast<NamedDecl>(D));
+      } else if (Owner && Owner->NameVisibility != Module::AllVisible) {
         // If Owner is made visible at some later point, make this declaration
         // visible too.
-        Reader.HiddenNamesMap[Owner].HiddenDecls.push_back(D);
+        Reader.HiddenNamesMap[Owner].push_back(D);
       } else {
         // The declaration is now visible.
         D->Hidden = false;

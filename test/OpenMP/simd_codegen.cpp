@@ -1,7 +1,7 @@
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -x c++ -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s
-// RUN: %clang_cc1 -fopenmp=libiomp5 -x c++ -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp=libiomp5 -x c++ -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -g -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
-// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp=libiomp5 -fexceptions -fcxx-exceptions -gline-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --check-prefix=TERM_DEBUG
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -triple x86_64-unknown-unknown -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp -x c++ -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -g -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
+// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp -fexceptions -fcxx-exceptions -gline-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --check-prefix=TERM_DEBUG
 //
 // expected-no-diagnostics
 #ifndef HEADER
@@ -176,28 +176,10 @@ void simple(float *a, float *b, float *c, float *d) {
   }
 // CHECK: [[SIMPLE_LOOP5_END]]
 
+// CHECK-NOT: mul i32 %{{.+}}, 10
   #pragma omp simd
-// FIXME: I think we would get wrong result using 'unsigned' in the loop below.
-// So we'll need to add zero trip test for 'unsigned' counters.
-//
-// CHECK: store i32 0, i32* [[OMP_IV6:%[^,]+]]
-
-// CHECK: [[IV6:%.+]] = load i32, i32* [[OMP_IV6]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP6_ID:[0-9]+]]
-// CHECK-NEXT: [[CMP6:%.+]] = icmp slt i32 [[IV6]], -8
-// CHECK-NEXT: br i1 [[CMP6]], label %[[SIMPLE_LOOP6_BODY:.+]], label %[[SIMPLE_LOOP6_END:[^,]+]]
-  for (int i=100; i<10; i+=10) {
-// CHECK: [[SIMPLE_LOOP6_BODY]]
-// Start of body: calculate i from IV:
-// CHECK: [[IV6_0:%.+]] = load i32, i32* [[OMP_IV6]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP6_ID]]
-// CHECK-NEXT: [[LC_IT_1:%.+]] = mul nsw i32 [[IV6_0]], 10
-// CHECK-NEXT: [[LC_IT_2:%.+]] = add nsw i32 100, [[LC_IT_1]]
-// CHECK-NEXT: store i32 [[LC_IT_2]], i32* {{.+}}, !llvm.mem.parallel_loop_access ![[SIMPLE_LOOP6_ID]]
-
-// CHECK: [[IV6_2:%.+]] = load i32, i32* [[OMP_IV6]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP6_ID]]
-// CHECK-NEXT: [[ADD6_2:%.+]] = add nsw i32 [[IV6_2]], 1
-// CHECK-NEXT: store i32 [[ADD6_2]], i32* [[OMP_IV6]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP6_ID]]
+  for (unsigned i=100; i<10; i+=10) {
   }
-// CHECK: [[SIMPLE_LOOP6_END]]
 
   int A;
   #pragma omp simd lastprivate(A)
@@ -205,8 +187,6 @@ void simple(float *a, float *b, float *c, float *d) {
 // Test checks that one iteration is separated in presence of lastprivate.
 //
 // CHECK: store i64 0, i64* [[OMP_IV7:%[^,]+]]
-// CHECK: br i1 true, label %[[SIMPLE_IF7_THEN:.+]], label %[[SIMPLE_IF7_END:[^,]+]]
-// CHECK: [[SIMPLE_IF7_THEN]]
 // CHECK: br label %[[SIMD_LOOP7_COND:[^,]+]]
 // CHECK: [[SIMD_LOOP7_COND]]
 // CHECK-NEXT: [[IV7:%.+]] = load i64, i64* [[OMP_IV7]]{{.*}}!llvm.mem.parallel_loop_access ![[SIMPLE_LOOP7_ID:[0-9]+]]
@@ -232,9 +212,6 @@ void simple(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[LC_FIN_2]], i64* [[ADDR_I:%[^,]+]]
 // CHECK: [[LOAD_I:%.+]] = load i64, i64* [[ADDR_I]]
 // CHECK-NEXT: [[CONV_I:%.+]] = trunc i64 [[LOAD_I]] to i32
-//
-// CHECK: br label %[[SIMPLE_IF7_END]]
-// CHECK: [[SIMPLE_IF7_END]]
 //
 
 // CHECK: ret void
@@ -496,6 +473,6 @@ void parallel_simd(float *a) {
   for (unsigned i = 131071; i <= 2147483647; i += 127)
     a[i] += bar();
 }
-// TERM_DEBUG: !{{[0-9]+}} = !MDLocation(line: [[@LINE-11]],
+// TERM_DEBUG: !{{[0-9]+}} = !DILocation(line: [[@LINE-11]],
 #endif // HEADER
 
