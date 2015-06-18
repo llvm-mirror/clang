@@ -738,6 +738,18 @@ void ASTStmtWriter::VisitDesignatedInitExpr(DesignatedInitExpr *E) {
   Code = serialization::EXPR_DESIGNATED_INIT;
 }
 
+void ASTStmtWriter::VisitDesignatedInitUpdateExpr(DesignatedInitUpdateExpr *E) {
+  VisitExpr(E);
+  Writer.AddStmt(E->getBase());
+  Writer.AddStmt(E->getUpdater());
+  Code = serialization::EXPR_DESIGNATED_INIT_UPDATE;
+}
+
+void ASTStmtWriter::VisitNoInitExpr(NoInitExpr *E) {
+  VisitExpr(E);
+  Code = serialization::EXPR_NO_INIT;
+}
+
 void ASTStmtWriter::VisitImplicitValueInitExpr(ImplicitValueInitExpr *E) {
   VisitExpr(E);
   Code = serialization::EXPR_IMPLICIT_VALUE_INIT;
@@ -1745,6 +1757,7 @@ void OMPClauseWriter::VisitOMPProcBindClause(OMPProcBindClause *C) {
 void OMPClauseWriter::VisitOMPScheduleClause(OMPScheduleClause *C) {
   Record.push_back(C->getScheduleKind());
   Writer->Writer.AddStmt(C->getChunkSize());
+  Writer->Writer.AddStmt(C->getHelperChunkSize());
   Writer->Writer.AddSourceLocation(C->getLParenLoc(), Record);
   Writer->Writer.AddSourceLocation(C->getScheduleKindLoc(), Record);
   Writer->Writer.AddSourceLocation(C->getCommaLoc(), Record);

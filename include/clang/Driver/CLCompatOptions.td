@@ -63,6 +63,8 @@ def _SLASH_fp_except_ : CLFlag<"fp:except-">, HelpText<"">, Alias<fno_trapping_m
 def _SLASH_fp_fast : CLFlag<"fp:fast">, HelpText<"">, Alias<ffast_math>;
 def _SLASH_fp_precise : CLFlag<"fp:precise">, HelpText<"">, Alias<fno_fast_math>;
 def _SLASH_fp_strict : CLFlag<"fp:strict">, HelpText<"">, Alias<fno_fast_math>;
+def _SLASH_GA : CLFlag<"GA">, Alias<ftlsmodel_EQ>, AliasArgs<["local-exec"]>,
+  HelpText<"Assume thread-local variables are defined in the executable">;
 def _SLASH_GR : CLFlag<"GR">, HelpText<"Enable emission of RTTI data">;
 def _SLASH_GR_ : CLFlag<"GR-">, HelpText<"Disable emission of RTTI data">;
 def _SLASH_GF_ : CLFlag<"GF-">, HelpText<"Disable string pooling">,
@@ -137,8 +139,16 @@ def _SLASH_wd4005 : CLFlag<"wd4005">, Alias<W_Joined>,
   AliasArgs<["no-macro-redefined"]>;
 def _SLASH_wd4996 : CLFlag<"wd4996">, Alias<W_Joined>,
   AliasArgs<["no-deprecated-declarations"]>;
+def _SLASH_wd4910 : CLFlag<"wd4910">, Alias<W_Joined>,
+  AliasArgs<["no-dllexport-explicit-instantiation-decl"]>;
 def _SLASH_vd : CLJoined<"vd">, HelpText<"Control vtordisp placement">,
   Alias<vtordisp_mode_EQ>;
+def _SLASH_Zc_sizedDealloc : CLFlag<"Zc:sizedDealloc">,
+  HelpText<"Enable C++14 sized global deallocation functions">,
+  Alias<fsized_deallocation>;
+def _SLASH_Zc_sizedDealloc_ : CLFlag<"Zc:sizedDealloc-">,
+  HelpText<"Disable C++14 sized global deallocation functions">,
+  Alias<fno_sized_deallocation>;
 def _SLASH_Zc_strictStrings : CLFlag<"Zc:strictStrings">,
   HelpText<"Treat string literals as const">, Alias<W_Joined>,
   AliasArgs<["error=c++11-compat-deprecated-writable-strings"]>;
@@ -210,6 +220,12 @@ def _SLASH_o : CLJoinedOrSeparate<"o">,
   HelpText<"Set output file or directory (ends in / or \\)">,
   MetaVarName<"<file or directory>">;
 def _SLASH_P : CLFlag<"P">, HelpText<"Preprocess to file">;
+def _SLASH_Qvec : CLFlag<"Qvec">,
+                  HelpText<"Enable the loop vectorization passes">,
+                  Alias<fvectorize>;
+def _SLASH_Qvec_ : CLFlag<"Qvec-">,
+                   HelpText<"Disable the loop vectorization passes">,
+                   Alias<fno_vectorize>;
 def _SLASH_Tc : CLCompileJoinedOrSeparate<"Tc">,
   HelpText<"Specify a C source file">, MetaVarName<"<filename>">;
 def _SLASH_TC : CLCompileFlag<"TC">, HelpText<"Treat all source files as C">;
@@ -269,7 +285,6 @@ def _SLASH_FU : CLJoinedOrSeparate<"FU">;
 def _SLASH_Fx : CLFlag<"Fx">;
 def _SLASH_G1 : CLFlag<"G1">;
 def _SLASH_G2 : CLFlag<"G2">;
-def _SLASH_GA : CLFlag<"GA">;
 def _SLASH_Ge : CLFlag<"Ge">;
 def _SLASH_Gh : CLFlag<"Gh">;
 def _SLASH_GH : CLFlag<"GH">;

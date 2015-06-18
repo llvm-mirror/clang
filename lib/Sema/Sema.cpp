@@ -99,6 +99,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     GlobalNewDeleteDeclared(false),
     TUKind(TUKind),
     NumSFINAEErrors(0),
+    CachedFakeTopLevelModule(nullptr),
     AccessCheckingSFINAE(false), InNonInstantiationSFINAEContext(false),
     NonInstantiationEntries(0), ArgumentPackSubstitutionIndex(-1),
     CurrentInstantiationScope(nullptr), DisableTypoCorrection(false),
@@ -721,11 +722,7 @@ void Sema::ActOnEndOfTranslationUnit() {
         ModMap.resolveConflicts(Mod, /*Complain=*/false);
 
         // Queue the submodules, so their exports will also be resolved.
-        for (Module::submodule_iterator Sub = Mod->submodule_begin(),
-                                     SubEnd = Mod->submodule_end();
-             Sub != SubEnd; ++Sub) {
-          Stack.push_back(*Sub);
-        }
+        Stack.append(Mod->submodule_begin(), Mod->submodule_end());
       }
     }
 
@@ -856,6 +853,17 @@ void Sema::ActOnEndOfTranslationUnit() {
           IsRecordFullyDefined(RD, RecordsComplete, MNCComplete)) {
         Diag(D->getLocation(), diag::warn_unused_private_field)
               << D->getDeclName();
+      }
+    }
+  }
+
+  if (!Diags.isIgnored(diag::warn_mismatched_delete_new, SourceLocation())) {
+    if (ExternalSource)
+      ExternalSource->ReadMismatchingDeleteExpressions(DeleteExprs);
+    for (const auto &DeletedFieldInfo : DeleteExprs) {
+      for (const auto &DeleteExprLoc : DeletedFieldInfo.second) {
+        AnalyzeDeleteExprMismatch(DeletedFieldInfo.first, DeleteExprLoc.first,
+                                  DeleteExprLoc.second);
       }
     }
   }
@@ -1219,6 +1227,9 @@ void ExternalSemaSource::ReadUndefinedButUsed(
                        llvm::DenseMap<NamedDecl *, SourceLocation> &Undefined) {
 }
 
+void ExternalSemaSource::ReadMismatchingDeleteExpressions(llvm::MapVector<
+    FieldDecl *, llvm::SmallVector<std::pair<SourceLocation, bool>, 4>> &) {}
+
 void PrettyDeclStackTraceEntry::print(raw_ostream &OS) const {
   SourceLocation Loc = this->Loc;
   if (!Loc.isValid() && TheDecl) Loc = TheDecl->getLocation();
@@ -1466,4 +1477,9 @@ CapturedRegionScopeInfo *Sema::getCurCapturedRegion() {
     return nullptr;
 
   return dyn_cast<CapturedRegionScopeInfo>(FunctionScopes.back());
+}
+
+const llvm::MapVector<FieldDecl *, Sema::DeleteLocs> &
+Sema::getMismatchingDeleteExpressions() const {
+  return DeleteExprs;
 }

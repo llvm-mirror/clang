@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -ferror-limit 100 %s
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s
 
 void foo() {
 }
@@ -50,6 +50,11 @@ public:
 
 S3 h;
 #pragma omp threadprivate(h) // expected-note {{defined as threadprivate or thread local}}
+
+void bar(int n, int b[n]) {
+#pragma omp task firstprivate(b)
+    foo();
+}
 
 namespace A {
 double x;

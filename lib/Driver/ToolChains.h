@@ -239,6 +239,13 @@ public:
                          bool IsEmbedded = false,
                          bool AddRPath = false) const;
 
+  /// Add any profiling runtime libraries that are needed. This is essentially a
+  /// MachO specific version of addProfileRT in Tools.cpp.
+  virtual void addProfileRTLibs(const llvm::opt::ArgList &Args,
+                                llvm::opt::ArgStringList &CmdArgs) const {
+    // There aren't any profiling libs for embedded targets currently.
+  }
+
   /// }
   /// @name ToolChain Implementation
   /// {
@@ -364,6 +371,9 @@ public:
   bool isKernelStatic() const override {
     return !isTargetIPhoneOS() || isIPhoneOSVersionLT(6, 0);
   }
+
+  void addProfileRTLibs(const llvm::opt::ArgList &Args,
+                        llvm::opt::ArgStringList &CmdArgs) const override;
 
 protected:
   /// }
@@ -714,6 +724,10 @@ public:
                                const llvm::opt::ArgList &Args);
 
   static StringRef GetTargetCPU(const llvm::opt::ArgList &Args);
+
+  static const char *GetSmallDataThreshold(const llvm::opt::ArgList &Args);
+
+  static bool UsesG0(const char* smallDataThreshold);
 };
 
 class LLVM_LIBRARY_VISIBILITY NaCl_TC : public Generic_ELF {
@@ -792,6 +806,9 @@ public:
   bool getVisualStudioInstallDir(std::string &path) const;
   bool getVisualStudioBinariesFolder(const char *clangProgramPath,
                                      std::string &path) const;
+
+  std::string ComputeEffectiveClangTriple(const llvm::opt::ArgList &Args,
+                                          types::ID InputType) const override;
 
 protected:
   void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,

@@ -34,6 +34,7 @@ if vim.eval('exists("g:clang_format_path")') == "1":
 # a '.clang-format' or '_clang-format' file to indicate the style that should be
 # used.
 style = 'file'
+fallback_style = None
 if vim.eval('exists("g:clang_format_fallback_style")') == "1":
   fallback_style = vim.eval('g:clang_format_fallback_style')
 
@@ -84,6 +85,8 @@ def main():
     for op in reversed(sequence.get_opcodes()):
       if op[0] is not 'equal':
         vim.current.buffer[op[1]:op[2]] = lines[op[3]:op[4]]
+    if output.get('IncompleteFormat'):
+      print 'clang-format: incomplete (syntax errors)'
     vim.command('goto %d' % (output['Cursor'] + 1))
 
 main()

@@ -84,14 +84,23 @@ The status of major ABI-impacting C++ features:
 * RTTI: :good:`Complete`.  Generation of RTTI data structures has been
   finished, along with support for the ``/GR`` flag.
 
-* Exceptions and SEH: :partial:`Minimal`.  Clang can parse both constructs, but
-  does not know how to emit compatible handlers.  Clang can throw and rethrow
-  C++ exceptions.
+* Exceptions and SEH: :partial:`Partial`.
+  C++ exceptions (``try`` / ``catch`` / ``throw``) and
+  structured exceptions (``__try`` / ``__except`` / ``__finally``) mostly
+  work on x64. 32-bit exception handling support is being worked on.  LLVM does
+  not model asynchronous exceptions, so it is currently impossible to catch an
+  asynchronous exception generated in the same frame as the catching ``__try``.
+  C++ exception specifications are ignored, but this is `consistent with Visual
+  C++`_.
 
-* Thread-safe initialization of local statics: :none:`Unstarted`.  We are ABI
-  compatible with MSVC 2013, which does not support thread-safe local statics.
-  MSVC "14" changed the ABI to make initialization of local statics thread safe,
-  and we have not yet implemented this.
+.. _consistent with Visual C++:
+  https://msdn.microsoft.com/en-us/library/wfa0edys.aspx
+
+* Thread-safe initialization of local statics: :good:`Complete`.  MSVC 2015
+  added support for thread-safe initialization of such variables by taking an
+  ABI break.
+  We are ABI compatible with both the MSVC 2013 and 2015 ABI for static local
+  variables.
 
 * Lambdas: :good:`Mostly complete`.  Clang is compatible with Microsoft's
   implementation of lambdas except for providing overloads for conversion to

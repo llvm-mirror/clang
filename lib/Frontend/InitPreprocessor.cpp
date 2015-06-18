@@ -453,6 +453,8 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
   }
   if (LangOpts.SizedDeallocation)
     Builder.defineMacro("__cpp_sized_deallocation", "201309");
+  if (LangOpts.ConceptsTS)
+    Builder.defineMacro("__cpp_experimental_concepts", "1");
 }
 
 static void InitializePredefinedMacros(const TargetInfo &TI,
@@ -790,7 +792,7 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
     Builder.defineMacro("__FINITE_MATH_ONLY__", "0");
 
   if (!LangOpts.MSVCCompat) {
-    if (LangOpts.GNUInline)
+    if (LangOpts.GNUInline || LangOpts.CPlusPlus)
       Builder.defineMacro("__GNUC_GNU_INLINE__");
     else
       Builder.defineMacro("__GNUC_STDC_INLINE__");

@@ -11,8 +11,8 @@ Written by the `LLVM Team <http://llvm.org/>`_
 .. warning::
 
    These are in-progress notes for the upcoming Clang 3.7 release. You may
-   prefer the `Clang 3.5 Release Notes
-   <http://llvm.org/releases/3.5.0/tools/clang/docs/ReleaseNotes.html>`_.
+   prefer the `Clang 3.6 Release Notes
+   <http://llvm.org/releases/3.6.0/tools/clang/docs/ReleaseNotes.html>`_.
 
 Introduction
 ============
@@ -47,8 +47,10 @@ sections with improvements to Clang's support for those languages.
 Major New Features
 ------------------
 
-- Feature ...
-
+- Use of the ``__declspec`` language extension for declaration attributes now
+  requires passing the -fms-extensions or -fborland compiler flag. This language
+  extension is also enabled when compiling CUDA code, but its use should be
+  viewed as an implementation detail that is subject to change.
 
 Improvements to Clang's diagnostics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -118,7 +120,13 @@ These are major API changes that have happened since the 3.6 release of
 Clang. If upgrading an external codebase that uses Clang as a library,
 this section should help get you past the largest hurdles of upgrading.
 
-...
+-  Some of the `PPCallbacks` interface now deals in `MacroDefinition`
+   objects instead of `MacroDirective` objects. This allows preserving
+   full information on macros imported from modules.
+
+-  `clang-c/Index.h` no longer `#include`\s `clang-c/Documentation.h`.
+   You now need to explicitly `#include "clang-c/Documentation.h"` if
+   you use the libclang documentation API.
 
 libclang
 --------

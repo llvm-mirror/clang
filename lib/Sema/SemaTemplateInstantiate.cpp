@@ -714,6 +714,20 @@ namespace {
     }
 
     void transformedLocalDecl(Decl *Old, Decl *New) {
+      // If we've instantiated the call operator of a lambda or the call
+      // operator template of a generic lambda, update the "instantiation of"
+      // information.
+      auto *NewMD = dyn_cast<CXXMethodDecl>(New);
+      if (NewMD && isLambdaCallOperator(NewMD)) {
+        auto *OldMD = dyn_cast<CXXMethodDecl>(Old);
+        if (auto *NewTD = NewMD->getDescribedFunctionTemplate())
+          NewTD->setInstantiatedFromMemberTemplate(
+              OldMD->getDescribedFunctionTemplate());
+        else
+          NewMD->setInstantiationOfMemberFunction(OldMD,
+                                                  TSK_ImplicitInstantiation);
+      }
+      
       SemaRef.CurrentInstantiationScope->InstantiatedLocal(Old, New);
     }
     
@@ -816,28 +830,6 @@ namespace {
       return TreeTransform<TemplateInstantiator>::TransformLambdaExpr(E);
     }
 
-    ExprResult TransformLambdaScope(LambdaExpr *E,
-        CXXMethodDecl *NewCallOperator, 
-        ArrayRef<InitCaptureInfoTy> InitCaptureExprsAndTypes) {
-      CXXMethodDecl *const OldCallOperator = E->getCallOperator();   
-      // In the generic lambda case, we set the NewTemplate to be considered
-      // an "instantiation" of the OldTemplate.
-      if (FunctionTemplateDecl *const NewCallOperatorTemplate = 
-            NewCallOperator->getDescribedFunctionTemplate()) {
-        
-        FunctionTemplateDecl *const OldCallOperatorTemplate = 
-                              OldCallOperator->getDescribedFunctionTemplate();
-        NewCallOperatorTemplate->setInstantiatedFromMemberTemplate(
-                                                     OldCallOperatorTemplate);
-      } else 
-        // For a non-generic lambda we set the NewCallOperator to 
-        // be an instantiation of the OldCallOperator.
-        NewCallOperator->setInstantiationOfMemberFunction(OldCallOperator,
-                                                    TSK_ImplicitInstantiation);
-      
-      return inherited::TransformLambdaScope(E, NewCallOperator, 
-          InitCaptureExprsAndTypes);
-    }
     TemplateParameterList *TransformTemplateParameterList(
                               TemplateParameterList *OrigTPL)  {
       if (!OrigTPL || !OrigTPL->size()) return OrigTPL;
@@ -2241,7 +2233,7 @@ bool Sema::InstantiateInClassInitializer(
   EnterExpressionEvaluationContext EvalContext(*this,
                                                Sema::PotentiallyEvaluated);
 
-  LocalInstantiationScope Scope(*this);
+  LocalInstantiationScope Scope(*this, true);
 
   // Instantiate the initializer.
   ActOnStartCXXInClassMemberInitializer();
@@ -2794,6 +2786,16 @@ LocalInstantiationScope::findInstantiationOf(const Decl *D) {
   // deduction, we may not have values for template parameters yet.
   if (isa<NonTypeTemplateParmDecl>(D) || isa<TemplateTypeParmDecl>(D) ||
       isa<TemplateTemplateParmDecl>(D))
+    return nullptr;
+
+  // Local types referenced prior to definition may require instantiation.
+  if (const CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(D))
+    if (RD->isLocalClass())
+      return nullptr;
+
+  // Enumeration types referenced prior to definition may appear as a result of
+  // error recovery.
+  if (isa<EnumDecl>(D))
     return nullptr;
 
   // If we didn't find the decl, then we either have a sema bug, or we have a

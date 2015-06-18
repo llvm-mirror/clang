@@ -1,14 +1,18 @@
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -x c++ -triple x86_64-unknown-unknown -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s
-// RUN: %clang_cc1 -fopenmp=libiomp5 -x c++ -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp=libiomp5 -x c++ -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
-// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp=libiomp5 -fexceptions -fcxx-exceptions -gline-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --check-prefix=TERM_DEBUG
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -triple x86_64-unknown-unknown -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp -x c++ -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
+// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp -fexceptions -fcxx-exceptions -gline-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --check-prefix=TERM_DEBUG
 //
 // expected-no-diagnostics
 #ifndef HEADER
 #define HEADER
 
 // CHECK: [[IDENT_T_TY:%.+]] = type { i32, i32, i32, i32, i8* }
-// CHECK: [[IMPLICIT_BARRIER_LOC:@.+]] = private unnamed_addr constant %{{.+}} { i32 0, i32 66, i32 0, i32 0, i8*
+// CHECK-DAG: [[IMPLICIT_BARRIER_LOC:@.+]] = private unnamed_addr constant %{{.+}} { i32 0, i32 66, i32 0, i32 0, i8*
+// CHECK-DAG: [[I:@.+]] = global i8 1,
+// CHECK-DAG: [[J:@.+]] = global i8 2,
+// CHECK-DAG: [[K:@.+]] = global i8 3,
+
 // CHECK-LABEL: define {{.*void}} @{{.*}}without_schedule_clause{{.*}}(float* {{.+}}, float* {{.+}}, float* {{.+}}, float* {{.+}})
 void without_schedule_clause(float *a, float *b, float *c, float *d) {
 // CHECK: [[GTID:%.+]] = call i32 @__kmpc_global_thread_num([[IDENT_T_TY]]* [[DEFAULT_LOC:[@%].+]])
@@ -37,6 +41,7 @@ void without_schedule_clause(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK-NOT: !llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i32 [[IV1_2]], 1
@@ -77,6 +82,7 @@ void static_not_chunked(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK-NOT: !llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i32 [[IV1_2]], 1
@@ -125,6 +131,7 @@ void static_chunked(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK-NOT: !llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add i32 [[IV1_2]], 1
@@ -176,7 +183,7 @@ void dynamic1(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[CALC_I_2]], i64* [[LC_I:.+]]
 // ... loop body ...
 // End of body: store into a[i]:
-// CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK: store float [[RESULT:%.+]], float* {{%.+}}!llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i64, i64* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add i64 [[IV1_2]], 1
@@ -217,7 +224,7 @@ void guided7(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i64 [[CALC_I_2]], i64* [[LC_I:.+]]
 // ... loop body ...
 // End of body: store into a[i]:
-// CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK: store float [[RESULT:%.+]], float* {{%.+}}!llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i64, i64* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add i64 [[IV1_2]], 1
@@ -262,6 +269,7 @@ void test_auto(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK-NOT: !llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i64, i64* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i64 [[IV1_2]], 1
@@ -303,6 +311,7 @@ void runtime(float *a, float *b, float *c, float *d) {
 // ... loop body ...
 // End of body: store into a[i]:
 // CHECK: store float [[RESULT:%.+]], float* {{%.+}}
+// CHECK-NOT: !llvm.mem.parallel_loop_access
     a[i] = b[i] * c[i] * d[i];
 // CHECK: [[IV1_2:%.+]] = load i32, i32* [[OMP_IV]]{{.*}}
 // CHECK-NEXT: [[ADD1_2:%.+]] = add nsw i32 [[IV1_2]], 1
@@ -313,6 +322,31 @@ void runtime(float *a, float *b, float *c, float *d) {
 // CHECK: [[O_LOOP1_END]]
 // CHECK: call {{.+}} @__kmpc_cancel_barrier([[IDENT_T_TY]]* [[IMPLICIT_BARRIER_LOC]], i32 [[GTID]])
 // CHECK: ret void
+}
+
+// CHECK-LABEL: test_precond
+void test_precond() {
+  // CHECK: [[A_ADDR:%.+]] = alloca i8,
+  // CHECK: [[I_ADDR:%.+]] = alloca i8,
+  char a = 0;
+  // CHECK: store i32 0, i32* [[IV_ADDR:%.+]],
+  // CHECK: [[A:%.+]] = load i8, i8* [[A_ADDR]],
+  // CHECK: [[CONV:%.+]] = sext i8 [[A]] to i32
+  // CHECK: [[IV:%.+]] = load i32, i32* [[IV_ADDR]],
+  // CHECK: [[MUL:%.+]] = mul nsw i32 [[IV]], 1
+  // CHECK: [[ADD:%.+]] = add nsw i32 [[CONV]], [[MUL]]
+  // CHECK: [[CONV:%.+]] = trunc i32 [[ADD]] to i8
+  // CHECK: store i8 [[CONV]], i8* [[I_ADDR]],
+  // CHECK: [[A:%.+]] = load i8, i8* [[A_ADDR]],
+  // CHECK: [[CONV:%.+]] = sext i8 [[A]] to i32
+  // CHECK: [[CMP:%.+]] = icmp slt i32 [[CONV]], 10
+  // CHECK: br i1 [[CMP]], label %[[PRECOND_THEN:[^,]+]], label %[[PRECOND_END:[^,]+]]
+  // CHECK: [[PRECOND_THEN]]
+  // CHECK: call void @__kmpc_for_static_init_4
+#pragma omp for
+  for(char i = a; i < 10; ++i);
+  // CHECK: call void @__kmpc_for_static_fini
+  // CHECK: [[PRECOND_END]]
 }
 
 // TERM_DEBUG-LABEL: foo
@@ -336,9 +370,45 @@ void parallel_for(float *a) {
     a[i] += foo();
 }
 // Check source line corresponds to "#pragma omp for schedule(static, 5)" above:
-// TERM_DEBUG-DAG: [[DBG_LOC_START]] = !MDLocation(line: [[@LINE-15]],
-// TERM_DEBUG-DAG: [[DBG_LOC_END]] = !MDLocation(line: [[@LINE-16]],
-// TERM_DEBUG-DAG: [[DBG_LOC_CANCEL]] = !MDLocation(line: [[@LINE-17]],
+// TERM_DEBUG-DAG: [[DBG_LOC_START]] = !DILocation(line: [[@LINE-15]],
+// TERM_DEBUG-DAG: [[DBG_LOC_END]] = !DILocation(line: [[@LINE-16]],
+// TERM_DEBUG-DAG: [[DBG_LOC_CANCEL]] = !DILocation(line: [[@LINE-17]],
+
+char i = 1, j = 2, k = 3;
+// CHECK-LABEL: for_with_global_lcv
+void for_with_global_lcv() {
+// CHECK: [[I_ADDR:%.+]] = alloca i8,
+// CHECK: [[J_ADDR:%.+]] = alloca i8,
+
+// CHECK: call void @__kmpc_for_static_init_4(
+// CHECK-NOT: [[I]]
+// CHECK: store i8 %{{.+}}, i8* [[I_ADDR]]
+// CHECK-NOT: [[I]]
+// CHECK: [[I_VAL:%.+]] = load i8, i8* [[I_ADDR]],
+// CHECK-NOT: [[I]]
+// CHECK: store i8 [[I_VAL]], i8* [[K]]
+// CHECK-NOT: [[I]]
+// CHECK: call void @__kmpc_for_static_fini(
+#pragma omp for
+  for (i = 0; i < 2; ++i) {
+    k = i;
+  }
+// CHECK: call void @__kmpc_for_static_init_4(
+// CHECK-NOT: [[J]]
+// CHECK: store i8 %{{.+}}, i8* [[J_ADDR]]
+// CHECK-NOT: [[J]]
+// CHECK: [[J_VAL:%.+]] = load i8, i8* [[J_ADDR]],
+// CHECK-NOT: [[J]]
+// CHECK: store i8 [[J_VAL]], i8* [[K]]
+// CHECK-NOT: [[J]]
+// CHECK: call void @__kmpc_for_static_fini(
+#pragma omp for collapse(2)
+  for (int i = 0; i < 2; ++i)
+  for (j = 0; j < 2; ++j) {
+    k = i;
+    k = j;
+  }
+}
 
 #endif // HEADER
 

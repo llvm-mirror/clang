@@ -259,6 +259,8 @@ llvm::Function *CodeGenModule::CreateGlobalInitOrDestructFunction(
       Fn->setSection(Section);
   }
 
+  SetLLVMFunctionAttributes(nullptr, getTypes().arrangeNullaryFunction(), Fn);
+
   Fn->setCallingConv(getRuntimeCC());
 
   if (!getLangOpts().Exceptions)
@@ -271,6 +273,8 @@ llvm::Function *CodeGenModule::CreateGlobalInitOrDestructFunction(
       Fn->addFnAttr(llvm::Attribute::SanitizeThread);
     if (getLangOpts().Sanitize.has(SanitizerKind::Memory))
       Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
+    if (getLangOpts().Sanitize.has(SanitizerKind::SafeStack))
+      Fn->addFnAttr(llvm::Attribute::SafeStack);
   }
 
   return Fn;
@@ -429,7 +433,7 @@ CodeGenModule::EmitCXXGlobalInitFunc() {
     // priority emitted above.
     FileName = llvm::sys::path::filename(MainFile->getName());
   } else {
-    FileName = SmallString<128>("<null>");
+    FileName = "<null>";
   }
 
   for (size_t i = 0; i < FileName.size(); ++i) {

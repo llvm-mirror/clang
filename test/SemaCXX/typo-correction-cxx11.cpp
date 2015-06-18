@@ -15,3 +15,20 @@ struct S {
   }
 };
 }
+
+namespace PR23140 {
+auto lneed = gned.*[] {};  // expected-error-re {{use of undeclared identifier 'gned'{{$}}}}
+
+void test(int aaa, int bbb, int thisvar) {  // expected-note {{'thisvar' declared here}}
+  int thatval = aaa * (bbb + thatvar);  // expected-error {{use of undeclared identifier 'thatvar'; did you mean 'thisvar'?}}
+}
+}
+
+namespace PR18854 {
+void f() {
+  for (auto&& x : e) {  // expected-error-re {{use of undeclared identifier 'e'{{$}}}}
+    auto Functor = [x]() {};
+    long Alignment = __alignof__(Functor);
+  }
+}
+}

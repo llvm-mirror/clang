@@ -298,8 +298,12 @@ void OMPClauseProfiler::VisitOMPDefaultClause(const OMPDefaultClause *C) { }
 void OMPClauseProfiler::VisitOMPProcBindClause(const OMPProcBindClause *C) { }
 
 void OMPClauseProfiler::VisitOMPScheduleClause(const OMPScheduleClause *C) {
-  if (C->getChunkSize())
+  if (C->getChunkSize()) {
     Profiler->VisitStmt(C->getChunkSize());
+    if (C->getHelperChunkSize()) {
+      Profiler->VisitStmt(C->getChunkSize());
+    }
+  }
 }
 
 void OMPClauseProfiler::VisitOMPOrderedClause(const OMPOrderedClause *) {}
@@ -738,6 +742,18 @@ void StmtProfiler::VisitDesignatedInitExpr(const DesignatedInitExpr *S) {
     }
     ID.AddInteger(D->getFirstExprIndex());
   }
+}
+
+// Seems that if VisitInitListExpr() only works on the syntactic form of an
+// InitListExpr, then a DesignatedInitUpdateExpr is not encountered.
+void StmtProfiler::VisitDesignatedInitUpdateExpr(
+    const DesignatedInitUpdateExpr *S) {
+  llvm_unreachable("Unexpected DesignatedInitUpdateExpr in syntactic form of "
+                   "initializer");
+}
+
+void StmtProfiler::VisitNoInitExpr(const NoInitExpr *S) {
+  llvm_unreachable("Unexpected NoInitExpr in syntactic form of initializer");
 }
 
 void StmtProfiler::VisitImplicitValueInitExpr(const ImplicitValueInitExpr *S) {

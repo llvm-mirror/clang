@@ -190,8 +190,7 @@ namespace clang {
         assert(D->isCanonicalDecl() && "non-canonical decl in set");
         Writer.AddDeclRef(D, Record);
       }
-      for (DeclID ID : LazySpecializations)
-        Record.push_back(ID);
+      Record.append(LazySpecializations.begin(), LazySpecializations.end());
     }
   };
 }
@@ -790,13 +789,15 @@ void ASTDeclWriter::VisitVarDecl(VarDecl *D) {
   Record.push_back(D->getStorageClass());
   Record.push_back(D->getTSCSpec());
   Record.push_back(D->getInitStyle());
-  Record.push_back(D->isExceptionVariable());
-  Record.push_back(D->isNRVOVariable());
-  Record.push_back(D->isCXXForRangeDecl());
-  Record.push_back(D->isARCPseudoStrong());
-  Record.push_back(D->isConstexpr());
-  Record.push_back(D->isInitCapture());
-  Record.push_back(D->isPreviousDeclInSameBlockScope());
+  if (!isa<ParmVarDecl>(D)) {
+    Record.push_back(D->isExceptionVariable());
+    Record.push_back(D->isNRVOVariable());
+    Record.push_back(D->isCXXForRangeDecl());
+    Record.push_back(D->isARCPseudoStrong());
+    Record.push_back(D->isConstexpr());
+    Record.push_back(D->isInitCapture());
+    Record.push_back(D->isPreviousDeclInSameBlockScope());
+  }
   Record.push_back(D->getLinkageInternal());
 
   if (D->getInit()) {
@@ -1378,8 +1379,12 @@ void ASTDeclWriter::VisitTemplateTypeParmDecl(TemplateTypeParmDecl *D) {
   VisitTypeDecl(D);
 
   Record.push_back(D->wasDeclaredWithTypename());
-  Record.push_back(D->defaultArgumentWasInherited());
-  Writer.AddTypeSourceInfo(D->getDefaultArgumentInfo(), Record);
+
+  bool OwnsDefaultArg = D->hasDefaultArgument() &&
+                        !D->defaultArgumentWasInherited();
+  Record.push_back(OwnsDefaultArg);
+  if (OwnsDefaultArg)
+    Writer.AddTypeSourceInfo(D->getDefaultArgumentInfo(), Record);
 
   Code = serialization::DECL_TEMPLATE_TYPE_PARM;
 }
@@ -1406,11 +1411,11 @@ void ASTDeclWriter::VisitNonTypeTemplateParmDecl(NonTypeTemplateParmDecl *D) {
   } else {
     // Rest of NonTypeTemplateParmDecl.
     Record.push_back(D->isParameterPack());
-    Record.push_back(D->getDefaultArgument() != nullptr);
-    if (D->getDefaultArgument()) {
+    bool OwnsDefaultArg = D->hasDefaultArgument() &&
+                          !D->defaultArgumentWasInherited();
+    Record.push_back(OwnsDefaultArg);
+    if (OwnsDefaultArg)
       Writer.AddStmt(D->getDefaultArgument());
-      Record.push_back(D->defaultArgumentWasInherited());
-    }
     Code = serialization::DECL_NON_TYPE_TEMPLATE_PARM;
   }
 }
@@ -1435,9 +1440,12 @@ void ASTDeclWriter::VisitTemplateTemplateParmDecl(TemplateTemplateParmDecl *D) {
     Code = serialization::DECL_EXPANDED_TEMPLATE_TEMPLATE_PARM_PACK;
   } else {
     // Rest of TemplateTemplateParmDecl.
-    Writer.AddTemplateArgumentLoc(D->getDefaultArgument(), Record);
-    Record.push_back(D->defaultArgumentWasInherited());
     Record.push_back(D->isParameterPack());
+    bool OwnsDefaultArg = D->hasDefaultArgument() &&
+                          !D->defaultArgumentWasInherited();
+    Record.push_back(OwnsDefaultArg);
+    if (OwnsDefaultArg)
+      Writer.AddTemplateArgumentLoc(D->getDefaultArgument(), Record);
     Code = serialization::DECL_TEMPLATE_TEMPLATE_PARM;
   }
 }
@@ -1738,13 +1746,6 @@ void ASTWriter::WriteDeclAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(0));                       // StorageClass
   Abv->Add(BitCodeAbbrevOp(0));                       // getTSCSpec
   Abv->Add(BitCodeAbbrevOp(0));                       // hasCXXDirectInitializer
-  Abv->Add(BitCodeAbbrevOp(0));                       // isExceptionVariable
-  Abv->Add(BitCodeAbbrevOp(0));                       // isNRVOVariable
-  Abv->Add(BitCodeAbbrevOp(0));                       // isCXXForRangeDecl
-  Abv->Add(BitCodeAbbrevOp(0));                       // isARCPseudoStrong
-  Abv->Add(BitCodeAbbrevOp(0));                       // isConstexpr
-  Abv->Add(BitCodeAbbrevOp(0));                       // isInitCapture
-  Abv->Add(BitCodeAbbrevOp(0));                       // isPrevDeclInSameScope
   Abv->Add(BitCodeAbbrevOp(0));                       // Linkage
   Abv->Add(BitCodeAbbrevOp(0));                       // HasInit
   Abv->Add(BitCodeAbbrevOp(0));                   // HasMemberSpecializationInfo

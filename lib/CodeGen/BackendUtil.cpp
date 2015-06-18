@@ -189,7 +189,14 @@ static void addSanitizerCoveragePass(const PassManagerBuilder &Builder,
   const PassManagerBuilderWrapper &BuilderWrapper =
       static_cast<const PassManagerBuilderWrapper&>(Builder);
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
-  PM.add(createSanitizerCoverageModulePass(CGOpts.SanitizeCoverage));
+  SanitizerCoverageOptions Opts;
+  Opts.CoverageType =
+      static_cast<SanitizerCoverageOptions::Type>(CGOpts.SanitizeCoverageType);
+  Opts.IndirectCalls = CGOpts.SanitizeCoverageIndirectCalls;
+  Opts.TraceBB = CGOpts.SanitizeCoverageTraceBB;
+  Opts.TraceCmp = CGOpts.SanitizeCoverageTraceCmp;
+  Opts.Use8bitCounters = CGOpts.SanitizeCoverage8bitCounters;
+  PM.add(createSanitizerCoverageModulePass(Opts));
 }
 
 static void addAddressSanitizerPasses(const PassManagerBuilder &Builder,
@@ -276,7 +283,6 @@ void EmitAssemblyHelper::CreatePasses() {
   PMBuilder.SLPVectorize = CodeGenOpts.VectorizeSLP;
   PMBuilder.LoopVectorize = CodeGenOpts.VectorizeLoop;
 
-  PMBuilder.DisableTailCalls = CodeGenOpts.DisableTailCalls;
   PMBuilder.DisableUnitAtATime = !CodeGenOpts.UnitAtATime;
   PMBuilder.DisableUnrollLoops = !CodeGenOpts.UnrollLoops;
   PMBuilder.MergeFunctions = CodeGenOpts.MergeFunctions;
@@ -306,7 +312,9 @@ void EmitAssemblyHelper::CreatePasses() {
                            addBoundsCheckingPass);
   }
 
-  if (CodeGenOpts.SanitizeCoverage) {
+  if (CodeGenOpts.SanitizeCoverageType ||
+      CodeGenOpts.SanitizeCoverageIndirectCalls ||
+      CodeGenOpts.SanitizeCoverageTraceCmp) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addSanitizerCoveragePass);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
@@ -394,6 +402,7 @@ void EmitAssemblyHelper::CreatePasses() {
   if (CodeGenOpts.ProfileInstrGenerate) {
     InstrProfOptions Options;
     Options.NoRedZone = CodeGenOpts.DisableRedZone;
+    Options.InstrProfileOutput = CodeGenOpts.InstrProfileOutput;
     MPM->add(createInstrProfilingPass(Options));
   }
 
@@ -443,10 +452,8 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   std::string FeaturesStr;
   if (!TargetOpts.Features.empty()) {
     SubtargetFeatures Features;
-    for (std::vector<std::string>::const_iterator
-           it = TargetOpts.Features.begin(),
-           ie = TargetOpts.Features.end(); it != ie; ++it)
-      Features.AddFeature(*it);
+    for (const std::string &Feature : TargetOpts.Features)
+      Features.AddFeature(Feature);
     FeaturesStr = Features.getString();
   }
 
@@ -470,6 +477,9 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
 
   llvm::TargetOptions Options;
 
+  if (!TargetOpts.Reciprocals.empty())
+    Options.Reciprocals = TargetRecip(TargetOpts.Reciprocals);
+
   Options.ThreadModel =
     llvm::StringSwitch<llvm::ThreadModel::Model>(CodeGenOpts.ThreadModel)
       .Case("posix", llvm::ThreadModel::POSIX)
@@ -480,15 +490,6 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
 
   if (CodeGenOpts.CompressDebugSections)
     Options.CompressDebugSections = true;
-
-  // Set frame pointer elimination mode.
-  if (!CodeGenOpts.DisableFPElim) {
-    Options.NoFramePointerElim = false;
-  } else if (CodeGenOpts.OmitLeafFramePointer) {
-    Options.NoFramePointerElim = false;
-  } else {
-    Options.NoFramePointerElim = true;
-  }
 
   if (CodeGenOpts.UseInitArray)
     Options.UseInitArray = true;
@@ -521,9 +522,7 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   Options.NoNaNsFPMath = CodeGenOpts.NoNaNsFPMath;
   Options.NoZerosInBSS = CodeGenOpts.NoZeroInitializedInBSS;
   Options.UnsafeFPMath = CodeGenOpts.UnsafeFPMath;
-  Options.UseSoftFloat = CodeGenOpts.SoftFloat;
   Options.StackAlignmentOverride = CodeGenOpts.StackAlignment;
-  Options.DisableTailCalls = CodeGenOpts.DisableTailCalls;
   Options.TrapFuncName = CodeGenOpts.TrapFuncName;
   Options.PositionIndependentExecutable = LangOpts.PIELevel != 0;
   Options.FunctionSections = CodeGenOpts.FunctionSections;
@@ -570,8 +569,7 @@ bool EmitAssemblyHelper::AddEmitPasses(BackendAction Action,
   // Add ObjC ARC final-cleanup optimizations. This is done as part of the
   // "codegen" passes so that it isn't run multiple times when there is
   // inlining happening.
-  if (LangOpts.ObjCAutoRefCount &&
-      CodeGenOpts.OptimizationLevel > 0)
+  if (CodeGenOpts.OptimizationLevel > 0)
     PM->add(createObjCARCContractPass());
 
   if (TM->addPassesToEmitFile(*PM, OS, CGFT,
@@ -625,10 +623,9 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
     PrettyStackTraceString CrashInfo("Per-function optimization");
 
     PerFunctionPasses->doInitialization();
-    for (Module::iterator I = TheModule->begin(),
-           E = TheModule->end(); I != E; ++I)
-      if (!I->isDeclaration())
-        PerFunctionPasses->run(*I);
+    for (Function &F : *TheModule)
+      if (!F.isDeclaration())
+        PerFunctionPasses->run(F);
     PerFunctionPasses->doFinalization();
   }
 

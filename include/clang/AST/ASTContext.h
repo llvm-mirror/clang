@@ -284,6 +284,11 @@ class ASTContext : public RefCountedBase<ASTContext> {
   /// merged into.
   llvm::DenseMap<Decl*, Decl*> MergedDecls;
 
+  /// \brief A mapping from a defining declaration to a list of modules (other
+  /// than the owning module of the declaration) that contain merged
+  /// definitions of that entity.
+  llvm::DenseMap<NamedDecl*, llvm::TinyPtrVector<Module*>> MergedDefModules;
+
 public:
   /// \brief A type synonym for the TemplateOrInstantiation mapping.
   typedef llvm::PointerUnion<VarTemplateDecl *, MemberSpecializationInfo *>
@@ -779,6 +784,23 @@ public:
   }
   void setPrimaryMergedDecl(Decl *D, Decl *Primary) {
     MergedDecls[D] = Primary;
+  }
+
+  /// \brief Note that the definition \p ND has been merged into module \p M,
+  /// and should be visible whenever \p M is visible.
+  void mergeDefinitionIntoModule(NamedDecl *ND, Module *M,
+                                 bool NotifyListeners = true);
+  /// \brief Clean up the merged definition list. Call this if you might have
+  /// added duplicates into the list.
+  void deduplicateMergedDefinitonsFor(NamedDecl *ND);
+
+  /// \brief Get the additional modules in which the definition \p Def has
+  /// been merged.
+  ArrayRef<Module*> getModulesWithMergedDefinition(NamedDecl *Def) {
+    auto MergedIt = MergedDefModules.find(Def);
+    if (MergedIt == MergedDefModules.end())
+      return None;
+    return MergedIt->second;
   }
 
   TranslationUnitDecl *getTranslationUnitDecl() const { return TUDecl; }
@@ -1690,6 +1712,10 @@ public:
   /// This can be different than the ABI alignment in cases where it is
   /// beneficial for performance to overalign a data type.
   unsigned getPreferredTypeAlign(const Type *T) const;
+
+  /// \brief Return the default alignment for __attribute__((aligned)) on
+  /// this target, to be used if no alignment value is specified.
+  unsigned getTargetDefaultAlignForAttributeAligned(void) const;
 
   /// \brief Return the alignment in bits that should be given to a
   /// global variable with type \p T.

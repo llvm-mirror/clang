@@ -29,6 +29,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
+#include "llvm/Support/TargetParser.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstdlib> // ::getenv
 #include <system_error>
@@ -108,8 +109,12 @@ bool Darwin::hasBlocksRuntime() const {
   }
 }
 
-static const char *GetArmArchForMArch(StringRef Value) {
-  return llvm::StringSwitch<const char*>(Value)
+// This is just a MachO name translation routine and there's no
+// way to join this into ARMTargetParser without breaking all
+// other assumptions. Maybe MachO should consider standardising
+// their nomenclature.
+static const char *ArmMachOArchName(StringRef Arch) {
+  return llvm::StringSwitch<const char*>(Arch)
     .Case("armv6k", "armv6")
     .Case("armv6m", "armv6m")
     .Case("armv5tej", "armv5")
@@ -125,21 +130,23 @@ static const char *GetArmArchForMArch(StringRef Value) {
     .Default(nullptr);
 }
 
-static const char *GetArmArchForMCpu(StringRef Value) {
-  return llvm::StringSwitch<const char *>(Value)
-    .Cases("arm9e", "arm946e-s", "arm966e-s", "arm968e-s", "arm926ej-s","armv5")
-    .Cases("arm10e", "arm10tdmi", "armv5")
-    .Cases("arm1020t", "arm1020e", "arm1022e", "arm1026ej-s", "armv5")
-    .Case("xscale", "xscale")
-    .Cases("arm1136j-s", "arm1136jf-s", "arm1176jz-s", "arm1176jzf-s", "armv6")
-    .Cases("sc000", "cortex-m0", "cortex-m0plus", "cortex-m1", "armv6m")
-    .Cases("cortex-a5", "cortex-a7", "cortex-a8", "armv7")
-    .Cases("cortex-a9", "cortex-a12", "cortex-a15", "cortex-a17", "krait", "armv7")
-    .Cases("cortex-r4", "cortex-r4f", "cortex-r5", "cortex-r7", "armv7r")
-    .Cases("sc300", "cortex-m3", "armv7m")
-    .Cases("cortex-m4", "cortex-m7", "armv7em")
-    .Case("swift", "armv7s")
-    .Default(nullptr);
+static const char *ArmMachOArchNameCPU(StringRef CPU) {
+  unsigned ArchKind = llvm::ARMTargetParser::parseCPUArch(CPU);
+  if (ArchKind == llvm::ARM::AK_INVALID)
+    return nullptr;
+  StringRef Arch = llvm::ARMTargetParser::getArchName(ArchKind);
+
+  // FIXME: Make sure this MachO triple mangling is really necessary.
+  // ARMv5* normalises to ARMv5.
+  if (Arch.startswith("armv5"))
+    Arch = Arch.substr(0, 5);
+  // ARMv6*, except ARMv6M, normalises to ARMv6.
+  else if (Arch.startswith("armv6") && !Arch.endswith("6m"))
+    Arch = Arch.substr(0, 5);
+  // ARMv7A normalises to ARMv7.
+  else if (Arch.endswith("v7a"))
+    Arch = Arch.substr(0, 5);
+  return Arch.data();
 }
 
 static bool isSoftFloatABI(const ArgList &Args) {
@@ -164,11 +171,11 @@ StringRef MachO::getMachOArchName(const ArgList &Args) const {
   case llvm::Triple::thumb:
   case llvm::Triple::arm: {
     if (const Arg *A = Args.getLastArg(options::OPT_march_EQ))
-      if (const char *Arch = GetArmArchForMArch(A->getValue()))
+      if (const char *Arch = ArmMachOArchName(A->getValue()))
         return Arch;
 
     if (const Arg *A = Args.getLastArg(options::OPT_mcpu_EQ))
-      if (const char *Arch = GetArmArchForMCpu(A->getValue()))
+      if (const char *Arch = ArmMachOArchNameCPU(A->getValue()))
         return Arch;
 
     return "arm";
@@ -324,6 +331,26 @@ void MachO::AddLinkRuntimeLib(const ArgList &Args, ArgStringList &CmdArgs,
   }
 }
 
+void Darwin::addProfileRTLibs(const ArgList &Args,
+                             ArgStringList &CmdArgs) const {
+  if (!(Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
+                     false) ||
+        Args.hasArg(options::OPT_fprofile_generate) ||
+        Args.hasArg(options::OPT_fprofile_instr_generate) ||
+        Args.hasArg(options::OPT_fprofile_instr_generate_EQ) ||
+        Args.hasArg(options::OPT_fcreate_profile) ||
+        Args.hasArg(options::OPT_coverage)))
+    return;
+
+  // Select the appropriate runtime library for the target.
+  if (isTargetIOSBased())
+    AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.profile_ios.a",
+                      /*AlwaysLink*/ true);
+  else
+    AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.profile_osx.a",
+                      /*AlwaysLink*/ true);
+}
+
 void DarwinClang::AddLinkSanitizerLibArgs(const ArgList &Args,
                                           ArgStringList &CmdArgs,
                                           StringRef Sanitizer) const {
@@ -374,19 +401,6 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
     return;
   }
 
-  // If we are building profile support, link that library in.
-  if (Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
-                   false) ||
-      Args.hasArg(options::OPT_fprofile_generate) ||
-      Args.hasArg(options::OPT_fprofile_instr_generate) ||
-      Args.hasArg(options::OPT_fcreate_profile) ||
-      Args.hasArg(options::OPT_coverage)) {
-    // Select the appropriate runtime library for the target.
-    if (isTargetIOSBased())
-      AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.profile_ios.a");
-    else
-      AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.profile_osx.a");
-  }
 
   const SanitizerArgs &Sanitize = getSanitizerArgs();
 
@@ -865,8 +879,8 @@ DerivedArgList *MachO::TranslateArgs(const DerivedArgList &Args,
   return DAL;
 }
 
-void MachO::AddLinkRuntimeLibArgs(const llvm::opt::ArgList &Args,
-                                  llvm::opt::ArgStringList &CmdArgs) const {
+void MachO::AddLinkRuntimeLibArgs(const ArgList &Args,
+                                  ArgStringList &CmdArgs) const {
   // Embedded targets are simple at the moment, not supporting sanitizers and
   // with different libraries for each member of the product { static, PIC } x
   // { hard-float, soft-float }
@@ -975,8 +989,8 @@ bool MachO::SupportsProfiling() const {
   return getArch() == llvm::Triple::x86 || getArch() == llvm::Triple::x86_64;
 }
 
-void Darwin::addMinVersionArgs(const llvm::opt::ArgList &Args,
-                               llvm::opt::ArgStringList &CmdArgs) const {
+void Darwin::addMinVersionArgs(const ArgList &Args,
+                               ArgStringList &CmdArgs) const {
   VersionTuple TargetVersion = getTargetVersion();
 
   if (isTargetIOSSimulator())
@@ -991,8 +1005,8 @@ void Darwin::addMinVersionArgs(const llvm::opt::ArgList &Args,
   CmdArgs.push_back(Args.MakeArgString(TargetVersion.getAsString()));
 }
 
-void Darwin::addStartObjectFileArgs(const llvm::opt::ArgList &Args,
-                                    llvm::opt::ArgStringList &CmdArgs) const {
+void Darwin::addStartObjectFileArgs(const ArgList &Args,
+                                    ArgStringList &CmdArgs) const {
   // Derived from startfile spec.
   if (Args.hasArg(options::OPT_dynamiclib)) {
     // Derived from darwin_dylib1 spec.
@@ -1561,7 +1575,7 @@ static Multilib makeMultilib(StringRef commonSuffix) {
 }
 
 static bool findMIPSMultilibs(const llvm::Triple &TargetTriple, StringRef Path,
-                              const llvm::opt::ArgList &Args,
+                              const ArgList &Args,
                               DetectedMultilibs &Result) {
   // Some MIPS toolchains put libraries and object files compiled
   // using different options in to the sub-directoris which names
@@ -2063,20 +2077,28 @@ bool Generic_GCC::isPICDefaultForced() const {
 }
 
 bool Generic_GCC::IsIntegratedAssemblerDefault() const {
-  return getTriple().getArch() == llvm::Triple::x86 ||
-         getTriple().getArch() == llvm::Triple::x86_64 ||
-         getTriple().getArch() == llvm::Triple::aarch64 ||
-         getTriple().getArch() == llvm::Triple::aarch64_be ||
-         getTriple().getArch() == llvm::Triple::arm ||
-         getTriple().getArch() == llvm::Triple::armeb ||
-         getTriple().getArch() == llvm::Triple::thumb ||
-         getTriple().getArch() == llvm::Triple::thumbeb ||
-         getTriple().getArch() == llvm::Triple::ppc ||
-         getTriple().getArch() == llvm::Triple::ppc64 ||
-         getTriple().getArch() == llvm::Triple::ppc64le ||
-         getTriple().getArch() == llvm::Triple::sparc ||
-         getTriple().getArch() == llvm::Triple::sparcv9 ||
-         getTriple().getArch() == llvm::Triple::systemz;
+  switch (getTriple().getArch()) {
+  case llvm::Triple::x86:
+  case llvm::Triple::x86_64:
+  case llvm::Triple::aarch64:
+  case llvm::Triple::aarch64_be:
+  case llvm::Triple::arm:
+  case llvm::Triple::armeb:
+  case llvm::Triple::bpfel:
+  case llvm::Triple::bpfeb:
+  case llvm::Triple::thumb:
+  case llvm::Triple::thumbeb:
+  case llvm::Triple::ppc:
+  case llvm::Triple::ppc64:
+  case llvm::Triple::ppc64le:
+  case llvm::Triple::sparc:
+  case llvm::Triple::sparcel:
+  case llvm::Triple::sparcv9:
+  case llvm::Triple::systemz:
+    return true;
+  default:
+    return false;
+  }
 }
 
 void Generic_ELF::addClangTargetOptions(const ArgList &DriverArgs,
@@ -2118,6 +2140,30 @@ std::string Hexagon_TC::GetGnuDir(const std::string &InstalledDir,
   return InstallRelDir;
 }
 
+const char *Hexagon_TC::GetSmallDataThreshold(const ArgList &Args)
+{
+  Arg *A;
+
+  A = Args.getLastArg(options::OPT_G,
+                      options::OPT_G_EQ,
+                      options::OPT_msmall_data_threshold_EQ);
+  if (A)
+    return A->getValue();
+
+  A = Args.getLastArg(options::OPT_shared,
+                      options::OPT_fpic,
+                      options::OPT_fPIC);
+  if (A)
+    return "0";
+
+  return 0;
+}
+
+bool Hexagon_TC::UsesG0(const char* smallDataThreshold)
+{
+  return smallDataThreshold && smallDataThreshold[0] == '0';
+}
+
 static void GetHexagonLibraryPaths(
   const ArgList &Args,
   const std::string &Ver,
@@ -2130,14 +2176,9 @@ static void GetHexagonLibraryPaths(
   //----------------------------------------------------------------------------
   // -L Args
   //----------------------------------------------------------------------------
-  for (arg_iterator
-         it = Args.filtered_begin(options::OPT_L),
-         ie = Args.filtered_end();
-       it != ie;
-       ++it) {
-    for (unsigned i = 0, e = (*it)->getNumValues(); i != e; ++i)
-      LibPaths->push_back((*it)->getValue(i));
-  }
+  for (const Arg *A : Args.filtered(options::OPT_L))
+    for (unsigned i = 0, e = A->getNumValues(); i != e; ++i)
+      LibPaths->push_back(A->getValue(i));
 
   //----------------------------------------------------------------------------
   // Other standard paths
@@ -3071,6 +3112,14 @@ static std::string getMultiarchTriple(const llvm::Triple &TargetTriple,
     if (llvm::sys::fs::exists(SysRoot + "/lib/powerpc64le-linux-gnu"))
       return "powerpc64le-linux-gnu";
     return TargetTriple.str();
+  case llvm::Triple::sparc:
+    if (llvm::sys::fs::exists(SysRoot + "/lib/sparc-linux-gnu"))
+      return "sparc-linux-gnu";
+    return TargetTriple.str();
+  case llvm::Triple::sparcv9:
+    if (llvm::sys::fs::exists(SysRoot + "/lib/sparc64-linux-gnu"))
+      return "sparc64-linux-gnu";
+    return TargetTriple.str();
   }
 }
 
@@ -3423,6 +3472,12 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   const StringRef PPC64LEMultiarchIncludeDirs[] = {
     "/usr/include/powerpc64le-linux-gnu"
   };
+  const StringRef SparcMultiarchIncludeDirs[] = {
+    "/usr/include/sparc-linux-gnu"
+  };
+  const StringRef Sparc64MultiarchIncludeDirs[] = {
+    "/usr/include/sparc64-linux-gnu"
+  };
   ArrayRef<StringRef> MultiarchIncludeDirs;
   if (getTriple().getArch() == llvm::Triple::x86_64) {
     MultiarchIncludeDirs = X86_64MultiarchIncludeDirs;
@@ -3450,6 +3505,10 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     MultiarchIncludeDirs = PPC64MultiarchIncludeDirs;
   } else if (getTriple().getArch() == llvm::Triple::ppc64le) {
     MultiarchIncludeDirs = PPC64LEMultiarchIncludeDirs;
+  } else if (getTriple().getArch() == llvm::Triple::sparc) {
+    MultiarchIncludeDirs = SparcMultiarchIncludeDirs;
+  } else if (getTriple().getArch() == llvm::Triple::sparcv9) {
+    MultiarchIncludeDirs = Sparc64MultiarchIncludeDirs;
   }
   for (StringRef Dir : MultiarchIncludeDirs) {
     if (llvm::sys::fs::exists(SysRoot + Dir)) {
@@ -3661,8 +3720,8 @@ void XCore::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   }
 }
 
-void XCore::addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
-                                     llvm::opt::ArgStringList &CC1Args) const {
+void XCore::addClangTargetOptions(const ArgList &DriverArgs,
+                                  ArgStringList &CC1Args) const {
   CC1Args.push_back("-nostdsysteminc");
 }
 

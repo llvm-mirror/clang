@@ -128,6 +128,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(constructorDecl);
   REGISTER_MATCHER(containsDeclaration);
   REGISTER_MATCHER(continueStmt);
+  REGISTER_MATCHER(conversionDecl);
   REGISTER_MATCHER(cStyleCastExpr);
   REGISTER_MATCHER(ctorInitializer);
   REGISTER_MATCHER(CUDAKernelCallExpr);
@@ -310,6 +311,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(specifiesTypeLoc);
   REGISTER_MATCHER(statementCountIs);
   REGISTER_MATCHER(staticCastExpr);
+  REGISTER_MATCHER(staticAssertDecl);
   REGISTER_MATCHER(stmt);
   REGISTER_MATCHER(stringLiteral);
   REGISTER_MATCHER(substNonTypeTemplateParmExpr);

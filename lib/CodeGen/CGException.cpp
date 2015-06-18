@@ -60,7 +60,10 @@ llvm::Constant *CodeGenModule::getTerminateFn() {
     name = "_ZSt9terminatev";
   } else if (getLangOpts().CPlusPlus &&
              getTarget().getCXXABI().isMicrosoft()) {
-    name = "\01?terminate@@YAXXZ";
+    if (getLangOpts().isCompatibleWithMSVC(LangOptions::MSVC2015))
+      name = "__std_terminate";
+    else
+      name = "\01?terminate@@YAXXZ";
   } else if (getLangOpts().ObjC1 &&
              getLangOpts().ObjCRuntime.hasTerminate())
     name = "objc_terminate";
@@ -955,8 +958,7 @@ void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
     CGM.getCXXABI().emitBeginCatch(*this, C);
 
     // Emit the PGO counter increment.
-    RegionCounter CatchCnt = getPGORegionCounter(C);
-    CatchCnt.beginRegion(Builder);
+    incrementProfileCounter(C);
 
     // Perform the body of the catch.
     EmitStmt(C->getHandlerBlock());
@@ -984,9 +986,8 @@ void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
       Builder.CreateBr(ContBB);
   }
 
-  RegionCounter ContCnt = getPGORegionCounter(&S);
   EmitBlock(ContBB);
-  ContCnt.beginRegion(Builder);
+  incrementProfileCounter(&S);
 }
 
 namespace {
@@ -1305,7 +1306,7 @@ struct PerformSEHFinally : EHScopeStack::Cleanup {
 
   void Emit(CodeGenFunction &CGF, Flags F) override {
     ASTContext &Context = CGF.getContext();
-    QualType ArgTys[2] = {Context.BoolTy, Context.VoidPtrTy};
+    QualType ArgTys[2] = {Context.UnsignedCharTy, Context.VoidPtrTy};
     FunctionProtoType::ExtProtoInfo EPI;
     const auto *FTP = cast<FunctionType>(
         Context.getFunctionType(Context.VoidTy, ArgTys, EPI));
@@ -1412,9 +1413,9 @@ void CodeGenFunction::EmitCapturedLocals(CodeGenFunction &ParentCGF,
         InsertPair.first->second = ParentCGF.EscapedLocals.size() - 1;
       int FrameEscapeIdx = InsertPair.first->second;
       // call i8* @llvm.framerecover(i8* bitcast(@parentFn), i8* %fp, i32 N)
-      RecoverCall =
-          Builder.CreateCall3(FrameRecoverFn, ParentI8Fn, ParentFP,
-                              llvm::ConstantInt::get(Int32Ty, FrameEscapeIdx));
+      RecoverCall = Builder.CreateCall(
+          FrameRecoverFn, {ParentI8Fn, ParentFP,
+                           llvm::ConstantInt::get(Int32Ty, FrameEscapeIdx)});
 
     } else {
       // If the parent didn't have an alloca, we're doing some nested outlining.
@@ -1502,7 +1503,8 @@ CodeGenFunction::GenerateSEHFilterFunction(CodeGenFunction &ParentCGF,
     CGM.getCXXABI().getMangleContext().mangleSEHFilterExpression(Parent, OS);
   }
 
-  startOutlinedSEHHelper(ParentCGF, Name, getContext().IntTy, Args, FilterExpr);
+  startOutlinedSEHHelper(ParentCGF, Name, getContext().LongTy, Args,
+                         FilterExpr);
 
   // Mark finally block calls as nounwind and noinline to make LLVM's job a
   // little easier.
@@ -1514,7 +1516,7 @@ CodeGenFunction::GenerateSEHFilterFunction(CodeGenFunction &ParentCGF,
 
   // Emit the original filter expression, convert to i32, and return.
   llvm::Value *R = EmitScalarExpr(FilterExpr);
-  R = Builder.CreateIntCast(R, CGM.IntTy,
+  R = Builder.CreateIntCast(R, ConvertType(getContext().LongTy),
                             FilterExpr->getType()->isSignedIntegerType());
   Builder.CreateStore(R, ReturnValue);
 
@@ -1532,7 +1534,8 @@ CodeGenFunction::GenerateSEHFinallyFunction(CodeGenFunction &ParentCGF,
   FunctionArgList Args;
   Args.push_back(ImplicitParamDecl::Create(
       getContext(), nullptr, StartLoc,
-      &getContext().Idents.get("abnormal_termination"), getContext().BoolTy));
+      &getContext().Idents.get("abnormal_termination"),
+      getContext().UnsignedCharTy));
   Args.push_back(ImplicitParamDecl::Create(
       getContext(), nullptr, StartLoc,
       &getContext().Idents.get("frame_pointer"), getContext().VoidPtrTy));

@@ -66,12 +66,22 @@ void *Decl::operator new(std::size_t Size, const ASTContext &Context,
 void *Decl::operator new(std::size_t Size, const ASTContext &Ctx,
                          DeclContext *Parent, std::size_t Extra) {
   assert(!Parent || &Parent->getParentASTContext() == &Ctx);
+  // With local visibility enabled, we track the owning module even for local
+  // declarations.
+  if (Ctx.getLangOpts().ModulesLocalVisibility) {
+    void *Buffer = ::operator new(sizeof(Module *) + Size + Extra, Ctx);
+    return new (Buffer) Module*(nullptr) + 1;
+  }
   return ::operator new(Size + Extra, Ctx);
 }
 
 Module *Decl::getOwningModuleSlow() const {
   assert(isFromASTFile() && "Not from AST file?");
   return getASTContext().getExternalSource()->getModule(getOwningModuleID());
+}
+
+bool Decl::hasLocalOwningModuleStorage() const {
+  return getASTContext().getLangOpts().ModulesLocalVisibility;
 }
 
 const char *Decl::getDeclKindName() const {

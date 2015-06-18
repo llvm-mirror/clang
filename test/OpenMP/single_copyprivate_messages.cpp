@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 %s
+// RUN: %clang_cc1 -verify -fopenmp %s
 
 void foo() {
 }
@@ -103,6 +103,11 @@ T tmain(T argc, C **argv) {
   }
 
   return T();
+}
+
+void bar(S4 a[2], int n, int b[n]) {
+#pragma omp single copyprivate(a, b)
+    foo();
 }
 
 namespace A {

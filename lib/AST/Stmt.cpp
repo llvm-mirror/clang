@@ -592,7 +592,7 @@ unsigned GCCAsmStmt::AnalyzeAsmString(SmallVectorImpl<AsmStringPiece>&Pieces,
       SourceLocation EndLoc =
           getAsmString()->getLocationOfByte(CurPtr - StrStart, SM, LO, TI);
 
-      Pieces.push_back(AsmStringPiece(N, Str, BeginLoc, EndLoc));
+      Pieces.emplace_back(N, std::move(Str), BeginLoc, EndLoc);
       continue;
     }
 
@@ -626,7 +626,7 @@ unsigned GCCAsmStmt::AnalyzeAsmString(SmallVectorImpl<AsmStringPiece>&Pieces,
       SourceLocation EndLoc =
           getAsmString()->getLocationOfByte(NameEnd + 1 - StrStart, SM, LO, TI);
 
-      Pieces.push_back(AsmStringPiece(N, Str, BeginLoc, EndLoc));
+      Pieces.emplace_back(N, std::move(Str), BeginLoc, EndLoc);
 
       CurPtr = NameEnd+1;
       continue;
@@ -1581,10 +1581,7 @@ OMPFlushClause *OMPFlushClause::CreateEmpty(const ASTContext &C, unsigned N) {
 
 const OMPClause *
 OMPExecutableDirective::getSingleClause(OpenMPClauseKind K) const {
-  auto ClauseFilter =
-      [=](const OMPClause *C) -> bool { return C->getClauseKind() == K; };
-  OMPExecutableDirective::filtered_clause_iterator<decltype(ClauseFilter)> I(
-      clauses(), ClauseFilter);
+  auto &&I = getClausesOfKind(K);
 
   if (I) {
     auto *Clause = *I;

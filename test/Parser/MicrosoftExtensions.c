@@ -52,6 +52,9 @@ void deprecated_enum_test(void) {
 [returnvalue:SA_Post( attr=1)]
 int foo1([SA_Post(attr=1)] void *param);
 
+[unbalanced(attribute) /* expected-note {{to match this '['}} */
+void f(void); /* expected-error {{expected ']'}} */
+
 void ms_intrinsics(int a) {
   __noop();
   __assume(a);
@@ -93,3 +96,10 @@ typedef void(*ignored_quals_dummy3)(), __stdcall ignored_quals3; // expected-war
 typedef void(*ignored_quals_dummy4)(), __thiscall ignored_quals4; // expected-warning {{qualifiers after comma in declarator list are ignored}}
 typedef void(*ignored_quals_dummy5)(), __cdecl ignored_quals5; // expected-warning {{qualifiers after comma in declarator list are ignored}}
 typedef void(*ignored_quals_dummy6)(), __vectorcall ignored_quals6; // expected-warning {{qualifiers after comma in declarator list are ignored}}
+
+__declspec(align(16)) struct align_before_key1 {};
+__declspec(align(16)) struct align_before_key2 {} align_before_key2_var;
+__declspec(align(16)) struct align_before_key3 {} *align_before_key3_var;
+_Static_assert(__alignof(struct align_before_key1) == 16, "");
+_Static_assert(__alignof(struct align_before_key2) == 16, "");
+_Static_assert(__alignof(struct align_before_key3) == 16, "");

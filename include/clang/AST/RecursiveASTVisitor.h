@@ -857,7 +857,7 @@ template <typename Derived>
 bool
 RecursiveASTVisitor<Derived>::TraverseLambdaCapture(LambdaExpr *LE,
                                                     const LambdaCapture *C) {
-  if (C->isInitCapture())
+  if (LE->isInitCapture(C))
     TRY_TO(TraverseDecl(C->getCapturedVar()));
   return true;
 }
@@ -2234,9 +2234,11 @@ DEF_TRAVERSE_STMT(CXXThisExpr, {})
 DEF_TRAVERSE_STMT(CXXThrowExpr, {})
 DEF_TRAVERSE_STMT(UserDefinedLiteral, {})
 DEF_TRAVERSE_STMT(DesignatedInitExpr, {})
+DEF_TRAVERSE_STMT(DesignatedInitUpdateExpr, {})
 DEF_TRAVERSE_STMT(ExtVectorElementExpr, {})
 DEF_TRAVERSE_STMT(GNUNullExpr, {})
 DEF_TRAVERSE_STMT(ImplicitValueInitExpr, {})
+DEF_TRAVERSE_STMT(NoInitExpr, {})
 DEF_TRAVERSE_STMT(ObjCBoolLiteralExpr, {})
 DEF_TRAVERSE_STMT(ObjCEncodeExpr, {
   if (TypeSourceInfo *TInfo = S->getEncodedTypeSourceInfo())
@@ -2465,6 +2467,7 @@ template <typename Derived>
 bool
 RecursiveASTVisitor<Derived>::VisitOMPScheduleClause(OMPScheduleClause *C) {
   TRY_TO(TraverseStmt(C->getChunkSize()));
+  TRY_TO(TraverseStmt(C->getHelperChunkSize()));
   return true;
 }
 

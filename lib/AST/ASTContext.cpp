@@ -866,6 +866,31 @@ void ASTContext::PrintStats() const {
   BumpAlloc.PrintStats();
 }
 
+void ASTContext::mergeDefinitionIntoModule(NamedDecl *ND, Module *M,
+                                           bool NotifyListeners) {
+  if (NotifyListeners)
+    if (auto *Listener = getASTMutationListener())
+      Listener->RedefinedHiddenDefinition(ND, M);
+
+  if (getLangOpts().ModulesLocalVisibility)
+    MergedDefModules[ND].push_back(M);
+  else
+    ND->setHidden(false);
+}
+
+void ASTContext::deduplicateMergedDefinitonsFor(NamedDecl *ND) {
+  auto It = MergedDefModules.find(ND);
+  if (It == MergedDefModules.end())
+    return;
+
+  auto &Merged = It->second;
+  llvm::DenseSet<Module*> Found;
+  for (Module *&M : Merged)
+    if (!Found.insert(M).second)
+      M = nullptr;
+  Merged.erase(std::remove(Merged.begin(), Merged.end(), nullptr), Merged.end());
+}
+
 ExternCContextDecl *ASTContext::getExternCContextDecl() const {
   if (!ExternCContext)
     ExternCContext = ExternCContextDecl::Create(*this, getTranslationUnitDecl());
@@ -1335,7 +1360,7 @@ CharUnits ASTContext::getDeclAlign(const Decl *D, bool ForAlignof) const {
       }
       Align = std::max(Align, getPreferredTypeAlign(T.getTypePtr()));
       if (const VarDecl *VD = dyn_cast<VarDecl>(D)) {
-        if (VD->hasGlobalStorage())
+        if (VD->hasGlobalStorage() && !ForAlignof)
           Align = std::max(Align, getTargetInfo().getMinGlobalAlign());
       }
     }
@@ -1797,11 +1822,16 @@ unsigned ASTContext::getPreferredTypeAlign(const Type *T) const {
   TypeInfo TI = getTypeInfo(T);
   unsigned ABIAlign = TI.Align;
 
+  T = T->getBaseElementTypeUnsafe();
+
+  // The preferred alignment of member pointers is that of a pointer.
+  if (T->isMemberPointerType())
+    return getPreferredTypeAlign(getPointerDiffType().getTypePtr());
+
   if (Target->getTriple().getArch() == llvm::Triple::xcore)
     return ABIAlign;  // Never overalign on XCore.
 
   // Double and long long should be naturally aligned if possible.
-  T = T->getBaseElementTypeUnsafe();
   if (const ComplexType *CT = T->getAs<ComplexType>())
     T = CT->getElementType().getTypePtr();
   if (const EnumType *ET = T->getAs<EnumType>())
@@ -1815,6 +1845,13 @@ unsigned ASTContext::getPreferredTypeAlign(const Type *T) const {
       return std::max(ABIAlign, (unsigned)getTypeSize(T));
 
   return ABIAlign;
+}
+
+/// getTargetDefaultAlignForAttributeAligned - Return the default alignment
+/// for __attribute__((aligned)) on this target, to be used if no alignment
+/// value is specified.
+unsigned ASTContext::getTargetDefaultAlignForAttributeAligned(void) const {
+  return getTargetInfo().getDefaultAlignForAttributeAligned();
 }
 
 /// getAlignOfGlobalVar - Return the alignment in bits that should be given
@@ -4894,7 +4931,7 @@ CharUnits ASTContext::getObjCEncodingTypeSize(QualType type) const {
 bool ASTContext::isMSStaticDataMemberInlineDefinition(const VarDecl *VD) const {
   return getLangOpts().MSVCCompat && VD->isStaticDataMember() &&
          VD->getType()->isIntegralOrEnumerationType() &&
-         !VD->getFirstDecl()->isOutOfLine() && VD->getFirstDecl()->hasInit();
+         VD->isFirstDecl() && !VD->isOutOfLine() && VD->hasInit();
 }
 
 static inline 

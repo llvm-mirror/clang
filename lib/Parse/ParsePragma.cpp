@@ -799,8 +799,10 @@ bool Parser::HandlePragmaLoopHint(LoopHint &Hint) {
          "PragmaLoopHintInfo::Toks must contain at least one token.");
 
   // If no option is specified the argument is assumed to be a constant expr.
+  bool OptionUnroll = false;
   bool StateOption = false;
-  if (OptionInfo) { // Pragma unroll does not specify an option.
+  if (OptionInfo) { // Pragma Unroll does not specify an option.
+    OptionUnroll = OptionInfo->isStr("unroll");
     StateOption = llvm::StringSwitch<bool>(OptionInfo->getName())
                       .Case("vectorize", true)
                       .Case("interleave", true)
@@ -812,19 +814,20 @@ bool Parser::HandlePragmaLoopHint(LoopHint &Hint) {
   if (Toks[0].is(tok::eof)) {
     ConsumeToken(); // The annotation token.
     Diag(Toks[0].getLocation(), diag::err_pragma_loop_missing_argument)
-        << /*StateArgument=*/StateOption << /*FullKeyword=*/PragmaUnroll;
+        << /*StateArgument=*/StateOption << /*FullKeyword=*/OptionUnroll;
     return false;
   }
 
   // Validate the argument.
   if (StateOption) {
     ConsumeToken(); // The annotation token.
-    bool OptionUnroll = OptionInfo->isStr("unroll");
     SourceLocation StateLoc = Toks[0].getLocation();
     IdentifierInfo *StateInfo = Toks[0].getIdentifierInfo();
-    if (!StateInfo || ((OptionUnroll ? !StateInfo->isStr("full")
-                                     : !StateInfo->isStr("enable")) &&
-                       !StateInfo->isStr("disable"))) {
+    if (!StateInfo ||
+        ((OptionUnroll ? !StateInfo->isStr("full")
+                       : !StateInfo->isStr("enable") &&
+                             !StateInfo->isStr("assume_safety")) &&
+         !StateInfo->isStr("disable"))) {
       Diag(Toks[0].getLocation(), diag::err_pragma_invalid_keyword)
           << /*FullKeyword=*/OptionUnroll;
       return false;
@@ -1489,7 +1492,7 @@ PragmaOpenMPHandler::HandlePragma(Preprocessor &PP,
   Token *Toks = new Token[Pragma.size()];
   std::copy(Pragma.begin(), Pragma.end(), Toks);
   PP.EnterTokenStream(Toks, Pragma.size(),
-                      /*DisableMacroExpansion=*/true, /*OwnsTokens=*/true);
+                      /*DisableMacroExpansion=*/false, /*OwnsTokens=*/true);
 }
 
 /// \brief Handle '#pragma pointers_to_members'
@@ -1953,6 +1956,7 @@ static bool ParseLoopHintValue(Preprocessor &PP, Token &Tok, Token PragmaName,
 ///  loop-hint-keyword:
 ///    'enable'
 ///    'disable'
+///    'assume_safety'
 ///
 ///  unroll-hint-keyword:
 ///    'full'

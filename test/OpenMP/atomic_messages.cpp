@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -ferror-limit 100 %s
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s
 
 int foo() {
 L1:
@@ -672,7 +672,6 @@ int capture() {
 #pragma omp atomic capture capture
   b = a /= b;
 
-  // expected-note@+1 {{in instantiation of function template specialization 'capture<int>' requested here}}
   return capture<int>();
 }
 

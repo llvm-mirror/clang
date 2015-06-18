@@ -1,13 +1,38 @@
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -x c++ -triple x86_64-unknown-unknown -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s
-// RUN: %clang_cc1 -fopenmp=libiomp5 -x c++ -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
-// RUN: %clang_cc1 -fopenmp=libiomp5 -x c++ -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
-// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp=libiomp5 -fexceptions -fcxx-exceptions -gline-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --check-prefix=TERM_DEBUG
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -triple x86_64-unknown-unknown -emit-llvm %s -fexceptions -fcxx-exceptions -o - | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-pch -o %t %s
+// RUN: %clang_cc1 -fopenmp -x c++ -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - | FileCheck %s
+// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -fopenmp -fexceptions -fcxx-exceptions -gline-tables-only -x c++ -emit-llvm %s -o - | FileCheck %s --check-prefix=TERM_DEBUG
+// RUN: %clang_cc1 -verify -triple x86_64-apple-darwin10 -O1 -fopenmp -emit-llvm %s -o - | FileCheck %s --check-prefix=CLEANUP
 //
 // expected-no-diagnostics
 #ifndef HEADER
 #define HEADER
 
-// CHECK: [[IDENT_T_TY:%.+]] = type { i32, i32, i32, i32, i8* }
+// CHECK-DAG: [[IDENT_T_TY:%.+]] = type { i32, i32, i32, i32, i8* }
+// CHECK-DAG: [[CAP_TY:%.+]] = type { i8* }
+
+// CHECK-LABEL: with_var_schedule
+void with_var_schedule() {
+  double a = 5;
+// CHECK: [[CHUNK_SIZE:%.+]] = fptosi double %{{.+}}to i8
+// CHECK: store i8 %{{.+}}, i8* [[CHUNK:%.+]],
+// CHECK: [[CHUNK_REF:%.+]] = getelementptr inbounds [[CAP_TY]], [[CAP_TY]]* [[CAP_ARG:%.+]], i{{.+}} 0, i{{.+}} 0
+// CHECK: store i8* [[CHUNK]], i8** [[CHUNK_REF]],
+// CHECK: [[BITCAST:%.+]] = bitcast [[CAP_TY]]* [[CAP_ARG]] to i8*
+// CHECK: call void {{.+}} @__kmpc_fork_call({{.+}}, i8* [[BITCAST]])
+
+// CHECK: [[CHUNK_REF:%.+]] = getelementptr inbounds [[CAP_TY]], [[CAP_TY]]* %{{.+}}, i{{.+}} 0, i{{.+}} 0
+// CHECK: [[CHUNK:%.+]] = load i8*, i8** [[CHUNK_REF]],
+// CHECK: [[CHUNK_VAL:%.+]] = load i8, i8* [[CHUNK]],
+// CHECK: [[CHUNK_SIZE:%.+]] = sext i8 [[CHUNK_VAL]] to i64
+// CHECK: call void @__kmpc_for_static_init_8u([[IDENT_T_TY]]* [[DEFAULT_LOC:@[^,]+]], i32 [[GTID:%[^,]+]], i32 33, i32* [[IS_LAST:%[^,]+]], i64* [[OMP_LB:%[^,]+]], i64* [[OMP_UB:%[^,]+]], i64* [[OMP_ST:%[^,]+]], i64 1, i64 [[CHUNK_SIZE]])
+// CHECK: call void @__kmpc_for_static_fini([[IDENT_T_TY]]* [[DEFAULT_LOC]], i32 [[GTID]])
+// CHECK: __kmpc_cancel_barrier
+#pragma omp parallel for schedule(static, char(a))
+  for (unsigned long long i = 1; i < 2; ++i) {
+  }
+}
+
 // CHECK-LABEL: define {{.*void}} @{{.*}}without_schedule_clause{{.*}}(float* {{.+}}, float* {{.+}}, float* {{.+}}, float* {{.+}})
 void without_schedule_clause(float *a, float *b, float *c, float *d) {
   #pragma omp parallel for
@@ -47,11 +72,7 @@ void without_schedule_clause(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: br label %{{.+}}
   }
 // CHECK: [[LOOP1_END]]
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call void @__kmpc_for_static_fini([[IDENT_T_TY]]* [[DEFAULT_LOC]], i32 [[GTID]])
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call {{.+}} @__kmpc_cancel_barrier([[IDENT_T_TY]]* [[DEFAULT_LOC_BARRIER:[@%].+]], i32 [[GTID]])
 // CHECK: ret void
 }
@@ -95,11 +116,7 @@ void static_not_chunked(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: br label %{{.+}}
   }
 // CHECK: [[LOOP1_END]]
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call void @__kmpc_for_static_fini([[IDENT_T_TY]]* [[DEFAULT_LOC]], i32 [[GTID]])
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call {{.+}} @__kmpc_cancel_barrier([[IDENT_T_TY]]* [[DEFAULT_LOC_BARRIER:[@%].+]], i32 [[GTID]])
 // CHECK: ret void
 }
@@ -162,11 +179,7 @@ void static_chunked(float *a, float *b, float *c, float *d) {
 // CHECK-NEXT: store i32 [[ADD_UB]], i32* [[OMP_UB]]
 
 // CHECK: [[O_LOOP1_END]]
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call void @__kmpc_for_static_fini([[IDENT_T_TY]]* [[DEFAULT_LOC]], i32 [[GTID]])
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call {{.+}} @__kmpc_cancel_barrier([[IDENT_T_TY]]* [[DEFAULT_LOC_BARRIER:[@%].+]], i32 [[GTID]])
 // CHECK: ret void
 }
@@ -181,8 +194,6 @@ void dynamic1(float *a, float *b, float *c, float *d) {
 // CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call void @__kmpc_dispatch_init_8u([[IDENT_T_TY]]* [[DEFAULT_LOC]], i32 [[GTID]], i32 35, i64 0, i64 16908287, i64 1, i64 1)
 //
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: [[HASWORK:%.+]] = call i32 @__kmpc_dispatch_next_8u([[IDENT_T_TY]]* [[DEFAULT_LOC]], i32 [[GTID]], i32* [[OMP_ISLAST:%[^,]+]], i64* [[OMP_LB:%[^,]+]], i64* [[OMP_UB:%[^,]+]], i64* [[OMP_ST:%[^,]+]])
 // CHECK-NEXT: [[O_CMP:%.+]] = icmp ne i32 [[HASWORK]], 0
 // CHECK-NEXT: br i1 [[O_CMP]], label %[[O_LOOP1_BODY:[^,]+]], label %[[O_LOOP1_END:[^,]+]]
@@ -214,8 +225,6 @@ void dynamic1(float *a, float *b, float *c, float *d) {
   }
 // CHECK: [[LOOP1_END]]
 // CHECK: [[O_LOOP1_END]]
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call {{.+}} @__kmpc_cancel_barrier([[IDENT_T_TY]]* [[DEFAULT_LOC_BARRIER:[@%].+]], i32 [[GTID]])
 // CHECK: ret void
 }
@@ -230,8 +239,6 @@ void guided7(float *a, float *b, float *c, float *d) {
 // CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call void @__kmpc_dispatch_init_8u([[IDENT_T_TY]]* [[DEFAULT_LOC]], i32 [[GTID]], i32 36, i64 0, i64 16908287, i64 1, i64 7)
 //
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: [[HASWORK:%.+]] = call i32 @__kmpc_dispatch_next_8u([[IDENT_T_TY]]* [[DEFAULT_LOC]], i32 [[GTID]], i32* [[OMP_ISLAST:%[^,]+]], i64* [[OMP_LB:%[^,]+]], i64* [[OMP_UB:%[^,]+]], i64* [[OMP_ST:%[^,]+]])
 // CHECK-NEXT: [[O_CMP:%.+]] = icmp ne i32 [[HASWORK]], 0
 // CHECK-NEXT: br i1 [[O_CMP]], label %[[O_LOOP1_BODY:[^,]+]], label %[[O_LOOP1_END:[^,]+]]
@@ -263,8 +270,6 @@ void guided7(float *a, float *b, float *c, float *d) {
   }
 // CHECK: [[LOOP1_END]]
 // CHECK: [[O_LOOP1_END]]
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call {{.+}} @__kmpc_cancel_barrier([[IDENT_T_TY]]* [[DEFAULT_LOC_BARRIER:[@%].+]], i32 [[GTID]])
 // CHECK: ret void
 }
@@ -332,8 +337,6 @@ void runtime(float *a, float *b, float *c, float *d) {
 // CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: call void @__kmpc_dispatch_init_4([[IDENT_T_TY]]* [[DEFAULT_LOC]], i32 [[GTID]], i32 37, i32 0, i32 199, i32 1, i32 1)
 //
-// CHECK: [[GTID_REF:%.+]] = load i32*, i32** [[GTID_REF_ADDR]],
-// CHECK: [[GTID:%.+]] = load i32, i32* [[GTID_REF]],
 // CHECK: [[HASWORK:%.+]] = call i32 @__kmpc_dispatch_next_4([[IDENT_T_TY]]* [[DEFAULT_LOC]], i32 [[GTID]], i32* [[OMP_ISLAST:%[^,]+]], i32* [[OMP_LB:%[^,]+]], i32* [[OMP_UB:%[^,]+]], i32* [[OMP_ST:%[^,]+]])
 // CHECK-NEXT: [[O_CMP:%.+]] = icmp ne i32 [[HASWORK]], 0
 // CHECK-NEXT: br i1 [[O_CMP]], label %[[O_LOOP1_BODY:[^,]+]], label %[[O_LOOP1_END:[^,]+]]
@@ -374,6 +377,7 @@ void runtime(float *a, float *b, float *c, float *d) {
 int foo() {return 0;};
 
 // TERM_DEBUG-LABEL: parallel_for
+// CLEANUP: parallel_for
 void parallel_for(float *a) {
 #pragma omp parallel for schedule(static, 5)
   // TERM_DEBUG-NOT: __kmpc_global_thread_num
@@ -386,13 +390,17 @@ void parallel_for(float *a) {
   // TERM_DEBUG:     [[TERM_LPAD]]
   // TERM_DEBUG:     call void @__clang_call_terminate
   // TERM_DEBUG:     unreachable
+  // CLEANUP-NOT: __kmpc_global_thread_num
+  // CLEANUP:     call void @__kmpc_for_static_init_4u({{.+}})
+  // CLEANUP:     call void @__kmpc_for_static_fini({{.+}})
+  // CLEANUP:     call {{.+}} @__kmpc_cancel_barrier({{.+}})
   for (unsigned i = 131071; i <= 2147483647; i += 127)
     a[i] += foo();
 }
 // Check source line corresponds to "#pragma omp parallel for schedule(static, 5)" above:
-// TERM_DEBUG-DAG: [[DBG_LOC_START]] = !MDLocation(line: [[@LINE-4]],
-// TERM_DEBUG-DAG: [[DBG_LOC_END]] = !MDLocation(line: [[@LINE-16]],
-// TERM_DEBUG-DAG: [[DBG_LOC_CANCEL]] = !MDLocation(line: [[@LINE-17]],
+// TERM_DEBUG-DAG: [[DBG_LOC_START]] = !DILocation(line: [[@LINE-4]],
+// TERM_DEBUG-DAG: [[DBG_LOC_END]] = !DILocation(line: [[@LINE-20]],
+// TERM_DEBUG-DAG: [[DBG_LOC_CANCEL]] = !DILocation(line: [[@LINE-21]],
 
 #endif // HEADER
 

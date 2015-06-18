@@ -124,16 +124,8 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
   // The parser verifies that there is a string literal here.
   assert(AsmString->isAscii());
 
-  bool ValidateConstraints = true;
-  if (getLangOpts().CUDA) {
-    // In CUDA mode don't verify asm constraints in device functions during host
-    // compilation and vice versa.
-    bool InDeviceMode = getLangOpts().CUDAIsDevice;
-    FunctionDecl *FD = getCurFunctionDecl();
-    bool IsDeviceFunction =
-        FD && (FD->hasAttr<CUDADeviceAttr>() || FD->hasAttr<CUDAGlobalAttr>());
-    ValidateConstraints = IsDeviceFunction == InDeviceMode;
-  }
+  bool ValidateConstraints =
+      DeclAttrsMatchCUDAMode(getLangOpts(), getCurFunctionDecl());
 
   for (unsigned i = 0; i != NumOutputs; i++) {
     StringLiteral *Literal = Constraints[i];
@@ -161,6 +153,14 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
     // Referring to parameters is not allowed in naked functions.
     if (CheckNakedParmReference(OutputExpr, *this))
       return StmtError();
+
+    // Bitfield can't be referenced with a pointer.
+    if (Info.allowsMemory() && OutputExpr->refersToBitField())
+      return StmtError(Diag(OutputExpr->getLocStart(),
+                            diag::err_asm_bitfield_in_memory_constraint)
+                       << 1
+                       << Info.getConstraintStr()
+                       << OutputExpr->getSourceRange());
 
     OutputConstraintInfos.push_back(Info);
 
@@ -237,6 +237,14 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
     // Referring to parameters is not allowed in naked functions.
     if (CheckNakedParmReference(InputExpr, *this))
       return StmtError();
+
+    // Bitfield can't be referenced with a pointer.
+    if (Info.allowsMemory() && InputExpr->refersToBitField())
+      return StmtError(Diag(InputExpr->getLocStart(),
+                            diag::err_asm_bitfield_in_memory_constraint)
+                       << 0
+                       << Info.getConstraintStr()
+                       << InputExpr->getSourceRange());
 
     // Only allow void types for memory constraints.
     if (Info.allowsMemory() && !Info.allowsRegister()) {

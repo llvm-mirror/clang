@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -verify -fopenmp=libiomp5 -ferror-limit 100 %s
+// RUN: %clang_cc1 -verify -fopenmp -ferror-limit 100 %s
 
 void foo() {
 }
@@ -44,6 +44,11 @@ public:
 
 int threadvar;
 #pragma omp threadprivate(threadvar) // expected-note {{defined as threadprivate or thread local}}
+
+void bar(int n, int b[n]) {
+#pragma omp task private(b)
+    foo();
+}
 
 namespace A {
 double x;

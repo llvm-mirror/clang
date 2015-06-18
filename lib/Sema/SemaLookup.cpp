@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 #include "clang/Sema/Lookup.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTMutationListener.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclCXX.h"
@@ -23,7 +24,9 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/LangOptions.h"
+#include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/ModuleLoader.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ExternalSemaSource.h"
 #include "clang/Sema/Overload.h"
@@ -1169,8 +1172,73 @@ static Decl *getInstantiatedFrom(Decl *D, MemberSpecializationInfo *MSInfo) {
   return MSInfo->isExplicitSpecialization() ? D : MSInfo->getInstantiatedFrom();
 }
 
+Module *Sema::getOwningModule(Decl *Entity) {
+  // If it's imported, grab its owning module.
+  Module *M = Entity->getImportedOwningModule();
+  if (M || !isa<NamedDecl>(Entity) || !cast<NamedDecl>(Entity)->isHidden())
+    return M;
+  assert(!Entity->isFromASTFile() &&
+         "hidden entity from AST file has no owning module");
+
+  if (!getLangOpts().ModulesLocalVisibility) {
+    // If we're not tracking visibility locally, the only way a declaration
+    // can be hidden and local is if it's hidden because it's parent is (for
+    // instance, maybe this is a lazily-declared special member of an imported
+    // class).
+    auto *Parent = cast<NamedDecl>(Entity->getDeclContext());
+    assert(Parent->isHidden() && "unexpectedly hidden decl");
+    return getOwningModule(Parent);
+  }
+
+  // It's local and hidden; grab or compute its owning module.
+  M = Entity->getLocalOwningModule();
+  if (M)
+    return M;
+
+  if (auto *Containing =
+          PP.getModuleContainingLocation(Entity->getLocation())) {
+    M = Containing;
+  } else if (Entity->isInvalidDecl() || Entity->getLocation().isInvalid()) {
+    // Don't bother tracking visibility for invalid declarations with broken
+    // locations.
+    cast<NamedDecl>(Entity)->setHidden(false);
+  } else {
+    // We need to assign a module to an entity that exists outside of any
+    // module, so that we can hide it from modules that we textually enter.
+    // Invent a fake module for all such entities.
+    if (!CachedFakeTopLevelModule) {
+      CachedFakeTopLevelModule =
+          PP.getHeaderSearchInfo().getModuleMap().findOrCreateModule(
+              "<top-level>", nullptr, false, false).first;
+
+      auto &SrcMgr = PP.getSourceManager();
+      SourceLocation StartLoc =
+          SrcMgr.getLocForStartOfFile(SrcMgr.getMainFileID());
+      auto &TopLevel =
+          VisibleModulesStack.empty() ? VisibleModules : VisibleModulesStack[0];
+      TopLevel.setVisible(CachedFakeTopLevelModule, StartLoc);
+    }
+
+    M = CachedFakeTopLevelModule;
+  }
+
+  if (M)
+    Entity->setLocalOwningModule(M);
+  return M;
+}
+
+void Sema::makeMergedDefinitionVisible(NamedDecl *ND, SourceLocation Loc) {
+  // FIXME: If ND is a template declaration, make the template parameters
+  // visible too. They're not (necessarily) within its DeclContext.
+  if (auto *M = PP.getModuleContainingLocation(Loc))
+    Context.mergeDefinitionIntoModule(ND, M);
+  else
+    // We're not building a module; just make the definition visible.
+    ND->setHidden(false);
+}
+
 /// \brief Find the module in which the given declaration was defined.
-static Module *getDefiningModule(Decl *Entity) {
+static Module *getDefiningModule(Sema &S, Decl *Entity) {
   if (FunctionDecl *FD = dyn_cast<FunctionDecl>(Entity)) {
     // If this function was instantiated from a template, the defining module is
     // the module containing the pattern.
@@ -1192,20 +1260,52 @@ static Module *getDefiningModule(Decl *Entity) {
   // from a template.
   DeclContext *Context = Entity->getDeclContext();
   if (Context->isFileContext())
-    return Entity->getOwningModule();
-  return getDefiningModule(cast<Decl>(Context));
+    return S.getOwningModule(Entity);
+  return getDefiningModule(S, cast<Decl>(Context));
 }
 
 llvm::DenseSet<Module*> &Sema::getLookupModules() {
   unsigned N = ActiveTemplateInstantiations.size();
   for (unsigned I = ActiveTemplateInstantiationLookupModules.size();
        I != N; ++I) {
-    Module *M = getDefiningModule(ActiveTemplateInstantiations[I].Entity);
+    Module *M =
+        getDefiningModule(*this, ActiveTemplateInstantiations[I].Entity);
     if (M && !LookupModulesCache.insert(M).second)
       M = nullptr;
     ActiveTemplateInstantiationLookupModules.push_back(M);
   }
   return LookupModulesCache;
+}
+
+bool Sema::hasVisibleMergedDefinition(NamedDecl *Def) {
+  for (Module *Merged : Context.getModulesWithMergedDefinition(Def))
+    if (isModuleVisible(Merged))
+      return true;
+  return false;
+}
+
+template<typename ParmDecl>
+static bool hasVisibleDefaultArgument(Sema &S, const ParmDecl *D) {
+  if (!D->hasDefaultArgument())
+    return false;
+
+  while (D) {
+    auto &DefaultArg = D->getDefaultArgStorage();
+    if (!DefaultArg.isInherited() && S.isVisible(D))
+      return true;
+
+    // If there was a previous default argument, maybe its parameter is visible.
+    D = DefaultArg.getInheritedFrom();
+  }
+  return false;
+}
+
+bool Sema::hasVisibleDefaultArgument(const NamedDecl *D) {
+  if (auto *P = dyn_cast<TemplateTypeParmDecl>(D))
+    return ::hasVisibleDefaultArgument(*this, P);
+  if (auto *P = dyn_cast<NonTypeTemplateParmDecl>(D))
+    return ::hasVisibleDefaultArgument(*this, P);
+  return ::hasVisibleDefaultArgument(*this, cast<TemplateTemplateParmDecl>(D));
 }
 
 /// \brief Determine whether a declaration is visible to name lookup.
@@ -1218,16 +1318,39 @@ llvm::DenseSet<Module*> &Sema::getLookupModules() {
 /// your module can see, including those later on in your module).
 bool LookupResult::isVisibleSlow(Sema &SemaRef, NamedDecl *D) {
   assert(D->isHidden() && "should not call this: not in slow case");
-  Module *DeclModule = D->getOwningModule();
-  assert(DeclModule && "hidden decl not from a module");
+  Module *DeclModule = SemaRef.getOwningModule(D);
+  if (!DeclModule) {
+    // getOwningModule() may have decided the declaration should not be hidden.
+    assert(!D->isHidden() && "hidden decl not from a module");
+    return true;
+  }
+
+  // If the owning module is visible, and the decl is not module private,
+  // then the decl is visible too. (Module private is ignored within the same
+  // top-level module.)
+  if (!D->isFromASTFile() || !D->isModulePrivate()) {
+    if (SemaRef.isModuleVisible(DeclModule))
+      return true;
+    // Also check merged definitions.
+    if (SemaRef.getLangOpts().ModulesLocalVisibility &&
+        SemaRef.hasVisibleMergedDefinition(D))
+      return true;
+  }
 
   // If this declaration is not at namespace scope nor module-private,
   // then it is visible if its lexical parent has a visible definition.
   DeclContext *DC = D->getLexicalDeclContext();
   if (!D->isModulePrivate() &&
       DC && !DC->isFileContext() && !isa<LinkageSpecDecl>(DC)) {
-    if (SemaRef.hasVisibleDefinition(cast<NamedDecl>(DC))) {
-      if (SemaRef.ActiveTemplateInstantiations.empty()) {
+    // For a parameter, check whether our current template declaration's
+    // lexical context is visible, not whether there's some other visible
+    // definition of it, because parameters aren't "within" the definition.
+    if ((D->isTemplateParameter() || isa<ParmVarDecl>(D))
+            ? isVisible(SemaRef, cast<NamedDecl>(DC))
+            : SemaRef.hasVisibleDefinition(cast<NamedDecl>(DC))) {
+      if (SemaRef.ActiveTemplateInstantiations.empty() &&
+          // FIXME: Do something better in this case.
+          !SemaRef.getLangOpts().ModulesLocalVisibility) {
         // Cache the fact that this declaration is implicitly visible because
         // its parent has a visible definition.
         D->setHidden(false);
@@ -1258,6 +1381,10 @@ bool LookupResult::isVisibleSlow(Sema &SemaRef, NamedDecl *D) {
     if ((*I)->isModuleVisible(DeclModule))
       return true;
   return false;
+}
+
+bool Sema::isVisibleSlow(const NamedDecl *D) {
+  return LookupResult::isVisible(*this, const_cast<NamedDecl*>(D));
 }
 
 /// \brief Retrieve the visible declaration corresponding to D, if any.
@@ -2905,6 +3032,9 @@ void Sema::ArgumentDependentLookup(DeclarationName Name, SourceLocation Loc,
       if (!isa<FunctionDecl>(D) && !isa<FunctionTemplateDecl>(D))
         continue;
 
+      if (!isVisible(D) && !(D = findAcceptableDecl(*this, D)))
+        continue;
+
       Result.insert(D);
     }
   }
@@ -2973,7 +3103,7 @@ class ShadowContextRAII {
 
 public:
   ShadowContextRAII(VisibleDeclsRecord &Visible) : Visible(Visible) {
-    Visible.ShadowMaps.push_back(ShadowMap());
+    Visible.ShadowMaps.emplace_back();
   }
 
   ~ShadowContextRAII() {
@@ -4515,20 +4645,64 @@ void Sema::diagnoseTypo(const TypoCorrection &Correction,
 
 /// Find which declaration we should import to provide the definition of
 /// the given declaration.
-static const NamedDecl *getDefinitionToImport(const NamedDecl *D) {
-  if (const VarDecl *VD = dyn_cast<VarDecl>(D))
+static NamedDecl *getDefinitionToImport(NamedDecl *D) {
+  if (VarDecl *VD = dyn_cast<VarDecl>(D))
     return VD->getDefinition();
   if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
-    return FD->isDefined(FD) ? FD : nullptr;
-  if (const TagDecl *TD = dyn_cast<TagDecl>(D))
+    return FD->isDefined(FD) ? const_cast<FunctionDecl*>(FD) : nullptr;
+  if (TagDecl *TD = dyn_cast<TagDecl>(D))
     return TD->getDefinition();
-  if (const ObjCInterfaceDecl *ID = dyn_cast<ObjCInterfaceDecl>(D))
+  if (ObjCInterfaceDecl *ID = dyn_cast<ObjCInterfaceDecl>(D))
     return ID->getDefinition();
-  if (const ObjCProtocolDecl *PD = dyn_cast<ObjCProtocolDecl>(D))
+  if (ObjCProtocolDecl *PD = dyn_cast<ObjCProtocolDecl>(D))
     return PD->getDefinition();
-  if (const TemplateDecl *TD = dyn_cast<TemplateDecl>(D))
+  if (TemplateDecl *TD = dyn_cast<TemplateDecl>(D))
     return getDefinitionToImport(TD->getTemplatedDecl());
   return nullptr;
+}
+
+void Sema::diagnoseMissingImport(SourceLocation Loc, NamedDecl *Decl,
+                                 bool NeedDefinition, bool Recover) {
+  assert(!isVisible(Decl) && "missing import for non-hidden decl?");
+
+  // Suggest importing a module providing the definition of this entity, if
+  // possible.
+  NamedDecl *Def = getDefinitionToImport(Decl);
+  if (!Def)
+    Def = Decl;
+
+  // FIXME: Add a Fix-It that imports the corresponding module or includes
+  // the header.
+  Module *Owner = getOwningModule(Decl);
+  assert(Owner && "definition of hidden declaration is not in a module");
+
+  auto Merged = Context.getModulesWithMergedDefinition(Decl);
+  if (!Merged.empty()) {
+    std::string ModuleList;
+    ModuleList += "\n        ";
+    ModuleList += Owner->getFullModuleName();
+    unsigned N = 0;
+    for (Module *M : Merged) {
+      ModuleList += "\n        ";
+      if (++N == 5 && Merged.size() != N) {
+        ModuleList += "[...]";
+        break;
+      }
+      ModuleList += M->getFullModuleName();
+    }
+
+    Diag(Loc, diag::err_module_private_declaration_multiple)
+      << NeedDefinition << Decl << ModuleList;
+  } else {
+    Diag(Loc, diag::err_module_private_declaration)
+      << NeedDefinition << Decl << Owner->getFullModuleName();
+  }
+  Diag(Decl->getLocation(), NeedDefinition ? diag::note_previous_definition
+                                           : diag::note_previous_declaration);
+
+  // Try to recover by implicitly importing this module.
+  if (Recover)
+    createImplicitModuleImportForErrorRecovery(Loc, Owner);
 }
 
 /// \brief Diagnose a successfully-corrected typo. Separated from the correction
@@ -4557,23 +4731,8 @@ void Sema::diagnoseTypo(const TypoCorrection &Correction,
     NamedDecl *Decl = Correction.getCorrectionDecl();
     assert(Decl && "import required but no declaration to import");
 
-    // Suggest importing a module providing the definition of this entity, if
-    // possible.
-    const NamedDecl *Def = getDefinitionToImport(Decl);
-    if (!Def)
-      Def = Decl;
-    Module *Owner = Def->getOwningModule();
-    assert(Owner && "definition of hidden declaration is not in a module");
-
-    Diag(Correction.getCorrectionRange().getBegin(),
-         diag::err_module_private_declaration)
-      << Def << Owner->getFullModuleName();
-    Diag(Def->getLocation(), diag::note_previous_declaration);
-
-    // Recover by implicitly importing this module.
-    if (ErrorRecovery)
-      createImplicitModuleImportForErrorRecovery(
-          Correction.getCorrectionRange().getBegin(), Owner);
+    diagnoseMissingImport(Correction.getCorrectionRange().getBegin(), Decl,
+                          /*NeedDefinition*/ false, ErrorRecovery);
     return;
   }
 

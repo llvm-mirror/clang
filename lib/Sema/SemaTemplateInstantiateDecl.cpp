@@ -202,6 +202,31 @@ static void instantiateDependentEnableIfAttr(
   New->addAttr(EIA);
 }
 
+// Constructs and adds to New a new instance of CUDALaunchBoundsAttr using
+// template A as the base and arguments from TemplateArgs.
+static void instantiateDependentCUDALaunchBoundsAttr(
+    Sema &S, const MultiLevelTemplateArgumentList &TemplateArgs,
+    const CUDALaunchBoundsAttr &Attr, Decl *New) {
+  // The alignment expression is a constant expression.
+  EnterExpressionEvaluationContext Unevaluated(S, Sema::ConstantEvaluated);
+
+  ExprResult Result = S.SubstExpr(Attr.getMaxThreads(), TemplateArgs);
+  if (Result.isInvalid())
+    return;
+  Expr *MaxThreads = Result.getAs<Expr>();
+
+  Expr *MinBlocks = nullptr;
+  if (Attr.getMinBlocks()) {
+    Result = S.SubstExpr(Attr.getMinBlocks(), TemplateArgs);
+    if (Result.isInvalid())
+      return;
+    MinBlocks = Result.getAs<Expr>();
+  }
+
+  S.AddLaunchBoundsAttr(Attr.getLocation(), New, MaxThreads, MinBlocks,
+                        Attr.getSpellingListIndex());
+}
+
 void Sema::InstantiateAttrs(const MultiLevelTemplateArgumentList &TemplateArgs,
                             const Decl *Tmpl, Decl *New,
                             LateInstantiatedAttrVec *LateAttrs,
@@ -230,6 +255,13 @@ void Sema::InstantiateAttrs(const MultiLevelTemplateArgumentList &TemplateArgs,
     if (EnableIf && EnableIf->getCond()->isValueDependent()) {
       instantiateDependentEnableIfAttr(*this, TemplateArgs, EnableIf, Tmpl,
                                        New);
+      continue;
+    }
+
+    if (const CUDALaunchBoundsAttr *CUDALaunchBounds =
+            dyn_cast<CUDALaunchBoundsAttr>(TmplAttr)) {
+      instantiateDependentCUDALaunchBoundsAttr(*this, TemplateArgs,
+                                               *CUDALaunchBounds, New);
       continue;
     }
 
@@ -1270,11 +1302,19 @@ Decl *TemplateDeclInstantiator::VisitCXXRecordDecl(CXXRecordDecl *D) {
   // DR1484 clarifies that the members of a local class are instantiated as part
   // of the instantiation of their enclosing entity.
   if (D->isCompleteDefinition() && D->isLocalClass()) {
+    Sema::SavePendingLocalImplicitInstantiationsRAII
+        SavedPendingLocalImplicitInstantiations(SemaRef);
+
     SemaRef.InstantiateClass(D->getLocation(), Record, D, TemplateArgs,
                              TSK_ImplicitInstantiation,
                              /*Complain=*/true);
+
     SemaRef.InstantiateClassMembers(D->getLocation(), Record, TemplateArgs,
                                     TSK_ImplicitInstantiation);
+
+    // This class may have local implicit instantiations that need to be
+    // performed within this scope.
+    SemaRef.PerformPendingInstantiations(/*LocalOnly=*/true);
   }
 
   SemaRef.DiagnoseUnusedNestedTypedefs(Record);
@@ -1887,7 +1927,7 @@ Decl *TemplateDeclInstantiator::VisitTemplateTypeParmDecl(
         SemaRef.SubstType(D->getDefaultArgumentInfo(), TemplateArgs,
                           D->getDefaultArgumentLoc(), D->getDeclName());
     if (InstantiatedDefaultArg)
-      Inst->setDefaultArgument(InstantiatedDefaultArg, false);
+      Inst->setDefaultArgument(InstantiatedDefaultArg);
   }
 
   // Introduce this template parameter's instantiation into the instantiation
@@ -2041,7 +2081,7 @@ Decl *TemplateDeclInstantiator::VisitNonTypeTemplateParmDecl(
   if (D->hasDefaultArgument()) {
     ExprResult Value = SemaRef.SubstExpr(D->getDefaultArgument(), TemplateArgs);
     if (!Value.isInvalid())
-      Param->setDefaultArgument(Value.get(), false);
+      Param->setDefaultArgument(Value.get());
   }
 
   // Introduce this template parameter's instantiation into the instantiation
@@ -2175,10 +2215,10 @@ TemplateDeclInstantiator::VisitTemplateTemplateParmDecl(
         D->getDefaultArgument().getTemplateNameLoc(), TemplateArgs);
     if (!TName.isNull())
       Param->setDefaultArgument(
+          SemaRef.Context,
           TemplateArgumentLoc(TemplateArgument(TName),
                               D->getDefaultArgument().getTemplateQualifierLoc(),
-                              D->getDefaultArgument().getTemplateNameLoc()),
-          false);
+                              D->getDefaultArgument().getTemplateNameLoc()));
   }
   Param->setAccess(AS_public);
 
@@ -4401,6 +4441,30 @@ NamedDecl *Sema::FindInstantiatedDecl(SourceLocation Loc, NamedDecl *D,
 
     if (D->isInvalidDecl())
       return nullptr;
+
+    // Normally this function only searches for already instantiated declaration
+    // however we have to make an exclusion for local types used before
+    // definition as in the code:
+    //
+    //   template<typename T> void f1() {
+    //     void g1(struct x1);
+    //     struct x1 {};
+    //   }
+    //
+    // In this case instantiation of the type of 'g1' requires definition of
+    // 'x1', which is defined later. Error recovery may produce an enum used
+    // before definition. In these cases we need to instantiate relevant
+    // declarations here.
+    bool NeedInstantiate = false;
+    if (CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(D))
+      NeedInstantiate = RD->isLocalClass();
+    else
+      NeedInstantiate = isa<EnumDecl>(D);
+    if (NeedInstantiate) {
+      Decl *Inst = SubstDecl(D, CurContext, TemplateArgs);
+      CurrentInstantiationScope->InstantiatedLocal(D, Inst);
+      return cast<TypeDecl>(Inst);
+    }
 
     // If we didn't find the decl, then we must have a label decl that hasn't
     // been found yet.  Lazily instantiate it and return it now.

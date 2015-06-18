@@ -56,17 +56,17 @@ namespace clang {
     std::unique_ptr<llvm::Module> TheModule, LinkModule;
 
   public:
-    BackendConsumer(BackendAction action, DiagnosticsEngine &_Diags,
-                    const CodeGenOptions &compopts,
-                    const TargetOptions &targetopts,
-                    const LangOptions &langopts, bool TimePasses,
-                    const std::string &infile, llvm::Module *LinkModule,
+    BackendConsumer(BackendAction Action, DiagnosticsEngine &Diags,
+                    const CodeGenOptions &CodeGenOpts,
+                    const TargetOptions &TargetOpts,
+                    const LangOptions &LangOpts, bool TimePasses,
+                    const std::string &InFile, llvm::Module *LinkModule,
                     raw_pwrite_stream *OS, LLVMContext &C,
                     CoverageSourceInfo *CoverageInfo = nullptr)
-        : Diags(_Diags), Action(action), CodeGenOpts(compopts),
-          TargetOpts(targetopts), LangOpts(langopts), AsmOutStream(OS),
+        : Diags(Diags), Action(Action), CodeGenOpts(CodeGenOpts),
+          TargetOpts(TargetOpts), LangOpts(LangOpts), AsmOutStream(OS),
           Context(nullptr), LLVMIRGeneration("LLVM IR Generation Time"),
-          Gen(CreateLLVMCodeGen(Diags, infile, compopts, C, CoverageInfo)),
+          Gen(CreateLLVMCodeGen(Diags, InFile, CodeGenOpts, C, CoverageInfo)),
           LinkModule(LinkModule) {
       llvm::TimePassesIsEnabled = TimePasses;
     }
@@ -79,6 +79,11 @@ namespace clang {
     }
 
     void Initialize(ASTContext &Ctx) override {
+      if (Context) {
+        assert(Context == &Ctx);
+        return;
+      }
+        
       Context = &Ctx;
 
       if (llvm::TimePassesIsEnabled)
@@ -429,13 +434,16 @@ void BackendConsumer::EmitOptimizationMessage(
   FileManager &FileMgr = SourceMgr.getFileManager();
   StringRef Filename;
   unsigned Line, Column;
-  D.getLocation(&Filename, &Line, &Column);
   SourceLocation DILoc;
-  const FileEntry *FE = FileMgr.getFile(Filename);
-  if (FE && Line > 0) {
-    // If -gcolumn-info was not used, Column will be 0. This upsets the
-    // source manager, so pass 1 if Column is not set.
-    DILoc = SourceMgr.translateFileLineCol(FE, Line, Column ? Column : 1);
+
+  if (D.isLocationAvailable()) {
+    D.getLocation(&Filename, &Line, &Column);
+    const FileEntry *FE = FileMgr.getFile(Filename);
+    if (FE && Line > 0) {
+      // If -gcolumn-info was not used, Column will be 0. This upsets the
+      // source manager, so pass 1 if Column is not set.
+      DILoc = SourceMgr.translateFileLineCol(FE, Line, Column ? Column : 1);
+    }
   }
 
   // If a location isn't available, try to approximate it using the associated
@@ -450,7 +458,7 @@ void BackendConsumer::EmitOptimizationMessage(
       << AddFlagValue(D.getPassName() ? D.getPassName() : "")
       << D.getMsg().str();
 
-  if (DILoc.isInvalid())
+  if (DILoc.isInvalid() && D.isLocationAvailable())
     // If we were not able to translate the file:line:col information
     // back to a SourceLocation, at least emit a note stating that
     // we could not translate this location. This can happen in the
@@ -624,7 +632,7 @@ GetOutputStream(CompilerInstance &CI, StringRef InFile, BackendAction Action) {
 std::unique_ptr<ASTConsumer>
 CodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   BackendAction BA = static_cast<BackendAction>(Act);
-  std::unique_ptr<raw_pwrite_stream> OS(GetOutputStream(CI, InFile, BA));
+  raw_pwrite_stream *OS = GetOutputStream(CI, InFile, BA);
   if (BA != Backend_EmitNothing && !OS)
     return nullptr;
 
@@ -661,7 +669,7 @@ CodeGenAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   std::unique_ptr<BackendConsumer> Result(new BackendConsumer(
       BA, CI.getDiagnostics(), CI.getCodeGenOpts(), CI.getTargetOpts(),
       CI.getLangOpts(), CI.getFrontendOpts().ShowTimers, InFile,
-      LinkModuleToUse, OS.release(), *VMContext, CoverageInfo));
+      LinkModuleToUse, OS, *VMContext, CoverageInfo));
   BEConsumer = Result.get();
   return std::move(Result);
 }

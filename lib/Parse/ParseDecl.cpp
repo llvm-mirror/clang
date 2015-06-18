@@ -529,64 +529,72 @@ bool Parser::ParseMicrosoftDeclSpecArgs(IdentifierInfo *AttrName,
 /// [MS] extended-decl-modifier-seq:
 ///             extended-decl-modifier[opt]
 ///             extended-decl-modifier extended-decl-modifier-seq
-void Parser::ParseMicrosoftDeclSpec(ParsedAttributes &Attrs) {
+void Parser::ParseMicrosoftDeclSpecs(ParsedAttributes &Attrs,
+                                     SourceLocation *End) {
+  assert((getLangOpts().MicrosoftExt || getLangOpts().Borland ||
+          getLangOpts().CUDA) &&
+         "Incorrect language options for parsing __declspec");
   assert(Tok.is(tok::kw___declspec) && "Not a declspec!");
 
-  ConsumeToken();
-  BalancedDelimiterTracker T(*this, tok::l_paren);
-  if (T.expectAndConsume(diag::err_expected_lparen_after, "__declspec",
-                         tok::r_paren))
-    return;
-
-  // An empty declspec is perfectly legal and should not warn.  Additionally,
-  // you can specify multiple attributes per declspec.
-  while (Tok.isNot(tok::r_paren)) {
-    // Attribute not present.
-    if (TryConsumeToken(tok::comma))
-      continue;
-
-    // We expect either a well-known identifier or a generic string.  Anything
-    // else is a malformed declspec.
-    bool IsString = Tok.getKind() == tok::string_literal;
-    if (!IsString && Tok.getKind() != tok::identifier &&
-        Tok.getKind() != tok::kw_restrict) {
-      Diag(Tok, diag::err_ms_declspec_type);
-      T.skipToEnd();
+  while (Tok.is(tok::kw___declspec)) {
+    ConsumeToken();
+    BalancedDelimiterTracker T(*this, tok::l_paren);
+    if (T.expectAndConsume(diag::err_expected_lparen_after, "__declspec",
+                           tok::r_paren))
       return;
-    }
 
-    IdentifierInfo *AttrName;
-    SourceLocation AttrNameLoc;
-    if (IsString) {
-      SmallString<8> StrBuffer;
-      bool Invalid = false;
-      StringRef Str = PP.getSpelling(Tok, StrBuffer, &Invalid);
-      if (Invalid) {
+    // An empty declspec is perfectly legal and should not warn.  Additionally,
+    // you can specify multiple attributes per declspec.
+    while (Tok.isNot(tok::r_paren)) {
+      // Attribute not present.
+      if (TryConsumeToken(tok::comma))
+        continue;
+
+      // We expect either a well-known identifier or a generic string.  Anything
+      // else is a malformed declspec.
+      bool IsString = Tok.getKind() == tok::string_literal;
+      if (!IsString && Tok.getKind() != tok::identifier &&
+          Tok.getKind() != tok::kw_restrict) {
+        Diag(Tok, diag::err_ms_declspec_type);
         T.skipToEnd();
         return;
       }
-      AttrName = PP.getIdentifierInfo(Str);
-      AttrNameLoc = ConsumeStringToken();
-    } else {
-      AttrName = Tok.getIdentifierInfo();
-      AttrNameLoc = ConsumeToken();
+
+      IdentifierInfo *AttrName;
+      SourceLocation AttrNameLoc;
+      if (IsString) {
+        SmallString<8> StrBuffer;
+        bool Invalid = false;
+        StringRef Str = PP.getSpelling(Tok, StrBuffer, &Invalid);
+        if (Invalid) {
+          T.skipToEnd();
+          return;
+        }
+        AttrName = PP.getIdentifierInfo(Str);
+        AttrNameLoc = ConsumeStringToken();
+      } else {
+        AttrName = Tok.getIdentifierInfo();
+        AttrNameLoc = ConsumeToken();
+      }
+
+      bool AttrHandled = false;
+
+      // Parse attribute arguments.
+      if (Tok.is(tok::l_paren))
+        AttrHandled = ParseMicrosoftDeclSpecArgs(AttrName, AttrNameLoc, Attrs);
+      else if (AttrName->getName() == "property")
+        // The property attribute must have an argument list.
+        Diag(Tok.getLocation(), diag::err_expected_lparen_after)
+            << AttrName->getName();
+
+      if (!AttrHandled)
+        Attrs.addNew(AttrName, AttrNameLoc, nullptr, AttrNameLoc, nullptr, 0,
+                     AttributeList::AS_Declspec);
     }
-
-    bool AttrHandled = false;
-
-    // Parse attribute arguments.
-    if (Tok.is(tok::l_paren))
-      AttrHandled = ParseMicrosoftDeclSpecArgs(AttrName, AttrNameLoc, Attrs);
-    else if (AttrName->getName() == "property")
-      // The property attribute must have an argument list.
-      Diag(Tok.getLocation(), diag::err_expected_lparen_after)
-          << AttrName->getName();
-
-    if (!AttrHandled)
-      Attrs.addNew(AttrName, AttrNameLoc, nullptr, AttrNameLoc, nullptr, 0,
-                   AttributeList::AS_Declspec);
+    T.consumeClose();
+    if (End)
+      *End = T.getCloseLocation();
   }
-  T.consumeClose();
 }
 
 void Parser::ParseMicrosoftTypeAttributes(ParsedAttributes &attrs) {
@@ -1357,6 +1365,46 @@ void Parser::ProhibitCXX11Attributes(ParsedAttributesWithRange &attrs) {
       AttrList->setInvalid();
     }
     AttrList = AttrList->getNext();
+  }
+}
+
+// As an exception to the rule, __declspec(align(...)) before the
+// class-key affects the type instead of the variable.
+void Parser::handleDeclspecAlignBeforeClassKey(ParsedAttributesWithRange &Attrs,
+                                               DeclSpec &DS,
+                                               Sema::TagUseKind TUK) {
+  if (TUK == Sema::TUK_Reference)
+    return;
+
+  ParsedAttributes &PA = DS.getAttributes();
+  AttributeList *AL = PA.getList();
+  AttributeList *Prev = nullptr;
+  while (AL) {
+    AttributeList *Next = AL->getNext();
+
+    // We only consider attributes using the appropriate '__declspec' spelling,
+    // this behavior doesn't extend to any other spellings.
+    if (AL->getKind() == AttributeList::AT_Aligned &&
+        AL->isDeclspecAttribute()) {
+      // Stitch the attribute into the tag's attribute list.
+      AL->setNext(nullptr);
+      Attrs.add(AL);
+
+      // Remove the attribute from the variable's attribute list.
+      if (Prev) {
+        // Set the last variable attribute's next attribute to be the attribute
+        // after the current one.
+        Prev->setNext(Next);
+      } else {
+        // Removing the head of the list requires us to reset the head to the
+        // next attribute.
+        PA.set(Next);
+      }
+    } else {
+      Prev = AL;
+    }
+
+    AL = Next;
   }
 }
 
@@ -2956,7 +3004,7 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
 
     // Microsoft declspec support.
     case tok::kw___declspec:
-      ParseMicrosoftDeclSpec(DS.getAttributes());
+      ParseMicrosoftDeclSpecs(DS.getAttributes());
       continue;
 
     // Microsoft single token adornments.
@@ -3600,10 +3648,7 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
   ParsedAttributesWithRange attrs(AttrFactory);
   MaybeParseGNUAttributes(attrs);
   MaybeParseCXX11Attributes(attrs);
-
-  // If declspecs exist after tag, parse them.
-  while (Tok.is(tok::kw___declspec))
-    ParseMicrosoftDeclSpec(attrs);
+  MaybeParseMicrosoftDeclSpecs(attrs);
 
   SourceLocation ScopedEnumKWLoc;
   bool IsScopedUsingClassTag = false;
@@ -3622,8 +3667,7 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
     // They are allowed afterwards, though.
     MaybeParseGNUAttributes(attrs);
     MaybeParseCXX11Attributes(attrs);
-    while (Tok.is(tok::kw___declspec))
-      ParseMicrosoftDeclSpec(attrs);
+    MaybeParseMicrosoftDeclSpecs(attrs);
   }
 
   // C++11 [temp.explicit]p12:
@@ -3851,6 +3895,15 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
     return;
   }
 
+  handleDeclspecAlignBeforeClassKey(attrs, DS, TUK);
+
+  Sema::SkipBodyInfo SkipBody;
+  if (!Name && TUK == Sema::TUK_Definition && Tok.is(tok::l_brace) &&
+      NextToken().is(tok::identifier))
+    SkipBody = Actions.shouldSkipAnonEnumBody(getCurScope(),
+                                              NextToken().getIdentifierInfo(),
+                                              NextToken().getLocation());
+
   bool Owned = false;
   bool IsDependent = false;
   const char *PrevSpec = nullptr;
@@ -3860,7 +3913,22 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
                                    AS, DS.getModulePrivateSpecLoc(), TParams,
                                    Owned, IsDependent, ScopedEnumKWLoc,
                                    IsScopedUsingClassTag, BaseType,
-                                   DSC == DSC_type_specifier);
+                                   DSC == DSC_type_specifier, &SkipBody);
+
+  if (SkipBody.ShouldSkip) {
+    assert(TUK == Sema::TUK_Definition && "can only skip a definition");
+
+    BalancedDelimiterTracker T(*this, tok::l_brace);
+    T.consumeOpen();
+    T.skipToEnd();
+
+    if (DS.SetTypeSpecType(DeclSpec::TST_enum, StartLoc,
+                           NameLoc.isValid() ? NameLoc : StartLoc,
+                           PrevSpec, DiagID, TagDecl, Owned,
+                           Actions.getASTContext().getPrintingPolicy()))
+      Diag(StartLoc, DiagID) << PrevSpec;
+    return;
+  }
 
   if (IsDependent) {
     // This enum has a dependent nested-name-specifier. Handle it as a
@@ -3932,6 +4000,7 @@ void Parser::ParseEnumBody(SourceLocation StartLoc, Decl *EnumDecl) {
     Diag(Tok, diag::error_empty_enum);
 
   SmallVector<Decl *, 32> EnumConstantDecls;
+  SmallVector<SuppressAccessChecks, 32> EnumAvailabilityDiags;
 
   Decl *LastEnumConstDecl = nullptr;
 
@@ -3962,7 +4031,7 @@ void Parser::ParseEnumBody(SourceLocation StartLoc, Decl *EnumDecl) {
 
     SourceLocation EqualLoc;
     ExprResult AssignedVal;
-    ParsingDeclRAIIObject PD(*this, ParsingDeclRAIIObject::NoParent);
+    EnumAvailabilityDiags.emplace_back(*this);
 
     if (TryConsumeToken(tok::equal, EqualLoc)) {
       AssignedVal = ParseConstantExpression();
@@ -3976,7 +4045,7 @@ void Parser::ParseEnumBody(SourceLocation StartLoc, Decl *EnumDecl) {
                                                     IdentLoc, Ident,
                                                     attrs.getList(), EqualLoc,
                                                     AssignedVal.get());
-    PD.complete(EnumConstDecl);
+    EnumAvailabilityDiags.back().done();
 
     EnumConstantDecls.push_back(EnumConstDecl);
     LastEnumConstDecl = EnumConstDecl;
@@ -4031,6 +4100,14 @@ void Parser::ParseEnumBody(SourceLocation StartLoc, Decl *EnumDecl) {
                         EnumDecl, EnumConstantDecls,
                         getCurScope(),
                         attrs.getList());
+
+  // Now handle enum constant availability diagnostics.
+  assert(EnumConstantDecls.size() == EnumAvailabilityDiags.size());
+  for (size_t i = 0, e = EnumConstantDecls.size(); i != e; ++i) {
+    ParsingDeclRAIIObject PD(*this, ParsingDeclRAIIObject::NoParent);
+    EnumAvailabilityDiags[i].redelay();
+    PD.complete(EnumConstantDecls[i]);
+  }
 
   EnumScope.Exit();
   Actions.ActOnTagFinishDefinition(getCurScope(), EnumDecl,

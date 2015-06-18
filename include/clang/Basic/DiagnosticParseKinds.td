@@ -170,6 +170,7 @@ def err_function_declared_typedef : Error<
   "function definition declared 'typedef'">;
 def err_at_defs_cxx : Error<"@defs is not supported in Objective-C++">;
 def err_at_in_class : Error<"unexpected '@' in member specification">;
+def err_unexpected_semi : Error<"unexpected ';' before %0">;
 
 def err_expected_fn_body : Error<
   "expected function body after function declarator">;
@@ -477,7 +478,8 @@ def err_invalid_operator_on_type : Error<
 def err_expected_unqualified_id : Error<
   "expected %select{identifier|unqualified-id}0">;
 def err_brackets_go_after_unqualified_id : Error<
-  "brackets go after the %select{identifier|unqualified-id}0">;
+  "brackets are not allowed here; to declare an array, "
+  "place the brackets after the %select{identifier|name}0">;
 def err_unexpected_unqualified_id : Error<"type-id cannot have a name">;
 def err_func_def_no_params : Error<
   "function definition does not declare parameters">;
@@ -987,12 +989,12 @@ def err_omp_expected_identifier_for_critical : Error<
 // Pragma loop support.
 def err_pragma_loop_missing_argument : Error<
   "missing argument; expected %select{an integer value|"
-  "'%select{enable|full}1' or 'disable'}0">;
+  "%select{'enable', 'assume_safety'|'full'}1 or 'disable'}0">;
 def err_pragma_loop_invalid_option : Error<
   "%select{invalid|missing}0 option%select{ %1|}0; expected vectorize, "
   "vectorize_width, interleave, interleave_count, unroll, or unroll_count">;
 def err_pragma_invalid_keyword : Error<
-  "invalid argument; expected '%select{enable|full}0' or 'disable'">;
+  "invalid argument; expected %select{'enable', 'assume_safety'|'full'}0 or 'disable'">;
 
 // Pragma unroll support.
 def warn_pragma_unroll_cuda_value_in_parens : Warning<

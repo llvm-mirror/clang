@@ -1398,6 +1398,12 @@ TEST(Callee, MatchesDeclarations) {
 
   EXPECT_TRUE(matches("class Y { void x() { x(); } };", CallMethodX));
   EXPECT_TRUE(notMatches("class Y { void x() {} };", CallMethodX));
+
+  CallMethodX = callExpr(callee(conversionDecl()));
+  EXPECT_TRUE(
+      matches("struct Y { operator int() const; }; int i = Y();", CallMethodX));
+  EXPECT_TRUE(notMatches("struct Y { operator int() const; }; Y y = Y();",
+                         CallMethodX));
 }
 
 TEST(Callee, MatchesMemberExpressions) {
@@ -1587,6 +1593,13 @@ TEST(IsDeleted, MatchesDeletedFunctionDeclarations) {
       notMatches("void Func();", functionDecl(hasName("Func"), isDeleted())));
   EXPECT_TRUE(matches("void Func() = delete;",
                       functionDecl(hasName("Func"), isDeleted())));
+}
+
+TEST(isConstexpr, MatchesConstexprDeclarations) {
+  EXPECT_TRUE(matches("constexpr int foo = 42;",
+                      varDecl(hasName("foo"), isConstexpr())));
+  EXPECT_TRUE(matches("constexpr int bar();",
+                      functionDecl(hasName("bar"), isConstexpr())));
 }
 
 TEST(HasAnyParameter, DoesntMatchIfInnerMatcherDoesntMatch) {
@@ -2136,6 +2149,10 @@ TEST(Matcher, FloatLiterals) {
 
 TEST(Matcher, NullPtrLiteral) {
   EXPECT_TRUE(matches("int* i = nullptr;", nullPtrLiteralExpr()));
+}
+
+TEST(Matcher, GNUNullExpr) {
+  EXPECT_TRUE(matches("int* i = __null;", gnuNullExpr()));
 }
 
 TEST(Matcher, AsmStatement) {

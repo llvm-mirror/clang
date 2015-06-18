@@ -37,9 +37,10 @@ public:
   void DeclRead(serialization::DeclID ID, const Decl *D) override;
   void SelectorRead(serialization::SelectorID iD, Selector Sel) override;
   void MacroDefinitionRead(serialization::PreprocessedEntityID,
-                           MacroDefinition *MD) override;
+                           MacroDefinitionRecord *MD) override;
+
 private:
-  std::vector<ASTDeserializationListener*> Listeners;
+  std::vector<ASTDeserializationListener *> Listeners;
 };
 
 MultiplexASTDeserializationListener::MultiplexASTDeserializationListener(
@@ -78,7 +79,7 @@ void MultiplexASTDeserializationListener::SelectorRead(
 }
 
 void MultiplexASTDeserializationListener::MacroDefinitionRead(
-    serialization::PreprocessedEntityID ID, MacroDefinition *MD) {
+    serialization::PreprocessedEntityID ID, MacroDefinitionRecord *MD) {
   for (size_t i = 0, e = Listeners.size(); i != e; ++i)
     Listeners[i]->MacroDefinitionRead(ID, MD);
 }
@@ -110,8 +111,7 @@ public:
                                     const ObjCCategoryDecl *ClassExt) override;
   void DeclarationMarkedUsed(const Decl *D) override;
   void DeclarationMarkedOpenMPThreadPrivate(const Decl *D) override;
-  void RedefinedHiddenDefinition(const NamedDecl *D,
-                                 SourceLocation Loc) override;
+  void RedefinedHiddenDefinition(const NamedDecl *D, Module *M) override;
 
 private:
   std::vector<ASTMutationListener*> Listeners;
@@ -195,10 +195,10 @@ void MultiplexASTMutationListener::DeclarationMarkedOpenMPThreadPrivate(
   for (size_t i = 0, e = Listeners.size(); i != e; ++i)
     Listeners[i]->DeclarationMarkedOpenMPThreadPrivate(D);
 }
-void MultiplexASTMutationListener::RedefinedHiddenDefinition(
-    const NamedDecl *D, SourceLocation Loc) {
+void MultiplexASTMutationListener::RedefinedHiddenDefinition(const NamedDecl *D,
+                                                             Module *M) {
   for (auto *L : Listeners)
-    L->RedefinedHiddenDefinition(D, Loc);
+    L->RedefinedHiddenDefinition(D, M);
 }
 
 }  // end namespace clang

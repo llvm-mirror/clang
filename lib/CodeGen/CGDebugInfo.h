@@ -52,27 +52,30 @@ class CGDebugInfo {
   CodeGenModule &CGM;
   const CodeGenOptions::DebugInfoKind DebugKind;
   llvm::DIBuilder DBuilder;
-  llvm::DICompileUnit TheCU;
+  llvm::DICompileUnit *TheCU = nullptr;
   SourceLocation CurLoc;
-  llvm::DIType VTablePtrType;
-  llvm::DIType ClassTy;
-  llvm::MDCompositeType *ObjTy = nullptr;
-  llvm::DIType SelTy;
-  llvm::DIType OCLImage1dDITy, OCLImage1dArrayDITy, OCLImage1dBufferDITy;
-  llvm::DIType OCLImage2dDITy, OCLImage2dArrayDITy;
-  llvm::DIType OCLImage3dDITy;
-  llvm::DIType OCLEventDITy;
-  llvm::DIType BlockLiteralGeneric;
+  llvm::DIType *VTablePtrType = nullptr;
+  llvm::DIType *ClassTy = nullptr;
+  llvm::DICompositeType *ObjTy = nullptr;
+  llvm::DIType *SelTy = nullptr;
+  llvm::DIType *OCLImage1dDITy = nullptr;
+  llvm::DIType *OCLImage1dArrayDITy = nullptr;
+  llvm::DIType *OCLImage1dBufferDITy = nullptr;
+  llvm::DIType *OCLImage2dDITy = nullptr;
+  llvm::DIType *OCLImage2dArrayDITy = nullptr;
+  llvm::DIType *OCLImage3dDITy = nullptr;
+  llvm::DIType *OCLEventDITy = nullptr;
+  llvm::DIType *BlockLiteralGeneric = nullptr;
 
   /// \brief Cache of previously constructed Types.
   llvm::DenseMap<const void *, llvm::TrackingMDRef> TypeCache;
 
   struct ObjCInterfaceCacheEntry {
     const ObjCInterfaceType *Type;
-    llvm::DIType Decl;
-    llvm::DIFile Unit;
-    ObjCInterfaceCacheEntry(const ObjCInterfaceType *Type, llvm::DIType Decl,
-                            llvm::DIFile Unit)
+    llvm::DIType *Decl;
+    llvm::DIFile *Unit;
+    ObjCInterfaceCacheEntry(const ObjCInterfaceType *Type, llvm::DIType *Decl,
+                            llvm::DIFile *Unit)
         : Type(Type), Decl(Decl), Unit(Unit) {}
   };
 
@@ -93,7 +96,7 @@ class CGDebugInfo {
       FwdDeclReplaceMap;
 
   // LexicalBlockStack - Keep track of our current nested lexical block.
-  std::vector<llvm::TrackingMDNodeRef> LexicalBlockStack;
+  std::vector<llvm::TypedTrackingMDRef<llvm::DIScope>> LexicalBlockStack;
   llvm::DenseMap<const Decl *, llvm::TrackingMDRef> RegionMap;
   // FnBeginRegionCount - Keep track of LexicalBlockStack counter at the
   // beginning of a function. This is used to pop unbalanced regions at
@@ -117,97 +120,94 @@ class CGDebugInfo {
 
   /// Helper functions for getOrCreateType.
   unsigned Checksum(const ObjCInterfaceDecl *InterfaceDecl);
-  llvm::DIType CreateType(const BuiltinType *Ty);
-  llvm::DIType CreateType(const ComplexType *Ty);
-  llvm::DIType CreateQualifiedType(QualType Ty, llvm::DIFile Fg);
-  llvm::DIType CreateType(const TypedefType *Ty, llvm::DIFile Fg);
-  llvm::DIType CreateType(const TemplateSpecializationType *Ty, llvm::DIFile Fg);
-  llvm::DIType CreateType(const ObjCObjectPointerType *Ty,
-                          llvm::DIFile F);
-  llvm::DIType CreateType(const PointerType *Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const BlockPointerType *Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const FunctionType *Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const RecordType *Tyg);
-  llvm::DIType CreateTypeDefinition(const RecordType *Ty);
-  llvm::MDCompositeType *CreateLimitedType(const RecordType *Ty);
+  llvm::DIType *CreateType(const BuiltinType *Ty);
+  llvm::DIType *CreateType(const ComplexType *Ty);
+  llvm::DIType *CreateQualifiedType(QualType Ty, llvm::DIFile *Fg);
+  llvm::DIType *CreateType(const TypedefType *Ty, llvm::DIFile *Fg);
+  llvm::DIType *CreateType(const TemplateSpecializationType *Ty,
+                           llvm::DIFile *Fg);
+  llvm::DIType *CreateType(const ObjCObjectPointerType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateType(const PointerType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateType(const BlockPointerType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateType(const FunctionType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateType(const RecordType *Tyg);
+  llvm::DIType *CreateTypeDefinition(const RecordType *Ty);
+  llvm::DICompositeType *CreateLimitedType(const RecordType *Ty);
   void CollectContainingType(const CXXRecordDecl *RD,
-                             llvm::MDCompositeType *CT);
-  llvm::DIType CreateType(const ObjCInterfaceType *Ty, llvm::DIFile F);
-  llvm::DIType CreateTypeDefinition(const ObjCInterfaceType *Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const ObjCObjectType *Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const VectorType *Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const ArrayType *Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const LValueReferenceType *Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const RValueReferenceType *Ty, llvm::DIFile Unit);
-  llvm::DIType CreateType(const MemberPointerType *Ty, llvm::DIFile F);
-  llvm::DIType CreateType(const AtomicType *Ty, llvm::DIFile F);
-  llvm::DIType CreateEnumType(const EnumType *Ty);
-  llvm::DIType CreateTypeDefinition(const EnumType *Ty);
-  llvm::DIType CreateSelfType(const QualType &QualTy, llvm::DIType Ty);
-  llvm::DIType getTypeOrNull(const QualType);
-  llvm::MDSubroutineType *getOrCreateMethodType(const CXXMethodDecl *Method,
-                                                llvm::DIFile F);
-  llvm::MDSubroutineType *
+                             llvm::DICompositeType *CT);
+  llvm::DIType *CreateType(const ObjCInterfaceType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateTypeDefinition(const ObjCInterfaceType *Ty,
+                                     llvm::DIFile *F);
+  llvm::DIType *CreateType(const ObjCObjectType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateType(const VectorType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateType(const ArrayType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateType(const LValueReferenceType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateType(const RValueReferenceType *Ty, llvm::DIFile *Unit);
+  llvm::DIType *CreateType(const MemberPointerType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateType(const AtomicType *Ty, llvm::DIFile *F);
+  llvm::DIType *CreateEnumType(const EnumType *Ty);
+  llvm::DIType *CreateTypeDefinition(const EnumType *Ty);
+  llvm::DIType *CreateSelfType(const QualType &QualTy, llvm::DIType *Ty);
+  llvm::DIType *getTypeOrNull(const QualType);
+  llvm::DISubroutineType *getOrCreateMethodType(const CXXMethodDecl *Method,
+                                                llvm::DIFile *F);
+  llvm::DISubroutineType *
   getOrCreateInstanceMethodType(QualType ThisPtr, const FunctionProtoType *Func,
-                                llvm::DIFile Unit);
-  llvm::MDSubroutineType *
-  getOrCreateFunctionType(const Decl *D, QualType FnType, llvm::DIFile F);
-  llvm::DIType getOrCreateVTablePtrType(llvm::DIFile F);
-  llvm::DINameSpace getOrCreateNameSpace(const NamespaceDecl *N);
-  llvm::DIType getOrCreateTypeDeclaration(QualType PointeeTy, llvm::DIFile F);
-  llvm::DIType CreatePointerLikeType(llvm::dwarf::Tag Tag,
-                                     const Type *Ty, QualType PointeeTy,
-                                     llvm::DIFile F);
+                                llvm::DIFile *Unit);
+  llvm::DISubroutineType *
+  getOrCreateFunctionType(const Decl *D, QualType FnType, llvm::DIFile *F);
+  llvm::DIType *getOrCreateVTablePtrType(llvm::DIFile *F);
+  llvm::DINamespace *getOrCreateNameSpace(const NamespaceDecl *N);
+  llvm::DIType *getOrCreateTypeDeclaration(QualType PointeeTy, llvm::DIFile *F);
+  llvm::DIType *CreatePointerLikeType(llvm::dwarf::Tag Tag, const Type *Ty,
+                                      QualType PointeeTy, llvm::DIFile *F);
 
   llvm::Value *getCachedInterfaceTypeOrNull(const QualType Ty);
-  llvm::DIType getOrCreateStructPtrType(StringRef Name, llvm::DIType &Cache);
+  llvm::DIType *getOrCreateStructPtrType(StringRef Name, llvm::DIType *&Cache);
 
-  llvm::DISubprogram CreateCXXMemberFunction(const CXXMethodDecl *Method,
-                                             llvm::DIFile F,
-                                             llvm::DIType RecordTy);
+  llvm::DISubprogram *CreateCXXMemberFunction(const CXXMethodDecl *Method,
+                                              llvm::DIFile *F,
+                                              llvm::DIType *RecordTy);
 
-  void CollectCXXMemberFunctions(const CXXRecordDecl *Decl, llvm::DIFile F,
+  void CollectCXXMemberFunctions(const CXXRecordDecl *Decl, llvm::DIFile *F,
                                  SmallVectorImpl<llvm::Metadata *> &E,
-                                 llvm::DIType T);
+                                 llvm::DIType *T);
 
-  void CollectCXXBases(const CXXRecordDecl *Decl, llvm::DIFile F,
+  void CollectCXXBases(const CXXRecordDecl *Decl, llvm::DIFile *F,
                        SmallVectorImpl<llvm::Metadata *> &EltTys,
-                       llvm::DIType RecordTy);
+                       llvm::DIType *RecordTy);
 
-  llvm::DIArray
-  CollectTemplateParams(const TemplateParameterList *TPList,
-                        ArrayRef<TemplateArgument> TAList,
-                        llvm::DIFile Unit);
-  llvm::DIArray
-  CollectFunctionTemplateParams(const FunctionDecl *FD, llvm::DIFile Unit);
-  llvm::DIArray
+  llvm::DINodeArray CollectTemplateParams(const TemplateParameterList *TPList,
+                                          ArrayRef<TemplateArgument> TAList,
+                                          llvm::DIFile *Unit);
+  llvm::DINodeArray CollectFunctionTemplateParams(const FunctionDecl *FD,
+                                                  llvm::DIFile *Unit);
+  llvm::DINodeArray
   CollectCXXTemplateParams(const ClassTemplateSpecializationDecl *TS,
-                           llvm::DIFile F);
+                           llvm::DIFile *F);
 
-  llvm::DIType createFieldType(StringRef name, QualType type,
-                               uint64_t sizeInBitsOverride, SourceLocation loc,
-                               AccessSpecifier AS,
-                               uint64_t offsetInBits,
-                               llvm::DIFile tunit,
-                               llvm::DIScope scope,
-                               const RecordDecl* RD = nullptr);
+  llvm::DIType *createFieldType(StringRef name, QualType type,
+                                uint64_t sizeInBitsOverride, SourceLocation loc,
+                                AccessSpecifier AS, uint64_t offsetInBits,
+                                llvm::DIFile *tunit, llvm::DIScope *scope,
+                                const RecordDecl *RD = nullptr);
 
   // Helpers for collecting fields of a record.
   void CollectRecordLambdaFields(const CXXRecordDecl *CXXDecl,
                                  SmallVectorImpl<llvm::Metadata *> &E,
-                                 llvm::DIType RecordTy);
-  llvm::DIDerivedType CreateRecordStaticField(const VarDecl *Var,
-                                              llvm::DIType RecordTy,
-                                              const RecordDecl* RD);
+                                 llvm::DIType *RecordTy);
+  llvm::DIDerivedType *CreateRecordStaticField(const VarDecl *Var,
+                                               llvm::DIType *RecordTy,
+                                               const RecordDecl *RD);
   void CollectRecordNormalField(const FieldDecl *Field, uint64_t OffsetInBits,
-                                llvm::DIFile F,
+                                llvm::DIFile *F,
                                 SmallVectorImpl<llvm::Metadata *> &E,
-                                llvm::DIType RecordTy, const RecordDecl *RD);
-  void CollectRecordFields(const RecordDecl *Decl, llvm::DIFile F,
+                                llvm::DIType *RecordTy, const RecordDecl *RD);
+  void CollectRecordFields(const RecordDecl *Decl, llvm::DIFile *F,
                            SmallVectorImpl<llvm::Metadata *> &E,
-                           llvm::DICompositeType RecordTy);
+                           llvm::DICompositeType *RecordTy);
 
-  void CollectVTableInfo(const CXXRecordDecl *Decl, llvm::DIFile F,
+  void CollectVTableInfo(const CXXRecordDecl *Decl, llvm::DIFile *F,
                          SmallVectorImpl<llvm::Metadata *> &EltTys);
 
   // CreateLexicalBlock - Create a new lexical block node and push it on
@@ -290,15 +290,14 @@ public:
   void EmitUsingDecl(const UsingDecl &UD);
 
   /// \brief Emit C++ namespace alias.
-  llvm::DIImportedEntity EmitNamespaceAlias(const NamespaceAliasDecl &NA);
+  llvm::DIImportedEntity *EmitNamespaceAlias(const NamespaceAliasDecl &NA);
 
   /// \brief Emit record type's standalone debug info.
-  llvm::DIType getOrCreateRecordType(QualType Ty, SourceLocation L);
+  llvm::DIType *getOrCreateRecordType(QualType Ty, SourceLocation L);
 
   /// \brief Emit an objective c interface type standalone
   /// debug info.
-  llvm::DIType getOrCreateInterfaceType(QualType Ty,
-                                        SourceLocation Loc);
+  llvm::DIType *getOrCreateInterfaceType(QualType Ty, SourceLocation Loc);
 
   void completeType(const EnumDecl *ED);
   void completeType(const RecordDecl *RD);
@@ -316,20 +315,17 @@ private:
 
   // EmitTypeForVarWithBlocksAttr - Build up structure info for the byref.
   // See BuildByRefType.
-  llvm::DIType EmitTypeForVarWithBlocksAttr(const VarDecl *VD,
-                                            uint64_t *OffSet);
+  llvm::DIType *EmitTypeForVarWithBlocksAttr(const VarDecl *VD,
+                                             uint64_t *OffSet);
 
   /// \brief Get context info for the decl.
-  llvm::DIScope getContextDescriptor(const Decl *Decl);
+  llvm::DIScope *getContextDescriptor(const Decl *Decl);
 
-  llvm::DIScope getCurrentContextDescriptor(const Decl *Decl);
+  llvm::DIScope *getCurrentContextDescriptor(const Decl *Decl);
 
   /// \brief Create a forward decl for a RecordType in a given context.
-  llvm::MDCompositeType *getOrCreateRecordFwdDecl(const RecordType *,
-                                                  llvm::MDScope *);
-
-  /// \brief Create a set of decls for the context chain.
-  llvm::DIDescriptor createContextChain(const Decl *Decl);
+  llvm::DICompositeType *getOrCreateRecordFwdDecl(const RecordType *,
+                                                  llvm::DIScope *);
 
   /// \brief Return current directory name.
   StringRef getCurrentDirname();
@@ -339,57 +335,58 @@ private:
 
   /// \brief Get the file debug info descriptor for the input
   /// location.
-  llvm::DIFile getOrCreateFile(SourceLocation Loc);
+  llvm::DIFile *getOrCreateFile(SourceLocation Loc);
 
   /// \brief Get the file info for main compile unit.
-  llvm::DIFile getOrCreateMainFile();
+  llvm::DIFile *getOrCreateMainFile();
 
   /// \brief Get the type from the cache or create a new type if
   /// necessary.
-  llvm::DIType getOrCreateType(QualType Ty, llvm::DIFile Fg);
+  llvm::DIType *getOrCreateType(QualType Ty, llvm::DIFile *Fg);
 
   /// \brief Get the type from the cache or create a new
   /// partial type if necessary.
-  llvm::DIType getOrCreateLimitedType(const RecordType *Ty, llvm::DIFile F);
+  llvm::DIType *getOrCreateLimitedType(const RecordType *Ty, llvm::DIFile *F);
 
   /// \brief Create type metadata for a source language type.
-  llvm::DIType CreateTypeNode(QualType Ty, llvm::DIFile Fg);
+  llvm::DIType *CreateTypeNode(QualType Ty, llvm::DIFile *Fg);
 
   /// \brief return the underlying ObjCInterfaceDecl
   /// if Ty is an ObjCInterface or a pointer to one.
   ObjCInterfaceDecl* getObjCInterfaceDecl(QualType Ty);
 
   /// \brief Create new member and increase Offset by FType's size.
-  llvm::DIType CreateMemberType(llvm::DIFile Unit, QualType FType,
-                                StringRef Name, uint64_t *Offset);
+  llvm::DIType *CreateMemberType(llvm::DIFile *Unit, QualType FType,
+                                 StringRef Name, uint64_t *Offset);
 
   /// \brief Retrieve the DIDescriptor, if any, for the canonical form of this
   /// declaration.
-  llvm::DebugNode *getDeclarationOrDefinition(const Decl *D);
+  llvm::DINode *getDeclarationOrDefinition(const Decl *D);
 
   /// \brief Return debug info descriptor to describe method
   /// declaration for the given method definition.
-  llvm::DISubprogram getFunctionDeclaration(const Decl *D);
+  llvm::DISubprogram *getFunctionDeclaration(const Decl *D);
 
   /// Return debug info descriptor to describe in-class static data member
   /// declaration for the given out-of-class definition.
-  llvm::DIDerivedType
+  llvm::DIDerivedType *
   getOrCreateStaticDataMemberDeclarationOrNull(const VarDecl *D);
 
-  /// \brief Create a DISubprogram describing the forward
+  /// \brief Create a subprogram describing the forward
   /// decalration represented in the given FunctionDecl.
-  llvm::DISubprogram getFunctionForwardDeclaration(const FunctionDecl *FD);
+  llvm::DISubprogram *getFunctionForwardDeclaration(const FunctionDecl *FD);
 
-  /// \brief Create a DIGlobalVariable describing the forward
-  /// decalration represented in the given VarDecl.
-  llvm::DIGlobalVariable getGlobalVariableForwardDeclaration(const VarDecl *VD);
+  /// \brief Create a global variable describing the forward decalration
+  /// represented in the given VarDecl.
+  llvm::DIGlobalVariable *
+  getGlobalVariableForwardDeclaration(const VarDecl *VD);
 
   /// Return a global variable that represents one of the collection of
   /// global variables created for an anonmyous union.
-  llvm::DIGlobalVariable
-  CollectAnonRecordDecls(const RecordDecl *RD, llvm::DIFile Unit,
+  llvm::DIGlobalVariable *
+  CollectAnonRecordDecls(const RecordDecl *RD, llvm::DIFile *Unit,
                          unsigned LineNo, StringRef LinkageName,
-                         llvm::GlobalVariable *Var, llvm::MDScope *DContext);
+                         llvm::GlobalVariable *Var, llvm::DIScope *DContext);
 
   /// \brief Get function name for the given FunctionDecl. If the
   /// name is constructed on demand (e.g. C++ destructor) then the name
@@ -421,15 +418,16 @@ private:
 
   /// \brief Collect various properties of a FunctionDecl.
   /// \param GD  A GlobalDecl whose getDecl() must return a FunctionDecl.
-  void collectFunctionDeclProps(GlobalDecl GD, llvm::DIFile Unit,
+  void collectFunctionDeclProps(GlobalDecl GD, llvm::DIFile *Unit,
                                 StringRef &Name, StringRef &LinkageName,
-                                llvm::MDScope *&FDContext,
-                                llvm::DIArray &TParamsArray, unsigned &Flags);
+                                llvm::DIScope *&FDContext,
+                                llvm::DINodeArray &TParamsArray,
+                                unsigned &Flags);
 
   /// \brief Collect various properties of a VarDecl.
-  void collectVarDeclProps(const VarDecl *VD, llvm::DIFile &Unit,
+  void collectVarDeclProps(const VarDecl *VD, llvm::DIFile *&Unit,
                            unsigned &LineNo, QualType &T, StringRef &Name,
-                           StringRef &LinkageName, llvm::MDScope *&VDContext);
+                           StringRef &LinkageName, llvm::DIScope *&VDContext);
 
   /// \brief Allocate a copy of \p A using the DebugInfoNames allocator
   /// and return a reference to it. If multiple arguments are given the strings

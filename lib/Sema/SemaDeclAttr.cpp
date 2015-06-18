@@ -2397,6 +2397,28 @@ static void handleSectionAttr(Sema &S, Decl *D, const AttributeList &Attr) {
     D->addAttr(NewAttr);
 }
 
+// Check for things we'd like to warn about, no errors or validation for now.
+// TODO: Validation should use a backend target library that specifies
+// the allowable subtarget features and cpus. We could use something like a
+// TargetCodeGenInfo hook here to do validation.
+void Sema::checkTargetAttr(SourceLocation LiteralLoc, StringRef AttrStr) {
+  for (auto Str : {"tune=", "fpmath="})
+    if (AttrStr.find(Str) != StringRef::npos)
+      Diag(LiteralLoc, diag::warn_unsupported_target_attribute) << Str;
+}
+
+static void handleTargetAttr(Sema &S, Decl *D, const AttributeList &Attr) {
+  StringRef Str;
+  SourceLocation LiteralLoc;
+  if (!S.checkStringLiteralArgumentAttr(Attr, 0, Str, &LiteralLoc))
+    return;
+  S.checkTargetAttr(LiteralLoc, Str);
+  unsigned Index = Attr.getAttributeSpellingListIndex();
+  TargetAttr *NewAttr =
+      ::new (S.Context) TargetAttr(Attr.getRange(), S.Context, Str, Index);
+  D->addAttr(NewAttr);
+}
+
 
 static void handleCleanupAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   VarDecl *VD = cast<VarDecl>(D);
@@ -3302,11 +3324,10 @@ static void handleGNUInlineAttr(Sema &S, Decl *D, const AttributeList &Attr) {
 static void handleCallConvAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   if (hasDeclarator(D)) return;
 
-  const FunctionDecl *FD = dyn_cast<FunctionDecl>(D);
   // Diagnostic is emitted elsewhere: here we store the (valid) Attr
   // in the Decl node for syntactic reasoning, e.g., pretty-printing.
   CallingConv CC;
-  if (S.CheckCallingConvAttr(Attr, CC, FD))
+  if (S.CheckCallingConvAttr(Attr, CC, /*FD*/nullptr))
     return;
 
   if (!isa<ObjCMethodDecl>(D)) {
@@ -3488,20 +3509,63 @@ bool Sema::CheckRegparmAttr(const AttributeList &Attr, unsigned &numParams) {
   return false;
 }
 
-static void handleLaunchBoundsAttr(Sema &S, Decl *D,
-                                   const AttributeList &Attr) {
-  uint32_t MaxThreads, MinBlocks = 0;
-  if (!checkUInt32Argument(S, Attr, Attr.getArgAsExpr(0), MaxThreads, 1))
-    return;
-  if (Attr.getNumArgs() > 1 && !checkUInt32Argument(S, Attr,
-                                                    Attr.getArgAsExpr(1),
-                                                    MinBlocks, 2))
+// Checks whether an argument of launch_bounds attribute is acceptable
+// May output an error.
+static bool checkLaunchBoundsArgument(Sema &S, Expr *E,
+                                      const CUDALaunchBoundsAttr &Attr,
+                                      const unsigned Idx) {
+
+  if (S.DiagnoseUnexpandedParameterPack(E))
+    return false;
+
+  // Accept template arguments for now as they depend on something else.
+  // We'll get to check them when they eventually get instantiated.
+  if (E->isValueDependent())
+    return true;
+
+  llvm::APSInt I(64);
+  if (!E->isIntegerConstantExpr(I, S.Context)) {
+    S.Diag(E->getExprLoc(), diag::err_attribute_argument_n_type)
+        << &Attr << Idx << AANT_ArgumentIntegerConstant << E->getSourceRange();
+    return false;
+  }
+  // Make sure we can fit it in 32 bits.
+  if (!I.isIntN(32)) {
+    S.Diag(E->getExprLoc(), diag::err_ice_too_large) << I.toString(10, false)
+                                                     << 32 << /* Unsigned */ 1;
+    return false;
+  }
+  if (I < 0)
+    S.Diag(E->getExprLoc(), diag::warn_attribute_argument_n_negative)
+        << &Attr << Idx << E->getSourceRange();
+
+  return true;
+}
+
+void Sema::AddLaunchBoundsAttr(SourceRange AttrRange, Decl *D, Expr *MaxThreads,
+                               Expr *MinBlocks, unsigned SpellingListIndex) {
+  CUDALaunchBoundsAttr TmpAttr(AttrRange, Context, MaxThreads, MinBlocks,
+                               SpellingListIndex);
+
+  if (!checkLaunchBoundsArgument(*this, MaxThreads, TmpAttr, 0))
     return;
 
-  D->addAttr(::new (S.Context)
-              CUDALaunchBoundsAttr(Attr.getRange(), S.Context,
-                                  MaxThreads, MinBlocks,
-                                  Attr.getAttributeSpellingListIndex()));
+  if (MinBlocks && !checkLaunchBoundsArgument(*this, MinBlocks, TmpAttr, 1))
+    return;
+
+  D->addAttr(::new (Context) CUDALaunchBoundsAttr(
+      AttrRange, Context, MaxThreads, MinBlocks, SpellingListIndex));
+}
+
+static void handleLaunchBoundsAttr(Sema &S, Decl *D,
+                                   const AttributeList &Attr) {
+  if (!checkAttributeAtLeastNumArgs(S, Attr, 1) ||
+      !checkAttributeAtMostNumArgs(S, Attr, 2))
+    return;
+
+  S.AddLaunchBoundsAttr(Attr.getRange(), D, Attr.getArgAsExpr(0),
+                        Attr.getNumArgs() > 1 ? Attr.getArgAsExpr(1) : nullptr,
+                        Attr.getAttributeSpellingListIndex());
 }
 
 static void handleArgumentWithTypeTagAttr(Sema &S, Decl *D,
@@ -4311,6 +4375,43 @@ static void handleDeprecatedAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   handleAttrWithMessage<DeprecatedAttr>(S, D, Attr);
 }
 
+static void handleNoSanitizeAttr(Sema &S, Decl *D, const AttributeList &Attr) {
+  if (!checkAttributeAtLeastNumArgs(S, Attr, 1))
+    return;
+
+  std::vector<std::string> Sanitizers;
+
+  for (unsigned I = 0, E = Attr.getNumArgs(); I != E; ++I) {
+    StringRef SanitizerName;
+    SourceLocation LiteralLoc;
+
+    if (!S.checkStringLiteralArgumentAttr(Attr, I, SanitizerName, &LiteralLoc))
+      return;
+
+    if (parseSanitizerValue(SanitizerName, /*AllowGroups=*/true) == 0)
+      S.Diag(LiteralLoc, diag::warn_unknown_sanitizer_ignored) << SanitizerName;
+
+    Sanitizers.push_back(SanitizerName);
+  }
+
+  D->addAttr(::new (S.Context) NoSanitizeAttr(
+      Attr.getRange(), S.Context, Sanitizers.data(), Sanitizers.size(),
+      Attr.getAttributeSpellingListIndex()));
+}
+
+static void handleNoSanitizeSpecificAttr(Sema &S, Decl *D,
+                                         const AttributeList &Attr) {
+  std::string SanitizerName =
+      llvm::StringSwitch<std::string>(Attr.getName()->getName())
+          .Case("no_address_safety_analysis", "address")
+          .Case("no_sanitize_address", "address")
+          .Case("no_sanitize_thread", "thread")
+          .Case("no_sanitize_memory", "memory");
+  D->addAttr(::new (S.Context)
+                 NoSanitizeAttr(Attr.getRange(), S.Context, &SanitizerName, 1,
+                                Attr.getAttributeSpellingListIndex()));
+}
+
 /// Handles semantic checking for features that are common to all attributes,
 /// such as checking whether a parameter was properly specified, or the correct
 /// number of arguments were passed, etc.
@@ -4637,6 +4738,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_Section:
     handleSectionAttr(S, D, Attr);
     break;
+  case AttributeList::AT_Target:
+    handleTargetAttr(S, D, Attr);
+    break;
   case AttributeList::AT_Unavailable:
     handleAttrWithMessage<UnavailableAttr>(S, D, Attr);
     break;
@@ -4779,17 +4883,14 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_ScopedLockable:
     handleSimpleAttribute<ScopedLockableAttr>(S, D, Attr);
     break;
-  case AttributeList::AT_NoSanitizeAddress:
-    handleSimpleAttribute<NoSanitizeAddressAttr>(S, D, Attr);
+  case AttributeList::AT_NoSanitize:
+    handleNoSanitizeAttr(S, D, Attr);
+    break;
+  case AttributeList::AT_NoSanitizeSpecific:
+    handleNoSanitizeSpecificAttr(S, D, Attr);
     break;
   case AttributeList::AT_NoThreadSafetyAnalysis:
     handleSimpleAttribute<NoThreadSafetyAnalysisAttr>(S, D, Attr);
-    break;
-  case AttributeList::AT_NoSanitizeThread:
-    handleSimpleAttribute<NoSanitizeThreadAttr>(S, D, Attr);
-    break;
-  case AttributeList::AT_NoSanitizeMemory:
-    handleSimpleAttribute<NoSanitizeMemoryAttr>(S, D, Attr);
     break;
   case AttributeList::AT_GuardedBy:
     handleGuardedByAttr(S, D, Attr);
@@ -5168,7 +5269,7 @@ static void DoEmitAvailabilityWarning(Sema &S, Sema::AvailabilityDiagnostic K,
   // Don't warn if our current context is deprecated or unavailable.
   switch (K) {
   case Sema::AD_Deprecation:
-    if (isDeclDeprecated(Ctx))
+    if (isDeclDeprecated(Ctx) || isDeclUnavailable(Ctx))
       return;
     diag = !ObjCPropertyAccess ? diag::warn_deprecated
                                : diag::warn_property_method_deprecated;

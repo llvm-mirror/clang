@@ -688,6 +688,31 @@ static void maybeSynthesizeBlockSignature(TypeProcessingState &state,
   state.setCurrentChunkIndex(declarator.getNumTypeObjects());
 }
 
+static void diagnoseAndRemoveTypeQualifiers(Sema &S, const DeclSpec &DS,
+                                            unsigned &TypeQuals,
+                                            QualType TypeSoFar,
+                                            unsigned RemoveTQs,
+                                            unsigned DiagID) {
+  // If this occurs outside a template instantiation, warn the user about
+  // it; they probably didn't mean to specify a redundant qualifier.
+  typedef std::pair<DeclSpec::TQ, SourceLocation> QualLoc;
+  for (QualLoc Qual : {QualLoc(DeclSpec::TQ_const, DS.getConstSpecLoc()),
+                       QualLoc(DeclSpec::TQ_volatile, DS.getVolatileSpecLoc()),
+                       QualLoc(DeclSpec::TQ_atomic, DS.getAtomicSpecLoc())}) {
+    if (!(RemoveTQs & Qual.first))
+      continue;
+
+    if (S.ActiveTemplateInstantiations.empty()) {
+      if (TypeQuals & Qual.first)
+        S.Diag(Qual.second, DiagID)
+          << DeclSpec::getSpecifierName(Qual.first) << TypeSoFar
+          << FixItHint::CreateRemoval(Qual.second);
+    }
+
+    TypeQuals &= ~Qual.first;
+  }
+}
+
 /// \brief Convert the specified declspec to the appropriate type
 /// object.
 /// \param state Specifies the declarator containing the declaration specifier
@@ -1117,24 +1142,22 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
 
   // Apply const/volatile/restrict qualifiers to T.
   if (unsigned TypeQuals = DS.getTypeQualifiers()) {
-
-    // Warn about CV qualifiers on functions: C99 6.7.3p8: "If the specification
-    // of a function type includes any type qualifiers, the behavior is
-    // undefined."
-    if (Result->isFunctionType() && TypeQuals) {
-      if (TypeQuals & DeclSpec::TQ_const)
-        S.Diag(DS.getConstSpecLoc(), diag::warn_typecheck_function_qualifiers)
-          << Result << DS.getSourceRange();
-      else if (TypeQuals & DeclSpec::TQ_volatile)
-        S.Diag(DS.getVolatileSpecLoc(),
-               diag::warn_typecheck_function_qualifiers)
-            << Result << DS.getSourceRange();
-      else {
-        assert((TypeQuals & (DeclSpec::TQ_restrict | DeclSpec::TQ_atomic)) &&
-               "Has CVRA quals but not C, V, R, or A?");
-        // No diagnostic; we'll diagnose 'restrict' or '_Atomic' applied to a
-        // function type later, in BuildQualifiedType.
-      }
+    // Warn about CV qualifiers on function types.
+    // C99 6.7.3p8:
+    //   If the specification of a function type includes any type qualifiers,
+    //   the behavior is undefined.
+    // C++11 [dcl.fct]p7:
+    //   The effect of a cv-qualifier-seq in a function declarator is not the
+    //   same as adding cv-qualification on top of the function type. In the
+    //   latter case, the cv-qualifiers are ignored.
+    if (TypeQuals && Result->isFunctionType()) {
+      diagnoseAndRemoveTypeQualifiers(
+          S, DS, TypeQuals, Result, DeclSpec::TQ_const | DeclSpec::TQ_volatile,
+          S.getLangOpts().CPlusPlus
+              ? diag::warn_typecheck_function_qualifiers_ignored
+              : diag::warn_typecheck_function_qualifiers_unspecified);
+      // No diagnostic for 'restrict' or '_Atomic' applied to a
+      // function type; we'll diagnose those later, in BuildQualifiedType.
     }
 
     // C++11 [dcl.ref]p1:
@@ -1145,25 +1168,11 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
     // There don't appear to be any other contexts in which a cv-qualified
     // reference type could be formed, so the 'ill-formed' clause here appears
     // to never happen.
-    if (DS.getTypeSpecType() == DeclSpec::TST_typename &&
-        TypeQuals && Result->isReferenceType()) {
-      // If this occurs outside a template instantiation, warn the user about
-      // it; they probably didn't mean to specify a redundant qualifier.
-      typedef std::pair<DeclSpec::TQ, SourceLocation> QualLoc;
-      QualLoc Quals[] = {
-        QualLoc(DeclSpec::TQ_const, DS.getConstSpecLoc()),
-        QualLoc(DeclSpec::TQ_volatile, DS.getVolatileSpecLoc()),
-        QualLoc(DeclSpec::TQ_atomic, DS.getAtomicSpecLoc())
-      };
-      for (unsigned I = 0, N = llvm::array_lengthof(Quals); I != N; ++I) {
-        if (S.ActiveTemplateInstantiations.empty()) {
-          if (TypeQuals & Quals[I].first)
-            S.Diag(Quals[I].second, diag::warn_typecheck_reference_qualifiers)
-              << DeclSpec::getSpecifierName(Quals[I].first) << Result
-              << FixItHint::CreateRemoval(Quals[I].second);
-        }
-        TypeQuals &= ~Quals[I].first;
-      }
+    if (TypeQuals && Result->isReferenceType()) {
+      diagnoseAndRemoveTypeQualifiers(
+          S, DS, TypeQuals, Result,
+          DeclSpec::TQ_const | DeclSpec::TQ_volatile | DeclSpec::TQ_atomic,
+          diag::warn_typecheck_reference_qualifiers);
     }
 
     // C90 6.5.3 constraints: "The same type qualifier shall not appear more
@@ -2833,14 +2842,14 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
       if ((T.getCVRQualifiers() || T->isAtomicType()) &&
           !(S.getLangOpts().CPlusPlus &&
             (T->isDependentType() || T->isRecordType()))) {
-	if (T->isVoidType() && !S.getLangOpts().CPlusPlus &&
-	    D.getFunctionDefinitionKind() == FDK_Definition) {
-	  // [6.9.1/3] qualified void return is invalid on a C
-	  // function definition.  Apparently ok on declarations and
-	  // in C++ though (!)
-	  S.Diag(DeclType.Loc, diag::err_func_returning_qualified_void) << T;
-	} else
-	  diagnoseRedundantReturnTypeQualifiers(S, T, D, chunkIndex);
+        if (T->isVoidType() && !S.getLangOpts().CPlusPlus &&
+            D.getFunctionDefinitionKind() == FDK_Definition) {
+          // [6.9.1/3] qualified void return is invalid on a C
+          // function definition.  Apparently ok on declarations and
+          // in C++ though (!)
+          S.Diag(DeclType.Loc, diag::err_func_returning_qualified_void) << T;
+        } else
+          diagnoseRedundantReturnTypeQualifiers(S, T, D, chunkIndex);
       }
 
       // Objective-C ARC ownership qualifiers are ignored on the function
@@ -3491,15 +3500,26 @@ static AttributeList::Kind getAttrListKind(AttributedType::Kind kind) {
 }
 
 static void fillAttributedTypeLoc(AttributedTypeLoc TL,
-                                  const AttributeList *attrs) {
-  AttributedType::Kind kind = TL.getAttrKind();
+                                  const AttributeList *attrs,
+                                  const AttributeList *DeclAttrs = nullptr) {
+  // DeclAttrs and attrs cannot be both empty.
+  assert((attrs || DeclAttrs) &&
+         "no type attributes in the expected location!");
 
-  assert(attrs && "no type attributes in the expected location!");
-  AttributeList::Kind parsedKind = getAttrListKind(kind);
-  while (attrs->getKind() != parsedKind) {
+  AttributeList::Kind parsedKind = getAttrListKind(TL.getAttrKind());
+  // Try to search for an attribute of matching kind in attrs list.
+  while (attrs && attrs->getKind() != parsedKind)
     attrs = attrs->getNext();
-    assert(attrs && "no matching attribute in expected location!");
+  if (!attrs) {
+    // No matching type attribute in attrs list found.
+    // Try searching through C++11 attributes in the declarator attribute list.
+    while (DeclAttrs && (!DeclAttrs->isCXX11Attribute() ||
+                         DeclAttrs->getKind() != parsedKind))
+      DeclAttrs = DeclAttrs->getNext();
+    attrs = DeclAttrs;
   }
+
+  assert(attrs && "no matching type attribute in expected location!");
 
   TL.setAttrNameLoc(attrs->getLoc());
   if (TL.hasAttrExprOperand()) {
@@ -3854,6 +3874,7 @@ Sema::GetTypeSourceInfoForDeclarator(Declarator &D, QualType T,
                                      TypeSourceInfo *ReturnTypeInfo) {
   TypeSourceInfo *TInfo = Context.CreateTypeSourceInfo(T);
   UnqualTypeLoc CurrTL = TInfo->getTypeLoc().getUnqualifiedLoc();
+  const AttributeList *DeclAttrs = D.getAttributes();
 
   // Handle parameter packs whose type is a pack expansion.
   if (isa<PackExpansionType>(T)) {
@@ -3870,7 +3891,7 @@ Sema::GetTypeSourceInfoForDeclarator(Declarator &D, QualType T,
     }
 
     while (AttributedTypeLoc TL = CurrTL.getAs<AttributedTypeLoc>()) {
-      fillAttributedTypeLoc(TL, D.getTypeObject(i).getAttrs());
+      fillAttributedTypeLoc(TL, D.getTypeObject(i).getAttrs(), DeclAttrs);
       CurrTL = TL.getNextTypeLoc().getUnqualifiedLoc();
     }
 
@@ -5132,12 +5153,16 @@ bool Sema::RequireCompleteType(SourceLocation Loc, QualType T,
 ///        in order to provide a definition of this entity.
 bool Sema::hasVisibleDefinition(NamedDecl *D, NamedDecl **Suggested) {
   // Easy case: if we don't have modules, all declarations are visible.
-  if (!getLangOpts().Modules)
+  if (!getLangOpts().Modules && !getLangOpts().ModulesLocalVisibility)
     return true;
 
   // If this definition was instantiated from a template, map back to the
   // pattern from which it was instantiated.
-  if (auto *RD = dyn_cast<CXXRecordDecl>(D)) {
+  if (isa<TagDecl>(D) && cast<TagDecl>(D)->isBeingDefined()) {
+    // We're in the middle of defining it; this definition should be treated
+    // as visible.
+    return true;
+  } else if (auto *RD = dyn_cast<CXXRecordDecl>(D)) {
     if (auto *Pattern = RD->getTemplateInstantiationPattern())
       RD = Pattern;
     D = RD->getDefinition();
@@ -5214,20 +5239,8 @@ bool Sema::RequireCompleteTypeImpl(SourceLocation Loc, QualType T,
     // If we know about the definition but it is not visible, complain.
     NamedDecl *SuggestedDef = nullptr;
     if (!Diagnoser.Suppressed && Def &&
-        !hasVisibleDefinition(Def, &SuggestedDef)) {
-      // Suppress this error outside of a SFINAE context if we've already
-      // emitted the error once for this type. There's no usefulness in
-      // repeating the diagnostic.
-      // FIXME: Add a Fix-It that imports the corresponding module or includes
-      // the header.
-      Module *Owner = SuggestedDef->getOwningModule();
-      Diag(Loc, diag::err_module_private_definition)
-        << T << Owner->getFullModuleName();
-      Diag(SuggestedDef->getLocation(), diag::note_previous_definition);
-
-      // Try to recover by implicitly importing this module.
-      createImplicitModuleImportForErrorRecovery(Loc, Owner);
-    }
+        !hasVisibleDefinition(Def, &SuggestedDef))
+      diagnoseMissingImport(Loc, SuggestedDef, /*NeedDefinition*/true);
 
     // We lock in the inheritance model once somebody has asked us to ensure
     // that a pointer-to-member type is complete.

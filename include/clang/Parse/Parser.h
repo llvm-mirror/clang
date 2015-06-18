@@ -1240,6 +1240,7 @@ private:
   bool ParseObjCProtocolReferences(SmallVectorImpl<Decl *> &P,
                                    SmallVectorImpl<SourceLocation> &PLocs,
                                    bool WarnOnDeclarations,
+                                   bool ForObjCContainer,
                                    SourceLocation &LAngleLoc,
                                    SourceLocation &EndProtoLoc);
   bool ParseObjCProtocolQualifiers(DeclSpec &DS);
@@ -1979,6 +1980,9 @@ private:
   void DiagnoseMisplacedCXX11Attribute(ParsedAttributesWithRange &Attrs,
                                        SourceLocation CorrectLocation);
 
+  void handleDeclspecAlignBeforeClassKey(ParsedAttributesWithRange &Attrs,
+                                         DeclSpec &DS, Sema::TagUseKind TUK);
+
   void ProhibitAttributes(ParsedAttributesWithRange &attrs) {
     if (!attrs.Range.isValid()) return;
     DiagnoseProhibitedAttributes(attrs);
@@ -2083,7 +2087,15 @@ private:
   }
   void ParseMicrosoftAttributes(ParsedAttributes &attrs,
                                 SourceLocation *endLoc = nullptr);
-  void ParseMicrosoftDeclSpec(ParsedAttributes &Attrs);
+  void MaybeParseMicrosoftDeclSpecs(ParsedAttributes &Attrs,
+                                    SourceLocation *End = nullptr) {
+    const auto &LO = getLangOpts();
+    if ((LO.MicrosoftExt || LO.Borland || LO.CUDA) &&
+        Tok.is(tok::kw___declspec))
+      ParseMicrosoftDeclSpecs(Attrs, End);
+  }
+  void ParseMicrosoftDeclSpecs(ParsedAttributes &Attrs,
+                               SourceLocation *End = nullptr);
   bool ParseMicrosoftDeclSpecArgs(IdentifierInfo *AttrName,
                                   SourceLocation AttrNameLoc,
                                   ParsedAttributes &Attrs);

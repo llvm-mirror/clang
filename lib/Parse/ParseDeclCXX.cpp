@@ -1229,10 +1229,7 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
   ParsedAttributesWithRange attrs(AttrFactory);
   // If attributes exist after tag, parse them.
   MaybeParseGNUAttributes(attrs);
-
-  // If declspecs exist after tag, parse them.
-  while (Tok.is(tok::kw___declspec))
-    ParseMicrosoftDeclSpec(attrs);
+  MaybeParseMicrosoftDeclSpecs(attrs);
 
   // Parse inheritance specifiers.
   if (Tok.is(tok::kw___single_inheritance) ||
@@ -1553,7 +1550,7 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
   TypeResult TypeResult = true; // invalid
 
   bool Owned = false;
-  bool SkipBody = false;
+  Sema::SkipBodyInfo SkipBody;
   if (TemplateId) {
     // Explicit specialization, class template partial specialization,
     // or explicit instantiation.
@@ -1640,7 +1637,8 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
           *TemplateId, attrs.getList(),
           MultiTemplateParamsArg(TemplateParams ? &(*TemplateParams)[0]
                                                 : nullptr,
-                                 TemplateParams ? TemplateParams->size() : 0));
+                                 TemplateParams ? TemplateParams->size() : 0),
+          &SkipBody);
     }
   } else if (TemplateInfo.Kind == ParsedTemplateInfo::ExplicitInstantiation &&
              TUK == Sema::TUK_Declaration) {
@@ -1692,6 +1690,8 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
       TParams =
         MultiTemplateParamsArg(&(*TemplateParams)[0], TemplateParams->size());
 
+    handleDeclspecAlignBeforeClassKey(attrs, DS, TUK);
+
     // Declaration or definition of a class type
     TagOrTempResult = Actions.ActOnTag(getCurScope(), TagType, TUK, StartLoc,
                                        SS, Name, NameLoc, attrs.getList(), AS,
@@ -1716,7 +1716,7 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
     assert(Tok.is(tok::l_brace) ||
            (getLangOpts().CPlusPlus && Tok.is(tok::colon)) ||
            isCXX11FinalKeyword());
-    if (SkipBody)
+    if (SkipBody.ShouldSkip)
       SkipCXXMemberSpecification(StartLoc, AttrFixitLoc, TagType,
                                  TagOrTempResult.get());
     else if (getLangOpts().CPlusPlus)
@@ -2724,12 +2724,13 @@ void Parser::SkipCXXMemberSpecification(SourceLocation RecordLoc,
     ParseScope ClassScope(this, Scope::ClassScope|Scope::DeclScope);
     ParsingClassDefinition ParsingDef(*this, TagDecl, /*NonNestedClass*/ true,
                                       TagType == DeclSpec::TST_interface);
-    Actions.ActOnTagStartSkippedDefinition(getCurScope(), TagDecl);
+    auto OldContext =
+        Actions.ActOnTagStartSkippedDefinition(getCurScope(), TagDecl);
 
     // Parse the bases but don't attach them to the class.
     ParseBaseClause(nullptr);
 
-    Actions.ActOnTagFinishSkippedDefinition();
+    Actions.ActOnTagFinishSkippedDefinition(OldContext);
 
     if (!Tok.is(tok::l_brace)) {
       Diag(PP.getLocForEndOfToken(PrevTokLocation),
@@ -3779,7 +3780,7 @@ SourceLocation Parser::SkipCXX11Attributes() {
   return EndLoc;
 }
 
-/// ParseMicrosoftAttributes - Parse a Microsoft attribute [Attr]
+/// ParseMicrosoftAttributes - Parse Microsoft attributes [Attr]
 ///
 /// [MS] ms-attribute:
 ///             '[' token-seq ']'
@@ -3791,13 +3792,15 @@ void Parser::ParseMicrosoftAttributes(ParsedAttributes &attrs,
                                       SourceLocation *endLoc) {
   assert(Tok.is(tok::l_square) && "Not a Microsoft attribute list");
 
-  while (Tok.is(tok::l_square)) {
+  do {
     // FIXME: If this is actually a C++11 attribute, parse it as one.
-    ConsumeBracket();
+    BalancedDelimiterTracker T(*this, tok::l_square);
+    T.consumeOpen();
     SkipUntil(tok::r_square, StopAtSemi | StopBeforeMatch);
-    if (endLoc) *endLoc = Tok.getLocation();
-    ExpectAndConsume(tok::r_square);
-  }
+    T.consumeClose();
+    if (endLoc)
+      *endLoc = T.getCloseLocation();
+  } while (Tok.is(tok::l_square));
 }
 
 void Parser::ParseMicrosoftIfExistsClassDeclaration(DeclSpec::TST TagType,

@@ -49,7 +49,7 @@ class FPOptions;
 class HeaderSearch;
 class HeaderSearchOptions;
 class IdentifierResolver;
-class MacroDefinition;
+class MacroDefinitionRecord;
 class MacroDirective;
 class MacroInfo;
 class OpaqueValueExpr;
@@ -284,8 +284,8 @@ private:
 
   /// \brief Mapping from macro definitions (as they occur in the preprocessing
   /// record) to the macro IDs.
-  llvm::DenseMap<const MacroDefinition *, serialization::PreprocessedEntityID>
-      MacroDefinitions;
+  llvm::DenseMap<const MacroDefinitionRecord *,
+                 serialization::PreprocessedEntityID> MacroDefinitions;
 
   /// \brief Cache of indices of anonymous declarations within their lexical
   /// contexts.
@@ -300,6 +300,7 @@ private:
       void *Type;
       unsigned Loc;
       unsigned Val;
+      Module *Mod;
     };
 
   public:
@@ -311,6 +312,8 @@ private:
         : Kind(Kind), Loc(Loc.getRawEncoding()) {}
     DeclUpdate(unsigned Kind, unsigned Val)
         : Kind(Kind), Val(Val) {}
+    DeclUpdate(unsigned Kind, Module *M)
+          : Kind(Kind), Mod(M) {}
 
     unsigned getKind() const { return Kind; }
     const Decl *getDecl() const { return Dcl; }
@@ -319,6 +322,7 @@ private:
       return SourceLocation::getFromRawEncoding(Loc);
     }
     unsigned getNumber() const { return Val; }
+    Module *getModule() const { return Mod; }
   };
 
   typedef SmallVector<DeclUpdate, 1> UpdateRecord;
@@ -827,7 +831,7 @@ public:
   void TypeRead(serialization::TypeIdx Idx, QualType T) override;
   void SelectorRead(serialization::SelectorID ID, Selector Sel) override;
   void MacroDefinitionRead(serialization::PreprocessedEntityID ID,
-                           MacroDefinition *MD) override;
+                           MacroDefinitionRecord *MD) override;
   void ModuleRead(serialization::SubmoduleID ID, Module *Mod) override;
 
   // ASTMutationListener implementation.
@@ -854,8 +858,7 @@ public:
                                     const ObjCCategoryDecl *ClassExt) override;
   void DeclarationMarkedUsed(const Decl *D) override;
   void DeclarationMarkedOpenMPThreadPrivate(const Decl *D) override;
-  void RedefinedHiddenDefinition(const NamedDecl *D,
-                                 SourceLocation Loc) override;
+  void RedefinedHiddenDefinition(const NamedDecl *D, Module *M) override;
 };
 
 /// \brief AST and semantic-analysis consumer that generates a

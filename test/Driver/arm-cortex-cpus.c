@@ -166,11 +166,52 @@
 // RUN: %clang -target arm -march=armebv8a -mbig-endian -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V8A-THUMB %s
 // CHECK-BE-V8A-THUMB: "-cc1"{{.*}} "-triple" "thumbebv8-{{.*}}" "-target-cpu" "cortex-a53"
 
-// ================== Check default CPU on bogus architecture
+// RUN: %clang -target arm -march=armv8.1a -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A %s
+// RUN: %clang -target armv8.1a -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A %s
+// RUN: %clang -target arm -march=armv8.1-a -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A %s
+// RUN: %clang -target arm -march=armv8.1a -mlittle-endian -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A %s
+// RUN: %clang -target armv8.1a -mlittle-endian -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A %s
+// RUN: %clang -target arm -march=armv8.1a -mlittle-endian -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A %s
+// RUN: %clang -target arm -mlittle-endian -march=armv8.1-a -mlittle-endian -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A %s
+// CHECK-V81A: "-cc1"{{.*}} "-triple" "armv8.1a-{{.*}}" "-target-cpu" "generic" "-target-feature" "+v8.1a"
+
+// RUN: %clang -target armebv8.1a -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A %s
+// RUN: %clang -target armeb -march=armebv8.1a -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A %s
+// RUN: %clang -target armeb -march=armebv8.1-a -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A %s
+// RUN: %clang -target armv8.1a -mbig-endian -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A %s
+// RUN: %clang -target arm -march=armebv8.1a -mbig-endian -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A %s
+// RUN: %clang -target arm -march=armebv8.1-a -mbig-endian -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A %s
+// CHECK-BE-V81A: "-cc1"{{.*}} "-triple" "armebv8.1a-{{.*}}" "-target-cpu" "generic" "-target-feature" "+v8.1a"
+
+// RUN: %clang -target armv8.1a -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A-THUMB %s
+// RUN: %clang -target arm -march=armv8.1a -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A-THUMB %s
+// RUN: %clang -target arm -march=armv8.1-a -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A-THUMB %s
+// RUN: %clang -target armv8.1a -mlittle-endian -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A-THUMB %s
+// RUN: %clang -target arm -march=armv8.1a -mlittle-endian -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A-THUMB %s
+// RUN: %clang -target arm -march=armv8.1-a -mlittle-endian -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-V81A-THUMB %s
+// CHECK-V81A-THUMB: "-cc1"{{.*}} "-triple" "thumbv8.1a-{{.*}}" "-target-cpu" "generic" "-target-feature" "+v8.1a"
+
+// RUN: %clang -target armebv8.1a -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A-THUMB %s
+// RUN: %clang -target armeb -march=armebv8.1a -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A-THUMB %s
+// RUN: %clang -target armeb -march=armebv8.1-a -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A-THUMB %s
+// RUN: %clang -target armv8.1a -mbig-endian -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A-THUMB %s
+// RUN: %clang -target arm -march=armebv8.1a -mbig-endian -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A-THUMB %s
+// RUN: %clang -target arm -march=armebv8.1-a -mbig-endian -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-V81A-THUMB %s
+// CHECK-BE-V81A-THUMB: "-cc1"{{.*}} "-triple" "thumbebv8.1a-{{.*}}" "-target-cpu" "generic" "-target-feature" "+v8.1a"
+
+// ================== Check that a bogus architecture gives an error
 // RUN: %clang -target arm -march=armbogusv6 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BOGUS %s
-// CHECK-BOGUS: "-cc1"{{.*}} "-triple" "armv4t-{{.*}} "-target-cpu" "arm7tdmi"
+// CHECK-BOGUS: error: {{.*}} does not support '-march=armbogusv6' 
 // RUN: %clang -target arm---eabihf -march=armbogusv7 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BOGUS-HF %s
-// CHECK-BOGUS-HF: "-cc1"{{.*}} "-triple" "armv6k-{{.*}} "-target-cpu" "arm1176jzf-s"
+// CHECK-BOGUS-HF: error: {{.*}} does not support '-march=armbogusv7' 
+// RUN: %clang -target arm -march=armv6bogus -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BOGUS2 %s
+// CHECK-BOGUS2: error: {{.*}} does not support '-march=armv6bogus'
+// RUN: %clang -target arm -march=bogus -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BOGUS3 %s
+// CHECK-BOGUS3: error: {{.*}} does not support '-march=bogus'
+
+// ================== Check that a bogus CPU gives an error
+// RUN: %clang -target arm -mcpu=bogus -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BOGUS-CPU %s
+// CHECK-BOGUS-CPU: error: {{.*}} does not support '-mcpu=bogus'
 
 // ================== Check default Architecture on each ARM11 CPU
 // RUN: %clang -target arm-linux-gnueabi -mcpu=arm1136j-s -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CPUV6 %s
@@ -351,3 +392,22 @@
 // RUN: %clang -target arm -mcpu=cortex-a57 -mbig-endian -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-CPUV8A-THUMB %s
 // RUN: %clang -target arm -mcpu=cortex-a72 -mbig-endian -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-BE-CPUV8A-THUMB %s
 // CHECK-BE-CPUV8A-THUMB: "-cc1"{{.*}} "-triple" "thumbebv8-{{.*}}
+
+// ================== Check whether -mcpu accepts mixed-case values.
+// RUN: %clang -target arm-linux-gnueabi -mcpu=Cortex-a5 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-CPUV7A %s
+// RUN: %clang -target arm-linux-gnueabi -mcpu=cortex-A7 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-CPUV7A %s
+// RUN: %clang -target arm-linux-gnueabi -mcpu=CORTEX-a8 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-CPUV7A %s
+// RUN: %clang -target arm-linux-gnueabi -mcpu=Cortex-A9 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-CPUV7A %s
+// RUN: %clang -target arm-linux-gnueabi -mcpu=corteX-A12 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-CPUV7A %s
+// RUN: %clang -target arm-linux-gnueabi -mcpu=CorteX-a15 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-CPUV7A %s
+// RUN: %clang -target arm-linux-gnueabi -mcpu=CorteX-A17 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-CPUV7A %s
+// CHECK-CASE-INSENSITIVE-CPUV7A: "-cc1"{{.*}} "-triple" "armv7-{{.*}}
+
+// ================== Check whether -march accepts mixed-case values.
+// RUN: %clang -target arm -march=Armv5 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-V5 %s
+// RUN: %clang -target arm -march=ARMV5 -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-V5 %s
+// CHECK-CASE-INSENSITIVE-V5: "-cc1"{{.*}} "-triple" "armv5-{{.*}} "-target-cpu" "arm10tdmi"
+
+// RUN: %clang -target arm -march=Armv6t2 -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-V6T2-THUMB %s
+// RUN: %clang -target arm -march=ARMV6T2 -mthumb -### -c %s 2>&1 | FileCheck -check-prefix=CHECK-CASE-INSENSITIVE-V6T2-THUMB %s
+// CHECK-CASE-INSENSITIVE-V6T2-THUMB: "-cc1"{{.*}} "-triple" "thumbv6t2-{{.*}} "-target-cpu" "arm1156t2-s"

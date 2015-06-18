@@ -64,10 +64,9 @@ GetFlattenedSpellings(const Record &Attr) {
   for (const auto &Spelling : Spellings) {
     if (Spelling->getValueAsString("Variety") == "GCC") {
       // Gin up two new spelling objects to add into the list.
-      Ret.push_back(FlattenedSpelling("GNU", Spelling->getValueAsString("Name"),
-                                      "", true));
-      Ret.push_back(FlattenedSpelling(
-          "CXX11", Spelling->getValueAsString("Name"), "gnu", true));
+      Ret.emplace_back("GNU", Spelling->getValueAsString("Name"), "", true);
+      Ret.emplace_back("CXX11", Spelling->getValueAsString("Name"), "gnu",
+                       true);
     } else
       Ret.push_back(FlattenedSpelling(*Spelling));
   }
@@ -82,6 +81,7 @@ static std::string ReadPCHRecord(StringRef type) {
     .Case("TypeSourceInfo *", "GetTypeSourceInfo(F, Record, Idx)")
     .Case("Expr *", "ReadExpr(F)")
     .Case("IdentifierInfo *", "GetIdentifierInfo(F, Record, Idx)")
+    .Case("std::string", "ReadString(Record, Idx)")
     .Default("Record[Idx++]");
 }
 
@@ -95,6 +95,7 @@ static std::string WritePCHRecord(StringRef type, StringRef name) {
     .Case("Expr *", "AddStmt(" + std::string(name) + ");\n")
     .Case("IdentifierInfo *", 
           "AddIdentifierRef(" + std::string(name) + ", Record);\n")
+    .Case("std::string", "AddString(" + std::string(name) + ", Record);\n")
     .Default("Record.push_back(" + std::string(name) + ");\n");
 }
 
@@ -413,15 +414,14 @@ namespace {
       // FIXME: Do not do the calculation here
       // FIXME: Handle types correctly
       // A null pointer means maximum alignment
-      // FIXME: Load the platform-specific maximum alignment, rather than
-      //        16, the x86 max.
       OS << "unsigned " << getAttrName() << "Attr::get" << getUpperName()
          << "(ASTContext &Ctx) const {\n";
       OS << "  assert(!is" << getUpperName() << "Dependent());\n";
       OS << "  if (is" << getLowerName() << "Expr)\n";
-      OS << "    return (" << getLowerName() << "Expr ? " << getLowerName()
-         << "Expr->EvaluateKnownConstInt(Ctx).getZExtValue() : 16)"
-         << "* Ctx.getCharWidth();\n";
+      OS << "    return " << getLowerName() << "Expr ? " << getLowerName()
+         << "Expr->EvaluateKnownConstInt(Ctx).getZExtValue()"
+         << " * Ctx.getCharWidth() : "
+         << "Ctx.getTargetDefaultAlignForAttributeAligned();\n";
       OS << "  else\n";
       OS << "    return 0; // FIXME\n";
       OS << "}\n";
@@ -984,6 +984,16 @@ namespace {
     }
   };
 
+  class VariadicStringArgument : public VariadicArgument {
+  public:
+    VariadicStringArgument(const Record &Arg, StringRef Attr)
+      : VariadicArgument(Arg, Attr, "std::string")
+    {}
+    void writeValueImpl(raw_ostream &OS) const override {
+      OS << "    OS << \"\\\"\" << Val << \"\\\"\";\n";
+    }
+  };
+
   class TypeArgument : public SimpleArgument {
   public:
     TypeArgument(const Record &Arg, StringRef Attr)
@@ -1045,6 +1055,8 @@ createArgument(const Record &Arg, StringRef Attr,
     Ptr = llvm::make_unique<SimpleArgument>(Arg, Attr, "unsigned");
   else if (ArgName == "VariadicUnsignedArgument")
     Ptr = llvm::make_unique<VariadicArgument>(Arg, Attr, "unsigned");
+  else if (ArgName == "VariadicStringArgument")
+    Ptr = llvm::make_unique<VariadicStringArgument>(Arg, Attr);
   else if (ArgName == "VariadicEnumArgument")
     Ptr = llvm::make_unique<VariadicEnumArgument>(Arg, Attr);
   else if (ArgName == "VariadicExprArgument")

@@ -61,8 +61,7 @@ class VoidModuleLoader : public ModuleLoader {
 
   void makeModuleVisible(Module *Mod,
                          Module::NameVisibilityKind Visibility,
-                         SourceLocation ImportLoc,
-                         bool Complain) override { }
+                         SourceLocation ImportLoc) override { }
 
   GlobalModuleIndex *loadGlobalModuleIndex(SourceLocation TriggerLoc) override
     { return nullptr; }
@@ -264,7 +263,7 @@ public:
                                  MacroNameTok.getIdentifierInfo()->getName(),
                                  true));
   }
-  void MacroExpands(const Token &MacroNameTok, const MacroDirective *MD,
+  void MacroExpands(const Token &MacroNameTok, const MacroDefinition &MD,
                     SourceRange Range, const MacroArgs *Args) override {
     Macros.push_back(MacroAction(MacroNameTok.getLocation(),
                                  MacroNameTok.getIdentifierInfo()->getName(),

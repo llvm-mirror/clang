@@ -78,6 +78,7 @@ namespace clang {
   typedef SmallVector<CXXBaseSpecifier*, 4> CXXCastPath;
   class CXXConstructorDecl;
   class CXXConversionDecl;
+  class CXXDeleteExpr;
   class CXXDestructorDecl;
   class CXXFieldCollector;
   class CXXMemberCallExpr;
@@ -222,15 +223,17 @@ class Sema {
 
   static bool mightHaveNonExternalLinkage(const DeclaratorDecl *FD);
 
-  static bool
-  shouldLinkPossiblyHiddenDecl(const NamedDecl *Old, const NamedDecl *New) {
+  bool isVisibleSlow(const NamedDecl *D);
+
+  bool shouldLinkPossiblyHiddenDecl(const NamedDecl *Old,
+                                    const NamedDecl *New) {
     // We are about to link these. It is now safe to compute the linkage of
     // the new decl. If the new decl has external linkage, we will
     // link it with the hidden decl (which also has external linkage) and
     // it will keep having external linkage. If it has internal linkage, we
     // will not link it. Since it has no previous decls, it will remain
     // with internal linkage.
-    return !Old->isHidden() || New->isExternallyVisible();
+    return isVisible(Old) || New->isExternallyVisible();
   }
 
 public:
@@ -401,6 +404,15 @@ public:
   /// \brief Set containing all typedefs that are likely unused.
   llvm::SmallSetVector<const TypedefNameDecl *, 4>
       UnusedLocalTypedefNameCandidates;
+
+  /// \brief Delete-expressions to be analyzed at the end of translation unit
+  ///
+  /// This list contains class members, and locations of delete-expressions
+  /// that could not be proven as to whether they mismatch with new-expression
+  /// used in initializer of the field.
+  typedef std::pair<SourceLocation, bool> DeleteExprLoc;
+  typedef llvm::SmallVector<DeleteExprLoc, 4> DeleteLocs;
+  llvm::MapVector<FieldDecl *, DeleteLocs> DeleteExprs;
 
   typedef llvm::SmallPtrSet<const CXXRecordDecl*, 8> RecordDeclSetTy;
 
@@ -886,6 +898,11 @@ public:
   void getUndefinedButUsed(
       SmallVectorImpl<std::pair<NamedDecl *, SourceLocation> > &Undefined);
 
+  /// Retrieves list of suspicious delete-expressions that will be checked at
+  /// the end of translation unit.
+  const llvm::MapVector<FieldDecl *, DeleteLocs> &
+  getMismatchingDeleteExpressions() const;
+
   typedef std::pair<ObjCMethodList, ObjCMethodList> GlobalMethods;
   typedef llvm::DenseMap<Selector, GlobalMethods> GlobalMethodPool;
 
@@ -1278,7 +1295,28 @@ public:
 private:
   bool RequireCompleteTypeImpl(SourceLocation Loc, QualType T,
                            TypeDiagnoser &Diagnoser);
+
+  VisibleModuleSet VisibleModules;
+  llvm::SmallVector<VisibleModuleSet, 16> VisibleModulesStack;
+
+  Module *CachedFakeTopLevelModule;
+
 public:
+  /// \brief Get the module owning an entity.
+  Module *getOwningModule(Decl *Entity);
+
+  /// \brief Make a merged definition of an existing hidden definition \p ND
+  /// visible at the specified location.
+  void makeMergedDefinitionVisible(NamedDecl *ND, SourceLocation Loc);
+
+  bool isModuleVisible(Module *M) { return VisibleModules.isVisible(M); }
+
+  /// Determine whether a declaration is visible to name lookup.
+  bool isVisible(const NamedDecl *D) {
+    return !D->isHidden() || isVisibleSlow(D);
+  }
+  bool hasVisibleMergedDefinition(NamedDecl *Def);
+
   /// Determine if \p D has a visible definition. If not, suggest a declaration
   /// that should be made visible to expose the definition.
   bool hasVisibleDefinition(NamedDecl *D, NamedDecl **Suggested);
@@ -1286,6 +1324,9 @@ public:
     NamedDecl *Hidden;
     return hasVisibleDefinition(const_cast<NamedDecl*>(D), &Hidden);
   }
+
+  /// Determine if the template parameter \p D has a visible default argument.
+  bool hasVisibleDefaultArgument(const NamedDecl *D);
 
   bool RequireCompleteType(SourceLocation Loc, QualType T,
                            TypeDiagnoser &Diagnoser);
@@ -1675,6 +1716,11 @@ public:
   /// #include or similar preprocessing directive.
   void ActOnModuleInclude(SourceLocation DirectiveLoc, Module *Mod);
 
+  /// \brief The parsed has entered a submodule.
+  void ActOnModuleBegin(SourceLocation DirectiveLoc, Module *Mod);
+  /// \brief The parser has left a submodule.
+  void ActOnModuleEnd(SourceLocation DirectiveLoc, Module *Mod);
+
   /// \brief Create an implicit import of the given module at the given
   /// source location, for error recovery, if possible.
   ///
@@ -1683,6 +1729,11 @@ public:
   /// has forgotten to import.
   void createImplicitModuleImportForErrorRecovery(SourceLocation Loc,
                                                   Module *Mod);
+
+  /// \brief Diagnose that the specified declaration needs to be visible but
+  /// isn't, and suggest a module import that would resolve the problem.
+  void diagnoseMissingImport(SourceLocation Loc, NamedDecl *Decl,
+                             bool NeedDefinition, bool Recover = true);
 
   /// \brief Retrieve a suitable printing policy.
   PrintingPolicy getPrintingPolicy() const {
@@ -1724,6 +1775,12 @@ public:
     TUK_Friend       // Friend declaration:  'friend struct foo;'
   };
 
+  struct SkipBodyInfo {
+    SkipBodyInfo() : ShouldSkip(false), Previous(nullptr) {}
+    bool ShouldSkip;
+    NamedDecl *Previous;
+  };
+
   Decl *ActOnTag(Scope *S, unsigned TagSpec, TagUseKind TUK,
                  SourceLocation KWLoc, CXXScopeSpec &SS,
                  IdentifierInfo *Name, SourceLocation NameLoc,
@@ -1733,7 +1790,7 @@ public:
                  bool &OwnedDecl, bool &IsDependent,
                  SourceLocation ScopedEnumKWLoc,
                  bool ScopedEnumUsesClassTag, TypeResult UnderlyingType,
-                 bool IsTypeSpecifier, bool *SkipBody = nullptr);
+                 bool IsTypeSpecifier, SkipBodyInfo *SkipBody = nullptr);
 
   Decl *ActOnTemplatedFriendTag(Scope *S, SourceLocation FriendLoc,
                                 unsigned TagSpec, SourceLocation TagLoc,
@@ -1798,10 +1855,10 @@ public:
   /// struct, or union).
   void ActOnTagStartDefinition(Scope *S, Decl *TagDecl);
 
+  typedef void *SkippedDefinitionContext;
+
   /// \brief Invoked when we enter a tag definition that we're skipping.
-  void ActOnTagStartSkippedDefinition(Scope *S, Decl *TD) {
-    PushDeclContext(S, cast<DeclContext>(TD));
-  }
+  SkippedDefinitionContext ActOnTagStartSkippedDefinition(Scope *S, Decl *TD);
 
   Decl *ActOnObjCContainerStartDefinition(Decl *IDecl);
 
@@ -1818,9 +1875,7 @@ public:
   void ActOnTagFinishDefinition(Scope *S, Decl *TagDecl,
                                 SourceLocation RBraceLoc);
 
-  void ActOnTagFinishSkippedDefinition() {
-    PopDeclContext();
-  }
+  void ActOnTagFinishSkippedDefinition(SkippedDefinitionContext Context);
 
   void ActOnObjCContainerFinishDefinition();
 
@@ -1843,6 +1898,11 @@ public:
   bool CheckEnumUnderlyingType(TypeSourceInfo *TI);
   bool CheckEnumRedeclaration(SourceLocation EnumLoc, bool IsScoped,
                               QualType EnumUnderlyingTy, const EnumDecl *Prev);
+
+  /// Determine whether the body of an anonymous enumeration should be skipped.
+  /// \param II The name of the first enumerator.
+  SkipBodyInfo shouldSkipAnonEnumBody(Scope *S, IdentifierInfo *II,
+                                      SourceLocation IILoc);
 
   Decl *ActOnEnumConstant(Scope *S, Decl *EnumDecl, Decl *LastEnumConstant,
                           SourceLocation IdLoc, IdentifierInfo *Id,
@@ -2671,16 +2731,42 @@ public:
                                bool EnteringContext = false,
                                const ObjCObjectPointerType *OPT = nullptr);
 
+  /// \brief Process any TypoExprs in the given Expr and its children,
+  /// generating diagnostics as appropriate and returning a new Expr if there
+  /// were typos that were all successfully corrected and ExprError if one or
+  /// more typos could not be corrected.
+  ///
+  /// \param E The Expr to check for TypoExprs.
+  ///
+  /// \param InitDecl A VarDecl to avoid because the Expr being corrected is its
+  /// initializer.
+  ///
+  /// \param Filter A function applied to a newly rebuilt Expr to determine if
+  /// it is an acceptable/usable result from a single combination of typo
+  /// corrections. As long as the filter returns ExprError, different
+  /// combinations of corrections will be tried until all are exhausted.
   ExprResult
-  CorrectDelayedTyposInExpr(Expr *E,
+  CorrectDelayedTyposInExpr(Expr *E, VarDecl *InitDecl = nullptr,
                             llvm::function_ref<ExprResult(Expr *)> Filter =
                                 [](Expr *E) -> ExprResult { return E; });
 
   ExprResult
-  CorrectDelayedTyposInExpr(ExprResult ER,
+  CorrectDelayedTyposInExpr(Expr *E,
+                            llvm::function_ref<ExprResult(Expr *)> Filter) {
+    return CorrectDelayedTyposInExpr(E, nullptr, Filter);
+  }
+
+  ExprResult
+  CorrectDelayedTyposInExpr(ExprResult ER, VarDecl *InitDecl = nullptr,
                             llvm::function_ref<ExprResult(Expr *)> Filter =
                                 [](Expr *E) -> ExprResult { return E; }) {
     return ER.isInvalid() ? ER : CorrectDelayedTyposInExpr(ER.get(), Filter);
+  }
+
+  ExprResult
+  CorrectDelayedTyposInExpr(ExprResult ER,
+                            llvm::function_ref<ExprResult(Expr *)> Filter) {
+    return CorrectDelayedTyposInExpr(ER, nullptr, Filter);
   }
 
   void diagnoseTypo(const TypoCorrection &Correction,
@@ -2739,6 +2825,7 @@ public:
                                       unsigned ArgNum, StringRef &Str,
                                       SourceLocation *ArgLocation = nullptr);
   bool checkSectionName(SourceLocation LiteralLoc, StringRef Str);
+  void checkTargetAttr(SourceLocation LiteralLoc, StringRef Str);
   bool checkMSInheritanceAttrOnDefinition(
       CXXRecordDecl *RD, SourceRange Range, bool BestCase,
       MSInheritanceAttr::Spelling SemanticSpelling);
@@ -4794,8 +4881,12 @@ public:
   /// ActOnLambdaExpr - This is called when the body of a lambda expression
   /// was successfully completed.
   ExprResult ActOnLambdaExpr(SourceLocation StartLoc, Stmt *Body,
-                             Scope *CurScope,
-                             bool IsInstantiation = false);
+                             Scope *CurScope);
+
+  /// \brief Complete a lambda-expression having processed and attached the
+  /// lambda body.
+  ExprResult BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
+                             sema::LambdaScopeInfo *LSI);
 
   /// \brief Define the "body" of the conversion from a lambda object to a
   /// function pointer.
@@ -5025,6 +5116,11 @@ public:
                             ArrayRef<CXXCtorInitializer*> MemInits,
                             bool AnyErrors);
 
+  void checkClassLevelDLLAttribute(CXXRecordDecl *Class);
+  void propagateDLLAttrToBaseClassTemplate(
+      CXXRecordDecl *Class, Attr *ClassAttr,
+      ClassTemplateSpecializationDecl *BaseTemplateSpec,
+      SourceLocation BaseLoc);
   void CheckCompletedCXXClass(CXXRecordDecl *Record);
   void ActOnFinishCXXMemberSpecification(Scope* S, SourceLocation RLoc,
                                          Decl *TagDecl,
@@ -5352,7 +5448,7 @@ public:
                                 SourceLocation FriendLoc,
                                 unsigned NumOuterTemplateParamLists,
                             TemplateParameterList **OuterTemplateParamLists,
-                                bool *SkipBody = nullptr);
+                                SkipBodyInfo *SkipBody = nullptr);
 
   void translateTemplateArguments(const ASTTemplateArgsPtr &In,
                                   TemplateArgumentListInfo &Out);
@@ -5425,7 +5521,8 @@ public:
                                    SourceLocation ModulePrivateLoc,
                                    TemplateIdAnnotation &TemplateId,
                                    AttributeList *Attr,
-                                 MultiTemplateParamsArg TemplateParameterLists);
+                                 MultiTemplateParamsArg TemplateParameterLists,
+                                   SkipBodyInfo *SkipBody = nullptr);
 
   Decl *ActOnTemplateDeclarator(Scope *S,
                                 MultiTemplateParamsArg TemplateParameterLists,
@@ -6952,7 +7049,7 @@ public:
                                         unsigned NumElts,
                                         AttributeList *attrList);
 
-  void FindProtocolDeclaration(bool WarnOnDeclarations,
+  void FindProtocolDeclaration(bool WarnOnDeclarations, bool ForObjCContainer,
                                const IdentifierLocPair *ProtocolId,
                                unsigned NumProtocols,
                                SmallVectorImpl<Decl *> &Protocols);
@@ -7393,6 +7490,11 @@ public:
   void AddAlignValueAttr(SourceRange AttrRange, Decl *D, Expr *E,
                          unsigned SpellingListIndex);
 
+  /// AddLaunchBoundsAttr - Adds a launch_bounds attribute to a particular
+  /// declaration.
+  void AddLaunchBoundsAttr(SourceRange AttrRange, Decl *D, Expr *MaxThreads,
+                           Expr *MinBlocks, unsigned SpellingListIndex);
+
   // OpenMP directives and clauses.
 private:
   void *VarDataSharingAttributesStack;
@@ -7412,8 +7514,18 @@ public:
   void StartOpenMPDSABlock(OpenMPDirectiveKind K,
                            const DeclarationNameInfo &DirName, Scope *CurScope,
                            SourceLocation Loc);
+  /// \brief Start analysis of clauses.
+  void StartOpenMPClauses();
+  /// \brief End analysis of clauses.
+  void EndOpenMPClauses();
   /// \brief Called on end of data sharing attribute block.
   void EndOpenMPDSABlock(Stmt *CurDirective);
+
+  /// \brief Check if the current region is an OpenMP loop region and if it is,
+  /// mark loop control variable, used in \p Init for loop initialization, as
+  /// private by default.
+  /// \param Init First part of the for loop.
+  void ActOnOpenMPLoopInitialization(SourceLocation ForLoc, Stmt *Init);
 
   // OpenMP directives and clauses.
   /// \brief Called on correct id-expression from the '#pragma omp
@@ -8497,7 +8609,9 @@ private:
                               llvm::APSInt &Result);
   bool SemaBuiltinConstantArgRange(CallExpr *TheCall, int ArgNum,
                                    int Low, int High);
-
+  bool SemaBuiltinARMSpecialReg(unsigned BuiltinID, CallExpr *TheCall,
+                                int ArgNum, unsigned ExpectedFieldNum,
+                                bool AllowName);
 public:
   enum FormatStringType {
     FST_Scanf,
@@ -8579,6 +8693,9 @@ private:
   /// attempts to add itself into the container
   void CheckObjCCircularContainer(ObjCMessageExpr *Message);
 
+  void AnalyzeDeleteExprMismatch(const CXXDeleteExpr *DE);
+  void AnalyzeDeleteExprMismatch(FieldDecl *Field, SourceLocation DeleteLoc,
+                                 bool DeleteWasArrayForm);
 public:
   /// \brief Register a magic integral constant to be used as a type tag.
   void RegisterTypeTagForDatatype(const IdentifierInfo *ArgumentKind,
@@ -8627,6 +8744,7 @@ protected:
   friend class Parser;
   friend class InitializationSequence;
   friend class ASTReader;
+  friend class ASTDeclReader;
   friend class ASTWriter;
 
 public:
