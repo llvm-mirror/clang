@@ -992,6 +992,12 @@ public:
   bool hasSjLjLowering() const override {
     return true;
   }
+
+  bool useFloat128ManglingForLongDouble() const override {
+    return LongDoubleWidth == 128 &&
+           LongDoubleFormat == &llvm::APFloat::PPCDoubleDouble &&
+           getTriple().isOSBinFormatELF();
+  }
 };
 
 const Builtin::Info PPCTargetInfo::BuiltinInfo[] = {
@@ -4188,9 +4194,7 @@ public:
   // FIXME: This should be based on Arch attributes, not CPU names.
   void getDefaultFeatures(llvm::StringMap<bool> &Features) const override {
     StringRef ArchName = getTriple().getArchName();
-    unsigned ArchKind =
-                llvm::ARMTargetParser::parseArch(
-                llvm::ARMTargetParser::getCanonicalArchName(ArchName));
+    unsigned ArchKind = llvm::ARMTargetParser::parseArch(ArchName);
     bool IsV8 = (ArchKind == llvm::ARM::AK_ARMV8A ||
                  ArchKind == llvm::ARM::AK_ARMV8_1A);
 
@@ -5501,6 +5505,16 @@ class SparcV8TargetInfo : public SparcTargetInfo {
 public:
   SparcV8TargetInfo(const llvm::Triple &Triple) : SparcTargetInfo(Triple) {
     DescriptionString = "E-m:e-p:32:32-i64:64-f128:64-n32-S64";
+    // NetBSD uses long (same as llvm default); everyone else uses int.
+    if (getTriple().getOS() == llvm::Triple::NetBSD) {
+      SizeType = UnsignedLong;
+      IntPtrType = SignedLong;
+      PtrDiffType = SignedLong;
+    } else {
+      SizeType = UnsignedInt;
+      IntPtrType = SignedInt;
+      PtrDiffType = SignedInt;
+    }
   }
 
   void getTargetDefines(const LangOptions &Opts,
@@ -5570,15 +5584,6 @@ public:
     // No need to store the CPU yet.  There aren't any CPU-specific
     // macros to define.
     return CPUKnown;
-  }
-};
-
-class SolarisSparcV8TargetInfo : public SolarisTargetInfo<SparcV8TargetInfo> {
-public:
-  SolarisSparcV8TargetInfo(const llvm::Triple &Triple)
-      : SolarisTargetInfo<SparcV8TargetInfo>(Triple) {
-    SizeType = UnsignedInt;
-    PtrDiffType = SignedInt;
   }
 };
 
@@ -5890,6 +5895,60 @@ validateAsmConstraint(const char *&Name,
     void getGCCRegAliases(const GCCRegAlias *&Aliases,
                           unsigned &NumAliases) const override {}
   };
+
+class BPFTargetInfo : public TargetInfo {
+public:
+  BPFTargetInfo(const llvm::Triple &Triple) : TargetInfo(Triple) {
+    LongWidth = LongAlign = PointerWidth = PointerAlign = 64;
+    SizeType    = UnsignedLong;
+    PtrDiffType = SignedLong;
+    IntPtrType  = SignedLong;
+    IntMaxType  = SignedLong;
+    Int64Type   = SignedLong;
+    RegParmMax = 5;
+    if (Triple.getArch() == llvm::Triple::bpfeb) {
+      BigEndian = true;
+      DescriptionString = "E-m:e-p:64:64-i64:64-n32:64-S128";
+    } else {
+      BigEndian = false;
+      DescriptionString = "e-m:e-p:64:64-i64:64-n32:64-S128";
+    }
+    MaxAtomicPromoteWidth = 64;
+    MaxAtomicInlineWidth = 64;
+    TLSSupported = false;
+  }
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
+    DefineStd(Builder, "bpf", Opts);
+    Builder.defineMacro("__BPF__");
+  }
+  bool hasFeature(StringRef Feature) const override {
+    return Feature == "bpf";
+  }
+
+  void getTargetBuiltins(const Builtin::Info *&Records,
+                         unsigned &NumRecords) const override {}
+  const char *getClobbers() const override {
+    return "";
+  }
+  BuiltinVaListKind getBuiltinVaListKind() const override {
+    return TargetInfo::VoidPtrBuiltinVaList;
+  }
+  void getGCCRegNames(const char * const *&Names,
+                      unsigned &NumNames) const override {
+    Names = nullptr;
+    NumNames = 0;
+  }
+  bool validateAsmConstraint(const char *&Name,
+                             TargetInfo::ConstraintInfo &info) const override {
+    return true;
+  }
+  void getGCCRegAliases(const GCCRegAlias *&Aliases,
+                        unsigned &NumAliases) const override {
+    Aliases = nullptr;
+    NumAliases = 0;
+  }
+};
 
 class MipsTargetInfoBase : public TargetInfo {
   virtual void setDescriptionString() = 0;
@@ -6889,6 +6948,10 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
       return new ARMbeTargetInfo(Triple);
     }
 
+  case llvm::Triple::bpfeb:
+  case llvm::Triple::bpfel:
+    return new BPFTargetInfo(Triple);
+
   case llvm::Triple::msp430:
     return new MSP430TargetInfo(Triple);
 
@@ -7023,7 +7086,7 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
     case llvm::Triple::Linux:
       return new LinuxTargetInfo<SparcV8TargetInfo>(Triple);
     case llvm::Triple::Solaris:
-      return new SolarisSparcV8TargetInfo(Triple);
+      return new SolarisTargetInfo<SparcV8TargetInfo>(Triple);
     case llvm::Triple::NetBSD:
       return new NetBSDTargetInfo<SparcV8TargetInfo>(Triple);
     case llvm::Triple::OpenBSD:
@@ -7081,6 +7144,8 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
       return new DarwinI386TargetInfo(Triple);
 
     switch (os) {
+    case llvm::Triple::CloudABI:
+      return new CloudABITargetInfo<X86_32TargetInfo>(Triple);
     case llvm::Triple::Linux: {
       switch (Triple.getEnvironment()) {
       default:

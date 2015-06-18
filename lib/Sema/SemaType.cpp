@@ -5153,7 +5153,7 @@ bool Sema::RequireCompleteType(SourceLocation Loc, QualType T,
 ///        in order to provide a definition of this entity.
 bool Sema::hasVisibleDefinition(NamedDecl *D, NamedDecl **Suggested) {
   // Easy case: if we don't have modules, all declarations are visible.
-  if (!getLangOpts().Modules)
+  if (!getLangOpts().Modules && !getLangOpts().ModulesLocalVisibility)
     return true;
 
   // If this definition was instantiated from a template, map back to the
@@ -5239,20 +5239,8 @@ bool Sema::RequireCompleteTypeImpl(SourceLocation Loc, QualType T,
     // If we know about the definition but it is not visible, complain.
     NamedDecl *SuggestedDef = nullptr;
     if (!Diagnoser.Suppressed && Def &&
-        !hasVisibleDefinition(Def, &SuggestedDef)) {
-      // Suppress this error outside of a SFINAE context if we've already
-      // emitted the error once for this type. There's no usefulness in
-      // repeating the diagnostic.
-      // FIXME: Add a Fix-It that imports the corresponding module or includes
-      // the header.
-      Module *Owner = getOwningModule(SuggestedDef);
-      Diag(Loc, diag::err_module_private_definition)
-        << T << Owner->getFullModuleName();
-      Diag(SuggestedDef->getLocation(), diag::note_previous_definition);
-
-      // Try to recover by implicitly importing this module.
-      createImplicitModuleImportForErrorRecovery(Loc, Owner);
-    }
+        !hasVisibleDefinition(Def, &SuggestedDef))
+      diagnoseMissingImport(Loc, SuggestedDef, /*NeedDefinition*/true);
 
     // We lock in the inheritance model once somebody has asked us to ensure
     // that a pointer-to-member type is complete.

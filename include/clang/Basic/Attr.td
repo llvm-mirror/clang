@@ -1250,6 +1250,14 @@ def Pascal : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def Target : InheritableAttr {
+  let Spellings = [GCC<"target">];
+  let Args = [StringArgument<"features">];
+  let Subjects =
+      SubjectList<[Function], ErrorDiag, "ExpectedFunctionMethodOrClass">;
+  let Documentation = [Undocumented];
+}
+
 def TransparentUnion : InheritableAttr {
   let Spellings = [GCC<"transparent_union">];
 //  let Subjects = SubjectList<[Record, TypedefName]>;
@@ -1935,8 +1943,8 @@ def LoopHint : Attr {
                           ["Vectorize", "VectorizeWidth", "Interleave", "InterleaveCount",
                            "Unroll", "UnrollCount"]>,
               EnumArgument<"State", "LoopHintState",
-                           ["default", "enable", "disable"],
-                           ["Default", "Enable", "Disable"]>,
+                           ["default", "enable", "disable", "assume_safety"],
+                           ["Default", "Enable", "Disable", "AssumeSafety"]>,
               ExprArgument<"Value">];
 
   let AdditionalMembers = [{
@@ -1982,6 +1990,8 @@ def LoopHint : Attr {
       return "";
     else if (state == Enable)
       OS << (option == Unroll ? "full" : "enable");
+    else if (state == AssumeSafety)
+      OS << "assume_safety";
     else
       OS << "disable";
     OS << ")";

@@ -140,10 +140,8 @@ InputArgList *Driver::ParseArgStrings(ArrayRef<const char *> ArgStrings) {
     }
   }
 
-  for (arg_iterator it = Args->filtered_begin(options::OPT_UNKNOWN),
-         ie = Args->filtered_end(); it != ie; ++it) {
-    Diags.Report(diag::err_drv_unknown_argument) << (*it) ->getAsString(*Args);
-  }
+  for (const Arg *A : Args->filtered(options::OPT_UNKNOWN))
+    Diags.Report(diag::err_drv_unknown_argument) << A->getAsString(*Args);
 
   return Args;
 }
@@ -279,7 +277,8 @@ DerivedArgList *Driver::TranslateInputArgs(const InputArgList &Args) const {
   // Add a default value of -mlinker-version=, if one was given and the user
   // didn't specify one.
 #if defined(HOST_LINK_VERSION)
-  if (!Args.hasArg(options::OPT_mlinker_version_EQ)) {
+  if (!Args.hasArg(options::OPT_mlinker_version_EQ) &&
+      strlen(HOST_LINK_VERSION) > 0) {
     DAL->AddJoinedArg(0, Opts->getOption(options::OPT_mlinker_version_EQ),
                       HOST_LINK_VERSION);
     DAL->getLastArg(options::OPT_mlinker_version_EQ)->claim();
@@ -347,9 +346,7 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
     DefaultTargetTriple = A->getValue();
   if (const Arg *A = Args->getLastArg(options::OPT_ccc_install_dir))
     Dir = InstalledDir = A->getValue();
-  for (arg_iterator it = Args->filtered_begin(options::OPT_B),
-         ie = Args->filtered_end(); it != ie; ++it) {
-    const Arg *A = *it;
+  for (const Arg *A : Args->filtered(options::OPT_B)) {
     A->claim();
     PrefixDirs.push_back(A->getValue(0));
   }
@@ -818,9 +815,12 @@ bool Driver::HandleImmediateArgs(const Compilation &C) {
   return true;
 }
 
+// Display an action graph human-readably.  Action A is the "sink" node
+// and latest-occuring action. Traversal is in pre-order, visiting the
+// inputs to each action before printing the action itself.
 static unsigned PrintActions1(const Compilation &C, Action *A,
                               std::map<Action*, unsigned> &Ids) {
-  if (Ids.count(A))
+  if (Ids.count(A)) // A was already visited.
     return Ids[A];
 
   std::string str;
@@ -851,6 +851,8 @@ static unsigned PrintActions1(const Compilation &C, Action *A,
   return Id;
 }
 
+// Print the action graphs in a compilation C.
+// For example "clang -c file1.c file2.c" is composed of two subgraphs.
 void Driver::PrintActions(const Compilation &C) const {
   std::map<Action*, unsigned> Ids;
   for (ActionList::const_iterator it = C.getActions().begin(),
@@ -1467,9 +1469,8 @@ void Driver::BuildJobs(Compilation &C) const {
       if (Opt.getKind() == Option::FlagClass) {
         bool DuplicateClaimed = false;
 
-        for (arg_iterator it = C.getArgs().filtered_begin(&Opt),
-               ie = C.getArgs().filtered_end(); it != ie; ++it) {
-          if ((*it)->isClaimed()) {
+        for (const Arg *AA : C.getArgs().filtered(&Opt)) {
+          if (AA->isClaimed()) {
             DuplicateClaimed = true;
             break;
           }
@@ -1697,8 +1698,7 @@ const char *Driver::GetNamedOutputPath(Compilation &C,
     assert(AtTopLevel && isa<PreprocessJobAction>(JA));
     StringRef BaseName = llvm::sys::path::filename(BaseInput);
     StringRef NameArg;
-    if (Arg *A = C.getArgs().getLastArg(options::OPT__SLASH_Fi,
-                                        options::OPT__SLASH_o))
+    if (Arg *A = C.getArgs().getLastArg(options::OPT__SLASH_Fi))
       NameArg = A->getValue();
     return C.addResultFile(MakeCLOutputFilename(C.getArgs(), NameArg, BaseName,
                                                 types::TY_PP_C), &JA);
@@ -2118,13 +2118,12 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
 }
 
 bool Driver::ShouldUseClangCompiler(const JobAction &JA) const {
-  // Check if user requested no clang, or clang doesn't understand this type (we
-  // only handle single inputs for now).
+  // Say "no" if there is not exactly one input of a type clang understands.
   if (JA.size() != 1 ||
       !types::isAcceptedByClang((*JA.begin())->getType()))
     return false;
 
-  // Otherwise make sure this is an action clang understands.
+  // And say "no" if this is not a kind of action clang understands.
   if (!isa<PreprocessJobAction>(JA) && !isa<PrecompileJobAction>(JA) &&
       !isa<CompileJobAction>(JA) && !isa<BackendJobAction>(JA))
     return false;
@@ -2185,6 +2184,6 @@ std::pair<unsigned, unsigned> Driver::getIncludeExcludeOptionFlagMasks() const {
   return std::make_pair(IncludedFlagsBitmask, ExcludedFlagsBitmask);
 }
 
-bool clang::driver::isOptimizationLevelFast(const llvm::opt::ArgList &Args) {
+bool clang::driver::isOptimizationLevelFast(const ArgList &Args) {
   return Args.hasFlag(options::OPT_Ofast, options::OPT_O_Group, false);
 }

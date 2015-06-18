@@ -3279,6 +3279,66 @@ Value *CodeGenFunction::GetValueForARMHint(unsigned BuiltinID) {
   }
 }
 
+// Generates the IR for the read/write special register builtin,
+// ValueType is the type of the value that is to be written or read,
+// RegisterType is the type of the register being written to or read from.
+static Value *EmitSpecialRegisterBuiltin(CodeGenFunction &CGF,
+                                         const CallExpr *E,
+                                         llvm::Type *RegisterType,
+                                         llvm::Type *ValueType, bool IsRead) {
+  // write and register intrinsics only support 32 and 64 bit operations.
+  assert((RegisterType->isIntegerTy(32) || RegisterType->isIntegerTy(64))
+          && "Unsupported size for register.");
+
+  CodeGen::CGBuilderTy &Builder = CGF.Builder;
+  CodeGen::CodeGenModule &CGM = CGF.CGM;
+  LLVMContext &Context = CGM.getLLVMContext();
+
+  const Expr *SysRegStrExpr = E->getArg(0)->IgnoreParenCasts();
+  StringRef SysReg = cast<StringLiteral>(SysRegStrExpr)->getString();
+
+  llvm::Metadata *Ops[] = { llvm::MDString::get(Context, SysReg) };
+  llvm::MDNode *RegName = llvm::MDNode::get(Context, Ops);
+  llvm::Value *Metadata = llvm::MetadataAsValue::get(Context, RegName);
+
+  llvm::Type *Types[] = { RegisterType };
+
+  bool MixedTypes = RegisterType->isIntegerTy(64) && ValueType->isIntegerTy(32);
+  assert(!(RegisterType->isIntegerTy(32) && ValueType->isIntegerTy(64))
+            && "Can't fit 64-bit value in 32-bit register");
+
+  if (IsRead) {
+    llvm::Value *F = CGM.getIntrinsic(llvm::Intrinsic::read_register, Types);
+    llvm::Value *Call = Builder.CreateCall(F, Metadata);
+
+    if (MixedTypes)
+      // Read into 64 bit register and then truncate result to 32 bit.
+      return Builder.CreateTrunc(Call, ValueType);
+
+    if (ValueType->isPointerTy())
+      // Have i32/i64 result (Call) but want to return a VoidPtrTy (i8*).
+      return Builder.CreateIntToPtr(Call, ValueType);
+
+    return Call;
+  }
+
+  llvm::Value *F = CGM.getIntrinsic(llvm::Intrinsic::write_register, Types);
+  llvm::Value *ArgValue = CGF.EmitScalarExpr(E->getArg(1));
+  if (MixedTypes) {
+    // Extend 32 bit write value to 64 bit to pass to write.
+    ArgValue = Builder.CreateZExt(ArgValue, RegisterType);
+    return Builder.CreateCall(F, { Metadata, ArgValue });
+  }
+
+  if (ValueType->isPointerTy()) {
+    // Have VoidPtrTy ArgValue but want to return an i32/i64.
+    ArgValue = Builder.CreatePtrToInt(ArgValue, RegisterType);
+    return Builder.CreateCall(F, { Metadata, ArgValue });
+  }
+
+  return Builder.CreateCall(F, { Metadata, ArgValue });
+}
+
 Value *CodeGenFunction::EmitARMBuiltinExpr(unsigned BuiltinID,
                                            const CallExpr *E) {
   if (auto Hint = GetValueForARMHint(BuiltinID))
@@ -3491,6 +3551,44 @@ Value *CodeGenFunction::EmitARMBuiltinExpr(unsigned BuiltinID,
     }
   }
 
+  if (BuiltinID == ARM::BI__builtin_arm_rsr ||
+      BuiltinID == ARM::BI__builtin_arm_rsr64 ||
+      BuiltinID == ARM::BI__builtin_arm_rsrp ||
+      BuiltinID == ARM::BI__builtin_arm_wsr ||
+      BuiltinID == ARM::BI__builtin_arm_wsr64 ||
+      BuiltinID == ARM::BI__builtin_arm_wsrp) {
+
+    bool IsRead = BuiltinID == ARM::BI__builtin_arm_rsr ||
+                  BuiltinID == ARM::BI__builtin_arm_rsr64 ||
+                  BuiltinID == ARM::BI__builtin_arm_rsrp;
+
+    bool IsPointerBuiltin = BuiltinID == ARM::BI__builtin_arm_rsrp ||
+                            BuiltinID == ARM::BI__builtin_arm_wsrp;
+
+    bool Is64Bit = BuiltinID == ARM::BI__builtin_arm_rsr64 ||
+                   BuiltinID == ARM::BI__builtin_arm_wsr64;
+
+    llvm::Type *ValueType;
+    llvm::Type *RegisterType;
+    if (IsPointerBuiltin) {
+      ValueType = VoidPtrTy;
+      RegisterType = Int32Ty;
+    } else if (Is64Bit) {
+      ValueType = RegisterType = Int64Ty;
+    } else {
+      ValueType = RegisterType = Int32Ty;
+    }
+
+    return EmitSpecialRegisterBuiltin(*this, E, RegisterType, ValueType, IsRead);
+  }
+
+  // Find out if any arguments are required to be integer constant
+  // expressions.
+  unsigned ICEArguments = 0;
+  ASTContext::GetBuiltinTypeError Error;
+  getContext().GetBuiltinType(BuiltinID, Error, &ICEArguments);
+  assert(Error == ASTContext::GE_None && "Should not codegen an error");
+
   SmallVector<Value*, 4> Ops;
   llvm::Value *Align = nullptr;
   for (unsigned i = 0, e = E->getNumArgs() - 1; i != e; i++) {
@@ -3553,7 +3651,17 @@ Value *CodeGenFunction::EmitARMBuiltinExpr(unsigned BuiltinID,
         continue;
       }
     }
-    Ops.push_back(EmitScalarExpr(E->getArg(i)));
+
+    if ((ICEArguments & (1 << i)) == 0) {
+      Ops.push_back(EmitScalarExpr(E->getArg(i)));
+    } else {
+      // If this is required to be a constant, constant fold it so that we know
+      // that the generated intrinsic gets a ConstantInt.
+      llvm::APSInt Result;
+      bool IsConst = E->getArg(i)->isIntegerConstantExpr(Result, getContext());
+      assert(IsConst && "Constant arg isn't actually constant?"); (void)IsConst;
+      Ops.push_back(llvm::ConstantInt::get(getLLVMContext(), Result));
+    }
   }
 
   switch (BuiltinID) {
@@ -4222,9 +4330,57 @@ Value *CodeGenFunction::EmitAArch64BuiltinExpr(unsigned BuiltinID,
     return Builder.CreateCall(F, {Arg0, Arg1});
   }
 
+  if (BuiltinID == AArch64::BI__builtin_arm_rsr ||
+      BuiltinID == AArch64::BI__builtin_arm_rsr64 ||
+      BuiltinID == AArch64::BI__builtin_arm_rsrp ||
+      BuiltinID == AArch64::BI__builtin_arm_wsr ||
+      BuiltinID == AArch64::BI__builtin_arm_wsr64 ||
+      BuiltinID == AArch64::BI__builtin_arm_wsrp) {
+
+    bool IsRead = BuiltinID == AArch64::BI__builtin_arm_rsr ||
+                  BuiltinID == AArch64::BI__builtin_arm_rsr64 ||
+                  BuiltinID == AArch64::BI__builtin_arm_rsrp;
+
+    bool IsPointerBuiltin = BuiltinID == AArch64::BI__builtin_arm_rsrp ||
+                            BuiltinID == AArch64::BI__builtin_arm_wsrp;
+
+    bool Is64Bit = BuiltinID != AArch64::BI__builtin_arm_rsr &&
+                   BuiltinID != AArch64::BI__builtin_arm_wsr;
+
+    llvm::Type *ValueType;
+    llvm::Type *RegisterType = Int64Ty;
+    if (IsPointerBuiltin) {
+      ValueType = VoidPtrTy;
+    } else if (Is64Bit) {
+      ValueType = Int64Ty;
+    } else {
+      ValueType = Int32Ty;
+    }
+
+    return EmitSpecialRegisterBuiltin(*this, E, RegisterType, ValueType, IsRead);
+  }
+
+  // Find out if any arguments are required to be integer constant
+  // expressions.
+  unsigned ICEArguments = 0;
+  ASTContext::GetBuiltinTypeError Error;
+  getContext().GetBuiltinType(BuiltinID, Error, &ICEArguments);
+  assert(Error == ASTContext::GE_None && "Should not codegen an error");
+
   llvm::SmallVector<Value*, 4> Ops;
-  for (unsigned i = 0, e = E->getNumArgs() - 1; i != e; i++)
-    Ops.push_back(EmitScalarExpr(E->getArg(i)));
+  for (unsigned i = 0, e = E->getNumArgs() - 1; i != e; i++) {
+    if ((ICEArguments & (1 << i)) == 0) {
+      Ops.push_back(EmitScalarExpr(E->getArg(i)));
+    } else {
+      // If this is required to be a constant, constant fold it so that we know
+      // that the generated intrinsic gets a ConstantInt.
+      llvm::APSInt Result;
+      bool IsConst = E->getArg(i)->isIntegerConstantExpr(Result, getContext());
+      assert(IsConst && "Constant arg isn't actually constant?");
+      (void)IsConst;
+      Ops.push_back(llvm::ConstantInt::get(getLLVMContext(), Result));
+    }
+  }
 
   auto SISDMap = makeArrayRef(AArch64SISDIntrinsicMap);
   const NeonIntrinsicInfo *Builtin = findNeonIntrinsicInMap(

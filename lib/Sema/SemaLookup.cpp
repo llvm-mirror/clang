@@ -1180,6 +1180,16 @@ Module *Sema::getOwningModule(Decl *Entity) {
   assert(!Entity->isFromASTFile() &&
          "hidden entity from AST file has no owning module");
 
+  if (!getLangOpts().ModulesLocalVisibility) {
+    // If we're not tracking visibility locally, the only way a declaration
+    // can be hidden and local is if it's hidden because it's parent is (for
+    // instance, maybe this is a lazily-declared special member of an imported
+    // class).
+    auto *Parent = cast<NamedDecl>(Entity->getDeclContext());
+    assert(Parent->isHidden() && "unexpectedly hidden decl");
+    return getOwningModule(Parent);
+  }
+
   // It's local and hidden; grab or compute its owning module.
   M = Entity->getLocalOwningModule();
   if (M)
@@ -1218,9 +1228,13 @@ Module *Sema::getOwningModule(Decl *Entity) {
 }
 
 void Sema::makeMergedDefinitionVisible(NamedDecl *ND, SourceLocation Loc) {
-  auto *M = PP.getModuleContainingLocation(Loc);
-  assert(M && "hidden definition not in any module");
-  Context.mergeDefinitionIntoModule(ND, M);
+  // FIXME: If ND is a template declaration, make the template parameters
+  // visible too. They're not (necessarily) within its DeclContext.
+  if (auto *M = PP.getModuleContainingLocation(Loc))
+    Context.mergeDefinitionIntoModule(ND, M);
+  else
+    // We're not building a module; just make the definition visible.
+    ND->setHidden(false);
 }
 
 /// \brief Find the module in which the given declaration was defined.
@@ -1268,6 +1282,30 @@ bool Sema::hasVisibleMergedDefinition(NamedDecl *Def) {
     if (isModuleVisible(Merged))
       return true;
   return false;
+}
+
+template<typename ParmDecl>
+static bool hasVisibleDefaultArgument(Sema &S, const ParmDecl *D) {
+  if (!D->hasDefaultArgument())
+    return false;
+
+  while (D) {
+    auto &DefaultArg = D->getDefaultArgStorage();
+    if (!DefaultArg.isInherited() && S.isVisible(D))
+      return true;
+
+    // If there was a previous default argument, maybe its parameter is visible.
+    D = DefaultArg.getInheritedFrom();
+  }
+  return false;
+}
+
+bool Sema::hasVisibleDefaultArgument(const NamedDecl *D) {
+  if (auto *P = dyn_cast<TemplateTypeParmDecl>(D))
+    return ::hasVisibleDefaultArgument(*this, P);
+  if (auto *P = dyn_cast<NonTypeTemplateParmDecl>(D))
+    return ::hasVisibleDefaultArgument(*this, P);
+  return ::hasVisibleDefaultArgument(*this, cast<TemplateTemplateParmDecl>(D));
 }
 
 /// \brief Determine whether a declaration is visible to name lookup.
@@ -2994,6 +3032,9 @@ void Sema::ArgumentDependentLookup(DeclarationName Name, SourceLocation Loc,
       if (!isa<FunctionDecl>(D) && !isa<FunctionTemplateDecl>(D))
         continue;
 
+      if (!isVisible(D) && !(D = findAcceptableDecl(*this, D)))
+        continue;
+
       Result.insert(D);
     }
   }
@@ -4620,6 +4661,50 @@ static NamedDecl *getDefinitionToImport(NamedDecl *D) {
   return nullptr;
 }
 
+void Sema::diagnoseMissingImport(SourceLocation Loc, NamedDecl *Decl,
+                                 bool NeedDefinition, bool Recover) {
+  assert(!isVisible(Decl) && "missing import for non-hidden decl?");
+
+  // Suggest importing a module providing the definition of this entity, if
+  // possible.
+  NamedDecl *Def = getDefinitionToImport(Decl);
+  if (!Def)
+    Def = Decl;
+
+  // FIXME: Add a Fix-It that imports the corresponding module or includes
+  // the header.
+  Module *Owner = getOwningModule(Decl);
+  assert(Owner && "definition of hidden declaration is not in a module");
+
+  auto Merged = Context.getModulesWithMergedDefinition(Decl);
+  if (!Merged.empty()) {
+    std::string ModuleList;
+    ModuleList += "\n        ";
+    ModuleList += Owner->getFullModuleName();
+    unsigned N = 0;
+    for (Module *M : Merged) {
+      ModuleList += "\n        ";
+      if (++N == 5 && Merged.size() != N) {
+        ModuleList += "[...]";
+        break;
+      }
+      ModuleList += M->getFullModuleName();
+    }
+
+    Diag(Loc, diag::err_module_private_declaration_multiple)
+      << NeedDefinition << Decl << ModuleList;
+  } else {
+    Diag(Loc, diag::err_module_private_declaration)
+      << NeedDefinition << Decl << Owner->getFullModuleName();
+  }
+  Diag(Decl->getLocation(), NeedDefinition ? diag::note_previous_definition
+                                           : diag::note_previous_declaration);
+
+  // Try to recover by implicitly importing this module.
+  if (Recover)
+    createImplicitModuleImportForErrorRecovery(Loc, Owner);
+}
+
 /// \brief Diagnose a successfully-corrected typo. Separated from the correction
 /// itself to allow external validation of the result, etc.
 ///
@@ -4646,23 +4731,8 @@ void Sema::diagnoseTypo(const TypoCorrection &Correction,
     NamedDecl *Decl = Correction.getCorrectionDecl();
     assert(Decl && "import required but no declaration to import");
 
-    // Suggest importing a module providing the definition of this entity, if
-    // possible.
-    NamedDecl *Def = getDefinitionToImport(Decl);
-    if (!Def)
-      Def = Decl;
-    Module *Owner = getOwningModule(Def);
-    assert(Owner && "definition of hidden declaration is not in a module");
-
-    Diag(Correction.getCorrectionRange().getBegin(),
-         diag::err_module_private_declaration)
-      << Def << Owner->getFullModuleName();
-    Diag(Def->getLocation(), diag::note_previous_declaration);
-
-    // Recover by implicitly importing this module.
-    if (ErrorRecovery)
-      createImplicitModuleImportForErrorRecovery(
-          Correction.getCorrectionRange().getBegin(), Owner);
+    diagnoseMissingImport(Correction.getCorrectionRange().getBegin(), Decl,
+                          /*NeedDefinition*/ false, ErrorRecovery);
     return;
   }
 

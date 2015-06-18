@@ -785,9 +785,15 @@ void UnwrappedLineParser::parseStructuralElement() {
     case tok::kw_struct:
     case tok::kw_union:
     case tok::kw_class:
+      // parseRecord falls through and does not yet add an unwrapped line as a
+      // record declaration or definition can start a structural element.
       parseRecord();
-      // A record declaration or definition is always the start of a structural
-      // element.
+      // This does not apply for Java and JavaScript.
+      if (Style.Language == FormatStyle::LK_Java ||
+          Style.Language == FormatStyle::LK_JavaScript) {
+        addUnwrappedLine();
+        return;
+      }
       break;
     case tok::period:
       nextToken();
@@ -848,6 +854,7 @@ void UnwrappedLineParser::parseStructuralElement() {
            Style.Language == FormatStyle::LK_Java) &&
           FormatTok->is(Keywords.kw_interface)) {
         parseRecord();
+        addUnwrappedLine();
         break;
       }
 
@@ -953,7 +960,7 @@ bool UnwrappedLineParser::tryToParseLambda() {
       nextToken();
       break;
     case tok::arrow:
-      FormatTok->Type = TT_TrailingReturnArrow;
+      FormatTok->Type = TT_LambdaArrow;
       nextToken();
       break;
     default:
@@ -1626,10 +1633,6 @@ void UnwrappedLineParser::parseRecord() {
   // We fall through to parsing a structural element afterwards, so
   // class A {} n, m;
   // will end up in one unwrapped line.
-  // This does not apply for Java and JavaScript.
-  if (Style.Language == FormatStyle::LK_Java ||
-      Style.Language == FormatStyle::LK_JavaScript)
-    addUnwrappedLine();
 }
 
 void UnwrappedLineParser::parseObjCProtocolList() {
@@ -1722,7 +1725,8 @@ void UnwrappedLineParser::parseJavaScriptEs6ImportExport() {
     return;
   }
 
-  if (FormatTok->isOneOf(tok::kw_const, tok::kw_class, Keywords.kw_var))
+  if (FormatTok->isOneOf(tok::kw_const, tok::kw_class, tok::kw_enum,
+                         Keywords.kw_var))
     return; // Fall through to parsing the corresponding structure.
 
   if (FormatTok->is(tok::l_brace)) {
