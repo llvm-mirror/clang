@@ -126,35 +126,48 @@ namespace clang {
     class RedeclarableResult {
       ASTReader &Reader;
       GlobalDeclID FirstID;
+      Decl *LoadedDecl;
       Decl *MergeWith;
       mutable bool Owning;
-      Decl::Kind DeclKind;
+      bool IsKeyDecl;
 
       void operator=(RedeclarableResult &) = delete;
 
     public:
       RedeclarableResult(ASTReader &Reader, GlobalDeclID FirstID,
-                         Decl *MergeWith, Decl::Kind DeclKind)
-        : Reader(Reader), FirstID(FirstID), MergeWith(MergeWith),
-          Owning(true), DeclKind(DeclKind) {}
+                         Decl *LoadedDecl, Decl *MergeWith, bool IsKeyDecl)
+          : Reader(Reader), FirstID(FirstID), LoadedDecl(LoadedDecl),
+            MergeWith(MergeWith), Owning(true), IsKeyDecl(IsKeyDecl) {}
 
       RedeclarableResult(RedeclarableResult &&Other)
-        : Reader(Other.Reader), FirstID(Other.FirstID),
-          MergeWith(Other.MergeWith), Owning(Other.Owning),
-          DeclKind(Other.DeclKind) {
+          : Reader(Other.Reader), FirstID(Other.FirstID),
+            LoadedDecl(Other.LoadedDecl), MergeWith(Other.MergeWith),
+            Owning(Other.Owning), IsKeyDecl(Other.IsKeyDecl) {
         Other.Owning = false;
       }
 
       ~RedeclarableResult() {
-        if (FirstID && Owning && isRedeclarableDeclKind(DeclKind)) {
+        if (FirstID && Owning &&
+            isRedeclarableDeclKind(LoadedDecl->getKind())) {
           auto Canon = Reader.GetDecl(FirstID)->getCanonicalDecl();
           if (Reader.PendingDeclChainsKnown.insert(Canon).second)
             Reader.PendingDeclChains.push_back(Canon);
         }
       }
 
+      /// \brief Note that a RedeclarableDecl is not actually redeclarable.
+      void setNotRedeclarable() {
+        Owning = false;
+        Reader.RedeclsDeserialized.erase(LoadedDecl);
+        assert(FirstID == LoadedDecl->getGlobalID() && !MergeWith &&
+               "non-redeclarable declaration was redeclared?");
+      }
+
       /// \brief Retrieve the first ID.
       GlobalDeclID getFirstID() const { return FirstID; }
+
+      /// \brief Is this declaration the key declaration?
+      bool isKeyDecl() const { return IsKeyDecl; }
 
       /// \brief Get a known declaration that this should be merged with, if
       /// any.
@@ -348,10 +361,13 @@ namespace clang {
 
     void mergeTemplatePattern(RedeclarableTemplateDecl *D,
                               RedeclarableTemplateDecl *Existing,
-                              DeclID DsID);
+                              DeclID DsID, bool IsKeyDecl);
+
+    ObjCTypeParamList *ReadObjCTypeParamList();
 
     // FIXME: Reorder according to DeclNodes.td?
     void VisitObjCMethodDecl(ObjCMethodDecl *D);
+    void VisitObjCTypeParamDecl(ObjCTypeParamDecl *D);
     void VisitObjCContainerDecl(ObjCContainerDecl *D);
     void VisitObjCInterfaceDecl(ObjCInterfaceDecl *D);
     void VisitObjCIvarDecl(ObjCIvarDecl *D);
@@ -365,7 +381,70 @@ namespace clang {
     void VisitObjCPropertyDecl(ObjCPropertyDecl *D);
     void VisitObjCPropertyImplDecl(ObjCPropertyImplDecl *D);
     void VisitOMPThreadPrivateDecl(OMPThreadPrivateDecl *D);
+
+    /// We've merged the definition \p MergedDef into the existing definition
+    /// \p Def. Ensure that \p Def is made visible whenever \p MergedDef is made
+    /// visible.
+    void mergeDefinitionVisibility(NamedDecl *Def, NamedDecl *MergedDef) {
+      if (Def->isHidden()) {
+        // If MergedDef is visible or becomes visible, make the definition visible.
+        if (!MergedDef->isHidden())
+          Def->Hidden = false;
+        else if (Reader.getContext().getLangOpts().ModulesLocalVisibility) {
+          Reader.getContext().mergeDefinitionIntoModule(
+              Def, MergedDef->getImportedOwningModule(),
+              /*NotifyListeners*/ false);
+          Reader.PendingMergedDefinitionsToDeduplicate.insert(Def);
+        } else {
+          auto SubmoduleID = MergedDef->getOwningModuleID();
+          assert(SubmoduleID && "hidden definition in no module");
+          Reader.HiddenNamesMap[Reader.getSubmodule(SubmoduleID)].push_back(Def);
+        }
+      }
+    }
   };
+}
+
+namespace {
+/// Iterator over the redeclarations of a declaration that have already
+/// been merged into the same redeclaration chain.
+template<typename DeclT>
+class MergedRedeclIterator {
+  DeclT *Start, *Canonical, *Current;
+public:
+  MergedRedeclIterator() : Current(nullptr) {}
+  MergedRedeclIterator(DeclT *Start)
+      : Start(Start), Canonical(nullptr), Current(Start) {}
+
+  DeclT *operator*() { return Current; }
+
+  MergedRedeclIterator &operator++() {
+    if (Current->isFirstDecl()) {
+      Canonical = Current;
+      Current = Current->getMostRecentDecl();
+    } else
+      Current = Current->getPreviousDecl();
+
+    // If we started in the merged portion, we'll reach our start position
+    // eventually. Otherwise, we'll never reach it, but the second declaration
+    // we reached was the canonical declaration, so stop when we see that one
+    // again.
+    if (Current == Start || Current == Canonical)
+      Current = nullptr;
+    return *this;
+  }
+
+  friend bool operator!=(const MergedRedeclIterator &A,
+                         const MergedRedeclIterator &B) {
+    return A.Current != B.Current;
+  }
+};
+}
+template<typename DeclT>
+llvm::iterator_range<MergedRedeclIterator<DeclT>> merged_redecls(DeclT *D) {
+  return llvm::iterator_range<MergedRedeclIterator<DeclT>>(
+      MergedRedeclIterator<DeclT>(D),
+      MergedRedeclIterator<DeclT>());
 }
 
 uint64_t ASTDeclReader::GetCurrentCursorOffset() {
@@ -585,9 +664,21 @@ void ASTDeclReader::VisitEnumDecl(EnumDecl *ED) {
   if (ED->IsCompleteDefinition &&
       Reader.getContext().getLangOpts().Modules &&
       Reader.getContext().getLangOpts().CPlusPlus) {
-    if (EnumDecl *&OldDef = Reader.EnumDefinitions[ED->getCanonicalDecl()]) {
+    EnumDecl *&OldDef = Reader.EnumDefinitions[ED->getCanonicalDecl()];
+    if (!OldDef) {
+      // This is the first time we've seen an imported definition. Look for a
+      // local definition before deciding that we are the first definition.
+      for (auto *D : merged_redecls(ED->getCanonicalDecl())) {
+        if (!D->isFromASTFile() && D->isCompleteDefinition()) {
+          OldDef = D;
+          break;
+        }
+      }
+    }
+    if (OldDef) {
       Reader.MergedDeclContexts.insert(std::make_pair(ED, OldDef));
       ED->IsCompleteDefinition = false;
+      mergeDefinitionVisibility(OldDef, ED);
     } else {
       OldDef = ED;
     }
@@ -735,14 +826,14 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
       FunctionTemplateSpecializationInfo::Profile(ID, TemplArgs, C);
       void *InsertPos = nullptr;
       FunctionTemplateDecl::Common *CommonPtr = CanonTemplate->getCommonPtr();
-      CommonPtr->Specializations.FindNodeOrInsertPos(ID, InsertPos);
+      FunctionTemplateSpecializationInfo *ExistingInfo =
+          CommonPtr->Specializations.FindNodeOrInsertPos(ID, InsertPos);
       if (InsertPos)
         CommonPtr->Specializations.InsertNode(FTInfo, InsertPos);
       else {
         assert(Reader.getContext().getLangOpts().Modules &&
                "already deserialized this template specialization");
-        // FIXME: This specialization is a redeclaration of one from another
-        // module. Merge it.
+        mergeRedeclarable(FD, ExistingInfo->Function, Redecl);
       }
     }
     break;
@@ -764,8 +855,8 @@ void ASTDeclReader::VisitFunctionDecl(FunctionDecl *FD) {
     
     FD->setDependentTemplateSpecialization(Reader.getContext(),
                                            TemplDecls, TemplArgs);
-
-    // FIXME: Merging.
+    // These are not merged; we don't need to merge redeclarations of dependent
+    // template friends.
     break;
   }
   }
@@ -824,10 +915,42 @@ void ASTDeclReader::VisitObjCMethodDecl(ObjCMethodDecl *MD) {
   MD->setParamsAndSelLocs(Reader.getContext(), Params, SelLocs);
 }
 
+void ASTDeclReader::VisitObjCTypeParamDecl(ObjCTypeParamDecl *D) {
+  RedeclarableResult Redecl = VisitTypedefNameDecl(D);
+  Redecl.setNotRedeclarable();
+
+  D->Variance = Record[Idx++];
+  D->Index = Record[Idx++];
+  D->VarianceLoc = ReadSourceLocation(Record, Idx);
+  D->ColonLoc = ReadSourceLocation(Record, Idx);
+}
+
 void ASTDeclReader::VisitObjCContainerDecl(ObjCContainerDecl *CD) {
   VisitNamedDecl(CD);
   CD->setAtStartLoc(ReadSourceLocation(Record, Idx));
   CD->setAtEndRange(ReadSourceRange(Record, Idx));
+}
+
+ObjCTypeParamList *ASTDeclReader::ReadObjCTypeParamList() {
+  unsigned numParams = Record[Idx++];
+  if (numParams == 0)
+    return nullptr;
+
+  SmallVector<ObjCTypeParamDecl *, 4> typeParams;
+  typeParams.reserve(numParams);
+  for (unsigned i = 0; i != numParams; ++i) {
+    auto typeParam = ReadDeclAs<ObjCTypeParamDecl>(Record, Idx);
+    if (!typeParam)
+      return nullptr;
+
+    typeParams.push_back(typeParam);
+  }
+
+  SourceLocation lAngleLoc = ReadSourceLocation(Record, Idx);
+  SourceLocation rAngleLoc = ReadSourceLocation(Record, Idx);
+
+  return ObjCTypeParamList::create(Reader.getContext(), lAngleLoc,
+                                   typeParams, rAngleLoc);
 }
 
 void ASTDeclReader::VisitObjCInterfaceDecl(ObjCInterfaceDecl *ID) {
@@ -835,7 +958,8 @@ void ASTDeclReader::VisitObjCInterfaceDecl(ObjCInterfaceDecl *ID) {
   VisitObjCContainerDecl(ID);
   TypeIDForTypeDecl = Reader.getGlobalTypeID(F, Record[Idx++]);
   mergeRedeclarable(ID, Redecl);
-  
+
+  ID->TypeParamList = ReadObjCTypeParamList();
   if (Record[Idx++]) {
     // Read the definition.
     ID->allocateDefinitionData();
@@ -847,8 +971,7 @@ void ASTDeclReader::VisitObjCInterfaceDecl(ObjCInterfaceDecl *ID) {
     ObjCInterfaceDecl::DefinitionData &Data = ID->data();
     
     // Read the superclass.
-    Data.SuperClass = ReadDeclAs<ObjCInterfaceDecl>(Record, Idx);
-    Data.SuperClassLoc = ReadSourceLocation(Record, Idx);
+    Data.SuperClassTInfo = GetTypeSourceInfo(Record, Idx);
 
     Data.EndLoc = ReadSourceLocation(Record, Idx);
     Data.HasDesignatedInitializers = Record[Idx++];
@@ -945,6 +1068,7 @@ void ASTDeclReader::VisitObjCCategoryDecl(ObjCCategoryDecl *CD) {
   Reader.CategoriesDeserialized.insert(CD);
 
   CD->ClassInterface = ReadDeclAs<ObjCInterfaceDecl>(Record, Idx);
+  CD->TypeParamList = ReadObjCTypeParamList();
   unsigned NumProtoRefs = Record[Idx++];
   SmallVector<ObjCProtocolDecl *, 16> ProtoRefs;
   ProtoRefs.reserve(NumProtoRefs);
@@ -967,13 +1091,13 @@ void ASTDeclReader::VisitObjCPropertyDecl(ObjCPropertyDecl *D) {
   VisitNamedDecl(D);
   D->setAtLoc(ReadSourceLocation(Record, Idx));
   D->setLParenLoc(ReadSourceLocation(Record, Idx));
-  D->setType(GetTypeSourceInfo(Record, Idx));
-  // FIXME: stable encoding
+  QualType T = Reader.readType(F, Record, Idx);
+  TypeSourceInfo *TSI = GetTypeSourceInfo(Record, Idx);
+  D->setType(T, TSI);
   D->setPropertyAttributes(
                       (ObjCPropertyDecl::PropertyAttributeKind)Record[Idx++]);
   D->setPropertyAttributesAsWritten(
                       (ObjCPropertyDecl::PropertyAttributeKind)Record[Idx++]);
-  // FIXME: stable encoding
   D->setPropertyImplementation(
                             (ObjCPropertyDecl::PropertyControl)Record[Idx++]);
   D->setGetterName(Reader.ReadDeclarationName(F,Record, Idx).getObjCSelector());
@@ -1094,9 +1218,11 @@ ASTDeclReader::RedeclarableResult ASTDeclReader::VisitVarDeclImpl(VarDecl *VD) {
   };
   switch ((VarKind)Record[Idx++]) {
   case VarNotTemplate:
-    // Only true variables (not parameters or implicit parameters) can be merged
-    if (VD->getKind() != Decl::ParmVar && VD->getKind() != Decl::ImplicitParam &&
-        !isa<VarTemplateSpecializationDecl>(VD))
+    // Only true variables (not parameters or implicit parameters) can be
+    // merged; the other kinds are not really redeclarable at all.
+    if (isa<ParmVarDecl>(VD) || isa<ImplicitParamDecl>(VD))
+      Redecl.setNotRedeclarable();
+    else if (!isa<VarTemplateSpecializationDecl>(VD))
       mergeRedeclarable(VD, Redecl);
     break;
   case VarTemplate:
@@ -1391,32 +1517,22 @@ void ASTDeclReader::MergeDefinitionData(
          "merging class definition into non-definition");
   auto &DD = *D->DefinitionData.getNotUpdated();
 
-  // If the new definition has new special members, let the name lookup
-  // code know that it needs to look in the new definition too.
-  //
-  // FIXME: We only need to do this if the merged definition declares members
-  // that this definition did not declare, or if it defines members that this
-  // definition did not define.
   if (DD.Definition != MergeDD.Definition) {
+    // If the new definition has new special members, let the name lookup
+    // code know that it needs to look in the new definition too.
+    //
+    // FIXME: We only need to do this if the merged definition declares members
+    // that this definition did not declare, or if it defines members that this
+    // definition did not define.
     Reader.MergedLookups[DD.Definition].push_back(MergeDD.Definition);
     DD.Definition->setHasExternalVisibleStorage();
 
-    if (DD.Definition->isHidden()) {
-      // If MergeDD is visible or becomes visible, make the definition visible.
-      if (!MergeDD.Definition->isHidden())
-        DD.Definition->Hidden = false;
-      else if (Reader.getContext().getLangOpts().ModulesLocalVisibility) {
-        Reader.getContext().mergeDefinitionIntoModule(
-            DD.Definition, MergeDD.Definition->getImportedOwningModule(),
-            /*NotifyListeners*/ false);
-        Reader.PendingMergedDefinitionsToDeduplicate.insert(DD.Definition);
-      } else {
-        auto SubmoduleID = MergeDD.Definition->getOwningModuleID();
-        assert(SubmoduleID && "hidden definition in no module");
-        Reader.HiddenNamesMap[Reader.getSubmodule(SubmoduleID)].push_back(
-            DD.Definition);
-      }
-    }
+    // Track that we merged the definitions.
+    Reader.MergedDeclContexts.insert(std::make_pair(MergeDD.Definition,
+                                                    DD.Definition));
+    Reader.PendingDefinitions.erase(MergeDD.Definition);
+    MergeDD.Definition->IsCompleteDefinition = false;
+    mergeDefinitionVisibility(DD.Definition, MergeDD.Definition);
   }
 
   auto PFDI = Reader.PendingFakeDefinitionData.find(&DD);
@@ -1525,42 +1641,21 @@ void ASTDeclReader::ReadCXXRecordDefinition(CXXRecordDecl *D, bool Update) {
   // because we're reading an update record, or because we've already done some
   // merging. Either way, just merge into it.
   CXXRecordDecl *Canon = D->getCanonicalDecl();
-  if (auto *CanonDD = Canon->DefinitionData.getNotUpdated()) {
-    if (CanonDD->Definition != DD->Definition)
-      Reader.MergedDeclContexts.insert(
-          std::make_pair(DD->Definition, CanonDD->Definition));
+  if (Canon->DefinitionData.getNotUpdated()) {
     MergeDefinitionData(Canon, std::move(*DD));
     D->DefinitionData = Canon->DefinitionData;
     return;
   }
 
-  // Propagate the DefinitionData pointer to the canonical declaration, so
-  // that all other deserialized declarations will see it.
-  if (Canon == D) {
-    D->DefinitionData = DD;
-    D->IsCompleteDefinition = true;
+  // Mark this declaration as being a definition.
+  D->IsCompleteDefinition = true;
+  D->DefinitionData = DD;
 
-    // If this is an update record, we can have redeclarations already. Make a
-    // note that we need to propagate the DefinitionData pointer onto them.
-    if (Update)
-      Reader.PendingDefinitions.insert(D);
-  } else if (auto *CanonDD = Canon->DefinitionData.getNotUpdated()) {
-    // We have already deserialized a definition of this record. This
-    // definition is no longer really a definition. Note that the pre-existing
-    // definition is the *real* definition.
-    Reader.MergedDeclContexts.insert(
-        std::make_pair(D, CanonDD->Definition));
-    D->DefinitionData = Canon->DefinitionData;
-    D->IsCompleteDefinition = false;
-    MergeDefinitionData(D, std::move(*DD));
-  } else {
-    Canon->DefinitionData = DD;
-    D->DefinitionData = Canon->DefinitionData;
-    D->IsCompleteDefinition = true;
-
-    // Note that we have deserialized a definition. Any declarations
-    // deserialized before this one will be be given the DefinitionData
-    // pointer at the end.
+  // If this is not the first declaration or is an update record, we can have
+  // other redeclarations already. Make a note that we need to propagate the
+  // DefinitionData pointer onto them.
+  if (Update || Canon != D) {
+    Canon->DefinitionData = D->DefinitionData;
     Reader.PendingDefinitions.insert(D);
   }
 }
@@ -1722,9 +1817,6 @@ DeclID ASTDeclReader::VisitTemplateDecl(TemplateDecl *D) {
       = Reader.ReadTemplateParameterList(F, Record, Idx); 
   D->init(TemplatedDecl, TemplateParams);
 
-  // FIXME: If this is a redeclaration of a template from another module, handle
-  // inheritance of default template arguments.
-
   return PatternID;
 }
 
@@ -1880,15 +1972,10 @@ ASTDeclReader::VisitClassTemplateSpecializationDeclImpl(
         // This declaration might be a definition. Merge with any existing
         // definition.
         if (auto *DDD = D->DefinitionData.getNotUpdated()) {
-          if (auto *CanonDD = CanonSpec->DefinitionData.getNotUpdated()) {
+          if (CanonSpec->DefinitionData.getNotUpdated())
             MergeDefinitionData(CanonSpec, std::move(*DDD));
-            Reader.PendingDefinitions.erase(D);
-            Reader.MergedDeclContexts.insert(
-                std::make_pair(D, CanonDD->Definition));
-            D->IsCompleteDefinition = false;
-          } else {
+          else
             CanonSpec->DefinitionData = D->DefinitionData;
-          }
         }
         D->DefinitionData = CanonSpec->DefinitionData;
       }
@@ -1995,6 +2082,7 @@ ASTDeclReader::VisitVarTemplateSpecializationDeclImpl(
   if (writtenAsCanonicalDecl) {
     VarTemplateDecl *CanonPattern = ReadDeclAs<VarTemplateDecl>(Record, Idx);
     if (D->isCanonicalDecl()) { // It's kept in the folding set.
+      // FIXME: If it's already present, merge it.
       if (VarTemplatePartialSpecializationDecl *Partial =
               dyn_cast<VarTemplatePartialSpecializationDecl>(D)) {
         CanonPattern->getCommonPtr()->PartialSpecializations
@@ -2103,12 +2191,16 @@ ASTDeclReader::RedeclarableResult
 ASTDeclReader::VisitRedeclarable(Redeclarable<T> *D) {
   DeclID FirstDeclID = ReadDeclID(Record, Idx);
   Decl *MergeWith = nullptr;
+  bool IsKeyDecl = ThisDeclID == FirstDeclID;
 
   // 0 indicates that this declaration was the only declaration of its entity,
   // and is used for space optimization.
-  if (FirstDeclID == 0)
+  if (FirstDeclID == 0) {
     FirstDeclID = ThisDeclID;
-  else if (unsigned N = Record[Idx++]) {
+    IsKeyDecl = true;
+  } else if (unsigned N = Record[Idx++]) {
+    IsKeyDecl = false;
+
     // We have some declarations that must be before us in our redeclaration
     // chain. Read them now, and remember that we ought to merge with one of
     // them.
@@ -2133,8 +2225,8 @@ ASTDeclReader::VisitRedeclarable(Redeclarable<T> *D) {
                              
   // The result structure takes care to note that we need to load the 
   // other declaration chains for this ID.
-  return RedeclarableResult(Reader, FirstDeclID, MergeWith,
-                            static_cast<T *>(D)->getKind());
+  return RedeclarableResult(Reader, FirstDeclID, static_cast<T *>(D), MergeWith,
+                            IsKeyDecl);
 }
 
 /// \brief Attempts to merge the given declaration (D) with another declaration
@@ -2173,11 +2265,11 @@ template<typename T> static T assert_cast(...) {
 /// declarations.
 void ASTDeclReader::mergeTemplatePattern(RedeclarableTemplateDecl *D,
                                          RedeclarableTemplateDecl *Existing,
-                                         DeclID DsID) {
+                                         DeclID DsID, bool IsKeyDecl) {
   auto *DPattern = D->getTemplatedDecl();
   auto *ExistingPattern = Existing->getTemplatedDecl();
   RedeclarableResult Result(Reader, DPattern->getCanonicalDecl()->getGlobalID(),
-                            /*MergeWith*/ExistingPattern, DPattern->getKind());
+                            DPattern, /*MergeWith*/ ExistingPattern, IsKeyDecl);
 
   if (auto *DClass = dyn_cast<CXXRecordDecl>(DPattern)) {
     // Merge with any existing definition.
@@ -2185,14 +2277,12 @@ void ASTDeclReader::mergeTemplatePattern(RedeclarableTemplateDecl *D,
     auto *ExistingClass =
         cast<CXXRecordDecl>(ExistingPattern)->getCanonicalDecl();
     if (auto *DDD = DClass->DefinitionData.getNotUpdated()) {
-      if (auto *ExistingDD = ExistingClass->DefinitionData.getNotUpdated()) {
+      if (ExistingClass->DefinitionData.getNotUpdated()) {
         MergeDefinitionData(ExistingClass, std::move(*DDD));
-        Reader.PendingDefinitions.erase(DClass);
-        Reader.MergedDeclContexts.insert(
-            std::make_pair(DClass, ExistingDD->Definition));
-        DClass->IsCompleteDefinition = false;
       } else {
         ExistingClass->DefinitionData = DClass->DefinitionData;
+        // We may have skipped this before because we thought that DClass
+        // was the canonical declaration.
         Reader.PendingDefinitions.insert(DClass);
       }
     }
@@ -2242,11 +2332,11 @@ void ASTDeclReader::mergeRedeclarable(Redeclarable<T> *DBase, T *Existing,
     if (auto *DTemplate = dyn_cast<RedeclarableTemplateDecl>(D))
       mergeTemplatePattern(
           DTemplate, assert_cast<RedeclarableTemplateDecl*>(ExistingCanon),
-          TemplatePatternID);
+          TemplatePatternID, Redecl.isKeyDecl());
 
-    // If this declaration was the canonical declaration, make a note of that.
-    if (DCanon == D) {
-      Reader.MergedDecls[ExistingCanon].push_back(Redecl.getFirstID());
+    // If this declaration is a key declaration, make a note of that.
+    if (Redecl.isKeyDecl()) {
+      Reader.KeyDecls[ExistingCanon].push_back(Redecl.getFirstID());
       if (Reader.PendingDeclChainsKnown.insert(ExistingCanon).second)
         Reader.PendingDeclChains.push_back(ExistingCanon);
     }
@@ -2583,7 +2673,6 @@ static bool isSameEntity(NamedDecl *X, NamedDecl *Y) {
     return NAX->getNamespace()->Equals(NAY->getNamespace());
   }
 
-  // FIXME: Many other cases to implement.
   return false;
 }
 
@@ -2732,9 +2821,6 @@ ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
     Result.suppress();
     return Result;
   }
-
-  // FIXME: Bail out for non-canonical declarations. We will have performed any
-  // necessary merging already.
 
   DeclContext *DC = D->getDeclContext()->getRedeclContext();
   if (TypedefNameForLinkage) {
@@ -2924,13 +3010,13 @@ static void inheritDefaultTemplateArguments(ASTContext &Context,
     NamedDecl *ToParam = ToTP->getParam(N - I - 1);
 
     if (auto *FTTP = dyn_cast<TemplateTypeParmDecl>(FromParam)) {
-      if (inheritDefaultTemplateArgument(Context, FTTP, ToParam))
+      if (!inheritDefaultTemplateArgument(Context, FTTP, ToParam))
         break;
     } else if (auto *FNTTP = dyn_cast<NonTypeTemplateParmDecl>(FromParam)) {
-      if (inheritDefaultTemplateArgument(Context, FNTTP, ToParam))
+      if (!inheritDefaultTemplateArgument(Context, FNTTP, ToParam))
         break;
     } else {
-      if (inheritDefaultTemplateArgument(
+      if (!inheritDefaultTemplateArgument(
               Context, cast<TemplateTemplateParmDecl>(FromParam), ToParam))
         break;
     }
@@ -3229,6 +3315,9 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
   case DECL_EMPTY:
     D = EmptyDecl::CreateDeserialized(Context, ID);
     break;
+  case DECL_OBJC_TYPE_PARAM:
+    D = ObjCTypeParamDecl::CreateDeserialized(Context, ID);
+    break;
   }
 
   assert(D && "Unknown declaration reading AST file");
@@ -3346,19 +3435,15 @@ namespace {
                        GlobalDeclID CanonID)
       : Reader(Reader), SearchDecls(SearchDecls), Deserialized(Deserialized),
         CanonID(CanonID) {
-      // Ensure that the canonical ID goes at the start of the chain.
-      addToChain(Reader.GetDecl(CanonID));
+      assert(std::is_sorted(SearchDecls.begin(), SearchDecls.end()));
     }
 
-    static ModuleManager::DFSPreorderControl
-    visitPreorder(ModuleFile &M, void *UserData) {
-      return static_cast<RedeclChainVisitor *>(UserData)->visitPreorder(M);
+    /// Get the chain, in order from newest to oldest.
+    ArrayRef<Decl *> getChain() const {
+      return Chain;
     }
 
-    static bool visitPostorder(ModuleFile &M, void *UserData) {
-      return static_cast<RedeclChainVisitor *>(UserData)->visitPostorder(M);
-    }
-
+  private:
     void addToChain(Decl *D) {
       if (!D)
         return;
@@ -3367,88 +3452,83 @@ namespace {
         Chain.push_back(D);
     }
 
-    void searchForID(ModuleFile &M, GlobalDeclID GlobalID) {
-      // Map global ID of the first declaration down to the local ID
-      // used in this module file.
-      DeclID ID = Reader.mapGlobalIDToModuleFileGlobalID(M, GlobalID);
-      if (!ID)
-        return;
-
-      // If the search decl was from this module, add it to the chain before any
-      // of its redeclarations in this module or users of it, and after any from
-      // imported modules.
-      if (CanonID != GlobalID && Reader.isDeclIDFromModule(GlobalID, M))
-        addToChain(Reader.GetDecl(GlobalID));
-
+    llvm::Optional<unsigned> findRedeclOffset(ModuleFile &M, DeclID LocalID) {
       // Perform a binary search to find the local redeclarations for this
       // declaration (if any).
-      const LocalRedeclarationsInfo Compare = { ID, 0 };
-      const LocalRedeclarationsInfo *Result
-        = std::lower_bound(M.RedeclarationsMap,
-                           M.RedeclarationsMap + M.LocalNumRedeclarationsInMap, 
-                           Compare);
-      if (Result == M.RedeclarationsMap + M.LocalNumRedeclarationsInMap ||
-          Result->FirstID != ID) {
-        // If we have a previously-canonical singleton declaration that was 
-        // merged into another redeclaration chain, create a trivial chain
-        // for this single declaration so that it will get wired into the 
-        // complete redeclaration chain.
-        if (GlobalID != CanonID && 
-            GlobalID - NUM_PREDEF_DECL_IDS >= M.BaseDeclID && 
-            GlobalID - NUM_PREDEF_DECL_IDS < M.BaseDeclID + M.LocalNumDecls) {
-          addToChain(Reader.GetDecl(GlobalID));
-        }
-        
-        return;
-      }
-      
-      // Dig out all of the redeclarations.
-      unsigned Offset = Result->Offset;
-      unsigned N = M.RedeclarationChains[Offset];
-      M.RedeclarationChains[Offset++] = 0; // Don't try to deserialize again
-      for (unsigned I = 0; I != N; ++I)
-        addToChain(Reader.GetLocalDecl(M, M.RedeclarationChains[Offset++]));
-    }
-
-    bool needsToVisitImports(ModuleFile &M, GlobalDeclID GlobalID) {
-      DeclID ID = Reader.mapGlobalIDToModuleFileGlobalID(M, GlobalID);
-      if (!ID)
-        return false;
-
-      const LocalRedeclarationsInfo Compare = {ID, 0};
+      const LocalRedeclarationsInfo Compare = { LocalID, 0 };
       const LocalRedeclarationsInfo *Result = std::lower_bound(
           M.RedeclarationsMap,
           M.RedeclarationsMap + M.LocalNumRedeclarationsInMap, Compare);
       if (Result == M.RedeclarationsMap + M.LocalNumRedeclarationsInMap ||
-          Result->FirstID != ID) {
-        return true;
-      }
-      unsigned Offset = Result->Offset;
-      unsigned N = M.RedeclarationChains[Offset];
-      // We don't need to visit a module or any of its imports if we've already
-      // deserialized the redecls from this module.
-      return N != 0;
+          Result->FirstID != LocalID)
+        return None;
+      return Result->Offset;
     }
 
-    ModuleManager::DFSPreorderControl visitPreorder(ModuleFile &M) {
-      for (unsigned I = 0, N = SearchDecls.size(); I != N; ++I) {
-        if (needsToVisitImports(M, SearchDecls[I]))
-          return ModuleManager::Continue;
-      }
-      return ModuleManager::SkipImports;
-    }
+  public:
+    bool operator()(ModuleFile &M) {
+      llvm::ArrayRef<DeclID> ToSearch = SearchDecls;
+      GlobalDeclID LocalSearchDeclID = 0;
 
-    bool visitPostorder(ModuleFile &M) {
-      // Visit each of the declarations.
-      for (unsigned I = 0, N = SearchDecls.size(); I != N; ++I)
-        searchForID(M, SearchDecls[I]);
-      // FIXME: If none of the SearchDecls had local IDs in this module, can
-      // we avoid searching any ancestor module files?
-      return false;
-    }
-    
-    ArrayRef<Decl *> getChain() const {
-      return Chain;
+      // First, check whether any of our search decls was declared in M.
+      auto I = std::lower_bound(SearchDecls.begin(), SearchDecls.end(),
+                                M.BaseDeclID + NUM_PREDEF_DECL_IDS);
+      if (I != SearchDecls.end() && Reader.isDeclIDFromModule(*I, M)) {
+        LocalSearchDeclID = *I;
+        ToSearch = llvm::makeArrayRef(*I);
+      }
+
+      // Now, walk the search decls looking for one that's declared in this
+      // module file.
+      bool ImportedModulesMightHaveDecls = false;
+      for (auto GlobalID : ToSearch) {
+        // Map global ID of the first declaration down to the local ID
+        // used in this module file.
+        DeclID LocalID = Reader.mapGlobalIDToModuleFileGlobalID(M, GlobalID);
+        if (!LocalID)
+          continue;
+
+        auto MaybeOffset = findRedeclOffset(M, LocalID);
+        if (MaybeOffset) {
+          // We found it. Dig out all of the redeclarations.
+          unsigned Offset = *MaybeOffset;
+          unsigned N = M.RedeclarationChains[Offset];
+          if (!N)
+            // We've already loaded these.
+            // FIXME: In this case, we may be able to skip processing any
+            // imported modules too. We can't do that yet, though, because
+            // it's possible that our list of search decls misses out some
+            // search decls from modules that M imports.
+            continue;
+          M.RedeclarationChains[Offset++] = 0; // Don't try to deserialize again
+
+          // Note, declarations are listed from newest to oldest, which is the
+          // order that we want.
+          for (unsigned I = 0; I != N; ++I)
+            addToChain(Reader.GetLocalDecl(M, M.RedeclarationChains[Offset++]));
+        }
+
+        // We found a search decl that is not from this module, but was
+        // imported into this module, so some imported module has more decls
+        // of this entity.
+        if (!LocalSearchDeclID)
+          ImportedModulesMightHaveDecls = true;
+
+        // If we found redecls for some search decl, there are no redecls for
+        // any other search decl for the same chain in this module.
+        if (MaybeOffset)
+          break;
+      }
+
+      if (LocalSearchDeclID && LocalSearchDeclID != CanonID) {
+        // If the search decl was from this module, add it to the chain.
+        // Note, the chain is sorted from newest to oldest, so this goes last.
+        // We exclude the canonical declaration; it implicitly goes at the end.
+        addToChain(Reader.GetDecl(LocalSearchDeclID));
+      }
+
+      // Stop looking if we know that no imported module has any declarations.
+      return !ImportedModulesMightHaveDecls;
     }
   };
 }
@@ -3464,18 +3544,19 @@ void ASTReader::loadPendingDeclChain(Decl *CanonDecl) {
   GlobalDeclID CanonID = CanonDecl->getGlobalID();
   if (CanonID)
     SearchDecls.push_back(CanonDecl->getGlobalID()); // Always first.
-  MergedDeclsMap::iterator MergedPos = MergedDecls.find(CanonDecl);
-  if (MergedPos != MergedDecls.end())
-    SearchDecls.append(MergedPos->second.begin(), MergedPos->second.end());
+  KeyDeclsMap::iterator KeyPos = KeyDecls.find(CanonDecl);
+  if (KeyPos != KeyDecls.end())
+    SearchDecls.append(KeyPos->second.begin(), KeyPos->second.end());
+  llvm::array_pod_sort(SearchDecls.begin(), SearchDecls.end());
 
   // Build up the list of redeclarations.
   RedeclChainVisitor Visitor(*this, SearchDecls, RedeclsDeserialized, CanonID);
-  ModuleMgr.visitDepthFirst(&RedeclChainVisitor::visitPreorder,
-                            &RedeclChainVisitor::visitPostorder, &Visitor);
+  ModuleMgr.visit(Visitor);
+  RedeclsDeserialized.erase(CanonDecl);
 
   // Retrieve the chains.
   ArrayRef<Decl *> Chain = Visitor.getChain();
-  if (Chain.empty() || (Chain.size() == 1 && Chain[0] == CanonDecl))
+  if (Chain.empty())
     return;
 
   // Hook up the chains.
@@ -3486,11 +3567,9 @@ void ASTReader::loadPendingDeclChain(Decl *CanonDecl) {
   if (!MostRecent)
     MostRecent = CanonDecl;
   for (unsigned I = 0, N = Chain.size(); I != N; ++I) {
-    if (Chain[I] == CanonDecl)
-      continue;
-
-    ASTDeclReader::attachPreviousDecl(*this, Chain[I], MostRecent, CanonDecl);
-    MostRecent = Chain[I];
+    auto *D = Chain[N - I - 1];
+    ASTDeclReader::attachPreviousDecl(*this, D, MostRecent, CanonDecl);
+    MostRecent = D;
   }
   ASTDeclReader::attachLatestDecl(CanonDecl, MostRecent);
 }
@@ -3566,11 +3645,7 @@ namespace {
       }
     }
 
-    static bool visit(ModuleFile &M, void *UserData) {
-      return static_cast<ObjCCategoriesVisitor *>(UserData)->visit(M);
-    }
-
-    bool visit(ModuleFile &M) {
+    bool operator()(ModuleFile &M) {
       // If we've loaded all of the category information we care about from
       // this module file, we're done.
       if (M.Generation <= PreviousGeneration)
@@ -3615,49 +3690,7 @@ void ASTReader::loadObjCCategories(serialization::GlobalDeclID ID,
                                    unsigned PreviousGeneration) {
   ObjCCategoriesVisitor Visitor(*this, ID, D, CategoriesDeserialized,
                                 PreviousGeneration);
-  ModuleMgr.visit(ObjCCategoriesVisitor::visit, &Visitor);
-}
-
-namespace {
-/// Iterator over the redeclarations of a declaration that have already
-/// been merged into the same redeclaration chain.
-template<typename DeclT>
-class MergedRedeclIterator {
-  DeclT *Start, *Canonical, *Current;
-public:
-  MergedRedeclIterator() : Current(nullptr) {}
-  MergedRedeclIterator(DeclT *Start)
-      : Start(Start), Canonical(nullptr), Current(Start) {}
-
-  DeclT *operator*() { return Current; }
-
-  MergedRedeclIterator &operator++() {
-    if (Current->isFirstDecl()) {
-      Canonical = Current;
-      Current = Current->getMostRecentDecl();
-    } else
-      Current = Current->getPreviousDecl();
-
-    // If we started in the merged portion, we'll reach our start position
-    // eventually. Otherwise, we'll never reach it, but the second declaration
-    // we reached was the canonical declaration, so stop when we see that one
-    // again.
-    if (Current == Start || Current == Canonical)
-      Current = nullptr;
-    return *this;
-  }
-
-  friend bool operator!=(const MergedRedeclIterator &A,
-                         const MergedRedeclIterator &B) {
-    return A.Current != B.Current;
-  }
-};
-}
-template<typename DeclT>
-llvm::iterator_range<MergedRedeclIterator<DeclT>> merged_redecls(DeclT *D) {
-  return llvm::iterator_range<MergedRedeclIterator<DeclT>>(
-      MergedRedeclIterator<DeclT>(D),
-      MergedRedeclIterator<DeclT>());
+  ModuleMgr.visit(Visitor);
 }
 
 template<typename DeclT, typename Fn>
@@ -3891,23 +3924,36 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
           Reader.Context, ReadSourceRange(Record, Idx)));
       break;
 
-    case UPD_DECL_EXPORTED:
+    case UPD_DECL_EXPORTED: {
       unsigned SubmoduleID = readSubmoduleID(Record, Idx);
+      auto *Exported = cast<NamedDecl>(D);
+      if (auto *TD = dyn_cast<TagDecl>(Exported))
+        Exported = TD->getDefinition();
       Module *Owner = SubmoduleID ? Reader.getSubmodule(SubmoduleID) : nullptr;
       if (Reader.getContext().getLangOpts().ModulesLocalVisibility) {
         // FIXME: This doesn't send the right notifications if there are
         // ASTMutationListeners other than an ASTWriter.
-        Reader.getContext().mergeDefinitionIntoModule(cast<NamedDecl>(D), Owner,
-                                                      /*NotifyListeners*/false);
-        Reader.PendingMergedDefinitionsToDeduplicate.insert(cast<NamedDecl>(D));
+        Reader.getContext().mergeDefinitionIntoModule(
+            cast<NamedDecl>(Exported), Owner,
+            /*NotifyListeners*/ false);
+        Reader.PendingMergedDefinitionsToDeduplicate.insert(
+            cast<NamedDecl>(Exported));
       } else if (Owner && Owner->NameVisibility != Module::AllVisible) {
         // If Owner is made visible at some later point, make this declaration
         // visible too.
-        Reader.HiddenNamesMap[Owner].push_back(D);
+        Reader.HiddenNamesMap[Owner].push_back(Exported);
       } else {
         // The declaration is now visible.
-        D->Hidden = false;
+        Exported->Hidden = false;
       }
+      break;
+    }
+
+    case UPD_ADDED_ATTR_TO_RECORD:
+      AttrVec Attrs;
+      Reader.ReadAttributes(F, Attrs, Record, Idx);
+      assert(Attrs.size() == 1);
+      D->addAttr(Attrs[0]);
       break;
     }
   }

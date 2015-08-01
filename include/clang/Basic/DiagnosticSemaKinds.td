@@ -188,6 +188,8 @@ def ext_flexible_array_init : Extension<
   "flexible array initialization is a GNU extension">, InGroup<GNUFlexibleArrayInitializer>;
 
 // Declarations.
+def err_redeclaration_different_type : Error<
+  "redeclaration of %0 with a different type%diff{: $ vs $|}1,2">;
 def err_bad_variable_name : Error<
   "%0 cannot be the name of a variable or data member">;
 def err_bad_parameter_name : Error<
@@ -426,6 +428,7 @@ def warn_redecl_library_builtin : Warning<
   InGroup<DiagGroup<"incompatible-library-redeclaration">>;
 def err_builtin_definition : Error<"definition of builtin function %0">;
 def err_arm_invalid_specialreg : Error<"invalid special register for builtin">;
+def err_invalid_cpu_supports : Error<"invalid cpu feature string for builtin">;
 def warn_builtin_unknown : Warning<"use of unknown builtin %0">,
   InGroup<ImplicitFunctionDeclare>, DefaultError;
 def warn_dyn_class_memaccess : Warning<
@@ -545,14 +548,14 @@ def err_pragma_options_align_mac68k_target_unsupported : Error<
 def warn_pragma_pack_invalid_alignment : Warning<
   "expected #pragma pack parameter to be '1', '2', '4', '8', or '16'">,
   InGroup<IgnoredPragmas>;
-// Follow the MSVC implementation.
+// Follow the Microsoft implementation.
 def warn_pragma_pack_show : Warning<"value of #pragma pack(show) == %0">;
 def warn_pragma_pack_pop_identifer_and_alignment : Warning<
   "specifying both a name and alignment to 'pop' is undefined">;
 def warn_pragma_pop_failed : Warning<"#pragma %0(pop, ...) failed: %1">,
   InGroup<IgnoredPragmas>;
 def warn_cxx_ms_struct :
-  Warning<"ms_struct may not produce MSVC-compatible layouts for classes "
+  Warning<"ms_struct may not produce Microsoft-compatible layouts for classes "
           "with base classes or virtual functions">,
   DefaultError, InGroup<IncompatibleMSStruct>;
 def err_section_conflict : Error<"%0 causes a section type conflict with %1">;
@@ -977,6 +980,12 @@ def warning_multiple_selectors: Warning<
   "several methods with selector %0 of mismatched types are found "
   "for the @selector expression">,
   InGroup<SelectorTypeMismatch>, DefaultIgnore;
+
+def err_objc_kindof_nonobject : Error<
+  "'__kindof' specifier cannot be applied to non-object type %0">;
+def err_objc_kindof_wrong_position : Error<
+  "'__kindof' type specifier must precede the declarator">;
+
 // C++ declarations
 def err_static_assert_expression_is_not_constant : Error<
   "static_assert expression is not an integral constant expression">;
@@ -1049,7 +1058,8 @@ def warn_template_qualified_friend_ignored : Warning<
 def ext_friend_tag_redecl_outside_namespace : ExtWarn<
   "unqualified friend declaration referring to type outside of the nearest "
   "enclosing namespace is a Microsoft extension; add a nested name specifier">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftUnqualifiedFriend>;
+def err_pure_friend : Error<"friend declaration cannot have a pure-specifier">;
 
 def err_invalid_member_in_interface : Error<
   "%select{data member |non-public member function |static member function |"
@@ -1090,6 +1100,9 @@ def err_type_defined_in_alias_template : Error<
 def note_pure_virtual_function : Note<
   "unimplemented pure virtual method %0 in %1">;
 
+def note_pure_qualified_call_kext : Note<
+  "qualified call to %0::%1 is treated as a virtual call to %1 due to -fapple-kext">;
+
 def err_deleted_decl_not_first : Error<
   "deleted definition must be first declaration">;
 
@@ -1124,15 +1137,13 @@ def err_rref_in_exception_spec : Error<
   "rvalue reference type %0 is not allowed in exception specification">;
 def err_mismatched_exception_spec : Error<
   "exception specification in declaration does not match previous declaration">;
-def ext_mismatched_exception_spec : ExtWarn<
-  "exception specification in declaration does not match previous declaration">,
-  InGroup<Microsoft>;
+def ext_mismatched_exception_spec : ExtWarn<err_mismatched_exception_spec.Text>,
+  InGroup<MicrosoftExceptionSpec>;
 def err_override_exception_spec : Error<
   "exception specification of overriding function is more lax than "
   "base version">;
-def ext_override_exception_spec : ExtWarn<
-  "exception specification of overriding function is more lax than "
-  "base version">, InGroup<Microsoft>;
+def ext_override_exception_spec : ExtWarn<err_override_exception_spec.Text>,
+  InGroup<MicrosoftExceptionSpec>;
 def err_incompatible_exception_specs : Error<
   "target exception specification is not superset of source">;
 def err_deep_exception_specs_differ : Error<
@@ -1152,7 +1163,7 @@ def err_access : Error<
 def ext_ms_using_declaration_inaccessible : ExtWarn<
   "using declaration referring to inaccessible member '%0' (which refers "
   "to accessible member '%1') is a Microsoft compatibility extension">,
-    AccessControl, InGroup<Microsoft>;
+    AccessControl, InGroup<MicrosoftUsingDecl>;
 def err_access_ctor : Error<
   "calling a %select{private|protected}0 constructor of class %2">, 
   AccessControl;
@@ -1258,10 +1269,12 @@ def err_mutable_function : Error<"'mutable' cannot be applied to functions">;
 def err_mutable_reference : Error<"'mutable' cannot be applied to references">;
 def ext_mutable_reference : ExtWarn<
   "'mutable' on a reference type is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftMutableReference>;
 def err_mutable_const : Error<"'mutable' and 'const' cannot be mixed">;
 def err_mutable_nonmember : Error<
   "'mutable' can only be applied to member variables">;
+def err_virtual_in_union : Error<
+  "unions cannot have virtual functions">;
 def err_virtual_non_function : Error<
   "'virtual' can only appear on non-static member functions">;
 def err_virtual_out_of_class : Error<
@@ -1292,7 +1305,7 @@ def err_non_virtual_pure : Error<
   "%0 is not virtual and cannot be declared pure">;
 def ext_pure_function_definition : ExtWarn<
   "function definition with pure-specifier is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftPureDefinition>;
 def err_implicit_object_parameter_init : Error<
   "cannot initialize object parameter of type %0 with an expression "
   "of type %1">;
@@ -1300,8 +1313,9 @@ def err_qualified_member_of_unrelated : Error<
   "%q0 is not a member of class %1">;
 
 def warn_call_to_pure_virtual_member_function_from_ctor_dtor : Warning<
-  "call to pure virtual member function %0; overrides of %0 in subclasses are "
-  "not available in the %select{constructor|destructor}1 of %2">;
+  "call to pure virtual member function %0 has undefined behavior; "
+  "overrides of %0 in subclasses are not available in the "
+  "%select{constructor|destructor}1 of %2">;
 
 def note_member_declared_at : Note<"member is declared here">;
 def note_ivar_decl : Note<"instance variable is declared here">;
@@ -1370,7 +1384,7 @@ def warn_cxx98_compat_static_data_member_in_union : Warning<
   InGroup<CXX98Compat>, DefaultIgnore;
 def ext_union_member_of_reference_type : ExtWarn<
   "union member %0 has reference type %1, which is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftUnionMemberReference>;
 def err_union_member_of_reference_type : Error<
   "union member %0 has reference type %1">;
 def ext_anonymous_struct_union_qualified : Extension<
@@ -1425,7 +1439,8 @@ def warn_no_constructor_for_refconst : Warning<
 def note_refconst_member_not_initialized : Note<
   "%select{const|reference}0 member %1 will never be initialized">;
 def ext_ms_explicit_constructor_call : ExtWarn<
-  "explicit constructor calls are a Microsoft extension">, InGroup<Microsoft>;
+  "explicit constructor calls are a Microsoft extension">,
+  InGroup<MicrosoftExplicitConstructorCall>;
 
 // C++ destructors
 def err_destructor_not_member : Error<
@@ -1756,7 +1771,7 @@ def err_enumerator_too_large : Error<
   "enumerator value is not representable in the underlying type %0">;
 def ext_enumerator_too_large : ExtWarn<
   "enumerator value is not representable in the underlying type %0">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftEnumValue>;
 def err_enumerator_wrapped : Error<
   "enumerator value %0 is not representable in the underlying type %1">;
 def err_enum_redeclare_type_mismatch : Error<
@@ -1949,6 +1964,14 @@ def warn_private_extern : Warning<
 def note_private_extern : Note<
   "use __attribute__((visibility(\"hidden\"))) attribute instead">;
 
+// C++ Concepts TS
+def err_concept_decl_non_template : Error<
+  "'concept' can only appear on the definition of a function template or variable template">;
+def err_concept_decls_may_only_appear_in_namespace_scope : Error<
+  "concept declarations may only appear in namespace scope">;
+def err_function_concept_not_defined : Error<
+  "function concept declaration must be a definition">;
+
 // C++11 char16_t/char32_t
 def warn_cxx98_compat_unicode_type : Warning<
   "'%0' type specifier is incompatible with C++98">,
@@ -2079,21 +2102,18 @@ def err_field_with_address_space : Error<
   "field may not be qualified with an address space">;
 def err_attr_objc_ownership_redundant : Error<
   "the type %0 is already explicitly ownership-qualified">;
-def err_undeclared_nsnumber : Error<
-  "NSNumber must be available to use Objective-C literals">;
 def err_invalid_nsnumber_type : Error<
   "%0 is not a valid literal type for NSNumber">;
-def err_undeclared_nsstring : Error<
-  "cannot box a string value because NSString has not been declared">;
 def err_objc_illegal_boxed_expression_type : Error<
   "illegal type %0 used in a boxed expression">;
+def err_objc_non_trivially_copyable_boxed_expression_type : Error<
+  "non-trivially copyable type %0 cannot be used in a boxed expression">;
 def err_objc_incomplete_boxed_expression_type : Error<
   "incomplete type %0 used in a boxed expression">;
-def err_undeclared_nsarray : Error<
-  "NSArray must be available to use Objective-C array literals">;
-def err_undeclared_nsdictionary : Error<
-  "NSDictionary must be available to use Objective-C dictionary "
-  "literals">;
+def err_undeclared_objc_literal_class : Error<
+  "definition of class %0 must be available to use Objective-C "
+  "%select{array literals|dictionary literals|numeric literals|boxed expressions|"
+  "string literals}1">;
 def err_undeclared_boxing_method : Error<
   "declaration of %0 is missing in %1 class">;
 def err_objc_literal_method_sig : Error<
@@ -2123,6 +2143,11 @@ def warn_concatenated_nsarray_literal : Warning<
   InGroup<ObjCStringConcatenation>;
 def note_objc_literal_comparison_isequal : Note<
   "use 'isEqual:' instead">;
+def warn_objc_collection_literal_element : Warning<
+  "object of type %0 is not compatible with "
+  "%select{array element type|dictionary key type|dictionary value type}1 %2">,
+  InGroup<ObjCLiteralConversion>;
+
 def err_attribute_argument_is_zero : Error<
   "%0 attribute must be greater than 0">;
 def warn_attribute_argument_n_negative : Warning<
@@ -2139,6 +2164,10 @@ def warn_objc_redundant_literal_use : Warning<
 
 def err_attr_tlsmodel_arg : Error<"tls_model must be \"global-dynamic\", "
   "\"local-dynamic\", \"initial-exec\" or \"local-exec\"">;
+
+def err_tls_var_aligned_over_maximum : Error<
+  "alignment (%0) of thread-local variable %1 is greater than the maximum supported "
+  "alignment (%2) for a thread-local variable on this target">;
 
 def err_only_annotate_after_access_spec : Error<
   "access specifier can only have annotation attributes">;
@@ -2190,7 +2219,7 @@ def err_attribute_invalid_on_stmt : Error<
   "%0 attribute cannot be applied to a statement">;
 def warn_declspec_attribute_ignored : Warning<
   "attribute %0 is ignored, place it after "
-  "\"%select{class|struct|union|interface|enum}1\" to apply attribute to "
+  "\"%select{class|struct|interface|union|enum}1\" to apply attribute to "
   "type declaration">, InGroup<IgnoredAttributes>;
 def warn_attribute_precede_definition : Warning<
   "attribute declaration must precede definition">,
@@ -2685,6 +2714,8 @@ def err_mode_not_primitive : Error<
   "mode attribute only supported for integer and floating-point types">;
 def err_mode_wrong_type : Error<
   "type of machine mode does not match type of base type">;
+def err_complex_mode_vector_type : Error<
+  "type of machine mode does not support base vector types">;
 def err_attr_wrong_decl : Error<
   "%0 attribute invalid on this declaration, requires typedef or value">;
 def warn_attribute_nonnull_no_pointers : Warning<
@@ -2749,8 +2780,8 @@ def warn_ns_attribute_wrong_return_type : Warning<
   "return %select{an Objective-C object|a pointer|a non-retainable pointer}2">,
   InGroup<IgnoredAttributes>;
 def warn_ns_attribute_wrong_parameter_type : Warning<
-  "%0 attribute only applies to %select{Objective-C object|pointer}1 "
-  "parameters">,
+  "%0 attribute only applies to "
+  "%select{Objective-C object|pointer|pointer-to-CF-pointer}1 parameters">,
   InGroup<IgnoredAttributes>;
 def warn_objc_requires_super_protocol : Warning<
   "%0 attribute cannot be applied to %select{methods in protocols|dealloc}1">,
@@ -2825,7 +2856,8 @@ def err_param_default_argument : Error<
 def err_param_default_argument_redefinition : Error<
   "redefinition of default argument">;
 def ext_param_default_argument_redefinition : ExtWarn<
-  "redefinition of default argument">, InGroup<Microsoft>;
+  err_param_default_argument_redefinition.Text>,
+  InGroup<MicrosoftDefaultArgRedefinition>;
 def err_param_default_argument_missing : Error<
   "missing default argument on parameter">;
 def err_param_default_argument_missing_name : Error<
@@ -3317,11 +3349,12 @@ def note_template_decl_here : Note<"template is declared here">;
 def err_template_arg_must_be_type : Error<
   "template argument for template type parameter must be a type">;
 def err_template_arg_must_be_type_suggest : Error<
-  "template argument for template type parameter must be a type; did you forget 'typename'?">;
+  "template argument for template type parameter must be a type; "
+  "did you forget 'typename'?">;
 def ext_ms_template_type_arg_missing_typename : ExtWarn<
   "template argument for template type parameter must be a type; "
   "omitted 'typename' is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftTemplate>;
 def err_template_arg_must_be_expr : Error<
   "template argument for non-type template parameter must be an expression">;
 def err_template_arg_nontype_ambig : Error<
@@ -3441,10 +3474,10 @@ def err_pointer_to_member_oper_value_classify: Error<
   "%select{rvalue|lvalue}1">;
 def ext_ms_deref_template_argument: ExtWarn<
   "non-type template argument containing a dereference operation is a "
-  "Microsoft extension">, InGroup<Microsoft>;
+  "Microsoft extension">, InGroup<MicrosoftTemplate>;
 def ext_ms_delayed_template_argument: ExtWarn<
   "using the undeclared type %0 as a default template argument is a "
-  "Microsoft extension">, InGroup<Microsoft>;
+  "Microsoft extension">, InGroup<MicrosoftTemplate>;
 
 // C++ template specialization
 def err_template_spec_unknown_kind : Error<
@@ -3492,7 +3525,7 @@ def ext_ms_template_spec_redecl_out_of_scope: ExtWarn<
   "variable template partial|function template|member "
   "function|static data member|member class|member enumeration}0 "
   "specialization of %1 outside namespace enclosing %2 "
-  "is a Microsoft extension">, InGroup<Microsoft>;
+  "is a Microsoft extension">, InGroup<MicrosoftTemplate>;
 def err_template_spec_redecl_global_scope : Error<
   "%select{class template|class template partial|variable template|"
   "variable template partial|function template|member "
@@ -3517,7 +3550,7 @@ def err_function_specialization_in_class : Error<
   "cannot specialize a function %0 within class scope">;
 def ext_function_specialization_in_class : ExtWarn<
   "explicit specialization of %0 within class scope is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftTemplate>;
 def ext_explicit_specialization_storage_class : ExtWarn<
   "explicit specialization cannot have a storage class">;
 def err_explicit_specialization_inconsistent_storage_class : Error<
@@ -3678,7 +3711,7 @@ def err_explicit_instantiation_duplicate : Error<
     "duplicate explicit instantiation of %0">;
 def ext_explicit_instantiation_duplicate : ExtWarn<
     "duplicate explicit instantiation of %0 ignored as a Microsoft extension">,
-    InGroup<Microsoft>;
+    InGroup<MicrosoftTemplate>;
 def note_previous_explicit_instantiation : Note<
     "previous explicit instantiation is here">;
 def ext_explicit_instantiation_after_specialization : Extension<
@@ -3763,10 +3796,11 @@ def err_invalid_var_template_spec_type : Error<"type %2 "
   "partial specialization|redeclaration}0 of %1 does not match"
   " expected type %3">;
 def err_mismatched_exception_spec_explicit_instantiation : Error<
-  "exception specification in explicit instantiation does not match instantiated one">;
+  "exception specification in explicit instantiation does not match "
+  "instantiated one">;
 def ext_mismatched_exception_spec_explicit_instantiation : ExtWarn<
-  "exception specification in explicit instantiation does not match instantiated one">,
-  InGroup<Microsoft>;
+  err_mismatched_exception_spec_explicit_instantiation.Text>,
+  InGroup<MicrosoftExceptionSpec>;
   
 // C++ typename-specifiers
 def err_typename_nested_not_found : Error<"no type named %0 in %1">;
@@ -3884,10 +3918,10 @@ def err_undeclared_var_use : Error<"use of undeclared identifier %0">;
 def ext_undeclared_unqual_id_with_dependent_base : ExtWarn<
   "use of undeclared identifier %0; "
   "unqualified lookup into dependent bases of class template %1 is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftTemplate>;
 def ext_found_via_dependent_bases_lookup : ExtWarn<"use of identifier %0 "
   "found via unqualified lookup into dependent bases of class templates is a "
-  "Microsoft extension">, InGroup<Microsoft>;
+  "Microsoft extension">, InGroup<MicrosoftTemplate>;
 def note_dependent_var_use : Note<"must qualify identifier to find this "
     "declaration in dependent base class">;
 def err_not_found_by_two_phase_lookup : Error<"call to function %0 that is neither "
@@ -4044,7 +4078,8 @@ def note_extern_c_global_conflict : Note<
 def warn_weak_import : Warning <
   "an already-declared variable is made a weak_import declaration %0">;
 def ext_static_non_static : Extension<
-  "redeclaring non-static %0 as static is a Microsoft extension">, InGroup<Microsoft>;
+  "redeclaring non-static %0 as static is a Microsoft extension">,
+  InGroup<MicrosoftRedeclareStatic>;
 def err_non_static_static : Error<
   "non-static declaration of %0 follows static declaration">;
 def err_extern_non_extern : Error<
@@ -4102,9 +4137,11 @@ def ext_forward_ref_enum : Extension<
 def err_forward_ref_enum : Error<
   "ISO C++ forbids forward references to 'enum' types">;
 def ext_ms_forward_ref_enum : Extension<
-  "forward references to 'enum' types are a Microsoft extension">, InGroup<Microsoft>;
+  "forward references to 'enum' types are a Microsoft extension">,
+  InGroup<MicrosoftEnumForwardReference>;
 def ext_forward_ref_enum_def : Extension<
-  "redeclaration of already-defined enum %0 is a GNU extension">, InGroup<GNURedeclaredEnum>;
+  "redeclaration of already-defined enum %0 is a GNU extension">,
+  InGroup<GNURedeclaredEnum>;
   
 def err_redefinition_of_enumerator : Error<"redefinition of enumerator %0">;
 def err_duplicate_member : Error<"duplicate member %0">;
@@ -4297,7 +4334,7 @@ def err_goto_into_protected_scope : Error<
   "cannot jump from this goto statement to its label">;
 def ext_goto_into_protected_scope : ExtWarn<
   "jump from this goto statement to its label is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftGoto>;
 def warn_cxx98_compat_goto_into_protected_scope : Warning<
   "jump from this goto statement to its label is incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
@@ -4430,12 +4467,12 @@ def err_flexible_array_init : Error<
 def ext_flexible_array_empty_aggregate_ms : Extension<
   "flexible array member %0 in otherwise empty "
   "%select{struct|interface|union|class|enum}1 is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftFlexibleArray>;
 def err_flexible_array_union : Error<
   "flexible array member %0 in a union is not allowed">;
 def ext_flexible_array_union_ms : Extension<
   "flexible array member %0 in a union is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftFlexibleArray>;
 def ext_flexible_array_empty_aggregate_gnu : Extension<
   "flexible array member %0 in otherwise empty "
   "%select{struct|interface|union|class|enum}1 is a GNU extension">,
@@ -4688,13 +4725,15 @@ def ext_sizeof_alignof_void_type : Extension<
   "invalid application of '%select{sizeof|alignof|vec_step}0' to a void "
   "type">, InGroup<PointerArith>;
 def err_opencl_sizeof_alignof_type : Error<
-  "invalid application of '%select{sizeof|alignof|vec_step}0' to a void type">;
+  "invalid application of '%select{sizeof|alignof|vec_step|__builtin_omp_required_simd_align}0' to a void type">;
 def err_sizeof_alignof_incomplete_type : Error<
-  "invalid application of '%select{sizeof|alignof|vec_step}0' to an "
+  "invalid application of '%select{sizeof|alignof|vec_step|__builtin_omp_required_simd_align}0' to an "
   "incomplete type %1">;
 def err_sizeof_alignof_function_type : Error<
-  "invalid application of '%select{sizeof|alignof|vec_step}0' to a "
+  "invalid application of '%select{sizeof|alignof|vec_step|__builtin_omp_required_simd_align}0' to a "
   "function type">;
+def err_openmp_default_simd_align_expr : Error<
+  "invalid application of '__builtin_omp_required_simd_align' to an expression, only type is allowed">;
 def err_sizeof_alignof_bitfield : Error<
   "invalid application of '%select{sizeof|alignof}0' to bit-field">;
 def err_alignof_member_of_incomplete_type : Error<
@@ -4728,6 +4767,8 @@ def warn_division_by_zero : Warning<"division by zero is undefined">,
   InGroup<DivZero>;
 def warn_remainder_by_zero : Warning<"remainder by zero is undefined">,
   InGroup<DivZero>;
+def warn_shift_lhs_negative : Warning<"shifting a negative signed value is undefined">,
+  InGroup<DiagGroup<"shift-negative-value">>;
 def warn_shift_negative : Warning<"shift count is negative">,
   InGroup<DiagGroup<"shift-count-negative">>;
 def warn_shift_gt_typewidth : Warning<"shift count >= width of type">,
@@ -4914,10 +4955,10 @@ def err_qualified_param_declarator : Error<
 def ext_out_of_line_declaration : ExtWarn<
   "out-of-line declaration of a member must be a definition">,
   InGroup<OutOfLineDeclaration>, DefaultError;
-def warn_member_extra_qualification : Warning<
-  "extra qualification on member %0">, InGroup<Microsoft>;
 def err_member_extra_qualification : Error<
   "extra qualification on member %0">;
+def warn_member_extra_qualification : Warning<
+  err_member_extra_qualification.Text>, InGroup<MicrosoftExtraQualification>;
 def warn_namespace_member_extra_qualification : Warning<
   "extra qualification on member %0">,
   InGroup<DiagGroup<"extra-qualification">>;
@@ -5393,7 +5434,7 @@ def ext_cast_fn_obj : Extension<
 def ext_ms_cast_fn_obj : ExtWarn<
   "static_cast between pointer-to-function and pointer-to-object is a "
   "Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftCast>;
 def warn_cxx98_compat_cast_fn_obj : Warning<
   "cast between pointer-to-function and pointer-to-object is incompatible with C++98">,
   InGroup<CXX98CompatPedantic>, DefaultIgnore;
@@ -5503,7 +5544,7 @@ def ext_default_init_const : ExtWarn<
   "default initialization of an object of const type %0"
   "%select{| without a user-provided default constructor}1 "
   "is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftConstInit>;
 def err_delete_operand : Error<"cannot delete expression of type %0">;
 def ext_delete_void_ptr_operand : ExtWarn<
   "cannot delete expression with pointer-to-'void' type %0">,
@@ -5564,6 +5605,8 @@ def err_seh_try_outside_functions : Error<
   "cannot use SEH '__try' in blocks, captured regions, or Obj-C method decls">;
 def err_mixing_cxx_try_seh_try : Error<
   "cannot use C++ 'try' in the same function as SEH '__try'">;
+def err_seh_try_unsupported : Error<
+  "SEH '__try' is not supported on this target">;
 def note_conflicting_try_here : Note<
   "conflicting %0 here">;
 def warn_jump_out_of_seh_finally : Warning<
@@ -5719,7 +5762,7 @@ def err_pseudo_dtor_base_not_scalar : Error<
   "pseudo-destructor expression">;
 def ext_pseudo_dtor_on_void : ExtWarn<
   "pseudo-destructors on type void are a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftVoidPseudoDtor>;
 def err_pseudo_dtor_type_mismatch : Error<
   "the type of object expression "
   "%diff{($) does not match the type being destroyed ($)|"
@@ -6306,6 +6349,10 @@ def warn_cast_qual : Warning<"cast from %0 to %1 drops %select{const and "
   InGroup<CastQual>, DefaultIgnore;
 def warn_cast_qual2 : Warning<"cast from %0 to %1 must have all intermediate "
   "pointers const qualified to be safe">, InGroup<CastQual>, DefaultIgnore;
+def warn_redefine_extname_not_applied : Warning<
+  "#pragma redefine_extname is applicable to external C declarations only; "
+  "not applied to %select{function|variable}0 %1">,
+  InGroup<Pragmas>;
 } // End of general sema category.
 
 // inline asm.
@@ -6465,7 +6512,7 @@ def err_anonymous_record_with_type : Error<
   "types cannot be declared in an anonymous %select{struct|union}0">;
 def ext_anonymous_record_with_type : Extension<
   "types declared in an anonymous %select{struct|union}0 are a Microsoft "
-  "extension">, InGroup<Microsoft>;
+  "extension">, InGroup<MicrosoftAnonTag>;
 def ext_anonymous_record_with_anonymous_type : Extension<
   "anonymous types declared in an anonymous %select{struct|union}0 "
   "are an extension">, InGroup<DiagGroup<"nested-anon-types">>;
@@ -6480,7 +6527,7 @@ def err_anonymous_record_nonpublic_member : Error<
   "%select{private|protected}1 data member">;
 def ext_ms_anonymous_record : ExtWarn<
   "anonymous %select{structs|unions}0 are a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftAnonTag>;
 
 // C++ local classes
 def err_reference_to_local_var_in_enclosing_function : Error<
@@ -6789,6 +6836,15 @@ def warn_format_non_standard_conversion_spec: Warning<
 def warn_printf_ignored_flag: Warning<
   "flag '%0' is ignored when flag '%1' is present">,
   InGroup<Format>;
+def warn_printf_empty_objc_flag: Warning<
+  "missing object format flag">,
+  InGroup<Format>;
+def warn_printf_ObjCflags_without_ObjCConversion: Warning<
+  "object format flags cannot be used with '%0' conversion specifier">,
+  InGroup<Format>;
+def warn_printf_invalid_objc_flag: Warning<
+    "'%0' is not a valid object format flag">,
+    InGroup<Format>;
 def warn_scanf_scanlist_incomplete : Warning<
   "no closing ']' for '%%[' in scanf format string">,
   InGroup<Format>;
@@ -7411,6 +7467,8 @@ def err_omp_unexpected_clause_value : Error<
   "expected %0 in OpenMP clause '%1'">;
 def err_omp_expected_var_name : Error<
   "expected variable name">;
+def err_omp_expected_var_name_or_array_item : Error<
+  "expected variable name, array element or array section">;
 def note_omp_task_predetermined_firstprivate_here : Note<
   "predetermined as a firstprivate in a task construct here">;
 def err_omp_clause_ref_type_arg : Error<
@@ -7445,8 +7503,8 @@ def err_omp_loop_var_dsa : Error<
 def err_omp_not_for : Error<
   "%select{statement after '#pragma omp %1' must be a for loop|"
   "expected %2 for loops after '#pragma omp %1'%select{|, but found only %4}3}0">;
-def note_omp_collapse_expr : Note<
-  "as specified in 'collapse' clause">;
+def note_omp_collapse_ordered_expr : Note<
+  "as specified in %select{'collapse'|'ordered'|'collapse' and 'ordered'}0 clause%select{||s}0">;
 def err_omp_negative_expression_in_clause : Error<
   "argument to '%0' clause must be a positive integer value">;
 def err_omp_not_integral : Error<
@@ -7599,6 +7657,12 @@ def err_omp_single_copyprivate_with_nowait : Error<
   "the 'copyprivate' clause must not be used with the 'nowait' clause">;
 def note_omp_nowait_clause_here : Note<
   "'nowait' clause is here">;
+def err_omp_wrong_cancel_region : Error<
+  "one of 'for', 'parallel', 'sections' or 'taskgroup' is expected">;
+def err_omp_parent_cancel_region_nowait : Error<
+  "parent region for 'omp %select{cancellation point/cancel}0' construct cannot be nowait">;
+def err_omp_parent_cancel_region_ordered : Error<
+  "parent region for 'omp %select{cancellation point/cancel}0' construct cannot be ordered">;
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {
@@ -7636,12 +7700,12 @@ def err_module_private_local : Error<
 def err_module_private_local_class : Error<
   "local %select{struct|interface|union|class|enum}0 cannot be declared "
   "__module_private__">;
-def err_module_private_declaration : Error<
-  "%select{declaration|definition}0 of %1 must be imported from "
-  "module '%2' before it is required">;
-def err_module_private_declaration_multiple : Error<
-  "%select{declaration|definition}0 of %1 must be imported from "
-  "one of the following modules before it is required:%2">;
+def err_module_unimported_use : Error<
+  "%select{declaration|definition|default argument}0 of %1 must be imported "
+  "from module '%2' before it is required">;
+def err_module_unimported_use_multiple : Error<
+  "%select{declaration|definition|default argument}0 of %1 must be imported "
+  "from one of the following modules before it is required:%2">;
 def err_module_import_in_extern_c : Error<
   "import of C++ module '%0' appears within extern \"C\" language linkage "
   "specification">;
@@ -7671,5 +7735,124 @@ def warn_profile_data_unprofiled : Warning<
   InGroup<ProfileInstrUnprofiled>;
 
 } // end of instrumentation issue category
+
+let CategoryName = "Nullability Issue" in {
+
+def warn_mismatched_nullability_attr : Warning<
+  "nullability specifier %0 conflicts with existing specifier %1">,
+  InGroup<Nullability>;
+
+def warn_nullability_declspec : Warning<
+  "nullability specifier %0 cannot be applied "
+  "to non-pointer type %1; did you mean to apply the specifier to the "
+  "%select{pointer|block pointer|member pointer|function pointer|"
+  "member function pointer}2?">,
+  InGroup<NullabilityDeclSpec>,
+  DefaultError;
+
+def note_nullability_here : Note<"%0 specified here">;
+
+def err_nullability_nonpointer : Error<
+  "nullability specifier %0 cannot be applied to non-pointer type %1">;
+
+def warn_nullability_lost : Warning<
+  "implicit conversion from nullable pointer %0 to non-nullable pointer "
+  "type %1">,
+  InGroup<NullableToNonNullConversion>, DefaultIgnore;
+
+def err_nullability_cs_multilevel : Error<
+  "nullability keyword %0 cannot be applied to multi-level pointer type %1">;
+def note_nullability_type_specifier : Note<
+  "use nullability type specifier %0 to affect the innermost "
+  "pointer type of %1">;
+
+def warn_null_resettable_setter : Warning<
+  "synthesized setter %0 for null_resettable property %1 does not handle nil">,
+  InGroup<Nullability>;
+
+def warn_nullability_missing : Warning<
+  "%select{pointer|block pointer|member pointer}0 is missing a nullability "
+  "type specifier (_Nonnull, _Nullable, or _Null_unspecified)">,
+  InGroup<NullabilityCompleteness>;
+
+def err_type_arg_explicit_nullability : Error<
+  "type argument %0 cannot explicitly specify nullability">;
+
+def err_type_param_bound_explicit_nullability : Error<
+  "type parameter %0 bound %1 cannot explicitly specify nullability">;
+
+}
+
+let CategoryName = "Generics Issue" in {
+
+def err_objc_type_param_bound_nonobject : Error<
+  "type bound %0 for type parameter %1 is not an Objective-C pointer type">;
+
+def err_objc_type_param_bound_missing_pointer : Error<
+  "missing '*' in type bound %0 for type parameter %1">;
+
+def err_objc_type_param_redecl : Error<
+  "redeclaration of type parameter %0">;
+
+def err_objc_type_param_arity_mismatch : Error<
+  "%select{forward class declaration|class definition|category|extension}0 has "
+  "too %select{few|many}1 type parameters (expected %2, have %3)">;
+
+def err_objc_type_param_bound_conflict : Error<
+  "type bound %0 for type parameter %1 conflicts with "
+  "%select{implicit|previous}2 bound %3%select{for type parameter %5|}4">;
+
+def err_objc_type_param_variance_conflict : Error<
+  "%select{in|co|contra}0variant type parameter %1 conflicts with previous "
+  "%select{in|co|contra}2variant type parameter %3">;
+
+def note_objc_type_param_here : Note<"type parameter %0 declared here">;
+
+def err_objc_type_param_bound_missing : Error<
+  "missing type bound %0 for type parameter %1 in %select{@interface|@class}2">;
+
+def err_objc_parameterized_category_nonclass : Error<
+  "%select{extension|category}0 of non-parameterized class %1 cannot have type "
+  "parameters">;
+
+def err_objc_parameterized_forward_class : Error<
+  "forward declaration of non-parameterized class %0 cannot have type "
+  "parameters">;
+
+def err_objc_parameterized_forward_class_first : Error<
+  "class %0 previously declared with type parameters">;
+
+def err_objc_type_arg_missing_star : Error<
+  "type argument %0 must be a pointer (requires a '*')">;
+
+def err_objc_type_arg_missing : Error<
+  "no type or protocol named %0">;
+
+def err_objc_type_args_and_protocols : Error<
+  "angle brackets contain both a %select{type|protocol}0 (%1) and a "
+  "%select{protocol|type}0 (%2)">;
+
+def err_objc_type_args_non_class : Error<
+  "type arguments cannot be applied to non-class type %0">;
+
+def err_objc_type_args_non_parameterized_class : Error<
+  "type arguments cannot be applied to non-parameterized class %0">;
+
+def err_objc_type_args_specialized_class : Error<
+  "type arguments cannot be applied to already-specialized class type %0">;
+
+def err_objc_type_args_wrong_arity : Error<
+  "too %select{many|few}0 type arguments for class %1 (have %2, expected %3)">;
+}
+
+def err_objc_type_arg_not_id_compatible : Error<
+  "type argument %0 is neither an Objective-C object nor a block type">;
+
+def err_objc_type_arg_does_not_match_bound : Error<
+  "type argument %0 does not satisfy the bound (%1) of type parameter %2">;
+
+def warn_objc_redundant_qualified_class_type : Warning<
+  "parameterized class %0 already conforms to the protocols listed; did you "
+  "forget a '*'?">, InGroup<ObjCProtocolQualifiers>;
 
 } // end of sema component.

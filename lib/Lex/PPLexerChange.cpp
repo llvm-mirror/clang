@@ -355,6 +355,17 @@ bool Preprocessor::HandleEndOfFile(Token &Result, bool isEndOfMacro) {
     PragmaARCCFCodeAuditedLoc = SourceLocation();
   }
 
+  // Complain about reaching a true EOF within assume_nonnull.
+  // We don't want to complain about reaching the end of a macro
+  // instantiation or a _Pragma.
+  if (PragmaAssumeNonNullLoc.isValid() &&
+      !isEndOfMacro && !(CurLexer && CurLexer->Is_PragmaLexer)) {
+    Diag(PragmaAssumeNonNullLoc, diag::err_pp_eof_in_assume_nonnull);
+
+    // Recover by leaving immediately.
+    PragmaAssumeNonNullLoc = SourceLocation();
+  }
+
   // If this is a #include'd file, pop it off the include stack and continue
   // lexing the #includer file.
   if (!IncludeMacroStack.empty()) {
@@ -633,11 +644,20 @@ void Preprocessor::EnterSubmodule(Module *M, SourceLocation ImportLoc) {
   if (FirstTime) {
     // Determine the set of starting macros for this submodule; take these
     // from the "null" module (the predefines buffer).
+    //
+    // FIXME: If we have local visibility but not modules enabled, the
+    // NullSubmoduleState is polluted by #defines in the top-level source
+    // file.
     auto &StartingMacros = NullSubmoduleState.Macros;
 
     // Restore to the starting state.
     // FIXME: Do this lazily, when each macro name is first referenced.
     for (auto &Macro : StartingMacros) {
+      // Skip uninteresting macros.
+      if (!Macro.second.getLatest() &&
+          Macro.second.getOverriddenMacros().empty())
+        continue;
+
       MacroState MS(Macro.second.getLatest());
       MS.setOverriddenMacros(*this, Macro.second.getOverriddenMacros());
       State.Macros.insert(std::make_pair(Macro.first, std::move(MS)));
@@ -721,6 +741,11 @@ void Preprocessor::LeaveSubmodule() {
     }
   }
 
+  // FIXME: Before we leave this submodule, we should parse all the other
+  // headers within it. Otherwise, we're left with an inconsistent state
+  // where we've made the module visible but don't yet have its complete
+  // contents.
+
   // Put back the outer module's state, if we're tracking it.
   if (getLangOpts().ModulesLocalVisibility)
     CurSubmoduleState = Info.OuterSubmoduleState;
@@ -728,6 +753,5 @@ void Preprocessor::LeaveSubmodule() {
   BuildingSubmoduleStack.pop_back();
 
   // A nested #include makes the included submodule visible.
-  if (!BuildingSubmoduleStack.empty() || !getLangOpts().ModulesLocalVisibility)
-    makeModuleVisible(LeavingMod, ImportLoc);
+  makeModuleVisible(LeavingMod, ImportLoc);
 }

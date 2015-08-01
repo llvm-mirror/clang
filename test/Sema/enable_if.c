@@ -49,7 +49,7 @@ size_t strnlen(const char *s, size_t maxlen)  // expected-note{{candidate functi
   __attribute__((unavailable("'maxlen' is larger than the buffer size")));
 
 void test2(const char *s, int i) {
-// CHECK: define void @test2
+// CHECK: define {{.*}}void @test2
   const char c[123];
   strnlen(s, i);
 // CHECK: call {{.*}}strnlen_real1
@@ -76,6 +76,21 @@ void test3(int c) {
   isdigit(-10);  // expected-error{{call to unavailable function 'isdigit': 'c' must have the value of an unsigned char or EOF}}
 #endif
 }
+
+// Verify that the alternate spelling __enable_if__ works as well.
+int isdigit2(int c) __attribute__((overloadable));  // expected-note{{candidate function}}
+int isdigit2(int c) __attribute__((overloadable))  // expected-note{{candidate function has been explicitly made unavailable}}
+  __attribute__((__enable_if__(c <= -1 || c > 255, "'c' must have the value of an unsigned char or EOF")))
+  __attribute__((unavailable("'c' must have the value of an unsigned char or EOF")));
+
+void test4(int c) {
+  isdigit2(c);
+  isdigit2(10);
+#ifndef CODEGEN
+  isdigit2(-10);  // expected-error{{call to unavailable function 'isdigit2': 'c' must have the value of an unsigned char or EOF}}
+#endif
+}
+
 
 #ifndef CODEGEN
 __attribute__((enable_if(n == 0, "chosen when 'n' is zero"))) void f1(int n); // expected-error{{use of undeclared identifier 'n'}}

@@ -254,7 +254,7 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
   }
 
   if (!HasScopeSpecifier &&
-      (Tok.is(tok::kw_decltype) || Tok.is(tok::annot_decltype))) {
+      Tok.isOneOf(tok::kw_decltype, tok::annot_decltype)) {
     DeclSpec DS(AttrFactory);
     SourceLocation DeclLoc = Tok.getLocation();
     SourceLocation EndLoc  = ParseDecltypeSpecifier(DS);
@@ -487,7 +487,7 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
       // as the name in a nested-name-specifier.
       Token Identifier = Tok;
       SourceLocation IdLoc = ConsumeToken();
-      assert((Tok.is(tok::coloncolon) || Tok.is(tok::colon)) &&
+      assert(Tok.isOneOf(tok::coloncolon, tok::colon) &&
              "NextToken() not working properly!");
       Token ColonColon = Tok;
       SourceLocation CCLoc = ConsumeToken();
@@ -892,7 +892,7 @@ Optional<unsigned> Parser::ParseLambdaIntroducer(LambdaIntroducer &Intro,
                                             Parens.getCloseLocation(),
                                             Exprs);
         }
-      } else if (Tok.is(tok::l_brace) || Tok.is(tok::equal)) {
+      } else if (Tok.isOneOf(tok::l_brace, tok::equal)) {
         // Each lambda init-capture forms its own full expression, which clears
         // Actions.MaybeODRUseExprs. So create an expression evaluation context
         // to save the necessary state, and restore it later.
@@ -1159,8 +1159,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                                            LParenLoc, FunLocalRangeEnd, D,
                                            TrailingReturnType),
                   Attr, DeclEndLoc);
-  } else if (Tok.is(tok::kw_mutable) || Tok.is(tok::arrow) ||
-             Tok.is(tok::kw___attribute) ||
+  } else if (Tok.isOneOf(tok::kw_mutable, tok::arrow, tok::kw___attribute) ||
              (Tok.is(tok::l_square) && NextToken().is(tok::l_square))) {
     // It's common to forget that one needs '()' before 'mutable', an attribute
     // specifier, or the result type. Deal with this.
@@ -1687,7 +1686,7 @@ bool Parser::ParseCXXCondition(ExprResult &ExprOut,
   // type-specifier-seq
   DeclSpec DS(AttrFactory);
   DS.takeAttributesFrom(attrs);
-  ParseSpecifierQualifierList(DS);
+  ParseSpecifierQualifierList(DS, AS_none, DSC_condition);
 
   // declarator
   Declarator DeclaratorInfo(DS, Declarator::ConditionContext);
@@ -1805,13 +1804,6 @@ void Parser::ParseCXXSimpleTypeSpecifier(DeclSpec &DS) {
     
     DS.SetRangeEnd(Tok.getAnnotationEndLoc());
     ConsumeToken();
-    
-    // Objective-C supports syntax of the form 'id<proto1,proto2>' where 'id'
-    // is a specific typedef and 'itf<proto1,proto2>' where 'itf' is an
-    // Objective-C interface.  If we don't have Objective-C or a '<', this is
-    // just a normal reference to a typedef name.
-    if (Tok.is(tok::less) && getLangOpts().ObjC1)
-      ParseObjCProtocolQualifiers(DS);
     
     DS.Finish(Diags, PP, Policy);
     return;

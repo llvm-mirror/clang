@@ -463,6 +463,10 @@ void Parser::Initialize() {
     ObjCTypeQuals[objc_oneway] = &PP.getIdentifierTable().get("oneway");
     ObjCTypeQuals[objc_bycopy] = &PP.getIdentifierTable().get("bycopy");
     ObjCTypeQuals[objc_byref] = &PP.getIdentifierTable().get("byref");
+    ObjCTypeQuals[objc_nonnull] = &PP.getIdentifierTable().get("nonnull");
+    ObjCTypeQuals[objc_nullable] = &PP.getIdentifierTable().get("nullable");
+    ObjCTypeQuals[objc_null_unspecified]
+      = &PP.getIdentifierTable().get("null_unspecified");
   }
 
   Ident_instancetype = nullptr;
@@ -472,11 +476,15 @@ void Parser::Initialize() {
 
   Ident_super = &PP.getIdentifierTable().get("super");
 
-  if (getLangOpts().AltiVec) {
+  Ident_vector = nullptr;
+  Ident_bool = nullptr;
+  Ident_pixel = nullptr;
+  if (getLangOpts().AltiVec || getLangOpts().ZVector) {
     Ident_vector = &PP.getIdentifierTable().get("vector");
-    Ident_pixel = &PP.getIdentifierTable().get("pixel");
     Ident_bool = &PP.getIdentifierTable().get("bool");
   }
+  if (getLangOpts().AltiVec)
+    Ident_pixel = &PP.getIdentifierTable().get("pixel");
 
   Ident_introduced = nullptr;
   Ident_deprecated = nullptr;
@@ -1409,14 +1417,35 @@ Parser::TryAnnotateName(bool IsAddressOfOperand,
     // It's not something we know about. Leave it unannotated.
     break;
 
-  case Sema::NC_Type:
-    Tok.setKind(tok::annot_typename);
-    setTypeAnnotation(Tok, Classification.getType());
-    Tok.setAnnotationEndLoc(NameLoc);
+  case Sema::NC_Type: {
+    SourceLocation BeginLoc = NameLoc;
     if (SS.isNotEmpty())
-      Tok.setLocation(SS.getBeginLoc());
+      BeginLoc = SS.getBeginLoc();
+
+    /// An Objective-C object type followed by '<' is a specialization of
+    /// a parameterized class type or a protocol-qualified type.
+    ParsedType Ty = Classification.getType();
+    if (getLangOpts().ObjC1 && NextToken().is(tok::less) &&
+        (Ty.get()->isObjCObjectType() ||
+         Ty.get()->isObjCObjectPointerType())) {
+      // Consume the name.
+      SourceLocation IdentifierLoc = ConsumeToken();
+      SourceLocation NewEndLoc;
+      TypeResult NewType
+          = parseObjCTypeArgsAndProtocolQualifiers(IdentifierLoc, Ty,
+                                                   /*consumeLastToken=*/false,
+                                                   NewEndLoc);
+      if (NewType.isUsable())
+        Ty = NewType.get();
+    }
+
+    Tok.setKind(tok::annot_typename);
+    setTypeAnnotation(Tok, Ty);
+    Tok.setAnnotationEndLoc(Tok.getLocation());
+    Tok.setLocation(BeginLoc);
     PP.AnnotateCachedTokens(Tok);
     return ANK_Success;
+  }
 
   case Sema::NC_Expression:
     Tok.setKind(tok::annot_primary_expr);
@@ -1464,7 +1493,7 @@ bool Parser::TryKeywordIdentFallback(bool DisableKeyword) {
     << PP.getSpelling(Tok)
     << DisableKeyword;
   if (DisableKeyword)
-    Tok.getIdentifierInfo()->RevertTokenIDToIdentifier();
+    Tok.getIdentifierInfo()->revertTokenIDToIdentifier();
   Tok.setKind(tok::identifier);
   return true;
 }
@@ -1623,13 +1652,33 @@ bool Parser::TryAnnotateTypeOrScopeTokenAfterScopeSpec(bool EnteringContext,
       // A FixIt was applied as a result of typo correction
       if (CorrectedII)
         Tok.setIdentifierInfo(CorrectedII);
+
+      SourceLocation BeginLoc = Tok.getLocation();
+      if (SS.isNotEmpty()) // it was a C++ qualified type name.
+        BeginLoc = SS.getBeginLoc();
+
+      /// An Objective-C object type followed by '<' is a specialization of
+      /// a parameterized class type or a protocol-qualified type.
+      if (getLangOpts().ObjC1 && NextToken().is(tok::less) &&
+          (Ty.get()->isObjCObjectType() ||
+           Ty.get()->isObjCObjectPointerType())) {
+        // Consume the name.
+        SourceLocation IdentifierLoc = ConsumeToken();
+        SourceLocation NewEndLoc;
+        TypeResult NewType
+          = parseObjCTypeArgsAndProtocolQualifiers(IdentifierLoc, Ty,
+                                                   /*consumeLastToken=*/false,
+                                                   NewEndLoc);
+        if (NewType.isUsable())
+          Ty = NewType.get();
+      }
+
       // This is a typename. Replace the current token in-place with an
       // annotation type token.
       Tok.setKind(tok::annot_typename);
       setTypeAnnotation(Tok, Ty);
       Tok.setAnnotationEndLoc(Tok.getLocation());
-      if (SS.isNotEmpty()) // it was a C++ qualified type name.
-        Tok.setLocation(SS.getBeginLoc());
+      Tok.setLocation(BeginLoc);
 
       // In case the tokens were cached, have Preprocessor replace
       // them with the annotation token.

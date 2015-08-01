@@ -97,10 +97,11 @@ static void AddImplicitIncludePTH(MacroBuilder &Builder, Preprocessor &PP,
 /// \brief Add an implicit \#include using the original file used to generate
 /// a PCH file.
 static void AddImplicitIncludePCH(MacroBuilder &Builder, Preprocessor &PP,
+                                  const PCHContainerReader &PCHContainerRdr,
                                   StringRef ImplicitIncludePCH) {
   std::string OriginalFile =
-    ASTReader::getOriginalSourceFile(ImplicitIncludePCH, PP.getFileManager(),
-                                     PP.getDiagnostics());
+      ASTReader::getOriginalSourceFile(ImplicitIncludePCH, PP.getFileManager(),
+                                       PCHContainerRdr, PP.getDiagnostics());
   if (OriginalFile.empty())
     return;
 
@@ -867,6 +868,14 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
                         "__attribute__((objc_ownership(none)))");
   }
 
+  // On Darwin, there are __double_underscored variants of the type
+  // nullability qualifiers.
+  if (TI.getTriple().isOSDarwin()) {
+    Builder.defineMacro("__nonnull", "_Nonnull");
+    Builder.defineMacro("__null_unspecified", "_Null_unspecified");
+    Builder.defineMacro("__nullable", "_Nullable");
+  }
+
   // OpenMP definition
   if (LangOpts.OpenMP) {
     // OpenMP 2.2:
@@ -891,9 +900,10 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
 /// InitializePreprocessor - Initialize the preprocessor getting it and the
 /// environment ready to process a single file. This returns true on error.
 ///
-void clang::InitializePreprocessor(Preprocessor &PP,
-                                   const PreprocessorOptions &InitOpts,
-                                   const FrontendOptions &FEOpts) {
+void clang::InitializePreprocessor(
+    Preprocessor &PP, const PreprocessorOptions &InitOpts,
+    const PCHContainerReader &PCHContainerRdr,
+    const FrontendOptions &FEOpts) {
   const LangOptions &LangOpts = PP.getLangOpts();
   std::string PredefineBuffer;
   PredefineBuffer.reserve(4080);
@@ -952,7 +962,8 @@ void clang::InitializePreprocessor(Preprocessor &PP,
 
   // Process -include-pch/-include-pth directives.
   if (!InitOpts.ImplicitPCHInclude.empty())
-    AddImplicitIncludePCH(Builder, PP, InitOpts.ImplicitPCHInclude);
+    AddImplicitIncludePCH(Builder, PP, PCHContainerRdr,
+                          InitOpts.ImplicitPCHInclude);
   if (!InitOpts.ImplicitPTHInclude.empty())
     AddImplicitIncludePTH(Builder, PP, InitOpts.ImplicitPTHInclude);
 

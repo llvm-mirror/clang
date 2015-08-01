@@ -354,13 +354,45 @@ static DeclContext *getContextForScopeMatching(Decl *D) {
   return D->getDeclContext()->getRedeclContext();
 }
 
+/// \brief Determine whether \p D is a better lookup result than \p Existing,
+/// given that they declare the same entity.
+static bool isPreferredLookupResult(Sema::LookupNameKind Kind,
+                                    NamedDecl *D, NamedDecl *Existing) {
+  // When looking up redeclarations of a using declaration, prefer a using
+  // shadow declaration over any other declaration of the same entity.
+  if (Kind == Sema::LookupUsingDeclName && isa<UsingShadowDecl>(D) &&
+      !isa<UsingShadowDecl>(Existing))
+    return true;
+
+  auto *DUnderlying = D->getUnderlyingDecl();
+  auto *EUnderlying = Existing->getUnderlyingDecl();
+
+  // If they have different underlying declarations, pick one arbitrarily
+  // (this happens when two type declarations denote the same type).
+  // FIXME: Should we prefer a struct declaration over a typedef or vice versa?
+  //        If a name could be a typedef-name or a class-name, which is it?
+  if (DUnderlying->getCanonicalDecl() != EUnderlying->getCanonicalDecl()) {
+    assert(isa<TypeDecl>(DUnderlying) && isa<TypeDecl>(EUnderlying));
+    return false;
+  }
+
+  // If D is newer than Existing, prefer it.
+  for (Decl *Prev = DUnderlying->getPreviousDecl(); Prev;
+       Prev = Prev->getPreviousDecl())
+    if (Prev == EUnderlying)
+      return true;
+
+  return false;
+}
+
 /// Resolves the result kind of this lookup.
 void LookupResult::resolveKind() {
   unsigned N = Decls.size();
 
   // Fast case: no possible ambiguity.
   if (N == 0) {
-    assert(ResultKind == NotFound || ResultKind == NotFoundInCurrentInstantiation);
+    assert(ResultKind == NotFound ||
+           ResultKind == NotFoundInCurrentInstantiation);
     return;
   }
 
@@ -378,8 +410,8 @@ void LookupResult::resolveKind() {
   // Don't do any extra resolution if we've already resolved as ambiguous.
   if (ResultKind == Ambiguous) return;
 
-  llvm::SmallPtrSet<NamedDecl*, 16> Unique;
-  llvm::SmallPtrSet<QualType, 16> UniqueTypes;
+  llvm::SmallDenseMap<NamedDecl*, unsigned, 16> Unique;
+  llvm::SmallDenseMap<QualType, unsigned, 16> UniqueTypes;
 
   bool Ambiguous = false;
   bool HasTag = false, HasFunction = false, HasNonFunction = false;
@@ -398,29 +430,41 @@ void LookupResult::resolveKind() {
       continue;
     }
 
+    llvm::Optional<unsigned> ExistingI;
+
     // Redeclarations of types via typedef can occur both within a scope
     // and, through using declarations and directives, across scopes. There is
     // no ambiguity if they all refer to the same type, so unique based on the
     // canonical type.
     if (TypeDecl *TD = dyn_cast<TypeDecl>(D)) {
+      // FIXME: Why are nested type declarations treated differently?
       if (!TD->getDeclContext()->isRecord()) {
         QualType T = getSema().Context.getTypeDeclType(TD);
-        if (!UniqueTypes.insert(getSema().Context.getCanonicalType(T)).second) {
-          // The type is not unique; pull something off the back and continue
-          // at this index.
-          Decls[I] = Decls[--N];
-          continue;
+        auto UniqueResult = UniqueTypes.insert(
+            std::make_pair(getSema().Context.getCanonicalType(T), I));
+        if (!UniqueResult.second) {
+          // The type is not unique.
+          ExistingI = UniqueResult.first->second;
         }
       }
     }
 
-    if (!Unique.insert(D).second) {
-      // If it's not unique, pull something off the back (and
-      // continue at this index).
-      // FIXME: This is wrong. We need to take the more recent declaration in
-      // order to get the right type, default arguments, etc. We also need to
-      // prefer visible declarations to hidden ones (for redeclaration lookup
-      // in modules builds).
+    // For non-type declarations, check for a prior lookup result naming this
+    // canonical declaration.
+    if (!ExistingI) {
+      auto UniqueResult = Unique.insert(std::make_pair(D, I));
+      if (!UniqueResult.second) {
+        // We've seen this entity before.
+        ExistingI = UniqueResult.first->second;
+      }
+    }
+
+    if (ExistingI) {
+      // This is not a unique lookup result. Pick one of the results and
+      // discard the other.
+      if (isPreferredLookupResult(getLookupKind(), Decls[I],
+                                  Decls[*ExistingI]))
+        Decls[*ExistingI] = Decls[I];
       Decls[I] = Decls[--N];
       continue;
     }
@@ -1228,13 +1272,17 @@ Module *Sema::getOwningModule(Decl *Entity) {
 }
 
 void Sema::makeMergedDefinitionVisible(NamedDecl *ND, SourceLocation Loc) {
-  // FIXME: If ND is a template declaration, make the template parameters
-  // visible too. They're not (necessarily) within its DeclContext.
   if (auto *M = PP.getModuleContainingLocation(Loc))
     Context.mergeDefinitionIntoModule(ND, M);
   else
     // We're not building a module; just make the definition visible.
     ND->setHidden(false);
+
+  // If ND is a template declaration, make the template parameters
+  // visible too. They're not (necessarily) within a mergeable DeclContext.
+  if (auto *TD = dyn_cast<TemplateDecl>(ND))
+    for (auto *Param : *TD->getTemplateParameters())
+      makeMergedDefinitionVisible(Param, Loc);
 }
 
 /// \brief Find the module in which the given declaration was defined.
@@ -1285,7 +1333,9 @@ bool Sema::hasVisibleMergedDefinition(NamedDecl *Def) {
 }
 
 template<typename ParmDecl>
-static bool hasVisibleDefaultArgument(Sema &S, const ParmDecl *D) {
+static bool
+hasVisibleDefaultArgument(Sema &S, const ParmDecl *D,
+                          llvm::SmallVectorImpl<Module *> *Modules) {
   if (!D->hasDefaultArgument())
     return false;
 
@@ -1294,18 +1344,27 @@ static bool hasVisibleDefaultArgument(Sema &S, const ParmDecl *D) {
     if (!DefaultArg.isInherited() && S.isVisible(D))
       return true;
 
+    if (!DefaultArg.isInherited() && Modules) {
+      auto *NonConstD = const_cast<ParmDecl*>(D);
+      Modules->push_back(S.getOwningModule(NonConstD));
+      const auto &Merged = S.Context.getModulesWithMergedDefinition(NonConstD);
+      Modules->insert(Modules->end(), Merged.begin(), Merged.end());
+    }
+
     // If there was a previous default argument, maybe its parameter is visible.
     D = DefaultArg.getInheritedFrom();
   }
   return false;
 }
 
-bool Sema::hasVisibleDefaultArgument(const NamedDecl *D) {
+bool Sema::hasVisibleDefaultArgument(const NamedDecl *D,
+                                     llvm::SmallVectorImpl<Module *> *Modules) {
   if (auto *P = dyn_cast<TemplateTypeParmDecl>(D))
-    return ::hasVisibleDefaultArgument(*this, P);
+    return ::hasVisibleDefaultArgument(*this, P, Modules);
   if (auto *P = dyn_cast<NonTypeTemplateParmDecl>(D))
-    return ::hasVisibleDefaultArgument(*this, P);
-  return ::hasVisibleDefaultArgument(*this, cast<TemplateTemplateParmDecl>(D));
+    return ::hasVisibleDefaultArgument(*this, P, Modules);
+  return ::hasVisibleDefaultArgument(*this, cast<TemplateTemplateParmDecl>(D),
+                                     Modules);
 }
 
 /// \brief Determine whether a declaration is visible to name lookup.
@@ -1664,12 +1723,10 @@ static bool LookupQualifiedNameInUsingDirectives(Sema &S, LookupResult &R,
 
 /// \brief Callback that looks for any member of a class with the given name.
 static bool LookupAnyMember(const CXXBaseSpecifier *Specifier,
-                            CXXBasePath &Path,
-                            void *Name) {
+                            CXXBasePath &Path, DeclarationName Name) {
   RecordDecl *BaseRecord = Specifier->getType()->getAs<RecordType>()->getDecl();
 
-  DeclarationName N = DeclarationName::getFromOpaquePtr(Name);
-  Path.Decls = BaseRecord->lookup(N);
+  Path.Decls = BaseRecord->lookup(Name);
   return !Path.Decls.empty();
 }
 
@@ -1787,7 +1844,8 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
   Paths.setOrigin(LookupRec);
 
   // Look for this member in our base classes
-  CXXRecordDecl::BaseMatchesCallback *BaseCallback = nullptr;
+  bool (*BaseCallback)(const CXXBaseSpecifier *Specifier, CXXBasePath &Path,
+                       DeclarationName Name) = nullptr;
   switch (R.getLookupKind()) {
     case LookupObjCImplicitSelfParam:
     case LookupOrdinaryName:
@@ -1820,8 +1878,12 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
       break;
   }
 
-  if (!LookupRec->lookupInBases(BaseCallback,
-                                R.getLookupName().getAsOpaquePtr(), Paths))
+  DeclarationName Name = R.getLookupName();
+  if (!LookupRec->lookupInBases(
+          [=](const CXXBaseSpecifier *Specifier, CXXBasePath &Path) {
+            return BaseCallback(Specifier, Path, Name);
+          },
+          Paths))
     return false;
 
   R.setNamingClass(LookupRec);
@@ -4230,7 +4292,7 @@ std::unique_ptr<TypoCorrectionConsumer> Sema::makeTypoCorrectionConsumer(
   // Don't try to correct the identifier "vector" when in AltiVec mode.
   // TODO: Figure out why typo correction misbehaves in this case, fix it, and
   // remove this workaround.
-  if (getLangOpts().AltiVec && Typo->isStr("vector"))
+  if ((getLangOpts().AltiVec || getLangOpts().ZVector) && Typo->isStr("vector"))
     return nullptr;
 
   // Provide a stop gap for files that are just seriously broken.  Trying
@@ -4676,33 +4738,59 @@ void Sema::diagnoseMissingImport(SourceLocation Loc, NamedDecl *Decl,
   Module *Owner = getOwningModule(Decl);
   assert(Owner && "definition of hidden declaration is not in a module");
 
+  llvm::SmallVector<Module*, 8> OwningModules;
+  OwningModules.push_back(Owner);
   auto Merged = Context.getModulesWithMergedDefinition(Decl);
-  if (!Merged.empty()) {
+  OwningModules.insert(OwningModules.end(), Merged.begin(), Merged.end());
+
+  diagnoseMissingImport(Loc, Decl, Decl->getLocation(), OwningModules,
+                        NeedDefinition ? MissingImportKind::Definition
+                                       : MissingImportKind::Declaration,
+                        Recover);
+}
+
+void Sema::diagnoseMissingImport(SourceLocation UseLoc, NamedDecl *Decl,
+                                 SourceLocation DeclLoc,
+                                 ArrayRef<Module *> Modules,
+                                 MissingImportKind MIK, bool Recover) {
+  assert(!Modules.empty());
+
+  if (Modules.size() > 1) {
     std::string ModuleList;
-    ModuleList += "\n        ";
-    ModuleList += Owner->getFullModuleName();
     unsigned N = 0;
-    for (Module *M : Merged) {
+    for (Module *M : Modules) {
       ModuleList += "\n        ";
-      if (++N == 5 && Merged.size() != N) {
+      if (++N == 5 && N != Modules.size()) {
         ModuleList += "[...]";
         break;
       }
       ModuleList += M->getFullModuleName();
     }
 
-    Diag(Loc, diag::err_module_private_declaration_multiple)
-      << NeedDefinition << Decl << ModuleList;
+    Diag(UseLoc, diag::err_module_unimported_use_multiple)
+      << (int)MIK << Decl << ModuleList;
   } else {
-    Diag(Loc, diag::err_module_private_declaration)
-      << NeedDefinition << Decl << Owner->getFullModuleName();
+    Diag(UseLoc, diag::err_module_unimported_use)
+      << (int)MIK << Decl << Modules[0]->getFullModuleName();
   }
-  Diag(Decl->getLocation(), NeedDefinition ? diag::note_previous_definition
-                                           : diag::note_previous_declaration);
+
+  unsigned DiagID;
+  switch (MIK) {
+  case MissingImportKind::Declaration:
+    DiagID = diag::note_previous_declaration;
+    break;
+  case MissingImportKind::Definition:
+    DiagID = diag::note_previous_definition;
+    break;
+  case MissingImportKind::DefaultArgument:
+    DiagID = diag::note_default_argument_declared_here;
+    break;
+  }
+  Diag(DeclLoc, DiagID);
 
   // Try to recover by implicitly importing this module.
   if (Recover)
-    createImplicitModuleImportForErrorRecovery(Loc, Owner);
+    createImplicitModuleImportForErrorRecovery(UseLoc, Modules[0]);
 }
 
 /// \brief Diagnose a successfully-corrected typo. Separated from the correction

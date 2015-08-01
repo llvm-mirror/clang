@@ -1031,6 +1031,8 @@ bool Sema::CheckX86BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall) {
   unsigned i = 0, l = 0, u = 0;
   switch (BuiltinID) {
   default: return false;
+  case X86::BI__builtin_cpu_supports:
+    return SemaBuiltinCpuSupports(TheCall);
   case X86::BI_mm_prefetch: i = 1; l = 0; u = 3; break;
   case X86::BI__builtin_ia32_sha1rnds4: i = 2, l = 0; u = 3; break;
   case X86::BI__builtin_ia32_vpermil2pd:
@@ -1115,6 +1117,13 @@ bool Sema::getFormatStringInfo(const FormatAttr *Format, bool IsCXXMember,
 /// \brief Returns true if the value evaluates to null.
 static bool CheckNonNullExpr(Sema &S,
                              const Expr *Expr) {
+  // If the expression has non-null type, it doesn't evaluate to null.
+  if (auto nullability
+        = Expr->IgnoreImplicit()->getType()->getNullability(S.Context)) {
+    if (*nullability == NullabilityKind::NonNull)
+      return false;
+  }
+
   // As a special case, transparent unions initialized with zero are
   // considered null for the purposes of the nonnull attribute.
   if (const RecordType *UT = Expr->getType()->getAsUnionType()) {
@@ -1190,56 +1199,111 @@ DiagnoseCStringFormatDirectiveInCFAPI(Sema &S,
   }
 }
 
+/// Determine whether the given type has a non-null nullability annotation.
+static bool isNonNullType(ASTContext &ctx, QualType type) {
+  if (auto nullability = type->getNullability(ctx))
+    return *nullability == NullabilityKind::NonNull;
+     
+  return false;
+}
+
 static void CheckNonNullArguments(Sema &S,
                                   const NamedDecl *FDecl,
+                                  const FunctionProtoType *Proto,
                                   ArrayRef<const Expr *> Args,
                                   SourceLocation CallSiteLoc) {
+  assert((FDecl || Proto) && "Need a function declaration or prototype");
+
   // Check the attributes attached to the method/function itself.
   llvm::SmallBitVector NonNullArgs;
-  for (const auto *NonNull : FDecl->specific_attrs<NonNullAttr>()) {
-    if (!NonNull->args_size()) {
-      // Easy case: all pointer arguments are nonnull.
-      for (const auto *Arg : Args)
-        if (S.isValidPointerAttrType(Arg->getType()))
-          CheckNonNullArgument(S, Arg, CallSiteLoc);
-      return;
-    }
+  if (FDecl) {
+    // Handle the nonnull attribute on the function/method declaration itself.
+    for (const auto *NonNull : FDecl->specific_attrs<NonNullAttr>()) {
+      if (!NonNull->args_size()) {
+        // Easy case: all pointer arguments are nonnull.
+        for (const auto *Arg : Args)
+          if (S.isValidPointerAttrType(Arg->getType()))
+            CheckNonNullArgument(S, Arg, CallSiteLoc);
+        return;
+      }
 
-    for (unsigned Val : NonNull->args()) {
-      if (Val >= Args.size())
-        continue;
-      if (NonNullArgs.empty())
-        NonNullArgs.resize(Args.size());
-      NonNullArgs.set(Val);
+      for (unsigned Val : NonNull->args()) {
+        if (Val >= Args.size())
+          continue;
+        if (NonNullArgs.empty())
+          NonNullArgs.resize(Args.size());
+        NonNullArgs.set(Val);
+      }
     }
   }
 
-  // Check the attributes on the parameters.
-  ArrayRef<ParmVarDecl*> parms;
-  if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(FDecl))
-    parms = FD->parameters();
-  else if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(FDecl))
-    parms = MD->parameters();
+  if (FDecl && (isa<FunctionDecl>(FDecl) || isa<ObjCMethodDecl>(FDecl))) {
+    // Handle the nonnull attribute on the parameters of the
+    // function/method.
+    ArrayRef<ParmVarDecl*> parms;
+    if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(FDecl))
+      parms = FD->parameters();
+    else
+      parms = cast<ObjCMethodDecl>(FDecl)->parameters();
+    
+    unsigned ParamIndex = 0;
+    for (ArrayRef<ParmVarDecl*>::iterator I = parms.begin(), E = parms.end();
+         I != E; ++I, ++ParamIndex) {
+      const ParmVarDecl *PVD = *I;
+      if (PVD->hasAttr<NonNullAttr>() || 
+          isNonNullType(S.Context, PVD->getType())) {
+        if (NonNullArgs.empty())
+          NonNullArgs.resize(Args.size());
 
-  unsigned ArgIndex = 0;
-  for (ArrayRef<ParmVarDecl*>::iterator I = parms.begin(), E = parms.end();
-       I != E; ++I, ++ArgIndex) {
-    const ParmVarDecl *PVD = *I;
-    if (PVD->hasAttr<NonNullAttr>() ||
-        (ArgIndex < NonNullArgs.size() && NonNullArgs[ArgIndex]))
-      CheckNonNullArgument(S, Args[ArgIndex], CallSiteLoc);
+        NonNullArgs.set(ParamIndex);
+      }
+    }
+  } else {
+    // If we have a non-function, non-method declaration but no
+    // function prototype, try to dig out the function prototype.
+    if (!Proto) {
+      if (const ValueDecl *VD = dyn_cast<ValueDecl>(FDecl)) {
+        QualType type = VD->getType().getNonReferenceType();
+        if (auto pointerType = type->getAs<PointerType>())
+          type = pointerType->getPointeeType();
+        else if (auto blockType = type->getAs<BlockPointerType>())
+          type = blockType->getPointeeType();
+        // FIXME: data member pointers?
+
+        // Dig out the function prototype, if there is one.
+        Proto = type->getAs<FunctionProtoType>();
+      } 
+    }
+
+    // Fill in non-null argument information from the nullability
+    // information on the parameter types (if we have them).
+    if (Proto) {
+      unsigned Index = 0;
+      for (auto paramType : Proto->getParamTypes()) {
+        if (isNonNullType(S.Context, paramType)) {
+          if (NonNullArgs.empty())
+            NonNullArgs.resize(Args.size());
+          
+          NonNullArgs.set(Index);
+        }
+        
+        ++Index;
+      }
+    }
   }
 
-  // In case this is a variadic call, check any remaining arguments.
-  for (/**/; ArgIndex < NonNullArgs.size(); ++ArgIndex)
+  // Check for non-null arguments.
+  for (unsigned ArgIndex = 0, ArgIndexEnd = NonNullArgs.size(); 
+       ArgIndex != ArgIndexEnd; ++ArgIndex) {
     if (NonNullArgs[ArgIndex])
       CheckNonNullArgument(S, Args[ArgIndex], CallSiteLoc);
+  }
 }
 
 /// Handles the checks for format strings, non-POD arguments to vararg
 /// functions, and NULL arguments passed to non-NULL parameters.
-void Sema::checkCall(NamedDecl *FDecl, ArrayRef<const Expr *> Args,
-                     unsigned NumParams, bool IsMemberFunction,
+void Sema::checkCall(NamedDecl *FDecl, const FunctionProtoType *Proto,
+                     ArrayRef<const Expr *> Args, bool IsMemberFunction,
                      SourceLocation Loc, SourceRange Range,
                      VariadicCallType CallType) {
   // FIXME: We should check as much as we can in the template definition.
@@ -1261,6 +1325,13 @@ void Sema::checkCall(NamedDecl *FDecl, ArrayRef<const Expr *> Args,
   // Refuse POD arguments that weren't caught by the format string
   // checks above.
   if (CallType != VariadicDoesNotApply) {
+    unsigned NumParams = Proto ? Proto->getNumParams()
+                       : FDecl && isa<FunctionDecl>(FDecl)
+                           ? cast<FunctionDecl>(FDecl)->getNumParams()
+                       : FDecl && isa<ObjCMethodDecl>(FDecl)
+                           ? cast<ObjCMethodDecl>(FDecl)->param_size()
+                       : 0;
+
     for (unsigned ArgIdx = NumParams; ArgIdx < Args.size(); ++ArgIdx) {
       // Args[ArgIdx] can be null in malformed code.
       if (const Expr *Arg = Args[ArgIdx]) {
@@ -1270,12 +1341,14 @@ void Sema::checkCall(NamedDecl *FDecl, ArrayRef<const Expr *> Args,
     }
   }
 
-  if (FDecl) {
-    CheckNonNullArguments(*this, FDecl, Args, Loc);
+  if (FDecl || Proto) {
+    CheckNonNullArguments(*this, FDecl, Proto, Args, Loc);
 
     // Type safety checking.
-    for (const auto *I : FDecl->specific_attrs<ArgumentWithTypeTagAttr>())
-      CheckArgumentWithTypeTag(I, Args.data());
+    if (FDecl) {
+      for (const auto *I : FDecl->specific_attrs<ArgumentWithTypeTagAttr>())
+        CheckArgumentWithTypeTag(I, Args.data());
+    }
   }
 }
 
@@ -1287,8 +1360,8 @@ void Sema::CheckConstructorCall(FunctionDecl *FDecl,
                                 SourceLocation Loc) {
   VariadicCallType CallType =
     Proto->isVariadic() ? VariadicConstructor : VariadicDoesNotApply;
-  checkCall(FDecl, Args, Proto->getNumParams(),
-            /*IsMemberFunction=*/true, Loc, SourceRange(), CallType);
+  checkCall(FDecl, Proto, Args, /*IsMemberFunction=*/true, Loc, SourceRange(), 
+            CallType);
 }
 
 /// CheckFunctionCall - Check a direct function call for various correctness
@@ -1301,7 +1374,6 @@ bool Sema::CheckFunctionCall(FunctionDecl *FDecl, CallExpr *TheCall,
                           IsMemberOperatorCall;
   VariadicCallType CallType = getVariadicCallType(FDecl, Proto,
                                                   TheCall->getCallee());
-  unsigned NumParams = Proto ? Proto->getNumParams() : 0;
   Expr** Args = TheCall->getArgs();
   unsigned NumArgs = TheCall->getNumArgs();
   if (IsMemberOperatorCall) {
@@ -1311,7 +1383,7 @@ bool Sema::CheckFunctionCall(FunctionDecl *FDecl, CallExpr *TheCall,
     ++Args;
     --NumArgs;
   }
-  checkCall(FDecl, llvm::makeArrayRef(Args, NumArgs), NumParams,
+  checkCall(FDecl, Proto, llvm::makeArrayRef(Args, NumArgs), 
             IsMemberFunction, TheCall->getRParenLoc(),
             TheCall->getCallee()->getSourceRange(), CallType);
 
@@ -1345,9 +1417,9 @@ bool Sema::CheckObjCMethodCall(ObjCMethodDecl *Method, SourceLocation lbrac,
   VariadicCallType CallType =
       Method->isVariadic() ? VariadicMethod : VariadicDoesNotApply;
 
-  checkCall(Method, Args, Method->param_size(),
-            /*IsMemberFunction=*/false,
-            lbrac, Method->getSourceRange(), CallType);
+  checkCall(Method, nullptr, Args,
+            /*IsMemberFunction=*/false, lbrac, Method->getSourceRange(), 
+            CallType);
 
   return false;
 }
@@ -1356,13 +1428,14 @@ bool Sema::CheckPointerCall(NamedDecl *NDecl, CallExpr *TheCall,
                             const FunctionProtoType *Proto) {
   QualType Ty;
   if (const auto *V = dyn_cast<VarDecl>(NDecl))
-    Ty = V->getType();
+    Ty = V->getType().getNonReferenceType();
   else if (const auto *F = dyn_cast<FieldDecl>(NDecl))
-    Ty = F->getType();
+    Ty = F->getType().getNonReferenceType();
   else
     return false;
 
-  if (!Ty->isBlockPointerType() && !Ty->isFunctionPointerType())
+  if (!Ty->isBlockPointerType() && !Ty->isFunctionPointerType() &&
+      !Ty->isFunctionProtoType())
     return false;
 
   VariadicCallType CallType;
@@ -1373,11 +1446,10 @@ bool Sema::CheckPointerCall(NamedDecl *NDecl, CallExpr *TheCall,
   } else { // Ty->isFunctionPointerType()
     CallType = VariadicFunction;
   }
-  unsigned NumParams = Proto ? Proto->getNumParams() : 0;
 
-  checkCall(NDecl, llvm::makeArrayRef(TheCall->getArgs(),
-                                      TheCall->getNumArgs()),
-            NumParams, /*IsMemberFunction=*/false, TheCall->getRParenLoc(),
+  checkCall(NDecl, Proto,
+            llvm::makeArrayRef(TheCall->getArgs(), TheCall->getNumArgs()),
+            /*IsMemberFunction=*/false, TheCall->getRParenLoc(),
             TheCall->getCallee()->getSourceRange(), CallType);
 
   return false;
@@ -1388,11 +1460,9 @@ bool Sema::CheckPointerCall(NamedDecl *NDecl, CallExpr *TheCall,
 bool Sema::CheckOtherCall(CallExpr *TheCall, const FunctionProtoType *Proto) {
   VariadicCallType CallType = getVariadicCallType(/*FDecl=*/nullptr, Proto,
                                                   TheCall->getCallee());
-  unsigned NumParams = Proto ? Proto->getNumParams() : 0;
-
-  checkCall(/*FDecl=*/nullptr,
+  checkCall(/*FDecl=*/nullptr, Proto,
             llvm::makeArrayRef(TheCall->getArgs(), TheCall->getNumArgs()),
-            NumParams, /*IsMemberFunction=*/false, TheCall->getRParenLoc(),
+            /*IsMemberFunction=*/false, TheCall->getRParenLoc(),
             TheCall->getCallee()->getSourceRange(), CallType);
 
   return false;
@@ -2714,6 +2784,26 @@ bool Sema::SemaBuiltinARMSpecialReg(unsigned BuiltinID, CallExpr *TheCall,
   return false;
 }
 
+/// SemaBuiltinCpuSupports - Handle __builtin_cpu_supports(char *).
+/// This checks that the target supports __builtin_cpu_supports and
+/// that the string argument is constant and valid.
+bool Sema::SemaBuiltinCpuSupports(CallExpr *TheCall) {
+  Expr *Arg = TheCall->getArg(0);
+
+  // Check if the argument is a string literal.
+  if (!isa<StringLiteral>(Arg->IgnoreParenImpCasts()))
+    return Diag(TheCall->getLocStart(), diag::err_expr_not_string_literal)
+           << Arg->getSourceRange();
+
+  // Check the contents of the string.
+  StringRef Feature =
+      cast<StringLiteral>(Arg->IgnoreParenImpCasts())->getString();
+  if (!Context.getTargetInfo().validateCpuSupports(Feature))
+    return Diag(TheCall->getLocStart(), diag::err_invalid_cpu_supports)
+           << Arg->getSourceRange();
+  return false;
+}
+
 /// SemaBuiltinLongjmp - Handle __builtin_longjmp(void *env[5], int val).
 /// This checks that the target supports __builtin_longjmp and
 /// that val is a constant 1.
@@ -3482,8 +3572,18 @@ public:
                          const char *startSpecifier, unsigned specifierLen);
   bool checkForCStrMembers(const analyze_printf::ArgType &AT,
                            const Expr *E);
+                           
+  void HandleEmptyObjCModifierFlag(const char *startFlag,
+                                   unsigned flagLen) override;
 
-};  
+  void HandleInvalidObjCModifierFlag(const char *startFlag,
+                                            unsigned flagLen) override;
+
+  void HandleObjCFlagsWithNonObjCConversion(const char *flagsStart,
+                                           const char *flagsEnd,
+                                           const char *conversionPosition) 
+                                             override;
+};
 }
 
 bool CheckPrintfHandler::HandleInvalidPrintfConversionSpecifier(
@@ -3601,6 +3701,41 @@ void CheckPrintfHandler::HandleIgnoredFlag(
                        getSpecifierRange(startSpecifier, specifierLen),
                        FixItHint::CreateRemoval(
                          getSpecifierRange(ignoredFlag.getPosition(), 1)));
+}
+
+//  void EmitFormatDiagnostic(PartialDiagnostic PDiag, SourceLocation StringLoc,
+//                            bool IsStringLocation, Range StringRange,
+//                            ArrayRef<FixItHint> Fixit = None);
+                            
+void CheckPrintfHandler::HandleEmptyObjCModifierFlag(const char *startFlag,
+                                                     unsigned flagLen) {
+  // Warn about an empty flag.
+  EmitFormatDiagnostic(S.PDiag(diag::warn_printf_empty_objc_flag),
+                       getLocationOfByte(startFlag),
+                       /*IsStringLocation*/true,
+                       getSpecifierRange(startFlag, flagLen));
+}
+
+void CheckPrintfHandler::HandleInvalidObjCModifierFlag(const char *startFlag,
+                                                       unsigned flagLen) {
+  // Warn about an invalid flag.
+  auto Range = getSpecifierRange(startFlag, flagLen);
+  StringRef flag(startFlag, flagLen);
+  EmitFormatDiagnostic(S.PDiag(diag::warn_printf_invalid_objc_flag) << flag,
+                      getLocationOfByte(startFlag),
+                      /*IsStringLocation*/true,
+                      Range, FixItHint::CreateRemoval(Range));
+}
+
+void CheckPrintfHandler::HandleObjCFlagsWithNonObjCConversion(
+    const char *flagsStart, const char *flagsEnd, const char *conversionPosition) {
+    // Warn about using '[...]' without a '@' conversion.
+    auto Range = getSpecifierRange(flagsStart, flagsEnd - flagsStart + 1);
+    auto diag = diag::warn_printf_ObjCflags_without_ObjCConversion;
+    EmitFormatDiagnostic(S.PDiag(diag) << StringRef(conversionPosition, 1),
+                         getLocationOfByte(conversionPosition),
+                         /*IsStringLocation*/true,
+                         Range, FixItHint::CreateRemoval(Range));
 }
 
 // Determines if the specified is a C++ class or struct containing
@@ -5680,7 +5815,8 @@ Sema::CheckReturnValExpr(Expr *RetValExp, QualType lhsType,
   CheckReturnStackAddr(*this, RetValExp, lhsType, ReturnLoc);
 
   // Check if the return value is null but should not be.
-  if (Attrs && hasSpecificAttr<ReturnsNonNullAttr>(*Attrs) &&
+  if (((Attrs && hasSpecificAttr<ReturnsNonNullAttr>(*Attrs)) ||
+       (!isObjCMethod && isNonNullType(Context, lhsType))) &&
       CheckNonNullExpr(*this, RetValExp))
     Diag(ReturnLoc, diag::warn_null_ret)
       << (isObjCMethod ? 1 : 0) << RetValExp->getSourceRange();
@@ -6748,6 +6884,101 @@ static void DiagnoseNullConversion(Sema &S, Expr *E, QualType T,
                                       S.getFixItZeroLiteralForType(T, Loc));
 }
 
+static void checkObjCArrayLiteral(Sema &S, QualType TargetType,
+                                  ObjCArrayLiteral *ArrayLiteral);
+static void checkObjCDictionaryLiteral(Sema &S, QualType TargetType,
+                                       ObjCDictionaryLiteral *DictionaryLiteral);
+
+/// Check a single element within a collection literal against the
+/// target element type.
+static void checkObjCCollectionLiteralElement(Sema &S,
+                                              QualType TargetElementType,
+                                              Expr *Element,
+                                              unsigned ElementKind) {
+  // Skip a bitcast to 'id' or qualified 'id'.
+  if (auto ICE = dyn_cast<ImplicitCastExpr>(Element)) {
+    if (ICE->getCastKind() == CK_BitCast &&
+        ICE->getSubExpr()->getType()->getAs<ObjCObjectPointerType>())
+      Element = ICE->getSubExpr();
+  }
+
+  QualType ElementType = Element->getType();
+  ExprResult ElementResult(Element);
+  if (ElementType->getAs<ObjCObjectPointerType>() &&
+      S.CheckSingleAssignmentConstraints(TargetElementType,
+                                         ElementResult,
+                                         false, false)
+        != Sema::Compatible) {
+    S.Diag(Element->getLocStart(),
+           diag::warn_objc_collection_literal_element)
+      << ElementType << ElementKind << TargetElementType
+      << Element->getSourceRange();
+  }
+
+  if (auto ArrayLiteral = dyn_cast<ObjCArrayLiteral>(Element))
+    checkObjCArrayLiteral(S, TargetElementType, ArrayLiteral);
+  else if (auto DictionaryLiteral = dyn_cast<ObjCDictionaryLiteral>(Element))
+    checkObjCDictionaryLiteral(S, TargetElementType, DictionaryLiteral);
+}
+
+/// Check an Objective-C array literal being converted to the given
+/// target type.
+static void checkObjCArrayLiteral(Sema &S, QualType TargetType,
+                                  ObjCArrayLiteral *ArrayLiteral) {
+  if (!S.NSArrayDecl)
+    return;
+
+  const auto *TargetObjCPtr = TargetType->getAs<ObjCObjectPointerType>();
+  if (!TargetObjCPtr)
+    return;
+
+  if (TargetObjCPtr->isUnspecialized() ||
+      TargetObjCPtr->getInterfaceDecl()->getCanonicalDecl()
+        != S.NSArrayDecl->getCanonicalDecl())
+    return;
+
+  auto TypeArgs = TargetObjCPtr->getTypeArgs();
+  if (TypeArgs.size() != 1)
+    return;
+
+  QualType TargetElementType = TypeArgs[0];
+  for (unsigned I = 0, N = ArrayLiteral->getNumElements(); I != N; ++I) {
+    checkObjCCollectionLiteralElement(S, TargetElementType,
+                                      ArrayLiteral->getElement(I),
+                                      0);
+  }
+}
+
+/// Check an Objective-C dictionary literal being converted to the given
+/// target type.
+static void checkObjCDictionaryLiteral(
+              Sema &S, QualType TargetType,
+              ObjCDictionaryLiteral *DictionaryLiteral) {
+  if (!S.NSDictionaryDecl)
+    return;
+
+  const auto *TargetObjCPtr = TargetType->getAs<ObjCObjectPointerType>();
+  if (!TargetObjCPtr)
+    return;
+
+  if (TargetObjCPtr->isUnspecialized() ||
+      TargetObjCPtr->getInterfaceDecl()->getCanonicalDecl()
+        != S.NSDictionaryDecl->getCanonicalDecl())
+    return;
+
+  auto TypeArgs = TargetObjCPtr->getTypeArgs();
+  if (TypeArgs.size() != 2)
+    return;
+
+  QualType TargetKeyType = TypeArgs[0];
+  QualType TargetObjectType = TypeArgs[1];
+  for (unsigned I = 0, N = DictionaryLiteral->getNumElements(); I != N; ++I) {
+    auto Element = DictionaryLiteral->getKeyValueElement(I);
+    checkObjCCollectionLiteralElement(S, TargetKeyType, Element.Key, 1);
+    checkObjCCollectionLiteralElement(S, TargetObjectType, Element.Value, 2);
+  }
+}
+
 void CheckImplicitConversion(Sema &S, Expr *E, QualType T,
                              SourceLocation CC, bool *ICContext = nullptr) {
   if (E->isTypeDependent() || E->isValueDependent()) return;
@@ -6786,6 +7017,13 @@ void CheckImplicitConversion(Sema &S, Expr *E, QualType T,
                                      SourceRange(CC));
     }
   }
+
+  // Check implicit casts from Objective-C collection literals to specialized
+  // collection types, e.g., NSArray<NSString *> *.
+  if (auto *ArrayLiteral = dyn_cast<ObjCArrayLiteral>(E))
+    checkObjCArrayLiteral(S, QualType(Target, 0), ArrayLiteral);
+  else if (auto *DictionaryLiteral = dyn_cast<ObjCDictionaryLiteral>(E))
+    checkObjCDictionaryLiteral(S, QualType(Target, 0), DictionaryLiteral);
 
   // Strip vector types.
   if (isa<VectorType>(Source)) {
@@ -7104,8 +7342,8 @@ void AnalyzeImplicitConversions(Sema &S, Expr *OrigE, SourceLocation CC) {
   CC = E->getExprLoc();
   BinaryOperator *BO = dyn_cast<BinaryOperator>(E);
   bool IsLogicalAndOperator = BO && BO->getOpcode() == BO_LAnd;
-  for (Stmt::child_range I = E->children(); I; ++I) {
-    Expr *ChildExpr = dyn_cast_or_null<Expr>(*I);
+  for (Stmt *SubStmt : E->children()) {
+    Expr *ChildExpr = dyn_cast_or_null<Expr>(SubStmt);
     if (!ChildExpr)
       continue;
 

@@ -4,6 +4,7 @@
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -std=c++11 -DLAMBDA -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=LAMBDA %s
 // RUN: %clang_cc1 -verify -fopenmp -x c++ -fblocks -DBLOCKS -triple x86_64-apple-darwin10 -emit-llvm %s -o - | FileCheck -check-prefix=BLOCKS %s
 // expected-no-diagnostics
+// REQUIRES: x86-registered-target
 #ifndef HEADER
 #define HEADER
 
@@ -82,10 +83,10 @@ int main() {
     // LAMBDA: [[G_PRIVATE_ADDR:%.+]] = alloca i{{[0-9]+}},
     // LAMBDA: [[G_VAL:%.+]] = load volatile i{{[0-9]+}}, i{{[0-9]+}}* [[G]]
     // LAMBDA: store i{{[0-9]+}} [[G_VAL]], i{{[0-9]+}}* [[G_PRIVATE_ADDR]]
-    // LAMBDA: call i32 @__kmpc_cancel_barrier(
+    // LAMBDA: call void @__kmpc_barrier(
     g = 1;
     // LAMBDA: call void @__kmpc_for_static_init_4(
-    // LAMBDA: store volatile i{{[0-9]+}} 1, i{{[0-9]+}}* [[G_PRIVATE_ADDR]],
+    // LAMBDA: store i{{[0-9]+}} 1, i{{[0-9]+}}* [[G_PRIVATE_ADDR]],
     // LAMBDA: [[G_PRIVATE_ADDR_REF:%.+]] = getelementptr inbounds %{{.+}}, %{{.+}}* [[ARG:%.+]], i{{[0-9]+}} 0, i{{[0-9]+}} 0
     // LAMBDA: store i{{[0-9]+}}* [[G_PRIVATE_ADDR]], i{{[0-9]+}}** [[G_PRIVATE_ADDR_REF]]
     // LAMBDA: call void [[INNER_LAMBDA:@.+]](%{{.+}}* [[ARG]])
@@ -98,7 +99,7 @@ int main() {
       // LAMBDA: [[ARG_PTR:%.+]] = load %{{.+}}*, %{{.+}}** [[ARG_PTR_REF]]
       // LAMBDA: [[G_PTR_REF:%.+]] = getelementptr inbounds %{{.+}}, %{{.+}}* [[ARG_PTR]], i{{[0-9]+}} 0, i{{[0-9]+}} 0
       // LAMBDA: [[G_REF:%.+]] = load i{{[0-9]+}}*, i{{[0-9]+}}** [[G_PTR_REF]]
-      // LAMBDA: store volatile i{{[0-9]+}} 2, i{{[0-9]+}}* [[G_REF]]
+      // LAMBDA: store i{{[0-9]+}} 2, i{{[0-9]+}}* [[G_REF]]
     }();
   }
   }();
@@ -123,10 +124,10 @@ int main() {
     // BLOCKS: [[G_PRIVATE_ADDR:%.+]] = alloca i{{[0-9]+}},
     // BLOCKS: [[G_VAL:%.+]] = load volatile i{{[0-9]+}}, i{{[0-9]+}}* [[G]]
     // BLOCKS: store i{{[0-9]+}} [[G_VAL]], i{{[0-9]+}}* [[G_PRIVATE_ADDR]]
-    // BLOCKS: call i32 @__kmpc_cancel_barrier(
+    // BLOCKS: call void @__kmpc_barrier(
     g = 1;
     // BLOCKS: call void @__kmpc_for_static_init_4(
-    // BLOCKS: store volatile i{{[0-9]+}} 1, i{{[0-9]+}}* [[G_PRIVATE_ADDR]],
+    // BLOCKS: store i{{[0-9]+}} 1, i{{[0-9]+}}* [[G_PRIVATE_ADDR]],
     // BLOCKS-NOT: [[G]]{{[[^:word:]]}}
     // BLOCKS: i{{[0-9]+}}* [[G_PRIVATE_ADDR]]
     // BLOCKS-NOT: [[G]]{{[[^:word:]]}}
@@ -137,7 +138,7 @@ int main() {
       // BLOCKS: define {{.+}} void {{@.+}}(i8*
       g = 2;
       // BLOCKS-NOT: [[G]]{{[[^:word:]]}}
-      // BLOCKS: store volatile i{{[0-9]+}} 2, i{{[0-9]+}}*
+      // BLOCKS: store i{{[0-9]+}} 2, i{{[0-9]+}}*
       // BLOCKS-NOT: [[G]]{{[[^:word:]]}}
       // BLOCKS: ret
     }();
@@ -194,7 +195,7 @@ int main() {
 // CHECK: call {{.*}} [[ST_TY_DESTR]]([[ST_TY]]* [[ST_TY_TEMP]])
 
 // Synchronization for initialization.
-// CHECK: call i32 @__kmpc_cancel_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]], i{{[0-9]+}} [[GTID]])
+// CHECK: call void @__kmpc_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]], i{{[0-9]+}} [[GTID]])
 
 // CHECK: call void @__kmpc_for_static_init_4(
 // CHECK: call void @__kmpc_for_static_fini(
@@ -202,7 +203,7 @@ int main() {
 // ~(firstprivate var), ~(firstprivate s_arr)
 // CHECK-DAG: call {{.*}} [[S_FLOAT_TY_DESTR]]([[S_FLOAT_TY]]* [[VAR_PRIV]])
 // CHECK-DAG: call {{.*}} [[S_FLOAT_TY_DESTR]]([[S_FLOAT_TY]]*
-// CHECK: call i32 @__kmpc_cancel_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]], i{{[0-9]+}} [[GTID]])
+// CHECK: call void @__kmpc_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]], i{{[0-9]+}} [[GTID]])
 
 // CHECK: = call {{.*}}i{{.+}} [[TMAIN_INT:@.+]]()
 
@@ -264,7 +265,7 @@ int main() {
 // Synchronization for initialization.
 // CHECK: [[GTID_REF:%.+]] = load i{{[0-9]+}}*, i{{[0-9]+}}** [[GTID_ADDR_ADDR]]
 // CHECK: [[GTID:%.+]] = load i{{[0-9]+}}, i{{[0-9]+}}* [[GTID_REF]]
-// CHECK: call i32 @__kmpc_cancel_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]], i{{[0-9]+}} [[GTID]])
+// CHECK: call void @__kmpc_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]], i{{[0-9]+}} [[GTID]])
 
 // CHECK: call void @__kmpc_for_static_init_4(
 // CHECK: call void @__kmpc_for_static_fini(

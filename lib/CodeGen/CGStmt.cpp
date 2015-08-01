@@ -222,6 +222,9 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
   case Stmt::OMPTaskwaitDirectiveClass:
     EmitOMPTaskwaitDirective(cast<OMPTaskwaitDirective>(*S));
     break;
+  case Stmt::OMPTaskgroupDirectiveClass:
+    EmitOMPTaskgroupDirective(cast<OMPTaskgroupDirective>(*S));
+    break;
   case Stmt::OMPFlushDirectiveClass:
     EmitOMPFlushDirective(cast<OMPFlushDirective>(*S));
     break;
@@ -236,6 +239,15 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
     break;
   case Stmt::OMPTeamsDirectiveClass:
     EmitOMPTeamsDirective(cast<OMPTeamsDirective>(*S));
+    break;
+  case Stmt::OMPCancellationPointDirectiveClass:
+    EmitOMPCancellationPointDirective(cast<OMPCancellationPointDirective>(*S));
+    break;
+  case Stmt::OMPCancelDirectiveClass:
+    EmitOMPCancelDirective(cast<OMPCancelDirective>(*S));
+    break;
+  case Stmt::OMPTargetDataDirectiveClass:
+    EmitOMPTargetDataDirective(cast<OMPTargetDataDirective>(*S));
     break;
   }
 }
@@ -581,100 +593,6 @@ void CodeGenFunction::EmitIfStmt(const IfStmt &S) {
   EmitBlock(ContBlock, true);
 }
 
-void CodeGenFunction::EmitCondBrHints(llvm::LLVMContext &Context,
-                                      llvm::BranchInst *CondBr,
-                                      ArrayRef<const Attr *> Attrs) {
-  // Return if there are no hints.
-  if (Attrs.empty())
-    return;
-
-  // Add vectorize and unroll hints to the metadata on the conditional branch.
-  //
-  // FIXME: Should this really start with a size of 1?
-  SmallVector<llvm::Metadata *, 2> Metadata(1);
-  for (const auto *Attr : Attrs) {
-    const LoopHintAttr *LH = dyn_cast<LoopHintAttr>(Attr);
-
-    // Skip non loop hint attributes
-    if (!LH)
-      continue;
-
-    LoopHintAttr::OptionType Option = LH->getOption();
-    LoopHintAttr::LoopHintState State = LH->getState();
-    const char *MetadataName;
-    switch (Option) {
-    case LoopHintAttr::Vectorize:
-    case LoopHintAttr::VectorizeWidth:
-      MetadataName = "llvm.loop.vectorize.width";
-      break;
-    case LoopHintAttr::Interleave:
-    case LoopHintAttr::InterleaveCount:
-      MetadataName = "llvm.loop.interleave.count";
-      break;
-    case LoopHintAttr::Unroll:
-      // With the unroll loop hint, a non-zero value indicates full unrolling.
-      MetadataName = State == LoopHintAttr::Disable ? "llvm.loop.unroll.disable"
-                                                    : "llvm.loop.unroll.full";
-      break;
-    case LoopHintAttr::UnrollCount:
-      MetadataName = "llvm.loop.unroll.count";
-      break;
-    }
-
-    Expr *ValueExpr = LH->getValue();
-    int ValueInt = 1;
-    if (ValueExpr) {
-      llvm::APSInt ValueAPS =
-          ValueExpr->EvaluateKnownConstInt(CGM.getContext());
-      ValueInt = static_cast<int>(ValueAPS.getSExtValue());
-    }
-
-    llvm::Constant *Value;
-    llvm::MDString *Name;
-    switch (Option) {
-    case LoopHintAttr::Vectorize:
-    case LoopHintAttr::Interleave:
-      if (State != LoopHintAttr::Disable) {
-        // FIXME: In the future I will modifiy the behavior of the metadata
-        // so we can enable/disable vectorization and interleaving separately.
-        Name = llvm::MDString::get(Context, "llvm.loop.vectorize.enable");
-        Value = Builder.getTrue();
-        break;
-      }
-      // Vectorization/interleaving is disabled, set width/count to 1.
-      ValueInt = 1;
-      // Fallthrough.
-    case LoopHintAttr::VectorizeWidth:
-    case LoopHintAttr::InterleaveCount:
-    case LoopHintAttr::UnrollCount:
-      Name = llvm::MDString::get(Context, MetadataName);
-      Value = llvm::ConstantInt::get(Int32Ty, ValueInt);
-      break;
-    case LoopHintAttr::Unroll:
-      Name = llvm::MDString::get(Context, MetadataName);
-      Value = nullptr;
-      break;
-    }
-
-    SmallVector<llvm::Metadata *, 2> OpValues;
-    OpValues.push_back(Name);
-    if (Value)
-      OpValues.push_back(llvm::ConstantAsMetadata::get(Value));
-
-    // Set or overwrite metadata indicated by Name.
-    Metadata.push_back(llvm::MDNode::get(Context, OpValues));
-  }
-
-  // FIXME: This condition is never false.  Should it be an assert?
-  if (!Metadata.empty()) {
-    // Add llvm.loop MDNode to CondBr.
-    llvm::MDNode *LoopID = llvm::MDNode::get(Context, Metadata);
-    LoopID->replaceOperandWith(0, LoopID); // First op points to itself.
-
-    CondBr->setMetadata("llvm.loop", LoopID);
-  }
-}
-
 void CodeGenFunction::EmitWhileStmt(const WhileStmt &S,
                                     ArrayRef<const Attr *> WhileAttrs) {
   // Emit the header for the loop, which will also become
@@ -682,7 +600,7 @@ void CodeGenFunction::EmitWhileStmt(const WhileStmt &S,
   JumpDest LoopHeader = getJumpDestInCurrentScope("while.cond");
   EmitBlock(LoopHeader.getBlock());
 
-  LoopStack.push(LoopHeader.getBlock(), WhileAttrs);
+  LoopStack.push(LoopHeader.getBlock(), CGM.getContext(), WhileAttrs);
 
   // Create an exit block for when the condition fails, which will
   // also become the break target.
@@ -721,7 +639,7 @@ void CodeGenFunction::EmitWhileStmt(const WhileStmt &S,
     llvm::BasicBlock *ExitBlock = LoopExit.getBlock();
     if (ConditionScope.requiresCleanups())
       ExitBlock = createBasicBlock("while.exit");
-    llvm::BranchInst *CondBr = Builder.CreateCondBr(
+    Builder.CreateCondBr(
         BoolCondVal, LoopBody, ExitBlock,
         createProfileWeightsForLoop(S.getCond(), getProfileCount(S.getBody())));
 
@@ -729,9 +647,6 @@ void CodeGenFunction::EmitWhileStmt(const WhileStmt &S,
       EmitBlock(ExitBlock);
       EmitBranchThroughCleanup(LoopExit);
     }
-
-    // Attach metadata to loop body conditional branch.
-    EmitCondBrHints(LoopBody->getContext(), CondBr, WhileAttrs);
   }
 
   // Emit the loop body.  We have to emit this in a cleanup scope
@@ -776,7 +691,7 @@ void CodeGenFunction::EmitDoStmt(const DoStmt &S,
   // Emit the body of the loop.
   llvm::BasicBlock *LoopBody = createBasicBlock("do.body");
 
-  LoopStack.push(LoopBody, DoAttrs);
+  LoopStack.push(LoopBody, CGM.getContext(), DoAttrs);
 
   EmitBlockWithFallThrough(LoopBody, &S);
   {
@@ -806,12 +721,9 @@ void CodeGenFunction::EmitDoStmt(const DoStmt &S,
   // As long as the condition is true, iterate the loop.
   if (EmitBoolCondBranch) {
     uint64_t BackedgeCount = getProfileCount(S.getBody()) - ParentCount;
-    llvm::BranchInst *CondBr = Builder.CreateCondBr(
+    Builder.CreateCondBr(
         BoolCondVal, LoopBody, LoopExit.getBlock(),
         createProfileWeightsForLoop(S.getCond(), BackedgeCount));
-
-    // Attach metadata to loop body conditional branch.
-    EmitCondBrHints(LoopBody->getContext(), CondBr, DoAttrs);
   }
 
   LoopStack.pop();
@@ -842,7 +754,7 @@ void CodeGenFunction::EmitForStmt(const ForStmt &S,
   llvm::BasicBlock *CondBlock = Continue.getBlock();
   EmitBlock(CondBlock);
 
-  LoopStack.push(CondBlock, ForAttrs);
+  LoopStack.push(CondBlock, CGM.getContext(), ForAttrs);
 
   // If the for loop doesn't have an increment we can just use the
   // condition as the continue block.  Otherwise we'll need to create
@@ -876,12 +788,9 @@ void CodeGenFunction::EmitForStmt(const ForStmt &S,
     // C99 6.8.5p2/p4: The first substatement is executed if the expression
     // compares unequal to 0.  The condition must be a scalar type.
     llvm::Value *BoolCondVal = EvaluateExprAsBool(S.getCond());
-    llvm::BranchInst *CondBr = Builder.CreateCondBr(
+    Builder.CreateCondBr(
         BoolCondVal, ForBody, ExitBlock,
         createProfileWeightsForLoop(S.getCond(), getProfileCount(S.getBody())));
-
-    // Attach metadata to loop body conditional branch.
-    EmitCondBrHints(ForBody->getContext(), CondBr, ForAttrs);
 
     if (ExitBlock != LoopExit.getBlock()) {
       EmitBlock(ExitBlock);
@@ -940,7 +849,7 @@ CodeGenFunction::EmitCXXForRangeStmt(const CXXForRangeStmt &S,
   llvm::BasicBlock *CondBlock = createBasicBlock("for.cond");
   EmitBlock(CondBlock);
 
-  LoopStack.push(CondBlock, ForAttrs);
+  LoopStack.push(CondBlock, CGM.getContext(), ForAttrs);
 
   // If there are any cleanups between here and the loop-exit scope,
   // create a block to stage a loop exit along.
@@ -954,12 +863,9 @@ CodeGenFunction::EmitCXXForRangeStmt(const CXXForRangeStmt &S,
   // The body is executed if the expression, contextually converted
   // to bool, is true.
   llvm::Value *BoolCondVal = EvaluateExprAsBool(S.getCond());
-  llvm::BranchInst *CondBr = Builder.CreateCondBr(
+  Builder.CreateCondBr(
       BoolCondVal, ForBody, ExitBlock,
       createProfileWeightsForLoop(S.getCond(), getProfileCount(S.getBody())));
-
-  // Attach metadata to loop body conditional branch.
-  EmitCondBrHints(ForBody->getContext(), CondBr, ForAttrs);
 
   if (ExitBlock != LoopExit.getBlock()) {
     EmitBlock(ExitBlock);
@@ -1843,6 +1749,14 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
   std::vector<llvm::Value*> InOutArgs;
   std::vector<llvm::Type*> InOutArgTypes;
 
+  // An inline asm can be marked readonly if it meets the following conditions:
+  //  - it doesn't have any sideeffects
+  //  - it doesn't clobber memory
+  //  - it doesn't return a value by-reference
+  // It can be marked readnone if it doesn't have any input memory constraints
+  // in addition to meeting the conditions listed above.
+  bool ReadOnly = true, ReadNone = true;
+
   for (unsigned i = 0, e = S.getNumOutputs(); i != e; i++) {
     TargetInfo::ConstraintInfo &Info = OutputConstraintInfos[i];
 
@@ -1906,6 +1820,7 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
       Args.push_back(Dest.getAddress());
       Constraints += "=*";
       Constraints += OutputConstraint;
+      ReadOnly = ReadNone = false;
     }
 
     if (Info.isReadWrite()) {
@@ -1949,6 +1864,9 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
     const Expr *InputExpr = S.getInputExpr(i);
 
     TargetInfo::ConstraintInfo &Info = InputConstraintInfos[i];
+
+    if (Info.allowsMemory())
+      ReadNone = false;
 
     if (!Constraints.empty())
       Constraints += ',';
@@ -2014,7 +1932,9 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
   for (unsigned i = 0, e = S.getNumClobbers(); i != e; i++) {
     StringRef Clobber = S.getClobber(i);
 
-    if (Clobber != "memory" && Clobber != "cc")
+    if (Clobber == "memory")
+      ReadOnly = ReadNone = false;
+    else if (Clobber != "cc")
       Clobber = getTarget().getNormalizedGCCRegisterName(Clobber);
 
     if (!Constraints.empty())
@@ -2053,6 +1973,16 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
   llvm::CallInst *Result = Builder.CreateCall(IA, Args);
   Result->addAttribute(llvm::AttributeSet::FunctionIndex,
                        llvm::Attribute::NoUnwind);
+
+  // Attach readnone and readonly attributes.
+  if (!HasSideEffect) {
+    if (ReadNone)
+      Result->addAttribute(llvm::AttributeSet::FunctionIndex,
+                           llvm::Attribute::ReadNone);
+    else if (ReadOnly)
+      Result->addAttribute(llvm::AttributeSet::FunctionIndex,
+                           llvm::Attribute::ReadOnly);
+  }
 
   // Slap the source location of the inline asm into a !srcloc metadata on the
   // call.
@@ -2123,8 +2053,8 @@ LValue CodeGenFunction::InitCapturedStruct(const CapturedStmt &S) {
       CreateMemTemp(RecordTy, "agg.captured"), RecordTy);
 
   RecordDecl::field_iterator CurField = RD->field_begin();
-  for (CapturedStmt::capture_init_iterator I = S.capture_init_begin(),
-                                           E = S.capture_init_end();
+  for (CapturedStmt::const_capture_init_iterator I = S.capture_init_begin(),
+                                                 E = S.capture_init_end();
        I != E; ++I, ++CurField) {
     LValue LV = EmitLValueForFieldInitialization(SlotLV, *CurField);
     if (CurField->hasCapturedVLAType()) {
@@ -2146,7 +2076,7 @@ CodeGenFunction::EmitCapturedStmt(const CapturedStmt &S, CapturedRegionKind K) {
 
   // Emit the CapturedDecl
   CodeGenFunction CGF(CGM, true);
-  CGF.CapturedStmtInfo = new CGCapturedStmtInfo(S, K);
+  CGCapturedStmtRAII CapInfoRAII(CGF, new CGCapturedStmtInfo(S, K));
   llvm::Function *F = CGF.GenerateCapturedStmtFunction(S);
   delete CGF.CapturedStmtInfo;
 

@@ -24,19 +24,25 @@ namespace clang {
 
 class GlobalModuleIndex;
 class ModuleMap;
+class PCHContainerReader;
 
 namespace serialization {
 
 /// \brief Manages the set of modules loaded by an AST reader.
 class ModuleManager {
-  /// \brief The chain of AST files. The first entry is the one named by the
-  /// user, the last one is the one that doesn't depend on anything further.
+  /// \brief The chain of AST files, in the order in which we started to load
+  /// them (this order isn't really useful for anything).
   SmallVector<ModuleFile *, 2> Chain;
+
+  /// \brief The chain of non-module PCH files. The first entry is the one named
+  /// by the user, the last one is the one that doesn't depend on anything
+  /// further.
+  SmallVector<ModuleFile *, 2> PCHChain;
 
   // \brief The roots of the dependency DAG of AST files. This is used
   // to implement short-circuiting logic when running DFS over the dependencies.
   SmallVector<ModuleFile *, 2> Roots;
-  
+
   /// \brief All loaded modules, indexed by name.
   llvm::DenseMap<const FileEntry *, ModuleFile *> Modules;
 
@@ -49,7 +55,10 @@ class ModuleManager {
   /// \brief FileManager that handles translating between filenames and
   /// FileEntry *.
   FileManager &FileMgr;
-  
+
+  /// \brief Knows how to unwrap module containers.
+  const PCHContainerReader &PCHContainerRdr;
+
   /// \brief A lookup of in-memory (virtual file) buffers
   llvm::DenseMap<const FileEntry *, std::unique_ptr<llvm::MemoryBuffer>>
       InMemoryBuffers;
@@ -112,10 +121,11 @@ public:
   typedef SmallVectorImpl<ModuleFile*>::const_iterator ModuleConstIterator;
   typedef SmallVectorImpl<ModuleFile*>::reverse_iterator ModuleReverseIterator;
   typedef std::pair<uint32_t, StringRef> ModuleOffset;
-  
-  explicit ModuleManager(FileManager &FileMgr);
+
+  explicit ModuleManager(FileManager &FileMgr,
+                         const PCHContainerReader &PCHContainerRdr);
   ~ModuleManager();
-  
+
   /// \brief Forward iterator to traverse all loaded modules.  This is reverse
   /// source-order.
   ModuleIterator begin() { return Chain.begin(); }
@@ -133,6 +143,11 @@ public:
   ModuleReverseIterator rbegin() { return Chain.rbegin(); }
   /// \brief Reverse iterator end-point to traverse all loaded modules.
   ModuleReverseIterator rend() { return Chain.rend(); }
+
+  /// \brief A range covering the PCH and preamble module files loaded.
+  llvm::iterator_range<ModuleConstIterator> pch_modules() const {
+    return llvm::make_range(PCHChain.begin(), PCHChain.end());
+  }
   
   /// \brief Returns the primary module associated with the manager, that is,
   /// the first module loaded
@@ -254,19 +269,15 @@ public:
   /// operations that can find data in any of the loaded modules.
   ///
   /// \param Visitor A visitor function that will be invoked with each
-  /// module and the given user data pointer. The return value must be
-  /// convertible to bool; when false, the visitation continues to
-  /// modules that the current module depends on. When true, the
-  /// visitation skips any modules that the current module depends on.
-  ///
-  /// \param UserData User data associated with the visitor object, which
-  /// will be passed along to the visitor.
+  /// module. The return value must be convertible to bool; when false, the
+  /// visitation continues to modules that the current module depends on. When
+  /// true, the visitation skips any modules that the current module depends on.
   ///
   /// \param ModuleFilesHit If non-NULL, contains the set of module files
   /// that we know we need to visit because the global module index told us to.
   /// Any module that is known to both the global module index and the module
   /// manager that is *not* in this set can be skipped.
-  void visit(bool (*Visitor)(ModuleFile &M, void *UserData), void *UserData,
+  void visit(llvm::function_ref<bool(ModuleFile &M)> Visitor,
              llvm::SmallPtrSetImpl<ModuleFile *> *ModuleFilesHit = nullptr);
 
   /// \brief Control DFS behavior during preorder visitation.

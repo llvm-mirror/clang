@@ -5,7 +5,7 @@
 // <rdar://problem/12955296>
 // RUN: %clang -### -target i386-apple-darwin9 -c -g %t.s 2>&1 | FileCheck -check-prefix=P %s
 
-// CHECK: !0 = !DICompileUnit(
+// CHECK: !0 = distinct !DICompileUnit(
 // CHECK-SAME:                flags:
 // CHECK-SAME:                -I path\5C with\5C \5C\5Cspaces
 // CHECK-SAME:                -g -Os
@@ -16,6 +16,3 @@ int x;
 // S: "-dwarf-debug-flags"
 
 // P: "-dwarf-debug-producer"
-
-// This depends on shell quoting.
-// REQUIRES: shell

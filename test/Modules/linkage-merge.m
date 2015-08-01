@@ -1,6 +1,6 @@
 // RUN: rm -rf %t
-// RUN: %clang_cc1 -fmodules -x objective-c -fmodules-cache-path=%t -emit-module -fmodule-name=linkage_merge_left %S/Inputs/module.map
-// RUN: %clang_cc1 -fmodules -fmodules-cache-path=%t -I %S/Inputs -w %s -verify
+// RUN: %clang_cc1 -fmodules -fimplicit-module-maps -x objective-c -fmodules-cache-path=%t -emit-module -fmodule-name=linkage_merge_left %S/Inputs/module.map
+// RUN: %clang_cc1 -fmodules -fimplicit-module-maps -fmodules-cache-path=%t -I %S/Inputs -w %s -verify
 
 // Test redeclarations of functions where the original declaration is
 // still hidden.
@@ -16,8 +16,8 @@ static int f2(float); // okay: considered distinct
 extern int f3(float); // okay: considered distinct
 
 extern float v0;
-// expected-error@-1{{redefinition of 'v0' with a different type: 'float' vs 'int'}}
-// expected-note@Inputs/linkage-merge-sub.h:6{{previous definition is here}}
+// expected-error@-1{{redeclaration of 'v0' with a different type: 'float' vs 'int'}}
+// expected-note@Inputs/linkage-merge-sub.h:6{{previous declaration is here}}
 
 static float v1;
 static float v2;

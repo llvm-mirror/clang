@@ -20,6 +20,7 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/Mangle.h"
+#include "clang/AST/ASTMutationListener.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
@@ -431,11 +432,10 @@ static bool checkRecordTypeForCapability(Sema &S, QualType Ty) {
   // Else check if any base classes have a capability.
   if (CXXRecordDecl *CRD = dyn_cast<CXXRecordDecl>(RD)) {
     CXXBasePaths BPaths(false, false);
-    if (CRD->lookupInBases([](const CXXBaseSpecifier *BS, CXXBasePath &P,
-      void *) {
-      return BS->getType()->getAs<RecordType>()
-        ->getDecl()->hasAttr<CapabilityAttr>();
-    }, nullptr, BPaths))
+    if (CRD->lookupInBases([](const CXXBaseSpecifier *BS, CXXBasePath &) {
+          const auto *Type = BS->getType()->getAs<RecordType>();
+          return Type->getDecl()->hasAttr<CapabilityAttr>();
+        }, BPaths))
       return true;
   }
   return false;
@@ -2857,7 +2857,7 @@ void Sema::AddAlignValueAttr(SourceRange AttrRange, Decl *D, Expr *E,
   }
 
   if (!E->isValueDependent()) {
-    llvm::APSInt Alignment(32);
+    llvm::APSInt Alignment;
     ExprResult ICE
       = VerifyIntegerConstantExpression(E, &Alignment,
           diag::err_align_value_attribute_argument_not_int,
@@ -2971,7 +2971,7 @@ void Sema::AddAlignedAttr(SourceRange AttrRange, Decl *D, Expr *E,
   }
 
   // FIXME: Cache the number on the Attr object?
-  llvm::APSInt Alignment(32);
+  llvm::APSInt Alignment;
   ExprResult ICE
     = VerifyIntegerConstantExpression(E, &Alignment,
         diag::err_aligned_attribute_argument_not_int,
@@ -2979,24 +2979,42 @@ void Sema::AddAlignedAttr(SourceRange AttrRange, Decl *D, Expr *E,
   if (ICE.isInvalid())
     return;
 
+  uint64_t AlignVal = Alignment.getZExtValue();
+
   // C++11 [dcl.align]p2:
   //   -- if the constant expression evaluates to zero, the alignment
   //      specifier shall have no effect
   // C11 6.7.5p6:
   //   An alignment specification of zero has no effect.
-  if (!(TmpAttr.isAlignas() && !Alignment) &&
-      !llvm::isPowerOf2_64(Alignment.getZExtValue())) {
-    Diag(AttrLoc, diag::err_alignment_not_power_of_two)
-      << E->getSourceRange();
-    return;
+  if (!(TmpAttr.isAlignas() && !Alignment)) {
+    if (!llvm::isPowerOf2_64(AlignVal)) {
+      Diag(AttrLoc, diag::err_alignment_not_power_of_two)
+        << E->getSourceRange();
+      return;
+    }
   }
 
   // Alignment calculations can wrap around if it's greater than 2**28.
-  unsigned MaxValidAlignment = TmpAttr.isDeclspec() ? 8192 : 268435456;
-  if (Alignment.getZExtValue() > MaxValidAlignment) {
+  unsigned MaxValidAlignment =
+      Context.getTargetInfo().getTriple().isOSBinFormatCOFF() ? 8192
+                                                              : 268435456;
+  if (AlignVal > MaxValidAlignment) {
     Diag(AttrLoc, diag::err_attribute_aligned_too_great) << MaxValidAlignment
                                                          << E->getSourceRange();
     return;
+  }
+
+  if (Context.getTargetInfo().isTLSSupported()) {
+    unsigned MaxTLSAlign =
+        Context.toCharUnitsFromBits(Context.getTargetInfo().getMaxTLSAlign())
+            .getQuantity();
+    auto *VD = dyn_cast<VarDecl>(D);
+    if (MaxTLSAlign && AlignVal > MaxTLSAlign && VD &&
+        VD->getTLSKind() != VarDecl::TLS_None) {
+      Diag(VD->getLocation(), diag::err_tls_var_aligned_over_maximum)
+          << (unsigned)AlignVal << VD << MaxTLSAlign;
+      return;
+    }
   }
 
   AlignedAttr *AA = ::new (Context) AlignedAttr(AttrRange, Context, true,
@@ -3154,16 +3172,22 @@ static void handleModeAttr(Sema &S, Decl *D, const AttributeList &Attr) {
     return;
   }
 
-  if (!OldTy->getAs<BuiltinType>() && !OldTy->isComplexType())
+  // Base type can also be a vector type (see PR17453).
+  // Distinguish between base type and base element type.
+  QualType OldElemTy = OldTy;
+  if (const VectorType *VT = OldTy->getAs<VectorType>())
+    OldElemTy = VT->getElementType();
+
+  if (!OldElemTy->getAs<BuiltinType>() && !OldElemTy->isComplexType())
     S.Diag(Attr.getLoc(), diag::err_mode_not_primitive);
   else if (IntegerMode) {
-    if (!OldTy->isIntegralOrEnumerationType())
+    if (!OldElemTy->isIntegralOrEnumerationType())
       S.Diag(Attr.getLoc(), diag::err_mode_wrong_type);
   } else if (ComplexMode) {
-    if (!OldTy->isComplexType())
+    if (!OldElemTy->isComplexType())
       S.Diag(Attr.getLoc(), diag::err_mode_wrong_type);
   } else {
-    if (!OldTy->isFloatingType())
+    if (!OldElemTy->isFloatingType())
       S.Diag(Attr.getLoc(), diag::err_mode_wrong_type);
   }
 
@@ -3176,21 +3200,40 @@ static void handleModeAttr(Sema &S, Decl *D, const AttributeList &Attr) {
     return;
   }
 
-  QualType NewTy;
+  QualType NewElemTy;
 
   if (IntegerMode)
-    NewTy = S.Context.getIntTypeForBitwidth(DestWidth,
-                                            OldTy->isSignedIntegerType());
+    NewElemTy = S.Context.getIntTypeForBitwidth(
+        DestWidth, OldElemTy->isSignedIntegerType());
   else
-    NewTy = S.Context.getRealTypeForBitwidth(DestWidth);
+    NewElemTy = S.Context.getRealTypeForBitwidth(DestWidth);
 
-  if (NewTy.isNull()) {
+  if (NewElemTy.isNull()) {
     S.Diag(Attr.getLoc(), diag::err_machine_mode) << 1 /*Unsupported*/ << Name;
     return;
   }
 
   if (ComplexMode) {
-    NewTy = S.Context.getComplexType(NewTy);
+    NewElemTy = S.Context.getComplexType(NewElemTy);
+  }
+
+  QualType NewTy = NewElemTy;
+  if (const VectorType *OldVT = OldTy->getAs<VectorType>()) {
+    // Complex machine mode does not support base vector types.
+    if (ComplexMode) {
+      S.Diag(Attr.getLoc(), diag::err_complex_mode_vector_type);
+      return;
+    }
+    unsigned NumElements = S.Context.getTypeSize(OldElemTy) *
+                           OldVT->getNumElements() /
+                           S.Context.getTypeSize(NewElemTy);
+    NewTy =
+        S.Context.getVectorType(NewElemTy, NumElements, OldVT->getVectorKind());
+  }
+
+  if (NewTy.isNull()) {
+    S.Diag(Attr.getLoc(), diag::err_mode_wrong_type);
+    return;
   }
 
   // Install the new type.
@@ -3705,10 +3748,31 @@ static void handleNSReturnsRetainedAttr(Sema &S, Decl *D,
     returnType = PD->getType();
   else if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
     returnType = FD->getReturnType();
-  else {
+  else if (auto *Param = dyn_cast<ParmVarDecl>(D)) {
+    returnType = Param->getType()->getPointeeType();
+    if (returnType.isNull()) {
+      S.Diag(D->getLocStart(), diag::warn_ns_attribute_wrong_parameter_type)
+          << Attr.getName() << /*pointer-to-CF*/2
+          << Attr.getRange();
+      return;
+    }
+  } else {
+    AttributeDeclKind ExpectedDeclKind;
+    switch (Attr.getKind()) {
+    default: llvm_unreachable("invalid ownership attribute");
+    case AttributeList::AT_NSReturnsRetained:
+    case AttributeList::AT_NSReturnsAutoreleased:
+    case AttributeList::AT_NSReturnsNotRetained:
+      ExpectedDeclKind = ExpectedFunctionOrMethod;
+      break;
+
+    case AttributeList::AT_CFReturnsRetained:
+    case AttributeList::AT_CFReturnsNotRetained:
+      ExpectedDeclKind = ExpectedFunctionMethodOrParameter;
+      break;
+    }
     S.Diag(D->getLocStart(), diag::warn_attribute_wrong_decl_type)
-        << Attr.getRange() << Attr.getName()
-        << ExpectedFunctionOrMethod;
+        << Attr.getRange() << Attr.getName() << ExpectedDeclKind;
     return;
   }
 
@@ -3735,8 +3799,25 @@ static void handleNSReturnsRetainedAttr(Sema &S, Decl *D,
   }
 
   if (!typeOK) {
-    S.Diag(D->getLocStart(), diag::warn_ns_attribute_wrong_return_type)
-      << Attr.getRange() << Attr.getName() << isa<ObjCMethodDecl>(D) << cf;
+    if (isa<ParmVarDecl>(D)) {
+      S.Diag(D->getLocStart(), diag::warn_ns_attribute_wrong_parameter_type)
+          << Attr.getName() << /*pointer-to-CF*/2
+          << Attr.getRange();
+    } else {
+      // Needs to be kept in sync with warn_ns_attribute_wrong_return_type.
+      enum : unsigned {
+        Function,
+        Method,
+        Property
+      } SubjectKind = Function;
+      if (isa<ObjCMethodDecl>(D))
+        SubjectKind = Method;
+      else if (isa<ObjCPropertyDecl>(D))
+        SubjectKind = Property;
+      S.Diag(D->getLocStart(), diag::warn_ns_attribute_wrong_return_type)
+          << Attr.getName() << SubjectKind << cf
+          << Attr.getRange();
+    }
     return;
   }
 
@@ -3925,6 +4006,34 @@ static void handleObjCRuntimeName(Sema &S, Decl *D,
              ObjCRuntimeNameAttr(Attr.getRange(), S.Context,
                                  MetaDataName,
                                  Attr.getAttributeSpellingListIndex()));
+}
+
+// when a user wants to use objc_boxable with a union or struct
+// but she doesn't have access to the declaration (legacy/third-party code)
+// then she can 'enable' this feature via trick with a typedef
+// e.g.:
+// typedef struct __attribute((objc_boxable)) legacy_struct legacy_struct;
+static void handleObjCBoxable(Sema &S, Decl *D, const AttributeList &Attr) {
+  bool notify = false;
+
+  RecordDecl *RD = dyn_cast<RecordDecl>(D);
+  if (RD && RD->getDefinition()) {
+    RD = RD->getDefinition();
+    notify = true;
+  }
+
+  if (RD) {
+    ObjCBoxableAttr *BoxableAttr = ::new (S.Context)
+                          ObjCBoxableAttr(Attr.getRange(), S.Context,
+                                          Attr.getAttributeSpellingListIndex());
+    RD->addAttr(BoxableAttr);
+    if (notify) {
+      // we need to notify ASTReader/ASTWriter about
+      // modification of existing declaration
+      if (ASTMutationListener *L = S.getASTMutationListener())
+        L->AddedAttributeToRecord(BoxableAttr, RD);
+    }
+  }
 }
 
 static void handleObjCOwnershipAttr(Sema &S, Decl *D,
@@ -4475,7 +4584,7 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   // which do not apply to the current target architecture are treated as
   // though they were unknown attributes.
   if (Attr.getKind() == AttributeList::UnknownAttribute ||
-      !Attr.existsInTarget(S.Context.getTargetInfo().getTriple())) {
+      !Attr.existsInTarget(S.Context.getTargetInfo())) {
     S.Diag(Attr.getLoc(), Attr.isDeclspecAttribute()
                               ? diag::warn_unhandled_ms_attribute_ignored
                               : diag::warn_unknown_attribute_ignored)
@@ -4615,6 +4724,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_Mode:
     handleModeAttr(S, D, Attr);
     break;
+  case AttributeList::AT_NoAlias:
+    handleSimpleAttribute<NoAliasAttr>(S, D, Attr);
+    break;
   case AttributeList::AT_NoCommon:
     handleSimpleAttribute<NoCommonAttr>(S, D, Attr);
     break;
@@ -4694,6 +4806,10 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
 
   case AttributeList::AT_ObjCRuntimeName:
     handleObjCRuntimeName(S, D, Attr);
+    break;
+
+  case AttributeList::AT_ObjCBoxable:
+    handleObjCBoxable(S, D, Attr);
     break;
           
   case AttributeList::AT_CFAuditedTransfer:

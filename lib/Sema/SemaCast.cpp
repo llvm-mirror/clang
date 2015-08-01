@@ -975,7 +975,7 @@ static TryCastResult TryStaticCast(Sema &Self, ExprResult &SrcExpr,
   if (tcr != TC_NotApplicable)
     return tcr;
 
-  // C++0x [expr.static.cast]p3: 
+  // C++11 [expr.static.cast]p3: 
   //   A glvalue of type "cv1 T1" can be cast to type "rvalue reference to cv2
   //   T2" if "cv2 T2" is reference-compatible with "cv1 T1".
   tcr = TryLValueToRValueCast(Self, SrcExpr.get(), DestType, CStyle, Kind, 
@@ -1133,7 +1133,7 @@ TryCastResult
 TryLValueToRValueCast(Sema &Self, Expr *SrcExpr, QualType DestType,
                       bool CStyle, CastKind &Kind, CXXCastPath &BasePath, 
                       unsigned &msg) {
-  // C++0x [expr.static.cast]p3:
+  // C++11 [expr.static.cast]p3:
   //   A glvalue of type "cv1 T1" can be cast to type "rvalue reference to 
   //   cv2 T2" if "cv2 T2" is reference-compatible with "cv1 T1".
   const RValueReferenceType *R = DestType->getAs<RValueReferenceType>();
@@ -1161,6 +1161,8 @@ TryLValueToRValueCast(Sema &Self, Expr *SrcExpr, QualType DestType,
                                         DerivedToBase, ObjCConversion,
                                         ObjCLifetimeConversion) 
         < Sema::Ref_Compatible_With_Added_Qualification) {
+    if (CStyle)
+      return TC_NotApplicable;
     msg = diag::err_bad_lvalue_to_rvalue_cast;
     return TC_Failed;
   }
@@ -1875,28 +1877,29 @@ static TryCastResult TryReinterpretCast(Sema &Self, ExprResult &SrcExpr,
     return TC_Success;
   }
 
+  // Allow reinterpret_casts between vectors of the same size and
+  // between vectors and integers of the same size.
   bool destIsVector = DestType->isVectorType();
   bool srcIsVector = SrcType->isVectorType();
   if (srcIsVector || destIsVector) {
-    // FIXME: Should this also apply to floating point types?
-    bool srcIsScalar = SrcType->isIntegralType(Self.Context);
-    bool destIsScalar = DestType->isIntegralType(Self.Context);
-    
-    // Check if this is a cast between a vector and something else.
-    if (!(srcIsScalar && destIsVector) && !(srcIsVector && destIsScalar) &&
-        !(srcIsVector && destIsVector))
+    // The non-vector type, if any, must have integral type.  This is
+    // the same rule that C vector casts use; note, however, that enum
+    // types are not integral in C++.
+    if ((!destIsVector && !DestType->isIntegralType(Self.Context)) ||
+        (!srcIsVector && !SrcType->isIntegralType(Self.Context)))
       return TC_NotApplicable;
 
-    // If both types have the same size, we can successfully cast.
-    if (Self.Context.getTypeSize(SrcType)
-          == Self.Context.getTypeSize(DestType)) {
+    // The size we want to consider is eltCount * eltSize.
+    // That's exactly what the lax-conversion rules will check.
+    if (Self.areLaxCompatibleVectorTypes(SrcType, DestType)) {
       Kind = CK_BitCast;
       return TC_Success;
     }
-    
-    if (destIsScalar)
+
+    // Otherwise, pick a reasonable diagnostic.
+    if (!destIsVector)
       msg = diag::err_bad_cxx_cast_vector_to_scalar_different_size;
-    else if (srcIsScalar)
+    else if (!srcIsVector)
       msg = diag::err_bad_cxx_cast_scalar_to_vector_different_size;
     else
       msg = diag::err_bad_cxx_cast_vector_to_vector_different_size;

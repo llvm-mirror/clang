@@ -1081,6 +1081,31 @@ void test6() {
 // CHECK: @llvm.ppc.altivec.vctuxs
 // CHECK-LE: @llvm.ppc.altivec.vctuxs
 
+  /* vec_div */
+  res_vsc = vec_div(vsc, vsc);
+// CHECK: sdiv <16 x i8>
+// CHECK-LE: sdiv <16 x i8>
+
+  res_vuc = vec_div(vuc, vuc);
+// CHECK: udiv <16 x i8>
+// CHECK-LE: udiv <16 x i8>
+
+  res_vs = vec_div(vs, vs);
+// CHECK: sdiv <8 x i16>
+// CHECK-LE: sdiv <8 x i16>
+
+  res_vus = vec_div(vus, vus);
+// CHECK: udiv <8 x i16>
+// CHECK-LE: udiv <8 x i16>
+
+  res_vi = vec_div(vi, vi);
+// CHECK: sdiv <4 x i32>
+// CHECK-LE: sdiv <4 x i32>
+
+  res_vui = vec_div(vui, vui);
+// CHECK: udiv <4 x i32>
+// CHECK-LE: udiv <4 x i32>
+
   /* vec_dss */
   vec_dss(0);
 // CHECK: @llvm.ppc.altivec.dss
@@ -2126,6 +2151,31 @@ void test6() {
   vec_mtvscr(vbi);
 // CHECK: @llvm.ppc.altivec.mtvscr
 // CHECK-LE: @llvm.ppc.altivec.mtvscr
+
+  /* vec_mul */
+  res_vsc = vec_mul(vsc, vsc);
+// CHECK: mul <16 x i8>
+// CHECK-LE: mul <16 x i8>
+
+  res_vuc = vec_mul(vuc, vuc);
+// CHECK: mul <16 x i8>
+// CHECK-LE: mul <16 x i8>
+
+  res_vs = vec_mul(vs, vs);
+// CHECK: mul <8 x i16>
+// CHECK-LE: mul <8 x i16>
+
+  res_vus = vec_mul(vus, vus);
+// CHECK: mul <8 x i16>
+// CHECK-LE: mul <8 x i16>
+
+  res_vi = vec_mul(vi, vi);
+// CHECK: mul <4 x i32>
+// CHECK-LE: mul <4 x i32>
+
+  res_vui = vec_mul(vui, vui);
+// CHECK: mul <4 x i32>
+// CHECK-LE: mul <4 x i32>
 
   /* vec_mule */
   res_vs  = vec_mule(vsc, vsc);
@@ -3257,67 +3307,225 @@ void test6() {
 
   /* vec_sld */
   res_vsc = vec_sld(vsc, vsc, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vuc = vec_sld(vuc, vuc, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vs  = vec_sld(vs, vs, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vus = vec_sld(vus, vus, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
+  res_vbs = vec_sld(vbs, vbs, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
+// CHECK: [[T1:%.+]] = bitcast <8 x i16> {{.+}} to <4 x i32>
+// CHECK: [[T2:%.+]] = bitcast <8 x i16> {{.+}} to <4 x i32>
+// CHECK: call <4 x i32> @llvm.ppc.altivec.vperm(<4 x i32> [[T1]], <4 x i32> [[T2]], <16 x i8>
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
+// CHECK-LE: xor <16 x i8>
+// CHECK-LE: [[T1:%.+]] = bitcast <8 x i16> {{.+}} to <4 x i32>
+// CHECK-LE: [[T2:%.+]] = bitcast <8 x i16> {{.+}} to <4 x i32>
+// CHECK-LE: call <4 x i32> @llvm.ppc.altivec.vperm(<4 x i32> [[T1]], <4 x i32> [[T2]], <16 x i8>
+
   res_vp  = vec_sld(vp, vp, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vi  = vec_sld(vi, vi, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vui = vec_sld(vui, vui, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
+  res_vbi = vec_sld(vbi, vbi, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
+// CHECK: call <4 x i32> @llvm.ppc.altivec.vperm(<4 x i32> {{.+}}, <4 x i32> {{.+}}, <16 x i8>
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
+// CHECK-LE: xor <16 x i8>
+// CHECK-LE: call <4 x i32> @llvm.ppc.altivec.vperm(<4 x i32> {{.+}}, <4 x i32> {{.+}}, <16 x i8>
+
   res_vf  = vec_sld(vf, vf, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vsc = vec_vsldoi(vsc, vsc, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vuc = vec_vsldoi(vuc, vuc, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vs  = vec_vsldoi(vs, vs, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vus = vec_vsldoi(vus, vus, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vp  = vec_vsldoi(vp, vp, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vi  = vec_vsldoi(vi, vi, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vui = vec_vsldoi(vui, vui, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   res_vf  = vec_vsldoi(vf, vf, 0);
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 1
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 2
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 3
+// CHECK: add nsw i32 {{[0-9a-zA-Z%.]+}}, 15
 // CHECK: @llvm.ppc.altivec.vperm
+// CHECK-LE: sub nsw i32 16
+// CHECK-LE: sub nsw i32 17
+// CHECK-LE: sub nsw i32 18
+// CHECK-LE: sub nsw i32 31
 // CHECK-LE: @llvm.ppc.altivec.vperm
 
   /* vec_sll */
@@ -3802,28 +4010,28 @@ void test6() {
 
   /* vec_sr */
   res_vsc = vec_sr(vsc, vuc);
-// CHECK: shr <16 x i8>
-// CHECK-LE: shr <16 x i8>
+// CHECK: lshr <16 x i8>
+// CHECK-LE: lshr <16 x i8>
 
   res_vuc = vec_sr(vuc, vuc);
-// CHECK: shr <16 x i8>
-// CHECK-LE: shr <16 x i8>
+// CHECK: lshr <16 x i8>
+// CHECK-LE: lshr <16 x i8>
 
   res_vs  = vec_sr(vs, vus);
-// CHECK: shr <8 x i16>
-// CHECK-LE: shr <8 x i16>
+// CHECK: lshr <8 x i16>
+// CHECK-LE: lshr <8 x i16>
 
   res_vus = vec_sr(vus, vus);
-// CHECK: shr <8 x i16>
-// CHECK-LE: shr <8 x i16>
+// CHECK: lshr <8 x i16>
+// CHECK-LE: lshr <8 x i16>
 
   res_vi  = vec_sr(vi, vui);
-// CHECK: shr <4 x i32>
-// CHECK-LE: shr <4 x i32>
+// CHECK: lshr <4 x i32>
+// CHECK-LE: lshr <4 x i32>
 
   res_vui = vec_sr(vui, vui);
-// CHECK: shr <4 x i32>
-// CHECK-LE: shr <4 x i32>
+// CHECK: lshr <4 x i32>
+// CHECK-LE: lshr <4 x i32>
 
   res_vsc = vec_vsrb(vsc, vuc);
 // CHECK: shr <16 x i8>

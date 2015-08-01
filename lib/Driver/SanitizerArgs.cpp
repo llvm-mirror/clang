@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include "clang/Driver/SanitizerArgs.h"
+#include "Tools.h"
 #include "clang/Basic/Sanitizers.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
@@ -25,7 +26,8 @@ using namespace clang::driver;
 using namespace llvm::opt;
 
 enum : SanitizerMask {
-  NeedsUbsanRt = Undefined | Integer,
+  NeedsUbsanRt = Undefined | Integer | CFI,
+  NeedsUbsanCxxRt = Vptr | CFI,
   NotAllowedWithTrap = Vptr,
   RequiresPIE = Memory | DataFlow,
   NeedsUnwindTables = Address | Thread | Memory | DataFlow,
@@ -34,6 +36,9 @@ enum : SanitizerMask {
   Unrecoverable = Address | Unreachable | Return,
   LegacyFsanitizeRecoverMask = Undefined | Integer,
   NeedsLTO = CFI,
+  TrappingSupported =
+      (Undefined & ~Vptr) | UnsignedIntegerOverflow | LocalBounds | CFI,
+  TrappingDefault = CFI,
 };
 
 enum CoverageFeature {
@@ -74,27 +79,6 @@ static std::string describeSanitizeArg(const llvm::opt::Arg *A,
 /// Sanitizers set.
 static std::string toString(const clang::SanitizerSet &Sanitizers);
 
-static SanitizerMask getToolchainUnsupportedKinds(const ToolChain &TC) {
-  bool IsFreeBSD = TC.getTriple().getOS() == llvm::Triple::FreeBSD;
-  bool IsLinux = TC.getTriple().getOS() == llvm::Triple::Linux;
-  bool IsX86 = TC.getTriple().getArch() == llvm::Triple::x86;
-  bool IsX86_64 = TC.getTriple().getArch() == llvm::Triple::x86_64;
-  bool IsMIPS64 = TC.getTriple().getArch() == llvm::Triple::mips64 ||
-                  TC.getTriple().getArch() == llvm::Triple::mips64el;
-
-  SanitizerMask Unsupported = 0;
-  if (!(IsLinux && (IsX86_64 || IsMIPS64))) {
-    Unsupported |= Memory | DataFlow;
-  }
-  if (!((IsLinux || IsFreeBSD) && (IsX86_64 || IsMIPS64))) {
-    Unsupported |= Thread;
-  }
-  if (!(IsLinux && (IsX86 || IsX86_64))) {
-    Unsupported |= Function;
-  }
-  return Unsupported;
-}
-
 static bool getDefaultBlacklist(const Driver &D, SanitizerMask Kinds,
                                 std::string &BLPath) {
   const char *BlacklistFile = nullptr;
@@ -106,6 +90,8 @@ static bool getDefaultBlacklist(const Driver &D, SanitizerMask Kinds,
     BlacklistFile = "tsan_blacklist.txt";
   else if (Kinds & DataFlow)
     BlacklistFile = "dfsan_abilist.txt";
+  else if (Kinds & CFI)
+    BlacklistFile = "cfi_blacklist.txt";
 
   if (BlacklistFile) {
     clang::SmallString<64> Path(D.ResourceDir);
@@ -116,8 +102,62 @@ static bool getDefaultBlacklist(const Driver &D, SanitizerMask Kinds,
   return false;
 }
 
+/// Sets group bits for every group that has at least one representative already
+/// enabled in \p Kinds.
+static SanitizerMask setGroupBits(SanitizerMask Kinds) {
+#define SANITIZER(NAME, ID)
+#define SANITIZER_GROUP(NAME, ID, ALIAS)                                       \
+  if (Kinds & SanitizerKind::ID)                                               \
+    Kinds |= SanitizerKind::ID##Group;
+#include "clang/Basic/Sanitizers.def"
+  return Kinds;
+}
+
+static SanitizerMask parseSanitizeTrapArgs(const Driver &D,
+                                           const llvm::opt::ArgList &Args) {
+  SanitizerMask TrapRemove = 0; // During the loop below, the accumulated set of
+                                // sanitizers disabled by the current sanitizer
+                                // argument or any argument after it.
+  SanitizerMask TrappingKinds = 0;
+  SanitizerMask TrappingSupportedWithGroups = setGroupBits(TrappingSupported);
+
+  for (ArgList::const_reverse_iterator I = Args.rbegin(), E = Args.rend();
+       I != E; ++I) {
+    const auto *Arg = *I;
+    if (Arg->getOption().matches(options::OPT_fsanitize_trap_EQ)) {
+      Arg->claim();
+      SanitizerMask Add = parseArgValues(D, Arg, true);
+      Add &= ~TrapRemove;
+      if (SanitizerMask InvalidValues = Add & ~TrappingSupportedWithGroups) {
+        SanitizerSet S;
+        S.Mask = InvalidValues;
+        D.Diag(diag::err_drv_unsupported_option_argument) << "-fsanitize-trap"
+                                                          << toString(S);
+      }
+      TrappingKinds |= expandSanitizerGroups(Add) & ~TrapRemove;
+    } else if (Arg->getOption().matches(options::OPT_fno_sanitize_trap_EQ)) {
+      Arg->claim();
+      TrapRemove |= expandSanitizerGroups(parseArgValues(D, Arg, true));
+    } else if (Arg->getOption().matches(
+                   options::OPT_fsanitize_undefined_trap_on_error)) {
+      Arg->claim();
+      TrappingKinds |=
+          expandSanitizerGroups(UndefinedGroup & ~TrapRemove) & ~TrapRemove;
+    } else if (Arg->getOption().matches(
+                   options::OPT_fno_sanitize_undefined_trap_on_error)) {
+      Arg->claim();
+      TrapRemove |= expandSanitizerGroups(UndefinedGroup);
+    }
+  }
+
+  // Apply default trapping behavior.
+  TrappingKinds |= TrappingDefault & ~TrapRemove;
+
+  return TrappingKinds;
+}
+
 bool SanitizerArgs::needsUbsanRt() const {
-  return !UbsanTrapOnError && (Sanitizers.Mask & NeedsUbsanRt) &&
+  return (Sanitizers.Mask & NeedsUbsanRt & ~TrapSanitizers.Mask) &&
          !Sanitizers.has(Address) &&
          !Sanitizers.has(Memory) &&
          !Sanitizers.has(Thread);
@@ -131,19 +171,16 @@ bool SanitizerArgs::needsUnwindTables() const {
   return Sanitizers.Mask & NeedsUnwindTables;
 }
 
-bool SanitizerArgs::needsLTO() const {
-  return Sanitizers.Mask & NeedsLTO;
-}
-
 void SanitizerArgs::clear() {
   Sanitizers.clear();
   RecoverableSanitizers.clear();
+  TrapSanitizers.clear();
   BlacklistFiles.clear();
   CoverageFeatures = 0;
   MsanTrackOrigins = 0;
+  MsanUseAfterDtor = false;
   AsanFieldPadding = 0;
   AsanZeroBaseShadow = false;
-  UbsanTrapOnError = false;
   AsanSharedRuntime = false;
   LinkCXXRuntimes = false;
 }
@@ -162,10 +199,13 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   SanitizerMask DiagnosedKinds = 0;  // All Kinds we have diagnosed up to now.
                                      // Used to deduplicate diagnostics.
   SanitizerMask Kinds = 0;
-  SanitizerMask NotSupported = getToolchainUnsupportedKinds(TC);
+  const SanitizerMask Supported = setGroupBits(TC.getSupportedSanitizers());
   ToolChain::RTTIMode RTTIMode = TC.getRTTIMode();
 
   const Driver &D = TC.getDriver();
+  SanitizerMask TrappingKinds = parseSanitizeTrapArgs(D, Args);
+  SanitizerMask InvalidTrappingKinds = TrappingKinds & NotAllowedWithTrap;
+
   for (ArgList::const_reverse_iterator I = Args.rbegin(), E = Args.rend();
        I != E; ++I) {
     const auto *Arg = *I;
@@ -180,14 +220,20 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
       // sanitizers in Add are those which have been explicitly enabled.
       // Diagnose them.
       if (SanitizerMask KindsToDiagnose =
-              Add & NotSupported & ~DiagnosedKinds) {
-        // Only diagnose the new kinds.
+              Add & InvalidTrappingKinds & ~DiagnosedKinds) {
+        std::string Desc = describeSanitizeArg(*I, KindsToDiagnose);
+        D.Diag(diag::err_drv_argument_not_allowed_with)
+            << Desc << "-fsanitize-trap=undefined";
+        DiagnosedKinds |= KindsToDiagnose;
+      }
+      Add &= ~InvalidTrappingKinds;
+      if (SanitizerMask KindsToDiagnose = Add & ~Supported & ~DiagnosedKinds) {
         std::string Desc = describeSanitizeArg(*I, KindsToDiagnose);
         D.Diag(diag::err_drv_unsupported_opt_for_target)
             << Desc << TC.getTriple().str();
         DiagnosedKinds |= KindsToDiagnose;
       }
-      Add &= ~NotSupported;
+      Add &= Supported;
 
       // Test for -fno-rtti + explicit -fsanitizer=vptr before expanding groups
       // so we don't error out if -fno-rtti and -fsanitize=undefined were
@@ -216,7 +262,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
       Add &= ~AllRemove;
       // Silently discard any unsupported sanitizers implicitly enabled through
       // group expansion.
-      Add &= ~NotSupported;
+      Add &= ~InvalidTrappingKinds;
+      Add &= Supported;
 
       Kinds |= Add;
     } else if (Arg->getOption().matches(options::OPT_fno_sanitize_EQ)) {
@@ -234,22 +281,39 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     Kinds &= ~Vptr;
   }
 
-  // Warn about undefined sanitizer options that require runtime support.
-  UbsanTrapOnError =
-    Args.hasFlag(options::OPT_fsanitize_undefined_trap_on_error,
-                 options::OPT_fno_sanitize_undefined_trap_on_error, false);
-  if (UbsanTrapOnError && (Kinds & NotAllowedWithTrap)) {
-    D.Diag(clang::diag::err_drv_argument_not_allowed_with)
-        << lastArgumentForMask(D, Args, NotAllowedWithTrap)
-        << "-fsanitize-undefined-trap-on-error";
-    Kinds &= ~NotAllowedWithTrap;
+  // Check that LTO is enabled if we need it.
+  if ((Kinds & NeedsLTO) && !D.IsUsingLTO(Args)) {
+    D.Diag(diag::err_drv_argument_only_allowed_with)
+        << lastArgumentForMask(D, Args, Kinds & NeedsLTO) << "-flto";
+  }
+
+  // Report error if there are non-trapping sanitizers that require
+  // c++abi-specific  parts of UBSan runtime, and they are not provided by the
+  // toolchain. We don't have a good way to check the latter, so we just
+  // check if the toolchan supports vptr.
+  if (~Supported & Vptr) {
+    SanitizerMask KindsToDiagnose = Kinds & ~TrappingKinds & NeedsUbsanCxxRt;
+    // The runtime library supports the Microsoft C++ ABI, but only well enough
+    // for CFI. FIXME: Remove this once we support vptr on Windows.
+    if (TC.getTriple().isOSWindows())
+      KindsToDiagnose &= ~CFI;
+    if (KindsToDiagnose) {
+      SanitizerSet S;
+      S.Mask = KindsToDiagnose;
+      D.Diag(diag::err_drv_unsupported_opt_for_target)
+          << ("-fno-sanitize-trap=" + toString(S)) << TC.getTriple().str();
+      Kinds &= ~KindsToDiagnose;
+    }
   }
 
   // Warn about incompatible groups of sanitizers.
   std::pair<SanitizerMask, SanitizerMask> IncompatibleGroups[] = {
       std::make_pair(Address, Thread), std::make_pair(Address, Memory),
       std::make_pair(Thread, Memory), std::make_pair(Leak, Thread),
-      std::make_pair(Leak, Memory)};
+      std::make_pair(Leak, Memory), std::make_pair(KernelAddress, Address),
+      std::make_pair(KernelAddress, Leak),
+      std::make_pair(KernelAddress, Thread),
+      std::make_pair(KernelAddress, Memory)};
   for (auto G : IncompatibleGroups) {
     SanitizerMask Group = G.first;
     if (Kinds & Group) {
@@ -305,6 +369,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   RecoverableKinds &= Kinds;
   RecoverableKinds &= ~Unrecoverable;
 
+  TrappingKinds &= Kinds;
+
   // Setup blacklist files.
   // Add default blacklist from resource directory.
   {
@@ -354,6 +420,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
         }
       }
     }
+    MsanUseAfterDtor = 
+      Args.hasArg(options::OPT_fsanitize_memory_use_after_dtor);
   }
 
   // Parse -f(no-)?sanitize-coverage flags if coverage is supported by the
@@ -460,6 +528,7 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   // Finally, initialize the set of available and recoverable sanitizers.
   Sanitizers.Mask |= Kinds;
   RecoverableSanitizers.Mask |= RecoverableKinds;
+  TrapSanitizers.Mask |= TrappingKinds;
 }
 
 static std::string toString(const clang::SanitizerSet &Sanitizers) {
@@ -474,8 +543,9 @@ static std::string toString(const clang::SanitizerSet &Sanitizers) {
   return Res;
 }
 
-void SanitizerArgs::addArgs(const llvm::opt::ArgList &Args,
-                            llvm::opt::ArgStringList &CmdArgs) const {
+void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
+                            llvm::opt::ArgStringList &CmdArgs,
+                            types::ID InputType) const {
   if (Sanitizers.empty())
     return;
   CmdArgs.push_back(Args.MakeArgString("-fsanitize=" + toString(Sanitizers)));
@@ -484,8 +554,9 @@ void SanitizerArgs::addArgs(const llvm::opt::ArgList &Args,
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-recover=" +
                                          toString(RecoverableSanitizers)));
 
-  if (UbsanTrapOnError)
-    CmdArgs.push_back("-fsanitize-undefined-trap-on-error");
+  if (!TrapSanitizers.empty())
+    CmdArgs.push_back(
+        Args.MakeArgString("-fsanitize-trap=" + toString(TrapSanitizers)));
 
   for (const auto &BLPath : BlacklistFiles) {
     SmallString<64> BlacklistOpt("-fsanitize-blacklist=");
@@ -496,6 +567,10 @@ void SanitizerArgs::addArgs(const llvm::opt::ArgList &Args,
   if (MsanTrackOrigins)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-memory-track-origins=" +
                                          llvm::utostr(MsanTrackOrigins)));
+
+  if (MsanUseAfterDtor)
+    CmdArgs.push_back(Args.MakeArgString("-fsanitize-memory-use-after-dtor"));
+
   if (AsanFieldPadding)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-address-field-padding=" +
                                          llvm::utostr(AsanFieldPadding)));
@@ -521,6 +596,17 @@ void SanitizerArgs::addArgs(const llvm::opt::ArgList &Args,
   // affect compilation.
   if (Sanitizers.has(Memory) || Sanitizers.has(Address))
     CmdArgs.push_back(Args.MakeArgString("-fno-assume-sane-operator-new"));
+
+  if (TC.getTriple().isOSWindows() && needsUbsanRt()) {
+    // Instruct the code generator to embed linker directives in the object file
+    // that cause the required runtime libraries to be linked.
+    CmdArgs.push_back(Args.MakeArgString(
+        "--dependent-lib=" + tools::getCompilerRT(TC, "ubsan_standalone")));
+    if (types::isCXX(InputType))
+      CmdArgs.push_back(
+          Args.MakeArgString("--dependent-lib=" +
+                             tools::getCompilerRT(TC, "ubsan_standalone_cxx")));
+  }
 }
 
 SanitizerMask parseArgValues(const Driver &D, const llvm::opt::Arg *A,
@@ -528,7 +614,9 @@ SanitizerMask parseArgValues(const Driver &D, const llvm::opt::Arg *A,
   assert((A->getOption().matches(options::OPT_fsanitize_EQ) ||
           A->getOption().matches(options::OPT_fno_sanitize_EQ) ||
           A->getOption().matches(options::OPT_fsanitize_recover_EQ) ||
-          A->getOption().matches(options::OPT_fno_sanitize_recover_EQ)) &&
+          A->getOption().matches(options::OPT_fno_sanitize_recover_EQ) ||
+          A->getOption().matches(options::OPT_fsanitize_trap_EQ) ||
+          A->getOption().matches(options::OPT_fno_sanitize_trap_EQ)) &&
          "Invalid argument in parseArgValues!");
   SanitizerMask Kinds = 0;
   for (int i = 0, n = A->getNumValues(); i != n; ++i) {

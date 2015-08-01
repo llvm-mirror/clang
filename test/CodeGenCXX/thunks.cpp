@@ -361,10 +361,28 @@ namespace Test15 {
   // CHECK: declare void @_ZThn8_N6Test151C1fEiz
 }
 
+namespace Test16 {
+struct A {
+  virtual ~A();
+};
+struct B {
+  virtual void foo();
+};
+struct C : public A, public B {
+  void foo() {}
+};
+struct D : public C {
+  ~D();
+};
+D::~D() {}
+// CHECK: define linkonce_odr void @_ZThn8_N6Test161C3fooEv({{.*}}) {{.*}} comdat
+}
+
 /**** The following has to go at the end of the file ****/
 
 // This is from Test5:
 // CHECK-LABEL: define internal void @_ZThn8_N6Test4B12_GLOBAL__N_11C1fEv(
+// CHECK-NOT: comdat
 // CHECK-LABEL: define linkonce_odr void @_ZTv0_n24_N5Test51B1fEv
 
 // This is from Test10:

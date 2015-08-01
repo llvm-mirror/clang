@@ -40,7 +40,6 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallSet.h"
-#include "llvm/Support/CrashRecoveryContext.h"
 using namespace clang;
 using namespace sema;
 
@@ -91,8 +90,9 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     LateTemplateParserCleanup(nullptr),
     OpaqueParser(nullptr), IdResolver(pp), StdInitializerList(nullptr),
     CXXTypeInfoDecl(nullptr), MSVCGuidDecl(nullptr),
-    NSNumberDecl(nullptr),
+    NSNumberDecl(nullptr), NSValueDecl(nullptr),
     NSStringDecl(nullptr), StringWithUTF8StringMethod(nullptr),
+    ValueWithBytesObjCTypeMethod(nullptr),
     NSArrayDecl(nullptr), ArrayWithObjectsMethod(nullptr),
     NSDictionaryDecl(nullptr), DictionaryWithObjectsMethod(nullptr),
     MSAsmLabelNameCounter(0),
@@ -153,6 +153,9 @@ void Sema::Initialize() {
   // This needs to happen after ExternalSemaSource::InitializeSema(this) or we
   // will not be able to merge any duplicate __va_list_tag decls correctly.
   VAListTagName = PP.getIdentifierInfo("__va_list_tag");
+
+  if (!TUScope)
+    return;
 
   // Initialize predefined 128-bit integer types, if needed.
   if (Context.getTargetInfo().hasInt128Type()) {
@@ -356,6 +359,19 @@ ExprResult Sema::ImpCastExprToType(Expr *E, QualType Ty,
   assert((VK == VK_RValue || !E->isRValue()) && "can't cast rvalue to lvalue");
 #endif
 
+  // Check whether we're implicitly casting from a nullable type to a nonnull
+  // type.
+  if (auto exprNullability = E->getType()->getNullability(Context)) {
+    if (*exprNullability == NullabilityKind::Nullable) {
+      if (auto typeNullability = Ty->getNullability(Context)) {
+        if (*typeNullability == NullabilityKind::NonNull) {
+          Diag(E->getLocStart(), diag::warn_nullability_lost)
+            << E->getType() << Ty;
+        }
+      }
+    }
+  }
+
   QualType ExprTy = Context.getCanonicalType(E->getType());
   QualType TypeTy = Context.getCanonicalType(Ty);
 
@@ -551,10 +567,10 @@ static bool MethodsAndNestedClassesComplete(const CXXRecordDecl *RD,
     if (const CXXMethodDecl *M = dyn_cast<CXXMethodDecl>(*I))
       Complete = M->isDefined() || (M->isPure() && !isa<CXXDestructorDecl>(M));
     else if (const FunctionTemplateDecl *F = dyn_cast<FunctionTemplateDecl>(*I))
-      // If the template function is marked as late template parsed at this point,
-      // it has not been instantiated and therefore we have not performed semantic
-      // analysis on it yet, so we cannot know if the type can be considered
-      // complete.
+      // If the template function is marked as late template parsed at this
+      // point, it has not been instantiated and therefore we have not
+      // performed semantic analysis on it yet, so we cannot know if the type
+      // can be considered complete.
       Complete = !F->getTemplatedDecl()->isLateTemplateParsed() &&
                   F->getTemplatedDecl()->isDefined();
     else if (const CXXRecordDecl *R = dyn_cast<CXXRecordDecl>(*I)) {

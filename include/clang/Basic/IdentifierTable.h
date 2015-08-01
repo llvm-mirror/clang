@@ -49,7 +49,7 @@ class IdentifierInfo {
   // Objective-C keyword ('protocol' in '@protocol') or builtin (__builtin_inf).
   // First NUM_OBJC_KEYWORDS values are for Objective-C, the remaining values
   // are for builtins.
-  unsigned ObjCOrBuiltinID    :11;
+  unsigned ObjCOrBuiltinID    :13;
   bool HasMacro               : 1; // True if there is a #define for this.
   bool HadMacro               : 1; // True if there was a #define for this.
   bool IsExtension            : 1; // True if identifier is a lang extension.
@@ -62,14 +62,14 @@ class IdentifierInfo {
                                    // partially) from an AST file.
   bool ChangedAfterLoad       : 1; // True if identifier has changed from the
                                    // definition loaded from an AST file.
-  bool RevertedTokenID        : 1; // True if RevertTokenIDToIdentifier was
+  bool RevertedTokenID        : 1; // True if revertTokenIDToIdentifier was
                                    // called.
   bool OutOfDate              : 1; // True if there may be additional
                                    // information about this identifier
                                    // stored externally.
   bool IsModulesImport        : 1; // True if this is the 'import' contextual
                                    // keyword.
-  // 32-bit word is filled.
+  // 30 bit left in 64-bit word.
 
   void *FETokenInfo;               // Managed by the language front-end.
   llvm::StringMapEntry<IdentifierInfo*> *Entry;
@@ -152,7 +152,7 @@ public:
   /// tokens.
   tok::TokenKind getTokenID() const { return (tok::TokenKind)TokenID; }
 
-  /// \brief True if RevertTokenIDToIdentifier() was called.
+  /// \brief True if revertTokenIDToIdentifier() was called.
   bool hasRevertedTokenIDToIdentifier() const { return RevertedTokenID; }
 
   /// \brief Revert TokenID to tok::identifier; used for GNU libstdc++ 4.2
@@ -161,10 +161,15 @@ public:
   /// TokenID is normally read-only but there are 2 instances where we revert it
   /// to tok::identifier for libstdc++ 4.2. Keep track of when this happens
   /// using this method so we can inform serialization about it.
-  void RevertTokenIDToIdentifier() {
+  void revertTokenIDToIdentifier() {
     assert(TokenID != tok::identifier && "Already at tok::identifier");
     TokenID = tok::identifier;
     RevertedTokenID = true;
+  }
+  void revertIdentifierToTokenID(tok::TokenKind TK) {
+    assert(TokenID == tok::identifier && "Should be at tok::identifier");
+    TokenID = TK;
+    RevertedTokenID = false;
   }
 
   /// \brief Return the preprocessor keyword ID for this identifier.
@@ -182,6 +187,18 @@ public:
       return tok::objc_not_keyword;
   }
   void setObjCKeywordID(tok::ObjCKeywordKind ID) { ObjCOrBuiltinID = ID; }
+
+  /// \brief True if setNotBuiltin() was called.
+  bool hasRevertedBuiltin() const {
+    return ObjCOrBuiltinID == tok::NUM_OBJC_KEYWORDS;
+  }
+
+  /// \brief Revert the identifier to a non-builtin identifier. We do this if
+  /// the name of a known builtin library function is used to declare that
+  /// function, but an unexpected type is specified.
+  void revertBuiltin() {
+    setBuiltinID(0);
+  }
 
   /// \brief Return a value indicating whether this is a builtin function.
   ///
@@ -404,19 +421,6 @@ public:
   /// \returns A new iterator into the set of known identifiers. The
   /// caller is responsible for deleting this iterator.
   virtual IdentifierIterator *getIdentifiers();
-};
-
-/// \brief An abstract class used to resolve numerical identifier
-/// references (meaningful only to some external source) into
-/// IdentifierInfo pointers.
-class ExternalIdentifierLookup {
-public:
-  virtual ~ExternalIdentifierLookup();
-
-  /// \brief Return the identifier associated with the given ID number.
-  ///
-  /// The ID 0 is associated with the NULL identifier.
-  virtual IdentifierInfo *GetIdentifier(unsigned ID) = 0;
 };
 
 /// \brief Implements an efficient mapping from strings to IdentifierInfo nodes.

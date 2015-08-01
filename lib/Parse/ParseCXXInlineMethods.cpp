@@ -27,10 +27,9 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
                                       ParsingDeclarator &D,
                                       const ParsedTemplateInfo &TemplateInfo,
                                       const VirtSpecifiers& VS,
-                                      ExprResult& Init) {
+                                      SourceLocation PureSpecLoc) {
   assert(D.isFunctionDeclarator() && "This isn't a function declarator!");
-  assert((Tok.is(tok::l_brace) || Tok.is(tok::colon) || Tok.is(tok::kw_try) ||
-          Tok.is(tok::equal)) &&
+  assert(Tok.isOneOf(tok::l_brace, tok::colon, tok::kw_try, tok::equal) &&
          "Current token not a '{', ':', '=', or 'try'!");
 
   MultiTemplateParamsArg TemplateParams(
@@ -48,12 +47,8 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
                                            VS, ICIS_NoInit);
     if (FnD) {
       Actions.ProcessDeclAttributeList(getCurScope(), FnD, AccessAttrs);
-      bool TypeSpecContainsAuto = D.getDeclSpec().containsPlaceholderType();
-      if (Init.isUsable())
-        Actions.AddInitializerToDecl(FnD, Init.get(), false,
-                                     TypeSpecContainsAuto);
-      else
-        Actions.ActOnUninitializedDecl(FnD, TypeSpecContainsAuto);
+      if (PureSpecLoc.isValid())
+        Actions.ActOnPureSpecifier(FnD, PureSpecLoc);
     }
   }
 
@@ -191,7 +186,7 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
 /// declaration. Now lex its initializer and store its tokens for parsing
 /// after the class is complete.
 void Parser::ParseCXXNonStaticMemberInitializer(Decl *VarD) {
-  assert((Tok.is(tok::l_brace) || Tok.is(tok::equal)) &&
+  assert(Tok.isOneOf(tok::l_brace, tok::equal) &&
          "Current token not a '{' or '='!");
 
   LateParsedMemberInitializer *MI =
@@ -511,7 +506,7 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
 
   // Consume the previously pushed token.
   ConsumeAnyToken(/*ConsumeCodeCompletionTok=*/true);
-  assert((Tok.is(tok::l_brace) || Tok.is(tok::colon) || Tok.is(tok::kw_try))
+  assert(Tok.isOneOf(tok::l_brace, tok::colon, tok::kw_try)
          && "Inline method not starting with '{', ':' or 'try'");
 
   // Parse the method body. Function body parsing code is similar enough
@@ -826,7 +821,7 @@ bool Parser::ConsumeAndStoreFunctionPrologue(CachedTokens &Toks) {
         }
       }
 
-      if (Tok.is(tok::identifier) || Tok.is(tok::kw_template)) {
+      if (Tok.isOneOf(tok::identifier, tok::kw_template)) {
         Toks.push_back(Tok);
         ConsumeToken();
       } else if (Tok.is(tok::code_completion)) {

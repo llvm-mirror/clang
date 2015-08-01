@@ -155,6 +155,7 @@ public:
   std::vector<std::string> DependentLibraries;
 
   /// Name of the profile file to use as output for -fprofile-instr-generate
+  /// and -fprofile-generate.
   std::string InstrProfileOutput;
 
   /// Name of the profile file to use with -fprofile-sample-use.
@@ -196,6 +197,9 @@ public:
   /// Set of sanitizer checks that are non-fatal (i.e. execution should be
   /// continued when possible).
   SanitizerSet SanitizeRecover;
+
+  /// Set of sanitizer checks that trap rather than diagnose.
+  SanitizerSet SanitizeTrap;
 
 public:
   // Define accessors/mutators for code generation options of enumeration type.

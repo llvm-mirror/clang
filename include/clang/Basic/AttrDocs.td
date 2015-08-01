@@ -181,6 +181,11 @@ to enforce the provided alignment assumption.
 def EnableIfDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
+.. Note:: Some features of this attribute are experimental. The meaning of
+  multiple enable_if attributes on a single declaration is subject to change in
+  a future version of clang. Also, the ABI is not standardized and the name
+  mangling may change in future versions. To avoid that, use asm labels.
+
 The ``enable_if`` attribute can be placed on function declarations to control
 which overload is selected based on the values of the function's arguments.
 When combined with the ``overloadable`` attribute, this feature is also
@@ -487,6 +492,34 @@ can only be placed before an @protocol or @interface declaration:
     }];
 }
 
+def ObjCBoxableDocs : Documentation {
+    let Category = DocCatFunction;
+    let Content = [{
+Structs and unions marked with the ``objc_boxable`` attribute can be used 
+with the Objective-C boxed expression syntax, ``@(...)``.
+
+**Usage**: ``__attribute__((objc_boxable))``. This attribute 
+can only be placed on a declaration of a trivially-copyable struct or union:
+
+.. code-block:: objc
+
+  struct __attribute__((objc_boxable)) some_struct {
+    int i;
+  };
+  union __attribute__((objc_boxable)) some_union {
+    int i;
+    float f;
+  };
+  typedef struct __attribute__((objc_boxable)) _some_struct some_struct;
+
+  // ...
+
+  some_struct ss;
+  NSValue *boxed = @(ss);
+
+    }];
+}
+
 def AvailabilityDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
@@ -671,6 +704,25 @@ The semantics are as follows:
   the execution state of the code which generated the exception. In this case
   a sequence equivalent to "movs pc, lr" will be used.
   }];
+}
+
+def TargetDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Clang supports the GNU style ``__attribute__((target("OPTIONS")))`` attribute.
+This attribute may be attached to a function definition and instructs
+the backend to use different code generation options than were passed on the
+command line.
+
+The current set of options correspond to the existing "subtarget features" for
+the target with or without a "-mno-" in front corresponding to the absence
+of the feature, as well as ``arch="CPU"`` which will change the default "CPU"
+for the function.
+
+Example "subtarget features" from the x86 backend include: "mmx", "sse", "sse4.2",
+"avx", "xop" and largely correspond to the machine specific options handled by
+the front end.
+}];
 }
 
 def DocCatAMDGPURegisterAttributes :
@@ -1276,7 +1328,7 @@ def MSNoVTableDocs : Documentation {
   let Content = [{
 This attribute can be added to a class declaration or definition to signal to
 the compiler that constructors and destructors will not reference the virtual
-function table.
+function table. It is only supported when using the Microsoft C++ ABI.
   }];
 }
 
@@ -1387,7 +1439,6 @@ More details can be found in the OpenCL C language Spec v2.0, Section 6.5.
 
 def OpenCLAddressSpaceGenericDocs : Documentation {
   let Category = DocOpenCLAddressSpaces;
-  let Heading = "__generic(generic)";
   let Content = [{
 The generic address space attribute is only available with OpenCL v2.0 and later.
 It can be used with pointer types. Variables in global and local scope and
@@ -1400,7 +1451,6 @@ spaces.
 
 def OpenCLAddressSpaceConstantDocs : Documentation {
   let Category = DocOpenCLAddressSpaces;
-  let Heading = "__constant(constant)";
   let Content = [{
 The constant address space attribute signals that an object is located in
 a constant (non-modifiable) memory region. It is available to all work items.
@@ -1412,7 +1462,6 @@ have an initializer.
 
 def OpenCLAddressSpaceGlobalDocs : Documentation {
   let Category = DocOpenCLAddressSpaces;
-  let Heading = "__global(global)";
   let Content = [{
 The global address space attribute specifies that an object is allocated in
 global memory, which is accessible by all work items. The content stored in this
@@ -1425,7 +1474,6 @@ scope) variables and static local variable as well.
 
 def OpenCLAddressSpaceLocalDocs : Documentation {
   let Category = DocOpenCLAddressSpaces;
-  let Heading = "__local(local)";
   let Content = [{
 The local address space specifies that an object is allocated in the local (work
 group) memory area, which is accessible to all work items in the same work
@@ -1438,7 +1486,6 @@ space are allowed. Local address space variables cannot have an initializer.
 
 def OpenCLAddressSpacePrivateDocs : Documentation {
   let Category = DocOpenCLAddressSpaces;
-  let Heading = "__private(private)";
   let Content = [{
 The private address space specifies that an object is allocated in the private
 (work item) memory. Other work items cannot access the same memory area and its
@@ -1446,5 +1493,120 @@ content is destroyed after work item execution ends. Local variables can be
 declared in the private address space. Function arguments are always in the
 private address space. Kernel function arguments of a pointer or an array type
 cannot point to the private address space.
+  }];
+}
+
+def NullabilityDocs : DocumentationCategory<"Nullability Attributes"> {
+  let Content = [{
+Whether a particular pointer may be "null" is an important concern when working with pointers in the C family of languages. The various nullability attributes indicate whether a particular pointer can be null or not, which makes APIs more expressive and can help static analysis tools identify bugs involving null pointers. Clang supports several kinds of nullability attributes: the ``nonnull`` and ``returns_nonnull`` attributes indicate which function or method parameters and result types can never be null, while nullability type qualifiers indicate which pointer types can be null (``_Nullable``) or cannot be null (``_Nonnull``). 
+
+The nullability (type) qualifiers express whether a value of a given pointer type can be null (the ``_Nullable`` qualifier), doesn't have a defined meaning for null (the ``_Nonnull`` qualifier), or for which the purpose of null is unclear (the ``_Null_unspecified`` qualifier). Because nullability qualifiers are expressed within the type system, they are more general than the ``nonnull`` and ``returns_nonnull`` attributes, allowing one to express (for example) a nullable pointer to an array of nonnull pointers. Nullability qualifiers are written to the right of the pointer to which they apply. For example:
+
+  .. code-block:: c
+
+    // No meaningful result when 'ptr' is null (here, it happens to be undefined behavior).
+    int fetch(int * _Nonnull ptr) { return *ptr; }
+
+    // 'ptr' may be null.
+    int fetch_or_zero(int * _Nullable ptr) {
+      return ptr ? *ptr : 0;
+    }
+
+    // A nullable pointer to non-null pointers to const characters.
+    const char *join_strings(const char * _Nonnull * _Nullable strings, unsigned n);
+
+In Objective-C, there is an alternate spelling for the nullability qualifiers that can be used in Objective-C methods and properties using context-sensitive, non-underscored keywords. For example:
+
+  .. code-block:: objective-c
+
+    @interface NSView : NSResponder
+      - (nullable NSView *)ancestorSharedWithView:(nonnull NSView *)aView;
+      @property (assign, nullable) NSView *superview;
+      @property (readonly, nonnull) NSArray *subviews;
+    @end
+  }];
+}
+
+def TypeNonNullDocs : Documentation {
+  let Category = NullabilityDocs;
+  let Content = [{
+The ``_Nonnull`` nullability qualifier indicates that null is not a meaningful value for a value of the ``_Nonnull`` pointer type. For example, given a declaration such as:
+
+  .. code-block:: c
+
+    int fetch(int * _Nonnull ptr);
+
+a caller of ``fetch`` should not provide a null value, and the compiler will produce a warning if it sees a literal null value passed to ``fetch``. Note that, unlike the declaration attribute ``nonnull``, the presence of ``_Nonnull`` does not imply that passing null is undefined behavior: ``fetch`` is free to consider null undefined behavior or (perhaps for backward-compatibility reasons) defensively handle null.
+  }];
+}
+
+def TypeNullableDocs : Documentation {
+  let Category = NullabilityDocs;
+  let Content = [{
+The ``_Nullable`` nullability qualifier indicates that a value of the ``_Nullable`` pointer type can be null. For example, given:
+
+  .. code-block:: c
+
+    int fetch_or_zero(int * _Nullable ptr);
+
+a caller of ``fetch_or_zero`` can provide null. 
+  }];
+}
+
+def TypeNullUnspecifiedDocs : Documentation {
+  let Category = NullabilityDocs;
+  let Content = [{
+The ``_Null_unspecified`` nullability qualifier indicates that neither the ``_Nonnull`` nor ``_Nullable`` qualifiers make sense for a particular pointer type. It is used primarily to indicate that the role of null with specific pointers in a nullability-annotated header is unclear, e.g., due to overly-complex implementations or historical factors with a long-lived API.
+  }];
+}
+
+def NonNullDocs : Documentation {
+  let Category = NullabilityDocs;
+  let Content = [{
+The ``nonnull`` attribute indicates that some function parameters must not be null, and can be used in several different ways. It's original usage (`from GCC <https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#Common-Function-Attributes>`_) is as a function (or Objective-C method) attribute that specifies which parameters of the function are nonnull in a comma-separated list. For example:
+
+  .. code-block:: c
+
+    extern void * my_memcpy (void *dest, const void *src, size_t len)
+                    __attribute__((nonnull (1, 2)));
+
+Here, the ``nonnull`` attribute indicates that parameters 1 and 2
+cannot have a null value. Omitting the parenthesized list of parameter indices means that all parameters of pointer type cannot be null:
+
+  .. code-block:: c
+
+    extern void * my_memcpy (void *dest, const void *src, size_t len)
+                    __attribute__((nonnull));
+
+Clang also allows the ``nonnull`` attribute to be placed directly on a function (or Objective-C method) parameter, eliminating the need to specify the parameter index ahead of type. For example:
+
+  .. code-block:: c
+
+    extern void * my_memcpy (void *dest __attribute__((nonnull)),
+                             const void *src __attribute__((nonnull)), size_t len);
+
+Note that the ``nonnull`` attribute indicates that passing null to a non-null parameter is undefined behavior, which the optimizer may take advantage of to, e.g., remove null checks. The ``_Nonnull`` type qualifier indicates that a pointer cannot be null in a more general manner (because it is part of the type system) and does not imply undefined behavior, making it more widely applicable.
+  }];
+}
+
+def ReturnsNonNullDocs : Documentation {
+  let Category = NullabilityDocs;
+  let Content = [{
+The ``returns_nonnull`` attribute indicates that a particular function (or Objective-C method) always returns a non-null pointer. For example, a particular system ``malloc`` might be defined to terminate a process when memory is not available rather than returning a null pointer:
+
+  .. code-block:: c
+
+    extern void * malloc (size_t size) __attribute__((returns_nonnull));
+
+The ``returns_nonnull`` attribute implies that returning a null pointer is undefined behavior, which the optimizer may take advantage of. The ``_Nonnull`` type qualifier indicates that a pointer cannot be null in a more general manner (because it is part of the type system) and does not imply undefined behavior, making it more widely applicable
+}];
+}
+
+def NoAliasDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``noalias`` attribute indicates that the only memory accesses inside
+function are loads and stores from objects pointed to by its pointer-typed
+arguments, with arbitrary offsets.
   }];
 }

@@ -543,7 +543,10 @@ namespace clang {
       /// macro definition.
       MACRO_OFFSET = 47,
 
-      // ID 48 used to be a table of macros.
+      /// \brief A list of "interesting" identifiers. Only used in C++ (where we
+      /// don't normally do lookups into the serialized identifier table). These
+      /// are eagerly deserialized.
+      INTERESTING_IDENTIFIERS = 48,
 
       /// \brief Record code for undefined but used functions and variables that
       /// need a definition in this TU.
@@ -758,26 +761,24 @@ namespace clang {
       PREDEF_TYPE_ARC_UNBRIDGED_CAST = 34,
       /// \brief The pseudo-object placeholder type.
       PREDEF_TYPE_PSEUDO_OBJECT = 35,
-      /// \brief The __va_list_tag placeholder type.
-      PREDEF_TYPE_VA_LIST_TAG = 36,
       /// \brief The placeholder type for builtin functions.
-      PREDEF_TYPE_BUILTIN_FN = 37,
+      PREDEF_TYPE_BUILTIN_FN = 36,
       /// \brief OpenCL 1d image type.
-      PREDEF_TYPE_IMAGE1D_ID    = 38,
+      PREDEF_TYPE_IMAGE1D_ID    = 37,
       /// \brief OpenCL 1d image array type.
-      PREDEF_TYPE_IMAGE1D_ARR_ID = 39,
+      PREDEF_TYPE_IMAGE1D_ARR_ID = 38,
       /// \brief OpenCL 1d image buffer type.
-      PREDEF_TYPE_IMAGE1D_BUFF_ID = 40,
+      PREDEF_TYPE_IMAGE1D_BUFF_ID = 39,
       /// \brief OpenCL 2d image type.
-      PREDEF_TYPE_IMAGE2D_ID    = 41,
+      PREDEF_TYPE_IMAGE2D_ID    = 40,
       /// \brief OpenCL 2d image array type.
-      PREDEF_TYPE_IMAGE2D_ARR_ID = 42,
+      PREDEF_TYPE_IMAGE2D_ARR_ID = 41,
       /// \brief OpenCL 3d image type.
-      PREDEF_TYPE_IMAGE3D_ID    = 43,
+      PREDEF_TYPE_IMAGE3D_ID    = 42,
       /// \brief OpenCL event type.
-      PREDEF_TYPE_EVENT_ID      = 44,
+      PREDEF_TYPE_EVENT_ID      = 43,
       /// \brief OpenCL sampler type.
-      PREDEF_TYPE_SAMPLER_ID    = 45
+      PREDEF_TYPE_SAMPLER_ID    = 44
     };
 
     /// \brief The number of predefined type IDs that are reserved for
@@ -942,15 +943,18 @@ namespace clang {
       /// \brief The internal '__builtin_va_list' typedef.
       PREDEF_DECL_BUILTIN_VA_LIST_ID = 9,
 
+      /// \brief The internal '__va_list_tag' struct, if any.
+      PREDEF_DECL_VA_LIST_TAG = 10,
+
       /// \brief The extern "C" context.
-      PREDEF_DECL_EXTERN_C_CONTEXT_ID = 10,
+      PREDEF_DECL_EXTERN_C_CONTEXT_ID = 11,
     };
 
     /// \brief The number of declaration IDs that are predefined.
     ///
     /// For more information about predefined declarations, see the
     /// \c PredefinedDeclIDs type and the PREDEF_DECL_*_ID constants.
-    const unsigned int NUM_PREDEF_DECL_IDS = 11;
+    const unsigned int NUM_PREDEF_DECL_IDS = 12;
     
     /// \brief Record codes for each kind of declaration.
     ///
@@ -1105,7 +1109,9 @@ namespace clang {
       /// \brief An OMPThreadPrivateDecl record.
       DECL_OMP_THREADPRIVATE,
       /// \brief An EmptyDecl record.
-      DECL_EMPTY
+      DECL_EMPTY,
+      /// \brief An ObjCTypeParamDecl record.
+      DECL_OBJC_TYPE_PARAM,
     };
 
     /// \brief Record codes for each kind of statement or expression.
@@ -1395,7 +1401,11 @@ namespace clang {
       STMT_OMP_ORDERED_DIRECTIVE,
       STMT_OMP_ATOMIC_DIRECTIVE,
       STMT_OMP_TARGET_DIRECTIVE,
+      STMT_OMP_TARGET_DATA_DIRECTIVE,
       STMT_OMP_TEAMS_DIRECTIVE,
+      STMT_OMP_TASKGROUP_DIRECTIVE,
+      STMT_OMP_CANCELLATION_POINT_DIRECTIVE,
+      STMT_OMP_CANCEL_DIRECTIVE,
 
       // ARC
       EXPR_OBJC_BRIDGED_CAST,     // ObjCBridgedCastExpr

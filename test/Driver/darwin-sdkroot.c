@@ -31,12 +31,46 @@
 // CHECK-NONROOT: "-cc1"
 // CHECK-NONROOT-NOT: "-isysroot"
 //
-// It doesn't make sense on msys bash.
-// REQUIRES: shell-preserves-root
-//
-// This test will fail with MSYS env.exe, since it does not preserve root,
-// expanding / into C:/MINGW/MSYS/1.0. To see the problem, from cmd.exe run:
+// This test fails with MSYS or MSYS2 env.exe, since it does not preserve
+// root, expanding / into C:/MINGW/MSYS/1.0 or c:/msys64. To reproduce the
+// problem, run:
 //
 //   env SDKROOT=/ cmd //c echo %SDKROOT%
 //
-// This test passes using env.exe from GnuWin32.
+// This test do pass using GnuWin32 env.exe.
+
+// Check if clang set the correct deployment target from -sysroot
+//
+// RUN: rm -rf %t/SDKs/iPhoneOS8.0.0.sdk
+// RUN: mkdir -p %t/SDKs/iPhoneOS8.0.0.sdk
+// RUN: env SDKROOT=%t/SDKs/iPhoneOS8.0.0.sdk %clang -target arm64-apple-darwin %s -### 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-IPHONE %s
+//
+// CHECK-IPHONE: clang
+// CHECK-IPHONE: "-cc1"
+// CHECK-IPHONE: "-triple" "arm64-apple-ios8.0.0"
+// CHECK-IPHONE: ld
+// CHECK-IPHONE: "-iphoneos_version_min" "8.0.0"
+//
+//
+// RUN: rm -rf %t/SDKs/iPhoneSimulator8.0.sdk
+// RUN: mkdir -p %t/SDKs/iPhoneSimulator8.0.sdk
+// RUN: env SDKROOT=%t/SDKs/iPhoneSimulator8.0.sdk %clang -target x86_64-apple-darwin %s -### 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-SIMULATOR %s
+//
+// CHECK-SIMULATOR: clang
+// CHECK-SIMULATOR: "-cc1"
+// CHECK-SIMULATOR: "-triple" "x86_64-apple-ios8.0.0"
+// CHECK-SIMULATOR: ld
+// CHECK-SIMULATOR: "-ios_simulator_version_min" "8.0.0"
+//
+// RUN: rm -rf %t/SDKs/MacOSX10.10.0.sdk
+// RUN: mkdir -p %t/SDKs/MacOSX10.10.0.sdk
+// RUN: env SDKROOT=%t/SDKs/MacOSX10.10.0.sdk %clang -target x86_64-apple-darwin %s -### 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-MACOSX %s
+//
+// CHECK-MACOSX: clang
+// CHECK-MACOSX: "-cc1"
+// CHECK-MACOSX: "-triple" "x86_64-apple-macosx10.10.0"
+// CHECK-MACOSX: ld
+// CHECK-MACOSX: "-macosx_version_min" "10.10.0"

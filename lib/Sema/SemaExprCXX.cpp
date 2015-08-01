@@ -3696,15 +3696,15 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
   case UTT_IsVolatile:
     return T.isVolatileQualified();
   case UTT_IsTrivial:
-    return T.isTrivialType(Self.Context);
+    return T.isTrivialType(C);
   case UTT_IsTriviallyCopyable:
-    return T.isTriviallyCopyableType(Self.Context);
+    return T.isTriviallyCopyableType(C);
   case UTT_IsStandardLayout:
     return T->isStandardLayoutType();
   case UTT_IsPOD:
-    return T.isPODType(Self.Context);
+    return T.isPODType(C);
   case UTT_IsLiteral:
-    return T->isLiteralType(Self.Context);
+    return T->isLiteralType(C);
   case UTT_IsEmpty:
     if (const CXXRecordDecl *RD = T->getAsCXXRecordDecl())
       return !RD->isUnion() && RD->isEmpty();
@@ -3755,7 +3755,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
     //   If __is_pod (type) is true then the trait is true, else if type is
     //   a cv class or union type (or array thereof) with a trivial default
     //   constructor ([class.ctor]) then the trait is true, else it is false.
-    if (T.isPODType(Self.Context))
+    if (T.isPODType(C))
       return true;
     if (CXXRecordDecl *RD = C.getBaseElementType(T)->getAsCXXRecordDecl())
       return RD->hasTrivialDefaultConstructor() &&
@@ -3765,7 +3765,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
     //  This trait is implemented by MSVC 2012 and needed to parse the
     //  standard library headers. Specifically this is used as the logic
     //  behind std::is_trivially_move_constructible (20.9.4.3).
-    if (T.isPODType(Self.Context))
+    if (T.isPODType(C))
       return true;
     if (CXXRecordDecl *RD = C.getBaseElementType(T)->getAsCXXRecordDecl())
       return RD->hasTrivialMoveConstructor() && !RD->hasNonTrivialMoveConstructor();
@@ -3776,7 +3776,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
     //   the trait is true, else if type is a cv class or union type
     //   with a trivial copy constructor ([class.copy]) then the trait
     //   is true, else it is false.
-    if (T.isPODType(Self.Context) || T->isReferenceType())
+    if (T.isPODType(C) || T->isReferenceType())
       return true;
     if (CXXRecordDecl *RD = T->getAsCXXRecordDecl())
       return RD->hasTrivialCopyConstructor() &&
@@ -3786,7 +3786,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
     //  This trait is implemented by MSVC 2012 and needed to parse the
     //  standard library headers. Specifically it is used as the logic
     //  behind std::is_trivially_move_assignable (20.9.4.3)
-    if (T.isPODType(Self.Context))
+    if (T.isPODType(C))
       return true;
     if (CXXRecordDecl *RD = C.getBaseElementType(T)->getAsCXXRecordDecl())
       return RD->hasTrivialMoveAssignment() && !RD->hasNonTrivialMoveAssignment();
@@ -3806,7 +3806,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
 
     if (T.isConstQualified())
       return false;
-    if (T.isPODType(Self.Context))
+    if (T.isPODType(C))
       return true;
     if (CXXRecordDecl *RD = T->getAsCXXRecordDecl())
       return RD->hasTrivialCopyAssignment() &&
@@ -3823,7 +3823,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
     //   type (or array thereof) with a trivial destructor
     //   ([class.dtor]) then the trait is true, else it is
     //   false.
-    if (T.isPODType(Self.Context) || T->isReferenceType())
+    if (T.isPODType(C) || T->isReferenceType())
       return true;
       
     // Objective-C++ ARC: autorelease types don't require destruction.
@@ -3847,7 +3847,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
       return false;
     if (T->isReferenceType())
       return false;
-    if (T.isPODType(Self.Context) || T->isObjCLifetimeType())
+    if (T.isPODType(C) || T->isObjCLifetimeType())
       return true;
 
     if (const RecordType *RT = T->getAs<RecordType>())
@@ -3860,7 +3860,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
     //  This trait is implemented by MSVC 2012 and needed to parse the
     //  standard library headers. Specifically this is used as the logic
     //  behind std::is_nothrow_move_assignable (20.9.4.3).
-    if (T.isPODType(Self.Context))
+    if (T.isPODType(C))
       return true;
 
     if (const RecordType *RT = C.getBaseElementType(T)->getAs<RecordType>())
@@ -3884,15 +3884,13 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
 
       bool FoundConstructor = false;
       unsigned FoundTQs;
-      DeclContext::lookup_result R = Self.LookupConstructors(RD);
-      for (DeclContext::lookup_iterator Con = R.begin(),
-           ConEnd = R.end(); Con != ConEnd; ++Con) {
+      for (const auto *ND : Self.LookupConstructors(RD)) {
         // A template constructor is never a copy constructor.
         // FIXME: However, it may actually be selected at the actual overload
         // resolution point.
-        if (isa<FunctionTemplateDecl>(*Con))
+        if (isa<FunctionTemplateDecl>(ND))
           continue;
-        CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(*Con);
+        const CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(ND);
         if (Constructor->isCopyConstructor(FoundTQs)) {
           FoundConstructor = true;
           const FunctionProtoType *CPT
@@ -3902,7 +3900,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
             return false;
           // TODO: check whether evaluating default arguments can throw.
           // For now, we'll be conservative and assume that they can throw.
-          if (!CPT->isNothrow(Self.Context) || CPT->getNumParams() > 1)
+          if (!CPT->isNothrow(C) || CPT->getNumParams() > 1)
             return false;
         }
       }
@@ -3924,13 +3922,11 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
         return true;
 
       bool FoundConstructor = false;
-      DeclContext::lookup_result R = Self.LookupConstructors(RD);
-      for (DeclContext::lookup_iterator Con = R.begin(),
-           ConEnd = R.end(); Con != ConEnd; ++Con) {
+      for (const auto *ND : Self.LookupConstructors(RD)) {
         // FIXME: In C++0x, a constructor template can be a default constructor.
-        if (isa<FunctionTemplateDecl>(*Con))
+        if (isa<FunctionTemplateDecl>(ND))
           continue;
-        CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(*Con);
+        const CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(ND);
         if (Constructor->isDefaultConstructor()) {
           FoundConstructor = true;
           const FunctionProtoType *CPT
@@ -3940,7 +3936,7 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
             return false;
           // FIXME: check whether evaluating default arguments can throw.
           // For now, we'll be conservative and assume that they can throw.
-          if (!CPT->isNothrow(Self.Context) || CPT->getNumParams() > 0)
+          if (!CPT->isNothrow(C) || CPT->getNumParams() > 0)
             return false;
         }
       }
@@ -4021,8 +4017,8 @@ static bool evaluateTypeTrait(Sema &S, TypeTrait Kind, SourceLocation KWLoc,
     // Precondition: T and all types in the parameter pack Args shall be
     // complete types, (possibly cv-qualified) void, or arrays of
     // unknown bound.
-    for (unsigned I = 0, N = Args.size(); I != N; ++I) {
-      QualType ArgTy = Args[I]->getType();
+    for (const auto *TSI : Args) {
+      QualType ArgTy = TSI->getType();
       if (ArgTy->isVoidType() || ArgTy->isIncompleteArrayType())
         continue;
 
@@ -4950,7 +4946,9 @@ QualType Sema::CXXCheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
 
   // Extension: conditional operator involving vector types.
   if (LTy->isVectorType() || RTy->isVectorType())
-    return CheckVectorOperands(LHS, RHS, QuestionLoc, /*isCompAssign*/false);
+    return CheckVectorOperands(LHS, RHS, QuestionLoc, /*isCompAssign*/false,
+                               /*AllowBothBool*/true,
+                               /*AllowBoolConversions*/false);
 
   //   -- The second and third operands have arithmetic or enumeration type;
   //      the usual arithmetic conversions are performed to bring them to a
@@ -6506,6 +6504,11 @@ public:
     // with the same edit length that pass all the checks and filters.
     // TODO: Properly handle various permutations of possible corrections when
     // there is more than one potentially ambiguous typo correction.
+    // Also, disable typo correction while attempting the transform when
+    // handling potentially ambiguous typo corrections as any new TypoExprs will
+    // have been introduced by the application of one of the correction
+    // candidates and add little to no value if corrected.
+    SemaRef.DisableTypoCorrection = true;
     while (!AmbiguousTypoExprs.empty()) {
       auto TE  = AmbiguousTypoExprs.back();
       auto Cached = TransformCache[TE];
@@ -6522,6 +6525,7 @@ public:
       State.Consumer->restoreSavedPosition();
       TransformCache[TE] = Cached;
     }
+    SemaRef.DisableTypoCorrection = false;
 
     // Ensure that all of the TypoExprs within the current Expr have been found.
     if (!Res.isUsable())

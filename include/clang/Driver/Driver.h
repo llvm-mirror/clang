@@ -42,7 +42,7 @@ namespace driver {
   class Command;
   class Compilation;
   class InputInfo;
-  class Job;
+  class JobList;
   class JobAction;
   class SanitizerArgs;
   class ToolChain;
@@ -91,7 +91,7 @@ public:
   /// The path to the compiler resource directory.
   std::string ResourceDir;
 
-  /// A prefix directory used to emulated a limited subset of GCC's '-Bprefix'
+  /// A prefix directory used to emulate a limited subset of GCC's '-Bprefix'
   /// functionality.
   /// FIXME: This type of customization should be removed in favor of the
   /// universal driver when it is ready.
@@ -195,7 +195,7 @@ private:
                            llvm::opt::Arg **FinalPhaseArg = nullptr) const;
 
   // Before executing jobs, sets up response files for commands that need them.
-  void setUpResponseFiles(Compilation &C, Job &J);
+  void setUpResponseFiles(Compilation &C, Command &Cmd);
 
   void generatePrefixedToolNames(const char *Tool, const ToolChain &TC,
                                  SmallVectorImpl<std::string> &Names) const;
@@ -262,7 +262,7 @@ public:
 
   /// ParseArgStrings - Parse the given list of strings into an
   /// ArgList.
-  llvm::opt::InputArgList *ParseArgStrings(ArrayRef<const char *> Args);
+  llvm::opt::InputArgList ParseArgStrings(ArrayRef<const char *> Args);
 
   /// BuildInputs - Construct the list of inputs and their types from 
   /// the given arguments.
@@ -402,15 +402,15 @@ public:
   /// handle this action.
   bool ShouldUseClangCompiler(const JobAction &JA) const;
 
-  bool IsUsingLTO(const ToolChain &TC, const llvm::opt::ArgList &Args) const;
+  bool IsUsingLTO(const llvm::opt::ArgList &Args) const;
 
 private:
-  /// \brief Retrieves a ToolChain for a particular target triple.
+  /// \brief Retrieves a ToolChain for a particular \p Target triple.
   ///
   /// Will cache ToolChains for the life of the driver object, and create them
   /// on-demand.
   const ToolChain &getToolChain(const llvm::opt::ArgList &Args,
-                                StringRef DarwinArchName = "") const;
+                                const llvm::Triple &Target) const;
 
   /// @}
 

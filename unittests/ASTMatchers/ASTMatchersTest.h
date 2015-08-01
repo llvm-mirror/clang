@@ -80,6 +80,7 @@ testing::AssertionResult matchesConditionally(
   Args.push_back("-frtti");
   Args.push_back("-fexceptions");
   if (!runToolOnCodeWithArgs(Factory->create(), Code, Args, Filename,
+                             std::make_shared<PCHContainerOperations>(),
                              VirtualMappedFiles)) {
     return testing::AssertionFailure() << "Parsing error in \"" << Code << "\"";
   }
@@ -163,6 +164,7 @@ testing::AssertionResult matchesConditionallyWithCuda(
   std::vector<std::string> Args;
   Args.push_back("-xcuda");
   Args.push_back("-fno-ms-extensions");
+  Args.push_back("--cuda-host-only");
   Args.push_back(CompileArg);
   if (!runToolOnCodeWithArgs(Factory->create(),
                              CudaHeader + Code, Args)) {

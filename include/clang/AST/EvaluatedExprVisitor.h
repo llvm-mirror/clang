@@ -88,8 +88,8 @@ public:
 
   void VisitLambdaExpr(PTR(LambdaExpr) LE) {
     // Only visit the capture initializers, and not the body.
-    for (LambdaExpr::capture_init_iterator I = LE->capture_init_begin(),
-                                           E = LE->capture_init_end();
+    for (LambdaExpr::const_capture_init_iterator I = LE->capture_init_begin(),
+                                                 E = LE->capture_init_end();
          I != E; ++I)
       if (*I)
         this->Visit(*I);
@@ -98,9 +98,9 @@ public:
   /// \brief The basis case walks all of the children of the statement or
   /// expression, assuming they are all potentially evaluated.
   void VisitStmt(PTR(Stmt) S) {
-    for (auto C = S->children(); C; ++C)
-      if (*C)
-        this->Visit(*C);
+    for (auto *SubStmt : S->children())
+      if (SubStmt)
+        this->Visit(SubStmt);
   }
 
 #undef PTR

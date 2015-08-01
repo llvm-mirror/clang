@@ -285,7 +285,7 @@ unsigned Parser::ParseAttributeArgsCommon(
     if (AttrKind == AttributeList::UnknownAttribute ||
         AttrKind == AttributeList::IgnoredAttribute) {
       const Token &Next = NextToken();
-      IsIdentifierArg = Next.is(tok::r_paren) || Next.is(tok::comma);
+      IsIdentifierArg = Next.isOneOf(tok::r_paren, tok::comma);
     }
 
     if (IsIdentifierArg)
@@ -365,7 +365,8 @@ void Parser::ParseGNUAttributeArgs(IdentifierInfo *AttrName,
   // These may refer to the function arguments, but need to be parsed early to
   // participate in determining whether it's a redeclaration.
   std::unique_ptr<ParseScope> PrototypeScope;
-  if (AttrName->isStr("enable_if") && D && D->isFunctionDeclarator()) {
+  if (normalizeAttrName(AttrName->getName()) == "enable_if" &&
+      D && D->isFunctionDeclarator()) {
     DeclaratorChunk::FunctionTypeInfo FTI = D->getFunctionTypeInfo();
     PrototypeScope.reset(new ParseScope(this, Scope::FunctionPrototypeScope |
                                         Scope::FunctionDeclarationScope |
@@ -386,7 +387,7 @@ bool Parser::ParseMicrosoftDeclSpecArgs(IdentifierInfo *AttrName,
   // If the attribute isn't known, we will not attempt to parse any
   // arguments.
   if (!hasAttribute(AttrSyntax::Declspec, nullptr, AttrName,
-                    getTargetInfo().getTriple(), getLangOpts())) {
+                    getTargetInfo(), getLangOpts())) {
     // Eat the left paren, then skip to the ending right paren.
     ConsumeParen();
     SkipUntil(tok::r_paren);
@@ -685,6 +686,28 @@ void Parser::ParseOpenCLQualifiers(ParsedAttributes &Attrs) {
   SourceLocation AttrNameLoc = Tok.getLocation();
   Attrs.addNew(AttrName, AttrNameLoc, nullptr, AttrNameLoc, nullptr, 0,
                AttributeList::AS_Keyword);
+}
+
+void Parser::ParseNullabilityTypeSpecifiers(ParsedAttributes &attrs) {
+  // Treat these like attributes, even though they're type specifiers.
+  while (true) {
+    switch (Tok.getKind()) {
+    case tok::kw__Nonnull:
+    case tok::kw__Nullable:
+    case tok::kw__Null_unspecified: {
+      IdentifierInfo *AttrName = Tok.getIdentifierInfo();
+      SourceLocation AttrNameLoc = ConsumeToken();
+      if (!getLangOpts().ObjC1)
+        Diag(AttrNameLoc, diag::ext_nullability)
+          << AttrName;
+      attrs.addNew(AttrName, AttrNameLoc, nullptr, AttrNameLoc, nullptr, 0, 
+                   AttributeList::AS_Keyword);
+      break;
+    }
+    default:
+      return;
+    }
+  }
 }
 
 static bool VersionNumberSeparator(const char Separator) {
@@ -1599,7 +1622,7 @@ void Parser::SkipMalformedDecl() {
       // a malformed class or function definition or similar.
       ConsumeBrace();
       SkipUntil(tok::r_brace);
-      if (Tok.is(tok::comma) || Tok.is(tok::l_brace) || Tok.is(tok::kw_try)) {
+      if (Tok.isOneOf(tok::comma, tok::l_brace, tok::kw_try)) {
         // This declaration isn't over yet. Keep skipping.
         continue;
       }
@@ -1705,7 +1728,7 @@ Parser::DeclGroupPtrTy Parser::ParseDeclGroup(ParsingDeclSpec &DS,
       // and we don't have any other declarators in this declaration.
       bool Fixit = !DS.setFunctionSpecNoreturn(Loc, PrevSpec, DiagID);
       MaybeParseGNUAttributes(D, &LateParsedAttrs);
-      Fixit &= Tok.is(tok::semi) || Tok.is(tok::l_brace) || Tok.is(tok::kw_try);
+      Fixit &= Tok.isOneOf(tok::semi, tok::l_brace, tok::kw_try);
 
       Diag(Loc, diag::err_c11_noreturn_misplaced)
           << (Fixit ? FixItHint::CreateRemoval(Loc) : FixItHint())
@@ -2122,8 +2145,7 @@ void Parser::ParseSpecifierQualifierList(DeclSpec &DS, AccessSpecifier AS,
   if (isTypeSpecifier(DSC) && !DS.hasTypeSpecifier()) {
     Diag(Tok, diag::err_expected_type);
     DS.SetTypeSpecError();
-  } else if (Specs == DeclSpec::PQ_None && !DS.getNumProtocolQualifiers() &&
-             !DS.hasAttributes()) {
+  } else if (Specs == DeclSpec::PQ_None && !DS.hasAttributes()) {
     Diag(Tok, diag::err_typename_requires_specqual);
     if (!DS.hasTypeSpecifier())
       DS.SetTypeSpecError();
@@ -2151,7 +2173,7 @@ void Parser::ParseSpecifierQualifierList(DeclSpec &DS, AccessSpecifier AS,
   }
 
   // Issue diagnostic and remove constexpr specfier if present.
-  if (DS.isConstexprSpecified()) {
+  if (DS.isConstexprSpecified() && DSC != DSC_condition) {
     Diag(DS.getConstexprSpecLoc(), diag::err_typename_invalid_constexpr);
     DS.ClearConstexprSpec();
   }
@@ -2176,9 +2198,9 @@ void Parser::ParseSpecifierQualifierList(DeclSpec &DS, AccessSpecifier AS,
 ///    int (x)
 ///
 static bool isValidAfterIdentifierInDeclarator(const Token &T) {
-  return T.is(tok::l_square) || T.is(tok::l_paren) || T.is(tok::r_paren) ||
-         T.is(tok::semi) || T.is(tok::comma) || T.is(tok::equal) ||
-         T.is(tok::kw_asm) || T.is(tok::l_brace) || T.is(tok::colon);
+  return T.isOneOf(tok::l_square, tok::l_paren, tok::r_paren, tok::semi,
+                   tok::comma, tok::equal, tok::kw_asm, tok::l_brace,
+                   tok::colon);
 }
 
 
@@ -2438,7 +2460,7 @@ ExprResult Parser::ParseAlignArgument(SourceLocation Start,
 /// [C++11] 'alignas' '(' assignment-expression ...[opt] ')'
 void Parser::ParseAlignmentSpecifier(ParsedAttributes &Attrs,
                                      SourceLocation *EndLoc) {
-  assert((Tok.is(tok::kw_alignas) || Tok.is(tok::kw__Alignas)) &&
+  assert(Tok.isOneOf(tok::kw_alignas, tok::kw__Alignas) &&
          "Not an alignment-specifier!");
 
   IdentifierInfo *KWName = Tok.getIdentifierInfo();
@@ -2481,8 +2503,8 @@ Parser::DiagnoseMissingSemiAfterTagDefinition(DeclSpec &DS, AccessSpecifier AS,
   bool EnteringContext = (DSContext == DSC_class || DSContext == DSC_top_level);
 
   if (getLangOpts().CPlusPlus &&
-      (Tok.is(tok::identifier) || Tok.is(tok::coloncolon) ||
-       Tok.is(tok::kw_decltype) || Tok.is(tok::annot_template_id)) &&
+      Tok.isOneOf(tok::identifier, tok::coloncolon, tok::kw_decltype,
+                  tok::annot_template_id) &&
       TryAnnotateCXXScopeToken(EnteringContext)) {
     SkipMalformedDecl();
     return true;
@@ -2495,7 +2517,7 @@ Parser::DiagnoseMissingSemiAfterTagDefinition(DeclSpec &DS, AccessSpecifier AS,
   // Determine whether the following tokens could possibly be a
   // declarator.
   bool MightBeDeclarator = true;
-  if (Tok.is(tok::kw_typename) || Tok.is(tok::annot_typename)) {
+  if (Tok.isOneOf(tok::kw_typename, tok::annot_typename)) {
     // A declarator-id can't start with 'typename'.
     MightBeDeclarator = false;
   } else if (AfterScope.is(tok::annot_template_id)) {
@@ -2510,9 +2532,8 @@ Parser::DiagnoseMissingSemiAfterTagDefinition(DeclSpec &DS, AccessSpecifier AS,
 
     // These tokens cannot come after the declarator-id in a
     // simple-declaration, and are likely to come after a type-specifier.
-    if (Next.is(tok::star) || Next.is(tok::amp) || Next.is(tok::ampamp) ||
-        Next.is(tok::identifier) || Next.is(tok::annot_cxxscope) ||
-        Next.is(tok::coloncolon)) {
+    if (Next.isOneOf(tok::star, tok::amp, tok::ampamp, tok::identifier,
+                     tok::annot_cxxscope, tok::coloncolon)) {
       // Missing a semicolon.
       MightBeDeclarator = false;
     } else if (HasScope) {
@@ -2581,6 +2602,7 @@ Parser::DiagnoseMissingSemiAfterTagDefinition(DeclSpec &DS, AccessSpecifier AS,
 /// [C11]   alignment-specifier declaration-specifiers[opt]
 /// [GNU]   attributes declaration-specifiers[opt]
 /// [Clang] '__module_private__' declaration-specifiers[opt]
+/// [ObjC1] '__kindof' declaration-specifiers[opt]
 ///
 ///       storage-class-specifier: [C99 6.7.1]
 ///         'typedef'
@@ -2624,6 +2646,18 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
     bool isStorageClass = false;
     const char *PrevSpec = nullptr;
     unsigned DiagID = 0;
+
+    // HACK: MSVC doesn't consider _Atomic to be a keyword and its STL
+    // implementation for VS2013 uses _Atomic as an identifier for one of the
+    // classes in <atomic>.
+    //
+    // A typedef declaration containing _Atomic<...> is among the places where
+    // the class is used.  If we are currently parsing such a declaration, treat
+    // the token as an identifier.
+    if (getLangOpts().MSVCCompat && Tok.is(tok::kw__Atomic) &&
+        DS.getStorageClassSpec() == clang::DeclSpec::SCS_typedef &&
+        !DS.hasTypeSpecifier() && GetLookAheadToken(1).is(tok::less))
+      Tok.setKind(tok::identifier);
 
     SourceLocation Loc = Tok.getLocation();
 
@@ -2865,12 +2899,6 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       DS.SetRangeEnd(Tok.getAnnotationEndLoc());
       ConsumeToken(); // The typename
 
-      // Objective-C supports syntax of the form 'id<proto1,proto2>' where 'id'
-      // is a specific typedef and 'itf<proto1,proto2>' where 'itf' is an
-      // Objective-C interface.
-      if (Tok.is(tok::less) && getLangOpts().ObjC1)
-        ParseObjCProtocolQualifiers(DS);
-
       continue;
     }
 
@@ -2920,6 +2948,19 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       if (DS.isTypeAltiVecVector())
         goto DoneWithDeclSpec;
 
+      if (DSContext == DSC_objc_method_result && isObjCInstancetype()) {
+        ParsedType TypeRep = Actions.ActOnObjCInstanceType(Loc);
+        assert(TypeRep);
+        isInvalid = DS.SetTypeSpecType(DeclSpec::TST_typename, Loc, PrevSpec,
+                                       DiagID, TypeRep, Policy);
+        if (isInvalid)
+          break;
+
+        DS.SetRangeEnd(Loc);
+        ConsumeToken();
+        continue;
+      }
+
       ParsedType TypeRep =
         Actions.getTypeName(*Tok.getIdentifierInfo(),
                             Tok.getLocation(), getCurScope());
@@ -2963,11 +3004,19 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       DS.SetRangeEnd(Tok.getLocation());
       ConsumeToken(); // The identifier
 
-      // Objective-C supports syntax of the form 'id<proto1,proto2>' where 'id'
-      // is a specific typedef and 'itf<proto1,proto2>' where 'itf' is an
-      // Objective-C interface.
-      if (Tok.is(tok::less) && getLangOpts().ObjC1)
-        ParseObjCProtocolQualifiers(DS);
+      // Objective-C supports type arguments and protocol references
+      // following an Objective-C object or object pointer
+      // type. Handle either one of them.
+      if (Tok.is(tok::less) && getLangOpts().ObjC1) {
+        SourceLocation NewEndLoc;
+        TypeResult NewTypeRep = parseObjCTypeArgsAndProtocolQualifiers(
+                                  Loc, TypeRep, /*consumeLastToken=*/true,
+                                  NewEndLoc);
+        if (NewTypeRep.isUsable()) {
+          DS.UpdateTypeRep(NewTypeRep.get());
+          DS.SetRangeEnd(NewEndLoc);
+        }
+      }
 
       // Need to support trailing type qualifiers (e.g. "id<p> const").
       // If a type specifier follows, it will be diagnosed elsewhere.
@@ -3039,6 +3088,20 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
     // OpenCL single token adornments.
     case tok::kw___kernel:
       ParseOpenCLAttributes(DS.getAttributes());
+      continue;
+
+    // Nullability type specifiers.
+    case tok::kw__Nonnull:
+    case tok::kw__Nullable:
+    case tok::kw__Null_unspecified:
+      ParseNullabilityTypeSpecifiers(DS.getAttributes());
+      continue;
+
+    // Objective-C 'kindof' types.
+    case tok::kw___kindof:
+      DS.getAttributes().addNew(Tok.getIdentifierInfo(), Loc, nullptr, Loc,
+                                nullptr, 0, AttributeList::AS_Keyword);
+      (void)ConsumeToken();
       continue;
 
     // storage-class-specifier
@@ -3149,6 +3212,11 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
     // constexpr
     case tok::kw_constexpr:
       isInvalid = DS.SetConstexprSpec(Loc, PrevSpec, DiagID);
+      break;
+
+    // concept
+    case tok::kw_concept:
+      isInvalid = DS.SetConceptSpec(Loc, PrevSpec, DiagID);
       break;
 
     // type-specifier
@@ -3372,10 +3440,19 @@ void Parser::ParseDeclarationSpecifiers(DeclSpec &DS,
       if (DS.hasTypeSpecifier() || !getLangOpts().ObjC1)
         goto DoneWithDeclSpec;
 
-      if (!ParseObjCProtocolQualifiers(DS))
-        Diag(Loc, diag::warn_objc_protocol_qualifier_missing_id)
-          << FixItHint::CreateInsertion(Loc, "id")
-          << SourceRange(Loc, DS.getSourceRange().getEnd());
+      SourceLocation StartLoc = Tok.getLocation();
+      SourceLocation EndLoc;
+      TypeResult Type = parseObjCProtocolQualifierType(EndLoc);
+      if (Type.isUsable()) {
+        if (DS.SetTypeSpecType(DeclSpec::TST_typename, StartLoc, StartLoc,
+                               PrevSpec, DiagID, Type.get(),
+                               Actions.getASTContext().getPrintingPolicy()))
+          Diag(StartLoc, DiagID) << PrevSpec;
+        
+        DS.SetRangeEnd(EndLoc);
+      } else {
+        DS.SetTypeSpecError();
+      }
 
       // Need to support trailing type qualifiers (e.g. "id<p> const").
       // If a type specifier follows, it will be diagnosed elsewhere.
@@ -3654,7 +3731,7 @@ void Parser::ParseEnumSpecifier(SourceLocation StartLoc, DeclSpec &DS,
   bool IsScopedUsingClassTag = false;
 
   // In C++11, recognize 'enum class' and 'enum struct'.
-  if (Tok.is(tok::kw_class) || Tok.is(tok::kw_struct)) {
+  if (Tok.isOneOf(tok::kw_class, tok::kw_struct)) {
     Diag(Tok, getLangOpts().CPlusPlus11 ? diag::warn_cxx98_compat_scoped_enum
                                         : diag::ext_scoped_enum);
     IsScopedUsingClassTag = Tok.is(tok::kw_class);
@@ -4285,6 +4362,12 @@ bool Parser::isTypeSpecifierQualifier() {
   case tok::kw___pascal:
   case tok::kw___unaligned:
 
+  case tok::kw__Nonnull:
+  case tok::kw__Nullable:
+  case tok::kw__Null_unspecified:
+
+  case tok::kw___kindof:
+
   case tok::kw___private:
   case tok::kw___local:
   case tok::kw___global:
@@ -4430,6 +4513,9 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
   case tok::annot_decltype:
   case tok::kw_constexpr:
 
+    // C++ Concepts TS - concept
+  case tok::kw_concept:
+
     // C11 _Atomic
   case tok::kw__Atomic:
     return true;
@@ -4458,6 +4544,12 @@ bool Parser::isDeclarationSpecifier(bool DisambiguatingWithExpression) {
   case tok::kw___pascal:
   case tok::kw___unaligned:
 
+  case tok::kw__Nonnull:
+  case tok::kw__Nullable:
+  case tok::kw__Null_unspecified:
+
+  case tok::kw___kindof:
+
   case tok::kw___private:
   case tok::kw___local:
   case tok::kw___global:
@@ -4483,7 +4575,7 @@ bool Parser::isConstructorDeclarator(bool IsUnqualified) {
   }
 
   // Parse the constructor name.
-  if (Tok.is(tok::identifier) || Tok.is(tok::annot_template_id)) {
+  if (Tok.isOneOf(tok::identifier, tok::annot_template_id)) {
     // We already know that we have a constructor name; just consume
     // the token.
     ConsumeToken();
@@ -4687,6 +4779,21 @@ void Parser::ParseTypeQualifierListOpt(DeclSpec &DS, unsigned AttrReqs,
         continue;
       }
       goto DoneWithTypeQuals;
+
+    // Nullability type specifiers.
+    case tok::kw__Nonnull:
+    case tok::kw__Nullable:
+    case tok::kw__Null_unspecified:
+      ParseNullabilityTypeSpecifiers(DS.getAttributes());
+      continue;
+
+    // Objective-C 'kindof' types.
+    case tok::kw___kindof:
+      DS.getAttributes().addNew(Tok.getIdentifierInfo(), Loc, nullptr, Loc,
+                                nullptr, 0, AttributeList::AS_Keyword);
+      (void)ConsumeToken();
+      continue;
+
     case tok::kw___attribute:
       if (AttrReqs & AR_GNUAttributesParsedAndRejected)
         // When GNU attributes are expressly forbidden, diagnose their usage.
@@ -5041,8 +5148,8 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
       // the l_paren token.
     }
 
-    if (Tok.is(tok::identifier) || Tok.is(tok::kw_operator) ||
-        Tok.is(tok::annot_template_id) || Tok.is(tok::tilde)) {
+    if (Tok.isOneOf(tok::identifier, tok::kw_operator, tok::annot_template_id,
+                    tok::tilde)) {
       // We found something that indicates the start of an unqualified-id.
       // Parse that unqualified-id.
       bool AllowConstructorName;
@@ -5145,7 +5252,7 @@ void Parser::ParseDirectDeclarator(Declarator &D) {
           << (D.getDeclSpec().isEmpty() ? SourceRange()
                                         : D.getDeclSpec().getSourceRange());
     } else if (getLangOpts().CPlusPlus) {
-      if (Tok.is(tok::period) || Tok.is(tok::arrow))
+      if (Tok.isOneOf(tok::period, tok::arrow))
         Diag(Tok, diag::err_invalid_operator_on_type) << Tok.is(tok::arrow);
       else {
         SourceLocation Loc = D.getCXXScopeSpec().getEndLoc();
@@ -5521,7 +5628,7 @@ void Parser::ParseFunctionDeclarator(Declarator &D,
 /// true if a ref-qualifier is found.
 bool Parser::ParseRefQualifier(bool &RefQualifierIsLValueRef,
                                SourceLocation &RefQualifierLoc) {
-  if (Tok.is(tok::amp) || Tok.is(tok::ampamp)) {
+  if (Tok.isOneOf(tok::amp, tok::ampamp)) {
     Diag(Tok, getLangOpts().CPlusPlus11 ?
          diag::warn_cxx98_compat_ref_qualifier :
          diag::ext_ref_qualifier);

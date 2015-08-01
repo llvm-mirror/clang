@@ -421,9 +421,13 @@ void ASTTypeWriter::VisitObjCInterfaceType(const ObjCInterfaceType *T) {
 
 void ASTTypeWriter::VisitObjCObjectType(const ObjCObjectType *T) {
   Writer.AddTypeRef(T->getBaseType(), Record);
+  Record.push_back(T->getTypeArgsAsWritten().size());
+  for (auto TypeArg : T->getTypeArgsAsWritten())
+    Writer.AddTypeRef(TypeArg, Record);
   Record.push_back(T->getNumProtocols());
   for (const auto *I : T->quals())
     Writer.AddDeclRef(I, Record);
+  Record.push_back(T->isKindOfTypeAsWritten());
   Code = TYPE_OBJC_OBJECT;
 }
 
@@ -648,8 +652,12 @@ void TypeLocWriter::VisitObjCInterfaceTypeLoc(ObjCInterfaceTypeLoc TL) {
 }
 void TypeLocWriter::VisitObjCObjectTypeLoc(ObjCObjectTypeLoc TL) {
   Record.push_back(TL.hasBaseTypeAsWritten());
-  Writer.AddSourceLocation(TL.getLAngleLoc(), Record);
-  Writer.AddSourceLocation(TL.getRAngleLoc(), Record);
+  Writer.AddSourceLocation(TL.getTypeArgsLAngleLoc(), Record);
+  Writer.AddSourceLocation(TL.getTypeArgsRAngleLoc(), Record);
+  for (unsigned i = 0, e = TL.getNumTypeArgs(); i != e; ++i)
+    Writer.AddTypeSourceInfo(TL.getTypeArgTInfo(i), Record);
+  Writer.AddSourceLocation(TL.getProtocolLAngleLoc(), Record);
+  Writer.AddSourceLocation(TL.getProtocolRAngleLoc(), Record);
   for (unsigned i = 0, e = TL.getNumProtocols(); i != e; ++i)
     Writer.AddSourceLocation(TL.getProtocolLoc(i), Record);
 }
@@ -1066,13 +1074,7 @@ void ASTWriter::WriteBlockInfoBlock() {
 /// \return \c true if the path was changed.
 static bool cleanPathForOutput(FileManager &FileMgr,
                                SmallVectorImpl<char> &Path) {
-  bool Changed = false;
-
-  if (!llvm::sys::path::is_absolute(StringRef(Path.data(), Path.size()))) {
-    llvm::sys::fs::make_absolute(Path);
-    Changed = true;
-  }
-
+  bool Changed = FileMgr.makeAbsolutePath(Path);
   return Changed | FileMgr.removeDotPaths(Path);
 }
 
@@ -1266,11 +1268,14 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
   Record.push_back(LangOpts.Sanitize.has(SanitizerKind::ID));
 #include "clang/Basic/Sanitizers.def"
 
+  Record.push_back(LangOpts.ModuleFeatures.size());
+  for (StringRef Feature : LangOpts.ModuleFeatures)
+    AddString(Feature, Record);
+
   Record.push_back((unsigned) LangOpts.ObjCRuntime.getKind());
   AddVersionTuple(LangOpts.ObjCRuntime.getVersion(), Record);
-  
-  Record.push_back(LangOpts.CurrentModule.size());
-  Record.append(LangOpts.CurrentModule.begin(), LangOpts.CurrentModule.end());
+
+  AddString(LangOpts.CurrentModule, Record);
 
   // Comment options.
   Record.push_back(LangOpts.CommentOpts.BlockCommandNames.size());
@@ -1418,7 +1423,7 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
 
     SmallString<128> OutputPath(OutputFile);
 
-    llvm::sys::fs::make_absolute(OutputPath);
+    SM.getFileManager().makeAbsolutePath(OutputPath);
     StringRef origDir = llvm::sys::path::parent_path(OutputPath);
 
     RecordData Record;
@@ -3091,18 +3096,20 @@ class ASTIdentifierTableTrait {
   ASTWriter &Writer;
   Preprocessor &PP;
   IdentifierResolver &IdResolver;
+  bool IsModule;
+  bool NeedDecls;
+  ASTWriter::RecordData *InterestingIdentifierOffsets;
   
   /// \brief Determines whether this is an "interesting" identifier that needs a
   /// full IdentifierInfo structure written into the hash table. Notably, this
   /// doesn't check whether the name has macros defined; use PublicMacroIterator
   /// to check that.
-  bool isInterestingIdentifier(IdentifierInfo *II, uint64_t MacroOffset) {
+  bool isInterestingIdentifier(const IdentifierInfo *II, uint64_t MacroOffset) {
     if (MacroOffset ||
         II->isPoisoned() ||
-        II->isExtensionToken() ||
-        II->getObjCOrBuiltinID() ||
+        (IsModule ? II->hasRevertedBuiltin() : II->getObjCOrBuiltinID()) ||
         II->hasRevertedTokenIDToIdentifier() ||
-        II->getFETokenInfo<void>())
+        (NeedDecls && II->getFETokenInfo<void>()))
       return true;
 
     return false;
@@ -3119,11 +3126,22 @@ public:
   typedef unsigned offset_type;
 
   ASTIdentifierTableTrait(ASTWriter &Writer, Preprocessor &PP,
-                          IdentifierResolver &IdResolver)
-      : Writer(Writer), PP(PP), IdResolver(IdResolver) {}
+                          IdentifierResolver &IdResolver, bool IsModule,
+                          ASTWriter::RecordData *InterestingIdentifierOffsets)
+      : Writer(Writer), PP(PP), IdResolver(IdResolver), IsModule(IsModule),
+        NeedDecls(!IsModule || !Writer.getLangOpts().CPlusPlus),
+        InterestingIdentifierOffsets(InterestingIdentifierOffsets) {}
 
   static hash_value_type ComputeHash(const IdentifierInfo* II) {
     return llvm::HashString(II->getName());
+  }
+
+  bool isInterestingIdentifier(const IdentifierInfo *II) {
+    auto MacroOffset = Writer.getMacroDirectivesOffset(II);
+    return isInterestingIdentifier(II, MacroOffset);
+  }
+  bool isInterestingNonMacroIdentifier(const IdentifierInfo *II) {
+    return isInterestingIdentifier(II, 0);
   }
 
   std::pair<unsigned,unsigned>
@@ -3137,10 +3155,12 @@ public:
       if (MacroOffset)
         DataLen += 4; // MacroDirectives offset.
 
-      for (IdentifierResolver::iterator D = IdResolver.begin(II),
-                                     DEnd = IdResolver.end();
-           D != DEnd; ++D)
-        DataLen += 4;
+      if (NeedDecls) {
+        for (IdentifierResolver::iterator D = IdResolver.begin(II),
+                                       DEnd = IdResolver.end();
+             D != DEnd; ++D)
+          DataLen += 4;
+      }
     }
     using namespace llvm::support;
     endian::Writer<little> LE(Out);
@@ -3159,6 +3179,12 @@ public:
     // Record the location of the key data.  This is used when generating
     // the mapping from persistent IDs to strings.
     Writer.SetIdentifierOffset(II, Out.tell());
+
+    // Emit the offset of the key/data length information to the interesting
+    // identifiers table if necessary.
+    if (InterestingIdentifierOffsets && isInterestingIdentifier(II))
+      InterestingIdentifierOffsets->push_back(Out.tell() - 4);
+
     Out.write(II->getNameStart(), KeyLen);
   }
 
@@ -3182,6 +3208,7 @@ public:
     Bits = (Bits << 1) | unsigned(HadMacroDefinition);
     Bits = (Bits << 1) | unsigned(II->isExtensionToken());
     Bits = (Bits << 1) | unsigned(II->isPoisoned());
+    Bits = (Bits << 1) | unsigned(II->hasRevertedBuiltin());
     Bits = (Bits << 1) | unsigned(II->hasRevertedTokenIDToIdentifier());
     Bits = (Bits << 1) | unsigned(II->isCPlusPlusOperatorKeyword());
     LE.write<uint16_t>(Bits);
@@ -3189,18 +3216,21 @@ public:
     if (HadMacroDefinition)
       LE.write<uint32_t>(MacroOffset);
 
-    // Emit the declaration IDs in reverse order, because the
-    // IdentifierResolver provides the declarations as they would be
-    // visible (e.g., the function "stat" would come before the struct
-    // "stat"), but the ASTReader adds declarations to the end of the list
-    // (so we need to see the struct "stat" before the function "stat").
-    // Only emit declarations that aren't from a chained PCH, though.
-    SmallVector<NamedDecl *, 16> Decls(IdResolver.begin(II), IdResolver.end());
-    for (SmallVectorImpl<NamedDecl *>::reverse_iterator D = Decls.rbegin(),
-                                                        DEnd = Decls.rend();
-         D != DEnd; ++D)
-      LE.write<uint32_t>(
-          Writer.getDeclID(getDeclForLocalLookup(PP.getLangOpts(), *D)));
+    if (NeedDecls) {
+      // Emit the declaration IDs in reverse order, because the
+      // IdentifierResolver provides the declarations as they would be
+      // visible (e.g., the function "stat" would come before the struct
+      // "stat"), but the ASTReader adds declarations to the end of the list
+      // (so we need to see the struct "stat" before the function "stat").
+      // Only emit declarations that aren't from a chained PCH, though.
+      SmallVector<NamedDecl *, 16> Decls(IdResolver.begin(II),
+                                         IdResolver.end());
+      for (SmallVectorImpl<NamedDecl *>::reverse_iterator D = Decls.rbegin(),
+                                                          DEnd = Decls.rend();
+           D != DEnd; ++D)
+        LE.write<uint32_t>(
+            Writer.getDeclID(getDeclForLocalLookup(PP.getLangOpts(), *D)));
+    }
   }
 };
 } // end anonymous namespace
@@ -3215,11 +3245,15 @@ void ASTWriter::WriteIdentifierTable(Preprocessor &PP,
                                      bool IsModule) {
   using namespace llvm;
 
+  RecordData InterestingIdents;
+
   // Create and write out the blob that contains the identifier
   // strings.
   {
     llvm::OnDiskChainedHashTableGenerator<ASTIdentifierTableTrait> Generator;
-    ASTIdentifierTableTrait Trait(*this, PP, IdResolver);
+    ASTIdentifierTableTrait Trait(
+        *this, PP, IdResolver, IsModule,
+        (getLangOpts().CPlusPlus && IsModule) ? &InterestingIdents : nullptr);
 
     // Look for any identifiers that were named while processing the
     // headers, but are otherwise not needed. We add these to the hash
@@ -3235,7 +3269,8 @@ void ASTWriter::WriteIdentifierTable(Preprocessor &PP,
     // that their order is stable.
     std::sort(IIs.begin(), IIs.end(), llvm::less_ptr<IdentifierInfo>());
     for (const IdentifierInfo *II : IIs)
-      getIdentifierRef(II);
+      if (Trait.isInterestingNonMacroIdentifier(II))
+        getIdentifierRef(II);
 
     // Create the on-disk hash table representation. We only store offsets
     // for identifiers that appear here for the first time.
@@ -3292,6 +3327,11 @@ void ASTWriter::WriteIdentifierTable(Preprocessor &PP,
   Record.push_back(FirstIdentID - NUM_PREDEF_IDENT_IDS);
   Stream.EmitRecordWithBlob(IdentifierOffsetAbbrev, Record,
                             bytes(IdentifierOffsets));
+
+  // In C++, write the list of interesting identifiers (those that are
+  // defined as macros, poisoned, or similar unusual things).
+  if (!InterestingIdents.empty())
+    Stream.EmitRecord(INTERESTING_IDENTIFIERS, InterestingIdents);
 }
 
 //===----------------------------------------------------------------------===//
@@ -3369,8 +3409,8 @@ public:
     }
     LE.write<uint16_t>(KeyLen);
 
-    // 2 bytes for num of decls and 4 for each DeclID.
-    unsigned DataLen = 2 + 4 * Lookup.size();
+    // 4 bytes for each DeclID.
+    unsigned DataLen = 4 * Lookup.size();
     LE.write<uint16_t>(DataLen);
 
     return std::make_pair(KeyLen, DataLen);
@@ -3412,7 +3452,6 @@ public:
     using namespace llvm::support;
     endian::Writer<little> LE(Out);
     uint64_t Start = Out.tell(); (void)Start;
-    LE.write<uint16_t>(Lookup.size());
     for (DeclContext::lookup_iterator I = Lookup.begin(), E = Lookup.end();
          I != E; ++I)
       LE.write<uint32_t>(
@@ -3623,6 +3662,55 @@ ASTWriter::GenerateNameLookupTable(const DeclContext *ConstDC,
 /// bitstream, or 0 if no block was written.
 uint64_t ASTWriter::WriteDeclContextVisibleBlock(ASTContext &Context,
                                                  DeclContext *DC) {
+  // If we imported a key declaration of this namespace, write the visible
+  // lookup results as an update record for it rather than including them
+  // on this declaration. We will only look at key declarations on reload.
+  if (isa<NamespaceDecl>(DC) && Chain &&
+      Chain->getKeyDeclaration(cast<Decl>(DC))->isFromASTFile()) {
+    // Only do this once, for the first local declaration of the namespace.
+    for (NamespaceDecl *Prev = cast<NamespaceDecl>(DC)->getPreviousDecl(); Prev;
+         Prev = Prev->getPreviousDecl())
+      if (!Prev->isFromASTFile())
+        return 0;
+
+    // Note that we need to emit an update record for the primary context.
+    UpdatedDeclContexts.insert(DC->getPrimaryContext());
+
+    // Make sure all visible decls are written. They will be recorded later. We
+    // do this using a side data structure so we can sort the names into
+    // a deterministic order.
+    StoredDeclsMap *Map = DC->getPrimaryContext()->buildLookup();
+    SmallVector<std::pair<DeclarationName, DeclContext::lookup_result>, 16>
+        LookupResults;
+    if (Map) {
+      LookupResults.reserve(Map->size());
+      for (auto &Entry : *Map)
+        LookupResults.push_back(
+            std::make_pair(Entry.first, Entry.second.getLookupResult()));
+    }
+
+    std::sort(LookupResults.begin(), LookupResults.end(), llvm::less_first());
+    for (auto &NameAndResult : LookupResults) {
+      DeclarationName Name = NameAndResult.first;
+      DeclContext::lookup_result Result = NameAndResult.second;
+      if (Name.getNameKind() == DeclarationName::CXXConstructorName ||
+          Name.getNameKind() == DeclarationName::CXXConversionFunctionName) {
+        // We have to work around a name lookup bug here where negative lookup
+        // results for these names get cached in namespace lookup tables (these
+        // names should never be looked up in a namespace).
+        assert(Result.empty() && "Cannot have a constructor or conversion "
+                                 "function name in a namespace!");
+        continue;
+      }
+
+      for (NamedDecl *ND : Result)
+        if (!ND->isFromASTFile())
+          GetDeclRef(ND);
+    }
+
+    return 0;
+  }
+
   if (DC->getPrimaryContext() != DC)
     return 0;
 
@@ -3674,6 +3762,11 @@ void ASTWriter::WriteDeclContextVisibleUpdate(const DeclContext *DC) {
   SmallString<4096> LookupTable;
   uint32_t BucketOffset = GenerateNameLookupTable(DC, LookupTable);
 
+  // If we're updating a namespace, select a key declaration as the key for the
+  // update record; those are the only ones that will be checked on reload.
+  if (isa<NamespaceDecl>(DC))
+    DC = cast<DeclContext>(Chain->getKeyDeclaration(cast<Decl>(DC)));
+
   // Write the lookup table
   RecordData Record;
   Record.push_back(UPDATE_VISIBLE);
@@ -3706,11 +3799,17 @@ void ASTWriter::WriteRedeclarations() {
   SmallVector<serialization::LocalRedeclarationsInfo, 2> LocalRedeclsMap;
 
   for (unsigned I = 0, N = Redeclarations.size(); I != N; ++I) {
-    Decl *First = Redeclarations[I];
-    assert(First->isFirstDecl() && "Not the first declaration?");
-    
-    Decl *MostRecent = First->getMostRecentDecl();
-    
+    const Decl *Key = Redeclarations[I];
+    assert((Chain ? Chain->getKeyDeclaration(Key) == Key
+                  : Key->isFirstDecl()) &&
+           "not the key declaration");
+
+    const Decl *First = Key->getCanonicalDecl();
+    const Decl *MostRecent = First->getMostRecentDecl();
+
+    assert((getDeclID(First) >= NUM_PREDEF_DECL_IDS || First == Key) &&
+           "should not have imported key decls for predefined decl");
+
     // If we only have a single declaration, there is no point in storing
     // a redeclaration chain.
     if (First == MostRecent)
@@ -3719,34 +3818,31 @@ void ASTWriter::WriteRedeclarations() {
     unsigned Offset = LocalRedeclChains.size();
     unsigned Size = 0;
     LocalRedeclChains.push_back(0); // Placeholder for the size.
-    
-    // Collect the set of local redeclarations of this declaration.
-    for (Decl *Prev = MostRecent; Prev != First;
+
+    // Collect the set of local redeclarations of this declaration, from newest
+    // to oldest.
+    for (const Decl *Prev = MostRecent; Prev;
          Prev = Prev->getPreviousDecl()) { 
-      if (!Prev->isFromASTFile()) {
+      if (!Prev->isFromASTFile() && Prev != Key) {
         AddDeclRef(Prev, LocalRedeclChains);
         ++Size;
       }
     }
 
     LocalRedeclChains[Offset] = Size;
-    
-    // Reverse the set of local redeclarations, so that we store them in
-    // order (since we found them in reverse order).
-    std::reverse(LocalRedeclChains.end() - Size, LocalRedeclChains.end());
-    
+
     // Add the mapping from the first ID from the AST to the set of local
     // declarations.
-    LocalRedeclarationsInfo Info = { getDeclID(First), Offset };
+    LocalRedeclarationsInfo Info = { getDeclID(Key), Offset };
     LocalRedeclsMap.push_back(Info);
-    
+
     assert(N == Redeclarations.size() && 
            "Deserialized a declaration we shouldn't have");
   }
-  
+
   if (LocalRedeclChains.empty())
     return;
-  
+
   // Sort the local redeclarations map by the first declaration ID,
   // since the reader will be performing binary searches on this information.
   llvm::array_pod_sort(LocalRedeclsMap.begin(), LocalRedeclsMap.end());
@@ -4042,25 +4138,28 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
   Preprocessor &PP = SemaRef.PP;
 
   // Set up predefined declaration IDs.
-  DeclIDs[Context.getTranslationUnitDecl()] = PREDEF_DECL_TRANSLATION_UNIT_ID;
-  if (Context.ObjCIdDecl)
-    DeclIDs[Context.ObjCIdDecl] = PREDEF_DECL_OBJC_ID_ID;
-  if (Context.ObjCSelDecl)
-    DeclIDs[Context.ObjCSelDecl] = PREDEF_DECL_OBJC_SEL_ID;
-  if (Context.ObjCClassDecl)
-    DeclIDs[Context.ObjCClassDecl] = PREDEF_DECL_OBJC_CLASS_ID;
-  if (Context.ObjCProtocolClassDecl)
-    DeclIDs[Context.ObjCProtocolClassDecl] = PREDEF_DECL_OBJC_PROTOCOL_ID;
-  if (Context.Int128Decl)
-    DeclIDs[Context.Int128Decl] = PREDEF_DECL_INT_128_ID;
-  if (Context.UInt128Decl)
-    DeclIDs[Context.UInt128Decl] = PREDEF_DECL_UNSIGNED_INT_128_ID;
-  if (Context.ObjCInstanceTypeDecl)
-    DeclIDs[Context.ObjCInstanceTypeDecl] = PREDEF_DECL_OBJC_INSTANCETYPE_ID;
-  if (Context.BuiltinVaListDecl)
-    DeclIDs[Context.getBuiltinVaListDecl()] = PREDEF_DECL_BUILTIN_VA_LIST_ID;
-  if (Context.ExternCContext)
-    DeclIDs[Context.ExternCContext] = PREDEF_DECL_EXTERN_C_CONTEXT_ID;
+  auto RegisterPredefDecl = [&] (Decl *D, PredefinedDeclIDs ID) {
+    if (D) {
+      assert(D->isCanonicalDecl() && "predefined decl is not canonical");
+      DeclIDs[D] = ID;
+      if (D->getMostRecentDecl() != D)
+        Redeclarations.push_back(D);
+    }
+  };
+  RegisterPredefDecl(Context.getTranslationUnitDecl(),
+                     PREDEF_DECL_TRANSLATION_UNIT_ID);
+  RegisterPredefDecl(Context.ObjCIdDecl, PREDEF_DECL_OBJC_ID_ID);
+  RegisterPredefDecl(Context.ObjCSelDecl, PREDEF_DECL_OBJC_SEL_ID);
+  RegisterPredefDecl(Context.ObjCClassDecl, PREDEF_DECL_OBJC_CLASS_ID);
+  RegisterPredefDecl(Context.ObjCProtocolClassDecl,
+                     PREDEF_DECL_OBJC_PROTOCOL_ID);
+  RegisterPredefDecl(Context.Int128Decl, PREDEF_DECL_INT_128_ID);
+  RegisterPredefDecl(Context.UInt128Decl, PREDEF_DECL_UNSIGNED_INT_128_ID);
+  RegisterPredefDecl(Context.ObjCInstanceTypeDecl,
+                     PREDEF_DECL_OBJC_INSTANCETYPE_ID);
+  RegisterPredefDecl(Context.BuiltinVaListDecl, PREDEF_DECL_BUILTIN_VA_LIST_ID);
+  RegisterPredefDecl(Context.VaListTagDecl, PREDEF_DECL_VA_LIST_TAG);
+  RegisterPredefDecl(Context.ExternCContext, PREDEF_DECL_EXTERN_C_CONTEXT_ID);
 
   // Build a record containing all of the tentative definitions in this file, in
   // TentativeDefinitions order.  Generally, this record will be empty for
@@ -4375,6 +4474,7 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
   WriteHeaderSearch(PP.getHeaderSearchInfo());
   WriteSelectors(SemaRef);
   WriteReferencedSelectorsPool(SemaRef);
+  WriteLateParsedTemplates(SemaRef);
   WriteIdentifierTable(PP, SemaRef.IdResolver, isModule);
   WriteFPPragmaOptions(SemaRef.getFPOptions());
   WriteOpenCLExtensions(SemaRef);
@@ -4490,7 +4590,6 @@ void ASTWriter::WriteASTCore(Sema &SemaRef,
   WriteDeclReplacementsBlock();
   WriteRedeclarations();
   WriteObjCCategories();
-  WriteLateParsedTemplates(SemaRef);
   if(!WritingModule)
     WriteOptimizePragmaOptions(SemaRef);
 
@@ -4617,6 +4716,10 @@ void ASTWriter::WriteDeclUpdatesBlocks(RecordDataImpl &OffsetsRecord) {
 
       case UPD_DECL_EXPORTED:
         Record.push_back(getSubmoduleID(Update.getModule()));
+        break;
+
+      case UPD_ADDED_ATTR_TO_RECORD:
+        WriteAttributes(llvm::makeArrayRef(Update.getAttr()), Record);
         break;
       }
     }
@@ -5660,7 +5763,7 @@ void ASTWriter::AddedCXXTemplateSpecialization(const FunctionTemplateDecl *TD,
 void ASTWriter::ResolvedExceptionSpec(const FunctionDecl *FD) {
   assert(!DoneWritingDeclsAndTypes && "Already done writing updates!");
   if (!Chain) return;
-  Chain->forEachFormerlyCanonicalImportedDecl(FD, [&](const Decl *D) {
+  Chain->forEachImportedKeyDecl(FD, [&](const Decl *D) {
     // If we don't already know the exception specification for this redecl
     // chain, add an update record for it.
     if (isUnresolvedExceptionSpec(cast<FunctionDecl>(D)
@@ -5674,7 +5777,7 @@ void ASTWriter::ResolvedExceptionSpec(const FunctionDecl *FD) {
 void ASTWriter::DeducedReturnType(const FunctionDecl *FD, QualType ReturnType) {
   assert(!WritingAST && "Already writing the AST!");
   if (!Chain) return;
-  Chain->forEachFormerlyCanonicalImportedDecl(FD, [&](const Decl *D) {
+  Chain->forEachImportedKeyDecl(FD, [&](const Decl *D) {
     DeclUpdates[D].push_back(
         DeclUpdate(UPD_CXX_DEDUCED_RETURN_TYPE, ReturnType));
   });
@@ -5685,7 +5788,7 @@ void ASTWriter::ResolvedOperatorDelete(const CXXDestructorDecl *DD,
   assert(!WritingAST && "Already writing the AST!");
   assert(Delete && "Not given an operator delete");
   if (!Chain) return;
-  Chain->forEachFormerlyCanonicalImportedDecl(DD, [&](const Decl *D) {
+  Chain->forEachImportedKeyDecl(DD, [&](const Decl *D) {
     DeclUpdates[D].push_back(DeclUpdate(UPD_CXX_RESOLVED_DTOR_DELETE, Delete));
   });
 }
@@ -5765,4 +5868,12 @@ void ASTWriter::RedefinedHiddenDefinition(const NamedDecl *D, Module *M) {
   assert(!WritingAST && "Already writing the AST!");
   assert(D->isHidden() && "expected a hidden declaration");
   DeclUpdates[D].push_back(DeclUpdate(UPD_DECL_EXPORTED, M));
+}
+
+void ASTWriter::AddedAttributeToRecord(const Attr *Attr,
+                                       const RecordDecl *Record) {
+  assert(!WritingAST && "Already writing the AST!");
+  if (!Record->isFromASTFile())
+    return;
+  DeclUpdates[Record].push_back(DeclUpdate(UPD_ADDED_ATTR_TO_RECORD, Attr));
 }

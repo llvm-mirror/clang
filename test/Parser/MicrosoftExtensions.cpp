@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 %s -triple i386-mingw32 -std=c++14 -fsyntax-only -Wno-unused-getter-return-value -Wno-unused-value -Wmicrosoft -verify -fms-extensions -fms-compatibility -fdelayed-template-parsing
+// RUN: %clang_cc1 %s -triple i386-pc-win32 -std=c++14 -fsyntax-only -Wno-unused-getter-return-value -Wno-unused-value -Wmicrosoft -verify -fms-extensions -fms-compatibility -fdelayed-template-parsing
 
 /* Microsoft attribute tests */
 [repeatable][source_annotation_attribute( Parameter|ReturnValue )]
@@ -399,4 +399,11 @@ __declspec(align(16)) struct align_before_key3 {} *align_before_key3_var;
 static_assert(__alignof(struct align_before_key1) == 16, "");
 static_assert(__alignof(struct align_before_key2) == 16, "");
 static_assert(__alignof(struct align_before_key3) == 16, "");
+}
+
+namespace PR24027 {
+struct S {
+  template <typename T>
+  S(T);
+} f([] {});
 }

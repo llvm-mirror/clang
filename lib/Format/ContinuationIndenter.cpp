@@ -126,7 +126,8 @@ bool ContinuationIndenter::canBreak(const LineState &State) {
   // Don't break after very short return types (e.g. "void") as that is often
   // unexpected.
   if (Current.is(TT_FunctionDeclarationName) &&
-      !Style.AlwaysBreakAfterDefinitionReturnType && State.Column < 6)
+      Style.AlwaysBreakAfterDefinitionReturnType == FormatStyle::DRTBS_None &&
+      State.Column < 6)
     return false;
 
   return !State.Stack.back().NoLineBreak;
@@ -150,12 +151,6 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
       State.Stack.back().BreakBeforeParameter && !Current.isTrailingComment() &&
       !Current.isOneOf(tok::r_paren, tok::r_brace))
     return true;
-  if (Style.AlwaysBreakBeforeMultilineStrings &&
-      State.Column > State.Stack.back().Indent && // Breaking saves columns.
-      !Previous.isOneOf(tok::kw_return, tok::lessless, tok::at) &&
-      !Previous.isOneOf(TT_InlineASMColon, TT_ConditionalExpr) &&
-      nextIsMultilineString(State))
-    return true;
   if (((Previous.is(TT_DictLiteral) && Previous.is(tok::l_brace)) ||
        Previous.is(TT_ArrayInitializerLSquare)) &&
       Style.ColumnLimit > 0 &&
@@ -170,8 +165,17 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
       State.Stack.back().BreakBeforeParameter)
     return true;
 
-  if (State.Column < getNewLineColumn(State))
+  unsigned NewLineColumn = getNewLineColumn(State);
+  if (State.Column < NewLineColumn)
     return false;
+
+  if (Style.AlwaysBreakBeforeMultilineStrings &&
+      (NewLineColumn == State.FirstIndent + Style.ContinuationIndentWidth ||
+       Previous.is(tok::comma) || Current.NestingLevel < 2) &&
+      !Previous.isOneOf(tok::kw_return, tok::lessless, tok::at) &&
+      !Previous.isOneOf(TT_InlineASMColon, TT_ConditionalExpr) &&
+      nextIsMultilineString(State))
+    return true;
 
   // Using CanBreakBefore here and below takes care of the decision whether the
   // current style uses wrapping before or after operators for the given
@@ -221,7 +225,8 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
   }
 
   // If the return type spans multiple lines, wrap before the function name.
-  if (Current.isOneOf(TT_FunctionDeclarationName, tok::kw_operator) &&
+  if ((Current.is(TT_FunctionDeclarationName) ||
+       (Current.is(tok::kw_operator) && !Previous.is(tok::coloncolon))) &&
       State.Stack.back().BreakBeforeParameter)
     return true;
 
@@ -416,7 +421,21 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
     Penalty += Style.PenaltyBreakFirstLessLess;
 
   State.Column = getNewLineColumn(State);
-  State.Stack.back().NestedBlockIndent = State.Column;
+
+  // Indent nested blocks relative to this column, unless in a very specific
+  // JavaScript special case where:
+  //
+  //   var loooooong_name =
+  //       function() {
+  //     // code
+  //   }
+  //
+  // is common and should be formatted like a free-standing function.
+  if (Style.Language != FormatStyle::LK_JavaScript ||
+      Current.NestingLevel != 0 || !PreviousNonComment->is(tok::equal) ||
+      !Current.is(Keywords.kw_function))
+    State.Stack.back().NestedBlockIndent = State.Column;
+
   if (NextNonComment->isMemberAccess()) {
     if (State.Stack.back().CallContinuation == 0)
       State.Stack.back().CallContinuation = State.Column;
@@ -610,7 +629,7 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
     return State.Stack.back().Indent;
 
   if (NextNonComment->isOneOf(TT_StartOfName, TT_PointerOrReference) ||
-      Previous.isOneOf(tok::coloncolon, tok::equal))
+      Previous.isOneOf(tok::coloncolon, tok::equal, TT_JsTypeColon))
     return ContinuationIndent;
   if (PreviousNonComment && PreviousNonComment->is(tok::colon) &&
       PreviousNonComment->isOneOf(TT_ObjCMethodExpr, TT_DictLiteral))
@@ -660,8 +679,13 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
   if (Current.isMemberAccess())
     State.Stack.back().StartOfFunctionCall =
         Current.LastOperator ? 0 : State.Column;
-  if (Current.is(TT_SelectorName))
+  if (Current.is(TT_SelectorName)) {
     State.Stack.back().ObjCSelectorNameFound = true;
+    if (Style.IndentWrappedFunctionNames) {
+      State.Stack.back().Indent =
+          State.FirstIndent + Style.ContinuationIndentWidth;
+    }
+  }
   if (Current.is(TT_CtorInitializerColon)) {
     // Indent 2 from the column, so:
     // SomeClass::SomeClass()
@@ -714,7 +738,7 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
   if (Current.is(TT_ObjCStringLiteral) && State.StartOfStringLiteral == 0)
     State.StartOfStringLiteral = State.Column + 1;
   else if (!Current.isOneOf(tok::comment, tok::identifier, tok::hash) &&
-             !Current.isStringLiteral())
+           !Current.isStringLiteral())
     State.StartOfStringLiteral = 0;
 
   State.Column += Current.ColumnWidth;
@@ -798,7 +822,7 @@ void ContinuationIndenter::moveStatePastFakeLParens(LineState &State,
     //       ParameterToInnerFunction));
     if (*I > prec::Unknown)
       NewParenState.LastSpace = std::max(NewParenState.LastSpace, State.Column);
-    if (*I != prec::Conditional)
+    if (*I != prec::Conditional && !Current.is(TT_UnaryOperator))
       NewParenState.StartOfFunctionCall = State.Column;
 
     // Always indent conditional expressions. Never indent expression where
@@ -844,6 +868,8 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
   unsigned LastSpace = State.Stack.back().LastSpace;
   bool AvoidBinPacking;
   bool BreakBeforeParameter = false;
+  unsigned NestedBlockIndent = std::max(State.Stack.back().StartOfFunctionCall,
+                                        State.Stack.back().NestedBlockIndent);
   if (Current.isOneOf(tok::l_brace, TT_ArrayInitializerLSquare)) {
     if (Current.opensBlockTypeList(Style)) {
       NewIndent = State.Stack.back().NestedBlockIndent + Style.IndentWidth;
@@ -857,6 +883,8 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
         Current.isOneOf(TT_ArrayInitializerLSquare, TT_DictLiteral) ||
         Style.Language == FormatStyle::LK_Proto || !Style.BinPackArguments ||
         (NextNoComment && NextNoComment->is(TT_DesignatedInitializerPeriod));
+    if (Current.ParameterCount > 1)
+      NestedBlockIndent = std::max(NestedBlockIndent, State.Column + 1);
   } else {
     NewIndent = Style.ContinuationIndentWidth +
                 std::max(State.Stack.back().LastSpace,
@@ -892,7 +920,7 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
         // be a line break within this call.
         for (const FormatToken *Tok = &Current;
              Tok && Tok != Current.MatchingParen; Tok = Tok->Next) {
-          if (Tok->MustBreakBefore || 
+          if (Tok->MustBreakBefore ||
               (Tok->CanBreakBefore && Tok->NewlinesBefore > 0)) {
             BreakBeforeParameter = true;
             break;
@@ -904,8 +932,6 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
   bool NoLineBreak = State.Stack.back().NoLineBreak ||
                      (Current.is(TT_TemplateOpener) &&
                       State.Stack.back().ContainsUnwrappedBuilder);
-  unsigned NestedBlockIndent = std::max(State.Stack.back().StartOfFunctionCall,
-                                        State.Stack.back().NestedBlockIndent);
   State.Stack.push_back(ParenState(NewIndent, NewIndentLevel, LastSpace,
                                    AvoidBinPacking, NoLineBreak));
   State.Stack.back().NestedBlockIndent = NestedBlockIndent;

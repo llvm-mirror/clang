@@ -201,8 +201,14 @@ static void addSanitizerCoveragePass(const PassManagerBuilder &Builder,
 
 static void addAddressSanitizerPasses(const PassManagerBuilder &Builder,
                                       legacy::PassManagerBase &PM) {
-  PM.add(createAddressSanitizerFunctionPass());
-  PM.add(createAddressSanitizerModulePass());
+  PM.add(createAddressSanitizerFunctionPass(/*CompileKernel*/false));
+  PM.add(createAddressSanitizerModulePass(/*CompileKernel*/false));
+}
+
+static void addKernelAddressSanitizerPasses(const PassManagerBuilder &Builder,
+                                            legacy::PassManagerBase &PM) {
+  PM.add(createAddressSanitizerFunctionPass(/*CompileKernel*/true));
+  PM.add(createAddressSanitizerModulePass(/*CompileKernel*/true));
 }
 
 static void addMemorySanitizerPass(const PassManagerBuilder &Builder,
@@ -266,6 +272,9 @@ static void addSymbolRewriterPass(const CodeGenOptions &Opts,
 }
 
 void EmitAssemblyHelper::CreatePasses() {
+  if (CodeGenOpts.DisableLLVMPasses)
+    return;
+
   unsigned OptLevel = CodeGenOpts.OptimizationLevel;
   CodeGenOptions::InliningMethod Inlining = CodeGenOpts.getInlining();
 
@@ -286,6 +295,7 @@ void EmitAssemblyHelper::CreatePasses() {
   PMBuilder.DisableUnitAtATime = !CodeGenOpts.UnitAtATime;
   PMBuilder.DisableUnrollLoops = !CodeGenOpts.UnrollLoops;
   PMBuilder.MergeFunctions = CodeGenOpts.MergeFunctions;
+  PMBuilder.PrepareForLTO = CodeGenOpts.PrepareForLTO;
   PMBuilder.RerollLoops = CodeGenOpts.RerollLoops;
 
   PMBuilder.addExtension(PassManagerBuilder::EP_EarlyAsPossible,
@@ -326,6 +336,13 @@ void EmitAssemblyHelper::CreatePasses() {
                            addAddressSanitizerPasses);
     PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
                            addAddressSanitizerPasses);
+  }
+
+  if (LangOpts.Sanitize.has(SanitizerKind::KernelAddress)) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
+                           addKernelAddressSanitizerPasses);
+    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                           addKernelAddressSanitizerPasses);
   }
 
   if (LangOpts.Sanitize.has(SanitizerKind::Memory)) {
@@ -441,8 +458,6 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
     BackendArgs.push_back("-limit-float-precision");
     BackendArgs.push_back(CodeGenOpts.LimitFloatPrecision.c_str());
   }
-  if (llvm::TimePassesIsEnabled)
-    BackendArgs.push_back("-time-passes");
   for (unsigned i = 0, e = CodeGenOpts.BackendOptions.size(); i != e; ++i)
     BackendArgs.push_back(CodeGenOpts.BackendOptions[i].c_str());
   BackendArgs.push_back(nullptr);
@@ -523,11 +538,11 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   Options.NoZerosInBSS = CodeGenOpts.NoZeroInitializedInBSS;
   Options.UnsafeFPMath = CodeGenOpts.UnsafeFPMath;
   Options.StackAlignmentOverride = CodeGenOpts.StackAlignment;
-  Options.TrapFuncName = CodeGenOpts.TrapFuncName;
   Options.PositionIndependentExecutable = LangOpts.PIELevel != 0;
   Options.FunctionSections = CodeGenOpts.FunctionSections;
   Options.DataSections = CodeGenOpts.DataSections;
   Options.UniqueSectionNames = CodeGenOpts.UniqueSectionNames;
+  Options.EmulatedTLS = CodeGenOpts.EmulatedTLS;
 
   Options.MCOptions.MCRelaxAll = CodeGenOpts.RelaxAll;
   Options.MCOptions.MCSaveTempLabels = CodeGenOpts.SaveTempLabels;
@@ -591,7 +606,10 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
   if (!TM)
     TM.reset(CreateTargetMachine(UsesCodeGen));
 
-  if (UsesCodeGen && !TM) return;
+  if (UsesCodeGen && !TM)
+    return;
+  if (TM)
+    TheModule->setDataLayout(TM->createDataLayout());
   CreatePasses();
 
   switch (Action) {
@@ -653,8 +671,7 @@ void clang::EmitBackendOutput(DiagnosticsEngine &Diags,
   // If an optional clang TargetInfo description string was passed in, use it to
   // verify the LLVM TargetMachine's DataLayout.
   if (AsmHelper.TM && !TDesc.empty()) {
-    std::string DLDesc =
-        AsmHelper.TM->getDataLayout()->getStringRepresentation();
+    std::string DLDesc = M->getDataLayout().getStringRepresentation();
     if (DLDesc != TDesc) {
       unsigned DiagID = Diags.getCustomDiagID(
           DiagnosticsEngine::Error, "backend data layout '%0' does not match "

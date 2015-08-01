@@ -236,6 +236,12 @@ class ASTContext : public RefCountedBase<ASTContext> {
   QualType ObjCClassRedefinitionType;
   QualType ObjCSelRedefinitionType;
 
+  /// The identifier 'NSObject'.
+  IdentifierInfo *NSObjectName = nullptr;
+
+  /// The identifier 'NSCopying'.
+  IdentifierInfo *NSCopyingName = nullptr;
+
   QualType ObjCConstantStringType;
   mutable RecordDecl *CFConstantStringTypeDecl;
   
@@ -837,9 +843,9 @@ public:
   mutable QualType AutoDeductTy;     // Deduction against 'auto'.
   mutable QualType AutoRRefDeductTy; // Deduction against 'auto &&'.
 
-  // Type used to help define __builtin_va_list for some targets.
-  // The type is built when constructing 'BuiltinVaListDecl'.
-  mutable QualType VaListTagTy;
+  // Decl used to help define __builtin_va_list for some targets.
+  // The decl is built when constructing 'BuiltinVaListDecl'.
+  mutable Decl *VaListTagDecl;
 
   ASTContext(LangOptions &LOpts, SourceManager &SM, IdentifierTable &idents,
              SelectorTable &sels, Builtin::Context &builtins);
@@ -1189,9 +1195,15 @@ public:
   QualType getObjCInterfaceType(const ObjCInterfaceDecl *Decl,
                                 ObjCInterfaceDecl *PrevDecl = nullptr) const;
 
+  /// Legacy interface: cannot provide type arguments or __kindof.
   QualType getObjCObjectType(QualType Base,
                              ObjCProtocolDecl * const *Protocols,
                              unsigned NumProtocols) const;
+
+  QualType getObjCObjectType(QualType Base,
+                             ArrayRef<QualType> typeArgs,
+                             ArrayRef<ObjCProtocolDecl *> protocols,
+                             bool isKindOf) const;
   
   bool ObjCObjectAdoptsQTypeProtocols(QualType QT, ObjCInterfaceDecl *Decl);
   /// QIdProtocolsAdoptObjCObjectProtocols - Checks that protocols in
@@ -1349,6 +1361,24 @@ public:
   /// \brief Set the user-written type that redefines 'SEL'.
   void setObjCSelRedefinitionType(QualType RedefType) {
     ObjCSelRedefinitionType = RedefType;
+  }
+
+  /// Retrieve the identifier 'NSObject'.
+  IdentifierInfo *getNSObjectName() {
+    if (!NSObjectName) {
+      NSObjectName = &Idents.get("NSObject");
+    }
+
+    return NSObjectName;
+  }
+
+  /// Retrieve the identifier 'NSCopying'.
+  IdentifierInfo *getNSCopyingName() {
+    if (!NSCopyingName) {
+      NSCopyingName = &Idents.get("NSCopying");
+    }
+
+    return NSCopyingName;
   }
 
   /// \brief Retrieve the Objective-C "instancetype" type, if already known;
@@ -1539,7 +1569,7 @@ public:
   /// \brief Retrieve the C type declaration corresponding to the predefined
   /// \c __va_list_tag type used to help define the \c __builtin_va_list type
   /// for some targets.
-  QualType getVaListTagType() const;
+  Decl *getVaListTagDecl() const;
 
   /// \brief Return a type with additional \c const, \c volatile, or
   /// \c restrict qualifiers.
@@ -1664,6 +1694,9 @@ public:
   TypeInfo getTypeInfo(const Type *T) const;
   TypeInfo getTypeInfo(QualType T) const { return getTypeInfo(T.getTypePtr()); }
 
+  /// \brief Get default simd alignment of the specified complete type in bits.
+  unsigned getOpenMPDefaultSimdAlign(QualType T) const;
+
   /// \brief Return the size of the specified (complete) type \p T, in bits.
   uint64_t getTypeSize(QualType T) const { return getTypeInfo(T).Width; }
   uint64_t getTypeSize(const Type *T) const { return getTypeInfo(T).Width; }
@@ -1741,7 +1774,6 @@ public:
   /// record (struct/union/class) \p D, which indicates its size and field
   /// position information.
   const ASTRecordLayout &getASTRecordLayout(const RecordDecl *D) const;
-  const ASTRecordLayout *BuildMicrosoftASTRecordLayout(const RecordDecl *D) const;
 
   /// \brief Get or compute information about the layout of the specified
   /// Objective-C interface.
@@ -1779,6 +1811,17 @@ public:
   ///
   /// \param method should be the declaration from the class definition
   void setNonKeyFunction(const CXXMethodDecl *method);
+
+  /// Loading virtual member pointers using the virtual inheritance model
+  /// always results in an adjustment using the vbtable even if the index is
+  /// zero.
+  ///
+  /// This is usually OK because the first slot in the vbtable points
+  /// backwards to the top of the MDC.  However, the MDC might be reusing a
+  /// vbptr from an nv-base.  In this case, the first slot in the vbtable
+  /// points to the start of the nv-base which introduced the vbptr and *not*
+  /// the MDC.  Modify the NonVirtualBaseAdjustment to account for this.
+  CharUnits getOffsetOfBaseWithVBPtr(const CXXRecordDecl *RD) const;
 
   /// Get the offset of a FieldDecl or IndirectFieldDecl, in bits.
   uint64_t getFieldOffset(const ValueDecl *FD) const;
@@ -1852,6 +1895,36 @@ public:
   bool hasSameUnqualifiedType(QualType T1, QualType T2) const {
     return getCanonicalType(T1).getTypePtr() ==
            getCanonicalType(T2).getTypePtr();
+  }
+
+  bool hasSameNullabilityTypeQualifier(QualType SubT, QualType SuperT,
+                                       bool IsParam) const {
+    auto SubTnullability = SubT->getNullability(*this);
+    auto SuperTnullability = SuperT->getNullability(*this);
+    if (SubTnullability.hasValue() == SuperTnullability.hasValue()) {
+      // Neither has nullability; return true
+      if (!SubTnullability)
+        return true;
+      // Both have nullability qualifier.
+      if (*SubTnullability == *SuperTnullability ||
+          *SubTnullability == NullabilityKind::Unspecified ||
+          *SuperTnullability == NullabilityKind::Unspecified)
+        return true;
+      
+      if (IsParam) {
+        // Ok for the superclass method parameter to be "nonnull" and the subclass
+        // method parameter to be "nullable"
+        return (*SuperTnullability == NullabilityKind::NonNull &&
+                *SubTnullability == NullabilityKind::Nullable);
+      }
+      else {
+        // For the return type, it's okay for the superclass method to specify
+        // "nullable" and the subclass method specify "nonnull"
+        return (*SuperTnullability == NullabilityKind::Nullable &&
+                *SubTnullability == NullabilityKind::NonNull);
+      }
+    }
+    return true;
   }
 
   bool ObjCMethodsAreEqual(const ObjCMethodDecl *MethodDecl,

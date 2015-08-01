@@ -37,7 +37,7 @@ import CmpRuns
 class SingleRunInfo:
     def __init__(self, path, root="", verboseLog=None):
         self.path = path
-        self.root = root
+        self.root = root.rstrip("/\\")
         self.verboseLog = verboseLog
 
 class AnalysisDiagnostic:
@@ -50,8 +50,8 @@ class AnalysisDiagnostic:
     def getFileName(self):
         root = self._report.run.root
         fileName = self._report.files[self._loc['file']]
-        if fileName.startswith(root) :
-            return fileName[len(root):]  
+        if fileName.startswith(root) and len(root) > 0:
+            return fileName[len(root)+1:]
         return fileName
 
     def getLine(self):
@@ -300,7 +300,7 @@ def dumpScanBuildResultsDiff(dirA, dirB, opts, deleteEmpty=True):
         print >>auxLog, "('TOTAL NEW REPORTS', %r)" % TotalReports
         print >>auxLog, "('TOTAL DIFFERENCES', %r)" % foundDiffs
         
-    return foundDiffs    
+    return foundDiffs, len(resultsA.diagnostics), len(resultsB.diagnostics)
 
 def main():
     from optparse import OptionParser

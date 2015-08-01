@@ -22,6 +22,7 @@
 #include "clang/Basic/SourceLocation.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/PointerIntPair.h"
+#include "llvm/ADT/iterator.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <string>
@@ -48,57 +49,6 @@ namespace clang {
   class SwitchStmt;
   class Token;
   class VarDecl;
-
-  //===--------------------------------------------------------------------===//
-  // ExprIterator - Iterators for iterating over Stmt* arrays that contain
-  //  only Expr*.  This is needed because AST nodes use Stmt* arrays to store
-  //  references to children (to be compatible with StmtIterator).
-  //===--------------------------------------------------------------------===//
-
-  class Stmt;
-  class Expr;
-
-  class ExprIterator : public std::iterator<std::forward_iterator_tag,
-                                            Expr *&, ptrdiff_t,
-                                            Expr *&, Expr *&> {
-    Stmt** I;
-  public:
-    ExprIterator(Stmt** i) : I(i) {}
-    ExprIterator() : I(nullptr) {}
-    ExprIterator& operator++() { ++I; return *this; }
-    ExprIterator operator-(size_t i) { return I-i; }
-    ExprIterator operator+(size_t i) { return I+i; }
-    Expr* operator[](size_t idx);
-    // FIXME: Verify that this will correctly return a signed distance.
-    signed operator-(const ExprIterator& R) const { return I - R.I; }
-    Expr* operator*() const;
-    Expr* operator->() const;
-    bool operator==(const ExprIterator& R) const { return I == R.I; }
-    bool operator!=(const ExprIterator& R) const { return I != R.I; }
-    bool operator>(const ExprIterator& R) const { return I > R.I; }
-    bool operator>=(const ExprIterator& R) const { return I >= R.I; }
-  };
-
-  class ConstExprIterator : public std::iterator<std::forward_iterator_tag,
-                                                 const Expr *&, ptrdiff_t,
-                                                 const Expr *&,
-                                                 const Expr *&> {
-    const Stmt * const *I;
-  public:
-    ConstExprIterator(const Stmt * const *i) : I(i) {}
-    ConstExprIterator() : I(nullptr) {}
-    ConstExprIterator& operator++() { ++I; return *this; }
-    ConstExprIterator operator+(size_t i) const { return I+i; }
-    ConstExprIterator operator-(size_t i) const { return I-i; }
-    const Expr * operator[](size_t idx) const;
-    signed operator-(const ConstExprIterator& R) const { return I - R.I; }
-    const Expr * operator*() const;
-    const Expr * operator->() const;
-    bool operator==(const ConstExprIterator& R) const { return I == R.I; }
-    bool operator!=(const ConstExprIterator& R) const { return I != R.I; }
-    bool operator>(const ConstExprIterator& R) const { return I > R.I; }
-    bool operator>=(const ConstExprIterator& R) const { return I >= R.I; }
-  };
 
 //===----------------------------------------------------------------------===//
 // AST classes for statements.
@@ -337,6 +287,39 @@ public:
   /// de-serialization).
   struct EmptyShell { };
 
+protected:
+  /// Iterator for iterating over Stmt * arrays that contain only Expr *
+  ///
+  /// This is needed because AST nodes use Stmt* arrays to store
+  /// references to children (to be compatible with StmtIterator).
+  struct ExprIterator
+      : llvm::iterator_adaptor_base<ExprIterator, Stmt **,
+                                    std::random_access_iterator_tag, Expr *> {
+    ExprIterator() : iterator_adaptor_base(nullptr) {}
+    ExprIterator(Stmt **I) : iterator_adaptor_base(I) {}
+
+    reference operator*() const {
+      assert((*I)->getStmtClass() >= firstExprConstant &&
+             (*I)->getStmtClass() <= lastExprConstant);
+      return *reinterpret_cast<Expr **>(I);
+    }
+  };
+
+  /// Const iterator for iterating over Stmt * arrays that contain only Expr *
+  struct ConstExprIterator
+      : llvm::iterator_adaptor_base<ConstExprIterator, const Stmt *const *,
+                                    std::random_access_iterator_tag,
+                                    const Expr *const> {
+    ConstExprIterator() : iterator_adaptor_base(nullptr) {}
+    ConstExprIterator(const Stmt *const *I) : iterator_adaptor_base(I) {}
+
+    reference operator*() const {
+      assert((*I)->getStmtClass() >= firstExprConstant &&
+             (*I)->getStmtClass() <= lastExprConstant);
+      return *reinterpret_cast<const Expr *const *>(I);
+    }
+  };
+
 private:
   /// \brief Whether statistic collection is enabled.
   static bool StatisticsEnabled;
@@ -411,19 +394,20 @@ public:
   typedef StmtIterator       child_iterator;
   typedef ConstStmtIterator  const_child_iterator;
 
-  typedef StmtRange          child_range;
-  typedef ConstStmtRange     const_child_range;
+  typedef llvm::iterator_range<child_iterator> child_range;
+  typedef llvm::iterator_range<const_child_iterator> const_child_range;
 
   child_range children();
   const_child_range children() const {
-    return const_cast<Stmt*>(this)->children();
+    auto Children = const_cast<Stmt *>(this)->children();
+    return const_child_range(Children.begin(), Children.end());
   }
 
-  child_iterator child_begin() { return children().first; }
-  child_iterator child_end() { return children().second; }
+  child_iterator child_begin() { return children().begin(); }
+  child_iterator child_end() { return children().end(); }
 
-  const_child_iterator child_begin() const { return children().first; }
-  const_child_iterator child_end() const { return children().second; }
+  const_child_iterator child_begin() const { return children().begin(); }
+  const_child_iterator child_end() const { return children().end(); }
 
   /// \brief Produce a unique representation of the given statement.
   ///
@@ -544,7 +528,9 @@ public:
     return T->getStmtClass() == NullStmtClass;
   }
 
-  child_range children() { return child_range(); }
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
 
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
@@ -643,7 +629,8 @@ public:
   }
 
   const_child_range children() const {
-    return child_range(Body, Body + CompoundStmtBits.NumStmts);
+    return const_child_range(child_iterator(Body),
+                             child_iterator(Body + CompoundStmtBits.NumStmts));
   }
 };
 
@@ -1239,7 +1226,9 @@ public:
   }
 
   // Iterators
-  child_range children() { return child_range(); }
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
 };
 
 /// IndirectGotoStmt - This represents an indirect goto.
@@ -1307,7 +1296,9 @@ public:
   }
 
   // Iterators
-  child_range children() { return child_range(); }
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
 };
 
 /// BreakStmt - This represents a break.
@@ -1335,7 +1326,9 @@ public:
   }
 
   // Iterators
-  child_range children() { return child_range(); }
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
 };
 
 
@@ -1390,7 +1383,7 @@ public:
   // Iterators
   child_range children() {
     if (RetExpr) return child_range(&RetExpr, &RetExpr+1);
-    return child_range();
+    return child_range(child_iterator(), child_iterator());
   }
 };
 
@@ -1974,7 +1967,9 @@ public:
   }
 
   // Iterators
-  child_range children() { return child_range(); }
+  child_range children() {
+    return child_range(child_iterator(), child_iterator());
+  }
 };
 
 /// \brief This captures a statement into a function. For example, the following
@@ -2076,8 +2071,10 @@ private:
   /// \brief Construct an empty captured statement.
   CapturedStmt(EmptyShell Empty, unsigned NumCaptures);
 
-  Stmt **getStoredStmts() const {
-    return reinterpret_cast<Stmt **>(const_cast<CapturedStmt *>(this) + 1);
+  Stmt **getStoredStmts() { return reinterpret_cast<Stmt **>(this + 1); }
+
+  Stmt *const *getStoredStmts() const {
+    return reinterpret_cast<Stmt *const *>(this + 1);
   }
 
   Capture *getStoredCaptures() const;
@@ -2096,14 +2093,12 @@ public:
 
   /// \brief Retrieve the statement being captured.
   Stmt *getCapturedStmt() { return getStoredStmts()[NumCaptures]; }
-  const Stmt *getCapturedStmt() const {
-    return const_cast<CapturedStmt *>(this)->getCapturedStmt();
-  }
+  const Stmt *getCapturedStmt() const { return getStoredStmts()[NumCaptures]; }
 
   /// \brief Retrieve the outlined function declaration.
   CapturedDecl *getCapturedDecl() { return CapDeclAndKind.getPointer(); }
   const CapturedDecl *getCapturedDecl() const {
-    return const_cast<CapturedStmt *>(this)->getCapturedDecl();
+    return CapDeclAndKind.getPointer();
   }
 
   /// \brief Set the outlined function declaration.
@@ -2164,18 +2159,36 @@ public:
   typedef Expr **capture_init_iterator;
   typedef llvm::iterator_range<capture_init_iterator> capture_init_range;
 
-  capture_init_range capture_inits() const {
+  /// \brief Const iterator that walks over the capture initialization
+  /// arguments.
+  typedef Expr *const *const_capture_init_iterator;
+  typedef llvm::iterator_range<const_capture_init_iterator>
+      const_capture_init_range;
+
+  capture_init_range capture_inits() {
     return capture_init_range(capture_init_begin(), capture_init_end());
   }
 
+  const_capture_init_range capture_inits() const {
+    return const_capture_init_range(capture_init_begin(), capture_init_end());
+  }
+
   /// \brief Retrieve the first initialization argument.
-  capture_init_iterator capture_init_begin() const {
+  capture_init_iterator capture_init_begin() {
     return reinterpret_cast<Expr **>(getStoredStmts());
+  }
+
+  const_capture_init_iterator capture_init_begin() const {
+    return reinterpret_cast<Expr *const *>(getStoredStmts());
   }
 
   /// \brief Retrieve the iterator pointing one past the last initialization
   /// argument.
-  capture_init_iterator capture_init_end() const {
+  capture_init_iterator capture_init_end() {
+    return capture_init_begin() + NumCaptures;
+  }
+
+  const_capture_init_iterator capture_init_end() const {
     return capture_init_begin() + NumCaptures;
   }
 

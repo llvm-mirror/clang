@@ -42,6 +42,7 @@
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Bitcode/BitstreamReader.h"
 #include "llvm/Support/DataTypes.h"
+#include "llvm/Support/Timer.h"
 #include <deque>
 #include <map>
 #include <memory>
@@ -304,7 +305,6 @@ class ASTReader
     public ExternalHeaderFileInfoSource,
     public ExternalSemaSource,
     public IdentifierInfoLookup,
-    public ExternalIdentifierLookup,
     public ExternalSLocEntrySource
 {
 public:
@@ -362,6 +362,7 @@ private:
 
   SourceManager &SourceMgr;
   FileManager &FileMgr;
+  const PCHContainerReader &PCHContainerRdr;
   DiagnosticsEngine &Diags;
 
   /// \brief The semantic analysis object that will be processing the
@@ -379,6 +380,9 @@ private:
 
   /// \brief The module manager which manages modules and their dependencies
   ModuleManager ModuleMgr;
+
+  /// \brief A timer used to track the time spent deserializing.
+  std::unique_ptr<llvm::Timer> ReadTimer;
 
   /// \brief The location where the module file will be considered as
   /// imported from. For non-module AST types it should be invalid.
@@ -976,12 +980,14 @@ private:
       MergedLookups;
 
   typedef llvm::DenseMap<Decl *, SmallVector<serialization::DeclID, 2> >
-    MergedDeclsMap;
+    KeyDeclsMap;
     
-  /// \brief A mapping from canonical declarations to the set of additional
-  /// (global, previously-canonical) declaration IDs that have been merged with
-  /// that canonical declaration.
-  MergedDeclsMap MergedDecls;
+  /// \brief A mapping from canonical declarations to the set of global
+  /// declaration IDs for key declaration that have been merged with that
+  /// canonical declaration. A key declaration is a formerly-canonical
+  /// declaration whose module did not import any other key declaration for that
+  /// entity. These are the IDs that we use as keys when finding redecl chains.
+  KeyDeclsMap KeyDecls;
   
   /// \brief A mapping from DeclContexts to the semantic DeclContext that we
   /// are treating as the definition of the entity. This is used, for instance,
@@ -1054,6 +1060,36 @@ public:
   void ResolveImportedPath(ModuleFile &M, std::string &Filename);
   static void ResolveImportedPath(std::string &Filename, StringRef Prefix);
 
+  /// \brief Returns the first key declaration for the given declaration. This
+  /// is one that is formerly-canonical (or still canonical) and whose module
+  /// did not import any other key declaration of the entity.
+  Decl *getKeyDeclaration(Decl *D) {
+    D = D->getCanonicalDecl();
+    if (D->isFromASTFile())
+      return D;
+
+    auto I = KeyDecls.find(D);
+    if (I == KeyDecls.end() || I->second.empty())
+      return D;
+    return GetExistingDecl(I->second[0]);
+  }
+  const Decl *getKeyDeclaration(const Decl *D) {
+    return getKeyDeclaration(const_cast<Decl*>(D));
+  }
+
+  /// \brief Run a callback on each imported key declaration of \p D.
+  template <typename Fn>
+  void forEachImportedKeyDecl(const Decl *D, Fn Visit) {
+    D = D->getCanonicalDecl();
+    if (D->isFromASTFile())
+      Visit(D);
+
+    auto It = KeyDecls.find(const_cast<Decl*>(D));
+    if (It != KeyDecls.end())
+      for (auto ID : It->second)
+        Visit(GetExistingDecl(ID));
+  }
+
 private:
   struct ImportedModule {
     ModuleFile *Mod;
@@ -1123,18 +1159,6 @@ private:
   /// of a redeclarable kind) that is either local or has already been loaded
   /// merged into its redecl chain.
   Decl *getMostRecentExistingDecl(Decl *D);
-
-  template <typename Fn>
-  void forEachFormerlyCanonicalImportedDecl(const Decl *D, Fn Visit) {
-    D = D->getCanonicalDecl();
-    if (D->isFromASTFile())
-      Visit(D);
-
-    auto It = MergedDecls.find(const_cast<Decl*>(D));
-    if (It != MergedDecls.end())
-      for (auto ID : It->second)
-        Visit(GetExistingDecl(ID));
-  }
 
   RecordLocation DeclCursorForID(serialization::DeclID ID,
                                  unsigned &RawLocation);
@@ -1237,6 +1261,9 @@ public:
   /// \param Context the AST context that this precompiled header will be
   /// loaded into.
   ///
+  /// \param PCHContainerRdr the PCHContainerOperations to use for loading and
+  /// creating modules.
+  ///
   /// \param isysroot If non-NULL, the system include path specified by the
   /// user. This is only used with relocatable PCH files. If non-NULL,
   /// a relocatable PCH file will use the default path "/".
@@ -1258,12 +1285,16 @@ public:
   ///
   /// \param UseGlobalIndex If true, the AST reader will try to load and use
   /// the global module index.
-  ASTReader(Preprocessor &PP, ASTContext &Context, StringRef isysroot = "",
-            bool DisableValidation = false,
+  ///
+  /// \param ReadTimer If non-null, a timer used to track the time spent
+  /// deserializing.
+  ASTReader(Preprocessor &PP, ASTContext &Context,
+            const PCHContainerReader &PCHContainerRdr,
+            StringRef isysroot = "", bool DisableValidation = false,
             bool AllowASTWithCompilerErrors = false,
             bool AllowConfigurationMismatch = false,
-            bool ValidateSystemInputs = false,
-            bool UseGlobalIndex = true);
+            bool ValidateSystemInputs = false, bool UseGlobalIndex = true,
+            std::unique_ptr<llvm::Timer> ReadTimer = {});
 
   ~ASTReader() override;
 
@@ -1425,21 +1456,23 @@ public:
 
   /// \brief Retrieve the name of the original source file name directly from
   /// the AST file, without actually loading the AST file.
-  static std::string getOriginalSourceFile(const std::string &ASTFileName,
-                                           FileManager &FileMgr,
-                                           DiagnosticsEngine &Diags);
+  static std::string
+  getOriginalSourceFile(const std::string &ASTFileName, FileManager &FileMgr,
+                        const PCHContainerReader &PCHContainerRdr,
+                        DiagnosticsEngine &Diags);
 
   /// \brief Read the control block for the named AST file.
   ///
   /// \returns true if an error occurred, false otherwise.
-  static bool readASTFileControlBlock(StringRef Filename,
-                                      FileManager &FileMgr,
-                                      ASTReaderListener &Listener);
+  static bool
+  readASTFileControlBlock(StringRef Filename, FileManager &FileMgr,
+                          const PCHContainerReader &PCHContainerRdr,
+                          ASTReaderListener &Listener);
 
   /// \brief Determine whether the given AST file is acceptable to load into a
   /// translation unit with the given language and target options.
-  static bool isAcceptableASTFile(StringRef Filename,
-                                  FileManager &FileMgr,
+  static bool isAcceptableASTFile(StringRef Filename, FileManager &FileMgr,
+                                  const PCHContainerReader &PCHContainerRdr,
                                   const LangOptions &LangOpts,
                                   const TargetOptions &TargetOpts,
                                   const PreprocessorOptions &PPOpts,
@@ -1685,7 +1718,7 @@ public:
   /// \brief Notify ASTReader that we started deserialization of
   /// a decl or type so until FinishedDeserializing is called there may be
   /// decls that are initializing. Must be paired with FinishedDeserializing.
-  void StartedDeserializing() override { ++NumCurrentElementsDeserializing; }
+  void StartedDeserializing() override;
 
   /// \brief Notify ASTReader that we finished the deserialization of
   /// a decl or type. Must be paired with StartedDeserializing.
@@ -1722,10 +1755,7 @@ public:
   /// declarations with this name are visible from translation unit scope, their
   /// declarations will be deserialized and introduced into the declaration
   /// chain of the identifier.
-  virtual IdentifierInfo *get(const char *NameStart, const char *NameEnd);
-  IdentifierInfo *get(StringRef Name) override {
-    return get(Name.begin(), Name.end());
-  }
+  IdentifierInfo *get(StringRef Name) override;
 
   /// \brief Retrieve an iterator into the set of all identifiers
   /// in all loaded AST files.
@@ -1839,6 +1869,11 @@ public:
   ///
   /// Note: overrides method in ExternalASTSource
   Module *getModule(unsigned ID) override;
+
+  /// \brief Return a descriptor for the corresponding module.
+  llvm::Optional<ASTSourceDescriptor> getSourceDescriptor(unsigned ID) override;
+  /// \brief Return a descriptor for the module.
+  ASTSourceDescriptor getSourceDescriptor(const Module &M) override;
 
   /// \brief Retrieve a selector from the given module with its local ID
   /// number.

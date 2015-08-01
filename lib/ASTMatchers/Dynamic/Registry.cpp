@@ -240,13 +240,16 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(innerType);
   REGISTER_MATCHER(integerLiteral);
   REGISTER_MATCHER(isArrow);
+  REGISTER_MATCHER(isCatchAll);
   REGISTER_MATCHER(isConst);
   REGISTER_MATCHER(isConstQualified);
   REGISTER_MATCHER(isDefinition);
   REGISTER_MATCHER(isDeleted);
+  REGISTER_MATCHER(isExceptionVariable);
   REGISTER_MATCHER(isExplicitTemplateSpecialization);
   REGISTER_MATCHER(isExpr);
   REGISTER_MATCHER(isExternC);
+  REGISTER_MATCHER(isFinal);
   REGISTER_MATCHER(isImplicit);
   REGISTER_MATCHER(isExpansionInFileMatching);
   REGISTER_MATCHER(isExpansionInMainFile);

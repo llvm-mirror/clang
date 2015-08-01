@@ -165,7 +165,8 @@ static bool isBuiltinHeader(StringRef FileName) {
 ModuleMap::HeadersMap::iterator
 ModuleMap::findKnownHeader(const FileEntry *File) {
   HeadersMap::iterator Known = Headers.find(File);
-  if (Known == Headers.end() && File->getDir() == BuiltinIncludeDir &&
+  if (HeaderInfo.getHeaderSearchOpts().ImplicitModuleMaps &&
+      Known == Headers.end() && File->getDir() == BuiltinIncludeDir &&
       isBuiltinHeader(llvm::sys::path::filename(File->getName()))) {
     HeaderInfo.loadTopLevelSystemModules();
     return Headers.find(File);
@@ -176,6 +177,9 @@ ModuleMap::findKnownHeader(const FileEntry *File) {
 ModuleMap::KnownHeader
 ModuleMap::findHeaderInUmbrellaDirs(const FileEntry *File,
                     SmallVectorImpl<const DirectoryEntry *> &IntermediateDirs) {
+  if (UmbrellaDirs.empty())
+    return KnownHeader();
+
   const DirectoryEntry *Dir = File->getDir();
   assert(Dir && "file in no directory");
 
@@ -342,6 +346,9 @@ ModuleMap::KnownHeader ModuleMap::findModuleForHeader(const FileEntry *File) {
     ModuleMap::KnownHeader Result;
     // Iterate over all modules that 'File' is part of to find the best fit.
     for (KnownHeader &H : Known->second) {
+      // Prefer a header from the current module over all others.
+      if (H.getModule()->getTopLevelModule() == CompilingModule)
+        return MakeResult(H);
       // Cannot use a module if it is unavailable.
       if (!H.getModule()->isAvailable())
         continue;
@@ -576,19 +583,28 @@ static void inferFrameworkLink(Module *Mod, const DirectoryEntry *FrameworkDir,
   }
 }
 
-Module *
-ModuleMap::inferFrameworkModule(StringRef ModuleName,
-                                const DirectoryEntry *FrameworkDir,
-                                bool IsSystem,
-                                Module *Parent) {
+Module *ModuleMap::inferFrameworkModule(const DirectoryEntry *FrameworkDir,
+                                        bool IsSystem, Module *Parent) {
   Attributes Attrs;
   Attrs.IsSystem = IsSystem;
-  return inferFrameworkModule(ModuleName, FrameworkDir, Attrs, Parent);
+  return inferFrameworkModule(FrameworkDir, Attrs, Parent);
 }
 
-Module *ModuleMap::inferFrameworkModule(StringRef ModuleName,
-                                        const DirectoryEntry *FrameworkDir,
+Module *ModuleMap::inferFrameworkModule(const DirectoryEntry *FrameworkDir,
                                         Attributes Attrs, Module *Parent) {
+  // Note: as an egregious but useful hack we use the real path here, because
+  // we might be looking at an embedded framework that symlinks out to a
+  // top-level framework, and we need to infer as if we were naming the
+  // top-level framework.
+  StringRef FrameworkDirName =
+      SourceMgr.getFileManager().getCanonicalName(FrameworkDir);
+
+  // In case this is a case-insensitive filesystem, use the canonical
+  // directory name as the ModuleName, since modules are case-sensitive.
+  // FIXME: we should be able to give a fix-it hint for the correct spelling.
+  SmallString<32> ModuleNameStorage;
+  StringRef ModuleName = sanitizeFilenameAsIdentifier(
+      llvm::sys::path::stem(FrameworkDirName), ModuleNameStorage);
 
   // Check whether we've already found this module.
   if (Module *Mod = lookupModuleQualified(ModuleName, Parent))
@@ -601,20 +617,6 @@ Module *ModuleMap::inferFrameworkModule(StringRef ModuleName,
   const FileEntry *ModuleMapFile = nullptr;
   if (!Parent) {
     // Determine whether we're allowed to infer a module map.
-
-    // Note: as an egregious but useful hack we use the real path here, because
-    // we might be looking at an embedded framework that symlinks out to a
-    // top-level framework, and we need to infer as if we were naming the
-    // top-level framework.
-    StringRef FrameworkDirName
-      = SourceMgr.getFileManager().getCanonicalName(FrameworkDir);
-
-    // In case this is a case-insensitive filesystem, make sure the canonical
-    // directory name matches ModuleName exactly. Modules are case-sensitive.
-    // FIXME: we should be able to give a fix-it hint for the correct spelling.
-    if (llvm::sys::path::stem(FrameworkDirName) != ModuleName)
-      return nullptr;
-
     bool canInfer = false;
     if (llvm::sys::path::has_parent_path(FrameworkDirName)) {
       // Figure out the parent path.
@@ -740,10 +742,7 @@ Module *ModuleMap::inferFrameworkModule(StringRef ModuleName,
         continue;
 
       // FIXME: Do we want to warn about subframeworks without umbrella headers?
-      SmallString<32> NameBuf;
-      inferFrameworkModule(sanitizeFilenameAsIdentifier(
-                               llvm::sys::path::stem(Dir->path()), NameBuf),
-                           SubframeworkDir, Attrs, Result);
+      inferFrameworkModule(SubframeworkDir, Attrs, Result);
     }
   }
 
@@ -1529,7 +1528,7 @@ void ModuleMapParser::parseModuleDecl() {
 ///     'extern' 'module' module-id string-literal
 void ModuleMapParser::parseExternModuleDecl() {
   assert(Tok.is(MMToken::ExternKeyword));
-  consumeToken(); // 'extern' keyword
+  SourceLocation ExternLoc = consumeToken(); // 'extern' keyword
 
   // Parse 'module' keyword.
   if (!Tok.is(MMToken::ModuleKeyword)) {
@@ -1568,7 +1567,7 @@ void ModuleMapParser::parseExternModuleDecl() {
         File, /*IsSystem=*/false,
         Map.HeaderInfo.getHeaderSearchOpts().ModuleMapFileHomeIsCwd
             ? Directory
-            : File->getDir());
+            : File->getDir(), ExternLoc);
 }
 
 /// \brief Parse a requires declaration.
@@ -2320,7 +2319,8 @@ bool ModuleMapParser::parseModuleMapFile() {
 }
 
 bool ModuleMap::parseModuleMapFile(const FileEntry *File, bool IsSystem,
-                                   const DirectoryEntry *Dir) {
+                                   const DirectoryEntry *Dir,
+                                   SourceLocation ExternModuleLoc) {
   llvm::DenseMap<const FileEntry *, bool>::iterator Known
     = ParsedModuleMap.find(File);
   if (Known != ParsedModuleMap.end())
@@ -2328,7 +2328,7 @@ bool ModuleMap::parseModuleMapFile(const FileEntry *File, bool IsSystem,
 
   assert(Target && "Missing target information");
   auto FileCharacter = IsSystem ? SrcMgr::C_System : SrcMgr::C_User;
-  FileID ID = SourceMgr.createFileID(File, SourceLocation(), FileCharacter);
+  FileID ID = SourceMgr.createFileID(File, ExternModuleLoc, FileCharacter);
   const llvm::MemoryBuffer *Buffer = SourceMgr.getBuffer(ID);
   if (!Buffer)
     return ParsedModuleMap[File] = true;

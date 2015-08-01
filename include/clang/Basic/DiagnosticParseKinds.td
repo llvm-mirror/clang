@@ -65,6 +65,10 @@ def ext_keyword_as_ident : ExtWarn<
   "%select{here|for the remainder of the translation unit}1">,
   InGroup<KeywordCompat>;
 
+def ext_nullability : Extension<
+  "type nullability specifier %0 is a Clang extension">,
+  InGroup<DiagGroup<"nullability-extension">>;
+
 def error_empty_enum : Error<"use of empty enum">;
 def err_invalid_sign_spec : Error<"'%0' cannot be signed or unsigned">;
 def err_invalid_short_spec : Error<"'short %0' is invalid">;
@@ -97,7 +101,7 @@ def ext_cxx11_enum_fixed_underlying_type : Extension<
   InGroup<CXX11>;
 def ext_c_enum_fixed_underlying_type : Extension<
   "enumeration types with a fixed underlying type are a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftFixedEnum>;
 def warn_cxx98_compat_enum_fixed_underlying_type : Warning<
   "enumeration types with a fixed underlying type are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
@@ -354,6 +358,10 @@ def err_invalid_pixel_decl_spec_combination : Error<
   "'%0' declaration specifier not allowed here">;
 def err_invalid_vector_bool_decl_spec : Error<
   "cannot use '%0' with '__vector bool'">;
+def err_invalid_vector_long_decl_spec : Error<
+  "cannot use 'long' with '__vector'">;
+def err_invalid_vector_float_decl_spec : Error<
+  "cannot use 'float' with '__vector'">;
 def err_invalid_vector_double_decl_spec : Error <
   "use of 'double' with '__vector' requires VSX support to be enabled "
   "(available on POWER7 or later)">;
@@ -504,7 +512,7 @@ def note_missing_end_of_definition_before : Note<
   "still within definition of %q0 here">;
 def ext_ellipsis_exception_spec : Extension<
   "exception specification of '...' is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftExceptionSpec>;
 def err_dynamic_and_noexcept_specification : Error<
   "cannot have both throw() and noexcept() clause on the same function">;
 def err_except_spec_unparsed : Error<
@@ -776,7 +784,7 @@ def err_override_control_interface : Error<
   "'%0' keyword not permitted with interface types">;
 def ext_ms_sealed_keyword : ExtWarn<
   "'sealed' keyword is a Microsoft extension">,
-  InGroup<Microsoft>;
+  InGroup<MicrosoftSealed>;
 
 def err_access_specifier_interface : Error<
   "interface types cannot specify '%select{private|protected}0' access">;
@@ -937,7 +945,7 @@ def err_pragma_comment_malformed : Error<
 def err_pragma_comment_unknown_kind : Error<"unknown kind of pragma comment">;
 // PS4 recognizes only #pragma comment(lib)
 def warn_pragma_comment_ignored : Warning<"'#pragma comment %0' ignored">,
-  InGroup<Microsoft>;
+  InGroup<IgnoredPragmas>;
 // - #pragma detect_mismatch
 def err_pragma_detect_mismatch_malformed : Error<
   "pragma detect_mismatch is malformed; it requires two comma-separated "
@@ -1007,6 +1015,18 @@ def err_module_expected_ident : Error<
   "expected a module name after module import">;
 def err_module_expected_semi : Error<
   "expected ';' after module name">;
+}
+
+let CategoryName = "Generics Issue" in {
+
+def err_objc_expected_type_parameter : Error<
+  "expected type parameter name">;
+
+def err_objc_parameterized_implementation : Error<
+  "@implementation cannot have type parameters">;
+
+def err_objc_type_args_after_protocols : Error<
+  "protocol qualifiers must precede type arguments">;
 }
 
 } // end of Parser diagnostics

@@ -172,7 +172,7 @@ public:
   virtual llvm::Constant *EmitNullMemberPointer(const MemberPointerType *MPT);
 
   /// Create a member pointer for the given method.
-  virtual llvm::Constant *EmitMemberPointer(const CXXMethodDecl *MD);
+  virtual llvm::Constant *EmitMemberFunctionPointer(const CXXMethodDecl *MD);
 
   /// Create a member pointer for the given field.
   virtual llvm::Constant *EmitMemberDataPointer(const MemberPointerType *MPT,
@@ -217,6 +217,9 @@ public:
   virtual void emitRethrow(CodeGenFunction &CGF, bool isNoReturn) = 0;
   virtual void emitThrow(CodeGenFunction &CGF, const CXXThrowExpr *E) = 0;
   virtual llvm::GlobalVariable *getThrowInfo(QualType T) { return nullptr; }
+
+  virtual bool canEmitAvailableExternallyVTable(
+      const CXXRecordDecl *RD) const = 0;
 
   virtual void emitBeginCatch(CodeGenFunction &CGF, const CXXCatchStmt *C) = 0;
 
@@ -366,7 +369,8 @@ public:
   virtual llvm::Value *getVirtualFunctionPointer(CodeGenFunction &CGF,
                                                  GlobalDecl GD,
                                                  llvm::Value *This,
-                                                 llvm::Type *Ty) = 0;
+                                                 llvm::Type *Ty,
+                                                 SourceLocation Loc) = 0;
 
   /// Emit the ABI-specific virtual destructor call.
   virtual llvm::Value *
