@@ -256,9 +256,8 @@ TEST_F(FormatTestJS, FormatsFreestandingFunctions) {
 }
 
 TEST_F(FormatTestJS, ArrayLiterals) {
-  verifyFormat(
-      "var aaaaa: List<SomeThing> =\n"
-      "    [new SomeThingAAAAAAAAAAAA(), new SomeThingBBBBBBBBB()];");
+  verifyFormat("var aaaaa: List<SomeThing> =\n"
+               "    [new SomeThingAAAAAAAAAAAA(), new SomeThingBBBBBBBBB()];");
   verifyFormat("return [\n"
                "  aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
                "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
@@ -293,6 +292,10 @@ TEST_F(FormatTestJS, FunctionLiterals) {
   verifyFormat("doFoo(function() {});");
   verifyFormat("doFoo(function() { return 1; });");
   verifyFormat("var func = function() {\n"
+               "  return 1;\n"
+               "};");
+  verifyFormat("var func =  //\n"
+               "    function() {\n"
                "  return 1;\n"
                "};");
   verifyFormat("return {\n"
@@ -576,6 +579,7 @@ TEST_F(FormatTestJS, RegexLiteralClassification) {
   verifyFormat("var x = a && /abc/.test(y);");
   verifyFormat("var x = a || /abc/.test(y);");
   verifyFormat("var x = a + /abc/.search(y);");
+  verifyFormat("/abc/.search(y);");
   verifyFormat("var regexs = {/abc/, /abc/};");
   verifyFormat("return /abc/;");
 
@@ -621,10 +625,23 @@ TEST_F(FormatTestJS, RegexLiteralSpecialCharacters) {
   verifyFormat("var regex = /\a\\//g;");
   verifyFormat("var regex = /a\\//;\n"
                "var x = 0;");
+  EXPECT_EQ("var regex = /'/g;", format("var regex = /'/g ;"));
+  EXPECT_EQ("var regex = /'/g;  //'", format("var regex = /'/g ; //'"));
   EXPECT_EQ("var regex = /\\/*/;\n"
             "var x = 0;",
             format("var regex = /\\/*/;\n"
                    "var x=0;"));
+  EXPECT_EQ("var x = /a\\//;", format("var x = /a\\//  \n;"));
+  verifyFormat("var regex = /\"/;", getGoogleJSStyleWithColumns(16));
+  verifyFormat("var regex =\n"
+               "    /\"/;",
+               getGoogleJSStyleWithColumns(15));
+  verifyFormat("var regex =  //\n"
+               "    /a/;");
+  verifyFormat("var regexs = [\n"
+               "  /d/,   //\n"
+               "  /aa/,  //\n"
+               "];");
 }
 
 TEST_F(FormatTestJS, RegexLiteralModifiers) {
@@ -670,6 +687,10 @@ TEST_F(FormatTestJS, ClassDeclarations) {
   verifyFormat("class C {\n  static x(): string { return 'asd'; }\n}");
   verifyFormat("class C extends P implements I {}");
   verifyFormat("class C extends p.P implements i.I {}");
+  verifyFormat("class Test {\n"
+               "  aaaaaaaaaaaaaaaa(aaaaaaaaaaaaaaa: aaaaaaaaaaaaaaaaaaaa):\n"
+               "      aaaaaaaaaaaaaaaaaaaaaa {}\n"
+               "}");
 
   // ':' is not a type declaration here.
   verifyFormat("class X {\n"
@@ -686,6 +707,26 @@ TEST_F(FormatTestJS, InterfaceDeclarations) {
                "  x: string;\n"
                "}\n"
                "var y;");
+  // Ensure that state is reset after parsing the interface.
+  verifyFormat("interface a {}\n"
+               "export function b() {}\n"
+               "var x;");
+}
+
+TEST_F(FormatTestJS, EnumDeclarations) {
+  verifyFormat("enum Foo {\n"
+               "  A = 1,\n"
+               "  B\n"
+               "}");
+  verifyFormat("export /* somecomment*/ enum Foo {\n"
+               "  A = 1,\n"
+               "  B\n"
+               "}");
+  verifyFormat("enum Foo {\n"
+               "  A = 1,  // comment\n"
+               "  B\n"
+               "}\n"
+               "var x = 1;");
 }
 
 TEST_F(FormatTestJS, MetadataAnnotations) {
@@ -770,15 +811,11 @@ TEST_F(FormatTestJS, TemplateStrings) {
                    "     ${  name    }\n"
                    "  !`;"));
 
-  // FIXME: +1 / -1 offsets are to work around clang-format miscalculating
-  // widths for unknown tokens that are not whitespace (e.g. '`'). Remove when
-  // the code is corrected.
-
   verifyFormat("var x =\n"
                "    `hello ${world}` >= some();",
                getGoogleJSStyleWithColumns(34)); // Barely doesn't fit.
   verifyFormat("var x = `hello ${world}` >= some();",
-               getGoogleJSStyleWithColumns(35 + 1)); // Barely fits.
+               getGoogleJSStyleWithColumns(35)); // Barely fits.
   EXPECT_EQ("var x = `hello\n"
             "  ${world}` >=\n"
             "        some();",
@@ -793,10 +830,14 @@ TEST_F(FormatTestJS, TemplateStrings) {
                    "  ${world}` >= some();",
                    getGoogleJSStyleWithColumns(22))); // Barely fits.
 
-  verifyFormat("var x =\n    `h`;", getGoogleJSStyleWithColumns(13 - 1));
+  verifyFormat("var x =\n"
+               "    `h`;",
+               getGoogleJSStyleWithColumns(11));
   EXPECT_EQ(
       "var x =\n    `multi\n  line`;",
-      format("var x = `multi\n  line`;", getGoogleJSStyleWithColumns(14 - 1)));
+      format("var x = `multi\n  line`;", getGoogleJSStyleWithColumns(13)));
+  verifyFormat("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
+               "    `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`);");
 
   // Make sure template strings get a proper ColumnWidth assigned, even if they
   // are first token in line.
@@ -840,9 +881,7 @@ TEST_F(FormatTestJS, TemplateStrings) {
                    "var y;"));
 }
 
-TEST_F(FormatTestJS, CastSyntax) {
-  verifyFormat("var x = <type>foo;");
-}
+TEST_F(FormatTestJS, CastSyntax) { verifyFormat("var x = <type>foo;"); }
 
 TEST_F(FormatTestJS, TypeArguments) {
   verifyFormat("class X<Y> {}");
@@ -852,6 +891,11 @@ TEST_F(FormatTestJS, TypeArguments) {
   verifyFormat("class C extends D<E> implements F<G>, H<I> {}");
   verifyFormat("function f(a: List<any> = null) {}");
   verifyFormat("function f(): List<any> {}");
+  verifyFormat("function aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa():\n"
+               "    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb {}");
+  verifyFormat("function aaaaaaaaaa(aaaaaaaaaaaaaaaa: aaaaaaaaaaaaaaaaaa,\n"
+               "                    aaaaaaaaaaaaaaaa: aaaaaaaaaaaaaaaaaa):\n"
+               "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa {}");
 }
 
 TEST_F(FormatTestJS, OptionalTypes) {

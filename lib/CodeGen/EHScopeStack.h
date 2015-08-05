@@ -96,6 +96,9 @@ enum CleanupKind : unsigned {
 /// and catch blocks.
 class EHScopeStack {
 public:
+  /* Should switch to alignof(uint64_t) instead of 8, when EHCleanupScope can */
+  enum { ScopeStackAlignment = 8 };
+
   /// A saved depth on the scope stack.  This is necessary because
   /// pushing scopes onto the stack invalidates iterators.
   class stable_iterator {
@@ -248,6 +251,7 @@ private:
   SmallVector<BranchFixup, 8> BranchFixups;
 
   char *allocate(size_t Size);
+  void deallocate(size_t Size);
 
   void *pushCleanup(CleanupKind K, size_t DataSize);
 
@@ -259,6 +263,8 @@ public:
 
   /// Push a lazily-created cleanup on the stack.
   template <class T, class... As> void pushCleanup(CleanupKind Kind, As... A) {
+    static_assert(llvm::AlignOf<T>::Alignment <= ScopeStackAlignment,
+                  "Cleanup's alignment is too large.");
     void *Buffer = pushCleanup(Kind, sizeof(T));
     Cleanup *Obj = new (Buffer) T(A...);
     (void) Obj;
@@ -267,6 +273,8 @@ public:
   /// Push a lazily-created cleanup on the stack. Tuple version.
   template <class T, class... As>
   void pushCleanupTuple(CleanupKind Kind, std::tuple<As...> A) {
+    static_assert(llvm::AlignOf<T>::Alignment <= ScopeStackAlignment,
+                  "Cleanup's alignment is too large.");
     void *Buffer = pushCleanup(Kind, sizeof(T));
     Cleanup *Obj = new (Buffer) T(std::move(A));
     (void) Obj;
@@ -287,6 +295,8 @@ public:
   /// stack is modified.
   template <class T, class... As>
   T *pushCleanupWithExtra(CleanupKind Kind, size_t N, As... A) {
+    static_assert(llvm::AlignOf<T>::Alignment <= ScopeStackAlignment,
+                  "Cleanup's alignment is too large.");
     void *Buffer = pushCleanup(Kind, sizeof(T) + T::getExtraSize(N));
     return new (Buffer) T(N, A...);
   }
@@ -318,6 +328,10 @@ public:
 
   /// Pops a terminate handler off the stack.
   void popTerminate();
+
+  void pushCatchEnd(llvm::BasicBlock *CatchEndBlockBB);
+
+  void popCatchEnd();
 
   // Returns true iff the current scope is either empty or contains only
   // lifetime markers, i.e. no real cleanup code

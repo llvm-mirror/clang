@@ -2,7 +2,7 @@
 // RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -fexceptions -fcxx-exceptions -triple x86_64-unknown-unknown -emit-pch -o %t %s
 // RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -include-pch %t -fsyntax-only -verify %s -triple x86_64-unknown-unknown -fexceptions -fcxx-exceptions -emit-llvm -o - | FileCheck %s
 // expected-no-diagnostics
-
+// REQUIRES: x86-registered-target
 #ifndef HEADER
 #define HEADER
 // CHECK: [[IMPLICIT_BARRIER_LOC:@.+]] = private unnamed_addr constant %{{.+}} { i32 0, i32 66, i32 0, i32 0, i8*
@@ -73,7 +73,7 @@ int main() {
 // CHECK:      [[INNER_LOOP_END]]
   }
 // CHECK:      call void @__kmpc_for_static_fini(%{{.+}}* @{{.+}}, i32 [[GTID]])
-// CHECK:      call i32 @__kmpc_cancel_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]],
+// CHECK:      call void @__kmpc_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]],
   return tmain<int>();
 }
 
@@ -89,7 +89,7 @@ int main() {
 // CHECK:       call void @__kmpc_end_single(
 // CHECK-NEXT:  br label %[[END]]
 // CHECK:       [[END]]
-// CHECK-NEXT:  call i32 @__kmpc_cancel_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]],
+// CHECK-NEXT:  call void @__kmpc_barrier(%{{.+}}* [[IMPLICIT_BARRIER_LOC]],
 // CHECK-NEXT:  ret
 // CHECK:       [[TERM_LPAD]]
 // CHECK:       call void @__clang_call_terminate(i8*

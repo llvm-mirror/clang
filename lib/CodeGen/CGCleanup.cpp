@@ -96,6 +96,7 @@ RValue DominatingValue<RValue>::saved_type::restore(CodeGenFunction &CGF) {
 
 /// Push an entry of the given size onto this protected-scope stack.
 char *EHScopeStack::allocate(size_t Size) {
+  Size = llvm::RoundUpToAlignment(Size, ScopeStackAlignment);
   if (!StartOfBuffer) {
     unsigned Capacity = 1024;
     while (Capacity < Size) Capacity *= 2;
@@ -123,6 +124,10 @@ char *EHScopeStack::allocate(size_t Size) {
   assert(StartOfBuffer + Size <= StartOfData);
   StartOfData -= Size;
   return StartOfData;
+}
+
+void EHScopeStack::deallocate(size_t Size) {
+  StartOfData += llvm::RoundUpToAlignment(Size, ScopeStackAlignment);
 }
 
 bool EHScopeStack::containsOnlyLifetimeMarkers(
@@ -166,7 +171,6 @@ EHScopeStack::stable_iterator EHScopeStack::getInnermostActiveEHScope() const {
 
 
 void *EHScopeStack::pushCleanup(CleanupKind Kind, size_t Size) {
-  assert(((Size % sizeof(void*)) == 0) && "cleanup type is misaligned");
   char *Buffer = allocate(EHCleanupScope::getSizeForCleanupSize(Size));
   bool IsNormalCleanup = Kind & NormalCleanup;
   bool IsEHCleanup = Kind & EHCleanup;
@@ -194,7 +198,7 @@ void EHScopeStack::popCleanup() {
   EHCleanupScope &Cleanup = cast<EHCleanupScope>(*begin());
   InnermostNormalCleanup = Cleanup.getEnclosingNormalCleanup();
   InnermostEHScope = Cleanup.getEnclosingEHScope();
-  StartOfData += Cleanup.getAllocatedSize();
+  deallocate(Cleanup.getAllocatedSize());
 
   // Destroy the cleanup.
   Cleanup.Destroy();
@@ -224,7 +228,7 @@ void EHScopeStack::popFilter() {
   assert(!empty() && "popping exception stack when not empty");
 
   EHFilterScope &filter = cast<EHFilterScope>(*begin());
-  StartOfData += EHFilterScope::getSizeForNumFilters(filter.getNumFilters());
+  deallocate(EHFilterScope::getSizeForNumFilters(filter.getNumFilters()));
 
   InnermostEHScope = filter.getEnclosingEHScope();
 }
@@ -240,6 +244,13 @@ EHCatchScope *EHScopeStack::pushCatch(unsigned numHandlers) {
 void EHScopeStack::pushTerminate() {
   char *Buffer = allocate(EHTerminateScope::getSize());
   new (Buffer) EHTerminateScope(InnermostEHScope);
+  InnermostEHScope = stable_begin();
+}
+
+void EHScopeStack::pushCatchEnd(llvm::BasicBlock *CatchEndBlockBB) {
+  char *Buffer = allocate(EHCatchEndScope::getSize());
+  auto *CES = new (Buffer) EHCatchEndScope(InnermostEHScope);
+  CES->setCachedEHDispatchBlock(CatchEndBlockBB);
   InnermostEHScope = stable_begin();
 }
 
@@ -892,6 +903,14 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
     CGBuilderTy::InsertPoint SavedIP = Builder.saveAndClearIP();
 
     EmitBlock(EHEntry);
+    llvm::BasicBlock *NextAction = getEHDispatchBlock(EHParent);
+    if (CGM.getCodeGenOpts().NewMSEH &&
+        EHPersonality::get(*this).isMSVCPersonality()) {
+      if (NextAction)
+        Builder.CreateCleanupPad(VoidTy, NextAction);
+      else
+        Builder.CreateCleanupPad(VoidTy, {});
+    }
 
     // We only actually emit the cleanup code if the cleanup is either
     // active or was used before it was deactivated.
@@ -901,7 +920,10 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough) {
       EmitCleanup(*this, Fn, cleanupFlags, EHActiveFlag);
     }
 
-    Builder.CreateBr(getEHDispatchBlock(EHParent));
+    if (CGM.getCodeGenOpts().NewMSEH && EHPersonality::get(*this).isMSVCPersonality())
+      Builder.CreateCleanupRet(NextAction);
+    else
+      Builder.CreateBr(NextAction);
 
     Builder.restoreIP(SavedIP);
 

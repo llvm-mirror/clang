@@ -5,6 +5,11 @@ void f0(void *a, void *b) {
 // CHECK: call {{.*}} @__clear_cache
 }
 
+void *tp (void) {
+  return __builtin_thread_pointer ();
+// CHECK: call {{.*}} @llvm.aarch64.thread.pointer()
+}
+
 // CHECK: call {{.*}} @llvm.aarch64.rbit.i32(i32 %a)
 unsigned rbit(unsigned a) {
   return __builtin_arm_rbit(a);
@@ -45,37 +50,37 @@ void prefetch() {
 }
 
 unsigned rsr() {
-  // CHECK: [[V0:[%A-Za-z0-9.]+]] = {{.*}} call i64 @llvm.read_register.i64(metadata !1)
+  // CHECK: [[V0:[%A-Za-z0-9.]+]] = {{.*}} call i64 @llvm.read_register.i64(metadata ![[M0:[0-9]]])
   // CHECK-NEXT: trunc i64 [[V0]] to i32
   return __builtin_arm_rsr("1:2:3:4:5");
 }
 
 unsigned long rsr64() {
-  // CHECK: call i64 @llvm.read_register.i64(metadata !1)
+  // CHECK: call i64 @llvm.read_register.i64(metadata ![[M0:[0-9]]])
   return __builtin_arm_rsr64("1:2:3:4:5");
 }
 
 void *rsrp() {
-  // CHECK: [[V0:[%A-Za-z0-9.]+]] = {{.*}} call i64 @llvm.read_register.i64(metadata !1)
+  // CHECK: [[V0:[%A-Za-z0-9.]+]] = {{.*}} call i64 @llvm.read_register.i64(metadata ![[M0:[0-9]]])
   // CHECK-NEXT: inttoptr i64 [[V0]] to i8*
   return __builtin_arm_rsrp("1:2:3:4:5");
 }
 
 void wsr(unsigned v) {
   // CHECK: [[V0:[%A-Za-z0-9.]+]] = zext i32 %v to i64
-  // CHECK-NEXT: call void @llvm.write_register.i64(metadata !1, i64 [[V0]])
+  // CHECK-NEXT: call void @llvm.write_register.i64(metadata ![[M0:[0-9]]], i64 [[V0]])
   __builtin_arm_wsr("1:2:3:4:5", v);
 }
 
 void wsr64(unsigned long v) {
-  // CHECK: call void @llvm.write_register.i64(metadata !1, i64 %v)
+  // CHECK: call void @llvm.write_register.i64(metadata ![[M0:[0-9]]], i64 %v)
   __builtin_arm_wsr64("1:2:3:4:5", v);
 }
 
 void wsrp(void *v) {
   // CHECK: [[V0:[%A-Za-z0-9.]+]] = ptrtoint i8* %v to i64
-  // CHECK-NEXT: call void @llvm.write_register.i64(metadata !1, i64 [[V0]])
+  // CHECK-NEXT: call void @llvm.write_register.i64(metadata ![[M0:[0-9]]], i64 [[V0]])
   __builtin_arm_wsrp("1:2:3:4:5", v);
 }
 
-// CHECK: !1 = !{!"1:2:3:4:5"}
+// CHECK: ![[M0]] = !{!"1:2:3:4:5"}

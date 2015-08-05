@@ -2466,8 +2466,8 @@ Sema::LookupInObjCMethod(LookupResult &Lookup, Scope *S,
         Diag(Loc, diag::warn_direct_ivar_access) << IV->getDeclName();
 
       ObjCIvarRefExpr *Result = new (Context)
-          ObjCIvarRefExpr(IV, IV->getType(), Loc, IV->getLocation(),
-                          SelfExpr.get(), true, true);
+          ObjCIvarRefExpr(IV, IV->getUsageType(SelfExpr.get()->getType()), Loc,
+                          IV->getLocation(), SelfExpr.get(), true, true);
 
       if (getLangOpts().ObjCAutoRefCount) {
         if (IV->getType().getObjCLifetime() == Qualifiers::OCL_Weak) {
@@ -3355,13 +3355,6 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
 
     // Get the value in the widest-possible width.
     unsigned MaxWidth = Context.getTargetInfo().getIntMaxTWidth();
-    // The microsoft literal suffix extensions support 128-bit literals, which
-    // may be wider than [u]intmax_t.
-    // FIXME: Actually, they don't. We seem to have accidentally invented the
-    //        i128 suffix.
-    if (Literal.MicrosoftInteger == 128 && MaxWidth < 128 &&
-        Context.getTargetInfo().hasInt128Type())
-      MaxWidth = 128;
     llvm::APInt ResultVal(MaxWidth, 0);
 
     if (Literal.GetIntegerValue(ResultVal)) {
@@ -3384,12 +3377,7 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
 
       // Microsoft specific integer suffixes are explicitly sized.
       if (Literal.MicrosoftInteger) {
-        if (Literal.MicrosoftInteger > MaxWidth) {
-          // If this target doesn't support __int128, error and force to ull.
-          Diag(Tok.getLocation(), diag::err_int128_unsupported);
-          Width = MaxWidth;
-          Ty = Context.getIntMaxType();
-        } else if (Literal.MicrosoftInteger == 8 && !Literal.isUnsigned) {
+        if (Literal.MicrosoftInteger == 8 && !Literal.isUnsigned) {
           Width = 8;
           Ty = Context.CharTy;
         } else {
@@ -3689,7 +3677,7 @@ bool Sema::CheckUnaryExprOrTypeTraitOperand(QualType ExprType,
   // C11 6.5.3.4/3, C++11 [expr.alignof]p3:
   //   When alignof or _Alignof is applied to an array type, the result
   //   is the alignment of the element type.
-  if (ExprKind == UETT_AlignOf)
+  if (ExprKind == UETT_AlignOf || ExprKind == UETT_OpenMPRequiredSimdAlign)
     ExprType = Context.getBaseElementType(ExprType);
 
   if (ExprKind == UETT_VecStep)
@@ -3824,6 +3812,9 @@ Sema::CreateUnaryExprOrTypeTraitExpr(Expr *E, SourceLocation OpLoc,
     isInvalid = CheckAlignOfExpr(*this, E);
   } else if (ExprKind == UETT_VecStep) {
     isInvalid = CheckVecStepExpr(E);
+  } else if (ExprKind == UETT_OpenMPRequiredSimdAlign) {
+      Diag(E->getExprLoc(), diag::err_openmp_default_simd_align_expr);
+      isInvalid = true;
   } else if (E->refersToBitField()) {  // C99 6.5.3.4p1.
     Diag(E->getExprLoc(), diag::err_sizeof_alignof_bitfield) << 0;
     isInvalid = true;
@@ -4314,7 +4305,6 @@ Sema::ConvertArgumentsForCall(CallExpr *Call, Expr *Fn,
                               SourceLocation RParenLoc,
                               bool IsExecConfig) {
   // Bail out early if calling a builtin with custom typechecking.
-  // We don't need to do this in the 
   if (FDecl)
     if (unsigned ID = FDecl->getBuiltinID())
       if (Context.BuiltinInfo.hasCustomTypechecking(ID))
@@ -4938,6 +4928,17 @@ Sema::BuildResolvedCallExpr(Expr *Fn, NamedDecl *NDecl,
     TheCall = new (Context) CallExpr(Context, Fn, Args, Context.BoolTy,
                                      VK_RValue, RParenLoc);
 
+  if (!getLangOpts().CPlusPlus) {
+    // C cannot always handle TypoExpr nodes in builtin calls and direct
+    // function calls as their argument checking don't necessarily handle
+    // dependent types properly, so make sure any TypoExprs have been
+    // dealt with.
+    ExprResult Result = CorrectDelayedTyposInExpr(TheCall);
+    if (!Result.isUsable()) return ExprError();
+    TheCall = dyn_cast<CallExpr>(Result.get());
+    if (!TheCall) return Result;
+  }
+
   // Bail out early if calling a builtin with custom typechecking.
   if (BuiltinID && Context.BuiltinInfo.hasCustomTypechecking(BuiltinID))
     return CheckBuiltinFunctionCall(FDecl, BuiltinID, TheCall);
@@ -5172,17 +5173,17 @@ Sema::ActOnInitList(SourceLocation LBraceLoc, MultiExprArg InitArgList,
 }
 
 /// Do an explicit extend of the given block pointer if we're in ARC.
-static void maybeExtendBlockObject(Sema &S, ExprResult &E) {
+void Sema::maybeExtendBlockObject(ExprResult &E) {
   assert(E.get()->getType()->isBlockPointerType());
   assert(E.get()->isRValue());
 
   // Only do this in an r-value context.
-  if (!S.getLangOpts().ObjCAutoRefCount) return;
+  if (!getLangOpts().ObjCAutoRefCount) return;
 
-  E = ImplicitCastExpr::Create(S.Context, E.get()->getType(),
+  E = ImplicitCastExpr::Create(Context, E.get()->getType(),
                                CK_ARCExtendBlockObject, E.get(),
                                /*base path*/ nullptr, VK_RValue);
-  S.ExprNeedsCleanups = true;
+  ExprNeedsCleanups = true;
 }
 
 /// Prepare a conversion of the given expression to an ObjC object
@@ -5192,7 +5193,7 @@ CastKind Sema::PrepareCastToObjCObjectPointer(ExprResult &E) {
   if (type->isObjCObjectPointerType()) {
     return CK_BitCast;
   } else if (type->isBlockPointerType()) {
-    maybeExtendBlockObject(*this, E);
+    maybeExtendBlockObject(E);
     return CK_BlockPointerToObjCPointerCast;
   } else {
     assert(type->isPointerType());
@@ -5234,7 +5235,7 @@ CastKind Sema::PrepareScalarCast(ExprResult &Src, QualType DestTy) {
         return CK_BitCast;
       if (SrcKind == Type::STK_CPointer)
         return CK_CPointerToObjCPointerCast;
-      maybeExtendBlockObject(*this, Src);
+      maybeExtendBlockObject(Src);
       return CK_BlockPointerToObjCPointerCast;
     case Type::STK_Bool:
       return CK_PointerToBoolean;
@@ -5387,7 +5388,16 @@ static bool breakDownVectorType(QualType type, uint64_t &len,
   return true;
 }
 
-static bool VectorTypesMatch(Sema &S, QualType srcTy, QualType destTy) {
+/// Are the two types lax-compatible vector types?  That is, given
+/// that one of them is a vector, do they have equal storage sizes,
+/// where the storage size is the number of elements times the element
+/// size?
+///
+/// This will also return false if either of the types is neither a
+/// vector nor a real type.
+bool Sema::areLaxCompatibleVectorTypes(QualType srcTy, QualType destTy) {
+  assert(destTy->isVectorType() || srcTy->isVectorType());
+
   uint64_t srcLen, destLen;
   QualType srcElt, destElt;
   if (!breakDownVectorType(srcTy, srcLen, srcElt)) return false;
@@ -5396,27 +5406,28 @@ static bool VectorTypesMatch(Sema &S, QualType srcTy, QualType destTy) {
   // ASTContext::getTypeSize will return the size rounded up to a
   // power of 2, so instead of using that, we need to use the raw
   // element size multiplied by the element count.
-  uint64_t srcEltSize = S.Context.getTypeSize(srcElt);
-  uint64_t destEltSize = S.Context.getTypeSize(destElt);
+  uint64_t srcEltSize = Context.getTypeSize(srcElt);
+  uint64_t destEltSize = Context.getTypeSize(destElt);
   
   return (srcLen * srcEltSize == destLen * destEltSize);
 }
 
-/// Is this a legal conversion between two known vector types?
+/// Is this a legal conversion between two types, one of which is
+/// known to be a vector type?
 bool Sema::isLaxVectorConversion(QualType srcTy, QualType destTy) {
   assert(destTy->isVectorType() || srcTy->isVectorType());
   
   if (!Context.getLangOpts().LaxVectorConversions)
     return false;
-  return VectorTypesMatch(*this, srcTy, destTy);
+  return areLaxCompatibleVectorTypes(srcTy, destTy);
 }
 
 bool Sema::CheckVectorCast(SourceRange R, QualType VectorTy, QualType Ty,
                            CastKind &Kind) {
   assert(VectorTy->isVectorType() && "Not a vector type!");
 
-  if (Ty->isVectorType() || Ty->isIntegerType()) {
-    if (!VectorTypesMatch(*this, Ty, VectorTy))
+  if (Ty->isVectorType() || Ty->isIntegralType(Context)) {
+    if (!areLaxCompatibleVectorTypes(Ty, VectorTy))
       return Diag(R.getBegin(),
                   Ty->isVectorType() ?
                   diag::err_invalid_conversion_between_vectors :
@@ -5442,7 +5453,7 @@ ExprResult Sema::CheckExtVectorCast(SourceRange R, QualType DestTy,
   // In OpenCL, casts between vectors of different types are not allowed.
   // (See OpenCL 6.2).
   if (SrcTy->isVectorType()) {
-    if (!VectorTypesMatch(*this, SrcTy, DestTy)
+    if (!areLaxCompatibleVectorTypes(SrcTy, DestTy)
         || (getLangOpts().OpenCL &&
             (DestTy.getCanonicalType() != SrcTy.getCanonicalType()))) {
       Diag(R.getBegin(),diag::err_invalid_conversion_between_ext_vectors)
@@ -5505,7 +5516,7 @@ Sema::ActOnCastExpr(Scope *S, SourceLocation LParenLoc,
   // i.e. all the elements are integer constants.
   ParenExpr *PE = dyn_cast<ParenExpr>(CastExpr);
   ParenListExpr *PLE = dyn_cast<ParenListExpr>(CastExpr);
-  if ((getLangOpts().AltiVec || getLangOpts().OpenCL)
+  if ((getLangOpts().AltiVec || getLangOpts().ZVector || getLangOpts().OpenCL)
        && castType->isVectorType() && (PE || PLE)) {
     if (PLE && PLE->getNumExprs() == 0) {
       Diag(PLE->getExprLoc(), diag::err_altivec_empty_initializer);
@@ -5813,36 +5824,6 @@ static QualType checkConditionalPointerCompatibility(Sema &S, ExprResult &LHS,
   return ResultTy;
 }
 
-/// \brief Returns true if QT is quelified-id and implements 'NSObject' and/or
-/// 'NSCopying' protocols (and nothing else); or QT is an NSObject and optionally
-/// implements 'NSObject' and/or NSCopying' protocols (and nothing else).
-static bool isObjCPtrBlockCompatible(Sema &S, ASTContext &C, QualType QT) {
-  if (QT->isObjCIdType())
-    return true;
-  
-  const ObjCObjectPointerType *OPT = QT->getAs<ObjCObjectPointerType>();
-  if (!OPT)
-    return false;
-
-  if (ObjCInterfaceDecl *ID = OPT->getInterfaceDecl())
-    if (ID->getIdentifier() != &C.Idents.get("NSObject"))
-      return false;
-  
-  ObjCProtocolDecl* PNSCopying =
-    S.LookupProtocol(&C.Idents.get("NSCopying"), SourceLocation());
-  ObjCProtocolDecl* PNSObject =
-    S.LookupProtocol(&C.Idents.get("NSObject"), SourceLocation());
-
-  for (auto *Proto : OPT->quals()) {
-    if ((PNSCopying && declaresSameEntity(Proto, PNSCopying)) ||
-        (PNSObject && declaresSameEntity(Proto, PNSObject)))
-      ;
-    else
-      return false;
-  }
-  return true;
-}
-
 /// \brief Return the resulting type when the operands are both block pointers.
 static QualType checkConditionalBlockPointerCompatibility(Sema &S,
                                                           ExprResult &LHS,
@@ -6092,7 +6073,9 @@ OpenCLCheckVectorConditional(Sema &S, ExprResult &Cond,
   if (LHS.get()->getType()->isVectorType() ||
       RHS.get()->getType()->isVectorType()) {
     QualType VecResTy = S.CheckVectorOperands(LHS, RHS, QuestionLoc,
-                                              /*isCompAssign*/false);
+                                              /*isCompAssign*/false,
+                                              /*AllowBothBool*/true,
+                                              /*AllowBoolConversions*/false);
     if (VecResTy.isNull()) return QualType();
     // The result type must match the condition type as specified in
     // OpenCL v1.1 s6.11.6.
@@ -6143,7 +6126,9 @@ QualType Sema::CheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
   // Now check the two expressions.
   if (LHS.get()->getType()->isVectorType() ||
       RHS.get()->getType()->isVectorType())
-    return CheckVectorOperands(LHS, RHS, QuestionLoc, /*isCompAssign*/false);
+    return CheckVectorOperands(LHS, RHS, QuestionLoc, /*isCompAssign*/false,
+                               /*AllowBothBool*/true,
+                               /*AllowBoolConversions*/false);
 
   QualType ResTy = UsualArithmeticConversions(LHS, RHS);
   if (LHS.isInvalid() || RHS.isInvalid())
@@ -6290,7 +6275,10 @@ QualType Sema::FindCompositeObjCPointerType(ExprResult &LHS, ExprResult &RHS,
 
     // FIXME: Consider unifying with 'areComparableObjCPointerTypes'.
     // It could return the composite type.
-    if (Context.canAssignObjCInterfaces(LHSOPT, RHSOPT)) {
+    if (!(compositeType =
+          Context.areCommonBaseCompatible(LHSOPT, RHSOPT)).isNull()) {
+      // Nothing more to do.
+    } else if (Context.canAssignObjCInterfaces(LHSOPT, RHSOPT)) {
       compositeType = RHSOPT->isObjCBuiltinType() ? RHSTy : LHSTy;
     } else if (Context.canAssignObjCInterfaces(RHSOPT, LHSOPT)) {
       compositeType = LHSOPT->isObjCBuiltinType() ? LHSTy : RHSTy;
@@ -6304,10 +6292,7 @@ QualType Sema::FindCompositeObjCPointerType(ExprResult &LHS, ExprResult &RHS,
       compositeType = Context.getObjCIdType();
     } else if (LHSTy->isObjCIdType() || RHSTy->isObjCIdType()) {
       compositeType = Context.getObjCIdType();
-    } else if (!(compositeType =
-                 Context.areCommonBaseCompatible(LHSOPT, RHSOPT)).isNull())
-      ;
-    else {
+    } else {
       Diag(QuestionLoc, diag::ext_typecheck_cond_incompatible_operands)
       << LHSTy << RHSTy
       << LHS.get()->getSourceRange() << RHS.get()->getSourceRange();
@@ -6995,9 +6980,9 @@ Sema::CheckAssignmentConstraints(QualType LHSType, ExprResult &RHS,
     }
 
     // Only under strict condition T^ is compatible with an Objective-C pointer.
-    if (RHSType->isBlockPointerType() &&
-        isObjCPtrBlockCompatible(*this, Context, LHSType)) {
-      maybeExtendBlockObject(*this, RHS);
+    if (RHSType->isBlockPointerType() && 
+        LHSType->isBlockCompatibleObjCPointerType(Context)) {
+      maybeExtendBlockObject(RHS);
       Kind = CK_BlockPointerToObjCPointerCast;
       return Compatible;
     }
@@ -7284,7 +7269,9 @@ static bool tryVectorConvertAndSplat(Sema &S, ExprResult *scalar,
 }
 
 QualType Sema::CheckVectorOperands(ExprResult &LHS, ExprResult &RHS,
-                                   SourceLocation Loc, bool IsCompAssign) {
+                                   SourceLocation Loc, bool IsCompAssign,
+                                   bool AllowBothBool,
+                                   bool AllowBoolConversions) {
   if (!IsCompAssign) {
     LHS = DefaultFunctionArrayLvalueConversion(LHS.get());
     if (LHS.isInvalid())
@@ -7299,13 +7286,20 @@ QualType Sema::CheckVectorOperands(ExprResult &LHS, ExprResult &RHS,
   QualType LHSType = LHS.get()->getType().getUnqualifiedType();
   QualType RHSType = RHS.get()->getType().getUnqualifiedType();
 
-  // If the vector types are identical, return.
-  if (Context.hasSameType(LHSType, RHSType))
-    return LHSType;
-
   const VectorType *LHSVecType = LHSType->getAs<VectorType>();
   const VectorType *RHSVecType = RHSType->getAs<VectorType>();
   assert(LHSVecType || RHSVecType);
+
+  // AltiVec-style "vector bool op vector bool" combinations are allowed
+  // for some operators but not others.
+  if (!AllowBothBool &&
+      LHSVecType && LHSVecType->getVectorKind() == VectorType::AltiVecBool &&
+      RHSVecType && RHSVecType->getVectorKind() == VectorType::AltiVecBool)
+    return InvalidOperands(Loc, LHS, RHS);
+
+  // If the vector types are identical, return.
+  if (Context.hasSameType(LHSType, RHSType))
+    return LHSType;
 
   // If we have compatible AltiVec and GCC vector types, use the AltiVec type.
   if (LHSVecType && RHSVecType &&
@@ -7318,6 +7312,28 @@ QualType Sema::CheckVectorOperands(ExprResult &LHS, ExprResult &RHS,
     if (!IsCompAssign)
       LHS = ImpCastExprToType(LHS.get(), RHSType, CK_BitCast);
     return RHSType;
+  }
+
+  // AllowBoolConversions says that bool and non-bool AltiVec vectors
+  // can be mixed, with the result being the non-bool type.  The non-bool
+  // operand must have integer element type.
+  if (AllowBoolConversions && LHSVecType && RHSVecType &&
+      LHSVecType->getNumElements() == RHSVecType->getNumElements() &&
+      (Context.getTypeSize(LHSVecType->getElementType()) ==
+       Context.getTypeSize(RHSVecType->getElementType()))) {
+    if (LHSVecType->getVectorKind() == VectorType::AltiVecVector &&
+        LHSVecType->getElementType()->isIntegerType() &&
+        RHSVecType->getVectorKind() == VectorType::AltiVecBool) {
+      RHS = ImpCastExprToType(RHS.get(), LHSType, CK_BitCast);
+      return LHSType;
+    }
+    if (!IsCompAssign &&
+        LHSVecType->getVectorKind() == VectorType::AltiVecBool &&
+        RHSVecType->getVectorKind() == VectorType::AltiVecVector &&
+        RHSVecType->getElementType()->isIntegerType()) {
+      LHS = ImpCastExprToType(LHS.get(), RHSType, CK_BitCast);
+      return RHSType;
+    }
   }
 
   // If there's an ext-vector type and a scalar, try to convert the scalar to
@@ -7408,7 +7424,9 @@ QualType Sema::CheckMultiplyDivideOperands(ExprResult &LHS, ExprResult &RHS,
 
   if (LHS.get()->getType()->isVectorType() ||
       RHS.get()->getType()->isVectorType())
-    return CheckVectorOperands(LHS, RHS, Loc, IsCompAssign);
+    return CheckVectorOperands(LHS, RHS, Loc, IsCompAssign,
+                               /*AllowBothBool*/getLangOpts().AltiVec,
+                               /*AllowBoolConversions*/false);
 
   QualType compType = UsualArithmeticConversions(LHS, RHS, IsCompAssign);
   if (LHS.isInvalid() || RHS.isInvalid())
@@ -7437,7 +7455,9 @@ QualType Sema::CheckRemainderOperands(
       RHS.get()->getType()->isVectorType()) {
     if (LHS.get()->getType()->hasIntegerRepresentation() && 
         RHS.get()->getType()->hasIntegerRepresentation())
-      return CheckVectorOperands(LHS, RHS, Loc, IsCompAssign);
+      return CheckVectorOperands(LHS, RHS, Loc, IsCompAssign,
+                                 /*AllowBothBool*/getLangOpts().AltiVec,
+                                 /*AllowBoolConversions*/false);
     return InvalidOperands(Loc, LHS, RHS);
   }
 
@@ -7723,7 +7743,10 @@ QualType Sema::CheckAdditionOperands( // C99 6.5.6
 
   if (LHS.get()->getType()->isVectorType() ||
       RHS.get()->getType()->isVectorType()) {
-    QualType compType = CheckVectorOperands(LHS, RHS, Loc, CompLHSTy);
+    QualType compType = CheckVectorOperands(
+        LHS, RHS, Loc, CompLHSTy,
+        /*AllowBothBool*/getLangOpts().AltiVec,
+        /*AllowBoolConversions*/getLangOpts().ZVector);
     if (CompLHSTy) *CompLHSTy = compType;
     return compType;
   }
@@ -7798,7 +7821,10 @@ QualType Sema::CheckSubtractionOperands(ExprResult &LHS, ExprResult &RHS,
 
   if (LHS.get()->getType()->isVectorType() ||
       RHS.get()->getType()->isVectorType()) {
-    QualType compType = CheckVectorOperands(LHS, RHS, Loc, CompLHSTy);
+    QualType compType = CheckVectorOperands(
+        LHS, RHS, Loc, CompLHSTy,
+        /*AllowBothBool*/getLangOpts().AltiVec,
+        /*AllowBoolConversions*/getLangOpts().ZVector);
     if (CompLHSTy) *CompLHSTy = compType;
     return compType;
   }
@@ -7924,9 +7950,19 @@ static void DiagnoseBadShiftValues(Sema& S, ExprResult &LHS, ExprResult &RHS,
   // representable in the result type, so never warn for those.
   llvm::APSInt Left;
   if (LHS.get()->isValueDependent() ||
-      !LHS.get()->isIntegerConstantExpr(Left, S.Context) ||
-      LHSType->hasUnsignedIntegerRepresentation())
+      LHSType->hasUnsignedIntegerRepresentation() ||
+      !LHS.get()->EvaluateAsInt(Left, S.Context))
     return;
+
+  // If LHS does not have a signed type and non-negative value
+  // then, the behavior is undefined. Warn about it.
+  if (Left.isNegative()) {
+    S.DiagRuntimeBehavior(Loc, LHS.get(),
+                          S.PDiag(diag::warn_shift_lhs_negative)
+                            << LHS.get()->getSourceRange());
+    return;
+  }
+
   llvm::APInt ResultBits =
       static_cast<llvm::APInt&>(Right) + Left.getMinSignedBits();
   if (LeftBits.uge(ResultBits))
@@ -8030,7 +8066,21 @@ QualType Sema::CheckShiftOperands(ExprResult &LHS, ExprResult &RHS,
       RHS.get()->getType()->isVectorType()) {
     if (LangOpts.OpenCL)
       return checkOpenCLVectorShift(*this, LHS, RHS, Loc, IsCompAssign);
-    return CheckVectorOperands(LHS, RHS, Loc, IsCompAssign);
+    if (LangOpts.ZVector) {
+      // The shift operators for the z vector extensions work basically
+      // like OpenCL shifts, except that neither the LHS nor the RHS is
+      // allowed to be a "vector bool".
+      if (auto LHSVecType = LHS.get()->getType()->getAs<VectorType>())
+        if (LHSVecType->getVectorKind() == VectorType::AltiVecBool)
+          return InvalidOperands(Loc, LHS, RHS);
+      if (auto RHSVecType = RHS.get()->getType()->getAs<VectorType>())
+        if (RHSVecType->getVectorKind() == VectorType::AltiVecBool)
+          return InvalidOperands(Loc, LHS, RHS);
+      return checkOpenCLVectorShift(*this, LHS, RHS, Loc, IsCompAssign);
+    }
+    return CheckVectorOperands(LHS, RHS, Loc, IsCompAssign,
+                               /*AllowBothBool*/true,
+                               /*AllowBoolConversions*/false);
   }
 
   // Shifts don't perform usual arithmetic conversions, they just do integer
@@ -8196,9 +8246,6 @@ static bool hasIsEqualMethod(Sema &S, const Expr *LHS, const Expr *RHS) {
 
   // Get the LHS object's interface type.
   QualType InterfaceType = Type->getPointeeType();
-  if (const ObjCObjectType *iQFaceTy =
-      InterfaceType->getAsObjCQualifiedInterfaceType())
-    InterfaceType = iQFaceTy->getBaseType();
 
   // If the RHS isn't an Objective-C object, bail out.
   if (!RHS->getType()->isObjCObjectPointerType())
@@ -8807,7 +8854,9 @@ QualType Sema::CheckVectorCompareOperands(ExprResult &LHS, ExprResult &RHS,
                                           bool IsRelational) {
   // Check to make sure we're operating on vectors of the same type and width,
   // Allowing one side to be a scalar of element type.
-  QualType vType = CheckVectorOperands(LHS, RHS, Loc, /*isCompAssign*/false);
+  QualType vType = CheckVectorOperands(LHS, RHS, Loc, /*isCompAssign*/false,
+                              /*AllowBothBool*/true,
+                              /*AllowBoolConversions*/getLangOpts().ZVector);
   if (vType.isNull())
     return vType;
 
@@ -8815,7 +8864,8 @@ QualType Sema::CheckVectorCompareOperands(ExprResult &LHS, ExprResult &RHS,
 
   // If AltiVec, the comparison results in a numeric type, i.e.
   // bool for C++, int for C
-  if (vType->getAs<VectorType>()->getVectorKind() == VectorType::AltiVecVector)
+  if (getLangOpts().AltiVec &&
+      vType->getAs<VectorType>()->getVectorKind() == VectorType::AltiVecVector)
     return Context.getLogicalOperationType();
 
   // For non-floating point types, check for self-comparisons of the form
@@ -8849,7 +8899,9 @@ QualType Sema::CheckVectorLogicalOperands(ExprResult &LHS, ExprResult &RHS,
                                           SourceLocation Loc) {
   // Ensure that either both operands are of the same vector type, or
   // one operand is of a vector type and the other is of its element type.
-  QualType vType = CheckVectorOperands(LHS, RHS, Loc, false);
+  QualType vType = CheckVectorOperands(LHS, RHS, Loc, false,
+                                       /*AllowBothBool*/true,
+                                       /*AllowBoolConversions*/false);
   if (vType.isNull())
     return InvalidOperands(Loc, LHS, RHS);
   if (getLangOpts().OpenCL && getLangOpts().OpenCLVersion < 120 &&
@@ -8867,8 +8919,9 @@ inline QualType Sema::CheckBitwiseOperands(
       RHS.get()->getType()->isVectorType()) {
     if (LHS.get()->getType()->hasIntegerRepresentation() &&
         RHS.get()->getType()->hasIntegerRepresentation())
-      return CheckVectorOperands(LHS, RHS, Loc, IsCompAssign);
-    
+      return CheckVectorOperands(LHS, RHS, Loc, IsCompAssign,
+                        /*AllowBothBool*/true,
+                        /*AllowBoolConversions*/getLangOpts().ZVector);
     return InvalidOperands(Loc, LHS, RHS);
   }
 
@@ -9482,6 +9535,10 @@ static QualType CheckIncrementDecrementOperand(Sema &S, Expr *Op,
                                           IsInc, IsPrefix);
   } else if (S.getLangOpts().AltiVec && ResType->isVectorType()) {
     // OK! ( C/C++ Language Extensions for CBEA(Version 2.6) 10.3 )
+  } else if (S.getLangOpts().ZVector && ResType->isVectorType() &&
+             (ResType->getAs<VectorType>()->getVectorKind() !=
+              VectorType::AltiVecBool)) {
+    // The z vector extensions allow ++ and -- for non-bool vectors.
   } else if(S.getLangOpts().OpenCL && ResType->isVectorType() &&
             ResType->getAs<VectorType>()->getElementType()->isIntegerType()) {
     // OpenCL V1.2 6.3 says dec/inc ops operate on integer vector types.
@@ -10562,8 +10619,13 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
     resultType = Input.get()->getType();
     if (resultType->isDependentType())
       break;
-    if (resultType->isArithmeticType() || // C99 6.5.3.3p1
-        resultType->isVectorType()) 
+    if (resultType->isArithmeticType()) // C99 6.5.3.3p1
+      break;
+    else if (resultType->isVectorType() &&
+             // The z vector extensions don't allow + or - with bool vectors.
+             (!Context.getLangOpts().ZVector ||
+              resultType->getAs<VectorType>()->getVectorKind() !=
+              VectorType::AltiVecBool))
       break;
     else if (getLangOpts().CPlusPlus && // C++ [expr.unary.op]p6
              Opc == UO_Plus &&
@@ -12543,6 +12605,8 @@ static bool captureInCapturedRegion(CapturedRegionScopeInfo *RSI,
   // By default, capture variables by reference.
   bool ByRef = true;
   // Using an LValue reference type is consistent with Lambdas (see below).
+  if (S.getLangOpts().OpenMP && S.IsOpenMPCapturedVar(Var))
+    DeclRefType = DeclRefType.getUnqualifiedType();
   CaptureType = S.Context.getLValueReferenceType(DeclRefType);
   Expr *CopyExpr = nullptr;
   if (BuildAndDiagnose) {
@@ -12742,6 +12806,7 @@ bool Sema::tryCaptureVariable(
   bool Nested = false;
   bool Explicit = (Kind != TryCapture_Implicit);
   unsigned FunctionScopesIndex = MaxFunctionScopesIndex;
+  unsigned OpenMPLevel = 0;
   do {
     // Only block literals, captured statements, and lambda expressions can
     // capture; other scopes don't work.
@@ -12768,6 +12833,21 @@ bool Sema::tryCaptureVariable(
     if (isVariableAlreadyCapturedInScopeInfo(CSI, Var, Nested, CaptureType, 
                                              DeclRefType)) 
       break;
+    if (getLangOpts().OpenMP) {
+      if (auto *RSI = dyn_cast<CapturedRegionScopeInfo>(CSI)) {
+        // OpenMP private variables should not be captured in outer scope, so
+        // just break here.
+        if (RSI->CapRegionKind == CR_OpenMP) {
+          if (isOpenMPPrivateVar(Var, OpenMPLevel)) {
+            Nested = true;
+            DeclRefType = DeclRefType.getUnqualifiedType();
+            CaptureType = Context.getLValueReferenceType(DeclRefType);
+            break;
+          }
+          ++OpenMPLevel;
+        }
+      }
+    }
     // If we are instantiating a generic lambda call operator body, 
     // we do not want to capture new variables.  What was captured
     // during either a lambdas transformation or initial parsing
@@ -13233,7 +13313,8 @@ static void MarkExprReferenced(Sema &SemaRef, SourceLocation Loc,
   if (!MD)
     return;
   // Only attempt to devirtualize if this is truly a virtual call.
-  bool IsVirtualCall = MD->isVirtual() && !ME->hasQualifier();
+  bool IsVirtualCall = MD->isVirtual() &&
+                          ME->performsVirtualDispatch(SemaRef.getLangOpts());
   if (!IsVirtualCall)
     return;
   const Expr *Base = ME->getBase();
@@ -13267,7 +13348,7 @@ void Sema::MarkMemberReferenced(MemberExpr *E) {
   //   expression, is odr-used, unless it is a pure virtual function and its
   //   name is not explicitly qualified.
   bool OdrUse = true;
-  if (!E->hasQualifier()) {
+  if (E->performsVirtualDispatch(getLangOpts())) {
     if (CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(E->getMemberDecl()))
       if (Method->isPure())
         OdrUse = false;

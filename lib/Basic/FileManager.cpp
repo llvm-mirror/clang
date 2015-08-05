@@ -19,6 +19,7 @@
 
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemStatCache.h"
+#include "clang/Frontend/PCHContainerOperations.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/FileSystem.h"
@@ -388,16 +389,28 @@ FileManager::getVirtualFile(StringRef Filename, off_t Size,
   return UFE;
 }
 
-void FileManager::FixupRelativePath(SmallVectorImpl<char> &path) const {
+bool FileManager::FixupRelativePath(SmallVectorImpl<char> &path) const {
   StringRef pathRef(path.data(), path.size());
 
   if (FileSystemOpts.WorkingDir.empty() 
       || llvm::sys::path::is_absolute(pathRef))
-    return;
+    return false;
 
   SmallString<128> NewPath(FileSystemOpts.WorkingDir);
   llvm::sys::path::append(NewPath, pathRef);
   path = NewPath;
+  return true;
+}
+
+bool FileManager::makeAbsolutePath(SmallVectorImpl<char> &Path) const {
+  bool Changed = FixupRelativePath(Path);
+
+  if (!llvm::sys::path::is_absolute(StringRef(Path.data(), Path.size()))) {
+    llvm::sys::fs::make_absolute(Path);
+    Changed = true;
+  }
+
+  return Changed;
 }
 
 llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
@@ -513,10 +526,10 @@ void FileManager::modifyFileEntry(FileEntry *File,
   File->ModTime = ModificationTime;
 }
 
-/// Remove '.' path components from the given absolute path.
+/// Remove '.' and '..' path components from the given absolute path.
 /// \return \c true if any changes were made.
 // FIXME: Move this to llvm::sys::path.
-bool FileManager::removeDotPaths(SmallVectorImpl<char> &Path) {
+bool FileManager::removeDotPaths(SmallVectorImpl<char> &Path, bool RemoveDotDot) {
   using namespace llvm::sys;
 
   SmallVector<StringRef, 16> ComponentStack;
@@ -524,24 +537,26 @@ bool FileManager::removeDotPaths(SmallVectorImpl<char> &Path) {
 
   // Skip the root path, then look for traversal in the components.
   StringRef Rel = path::relative_path(P);
-  bool AnyDots = false;
   for (StringRef C : llvm::make_range(path::begin(Rel), path::end(Rel))) {
-    if (C == ".") {
-      AnyDots = true;
+    if (C == ".")
       continue;
+    if (RemoveDotDot) {
+      if (C == "..") {
+        if (!ComponentStack.empty())
+          ComponentStack.pop_back();
+        continue;
+      }
     }
     ComponentStack.push_back(C);
   }
-
-  if (!AnyDots)
-    return false;
 
   SmallString<256> Buffer = path::root_path(P);
   for (StringRef C : ComponentStack)
     path::append(Buffer, C);
 
+  bool Changed = (Path != Buffer);
   Path.swap(Buffer);
-  return true;
+  return Changed;
 }
 
 StringRef FileManager::getCanonicalName(const DirectoryEntry *Dir) {
@@ -565,7 +580,16 @@ StringRef FileManager::getCanonicalName(const DirectoryEntry *Dir) {
   SmallString<256> CanonicalNameBuf(CanonicalName);
   llvm::sys::fs::make_absolute(CanonicalNameBuf);
   llvm::sys::path::native(CanonicalNameBuf);
-  removeDotPaths(CanonicalNameBuf);
+  // We've run into needing to remove '..' here in the wild though, so
+  // remove it.
+  // On Windows, symlinks are significantly less prevalent, so removing
+  // '..' is pretty safe.
+  // Ideally we'd have an equivalent of `realpath` and could implement
+  // sys::fs::canonical across all the platforms.
+  removeDotPaths(CanonicalNameBuf, /*RemoveDotDot*/true);
+  char *Mem = CanonicalNameStorage.Allocate<char>(CanonicalNameBuf.size());
+  memcpy(Mem, CanonicalNameBuf.data(), CanonicalNameBuf.size());
+  CanonicalName = StringRef(Mem, CanonicalNameBuf.size());
 #endif
 
   CanonicalDirNames.insert(std::make_pair(Dir, CanonicalName));
@@ -585,3 +609,7 @@ void FileManager::PrintStats() const {
 
   //llvm::errs() << PagesMapped << BytesOfPagesMapped << FSLookups;
 }
+
+// Virtual destructors for abstract base classes that need live in Basic.
+PCHContainerWriter::~PCHContainerWriter() {}
+PCHContainerReader::~PCHContainerReader() {}

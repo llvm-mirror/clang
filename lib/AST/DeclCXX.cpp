@@ -385,17 +385,11 @@ void CXXRecordDecl::addedClassSubobject(CXXRecordDecl *Subobj) {
   }
 }
 
-/// Callback function for CXXRecordDecl::forallBases that acknowledges
-/// that it saw a base class.
-static bool SawBase(const CXXRecordDecl *, void *) {
-  return true;
-}
-
 bool CXXRecordDecl::hasAnyDependentBases() const {
   if (!isDependentContext())
     return false;
 
-  return !forallBases(SawBase, nullptr);
+  return !forallBases([](const CXXRecordDecl *) { return true; });
 }
 
 bool CXXRecordDecl::isTriviallyCopyable() const {
@@ -1272,7 +1266,7 @@ const CXXRecordDecl *CXXRecordDecl::getTemplateInstantiationPattern() const {
           break;
         CTD = NewCTD;
       }
-      return CTD->getTemplatedDecl();
+      return CTD->getTemplatedDecl()->getDefinition();
     }
     if (auto *CTPSD =
             From.dyn_cast<ClassTemplatePartialSpecializationDecl *>()) {
@@ -1281,7 +1275,7 @@ const CXXRecordDecl *CXXRecordDecl::getTemplateInstantiationPattern() const {
           break;
         CTPSD = NewCTPSD;
       }
-      return CTPSD;
+      return CTPSD->getDefinition();
     }
   }
 
@@ -1290,7 +1284,7 @@ const CXXRecordDecl *CXXRecordDecl::getTemplateInstantiationPattern() const {
       const CXXRecordDecl *RD = this;
       while (auto *NewRD = RD->getInstantiatedFromMemberClass())
         RD = NewRD;
-      return RD;
+      return RD->getDefinition();
     }
   }
 

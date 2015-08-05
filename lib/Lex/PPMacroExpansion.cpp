@@ -726,10 +726,10 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
 
   unsigned NumActuals = 0;
   while (Tok.isNot(tok::r_paren)) {
-    if (ContainsCodeCompletionTok && (Tok.is(tok::eof) || Tok.is(tok::eod)))
+    if (ContainsCodeCompletionTok && Tok.isOneOf(tok::eof, tok::eod))
       break;
 
-    assert((Tok.is(tok::l_paren) || Tok.is(tok::comma)) &&
+    assert(Tok.isOneOf(tok::l_paren, tok::comma) &&
            "only expect argument separators here");
 
     unsigned ArgTokenStart = ArgTokens.size();
@@ -744,7 +744,7 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
       // an argument value in a macro could expand to ',' or '(' or ')'.
       LexUnexpandedToken(Tok);
 
-      if (Tok.is(tok::eof) || Tok.is(tok::eod)) { // "#if f(<eof>" & "#if f(\n"
+      if (Tok.isOneOf(tok::eof, tok::eod)) { // "#if f(<eof>" & "#if f(\n"
         if (!ContainsCodeCompletionTok) {
           Diag(MacroName, diag::err_unterm_macro_invoc);
           Diag(MI->getDefinitionLoc(), diag::note_macro_here)
@@ -1049,13 +1049,18 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
     Feature = Feature.substr(2, Feature.size() - 4);
 
   return llvm::StringSwitch<bool>(Feature)
-      .Case("address_sanitizer", LangOpts.Sanitize.has(SanitizerKind::Address))
+      .Case("address_sanitizer",
+            LangOpts.Sanitize.hasOneOf(SanitizerKind::Address |
+                                       SanitizerKind::KernelAddress))
+      .Case("assume_nonnull", true)
       .Case("attribute_analyzer_noreturn", true)
       .Case("attribute_availability", true)
       .Case("attribute_availability_with_message", true)
       .Case("attribute_availability_app_extension", true)
+      .Case("attribute_availability_with_version_underscores", true)
       .Case("attribute_cf_returns_not_retained", true)
       .Case("attribute_cf_returns_retained", true)
+      .Case("attribute_cf_returns_on_parameters", true)
       .Case("attribute_deprecated_with_message", true)
       .Case("attribute_ext_vector_type", true)
       .Case("attribute_ns_returns_not_retained", true)
@@ -1073,6 +1078,7 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
       .Case("cxx_exceptions", LangOpts.CXXExceptions)
       .Case("cxx_rtti", LangOpts.RTTI)
       .Case("enumerator_attributes", true)
+      .Case("nullability", true)
       .Case("memory_sanitizer", LangOpts.Sanitize.has(SanitizerKind::Memory))
       .Case("thread_sanitizer", LangOpts.Sanitize.has(SanitizerKind::Thread))
       .Case("dataflow_sanitizer", LangOpts.Sanitize.has(SanitizerKind::DataFlow))
@@ -1083,6 +1089,7 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
       .Case("objc_default_synthesize_properties", LangOpts.ObjC2)
       .Case("objc_fixed_enum", LangOpts.ObjC2)
       .Case("objc_instancetype", LangOpts.ObjC2)
+      .Case("objc_kindof", LangOpts.ObjC2)
       .Case("objc_modules", LangOpts.ObjC2 && LangOpts.Modules)
       .Case("objc_nonfragile_abi", LangOpts.ObjCRuntime.isNonFragile())
       .Case("objc_property_explicit_atomic",
@@ -1097,9 +1104,12 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
       .Case("objc_array_literals", LangOpts.ObjC2)
       .Case("objc_dictionary_literals", LangOpts.ObjC2)
       .Case("objc_boxed_expressions", LangOpts.ObjC2)
+      .Case("objc_boxed_nsvalue_expressions", LangOpts.ObjC2)
       .Case("arc_cf_code_audited", true)
       .Case("objc_bridge_id", true)
       .Case("objc_bridge_id_on_typedefs", true)
+      .Case("objc_generics", LangOpts.ObjC2)
+      .Case("objc_generics_variance", LangOpts.ObjC2)
       // C11 features
       .Case("c_alignas", LangOpts.C11)
       .Case("c_alignof", LangOpts.C11)
@@ -1623,13 +1633,13 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
       Value = FeatureII->getBuiltinID() != 0;
     } else if (II == Ident__has_attribute)
       Value = hasAttribute(AttrSyntax::GNU, nullptr, FeatureII,
-                           getTargetInfo().getTriple(), getLangOpts());
+                           getTargetInfo(), getLangOpts());
     else if (II == Ident__has_cpp_attribute)
       Value = hasAttribute(AttrSyntax::CXX, ScopeII, FeatureII,
-                           getTargetInfo().getTriple(), getLangOpts());
+                           getTargetInfo(), getLangOpts());
     else if (II == Ident__has_declspec)
       Value = hasAttribute(AttrSyntax::Declspec, nullptr, FeatureII,
-                           getTargetInfo().getTriple(), getLangOpts());
+                           getTargetInfo(), getLangOpts());
     else if (II == Ident__has_extension)
       Value = HasExtension(*this, FeatureII);
     else {
@@ -1747,7 +1757,7 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
       Diag(Tok.getLocation(), diag::err_pp_identifier_arg_not_identifier)
         << Tok.getKind();
       // Don't walk past anything that's not a real token.
-      if (Tok.is(tok::eof) || Tok.is(tok::eod) || Tok.isAnnotation())
+      if (Tok.isOneOf(tok::eof, tok::eod) || Tok.isAnnotation())
         return;
     }
 

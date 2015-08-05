@@ -81,14 +81,14 @@ __declspec(dllimport) static int StaticGlobal; // expected-error{{'StaticGlobal'
 __declspec(dllimport) __thread int ThreadLocalGlobal; // expected-error{{'ThreadLocalGlobal' cannot be thread local when declared 'dllimport'}}
 
 // Import in local scope.
-__declspec(dllimport) float LocalRedecl1; // expected-note{{previous definition is here}}
-__declspec(dllimport) float LocalRedecl2; // expected-note{{previous definition is here}}
-__declspec(dllimport) float LocalRedecl3; // expected-note{{previous definition is here}}
+__declspec(dllimport) float LocalRedecl1; // expected-note{{previous declaration is here}}
+__declspec(dllimport) float LocalRedecl2; // expected-note{{previous declaration is here}}
+__declspec(dllimport) float LocalRedecl3; // expected-note{{previous declaration is here}}
 __declspec(dllimport) float LocalRedecl4;
 void functionScope() {
-  __declspec(dllimport) int LocalRedecl1; // expected-error{{redefinition of 'LocalRedecl1' with a different type: 'int' vs 'float'}}
-  int *__attribute__((dllimport)) LocalRedecl2; // expected-error{{redefinition of 'LocalRedecl2' with a different type: 'int *' vs 'float'}}
-  int LocalRedecl3 __attribute__((dllimport)); // expected-error{{redefinition of 'LocalRedecl3' with a different type: 'int' vs 'float'}}
+  __declspec(dllimport) int LocalRedecl1; // expected-error{{redeclaration of 'LocalRedecl1' with a different type: 'int' vs 'float'}}
+  int *__attribute__((dllimport)) LocalRedecl2; // expected-error{{redeclaration of 'LocalRedecl2' with a different type: 'int *' vs 'float'}}
+  int LocalRedecl3 __attribute__((dllimport)); // expected-error{{redeclaration of 'LocalRedecl3' with a different type: 'int' vs 'float'}}
 
   __declspec(dllimport)        int LocalVarDecl;
   __declspec(dllimport)        int LocalVarDef = 1; // expected-error{{definition of dllimport data}}
@@ -143,7 +143,7 @@ __declspec(dllimport) void redecl3(); // expected-note{{previous declaration is 
 
                       void redecl4(); // expected-note{{previous declaration is here}}
 void useRedecl4() { redecl4(); }
-__declspec(dllimport) void redecl4(); // expected-error{{redeclaration of 'redecl4' cannot add 'dllimport' attribute}}
+__declspec(dllimport) void redecl4(); // expected-warning{{redeclaration of 'redecl4' should not add 'dllimport' attribute}}
 
 // Allow with a warning if the decl hasn't been used yet.
                       void redecl5(); // expected-note{{previous declaration is here}}

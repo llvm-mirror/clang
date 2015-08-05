@@ -240,6 +240,9 @@ namespace  {
     void dumpTemplateArgument(const TemplateArgument &A,
                               SourceRange R = SourceRange());
 
+    // Objective-C utilities.
+    void dumpObjCTypeParamList(const ObjCTypeParamList *typeParams);
+
     // Types
     void VisitComplexType(const ComplexType *T) {
       dumpTypeAsChild(T->getElementType());
@@ -463,6 +466,7 @@ namespace  {
     // ObjC Decls
     void VisitObjCIvarDecl(const ObjCIvarDecl *D);
     void VisitObjCMethodDecl(const ObjCMethodDecl *D);
+    void VisitObjCTypeParamDecl(const ObjCTypeParamDecl *D);
     void VisitObjCCategoryDecl(const ObjCCategoryDecl *D);
     void VisitObjCCategoryImplDecl(const ObjCCategoryImplDecl *D);
     void VisitObjCProtocolDecl(const ObjCProtocolDecl *D);
@@ -955,6 +959,18 @@ void ASTDumper::dumpTemplateArgument(const TemplateArgument &A, SourceRange R) {
 }
 
 //===----------------------------------------------------------------------===//
+//  Objective-C Utilities
+//===----------------------------------------------------------------------===//
+void ASTDumper::dumpObjCTypeParamList(const ObjCTypeParamList *typeParams) {
+  if (!typeParams)
+    return;
+
+  for (auto typeParam : *typeParams) {
+    dumpDecl(typeParam);
+  }
+}
+
+//===----------------------------------------------------------------------===//
 //  Decl dumping methods.
 //===----------------------------------------------------------------------===//
 
@@ -981,6 +997,10 @@ void ASTDumper::dumpDecl(const Decl *D) {
       OS << " in " << M->getFullModuleName();
     else if (Module *M = D->getLocalOwningModule())
       OS << " in (local) " << M->getFullModuleName();
+    if (auto *ND = dyn_cast<NamedDecl>(D))
+      for (Module *M : D->getASTContext().getModulesWithMergedDefinition(
+               const_cast<NamedDecl *>(ND)))
+        dumpChild([=] { OS << "also in " << M->getFullModuleName(); });
     if (const NamedDecl *ND = dyn_cast<NamedDecl>(D))
       if (ND->isHidden())
         OS << " hidden";
@@ -1453,9 +1473,30 @@ void ASTDumper::VisitObjCMethodDecl(const ObjCMethodDecl *D) {
     dumpStmt(D->getBody());
 }
 
+void ASTDumper::VisitObjCTypeParamDecl(const ObjCTypeParamDecl *D) {
+  dumpName(D);
+  switch (D->getVariance()) {
+  case ObjCTypeParamVariance::Invariant:
+    break;
+
+  case ObjCTypeParamVariance::Covariant:
+    OS << " covariant";
+    break;
+
+  case ObjCTypeParamVariance::Contravariant:
+    OS << " contravariant";
+    break;
+  }
+
+  if (D->hasExplicitBound())
+    OS << " bounded";
+  dumpType(D->getUnderlyingType());
+}
+
 void ASTDumper::VisitObjCCategoryDecl(const ObjCCategoryDecl *D) {
   dumpName(D);
   dumpDeclRef(D->getClassInterface());
+  dumpObjCTypeParamList(D->getTypeParamList());
   dumpDeclRef(D->getImplementation());
   for (ObjCCategoryDecl::protocol_iterator I = D->protocol_begin(),
                                            E = D->protocol_end();
@@ -1478,6 +1519,7 @@ void ASTDumper::VisitObjCProtocolDecl(const ObjCProtocolDecl *D) {
 
 void ASTDumper::VisitObjCInterfaceDecl(const ObjCInterfaceDecl *D) {
   dumpName(D);
+  dumpObjCTypeParamList(D->getTypeParamListAsWritten());
   dumpDeclRef(D->getSuperClass(), "super");
 
   dumpDeclRef(D->getImplementation());
@@ -1595,8 +1637,8 @@ void ASTDumper::dumpStmt(const Stmt *S) {
 
     ConstStmtVisitor<ASTDumper>::Visit(S);
 
-    for (Stmt::const_child_range CI = S->children(); CI; ++CI)
-      dumpStmt(*CI);
+    for (const Stmt *SubStmt : S->children())
+      dumpStmt(SubStmt);
   });
 }
 
@@ -1824,6 +1866,9 @@ void ASTDumper::VisitUnaryExprOrTypeTraitExpr(
     break;
   case UETT_VecStep:
     OS << " vec_step";
+    break;
+  case UETT_OpenMPRequiredSimdAlign:
+    OS << " __builtin_omp_required_simd_align";
     break;
   }
   if (Node->isArgumentType())

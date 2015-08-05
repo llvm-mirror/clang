@@ -161,7 +161,13 @@ Sema::ResolveExceptionSpec(SourceLocation Loc, const FunctionProtoType *FPT) {
   else
     InstantiateExceptionSpec(Loc, SourceDecl);
 
-  return SourceDecl->getType()->castAs<FunctionProtoType>();
+  const FunctionProtoType *Proto =
+    SourceDecl->getType()->castAs<FunctionProtoType>();
+  if (Proto->getExceptionSpecType() == clang::EST_Unparsed) {
+    Diag(Loc, diag::err_exception_spec_not_parsed);
+    Proto = nullptr;
+  }
+  return Proto;
 }
 
 void
@@ -397,7 +403,7 @@ bool Sema::CheckEquivalentExceptionSpec(const PartialDiagnostic &DiagID,
   //   - both are dynamic-exception-specifications that have the same set of
   //     adjusted types.
   //
-  // C++0x [except.spec]p12: An exception-specifcation is non-throwing if it is
+  // C++0x [except.spec]p12: An exception-specification is non-throwing if it is
   //   of the form throw(), noexcept, or noexcept(constant-expression) where the
   //   constant-expression yields true.
   //
@@ -837,11 +843,13 @@ bool Sema::CheckOverridingFunctionExceptionSpec(const CXXMethodDecl *New,
                                   New->getLocation());
 }
 
-static CanThrowResult canSubExprsThrow(Sema &S, const Expr *CE) {
-  Expr *E = const_cast<Expr*>(CE);
+static CanThrowResult canSubExprsThrow(Sema &S, const Expr *E) {
   CanThrowResult R = CT_Cannot;
-  for (Expr::child_range I = E->children(); I && R != CT_Can; ++I)
-    R = mergeCanThrow(R, S.canThrow(cast<Expr>(*I)));
+  for (const Stmt *SubStmt : E->children()) {
+    R = mergeCanThrow(R, S.canThrow(cast<Expr>(SubStmt)));
+    if (R == CT_Can)
+      break;
+  }
   return R;
 }
 
@@ -971,8 +979,9 @@ CanThrowResult Sema::canThrow(const Expr *E) {
   case Expr::LambdaExprClass: {
     const LambdaExpr *Lambda = cast<LambdaExpr>(E);
     CanThrowResult CT = CT_Cannot;
-    for (LambdaExpr::capture_init_iterator Cap = Lambda->capture_init_begin(),
-                                        CapEnd = Lambda->capture_init_end();
+    for (LambdaExpr::const_capture_init_iterator
+             Cap = Lambda->capture_init_begin(),
+             CapEnd = Lambda->capture_init_end();
          Cap != CapEnd; ++Cap)
       CT = mergeCanThrow(CT, canThrow(*Cap));
     return CT;

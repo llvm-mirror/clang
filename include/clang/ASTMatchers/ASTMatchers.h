@@ -112,7 +112,7 @@ private:
 ///
 /// FIXME: Do we want to support this now that we have bind()?
 template <typename T>
-internal::Matcher<T> id(const std::string &ID,
+internal::Matcher<T> id(StringRef ID,
                         const internal::BindableMatcher<T> &InnerMatcher) {
   return InnerMatcher.bind(ID);
 }
@@ -2367,8 +2367,6 @@ AST_MATCHER_P(DeclRefExpr, to, internal::Matcher<Decl>,
 /// \brief Matches a \c DeclRefExpr that refers to a declaration through a
 /// specific using shadow declaration.
 ///
-/// FIXME: This currently only works for functions. Fix.
-///
 /// Given
 /// \code
 ///   namespace a { void f() {} }
@@ -2378,7 +2376,7 @@ AST_MATCHER_P(DeclRefExpr, to, internal::Matcher<Decl>,
 ///     a::f();  // .. but not this.
 ///   }
 /// \endcode
-/// declRefExpr(throughUsingDeclaration(anything()))
+/// declRefExpr(throughUsingDecl(anything()))
 ///   matches \c f()
 AST_MATCHER_P(DeclRefExpr, throughUsingDecl,
               internal::Matcher<UsingShadowDecl>, InnerMatcher) {
@@ -2448,6 +2446,21 @@ AST_MATCHER(VarDecl, hasLocalStorage) {
 /// \endcode
 AST_MATCHER(VarDecl, hasGlobalStorage) {
   return Node.hasGlobalStorage();
+}
+
+/// \brief Matches a variable declaration that is an exception variable from
+/// a C++ catch block, or an Objective-C \@catch statement.
+///
+/// Example matches x (matcher = varDecl(isExceptionVariable())
+/// \code
+/// void f(int y) {
+///   try {
+///   } catch (int x) {
+///   }
+/// }
+/// \endcode
+AST_MATCHER(VarDecl, isExceptionVariable) {
+  return Node.isExceptionVariable();
 }
 
 /// \brief Checks that a call expression or a constructor call expression has
@@ -2526,6 +2539,23 @@ AST_MATCHER_P2(DeclStmt, containsDeclaration, unsigned, N,
   DeclStmt::const_decl_iterator Iterator = Node.decl_begin();
   std::advance(Iterator, N);
   return InnerMatcher.matches(**Iterator, Finder, Builder);
+}
+
+/// \brief Matches a C++ catch statement that has a catch-all handler.
+///
+/// Given
+/// \code
+///   try {
+///     // ...
+///   } catch (int) {
+///     // ...
+///   } catch (...) {
+///     // ...
+///   }
+/// /endcode
+/// catchStmt(isCatchAll()) matches catch(...) but not catch(int).
+AST_MATCHER(CXXCatchStmt, isCatchAll) {
+  return Node.getExceptionDecl() == nullptr;
 }
 
 /// \brief Matches a constructor initializer.
@@ -3113,6 +3143,27 @@ AST_MATCHER_P(CXXMethodDecl, ofClass,
 ///   matches A::x
 AST_MATCHER(CXXMethodDecl, isVirtual) {
   return Node.isVirtual();
+}
+
+/// \brief Matches if the given method or class declaration is final.
+///
+/// Given:
+/// \code
+///   class A final {};
+///
+///   struct B {
+///     virtual void f();
+///   };
+///
+///   struct C : B {
+///     void f() final;
+///   };
+/// \endcode
+/// matches A and C::f, but not B, C, or B::f
+AST_POLYMORPHIC_MATCHER(isFinal,
+                        AST_POLYMORPHIC_SUPPORTED_TYPES(CXXRecordDecl,
+                                                        CXXMethodDecl)) {
+  return Node.template hasAttr<FinalAttr>();
 }
 
 /// \brief Matches if the given method declaration is pure.
@@ -4077,7 +4128,8 @@ AST_MATCHER_P(CaseStmt, hasCaseConstant, internal::Matcher<Expr>,
 ///   __attribute__((device)) void f() { ... }
 /// \endcode
 /// decl(hasAttr(clang::attr::CUDADevice)) matches the function declaration of
-/// f.
+/// f. If the matcher is use from clang-query, attr::Kind parameter should be
+/// passed as a quoted string. e.g., hasAttr("attr::CUDADevice").
 AST_MATCHER_P(Decl, hasAttr, attr::Kind, AttrKind) {
   for (const auto *Attr : Node.attrs()) {
     if (Attr->getKind() == AttrKind)

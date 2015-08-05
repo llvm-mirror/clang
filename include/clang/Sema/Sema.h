@@ -210,6 +210,50 @@ namespace threadSafety {
 typedef std::pair<llvm::PointerUnion<const TemplateTypeParmType*, NamedDecl*>,
                   SourceLocation> UnexpandedParameterPack;
 
+/// Describes whether we've seen any nullability information for the given
+/// file.
+struct FileNullability {
+  /// The first pointer declarator (of any pointer kind) in the file that does
+  /// not have a corresponding nullability annotation.
+  SourceLocation PointerLoc;
+
+  /// Which kind of pointer declarator we saw.
+  uint8_t PointerKind;
+
+  /// Whether we saw any type nullability annotations in the given file.
+  bool SawTypeNullability = false;
+};
+
+/// A mapping from file IDs to a record of whether we've seen nullability
+/// information in that file.
+class FileNullabilityMap {
+  /// A mapping from file IDs to the nullability information for each file ID.
+  llvm::DenseMap<FileID, FileNullability> Map;
+
+  /// A single-element cache based on the file ID.
+  struct {
+    FileID File;
+    FileNullability Nullability;
+  } Cache;
+
+public:
+  FileNullability &operator[](FileID file) {
+    // Check the single-element cache.
+    if (file == Cache.File)
+      return Cache.Nullability;
+
+    // It's not in the single-element cache; flush the cache if we have one.
+    if (!Cache.File.isInvalid()) {
+      Map[Cache.File] = Cache.Nullability;
+    }
+
+    // Pull this entry into the cache.
+    Cache.File = file;
+    Cache.Nullability = Map[file];
+    return Cache.Nullability;
+  }
+};
+
 /// Sema - This implements semantic analysis and AST building for C.
 class Sema {
   Sema(const Sema &) = delete;
@@ -233,7 +277,9 @@ class Sema {
     // it will keep having external linkage. If it has internal linkage, we
     // will not link it. Since it has no previous decls, it will remain
     // with internal linkage.
-    return isVisible(Old) || New->isExternallyVisible();
+    if (getLangOpts().ModulesHideInternalLinkage)
+      return isVisible(Old) || New->isExternallyVisible();
+    return true;
   }
 
 public:
@@ -340,6 +386,9 @@ public:
   PragmaStack<StringLiteral *> BSSSegStack;
   PragmaStack<StringLiteral *> ConstSegStack;
   PragmaStack<StringLiteral *> CodeSegStack;
+
+  /// A mapping that describes the nullability we've seen in each header file.
+  FileNullabilityMap NullabilityMap;
 
   /// Last section used with #pragma init_seg.
   StringLiteral *CurInitSeg;
@@ -653,8 +702,14 @@ public:
   /// \brief The declaration of the Objective-C NSNumber class.
   ObjCInterfaceDecl *NSNumberDecl;
 
+  /// \brief The declaration of the Objective-C NSValue class.
+  ObjCInterfaceDecl *NSValueDecl;
+
   /// \brief Pointer to NSNumber type (NSNumber *).
   QualType NSNumberPointer;
+
+  /// \brief Pointer to NSValue type (NSValue *).
+  QualType NSValuePointer;
 
   /// \brief The Objective-C NSNumber methods used to create NSNumber literals.
   ObjCMethodDecl *NSNumberLiteralMethods[NSAPI::NumNSNumberLiteralMethods];
@@ -667,6 +722,9 @@ public:
 
   /// \brief The declaration of the stringWithUTF8String: method.
   ObjCMethodDecl *StringWithUTF8StringMethod;
+
+  /// \brief The declaration of the valueWithBytes:objCType: method.
+  ObjCMethodDecl *ValueWithBytesObjCTypeMethod;
 
   /// \brief The declaration of the Objective-C NSArray class.
   ObjCInterfaceDecl *NSArrayDecl;
@@ -1157,6 +1215,16 @@ public:
 
   bool CheckFunctionReturnType(QualType T, SourceLocation Loc);
 
+  unsigned deduceWeakPropertyFromType(QualType T) {
+    if ((getLangOpts().getGC() != LangOptions::NonGC &&
+         T.isObjCGCWeak()) ||
+        (getLangOpts().ObjCAutoRefCount &&
+         T.getObjCLifetime() == Qualifiers::OCL_Weak))
+        return ObjCDeclSpec::DQ_PR_weak;
+    return 0;
+  }
+
+
   /// \brief Build a function type.
   ///
   /// This routine checks the function type according to C++ rules and
@@ -1319,14 +1387,17 @@ public:
 
   /// Determine if \p D has a visible definition. If not, suggest a declaration
   /// that should be made visible to expose the definition.
-  bool hasVisibleDefinition(NamedDecl *D, NamedDecl **Suggested);
+  bool hasVisibleDefinition(NamedDecl *D, NamedDecl **Suggested,
+                            bool OnlyNeedComplete = false);
   bool hasVisibleDefinition(const NamedDecl *D) {
     NamedDecl *Hidden;
     return hasVisibleDefinition(const_cast<NamedDecl*>(D), &Hidden);
   }
 
   /// Determine if the template parameter \p D has a visible default argument.
-  bool hasVisibleDefaultArgument(const NamedDecl *D);
+  bool
+  hasVisibleDefaultArgument(const NamedDecl *D,
+                            llvm::SmallVectorImpl<Module *> *Modules = nullptr);
 
   bool RequireCompleteType(SourceLocation Loc, QualType T,
                            TypeDiagnoser &Diagnoser);
@@ -1620,6 +1691,7 @@ public:
                             bool TypeMayContainAuto);
   void ActOnUninitializedDecl(Decl *dcl, bool TypeMayContainAuto);
   void ActOnInitializerError(Decl *Dcl);
+  void ActOnPureSpecifier(Decl *D, SourceLocation PureSpecLoc);
   void ActOnCXXForRangeDecl(Decl *D);
   StmtResult ActOnCXXForRangeIdentifier(Scope *S, SourceLocation IdentLoc,
                                         IdentifierInfo *Ident,
@@ -1730,10 +1802,21 @@ public:
   void createImplicitModuleImportForErrorRecovery(SourceLocation Loc,
                                                   Module *Mod);
 
+  /// Kinds of missing import. Note, the values of these enumerators correspond
+  /// to %select values in diagnostics.
+  enum class MissingImportKind {
+    Declaration,
+    Definition,
+    DefaultArgument
+  };
+
   /// \brief Diagnose that the specified declaration needs to be visible but
   /// isn't, and suggest a module import that would resolve the problem.
   void diagnoseMissingImport(SourceLocation Loc, NamedDecl *Decl,
                              bool NeedDefinition, bool Recover = true);
+  void diagnoseMissingImport(SourceLocation Loc, NamedDecl *Decl,
+                             SourceLocation DeclLoc, ArrayRef<Module *> Modules,
+                             MissingImportKind MIK, bool Recover);
 
   /// \brief Retrieve a suitable printing policy.
   PrintingPolicy getPrintingPolicy() const {
@@ -1766,7 +1849,7 @@ public:
   bool isAcceptableTagRedeclaration(const TagDecl *Previous,
                                     TagTypeKind NewTag, bool isDefinition,
                                     SourceLocation NewTagLoc,
-                                    const IdentifierInfo &Name);
+                                    const IdentifierInfo *Name);
 
   enum TagUseKind {
     TUK_Reference,   // Reference to a tag:  'struct foo *X;'
@@ -2105,6 +2188,7 @@ public:
   void HandleFunctionTypeMismatch(PartialDiagnostic &PDiag,
                                   QualType FromType, QualType ToType);
 
+  void maybeExtendBlockObject(ExprResult &E);
   CastKind PrepareCastToObjCObjectPointer(ExprResult &E);
   bool CheckPointerConversion(Expr *From, QualType ToType,
                               CastKind &Kind,
@@ -2846,6 +2930,26 @@ public:
   /// Valid types should not have multiple attributes with different CCs.
   const AttributedType *getCallingConvAttributedType(QualType T) const;
 
+  /// Check whether a nullability type specifier can be added to the given
+  /// type.
+  ///
+  /// \param type The type to which the nullability specifier will be
+  /// added. On success, this type will be updated appropriately.
+  ///
+  /// \param nullability The nullability specifier to add.
+  ///
+  /// \param nullabilityLoc The location of the nullability specifier.
+  ///
+  /// \param isContextSensitive Whether this nullability specifier was
+  /// written as a context-sensitive keyword (in an Objective-C
+  /// method) or an Objective-C property attribute, rather than as an
+  /// underscored type specifier.
+  ///
+  /// \returns true if nullability cannot be applied, false otherwise.
+  bool checkNullabilityTypeSpecifier(QualType &type, NullabilityKind nullability,
+                                     SourceLocation nullabilityLoc,
+                                     bool isContextSensitive);
+
   /// \brief Stmt attributes - this routine is the top level dispatcher.
   StmtResult ProcessStmtAttributes(Stmt *Stmt, AttributeList *Attrs,
                                    SourceRange Range);
@@ -2885,6 +2989,9 @@ public:
                                        ObjCContainerDecl *CDecl,
                                        bool SynthesizeProperties);
 
+  /// Diagnose any null-resettable synthesized setters.
+  void diagnoseNullResettableSynthesizedSetters(const ObjCImplDecl *impDecl);
+
   /// DefaultSynthesizeProperties - This routine default synthesizes all
   /// properties which must be synthesized in the class's \@implementation.
   void DefaultSynthesizeProperties (Scope *S, ObjCImplDecl* IMPDecl,
@@ -2921,7 +3028,8 @@ public:
                       const unsigned Attributes,
                       const unsigned AttributesAsWritten,
                       bool *isOverridingProperty,
-                      TypeSourceInfo *T,
+                      QualType T,
+                      TypeSourceInfo *TSI,
                       tok::ObjCKeywordKind MethodImplKind);
 
   /// Called by ActOnProperty and HandlePropertyInClassExtension to
@@ -2937,7 +3045,8 @@ public:
                                        const bool isReadWrite,
                                        const unsigned Attributes,
                                        const unsigned AttributesAsWritten,
-                                       TypeSourceInfo *T,
+                                       QualType T,
+                                       TypeSourceInfo *TSI,
                                        tok::ObjCKeywordKind MethodImplKind,
                                        DeclContext *lexicalDC = nullptr);
 
@@ -4930,9 +5039,9 @@ public:
 
   /// BuildObjCBoxedExpr - builds an ObjCBoxedExpr AST node for the
   /// '@' prefixed parenthesized expression. The type of the expression will
-  /// either be "NSNumber *" or "NSString *" depending on the type of
-  /// ValueType, which is allowed to be a built-in numeric type or
-  /// "char *" or "const char *".
+  /// either be "NSNumber *", "NSString *" or "NSValue *" depending on the type
+  /// of ValueType, which is allowed to be a built-in numeric type, "char *",
+  /// "const char *" or C structure with attribute 'objc_boxable'.
   ExprResult BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr);
 
   ExprResult BuildObjCSubscriptExpression(SourceLocation RB, Expr *BaseExpr,
@@ -6981,16 +7090,44 @@ public:
   };
   ObjCContainerKind getObjCContainerKind() const;
 
-  Decl *ActOnStartClassInterface(SourceLocation AtInterfaceLoc,
+  DeclResult actOnObjCTypeParam(Scope *S,
+                                ObjCTypeParamVariance variance,
+                                SourceLocation varianceLoc,
+                                unsigned index,
+                                IdentifierInfo *paramName,
+                                SourceLocation paramLoc,
+                                SourceLocation colonLoc,
+                                ParsedType typeBound);
+
+  ObjCTypeParamList *actOnObjCTypeParamList(Scope *S, SourceLocation lAngleLoc,
+                                            ArrayRef<Decl *> typeParams,
+                                            SourceLocation rAngleLoc);
+  void popObjCTypeParamList(Scope *S, ObjCTypeParamList *typeParamList);
+
+  Decl *ActOnStartClassInterface(Scope *S,
+                                 SourceLocation AtInterfaceLoc,
                                  IdentifierInfo *ClassName,
                                  SourceLocation ClassLoc,
+                                 ObjCTypeParamList *typeParamList,
                                  IdentifierInfo *SuperName,
                                  SourceLocation SuperLoc,
+                                 ArrayRef<ParsedType> SuperTypeArgs,
+                                 SourceRange SuperTypeArgsRange,
                                  Decl * const *ProtoRefs,
                                  unsigned NumProtoRefs,
                                  const SourceLocation *ProtoLocs,
                                  SourceLocation EndProtoLoc,
                                  AttributeList *AttrList);
+    
+  void ActOnSuperClassOfClassInterface(Scope *S,
+                                       SourceLocation AtInterfaceLoc,
+                                       ObjCInterfaceDecl *IDecl,
+                                       IdentifierInfo *ClassName,
+                                       SourceLocation ClassLoc,
+                                       IdentifierInfo *SuperName,
+                                       SourceLocation SuperLoc,
+                                       ArrayRef<ParsedType> SuperTypeArgs,
+                                       SourceRange SuperTypeArgsRange);
   
   void ActOnTypedefedProtocols(SmallVectorImpl<Decl *> &ProtocolRefs,
                                IdentifierInfo *SuperName,
@@ -7017,6 +7154,7 @@ public:
   Decl *ActOnStartCategoryInterface(SourceLocation AtInterfaceLoc,
                                     IdentifierInfo *ClassName,
                                     SourceLocation ClassLoc,
+                                    ObjCTypeParamList *typeParamList,
                                     IdentifierInfo *CategoryName,
                                     SourceLocation CategoryLoc,
                                     Decl * const *ProtoRefs,
@@ -7040,9 +7178,10 @@ public:
                                                ArrayRef<Decl *> Decls);
 
   DeclGroupPtrTy ActOnForwardClassDeclaration(SourceLocation Loc,
-                                     IdentifierInfo **IdentList,
-                                     SourceLocation *IdentLocs,
-                                     unsigned NumElts);
+                   IdentifierInfo **IdentList,
+                   SourceLocation *IdentLocs,
+                   ArrayRef<ObjCTypeParamList *> TypeParamLists,
+                   unsigned NumElts);
 
   DeclGroupPtrTy ActOnForwardProtocolDeclaration(SourceLocation AtProtoclLoc,
                                         const IdentifierLocPair *IdentList,
@@ -7053,6 +7192,61 @@ public:
                                const IdentifierLocPair *ProtocolId,
                                unsigned NumProtocols,
                                SmallVectorImpl<Decl *> &Protocols);
+
+  /// Given a list of identifiers (and their locations), resolve the
+  /// names to either Objective-C protocol qualifiers or type
+  /// arguments, as appropriate.
+  void actOnObjCTypeArgsOrProtocolQualifiers(
+         Scope *S,
+         ParsedType baseType,
+         SourceLocation lAngleLoc,
+         ArrayRef<IdentifierInfo *> identifiers,
+         ArrayRef<SourceLocation> identifierLocs,
+         SourceLocation rAngleLoc,
+         SourceLocation &typeArgsLAngleLoc,
+         SmallVectorImpl<ParsedType> &typeArgs,
+         SourceLocation &typeArgsRAngleLoc,
+         SourceLocation &protocolLAngleLoc,
+         SmallVectorImpl<Decl *> &protocols,
+         SourceLocation &protocolRAngleLoc,
+         bool warnOnIncompleteProtocols);
+
+  /// Build a an Objective-C protocol-qualified 'id' type where no
+  /// base type was specified.
+  TypeResult actOnObjCProtocolQualifierType(
+               SourceLocation lAngleLoc,
+               ArrayRef<Decl *> protocols,
+               ArrayRef<SourceLocation> protocolLocs,
+               SourceLocation rAngleLoc);
+
+  /// Build a specialized and/or protocol-qualified Objective-C type.
+  TypeResult actOnObjCTypeArgsAndProtocolQualifiers(
+               Scope *S,
+               SourceLocation Loc,
+               ParsedType BaseType,
+               SourceLocation TypeArgsLAngleLoc,
+               ArrayRef<ParsedType> TypeArgs,
+               SourceLocation TypeArgsRAngleLoc,
+               SourceLocation ProtocolLAngleLoc,
+               ArrayRef<Decl *> Protocols,
+               ArrayRef<SourceLocation> ProtocolLocs,
+               SourceLocation ProtocolRAngleLoc);
+
+  /// Build an Objective-C object pointer type.
+  QualType BuildObjCObjectType(QualType BaseType,
+                               SourceLocation Loc,
+                               SourceLocation TypeArgsLAngleLoc,
+                               ArrayRef<TypeSourceInfo *> TypeArgs,
+                               SourceLocation TypeArgsRAngleLoc,
+                               SourceLocation ProtocolLAngleLoc,
+                               ArrayRef<ObjCProtocolDecl *> Protocols,
+                               ArrayRef<SourceLocation> ProtocolLocs,
+                               SourceLocation ProtocolRAngleLoc,
+                               bool FailOnError = false);
+
+  /// Check the application of the Objective-C '__kindof' qualifier to
+  /// the given type.
+  bool checkObjCKindOfType(QualType &type, SourceLocation loc);
 
   /// Ensure attributes are consistent with type.
   /// \param [in, out] Attributes The attributes to check; they will
@@ -7503,11 +7697,17 @@ private:
   void DestroyDataSharingAttributesStack();
   ExprResult VerifyPositiveIntegerConstantInClause(Expr *Op,
                                                    OpenMPClauseKind CKind);
-  /// \brief Checks if the specified variable is used in one of the private
-  /// clauses in OpenMP constructs.
+public:
+  /// \brief Check if the specified variable is used in one of the private
+  /// clauses (private, firstprivate, lastprivate, reduction etc.) in OpenMP
+  /// constructs.
   bool IsOpenMPCapturedVar(VarDecl *VD);
 
-public:
+  /// \brief Check if the specified variable is used in 'private' clause.
+  /// \param Level Relative level of nested OpenMP construct for that the check
+  /// is performed.
+  bool isOpenMPPrivateVar(VarDecl *VD, unsigned Level);
+
   ExprResult PerformOpenMPImplicitIntegerConversion(SourceLocation OpLoc,
                                                     Expr *Op);
   /// \brief Called on start of new data sharing attribute block.
@@ -7515,9 +7715,9 @@ public:
                            const DeclarationNameInfo &DirName, Scope *CurScope,
                            SourceLocation Loc);
   /// \brief Start analysis of clauses.
-  void StartOpenMPClauses();
+  void StartOpenMPClause(OpenMPClauseKind K);
   /// \brief End analysis of clauses.
-  void EndOpenMPClauses();
+  void EndOpenMPClause();
   /// \brief Called on end of data sharing attribute block.
   void EndOpenMPDSABlock(Stmt *CurDirective);
 
@@ -7551,12 +7751,10 @@ public:
   ///
   /// \returns Statement for finished OpenMP region.
   StmtResult ActOnOpenMPRegionEnd(StmtResult S, ArrayRef<OMPClause *> Clauses);
-  StmtResult ActOnOpenMPExecutableDirective(OpenMPDirectiveKind Kind,
-                                            const DeclarationNameInfo &DirName,
-                                            ArrayRef<OMPClause *> Clauses,
-                                            Stmt *AStmt,
-                                            SourceLocation StartLoc,
-                                            SourceLocation EndLoc);
+  StmtResult ActOnOpenMPExecutableDirective(
+      OpenMPDirectiveKind Kind, const DeclarationNameInfo &DirName,
+      OpenMPDirectiveKind CancelRegion, ArrayRef<OMPClause *> Clauses,
+      Stmt *AStmt, SourceLocation StartLoc, SourceLocation EndLoc);
   /// \brief Called on well-formed '\#pragma omp parallel' after parsing
   /// of the  associated statement.
   StmtResult ActOnOpenMPParallelDirective(ArrayRef<OMPClause *> Clauses,
@@ -7636,6 +7834,9 @@ public:
   /// \brief Called on well-formed '\#pragma omp taskwait'.
   StmtResult ActOnOpenMPTaskwaitDirective(SourceLocation StartLoc,
                                           SourceLocation EndLoc);
+  /// \brief Called on well-formed '\#pragma omp taskgroup'.
+  StmtResult ActOnOpenMPTaskgroupDirective(Stmt *AStmt, SourceLocation StartLoc,
+                                           SourceLocation EndLoc);
   /// \brief Called on well-formed '\#pragma omp flush'.
   StmtResult ActOnOpenMPFlushDirective(ArrayRef<OMPClause *> Clauses,
                                        SourceLocation StartLoc,
@@ -7654,11 +7855,25 @@ public:
   StmtResult ActOnOpenMPTargetDirective(ArrayRef<OMPClause *> Clauses,
                                         Stmt *AStmt, SourceLocation StartLoc,
                                         SourceLocation EndLoc);
+  /// \brief Called on well-formed '\#pragma omp target data' after parsing of
+  /// the associated statement.
+  StmtResult ActOnOpenMPTargetDataDirective(ArrayRef<OMPClause *> Clauses,
+                                            Stmt *AStmt, SourceLocation StartLoc,
+                                            SourceLocation EndLoc);
   /// \brief Called on well-formed '\#pragma omp teams' after parsing of the
   /// associated statement.
   StmtResult ActOnOpenMPTeamsDirective(ArrayRef<OMPClause *> Clauses,
                                        Stmt *AStmt, SourceLocation StartLoc,
                                        SourceLocation EndLoc);
+  /// \brief Called on well-formed '\#pragma omp cancellation point'.
+  StmtResult
+  ActOnOpenMPCancellationPointDirective(SourceLocation StartLoc,
+                                        SourceLocation EndLoc,
+                                        OpenMPDirectiveKind CancelRegion);
+  /// \brief Called on well-formed '\#pragma omp cancel'.
+  StmtResult ActOnOpenMPCancelDirective(SourceLocation StartLoc,
+                                        SourceLocation EndLoc,
+                                        OpenMPDirectiveKind CancelRegion);
 
   OMPClause *ActOnOpenMPSingleExprClause(OpenMPClauseKind Kind,
                                          Expr *Expr,
@@ -7688,6 +7903,11 @@ public:
                                        SourceLocation StartLoc,
                                        SourceLocation LParenLoc,
                                        SourceLocation EndLoc);
+  /// \brief Called on well-formed 'ordered' clause.
+  OMPClause *
+  ActOnOpenMPOrderedClause(SourceLocation StartLoc, SourceLocation EndLoc,
+                           SourceLocation LParenLoc = SourceLocation(),
+                           Expr *NumForLoops = nullptr);
 
   OMPClause *ActOnOpenMPSimpleClause(OpenMPClauseKind Kind,
                                      unsigned Argument,
@@ -7725,9 +7945,6 @@ public:
 
   OMPClause *ActOnOpenMPClause(OpenMPClauseKind Kind, SourceLocation StartLoc,
                                SourceLocation EndLoc);
-  /// \brief Called on well-formed 'ordered' clause.
-  OMPClause *ActOnOpenMPOrderedClause(SourceLocation StartLoc,
-                                      SourceLocation EndLoc);
   /// \brief Called on well-formed 'nowait' clause.
   OMPClause *ActOnOpenMPNowaitClause(SourceLocation StartLoc,
                                      SourceLocation EndLoc);
@@ -7753,13 +7970,13 @@ public:
   OMPClause *ActOnOpenMPSeqCstClause(SourceLocation StartLoc,
                                      SourceLocation EndLoc);
 
-  OMPClause *
-  ActOnOpenMPVarListClause(OpenMPClauseKind Kind, ArrayRef<Expr *> Vars,
-                           Expr *TailExpr, SourceLocation StartLoc,
-                           SourceLocation LParenLoc, SourceLocation ColonLoc,
-                           SourceLocation EndLoc,
-                           CXXScopeSpec &ReductionIdScopeSpec,
-                           const DeclarationNameInfo &ReductionId);
+  OMPClause *ActOnOpenMPVarListClause(
+      OpenMPClauseKind Kind, ArrayRef<Expr *> Vars, Expr *TailExpr,
+      SourceLocation StartLoc, SourceLocation LParenLoc,
+      SourceLocation ColonLoc, SourceLocation EndLoc,
+      CXXScopeSpec &ReductionIdScopeSpec,
+      const DeclarationNameInfo &ReductionId, OpenMPDependClauseKind DepKind,
+      SourceLocation DepLoc);
   /// \brief Called on well-formed 'private' clause.
   OMPClause *ActOnOpenMPPrivateClause(ArrayRef<Expr *> VarList,
                                       SourceLocation StartLoc,
@@ -7816,6 +8033,12 @@ public:
                                     SourceLocation StartLoc,
                                     SourceLocation LParenLoc,
                                     SourceLocation EndLoc);
+  /// \brief Called on well-formed 'depend' clause.
+  OMPClause *
+  ActOnOpenMPDependClause(OpenMPDependClauseKind DepKind, SourceLocation DepLoc,
+                          SourceLocation ColonLoc, ArrayRef<Expr *> VarList,
+                          SourceLocation StartLoc, SourceLocation LParenLoc,
+                          SourceLocation EndLoc);
 
   /// \brief The kind of conversion being performed.
   enum CheckedConversionKind {
@@ -8147,13 +8370,15 @@ public:
 
   /// type checking for vector binary operators.
   QualType CheckVectorOperands(ExprResult &LHS, ExprResult &RHS,
-                               SourceLocation Loc, bool IsCompAssign);
+                               SourceLocation Loc, bool IsCompAssign,
+                               bool AllowBothBool, bool AllowBoolConversion);
   QualType GetSignedVectorType(QualType V);
   QualType CheckVectorCompareOperands(ExprResult &LHS, ExprResult &RHS,
                                       SourceLocation Loc, bool isRelational);
   QualType CheckVectorLogicalOperands(ExprResult &LHS, ExprResult &RHS,
                                       SourceLocation Loc);
 
+  bool areLaxCompatibleVectorTypes(QualType srcType, QualType destType);
   bool isLaxVectorConversion(QualType srcType, QualType destType);
 
   /// type checking declaration initializers (C99 6.7.8)
@@ -8564,9 +8789,10 @@ private:
                             const FunctionProtoType *Proto,
                             SourceLocation Loc);
 
-  void checkCall(NamedDecl *FDecl, ArrayRef<const Expr *> Args,
-                 unsigned NumParams, bool IsMemberFunction, SourceLocation Loc,
-                 SourceRange Range, VariadicCallType CallType);
+  void checkCall(NamedDecl *FDecl, const FunctionProtoType *Proto,
+                 ArrayRef<const Expr *> Args, bool IsMemberFunction, 
+                 SourceLocation Loc, SourceRange Range, 
+                 VariadicCallType CallType);
 
   bool CheckObjCString(Expr *Arg);
 
@@ -8612,6 +8838,7 @@ private:
   bool SemaBuiltinARMSpecialReg(unsigned BuiltinID, CallExpr *TheCall,
                                 int ArgNum, unsigned ExpectedFieldNum,
                                 bool AllowName);
+  bool SemaBuiltinCpuSupports(CallExpr *TheCall);
 public:
   enum FormatStringType {
     FST_Scanf,
@@ -8740,6 +8967,13 @@ private:
   mutable IdentifierInfo *Ident_super;
   mutable IdentifierInfo *Ident___float128;
 
+  /// Nullability type specifiers.
+  IdentifierInfo *Ident__Nonnull = nullptr;
+  IdentifierInfo *Ident__Nullable = nullptr;
+  IdentifierInfo *Ident__Null_unspecified = nullptr;
+
+  IdentifierInfo *Ident_NSError = nullptr;
+
 protected:
   friend class Parser;
   friend class InitializationSequence;
@@ -8748,6 +8982,15 @@ protected:
   friend class ASTWriter;
 
 public:
+  /// Retrieve the keyword associated
+  IdentifierInfo *getNullabilityKeyword(NullabilityKind nullability);
+
+  /// The struct behind the CFErrorRef pointer.
+  RecordDecl *CFError = nullptr;
+
+  /// Retrieve the identifier "NSError".
+  IdentifierInfo *getNSErrorIdent();
+
   /// \brief Retrieve the parser's current scope.
   ///
   /// This routine must only be used when it is certain that semantic analysis

@@ -31,9 +31,9 @@ protected:
     return Result;
   }
 
-  static std::string format(
-      llvm::StringRef Code,
-      const FormatStyle &Style = getGoogleStyle(FormatStyle::LK_Java)) {
+  static std::string
+  format(llvm::StringRef Code,
+         const FormatStyle &Style = getGoogleStyle(FormatStyle::LK_Java)) {
     return format(Code, 0, Code.size(), Style);
   }
 
@@ -67,6 +67,8 @@ TEST_F(FormatTestJava, FormatsInstanceOfLikeOperators) {
   verifyFormat("return aaaaaaaaaaaaaaaaaaaaaaaaaaaaa instanceof\n"
                "    bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;",
                Style);
+  verifyFormat("return aaaaaaaaaaaaaaaaaaa instanceof bbbbbbbbbbbbbbbbbbbbbbb\n"
+               "    && ccccccccccccccccccc instanceof dddddddddddddddddddddd;");
 }
 
 TEST_F(FormatTestJava, Chromium) {

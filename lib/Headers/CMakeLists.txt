@@ -5,6 +5,7 @@ set(files
   arm_acle.h
   avx2intrin.h
   avx512bwintrin.h
+  avx512cdintrin.h
   avx512erintrin.h
   avx512fintrin.h
   avx512vlbwintrin.h
@@ -21,11 +22,13 @@ set(files
   float.h
   fma4intrin.h
   fmaintrin.h
+  fxsrintrin.h
   htmintrin.h
   htmxlintrin.h
   ia32intrin.h
   immintrin.h
   Intrin.h
+  inttypes.h
   iso646.h
   limits.h
   lzcntintrin.h
@@ -56,12 +59,14 @@ set(files
   unwind.h
   vadefs.h
   varargs.h
+  vecintrin.h
   __wmmintrin_aes.h
   wmmintrin.h
   __wmmintrin_pclmul.h
   x86intrin.h
   xmmintrin.h
   xopintrin.h
+  xtestintrin.h
   )
 
 set(output_dir ${LLVM_LIBRARY_OUTPUT_INTDIR}/clang/${CLANG_VERSION}/include)

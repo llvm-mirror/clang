@@ -218,15 +218,27 @@ the configuration (without a prefix: ``Auto``).
   If ``true``, ``while (true) continue;`` can be put on a
   single line.
 
-**AlwaysBreakAfterDefinitionReturnType** (``bool``)
-  If ``true``, always break after function definition return types.
+**AlwaysBreakAfterDefinitionReturnType** (``DefinitionReturnTypeBreakingStyle``)
+  The function definition return type breaking style to use.
 
-  More truthfully called 'break before the identifier following the type
-  in a function definition'. PenaltyReturnTypeOnItsOwnLine becomes
-  irrelevant.
+  Possible values:
+
+  * ``DRTBS_None`` (in configuration: ``None``)
+    Break after return type automatically.
+    ``PenaltyReturnTypeOnItsOwnLine`` is taken into account.
+  * ``DRTBS_All`` (in configuration: ``All``)
+    Always break after the return type.
+  * ``DRTBS_TopLevel`` (in configuration: ``TopLevel``)
+    Always break after the return types of top level functions.
+
 
 **AlwaysBreakBeforeMultilineStrings** (``bool``)
   If ``true``, always break before multiline string literals.
+
+  This flag is mean to make cases where there are multiple multiline strings
+  in a file look more consistent. Thus, it will only take effect if wrapping
+  the string at that point leads to it being indented
+  ``ContinuationIndentWidth`` spaces from the start of the line.
 
 **AlwaysBreakTemplateDeclarations** (``bool``)
   If ``true``, always break after the ``template<...>`` of a
@@ -263,6 +275,9 @@ the configuration (without a prefix: ``Auto``).
   * ``BS_Linux`` (in configuration: ``Linux``)
     Like ``Attach``, but break before braces on function, namespace and
     class definitions.
+  * ``BS_Mozilla`` (in configuration: ``Mozilla``)
+    Like ``Attach``, but break before braces on enum, function, and record
+    definitions.
   * ``BS_Stroustrup`` (in configuration: ``Stroustrup``)
     Like ``Attach``, but break before function definitions, and 'else'.
   * ``BS_Allman`` (in configuration: ``Allman``)
@@ -322,7 +337,7 @@ the configuration (without a prefix: ``Auto``).
   alignment of & and \*. ``PointerAlignment`` is then used only as fallback.
 
 **DisableFormat** (``bool``)
-  Disables formatting at all.
+  Disables formatting completely.
 
 **ExperimentalAutoDetectBinPacking** (``bool``)
   If ``true``, clang-format detects whether function calls and
@@ -381,6 +396,12 @@ the configuration (without a prefix: ``Auto``).
     Should be used for Protocol Buffers
     (https://developers.google.com/protocol-buffers/).
 
+
+**MacroBlockBegin** (``std::string``)
+  A regular expression matching macros that start a block.
+
+**MacroBlockEnd** (``std::string``)
+  A regular expression matching macros that end a block.
 
 **MaxEmptyLinesToKeep** (``unsigned``)
   The maximum number of consecutive empty lines to keep.

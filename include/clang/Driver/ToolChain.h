@@ -10,6 +10,7 @@
 #ifndef LLVM_CLANG_DRIVER_TOOLCHAIN_H
 #define LLVM_CLANG_DRIVER_TOOLCHAIN_H
 
+#include "clang/Basic/Sanitizers.h"
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Multilib.h"
 #include "clang/Driver/Types.h"
@@ -183,7 +184,7 @@ public:
   /// This is used when handling the verbose option to print detailed,
   /// toolchain-specific information useful for understanding the behavior of
   /// the driver on a specific platform.
-  virtual void printVerboseInfo(raw_ostream &OS) const {};
+  virtual void printVerboseInfo(raw_ostream &OS) const {}
 
   // Platform defaults information
 
@@ -348,6 +349,9 @@ public:
   virtual bool
   AddFastMathRuntimeIfAvailable(const llvm::opt::ArgList &Args,
                                 llvm::opt::ArgStringList &CmdArgs) const;
+
+  /// \brief Return sanitizers which are available in this toolchain.
+  virtual SanitizerMask getSupportedSanitizers() const;
 };
 
 } // end namespace driver

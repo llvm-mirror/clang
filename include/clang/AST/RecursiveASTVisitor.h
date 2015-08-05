@@ -1008,6 +1008,9 @@ DEF_TRAVERSE_TYPE(ObjCObjectType, {
   // type is itself.
   if (T->getBaseType().getTypePtr() != T)
     TRY_TO(TraverseType(T->getBaseType()));
+  for (auto typeArg : T->getTypeArgsAsWritten()) {
+    TRY_TO(TraverseType(typeArg));
+  }
 })
 
 DEF_TRAVERSE_TYPE(ObjCObjectPointerType,
@@ -1234,6 +1237,8 @@ DEF_TRAVERSE_TYPELOC(ObjCObjectType, {
   // type is itself.
   if (TL.getTypePtr()->getBaseType().getTypePtr() != TL.getTypePtr())
     TRY_TO(TraverseTypeLoc(TL.getBaseLoc()));
+  for (unsigned i = 0, n = TL.getNumTypeArgs(); i != n; ++i)
+    TRY_TO(TraverseTypeLoc(TL.getTypeArgTInfo(i)->getTypeLoc()));
 })
 
 DEF_TRAVERSE_TYPELOC(ObjCObjectPointerType,
@@ -1382,7 +1387,12 @@ DEF_TRAVERSE_DECL(ObjCCompatibleAliasDecl, {// FIXME: implement
                                            })
 
 DEF_TRAVERSE_DECL(ObjCCategoryDecl, {// FIXME: implement
-                                    })
+  if (ObjCTypeParamList *typeParamList = D->getTypeParamList()) {
+    for (auto typeParam : *typeParamList) {
+      TRY_TO(TraverseObjCTypeParamDecl(typeParam));
+    }
+  }
+})
 
 DEF_TRAVERSE_DECL(ObjCCategoryImplDecl, {// FIXME: implement
                                         })
@@ -1391,7 +1401,16 @@ DEF_TRAVERSE_DECL(ObjCImplementationDecl, {// FIXME: implement
                                           })
 
 DEF_TRAVERSE_DECL(ObjCInterfaceDecl, {// FIXME: implement
-                                     })
+  if (ObjCTypeParamList *typeParamList = D->getTypeParamListAsWritten()) {
+    for (auto typeParam : *typeParamList) {
+      TRY_TO(TraverseObjCTypeParamDecl(typeParam));
+    }
+  }
+
+  if (TypeSourceInfo *superTInfo = D->getSuperClassTInfo()) {
+    TRY_TO(TraverseTypeLoc(superTInfo->getTypeLoc()));
+  }
+})
 
 DEF_TRAVERSE_DECL(ObjCProtocolDecl, {// FIXME: implement
                                     })
@@ -1408,6 +1427,15 @@ DEF_TRAVERSE_DECL(ObjCMethodDecl, {
     TRY_TO(TraverseStmt(D->getBody()));
   }
   return true;
+})
+
+DEF_TRAVERSE_DECL(ObjCTypeParamDecl, {
+  if (D->hasExplicitBound()) {
+    TRY_TO(TraverseTypeLoc(D->getTypeSourceInfo()->getTypeLoc()));
+    // We shouldn't traverse D->getTypeForDecl(); it's a result of
+    // declaring the type alias, not something that was written in the
+    // source.
+  }
 })
 
 DEF_TRAVERSE_DECL(ObjCPropertyDecl, {
@@ -1881,8 +1909,8 @@ DEF_TRAVERSE_DECL(ParmVarDecl, {
   bool RecursiveASTVisitor<Derived>::Traverse##STMT(STMT *S) {                 \
     TRY_TO(WalkUpFrom##STMT(S));                                               \
     { CODE; }                                                                  \
-    for (Stmt::child_range range = S->children(); range; ++range) {            \
-      TRY_TO(TraverseStmt(*range));                                            \
+    for (Stmt *SubStmt : S->children()) {                                      \
+      TRY_TO(TraverseStmt(SubStmt));                                           \
     }                                                                          \
     return true;                                                               \
   }
@@ -2038,15 +2066,15 @@ bool RecursiveASTVisitor<Derived>::TraverseInitListExpr(InitListExpr *S) {
   if (Syn) {
     TRY_TO(WalkUpFromInitListExpr(Syn));
     // All we need are the default actions.  FIXME: use a helper function.
-    for (Stmt::child_range range = Syn->children(); range; ++range) {
-      TRY_TO(TraverseStmt(*range));
+    for (Stmt *SubStmt : Syn->children()) {
+      TRY_TO(TraverseStmt(SubStmt));
     }
   }
   InitListExpr *Sem = S->isSemanticForm() ? S : S->getSemanticForm();
   if (Sem) {
     TRY_TO(WalkUpFromInitListExpr(Sem));
-    for (Stmt::child_range range = Sem->children(); range; ++range) {
-      TRY_TO(TraverseStmt(*range));
+    for (Stmt *SubStmt : Sem->children()) {
+      TRY_TO(TraverseStmt(SubStmt));
     }
   }
   return true;
@@ -2388,6 +2416,15 @@ DEF_TRAVERSE_STMT(OMPBarrierDirective,
 DEF_TRAVERSE_STMT(OMPTaskwaitDirective,
                   { TRY_TO(TraverseOMPExecutableDirective(S)); })
 
+DEF_TRAVERSE_STMT(OMPTaskgroupDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
+DEF_TRAVERSE_STMT(OMPCancellationPointDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
+DEF_TRAVERSE_STMT(OMPCancelDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
 DEF_TRAVERSE_STMT(OMPFlushDirective,
                   { TRY_TO(TraverseOMPExecutableDirective(S)); })
 
@@ -2398,6 +2435,9 @@ DEF_TRAVERSE_STMT(OMPAtomicDirective,
                   { TRY_TO(TraverseOMPExecutableDirective(S)); })
 
 DEF_TRAVERSE_STMT(OMPTargetDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
+DEF_TRAVERSE_STMT(OMPTargetDataDirective,
                   { TRY_TO(TraverseOMPExecutableDirective(S)); })
 
 DEF_TRAVERSE_STMT(OMPTeamsDirective,
@@ -2472,7 +2512,8 @@ RecursiveASTVisitor<Derived>::VisitOMPScheduleClause(OMPScheduleClause *C) {
 }
 
 template <typename Derived>
-bool RecursiveASTVisitor<Derived>::VisitOMPOrderedClause(OMPOrderedClause *) {
+bool RecursiveASTVisitor<Derived>::VisitOMPOrderedClause(OMPOrderedClause *C) {
+  TRY_TO(TraverseStmt(C->getNumForLoops()));
   return true;
 }
 
@@ -2648,6 +2689,12 @@ RecursiveASTVisitor<Derived>::VisitOMPReductionClause(OMPReductionClause *C) {
 
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPFlushClause(OMPFlushClause *C) {
+  TRY_TO(VisitOMPClauseList(C));
+  return true;
+}
+
+template <typename Derived>
+bool RecursiveASTVisitor<Derived>::VisitOMPDependClause(OMPDependClause *C) {
   TRY_TO(VisitOMPClauseList(C));
   return true;
 }

@@ -71,7 +71,7 @@ namespace consumed {
     virtual void warnParamReturnTypestateMismatch(SourceLocation Loc,
                                                   StringRef VariableName,
                                                   StringRef ExpectedState,
-                                                  StringRef ObservedState) {};
+                                                  StringRef ObservedState) {}
     
     // FIXME: Add documentation.
     virtual void warnParamTypestateMismatch(SourceLocation LOC,
@@ -239,7 +239,6 @@ namespace consumed {
     
     void determineExpectedReturnState(AnalysisDeclContext &AC,
                                       const FunctionDecl *D);
-    bool hasConsumableAttributes(const CXXRecordDecl *RD);
     bool splitState(const CFGBlock *CurrBlock,
                     const ConsumedStmtVisitor &Visitor);
     

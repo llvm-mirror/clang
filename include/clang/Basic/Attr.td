@@ -195,7 +195,8 @@ class CXX11<string namespace, string name, int version = 1>
     : Spelling<name, "CXX11"> {
   string Namespace = namespace;
   int Version = version;
-} class Keyword<string name> : Spelling<name, "Keyword">;
+}
+class Keyword<string name> : Spelling<name, "Keyword">;
 class Pragma<string namespace, string name> : Spelling<name, "Pragma"> {
   string Namespace = namespace;
 }
@@ -240,14 +241,18 @@ def COnly : LangOpt<"CPlusPlus", 1>;
 class TargetArch<list<string> arches> {
   list<string> Arches = arches;
   list<string> OSes;
+  list<string> CXXABIs;
 }
 def TargetARM : TargetArch<["arm", "thumb"]>;
+def TargetMips : TargetArch<["mips", "mipsel"]>;
 def TargetMSP430 : TargetArch<["msp430"]>;
 def TargetX86 : TargetArch<["x86"]>;
 def TargetWindows : TargetArch<["x86", "x86_64", "arm", "thumb"]> {
   let OSes = ["Win32"];
 }
-def TargetMips : TargetArch<["mips", "mipsel"]>;
+def TargetMicrosoftCXXABI : TargetArch<["x86", "x86_64", "arm", "thumb"]> {
+  let CXXABIs = ["Microsoft"];
+}
 
 class Attr {
   // The various ways in which an attribute can be spelled in source
@@ -866,6 +871,12 @@ def ReturnsTwice : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def NoAlias : InheritableAttr {
+  let Spellings = [Declspec<"noalias">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [NoAliasDocs];
+}
+
 def NoCommon : InheritableAttr {
   let Spellings = [GCC<"nocommon">];
   let Subjects = SubjectList<[Var]>;
@@ -949,13 +960,34 @@ def NonNull : InheritableAttr {
   } }];
   // FIXME: We should merge duplicates into a single nonnull attribute.
   let DuplicatesAllowedWhileMerging = 1;
-  let Documentation = [Undocumented];
+  let Documentation = [NonNullDocs];
 }
 
 def ReturnsNonNull : InheritableAttr {
   let Spellings = [GCC<"returns_nonnull">];
   let Subjects = SubjectList<[ObjCMethod, Function], WarnDiag,
                              "ExpectedFunctionOrMethod">;
+  let Documentation = [ReturnsNonNullDocs];
+}
+
+// Nullability type attributes.
+def TypeNonNull : TypeAttr {
+  let Spellings = [Keyword<"_Nonnull">];
+  let Documentation = [TypeNonNullDocs];
+}
+
+def TypeNullable : TypeAttr {
+  let Spellings = [Keyword<"_Nullable">];
+  let Documentation = [TypeNullableDocs];
+}
+
+def TypeNullUnspecified : TypeAttr {
+  let Spellings = [Keyword<"_Null_unspecified">];
+  let Documentation = [TypeNullUnspecifiedDocs];
+}
+
+def ObjCKindOf : TypeAttr {
+  let Spellings = [Keyword<"__kindof">];
   let Documentation = [Undocumented];
 }
 
@@ -1108,6 +1140,12 @@ def ObjCRuntimeName : Attr {
   let Documentation = [ObjCRuntimeNameDocs];
 }
 
+def ObjCBoxable : Attr {
+  let Spellings = [GNU<"objc_boxable">];
+  let Subjects = SubjectList<[Record], ErrorDiag, "ExpectedStructOrUnion">;
+  let Documentation = [ObjCBoxableDocs];
+}
+
 def OptimizeNone : InheritableAttr {
   let Spellings = [GNU<"optnone">, CXX11<"clang", "optnone">];
   let Subjects = SubjectList<[Function, ObjCMethod]>;
@@ -1253,9 +1291,8 @@ def Pascal : InheritableAttr {
 def Target : InheritableAttr {
   let Spellings = [GCC<"target">];
   let Args = [StringArgument<"features">];
-  let Subjects =
-      SubjectList<[Function], ErrorDiag, "ExpectedFunctionMethodOrClass">;
-  let Documentation = [Undocumented];
+  let Subjects = SubjectList<[Function], ErrorDiag>;
+  let Documentation = [TargetDocs];
 }
 
 def TransparentUnion : InheritableAttr {
@@ -1787,7 +1824,7 @@ def TypeTagForDatatype : InheritableAttr {
 
 // Microsoft-related attributes
 
-def MSNoVTable : InheritableAttr {
+def MSNoVTable : InheritableAttr, TargetSpecificAttr<TargetMicrosoftCXXABI> {
   let Spellings = [Declspec<"novtable">];
   let Subjects = SubjectList<[CXXRecord]>;
   let Documentation = [MSNoVTableDocs];

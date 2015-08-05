@@ -74,16 +74,18 @@ static CGCXXABI *createCXXABI(CodeGenModule &CGM) {
   llvm_unreachable("invalid C++ ABI kind");
 }
 
-CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
-                             llvm::Module &M, const llvm::DataLayout &TD,
+CodeGenModule::CodeGenModule(ASTContext &C, const HeaderSearchOptions &HSO,
+                             const PreprocessorOptions &PPO,
+                             const CodeGenOptions &CGO, llvm::Module &M,
                              DiagnosticsEngine &diags,
                              CoverageSourceInfo *CoverageInfo)
-    : Context(C), LangOpts(C.getLangOpts()), CodeGenOpts(CGO), TheModule(M),
-      Diags(diags), TheDataLayout(TD), Target(C.getTargetInfo()),
-      ABI(createCXXABI(*this)), VMContext(M.getContext()), TBAA(nullptr),
-      TheTargetCodeGenInfo(nullptr), Types(*this), VTables(*this),
-      ObjCRuntime(nullptr), OpenCLRuntime(nullptr), OpenMPRuntime(nullptr),
-      CUDARuntime(nullptr), DebugInfo(nullptr), ARCData(nullptr),
+    : Context(C), LangOpts(C.getLangOpts()), HeaderSearchOpts(HSO),
+      PreprocessorOpts(PPO), CodeGenOpts(CGO), TheModule(M), Diags(diags),
+      Target(C.getTargetInfo()), ABI(createCXXABI(*this)),
+      VMContext(M.getContext()), TBAA(nullptr), TheTargetCodeGenInfo(nullptr),
+      Types(*this), VTables(*this), ObjCRuntime(nullptr),
+      OpenCLRuntime(nullptr), OpenMPRuntime(nullptr), CUDARuntime(nullptr),
+      DebugInfo(nullptr), ARCData(nullptr),
       NoObjCARCExceptionsMetadata(nullptr), RRData(nullptr), PGOReader(nullptr),
       CFConstantStringClassRef(nullptr), ConstantStringClassRef(nullptr),
       NSConstantStringType(nullptr), NSConcreteGlobalBlock(nullptr),
@@ -145,8 +147,9 @@ CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
         llvm::IndexedInstrProfReader::create(CodeGenOpts.InstrProfileInput);
     if (std::error_code EC = ReaderOrErr.getError()) {
       unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
-                                              "Could not read profile: %0");
-      getDiags().Report(DiagID) << EC.message();
+                                              "Could not read profile %0: %1");
+      getDiags().Report(DiagID) << CodeGenOpts.InstrProfileInput
+                                << EC.message();
     } else
       PGOReader = std::move(ReaderOrErr.get());
   }
@@ -1218,8 +1221,9 @@ bool CodeGenModule::isInSanitizerBlacklist(llvm::Function *Fn,
 bool CodeGenModule::isInSanitizerBlacklist(llvm::GlobalVariable *GV,
                                            SourceLocation Loc, QualType Ty,
                                            StringRef Category) const {
-  // For now globals can be blacklisted only in ASan.
-  if (!LangOpts.Sanitize.has(SanitizerKind::Address))
+  // For now globals can be blacklisted only in ASan and KASan.
+  if (!LangOpts.Sanitize.hasOneOf(
+          SanitizerKind::Address | SanitizerKind::KernelAddress))
     return false;
   const auto &SanitizerBL = getContext().getSanitizerBlacklist();
   if (SanitizerBL.isBlacklistedGlobal(GV->getName(), Category))
@@ -1257,6 +1261,11 @@ bool CodeGenModule::MayBeEmittedEagerly(const ValueDecl *Global) {
       // Implicit template instantiations may change linkage if they are later
       // explicitly instantiated, so they should not be emitted eagerly.
       return false;
+  // If OpenMP is enabled and threadprivates must be generated like TLS, delay
+  // codegen for global variables, because they may be marked as threadprivate.
+  if (LangOpts.OpenMP && LangOpts.OpenMPUseTLS &&
+      getContext().getTargetInfo().isTLSSupported() && isa<VarDecl>(Global))
+    return false;
 
   return true;
 }
@@ -1423,7 +1432,7 @@ namespace {
         return false;
       }
       unsigned BuiltinID = FD->getBuiltinID();
-      if (!BuiltinID)
+      if (!BuiltinID || !BI.isLibFunction(BuiltinID))
         return true;
       StringRef BuiltinName = BI.GetName(BuiltinID);
       if (BuiltinName.startswith("__builtin_") &&
@@ -1883,8 +1892,8 @@ void CodeGenModule::EmitTentativeDefinition(const VarDecl *D) {
 }
 
 CharUnits CodeGenModule::GetTargetTypeStoreSize(llvm::Type *Ty) const {
-    return Context.toCharUnitsFromBits(
-      TheDataLayout.getTypeStoreSizeInBits(Ty));
+  return Context.toCharUnitsFromBits(
+      getDataLayout().getTypeStoreSizeInBits(Ty));
 }
 
 unsigned CodeGenModule::GetGlobalVarAddressSpace(const VarDecl *D,
@@ -3357,6 +3366,8 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
           Owner->getTopLevelModule()->Name == getLangOpts().CurrentModule)
         break;
     }
+    if (CGDebugInfo *DI = getModuleDebugInfo())
+      DI->EmitImportDecl(*Import);
 
     ImportedModules.insert(Import->getImportedModule());
     break;
@@ -3395,7 +3406,7 @@ void CodeGenModule::AddDeferredUnusedCoverageMapping(Decl *D) {
   case Decl::ObjCMethod:
   case Decl::CXXConstructor:
   case Decl::CXXDestructor: {
-    if (!cast<FunctionDecl>(D)->hasBody())
+    if (!cast<FunctionDecl>(D)->doesThisDeclarationHaveABody())
       return;
     auto I = DeferredEmptyCoverageMappingDecls.find(D);
     if (I == DeferredEmptyCoverageMappingDecls.end())
@@ -3658,4 +3669,18 @@ void CodeGenModule::EmitOMPThreadPrivateDecl(const OMPThreadPrivateDecl *D) {
             VD, GetAddrOfGlobalVar(VD), RefExpr->getLocStart(), PerformInit))
       CXXGlobalInits.push_back(InitFunction);
   }
+}
+
+llvm::MDTuple *CodeGenModule::CreateVTableBitSetEntry(
+    llvm::GlobalVariable *VTable, CharUnits Offset, const CXXRecordDecl *RD) {
+  std::string OutName;
+  llvm::raw_string_ostream Out(OutName);
+  getCXXABI().getMangleContext().mangleCXXVTableBitSet(RD, Out);
+
+  llvm::Metadata *BitsetOps[] = {
+      llvm::MDString::get(getLLVMContext(), Out.str()),
+      llvm::ConstantAsMetadata::get(VTable),
+      llvm::ConstantAsMetadata::get(
+          llvm::ConstantInt::get(Int64Ty, Offset.getQuantity()))};
+  return llvm::MDTuple::get(getLLVMContext(), BitsetOps);
 }

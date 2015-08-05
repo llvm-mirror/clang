@@ -70,8 +70,15 @@ namespace clang {
 /// Decl - This represents one declaration (or definition), e.g. a variable,
 /// typedef, function, struct, etc.
 ///
+/// Note: There are objects tacked on before the *beginning* of Decl
+/// (and its subclasses) in its Decl::operator new(). Proper alignment
+/// of all subclasses (not requiring more than DeclObjAlignment) is
+/// asserted in DeclBase.cpp.
 class Decl {
 public:
+  /// \brief Alignment guaranteed when allocating Decl and any subtypes.
+  enum { DeclObjAlignment = llvm::AlignOf<uint64_t>::Alignment };
+
   /// \brief Lists the kind of concrete classes of Decl.
   enum Kind {
 #define DECL(DERIVED, BASE) DERIVED,
@@ -178,7 +185,12 @@ public:
     OBJC_TQ_Out = 0x4,
     OBJC_TQ_Bycopy = 0x8,
     OBJC_TQ_Byref = 0x10,
-    OBJC_TQ_Oneway = 0x20
+    OBJC_TQ_Oneway = 0x20,
+
+    /// The nullability qualifier is set when the nullability of the
+    /// result or parameter was expressed via a context-sensitive
+    /// keyword.
+    OBJC_TQ_CSNullability = 0x40
   };
 
 protected:

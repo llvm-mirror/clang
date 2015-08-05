@@ -31,10 +31,9 @@ using namespace CodeGen;
 typedef llvm::PointerIntPair<llvm::Value*,1,bool> TryEmitResult;
 static TryEmitResult
 tryEmitARCRetainScalarExpr(CodeGenFunction &CGF, const Expr *e);
-static RValue AdjustRelatedResultType(CodeGenFunction &CGF,
-                                      QualType ET,
-                                      const ObjCMethodDecl *Method,
-                                      RValue Result);
+static RValue AdjustObjCObjectType(CodeGenFunction &CGF,
+                                   QualType ET,
+                                   RValue Result);
 
 /// Given the address of a variable of pointer type, find the correct
 /// null to store into it.
@@ -55,13 +54,15 @@ llvm::Value *CodeGenFunction::EmitObjCStringLiteral(const ObjCStringLiteral *E)
 
 /// EmitObjCBoxedExpr - This routine generates code to call
 /// the appropriate expression boxing method. This will either be
-/// one of +[NSNumber numberWith<Type>:], or +[NSString stringWithUTF8String:].
+/// one of +[NSNumber numberWith<Type>:], or +[NSString stringWithUTF8String:],
+/// or [NSValue valueWithBytes:objCType:].
 ///
 llvm::Value *
 CodeGenFunction::EmitObjCBoxedExpr(const ObjCBoxedExpr *E) {
   // Generate the correct selector for this literal's concrete type.
   // Get the method.
   const ObjCMethodDecl *BoxingMethod = E->getBoxingMethod();
+  const Expr *SubExpr = E->getSubExpr();
   assert(BoxingMethod && "BoxingMethod is null");
   assert(BoxingMethod->isClassMethod() && "BoxingMethod must be a class method");
   Selector Sel = BoxingMethod->getSelector();
@@ -74,7 +75,35 @@ CodeGenFunction::EmitObjCBoxedExpr(const ObjCBoxedExpr *E) {
   llvm::Value *Receiver = Runtime.GetClass(*this, ClassDecl);
 
   CallArgList Args;
-  EmitCallArgs(Args, BoxingMethod, E->arg_begin(), E->arg_end());
+  const ParmVarDecl *ArgDecl = *BoxingMethod->param_begin();
+  QualType ArgQT = ArgDecl->getType().getUnqualifiedType();
+  
+  // ObjCBoxedExpr supports boxing of structs and unions 
+  // via [NSValue valueWithBytes:objCType:]
+  const QualType ValueType(SubExpr->getType().getCanonicalType());
+  if (ValueType->isObjCBoxableRecordType()) {
+    // Emit CodeGen for first parameter
+    // and cast value to correct type
+    llvm::Value *Temporary = CreateMemTemp(SubExpr->getType());
+    EmitAnyExprToMem(SubExpr, Temporary, Qualifiers(), /*isInit*/ true);
+    llvm::Value *BitCast = Builder.CreateBitCast(Temporary,
+                                                 ConvertType(ArgQT));
+    Args.add(RValue::get(BitCast), ArgQT);
+
+    // Create char array to store type encoding
+    std::string Str;
+    getContext().getObjCEncodingForType(ValueType, Str);
+    llvm::GlobalVariable *GV = CGM.GetAddrOfConstantCString(Str);
+    
+    // Cast type encoding to correct type
+    const ParmVarDecl *EncodingDecl = BoxingMethod->parameters()[1];
+    QualType EncodingQT = EncodingDecl->getType().getUnqualifiedType();
+    llvm::Value *Cast = Builder.CreateBitCast(GV, ConvertType(EncodingQT));
+
+    Args.add(RValue::get(Cast), EncodingQT);
+  } else {
+    Args.add(EmitAnyExpr(SubExpr), ArgQT);
+  }
 
   RValue result = Runtime.GenerateMessageSend(
       *this, ReturnValueSlot(), BoxingMethod->getReturnType(), Sel, Receiver,
@@ -218,23 +247,22 @@ llvm::Value *CodeGenFunction::EmitObjCProtocolExpr(const ObjCProtocolExpr *E) {
   return CGM.getObjCRuntime().GenerateProtocolRef(*this, E->getProtocol());
 }
 
-/// \brief Adjust the type of the result of an Objective-C message send 
-/// expression when the method has a related result type.
-static RValue AdjustRelatedResultType(CodeGenFunction &CGF,
-                                      QualType ExpT,
-                                      const ObjCMethodDecl *Method,
-                                      RValue Result) {
-  if (!Method)
+/// \brief Adjust the type of an Objective-C object that doesn't match up due
+/// to type erasure at various points, e.g., related result types or the use
+/// of parameterized classes.
+static RValue AdjustObjCObjectType(CodeGenFunction &CGF, QualType ExpT,
+                                   RValue Result) {
+  if (!ExpT->isObjCRetainableType())
     return Result;
 
-  if (!Method->hasRelatedResultType() ||
-      CGF.getContext().hasSameType(ExpT, Method->getReturnType()) ||
-      !Result.isScalar())
+  // If the converted types are the same, we're done.
+  llvm::Type *ExpLLVMTy = CGF.ConvertType(ExpT);
+  if (ExpLLVMTy == Result.getScalarVal()->getType())
     return Result;
-  
-  // We have applied a related result type. Cast the rvalue appropriately.
+
+  // We have applied a substitution. Cast the rvalue appropriately.
   return RValue::get(CGF.Builder.CreateBitCast(Result.getScalarVal(),
-                                               CGF.ConvertType(ExpT)));
+                                               ExpLLVMTy));
 }
 
 /// Decide whether to extend the lifetime of the receiver of a
@@ -362,7 +390,7 @@ RValue CodeGenFunction::EmitObjCMessageExpr(const ObjCMessageExpr *E,
   QualType ResultType = method ? method->getReturnType() : E->getType();
 
   CallArgList Args;
-  EmitCallArgs(Args, method, E->arg_begin(), E->arg_end());
+  EmitCallArgs(Args, method, E->arguments());
 
   // For delegate init calls in ARC, do an unsafe store of null into
   // self.  This represents the call taking direct ownership of that
@@ -419,7 +447,7 @@ RValue CodeGenFunction::EmitObjCMessageExpr(const ObjCMessageExpr *E,
     Builder.CreateStore(newSelf, selfAddr);
   }
 
-  return AdjustRelatedResultType(*this, E->getType(), method, result);
+  return AdjustObjCObjectType(*this, E->getType(), result);
 }
 
 namespace {
@@ -1981,7 +2009,7 @@ CodeGenFunction::EmitARCRetainAutoreleasedReturnValue(llvm::Value *value) {
 
   // Call the marker asm if we made one, which we do only at -O0.
   if (marker)
-    Builder.CreateCall(marker, {});
+    Builder.CreateCall(marker);
 
   return emitARCValueOperation(*this, value,
                      CGM.getARCEntrypoints().objc_retainAutoreleasedReturnValue,
