@@ -31,6 +31,7 @@
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include <algorithm>
 using namespace clang;
 using namespace sema;
 
@@ -3959,6 +3960,11 @@ namespace {
 
 bool UnnamedLocalNoLinkageFinder::VisitBuiltinType(const BuiltinType*) {
   return false;
+}
+
+bool UnnamedLocalNoLinkageFinder::VisitParamPackType(const ParamPackType *T) {
+  return std::all_of(T->getPackTypes().begin(), T->getPackTypes().end(),
+                     [this](QualType const &Q) { return Visit(Q);});
 }
 
 bool UnnamedLocalNoLinkageFinder::VisitComplexType(const ComplexType* T) {

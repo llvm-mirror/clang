@@ -315,6 +315,14 @@ void TypePrinter::printBuiltinBefore(const BuiltinType *T, raw_ostream &OS) {
 }
 void TypePrinter::printBuiltinAfter(const BuiltinType *T, raw_ostream &OS) { }
 
+void TypePrinter::printParamPackBefore(const ParamPackType *T, raw_ostream &OS) {
+  OS << "<"; // mps TODO: Test
+}
+
+void TypePrinter::printParamPackAfter(const ParamPackType *T, raw_ostream &OS) {
+  OS << ">"; // mps TODO: Test
+}
+
 void TypePrinter::printComplexBefore(const ComplexType *T, raw_ostream &OS) {
   OS << "_Complex ";
   printBefore(T->getElementType(), OS);

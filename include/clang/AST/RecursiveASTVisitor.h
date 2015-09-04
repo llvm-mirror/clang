@@ -882,6 +882,11 @@ bool RecursiveASTVisitor<Derived>::TraverseLambdaBody(LambdaExpr *LE) {
 
 DEF_TRAVERSE_TYPE(BuiltinType, {})
 
+DEF_TRAVERSE_TYPE(ParamPackType, {
+  for (QualType &PackType : T->getPackTypes())
+  TRY_TO(TraverseType(PackType));
+})
+
 DEF_TRAVERSE_TYPE(ComplexType, { TRY_TO(TraverseType(T->getElementType())); })
 
 DEF_TRAVERSE_TYPE(PointerType, { TRY_TO(TraverseType(T->getPointeeType())); })
@@ -1061,6 +1066,8 @@ RecursiveASTVisitor<Derived>::TraverseQualifiedTypeLoc(QualifiedTypeLoc TL) {
 
 DEF_TRAVERSE_TYPELOC(BuiltinType, {})
 
+DEF_TRAVERSE_TYPELOC(ParamPackType, {}) // mps TODO
+
 // FIXME: ComplexTypeLoc is unfinished
 DEF_TRAVERSE_TYPELOC(ComplexType, {
   TRY_TO(TraverseType(TL.getTypePtr()->getElementType()));
@@ -1078,7 +1085,7 @@ DEF_TRAVERSE_TYPELOC(LValueReferenceType,
 DEF_TRAVERSE_TYPELOC(RValueReferenceType,
                      { TRY_TO(TraverseTypeLoc(TL.getPointeeLoc())); })
 
-// FIXME: location of base class?
+// FIXME: location of base classf?
 // We traverse this in the type case as well, but how is it not reached through
 // the pointee type?
 DEF_TRAVERSE_TYPELOC(MemberPointerType, {

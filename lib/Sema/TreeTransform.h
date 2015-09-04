@@ -3978,6 +3978,13 @@ QualType TreeTransform<Derived>::TransformBuiltinType(TypeLocBuilder &TLB,
 }
 
 template<typename Derived>
+QualType TreeTransform<Derived>::TransformParamPackType(TypeLocBuilder &TLB,
+                                                        ParamPackTypeLoc T) {
+  assert(false); // mps TODO
+  return QualType();
+}
+
+template<typename Derived>
 QualType TreeTransform<Derived>::TransformComplexType(TypeLocBuilder &TLB,
                                                       ComplexTypeLoc T) {
   // FIXME: recurse?

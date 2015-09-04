@@ -6,6 +6,8 @@ add_subdirectory(clang-fuzzer)
 
 add_subdirectory(c-index-test)
 add_subdirectory(libclang)
+add_subdirectory(reflector)
+add_subdirectory(tooling-sample)
 
 if(CLANG_ENABLE_ARCMT)
   add_subdirectory(arcmt-test)

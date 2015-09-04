@@ -57,7 +57,7 @@
 #include "llvm/Support/Threading.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
-
+#include<algorithm>
 #if LLVM_ENABLE_THREADS != 0 && defined(__APPLE__)
 #define USE_DARWIN_THREADS
 #endif
@@ -1442,6 +1442,10 @@ bool CursorVisitor::VisitLinkageSpecDecl(LinkageSpecDecl *D) {
 
 bool CursorVisitor::VisitQualifiedTypeLoc(QualifiedTypeLoc TL) {
   return Visit(TL.getUnqualifiedLoc());
+}
+
+bool CursorVisitor::VisitParamPackTypeLoc(ParamPackTypeLoc TL) {
+  return false; // mps TODO
 }
 
 bool CursorVisitor::VisitBuiltinTypeLoc(BuiltinTypeLoc TL) {

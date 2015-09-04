@@ -60,6 +60,7 @@
 #endif
 
 TYPE(Builtin, Type)
+TYPE(ParamPack, Type)
 TYPE(Complex, Type)
 TYPE(Pointer, Type)
 TYPE(BlockPointer, Type)
