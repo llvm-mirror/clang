@@ -342,6 +342,17 @@ private:
   typedef llvm::StringMap<llvm::TrackingVH<llvm::Constant> > ReplacementsTy;
   ReplacementsTy Replacements;
 
+  /// List of global values to be replaced with something else. Used when we
+  /// want to replace a GlobalValue but can't identify it by its mangled name
+  /// anymore (because the name is already taken).
+  llvm::SmallVector<std::pair<llvm::GlobalValue *, llvm::Constant *>, 8>
+    GlobalValReplacements;
+
+  /// Set of global decls for which we already diagnosed mangled name conflict.
+  /// Required to not issue a warning (on a mangling conflict) multiple times
+  /// for the same decl.
+  llvm::DenseSet<GlobalDecl> DiagnosedConflictingDefinitions;
+
   /// A queue of (optional) vtables to consider emitting.
   std::vector<const CXXRecordDecl*> DeferredVTables;
 
@@ -682,18 +693,7 @@ public:
     llvm_unreachable("unknown visibility!");
   }
 
-  llvm::Constant *GetAddrOfGlobal(GlobalDecl GD) {
-    if (isa<CXXConstructorDecl>(GD.getDecl()))
-      return getAddrOfCXXStructor(cast<CXXConstructorDecl>(GD.getDecl()),
-                                  getFromCtorType(GD.getCtorType()));
-    else if (isa<CXXDestructorDecl>(GD.getDecl()))
-      return getAddrOfCXXStructor(cast<CXXDestructorDecl>(GD.getDecl()),
-                                  getFromDtorType(GD.getDtorType()));
-    else if (isa<FunctionDecl>(GD.getDecl()))
-      return GetAddrOfFunction(GD);
-    else
-      return GetAddrOfGlobalVar(cast<VarDecl>(GD.getDecl()));
-  }
+  llvm::Constant *GetAddrOfGlobal(GlobalDecl GD, bool IsForDefinition = false);
 
   /// Will return a global variable of the given type. If a variable with a
   /// different type already exists then a new  variable with the right type
@@ -725,7 +725,8 @@ public:
   /// function will use the specified type if it has to create it.
   llvm::Constant *GetAddrOfFunction(GlobalDecl GD, llvm::Type *Ty = 0,
                                     bool ForVTable = false,
-                                    bool DontDefer = false);
+                                    bool DontDefer = false,
+                                    bool IsForDefinition = false);
 
   /// Get the address of the RTTI descriptor for the given type.
   llvm::Constant *GetAddrOfRTTIDescriptor(QualType Ty, bool ForEH = false);
@@ -847,11 +848,11 @@ public:
                                      StructorType Type);
 
   /// Return the address of the constructor/destructor of the given type.
-  llvm::GlobalValue *
+  llvm::Constant *
   getAddrOfCXXStructor(const CXXMethodDecl *MD, StructorType Type,
                        const CGFunctionInfo *FnInfo = nullptr,
                        llvm::FunctionType *FnType = nullptr,
-                       bool DontDefer = false);
+                       bool DontDefer = false, bool IsForDefinition = false);
 
   /// Given a builtin id for a function like "__builtin_fabsf", return a
   /// Function* for "fabsf".
@@ -1098,6 +1099,13 @@ public:
   /// are emitted lazily.
   void EmitGlobal(GlobalDecl D);
 
+  bool
+  HasTrivialDestructorBody(ASTContext &Context,
+                           const CXXRecordDecl *BaseClassDecl,
+                           const CXXRecordDecl *MostDerivedClassDecl);
+  bool
+  FieldHasTrivialDestructorBody(ASTContext &Context, const FieldDecl *Field);
+
   bool TryEmitDefinitionAsAlias(GlobalDecl Alias, GlobalDecl Target,
                                 bool InEveryTU);
   bool TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D);
@@ -1121,6 +1129,8 @@ public:
   void setAliasAttributes(const Decl *D, llvm::GlobalValue *GV);
 
   void addReplacement(StringRef Name, llvm::Constant *C);
+
+  void addGlobalValReplacement(llvm::GlobalValue *GV, llvm::Constant *C);
 
   /// \brief Emit a code for threadprivate directive.
   /// \param D Threadprivate declaration.
@@ -1148,7 +1158,8 @@ private:
   GetOrCreateLLVMFunction(StringRef MangledName, llvm::Type *Ty, GlobalDecl D,
                           bool ForVTable, bool DontDefer = false,
                           bool IsThunk = false,
-                          llvm::AttributeSet ExtraAttrs = llvm::AttributeSet());
+                          llvm::AttributeSet ExtraAttrs = llvm::AttributeSet(),
+                          bool IsForDefinition = false);
 
   llvm::Constant *GetOrCreateLLVMGlobal(StringRef MangledName,
                                         llvm::PointerType *PTy,
@@ -1210,6 +1221,9 @@ private:
 
   /// Call replaceAllUsesWith on all pairs in Replacements.
   void applyReplacements();
+
+  /// Call replaceAllUsesWith on all pairs in GlobalValReplacements.
+  void applyGlobalValReplacements();
 
   void checkAliases();
 

@@ -684,6 +684,7 @@ CXXABI *ASTContext::createCXXABI(const TargetInfo &T) {
   case TargetCXXABI::GenericAArch64:
   case TargetCXXABI::GenericMIPS:
   case TargetCXXABI::GenericItanium:
+  case TargetCXXABI::WebAssembly:
     return CreateItaniumCXXABI(*this);
   case TargetCXXABI::Microsoft:
     return CreateMicrosoftCXXABI(*this);
@@ -8431,6 +8432,7 @@ MangleContext *ASTContext::createMangleContext() {
   case TargetCXXABI::GenericMIPS:
   case TargetCXXABI::iOS:
   case TargetCXXABI::iOS64:
+  case TargetCXXABI::WebAssembly:
     return ItaniumMangleContext::create(*this, getDiagnostics());
   case TargetCXXABI::Microsoft:
     return MicrosoftMangleContext::create(*this, getDiagnostics());
@@ -8547,6 +8549,25 @@ Expr *ASTContext::getDefaultArgExprForConstructor(const CXXConstructorDecl *CD,
                                                   unsigned ParmIdx) {
   return ABI->getDefaultArgExprForConstructor(
       cast<CXXConstructorDecl>(CD->getFirstDecl()), ParmIdx);
+}
+
+void ASTContext::addTypedefNameForUnnamedTagDecl(TagDecl *TD,
+                                                 TypedefNameDecl *DD) {
+  return ABI->addTypedefNameForUnnamedTagDecl(TD, DD);
+}
+
+TypedefNameDecl *
+ASTContext::getTypedefNameForUnnamedTagDecl(const TagDecl *TD) {
+  return ABI->getTypedefNameForUnnamedTagDecl(TD);
+}
+
+void ASTContext::addDeclaratorForUnnamedTagDecl(TagDecl *TD,
+                                                DeclaratorDecl *DD) {
+  return ABI->addDeclaratorForUnnamedTagDecl(TD, DD);
+}
+
+DeclaratorDecl *ASTContext::getDeclaratorForUnnamedTagDecl(const TagDecl *TD) {
+  return ABI->getDeclaratorForUnnamedTagDecl(TD);
 }
 
 void ASTContext::setParameterIndex(const ParmVarDecl *D, unsigned int index) {

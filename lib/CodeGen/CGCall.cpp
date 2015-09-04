@@ -1497,47 +1497,26 @@ void CodeGenModule::ConstructAttributeList(const CGFunctionInfo &FI,
     // parse that and add it to the feature set.
     StringRef TargetCPU = getTarget().getTargetOpts().CPU;
     const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(TargetDecl);
-    if (FD && FD->getAttr<TargetAttr>()) {
+    if (FD && FD->hasAttr<TargetAttr>()) {
       llvm::StringMap<bool> FeatureMap;
       const auto *TD = FD->getAttr<TargetAttr>();
+      TargetAttr::ParsedTargetAttr ParsedAttr = TD->parse();
 
-      // Make a copy of the features as passed on the command line.
-      std::vector<std::string> FnFeatures =
-          getTarget().getTargetOpts().FeaturesAsWritten;
+      // Make a copy of the features as passed on the command line into the
+      // beginning of the additional features from the function to override.
+      ParsedAttr.first.insert(
+          ParsedAttr.first.begin(),
+          getTarget().getTargetOpts().FeaturesAsWritten.begin(),
+          getTarget().getTargetOpts().FeaturesAsWritten.end());
 
-      // Grab the target attribute string.
-      StringRef FeaturesStr = TD->getFeatures();
-      SmallVector<StringRef, 1> AttrFeatures;
-      FeaturesStr.split(AttrFeatures, ",");
+      if (ParsedAttr.second != "")
+	TargetCPU = ParsedAttr.second;
 
-      // Grab the various features and prepend a "+" to turn on the feature to
-      // the backend and add them to our existing set of features.
-      for (auto &Feature : AttrFeatures) {
-        // Go ahead and trim whitespace rather than either erroring or
-        // accepting it weirdly.
-        Feature = Feature.trim();
-
-        // While we're here iterating check for a different target cpu.
-        if (Feature.startswith("arch="))
-          TargetCPU = Feature.split("=").second.trim();
-        else if (Feature.startswith("tune="))
-          // We don't support cpu tuning this way currently.
-          ;
-        else if (Feature.startswith("fpmath="))
-          // TODO: Support the fpmath option this way. It will require checking
-          // overall feature validity for the function with the rest of the
-          // attributes on the function.
-          ;
-        else if (Feature.startswith("no-"))
-          FnFeatures.push_back("-" + Feature.split("-").second.str());
-        else
-          FnFeatures.push_back("+" + Feature.str());
-      }
       // Now populate the feature map, first with the TargetCPU which is either
       // the default or a new one from the target attribute string. Then we'll
       // use the passed in features (FeaturesAsWritten) along with the new ones
       // from the attribute.
-      getTarget().initFeatureMap(FeatureMap, Diags, TargetCPU, FnFeatures);
+      getTarget().initFeatureMap(FeatureMap, Diags, TargetCPU, ParsedAttr.first);
 
       // Produce the canonical string for this set of features.
       std::vector<std::string> Features;

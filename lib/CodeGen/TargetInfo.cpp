@@ -445,6 +445,83 @@ ABIArgInfo DefaultABIInfo::classifyReturnType(QualType RetTy) const {
 }
 
 //===----------------------------------------------------------------------===//
+// WebAssembly ABI Implementation
+//
+// This is a very simple ABI that relies a lot on DefaultABIInfo.
+//===----------------------------------------------------------------------===//
+
+class WebAssemblyABIInfo final : public DefaultABIInfo {
+public:
+  explicit WebAssemblyABIInfo(CodeGen::CodeGenTypes &CGT)
+      : DefaultABIInfo(CGT) {}
+
+private:
+  ABIArgInfo classifyReturnType(QualType RetTy) const;
+  ABIArgInfo classifyArgumentType(QualType Ty) const;
+
+  // DefaultABIInfo's classifyReturnType and classifyArgumentType are
+  // non-virtual, but computeInfo is virtual, so we overload that.
+  void computeInfo(CGFunctionInfo &FI) const override {
+    if (!getCXXABI().classifyReturnType(FI))
+      FI.getReturnInfo() = classifyReturnType(FI.getReturnType());
+    for (auto &Arg : FI.arguments())
+      Arg.info = classifyArgumentType(Arg.type);
+  }
+};
+
+class WebAssemblyTargetCodeGenInfo final : public TargetCodeGenInfo {
+public:
+  explicit WebAssemblyTargetCodeGenInfo(CodeGen::CodeGenTypes &CGT)
+      : TargetCodeGenInfo(new WebAssemblyABIInfo(CGT)) {}
+};
+
+/// \brief Classify argument of given type \p Ty.
+ABIArgInfo WebAssemblyABIInfo::classifyArgumentType(QualType Ty) const {
+  Ty = useFirstFieldIfTransparentUnion(Ty);
+
+  if (isAggregateTypeForABI(Ty)) {
+    // Records with non-trivial destructors/copy-constructors should not be
+    // passed by value.
+    unsigned TypeAlign = getContext().getTypeAlignInChars(Ty).getQuantity();
+    if (auto RAA = getRecordArgABI(Ty, getCXXABI()))
+      return ABIArgInfo::getIndirect(TypeAlign,
+                                     RAA == CGCXXABI::RAA_DirectInMemory);
+    // Ignore empty structs/unions.
+    if (isEmptyRecord(getContext(), Ty, true))
+      return ABIArgInfo::getIgnore();
+    // Lower single-element structs to just pass a regular value. TODO: We
+    // could do reasonable-size multiple-element structs too, using getExpand(),
+    // though watch out for things like bitfields.
+    if (const Type *SeltTy = isSingleElementStruct(Ty, getContext()))
+      return ABIArgInfo::getDirect(CGT.ConvertType(QualType(SeltTy, 0)));
+    return ABIArgInfo::getIndirect(TypeAlign);
+  }
+
+  // Otherwise just do the default thing.
+  return DefaultABIInfo::classifyArgumentType(Ty);
+}
+
+ABIArgInfo WebAssemblyABIInfo::classifyReturnType(QualType RetTy) const {
+  if (isAggregateTypeForABI(RetTy)) {
+    // Records with non-trivial destructors/copy-constructors should not be
+    // returned by value.
+    if (!getRecordArgABI(RetTy, getCXXABI())) {
+      // Ignore empty structs/unions.
+      if (isEmptyRecord(getContext(), RetTy, true))
+        return ABIArgInfo::getIgnore();
+      // Lower single-element structs to just return a regular value. TODO: We
+      // could do reasonable-size multiple-element structs too, using
+      // ABIArgInfo::getDirect().
+      if (const Type *SeltTy = isSingleElementStruct(RetTy, getContext()))
+        return ABIArgInfo::getDirect(CGT.ConvertType(QualType(SeltTy, 0)));
+    }
+  }
+
+  // Otherwise just do the default thing.
+  return DefaultABIInfo::classifyReturnType(RetTy);
+}
+
+//===----------------------------------------------------------------------===//
 // le32/PNaCl bitcode ABI Implementation
 //
 // This is a simplified version of the x86_32 ABI.  Arguments and return values
@@ -4714,6 +4791,16 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty,
     return ABIArgInfo::getIndirect(0, /*ByVal=*/false);
   }
 
+  // __fp16 gets passed as if it were an int or float, but with the top 16 bits
+  // unspecified. This is not done for OpenCL as it handles the half type
+  // natively, and does not need to interwork with AAPCS code.
+  if (Ty->isHalfType() && !getContext().getLangOpts().OpenCL) {
+    llvm::Type *ResType = IsEffectivelyAAPCS_VFP ?
+      llvm::Type::getFloatTy(getVMContext()) :
+      llvm::Type::getInt32Ty(getVMContext());
+    return ABIArgInfo::getDirect(ResType);
+  }
+
   if (!isAggregateTypeForABI(Ty)) {
     // Treat an enum type as its underlying type.
     if (const EnumType *EnumTy = Ty->getAs<EnumType>()) {
@@ -4870,6 +4957,16 @@ ABIArgInfo ARMABIInfo::classifyReturnType(QualType RetTy,
   // Large vector types should be returned via memory.
   if (RetTy->isVectorType() && getContext().getTypeSize(RetTy) > 128) {
     return ABIArgInfo::getIndirect(0);
+  }
+
+  // __fp16 gets returned as if it were an int or float, but with the top 16
+  // bits unspecified. This is not done for OpenCL as it handles the half type
+  // natively, and does not need to interwork with AAPCS code.
+  if (RetTy->isHalfType() && !getContext().getLangOpts().OpenCL) {
+    llvm::Type *ResType = IsEffectivelyAAPCS_VFP ?
+      llvm::Type::getFloatTy(getVMContext()) :
+      llvm::Type::getInt32Ty(getVMContext());
+    return ABIArgInfo::getDirect(ResType);
   }
 
   if (!isAggregateTypeForABI(RetTy)) {
@@ -7134,6 +7231,10 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
 
     return *(TheTargetCodeGenInfo = new AArch64TargetCodeGenInfo(Types, Kind));
   }
+
+  case llvm::Triple::wasm32:
+  case llvm::Triple::wasm64:
+    return *(TheTargetCodeGenInfo = new WebAssemblyTargetCodeGenInfo(Types));
 
   case llvm::Triple::arm:
   case llvm::Triple::armeb:

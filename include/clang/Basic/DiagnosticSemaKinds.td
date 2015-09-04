@@ -416,7 +416,8 @@ def note_unreachable_silence : Note<
 
 /// Built-in functions.
 def ext_implicit_lib_function_decl : ExtWarn<
-  "implicitly declaring library function '%0' with type %1">;
+  "implicitly declaring library function '%0' with type %1">,
+  InGroup<ImplicitFunctionDeclare>;
 def note_include_header_or_declare : Note<
   "include the header <%0> or explicitly provide a declaration for '%1'">;
 def note_previous_builtin_declaration : Note<"%0 is a builtin with type %1">;
@@ -5674,6 +5675,9 @@ def err_throw_incomplete_ptr : Error<
   "cannot throw pointer to object of incomplete type %0">;
 def err_return_in_constructor_handler : Error<
   "return in the catch of a function try block of a constructor is illegal">;
+def warn_cdtor_function_try_handler_mem_expr : Warning<
+  "cannot refer to a non-static member from the handler of a "
+  "%select{constructor|destructor}0 function try block">, InGroup<Exceptions>;
 
 let CategoryName = "Lambda Issue" in {
   def err_capture_more_than_once : Error<
@@ -7691,6 +7695,14 @@ def err_omp_wrong_linear_modifier_non_reference : Error<
   "variable of non-reference type %0 can be used only with 'val' modifier, but used with '%1'">;
 def err_omp_wrong_simdlen_safelen_values : Error<
   "the value of 'simdlen' parameter must be less than or equal to the value of the 'safelen' parameter">;
+def err_omp_wrong_if_directive_name_modifier : Error<
+  "directive name modifier '%0' is not allowed for '#pragma omp %1'">;
+def err_omp_no_more_if_clause : Error<
+  "no more 'if' clause is allowed">;
+def err_omp_unnamed_if_clause : Error<
+  "expected %select{|one of}0 %1 directive name modifier%select{|s}0">;
+def note_omp_previous_named_if_clause : Note<
+  "previous clause with directive name modifier specified here">;
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {

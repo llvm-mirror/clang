@@ -344,7 +344,7 @@ namespace clang {
 
       /// \brief This is so that older clang versions, before the introduction
       /// of the control block, can read and reject the newer PCH format.
-      /// *DON"T CHANGE THIS NUMBER*.
+      /// *DON'T CHANGE THIS NUMBER*.
       METADATA_OLD_FORMAT = 4,
 
       /// \brief Record code for the identifier table.
@@ -1531,5 +1531,24 @@ namespace clang {
     /// @}
   }
 } // end namespace clang
+
+namespace llvm {
+  template <> struct DenseMapInfo<clang::serialization::DeclarationNameKey> {
+    static clang::serialization::DeclarationNameKey getEmptyKey() {
+      return clang::serialization::DeclarationNameKey(-1, 1);
+    }
+    static clang::serialization::DeclarationNameKey getTombstoneKey() {
+      return clang::serialization::DeclarationNameKey(-1, 2);
+    }
+    static unsigned
+    getHashValue(const clang::serialization::DeclarationNameKey &Key) {
+      return Key.getHash();
+    }
+    static bool isEqual(const clang::serialization::DeclarationNameKey &L,
+                        const clang::serialization::DeclarationNameKey &R) {
+      return L == R;
+    }
+  };
+}
 
 #endif

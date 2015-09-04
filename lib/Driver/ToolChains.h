@@ -145,6 +145,12 @@ public:
                                 const std::string &LibDir,
                                 StringRef CandidateTriple,
                                 bool NeedsBiarchSuffix = false);
+
+    void scanLibDirForGCCTripleSolaris(const llvm::Triple &TargetArch,
+                                       const llvm::opt::ArgList &Args,
+                                       const std::string &LibDir,
+                                       StringRef CandidateTriple,
+                                       bool NeedsBiarchSuffix = false);
   };
 
 protected:
@@ -923,6 +929,27 @@ protected:
 private:
   mutable std::unique_ptr<Tool> Compiler;
   mutable std::unique_ptr<Tool> Assembler;
+};
+
+class LLVM_LIBRARY_VISIBILITY WebAssembly final : public ToolChain {
+public:
+  WebAssembly(const Driver &D, const llvm::Triple &Triple,
+              const llvm::opt::ArgList &Args)
+      : ToolChain(D, Triple, Args) {}
+
+private:
+  bool IsMathErrnoDefault() const override;
+  bool IsObjCNonFragileABIDefault() const override;
+  bool UseObjCMixedDispatch() const override;
+  bool isPICDefault() const override;
+  bool isPIEDefault() const override;
+  bool isPICDefaultForced() const override;
+  bool IsIntegratedAssemblerDefault() const override;
+  bool hasBlocksRuntime() const override;
+  bool SupportsObjCGC() const override;
+  bool SupportsProfiling() const override;
+  void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
+                             llvm::opt::ArgStringList &CC1Args) const override;
 };
 
 } // end namespace toolchains

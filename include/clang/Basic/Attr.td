@@ -290,6 +290,8 @@ class Attr {
   // attribute to be applicable. If empty, no language options are required.
   list<LangOpt> LangOpts = [];
   // Any additional text that should be included verbatim in the class.
+  // Note: Any additional data members will leak and should be constructed
+  // externally on the ASTContext.
   code AdditionalMembers = [{}];
   // Any documentation that should be associated with the attribute. Since an
   // attribute may be documented under multiple categories, more than one
@@ -745,18 +747,6 @@ def FlagEnum : InheritableAttr {
   let Subjects = SubjectList<[Enum]>;
   let Documentation = [FlagEnumDocs];
   let LangOpts = [COnly];
-  let AdditionalMembers = [{
-private:
-    llvm::APInt FlagBits;
-public:
-    llvm::APInt &getFlagBits() {
-      return FlagBits;
-    }
-
-    const llvm::APInt &getFlagBits() const {
-      return FlagBits;
-    }
-}];
 }
 
 def Flatten : InheritableAttr {
@@ -1315,9 +1305,41 @@ def Pascal : InheritableAttr {
 
 def Target : InheritableAttr {
   let Spellings = [GCC<"target">];
-  let Args = [StringArgument<"features">];
+  let Args = [StringArgument<"featuresStr">];
   let Subjects = SubjectList<[Function], ErrorDiag>;
   let Documentation = [TargetDocs];
+  let AdditionalMembers = [{
+    typedef std::pair<std::vector<std::string>, StringRef> ParsedTargetAttr;
+    ParsedTargetAttr parse() const {
+      ParsedTargetAttr Ret;
+      SmallVector<StringRef, 1> AttrFeatures;
+      getFeaturesStr().split(AttrFeatures, ",");
+
+      // Grab the various features and prepend a "+" to turn on the feature to
+      // the backend and add them to our existing set of features.
+      for (auto &Feature : AttrFeatures) {
+        // Go ahead and trim whitespace rather than either erroring or
+        // accepting it weirdly.
+        Feature = Feature.trim();
+
+        // We don't support cpu tuning this way currently.
+        // TODO: Support the fpmath option. It will require checking
+        // overall feature validity for the function with the rest of the
+        // attributes on the function.
+        if (Feature.startswith("fpmath=") || Feature.startswith("tune="))
+	  continue;
+
+        // While we're here iterating check for a different target cpu.
+        if (Feature.startswith("arch="))
+          Ret.second = Feature.split("=").second.trim();
+        else if (Feature.startswith("no-"))
+          Ret.first.push_back("-" + Feature.split("-").second.str());
+        else
+          Ret.first.push_back("+" + Feature.str());
+      }
+      return Ret;
+    }
+  }];
 }
 
 def TransparentUnion : InheritableAttr {

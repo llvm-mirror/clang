@@ -484,6 +484,8 @@ static bool isNoCommonDefault(const llvm::Triple &Triple) {
     return false;
 
   case llvm::Triple::xcore:
+  case llvm::Triple::wasm32:
+  case llvm::Triple::wasm64:
     return true;
   }
 }
@@ -1553,6 +1555,25 @@ static const char *getX86TargetCPU(const ArgList &Args,
   }
 }
 
+/// Get the (LLVM) name of the WebAssembly cpu we are targeting.
+static StringRef getWebAssemblyTargetCPU(const ArgList &Args) {
+  // If we have -mcpu=, use that.
+  if (Arg *A = Args.getLastArg(options::OPT_mcpu_EQ)) {
+    StringRef CPU = A->getValue();
+
+#ifdef __wasm__
+    // Handle "native" by examining the host. "native" isn't meaningful when
+    // cross compiling, so only support this when the host is also WebAssembly.
+    if (CPU == "native")
+      return llvm::sys::getHostCPUName();
+#endif
+
+    return CPU;
+  }
+
+  return "generic";
+}
+
 static std::string getCPUName(const ArgList &Args, const llvm::Triple &T,
                               bool FromAs = false) {
   switch (T.getArch()) {
@@ -1625,6 +1646,10 @@ static std::string getCPUName(const ArgList &Args, const llvm::Triple &T,
   case llvm::Triple::r600:
   case llvm::Triple::amdgcn:
     return getR600TargetGPU(Args);
+
+  case llvm::Triple::wasm32:
+  case llvm::Triple::wasm64:
+    return getWebAssemblyTargetCPU(Args);
   }
 }
 
@@ -2074,6 +2099,24 @@ static void getAArch64TargetFeatures(const Driver &D,
     Features.push_back("+reserve-x18");
 }
 
+static void getWebAssemblyTargetFeatures(const ArgList &Args,
+                                         std::vector<const char *> &Features) {
+  for (const Arg *A : Args.filtered(options::OPT_m_wasm_Features_Group)) {
+    StringRef Name = A->getOption().getName();
+    A->claim();
+
+    // Skip over "-m".
+    assert(Name.startswith("m") && "Invalid feature name.");
+    Name = Name.substr(1);
+
+    bool IsNegative = Name.startswith("no-");
+    if (IsNegative)
+      Name = Name.substr(3);
+
+    Features.push_back(Args.MakeArgString((IsNegative ? "-" : "+") + Name));
+  }
+}
+
 static void getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
                               const ArgList &Args, ArgStringList &CmdArgs,
                               bool ForAS) {
@@ -2110,6 +2153,10 @@ static void getTargetFeatures(const Driver &D, const llvm::Triple &Triple,
   case llvm::Triple::x86:
   case llvm::Triple::x86_64:
     getX86TargetFeatures(D, Triple, Args, Features);
+    break;
+  case llvm::Triple::wasm32:
+  case llvm::Triple::wasm64:
+    getWebAssemblyTargetFeatures(Args, Features);
     break;
   }
 
@@ -2335,6 +2382,12 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
       } else if (Value.startswith("-mcpu") || Value.startswith("-mfpu") ||
                  Value.startswith("-mhwdiv") || Value.startswith("-march")) {
         // Do nothing, we'll validate it later.
+      } else if (Value == "--trap") {
+        CmdArgs.push_back("-target-feature");
+        CmdArgs.push_back("+use-tcc-in-div");
+      } else if (Value == "--break") {
+        CmdArgs.push_back("-target-feature");
+        CmdArgs.push_back("-use-tcc-in-div");
       } else {
         D.Diag(diag::err_drv_unsupported_option_argument)
             << A->getOption().getName() << Value;
@@ -2584,9 +2637,15 @@ static bool areOptimizationsEnabled(const ArgList &Args) {
 
 static bool shouldUseFramePointerForTarget(const ArgList &Args,
                                            const llvm::Triple &Triple) {
-  // XCore never wants frame pointers, regardless of OS.
-  if (Triple.getArch() == llvm::Triple::xcore) {
+  switch (Triple.getArch()) {
+  case llvm::Triple::xcore:
+  case llvm::Triple::wasm32:
+  case llvm::Triple::wasm64:
+    // XCore never wants frame pointers, regardless of OS.
+    // WebAssembly never wants frame pointers.
     return false;
+  default:
+    break;
   }
 
   if (Triple.isOSLinux()) {
@@ -4293,9 +4352,19 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-mstack-probe-size=0");
   }
 
-  if (getToolChain().getArch() == llvm::Triple::aarch64 ||
-      getToolChain().getArch() == llvm::Triple::aarch64_be)
+  switch (getToolChain().getArch()) {
+  case llvm::Triple::aarch64:
+  case llvm::Triple::aarch64_be:
+  case llvm::Triple::arm:
+  case llvm::Triple::armeb:
+  case llvm::Triple::thumb:
+  case llvm::Triple::thumbeb:
     CmdArgs.push_back("-fallow-half-arguments-and-returns");
+    break;
+
+  default:
+    break;
+  }
 
   if (Arg *A = Args.getLastArg(options::OPT_mrestrict_it,
                                options::OPT_mno_restrict_it)) {
@@ -6836,25 +6905,6 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
                                    const InputInfoList &Inputs,
                                    const ArgList &Args,
                                    const char *LinkingOutput) const {
-  // FIXME: Find a real GCC, don't hard-code versions here
-  std::string GCCLibPath = "/usr/gcc/4.5/lib/gcc/";
-  const llvm::Triple &T = getToolChain().getTriple();
-  std::string LibPath = "/usr/lib/";
-  const llvm::Triple::ArchType Arch = T.getArch();
-  switch (Arch) {
-  case llvm::Triple::x86:
-    GCCLibPath +=
-        ("i386-" + T.getVendorName() + "-" + T.getOSName()).str() + "/4.5.2/";
-    break;
-  case llvm::Triple::x86_64:
-    GCCLibPath += ("i386-" + T.getVendorName() + "-" + T.getOSName()).str();
-    GCCLibPath += "/4.5.2/amd64/";
-    LibPath += "amd64/";
-    break;
-  default:
-    llvm_unreachable("Unsupported architecture");
-  }
-
   ArgStringList CmdArgs;
 
   // Demangle C++ names in errors
@@ -6875,7 +6925,8 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("-shared");
     } else {
       CmdArgs.push_back("--dynamic-linker");
-      CmdArgs.push_back(Args.MakeArgString(LibPath + "ld.so.1"));
+      CmdArgs.push_back(
+          Args.MakeArgString(getToolChain().GetFilePath("ld.so.1")));
     }
   }
 
@@ -6888,21 +6939,24 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (!Args.hasArg(options::OPT_nostdlib) &&
       !Args.hasArg(options::OPT_nostartfiles)) {
-    if (!Args.hasArg(options::OPT_shared)) {
-      CmdArgs.push_back(Args.MakeArgString(LibPath + "crt1.o"));
-      CmdArgs.push_back(Args.MakeArgString(LibPath + "crti.o"));
-      CmdArgs.push_back(Args.MakeArgString(LibPath + "values-Xa.o"));
-      CmdArgs.push_back(Args.MakeArgString(GCCLibPath + "crtbegin.o"));
-    } else {
-      CmdArgs.push_back(Args.MakeArgString(LibPath + "crti.o"));
-      CmdArgs.push_back(Args.MakeArgString(LibPath + "values-Xa.o"));
-      CmdArgs.push_back(Args.MakeArgString(GCCLibPath + "crtbegin.o"));
-    }
+    if (!Args.hasArg(options::OPT_shared))
+      CmdArgs.push_back(
+          Args.MakeArgString(getToolChain().GetFilePath("crt1.o")));
+
+    CmdArgs.push_back(Args.MakeArgString(getToolChain().GetFilePath("crti.o")));
+    CmdArgs.push_back(
+        Args.MakeArgString(getToolChain().GetFilePath("values-Xa.o")));
+    CmdArgs.push_back(
+        Args.MakeArgString(getToolChain().GetFilePath("crtbegin.o")));
+
     if (getToolChain().getDriver().CCCIsCXX())
-      CmdArgs.push_back(Args.MakeArgString(LibPath + "cxa_finalize.o"));
+      CmdArgs.push_back(
+          Args.MakeArgString(getToolChain().GetFilePath("cxa_finalize.o")));
   }
 
-  CmdArgs.push_back(Args.MakeArgString("-L" + GCCLibPath));
+  const ToolChain::path_list &Paths = getToolChain().getFilePaths();
+  for (const auto &Path : Paths)
+    CmdArgs.push_back(Args.MakeArgString(StringRef("-L") + Path));
 
   Args.AddAllArgs(CmdArgs, {options::OPT_L, options::OPT_T_Group,
                             options::OPT_e, options::OPT_r});
@@ -6923,9 +6977,10 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (!Args.hasArg(options::OPT_nostdlib) &&
       !Args.hasArg(options::OPT_nostartfiles)) {
-    CmdArgs.push_back(Args.MakeArgString(GCCLibPath + "crtend.o"));
+    CmdArgs.push_back(
+        Args.MakeArgString(getToolChain().GetFilePath("crtend.o")));
   }
-  CmdArgs.push_back(Args.MakeArgString(LibPath + "crtn.o"));
+  CmdArgs.push_back(Args.MakeArgString(getToolChain().GetFilePath("crtn.o")));
 
   addProfileRT(getToolChain(), Args, CmdArgs);
 
@@ -9620,6 +9675,7 @@ void tools::SHAVE::Compiler::ConstructJob(Compilation &C, const JobAction &JA,
                    options::OPT_f_Group,
                    options::OPT_f_clang_Group,
                    options::OPT_g_Group,
+                   options::OPT_M_Group,
                    options::OPT_O_Group,
                    options::OPT_W_Group});
   CmdArgs.push_back("-fno-exceptions"); // Always do this even if unspecified.

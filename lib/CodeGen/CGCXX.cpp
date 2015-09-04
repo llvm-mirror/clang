@@ -39,6 +39,12 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
   if (getCodeGenOpts().OptimizationLevel == 0)
     return true;
 
+  // If sanitizing memory to check for use-after-dtor, do not emit as
+  //  an alias, unless this class owns no members.
+  if (getCodeGenOpts().SanitizeMemoryUseAfterDtor &&
+      !D->getParent()->field_empty())
+    return true;
+
   // If the destructor doesn't have a trivial body, we have to emit it
   // separately.
   if (!D->hasTrivialBody())
@@ -207,7 +213,8 @@ llvm::Function *CodeGenModule::codegenCXXStructor(const CXXMethodDecl *MD,
   const CGFunctionInfo &FnInfo =
       getTypes().arrangeCXXStructorDeclaration(MD, Type);
   auto *Fn = cast<llvm::Function>(
-      getAddrOfCXXStructor(MD, Type, &FnInfo, nullptr, true));
+      getAddrOfCXXStructor(MD, Type, &FnInfo, /*FnType=*/nullptr,
+                           /*DontDefer=*/true, /*IsForDefinition=*/true));
 
   GlobalDecl GD;
   if (const auto *DD = dyn_cast<CXXDestructorDecl>(MD)) {
@@ -226,9 +233,9 @@ llvm::Function *CodeGenModule::codegenCXXStructor(const CXXMethodDecl *MD,
   return Fn;
 }
 
-llvm::GlobalValue *CodeGenModule::getAddrOfCXXStructor(
+llvm::Constant *CodeGenModule::getAddrOfCXXStructor(
     const CXXMethodDecl *MD, StructorType Type, const CGFunctionInfo *FnInfo,
-    llvm::FunctionType *FnType, bool DontDefer) {
+    llvm::FunctionType *FnType, bool DontDefer, bool IsForDefinition) {
   GlobalDecl GD;
   if (auto *CD = dyn_cast<CXXConstructorDecl>(MD)) {
     GD = GlobalDecl(CD, toCXXCtorType(Type));
@@ -236,19 +243,15 @@ llvm::GlobalValue *CodeGenModule::getAddrOfCXXStructor(
     GD = GlobalDecl(cast<CXXDestructorDecl>(MD), toCXXDtorType(Type));
   }
 
-  StringRef Name = getMangledName(GD);
-  if (llvm::GlobalValue *Existing = GetGlobalValue(Name))
-    return Existing;
-
   if (!FnType) {
     if (!FnInfo)
       FnInfo = &getTypes().arrangeCXXStructorDeclaration(MD, Type);
     FnType = getTypes().GetFunctionType(*FnInfo);
   }
 
-  return cast<llvm::Function>(GetOrCreateLLVMFunction(Name, FnType, GD,
-                                                      /*ForVTable=*/false,
-                                                      DontDefer));
+  return GetOrCreateLLVMFunction(
+      getMangledName(GD), FnType, GD, /*ForVTable=*/false, DontDefer,
+      /*isThunk=*/false, /*ExtraAttrs=*/llvm::AttributeSet(), IsForDefinition);
 }
 
 static llvm::Value *BuildAppleKextVirtualCall(CodeGenFunction &CGF,

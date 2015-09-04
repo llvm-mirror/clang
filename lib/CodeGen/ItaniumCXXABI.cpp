@@ -354,6 +354,20 @@ public:
   // ARM64 libraries are prepared for non-unique RTTI.
   bool shouldRTTIBeUnique() const override { return false; }
 };
+
+class WebAssemblyCXXABI final : public ItaniumCXXABI {
+public:
+  explicit WebAssemblyCXXABI(CodeGen::CodeGenModule &CGM)
+      : ItaniumCXXABI(CGM, /*UseARMMethodPtrABI=*/true,
+                      /*UseARMGuardVarABI=*/true) {}
+
+private:
+  bool HasThisReturn(GlobalDecl GD) const override {
+    return isa<CXXConstructorDecl>(GD.getDecl()) ||
+           (isa<CXXDestructorDecl>(GD.getDecl()) &&
+            GD.getDtorType() != Dtor_Deleting);
+  }
+};
 }
 
 CodeGen::CGCXXABI *CodeGen::CreateItaniumCXXABI(CodeGenModule &CGM) {
@@ -376,6 +390,9 @@ CodeGen::CGCXXABI *CodeGen::CreateItaniumCXXABI(CodeGenModule &CGM) {
 
   case TargetCXXABI::GenericMIPS:
     return new ItaniumCXXABI(CGM, /* UseARMMethodPtrABI = */ true);
+
+  case TargetCXXABI::WebAssembly:
+    return new WebAssemblyCXXABI(CGM);
 
   case TargetCXXABI::GenericItanium:
     if (CGM.getContext().getTargetInfo().getTriple().getArch()
@@ -1823,10 +1840,12 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
     // If the variable is thread-local, so is its guard variable.
     guard->setThreadLocalMode(var->getThreadLocalMode());
 
-    // The ABI says: It is suggested that it be emitted in the same COMDAT group
-    // as the associated data object
+    // The ABI says: "It is suggested that it be emitted in the same COMDAT
+    // group as the associated data object." In practice, this doesn't work for
+    // non-ELF object formats, so only do it for ELF.
     llvm::Comdat *C = var->getComdat();
-    if (!D.isLocalVarDecl() && C) {
+    if (!D.isLocalVarDecl() && C &&
+        CGM.getTarget().getTriple().isOSBinFormatELF()) {
       guard->setComdat(C);
       CGF.CurFn->setComdat(C);
     } else if (CGM.supportsCOMDAT() && guard->isWeakForLinker()) {
@@ -3298,7 +3317,7 @@ void ItaniumCXXABI::emitCXXStructor(const CXXMethodDecl *MD,
 
     if (CGType == StructorCodegen::RAUW) {
       StringRef MangledName = CGM.getMangledName(CompleteDecl);
-      auto *Aliasee = cast<llvm::GlobalValue>(CGM.GetAddrOfGlobal(BaseDecl));
+      auto *Aliasee = CGM.GetAddrOfGlobal(BaseDecl);
       CGM.addReplacement(MangledName, Aliasee);
       return;
     }
