@@ -307,6 +307,8 @@ private:
       if (Line->First->isOneOf(tok::kw_if, tok::kw_for, tok::kw_switch,
                                tok::kw_while, tok::comment))
         return 0;
+      if (Line->Last->is(tok::comment))
+	return 0;
       Length += I[1 + NumStmts]->Last->TotalLength + 1; // 1 for the space.
     }
     if (NumStmts == 0 || NumStmts == 3 || Length > Limit)
