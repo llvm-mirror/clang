@@ -1562,6 +1562,11 @@ class DependentSizedExtVectorTypeLoc :
                                      DependentSizedExtVectorType> {
 };
 
+class ParamPackTypeLoc : public InheritingConcreteTypeLoc<TypeSpecTypeLoc,
+                                                          ParamPackTypeLoc,
+                                                          ParamPackType> {
+};
+
 // FIXME: location of the '_Complex' keyword.
 class ComplexTypeLoc : public InheritingConcreteTypeLoc<TypeSpecTypeLoc,
                                                         ComplexTypeLoc,

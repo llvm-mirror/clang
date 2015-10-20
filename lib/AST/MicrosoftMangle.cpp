@@ -2136,6 +2136,10 @@ void MicrosoftCXXNameMangler::mangleType(const RValueReferenceType *T,
   mangleType(PointeeType, Range);
 }
 
+void MicrosoftCXXNameMangler::mangleType(const ParamPackType *T,
+                                         Qualifiers Quals, SourceRange Range) { // mps TODO
+
+}
 void MicrosoftCXXNameMangler::mangleType(const ComplexType *T, Qualifiers,
                                          SourceRange Range) {
   DiagnosticsEngine &Diags = Context.getDiags();

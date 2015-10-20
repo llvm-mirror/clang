@@ -5561,6 +5561,11 @@ void TypeLocReader::VisitBuiltinTypeLoc(BuiltinTypeLoc TL) {
     TL.setModeAttr(Record[Idx++]);
   }
 }
+
+void TypeLocReader::VisitParamPackTypeLoc(ParamPackTypeLoc) {
+  // mps TODO
+}
+
 void TypeLocReader::VisitComplexTypeLoc(ComplexTypeLoc TL) {
   TL.setNameLoc(ReadSourceLocation(Record, Idx));
 }

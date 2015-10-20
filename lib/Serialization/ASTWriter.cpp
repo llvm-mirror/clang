@@ -107,6 +107,12 @@ void ASTTypeWriter::VisitBuiltinType(const BuiltinType *T) {
   llvm_unreachable("Built-in types are never serialized");
 }
 
+void ASTTypeWriter::VisitParamPackType(const ParamPackType *T) {
+  for (QualType const &QT : T->getPackTypes())
+    Writer.AddTypeRef(QT, Record);
+  Code = TYPE_PARAM_PACK;
+}
+
 void ASTTypeWriter::VisitComplexType(const ComplexType *T) {
   Writer.AddTypeRef(T->getElementType(), Record);
   Code = TYPE_COMPLEX;
@@ -479,6 +485,11 @@ void TypeLocWriter::VisitBuiltinTypeLoc(BuiltinTypeLoc TL) {
     Record.push_back(TL.hasModeAttr());
   }
 }
+
+void TypeLocWriter::VisitParamPackTypeLoc(ParamPackTypeLoc) {
+  // mps TODO
+}
+
 void TypeLocWriter::VisitComplexTypeLoc(ComplexTypeLoc TL) {
   Writer.AddSourceLocation(TL.getNameLoc(), Record);
 }

@@ -16,7 +16,7 @@
 
 #ifndef LLVM_CLANG_AST_TYPE_H
 #define LLVM_CLANG_AST_TYPE_H
-
+#include <algorithm>
 #include "clang/AST/NestedNameSpecifier.h"
 #include "clang/AST/TemplateName.h"
 #include "clang/Basic/AddressSpaces.h"
@@ -2062,6 +2062,25 @@ public:
   }
 
   static bool classof(const Type *T) { return T->getTypeClass() == Builtin; }
+};
+
+class ParamPackType : public Type, public llvm::FoldingSetNode {
+	SmallVector<QualType, 2> PackTypes;
+    ParamPackType(SmallVectorImpl<QualType> &PackTypes, QualType Canon) :
+      Type(ParamPack, Canon,
+        std::any_of(PackTypes.begin(), PackTypes.end(), [](QualType PackType) { return PackType->isDependentType(); }),
+        std::any_of(PackTypes.begin(), PackTypes.end(), [](QualType PackType) { return PackType->isInstantiationDependentType(); }),
+        std::any_of(PackTypes.begin(), PackTypes.end(), [](QualType PackType) { return PackType->isVariablyModifiedType(); }),
+        std::any_of(PackTypes.begin(), PackTypes.end(), [](QualType PackType) { return PackType->containsUnexpandedParameterPack(); })),
+      PackTypes(PackTypes.begin(), PackTypes.end()) {
+    }
+public:
+  SmallVectorImpl<QualType> &getPackTypes() { return PackTypes; }
+  SmallVectorImpl<QualType> const &getPackTypes() const { return PackTypes; }
+  bool isSugared() const { return false; }
+  QualType desugar() const { return QualType(this, 0); }
+
+  static bool classof(const Type *T) { return T->getTypeClass() == ParamPack; }
 };
 
 /// Complex values, per C99 6.2.5p11.  This supports the C99 complex

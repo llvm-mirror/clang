@@ -2311,6 +2311,16 @@ void CXXNameMangler::mangleType(const RValueReferenceType *T) {
   mangleType(T->getPointeeType());
 }
 
+void CXXNameMangler::mangleType(const ParamPackType *T) {
+  Out << 'p'; // mps TODO is this free
+  bool first = true;
+  for (QualType const &PackType : T->getPackTypes()) {
+    if (!first)
+      Out << '_';
+    mangleType(PackType);
+  }
+}
+
 // <type> ::= C <type>   # complex pair (C 2000)
 void CXXNameMangler::mangleType(const ComplexType *T) {
   Out << 'C';
