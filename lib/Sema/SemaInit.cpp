@@ -443,8 +443,11 @@ ExprResult InitListChecker::PerformEmptyInit(Sema &SemaRef,
         if (!VerifyOnly) {
           SemaRef.Diag(CtorDecl->getLocation(),
                        diag::warn_invalid_initializer_from_system_header);
-          SemaRef.Diag(Entity.getDecl()->getLocation(),
-                       diag::note_used_in_initialization_here);
+          if (Entity.getKind() == InitializedEntity::EK_Member)
+            SemaRef.Diag(Entity.getDecl()->getLocation(),
+                         diag::note_used_in_initialization_here);
+          else if (Entity.getKind() == InitializedEntity::EK_ArrayElement)
+            SemaRef.Diag(Loc, diag::note_used_in_initialization_here);
         }
       }
     }
@@ -802,7 +805,8 @@ void InitListChecker::CheckImplicitInitList(const InitializedEntity &Entity,
     unsigned EndIndex = (Index == StartIndex? StartIndex : Index - 1);
     // Update the structured sub-object initializer so that it's ending
     // range corresponds with the end of the last initializer it used.
-    if (EndIndex < ParentIList->getNumInits()) {
+    if (EndIndex < ParentIList->getNumInits() &&
+        ParentIList->getInit(EndIndex)) {
       SourceLocation EndLoc
         = ParentIList->getInit(EndIndex)->getSourceRange().getEnd();
       StructuredSubobjectInitList->setRBraceLoc(EndLoc);
@@ -3008,6 +3012,7 @@ bool InitializationSequence::isAmbiguous() const {
   case FK_VariableLengthArrayHasInitializer:
   case FK_PlaceholderType:
   case FK_ExplicitConstructor:
+  case FK_AddressOfUnaddressableFunction:
     return false;
 
   case FK_ReferenceInitOverloadFailed:
@@ -3728,7 +3733,9 @@ static void TryListInitialization(Sema &S,
 
   // C++11 [dcl.init.list]p3:
   //   - If T is an aggregate, aggregate initialization is performed.
-  if (DestType->isRecordType() && !DestType->isAggregateType()) {
+  if ((DestType->isRecordType() && !DestType->isAggregateType()) ||
+      (S.getLangOpts().CPlusPlus11 &&
+       S.isStdInitializerList(DestType, nullptr))) {
     if (S.getLangOpts().CPlusPlus11) {
       //   - Otherwise, if the initializer list has no elements and T is a
       //     class type with a default constructor, the object is
@@ -4798,6 +4805,17 @@ InitializationSequence::InitializationSequence(Sema &S,
   InitializeFrom(S, Entity, Kind, Args, TopLevelOfInitList);
 }
 
+/// Tries to get a FunctionDecl out of `E`. If it succeeds and we can take the
+/// address of that function, this returns true. Otherwise, it returns false.
+static bool isExprAnUnaddressableFunction(Sema &S, const Expr *E) {
+  auto *DRE = dyn_cast<DeclRefExpr>(E);
+  if (!DRE || !isa<FunctionDecl>(DRE->getDecl()))
+    return false;
+
+  return !S.checkAddressOfFunctionIsAvailable(
+      cast<FunctionDecl>(DRE->getDecl()));
+}
+
 void InitializationSequence::InitializeFrom(Sema &S,
                                             const InitializedEntity &Entity,
                                             const InitializationKind &Kind,
@@ -4979,7 +4997,7 @@ void InitializationSequence::InitializeFrom(Sema &S,
   }
 
   assert(S.getLangOpts().CPlusPlus);
-      
+
   //     - If the destination type is a (possibly cv-qualified) class type:
   if (DestType->isRecordType()) {
     //     - If the initialization is direct-initialization, or if it is
@@ -5076,6 +5094,9 @@ void InitializationSequence::InitializeFrom(Sema &S,
                !S.ResolveAddressOfOverloadedFunction(Initializer, DestType,
                                                      false, dap))
       SetFailed(InitializationSequence::FK_AddressOfOverloadFailed);
+    else if (Initializer->getType()->isFunctionType() &&
+             isExprAnUnaddressableFunction(S, Initializer))
+      SetFailed(InitializationSequence::FK_AddressOfUnaddressableFunction);
     else
       SetFailed(InitializationSequence::FK_ConversionFailed);
   } else {
@@ -6596,6 +6617,8 @@ InitializationSequence::Perform(Sema &S,
 
     case SK_CAssignment: {
       QualType SourceType = CurInit.get()->getType();
+      // Save off the initial CurInit in case we need to emit a diagnostic
+      ExprResult InitialCurInit = CurInit;
       ExprResult Result = CurInit;
       Sema::AssignConvertType ConvTy =
         S.CheckSingleAssignmentConstraints(Step->Type, Result, true,
@@ -6618,7 +6641,7 @@ InitializationSequence::Perform(Sema &S,
       bool Complained;
       if (S.DiagnoseAssignmentResult(ConvTy, Kind.getLocation(),
                                      Step->Type, SourceType,
-                                     CurInit.get(),
+                                     InitialCurInit.get(),
                                      getAssignmentAction(Entity, true),
                                      &Complained)) {
         PrintInitLocationNote(S, Entity);
@@ -6921,6 +6944,13 @@ bool InitializationSequence::Diagnose(Sema &S,
     break;
   }
 
+  case FK_AddressOfUnaddressableFunction: {
+    auto *FD = cast<FunctionDecl>(cast<DeclRefExpr>(Args[0])->getDecl());
+    S.checkAddressOfFunctionIsAvailable(FD, /*Complain=*/true,
+                                        Args[0]->getLocStart());
+    break;
+  }
+
   case FK_ReferenceInitOverloadFailed:
   case FK_UserConversionOverloadFailed:
     switch (FailedOverloadResult) {
@@ -6943,6 +6973,7 @@ bool InitializationSequence::Diagnose(Sema &S,
                           diag::err_typecheck_nonviable_condition_incomplete,
                                Args[0]->getType(), Args[0]->getSourceRange()))
         S.Diag(Kind.getLocation(), diag::err_typecheck_nonviable_condition)
+          << (Entity.getKind() == InitializedEntity::EK_Result)
           << Args[0]->getType() << Args[0]->getSourceRange()
           << DestType.getNonReferenceType();
 
@@ -7043,10 +7074,12 @@ bool InitializationSequence::Diagnose(Sema &S,
     SourceRange R;
 
     auto *InitList = dyn_cast<InitListExpr>(Args[0]);
-    if (InitList && InitList->getNumInits() == 1)
+    if (InitList && InitList->getNumInits() >= 1) {
       R = SourceRange(InitList->getInit(0)->getLocEnd(), InitList->getLocEnd());
-    else
+    } else {
+      assert(Args.size() > 1 && "Expected multiple initializers!");
       R = SourceRange(Args.front()->getLocEnd(), Args.back()->getLocEnd());
+    }
 
     R.setBegin(S.getLocForEndOfToken(R.getBegin()));
     if (Kind.isCStyleOrFunctionalCast())
@@ -7238,6 +7271,10 @@ void InitializationSequence::dump(raw_ostream &OS) const {
 
     case FK_ArrayNeedsInitList:
       OS << "array requires initializer list";
+      break;
+
+    case FK_AddressOfUnaddressableFunction:
+      OS << "address of unaddressable function was taken";
       break;
 
     case FK_ArrayNeedsInitListOrStringLiteral:

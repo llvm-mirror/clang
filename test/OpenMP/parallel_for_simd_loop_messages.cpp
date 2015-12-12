@@ -54,32 +54,32 @@ int test_iteration_spaces() {
   for (double fi = 0; fi < 10.0; fi++) {
     c[(int)fi] = a[(int)fi] + b[(int)fi];
   }
-// expected-error@+2 {{variable must be of integer or random access iterator type}}
+// expected-error@+2 {{initialization clause of OpenMP for loop is not in canonical form ('var = init' or 'T var = init')}}
 #pragma omp parallel for simd
   for (int &ref = ii; ref < 10; ref++) {
   }
-// expected-error@+2 {{initialization clause of OpenMP for loop must be of the form 'var = init' or 'T var = init'}}
+// expected-error@+2 {{initialization clause of OpenMP for loop is not in canonical form ('var = init' or 'T var = init')}}
 #pragma omp parallel for simd
   for (int i; i < 10; i++)
     c[i] = a[i];
 
-// expected-error@+2 {{initialization clause of OpenMP for loop must be of the form 'var = init' or 'T var = init'}}
+// expected-error@+2 {{initialization clause of OpenMP for loop is not in canonical form ('var = init' or 'T var = init')}}
 #pragma omp parallel for simd
   for (int i = 0, j = 0; i < 10; ++i)
     c[i] = a[i];
 
-// expected-error@+2 {{initialization clause of OpenMP for loop must be of the form 'var = init' or 'T var = init'}}
+// expected-error@+2 {{initialization clause of OpenMP for loop is not in canonical form ('var = init' or 'T var = init')}}
 #pragma omp parallel for simd
   for (; ii < 10; ++ii)
     c[ii] = a[ii];
 
 // expected-warning@+3 {{expression result unused}}
-// expected-error@+2 {{initialization clause of OpenMP for loop must be of the form 'var = init' or 'T var = init'}}
+// expected-error@+2 {{initialization clause of OpenMP for loop is not in canonical form ('var = init' or 'T var = init')}}
 #pragma omp parallel for simd
   for (ii + 1; ii < 10; ++ii)
     c[ii] = a[ii];
 
-// expected-error@+2 {{initialization clause of OpenMP for loop must be of the form 'var = init' or 'T var = init'}}
+// expected-error@+2 {{initialization clause of OpenMP for loop is not in canonical form ('var = init' or 'T var = init')}}
 #pragma omp parallel for simd
   for (c[ii] = 0; ii < 10; ++ii)
     c[ii] = a[ii];
@@ -353,12 +353,12 @@ public:
   typedef int difference_type;
   typedef std::random_access_iterator_tag iterator_category;
 };
-// expected-note@+2 {{candidate function not viable: no known conversion from 'const Iter0' to 'GoodIter' for 2nd argument}}
+// expected-note@+2 {{candidate function not viable: no known conversion from 'Iter0' to 'GoodIter' for 2nd argument}}
 // expected-note@+1 2 {{candidate function not viable: no known conversion from 'Iter1' to 'GoodIter' for 1st argument}}
 int operator-(GoodIter a, GoodIter b) { return 0; }
 // expected-note@+1 3 {{candidate function not viable: requires single argument 'a', but 2 arguments were provided}}
 GoodIter operator-(GoodIter a) { return a; }
-// expected-note@+2 {{candidate function not viable: no known conversion from 'const Iter0' to 'int' for 2nd argument}}
+// expected-note@+2 {{candidate function not viable: no known conversion from 'Iter0' to 'int' for 2nd argument}}
 // expected-note@+1 2 {{candidate function not viable: no known conversion from 'Iter1' to 'GoodIter' for 1st argument}}
 GoodIter operator-(GoodIter a, int v) { return GoodIter(); }
 // expected-note@+1 2 {{candidate function not viable: no known conversion from 'Iter0' to 'GoodIter' for 1st argument}}
@@ -375,7 +375,7 @@ int test_with_random_access_iterator() {
 #pragma omp parallel for simd
   for (GoodIter I = begin; I < end; ++I)
     ++I;
-// expected-error@+2 {{variable must be of integer or random access iterator type}}
+// expected-error@+2 {{initialization clause of OpenMP for loop is not in canonical form ('var = init' or 'T var = init')}}
 #pragma omp parallel for simd
   for (GoodIter &I = begin; I < end; ++I)
     ++I;
@@ -401,12 +401,12 @@ int test_with_random_access_iterator() {
 #pragma omp parallel for simd
   for (begin = GoodIter(0); begin < end; ++begin)
     ++begin;
-// expected-error@+3 {{invalid operands to binary expression ('GoodIter' and 'const Iter0')}}
+// expected-error@+3 {{invalid operands to binary expression ('GoodIter' and 'Iter0')}}
 // expected-error@+2 {{could not calculate number of iterations calling 'operator-' with upper and lower loop bounds}}
 #pragma omp parallel for simd
   for (begin = begin0; begin < end; ++begin)
     ++begin;
-// expected-error@+2 {{initialization clause of OpenMP for loop must be of the form 'var = init' or 'T var = init'}}
+// expected-error@+2 {{initialization clause of OpenMP for loop is not in canonical form ('var = init' or 'T var = init')}}
 #pragma omp parallel for simd
   for (++begin; begin < end; ++begin)
     ++begin;

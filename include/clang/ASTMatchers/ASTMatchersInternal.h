@@ -668,16 +668,30 @@ private:
     return matchesDecl(Node.getDecl(), Finder, Builder);
   }
 
-  /// \brief Extracts the CXXRecordDecl or EnumDecl of a QualType and returns
-  /// whether the inner matcher matches on it.
+  /// \brief Extracts the TagDecl of a QualType and returns whether the inner
+  /// matcher matches on it.
   bool matchesSpecialized(const QualType &Node, ASTMatchFinder *Finder,
                           BoundNodesTreeBuilder *Builder) const {
-    /// FIXME: Add other ways to convert...
     if (Node.isNull())
       return false;
-    if (const EnumType *AsEnum = dyn_cast<EnumType>(Node.getTypePtr()))
-      return matchesDecl(AsEnum->getDecl(), Finder, Builder);
-    return matchesDecl(Node->getAsCXXRecordDecl(), Finder, Builder);
+
+    if (auto *TD = Node->getAsTagDecl())
+      return matchesDecl(TD, Finder, Builder);
+    else if (auto *TT = Node->getAs<TypedefType>())
+      return matchesDecl(TT->getDecl(), Finder, Builder);
+    // Do not use getAs<TemplateTypeParmType> instead of the direct dyn_cast.
+    // Calling getAs will return the canonical type, but that type does not
+    // store a TemplateTypeParmDecl. We *need* the uncanonical type, if it is
+    // available, and using dyn_cast ensures that.
+    else if (auto *TTP = dyn_cast<TemplateTypeParmType>(Node.getTypePtr()))
+      return matchesDecl(TTP->getDecl(), Finder, Builder);
+    else if (auto *OCIT = Node->getAs<ObjCInterfaceType>())
+      return matchesDecl(OCIT->getDecl(), Finder, Builder);
+    else if (auto *UUT = Node->getAs<UnresolvedUsingType>())
+      return matchesDecl(UUT->getDecl(), Finder, Builder);
+    else if (auto *ICNT = Node->getAs<InjectedClassNameType>())
+      return matchesDecl(ICNT->getDecl(), Finder, Builder);
+    return false;
   }
 
   /// \brief Gets the TemplateDecl from a TemplateSpecializationType
@@ -834,8 +848,10 @@ public:
                          BoundNodesTreeBuilder *Builder,
                          AncestorMatchMode MatchMode) {
     static_assert(std::is_base_of<Decl, T>::value ||
-                  std::is_base_of<Stmt, T>::value,
-                  "only Decl or Stmt allowed for recursive matching");
+                      std::is_base_of<NestedNameSpecifierLoc, T>::value ||
+                      std::is_base_of<Stmt, T>::value ||
+                      std::is_base_of<TypeLoc, T>::value,
+                  "type not allowed for recursive matching");
     return matchesAncestorOf(ast_type_traits::DynTypedNode::create(Node),
                              Matcher, Builder, MatchMode);
   }

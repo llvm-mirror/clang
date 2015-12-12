@@ -389,3 +389,51 @@ template void fn_tmpl<extern_c_func>();
 
 extern "C" void __attribute__((overloadable)) overloaded_fn() {}
 // CHECK-DAG: @"\01?overloaded_fn@@$$J0YAXXZ"
+
+namespace UnnamedType {
+struct S {
+  typedef struct {} *T1[1];
+  typedef struct {} T2;
+  typedef struct {} *T3, T4;
+  using T5 = struct {};
+  using T6 = struct {} *;
+};
+void f(S::T1) {}
+void f(S::T2) {}
+void f(S::T3) {}
+void f(S::T4) {}
+void f(S::T5) {}
+void f(S::T6) {}
+// CHECK-DAG: @"\01?f@UnnamedType@@YAXQAPAU<unnamed-type-T1>@S@1@@Z"
+// CHECK-DAG: @"\01?f@UnnamedType@@YAXUT2@S@1@@Z"
+// CHECK-DAG: @"\01?f@UnnamedType@@YAXPAUT4@S@1@@Z"
+// CHECK-DAG: @"\01?f@UnnamedType@@YAXUT4@S@1@@Z"
+// CHECK-DAG: @"\01?f@UnnamedType@@YAXUT5@S@1@@Z"
+// CHECK-DAG: @"\01?f@UnnamedType@@YAXPAU<unnamed-type-T6>@S@1@@Z"
+
+// X64-DAG: @"\01?f@UnnamedType@@YAXQEAPEAU<unnamed-type-T1>@S@1@@Z"
+// X64-DAG: @"\01?f@UnnamedType@@YAXUT2@S@1@@Z"
+// X64-DAG: @"\01?f@UnnamedType@@YAXPEAUT4@S@1@@Z"(%"struct.UnnamedType::S::T4"
+// X64-DAG: @"\01?f@UnnamedType@@YAXUT4@S@1@@Z"
+// X64-DAG: @"\01?f@UnnamedType@@YAXUT5@S@1@@Z"
+// X64-DAG: @"\01?f@UnnamedType@@YAXPEAU<unnamed-type-T6>@S@1@@Z"
+}
+
+namespace PassObjectSize {
+// NOTE: This mangling is subject to change.
+// Reiterating from the comment in MicrosoftMangle, the scheme is pretend a
+// parameter of type __clang::__pass_object_sizeN exists after each pass object
+// size param P, where N is the Type of the pass_object_size attribute on P.
+//
+// e.g. we want to mangle:
+//   void foo(void *const __attribute__((pass_object_size(0))));
+// as if it were
+//   namespace __clang { enum __pass_object_size0 : size_t {}; }
+//   void foo(void *const, __clang::__pass_object_size0);
+// where __clang is a top-level namespace.
+
+// CHECK-DAG: define i32 @"\01?foo@PassObjectSize@@YAHQAHW4__pass_object_size0@__clang@@@Z"
+int foo(int *const i __attribute__((pass_object_size(0)))) { return 0; }
+// CHECK-DAG: define i32 @"\01?bar@PassObjectSize@@YAHQAHW4__pass_object_size1@__clang@@@Z"
+int bar(int *const i __attribute__((pass_object_size(1)))) { return 0; }
+}

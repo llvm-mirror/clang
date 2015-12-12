@@ -33,7 +33,6 @@ CODEGENOPT(CompressDebugSections, 1, 0) ///< -Wa,-compress-debug-sections
 CODEGENOPT(Autolink          , 1, 1) ///< -fno-autolink
 CODEGENOPT(AsmVerbose        , 1, 0) ///< -dA, -fverbose-asm.
 CODEGENOPT(ObjCAutoRefCountExceptions , 1, 0) ///< Whether ARC should be EH-safe.
-CODEGENOPT(NewMSEH           , 1, 0) ///< Whether we should use the new IR representation for MS exceptions
 CODEGENOPT(CoverageExtraChecksum, 1, 0) ///< Whether we need a second checksum for functions in GCNO files.
 CODEGENOPT(CoverageNoFunctionNamesInData, 1, 0) ///< Do not include function names in GCDA files.
 CODEGENOPT(CoverageExitBlockBeforeBody, 1, 0) ///< Whether to emit the exit block before the body blocks in GCNO files.
@@ -74,6 +73,8 @@ CODEGENOPT(LessPreciseFPMAD  , 1, 0) ///< Enable less precise MAD instructions t
                                      ///< be generated.
 CODEGENOPT(PrepareForLTO     , 1, 0) ///< Set when -flto is enabled on the
                                      ///< compile step.
+CODEGENOPT(EmitFunctionSummary, 1, 0) ///< Set when -flto=thin is enabled on the
+                                      ///< compile step.
 CODEGENOPT(MergeAllConstants , 1, 1) ///< Merge identical constants.
 CODEGENOPT(MergeFunctions    , 1, 0) ///< Set when -fmerge-functions is enabled.
 CODEGENOPT(MSVolatile        , 1, 0) ///< Set when /volatile:ms is enabled.
@@ -132,6 +133,7 @@ CODEGENOPT(SanitizeCoverage8bitCounters, 1, 0) ///< Use 8-bit frequency counters
 CODEGENOPT(SimplifyLibCalls  , 1, 1) ///< Set when -fbuiltin is enabled.
 CODEGENOPT(SoftFloat         , 1, 0) ///< -soft-float.
 CODEGENOPT(StrictEnums       , 1, 0) ///< Optimize based on strict enum definition.
+CODEGENOPT(StrictVTablePointers, 1, 0) ///< Optimize based on the strict vtable pointers
 CODEGENOPT(TimePasses        , 1, 0) ///< Set when -ftime-report is enabled.
 CODEGENOPT(UnitAtATime       , 1, 1) ///< Unused. For mirroring GCC optimization
                                      ///< selection.
@@ -150,7 +152,7 @@ CODEGENOPT(UseRegisterSizedBitfieldAccess , 1, 0)
 CODEGENOPT(VerifyModule      , 1, 1) ///< Control whether the module should be run
                                      ///< through the LLVM Verifier.
 
-CODEGENOPT(StackRealignment  , 1, 0) ///< Control whether to permit stack
+CODEGENOPT(StackRealignment  , 1, 0) ///< Control whether to force stack
                                      ///< realignment.
 CODEGENOPT(UseInitArray      , 1, 0) ///< Control whether to use .init_array or
                                      ///< .ctors.
@@ -160,6 +162,9 @@ VALUE_CODEGENOPT(StackProbeSize    , 32, 4096) ///< Overrides default stack
                                                ///< probe size, even if 0.
 CODEGENOPT(DebugColumnInfo, 1, 0) ///< Whether or not to use column information
                                   ///< in debug info.
+
+CODEGENOPT(DebugTypeExtRefs, 1, 0) ///< Whether or not debug info should contain
+                                   ///< external references to a PCH or module.
 
 CODEGENOPT(EmitLLVMUseLists, 1, 0) ///< Control whether to serialize use-lists.
 
@@ -173,8 +178,13 @@ VALUE_CODEGENOPT(SSPBufferSize, 32, 0)
 /// The kind of generated debug info.
 ENUM_CODEGENOPT(DebugInfo, DebugInfoKind, 3, NoDebugInfo)
 
-/// Dwarf version.
+/// Dwarf version. Version zero indicates to LLVM that no DWARF should be
+/// emitted.
 VALUE_CODEGENOPT(DwarfVersion, 3, 0)
+
+/// Whether we should emit CodeView debug information. It's possible to emit
+/// CodeView and DWARF into the same object.
+CODEGENOPT(EmitCodeView, 1, 0)
 
 /// The kind of inlining to perform.
 ENUM_CODEGENOPT(Inlining, InliningMethod, 2, NoInlining)

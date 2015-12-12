@@ -215,6 +215,7 @@ void InitHeaderSearch::AddDefaultCIncludePaths(const llvm::Triple &triple,
     case llvm::Triple::OpenBSD:
     case llvm::Triple::Bitrig:
     case llvm::Triple::NaCl:
+    case llvm::Triple::PS4:
       break;
     case llvm::Triple::Win32:
       if (triple.getEnvironment() != llvm::Triple::Cygnus)
@@ -246,10 +247,8 @@ void InitHeaderSearch::AddDefaultCIncludePaths(const llvm::Triple &triple,
   if (CIncludeDirs != "") {
     SmallVector<StringRef, 5> dirs;
     CIncludeDirs.split(dirs, ":");
-    for (SmallVectorImpl<StringRef>::iterator i = dirs.begin();
-         i != dirs.end();
-         ++i)
-      AddPath(*i, ExternCSystem, false);
+    for (StringRef dir : dirs)
+      AddPath(dir, ExternCSystem, false);
     return;
   }
 
@@ -320,6 +319,28 @@ void InitHeaderSearch::AddDefaultCIncludePaths(const llvm::Triple &triple,
   case llvm::Triple::RTEMS:
   case llvm::Triple::NaCl:
     break;
+  case llvm::Triple::PS4: {
+    // <isysroot> gets prepended later in AddPath().
+    std::string BaseSDKPath = "";
+    if (!HasSysroot) {
+      const char *envValue = getenv("SCE_PS4_SDK_DIR");
+      if (envValue)
+        BaseSDKPath = envValue;
+      else {
+        // HSOpts.ResourceDir variable contains the location of Clang's
+        // resource files.
+        // Assuming that Clang is configured for PS4 without
+        // --with-clang-resource-dir option, the location of Clang's resource
+        // files is <SDK_DIR>/host_tools/lib/clang
+        SmallString<128> P = StringRef(HSOpts.ResourceDir);
+        llvm::sys::path::append(P, "../../..");
+        BaseSDKPath = P.str();
+      }
+    }
+    AddPath(BaseSDKPath + "/target/include", System, false);
+    if (triple.isPS4CPU())
+      AddPath(BaseSDKPath + "/target/include_common", System, false);
+  }
   default:
     AddPath("/usr/include", ExternCSystem, false);
     break;
@@ -404,10 +425,6 @@ AddDefaultCPlusPlusIncludePaths(const llvm::Triple &triple, const HeaderSearchOp
     AddGnuCPlusPlusIncludePaths("/usr/gnu/include/c++/4.4.3",
                                 "", "", "", triple);
     break;
-  case llvm::Triple::Solaris:
-    AddGnuCPlusPlusIncludePaths("/usr/gcc/4.5/include/c++/4.5.2/",
-                                "i386-pc-solaris2.11", "", "", triple);
-    break;
   default:
     break;
   }
@@ -453,11 +470,6 @@ void InitHeaderSearch::AddDefaultIncludePaths(const LangOptions &Lang,
           AddUnmappedPath(P, CXXSystem, false);
         }
       }
-      // On Solaris, include the support directory for things like xlocale and
-      // fudged system headers.
-      if (triple.getOS() == llvm::Triple::Solaris) 
-        AddPath("/usr/include/c++/v1/support/solaris", CXXSystem, false);
-      
       AddPath("/usr/include/c++/v1", CXXSystem, false);
     } else {
       AddDefaultCPlusPlusIncludePaths(triple, HSOpts);
@@ -568,39 +580,33 @@ void InitHeaderSearch::Realize(const LangOptions &Lang) {
   SearchList.reserve(IncludePath.size());
 
   // Quoted arguments go first.
-  for (path_iterator it = IncludePath.begin(), ie = IncludePath.end();
-       it != ie; ++it) {
-    if (it->first == Quoted)
-      SearchList.push_back(it->second);
-  }
+  for (auto &Include : IncludePath)
+    if (Include.first == Quoted)
+      SearchList.push_back(Include.second);
+
   // Deduplicate and remember index.
   RemoveDuplicates(SearchList, 0, Verbose);
   unsigned NumQuoted = SearchList.size();
 
-  for (path_iterator it = IncludePath.begin(), ie = IncludePath.end();
-       it != ie; ++it) {
-    if (it->first == Angled || it->first == IndexHeaderMap)
-      SearchList.push_back(it->second);
-  }
+  for (auto &Include : IncludePath)
+    if (Include.first == Angled || Include.first == IndexHeaderMap)
+      SearchList.push_back(Include.second);
 
   RemoveDuplicates(SearchList, NumQuoted, Verbose);
   unsigned NumAngled = SearchList.size();
 
-  for (path_iterator it = IncludePath.begin(), ie = IncludePath.end();
-       it != ie; ++it) {
-    if (it->first == System || it->first == ExternCSystem ||
-        (!Lang.ObjC1 && !Lang.CPlusPlus && it->first == CSystem)    ||
-        (/*FIXME !Lang.ObjC1 && */Lang.CPlusPlus  && it->first == CXXSystem)  ||
-        (Lang.ObjC1  && !Lang.CPlusPlus && it->first == ObjCSystem) ||
-        (Lang.ObjC1  && Lang.CPlusPlus  && it->first == ObjCXXSystem))
-      SearchList.push_back(it->second);
-  }
+  for (auto &Include : IncludePath)
+    if (Include.first == System || Include.first == ExternCSystem ||
+        (!Lang.ObjC1 && !Lang.CPlusPlus && Include.first == CSystem) ||
+        (/*FIXME !Lang.ObjC1 && */ Lang.CPlusPlus &&
+         Include.first == CXXSystem) ||
+        (Lang.ObjC1 && !Lang.CPlusPlus && Include.first == ObjCSystem) ||
+        (Lang.ObjC1 && Lang.CPlusPlus && Include.first == ObjCXXSystem))
+      SearchList.push_back(Include.second);
 
-  for (path_iterator it = IncludePath.begin(), ie = IncludePath.end();
-       it != ie; ++it) {
-    if (it->first == After)
-      SearchList.push_back(it->second);
-  }
+  for (auto &Include : IncludePath)
+    if (Include.first == After)
+      SearchList.push_back(Include.second);
 
   // Remove duplicates across both the Angled and System directories.  GCC does
   // this and failing to remove duplicates across these two groups breaks

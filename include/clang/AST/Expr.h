@@ -62,7 +62,6 @@ struct SubobjectAdjustment {
     MemberPointerAdjustment
   } Kind;
 
-
   struct DTB {
     const CastExpr *BasePath;
     const CXXRecordDecl *DerivedClass;
@@ -149,8 +148,6 @@ public:
   /// \brief Set whether this expression is value-dependent or not.
   void setValueDependent(bool VD) {
     ExprBits.ValueDependent = VD;
-    if (VD)
-      ExprBits.InstantiationDependent = true;
   }
 
   /// isTypeDependent - Determines whether this expression is
@@ -169,8 +166,6 @@ public:
   /// \brief Set whether this expression is type-dependent or not.
   void setTypeDependent(bool TD) {
     ExprBits.TypeDependent = TD;
-    if (TD)
-      ExprBits.InstantiationDependent = true;
   }
 
   /// \brief Whether this expression is instantiation-dependent, meaning that
@@ -459,6 +454,10 @@ public:
   /// \brief Returns whether this expression refers to a vector element.
   bool refersToVectorElement() const;
 
+  /// \brief Returns whether this expression refers to a global register
+  /// variable.
+  bool refersToGlobalRegisterVar() const;
+
   /// \brief Returns whether this expression has a placeholder type.
   bool hasPlaceholderType() const {
     return getType()->isPlaceholderType();
@@ -530,9 +529,14 @@ public:
 
   /// EvalStatus is a struct with detailed info about an evaluation in progress.
   struct EvalStatus {
-    /// HasSideEffects - Whether the evaluated expression has side effects.
+    /// \brief Whether the evaluated expression has side effects.
     /// For example, (f() && 0) can be folded, but it still has side effects.
     bool HasSideEffects;
+
+    /// \brief Whether the evaluation hit undefined behavior.
+    /// For example, 1.0 / 0.0 can be folded to Inf, but has undefined behavior.
+    /// Likewise, INT_MAX + 1 can be folded to INT_MIN, but has UB.
+    bool HasUndefinedBehavior;
 
     /// Diag - If this is non-null, it will be filled in with a stack of notes
     /// indicating why evaluation failed (or why it failed to produce a constant
@@ -543,7 +547,8 @@ public:
     /// expression *is* a constant expression, no notes will be produced.
     SmallVectorImpl<PartialDiagnosticAt> *Diag;
 
-    EvalStatus() : HasSideEffects(false), Diag(nullptr) {}
+    EvalStatus()
+        : HasSideEffects(false), HasUndefinedBehavior(false), Diag(nullptr) {}
 
     // hasSideEffects - Return true if the evaluated expression has
     // side effects.
@@ -576,7 +581,12 @@ public:
   /// side-effects.
   bool EvaluateAsBooleanCondition(bool &Result, const ASTContext &Ctx) const;
 
-  enum SideEffectsKind { SE_NoSideEffects, SE_AllowSideEffects };
+  enum SideEffectsKind {
+    SE_NoSideEffects,          ///< Strictly evaluate the expression.
+    SE_AllowUndefinedBehavior, ///< Allow UB that we can give a value, but not
+                               ///< arbitrary unmodeled side effects.
+    SE_AllowSideEffects        ///< Allow any unmodeled side effect.
+  };
 
   /// EvaluateAsInt - Return true if this is a constant which we can fold and
   /// convert to an integer, using any crazy technique that we want to.
@@ -585,7 +595,8 @@ public:
 
   /// isEvaluatable - Call EvaluateAsRValue to see if this expression can be
   /// constant folded without side-effects, but discard the result.
-  bool isEvaluatable(const ASTContext &Ctx) const;
+  bool isEvaluatable(const ASTContext &Ctx,
+                     SideEffectsKind AllowSideEffects = SE_NoSideEffects) const;
 
   /// HasSideEffects - This routine returns true for all those expressions
   /// which have any effect other than producing a value. Example is a function
@@ -628,6 +639,16 @@ public:
   bool EvaluateWithSubstitution(APValue &Value, ASTContext &Ctx,
                                 const FunctionDecl *Callee,
                                 ArrayRef<const Expr*> Args) const;
+
+  /// \brief If the current Expr is a pointer, this will try to statically
+  /// determine the number of bytes available where the pointer is pointing.
+  /// Returns true if all of the above holds and we were able to figure out the
+  /// size, false otherwise.
+  ///
+  /// \param Type - How to evaluate the size of the Expr, as defined by the
+  /// "type" parameter of __builtin_object_size
+  bool tryEvaluateObjectSize(uint64_t &Result, ASTContext &Ctx,
+                             unsigned Type) const;
 
   /// \brief Enumeration used to describe the kind of Null pointer constant
   /// returned from \c isNullPointerConstant().
@@ -806,7 +827,6 @@ public:
            T->getStmtClass() <= lastExprConstant;
   }
 };
-
 
 //===----------------------------------------------------------------------===//
 // Primary Expressions.
@@ -1611,13 +1631,15 @@ public:
   /// and can have escape sequences in them in addition to the usual trigraph
   /// and escaped newline business.  This routine handles this complexity.
   ///
-  SourceLocation getLocationOfByte(unsigned ByteNo, const SourceManager &SM,
-                                   const LangOptions &Features,
-                                   const TargetInfo &Target) const;
+  SourceLocation
+  getLocationOfByte(unsigned ByteNo, const SourceManager &SM,
+                    const LangOptions &Features, const TargetInfo &Target,
+                    unsigned *StartToken = nullptr,
+                    unsigned *StartTokenByteOffset = nullptr) const;
 
   typedef const SourceLocation *tokloc_iterator;
   tokloc_iterator tokloc_begin() const { return TokLocs; }
-  tokloc_iterator tokloc_end() const { return TokLocs+NumConcatenated; }
+  tokloc_iterator tokloc_end() const { return TokLocs + NumConcatenated; }
 
   SourceLocation getLocStart() const LLVM_READONLY { return TokLocs[0]; }
   SourceLocation getLocEnd() const LLVM_READONLY {
@@ -1674,7 +1696,6 @@ public:
   // Iterators
   child_range children() { return child_range(&Val, &Val+1); }
 };
-
 
 /// UnaryOperator - This represents the unary-expression's (except sizeof and
 /// alignof), the postinc/postdec operators from postfix-expression, and various
@@ -2158,7 +2179,6 @@ public:
     return child_range(&SubExprs[0], &SubExprs[0]+END_EXPR);
   }
 };
-
 
 /// CallExpr - Represents a function call (C99 6.5.2.2, C++ [expr.call]).
 /// CallExpr itself represents a normal function call, e.g., "f(x, 2)",
@@ -3456,7 +3476,6 @@ public:
   child_range children() { return child_range(&SubStmt, &SubStmt+1); }
 };
 
-
 /// ShuffleVectorExpr - clang-specific builtin-in function
 /// __builtin_shufflevector.
 /// This AST node represents a operator that does a constant
@@ -3695,33 +3714,35 @@ public:
   }
 };
 
-/// VAArgExpr, used for the builtin function __builtin_va_arg.
+/// Represents a call to the builtin function \c __builtin_va_arg.
 class VAArgExpr : public Expr {
   Stmt *Val;
-  TypeSourceInfo *TInfo;
+  llvm::PointerIntPair<TypeSourceInfo *, 1, bool> TInfo;
   SourceLocation BuiltinLoc, RParenLoc;
 public:
-  VAArgExpr(SourceLocation BLoc, Expr* e, TypeSourceInfo *TInfo,
-            SourceLocation RPLoc, QualType t)
-    : Expr(VAArgExprClass, t, VK_RValue, OK_Ordinary,
-           t->isDependentType(), false,
-           (TInfo->getType()->isInstantiationDependentType() ||
-            e->isInstantiationDependent()),
-           (TInfo->getType()->containsUnexpandedParameterPack() ||
-            e->containsUnexpandedParameterPack())),
-      Val(e), TInfo(TInfo),
-      BuiltinLoc(BLoc),
-      RParenLoc(RPLoc) { }
+  VAArgExpr(SourceLocation BLoc, Expr *e, TypeSourceInfo *TInfo,
+            SourceLocation RPLoc, QualType t, bool IsMS)
+      : Expr(VAArgExprClass, t, VK_RValue, OK_Ordinary, t->isDependentType(),
+             false, (TInfo->getType()->isInstantiationDependentType() ||
+                     e->isInstantiationDependent()),
+             (TInfo->getType()->containsUnexpandedParameterPack() ||
+              e->containsUnexpandedParameterPack())),
+        Val(e), TInfo(TInfo, IsMS), BuiltinLoc(BLoc), RParenLoc(RPLoc) {}
 
-  /// \brief Create an empty __builtin_va_arg expression.
-  explicit VAArgExpr(EmptyShell Empty) : Expr(VAArgExprClass, Empty) { }
+  /// Create an empty __builtin_va_arg expression.
+  explicit VAArgExpr(EmptyShell Empty)
+      : Expr(VAArgExprClass, Empty), Val(nullptr), TInfo(nullptr, false) {}
 
   const Expr *getSubExpr() const { return cast<Expr>(Val); }
   Expr *getSubExpr() { return cast<Expr>(Val); }
   void setSubExpr(Expr *E) { Val = E; }
 
-  TypeSourceInfo *getWrittenTypeInfo() const { return TInfo; }
-  void setWrittenTypeInfo(TypeSourceInfo *TI) { TInfo = TI; }
+  /// Returns whether this is really a Win64 ABI va_arg expression.
+  bool isMicrosoftABI() const { return TInfo.getInt(); }
+  void setIsMicrosoftABI(bool IsMS) { TInfo.setInt(IsMS); }
+
+  TypeSourceInfo *getWrittenTypeInfo() const { return TInfo.getPointer(); }
+  void setWrittenTypeInfo(TypeSourceInfo *TI) { TInfo.setPointer(TI); }
 
   SourceLocation getBuiltinLoc() const { return BuiltinLoc; }
   void setBuiltinLoc(SourceLocation L) { BuiltinLoc = L; }
@@ -3819,6 +3840,10 @@ public:
 
   /// \brief Retrieve the set of initializers.
   Expr **getInits() { return reinterpret_cast<Expr **>(InitExprs.data()); }
+
+  ArrayRef<Expr *> inits() {
+    return llvm::makeArrayRef(getInits(), getNumInits());
+  }
 
   const Expr *getInit(unsigned Init) const {
     assert(Init < getNumInits() && "Initializer access out of range!");
@@ -4404,7 +4429,6 @@ public:
   }
 };
 
-
 class ParenListExpr : public Expr {
   Stmt **Exprs;
   unsigned NumExprs;
@@ -4431,6 +4455,10 @@ public:
 
   Expr **getExprs() { return reinterpret_cast<Expr **>(Exprs); }
 
+  ArrayRef<Expr *> exprs() {
+    return llvm::makeArrayRef(getExprs(), getNumExprs());
+  }
+
   SourceLocation getLParenLoc() const { return LParenLoc; }
   SourceLocation getRParenLoc() const { return RParenLoc; }
 
@@ -4449,7 +4477,6 @@ public:
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
 };
-
 
 /// \brief Represents a C11 generic selection.
 ///
@@ -4566,7 +4593,6 @@ public:
 // Clang Extensions
 //===----------------------------------------------------------------------===//
 
-
 /// ExtVectorElementExpr - This represents access to specific elements of a
 /// vector, and may occur on the left hand side or right hand side.  For example
 /// the following is legal:  "V.xy = V.zw" if V is a 4 element extended vector.
@@ -4629,7 +4655,6 @@ public:
   // Iterators
   child_range children() { return child_range(&Base, &Base+1); }
 };
-
 
 /// BlockExpr - Adaptor class for mixing a BlockDecl with expressions.
 /// ^{ statement-body }   or   ^(int arg1, float arg2){ statement-body }
@@ -4825,6 +4850,14 @@ public:
   const_semantics_iterator semantics_end() const {
     return getSubExprsBuffer() + getNumSubExprs();
   }
+
+  llvm::iterator_range<semantics_iterator> semantics() {
+    return llvm::make_range(semantics_begin(), semantics_end());
+  }
+  llvm::iterator_range<const_semantics_iterator> semantics() const {
+    return llvm::make_range(semantics_begin(), semantics_end());
+  }
+
   Expr *getSemanticExpr(unsigned index) {
     assert(index + 1 < getNumSubExprs());
     return getSubExprsBuffer()[index + 1];
@@ -4976,7 +5009,12 @@ public:
   }
   SourceLocation getLocStart() const LLVM_READONLY { return SourceLocation(); }
   SourceLocation getLocEnd() const LLVM_READONLY { return SourceLocation(); }
-};
-}  // end namespace clang
+  
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == TypoExprClass;
+  }
 
-#endif
+};
+} // end namespace clang
+
+#endif // LLVM_CLANG_AST_EXPR_H

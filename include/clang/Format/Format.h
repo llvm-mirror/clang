@@ -43,26 +43,56 @@ struct FormatStyle {
   /// \brief The extra indent or outdent of access modifiers, e.g. \c public:.
   int AccessModifierOffset;
 
+  /// \brief Different styles for aligning after open brackets.
+  enum BracketAlignmentStyle {
+    /// \brief Align parameters on the open bracket, e.g.:
+    /// \code
+    ///   someLongFunction(argument1,
+    ///                    argument2);
+    /// \endcode
+    BAS_Align,
+    /// \brief Don't align, instead use \c ContinuationIndentWidth, e.g.:
+    /// \code
+    ///   someLongFunction(argument1,
+    ///       argument2);
+    /// \endcode
+    BAS_DontAlign,
+    /// \brief Always break after an open bracket, if the parameters don't fit
+    /// on a single line, e.g.:
+    /// \code
+    ///   someLongFunction(
+    ///       argument1, argument2);
+    /// \endcode
+    BAS_AlwaysBreak,
+  };
+
   /// \brief If \c true, horizontally aligns arguments after an open bracket.
   ///
   /// This applies to round brackets (parentheses), angle brackets and square
-  /// brackets. This will result in formattings like
-  /// \code
-  /// someLongFunction(argument1,
-  ///                  argument2);
-  /// \endcode
-  bool AlignAfterOpenBracket;
+  /// brackets.
+  BracketAlignmentStyle AlignAfterOpenBracket;
 
   /// \brief If \c true, aligns consecutive assignments.
   ///
   /// This will align the assignment operators of consecutive lines. This
   /// will result in formattings like
   /// \code
-  /// int aaaa = 12;
-  /// int b    = 23;
-  /// int ccc  = 23;
+  ///   int aaaa = 12;
+  ///   int b    = 23;
+  ///   int ccc  = 23;
   /// \endcode
   bool AlignConsecutiveAssignments;
+
+  /// \brief If \c true, aligns consecutive declarations.
+  ///
+  /// This will align the declaration names of consecutive lines. This
+  /// will result in formattings like
+  /// \code
+  ///   int         aaaa = 12;
+  ///   float       b = 23;
+  ///   std::string ccc = 23;
+  /// \endcode
+  bool AlignConsecutiveDeclarations;
 
   /// \brief If \c true, aligns escaped newlines as far left as possible.
   /// Otherwise puts them into the right-most column.
@@ -70,6 +100,13 @@ struct FormatStyle {
 
   /// \brief If \c true, horizontally align operands of binary and ternary
   /// expressions.
+  ///
+  /// Specifically, this aligns operands of a single expression that needs to be
+  /// split over multiple lines, e.g.:
+  /// \code
+  ///   int aaa = bbbbbbbbbbbbbbb +
+  ///             ccccccccccccccc;
+  /// \endcode
   bool AlignOperands;
 
   /// \brief If \c true, aligns trailing comments.
@@ -169,18 +206,54 @@ struct FormatStyle {
     /// Like ``Attach``, but break before braces on enum, function, and record
     /// definitions.
     BS_Mozilla,
-    /// Like \c Attach, but break before function definitions, and 'else'.
+    /// Like \c Attach, but break before function definitions, 'catch', and 'else'.
     BS_Stroustrup,
     /// Always break before braces.
     BS_Allman,
     /// Always break before braces and add an extra level of indentation to
     /// braces of control statements, not to those of class, function
     /// or other definitions.
-    BS_GNU
+    BS_GNU,
+    /// Like ``Attach``, but break before functions.
+    BS_WebKit,
+    /// Configure each individual brace in \c BraceWrapping.
+    BS_Custom
   };
 
   /// \brief The brace breaking style to use.
   BraceBreakingStyle BreakBeforeBraces;
+
+  /// \brief Precise control over the wrapping of braces.
+  struct BraceWrappingFlags {
+    /// \brief Wrap class definitions.
+    bool AfterClass;
+    /// \brief Wrap control statements (if/for/while/switch/..).
+    bool AfterControlStatement;
+    /// \brief Wrap enum definitions.
+    bool AfterEnum;
+    /// \brief Wrap function definitions.
+    bool AfterFunction;
+    /// \brief Wrap namespace definitions.
+    bool AfterNamespace;
+    /// \brief Wrap ObjC definitions (@autoreleasepool, interfaces, ..).
+    bool AfterObjCDeclaration;
+    /// \brief Wrap struct definitions.
+    bool AfterStruct;
+    /// \brief Wrap union definitions.
+    bool AfterUnion;
+    /// \brief Wrap before \c catch.
+    bool BeforeCatch;
+    /// \brief Wrap before \c else.
+    bool BeforeElse;
+    /// \brief Indent the wrapped braces themselves.
+    bool IndentBraces;
+  };
+
+  /// \brief Control of individual brace wrapping cases.
+  ///
+  /// If \c BreakBeforeBraces is set to \c custom, use this to specify how each
+  /// individual brace case should be handled. Otherwise, this is ignored.
+  BraceWrappingFlags BraceWrapping;
 
   /// \brief If \c true, ternary operators will be placed after line breaks.
   bool BreakBeforeTernaryOperators;
@@ -188,6 +261,9 @@ struct FormatStyle {
   /// \brief Always break constructor initializers before commas and align
   /// the commas with the colon.
   bool BreakConstructorInitializersBeforeComma;
+
+  /// \brief Break after each annotation on a field in Java files.
+  bool BreakAfterJavaFieldAnnotations;
 
   /// \brief The column limit.
   ///
@@ -250,12 +326,54 @@ struct FormatStyle {
   ///
   /// These are expected to be macros of the form:
   /// \code
-  /// FOREACH(<variable-declaration>, ...)
-  ///   <loop-body>
+  ///   FOREACH(<variable-declaration>, ...)
+  ///     <loop-body>
+  /// \endcode
+  ///
+  /// In the .clang-format configuration file, this can be configured like:
+  /// \code
+  ///   ForEachMacros: ['RANGES_FOR', 'FOREACH']
   /// \endcode
   ///
   /// For example: BOOST_FOREACH.
   std::vector<std::string> ForEachMacros;
+
+  /// \brief See documentation of \c IncludeCategories.
+  struct IncludeCategory {
+    /// \brief The regular expression that this category matches.
+    std::string Regex;
+    /// \brief The priority to assign to this category.
+    unsigned Priority;
+    bool operator==(const IncludeCategory &Other) const {
+      return Regex == Other.Regex && Priority == Other.Priority;
+    }
+  };
+
+  /// \brief Regular expressions denoting the different #include categories used
+  /// for ordering #includes.
+  ///
+  /// These regular expressions are matched against the filename of an include
+  /// (including the <> or "") in order. The value belonging to the first
+  /// matching regular expression is assigned and #includes are sorted first
+  /// according to increasing category number and then alphabetically within
+  /// each category.
+  ///
+  /// If none of the regular expressions match, UINT_MAX is assigned as
+  /// category. The main header for a source file automatically gets category 0,
+  /// so that it is kept at the beginning of the #includes
+  /// (http://llvm.org/docs/CodingStandards.html#include-style).
+  ///
+  /// To configure this in the .clang-format file, use:
+  /// \code
+  ///   IncludeCategories:
+  ///     - Regex:           '^"(llvm|llvm-c|clang|clang-c)/'
+  ///       Priority:        2
+  ///     - Regex:           '^(<|"(gtest|isl|json)/)'
+  ///       Priority:        3
+  ///     - Regex:           '.*'
+  ///       Priority:        1
+  /// \endcode
+  std::vector<IncludeCategory> IncludeCategories;
 
   /// \brief Indent case labels one level from the switch statement.
   ///
@@ -355,8 +473,14 @@ struct FormatStyle {
     PAS_Middle
   };
 
-  /// Pointer and reference alignment style.
+  /// \brief Pointer and reference alignment style.
   PointerAlignmentStyle PointerAlignment;
+
+  /// \brief If true, clang-format will attempt to re-flow comments.
+  bool ReflowComments;
+
+  /// \brief If true, clang-format will sort #includes.
+  bool SortIncludes;
 
   /// \brief If \c true, a space may be inserted after C style casts.
   bool SpaceAfterCStyleCast;
@@ -444,6 +568,7 @@ struct FormatStyle {
     return AccessModifierOffset == R.AccessModifierOffset &&
            AlignAfterOpenBracket == R.AlignAfterOpenBracket &&
            AlignConsecutiveAssignments == R.AlignConsecutiveAssignments &&
+           AlignConsecutiveDeclarations == R.AlignConsecutiveDeclarations &&
            AlignEscapedNewlinesLeft == R.AlignEscapedNewlinesLeft &&
            AlignOperands == R.AlignOperands &&
            AlignTrailingComments == R.AlignTrailingComments &&
@@ -470,8 +595,8 @@ struct FormatStyle {
            BreakBeforeTernaryOperators == R.BreakBeforeTernaryOperators &&
            BreakConstructorInitializersBeforeComma ==
                R.BreakConstructorInitializersBeforeComma &&
-           ColumnLimit == R.ColumnLimit &&
-           CommentPragmas == R.CommentPragmas &&
+           BreakAfterJavaFieldAnnotations == R.BreakAfterJavaFieldAnnotations &&
+           ColumnLimit == R.ColumnLimit && CommentPragmas == R.CommentPragmas &&
            ConstructorInitializerAllOnOneLineOrOnePerLine ==
                R.ConstructorInitializerAllOnOneLineOrOnePerLine &&
            ConstructorInitializerIndentWidth ==
@@ -483,6 +608,7 @@ struct FormatStyle {
            ExperimentalAutoDetectBinPacking ==
                R.ExperimentalAutoDetectBinPacking &&
            ForEachMacros == R.ForEachMacros &&
+           IncludeCategories == R.IncludeCategories &&
            IndentCaseLabels == R.IndentCaseLabels &&
            IndentWidth == R.IndentWidth && Language == R.Language &&
            IndentWrappedFunctionNames == R.IndentWrappedFunctionNames &&
@@ -513,8 +639,7 @@ struct FormatStyle {
            SpacesInCStyleCastParentheses == R.SpacesInCStyleCastParentheses &&
            SpacesInParentheses == R.SpacesInParentheses &&
            SpacesInSquareBrackets == R.SpacesInSquareBrackets &&
-           Standard == R.Standard &&
-           TabWidth == R.TabWidth &&
+           Standard == R.Standard && TabWidth == R.TabWidth &&
            UseTab == R.UseTab;
   }
 };
@@ -568,6 +693,13 @@ std::error_code parseConfiguration(StringRef Text, FormatStyle *Style);
 
 /// \brief Gets configuration in a YAML string.
 std::string configurationAsText(const FormatStyle &Style);
+
+/// \brief Returns the replacements necessary to sort all #include blocks that
+/// are affected by 'Ranges'.
+tooling::Replacements sortIncludes(const FormatStyle &Style, StringRef Code,
+                                   ArrayRef<tooling::Range> Ranges,
+                                   StringRef FileName,
+                                   unsigned *Cursor = nullptr);
 
 /// \brief Reformats the given \p Ranges in the file \p ID.
 ///

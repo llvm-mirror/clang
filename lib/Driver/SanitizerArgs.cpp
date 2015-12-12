@@ -29,11 +29,11 @@ enum : SanitizerMask {
   NeedsUbsanRt = Undefined | Integer | CFI,
   NeedsUbsanCxxRt = Vptr | CFI,
   NotAllowedWithTrap = Vptr,
-  RequiresPIE = Memory | DataFlow,
+  RequiresPIE = DataFlow,
   NeedsUnwindTables = Address | Thread | Memory | DataFlow,
   SupportsCoverage = Address | Memory | Leak | Undefined | Integer | DataFlow,
   RecoverableByDefault = Undefined | Integer,
-  Unrecoverable = Address | Unreachable | Return,
+  Unrecoverable = Unreachable | Return,
   LegacyFsanitizeRecoverMask = Undefined | Integer,
   NeedsLTO = CFI,
   TrappingSupported =
@@ -164,7 +164,7 @@ bool SanitizerArgs::needsUbsanRt() const {
 }
 
 bool SanitizerArgs::requiresPIE() const {
-  return AsanZeroBaseShadow || (Sanitizers.Mask & RequiresPIE);
+  return NeedPIE || (Sanitizers.Mask & RequiresPIE);
 }
 
 bool SanitizerArgs::needsUnwindTables() const {
@@ -176,11 +176,12 @@ void SanitizerArgs::clear() {
   RecoverableSanitizers.clear();
   TrapSanitizers.clear();
   BlacklistFiles.clear();
+  ExtraDeps.clear();
   CoverageFeatures = 0;
   MsanTrackOrigins = 0;
   MsanUseAfterDtor = false;
+  NeedPIE = false;
   AsanFieldPadding = 0;
-  AsanZeroBaseShadow = false;
   AsanSharedRuntime = false;
   LinkCXXRuntimes = false;
 }
@@ -282,7 +283,7 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   }
 
   // Check that LTO is enabled if we need it.
-  if ((Kinds & NeedsLTO) && !D.IsUsingLTO(Args)) {
+  if ((Kinds & NeedsLTO) && !D.isUsingLTO()) {
     D.Diag(diag::err_drv_argument_only_allowed_with)
         << lastArgumentForMask(D, Args, Kinds & NeedsLTO) << "-flto";
   }
@@ -383,13 +384,16 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     if (Arg->getOption().matches(options::OPT_fsanitize_blacklist)) {
       Arg->claim();
       std::string BLPath = Arg->getValue();
-      if (llvm::sys::fs::exists(BLPath))
+      if (llvm::sys::fs::exists(BLPath)) {
         BlacklistFiles.push_back(BLPath);
-      else
+        ExtraDeps.push_back(BLPath);
+      } else
         D.Diag(clang::diag::err_drv_no_such_file) << BLPath;
+
     } else if (Arg->getOption().matches(options::OPT_fno_sanitize_blacklist)) {
       Arg->claim();
       BlacklistFiles.clear();
+      ExtraDeps.clear();
     }
   }
   // Validate blacklists format.
@@ -420,8 +424,10 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
         }
       }
     }
-    MsanUseAfterDtor = 
-      Args.hasArg(options::OPT_fsanitize_memory_use_after_dtor);
+    MsanUseAfterDtor =
+        Args.hasArg(options::OPT_fsanitize_memory_use_after_dtor);
+    NeedPIE |= !(TC.getTriple().isOSLinux() &&
+                 TC.getTriple().getArch() == llvm::Triple::x86_64);
   }
 
   // Parse -f(no-)?sanitize-coverage flags if coverage is supported by the
@@ -491,10 +497,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
 
   if (AllAddedKinds & Address) {
     AsanSharedRuntime =
-        Args.hasArg(options::OPT_shared_libasan) ||
-        (TC.getTriple().getEnvironment() == llvm::Triple::Android);
-    AsanZeroBaseShadow =
-        (TC.getTriple().getEnvironment() == llvm::Triple::Android);
+        Args.hasArg(options::OPT_shared_libasan) || TC.getTriple().isAndroid();
+    NeedPIE |= TC.getTriple().isAndroid();
     if (Arg *A =
             Args.getLastArg(options::OPT_fsanitize_address_field_padding)) {
         StringRef S = A->getValue();
@@ -563,6 +567,11 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
     BlacklistOpt += BLPath;
     CmdArgs.push_back(Args.MakeArgString(BlacklistOpt));
   }
+  for (const auto &Dep : ExtraDeps) {
+    SmallString<64> ExtraDepOpt("-fdepfile-entry=");
+    ExtraDepOpt += Dep;
+    CmdArgs.push_back(Args.MakeArgString(ExtraDepOpt));
+  }
 
   if (MsanTrackOrigins)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-memory-track-origins=" +
@@ -601,11 +610,10 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
     // Instruct the code generator to embed linker directives in the object file
     // that cause the required runtime libraries to be linked.
     CmdArgs.push_back(Args.MakeArgString(
-        "--dependent-lib=" + tools::getCompilerRT(TC, "ubsan_standalone")));
+        "--dependent-lib=" + TC.getCompilerRT(Args, "ubsan_standalone")));
     if (types::isCXX(InputType))
-      CmdArgs.push_back(
-          Args.MakeArgString("--dependent-lib=" +
-                             tools::getCompilerRT(TC, "ubsan_standalone_cxx")));
+      CmdArgs.push_back(Args.MakeArgString(
+          "--dependent-lib=" + TC.getCompilerRT(Args, "ubsan_standalone_cxx")));
   }
 }
 

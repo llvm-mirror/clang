@@ -611,6 +611,8 @@ const FileEntry *Preprocessor::LookupFile(
     SmallVectorImpl<char> *RelativePath,
     ModuleMap::KnownHeader *SuggestedModule,
     bool SkipCache) {
+  Module *RequestingModule = getModuleForLocation(FilenameLoc); 
+
   // If the header lookup mechanism may be relative to the current inclusion
   // stack, record the parent #includes.
   SmallVector<std::pair<const FileEntry *, const DirectoryEntry *>, 16>
@@ -664,8 +666,8 @@ const FileEntry *Preprocessor::LookupFile(
     const DirectoryLookup *TmpFromDir = nullptr;
     while (const FileEntry *FE = HeaderInfo.LookupFile(
                Filename, FilenameLoc, isAngled, TmpFromDir, TmpCurDir,
-               Includers, SearchPath, RelativePath, SuggestedModule,
-               SkipCache)) {
+               Includers, SearchPath, RelativePath, RequestingModule,
+               SuggestedModule, SkipCache)) {
       // Keep looking as if this file did a #include_next.
       TmpFromDir = TmpCurDir;
       ++TmpFromDir;
@@ -681,11 +683,11 @@ const FileEntry *Preprocessor::LookupFile(
   // Do a standard file entry lookup.
   const FileEntry *FE = HeaderInfo.LookupFile(
       Filename, FilenameLoc, isAngled, FromDir, CurDir, Includers, SearchPath,
-      RelativePath, SuggestedModule, SkipCache);
+      RelativePath, RequestingModule, SuggestedModule, SkipCache);
   if (FE) {
     if (SuggestedModule && !LangOpts.AsmPreprocessor)
       HeaderInfo.getModuleMap().diagnoseHeaderInclusion(
-          getModuleForLocation(FilenameLoc), FilenameLoc, Filename, FE);
+          RequestingModule, FilenameLoc, Filename, FE);
     return FE;
   }
 
@@ -697,10 +699,11 @@ const FileEntry *Preprocessor::LookupFile(
     if ((CurFileEnt = SourceMgr.getFileEntryForID(CurPPLexer->getFileID()))) {
       if ((FE = HeaderInfo.LookupSubframeworkHeader(Filename, CurFileEnt,
                                                     SearchPath, RelativePath,
+                                                    RequestingModule,
                                                     SuggestedModule))) {
         if (SuggestedModule && !LangOpts.AsmPreprocessor)
           HeaderInfo.getModuleMap().diagnoseHeaderInclusion(
-              getModuleForLocation(FilenameLoc), FilenameLoc, Filename, FE);
+              RequestingModule, FilenameLoc, Filename, FE);
         return FE;
       }
     }
@@ -713,10 +716,10 @@ const FileEntry *Preprocessor::LookupFile(
            SourceMgr.getFileEntryForID(ISEntry.ThePPLexer->getFileID()))) {
         if ((FE = HeaderInfo.LookupSubframeworkHeader(
                 Filename, CurFileEnt, SearchPath, RelativePath,
-                SuggestedModule))) {
+                RequestingModule, SuggestedModule))) {
           if (SuggestedModule && !LangOpts.AsmPreprocessor)
             HeaderInfo.getModuleMap().diagnoseHeaderInclusion(
-                getModuleForLocation(FilenameLoc), FilenameLoc, Filename, FE);
+                RequestingModule, FilenameLoc, Filename, FE);
           return FE;
         }
       }
@@ -1674,6 +1677,29 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
           getLangOpts().CurrentModule &&
       SuggestedModule.getModule()->getTopLevelModuleName() !=
           getLangOpts().ImplementationOfModule) {
+
+    // If this include corresponds to a module but that module is
+    // unavailable, diagnose the situation and bail out.
+    if (!SuggestedModule.getModule()->isAvailable()) {
+      clang::Module::Requirement Requirement;
+      clang::Module::UnresolvedHeaderDirective MissingHeader;
+      Module *M = SuggestedModule.getModule();
+      // Identify the cause.
+      (void)M->isAvailable(getLangOpts(), getTargetInfo(), Requirement,
+                           MissingHeader);
+      if (MissingHeader.FileNameLoc.isValid()) {
+        Diag(MissingHeader.FileNameLoc, diag::err_module_header_missing)
+            << MissingHeader.IsUmbrella << MissingHeader.FileName;
+      } else {
+        Diag(M->DefinitionLoc, diag::err_module_unavailable)
+            << M->getFullModuleName() << Requirement.second << Requirement.first;
+      }
+      Diag(FilenameTok.getLocation(),
+           diag::note_implicit_top_level_module_import_here)
+          << M->getTopLevelModuleName();
+      return;
+    }
+
     // Compute the module access path corresponding to this module.
     // FIXME: Should we have a second loadModule() overload to avoid this
     // extra lookup step?
@@ -1776,7 +1802,7 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
   if (IncludePos.isMacroID())
     IncludePos = SourceMgr.getExpansionRange(IncludePos).second;
   FileID FID = SourceMgr.createFileID(File, IncludePos, FileCharacter);
-  assert(!FID.isInvalid() && "Expected valid file ID");
+  assert(FID.isValid() && "Expected valid file ID");
 
   // If all is good, enter the new file!
   if (EnterSourceFile(FID, CurDir, FilenameTok.getLocation()))
@@ -1925,7 +1951,7 @@ bool Preprocessor::ReadMacroDefinitionArgList(MacroInfo *MI, Token &Tok) {
       // Add the __VA_ARGS__ identifier as an argument.
       Arguments.push_back(Ident__VA_ARGS__);
       MI->setIsC99Varargs();
-      MI->setArgumentList(&Arguments[0], Arguments.size(), BP);
+      MI->setArgumentList(Arguments, BP);
       return false;
     case tok::eod:  // #define X(
       Diag(Tok, diag::err_pp_missing_rparen_in_macro_def);
@@ -1959,7 +1985,7 @@ bool Preprocessor::ReadMacroDefinitionArgList(MacroInfo *MI, Token &Tok) {
         Diag(Tok, diag::err_pp_expected_comma_in_arg_list);
         return true;
       case tok::r_paren: // #define X(A)
-        MI->setArgumentList(&Arguments[0], Arguments.size(), BP);
+        MI->setArgumentList(Arguments, BP);
         return false;
       case tok::comma:  // #define X(A,
         break;
@@ -1975,7 +2001,7 @@ bool Preprocessor::ReadMacroDefinitionArgList(MacroInfo *MI, Token &Tok) {
         }
 
         MI->setIsGNUVarargs();
-        MI->setArgumentList(&Arguments[0], Arguments.size(), BP);
+        MI->setArgumentList(Arguments, BP);
         return false;
       }
     }

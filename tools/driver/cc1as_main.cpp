@@ -126,6 +126,9 @@ struct AssemblerInvocation {
   unsigned NoExecStack : 1;
   unsigned FatalWarnings : 1;
 
+  /// The name of the relocation model to use.
+  std::string RelocationModel;
+
   /// @}
 
 public:
@@ -141,7 +144,7 @@ public:
     RelaxAll = 0;
     NoExecStack = 0;
     FatalWarnings = 0;
-    DwarfVersion = 3;
+    DwarfVersion = 0;
   }
 
   static bool CreateFromArgs(AssemblerInvocation &Res,
@@ -192,14 +195,10 @@ bool AssemblerInvocation::CreateFromArgs(AssemblerInvocation &Opts,
   Opts.IncludePaths = Args.getAllArgValues(OPT_I);
   Opts.NoInitialTextSection = Args.hasArg(OPT_n);
   Opts.SaveTemporaryLabels = Args.hasArg(OPT_msave_temp_labels);
-  Opts.GenDwarfForAssembly = Args.hasArg(OPT_g_Flag);
+  // Any DebugInfoKind implies GenDwarfForAssembly.
+  Opts.GenDwarfForAssembly = Args.hasArg(OPT_debug_info_kind_EQ);
   Opts.CompressDebugSections = Args.hasArg(OPT_compress_debug_sections);
-  if (Args.hasArg(OPT_gdwarf_2))
-    Opts.DwarfVersion = 2;
-  if (Args.hasArg(OPT_gdwarf_3))
-    Opts.DwarfVersion = 3;
-  if (Args.hasArg(OPT_gdwarf_4))
-    Opts.DwarfVersion = 4;
+  Opts.DwarfVersion = getLastArgIntValue(Args, OPT_dwarf_version_EQ, 0, Diags);
   Opts.DwarfDebugFlags = Args.getLastArgValue(OPT_dwarf_debug_flags);
   Opts.DwarfDebugProducer = Args.getLastArgValue(OPT_dwarf_debug_producer);
   Opts.DebugCompilationDir = Args.getLastArgValue(OPT_fdebug_compilation_dir);
@@ -248,6 +247,7 @@ bool AssemblerInvocation::CreateFromArgs(AssemblerInvocation &Opts,
   Opts.RelaxAll = Args.hasArg(OPT_mrelax_all);
   Opts.NoExecStack = Args.hasArg(OPT_mno_exec_stack);
   Opts.FatalWarnings = Args.hasArg(OPT_massembler_fatal_warnings);
+  Opts.RelocationModel = Args.getLastArgValue(OPT_mrelocation_model, "pic");
 
   return Success;
 }
@@ -321,8 +321,19 @@ static bool ExecuteAssembler(AssemblerInvocation &Opts,
   std::unique_ptr<MCObjectFileInfo> MOFI(new MCObjectFileInfo());
 
   MCContext Ctx(MAI.get(), MRI.get(), MOFI.get(), &SrcMgr);
-  // FIXME: Assembler behavior can change with -static.
-  MOFI->InitMCObjectFileInfo(Triple(Opts.Triple), Reloc::Default,
+
+  llvm::Reloc::Model RM = llvm::Reloc::Default;
+  if (Opts.RelocationModel == "static") {
+    RM = llvm::Reloc::Static;
+  } else if (Opts.RelocationModel == "pic") {
+    RM = llvm::Reloc::PIC_;
+  } else {
+    assert(Opts.RelocationModel == "dynamic-no-pic" &&
+           "Invalid PIC model!");
+    RM = llvm::Reloc::DynamicNoPIC;
+  }
+
+  MOFI->InitMCObjectFileInfo(Triple(Opts.Triple), RM,
                              CodeModel::Default, Ctx);
   if (Opts.SaveTemporaryLabels)
     Ctx.setAllowTemporaryLabels(false);
@@ -496,4 +507,3 @@ int cc1as_main(ArrayRef<const char *> Argv, const char *Argv0, void *MainAddr) {
 
   return !!Failed;
 }
-

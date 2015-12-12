@@ -144,7 +144,15 @@ public:
   class Cleanup {
     // Anchor the construction vtable.
     virtual void anchor();
+
+  protected:
+    ~Cleanup() = default;
+
   public:
+    Cleanup(const Cleanup &) = default;
+    Cleanup(Cleanup &&) {}
+    Cleanup() = default;
+
     /// Generation flags.
     class Flags {
       enum {
@@ -171,10 +179,6 @@ public:
       void setIsEHCleanupKind() { flags |= F_IsEHCleanupKind; }
     };
 
-    // Provide a virtual destructor to suppress a very common warning
-    // that unfortunately cannot be suppressed without this.  Cleanups
-    // should not rely on this destructor ever being called.
-    virtual ~Cleanup() {}
 
     /// Emit the cleanup.  For normal cleanups, this is run in the
     /// same EH context as when the cleanup was pushed, i.e. the
@@ -187,7 +191,8 @@ public:
 
   /// ConditionalCleanup stores the saved form of its parameters,
   /// then restores them and performs the cleanup.
-  template <class T, class... As> class ConditionalCleanup : public Cleanup {
+  template <class T, class... As>
+  class ConditionalCleanup final : public Cleanup {
     typedef std::tuple<typename DominatingValue<As>::saved_type...> SavedTuple;
     SavedTuple Saved;
 
@@ -329,9 +334,9 @@ public:
   /// Pops a terminate handler off the stack.
   void popTerminate();
 
-  void pushCatchEnd(llvm::BasicBlock *CatchEndBlockBB);
+  void pushPadEnd(llvm::BasicBlock *PadEndBB);
 
-  void popCatchEnd();
+  void popPadEnd();
 
   // Returns true iff the current scope is either empty or contains only
   // lifetime markers, i.e. no real cleanup code
@@ -360,7 +365,6 @@ public:
     return InnermostEHScope;
   }
 
-  stable_iterator getInnermostActiveEHScope() const;
 
   /// An unstable reference to a scope-stack depth.  Invalidated by
   /// pushes but not pops.
@@ -390,9 +394,6 @@ public:
   /// Turn a stable reference to a scope depth into a unstable pointer
   /// to the EH stack.
   iterator find(stable_iterator save) const;
-
-  /// Removes the cleanup pointed to by the given stable_iterator.
-  void removeCleanup(stable_iterator save);
 
   /// Add a branch fixup to the current cleanup scope.
   BranchFixup &addBranchFixup() {

@@ -28,6 +28,7 @@
 #include "clang/Basic/TargetInfo.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/MathExtras.h"
+#include "llvm/Support/JamCRC.h"
 
 using namespace clang;
 
@@ -160,8 +161,6 @@ public:
   void mangleSEHFinallyBlock(const NamedDecl *EnclosingDecl,
                              raw_ostream &Out) override;
   void mangleStringLiteral(const StringLiteral *SL, raw_ostream &Out) override;
-  void mangleCXXVTableBitSet(const CXXRecordDecl *RD,
-                             raw_ostream &Out) override;
   bool getNextDiscriminator(const NamedDecl *ND, unsigned &disc) {
     // Lambda closure types are already numbered.
     if (isLambda(ND))
@@ -179,7 +178,9 @@ public:
 
     // Anonymous tags are already numbered.
     if (const TagDecl *Tag = dyn_cast<TagDecl>(ND)) {
-      if (Tag->getName().empty() && !Tag->getTypedefNameForAnonDecl())
+      if (!Tag->hasNameForLinkage() &&
+          !getASTContext().getDeclaratorForUnnamedTagDecl(Tag) &&
+          !getASTContext().getTypedefNameForUnnamedTagDecl(Tag))
         return false;
     }
 
@@ -364,7 +365,8 @@ bool MicrosoftMangleContextImpl::shouldMangleCXXName(const NamedDecl *D) {
         DC = getEffectiveParentContext(DC);
 
     if (DC->isTranslationUnit() && D->getFormalLinkage() == InternalLinkage &&
-        !isa<VarTemplateSpecializationDecl>(D))
+        !isa<VarTemplateSpecializationDecl>(D) &&
+        D->getIdentifier() != nullptr)
       return false;
   }
 
@@ -695,7 +697,6 @@ void MicrosoftCXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
     // Function templates aren't considered for name back referencing.  This
     // makes sense since function templates aren't likely to occur multiple
     // times in a symbol.
-    // FIXME: Test alias template mangling with MSVC 2013.
     if (!isa<ClassTemplateDecl>(TD)) {
       mangleTemplateInstantiationName(TD, *TemplateArgs);
       Out << '@';
@@ -721,7 +722,6 @@ void MicrosoftCXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
     llvm::raw_svector_ostream Stream(TemplateMangling);
     MicrosoftCXXNameMangler Extra(Context, Stream);
     Extra.mangleTemplateInstantiationName(TD, *TemplateArgs);
-    Stream.flush();
 
     mangleSourceName(TemplateMangling);
     return;
@@ -787,14 +787,21 @@ void MicrosoftCXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
       }
 
       llvm::SmallString<64> Name("<unnamed-type-");
-      if (TD->hasDeclaratorForAnonDecl()) {
-        // Anonymous types with no tag or typedef get the name of their
+      if (DeclaratorDecl *DD =
+              Context.getASTContext().getDeclaratorForUnnamedTagDecl(TD)) {
+        // Anonymous types without a name for linkage purposes have their
         // declarator mangled in if they have one.
-        Name += TD->getDeclaratorForAnonDecl()->getName();
+        Name += DD->getName();
+      } else if (TypedefNameDecl *TND =
+                     Context.getASTContext().getTypedefNameForUnnamedTagDecl(
+                         TD)) {
+        // Anonymous types without a name for linkage purposes have their
+        // associate typedef mangled in if they have one.
+        Name += TND->getName();
       } else {
         // Otherwise, number the types using a $S prefix.
         Name += "$S";
-        Name += llvm::utostr(Context.getAnonymousStructId(TD));
+        Name += llvm::utostr(Context.getAnonymousStructId(TD) + 1);
       }
       Name += ">";
       mangleSourceName(Name.str());
@@ -1039,6 +1046,14 @@ void MicrosoftCXXNameMangler::mangleOperatorName(OverloadedOperatorKind OO,
     break;
   }
 
+  case OO_Coawait: {
+    DiagnosticsEngine &Diags = Context.getDiags();
+    unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
+      "cannot mangle this operator co_await yet");
+    Diags.Report(Loc, DiagID);
+    break;
+  }
+
   case OO_None:
   case NUM_OVERLOADED_OPERATORS:
     llvm_unreachable("Not an overloaded operator");
@@ -1210,12 +1225,13 @@ void MicrosoftCXXNameMangler::mangleTemplateArg(const TemplateDecl *TD,
     QualType T = TA.getNullPtrType();
     if (const MemberPointerType *MPT = T->getAs<MemberPointerType>()) {
       const CXXRecordDecl *RD = MPT->getMostRecentCXXRecordDecl();
-      if (MPT->isMemberFunctionPointerType() && isa<ClassTemplateDecl>(TD)) {
+      if (MPT->isMemberFunctionPointerType() &&
+          !isa<FunctionTemplateDecl>(TD)) {
         mangleMemberFunctionPointer(RD, nullptr);
         return;
       }
       if (MPT->isMemberDataPointer()) {
-        if (isa<ClassTemplateDecl>(TD)) {
+        if (!isa<FunctionTemplateDecl>(TD)) {
           mangleMemberDataPointer(RD, nullptr);
           return;
         }
@@ -1546,29 +1562,72 @@ void MicrosoftCXXNameMangler::mangleType(const BuiltinType *T, Qualifiers,
   //                 ::= _W # wchar_t
   //                 ::= _Z # __float80 (Digital Mars)
   switch (T->getKind()) {
-  case BuiltinType::Void: Out << 'X'; break;
-  case BuiltinType::SChar: Out << 'C'; break;
-  case BuiltinType::Char_U: case BuiltinType::Char_S: Out << 'D'; break;
-  case BuiltinType::UChar: Out << 'E'; break;
-  case BuiltinType::Short: Out << 'F'; break;
-  case BuiltinType::UShort: Out << 'G'; break;
-  case BuiltinType::Int: Out << 'H'; break;
-  case BuiltinType::UInt: Out << 'I'; break;
-  case BuiltinType::Long: Out << 'J'; break;
-  case BuiltinType::ULong: Out << 'K'; break;
-  case BuiltinType::Float: Out << 'M'; break;
-  case BuiltinType::Double: Out << 'N'; break;
+  case BuiltinType::Void:
+    Out << 'X';
+    break;
+  case BuiltinType::SChar:
+    Out << 'C';
+    break;
+  case BuiltinType::Char_U:
+  case BuiltinType::Char_S:
+    Out << 'D';
+    break;
+  case BuiltinType::UChar:
+    Out << 'E';
+    break;
+  case BuiltinType::Short:
+    Out << 'F';
+    break;
+  case BuiltinType::UShort:
+    Out << 'G';
+    break;
+  case BuiltinType::Int:
+    Out << 'H';
+    break;
+  case BuiltinType::UInt:
+    Out << 'I';
+    break;
+  case BuiltinType::Long:
+    Out << 'J';
+    break;
+  case BuiltinType::ULong:
+    Out << 'K';
+    break;
+  case BuiltinType::Float:
+    Out << 'M';
+    break;
+  case BuiltinType::Double:
+    Out << 'N';
+    break;
   // TODO: Determine size and mangle accordingly
-  case BuiltinType::LongDouble: Out << 'O'; break;
-  case BuiltinType::LongLong: Out << "_J"; break;
-  case BuiltinType::ULongLong: Out << "_K"; break;
-  case BuiltinType::Int128: Out << "_L"; break;
-  case BuiltinType::UInt128: Out << "_M"; break;
-  case BuiltinType::Bool: Out << "_N"; break;
-  case BuiltinType::Char16: Out << "_S"; break;
-  case BuiltinType::Char32: Out << "_U"; break;
+  case BuiltinType::LongDouble:
+    Out << 'O';
+    break;
+  case BuiltinType::LongLong:
+    Out << "_J";
+    break;
+  case BuiltinType::ULongLong:
+    Out << "_K";
+    break;
+  case BuiltinType::Int128:
+    Out << "_L";
+    break;
+  case BuiltinType::UInt128:
+    Out << "_M";
+    break;
+  case BuiltinType::Bool:
+    Out << "_N";
+    break;
+  case BuiltinType::Char16:
+    Out << "_S";
+    break;
+  case BuiltinType::Char32:
+    Out << "_U";
+    break;
   case BuiltinType::WChar_S:
-  case BuiltinType::WChar_U: Out << "_W"; break;
+  case BuiltinType::WChar_U:
+    Out << "_W";
+    break;
 
 #define BUILTIN_TYPE(Id, SingletonId)
 #define PLACEHOLDER_TYPE(Id, SingletonId) \
@@ -1577,28 +1636,81 @@ void MicrosoftCXXNameMangler::mangleType(const BuiltinType *T, Qualifiers,
   case BuiltinType::Dependent:
     llvm_unreachable("placeholder types shouldn't get to name mangling");
 
-  case BuiltinType::ObjCId: Out << "PAUobjc_object@@"; break;
-  case BuiltinType::ObjCClass: Out << "PAUobjc_class@@"; break;
-  case BuiltinType::ObjCSel: Out << "PAUobjc_selector@@"; break;
+  case BuiltinType::ObjCId:
+    Out << "PAUobjc_object@@";
+    break;
+  case BuiltinType::ObjCClass:
+    Out << "PAUobjc_class@@";
+    break;
+  case BuiltinType::ObjCSel:
+    Out << "PAUobjc_selector@@";
+    break;
 
-  case BuiltinType::OCLImage1d: Out << "PAUocl_image1d@@"; break;
-  case BuiltinType::OCLImage1dArray: Out << "PAUocl_image1darray@@"; break;
-  case BuiltinType::OCLImage1dBuffer: Out << "PAUocl_image1dbuffer@@"; break;
-  case BuiltinType::OCLImage2d: Out << "PAUocl_image2d@@"; break;
-  case BuiltinType::OCLImage2dArray: Out << "PAUocl_image2darray@@"; break;
-  case BuiltinType::OCLImage3d: Out << "PAUocl_image3d@@"; break;
-  case BuiltinType::OCLSampler: Out << "PAUocl_sampler@@"; break;
-  case BuiltinType::OCLEvent: Out << "PAUocl_event@@"; break;
+  case BuiltinType::OCLImage1d:
+    Out << "PAUocl_image1d@@";
+    break;
+  case BuiltinType::OCLImage1dArray:
+    Out << "PAUocl_image1darray@@";
+    break;
+  case BuiltinType::OCLImage1dBuffer:
+    Out << "PAUocl_image1dbuffer@@";
+    break;
+  case BuiltinType::OCLImage2d:
+    Out << "PAUocl_image2d@@";
+    break;
+  case BuiltinType::OCLImage2dArray:
+    Out << "PAUocl_image2darray@@";
+    break;
+  case BuiltinType::OCLImage2dDepth:
+    Out << "PAUocl_image2ddepth@@";
+    break;
+  case BuiltinType::OCLImage2dArrayDepth:
+    Out << "PAUocl_image2darraydepth@@";
+    break;
+  case BuiltinType::OCLImage2dMSAA:
+    Out << "PAUocl_image2dmsaa@@";
+    break;
+  case BuiltinType::OCLImage2dArrayMSAA:
+    Out << "PAUocl_image2darraymsaa@@";
+    break;
+  case BuiltinType::OCLImage2dMSAADepth:
+    Out << "PAUocl_image2dmsaadepth@@";
+    break;
+  case BuiltinType::OCLImage2dArrayMSAADepth:
+    Out << "PAUocl_image2darraymsaadepth@@";
+    break;
+  case BuiltinType::OCLImage3d:
+    Out << "PAUocl_image3d@@";
+    break;
+  case BuiltinType::OCLSampler:
+    Out << "PAUocl_sampler@@";
+    break;
+  case BuiltinType::OCLEvent:
+    Out << "PAUocl_event@@";
+    break;
+  case BuiltinType::OCLClkEvent:
+    Out << "PAUocl_clkevent@@";
+    break;
+  case BuiltinType::OCLQueue:
+    Out << "PAUocl_queue@@";
+    break;
+  case BuiltinType::OCLNDRange:
+    Out << "PAUocl_ndrange@@";
+    break;
+  case BuiltinType::OCLReserveID:
+    Out << "PAUocl_reserveid@@";
+    break;
 
-  case BuiltinType::NullPtr: Out << "$$T"; break;
+  case BuiltinType::NullPtr:
+    Out << "$$T";
+    break;
 
   case BuiltinType::Half: {
     DiagnosticsEngine &Diags = Context.getDiags();
-    unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
-      "cannot mangle this built-in %0 type yet");
+    unsigned DiagID = Diags.getCustomDiagID(
+        DiagnosticsEngine::Error, "cannot mangle this built-in %0 type yet");
     Diags.Report(Range.getBegin(), DiagID)
-      << T->getName(Context.getASTContext().getPrintingPolicy())
-      << Range;
+        << T->getName(Context.getASTContext().getPrintingPolicy()) << Range;
     break;
   }
   }
@@ -1620,7 +1732,8 @@ void MicrosoftCXXNameMangler::mangleType(const FunctionProtoType *T, Qualifiers,
 }
 void MicrosoftCXXNameMangler::mangleType(const FunctionNoProtoType *T,
                                          Qualifiers, SourceRange) {
-  llvm_unreachable("Can't mangle K&R function prototypes");
+  Out << "$$A6";
+  mangleFunctionType(T);
 }
 
 void MicrosoftCXXNameMangler::mangleFunctionType(const FunctionType *T,
@@ -1628,7 +1741,7 @@ void MicrosoftCXXNameMangler::mangleFunctionType(const FunctionType *T,
                                                  bool ForceThisQuals) {
   // <function-type> ::= <this-cvr-qualifiers> <calling-convention>
   //                     <return-type> <argument-list> <throw-spec>
-  const FunctionProtoType *Proto = cast<FunctionProtoType>(T);
+  const FunctionProtoType *Proto = dyn_cast<FunctionProtoType>(T);
 
   SourceRange Range;
   if (D) Range = D->getSourceRange();
@@ -1699,12 +1812,14 @@ void MicrosoftCXXNameMangler::mangleFunctionType(const FunctionType *T,
     }
     Out << '@';
   } else {
-    QualType ResultType = Proto->getReturnType();
+    QualType ResultType = T->getReturnType();
     if (const auto *AT =
             dyn_cast_or_null<AutoType>(ResultType->getContainedAutoType())) {
       Out << '?';
       mangleQualifiers(ResultType.getLocalQualifiers(), /*IsMember=*/false);
       Out << '?';
+      assert(AT->getKeyword() != AutoTypeKeyword::GNUAutoType &&
+             "shouldn't need to mangle __auto_type!");
       mangleSourceName(AT->isDecltypeAuto() ? "<decltype-auto>" : "<auto>");
       Out << '@';
     } else {
@@ -1717,12 +1832,29 @@ void MicrosoftCXXNameMangler::mangleFunctionType(const FunctionType *T,
   // <argument-list> ::= X # void
   //                 ::= <type>+ @
   //                 ::= <type>* Z # varargs
-  if (Proto->getNumParams() == 0 && !Proto->isVariadic()) {
+  if (!Proto) {
+    // Function types without prototypes can arise when mangling a function type
+    // within an overloadable function in C. We mangle these as the absence of
+    // any parameter types (not even an empty parameter list).
+    Out << '@';
+  } else if (Proto->getNumParams() == 0 && !Proto->isVariadic()) {
     Out << 'X';
   } else {
     // Happens for function pointer type arguments for example.
-    for (const QualType &Arg : Proto->param_types())
-      mangleArgumentType(Arg, Range);
+    for (unsigned I = 0, E = Proto->getNumParams(); I != E; ++I) {
+      mangleArgumentType(Proto->getParamType(I), Range);
+      // Mangle each pass_object_size parameter as if it's a paramater of enum
+      // type passed directly after the parameter with the pass_object_size
+      // attribute. The aforementioned enum's name is __pass_object_size, and we
+      // pretend it resides in a top-level namespace called __clang.
+      //
+      // FIXME: Is there a defined extension notation for the MS ABI, or is it
+      // necessary to just cross our fingers and hope this type+namespace
+      // combination doesn't conflict with anything?
+      if (D)
+        if (auto *P = D->getParamDecl(I)->getAttr<PassObjectSizeAttr>())
+          Out << "W4__pass_object_size" << P->getType() << "@__clang@@";
+    }
     // <builtin-type>      ::= Z  # ellipsis
     if (Proto->isVariadic())
       Out << 'Z';
@@ -2076,13 +2208,9 @@ void MicrosoftCXXNameMangler::mangleType(const VectorType *T, Qualifiers Quals,
   Out << "@@";
 }
 
-void MicrosoftCXXNameMangler::mangleType(const ExtVectorType *T, Qualifiers,
-                                         SourceRange Range) {
-  DiagnosticsEngine &Diags = Context.getDiags();
-  unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
-    "cannot mangle this extended vector type yet");
-  Diags.Report(Range.getBegin(), DiagID)
-    << Range;
+void MicrosoftCXXNameMangler::mangleType(const ExtVectorType *T,
+                                         Qualifiers Quals, SourceRange Range) {
+  mangleType(static_cast<const VectorType *>(T), Quals, Range);
 }
 void MicrosoftCXXNameMangler::mangleType(const DependentSizedExtVectorType *T,
                                          Qualifiers, SourceRange Range) {
@@ -2688,28 +2816,6 @@ void MicrosoftMangleContextImpl::mangleStringLiteral(const StringLiteral *SL,
   // N.B. The length is in terms of bytes, not characters.
   Mangler.mangleNumber(SL->getByteLength() + SL->getCharByteWidth());
 
-  // We will use the "Rocksoft^tm Model CRC Algorithm" to describe the
-  // properties of our CRC:
-  //   Width  : 32
-  //   Poly   : 04C11DB7
-  //   Init   : FFFFFFFF
-  //   RefIn  : True
-  //   RefOut : True
-  //   XorOut : 00000000
-  //   Check  : 340BC6D9
-  uint32_t CRC = 0xFFFFFFFFU;
-
-  auto UpdateCRC = [&CRC](char Byte) {
-    for (unsigned i = 0; i < 8; ++i) {
-      bool Bit = CRC & 0x80000000U;
-      if (Byte & (1U << i))
-        Bit = !Bit;
-      CRC <<= 1;
-      if (Bit)
-        CRC ^= 0x04C11DB7U;
-    }
-  };
-
   auto GetLittleEndianByte = [&Mangler, &SL](unsigned Index) {
     unsigned CharByteWidth = SL->getCharByteWidth();
     uint32_t CodeUnit = SL->getCodeUnit(Index / CharByteWidth);
@@ -2725,22 +2831,19 @@ void MicrosoftMangleContextImpl::mangleStringLiteral(const StringLiteral *SL,
   };
 
   // CRC all the bytes of the StringLiteral.
+  llvm::JamCRC JC;
   for (unsigned I = 0, E = SL->getByteLength(); I != E; ++I)
-    UpdateCRC(GetLittleEndianByte(I));
+    JC.update(GetLittleEndianByte(I));
 
   // The NUL terminator byte(s) were not present earlier,
   // we need to manually process those bytes into the CRC.
   for (unsigned NullTerminator = 0; NullTerminator < SL->getCharByteWidth();
        ++NullTerminator)
-    UpdateCRC('\x00');
-
-  // The literature refers to the process of reversing the bits in the final CRC
-  // output as "reflection".
-  CRC = llvm::reverseBits(CRC);
+    JC.update('\x00');
 
   // <encoded-crc>: The CRC is encoded utilizing the standard number mangling
   // scheme.
-  Mangler.mangleNumber(CRC);
+  Mangler.mangleNumber(JC.getCRC());
 
   // <encoded-string>: The mangled name also contains the first 32 _characters_
   // (including null-terminator bytes) of the StringLiteral.
@@ -2788,21 +2891,6 @@ void MicrosoftMangleContextImpl::mangleStringLiteral(const StringLiteral *SL,
       MangleByte(0);
 
   Mangler.getStream() << '@';
-}
-
-void MicrosoftMangleContextImpl::mangleCXXVTableBitSet(const CXXRecordDecl *RD,
-                                                       raw_ostream &Out) {
-  if (!RD->isExternallyVisible()) {
-    // This part of the identifier needs to be unique across all translation
-    // units in the linked program. The scheme fails if multiple translation
-    // units are compiled using the same relative source file path, or if
-    // multiple translation units are built from the same source file.
-    SourceManager &SM = getASTContext().getSourceManager();
-    Out << "[" << SM.getFileEntryForID(SM.getMainFileID())->getName() << "]";
-  }
-
-  MicrosoftCXXNameMangler mangler(*this, Out);
-  mangler.mangleName(RD);
 }
 
 MicrosoftMangleContext *

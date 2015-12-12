@@ -276,6 +276,10 @@ TEST_F(FormatTestJava, Annotations) {
   verifyFormat("void SomeFunction(@org.llvm.Nullable String something) {}");
 
   verifyFormat("@Partial @Mock DataLoader loader;");
+  verifyFormat("@Partial\n"
+               "@Mock\n"
+               "DataLoader loader;",
+               getChromiumStyle(FormatStyle::LK_Java));
   verifyFormat("@SuppressWarnings(value = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\")\n"
                "public static int iiiiiiiiiiiiiiiiiiiiiiii;");
 
@@ -391,6 +395,10 @@ TEST_F(FormatTestJava, SynchronizedKeyword) {
   verifyFormat("synchronized (mData) {\n"
                "  // ...\n"
                "}");
+}
+
+TEST_F(FormatTestJava, AssertKeyword) {
+  verifyFormat("assert a && b;");
 }
 
 TEST_F(FormatTestJava, PackageDeclarations) {

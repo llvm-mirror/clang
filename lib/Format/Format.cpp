@@ -13,6 +13,7 @@
 ///
 //===----------------------------------------------------------------------===//
 
+#include "clang/Format/Format.h"
 #include "ContinuationIndenter.h"
 #include "TokenAnnotator.h"
 #include "UnwrappedLineFormatter.h"
@@ -21,7 +22,6 @@
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/SourceManager.h"
-#include "clang/Format/Format.h"
 #include "clang/Lex/Lexer.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Allocator.h"
@@ -37,6 +37,7 @@
 using clang::format::FormatStyle;
 
 LLVM_YAML_IS_FLOW_SEQUENCE_VECTOR(std::string)
+LLVM_YAML_IS_SEQUENCE_VECTOR(clang::format::FormatStyle::IncludeCategory)
 
 namespace llvm {
 namespace yaml {
@@ -98,11 +99,15 @@ template <> struct ScalarEnumerationTraits<FormatStyle::BraceBreakingStyle> {
     IO.enumCase(Value, "Stroustrup", FormatStyle::BS_Stroustrup);
     IO.enumCase(Value, "Allman", FormatStyle::BS_Allman);
     IO.enumCase(Value, "GNU", FormatStyle::BS_GNU);
+    IO.enumCase(Value, "WebKit", FormatStyle::BS_WebKit);
+    IO.enumCase(Value, "Custom", FormatStyle::BS_Custom);
   }
 };
 
-template <> struct ScalarEnumerationTraits<FormatStyle::DefinitionReturnTypeBreakingStyle> {
-  static void enumeration(IO &IO, FormatStyle::DefinitionReturnTypeBreakingStyle &Value) {
+template <>
+struct ScalarEnumerationTraits<FormatStyle::DefinitionReturnTypeBreakingStyle> {
+  static void
+  enumeration(IO &IO, FormatStyle::DefinitionReturnTypeBreakingStyle &Value) {
     IO.enumCase(Value, "None", FormatStyle::DRTBS_None);
     IO.enumCase(Value, "All", FormatStyle::DRTBS_All);
     IO.enumCase(Value, "TopLevel", FormatStyle::DRTBS_TopLevel);
@@ -120,6 +125,18 @@ struct ScalarEnumerationTraits<FormatStyle::NamespaceIndentationKind> {
     IO.enumCase(Value, "None", FormatStyle::NI_None);
     IO.enumCase(Value, "Inner", FormatStyle::NI_Inner);
     IO.enumCase(Value, "All", FormatStyle::NI_All);
+  }
+};
+
+template <> struct ScalarEnumerationTraits<FormatStyle::BracketAlignmentStyle> {
+  static void enumeration(IO &IO, FormatStyle::BracketAlignmentStyle &Value) {
+    IO.enumCase(Value, "Align", FormatStyle::BAS_Align);
+    IO.enumCase(Value, "DontAlign", FormatStyle::BAS_DontAlign);
+    IO.enumCase(Value, "AlwaysBreak", FormatStyle::BAS_AlwaysBreak);
+
+    // For backward compatibility.
+    IO.enumCase(Value, "true", FormatStyle::BAS_Align);
+    IO.enumCase(Value, "false", FormatStyle::BAS_DontAlign);
   }
 };
 
@@ -197,6 +214,8 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("AlignAfterOpenBracket", Style.AlignAfterOpenBracket);
     IO.mapOptional("AlignConsecutiveAssignments",
                    Style.AlignConsecutiveAssignments);
+    IO.mapOptional("AlignConsecutiveDeclarations",
+                   Style.AlignConsecutiveDeclarations);
     IO.mapOptional("AlignEscapedNewlinesLeft", Style.AlignEscapedNewlinesLeft);
     IO.mapOptional("AlignOperands", Style.AlignOperands);
     IO.mapOptional("AlignTrailingComments", Style.AlignTrailingComments);
@@ -220,6 +239,7 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.AlwaysBreakTemplateDeclarations);
     IO.mapOptional("BinPackArguments", Style.BinPackArguments);
     IO.mapOptional("BinPackParameters", Style.BinPackParameters);
+    IO.mapOptional("BraceWrapping", Style.BraceWrapping);
     IO.mapOptional("BreakBeforeBinaryOperators",
                    Style.BreakBeforeBinaryOperators);
     IO.mapOptional("BreakBeforeBraces", Style.BreakBeforeBraces);
@@ -240,6 +260,7 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("ExperimentalAutoDetectBinPacking",
                    Style.ExperimentalAutoDetectBinPacking);
     IO.mapOptional("ForEachMacros", Style.ForEachMacros);
+    IO.mapOptional("IncludeCategories", Style.IncludeCategories);
     IO.mapOptional("IndentCaseLabels", Style.IndentCaseLabels);
     IO.mapOptional("IndentWidth", Style.IndentWidth);
     IO.mapOptional("IndentWrappedFunctionNames",
@@ -264,6 +285,8 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("PenaltyReturnTypeOnItsOwnLine",
                    Style.PenaltyReturnTypeOnItsOwnLine);
     IO.mapOptional("PointerAlignment", Style.PointerAlignment);
+    IO.mapOptional("ReflowComments", Style.ReflowComments);
+    IO.mapOptional("SortIncludes", Style.SortIncludes);
     IO.mapOptional("SpaceAfterCStyleCast", Style.SpaceAfterCStyleCast);
     IO.mapOptional("SpaceBeforeAssignmentOperators",
                    Style.SpaceBeforeAssignmentOperators);
@@ -281,6 +304,29 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("Standard", Style.Standard);
     IO.mapOptional("TabWidth", Style.TabWidth);
     IO.mapOptional("UseTab", Style.UseTab);
+  }
+};
+
+template <> struct MappingTraits<FormatStyle::BraceWrappingFlags> {
+  static void mapping(IO &IO, FormatStyle::BraceWrappingFlags &Wrapping) {
+    IO.mapOptional("AfterClass", Wrapping.AfterClass);
+    IO.mapOptional("AfterControlStatement", Wrapping.AfterControlStatement);
+    IO.mapOptional("AfterEnum", Wrapping.AfterEnum);
+    IO.mapOptional("AfterFunction", Wrapping.AfterFunction);
+    IO.mapOptional("AfterNamespace", Wrapping.AfterNamespace);
+    IO.mapOptional("AfterObjCDeclaration", Wrapping.AfterObjCDeclaration);
+    IO.mapOptional("AfterStruct", Wrapping.AfterStruct);
+    IO.mapOptional("AfterUnion", Wrapping.AfterUnion);
+    IO.mapOptional("BeforeCatch", Wrapping.BeforeCatch);
+    IO.mapOptional("BeforeElse", Wrapping.BeforeElse);
+    IO.mapOptional("IndentBraces", Wrapping.IndentBraces);
+  }
+};
+
+template <> struct MappingTraits<FormatStyle::IncludeCategory> {
+  static void mapping(IO &IO, FormatStyle::IncludeCategory &Category) {
+    IO.mapOptional("Regex", Category.Regex);
+    IO.mapOptional("Priority", Category.Priority);
   }
 };
 
@@ -309,8 +355,8 @@ template <> struct DocumentListTraits<std::vector<FormatStyle>> {
     return Seq[Index];
   }
 };
-}
-}
+} // namespace yaml
+} // namespace llvm
 
 namespace clang {
 namespace format {
@@ -339,15 +385,66 @@ std::string ParseErrorCategory::message(int EV) const {
   llvm_unreachable("unexpected parse error");
 }
 
+static FormatStyle expandPresets(const FormatStyle &Style) {
+  if (Style.BreakBeforeBraces == FormatStyle::BS_Custom)
+    return Style;
+  FormatStyle Expanded = Style;
+  Expanded.BraceWrapping = {false, false, false, false, false, false,
+                            false, false, false, false, false};
+  switch (Style.BreakBeforeBraces) {
+  case FormatStyle::BS_Linux:
+    Expanded.BraceWrapping.AfterClass = true;
+    Expanded.BraceWrapping.AfterFunction = true;
+    Expanded.BraceWrapping.AfterNamespace = true;
+    Expanded.BraceWrapping.BeforeElse = true;
+    break;
+  case FormatStyle::BS_Mozilla:
+    Expanded.BraceWrapping.AfterClass = true;
+    Expanded.BraceWrapping.AfterEnum = true;
+    Expanded.BraceWrapping.AfterFunction = true;
+    Expanded.BraceWrapping.AfterStruct = true;
+    Expanded.BraceWrapping.AfterUnion = true;
+    break;
+  case FormatStyle::BS_Stroustrup:
+    Expanded.BraceWrapping.AfterFunction = true;
+    Expanded.BraceWrapping.BeforeCatch = true;
+    Expanded.BraceWrapping.BeforeElse = true;
+    break;
+  case FormatStyle::BS_Allman:
+    Expanded.BraceWrapping.AfterClass = true;
+    Expanded.BraceWrapping.AfterControlStatement = true;
+    Expanded.BraceWrapping.AfterEnum = true;
+    Expanded.BraceWrapping.AfterFunction = true;
+    Expanded.BraceWrapping.AfterNamespace = true;
+    Expanded.BraceWrapping.AfterObjCDeclaration = true;
+    Expanded.BraceWrapping.AfterStruct = true;
+    Expanded.BraceWrapping.BeforeCatch = true;
+    Expanded.BraceWrapping.BeforeElse = true;
+    break;
+  case FormatStyle::BS_GNU:
+    Expanded.BraceWrapping = {true, true, true, true, true, true,
+                              true, true, true, true, true};
+    break;
+  case FormatStyle::BS_WebKit:
+    Expanded.BraceWrapping.AfterFunction = true;
+    Expanded.BraceWrapping.BeforeElse = true;
+    break;
+  default:
+    break;
+  }
+  return Expanded;
+}
+
 FormatStyle getLLVMStyle() {
   FormatStyle LLVMStyle;
   LLVMStyle.Language = FormatStyle::LK_Cpp;
   LLVMStyle.AccessModifierOffset = -2;
   LLVMStyle.AlignEscapedNewlinesLeft = false;
-  LLVMStyle.AlignAfterOpenBracket = true;
+  LLVMStyle.AlignAfterOpenBracket = FormatStyle::BAS_Align;
   LLVMStyle.AlignOperands = true;
   LLVMStyle.AlignTrailingComments = true;
   LLVMStyle.AlignConsecutiveAssignments = false;
+  LLVMStyle.AlignConsecutiveDeclarations = false;
   LLVMStyle.AllowAllParametersOfDeclarationOnNextLine = true;
   LLVMStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_All;
   LLVMStyle.AllowShortBlocksOnASingleLine = false;
@@ -362,7 +459,10 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.BreakBeforeBinaryOperators = FormatStyle::BOS_None;
   LLVMStyle.BreakBeforeTernaryOperators = true;
   LLVMStyle.BreakBeforeBraces = FormatStyle::BS_Attach;
+  LLVMStyle.BraceWrapping = {false, false, false, false, false, false,
+                             false, false, false, false, false};
   LLVMStyle.BreakConstructorInitializersBeforeComma = false;
+  LLVMStyle.BreakAfterJavaFieldAnnotations = false;
   LLVMStyle.ColumnLimit = 80;
   LLVMStyle.CommentPragmas = "^ IWYU pragma:";
   LLVMStyle.ConstructorInitializerAllOnOneLineOrOnePerLine = false;
@@ -374,6 +474,9 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.ForEachMacros.push_back("foreach");
   LLVMStyle.ForEachMacros.push_back("Q_FOREACH");
   LLVMStyle.ForEachMacros.push_back("BOOST_FOREACH");
+  LLVMStyle.IncludeCategories = {{"^\"(llvm|llvm-c|clang|clang-c)/", 2},
+                                 {"^(<|\"(gtest|isl|json)/)", 3},
+                                 {".*", 1}};
   LLVMStyle.IndentCaseLabels = false;
   LLVMStyle.IndentWrappedFunctionNames = false;
   LLVMStyle.IndentWidth = 2;
@@ -388,6 +491,7 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.SpacesBeforeTrailingComments = 1;
   LLVMStyle.Standard = FormatStyle::LS_Cpp11;
   LLVMStyle.UseTab = FormatStyle::UT_Never;
+  LLVMStyle.ReflowComments = true;
   LLVMStyle.SpacesInParentheses = false;
   LLVMStyle.SpacesInSquareBrackets = false;
   LLVMStyle.SpaceInEmptyParentheses = false;
@@ -406,6 +510,7 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.PenaltyBreakBeforeFirstCallParameter = 19;
 
   LLVMStyle.DisableFormat = false;
+  LLVMStyle.SortIncludes = true;
 
   return LLVMStyle;
 }
@@ -422,6 +527,7 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
   GoogleStyle.AlwaysBreakTemplateDeclarations = true;
   GoogleStyle.ConstructorInitializerAllOnOneLineOrOnePerLine = true;
   GoogleStyle.DerivePointerAlignment = true;
+  GoogleStyle.IncludeCategories = {{"^<.*\\.h>", 1}, {"^<.*", 2}, {".*", 3}};
   GoogleStyle.IndentCaseLabels = true;
   GoogleStyle.KeepEmptyLinesAtTheStartOfBlocks = false;
   GoogleStyle.ObjCSpaceAfterProperty = false;
@@ -434,7 +540,7 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
   GoogleStyle.PenaltyBreakBeforeFirstCallParameter = 1;
 
   if (Language == FormatStyle::LK_Java) {
-    GoogleStyle.AlignAfterOpenBracket = false;
+    GoogleStyle.AlignAfterOpenBracket = FormatStyle::BAS_DontAlign;
     GoogleStyle.AlignOperands = false;
     GoogleStyle.AlignTrailingComments = false;
     GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_Empty;
@@ -445,11 +551,12 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
     GoogleStyle.SpaceAfterCStyleCast = true;
     GoogleStyle.SpacesBeforeTrailingComments = 1;
   } else if (Language == FormatStyle::LK_JavaScript) {
+    GoogleStyle.AlignAfterOpenBracket = FormatStyle::BAS_AlwaysBreak;
+    GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_Inline;
+    GoogleStyle.AlwaysBreakBeforeMultilineStrings = false;
     GoogleStyle.BreakBeforeTernaryOperators = false;
     GoogleStyle.MaxEmptyLinesToKeep = 3;
     GoogleStyle.SpacesInContainerLiterals = false;
-    GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_Inline;
-    GoogleStyle.AlwaysBreakBeforeMultilineStrings = false;
   } else if (Language == FormatStyle::LK_Proto) {
     GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_None;
     GoogleStyle.SpacesInContainerLiterals = false;
@@ -462,8 +569,9 @@ FormatStyle getChromiumStyle(FormatStyle::LanguageKind Language) {
   FormatStyle ChromiumStyle = getGoogleStyle(Language);
   if (Language == FormatStyle::LK_Java) {
     ChromiumStyle.AllowShortIfStatementsOnASingleLine = true;
-    ChromiumStyle.IndentWidth = 4;
+    ChromiumStyle.BreakAfterJavaFieldAnnotations = true;
     ChromiumStyle.ContinuationIndentWidth = 8;
+    ChromiumStyle.IndentWidth = 4;
   } else {
     ChromiumStyle.AllowAllParametersOfDeclarationOnNextLine = false;
     ChromiumStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_Inline;
@@ -472,8 +580,6 @@ FormatStyle getChromiumStyle(FormatStyle::LanguageKind Language) {
     ChromiumStyle.BinPackParameters = false;
     ChromiumStyle.DerivePointerAlignment = false;
   }
-  ChromiumStyle.MacroBlockBegin = "^IPC_BEGIN_MESSAGE_MAP$";
-  ChromiumStyle.MacroBlockBegin = "^IPC_END_MESSAGE_MAP$";
   return ChromiumStyle;
 }
 
@@ -500,11 +606,11 @@ FormatStyle getMozillaStyle() {
 FormatStyle getWebKitStyle() {
   FormatStyle Style = getLLVMStyle();
   Style.AccessModifierOffset = -4;
-  Style.AlignAfterOpenBracket = false;
+  Style.AlignAfterOpenBracket = FormatStyle::BAS_DontAlign;
   Style.AlignOperands = false;
   Style.AlignTrailingComments = false;
   Style.BreakBeforeBinaryOperators = FormatStyle::BOS_All;
-  Style.BreakBeforeBraces = FormatStyle::BS_Stroustrup;
+  Style.BreakBeforeBraces = FormatStyle::BS_WebKit;
   Style.BreakConstructorInitializersBeforeComma = true;
   Style.Cpp11BracedListStyle = false;
   Style.ColumnLimit = 0;
@@ -533,6 +639,7 @@ FormatStyle getGNUStyle() {
 FormatStyle getNoStyle() {
   FormatStyle NoStyle = getLLVMStyle();
   NoStyle.DisableFormat = true;
+  NoStyle.SortIncludes = false;
   return NoStyle;
 }
 
@@ -612,7 +719,7 @@ std::string configurationAsText(const FormatStyle &Style) {
   llvm::yaml::Output Output(Stream);
   // We use the same mapping method for input and output, so we need a non-const
   // reference here.
-  FormatStyle NonConstStyle = Style;
+  FormatStyle NonConstStyle = expandPresets(Style);
   Output << NonConstStyle;
   return Stream.str();
 }
@@ -644,6 +751,8 @@ public:
     assert(FirstInLineIndex == 0);
     do {
       Tokens.push_back(getNextToken());
+      if (Style.Language == FormatStyle::LK_JavaScript)
+        tryParseJSRegexLiteral();
       tryMergePreviousTokens();
       if (Tokens.back()->NewlinesBefore > 0 || Tokens.back()->IsMultiline)
         FirstInLineIndex = Tokens.size() - 1;
@@ -663,10 +772,6 @@ private:
       return;
 
     if (Style.Language == FormatStyle::LK_JavaScript) {
-      if (tryMergeJSRegexLiteral())
-        return;
-      if (tryMergeEscapeSequence())
-        return;
       if (tryMergeTemplateString())
         return;
 
@@ -738,96 +843,97 @@ private:
     return true;
   }
 
-  // Tries to merge an escape sequence, i.e. a "\\" and the following
-  // character. Use e.g. inside JavaScript regex literals.
-  bool tryMergeEscapeSequence() {
-    if (Tokens.size() < 2)
+  // Returns \c true if \p Tok can only be followed by an operand in JavaScript.
+  bool precedesOperand(FormatToken *Tok) {
+    // NB: This is not entirely correct, as an r_paren can introduce an operand
+    // location in e.g. `if (foo) /bar/.exec(...);`. That is a rare enough
+    // corner case to not matter in practice, though.
+    return Tok->isOneOf(tok::period, tok::l_paren, tok::comma, tok::l_brace,
+                        tok::r_brace, tok::l_square, tok::semi, tok::exclaim,
+                        tok::colon, tok::question, tok::tilde) ||
+           Tok->isOneOf(tok::kw_return, tok::kw_do, tok::kw_case, tok::kw_throw,
+                        tok::kw_else, tok::kw_new, tok::kw_delete, tok::kw_void,
+                        tok::kw_typeof, Keywords.kw_instanceof,
+                        Keywords.kw_in) ||
+           Tok->isBinaryOperator();
+  }
+
+  bool canPrecedeRegexLiteral(FormatToken *Prev) {
+    if (!Prev)
+      return true;
+
+    // Regex literals can only follow after prefix unary operators, not after
+    // postfix unary operators. If the '++' is followed by a non-operand
+    // introducing token, the slash here is the operand and not the start of a
+    // regex.
+    if (Prev->isOneOf(tok::plusplus, tok::minusminus))
+      return (Tokens.size() < 3 || precedesOperand(Tokens[Tokens.size() - 3]));
+
+    // The previous token must introduce an operand location where regex
+    // literals can occur.
+    if (!precedesOperand(Prev))
       return false;
-    FormatToken *Previous = Tokens[Tokens.size() - 2];
-    if (Previous->isNot(tok::unknown) || Previous->TokenText != "\\")
-      return false;
-    ++Previous->ColumnWidth;
-    StringRef Text = Previous->TokenText;
-    Previous->TokenText = StringRef(Text.data(), Text.size() + 1);
-    resetLexer(SourceMgr.getFileOffset(Tokens.back()->Tok.getLocation()) + 1);
-    Tokens.resize(Tokens.size() - 1);
-    Column = Previous->OriginalColumn + Previous->ColumnWidth;
+
     return true;
   }
 
-  // Try to determine whether the current token ends a JavaScript regex literal.
-  // We heuristically assume that this is a regex literal if we find two
-  // unescaped slashes on a line and the token before the first slash is one of
-  // "(;,{}![:?", a binary operator or 'return', as those cannot be followed by
-  // a division.
-  bool tryMergeJSRegexLiteral() {
-    if (Tokens.size() < 2)
-      return false;
+  // Tries to parse a JavaScript Regex literal starting at the current token,
+  // if that begins with a slash and is in a location where JavaScript allows
+  // regex literals. Changes the current token to a regex literal and updates
+  // its text if successful.
+  void tryParseJSRegexLiteral() {
+    FormatToken *RegexToken = Tokens.back();
+    if (!RegexToken->isOneOf(tok::slash, tok::slashequal))
+      return;
 
-    // If this is a string literal with a slash inside, compute the slash's
-    // offset and try to find the beginning of the regex literal.
-    // Also look at tok::unknown, as it can be an unterminated char literal.
-    size_t SlashInStringPos = StringRef::npos;
-    if (Tokens.back()->isOneOf(tok::string_literal, tok::char_constant,
-                               tok::unknown)) {
-      // Start search from position 1 as otherwise, this is an unknown token
-      // for an unterminated /*-comment which is handled elsewhere.
-      SlashInStringPos = Tokens.back()->TokenText.find('/', 1);
-      if (SlashInStringPos == StringRef::npos)
-        return false;
-    }
-
-    // If a regex literal ends in "\//", this gets represented by an unknown
-    // token "\" and a comment.
-    bool MightEndWithEscapedSlash =
-        Tokens.back()->is(tok::comment) &&
-        Tokens.back()->TokenText.startswith("//") &&
-        Tokens[Tokens.size() - 2]->TokenText == "\\";
-    if (!MightEndWithEscapedSlash && SlashInStringPos == StringRef::npos &&
-        (Tokens.back()->isNot(tok::slash) ||
-         (Tokens[Tokens.size() - 2]->is(tok::unknown) &&
-          Tokens[Tokens.size() - 2]->TokenText == "\\")))
-      return false;
-
-    unsigned TokenCount = 0;
+    FormatToken *Prev = nullptr;
     for (auto I = Tokens.rbegin() + 1, E = Tokens.rend(); I != E; ++I) {
-      ++TokenCount;
-      auto Prev = I + 1;
-      while (Prev != E && Prev[0]->is(tok::comment))
-        ++Prev;
-      if (I[0]->isOneOf(tok::slash, tok::slashequal) &&
-          (Prev == E ||
-           ((Prev[0]->isOneOf(tok::l_paren, tok::semi, tok::l_brace,
-                              tok::r_brace, tok::exclaim, tok::l_square,
-                              tok::colon, tok::comma, tok::question,
-                              tok::kw_return) ||
-             Prev[0]->isBinaryOperator())))) {
-        unsigned LastColumn = Tokens.back()->OriginalColumn;
-        SourceLocation Loc = Tokens.back()->Tok.getLocation();
-        if (MightEndWithEscapedSlash) {
-          // This regex literal ends in '\//'. Skip past the '//' of the last
-          // token and re-start lexing from there.
-          resetLexer(SourceMgr.getFileOffset(Loc) + 2);
-        } else if (SlashInStringPos != StringRef::npos) {
-          // This regex literal ends in a string_literal with a slash inside.
-          // Calculate end column and reset lexer appropriately.
-          resetLexer(SourceMgr.getFileOffset(Loc) + SlashInStringPos + 1);
-          LastColumn += SlashInStringPos;
-        }
-        Tokens.resize(Tokens.size() - TokenCount);
-        Tokens.back()->Tok.setKind(tok::unknown);
-        Tokens.back()->Type = TT_RegexLiteral;
-        // Treat regex literals like other string_literals.
-        Tokens.back()->Tok.setKind(tok::string_literal);
-        Tokens.back()->ColumnWidth += LastColumn - I[0]->OriginalColumn;
-        return true;
+      // NB: Because previous pointers are not initialized yet, this cannot use
+      // Token.getPreviousNonComment.
+      if ((*I)->isNot(tok::comment)) {
+        Prev = *I;
+        break;
       }
-
-      // There can't be a newline inside a regex literal.
-      if (I[0]->NewlinesBefore > 0)
-        return false;
     }
-    return false;
+
+    if (!canPrecedeRegexLiteral(Prev))
+      return;
+
+    // 'Manually' lex ahead in the current file buffer.
+    const char *Offset = Lex->getBufferLocation();
+    const char *RegexBegin = Offset - RegexToken->TokenText.size();
+    StringRef Buffer = Lex->getBuffer();
+    bool InCharacterClass = false;
+    bool HaveClosingSlash = false;
+    for (; !HaveClosingSlash && Offset != Buffer.end(); ++Offset) {
+      // Regular expressions are terminated with a '/', which can only be
+      // escaped using '\' or a character class between '[' and ']'.
+      // See http://www.ecma-international.org/ecma-262/5.1/#sec-7.8.5.
+      switch (*Offset) {
+      case '\\':
+        // Skip the escaped character.
+        ++Offset;
+        break;
+      case '[':
+        InCharacterClass = true;
+        break;
+      case ']':
+        InCharacterClass = false;
+        break;
+      case '/':
+        if (!InCharacterClass)
+          HaveClosingSlash = true;
+        break;
+      }
+    }
+
+    RegexToken->Type = TT_RegexLiteral;
+    // Treat regex literals like other string_literals.
+    RegexToken->Tok.setKind(tok::string_literal);
+    RegexToken->TokenText = StringRef(RegexBegin, Offset - RegexBegin);
+    RegexToken->ColumnWidth = RegexToken->TokenText.size();
+
+    resetLexer(SourceMgr.getFileOffset(Lex->getSourceLocation(Offset)));
   }
 
   bool tryMergeTemplateString() {
@@ -1139,6 +1245,10 @@ private:
       FormatTok->Tok.setKind(Info.getTokenID());
       if (Style.Language == FormatStyle::LK_Java &&
           FormatTok->isOneOf(tok::kw_struct, tok::kw_union, tok::kw_delete)) {
+        FormatTok->Tok.setKind(tok::identifier);
+        FormatTok->Tok.setIdentifierInfo(nullptr);
+      } else if (Style.Language == FormatStyle::LK_JavaScript &&
+                 FormatTok->isOneOf(tok::kw_struct, tok::kw_union)) {
         FormatTok->Tok.setKind(tok::identifier);
         FormatTok->Tok.setIdentifierInfo(nullptr);
       }
@@ -1572,15 +1682,171 @@ private:
   bool BinPackInconclusiveFunctions;
 };
 
+struct IncludeDirective {
+  StringRef Filename;
+  StringRef Text;
+  unsigned Offset;
+  unsigned Category;
+};
+
 } // end anonymous namespace
+
+// Determines whether 'Ranges' intersects with ('Start', 'End').
+static bool affectsRange(ArrayRef<tooling::Range> Ranges, unsigned Start,
+                         unsigned End) {
+  for (auto Range : Ranges) {
+    if (Range.getOffset() < End &&
+        Range.getOffset() + Range.getLength() > Start)
+      return true;
+  }
+  return false;
+}
+
+// Sorts a block of includes given by 'Includes' alphabetically adding the
+// necessary replacement to 'Replaces'. 'Includes' must be in strict source
+// order.
+static void sortIncludes(const FormatStyle &Style,
+                         const SmallVectorImpl<IncludeDirective> &Includes,
+                         ArrayRef<tooling::Range> Ranges, StringRef FileName,
+                         tooling::Replacements &Replaces, unsigned *Cursor) {
+  if (!affectsRange(Ranges, Includes.front().Offset,
+                    Includes.back().Offset + Includes.back().Text.size()))
+    return;
+  SmallVector<unsigned, 16> Indices;
+  for (unsigned i = 0, e = Includes.size(); i != e; ++i)
+    Indices.push_back(i);
+  std::sort(Indices.begin(), Indices.end(), [&](unsigned LHSI, unsigned RHSI) {
+    return std::tie(Includes[LHSI].Category, Includes[LHSI].Filename) <
+           std::tie(Includes[RHSI].Category, Includes[RHSI].Filename);
+  });
+
+  // If the #includes are out of order, we generate a single replacement fixing
+  // the entire block. Otherwise, no replacement is generated.
+  bool OutOfOrder = false;
+  for (unsigned i = 1, e = Indices.size(); i != e; ++i) {
+    if (Indices[i] != i) {
+      OutOfOrder = true;
+      break;
+    }
+  }
+  if (!OutOfOrder)
+    return;
+
+  std::string result;
+  bool CursorMoved = false;
+  for (unsigned Index : Indices) {
+    if (!result.empty())
+      result += "\n";
+    result += Includes[Index].Text;
+
+    if (Cursor && !CursorMoved) {
+      unsigned Start = Includes[Index].Offset;
+      unsigned End = Start + Includes[Index].Text.size();
+      if (*Cursor >= Start && *Cursor < End) {
+        *Cursor = Includes.front().Offset + result.size() + *Cursor - End;
+        CursorMoved = true;
+      }
+    }
+  }
+
+  // Sorting #includes shouldn't change their total number of characters.
+  // This would otherwise mess up 'Ranges'.
+  assert(result.size() ==
+         Includes.back().Offset + Includes.back().Text.size() -
+             Includes.front().Offset);
+
+  Replaces.insert(tooling::Replacement(FileName, Includes.front().Offset,
+                                       result.size(), result));
+}
+
+tooling::Replacements sortIncludes(const FormatStyle &Style, StringRef Code,
+                                   ArrayRef<tooling::Range> Ranges,
+                                   StringRef FileName, unsigned *Cursor) {
+  tooling::Replacements Replaces;
+  if (!Style.SortIncludes)
+    return Replaces;
+
+  unsigned Prev = 0;
+  unsigned SearchFrom = 0;
+  llvm::Regex IncludeRegex(
+      R"(^[\t\ ]*#[\t\ ]*(import|include)[^"<]*(["<][^">]*[">]))");
+  SmallVector<StringRef, 4> Matches;
+  SmallVector<IncludeDirective, 16> IncludesInBlock;
+
+  // In compiled files, consider the first #include to be the main #include of
+  // the file if it is not a system #include. This ensures that the header
+  // doesn't have hidden dependencies
+  // (http://llvm.org/docs/CodingStandards.html#include-style).
+  //
+  // FIXME: Do some sanity checking, e.g. edit distance of the base name, to fix
+  // cases where the first #include is unlikely to be the main header.
+  bool LookForMainHeader = FileName.endswith(".c") ||
+                           FileName.endswith(".cc") ||
+                           FileName.endswith(".cpp")||
+                           FileName.endswith(".c++")||
+                           FileName.endswith(".cxx") ||
+                           FileName.endswith(".m")||
+                           FileName.endswith(".mm");
+
+  // Create pre-compiled regular expressions for the #include categories.
+  SmallVector<llvm::Regex, 4> CategoryRegexs;
+  for (const auto &Category : Style.IncludeCategories)
+    CategoryRegexs.emplace_back(Category.Regex);
+
+  bool FormattingOff = false;
+
+  for (;;) {
+    auto Pos = Code.find('\n', SearchFrom);
+    StringRef Line =
+        Code.substr(Prev, (Pos != StringRef::npos ? Pos : Code.size()) - Prev);
+
+    StringRef Trimmed = Line.trim();
+    if (Trimmed == "// clang-format off")
+      FormattingOff = true;
+    else if (Trimmed == "// clang-format on")
+      FormattingOff = false;
+
+    if (!FormattingOff && !Line.endswith("\\")) {
+      if (IncludeRegex.match(Line, &Matches)) {
+        StringRef IncludeName = Matches[2];
+        unsigned Category;
+        if (LookForMainHeader && !IncludeName.startswith("<")) {
+          Category = 0;
+        } else {
+          Category = UINT_MAX;
+          for (unsigned i = 0, e = CategoryRegexs.size(); i != e; ++i) {
+            if (CategoryRegexs[i].match(IncludeName)) {
+              Category = Style.IncludeCategories[i].Priority;
+              break;
+            }
+          }
+        }
+        LookForMainHeader = false;
+        IncludesInBlock.push_back({IncludeName, Line, Prev, Category});
+      } else if (!IncludesInBlock.empty()) {
+        sortIncludes(Style, IncludesInBlock, Ranges, FileName, Replaces,
+                     Cursor);
+        IncludesInBlock.clear();
+      }
+      Prev = Pos + 1;
+    }
+    if (Pos == StringRef::npos || Pos + 1 == Code.size())
+      break;
+    SearchFrom = Pos + 1;
+  }
+  if (!IncludesInBlock.empty())
+    sortIncludes(Style, IncludesInBlock, Ranges, FileName, Replaces, Cursor);
+  return Replaces;
+}
 
 tooling::Replacements reformat(const FormatStyle &Style,
                                SourceManager &SourceMgr, FileID ID,
                                ArrayRef<CharSourceRange> Ranges,
                                bool *IncompleteFormat) {
-  if (Style.DisableFormat)
+  FormatStyle Expanded = expandPresets(Style);
+  if (Expanded.DisableFormat)
     return tooling::Replacements();
-  Formatter formatter(Style, SourceMgr, ID, Ranges);
+  Formatter formatter(Expanded, SourceMgr, ID, Ranges);
   return formatter.format(IncompleteFormat);
 }
 
@@ -1590,18 +1856,17 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
   if (Style.DisableFormat)
     return tooling::Replacements();
 
-  FileManager Files((FileSystemOptions()));
+  IntrusiveRefCntPtr<vfs::InMemoryFileSystem> InMemoryFileSystem(
+      new vfs::InMemoryFileSystem);
+  FileManager Files(FileSystemOptions(), InMemoryFileSystem);
   DiagnosticsEngine Diagnostics(
       IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
       new DiagnosticOptions);
   SourceManager SourceMgr(Diagnostics, Files);
-  std::unique_ptr<llvm::MemoryBuffer> Buf =
-      llvm::MemoryBuffer::getMemBuffer(Code, FileName);
-  const clang::FileEntry *Entry =
-      Files.getVirtualFile(FileName, Buf->getBufferSize(), 0);
-  SourceMgr.overrideFileContents(Entry, std::move(Buf));
-  FileID ID =
-      SourceMgr.createFileID(Entry, SourceLocation(), clang::SrcMgr::C_User);
+  InMemoryFileSystem->addFile(FileName, 0,
+                              llvm::MemoryBuffer::getMemBuffer(Code, FileName));
+  FileID ID = SourceMgr.createFileID(Files.getFile(FileName), SourceLocation(),
+                                     clang::SrcMgr::C_User);
   SourceLocation StartOfFile = SourceMgr.getLocForStartOfFile(ID);
   std::vector<CharSourceRange> CharRanges;
   for (const tooling::Range &Range : Ranges) {
@@ -1624,6 +1889,7 @@ LangOptions getFormattingLangOpts(const FormatStyle &Style) {
   LangOpts.ObjC1 = 1;
   LangOpts.ObjC2 = 1;
   LangOpts.MicrosoftExt = 1; // To get kw___try, kw___finally.
+  LangOpts.DeclSpecKeyword = 1; // To get __declspec.
   return LangOpts;
 }
 

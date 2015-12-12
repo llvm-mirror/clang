@@ -107,6 +107,37 @@ static bool CheckNakedParmReference(Expr *E, Sema &S) {
   return false;
 }
 
+/// \brief Returns true if given expression is not compatible with inline
+/// assembly's memory constraint; false otherwise.
+static bool checkExprMemoryConstraintCompat(Sema &S, Expr *E,
+                                            TargetInfo::ConstraintInfo &Info,
+                                            bool is_input_expr) {
+  enum {
+    ExprBitfield = 0,
+    ExprVectorElt,
+    ExprGlobalRegVar,
+    ExprSafeType
+  } EType = ExprSafeType;
+
+  // Bitfields, vector elements and global register variables are not
+  // compatible.
+  if (E->refersToBitField())
+    EType = ExprBitfield;
+  else if (E->refersToVectorElement())
+    EType = ExprVectorElt;
+  else if (E->refersToGlobalRegisterVar())
+    EType = ExprGlobalRegVar;
+
+  if (EType != ExprSafeType) {
+    S.Diag(E->getLocStart(), diag::err_asm_non_addr_value_in_memory_constraint)
+        << EType << is_input_expr << Info.getConstraintStr()
+        << E->getSourceRange();
+    return true;
+  }
+
+  return false;
+}
+
 StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
                                  bool IsVolatile, unsigned NumOutputs,
                                  unsigned NumInputs, IdentifierInfo **Names,
@@ -124,8 +155,14 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
   // The parser verifies that there is a string literal here.
   assert(AsmString->isAscii());
 
-  bool ValidateConstraints =
-      DeclAttrsMatchCUDAMode(getLangOpts(), getCurFunctionDecl());
+  // If we're compiling CUDA file and function attributes indicate that it's not
+  // for this compilation side, skip all the checks.
+  if (!DeclAttrsMatchCUDAMode(getLangOpts(), getCurFunctionDecl())) {
+    GCCAsmStmt *NS = new (Context) GCCAsmStmt(
+        Context, AsmLoc, IsSimple, IsVolatile, NumOutputs, NumInputs, Names,
+        Constraints, Exprs.data(), AsmString, NumClobbers, Clobbers, RParenLoc);
+    return NS;
+  }
 
   for (unsigned i = 0; i != NumOutputs; i++) {
     StringLiteral *Literal = Constraints[i];
@@ -136,8 +173,7 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
       OutputName = Names[i]->getName();
 
     TargetInfo::ConstraintInfo Info(Literal->getString(), OutputName);
-    if (ValidateConstraints &&
-        !Context.getTargetInfo().validateOutputConstraint(Info))
+    if (!Context.getTargetInfo().validateOutputConstraint(Info))
       return StmtError(Diag(Literal->getLocStart(),
                             diag::err_asm_invalid_output_constraint)
                        << Info.getConstraintStr());
@@ -154,13 +190,10 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
     if (CheckNakedParmReference(OutputExpr, *this))
       return StmtError();
 
-    // Bitfield can't be referenced with a pointer.
-    if (Info.allowsMemory() && OutputExpr->refersToBitField())
-      return StmtError(Diag(OutputExpr->getLocStart(),
-                            diag::err_asm_bitfield_in_memory_constraint)
-                       << 1
-                       << Info.getConstraintStr()
-                       << OutputExpr->getSourceRange());
+    // Check that the output expression is compatible with memory constraint.
+    if (Info.allowsMemory() &&
+        checkExprMemoryConstraintCompat(*this, OutputExpr, Info, false))
+      return StmtError();
 
     OutputConstraintInfos.push_back(Info);
 
@@ -219,9 +252,8 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
       InputName = Names[i]->getName();
 
     TargetInfo::ConstraintInfo Info(Literal->getString(), InputName);
-    if (ValidateConstraints &&
-        !Context.getTargetInfo().validateInputConstraint(
-            OutputConstraintInfos.data(), NumOutputs, Info)) {
+    if (!Context.getTargetInfo().validateInputConstraint(OutputConstraintInfos,
+                                                         Info)) {
       return StmtError(Diag(Literal->getLocStart(),
                             diag::err_asm_invalid_input_constraint)
                        << Info.getConstraintStr());
@@ -238,13 +270,10 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
     if (CheckNakedParmReference(InputExpr, *this))
       return StmtError();
 
-    // Bitfield can't be referenced with a pointer.
-    if (Info.allowsMemory() && InputExpr->refersToBitField())
-      return StmtError(Diag(InputExpr->getLocStart(),
-                            diag::err_asm_bitfield_in_memory_constraint)
-                       << 0
-                       << Info.getConstraintStr()
-                       << InputExpr->getSourceRange());
+    // Check that the input expression is compatible with memory constraint.
+    if (Info.allowsMemory() &&
+        checkExprMemoryConstraintCompat(*this, InputExpr, Info, true))
+      return StmtError();
 
     // Only allow void types for memory constraints.
     if (Info.allowsMemory() && !Info.allowsRegister()) {
@@ -391,6 +420,8 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
                             diag::err_asm_unexpected_constraint_alternatives)
                        << NumAlternatives << AltCount);
   }
+  SmallVector<size_t, 4> InputMatchedToOutput(OutputConstraintInfos.size(),
+                                              ~0U);
   for (unsigned i = 0, e = InputConstraintInfos.size(); i != e; ++i) {
     TargetInfo::ConstraintInfo &Info = InputConstraintInfos[i];
     StringRef ConstraintStr = Info.getConstraintStr();
@@ -411,6 +442,19 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
     unsigned InputOpNo = i+NumOutputs;
     Expr *OutputExpr = Exprs[TiedTo];
     Expr *InputExpr = Exprs[InputOpNo];
+
+    // Make sure no more than one input constraint matches each output.
+    assert(TiedTo < InputMatchedToOutput.size() && "TiedTo value out of range");
+    if (InputMatchedToOutput[TiedTo] != ~0U) {
+      Diag(NS->getInputExpr(i)->getLocStart(),
+           diag::err_asm_input_duplicate_match)
+          << TiedTo;
+      Diag(NS->getInputExpr(InputMatchedToOutput[TiedTo])->getLocStart(),
+           diag::note_asm_input_duplicate_first)
+          << TiedTo;
+      return StmtError();
+    }
+    InputMatchedToOutput[TiedTo] = i;
 
     if (OutputExpr->isTypeDependent() || InputExpr->isTypeDependent())
       continue;
@@ -503,6 +547,17 @@ StmtResult Sema::ActOnGCCAsmStmt(SourceLocation AsmLoc, bool IsSimple,
   return NS;
 }
 
+static void fillInlineAsmTypeInfo(const ASTContext &Context, QualType T,
+                                  llvm::InlineAsmIdentifierInfo &Info) {
+  // Compute the type size (and array length if applicable?).
+  Info.Type = Info.Size = Context.getTypeSizeInChars(T).getQuantity();
+  if (T->isArrayType()) {
+    const ArrayType *ATy = Context.getAsArrayType(T);
+    Info.Type = Context.getTypeSizeInChars(ATy->getElementType()).getQuantity();
+    Info.Length = Info.Size / Info.Type;
+  }
+}
+
 ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
                                            SourceLocation TemplateKWLoc,
                                            UnqualifiedId &Id,
@@ -550,13 +605,7 @@ ExprResult Sema::LookupInlineAsmIdentifier(CXXScopeSpec &SS,
     return ExprError();
   }
 
-  // Compute the type size (and array length if applicable?).
-  Info.Type = Info.Size = Context.getTypeSizeInChars(T).getQuantity();
-  if (T->isArrayType()) {
-    const ArrayType *ATy = Context.getAsArrayType(T);
-    Info.Type = Context.getTypeSizeInChars(ATy->getElementType()).getQuantity();
-    Info.Length = Info.Size / Info.Type;
-  }
+  fillInlineAsmTypeInfo(Context, T, Info);
 
   // We can work with the expression as long as it's not an r-value.
   if (!Result.get()->isRValue())
@@ -609,6 +658,49 @@ bool Sema::LookupInlineAsmField(StringRef Base, StringRef Member,
   Offset = (unsigned)Result.getQuantity();
 
   return false;
+}
+
+ExprResult
+Sema::LookupInlineAsmVarDeclField(Expr *E, StringRef Member, unsigned &Offset,
+                                  llvm::InlineAsmIdentifierInfo &Info,
+                                  SourceLocation AsmLoc) {
+  Info.clear();
+
+  const RecordType *RT = E->getType()->getAs<RecordType>();
+  // FIXME: Diagnose this as field access into a scalar type.
+  if (!RT)
+    return ExprResult();
+
+  LookupResult FieldResult(*this, &Context.Idents.get(Member), AsmLoc,
+                           LookupMemberName);
+
+  if (!LookupQualifiedName(FieldResult, RT->getDecl()))
+    return ExprResult();
+
+  // Only normal and indirect field results will work.
+  ValueDecl *FD = dyn_cast<FieldDecl>(FieldResult.getFoundDecl());
+  if (!FD)
+    FD = dyn_cast<IndirectFieldDecl>(FieldResult.getFoundDecl());
+  if (!FD)
+    return ExprResult();
+
+  Offset = (unsigned)Context.toCharUnitsFromBits(Context.getFieldOffset(FD))
+               .getQuantity();
+
+  // Make an Expr to thread through OpDecl.
+  ExprResult Result = BuildMemberReferenceExpr(
+      E, E->getType(), AsmLoc, /*IsArrow=*/false, CXXScopeSpec(),
+      SourceLocation(), nullptr, FieldResult, nullptr, nullptr);
+  if (Result.isInvalid())
+    return Result;
+  Info.OpDecl = Result.get();
+
+  fillInlineAsmTypeInfo(Context, Result.get()->getType(), Info);
+
+  // Fields are "variables" as far as inline assembly is concerned.
+  Info.IsVarDecl = true;
+
+  return Result;
 }
 
 StmtResult Sema::ActOnMSAsmStmt(SourceLocation AsmLoc, SourceLocation LBraceLoc,

@@ -104,10 +104,6 @@ def _SLASH_Os : CLFlag<"Os">, HelpText<"Optimize for size">, Alias<O>,
   AliasArgs<["s"]>;
 def _SLASH_Ot : CLFlag<"Ot">, HelpText<"Optimize for speed">, Alias<O>,
   AliasArgs<["2"]>;
-def _SLASH_Oy : CLFlag<"Oy">, HelpText<"Enable frame pointer omission">,
-  Alias<fomit_frame_pointer>;
-def _SLASH_Oy_ : CLFlag<"Oy-">, HelpText<"Disable frame pointer omission">,
-  Alias<fno_omit_frame_pointer>;
 def _SLASH_QUESTION : CLFlag<"?">, Alias<help>,
   HelpText<"Display available options">;
 def _SLASH_Qvec : CLFlag<"Qvec">,
@@ -157,9 +153,10 @@ def _SLASH_Zc_trigraphs : CLFlag<"Zc:trigraphs">,
   HelpText<"Enable trigraphs">, Alias<ftrigraphs>;
 def _SLASH_Zc_trigraphs_off : CLFlag<"Zc:trigraphs-">,
   HelpText<"Disable trigraphs (default)">, Alias<fno_trigraphs>;
-def _SLASH_Z7 : CLFlag<"Z7">, Alias<gline_tables_only>;
-def _SLASH_Zi : CLFlag<"Zi">, HelpText<"Enable debug information">,
-  Alias<gline_tables_only>;
+def _SLASH_Z7 : CLFlag<"Z7">,
+  HelpText<"Enable CodeView debug information in object files">;
+def _SLASH_Zi : CLFlag<"Zi">, Alias<_SLASH_Z7>,
+  HelpText<"Alias for /Z7. Does not produce PDBs.">;
 def _SLASH_Zp : CLJoined<"Zp">,
   HelpText<"Specify the default maximum struct packing alignment">,
   Alias<fpack_struct_EQ>;
@@ -246,6 +243,7 @@ def _SLASH_Zl : CLFlag<"Zl">,
 // Ignored:
 
 def _SLASH_analyze_ : CLIgnoredFlag<"analyze-">;
+def _SLASH_bigobj : CLIgnoredFlag<"bigobj">;
 def _SLASH_cgthreads : CLIgnoredJoined<"cgthreads">;
 def _SLASH_d2Zi_PLUS : CLIgnoredFlag<"d2Zi+">;
 def _SLASH_errorReport : CLIgnoredJoined<"errorReport">;
@@ -277,7 +275,6 @@ def _SLASH_Zo_ : CLIgnoredFlag<"Zo-">;
 // Unsupported:
 
 def _SLASH_AI : CLJoined<"AI">;
-def _SLASH_bigobj : CLFlag<"bigobj">;
 def _SLASH_clr : CLJoined<"clr">;
 def _SLASH_doc : CLJoined<"doc">;
 def _SLASH_FA_joined : CLJoined<"FA">;
@@ -302,6 +299,7 @@ def _SLASH_Gm_ : CLFlag<"Gm-">;
 def _SLASH_Gr : CLFlag<"Gr">;
 def _SLASH_GS : CLFlag<"GS">;
 def _SLASH_GT : CLFlag<"GT">;
+def _SLASH_Guard : CLJoined<"guard:">;
 def _SLASH_GX : CLFlag<"GX">;
 def _SLASH_Gv : CLFlag<"Gv">;
 def _SLASH_Gz : CLFlag<"Gz">;

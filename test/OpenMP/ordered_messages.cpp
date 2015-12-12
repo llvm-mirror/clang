@@ -24,6 +24,73 @@ T foo() {
       foo();
     }
   }
+  #pragma omp for ordered
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered threads threads // expected-error {{directive '#pragma omp ordered' cannot contain more than one 'threads' clause}}
+    {
+      foo();
+    }
+  }
+  #pragma omp for ordered(1) // expected-note {{'ordered' clause with specified parameter}}
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered // expected-error {{'ordered' directive without any clauses cannot be closely nested inside ordered region with specified parameter}}
+    {
+      foo();
+    }
+  }
+  #pragma omp for ordered(1) // expected-note {{'ordered' clause with specified parameter}}
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered threads // expected-error {{'ordered' directive with 'threads' clause cannot be closely nested inside ordered region with specified parameter}}
+    {
+      foo();
+    }
+  }
+  #pragma omp ordered simd simd // expected-error {{directive '#pragma omp ordered' cannot contain more than one 'simd' clause}}
+  {
+    foo();
+  }
+  #pragma omp simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
+  #pragma omp simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered threads // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
+  #pragma omp for simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
+  #pragma omp for simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered threads // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
+  #pragma omp parallel for simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
+  #pragma omp parallel for simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered threads // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
 
   return T();
 }
@@ -46,6 +113,73 @@ int foo() {
     #pragma omp ordered
     {
       L2:
+      foo();
+    }
+  }
+  #pragma omp for ordered
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered threads threads // expected-error {{directive '#pragma omp ordered' cannot contain more than one 'threads' clause}}
+    {
+      foo();
+    }
+  }
+  #pragma omp for ordered(1) // expected-note {{'ordered' clause with specified parameter}}
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered // expected-error {{'ordered' directive without any clauses cannot be closely nested inside ordered region with specified parameter}}
+    {
+      foo();
+    }
+  }
+  #pragma omp for ordered(1) // expected-note {{'ordered' clause with specified parameter}}
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered threads // expected-error {{'ordered' directive with 'threads' clause cannot be closely nested inside ordered region with specified parameter}}
+    {
+      foo();
+    }
+  }
+  #pragma omp ordered simd simd // expected-error {{directive '#pragma omp ordered' cannot contain more than one 'simd' clause}}
+  {
+    foo();
+  }
+  #pragma omp simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
+  #pragma omp simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered threads // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
+  #pragma omp for simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
+  #pragma omp for simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered threads // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
+  #pragma omp parallel for simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
+      foo();
+    }
+  }
+  #pragma omp parallel for simd
+  for (int i = 0; i < 10; ++i) {
+    #pragma omp ordered threads // expected-error {{OpenMP constructs may not be nested inside a simd region}}
+    {
       foo();
     }
   }

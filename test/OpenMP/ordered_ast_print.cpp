@@ -18,6 +18,30 @@ T tmain (T argc) {
   {
     a=2;
   }
+  #pragma omp for ordered
+  for (int i =0 ; i < argc; ++i)
+  #pragma omp ordered threads
+  {
+    a=2;
+  }
+  #pragma omp simd
+  for (int i =0 ; i < argc; ++i)
+  #pragma omp ordered simd
+  {
+    a=2;
+  }
+  #pragma omp for simd
+  for (int i =0 ; i < argc; ++i)
+  #pragma omp ordered simd
+  {
+    a=2;
+  }
+  #pragma omp parallel for simd
+  for (int i =0 ; i < argc; ++i)
+  #pragma omp ordered simd
+  {
+    a=2;
+  }
   return (0);
 }
 
@@ -28,11 +52,59 @@ T tmain (T argc) {
 // CHECK-NEXT: {
 // CHECK-NEXT: a = 2;
 // CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp for ordered
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered threads
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp simd
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered simd
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp for simd
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered simd
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp parallel for simd
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered simd
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
 
 // CHECK: static T a;
 // CHECK-NEXT: #pragma omp for ordered
 // CHECK-NEXT: for (int i = 0; i < argc; ++i)
 // CHECK-NEXT: #pragma omp ordered
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp for ordered
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered threads
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp simd
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered simd
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp for simd
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered simd
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp parallel for simd
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered simd
 // CHECK-NEXT: {
 // CHECK-NEXT: a = 2;
 // CHECK-NEXT: }
@@ -47,9 +119,57 @@ int main (int argc, char **argv) {
   {
     a=2;
   }
+  #pragma omp for ordered
+  for (int i =0 ; i < argc; ++i)
+  #pragma omp ordered threads
+  {
+    a=2;
+  }
+  #pragma omp simd
+  for (int i =0 ; i < argc; ++i)
+  #pragma omp ordered simd
+  {
+    a=2;
+  }
+  #pragma omp for simd
+  for (int i =0 ; i < argc; ++i)
+  #pragma omp ordered simd
+  {
+    a=2;
+  }
+  #pragma omp parallel for simd
+  for (int i =0 ; i < argc; ++i)
+  #pragma omp ordered simd
+  {
+    a=2;
+  }
 // CHECK-NEXT: #pragma omp for ordered
 // CHECK-NEXT: for (int i = 0; i < argc; ++i)
 // CHECK-NEXT: #pragma omp ordered
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp for ordered
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered threads
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp simd
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered simd
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp for simd
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered simd
+// CHECK-NEXT: {
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp parallel for simd
+// CHECK-NEXT: for (int i = 0; i < argc; ++i)
+// CHECK-NEXT: #pragma omp ordered simd
 // CHECK-NEXT: {
 // CHECK-NEXT: a = 2;
 // CHECK-NEXT: }

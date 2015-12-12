@@ -9,6 +9,7 @@
 
 #include "clang/AST/NSAPI.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/DeclObjC.h"
 #include "clang/AST/Expr.h"
 #include "llvm/ADT/StringSwitch.h"
 
@@ -29,7 +30,6 @@ IdentifierInfo *NSAPI::getNSClassId(NSClassIdKindKind K) const {
     "NSMutableDictionary",
     "NSNumber",
     "NSMutableSet",
-    "NSCountedSet",
     "NSMutableOrderedSet",
     "NSValue"
   };
@@ -450,9 +450,19 @@ NSAPI::getNSNumberFactoryMethodKind(QualType T) const {
   case BuiltinType::OCLImage1dBuffer:
   case BuiltinType::OCLImage2d:
   case BuiltinType::OCLImage2dArray:
+  case BuiltinType::OCLImage2dDepth:
+  case BuiltinType::OCLImage2dArrayDepth:
+  case BuiltinType::OCLImage2dMSAA:
+  case BuiltinType::OCLImage2dArrayMSAA:
+  case BuiltinType::OCLImage2dMSAADepth:
+  case BuiltinType::OCLImage2dArrayMSAADepth:
   case BuiltinType::OCLImage3d:
   case BuiltinType::OCLSampler:
   case BuiltinType::OCLEvent:
+  case BuiltinType::OCLClkEvent:
+  case BuiltinType::OCLQueue:
+  case BuiltinType::OCLNDRange:
+  case BuiltinType::OCLReserveID:
   case BuiltinType::BoundMember:
   case BuiltinType::Dependent:
   case BuiltinType::Overload:
@@ -461,6 +471,7 @@ NSAPI::getNSNumberFactoryMethodKind(QualType T) const {
   case BuiltinType::Half:
   case BuiltinType::PseudoObject:
   case BuiltinType::BuiltinFn:
+  case BuiltinType::OMPArraySection:
     break;
   }
   
@@ -509,6 +520,26 @@ StringRef NSAPI::GetNSIntegralKind(QualType T) const {
 bool NSAPI::isMacroDefined(StringRef Id) const {
   // FIXME: Check whether the relevant module macros are visible.
   return Ctx.Idents.get(Id).hasMacroDefinition();
+}
+
+bool NSAPI::isSubclassOfNSClass(ObjCInterfaceDecl *InterfaceDecl,
+                                NSClassIdKindKind NSClassKind) const {
+  if (!InterfaceDecl) {
+    return false;
+  }
+
+  IdentifierInfo *NSClassID = getNSClassId(NSClassKind);
+
+  bool IsSubclass = false;
+  do {
+    IsSubclass = NSClassID == InterfaceDecl->getIdentifier();
+
+    if (IsSubclass) {
+      break;
+    }
+  } while ((InterfaceDecl = InterfaceDecl->getSuperClass()));
+
+  return IsSubclass;
 }
 
 bool NSAPI::isObjCTypedef(QualType T,

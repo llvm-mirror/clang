@@ -152,6 +152,9 @@ public:
   /// \brief Whether this module is missing a feature from \c Requirements.
   unsigned IsMissingRequirement : 1;
 
+  /// \brief Whether we tried and failed to load a module file for this module.
+  unsigned HasIncompatibleModuleFile : 1;
+
   /// \brief Whether this module is available in the current translation unit.
   ///
   /// If the module is missing headers or does not meet all requirements then
@@ -356,6 +359,12 @@ public:
   /// its top-level module.
   std::string getFullModuleName() const;
 
+  /// \brief Whether the full name of this module is equal to joining
+  /// \p nameParts with "."s.
+  ///
+  /// This is more efficient than getFullModuleName().
+  bool fullModuleNameIs(ArrayRef<StringRef> nameParts) const;
+
   /// \brief Retrieve the top-level module for this (sub)module, which may
   /// be this module.
   Module *getTopLevelModule() {
@@ -468,6 +477,13 @@ public:
   submodule_const_iterator submodule_begin() const {return SubModules.begin();}
   submodule_iterator submodule_end()   { return SubModules.end(); }
   submodule_const_iterator submodule_end() const { return SubModules.end(); }
+
+  llvm::iterator_range<submodule_iterator> submodules() {
+    return llvm::make_range(submodule_begin(), submodule_end());
+  }
+  llvm::iterator_range<submodule_const_iterator> submodules() const {
+    return llvm::make_range(submodule_begin(), submodule_end());
+  }
 
   /// \brief Appends this module's list of exported modules to \p Exported.
   ///

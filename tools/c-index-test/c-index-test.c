@@ -255,6 +255,17 @@ static int parse_remapped_files_with_try(int try_idx,
   if (ret)
     return ret;
 
+  if (num_unsaved_files_no_try_idx == 0) {
+    *unsaved_files = unsaved_files_try_idx;
+    *num_unsaved_files = num_unsaved_files_try_idx;
+    return 0;
+  }
+  if (num_unsaved_files_try_idx == 0) {
+    *unsaved_files = unsaved_files_no_try_idx;
+    *num_unsaved_files = num_unsaved_files_no_try_idx;
+    return 0;
+  }
+
   *num_unsaved_files = num_unsaved_files_no_try_idx + num_unsaved_files_try_idx;
   *unsaved_files
     = (struct CXUnsavedFile *)realloc(unsaved_files_no_try_idx,
@@ -756,6 +767,8 @@ static void PrintCursor(CXCursor Cursor, const char *CommentSchemaFile) {
     clang_disposeString(DeprecatedMessage);
     clang_disposeString(UnavailableMessage);
     
+    if (clang_CXXField_isMutable(Cursor))
+      printf(" (mutable)");
     if (clang_CXXMethod_isStatic(Cursor))
       printf(" (static)");
     if (clang_CXXMethod_isVirtual(Cursor))
@@ -1235,6 +1248,32 @@ static enum CXChildVisitResult PrintLinkage(CXCursor cursor, CXCursor p,
 }
 
 /******************************************************************************/
+/* Visibility testing.                                                        */
+/******************************************************************************/
+
+static enum CXChildVisitResult PrintVisibility(CXCursor cursor, CXCursor p,
+                                               CXClientData d) {
+  const char *visibility = 0;
+
+  if (clang_isInvalid(clang_getCursorKind(cursor)))
+    return CXChildVisit_Recurse;
+
+  switch (clang_getCursorVisibility(cursor)) {
+    case CXVisibility_Invalid: break;
+    case CXVisibility_Hidden: visibility = "Hidden"; break;
+    case CXVisibility_Protected: visibility = "Protected"; break;
+    case CXVisibility_Default: visibility = "Default"; break;
+  }
+
+  if (visibility) {
+    PrintCursor(cursor, NULL);
+    printf("visibility=%s\n", visibility);
+  }
+
+  return CXChildVisit_Recurse;
+}
+
+/******************************************************************************/
 /* Typekind testing.                                                          */
 /******************************************************************************/
 
@@ -1419,11 +1458,32 @@ static enum CXChildVisitResult PrintTypeSize(CXCursor cursor, CXCursor p,
 static enum CXChildVisitResult PrintMangledName(CXCursor cursor, CXCursor p,
                                                 CXClientData d) {
   CXString MangledName;
+  if (clang_isUnexposed(clang_getCursorKind(cursor)))
+    return CXChildVisit_Recurse;
   PrintCursor(cursor, NULL);
   MangledName = clang_Cursor_getMangling(cursor);
   printf(" [mangled=%s]\n", clang_getCString(MangledName));
   clang_disposeString(MangledName);
   return CXChildVisit_Continue;
+}
+
+static enum CXChildVisitResult PrintManglings(CXCursor cursor, CXCursor p,
+                                              CXClientData d) {
+  unsigned I, E;
+  CXStringSet *Manglings = NULL;
+  if (clang_isUnexposed(clang_getCursorKind(cursor)))
+    return CXChildVisit_Recurse;
+  if (!clang_isDeclaration(clang_getCursorKind(cursor)))
+    return CXChildVisit_Recurse;
+  if (clang_getCursorKind(cursor) == CXCursor_ParmDecl)
+    return CXChildVisit_Continue;
+  PrintCursor(cursor, NULL);
+  Manglings = clang_Cursor_getCXXManglings(cursor);
+  for (I = 0, E = Manglings->Count; I < E; ++I)
+    printf(" [mangled=%s]", clang_getCString(Manglings->Strings[I]));
+  clang_disposeStringSet(Manglings);
+  printf("\n");
+  return CXChildVisit_Recurse;
 }
 
 /******************************************************************************/
@@ -4050,6 +4110,7 @@ static void print_usage(void) {
     "       c-index-test -test-inclusion-stack-tu <AST file>\n");
   fprintf(stderr,
     "       c-index-test -test-print-linkage-source {<args>}*\n"
+    "       c-index-test -test-print-visibility {<args>}*\n"
     "       c-index-test -test-print-type {<args>}*\n"
     "       c-index-test -test-print-type-size {<args>}*\n"
     "       c-index-test -test-print-bitwidth {<args>}*\n"
@@ -4137,6 +4198,9 @@ int cindextest_main(int argc, const char **argv) {
   else if (argc > 2 && strcmp(argv[1], "-test-print-linkage-source") == 0)
     return perform_test_load_source(argc - 2, argv + 2, "all", PrintLinkage,
                                     NULL);
+  else if (argc > 2 && strcmp(argv[1], "-test-print-visibility") == 0)
+    return perform_test_load_source(argc - 2, argv + 2, "all", PrintVisibility,
+                                    NULL);
   else if (argc > 2 && strcmp(argv[1], "-test-print-type") == 0)
     return perform_test_load_source(argc - 2, argv + 2, "all",
                                     PrintType, 0);
@@ -4148,6 +4212,8 @@ int cindextest_main(int argc, const char **argv) {
                                     PrintBitWidth, 0);
   else if (argc > 2 && strcmp(argv[1], "-test-print-mangle") == 0)
     return perform_test_load_tu(argv[2], "all", NULL, PrintMangledName, NULL);
+  else if (argc > 2 && strcmp(argv[1], "-test-print-manglings") == 0)
+    return perform_test_load_tu(argv[2], "all", NULL, PrintManglings, NULL);
   else if (argc > 1 && strcmp(argv[1], "-print-usr") == 0) {
     if (argc > 2)
       return print_usrs(argv + 2, argv + argc);

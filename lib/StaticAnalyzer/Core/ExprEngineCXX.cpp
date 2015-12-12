@@ -300,7 +300,7 @@ void ExprEngine::VisitCXXDestructor(QualType ObjectType,
                                     const MemRegion *Dest,
                                     const Stmt *S,
                                     bool IsBaseDtor,
-                                    ExplodedNode *Pred, 
+                                    ExplodedNode *Pred,
                                     ExplodedNodeSet &Dst) {
   const LocationContext *LCtx = Pred->getLocationContext();
   ProgramStateRef State = Pred->getState();
@@ -373,7 +373,7 @@ void ExprEngine::VisitCXXNewExpr(const CXXNewExpr *CNE, ExplodedNode *Pred,
   // Also, we need to decide how allocators actually work -- they're not
   // really part of the CXXNewExpr because they happen BEFORE the
   // CXXConstructExpr subexpression. See PR12014 for some discussion.
-  
+
   unsigned blockCount = currBldrCtx->blockCount();
   const LocationContext *LCtx = Pred->getLocationContext();
   DefinedOrUnknownSVal symVal = UnknownVal();
@@ -392,8 +392,8 @@ void ExprEngine::VisitCXXNewExpr(const CXXNewExpr *CNE, ExplodedNode *Pred,
       IsStandardGlobalOpNewFunction = (FD->getNumParams() == 1);
   }
 
-  // We assume all standard global 'operator new' functions allocate memory in 
-  // heap. We realize this is an approximation that might not correctly model 
+  // We assume all standard global 'operator new' functions allocate memory in
+  // heap. We realize this is an approximation that might not correctly model
   // a custom global allocator.
   if (IsStandardGlobalOpNewFunction)
     symVal = svalBuilder.getConjuredHeapSymbolVal(CNE, LCtx, blockCount);
@@ -472,7 +472,7 @@ void ExprEngine::VisitCXXNewExpr(const CXXNewExpr *CNE, ExplodedNode *Pred,
   }
 }
 
-void ExprEngine::VisitCXXDeleteExpr(const CXXDeleteExpr *CDE, 
+void ExprEngine::VisitCXXDeleteExpr(const CXXDeleteExpr *CDE,
                                     ExplodedNode *Pred, ExplodedNodeSet &Dst) {
   StmtNodeBuilder Bldr(Pred, Dst, *currBldrCtx);
   ProgramStateRef state = Pred->getState();
@@ -512,4 +512,56 @@ void ExprEngine::VisitCXXThisExpr(const CXXThisExpr *TE, ExplodedNode *Pred,
   ProgramStateRef state = Pred->getState();
   SVal V = state->getSVal(loc::MemRegionVal(R));
   Bldr.generateNode(TE, Pred, state->BindExpr(TE, LCtx, V));
+}
+
+void ExprEngine::VisitLambdaExpr(const LambdaExpr *LE, ExplodedNode *Pred,
+                                 ExplodedNodeSet &Dst) {
+  const LocationContext *LocCtxt = Pred->getLocationContext();
+
+  // Get the region of the lambda itself.
+  const MemRegion *R = svalBuilder.getRegionManager().getCXXTempObjectRegion(
+      LE, LocCtxt);
+  SVal V = loc::MemRegionVal(R);
+  
+  ProgramStateRef State = Pred->getState();
+  
+  // If we created a new MemRegion for the lambda, we should explicitly bind
+  // the captures.
+  CXXRecordDecl::field_iterator CurField = LE->getLambdaClass()->field_begin();
+  for (LambdaExpr::const_capture_init_iterator i = LE->capture_init_begin(),
+                                               e = LE->capture_init_end();
+       i != e; ++i, ++CurField) {
+    FieldDecl *FieldForCapture = *CurField;
+    SVal FieldLoc = State->getLValue(FieldForCapture, V);
+
+    SVal InitVal;
+    if (!FieldForCapture->hasCapturedVLAType()) {
+      Expr *InitExpr = *i;
+      assert(InitExpr && "Capture missing initialization expression");
+      InitVal = State->getSVal(InitExpr, LocCtxt);
+    } else {
+      // The field stores the length of a captured variable-length array.
+      // These captures don't have initialization expressions; instead we
+      // get the length from the VLAType size expression.
+      Expr *SizeExpr = FieldForCapture->getCapturedVLAType()->getSizeExpr();
+      InitVal = State->getSVal(SizeExpr, LocCtxt);
+    }
+
+    State = State->bindLoc(FieldLoc, InitVal);
+  }
+
+  // Decay the Loc into an RValue, because there might be a
+  // MaterializeTemporaryExpr node above this one which expects the bound value
+  // to be an RValue.
+  SVal LambdaRVal = State->getSVal(R);
+
+  ExplodedNodeSet Tmp;
+  StmtNodeBuilder Bldr(Pred, Tmp, *currBldrCtx);
+  // FIXME: is this the right program point kind?
+  Bldr.generateNode(LE, Pred,
+                    State->BindExpr(LE, LocCtxt, LambdaRVal),
+                    nullptr, ProgramPoint::PostLValueKind);
+
+  // FIXME: Move all post/pre visits to ::Visit().
+  getCheckerManager().runCheckersForPostStmt(Dst, Tmp, LE, *this);
 }

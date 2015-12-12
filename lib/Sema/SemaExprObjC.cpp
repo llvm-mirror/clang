@@ -1092,7 +1092,7 @@ ExprResult Sema::ParseObjCEncodeExpression(SourceLocation AtLoc,
   QualType EncodedType = GetTypeFromParser(ty, &TInfo);
   if (!TInfo)
     TInfo = Context.getTrivialTypeSourceInfo(EncodedType,
-                                             PP.getLocForEndOfToken(LParenLoc));
+                                             getLocForEndOfToken(LParenLoc));
 
   return BuildObjCEncodeExpression(AtLoc, TInfo, RParenLoc);
 }
@@ -1657,7 +1657,8 @@ bool Sema::CheckMessageArgumentTypes(QualType ReceiverType,
       // Objective-C pointer type, we may need to extend the lifetime
       // of the block object.
       if (typeArgs && Args[i]->isRValue() && paramType->isBlockPointerType() &&
-          origParamType->isBlockCompatibleObjCPointerType(Context)) {
+          Args[i]->getType()->isBlockPointerType() &&
+          origParamType->isObjCObjectPointerType()) {
         ExprResult arg = Args[i];
         maybeExtendBlockObject(arg);
         Args[i] = arg.get();
@@ -1778,8 +1779,7 @@ HandleExprPropertyRefExpr(const ObjCObjectPointerType *OPT,
                           diag::err_property_not_found_forward_class,
                           MemberName, BaseRange))
     return ExprError();
-  
-  // Search for a declared property first.
+ 
   if (ObjCPropertyDecl *PD = IFace->FindPropertyDeclaration(Member)) {
     // Check whether we can reference this property.
     if (DiagnoseUseOfDecl(PD, MemberLoc))
@@ -3397,7 +3397,7 @@ static void addFixitForObjCARCConversion(Sema &S,
       DiagB.AddFixItHint(FixItHint::CreateInsertion(range.getBegin(),
                                                     BridgeCall));
       DiagB.AddFixItHint(FixItHint::CreateInsertion(
-                                       S.PP.getLocForEndOfToken(range.getEnd()),
+                                       S.getLocForEndOfToken(range.getEnd()),
                                        ")"));
     }
     return;
@@ -3430,7 +3430,7 @@ static void addFixitForObjCARCConversion(Sema &S,
       DiagB.AddFixItHint(FixItHint::CreateInsertion(range.getBegin(),
                                                     castCode));
       DiagB.AddFixItHint(FixItHint::CreateInsertion(
-                                       S.PP.getLocForEndOfToken(range.getEnd()),
+                                       S.getLocForEndOfToken(range.getEnd()),
                                        ")"));
     }
   }
@@ -3471,7 +3471,7 @@ diagnoseObjCARCConversion(Sema &S, SourceRange castRange,
     (castRange.isValid() ? castRange.getBegin() : castExpr->getExprLoc());
   
   if (S.makeUnavailableInSystemHeader(loc,
-                "converts between Objective-C and C pointers in -fobjc-arc"))
+                                 UnavailableAttr::IR_ARCForbiddenConversion))
     return;
 
   QualType castExprType = castExpr->getType();
@@ -3498,7 +3498,7 @@ diagnoseObjCARCConversion(Sema &S, SourceRange castRange,
   }
   
   // Check whether this could be fixed with a bridge cast.
-  SourceLocation afterLParen = S.PP.getLocForEndOfToken(castRange.getBegin());
+  SourceLocation afterLParen = S.getLocForEndOfToken(castRange.getBegin());
   SourceLocation noteLoc = afterLParen.isValid() ? afterLParen : loc;
 
   // Bridge from an ARC type to a CF type.
@@ -3901,7 +3901,7 @@ Sema::CheckObjCBridgeRelatedConversions(SourceLocation Loc,
       ExpressionString += RelatedClass->getNameAsString();
       ExpressionString += " ";
       ExpressionString += ClassMethod->getSelector().getAsString();
-      SourceLocation SrcExprEndLoc = PP.getLocForEndOfToken(SrcExpr->getLocEnd());
+      SourceLocation SrcExprEndLoc = getLocForEndOfToken(SrcExpr->getLocEnd());
       // Provide a fixit: [RelatedClass ClassMethod SrcExpr]
       Diag(Loc, diag::err_objc_bridged_related_known_method)
         << SrcType << DestType << ClassMethod->getSelector() << false
@@ -3926,7 +3926,7 @@ Sema::CheckObjCBridgeRelatedConversions(SourceLocation Loc,
     // Implicit conversion from ObjC type to CF object is needed.
     if (InstanceMethod) {
       std::string ExpressionString;
-      SourceLocation SrcExprEndLoc = PP.getLocForEndOfToken(SrcExpr->getLocEnd());
+      SourceLocation SrcExprEndLoc = getLocForEndOfToken(SrcExpr->getLocEnd());
       if (InstanceMethod->isPropertyAccessor())
         if (const ObjCPropertyDecl *PDecl = InstanceMethod->findPropertyDecl()) {
           // fixit: ObjectExpr.propertyname when it is  aproperty accessor.

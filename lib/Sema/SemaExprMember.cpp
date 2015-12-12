@@ -102,8 +102,9 @@ static IMAKind ClassifyImplicitMemberAccess(Sema &SemaRef,
   bool hasNonInstance = false;
   bool isField = false;
   BaseSet Classes;
-  for (LookupResult::iterator I = R.begin(), E = R.end(); I != E; ++I) {
-    NamedDecl *D = *I;
+  for (NamedDecl *D : R) {
+    // Look through any using decls.
+    D = D->getUnderlyingDecl();
 
     if (D->isCXXInstanceMember()) {
       isField |= isa<FieldDecl>(D) || isa<MSPropertyDecl>(D) ||
@@ -111,8 +112,7 @@ static IMAKind ClassifyImplicitMemberAccess(Sema &SemaRef,
 
       CXXRecordDecl *R = cast<CXXRecordDecl>(D->getDeclContext());
       Classes.insert(R->getCanonicalDecl());
-    }
-    else
+    } else
       hasNonInstance = true;
   }
 
@@ -234,15 +234,17 @@ ExprResult
 Sema::BuildPossibleImplicitMemberExpr(const CXXScopeSpec &SS,
                                       SourceLocation TemplateKWLoc,
                                       LookupResult &R,
-                                const TemplateArgumentListInfo *TemplateArgs) {
+                                const TemplateArgumentListInfo *TemplateArgs,
+                                      const Scope *S) {
   switch (ClassifyImplicitMemberAccess(*this, R)) {
   case IMA_Instance:
-    return BuildImplicitMemberExpr(SS, TemplateKWLoc, R, TemplateArgs, true);
+    return BuildImplicitMemberExpr(SS, TemplateKWLoc, R, TemplateArgs, true, S);
 
   case IMA_Mixed:
   case IMA_Mixed_Unrelated:
   case IMA_Unresolved:
-    return BuildImplicitMemberExpr(SS, TemplateKWLoc, R, TemplateArgs, false);
+    return BuildImplicitMemberExpr(SS, TemplateKWLoc, R, TemplateArgs, false,
+                                   S);
 
   case IMA_Field_Uneval_Context:
     Diag(R.getNameLoc(), diag::warn_cxx98_compat_non_static_member_use)
@@ -630,6 +632,16 @@ static bool LookupMemberExprInRecord(Sema &SemaRef, LookupResult &R,
 
   DeclarationName Typo = R.getLookupName();
   SourceLocation TypoLoc = R.getNameLoc();
+
+  struct QueryState {
+    Sema &SemaRef;
+    DeclarationNameInfo NameInfo;
+    Sema::LookupNameKind LookupKind;
+    Sema::RedeclarationKind Redecl;
+  };
+  QueryState Q = {R.getSema(), R.getLookupNameInfo(), R.getLookupKind(),
+                  R.isForRedeclaration() ? Sema::ForRedeclaration
+                                         : Sema::NotForRedeclaration};
   TE = SemaRef.CorrectTypoDelayed(
       R.getLookupNameInfo(), R.getLookupKind(), nullptr, &SS,
       llvm::make_unique<RecordMemberExprValidatorCCC>(RTy),
@@ -648,6 +660,7 @@ static bool LookupMemberExprInRecord(Sema &SemaRef, LookupResult &R,
         }
       },
       [=](Sema &SemaRef, TypoExpr *TE, TypoCorrection TC) mutable {
+        LookupResult R(Q.SemaRef, Q.NameInfo, Q.LookupKind, Q.Redecl);
         R.clear(); // Ensure there's no decls lingering in the shared state.
         R.suppressDiagnostics();
         R.setLookupName(TC.getCorrection());
@@ -656,7 +669,7 @@ static bool LookupMemberExprInRecord(Sema &SemaRef, LookupResult &R,
         R.resolveKind();
         return SemaRef.BuildMemberReferenceExpr(
             BaseExpr, BaseExpr->getType(), OpLoc, IsArrow, SS, SourceLocation(),
-            nullptr, R, nullptr);
+            nullptr, R, nullptr, nullptr);
       },
       Sema::CTK_ErrorRecovery, DC);
 
@@ -676,6 +689,7 @@ Sema::BuildMemberReferenceExpr(Expr *Base, QualType BaseType,
                                NamedDecl *FirstQualifierInScope,
                                const DeclarationNameInfo &NameInfo,
                                const TemplateArgumentListInfo *TemplateArgs,
+                               const Scope *S,
                                ActOnMemberAccessExtraArgs *ExtraArgs) {
   if (BaseType->isDependentType() ||
       (SS.isSet() && isDependentScopeSpecifier(SS)))
@@ -722,7 +736,7 @@ Sema::BuildMemberReferenceExpr(Expr *Base, QualType BaseType,
 
   return BuildMemberReferenceExpr(Base, BaseType,
                                   OpLoc, IsArrow, SS, TemplateKWLoc,
-                                  FirstQualifierInScope, R, TemplateArgs,
+                                  FirstQualifierInScope, R, TemplateArgs, S,
                                   false, ExtraArgs);
 }
 
@@ -874,6 +888,18 @@ static MemberExpr *BuildMemberExpr(
   return E;
 }
 
+/// \brief Determine if the given scope is within a function-try-block handler.
+static bool IsInFnTryBlockHandler(const Scope *S) {
+  // Walk the scope stack until finding a FnTryCatchScope, or leave the
+  // function scope. If a FnTryCatchScope is found, check whether the TryScope
+  // flag is set. If it is not, it's a function-try-block handler.
+  for (; S != S->getFnParent(); S = S->getParent()) {
+    if (S->getFlags() & Scope::FnTryCatchScope)
+      return (S->getFlags() & Scope::TryScope) != Scope::TryScope;
+  }
+  return false;
+}
+
 ExprResult
 Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
                                SourceLocation OpLoc, bool IsArrow,
@@ -882,6 +908,7 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
                                NamedDecl *FirstQualifierInScope,
                                LookupResult &R,
                                const TemplateArgumentListInfo *TemplateArgs,
+                               const Scope *S,
                                bool SuppressQualifierCheck,
                                ActOnMemberAccessExtraArgs *ExtraArgs) {
   QualType BaseType = BaseExprType;
@@ -944,6 +971,17 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
 
   if (R.isAmbiguous())
     return ExprError();
+
+  // [except.handle]p10: Referring to any non-static member or base class of an
+  // object in the handler for a function-try-block of a constructor or
+  // destructor for that object results in undefined behavior.
+  const auto *FD = getCurFunctionDecl();
+  if (S && BaseExpr && FD &&
+      (isa<CXXDestructorDecl>(FD) || isa<CXXConstructorDecl>(FD)) &&
+      isa<CXXThisExpr>(BaseExpr->IgnoreImpCasts()) &&
+      IsInFnTryBlockHandler(S))
+    Diag(MemberLoc, diag::warn_cdtor_function_try_handler_mem_expr)
+        << isa<CXXDestructorDecl>(FD);
 
   if (R.empty()) {
     // Rederive where we looked up.
@@ -1634,7 +1672,7 @@ ExprResult Sema::ActOnMemberAccessExpr(Scope *S, Expr *Base,
   ActOnMemberAccessExtraArgs ExtraArgs = {S, Id, ObjCImpDecl};
   return BuildMemberReferenceExpr(Base, Base->getType(), OpLoc, IsArrow, SS,
                                   TemplateKWLoc, FirstQualifierInScope,
-                                  NameInfo, TemplateArgs, &ExtraArgs);
+                                  NameInfo, TemplateArgs, S, &ExtraArgs);
 }
 
 static ExprResult
@@ -1707,7 +1745,7 @@ Sema::BuildImplicitMemberExpr(const CXXScopeSpec &SS,
                               SourceLocation TemplateKWLoc,
                               LookupResult &R,
                               const TemplateArgumentListInfo *TemplateArgs,
-                              bool IsKnownInstance) {
+                              bool IsKnownInstance, const Scope *S) {
   assert(!R.empty() && !R.isAmbiguous());
   
   SourceLocation loc = R.getNameLoc();
@@ -1732,5 +1770,5 @@ Sema::BuildImplicitMemberExpr(const CXXScopeSpec &SS,
                                   /*IsArrow*/ true,
                                   SS, TemplateKWLoc,
                                   /*FirstQualifierInScope*/ nullptr,
-                                  R, TemplateArgs);
+                                  R, TemplateArgs, S);
 }

@@ -1,4 +1,4 @@
-//===--- ASTUnit.cpp - ASTUnit utility ------------------------------------===//
+//===--- ASTUnit.cpp - ASTUnit utility --------------------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -47,6 +47,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+
 using namespace clang;
 
 using llvm::TimeRecord;
@@ -185,7 +186,7 @@ struct ASTUnit::ASTWriterData {
   llvm::BitstreamWriter Stream;
   ASTWriter Writer;
 
-  ASTWriterData() : Stream(Buffer), Writer(Stream) { }
+  ASTWriterData() : Stream(Buffer), Writer(Stream, { }) { }
 };
 
 void ASTUnit::clearFileLevelDecls() {
@@ -649,12 +650,12 @@ void ASTUnit::ConfigureDiags(IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
 }
 
 std::unique_ptr<ASTUnit> ASTUnit::LoadFromASTFile(
-    const std::string &Filename,
-    const PCHContainerReader &PCHContainerRdr,
+    const std::string &Filename, const PCHContainerReader &PCHContainerRdr,
     IntrusiveRefCntPtr<DiagnosticsEngine> Diags,
-    const FileSystemOptions &FileSystemOpts, bool OnlyLocalDecls,
-    ArrayRef<RemappedFile> RemappedFiles, bool CaptureDiagnostics,
-    bool AllowPCHWithCompilerErrors, bool UserFilesAreVolatile) {
+    const FileSystemOptions &FileSystemOpts, bool UseDebugInfo,
+    bool OnlyLocalDecls, ArrayRef<RemappedFile> RemappedFiles,
+    bool CaptureDiagnostics, bool AllowPCHWithCompilerErrors,
+    bool UserFilesAreVolatile) {
   std::unique_ptr<ASTUnit> AST(new ASTUnit(true));
 
   // Recover resources if we crash before exiting this method.
@@ -708,7 +709,7 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromASTFile(
   bool disableValid = false;
   if (::getenv("LIBCLANG_DISABLE_PCH_VALIDATION"))
     disableValid = true;
-  AST->Reader = new ASTReader(PP, Context, PCHContainerRdr,
+  AST->Reader = new ASTReader(PP, Context, PCHContainerRdr, { },
                               /*isysroot=*/"",
                               /*DisableValidation=*/disableValid,
                               AllowPCHWithCompilerErrors);
@@ -926,6 +927,7 @@ public:
                              const Preprocessor &PP, StringRef isysroot,
                              raw_ostream *Out)
       : PCHGenerator(PP, "", nullptr, isysroot, std::make_shared<PCHBuffer>(),
+                     ArrayRef<llvm::IntrusiveRefCntPtr<ModuleFileExtension>>(),
                      /*AllowASTWithErrors=*/true),
         Unit(Unit), Hash(Unit.getCurrentTopLevelHashValue()), Action(Action),
         Out(Out) {
@@ -973,7 +975,7 @@ public:
   }
 };
 
-}
+} // anonymous namespace
 
 std::unique_ptr<ASTConsumer>
 PrecompilePreambleAction::CreateASTConsumer(CompilerInstance &CI,
@@ -1076,11 +1078,10 @@ bool ASTUnit::Parse(std::shared_ptr<PCHContainerOperations> PCHContainerOps,
   // Configure the various subsystems.
   LangOpts = Clang->getInvocation().LangOpts;
   FileSystemOpts = Clang->getFileSystemOpts();
-  IntrusiveRefCntPtr<vfs::FileSystem> VFS =
-      createVFSFromCompilerInvocation(Clang->getInvocation(), getDiagnostics());
-  if (!VFS)
-    return true;
-  FileMgr = new FileManager(FileSystemOpts, VFS);
+  if (!FileMgr) {
+    Clang->createFileManager();
+    FileMgr = &Clang->getFileManager();
+  }
   SourceMgr = new SourceManager(getDiagnostics(), *FileMgr,
                                 UserFilesAreVolatile);
   TheSema.reset();
@@ -1892,8 +1893,8 @@ bool ASTUnit::LoadFromCompilerInvocation(
 std::unique_ptr<ASTUnit> ASTUnit::LoadFromCompilerInvocation(
     CompilerInvocation *CI,
     std::shared_ptr<PCHContainerOperations> PCHContainerOps,
-    IntrusiveRefCntPtr<DiagnosticsEngine> Diags, bool OnlyLocalDecls,
-    bool CaptureDiagnostics, bool PrecompilePreamble,
+    IntrusiveRefCntPtr<DiagnosticsEngine> Diags, FileManager *FileMgr,
+    bool OnlyLocalDecls, bool CaptureDiagnostics, bool PrecompilePreamble,
     TranslationUnitKind TUKind, bool CacheCodeCompletionResults,
     bool IncludeBriefCommentsInCodeCompletion, bool UserFilesAreVolatile) {
   // Create the AST unit.
@@ -1907,12 +1908,8 @@ std::unique_ptr<ASTUnit> ASTUnit::LoadFromCompilerInvocation(
   AST->IncludeBriefCommentsInCodeCompletion
     = IncludeBriefCommentsInCodeCompletion;
   AST->Invocation = CI;
-  AST->FileSystemOpts = CI->getFileSystemOpts();
-  IntrusiveRefCntPtr<vfs::FileSystem> VFS =
-      createVFSFromCompilerInvocation(*CI, *Diags);
-  if (!VFS)
-    return nullptr;
-  AST->FileMgr = new FileManager(AST->FileSystemOpts, VFS);
+  AST->FileSystemOpts = FileMgr->getFileSystemOpts();
+  AST->FileMgr = FileMgr;
   AST->UserFilesAreVolatile = UserFilesAreVolatile;
   
   // Recover resources if we crash before exiting this method.
@@ -1937,6 +1934,7 @@ ASTUnit *ASTUnit::LoadFromCommandLine(
     bool CacheCodeCompletionResults, bool IncludeBriefCommentsInCodeCompletion,
     bool AllowPCHWithCompilerErrors, bool SkipFunctionBodies,
     bool UserFilesAreVolatile, bool ForSerialization,
+    llvm::Optional<StringRef> ModuleFormat,
     std::unique_ptr<ASTUnit> *ErrAST) {
   assert(Diags.get() && "no DiagnosticsEngine was provided");
 
@@ -1969,6 +1967,9 @@ ASTUnit *ASTUnit::LoadFromCommandLine(
   CI->getHeaderSearchOpts().ResourceDir = ResourceFilesPath;
 
   CI->getFrontendOpts().SkipFunctionBodies = SkipFunctionBodies;
+
+  if (ModuleFormat)
+    CI->getHeaderSearchOpts().ModuleFormat = ModuleFormat.getValue();
 
   // Create the AST unit.
   std::unique_ptr<ASTUnit> AST;
@@ -2043,6 +2044,7 @@ bool ASTUnit::Reparse(std::shared_ptr<PCHContainerOperations> PCHContainerOps,
         getMainBufferWithPrecompiledPreamble(PCHContainerOps, *Invocation);
 
   // Clear out the diagnostics state.
+  FileMgr.reset();
   getDiagnostics().Reset();
   ProcessWarningOptions(getDiagnostics(), Invocation->getDiagnosticOpts());
   if (OverrideMainBuffer)
@@ -2124,7 +2126,7 @@ namespace {
       return Next.getCodeCompletionTUInfo();
     }
   };
-}
+} // anonymous namespace
 
 /// \brief Helper function that computes which global names are hidden by the
 /// local code-completion results.
@@ -2209,7 +2211,6 @@ static void CalculateHiddenNames(const CodeCompletionContext &Context,
       HiddenNames.insert(Name.getAsString());
   }
 }
-
 
 void AugmentedCodeCompleteConsumer::ProcessCodeCompleteResults(Sema &S,
                                             CodeCompletionContext Context,
@@ -2504,7 +2505,7 @@ bool ASTUnit::serialize(raw_ostream &OS) {
 
   SmallString<128> Buffer;
   llvm::BitstreamWriter Stream(Buffer);
-  ASTWriter Writer(Stream);
+  ASTWriter Writer(Stream, { });
   return serializeUnit(Writer, Buffer, getSema(), hasErrors, OS);
 }
 
@@ -2844,9 +2845,9 @@ void ASTUnit::ConcurrencyState::finish() {
 
 #else // NDEBUG
 
-ASTUnit::ConcurrencyState::ConcurrencyState() { Mutex = 0; }
+ASTUnit::ConcurrencyState::ConcurrencyState() { Mutex = nullptr; }
 ASTUnit::ConcurrencyState::~ConcurrencyState() {}
 void ASTUnit::ConcurrencyState::start() {}
 void ASTUnit::ConcurrencyState::finish() {}
 
-#endif
+#endif // NDEBUG
