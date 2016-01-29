@@ -248,9 +248,9 @@ struct FormatToken {
   /// with the same precedence, contains the 0-based operator index.
   unsigned OperatorIndex = 0;
 
-  /// \brief Is this the last operator (or "."/"->") in a sequence of operators
-  /// with the same precedence?
-  bool LastOperator = false;
+  /// \brief If this is an operator (or "."/"->") in a sequence of operators
+  /// with the same precedence, points to the next operator.
+  FormatToken *NextOperator = nullptr;
 
   /// \brief Is this token part of a \c DeclStmt defining multiple variables?
   ///
@@ -536,6 +536,7 @@ struct AdditionalKeywords {
     kw_finally = &IdentTable.get("finally");
     kw_function = &IdentTable.get("function");
     kw_import = &IdentTable.get("import");
+    kw_is = &IdentTable.get("is");
     kw_let = &IdentTable.get("let");
     kw_var = &IdentTable.get("var");
 
@@ -580,6 +581,7 @@ struct AdditionalKeywords {
   IdentifierInfo *kw_finally;
   IdentifierInfo *kw_function;
   IdentifierInfo *kw_import;
+  IdentifierInfo *kw_is;
   IdentifierInfo *kw_let;
   IdentifierInfo *kw_var;
 

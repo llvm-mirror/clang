@@ -1,4 +1,3 @@
-
 //==--- DiagnosticSemaKinds.td - libsema diagnostics ----------------------===//
 //
 //                     The LLVM Compiler Infrastructure
@@ -255,6 +254,13 @@ def err_bad_variable_name : Error<
 def err_bad_parameter_name : Error<
   "%0 cannot be the name of a parameter">;
 def err_parameter_name_omitted : Error<"parameter name omitted">;
+def err_anyx86_interrupt_attribute : Error<
+  "%select{x86|x86-64}0 'interrupt' attribute only applies to functions that "
+  "have %select{a 'void' return type|"
+  "only a pointer parameter optionally followed by an integer parameter|"
+  "a pointer as the first parameter|a %2 type as the second parameter}1">;
+def err_anyx86_interrupt_called : Error<
+  "interrupt service routine cannot be called directly">;
 def warn_mips_interrupt_attribute : Warning<
    "MIPS 'interrupt' attribute only applies to functions that have "
    "%select{no parameters|a 'void' return type}0">,
@@ -930,6 +936,9 @@ def warn_missing_explicit_synthesis : Warning <
 def warn_property_getter_owning_mismatch : Warning<
   "property declared as returning non-retained objects"
   "; getter returning retained objects">;
+def warn_property_redecl_getter_mismatch : Warning<
+  "getter name mismatch between property redeclaration (%1) and its original "
+  "declaration (%0)">, InGroup<PropertyAttr>;
 def error_property_setter_ambiguous_use : Error<
   "synthesized properties %0 and %1 both claim setter %2 -"
   " use of this setter will cause unexpected behavior">;
@@ -1169,6 +1178,8 @@ def err_type_defined_in_param_type : Error<
   "%0 cannot be defined in a parameter type">;
 def err_type_defined_in_alias_template : Error<
   "%0 cannot be defined in a type alias template">;
+def err_type_defined_in_condition : Error<
+  "%0 cannot be defined in a condition">;
 
 def note_pure_virtual_function : Note<
   "unimplemented pure virtual method %0 in %1">;
@@ -2395,6 +2406,8 @@ def warn_attribute_dll_instantiated_base_class : Warning<
   "propagating dll attribute to %select{already instantiated|explicitly specialized}0 "
   "base class template without dll attribute is not supported">,
   InGroup<DiagGroup<"unsupported-dll-base-class-template">>, DefaultIgnore;
+def err_attribute_dll_ambiguous_default_ctor : Error<
+  "'__declspec(dllexport)' cannot be applied to more than one default constructor in %0">;
 def err_attribute_weakref_not_static : Error<
   "weakref declaration must have internal linkage">;
 def err_attribute_weakref_not_global_context : Error<
@@ -2838,8 +2851,6 @@ def warn_vector_mode_deprecated : Warning<
   InGroup<DeprecatedAttributes>;
 def err_complex_mode_vector_type : Error<
   "type of machine mode does not support base vector types">;
-def err_attr_wrong_decl : Error<
-  "%0 attribute invalid on this declaration, requires typedef or value">;
 def warn_attribute_nonnull_no_pointers : Warning<
   "'nonnull' attribute applied to function with no pointer arguments">,
   InGroup<IgnoredAttributes>;
@@ -3107,6 +3118,10 @@ def note_addrof_ovl_candidate_disabled_by_enable_if_attr : Note<
 def note_ovl_candidate_failed_overload_resolution : Note<
     "candidate template ignored: couldn't resolve reference to overloaded "
     "function %0">;
+def note_ovl_candidate_deduced_mismatch : Note<
+    "candidate template ignored: deduced type "
+    "%diff{$ of %ordinal0 parameter does not match adjusted type $ of argument"
+    "|of %ordinal0 parameter does not match adjusted type of argument}1,2%3">;
 def note_ovl_candidate_non_deduced_mismatch : Note<
     "candidate template ignored: could not match %diff{$ against $|types}0,1">;
 // This note is needed because the above note would sometimes print two
@@ -4256,6 +4271,9 @@ def err_tag_definition_of_typedef : Error<
 def err_conflicting_types : Error<"conflicting types for %0">;
 def err_different_pass_object_size_params : Error<
   "conflicting pass_object_size attributes on parameters">;
+def err_late_asm_label_name : Error<
+  "cannot apply asm label to %select{variable|function}0 after its first use">;
+def err_different_asm_label : Error<"conflicting asm label">;
 def err_nested_redefinition : Error<"nested redefinition of %0">;
 def err_use_with_wrong_tag : Error<
   "use of %0 with tag type that does not match previous declaration">;
@@ -4969,8 +4987,8 @@ def note_logical_instead_of_bitwise_change_operator : Note<
 def note_logical_instead_of_bitwise_remove_constant : Note<
   "remove constant to silence this warning">;
 
-def warn_bitwise_and_in_bitwise_or : Warning<
-  "'&' within '|'">, InGroup<BitwiseOpParentheses>;
+def warn_bitwise_op_in_bitwise_op : Warning<
+  "'%0' within '%1'">, InGroup<BitwiseOpParentheses>;
 
 def warn_logical_and_in_logical_or : Warning<
   "'&&' within '||'">, InGroup<LogicalOpParentheses>;
@@ -5789,7 +5807,8 @@ def warn_non_virtual_dtor : Warning<
   "%0 has virtual functions but non-virtual destructor">,
   InGroup<NonVirtualDtor>, DefaultIgnore;
 def warn_delete_non_virtual_dtor : Warning<
-  "delete called on %0 that has virtual functions but non-virtual destructor">,
+  "delete called on non-final %0 that has virtual functions "
+  "but non-virtual destructor">,
   InGroup<DeleteNonVirtualDtor>, DefaultIgnore;
 def warn_delete_abstract_non_virtual_dtor : Warning<
   "delete called on %0 that is abstract but has non-virtual destructor">,
@@ -5955,8 +5974,6 @@ def err_pseudo_dtor_destructor_non_type : Error<
 def err_invalid_use_of_function_type : Error<
   "a function type is not allowed here">;
 def err_invalid_use_of_array_type : Error<"an array type is not allowed here">;
-def err_type_defined_in_condition : Error<
-  "types may not be defined in conditions">;
 def err_typecheck_bool_condition : Error<
   "value of type %0 is not contextually convertible to 'bool'">;
 def err_typecheck_ambiguous_condition : Error<
@@ -7630,6 +7647,10 @@ def err_wrong_sampler_addressspace: Error<
   "sampler type cannot be used with the __local and __global address space qualifiers">;
 def err_opencl_global_invalid_addr_space : Error<
   "program scope variable must reside in %0 address space">;
+def err_missing_actual_pipe_type : Error<
+  "missing actual type specifier for pipe">;
+def err_reference_pipe_type : Error <
+  "pipes packet types cannot be of reference type">;
 def err_opencl_no_main : Error<"%select{function|kernel}0 cannot be called 'main'">;
 def err_opencl_kernel_attr :
   Error<"attribute %0 can only be applied to a kernel function">;
@@ -7802,7 +7823,8 @@ def err_omp_prohibited_region : Error<
   "region cannot be%select{| closely}0 nested inside '%1' region"
   "%select{|; perhaps you forget to enclose 'omp %3' directive into a parallel region?|"
   "; perhaps you forget to enclose 'omp %3' directive into a for or a parallel for region with 'ordered' clause?|"
-  "; perhaps you forget to enclose 'omp %3' directive into a target region?}2">;
+  "; perhaps you forget to enclose 'omp %3' directive into a target region?|"
+  "; perhaps you forget to enclose 'omp %3' directive into a teams region?}2">;
 def err_omp_prohibited_region_simd : Error<
   "OpenMP constructs may not be nested inside a simd region">;
 def err_omp_prohibited_region_atomic : Error<
@@ -7903,6 +7925,8 @@ def note_omp_previous_named_if_clause : Note<
   "previous clause with directive name modifier specified here">;
 def err_omp_ordered_directive_with_param : Error<
   "'ordered' directive %select{without any clauses|with 'threads' clause}0 cannot be closely nested inside ordered region with specified parameter">;
+def err_omp_ordered_directive_without_param : Error<
+  "'ordered' directive with 'depend' clause cannot be closely nested inside ordered region without specified parameter">;
 def note_omp_ordered_param : Note<
   "'ordered' clause with specified parameter">;
 def err_omp_expected_base_var_name : Error<
@@ -7925,6 +7949,42 @@ def err_omp_grainsize_num_tasks_mutually_exclusive : Error<
   "'%0' and '%1' clause are mutually exclusive and may not appear on the same directive">;
 def note_omp_previous_grainsize_num_tasks : Note<
   "'%0' clause is specified here">;
+def err_omp_hint_clause_no_name : Error<
+  "the name of the construct must be specified in presence of 'hint' clause">;
+def err_omp_critical_with_hint : Error<
+  "constructs with the same name must have a 'hint' clause with the same value">;
+def note_omp_critical_hint_here : Note<
+  "%select{|previous }0'hint' clause with value '%1'">;
+def note_omp_critical_no_hint : Note<
+  "%select{|previous }0directive with no 'hint' clause specified">;
+def err_omp_firstprivate_distribute_private_teams : Error<
+  "private variable in '#pragma omp teams' cannot be firstprivate in '#pragma omp distribute'">;
+def err_omp_firstprivate_and_lastprivate_in_distribute : Error<
+  "lastprivate variable cannot be firstprivate in '#pragma omp distribute'">;
+def err_omp_firstprivate_distribute_in_teams_reduction : Error<
+  "reduction variable in '#pragma omp teams' cannot be firstprivate in '#pragma omp distribute'">;
+def err_omp_depend_clause_thread_simd : Error<
+  "'depend' clauses cannot be mixed with '%0' clause">;
+def err_omp_depend_sink_wrong_expr : Error<
+  "expected expression form x[+-d], where x is the loop iteration variable and d is a constant non-negative integer">;
+def err_omp_depend_sink_expected_loop_iteration : Error<
+  "expected %0 loop iteration variable">;
+def err_omp_depend_sink_unexpected_expr : Error<
+  "unexpected expression: number of expressions is larger than the number of associated loops">;
+def err_omp_depend_sink_expected_plus_minus : Error<
+  "expected '+' or '-' operation">;
+def err_omp_depend_sink_source_not_allowed : Error<
+  "'depend(%select{source|sink:vec}0)' clause%select{|s}0 cannot be mixed with 'depend(%select{sink:vec|source}0)' clause%select{s|}0">;
+def err_omp_linear_ordered : Error<
+  "'linear' clause cannot be specified along with 'ordered' clause with a parameter">;
+def err_omp_unexpected_schedule_modifier : Error<
+  "modifier '%0' cannot be used along with modifier '%1'">;
+def err_omp_schedule_nonmonotonic_static : Error<
+  "'nonmonotonic' modifier can only be specified with 'dynamic' or 'guided' schedule kind">;
+def err_omp_schedule_nonmonotonic_ordered : Error<
+  "'schedule' clause with 'nonmonotonic' modifier cannot be specified if an 'ordered' clause is specified">;
+def err_omp_ordered_simd : Error<
+  "'ordered' clause with a parameter can not be specified in '#pragma omp %0' directive">;
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {

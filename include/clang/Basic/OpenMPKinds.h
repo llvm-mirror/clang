@@ -62,6 +62,15 @@ enum OpenMPScheduleClauseKind {
   OMPC_SCHEDULE_unknown
 };
 
+/// \brief OpenMP modifiers for 'schedule' clause.
+enum OpenMPScheduleClauseModifier {
+  OMPC_SCHEDULE_MODIFIER_unknown = OMPC_SCHEDULE_unknown,
+#define OPENMP_SCHEDULE_MODIFIER(Name) \
+  OMPC_SCHEDULE_MODIFIER_##Name,
+#include "clang/Basic/OpenMPKinds.def"
+  OMPC_SCHEDULE_MODIFIER_last
+};
+
 /// \brief OpenMP attributes for 'depend' clause.
 enum OpenMPDependClauseKind {
 #define OPENMP_DEPEND_KIND(Name) \
@@ -84,6 +93,13 @@ enum OpenMPMapClauseKind {
   OMPC_MAP_##Name,
 #include "clang/Basic/OpenMPKinds.def"
   OMPC_MAP_unknown
+};
+
+/// \brief OpenMP attributes for 'dist_schedule' clause.
+enum OpenMPDistScheduleClauseKind {
+#define OPENMP_DIST_SCHEDULE_KIND(Name) OMPC_DIST_SCHEDULE_##Name,
+#include "clang/Basic/OpenMPKinds.def"
+  OMPC_DIST_SCHEDULE_unknown
 };
 
 OpenMPDirectiveKind getOpenMPDirectiveKind(llvm::StringRef Str);
@@ -140,6 +156,13 @@ bool isOpenMPTeamsDirective(OpenMPDirectiveKind DKind);
 /// \return true - the directive is a simd directive like 'omp simd',
 /// otherwise - false.
 bool isOpenMPSimdDirective(OpenMPDirectiveKind DKind);
+
+/// \brief Checks if the specified directive is a distribute directive.
+/// \param DKind Specified directive.
+/// \return true - the directive is a distribute-directive like 'omp
+/// distribute',
+/// otherwise - false.
+bool isOpenMPDistributeDirective(OpenMPDirectiveKind DKind);
 
 /// \brief Checks if the specified clause is one of private clauses like
 /// 'private', 'firstprivate', 'reduction' etc..

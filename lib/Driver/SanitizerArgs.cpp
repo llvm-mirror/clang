@@ -160,7 +160,16 @@ bool SanitizerArgs::needsUbsanRt() const {
   return (Sanitizers.Mask & NeedsUbsanRt & ~TrapSanitizers.Mask) &&
          !Sanitizers.has(Address) &&
          !Sanitizers.has(Memory) &&
-         !Sanitizers.has(Thread);
+         !Sanitizers.has(Thread) &&
+         !CfiCrossDso;
+}
+
+bool SanitizerArgs::needsCfiRt() const {
+  return !(Sanitizers.Mask & CFI & ~TrapSanitizers.Mask) && CfiCrossDso;
+}
+
+bool SanitizerArgs::needsCfiDiagRt() const {
+  return (Sanitizers.Mask & CFI & ~TrapSanitizers.Mask) && CfiCrossDso;
 }
 
 bool SanitizerArgs::requiresPIE() const {
@@ -171,24 +180,8 @@ bool SanitizerArgs::needsUnwindTables() const {
   return Sanitizers.Mask & NeedsUnwindTables;
 }
 
-void SanitizerArgs::clear() {
-  Sanitizers.clear();
-  RecoverableSanitizers.clear();
-  TrapSanitizers.clear();
-  BlacklistFiles.clear();
-  ExtraDeps.clear();
-  CoverageFeatures = 0;
-  MsanTrackOrigins = 0;
-  MsanUseAfterDtor = false;
-  NeedPIE = false;
-  AsanFieldPadding = 0;
-  AsanSharedRuntime = false;
-  LinkCXXRuntimes = false;
-}
-
 SanitizerArgs::SanitizerArgs(const ToolChain &TC,
                              const llvm::opt::ArgList &Args) {
-  clear();
   SanitizerMask AllRemove = 0;  // During the loop below, the accumulated set of
                                 // sanitizers disabled by the current sanitizer
                                 // argument or any argument after it.
@@ -430,6 +423,14 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
                  TC.getTriple().getArch() == llvm::Triple::x86_64);
   }
 
+  if (AllAddedKinds & CFI) {
+    CfiCrossDso = Args.hasFlag(options::OPT_fsanitize_cfi_cross_dso,
+                               options::OPT_fno_sanitize_cfi_cross_dso, false);
+    // Without PIE, external function address may resolve to a PLT record, which
+    // can not be verified by the target module.
+    NeedPIE |= CfiCrossDso;
+  }
+
   // Parse -f(no-)?sanitize-coverage flags if coverage is supported by the
   // enabled sanitizers.
   if (AllAddedKinds & SupportsCoverage) {
@@ -579,6 +580,9 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
 
   if (MsanUseAfterDtor)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-memory-use-after-dtor"));
+
+  if (CfiCrossDso)
+    CmdArgs.push_back(Args.MakeArgString("-fsanitize-cfi-cross-dso"));
 
   if (AsanFieldPadding)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-address-field-padding=" +

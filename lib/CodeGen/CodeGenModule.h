@@ -696,11 +696,14 @@ public:
   unsigned GetGlobalVarAddressSpace(const VarDecl *D, unsigned AddrSpace);
 
   /// Return the llvm::Constant for the address of the given global variable.
-  /// If Ty is non-null and if the global doesn't exist, then it will be greated
+  /// If Ty is non-null and if the global doesn't exist, then it will be created
   /// with the specified type instead of whatever the normal requested type
-  /// would be.
+  /// would be. If IsForDefinition is true, it is guranteed that an actual
+  /// global with type Ty will be returned, not conversion of a variable with
+  /// the same mangled name but some other type.
   llvm::Constant *GetAddrOfGlobalVar(const VarDecl *D,
-                                     llvm::Type *Ty = nullptr);
+                                     llvm::Type *Ty = nullptr,
+                                     bool IsForDefinition = false);
 
   /// Return the address of the given function. If Ty is non-null, then this
   /// function will use the specified type if it has to create it.
@@ -966,13 +969,14 @@ public:
   /// Get the LLVM attributes and calling convention to use for a particular
   /// function type.
   ///
+  /// \param Name - The function name.
   /// \param Info - The function type information.
   /// \param CalleeInfo - The callee information these attributes are being
   /// constructed for. If valid, the attributes applied to this decl may
   /// contribute to the function attributes and calling convention.
   /// \param PAL [out] - On return, the attribute list to use.
   /// \param CallingConv [out] - On return, the LLVM calling convention to use.
-  void ConstructAttributeList(const CGFunctionInfo &Info,
+  void ConstructAttributeList(StringRef Name, const CGFunctionInfo &Info,
                               CGCalleeInfo CalleeInfo, AttributeListType &PAL,
                               unsigned &CallingConv, bool AttrOnCallSite);
 
@@ -1106,15 +1110,21 @@ public:
   void EmitVTableBitSetEntries(llvm::GlobalVariable *VTable,
                                const VTableLayout &VTLayout);
 
+  /// Generate a cross-DSO type identifier for type.
+  llvm::ConstantInt *CreateCfiIdForTypeMetadata(llvm::Metadata *MD);
+
   /// Create a metadata identifier for the given type. This may either be an
   /// MDString (for external identifiers) or a distinct unnamed MDNode (for
   /// internal identifiers).
   llvm::Metadata *CreateMetadataIdentifierForType(QualType T);
 
-  /// Create a bitset entry for the given vtable.
-  llvm::MDTuple *CreateVTableBitSetEntry(llvm::GlobalVariable *VTable,
-                                         CharUnits Offset,
-                                         const CXXRecordDecl *RD);
+  /// Create a bitset entry for the given function and add it to BitsetsMD.
+  void CreateFunctionBitSetEntry(const FunctionDecl *FD, llvm::Function *F);
+
+  /// Create a bitset entry for the given vtable and add it to BitsetsMD.
+  void CreateVTableBitSetEntry(llvm::NamedMDNode *BitsetsMD,
+                               llvm::GlobalVariable *VTable, CharUnits Offset,
+                               const CXXRecordDecl *RD);
 
   /// \breif Get the declaration of std::terminate for the platform.
   llvm::Constant *getTerminateFn();
@@ -1129,7 +1139,8 @@ private:
 
   llvm::Constant *GetOrCreateLLVMGlobal(StringRef MangledName,
                                         llvm::PointerType *PTy,
-                                        const VarDecl *D);
+                                        const VarDecl *D,
+                                        bool IsForDefinition = false);
 
   void setNonAliasAttributes(const Decl *D, llvm::GlobalObject *GO);
 
@@ -1140,7 +1151,7 @@ private:
   void EmitGlobalDefinition(GlobalDecl D, llvm::GlobalValue *GV = nullptr);
 
   void EmitGlobalFunctionDefinition(GlobalDecl GD, llvm::GlobalValue *GV);
-  void EmitGlobalVarDefinition(const VarDecl *D);
+  void EmitGlobalVarDefinition(const VarDecl *D, bool IsTentative = false);
   void EmitAliasDefinition(GlobalDecl GD);
   void EmitObjCPropertyImplementations(const ObjCImplementationDecl *D);
   void EmitObjCIvarInitializations(ObjCImplementationDecl *D);

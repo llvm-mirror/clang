@@ -59,6 +59,12 @@ def ext_dollar_in_identifier : Extension<"'$' in identifier">,
 def ext_charize_microsoft : Extension<
   "charizing operator #@ is a Microsoft extension">,
   InGroup<MicrosoftCharize>;
+def ext_comment_paste_microsoft : Extension<
+  "pasting two '/' tokens into a '//' comment is a Microsoft extension">,
+  InGroup<MicrosoftCommentPaste>;
+def ext_ctrl_z_eof_microsoft : Extension<
+  "treating Ctrl-Z as end-of-file is a Microsoft extension">,
+  InGroup<MicrosoftEndOfFile>;
 
 def ext_token_used : Extension<"extension used">,
   InGroup<DiagGroup<"language-extension-token">>;
@@ -293,6 +299,9 @@ def warn_pp_macro_hides_keyword : Extension<
 def warn_pp_macro_is_reserved_id : Warning<
   "macro name is a reserved identifier">, DefaultIgnore,
   InGroup<ReservedIdAsMacro>;
+def warn_pp_objc_macro_redef_ignored : Warning<
+  "ignoring redefinition of Objective-C qualifier macro">,
+  InGroup<DiagGroup<"objc-macro-redefinition">>;
 
 def pp_invalid_string_literal : Warning<
   "invalid string literal, ignoring final '\\'">;
@@ -481,6 +490,8 @@ def warn_pragma_diagnostic_unknown_warning :
 // - #pragma __debug
 def warn_pragma_debug_unexpected_command : Warning<
   "unexpected debug command '%0'">, InGroup<IgnoredPragmas>;
+def warn_pragma_debug_missing_argument : Warning<
+  "missing argument to debug command '%0'">, InGroup<IgnoredPragmas>;
 
 def err_defined_macro_name : Error<"'defined' cannot be used as a macro name">;
 def err_paste_at_start : Error<

@@ -3533,6 +3533,20 @@ AST_MATCHER(QualType, isInteger) {
     return Node->isIntegerType();
 }
 
+/// \brief Matches QualType nodes that are of character type.
+///
+/// Given
+/// \code
+///   void a(char);
+///   void b(wchar_t);
+///   void c(double);
+/// \endcode
+/// functionDecl(hasAnyParameter(hasType(isAnyCharacter())))
+/// matches "a(char)", "b(wchar_t)", but not "c(double)".
+AST_MATCHER(QualType, isAnyCharacter) {
+    return Node->isAnyCharacterType();
+}
+
 /// \brief Matches QualType nodes that are const-qualified, i.e., that
 /// include "top-level" const.
 ///
@@ -3746,6 +3760,18 @@ AST_MATCHER_FUNCTION_P_OVERLOAD(internal::BindableMatcher<TypeLoc>, loc,
                                 internal::Matcher<QualType>, InnerMatcher, 0) {
   return internal::BindableMatcher<TypeLoc>(
       new internal::TypeLocTypeMatcher(InnerMatcher));
+}
+
+/// \brief Matches type \c bool.
+///
+/// Given
+/// \code
+///  struct S { bool func(); };
+/// \endcode
+/// functionDecl(returns(booleanType()))
+///   matches "bool func();"
+AST_MATCHER(Type, booleanType) {
+  return Node.isBooleanType();
 }
 
 /// \brief Matches type \c void.

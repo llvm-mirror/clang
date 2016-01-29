@@ -8,7 +8,7 @@
 
 void foo() {}
 
-template <class T>
+template <class T, int N>
 T tmain (T argc) {
   T b = argc, c, d, e, f, g;
   static T a;
@@ -41,6 +41,12 @@ T tmain (T argc) {
   #pragma omp ordered simd
   {
     a=2;
+  }
+  #pragma omp parallel for ordered(1)
+  for (int i =0 ; i < argc; ++i) {
+  #pragma omp ordered depend(source)
+  #pragma omp ordered depend(sink:i+N)
+    a = 2;
   }
   return (0);
 }
@@ -76,7 +82,12 @@ T tmain (T argc) {
 // CHECK-NEXT: {
 // CHECK-NEXT: a = 2;
 // CHECK-NEXT: }
-
+// CHECK-NEXT: #pragma omp parallel for ordered(1)
+// CHECK-NEXT: for (int i = 0; i < argc; ++i) {
+// CHECK-NEXT: #pragma omp ordered depend(source)
+// CHECK-NEXT: #pragma omp ordered depend(sink : i + 3)
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
 // CHECK: static T a;
 // CHECK-NEXT: #pragma omp for ordered
 // CHECK-NEXT: for (int i = 0; i < argc; ++i)
@@ -108,7 +119,14 @@ T tmain (T argc) {
 // CHECK-NEXT: {
 // CHECK-NEXT: a = 2;
 // CHECK-NEXT: }
+// CHECK-NEXT: #pragma omp parallel for ordered(1)
+// CHECK-NEXT: for (int i = 0; i < argc; ++i) {
+// CHECK-NEXT: #pragma omp ordered depend(source)
+// CHECK-NEXT: #pragma omp ordered depend(sink : i + N)
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
 
+// CHECK-LABEL: int main(
 int main (int argc, char **argv) {
   int b = argc, c, d, e, f, g;
   static int a;
@@ -143,6 +161,12 @@ int main (int argc, char **argv) {
   {
     a=2;
   }
+  #pragma omp parallel for ordered(1)
+  for (int i =0 ; i < argc; ++i) {
+  #pragma omp ordered depend(source)
+  #pragma omp ordered depend(sink: i - 5)
+    a = 2;
+  }
 // CHECK-NEXT: #pragma omp for ordered
 // CHECK-NEXT: for (int i = 0; i < argc; ++i)
 // CHECK-NEXT: #pragma omp ordered
@@ -173,7 +197,13 @@ int main (int argc, char **argv) {
 // CHECK-NEXT: {
 // CHECK-NEXT: a = 2;
 // CHECK-NEXT: }
-  return tmain(argc);
+// CHECK-NEXT: #pragma omp parallel for ordered(1)
+// CHECK-NEXT: for (int i = 0; i < argc; ++i) {
+// CHECK-NEXT: #pragma omp ordered depend(source)
+// CHECK-NEXT: #pragma omp ordered depend(sink : i - 5)
+// CHECK-NEXT: a = 2;
+// CHECK-NEXT: }
+  return tmain<int, 3>(argc);
 }
 
 #endif

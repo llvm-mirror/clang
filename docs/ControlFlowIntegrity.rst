@@ -24,10 +24,14 @@ You can also enable a subset of available :ref:`schemes <cfi-schemes>`.
 As currently implemented, all schemes rely on link-time optimization (LTO);
 so it is required to specify ``-flto``, and the linker used must support LTO,
 for example via the `gold plugin`_.
-To allow the checks to be implemented efficiently, the program must
-be structured such that certain object files are compiled with CFI enabled,
-and are statically linked into the program. This may preclude the use of
-shared libraries in some cases.
+
+To allow the checks to be implemented efficiently, the program must be
+structured such that certain object files are compiled with CFI
+enabled, and are statically linked into the program. This may preclude
+the use of shared libraries in some cases. Experimental support for
+:ref:`cross-DSO control flow integrity <cfi-cross-dso>` exists that
+does not have these requirements. This cross-DSO support has unstable
+ABI at this time.
 
 .. _gold plugin: http://llvm.org/docs/GoldPlugin.html
 
@@ -61,6 +65,24 @@ checking.
 Remember that you have to provide ``-flto`` if at least one CFI scheme is
 enabled.
 
+Trapping and Diagnostics
+========================
+
+By default, CFI will abort the program immediately upon detecting a control
+flow integrity violation. You can use the :ref:`-fno-sanitize-trap=
+<controlling-code-generation>` flag to cause CFI to print a diagnostic
+similar to the one below before the program aborts.
+
+.. code-block:: console
+
+    bad-cast.cpp:109:7: runtime error: control flow integrity check for type 'B' failed during base-to-derived cast (vtable address 0x000000425a50)
+    0x000000425a50: note: vtable is of type 'A'
+     00 00 00 00  f0 f1 41 00 00 00 00 00  00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00  20 5a 42 00
+                  ^ 
+
+If diagnostics are enabled, you can also configure CFI to continue program
+execution instead of aborting by using the :ref:`-fsanitize-recover=
+<controlling-code-generation>` flag.
 
 Forward-Edge CFI for Virtual Calls
 ==================================
@@ -226,6 +248,16 @@ are typically defined outside of the linked program.
     type:std::*
     # Ignore all types with a uuid attribute.
     type:attr:uuid
+
+.. _cfi-cross-dso:
+
+Shared library support
+======================
+
+Use **-f[no-]sanitize-cfi-cross-dso** to enable the cross-DSO control
+flow integrity mode, which allows all CFI schemes listed above to
+apply across DSO boundaries. As in the regular CFI, each DSO must be
+built with ``-flto``.
 
 Design
 ======

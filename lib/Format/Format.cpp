@@ -47,6 +47,7 @@ template <> struct ScalarEnumerationTraits<FormatStyle::LanguageKind> {
     IO.enumCase(Value, "Java", FormatStyle::LK_Java);
     IO.enumCase(Value, "JavaScript", FormatStyle::LK_JavaScript);
     IO.enumCase(Value, "Proto", FormatStyle::LK_Proto);
+    IO.enumCase(Value, "TableGen", FormatStyle::LK_TableGen);
   }
 };
 
@@ -101,6 +102,18 @@ template <> struct ScalarEnumerationTraits<FormatStyle::BraceBreakingStyle> {
     IO.enumCase(Value, "GNU", FormatStyle::BS_GNU);
     IO.enumCase(Value, "WebKit", FormatStyle::BS_WebKit);
     IO.enumCase(Value, "Custom", FormatStyle::BS_Custom);
+  }
+};
+
+template <>
+struct ScalarEnumerationTraits<FormatStyle::ReturnTypeBreakingStyle> {
+  static void enumeration(IO &IO, FormatStyle::ReturnTypeBreakingStyle &Value) {
+    IO.enumCase(Value, "None", FormatStyle::RTBS_None);
+    IO.enumCase(Value, "All", FormatStyle::RTBS_All);
+    IO.enumCase(Value, "TopLevel", FormatStyle::RTBS_TopLevel);
+    IO.enumCase(Value, "TopLevelDefinitions",
+                FormatStyle::RTBS_TopLevelDefinitions);
+    IO.enumCase(Value, "AllDefinitions", FormatStyle::RTBS_AllDefinitions);
   }
 };
 
@@ -233,6 +246,21 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.AllowShortLoopsOnASingleLine);
     IO.mapOptional("AlwaysBreakAfterDefinitionReturnType",
                    Style.AlwaysBreakAfterDefinitionReturnType);
+    IO.mapOptional("AlwaysBreakAfterReturnType",
+                   Style.AlwaysBreakAfterReturnType);
+    // If AlwaysBreakAfterDefinitionReturnType was specified but
+    // AlwaysBreakAfterReturnType was not, initialize the latter from the
+    // former for backwards compatibility.
+    if (Style.AlwaysBreakAfterDefinitionReturnType != FormatStyle::DRTBS_None &&
+        Style.AlwaysBreakAfterReturnType == FormatStyle::RTBS_None) {
+      if (Style.AlwaysBreakAfterDefinitionReturnType == FormatStyle::DRTBS_All)
+        Style.AlwaysBreakAfterReturnType = FormatStyle::RTBS_AllDefinitions;
+      else if (Style.AlwaysBreakAfterDefinitionReturnType ==
+               FormatStyle::DRTBS_TopLevel)
+        Style.AlwaysBreakAfterReturnType =
+            FormatStyle::RTBS_TopLevelDefinitions;
+    }
+
     IO.mapOptional("AlwaysBreakBeforeMultilineStrings",
                    Style.AlwaysBreakBeforeMultilineStrings);
     IO.mapOptional("AlwaysBreakTemplateDeclarations",
@@ -396,7 +424,6 @@ static FormatStyle expandPresets(const FormatStyle &Style) {
     Expanded.BraceWrapping.AfterClass = true;
     Expanded.BraceWrapping.AfterFunction = true;
     Expanded.BraceWrapping.AfterNamespace = true;
-    Expanded.BraceWrapping.BeforeElse = true;
     break;
   case FormatStyle::BS_Mozilla:
     Expanded.BraceWrapping.AfterClass = true;
@@ -427,7 +454,6 @@ static FormatStyle expandPresets(const FormatStyle &Style) {
     break;
   case FormatStyle::BS_WebKit:
     Expanded.BraceWrapping.AfterFunction = true;
-    Expanded.BraceWrapping.BeforeElse = true;
     break;
   default:
     break;
@@ -451,6 +477,7 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.AllowShortCaseLabelsOnASingleLine = false;
   LLVMStyle.AllowShortIfStatementsOnASingleLine = false;
   LLVMStyle.AllowShortLoopsOnASingleLine = false;
+  LLVMStyle.AlwaysBreakAfterReturnType = FormatStyle::RTBS_None;
   LLVMStyle.AlwaysBreakAfterDefinitionReturnType = FormatStyle::DRTBS_None;
   LLVMStyle.AlwaysBreakBeforeMultilineStrings = false;
   LLVMStyle.AlwaysBreakTemplateDeclarations = false;
@@ -552,9 +579,11 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
     GoogleStyle.SpacesBeforeTrailingComments = 1;
   } else if (Language == FormatStyle::LK_JavaScript) {
     GoogleStyle.AlignAfterOpenBracket = FormatStyle::BAS_AlwaysBreak;
+    GoogleStyle.AlignOperands = false;
     GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_Inline;
     GoogleStyle.AlwaysBreakBeforeMultilineStrings = false;
     GoogleStyle.BreakBeforeTernaryOperators = false;
+    GoogleStyle.CommentPragmas = "@(export|visibility) {";
     GoogleStyle.MaxEmptyLinesToKeep = 3;
     GoogleStyle.SpacesInContainerLiterals = false;
   } else if (Language == FormatStyle::LK_Proto) {
@@ -580,6 +609,7 @@ FormatStyle getChromiumStyle(FormatStyle::LanguageKind Language) {
     ChromiumStyle.BinPackParameters = false;
     ChromiumStyle.DerivePointerAlignment = false;
   }
+  ChromiumStyle.SortIncludes = false;
   return ChromiumStyle;
 }
 
@@ -587,6 +617,8 @@ FormatStyle getMozillaStyle() {
   FormatStyle MozillaStyle = getLLVMStyle();
   MozillaStyle.AllowAllParametersOfDeclarationOnNextLine = false;
   MozillaStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_Inline;
+  MozillaStyle.AlwaysBreakAfterReturnType =
+      FormatStyle::RTBS_TopLevelDefinitions;
   MozillaStyle.AlwaysBreakAfterDefinitionReturnType =
       FormatStyle::DRTBS_TopLevel;
   MozillaStyle.AlwaysBreakTemplateDeclarations = true;
@@ -626,6 +658,7 @@ FormatStyle getWebKitStyle() {
 FormatStyle getGNUStyle() {
   FormatStyle Style = getLLVMStyle();
   Style.AlwaysBreakAfterDefinitionReturnType = FormatStyle::DRTBS_All;
+  Style.AlwaysBreakAfterReturnType = FormatStyle::RTBS_AllDefinitions;
   Style.BreakBeforeBinaryOperators = FormatStyle::BOS_All;
   Style.BreakBeforeBraces = FormatStyle::BS_GNU;
   Style.BreakBeforeTernaryOperators = true;
@@ -1206,6 +1239,8 @@ private:
           FormatTok->Type = TT_ImplicitStringLiteral;
           break;
         }
+        if (FormatTok->Type == TT_ImplicitStringLiteral)
+          break;
       }
 
       if (FormatTok->is(TT_ImplicitStringLiteral))
@@ -1244,11 +1279,13 @@ private:
       FormatTok->Tok.setIdentifierInfo(&Info);
       FormatTok->Tok.setKind(Info.getTokenID());
       if (Style.Language == FormatStyle::LK_Java &&
-          FormatTok->isOneOf(tok::kw_struct, tok::kw_union, tok::kw_delete)) {
+          FormatTok->isOneOf(tok::kw_struct, tok::kw_union, tok::kw_delete,
+                             tok::kw_operator)) {
         FormatTok->Tok.setKind(tok::identifier);
         FormatTok->Tok.setIdentifierInfo(nullptr);
       } else if (Style.Language == FormatStyle::LK_JavaScript &&
-                 FormatTok->isOneOf(tok::kw_struct, tok::kw_union)) {
+                 FormatTok->isOneOf(tok::kw_struct, tok::kw_union,
+                                    tok::kw_operator)) {
         FormatTok->Tok.setKind(tok::identifier);
         FormatTok->Tok.setIdentifierInfo(nullptr);
       }
@@ -1686,7 +1723,7 @@ struct IncludeDirective {
   StringRef Filename;
   StringRef Text;
   unsigned Offset;
-  unsigned Category;
+  int Category;
 };
 
 } // end anonymous namespace
@@ -1780,13 +1817,13 @@ tooling::Replacements sortIncludes(const FormatStyle &Style, StringRef Code,
   //
   // FIXME: Do some sanity checking, e.g. edit distance of the base name, to fix
   // cases where the first #include is unlikely to be the main header.
-  bool LookForMainHeader = FileName.endswith(".c") ||
-                           FileName.endswith(".cc") ||
-                           FileName.endswith(".cpp")||
-                           FileName.endswith(".c++")||
-                           FileName.endswith(".cxx") ||
-                           FileName.endswith(".m")||
-                           FileName.endswith(".mm");
+  bool IsSource = FileName.endswith(".c") || FileName.endswith(".cc") ||
+                  FileName.endswith(".cpp") || FileName.endswith(".c++") ||
+                  FileName.endswith(".cxx") || FileName.endswith(".m") ||
+                  FileName.endswith(".mm");
+  StringRef FileStem = llvm::sys::path::stem(FileName);
+  bool FirstIncludeBlock = true;
+  bool MainIncludeFound = false;
 
   // Create pre-compiled regular expressions for the #include categories.
   SmallVector<llvm::Regex, 4> CategoryRegexs;
@@ -1809,24 +1846,28 @@ tooling::Replacements sortIncludes(const FormatStyle &Style, StringRef Code,
     if (!FormattingOff && !Line.endswith("\\")) {
       if (IncludeRegex.match(Line, &Matches)) {
         StringRef IncludeName = Matches[2];
-        unsigned Category;
-        if (LookForMainHeader && !IncludeName.startswith("<")) {
-          Category = 0;
-        } else {
-          Category = UINT_MAX;
-          for (unsigned i = 0, e = CategoryRegexs.size(); i != e; ++i) {
-            if (CategoryRegexs[i].match(IncludeName)) {
-              Category = Style.IncludeCategories[i].Priority;
-              break;
-            }
+        int Category = INT_MAX;
+        for (unsigned i = 0, e = CategoryRegexs.size(); i != e; ++i) {
+          if (CategoryRegexs[i].match(IncludeName)) {
+            Category = Style.IncludeCategories[i].Priority;
+            break;
           }
         }
-        LookForMainHeader = false;
+        if (IsSource && !MainIncludeFound && Category > 0 &&
+            FirstIncludeBlock && IncludeName.startswith("\"")) {
+          StringRef HeaderStem =
+              llvm::sys::path::stem(IncludeName.drop_front(1).drop_back(1));
+          if (FileStem.startswith(HeaderStem)) {
+            Category = 0;
+            MainIncludeFound = true;
+          }
+        }
         IncludesInBlock.push_back({IncludeName, Line, Prev, Category});
       } else if (!IncludesInBlock.empty()) {
         sortIncludes(Style, IncludesInBlock, Ranges, FileName, Replaces,
                      Cursor);
         IncludesInBlock.clear();
+        FirstIncludeBlock = false;
       }
       Prev = Pos + 1;
     }
@@ -1863,8 +1904,9 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
       IntrusiveRefCntPtr<DiagnosticIDs>(new DiagnosticIDs),
       new DiagnosticOptions);
   SourceManager SourceMgr(Diagnostics, Files);
-  InMemoryFileSystem->addFile(FileName, 0,
-                              llvm::MemoryBuffer::getMemBuffer(Code, FileName));
+  InMemoryFileSystem->addFile(
+      FileName, 0, llvm::MemoryBuffer::getMemBuffer(
+                       Code, FileName, /*RequiresNullTerminator=*/false));
   FileID ID = SourceMgr.createFileID(Files.getFile(FileName), SourceLocation(),
                                      clang::SrcMgr::C_User);
   SourceLocation StartOfFile = SourceMgr.getLocForStartOfFile(ID);
@@ -1905,15 +1947,15 @@ const char *StyleOptionHelpDescription =
     "  -style=\"{BasedOnStyle: llvm, IndentWidth: 8}\"";
 
 static FormatStyle::LanguageKind getLanguageByFileName(StringRef FileName) {
-  if (FileName.endswith(".java")) {
+  if (FileName.endswith(".java"))
     return FormatStyle::LK_Java;
-  } else if (FileName.endswith_lower(".js") || FileName.endswith_lower(".ts")) {
-    // JavaScript or TypeScript.
-    return FormatStyle::LK_JavaScript;
-  } else if (FileName.endswith_lower(".proto") ||
-             FileName.endswith_lower(".protodevel")) {
+  if (FileName.endswith_lower(".js") || FileName.endswith_lower(".ts"))
+    return FormatStyle::LK_JavaScript; // JavaScript or TypeScript.
+  if (FileName.endswith_lower(".proto") ||
+      FileName.endswith_lower(".protodevel"))
     return FormatStyle::LK_Proto;
-  }
+  if (FileName.endswith_lower(".td"))
+    return FormatStyle::LK_TableGen;
   return FormatStyle::LK_Cpp;
 }
 

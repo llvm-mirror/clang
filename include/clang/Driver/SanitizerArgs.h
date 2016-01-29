@@ -28,13 +28,14 @@ class SanitizerArgs {
 
   std::vector<std::string> BlacklistFiles;
   std::vector<std::string> ExtraDeps;
-  int CoverageFeatures;
-  int MsanTrackOrigins;
-  bool MsanUseAfterDtor;
-  int AsanFieldPadding;
-  bool AsanSharedRuntime;
-  bool LinkCXXRuntimes;
-  bool NeedPIE;
+  int CoverageFeatures = 0;
+  int MsanTrackOrigins = 0;
+  bool MsanUseAfterDtor = false;
+  bool CfiCrossDso = false;
+  int AsanFieldPadding = 0;
+  bool AsanSharedRuntime = false;
+  bool LinkCXXRuntimes = false;
+  bool NeedPIE = false;
 
  public:
   /// Parses the sanitizer arguments from an argument list.
@@ -53,15 +54,14 @@ class SanitizerArgs {
   bool needsSafeStackRt() const {
     return Sanitizers.has(SanitizerKind::SafeStack);
   }
+  bool needsCfiRt() const;
+  bool needsCfiDiagRt() const;
 
   bool requiresPIE() const;
   bool needsUnwindTables() const;
   bool linkCXXRuntimes() const { return LinkCXXRuntimes; }
   void addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
                llvm::opt::ArgStringList &CmdArgs, types::ID InputType) const;
-
- private:
-  void clear();
 };
 
 }  // namespace driver

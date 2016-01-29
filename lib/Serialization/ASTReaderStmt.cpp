@@ -93,6 +93,7 @@ namespace clang {
 
     /// \brief Read and initialize a ExplicitTemplateArgumentList structure.
     void ReadTemplateKWAndArgsInfo(ASTTemplateKWAndArgsInfo &Args,
+                                   TemplateArgumentLoc *ArgsLocArray,
                                    unsigned NumTemplateArgs);
     /// \brief Read and initialize a ExplicitTemplateArgumentList structure.
     void ReadExplicitTemplateArgumentList(ASTTemplateArgumentListInfo &ArgList,
@@ -105,9 +106,9 @@ namespace clang {
   };
 }
 
-void ASTStmtReader::
-ReadTemplateKWAndArgsInfo(ASTTemplateKWAndArgsInfo &Args,
-                          unsigned NumTemplateArgs) {
+void ASTStmtReader::ReadTemplateKWAndArgsInfo(ASTTemplateKWAndArgsInfo &Args,
+                                              TemplateArgumentLoc *ArgsLocArray,
+                                              unsigned NumTemplateArgs) {
   SourceLocation TemplateKWLoc = ReadSourceLocation(Record, Idx);
   TemplateArgumentListInfo ArgInfo;
   ArgInfo.setLAngleLoc(ReadSourceLocation(Record, Idx));
@@ -115,7 +116,7 @@ ReadTemplateKWAndArgsInfo(ASTTemplateKWAndArgsInfo &Args,
   for (unsigned i = 0; i != NumTemplateArgs; ++i)
     ArgInfo.addArgument(
         Reader.ReadTemplateArgumentLoc(F, Record, Idx));
-  Args.initializeFrom(TemplateKWLoc, ArgInfo);
+  Args.initializeFrom(TemplateKWLoc, ArgInfo, ArgsLocArray);
 }
 
 void ASTStmtReader::VisitStmt(Stmt *S) {
@@ -459,15 +460,17 @@ void ASTStmtReader::VisitDeclRefExpr(DeclRefExpr *E) {
     NumTemplateArgs = Record[Idx++];
 
   if (E->hasQualifier())
-    E->getInternalQualifierLoc()
-      = Reader.ReadNestedNameSpecifierLoc(F, Record, Idx);
+    new (E->getTrailingObjects<NestedNameSpecifierLoc>())
+        NestedNameSpecifierLoc(
+            Reader.ReadNestedNameSpecifierLoc(F, Record, Idx));
 
   if (E->hasFoundDecl())
-    E->getInternalFoundDecl() = ReadDeclAs<NamedDecl>(Record, Idx);
+    *E->getTrailingObjects<NamedDecl *>() = ReadDeclAs<NamedDecl>(Record, Idx);
 
   if (E->hasTemplateKWAndArgsInfo())
-    ReadTemplateKWAndArgsInfo(*E->getTemplateKWAndArgsInfo(),
-                              NumTemplateArgs);
+    ReadTemplateKWAndArgsInfo(
+        *E->getTrailingObjects<ASTTemplateKWAndArgsInfo>(),
+        E->getTrailingObjects<TemplateArgumentLoc>(), NumTemplateArgs);
 
   E->setDecl(ReadDeclAs<ValueDecl>(Record, Idx));
   E->setLocation(ReadSourceLocation(Record, Idx));
@@ -547,7 +550,6 @@ void ASTStmtReader::VisitUnaryOperator(UnaryOperator *E) {
 }
 
 void ASTStmtReader::VisitOffsetOfExpr(OffsetOfExpr *E) {
-  typedef OffsetOfExpr::OffsetOfNode Node;
   VisitExpr(E);
   assert(E->getNumComponents() == Record[Idx]);
   ++Idx;
@@ -557,29 +559,29 @@ void ASTStmtReader::VisitOffsetOfExpr(OffsetOfExpr *E) {
   E->setRParenLoc(ReadSourceLocation(Record, Idx));
   E->setTypeSourceInfo(GetTypeSourceInfo(Record, Idx));
   for (unsigned I = 0, N = E->getNumComponents(); I != N; ++I) {
-    Node::Kind Kind = static_cast<Node::Kind>(Record[Idx++]);
+    OffsetOfNode::Kind Kind = static_cast<OffsetOfNode::Kind>(Record[Idx++]);
     SourceLocation Start = ReadSourceLocation(Record, Idx);
     SourceLocation End = ReadSourceLocation(Record, Idx);
     switch (Kind) {
-    case Node::Array:
-      E->setComponent(I, Node(Start, Record[Idx++], End));
-      break;
-        
-    case Node::Field:
-      E->setComponent(I, Node(Start, ReadDeclAs<FieldDecl>(Record, Idx), End));
+    case OffsetOfNode::Array:
+      E->setComponent(I, OffsetOfNode(Start, Record[Idx++], End));
       break;
 
-    case Node::Identifier:
-      E->setComponent(I, 
-                      Node(Start, 
-                           Reader.GetIdentifierInfo(F, Record, Idx),
-                           End));
+    case OffsetOfNode::Field:
+      E->setComponent(
+          I, OffsetOfNode(Start, ReadDeclAs<FieldDecl>(Record, Idx), End));
       break;
-        
-    case Node::Base: {
+
+    case OffsetOfNode::Identifier:
+      E->setComponent(
+          I,
+          OffsetOfNode(Start, Reader.GetIdentifierInfo(F, Record, Idx), End));
+      break;
+
+    case OffsetOfNode::Base: {
       CXXBaseSpecifier *Base = new (Reader.getContext()) CXXBaseSpecifier();
       *Base = Reader.ReadCXXBaseSpecifier(F, Record, Idx);
-      E->setComponent(I, Node(Base));
+      E->setComponent(I, OffsetOfNode(Base));
       break;
     }
     }
@@ -985,8 +987,10 @@ void ASTStmtReader::VisitObjCDictionaryLiteral(ObjCDictionaryLiteral *E) {
   assert(NumElements == E->getNumElements() && "Wrong number of elements");
   bool HasPackExpansions = Record[Idx++];
   assert(HasPackExpansions == E->HasPackExpansions &&"Pack expansion mismatch");
-  ObjCDictionaryLiteral::KeyValuePair *KeyValues = E->getKeyValues();
-  ObjCDictionaryLiteral::ExpansionData *Expansions = E->getExpansionData();
+  ObjCDictionaryLiteral::KeyValuePair *KeyValues =
+      E->getTrailingObjects<ObjCDictionaryLiteral::KeyValuePair>();
+  ObjCDictionaryLiteral::ExpansionData *Expansions =
+      E->getTrailingObjects<ObjCDictionaryLiteral::ExpansionData>();
   for (unsigned I = 0; I != NumElements; ++I) {
     KeyValues[I].Key = Reader.ReadSubExpr();
     KeyValues[I].Value = Reader.ReadSubExpr();
@@ -1360,10 +1364,7 @@ void ASTStmtReader::VisitCXXThrowExpr(CXXThrowExpr *E) {
 
 void ASTStmtReader::VisitCXXDefaultArgExpr(CXXDefaultArgExpr *E) {
   VisitExpr(E);
-
-  assert((bool)Record[Idx] == E->Param.getInt() && "We messed up at creation ?");
-  ++Idx; // HasOtherExprStored and SubExpr was handled during creation.
-  E->Param.setPointer(ReadDeclAs<ParmVarDecl>(Record, Idx));
+  E->Param = ReadDeclAs<ParmVarDecl>(Record, Idx);
   E->Loc = ReadSourceLocation(Record, Idx);
 }
 
@@ -1443,7 +1444,8 @@ void ASTStmtReader::VisitExprWithCleanups(ExprWithCleanups *E) {
   unsigned NumObjects = Record[Idx++];
   assert(NumObjects == E->getNumObjects());
   for (unsigned i = 0; i != NumObjects; ++i)
-    E->getObjectsBuffer()[i] = ReadDeclAs<BlockDecl>(Record, Idx);
+    E->getTrailingObjects<BlockDecl *>()[i] =
+        ReadDeclAs<BlockDecl>(Record, Idx);
 
   E->SubExpr = Reader.ReadSubExpr();
 }
@@ -1453,8 +1455,10 @@ ASTStmtReader::VisitCXXDependentScopeMemberExpr(CXXDependentScopeMemberExpr *E){
   VisitExpr(E);
 
   if (Record[Idx++]) // HasTemplateKWAndArgsInfo
-    ReadTemplateKWAndArgsInfo(*E->getTemplateKWAndArgsInfo(),
-                              /*NumTemplateArgs=*/Record[Idx++]);
+    ReadTemplateKWAndArgsInfo(
+        *E->getTrailingObjects<ASTTemplateKWAndArgsInfo>(),
+        E->getTrailingObjects<TemplateArgumentLoc>(),
+        /*NumTemplateArgs=*/Record[Idx++]);
 
   E->Base = Reader.ReadSubExpr();
   E->BaseType = Reader.readType(F, Record, Idx);
@@ -1470,8 +1474,10 @@ ASTStmtReader::VisitDependentScopeDeclRefExpr(DependentScopeDeclRefExpr *E) {
   VisitExpr(E);
 
   if (Record[Idx++]) // HasTemplateKWAndArgsInfo
-    ReadTemplateKWAndArgsInfo(*E->getTemplateKWAndArgsInfo(),
-                              /*NumTemplateArgs=*/Record[Idx++]);
+    ReadTemplateKWAndArgsInfo(
+        *E->getTrailingObjects<ASTTemplateKWAndArgsInfo>(),
+        E->getTrailingObjects<TemplateArgumentLoc>(),
+        /*NumTemplateArgs=*/Record[Idx++]);
 
   E->QualifierLoc = Reader.ReadNestedNameSpecifierLoc(F, Record, Idx);
   ReadDeclarationNameInfo(E->NameInfo, Record, Idx);
@@ -1493,7 +1499,8 @@ void ASTStmtReader::VisitOverloadExpr(OverloadExpr *E) {
   VisitExpr(E);
 
   if (Record[Idx++]) // HasTemplateKWAndArgsInfo
-    ReadTemplateKWAndArgsInfo(*E->getTemplateKWAndArgsInfo(),
+    ReadTemplateKWAndArgsInfo(*E->getTrailingASTTemplateKWAndArgsInfo(),
+                              E->getTrailingTemplateArgumentLoc(),
                               /*NumTemplateArgs=*/Record[Idx++]);
 
   unsigned NumDecls = Record[Idx++];
@@ -1534,7 +1541,7 @@ void ASTStmtReader::VisitTypeTraitExpr(TypeTraitExpr *E) {
   E->Loc = Range.getBegin();
   E->RParenLoc = Range.getEnd();
 
-  TypeSourceInfo **Args = E->getTypeSourceInfos();
+  TypeSourceInfo **Args = E->getTrailingObjects<TypeSourceInfo *>();
   for (unsigned I = 0, N = E->getNumArgs(); I != N; ++I)
     Args[I] = GetTypeSourceInfo(Record, Idx);
 }
@@ -1582,7 +1589,7 @@ void ASTStmtReader::VisitSizeOfPackExpr(SizeOfPackExpr *E) {
   E->Pack = Reader.ReadDeclAs<NamedDecl>(F, Record, Idx);
   if (E->isPartiallySubstituted()) {
     assert(E->Length == NumPartialArgs);
-    for (auto *I = reinterpret_cast<TemplateArgument *>(E + 1),
+    for (auto *I = E->getTrailingObjects<TemplateArgument>(),
               *E = I + NumPartialArgs;
          I != E; ++I)
       new (I) TemplateArgument(Reader.ReadTemplateArgument(F, Record, Idx));
@@ -1617,7 +1624,7 @@ void ASTStmtReader::VisitFunctionParmPackExpr(FunctionParmPackExpr *E) {
   E->NumParameters = Record[Idx++];
   E->ParamPack = ReadDeclAs<ParmVarDecl>(Record, Idx);
   E->NameLoc = ReadSourceLocation(Record, Idx);
-  ParmVarDecl **Parms = reinterpret_cast<ParmVarDecl**>(E+1);
+  ParmVarDecl **Parms = E->getTrailingObjects<ParmVarDecl *>();
   for (unsigned i = 0, n = E->NumParameters; i != n; ++i)
     Parms[i] = ReadDeclAs<ParmVarDecl>(Record, Idx);
 }
@@ -1868,6 +1875,12 @@ OMPClause *OMPClauseReader::readClause() {
   case OMPC_num_tasks:
     C = new (Context) OMPNumTasksClause();
     break;
+  case OMPC_hint:
+    C = new (Context) OMPHintClause();
+    break;
+  case OMPC_dist_schedule:
+    C = new (Context) OMPDistScheduleClause();
+    break;
   }
   Visit(C);
   C->setLocStart(Reader->ReadSourceLocation(Record, Idx));
@@ -1926,9 +1939,15 @@ void OMPClauseReader::VisitOMPProcBindClause(OMPProcBindClause *C) {
 void OMPClauseReader::VisitOMPScheduleClause(OMPScheduleClause *C) {
   C->setScheduleKind(
        static_cast<OpenMPScheduleClauseKind>(Record[Idx++]));
+  C->setFirstScheduleModifier(
+      static_cast<OpenMPScheduleClauseModifier>(Record[Idx++]));
+  C->setSecondScheduleModifier(
+      static_cast<OpenMPScheduleClauseModifier>(Record[Idx++]));
   C->setChunkSize(Reader->Reader.ReadSubExpr());
   C->setHelperChunkSize(Reader->Reader.ReadSubExpr());
   C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
+  C->setFirstScheduleModifierLoc(Reader->ReadSourceLocation(Record, Idx));
+  C->setSecondScheduleModifierLoc(Reader->ReadSourceLocation(Record, Idx));
   C->setScheduleKindLoc(Reader->ReadSourceLocation(Record, Idx));
   C->setCommaLoc(Reader->ReadSourceLocation(Record, Idx));
 }
@@ -2219,6 +2238,21 @@ void OMPClauseReader::VisitOMPNumTasksClause(OMPNumTasksClause *C) {
   C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
 }
 
+void OMPClauseReader::VisitOMPHintClause(OMPHintClause *C) {
+  C->setHint(Reader->Reader.ReadSubExpr());
+  C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
+}
+
+void OMPClauseReader::VisitOMPDistScheduleClause(OMPDistScheduleClause *C) {
+  C->setDistScheduleKind(
+      static_cast<OpenMPDistScheduleClauseKind>(Record[Idx++]));
+  C->setChunkSize(Reader->Reader.ReadSubExpr());
+  C->setHelperChunkSize(Reader->Reader.ReadSubExpr());
+  C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
+  C->setDistScheduleKindLoc(Reader->ReadSourceLocation(Record, Idx));
+  C->setCommaLoc(Reader->ReadSourceLocation(Record, Idx));
+}
+
 //===----------------------------------------------------------------------===//
 // OpenMP Directives.
 //===----------------------------------------------------------------------===//
@@ -2328,6 +2362,8 @@ void ASTStmtReader::VisitOMPMasterDirective(OMPMasterDirective *D) {
 
 void ASTStmtReader::VisitOMPCriticalDirective(OMPCriticalDirective *D) {
   VisitStmt(D);
+  // The NumClauses field was read in ReadStmtFromStream.
+  ++Idx;
   VisitOMPExecutableDirective(D);
   ReadDeclarationNameInfo(D->DirName, Record, Idx);
 }
@@ -2446,6 +2482,10 @@ void ASTStmtReader::VisitOMPTaskLoopDirective(OMPTaskLoopDirective *D) {
 }
 
 void ASTStmtReader::VisitOMPTaskLoopSimdDirective(OMPTaskLoopSimdDirective *D) {
+  VisitOMPLoopDirective(D);
+}
+
+void ASTStmtReader::VisitOMPDistributeDirective(OMPDistributeDirective *D) {
   VisitOMPLoopDirective(D);
 }
 
@@ -2987,7 +3027,8 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
       break;
 
     case STMT_OMP_CRITICAL_DIRECTIVE:
-      S = OMPCriticalDirective::CreateEmpty(Context, Empty);
+      S = OMPCriticalDirective::CreateEmpty(
+          Context, Record[ASTStmtReader::NumStmtFields], Empty);
       break;
 
     case STMT_OMP_PARALLEL_FOR_DIRECTIVE: {
@@ -3087,6 +3128,14 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
       break;
     }
 
+    case STMT_OMP_DISTRIBUTE_DIRECTIVE: {
+      unsigned NumClauses = Record[ASTStmtReader::NumStmtFields];
+      unsigned CollapsedNum = Record[ASTStmtReader::NumStmtFields + 1];
+      S = OMPDistributeDirective::CreateEmpty(Context, NumClauses, CollapsedNum,
+                                              Empty);
+      break;
+    }
+
     case EXPR_CXX_OPERATOR_CALL:
       S = new (Context) CXXOperatorCallExpr(Context, Empty);
       break;
@@ -3166,16 +3215,9 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
     case EXPR_CXX_THROW:
       S = new (Context) CXXThrowExpr(Empty);
       break;
-    case EXPR_CXX_DEFAULT_ARG: {
-      bool HasOtherExprStored = Record[ASTStmtReader::NumExprFields];
-      if (HasOtherExprStored) {
-        Expr *SubExpr = ReadSubExpr();
-        S = CXXDefaultArgExpr::Create(Context, SourceLocation(), nullptr,
-                                      SubExpr);
-      } else
-        S = new (Context) CXXDefaultArgExpr(Empty);
+    case EXPR_CXX_DEFAULT_ARG:
+      S = new (Context) CXXDefaultArgExpr(Empty);
       break;
-    }
     case EXPR_CXX_DEFAULT_INIT:
       S = new (Context) CXXDefaultInitExpr(Empty);
       break;

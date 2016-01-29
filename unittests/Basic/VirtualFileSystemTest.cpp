@@ -20,6 +20,18 @@ using namespace llvm;
 using llvm::sys::fs::UniqueID;
 
 namespace {
+struct DummyFile : public vfs::File {
+  vfs::Status S;
+  explicit DummyFile(vfs::Status S) : S(S) {}
+  llvm::ErrorOr<vfs::Status> status() override { return S; }
+  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
+  getBuffer(const Twine &Name, int64_t FileSize, bool RequiresNullTerminator,
+            bool IsVolatile) override {
+    llvm_unreachable("unimplemented");
+  }
+  virtual std::error_code close() override { return std::error_code(); }
+};
+
 class DummyFileSystem : public vfs::FileSystem {
   int FSID;   // used to produce UniqueIDs
   int FileID; // used to produce UniqueIDs
@@ -42,7 +54,10 @@ public:
   }
   ErrorOr<std::unique_ptr<vfs::File>>
   openFileForRead(const Twine &Path) override {
-    llvm_unreachable("unimplemented");
+    auto S = status(Path);
+    if (S)
+      return std::unique_ptr<vfs::File>(new DummyFile{*S});
+    return S.getError();
   }
   llvm::ErrorOr<std::string> getCurrentWorkingDirectory() const override {
     return std::string();
@@ -355,14 +370,6 @@ TEST(VirtualFileSystemTest, BasicRealFSRecursiveIteration) {
   EXPECT_EQ(1, Counts[3]); // d
 }
 
-template <typename T, size_t N>
-std::vector<StringRef> makeStringRefVector(const T (&Arr)[N]) {
-  std::vector<StringRef> Vec;
-  for (size_t i = 0; i != N; ++i)
-    Vec.push_back(Arr[i]);
-  return Vec;
-}
-
 template <typename DirIter>
 static void checkContents(DirIter I, ArrayRef<StringRef> Expected) {
   std::error_code EC;
@@ -390,20 +397,14 @@ TEST(VirtualFileSystemTest, OverlayIteration) {
   checkContents(O->dir_begin("/", EC), ArrayRef<StringRef>("/file1"));
 
   Upper->addRegularFile("/file2");
-  {
-    const char *Contents[] = {"/file2", "/file1"};
-    checkContents(O->dir_begin("/", EC), makeStringRefVector(Contents));
-  }
+  checkContents(O->dir_begin("/", EC), {"/file2", "/file1"});
 
   Lower->addDirectory("/dir1");
   Lower->addRegularFile("/dir1/foo");
   Upper->addDirectory("/dir2");
   Upper->addRegularFile("/dir2/foo");
   checkContents(O->dir_begin("/dir2", EC), ArrayRef<StringRef>("/dir2/foo"));
-  {
-    const char *Contents[] = {"/dir2", "/file2", "/dir1", "/file1"};
-    checkContents(O->dir_begin("/", EC), makeStringRefVector(Contents));
-  }
+  checkContents(O->dir_begin("/", EC), {"/dir2", "/file2", "/dir1", "/file1"});
 }
 
 TEST(VirtualFileSystemTest, OverlayRecursiveIteration) {
@@ -425,11 +426,8 @@ TEST(VirtualFileSystemTest, OverlayRecursiveIteration) {
 
   Upper->addDirectory("/dir");
   Upper->addRegularFile("/dir/file2");
-  {
-    const char *Contents[] = {"/dir", "/dir/file2", "/file1"};
-    checkContents(vfs::recursive_directory_iterator(*O, "/", EC),
-                  makeStringRefVector(Contents));
-  }
+  checkContents(vfs::recursive_directory_iterator(*O, "/", EC),
+                {"/dir", "/dir/file2", "/file1"});
 
   Lower->addDirectory("/dir1");
   Lower->addRegularFile("/dir1/foo");
@@ -445,13 +443,10 @@ TEST(VirtualFileSystemTest, OverlayRecursiveIteration) {
   Upper->addRegularFile("/hiddenByUp");
   checkContents(vfs::recursive_directory_iterator(*O, "/dir2", EC),
                 ArrayRef<StringRef>("/dir2/foo"));
-  {
-    const char *Contents[] = { "/dir", "/dir/file2", "/dir2", "/dir2/foo",
-        "/hiddenByUp", "/a", "/a/b", "/a/b/c", "/a/b/c/d", "/dir1", "/dir1/a",
-        "/dir1/a/b", "/dir1/foo", "/file1" };
-    checkContents(vfs::recursive_directory_iterator(*O, "/", EC),
-                  makeStringRefVector(Contents));
-  }
+  checkContents(vfs::recursive_directory_iterator(*O, "/", EC),
+                {"/dir", "/dir/file2", "/dir2", "/dir2/foo", "/hiddenByUp",
+                 "/a", "/a/b", "/a/b/c", "/a/b/c/d", "/dir1", "/dir1/a",
+                 "/dir1/a/b", "/dir1/foo", "/file1"});
 }
 
 TEST(VirtualFileSystemTest, ThreeLevelIteration) {
@@ -471,10 +466,7 @@ TEST(VirtualFileSystemTest, ThreeLevelIteration) {
 
   Lower->addRegularFile("/file1");
   Upper->addRegularFile("/file3");
-  {
-    const char *Contents[] = {"/file3", "/file2", "/file1"};
-    checkContents(O->dir_begin("/", EC), makeStringRefVector(Contents));
-  }
+  checkContents(O->dir_begin("/", EC), {"/file3", "/file2", "/file1"});
 }
 
 TEST(VirtualFileSystemTest, HiddenInIteration) {
@@ -495,11 +487,9 @@ TEST(VirtualFileSystemTest, HiddenInIteration) {
   Middle->addRegularFile("/hiddenByUp", sys::fs::owner_write);
   Upper->addRegularFile("/onlyInUp", sys::fs::owner_all);
   Upper->addRegularFile("/hiddenByUp", sys::fs::owner_all);
-  {
-    const char *Contents[] = {"/hiddenByUp", "/onlyInUp", "/hiddenByMid",
-                              "/onlyInMid", "/onlyInLow"};
-    checkContents(O->dir_begin("/", EC), makeStringRefVector(Contents));
-  }
+  checkContents(
+      O->dir_begin("/", EC),
+      {"/hiddenByUp", "/onlyInUp", "/hiddenByMid", "/onlyInMid", "/onlyInLow"});
 
   // Make sure we get the top-most entry
   {
@@ -642,6 +632,18 @@ TEST_F(InMemoryFileSystemTest, WorkingDirectory) {
 
   Stat = FS.status("c");
   ASSERT_FALSE(Stat.getError()) << Stat.getError() << "\n" << FS.toString();
+
+  auto ReplaceBackslashes = [](std::string S) {
+    std::replace(S.begin(), S.end(), '\\', '/');
+    return S;
+  };
+  NormalizedFS.setCurrentWorkingDirectory("/b/c");
+  NormalizedFS.setCurrentWorkingDirectory(".");
+  ASSERT_EQ("/b/c", ReplaceBackslashes(
+                        NormalizedFS.getCurrentWorkingDirectory().get()));
+  NormalizedFS.setCurrentWorkingDirectory("..");
+  ASSERT_EQ("/b", ReplaceBackslashes(
+                      NormalizedFS.getCurrentWorkingDirectory().get()));
 }
 
 // NOTE: in the tests below, we use '//root/' as our root directory, since it is
@@ -718,10 +720,20 @@ TEST_F(VFSFromYAMLTest, MappedFiles) {
   ErrorOr<vfs::Status> S = O->status("//root/file1");
   ASSERT_FALSE(S.getError());
   EXPECT_EQ("//root/foo/bar/a", S->getName());
+  EXPECT_TRUE(S->IsVFSMapped);
 
   ErrorOr<vfs::Status> SLower = O->status("//root/foo/bar/a");
   EXPECT_EQ("//root/foo/bar/a", SLower->getName());
   EXPECT_TRUE(S->equivalent(*SLower));
+  EXPECT_FALSE(SLower->IsVFSMapped);
+
+  // file after opening
+  auto OpenedF = O->openFileForRead("//root/file1");
+  ASSERT_FALSE(OpenedF.getError());
+  auto OpenedS = (*OpenedF)->status();
+  ASSERT_FALSE(OpenedS.getError());
+  EXPECT_EQ("//root/foo/bar/a", OpenedS->getName());
+  EXPECT_TRUE(OpenedS->IsVFSMapped);
 
   // directory
   S = O->status("//root/");
@@ -1042,15 +1054,9 @@ TEST_F(VFSFromYAMLTest, DirectoryIteration) {
   O->pushOverlay(FS);
 
   std::error_code EC;
-  {
-    const char *Contents[] = {"//root/file1", "//root/file2", "//root/file3",
-                              "//root/foo"};
-    checkContents(O->dir_begin("//root/", EC), makeStringRefVector(Contents));
-  }
+  checkContents(O->dir_begin("//root/", EC),
+                {"//root/file1", "//root/file2", "//root/file3", "//root/foo"});
 
-  {
-    const char *Contents[] = {"//root/foo/bar/a", "//root/foo/bar/b"};
-    checkContents(O->dir_begin("//root/foo/bar", EC),
-                  makeStringRefVector(Contents));
-  }
+  checkContents(O->dir_begin("//root/foo/bar", EC),
+                {"//root/foo/bar/a", "//root/foo/bar/b"});
 }

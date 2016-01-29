@@ -156,12 +156,32 @@ struct FormatStyle {
     DRTBS_None,
     /// Always break after the return type.
     DRTBS_All,
-    /// Always break after the return types of top level functions.
+    /// Always break after the return types of top-level functions.
     DRTBS_TopLevel,
   };
 
-  /// \brief The function definition return type breaking style to use.
+  /// \brief Different ways to break after the function definition or
+  /// declaration return type.
+  enum ReturnTypeBreakingStyle {
+    /// Break after return type automatically.
+    /// \c PenaltyReturnTypeOnItsOwnLine is taken into account.
+    RTBS_None,
+    /// Always break after the return type.
+    RTBS_All,
+    /// Always break after the return types of top-level functions.
+    RTBS_TopLevel,
+    /// Always break after the return type of function definitions.
+    RTBS_AllDefinitions,
+    /// Always break after the return type of top-level definitions.
+    RTBS_TopLevelDefinitions,
+  };
+
+  /// \brief The function definition return type breaking style to use.  This
+  /// option is deprecated and is retained for backwards compatibility.
   DefinitionReturnTypeBreakingStyle AlwaysBreakAfterDefinitionReturnType;
+
+  /// \brief The function declaration return type breaking style to use.
+  ReturnTypeBreakingStyle AlwaysBreakAfterReturnType;
 
   /// \brief If \c true, always break before multiline string literals.
   ///
@@ -343,7 +363,7 @@ struct FormatStyle {
     /// \brief The regular expression that this category matches.
     std::string Regex;
     /// \brief The priority to assign to this category.
-    unsigned Priority;
+    int Priority;
     bool operator==(const IncludeCategory &Other) const {
       return Regex == Other.Regex && Priority == Other.Priority;
     }
@@ -358,10 +378,12 @@ struct FormatStyle {
   /// according to increasing category number and then alphabetically within
   /// each category.
   ///
-  /// If none of the regular expressions match, UINT_MAX is assigned as
-  /// category. The main header for a source file automatically gets category 0,
-  /// so that it is kept at the beginning of the #includes
-  /// (http://llvm.org/docs/CodingStandards.html#include-style).
+  /// If none of the regular expressions match, INT_MAX is assigned as
+  /// category. The main header for a source file automatically gets category 0.
+  /// so that it is generally kept at the beginning of the #includes
+  /// (http://llvm.org/docs/CodingStandards.html#include-style). However, you
+  /// can also assign negative priorities if you have certain headers that
+  /// always need to be first.
   ///
   /// To configure this in the .clang-format file, use:
   /// \code
@@ -405,7 +427,9 @@ struct FormatStyle {
     LK_JavaScript,
     /// Should be used for Protocol Buffers
     /// (https://developers.google.com/protocol-buffers/).
-    LK_Proto
+    LK_Proto,
+    /// Should be used for TableGen code.
+    LK_TableGen
   };
 
   /// \brief Language, this format style is targeted at.
@@ -582,8 +606,7 @@ struct FormatStyle {
            AllowShortIfStatementsOnASingleLine ==
                R.AllowShortIfStatementsOnASingleLine &&
            AllowShortLoopsOnASingleLine == R.AllowShortLoopsOnASingleLine &&
-           AlwaysBreakAfterDefinitionReturnType ==
-               R.AlwaysBreakAfterDefinitionReturnType &&
+           AlwaysBreakAfterReturnType == R.AlwaysBreakAfterReturnType &&
            AlwaysBreakBeforeMultilineStrings ==
                R.AlwaysBreakBeforeMultilineStrings &&
            AlwaysBreakTemplateDeclarations ==

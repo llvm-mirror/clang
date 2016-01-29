@@ -134,6 +134,7 @@ let Flags = [CC1Option, CC1AsOption, NoDriverOption] in {
 
 def debug_info_kind_EQ : Joined<["-"], "debug-info-kind=">;
 def dwarf_version_EQ : Joined<["-"], "dwarf-version=">;
+def debugger_tuning_EQ : Joined<["-"], "debugger-tuning=">;
 def fdebug_compilation_dir : Separate<["-"], "fdebug-compilation-dir">,
   HelpText<"The compilation directory to embed in the debug info.">;
 def dwarf_debug_flags : Separate<["-"], "dwarf-debug-flags">,
@@ -676,6 +677,15 @@ def fcuda_include_gpubinary : Separate<["-"], "fcuda-include-gpubinary">,
 def fcuda_target_overloads : Flag<["-"], "fcuda-target-overloads">,
   HelpText<"Enable function overloads based on CUDA target attributes.">;
 
+//===----------------------------------------------------------------------===//
+// OpenMP Options
+//===----------------------------------------------------------------------===//
+
+def fopenmp_is_device : Flag<["-"], "fopenmp-is-device">,
+  HelpText<"Generate code only for an OpenMP target device.">;
+def omp_host_ir_file_path : Separate<["-"], "omp-host-ir-file-path">,
+  HelpText<"Path to the IR file produced by the frontend for the host.">;
+  
 } // let Flags = [CC1Option]
 
 

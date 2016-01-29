@@ -395,7 +395,8 @@ private:
   void mangleCXXCtorType(CXXCtorType T);
   void mangleCXXDtorType(CXXDtorType T);
 
-  void mangleTemplateArgs(const ASTTemplateArgumentListInfo &TemplateArgs);
+  void mangleTemplateArgs(const TemplateArgumentLoc *TemplateArgs,
+                          unsigned NumTemplateArgs);
   void mangleTemplateArgs(const TemplateArgument *TemplateArgs,
                           unsigned NumTemplateArgs);
   void mangleTemplateArgs(const TemplateArgumentList &AL);
@@ -1017,7 +1018,7 @@ void CXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
       unsigned UnnamedMangle = getASTContext().getManglingNumber(TD);
       Out << "Ut";
       if (UnnamedMangle > 1)
-        Out << llvm::utostr(UnnamedMangle - 2);
+        Out << UnnamedMangle - 2;
       Out << '_';
       break;
     }
@@ -1508,6 +1509,7 @@ bool CXXNameMangler::mangleUnresolvedTypeOrSimpleId(QualType Ty,
   case Type::ObjCInterface:
   case Type::ObjCObjectPointer:
   case Type::Atomic:
+  case Type::Pipe:
     llvm_unreachable("type is illegal as a nested name specifier");
 
   case Type::SubstTemplateTypeParmPack:
@@ -2449,7 +2451,7 @@ void CXXNameMangler::mangleAArch64NeonVectorType(const VectorType *T) {
     EltName = mangleAArch64VectorBase(cast<BuiltinType>(EltType));
 
   std::string TypeName =
-      ("__" + EltName + "x" + llvm::utostr(T->getNumElements()) + "_t").str();
+      ("__" + EltName + "x" + Twine(T->getNumElements()) + "_t").str();
   Out << TypeName.length() << TypeName;
 }
 
@@ -2679,6 +2681,13 @@ void CXXNameMangler::mangleType(const AtomicType *T) {
   // (Until there's a standardized mangling...)
   Out << "U7_Atomic";
   mangleType(T->getValueType());
+}
+
+void CXXNameMangler::mangleType(const PipeType *T) {
+  // Pipe type mangling rules are described in SPIR 2.0 specification
+  // A.1 Data types and A.3 Summary of changes
+  // <type> ::= 8ocl_pipe
+  Out << "8ocl_pipe";
 }
 
 void CXXNameMangler::mangleIntegerLiteral(QualType T,
@@ -3035,7 +3044,7 @@ recurse:
                      ME->isArrow(), ME->getQualifier(), nullptr,
                      ME->getMemberName(), Arity);
     if (ME->hasExplicitTemplateArgs())
-      mangleTemplateArgs(ME->getExplicitTemplateArgs());
+      mangleTemplateArgs(ME->getTemplateArgs(), ME->getNumTemplateArgs());
     break;
   }
 
@@ -3047,7 +3056,7 @@ recurse:
                      ME->getFirstQualifierFoundInScope(),
                      ME->getMember(), Arity);
     if (ME->hasExplicitTemplateArgs())
-      mangleTemplateArgs(ME->getExplicitTemplateArgs());
+      mangleTemplateArgs(ME->getTemplateArgs(), ME->getNumTemplateArgs());
     break;
   }
 
@@ -3059,7 +3068,7 @@ recurse:
     // base-unresolved-name, where <template-args> are just tacked
     // onto the end.
     if (ULE->hasExplicitTemplateArgs())
-      mangleTemplateArgs(ULE->getExplicitTemplateArgs());
+      mangleTemplateArgs(ULE->getTemplateArgs(), ULE->getNumTemplateArgs());
     break;
   }
 
@@ -3381,7 +3390,7 @@ recurse:
     // base-unresolved-name, where <template-args> are just tacked
     // onto the end.
     if (DRE->hasExplicitTemplateArgs())
-      mangleTemplateArgs(DRE->getExplicitTemplateArgs());
+      mangleTemplateArgs(DRE->getTemplateArgs(), DRE->getNumTemplateArgs());
     break;
   }
 
@@ -3649,12 +3658,12 @@ void CXXNameMangler::mangleCXXDtorType(CXXDtorType T) {
   }
 }
 
-void CXXNameMangler::mangleTemplateArgs(
-                          const ASTTemplateArgumentListInfo &TemplateArgs) {
+void CXXNameMangler::mangleTemplateArgs(const TemplateArgumentLoc *TemplateArgs,
+                                        unsigned NumTemplateArgs) {
   // <template-args> ::= I <template-arg>+ E
   Out << 'I';
-  for (unsigned i = 0, e = TemplateArgs.NumTemplateArgs; i != e; ++i)
-    mangleTemplateArg(TemplateArgs.getTemplateArgs()[i].getArgument());
+  for (unsigned i = 0; i != NumTemplateArgs; ++i)
+    mangleTemplateArg(TemplateArgs[i].getArgument());
   Out << 'E';
 }
 
