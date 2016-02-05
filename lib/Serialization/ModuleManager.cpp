@@ -194,6 +194,9 @@ void ModuleManager::removeModules(
   if (first == last)
     return;
 
+  // Explicitly clear VisitOrder since we might not notice it is stale.
+  VisitOrder.clear();
+
   // Collect the set of module file pointers that we'll be removing.
   llvm::SmallPtrSet<ModuleFile *, 4> victimSet(first, last);
 
@@ -249,15 +252,6 @@ ModuleManager::addInMemoryBuffer(StringRef FileName,
   InMemoryBuffers[Entry] = std::move(Buffer);
 }
 
-bool ModuleManager::addKnownModuleFile(StringRef FileName) {
-  const FileEntry *File;
-  if (lookupModuleFile(FileName, 0, 0, File))
-    return true;
-  if (!Modules.count(File))
-    AdditionalKnownModuleFiles.insert(File);
-  return false;
-}
-
 ModuleManager::VisitState *ModuleManager::allocateVisitState() {
   // Fast path: if we have a cached state, use it.
   if (FirstVisitState) {
@@ -294,8 +288,6 @@ void ModuleManager::setGlobalIndex(GlobalModuleIndex *Index) {
 }
 
 void ModuleManager::moduleFileAccepted(ModuleFile *MF) {
-  AdditionalKnownModuleFiles.remove(MF->File);
-
   if (!GlobalIndex || GlobalIndex->loadedModuleFile(MF))
     return;
 
@@ -415,71 +407,6 @@ void ModuleManager::visit(llvm::function_ref<bool(ModuleFile &M)> Visitor,
   }
 
   returnVisitState(State);
-}
-
-static void markVisitedDepthFirst(ModuleFile &M,
-                                  SmallVectorImpl<bool> &Visited) {
-  for (llvm::SetVector<ModuleFile *>::iterator IM = M.Imports.begin(),
-                                               IMEnd = M.Imports.end();
-       IM != IMEnd; ++IM) {
-    if (Visited[(*IM)->Index])
-      continue;
-    Visited[(*IM)->Index] = true;
-    if (!M.DirectlyImported)
-      markVisitedDepthFirst(**IM, Visited);
-  }
-}
-
-/// \brief Perform a depth-first visit of the current module.
-static bool visitDepthFirst(
-    ModuleFile &M,
-    ModuleManager::DFSPreorderControl (*PreorderVisitor)(ModuleFile &M,
-                                                         void *UserData),
-    bool (*PostorderVisitor)(ModuleFile &M, void *UserData), void *UserData,
-    SmallVectorImpl<bool> &Visited) {
-  if (PreorderVisitor) {
-    switch (PreorderVisitor(M, UserData)) {
-    case ModuleManager::Abort:
-      return true;
-    case ModuleManager::SkipImports:
-      markVisitedDepthFirst(M, Visited);
-      return false;
-    case ModuleManager::Continue:
-      break;
-    }
-  }
-
-  // Visit children
-  for (llvm::SetVector<ModuleFile *>::iterator IM = M.Imports.begin(),
-                                            IMEnd = M.Imports.end();
-       IM != IMEnd; ++IM) {
-    if (Visited[(*IM)->Index])
-      continue;
-    Visited[(*IM)->Index] = true;
-
-    if (visitDepthFirst(**IM, PreorderVisitor, PostorderVisitor, UserData, Visited))
-      return true;
-  }  
-  
-  if (PostorderVisitor)
-    return PostorderVisitor(M, UserData);
-
-  return false;
-}
-
-void ModuleManager::visitDepthFirst(
-    ModuleManager::DFSPreorderControl (*PreorderVisitor)(ModuleFile &M,
-                                                         void *UserData),
-    bool (*PostorderVisitor)(ModuleFile &M, void *UserData), void *UserData) {
-  SmallVector<bool, 16> Visited(size(), false);
-  for (unsigned I = 0, N = Roots.size(); I != N; ++I) {
-    if (Visited[Roots[I]->Index])
-      continue;
-    Visited[Roots[I]->Index] = true;
-
-    if (::visitDepthFirst(*Roots[I], PreorderVisitor, PostorderVisitor, UserData, Visited))
-      return;
-  }
 }
 
 bool ModuleManager::lookupModuleFile(StringRef FileName,

@@ -441,13 +441,17 @@ public:
   ///
   /// One set of Objective-C lifetime qualifiers compatibly includes the other
   /// if the lifetime qualifiers match, or if both are non-__weak and the
-  /// including set also contains the 'const' qualifier.
+  /// including set also contains the 'const' qualifier, or both are non-__weak
+  /// and one is None (which can only happen in non-ARC modes).
   bool compatiblyIncludesObjCLifetime(Qualifiers other) const {
     if (getObjCLifetime() == other.getObjCLifetime())
       return true;
 
     if (getObjCLifetime() == OCL_Weak || other.getObjCLifetime() == OCL_Weak)
       return false;
+
+    if (getObjCLifetime() == OCL_None || other.getObjCLifetime() == OCL_None)
+      return true;
 
     return hasConst();
   }
@@ -1206,6 +1210,16 @@ enum RefQualifierKind {
   RQ_RValue
 };
 
+/// Which keyword(s) were used to create an AutoType.
+enum class AutoTypeKeyword {
+  /// \brief auto
+  Auto,
+  /// \brief decltype(auto)
+  DecltypeAuto,
+  /// \brief __auto_type (GNU extension)
+  GNUAutoType
+};
+
 /// The base class of the type hierarchy.
 ///
 /// A central concept with types is that each type always has a canonical
@@ -1424,8 +1438,9 @@ protected:
 
     unsigned : NumTypeBits;
 
-    /// Was this placeholder type spelled as 'decltype(auto)'?
-    unsigned IsDecltypeAuto : 1;
+    /// Was this placeholder type spelled as 'auto', 'decltype(auto)',
+    /// or '__auto_type'?  AutoTypeKeyword value.
+    unsigned Keyword : 2;
   };
 
   union {
@@ -1653,6 +1668,7 @@ public:
   bool isObjCQualifiedClassType() const;        // Class<foo>
   bool isObjCObjectOrInterfaceType() const;
   bool isObjCIdType() const;                    // id
+  bool isObjCInertUnsafeUnretainedType() const;
 
   /// Whether the type is Objective-C 'id' or a __kindof type of an
   /// object type, e.g., __kindof NSView * or __kindof id
@@ -1683,17 +1699,27 @@ public:
   bool isNullPtrType() const;                   // C++0x nullptr_t
   bool isAtomicType() const;                    // C11 _Atomic()
 
-  bool isImage1dT() const;                      // OpenCL image1d_t
-  bool isImage1dArrayT() const;                 // OpenCL image1d_array_t
-  bool isImage1dBufferT() const;                // OpenCL image1d_buffer_t
-  bool isImage2dT() const;                      // OpenCL image2d_t
-  bool isImage2dArrayT() const;                 // OpenCL image2d_array_t
-  bool isImage3dT() const;                      // OpenCL image3d_t
+  bool isImage1dT() const;               // OpenCL image1d_t
+  bool isImage1dArrayT() const;          // OpenCL image1d_array_t
+  bool isImage1dBufferT() const;         // OpenCL image1d_buffer_t
+  bool isImage2dT() const;               // OpenCL image2d_t
+  bool isImage2dArrayT() const;          // OpenCL image2d_array_t
+  bool isImage2dDepthT() const;          // OpenCL image_2d_depth_t
+  bool isImage2dArrayDepthT() const;     // OpenCL image_2d_array_depth_t
+  bool isImage2dMSAAT() const;           // OpenCL image_2d_msaa_t
+  bool isImage2dArrayMSAAT() const;      // OpenCL image_2d_array_msaa_t
+  bool isImage2dMSAATDepth() const;      // OpenCL image_2d_msaa_depth_t
+  bool isImage2dArrayMSAATDepth() const; // OpenCL image_2d_array_msaa_depth_t
+  bool isImage3dT() const;               // OpenCL image3d_t
 
   bool isImageType() const;                     // Any OpenCL image type
 
   bool isSamplerT() const;                      // OpenCL sampler_t
   bool isEventT() const;                        // OpenCL event_t
+  bool isClkEventT() const;                     // OpenCL clk_event_t
+  bool isQueueT() const;                        // OpenCL queue_t
+  bool isNDRangeT() const;                      // OpenCL ndrange_t
+  bool isReserveIDT() const;                    // OpenCL reserve_id_t
 
   bool isOpenCLSpecificType() const;            // Any OpenCL specific type
 
@@ -3611,6 +3637,7 @@ public:
     attr_nullable,
     attr_null_unspecified,
     attr_objc_kindof,
+    attr_objc_inert_unsafe_unretained,
   };
 
 private:
@@ -3639,6 +3666,23 @@ public:
 
   bool isSugared() const { return true; }
   QualType desugar() const { return getEquivalentType(); }
+
+  /// Does this attribute behave like a type qualifier?
+  ///
+  /// A type qualifier adjusts a type to provide specialized rules for
+  /// a specific object, like the standard const and volatile qualifiers.
+  /// This includes attributes controlling things like nullability,
+  /// address spaces, and ARC ownership.  The value of the object is still
+  /// largely described by the modified type.
+  ///
+  /// In contrast, many type attributes "rewrite" their modified type to
+  /// produce a fundamentally different type, not necessarily related in any
+  /// formalizable way to the original type.  For example, calling convention
+  /// and vector attributes are not simple type qualifiers.
+  ///
+  /// Type qualifiers are often, but not always, reflected in the canonical
+  /// type.
+  bool isQualifier() const;
 
   bool isMSTypeSpec() const;
 
@@ -3871,8 +3915,7 @@ public:
 /// is no deduced type and an auto type is canonical. In the latter case, it is
 /// also a dependent type.
 class AutoType : public Type, public llvm::FoldingSetNode {
-  AutoType(QualType DeducedType, bool IsDecltypeAuto,
-           bool IsDependent)
+  AutoType(QualType DeducedType, AutoTypeKeyword Keyword, bool IsDependent)
     : Type(Auto, DeducedType.isNull() ? QualType(this, 0) : DeducedType,
            /*Dependent=*/IsDependent, /*InstantiationDependent=*/IsDependent,
            /*VariablyModified=*/false,
@@ -3880,13 +3923,18 @@ class AutoType : public Type, public llvm::FoldingSetNode {
                ? false : DeducedType->containsUnexpandedParameterPack()) {
     assert((DeducedType.isNull() || !IsDependent) &&
            "auto deduced to dependent type");
-    AutoTypeBits.IsDecltypeAuto = IsDecltypeAuto;
+    AutoTypeBits.Keyword = (unsigned)Keyword;
   }
 
   friend class ASTContext;  // ASTContext creates these
 
 public:
-  bool isDecltypeAuto() const { return AutoTypeBits.IsDecltypeAuto; }
+  bool isDecltypeAuto() const {
+    return getKeyword() == AutoTypeKeyword::DecltypeAuto;
+  }
+  AutoTypeKeyword getKeyword() const {
+    return (AutoTypeKeyword)AutoTypeBits.Keyword;
+  }
 
   bool isSugared() const { return !isCanonicalUnqualified(); }
   QualType desugar() const { return getCanonicalTypeInternal(); }
@@ -3901,14 +3949,13 @@ public:
   }
 
   void Profile(llvm::FoldingSetNodeID &ID) {
-    Profile(ID, getDeducedType(), isDecltypeAuto(), 
-		    isDependentType());
+    Profile(ID, getDeducedType(), getKeyword(), isDependentType());
   }
 
   static void Profile(llvm::FoldingSetNodeID &ID, QualType Deduced,
-                      bool IsDecltypeAuto, bool IsDependent) {
+                      AutoTypeKeyword Keyword, bool IsDependent) {
     ID.AddPointer(Deduced.getAsOpaquePtr());
-    ID.AddBoolean(IsDecltypeAuto);
+    ID.AddInteger((unsigned)Keyword);
     ID.AddBoolean(IsDependent);
   }
 
@@ -4608,7 +4655,7 @@ public:
   /// Retrieve the type arguments of this object type as they were
   /// written.
   ArrayRef<QualType> getTypeArgsAsWritten() const {
-    return ArrayRef<QualType>(getTypeArgStorage(),
+    return llvm::makeArrayRef(getTypeArgStorage(),
                               ObjCObjectTypeBits.NumTypeArgs);
   }
 
@@ -5354,6 +5401,30 @@ inline bool Type::isImage2dArrayT() const {
   return isSpecificBuiltinType(BuiltinType::OCLImage2dArray);
 }
 
+inline bool Type::isImage2dDepthT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dDepth);
+}
+
+inline bool Type::isImage2dArrayDepthT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dArrayDepth);
+}
+
+inline bool Type::isImage2dMSAAT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dMSAA);
+}
+
+inline bool Type::isImage2dArrayMSAAT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dArrayMSAA);
+}
+
+inline bool Type::isImage2dMSAATDepth() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dMSAADepth);
+}
+
+inline bool Type::isImage2dArrayMSAATDepth() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dArrayMSAADepth);
+}
+
 inline bool Type::isImage3dT() const {
   return isSpecificBuiltinType(BuiltinType::OCLImage3d);
 }
@@ -5366,14 +5437,33 @@ inline bool Type::isEventT() const {
   return isSpecificBuiltinType(BuiltinType::OCLEvent);
 }
 
+inline bool Type::isClkEventT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLClkEvent);
+}
+
+inline bool Type::isQueueT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLQueue);
+}
+
+inline bool Type::isNDRangeT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLNDRange);
+}
+
+inline bool Type::isReserveIDT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLReserveID);
+}
+
 inline bool Type::isImageType() const {
-  return isImage3dT() ||
-         isImage2dT() || isImage2dArrayT() ||
-         isImage1dT() || isImage1dArrayT() || isImage1dBufferT();
+  return isImage3dT() || isImage2dT() || isImage2dArrayT() ||
+         isImage2dDepthT() || isImage2dArrayDepthT() || isImage2dMSAAT() ||
+         isImage2dArrayMSAAT() || isImage2dMSAATDepth() ||
+         isImage2dArrayMSAATDepth() || isImage1dT() || isImage1dArrayT() ||
+         isImage1dBufferT();
 }
 
 inline bool Type::isOpenCLSpecificType() const {
-  return isSamplerT() || isEventT() || isImageType();
+  return isSamplerT() || isEventT() || isImageType() || isClkEventT() ||
+         isQueueT() || isNDRangeT() || isReserveIDT();
 }
 
 inline bool Type::isTemplateTypeParmType() const {

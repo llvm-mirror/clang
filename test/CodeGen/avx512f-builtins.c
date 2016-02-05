@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 %s -O0 -triple=x86_64-apple-darwin -target-feature +avx512f -emit-llvm -o - -Werror | FileCheck %s
+// RUN: %clang_cc1 %s -triple=x86_64-apple-darwin -target-feature +avx512f -emit-llvm -o - -Werror | FileCheck %s
 
 // Don't include mm_malloc.h, it's system specific.
 #define __MM_MALLOC_H
@@ -772,8 +772,8 @@ __mmask16 test_mm512_mask_cmp_round_ps_mask(__mmask16 m, __m512 a, __m512 b) {
 }
 
 __mmask16 test_mm512_cmp_ps_mask(__m512 a, __m512 b) {
-  // check-label: @test_mm512_cmp_ps_mask
-  // check: @llvm.x86.avx512.mask.cmp.ps.512
+  // CHECK-LABEL: @test_mm512_cmp_ps_mask
+  // CHECKn: @llvm.x86.avx512.mask.cmp.ps.512
   return _mm512_cmp_ps_mask(a, b, 0);
 }
 
@@ -796,8 +796,8 @@ __mmask8 test_mm512_mask_cmp_round_pd_mask(__mmask8 m, __m512d a, __m512d b) {
 }
 
 __mmask8 test_mm512_cmp_pd_mask(__m512d a, __m512d b) {
-  // check-label: @test_mm512_cmp_pd_mask
-  // check: @llvm.x86.avx512.mask.cmp.pd.512
+  // CHECK-LABEL: @test_mm512_cmp_pd_mask
+  // CHECK: @llvm.x86.avx512.mask.cmp.pd.512
   return _mm512_cmp_pd_mask(a, b, 0);
 }
 
@@ -1874,4 +1874,28 @@ __m128d test_mm_maskz_min_sd(__mmask8 __U, __m128d __A, __m128d __B) {
   // CHECK-LABEL: @test_mm_maskz_min_sd
   // CHECK: @llvm.x86.avx512.mask.min.sd.round
   return _mm_maskz_min_sd(__U,__A,__B); 
+}
+
+__m512 test_mm512_undefined() {
+  // CHECK-LABEL: @test_mm512_undefined
+  // CHECK: ret <16 x float> undef
+  return _mm512_undefined();
+}
+
+__m512 test_mm512_undefined_ps() {
+  // CHECK-LABEL: @test_mm512_undefined_ps
+  // CHECK: ret <16 x float> undef
+  return _mm512_undefined_ps();
+}
+
+__m512d test_mm512_undefined_pd() {
+  // CHECK-LABEL: @test_mm512_undefined_pd
+  // CHECK: ret <8 x double> undef
+  return _mm512_undefined_pd();
+}
+
+__m512i test_mm512_undefined_epi32() {
+  // CHECK-LABEL: @test_mm512_undefined_epi32
+  // CHECK: ret <8 x i64> undef
+  return _mm512_undefined_epi32();
 }

@@ -1,4 +1,4 @@
-//===--- ParseDeclCXX.cpp - C++ Declaration Parsing -----------------------===//
+//===--- ParseDeclCXX.cpp - C++ Declaration Parsing -------------*- C++ -*-===//
 //
 //                     The LLVM Compiler Infrastructure
 //
@@ -26,6 +26,7 @@
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/SmallString.h"
+
 using namespace clang;
 
 /// ParseNamespace - We know that the current token is a namespace keyword. This
@@ -54,9 +55,9 @@ using namespace clang;
 ///       namespace-alias-definition:  [C++ 7.3.2: namespace.alias]
 ///         'namespace' identifier '=' qualified-namespace-specifier ';'
 ///
-Decl *Parser::ParseNamespace(unsigned Context,
-                             SourceLocation &DeclEnd,
-                             SourceLocation InlineLoc) {
+Parser::DeclGroupPtrTy Parser::ParseNamespace(unsigned Context,
+                                              SourceLocation &DeclEnd,
+                                              SourceLocation InlineLoc) {
   assert(Tok.is(tok::kw_namespace) && "Not a namespace!");
   SourceLocation NamespaceLoc = ConsumeToken();  // eat the 'namespace'.
   ObjCDeclContextSwitch ObjCDC(*this);
@@ -64,7 +65,7 @@ Decl *Parser::ParseNamespace(unsigned Context,
   if (Tok.is(tok::code_completion)) {
     Actions.CodeCompleteNamespaceDecl(getCurScope());
     cutOffParsing();
-    return nullptr;
+    return DeclGroupPtrTy();;
   }
 
   SourceLocation IdentLoc;
@@ -108,16 +109,16 @@ Decl *Parser::ParseNamespace(unsigned Context,
       Diag(Tok, diag::err_expected) << tok::identifier;
       // Skip to end of the definition and eat the ';'.
       SkipUntil(tok::semi);
-      return nullptr;
+      return DeclGroupPtrTy();
     }
     if (attrLoc.isValid())
       Diag(attrLoc, diag::err_unexpected_namespace_attributes_alias);
     if (InlineLoc.isValid())
       Diag(InlineLoc, diag::err_inline_namespace_alias)
           << FixItHint::CreateRemoval(InlineLoc);
-    return ParseNamespaceAlias(NamespaceLoc, IdentLoc, Ident, DeclEnd);
-  }
-
+    Decl *NSAlias = ParseNamespaceAlias(NamespaceLoc, IdentLoc, Ident, DeclEnd);
+    return Actions.ConvertDeclToDeclGroup(NSAlias);
+}
 
   BalancedDelimiterTracker T(*this, tok::l_brace);
   if (T.consumeOpen()) {
@@ -125,7 +126,7 @@ Decl *Parser::ParseNamespace(unsigned Context,
       Diag(Tok, diag::err_expected) << tok::l_brace;
     else
       Diag(Tok, diag::err_expected_either) << tok::identifier << tok::l_brace;
-    return nullptr;
+    return DeclGroupPtrTy();
   }
 
   if (getCurScope()->isClassScope() || getCurScope()->isTemplateParamScope() || 
@@ -133,7 +134,7 @@ Decl *Parser::ParseNamespace(unsigned Context,
       getCurScope()->getFnParent()) {
     Diag(T.getOpenLocation(), diag::err_namespace_nonnamespace_scope);
     SkipUntil(tok::r_brace);
-    return nullptr;
+    return DeclGroupPtrTy();
   }
 
   if (ExtraIdent.empty()) {
@@ -180,10 +181,11 @@ Decl *Parser::ParseNamespace(unsigned Context,
   // Enter a scope for the namespace.
   ParseScope NamespaceScope(this, Scope::DeclScope);
 
+  UsingDirectiveDecl *ImplicitUsingDirectiveDecl = nullptr;
   Decl *NamespcDecl =
     Actions.ActOnStartNamespaceDef(getCurScope(), InlineLoc, NamespaceLoc,
                                    IdentLoc, Ident, T.getOpenLocation(), 
-                                   attrs.getList());
+                                   attrs.getList(), ImplicitUsingDirectiveDecl);
 
   PrettyDeclStackTraceEntry CrashInfo(Actions, NamespcDecl, NamespaceLoc,
                                       "parsing namespace");
@@ -198,8 +200,9 @@ Decl *Parser::ParseNamespace(unsigned Context,
 
   DeclEnd = T.getCloseLocation();
   Actions.ActOnFinishNamespaceDef(NamespcDecl, DeclEnd);
-
-  return NamespcDecl;
+  
+  return Actions.ConvertDeclToDeclGroup(NamespcDecl, 
+                                        ImplicitUsingDirectiveDecl);
 }
 
 /// ParseInnerNamespace - Parse the contents of a namespace.
@@ -210,7 +213,8 @@ void Parser::ParseInnerNamespace(std::vector<SourceLocation> &IdentLoc,
                                  ParsedAttributes &attrs,
                                  BalancedDelimiterTracker &Tracker) {
   if (index == Ident.size()) {
-    while (Tok.isNot(tok::r_brace) && !isEofOrEom()) {
+    while (!tryParseMisplacedModuleImport() && Tok.isNot(tok::r_brace) &&
+           Tok.isNot(tok::eof)) {
       ParsedAttributesWithRange attrs(AttrFactory);
       MaybeParseCXX11Attributes(attrs);
       MaybeParseMicrosoftAttributes(attrs);
@@ -228,17 +232,19 @@ void Parser::ParseInnerNamespace(std::vector<SourceLocation> &IdentLoc,
   // FIXME: Preserve the source information through to the AST rather than
   // desugaring it here.
   ParseScope NamespaceScope(this, Scope::DeclScope);
+  UsingDirectiveDecl *ImplicitUsingDirectiveDecl = nullptr;
   Decl *NamespcDecl =
     Actions.ActOnStartNamespaceDef(getCurScope(), SourceLocation(),
                                    NamespaceLoc[index], IdentLoc[index],
                                    Ident[index], Tracker.getOpenLocation(), 
-                                   attrs.getList());
+                                   attrs.getList(), ImplicitUsingDirectiveDecl);
+  assert(!ImplicitUsingDirectiveDecl && 
+         "nested namespace definition cannot define anonymous namespace");
 
   ParseInnerNamespace(IdentLoc, Ident, NamespaceLoc, ++index, InlineLoc,
                       attrs, Tracker);
 
   NamespaceScope.Exit();
-
   Actions.ActOnFinishNamespaceDef(NamespcDecl, Tracker.getCloseLocation());
 }
 
@@ -279,8 +285,8 @@ Decl *Parser::ParseNamespaceAlias(SourceLocation NamespaceLoc,
   if (ExpectAndConsume(tok::semi, diag::err_expected_semi_after_namespace_name))
     SkipUntil(tok::semi);
 
-  return Actions.ActOnNamespaceAliasDef(getCurScope(), NamespaceLoc, AliasLoc, Alias,
-                                        SS, IdentLoc, Ident);
+  return Actions.ActOnNamespaceAliasDef(getCurScope(), NamespaceLoc, AliasLoc,
+                                        Alias, SS, IdentLoc, Ident);
 }
 
 /// ParseLinkage - We know that the current token is a string_literal
@@ -393,8 +399,8 @@ Decl *Parser::ParseUsingDirectiveOrDeclaration(unsigned Context,
     // Template parameters are always an error here.
     if (TemplateInfo.Kind) {
       SourceRange R = TemplateInfo.getSourceRange();
-      Diag(UsingLoc, diag::err_templated_using_directive)
-        << R << FixItHint::CreateRemoval(R);
+      Diag(UsingLoc, diag::err_templated_using_directive_declaration)
+        << 0 /* directive */ << R << FixItHint::CreateRemoval(R);
     }
 
     return ParseUsingDirective(Context, UsingLoc, DeclEnd, attrs);
@@ -644,8 +650,8 @@ Decl *Parser::ParseUsingDeclaration(unsigned Context,
   //   template <...> using id = type;
   if (TemplateInfo.Kind && !IsAliasDecl) {
     SourceRange R = TemplateInfo.getSourceRange();
-    Diag(UsingLoc, diag::err_templated_using_declaration)
-      << R << FixItHint::CreateRemoval(R);
+    Diag(UsingLoc, diag::err_templated_using_directive_declaration)
+      << 1 /* declaration */ << R << FixItHint::CreateRemoval(R);
 
     // Unfortunately, we have to bail out instead of recovering by
     // ignoring the parameters, just in case the nested name specifier
@@ -1967,7 +1973,7 @@ void Parser::HandleMemberFunctionDeclDelays(Declarator& DeclaratorInfo,
 
     // Stash the exception-specification tokens in the late-pased method.
     LateMethod->ExceptionSpecTokens = FTI.ExceptionSpecTokens;
-    FTI.ExceptionSpecTokens = 0;
+    FTI.ExceptionSpecTokens = nullptr;
 
     // Push tokens for each parameter.  Those that do not have
     // defaults will be NULL.
@@ -2853,6 +2859,11 @@ Parser::DeclGroupPtrTy Parser::ParseCXXClassMemberDeclarationWithPragmas(
     return DeclGroupPtrTy();
   }
 
+  if (Tok.is(tok::annot_pragma_ms_vtordisp)) {
+    HandlePragmaMSVtorDisp();
+    return DeclGroupPtrTy();
+  }
+
   // If we see a namespace here, a close brace was missing somewhere.
   if (Tok.is(tok::kw_namespace)) {
     DiagnoseUnexpectedNamespace(cast<NamedDecl>(TagDecl));
@@ -3063,11 +3074,12 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
 
   if (TagDecl) {
     // While we still have something to read, read the member-declarations.
-    while (Tok.isNot(tok::r_brace) && !isEofOrEom())
+    while (!tryParseMisplacedModuleImport() && Tok.isNot(tok::r_brace) &&
+           Tok.isNot(tok::eof)) {
       // Each iteration of this loop reads one member-declaration.
       ParseCXXClassMemberDeclarationWithPragmas(
           CurAS, AccessAttrs, static_cast<DeclSpec::TST>(TagType), TagDecl);
-
+    }
     T.consumeClose();
   } else {
     SkipUntil(tok::r_brace);
@@ -3106,7 +3118,7 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
 
     // We've finished parsing everything, including default argument
     // initializers.
-    Actions.ActOnFinishCXXMemberDefaultArgs(TagDecl);
+    Actions.ActOnFinishCXXNonNestedClass(TagDecl);
   }
 
   if (TagDecl)
@@ -3317,7 +3329,7 @@ Parser::tryParseExceptionSpecification(bool Delayed,
                     ExprResult &NoexceptExpr,
                     CachedTokens *&ExceptionSpecTokens) {
   ExceptionSpecificationType Result = EST_None;
-  ExceptionSpecTokens = 0;
+  ExceptionSpecTokens = nullptr;
   
   // Handle delayed parsing of exception-specifications.
   if (Delayed) {
@@ -3334,7 +3346,7 @@ Parser::tryParseExceptionSpecification(bool Delayed,
       // If this is a bare 'noexcept', we're done.
       if (IsNoexcept) {
         Diag(Tok, diag::warn_cxx98_compat_noexcept_decl);
-        NoexceptExpr = 0;
+        NoexceptExpr = nullptr;
         return EST_BasicNoexcept;
       }
       
@@ -3417,7 +3429,7 @@ Parser::tryParseExceptionSpecification(bool Delayed,
 }
 
 static void diagnoseDynamicExceptionSpecification(
-    Parser &P, const SourceRange &Range, bool IsNoexcept) {
+    Parser &P, SourceRange Range, bool IsNoexcept) {
   if (P.getLangOpts().CPlusPlus11) {
     const char *Replacement = IsNoexcept ? "noexcept" : "noexcept(false)";
     P.Diag(Range.getBegin(), diag::warn_exception_spec_deprecated) << Range;
@@ -3615,9 +3627,8 @@ static bool IsBuiltInOrStandardCXX11Attribute(IdentifierInfo *AttrName,
   case AttributeList::AT_CarriesDependency:
   case AttributeList::AT_Deprecated:
   case AttributeList::AT_FallThrough:
-  case AttributeList::AT_CXX11NoReturn: {
+  case AttributeList::AT_CXX11NoReturn:
     return true;
-  }
 
   default:
     return false;

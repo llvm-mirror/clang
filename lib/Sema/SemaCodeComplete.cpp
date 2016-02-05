@@ -3036,6 +3036,7 @@ CXCursorKind clang::getCursorKindForDecl(const Decl *D) {
     case Decl::ParmVar:            return CXCursor_ParmDecl;
     case Decl::Typedef:            return CXCursor_TypedefDecl;
     case Decl::TypeAlias:          return CXCursor_TypeAliasDecl;
+    case Decl::TypeAliasTemplate:  return CXCursor_TypeAliasTemplateDecl;
     case Decl::Var:                return CXCursor_VarDecl;
     case Decl::Namespace:          return CXCursor_Namespace;
     case Decl::NamespaceAlias:     return CXCursor_NamespaceAlias;
@@ -3376,7 +3377,7 @@ void Sema::CodeCompleteOrdinaryName(Scope *S,
   case PCC_Statement:
   case PCC_RecoveryInFunction:
     if (S->getFnParent())
-      AddPrettyFunctionResults(PP.getLangOpts(), Results);        
+      AddPrettyFunctionResults(getLangOpts(), Results);
     break;
     
   case PCC_Namespace:
@@ -3520,7 +3521,7 @@ void Sema::CodeCompleteExpression(Scope *S,
   if (S->getFnParent() && 
       !Data.ObjCCollection && 
       !Data.IntegralConstantExpression)
-    AddPrettyFunctionResults(PP.getLangOpts(), Results);        
+    AddPrettyFunctionResults(getLangOpts(), Results);
 
   if (CodeCompleter->includeMacros())
     AddMacroResults(PP, Results, false, PreferredTypeIsPointer);
@@ -4051,7 +4052,7 @@ void Sema::CodeCompleteCall(Scope *S, Expr *Fn, ArrayRef<Expr *> Args) {
       // If expression's type is CXXRecordDecl, it may overload the function
       // call operator, so we check if it does and add them as candidates.
       // A complete type is needed to lookup for member function call operators.
-      if (!RequireCompleteType(Loc, NakedFn->getType(), 0)) {
+      if (isCompleteType(Loc, NakedFn->getType())) {
         DeclarationName OpName = Context.DeclarationNames
                                  .getCXXOperatorName(OO_Call);
         LookupResult R(*this, OpName, Loc, LookupOrdinaryName);
@@ -4093,7 +4094,7 @@ void Sema::CodeCompleteConstructor(Scope *S, QualType Type, SourceLocation Loc,
     return;
 
   // A complete type is needed to lookup for constructors.
-  if (RequireCompleteType(Loc, Type, 0))
+  if (!isCompleteType(Loc, Type))
     return;
 
   CXXRecordDecl *RD = Type->getAsCXXRecordDecl();
@@ -4205,7 +4206,7 @@ void Sema::CodeCompleteAfterIf(Scope *S) {
   Results.ExitScope();
   
   if (S->getFnParent())
-    AddPrettyFunctionResults(PP.getLangOpts(), Results);        
+    AddPrettyFunctionResults(getLangOpts(), Results);
   
   if (CodeCompleter->includeMacros())
     AddMacroResults(PP, Results, false);
@@ -4912,7 +4913,7 @@ void Sema::CodeCompleteObjCPropertyFlags(Scope *S, ObjCDeclSpec &ODS) {
     Results.AddResult(CodeCompletionResult("atomic"));
 
   // Only suggest "weak" if we're compiling for ARC-with-weak-references or GC.
-  if (getLangOpts().ObjCARCWeak || getLangOpts().getGC() != LangOptions::NonGC)
+  if (getLangOpts().ObjCWeak || getLangOpts().getGC() != LangOptions::NonGC)
     if (!ObjCPropertyFlagConflicts(Attributes, ObjCDeclSpec::DQ_PR_weak))
       Results.AddResult(CodeCompletionResult("weak"));
 

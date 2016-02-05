@@ -11,8 +11,8 @@ Written by the `LLVM Team <http://llvm.org/>`_
 .. warning::
 
    These are in-progress notes for the upcoming Clang 3.8 release. You may
-   prefer the `Clang 3.6 Release Notes
-   <http://llvm.org/releases/3.6.0/tools/clang/docs/ReleaseNotes.html>`_.
+   prefer the `Clang 3.7 Release Notes
+   <http://llvm.org/releases/3.7.0/tools/clang/docs/ReleaseNotes.html>`_.
 
 Introduction
 ============
@@ -54,7 +54,7 @@ Improvements to Clang's diagnostics
 
 Clang's diagnostics are constantly being improved to catch more issues,
 explain them more clearly, and provide more accurate source information
-about them. The improvements since the 3.5 release include:
+about them. The improvements since the 3.7 release include:
 
 -  ...
 
@@ -114,6 +114,51 @@ this section should help get you past the largest hurdles of upgrading.
 
 -  ...
 
+AST Matchers
+------------
+The AST matcher functions were renamed to reflect the exact AST node names,
+which is a breaking change to AST matching code. The following matchers were
+affected:
+
+=======================	============================
+Previous Matcher Name	New Matcher Name
+=======================	============================
+recordDecl		recordDecl and cxxRecordDecl
+ctorInitializer		cxxCtorInitializer
+constructorDecl		cxxConstructorDecl
+destructorDecl		cxxDestructorDecl
+methodDecl		cxxMethodDecl
+conversionDecl		cxxConversionDecl
+memberCallExpr		cxxMemberCallExpr
+constructExpr		cxxConstructExpr
+unresolvedConstructExpr	cxxUnresolvedConstructExpr
+thisExpr		cxxThisExpr
+bindTemporaryExpr	cxxBindTemporaryExpr
+newExpr			cxxNewExpr
+deleteExpr		cxxDeleteExpr
+defaultArgExpr		cxxDefaultArgExpr
+operatorCallExpr	cxxOperatorCallExpr
+forRangeStmt		cxxForRangeStmt
+catchStmt		cxxCatchStmt
+tryStmt			cxxTryStmt
+throwExpr		cxxThrowExpr
+boolLiteral		cxxBoolLiteral
+nullPtrLiteralExpr	cxxNullPtrLiteralExpr
+reinterpretCastExpr	cxxReinterpretCastExpr
+staticCastExpr		cxxStaticCastExpr
+dynamicCastExpr		cxxDynamicCastExpr
+constCastExpr		cxxConstCastExpr
+functionalCastExpr	cxxFunctionalCastExpr
+temporaryObjectExpr	cxxTemporaryObjectExpr
+CUDAKernalCallExpr	cudaKernelCallExpr
+=======================	============================
+
+recordDecl() previously matched AST nodes of type CXXRecordDecl, but now
+matches AST nodes of type RecordDecl. If a CXXRecordDecl is required, use the
+cxxRecordDecl() matcher instead.
+
+...
+
 libclang
 --------
 
@@ -156,4 +201,4 @@ tree.
 
 If you have any questions or comments about Clang, please feel free to
 contact us via the `mailing
-list <http://lists.cs.uiuc.edu/mailman/listinfo/cfe-dev>`_.
+list <http://lists.llvm.org/mailman/listinfo/cfe-dev>`_.

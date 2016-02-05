@@ -98,7 +98,7 @@ namespace {
       Ctx = &Context;
 
       M->setTargetTriple(Ctx->getTargetInfo().getTriple().getTriple());
-      M->setDataLayout(Ctx->getTargetInfo().getTargetDescription());
+      M->setDataLayout(Ctx->getTargetInfo().getDataLayoutString());
       Builder.reset(new CodeGen::CodeGenModule(Context, HeaderSearchOpts,
                                                PreprocessorOpts, CodeGenOpts,
                                                *M, Diags, CoverageInfo));
@@ -175,7 +175,7 @@ namespace {
 
       // For MSVC compatibility, treat declarations of static data members with
       // inline initializers as definitions.
-      if (Ctx->getLangOpts().MSVCCompat) {
+      if (Ctx->getTargetInfo().getCXXABI().isMicrosoft()) {
         for (Decl *Member : D->decls()) {
           if (VarDecl *VD = dyn_cast<VarDecl>(Member)) {
             if (Ctx->isMSStaticDataMemberInlineDefinition(VD) &&

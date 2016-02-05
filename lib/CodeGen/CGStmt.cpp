@@ -16,6 +16,7 @@
 #include "CodeGenModule.h"
 #include "TargetInfo.h"
 #include "clang/AST/StmtVisitor.h"
+#include "clang/Basic/Builtins.h"
 #include "clang/Basic/PrettyStackTrace.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Sema/LoopHint.h"
@@ -25,6 +26,8 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/MDBuilder.h"
+
 using namespace clang;
 using namespace CodeGen;
 
@@ -138,6 +141,10 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
   case Stmt::SwitchStmtClass:   EmitSwitchStmt(cast<SwitchStmt>(*S));     break;
   case Stmt::GCCAsmStmtClass:   // Intentional fall-through.
   case Stmt::MSAsmStmtClass:    EmitAsmStmt(cast<AsmStmt>(*S));           break;
+  case Stmt::CoroutineBodyStmtClass:
+  case Stmt::CoreturnStmtClass:
+    CGM.ErrorUnsupported(S, "coroutine");
+    break;
   case Stmt::CapturedStmtClass: {
     const CapturedStmt *CS = cast<CapturedStmt>(S);
     EmitCapturedStmt(*CS, CS->getCapturedRegionKind());
@@ -249,6 +256,15 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
   case Stmt::OMPTargetDataDirectiveClass:
     EmitOMPTargetDataDirective(cast<OMPTargetDataDirective>(*S));
     break;
+  case Stmt::OMPTaskLoopDirectiveClass:
+    EmitOMPTaskLoopDirective(cast<OMPTaskLoopDirective>(*S));
+    break;
+  case Stmt::OMPTaskLoopSimdDirectiveClass:
+    EmitOMPTaskLoopSimdDirective(cast<OMPTaskLoopSimdDirective>(*S));
+    break;
+case Stmt::OMPDistributeDirectiveClass:
+    EmitOMPDistributeDirective(cast<OMPDistributeDirective>(*S));
+	break;
   }
 }
 
@@ -275,8 +291,8 @@ bool CodeGenFunction::EmitSimpleStmt(const Stmt *S) {
 /// EmitCompoundStmt - Emit a compound statement {..} node.  If GetLast is true,
 /// this captures the expression result of the last sub-statement and returns it
 /// (for use by the statement expression extension).
-llvm::Value* CodeGenFunction::EmitCompoundStmt(const CompoundStmt &S, bool GetLast,
-                                               AggValueSlot AggSlot) {
+Address CodeGenFunction::EmitCompoundStmt(const CompoundStmt &S, bool GetLast,
+                                          AggValueSlot AggSlot) {
   PrettyStackTraceLoc CrashInfo(getContext().getSourceManager(),S.getLBracLoc(),
                              "LLVM IR generation of compound statement ('{}')");
 
@@ -286,7 +302,7 @@ llvm::Value* CodeGenFunction::EmitCompoundStmt(const CompoundStmt &S, bool GetLa
   return EmitCompoundStmtWithoutScope(S, GetLast, AggSlot);
 }
 
-llvm::Value*
+Address
 CodeGenFunction::EmitCompoundStmtWithoutScope(const CompoundStmt &S,
                                               bool GetLast,
                                               AggValueSlot AggSlot) {
@@ -295,7 +311,7 @@ CodeGenFunction::EmitCompoundStmtWithoutScope(const CompoundStmt &S,
        E = S.body_end()-GetLast; I != E; ++I)
     EmitStmt(*I);
 
-  llvm::Value *RetAlloca = nullptr;
+  Address RetAlloca = Address::invalid();
   if (GetLast) {
     // We have to special case labels here.  They are statements, but when put
     // at the end of a statement expression, they yield the value of their
@@ -340,7 +356,7 @@ void CodeGenFunction::SimplifyForwardingBlocks(llvm::BasicBlock *BB) {
     return;
 
   // Can only simplify empty blocks.
-  if (BI != BB->begin())
+  if (BI->getIterator() != BB->begin())
     return;
 
   BB->replaceAllUsesWith(BI->getSuccessor(0));
@@ -362,7 +378,7 @@ void CodeGenFunction::EmitBlock(llvm::BasicBlock *BB, bool IsFinished) {
   // Place the block after the current block, if possible, or else at
   // the end of the function.
   if (CurBB && CurBB->getParent())
-    CurFn->getBasicBlockList().insertAfter(CurBB, BB);
+    CurFn->getBasicBlockList().insertAfter(CurBB->getIterator(), BB);
   else
     CurFn->getBasicBlockList().push_back(BB);
   Builder.SetInsertPoint(BB);
@@ -389,7 +405,8 @@ void CodeGenFunction::EmitBlockAfterUses(llvm::BasicBlock *block) {
   bool inserted = false;
   for (llvm::User *u : block->users()) {
     if (llvm::Instruction *insn = dyn_cast<llvm::Instruction>(u)) {
-      CurFn->getBasicBlockList().insertAfter(insn->getParent(), block);
+      CurFn->getBasicBlockList().insertAfter(insn->getParent()->getIterator(),
+                                             block);
       inserted = true;
       break;
     }
@@ -909,10 +926,9 @@ void CodeGenFunction::EmitReturnOfRValue(RValue RV, QualType Ty) {
   if (RV.isScalar()) {
     Builder.CreateStore(RV.getScalarVal(), ReturnValue);
   } else if (RV.isAggregate()) {
-    EmitAggregateCopy(ReturnValue, RV.getAggregateAddr(), Ty);
+    EmitAggregateCopy(ReturnValue, RV.getAggregateAddress(), Ty);
   } else {
-    EmitStoreOfComplex(RV.getComplexVal(),
-                       MakeNaturalAlignAddrLValue(ReturnValue, Ty),
+    EmitStoreOfComplex(RV.getComplexVal(), MakeAddrLValue(ReturnValue, Ty),
                        /*init*/ true);
   }
   EmitBranchThroughCleanup(ReturnBlock);
@@ -953,8 +969,8 @@ void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
     // If there is an NRVO flag for this variable, set it to 1 into indicate
     // that the cleanup code should not destroy the variable.
     if (llvm::Value *NRVOFlag = NRVOFlags[S.getNRVOCandidate()])
-      Builder.CreateStore(Builder.getTrue(), NRVOFlag);
-  } else if (!ReturnValue || (RV && RV->getType()->isVoidType())) {
+      Builder.CreateFlagStore(Builder.getTrue(), NRVOFlag);
+  } else if (!ReturnValue.isValid() || (RV && RV->getType()->isVoidType())) {
     // Make sure not to return anything, but evaluate the expression
     // for side effects.
     if (RV)
@@ -972,19 +988,16 @@ void CodeGenFunction::EmitReturnStmt(const ReturnStmt &S) {
       Builder.CreateStore(EmitScalarExpr(RV), ReturnValue);
       break;
     case TEK_Complex:
-      EmitComplexExprIntoLValue(RV,
-                     MakeNaturalAlignAddrLValue(ReturnValue, RV->getType()),
+      EmitComplexExprIntoLValue(RV, MakeAddrLValue(ReturnValue, RV->getType()),
                                 /*isInit*/ true);
       break;
-    case TEK_Aggregate: {
-      CharUnits Alignment = getContext().getTypeAlignInChars(RV->getType());
-      EmitAggExpr(RV, AggValueSlot::forAddr(ReturnValue, Alignment,
+    case TEK_Aggregate:
+      EmitAggExpr(RV, AggValueSlot::forAddr(ReturnValue,
                                             Qualifiers(),
                                             AggValueSlot::IsDestructed,
                                             AggValueSlot::DoesNotNeedGCBarriers,
                                             AggValueSlot::IsNotAliased));
       break;
-    }
     }
   }
 
@@ -1521,6 +1534,22 @@ void CodeGenFunction::EmitSwitchStmt(const SwitchStmt &S) {
   EmitBlock(SwitchExit.getBlock(), true);
   incrementProfileCounter(&S);
 
+  // If the switch has a condition wrapped by __builtin_unpredictable,
+  // create metadata that specifies that the switch is unpredictable.
+  // Don't bother if not optimizing because that metadata would not be used.
+  if (CGM.getCodeGenOpts().OptimizationLevel != 0) {
+    if (const CallExpr *Call = dyn_cast<CallExpr>(S.getCond())) {
+      const Decl *TargetDecl = Call->getCalleeDecl();
+      if (const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(TargetDecl)) {
+        if (FD->getBuiltinID() == Builtin::BI__builtin_unpredictable) {
+          llvm::MDBuilder MDHelper(getLLVMContext());
+          SwitchInsn->setMetadata(llvm::LLVMContext::MD_unpredictable,
+                                  MDHelper.createUnpredictable());
+        }
+      }
+    }
+  }
+
   if (SwitchWeights) {
     assert(SwitchWeights->size() == 1 + SwitchInsn->getNumCases() &&
            "switch weights do not match switch cases");
@@ -1572,9 +1601,7 @@ SimplifyConstraint(const char *Constraint, const TargetInfo &Target,
       assert(OutCons &&
              "Must pass output names to constraints with a symbolic name");
       unsigned Index;
-      bool result = Target.resolveSymbolicName(Constraint,
-                                               &(*OutCons)[0],
-                                               OutCons->size(), Index);
+      bool result = Target.resolveSymbolicName(Constraint, *OutCons, Index);
       assert(result && "Could not resolve symbolic name"); (void)result;
       Result += llvm::utostr(Index);
       break;
@@ -1640,12 +1667,12 @@ CodeGenFunction::EmitAsmInputLValue(const TargetInfo::ConstraintInfo &Info,
         Arg = Builder.CreateLoad(Builder.CreateBitCast(InputValue.getAddress(),
                                                        Ty));
       } else {
-        Arg = InputValue.getAddress();
+        Arg = InputValue.getPointer();
         ConstraintStr += '*';
       }
     }
   } else {
-    Arg = InputValue.getAddress();
+    Arg = InputValue.getPointer();
     ConstraintStr += '*';
   }
 
@@ -1669,7 +1696,8 @@ llvm::Value* CodeGenFunction::EmitAsmInput(
   if (Info.allowsRegister() || !Info.allowsMemory())
     if (CodeGenFunction::hasScalarEvaluationKind(InputExpr->getType()))
       return EmitScalarExpr(InputExpr);
-
+  if (InputExpr->getStmtClass() == Expr::CXXThisExprClass)
+    return EmitScalarExpr(InputExpr);
   InputExpr = InputExpr->IgnoreParenNoopCasts(getContext());
   LValue Dest = EmitLValue(InputExpr);
   return EmitAsmInputLValue(Info, Dest, InputExpr->getType(), ConstraintStr,
@@ -1690,13 +1718,15 @@ static llvm::MDNode *getAsmSrcLocInfo(const StringLiteral *Str,
   if (!StrVal.empty()) {
     const SourceManager &SM = CGF.CGM.getContext().getSourceManager();
     const LangOptions &LangOpts = CGF.CGM.getLangOpts();
+    unsigned StartToken = 0;
+    unsigned ByteOffset = 0;
 
     // Add the location of the start of each subsequent line of the asm to the
     // MDNode.
-    for (unsigned i = 0, e = StrVal.size()-1; i != e; ++i) {
+    for (unsigned i = 0, e = StrVal.size() - 1; i != e; ++i) {
       if (StrVal[i] != '\n') continue;
-      SourceLocation LineLoc = Str->getLocationOfByte(i+1, SM, LangOpts,
-                                                      CGF.getTarget());
+      SourceLocation LineLoc = Str->getLocationOfByte(
+          i + 1, SM, LangOpts, CGF.getTarget(), &StartToken, &ByteOffset);
       Locs.push_back(llvm::ConstantAsMetadata::get(
           llvm::ConstantInt::get(CGF.Int32Ty, LineLoc.getRawEncoding())));
     }
@@ -1729,8 +1759,7 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
       Name = GAS->getInputName(i);
     TargetInfo::ConstraintInfo Info(S.getInputConstraint(i), Name);
     bool IsValid =
-      getTarget().validateInputConstraint(OutputConstraintInfos.data(),
-                                          S.getNumOutputs(), Info);
+      getTarget().validateInputConstraint(OutputConstraintInfos, Info);
     assert(IsValid && "Failed to parse input constraint"); (void)IsValid;
     InputConstraintInfos.push_back(Info);
   }
@@ -1816,8 +1845,8 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
             << OutExpr->getType() << OutputConstraint;
       }
     } else {
-      ArgTypes.push_back(Dest.getAddress()->getType());
-      Args.push_back(Dest.getAddress());
+      ArgTypes.push_back(Dest.getAddress().getType());
+      Args.push_back(Dest.getPointer());
       Constraints += "=*";
       Constraints += OutputConstraint;
       ReadOnly = ReadNone = false;
@@ -1974,6 +2003,15 @@ void CodeGenFunction::EmitAsmStmt(const AsmStmt &S) {
   Result->addAttribute(llvm::AttributeSet::FunctionIndex,
                        llvm::Attribute::NoUnwind);
 
+  if (isa<MSAsmStmt>(&S)) {
+    // If the assembly contains any labels, mark the call noduplicate to prevent
+    // defining the same ASM label twice (PR23715). This is pretty hacky, but it
+    // works.
+    if (AsmString.find("__MSASMLABEL_") != std::string::npos)
+      Result->addAttribute(llvm::AttributeSet::FunctionIndex,
+                           llvm::Attribute::NoDuplicate);
+  }
+
   // Attach readnone and readonly attributes.
   if (!HasSideEffect) {
     if (ReadNone)
@@ -2049,8 +2087,8 @@ LValue CodeGenFunction::InitCapturedStruct(const CapturedStmt &S) {
   QualType RecordTy = getContext().getRecordType(RD);
 
   // Initialize the captured struct.
-  LValue SlotLV = MakeNaturalAlignAddrLValue(
-      CreateMemTemp(RecordTy, "agg.captured"), RecordTy);
+  LValue SlotLV =
+    MakeAddrLValue(CreateMemTemp(RecordTy, "agg.captured"), RecordTy);
 
   RecordDecl::field_iterator CurField = RD->field_begin();
   for (CapturedStmt::const_capture_init_iterator I = S.capture_init_begin(),
@@ -2081,13 +2119,12 @@ CodeGenFunction::EmitCapturedStmt(const CapturedStmt &S, CapturedRegionKind K) {
   delete CGF.CapturedStmtInfo;
 
   // Emit call to the helper function.
-  EmitCallOrInvoke(F, CapStruct.getAddress());
+  EmitCallOrInvoke(F, CapStruct.getPointer());
 
   return F;
 }
 
-llvm::Value *
-CodeGenFunction::GenerateCapturedStmtArgument(const CapturedStmt &S) {
+Address CodeGenFunction::GenerateCapturedStmtArgument(const CapturedStmt &S) {
   LValue CapStruct = InitCapturedStruct(S);
   return CapStruct.getAddress();
 }
@@ -2126,8 +2163,7 @@ CodeGenFunction::GenerateCapturedStmtFunction(const CapturedStmt &S) {
                 CD->getLocation(),
                 CD->getBody()->getLocStart());
   // Set the context parameter in CapturedStmtInfo.
-  llvm::Value *DeclPtr = LocalDeclMap[CD->getContextParam()];
-  assert(DeclPtr && "missing context parameter for CapturedStmt");
+  Address DeclPtr = GetAddrOfLocalVar(CD->getContextParam());
   CapturedStmtInfo->setContextValue(Builder.CreateLoad(DeclPtr));
 
   // Initialize variable-length arrays.
@@ -2149,7 +2185,7 @@ CodeGenFunction::GenerateCapturedStmtFunction(const CapturedStmt &S) {
     CXXThisValue = EmitLoadOfLValue(ThisLValue, Loc).getScalarVal();
   }
 
-  PGO.assignRegionCounters(CD, F);
+  PGO.assignRegionCounters(GlobalDecl(CD), F);
   CapturedStmtInfo->EmitBody(*this, CD->getBody());
   FinishFunction(CD->getBodyRBrace());
 

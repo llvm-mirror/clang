@@ -71,10 +71,10 @@ public:
 
   // Make vanilla 'new' and 'delete' illegal for Stmts.
 protected:
-  void* operator new(size_t bytes) throw() {
+  void *operator new(size_t bytes) LLVM_NOEXCEPT {
     llvm_unreachable("Stmts cannot be allocated with regular 'new'.");
   }
-  void operator delete(void* data) throw() {
+  void operator delete(void *data) LLVM_NOEXCEPT {
     llvm_unreachable("Stmts cannot be released with regular 'delete'.");
   }
 
@@ -272,14 +272,12 @@ public:
     return operator new(bytes, *C, alignment);
   }
 
-  void* operator new(size_t bytes, void* mem) throw() {
-    return mem;
-  }
+  void *operator new(size_t bytes, void *mem) LLVM_NOEXCEPT { return mem; }
 
-  void operator delete(void*, const ASTContext&, unsigned) throw() { }
-  void operator delete(void*, const ASTContext*, unsigned) throw() { }
-  void operator delete(void*, size_t) throw() { }
-  void operator delete(void*, void*) throw() { }
+  void operator delete(void *, const ASTContext &, unsigned) LLVM_NOEXCEPT {}
+  void operator delete(void *, const ASTContext *, unsigned) LLVM_NOEXCEPT {}
+  void operator delete(void *, size_t) LLVM_NOEXCEPT {}
+  void operator delete(void *, void *) LLVM_NOEXCEPT {}
 
 public:
   /// \brief A placeholder type used to construct an empty shell of a
@@ -560,7 +558,7 @@ public:
     CompoundStmtBits.NumStmts = 0;
   }
 
-  void setStmts(const ASTContext &C, Stmt **Stmts, unsigned NumStmts);
+  void setStmts(const ASTContext &C, ArrayRef<Stmt *> Stmts);
 
   bool body_empty() const { return CompoundStmtBits.NumStmts == 0; }
   unsigned size() const { return CompoundStmtBits.NumStmts; }
@@ -827,18 +825,20 @@ class AttributedStmt : public Stmt {
   AttributedStmt(SourceLocation Loc, ArrayRef<const Attr*> Attrs, Stmt *SubStmt)
     : Stmt(AttributedStmtClass), SubStmt(SubStmt), AttrLoc(Loc),
       NumAttrs(Attrs.size()) {
-    memcpy(getAttrArrayPtr(), Attrs.data(), Attrs.size() * sizeof(Attr *));
+    std::copy(Attrs.begin(), Attrs.end(), getAttrArrayPtr());
   }
 
   explicit AttributedStmt(EmptyShell Empty, unsigned NumAttrs)
     : Stmt(AttributedStmtClass, Empty), NumAttrs(NumAttrs) {
-    memset(getAttrArrayPtr(), 0, NumAttrs * sizeof(Attr *));
+    std::fill_n(getAttrArrayPtr(), NumAttrs, nullptr);
   }
 
-  Attr *const *getAttrArrayPtr() const {
-    return reinterpret_cast<Attr *const *>(this + 1);
+  const Attr *const *getAttrArrayPtr() const {
+    return reinterpret_cast<const Attr *const *>(this + 1);
   }
-  Attr **getAttrArrayPtr() { return reinterpret_cast<Attr **>(this + 1); }
+  const Attr **getAttrArrayPtr() {
+    return reinterpret_cast<const Attr **>(this + 1);
+  }
 
 public:
   static AttributedStmt *Create(const ASTContext &C, SourceLocation Loc,
@@ -1988,6 +1988,7 @@ public:
   enum VariableCaptureKind {
     VCK_This,
     VCK_ByRef,
+    VCK_ByCopy,
     VCK_VLAType,
   };
 
@@ -2007,21 +2008,7 @@ public:
     /// \param Var The variable being captured, or null if capturing this.
     ///
     Capture(SourceLocation Loc, VariableCaptureKind Kind,
-            VarDecl *Var = nullptr)
-      : VarAndKind(Var, Kind), Loc(Loc) {
-      switch (Kind) {
-      case VCK_This:
-        assert(!Var && "'this' capture cannot have a variable!");
-        break;
-      case VCK_ByRef:
-        assert(Var && "capturing by reference must have a variable!");
-        break;
-      case VCK_VLAType:
-        assert(!Var &&
-               "Variable-length array type capture cannot have a variable!");
-        break;
-      }
-    }
+            VarDecl *Var = nullptr);
 
     /// \brief Determine the kind of capture.
     VariableCaptureKind getCaptureKind() const { return VarAndKind.getInt(); }
@@ -2033,8 +2020,13 @@ public:
     /// \brief Determine whether this capture handles the C++ 'this' pointer.
     bool capturesThis() const { return getCaptureKind() == VCK_This; }
 
-    /// \brief Determine whether this capture handles a variable.
+    /// \brief Determine whether this capture handles a variable (by reference).
     bool capturesVariable() const { return getCaptureKind() == VCK_ByRef; }
+
+    /// \brief Determine whether this capture handles a variable by copy.
+    bool capturesVariableByCopy() const {
+      return getCaptureKind() == VCK_ByCopy;
+    }
 
     /// \brief Determine whether this capture handles a variable-length array
     /// type.
@@ -2046,7 +2038,7 @@ public:
     ///
     /// This operation is only valid if this capture captures a variable.
     VarDecl *getCapturedVar() const {
-      assert(capturesVariable() &&
+      assert((capturesVariable() || capturesVariableByCopy()) &&
              "No variable available for 'this' or VAT capture");
       return VarAndKind.getPointer();
     }

@@ -470,6 +470,18 @@ typedef struct {
   int b;
 } A;
 
+typedef struct {
+  int b1;
+  A   b2;
+} B;
+
+typedef struct {
+  int c1;
+  A   c2;
+  int c3;
+  B   c4;
+} C;
+
 void t39() {
 // CHECK-LABEL: define void @t39
   __asm mov eax, [eax].A.b
@@ -478,6 +490,14 @@ void t39() {
 // CHECK: mov eax, [eax] .4
   __asm mov eax, fs:[0] A.b
 // CHECK: mov eax, fs:[$$0] .4
+  __asm mov eax, [eax].B.b2.a
+// CHECK: mov eax, [eax].4
+  __asm mov eax, [eax] B.b2.b
+// CHECK: mov eax, [eax] .8
+  __asm mov eax, fs:[0] C.c2.b
+// CHECK: mov eax, fs:[$$0] .8
+  __asm mov eax, [eax]C.c4.b2.b
+// CHECK: mov eax, [eax].24
 // CHECK: "~{eax},~{dirflag},~{fpsr},~{flags}"()
 }
 
@@ -533,8 +553,8 @@ void label1() {
     label:
     jmp label
   }
-  // CHECK-LABEL: define void @label1
-  // CHECK: call void asm sideeffect inteldialect "{{.*}}__MSASMLABEL_.1__label:\0A\09jmp {{.*}}__MSASMLABEL_.1__label", "~{dirflag},~{fpsr},~{flags}"()
+  // CHECK-LABEL: define void @label1()
+  // CHECK: call void asm sideeffect inteldialect "{{.*}}__MSASMLABEL_.1__label:\0A\09jmp {{.*}}__MSASMLABEL_.1__label", "~{dirflag},~{fpsr},~{flags}"() [[ATTR1:#[0-9]+]]
 }
 
 void label2() {
@@ -563,3 +583,24 @@ void label4() {
   // CHECK-LABEL: define void @label4
   // CHECK: call void asm sideeffect inteldialect "{{.*}}__MSASMLABEL_.4__label:\0A\09mov eax, {{.*}}__MSASMLABEL_.4__label", "~{eax},~{dirflag},~{fpsr},~{flags}"()
 }
+
+typedef union _LARGE_INTEGER {
+  struct {
+    unsigned int LowPart;
+    unsigned int  HighPart;
+  };
+  struct {
+    unsigned int LowPart;
+    unsigned int  HighPart;
+  } u;
+  unsigned long long QuadPart;
+} LARGE_INTEGER, *PLARGE_INTEGER;
+
+int test_indirect_field(LARGE_INTEGER LargeInteger) {
+    __asm mov     eax, LargeInteger.LowPart
+}
+// CHECK-LABEL: define i32 @test_indirect_field(
+// CHECK: call i32 asm sideeffect inteldialect "mov eax, dword ptr $1",
+
+// MS ASM containing labels must not be duplicated (PR23715).
+// CHECK: attributes [[ATTR1]] = { {{.*}}noduplicate{{.*}} }
