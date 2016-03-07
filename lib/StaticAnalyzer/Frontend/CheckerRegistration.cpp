@@ -42,7 +42,7 @@ public:
   ClangCheckerRegistry(ArrayRef<std::string> plugins,
                        DiagnosticsEngine *diags = nullptr);
 };
-  
+
 } // end anonymous namespace
 
 ClangCheckerRegistry::ClangCheckerRegistry(ArrayRef<std::string> plugins,
@@ -83,10 +83,7 @@ bool ClangCheckerRegistry::isCompatibleAPIVersion(const char *versionString) {
 
   // For now, none of the static analyzer API is considered stable.
   // Versions must match exactly.
-  if (strcmp(versionString, CLANG_ANALYZER_API_VERSION_STRING) == 0)
-    return true;
-
-  return false;
+  return strcmp(versionString, CLANG_ANALYZER_API_VERSION_STRING) == 0;
 }
 
 void ClangCheckerRegistry::warnIncompatible(DiagnosticsEngine *diags,

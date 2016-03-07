@@ -14,6 +14,7 @@
 #include "clang/Sema/Sema.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
+#include "clang/AST/ExprCXX.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/SemaDiagnostic.h"
 #include "llvm/ADT/Optional.h"
@@ -60,8 +61,100 @@ Sema::CUDAFunctionTarget Sema::IdentifyCUDATarget(const FunctionDecl *D) {
   return CFT_Host;
 }
 
+// * CUDA Call preference table
+//
+// F - from,
+// T - to
+// Ph - preference in host mode
+// Pd - preference in device mode
+// H  - handled in (x)
+// Preferences: N:native, HD:host-device, SS:same side, WS:wrong side, --:never.
+//
+// | F  | T  | Ph  | Pd  |  H  |
+// |----+----+-----+-----+-----+
+// | d  | d  | N   | N   | (c) |
+// | d  | g  | --  | --  | (a) |
+// | d  | h  | --  | --  | (e) |
+// | d  | hd | HD  | HD  | (b) |
+// | g  | d  | N   | N   | (c) |
+// | g  | g  | --  | --  | (a) |
+// | g  | h  | --  | --  | (e) |
+// | g  | hd | HD  | HD  | (b) |
+// | h  | d  | --  | --  | (e) |
+// | h  | g  | N   | N   | (c) |
+// | h  | h  | N   | N   | (c) |
+// | h  | hd | HD  | HD  | (b) |
+// | hd | d  | WS  | SS  | (d) |
+// | hd | g  | SS  | --  |(d/a)|
+// | hd | h  | SS  | WS  | (d) |
+// | hd | hd | HD  | HD  | (b) |
+
+Sema::CUDAFunctionPreference
+Sema::IdentifyCUDAPreference(const FunctionDecl *Caller,
+                             const FunctionDecl *Callee) {
+  assert(getLangOpts().CUDATargetOverloads &&
+         "Should not be called w/o enabled target overloads.");
+
+  assert(Callee && "Callee must be valid.");
+  CUDAFunctionTarget CalleeTarget = IdentifyCUDATarget(Callee);
+  CUDAFunctionTarget CallerTarget =
+      (Caller != nullptr) ? IdentifyCUDATarget(Caller) : Sema::CFT_Host;
+
+  // If one of the targets is invalid, the check always fails, no matter what
+  // the other target is.
+  if (CallerTarget == CFT_InvalidTarget || CalleeTarget == CFT_InvalidTarget)
+    return CFP_Never;
+
+  // (a) Can't call global from some contexts until we support CUDA's
+  // dynamic parallelism.
+  if (CalleeTarget == CFT_Global &&
+      (CallerTarget == CFT_Global || CallerTarget == CFT_Device ||
+       (CallerTarget == CFT_HostDevice && getLangOpts().CUDAIsDevice)))
+    return CFP_Never;
+
+  // (b) Calling HostDevice is OK for everyone.
+  if (CalleeTarget == CFT_HostDevice)
+    return CFP_HostDevice;
+
+  // (c) Best case scenarios
+  if (CalleeTarget == CallerTarget ||
+      (CallerTarget == CFT_Host && CalleeTarget == CFT_Global) ||
+      (CallerTarget == CFT_Global && CalleeTarget == CFT_Device))
+    return CFP_Native;
+
+  // (d) HostDevice behavior depends on compilation mode.
+  if (CallerTarget == CFT_HostDevice) {
+    // It's OK to call a compilation-mode matching function from an HD one.
+    if ((getLangOpts().CUDAIsDevice && CalleeTarget == CFT_Device) ||
+        (!getLangOpts().CUDAIsDevice &&
+         (CalleeTarget == CFT_Host || CalleeTarget == CFT_Global)))
+      return CFP_SameSide;
+
+    // We'll allow calls to non-mode-matching functions if target call
+    // checks are disabled. This is needed to avoid complaining about
+    // HD->H calls when we compile for device side and vice versa.
+    if (getLangOpts().CUDADisableTargetCallChecks)
+      return CFP_WrongSide;
+
+    return CFP_Never;
+  }
+
+  // (e) Calling across device/host boundary is not something you should do.
+  if ((CallerTarget == CFT_Host && CalleeTarget == CFT_Device) ||
+      (CallerTarget == CFT_Device && CalleeTarget == CFT_Host) ||
+      (CallerTarget == CFT_Global && CalleeTarget == CFT_Host))
+    return CFP_Never;
+
+  llvm_unreachable("All cases should've been handled by now.");
+}
+
 bool Sema::CheckCUDATarget(const FunctionDecl *Caller,
                            const FunctionDecl *Callee) {
+  // With target overloads enabled, we only disallow calling
+  // combinations with CFP_Never.
+  if (getLangOpts().CUDATargetOverloads)
+    return IdentifyCUDAPreference(Caller,Callee) == CFP_Never;
+
   // The CUDADisableTargetCallChecks short-circuits this check: we assume all
   // cross-target calls are valid.
   if (getLangOpts().CUDADisableTargetCallChecks)
@@ -117,6 +210,57 @@ bool Sema::CheckCUDATarget(const FunctionDecl *Caller,
   return false;
 }
 
+template <typename T, typename FetchDeclFn>
+static void EraseUnwantedCUDAMatchesImpl(Sema &S, const FunctionDecl *Caller,
+                                         llvm::SmallVectorImpl<T> &Matches,
+                                         FetchDeclFn FetchDecl) {
+  assert(S.getLangOpts().CUDATargetOverloads &&
+         "Should not be called w/o enabled target overloads.");
+  if (Matches.size() <= 1)
+    return;
+
+  // Find the best call preference among the functions in Matches.
+  Sema::CUDAFunctionPreference P, BestCFP = Sema::CFP_Never;
+  for (auto const &Match : Matches) {
+    P = S.IdentifyCUDAPreference(Caller, FetchDecl(Match));
+    if (P > BestCFP)
+      BestCFP = P;
+  }
+
+  // Erase all functions with lower priority.
+  for (unsigned I = 0, N = Matches.size(); I != N;)
+    if (S.IdentifyCUDAPreference(Caller, FetchDecl(Matches[I])) < BestCFP) {
+      Matches[I] = Matches[--N];
+      Matches.resize(N);
+    } else {
+      ++I;
+    }
+}
+
+void Sema::EraseUnwantedCUDAMatches(const FunctionDecl *Caller,
+                                    SmallVectorImpl<FunctionDecl *> &Matches){
+  EraseUnwantedCUDAMatchesImpl<FunctionDecl *>(
+      *this, Caller, Matches, [](const FunctionDecl *item) { return item; });
+}
+
+void Sema::EraseUnwantedCUDAMatches(const FunctionDecl *Caller,
+                                    SmallVectorImpl<DeclAccessPair> &Matches) {
+  EraseUnwantedCUDAMatchesImpl<DeclAccessPair>(
+      *this, Caller, Matches, [](const DeclAccessPair &item) {
+        return dyn_cast<FunctionDecl>(item.getDecl());
+      });
+}
+
+void Sema::EraseUnwantedCUDAMatches(
+    const FunctionDecl *Caller,
+    SmallVectorImpl<std::pair<DeclAccessPair, FunctionDecl *>> &Matches){
+  EraseUnwantedCUDAMatchesImpl<std::pair<DeclAccessPair, FunctionDecl *>>(
+      *this, Caller, Matches,
+      [](const std::pair<DeclAccessPair, FunctionDecl *> &item) {
+        return dyn_cast<FunctionDecl>(item.second);
+      });
+}
+
 /// When an implicitly-declared special member has to invoke more than one
 /// base/field special member, conflicts may occur in the targets of these
 /// members. For example, if one base's member __host__ and another's is
@@ -129,12 +273,9 @@ static bool
 resolveCalleeCUDATargetConflict(Sema::CUDAFunctionTarget Target1,
                                 Sema::CUDAFunctionTarget Target2,
                                 Sema::CUDAFunctionTarget *ResolvedTarget) {
-  if (Target1 == Sema::CFT_Global && Target2 == Sema::CFT_Global) {
-    // TODO: this shouldn't happen, really. Methods cannot be marked __global__.
-    // Clang should detect this earlier and produce an error. Then this
-    // condition can be changed to an assertion.
-    return true;
-  }
+  // Only free functions and static member functions may be global.
+  assert(Target1 != Sema::CFT_Global);
+  assert(Target2 != Sema::CFT_Global);
 
   if (Target1 == Sema::CFT_HostDevice) {
     *ResolvedTarget = Target2;
@@ -277,4 +418,38 @@ bool Sema::inferCUDATargetForImplicitSpecialMember(CXXRecordDecl *ClassDecl,
   }
 
   return false;
+}
+
+bool Sema::isEmptyCudaConstructor(SourceLocation Loc, CXXConstructorDecl *CD) {
+  if (!CD->isDefined() && CD->isTemplateInstantiation())
+    InstantiateFunctionDefinition(Loc, CD->getFirstDecl());
+
+  // (E.2.3.1, CUDA 7.5) A constructor for a class type is considered
+  // empty at a point in the translation unit, if it is either a
+  // trivial constructor
+  if (CD->isTrivial())
+    return true;
+
+  // ... or it satisfies all of the following conditions:
+  // The constructor function has been defined.
+  // The constructor function has no parameters,
+  // and the function body is an empty compound statement.
+  if (!(CD->hasTrivialBody() && CD->getNumParams() == 0))
+    return false;
+
+  // Its class has no virtual functions and no virtual base classes.
+  if (CD->getParent()->isDynamicClass())
+    return false;
+
+  // The only form of initializer allowed is an empty constructor.
+  // This will recursively checks all base classes and member initializers
+  if (!llvm::all_of(CD->inits(), [&](const CXXCtorInitializer *CI) {
+        if (const CXXConstructExpr *CE =
+                dyn_cast<CXXConstructExpr>(CI->getInit()))
+          return isEmptyCudaConstructor(Loc, CE->getConstructor());
+        return false;
+      }))
+    return false;
+
+  return true;
 }

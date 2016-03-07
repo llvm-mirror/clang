@@ -2416,7 +2416,7 @@ private:
   MethodVFTableLocationsTy MethodVFTableLocations;
 
   /// \brief Does this class have an RTTI component?
-  bool HasRTTIComponent;
+  bool HasRTTIComponent = false;
 
   /// MethodInfo - Contains information about a method in a vtable.
   /// (Used for computing 'this' pointer adjustment thunks.
@@ -2546,11 +2546,13 @@ public:
         WhichVFPtr(*Which),
         Overriders(MostDerivedClass, CharUnits(), MostDerivedClass) {
     // Only include the RTTI component if we know that we will provide a
-    // definition of the vftable.
-    HasRTTIComponent = Context.getLangOpts().RTTIData &&
-                       !MostDerivedClass->hasAttr<DLLImportAttr>() &&
-                       MostDerivedClass->getTemplateSpecializationKind() !=
-                           TSK_ExplicitInstantiationDeclaration;
+    // definition of the vftable.  We always provide the definition of
+    // dllimported classes.
+    if (Context.getLangOpts().RTTIData)
+      if (MostDerivedClass->hasAttr<DLLImportAttr>() ||
+          MostDerivedClass->getTemplateSpecializationKind() !=
+              TSK_ExplicitInstantiationDeclaration)
+        HasRTTIComponent = true;
 
     LayoutVFTable();
 
@@ -2882,22 +2884,26 @@ static void GroupNewVirtualOverloads(
   // Put the virtual methods into VirtualMethods in the proper order:
   // 1) Group overloads by declaration name. New groups are added to the
   //    vftable in the order of their first declarations in this class
-  //    (including overrides and non-virtual methods).
+  //    (including overrides, non-virtual methods and any other named decl that
+  //    might be nested within the class).
   // 2) In each group, new overloads appear in the reverse order of declaration.
   typedef SmallVector<const CXXMethodDecl *, 1> MethodGroup;
   SmallVector<MethodGroup, 10> Groups;
   typedef llvm::DenseMap<DeclarationName, unsigned> VisitedGroupIndicesTy;
   VisitedGroupIndicesTy VisitedGroupIndices;
-  for (const auto *MD : RD->methods()) {
-    MD = MD->getCanonicalDecl();
+  for (const auto *D : RD->decls()) {
+    const auto *ND = dyn_cast<NamedDecl>(D);
+    if (!ND)
+      continue;
     VisitedGroupIndicesTy::iterator J;
     bool Inserted;
     std::tie(J, Inserted) = VisitedGroupIndices.insert(
-        std::make_pair(MD->getDeclName(), Groups.size()));
+        std::make_pair(ND->getDeclName(), Groups.size()));
     if (Inserted)
       Groups.push_back(MethodGroup());
-    if (MD->isVirtual())
-      Groups[J->second].push_back(MD);
+    if (const auto *MD = dyn_cast<CXXMethodDecl>(ND))
+      if (MD->isVirtual())
+        Groups[J->second].push_back(MD->getCanonicalDecl());
   }
 
   for (const MethodGroup &Group : Groups)

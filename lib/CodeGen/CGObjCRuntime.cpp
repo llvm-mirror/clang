@@ -120,9 +120,8 @@ LValue CGObjCRuntime::EmitValueForIvarAtOffset(CodeGen::CodeGenFunction &CGF,
   uint64_t BitOffset = FieldBitOffset % CGF.CGM.getContext().getCharWidth();
   uint64_t AlignmentBits = CGF.CGM.getTarget().getCharAlign();
   uint64_t BitFieldSize = Ivar->getBitWidthValue(CGF.getContext());
-  CharUnits StorageSize =
-    CGF.CGM.getContext().toCharUnitsFromBits(
-      llvm::RoundUpToAlignment(BitOffset + BitFieldSize, AlignmentBits));
+  CharUnits StorageSize = CGF.CGM.getContext().toCharUnitsFromBits(
+      llvm::alignTo(BitOffset + BitFieldSize, AlignmentBits));
   CharUnits Alignment = CGF.CGM.getContext().toCharUnitsFromBits(AlignmentBits);
 
   // Allocate a new CGBitFieldInfo object to describe this access.
@@ -136,12 +135,13 @@ LValue CGObjCRuntime::EmitValueForIvarAtOffset(CodeGen::CodeGenFunction &CGF,
                              CGF.CGM.getContext().toBits(StorageSize),
                              CharUnits::fromQuantity(0)));
 
-  V = CGF.Builder.CreateBitCast(V,
-                                llvm::Type::getIntNPtrTy(CGF.getLLVMContext(),
+  Address Addr(V, Alignment);
+  Addr = CGF.Builder.CreateElementBitCast(Addr,
+                                   llvm::Type::getIntNTy(CGF.getLLVMContext(),
                                                          Info->StorageSize));
-  return LValue::MakeBitfield(V, *Info,
+  return LValue::MakeBitfield(Addr, *Info,
                               IvarTy.withCVRQualifiers(CVRQualifiers),
-                              Alignment);
+                              AlignmentSource::Decl);
 }
 
 namespace {
@@ -152,7 +152,7 @@ namespace {
     llvm::Constant *TypeInfo;
   };
 
-  struct CallObjCEndCatch : EHScopeStack::Cleanup {
+  struct CallObjCEndCatch final : EHScopeStack::Cleanup {
     CallObjCEndCatch(bool MightThrow, llvm::Value *Fn) :
       MightThrow(MightThrow), Fn(Fn) {}
     bool MightThrow;
@@ -255,24 +255,7 @@ void CGObjCRuntime::EmitTryCatchStmt(CodeGenFunction &CGF,
       llvm::Value *CastExn = CGF.Builder.CreateBitCast(Exn, CatchType);
 
       CGF.EmitAutoVarDecl(*CatchParam);
-
-      llvm::Value *CatchParamAddr = CGF.GetAddrOfLocalVar(CatchParam);
-
-      switch (CatchParam->getType().getQualifiers().getObjCLifetime()) {
-      case Qualifiers::OCL_Strong:
-        CastExn = CGF.EmitARCRetainNonBlock(CastExn);
-        // fallthrough
-
-      case Qualifiers::OCL_None:
-      case Qualifiers::OCL_ExplicitNone:
-      case Qualifiers::OCL_Autoreleasing:
-        CGF.Builder.CreateStore(CastExn, CatchParamAddr);
-        break;
-
-      case Qualifiers::OCL_Weak:
-        CGF.EmitARCInitWeak(CatchParamAddr, CastExn);
-        break;
-      }
+      EmitInitOfCatchParam(CGF, CastExn, CatchParam);
     }
 
     CGF.ObjCEHValueStack.push_back(Exn);
@@ -296,8 +279,32 @@ void CGObjCRuntime::EmitTryCatchStmt(CodeGenFunction &CGF,
     CGF.EmitBlock(Cont.getBlock());
 }
 
+void CGObjCRuntime::EmitInitOfCatchParam(CodeGenFunction &CGF,
+                                         llvm::Value *exn,
+                                         const VarDecl *paramDecl) {
+
+  Address paramAddr = CGF.GetAddrOfLocalVar(paramDecl);
+
+  switch (paramDecl->getType().getQualifiers().getObjCLifetime()) {
+  case Qualifiers::OCL_Strong:
+    exn = CGF.EmitARCRetainNonBlock(exn);
+    // fallthrough
+
+  case Qualifiers::OCL_None:
+  case Qualifiers::OCL_ExplicitNone:
+  case Qualifiers::OCL_Autoreleasing:
+    CGF.Builder.CreateStore(exn, paramAddr);
+    return;
+
+  case Qualifiers::OCL_Weak:
+    CGF.EmitARCInitWeak(paramAddr, exn);
+    return;
+  }
+  llvm_unreachable("invalid ownership qualifier");
+}
+
 namespace {
-  struct CallSyncExit : EHScopeStack::Cleanup {
+  struct CallSyncExit final : EHScopeStack::Cleanup {
     llvm::Value *SyncExitFn;
     llvm::Value *SyncArg;
     CallSyncExit(llvm::Value *SyncExitFn, llvm::Value *SyncArg)

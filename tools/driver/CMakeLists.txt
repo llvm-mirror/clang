@@ -3,7 +3,6 @@ set( LLVM_LINK_COMPONENTS
   Analysis
   CodeGen
   Core
-  IPA
   IPO
   InstCombine
   Instrumentation
@@ -25,7 +24,7 @@ if(CLANG_PLUGIN_SUPPORT)
   set(LLVM_NO_DEAD_STRIP 1)
 endif()
 
-add_clang_executable(clang
+add_clang_tool(clang
   driver.cpp
   cc1_main.cpp
   cc1as_main.cpp
@@ -52,38 +51,17 @@ endif()
 
 add_dependencies(clang clang-headers)
 
-if(UNIX)
-  set(CLANGXX_LINK_OR_COPY create_symlink)
-# Create a relative symlink
-  set(clang_binary "clang${CMAKE_EXECUTABLE_SUFFIX}")
-else()
-  set(CLANGXX_LINK_OR_COPY copy)
-  set(clang_binary "${LLVM_RUNTIME_OUTPUT_INTDIR}/clang${CMAKE_EXECUTABLE_SUFFIX}")
+if(NOT CLANG_LINKS_TO_CREATE)
+  set(CLANG_LINKS_TO_CREATE clang++ clang-cl)
+
+  if (WIN32)
+    list(APPEND CLANG_LINKS_TO_CREATE ../msbuild-bin/cl)
+  endif()
 endif()
 
-# Create the clang++ symlink in the build directory.
-set(clang_pp "${LLVM_RUNTIME_OUTPUT_INTDIR}/clang++${CMAKE_EXECUTABLE_SUFFIX}")
-add_custom_command(TARGET clang POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E ${CLANGXX_LINK_OR_COPY} "${clang_binary}" "${clang_pp}"
-    WORKING_DIRECTORY "${LLVM_RUNTIME_OUTPUT_INTDIR}")
-
-set_property(DIRECTORY APPEND
-  PROPERTY ADDITIONAL_MAKE_CLEAN_FILES ${clang_pp})
-
-# Create the clang-cl symlink in the build directory.
-set(clang_cl "${LLVM_RUNTIME_OUTPUT_INTDIR}/clang-cl${CMAKE_EXECUTABLE_SUFFIX}")
-add_custom_command(TARGET clang POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E ${CLANGXX_LINK_OR_COPY} "${clang_binary}" "${clang_cl}"
-    WORKING_DIRECTORY "${LLVM_RUNTIME_OUTPUT_INTDIR}")
-
-set_property(DIRECTORY APPEND
-  PROPERTY ADDITIONAL_MAKE_CLEAN_FILES ${clang_cl})
-
-install(TARGETS clang
-  RUNTIME DESTINATION bin)
-
-# Create the clang++ and clang-cl symlinks at installation time.
-install(SCRIPT clang_symlink.cmake -DCMAKE_INSTALL_PREFIX=\"${CMAKE_INSTALL_PREFIX}\")
+foreach(link ${CLANG_LINKS_TO_CREATE})
+  add_clang_symlink(${link} clang)
+endforeach()
 
 # Configure plist creation for OS X.
 set (TOOL_INFO_PLIST "Info.plist" CACHE STRING "Plist name")
@@ -96,10 +74,7 @@ if (APPLE)
 
   set(TOOL_INFO_UTI "${CLANG_VENDOR_UTI}")
   set(TOOL_INFO_VERSION "${CLANG_VERSION}")
-  if (LLVM_SUBMIT_VERSION)
-    set(TOOL_INFO_BUILD_VERSION
-      "${LLVM_SUBMIT_VERSION}.${LLVM_SUBMIT_SUBVERSION}")
-  endif()
+  set(TOOL_INFO_BUILD_VERSION "${LLVM_MAJOR_VERSION}.${LLVM_MINOR_VERSION}")
   
   set(TOOL_INFO_PLIST_OUT "${CMAKE_CURRENT_BINARY_DIR}/${TOOL_INFO_PLIST}")
   target_link_libraries(clang
@@ -112,7 +87,7 @@ if (APPLE)
   set(TOOL_INFO_BUILD_VERSION)
 endif()
 
-if(CLANG_ORDER_FILE)
+if(CLANG_ORDER_FILE AND EXISTS CLANG_ORDER_FILE)
   target_link_libraries(clang "-Wl,-order_file,${CLANG_ORDER_FILE}")
 endif()
 

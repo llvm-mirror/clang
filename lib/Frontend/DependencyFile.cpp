@@ -51,15 +51,8 @@ struct DepCollectorPPCallbacks : public PPCallbacks {
     if (!FE)
       return;
 
-    StringRef Filename = FE->getName();
-
-    // Remove leading "./" (or ".//" or "././" etc.)
-    while (Filename.size() > 2 && Filename[0] == '.' &&
-           llvm::sys::path::is_separator(Filename[1])) {
-      Filename = Filename.substr(1);
-      while (llvm::sys::path::is_separator(Filename[0]))
-        Filename = Filename.substr(1);
-    }
+    StringRef Filename =
+        llvm::sys::path::remove_leading_dotslash(FE->getName());
 
     DepCollector.maybeAddDependency(Filename, /*FromModule*/false,
                                    FileType != SrcMgr::C_User,
@@ -104,14 +97,15 @@ struct DepCollectorASTListener : public ASTReaderListener {
   bool needsSystemInputFileVisitation() override {
     return DepCollector.needSystemDependencies();
   }
-  void visitModuleFile(StringRef Filename) override {
+  void visitModuleFile(StringRef Filename,
+                       serialization::ModuleKind Kind) override {
     DepCollector.maybeAddDependency(Filename, /*FromModule*/true,
                                    /*IsSystem*/false, /*IsModuleFile*/true,
                                    /*IsMissing*/false);
   }
   bool visitInputFile(StringRef Filename, bool IsSystem,
-                      bool IsOverridden) override {
-    if (IsOverridden)
+                      bool IsOverridden, bool IsExplicitModule) override {
+    if (IsOverridden || IsExplicitModule)
       return true;
 
     DepCollector.maybeAddDependency(Filename, /*FromModule*/true, IsSystem,
@@ -182,7 +176,11 @@ public:
       AddMissingHeaderDeps(Opts.AddMissingHeaderDeps),
       SeenMissingHeader(false),
       IncludeModuleFiles(Opts.IncludeModuleFiles),
-      OutputFormat(Opts.OutputFormat) {}
+      OutputFormat(Opts.OutputFormat) {
+    for (auto ExtraDep : Opts.ExtraDeps) {
+      AddFilename(ExtraDep);
+    }
+  }
 
   void FileChanged(SourceLocation Loc, FileChangeReason Reason,
                    SrcMgr::CharacteristicKind FileType,
@@ -222,9 +220,10 @@ public:
   bool needsSystemInputFileVisitation() override {
     return Parent.includeSystemHeaders();
   }
-  void visitModuleFile(StringRef Filename) override;
+  void visitModuleFile(StringRef Filename,
+                       serialization::ModuleKind Kind) override;
   bool visitInputFile(StringRef Filename, bool isSystem,
-                      bool isOverridden) override;
+                      bool isOverridden, bool isExplicitModule) override;
 };
 }
 
@@ -289,15 +288,7 @@ void DFGImpl::FileChanged(SourceLocation Loc,
   if (!FileMatchesDepCriteria(Filename.data(), FileType))
     return;
 
-  // Remove leading "./" (or ".//" or "././" etc.)
-  while (Filename.size() > 2 && Filename[0] == '.' &&
-         llvm::sys::path::is_separator(Filename[1])) {
-    Filename = Filename.substr(1);
-    while (llvm::sys::path::is_separator(Filename[0]))
-      Filename = Filename.substr(1);
-  }
-    
-  AddFilename(Filename);
+  AddFilename(llvm::sys::path::remove_leading_dotslash(Filename));
 }
 
 void DFGImpl::InclusionDirective(SourceLocation HashLoc,
@@ -468,16 +459,18 @@ void DFGImpl::OutputDependencyFile() {
 }
 
 bool DFGASTReaderListener::visitInputFile(llvm::StringRef Filename,
-                                          bool IsSystem, bool IsOverridden) {
+                                          bool IsSystem, bool IsOverridden,
+                                          bool IsExplicitModule) {
   assert(!IsSystem || needsSystemInputFileVisitation());
-  if (IsOverridden)
+  if (IsOverridden || IsExplicitModule)
     return true;
 
   Parent.AddFilename(Filename);
   return true;
 }
 
-void DFGASTReaderListener::visitModuleFile(llvm::StringRef Filename) {
+void DFGASTReaderListener::visitModuleFile(llvm::StringRef Filename,
+                                           serialization::ModuleKind Kind) {
   if (Parent.includeModuleFiles())
     Parent.AddFilename(Filename);
 }

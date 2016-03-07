@@ -2,8 +2,14 @@
 // RUN: %clang_cc1 -fmodules -fimplicit-module-maps -x objective-c -verify -fmodules-cache-path=%t -I %S/Inputs %s
 // RUN: %clang_cc1 -fmodules -fimplicit-module-maps -x objective-c -verify -fmodules-cache-path=%t -I %S/Inputs %s -DALT
 // RUN: %clang_cc1 -fmodules -fimplicit-module-maps -x objective-c -verify -fmodules-cache-path=%t -I %S/Inputs %s -detailed-preprocessing-record
-// RUN: %clang_cc1 -fmodules -fimplicit-module-maps -DLOCAL_VISIBILITY -fmodules-local-submodule-visibility -x objective-c++ -verify -fmodules-cache-path=%t -I %S/Inputs %s
 // RUN: not %clang_cc1 -E -fmodules -fimplicit-module-maps -x objective-c -fmodules-cache-path=%t -I %S/Inputs %s | FileCheck -check-prefix CHECK-PREPROCESSED %s
+// 
+// RUN: %clang_cc1 -fmodules -fimplicit-module-maps -x objective-c++ -verify -fmodules-cache-path=%t -I %S/Inputs %s
+// RUN: %clang_cc1 -fmodules -fimplicit-module-maps -x objective-c++ -verify -fmodules-cache-path=%t -I %S/Inputs %s -DALT
+// RUN: %clang_cc1 -fmodules -fimplicit-module-maps -x objective-c++ -verify -fmodules-cache-path=%t -I %S/Inputs %s -detailed-preprocessing-record
+// RUN: not %clang_cc1 -E -fmodules -fimplicit-module-maps -x objective-c++ -fmodules-cache-path=%t -I %S/Inputs %s | FileCheck -check-prefix CHECK-PREPROCESSED %s
+//
+// RUN: %clang_cc1 -fmodules -fimplicit-module-maps -DLOCAL_VISIBILITY -fmodules-local-submodule-visibility -x objective-c++ -verify -fmodules-cache-path=%t -I %S/Inputs %s
 // FIXME: When we have a syntax for modules in C, use that.
 // These notes come from headers in modules, and are bogus.
 
@@ -12,7 +18,6 @@
 // expected-note@Inputs/macros_right.h:12{{expanding this definition of 'LEFT_RIGHT_DIFFERENT'}}
 // expected-note@Inputs/macros_right.h:13{{expanding this definition of 'LEFT_RIGHT_DIFFERENT2'}}
 // expected-note@Inputs/macros_left.h:14{{other definition of 'LEFT_RIGHT_DIFFERENT'}}
-// expected-note@Inputs/macros_left.h:11{{other definition of 'LEFT_RIGHT_DIFFERENT2'}}
 
 @import macros;
 
@@ -66,8 +71,13 @@ void f() {
 #  error TOP should not be visible
 #endif
 
+#undef INTEGER
+#define INTEGER int
+
 // Import left module (which also imports top)
 @import macros_left;
+
+INTEGER my_integer = 0;
 
 #ifndef LEFT
 #  error LEFT should be visible

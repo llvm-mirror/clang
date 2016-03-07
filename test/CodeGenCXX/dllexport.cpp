@@ -544,6 +544,7 @@ struct A {
 struct __declspec(dllexport) B {
   B(A = 0) {}
 };
+
 }
 //
 // M32-DAG: define weak_odr dllexport x86_thiscallcc void @"\01??_FB@PR23801@@QAEXXZ"({{.*}}) comdat
@@ -569,6 +570,30 @@ struct __declspec(dllexport) T {
 USEVAR(T::b)
 int T::c;
 
+// Export template class with static member variable
+// MSC-DAG: @"\01?StaticClassVarExpTmplClass@?$TmplClass@H@@2HA" = weak_odr dllexport global i32 0, comdat, align 4
+// GNU-DAG: @_ZN9TmplClassIiE26StaticClassVarExpTmplClassE = weak_odr dllexport global i32 0, comdat, align 4
+template<typename T>
+struct __declspec(dllexport) TmplClass
+{
+  static T StaticClassVarExpTmplClass;
+};
+
+template<typename T>
+T TmplClass<T>::StaticClassVarExpTmplClass;
+
+// Export a definition of a template function.
+// MSC-DAG: define weak_odr dllexport i32 @"\01??$TypeFunTmpl@H@@YAHH@Z"
+// GNU-DAG: define weak_odr dllexport i32 @_Z11TypeFunTmplIiET_S0_
+template<typename T>
+T __declspec(dllexport) TypeFunTmpl(T t) { return t + t; }
+
+// Instantiate the exported template class and the exported template function.
+int useExportedTmplStaticAndFun()
+{
+  return TmplClass<int>::StaticClassVarExpTmplClass + TypeFunTmpl<int>(10);
+}
+
 template <typename T> struct __declspec(dllexport) U { void foo() {} };
 struct __declspec(dllexport) V : public U<int> { };
 // U<int>'s assignment operator is emitted.
@@ -582,7 +607,7 @@ void W::foo() {}
 // M32-DAG: define weak_odr dllexport x86_thiscallcc %struct.W* @"\01??0W@@QAE@ABU0@@Z"
 // vftable:
 // M32-DAG: [[W_VTABLE:@.*]] = private unnamed_addr constant [2 x i8*] [i8* bitcast (%rtti.CompleteObjectLocator* @"\01??_R4W@@6B@" to i8*), i8* bitcast (void (%struct.W*)* @"\01?foo@W@@UAEXXZ" to i8*)], comdat($"\01??_7W@@6B@")
-// M32-DAG: @"\01??_7W@@6B@" = dllexport unnamed_addr alias getelementptr inbounds ([2 x i8*], [2 x i8*]* [[W_VTABLE]], i32 0, i32 1)
+// M32-DAG: @"\01??_7W@@6B@" = dllexport unnamed_addr alias i8*, getelementptr inbounds ([2 x i8*], [2 x i8*]* [[W_VTABLE]], i32 0, i32 1)
 // G32-DAG: @_ZTV1W = dllexport unnamed_addr constant [3 x i8*] [i8* null, i8* bitcast ({ i8*, i8* }* @_ZTI1W to i8*), i8* bitcast (void (%struct.W*)* @_ZN1W3fooEv to i8*)]
 
 struct __declspec(dllexport) X : public virtual W {};
@@ -611,7 +636,6 @@ namespace UseDtorAlias {
   B::~B() { }
   // Emit a alias definition of B's constructor.
   // M32-DAG: @"\01??1B@UseDtorAlias@@QAE@XZ" = dllexport alias {{.*}} @"\01??1A@UseDtorAlias@@QAE@XZ"
-
 }
 
 struct __declspec(dllexport) DefaultedCtorsDtors {
@@ -728,6 +752,65 @@ template <typename T> struct PR23770DerivedTemplate : PR23770BaseTemplate<int> {
 extern template struct PR23770DerivedTemplate<int>;
 template struct __declspec(dllexport) PR23770DerivedTemplate<int>;
 // M32-DAG: define weak_odr dllexport x86_thiscallcc void @"\01?f@?$PR23770BaseTemplate@H@@QAEXXZ"
+
+namespace InClassInits {
+
+struct __declspec(dllexport) S {
+  int x = 42;
+};
+// M32-DAG: define weak_odr dllexport x86_thiscallcc %"struct.InClassInits::S"* @"\01??0S@InClassInits@@QAE@XZ"
+
+// dllexport an already instantiated class template.
+template <typename T> struct Base {
+  int x = 42;
+};
+Base<int> base;
+struct __declspec(dllexport) T : Base<int> { };
+// M32-DAG: define weak_odr dllexport x86_thiscallcc %"struct.InClassInits::Base"* @"\01??0?$Base@H@InClassInits@@QAE@XZ"
+
+struct A { A(int); };
+struct __declspec(dllexport) U {
+  // Class with both default constructor closure and in-class initializer.
+  U(A = 0) {}
+  int x = 0;
+};
+// M32-DAG: define weak_odr dllexport x86_thiscallcc %"struct.InClassInits::U"* @"\01??0U@InClassInits@@QAE@UA@1@@Z"
+
+struct Evil {
+  template <typename T> struct Base {
+    int x = 0;
+  };
+  struct S : Base<int> {};
+  // The already instantiated Base<int> becomes dllexported below, but the
+  // in-class initializer for Base<>::x still hasn't been parsed, so emitting
+  // the default ctor must still be delayed.
+  struct __declspec(dllexport) T : Base<int> {};
+};
+// M32-DAG: define weak_odr dllexport x86_thiscallcc %"struct.InClassInits::Evil::Base"* @"\01??0?$Base@H@Evil@InClassInits@@QAE@XZ"
+
+template <typename T> struct Foo {};
+template <typename T> struct Bar {
+  Bar<T> &operator=(Foo<T>) {}
+};
+struct __declspec(dllexport) Baz {
+  Bar<int> n;
+};
+// After parsing Baz, in ActOnFinishCXXNonNestedClass we would synthesize
+// Baz's operator=, causing instantiation of Foo<int> after which
+// ActOnFinishCXXNonNestedClass is called, and we would bite our own tail.
+// M32-DAG: define weak_odr dllexport x86_thiscallcc dereferenceable(1) %"struct.InClassInits::Baz"* @"\01??4Baz@InClassInits@@QAEAAU01@ABU01@@Z"
+}
+
+// We had an issue where instantiating A would force emission of B's delayed
+// exported methods.
+namespace pr26490 {
+template <typename T> struct A { };
+struct __declspec(dllexport) B {
+  B(int = 0) {}
+  A<int> m_fn1() {}
+};
+// M32-DAG: define weak_odr dllexport x86_thiscallcc void @"\01??_FB@pr26490@@QAEXXZ"
+}
 
 
 //===----------------------------------------------------------------------===//

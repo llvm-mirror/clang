@@ -837,10 +837,6 @@ void Type::applyModifier(char Mod) {
     Float = true;
     break;
   case 'f':
-    // Special case - if we're half-precision, a floating
-    // point argument needs to be 128-bits (double size).
-    if (isHalf())
-      Bitwidth = 128;
     Float = true;
     ElementBitwidth = 32;
     break;
@@ -993,6 +989,10 @@ std::string Intrinsic::getInstTypeCode(Type T, ClassKind CK) const {
   return S;
 }
 
+static bool isFloatingPointProtoModifier(char Mod) {
+  return Mod == 'F' || Mod == 'f';
+}
+
 std::string Intrinsic::getBuiltinTypeStr() {
   ClassKind LocalCK = getClassKind(true);
   std::string S;
@@ -1014,7 +1014,7 @@ std::string Intrinsic::getBuiltinTypeStr() {
     if (!RetT.isScalar() && !RetT.isSigned())
       RetT.makeSigned();
 
-    bool ForcedVectorFloatingType = Proto[0] == 'F' || Proto[0] == 'f';
+    bool ForcedVectorFloatingType = isFloatingPointProtoModifier(Proto[0]);
     if (LocalCK == ClassB && !RetT.isScalar() && !ForcedVectorFloatingType)
       // Cast to vector of 8-bit elements.
       RetT.makeInteger(8, true);
@@ -1027,7 +1027,7 @@ std::string Intrinsic::getBuiltinTypeStr() {
     if (T.isPoly())
       T.makeInteger(T.getElementSizeInBits(), false);
 
-    bool ForcedFloatingType = Proto[I + 1] == 'F' || Proto[I + 1] == 'f';
+    bool ForcedFloatingType = isFloatingPointProtoModifier(Proto[I + 1]);
     if (LocalCK == ClassB && !T.isScalar() && !ForcedFloatingType)
       T.makeInteger(8, true);
     // Halves always get converted to 8-bit elements.
@@ -1065,8 +1065,8 @@ std::string Intrinsic::mangleName(std::string Name, ClassKind LocalCK) const {
   std::string typeCode = getInstTypeCode(BaseType, LocalCK);
   std::string S = Name;
 
-  if (Name == "vcvt_f32_f16" || Name == "vcvt_f32_f64" ||
-      Name == "vcvt_f64_f32")
+  if (Name == "vcvt_f16_f32" || Name == "vcvt_f32_f16" ||
+      Name == "vcvt_f32_f64" || Name == "vcvt_f64_f32")
     return Name;
 
   if (typeCode.size() > 0) {
@@ -1195,12 +1195,12 @@ void Intrinsic::emitReverseVariable(Variable &Dest, Variable &Src) {
     emitNewLine();
 
     for (unsigned K = 0; K < Dest.getType().getNumVectors(); ++K) {
-      OS << "  " << Dest.getName() << ".val[" << utostr(K) << "] = "
+      OS << "  " << Dest.getName() << ".val[" << K << "] = "
          << "__builtin_shufflevector("
-         << Src.getName() << ".val[" << utostr(K) << "], "
-         << Src.getName() << ".val[" << utostr(K) << "]";
+         << Src.getName() << ".val[" << K << "], "
+         << Src.getName() << ".val[" << K << "]";
       for (int J = Dest.getType().getNumElements() - 1; J >= 0; --J)
-        OS << ", " << utostr(J);
+        OS << ", " << J;
       OS << ");";
       emitNewLine();
     }
@@ -1208,7 +1208,7 @@ void Intrinsic::emitReverseVariable(Variable &Dest, Variable &Src) {
     OS << "  " << Dest.getName()
        << " = __builtin_shufflevector(" << Src.getName() << ", " << Src.getName();
     for (int J = Dest.getType().getNumElements() - 1; J >= 0; --J)
-      OS << ", " << utostr(J);
+      OS << ", " << J;
     OS << ");";
     emitNewLine();
   }
@@ -1364,7 +1364,7 @@ void Intrinsic::emitBodyAsBuiltinCall() {
   // Extra constant integer to hold type class enum for this function, e.g. s8
   if (getClassKind(true) == ClassB) {
     Type ThisTy = getReturnType();
-    if (Proto[0] == 'v' || Proto[0] == 'f' || Proto[0] == 'F')
+    if (Proto[0] == 'v' || isFloatingPointProtoModifier(Proto[0]))
       ThisTy = getParamType(0);
     if (ThisTy.isPointer())
       ThisTy = getParamType(1);
@@ -1926,7 +1926,7 @@ void NeonEmitter::createIntrinsic(Record *R,
 
   ClassKind CK = ClassNone;
   if (R->getSuperClasses().size() >= 2)
-    CK = ClassMap[R->getSuperClasses()[1]];
+    CK = ClassMap[R->getSuperClasses()[1].first];
 
   std::vector<std::pair<TypeSpec, TypeSpec>> NewTypeSpecs;
   for (auto TS : TypeSpecs) {
@@ -2022,8 +2022,8 @@ void NeonEmitter::genOverloadTypeCheckCode(raw_ostream &OS,
 
     uint64_t Mask = 0ULL;
     Type Ty = Def->getReturnType();
-    if (Def->getProto()[0] == 'v' || Def->getProto()[0] == 'f' ||
-        Def->getProto()[0] == 'F')
+    if (Def->getProto()[0] == 'v' ||
+        isFloatingPointProtoModifier(Def->getProto()[0]))
       Ty = Def->getParamType(0);
     if (Ty.isPointer())
       Ty = Def->getParamType(1);

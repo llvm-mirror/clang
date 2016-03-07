@@ -1,5 +1,7 @@
 // RUN: %clang_cc1 -triple x86_64-apple-macos10.7.0 -fsyntax-only -verify -fno-lax-vector-conversions -Wconversion %s
 
+typedef __attribute__((ext_vector_type(8))) _Bool BoolVector; // expected-error {{invalid vector element type '_Bool'}}
+
 typedef __attribute__(( ext_vector_type(2) )) float float2;
 typedef __attribute__(( ext_vector_type(3) )) float float3;
 typedef __attribute__(( ext_vector_type(4) )) int int4;
@@ -20,8 +22,8 @@ static void test() {
     int *ptr;
     int i;
 
-    vec3 += vec2; // expected-error {{can't convert between vector values of different size}}
-    vec4 += vec3; // expected-error {{can't convert between vector values of different size}}
+    vec3 += vec2; // expected-error {{cannot convert between vector values of different size}}
+    vec4 += vec3; // expected-error {{cannot convert between vector values of different size}}
     
     vec4 = 5.0f;
     vec4 = (float4)5.0f;
@@ -44,11 +46,11 @@ static void test() {
      vec4 /= 5.2f;
      vec4 %= 4; // expected-error {{invalid operands to binary expression ('float4' (vector of 4 'float' values) and 'int')}}
     ivec4 %= 4;
-    ivec4 += vec4; // expected-error {{can't convert between vector values of different size ('int4' (vector of 4 'int' values) and 'float4' (vector of 4 'float' values))}}
+    ivec4 += vec4; // expected-error {{cannot convert between vector values of different size ('int4' (vector of 4 'int' values) and 'float4' (vector of 4 'float' values))}}
     ivec4 += (int4)vec4;
     ivec4 -= ivec4;
     ivec4 |= ivec4;
-    ivec4 += ptr; // expected-error {{can't convert between vector and non-scalar values ('int4' (vector of 4 'int' values) and 'int *')}}
+    ivec4 += ptr; // expected-error {{cannot convert between vector and non-scalar values ('int4' (vector of 4 'int' values) and 'int *')}}
 }
 
 typedef __attribute__(( ext_vector_type(2) )) float2 vecfloat2; // expected-error{{invalid vector element type 'float2' (vector of 2 'float' values)}}
@@ -102,11 +104,11 @@ static void splats(int i, long l, __uint128_t t, float f, double d) {
   vs = 65536 + vs; // expected-warning {{implicit conversion from 'int' to 'short8' (vector of 8 'short' values) changes value from 65536 to 0}}
   vs = vs + i; // expected-warning {{implicit conversion loses integer precision}}
   vs = vs + 1;
-  vs = vs + 1.f; // expected-error {{can't convert between vector values of different size}}
+  vs = vs + 1.f; // expected-error {{cannot convert between vector values of different size}}
   
   vi = l + vi; // expected-warning {{implicit conversion loses integer precision}}
   vi = 1 + vi;
-  vi = vi + 2.0; // expected-error {{can't convert between vector values of different size}}
+  vi = vi + 2.0; // expected-error {{cannot convert between vector values of different size}}
   vi = vi + 0xffffffff; // expected-warning {{implicit conversion changes signedness}}
   
   vl = l + vl; // expected-warning {{implicit conversion changes signedness}}

@@ -78,7 +78,7 @@ public:
   std::string RewriteFilename(const std::string &Filename, int &fd) override {
     SmallString<128> Path;
     llvm::sys::fs::createTemporaryFile(llvm::sys::path::filename(Filename),
-                                       llvm::sys::path::extension(Filename), fd,
+                                       llvm::sys::path::extension(Filename).drop_front(), fd,
                                        Path);
     return Path.str();
   }
@@ -153,11 +153,10 @@ std::unique_ptr<ASTConsumer>
 RewriteObjCAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   if (raw_ostream *OS = CI.createDefaultOutputFile(false, InFile, "cpp")) {
     if (CI.getLangOpts().ObjCRuntime.isNonFragile())
-      return CreateModernObjCRewriter(InFile, OS,
-                                CI.getDiagnostics(), CI.getLangOpts(),
-                                CI.getDiagnosticOpts().NoRewriteMacros,
-                                (CI.getCodeGenOpts().getDebugInfo() !=
-                                 CodeGenOptions::NoDebugInfo));
+      return CreateModernObjCRewriter(
+          InFile, OS, CI.getDiagnostics(), CI.getLangOpts(),
+          CI.getDiagnosticOpts().NoRewriteMacros,
+          (CI.getCodeGenOpts().getDebugInfo() != codegenoptions::NoDebugInfo));
     return CreateObjCRewriter(InFile, OS,
                               CI.getDiagnostics(), CI.getLangOpts(),
                               CI.getDiagnosticOpts().NoRewriteMacros);

@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -triple x86_64-none-linux-gnu -emit-llvm -g %s -o - | FileCheck %s
-// RUN: %clang_cc1 -triple i686-pc-windows-msvc -emit-llvm -g %s -o - | FileCheck %s --check-prefix=MSVC
+// RUN: %clang_cc1 -triple x86_64-none-linux-gnu -emit-llvm -debug-info-kind=limited %s -o - | FileCheck %s
+// RUN: %clang_cc1 -triple i686-pc-windows-msvc -emit-llvm -debug-info-kind=limited %s -o - | FileCheck %s --check-prefix=MSVC
 
 template<typename T> struct Identity {
   typedef T Type;
@@ -114,9 +114,9 @@ foo func(foo f) {
 // CHECK: !DICompositeType(tag: DW_TAG_structure_type, name: "b"
 // CHECK-SAME:             DIFlagFwdDecl
 
-// CHECK: [[FUNC:![0-9]+]] = !DISubprogram(name: "func", linkageName: "_ZN7pr147634funcENS_3fooE"
-// CHECK-SAME:                             type: [[FUNC_TYPE:![0-9]*]]
-// CHECK-SAME:                             isDefinition: true
+// CHECK: [[FUNC:![0-9]+]] = distinct !DISubprogram(name: "func", linkageName: "_ZN7pr147634funcENS_3fooE"
+// CHECK-SAME:                                      type: [[FUNC_TYPE:![0-9]*]]
+// CHECK-SAME:                                      isDefinition: true
 }
 
 void foo() {

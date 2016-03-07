@@ -52,7 +52,8 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
     }
   }
 
-  HandleMemberFunctionDeclDelays(D, FnD);
+  if (FnD)
+    HandleMemberFunctionDeclDelays(D, FnD);
 
   D.complete(FnD);
 
@@ -67,8 +68,9 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
     SourceLocation KWEndLoc = Tok.getEndLoc().getLocWithOffset(-1);
     if (TryConsumeToken(tok::kw_delete, KWLoc)) {
       Diag(KWLoc, getLangOpts().CPlusPlus11
-                      ? diag::warn_cxx98_compat_deleted_function
-                      : diag::ext_deleted_function);
+                      ? diag::warn_cxx98_compat_defaulted_deleted_function
+                      : diag::ext_defaulted_deleted_function)
+        << 1 /* deleted */;
       Actions.SetDeclDeleted(FnD, KWLoc);
       Delete = true;
       if (auto *DeclAsFunction = dyn_cast<FunctionDecl>(FnD)) {
@@ -76,8 +78,9 @@ NamedDecl *Parser::ParseCXXInlineMethodDef(AccessSpecifier AS,
       }
     } else if (TryConsumeToken(tok::kw_default, KWLoc)) {
       Diag(KWLoc, getLangOpts().CPlusPlus11
-                      ? diag::warn_cxx98_compat_defaulted_function
-                      : diag::ext_defaulted_function);
+                      ? diag::warn_cxx98_compat_defaulted_deleted_function
+                      : diag::ext_defaulted_deleted_function)
+        << 0 /* defaulted */;
       Actions.SetDeclDefaulted(FnD, KWLoc);
       if (auto *DeclAsFunction = dyn_cast<FunctionDecl>(FnD)) {
         DeclAsFunction->setRangeEnd(KWEndLoc);
@@ -323,7 +326,7 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
 
       // Parse the default argument from its saved token stream.
       Toks->push_back(Tok); // So that the current token doesn't get lost
-      PP.EnterTokenStream(&Toks->front(), Toks->size(), true, false);
+      PP.EnterTokenStream(*Toks, true);
 
       // Consume the previously-pushed token.
       ConsumeAnyToken();
@@ -397,7 +400,7 @@ void Parser::ParseLexedMethodDeclaration(LateParsedMethodDeclaration &LM) {
 
     // Parse the default argument from its saved token stream.
     Toks->push_back(Tok); // So that the current token doesn't get lost
-    PP.EnterTokenStream(&Toks->front(), Toks->size(), true, false);
+    PP.EnterTokenStream(*Toks, true);
 
     // Consume the previously-pushed token.
     ConsumeAnyToken();
@@ -502,7 +505,7 @@ void Parser::ParseLexedMethodDef(LexedMethod &LM) {
   // Append the current token at the end of the new token stream so that it
   // doesn't get lost.
   LM.Toks.push_back(Tok);
-  PP.EnterTokenStream(LM.Toks.data(), LM.Toks.size(), true, false);
+  PP.EnterTokenStream(LM.Toks, true);
 
   // Consume the previously pushed token.
   ConsumeAnyToken(/*ConsumeCodeCompletionTok=*/true);
@@ -615,7 +618,7 @@ void Parser::ParseLexedMemberInitializer(LateParsedMemberInitializer &MI) {
   // Append the current token at the end of the new token stream so that it
   // doesn't get lost.
   MI.Toks.push_back(Tok);
-  PP.EnterTokenStream(MI.Toks.data(), MI.Toks.size(), true, false);
+  PP.EnterTokenStream(MI.Toks, true);
 
   // Consume the previously pushed token.
   ConsumeAnyToken(/*ConsumeCodeCompletionTok=*/true);
@@ -969,10 +972,10 @@ public:
     // Put back the original tokens.
     Self.SkipUntil(EndKind, StopAtSemi | StopBeforeMatch);
     if (Toks.size()) {
-      Token *Buffer = new Token[Toks.size()];
-      std::copy(Toks.begin() + 1, Toks.end(), Buffer);
+      auto Buffer = llvm::make_unique<Token[]>(Toks.size());
+      std::copy(Toks.begin() + 1, Toks.end(), Buffer.get());
       Buffer[Toks.size() - 1] = Self.Tok;
-      Self.PP.EnterTokenStream(Buffer, Toks.size(), true, /*Owned*/true);
+      Self.PP.EnterTokenStream(std::move(Buffer), Toks.size(), true);
 
       Self.Tok = Toks.front();
     }

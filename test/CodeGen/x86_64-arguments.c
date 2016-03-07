@@ -261,12 +261,12 @@ void f33(va_list X) {
 typedef unsigned long long v1i64 __attribute__((__vector_size__(8)));
 
 // rdar://8359248
-// CHECK-LABEL: define i64 @f34(i64 %arg.coerce)
+// CHECK-LABEL: define double @f34(double %arg.coerce)
 v1i64 f34(v1i64 arg) { return arg; }
 
 
 // rdar://8358475
-// CHECK-LABEL: define i64 @f35(i64 %arg.coerce)
+// CHECK-LABEL: define double @f35(double %arg.coerce)
 typedef unsigned long v1i64_2 __attribute__((__vector_size__(8)));
 v1i64_2 f35(v1i64_2 arg) { return arg+arg; }
 
@@ -336,7 +336,8 @@ void func43(SA s) {
 
 // CHECK-LABEL: define i32 @f44
 // CHECK: ptrtoint
-// CHECK-NEXT: and {{.*}}, -32
+// CHECK-NEXT: add i64 %{{[0-9]+}}, 31
+// CHECK-NEXT: and i64 %{{[0-9]+}}, -32
 // CHECK-NEXT: inttoptr
 typedef int T44 __attribute((vector_size(32)));
 struct s44 { T44 x; int y; };

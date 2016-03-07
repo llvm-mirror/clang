@@ -2,9 +2,11 @@
 // RUN: %clang_cc1 -std=c++11 -verify %s
 // RUN: %clang_cc1 -std=c++1y -fsized-deallocation -verify %s
 // RUN: %clang_cc1 -std=c++1y -fsized-deallocation -fconcepts-ts -DCONCEPTS_TS=1 -verify %s
+// RUN: %clang_cc1 -fcoroutines -DCOROUTINES -verify %s
 
 // expected-no-diagnostics
 
+// FIXME using `defined` in a macro has undefined behavior.
 #if __cplusplus < 201103L
 #define check(macro, cxx98, cxx11, cxx1y) cxx98 == 0 ? defined(__cpp_##macro) : __cpp_##macro != cxx98
 #elif __cplusplus < 201304L
@@ -127,4 +129,8 @@
 
 #if check(experimental_concepts, 0, 0, CONCEPTS_TS)
 #error "wrong value for __cpp_experimental_concepts"
+#endif
+
+#if (COROUTINES && !__cpp_coroutines) || (!COROUTINES && __cpp_coroutines)
+#error "wrong value for __cpp_coroutines"
 #endif

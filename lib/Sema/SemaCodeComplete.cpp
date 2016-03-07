@@ -494,6 +494,7 @@ bool ResultBuilder::isInterestingDecl(const NamedDecl *ND,
                                       bool &AsNestedNameSpecifier) const {
   AsNestedNameSpecifier = false;
 
+  auto *Named = ND;
   ND = ND->getUnderlyingDecl();
 
   // Skip unnamed entities.
@@ -526,14 +527,14 @@ bool ResultBuilder::isInterestingDecl(const NamedDecl *ND,
         return false;
 
   if (Filter == &ResultBuilder::IsNestedNameSpecifier ||
-      ((isa<NamespaceDecl>(ND) || isa<NamespaceAliasDecl>(ND)) &&
+      (isa<NamespaceDecl>(ND) &&
        Filter != &ResultBuilder::IsNamespace &&
        Filter != &ResultBuilder::IsNamespaceOrAlias &&
        Filter != nullptr))
     AsNestedNameSpecifier = true;
 
   // Filter out any unwanted results.
-  if (Filter && !(this->*Filter)(ND)) {
+  if (Filter && !(this->*Filter)(Named)) {
     // Check whether it is interesting as a nested-name-specifier.
     if (AllowNestedNameSpecifiers && SemaRef.getLangOpts().CPlusPlus && 
         IsNestedNameSpecifier(ND) &&
@@ -1142,14 +1143,12 @@ bool ResultBuilder::IsNamespace(const NamedDecl *ND) const {
 /// \brief Determines whether the given declaration is a namespace or 
 /// namespace alias.
 bool ResultBuilder::IsNamespaceOrAlias(const NamedDecl *ND) const {
-  return isa<NamespaceDecl>(ND) || isa<NamespaceAliasDecl>(ND);
+  return isa<NamespaceDecl>(ND->getUnderlyingDecl());
 }
 
 /// \brief Determines whether the given declaration is a type.
 bool ResultBuilder::IsType(const NamedDecl *ND) const {
-  if (const UsingShadowDecl *Using = dyn_cast<UsingShadowDecl>(ND))
-    ND = Using->getTargetDecl();
-  
+  ND = ND->getUnderlyingDecl();
   return isa<TypeDecl>(ND) || isa<ObjCInterfaceDecl>(ND);
 }
 
@@ -1157,11 +1156,9 @@ bool ResultBuilder::IsType(const NamedDecl *ND) const {
 /// "." or "->".  Only value declarations, nested name specifiers, and
 /// using declarations thereof should show up.
 bool ResultBuilder::IsMember(const NamedDecl *ND) const {
-  if (const UsingShadowDecl *Using = dyn_cast<UsingShadowDecl>(ND))
-    ND = Using->getTargetDecl();
-
+  ND = ND->getUnderlyingDecl();
   return isa<ValueDecl>(ND) || isa<FunctionTemplateDecl>(ND) ||
-    isa<ObjCPropertyDecl>(ND);
+         isa<ObjCPropertyDecl>(ND);
 }
 
 static bool isObjCReceiverType(ASTContext &C, QualType T) {
@@ -3036,6 +3033,7 @@ CXCursorKind clang::getCursorKindForDecl(const Decl *D) {
     case Decl::ParmVar:            return CXCursor_ParmDecl;
     case Decl::Typedef:            return CXCursor_TypedefDecl;
     case Decl::TypeAlias:          return CXCursor_TypeAliasDecl;
+    case Decl::TypeAliasTemplate:  return CXCursor_TypeAliasTemplateDecl;
     case Decl::Var:                return CXCursor_VarDecl;
     case Decl::Namespace:          return CXCursor_Namespace;
     case Decl::NamespaceAlias:     return CXCursor_NamespaceAlias;
@@ -3376,7 +3374,7 @@ void Sema::CodeCompleteOrdinaryName(Scope *S,
   case PCC_Statement:
   case PCC_RecoveryInFunction:
     if (S->getFnParent())
-      AddPrettyFunctionResults(PP.getLangOpts(), Results);        
+      AddPrettyFunctionResults(getLangOpts(), Results);
     break;
     
   case PCC_Namespace:
@@ -3520,7 +3518,7 @@ void Sema::CodeCompleteExpression(Scope *S,
   if (S->getFnParent() && 
       !Data.ObjCCollection && 
       !Data.IntegralConstantExpression)
-    AddPrettyFunctionResults(PP.getLangOpts(), Results);        
+    AddPrettyFunctionResults(getLangOpts(), Results);
 
   if (CodeCompleter->includeMacros())
     AddMacroResults(PP, Results, false, PreferredTypeIsPointer);
@@ -3572,7 +3570,7 @@ static void AddObjCProperties(const CodeCompletionContext &CCContext,
   Container = getContainerDef(Container);
   
   // Add properties in this container.
-  for (const auto *P : Container->properties())
+  for (const auto *P : Container->instance_properties())
     if (AddedProperties.insert(P->getIdentifier()).second)
       Results.MaybeAddResult(Result(P, Results.getBasePriority(P), nullptr),
                              CurContext);
@@ -3820,6 +3818,10 @@ void Sema::CodeCompleteTypeQualifiers(DeclSpec &DS) {
                             Results.data(), Results.size());
 }
 
+void Sema::CodeCompleteBracketDeclarator(Scope *S) {
+  CodeCompleteExpression(S, QualType(getASTContext().getSizeType()));
+}
+
 void Sema::CodeCompleteCase(Scope *S) {
   if (getCurFunction()->SwitchStack.empty() || !CodeCompleter)
     return;
@@ -4051,7 +4053,7 @@ void Sema::CodeCompleteCall(Scope *S, Expr *Fn, ArrayRef<Expr *> Args) {
       // If expression's type is CXXRecordDecl, it may overload the function
       // call operator, so we check if it does and add them as candidates.
       // A complete type is needed to lookup for member function call operators.
-      if (!RequireCompleteType(Loc, NakedFn->getType(), 0)) {
+      if (isCompleteType(Loc, NakedFn->getType())) {
         DeclarationName OpName = Context.DeclarationNames
                                  .getCXXOperatorName(OO_Call);
         LookupResult R(*this, OpName, Loc, LookupOrdinaryName);
@@ -4093,7 +4095,7 @@ void Sema::CodeCompleteConstructor(Scope *S, QualType Type, SourceLocation Loc,
     return;
 
   // A complete type is needed to lookup for constructors.
-  if (RequireCompleteType(Loc, Type, 0))
+  if (!isCompleteType(Loc, Type))
     return;
 
   CXXRecordDecl *RD = Type->getAsCXXRecordDecl();
@@ -4205,7 +4207,7 @@ void Sema::CodeCompleteAfterIf(Scope *S) {
   Results.ExitScope();
   
   if (S->getFnParent())
-    AddPrettyFunctionResults(PP.getLangOpts(), Results);        
+    AddPrettyFunctionResults(getLangOpts(), Results);
   
   if (CodeCompleter->includeMacros())
     AddMacroResults(PP, Results, false);
@@ -4912,7 +4914,7 @@ void Sema::CodeCompleteObjCPropertyFlags(Scope *S, ObjCDeclSpec &ODS) {
     Results.AddResult(CodeCompletionResult("atomic"));
 
   // Only suggest "weak" if we're compiling for ARC-with-weak-references or GC.
-  if (getLangOpts().ObjCARCWeak || getLangOpts().getGC() != LangOptions::NonGC)
+  if (getLangOpts().ObjCWeak || getLangOpts().getGC() != LangOptions::NonGC)
     if (!ObjCPropertyFlagConflicts(Attributes, ObjCDeclSpec::DQ_PR_weak))
       Results.AddResult(CodeCompletionResult("weak"));
 
@@ -5925,8 +5927,8 @@ static void AddProtocolResults(DeclContext *Ctx, DeclContext *CurContext,
   }
 }
 
-void Sema::CodeCompleteObjCProtocolReferences(IdentifierLocPair *Protocols,
-                                              unsigned NumProtocols) {
+void Sema::CodeCompleteObjCProtocolReferences(
+                                        ArrayRef<IdentifierLocPair> Protocols) {
   ResultBuilder Results(*this, CodeCompleter->getAllocator(),
                         CodeCompleter->getCodeCompletionTUInfo(),
                         CodeCompletionContext::CCC_ObjCProtocolName);
@@ -5937,9 +5939,9 @@ void Sema::CodeCompleteObjCProtocolReferences(IdentifierLocPair *Protocols,
     // Tell the result set to ignore all of the protocols we have
     // already seen.
     // FIXME: This doesn't work when caching code-completion results.
-    for (unsigned I = 0; I != NumProtocols; ++I)
-      if (ObjCProtocolDecl *Protocol = LookupProtocol(Protocols[I].first,
-                                                      Protocols[I].second))
+    for (const IdentifierLocPair &Pair : Protocols)
+      if (ObjCProtocolDecl *Protocol = LookupProtocol(Pair.first,
+                                                      Pair.second))
         Results.Ignore(Protocol);
 
     // Add all protocols.
@@ -6191,7 +6193,7 @@ void Sema::CodeCompleteObjCPropertySynthesizeIvar(Scope *S,
   // Figure out which interface we're looking into.
   ObjCInterfaceDecl *Class = nullptr;
   if (ObjCImplementationDecl *ClassImpl
-                                 = dyn_cast<ObjCImplementationDecl>(Container))  
+                                 = dyn_cast<ObjCImplementationDecl>(Container))
     Class = ClassImpl->getClassInterface();
   else
     Class = cast<ObjCCategoryImplDecl>(Container)->getCategoryDecl()
@@ -6200,8 +6202,8 @@ void Sema::CodeCompleteObjCPropertySynthesizeIvar(Scope *S,
   // Determine the type of the property we're synthesizing.
   QualType PropertyType = Context.getObjCIdType();
   if (Class) {
-    if (ObjCPropertyDecl *Property
-                              = Class->FindPropertyDeclaration(PropertyName)) {
+    if (ObjCPropertyDecl *Property = Class->FindPropertyDeclaration(
+            PropertyName, ObjCPropertyQueryKind::OBJC_PR_query_instance)) {
       PropertyType 
         = Property->getType().getNonReferenceType().getUnqualifiedType();
       
@@ -7180,7 +7182,7 @@ void Sema::CodeCompleteObjCMethodDecl(Scope *S,
         Containers.push_back(Cat);
     
     for (unsigned I = 0, N = Containers.size(); I != N; ++I)
-      for (auto *P : Containers[I]->properties())
+      for (auto *P : Containers[I]->instance_properties())
         AddObjCKeyValueCompletions(P, IsInstanceMethod, ReturnType, Context, 
                                    KnownSelectors, Results);
   }

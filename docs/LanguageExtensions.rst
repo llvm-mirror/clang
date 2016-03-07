@@ -415,7 +415,7 @@ dash indicates that an operation is not accepted according to a corresponding
 specification.
 
 ============================== ======= ======= ======= =======
-         Opeator               OpenCL  AltiVec   GCC    NEON
+         Operator              OpenCL  AltiVec   GCC    NEON
 ============================== ======= ======= ======= =======
 []                               yes     yes     yes     --
 unary operators +, --            yes     yes     yes     --
@@ -1017,8 +1017,8 @@ The following type trait primitives are supported by Clang:
   ``argtypes...`` such that no non-trivial functions are called as part of
   that initialization.  This trait is required to implement the C++11 standard
   library.
-* ``__is_destructible`` (MSVC 2013): partially implemented
-* ``__is_nothrow_destructible`` (MSVC 2013): partially implemented
+* ``__is_destructible`` (MSVC 2013)
+* ``__is_nothrow_destructible`` (MSVC 2013)
 * ``__is_nothrow_assignable`` (MSVC 2013, clang)
 * ``__is_constructible`` (MSVC 2013, clang)
 * ``__is_nothrow_constructible`` (MSVC 2013, clang)
@@ -1540,6 +1540,33 @@ takes no arguments and produces a void result.
 
 Query for this feature with ``__has_builtin(__builtin_unreachable)``.
 
+``__builtin_unpredictable``
+---------------------------
+
+``__builtin_unpredictable`` is used to indicate that a branch condition is
+unpredictable by hardware mechanisms such as branch prediction logic.
+
+**Syntax**:
+
+.. code-block:: c++
+
+    __builtin_unpredictable(long long)
+
+**Example of use**:
+
+.. code-block:: c++
+
+  if (__builtin_unpredictable(x > 0)) {
+     foo();
+  }
+
+**Description**:
+
+The ``__builtin_unpredictable()`` builtin is expected to be used with control
+flow conditions such as in ``if`` and ``switch`` statements.
+
+Query for this feature with ``__has_builtin(__builtin_unpredictable)``.
+
 ``__sync_swap``
 ---------------
 
@@ -1652,17 +1679,20 @@ an example of their usage:
   errorcode_t security_critical_application(...) {
     unsigned x, y, result;
     ...
-    if (__builtin_umul_overflow(x, y, &result))
+    if (__builtin_mul_overflow(x, y, &result))
       return kErrorCodeHackers;
     ...
     use_multiply(result);
     ...
   }
 
-A complete enumeration of the builtins are:
+Clang provides the following checked arithmetic builtins:
 
 .. code-block:: c
 
+  bool __builtin_add_overflow   (type1 x, type2 y, type3 *sum);
+  bool __builtin_sub_overflow   (type1 x, type2 y, type3 *diff);
+  bool __builtin_mul_overflow   (type1 x, type2 y, type3 *prod);
   bool __builtin_uadd_overflow  (unsigned x, unsigned y, unsigned *sum);
   bool __builtin_uaddl_overflow (unsigned long x, unsigned long y, unsigned long *sum);
   bool __builtin_uaddll_overflow(unsigned long long x, unsigned long long y, unsigned long long *sum);
@@ -1682,6 +1712,39 @@ A complete enumeration of the builtins are:
   bool __builtin_smull_overflow (long x, long y, long *prod);
   bool __builtin_smulll_overflow(long long x, long long y, long long *prod);
 
+Each builtin performs the specified mathematical operation on the
+first two arguments and stores the result in the third argument.  If
+possible, the result will be equal to mathematically-correct result
+and the builtin will return 0.  Otherwise, the builtin will return
+1 and the result will be equal to the unique value that is equivalent
+to the mathematically-correct result modulo two raised to the *k*
+power, where *k* is the number of bits in the result type.  The
+behavior of these builtins is well-defined for all argument values.
+
+The first three builtins work generically for operands of any integer type,
+including boolean types.  The operands need not have the same type as each
+other, or as the result.  The other builtins may implicitly promote or
+convert their operands before performing the operation.
+
+Query for this feature with ``__has_builtin(__builtin_add_overflow)``, etc.
+
+Floating point builtins
+---------------------------------------
+
+``__builtin_canonicalize``
+--------------------------
+
+.. code-block:: c
+
+   double __builtin_canonicalize(double);
+   float __builtin_canonicalizef(float);
+   long double__builtin_canonicalizel(long double);
+
+Returns the platform specific canonical encoding of a floating point
+number. This canonicalization is useful for implementing certain
+numeric primitives such as frexp. See `LLVM canonicalize intrinsic
+<http://llvm.org/docs/LangRef.html#llvm-canonicalize-intrinsic>`_ for
+more information on the semantics.
 
 .. _langext-__c11_atomic:
 
@@ -1733,6 +1796,7 @@ instructions for implementing atomic operations.
   void __builtin_arm_clrex(void);
 
 The types ``T`` currently supported are:
+
 * Integer types with width at most 64 bits (or 128 bits on AArch64).
 * Floating-point types
 * Pointer types.
@@ -1750,6 +1814,26 @@ care should be exercised.
 
 For these reasons the higher level atomic primitives should be preferred where
 possible.
+
+Non-temporal load/store builtins
+--------------------------------
+
+Clang provides overloaded builtins allowing generation of non-temporal memory
+accesses.
+
+.. code-block:: c
+
+  T __builtin_nontemporal_load(T *addr);
+  void __builtin_nontemporal_store(T value, T *addr);
+
+The types ``T`` currently supported are:
+
+* Integer types.
+* Floating-point types.
+* Vector types.
+
+Note that the compiler does not guarantee that non-temporal loads or stores
+will be used.
 
 Non-standard C++11 Attributes
 =============================
@@ -1791,7 +1875,7 @@ in the `ARM C Language Extensions Release 2.0
 <http://infocenter.arm.com/help/topic/com.arm.doc.ihi0053c/IHI0053C_acle_2_0.pdf>`_.
 Note that these intrinsics are implemented as motion barriers that block
 reordering of memory accesses and side effect instructions. Other instructions
-like simple arithmatic may be reordered around the intrinsic. If you expect to
+like simple arithmetic may be reordered around the intrinsic. If you expect to
 have no reordering at all, use inline assembly instead.
 
 X86/X86-64 Language Extensions
@@ -1993,11 +2077,23 @@ iterations. Full unrolling is only possible if the loop trip count is known at
 compile time. Partial unrolling replicates the loop body within the loop and
 reduces the trip count.
 
-If ``unroll(full)`` is specified the unroller will attempt to fully unroll the
+If ``unroll(enable)`` is specified the unroller will attempt to fully unroll the
 loop if the trip count is known at compile time. If the fully unrolled code size
 is greater than an internal limit the loop will be partially unrolled up to this
-limit. If the loop count is not known at compile time the loop will not be
-unrolled.
+limit. If the trip count is not known at compile time the loop will be partially
+unrolled with a heuristically chosen unroll factor.
+
+.. code-block:: c++
+
+  #pragma clang loop unroll(enable)
+  for(...) {
+    ...
+  }
+
+If ``unroll(full)`` is specified the unroller will attempt to fully unroll the
+loop if the trip count is known at compile time identically to
+``unroll(enable)``. However, with ``unroll(full)`` the loop will not be unrolled
+if the loop count is not known at compile time.
 
 .. code-block:: c++
 
@@ -2009,7 +2105,7 @@ unrolled.
 The unroll count can be specified explicitly with ``unroll_count(_value_)`` where
 _value_ is a positive integer. If this value is greater than the trip count the
 loop will be fully unrolled. Otherwise the loop is partially unrolled subject
-to the same code size limit as with ``unroll(full)``.
+to the same code size limit as with ``unroll(enable)``.
 
 .. code-block:: c++
 

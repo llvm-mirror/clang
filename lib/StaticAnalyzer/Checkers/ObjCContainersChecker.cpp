@@ -79,7 +79,6 @@ void ObjCContainersChecker::addSizeInfo(const Expr *Array, const Expr *Size,
 
   C.addTransition(
       State->set<ArraySizeMap>(ArraySym, SizeV.castAs<DefinedSVal>()));
-  return;
 }
 
 void ObjCContainersChecker::checkPostStmt(const CallExpr *CE,
@@ -133,13 +132,13 @@ void ObjCContainersChecker::checkPreStmt(const CallExpr *CE,
     if (IdxVal.isUnknownOrUndef())
       return;
     DefinedSVal Idx = IdxVal.castAs<DefinedSVal>();
-    
+
     // Now, check if 'Idx in [0, Size-1]'.
     const QualType T = IdxExpr->getType();
     ProgramStateRef StInBound = State->assumeInBound(Idx, *Size, true, T);
     ProgramStateRef StOutBound = State->assumeInBound(Idx, *Size, false, T);
     if (StOutBound && !StInBound) {
-      ExplodedNode *N = C.generateSink(StOutBound);
+      ExplodedNode *N = C.generateErrorNode(StOutBound);
       if (!N)
         return;
       initBugType();
@@ -156,10 +155,7 @@ ObjCContainersChecker::checkPointerEscape(ProgramStateRef State,
                                           const InvalidatedSymbols &Escaped,
                                           const CallEvent *Call,
                                           PointerEscapeKind Kind) const {
-  for (InvalidatedSymbols::const_iterator I = Escaped.begin(),
-                                          E = Escaped.end();
-                                          I != E; ++I) {
-    SymbolRef Sym = *I;
+  for (const auto &Sym : Escaped) {
     // When a symbol for a mutable array escapes, we can't reason precisely
     // about its size any more -- so remove it from the map.
     // Note that we aren't notified here when a CFMutableArrayRef escapes as a
@@ -169,6 +165,7 @@ ObjCContainersChecker::checkPointerEscape(ProgramStateRef State,
   }
   return State;
 }
+
 /// Register checker.
 void ento::registerObjCContainersChecker(CheckerManager &mgr) {
   mgr.registerChecker<ObjCContainersChecker>();

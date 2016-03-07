@@ -14,6 +14,7 @@
 #ifndef LLVM_CLANG_AST_MANGLE_H
 #define LLVM_CLANG_AST_MANGLE_H
 
+#include "clang/AST/Decl.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/ABI.h"
 #include "llvm/ADT/DenseMap.h"
@@ -123,6 +124,7 @@ public:
   void mangleBlock(const DeclContext *DC, const BlockDecl *BD,
                    raw_ostream &Out);
 
+  void mangleObjCMethodNameWithoutSize(const ObjCMethodDecl *MD, raw_ostream &);
   void mangleObjCMethodName(const ObjCMethodDecl *MD, raw_ostream &);
 
   virtual void mangleStaticGuardVariable(const VarDecl *D, raw_ostream &) = 0;
@@ -143,9 +145,6 @@ public:
   /// TODO: Extend this to internal types by generating names that are unique
   /// across translation units so it can be used with LTO.
   virtual void mangleTypeName(QualType T, raw_ostream &) = 0;
-
-  virtual void mangleCXXVTableBitSet(const CXXRecordDecl *RD,
-                                     raw_ostream &) = 0;
 
   /// @}
 };
@@ -218,9 +217,6 @@ public:
                                       CXXCtorType CT, uint32_t Size,
                                       uint32_t NVOffset, int32_t VBPtrOffset,
                                       uint32_t VBIndex, raw_ostream &Out) = 0;
-
-  virtual void mangleCXXCatchHandlerType(QualType T, uint32_t Flags,
-                                         raw_ostream &Out) = 0;
 
   virtual void mangleCXXRTTIBaseClassDescriptor(
       const CXXRecordDecl *Derived, uint32_t NVOffset, int32_t VBPtrOffset,

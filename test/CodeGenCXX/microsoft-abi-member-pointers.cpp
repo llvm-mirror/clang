@@ -3,16 +3,29 @@
 // RUN: %clang_cc1 -std=c++11 -Wno-uninitialized -fno-rtti -emit-llvm %s -o - -triple=i386-pc-win32 -DINCOMPLETE_VIRTUAL -fms-extensions -verify
 // RUN: %clang_cc1 -std=c++11 -Wno-uninitialized -fno-rtti -emit-llvm %s -o - -triple=i386-pc-win32 -DINCOMPLETE_VIRTUAL -DMEMFUN -fms-extensions -verify
 
+struct PR26313_Y;
+typedef void (PR26313_Y::*PR26313_FUNC)();
+struct PR26313_X {
+  PR26313_FUNC *ptr;
+  PR26313_X();
+};
+PR26313_X::PR26313_X() {}
+void PR26313_f(PR26313_FUNC *p) { delete p; }
+
+struct PR26313_Z;
+int PR26313_Z::**a = nullptr;
+int PR26313_Z::*b = *a;
+// CHECK-DAG: @"\01?a@@3PAPQPR26313_Z@@HA" = global %0* null, align 4
+// CHECK-DAG: @"\01?b@@3PQPR26313_Z@@HQ1@" = global { i32, i32, i32 } { i32 0, i32 0, i32 -1 }, align 4
+
 namespace PR20947 {
 struct A;
 int A::**a = nullptr;
-// CHECK: %[[opaque0:.*]] = type opaque
-// CHECK: %[[opaque1:.*]] = type opaque
-// CHECK: @"\01?a@PR20947@@3PAPQA@1@HA" = global %[[opaque0]]* null, align 4
+// CHECK-DAG: @"\01?a@PR20947@@3PAPQA@1@HA" = global %{{.*}}* null, align 4
 
 struct B;
 int B::*&b = b;
-// CHECK: @"\01?b@PR20947@@3AAPQB@1@HA" = global %[[opaque1]]* null, align 4
+// CHECK-DAG: @"\01?b@PR20947@@3AAPQB@1@HA" = global %{{.*}}* null, align 4
 }
 
 namespace PR20017 {
@@ -745,4 +758,37 @@ void foo_fun() {
   // CHECK: store i8* bitcast (void (%class.CA*)* @"\01?OnHelp@CA@@QAEXXZ" to i8*), i8**
   f func = (f)&CA::OnHelp;
 }
+namespace PR24703 {
+struct S;
 
+void f(int S::*&p) {}
+// CHECK-LABEL: define void @"\01?f@PR24703@@YAXAAPQS@1@H@Z"(
+}
+
+namespace ReferenceToMPTWithIncompleteClass {
+struct S;
+struct J;
+struct K;
+extern K *k;
+
+// CHECK-LABEL: @"\01?f@ReferenceToMPTWithIncompleteClass@@YAIAAPQS@1@H@Z"(
+// CHECK: ret i32 12
+unsigned f(int S::*&p) { return sizeof p; }
+
+// CHECK-LABEL: @"\01?g@ReferenceToMPTWithIncompleteClass@@YA_NAAPQJ@1@H0@Z"(
+bool g(int J::*&p, int J::*&q) { return p == q; }
+
+// CHECK-LABEL: @"\01?h@ReferenceToMPTWithIncompleteClass@@YAHAAPQK@1@H@Z"(
+int h(int K::*&p) { return k->*p; }
+}
+
+namespace PMFInTemplateArgument {
+template <class C, int (C::*M)(int)>
+void JSMethod();
+class A {
+  int printd(int);
+  void printd();
+};
+void A::printd() { JSMethod<A, &A::printd>(); }
+// CHECK-LABEL: @"\01??$JSMethod@VA@PMFInTemplateArgument@@$1?printd@12@AAEHH@Z@PMFInTemplateArgument@@YAXXZ"(
+}

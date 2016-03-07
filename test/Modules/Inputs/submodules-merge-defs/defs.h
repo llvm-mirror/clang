@@ -5,10 +5,17 @@ class B {
   struct Inner1 {};
 public:
   struct Inner2;
+  struct Inner3;
   template<typename T> void f();
+};
+struct BFriend {
+  friend class B::Inner3;
+private:
+  struct Inner3Base {};
 };
 // Check that lookup and access checks are performed in the right context.
 struct B::Inner2 : Inner1 {};
+struct B::Inner3 : BFriend::Inner3Base {};
 template<typename T> void B::f() {}
 template<> inline void B::f<int>() {}
 
@@ -124,3 +131,10 @@ namespace ClassTemplatePartialSpec {
   };
   template<typename A, int B> template<typename C> F<A[B]>::F() {}
 }
+
+struct MemberClassTemplate {
+  template<typename T> struct A;
+};
+template<typename T> struct MemberClassTemplate::A {};
+template<typename T> struct MemberClassTemplate::A<T*> {};
+template<> struct MemberClassTemplate::A<int> {};

@@ -51,13 +51,10 @@ class SimpleStreamChecker : public Checker<check::PostCall,
                                            check::PreCall,
                                            check::DeadSymbols,
                                            check::PointerEscape> {
-
-  mutable IdentifierInfo *IIfopen, *IIfclose;
+  CallDescription OpenFn, CloseFn;
 
   std::unique_ptr<BugType> DoubleCloseBugType;
   std::unique_ptr<BugType> LeakBugType;
-
-  void initIdentifierInfo(ASTContext &Ctx) const;
 
   void reportDoubleClose(SymbolRef FileDescSym,
                          const CallEvent &Call,
@@ -92,7 +89,7 @@ public:
 REGISTER_MAP_WITH_PROGRAMSTATE(StreamMap, SymbolRef, StreamState)
 
 namespace {
-class StopTrackingCallback : public SymbolVisitor {
+class StopTrackingCallback final : public SymbolVisitor {
   ProgramStateRef state;
 public:
   StopTrackingCallback(ProgramStateRef st) : state(st) {}
@@ -106,7 +103,7 @@ public:
 } // end anonymous namespace
 
 SimpleStreamChecker::SimpleStreamChecker()
-    : IIfopen(nullptr), IIfclose(nullptr) {
+    : OpenFn("fopen"), CloseFn("fclose", 1) {
   // Initialize the bug types.
   DoubleCloseBugType.reset(
       new BugType(this, "Double fclose", "Unix Stream API Error"));
@@ -119,12 +116,10 @@ SimpleStreamChecker::SimpleStreamChecker()
 
 void SimpleStreamChecker::checkPostCall(const CallEvent &Call,
                                         CheckerContext &C) const {
-  initIdentifierInfo(C.getASTContext());
-
   if (!Call.isGlobalCFunction())
     return;
 
-  if (Call.getCalleeIdentifier() != IIfopen)
+  if (!Call.isCalled(OpenFn))
     return;
 
   // Get the symbolic value corresponding to the file handle.
@@ -140,15 +135,10 @@ void SimpleStreamChecker::checkPostCall(const CallEvent &Call,
 
 void SimpleStreamChecker::checkPreCall(const CallEvent &Call,
                                        CheckerContext &C) const {
-  initIdentifierInfo(C.getASTContext());
-
   if (!Call.isGlobalCFunction())
     return;
 
-  if (Call.getCalleeIdentifier() != IIfclose)
-    return;
-
-  if (Call.getNumArgs() != 1)
+  if (!Call.isCalled(CloseFn))
     return;
 
   // Get the symbolic value corresponding to the file handle.
@@ -200,7 +190,9 @@ void SimpleStreamChecker::checkDeadSymbols(SymbolReaper &SymReaper,
       State = State->remove<StreamMap>(Sym);
   }
 
-  ExplodedNode *N = C.addTransition(State);
+  ExplodedNode *N = C.generateNonFatalErrorNode(State);
+  if (!N)
+    return;
   reportLeaks(LeakedStreams, C, N);
 }
 
@@ -208,7 +200,7 @@ void SimpleStreamChecker::reportDoubleClose(SymbolRef FileDescSym,
                                             const CallEvent &Call,
                                             CheckerContext &C) const {
   // We reached a bug, stop exploring the path here by generating a sink.
-  ExplodedNode *ErrNode = C.generateSink();
+  ExplodedNode *ErrNode = C.generateErrorNode();
   // If we've already reached this node on another path, return.
   if (!ErrNode)
     return;
@@ -271,13 +263,6 @@ SimpleStreamChecker::checkPointerEscape(ProgramStateRef State,
     State = State->remove<StreamMap>(Sym);
   }
   return State;
-}
-
-void SimpleStreamChecker::initIdentifierInfo(ASTContext &Ctx) const {
-  if (IIfopen)
-    return;
-  IIfopen = &Ctx.Idents.get("fopen");
-  IIfclose = &Ctx.Idents.get("fclose");
 }
 
 void ento::registerSimpleStreamChecker(CheckerManager &mgr) {

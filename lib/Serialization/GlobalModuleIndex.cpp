@@ -354,7 +354,7 @@ void GlobalModuleIndex::printStats() {
   std::fprintf(stderr, "\n");
 }
 
-void GlobalModuleIndex::dump() {
+LLVM_DUMP_METHOD void GlobalModuleIndex::dump() {
   llvm::errs() << "*** Global Module Index Dump:\n";
   llvm::errs() << "Module files:\n";
   for (auto &MI : Modules) {
@@ -757,9 +757,7 @@ void GlobalModuleIndexBuilder::writeIndex(llvm::BitstreamWriter &Stream) {
     unsigned IDTableAbbrev = Stream.EmitAbbrev(Abbrev);
 
     // Write the identifier table
-    Record.clear();
-    Record.push_back(IDENTIFIER_INDEX);
-    Record.push_back(BucketOffset);
+    uint64_t Record[] = {IDENTIFIER_INDEX, BucketOffset};
     Stream.EmitRecordWithBlob(IDTableAbbrev, Record, IdentifierTable);
   }
 

@@ -21,13 +21,14 @@
 #include "clang/Basic/TargetCXXABI.h"
 #include "clang/Basic/TargetOptions.h"
 #include "clang/Basic/VersionTuple.h"
-#include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/IR/DataLayout.h"
 #include "llvm/Support/DataTypes.h"
 #include <cassert>
 #include <string>
@@ -74,8 +75,7 @@ protected:
   unsigned short MaxVectorAlign;
   unsigned short MaxTLSAlign;
   unsigned short SimdDefaultAlign;
-  const char *DataLayoutString;
-  const char *UserLabelPrefix;
+  std::unique_ptr<llvm::DataLayout> DataLayout;
   const char *MCountName;
   const llvm::fltSemantics *HalfFormat, *FloatFormat, *DoubleFormat,
     *LongDoubleFormat;
@@ -90,8 +90,14 @@ protected:
   unsigned RealTypeUsesObjCFPRet : 3;
   unsigned ComplexLongDoubleUsesFP2Ret : 1;
 
+  unsigned HasBuiltinMSVaList : 1;
+
   // TargetInfo Constructor.  Default initializes all fields.
   TargetInfo(const llvm::Triple &T);
+
+  void resetDataLayout(StringRef DL) {
+    DataLayout.reset(new llvm::DataLayout(DL));
+  }
 
 public:
   /// \brief Construct a target for the given options.
@@ -106,9 +112,9 @@ public:
   virtual ~TargetInfo();
 
   /// \brief Retrieve the target options.
-  TargetOptions &getTargetOpts() const { 
+  TargetOptions &getTargetOpts() const {
     assert(TargetOpts && "Missing target options");
-    return *TargetOpts; 
+    return *TargetOpts;
   }
 
   ///===---- Target Data Type Query Methods -------------------------------===//
@@ -200,6 +206,9 @@ protected:
   /// zero-length bitfield.
   unsigned UseZeroLengthBitfieldAlignment : 1;
 
+  /// \brief  Whether explicit bit field alignment attributes are honored.
+  unsigned UseExplicitBitFieldAlignment : 1;
+
   /// If non-zero, specifies a fixed alignment value for bitfields that follow
   /// zero length bitfield, regardless of the zero length bitfield type.
   unsigned ZeroLengthBitfieldBoundary;
@@ -255,10 +264,11 @@ public:
   unsigned getTypeWidth(IntType T) const;
 
   /// \brief Return integer type with specified width.
-  IntType getIntTypeByWidth(unsigned BitWidth, bool IsSigned) const;
+  virtual IntType getIntTypeByWidth(unsigned BitWidth, bool IsSigned) const;
 
   /// \brief Return the smallest integer type with at least the specified width.
-  IntType getLeastIntTypeByWidth(unsigned BitWidth, bool IsSigned) const;
+  virtual IntType getLeastIntTypeByWidth(unsigned BitWidth,
+                                         bool IsSigned) const;
 
   /// \brief Return floating point type with specified width.
   RealType getRealTypeByWidth(unsigned BitWidth) const;
@@ -313,7 +323,9 @@ public:
   unsigned getLongLongAlign() const { return LongLongAlign; }
 
   /// \brief Determine whether the __int128 type is supported on this target.
-  virtual bool hasInt128Type() const { return getPointerWidth(0) >= 64; } // FIXME
+  virtual bool hasInt128Type() const {
+    return getPointerWidth(0) >= 64;
+  } // FIXME
 
   /// \brief Return the alignment that is suitable for storing any
   /// object with a fundamental alignment requirement.
@@ -408,22 +420,14 @@ public:
   }
 
   // Return the size of unwind_word for this target.
-  unsigned getUnwindWordWidth() const { return getPointerWidth(0); }
+  virtual unsigned getUnwindWordWidth() const { return getPointerWidth(0); }
 
   /// \brief Return the "preferred" register width on this target.
-  unsigned getRegisterWidth() const {
+  virtual unsigned getRegisterWidth() const {
     // Currently we assume the register width on the target matches the pointer
     // width, we can introduce a new variable for this if/when some target wants
     // it.
     return PointerWidth;
-  }
-
-  /// \brief Returns the default value of the __USER_LABEL_PREFIX__ macro,
-  /// which is the prefix given to user symbols by default.
-  ///
-  /// On most platforms this is "_", but it is "" on some, and "." on others.
-  const char *getUserLabelPrefix() const {
-    return UserLabelPrefix;
   }
 
   /// \brief Returns the name of the mcount instrumentation function.
@@ -459,6 +463,12 @@ public:
   /// a zero length bitfield.
   unsigned getZeroLengthBitfieldBoundary() const {
     return ZeroLengthBitfieldBoundary;
+  }
+
+  /// \brief Check whether explicit bitfield alignment attributes should be
+  //  honored, as in "__attribute__((aligned(2))) int b : 1;".
+  bool useExplicitBitFieldAlignment() const {
+    return UseExplicitBitFieldAlignment;
   }
 
   /// \brief Check whether this target support '\#pragma options align=mac68k'.
@@ -511,8 +521,7 @@ public:
   /// Return information about target-specific builtins for
   /// the current primary target, and info about which builtins are non-portable
   /// across the current set of primary and secondary targets.
-  virtual void getTargetBuiltins(const Builtin::Info *&Records,
-                                 unsigned &NumRecords) const = 0;
+  virtual ArrayRef<Builtin::Info> getTargetBuiltins() const = 0;
 
   /// The __builtin_clz* and __builtin_ctz* built-in
   /// functions are specified to have undefined results for zero inputs, but
@@ -524,6 +533,10 @@ public:
   /// \brief Returns the kind of __builtin_va_list type that should be used
   /// with this target.
   virtual BuiltinVaListKind getBuiltinVaListKind() const = 0;
+
+  /// Returns whether or not type \c __builtin_ms_va_list type is
+  /// available on this target.
+  bool hasBuiltinMSVaList() const { return HasBuiltinMSVaList; }
 
   /// \brief Returns whether the passed in string is a valid clobber in an
   /// inline asm statement.
@@ -625,7 +638,7 @@ public:
     }
 
     /// \brief Indicate that this is an input operand that is tied to
-    /// the specified output operand. 
+    /// the specified output operand.
     ///
     /// Copy over the various constraint information from the output.
     void setTiedOperand(unsigned N, ConstraintInfo &Output) {
@@ -636,12 +649,24 @@ public:
     }
   };
 
+  /// \brief Validate register name used for global register variables.
+  ///
+  /// This function returns true if the register passed in RegName can be used
+  /// for global register variables on this target. In addition, it returns
+  /// true in HasSizeMismatch if the size of the register doesn't match the
+  /// variable size passed in RegSize.
+  virtual bool validateGlobalRegisterVariable(StringRef RegName,
+                                              unsigned RegSize,
+                                              bool &HasSizeMismatch) const {
+    HasSizeMismatch = false;
+    return true;
+  }
+
   // validateOutputConstraint, validateInputConstraint - Checks that
   // a constraint is valid and provides information about it.
   // FIXME: These should return a real error instead of just true/false.
   bool validateOutputConstraint(ConstraintInfo &Info) const;
-  bool validateInputConstraint(ConstraintInfo *OutputConstraints,
-                               unsigned NumOutputs,
+  bool validateInputConstraint(MutableArrayRef<ConstraintInfo> OutputConstraints,
                                ConstraintInfo &info) const;
 
   virtual bool validateOutputSize(StringRef /*Constraint*/,
@@ -660,9 +685,13 @@ public:
                              std::string &/*SuggestedModifier*/) const {
     return true;
   }
+  virtual bool
+  validateAsmConstraint(const char *&Name,
+                        TargetInfo::ConstraintInfo &info) const = 0;
+
   bool resolveSymbolicName(const char *&Name,
-                           ConstraintInfo *OutputConstraints,
-                           unsigned NumOutputs, unsigned &Index) const;
+                           ArrayRef<ConstraintInfo> OutputConstraints,
+                           unsigned &Index) const;
 
   // Constraint parm will be left pointing at the last character of
   // the constraint.  In practice, it won't be changed unless the
@@ -674,24 +703,23 @@ public:
     return std::string(1, *Constraint);
   }
 
+  /// \brief Returns a string of target-specific clobbers, in LLVM format.
+  virtual const char *getClobbers() const = 0;
+
   /// \brief Returns true if NaN encoding is IEEE 754-2008.
   /// Only MIPS allows a different encoding.
   virtual bool isNan2008() const {
     return true;
   }
 
-  /// \brief Returns a string of target-specific clobbers, in LLVM format.
-  virtual const char *getClobbers() const = 0;
-
-
   /// \brief Returns the target triple of the primary target.
   const llvm::Triple &getTriple() const {
     return Triple;
   }
 
-  const char *getDataLayoutString() const {
-    assert(DataLayoutString && "Uninitialized DataLayoutString!");
-    return DataLayoutString;
+  const llvm::DataLayout &getDataLayout() const {
+    assert(DataLayout && "Uninitialized DataLayout!");
+    return *DataLayout;
   }
 
   struct GCCRegAlias {
@@ -737,10 +765,13 @@ public:
   /// language options which change the target configuration.
   virtual void adjust(const LangOptions &Opts);
 
-  /// \brief Get the default set of target features for the CPU;
-  /// this should include all legal feature strings on the target.
-  virtual void getDefaultFeatures(llvm::StringMap<bool> &Features) const {
-  }
+  /// \brief Initialize the map with the default set of target features for the
+  /// CPU this should include all legal feature strings on the target.
+  ///
+  /// \return False on error (invalid features).
+  virtual bool initFeatureMap(llvm::StringMap<bool> &Features,
+                              DiagnosticsEngine &Diags, StringRef CPU,
+                              const std::vector<std::string> &FeatureVec) const;
 
   /// \brief Get the ABI currently in use.
   virtual StringRef getABI() const { return StringRef(); }
@@ -771,23 +802,6 @@ public:
     return false;
   }
 
-  /// \brief Use this specified C++ ABI.
-  ///
-  /// \return False on error (invalid C++ ABI name).
-  bool setCXXABI(llvm::StringRef name) {
-    TargetCXXABI ABI;
-    if (!ABI.tryParse(name)) return false;
-    return setCXXABI(ABI);
-  }
-
-  /// \brief Set the C++ ABI to be used by this implementation.
-  ///
-  /// \return False on error (ABI not valid on this target)
-  virtual bool setCXXABI(TargetCXXABI ABI) {
-    TheCXXABI = ABI;
-    return true;
-  }
-
   /// \brief Enable or disable a specific target feature;
   /// the feature name must be valid.
   virtual void setFeatureEnabled(llvm::StringMap<bool> &Features,
@@ -803,6 +817,8 @@ public:
   ///
   /// The target may modify the features list, to change which options are
   /// passed onwards to the backend.
+  /// FIXME: This part should be fixed so that we can change handleTargetFeatures
+  /// to merely a TargetInfo initialization routine.
   ///
   /// \return  False on error.
   virtual bool handleTargetFeatures(std::vector<std::string> &Features,
@@ -818,7 +834,7 @@ public:
   // \brief Validate the contents of the __builtin_cpu_supports(const char*)
   // argument.
   virtual bool validateCpuSupports(StringRef Name) const { return false; }
-  
+
   // \brief Returns maximal number of args passed in registers.
   unsigned getRegParmMax() const {
     assert(RegParmMax < 7 && "RegParmMax value is larger than AST can handle");
@@ -902,7 +918,7 @@ public:
   };
 
   /// \brief Determines whether a given calling convention is valid for the
-  /// target. A calling convention can either be accepted, produce a warning 
+  /// target. A calling convention can either be accepted, produce a warning
   /// and be substituted with the default calling convention, or (someday)
   /// produce an error (such as using thiscall on a non-instance function).
   virtual CallingConvCheckResult checkCallingConvention(CallingConv CC) const {
@@ -920,6 +936,9 @@ public:
     return false;
   }
 
+  /// \brief Whether target allows to overalign ABI-specified prefered alignment
+  virtual bool allowsLargerPreferedTypeAlignment() const { return true; }
+
 protected:
   virtual uint64_t getPointerWidthV(unsigned AddrSpace) const {
     return PointerWidth;
@@ -930,17 +949,11 @@ protected:
   virtual enum IntType getPtrDiffTypeV(unsigned AddrSpace) const {
     return PtrDiffType;
   }
-  virtual void getGCCRegNames(const char * const *&Names,
-                              unsigned &NumNames) const = 0;
-  virtual void getGCCRegAliases(const GCCRegAlias *&Aliases,
-                                unsigned &NumAliases) const = 0;
-  virtual void getGCCAddlRegNames(const AddlRegName *&Addl,
-                                  unsigned &NumAddl) const {
-    Addl = nullptr;
-    NumAddl = 0;
+  virtual ArrayRef<const char *> getGCCRegNames() const = 0;
+  virtual ArrayRef<GCCRegAlias> getGCCRegAliases() const = 0;
+  virtual ArrayRef<AddlRegName> getGCCAddlRegNames() const {
+    return None;
   }
-  virtual bool validateAsmConstraint(const char *&Name,
-                                     TargetInfo::ConstraintInfo &info) const= 0;
 };
 
 }  // end namespace clang

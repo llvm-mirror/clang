@@ -78,6 +78,9 @@ class CompilerInstance : public ModuleLoader {
   /// The target being compiled for.
   IntrusiveRefCntPtr<TargetInfo> Target;
 
+  /// Auxiliary Target info.
+  IntrusiveRefCntPtr<TargetInfo> AuxTarget;
+
   /// The virtual file system.
   IntrusiveRefCntPtr<vfs::FileSystem> VirtualFileSystem;
 
@@ -348,8 +351,17 @@ public:
     return *Target;
   }
 
-  /// Replace the current diagnostics engine.
+  /// Replace the current Target.
   void setTarget(TargetInfo *Value);
+
+  /// }
+  /// @name AuxTarget Info
+  /// {
+
+  TargetInfo *getAuxTarget() const { return AuxTarget.get(); }
+
+  /// Replace the current AuxTarget.
+  void setAuxTarget(TargetInfo *Value);
 
   /// }
   /// @name Virtual File System
@@ -643,6 +655,7 @@ public:
       StringRef Path, StringRef Sysroot, bool DisablePCHValidation,
       bool AllowPCHWithCompilerErrors, Preprocessor &PP, ASTContext &Context,
       const PCHContainerReader &PCHContainerRdr,
+      ArrayRef<IntrusiveRefCntPtr<ModuleFileExtension>> Extensions,
       void *DeserializationListener, bool OwnDeserializationListener,
       bool Preamble, bool UseGlobalModuleIndex);
 
@@ -735,10 +748,11 @@ public:
   ///
   /// \return True on success.
   static bool InitializeSourceManager(const FrontendInputFile &Input,
-                DiagnosticsEngine &Diags,
-                FileManager &FileMgr,
-                SourceManager &SourceMgr,
-                const FrontendOptions &Opts);
+                                      DiagnosticsEngine &Diags,
+                                      FileManager &FileMgr,
+                                      SourceManager &SourceMgr,
+                                      HeaderSearch *HS,
+                                      const FrontendOptions &Opts);
 
   /// }
 

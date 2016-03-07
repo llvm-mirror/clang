@@ -27,6 +27,7 @@ struct ExplicitSpec_NotImported {};
 #define USEVAR(var) USEVARTYPE(int, var)
 #define USE(func) void UNIQ(use)() { func(); }
 #define USEMEMFUNC(class, func) void (class::*UNIQ(use)())() { return &class::func; }
+#define USESTATICMEMFUNC(class, func) void (*UNIQ(use)())() { return &class::func; }
 #define USECLASS(class) void UNIQ(USE)() { class x; }
 #define USECOPYASSIGN(class) class& (class::*UNIQ(use)())(class&) { return &class::operator=; }
 #define USEMOVEASSIGN(class) class& (class::*UNIQ(use)())(class&&) { return &class::operator=; }
@@ -86,7 +87,7 @@ USEVAR(GlobalRedecl3)
 namespace ns { __declspec(dllimport) int ExternalGlobal; }
 USEVAR(ns::ExternalGlobal)
 
-int f();
+int __declspec(dllimport) f();
 // MO1-DAG: @"\01?x@?1??inlineStaticLocalsFunc@@YAHXZ@4HA" = available_externally dllimport global i32 0
 // MO1-DAG: @"\01??_B?1??inlineStaticLocalsFunc@@YAHXZ@51" = available_externally dllimport global i32 0
 inline int __declspec(dllimport) inlineStaticLocalsFunc() {
@@ -314,6 +315,46 @@ void UNIQ(use)() { ::operator new(42); }
 namespace ns { __declspec(dllimport) void externalFunc(); }
 USE(ns::externalFunc)
 
+// A dllimport function referencing non-imported vars or functions must not be available_externally.
+__declspec(dllimport) int ImportedVar;
+int NonImportedVar;
+__declspec(dllimport) int ImportedFunc();
+int NonImportedFunc();
+__declspec(dllimport) inline int ReferencingImportedVar() { return ImportedVar; }
+// MO1-DAG: define available_externally dllimport i32 @"\01?ReferencingImportedVar@@YAHXZ"
+__declspec(dllimport) inline int ReferencingNonImportedVar() { return NonImportedVar; }
+// MO1-DAG: declare dllimport i32 @"\01?ReferencingNonImportedVar@@YAHXZ"()
+__declspec(dllimport) inline int ReferencingImportedFunc() { return ImportedFunc(); }
+// MO1-DAG: define available_externally dllimport i32 @"\01?ReferencingImportedFunc@@YAHXZ"
+__declspec(dllimport) inline int ReferencingNonImportedFunc() { return NonImportedFunc(); }
+// MO1-DAG: declare dllimport i32 @"\01?ReferencingNonImportedFunc@@YAHXZ"()
+USE(ReferencingImportedVar)
+USE(ReferencingNonImportedVar)
+USE(ReferencingImportedFunc)
+USE(ReferencingNonImportedFunc)
+// References to operator new and delete count too, despite not being DeclRefExprs.
+__declspec(dllimport) inline int *ReferencingNonImportedNew() { return new int[2]; }
+// MO1-DAG: declare dllimport i32* @"\01?ReferencingNonImportedNew@@YAPAHXZ"
+__declspec(dllimport) inline int *ReferencingNonImportedDelete() { delete (int*)nullptr; }
+// MO1-DAG: declare dllimport i32* @"\01?ReferencingNonImportedDelete@@YAPAHXZ"
+USE(ReferencingNonImportedNew)
+USE(ReferencingNonImportedDelete)
+__declspec(dllimport) void* operator new[](__SIZE_TYPE__);
+__declspec(dllimport) void operator delete(void*);
+__declspec(dllimport) inline int *ReferencingImportedNew() { return new int[2]; }
+// MO1-DAG: define available_externally dllimport i32* @"\01?ReferencingImportedNew@@YAPAHXZ"
+__declspec(dllimport) inline int *ReferencingImportedDelete() { delete (int*)nullptr; }
+// MO1-DAG: define available_externally dllimport i32* @"\01?ReferencingImportedDelete@@YAPAHXZ"
+USE(ReferencingImportedNew)
+USE(ReferencingImportedDelete)
+
+// A dllimport function with a TLS variable must not be available_externally.
+__declspec(dllimport) inline void FunctionWithTLSVar() { static __thread int x = 42; }
+// MO1-DAG: declare dllimport void @"\01?FunctionWithTLSVar@@YAXXZ"
+__declspec(dllimport) inline void FunctionWithNormalVar() { static int x = 42; }
+// MO1-DAG: define available_externally dllimport void @"\01?FunctionWithNormalVar@@YAXXZ"
+USE(FunctionWithTLSVar)
+USE(FunctionWithNormalVar)
 
 
 //===----------------------------------------------------------------------===//
@@ -550,6 +591,10 @@ struct __declspec(dllimport) T {
   void a() {}
   // MO1-DAG: define available_externally dllimport x86_thiscallcc void @"\01?a@T@@QAEXXZ"
 
+  static void StaticMethod();
+  // MSC-DAG: declare dllimport void @"\01?StaticMethod@T@@SAXXZ"()
+  // GNU-DAG: declare dllimport void @_ZN1T12StaticMethodEv()
+
   static int b;
   // MO1-DAG: @"\01?b@T@@2HA" = external dllimport global i32
 
@@ -562,6 +607,7 @@ struct __declspec(dllimport) T {
   // M19-DAG: define available_externally dllimport x86_thiscallcc dereferenceable({{[0-9]+}}) %struct.T* @"\01??4T@@QAEAAU0@$$QAU0@@Z"
 };
 USEMEMFUNC(T, a)
+USESTATICMEMFUNC(T, StaticMethod)
 USEVAR(T::b)
 USECOPYASSIGN(T)
 USEMOVEASSIGN(T)
@@ -574,14 +620,14 @@ USEMEMFUNC(V, foo)
 struct __declspec(dllimport) W { virtual void foo() {} };
 USECLASS(W)
 // vftable:
-// MO1-DAG: @"\01??_7W@@6B@" = available_externally dllimport unnamed_addr constant [1 x i8*] [i8* bitcast (void (%struct.W*)* @"\01?foo@W@@UAEXXZ" to i8*)]
+// MO1-DAG: @"\01??_SW@@6B@" = linkonce_odr unnamed_addr constant [1 x i8*] [i8* bitcast (void (%struct.W*)* @"\01?foo@W@@UAEXXZ" to i8*)]
 // GO1-DAG: @_ZTV1W = available_externally dllimport unnamed_addr constant [3 x i8*] [i8* null, i8* null, i8* bitcast (void (%struct.W*)* @_ZN1W3fooEv to i8*)]
 
 struct __declspec(dllimport) KeyFuncClass {
   constexpr KeyFuncClass() {}
   virtual void foo();
 };
-constexpr KeyFuncClass keyFuncClassVar;
+extern constexpr KeyFuncClass keyFuncClassVar = {};
 // G32-DAG: @_ZTV12KeyFuncClass = external dllimport unnamed_addr constant [3 x i8*]
 
 struct __declspec(dllimport) X : public virtual W {};

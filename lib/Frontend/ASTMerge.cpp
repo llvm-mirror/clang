@@ -59,7 +59,6 @@ void ASTMergeAction::ExecuteAction() {
                          /*MinimalImport=*/false);
 
     TranslationUnitDecl *TU = Unit->getASTContext().getTranslationUnitDecl();
-    CI.getASTConsumer().Initialize(CI.getASTContext());
     for (auto *D : TU->decls()) {
       // Don't re-import __va_list_tag, __builtin_va_list.
       if (const auto *ND = dyn_cast<NamedDecl>(D))
@@ -84,14 +83,13 @@ void ASTMergeAction::EndSourceFileAction() {
   return AdaptedAction->EndSourceFileAction();
 }
 
-ASTMergeAction::ASTMergeAction(FrontendAction *AdaptedAction,
+ASTMergeAction::ASTMergeAction(std::unique_ptr<FrontendAction> adaptedAction,
                                ArrayRef<std::string> ASTFiles)
-  : AdaptedAction(AdaptedAction), ASTFiles(ASTFiles.begin(), ASTFiles.end()) {
+: AdaptedAction(std::move(adaptedAction)), ASTFiles(ASTFiles.begin(), ASTFiles.end()) {
   assert(AdaptedAction && "ASTMergeAction needs an action to adapt");
 }
 
 ASTMergeAction::~ASTMergeAction() { 
-  delete AdaptedAction;
 }
 
 bool ASTMergeAction::usesPreprocessorOnly() const {

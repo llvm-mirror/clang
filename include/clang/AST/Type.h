@@ -441,13 +441,17 @@ public:
   ///
   /// One set of Objective-C lifetime qualifiers compatibly includes the other
   /// if the lifetime qualifiers match, or if both are non-__weak and the
-  /// including set also contains the 'const' qualifier.
+  /// including set also contains the 'const' qualifier, or both are non-__weak
+  /// and one is None (which can only happen in non-ARC modes).
   bool compatiblyIncludesObjCLifetime(Qualifiers other) const {
     if (getObjCLifetime() == other.getObjCLifetime())
       return true;
 
     if (getObjCLifetime() == OCL_Weak || other.getObjCLifetime() == OCL_Weak)
       return false;
+
+    if (getObjCLifetime() == OCL_None || other.getObjCLifetime() == OCL_None)
+      return true;
 
     return hasConst();
   }
@@ -1206,6 +1210,16 @@ enum RefQualifierKind {
   RQ_RValue
 };
 
+/// Which keyword(s) were used to create an AutoType.
+enum class AutoTypeKeyword {
+  /// \brief auto
+  Auto,
+  /// \brief decltype(auto)
+  DecltypeAuto,
+  /// \brief __auto_type (GNU extension)
+  GNUAutoType
+};
+
 /// The base class of the type hierarchy.
 ///
 /// A central concept with types is that each type always has a canonical
@@ -1424,8 +1438,9 @@ protected:
 
     unsigned : NumTypeBits;
 
-    /// Was this placeholder type spelled as 'decltype(auto)'?
-    unsigned IsDecltypeAuto : 1;
+    /// Was this placeholder type spelled as 'auto', 'decltype(auto)',
+    /// or '__auto_type'?  AutoTypeKeyword value.
+    unsigned Keyword : 2;
   };
 
   union {
@@ -1653,6 +1668,7 @@ public:
   bool isObjCQualifiedClassType() const;        // Class<foo>
   bool isObjCObjectOrInterfaceType() const;
   bool isObjCIdType() const;                    // id
+  bool isObjCInertUnsafeUnretainedType() const;
 
   /// Whether the type is Objective-C 'id' or a __kindof type of an
   /// object type, e.g., __kindof NSView * or __kindof id
@@ -1683,18 +1699,29 @@ public:
   bool isNullPtrType() const;                   // C++0x nullptr_t
   bool isAtomicType() const;                    // C11 _Atomic()
 
-  bool isImage1dT() const;                      // OpenCL image1d_t
-  bool isImage1dArrayT() const;                 // OpenCL image1d_array_t
-  bool isImage1dBufferT() const;                // OpenCL image1d_buffer_t
-  bool isImage2dT() const;                      // OpenCL image2d_t
-  bool isImage2dArrayT() const;                 // OpenCL image2d_array_t
-  bool isImage3dT() const;                      // OpenCL image3d_t
+  bool isImage1dT() const;               // OpenCL image1d_t
+  bool isImage1dArrayT() const;          // OpenCL image1d_array_t
+  bool isImage1dBufferT() const;         // OpenCL image1d_buffer_t
+  bool isImage2dT() const;               // OpenCL image2d_t
+  bool isImage2dArrayT() const;          // OpenCL image2d_array_t
+  bool isImage2dDepthT() const;          // OpenCL image_2d_depth_t
+  bool isImage2dArrayDepthT() const;     // OpenCL image_2d_array_depth_t
+  bool isImage2dMSAAT() const;           // OpenCL image_2d_msaa_t
+  bool isImage2dArrayMSAAT() const;      // OpenCL image_2d_array_msaa_t
+  bool isImage2dMSAATDepth() const;      // OpenCL image_2d_msaa_depth_t
+  bool isImage2dArrayMSAATDepth() const; // OpenCL image_2d_array_msaa_depth_t
+  bool isImage3dT() const;               // OpenCL image3d_t
 
   bool isImageType() const;                     // Any OpenCL image type
 
   bool isSamplerT() const;                      // OpenCL sampler_t
   bool isEventT() const;                        // OpenCL event_t
+  bool isClkEventT() const;                     // OpenCL clk_event_t
+  bool isQueueT() const;                        // OpenCL queue_t
+  bool isNDRangeT() const;                      // OpenCL ndrange_t
+  bool isReserveIDT() const;                    // OpenCL reserve_id_t
 
+  bool isPipeType() const;                      // OpenCL pipe type
   bool isOpenCLSpecificType() const;            // Any OpenCL specific type
 
   /// Determines if this type, which must satisfy
@@ -3013,6 +3040,74 @@ public:
 /// type.
 class FunctionProtoType : public FunctionType, public llvm::FoldingSetNode {
 public:
+  /// Interesting information about a specific parameter that can't simply
+  /// be reflected in parameter's type.
+  ///
+  /// It makes sense to model language features this way when there's some
+  /// sort of parameter-specific override (such as an attribute) that
+  /// affects how the function is called.  For example, the ARC ns_consumed
+  /// attribute changes whether a parameter is passed at +0 (the default)
+  /// or +1 (ns_consumed).  This must be reflected in the function type,
+  /// but isn't really a change to the parameter type.
+  ///
+  /// One serious disadvantage of modelling language features this way is
+  /// that they generally do not work with language features that attempt
+  /// to destructure types.  For example, template argument deduction will
+  /// not be able to match a parameter declared as
+  ///   T (*)(U)
+  /// against an argument of type
+  ///   void (*)(__attribute__((ns_consumed)) id)
+  /// because the substitution of T=void, U=id into the former will
+  /// not produce the latter.
+  class ExtParameterInfo {
+    enum {
+      ABIMask         = 0x0F,
+      IsConsumed      = 0x10
+    };
+    unsigned char Data;
+  public:
+    ExtParameterInfo() : Data(0) {}
+
+    /// Return the ABI treatment of this parameter.
+    ParameterABI getABI() const {
+      return ParameterABI(Data & ABIMask);
+    }
+    ExtParameterInfo withABI(ParameterABI kind) const {
+      ExtParameterInfo copy = *this;
+      copy.Data = (copy.Data & ~ABIMask) | unsigned(kind);
+      return copy;
+    }
+
+    /// Is this parameter considered "consumed" by Objective-C ARC?
+    /// Consumed parameters must have retainable object type.
+    bool isConsumed() const {
+      return (Data & IsConsumed);
+    }
+    ExtParameterInfo withIsConsumed(bool consumed) const {
+      ExtParameterInfo copy = *this;
+      if (consumed) {
+        copy.Data |= IsConsumed;
+      } else {
+        copy.Data &= ~IsConsumed;
+      }
+      return copy;
+    }
+
+    unsigned char getOpaqueValue() const { return Data; }
+    static ExtParameterInfo getFromOpaqueValue(unsigned char data) {
+      ExtParameterInfo result;
+      result.Data = data;
+      return result;
+    }
+
+    friend bool operator==(ExtParameterInfo lhs, ExtParameterInfo rhs) {
+      return lhs.Data == rhs.Data;
+    }
+    friend bool operator!=(ExtParameterInfo lhs, ExtParameterInfo rhs) {
+      return lhs.Data != rhs.Data;
+    }
+  };
+
   struct ExceptionSpecInfo {
     ExceptionSpecInfo()
         : Type(EST_None), NoexceptExpr(nullptr),
@@ -3040,11 +3135,11 @@ public:
   struct ExtProtoInfo {
     ExtProtoInfo()
         : Variadic(false), HasTrailingReturn(false), TypeQuals(0),
-          RefQualifier(RQ_None), ConsumedParameters(nullptr) {}
+          RefQualifier(RQ_None), ExtParameterInfos(nullptr) {}
 
     ExtProtoInfo(CallingConv CC)
         : ExtInfo(CC), Variadic(false), HasTrailingReturn(false), TypeQuals(0),
-          RefQualifier(RQ_None), ConsumedParameters(nullptr) {}
+          RefQualifier(RQ_None), ExtParameterInfos(nullptr) {}
 
     ExtProtoInfo withExceptionSpec(const ExceptionSpecInfo &O) {
       ExtProtoInfo Result(*this);
@@ -3058,7 +3153,7 @@ public:
     unsigned char TypeQuals;
     RefQualifierKind RefQualifier;
     ExceptionSpecInfo ExceptionSpec;
-    const bool *ConsumedParameters;
+    const ExtParameterInfo *ExtParameterInfos;
   };
 
 private:
@@ -3085,8 +3180,8 @@ private:
   /// The type of exception specification this function has.
   unsigned ExceptionSpecType : 4;
 
-  /// Whether this function has any consumed parameters.
-  unsigned HasAnyConsumedParams : 1;
+  /// Whether this function has extended parameter information.
+  unsigned HasExtParameterInfos : 1;
 
   /// Whether the function is variadic.
   unsigned Variadic : 1;
@@ -3108,25 +3203,36 @@ private:
   // instantiate this function type's exception specification, and the function
   // from which it should be instantiated.
 
-  // ConsumedParameters - A variable size array, following Exceptions
-  // and of length NumParams, holding flags indicating which parameters
-  // are consumed.  This only appears if HasAnyConsumedParams is true.
+  // ExtParameterInfos - A variable size array, following the exception
+  // specification and of length NumParams, holding an ExtParameterInfo
+  // for each of the parameters.  This only appears if HasExtParameterInfos
+  // is true.
 
   friend class ASTContext;  // ASTContext creates these.
 
-  const bool *getConsumedParamsBuffer() const {
-    assert(hasAnyConsumedParams());
+  const ExtParameterInfo *getExtParameterInfosBuffer() const {
+    assert(hasExtParameterInfos());
 
-    // Find the end of the exceptions.
-    Expr *const *eh_end = reinterpret_cast<Expr *const *>(exception_end());
-    if (getExceptionSpecType() == EST_ComputedNoexcept)
-      eh_end += 1; // NoexceptExpr
-    // The memory layout of these types isn't handled here, so
-    // hopefully this is never called for them?
-    assert(getExceptionSpecType() != EST_Uninstantiated &&
-           getExceptionSpecType() != EST_Unevaluated);
+    // Find the end of the exception specification.
+    const char *ptr = reinterpret_cast<const char *>(exception_begin());
+    ptr += getExceptionSpecSize();
 
-    return reinterpret_cast<const bool*>(eh_end);
+    return reinterpret_cast<const ExtParameterInfo *>(ptr);
+  }
+
+  size_t getExceptionSpecSize() const {
+    switch (getExceptionSpecType()) {
+    case EST_None:             return 0;
+    case EST_DynamicNone:      return 0;
+    case EST_MSAny:            return 0;
+    case EST_BasicNoexcept:    return 0;
+    case EST_Unparsed:         return 0;
+    case EST_Dynamic:          return getNumExceptions() * sizeof(QualType);
+    case EST_ComputedNoexcept: return sizeof(Expr*);
+    case EST_Uninstantiated:   return 2 * sizeof(FunctionDecl*);
+    case EST_Unevaluated:      return sizeof(FunctionDecl*);
+    }
+    llvm_unreachable("bad exception specification kind");
   }
 
 public:
@@ -3157,8 +3263,8 @@ public:
     } else if (EPI.ExceptionSpec.Type == EST_Unevaluated) {
       EPI.ExceptionSpec.SourceDecl = getExceptionSpecDecl();
     }
-    if (hasAnyConsumedParams())
-      EPI.ConsumedParameters = getConsumedParamsBuffer();
+    if (hasExtParameterInfos())
+      EPI.ExtParameterInfos = getExtParameterInfosBuffer();
     return EPI;
   }
 
@@ -3273,11 +3379,41 @@ public:
     return exception_begin() + NumExceptions;
   }
 
-  bool hasAnyConsumedParams() const { return HasAnyConsumedParams; }
+  /// Is there any interesting extra information for any of the parameters
+  /// of this function type?
+  bool hasExtParameterInfos() const { return HasExtParameterInfos; }
+  ArrayRef<ExtParameterInfo> getExtParameterInfos() const {
+    assert(hasExtParameterInfos());
+    return ArrayRef<ExtParameterInfo>(getExtParameterInfosBuffer(),
+                                      getNumParams());
+  }
+  /// Return a pointer to the beginning of the array of extra parameter
+  /// information, if present, or else null if none of the parameters
+  /// carry it.  This is equivalent to getExtProtoInfo().ExtParameterInfos.
+  const ExtParameterInfo *getExtParameterInfosOrNull() const {
+    if (!hasExtParameterInfos())
+      return nullptr;
+    return getExtParameterInfosBuffer();
+  }
+
+  ExtParameterInfo getExtParameterInfo(unsigned I) const {
+    assert(I < getNumParams() && "parameter index out of range");
+    if (hasExtParameterInfos())
+      return getExtParameterInfosBuffer()[I];
+    return ExtParameterInfo();
+  }
+
+  ParameterABI getParameterABI(unsigned I) const {
+    assert(I < getNumParams() && "parameter index out of range");
+    if (hasExtParameterInfos())
+      return getExtParameterInfosBuffer()[I].getABI();
+    return ParameterABI::Ordinary;
+  }
+
   bool isParamConsumed(unsigned I) const {
     assert(I < getNumParams() && "parameter index out of range");
-    if (hasAnyConsumedParams())
-      return getConsumedParamsBuffer()[I];
+    if (hasExtParameterInfos())
+      return getExtParameterInfosBuffer()[I].isConsumed();
     return false;
   }
 
@@ -3599,6 +3735,7 @@ public:
     attr_stdcall,
     attr_thiscall,
     attr_pascal,
+    attr_swiftcall,
     attr_vectorcall,
     attr_inteloclbicc,
     attr_ms_abi,
@@ -3611,6 +3748,7 @@ public:
     attr_nullable,
     attr_null_unspecified,
     attr_objc_kindof,
+    attr_objc_inert_unsafe_unretained,
   };
 
 private:
@@ -3639,6 +3777,23 @@ public:
 
   bool isSugared() const { return true; }
   QualType desugar() const { return getEquivalentType(); }
+
+  /// Does this attribute behave like a type qualifier?
+  ///
+  /// A type qualifier adjusts a type to provide specialized rules for
+  /// a specific object, like the standard const and volatile qualifiers.
+  /// This includes attributes controlling things like nullability,
+  /// address spaces, and ARC ownership.  The value of the object is still
+  /// largely described by the modified type.
+  ///
+  /// In contrast, many type attributes "rewrite" their modified type to
+  /// produce a fundamentally different type, not necessarily related in any
+  /// formalizable way to the original type.  For example, calling convention
+  /// and vector attributes are not simple type qualifiers.
+  ///
+  /// Type qualifiers are often, but not always, reflected in the canonical
+  /// type.
+  bool isQualifier() const;
 
   bool isMSTypeSpec() const;
 
@@ -3871,8 +4026,7 @@ public:
 /// is no deduced type and an auto type is canonical. In the latter case, it is
 /// also a dependent type.
 class AutoType : public Type, public llvm::FoldingSetNode {
-  AutoType(QualType DeducedType, bool IsDecltypeAuto,
-           bool IsDependent)
+  AutoType(QualType DeducedType, AutoTypeKeyword Keyword, bool IsDependent)
     : Type(Auto, DeducedType.isNull() ? QualType(this, 0) : DeducedType,
            /*Dependent=*/IsDependent, /*InstantiationDependent=*/IsDependent,
            /*VariablyModified=*/false,
@@ -3880,13 +4034,18 @@ class AutoType : public Type, public llvm::FoldingSetNode {
                ? false : DeducedType->containsUnexpandedParameterPack()) {
     assert((DeducedType.isNull() || !IsDependent) &&
            "auto deduced to dependent type");
-    AutoTypeBits.IsDecltypeAuto = IsDecltypeAuto;
+    AutoTypeBits.Keyword = (unsigned)Keyword;
   }
 
   friend class ASTContext;  // ASTContext creates these
 
 public:
-  bool isDecltypeAuto() const { return AutoTypeBits.IsDecltypeAuto; }
+  bool isDecltypeAuto() const {
+    return getKeyword() == AutoTypeKeyword::DecltypeAuto;
+  }
+  AutoTypeKeyword getKeyword() const {
+    return (AutoTypeKeyword)AutoTypeBits.Keyword;
+  }
 
   bool isSugared() const { return !isCanonicalUnqualified(); }
   QualType desugar() const { return getCanonicalTypeInternal(); }
@@ -3901,14 +4060,13 @@ public:
   }
 
   void Profile(llvm::FoldingSetNodeID &ID) {
-    Profile(ID, getDeducedType(), isDecltypeAuto(), 
-		    isDependentType());
+    Profile(ID, getDeducedType(), getKeyword(), isDependentType());
   }
 
   static void Profile(llvm::FoldingSetNodeID &ID, QualType Deduced,
-                      bool IsDecltypeAuto, bool IsDependent) {
+                      AutoTypeKeyword Keyword, bool IsDependent) {
     ID.AddPointer(Deduced.getAsOpaquePtr());
-    ID.AddBoolean(IsDecltypeAuto);
+    ID.AddInteger((unsigned)Keyword);
     ID.AddBoolean(IsDependent);
   }
 
@@ -4608,7 +4766,7 @@ public:
   /// Retrieve the type arguments of this object type as they were
   /// written.
   ArrayRef<QualType> getTypeArgsAsWritten() const {
-    return ArrayRef<QualType>(getTypeArgStorage(),
+    return llvm::makeArrayRef(getTypeArgStorage(),
                               ObjCObjectTypeBits.NumTypeArgs);
   }
 
@@ -4966,6 +5124,41 @@ class AtomicType : public Type, public llvm::FoldingSetNode {
   static bool classof(const Type *T) {
     return T->getTypeClass() == Atomic;
   }
+};
+
+/// PipeType - OpenCL20.
+class PipeType : public Type, public llvm::FoldingSetNode {
+  QualType ElementType;
+
+  PipeType(QualType elemType, QualType CanonicalPtr) :
+    Type(Pipe, CanonicalPtr, elemType->isDependentType(),
+         elemType->isInstantiationDependentType(),
+         elemType->isVariablyModifiedType(),
+         elemType->containsUnexpandedParameterPack()),
+    ElementType(elemType) {}
+  friend class ASTContext;  // ASTContext creates these.
+
+public:
+
+  QualType getElementType() const { return ElementType; }
+
+  bool isSugared() const { return false; }
+
+  QualType desugar() const { return QualType(this, 0); }
+
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    Profile(ID, getElementType());
+  }
+
+  static void Profile(llvm::FoldingSetNodeID &ID, QualType T) {
+    ID.AddPointer(T.getAsOpaquePtr());
+  }
+
+
+  static bool classof(const Type *T) {
+    return T->getTypeClass() == Pipe;
+  }
+
 };
 
 /// A qualifier set is used to build a set of qualifiers.
@@ -5354,6 +5547,30 @@ inline bool Type::isImage2dArrayT() const {
   return isSpecificBuiltinType(BuiltinType::OCLImage2dArray);
 }
 
+inline bool Type::isImage2dDepthT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dDepth);
+}
+
+inline bool Type::isImage2dArrayDepthT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dArrayDepth);
+}
+
+inline bool Type::isImage2dMSAAT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dMSAA);
+}
+
+inline bool Type::isImage2dArrayMSAAT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dArrayMSAA);
+}
+
+inline bool Type::isImage2dMSAATDepth() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dMSAADepth);
+}
+
+inline bool Type::isImage2dArrayMSAATDepth() const {
+  return isSpecificBuiltinType(BuiltinType::OCLImage2dArrayMSAADepth);
+}
+
 inline bool Type::isImage3dT() const {
   return isSpecificBuiltinType(BuiltinType::OCLImage3d);
 }
@@ -5366,14 +5583,37 @@ inline bool Type::isEventT() const {
   return isSpecificBuiltinType(BuiltinType::OCLEvent);
 }
 
+inline bool Type::isClkEventT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLClkEvent);
+}
+
+inline bool Type::isQueueT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLQueue);
+}
+
+inline bool Type::isNDRangeT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLNDRange);
+}
+
+inline bool Type::isReserveIDT() const {
+  return isSpecificBuiltinType(BuiltinType::OCLReserveID);
+}
+
 inline bool Type::isImageType() const {
-  return isImage3dT() ||
-         isImage2dT() || isImage2dArrayT() ||
-         isImage1dT() || isImage1dArrayT() || isImage1dBufferT();
+  return isImage3dT() || isImage2dT() || isImage2dArrayT() ||
+         isImage2dDepthT() || isImage2dArrayDepthT() || isImage2dMSAAT() ||
+         isImage2dArrayMSAAT() || isImage2dMSAATDepth() ||
+         isImage2dArrayMSAATDepth() || isImage1dT() || isImage1dArrayT() ||
+         isImage1dBufferT();
+}
+
+inline bool Type::isPipeType() const {
+  return isa<PipeType>(CanonicalType);
 }
 
 inline bool Type::isOpenCLSpecificType() const {
-  return isSamplerT() || isEventT() || isImageType();
+  return isSamplerT() || isEventT() || isImageType() || isClkEventT() ||
+         isQueueT() || isNDRangeT() || isReserveIDT() || isPipeType();
 }
 
 inline bool Type::isTemplateTypeParmType() const {

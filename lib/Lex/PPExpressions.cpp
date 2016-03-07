@@ -42,7 +42,7 @@ public:
   unsigned getBitWidth() const { return Val.getBitWidth(); }
   bool isUnsigned() const { return Val.isUnsigned(); }
 
-  const SourceRange &getRange() const { return Range; }
+  SourceRange getRange() const { return Range; }
 
   void setRange(SourceLocation L) { Range.setBegin(L); Range.setEnd(L); }
   void setRange(SourceLocation B, SourceLocation E) {
@@ -140,6 +140,51 @@ static bool EvaluateDefined(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
     PP.LexNonComment(PeekTok);
   }
 
+  // [cpp.cond]p4:
+  //   Prior to evaluation, macro invocations in the list of preprocessing
+  //   tokens that will become the controlling constant expression are replaced
+  //   (except for those macro names modified by the 'defined' unary operator),
+  //   just as in normal text. If the token 'defined' is generated as a result
+  //   of this replacement process or use of the 'defined' unary operator does
+  //   not match one of the two specified forms prior to macro replacement, the
+  //   behavior is undefined.
+  // This isn't an idle threat, consider this program:
+  //   #define FOO
+  //   #define BAR defined(FOO)
+  //   #if BAR
+  //   ...
+  //   #else
+  //   ...
+  //   #endif
+  // clang and gcc will pick the #if branch while Visual Studio will take the
+  // #else branch.  Emit a warning about this undefined behavior.
+  if (beginLoc.isMacroID()) {
+    bool IsFunctionTypeMacro =
+        PP.getSourceManager()
+            .getSLocEntry(PP.getSourceManager().getFileID(beginLoc))
+            .getExpansion()
+            .isFunctionMacroExpansion();
+    // For object-type macros, it's easy to replace
+    //   #define FOO defined(BAR)
+    // with
+    //   #if defined(BAR)
+    //   #define FOO 1
+    //   #else
+    //   #define FOO 0
+    //   #endif
+    // and doing so makes sense since compilers handle this differently in
+    // practice (see example further up).  But for function-type macros,
+    // there is no good way to write
+    //   # define FOO(x) (defined(M_ ## x) && M_ ## x)
+    // in a different way, and compilers seem to agree on how to behave here.
+    // So warn by default on object-type macros, but only warn in -pedantic
+    // mode on function-type macros.
+    if (IsFunctionTypeMacro)
+      PP.Diag(beginLoc, diag::warn_defined_in_function_type_macro);
+    else
+      PP.Diag(beginLoc, diag::warn_defined_in_object_type_macro);
+  }
+
   // Invoke the 'defined' callback.
   if (PPCallbacks *Callbacks = PP.getPPCallbacks()) {
     Callbacks->Defined(macroToken, Macro,
@@ -177,8 +222,8 @@ static bool EvaluateValue(PPValue &Result, Token &PeekTok, DefinedTracker &DT,
   if (IdentifierInfo *II = PeekTok.getIdentifierInfo()) {
     // Handle "defined X" and "defined(X)".
     if (II->isStr("defined"))
-      return(EvaluateDefined(Result, PeekTok, DT, ValueLive, PP));
-    
+      return EvaluateDefined(Result, PeekTok, DT, ValueLive, PP);
+
     // If this identifier isn't 'defined' or one of the special
     // preprocessor keywords and it wasn't macro expanded, it turns
     // into a simple 0, unless it is the C++ keyword "true", in which case it
@@ -549,12 +594,12 @@ static bool EvaluateDirectiveSubExpr(PPValue &LHS, unsigned MinPrec,
       // value was negative, warn about it.
       if (ValueLive && Res.isUnsigned()) {
         if (!LHS.isUnsigned() && LHS.Val.isNegative())
-          PP.Diag(OpLoc, diag::warn_pp_convert_lhs_to_positive)
+          PP.Diag(OpLoc, diag::warn_pp_convert_to_positive) << 0
             << LHS.Val.toString(10, true) + " to " +
                LHS.Val.toString(10, false)
             << LHS.getRange() << RHS.getRange();
         if (!RHS.isUnsigned() && RHS.Val.isNegative())
-          PP.Diag(OpLoc, diag::warn_pp_convert_rhs_to_positive)
+          PP.Diag(OpLoc, diag::warn_pp_convert_to_positive) << 1
             << RHS.Val.toString(10, true) + " to " +
                RHS.Val.toString(10, false)
             << LHS.getRange() << RHS.getRange();
@@ -605,8 +650,10 @@ static bool EvaluateDirectiveSubExpr(PPValue &LHS, unsigned MinPrec,
     case tok::greatergreater: {
       // Determine whether overflow is about to happen.
       unsigned ShAmt = static_cast<unsigned>(RHS.Val.getLimitedValue());
-      if (ShAmt >= LHS.getBitWidth())
-        Overflow = true, ShAmt = LHS.getBitWidth()-1;
+      if (ShAmt >= LHS.getBitWidth()) {
+        Overflow = true;
+        ShAmt = LHS.getBitWidth()-1;
+      }
       Res = LHS.Val >> ShAmt;
       break;
     }

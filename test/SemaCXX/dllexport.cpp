@@ -71,6 +71,10 @@ __declspec(dllexport) auto ExternalAutoTypeGlobal = External();
 
 // Thread local variables are invalid.
 __declspec(dllexport) __thread int ThreadLocalGlobal; // expected-error{{'ThreadLocalGlobal' cannot be thread local when declared 'dllexport'}}
+// But a static local TLS var in an export function is OK.
+inline void __declspec(dllexport) ExportedInlineWithThreadLocal() {
+  static __thread int OK; // no-error
+}
 
 // Export in local scope.
 void functionScope() {
@@ -726,7 +730,12 @@ __declspec(dllexport)        int  MemberRedecl::StaticField = 1;       // expect
 __declspec(dllexport) const  int  MemberRedecl::StaticConstField = 1;  // expected-error{{redeclaration of 'MemberRedecl::StaticConstField' cannot add 'dllexport' attribute}}
 __declspec(dllexport) constexpr int MemberRedecl::ConstexprField;      // expected-error{{redeclaration of 'MemberRedecl::ConstexprField' cannot add 'dllexport' attribute}}
 
-
+#ifdef MS
+struct __declspec(dllexport) ClassWithMultipleDefaultCtors {
+  ClassWithMultipleDefaultCtors(int = 40) {} // expected-error{{'__declspec(dllexport)' cannot be applied to more than one default constructor}}
+  ClassWithMultipleDefaultCtors(int = 30, ...) {} // expected-note{{declared here}}
+};
+#endif
 
 //===----------------------------------------------------------------------===//
 // Class member templates
@@ -1079,3 +1088,12 @@ template<typename T> template<typename U> __declspec(dllexport) constexpr int CT
 #endif // __has_feature(cxx_variable_templates)
 
 // FIXME: Precedence rules seem to be different for classes.
+
+//===----------------------------------------------------------------------===//
+// Lambdas
+//===----------------------------------------------------------------------===//
+// The MS ABI doesn't provide a stable mangling for lambdas, so they can't be imported or exported.
+#ifdef MS
+// expected-error@+2{{lambda cannot be declared 'dllexport'}}
+#endif
+auto Lambda = []() __declspec(dllexport) -> bool { return true; };

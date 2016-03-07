@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -emit-llvm -fblocks -g  -triple x86_64-apple-darwin10 -fobjc-dispatch-method=mixed -x objective-c < %s -o - | FileCheck %s
+// RUN: %clang_cc1 -emit-llvm -fblocks -debug-info-kind=limited  -triple x86_64-apple-darwin10 -fobjc-dispatch-method=mixed -x objective-c < %s -o - | FileCheck %s
 
 // rdar://problem/9279956
 // Test that we generate the proper debug location for a captured self.
@@ -24,9 +24,9 @@
 
 // CHECK-DAG: [[DBG_LINE]] = !DILocation(line: 0, scope: ![[COPY_SP:[0-9]+]])
 // CHECK-DAG: [[COPY_LINE]] = !DILocation(line: 0, scope: ![[COPY_SP:[0-9]+]])
-// CHECK-DAG: [[COPY_SP]] = !DISubprogram(name: "__copy_helper_block_"
+// CHECK-DAG: [[COPY_SP]] = distinct !DISubprogram(name: "__copy_helper_block_"
 // CHECK-DAG: [[DESTROY_LINE]] = !DILocation(line: 0, scope: ![[DESTROY_SP:[0-9]+]])
-// CHECK-DAG: [[DESTROY_SP]] = !DISubprogram(name: "__destroy_helper_block_"
+// CHECK-DAG: [[DESTROY_SP]] = distinct !DISubprogram(name: "__destroy_helper_block_"
 typedef unsigned int NSUInteger;
 
 @protocol NSObject

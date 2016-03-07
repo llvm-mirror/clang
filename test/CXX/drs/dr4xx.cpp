@@ -83,7 +83,7 @@ namespace dr406 { // dr406: yes
   } A;
 }
 
-namespace dr407 { // dr407: no
+namespace dr407 { // dr407: 3.8
   struct S;
   typedef struct S S;
   void f() {
@@ -108,22 +108,22 @@ namespace dr407 { // dr407: no
       struct S s; // expected-error {{ambiguous}}
     }
     namespace D {
-      // FIXME: This is valid.
       using A::S;
-      typedef struct S S; // expected-note {{here}}
-      struct S s; // expected-error {{refers to a typedef}}
+      typedef struct S S;
+      struct S s;
     }
     namespace E {
-      // FIXME: The standard doesn't say whether this is valid.
+      // The standard doesn't say whether this is valid. We interpret
+      // DR407 as meaning "if lookup finds both a tag and a typedef with the
+      // same type, then it's OK in an elaborated-type-specifier".
       typedef A::S S;
       using A::S;
       struct S s;
     }
     namespace F {
-      typedef A::S S; // expected-note {{here}}
+      typedef A::S S;
     }
-    // FIXME: The standard doesn't say what to do in these cases, but
-    // our behavior should not depend on the order of the using-directives.
+    // The standard doesn't say what to do in these cases either.
     namespace G {
       using namespace A;
       using namespace F;
@@ -132,7 +132,7 @@ namespace dr407 { // dr407: no
     namespace H {
       using namespace F;
       using namespace A;
-      struct S s; // expected-error {{refers to a typedef}}
+      struct S s;
     }
   }
 }
@@ -659,7 +659,7 @@ namespace dr457 { // dr457: yes
 
   enum E {
     ea = a,
-    eb = b // expected-error {{not an integral constant}} expected-note {{read of volatile-qualified}}
+    eb = b // expected-error {{constant}} expected-note {{read of volatile-qualified}}
   };
 }
 
@@ -1197,12 +1197,12 @@ namespace dr496 { // dr496: no
   int check6[ __is_trivially_assignable(B, const B&) ? 1 : -1];
 }
 
-namespace dr497 { // dr497: yes
+namespace dr497 { // dr497: sup 253
   void before() {
     struct S {
       mutable int i;
     };
-    const S cs; // expected-error {{default initialization}}
+    const S cs;
     int S::*pm = &S::i;
     cs.*pm = 88; // expected-error {{not assignable}}
   }

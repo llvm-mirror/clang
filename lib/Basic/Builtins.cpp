@@ -32,37 +32,49 @@ static const Builtin::Info BuiltinInfo[] = {
 const Builtin::Info &Builtin::Context::getRecord(unsigned ID) const {
   if (ID < Builtin::FirstTSBuiltin)
     return BuiltinInfo[ID];
-  assert(ID - Builtin::FirstTSBuiltin < NumTSRecords && "Invalid builtin ID!");
+  assert(((ID - Builtin::FirstTSBuiltin) <
+          (TSRecords.size() + AuxTSRecords.size())) &&
+         "Invalid builtin ID!");
+  if (isAuxBuiltinID(ID))
+    return AuxTSRecords[getAuxBuiltinID(ID) - Builtin::FirstTSBuiltin];
   return TSRecords[ID - Builtin::FirstTSBuiltin];
 }
 
-Builtin::Context::Context() {
-  // Get the target specific builtins from the target.
-  TSRecords = nullptr;
-  NumTSRecords = 0;
+void Builtin::Context::InitializeTarget(const TargetInfo &Target,
+                                        const TargetInfo *AuxTarget) {
+  assert(TSRecords.empty() && "Already initialized target?");
+  TSRecords = Target.getTargetBuiltins();
+  if (AuxTarget)
+    AuxTSRecords = AuxTarget->getTargetBuiltins();
 }
 
-void Builtin::Context::initializeTarget(const TargetInfo &Target) {
-  assert(NumTSRecords == 0 && "Already initialized target?");
-  Target.getTargetBuiltins(TSRecords, NumTSRecords);  
+bool Builtin::Context::isBuiltinFunc(const char *Name) {
+  StringRef FuncName(Name);
+  for (unsigned i = Builtin::NotBuiltin + 1; i != Builtin::FirstTSBuiltin; ++i)
+    if (FuncName.equals(BuiltinInfo[i].Name))
+      return strchr(BuiltinInfo[i].Attributes, 'f') != nullptr;
+
+  return false;
 }
 
 bool Builtin::Context::builtinIsSupported(const Builtin::Info &BuiltinInfo,
                                           const LangOptions &LangOpts) {
-  bool BuiltinsUnsupported = LangOpts.NoBuiltin &&
-                             strchr(BuiltinInfo.Attributes, 'f');
+  bool BuiltinsUnsupported =
+      (LangOpts.NoBuiltin || LangOpts.isNoBuiltinFunc(BuiltinInfo.Name)) &&
+      strchr(BuiltinInfo.Attributes, 'f');
   bool MathBuiltinsUnsupported =
-    LangOpts.NoMathBuiltin && BuiltinInfo.HeaderName &&      
+    LangOpts.NoMathBuiltin && BuiltinInfo.HeaderName &&
     llvm::StringRef(BuiltinInfo.HeaderName).equals("math.h");
   bool GnuModeUnsupported = !LangOpts.GNUMode && (BuiltinInfo.Langs & GNU_LANG);
   bool MSModeUnsupported =
       !LangOpts.MicrosoftExt && (BuiltinInfo.Langs & MS_LANG);
   bool ObjCUnsupported = !LangOpts.ObjC1 && BuiltinInfo.Langs == OBJC_LANG;
-  return !BuiltinsUnsupported && !MathBuiltinsUnsupported &&
+  bool OclCUnsupported = !LangOpts.OpenCL && BuiltinInfo.Langs == OCLC_LANG;
+  return !BuiltinsUnsupported && !MathBuiltinsUnsupported && !OclCUnsupported &&
          !GnuModeUnsupported && !MSModeUnsupported && !ObjCUnsupported;
 }
 
-/// InitializeBuiltins - Mark the identifiers for all the builtins with their
+/// initializeBuiltins - Mark the identifiers for all the builtins with their
 /// appropriate builtin ID # and mark any non-portable builtin identifiers as
 /// such.
 void Builtin::Context::initializeBuiltins(IdentifierTable &Table,
@@ -74,9 +86,14 @@ void Builtin::Context::initializeBuiltins(IdentifierTable &Table,
     }
 
   // Step #2: Register target-specific builtins.
-  for (unsigned i = 0, e = NumTSRecords; i != e; ++i)
+  for (unsigned i = 0, e = TSRecords.size(); i != e; ++i)
     if (builtinIsSupported(TSRecords[i], LangOpts))
-      Table.get(TSRecords[i].Name).setBuiltinID(i+Builtin::FirstTSBuiltin);
+      Table.get(TSRecords[i].Name).setBuiltinID(i + Builtin::FirstTSBuiltin);
+
+  // Step #3: Register target-specific builtins for AuxTarget.
+  for (unsigned i = 0, e = AuxTSRecords.size(); i != e; ++i)
+    Table.get(AuxTSRecords[i].Name)
+        .setBuiltinID(i + Builtin::FirstTSBuiltin + TSRecords.size());
 }
 
 void Builtin::Context::forgetBuiltin(unsigned ID, IdentifierTable &Table) {

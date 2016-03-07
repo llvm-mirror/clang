@@ -142,19 +142,32 @@ public:
   /// \brief Retrieve the module that corresponds to the given module ID.
   virtual Module *getModule(unsigned ID) { return nullptr; }
 
-  /// \brief Holds everything needed to generate debug info for an
-  /// imported module or precompiled header file.
-  struct ASTSourceDescriptor {
-    std::string ModuleName;
-    std::string Path;
-    std::string ASTFile;
-    uint64_t Signature;
+  /// Abstracts clang modules and precompiled header files and holds
+  /// everything needed to generate debug info for an imported module
+  /// or PCH.
+  class ASTSourceDescriptor {
+    StringRef PCHModuleName;
+    StringRef Path;
+    StringRef ASTFile;
+    uint64_t Signature = 0;
+    const Module *ClangModule = nullptr;
+
+  public:
+    ASTSourceDescriptor(){};
+    ASTSourceDescriptor(StringRef Name, StringRef Path, StringRef ASTFile,
+                        uint64_t Signature)
+        : PCHModuleName(std::move(Name)), Path(std::move(Path)),
+          ASTFile(std::move(ASTFile)), Signature(Signature){};
+    ASTSourceDescriptor(const Module &M);
+    std::string getModuleName() const;
+    StringRef getPath() const { return Path; }
+    StringRef getASTFile() const { return ASTFile; }
+    uint64_t getSignature() const { return Signature; }
+    const Module *getModuleOrNull() const { return ClangModule; }
   };
 
-  /// \brief Return a descriptor for the corresponding module, if one exists.
+  /// Return a descriptor for the corresponding module, if one exists.
   virtual llvm::Optional<ASTSourceDescriptor> getSourceDescriptor(unsigned ID);
-  /// \brief Return a descriptor for the module.
-  virtual ASTSourceDescriptor getSourceDescriptor(const Module &M);
 
   /// \brief Finds all declarations lexically contained within the given
   /// DeclContext, after applying an optional filter predicate.

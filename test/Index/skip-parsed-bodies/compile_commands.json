@@ -1,25 +1,25 @@
 [
 {
   "directory": ".",
-  "command": "/usr/bin/clang++ -fsyntax-only t1.cpp",
+  "command": "/usr/bin/clang++ -fsyntax-only -fno-ms-compatibility -fno-delayed-template-parsing t1.cpp",
   "file": "t1.cpp"
 },
 {
   "directory": ".",
-  "command": "/usr/bin/clang++ -fsyntax-only t2.cpp -DBLAH",
+  "command": "/usr/bin/clang++ -fsyntax-only -fno-ms-compatibility -fno-delayed-template-parsing t2.cpp -DBLAH",
   "file": "t2.cpp"
 },
 {
   "directory": ".",
-  "command": "/usr/bin/clang++ -fsyntax-only t3.cpp -DBLAH",
+  "command": "/usr/bin/clang++ -fsyntax-only -fno-ms-compatibility -fno-delayed-template-parsing t3.cpp -DBLAH",
   "file": "t2.cpp"
 }
 ]
 
-// XFAIL: mingw32,win32,windows-gnu
 // RUN: c-index-test -index-compile-db %s | FileCheck %s
 
-// CHECK:      [enteredMainFile]: t1.cpp
+// CHECK:      [startedTranslationUnit]
+// CHECK-NEXT: [enteredMainFile]: t1.cpp
 // CHECK:      [indexDeclaration]: kind: c++-instance-method | name: method_decl | {{.*}} | isRedecl: 0 | isDef: 0 | isContainer: 0
 // CHECK-NEXT: [indexDeclaration]: kind: c++-instance-method | name: method_def1 | {{.*}} | isRedecl: 0 | isDef: 1 | isContainer: 1
 // CHECK-NEXT: [indexEntityReference]: kind: variable | name: some_val | {{.*}} | loc: ./t.h:9:27
@@ -34,6 +34,7 @@
 // CHECK-NEXT: [diagnostic]: {{.*}} undeclared identifier 'undef_val2'
 // CHECK-NEXT: [diagnostic]: {{.*}} undeclared identifier 'undef_val3'
 
+// CHECK-NEXT: [startedTranslationUnit]
 // CHECK-NEXT: [enteredMainFile]: t2.cpp
 // CHECK:      [indexDeclaration]: kind: c++-instance-method | name: method_decl | {{.*}} | isRedecl: 0 | isDef: 0 | isContainer: 0
 // CHECK-NEXT: [indexDeclaration]: kind: c++-instance-method | name: method_def1 | {{.*}} | isRedecl: 0 | isDef: 1 | isContainer: skipped
@@ -53,6 +54,7 @@
 // CHECK-NEXT: [diagnostic]: {{.*}} undeclared identifier 'undef_tsval'
 // CHECK-NEXT: [diagnostic]: {{.*}} undeclared identifier 'undef_impval'
 
+// CHECK-NEXT: [startedTranslationUnit]
 // CHECK-NEXT: [enteredMainFile]: t3.cpp
 // CHECK:      [indexDeclaration]: kind: c++-instance-method | name: method_decl | {{.*}} | isRedecl: 0 | isDef: 0 | isContainer: 0
 // CHECK-NEXT: [indexDeclaration]: kind: c++-instance-method | name: method_def1 | {{.*}} | isRedecl: 0 | isDef: 1 | isContainer: skipped

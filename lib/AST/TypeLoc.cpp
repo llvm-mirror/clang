@@ -80,11 +80,11 @@ unsigned TypeLoc::getFullDataSizeForType(QualType Ty) {
   while (!TyLoc.isNull()) {
     unsigned Align = getLocalAlignmentForType(TyLoc.getType());
     MaxAlign = std::max(Align, MaxAlign);
-    Total = llvm::RoundUpToAlignment(Total, Align);
+    Total = llvm::alignTo(Total, Align);
     Total += TypeSizer().Visit(TyLoc);
     TyLoc = TyLoc.getNextTypeLoc();
   }
-  Total = llvm::RoundUpToAlignment(Total, MaxAlign);
+  Total = llvm::alignTo(Total, MaxAlign);
   return Total;
 }
 
@@ -149,12 +149,12 @@ void TypeLoc::copy(TypeLoc other) {
   // If both data pointers are aligned to the maximum alignment, we
   // can memcpy because getFullDataSize() accurately reflects the
   // layout of the data.
-  if (reinterpret_cast<uintptr_t>(Data)
-        == llvm::RoundUpToAlignment(reinterpret_cast<uintptr_t>(Data),
-                                    TypeLocMaxDataAlign) &&
-      reinterpret_cast<uintptr_t>(other.Data)
-        == llvm::RoundUpToAlignment(reinterpret_cast<uintptr_t>(other.Data),
-                                    TypeLocMaxDataAlign)) {
+  if (reinterpret_cast<uintptr_t>(Data) ==
+          llvm::alignTo(reinterpret_cast<uintptr_t>(Data),
+                        TypeLocMaxDataAlign) &&
+      reinterpret_cast<uintptr_t>(other.Data) ==
+          llvm::alignTo(reinterpret_cast<uintptr_t>(other.Data),
+                        TypeLocMaxDataAlign)) {
     memcpy(Data, other.Data, getFullDataSize());
     return;
   }
@@ -192,7 +192,7 @@ SourceLocation TypeLoc::getBeginLoc() const {
       Cur = Cur.getNextTypeLoc();
       continue;
     default:
-      if (!Cur.getLocalSourceRange().getBegin().isInvalid())
+      if (Cur.getLocalSourceRange().getBegin().isValid())
         LeftMost = Cur;
       Cur = Cur.getNextTypeLoc();
       if (Cur.isNull())
@@ -338,10 +338,21 @@ TypeSpecifierType BuiltinTypeLoc::getWrittenTypeSpec() const {
   case BuiltinType::OCLImage1dBuffer:
   case BuiltinType::OCLImage2d:
   case BuiltinType::OCLImage2dArray:
+  case BuiltinType::OCLImage2dDepth:
+  case BuiltinType::OCLImage2dArrayDepth:
+  case BuiltinType::OCLImage2dMSAA:
+  case BuiltinType::OCLImage2dArrayMSAA:
+  case BuiltinType::OCLImage2dMSAADepth:
+  case BuiltinType::OCLImage2dArrayMSAADepth:
   case BuiltinType::OCLImage3d:
   case BuiltinType::OCLSampler:
   case BuiltinType::OCLEvent:
+  case BuiltinType::OCLClkEvent:
+  case BuiltinType::OCLQueue:
+  case BuiltinType::OCLNDRange:
+  case BuiltinType::OCLReserveID:
   case BuiltinType::BuiltinFn:
+  case BuiltinType::OMPArraySection:
     return TST_unspecified;
   }
 
@@ -363,6 +374,27 @@ SourceLocation TypeLoc::findNullabilityLoc() const {
   }
 
   return SourceLocation();
+}
+
+TypeLoc TypeLoc::findExplicitQualifierLoc() const {
+  // Qualified types.
+  if (auto qual = getAs<QualifiedTypeLoc>())
+    return qual;
+
+  TypeLoc loc = IgnoreParens();
+
+  // Attributed types.
+  if (auto attr = loc.getAs<AttributedTypeLoc>()) {
+    if (attr.isQualifier()) return attr;
+    return attr.getModifiedLoc().findExplicitQualifierLoc();
+  }
+
+  // C11 _Atomic types.
+  if (auto atomic = loc.getAs<AtomicTypeLoc>()) {
+    return atomic;
+  }
+
+  return TypeLoc();
 }
 
 void ObjCObjectTypeLoc::initializeLocal(ASTContext &Context, 

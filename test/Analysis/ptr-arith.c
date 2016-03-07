@@ -52,7 +52,7 @@ void f4() {
 void f5() {
   int x, y;
   int *p;
-  p = &x + 1;  // expected-warning{{Pointer arithmetic done on non-array variables means reliance on memory layout, which is dangerous}}
+  p = &x + 1;  // expected-warning{{Pointer arithmetic on non-array variables relies on memory layout, which is dangerous}}
 
   int a[10];
   p = a + 1; // no-warning
@@ -75,7 +75,7 @@ start:
   clang_analyzer_eval(&a != 0); // expected-warning{{TRUE}}
   clang_analyzer_eval(&a >= 0); // expected-warning{{TRUE}}
   clang_analyzer_eval(&a > 0); // expected-warning{{TRUE}}
-  clang_analyzer_eval((&a - 0) != 0); // expected-warning{{TRUE}} expected-warning{{Pointer arithmetic done on non-array variables}}
+  clang_analyzer_eval((&a - 0) != 0); // expected-warning{{TRUE}}
 
   // LHS is NULL, RHS is non-symbolic
   // The same code is used for labels and non-symbolic values.
@@ -294,5 +294,22 @@ void symbolicFieldRegion(struct Point *points, int i, int j) {
   clang_analyzer_eval(&points[i].x == &points[j].x);// expected-warning{{UNKNOWN}}
   clang_analyzer_eval(&points[i].x == &points[i].y);// expected-warning{{FALSE}}
   clang_analyzer_eval(&points[i].x < &points[i].y);// expected-warning{{TRUE}}
+}
+
+void negativeIndex(char *str) {
+  *(str + 1) = 'a';
+  clang_analyzer_eval(*(str + 1) == 'a'); // expected-warning{{TRUE}}
+  clang_analyzer_eval(*(str - 1) == 'a'); // expected-warning{{UNKNOWN}}
+
+  char *ptr1 = str - 1;
+  clang_analyzer_eval(*ptr1 == 'a'); // expected-warning{{UNKNOWN}}
+
+  char *ptr2 = str;
+  ptr2 -= 1;
+  clang_analyzer_eval(*ptr2 == 'a'); // expected-warning{{UNKNOWN}}
+
+  char *ptr3 = str;
+  --ptr3;
+  clang_analyzer_eval(*ptr3 == 'a'); // expected-warning{{UNKNOWN}}
 }
 

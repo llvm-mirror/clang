@@ -33,7 +33,6 @@ CODEGENOPT(CompressDebugSections, 1, 0) ///< -Wa,-compress-debug-sections
 CODEGENOPT(Autolink          , 1, 1) ///< -fno-autolink
 CODEGENOPT(AsmVerbose        , 1, 0) ///< -dA, -fverbose-asm.
 CODEGENOPT(ObjCAutoRefCountExceptions , 1, 0) ///< Whether ARC should be EH-safe.
-CODEGENOPT(NewMSEH           , 1, 0) ///< Whether we should use the new IR representation for MS exceptions
 CODEGENOPT(CoverageExtraChecksum, 1, 0) ///< Whether we need a second checksum for functions in GCNO files.
 CODEGENOPT(CoverageNoFunctionNamesInData, 1, 0) ///< Do not include function names in GCDA files.
 CODEGENOPT(CoverageExitBlockBeforeBody, 1, 0) ///< Whether to emit the exit block before the body blocks in GCNO files.
@@ -74,6 +73,11 @@ CODEGENOPT(LessPreciseFPMAD  , 1, 0) ///< Enable less precise MAD instructions t
                                      ///< be generated.
 CODEGENOPT(PrepareForLTO     , 1, 0) ///< Set when -flto is enabled on the
                                      ///< compile step.
+CODEGENOPT(EmitFunctionSummary, 1, 0) ///< Set when -flto=thin is enabled on the
+                                      ///< compile step.
+CODEGENOPT(IncrementalLinkerCompatible, 1, 0) ///< Emit an object file which can
+                                              ///< be used with an incremental
+                                              ///< linker.
 CODEGENOPT(MergeAllConstants , 1, 1) ///< Merge identical constants.
 CODEGENOPT(MergeFunctions    , 1, 0) ///< Set when -fmerge-functions is enabled.
 CODEGENOPT(MSVolatile        , 1, 0) ///< Set when /volatile:ms is enabled.
@@ -99,8 +103,10 @@ CODEGENOPT(OmitLeafFramePointer , 1, 0) ///< Set when -momit-leaf-frame-pointer 
 VALUE_CODEGENOPT(OptimizationLevel, 2, 0) ///< The -O[0-3] option specified.
 VALUE_CODEGENOPT(OptimizeSize, 2, 0) ///< If -Os (==1) or -Oz (==2) is specified.
 
-CODEGENOPT(ProfileInstrGenerate , 1, 0) ///< Instrument code to generate
-                                        ///< execution counts to use with PGO.
+/// \brief Choose profile instrumenation kind or no instrumentation.
+ENUM_CODEGENOPT(ProfileInstr, ProfileInstrKind, 2, ProfileNone)
+/// \brief Choose profile kind for PGO use compilation.
+ENUM_CODEGENOPT(ProfileUse, ProfileInstrKind, 2, ProfileNone)
 CODEGENOPT(CoverageMapping , 1, 0) ///< Generate coverage mapping regions to
                                    ///< enable code coverage analysis.
 CODEGENOPT(DumpCoverageMapping , 1, 0) ///< Dump the generated coverage mapping
@@ -119,6 +125,7 @@ CODEGENOPT(SanitizeMemoryTrackOrigins, 2, 0) ///< Enable tracking origins in
                                              ///< MemorySanitizer
 CODEGENOPT(SanitizeMemoryUseAfterDtor, 1, 0) ///< Enable use-after-delete detection
                                              ///< in MemorySanitizer
+CODEGENOPT(SanitizeCfiCrossDso, 1, 0) ///< Enable cross-dso support in CFI.
 CODEGENOPT(SanitizeCoverageType, 2, 0) ///< Type of sanitizer coverage
                                        ///< instrumentation.
 CODEGENOPT(SanitizeCoverageIndirectCalls, 1, 0) ///< Enable sanitizer coverage
@@ -129,9 +136,13 @@ CODEGENOPT(SanitizeCoverageTraceCmp, 1, 0) ///< Enable cmp instruction tracing
                                            ///< in sanitizer coverage.
 CODEGENOPT(SanitizeCoverage8bitCounters, 1, 0) ///< Use 8-bit frequency counters
                                                ///< in sanitizer coverage.
+CODEGENOPT(SanitizeCoverageTracePC, 1, 0) ///< Enable PC tracing
+                                          ///< in sanitizer coverage.
+CODEGENOPT(SanitizeStats     , 1, 0) ///< Collect statistics for sanitizers.
 CODEGENOPT(SimplifyLibCalls  , 1, 1) ///< Set when -fbuiltin is enabled.
 CODEGENOPT(SoftFloat         , 1, 0) ///< -soft-float.
 CODEGENOPT(StrictEnums       , 1, 0) ///< Optimize based on strict enum definition.
+CODEGENOPT(StrictVTablePointers, 1, 0) ///< Optimize based on the strict vtable pointers
 CODEGENOPT(TimePasses        , 1, 0) ///< Set when -ftime-report is enabled.
 CODEGENOPT(UnitAtATime       , 1, 1) ///< Unused. For mirroring GCC optimization
                                      ///< selection.
@@ -150,7 +161,7 @@ CODEGENOPT(UseRegisterSizedBitfieldAccess , 1, 0)
 CODEGENOPT(VerifyModule      , 1, 1) ///< Control whether the module should be run
                                      ///< through the LLVM Verifier.
 
-CODEGENOPT(StackRealignment  , 1, 0) ///< Control whether to permit stack
+CODEGENOPT(StackRealignment  , 1, 0) ///< Control whether to force stack
                                      ///< realignment.
 CODEGENOPT(UseInitArray      , 1, 0) ///< Control whether to use .init_array or
                                      ///< .ctors.
@@ -161,7 +172,17 @@ VALUE_CODEGENOPT(StackProbeSize    , 32, 4096) ///< Overrides default stack
 CODEGENOPT(DebugColumnInfo, 1, 0) ///< Whether or not to use column information
                                   ///< in debug info.
 
+CODEGENOPT(DebugTypeExtRefs, 1, 0) ///< Whether or not debug info should contain
+                                   ///< external references to a PCH or module.
+
+CODEGENOPT(DebugExplicitImport, 1, 0)  ///< Whether or not debug info should 
+                                       ///< contain explicit imports for 
+                                       ///< anonymous namespaces
+
 CODEGENOPT(EmitLLVMUseLists, 1, 0) ///< Control whether to serialize use-lists.
+
+CODEGENOPT(WholeProgramVTables, 1, 0) ///< Whether to apply whole-program
+                                      ///  vtable optimization.
 
 /// The user specified number of registers to be used for integral arguments,
 /// or 0 if unspecified.
@@ -171,7 +192,11 @@ VALUE_CODEGENOPT(NumRegisterParameters, 32, 0)
 VALUE_CODEGENOPT(SSPBufferSize, 32, 0)
 
 /// The kind of generated debug info.
-ENUM_CODEGENOPT(DebugInfo, DebugInfoKind, 3, NoDebugInfo)
+ENUM_CODEGENOPT(DebugInfo, codegenoptions::DebugInfoKind, 3, codegenoptions::NoDebugInfo)
+
+/// Tune the debug info for this debugger.
+ENUM_CODEGENOPT(DebuggerTuning, llvm::DebuggerKind, 2,
+                llvm::DebuggerKind::Default)
 
 /// Dwarf version. Version zero indicates to LLVM that no DWARF should be
 /// emitted.

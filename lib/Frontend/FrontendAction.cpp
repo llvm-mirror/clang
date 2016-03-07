@@ -190,9 +190,9 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
 
     IntrusiveRefCntPtr<DiagnosticsEngine> Diags(&CI.getDiagnostics());
 
-    std::unique_ptr<ASTUnit> AST =
-        ASTUnit::LoadFromASTFile(InputFile, CI.getPCHContainerReader(),
-                                 Diags, CI.getFileSystemOpts());
+    std::unique_ptr<ASTUnit> AST = ASTUnit::LoadFromASTFile(
+        InputFile, CI.getPCHContainerReader(), Diags, CI.getFileSystemOpts(),
+        CI.getCodeGenOpts().DebugTypeExtRefs);
 
     if (!AST)
       goto failure;
@@ -284,7 +284,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
 
       if (!Found) {
         CI.getDiagnostics().Report(diag::err_fe_no_pch_in_dir) << PCHInclude;
-        return true;
+        goto failure;
       }
     }
   }
@@ -442,9 +442,11 @@ bool FrontendAction::Execute() {
   // there were any module-build failures.
   if (CI.shouldBuildGlobalModuleIndex() && CI.hasFileManager() &&
       CI.hasPreprocessor()) {
-    GlobalModuleIndex::writeIndex(
-        CI.getFileManager(), CI.getPCHContainerReader(),
-        CI.getPreprocessor().getHeaderSearchInfo().getModuleCachePath());
+    StringRef Cache =
+        CI.getPreprocessor().getHeaderSearchInfo().getModuleCachePath();
+    if (!Cache.empty())
+      GlobalModuleIndex::writeIndex(CI.getFileManager(),
+                                    CI.getPCHContainerReader(), Cache);
   }
 
   return true;
@@ -557,7 +559,10 @@ bool WrapperFrontendAction::BeginSourceFileAction(CompilerInstance &CI,
                                                   StringRef Filename) {
   WrappedAction->setCurrentInput(getCurrentInput());
   WrappedAction->setCompilerInstance(&CI);
-  return WrappedAction->BeginSourceFileAction(CI, Filename);
+  auto Ret = WrappedAction->BeginSourceFileAction(CI, Filename);
+  // BeginSourceFileAction may change CurrentInput, e.g. during module builds.
+  setCurrentInput(WrappedAction->getCurrentInput());
+  return Ret;
 }
 void WrapperFrontendAction::ExecuteAction() {
   WrappedAction->ExecuteAction();
@@ -585,6 +590,7 @@ bool WrapperFrontendAction::hasCodeCompletionSupport() const {
   return WrappedAction->hasCodeCompletionSupport();
 }
 
-WrapperFrontendAction::WrapperFrontendAction(FrontendAction *WrappedAction)
-  : WrappedAction(WrappedAction) {}
+WrapperFrontendAction::WrapperFrontendAction(
+    std::unique_ptr<FrontendAction> WrappedAction)
+  : WrappedAction(std::move(WrappedAction)) {}
 

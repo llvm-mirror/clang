@@ -23,48 +23,6 @@
 #include <algorithm>
 using namespace clang;
 
-/// \brief Retrieve the name of the immediate macro expansion.
-///
-/// This routine starts from a source location, and finds the name of the macro
-/// responsible for its immediate expansion. It looks through any intervening
-/// macro argument expansions to compute this. It returns a StringRef which
-/// refers to the SourceManager-owned buffer of the source where that macro
-/// name is spelled. Thus, the result shouldn't out-live that SourceManager.
-///
-/// This differs from Lexer::getImmediateMacroName in that any macro argument
-/// location will result in the topmost function macro that accepted it.
-/// e.g.
-/// \code
-///   MAC1( MAC2(foo) )
-/// \endcode
-/// for location of 'foo' token, this function will return "MAC1" while
-/// Lexer::getImmediateMacroName will return "MAC2".
-static StringRef getImmediateMacroName(SourceLocation Loc,
-                                       const SourceManager &SM,
-                                       const LangOptions &LangOpts) {
-   assert(Loc.isMacroID() && "Only reasonble to call this on macros");
-   // Walk past macro argument expanions.
-   while (SM.isMacroArgExpansion(Loc))
-     Loc = SM.getImmediateExpansionRange(Loc).first;
-
-   // If the macro's spelling has no FileID, then it's actually a token paste
-   // or stringization (or similar) and not a macro at all.
-   if (!SM.getFileEntryForID(SM.getFileID(SM.getSpellingLoc(Loc))))
-     return StringRef();
-
-   // Find the spelling location of the start of the non-argument expansion
-   // range. This is where the macro name was spelled in order to begin
-   // expanding this macro.
-   Loc = SM.getSpellingLoc(SM.getImmediateExpansionRange(Loc).first);
-
-   // Dig out the buffer where the macro name was spelled and the extents of the
-   // name so that we can render it into the expansion note.
-   std::pair<FileID, unsigned> ExpansionInfo = SM.getDecomposedLoc(Loc);
-   unsigned MacroTokenLength = Lexer::MeasureTokenLength(Loc, SM, LangOpts);
-   StringRef ExpansionBuffer = SM.getBufferData(ExpansionInfo.first);
-   return ExpansionBuffer.substr(ExpansionInfo.second, MacroTokenLength);
-}
-
 DiagnosticRenderer::DiagnosticRenderer(const LangOptions &LangOpts,
                                        DiagnosticOptions *DiagOpts)
   : LangOpts(LangOpts), DiagOpts(DiagOpts), LastLevel() {}
@@ -245,7 +203,7 @@ void DiagnosticRenderer::emitIncludeStackRecursively(SourceLocation Loc,
   // import stack rather than the 
   // FIXME: We want submodule granularity here.
   std::pair<SourceLocation, StringRef> Imported = SM.getModuleImportLoc(Loc);
-  if (Imported.first.isValid()) {
+  if (!Imported.second.empty()) {
     // This location was imported by a module. Emit the module import stack.
     emitImportStackRecursively(Imported.first, Imported.second, SM);
     return;
@@ -276,13 +234,11 @@ void DiagnosticRenderer::emitImportStack(SourceLocation Loc,
 void DiagnosticRenderer::emitImportStackRecursively(SourceLocation Loc,
                                                     StringRef ModuleName,
                                                     const SourceManager &SM) {
-  if (Loc.isInvalid()) {
+  if (ModuleName.empty()) {
     return;
   }
 
   PresumedLoc PLoc = SM.getPresumedLoc(Loc, DiagOpts->ShowPresumedLoc);
-  if (PLoc.isInvalid())
-    return;
 
   // Emit the other import frames first.
   std::pair<SourceLocation, StringRef> NextImportLoc
@@ -308,6 +264,81 @@ void DiagnosticRenderer::emitModuleBuildStack(const SourceManager &SM) {
   }
 }
 
+/// A recursive function to trace all possible backtrace locations
+/// to match the \p CaretLocFileID.
+static SourceLocation
+retrieveMacroLocation(SourceLocation Loc, FileID MacroFileID,
+                      FileID CaretFileID,
+                      const SmallVectorImpl<FileID> &CommonArgExpansions,
+                      bool IsBegin, const SourceManager *SM) {
+  assert(SM->getFileID(Loc) == MacroFileID);
+  if (MacroFileID == CaretFileID)
+    return Loc;
+  if (!Loc.isMacroID())
+    return SourceLocation();
+
+  SourceLocation MacroLocation, MacroArgLocation;
+
+  if (SM->isMacroArgExpansion(Loc)) {
+    // Only look at the immediate spelling location of this macro argument if
+    // the other location in the source range is also present in that expansion.
+    if (std::binary_search(CommonArgExpansions.begin(),
+                           CommonArgExpansions.end(), MacroFileID))
+      MacroLocation = SM->getImmediateSpellingLoc(Loc);
+    MacroArgLocation = IsBegin ? SM->getImmediateExpansionRange(Loc).first
+                               : SM->getImmediateExpansionRange(Loc).second;
+  } else {
+    MacroLocation = IsBegin ? SM->getImmediateExpansionRange(Loc).first
+                            : SM->getImmediateExpansionRange(Loc).second;
+    MacroArgLocation = SM->getImmediateSpellingLoc(Loc);
+  }
+
+  if (MacroLocation.isValid()) {
+    MacroFileID = SM->getFileID(MacroLocation);
+    MacroLocation =
+        retrieveMacroLocation(MacroLocation, MacroFileID, CaretFileID,
+                              CommonArgExpansions, IsBegin, SM);
+    if (MacroLocation.isValid())
+      return MacroLocation;
+  }
+
+  MacroFileID = SM->getFileID(MacroArgLocation);
+  return retrieveMacroLocation(MacroArgLocation, MacroFileID, CaretFileID,
+                               CommonArgExpansions, IsBegin, SM);
+}
+
+/// Walk up the chain of macro expansions and collect the FileIDs identifying the
+/// expansions.
+static void getMacroArgExpansionFileIDs(SourceLocation Loc,
+                                        SmallVectorImpl<FileID> &IDs,
+                                        bool IsBegin, const SourceManager *SM) {
+  while (Loc.isMacroID()) {
+    if (SM->isMacroArgExpansion(Loc)) {
+      IDs.push_back(SM->getFileID(Loc));
+      Loc = SM->getImmediateSpellingLoc(Loc);
+    } else {
+      auto ExpRange = SM->getImmediateExpansionRange(Loc);
+      Loc = IsBegin ? ExpRange.first : ExpRange.second;
+    }
+  }
+}
+
+/// Collect the expansions of the begin and end locations and compute the set
+/// intersection. Produces a sorted vector of FileIDs in CommonArgExpansions.
+static void computeCommonMacroArgExpansionFileIDs(
+    SourceLocation Begin, SourceLocation End, const SourceManager *SM,
+    SmallVectorImpl<FileID> &CommonArgExpansions) {
+  SmallVector<FileID, 4> BeginArgExpansions;
+  SmallVector<FileID, 4> EndArgExpansions;
+  getMacroArgExpansionFileIDs(Begin, BeginArgExpansions, /*IsBegin=*/true, SM);
+  getMacroArgExpansionFileIDs(End, EndArgExpansions, /*IsBegin=*/false, SM);
+  std::sort(BeginArgExpansions.begin(), BeginArgExpansions.end());
+  std::sort(EndArgExpansions.begin(), EndArgExpansions.end());
+  std::set_intersection(BeginArgExpansions.begin(), BeginArgExpansions.end(),
+                        EndArgExpansions.begin(), EndArgExpansions.end(),
+                        std::back_inserter(CommonArgExpansions));
+}
+
 // Helper function to fix up source ranges.  It takes in an array of ranges,
 // and outputs an array of ranges where we want to draw the range highlighting
 // around the location specified by CaretLoc.
@@ -325,9 +356,9 @@ static void mapDiagnosticRanges(
     const SourceManager *SM) {
   FileID CaretLocFileID = SM->getFileID(CaretLoc);
 
-  for (ArrayRef<CharSourceRange>::const_iterator I = Ranges.begin(),
-       E = Ranges.end();
-       I != E; ++I) {
+  for (auto I = Ranges.begin(), E = Ranges.end(); I != E; ++I) {
+    if (I->isInvalid()) continue;
+
     SourceLocation Begin = I->getBegin(), End = I->getEnd();
     bool IsTokenRange = I->isTokenRange();
 
@@ -356,27 +387,19 @@ static void mapDiagnosticRanges(
       }
     }
 
-    while (Begin.isMacroID() && BeginFileID != CaretLocFileID) {
-      if (SM->isMacroArgExpansion(Begin)) {
-        Begin = SM->getImmediateSpellingLoc(Begin);
-        End = SM->getImmediateSpellingLoc(End);
-      } else {
-        Begin = SM->getImmediateExpansionRange(Begin).first;
-        End = SM->getImmediateExpansionRange(End).second;
-      }
-      BeginFileID = SM->getFileID(Begin);
-      if (BeginFileID != SM->getFileID(End)) {
-        // FIXME: Ugly hack to stop a crash; this code is making bad
-        // assumptions and it's too complicated for me to reason
-        // about.
-        Begin = End = SourceLocation();
-        break;
-      }
-    }
+    // Do the backtracking.
+    SmallVector<FileID, 4> CommonArgExpansions;
+    computeCommonMacroArgExpansionFileIDs(Begin, End, SM, CommonArgExpansions);
+    Begin = retrieveMacroLocation(Begin, BeginFileID, CaretLocFileID,
+                                  CommonArgExpansions, /*IsBegin=*/true, SM);
+    End = retrieveMacroLocation(End, BeginFileID, CaretLocFileID,
+                                CommonArgExpansions, /*IsBegin=*/false, SM);
+    if (Begin.isInvalid() || End.isInvalid()) continue;
 
     // Return the spelling location of the beginning and end of the range.
     Begin = SM->getSpellingLoc(Begin);
     End = SM->getSpellingLoc(End);
+
     SpellingRanges.push_back(CharSourceRange(SourceRange(Begin, End),
                                              IsTokenRange));
   }
@@ -401,13 +424,7 @@ void DiagnosticRenderer::emitSingleMacroExpansion(
     const SourceManager &SM) {
   // Find the spelling location for the macro definition. We must use the
   // spelling location here to avoid emitting a macro backtrace for the note.
-  SourceLocation SpellingLoc = Loc;
-
-  // If this is the expansion of a macro argument, point the caret at the
-  // use of the argument in the definition of the macro, not the expansion.
-  if (SM.isMacroArgExpansion(Loc))
-    SpellingLoc = SM.getImmediateExpansionRange(Loc).first;
-  SpellingLoc = SM.getSpellingLoc(SpellingLoc);
+  SourceLocation SpellingLoc = SM.getSpellingLoc(Loc);
 
   // Map the ranges into the FileID of the diagnostic location.
   SmallVector<CharSourceRange, 4> SpellingRanges;
@@ -415,7 +432,8 @@ void DiagnosticRenderer::emitSingleMacroExpansion(
 
   SmallString<100> MessageStorage;
   llvm::raw_svector_ostream Message(MessageStorage);
-  StringRef MacroName = getImmediateMacroName(Loc, SM, LangOpts);
+  StringRef MacroName =
+      Lexer::getImmediateMacroNameForDiagnostics(Loc, SM, LangOpts);
   if (MacroName.empty())
     Message << "expanded from here";
   else
@@ -423,6 +441,69 @@ void DiagnosticRenderer::emitSingleMacroExpansion(
 
   emitDiagnostic(SpellingLoc, DiagnosticsEngine::Note, Message.str(),
                  SpellingRanges, None, &SM);
+}
+
+/// Check that the macro argument location of Loc starts with ArgumentLoc.
+/// The starting location of the macro expansions is used to differeniate
+/// different macro expansions.
+static bool checkLocForMacroArgExpansion(SourceLocation Loc,
+                                         const SourceManager &SM,
+                                         SourceLocation ArgumentLoc) {
+  SourceLocation MacroLoc;
+  if (SM.isMacroArgExpansion(Loc, &MacroLoc)) {
+    if (ArgumentLoc == MacroLoc) return true;
+  }
+
+  return false;
+}
+
+/// Check if all the locations in the range have the same macro argument
+/// expansion, and that that expansion starts with ArgumentLoc.
+static bool checkRangeForMacroArgExpansion(CharSourceRange Range,
+                                           const SourceManager &SM,
+                                           SourceLocation ArgumentLoc) {
+  SourceLocation BegLoc = Range.getBegin(), EndLoc = Range.getEnd();
+  while (BegLoc != EndLoc) {
+    if (!checkLocForMacroArgExpansion(BegLoc, SM, ArgumentLoc))
+      return false;
+    BegLoc.getLocWithOffset(1);
+  }
+
+  return checkLocForMacroArgExpansion(BegLoc, SM, ArgumentLoc);
+}
+
+/// A helper function to check if the current ranges are all inside the same
+/// macro argument expansion as Loc.
+static bool checkRangesForMacroArgExpansion(SourceLocation Loc,
+                                            ArrayRef<CharSourceRange> Ranges,
+                                            const SourceManager &SM) {
+  assert(Loc.isMacroID() && "Must be a macro expansion!");
+
+  SmallVector<CharSourceRange, 4> SpellingRanges;
+  mapDiagnosticRanges(Loc, Ranges, SpellingRanges, &SM);
+
+  /// Count all valid ranges.
+  unsigned ValidCount = 0;
+  for (auto I : Ranges)
+    if (I.isValid()) ValidCount++;
+
+  if (ValidCount > SpellingRanges.size())
+    return false;
+
+  /// To store the source location of the argument location.
+  SourceLocation ArgumentLoc;
+
+  /// Set the ArgumentLoc to the beginning location of the expansion of Loc
+  /// so to check if the ranges expands to the same beginning location.
+  if (!SM.isMacroArgExpansion(Loc,&ArgumentLoc))
+    return false;
+
+  for (auto I = SpellingRanges.begin(), E = SpellingRanges.end(); I != E; ++I) {
+    if (!checkRangeForMacroArgExpansion(*I, SM, ArgumentLoc))
+      return false;
+  }
+
+  return true;
 }
 
 /// \brief Recursively emit notes for each macro expansion and caret
@@ -441,15 +522,34 @@ void DiagnosticRenderer::emitMacroExpansions(SourceLocation Loc,
                                              ArrayRef<CharSourceRange> Ranges,
                                              ArrayRef<FixItHint> Hints,
                                              const SourceManager &SM) {
-  assert(!Loc.isInvalid() && "must have a valid source location here");
+  assert(Loc.isValid() && "must have a valid source location here");
 
   // Produce a stack of macro backtraces.
   SmallVector<SourceLocation, 8> LocationStack;
+  unsigned IgnoredEnd = 0;
   while (Loc.isMacroID()) {
-    LocationStack.push_back(Loc);
+    // If this is the expansion of a macro argument, point the caret at the
+    // use of the argument in the definition of the macro, not the expansion.
+    if (SM.isMacroArgExpansion(Loc))
+      LocationStack.push_back(SM.getImmediateExpansionRange(Loc).first);
+    else
+      LocationStack.push_back(Loc);
+
+    if (checkRangesForMacroArgExpansion(Loc, Ranges, SM))
+      IgnoredEnd = LocationStack.size();
+
     Loc = SM.getImmediateMacroCallerLoc(Loc);
-    assert(!Loc.isInvalid() && "must have a valid source location here");
+
+    // Once the location no longer points into a macro, try stepping through
+    // the last found location.  This sometimes produces additional useful
+    // backtraces.
+    if (Loc.isFileID())
+      Loc = SM.getImmediateMacroCallerLoc(LocationStack.back());
+    assert(Loc.isValid() && "must have a valid source location here");
   }
+
+  LocationStack.erase(LocationStack.begin(),
+                      LocationStack.begin() + IgnoredEnd);
 
   unsigned MacroDepth = LocationStack.size();
   unsigned MacroLimit = DiagOpts->MacroBacktraceLimit;
@@ -501,8 +601,11 @@ void DiagnosticNoteRenderer::emitImportLocation(SourceLocation Loc,
   // Generate a note indicating the include location.
   SmallString<200> MessageStorage;
   llvm::raw_svector_ostream Message(MessageStorage);
-  Message << "in module '" << ModuleName << "' imported from "
-          << PLoc.getFilename() << ':' << PLoc.getLine() << ":";
+  Message << "in module '" << ModuleName;
+  if (PLoc.isValid())
+    Message << "' imported from " << PLoc.getFilename() << ':'
+            << PLoc.getLine();
+  Message << ":";
   emitNote(Loc, Message.str(), &SM);
 }
 

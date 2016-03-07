@@ -116,6 +116,14 @@ int main() {
   P(bswap16, (N));
   P(bswap32, (N));
   P(bswap64, (N));
+
+  // CHECK: @llvm.bitreverse.i16
+  // CHECK: @llvm.bitreverse.i32
+  // CHECK: @llvm.bitreverse.i64
+  P(bitreverse16, (N));
+  P(bitreverse32, (N));
+  P(bitreverse64, (N));
+
   // FIXME
   // V(clear_cache, (&N, &N+1));
   V(trap, ());
@@ -242,6 +250,13 @@ void test_float_builtin_ops(float F, double D, long double LD) {
   // CHECK: call float @llvm.fabs.f32(float
   // CHECK: call double @llvm.fabs.f64(double
   // CHECK: call x86_fp80 @llvm.fabs.f80(x86_fp80
+
+  resf = __builtin_canonicalizef(F);
+  resd = __builtin_canonicalize(D);
+  resld = __builtin_canonicalizel(LD);
+  // CHECK: call float @llvm.canonicalize.f32(float
+  // CHECK: call double @llvm.canonicalize.f64(double
+  // CHECK: call x86_fp80 @llvm.canonicalize.f80(x86_fp80
 }
 
 // __builtin_longjmp isn't supported on all platforms, so only test it on X86.

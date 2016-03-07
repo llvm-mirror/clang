@@ -7,7 +7,7 @@
 // pointing at the implicit operator new. We can't match such a diagnostic
 // with -verify.
 __extension__ typedef __SIZE_TYPE__ size_t;
-void *operator new(size_t); // expected-warning 0-1{{missing exception spec}} expected-note{{candidate}}
+void *operator new(size_t); // expected-error 0-1{{missing exception spec}} expected-note{{candidate}}
 
 namespace dr500 { // dr500: dup 372
   class D;
@@ -148,8 +148,7 @@ namespace dr522 { // dr522: yes
   template<typename T> void b2(volatile T * const *);
   template<typename T> void b2(volatile T * const S::*);
   template<typename T> void b2(volatile T * const S::* const *);
-  // FIXME: This diagnostic isn't very good. The problem is not substitution failure.
-  template<typename T> void b2a(volatile T *S::* const *); // expected-note {{substitution failure}}
+  template<typename T> void b2a(volatile T *S::* const *); // expected-note {{candidate template ignored: deduced type 'volatile int *dr522::S::*const *' of 1st parameter does not match adjusted type 'int *dr522::S::**' of argument}}
 
   template<typename T> struct Base {};
   struct Derived : Base<int> {};
@@ -519,23 +518,12 @@ namespace dr546 { // dr546: yes
 }
 
 namespace dr547 { // dr547: yes
-  // When targeting the MS x86 ABI, the type of a member function includes a
-  // __thiscall qualifier. This is non-conforming, but we still implement
-  // the intent of dr547
-#if defined(_M_IX86) || (defined(__MINGW32__) && !defined(__MINGW64__))
-#define THISCALL __thiscall
-#else
-#define THISCALL
-#endif
-
   template<typename T> struct X;
-  template<typename T> struct X<THISCALL T() const> {};
+  template<typename T> struct X<T() const> {};
   template<typename T, typename C> X<T> f(T C::*) { return X<T>(); }
 
   struct S { void f() const; };
-  X<THISCALL void() const> x = f(&S::f);
-
-#undef THISCALL
+  X<void() const> x = f(&S::f);
 }
 
 namespace dr548 { // dr548: dup 482

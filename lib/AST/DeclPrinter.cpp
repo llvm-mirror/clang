@@ -92,10 +92,13 @@ namespace {
     void VisitUsingDecl(UsingDecl *D);
     void VisitUsingShadowDecl(UsingShadowDecl *D);
     void VisitOMPThreadPrivateDecl(OMPThreadPrivateDecl *D);
+    void VisitOMPDeclareReductionDecl(OMPDeclareReductionDecl *D);
+    void VisitOMPCapturedExprDecl(OMPCapturedExprDecl *D);
 
     void PrintTemplateParameters(const TemplateParameterList *Params,
                                  const TemplateArgumentList *Args = nullptr);
     void prettyPrintAttributes(Decl *D);
+    void prettyPrintPragmas(Decl *D);
     void printDeclType(QualType T, StringRef DeclName, bool Pack = false);
   };
 }
@@ -197,12 +200,40 @@ raw_ostream& DeclPrinter::Indent(unsigned Indentation) {
 void DeclPrinter::prettyPrintAttributes(Decl *D) {
   if (Policy.PolishForDeclaration)
     return;
-  
+
   if (D->hasAttrs()) {
     AttrVec &Attrs = D->getAttrs();
-    for (AttrVec::const_iterator i=Attrs.begin(), e=Attrs.end(); i!=e; ++i) {
-      Attr *A = *i;
-      A->printPretty(Out, Policy);
+    for (auto *A : Attrs) {
+      switch (A->getKind()) {
+#define ATTR(X)
+#define PRAGMA_SPELLING_ATTR(X) case attr::X:
+#include "clang/Basic/AttrList.inc"
+        break;
+      default:
+        A->printPretty(Out, Policy);
+        break;
+      }
+    }
+  }
+}
+
+void DeclPrinter::prettyPrintPragmas(Decl *D) {
+  if (Policy.PolishForDeclaration)
+    return;
+
+  if (D->hasAttrs()) {
+    AttrVec &Attrs = D->getAttrs();
+    for (auto *A : Attrs) {
+      switch (A->getKind()) {
+#define ATTR(X)
+#define PRAGMA_SPELLING_ATTR(X) case attr::X:
+#include "clang/Basic/AttrList.inc"
+        A->printPretty(Out, Policy);
+        Indent();
+        break;
+      default:
+        break;
+      }
     }
   }
 }
@@ -304,7 +335,7 @@ void DeclPrinter::VisitDeclContext(DeclContext *DC, bool Indent) {
 
     // FIXME: Need to be able to tell the DeclPrinter when
     const char *Terminator = nullptr;
-    if (isa<OMPThreadPrivateDecl>(*D))
+    if (isa<OMPThreadPrivateDecl>(*D) || isa<OMPDeclareReductionDecl>(*D))
       Terminator = nullptr;
     else if (isa<FunctionDecl>(*D) &&
              cast<FunctionDecl>(*D)->isThisDeclarationADefinition())
@@ -408,6 +439,10 @@ void DeclPrinter::VisitEnumConstantDecl(EnumConstantDecl *D) {
 }
 
 void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
+  if (!D->getDescribedFunctionTemplate() &&
+      !D->isFunctionTemplateSpecialization())
+    prettyPrintPragmas(D);
+
   CXXConstructorDecl *CDecl = dyn_cast<CXXConstructorDecl>(D);
   CXXConversionDecl *ConversionDecl = dyn_cast<CXXConversionDecl>(D);
   if (!Policy.SuppressSpecifiers) {
@@ -416,7 +451,7 @@ void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
     case SC_Extern: Out << "extern "; break;
     case SC_Static: Out << "static "; break;
     case SC_PrivateExtern: Out << "__private_extern__ "; break;
-    case SC_Auto: case SC_Register: case SC_OpenCLWorkGroupLocal:
+    case SC_Auto: case SC_Register:
       llvm_unreachable("invalid for functions");
     }
 
@@ -643,6 +678,7 @@ void DeclPrinter::VisitFriendDecl(FriendDecl *D) {
 }
 
 void DeclPrinter::VisitFieldDecl(FieldDecl *D) {
+  // FIXME: add printing of pragma attributes if required.
   if (!Policy.SuppressSpecifiers && D->isMutable())
     Out << "mutable ";
   if (!Policy.SuppressSpecifiers && D->isModulePrivate())
@@ -672,6 +708,7 @@ void DeclPrinter::VisitLabelDecl(LabelDecl *D) {
 }
 
 void DeclPrinter::VisitVarDecl(VarDecl *D) {
+  prettyPrintPragmas(D);
   if (!Policy.SuppressSpecifiers) {
     StorageClass SC = D->getStorageClass();
     if (SC != SC_None)
@@ -716,7 +753,10 @@ void DeclPrinter::VisitVarDecl(VarDecl *D) {
       else if (D->getInitStyle() == VarDecl::CInit) {
         Out << " = ";
       }
-      Init->printPretty(Out, nullptr, Policy, Indentation);
+      PrintingPolicy SubPolicy(Policy);
+      SubPolicy.SuppressSpecifiers = false;
+      SubPolicy.SuppressTag = false;
+      Init->printPretty(Out, nullptr, SubPolicy, Indentation);
       if ((D->getInitStyle() == VarDecl::CallInit) && !isa<ParenListExpr>(Init))
         Out << ")";
     }
@@ -779,6 +819,7 @@ void DeclPrinter::VisitEmptyDecl(EmptyDecl *D) {
 }
 
 void DeclPrinter::VisitCXXRecordDecl(CXXRecordDecl *D) {
+  // FIXME: add printing of pragma attributes if required.
   if (!Policy.SuppressSpecifiers && D->isModulePrivate())
     Out << "__module_private__ ";
   Out << D->getKindName();
@@ -914,11 +955,13 @@ void DeclPrinter::VisitFunctionTemplateDecl(FunctionTemplateDecl *D) {
   if (PrintInstantiation) {
     TemplateParameterList *Params = D->getTemplateParameters();
     for (auto *I : D->specializations()) {
+      prettyPrintPragmas(I);
       PrintTemplateParameters(Params, I->getTemplateSpecializationArgs());
       Visit(I);
     }
   }
 
+  prettyPrintPragmas(D->getTemplatedDecl());
   return VisitRedeclarableTemplateDecl(D);
 }
 
@@ -1088,7 +1131,7 @@ void DeclPrinter::VisitObjCInterfaceDecl(ObjCInterfaceDecl *OID) {
   }
   
   if (SID)
-    Out << " : " << OID->getSuperClass()->getName();
+    Out << " : " << QualType(OID->getSuperClassType(), 0).getAsString(Policy);
 
   // Protocols?
   const ObjCList<ObjCProtocolDecl> &Protocols = OID->getReferencedProtocols();
@@ -1260,6 +1303,11 @@ void DeclPrinter::VisitObjCPropertyDecl(ObjCPropertyDecl *PDecl) {
       }
     }
 
+    if (PDecl->getPropertyAttributes() & ObjCPropertyDecl::OBJC_PR_class) {
+      Out << (first ? ' ' : ',') << "class";
+      first = false;
+    }
+
     (void) first; // Silence dead store warning due to idiomatic code.
     Out << " )";
   }
@@ -1299,7 +1347,7 @@ void DeclPrinter::VisitUnresolvedUsingValueDecl(UnresolvedUsingValueDecl *D) {
   if (!D->isAccessDeclaration())
     Out << "using ";
   D->getQualifier()->print(Out, Policy);
-  Out << D->getName();
+  Out << D->getDeclName();
 }
 
 void DeclPrinter::VisitUsingShadowDecl(UsingShadowDecl *D) {
@@ -1318,5 +1366,40 @@ void DeclPrinter::VisitOMPThreadPrivateDecl(OMPThreadPrivateDecl *D) {
     }
     Out << ")";
   }
+}
+
+void DeclPrinter::VisitOMPDeclareReductionDecl(OMPDeclareReductionDecl *D) {
+  if (!D->isInvalidDecl()) {
+    Out << "#pragma omp declare reduction (";
+    if (D->getDeclName().getNameKind() == DeclarationName::CXXOperatorName) {
+      static const char *const OperatorNames[NUM_OVERLOADED_OPERATORS] = {
+          nullptr,
+#define OVERLOADED_OPERATOR(Name, Spelling, Token, Unary, Binary, MemberOnly)  \
+          Spelling,
+#include "clang/Basic/OperatorKinds.def"
+      };
+      const char *OpName =
+          OperatorNames[D->getDeclName().getCXXOverloadedOperator()];
+      assert(OpName && "not an overloaded operator");
+      Out << OpName;
+    } else {
+      assert(D->getDeclName().isIdentifier());
+      D->printName(Out);
+    }
+    Out << " : ";
+    D->getType().print(Out, Policy);
+    Out << " : ";
+    D->getCombiner()->printPretty(Out, nullptr, Policy, 0);
+    Out << ")";
+    if (auto *Init = D->getInitializer()) {
+      Out << " initializer(";
+      Init->printPretty(Out, nullptr, Policy, 0);
+      Out << ")";
+    }
+  }
+}
+
+void DeclPrinter::VisitOMPCapturedExprDecl(OMPCapturedExprDecl *D) {
+  D->getInit()->printPretty(Out, nullptr, Policy, Indentation);
 }
 

@@ -113,6 +113,9 @@ public:
     /// Tags, declared with 'struct foo;' and referenced with
     /// 'struct foo'.  All tags are also types.  This is what
     /// elaborated-type-specifiers look for in C.
+    /// This also contains names that conflict with tags in the
+    /// same scope but that are otherwise ordinary names (non-type
+    /// template parameters and indirect field declarations).
     IDNS_Tag                 = 0x0002,
 
     /// Types, declared with 'struct foo', typedefs, etc.
@@ -131,7 +134,7 @@ public:
     IDNS_Namespace           = 0x0010,
 
     /// Ordinary names.  In C, everything that's not a label, tag,
-    /// or member ends up here.
+    /// member, or function-local extern ends up here.
     IDNS_Ordinary            = 0x0020,
 
     /// Objective C \@protocol.
@@ -160,8 +163,13 @@ public:
 
     /// This declaration is a function-local extern declaration of a
     /// variable or function. This may also be IDNS_Ordinary if it
-    /// has been declared outside any function.
-    IDNS_LocalExtern         = 0x0800
+    /// has been declared outside any function. These act mostly like
+    /// invisible friend declarations, but are also visible to unqualified
+    /// lookup within the scope of the declaring function.
+    IDNS_LocalExtern         = 0x0800,
+
+    /// This declaration is an OpenMP user defined reduction construction.
+    IDNS_OMPReduction        = 0x1000
   };
 
   /// ObjCDeclQualifier - 'Qualifiers' written next to the return and
@@ -251,7 +259,7 @@ private:
   SourceLocation Loc;
 
   /// DeclKind - This indicates which class this is.
-  unsigned DeclKind : 8;
+  unsigned DeclKind : 7;
 
   /// InvalidDecl - This indicates a semantic error occurred.
   unsigned InvalidDecl :  1;
@@ -291,7 +299,7 @@ protected:
   unsigned Hidden : 1;
   
   /// IdentifierNamespace - This specifies what IDNS_* namespace this lives in.
-  unsigned IdentifierNamespace : 12;
+  unsigned IdentifierNamespace : 13;
 
   /// \brief If 0, we have not computed the linkage of this declaration.
   /// Otherwise, it is the linkage + 1.
@@ -475,8 +483,7 @@ public:
 
   template <typename T>
   llvm::iterator_range<specific_attr_iterator<T>> specific_attrs() const {
-    return llvm::iterator_range<specific_attr_iterator<T>>(
-        specific_attr_begin<T>(), specific_attr_end<T>());
+    return llvm::make_range(specific_attr_begin<T>(), specific_attr_end<T>());
   }
 
   template <typename T>
@@ -727,6 +734,15 @@ public:
   bool isDefinedOutsideFunctionOrMethod() const {
     return getParentFunctionOrMethod() == nullptr;
   }
+
+  /// \brief Returns true if this declaration lexically is inside a function.
+  /// It recognizes non-defining declarations as well as members of local
+  /// classes:
+  /// \code
+  ///     void foo() { void bar(); }
+  ///     void foo2() { class ABC { void bar(); }; }
+  /// \endcode
+  bool isLexicallyWithinFunctionOrMethod() const;
 
   /// \brief If this decl is defined inside a function/method/block it returns
   /// the corresponding DeclContext, otherwise it returns null.
@@ -1104,6 +1120,7 @@ public:
 ///   ObjCContainerDecl
 ///   LinkageSpecDecl
 ///   BlockDecl
+///   OMPDeclareReductionDecl
 ///
 class DeclContext {
   /// DeclKind - This indicates which class this is.
@@ -1132,6 +1149,11 @@ class DeclContext {
   /// \brief If \c true, the external source may have lexical declarations
   /// that are missing from the lookup table.
   mutable bool HasLazyExternalLexicalLookups : 1;
+
+  /// \brief If \c true, lookups should only return identifier from
+  /// DeclContext scope (for example TranslationUnit). Used in
+  /// LookupQualifiedName()
+  mutable bool UseQualifiedLookup : 1;
 
   /// \brief Pointer to the data structure used to lookup declarations
   /// within this context (or a DependentStoredDeclsMap if this is a
@@ -1167,6 +1189,7 @@ protected:
         ExternalVisibleStorage(false),
         NeedToReconcileExternalVisibleStorage(false),
         HasLazyLocalLexicalLookups(false), HasLazyExternalLexicalLookups(false),
+        UseQualifiedLookup(false),
         LookupPtr(nullptr), FirstDecl(nullptr), LastDecl(nullptr) {}
 
 public:
@@ -1745,6 +1768,16 @@ public:
   bool isDeclInLexicalTraversal(const Decl *D) const {
     return D && (D->NextInContextAndBits.getPointer() || D == FirstDecl || 
                  D == LastDecl);
+  }
+
+  bool setUseQualifiedLookup(bool use = true) {
+    bool old_value = UseQualifiedLookup;
+    UseQualifiedLookup = use;
+    return old_value;
+  }
+
+  bool shouldUseQualifiedLookup() const {
+    return UseQualifiedLookup;
   }
 
   static bool classof(const Decl *D);

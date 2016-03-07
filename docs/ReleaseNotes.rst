@@ -1,5 +1,5 @@
 =====================================
-Clang 3.8 (In-Progress) Release Notes
+Clang 3.9 (In-Progress) Release Notes
 =====================================
 
 .. contents::
@@ -10,15 +10,15 @@ Written by the `LLVM Team <http://llvm.org/>`_
 
 .. warning::
 
-   These are in-progress notes for the upcoming Clang 3.8 release. You may
-   prefer the `Clang 3.6 Release Notes
-   <http://llvm.org/releases/3.6.0/tools/clang/docs/ReleaseNotes.html>`_.
+   These are in-progress notes for the upcoming Clang 3.9 release. You may
+   prefer the `Clang 3.7 Release Notes
+   <http://llvm.org/releases/3.7.0/tools/clang/docs/ReleaseNotes.html>`_.
 
 Introduction
 ============
 
 This document contains the release notes for the Clang C/C++/Objective-C
-frontend, part of the LLVM Compiler Infrastructure, release 3.8. Here we
+frontend, part of the LLVM Compiler Infrastructure, release 3.9. Here we
 describe the status of Clang in some detail, including major
 improvements from the previous release and new feature work. For the
 general LLVM release notes, see `the LLVM
@@ -36,7 +36,7 @@ main Clang web page, this document applies to the *next* release, not
 the current one. To see the release notes for a specific release, please
 see the `releases page <http://llvm.org/releases/>`_.
 
-What's New in Clang 3.8?
+What's New in Clang 3.9?
 ========================
 
 Some of the major new features and improvements to Clang are listed
@@ -54,7 +54,7 @@ Improvements to Clang's diagnostics
 
 Clang's diagnostics are constantly being improved to catch more issues,
 explain them more clearly, and provide more accurate source information
-about them. The improvements since the 3.5 release include:
+about them. The improvements since the 3.7 release include:
 
 -  ...
 
@@ -73,6 +73,8 @@ Windows Support
 ---------------
 
 Clang's support for building native Windows programs ...
+
+TLS is enabled for Cygwin defaults to -femulated-tls.
 
 
 C Language Changes in Clang
@@ -108,11 +110,16 @@ OpenCL C Language Changes in Clang
 Internal API Changes
 --------------------
 
-These are major API changes that have happened since the 3.7 release of
+These are major API changes that have happened since the 3.8 release of
 Clang. If upgrading an external codebase that uses Clang as a library,
 this section should help get you past the largest hurdles of upgrading.
 
 -  ...
+
+AST Matchers
+------------
+
+...
 
 libclang
 --------

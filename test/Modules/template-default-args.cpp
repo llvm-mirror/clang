@@ -13,6 +13,7 @@ template<typename T = int, typename U = int> struct I {};
 END
 
 #include "b.h"
+#include "d.h"
 
 BEGIN
 template<typename T = int> struct A {};
@@ -22,6 +23,9 @@ template<typename T = int> struct C;
 template<typename T> struct D {};
 template<typename T> struct F {};
 template<typename T> struct G {};
+template<typename T> struct J {};
+template<typename T = int> struct J;
+struct K : J<> {};
 END
 
 #include "c.h"
@@ -38,4 +42,5 @@ G<> g; // expected-error {{default argument of 'G' must be imported from module 
 H<> h; // expected-error {{default argument of 'H' must be imported from module 'X.A' before it is required}}
 // expected-note@a.h:8 {{default argument declared here}}
 I<> i;
+L<> *l;
 END

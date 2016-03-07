@@ -126,7 +126,7 @@ bool MacroInfo::isIdenticalTo(const MacroInfo &Other, Preprocessor &PP,
   return true;
 }
 
-void MacroInfo::dump() const {
+LLVM_DUMP_METHOD void MacroInfo::dump() const {
   llvm::raw_ostream &Out = llvm::errs();
 
   // FIXME: Dump locations.
@@ -154,16 +154,20 @@ void MacroInfo::dump() const {
     Out << ")";
   }
 
+  bool First = true;
   for (const Token &Tok : ReplacementTokens) {
-    Out << " ";
+    // Leading space is semantically meaningful in a macro definition,
+    // so preserve it in the dump output.
+    if (First || Tok.hasLeadingSpace())
+      Out << " ";
+    First = false;
+
     if (const char *Punc = tok::getPunctuatorSpelling(Tok.getKind()))
       Out << Punc;
-    else if (const char *Kwd = tok::getKeywordSpelling(Tok.getKind()))
-      Out << Kwd;
-    else if (Tok.is(tok::identifier))
-      Out << Tok.getIdentifierInfo()->getName();
     else if (Tok.isLiteral() && Tok.getLiteralData())
       Out << StringRef(Tok.getLiteralData(), Tok.getLength());
+    else if (auto *II = Tok.getIdentifierInfo())
+      Out << II->getName();
     else
       Out << Tok.getName();
   }
@@ -205,7 +209,7 @@ MacroDirective::findDirectiveAtLoc(SourceLocation L, SourceManager &SM) const {
   return DefInfo();
 }
 
-void MacroDirective::dump() const {
+LLVM_DUMP_METHOD void MacroDirective::dump() const {
   llvm::raw_ostream &Out = llvm::errs();
 
   switch (getKind()) {

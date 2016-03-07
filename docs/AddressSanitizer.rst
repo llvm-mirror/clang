@@ -196,12 +196,11 @@ Disabling Instrumentation with ``__attribute__((no_sanitize("address")))``
 --------------------------------------------------------------------------
 
 Some code should not be instrumented by AddressSanitizer. One may use the
-function attribute ``__attribute__((no_sanitize("address")))``
-(which has deprecated synonyms
-:ref:`no_sanitize_address <langext-address_sanitizer>` and
-`no_address_safety_analysis`) to disable instrumentation of a particular
-function. This attribute may not be supported by other compilers, so we suggest
-to use it together with ``__has_feature(address_sanitizer)``.
+function attribute ``__attribute__((no_sanitize("address")))`` (which has
+deprecated synonyms `no_sanitize_address` and `no_address_safety_analysis`) to
+disable instrumentation of a particular function. This attribute may not be
+supported by other compilers, so we suggest to use it together with
+``__has_feature(address_sanitizer)``.
 
 Suppressing Errors in Recompiled Code (Blacklist)
 -------------------------------------------------
@@ -232,6 +231,23 @@ problems happening in certain source files or with certain global variables.
     global:bad_init_global=init
     type:*BadInitClassSubstring*=init
     src:bad/init/files/*=init
+
+Suppressing memory leaks
+------------------------
+
+Memory leak reports produced by :doc:`LeakSanitizer` (if it is run as a part
+of AddressSanitizer) can be suppressed by a separate file passed as
+
+.. code-block:: bash
+
+    LSAN_OPTIONS=suppressions=MyLSan.supp
+
+which contains lines of the form `leak:<pattern>`. Memory leak will be
+suppressed if pattern matches any function name, source file name, or
+library name in the symbolized stack trace of the leak report. See
+`full documentation
+<https://github.com/google/sanitizers/wiki/AddressSanitizerLeakSanitizer#suppressions>`_
+for more details.
 
 Limitations
 ===========
@@ -268,5 +284,4 @@ check-asan`` command.
 More Information
 ================
 
-`http://code.google.com/p/address-sanitizer <http://code.google.com/p/address-sanitizer/>`_
-
+`<https://github.com/google/sanitizers/wiki/AddressSanitizer>`_

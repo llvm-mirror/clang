@@ -1,10 +1,12 @@
 set(LLVM_LINK_COMPONENTS
+  ${LLVM_TARGETS_TO_BUILD}
   Support
   )
 
 add_clang_unittest(ToolingTests
   CommentHandlerTest.cpp
   CompilationDatabaseTest.cpp
+  LookupTest.cpp
   ToolingTest.cpp
   RecursiveASTVisitorTest.cpp
   RecursiveASTVisitorTestCallVisitor.cpp
@@ -15,6 +17,7 @@ add_clang_unittest(ToolingTests
   RewriterTest.cpp
   RefactoringCallbacksTest.cpp
   ReplacementsYamlTest.cpp
+  QualTypeNamesTest.cpp
   )
 
 target_link_libraries(ToolingTests
