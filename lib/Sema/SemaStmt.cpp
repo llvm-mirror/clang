@@ -249,10 +249,10 @@ void Sema::DiagnoseUnusedExprResult(const Stmt *S) {
     // is written in a macro body, only warn if it has the warn_unused_result
     // attribute.
     if (const Decl *FD = CE->getCalleeDecl()) {
-      const FunctionDecl *Func = dyn_cast<FunctionDecl>(FD);
-      if (Func ? Func->hasUnusedResultAttr()
-               : FD->hasAttr<WarnUnusedResultAttr>()) {
-        Diag(Loc, diag::warn_unused_result) << R1 << R2;
+      if (const Attr *A = isa<FunctionDecl>(FD)
+                              ? cast<FunctionDecl>(FD)->getUnusedResultAttr()
+                              : FD->getAttr<WarnUnusedResultAttr>()) {
+        Diag(Loc, diag::warn_unused_result) << A << R1 << R2;
         return;
       }
       if (ShouldSuppress)
@@ -276,8 +276,8 @@ void Sema::DiagnoseUnusedExprResult(const Stmt *S) {
     }
     const ObjCMethodDecl *MD = ME->getMethodDecl();
     if (MD) {
-      if (MD->hasAttr<WarnUnusedResultAttr>()) {
-        Diag(Loc, diag::warn_unused_result) << R1 << R2;
+      if (const auto *A = MD->getAttr<WarnUnusedResultAttr>()) {
+        Diag(Loc, diag::warn_unused_result) << A << R1 << R2;
         return;
       }
     }
@@ -488,6 +488,20 @@ StmtResult Sema::ActOnAttributedStmt(SourceLocation AttrLoc,
   return LS;
 }
 
+namespace {
+class CommaVisitor : public EvaluatedExprVisitor<CommaVisitor> {
+  typedef EvaluatedExprVisitor<CommaVisitor> Inherited;
+  Sema &SemaRef;
+public:
+  CommaVisitor(Sema &SemaRef) : Inherited(SemaRef.Context), SemaRef(SemaRef) {}
+  void VisitBinaryOperator(BinaryOperator *E) {
+    if (E->getOpcode() == BO_Comma)
+      SemaRef.DiagnoseCommaOperator(E->getLHS(), E->getExprLoc());
+    EvaluatedExprVisitor<CommaVisitor>::VisitBinaryOperator(E);
+  }
+};
+}
+
 StmtResult
 Sema::ActOnIfStmt(SourceLocation IfLoc, FullExprArg CondVal, Decl *CondVar,
                   Stmt *thenStmt, SourceLocation ElseLoc,
@@ -502,6 +516,11 @@ Sema::ActOnIfStmt(SourceLocation IfLoc, FullExprArg CondVal, Decl *CondVar,
   }
   Expr *ConditionExpr = CondResult.getAs<Expr>();
   if (ConditionExpr) {
+
+    if (!Diags.isIgnored(diag::warn_comma_operator,
+                         ConditionExpr->getExprLoc()))
+      CommaVisitor(*this).Visit(ConditionExpr);
+
     DiagnoseUnusedExprResult(thenStmt);
 
     if (!elseStmt) {
@@ -980,7 +999,8 @@ Sema::ActOnFinishSwitchStmt(SourceLocation SwitchLoc, Stmt *Switch,
             << SourceRange(CR->getLHS()->getLocStart(),
                            Hi->getLocEnd());
           CaseRanges.erase(CaseRanges.begin()+i);
-          --i, --e;
+          --i;
+          --e;
           continue;
         }
 
@@ -1239,6 +1259,10 @@ Sema::ActOnWhileStmt(SourceLocation WhileLoc, FullExprArg Cond,
     return StmtError();
   CheckBreakContinueBinding(ConditionExpr);
 
+  if (ConditionExpr &&
+      !Diags.isIgnored(diag::warn_comma_operator, ConditionExpr->getExprLoc()))
+    CommaVisitor(*this).Visit(ConditionExpr);
+
   DiagnoseUnusedExprResult(Body);
 
   if (isa<NullStmt>(Body))
@@ -1414,6 +1438,18 @@ namespace {
       if (VarDecl *VD = dyn_cast<VarDecl>(E->getDecl()))
         if (Decls.count(VD))
           FoundDecl = true;
+    }
+
+    void VisitPseudoObjectExpr(PseudoObjectExpr *POE) {
+      // Only need to visit the semantics for POE.
+      // SyntaticForm doesn't really use the Decal.
+      for (auto *S : POE->semantics()) {
+        if (auto *OVE = dyn_cast<OpaqueValueExpr>(S))
+          // Look past the OVE into the expression it binds.
+          Visit(OVE->getSourceExpr());
+        else
+          Visit(S);
+      }
     }
 
     bool FoundDeclInUse() { return FoundDecl; }
@@ -1640,6 +1676,11 @@ Sema::ActOnForStmt(SourceLocation ForLoc, SourceLocation LParenLoc,
     if (SecondResult.isInvalid())
       return StmtError();
   }
+
+  if (SecondResult.get() &&
+      !Diags.isIgnored(diag::warn_comma_operator,
+                       SecondResult.get()->getExprLoc()))
+    CommaVisitor(*this).Visit(SecondResult.get());
 
   Expr *Third  = third.release().getAs<Expr>();
 
@@ -3066,22 +3107,28 @@ bool Sema::DeduceFunctionTypeFromReturnExpr(FunctionDecl *FD,
   //  has multiple return statements, the return type is deduced for each return
   //  statement. [...] if the type deduced is not the same in each deduction,
   //  the program is ill-formed.
-  if (AT->isDeduced() && !FD->isInvalidDecl()) {
+  QualType DeducedT = AT->getDeducedType();
+  if (!DeducedT.isNull() && !FD->isInvalidDecl()) {
     AutoType *NewAT = Deduced->getContainedAutoType();
+    // It is possible that NewAT->getDeducedType() is null. When that happens,
+    // we should not crash, instead we ignore this deduction.
+    if (NewAT->getDeducedType().isNull())
+      return false;
+
     CanQualType OldDeducedType = Context.getCanonicalFunctionResultType(
-                                   AT->getDeducedType());
+                                   DeducedT);
     CanQualType NewDeducedType = Context.getCanonicalFunctionResultType(
                                    NewAT->getDeducedType());
     if (!FD->isDependentContext() && OldDeducedType != NewDeducedType) {
       const LambdaScopeInfo *LambdaSI = getCurLambda();
       if (LambdaSI && LambdaSI->HasImplicitReturnType) {
         Diag(ReturnLoc, diag::err_typecheck_missing_return_type_incompatible)
-          << NewAT->getDeducedType() << AT->getDeducedType()
+          << NewAT->getDeducedType() << DeducedT
           << true /*IsLambda*/;
       } else {
         Diag(ReturnLoc, diag::err_auto_fn_different_deductions)
           << (AT->isDecltypeAuto() ? 1 : 0)
-          << NewAT->getDeducedType() << AT->getDeducedType();
+          << NewAT->getDeducedType() << DeducedT;
       }
       return true;
     }
@@ -3525,11 +3572,6 @@ template <> struct DenseMapInfo<CatchHandlerType> {
     return LHS == RHS;
   }
 };
-
-// It's OK to treat CatchHandlerType as a POD type.
-template <> struct isPodLike<CatchHandlerType> {
-  static const bool value = true;
-};
 }
 
 namespace {
@@ -3554,7 +3596,7 @@ public:
   bool operator()(const CXXBaseSpecifier *S, CXXBasePath &) {
     if (S->getAccessSpecifier() == AccessSpecifier::AS_public) {
       CatchHandlerType Check(S->getType(), CheckAgainstPointer);
-      auto M = TypesToCheck;
+      const auto &M = TypesToCheck;
       auto I = M.find(Check);
       if (I != M.end()) {
         FoundHandler = I->second;

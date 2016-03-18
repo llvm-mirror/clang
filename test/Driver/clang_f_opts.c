@@ -97,11 +97,11 @@
 // RUN: %clang -### -S -fcoverage-mapping %s 2>&1 | FileCheck -check-prefix=CHECK-COVERAGE-AND-GEN %s
 // RUN: %clang -### -S -fcoverage-mapping -fno-coverage-mapping %s 2>&1 | FileCheck -check-prefix=CHECK-DISABLE-COVERAGE %s
 // RUN: %clang -### -S -fprofile-instr-generate -fcoverage-mapping -fno-coverage-mapping %s 2>&1 | FileCheck -check-prefix=CHECK-DISABLE-COVERAGE %s
-// CHECK-PROFILE-GENERATE: "-fprofile-instr-generate"
-// CHECK-PROFILE-GENERATE-DIR: "-fprofile-instr-generate=/some/dir{{/|\\\\}}default.profraw"
-// CHECK-PROFILE-GENERATE-FILE: "-fprofile-instr-generate=/tmp/somefile.profraw"
+// CHECK-PROFILE-GENERATE: "-fprofile-instrument=clang"
+// CHECK-PROFILE-GENERATE-DIR: "-fprofile-instrument-path=/some/dir{{/|\\\\}}default.profraw"
+// CHECK-PROFILE-GENERATE-FILE: "-fprofile-instrument-path=/tmp/somefile.profraw"
 // CHECK-NO-MIX-GEN-USE: '{{[a-z=-]*}}' not allowed with '{{[a-z=-]*}}'
-// CHECK-DISABLE-GEN-NOT: "-fprofile-instr-generate"
+// CHECK-DISABLE-GEN-NOT: "-fprofile-instrument=clang"
 // CHECK-DISABLE-USE-NOT: "-fprofile-instr-use"
 // CHECK-COVERAGE-AND-GEN: '-fcoverage-mapping' only allowed with '-fprofile-instr-generate'
 // CHECK-DISABLE-COVERAGE-NOT: "-fcoverage-mapping"
@@ -111,9 +111,9 @@
 // RUN: mkdir -p %t.d/some/dir
 // RUN: %clang -### -S -fprofile-use=%t.d/some/dir %s 2>&1 | FileCheck -check-prefix=CHECK-PROFILE-USE-DIR %s
 // RUN: %clang -### -S -fprofile-instr-use=/tmp/somefile.prof %s 2>&1 | FileCheck -check-prefix=CHECK-PROFILE-USE-FILE %s
-// CHECK-PROFILE-USE: "-fprofile-instr-use=default.profdata"
-// CHECK-PROFILE-USE-DIR: "-fprofile-instr-use={{.*}}.d/some/dir{{/|\\\\}}default.profdata"
-// CHECK-PROFILE-USE-FILE: "-fprofile-instr-use=/tmp/somefile.prof"
+// CHECK-PROFILE-USE: "-fprofile-instrument-use-path=default.profdata"
+// CHECK-PROFILE-USE-DIR: "-fprofile-instrument-use-path={{.*}}.d/some/dir{{/|\\\\}}default.profdata"
+// CHECK-PROFILE-USE-FILE: "-fprofile-instrument-use-path=/tmp/somefile.prof"
 
 // RUN: %clang -### -S -fvectorize %s 2>&1 | FileCheck -check-prefix=CHECK-VECTORIZE %s
 // RUN: %clang -### -S -fno-vectorize -fvectorize %s 2>&1 | FileCheck -check-prefix=CHECK-VECTORIZE %s

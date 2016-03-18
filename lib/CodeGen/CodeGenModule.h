@@ -21,6 +21,7 @@
 #include "clang/AST/Attr.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
+#include "clang/AST/DeclOpenMP.h"
 #include "clang/AST/GlobalDecl.h"
 #include "clang/AST/Mangle.h"
 #include "clang/Basic/ABI.h"
@@ -33,6 +34,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ValueHandle.h"
+#include "llvm/Transforms/Utils/SanitizerStats.h"
 
 namespace llvm {
 class Module;
@@ -165,6 +167,9 @@ struct ObjCEntrypoints {
   /// id objc_storeWeak(id*, id);
   llvm::Constant *objc_storeWeak;
 
+  /// id objc_unsafeClaimAutoreleasedReturnValue(id);
+  llvm::Constant *objc_unsafeClaimAutoreleasedReturnValue;
+
   /// A void(void) inline asm to use to mark that the return value of
   /// a call will be immediately retain.
   llvm::InlineAsm *retainAutoreleasedReturnValueMarker;
@@ -289,6 +294,7 @@ private:
   llvm::MDNode *NoObjCARCExceptionsMetadata;
   std::unique_ptr<llvm::IndexedInstrProfReader> PGOReader;
   InstrProfStats PGOStats;
+  std::unique_ptr<llvm::SanitizerStatReport> SanStats;
 
   // A set of references that have only been seen via a weakref so far. This is
   // used to remove the weak of the reference if we ever see a direct reference
@@ -483,6 +489,8 @@ private:
   /// maintain this mapping because identifiers may be formed from distinct
   /// MDNodes.
   llvm::DenseMap<QualType, llvm::Metadata *> MetadataIdMap;
+
+  SanitizerBlacklist WholeProgramVTablesBlacklist;
 
 public:
   CodeGenModule(ASTContext &C, const HeaderSearchOptions &headersearchopts,
@@ -992,6 +1000,8 @@ public:
 
   void EmitVTable(CXXRecordDecl *Class);
 
+  void RefreshTypeCacheForClass(const CXXRecordDecl *Class);
+
   /// \brief Appends Opts to the "Linker Options" metadata value.
   void AppendLinkerOptions(StringRef Opts);
 
@@ -1101,9 +1111,16 @@ public:
   /// \param D Threadprivate declaration.
   void EmitOMPThreadPrivateDecl(const OMPThreadPrivateDecl *D);
 
-  /// Returns whether the given record is blacklisted from control flow
-  /// integrity checks.
-  bool IsCFIBlacklistedRecord(const CXXRecordDecl *RD);
+  /// \brief Emit a code for declare reduction construct.
+  void EmitOMPDeclareReduction(const OMPDeclareReductionDecl *D,
+                               CodeGenFunction *CGF = nullptr);
+
+  /// Returns whether we need bit sets attached to vtables.
+  bool NeedVTableBitSets();
+
+  /// Returns whether the given record is blacklisted from whole-program
+  /// transformations (i.e. CFI or whole-program vtable optimization).
+  bool IsBitSetBlacklistedRecord(const CXXRecordDecl *RD);
 
   /// Emit bit set entries for the given vtable using the given layout if
   /// vptr CFI is enabled.
@@ -1121,6 +1138,9 @@ public:
   /// Create a bitset entry for the given function and add it to BitsetsMD.
   void CreateFunctionBitSetEntry(const FunctionDecl *FD, llvm::Function *F);
 
+  /// Returns whether this module needs the "all-vtables" bitset.
+  bool NeedAllVtablesBitSet() const;
+
   /// Create a bitset entry for the given vtable and add it to BitsetsMD.
   void CreateVTableBitSetEntry(llvm::NamedMDNode *BitsetsMD,
                                llvm::GlobalVariable *VTable, CharUnits Offset,
@@ -1128,6 +1148,8 @@ public:
 
   /// \breif Get the declaration of std::terminate for the platform.
   llvm::Constant *getTerminateFn();
+
+  llvm::SanitizerStatReport &getSanStats();
 
 private:
   llvm::Constant *

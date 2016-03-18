@@ -12,10 +12,13 @@ set(files
   avx512vlintrin.h
   avx512dqintrin.h
   avx512vldqintrin.h
+  avx512vbmiintrin.h
+  avx512vbmivlintrin.h
   pkuintrin.h
   avxintrin.h
   bmi2intrin.h
   bmiintrin.h
+  __clang_cuda_cmath.h
   __clang_cuda_runtime_wrapper.h
   cpuid.h
   cuda_builtin_vars.h
@@ -73,6 +76,8 @@ set(files
   xsavecintrin.h
   xsavesintrin.h
   xtestintrin.h
+  avx512ifmaintrin.h
+  avx512ifmavlintrin.h
   )
 
 set(output_dir ${LLVM_LIBRARY_OUTPUT_INTDIR}/clang/${CLANG_VERSION}/include)
@@ -109,7 +114,7 @@ install(
 
 if (NOT CMAKE_CONFIGURATION_TYPES) # don't add this for IDE's.
   add_custom_target(install-clang-headers
-    DEPENDS
+    DEPENDS clang-headers
     COMMAND "${CMAKE_COMMAND}"
             -DCMAKE_INSTALL_COMPONENT=clang-headers
             -P "${CMAKE_BINARY_DIR}/cmake_install.cmake")

@@ -191,6 +191,11 @@ void Sema::Initialize() {
       PushOnScopeChains(Context.getObjCProtocolDecl(), TUScope);
   }
 
+  // Create the internal type for the *StringMakeConstantString builtins.
+  DeclarationName ConstantString = &Context.Idents.get("__NSConstantString");
+  if (IdResolver.begin(ConstantString) == IdResolver.end())
+    PushOnScopeChains(Context.getCFConstantStringDecl(), TUScope);
+
   // Initialize Microsoft "predefined C++ types".
   if (getLangOpts().MSVCCompat) {
     if (getLangOpts().CPlusPlus &&

@@ -86,6 +86,17 @@ TEST_F(FormatTestJS, UnderstandsJavaScriptOperators) {
 
   verifyFormat("var b = a.map((x) => x + 1);");
   verifyFormat("return ('aaa') in bbbb;");
+  verifyFormat("var x = aaaaaaaaaaaaaaaaaaaaaaaaa() in\n"
+               "    aaaa.aaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;");
+  FormatStyle Style = getGoogleJSStyleWithColumns(80);
+  Style.AlignOperands = true;
+  verifyFormat("var x = aaaaaaaaaaaaaaaaaaaaaaaaa() in\n"
+               "        aaaa.aaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;",
+               Style);
+  Style.BreakBeforeBinaryOperators = FormatStyle::BOS_All;
+  verifyFormat("var x = aaaaaaaaaaaaaaaaaaaaaaaaa()\n"
+               "            in aaaa.aaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;",
+               Style);
 
   // ES6 spread operator.
   verifyFormat("someFunction(...a);");
@@ -189,6 +200,18 @@ TEST_F(FormatTestJS, ContainerLiterals) {
                "  b: 2,\n"
                "  [c]: 3,\n"
                "};");
+
+  // Object literals can leave out labels.
+  verifyFormat("f({a}, () => {\n"
+               "  g();  //\n"
+               "});");
+
+  // Keys can be quoted.
+  verifyFormat("var x = {\n"
+               "  a: a,\n"
+               "  b: b,\n"
+               "  'c': c,\n"
+               "};");
 }
 
 TEST_F(FormatTestJS, MethodsInObjectLiterals) {
@@ -234,7 +257,7 @@ TEST_F(FormatTestJS, SpacesInContainerLiterals) {
   verifyFormat("f({'a': [{}]});");
 }
 
-TEST_F(FormatTestJS, SingleQuoteStrings) {
+TEST_F(FormatTestJS, SingleQuotedStrings) {
   verifyFormat("this.function('', true);");
 }
 
@@ -260,6 +283,8 @@ TEST_F(FormatTestJS, GoogModules) {
   verifyFormat("var long = goog.require('this.is.really.absurdly.long');",
                getGoogleJSStyleWithColumns(40));
   verifyFormat("goog.setTestOnly('this.is.really.absurdly.long');",
+               getGoogleJSStyleWithColumns(40));
+  verifyFormat("goog.forwardDeclare('this.is.really.absurdly.long');",
                getGoogleJSStyleWithColumns(40));
 
   // These should be wrapped normally.
@@ -579,6 +604,12 @@ TEST_F(FormatTestJS, ReturnStatements) {
 TEST_F(FormatTestJS, ForLoops) {
   verifyFormat("for (var i in [2, 3]) {\n"
                "}");
+  verifyFormat("for (var i of [2, 3]) {\n"
+               "}");
+  verifyFormat("for (let {a, b} of x) {\n"
+               "}");
+  verifyFormat("for (let {a, b} in x) {\n"
+               "}");
 }
 
 TEST_F(FormatTestJS, AutomaticSemicolonInsertion) {
@@ -742,6 +773,7 @@ TEST_F(FormatTestJS, TypeAnnotations) {
   verifyFormat("function x(): {x: string} {\n  return {x: 'x'};\n}");
   verifyFormat("function x(y: string): string {\n  return 'x';\n}");
   verifyFormat("for (var y: string in x) {\n  x();\n}");
+  verifyFormat("for (var y: string of x) {\n  x();\n}");
   verifyFormat("function x(y: {a?: number;} = {}): number {\n"
                "  return 12;\n"
                "}");
@@ -793,6 +825,7 @@ TEST_F(FormatTestJS, InterfaceDeclarations) {
   verifyFormat("interface I {\n"
                "  x: string;\n"
                "  enum: string[];\n"
+               "  enum?: string[];\n"
                "}\n"
                "var y;");
   // Ensure that state is reset after parsing the interface.
@@ -854,7 +887,7 @@ TEST_F(FormatTestJS, Modules) {
   verifyFormat("import {\n"
                "  X,\n"
                "  Y,\n"
-               "} from 'some/long/module.js';",
+               "} from\n    'some/long/module.js';",
                getGoogleJSStyleWithColumns(20));
   verifyFormat("import {X as myLocalX, Y as myLocalY} from 'some/module.js';");
   verifyFormat("import * as lib from 'some/module.js';");
@@ -1063,6 +1096,37 @@ TEST_F(FormatTestJS, JSDocAnnotations) {
                    " * @export {this.is.a.long.path.to.a.Type}\n"
                    " */",
                    getGoogleJSStyleWithColumns(20)));
+}
+
+TEST_F(FormatTestJS, RequoteStringsSingle) {
+  EXPECT_EQ("var x = 'foo';", format("var x = \"foo\";"));
+  EXPECT_EQ("var x = 'fo\\'o\\'';", format("var x = \"fo'o'\";"));
+  EXPECT_EQ("var x = 'fo\\'o\\'';", format("var x = \"fo\\'o'\";"));
+  EXPECT_EQ("var x =\n"
+            "    'foo\\'';",
+            // Code below is 15 chars wide, doesn't fit into the line with the
+            // \ escape added.
+            format("var x = \"foo'\";", getGoogleJSStyleWithColumns(15)));
+  // Removes no-longer needed \ escape from ".
+  EXPECT_EQ("var x = 'fo\"o';", format("var x = \"fo\\\"o\";"));
+  // Code below fits into 15 chars *after* removing the \ escape.
+  EXPECT_EQ("var x = 'fo\"o';",
+            format("var x = \"fo\\\"o\";", getGoogleJSStyleWithColumns(15)));
+}
+
+TEST_F(FormatTestJS, RequoteStringsDouble) {
+  FormatStyle DoubleQuotes = getGoogleStyle(FormatStyle::LK_JavaScript);
+  DoubleQuotes.JavaScriptQuotes = FormatStyle::JSQS_Double;
+  verifyFormat("var x = \"foo\";", DoubleQuotes);
+  EXPECT_EQ("var x = \"foo\";", format("var x = 'foo';", DoubleQuotes));
+  EXPECT_EQ("var x = \"fo'o\";", format("var x = 'fo\\'o';", DoubleQuotes));
+}
+
+TEST_F(FormatTestJS, RequoteStringsLeave) {
+  FormatStyle LeaveQuotes = getGoogleStyle(FormatStyle::LK_JavaScript);
+  LeaveQuotes.JavaScriptQuotes = FormatStyle::JSQS_Leave;
+  verifyFormat("var x = \"foo\";", LeaveQuotes);
+  verifyFormat("var x = 'foo';", LeaveQuotes);
 }
 
 } // end namespace tooling

@@ -1558,10 +1558,13 @@ void ItaniumRecordLayoutBuilder::LayoutBitField(const FieldDecl *D) {
 
   // But, if there's a #pragma pack in play, that takes precedent over
   // even the 'aligned' attribute, for non-zero-width bitfields.
+  unsigned MaxFieldAlignmentInBits = Context.toBits(MaxFieldAlignment);
   if (!MaxFieldAlignment.isZero() && FieldSize) {
-    unsigned MaxFieldAlignmentInBits = Context.toBits(MaxFieldAlignment);
-    FieldAlign = std::min(FieldAlign, MaxFieldAlignmentInBits);
     UnpackedFieldAlign = std::min(UnpackedFieldAlign, MaxFieldAlignmentInBits);
+    if (FieldPacked)
+      FieldAlign = UnpackedFieldAlign;
+    else
+      FieldAlign = std::min(FieldAlign, MaxFieldAlignmentInBits);
   }
 
   // But, ms_struct just ignores all of that in unions, even explicit
@@ -1600,7 +1603,10 @@ void ItaniumRecordLayoutBuilder::LayoutBitField(const FieldDecl *D) {
         (AllowPadding &&
          (FieldOffset & (FieldAlign-1)) + FieldSize > TypeSize)) {
       FieldOffset = llvm::alignTo(FieldOffset, FieldAlign);
-    } else if (ExplicitFieldAlign) {
+    } else if (ExplicitFieldAlign &&
+               (MaxFieldAlignmentInBits == 0 ||
+                ExplicitFieldAlign <= MaxFieldAlignmentInBits) &&
+               Context.getTargetInfo().useExplicitBitFieldAlignment()) {
       // TODO: figure it out what needs to be done on targets that don't honor
       // bit-field type alignment like ARM APCS ABI.
       FieldOffset = llvm::alignTo(FieldOffset, ExplicitFieldAlign);
@@ -1612,7 +1618,10 @@ void ItaniumRecordLayoutBuilder::LayoutBitField(const FieldDecl *D) {
          (UnpackedFieldOffset & (UnpackedFieldAlign-1)) + FieldSize > TypeSize))
       UnpackedFieldOffset =
           llvm::alignTo(UnpackedFieldOffset, UnpackedFieldAlign);
-    else if (ExplicitFieldAlign)
+    else if (ExplicitFieldAlign &&
+             (MaxFieldAlignmentInBits == 0 ||
+              ExplicitFieldAlign <= MaxFieldAlignmentInBits) &&
+             Context.getTargetInfo().useExplicitBitFieldAlignment())
       UnpackedFieldOffset =
           llvm::alignTo(UnpackedFieldOffset, ExplicitFieldAlign);
   }
@@ -2123,7 +2132,7 @@ static bool isMsLayout(const ASTContext &Context) {
 //   function pointer) and a vbptr (virtual base pointer).  They can each be
 //   shared with a, non-virtual bases. These bases need not be the same.  vfptrs
 //   always occur at offset 0.  vbptrs can occur at an arbitrary offset and are
-//   placed after the lexiographically last non-virtual base.  This placement
+//   placed after the lexicographically last non-virtual base.  This placement
 //   is always before fields but can be in the middle of the non-virtual bases
 //   due to the two-pass layout scheme for non-virtual-bases.
 // * Virtual bases sometimes require a 'vtordisp' field that is laid out before
@@ -2144,7 +2153,7 @@ static bool isMsLayout(const ASTContext &Context) {
 //   pushes all bases and fields back by the alignment imposed by those bases
 //   and fields.  This can potentially add a significant amount of padding.
 //   vbptrs are injected immediately after the last non-virtual base as
-//   lexiographically ordered in the code.  If this site isn't pointer aligned
+//   lexicographically ordered in the code.  If this site isn't pointer aligned
 //   the vbptr is placed at the next properly aligned location.  Enough padding
 //   is added to guarantee a fit.
 // * The last zero sized non-virtual base can be placed at the end of the
@@ -2467,7 +2476,7 @@ MicrosoftRecordLayoutBuilder::layoutNonVirtualBases(const CXXRecordDecl *RD) {
   // out any bases that do not contain vfptrs.  We implement this as two passes
   // over the bases.  This approach guarantees that the primary base is laid out
   // first.  We use these passes to calculate some additional aggregated
-  // information about the bases, such as reqruied alignment and the presence of
+  // information about the bases, such as required alignment and the presence of
   // zero sized members.
   const ASTRecordLayout *PreviousBaseLayout = nullptr;
   // Iterate through the bases and lay out the non-virtual ones.
@@ -2479,7 +2488,7 @@ MicrosoftRecordLayoutBuilder::layoutNonVirtualBases(const CXXRecordDecl *RD) {
       HasVBPtr = true;
       continue;
     }
-    // Check fo a base to share a VBPtr with.
+    // Check for a base to share a VBPtr with.
     if (!SharedVBPtrBase && BaseLayout.hasVBPtr()) {
       SharedVBPtrBase = BaseDecl;
       HasVBPtr = true;
@@ -3061,7 +3070,7 @@ ASTContext::getObjCLayout(const ObjCInterfaceDecl *D,
   // Add in synthesized ivar count if laying out an implementation.
   if (Impl) {
     unsigned SynthCount = CountNonClassIvars(D);
-    // If there aren't any sythesized ivars then reuse the interface
+    // If there aren't any synthesized ivars then reuse the interface
     // entry. Note we can't cache this because we simply free all
     // entries later; however we shouldn't look up implementations
     // frequently.

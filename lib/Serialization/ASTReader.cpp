@@ -48,6 +48,7 @@
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Bitcode/BitstreamReader.h"
+#include "llvm/Support/Compression.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -768,6 +769,15 @@ IdentID ASTIdentifierLookupTrait::ReadIdentifierID(const unsigned char *d) {
   return Reader.getGlobalIdentifierID(F, RawID >> 1);
 }
 
+static void markIdentifierFromAST(ASTReader &Reader, IdentifierInfo &II) {
+  if (!II.isFromAST()) {
+    II.setIsFromAST();
+    bool IsModule = Reader.getPreprocessor().getCurrentModule() != nullptr;
+    if (isInterestingIdentifier(Reader, II, IsModule))
+      II.setChangedSinceDeserialization();
+  }
+}
+
 IdentifierInfo *ASTIdentifierLookupTrait::ReadData(const internal_key_type& k,
                                                    const unsigned char* d,
                                                    unsigned DataLen) {
@@ -784,12 +794,7 @@ IdentifierInfo *ASTIdentifierLookupTrait::ReadData(const internal_key_type& k,
     II = &Reader.getIdentifierTable().getOwn(k);
     KnownII = II;
   }
-  if (!II->isFromAST()) {
-    II->setIsFromAST();
-    bool IsModule = Reader.PP.getCurrentModule() != nullptr;
-    if (isInterestingIdentifier(Reader, *II, IsModule))
-      II->setChangedSinceDeserialization();
-  }
+  markIdentifierFromAST(Reader, *II);
   Reader.markIdentifierUpToDate(II);
 
   IdentID ID = Reader.getGlobalIdentifierID(F, RawID);
@@ -1199,6 +1204,32 @@ bool ASTReader::ReadSLocEntry(int ID) {
     return true;
   }
 
+  // Local helper to read the (possibly-compressed) buffer data following the
+  // entry record.
+  auto ReadBuffer = [this](
+      BitstreamCursor &SLocEntryCursor,
+      StringRef Name) -> std::unique_ptr<llvm::MemoryBuffer> {
+    RecordData Record;
+    StringRef Blob;
+    unsigned Code = SLocEntryCursor.ReadCode();
+    unsigned RecCode = SLocEntryCursor.readRecord(Code, Record, &Blob);
+
+    if (RecCode == SM_SLOC_BUFFER_BLOB_COMPRESSED) {
+      SmallString<0> Uncompressed;
+      if (llvm::zlib::uncompress(Blob, Uncompressed, Record[0]) !=
+          llvm::zlib::StatusOK) {
+        Error("could not decompress embedded file contents");
+        return nullptr;
+      }
+      return llvm::MemoryBuffer::getMemBufferCopy(Uncompressed, Name);
+    } else if (RecCode == SM_SLOC_BUFFER_BLOB) {
+      return llvm::MemoryBuffer::getMemBuffer(Blob.drop_back(1), Name, true);
+    } else {
+      Error("AST record has invalid code");
+      return nullptr;
+    }
+  };
+
   ModuleFile *F = GlobalSLocEntryMap.find(-ID)->second;
   F->SLocEntryCursor.JumpToBit(F->SLocEntryOffsets[ID - F->SLocEntryBaseID]);
   BitstreamCursor &SLocEntryCursor = F->SLocEntryCursor;
@@ -1254,24 +1285,16 @@ bool ASTReader::ReadSLocEntry(int ID) {
       FileDeclIDs[FID] = FileDeclsInfo(F, llvm::makeArrayRef(FirstDecl,
                                                              NumFileDecls));
     }
-    
+
     const SrcMgr::ContentCache *ContentCache
       = SourceMgr.getOrCreateContentCache(File,
                               /*isSystemFile=*/FileCharacter != SrcMgr::C_User);
     if (OverriddenBuffer && !ContentCache->BufferOverridden &&
         ContentCache->ContentsEntry == ContentCache->OrigEntry &&
         !ContentCache->getRawBuffer()) {
-      unsigned Code = SLocEntryCursor.ReadCode();
-      Record.clear();
-      unsigned RecCode = SLocEntryCursor.readRecord(Code, Record, &Blob);
-      
-      if (RecCode != SM_SLOC_BUFFER_BLOB) {
-        Error("AST record has invalid code");
+      auto Buffer = ReadBuffer(SLocEntryCursor, File->getName());
+      if (!Buffer)
         return true;
-      }
-      
-      std::unique_ptr<llvm::MemoryBuffer> Buffer
-        = llvm::MemoryBuffer::getMemBuffer(Blob.drop_back(1), File->getName());
       SourceMgr.overrideFileContents(File, std::move(Buffer));
     }
 
@@ -1288,18 +1311,10 @@ bool ASTReader::ReadSLocEntry(int ID) {
         (F->Kind == MK_ImplicitModule || F->Kind == MK_ExplicitModule)) {
       IncludeLoc = getImportLocation(F);
     }
-    unsigned Code = SLocEntryCursor.ReadCode();
-    Record.clear();
-    unsigned RecCode
-      = SLocEntryCursor.readRecord(Code, Record, &Blob);
 
-    if (RecCode != SM_SLOC_BUFFER_BLOB) {
-      Error("AST record has invalid code");
+    auto Buffer = ReadBuffer(SLocEntryCursor, Name);
+    if (!Buffer)
       return true;
-    }
-
-    std::unique_ptr<llvm::MemoryBuffer> Buffer =
-        llvm::MemoryBuffer::getMemBuffer(Blob.drop_back(1), Name);
     SourceMgr.createFileID(std::move(Buffer), FileCharacter, ID,
                            BaseOffset + Offset, IncludeLoc);
     break;
@@ -2254,9 +2269,10 @@ ASTReader::ReadControlBlock(ModuleFile &F,
               (AllowConfigurationMismatch && Result == ConfigurationMismatch))
             Result = Success;
 
-          // If we've diagnosed a problem, we're done.
-          if (Result != Success &&
-              isDiagnosedResult(Result, ClientLoadCapabilities))
+          // If we can't load the module, exit early since we likely
+          // will rebuild the module anyway. The stream may be in the
+          // middle of a block.
+          if (Result != Success)
             return Result;
         } else if (Stream.SkipBlock()) {
           Error("malformed block record in AST file");
@@ -3201,6 +3217,23 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       OptimizeOffPragmaLocation = ReadSourceLocation(F, Record[0]);
       break;
 
+    case MSSTRUCT_PRAGMA_OPTIONS:
+      if (Record.size() != 1) {
+        Error("invalid pragma ms_struct record");
+        return Failure;
+      }
+      PragmaMSStructState = Record[0];
+      break;
+
+    case POINTERS_TO_MEMBERS_PRAGMA_OPTIONS:
+      if (Record.size() != 2) {
+        Error("invalid pragma ms_struct record");
+        return Failure;
+      }
+      PragmaMSPointersToMembersState = Record[0];
+      PointersToMembersPragmaLocation = ReadSourceLocation(F, Record[1]);
+      break;
+
     case UNUSED_LOCAL_TYPEDEF_NAME_CANDIDATES:
       for (unsigned I = 0, N = Record.size(); I != N; ++I)
         UnusedLocalTypedefNameCandidates.push_back(
@@ -3467,7 +3500,7 @@ static bool SkipCursorToBlock(BitstreamCursor &Cursor, unsigned BlockID) {
   }
 }
 
-ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
+ASTReader::ASTReadResult ASTReader::ReadAST(StringRef FileName,
                                             ModuleKind Type,
                                             SourceLocation ImportLoc,
                                             unsigned ClientLoadCapabilities) {
@@ -3560,12 +3593,7 @@ ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
 
       // Mark this identifier as being from an AST file so that we can track
       // whether we need to serialize it.
-      if (!II.isFromAST()) {
-        II.setIsFromAST();
-        bool IsModule = PP.getCurrentModule() != nullptr;
-        if (isInterestingIdentifier(*this, II, IsModule))
-          II.setChangedSinceDeserialization();
-      }
+      markIdentifierFromAST(*this, II);
 
       // Associate the ID with the identifier so that the writer can reuse it.
       auto ID = Trait.ReadIdentifierID(Data + KeyDataLen.first);
@@ -4052,7 +4080,9 @@ void ASTReader::InitializeContext() {
     if (Module *Imported = getSubmodule(Import.ID)) {
       makeModuleVisible(Imported, Module::AllVisible,
                         /*ImportLoc=*/Import.ImportLoc);
-      PP.makeModuleVisible(Imported, Import.ImportLoc);
+      if (Import.ImportLoc.isValid())
+        PP.makeModuleVisible(Imported, Import.ImportLoc);
+      // FIXME: should we tell Sema to make the module visible too?
     }
   }
   ImportedModules.clear();
@@ -5374,6 +5404,17 @@ QualType ASTReader::readTypeRecord(unsigned Index) {
     for (unsigned I = 0; I != NumParams; ++I)
       ParamTypes.push_back(readType(*Loc.F, Record, Idx));
 
+    SmallVector<FunctionProtoType::ExtParameterInfo, 4> ExtParameterInfos;
+    if (Idx != Record.size()) {
+      for (unsigned I = 0; I != NumParams; ++I)
+        ExtParameterInfos.push_back(
+          FunctionProtoType::ExtParameterInfo
+                           ::getFromOpaqueValue(Record[Idx++]));
+      EPI.ExtParameterInfos = ExtParameterInfos.data();
+    }
+
+    assert(Idx == Record.size());
+
     return Context.getFunctionType(ResultType, ParamTypes, EPI);
   }
 
@@ -6444,6 +6485,12 @@ static Decl *getPredefinedDecl(ASTContext &Context, PredefinedDeclIDs ID) {
 
   case PREDEF_DECL_MAKE_INTEGER_SEQ_ID:
     return Context.getMakeIntegerSeqDecl();
+
+  case PREDEF_DECL_CF_CONSTANT_STRING_ID:
+    return Context.getCFConstantStringDecl();
+
+  case PREDEF_DECL_CF_CONSTANT_STRING_TAG_ID:
+    return Context.getCFConstantStringTagDecl();
   }
   llvm_unreachable("PredefinedDeclIDs unknown enum value");
 }
@@ -6883,7 +6930,7 @@ dumpModuleIDMap(StringRef Name,
   }
 }
 
-void ASTReader::dump() {
+LLVM_DUMP_METHOD void ASTReader::dump() {
   llvm::errs() << "*** PCH/ModuleFile Remappings:\n";
   dumpModuleIDMap("Global bit offset map", GlobalBitOffsetsMap);
   dumpModuleIDMap("Global source location entry map", GlobalSLocEntryMap);
@@ -6968,10 +7015,18 @@ void ASTReader::UpdateSema() {
     SemaDeclRefs.clear();
   }
 
-  // Update the state of 'pragma clang optimize'. Use the same API as if we had
-  // encountered the pragma in the source.
+  // Update the state of pragmas. Use the same API as if we had encountered the
+  // pragma in the source.
   if(OptimizeOffPragmaLocation.isValid())
     SemaObj->ActOnPragmaOptimize(/* IsOn = */ false, OptimizeOffPragmaLocation);
+  if (PragmaMSStructState != -1)
+    SemaObj->ActOnPragmaMSStruct((PragmaMSStructKind)PragmaMSStructState);
+  if (PointersToMembersPragmaLocation.isValid()) {
+    SemaObj->ActOnPragmaMSPointersToMembers(
+        (LangOptions::PragmaMSPointersToMembersKind)
+            PragmaMSPointersToMembersState,
+        PointersToMembersPragmaLocation);
+  }
 }
 
 IdentifierInfo *ASTReader::get(StringRef Name) {
@@ -7449,10 +7504,11 @@ IdentifierInfo *ASTReader::DecodeIdentifierInfo(IdentifierID ID) {
     const unsigned char *StrLenPtr = (const unsigned char*) Str - 2;
     unsigned StrLen = (((unsigned) StrLenPtr[0])
                        | (((unsigned) StrLenPtr[1]) << 8)) - 1;
-    IdentifiersLoaded[ID]
-      = &PP.getIdentifierTable().get(StringRef(Str, StrLen));
+    auto &II = PP.getIdentifierTable().get(StringRef(Str, StrLen));
+    IdentifiersLoaded[ID] = &II;
+    markIdentifierFromAST(*this,  II);
     if (DeserializationListener)
-      DeserializationListener->IdentifierRead(ID + 1, IdentifiersLoaded[ID]);
+      DeserializationListener->IdentifierRead(ID + 1, &II);
   }
 
   return IdentifiersLoaded[ID];
@@ -7581,8 +7637,9 @@ ASTReader::getSourceDescriptor(unsigned ID) {
   // Chained PCH are not suported.
   if (ModuleMgr.size() == 1) {
     ModuleFile &MF = ModuleMgr.getPrimaryModule();
-    return ASTReader::ASTSourceDescriptor(
-        MF.OriginalSourceFileName, MF.OriginalDir, MF.FileName, MF.Signature);
+    StringRef ModuleName = llvm::sys::path::filename(MF.OriginalSourceFileName);
+    return ASTReader::ASTSourceDescriptor(ModuleName, MF.OriginalDir,
+                                          MF.FileName, MF.Signature);
   }
   return None;
 }
@@ -8664,6 +8721,8 @@ ASTReader::ASTReader(
       Diags(PP.getDiagnostics()), SemaObj(nullptr), PP(PP), Context(Context),
       Consumer(nullptr), ModuleMgr(PP.getFileManager(), PCHContainerRdr),
       ReadTimer(std::move(ReadTimer)),
+      PragmaMSStructState(-1),
+      PragmaMSPointersToMembersState(-1),
       isysroot(isysroot), DisableValidation(DisableValidation),
       AllowASTWithCompilerErrors(AllowASTWithCompilerErrors),
       AllowConfigurationMismatch(AllowConfigurationMismatch),

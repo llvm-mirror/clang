@@ -14,6 +14,7 @@
 
 #include "CGCall.h"
 #include "ABIInfo.h"
+#include "CGBlocks.h"
 #include "CGCXXABI.h"
 #include "CGCleanup.h"
 #include "CodeGenFunction.h"
@@ -569,8 +570,7 @@ CGFunctionInfo *CGFunctionInfo::create(unsigned llvmCC,
                                        CanQualType resultType,
                                        ArrayRef<CanQualType> argTypes,
                                        RequiredArgs required) {
-  void *buffer = operator new(sizeof(CGFunctionInfo) +
-                              sizeof(ArgInfo) * (argTypes.size() + 1));
+  void *buffer = operator new(totalSizeToAlloc<ArgInfo>(argTypes.size() + 1));
   CGFunctionInfo *FI = new(buffer) CGFunctionInfo();
   FI->CallingConvention = llvmCC;
   FI->EffectiveCallingConvention = llvmCC;
@@ -634,7 +634,8 @@ struct RecordExpansion : TypeExpansion {
 
   RecordExpansion(SmallVector<const CXXBaseSpecifier *, 1> &&Bases,
                   SmallVector<const FieldDecl *, 1> &&Fields)
-      : TypeExpansion(TEK_Record), Bases(Bases), Fields(Fields) {}
+      : TypeExpansion(TEK_Record), Bases(std::move(Bases)),
+        Fields(std::move(Fields)) {}
   static bool classof(const TypeExpansion *TE) {
     return TE->Kind == TEK_Record;
   }
@@ -1450,6 +1451,7 @@ void CodeGenModule::ConstructAttributeList(
 
   const Decl *TargetDecl = CalleeInfo.getCalleeDecl();
 
+  bool HasAnyX86InterruptAttr = false;
   // FIXME: handle sseregparm someday...
   if (TargetDecl) {
     if (TargetDecl->hasAttr<ReturnsTwiceAttr>())
@@ -1487,6 +1489,7 @@ void CodeGenModule::ConstructAttributeList(
     if (TargetDecl->hasAttr<ReturnsNonNullAttr>())
       RetAttrs.addAttribute(llvm::Attribute::NonNull);
 
+    HasAnyX86InterruptAttr = TargetDecl->hasAttr<AnyX86InterruptAttr>();
     HasOptnone = TargetDecl->hasAttr<OptimizeNoneAttr>();
   }
 
@@ -1526,10 +1529,11 @@ void CodeGenModule::ConstructAttributeList(
     }
 
     bool DisableTailCalls =
-        CodeGenOpts.DisableTailCalls ||
+        CodeGenOpts.DisableTailCalls || HasAnyX86InterruptAttr ||
         (TargetDecl && TargetDecl->hasAttr<DisableTailCallsAttr>());
-    FuncAttrs.addAttribute("disable-tail-calls",
-                           llvm::toStringRef(DisableTailCalls));
+    FuncAttrs.addAttribute(
+        "disable-tail-calls",
+        llvm::toStringRef(DisableTailCalls));
 
     FuncAttrs.addAttribute("less-precise-fpmad",
                            llvm::toStringRef(CodeGenOpts.LessPreciseFPMAD));
@@ -1592,6 +1596,14 @@ void CodeGenModule::ConstructAttributeList(
             llvm::join(Features.begin(), Features.end(), ","));
       }
     }
+  }
+
+  if (getLangOpts().CUDA && getLangOpts().CUDAIsDevice) {
+    // Conservatively, mark all functions and calls in CUDA as convergent
+    // (meaning, they may call an intrinsically convergent op, such as
+    // __syncthreads(), and so can't have certain optimizations applied around
+    // them).  LLVM will remove this attribute where it safely can.
+    FuncAttrs.addAttribute(llvm::Attribute::Convergent);
   }
 
   ClangToLLVMArgMapping IRFunctionArgs(getContext(), FI);
@@ -2462,9 +2474,26 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
     // In ARC, end functions that return a retainable type with a call
     // to objc_autoreleaseReturnValue.
     if (AutoreleaseResult) {
+#ifndef NDEBUG
+      // Type::isObjCRetainabletype has to be called on a QualType that hasn't
+      // been stripped of the typedefs, so we cannot use RetTy here. Get the
+      // original return type of FunctionDecl, CurCodeDecl, and BlockDecl from
+      // CurCodeDecl or BlockInfo.
+      QualType RT;
+
+      if (auto *FD = dyn_cast<FunctionDecl>(CurCodeDecl))
+        RT = FD->getReturnType();
+      else if (auto *MD = dyn_cast<ObjCMethodDecl>(CurCodeDecl))
+        RT = MD->getReturnType();
+      else if (isa<BlockDecl>(CurCodeDecl))
+        RT = BlockInfo->BlockExpression->getFunctionType()->getReturnType();
+      else
+        llvm_unreachable("Unexpected function/method type");
+
       assert(getLangOpts().ObjCAutoRefCount &&
              !FI.isReturnsRetained() &&
-             RetTy->isObjCRetainableType());
+             RT->isObjCRetainableType());
+#endif
       RV = emitAutoreleaseOfResult(*this, RV);
     }
 
@@ -3046,24 +3075,13 @@ CodeGenFunction::EmitRuntimeCall(llvm::Value *callee,
   return EmitRuntimeCall(callee, None, name);
 }
 
-/// Emits a simple call (never an invoke) to the given runtime
-/// function.
-llvm::CallInst *
-CodeGenFunction::EmitRuntimeCall(llvm::Value *callee,
-                                 ArrayRef<llvm::Value*> args,
-                                 const llvm::Twine &name) {
-  llvm::CallInst *call = Builder.CreateCall(callee, args, name);
-  call->setCallingConv(getRuntimeCC());
-  return call;
-}
-
 // Calls which may throw must have operand bundles indicating which funclet
 // they are nested within.
 static void
-getBundlesForFunclet(llvm::Value *Callee,
-                     llvm::Instruction *CurrentFuncletPad,
+getBundlesForFunclet(llvm::Value *Callee, llvm::Instruction *CurrentFuncletPad,
                      SmallVectorImpl<llvm::OperandBundleDef> &BundleList) {
-  // There is no need for a funclet operand bundle if we aren't inside a funclet.
+  // There is no need for a funclet operand bundle if we aren't inside a
+  // funclet.
   if (!CurrentFuncletPad)
     return;
 
@@ -3073,6 +3091,19 @@ getBundlesForFunclet(llvm::Value *Callee,
     return;
 
   BundleList.emplace_back("funclet", CurrentFuncletPad);
+}
+
+/// Emits a simple call (never an invoke) to the given runtime function.
+llvm::CallInst *
+CodeGenFunction::EmitRuntimeCall(llvm::Value *callee,
+                                 ArrayRef<llvm::Value*> args,
+                                 const llvm::Twine &name) {
+  SmallVector<llvm::OperandBundleDef, 1> BundleList;
+  getBundlesForFunclet(callee, CurrentFuncletPad, BundleList);
+
+  llvm::CallInst *call = Builder.CreateCall(callee, args, BundleList, name);
+  call->setCallingConv(getRuntimeCC());
+  return call;
 }
 
 /// Emits a call or invoke to the given noreturn runtime function.
@@ -3098,8 +3129,7 @@ void CodeGenFunction::EmitNoreturnRuntimeCallOrInvoke(llvm::Value *callee,
   }
 }
 
-/// Emits a call or invoke instruction to the given nullary runtime
-/// function.
+/// Emits a call or invoke instruction to the given nullary runtime function.
 llvm::CallSite
 CodeGenFunction::EmitRuntimeCallOrInvoke(llvm::Value *callee,
                                          const Twine &name) {
@@ -3123,13 +3153,16 @@ CodeGenFunction::EmitCallOrInvoke(llvm::Value *Callee,
                                   ArrayRef<llvm::Value *> Args,
                                   const Twine &Name) {
   llvm::BasicBlock *InvokeDest = getInvokeDest();
+  SmallVector<llvm::OperandBundleDef, 1> BundleList;
+  getBundlesForFunclet(Callee, CurrentFuncletPad, BundleList);
 
   llvm::Instruction *Inst;
   if (!InvokeDest)
-    Inst = Builder.CreateCall(Callee, Args, Name);
+    Inst = Builder.CreateCall(Callee, Args, BundleList, Name);
   else {
     llvm::BasicBlock *ContBB = createBasicBlock("invoke.cont");
-    Inst = Builder.CreateInvoke(Callee, ContBB, InvokeDest, Args, Name);
+    Inst = Builder.CreateInvoke(Callee, ContBB, InvokeDest, Args, BundleList,
+                                Name);
     EmitBlock(ContBB);
   }
 
@@ -3540,6 +3573,11 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
 
   CS.setAttributes(Attrs);
   CS.setCallingConv(static_cast<llvm::CallingConv::ID>(CallingConv));
+
+  // Insert instrumentation or attach profile metadata at indirect call sites
+  if (!CS.getCalledFunction())
+    PGO.valueProfile(Builder, llvm::IPVK_IndirectCallTarget,
+                     CS.getInstruction(), Callee);
 
   // In ObjC ARC mode with no ObjC ARC exception safety, tell the ARC
   // optimizer it can aggressively ignore unwind edges.

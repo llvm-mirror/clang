@@ -2060,11 +2060,46 @@ static bool
 ConvertDeducedTemplateArgument(Sema &S, NamedDecl *Param,
                                DeducedTemplateArgument Arg,
                                NamedDecl *Template,
-                               QualType NTTPType,
-                               unsigned ArgumentPackIndex,
                                TemplateDeductionInfo &Info,
                                bool InFunctionTemplate,
                                SmallVectorImpl<TemplateArgument> &Output) {
+  // First, for a non-type template parameter type that is
+  // initialized by a declaration, we need the type of the
+  // corresponding non-type template parameter.
+  QualType NTTPType;
+  if (NonTypeTemplateParmDecl *NTTP =
+          dyn_cast<NonTypeTemplateParmDecl>(Param)) {
+    NTTPType = NTTP->getType();
+    if (NTTPType->isDependentType()) {
+      TemplateArgumentList TemplateArgs(TemplateArgumentList::OnStack,
+                                        Output.data(), Output.size());
+      NTTPType = S.SubstType(NTTPType,
+                             MultiLevelTemplateArgumentList(TemplateArgs),
+                             NTTP->getLocation(),
+                             NTTP->getDeclName());
+      if (NTTPType.isNull())
+        return true;
+    }
+  }
+
+  auto ConvertArg = [&](DeducedTemplateArgument Arg,
+                        unsigned ArgumentPackIndex) {
+    // Convert the deduced template argument into a template
+    // argument that we can check, almost as if the user had written
+    // the template argument explicitly.
+    TemplateArgumentLoc ArgLoc =
+        getTrivialTemplateArgumentLoc(S, Arg, NTTPType, Info.getLocation());
+
+    // Check the template argument, converting it as necessary.
+    return S.CheckTemplateArgument(
+        Param, ArgLoc, Template, Template->getLocation(),
+        Template->getSourceRange().getEnd(), ArgumentPackIndex, Output,
+        InFunctionTemplate
+            ? (Arg.wasDeducedFromArrayBound() ? Sema::CTAK_DeducedFromArrayBound
+                                              : Sema::CTAK_Deduced)
+            : Sema::CTAK_Specified);
+  };
+
   if (Arg.getKind() == TemplateArgument::Pack) {
     // This is a template argument pack, so check each of its arguments against
     // the template parameter.
@@ -2075,13 +2110,33 @@ ConvertDeducedTemplateArgument(Sema &S, NamedDecl *Param,
       // checking logic has all of the prior template arguments available.
       DeducedTemplateArgument InnerArg(P);
       InnerArg.setDeducedFromArrayBound(Arg.wasDeducedFromArrayBound());
-      if (ConvertDeducedTemplateArgument(S, Param, InnerArg, Template,
-                                         NTTPType, PackedArgsBuilder.size(),
-                                         Info, InFunctionTemplate, Output))
+      assert(InnerArg.getKind() != TemplateArgument::Pack &&
+             "deduced nested pack");
+      if (ConvertArg(InnerArg, PackedArgsBuilder.size()))
         return true;
 
       // Move the converted template argument into our argument pack.
       PackedArgsBuilder.push_back(Output.pop_back_val());
+    }
+
+    // If the pack is empty, we still need to substitute into the parameter
+    // itself, in case that substitution fails. For non-type parameters, we did
+    // this above. For type parameters, no substitution is ever required.
+    auto *TTP = dyn_cast<TemplateTemplateParmDecl>(Param);
+    if (TTP && PackedArgsBuilder.empty()) {
+      // Set up a template instantiation context.
+      LocalInstantiationScope Scope(S);
+      Sema::InstantiatingTemplate Inst(S, Template->getLocation(), Template,
+                                       TTP, Output,
+                                       Template->getSourceRange());
+      if (Inst.isInvalid())
+        return true;
+
+      TemplateArgumentList TemplateArgs(TemplateArgumentList::OnStack,
+                                        Output.data(), Output.size());
+      if (!S.SubstDecl(TTP, S.CurContext,
+                       MultiLevelTemplateArgumentList(TemplateArgs)))
+        return true;
     }
 
     // Create the resulting argument pack.
@@ -2090,24 +2145,7 @@ ConvertDeducedTemplateArgument(Sema &S, NamedDecl *Param,
     return false;
   }
 
-  // Convert the deduced template argument into a template
-  // argument that we can check, almost as if the user had written
-  // the template argument explicitly.
-  TemplateArgumentLoc ArgLoc = getTrivialTemplateArgumentLoc(S, Arg, NTTPType,
-                                                             Info.getLocation());
-
-  // Check the template argument, converting it as necessary.
-  return S.CheckTemplateArgument(Param, ArgLoc,
-                                 Template,
-                                 Template->getLocation(),
-                                 Template->getSourceRange().getEnd(),
-                                 ArgumentPackIndex,
-                                 Output,
-                                 InFunctionTemplate
-                                  ? (Arg.wasDeducedFromArrayBound()
-                                       ? Sema::CTAK_DeducedFromArrayBound
-                                       : Sema::CTAK_Deduced)
-                                 : Sema::CTAK_Specified);
+  return ConvertArg(Arg, 0);
 }
 
 /// Complete template argument deduction for a class template partial
@@ -2138,34 +2176,8 @@ FinishTemplateArgumentDeduction(Sema &S,
 
     // We have deduced this argument, so it still needs to be
     // checked and converted.
-
-    // First, for a non-type template parameter type that is
-    // initialized by a declaration, we need the type of the
-    // corresponding non-type template parameter.
-    QualType NTTPType;
-    if (NonTypeTemplateParmDecl *NTTP
-                                  = dyn_cast<NonTypeTemplateParmDecl>(Param)) {
-      NTTPType = NTTP->getType();
-      if (NTTPType->isDependentType()) {
-        TemplateArgumentList TemplateArgs(TemplateArgumentList::OnStack,
-                                          Builder.data(), Builder.size());
-        NTTPType = S.SubstType(NTTPType,
-                               MultiLevelTemplateArgumentList(TemplateArgs),
-                               NTTP->getLocation(),
-                               NTTP->getDeclName());
-        if (NTTPType.isNull()) {
-          Info.Param = makeTemplateParameter(Param);
-          // FIXME: These template arguments are temporary. Free them!
-          Info.reset(TemplateArgumentList::CreateCopy(S.Context,
-                                                      Builder.data(),
-                                                      Builder.size()));
-          return Sema::TDK_SubstitutionFailure;
-        }
-      }
-    }
-
     if (ConvertDeducedTemplateArgument(S, Param, Deduced[I],
-                                       Partial, NTTPType, 0, Info, false,
+                                       Partial, Info, false,
                                        Builder)) {
       Info.Param = makeTemplateParameter(Param);
       // FIXME: These template arguments are temporary. Free them!
@@ -2306,32 +2318,8 @@ static Sema::TemplateDeductionResult FinishTemplateArgumentDeduction(
 
     // We have deduced this argument, so it still needs to be
     // checked and converted.
-
-    // First, for a non-type template parameter type that is
-    // initialized by a declaration, we need the type of the
-    // corresponding non-type template parameter.
-    QualType NTTPType;
-    if (NonTypeTemplateParmDecl *NTTP =
-            dyn_cast<NonTypeTemplateParmDecl>(Param)) {
-      NTTPType = NTTP->getType();
-      if (NTTPType->isDependentType()) {
-        TemplateArgumentList TemplateArgs(TemplateArgumentList::OnStack,
-                                          Builder.data(), Builder.size());
-        NTTPType =
-            S.SubstType(NTTPType, MultiLevelTemplateArgumentList(TemplateArgs),
-                        NTTP->getLocation(), NTTP->getDeclName());
-        if (NTTPType.isNull()) {
-          Info.Param = makeTemplateParameter(Param);
-          // FIXME: These template arguments are temporary. Free them!
-          Info.reset(TemplateArgumentList::CreateCopy(S.Context, Builder.data(),
-                                                      Builder.size()));
-          return Sema::TDK_SubstitutionFailure;
-        }
-      }
-    }
-
-    if (ConvertDeducedTemplateArgument(S, Param, Deduced[I], Partial, NTTPType,
-                                       0, Info, false, Builder)) {
+    if (ConvertDeducedTemplateArgument(S, Param, Deduced[I], Partial,
+                                       Info, false, Builder)) {
       Info.Param = makeTemplateParameter(Param);
       // FIXME: These template arguments are temporary. Free them!
       Info.reset(TemplateArgumentList::CreateCopy(S.Context, Builder.data(),
@@ -2564,6 +2552,8 @@ Sema::SubstituteExplicitTemplateArguments(
   // Isolate our substituted parameters from our caller.
   LocalInstantiationScope InstScope(*this, /*MergeWithOuterScope*/true);
 
+  ExtParameterInfoBuilder ExtParamInfos;
+
   // Instantiate the types of each of the function parameters given the
   // explicitly-specified template arguments. If the function has a trailing
   // return type, substitute it after the arguments to ensure we substitute
@@ -2571,8 +2561,9 @@ Sema::SubstituteExplicitTemplateArguments(
   if (Proto->hasTrailingReturn()) {
     if (SubstParmTypes(Function->getLocation(),
                        Function->param_begin(), Function->getNumParams(),
+                       Proto->getExtParameterInfosOrNull(),
                        MultiLevelTemplateArgumentList(*ExplicitArgumentList),
-                       ParamTypes))
+                       ParamTypes, /*params*/ nullptr, ExtParamInfos))
       return TDK_SubstitutionFailure;
   }
   
@@ -2602,21 +2593,24 @@ Sema::SubstituteExplicitTemplateArguments(
     if (ResultType.isNull() || Trap.hasErrorOccurred())
       return TDK_SubstitutionFailure;
   }
-  
+
   // Instantiate the types of each of the function parameters given the
   // explicitly-specified template arguments if we didn't do so earlier.
   if (!Proto->hasTrailingReturn() &&
       SubstParmTypes(Function->getLocation(),
                      Function->param_begin(), Function->getNumParams(),
+                     Proto->getExtParameterInfosOrNull(),
                      MultiLevelTemplateArgumentList(*ExplicitArgumentList),
-                     ParamTypes))
+                     ParamTypes, /*params*/ nullptr, ExtParamInfos))
     return TDK_SubstitutionFailure;
 
   if (FunctionType) {
+    auto EPI = Proto->getExtProtoInfo();
+    EPI.ExtParameterInfos = ExtParamInfos.getPointerOrNull(ParamTypes.size());
     *FunctionType = BuildFunctionType(ResultType, ParamTypes,
                                       Function->getLocation(),
                                       Function->getDeclName(),
-                                      Proto->getExtProtoInfo());
+                                      EPI);
     if (FunctionType->isNull() || Trap.hasErrorOccurred())
       return TDK_SubstitutionFailure;
   }
@@ -2804,36 +2798,11 @@ Sema::FinishTemplateArgumentDeduction(FunctionTemplateDecl *FunctionTemplate,
         }
         continue;
       }
+
       // We have deduced this argument, so it still needs to be
       // checked and converted.
-
-      // First, for a non-type template parameter type that is
-      // initialized by a declaration, we need the type of the
-      // corresponding non-type template parameter.
-      QualType NTTPType;
-      if (NonTypeTemplateParmDecl *NTTP
-                                = dyn_cast<NonTypeTemplateParmDecl>(Param)) {
-        NTTPType = NTTP->getType();
-        if (NTTPType->isDependentType()) {
-          TemplateArgumentList TemplateArgs(TemplateArgumentList::OnStack,
-                                            Builder.data(), Builder.size());
-          NTTPType = SubstType(NTTPType,
-                               MultiLevelTemplateArgumentList(TemplateArgs),
-                               NTTP->getLocation(),
-                               NTTP->getDeclName());
-          if (NTTPType.isNull()) {
-            Info.Param = makeTemplateParameter(Param);
-            // FIXME: These template arguments are temporary. Free them!
-            Info.reset(TemplateArgumentList::CreateCopy(Context,
-                                                        Builder.data(),
-                                                        Builder.size()));
-            return TDK_SubstitutionFailure;
-          }
-        }
-      }
-
       if (ConvertDeducedTemplateArgument(*this, Param, Deduced[I],
-                                         FunctionTemplate, NTTPType, 0, Info,
+                                         FunctionTemplate, Info,
                                          true, Builder)) {
         Info.Param = makeTemplateParameter(Param);
         // FIXME: These template arguments are temporary. Free them!
@@ -2862,11 +2831,22 @@ Sema::FinishTemplateArgumentDeduction(FunctionTemplateDecl *FunctionTemplate,
         Builder.push_back(TemplateArgument(
             llvm::makeArrayRef(ExplicitArgs, NumExplicitArgs)));
 
-        // Forget the partially-substituted pack; it's substitution is now
+        // Forget the partially-substituted pack; its substitution is now
         // complete.
         CurrentInstantiationScope->ResetPartiallySubstitutedPack();
       } else {
-        Builder.push_back(TemplateArgument::getEmptyPack());
+        // Go through the motions of checking the empty argument pack against
+        // the parameter pack.
+        DeducedTemplateArgument DeducedPack(TemplateArgument::getEmptyPack());
+        if (ConvertDeducedTemplateArgument(*this, Param, DeducedPack,
+                                           FunctionTemplate, Info, true,
+                                           Builder)) {
+          Info.Param = makeTemplateParameter(Param);
+          // FIXME: These template arguments are temporary. Free them!
+          Info.reset(TemplateArgumentList::CreateCopy(Context, Builder.data(),
+                                                      Builder.size()));
+          return TDK_SubstitutionFailure;
+        }
       }
       continue;
     }

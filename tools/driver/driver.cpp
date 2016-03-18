@@ -130,7 +130,7 @@ static void ApplyOneQAOverride(raw_ostream &OS,
       }
     }
   } else if (Edit[0] == 'x' || Edit[0] == 'X') {
-    std::string Option = Edit.substr(1, std::string::npos);
+    auto Option = Edit.substr(1);
     for (unsigned i = 1; i < Args.size();) {
       if (Option == Args[i]) {
         OS << "### Deleting argument " << Args[i] << '\n';
@@ -290,9 +290,9 @@ static void SetInstallDir(SmallVectorImpl<const char *> &argv,
   if (CanonicalPrefixes)
     llvm::sys::fs::make_absolute(InstalledPath);
 
-  InstalledPath = llvm::sys::path::parent_path(InstalledPath);
-  if (llvm::sys::fs::exists(InstalledPath.c_str()))
-    TheDriver.setInstalledDir(InstalledPath);
+  StringRef InstalledPathParent(llvm::sys::path::parent_path(InstalledPath));
+  if (llvm::sys::fs::exists(InstalledPathParent))
+    TheDriver.setInstalledDir(InstalledPathParent);
 }
 
 static int ExecuteCC1Tool(ArrayRef<const char *> argv, StringRef Tool) {

@@ -71,6 +71,14 @@ template <> struct ScalarEnumerationTraits<FormatStyle::UseTabStyle> {
   }
 };
 
+template <> struct ScalarEnumerationTraits<FormatStyle::JavaScriptQuoteStyle> {
+  static void enumeration(IO &IO, FormatStyle::JavaScriptQuoteStyle &Value) {
+    IO.enumCase(Value, "Leave", FormatStyle::JSQS_Leave);
+    IO.enumCase(Value, "Single", FormatStyle::JSQS_Single);
+    IO.enumCase(Value, "Double", FormatStyle::JSQS_Double);
+  }
+};
+
 template <> struct ScalarEnumerationTraits<FormatStyle::ShortFunctionStyle> {
   static void enumeration(IO &IO, FormatStyle::ShortFunctionStyle &Value) {
     IO.enumCase(Value, "None", FormatStyle::SFS_None);
@@ -275,6 +283,9 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.BreakBeforeTernaryOperators);
     IO.mapOptional("BreakConstructorInitializersBeforeComma",
                    Style.BreakConstructorInitializersBeforeComma);
+    IO.mapOptional("BreakAfterJavaFieldAnnotations",
+                   Style.BreakAfterJavaFieldAnnotations);
+    IO.mapOptional("BreakStringLiterals", Style.BreakStringLiterals);
     IO.mapOptional("ColumnLimit", Style.ColumnLimit);
     IO.mapOptional("CommentPragmas", Style.CommentPragmas);
     IO.mapOptional("ConstructorInitializerAllOnOneLineOrOnePerLine",
@@ -332,6 +343,7 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("Standard", Style.Standard);
     IO.mapOptional("TabWidth", Style.TabWidth);
     IO.mapOptional("UseTab", Style.UseTab);
+    IO.mapOptional("JavaScriptQuotes", Style.JavaScriptQuotes);
   }
 };
 
@@ -488,8 +500,9 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.BreakBeforeBraces = FormatStyle::BS_Attach;
   LLVMStyle.BraceWrapping = {false, false, false, false, false, false,
                              false, false, false, false, false};
-  LLVMStyle.BreakConstructorInitializersBeforeComma = false;
   LLVMStyle.BreakAfterJavaFieldAnnotations = false;
+  LLVMStyle.BreakConstructorInitializersBeforeComma = false;
+  LLVMStyle.BreakStringLiterals = true;
   LLVMStyle.ColumnLimit = 80;
   LLVMStyle.CommentPragmas = "^ IWYU pragma:";
   LLVMStyle.ConstructorInitializerAllOnOneLineOrOnePerLine = false;
@@ -518,6 +531,7 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.SpacesBeforeTrailingComments = 1;
   LLVMStyle.Standard = FormatStyle::LS_Cpp11;
   LLVMStyle.UseTab = FormatStyle::UT_Never;
+  LLVMStyle.JavaScriptQuotes = FormatStyle::JSQS_Leave;
   LLVMStyle.ReflowComments = true;
   LLVMStyle.SpacesInParentheses = false;
   LLVMStyle.SpacesInSquareBrackets = false;
@@ -583,9 +597,10 @@ FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language) {
     GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_Inline;
     GoogleStyle.AlwaysBreakBeforeMultilineStrings = false;
     GoogleStyle.BreakBeforeTernaryOperators = false;
-    GoogleStyle.CommentPragmas = "@(export|visibility) {";
+    GoogleStyle.CommentPragmas = "@(export|return|see|visibility) ";
     GoogleStyle.MaxEmptyLinesToKeep = 3;
     GoogleStyle.SpacesInContainerLiterals = false;
+    GoogleStyle.JavaScriptQuotes = FormatStyle::JSQS_Single;
   } else if (Language == FormatStyle::LK_Proto) {
     GoogleStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_None;
     GoogleStyle.SpacesInContainerLiterals = false;
@@ -762,13 +777,13 @@ namespace {
 class FormatTokenLexer {
 public:
   FormatTokenLexer(SourceManager &SourceMgr, FileID ID, FormatStyle &Style,
-                   encoding::Encoding Encoding)
+                   encoding::Encoding Encoding, tooling::Replacements &Replaces)
       : FormatTok(nullptr), IsFirstToken(true), GreaterStashed(false),
         LessStashed(false), Column(0), TrailingWhitespace(0),
         SourceMgr(SourceMgr), ID(ID), Style(Style),
         IdentTable(getFormattingLangOpts(Style)), Keywords(IdentTable),
-        Encoding(Encoding), FirstInLineIndex(0), FormattingDisabled(false),
-        MacroBlockBeginRegex(Style.MacroBlockBegin),
+        Encoding(Encoding), Replaces(Replaces), FirstInLineIndex(0),
+        FormattingDisabled(false), MacroBlockBeginRegex(Style.MacroBlockBegin),
         MacroBlockEndRegex(Style.MacroBlockEnd) {
     Lex.reset(new Lexer(ID, SourceMgr.getBuffer(ID), SourceMgr,
                         getFormattingLangOpts(Style)));
@@ -787,6 +802,8 @@ public:
       if (Style.Language == FormatStyle::LK_JavaScript)
         tryParseJSRegexLiteral();
       tryMergePreviousTokens();
+      if (Style.Language == FormatStyle::LK_JavaScript)
+        tryRequoteJSStringLiteral();
       if (Tokens.back()->NewlinesBefore > 0 || Tokens.back()->IsMultiline)
         FirstInLineIndex = Tokens.size() - 1;
     } while (Tokens.back()->Tok.isNot(tok::eof));
@@ -1055,6 +1072,75 @@ private:
       return true;
     }
     return false;
+  }
+
+  // If the last token is a double/single-quoted string literal, generates a
+  // replacement with a single/double quoted string literal, re-escaping the
+  // contents in the process.
+  void tryRequoteJSStringLiteral() {
+    if (Style.JavaScriptQuotes == FormatStyle::JSQS_Leave)
+      return;
+
+    FormatToken *FormatTok = Tokens.back();
+    StringRef Input = FormatTok->TokenText;
+    if (!FormatTok->isStringLiteral() ||
+        // NB: testing for not starting with a double quote to avoid breaking
+        // `template strings`.
+        (Style.JavaScriptQuotes == FormatStyle::JSQS_Single &&
+         !Input.startswith("\"")) ||
+        (Style.JavaScriptQuotes == FormatStyle::JSQS_Double &&
+         !Input.startswith("\'")))
+      return;
+
+    // Change start and end quote.
+    bool IsSingle = Style.JavaScriptQuotes == FormatStyle::JSQS_Single;
+    SourceLocation Start = FormatTok->Tok.getLocation();
+    auto Replace = [&](SourceLocation Start, unsigned Length,
+                       StringRef ReplacementText) {
+      Replaces.insert(
+          tooling::Replacement(SourceMgr, Start, Length, ReplacementText));
+    };
+    Replace(Start, 1, IsSingle ? "'" : "\"");
+    Replace(FormatTok->Tok.getEndLoc().getLocWithOffset(-1), 1,
+            IsSingle ? "'" : "\"");
+
+    // Escape internal quotes.
+    size_t ColumnWidth = FormatTok->TokenText.size();
+    bool Escaped = false;
+    for (size_t i = 1; i < Input.size() - 1; i++) {
+      switch (Input[i]) {
+      case '\\':
+        if (!Escaped && i + 1 < Input.size() &&
+            ((IsSingle && Input[i + 1] == '"') ||
+             (!IsSingle && Input[i + 1] == '\''))) {
+          // Remove this \, it's escaping a " or ' that no longer needs escaping
+          ColumnWidth--;
+          Replace(Start.getLocWithOffset(i), 1, "");
+          continue;
+        }
+        Escaped = !Escaped;
+        break;
+      case '\"':
+      case '\'':
+        if (!Escaped && IsSingle == (Input[i] == '\'')) {
+          // Escape the quote.
+          Replace(Start.getLocWithOffset(i), 0, "\\");
+          ColumnWidth++;
+        }
+        Escaped = false;
+        break;
+      default:
+        Escaped = false;
+        break;
+      }
+    }
+
+    // For formatting, count the number of non-escaped single quotes in them
+    // and adjust ColumnWidth to take the added escapes into account.
+    // FIXME(martinprobst): this might conflict with code breaking a long string
+    // literal (which clang-format doesn't do, yet). For that to work, this code
+    // would have to modify TokenText directly.
+    FormatTok->ColumnWidth = ColumnWidth;
   }
 
   bool tryMerge_TMacro() {
@@ -1355,6 +1441,7 @@ private:
   IdentifierTable IdentTable;
   AdditionalKeywords Keywords;
   encoding::Encoding Encoding;
+  tooling::Replacements &Replaces;
   llvm::SpecificBumpPtrAllocator<FormatToken> Allocator;
   // Index (in 'Tokens') of the last token that starts a new line.
   unsigned FirstInLineIndex;
@@ -1378,8 +1465,13 @@ private:
         Tok.IsUnterminatedLiteral = true;
       } else if (Style.Language == FormatStyle::LK_JavaScript &&
                  Tok.TokenText == "''") {
-        Tok.Tok.setKind(tok::char_constant);
+        Tok.Tok.setKind(tok::string_literal);
       }
+    }
+
+    if (Style.Language == FormatStyle::LK_JavaScript &&
+        Tok.is(tok::char_constant)) {
+      Tok.Tok.setKind(tok::string_literal);
     }
 
     if (Tok.is(tok::comment) && (Tok.TokenText == "// clang-format on" ||
@@ -1439,7 +1531,7 @@ public:
 
   tooling::Replacements format(bool *IncompleteFormat) {
     tooling::Replacements Result;
-    FormatTokenLexer Tokens(SourceMgr, ID, Style, Encoding);
+    FormatTokenLexer Tokens(SourceMgr, ID, Style, Encoding, Result);
 
     UnwrappedLineParser Parser(Style, Tokens.getKeywords(), Tokens.lex(),
                                *this);
@@ -1752,10 +1844,11 @@ static void sortIncludes(const FormatStyle &Style,
   SmallVector<unsigned, 16> Indices;
   for (unsigned i = 0, e = Includes.size(); i != e; ++i)
     Indices.push_back(i);
-  std::sort(Indices.begin(), Indices.end(), [&](unsigned LHSI, unsigned RHSI) {
-    return std::tie(Includes[LHSI].Category, Includes[LHSI].Filename) <
-           std::tie(Includes[RHSI].Category, Includes[RHSI].Filename);
-  });
+  std::stable_sort(
+      Indices.begin(), Indices.end(), [&](unsigned LHSI, unsigned RHSI) {
+        return std::tie(Includes[LHSI].Category, Includes[LHSI].Filename) <
+               std::tie(Includes[RHSI].Category, Includes[RHSI].Filename);
+      });
 
   // If the #includes are out of order, we generate a single replacement fixing
   // the entire block. Otherwise, no replacement is generated.
@@ -1878,6 +1971,34 @@ tooling::Replacements sortIncludes(const FormatStyle &Style, StringRef Code,
   if (!IncludesInBlock.empty())
     sortIncludes(Style, IncludesInBlock, Ranges, FileName, Replaces, Cursor);
   return Replaces;
+}
+
+tooling::Replacements formatReplacements(StringRef Code,
+                                         const tooling::Replacements &Replaces,
+                                         const FormatStyle &Style) {
+  if (Replaces.empty())
+    return tooling::Replacements();
+
+  std::string NewCode = applyAllReplacements(Code, Replaces);
+  std::vector<tooling::Range> ChangedRanges =
+      tooling::calculateChangedRangesInFile(Replaces);
+  StringRef FileName = Replaces.begin()->getFilePath();
+  tooling::Replacements FormatReplaces =
+      reformat(Style, NewCode, ChangedRanges, FileName);
+
+  tooling::Replacements MergedReplacements =
+      mergeReplacements(Replaces, FormatReplaces);
+  return MergedReplacements;
+}
+
+std::string applyAllReplacementsAndFormat(StringRef Code,
+                                          const tooling::Replacements &Replaces,
+                                          const FormatStyle &Style) {
+  tooling::Replacements NewReplacements =
+      formatReplacements(Code, Replaces, Style);
+  if (NewReplacements.empty())
+    return Code; // Exit early to avoid overhead in `applyAllReplacements`.
+  return applyAllReplacements(Code, NewReplacements);
 }
 
 tooling::Replacements reformat(const FormatStyle &Style,

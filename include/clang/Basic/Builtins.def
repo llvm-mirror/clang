@@ -377,6 +377,11 @@ BUILTIN(__builtin_signbit, "i.", "Fnc")
 BUILTIN(__builtin_signbitf, "if", "Fnc")
 BUILTIN(__builtin_signbitl, "iLd", "Fnc")
 
+// Special FP builtins.
+BUILTIN(__builtin_canonicalize, "dd", "nc")
+BUILTIN(__builtin_canonicalizef, "ff", "nc")
+BUILTIN(__builtin_canonicalizel, "LdLd", "nc")
+
 // Builtins for arithmetic.
 BUILTIN(__builtin_clzs , "iUs"  , "nc")
 BUILTIN(__builtin_clz  , "iUi"  , "nc")
@@ -403,6 +408,10 @@ BUILTIN(__builtin_popcountll, "iULLi", "nc")
 BUILTIN(__builtin_bswap16, "UsUs", "nc")
 BUILTIN(__builtin_bswap32, "UiUi", "nc")
 BUILTIN(__builtin_bswap64, "ULLiULLi", "nc")
+
+BUILTIN(__builtin_bitreverse16, "UsUs", "nc")
+BUILTIN(__builtin_bitreverse32, "UiUi", "nc")
+BUILTIN(__builtin_bitreverse64, "ULLiULLi", "nc")
 
 // Random GCC builtins
 BUILTIN(__builtin_constant_p, "i.", "nctu")
@@ -1251,6 +1260,32 @@ BUILTIN(__builtin___get_unsafe_stack_ptr, "v*", "Fn")
 // Nontemporal loads/stores builtins
 BUILTIN(__builtin_nontemporal_store, "v.", "t")
 BUILTIN(__builtin_nontemporal_load, "v.", "t")
+
+// OpenCL v2.0 s6.13.16, s9.17.3.5 - Pipe functions.
+// We need the generic prototype, since the packet type could be anything.
+LANGBUILTIN(read_pipe, "i.", "tn", OCLC_LANG)
+LANGBUILTIN(write_pipe, "i.", "tn", OCLC_LANG)
+
+LANGBUILTIN(reserve_read_pipe, "i.", "tn", OCLC_LANG)
+LANGBUILTIN(reserve_write_pipe, "i.", "tn", OCLC_LANG)
+
+LANGBUILTIN(commit_write_pipe, "v.", "tn", OCLC_LANG)
+LANGBUILTIN(commit_read_pipe, "v.", "tn", OCLC_LANG)
+
+LANGBUILTIN(sub_group_reserve_read_pipe, "i.", "tn", OCLC_LANG)
+LANGBUILTIN(sub_group_reserve_write_pipe, "i.", "tn", OCLC_LANG)
+
+LANGBUILTIN(sub_group_commit_read_pipe, "v.", "tn", OCLC_LANG)
+LANGBUILTIN(sub_group_commit_write_pipe, "v.", "tn", OCLC_LANG)
+
+LANGBUILTIN(work_group_reserve_read_pipe, "i.", "tn", OCLC_LANG)
+LANGBUILTIN(work_group_reserve_write_pipe, "i.", "tn", OCLC_LANG)
+
+LANGBUILTIN(work_group_commit_read_pipe, "v.", "tn", OCLC_LANG)
+LANGBUILTIN(work_group_commit_write_pipe, "v.", "tn", OCLC_LANG)
+
+LANGBUILTIN(get_pipe_num_packets, "Ui.", "tn", OCLC_LANG)
+LANGBUILTIN(get_pipe_max_packets, "Ui.", "tn", OCLC_LANG)
 
 #undef BUILTIN
 #undef LIBBUILTIN

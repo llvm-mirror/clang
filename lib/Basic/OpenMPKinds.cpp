@@ -114,6 +114,14 @@ unsigned clang::getOpenMPSimpleClauseType(OpenMPClauseKind Kind,
 #define OPENMP_DIST_SCHEDULE_KIND(Name) .Case(#Name, OMPC_DIST_SCHEDULE_##Name)
 #include "clang/Basic/OpenMPKinds.def"
         .Default(OMPC_DIST_SCHEDULE_unknown);
+  case OMPC_defaultmap:
+    return llvm::StringSwitch<unsigned>(Str)
+#define OPENMP_DEFAULTMAP_KIND(Name)                                           \
+  .Case(#Name, static_cast<unsigned>(OMPC_DEFAULTMAP_##Name))
+#define OPENMP_DEFAULTMAP_MODIFIER(Name)                                       \
+  .Case(#Name, static_cast<unsigned>(OMPC_DEFAULTMAP_MODIFIER_##Name))
+#include "clang/Basic/OpenMPKinds.def"
+        .Default(OMPC_DEFAULTMAP_unknown);
   case OMPC_unknown:
   case OMPC_threadprivate:
   case OMPC_if:
@@ -234,6 +242,20 @@ const char *clang::getOpenMPSimpleClauseTypeName(OpenMPClauseKind Kind,
 #include "clang/Basic/OpenMPKinds.def"
     }
     llvm_unreachable("Invalid OpenMP 'dist_schedule' clause type");
+  case OMPC_defaultmap:
+    switch (Type) {
+    case OMPC_DEFAULTMAP_unknown:
+    case OMPC_DEFAULTMAP_MODIFIER_last:
+      return "unknown";
+#define OPENMP_DEFAULTMAP_KIND(Name)                                         \
+    case OMPC_DEFAULTMAP_##Name:                                             \
+      return #Name;
+#define OPENMP_DEFAULTMAP_MODIFIER(Name)                                     \
+    case OMPC_DEFAULTMAP_MODIFIER_##Name:                                    \
+      return #Name;
+#include "clang/Basic/OpenMPKinds.def"
+    }
+    llvm_unreachable("Invalid OpenMP 'schedule' clause type");
   case OMPC_unknown:
   case OMPC_threadprivate:
   case OMPC_if:
@@ -413,6 +435,46 @@ bool clang::isAllowedClauseForDirective(OpenMPDirectiveKind DKind,
       break;
     }
     break;
+  case OMPD_target_enter_data:
+    switch (CKind) {
+#define OPENMP_TARGET_ENTER_DATA_CLAUSE(Name)                                  \
+  case OMPC_##Name:                                                            \
+    return true;
+#include "clang/Basic/OpenMPKinds.def"
+    default:
+      break;
+    }
+    break;
+  case OMPD_target_exit_data:
+    switch (CKind) {
+#define OPENMP_TARGET_EXIT_DATA_CLAUSE(Name)                                   \
+  case OMPC_##Name:                                                            \
+    return true;
+#include "clang/Basic/OpenMPKinds.def"
+    default:
+      break;
+    }
+    break;
+  case OMPD_target_parallel:
+    switch (CKind) {
+#define OPENMP_TARGET_PARALLEL_CLAUSE(Name)                                    \
+  case OMPC_##Name:                                                            \
+    return true;
+#include "clang/Basic/OpenMPKinds.def"
+    default:
+      break;
+    }
+    break;
+  case OMPD_target_parallel_for:
+    switch (CKind) {
+#define OPENMP_TARGET_PARALLEL_FOR_CLAUSE(Name)                                \
+  case OMPC_##Name:                                                            \
+    return true;
+#include "clang/Basic/OpenMPKinds.def"
+    default:
+      break;
+    }
+    break;
   case OMPD_teams:
     switch (CKind) {
 #define OPENMP_TEAMS_CLAUSE(Name)                                              \
@@ -492,6 +554,7 @@ bool clang::isAllowedClauseForDirective(OpenMPDirectiveKind DKind,
   case OMPD_taskwait:
   case OMPD_taskgroup:
   case OMPD_cancellation_point:
+  case OMPD_declare_reduction:
     break;
   }
   return false;
@@ -500,17 +563,17 @@ bool clang::isAllowedClauseForDirective(OpenMPDirectiveKind DKind,
 bool clang::isOpenMPLoopDirective(OpenMPDirectiveKind DKind) {
   return DKind == OMPD_simd || DKind == OMPD_for || DKind == OMPD_for_simd ||
          DKind == OMPD_parallel_for || DKind == OMPD_parallel_for_simd ||
-         DKind == OMPD_taskloop ||
-         DKind == OMPD_taskloop_simd ||
-         DKind == OMPD_distribute; // TODO add next directives.
+         DKind == OMPD_taskloop || DKind == OMPD_taskloop_simd ||
+         DKind == OMPD_distribute ||
+         DKind == OMPD_target_parallel_for; // TODO add next directives.
 }
 
 bool clang::isOpenMPWorksharingDirective(OpenMPDirectiveKind DKind) {
   return DKind == OMPD_for || DKind == OMPD_for_simd ||
          DKind == OMPD_sections || DKind == OMPD_section ||
          DKind == OMPD_single || DKind == OMPD_parallel_for ||
-         DKind == OMPD_parallel_for_simd ||
-         DKind == OMPD_parallel_sections; // TODO add next directives.
+         DKind == OMPD_parallel_for_simd || DKind == OMPD_parallel_sections ||
+         DKind == OMPD_target_parallel_for; // TODO add next directives.
 }
 
 bool clang::isOpenMPTaskLoopDirective(OpenMPDirectiveKind DKind) {
@@ -519,12 +582,21 @@ bool clang::isOpenMPTaskLoopDirective(OpenMPDirectiveKind DKind) {
 
 bool clang::isOpenMPParallelDirective(OpenMPDirectiveKind DKind) {
   return DKind == OMPD_parallel || DKind == OMPD_parallel_for ||
-         DKind == OMPD_parallel_for_simd ||
-         DKind == OMPD_parallel_sections; // TODO add next directives.
+         DKind == OMPD_parallel_for_simd || DKind == OMPD_parallel_sections ||
+         DKind == OMPD_target_parallel || DKind == OMPD_target_parallel_for;
+  // TODO add next directives.
 }
 
-bool clang::isOpenMPTargetDirective(OpenMPDirectiveKind DKind) {
-  return DKind == OMPD_target; // TODO add next directives.
+bool clang::isOpenMPTargetExecutionDirective(OpenMPDirectiveKind DKind) {
+  // TODO add next directives.
+  return DKind == OMPD_target || DKind == OMPD_target_parallel ||
+         DKind == OMPD_target_parallel_for;
+}
+
+bool clang::isOpenMPTargetDataManagementDirective(OpenMPDirectiveKind DKind) {
+  // TODO add target update directive check.
+  return DKind == OMPD_target_data || DKind == OMPD_target_enter_data ||
+         DKind == OMPD_target_exit_data;
 }
 
 bool clang::isOpenMPTeamsDirective(OpenMPDirectiveKind DKind) {

@@ -1512,7 +1512,7 @@ QualType Sema::SubstType(QualType T,
 }
 
 static bool NeedsInstantiationAsFunctionType(TypeSourceInfo *T) {
-  if (T->getType()->isInstantiationDependentType() || 
+  if (T->getType()->isInstantiationDependentType() ||
       T->getType()->isVariablyModifiedType())
     return true;
 
@@ -1521,23 +1521,13 @@ static bool NeedsInstantiationAsFunctionType(TypeSourceInfo *T) {
     return false;
 
   FunctionProtoTypeLoc FP = TL.castAs<FunctionProtoTypeLoc>();
-  for (unsigned I = 0, E = FP.getNumParams(); I != E; ++I) {
-    ParmVarDecl *P = FP.getParam(I);
-
+  for (ParmVarDecl *P : FP.getParams()) {
     // This must be synthesized from a typedef.
     if (!P) continue;
 
-    // The parameter's type as written might be dependent even if the
-    // decayed type was not dependent.
-    if (TypeSourceInfo *TSInfo = P->getTypeSourceInfo())
-      if (TSInfo->getType()->isInstantiationDependentType())
-        return true;
-
-    // TODO: currently we always rebuild expressions.  When we
-    // properly get lazier about this, we should use the same
-    // logic to avoid rebuilding prototypes here.
-    if (P->hasDefaultArg())
-      return true;
+    // If there are any parameters, a new TypeSourceInfo that refers to the
+    // instantiated parameters must be built.
+    return true;
   }
 
   return false;
@@ -1556,7 +1546,7 @@ TypeSourceInfo *Sema::SubstFunctionDeclType(TypeSourceInfo *T,
   assert(!ActiveTemplateInstantiations.empty() &&
          "Cannot perform an instantiation without some context on the "
          "instantiation stack");
-  
+
   if (!NeedsInstantiationAsFunctionType(T))
     return T;
 
@@ -1720,9 +1710,11 @@ ParmVarDecl *Sema::SubstParmVarDecl(ParmVarDecl *OldParm,
 /// from such a substitution.
 bool Sema::SubstParmTypes(SourceLocation Loc, 
                           ParmVarDecl **Params, unsigned NumParams,
+                    const FunctionProtoType::ExtParameterInfo *ExtParamInfos,
                           const MultiLevelTemplateArgumentList &TemplateArgs,
                           SmallVectorImpl<QualType> &ParamTypes,
-                          SmallVectorImpl<ParmVarDecl *> *OutParams) {
+                          SmallVectorImpl<ParmVarDecl *> *OutParams,
+                          ExtParameterInfoBuilder &ParamInfos) {
   assert(!ActiveTemplateInstantiations.empty() &&
          "Cannot perform an instantiation without some context on the "
          "instantiation stack");
@@ -1730,8 +1722,9 @@ bool Sema::SubstParmTypes(SourceLocation Loc,
   TemplateInstantiator Instantiator(*this, TemplateArgs, Loc, 
                                     DeclarationName());
   return Instantiator.TransformFunctionTypeParams(Loc, Params, NumParams,
-                                                  nullptr, ParamTypes,
-                                                  OutParams);
+                                                  nullptr, ExtParamInfos,
+                                                  ParamTypes, OutParams,
+                                                  ParamInfos);
 }
 
 /// \brief Perform substitution on the base class specifiers of the
@@ -1959,6 +1952,13 @@ Sema::InstantiateClass(SourceLocation PointOfInstantiation,
   bool MergeWithParentScope = !Instantiation->isDefinedOutsideFunctionOrMethod();
   LocalInstantiationScope Scope(*this, MergeWithParentScope);
 
+  // All dllexported classes created during instantiation should be fully
+  // emitted after instantiation completes. We may not be ready to emit any
+  // delayed classes already on the stack, so save them away and put them back
+  // later.
+  decltype(DelayedDllExportClasses) ExportedClasses;
+  std::swap(ExportedClasses, DelayedDllExportClasses);
+
   // Pull attributes from the pattern onto the instantiation.
   InstantiateAttrs(TemplateArgs, Pattern, Instantiation);
 
@@ -2043,6 +2043,9 @@ Sema::InstantiateClass(SourceLocation PointOfInstantiation,
   // Default arguments are parsed, if not instantiated. We can go instantiate
   // default arg exprs for default constructors if necessary now.
   ActOnFinishCXXNonNestedClass(Instantiation);
+
+  // Put back the delayed exported classes that we moved out of the way.
+  std::swap(ExportedClasses, DelayedDllExportClasses);
 
   // Instantiate late parsed attributes, and attach them to their decls.
   // See Sema::InstantiateAttrs

@@ -3736,7 +3736,8 @@ static bool CheckTrivialDefaultConstructor(EvalInfo &Info, SourceLocation Loc,
 /// expression.
 static bool CheckConstexprFunction(EvalInfo &Info, SourceLocation CallLoc,
                                    const FunctionDecl *Declaration,
-                                   const FunctionDecl *Definition) {
+                                   const FunctionDecl *Definition,
+                                   const Stmt *Body) {
   // Potential constant expressions can contain calls to declared, but not yet
   // defined, constexpr functions.
   if (Info.checkingPotentialConstantExpression() && !Definition &&
@@ -3749,7 +3750,8 @@ static bool CheckConstexprFunction(EvalInfo &Info, SourceLocation CallLoc,
     return false;
 
   // Can we evaluate this function call?
-  if (Definition && Definition->isConstexpr() && !Definition->isInvalidDecl())
+  if (Definition && Definition->isConstexpr() &&
+      !Definition->isInvalidDecl() && Body)
     return true;
 
   if (Info.getLangOpts().CPlusPlus11) {
@@ -4275,7 +4277,7 @@ public:
     const FunctionDecl *Definition = nullptr;
     Stmt *Body = FD->getBody(Definition);
 
-    if (!CheckConstexprFunction(Info, E->getExprLoc(), FD, Definition) ||
+    if (!CheckConstexprFunction(Info, E->getExprLoc(), FD, Definition, Body) ||
         !HandleFunctionCall(E->getExprLoc(), Definition, This, Args, Body, Info,
                             Result, ResultSlot))
       return false;
@@ -4424,6 +4426,15 @@ public:
   /// Visit a value which is evaluated, but whose value is ignored.
   void VisitIgnoredValue(const Expr *E) {
     EvaluateIgnoredValue(Info, E);
+  }
+
+  /// Potentially visit a MemberExpr's base expression.
+  void VisitIgnoredBaseExpression(const Expr *E) {
+    // While MSVC doesn't evaluate the base expression, it does diagnose the
+    // presence of side-effecting behavior.
+    if (Info.getLangOpts().MSVCCompat && !E->HasSideEffects(Info.Ctx))
+      return;
+    VisitIgnoredValue(E);
   }
 };
 
@@ -4748,14 +4759,14 @@ bool LValueExprEvaluator::VisitCXXUuidofExpr(const CXXUuidofExpr *E) {
 bool LValueExprEvaluator::VisitMemberExpr(const MemberExpr *E) {
   // Handle static data members.
   if (const VarDecl *VD = dyn_cast<VarDecl>(E->getMemberDecl())) {
-    VisitIgnoredValue(E->getBase());
+    VisitIgnoredBaseExpression(E->getBase());
     return VisitVarDecl(E, VD);
   }
 
   // Handle static member functions.
   if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(E->getMemberDecl())) {
     if (MD->isStatic()) {
-      VisitIgnoredValue(E->getBase());
+      VisitIgnoredBaseExpression(E->getBase());
       return Success(MD);
     }
   }
@@ -5417,12 +5428,33 @@ bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
     return EvaluateInPlace(Result.getUnionValue(), Info, Subobject, InitExpr);
   }
 
-  assert((!isa<CXXRecordDecl>(RD) || !cast<CXXRecordDecl>(RD)->getNumBases()) &&
-         "initializer list for class with base classes");
-  Result = APValue(APValue::UninitStruct(), 0,
+  auto *CXXRD = dyn_cast<CXXRecordDecl>(RD);
+  Result = APValue(APValue::UninitStruct(), CXXRD ? CXXRD->getNumBases() : 0,
                    std::distance(RD->field_begin(), RD->field_end()));
   unsigned ElementNo = 0;
   bool Success = true;
+
+  // Initialize base classes.
+  if (CXXRD) {
+    for (const auto &Base : CXXRD->bases()) {
+      assert(ElementNo < E->getNumInits() && "missing init for base class");
+      const Expr *Init = E->getInit(ElementNo);
+
+      LValue Subobject = This;
+      if (!HandleLValueBase(Info, Init, Subobject, CXXRD, &Base))
+        return false;
+
+      APValue &FieldVal = Result.getStructBase(ElementNo);
+      if (!EvaluateInPlace(FieldVal, Info, Subobject, Init)) {
+        if (!Info.keepEvaluatingAfterFailure())
+          return false;
+        Success = false;
+      }
+      ++ElementNo;
+    }
+  }
+
+  // Initialize members.
   for (const auto *Field : RD->fields()) {
     // Anonymous bit-fields are not considered members of the class for
     // purposes of aggregate initialization.
@@ -5483,9 +5515,9 @@ bool RecordExprEvaluator::VisitCXXConstructExpr(const CXXConstructExpr *E) {
   }
 
   const FunctionDecl *Definition = nullptr;
-  FD->getBody(Definition);
+  auto Body = FD->getBody(Definition);
 
-  if (!CheckConstexprFunction(Info, E->getExprLoc(), FD, Definition))
+  if (!CheckConstexprFunction(Info, E->getExprLoc(), FD, Definition, Body))
     return false;
 
   // Avoid materializing a temporary for an elidable copy/move constructor.
@@ -5971,9 +6003,9 @@ bool ArrayExprEvaluator::VisitCXXConstructExpr(const CXXConstructExpr *E,
   }
 
   const FunctionDecl *Definition = nullptr;
-  FD->getBody(Definition);
+  auto Body = FD->getBody(Definition);
 
-  if (!CheckConstexprFunction(Info, E->getExprLoc(), FD, Definition))
+  if (!CheckConstexprFunction(Info, E->getExprLoc(), FD, Definition, Body))
     return false;
 
   if (ZeroInit && !HadZeroInit) {
@@ -6076,7 +6108,7 @@ public:
   }
   bool VisitMemberExpr(const MemberExpr *E) {
     if (CheckReferencedDecl(E, E->getMemberDecl())) {
-      VisitIgnoredValue(E->getBase());
+      VisitIgnoredBaseExpression(E->getBase());
       return true;
     }
 
@@ -6185,7 +6217,8 @@ bool IntExprEvaluator::CheckReferencedDecl(const Expr* E, const Decl* D) {
 
 /// EvaluateBuiltinClassifyType - Evaluate __builtin_classify_type the same way
 /// as GCC.
-static int EvaluateBuiltinClassifyType(const CallExpr *E) {
+static int EvaluateBuiltinClassifyType(const CallExpr *E,
+                                       const LangOptions &LangOpts) {
   // The following enum mimics the values returned by GCC.
   // FIXME: Does GCC differ between lvalue and rvalue references here?
   enum gcc_type_class {
@@ -6205,37 +6238,132 @@ static int EvaluateBuiltinClassifyType(const CallExpr *E) {
   if (E->getNumArgs() == 0)
     return no_type_class;
 
-  QualType ArgTy = E->getArg(0)->getType();
-  if (ArgTy->isVoidType())
-    return void_type_class;
-  else if (ArgTy->isEnumeralType())
-    return enumeral_type_class;
-  else if (ArgTy->isBooleanType())
-    return boolean_type_class;
-  else if (ArgTy->isCharType())
-    return string_type_class; // gcc doesn't appear to use char_type_class
-  else if (ArgTy->isIntegerType())
-    return integer_type_class;
-  else if (ArgTy->isPointerType())
+  QualType CanTy = E->getArg(0)->getType().getCanonicalType();
+  const BuiltinType *BT = dyn_cast<BuiltinType>(CanTy);
+
+  switch (CanTy->getTypeClass()) {
+#define TYPE(ID, BASE)
+#define DEPENDENT_TYPE(ID, BASE) case Type::ID:
+#define NON_CANONICAL_TYPE(ID, BASE) case Type::ID:
+#define NON_CANONICAL_UNLESS_DEPENDENT_TYPE(ID, BASE) case Type::ID:
+#include "clang/AST/TypeNodes.def"
+      llvm_unreachable("CallExpr::isBuiltinClassifyType(): unimplemented type");
+
+  case Type::Builtin:
+    switch (BT->getKind()) {
+#define BUILTIN_TYPE(ID, SINGLETON_ID)
+#define SIGNED_TYPE(ID, SINGLETON_ID) case BuiltinType::ID: return integer_type_class;
+#define FLOATING_TYPE(ID, SINGLETON_ID) case BuiltinType::ID: return real_type_class;
+#define PLACEHOLDER_TYPE(ID, SINGLETON_ID) case BuiltinType::ID: break;
+#include "clang/AST/BuiltinTypes.def"
+    case BuiltinType::Void:
+      return void_type_class;
+
+    case BuiltinType::Bool:
+      return boolean_type_class;
+
+    case BuiltinType::Char_U: // gcc doesn't appear to use char_type_class
+    case BuiltinType::UChar:
+    case BuiltinType::UShort:
+    case BuiltinType::UInt:
+    case BuiltinType::ULong:
+    case BuiltinType::ULongLong:
+    case BuiltinType::UInt128:
+      return integer_type_class;
+
+    case BuiltinType::NullPtr:
+      return pointer_type_class;
+
+    case BuiltinType::WChar_U:
+    case BuiltinType::Char16:
+    case BuiltinType::Char32:
+    case BuiltinType::ObjCId:
+    case BuiltinType::ObjCClass:
+    case BuiltinType::ObjCSel:
+    case BuiltinType::OCLImage1d:
+    case BuiltinType::OCLImage1dArray:
+    case BuiltinType::OCLImage2d:
+    case BuiltinType::OCLImage2dArray:
+    case BuiltinType::OCLImage1dBuffer:
+    case BuiltinType::OCLImage2dDepth:
+    case BuiltinType::OCLImage2dArrayDepth:
+    case BuiltinType::OCLImage2dMSAA:
+    case BuiltinType::OCLImage2dArrayMSAA:
+    case BuiltinType::OCLImage2dMSAADepth:
+    case BuiltinType::OCLImage2dArrayMSAADepth:
+    case BuiltinType::OCLImage3d:
+    case BuiltinType::OCLSampler:
+    case BuiltinType::OCLEvent:
+    case BuiltinType::OCLClkEvent:
+    case BuiltinType::OCLQueue:
+    case BuiltinType::OCLNDRange:
+    case BuiltinType::OCLReserveID:
+    case BuiltinType::Dependent:
+      llvm_unreachable("CallExpr::isBuiltinClassifyType(): unimplemented type");
+    };
+
+  case Type::Enum:
+    return LangOpts.CPlusPlus ? enumeral_type_class : integer_type_class;
+    break;
+
+  case Type::Pointer:
     return pointer_type_class;
-  else if (ArgTy->isReferenceType())
-    return reference_type_class;
-  else if (ArgTy->isRealType())
-    return real_type_class;
-  else if (ArgTy->isComplexType())
+    break;
+
+  case Type::MemberPointer:
+    if (CanTy->isMemberDataPointerType())
+      return offset_type_class;
+    else {
+      // We expect member pointers to be either data or function pointers,
+      // nothing else.
+      assert(CanTy->isMemberFunctionPointerType());
+      return method_type_class;
+    }
+
+  case Type::Complex:
     return complex_type_class;
-  else if (ArgTy->isFunctionType())
-    return function_type_class;
-  else if (ArgTy->isStructureOrClassType())
-    return record_type_class;
-  else if (ArgTy->isUnionType())
-    return union_type_class;
-  else if (ArgTy->isArrayType())
-    return array_type_class;
-  else if (ArgTy->isUnionType())
-    return union_type_class;
-  else  // FIXME: offset_type_class, method_type_class, & lang_type_class?
+
+  case Type::FunctionNoProto:
+  case Type::FunctionProto:
+    return LangOpts.CPlusPlus ? function_type_class : pointer_type_class;
+
+  case Type::Record:
+    if (const RecordType *RT = CanTy->getAs<RecordType>()) {
+      switch (RT->getDecl()->getTagKind()) {
+      case TagTypeKind::TTK_Struct:
+      case TagTypeKind::TTK_Class:
+      case TagTypeKind::TTK_Interface:
+        return record_type_class;
+
+      case TagTypeKind::TTK_Enum:
+        return LangOpts.CPlusPlus ? enumeral_type_class : integer_type_class;
+
+      case TagTypeKind::TTK_Union:
+        return union_type_class;
+      }
+    }
     llvm_unreachable("CallExpr::isBuiltinClassifyType(): unimplemented type");
+
+  case Type::ConstantArray:
+  case Type::VariableArray:
+  case Type::IncompleteArray:
+    return LangOpts.CPlusPlus ? array_type_class : pointer_type_class;
+
+  case Type::BlockPointer:
+  case Type::LValueReference:
+  case Type::RValueReference:
+  case Type::Vector:
+  case Type::ExtVector:
+  case Type::Auto:
+  case Type::ObjCObject:
+  case Type::ObjCInterface:
+  case Type::ObjCObjectPointer:
+  case Type::Pipe:
+  case Type::Atomic:
+    llvm_unreachable("CallExpr::isBuiltinClassifyType(): unimplemented type");
+  }
+
+  llvm_unreachable("CallExpr::isBuiltinClassifyType(): unimplemented type");
 }
 
 /// EvaluateBuiltinConstantPForLValue - Determine the result of
@@ -6607,7 +6735,7 @@ bool IntExprEvaluator::VisitCallExpr(const CallExpr *E) {
   }
 
   case Builtin::BI__builtin_classify_type:
-    return Success(EvaluateBuiltinClassifyType(E), E);
+    return Success(EvaluateBuiltinClassifyType(E, Info.getLangOpts()), E);
 
   // FIXME: BI__builtin_clrsb
   // FIXME: BI__builtin_clrsbl

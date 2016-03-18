@@ -785,6 +785,13 @@ private:
   /// \brief The pragma clang optimize location (if the pragma state is "off").
   SourceLocation OptimizeOffPragmaLocation;
 
+  /// \brief The PragmaMSStructKind pragma ms_struct state if set, or -1.
+  int PragmaMSStructState;
+
+  /// \brief The PragmaMSPointersToMembersKind pragma pointers_to_members state.
+  int PragmaMSPointersToMembersState;
+  SourceLocation PointersToMembersPragmaLocation;
+
   /// \brief The OpenCL extension settings.
   SmallVector<uint64_t, 1> OpenCLExtensions;
 
@@ -1364,7 +1371,7 @@ public:
   /// \param ClientLoadCapabilities The set of client load-failure
   /// capabilities, represented as a bitset of the enumerators of
   /// LoadFailureCapabilities.
-  ASTReadResult ReadAST(const std::string &FileName, ModuleKind Type,
+  ASTReadResult ReadAST(StringRef FileName, ModuleKind Type,
                         SourceLocation ImportLoc,
                         unsigned ClientLoadCapabilities);
 

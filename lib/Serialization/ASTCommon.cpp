@@ -319,6 +319,8 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
   case Decl::ObjCCompatibleAlias:
   case Decl::LinkageSpec:
   case Decl::ObjCPropertyImpl:
+  case Decl::PragmaComment:
+  case Decl::PragmaDetectMismatch:
   case Decl::FileScopeAsm:
   case Decl::AccessSpec:
   case Decl::Friend:
@@ -329,6 +331,8 @@ bool serialization::isRedeclarableDeclKind(unsigned Kind) {
   case Decl::ClassScopeFunctionSpecialization:
   case Decl::Import:
   case Decl::OMPThreadPrivate:
+  case Decl::OMPCapturedExpr:
+  case Decl::OMPDeclareReduction:
   case Decl::BuiltinTemplate:
     return false;
 

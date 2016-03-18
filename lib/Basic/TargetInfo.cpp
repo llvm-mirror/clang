@@ -66,13 +66,12 @@ TargetInfo::TargetInfo(const llvm::Triple &T) : TargetOpts(), Triple(T) {
   UseSignedCharForObjCBool = true;
   UseBitFieldTypeAlignment = true;
   UseZeroLengthBitfieldAlignment = false;
+  UseExplicitBitFieldAlignment = true;
   ZeroLengthBitfieldBoundary = 0;
   HalfFormat = &llvm::APFloat::IEEEhalf;
   FloatFormat = &llvm::APFloat::IEEEsingle;
   DoubleFormat = &llvm::APFloat::IEEEdouble;
   LongDoubleFormat = &llvm::APFloat::IEEEdouble;
-  DataLayoutString = nullptr;
-  UserLabelPrefix = "_";
   MCountName = "mcount";
   RegParmMax = 0;
   SSERegParmMax = 0;

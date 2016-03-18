@@ -94,9 +94,11 @@ private:
   SourceLocation ScopeLoc;
   SourceLocation EllipsisLoc;
 
+  unsigned AttrKind : 16;
+
   /// The number of expression arguments this attribute has.
   /// The expressions themselves are stored after the object.
-  unsigned NumArgs : 15;
+  unsigned NumArgs : 16;
 
   /// Corresponds to the Syntax enum.
   unsigned SyntaxUsed : 3;
@@ -122,7 +124,11 @@ private:
   /// True if this has a ParsedType
   unsigned HasParsedType : 1;
 
-  unsigned AttrKind : 8;
+  /// True if the processing cache is valid.
+  mutable unsigned HasProcessingCache : 1;
+
+  /// A cached value.
+  mutable unsigned ProcessingCache : 8;
 
   /// \brief The location of the 'unavailable' keyword in an
   /// availability attribute.
@@ -155,6 +161,17 @@ private:
   const AvailabilityChange &getAvailabilitySlot(AvailabilitySlot index) const {
     return reinterpret_cast<const AvailabilityChange*>(getArgsBuffer()
                                                        + NumArgs)[index];
+  }
+
+  /// The location of the 'strict' keyword in an availability attribute.
+  SourceLocation *getStrictSlot() {
+    return reinterpret_cast<SourceLocation*>(
+               &getAvailabilitySlot(ObsoletedSlot) + 1);
+  }
+
+  SourceLocation const *getStrictSlot() const {
+    return reinterpret_cast<SourceLocation const*>(
+               &getAvailabilitySlot(ObsoletedSlot) + 1);
   }
 
 public:
@@ -220,7 +237,8 @@ private:
       ScopeLoc(scopeLoc), EllipsisLoc(ellipsisLoc), NumArgs(numArgs),
       SyntaxUsed(syntaxUsed), Invalid(false), UsedAsTypeAttr(false),
       IsAvailability(false), IsTypeTagForDatatype(false), IsProperty(false),
-      HasParsedType(false), NextInPosition(nullptr), NextInPool(nullptr) {
+      HasParsedType(false), HasProcessingCache(false),
+      NextInPosition(nullptr), NextInPool(nullptr) {
     if (numArgs) memcpy(getArgsBuffer(), args, numArgs * sizeof(ArgsUnion));
     AttrKind = getKind(getName(), getScopeName(), syntaxUsed);
   }
@@ -233,18 +251,19 @@ private:
                 const AvailabilityChange &obsoleted,
                 SourceLocation unavailable, 
                 const Expr *messageExpr,
-                Syntax syntaxUsed)
+                Syntax syntaxUsed, SourceLocation strict)
     : AttrName(attrName), ScopeName(scopeName), AttrRange(attrRange),
       ScopeLoc(scopeLoc), EllipsisLoc(), NumArgs(1), SyntaxUsed(syntaxUsed),
       Invalid(false), UsedAsTypeAttr(false), IsAvailability(true),
       IsTypeTagForDatatype(false), IsProperty(false), HasParsedType(false),
-      UnavailableLoc(unavailable), MessageExpr(messageExpr),
-      NextInPosition(nullptr), NextInPool(nullptr) {
+      HasProcessingCache(false), UnavailableLoc(unavailable),
+      MessageExpr(messageExpr), NextInPosition(nullptr), NextInPool(nullptr) {
     ArgsUnion PVal(Parm);
     memcpy(getArgsBuffer(), &PVal, sizeof(ArgsUnion));
     new (&getAvailabilitySlot(IntroducedSlot)) AvailabilityChange(introduced);
     new (&getAvailabilitySlot(DeprecatedSlot)) AvailabilityChange(deprecated);
     new (&getAvailabilitySlot(ObsoletedSlot)) AvailabilityChange(obsoleted);
+    memcpy(getStrictSlot(), &strict, sizeof(SourceLocation));
     AttrKind = getKind(getName(), getScopeName(), syntaxUsed);
   }
 
@@ -259,7 +278,7 @@ private:
     ScopeLoc(scopeLoc), EllipsisLoc(), NumArgs(3), SyntaxUsed(syntaxUsed),
     Invalid(false), UsedAsTypeAttr(false), IsAvailability(false),
     IsTypeTagForDatatype(false), IsProperty(false), HasParsedType(false),
-    NextInPosition(nullptr), NextInPool(nullptr) {
+    HasProcessingCache(false), NextInPosition(nullptr), NextInPool(nullptr) {
     ArgsVector Args;
     Args.push_back(Parm1);
     Args.push_back(Parm2);
@@ -277,7 +296,7 @@ private:
       ScopeLoc(scopeLoc), EllipsisLoc(), NumArgs(1), SyntaxUsed(syntaxUsed),
       Invalid(false), UsedAsTypeAttr(false), IsAvailability(false),
       IsTypeTagForDatatype(true), IsProperty(false), HasParsedType(false),
-      NextInPosition(nullptr), NextInPool(nullptr) {
+      HasProcessingCache(false), NextInPosition(nullptr), NextInPool(nullptr) {
     ArgsUnion PVal(ArgKind);
     memcpy(getArgsBuffer(), &PVal, sizeof(ArgsUnion));
     TypeTagForDatatypeData &ExtraData = getTypeTagForDatatypeDataSlot();
@@ -295,7 +314,7 @@ private:
         ScopeLoc(scopeLoc), EllipsisLoc(), NumArgs(0), SyntaxUsed(syntaxUsed),
         Invalid(false), UsedAsTypeAttr(false), IsAvailability(false),
         IsTypeTagForDatatype(false), IsProperty(false), HasParsedType(true),
-        NextInPosition(nullptr), NextInPool(nullptr) {
+        HasProcessingCache(false), NextInPosition(nullptr), NextInPool(nullptr){
     new (&getTypeBuffer()) ParsedType(typeArg);
     AttrKind = getKind(getName(), getScopeName(), syntaxUsed);
   }
@@ -309,7 +328,7 @@ private:
       ScopeLoc(scopeLoc), EllipsisLoc(), NumArgs(0), SyntaxUsed(syntaxUsed),
       Invalid(false), UsedAsTypeAttr(false), IsAvailability(false),
       IsTypeTagForDatatype(false), IsProperty(true), HasParsedType(false),
-      NextInPosition(nullptr), NextInPool(nullptr) {
+      HasProcessingCache(false), NextInPosition(nullptr), NextInPool(nullptr) {
     new (&getPropertyDataBuffer()) PropertyData(getterId, setterId);
     AttrKind = getKind(getName(), getScopeName(), syntaxUsed);
   }
@@ -360,6 +379,16 @@ public:
 
   bool isInvalid() const { return Invalid; }
   void setInvalid(bool b = true) const { Invalid = b; }
+
+  bool hasProcessingCache() const { return HasProcessingCache; }
+  unsigned getProcessingCache() const {
+    assert(hasProcessingCache());
+    return ProcessingCache;
+  }
+  void setProcessingCache(unsigned value) const {
+    ProcessingCache = value;
+    HasProcessingCache = true;
+  }
 
   bool isUsedAsTypeAttr() const { return UsedAsTypeAttr; }
   void setUsedAsTypeAttr() { UsedAsTypeAttr = true; }
@@ -412,6 +441,11 @@ public:
     return getAvailabilitySlot(ObsoletedSlot);
   }
 
+  SourceLocation getStrictLoc() const {
+    assert(getKind() == AT_Availability && "Not an availability attribute");
+    return *getStrictSlot();
+  }
+
   SourceLocation getUnavailableLoc() const {
     assert(getKind() == AT_Availability && "Not an availability attribute");
     return UnavailableLoc;
@@ -457,6 +491,7 @@ public:
 
   bool isTargetSpecificAttr() const;
   bool isTypeAttr() const;
+  bool isStmtAttr() const;
 
   bool hasCustomParsing() const;
   unsigned getMinArgs() const;
@@ -488,7 +523,7 @@ public:
     AvailabilityAllocSize =
       sizeof(AttributeList)
       + ((3 * sizeof(AvailabilityChange) + sizeof(void*) +
-         sizeof(ArgsUnion) - 1)
+         sizeof(ArgsUnion) + sizeof(SourceLocation) - 1)
          / sizeof(void*) * sizeof(void*)),
     TypeTagForDatatypeAllocSize =
       sizeof(AttributeList)
@@ -606,13 +641,14 @@ public:
                         const AvailabilityChange &obsoleted,
                         SourceLocation unavailable,
                         const Expr *MessageExpr,
-                        AttributeList::Syntax syntax) {
+                        AttributeList::Syntax syntax,
+                        SourceLocation strict) {
     void *memory = allocate(AttributeFactory::AvailabilityAllocSize);
     return add(new (memory) AttributeList(attrName, attrRange,
                                           scopeName, scopeLoc,
                                           Param, introduced, deprecated,
                                           obsoleted, unavailable, MessageExpr,
-                                          syntax));
+                                          syntax, strict));
   }
 
   AttributeList *create(IdentifierInfo *attrName, SourceRange attrRange,
@@ -741,10 +777,12 @@ public:
                         const AvailabilityChange &obsoleted,
                         SourceLocation unavailable,
                         const Expr *MessageExpr,
-                        AttributeList::Syntax syntax) {
+                        AttributeList::Syntax syntax,
+                        SourceLocation strict) {
     AttributeList *attr =
       pool.create(attrName, attrRange, scopeName, scopeLoc, Param, introduced,
-                  deprecated, obsoleted, unavailable, MessageExpr, syntax);
+                  deprecated, obsoleted, unavailable, MessageExpr, syntax,
+                  strict);
     add(attr);
     return attr;
   }
@@ -833,7 +871,6 @@ enum AttributeDeclKind {
   ExpectedEnum,
   ExpectedVariable,
   ExpectedMethod,
-  ExpectedVariableFunctionOrLabel,
   ExpectedFieldOrGlobalVar,
   ExpectedStruct,
   ExpectedVariableOrTypedef,
@@ -855,7 +892,11 @@ enum AttributeDeclKind {
   ExpectedStructOrTypedef,
   ExpectedObjectiveCInterfaceOrProtocol,
   ExpectedKernelFunction,
-  ExpectedFunctionWithProtoType
+  ExpectedFunctionWithProtoType,
+  ExpectedVariableEnumFieldOrTypedef,
+  ExpectedFunctionMethodEnumOrClass,
+  ExpectedStructClassVariableFunctionOrInlineNamespace,
+  ExpectedForMaybeUnused
 };
 
 }  // end namespace clang

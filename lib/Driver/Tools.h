@@ -10,11 +10,11 @@
 #ifndef LLVM_CLANG_LIB_DRIVER_TOOLS_H
 #define LLVM_CLANG_LIB_DRIVER_TOOLS_H
 
+#include "clang/Basic/DebugInfoOptions.h"
 #include "clang/Basic/VersionTuple.h"
 #include "clang/Driver/Tool.h"
 #include "clang/Driver/Types.h"
 #include "clang/Driver/Util.h"
-#include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/Compiler.h"
@@ -91,9 +91,9 @@ private:
                                  llvm::opt::ArgStringList &cmdArgs,
                                  RewriteKind rewrite) const;
 
-  void AddClangCLArgs(const llvm::opt::ArgList &Args,
+  void AddClangCLArgs(const llvm::opt::ArgList &Args, types::ID InputType,
                       llvm::opt::ArgStringList &CmdArgs,
-                      enum CodeGenOptions::DebugInfoKind *DebugInfoKind,
+                      codegenoptions::DebugInfoKind *DebugInfoKind,
                       bool *EmitCodeView) const;
 
   visualstudio::Compiler *getCLFallback() const;

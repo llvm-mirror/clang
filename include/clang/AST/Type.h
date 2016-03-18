@@ -3040,6 +3040,74 @@ public:
 /// type.
 class FunctionProtoType : public FunctionType, public llvm::FoldingSetNode {
 public:
+  /// Interesting information about a specific parameter that can't simply
+  /// be reflected in parameter's type.
+  ///
+  /// It makes sense to model language features this way when there's some
+  /// sort of parameter-specific override (such as an attribute) that
+  /// affects how the function is called.  For example, the ARC ns_consumed
+  /// attribute changes whether a parameter is passed at +0 (the default)
+  /// or +1 (ns_consumed).  This must be reflected in the function type,
+  /// but isn't really a change to the parameter type.
+  ///
+  /// One serious disadvantage of modelling language features this way is
+  /// that they generally do not work with language features that attempt
+  /// to destructure types.  For example, template argument deduction will
+  /// not be able to match a parameter declared as
+  ///   T (*)(U)
+  /// against an argument of type
+  ///   void (*)(__attribute__((ns_consumed)) id)
+  /// because the substitution of T=void, U=id into the former will
+  /// not produce the latter.
+  class ExtParameterInfo {
+    enum {
+      ABIMask         = 0x0F,
+      IsConsumed      = 0x10
+    };
+    unsigned char Data;
+  public:
+    ExtParameterInfo() : Data(0) {}
+
+    /// Return the ABI treatment of this parameter.
+    ParameterABI getABI() const {
+      return ParameterABI(Data & ABIMask);
+    }
+    ExtParameterInfo withABI(ParameterABI kind) const {
+      ExtParameterInfo copy = *this;
+      copy.Data = (copy.Data & ~ABIMask) | unsigned(kind);
+      return copy;
+    }
+
+    /// Is this parameter considered "consumed" by Objective-C ARC?
+    /// Consumed parameters must have retainable object type.
+    bool isConsumed() const {
+      return (Data & IsConsumed);
+    }
+    ExtParameterInfo withIsConsumed(bool consumed) const {
+      ExtParameterInfo copy = *this;
+      if (consumed) {
+        copy.Data |= IsConsumed;
+      } else {
+        copy.Data &= ~IsConsumed;
+      }
+      return copy;
+    }
+
+    unsigned char getOpaqueValue() const { return Data; }
+    static ExtParameterInfo getFromOpaqueValue(unsigned char data) {
+      ExtParameterInfo result;
+      result.Data = data;
+      return result;
+    }
+
+    friend bool operator==(ExtParameterInfo lhs, ExtParameterInfo rhs) {
+      return lhs.Data == rhs.Data;
+    }
+    friend bool operator!=(ExtParameterInfo lhs, ExtParameterInfo rhs) {
+      return lhs.Data != rhs.Data;
+    }
+  };
+
   struct ExceptionSpecInfo {
     ExceptionSpecInfo()
         : Type(EST_None), NoexceptExpr(nullptr),
@@ -3067,11 +3135,11 @@ public:
   struct ExtProtoInfo {
     ExtProtoInfo()
         : Variadic(false), HasTrailingReturn(false), TypeQuals(0),
-          RefQualifier(RQ_None), ConsumedParameters(nullptr) {}
+          RefQualifier(RQ_None), ExtParameterInfos(nullptr) {}
 
     ExtProtoInfo(CallingConv CC)
         : ExtInfo(CC), Variadic(false), HasTrailingReturn(false), TypeQuals(0),
-          RefQualifier(RQ_None), ConsumedParameters(nullptr) {}
+          RefQualifier(RQ_None), ExtParameterInfos(nullptr) {}
 
     ExtProtoInfo withExceptionSpec(const ExceptionSpecInfo &O) {
       ExtProtoInfo Result(*this);
@@ -3085,7 +3153,7 @@ public:
     unsigned char TypeQuals;
     RefQualifierKind RefQualifier;
     ExceptionSpecInfo ExceptionSpec;
-    const bool *ConsumedParameters;
+    const ExtParameterInfo *ExtParameterInfos;
   };
 
 private:
@@ -3112,8 +3180,8 @@ private:
   /// The type of exception specification this function has.
   unsigned ExceptionSpecType : 4;
 
-  /// Whether this function has any consumed parameters.
-  unsigned HasAnyConsumedParams : 1;
+  /// Whether this function has extended parameter information.
+  unsigned HasExtParameterInfos : 1;
 
   /// Whether the function is variadic.
   unsigned Variadic : 1;
@@ -3135,25 +3203,36 @@ private:
   // instantiate this function type's exception specification, and the function
   // from which it should be instantiated.
 
-  // ConsumedParameters - A variable size array, following Exceptions
-  // and of length NumParams, holding flags indicating which parameters
-  // are consumed.  This only appears if HasAnyConsumedParams is true.
+  // ExtParameterInfos - A variable size array, following the exception
+  // specification and of length NumParams, holding an ExtParameterInfo
+  // for each of the parameters.  This only appears if HasExtParameterInfos
+  // is true.
 
   friend class ASTContext;  // ASTContext creates these.
 
-  const bool *getConsumedParamsBuffer() const {
-    assert(hasAnyConsumedParams());
+  const ExtParameterInfo *getExtParameterInfosBuffer() const {
+    assert(hasExtParameterInfos());
 
-    // Find the end of the exceptions.
-    Expr *const *eh_end = reinterpret_cast<Expr *const *>(exception_end());
-    if (getExceptionSpecType() == EST_ComputedNoexcept)
-      eh_end += 1; // NoexceptExpr
-    // The memory layout of these types isn't handled here, so
-    // hopefully this is never called for them?
-    assert(getExceptionSpecType() != EST_Uninstantiated &&
-           getExceptionSpecType() != EST_Unevaluated);
+    // Find the end of the exception specification.
+    const char *ptr = reinterpret_cast<const char *>(exception_begin());
+    ptr += getExceptionSpecSize();
 
-    return reinterpret_cast<const bool*>(eh_end);
+    return reinterpret_cast<const ExtParameterInfo *>(ptr);
+  }
+
+  size_t getExceptionSpecSize() const {
+    switch (getExceptionSpecType()) {
+    case EST_None:             return 0;
+    case EST_DynamicNone:      return 0;
+    case EST_MSAny:            return 0;
+    case EST_BasicNoexcept:    return 0;
+    case EST_Unparsed:         return 0;
+    case EST_Dynamic:          return getNumExceptions() * sizeof(QualType);
+    case EST_ComputedNoexcept: return sizeof(Expr*);
+    case EST_Uninstantiated:   return 2 * sizeof(FunctionDecl*);
+    case EST_Unevaluated:      return sizeof(FunctionDecl*);
+    }
+    llvm_unreachable("bad exception specification kind");
   }
 
 public:
@@ -3184,8 +3263,8 @@ public:
     } else if (EPI.ExceptionSpec.Type == EST_Unevaluated) {
       EPI.ExceptionSpec.SourceDecl = getExceptionSpecDecl();
     }
-    if (hasAnyConsumedParams())
-      EPI.ConsumedParameters = getConsumedParamsBuffer();
+    if (hasExtParameterInfos())
+      EPI.ExtParameterInfos = getExtParameterInfosBuffer();
     return EPI;
   }
 
@@ -3300,11 +3379,41 @@ public:
     return exception_begin() + NumExceptions;
   }
 
-  bool hasAnyConsumedParams() const { return HasAnyConsumedParams; }
+  /// Is there any interesting extra information for any of the parameters
+  /// of this function type?
+  bool hasExtParameterInfos() const { return HasExtParameterInfos; }
+  ArrayRef<ExtParameterInfo> getExtParameterInfos() const {
+    assert(hasExtParameterInfos());
+    return ArrayRef<ExtParameterInfo>(getExtParameterInfosBuffer(),
+                                      getNumParams());
+  }
+  /// Return a pointer to the beginning of the array of extra parameter
+  /// information, if present, or else null if none of the parameters
+  /// carry it.  This is equivalent to getExtProtoInfo().ExtParameterInfos.
+  const ExtParameterInfo *getExtParameterInfosOrNull() const {
+    if (!hasExtParameterInfos())
+      return nullptr;
+    return getExtParameterInfosBuffer();
+  }
+
+  ExtParameterInfo getExtParameterInfo(unsigned I) const {
+    assert(I < getNumParams() && "parameter index out of range");
+    if (hasExtParameterInfos())
+      return getExtParameterInfosBuffer()[I];
+    return ExtParameterInfo();
+  }
+
+  ParameterABI getParameterABI(unsigned I) const {
+    assert(I < getNumParams() && "parameter index out of range");
+    if (hasExtParameterInfos())
+      return getExtParameterInfosBuffer()[I].getABI();
+    return ParameterABI::Ordinary;
+  }
+
   bool isParamConsumed(unsigned I) const {
     assert(I < getNumParams() && "parameter index out of range");
-    if (hasAnyConsumedParams())
-      return getConsumedParamsBuffer()[I];
+    if (hasExtParameterInfos())
+      return getExtParameterInfosBuffer()[I].isConsumed();
     return false;
   }
 
@@ -3626,6 +3735,7 @@ public:
     attr_stdcall,
     attr_thiscall,
     attr_pascal,
+    attr_swiftcall,
     attr_vectorcall,
     attr_inteloclbicc,
     attr_ms_abi,

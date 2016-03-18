@@ -14,6 +14,7 @@
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporterVisitor.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprObjC.h"
+#include "clang/Analysis/CFGStmtMap.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/BugReporter.h"
 #include "clang/StaticAnalyzer/Core/BugReporter/PathDiagnostic.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/CallEvent.h"
@@ -828,8 +829,53 @@ SuppressInlineDefensiveChecksVisitor::VisitNode(const ExplodedNode *Succ,
     // Check if this is inlined defensive checks.
     const LocationContext *CurLC =Succ->getLocationContext();
     const LocationContext *ReportLC = BR.getErrorNode()->getLocationContext();
-    if (CurLC != ReportLC && !CurLC->isParentOf(ReportLC))
+    if (CurLC != ReportLC && !CurLC->isParentOf(ReportLC)) {
       BR.markInvalid("Suppress IDC", CurLC);
+      return nullptr;
+    }
+
+    // Treat defensive checks in function-like macros as if they were an inlined
+    // defensive check. If the bug location is not in a macro and the
+    // terminator for the current location is in a macro then suppress the
+    // warning.
+    auto BugPoint = BR.getErrorNode()->getLocation().getAs<StmtPoint>();
+
+    if (!BugPoint)
+      return nullptr;
+
+    SourceLocation BugLoc = BugPoint->getStmt()->getLocStart();
+    if (BugLoc.isMacroID())
+      return nullptr;
+
+    ProgramPoint CurPoint = Succ->getLocation();
+    const Stmt *CurTerminatorStmt = nullptr;
+    if (auto BE = CurPoint.getAs<BlockEdge>()) {
+      CurTerminatorStmt = BE->getSrc()->getTerminator().getStmt();
+    } else if (auto SP = CurPoint.getAs<StmtPoint>()) {
+      const Stmt *CurStmt = SP->getStmt();
+      if (!CurStmt->getLocStart().isMacroID())
+        return nullptr;
+
+      CFGStmtMap *Map = CurLC->getAnalysisDeclContext()->getCFGStmtMap();
+      CurTerminatorStmt = Map->getBlock(CurStmt)->getTerminator();
+    } else {
+      return nullptr;
+    }
+
+    if (!CurTerminatorStmt)
+      return nullptr;
+
+    SourceLocation TerminatorLoc = CurTerminatorStmt->getLocStart();
+    if (TerminatorLoc.isMacroID()) {
+      const SourceManager &SMgr = BRC.getSourceManager();
+      std::pair<FileID, unsigned> TLInfo = SMgr.getDecomposedLoc(TerminatorLoc);
+      SrcMgr::SLocEntry SE = SMgr.getSLocEntry(TLInfo.first);
+      const SrcMgr::ExpansionInfo &EInfo = SE.getExpansion();
+      if (EInfo.isFunctionMacroExpansion()) {
+        BR.markInvalid("Suppress Macro IDC", CurLC);
+        return nullptr;
+      }
+    }
   }
   return nullptr;
 }
@@ -1494,20 +1540,6 @@ ConditionBRVisitor::VisitTrueTest(const Expr *Cond,
   return event;
 }
 
-
-// FIXME: Copied from ExprEngineCallAndReturn.cpp.
-static bool isInStdNamespace(const Decl *D) {
-  const DeclContext *DC = D->getDeclContext()->getEnclosingNamespaceContext();
-  const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(DC);
-  if (!ND)
-    return false;
-
-  while (const NamespaceDecl *Parent = dyn_cast<NamespaceDecl>(ND->getParent()))
-    ND = Parent;
-
-  return ND->isStdNamespace();
-}
-
 std::unique_ptr<PathDiagnosticPiece>
 LikelyFalsePositiveSuppressionBRVisitor::getEndPath(BugReporterContext &BRC,
                                                     const ExplodedNode *N,
@@ -1518,7 +1550,7 @@ LikelyFalsePositiveSuppressionBRVisitor::getEndPath(BugReporterContext &BRC,
   AnalyzerOptions &Options = Eng.getAnalysisManager().options;
   const Decl *D = N->getLocationContext()->getDecl();
 
-  if (isInStdNamespace(D)) {
+  if (AnalysisDeclContext::isInStdNamespace(D)) {
     // Skip reports within the 'std' namespace. Although these can sometimes be
     // the user's fault, we currently don't report them very well, and
     // Note that this will not help for any other data structure libraries, like

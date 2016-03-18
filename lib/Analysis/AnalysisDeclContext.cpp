@@ -135,6 +135,10 @@ bool AnalysisDeclContext::isBodyAutosynthesizedFromModelFile() const {
   return Tmp && Body->getLocStart().isValid();
 }
 
+/// Returns true if \param VD is an Objective-C implicit 'self' parameter.
+static bool isSelfDecl(const VarDecl *VD) {
+  return isa<ImplicitParamDecl>(VD) && VD->getName() == "self";
+}
 
 const ImplicitParamDecl *AnalysisDeclContext::getSelfDecl() const {
   if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(D))
@@ -143,7 +147,7 @@ const ImplicitParamDecl *AnalysisDeclContext::getSelfDecl() const {
     // See if 'self' was captured by the block.
     for (const auto &I : BD->captures()) {
       const VarDecl *VD = I.getVariable();
-      if (VD->getName() == "self")
+      if (isSelfDecl(VD))
         return dyn_cast<ImplicitParamDecl>(VD);
     }    
   }
@@ -161,7 +165,7 @@ const ImplicitParamDecl *AnalysisDeclContext::getSelfDecl() const {
       continue;
 
     VarDecl *VD = LC.getCapturedVar();
-    if (VD->getName() == "self")
+    if (isSelfDecl(VD))
       return dyn_cast<ImplicitParamDecl>(VD);
   }
 
@@ -315,6 +319,21 @@ AnalysisDeclContext::getBlockInvocationContext(const LocationContext *parent,
                                                const void *ContextData) {
   return getLocationContextManager().getBlockInvocationContext(this, parent,
                                                                BD, ContextData);
+}
+
+bool AnalysisDeclContext::isInStdNamespace(const Decl *D) {
+  const DeclContext *DC = D->getDeclContext()->getEnclosingNamespaceContext();
+  const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(DC);
+  if (!ND)
+    return false;
+
+  while (const DeclContext *Parent = ND->getParent()) {
+    if (!isa<NamespaceDecl>(Parent))
+      break;
+    ND = cast<NamespaceDecl>(Parent);
+  }
+
+  return ND->isStdNamespace();
 }
 
 LocationContextManager & AnalysisDeclContext::getLocationContextManager() {
