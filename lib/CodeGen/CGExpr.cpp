@@ -66,8 +66,6 @@ Address CodeGenFunction::CreateTempAlloca(llvm::Type *Ty, CharUnits Align,
 /// block.
 llvm::AllocaInst *CodeGenFunction::CreateTempAlloca(llvm::Type *Ty,
                                                     const Twine &Name) {
-  if (!Builder.isNamePreserving())
-    return new llvm::AllocaInst(Ty, nullptr, "", AllocaInsertPt);
   return new llvm::AllocaInst(Ty, nullptr, Name, AllocaInsertPt);
 }
 
@@ -2481,16 +2479,12 @@ void CodeGenFunction::EmitCheck(
   assert(JointCond);
 
   CheckRecoverableKind RecoverKind = getRecoverableKind(Checked[0].second);
-  // In cross-DSO CFI mode this code is used to generate __cfi_check_fail, which
-  // includes all checks, even those that are not in SanOpts.
-  assert(CGM.getCodeGenOpts().SanitizeCfiCrossDso ||
-         SanOpts.has(Checked[0].second));
+  assert(SanOpts.has(Checked[0].second));
 #ifndef NDEBUG
   for (int i = 1, n = Checked.size(); i < n; ++i) {
     assert(RecoverKind == getRecoverableKind(Checked[i].second) &&
            "All recoverable kinds in a single check must be same!");
-    assert(CGM.getCodeGenOpts().SanitizeCfiCrossDso ||
-           SanOpts.has(Checked[i].second));
+    assert(SanOpts.has(Checked[i].second));
   }
 #endif
 
@@ -2616,8 +2610,8 @@ void CodeGenFunction::EmitCfiCheckFail() {
   Args.push_back(&ArgData);
   Args.push_back(&ArgAddr);
 
-  const CGFunctionInfo &FI = CGM.getTypes().arrangeFreeFunctionDeclaration(
-      getContext().VoidTy, Args, FunctionType::ExtInfo(), /*variadic=*/false);
+  const CGFunctionInfo &FI =
+    CGM.getTypes().arrangeBuiltinFunctionDeclaration(getContext().VoidTy, Args);
 
   llvm::Function *F = llvm::Function::Create(
       llvm::FunctionType::get(VoidTy, {VoidPtrTy, VoidPtrTy}, false),
@@ -2672,8 +2666,11 @@ void CodeGenFunction::EmitCfiCheckFail() {
     SanitizerMask Mask = CheckKindMaskPair.second;
     llvm::Value *Cond =
         Builder.CreateICmpNE(CheckKind, llvm::ConstantInt::get(Int8Ty, Kind));
-    EmitCheck(std::make_pair(Cond, Mask), "cfi_check_fail", {},
-              {Data, Addr, ValidVtable});
+    if (CGM.getLangOpts().Sanitize.has(Mask))
+      EmitCheck(std::make_pair(Cond, Mask), "cfi_check_fail", {},
+                {Data, Addr, ValidVtable});
+    else
+      EmitTrapCheck(Cond);
   }
 
   FinishFunction();

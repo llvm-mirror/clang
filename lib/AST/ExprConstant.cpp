@@ -36,6 +36,7 @@
 #include "clang/AST/APValue.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTDiagnostic.h"
+#include "clang/AST/ASTLambda.h"
 #include "clang/AST/CharUnits.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/RecordLayout.h"
@@ -2045,7 +2046,22 @@ static bool evaluateVarDeclInit(EvalInfo &Info, const Expr *E,
   // If this is a local variable, dig out its value.
   if (Frame) {
     Result = Frame->getTemporary(VD);
-    assert(Result && "missing value for local variable");
+    if (!Result) {
+      // Assume variables referenced within a lambda's call operator that were
+      // not declared within the call operator are captures and during checking
+      // of a potential constant expression, assume they are unknown constant
+      // expressions.
+      assert(isLambdaCallOperator(Frame->Callee) &&
+             (VD->getDeclContext() != Frame->Callee || VD->isInitCapture()) &&
+             "missing value for local variable");
+      if (Info.checkingPotentialConstantExpression())
+        return false;
+      // FIXME: implement capture evaluation during constant expr evaluation.
+      Info.Diag(E->getLocStart(),
+           diag::note_unimplemented_constexpr_lambda_feature_ast)
+          << "captures not currently allowed";
+      return false;
+    }
     return true;
   }
 
@@ -3647,7 +3663,10 @@ static EvalStmtResult EvaluateStmt(StmtResult &Result, EvalInfo &Info,
       return ESR;
 
     // Create the __begin and __end iterators.
-    ESR = EvaluateStmt(Result, Info, FS->getBeginEndStmt());
+    ESR = EvaluateStmt(Result, Info, FS->getBeginStmt());
+    if (ESR != ESR_Succeeded)
+      return ESR;
+    ESR = EvaluateStmt(Result, Info, FS->getEndStmt());
     if (ESR != ESR_Succeeded)
       return ESR;
 
@@ -8641,12 +8660,14 @@ bool ComplexExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
         APFloat MaxCD = maxnum(abs(C), abs(D));
         if (MaxCD.isFinite()) {
           DenomLogB = ilogb(MaxCD);
-          C = scalbn(C, -DenomLogB);
-          D = scalbn(D, -DenomLogB);
+          C = scalbn(C, -DenomLogB, APFloat::rmNearestTiesToEven);
+          D = scalbn(D, -DenomLogB, APFloat::rmNearestTiesToEven);
         }
         APFloat Denom = C * C + D * D;
-        ResR = scalbn((A * C + B * D) / Denom, -DenomLogB);
-        ResI = scalbn((B * C - A * D) / Denom, -DenomLogB);
+        ResR = scalbn((A * C + B * D) / Denom, -DenomLogB,
+                      APFloat::rmNearestTiesToEven);
+        ResI = scalbn((B * C - A * D) / Denom, -DenomLogB,
+                      APFloat::rmNearestTiesToEven);
         if (ResR.isNaN() && ResI.isNaN()) {
           if (Denom.isPosZero() && (!A.isNaN() || !B.isNaN())) {
             ResR = APFloat::getInf(ResR.getSemantics(), C.isNegative()) * A;

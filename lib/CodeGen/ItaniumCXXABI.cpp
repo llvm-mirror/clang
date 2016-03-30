@@ -1529,8 +1529,8 @@ ItaniumCXXABI::getVTableAddressPoint(BaseSubobject Base,
                               .getVTableLayout(VTableClass)
                               .getAddressPoint(Base);
   llvm::Value *Indices[] = {
-    llvm::ConstantInt::get(CGM.Int64Ty, 0),
-    llvm::ConstantInt::get(CGM.Int64Ty, AddressPoint)
+    llvm::ConstantInt::get(CGM.Int32Ty, 0),
+    llvm::ConstantInt::get(CGM.Int32Ty, AddressPoint)
   };
 
   return llvm::ConstantExpr::getInBoundsGetElementPtr(VTable->getValueType(),
@@ -2186,9 +2186,8 @@ ItaniumCXXABI::getOrCreateThreadLocalWrapper(const VarDecl *VD,
   if (RetQT->isReferenceType())
     RetQT = RetQT.getNonReferenceType();
 
-  const CGFunctionInfo &FI = CGM.getTypes().arrangeFreeFunctionDeclaration(
-      getContext().getPointerType(RetQT), FunctionArgList(),
-      FunctionType::ExtInfo(), false);
+  const CGFunctionInfo &FI = CGM.getTypes().arrangeBuiltinFunctionDeclaration(
+      getContext().getPointerType(RetQT), FunctionArgList());
 
   llvm::FunctionType *FnTy = CGM.getTypes().GetFunctionType(FI);
   llvm::Function *Wrapper =
@@ -2238,6 +2237,11 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     CodeGenFunction(CGM)
         .GenerateCXXGlobalInitFunc(InitFunc, CXXThreadLocalInits,
                                    Address(Guard, GuardAlign));
+    // On Darwin platforms, use CXX_FAST_TLS calling convention.
+    if (CGM.getTarget().getTriple().isOSDarwin()) {
+      InitFunc->setCallingConv(llvm::CallingConv::CXX_FAST_TLS);
+      InitFunc->addFnAttr(llvm::Attribute::NoUnwind);
+    }
   }
   for (const VarDecl *VD : CXXThreadLocals) {
     llvm::GlobalVariable *Var =
@@ -2275,9 +2279,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       Init = llvm::Function::Create(
           FnTy, llvm::GlobalVariable::ExternalWeakLinkage, InitFnName.str(),
           &CGM.getModule());
-      const CGFunctionInfo &FI = CGM.getTypes().arrangeFreeFunctionDeclaration(
-          CGM.getContext().VoidTy, FunctionArgList(), FunctionType::ExtInfo(),
-          false);
+      const CGFunctionInfo &FI = CGM.getTypes().arrangeNullaryFunction();
       CGM.SetLLVMFunctionAttributes(nullptr, FI, cast<llvm::Function>(Init));
     }
 
@@ -2289,8 +2291,11 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     llvm::BasicBlock *Entry = llvm::BasicBlock::Create(Context, "", Wrapper);
     CGBuilderTy Builder(CGM, Entry);
     if (InitIsInitFunc) {
-      if (Init)
-        Builder.CreateCall(Init);
+      if (Init) {
+        llvm::CallInst *CallVal = Builder.CreateCall(Init);
+        if (isThreadWrapperReplaceable(VD, CGM))
+          CallVal->setCallingConv(llvm::CallingConv::CXX_FAST_TLS);
+      }
     } else {
       // Don't know whether we have an init function. Call it if it exists.
       llvm::Value *Have = Builder.CreateIsNotNull(Init);
@@ -2886,7 +2891,7 @@ static llvm::GlobalVariable::LinkageTypes getTypeInfoLinkage(CodeGenModule &CGM,
 
 llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force) {
   // We want to operate on the canonical type.
-  Ty = CGM.getContext().getCanonicalType(Ty);
+  Ty = Ty.getCanonicalType();
 
   // Check if we've already emitted an RTTI descriptor for this type.
   SmallString<256> Name;

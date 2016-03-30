@@ -747,9 +747,7 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
   // later.  Don't create this with the builder, because we don't want it
   // folded.
   llvm::Value *Undef = llvm::UndefValue::get(Int32Ty);
-  AllocaInsertPt = new llvm::BitCastInst(Undef, Int32Ty, "", EntryBB);
-  if (Builder.isNamePreserving())
-    AllocaInsertPt->setName("allocapt");
+  AllocaInsertPt = new llvm::BitCastInst(Undef, Int32Ty, "allocapt", EntryBB);
 
   ReturnBlock = getJumpDestInCurrentScope("return");
 
@@ -825,10 +823,22 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
       MD->getParent()->getCaptureFields(LambdaCaptureFields,
                                         LambdaThisCaptureField);
       if (LambdaThisCaptureField) {
-        // If this lambda captures this, load it.
-        LValue ThisLValue = EmitLValueForLambdaField(LambdaThisCaptureField);
-        CXXThisValue = EmitLoadOfLValue(ThisLValue,
-                                        SourceLocation()).getScalarVal();
+        // If the lambda captures the object referred to by '*this' - either by
+        // value or by reference, make sure CXXThisValue points to the correct
+        // object.
+
+        // Get the lvalue for the field (which is a copy of the enclosing object
+        // or contains the address of the enclosing object).
+        LValue ThisFieldLValue = EmitLValueForLambdaField(LambdaThisCaptureField);
+        if (!LambdaThisCaptureField->getType()->isPointerType()) {
+          // If the enclosing object was captured by value, just use its address.
+          CXXThisValue = ThisFieldLValue.getAddress().getPointer();
+        } else {
+          // Load the lvalue pointed to by the field, since '*this' was captured
+          // by reference.
+          CXXThisValue =
+              EmitLoadOfLValue(ThisFieldLValue, SourceLocation()).getScalarVal();
+        }
       }
       for (auto *FD : MD->getParent()->fields()) {
         if (FD->hasCapturedVLAType()) {
@@ -1862,25 +1872,13 @@ void CodeGenFunction::InsertHelper(llvm::Instruction *I,
     CGM.getSanitizerMetadata()->disableSanitizerForInstruction(I);
 }
 
-template <bool PreserveNames>
-void CGBuilderInserter<PreserveNames>::InsertHelper(
+void CGBuilderInserter::InsertHelper(
     llvm::Instruction *I, const llvm::Twine &Name, llvm::BasicBlock *BB,
     llvm::BasicBlock::iterator InsertPt) const {
-  llvm::IRBuilderDefaultInserter<PreserveNames>::InsertHelper(I, Name, BB,
-                                                              InsertPt);
+  llvm::IRBuilderDefaultInserter::InsertHelper(I, Name, BB, InsertPt);
   if (CGF)
     CGF->InsertHelper(I, Name, BB, InsertPt);
 }
-
-#ifdef NDEBUG
-#define PreserveNames false
-#else
-#define PreserveNames true
-#endif
-template void CGBuilderInserter<PreserveNames>::InsertHelper(
-    llvm::Instruction *I, const llvm::Twine &Name, llvm::BasicBlock *BB,
-    llvm::BasicBlock::iterator InsertPt) const;
-#undef PreserveNames
 
 static bool hasRequiredFeatures(const SmallVectorImpl<StringRef> &ReqFeatures,
                                 CodeGenModule &CGM, const FunctionDecl *FD,

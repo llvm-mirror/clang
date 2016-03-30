@@ -30,23 +30,6 @@ def warn_redundant_loop_iteration : Warning<
   InGroup<ForLoopAnalysis>, DefaultIgnore;
 def note_loop_iteration_here : Note<"%select{decremented|incremented}0 here">;
 
-def warn_for_range_const_reference_copy : Warning<
-  "loop variable %0 "
-  "%diff{has type $ but is initialized with type $"
-  "| is initialized with a value of a different type}1,2 resulting in a copy">,
-  InGroup<RangeLoopAnalysis>, DefaultIgnore;
-def note_use_type_or_non_reference : Note<
-  "use non-reference type %0 to keep the copy or type %1 to prevent copying">;
-def warn_for_range_variable_always_copy : Warning<
-  "loop variable %0 is always a copy because the range of type %1 does not "
-  "return a reference">,
-  InGroup<RangeLoopAnalysis>, DefaultIgnore;
-def note_use_non_reference_type : Note<"use non-reference type %0">;
-def warn_for_range_copy : Warning<
-  "loop variable %0 of type %1 creates a copy from type %2">,
-  InGroup<RangeLoopAnalysis>, DefaultIgnore;
-def note_use_reference_type : Note<"use reference type %0 to prevent copying">;
-
 def warn_duplicate_enum_values : Warning<
   "element %0 has been implicitly assigned %1 which another element has "
   "been assigned">, InGroup<DiagGroup<"duplicate-enum">>, DefaultIgnore;
@@ -1920,8 +1903,12 @@ def err_for_range_iter_deduction_failure : Error<
   "cannot use type %0 as an iterator">;
 def err_for_range_member_begin_end_mismatch : Error<
   "range type %0 has '%select{begin|end}1' member but no '%select{end|begin}1' member">;
-def err_for_range_begin_end_types_differ : Error<
-  "'begin' and 'end' must return the same type (got %0 and %1)">;
+def ext_for_range_begin_end_types_differ : ExtWarn<
+  "'begin' and 'end' returning different types (%0 and %1) is a C++1z extension">,
+  InGroup<CXX1z>;
+def warn_for_range_begin_end_types_differ : Warning<
+  "'begin' and 'end' returning different types (%0 and %1) is incompatible "
+  "with C++ standards before C++1z">, InGroup<CXXPre1zCompat>, DefaultIgnore;
 def note_in_for_range: Note<
   "when looking up '%select{begin|end}0' function for range expression "
   "of type %1">;
@@ -1938,6 +1925,22 @@ def note_for_range_invalid_iterator : Note <
   "in implicit call to 'operator%select{!=|*|++}0' for iterator of type %1">;
 def note_for_range_begin_end : Note<
   "selected '%select{begin|end}0' %select{function|template }1%2 with iterator type %3">;
+def warn_for_range_const_reference_copy : Warning<
+  "loop variable %0 "
+  "%diff{has type $ but is initialized with type $"
+  "| is initialized with a value of a different type}1,2 resulting in a copy">,
+  InGroup<RangeLoopAnalysis>, DefaultIgnore;
+def note_use_type_or_non_reference : Note<
+  "use non-reference type %0 to keep the copy or type %1 to prevent copying">;
+def warn_for_range_variable_always_copy : Warning<
+  "loop variable %0 is always a copy because the range of type %1 does not "
+  "return a reference">,
+  InGroup<RangeLoopAnalysis>, DefaultIgnore;
+def note_use_non_reference_type : Note<"use non-reference type %0">;
+def warn_for_range_copy : Warning<
+  "loop variable %0 of type %1 creates a copy from type %2">,
+  InGroup<RangeLoopAnalysis>, DefaultIgnore;
+def note_use_reference_type : Note<"use reference type %0 to prevent copying">;
 
 // C++11 constexpr
 def warn_cxx98_compat_constexpr : Warning<
@@ -3567,8 +3570,8 @@ def note_template_unnamed_type_here : Note<
   "unnamed type used in template argument was declared here">;
 def err_template_arg_overload_type : Error<
   "template argument is the type of an unresolved overloaded function">;
-def err_template_arg_not_class_template : Error<
-  "template argument does not refer to a class template or template "
+def err_template_arg_not_valid_template : Error<
+  "template argument does not refer to a class or alias template, or template "
   "template parameter">;
 def note_template_arg_refers_here_func : Note<
   "template argument refers to function template %0, here">;
@@ -5988,6 +5991,13 @@ let CategoryName = "Lambda Issue" in {
     "cannot deduce type for lambda capture %0 from initializer of type %2">;
   def err_init_capture_deduction_failure_from_init_list : Error<
     "cannot deduce type for lambda capture %0 from initializer list">;
+
+  // C++1z '*this' captures.
+  def warn_cxx14_compat_star_this_lambda_capture : Warning<
+    "by value capture of '*this' is incompatible with C++ standards before C++1z">,
+     InGroup<CXXPre1zCompat>, DefaultIgnore;
+  def ext_star_this_lambda_capture_cxx1z : ExtWarn<
+    "capture of '*this' by copy is a C++1z extension">, InGroup<CXX1z>;
 }
 
 def err_return_in_captured_stmt : Error<
@@ -7152,6 +7162,8 @@ def warn_scanf_scanlist_incomplete : Warning<
 def note_format_string_defined : Note<"format string is defined here">;
 def note_format_fix_specifier : Note<"did you mean to use '%0'?">;
 def note_printf_c_str: Note<"did you mean to call the %0 method?">;
+def note_format_security_fixit: Note<
+  "treat the string as an argument to avoid this">;
 
 def warn_null_arg : Warning<
   "null passed to a callee that requires a non-null argument">,
@@ -7940,7 +7952,10 @@ def warn_omp_loop_64_bit_var : Warning<
   "OpenMP loop iteration variable cannot have more than 64 bits size and will be narrowed">,
   InGroup<OpenMPLoopForm>;
 def err_omp_unknown_reduction_identifier : Error<
-  "incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', '&&', '||', 'min' or 'max'">;
+  "incorrect reduction identifier, expected one of '+', '-', '*', '&', '|', '^', "
+  "'&&', '||', 'min' or 'max' or declare reduction for type %0">;
+def err_omp_not_resolved_reduction_identifier : Error<
+  "unable to resolve declare reduction construct for type %0">;
 def err_omp_reduction_ref_type_arg : Error<
   "argument of OpenMP clause 'reduction' must reference the same object in all threads">;
 def err_omp_clause_not_arithmetic_type_arg : Error<
@@ -8128,6 +8143,8 @@ def err_omp_schedule_nonmonotonic_ordered : Error<
   "'schedule' clause with 'nonmonotonic' modifier cannot be specified if an 'ordered' clause is specified">;
 def err_omp_ordered_simd : Error<
   "'ordered' clause with a parameter can not be specified in '#pragma omp %0' directive">;
+def err_omp_variable_in_map_and_dsa : Error<
+  "%0 variable cannot be in a map clause in '#pragma omp %1' directive">; 
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {

@@ -1161,7 +1161,8 @@ void ASTStmtWriter::VisitCXXForRangeStmt(CXXForRangeStmt *S) {
   Writer.AddSourceLocation(S->getColonLoc(), Record);
   Writer.AddSourceLocation(S->getRParenLoc(), Record);
   Writer.AddStmt(S->getRangeStmt());
-  Writer.AddStmt(S->getBeginEndStmt());
+  Writer.AddStmt(S->getBeginStmt());
+  Writer.AddStmt(S->getEndStmt());
   Writer.AddStmt(S->getCond());
   Writer.AddStmt(S->getInc());
   Writer.AddStmt(S->getLoopVarStmt());
@@ -1700,6 +1701,7 @@ void ASTStmtWriter::VisitMSPropertySubscriptExpr(MSPropertySubscriptExpr *E) {
 void ASTStmtWriter::VisitCXXUuidofExpr(CXXUuidofExpr *E) {
   VisitExpr(E);
   Writer.AddSourceRange(E->getSourceRange(), Record);
+  Writer.AddString(E->getUuidStr(), Record);
   if (E->isTypeOperand()) {
     Writer.AddTypeSourceInfo(E->getTypeOperandSourceInfo(), Record);
     Code = serialization::EXPR_CXX_UUIDOF_TYPE;

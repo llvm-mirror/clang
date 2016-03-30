@@ -1207,7 +1207,8 @@ void ASTStmtReader::VisitCXXForRangeStmt(CXXForRangeStmt *S) {
   S->ColonLoc = ReadSourceLocation(Record, Idx);
   S->RParenLoc = ReadSourceLocation(Record, Idx);
   S->setRangeStmt(Reader.ReadSubStmt());
-  S->setBeginEndStmt(Reader.ReadSubStmt());
+  S->setBeginStmt(Reader.ReadSubStmt());
+  S->setEndStmt(Reader.ReadSubStmt());
   S->setCond(Reader.ReadSubExpr());
   S->setInc(Reader.ReadSubExpr());
   S->setLoopVarStmt(Reader.ReadSubStmt());
@@ -1679,6 +1680,8 @@ void ASTStmtReader::VisitMSPropertySubscriptExpr(MSPropertySubscriptExpr *E) {
 void ASTStmtReader::VisitCXXUuidofExpr(CXXUuidofExpr *E) {
   VisitExpr(E);
   E->setSourceRange(ReadSourceRange(Record, Idx));
+  std::string UuidStr = ReadString(Record, Idx);
+  E->setUuidStr(StringRef(UuidStr).copy(Reader.getContext()));
   if (E->isTypeOperand()) { // __uuidof(ComType)
     E->setTypeOperandSourceInfo(
         GetTypeSourceInfo(Record, Idx));

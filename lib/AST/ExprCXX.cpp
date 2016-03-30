@@ -54,79 +54,6 @@ QualType CXXUuidofExpr::getTypeOperand(ASTContext &Context) const {
       Operand.get<TypeSourceInfo *>()->getType().getNonReferenceType(), Quals);
 }
 
-// static
-const UuidAttr *CXXUuidofExpr::GetUuidAttrOfType(QualType QT,
-                                                 bool *RDHasMultipleGUIDsPtr) {
-  // Optionally remove one level of pointer, reference or array indirection.
-  const Type *Ty = QT.getTypePtr();
-  if (QT->isPointerType() || QT->isReferenceType())
-    Ty = QT->getPointeeType().getTypePtr();
-  else if (QT->isArrayType())
-    Ty = Ty->getBaseElementTypeUnsafe();
-
-  const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
-  if (!RD)
-    return nullptr;
-
-  if (const UuidAttr *Uuid = RD->getMostRecentDecl()->getAttr<UuidAttr>())
-    return Uuid;
-
-  // __uuidof can grab UUIDs from template arguments.
-  if (const ClassTemplateSpecializationDecl *CTSD =
-          dyn_cast<ClassTemplateSpecializationDecl>(RD)) {
-    const TemplateArgumentList &TAL = CTSD->getTemplateArgs();
-    const UuidAttr *UuidForRD = nullptr;
-
-    for (const TemplateArgument &TA : TAL.asArray()) {
-      bool SeenMultipleGUIDs = false;
-
-      const UuidAttr *UuidForTA = nullptr;
-      if (TA.getKind() == TemplateArgument::Type)
-        UuidForTA = GetUuidAttrOfType(TA.getAsType(), &SeenMultipleGUIDs);
-      else if (TA.getKind() == TemplateArgument::Declaration)
-        UuidForTA =
-            GetUuidAttrOfType(TA.getAsDecl()->getType(), &SeenMultipleGUIDs);
-
-      // If the template argument has a UUID, there are three cases:
-      //  - This is the first UUID seen for this RecordDecl.
-      //  - This is a different UUID than previously seen for this RecordDecl.
-      //  - This is the same UUID than previously seen for this RecordDecl.
-      if (UuidForTA) {
-        if (!UuidForRD)
-          UuidForRD = UuidForTA;
-        else if (UuidForRD != UuidForTA)
-          SeenMultipleGUIDs = true;
-      }
-
-      // Seeing multiple UUIDs means that we couldn't find a UUID
-      if (SeenMultipleGUIDs) {
-        if (RDHasMultipleGUIDsPtr)
-          *RDHasMultipleGUIDsPtr = true;
-        return nullptr;
-      }
-    }
-
-    return UuidForRD;
-  }
-
-  return nullptr;
-}
-
-StringRef CXXUuidofExpr::getUuidAsStringRef(ASTContext &Context) const {
-  StringRef Uuid;
-  if (isTypeOperand())
-    Uuid = CXXUuidofExpr::GetUuidAttrOfType(getTypeOperand(Context))->getGuid();
-  else {
-    // Special case: __uuidof(0) means an all-zero GUID.
-    Expr *Op = getExprOperand();
-    if (!Op->isNullPointerConstant(Context, Expr::NPC_ValueDependentIsNull))
-      Uuid = CXXUuidofExpr::GetUuidAttrOfType(Op->getType())->getGuid();
-    else
-      Uuid = "00000000-0000-0000-0000-000000000000";
-  }
-  return Uuid;
-}
-
 // CXXScalarValueInitExpr
 SourceLocation CXXScalarValueInitExpr::getLocStart() const {
   return TypeInfo ? TypeInfo->getTypeLoc().getBeginLoc() : RParenLoc;
@@ -879,18 +806,25 @@ CXXConstructExpr::CXXConstructExpr(const ASTContext &C, StmtClass SC,
   }
 }
 
+LambdaCapture::OpaqueCapturedEntity LambdaCapture::ThisSentinel;
+LambdaCapture::OpaqueCapturedEntity LambdaCapture::VLASentinel;
+
 LambdaCapture::LambdaCapture(SourceLocation Loc, bool Implicit,
                              LambdaCaptureKind Kind, VarDecl *Var,
                              SourceLocation EllipsisLoc)
-  : DeclAndBits(Var, 0), Loc(Loc), EllipsisLoc(EllipsisLoc)
+  : CapturedEntityAndBits(Var, 0), Loc(Loc), EllipsisLoc(EllipsisLoc)
 {
   unsigned Bits = 0;
   if (Implicit)
     Bits |= Capture_Implicit;
   
   switch (Kind) {
+  case LCK_StarThis:
+    Bits |= Capture_ByCopy;
+    // Fall through
   case LCK_This:
     assert(!Var && "'this' capture cannot have a variable!");
+    CapturedEntityAndBits.setPointer(&ThisSentinel);
     break;
 
   case LCK_ByCopy:
@@ -901,18 +835,20 @@ LambdaCapture::LambdaCapture(SourceLocation Loc, bool Implicit,
     break;
   case LCK_VLAType:
     assert(!Var && "VLA type capture cannot have a variable!");
-    Bits |= Capture_ByCopy;
+    CapturedEntityAndBits.setPointer(&VLASentinel);
     break;
   }
-  DeclAndBits.setInt(Bits);
+  CapturedEntityAndBits.setInt(Bits);
 }
 
 LambdaCaptureKind LambdaCapture::getCaptureKind() const {
-  Decl *D = DeclAndBits.getPointer();
-  bool CapByCopy = DeclAndBits.getInt() & Capture_ByCopy;
-  if (!D)
-    return CapByCopy ? LCK_VLAType : LCK_This;
-
+  void *Ptr = CapturedEntityAndBits.getPointer();
+  if (Ptr == &VLASentinel)
+    return LCK_VLAType;
+  const unsigned Bits = CapturedEntityAndBits.getInt();
+  bool CapByCopy = Bits & Capture_ByCopy;
+  if (Ptr == &ThisSentinel)
+    return CapByCopy ? LCK_StarThis : LCK_This;
   return CapByCopy ? LCK_ByCopy : LCK_ByRef;
 }
 

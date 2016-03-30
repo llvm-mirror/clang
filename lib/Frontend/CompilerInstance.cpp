@@ -360,19 +360,19 @@ void CompilerInstance::createPreprocessor(TranslationUnitKind TUKind) {
 
   // Handle generating header include information, if requested.
   if (DepOpts.ShowHeaderIncludes)
-    AttachHeaderIncludeGen(*PP, DepOpts.ExtraDeps);
+    AttachHeaderIncludeGen(*PP, DepOpts);
   if (!DepOpts.HeaderIncludeOutputFile.empty()) {
     StringRef OutputPath = DepOpts.HeaderIncludeOutputFile;
     if (OutputPath == "-")
       OutputPath = "";
-    AttachHeaderIncludeGen(*PP, DepOpts.ExtraDeps,
+    AttachHeaderIncludeGen(*PP, DepOpts,
                            /*ShowAllHeaders=*/true, OutputPath,
                            /*ShowDepth=*/false);
   }
 
   if (DepOpts.PrintShowIncludes) {
-    AttachHeaderIncludeGen(*PP, DepOpts.ExtraDeps,
-                           /*ShowAllHeaders=*/false, /*OutputPath=*/"",
+    AttachHeaderIncludeGen(*PP, DepOpts,
+                           /*ShowAllHeaders=*/true, /*OutputPath=*/"",
                            /*ShowDepth=*/true, /*MSStyle=*/true);
   }
 }
@@ -715,16 +715,14 @@ bool CompilerInstance::InitializeSourceManager(const FrontendInputFile &Input){
   return InitializeSourceManager(
       Input, getDiagnostics(), getFileManager(), getSourceManager(),
       hasPreprocessor() ? &getPreprocessor().getHeaderSearchInfo() : nullptr,
-      getFrontendOpts());
+      getDependencyOutputOpts(), getFrontendOpts());
 }
 
 // static
-bool CompilerInstance::InitializeSourceManager(const FrontendInputFile &Input,
-                                               DiagnosticsEngine &Diags,
-                                               FileManager &FileMgr,
-                                               SourceManager &SourceMgr,
-                                               HeaderSearch *HS,
-                                               const FrontendOptions &Opts) {
+bool CompilerInstance::InitializeSourceManager(
+    const FrontendInputFile &Input, DiagnosticsEngine &Diags,
+    FileManager &FileMgr, SourceManager &SourceMgr, HeaderSearch *HS,
+    DependencyOutputOptions &DepOpts, const FrontendOptions &Opts) {
   SrcMgr::CharacteristicKind
     Kind = Input.isSystem() ? SrcMgr::C_System : SrcMgr::C_User;
 
@@ -765,6 +763,9 @@ bool CompilerInstance::InitializeSourceManager(const FrontendInputFile &Input,
                             /*RelativePath=*/nullptr,
                             /*RequestingModule=*/nullptr,
                             /*SuggestedModule=*/nullptr, /*SkipCache=*/true);
+      // Also add the header to /showIncludes output.
+      if (File)
+        DepOpts.ShowIncludesPretendHeader = File->getName();
     }
     if (!File) {
       Diags.Report(diag::err_fe_error_reading) << InputFile;

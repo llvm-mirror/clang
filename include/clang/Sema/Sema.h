@@ -941,7 +941,7 @@ public:
 
   /// UndefinedInternals - all the used, undefined objects which require a
   /// definition in this translation unit.
-  llvm::DenseMap<NamedDecl *, SourceLocation> UndefinedButUsed;
+  llvm::MapVector<NamedDecl *, SourceLocation> UndefinedButUsed;
 
   /// Obtain a sorted list of functions that are undefined but ODR-used.
   void getUndefinedButUsed(
@@ -2110,7 +2110,7 @@ public:
                                           VersionTuple Obsoleted,
                                           bool IsUnavailable,
                                           StringRef Message,
-                                          bool IsStrict,
+                                          bool IsStrict, StringRef Replacement,
                                           AvailabilityMergeKind AMK,
                                           unsigned AttrSpellingListIndex);
   TypeVisibilityAttr *mergeTypeVisibilityAttr(Decl *D, SourceRange Range,
@@ -2385,8 +2385,8 @@ public:
 
   // Members have to be NamespaceDecl* or TranslationUnitDecl*.
   // TODO: make this is a typesafe union.
-  typedef llvm::SmallPtrSet<DeclContext   *, 16> AssociatedNamespaceSet;
-  typedef llvm::SmallPtrSet<CXXRecordDecl *, 16> AssociatedClassSet;
+  typedef llvm::SmallSetVector<DeclContext   *, 16> AssociatedNamespaceSet;
+  typedef llvm::SmallSetVector<CXXRecordDecl *, 16> AssociatedClassSet;
 
   void AddOverloadCandidate(FunctionDecl *Function,
                             DeclAccessPair FoundDecl,
@@ -2505,6 +2505,10 @@ public:
                                      bool Complain,
                                      DeclAccessPair &Found,
                                      bool *pHadMultipleCandidates = nullptr);
+
+  FunctionDecl *
+  resolveAddressOfOnlyViableOverloadCandidate(Expr *E,
+                                              DeclAccessPair &FoundResult);
 
   FunctionDecl *
   ResolveSingleFunctionTemplateSpecialization(OverloadExpr *ovl,
@@ -3372,7 +3376,7 @@ public:
   StmtResult BuildCXXForRangeStmt(SourceLocation ForLoc,
                                   SourceLocation CoawaitLoc,
                                   SourceLocation ColonLoc,
-                                  Stmt *RangeDecl, Stmt *BeginEndDecl,
+                                  Stmt *RangeDecl, Stmt *Begin, Stmt *End,
                                   Expr *Cond, Expr *Inc,
                                   Stmt *LoopVarDecl,
                                   SourceLocation RParenLoc,
@@ -3589,9 +3593,15 @@ public:
   // for expressions referring to a decl; these exist because odr-use marking
   // needs to be delayed for some constant variables when we build one of the
   // named expressions.
-  void MarkAnyDeclReferenced(SourceLocation Loc, Decl *D, bool OdrUse);
+  //
+  // MightBeOdrUse indicates whether the use could possibly be an odr-use, and
+  // should usually be true. This only needs to be set to false if the lack of
+  // odr-use cannot be determined from the current context (for instance,
+  // because the name denotes a virtual function and was written without an
+  // explicit nested-name-specifier).
+  void MarkAnyDeclReferenced(SourceLocation Loc, Decl *D, bool MightBeOdrUse);
   void MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
-                              bool OdrUse = true);
+                              bool MightBeOdrUse = true);
   void MarkVariableReferenced(SourceLocation Loc, VarDecl *Var);
   void MarkDeclRefReferenced(DeclRefExpr *E);
   void MarkMemberReferenced(MemberExpr *E);
@@ -4619,7 +4629,8 @@ public:
   /// \return returns 'true' if failed, 'false' if success.
   bool CheckCXXThisCapture(SourceLocation Loc, bool Explicit = false, 
       bool BuildAndDiagnose = true,
-      const unsigned *const FunctionScopeIndexToStopAt = nullptr);
+      const unsigned *const FunctionScopeIndexToStopAt = nullptr,
+      bool ByCopy = false);
 
   /// \brief Determine whether the given type is the type of *this that is used
   /// outside of the body of a member function for a type that is currently
@@ -5002,7 +5013,8 @@ public:
                                        SourceRange IntroducerRange,
                                        TypeSourceInfo *MethodType,
                                        SourceLocation EndLoc,
-                                       ArrayRef<ParmVarDecl *> Params);
+                                       ArrayRef<ParmVarDecl *> Params, 
+                                       bool IsConstexprSpecified);
 
   /// \brief Endow the lambda scope info with the relevant properties.
   void buildLambdaScope(sema::LambdaScopeInfo *LSI, 
@@ -8225,12 +8237,12 @@ public:
                                      SourceLocation LParenLoc,
                                      SourceLocation EndLoc);
   /// \brief Called on well-formed 'reduction' clause.
-  OMPClause *
-  ActOnOpenMPReductionClause(ArrayRef<Expr *> VarList, SourceLocation StartLoc,
-                             SourceLocation LParenLoc, SourceLocation ColonLoc,
-                             SourceLocation EndLoc,
-                             CXXScopeSpec &ReductionIdScopeSpec,
-                             const DeclarationNameInfo &ReductionId);
+  OMPClause *ActOnOpenMPReductionClause(
+      ArrayRef<Expr *> VarList, SourceLocation StartLoc,
+      SourceLocation LParenLoc, SourceLocation ColonLoc, SourceLocation EndLoc,
+      CXXScopeSpec &ReductionIdScopeSpec,
+      const DeclarationNameInfo &ReductionId,
+      ArrayRef<Expr *> UnresolvedReductions = llvm::None);
   /// \brief Called on well-formed 'linear' clause.
   OMPClause *
   ActOnOpenMPLinearClause(ArrayRef<Expr *> VarList, Expr *Step,

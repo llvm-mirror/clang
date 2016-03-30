@@ -622,21 +622,20 @@ emitCombinerOrInitializer(CodeGenModule &CGM, QualType Ty,
   auto &C = CGM.getContext();
   QualType PtrTy = C.getPointerType(Ty).withRestrict();
   FunctionArgList Args;
-  ImplicitParamDecl OmpInParm(C, /*DC=*/nullptr, In->getLocation(),
-                              /*Id=*/nullptr, PtrTy);
   ImplicitParamDecl OmpOutParm(C, /*DC=*/nullptr, Out->getLocation(),
                                /*Id=*/nullptr, PtrTy);
-  Args.push_back(&OmpInParm);
+  ImplicitParamDecl OmpInParm(C, /*DC=*/nullptr, In->getLocation(),
+                              /*Id=*/nullptr, PtrTy);
   Args.push_back(&OmpOutParm);
-  FunctionType::ExtInfo Info;
+  Args.push_back(&OmpInParm);
   auto &FnInfo =
-      CGM.getTypes().arrangeFreeFunctionDeclaration(C.VoidTy, Args, Info,
-                                                    /*isVariadic=*/false);
+      CGM.getTypes().arrangeBuiltinFunctionDeclaration(C.VoidTy, Args);
   auto *FnTy = CGM.getTypes().GetFunctionType(FnInfo);
   auto *Fn = llvm::Function::Create(
       FnTy, llvm::GlobalValue::InternalLinkage,
       IsCombiner ? ".omp_combiner." : ".omp_initializer.", &CGM.getModule());
   CGM.SetInternalFunctionAttributes(/*D=*/nullptr, Fn, FnInfo);
+  Fn->addFnAttr(llvm::Attribute::AlwaysInline);
   CodeGenFunction CGF(CGM);
   // Map "T omp_in;" variable to "*omp_in_parm" value in all expressions.
   // Map "T omp_out;" variable to "*omp_out_parm" value in all expressions.
@@ -688,6 +687,15 @@ void CGOpenMPRuntime::emitUserDefinedReduction(
     auto &Decls = FunctionUDRMap.FindAndConstruct(CGF->CurFn);
     Decls.second.push_back(D);
   }
+}
+
+std::pair<llvm::Function *, llvm::Function *>
+CGOpenMPRuntime::getUserDefinedReduction(const OMPDeclareReductionDecl *D) {
+  auto I = UDRMap.find(D);
+  if (I != UDRMap.end())
+    return I->second;
+  emitUserDefinedReduction(/*CGF=*/nullptr, D);
+  return UDRMap.lookup(D);
 }
 
 // Layout information for ident_t.
@@ -1531,9 +1539,8 @@ llvm::Function *CGOpenMPRuntime::emitThreadPrivateVarDefinition(
                             /*Id=*/nullptr, CGM.getContext().VoidPtrTy);
       Args.push_back(&Dst);
 
-      auto &FI = CGM.getTypes().arrangeFreeFunctionDeclaration(
-          CGM.getContext().VoidPtrTy, Args, FunctionType::ExtInfo(),
-          /*isVariadic=*/false);
+      auto &FI = CGM.getTypes().arrangeBuiltinFunctionDeclaration(
+          CGM.getContext().VoidPtrTy, Args);
       auto FTy = CGM.getTypes().GetFunctionType(FI);
       auto Fn = CGM.CreateGlobalInitOrDestructFunction(
           FTy, ".__kmpc_global_ctor_.", FI, Loc);
@@ -1563,9 +1570,8 @@ llvm::Function *CGOpenMPRuntime::emitThreadPrivateVarDefinition(
                             /*Id=*/nullptr, CGM.getContext().VoidPtrTy);
       Args.push_back(&Dst);
 
-      auto &FI = CGM.getTypes().arrangeFreeFunctionDeclaration(
-          CGM.getContext().VoidTy, Args, FunctionType::ExtInfo(),
-          /*isVariadic=*/false);
+      auto &FI = CGM.getTypes().arrangeBuiltinFunctionDeclaration(
+          CGM.getContext().VoidTy, Args);
       auto FTy = CGM.getTypes().GetFunctionType(FI);
       auto Fn = CGM.CreateGlobalInitOrDestructFunction(
           FTy, ".__kmpc_global_dtor_.", FI, Loc);
@@ -1937,9 +1943,7 @@ static llvm::Value *emitCopyprivateCopyFunction(
                            C.VoidPtrTy);
   Args.push_back(&LHSArg);
   Args.push_back(&RHSArg);
-  FunctionType::ExtInfo EI;
-  auto &CGFI = CGM.getTypes().arrangeFreeFunctionDeclaration(
-      C.VoidTy, Args, EI, /*isVariadic=*/false);
+  auto &CGFI = CGM.getTypes().arrangeBuiltinFunctionDeclaration(C.VoidTy, Args);
   auto *Fn = llvm::Function::Create(
       CGM.getTypes().GetFunctionType(CGFI), llvm::GlobalValue::InternalLinkage,
       ".omp.copyprivate.copy_func", &CGM.getModule());
@@ -2490,9 +2494,7 @@ createOffloadingBinaryDescriptorFunction(CodeGenModule &CGM, StringRef Name,
 
   CodeGenFunction CGF(CGM);
   GlobalDecl();
-  auto &FI = CGM.getTypes().arrangeFreeFunctionDeclaration(
-      C.VoidTy, Args, FunctionType::ExtInfo(),
-      /*isVariadic=*/false);
+  auto &FI = CGM.getTypes().arrangeBuiltinFunctionDeclaration(C.VoidTy, Args);
   auto FTy = CGM.getTypes().GetFunctionType(FI);
   auto *Fn =
       CGM.CreateGlobalInitOrDestructFunction(FTy, Name, FI, SourceLocation());
@@ -2970,10 +2972,8 @@ emitProxyTaskFunction(CodeGenModule &CGM, SourceLocation Loc,
                                 KmpTaskTWithPrivatesPtrQTy.withRestrict());
   Args.push_back(&GtidArg);
   Args.push_back(&TaskTypeArg);
-  FunctionType::ExtInfo Info;
   auto &TaskEntryFnInfo =
-      CGM.getTypes().arrangeFreeFunctionDeclaration(KmpInt32Ty, Args, Info,
-                                                    /*isVariadic=*/false);
+      CGM.getTypes().arrangeBuiltinFunctionDeclaration(KmpInt32Ty, Args);
   auto *TaskEntryTy = CGM.getTypes().GetFunctionType(TaskEntryFnInfo);
   auto *TaskEntry =
       llvm::Function::Create(TaskEntryTy, llvm::GlobalValue::InternalLinkage,
@@ -3040,8 +3040,7 @@ static llvm::Value *emitDestructorsFunction(CodeGenModule &CGM,
   Args.push_back(&TaskTypeArg);
   FunctionType::ExtInfo Info;
   auto &DestructorFnInfo =
-      CGM.getTypes().arrangeFreeFunctionDeclaration(KmpInt32Ty, Args, Info,
-                                                    /*isVariadic=*/false);
+      CGM.getTypes().arrangeBuiltinFunctionDeclaration(KmpInt32Ty, Args);
   auto *DestructorFnTy = CGM.getTypes().GetFunctionType(DestructorFnInfo);
   auto *DestructorFn =
       llvm::Function::Create(DestructorFnTy, llvm::GlobalValue::InternalLinkage,
@@ -3115,10 +3114,8 @@ emitTaskPrivateMappingFunction(CodeGenModule &CGM, SourceLocation Loc,
     PrivateVarsPos[VD] = Counter;
     ++Counter;
   }
-  FunctionType::ExtInfo Info;
   auto &TaskPrivatesMapFnInfo =
-      CGM.getTypes().arrangeFreeFunctionDeclaration(C.VoidTy, Args, Info,
-                                                    /*isVariadic=*/false);
+      CGM.getTypes().arrangeBuiltinFunctionDeclaration(C.VoidTy, Args);
   auto *TaskPrivatesMapTy =
       CGM.getTypes().GetFunctionType(TaskPrivatesMapFnInfo);
   auto *TaskPrivatesMap = llvm::Function::Create(
@@ -3609,6 +3606,26 @@ static void EmitOMPAggregateReduction(
   CGF.EmitBlock(DoneBB, /*IsFinished=*/true);
 }
 
+/// Emit reduction combiner. If the combiner is a simple expression emit it as
+/// is, otherwise consider it as combiner of UDR decl and emit it as a call of
+/// UDR combiner function.
+static void emitReductionCombiner(CodeGenFunction &CGF,
+                                  const Expr *ReductionOp) {
+  if (auto *CE = dyn_cast<CallExpr>(ReductionOp))
+    if (auto *OVE = dyn_cast<OpaqueValueExpr>(CE->getCallee()))
+      if (auto *DRE =
+              dyn_cast<DeclRefExpr>(OVE->getSourceExpr()->IgnoreImpCasts()))
+        if (auto *DRD = dyn_cast<OMPDeclareReductionDecl>(DRE->getDecl())) {
+          std::pair<llvm::Function *, llvm::Function *> Reduction =
+              CGF.CGM.getOpenMPRuntime().getUserDefinedReduction(DRD);
+          RValue Func = RValue::get(Reduction.first);
+          CodeGenFunction::OpaqueValueMapping Map(CGF, OVE, Func);
+          CGF.EmitIgnoredExpr(ReductionOp);
+          return;
+        }
+  CGF.EmitIgnoredExpr(ReductionOp);
+}
+
 static llvm::Value *emitReductionFunction(CodeGenModule &CGM,
                                           llvm::Type *ArgsType,
                                           ArrayRef<const Expr *> Privates,
@@ -3625,9 +3642,7 @@ static llvm::Value *emitReductionFunction(CodeGenModule &CGM,
                            C.VoidPtrTy);
   Args.push_back(&LHSArg);
   Args.push_back(&RHSArg);
-  FunctionType::ExtInfo EI;
-  auto &CGFI = CGM.getTypes().arrangeFreeFunctionDeclaration(
-      C.VoidTy, Args, EI, /*isVariadic=*/false);
+  auto &CGFI = CGM.getTypes().arrangeBuiltinFunctionDeclaration(C.VoidTy, Args);
   auto *Fn = llvm::Function::Create(
       CGM.getTypes().GetFunctionType(CGFI), llvm::GlobalValue::InternalLinkage,
       ".omp.reduction.reduction_func", &CGM.getModule());
@@ -3682,13 +3697,14 @@ static llvm::Value *emitReductionFunction(CodeGenModule &CGM,
       // Emit reduction for array section.
       auto *LHSVar = cast<VarDecl>(cast<DeclRefExpr>(*ILHS)->getDecl());
       auto *RHSVar = cast<VarDecl>(cast<DeclRefExpr>(*IRHS)->getDecl());
-      EmitOMPAggregateReduction(CGF, (*IPriv)->getType(), LHSVar, RHSVar,
-                                [=](CodeGenFunction &CGF, const Expr *,
-                                    const Expr *,
-                                    const Expr *) { CGF.EmitIgnoredExpr(E); });
+      EmitOMPAggregateReduction(
+          CGF, (*IPriv)->getType(), LHSVar, RHSVar,
+          [=](CodeGenFunction &CGF, const Expr *, const Expr *, const Expr *) {
+            emitReductionCombiner(CGF, E);
+          });
     } else
       // Emit reduction for array subscript or single variable.
-      CGF.EmitIgnoredExpr(E);
+      emitReductionCombiner(CGF, E);
     ++IPriv;
     ++ILHS;
     ++IRHS;
@@ -3755,9 +3771,9 @@ void CGOpenMPRuntime::emitReduction(CodeGenFunction &CGF, SourceLocation Loc,
         EmitOMPAggregateReduction(
             CGF, (*IPriv)->getType(), LHSVar, RHSVar,
             [=](CodeGenFunction &CGF, const Expr *, const Expr *,
-                const Expr *) { CGF.EmitIgnoredExpr(E); });
+                const Expr *) { emitReductionCombiner(CGF, E); });
       } else
-        CGF.EmitIgnoredExpr(E);
+        emitReductionCombiner(CGF, E);
       ++IPriv;
       ++ILHS;
       ++IRHS;
@@ -3872,10 +3888,10 @@ void CGOpenMPRuntime::emitReduction(CodeGenFunction &CGF, SourceLocation Loc,
         EmitOMPAggregateReduction(
             CGF, (*IPriv)->getType(), LHSVar, RHSVar,
             [=](CodeGenFunction &CGF, const Expr *, const Expr *,
-                const Expr *) { CGF.EmitIgnoredExpr(E); });
+                const Expr *) { emitReductionCombiner(CGF, E); });
       } else
         // Emit reduction for array subscript or single variable.
-        CGF.EmitIgnoredExpr(E);
+        emitReductionCombiner(CGF, E);
       ++IPriv;
       ++ILHS;
       ++IRHS;
@@ -3977,7 +3993,8 @@ void CGOpenMPRuntime::emitReduction(CodeGenFunction &CGF, SourceLocation Loc,
                                              const Expr *, const Expr *) {
             emitCriticalRegion(
                 CGF, ".atomic_reduction",
-                [E](CodeGenFunction &CGF) { CGF.EmitIgnoredExpr(E); }, Loc);
+                [=](CodeGenFunction &CGF) { emitReductionCombiner(CGF, E); },
+                Loc);
           };
           if ((*IPriv)->getType()->isArrayType()) {
             auto *LHSVar = cast<VarDecl>(cast<DeclRefExpr>(*ILHS)->getDecl());
@@ -4156,10 +4173,23 @@ void CGOpenMPRuntime::emitTargetOutlinedFunction(
   const CapturedStmt &CS = *cast<CapturedStmt>(D.getAssociatedStmt());
 
   // Emit target region as a standalone region.
-  auto &&CodeGen = [&CS](CodeGenFunction &CGF) {
+  auto &&CodeGen = [&CS, &D](CodeGenFunction &CGF) {
+    CodeGenFunction::OMPPrivateScope PrivateScope(CGF);
+    (void)CGF.EmitOMPFirstprivateClause(D, PrivateScope);
+    CGF.EmitOMPPrivateClause(D, PrivateScope);
+    (void)PrivateScope.Privatize();
+
     CGF.EmitStmt(CS.getCapturedStmt());
   };
 
+  emitTargetOutlinedFunctionHelper(D, ParentName, OutlinedFn, OutlinedFnID,
+                                   IsOffloadEntry, CodeGen);
+}
+
+void CGOpenMPRuntime::emitTargetOutlinedFunctionHelper(
+    const OMPExecutableDirective &D, StringRef ParentName,
+    llvm::Function *&OutlinedFn, llvm::Constant *&OutlinedFnID,
+    bool IsOffloadEntry, const RegionCodeGenTy &CodeGen) {
   // Create a unique name for the entry function using the source location
   // information of the current target region. The name will be something like:
   //
@@ -4180,6 +4210,8 @@ void CGOpenMPRuntime::emitTargetOutlinedFunction(
     OS << "__omp_offloading" << llvm::format("_%x", DeviceID)
        << llvm::format("_%x_", FileID) << ParentName << "_l" << Line;
   }
+
+  const CapturedStmt &CS = *cast<CapturedStmt>(D.getAssociatedStmt());
 
   CodeGenFunction CGF(CGM, true);
   CGOpenMPTargetRegionInfo CGInfo(CS, CodeGen, EntryFnName);

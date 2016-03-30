@@ -1990,8 +1990,8 @@ inline internal::Matcher<NamedDecl> hasName(const std::string &Name) {
 /// \code
 ///     anyOf(hasName(a), hasName(b), hasName(c))
 /// \endcode
-const llvm::VariadicFunction<internal::Matcher<NamedDecl>, StringRef,
-                             internal::hasAnyNameFunc>
+const internal::VariadicFunction<internal::Matcher<NamedDecl>, StringRef,
+                                 internal::hasAnyNameFunc>
     hasAnyName = {};
 
 /// \brief Matches NamedDecl nodes whose fully qualified names contain
@@ -5007,6 +5007,22 @@ AST_MATCHER_P(Decl, hasAttr, attr::Kind, AttrKind) {
   }
   return false;
 }
+
+/// \brief Matches the return value expression of a return statement
+///
+/// Given
+/// \code
+///   return a + b;
+/// \endcode
+/// hasReturnValue(binaryOperator())
+///   matches 'return a + b'
+/// with binaryOperator()
+///   matching 'a + b'
+AST_MATCHER_P(ReturnStmt, hasReturnValue, internal::Matcher<Expr>, 
+              InnerMatcher) {
+  return InnerMatcher.matches(*Node.getRetValue(), Finder, Builder);
+}
+
 
 /// \brief Matches CUDA kernel call expression.
 ///

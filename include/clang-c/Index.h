@@ -2971,6 +2971,8 @@ enum CXCallingConv {
   CXCallingConv_X86_64SysV = 11,
   CXCallingConv_X86VectorCall = 12,
   CXCallingConv_Swift = 13,
+  CXCallingConv_PreserveMost = 14,
+  CXCallingConv_PreserveAll = 15,
 
   CXCallingConv_Invalid = 100,
   CXCallingConv_Unexposed = 200
@@ -4956,7 +4958,7 @@ CINDEX_LINKAGE unsigned clang_defaultCodeCompleteOptions(void);
  * Note that the column should point just after the syntactic construct that
  * initiated code completion, and not in the middle of a lexical token.
  *
- * \param unsaved_files the Tiles that have not yet been saved to disk
+ * \param unsaved_files the Files that have not yet been saved to disk
  * but may be required for parsing or code completion, including the
  * contents of those files.  The contents and name of these files (as
  * specified by CXUnsavedFile) are copied when necessary, so the

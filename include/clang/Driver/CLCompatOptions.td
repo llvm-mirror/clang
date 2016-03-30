@@ -98,6 +98,7 @@ def _SLASH_I : CLJoinedOrSeparate<"I">,
 def _SLASH_J : CLFlag<"J">, HelpText<"Make char type unsigned">,
   Alias<funsigned_char>;
 def _SLASH_O0 : CLFlag<"O0">, Alias<O0>;
+// /Oy- is handled by the /O option because /Oy- only has an effect on 32-bit.
 def _SLASH_O : CLJoined<"O">, HelpText<"Optimization level">;
 def _SLASH_Ob0 : CLFlag<"Ob0">, HelpText<"Disable inlining">,
   Alias<fno_inline>;
@@ -272,6 +273,7 @@ def _SLASH_cgthreads : CLIgnoredJoined<"cgthreads">;
 def _SLASH_d2Zi_PLUS : CLIgnoredFlag<"d2Zi+">;
 def _SLASH_errorReport : CLIgnoredJoined<"errorReport">;
 def _SLASH_Fd : CLIgnoredJoined<"Fd">;
+def _SLASH_FC : CLIgnoredFlag<"FC">;
 def _SLASH_FS : CLIgnoredFlag<"FS">, HelpText<"Force synchronous PDB writes">;
 def _SLASH_Gd : CLIgnoredFlag<"Gd">;
 def _SLASH_GF : CLIgnoredFlag<"GF">;
@@ -303,7 +305,6 @@ def _SLASH_clr : CLJoined<"clr">;
 def _SLASH_doc : CLJoined<"doc">;
 def _SLASH_FA_joined : CLJoined<"FA">;
 def _SLASH_favor : CLJoined<"favor">;
-def _SLASH_FC : CLFlag<"FC">;
 def _SLASH_F : CLFlag<"F">;
 def _SLASH_Fm : CLJoined<"Fm">;
 def _SLASH_Fr : CLJoined<"Fr">;

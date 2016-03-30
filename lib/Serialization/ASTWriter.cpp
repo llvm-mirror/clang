@@ -937,7 +937,6 @@ void ASTWriter::WriteBlockInfoBlock() {
   RECORD(SEMA_DECL_REFS);
   RECORD(WEAK_UNDECLARED_IDENTIFIERS);
   RECORD(PENDING_IMPLICIT_INSTANTIATIONS);
-  RECORD(DECL_REPLACEMENTS);
   RECORD(UPDATE_VISIBLE);
   RECORD(DECL_UPDATE_OFFSETS);
   RECORD(DECL_UPDATES);
@@ -1913,7 +1912,7 @@ void ASTWriter::WriteSourceManagerBlock(SourceManager &SourceMgr,
     Record.push_back(SLoc->getOffset() - 2);
     if (SLoc->isFile()) {
       const SrcMgr::FileInfo &File = SLoc->getFile();
-      Record.push_back(File.getIncludeLoc().getRawEncoding());
+      AddSourceLocation(File.getIncludeLoc(), Record);
       Record.push_back(File.getFileCharacteristic()); // FIXME: stable encoding
       Record.push_back(File.hasLineDirectives());
 
@@ -1985,10 +1984,12 @@ void ASTWriter::WriteSourceManagerBlock(SourceManager &SourceMgr,
     } else {
       // The source location entry is a macro expansion.
       const SrcMgr::ExpansionInfo &Expansion = SLoc->getExpansion();
-      Record.push_back(Expansion.getSpellingLoc().getRawEncoding());
-      Record.push_back(Expansion.getExpansionLocStart().getRawEncoding());
-      Record.push_back(Expansion.isMacroArgExpansion() ? 0
-                             : Expansion.getExpansionLocEnd().getRawEncoding());
+      AddSourceLocation(Expansion.getSpellingLoc(), Record);
+      AddSourceLocation(Expansion.getExpansionLocStart(), Record);
+      AddSourceLocation(Expansion.isMacroArgExpansion()
+                            ? SourceLocation()
+                            : Expansion.getExpansionLocEnd(),
+                        Record);
 
       // Compute the token length for this macro expansion.
       unsigned NextOffset = SourceMgr.getNextLocalOffset();
@@ -2670,7 +2671,7 @@ void ASTWriter::WritePragmaDiagnosticMappings(const DiagnosticsEngine &Diag,
     if (point.Loc.isInvalid())
       continue;
 
-    Record.push_back(point.Loc.getRawEncoding());
+    AddSourceLocation(point.Loc, Record);
     unsigned &DiagStateID = DiagStateIDMap[point.State];
     Record.push_back(DiagStateID);
     
@@ -4621,7 +4622,6 @@ uint64_t ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
     }
   }
 
-  WriteDeclReplacementsBlock();
   WriteObjCCategories();
   if(!WritingModule) {
     WriteOptimizePragmaOptions(SemaRef);
@@ -4783,21 +4783,9 @@ void ASTWriter::WriteDeclUpdatesBlocks(RecordDataImpl &OffsetsRecord) {
   }
 }
 
-void ASTWriter::WriteDeclReplacementsBlock() {
-  if (ReplacedDecls.empty())
-    return;
-
-  RecordData Record;
-  for (const auto &I : ReplacedDecls) {
-    Record.push_back(I.ID);
-    Record.push_back(I.Offset);
-    Record.push_back(I.Loc);
-  }
-  Stream.EmitRecord(DECL_REPLACEMENTS, Record);
-}
-
 void ASTWriter::AddSourceLocation(SourceLocation Loc, RecordDataImpl &Record) {
-  Record.push_back(Loc.getRawEncoding());
+  uint32_t Raw = Loc.getRawEncoding();
+  Record.push_back((Raw << 1) | (Raw >> 31));
 }
 
 void ASTWriter::AddSourceRange(SourceRange Range, RecordDataImpl &Record) {
@@ -5631,6 +5619,7 @@ void ASTWriter::AddCXXDefinitionData(const CXXRecordDecl *D, RecordDataImpl &Rec
       Record.push_back(Capture.isImplicit());
       Record.push_back(Capture.getCaptureKind());
       switch (Capture.getCaptureKind()) {
+      case LCK_StarThis:
       case LCK_This:
       case LCK_VLAType:
         break;
@@ -5751,8 +5740,16 @@ static bool isImportedDeclContext(ASTReader *Chain, const Decl *D) {
 }
 
 void ASTWriter::AddedVisibleDecl(const DeclContext *DC, const Decl *D) {
-  // TU and namespaces are handled elsewhere.
-  if (isa<TranslationUnitDecl>(DC) || isa<NamespaceDecl>(DC))
+  // TU is handled elsewhere.
+  if (isa<TranslationUnitDecl>(DC))
+    return;
+
+  // Namespaces are handled elsewhere, except for template instantiations of
+  // FunctionTemplateDecls in namespaces. We are interested in cases where the
+  // local instantiations are added to an imported context. Only happens when
+  // adding ADL lookup candidates, for example templated friends.
+  if (isa<NamespaceDecl>(DC) && D->getFriendObjectKind() == Decl::FOK_None &&
+      !isa<FunctionTemplateDecl>(D))
     return;
 
   // We're only interested in cases where a local declaration is added to an

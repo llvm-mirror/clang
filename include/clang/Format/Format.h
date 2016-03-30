@@ -16,6 +16,7 @@
 #define LLVM_CLANG_FORMAT_FORMAT_H
 
 #include "clang/Basic/LangOptions.h"
+#include "clang/Basic/VirtualFileSystem.h"
 #include "clang/Tooling/Core/Replacement.h"
 #include "llvm/ADT/ArrayRef.h"
 #include <system_error>
@@ -400,6 +401,19 @@ struct FormatStyle {
   ///       Priority:        1
   /// \endcode
   std::vector<IncludeCategory> IncludeCategories;
+
+  /// \brief Specify a regular expression of suffixes that are allowed in the
+  /// file-to-main-include mapping.
+  ///
+  /// When guessing whether a #include is the "main" include (to assign
+  /// category 0, see above), use this regex of allowed suffixes to the header
+  /// stem. A partial match is done, so that:
+  /// - "" means "arbitrary suffix"
+  /// - "$" means "no suffix"
+  ///
+  /// For example, if configured to "(_test)?$", then a header a.h would be seen
+  /// as the "main" include in both a.cc and a_test.cc.
+  std::string IncludeIsMainRegex;
 
   /// \brief Indent case labels one level from the switch statement.
   ///
@@ -819,11 +833,13 @@ extern const char *StyleOptionHelpDescription;
 /// == "file".
 /// \param[in] FallbackStyle The name of a predefined style used to fallback to
 /// in case the style can't be determined from \p StyleName.
+/// \param[in] FS The underlying file system, in which the file resides. By
+/// default, the file system is the real file system.
 ///
 /// \returns FormatStyle as specified by ``StyleName``. If no style could be
 /// determined, the default is LLVM Style (see ``getLLVMStyle()``).
 FormatStyle getStyle(StringRef StyleName, StringRef FileName,
-                     StringRef FallbackStyle);
+                     StringRef FallbackStyle, vfs::FileSystem *FS = nullptr);
 
 } // end namespace format
 } // end namespace clang

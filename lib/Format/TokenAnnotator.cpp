@@ -141,6 +141,9 @@ private:
          Left->Previous->is(TT_BinaryOperator))) {
       // static_assert, if and while usually contain expressions.
       Contexts.back().IsExpression = true;
+    } else if (Style.Language == FormatStyle::LK_JavaScript && Left->Previous &&
+               Left->Previous->is(Keywords.kw_function)) {
+      Contexts.back().IsExpression = false;
     } else if (Left->Previous && Left->Previous->is(tok::r_square) &&
                Left->Previous->MatchingParen &&
                Left->Previous->MatchingParen->is(TT_LambdaLSquare)) {
@@ -518,6 +521,14 @@ private:
         Tok->Type = TT_InlineASMColon;
       }
       break;
+    case tok::pipe:
+    case tok::amp:
+      // | and & in declarations/type expressions represent union and
+      // intersection types, respectively.
+      if (Style.Language == FormatStyle::LK_JavaScript &&
+          !Contexts.back().IsExpression)
+        Tok->Type = TT_JsTypeOperator;
+      break;
     case tok::kw_if:
     case tok::kw_while:
       if (CurrentToken && CurrentToken->is(tok::l_paren)) {
@@ -753,13 +764,30 @@ public:
         return LT_ImportStatement;
     }
 
+    // import {...} from '...';
+    if (Style.Language == FormatStyle::LK_JavaScript &&
+        CurrentToken->is(Keywords.kw_import))
+      return LT_ImportStatement;
+
     bool KeywordVirtualFound = false;
     bool ImportStatement = false;
     while (CurrentToken) {
       if (CurrentToken->is(tok::kw_virtual))
         KeywordVirtualFound = true;
-      if (isImportStatement(*CurrentToken))
-        ImportStatement = true;
+      if (Style.Language == FormatStyle::LK_JavaScript) {
+        // export {...} from '...';
+        // An export followed by "from 'some string';" is a re-export from
+        // another module identified by a URI and is treated as a
+        // LT_ImportStatement (i.e. prevent wraps on it for long URIs).
+        // Just "export {...};" or "export class ..." should not be treated as
+        // an import in this sense.
+        if (Line.First->is(tok::kw_export) &&
+            CurrentToken->is(Keywords.kw_from) && CurrentToken->Next &&
+            CurrentToken->Next->isStringLiteral())
+          ImportStatement = true;
+        if (isClosureImportStatement(*CurrentToken))
+          ImportStatement = true;
+      }
       if (!consumeToken())
         return LT_Invalid;
     }
@@ -779,11 +807,10 @@ public:
   }
 
 private:
-  bool isImportStatement(const FormatToken &Tok) {
+  bool isClosureImportStatement(const FormatToken &Tok) {
     // FIXME: Closure-library specific stuff should not be hard-coded but be
     // configurable.
-    return Style.Language == FormatStyle::LK_JavaScript &&
-           Tok.TokenText == "goog" && Tok.Next && Tok.Next->is(tok::period) &&
+    return Tok.TokenText == "goog" && Tok.Next && Tok.Next->is(tok::period) &&
            Tok.Next->Next && (Tok.Next->Next->TokenText == "module" ||
                               Tok.Next->Next->TokenText == "provide" ||
                               Tok.Next->Next->TokenText == "require" ||
@@ -2038,8 +2065,11 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
         Left.isOneOf(Keywords.kw_returns, Keywords.kw_option))
       return true;
   } else if (Style.Language == FormatStyle::LK_JavaScript) {
-    if (Left.isOneOf(Keywords.kw_let, Keywords.kw_var, TT_JsFatArrow,
-                     Keywords.kw_in, Keywords.kw_of))
+    if (Left.is(TT_JsFatArrow))
+      return true;
+    if (Left.isOneOf(Keywords.kw_let, Keywords.kw_var, Keywords.kw_in,
+                     Keywords.kw_of) &&
+        (!Left.Previous || !Left.Previous->is(tok::period)))
       return true;
     if (Left.is(tok::kw_default) && Left.Previous &&
         Left.Previous->is(tok::kw_export))
@@ -2047,6 +2077,8 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
     if (Left.is(Keywords.kw_is) && Right.is(tok::l_brace))
       return true;
     if (Right.isOneOf(TT_JsTypeColon, TT_JsTypeOptionalQuestion))
+      return false;
+    if (Left.is(TT_JsTypeOperator) || Right.is(TT_JsTypeOperator))
       return false;
     if ((Left.is(tok::l_brace) || Right.is(tok::r_brace)) &&
         Line.First->isOneOf(Keywords.kw_import, tok::kw_export))
