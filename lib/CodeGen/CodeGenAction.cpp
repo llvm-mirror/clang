@@ -26,12 +26,10 @@
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
-#include "llvm/IR/FunctionInfo.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
-#include "llvm/Object/FunctionIndexObjectFile.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
@@ -55,7 +53,6 @@ namespace clang {
 
     std::unique_ptr<CodeGenerator> Gen;
 
-    std::unique_ptr<llvm::Module> TheModule;
     SmallVector<std::pair<unsigned, std::unique_ptr<llvm::Module>>, 4>
         LinkModules;
 
@@ -83,7 +80,10 @@ namespace clang {
         this->LinkModules.push_back(
             std::make_pair(I.first, std::unique_ptr<llvm::Module>(I.second)));
     }
-    std::unique_ptr<llvm::Module> takeModule() { return std::move(TheModule); }
+    llvm::Module *getModule() const { return Gen->GetModule(); }
+    std::unique_ptr<llvm::Module> takeModule() {
+      return std::unique_ptr<llvm::Module>(Gen->ReleaseModule());
+    }
     void releaseLinkModules() {
       for (auto &I : LinkModules)
         I.second.release();
@@ -102,8 +102,6 @@ namespace clang {
         LLVMIRGeneration.startTimer();
 
       Gen->Initialize(Ctx);
-
-      TheModule.reset(Gen->GetModule());
 
       if (llvm::TimePassesIsEnabled)
         LLVMIRGeneration.stopTimer();
@@ -151,25 +149,12 @@ namespace clang {
       }
 
       // Silently ignore if we weren't initialized for some reason.
-      if (!TheModule)
+      if (!getModule())
         return;
-
-      // Make sure IR generation is happy with the module. This is released by
-      // the module provider.
-      llvm::Module *M = Gen->ReleaseModule();
-      if (!M) {
-        // The module has been released by IR gen on failures, do not double
-        // free.
-        TheModule.release();
-        return;
-      }
-
-      assert(TheModule.get() == M &&
-             "Unexpected module change during IR generation");
 
       // Install an inline asm handler so that diagnostics get printed through
       // our diagnostics hooks.
-      LLVMContext &Ctx = TheModule->getContext();
+      LLVMContext &Ctx = getModule()->getContext();
       LLVMContext::InlineAsmDiagHandlerTy OldHandler =
         Ctx.getInlineAsmDiagnosticHandler();
       void *OldContext = Ctx.getInlineAsmDiagnosticContext();
@@ -184,13 +169,13 @@ namespace clang {
       for (auto &I : LinkModules) {
         unsigned LinkFlags = I.first;
         CurLinkModule = I.second.get();
-        if (Linker::linkModules(*M, std::move(I.second), LinkFlags))
+        if (Linker::linkModules(*getModule(), std::move(I.second), LinkFlags))
           return;
       }
 
       EmitBackendOutput(Diags, CodeGenOpts, TargetOpts, LangOpts,
-                        C.getTargetInfo().getDataLayoutString(),
-                        TheModule.get(), Action, AsmOutStream);
+                        C.getTargetInfo().getDataLayout(),
+                        getModule(), Action, AsmOutStream);
 
       Ctx.setInlineAsmDiagnosticHandler(OldHandler, OldContext);
 
@@ -212,21 +197,12 @@ namespace clang {
       Gen->CompleteTentativeDefinition(D);
     }
 
+    void AssignInheritanceModel(CXXRecordDecl *RD) override {
+      Gen->AssignInheritanceModel(RD);
+    }
+
     void HandleVTable(CXXRecordDecl *RD) override {
       Gen->HandleVTable(RD);
-    }
-
-    void HandleLinkerOptionPragma(llvm::StringRef Opts) override {
-      Gen->HandleLinkerOptionPragma(Opts);
-    }
-
-    void HandleDetectMismatch(llvm::StringRef Name,
-                                      llvm::StringRef Value) override {
-      Gen->HandleDetectMismatch(Name, Value);
-    }
-
-    void HandleDependentLibrary(llvm::StringRef Opts) override {
-      Gen->HandleDependentLibrary(Opts);
     }
 
     static void InlineAsmDiagHandler(const llvm::SMDiagnostic &SM,void *Context,
@@ -240,6 +216,13 @@ namespace clang {
       ((BackendConsumer *)Context)->DiagnosticHandlerImpl(DI);
     }
 
+    /// Get the best possible source location to represent a diagnostic that
+    /// may have associated debug info.
+    const FullSourceLoc
+    getBestLocationFromDebugLoc(const llvm::DiagnosticInfoWithDebugLocBase &D,
+                                bool &BadDebugInfo, StringRef &Filename,
+                                unsigned &Line, unsigned &Column) const;
+
     void InlineAsmDiagHandler2(const llvm::SMDiagnostic &,
                                SourceLocation LocCookie);
 
@@ -252,6 +235,8 @@ namespace clang {
     /// \return True if the diagnostic has been successfully reported, false
     /// otherwise.
     bool StackSizeDiagHandler(const llvm::DiagnosticInfoStackSize &D);
+    /// \brief Specialized handler for unsupported backend feature diagnostic.
+    void UnsupportedDiagHandler(const llvm::DiagnosticInfoUnsupported &D);
     /// \brief Specialized handlers for optimization remarks.
     /// Note that these handlers only accept remarks and they always handle
     /// them.
@@ -437,16 +422,11 @@ BackendConsumer::StackSizeDiagHandler(const llvm::DiagnosticInfoStackSize &D) {
   return false;
 }
 
-void BackendConsumer::EmitOptimizationMessage(
-    const llvm::DiagnosticInfoOptimizationBase &D, unsigned DiagID) {
-  // We only support warnings and remarks.
-  assert(D.getSeverity() == llvm::DS_Remark ||
-         D.getSeverity() == llvm::DS_Warning);
-
+const FullSourceLoc BackendConsumer::getBestLocationFromDebugLoc(
+    const llvm::DiagnosticInfoWithDebugLocBase &D, bool &BadDebugInfo, StringRef &Filename,
+                                unsigned &Line, unsigned &Column) const {
   SourceManager &SourceMgr = Context->getSourceManager();
   FileManager &FileMgr = SourceMgr.getFileManager();
-  StringRef Filename;
-  unsigned Line, Column;
   SourceLocation DILoc;
 
   if (D.isLocationAvailable()) {
@@ -457,6 +437,7 @@ void BackendConsumer::EmitOptimizationMessage(
       // source manager, so pass 1 if Column is not set.
       DILoc = SourceMgr.translateFileLineCol(FE, Line, Column ? Column : 1);
     }
+    BadDebugInfo = DILoc.isInvalid();
   }
 
   // If a location isn't available, try to approximate it using the associated
@@ -465,18 +446,63 @@ void BackendConsumer::EmitOptimizationMessage(
   FullSourceLoc Loc(DILoc, SourceMgr);
   if (Loc.isInvalid())
     if (const Decl *FD = Gen->GetDeclForMangledName(D.getFunction().getName()))
-      Loc = FD->getASTContext().getFullLoc(FD->getBodyRBrace());
-
-  Diags.Report(Loc, DiagID)
-      << AddFlagValue(D.getPassName() ? D.getPassName() : "")
-      << D.getMsg().str();
+      Loc = FD->getASTContext().getFullLoc(FD->getLocation());
 
   if (DILoc.isInvalid() && D.isLocationAvailable())
     // If we were not able to translate the file:line:col information
     // back to a SourceLocation, at least emit a note stating that
     // we could not translate this location. This can happen in the
     // case of #line directives.
-    Diags.Report(Loc, diag::note_fe_backend_optimization_remark_invalid_loc)
+    Diags.Report(Loc, diag::note_fe_backend_invalid_loc)
+        << Filename << Line;
+
+  return Loc;
+}
+
+void BackendConsumer::UnsupportedDiagHandler(
+    const llvm::DiagnosticInfoUnsupported &D) {
+  // We only support errors.
+  assert(D.getSeverity() == llvm::DS_Error);
+
+  StringRef Filename;
+  unsigned Line, Column;
+  bool BadDebugInfo;
+  FullSourceLoc Loc = getBestLocationFromDebugLoc(D, BadDebugInfo, Filename,
+      Line, Column);
+
+  Diags.Report(Loc, diag::err_fe_backend_unsupported) << D.getMessage().str();
+
+  if (BadDebugInfo)
+    // If we were not able to translate the file:line:col information
+    // back to a SourceLocation, at least emit a note stating that
+    // we could not translate this location. This can happen in the
+    // case of #line directives.
+    Diags.Report(Loc, diag::note_fe_backend_invalid_loc)
+        << Filename << Line << Column;
+}
+
+void BackendConsumer::EmitOptimizationMessage(
+    const llvm::DiagnosticInfoOptimizationBase &D, unsigned DiagID) {
+  // We only support warnings and remarks.
+  assert(D.getSeverity() == llvm::DS_Remark ||
+         D.getSeverity() == llvm::DS_Warning);
+
+  StringRef Filename;
+  unsigned Line, Column;
+  bool BadDebugInfo = false;
+  FullSourceLoc Loc = getBestLocationFromDebugLoc(D, BadDebugInfo, Filename,
+      Line, Column);
+
+  Diags.Report(Loc, DiagID)
+      << AddFlagValue(D.getPassName() ? D.getPassName() : "")
+      << D.getMsg().str();
+
+  if (BadDebugInfo)
+    // If we were not able to translate the file:line:col information
+    // back to a SourceLocation, at least emit a note stating that
+    // we could not translate this location. This can happen in the
+    // case of #line directives.
+    Diags.Report(Loc, diag::note_fe_backend_invalid_loc)
         << Filename << Line << Column;
 }
 
@@ -600,6 +626,9 @@ void BackendConsumer::DiagnosticHandlerImpl(const DiagnosticInfo &DI) {
     // Optimization failures are always handled completely by this
     // handler.
     OptimizationFailureHandler(cast<DiagnosticInfoOptimizationFailure>(DI));
+    return;
+  case llvm::DK_Unsupported:
+    UnsupportedDiagHandler(cast<DiagnosticInfoUnsupported>(DI));
     return;
   default:
     // Plugin IDs are not bound to any value as they are set dynamically.
@@ -781,43 +810,11 @@ void CodeGenAction::ExecuteAction() {
       TheModule->setTargetTriple(TargetOpts.Triple);
     }
 
-    auto DiagHandler = [&](const DiagnosticInfo &DI) {
-      TheModule->getContext().diagnose(DI);
-    };
-
-    // If we are performing ThinLTO importing compilation (indicated by
-    // a non-empty index file option), then we need promote to global scope
-    // and rename any local values that are potentially exported to other
-    // modules. Do this early so that the rest of the compilation sees the
-    // promoted symbols.
-    std::unique_ptr<FunctionInfoIndex> Index;
-    if (!CI.getCodeGenOpts().ThinLTOIndexFile.empty()) {
-      ErrorOr<std::unique_ptr<FunctionInfoIndex>> IndexOrErr =
-          llvm::getFunctionIndexForFile(CI.getCodeGenOpts().ThinLTOIndexFile,
-                                        DiagHandler);
-      if (std::error_code EC = IndexOrErr.getError()) {
-        std::string Error = EC.message();
-        errs() << "Error loading index file '"
-               << CI.getCodeGenOpts().ThinLTOIndexFile << "': " << Error
-               << "\n";
-        return;
-      }
-      Index = std::move(IndexOrErr.get());
-      assert(Index);
-      // Currently this requires creating a new Module object.
-      std::unique_ptr<llvm::Module> RenamedModule =
-          renameModuleForThinLTO(std::move(TheModule), Index.get());
-      if (!RenamedModule)
-        return;
-
-      TheModule = std::move(RenamedModule);
-    }
-
     LLVMContext &Ctx = TheModule->getContext();
     Ctx.setInlineAsmDiagnosticHandler(BitcodeInlineAsmDiagHandler);
     EmitBackendOutput(CI.getDiagnostics(), CI.getCodeGenOpts(), TargetOpts,
-                      CI.getLangOpts(), CI.getTarget().getDataLayoutString(),
-                      TheModule.get(), BA, OS, std::move(Index));
+                      CI.getLangOpts(), CI.getTarget().getDataLayout(),
+                      TheModule.get(), BA, OS);
     return;
   }
 

@@ -226,15 +226,16 @@ getGenericLambdaTemplateParameterList(LambdaScopeInfo *LSI, Sema &SemaRef) {
   if (LSI->GLTemplateParameterList)
     return LSI->GLTemplateParameterList;
 
-  if (LSI->AutoTemplateParams.size()) {
+  if (!LSI->AutoTemplateParams.empty()) {
     SourceRange IntroRange = LSI->IntroducerRange;
     SourceLocation LAngleLoc = IntroRange.getBegin();
     SourceLocation RAngleLoc = IntroRange.getEnd();
     LSI->GLTemplateParameterList = TemplateParameterList::Create(
         SemaRef.Context,
         /*Template kw loc*/ SourceLocation(), LAngleLoc,
-        (NamedDecl **)LSI->AutoTemplateParams.data(),
-        LSI->AutoTemplateParams.size(), RAngleLoc);
+        llvm::makeArrayRef((NamedDecl *const *)LSI->AutoTemplateParams.data(),
+                           LSI->AutoTemplateParams.size()),
+        RAngleLoc);
   }
   return LSI->GLTemplateParameterList;
 }
@@ -616,6 +617,8 @@ void Sema::deduceClosureReturnType(CapturingScopeInfo &CSI) {
   assert(CSI.HasImplicitReturnType);
   // If it was ever a placeholder, it had to been deduced to DependentTy.
   assert(CSI.ReturnType.isNull() || !CSI.ReturnType->isUndeducedType()); 
+  assert((!isa<LambdaScopeInfo>(CSI) || !getLangOpts().CPlusPlus14) &&
+         "lambda expressions use auto deduction in C++14 onwards");
 
   // C++ core issue 975:
   //   If a lambda-expression does not include a trailing-return-type,

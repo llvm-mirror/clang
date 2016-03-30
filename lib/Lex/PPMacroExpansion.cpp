@@ -52,6 +52,13 @@ void Preprocessor::appendMacroDirective(IdentifierInfo *II, MacroDirective *MD){
   StoredMD.setLatest(MD);
   StoredMD.overrideActiveModuleMacros(*this, II);
 
+  if (needModuleMacros()) {
+    // Track that we created a new macro directive, so we know we should
+    // consider building a ModuleMacro for it when we get to the end of
+    // the module.
+    PendingModuleMacroNames.push_back(II);
+  }
+
   // Set up the identifier as having associated macro history.
   II->setHasMacroDefinition(true);
   if (!MD->isDefined() && LeafModuleMacros.find(II) == LeafModuleMacros.end())
@@ -597,9 +604,7 @@ static bool CheckMatchedBrackets(const SmallVectorImpl<Token> &Tokens) {
       Brackets.pop_back();
     }
   }
-  if (!Brackets.empty())
-    return false;
-  return true;
+  return Brackets.empty();
 }
 
 /// GenerateNewArgTokens - Returns true if OldTokens can be converted to a new
@@ -725,6 +730,7 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
   // heap allocations in the common case.
   SmallVector<Token, 64> ArgTokens;
   bool ContainsCodeCompletionTok = false;
+  bool FoundElidedComma = false;
 
   SourceLocation TooManyArgsLoc;
 
@@ -756,17 +762,20 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
           // Do not lose the EOF/EOD.  Return it to the client.
           MacroName = Tok;
           return nullptr;
-        } else {
-          // Do not lose the EOF/EOD.
-          Token *Toks = new Token[1];
-          Toks[0] = Tok;
-          EnterTokenStream(Toks, 1, true, true);
-          break;
         }
+        // Do not lose the EOF/EOD.
+        auto Toks = llvm::make_unique<Token[]>(1);
+        Toks[0] = Tok;
+        EnterTokenStream(std::move(Toks), 1, true);
+        break;
       } else if (Tok.is(tok::r_paren)) {
         // If we found the ) token, the macro arg list is done.
         if (NumParens-- == 0) {
           MacroEnd = Tok.getLocation();
+          if (!ArgTokens.empty() &&
+              ArgTokens.back().commaAfterElided()) {
+            FoundElidedComma = true;
+          }
           break;
         }
       } else if (Tok.is(tok::l_paren)) {
@@ -911,7 +920,7 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
       // then we have an empty "()" argument empty list.  This is fine, even if
       // the macro expects one argument (the argument is just empty).
       isVarargsElided = MI->isVariadic();
-    } else if (MI->isVariadic() &&
+    } else if ((FoundElidedComma || MI->isVariadic()) &&
                (NumActuals+1 == MinArgsExpected ||  // A(x, ...) -> A(X)
                 (NumActuals == 0 && MinArgsExpected == 2))) {// A(x,...) -> A()
       // Varargs where the named vararg parameter is missing: OK as extension.
@@ -1064,6 +1073,8 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
       .Case("attribute_availability_with_version_underscores", true)
       .Case("attribute_availability_tvos", true)
       .Case("attribute_availability_watchos", true)
+      .Case("attribute_availability_with_strict", true)
+      .Case("attribute_availability_in_templates", true)
       .Case("attribute_cf_returns_not_retained", true)
       .Case("attribute_cf_returns_retained", true)
       .Case("attribute_cf_returns_on_parameters", true)
@@ -1116,6 +1127,7 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
       .Case("objc_bridge_id_on_typedefs", true)
       .Case("objc_generics", LangOpts.ObjC2)
       .Case("objc_generics_variance", LangOpts.ObjC2)
+      .Case("objc_class_property", LangOpts.ObjC2)
       // C11 features
       .Case("c_alignas", LangOpts.C11)
       .Case("c_alignof", LangOpts.C11)
@@ -1436,8 +1448,9 @@ static bool EvaluateBuildingModule(Token &Tok,
     return false;
   }
 
-  bool Result
-    = Tok.getIdentifierInfo()->getName() == PP.getLangOpts().CurrentModule;
+  bool Result =
+      PP.getLangOpts().CompilingModule &&
+      Tok.getIdentifierInfo()->getName() == PP.getLangOpts().CurrentModule;
 
   // Get ')'.
   PP.LexNonComment(Tok);

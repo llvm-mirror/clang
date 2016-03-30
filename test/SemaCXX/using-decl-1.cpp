@@ -30,9 +30,7 @@ struct X0 {
 };
 
 struct X1 : X0 {
-  // FIXME: give this operator() a 'float' parameter to test overloading
-  // behavior. It currently fails.
-  void operator()();
+  void operator()(float&);
   using X0::operator();
   
   void test() {
@@ -339,4 +337,27 @@ struct B : A {
 #endif
   enum { X = sizeof(field) };
 };
+}
+
+namespace tag_vs_var {
+  namespace N {
+    struct X {};
+
+    struct Y {};
+    int Y;
+
+    int Z;
+  }
+  using N::X;
+  using N::Y;
+  using N::Z;
+
+  namespace N {
+    int X;
+
+    struct Z {};
+  }
+  using N::X;
+  using N::Y;
+  using N::Z;
 }

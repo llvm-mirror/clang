@@ -876,6 +876,22 @@ struct PragmaDebugHandler : public PragmaHandler {
       Crasher.setKind(tok::annot_pragma_parser_crash);
       Crasher.setAnnotationRange(SourceRange(Tok.getLocation()));
       PP.EnterToken(Crasher);
+    } else if (II->isStr("dump")) {
+      Token Identifier;
+      PP.LexUnexpandedToken(Identifier);
+      if (auto *DumpII = Identifier.getIdentifierInfo()) {
+        Token DumpAnnot;
+        DumpAnnot.startToken();
+        DumpAnnot.setKind(tok::annot_pragma_dump);
+        DumpAnnot.setAnnotationRange(
+            SourceRange(Tok.getLocation(), Identifier.getLocation()));
+        DumpAnnot.setAnnotationValue(DumpII);
+        PP.DiscardUntilEndOfDirective();
+        PP.EnterToken(DumpAnnot);
+      } else {
+        PP.Diag(Identifier, diag::warn_pragma_debug_missing_argument)
+            << II->getName();
+      }
     } else if (II->isStr("llvm_fatal_error")) {
       llvm::report_fatal_error("#pragma clang __debug llvm_fatal_error");
     } else if (II->isStr("llvm_unreachable")) {
@@ -887,7 +903,8 @@ struct PragmaDebugHandler : public PragmaHandler {
       if (MacroII)
         PP.dumpMacroInfo(MacroII);
       else
-        PP.Diag(MacroName, diag::warn_pragma_diagnostic_invalid);
+        PP.Diag(MacroName, diag::warn_pragma_debug_missing_argument)
+            << II->getName();
     } else if (II->isStr("overflow_stack")) {
       DebugOverflowStack();
     } else if (II->isStr("handle_crash")) {
@@ -921,13 +938,13 @@ struct PragmaDebugHandler : public PragmaHandler {
     }
 
     SourceLocation NameLoc = Tok.getLocation();
-    Token *Toks = PP.getPreprocessorAllocator().Allocate<Token>(1);
-    Toks->startToken();
-    Toks->setKind(tok::annot_pragma_captured);
-    Toks->setLocation(NameLoc);
+    MutableArrayRef<Token> Toks(
+        PP.getPreprocessorAllocator().Allocate<Token>(1), 1);
+    Toks[0].startToken();
+    Toks[0].setKind(tok::annot_pragma_captured);
+    Toks[0].setLocation(NameLoc);
 
-    PP.EnterTokenStream(Toks, 1, /*DisableMacroExpansion=*/true,
-                        /*OwnsTokens=*/false);
+    PP.EnterTokenStream(Toks, /*DisableMacroExpansion=*/true);
   }
 
 // Disable MSVC warning about runtime stack overflow.
@@ -1007,10 +1024,19 @@ public:
       return;
     }
 
-    if (PP.getDiagnostics().setSeverityForGroup(
-            WarningName[1] == 'W' ? diag::Flavor::WarningOrError
-                                  : diag::Flavor::Remark,
-            WarningName.substr(2), SV, DiagLoc))
+    diag::Flavor Flavor = WarningName[1] == 'W' ? diag::Flavor::WarningOrError
+                                                : diag::Flavor::Remark;
+    StringRef Group = StringRef(WarningName).substr(2);
+    bool unknownDiag = false;
+    if (Group == "everything") {
+      // Special handling for pragma clang diagnostic ... "-Weverything".
+      // There is no formal group named "everything", so there has to be a
+      // special case for it.
+      PP.getDiagnostics().setSeverityForAll(Flavor, SV, DiagLoc);
+    } else
+      unknownDiag = PP.getDiagnostics().setSeverityForGroup(Flavor, Group, SV,
+                                                            DiagLoc);
+    if (unknownDiag)
       PP.Diag(StringLoc, diag::warn_pragma_diagnostic_unknown_warning)
         << WarningName;
     else if (Callbacks)

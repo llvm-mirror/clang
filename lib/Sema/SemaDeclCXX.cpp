@@ -1553,9 +1553,9 @@ NoteIndirectBases(ASTContext &Context, IndirectBaseSet &Set,
 
 /// \brief Performs the actual work of attaching the given base class
 /// specifiers to a C++ class.
-bool Sema::AttachBaseSpecifiers(CXXRecordDecl *Class, CXXBaseSpecifier **Bases,
-                                unsigned NumBases) {
- if (NumBases == 0)
+bool Sema::AttachBaseSpecifiers(CXXRecordDecl *Class,
+                                MutableArrayRef<CXXBaseSpecifier *> Bases) {
+ if (Bases.empty())
     return false;
 
   // Used to keep track of which base types we have already seen, so
@@ -1571,7 +1571,7 @@ bool Sema::AttachBaseSpecifiers(CXXRecordDecl *Class, CXXBaseSpecifier **Bases,
   // Copy non-redundant base specifiers into permanent storage.
   unsigned NumGoodBases = 0;
   bool Invalid = false;
-  for (unsigned idx = 0; idx < NumBases; ++idx) {
+  for (unsigned idx = 0; idx < Bases.size(); ++idx) {
     QualType NewBaseType
       = Context.getCanonicalType(Bases[idx]->getType());
     NewBaseType = NewBaseType.getLocalUnqualifiedType();
@@ -1597,7 +1597,7 @@ bool Sema::AttachBaseSpecifiers(CXXRecordDecl *Class, CXXBaseSpecifier **Bases,
       Bases[NumGoodBases++] = Bases[idx];
 
       // Note this base's direct & indirect bases, if there could be ambiguity.
-      if (NumBases > 1)
+      if (Bases.size() > 1)
         NoteIndirectBases(Context, IndirectBaseTypes, NewBaseType);
       
       if (const RecordType *Record = NewBaseType->getAs<RecordType>()) {
@@ -1619,7 +1619,7 @@ bool Sema::AttachBaseSpecifiers(CXXRecordDecl *Class, CXXBaseSpecifier **Bases,
   }
 
   // Attach the remaining base class specifiers to the derived class.
-  Class->setBases(Bases, NumGoodBases);
+  Class->setBases(Bases.data(), NumGoodBases);
   
   for (unsigned idx = 0; idx < NumGoodBases; ++idx) {
     // Check whether this direct base is inaccessible due to ambiguity.
@@ -1654,13 +1654,13 @@ bool Sema::AttachBaseSpecifiers(CXXRecordDecl *Class, CXXBaseSpecifier **Bases,
 /// ActOnBaseSpecifiers - Attach the given base specifiers to the
 /// class, after checking whether there are any duplicate base
 /// classes.
-void Sema::ActOnBaseSpecifiers(Decl *ClassDecl, CXXBaseSpecifier **Bases,
-                               unsigned NumBases) {
-  if (!ClassDecl || !Bases || !NumBases)
+void Sema::ActOnBaseSpecifiers(Decl *ClassDecl,
+                               MutableArrayRef<CXXBaseSpecifier *> Bases) {
+  if (!ClassDecl || Bases.empty())
     return;
 
   AdjustDeclIfTemplate(ClassDecl);
-  AttachBaseSpecifiers(cast<CXXRecordDecl>(ClassDecl), Bases, NumBases);
+  AttachBaseSpecifiers(cast<CXXRecordDecl>(ClassDecl), Bases);
 }
 
 /// \brief Determine whether the type \p Derived is a C++ class that is
@@ -1742,13 +1742,18 @@ void Sema::BuildBasePathArray(const CXXBasePaths &Paths,
 /// otherwise. Loc is the location where this routine should point to
 /// if there is an error, and Range is the source range to highlight
 /// if there is an error.
+///
+/// If either InaccessibleBaseID or AmbigiousBaseConvID are 0, then the
+/// diagnostic for the respective type of error will be suppressed, but the
+/// check for ill-formed code will still be performed.
 bool
 Sema::CheckDerivedToBaseConversion(QualType Derived, QualType Base,
                                    unsigned InaccessibleBaseID,
                                    unsigned AmbigiousBaseConvID,
                                    SourceLocation Loc, SourceRange Range,
                                    DeclarationName Name,
-                                   CXXCastPath *BasePath) {
+                                   CXXCastPath *BasePath,
+                                   bool IgnoreAccess) {
   // First, determine whether the path from Derived to Base is
   // ambiguous. This is slightly more expensive than checking whether
   // the Derived to Base conversion exists, because here we need to
@@ -1761,7 +1766,7 @@ Sema::CheckDerivedToBaseConversion(QualType Derived, QualType Base,
   (void)DerivationOkay;
   
   if (!Paths.isAmbiguous(Context.getCanonicalType(Base).getUnqualifiedType())) {
-    if (InaccessibleBaseID) {
+    if (!IgnoreAccess) {
       // Check that the base class can be accessed.
       switch (CheckBaseClassAccess(Loc, Base, Derived, Paths.front(),
                                    InaccessibleBaseID)) {
@@ -1810,12 +1815,10 @@ Sema::CheckDerivedToBaseConversion(QualType Derived, QualType Base,
                                    SourceLocation Loc, SourceRange Range,
                                    CXXCastPath *BasePath,
                                    bool IgnoreAccess) {
-  return CheckDerivedToBaseConversion(Derived, Base,
-                                      IgnoreAccess ? 0
-                                       : diag::err_upcast_to_inaccessible_base,
-                                      diag::err_ambiguous_derived_to_base_conv,
-                                      Loc, Range, DeclarationName(), 
-                                      BasePath);
+  return CheckDerivedToBaseConversion(
+      Derived, Base, diag::err_upcast_to_inaccessible_base,
+      diag::err_ambiguous_derived_to_base_conv, Loc, Range, DeclarationName(),
+      BasePath, IgnoreAccess);
 }
 
 
@@ -5626,7 +5629,9 @@ bool SpecialMemberDeletionInfo::shouldDeleteForClassSubobject(
 /// having a particular direct or virtual base class.
 bool SpecialMemberDeletionInfo::shouldDeleteForBase(CXXBaseSpecifier *Base) {
   CXXRecordDecl *BaseClass = Base->getType()->getAsCXXRecordDecl();
-  return shouldDeleteForClassSubobject(BaseClass, Base, 0);
+  // If program is correct, BaseClass cannot be null, but if it is, the error
+  // must be reported elsewhere.
+  return BaseClass && shouldDeleteForClassSubobject(BaseClass, Base, 0);
 }
 
 /// Check whether we should delete a special member function due to the class
@@ -6998,6 +7003,7 @@ void Sema::CheckConversionDeclarator(Declarator &D, QualType &R,
       case DeclaratorChunk::BlockPointer:
       case DeclaratorChunk::Reference:
       case DeclaratorChunk::MemberPointer:
+      case DeclaratorChunk::Pipe:
         extendLeft(Before, Chunk.getSourceRange());
         break;
 
@@ -7196,7 +7202,8 @@ Decl *Sema::ActOnStartNamespaceDef(Scope *NamespcScope,
     // as if by qualified name lookup.
     LookupResult R(*this, II, IdentLoc, LookupOrdinaryName, ForRedeclaration);
     LookupQualifiedName(R, CurContext->getRedeclContext());
-    NamedDecl *PrevDecl = R.getAsSingle<NamedDecl>();
+    NamedDecl *PrevDecl =
+        R.isSingleResult() ? R.getRepresentativeDecl() : nullptr;
     PrevNS = dyn_cast_or_null<NamespaceDecl>(PrevDecl);
 
     if (PrevNS) {
@@ -7529,7 +7536,7 @@ static bool TryNamespaceTypoCorrection(Sema &S, LookupResult &R, Scope *Sc,
                      S.PDiag(diag::err_using_directive_suggest) << Ident,
                      S.PDiag(diag::note_namespace_defined_here));
     }
-    R.addDecl(Corrected.getCorrectionDecl());
+    R.addDecl(Corrected.getFoundDecl());
     return true;
   }
   return false;
@@ -7577,9 +7584,9 @@ Decl *Sema::ActOnUsingDirective(Scope *S,
   }
   
   if (!R.empty()) {
-    NamedDecl *Named = R.getFoundDecl();
-    assert((isa<NamespaceDecl>(Named) || isa<NamespaceAliasDecl>(Named))
-        && "expected namespace decl");
+    NamedDecl *Named = R.getRepresentativeDecl();
+    NamespaceDecl *NS = R.getAsSingle<NamespaceDecl>();
+    assert(NS && "expected namespace decl");
 
     // The use of a nested name specifier may trigger deprecation warnings.
     DiagnoseUseOfDecl(Named, IdentLoc);
@@ -7596,7 +7603,6 @@ Decl *Sema::ActOnUsingDirective(Scope *S,
 
     // Find enclosing context containing both using-directive and
     // nominated namespace.
-    NamespaceDecl *NS = getNamespaceDecl(Named);
     DeclContext *CommonAncestor = cast<DeclContext>(NS);
     while (CommonAncestor && !CommonAncestor->Encloses(CurContext))
       CommonAncestor = CommonAncestor->getParent();
@@ -7790,9 +7796,19 @@ bool Sema::CheckUsingShadowDecl(UsingDecl *Using, NamedDecl *Orig,
   for (LookupResult::iterator I = Previous.begin(), E = Previous.end();
          I != E; ++I) {
     NamedDecl *D = (*I)->getUnderlyingDecl();
+    // We can have UsingDecls in our Previous results because we use the same
+    // LookupResult for checking whether the UsingDecl itself is a valid
+    // redeclaration.
+    if (isa<UsingDecl>(D))
+      continue;
+
     if (IsEquivalentForUsingDecl(Context, D, Target)) {
       if (UsingShadowDecl *Shadow = dyn_cast<UsingShadowDecl>(*I))
         PrevShadow = Shadow;
+      FoundEquivalentDecl = true;
+    } else if (isEquivalentInternalLinkageDeclaration(D, Target)) {
+      // We don't conflict with an existing using shadow decl of an equivalent
+      // declaration, but we're not a redeclaration of it.
       FoundEquivalentDecl = true;
     }
 
@@ -8667,7 +8683,7 @@ Decl *Sema::ActOnNamespaceAliasDef(Scope *S, SourceLocation NamespaceLoc,
     }
   }
   assert(!R.isAmbiguous() && !R.empty());
-  NamedDecl *ND = R.getFoundDecl();
+  NamedDecl *ND = R.getRepresentativeDecl();
 
   // Check if we have a previous declaration with the same name.
   LookupResult PrevR(*this, Alias, AliasLoc, LookupOrdinaryName,
@@ -8686,7 +8702,8 @@ Decl *Sema::ActOnNamespaceAliasDef(Scope *S, SourceLocation NamespaceLoc,
 
   // Find the previous declaration and check that we can redeclare it.
   NamespaceAliasDecl *Prev = nullptr; 
-  if (NamedDecl *PrevDecl = PrevR.getAsSingle<NamedDecl>()) {
+  if (PrevR.isSingleResult()) {
+    NamedDecl *PrevDecl = PrevR.getRepresentativeDecl();
     if (NamespaceAliasDecl *AD = dyn_cast<NamespaceAliasDecl>(PrevDecl)) {
       // We already have an alias with the same name that points to the same
       // namespace; check that it matches.
@@ -8695,12 +8712,12 @@ Decl *Sema::ActOnNamespaceAliasDef(Scope *S, SourceLocation NamespaceLoc,
       } else if (isVisible(PrevDecl)) {
         Diag(AliasLoc, diag::err_redefinition_different_namespace_alias)
           << Alias;
-        Diag(PrevDecl->getLocation(), diag::note_previous_namespace_alias)
+        Diag(AD->getLocation(), diag::note_previous_namespace_alias)
           << AD->getNamespace();
         return nullptr;
       }
     } else if (isVisible(PrevDecl)) {
-      unsigned DiagID = isa<NamespaceDecl>(PrevDecl)
+      unsigned DiagID = isa<NamespaceDecl>(PrevDecl->getUnderlyingDecl())
                             ? diag::err_redefinition
                             : diag::err_redefinition_different_kind;
       Diag(AliasLoc, DiagID) << Alias;
@@ -9467,6 +9484,10 @@ static void getDefaultArgExprsForConstructors(Sema &S, CXXRecordDecl *Class) {
   if (Class->getDescribedClassTemplate())
     return;
 
+  CallingConv ExpectedCallingConv = S.Context.getDefaultCallingConvention(
+      /*IsVariadic=*/false, /*IsCXXMethod=*/true);
+
+  CXXConstructorDecl *LastExportedDefaultCtor = nullptr;
   for (Decl *Member : Class->decls()) {
     auto *CD = dyn_cast<CXXConstructorDecl>(Member);
     if (!CD) {
@@ -9478,7 +9499,25 @@ static void getDefaultArgExprsForConstructors(Sema &S, CXXRecordDecl *Class) {
       continue;
     }
 
-    for (unsigned I = 0, E = CD->getNumParams(); I != E; ++I) {
+    CallingConv ActualCallingConv =
+        CD->getType()->getAs<FunctionProtoType>()->getCallConv();
+
+    // Skip default constructors with typical calling conventions and no default
+    // arguments.
+    unsigned NumParams = CD->getNumParams();
+    if (ExpectedCallingConv == ActualCallingConv && NumParams == 0)
+      continue;
+
+    if (LastExportedDefaultCtor) {
+      S.Diag(LastExportedDefaultCtor->getLocation(),
+             diag::err_attribute_dll_ambiguous_default_ctor) << Class;
+      S.Diag(CD->getLocation(), diag::note_entity_declared_at)
+          << CD->getDeclName();
+      return;
+    }
+    LastExportedDefaultCtor = CD;
+
+    for (unsigned I = 0; I != NumParams; ++I) {
       // Skip any default arguments that we've already instantiated.
       if (S.Context.getDefaultArgExprForConstructor(CD, I))
         continue;
@@ -9500,6 +9539,10 @@ void Sema::ActOnFinishCXXNonNestedClass(Decl *D) {
   if (RD && Context.getTargetInfo().getCXXABI().isMicrosoft())
     getDefaultArgExprsForConstructors(*this, RD);
 
+  referenceDLLExportedClassMethods();
+}
+
+void Sema::referenceDLLExportedClassMethods() {
   if (!DelayedDllExportClasses.empty()) {
     // Calling ReferenceDllExportedMethods might cause the current function to
     // be called again, so use a local copy of DelayedDllExportClasses.
@@ -11732,6 +11775,49 @@ bool Sema::CheckOverloadedOperatorDeclaration(FunctionDecl *FnDecl) {
   return false;
 }
 
+static bool
+checkLiteralOperatorTemplateParameterList(Sema &SemaRef,
+                                          FunctionTemplateDecl *TpDecl) {
+  TemplateParameterList *TemplateParams = TpDecl->getTemplateParameters();
+
+  // Must have one or two template parameters.
+  if (TemplateParams->size() == 1) {
+    NonTypeTemplateParmDecl *PmDecl =
+        dyn_cast<NonTypeTemplateParmDecl>(TemplateParams->getParam(0));
+
+    // The template parameter must be a char parameter pack.
+    if (PmDecl && PmDecl->isTemplateParameterPack() &&
+        SemaRef.Context.hasSameType(PmDecl->getType(), SemaRef.Context.CharTy))
+      return false;
+
+  } else if (TemplateParams->size() == 2) {
+    TemplateTypeParmDecl *PmType =
+        dyn_cast<TemplateTypeParmDecl>(TemplateParams->getParam(0));
+    NonTypeTemplateParmDecl *PmArgs =
+        dyn_cast<NonTypeTemplateParmDecl>(TemplateParams->getParam(1));
+
+    // The second template parameter must be a parameter pack with the
+    // first template parameter as its type.
+    if (PmType && PmArgs && !PmType->isTemplateParameterPack() &&
+        PmArgs->isTemplateParameterPack()) {
+      const TemplateTypeParmType *TArgs =
+          PmArgs->getType()->getAs<TemplateTypeParmType>();
+      if (TArgs && TArgs->getDepth() == PmType->getDepth() &&
+          TArgs->getIndex() == PmType->getIndex()) {
+        if (SemaRef.ActiveTemplateInstantiations.empty())
+          SemaRef.Diag(TpDecl->getLocation(),
+                       diag::ext_string_literal_operator_template);
+        return false;
+      }
+    }
+  }
+
+  SemaRef.Diag(TpDecl->getTemplateParameters()->getSourceRange().getBegin(),
+               diag::err_literal_operator_template)
+      << TpDecl->getTemplateParameters()->getSourceRange();
+  return true;
+}
+
 /// CheckLiteralOperatorDeclaration - Check whether the declaration
 /// of this literal operator function is well-formed. If so, returns
 /// false; otherwise, emits appropriate diagnostics and returns true.
@@ -11747,10 +11833,9 @@ bool Sema::CheckLiteralOperatorDeclaration(FunctionDecl *FnDecl) {
     return true;
   }
 
-  bool Valid = false;
-
   // This might be the definition of a literal operator template.
   FunctionTemplateDecl *TpDecl = FnDecl->getDescribedFunctionTemplate();
+
   // This might be a specialization of a literal operator template.
   if (!TpDecl)
     TpDecl = FnDecl->getPrimaryTemplate();
@@ -11759,100 +11844,116 @@ bool Sema::CheckLiteralOperatorDeclaration(FunctionDecl *FnDecl) {
   // template <class T, T...> type operator "" name() are the only valid
   // template signatures, and the only valid signatures with no parameters.
   if (TpDecl) {
-    if (FnDecl->param_size() == 0) {
-      // Must have one or two template parameters
-      TemplateParameterList *Params = TpDecl->getTemplateParameters();
-      if (Params->size() == 1) {
-        NonTypeTemplateParmDecl *PmDecl =
-          dyn_cast<NonTypeTemplateParmDecl>(Params->getParam(0));
-
-        // The template parameter must be a char parameter pack.
-        if (PmDecl && PmDecl->isTemplateParameterPack() &&
-            Context.hasSameType(PmDecl->getType(), Context.CharTy))
-          Valid = true;
-      } else if (Params->size() == 2) {
-        TemplateTypeParmDecl *PmType =
-          dyn_cast<TemplateTypeParmDecl>(Params->getParam(0));
-        NonTypeTemplateParmDecl *PmArgs =
-          dyn_cast<NonTypeTemplateParmDecl>(Params->getParam(1));
-
-        // The second template parameter must be a parameter pack with the
-        // first template parameter as its type.
-        if (PmType && PmArgs &&
-            !PmType->isTemplateParameterPack() &&
-            PmArgs->isTemplateParameterPack()) {
-          const TemplateTypeParmType *TArgs =
-            PmArgs->getType()->getAs<TemplateTypeParmType>();
-          if (TArgs && TArgs->getDepth() == PmType->getDepth() &&
-              TArgs->getIndex() == PmType->getIndex()) {
-            Valid = true;
-            if (ActiveTemplateInstantiations.empty())
-              Diag(FnDecl->getLocation(),
-                   diag::ext_string_literal_operator_template);
-          }
-        }
-      }
+    if (FnDecl->param_size() != 0) {
+      Diag(FnDecl->getLocation(),
+           diag::err_literal_operator_template_with_params);
+      return true;
     }
-  } else if (FnDecl->param_size()) {
-    // Check the first parameter
+
+    if (checkLiteralOperatorTemplateParameterList(*this, TpDecl))
+      return true;
+
+  } else if (FnDecl->param_size() == 1) {
+    const ParmVarDecl *Param = FnDecl->getParamDecl(0);
+
+    QualType ParamType = Param->getType().getUnqualifiedType();
+
+    // Only unsigned long long int, long double, any character type, and const
+    // char * are allowed as the only parameters.
+    if (ParamType->isSpecificBuiltinType(BuiltinType::ULongLong) ||
+        ParamType->isSpecificBuiltinType(BuiltinType::LongDouble) ||
+        Context.hasSameType(ParamType, Context.CharTy) ||
+        Context.hasSameType(ParamType, Context.WideCharTy) ||
+        Context.hasSameType(ParamType, Context.Char16Ty) ||
+        Context.hasSameType(ParamType, Context.Char32Ty)) {
+    } else if (const PointerType *Ptr = ParamType->getAs<PointerType>()) {
+      QualType InnerType = Ptr->getPointeeType();
+
+      // Pointer parameter must be a const char *.
+      if (!(Context.hasSameType(InnerType.getUnqualifiedType(),
+                                Context.CharTy) &&
+            InnerType.isConstQualified() && !InnerType.isVolatileQualified())) {
+        Diag(Param->getSourceRange().getBegin(),
+             diag::err_literal_operator_param)
+            << ParamType << "'const char *'" << Param->getSourceRange();
+        return true;
+      }
+
+    } else if (ParamType->isRealFloatingType()) {
+      Diag(Param->getSourceRange().getBegin(), diag::err_literal_operator_param)
+          << ParamType << Context.LongDoubleTy << Param->getSourceRange();
+      return true;
+
+    } else if (ParamType->isIntegerType()) {
+      Diag(Param->getSourceRange().getBegin(), diag::err_literal_operator_param)
+          << ParamType << Context.UnsignedLongLongTy << Param->getSourceRange();
+      return true;
+
+    } else {
+      Diag(Param->getSourceRange().getBegin(),
+           diag::err_literal_operator_invalid_param)
+          << ParamType << Param->getSourceRange();
+      return true;
+    }
+
+  } else if (FnDecl->param_size() == 2) {
     FunctionDecl::param_iterator Param = FnDecl->param_begin();
 
-    QualType T = (*Param)->getType().getUnqualifiedType();
+    // First, verify that the first parameter is correct.
 
-    // unsigned long long int, long double, and any character type are allowed
-    // as the only parameters.
-    if (Context.hasSameType(T, Context.UnsignedLongLongTy) ||
-        Context.hasSameType(T, Context.LongDoubleTy) ||
-        Context.hasSameType(T, Context.CharTy) ||
-        Context.hasSameType(T, Context.WideCharTy) ||
-        Context.hasSameType(T, Context.Char16Ty) ||
-        Context.hasSameType(T, Context.Char32Ty)) {
-      if (++Param == FnDecl->param_end())
-        Valid = true;
-      goto FinishedParams;
+    QualType FirstParamType = (*Param)->getType().getUnqualifiedType();
+
+    // Two parameter function must have a pointer to const as a
+    // first parameter; let's strip those qualifiers.
+    const PointerType *PT = FirstParamType->getAs<PointerType>();
+
+    if (!PT) {
+      Diag((*Param)->getSourceRange().getBegin(),
+           diag::err_literal_operator_param)
+          << FirstParamType << "'const char *'" << (*Param)->getSourceRange();
+      return true;
     }
 
-    // Otherwise it must be a pointer to const; let's strip those qualifiers.
-    const PointerType *PT = T->getAs<PointerType>();
-    if (!PT)
-      goto FinishedParams;
-    T = PT->getPointeeType();
-    if (!T.isConstQualified() || T.isVolatileQualified())
-      goto FinishedParams;
-    T = T.getUnqualifiedType();
+    QualType PointeeType = PT->getPointeeType();
+    // First parameter must be const
+    if (!PointeeType.isConstQualified() || PointeeType.isVolatileQualified()) {
+      Diag((*Param)->getSourceRange().getBegin(),
+           diag::err_literal_operator_param)
+          << FirstParamType << "'const char *'" << (*Param)->getSourceRange();
+      return true;
+    }
 
-    // Move on to the second parameter;
+    QualType InnerType = PointeeType.getUnqualifiedType();
+    // Only const char *, const wchar_t*, const char16_t*, and const char32_t*
+    // are allowed as the first parameter to a two-parameter function
+    if (!(Context.hasSameType(InnerType, Context.CharTy) ||
+          Context.hasSameType(InnerType, Context.WideCharTy) ||
+          Context.hasSameType(InnerType, Context.Char16Ty) ||
+          Context.hasSameType(InnerType, Context.Char32Ty))) {
+      Diag((*Param)->getSourceRange().getBegin(),
+           diag::err_literal_operator_param)
+          << FirstParamType << "'const char *'" << (*Param)->getSourceRange();
+      return true;
+    }
+
+    // Move on to the second and final parameter.
     ++Param;
 
-    // If there is no second parameter, the first must be a const char *
-    if (Param == FnDecl->param_end()) {
-      if (Context.hasSameType(T, Context.CharTy))
-        Valid = true;
-      goto FinishedParams;
+    // The second parameter must be a std::size_t.
+    QualType SecondParamType = (*Param)->getType().getUnqualifiedType();
+    if (!Context.hasSameType(SecondParamType, Context.getSizeType())) {
+      Diag((*Param)->getSourceRange().getBegin(),
+           diag::err_literal_operator_param)
+          << SecondParamType << Context.getSizeType()
+          << (*Param)->getSourceRange();
+      return true;
     }
-
-    // const char *, const wchar_t*, const char16_t*, and const char32_t*
-    // are allowed as the first parameter to a two-parameter function
-    if (!(Context.hasSameType(T, Context.CharTy) ||
-          Context.hasSameType(T, Context.WideCharTy) ||
-          Context.hasSameType(T, Context.Char16Ty) ||
-          Context.hasSameType(T, Context.Char32Ty)))
-      goto FinishedParams;
-
-    // The second and final parameter must be an std::size_t
-    T = (*Param)->getType().getUnqualifiedType();
-    if (Context.hasSameType(T, Context.getSizeType()) &&
-        ++Param == FnDecl->param_end())
-      Valid = true;
-  }
-
-  // FIXME: This diagnostic is absolutely terrible.
-FinishedParams:
-  if (!Valid) {
-    Diag(FnDecl->getLocation(), diag::err_literal_operator_params)
-      << FnDecl->getDeclName();
+  } else {
+    Diag(FnDecl->getLocation(), diag::err_literal_operator_bad_param_count);
     return true;
   }
+
+  // Parameters are good.
 
   // A parameter-declaration-clause containing a default argument is not
   // equivalent to any of the permitted forms.
@@ -12987,19 +13088,20 @@ bool Sema::CheckOverridingFunctionReturnType(const CXXMethodDecl *New,
     return true;
   }
 
-  // C++ [class.virtual]p6:
-  //   If the return type of D::f differs from the return type of B::f, the 
-  //   class type in the return type of D::f shall be complete at the point of
-  //   declaration of D::f or shall be the class type D.
-  if (const RecordType *RT = NewClassTy->getAs<RecordType>()) {
-    if (!RT->isBeingDefined() &&
-        RequireCompleteType(New->getLocation(), NewClassTy, 
-                            diag::err_covariant_return_incomplete,
-                            New->getDeclName()))
-    return true;
-  }
-
   if (!Context.hasSameUnqualifiedType(NewClassTy, OldClassTy)) {
+    // C++14 [class.virtual]p8:
+    //   If the class type in the covariant return type of D::f differs from
+    //   that of B::f, the class type in the return type of D::f shall be
+    //   complete at the point of declaration of D::f or shall be the class
+    //   type D.
+    if (const RecordType *RT = NewClassTy->getAs<RecordType>()) {
+      if (!RT->isBeingDefined() &&
+          RequireCompleteType(New->getLocation(), NewClassTy,
+                              diag::err_covariant_return_incomplete,
+                              New->getDeclName()))
+        return true;
+    }
+
     // Check if the new class derives from the old class.
     if (!IsDerivedFrom(New->getLocation(), NewClassTy, OldClassTy)) {
       Diag(New->getLocation(), diag::err_covariant_return_not_derived)
@@ -13036,7 +13138,7 @@ bool Sema::CheckOverridingFunctionReturnType(const CXXMethodDecl *New,
     Diag(Old->getLocation(), diag::note_overridden_virtual_function)
         << Old->getReturnTypeSourceRange();
     return true;
-  };
+  }
 
 
   // The new class type must have the same or less qualifiers as the old type.
@@ -13048,7 +13150,7 @@ bool Sema::CheckOverridingFunctionReturnType(const CXXMethodDecl *New,
     Diag(Old->getLocation(), diag::note_overridden_virtual_function)
         << Old->getReturnTypeSourceRange();
     return true;
-  };
+  }
 
   return false;
 }

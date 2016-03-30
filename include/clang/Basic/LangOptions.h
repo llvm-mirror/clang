@@ -92,13 +92,11 @@ public:
   /// If none is specified, abort (GCC-compatible behaviour).
   std::string OverflowHandler;
 
-  /// \brief The name of the current module.
+  /// \brief The name of the current module, of which the main source file
+  /// is a part. If CompilingModule is set, we are compiling the interface
+  /// of this module, otherwise we are compiling an implementation file of
+  /// it.
   std::string CurrentModule;
-
-  /// \brief The name of the module that the translation unit is an
-  /// implementation of. Prevents semantic imports, but does not otherwise
-  /// treat this as the CurrentModule.
-  std::string ImplementationOfModule;
 
   /// \brief The names of any features to enable in module 'requires' decls
   /// in addition to the hard-coded list in Module.cpp and the target features.
@@ -108,7 +106,18 @@ public:
 
   /// \brief Options for parsing comments.
   CommentOptions CommentOpts;
-  
+
+  /// \brief A list of all -fno-builtin-* function names (e.g., memset).
+  std::vector<std::string> NoBuiltinFuncs;
+
+  /// \brief Triples of the OpenMP targets that the host code codegen should
+  /// take into account in order to generate accurate offloading descriptors.
+  std::vector<llvm::Triple> OMPTargetTriples;
+
+  /// \brief Name of the IR file that contains the result of the OpenMP target
+  /// host code generation.
+  std::string OMPHostIRFile;
+
   LangOptions();
 
   // Define accessors/mutators for language options of enumeration type.
@@ -134,6 +143,10 @@ public:
   /// \brief Reset all of the options that are not considered when building a
   /// module.
   void resetNonModularOptions();
+
+  /// \brief Is this a libc/libm function that is no longer recognized as a
+  /// builtin because a -fno-builtin-* option has been specified?
+  bool isNoBuiltinFunc(const char *Name) const;
 };
 
 /// \brief Floating point control options

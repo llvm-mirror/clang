@@ -252,6 +252,7 @@ def TargetARM : TargetArch<["arm", "thumb"]>;
 def TargetMips : TargetArch<["mips", "mipsel"]>;
 def TargetMSP430 : TargetArch<["msp430"]>;
 def TargetX86 : TargetArch<["x86"]>;
+def TargetAnyX86 : TargetArch<["x86", "x86_64"]>;
 def TargetWindows : TargetArch<["x86", "x86_64", "arm", "thumb"]> {
   let OSes = ["Win32"];
 }
@@ -310,6 +311,9 @@ class TypeAttr : Attr {
   let ASTNode = 0;
 }
 
+/// A stmt attribute is not processed on a declaration or a type.
+class StmtAttr : Attr;
+
 /// An inheritable attribute is inherited by later redeclarations.
 class InheritableAttr : Attr;
 
@@ -337,6 +341,11 @@ class TargetSpecificAttr<TargetArch target> {
 /// redeclarations, even when it's written on a parameter.
 class InheritableParamAttr : InheritableAttr;
 
+/// An attribute which changes the ABI rules for a specific parameter.
+class ParameterABIAttr : InheritableParamAttr {
+  let Subjects = SubjectList<[ParmVar]>;
+}
+
 /// An ignored attribute, which we parse but discard with no checking.
 class IgnoredAttr : Attr {
   let Ignored = 1;
@@ -348,6 +357,14 @@ class IgnoredAttr : Attr {
 //
 // Attributes begin here
 //
+
+def AbiTag : Attr {
+  let Spellings = [GCC<"abi_tag">];
+  let Args = [VariadicStringArgument<"Tags">];
+  let Subjects = SubjectList<[Struct, Var, Function, Namespace], ErrorDiag,
+      "ExpectedStructClassVariableFunctionOrInlineNamespace">;
+  let Documentation = [AbiTagsDocs];
+}
 
 def AddressSpace : TypeAttr {
   let Spellings = [GNU<"address_space">];
@@ -426,8 +443,8 @@ def Annotate : InheritableParamAttr {
 }
 
 def ARMInterrupt : InheritableAttr, TargetSpecificAttr<TargetARM> {
-  // NOTE: If you add any additional spellings, MSP430Interrupt's and
-  // MipsInterrupt's spellings must match.
+  // NOTE: If you add any additional spellings, MSP430Interrupt's,
+  // MipsInterrupt's and AnyX86Interrupt's spellings must match.
   let Spellings = [GNU<"interrupt">];
   let Args = [EnumArgument<"Interrupt", "InterruptType",
                            ["IRQ", "FIQ", "SWI", "ABORT", "UNDEF", ""],
@@ -449,7 +466,8 @@ def Availability : InheritableAttr {
   let Spellings = [GNU<"availability">];
   let Args = [IdentifierArgument<"platform">, VersionArgument<"introduced">,
               VersionArgument<"deprecated">, VersionArgument<"obsoleted">,
-              BoolArgument<"unavailable">, StringArgument<"message">];
+              BoolArgument<"unavailable">, StringArgument<"message">,
+              BoolArgument<"strict">];
   let AdditionalMembers =
 [{static llvm::StringRef getPrettyPlatformName(llvm::StringRef Platform) {
     return llvm::StringSwitch<llvm::StringRef>(Platform)
@@ -654,9 +672,15 @@ def OpenCLKernel : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def OpenCLUnrollHint : InheritableAttr {
+  let Spellings = [GNU<"opencl_unroll_hint">];
+  let Args = [UnsignedArgument<"UnrollHint">];
+  let Documentation = [OpenCLUnrollHintDocs];
+}
+
 // This attribute is both a type attribute, and a declaration attribute (for
 // parameter variables).
-def OpenCLImageAccess : Attr {
+def OpenCLAccess : Attr {
   let Spellings = [Keyword<"__read_only">, Keyword<"read_only">,
                    Keyword<"__write_only">, Keyword<"write_only">,
                    Keyword<"__read_write">, Keyword<"read_write">];
@@ -667,7 +691,7 @@ def OpenCLImageAccess : Attr {
                                             Keyword<"read_write">]>,
                    Accessor<"isWriteOnly", [Keyword<"__write_only">,
                                             Keyword<"write_only">]>];
-  let Documentation = [Undocumented];
+  let Documentation = [OpenCLAccessDocs];
 }
 
 def OpenCLPrivateAddressSpace : TypeAttr {
@@ -725,8 +749,9 @@ def ExtVectorType : Attr {
   let Documentation = [Undocumented];
 }
 
-def FallThrough : Attr {
-  let Spellings = [CXX11<"clang", "fallthrough">];
+def FallThrough : StmtAttr {
+  let Spellings = [CXX11<"", "fallthrough", 201603>,
+                   CXX11<"clang", "fallthrough">];
 //  let Subjects = [NullStmt];
   let Documentation = [FallthroughDocs];
 }
@@ -845,8 +870,8 @@ def MSABI : InheritableAttr {
 }
 
 def MSP430Interrupt : InheritableAttr, TargetSpecificAttr<TargetMSP430> {
-  // NOTE: If you add any additional spellings, ARMInterrupt's and
-  // MipsInterrupt's spellings must match.
+  // NOTE: If you add any additional spellings, ARMInterrupt's, MipsInterrupt's
+  // and AnyX86Interrupt's spellings must match.
   let Spellings = [GNU<"interrupt">];
   let Args = [UnsignedArgument<"Number">];
   let ParseKind = "Interrupt";
@@ -861,8 +886,8 @@ def Mips16 : InheritableAttr, TargetSpecificAttr<TargetMips> {
 }
 
 def MipsInterrupt : InheritableAttr, TargetSpecificAttr<TargetMips> {
-  // NOTE: If you add any additional spellings, ARMInterrupt's and
-  // MSP430Interrupt's spellings must match.
+  // NOTE: If you add any additional spellings, ARMInterrupt's,
+  // MSP430Interrupt's and AnyX86Interrupt's spellings must match.
   let Spellings = [GNU<"interrupt">];
   let Subjects = SubjectList<[Function]>;
   let Args = [EnumArgument<"Interrupt", "InterruptType",
@@ -878,6 +903,8 @@ def MipsInterrupt : InheritableAttr, TargetSpecificAttr<TargetMips> {
 
 def Mode : Attr {
   let Spellings = [GCC<"mode">];
+  let Subjects = SubjectList<[Var, Enum, TypedefName, Field], ErrorDiag,
+                             "ExpectedVariableEnumFieldOrTypedef">;
   let Args = [IdentifierArgument<"Mode">];
   let Documentation = [Undocumented];
 }
@@ -1325,6 +1352,27 @@ def StdCall : InheritableAttr {
   let Documentation = [StdCallDocs];
 }
 
+def SwiftCall : InheritableAttr {
+  let Spellings = [GCC<"swiftcall">];
+//  let Subjects = SubjectList<[Function]>;
+  let Documentation = [SwiftCallDocs];
+}
+
+def SwiftContext : ParameterABIAttr {
+  let Spellings = [GCC<"swift_context">];
+  let Documentation = [SwiftContextDocs];
+}
+
+def SwiftErrorResult : ParameterABIAttr {
+  let Spellings = [GCC<"swift_error_result">];
+  let Documentation = [SwiftErrorResultDocs];
+}
+
+def SwiftIndirectResult : ParameterABIAttr {
+  let Spellings = [GCC<"swift_indirect_result">];
+  let Documentation = [SwiftIndirectResultDocs];
+}
+
 def SysVABI : InheritableAttr {
   let Spellings = [GCC<"sysv_abi">];
 //  let Subjects = [Function, ObjCMethod];
@@ -1436,11 +1484,11 @@ def ObjCRequiresPropertyDefs : InheritableAttr {
 }
 
 def Unused : InheritableAttr {
-  let Spellings = [GCC<"unused">];
-  let Subjects = SubjectList<[Var, ObjCIvar, Type, Label, Field, ObjCMethod,
-                              FunctionLike], WarnDiag,
-                             "ExpectedVariableFunctionOrLabel">;
-  let Documentation = [Undocumented];
+  let Spellings = [CXX11<"", "maybe_unused", 201603>, GCC<"unused">];
+  let Subjects = SubjectList<[Var, ObjCIvar, Type, Enum, EnumConstant, Label,
+                              Field, ObjCMethod, FunctionLike], WarnDiag,
+                             "ExpectedForMaybeUnused">;
+  let Documentation = [WarnMaybeUnusedDocs];
 }
 
 def Used : InheritableAttr {
@@ -1501,11 +1549,12 @@ def WarnUnused : InheritableAttr {
 }
 
 def WarnUnusedResult : InheritableAttr {
-  let Spellings = [GCC<"warn_unused_result">,
-                   CXX11<"clang", "warn_unused_result">];
-  let Subjects = SubjectList<[ObjCMethod, CXXRecord, FunctionLike], WarnDiag,
-                             "ExpectedFunctionMethodOrClass">;
-  let Documentation = [Undocumented];
+  let Spellings = [CXX11<"", "nodiscard", 201603>,
+                   CXX11<"clang", "warn_unused_result">,
+                   GCC<"warn_unused_result">];
+  let Subjects = SubjectList<[ObjCMethod, Enum, CXXRecord, FunctionLike],
+                             WarnDiag, "ExpectedFunctionMethodEnumOrClass">;
+  let Documentation = [WarnUnusedResultsDocs];
 }
 
 def Weak : InheritableAttr {
@@ -1525,6 +1574,16 @@ def WeakRef : InheritableAttr {
   let Args = [StringArgument<"Aliasee", 1>];
   let Subjects = SubjectList<[Var, Function], ErrorDiag>;
   let Documentation = [Undocumented];
+}
+
+def AnyX86Interrupt : InheritableAttr, TargetSpecificAttr<TargetAnyX86> {
+  // NOTE: If you add any additional spellings, ARMInterrupt's,
+  // MSP430Interrupt's and MipsInterrupt's spellings must match.
+  let Spellings = [GNU<"interrupt">];
+  let Subjects = SubjectList<[HasFunctionProto]>;
+  let ParseKind = "Interrupt";
+  let HasCustomParsing = 1;
+  let Documentation = [AnyX86InterruptDocs];
 }
 
 def X86ForceAlignArgPointer : InheritableAttr, TargetSpecificAttr<TargetX86> {
@@ -2159,6 +2218,13 @@ def CapturedRecord : InheritableAttr {
 }
 
 def OMPThreadPrivateDecl : InheritableAttr {
+  // This attribute has no spellings as it is only ever created implicitly.
+  let Spellings = [];
+  let SemaHandler = 0;
+  let Documentation = [Undocumented];
+}
+
+def OMPCaptureNoInit : InheritableAttr {
   // This attribute has no spellings as it is only ever created implicitly.
   let Spellings = [];
   let SemaHandler = 0;

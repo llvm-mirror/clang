@@ -1038,6 +1038,11 @@ are listed below.
    Enable simple code coverage in addition to certain sanitizers.
    See :doc:`SanitizerCoverage` for more details.
 
+**-f[no-]sanitize-stats**
+
+   Enable simple statistics gathering for the enabled sanitizers.
+   See :doc:`SanitizerStats` for more details.
+
 .. option:: -fsanitize-undefined-trap-on-error
 
    Deprecated alias for ``-fsanitize-trap=undefined``.
@@ -1047,6 +1052,21 @@ are listed below.
    Enable cross-DSO control flow integrity checks. This flag modifies
    the behavior of sanitizers in the ``cfi`` group to allow checking
    of cross-DSO virtual and indirect calls.
+
+.. option:: -fwhole-program-vtables
+
+   Enable whole-program vtable optimizations, such as single-implementation
+   devirtualization and virtual constant propagation. Requires ``-flto``.
+
+   By default, the compiler will assume that all type hierarchies are
+   closed except those in the ``std`` namespace, the ``stdext`` namespace
+   and classes with the ``__declspec(uuid())`` attribute.
+
+.. option:: -fwhole-program-vtables-blacklist=path
+
+   Allows the user to specify the path to a list of additional classes to
+   blacklist from whole-program vtable optimizations. This list is in the
+   :ref:`CFI blacklist <cfi-blacklist>` format.
 
 .. option:: -fno-assume-sane-operator-new
 
@@ -1689,10 +1709,6 @@ GCC extensions not implemented yet
 clang tries to be compatible with gcc as much as possible, but some gcc
 extensions are not implemented yet:
 
--  clang does not support #pragma weak (`bug
-   3679 <http://llvm.org/bugs/show_bug.cgi?id=3679>`_). Due to the uses
-   described in the bug, this is likely to be implemented at some point,
-   at least partially.
 -  clang does not support decimal floating point types (``_Decimal32`` and
    friends) or fixed-point types (``_Fract`` and friends); nobody has
    expressed interest in these features yet, so it's hard to say when
@@ -1710,9 +1726,6 @@ extensions are not implemented yet:
      ...
      local_function(1);
 
--  clang does not support global register variables; this is unlikely to
-   be implemented soon because it requires additional LLVM backend
-   support.
 -  clang does not support static initialization of flexible array
    members. This appears to be a rarely used extension, but could be
    implemented pending user demand.
@@ -2019,8 +2032,9 @@ with a warning. For example:
 
 To suppress warnings about unused arguments, use the ``-Qunused-arguments`` option.
 
-Options that are not known to clang-cl will cause errors. If they are spelled with a
-leading ``/``, they will be mistaken for a filename:
+Options that are not known to clang-cl will be ignored by default. Use the
+``-Werror=unknown-argument`` option in order to treat them as errors. If these
+options are spelled with a leading ``/``, they will be mistaken for a filename:
 
   ::
 
@@ -2036,6 +2050,8 @@ Execute ``clang-cl /?`` to see a list of supported options:
     CL.EXE COMPATIBILITY OPTIONS:
       /?                     Display available options
       /arch:<value>          Set architecture for code generation
+      /Brepro-               Emit an object file which cannot be reproduced over time
+      /Brepro                Emit an object file which can be reproduced over time
       /C                     Don't discard comments when preprocessing
       /c                     Compile only
       /D <macro[=value]>     Define macro
@@ -2079,8 +2095,6 @@ Execute ``clang-cl /?`` to see a list of supported options:
       /Oi                    Enable use of builtin functions
       /Os                    Optimize for size
       /Ot                    Optimize for speed
-      /Oy-                   Disable frame pointer omission
-      /Oy                    Enable frame pointer omission
       /O<value>              Optimization level
       /o <file or directory> Set output file or directory (ends in / or \)
       /P                     Preprocess to file
@@ -2105,7 +2119,7 @@ Execute ``clang-cl /?`` to see a list of supported options:
       /W2                    Enable -Wall
       /W3                    Enable -Wall
       /W4                    Enable -Wall and -Wextra
-      /Wall                  Enable -Wall
+      /Wall                  Enable -Wall and -Wextra
       /WX-                   Do not treat warnings as errors
       /WX                    Treat warnings as errors
       /w                     Disable all warnings
@@ -2133,8 +2147,10 @@ Execute ``clang-cl /?`` to see a list of supported options:
       -fms-compatibility-version=<value>
                               Dot-separated value representing the Microsoft compiler version
                               number to report in _MSC_VER (0 = don't define it (default))
-      -fmsc-version=<value>   Microsoft compiler version number to report in _MSC_VER (0 = don't
-                              define it (default))
+      -fms-compatibility      Enable full Microsoft Visual C++ compatibility
+      -fms-extensions         Accept some non-standard constructs supported by the Microsoft compiler
+      -fmsc-version=<value>   Microsoft compiler version number to report in _MSC_VER
+                              (0 = don't define it (default))
       -fno-sanitize-coverage=<value>
                               Disable specified features of coverage instrumentation for Sanitizers
       -fno-sanitize-recover=<value>

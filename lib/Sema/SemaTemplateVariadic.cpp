@@ -750,6 +750,7 @@ bool Sema::containsUnexpandedParameterPacks(Declarator &D) {
     case DeclaratorChunk::Pointer:
     case DeclaratorChunk::Reference:
     case DeclaratorChunk::Paren:
+    case DeclaratorChunk::Pipe:
     case DeclaratorChunk::BlockPointer:
       // These declarator chunks cannot contain any parameter packs.
       break;
@@ -995,10 +996,6 @@ ExprResult Sema::BuildEmptyCXXFoldExpr(SourceLocation EllipsisLoc,
                                        BinaryOperatorKind Operator) {
   // [temp.variadic]p9:
   //   If N is zero for a unary fold-expression, the value of the expression is
-  //       *   ->  1
-  //       +   ->  int()
-  //       &   ->  -1
-  //       |   ->  int()
   //       &&  ->  true
   //       ||  ->  false
   //       ,   ->  void()
@@ -1008,17 +1005,6 @@ ExprResult Sema::BuildEmptyCXXFoldExpr(SourceLocation EllipsisLoc,
   // prevent the result from being a null pointer constant.
   QualType ScalarType;
   switch (Operator) {
-  case BO_Add:
-    ScalarType = Context.IntTy;
-    break;
-  case BO_Mul:
-    return ActOnIntegerConstant(EllipsisLoc, 1);
-  case BO_Or:
-    ScalarType = Context.IntTy;
-    break;
-  case BO_And:
-    return CreateBuiltinUnaryOp(EllipsisLoc, UO_Minus,
-                                ActOnIntegerConstant(EllipsisLoc, 1).get());
   case BO_LOr:
     return ActOnCXXBoolLiteral(EllipsisLoc, tok::kw_false);
   case BO_LAnd:

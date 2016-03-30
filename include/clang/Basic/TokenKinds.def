@@ -219,6 +219,9 @@ PUNCTUATOR(at,                  "@")
 PUNCTUATOR(lesslessless,          "<<<")
 PUNCTUATOR(greatergreatergreater, ">>>")
 
+// CL support
+PUNCTUATOR(caretcaret,            "^^")
+
 // C99 6.4.1: Keywords.  These turn into kw_* tokens.
 // Flags allowed:
 //   KEYALL   - This is a keyword in all variants of C and C++, or it
@@ -519,6 +522,8 @@ KEYWORD(vec_step                    , KEYOPENCL|KEYALTIVEC|KEYZVECTOR)
 // OpenMP Type Traits
 KEYWORD(__builtin_omp_required_simd_align, KEYALL)
 
+KEYWORD(pipe                        , KEYOPENCL)
+
 // Borland Extensions.
 KEYWORD(__pascal                    , KEYALL)
 
@@ -696,6 +701,11 @@ ANNOTATION(pragma_parser_crash)
 // The lexer produces these so that they only take effect when the parser
 // handles them.
 ANNOTATION(pragma_captured)
+
+// Annotation for #pragma clang __debug dump...
+// The lexer produces these so that the parser and semantic analysis can
+// look up and dump the operand.
+ANNOTATION(pragma_dump)
 
 // Annotation for #pragma ms_struct...
 // The lexer produces these so that they only take effect when the parser

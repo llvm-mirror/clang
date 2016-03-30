@@ -686,8 +686,10 @@ llvm::BasicBlock *CodeGenFunction::getInvokeDestImpl() {
   assert(EHStack.requiresLandingPad());
   assert(!EHStack.empty());
 
-  // If exceptions are disabled, there are usually no landingpads. However, when
-  // SEH is enabled, functions using SEH still get landingpads.
+  // If exceptions are disabled and SEH is not in use, then there is no invoke
+  // destination. SEH "works" even if exceptions are off. In practice, this
+  // means that C++ destructors and other EH cleanups don't run, which is
+  // consistent with MSVC's behavior.
   const LangOptions &LO = CGM.getLangOpts();
   if (!LO.Exceptions) {
     if (!LO.Borland && !LO.MicrosoftExt)
@@ -1326,11 +1328,13 @@ llvm::BasicBlock *CodeGenFunction::getTerminateHandler() {
   TerminateHandler = createBasicBlock("terminate.handler");
   Builder.SetInsertPoint(TerminateHandler);
   llvm::Value *Exn = nullptr;
+  SaveAndRestore<llvm::Instruction *> RestoreCurrentFuncletPad(
+      CurrentFuncletPad);
   if (EHPersonality::get(*this).usesFuncletPads()) {
     llvm::Value *ParentPad = CurrentFuncletPad;
     if (!ParentPad)
       ParentPad = llvm::ConstantTokenNone::get(CGM.getLLVMContext());
-    Builder.CreateCleanupPad(ParentPad);
+    CurrentFuncletPad = Builder.CreateCleanupPad(ParentPad);
   } else {
     if (getLangOpts().CPlusPlus)
       Exn = getExceptionFromSlot();
@@ -1623,14 +1627,13 @@ void CodeGenFunction::startOutlinedSEHHelper(CodeGenFunction &ParentCGF,
   SmallString<128> Name;
   {
     llvm::raw_svector_ostream OS(Name);
-    const Decl *ParentCodeDecl = ParentCGF.CurCodeDecl;
-    const NamedDecl *Parent = dyn_cast_or_null<NamedDecl>(ParentCodeDecl);
-    assert(Parent && "FIXME: handle unnamed decls (lambdas, blocks) with SEH");
+    const FunctionDecl *ParentSEHFn = ParentCGF.CurSEHParent;
+    assert(ParentSEHFn && "No CurSEHParent!");
     MangleContext &Mangler = CGM.getCXXABI().getMangleContext();
     if (IsFilter)
-      Mangler.mangleSEHFilterExpression(Parent, OS);
+      Mangler.mangleSEHFilterExpression(ParentSEHFn, OS);
     else
-      Mangler.mangleSEHFinallyBlock(Parent, OS);
+      Mangler.mangleSEHFinallyBlock(ParentSEHFn, OS);
   }
 
   FunctionArgList Args;
@@ -1677,6 +1680,7 @@ void CodeGenFunction::startOutlinedSEHHelper(CodeGenFunction &ParentCGF,
 
   StartFunction(GlobalDecl(), RetTy, Fn, FnInfo, Args,
                 OutlinedStmt->getLocStart(), OutlinedStmt->getLocStart());
+  CurSEHParent = ParentCGF.CurSEHParent;
 
   CGM.SetLLVMFunctionAttributes(nullptr, FnInfo, CurFn);
   EmitCapturedLocals(ParentCGF, OutlinedStmt, IsFilter);

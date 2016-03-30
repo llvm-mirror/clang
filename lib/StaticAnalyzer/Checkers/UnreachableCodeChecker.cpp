@@ -26,10 +26,6 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/SVals.h"
 #include "llvm/ADT/SmallSet.h"
 
-// The number of CFGBlock pointers we want to reserve memory for. This is used
-// once for each function we analyze.
-#define DEFAULT_CFGBLOCKS 256
-
 using namespace clang;
 using namespace ento;
 
@@ -39,7 +35,7 @@ public:
   void checkEndAnalysis(ExplodedGraph &G, BugReporter &B,
                         ExprEngine &Eng) const;
 private:
-  typedef llvm::SmallSet<unsigned, DEFAULT_CFGBLOCKS> CFGBlocksSet;
+  typedef llvm::SmallSet<unsigned, 32> CFGBlocksSet;
 
   static inline const Stmt *getUnreachableStmt(const CFGBlock *CB);
   static void FindUnreachableEntryPoints(const CFGBlock *CB,
@@ -235,12 +231,9 @@ bool UnreachableCodeChecker::isInvalidPath(const CFGBlock *CB,
     return false;
 
   // Run each of the checks on the conditions
-  if (containsMacro(cond) || containsEnum(cond)
-      || containsStaticLocal(cond) || containsBuiltinOffsetOf(cond)
-      || containsStmt<UnaryExprOrTypeTraitExpr>(cond))
-    return true;
-
-  return false;
+  return containsMacro(cond) || containsEnum(cond) ||
+         containsStaticLocal(cond) || containsBuiltinOffsetOf(cond) ||
+         containsStmt<UnaryExprOrTypeTraitExpr>(cond);
 }
 
 // Returns true if the given CFGBlock is empty

@@ -21,6 +21,10 @@ int _c(void) {return N::anonymous + c;}
 // CHECK-DAG: @"\01?_c@@YAHXZ"
 // X64-DAG:   @"\01?_c@@YAHXZ"
 
+const int &NeedsReferenceTemporary = 2;
+// CHECK-DAG: @"\01?NeedsReferenceTemporary@@3ABHB" = constant i32* @"\01?$RT1@NeedsReferenceTemporary@@3ABHB"
+// X64-DAG: @"\01?NeedsReferenceTemporary@@3AEBHEB" = constant i32* @"\01?$RT1@NeedsReferenceTemporary@@3AEBHEB"
+
 class foo {
   static const short d;
 // CHECK-DAG: @"\01?d@foo@@0FB"
@@ -436,4 +440,42 @@ namespace PassObjectSize {
 int foo(int *const i __attribute__((pass_object_size(0)))) { return 0; }
 // CHECK-DAG: define i32 @"\01?bar@PassObjectSize@@YAHQAHW4__pass_object_size1@__clang@@@Z"
 int bar(int *const i __attribute__((pass_object_size(1)))) { return 0; }
+// CHECK-DAG: define i32 @"\01?qux@PassObjectSize@@YAHQAHW4__pass_object_size1@__clang@@0W4__pass_object_size0@3@@Z"
+int qux(int *const i __attribute__((pass_object_size(1))), int *const j __attribute__((pass_object_size(0)))) { return 0; }
+// CHECK-DAG: define i32 @"\01?zot@PassObjectSize@@YAHQAHW4__pass_object_size1@__clang@@01@Z"
+int zot(int *const i __attribute__((pass_object_size(1))), int *const j __attribute__((pass_object_size(1)))) { return 0; }
+}
+
+namespace Atomic {
+// CHECK-DAG: define void @"\01?f@Atomic@@YAXU?$_Atomic@H@__clang@@@Z"(
+void f(_Atomic(int)) {}
+}
+namespace Complex {
+// CHECK-DAG: define void @"\01?f@Complex@@YAXU?$_Complex@H@__clang@@@Z"(
+void f(_Complex int) {}
+}
+
+namespace PR26029 {
+template <class>
+struct L {
+  L() {}
+};
+template <class>
+class H;
+struct M : L<H<int *> > {};
+
+template <class>
+struct H {};
+
+template <class GT>
+void m_fn3() {
+  (H<GT *>());
+  M();
+}
+
+void runOnFunction() {
+  L<H<int *> > b;
+  m_fn3<int>();
+}
+// CHECK-DAG: call {{.*}} @"\01??0?$L@V?$H@PAH@PR26029@@@PR26029@@QAE@XZ"
 }

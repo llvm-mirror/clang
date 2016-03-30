@@ -59,6 +59,12 @@ def ext_dollar_in_identifier : Extension<"'$' in identifier">,
 def ext_charize_microsoft : Extension<
   "charizing operator #@ is a Microsoft extension">,
   InGroup<MicrosoftCharize>;
+def ext_comment_paste_microsoft : Extension<
+  "pasting two '/' tokens into a '//' comment is a Microsoft extension">,
+  InGroup<MicrosoftCommentPaste>;
+def ext_ctrl_z_eof_microsoft : Extension<
+  "treating Ctrl-Z as end-of-file is a Microsoft extension">,
+  InGroup<MicrosoftEndOfFile>;
 
 def ext_token_used : Extension<"extension used">,
   InGroup<DiagGroup<"language-extension-token">>;
@@ -169,10 +175,17 @@ def err_multichar_utf_character_literal : Error<
 def err_exponent_has_no_digits : Error<"exponent has no digits">;
 def ext_imaginary_constant : Extension<
   "imaginary constants are a GNU extension">, InGroup<GNUImaginaryConstant>;
-def err_hexconstant_requires: Error<
-  "hexadecimal floating constants require %select{an exponent|a significand}0">;
-def ext_hexconstant_invalid : Extension<
+def err_hex_constant_requires : Error<
+  "hexadecimal floating %select{constant|literal}0 requires "
+  "%select{an exponent|a significand}1">;
+def ext_hex_constant_invalid : Extension<
   "hexadecimal floating constants are a C99 feature">, InGroup<C99>;
+def ext_hex_literal_invalid : Extension<
+  "hexadecimal floating literals are a C++1z feature">, InGroup<CXX1z>;
+def warn_cxx1z_hex_literal : Warning<
+  "hexidecimal floating literals are incompatible with "
+  "C++ standards before C++1z">,
+  InGroup<CXXPre1zCompatPedantic>, DefaultIgnore;
 def ext_binary_literal : Extension<
   "binary integer literals are a GNU extension">, InGroup<GNUBinaryLiteral>;
 def ext_binary_literal_cxx14 : Extension<
@@ -484,6 +497,8 @@ def warn_pragma_diagnostic_unknown_warning :
 // - #pragma __debug
 def warn_pragma_debug_unexpected_command : Warning<
   "unexpected debug command '%0'">, InGroup<IgnoredPragmas>;
+def warn_pragma_debug_missing_argument : Warning<
+  "missing argument to debug command '%0'">, InGroup<IgnoredPragmas>;
 
 def err_defined_macro_name : Error<"'defined' cannot be used as a macro name">;
 def err_paste_at_start : Error<
@@ -649,6 +664,13 @@ def warn_header_guard : Warning<
   InGroup<DiagGroup<"header-guard">>;
 def note_header_guard : Note<
   "%0 is defined here; did you mean %1?">;
+
+def warn_defined_in_object_type_macro : Warning<
+  "macro expansion producing 'defined' has undefined behavior">,
+  InGroup<ExpansionToDefined>;
+def warn_defined_in_function_type_macro : Extension<
+  "macro expansion producing 'defined' has undefined behavior">,
+  InGroup<ExpansionToDefined>;
 
 let CategoryName = "Nullability Issue" in {
 

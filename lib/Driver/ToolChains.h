@@ -163,6 +163,7 @@ protected:
     bool IsValid;
     const Driver &D;
     std::string CudaInstallPath;
+    std::string CudaBinPath;
     std::string CudaLibPath;
     std::string CudaLibDevicePath;
     std::string CudaIncludePath;
@@ -179,6 +180,8 @@ protected:
 
     /// \brief Get the detected Cuda installation path.
     StringRef getInstallPath() const { return CudaInstallPath; }
+    /// \brief Get the detected path to Cuda's bin directory.
+    StringRef getBinPath() const { return CudaBinPath; }
     /// \brief Get the detected Cuda Include path.
     StringRef getIncludePath() const { return CudaIncludePath; }
     /// \brief Get the detected Cuda library path.
@@ -493,6 +496,8 @@ protected:
     return TargetVersion < VersionTuple(V0, V1, V2);
   }
 
+  StringRef getOSLibraryNameSuffix() const;
+
 public:
   /// }
   /// @name ToolChain Implementation
@@ -507,6 +512,7 @@ public:
   TranslateArgs(const llvm::opt::DerivedArgList &Args,
                 const char *BoundArch) const override;
 
+  CXXStdlibType GetDefaultCXXStdlibType() const override;
   ObjCRuntime getDefaultObjCRuntime(bool isNonFragile) const override;
   bool hasBlocksRuntime() const override;
 
@@ -535,6 +541,8 @@ public:
   void CheckObjCARC() const override;
 
   bool UseSjLjExceptions(const llvm::opt::ArgList &Args) const override;
+
+  bool SupportsEmbeddedBitcode() const override;
 
   SanitizerMask getSupportedSanitizers() const override;
 };
@@ -610,6 +618,8 @@ public:
                            llvm::opt::ArgStringList &CmdArgs) const override;
 
   bool isPIEDefault() const override { return false; }
+
+  SanitizerMask getSupportedSanitizers() const override;
 
 protected:
   Tool *buildLinker() const override;
@@ -694,7 +704,7 @@ public:
   bool IsMathErrnoDefault() const override { return false; }
   bool IsObjCNonFragileABIDefault() const override { return true; }
 
-  CXXStdlibType GetCXXStdlibType(const llvm::opt::ArgList &Args) const override;
+  CXXStdlibType GetDefaultCXXStdlibType() const override;
   void AddClangCXXStdlibIncludeArgs(
       const llvm::opt::ArgList &DriverArgs,
       llvm::opt::ArgStringList &CC1Args) const override;
@@ -722,6 +732,8 @@ public:
   void AddClangCXXStdlibIncludeArgs(
       const llvm::opt::ArgList &DriverArgs,
       llvm::opt::ArgStringList &CC1Args) const override;
+  void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &CmdArgs) const override;
 
   bool UseSjLjExceptions(const llvm::opt::ArgList &Args) const override;
   bool isPIEDefault() const override;
@@ -730,9 +742,6 @@ public:
   // Until dtrace (via CTF) and LLDB can deal with distributed debug info,
   // FreeBSD defaults to standalone/full debug info.
   bool GetDefaultStandaloneDebug() const override { return true; }
-  llvm::DebuggerKind getDefaultDebuggerTuning() const override {
-    return llvm::DebuggerKind::LLDB;
-  }
 
 protected:
   Tool *buildAssembler() const override;
@@ -819,6 +828,14 @@ public:
                 const char *BoundArch) const override;
   void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
                              llvm::opt::ArgStringList &CC1Args) const override;
+
+  // Never try to use the integrated assembler with CUDA; always fork out to
+  // ptxas.
+  bool useIntegratedAs() const override { return false; }
+
+protected:
+  Tool *buildAssembler() const override;  // ptxas
+  Tool *buildLinker() const override;     // fatbinary (ok, not really a linker)
 };
 
 class LLVM_LIBRARY_VISIBILITY MipsLLVMToolChain : public Linux {
@@ -1110,6 +1127,14 @@ private:
   bool HasNativeLLVMSupport() const override;
   void addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
                              llvm::opt::ArgStringList &CC1Args) const override;
+  RuntimeLibType GetDefaultRuntimeLibType() const override;
+  CXXStdlibType GetCXXStdlibType(const llvm::opt::ArgList &Args) const override;
+  void AddClangSystemIncludeArgs(
+      const llvm::opt::ArgList &DriverArgs,
+      llvm::opt::ArgStringList &CC1Args) const override;
+  void AddClangCXXStdlibIncludeArgs(
+      const llvm::opt::ArgList &DriverArgs,
+      llvm::opt::ArgStringList &CC1Args) const override;
 
   Tool *buildLinker() const override;
 };

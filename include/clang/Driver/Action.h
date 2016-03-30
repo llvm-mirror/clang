@@ -15,6 +15,9 @@
 #include "llvm/ADT/SmallVector.h"
 
 namespace llvm {
+
+class StringRef;
+
 namespace opt {
   class Arg;
 }
@@ -32,11 +35,16 @@ namespace driver {
 /// single primary output, at least in terms of controlling the
 /// compilation. Actions can produce auxiliary files, but can only
 /// produce a single output to feed into subsequent actions.
+///
+/// Actions are usually owned by a Compilation, which creates new
+/// actions via MakeAction().
 class Action {
 public:
   typedef ActionList::size_type size_type;
-  typedef ActionList::iterator iterator;
-  typedef ActionList::const_iterator const_iterator;
+  typedef ActionList::iterator input_iterator;
+  typedef ActionList::const_iterator input_const_iterator;
+  typedef llvm::iterator_range<input_iterator> input_range;
+  typedef llvm::iterator_range<input_const_iterator> input_const_range;
 
   enum ActionClass {
     InputClass = 0,
@@ -70,26 +78,19 @@ private:
 
   ActionList Inputs;
 
-  unsigned OwnsInputs : 1;
-
 protected:
-  Action(ActionClass Kind, types::ID Type)
-    : Kind(Kind), Type(Type), OwnsInputs(true)  {}
-  Action(ActionClass Kind, std::unique_ptr<Action> Input, types::ID Type)
-      : Kind(Kind), Type(Type), Inputs(1, Input.release()), OwnsInputs(true) {
-  }
-  Action(ActionClass Kind, std::unique_ptr<Action> Input)
-      : Kind(Kind), Type(Input->getType()), Inputs(1, Input.release()),
-        OwnsInputs(true) {}
+  Action(ActionClass Kind, types::ID Type) : Action(Kind, ActionList(), Type) {}
+  Action(ActionClass Kind, Action *Input, types::ID Type)
+      : Action(Kind, ActionList({Input}), Type) {}
+  Action(ActionClass Kind, Action *Input)
+      : Action(Kind, ActionList({Input}), Input->getType()) {}
   Action(ActionClass Kind, const ActionList &Inputs, types::ID Type)
-    : Kind(Kind), Type(Type), Inputs(Inputs), OwnsInputs(true) {}
+      : Kind(Kind), Type(Type), Inputs(Inputs) {}
+
 public:
   virtual ~Action();
 
   const char *getClassName() const { return Action::getClassName(getKind()); }
-
-  bool getOwnsInputs() { return OwnsInputs; }
-  void setOwnsInputs(bool Value) { OwnsInputs = Value; }
 
   ActionClass getKind() const { return Kind; }
   types::ID getType() const { return Type; }
@@ -99,10 +100,14 @@ public:
 
   size_type size() const { return Inputs.size(); }
 
-  iterator begin() { return Inputs.begin(); }
-  iterator end() { return Inputs.end(); }
-  const_iterator begin() const { return Inputs.begin(); }
-  const_iterator end() const { return Inputs.end(); }
+  input_iterator input_begin() { return Inputs.begin(); }
+  input_iterator input_end() { return Inputs.end(); }
+  input_range inputs() { return input_range(input_begin(), input_end()); }
+  input_const_iterator input_begin() const { return Inputs.begin(); }
+  input_const_iterator input_end() const { return Inputs.end(); }
+  input_const_range inputs() const {
+    return input_const_range(input_begin(), input_end());
+  }
 };
 
 class InputAction : public Action {
@@ -126,7 +131,7 @@ class BindArchAction : public Action {
   const char *ArchName;
 
 public:
-  BindArchAction(std::unique_ptr<Action> Input, const char *ArchName);
+  BindArchAction(Action *Input, const char *ArchName);
 
   const char *getArchName() const { return ArchName; }
 
@@ -137,18 +142,25 @@ public:
 
 class CudaDeviceAction : public Action {
   virtual void anchor();
-  /// GPU architecture to bind -- e.g 'sm_35'.
+  /// GPU architecture to bind.  Always of the form /sm_\d+/ or null (when the
+  /// action applies to multiple architectures).
   const char *GpuArchName;
   /// True when action results are not consumed by the host action (e.g when
   /// -fsyntax-only or --cuda-device-only options are used).
   bool AtTopLevel;
 
 public:
-  CudaDeviceAction(std::unique_ptr<Action> Input, const char *ArchName,
-                   bool AtTopLevel);
+  CudaDeviceAction(Action *Input, const char *ArchName, bool AtTopLevel);
 
   const char *getGpuArchName() const { return GpuArchName; }
+
+  /// Gets the compute_XX that corresponds to getGpuArchName().  Returns null
+  /// when getGpuArchName() is null.
+  const char *getComputeArchName() const;
+
   bool isAtTopLevel() const { return AtTopLevel; }
+
+  static bool IsValidGpuArchName(llvm::StringRef ArchName);
 
   static bool classof(const Action *A) {
     return A->getKind() == CudaDeviceClass;
@@ -160,9 +172,7 @@ class CudaHostAction : public Action {
   ActionList DeviceActions;
 
 public:
-  CudaHostAction(std::unique_ptr<Action> Input,
-                 const ActionList &DeviceActions);
-  ~CudaHostAction() override;
+  CudaHostAction(Action *Input, const ActionList &DeviceActions);
 
   const ActionList &getDeviceActions() const { return DeviceActions; }
 
@@ -172,7 +182,7 @@ public:
 class JobAction : public Action {
   virtual void anchor();
 protected:
-  JobAction(ActionClass Kind, std::unique_ptr<Action> Input, types::ID Type);
+  JobAction(ActionClass Kind, Action *Input, types::ID Type);
   JobAction(ActionClass Kind, const ActionList &Inputs, types::ID Type);
 
 public:
@@ -185,7 +195,7 @@ public:
 class PreprocessJobAction : public JobAction {
   void anchor() override;
 public:
-  PreprocessJobAction(std::unique_ptr<Action> Input, types::ID OutputType);
+  PreprocessJobAction(Action *Input, types::ID OutputType);
 
   static bool classof(const Action *A) {
     return A->getKind() == PreprocessJobClass;
@@ -195,7 +205,7 @@ public:
 class PrecompileJobAction : public JobAction {
   void anchor() override;
 public:
-  PrecompileJobAction(std::unique_ptr<Action> Input, types::ID OutputType);
+  PrecompileJobAction(Action *Input, types::ID OutputType);
 
   static bool classof(const Action *A) {
     return A->getKind() == PrecompileJobClass;
@@ -205,7 +215,7 @@ public:
 class AnalyzeJobAction : public JobAction {
   void anchor() override;
 public:
-  AnalyzeJobAction(std::unique_ptr<Action> Input, types::ID OutputType);
+  AnalyzeJobAction(Action *Input, types::ID OutputType);
 
   static bool classof(const Action *A) {
     return A->getKind() == AnalyzeJobClass;
@@ -215,7 +225,7 @@ public:
 class MigrateJobAction : public JobAction {
   void anchor() override;
 public:
-  MigrateJobAction(std::unique_ptr<Action> Input, types::ID OutputType);
+  MigrateJobAction(Action *Input, types::ID OutputType);
 
   static bool classof(const Action *A) {
     return A->getKind() == MigrateJobClass;
@@ -225,7 +235,7 @@ public:
 class CompileJobAction : public JobAction {
   void anchor() override;
 public:
-  CompileJobAction(std::unique_ptr<Action> Input, types::ID OutputType);
+  CompileJobAction(Action *Input, types::ID OutputType);
 
   static bool classof(const Action *A) {
     return A->getKind() == CompileJobClass;
@@ -235,7 +245,7 @@ public:
 class BackendJobAction : public JobAction {
   void anchor() override;
 public:
-  BackendJobAction(std::unique_ptr<Action> Input, types::ID OutputType);
+  BackendJobAction(Action *Input, types::ID OutputType);
 
   static bool classof(const Action *A) {
     return A->getKind() == BackendJobClass;
@@ -245,7 +255,7 @@ public:
 class AssembleJobAction : public JobAction {
   void anchor() override;
 public:
-  AssembleJobAction(std::unique_ptr<Action> Input, types::ID OutputType);
+  AssembleJobAction(Action *Input, types::ID OutputType);
 
   static bool classof(const Action *A) {
     return A->getKind() == AssembleJobClass;
@@ -285,8 +295,7 @@ public:
 class VerifyJobAction : public JobAction {
   void anchor() override;
 public:
-  VerifyJobAction(ActionClass Kind, std::unique_ptr<Action> Input,
-                  types::ID Type);
+  VerifyJobAction(ActionClass Kind, Action *Input, types::ID Type);
   static bool classof(const Action *A) {
     return A->getKind() == VerifyDebugInfoJobClass ||
            A->getKind() == VerifyPCHJobClass;
@@ -296,7 +305,7 @@ public:
 class VerifyDebugInfoJobAction : public VerifyJobAction {
   void anchor() override;
 public:
-  VerifyDebugInfoJobAction(std::unique_ptr<Action> Input, types::ID Type);
+  VerifyDebugInfoJobAction(Action *Input, types::ID Type);
   static bool classof(const Action *A) {
     return A->getKind() == VerifyDebugInfoJobClass;
   }
@@ -305,7 +314,7 @@ public:
 class VerifyPCHJobAction : public VerifyJobAction {
   void anchor() override;
 public:
-  VerifyPCHJobAction(std::unique_ptr<Action> Input, types::ID Type);
+  VerifyPCHJobAction(Action *Input, types::ID Type);
   static bool classof(const Action *A) {
     return A->getKind() == VerifyPCHJobClass;
   }

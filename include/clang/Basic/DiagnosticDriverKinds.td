@@ -22,10 +22,13 @@ def err_drv_unknown_stdin_type_clang_cl : Error<
 def err_drv_unknown_language : Error<"language not recognized: '%0'">;
 def err_drv_invalid_arch_name : Error<
   "invalid arch name '%0'">;
+def err_drv_cuda_bad_gpu_arch : Error<"Unsupported CUDA gpu architecture: %0">;
 def err_drv_invalid_thread_model_for_target : Error<
   "invalid thread model '%0' in '%1' for this target">;
 def err_drv_invalid_linker_name : Error<
   "invalid linker name in argument '%0'">;
+def err_drv_invalid_pgo_instrumentor : Error<
+  "invalid PGO instrumentor in argument '%0'">;
 def err_drv_invalid_rtlib_name : Error<
   "invalid runtime library name in argument '%0'">;
 def err_drv_unsupported_rtlib_for_platform : Error<
@@ -92,6 +95,23 @@ def err_target_unsupported_arch
 def err_drv_I_dash_not_supported : Error<
   "'%0' not supported, please use -iquote instead">;
 def err_drv_unknown_argument : Error<"unknown argument: '%0'">;
+def warn_drv_unknown_argument_clang_cl : Warning<
+  "unknown argument ignored in clang-cl: '%0'">,
+  InGroup<UnknownArgument>;
+
+def warn_drv_ycyu_no_arg_clang_cl : Warning<
+  "support for '%0' without a filename not implemented yet; flag ignored">,
+  InGroup<ClangClPch>;
+def warn_drv_ycyu_different_arg_clang_cl : Warning<
+  "support for '/Yc' and '/Yu' with different filenames not implemented yet; flags ignored">,
+  InGroup<ClangClPch>;
+def warn_drv_ycyu_no_fi_arg_clang_cl : Warning<
+  "support for '%0' without a corresponding /FI flag not implemented yet; flag ignored">,
+  InGroup<ClangClPch>;
+def warn_drv_yc_multiple_inputs_clang_cl : Warning<
+  "support for '/Yc' with more than one source file not implemented yet; flag ignored">,
+  InGroup<ClangClPch>;
+
 def err_drv_invalid_value : Error<"invalid value '%1' in '%0'">;
 def err_drv_invalid_int_value : Error<"invalid integral value '%1' in '%0'">;
 def err_drv_invalid_remap_file : Error<
@@ -123,6 +143,13 @@ def err_drv_emit_llvm_link : Error<
 def err_drv_optimization_remark_pattern : Error<
   "%0 in '%1'">;
 def err_drv_no_neon_modifier : Error<"[no]neon is not accepted as modifier, please use [no]simd instead">;
+def err_drv_invalid_omp_target : Error<"OpenMP target is invalid: '%0'">;
+def err_drv_omp_host_ir_file_not_found : Error<
+  "The provided host compiler IR file '%0' is required to generate code for OpenMP target regions but cannot be found.">;
+def err_drv_omp_host_target_not_supported : Error<
+  "The target '%0' is not a supported OpenMP host target.">;
+def err_drv_bitcode_unsupported_on_toolchain : Error<
+  "-fembed-bitcode is not supported on versions of iOS prior to 6.0">;
 
 def warn_O4_is_O3 : Warning<"-O4 is equivalent to -O3">, InGroup<Deprecated>;
 def warn_drv_lto_libpath : Warning<"libLTO.dylib relative to clang installed dir not found; using 'ld' default search path instead">,

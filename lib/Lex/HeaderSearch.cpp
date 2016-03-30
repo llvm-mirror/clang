@@ -14,7 +14,6 @@
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/IdentifierTable.h"
-#include "clang/Frontend/PCHContainerOperations.h"
 #include "clang/Lex/ExternalPreprocessorSource.h"
 #include "clang/Lex/HeaderMap.h"
 #include "clang/Lex/HeaderSearchOptions.h"
@@ -153,8 +152,7 @@ std::string HeaderSearch::getModuleFileName(StringRef ModuleName,
     auto FileName = llvm::sys::path::filename(ModuleMapPath);
 
     llvm::hash_code Hash =
-      llvm::hash_combine(DirName.lower(), FileName.lower(),
-                         HSOpts->ModuleFormat, HSOpts->UseDebugInfo);
+      llvm::hash_combine(DirName.lower(), FileName.lower());
 
     SmallString<128> HashStr;
     llvm::APInt(64, size_t(Hash)).toStringUnsigned(HashStr, /*Radix*/36);

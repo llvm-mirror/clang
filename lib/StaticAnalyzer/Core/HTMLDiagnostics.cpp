@@ -123,10 +123,10 @@ void HTMLDiagnostics::ReportDiag(const PathDiagnostic& D,
 
   // The path as already been prechecked that all parts of the path are
   // from the same file and that it is non-empty.
-  const SourceManager &SMgr = (*path.begin())->getLocation().getManager();
+  const SourceManager &SMgr = path.front()->getLocation().getManager();
   assert(!path.empty());
   FileID FID =
-    (*path.begin())->getLocation().asLocation().getExpansionLoc().getFileID();
+    path.front()->getLocation().asLocation().getExpansionLoc().getFileID();
   assert(FID.isValid());
 
   // Create a new rewriter to generate HTML.
@@ -144,7 +144,7 @@ void HTMLDiagnostics::ReportDiag(const PathDiagnostic& D,
           // Retrieve the relative position of the declaration which will be used
           // for the file name
           FullSourceLoc L(
-              SMgr.getExpansionLoc((*path.rbegin())->getLocation().asLocation()),
+              SMgr.getExpansionLoc(path.back()->getLocation().asLocation()),
               SMgr);
           FullSourceLoc FunL(SMgr.getExpansionLoc(Body->getLocStart()), SMgr);
           offsetDecl = L.getExpansionLineNumber() - FunL.getExpansionLineNumber();
@@ -188,8 +188,8 @@ void HTMLDiagnostics::ReportDiag(const PathDiagnostic& D,
     DirName += '/';
   }
 
-  int LineNumber = (*path.rbegin())->getLocation().asLocation().getExpansionLineNumber();
-  int ColumnNumber = (*path.rbegin())->getLocation().asLocation().getExpansionColumnNumber();
+  int LineNumber = path.back()->getLocation().asLocation().getExpansionLineNumber();
+  int ColumnNumber = path.back()->getLocation().asLocation().getExpansionColumnNumber();
 
   // Add the name of the file as an <h1> tag.
 
@@ -412,13 +412,13 @@ void HTMLDiagnostics::HandlePiece(Rewriter& R, FileID BugFileID,
   // Output a maximum size.
   if (!isa<PathDiagnosticMacroPiece>(P)) {
     // Get the string and determining its maximum substring.
-    const std::string& Msg = P.getString();
+    const auto &Msg = P.getString();
     unsigned max_token = 0;
     unsigned cnt = 0;
     unsigned len = Msg.size();
 
-    for (std::string::const_iterator I=Msg.begin(), E=Msg.end(); I!=E; ++I)
-      switch (*I) {
+    for (char C : Msg)
+      switch (C) {
       default:
         ++cnt;
         continue;

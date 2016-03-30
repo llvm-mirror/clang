@@ -570,6 +570,30 @@ struct __declspec(dllexport) T {
 USEVAR(T::b)
 int T::c;
 
+// Export template class with static member variable
+// MSC-DAG: @"\01?StaticClassVarExpTmplClass@?$TmplClass@H@@2HA" = weak_odr dllexport global i32 0, comdat, align 4
+// GNU-DAG: @_ZN9TmplClassIiE26StaticClassVarExpTmplClassE = weak_odr dllexport global i32 0, comdat, align 4
+template<typename T>
+struct __declspec(dllexport) TmplClass
+{
+  static T StaticClassVarExpTmplClass;
+};
+
+template<typename T>
+T TmplClass<T>::StaticClassVarExpTmplClass;
+
+// Export a definition of a template function.
+// MSC-DAG: define weak_odr dllexport i32 @"\01??$TypeFunTmpl@H@@YAHH@Z"
+// GNU-DAG: define weak_odr dllexport i32 @_Z11TypeFunTmplIiET_S0_
+template<typename T>
+T __declspec(dllexport) TypeFunTmpl(T t) { return t + t; }
+
+// Instantiate the exported template class and the exported template function.
+int useExportedTmplStaticAndFun()
+{
+  return TmplClass<int>::StaticClassVarExpTmplClass + TypeFunTmpl<int>(10);
+}
+
 template <typename T> struct __declspec(dllexport) U { void foo() {} };
 struct __declspec(dllexport) V : public U<int> { };
 // U<int>'s assignment operator is emitted.
@@ -775,6 +799,17 @@ struct __declspec(dllexport) Baz {
 // Baz's operator=, causing instantiation of Foo<int> after which
 // ActOnFinishCXXNonNestedClass is called, and we would bite our own tail.
 // M32-DAG: define weak_odr dllexport x86_thiscallcc dereferenceable(1) %"struct.InClassInits::Baz"* @"\01??4Baz@InClassInits@@QAEAAU01@ABU01@@Z"
+}
+
+// We had an issue where instantiating A would force emission of B's delayed
+// exported methods.
+namespace pr26490 {
+template <typename T> struct A { };
+struct __declspec(dllexport) B {
+  B(int = 0) {}
+  A<int> m_fn1() {}
+};
+// M32-DAG: define weak_odr dllexport x86_thiscallcc void @"\01??_FB@pr26490@@QAEXXZ"
 }
 
 

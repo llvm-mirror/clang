@@ -15,10 +15,10 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/LocInfoType.h"
 #include "clang/AST/TypeLoc.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/TargetInfo.h"
-#include "clang/Sema/LocInfoType.h"
 #include "clang/Sema/ParsedTemplate.h"
 #include "clang/Sema/Sema.h"
 #include "clang/Sema/SemaDiagnostic.h"
@@ -270,6 +270,7 @@ bool Declarator::isDeclarationOfFunction() const {
     case DeclaratorChunk::Array:
     case DeclaratorChunk::BlockPointer:
     case DeclaratorChunk::MemberPointer:
+    case DeclaratorChunk::Pipe:
       return false;
     }
     llvm_unreachable("Invalid type chunk");
@@ -710,6 +711,22 @@ bool DeclSpec::SetTypeAltiVecVector(bool isAltiVecVector, SourceLocation Loc,
   }
   TypeAltiVecVector = isAltiVecVector;
   AltiVecLoc = Loc;
+  return false;
+}
+
+bool DeclSpec::SetTypePipe(bool isPipe, SourceLocation Loc,
+                           const char *&PrevSpec, unsigned &DiagID,
+                           const PrintingPolicy &Policy) {
+
+  if (TypeSpecType != TST_unspecified) {
+    PrevSpec = DeclSpec::getSpecifierName((TST)TypeSpecType, Policy);
+    DiagID = diag::err_invalid_decl_spec_combination;
+    return true;
+  }
+
+  if (isPipe) {
+    TypeSpecPipe = TSP_pipe;
+  }
   return false;
 }
 

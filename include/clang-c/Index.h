@@ -32,7 +32,7 @@
  * compatible, thus CINDEX_VERSION_MAJOR is expected to remain stable.
  */
 #define CINDEX_VERSION_MAJOR 0
-#define CINDEX_VERSION_MINOR 32
+#define CINDEX_VERSION_MINOR 34
 
 #define CINDEX_VERSION_ENCODE(major, minor) ( \
       ((major) * 10000)                       \
@@ -1208,7 +1208,18 @@ enum CXTranslationUnit_Flags {
    * trades runtime on the first parse (serializing the preamble takes time) for
    * reduced runtime on the second parse (can now reuse the preamble).
    */
-  CXTranslationUnit_CreatePreambleOnFirstParse = 0x100
+  CXTranslationUnit_CreatePreambleOnFirstParse = 0x100,
+
+  /**
+   * \brief Do not stop processing when fatal errors are encountered.
+   *
+   * When fatal errors are encountered while parsing a translation unit,
+   * semantic analysis is typically stopped early when compiling code. A common
+   * source for fatal errors are unresolvable include files. For the
+   * purposes of an IDE, this is undesirable behavior and as much information
+   * as possible should be reported. Use this flag to enable this behavior.
+   */
+  CXTranslationUnit_KeepGoing = 0x200
 };
 
 /**
@@ -2274,7 +2285,23 @@ enum CXCursorKind {
    */
   CXCursor_OMPDistributeDirective        = 260,
 
-  CXCursor_LastStmt                      = CXCursor_OMPDistributeDirective,
+  /** \brief OpenMP target enter data directive.
+   */
+  CXCursor_OMPTargetEnterDataDirective   = 261,
+
+  /** \brief OpenMP target exit data directive.
+   */
+  CXCursor_OMPTargetExitDataDirective    = 262,
+
+  /** \brief OpenMP target parallel directive.
+   */
+  CXCursor_OMPTargetParallelDirective    = 263,
+
+  /** \brief OpenMP target parallel for directive.
+   */
+  CXCursor_OMPTargetParallelForDirective = 264,
+
+  CXCursor_LastStmt                   = CXCursor_OMPTargetParallelForDirective,
 
   /**
    * \brief Cursor that represents the translation unit itself.
@@ -2429,6 +2456,11 @@ CINDEX_LINKAGE unsigned clang_isStatement(enum CXCursorKind);
  * \brief Determine whether the given cursor kind represents an attribute.
  */
 CINDEX_LINKAGE unsigned clang_isAttribute(enum CXCursorKind);
+
+/**
+ * \brief Determine whether the given cursor has any attributes.
+ */
+CINDEX_LINKAGE unsigned clang_Cursor_hasAttrs(CXCursor C);
 
 /**
  * \brief Determine whether the given cursor kind represents an invalid
@@ -2938,6 +2970,7 @@ enum CXCallingConv {
   CXCallingConv_X86_64Win64 = 10,
   CXCallingConv_X86_64SysV = 11,
   CXCallingConv_X86VectorCall = 12,
+  CXCallingConv_Swift = 13,
 
   CXCallingConv_Invalid = 100,
   CXCallingConv_Unexposed = 200
@@ -3170,6 +3203,24 @@ CINDEX_LINKAGE CXType clang_getCanonicalType(CXType T);
 CINDEX_LINKAGE unsigned clang_isConstQualifiedType(CXType T);
 
 /**
+ * \brief Determine whether a  CXCursor that is a macro, is
+ * function like.
+ */
+CINDEX_LINKAGE unsigned clang_Cursor_isMacroFunctionLike(CXCursor C);
+
+/**
+ * \brief Determine whether a  CXCursor that is a macro, is a
+ * builtin one.
+ */
+CINDEX_LINKAGE unsigned clang_Cursor_isMacroBuiltin(CXCursor C);
+
+/**
+ * \brief Determine whether a  CXCursor that is a function declaration, is an
+ * inline declaration.
+ */
+CINDEX_LINKAGE unsigned clang_Cursor_isFunctionInlined(CXCursor C);
+
+/**
  * \brief Determine whether a CXType has the "volatile" qualifier set,
  * without looking through typedefs that may have added "volatile" at
  * a different level.
@@ -3197,6 +3248,11 @@ CINDEX_LINKAGE CXCursor clang_getTypeDeclaration(CXType T);
  * Returns the Objective-C type encoding for the specified declaration.
  */
 CINDEX_LINKAGE CXString clang_getDeclObjCTypeEncoding(CXCursor C);
+
+/**
+ * Returns the Objective-C type encoding for the specified CXType.
+ */
+CINDEX_LINKAGE CXString clang_Type_getObjCEncoding(CXType type); 
 
 /**
  * \brief Retrieve the spelling of a given CXTypeKind.
@@ -3612,8 +3668,8 @@ typedef enum CXChildVisitResult
  * Visits the children of a cursor using the specified block.  Behaves
  * identically to clang_visitChildren() in all other respects.
  */
-unsigned clang_visitChildrenWithBlock(CXCursor parent,
-                                      CXCursorVisitorBlock block);
+CINDEX_LINKAGE unsigned clang_visitChildrenWithBlock(CXCursor parent,
+                                                    CXCursorVisitorBlock block);
 #  endif
 #endif
 
@@ -5077,6 +5133,59 @@ CINDEX_LINKAGE void clang_getInclusions(CXTranslationUnit tu,
                                         CXInclusionVisitor visitor,
                                         CXClientData client_data);
 
+typedef enum {
+  CXEval_Int = 1 ,
+  CXEval_Float = 2,
+  CXEval_ObjCStrLiteral = 3,
+  CXEval_StrLiteral = 4,
+  CXEval_CFStr = 5,
+  CXEval_Other = 6,
+
+  CXEval_UnExposed = 0
+
+} CXEvalResultKind ;
+
+/**
+ * \brief Evaluation result of a cursor
+ */
+typedef void * CXEvalResult;
+
+/**
+ * \brief If cursor is a statement declaration tries to evaluate the 
+ * statement and if its variable, tries to evaluate its initializer,
+ * into its corresponding type.
+ */
+CINDEX_LINKAGE CXEvalResult clang_Cursor_Evaluate(CXCursor C);
+
+/**
+ * \brief Returns the kind of the evaluated result.
+ */
+CINDEX_LINKAGE CXEvalResultKind clang_EvalResult_getKind(CXEvalResult E);
+
+/**
+ * \brief Returns the evaluation result as integer if the
+ * kind is Int.
+ */
+CINDEX_LINKAGE int clang_EvalResult_getAsInt(CXEvalResult E);
+
+/**
+ * \brief Returns the evaluation result as double if the
+ * kind is double.
+ */
+CINDEX_LINKAGE double clang_EvalResult_getAsDouble(CXEvalResult E);
+
+/**
+ * \brief Returns the evaluation result as a constant string if the
+ * kind is other than Int or float. User must not free this pointer,
+ * instead call clang_EvalResult_dispose on the CXEvalResult returned
+ * by clang_Cursor_Evaluate.
+ */
+CINDEX_LINKAGE const char* clang_EvalResult_getAsStr(CXEvalResult E);
+
+/**
+ * \brief Disposes the created Eval memory.
+ */
+CINDEX_LINKAGE void clang_EvalResult_dispose(CXEvalResult E);
 /**
  * @}
  */

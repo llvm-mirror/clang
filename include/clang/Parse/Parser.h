@@ -134,6 +134,9 @@ class Parser : public CodeCompletionHandler {
   /// \brief Identifier for "message".
   IdentifierInfo *Ident_message;
 
+  /// \brief Identifier for "strict".
+  IdentifierInfo *Ident_strict;
+
   /// C++0x contextual keywords.
   mutable IdentifierInfo *Ident_final;
   mutable IdentifierInfo *Ident_override;
@@ -500,6 +503,10 @@ private:
   /// \brief Handle the annotation token produced for
   /// #pragma align...
   void HandlePragmaAlign();
+
+  /// \brief Handle the annotation token produced for
+  /// #pragma clang __debug dump...
+  void HandlePragmaDump();
 
   /// \brief Handle the annotation token produced for
   /// #pragma weak id...
@@ -1640,13 +1647,22 @@ private:
   /// A SmallVector of types.
   typedef SmallVector<ParsedType, 12> TypeVector;
 
-  StmtResult ParseStatement(SourceLocation *TrailingElseLoc = nullptr);
+  StmtResult ParseStatement(SourceLocation *TrailingElseLoc = nullptr,
+                            bool AllowOpenMPStandalone = false);
+  enum AllowedContsructsKind {
+    /// \brief Allow any declarations, statements, OpenMP directives.
+    ACK_Any,
+    /// \brief Allow only statements and non-standalone OpenMP directives.
+    ACK_StatementsOpenMPNonStandalone,
+    /// \brief Allow statements and all executable OpenMP directives
+    ACK_StatementsOpenMPAnyExecutable
+  };
   StmtResult
-  ParseStatementOrDeclaration(StmtVector &Stmts, bool OnlyStatement,
+  ParseStatementOrDeclaration(StmtVector &Stmts, AllowedContsructsKind Allowed,
                               SourceLocation *TrailingElseLoc = nullptr);
   StmtResult ParseStatementOrDeclarationAfterAttributes(
                                          StmtVector &Stmts,
-                                         bool OnlyStatement,
+                                         AllowedContsructsKind Allowed,
                                          SourceLocation *TrailingElseLoc,
                                          ParsedAttributesWithRange &Attrs);
   StmtResult ParseExprStatement();
@@ -1674,7 +1690,8 @@ private:
   StmtResult ParseReturnStatement();
   StmtResult ParseAsmStatement(bool &msAsm);
   StmtResult ParseMicrosoftAsmStatement(SourceLocation AsmLoc);
-  StmtResult ParsePragmaLoopHint(StmtVector &Stmts, bool OnlyStatement,
+  StmtResult ParsePragmaLoopHint(StmtVector &Stmts,
+                                 AllowedContsructsKind Allowed,
                                  SourceLocation *TrailingElseLoc,
                                  ParsedAttributesWithRange &Attrs);
 
@@ -2181,8 +2198,19 @@ private:
   SourceLocation SkipExtendedMicrosoftTypeAttributes();
   void ParseMicrosoftInheritanceClassAttributes(ParsedAttributes &attrs);
   void ParseBorlandTypeAttributes(ParsedAttributes &attrs);
-  void ParseOpenCLAttributes(ParsedAttributes &attrs);
+  void ParseOpenCLKernelAttributes(ParsedAttributes &attrs);
   void ParseOpenCLQualifiers(ParsedAttributes &Attrs);
+  /// \brief Parses opencl_unroll_hint attribute if language is OpenCL v2.0
+  /// or higher.
+  /// \return false if error happens.
+  bool MaybeParseOpenCLUnrollHintAttribute(ParsedAttributes &Attrs) {
+    if (getLangOpts().OpenCL)
+      return ParseOpenCLUnrollHintAttribute(Attrs);
+    return true;
+  }
+  /// \brief Parses opencl_unroll_hint attribute.
+  /// \return false if error happens.
+  bool ParseOpenCLUnrollHintAttribute(ParsedAttributes &Attrs);
   void ParseNullabilityTypeSpecifiers(ParsedAttributes &attrs);
 
   VersionTuple ParseVersionTuple(SourceRange &Range);
@@ -2426,7 +2454,9 @@ private:
   //===--------------------------------------------------------------------===//
   // OpenMP: Directives and clauses.
   /// \brief Parses declarative OpenMP directives.
-  DeclGroupPtrTy ParseOpenMPDeclarativeDirective();
+  DeclGroupPtrTy ParseOpenMPDeclarativeDirective(AccessSpecifier AS);
+  /// \brief Parse 'omp declare reduction' construct.
+  DeclGroupPtrTy ParseOpenMPDeclareReductionDirective(AccessSpecifier AS);
   /// \brief Parses simple list of variables.
   ///
   /// \param Kind Kind of the directive.
@@ -2439,11 +2469,13 @@ private:
                                 bool AllowScopeSpecifier);
   /// \brief Parses declarative or executable directive.
   ///
-  /// \param StandAloneAllowed true if allowed stand-alone directives,
-  /// false - otherwise
+  /// \param Allowed ACK_Any, if any directives are allowed,
+  /// ACK_StatementsOpenMPAnyExecutable - if any executable directives are
+  /// allowed, ACK_StatementsOpenMPNonStandalone - if only non-standalone
+  /// executable directives are allowed.
   ///
   StmtResult
-  ParseOpenMPDeclarativeOrExecutableDirective(bool StandAloneAllowed);
+  ParseOpenMPDeclarativeOrExecutableDirective(AllowedContsructsKind Allowed);
   /// \brief Parses clause of kind \a CKind for directive of a kind \a Kind.
   ///
   /// \param DKind Kind of current directive.

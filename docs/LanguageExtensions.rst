@@ -1728,6 +1728,24 @@ convert their operands before performing the operation.
 
 Query for this feature with ``__has_builtin(__builtin_add_overflow)``, etc.
 
+Floating point builtins
+---------------------------------------
+
+``__builtin_canonicalize``
+--------------------------
+
+.. code-block:: c
+
+   double __builtin_canonicalize(double);
+   float __builtin_canonicalizef(float);
+   long double__builtin_canonicalizel(long double);
+
+Returns the platform specific canonical encoding of a floating point
+number. This canonicalization is useful for implementing certain
+numeric primitives such as frexp. See `LLVM canonicalize intrinsic
+<http://llvm.org/docs/LangRef.html#llvm-canonicalize-intrinsic>`_ for
+more information on the semantics.
+
 .. _langext-__c11_atomic:
 
 __c11_atomic builtins
@@ -1857,7 +1875,7 @@ in the `ARM C Language Extensions Release 2.0
 <http://infocenter.arm.com/help/topic/com.arm.doc.ihi0053c/IHI0053C_acle_2_0.pdf>`_.
 Note that these intrinsics are implemented as motion barriers that block
 reordering of memory accesses and side effect instructions. Other instructions
-like simple arithmatic may be reordered around the intrinsic. If you expect to
+like simple arithmetic may be reordered around the intrinsic. If you expect to
 have no reordering at all, use inline assembly instead.
 
 X86/X86-64 Language Extensions

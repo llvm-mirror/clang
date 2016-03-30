@@ -66,8 +66,7 @@ public:
   CXXOperatorCallExpr(ASTContext& C, OverloadedOperatorKind Op, Expr *fn,
                       ArrayRef<Expr*> args, QualType t, ExprValueKind VK,
                       SourceLocation operatorloc, bool fpContractable)
-    : CallExpr(C, CXXOperatorCallExprClass, fn, 0, args, t, VK,
-               operatorloc),
+    : CallExpr(C, CXXOperatorCallExprClass, fn, args, t, VK, operatorloc),
       Operator(Op), FPContractable(fpContractable) {
     Range = getSourceRangeImpl();
   }
@@ -125,7 +124,7 @@ class CXXMemberCallExpr : public CallExpr {
 public:
   CXXMemberCallExpr(ASTContext &C, Expr *fn, ArrayRef<Expr*> args,
                     QualType t, ExprValueKind VK, SourceLocation RP)
-    : CallExpr(C, CXXMemberCallExprClass, fn, 0, args, t, VK, RP) {}
+    : CallExpr(C, CXXMemberCallExprClass, fn, args, t, VK, RP) {}
 
   CXXMemberCallExpr(ASTContext &C, EmptyShell Empty)
     : CallExpr(C, CXXMemberCallExprClass, Empty) { }
@@ -160,9 +159,7 @@ public:
   CUDAKernelCallExpr(ASTContext &C, Expr *fn, CallExpr *Config,
                      ArrayRef<Expr*> args, QualType t, ExprValueKind VK,
                      SourceLocation RP)
-    : CallExpr(C, CUDAKernelCallExprClass, fn, END_PREARG, args, t, VK, RP) {
-    setConfig(Config);
-  }
+      : CallExpr(C, CUDAKernelCallExprClass, fn, Config, args, t, VK, RP) {}
 
   CUDAKernelCallExpr(ASTContext &C, EmptyShell Empty)
     : CallExpr(C, CUDAKernelCallExprClass, END_PREARG, Empty) { }
@@ -171,7 +168,20 @@ public:
     return cast_or_null<CallExpr>(getPreArg(CONFIG));
   }
   CallExpr *getConfig() { return cast_or_null<CallExpr>(getPreArg(CONFIG)); }
-  void setConfig(CallExpr *E) { setPreArg(CONFIG, E); }
+
+  /// \brief Sets the kernel configuration expression.
+  ///
+  /// Note that this method cannot be called if config has already been set to a
+  /// non-null value.
+  void setConfig(CallExpr *E) {
+    assert(!getConfig() &&
+           "Cannot call setConfig if config is not null");
+    setPreArg(CONFIG, E);
+    setInstantiationDependent(isInstantiationDependent() ||
+                              E->isInstantiationDependent());
+    setContainsUnexpandedParameterPack(containsUnexpandedParameterPack() ||
+                                       E->containsUnexpandedParameterPack());
+  }
 
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CUDAKernelCallExprClass;
@@ -235,7 +245,9 @@ public:
 ///
 /// This expression node represents a C++ static cast, e.g.,
 /// \c static_cast<int>(1.0).
-class CXXStaticCastExpr : public CXXNamedCastExpr {
+class CXXStaticCastExpr final
+    : public CXXNamedCastExpr,
+      private llvm::TrailingObjects<CXXStaticCastExpr, CXXBaseSpecifier *> {
   CXXStaticCastExpr(QualType ty, ExprValueKind vk, CastKind kind, Expr *op,
                     unsigned pathSize, TypeSourceInfo *writtenTy,
                     SourceLocation l, SourceLocation RParenLoc,
@@ -259,6 +271,9 @@ public:
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CXXStaticCastExprClass;
   }
+
+  friend TrailingObjects;
+  friend class CastExpr;
 };
 
 /// \brief A C++ @c dynamic_cast expression (C++ [expr.dynamic.cast]).
@@ -266,7 +281,9 @@ public:
 /// This expression node represents a dynamic cast, e.g.,
 /// \c dynamic_cast<Derived*>(BasePtr). Such a cast may perform a run-time
 /// check to determine how to perform the type conversion.
-class CXXDynamicCastExpr : public CXXNamedCastExpr {
+class CXXDynamicCastExpr final
+    : public CXXNamedCastExpr,
+      private llvm::TrailingObjects<CXXDynamicCastExpr, CXXBaseSpecifier *> {
   CXXDynamicCastExpr(QualType ty, ExprValueKind VK, CastKind kind,
                      Expr *op, unsigned pathSize, TypeSourceInfo *writtenTy,
                      SourceLocation l, SourceLocation RParenLoc,
@@ -293,6 +310,9 @@ public:
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CXXDynamicCastExprClass;
   }
+
+  friend TrailingObjects;
+  friend class CastExpr;
 };
 
 /// \brief A C++ @c reinterpret_cast expression (C++ [expr.reinterpret.cast]).
@@ -303,7 +323,10 @@ public:
 /// A reinterpret_cast provides a differently-typed view of a value but
 /// (in Clang, as in most C++ implementations) performs no actual work at
 /// run time.
-class CXXReinterpretCastExpr : public CXXNamedCastExpr {
+class CXXReinterpretCastExpr final
+    : public CXXNamedCastExpr,
+      private llvm::TrailingObjects<CXXReinterpretCastExpr,
+                                    CXXBaseSpecifier *> {
   CXXReinterpretCastExpr(QualType ty, ExprValueKind vk, CastKind kind,
                          Expr *op, unsigned pathSize,
                          TypeSourceInfo *writtenTy, SourceLocation l,
@@ -328,6 +351,9 @@ public:
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CXXReinterpretCastExprClass;
   }
+
+  friend TrailingObjects;
+  friend class CastExpr;
 };
 
 /// \brief A C++ \c const_cast expression (C++ [expr.const.cast]).
@@ -337,7 +363,9 @@ public:
 ///
 /// A const_cast can remove type qualifiers but does not change the underlying
 /// value.
-class CXXConstCastExpr : public CXXNamedCastExpr {
+class CXXConstCastExpr final
+    : public CXXNamedCastExpr,
+      private llvm::TrailingObjects<CXXConstCastExpr, CXXBaseSpecifier *> {
   CXXConstCastExpr(QualType ty, ExprValueKind VK, Expr *op,
                    TypeSourceInfo *writtenTy, SourceLocation l,
                    SourceLocation RParenLoc, SourceRange AngleBrackets)
@@ -358,6 +386,9 @@ public:
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CXXConstCastExprClass;
   }
+
+  friend TrailingObjects;
+  friend class CastExpr;
 };
 
 /// \brief A call to a literal operator (C++11 [over.literal])
@@ -377,7 +408,7 @@ public:
   UserDefinedLiteral(const ASTContext &C, Expr *Fn, ArrayRef<Expr*> Args,
                      QualType T, ExprValueKind VK, SourceLocation LitEndLoc,
                      SourceLocation SuffixLoc)
-    : CallExpr(C, UserDefinedLiteralClass, Fn, 0, Args, T, VK, LitEndLoc),
+    : CallExpr(C, UserDefinedLiteralClass, Fn, Args, T, VK, LitEndLoc),
       UDSuffixLoc(SuffixLoc) {}
   explicit UserDefinedLiteral(const ASTContext &C, EmptyShell Empty)
     : CallExpr(C, UserDefinedLiteralClass, Empty) {}
@@ -930,13 +961,9 @@ public:
 /// This wraps up a function call argument that was created from the
 /// corresponding parameter's default argument, when the call did not
 /// explicitly supply arguments for all of the parameters.
-class CXXDefaultArgExpr : public Expr {
+class CXXDefaultArgExpr final : public Expr {
   /// \brief The parameter whose default is being used.
-  ///
-  /// When the bit is set, the subexpression is stored after the
-  /// CXXDefaultArgExpr itself. When the bit is clear, the parameter's
-  /// actual default expression is the subexpression.
-  llvm::PointerIntPair<ParmVarDecl *, 1, bool> Param;
+  ParmVarDecl *Param;
 
   /// \brief The location where the default argument expression was used.
   SourceLocation Loc;
@@ -948,16 +975,7 @@ class CXXDefaultArgExpr : public Expr {
              : param->getDefaultArg()->getType(),
            param->getDefaultArg()->getValueKind(),
            param->getDefaultArg()->getObjectKind(), false, false, false, false),
-      Param(param, false), Loc(Loc) { }
-
-  CXXDefaultArgExpr(StmtClass SC, SourceLocation Loc, ParmVarDecl *param,
-                    Expr *SubExpr)
-    : Expr(SC, SubExpr->getType(),
-           SubExpr->getValueKind(), SubExpr->getObjectKind(),
-           false, false, false, false),
-      Param(param, true), Loc(Loc) {
-    *reinterpret_cast<Expr **>(this + 1) = SubExpr;
-  }
+      Param(param), Loc(Loc) { }
 
 public:
   CXXDefaultArgExpr(EmptyShell Empty) : Expr(CXXDefaultArgExprClass, Empty) {}
@@ -969,24 +987,15 @@ public:
     return new (C) CXXDefaultArgExpr(CXXDefaultArgExprClass, Loc, Param);
   }
 
-  // \p Param is the parameter whose default argument is used by this
-  // expression, and \p SubExpr is the expression that will actually be used.
-  static CXXDefaultArgExpr *Create(const ASTContext &C, SourceLocation Loc,
-                                   ParmVarDecl *Param, Expr *SubExpr);
-
   // Retrieve the parameter that the argument was created from.
-  const ParmVarDecl *getParam() const { return Param.getPointer(); }
-  ParmVarDecl *getParam() { return Param.getPointer(); }
+  const ParmVarDecl *getParam() const { return Param; }
+  ParmVarDecl *getParam() { return Param; }
 
   // Retrieve the actual argument to the function call.
   const Expr *getExpr() const {
-    if (Param.getInt())
-      return *reinterpret_cast<Expr const * const*> (this + 1);
     return getParam()->getDefaultArg();
   }
   Expr *getExpr() {
-    if (Param.getInt())
-      return *reinterpret_cast<Expr **> (this + 1);
     return getParam()->getDefaultArg();
   }
 
@@ -1313,7 +1322,9 @@ public:
 /// \code
 ///   x = int(0.5);
 /// \endcode
-class CXXFunctionalCastExpr : public ExplicitCastExpr {
+class CXXFunctionalCastExpr final
+    : public ExplicitCastExpr,
+      private llvm::TrailingObjects<CXXFunctionalCastExpr, CXXBaseSpecifier *> {
   SourceLocation LParenLoc;
   SourceLocation RParenLoc;
 
@@ -1350,6 +1361,9 @@ public:
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CXXFunctionalCastExprClass;
   }
+
+  friend TrailingObjects;
+  friend class CastExpr;
 };
 
 /// @brief Represents a C++ functional cast expression that builds a
@@ -1415,7 +1429,9 @@ public:
 /// C++1y introduces a new form of "capture" called an init-capture that
 /// includes an initializing expression (rather than capturing a variable),
 /// and which can never occur implicitly.
-class LambdaExpr : public Expr {
+class LambdaExpr final
+    : public Expr,
+      private llvm::TrailingObjects<LambdaExpr, Stmt *, unsigned, VarDecl *> {
   /// \brief The source range that covers the lambda introducer ([...]).
   SourceRange IntroducerRange;
 
@@ -1450,23 +1466,21 @@ class LambdaExpr : public Expr {
   /// module file just to determine the source range.
   SourceLocation ClosingBrace;
 
-  // Note: The capture initializers are stored directly after the lambda
-  // expression, along with the index variables used to initialize by-copy
-  // array captures.
+  size_t numTrailingObjects(OverloadToken<Stmt *>) const {
+    return NumCaptures + 1;
+  }
 
-  typedef LambdaCapture Capture;
+  size_t numTrailingObjects(OverloadToken<unsigned>) const {
+    return HasArrayIndexVars ? NumCaptures + 1 : 0;
+  }
 
   /// \brief Construct a lambda expression.
   LambdaExpr(QualType T, SourceRange IntroducerRange,
              LambdaCaptureDefault CaptureDefault,
-             SourceLocation CaptureDefaultLoc,
-             ArrayRef<Capture> Captures,
-             bool ExplicitParams,
-             bool ExplicitResultType,
-             ArrayRef<Expr *> CaptureInits,
-             ArrayRef<VarDecl *> ArrayIndexVars,
-             ArrayRef<unsigned> ArrayIndexStarts,
-             SourceLocation ClosingBrace,
+             SourceLocation CaptureDefaultLoc, ArrayRef<LambdaCapture> Captures,
+             bool ExplicitParams, bool ExplicitResultType,
+             ArrayRef<Expr *> CaptureInits, ArrayRef<VarDecl *> ArrayIndexVars,
+             ArrayRef<unsigned> ArrayIndexStarts, SourceLocation ClosingBrace,
              bool ContainsUnexpandedParameterPack);
 
   /// \brief Construct an empty lambda expression.
@@ -1477,53 +1491,35 @@ class LambdaExpr : public Expr {
     getStoredStmts()[NumCaptures] = nullptr;
   }
 
-  Stmt **getStoredStmts() { return reinterpret_cast<Stmt **>(this + 1); }
+  Stmt **getStoredStmts() { return getTrailingObjects<Stmt *>(); }
 
-  Stmt *const *getStoredStmts() const {
-    return reinterpret_cast<Stmt *const *>(this + 1);
-  }
+  Stmt *const *getStoredStmts() const { return getTrailingObjects<Stmt *>(); }
 
   /// \brief Retrieve the mapping from captures to the first array index
   /// variable.
-  unsigned *getArrayIndexStarts() {
-    return reinterpret_cast<unsigned *>(getStoredStmts() + NumCaptures + 1);
-  }
+  unsigned *getArrayIndexStarts() { return getTrailingObjects<unsigned>(); }
 
   const unsigned *getArrayIndexStarts() const {
-    return reinterpret_cast<const unsigned *>(getStoredStmts() + NumCaptures +
-                                              1);
+    return getTrailingObjects<unsigned>();
   }
 
   /// \brief Retrieve the complete set of array-index variables.
-  VarDecl **getArrayIndexVars() {
-    unsigned ArrayIndexSize = llvm::RoundUpToAlignment(
-        sizeof(unsigned) * (NumCaptures + 1), llvm::alignOf<VarDecl *>());
-    return reinterpret_cast<VarDecl **>(
-        reinterpret_cast<char *>(getArrayIndexStarts()) + ArrayIndexSize);
-  }
+  VarDecl **getArrayIndexVars() { return getTrailingObjects<VarDecl *>(); }
 
   VarDecl *const *getArrayIndexVars() const {
-    unsigned ArrayIndexSize = llvm::RoundUpToAlignment(
-        sizeof(unsigned) * (NumCaptures + 1), llvm::alignOf<VarDecl *>());
-    return reinterpret_cast<VarDecl *const *>(
-        reinterpret_cast<const char *>(getArrayIndexStarts()) + ArrayIndexSize);
+    return getTrailingObjects<VarDecl *>();
   }
 
 public:
   /// \brief Construct a new lambda expression.
-  static LambdaExpr *Create(const ASTContext &C,
-                            CXXRecordDecl *Class,
-                            SourceRange IntroducerRange,
-                            LambdaCaptureDefault CaptureDefault,
-                            SourceLocation CaptureDefaultLoc,
-                            ArrayRef<Capture> Captures,
-                            bool ExplicitParams,
-                            bool ExplicitResultType,
-                            ArrayRef<Expr *> CaptureInits,
-                            ArrayRef<VarDecl *> ArrayIndexVars,
-                            ArrayRef<unsigned> ArrayIndexStarts,
-                            SourceLocation ClosingBrace,
-                            bool ContainsUnexpandedParameterPack);
+  static LambdaExpr *
+  Create(const ASTContext &C, CXXRecordDecl *Class, SourceRange IntroducerRange,
+         LambdaCaptureDefault CaptureDefault, SourceLocation CaptureDefaultLoc,
+         ArrayRef<LambdaCapture> Captures, bool ExplicitParams,
+         bool ExplicitResultType, ArrayRef<Expr *> CaptureInits,
+         ArrayRef<VarDecl *> ArrayIndexVars,
+         ArrayRef<unsigned> ArrayIndexStarts, SourceLocation ClosingBrace,
+         bool ContainsUnexpandedParameterPack);
 
   /// \brief Construct a new lambda expression that will be deserialized from
   /// an external source.
@@ -1546,7 +1542,7 @@ public:
 
   /// \brief An iterator that walks over the captures of the lambda,
   /// both implicit and explicit.
-  typedef const Capture *capture_iterator;
+  typedef const LambdaCapture *capture_iterator;
 
   /// \brief An iterator over a range of lambda captures.
   typedef llvm::iterator_range<capture_iterator> capture_range;
@@ -1683,9 +1679,11 @@ public:
   SourceLocation getLocEnd() const LLVM_READONLY { return ClosingBrace; }
 
   child_range children() {
+    // Includes initialization exprs plus body stmt
     return child_range(getStoredStmts(), getStoredStmts() + NumCaptures + 1);
   }
 
+  friend TrailingObjects;
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
 };
@@ -2200,7 +2198,9 @@ public:
 ///   __is_enum(std::string) == false
 ///   __is_trivially_constructible(vector<int>, int*, int*)
 /// \endcode
-class TypeTraitExpr : public Expr {
+class TypeTraitExpr final
+    : public Expr,
+      private llvm::TrailingObjects<TypeTraitExpr, TypeSourceInfo *> {
   /// \brief The location of the type trait keyword.
   SourceLocation Loc;
   
@@ -2217,16 +2217,10 @@ class TypeTraitExpr : public Expr {
 
   TypeTraitExpr(EmptyShell Empty) : Expr(TypeTraitExprClass, Empty) { }
 
-  /// \brief Retrieve the argument types.
-  TypeSourceInfo **getTypeSourceInfos() {
-    return reinterpret_cast<TypeSourceInfo **>(this+1);
+  size_t numTrailingObjects(OverloadToken<TypeSourceInfo *>) const {
+    return getNumArgs();
   }
-  
-  /// \brief Retrieve the argument types.
-  TypeSourceInfo * const *getTypeSourceInfos() const {
-    return reinterpret_cast<TypeSourceInfo * const*>(this+1);
-  }
-  
+
 public:
   /// \brief Create a new type trait expression.
   static TypeTraitExpr *Create(const ASTContext &C, QualType T,
@@ -2258,22 +2252,9 @@ public:
   }
   
   /// \brief Retrieve the argument types.
-  ArrayRef<TypeSourceInfo *> getArgs() const { 
-    return llvm::makeArrayRef(getTypeSourceInfos(), getNumArgs());
-  }
-  
-  typedef TypeSourceInfo **arg_iterator;
-  arg_iterator arg_begin() { 
-    return getTypeSourceInfos(); 
-  }
-  arg_iterator arg_end() { 
-    return getTypeSourceInfos() + getNumArgs(); 
-  }
-
-  typedef TypeSourceInfo const * const *arg_const_iterator;
-  arg_const_iterator arg_begin() const { return getTypeSourceInfos(); }
-  arg_const_iterator arg_end() const { 
-    return getTypeSourceInfos() + getNumArgs(); 
+  ArrayRef<TypeSourceInfo *> getArgs() const {
+    return llvm::makeArrayRef(getTrailingObjects<TypeSourceInfo *>(),
+                              getNumArgs());
   }
 
   SourceLocation getLocStart() const LLVM_READONLY { return Loc; }
@@ -2288,9 +2269,9 @@ public:
     return child_range(child_iterator(), child_iterator());
   }
 
+  friend TrailingObjects;
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
-
 };
 
 /// \brief An Embarcadero array type trait, as used in the implementation of
@@ -2428,7 +2409,7 @@ public:
 
 /// \brief A reference to an overloaded function set, either an
 /// \c UnresolvedLookupExpr or an \c UnresolvedMemberExpr.
-class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) OverloadExpr : public Expr {
+class OverloadExpr : public Expr {
   /// \brief The common name of these declarations.
   DeclarationNameInfo NameInfo;
 
@@ -2448,12 +2429,17 @@ protected:
   bool HasTemplateKWAndArgsInfo;
 
   /// \brief Return the optional template keyword and arguments info.
-  ASTTemplateKWAndArgsInfo *getTemplateKWAndArgsInfo(); // defined far below.
+  ASTTemplateKWAndArgsInfo *
+  getTrailingASTTemplateKWAndArgsInfo(); // defined far below.
 
   /// \brief Return the optional template keyword and arguments info.
-  const ASTTemplateKWAndArgsInfo *getTemplateKWAndArgsInfo() const {
-    return const_cast<OverloadExpr*>(this)->getTemplateKWAndArgsInfo();
+  const ASTTemplateKWAndArgsInfo *getTrailingASTTemplateKWAndArgsInfo() const {
+    return const_cast<OverloadExpr *>(this)
+        ->getTrailingASTTemplateKWAndArgsInfo();
   }
+
+  /// Return the optional template arguments.
+  TemplateArgumentLoc *getTrailingTemplateArgumentLoc(); // defined far below
 
   OverloadExpr(StmtClass K, const ASTContext &C,
                NestedNameSpecifierLoc QualifierLoc,
@@ -2545,21 +2531,21 @@ public:
   /// this name, if any.
   SourceLocation getTemplateKeywordLoc() const {
     if (!HasTemplateKWAndArgsInfo) return SourceLocation();
-    return getTemplateKWAndArgsInfo()->getTemplateKeywordLoc();
+    return getTrailingASTTemplateKWAndArgsInfo()->TemplateKWLoc;
   }
 
   /// \brief Retrieve the location of the left angle bracket starting the
   /// explicit template argument list following the name, if any.
   SourceLocation getLAngleLoc() const {
     if (!HasTemplateKWAndArgsInfo) return SourceLocation();
-    return getTemplateKWAndArgsInfo()->LAngleLoc;
+    return getTrailingASTTemplateKWAndArgsInfo()->LAngleLoc;
   }
 
   /// \brief Retrieve the location of the right angle bracket ending the
   /// explicit template argument list following the name, if any.
   SourceLocation getRAngleLoc() const {
     if (!HasTemplateKWAndArgsInfo) return SourceLocation();
-    return getTemplateKWAndArgsInfo()->RAngleLoc;
+    return getTrailingASTTemplateKWAndArgsInfo()->RAngleLoc;
   }
 
   /// \brief Determines whether the name was preceded by the template keyword.
@@ -2568,39 +2554,23 @@ public:
   /// \brief Determines whether this expression had explicit template arguments.
   bool hasExplicitTemplateArgs() const { return getLAngleLoc().isValid(); }
 
-  // Note that, inconsistently with the explicit-template-argument AST
-  // nodes, users are *forbidden* from calling these methods on objects
-  // without explicit template arguments.
-
-  ASTTemplateArgumentListInfo &getExplicitTemplateArgs() {
-    assert(hasExplicitTemplateArgs());
-    return *getTemplateKWAndArgsInfo();
-  }
-
-  const ASTTemplateArgumentListInfo &getExplicitTemplateArgs() const {
-    return const_cast<OverloadExpr*>(this)->getExplicitTemplateArgs();
-  }
-
   TemplateArgumentLoc const *getTemplateArgs() const {
-    return getExplicitTemplateArgs().getTemplateArgs();
+    if (!hasExplicitTemplateArgs())
+      return nullptr;
+    return const_cast<OverloadExpr *>(this)->getTrailingTemplateArgumentLoc();
   }
 
   unsigned getNumTemplateArgs() const {
-    return getExplicitTemplateArgs().NumTemplateArgs;
+    if (!hasExplicitTemplateArgs())
+      return 0;
+
+    return getTrailingASTTemplateKWAndArgsInfo()->NumTemplateArgs;
   }
 
   /// \brief Copies the template arguments into the given structure.
   void copyTemplateArgumentsInto(TemplateArgumentListInfo &List) const {
-    getExplicitTemplateArgs().copyInto(List);
-  }
-
-  /// \brief Retrieves the optional explicit template arguments.
-  ///
-  /// This points to the same data as getExplicitTemplateArgs(), but
-  /// returns null if there are no explicit template arguments.
-  const ASTTemplateArgumentListInfo *getOptionalExplicitTemplateArgs() const {
-    if (!hasExplicitTemplateArgs()) return nullptr;
-    return &getExplicitTemplateArgs();
+    if (hasExplicitTemplateArgs())
+      getTrailingASTTemplateKWAndArgsInfo()->copyInto(getTemplateArgs(), List);
   }
 
   static bool classof(const Stmt *T) {
@@ -2623,7 +2593,10 @@ public:
 ///
 /// These never include UnresolvedUsingValueDecls, which are always class
 /// members and therefore appear only in UnresolvedMemberLookupExprs.
-class UnresolvedLookupExpr : public OverloadExpr {
+class UnresolvedLookupExpr final
+    : public OverloadExpr,
+      private llvm::TrailingObjects<
+          UnresolvedLookupExpr, ASTTemplateKWAndArgsInfo, TemplateArgumentLoc> {
   /// True if these lookup results should be extended by
   /// argument-dependent lookup if this is the operand of a function
   /// call.
@@ -2639,6 +2612,10 @@ class UnresolvedLookupExpr : public OverloadExpr {
   /// want to improve memory use here, this could go in a union
   /// against the qualified-lookup bits.
   CXXRecordDecl *NamingClass;
+
+  size_t numTrailingObjects(OverloadToken<ASTTemplateKWAndArgsInfo>) const {
+    return HasTemplateKWAndArgsInfo ? 1 : 0;
+  }
 
   UnresolvedLookupExpr(const ASTContext &C,
                        CXXRecordDecl *NamingClass,
@@ -2659,6 +2636,8 @@ class UnresolvedLookupExpr : public OverloadExpr {
       RequiresADL(false), Overloaded(false), NamingClass(nullptr)
   {}
 
+  friend TrailingObjects;
+  friend class OverloadExpr;
   friend class ASTStmtReader;
 
 public:
@@ -2734,8 +2713,11 @@ public:
 /// qualifier (X<T>::) and the name of the entity being referenced
 /// ("value"). Such expressions will instantiate to a DeclRefExpr once the
 /// declaration can be found.
-class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) DependentScopeDeclRefExpr
-    : public Expr {
+class DependentScopeDeclRefExpr final
+    : public Expr,
+      private llvm::TrailingObjects<DependentScopeDeclRefExpr,
+                                    ASTTemplateKWAndArgsInfo,
+                                    TemplateArgumentLoc> {
   /// \brief The nested-name-specifier that qualifies this unresolved
   /// declaration name.
   NestedNameSpecifierLoc QualifierLoc;
@@ -2747,15 +2729,8 @@ class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) DependentScopeDeclRefExpr
   /// keyword and arguments.
   bool HasTemplateKWAndArgsInfo;
 
-  /// \brief Return the optional template keyword and arguments info.
-  ASTTemplateKWAndArgsInfo *getTemplateKWAndArgsInfo() {
-    if (!HasTemplateKWAndArgsInfo) return nullptr;
-    return reinterpret_cast<ASTTemplateKWAndArgsInfo*>(this + 1);
-  }
-  /// \brief Return the optional template keyword and arguments info.
-  const ASTTemplateKWAndArgsInfo *getTemplateKWAndArgsInfo() const {
-    return const_cast<DependentScopeDeclRefExpr*>(this)
-      ->getTemplateKWAndArgsInfo();
+  size_t numTrailingObjects(OverloadToken<ASTTemplateKWAndArgsInfo>) const {
+    return HasTemplateKWAndArgsInfo ? 1 : 0;
   }
 
   DependentScopeDeclRefExpr(QualType T,
@@ -2800,21 +2775,21 @@ public:
   /// this name, if any.
   SourceLocation getTemplateKeywordLoc() const {
     if (!HasTemplateKWAndArgsInfo) return SourceLocation();
-    return getTemplateKWAndArgsInfo()->getTemplateKeywordLoc();
+    return getTrailingObjects<ASTTemplateKWAndArgsInfo>()->TemplateKWLoc;
   }
 
   /// \brief Retrieve the location of the left angle bracket starting the
   /// explicit template argument list following the name, if any.
   SourceLocation getLAngleLoc() const {
     if (!HasTemplateKWAndArgsInfo) return SourceLocation();
-    return getTemplateKWAndArgsInfo()->LAngleLoc;
+    return getTrailingObjects<ASTTemplateKWAndArgsInfo>()->LAngleLoc;
   }
 
   /// \brief Retrieve the location of the right angle bracket ending the
   /// explicit template argument list following the name, if any.
   SourceLocation getRAngleLoc() const {
     if (!HasTemplateKWAndArgsInfo) return SourceLocation();
-    return getTemplateKWAndArgsInfo()->RAngleLoc;
+    return getTrailingObjects<ASTTemplateKWAndArgsInfo>()->RAngleLoc;
   }
 
   /// Determines whether the name was preceded by the template keyword.
@@ -2823,42 +2798,26 @@ public:
   /// Determines whether this lookup had explicit template arguments.
   bool hasExplicitTemplateArgs() const { return getLAngleLoc().isValid(); }
 
-  // Note that, inconsistently with the explicit-template-argument AST
-  // nodes, users are *forbidden* from calling these methods on objects
-  // without explicit template arguments.
-
-  ASTTemplateArgumentListInfo &getExplicitTemplateArgs() {
-    assert(hasExplicitTemplateArgs());
-    return *reinterpret_cast<ASTTemplateArgumentListInfo*>(this + 1);
-  }
-
-  /// Gets a reference to the explicit template argument list.
-  const ASTTemplateArgumentListInfo &getExplicitTemplateArgs() const {
-    assert(hasExplicitTemplateArgs());
-    return *reinterpret_cast<const ASTTemplateArgumentListInfo*>(this + 1);
-  }
-
-  /// \brief Retrieves the optional explicit template arguments.
-  ///
-  /// This points to the same data as getExplicitTemplateArgs(), but
-  /// returns null if there are no explicit template arguments.
-  const ASTTemplateArgumentListInfo *getOptionalExplicitTemplateArgs() const {
-    if (!hasExplicitTemplateArgs()) return nullptr;
-    return &getExplicitTemplateArgs();
-  }
-
   /// \brief Copies the template arguments (if present) into the given
   /// structure.
   void copyTemplateArgumentsInto(TemplateArgumentListInfo &List) const {
-    getExplicitTemplateArgs().copyInto(List);
+    if (hasExplicitTemplateArgs())
+      getTrailingObjects<ASTTemplateKWAndArgsInfo>()->copyInto(
+          getTrailingObjects<TemplateArgumentLoc>(), List);
   }
 
   TemplateArgumentLoc const *getTemplateArgs() const {
-    return getExplicitTemplateArgs().getTemplateArgs();
+    if (!hasExplicitTemplateArgs())
+      return nullptr;
+
+    return getTrailingObjects<TemplateArgumentLoc>();
   }
 
   unsigned getNumTemplateArgs() const {
-    return getExplicitTemplateArgs().NumTemplateArgs;
+    if (!hasExplicitTemplateArgs())
+      return 0;
+
+    return getTrailingObjects<ASTTemplateKWAndArgsInfo>()->NumTemplateArgs;
   }
 
   /// Note: getLocStart() is the start of the whole DependentScopeDeclRefExpr,
@@ -2880,6 +2839,7 @@ public:
     return child_range(child_iterator(), child_iterator());
   }
 
+  friend TrailingObjects;
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
 };
@@ -2894,7 +2854,9 @@ public:
 /// This expression also tracks whether the sub-expression contains a
 /// potentially-evaluated block literal.  The lifetime of a block
 /// literal is the extent of the enclosing scope.
-class ExprWithCleanups : public Expr {
+class ExprWithCleanups final
+    : public Expr,
+      private llvm::TrailingObjects<ExprWithCleanups, BlockDecl *> {
 public:
   /// The type of objects that are kept in the cleanup.
   /// It's useful to remember the set of blocks;  we could also
@@ -2908,12 +2870,7 @@ private:
   ExprWithCleanups(EmptyShell, unsigned NumObjects);
   ExprWithCleanups(Expr *SubExpr, ArrayRef<CleanupObject> Objects);
 
-  CleanupObject *getObjectsBuffer() {
-    return reinterpret_cast<CleanupObject*>(this + 1);
-  }
-  const CleanupObject *getObjectsBuffer() const {
-    return reinterpret_cast<const CleanupObject*>(this + 1);
-  }
+  friend TrailingObjects;
   friend class ASTStmtReader;
 
 public:
@@ -2924,7 +2881,8 @@ public:
                                   ArrayRef<CleanupObject> objects);
 
   ArrayRef<CleanupObject> getObjects() const {
-    return llvm::makeArrayRef(getObjectsBuffer(), getNumObjects());
+    return llvm::makeArrayRef(getTrailingObjects<CleanupObject>(),
+                              getNumObjects());
   }
 
   unsigned getNumObjects() const { return ExprWithCleanupsBits.NumObjects; }
@@ -2976,7 +2934,9 @@ public:
 /// When the returned expression is instantiated, it may resolve to a
 /// constructor call, conversion function call, or some kind of type
 /// conversion.
-class CXXUnresolvedConstructExpr : public Expr {
+class CXXUnresolvedConstructExpr final
+    : public Expr,
+      private llvm::TrailingObjects<CXXUnresolvedConstructExpr, Expr *> {
   /// \brief The type being constructed.
   TypeSourceInfo *Type;
 
@@ -2997,6 +2957,7 @@ class CXXUnresolvedConstructExpr : public Expr {
   CXXUnresolvedConstructExpr(EmptyShell Empty, unsigned NumArgs)
     : Expr(CXXUnresolvedConstructExprClass, Empty), Type(), NumArgs(NumArgs) { }
 
+  friend TrailingObjects;
   friend class ASTStmtReader;
 
 public:
@@ -3031,13 +2992,11 @@ public:
   unsigned arg_size() const { return NumArgs; }
 
   typedef Expr** arg_iterator;
-  arg_iterator arg_begin() { return reinterpret_cast<Expr**>(this + 1); }
+  arg_iterator arg_begin() { return getTrailingObjects<Expr *>(); }
   arg_iterator arg_end() { return arg_begin() + NumArgs; }
 
   typedef const Expr* const * const_arg_iterator;
-  const_arg_iterator arg_begin() const {
-    return reinterpret_cast<const Expr* const *>(this + 1);
-  }
+  const_arg_iterator arg_begin() const { return getTrailingObjects<Expr *>(); }
   const_arg_iterator arg_end() const {
     return arg_begin() + NumArgs;
   }
@@ -3070,7 +3029,7 @@ public:
 
   // Iterators
   child_range children() {
-    Stmt **begin = reinterpret_cast<Stmt**>(this+1);
+    Stmt **begin = reinterpret_cast<Stmt **>(arg_begin());
     return child_range(begin, begin + NumArgs);
   }
 };
@@ -3082,8 +3041,11 @@ public:
 /// Like UnresolvedMemberExprs, these can be either implicit or
 /// explicit accesses.  It is only possible to get one of these with
 /// an implicit access if a qualifier is provided.
-class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) CXXDependentScopeMemberExpr
-    : public Expr {
+class CXXDependentScopeMemberExpr final
+    : public Expr,
+      private llvm::TrailingObjects<CXXDependentScopeMemberExpr,
+                                    ASTTemplateKWAndArgsInfo,
+                                    TemplateArgumentLoc> {
   /// \brief The expression for the base pointer or class reference,
   /// e.g., the \c x in x.f.  Can be null in implicit accesses.
   Stmt *Base;
@@ -3121,15 +3083,8 @@ class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) CXXDependentScopeMemberExpr
   /// FIXME: could also be a template-id
   DeclarationNameInfo MemberNameInfo;
 
-  /// \brief Return the optional template keyword and arguments info.
-  ASTTemplateKWAndArgsInfo *getTemplateKWAndArgsInfo() {
-    if (!HasTemplateKWAndArgsInfo) return nullptr;
-    return reinterpret_cast<ASTTemplateKWAndArgsInfo*>(this + 1);
-  }
-  /// \brief Return the optional template keyword and arguments info.
-  const ASTTemplateKWAndArgsInfo *getTemplateKWAndArgsInfo() const {
-    return const_cast<CXXDependentScopeMemberExpr*>(this)
-      ->getTemplateKWAndArgsInfo();
+  size_t numTrailingObjects(OverloadToken<ASTTemplateKWAndArgsInfo>) const {
+    return HasTemplateKWAndArgsInfo ? 1 : 0;
   }
 
   CXXDependentScopeMemberExpr(const ASTContext &C, Expr *Base,
@@ -3225,21 +3180,21 @@ public:
   /// member name, if any.
   SourceLocation getTemplateKeywordLoc() const {
     if (!HasTemplateKWAndArgsInfo) return SourceLocation();
-    return getTemplateKWAndArgsInfo()->getTemplateKeywordLoc();
+    return getTrailingObjects<ASTTemplateKWAndArgsInfo>()->TemplateKWLoc;
   }
 
   /// \brief Retrieve the location of the left angle bracket starting the
   /// explicit template argument list following the member name, if any.
   SourceLocation getLAngleLoc() const {
     if (!HasTemplateKWAndArgsInfo) return SourceLocation();
-    return getTemplateKWAndArgsInfo()->LAngleLoc;
+    return getTrailingObjects<ASTTemplateKWAndArgsInfo>()->LAngleLoc;
   }
 
   /// \brief Retrieve the location of the right angle bracket ending the
   /// explicit template argument list following the member name, if any.
   SourceLocation getRAngleLoc() const {
     if (!HasTemplateKWAndArgsInfo) return SourceLocation();
-    return getTemplateKWAndArgsInfo()->RAngleLoc;
+    return getTrailingObjects<ASTTemplateKWAndArgsInfo>()->RAngleLoc;
   }
 
   /// Determines whether the member name was preceded by the template keyword.
@@ -3249,50 +3204,30 @@ public:
   /// template argument list explicitly specified, e.g., x.f<int>.
   bool hasExplicitTemplateArgs() const { return getLAngleLoc().isValid(); }
 
-  /// \brief Retrieve the explicit template argument list that followed the
-  /// member template name, if any.
-  ASTTemplateArgumentListInfo &getExplicitTemplateArgs() {
-    assert(hasExplicitTemplateArgs());
-    return *reinterpret_cast<ASTTemplateArgumentListInfo *>(this + 1);
-  }
-
-  /// \brief Retrieve the explicit template argument list that followed the
-  /// member template name, if any.
-  const ASTTemplateArgumentListInfo &getExplicitTemplateArgs() const {
-    return const_cast<CXXDependentScopeMemberExpr *>(this)
-             ->getExplicitTemplateArgs();
-  }
-
-  /// \brief Retrieves the optional explicit template arguments.
-  ///
-  /// This points to the same data as getExplicitTemplateArgs(), but
-  /// returns null if there are no explicit template arguments.
-  const ASTTemplateArgumentListInfo *getOptionalExplicitTemplateArgs() const {
-    if (!hasExplicitTemplateArgs()) return nullptr;
-    return &getExplicitTemplateArgs();
-  }
-
   /// \brief Copies the template arguments (if present) into the given
   /// structure.
   void copyTemplateArgumentsInto(TemplateArgumentListInfo &List) const {
-    getExplicitTemplateArgs().copyInto(List);
-  }
-
-  /// \brief Initializes the template arguments using the given structure.
-  void initializeTemplateArgumentsFrom(const TemplateArgumentListInfo &List) {
-    getExplicitTemplateArgs().initializeFrom(List);
+    if (hasExplicitTemplateArgs())
+      getTrailingObjects<ASTTemplateKWAndArgsInfo>()->copyInto(
+          getTrailingObjects<TemplateArgumentLoc>(), List);
   }
 
   /// \brief Retrieve the template arguments provided as part of this
   /// template-id.
   const TemplateArgumentLoc *getTemplateArgs() const {
-    return getExplicitTemplateArgs().getTemplateArgs();
+    if (!hasExplicitTemplateArgs())
+      return nullptr;
+
+    return getTrailingObjects<TemplateArgumentLoc>();
   }
 
   /// \brief Retrieve the number of template arguments provided as part of this
   /// template-id.
   unsigned getNumTemplateArgs() const {
-    return getExplicitTemplateArgs().NumTemplateArgs;
+    if (!hasExplicitTemplateArgs())
+      return 0;
+
+    return getTrailingObjects<ASTTemplateKWAndArgsInfo>()->NumTemplateArgs;
   }
 
   SourceLocation getLocStart() const LLVM_READONLY {
@@ -3301,8 +3236,8 @@ public:
     if (getQualifier())
       return getQualifierLoc().getBeginLoc();
     return MemberNameInfo.getBeginLoc();
-
   }
+
   SourceLocation getLocEnd() const LLVM_READONLY {
     if (hasExplicitTemplateArgs())
       return getRAngleLoc();
@@ -3320,6 +3255,7 @@ public:
     return child_range(&Base, &Base + 1);
   }
 
+  friend TrailingObjects;
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
 };
@@ -3339,8 +3275,10 @@ public:
 /// In the final AST, an explicit access always becomes a MemberExpr.
 /// An implicit access may become either a MemberExpr or a
 /// DeclRefExpr, depending on whether the member is static.
-class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) UnresolvedMemberExpr
-    : public OverloadExpr {
+class UnresolvedMemberExpr final
+    : public OverloadExpr,
+      private llvm::TrailingObjects<
+          UnresolvedMemberExpr, ASTTemplateKWAndArgsInfo, TemplateArgumentLoc> {
   /// \brief Whether this member expression used the '->' operator or
   /// the '.' operator.
   bool IsArrow : 1;
@@ -3361,6 +3299,10 @@ class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) UnresolvedMemberExpr
   /// \brief The location of the '->' or '.' operator.
   SourceLocation OperatorLoc;
 
+  size_t numTrailingObjects(OverloadToken<ASTTemplateKWAndArgsInfo>) const {
+    return HasTemplateKWAndArgsInfo ? 1 : 0;
+  }
+
   UnresolvedMemberExpr(const ASTContext &C, bool HasUnresolvedUsing,
                        Expr *Base, QualType BaseType, bool IsArrow,
                        SourceLocation OperatorLoc,
@@ -3374,6 +3316,8 @@ class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) UnresolvedMemberExpr
     : OverloadExpr(UnresolvedMemberExprClass, Empty), IsArrow(false),
       HasUnresolvedUsing(false), Base(nullptr) { }
 
+  friend TrailingObjects;
+  friend class OverloadExpr;
   friend class ASTStmtReader;
 
 public:
@@ -3465,15 +3409,26 @@ public:
   }
 };
 
-inline ASTTemplateKWAndArgsInfo *OverloadExpr::getTemplateKWAndArgsInfo() {
+inline ASTTemplateKWAndArgsInfo *
+OverloadExpr::getTrailingASTTemplateKWAndArgsInfo() {
   if (!HasTemplateKWAndArgsInfo)
     return nullptr;
+
   if (isa<UnresolvedLookupExpr>(this))
-    return reinterpret_cast<ASTTemplateKWAndArgsInfo *>(
-        cast<UnresolvedLookupExpr>(this) + 1);
+    return cast<UnresolvedLookupExpr>(this)
+        ->getTrailingObjects<ASTTemplateKWAndArgsInfo>();
   else
-    return reinterpret_cast<ASTTemplateKWAndArgsInfo *>(
-        cast<UnresolvedMemberExpr>(this) + 1);
+    return cast<UnresolvedMemberExpr>(this)
+        ->getTrailingObjects<ASTTemplateKWAndArgsInfo>();
+}
+
+inline TemplateArgumentLoc *OverloadExpr::getTrailingTemplateArgumentLoc() {
+  if (isa<UnresolvedLookupExpr>(this))
+    return cast<UnresolvedLookupExpr>(this)
+        ->getTrailingObjects<TemplateArgumentLoc>();
+  else
+    return cast<UnresolvedMemberExpr>(this)
+        ->getTrailingObjects<TemplateArgumentLoc>();
 }
 
 /// \brief Represents a C++11 noexcept expression (C++ [expr.unary.noexcept]).
@@ -3607,7 +3562,9 @@ public:
 ///   static const unsigned value = sizeof...(Types);
 /// };
 /// \endcode
-class SizeOfPackExpr : public Expr {
+class SizeOfPackExpr final
+    : public Expr,
+      private llvm::TrailingObjects<SizeOfPackExpr, TemplateArgument> {
   /// \brief The location of the \c sizeof keyword.
   SourceLocation OperatorLoc;
 
@@ -3632,6 +3589,7 @@ class SizeOfPackExpr : public Expr {
   /// \brief The parameter pack.
   NamedDecl *Pack;
 
+  friend TrailingObjects;
   friend class ASTStmtReader;
   friend class ASTStmtWriter;
 
@@ -3648,7 +3606,7 @@ class SizeOfPackExpr : public Expr {
         Length(Length ? *Length : PartialArgs.size()), Pack(Pack) {
     assert((!Length || PartialArgs.empty()) &&
            "have partial args for non-dependent sizeof... expression");
-    TemplateArgument *Args = reinterpret_cast<TemplateArgument *>(this + 1);
+    TemplateArgument *Args = getTrailingObjects<TemplateArgument>();
     std::uninitialized_copy(PartialArgs.begin(), PartialArgs.end(), Args);
   }
 
@@ -3699,8 +3657,7 @@ public:
   /// \brief Get
   ArrayRef<TemplateArgument> getPartialArguments() const {
     assert(isPartiallySubstituted());
-    const TemplateArgument *Args =
-        reinterpret_cast<const TemplateArgument *>(this + 1);
+    const TemplateArgument *Args = getTrailingObjects<TemplateArgument>();
     return llvm::makeArrayRef(Args, Args + Length);
   }
 
@@ -3836,7 +3793,9 @@ public:
 /// };
 /// template struct S<int, int>;
 /// \endcode
-class FunctionParmPackExpr : public Expr {
+class FunctionParmPackExpr final
+    : public Expr,
+      private llvm::TrailingObjects<FunctionParmPackExpr, ParmVarDecl *> {
   /// \brief The function parameter pack which was referenced.
   ParmVarDecl *ParamPack;
 
@@ -3850,6 +3809,7 @@ class FunctionParmPackExpr : public Expr {
                        SourceLocation NameLoc, unsigned NumParams,
                        ParmVarDecl *const *Params);
 
+  friend TrailingObjects;
   friend class ASTReader;
   friend class ASTStmtReader;
 
@@ -3870,7 +3830,7 @@ public:
   /// \brief Iterators over the parameters which the parameter pack expanded
   /// into.
   typedef ParmVarDecl * const *iterator;
-  iterator begin() const { return reinterpret_cast<iterator>(this+1); }
+  iterator begin() const { return getTrailingObjects<ParmVarDecl *>(); }
   iterator end() const { return begin() + NumParameters; }
 
   /// \brief Get the number of parameters in this parameter pack.

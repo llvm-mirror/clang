@@ -119,6 +119,7 @@ public:
                               const FunctionDecl *Delete) override;
   void CompletedImplicitDefinition(const FunctionDecl *D) override;
   void StaticDataMemberInstantiated(const VarDecl *D) override;
+  void DefaultArgumentInstantiated(const ParmVarDecl *D) override;
   void AddedObjCCategoryToInterface(const ObjCCategoryDecl *CatD,
                                     const ObjCInterfaceDecl *IFD) override;
   void FunctionDefinitionInstantiated(const FunctionDecl *D) override;
@@ -192,6 +193,11 @@ void MultiplexASTMutationListener::StaticDataMemberInstantiated(
                                                              const VarDecl *D) {
   for (size_t i = 0, e = Listeners.size(); i != e; ++i)
     Listeners[i]->StaticDataMemberInstantiated(D);
+}
+void MultiplexASTMutationListener::DefaultArgumentInstantiated(
+                                                         const ParmVarDecl *D) {
+  for (size_t i = 0, e = Listeners.size(); i != e; ++i)
+    Listeners[i]->DefaultArgumentInstantiated(D);
 }
 void MultiplexASTMutationListener::AddedObjCCategoryToInterface(
                                                  const ObjCCategoryDecl *CatD,
@@ -311,24 +317,14 @@ void MultiplexConsumer::HandleImplicitImportDecl(ImportDecl *D) {
     Consumer->HandleImplicitImportDecl(D);
 }
 
-void MultiplexConsumer::HandleLinkerOptionPragma(llvm::StringRef Opts) {
-  for (auto &Consumer : Consumers)
-    Consumer->HandleLinkerOptionPragma(Opts);
-}
-
-void MultiplexConsumer::HandleDetectMismatch(llvm::StringRef Name, llvm::StringRef Value) {
-  for (auto &Consumer : Consumers)
-    Consumer->HandleDetectMismatch(Name, Value);
-}
-
-void MultiplexConsumer::HandleDependentLibrary(llvm::StringRef Lib) {
-  for (auto &Consumer : Consumers)
-    Consumer->HandleDependentLibrary(Lib);
-}
-
 void MultiplexConsumer::CompleteTentativeDefinition(VarDecl *D) {
   for (auto &Consumer : Consumers)
     Consumer->CompleteTentativeDefinition(D);
+}
+
+void MultiplexConsumer::AssignInheritanceModel(CXXRecordDecl *RD) {
+  for (auto &Consumer : Consumers)
+    Consumer->AssignInheritanceModel(RD);
 }
 
 void MultiplexConsumer::HandleVTable(CXXRecordDecl *RD) {
@@ -347,6 +343,13 @@ ASTDeserializationListener *MultiplexConsumer::GetASTDeserializationListener() {
 void MultiplexConsumer::PrintStats() {
   for (auto &Consumer : Consumers)
     Consumer->PrintStats();
+}
+
+bool MultiplexConsumer::shouldSkipFunctionBody(Decl *D) {
+  bool Skip = true;
+  for (auto &Consumer : Consumers)
+    Skip = Skip && Consumer->shouldSkipFunctionBody(D);
+  return Skip;
 }
 
 void MultiplexConsumer::InitializeSema(Sema &S) {

@@ -95,6 +95,42 @@
 // THUMBV8A-EABI:#define __ARM_ARCH_EXT_IDIV__ 1
 // THUMBV8A-EABI: #define __ARM_FP 0xE
 
+// RUN: %clang -target armv8m.base-none-linux-gnu -x c -E -dM %s -o - | FileCheck --check-prefix=V8M_BASELINE %s
+// V8M_BASELINE: __ARM_ARCH 8
+// V8M_BASELINE: __ARM_ARCH_8M_BASE__ 1
+// V8M_BASELINE: __ARM_ARCH_EXT_IDIV__ 1
+// V8M_BASELINE-NOT: __ARM_ARCH_ISA_ARM
+// V8M_BASELINE: __ARM_ARCH_ISA_THUMB 1
+// V8M_BASELINE: __ARM_ARCH_PROFILE 'M'
+// V8M_BASELINE-NOT: __ARM_FEATURE_CRC32
+// V8M_BASELINE-NOT: __ARM_FEATURE_DSP
+// V8M_BASELINE-NOT: __ARM_FP 0x{{.*}}
+// V8M_BASELINE-NOT: __GCC_HAVE_SYNC_COMPARE_AND_SWAP_1
+
+// RUN: %clang -target armv8m.main-none-linux-gnu -x c -E -dM %s -o - | FileCheck --check-prefix=V8M_MAINLINE %s
+// V8M_MAINLINE: __ARM_ARCH 8
+// V8M_MAINLINE: __ARM_ARCH_8M_MAIN__ 1
+// V8M_MAINLINE: __ARM_ARCH_EXT_IDIV__ 1
+// V8M_MAINLINE-NOT: __ARM_ARCH_ISA_ARM
+// V8M_MAINLINE: __ARM_ARCH_ISA_THUMB 2
+// V8M_MAINLINE: __ARM_ARCH_PROFILE 'M'
+// V8M_MAINLINE-NOT: __ARM_FEATURE_CRC32
+// V8M_MAINLINE-NOT: __ARM_FEATURE_DSP
+// V8M_MAINLINE: __ARM_FP 0xE
+// V8M_MAINLINE: __GCC_HAVE_SYNC_COMPARE_AND_SWAP_1 1
+
+// RUN: %clang -target arm-none-linux-gnu -march=armv8-m.main+dsp -x c -E -dM %s -o - | FileCheck --check-prefix=V8M_MAINLINE_DSP %s
+// V8M_MAINLINE_DSP: __ARM_ARCH 8
+// V8M_MAINLINE_DSP: __ARM_ARCH_8M_MAIN__ 1
+// V8M_MAINLINE_DSP: __ARM_ARCH_EXT_IDIV__ 1
+// V8M_MAINLINE_DSP-NOT: __ARM_ARCH_ISA_ARM
+// V8M_MAINLINE_DSP: __ARM_ARCH_ISA_THUMB 2
+// V8M_MAINLINE_DSP: __ARM_ARCH_PROFILE 'M'
+// V8M_MAINLINE_DSP-NOT: __ARM_FEATURE_CRC32
+// V8M_MAINLINE_DSP: __ARM_FEATURE_DSP 1
+// V8M_MAINLINE_DSP: __ARM_FP 0xE
+// V8M_MAINLINE_DSP: __GCC_HAVE_SYNC_COMPARE_AND_SWAP_1 1
+
 // RUN: %clang -target arm-none-linux-gnu -x c -E -dM %s -o - | FileCheck --check-prefix=CHECK-DEFS %s
 // CHECK-DEFS:#define __ARM_PCS 1
 // CHECK-DEFS:#define __ARM_SIZEOF_MINIMAL_ENUM 4
@@ -409,3 +445,9 @@
 // CHECK-V81A: #define __ARM_ARCH_PROFILE 'A'
 // CHECK-V81A: __ARM_FEATURE_QRDMX 1
 // CHECK-V81A: #define __ARM_FP 0xE
+
+// RUN: %clang -target armv8.2a-none-none-eabi -x c -E -dM %s -o - | FileCheck --check-prefix=CHECK-V82A %s
+// CHECK-V82A: __ARM_ARCH 8
+// CHECK-V82A: __ARM_ARCH_8_2A__ 1
+// CHECK-V82A: #define __ARM_ARCH_PROFILE 'A'
+// CHECK-V82A: #define __ARM_FP 0xE

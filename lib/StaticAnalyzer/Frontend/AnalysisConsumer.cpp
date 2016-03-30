@@ -274,7 +274,7 @@ public:
       llvm::errs() << ": " << Loc.getFilename();
       if (isa<FunctionDecl>(D) || isa<ObjCMethodDecl>(D)) {
         const NamedDecl *ND = cast<NamedDecl>(D);
-        llvm::errs() << ' ' << *ND << '\n';
+        llvm::errs() << ' ' << ND->getQualifiedNameAsString() << '\n';
       }
       else if (isa<BlockDecl>(D)) {
         llvm::errs() << ' ' << "block(line:" << Loc.getLine() << ",col:"
@@ -496,10 +496,11 @@ void AnalysisConsumer::HandleDeclsCallGraph(const unsigned LocalTUDeclsSize) {
                (Mgr->options.InliningMode == All ? nullptr : &VisitedCallees));
 
     // Add the visited callees to the global visited set.
-    for (SetOfConstDecls::iterator I = VisitedCallees.begin(),
-                                   E = VisitedCallees.end(); I != E; ++I) {
-        Visited.insert(*I);
-    }
+    for (const Decl *Callee : VisitedCallees)
+      // Decls from CallGraph are already canonical. But Decls coming from
+      // CallExprs may be not. We should canonicalize them manually.
+      Visited.insert(isa<ObjCMethodDecl>(Callee) ? Callee
+                                                 : Callee->getCanonicalDecl());
     VisitedAsTopLevel.insert(D);
   }
 }

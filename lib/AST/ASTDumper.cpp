@@ -19,6 +19,7 @@
 #include "clang/AST/DeclLookups.h"
 #include "clang/AST/DeclObjC.h"
 #include "clang/AST/DeclVisitor.h"
+#include "clang/AST/LocInfoType.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/AST/TypeVisitor.h"
 #include "clang/Basic/Builtins.h"
@@ -425,6 +426,8 @@ namespace  {
     void VisitVarDecl(const VarDecl *D);
     void VisitFileScopeAsmDecl(const FileScopeAsmDecl *D);
     void VisitImportDecl(const ImportDecl *D);
+    void VisitPragmaCommentDecl(const PragmaCommentDecl *D);
+    void VisitPragmaDetectMismatchDecl(const PragmaDetectMismatchDecl *D);
 
     // C++ Decls
     void VisitNamespaceDecl(const NamespaceDecl *D);
@@ -655,6 +658,15 @@ void ASTDumper::dumpTypeAsChild(const Type *T) {
       OS << "<<<NULL>>>";
       return;
     }
+    if (const LocInfoType *LIT = llvm::dyn_cast<LocInfoType>(T)) {
+      {
+        ColorScope Color(*this, TypeColor);
+        OS << "LocInfo Type";
+      }
+      dumpPointer(T);
+      dumpTypeAsChild(LIT->getTypeSourceInfo()->getType());
+      return;
+    }
 
     {
       ColorScope Color(*this, TypeColor);
@@ -809,8 +821,6 @@ void ASTDumper::dumpAttr(const Attr *A) {
       switch (A->getKind()) {
 #define ATTR(X) case attr::X: OS << #X; break;
 #include "clang/Basic/AttrList.inc"
-      default:
-        llvm_unreachable("unexpected attribute kind");
       }
       OS << "Attr";
     }
@@ -1045,6 +1055,7 @@ void ASTDumper::VisitTypedefDecl(const TypedefDecl *D) {
   dumpType(D->getUnderlyingType());
   if (D->isModulePrivate())
     OS << " __module_private__";
+  dumpTypeAsChild(D->getUnderlyingType());
 }
 
 void ASTDumper::VisitEnumDecl(const EnumDecl *D) {
@@ -1191,6 +1202,27 @@ void ASTDumper::VisitImportDecl(const ImportDecl *D) {
   OS << ' ' << D->getImportedModule()->getFullModuleName();
 }
 
+void ASTDumper::VisitPragmaCommentDecl(const PragmaCommentDecl *D) {
+  OS << ' ';
+  switch (D->getCommentKind()) {
+  case PCK_Unknown:  llvm_unreachable("unexpected pragma comment kind");
+  case PCK_Compiler: OS << "compiler"; break;
+  case PCK_ExeStr:   OS << "exestr"; break;
+  case PCK_Lib:      OS << "lib"; break;
+  case PCK_Linker:   OS << "linker"; break;
+  case PCK_User:     OS << "user"; break;
+  }
+  StringRef Arg = D->getArg();
+  if (!Arg.empty())
+    OS << " \"" << Arg << "\"";
+}
+
+void ASTDumper::VisitPragmaDetectMismatchDecl(
+    const PragmaDetectMismatchDecl *D) {
+  OS << " \"" << D->getName() << "\" \"" << D->getValue() << "\"";
+}
+
+
 //===----------------------------------------------------------------------===//
 // C++ Declarations
 //===----------------------------------------------------------------------===//
@@ -1216,6 +1248,7 @@ void ASTDumper::VisitNamespaceAliasDecl(const NamespaceAliasDecl *D) {
 void ASTDumper::VisitTypeAliasDecl(const TypeAliasDecl *D) {
   dumpName(D);
   dumpType(D->getUnderlyingType());
+  dumpTypeAsChild(D->getUnderlyingType());
 }
 
 void ASTDumper::VisitTypeAliasTemplateDecl(const TypeAliasTemplateDecl *D) {
@@ -1409,6 +1442,8 @@ void ASTDumper::VisitUnresolvedUsingValueDecl(const UnresolvedUsingValueDecl *D)
 void ASTDumper::VisitUsingShadowDecl(const UsingShadowDecl *D) {
   OS << ' ';
   dumpBareDeclRef(D->getTargetDecl());
+  if (auto *TD = dyn_cast<TypeDecl>(D->getUnderlyingDecl()))
+    dumpTypeAsChild(TD->getTypeForDecl());
 }
 
 void ASTDumper::VisitLinkageSpecDecl(const LinkageSpecDecl *D) {
@@ -1583,6 +1618,8 @@ void ASTDumper::VisitObjCPropertyDecl(const ObjCPropertyDecl *D) {
       OS << " strong";
     if (Attrs & ObjCPropertyDecl::OBJC_PR_unsafe_unretained)
       OS << " unsafe_unretained";
+    if (Attrs & ObjCPropertyDecl::OBJC_PR_class)
+      OS << " class";
     if (Attrs & ObjCPropertyDecl::OBJC_PR_getter)
       dumpDeclRef(D->getGetterMethodDecl(), "getter");
     if (Attrs & ObjCPropertyDecl::OBJC_PR_setter)

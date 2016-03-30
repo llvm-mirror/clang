@@ -972,12 +972,22 @@ CapturedStmt::Capture::Capture(SourceLocation Loc, VariableCaptureKind Kind,
   }
 }
 
+CapturedStmt::VariableCaptureKind
+CapturedStmt::Capture::getCaptureKind() const {
+  return VarAndKind.getInt();
+}
+
+VarDecl *CapturedStmt::Capture::getCapturedVar() const {
+  assert((capturesVariable() || capturesVariableByCopy()) &&
+         "No variable available for 'this' or VAT capture");
+  return VarAndKind.getPointer();
+}
+
 CapturedStmt::Capture *CapturedStmt::getStoredCaptures() const {
   unsigned Size = sizeof(CapturedStmt) + sizeof(Stmt *) * (NumCaptures + 1);
 
   // Offset of the first Capture object.
-  unsigned FirstCaptureOffset =
-    llvm::RoundUpToAlignment(Size, llvm::alignOf<Capture>());
+  unsigned FirstCaptureOffset = llvm::alignTo(Size, llvm::alignOf<Capture>());
 
   return reinterpret_cast<Capture *>(
       reinterpret_cast<char *>(const_cast<CapturedStmt *>(this))
@@ -1034,7 +1044,7 @@ CapturedStmt *CapturedStmt::Create(const ASTContext &Context, Stmt *S,
   unsigned Size = sizeof(CapturedStmt) + sizeof(Stmt *) * (Captures.size() + 1);
   if (!Captures.empty()) {
     // Realign for the following Capture array.
-    Size = llvm::RoundUpToAlignment(Size, llvm::alignOf<Capture>());
+    Size = llvm::alignTo(Size, llvm::alignOf<Capture>());
     Size += sizeof(Capture) * Captures.size();
   }
 
@@ -1047,7 +1057,7 @@ CapturedStmt *CapturedStmt::CreateDeserialized(const ASTContext &Context,
   unsigned Size = sizeof(CapturedStmt) + sizeof(Stmt *) * (NumCaptures + 1);
   if (NumCaptures > 0) {
     // Realign for the following Capture array.
-    Size = llvm::RoundUpToAlignment(Size, llvm::alignOf<Capture>());
+    Size = llvm::alignTo(Size, llvm::alignOf<Capture>());
     Size += sizeof(Capture) * NumCaptures;
   }
 
@@ -1058,6 +1068,29 @@ CapturedStmt *CapturedStmt::CreateDeserialized(const ASTContext &Context,
 Stmt::child_range CapturedStmt::children() {
   // Children are captured field initilizers.
   return child_range(getStoredStmts(), getStoredStmts() + NumCaptures);
+}
+
+CapturedDecl *CapturedStmt::getCapturedDecl() {
+  return CapDeclAndKind.getPointer();
+}
+const CapturedDecl *CapturedStmt::getCapturedDecl() const {
+  return CapDeclAndKind.getPointer();
+}
+
+/// \brief Set the outlined function declaration.
+void CapturedStmt::setCapturedDecl(CapturedDecl *D) {
+  assert(D && "null CapturedDecl");
+  CapDeclAndKind.setPointer(D);
+}
+
+/// \brief Retrieve the captured region kind.
+CapturedRegionKind CapturedStmt::getCapturedRegionKind() const {
+  return CapDeclAndKind.getInt();
+}
+
+/// \brief Set the captured region kind.
+void CapturedStmt::setCapturedRegionKind(CapturedRegionKind Kind) {
+  CapDeclAndKind.setInt(Kind);
 }
 
 bool CapturedStmt::capturesVariable(const VarDecl *Var) const {

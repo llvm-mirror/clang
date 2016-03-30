@@ -79,9 +79,9 @@ testing::AssertionResult matchesConditionally(
   // Some tests need rtti/exceptions on
   Args.push_back("-frtti");
   Args.push_back("-fexceptions");
-  if (!runToolOnCodeWithArgs(Factory->create(), Code, Args, Filename,
-                             std::make_shared<PCHContainerOperations>(),
-                             VirtualMappedFiles)) {
+  if (!runToolOnCodeWithArgs(
+          Factory->create(), Code, Args, Filename, "clang-tool",
+          std::make_shared<PCHContainerOperations>(), VirtualMappedFiles)) {
     return testing::AssertionFailure() << "Parsing error in \"" << Code << "\"";
   }
   if (Found != DynamicFound) {
@@ -123,6 +123,13 @@ template <typename T>
 testing::AssertionResult matchesC(const std::string &Code, const T &AMatcher) {
   return matchesConditionally(Code, AMatcher, true, "", FileContentMappings(),
                               "input.c");
+}
+
+template <typename T>
+testing::AssertionResult matchesC99(const std::string &Code,
+                                    const T &AMatcher) {
+  return matchesConditionally(Code, AMatcher, true, "-std=c99",
+                              FileContentMappings(), "input.c");
 }
 
 template <typename T>

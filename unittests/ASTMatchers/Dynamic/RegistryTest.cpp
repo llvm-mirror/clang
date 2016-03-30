@@ -421,7 +421,7 @@ TEST_F(RegistryTest, Errors) {
                        constructMatcher("parameterCountIs", 3), Error.get())
           .isNull());
   EXPECT_EQ("Incorrect type for arg 2. (Expected = Matcher<CXXRecordDecl>) != "
-            "(Actual = Matcher<FunctionDecl>)",
+            "(Actual = Matcher<FunctionDecl|FunctionProtoType>)",
             Error->toString());
 
   // Bad argument type with variadic.
@@ -504,6 +504,12 @@ TEST_F(RegistryTest, HasArgs) {
       .getTypedMatcher<Decl>();
   EXPECT_TRUE(matches("struct __attribute__((warn_unused)) X {};", Value));
   EXPECT_FALSE(matches("struct X {};", Value));
+}
+
+TEST_F(RegistryTest, ParenExpr) {
+  Matcher<Stmt> Value = constructMatcher("parenExpr").getTypedMatcher<Stmt>();
+  EXPECT_TRUE(matches("int i = (1);", Value));
+  EXPECT_FALSE(matches("int i = 1;", Value));
 }
 
 } // end anonymous namespace

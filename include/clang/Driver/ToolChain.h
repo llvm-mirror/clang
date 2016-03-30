@@ -134,7 +134,7 @@ public:
   StringRef getOS() const { return Triple.getOSName(); }
 
   /// \brief Provide the default architecture name (as expected by -arch) for
-  /// this toolchain. Note t
+  /// this toolchain.
   StringRef getDefaultUniversalArchName() const;
 
   std::string getTripleString() const {
@@ -228,7 +228,7 @@ public:
   virtual bool IsIntegratedAssemblerDefault() const { return false; }
 
   /// \brief Check if the toolchain should use the integrated assembler.
-  bool useIntegratedAs() const;
+  virtual bool useIntegratedAs() const;
 
   /// IsMathErrnoDefault - Does this tool chain use -fmath-errno by default.
   virtual bool IsMathErrnoDefault() const { return true; }
@@ -254,6 +254,10 @@ public:
   /// GetDefaultRuntimeLibType - Get the default runtime library variant to use.
   virtual RuntimeLibType GetDefaultRuntimeLibType() const {
     return ToolChain::RLT_Libgcc;
+  }
+
+  virtual CXXStdlibType GetDefaultCXXStdlibType() const {
+    return ToolChain::CST_Libstdcxx;
   }
 
   virtual std::string getCompilerRT(const llvm::opt::ArgList &Args,
@@ -312,6 +316,11 @@ public:
 
   /// UseSjLjExceptions - Does this tool chain use SjLj exceptions.
   virtual bool UseSjLjExceptions(const llvm::opt::ArgList &Args) const {
+    return false;
+  }
+
+  /// SupportsEmbeddedBitcode - Does this tool chain support embedded bitcode.
+  virtual bool SupportsEmbeddedBitcode() const {
     return false;
   }
 

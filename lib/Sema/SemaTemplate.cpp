@@ -1,13 +1,13 @@
-//===------- SemaTemplate.cpp - Semantic Analysis for C++ Templates -------===/
+//===------- SemaTemplate.cpp - Semantic Analysis for C++ Templates -------===//
 //
 //                     The LLVM Compiler Infrastructure
 //
 // This file is distributed under the University of Illinois Open Source
 // License. See LICENSE.TXT for details.
-//===----------------------------------------------------------------------===/
+//===----------------------------------------------------------------------===//
 //
 //  This file implements semantic analysis for C++ templates.
-//===----------------------------------------------------------------------===/
+//===----------------------------------------------------------------------===//
 
 #include "TreeTransform.h"
 #include "clang/AST/ASTConsumer.h"
@@ -32,6 +32,7 @@
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+
 using namespace clang;
 using namespace sema;
 
@@ -329,8 +330,8 @@ void Sema::LookupTemplateName(LookupResult &Found,
             Found.getLookupNameInfo(), Found.getLookupKind(), S, &SS,
             std::move(FilterCCC), CTK_ErrorRecovery, LookupCtx)) {
       Found.setLookupName(Corrected.getCorrection());
-      if (Corrected.getCorrectionDecl())
-        Found.addDecl(Corrected.getCorrectionDecl());
+      if (auto *ND = Corrected.getFoundDecl())
+        Found.addDecl(ND);
       FilterAcceptableTemplateNames(Found);
       if (!Found.empty()) {
         if (LookupCtx) {
@@ -458,7 +459,6 @@ void Sema::DiagnoseTemplateParameterShadow(SourceLocation Loc, Decl *PrevDecl) {
   Diag(Loc, diag::err_template_param_shadow)
     << cast<NamedDecl>(PrevDecl)->getDeclName();
   Diag(PrevDecl->getLocation(), diag::note_template_param_here);
-  return;
 }
 
 /// AdjustDeclIfTemplate - If the given decl happens to be a template, reset
@@ -555,7 +555,6 @@ Decl *Sema::ActOnTypeParameter(Scope *S, bool Typename,
                                ParsedType DefaultArg) {
   assert(S->isTemplateParamScope() &&
          "Template type parameter not in template parameter scope!");
-  bool Invalid = false;
 
   SourceLocation Loc = ParamNameLoc;
   if (!ParamName)
@@ -567,8 +566,6 @@ Decl *Sema::ActOnTypeParameter(Scope *S, bool Typename,
                                    KeyLoc, Loc, Depth, Position, ParamName,
                                    Typename, IsParameterPack);
   Param->setAccess(AS_public);
-  if (Invalid)
-    Param->setInvalidDecl();
 
   if (ParamName) {
     maybeDiagnoseTemplateParameterShadow(*this, S, ParamNameLoc, ParamName);
@@ -583,7 +580,7 @@ Decl *Sema::ActOnTypeParameter(Scope *S, bool Typename,
   //   template-parameter that is not a template parameter pack.
   if (DefaultArg && IsParameterPack) {
     Diag(EqualLoc, diag::err_template_param_pack_default_arg);
-    DefaultArg = ParsedType();
+    DefaultArg = nullptr;
   }
 
   // Handle the default argument, if provided.
@@ -814,14 +811,15 @@ Sema::ActOnTemplateParameterList(unsigned Depth,
                                  SourceLocation ExportLoc,
                                  SourceLocation TemplateLoc,
                                  SourceLocation LAngleLoc,
-                                 Decl **Params, unsigned NumParams,
+                                 ArrayRef<Decl *> Params,
                                  SourceLocation RAngleLoc) {
   if (ExportLoc.isValid())
     Diag(ExportLoc, diag::warn_template_export_unsupported);
 
-  return TemplateParameterList::Create(Context, TemplateLoc, LAngleLoc,
-                                       (NamedDecl**)Params, NumParams,
-                                       RAngleLoc);
+  return TemplateParameterList::Create(
+      Context, TemplateLoc, LAngleLoc,
+      llvm::makeArrayRef((NamedDecl *const *)Params.data(), Params.size()),
+      RAngleLoc);
 }
 
 static void SetNestedNameSpecifier(TagDecl *T, const CXXScopeSpec &SS) {
@@ -1576,7 +1574,7 @@ struct DependencyChecker : RecursiveASTVisitor<DependencyChecker> {
     return TraverseType(T->getInjectedSpecializationType());
   }
 };
-}
+} // end anonymous namespace
 
 /// Determines whether a given type depends on the given parameter
 /// list.
@@ -1938,7 +1936,7 @@ TemplateParameterList *Sema::MatchTemplateParametersToScopeSpecifier(
 
       // Fabricate an empty template parameter list for the invented header.
       return TemplateParameterList::Create(Context, SourceLocation(),
-                                           SourceLocation(), nullptr, 0,
+                                           SourceLocation(), None,
                                            SourceLocation());
     }
 
@@ -2712,7 +2710,7 @@ struct PartialSpecMatchResult {
   VarTemplatePartialSpecializationDecl *Partial;
   TemplateArgumentList *Args;
 };
-}
+} // end anonymous namespace
 
 DeclResult
 Sema::CheckVarTemplateId(VarTemplateDecl *Template, SourceLocation TemplateLoc,
@@ -3280,7 +3278,6 @@ SubstDefaultTemplateArgument(Sema &SemaRef,
   for (unsigned i = 0, e = Param->getDepth(); i != e; ++i)
     TemplateArgLists.addOuterTemplateArguments(None);
 
-  Sema::ContextRAII SavedContext(SemaRef, Template->getDeclContext());
   EnterExpressionEvaluationContext ConstantEvaluated(SemaRef,
                                                      Sema::ConstantEvaluated);
   return SemaRef.SubstExpr(Param->getDefaultArgument(), TemplateArgLists);
@@ -4014,7 +4011,7 @@ namespace {
     bool VisitTagDecl(const TagDecl *Tag);
     bool VisitNestedNameSpecifier(NestedNameSpecifier *NNS);
   };
-}
+} // end anonymous namespace
 
 bool UnnamedLocalNoLinkageFinder::VisitBuiltinType(const BuiltinType*) {
   return false;
@@ -4183,6 +4180,10 @@ bool UnnamedLocalNoLinkageFinder::VisitAtomicType(const AtomicType* T) {
   return Visit(T->getValueType());
 }
 
+bool UnnamedLocalNoLinkageFinder::VisitPipeType(const PipeType* T) {
+  return false;
+}
+
 bool UnnamedLocalNoLinkageFinder::VisitTagDecl(const TagDecl *Tag) {
   if (Tag->getDeclContext()->isFunctionOrMethod()) {
     S.Diag(SR.getBegin(),
@@ -4224,7 +4225,6 @@ bool UnnamedLocalNoLinkageFinder::VisitNestedNameSpecifier(
   }
   llvm_unreachable("Invalid NestedNameSpecifier::Kind!");
 }
-
 
 /// \brief Check a template argument against its corresponding
 /// template type parameter.
@@ -5502,6 +5502,8 @@ Sema::BuildExpressionFromIntegralTemplateArgument(const TemplateArgument &Arg,
 
   Expr *E;
   if (T->isAnyCharacterType()) {
+    // This does not need to handle u8 character literals because those are
+    // of type char, and so can also be covered by an ASCII character literal.
     CharacterLiteral::CharacterKind Kind;
     if (T->isWideCharType())
       Kind = CharacterLiteral::Wide;
@@ -7456,7 +7458,13 @@ Sema::ActOnExplicitInstantiation(Scope *S,
             getDLLAttr(Specialization)->clone(getASTContext()));
         A->setInherited(true);
         Def->addAttr(A);
+
+        // We reject explicit instantiations in class scope, so there should
+        // never be any delayed exported classes to worry about.
+        assert(DelayedDllExportClasses.empty() &&
+               "delayed exports present at explicit instantiation");
         checkClassLevelDLLAttribute(Def);
+        referenceDLLExportedClassMethods();
 
         // Propagate attribute to base class templates.
         for (auto &B : Def->bases()) {
@@ -7666,6 +7674,15 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
     // not already specified.
     Diag(D.getDeclSpec().getConstexprSpecLoc(),
          diag::err_explicit_instantiation_constexpr);
+
+  // C++ Concepts TS [dcl.spec.concept]p1: The concept specifier shall be
+  // applied only to the definition of a function template or variable template,
+  // declared in namespace scope.
+  if (D.getDeclSpec().isConceptSpecified()) {
+    Diag(D.getDeclSpec().getConceptSpecLoc(),
+         diag::err_concept_specified_specialization) << 0;
+    return true;
+  }
 
   // C++0x [temp.explicit]p2:
   //   There are two forms of explicit instantiation: an explicit instantiation
@@ -8288,7 +8305,7 @@ namespace {
       return E;
     }
   };
-}
+} // end anonymous namespace
 
 /// \brief Rebuilds a type within the context of the current instantiation.
 ///

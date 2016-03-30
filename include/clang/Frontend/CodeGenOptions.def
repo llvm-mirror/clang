@@ -103,8 +103,10 @@ CODEGENOPT(OmitLeafFramePointer , 1, 0) ///< Set when -momit-leaf-frame-pointer 
 VALUE_CODEGENOPT(OptimizationLevel, 2, 0) ///< The -O[0-3] option specified.
 VALUE_CODEGENOPT(OptimizeSize, 2, 0) ///< If -Os (==1) or -Oz (==2) is specified.
 
-CODEGENOPT(ProfileInstrGenerate , 1, 0) ///< Instrument code to generate
-                                        ///< execution counts to use with PGO.
+/// \brief Choose profile instrumenation kind or no instrumentation.
+ENUM_CODEGENOPT(ProfileInstr, ProfileInstrKind, 2, ProfileNone)
+/// \brief Choose profile kind for PGO use compilation.
+ENUM_CODEGENOPT(ProfileUse, ProfileInstrKind, 2, ProfileNone)
 CODEGENOPT(CoverageMapping , 1, 0) ///< Generate coverage mapping regions to
                                    ///< enable code coverage analysis.
 CODEGENOPT(DumpCoverageMapping , 1, 0) ///< Dump the generated coverage mapping
@@ -134,6 +136,9 @@ CODEGENOPT(SanitizeCoverageTraceCmp, 1, 0) ///< Enable cmp instruction tracing
                                            ///< in sanitizer coverage.
 CODEGENOPT(SanitizeCoverage8bitCounters, 1, 0) ///< Use 8-bit frequency counters
                                                ///< in sanitizer coverage.
+CODEGENOPT(SanitizeCoverageTracePC, 1, 0) ///< Enable PC tracing
+                                          ///< in sanitizer coverage.
+CODEGENOPT(SanitizeStats     , 1, 0) ///< Collect statistics for sanitizers.
 CODEGENOPT(SimplifyLibCalls  , 1, 1) ///< Set when -fbuiltin is enabled.
 CODEGENOPT(SoftFloat         , 1, 0) ///< -soft-float.
 CODEGENOPT(StrictEnums       , 1, 0) ///< Optimize based on strict enum definition.
@@ -176,6 +181,9 @@ CODEGENOPT(DebugExplicitImport, 1, 0)  ///< Whether or not debug info should
 
 CODEGENOPT(EmitLLVMUseLists, 1, 0) ///< Control whether to serialize use-lists.
 
+CODEGENOPT(WholeProgramVTables, 1, 0) ///< Whether to apply whole-program
+                                      ///  vtable optimization.
+
 /// The user specified number of registers to be used for integral arguments,
 /// or 0 if unspecified.
 VALUE_CODEGENOPT(NumRegisterParameters, 32, 0)
@@ -184,10 +192,11 @@ VALUE_CODEGENOPT(NumRegisterParameters, 32, 0)
 VALUE_CODEGENOPT(SSPBufferSize, 32, 0)
 
 /// The kind of generated debug info.
-ENUM_CODEGENOPT(DebugInfo, DebugInfoKind, 3, NoDebugInfo)
+ENUM_CODEGENOPT(DebugInfo, codegenoptions::DebugInfoKind, 3, codegenoptions::NoDebugInfo)
 
 /// Tune the debug info for this debugger.
-ENUM_CODEGENOPT(DebuggerTuning, DebuggerKind, 2, DebuggerKindDefault)
+ENUM_CODEGENOPT(DebuggerTuning, llvm::DebuggerKind, 2,
+                llvm::DebuggerKind::Default)
 
 /// Dwarf version. Version zero indicates to LLVM that no DWARF should be
 /// emitted.

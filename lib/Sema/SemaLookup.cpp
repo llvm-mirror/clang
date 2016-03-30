@@ -280,6 +280,10 @@ static inline unsigned getIDNS(Sema::LookupNameKind NameKind,
     IDNS = Decl::IDNS_ObjCProtocol;
     break;
 
+  case Sema::LookupOMPReductionName:
+    IDNS = Decl::IDNS_OMPReduction;
+    break;
+
   case Sema::LookupAnyName:
     IDNS = Decl::IDNS_Ordinary | Decl::IDNS_Tag | Decl::IDNS_Member
       | Decl::IDNS_Using | Decl::IDNS_Namespace | Decl::IDNS_ObjCProtocol
@@ -419,6 +423,18 @@ static bool isPreferredLookupResult(Sema &S, Sema::LookupNameKind Kind,
     }
   }
 
+  // VarDecl can have incomplete array types, prefer the one with more complete
+  // array type.
+  if (VarDecl *DVD = dyn_cast<VarDecl>(DUnderlying)) {
+    VarDecl *EVD = cast<VarDecl>(EUnderlying);
+    if (EVD->getType()->isIncompleteType() &&
+        !DVD->getType()->isIncompleteType()) {
+      // Prefer the decl with a more complete type if visible.
+      return S.isVisible(DVD);
+    }
+    return false; // Avoid picking up a newer decl, just because it was newer.
+  }
+
   // For most kinds of declaration, it doesn't really matter which one we pick.
   if (!isa<FunctionDecl>(DUnderlying) && !isa<VarDecl>(DUnderlying)) {
     // If the existing declaration is hidden, prefer the new one. Otherwise,
@@ -432,10 +448,6 @@ static bool isPreferredLookupResult(Sema &S, Sema::LookupNameKind Kind,
     if (Prev == EUnderlying)
       return true;
   return false;
-
-  // If the existing declaration is hidden, prefer the new one. Otherwise,
-  // keep what we've got.
-  return !S.isVisible(Existing);
 }
 
 /// Determine whether \p D can hide a tag declaration.
@@ -650,6 +662,13 @@ void LookupResult::print(raw_ostream &Out) {
   }
 }
 
+LLVM_DUMP_METHOD void LookupResult::dump() {
+  llvm::errs() << "lookup results for " << getLookupName().getAsString()
+               << ":\n";
+  for (NamedDecl *D : *this)
+    D->dump();
+}
+
 /// \brief Lookup a builtin function, when name lookup would otherwise
 /// fail.
 static bool LookupBuiltin(Sema &S, LookupResult &R) {
@@ -677,9 +696,9 @@ static bool LookupBuiltin(Sema &S, LookupResult &R) {
 
       // If this is a builtin on this (or all) targets, create the decl.
       if (unsigned BuiltinID = II->getBuiltinID()) {
-        // In C++, we don't have any predefined library functions like
-        // 'malloc'. Instead, we'll just error.
-        if (S.getLangOpts().CPlusPlus &&
+        // In C++ and OpenCL (spec v1.2 s6.9.f), we don't have any predefined
+        // library functions like 'malloc'. Instead, we'll just error.
+        if ((S.getLangOpts().CPlusPlus || S.getLangOpts().OpenCL) &&
             S.Context.BuiltinInfo.isPredefinedLibFunction(BuiltinID))
           return false;
 
@@ -1563,6 +1582,10 @@ static NamedDecl *findAcceptableDecl(Sema &SemaRef, NamedDecl *D) {
   assert(!LookupResult::isVisible(SemaRef, D) && "not in slow case");
 
   for (auto RD : D->redecls()) {
+    // Don't bother with extra checks if we already know this one isn't visible.
+    if (RD == D)
+      continue;
+
     if (auto ND = dyn_cast<NamedDecl>(RD)) {
       // FIXME: This is wrong in the case where the previous declaration is not
       // visible in the same scope as D. This needs to be done much more
@@ -1576,6 +1599,23 @@ static NamedDecl *findAcceptableDecl(Sema &SemaRef, NamedDecl *D) {
 }
 
 NamedDecl *LookupResult::getAcceptableDeclSlow(NamedDecl *D) const {
+  if (auto *ND = dyn_cast<NamespaceDecl>(D)) {
+    // Namespaces are a bit of a special case: we expect there to be a lot of
+    // redeclarations of some namespaces, all declarations of a namespace are
+    // essentially interchangeable, all declarations are found by name lookup
+    // if any is, and namespaces are never looked up during template
+    // instantiation. So we benefit from caching the check in this case, and
+    // it is correct to do so.
+    auto *Key = ND->getCanonicalDecl();
+    if (auto *Acceptable = getSema().VisibleNamespaceCache.lookup(Key))
+      return Acceptable;
+    auto *Acceptable =
+        isVisible(getSema(), Key) ? Key : findAcceptableDecl(getSema(), Key);
+    if (Acceptable)
+      getSema().VisibleNamespaceCache.insert(std::make_pair(Key, Acceptable));
+    return Acceptable;
+  }
+
   return findAcceptableDecl(getSema(), D);
 }
 
@@ -1977,6 +2017,10 @@ bool Sema::LookupQualifiedName(LookupResult &R, DeclContext *LookupCtx,
 
     case LookupAnyName:
       BaseCallback = &LookupAnyMember;
+      break;
+
+    case LookupOMPReductionName:
+      BaseCallback = &CXXRecordDecl::FindOMPReductionMember;
       break;
 
     case LookupUsingDeclName:
@@ -2615,6 +2659,9 @@ addAssociatedClassesAndNamespaces(AssociatedLookup &Result, QualType Ty) {
     // contained type.
     case Type::Atomic:
       T = cast<AtomicType>(T)->getValueType().getTypePtr();
+      continue;
+    case Type::Pipe:
+      T = cast<PipeType>(T)->getElementType().getTypePtr();
       continue;
     }
 
@@ -3305,9 +3352,6 @@ public:
 } // end anonymous namespace
 
 NamedDecl *VisibleDeclsRecord::checkHidden(NamedDecl *ND) {
-  // Look through using declarations.
-  ND = ND->getUnderlyingDecl();
-
   unsigned IDNS = ND->getIdentifierNamespace();
   std::list<ShadowMap>::reverse_iterator SM = ShadowMaps.rbegin();
   for (std::list<ShadowMap>::reverse_iterator SMEnd = ShadowMaps.rend();
@@ -4200,7 +4244,8 @@ static void LookupPotentialTypoResult(Sema &SemaRef,
         }
       }
 
-      if (ObjCPropertyDecl *Prop = Class->FindPropertyDeclaration(Name)) {
+      if (ObjCPropertyDecl *Prop = Class->FindPropertyDeclaration(
+              Name, ObjCPropertyQueryKind::OBJC_PR_query_instance)) {
         Res.addDecl(Prop);
         Res.resolveKind();
         return;
@@ -4722,7 +4767,7 @@ void TypoCorrection::addCorrectionDecl(NamedDecl *CDecl) {
   if (isKeyword())
     CorrectionDecls.clear();
 
-  CorrectionDecls.push_back(CDecl->getUnderlyingDecl());
+  CorrectionDecls.push_back(CDecl);
 
   if (!CorrectionName)
     CorrectionName = CDecl->getDeclName();
@@ -4951,7 +4996,7 @@ void Sema::diagnoseTypo(const TypoCorrection &Correction,
 
   // Maybe we're just missing a module import.
   if (Correction.requiresImport()) {
-    NamedDecl *Decl = Correction.getCorrectionDecl();
+    NamedDecl *Decl = Correction.getFoundDecl();
     assert(Decl && "import required but no declaration to import");
 
     diagnoseMissingImport(Correction.getCorrectionRange().getBegin(), Decl,
@@ -4963,7 +5008,7 @@ void Sema::diagnoseTypo(const TypoCorrection &Correction,
     << CorrectedQuotedStr << (ErrorRecovery ? FixTypo : FixItHint());
 
   NamedDecl *ChosenDecl =
-      Correction.isKeyword() ? nullptr : Correction.getCorrectionDecl();
+      Correction.isKeyword() ? nullptr : Correction.getFoundDecl();
   if (PrevNote.getDiagID() && ChosenDecl)
     Diag(ChosenDecl->getLocation(), PrevNote)
       << CorrectedQuotedStr << (ErrorRecovery ? FixItHint() : FixTypo);
@@ -4990,4 +5035,13 @@ const Sema::TypoExprState &Sema::getTypoExprState(TypoExpr *TE) const {
 
 void Sema::clearDelayedTypo(TypoExpr *TE) {
   DelayedTypos.erase(TE);
+}
+
+void Sema::ActOnPragmaDump(Scope *S, SourceLocation IILoc, IdentifierInfo *II) {
+  DeclarationNameInfo Name(II, IILoc);
+  LookupResult R(*this, Name, LookupAnyName, Sema::NotForRedeclaration);
+  R.suppressDiagnostics();
+  R.setHideTags(false);
+  LookupName(R, S);
+  R.dump();
 }
