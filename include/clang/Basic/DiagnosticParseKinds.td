@@ -27,6 +27,8 @@ def err_msasm_unable_to_create_target : Error<
   "MS-style inline assembly is not available: %0">;
 def err_gnu_inline_asm_disabled : Error<
   "GNU-style inline assembly is disabled">;
+def err_asm_goto_not_supported_yet : Error<
+  "'asm goto' constructs are not supported yet">;
 }
 
 let CategoryName = "Parse Issue" in {
@@ -953,12 +955,18 @@ def err_omp_expected_identifier_for_critical : Error<
   "expected identifier specifying the name of the 'omp critical' directive">;
 def err_omp_expected_reduction_identifier : Error<
   "expected identifier or one of the following operators: '+', '-', '*', '&', '|', '^', '&&', or '||'">;
+def err_omp_decl_in_declare_simd : Error<
+  "function declaration is expected after 'declare simd' directive">;
 def err_omp_unknown_map_type : Error<
   "incorrect map type, expected one of 'to', 'from', 'tofrom', 'alloc', 'release', or 'delete'">;
 def err_omp_unknown_map_type_modifier : Error<
   "incorrect map type modifier, expected 'always'">;
 def err_omp_map_type_missing : Error<
   "missing map type">;
+def err_omp_declare_simd_inbranch_notinbranch : Error<
+  "unexpected '%0' clause, '%1' is specified already">;
+def err_expected_end_declare_target : Error<
+  "expected '#pragma omp end declare target'">;
 
 // Pragma loop support.
 def err_pragma_loop_missing_argument : Error<

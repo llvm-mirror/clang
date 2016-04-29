@@ -906,7 +906,7 @@ CodeGenFunction::generateObjCGetterBody(const ObjCImplementationDecl *classImpl,
     Address ivarAddr = LV.getAddress();
     ivarAddr = Builder.CreateBitCast(ivarAddr, bitcastType);
     llvm::LoadInst *load = Builder.CreateLoad(ivarAddr, "load");
-    load->setAtomic(llvm::Unordered);
+    load->setAtomic(llvm::AtomicOrdering::Unordered);
 
     // Store that value into the return address.  Doing this with a
     // bitcast is likely to produce some pretty ugly IR, but it's not
@@ -1183,7 +1183,7 @@ CodeGenFunction::generateObjCSetterBody(const ObjCImplementationDecl *classImpl,
 
     // Perform an atomic store.  There are no memory ordering requirements.
     llvm::StoreInst *store = Builder.CreateStore(load, ivarAddr);
-    store->setAtomic(llvm::Unordered);
+    store->setAtomic(llvm::AtomicOrdering::Unordered);
     return;
   }
 
@@ -1485,6 +1485,8 @@ void CodeGenFunction::EmitObjCForCollectionStmt(const ObjCForCollectionStmt &S){
                                       ArrayType::Normal, 0);
   Address ItemsPtr = CreateMemTemp(ItemsTy, "items.ptr");
 
+  RunCleanupsScope ForScope(*this);
+
   // Emit the collection pointer.  In ARC, we do a retain.
   llvm::Value *Collection;
   if (getLangOpts().ObjCAutoRefCount) {
@@ -1725,10 +1727,7 @@ void CodeGenFunction::EmitObjCForCollectionStmt(const ObjCForCollectionStmt &S){
   if (DI)
     DI->EmitLexicalBlockEnd(Builder, S.getSourceRange().getEnd());
 
-  // Leave the cleanup we entered in ARC.
-  if (getLangOpts().ObjCAutoRefCount)
-    PopCleanupBlock();
-
+  ForScope.ForceCleanup();
   EmitBlock(LoopEnd.getBlock());
 }
 

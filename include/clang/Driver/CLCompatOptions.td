@@ -45,8 +45,8 @@ class CLCompileJoinedOrSeparate<string name> : Option<["/", "-"], name,
   KIND_JOINED_OR_SEPARATE>, Group<cl_compile_Group>,
   Flags<[CLOption, DriverOption]>;
 
-class CLRemainingArgs<string name> : Option<["/", "-"], name,
-  KIND_REMAINING_ARGS>, Group<cl_Group>, Flags<[CLOption, DriverOption]>;
+class CLRemainingArgsJoined<string name> : Option<["/", "-"], name,
+  KIND_REMAINING_ARGS_JOINED>, Group<cl_Group>, Flags<[CLOption, DriverOption]>;
 
 // Aliases:
 // (We don't put any of these in cl_compile_Group as the options they alias are
@@ -210,9 +210,12 @@ def _SLASH_GX : CLFlag<"GX">,
   HelpText<"Enable exception handling">;
 def _SLASH_GX_ : CLFlag<"GX-">,
   HelpText<"Enable exception handling">;
+def _SLASH_imsvc : CLJoinedOrSeparate<"imsvc">,
+  HelpText<"Add directory to system include search path, as if part of %INCLUDE%">,
+  MetaVarName<"<dir>">;
 def _SLASH_LD : CLFlag<"LD">, HelpText<"Create DLL">;
 def _SLASH_LDd : CLFlag<"LDd">, HelpText<"Create debug DLL">;
-def _SLASH_link : CLRemainingArgs<"link">,
+def _SLASH_link : CLRemainingArgsJoined<"link">,
   HelpText<"Forward options to the linker">, MetaVarName<"<options>">;
 def _SLASH_MD : Option<["/", "-"], "MD", KIND_FLAG>, Group<_SLASH_M_Group>,
   Flags<[CLOption, DriverOption]>, HelpText<"Use DLL run-time">;
@@ -270,6 +273,7 @@ def _SLASH_Fp : CLJoined<"Fp">,
 def _SLASH_analyze_ : CLIgnoredFlag<"analyze-">;
 def _SLASH_bigobj : CLIgnoredFlag<"bigobj">;
 def _SLASH_cgthreads : CLIgnoredJoined<"cgthreads">;
+def _SLASH_d2FastFail : CLIgnoredFlag<"d2FastFail">;
 def _SLASH_d2Zi_PLUS : CLIgnoredFlag<"d2Zi+">;
 def _SLASH_errorReport : CLIgnoredJoined<"errorReport">;
 def _SLASH_Fd : CLIgnoredJoined<"Fd">;

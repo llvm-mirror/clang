@@ -38,7 +38,11 @@
 // CHECKSH-NOT: "-fmodules-cache-path="
 // CHECKSH: "crash-vfs-{{[^ ]*}}.m"
 // CHECKSH: "-ivfsoverlay" "crash-vfs-{{[^ ]*}}.cache/vfs/vfs.yaml"
+// CHECKSH: "-fmodules-cache-path=crash-vfs-{{[^ ]*}}.cache/modules"
 
+// CHECKYAML: 'case-sensitive':
+// CHECKYAML-NEXT: 'use-external-names': 'false',
+// CHECKYAML-NEXT: 'overlay-relative': 'true',
 // CHECKYAML: 'type': 'directory'
 // CHECKYAML: 'name': "/[[PATH:.*]]/i/usr/include",
 // CHECKYAML-NEXT: 'contents': [
@@ -69,4 +73,4 @@
 // RUN:     -fmodules-cache-path=%t/m/ 2>&1 \
 // RUN:     | FileCheck %s --check-prefix=CHECKOVERLAY
 
-// CHECKOVERLAY: @import cstd.stdio; /* clang -E: implicit import for "{{[^ ]*}}.cache/vfs/{{[^ ]*}}/i/usr/include/stdio.h"
+// CHECKOVERLAY: @import cstd.stdio; /* clang -E: implicit import for "/{{[^ ].*}}/i/usr/x/../stdio.h" */

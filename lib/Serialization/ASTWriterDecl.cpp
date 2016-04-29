@@ -32,18 +32,24 @@ using namespace serialization;
 
 namespace clang {
   class ASTDeclWriter : public DeclVisitor<ASTDeclWriter, void> {
-
     ASTWriter &Writer;
     ASTContext &Context;
-    typedef ASTWriter::RecordData RecordData;
-    RecordData &Record;
+    ASTRecordWriter Record;
 
-  public:
     serialization::DeclCode Code;
     unsigned AbbrevToUse;
 
-    ASTDeclWriter(ASTWriter &Writer, ASTContext &Context, RecordData &Record)
-      : Writer(Writer), Context(Context), Record(Record) {
+  public:
+    ASTDeclWriter(ASTWriter &Writer, ASTContext &Context,
+                  ASTWriter::RecordDataImpl &Record)
+        : Writer(Writer), Context(Context), Record(Writer, Record),
+          Code((serialization::DeclCode)0), AbbrevToUse(0) {}
+
+    uint64_t Emit(Decl *D) {
+      if (!Code)
+        llvm::report_fatal_error(StringRef("unexpected declaration kind '") +
+            D->getDeclKindName() + "'");
+      return Record.Emit(Code, AbbrevToUse);
     }
 
     void Visit(Decl *D);
@@ -112,8 +118,7 @@ namespace clang {
     void VisitCapturedDecl(CapturedDecl *D);
     void VisitEmptyDecl(EmptyDecl *D);
 
-    void VisitDeclContext(DeclContext *DC, uint64_t LexicalOffset,
-                          uint64_t VisibleOffset);
+    void VisitDeclContext(DeclContext *DC);
     template <typename T> void VisitRedeclarable(Redeclarable<T> *D);
 
 
@@ -136,12 +141,6 @@ namespace clang {
     void VisitOMPDeclareReductionDecl(OMPDeclareReductionDecl *D);
     void VisitOMPCapturedExprDecl(OMPCapturedExprDecl *D);
 
-    void AddLocalOffset(uint64_t LocalOffset) {
-      uint64_t Offset = Writer.Stream.GetCurrentBitNo();
-      assert(LocalOffset < Offset && "invalid offset");
-      Record.push_back(LocalOffset ? Offset - LocalOffset : 0);
-    }
-
     /// Add an Objective-C type parameter list to the given record.
     void AddObjCTypeParamList(ObjCTypeParamList *typeParams) {
       // Empty type parameter list.
@@ -152,21 +151,10 @@ namespace clang {
 
       Record.push_back(typeParams->size());
       for (auto typeParam : *typeParams) {
-        Writer.AddDeclRef(typeParam, Record);
+        Record.AddDeclRef(typeParam);
       }
-      Writer.AddSourceLocation(typeParams->getLAngleLoc(), Record);
-      Writer.AddSourceLocation(typeParams->getRAngleLoc(), Record);
-    }
-
-    void AddFunctionDefinition(const FunctionDecl *FD) {
-      assert(FD->doesThisDeclarationHaveABody());
-      if (auto *CD = dyn_cast<CXXConstructorDecl>(FD)) {
-        Record.push_back(CD->NumCtorInitializers);
-        if (CD->NumCtorInitializers)
-          Writer.AddCXXCtorInitializersRef(
-              llvm::makeArrayRef(CD->init_begin(), CD->init_end()), Record);
-      }
-      Writer.AddStmt(FD->getBody());
+      Record.AddSourceLocation(typeParams->getLAngleLoc());
+      Record.AddSourceLocation(typeParams->getRAngleLoc());
     }
 
     /// Add to the record the first declaration from each module file that
@@ -182,7 +170,7 @@ namespace clang {
           Firsts[nullptr] = R;
       }
       for (const auto &F : Firsts)
-        Writer.AddDeclRef(F.second, Record);
+        Record.AddDeclRef(F.second);
     }
 
     /// Get the specialization decl from an entry in the specialization list.
@@ -271,7 +259,7 @@ void ASTDeclWriter::Visit(Decl *D) {
   // abbreviation infrastructure requires that arrays are encoded last, so
   // we handle it here in the case of those classes derived from DeclaratorDecl
   if (DeclaratorDecl *DD = dyn_cast<DeclaratorDecl>(D)) {
-    Writer.AddTypeSourceInfo(DD->getTypeSourceInfo(), Record);
+    Record.AddTypeSourceInfo(DD->getTypeSourceInfo());
   }
 
   // Handle FunctionDecl's body here and write it after all other Stmts/Exprs
@@ -280,21 +268,26 @@ void ASTDeclWriter::Visit(Decl *D) {
   if (FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
     Record.push_back(FD->doesThisDeclarationHaveABody());
     if (FD->doesThisDeclarationHaveABody())
-      AddFunctionDefinition(FD);
+      Record.AddFunctionDefinition(FD);
   }
+
+  // If this declaration is also a DeclContext, write blocks for the
+  // declarations that lexically stored inside its context and those
+  // declarations that are visible from its context.
+  if (DeclContext *DC = dyn_cast<DeclContext>(D))
+    VisitDeclContext(DC);
 }
 
 void ASTDeclWriter::VisitDecl(Decl *D) {
-  Writer.AddDeclRef(cast_or_null<Decl>(D->getDeclContext()), Record);
+  Record.AddDeclRef(cast_or_null<Decl>(D->getDeclContext()));
   if (D->getDeclContext() != D->getLexicalDeclContext())
-    Writer.AddDeclRef(cast_or_null<Decl>(D->getLexicalDeclContext()), Record);
+    Record.AddDeclRef(cast_or_null<Decl>(D->getLexicalDeclContext()));
   else
     Record.push_back(0);
   Record.push_back(D->isInvalidDecl());
   Record.push_back(D->hasAttrs());
   if (D->hasAttrs())
-    Writer.WriteAttributes(llvm::makeArrayRef(D->getAttrs().begin(),
-                                              D->getAttrs().size()), Record);
+    Record.AddAttributes(D->getAttrs());
   Record.push_back(D->isImplicit());
   Record.push_back(D->isUsed(false));
   Record.push_back(D->isReferenced());
@@ -328,9 +321,9 @@ void ASTDeclWriter::VisitPragmaCommentDecl(PragmaCommentDecl *D) {
   StringRef Arg = D->getArg();
   Record.push_back(Arg.size());
   VisitDecl(D);
-  Writer.AddSourceLocation(D->getLocStart(), Record);
+  Record.AddSourceLocation(D->getLocStart());
   Record.push_back(D->getCommentKind());
-  Writer.AddString(Arg, Record);
+  Record.AddString(Arg);
   Code = serialization::DECL_PRAGMA_COMMENT;
 }
 
@@ -340,9 +333,9 @@ void ASTDeclWriter::VisitPragmaDetectMismatchDecl(
   StringRef Value = D->getValue();
   Record.push_back(Name.size() + 1 + Value.size());
   VisitDecl(D);
-  Writer.AddSourceLocation(D->getLocStart(), Record);
-  Writer.AddString(Name, Record);
-  Writer.AddString(Value, Record);
+  Record.AddSourceLocation(D->getLocStart());
+  Record.AddString(Name);
+  Record.AddString(Value);
   Code = serialization::DECL_PRAGMA_DETECT_MISMATCH;
 }
 
@@ -352,7 +345,7 @@ void ASTDeclWriter::VisitTranslationUnitDecl(TranslationUnitDecl *D) {
 
 void ASTDeclWriter::VisitNamedDecl(NamedDecl *D) {
   VisitDecl(D);
-  Writer.AddDeclarationName(D->getDeclName(), Record);
+  Record.AddDeclarationName(D->getDeclName());
   Record.push_back(needsAnonymousDeclarationNumber(D)
                        ? Writer.getAnonymousDeclarationNumber(D)
                        : 0);
@@ -360,17 +353,17 @@ void ASTDeclWriter::VisitNamedDecl(NamedDecl *D) {
 
 void ASTDeclWriter::VisitTypeDecl(TypeDecl *D) {
   VisitNamedDecl(D);
-  Writer.AddSourceLocation(D->getLocStart(), Record);
-  Writer.AddTypeRef(QualType(D->getTypeForDecl(), 0), Record);
+  Record.AddSourceLocation(D->getLocStart());
+  Record.AddTypeRef(QualType(D->getTypeForDecl(), 0));
 }
 
 void ASTDeclWriter::VisitTypedefNameDecl(TypedefNameDecl *D) {
   VisitRedeclarable(D);
   VisitTypeDecl(D);
-  Writer.AddTypeSourceInfo(D->getTypeSourceInfo(), Record);
+  Record.AddTypeSourceInfo(D->getTypeSourceInfo());
   Record.push_back(D->isModed());
   if (D->isModed())
-    Writer.AddTypeRef(D->getUnderlyingType(), Record);
+    Record.AddTypeRef(D->getUnderlyingType());
 }
 
 void ASTDeclWriter::VisitTypedefDecl(TypedefDecl *D) {
@@ -391,7 +384,7 @@ void ASTDeclWriter::VisitTypedefDecl(TypedefDecl *D) {
 
 void ASTDeclWriter::VisitTypeAliasDecl(TypeAliasDecl *D) {
   VisitTypedefNameDecl(D);
-  Writer.AddDeclRef(D->getDescribedAliasTemplate(), Record);
+  Record.AddDeclRef(D->getDescribedAliasTemplate());
   Code = serialization::DECL_TYPEALIAS;
 }
 
@@ -405,15 +398,15 @@ void ASTDeclWriter::VisitTagDecl(TagDecl *D) {
   Record.push_back(D->isEmbeddedInDeclarator());
   Record.push_back(D->isFreeStanding());
   Record.push_back(D->isCompleteDefinitionRequired());
-  Writer.AddSourceLocation(D->getRBraceLoc(), Record);
+  Record.AddSourceLocation(D->getRBraceLoc());
 
   if (D->hasExtInfo()) {
     Record.push_back(1);
-    Writer.AddQualifierInfo(*D->getExtInfo(), Record);
+    Record.AddQualifierInfo(*D->getExtInfo());
   } else if (auto *TD = D->getTypedefNameForAnonDecl()) {
     Record.push_back(2);
-    Writer.AddDeclRef(TD, Record);
-    Writer.AddIdentifierRef(TD->getDeclName().getAsIdentifierInfo(), Record);
+    Record.AddDeclRef(TD);
+    Record.AddIdentifierRef(TD->getDeclName().getAsIdentifierInfo());
   } else {
     Record.push_back(0);
   }
@@ -421,21 +414,21 @@ void ASTDeclWriter::VisitTagDecl(TagDecl *D) {
 
 void ASTDeclWriter::VisitEnumDecl(EnumDecl *D) {
   VisitTagDecl(D);
-  Writer.AddTypeSourceInfo(D->getIntegerTypeSourceInfo(), Record);
+  Record.AddTypeSourceInfo(D->getIntegerTypeSourceInfo());
   if (!D->getIntegerTypeSourceInfo())
-    Writer.AddTypeRef(D->getIntegerType(), Record);
-  Writer.AddTypeRef(D->getPromotionType(), Record);
+    Record.AddTypeRef(D->getIntegerType());
+  Record.AddTypeRef(D->getPromotionType());
   Record.push_back(D->getNumPositiveBits());
   Record.push_back(D->getNumNegativeBits());
   Record.push_back(D->isScoped());
   Record.push_back(D->isScopedUsingClassTag());
   Record.push_back(D->isFixed());
   if (MemberSpecializationInfo *MemberInfo = D->getMemberSpecializationInfo()) {
-    Writer.AddDeclRef(MemberInfo->getInstantiatedFrom(), Record);
+    Record.AddDeclRef(MemberInfo->getInstantiatedFrom());
     Record.push_back(MemberInfo->getTemplateSpecializationKind());
-    Writer.AddSourceLocation(MemberInfo->getPointOfInstantiation(), Record);
+    Record.AddSourceLocation(MemberInfo->getPointOfInstantiation());
   } else {
-    Writer.AddDeclRef(nullptr, Record);
+    Record.AddDeclRef(nullptr);
   }
 
   if (D->getDeclContext() == D->getLexicalDeclContext() &&
@@ -489,31 +482,31 @@ void ASTDeclWriter::VisitRecordDecl(RecordDecl *D) {
 
 void ASTDeclWriter::VisitValueDecl(ValueDecl *D) {
   VisitNamedDecl(D);
-  Writer.AddTypeRef(D->getType(), Record);
+  Record.AddTypeRef(D->getType());
 }
 
 void ASTDeclWriter::VisitEnumConstantDecl(EnumConstantDecl *D) {
   VisitValueDecl(D);
   Record.push_back(D->getInitExpr()? 1 : 0);
   if (D->getInitExpr())
-    Writer.AddStmt(D->getInitExpr());
-  Writer.AddAPSInt(D->getInitVal(), Record);
+    Record.AddStmt(D->getInitExpr());
+  Record.AddAPSInt(D->getInitVal());
 
   Code = serialization::DECL_ENUM_CONSTANT;
 }
 
 void ASTDeclWriter::VisitDeclaratorDecl(DeclaratorDecl *D) {
   VisitValueDecl(D);
-  Writer.AddSourceLocation(D->getInnerLocStart(), Record);
+  Record.AddSourceLocation(D->getInnerLocStart());
   Record.push_back(D->hasExtInfo());
   if (D->hasExtInfo())
-    Writer.AddQualifierInfo(*D->getExtInfo(), Record);
+    Record.AddQualifierInfo(*D->getExtInfo());
 }
 
 void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
   VisitRedeclarable(D);
   VisitDeclaratorDecl(D);
-  Writer.AddDeclarationNameLoc(D->DNLoc, D->getDeclName(), Record);
+  Record.AddDeclarationNameLoc(D->DNLoc, D->getDeclName());
   Record.push_back(D->getIdentifierNamespace());
   
   // FunctionDecl's body is handled last at ASTWriterDecl::Visit,
@@ -535,20 +528,20 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
   Record.push_back(D->HasSkippedBody);
   Record.push_back(D->IsLateTemplateParsed);
   Record.push_back(D->getLinkageInternal());
-  Writer.AddSourceLocation(D->getLocEnd(), Record);
+  Record.AddSourceLocation(D->getLocEnd());
 
   Record.push_back(D->getTemplatedKind());
   switch (D->getTemplatedKind()) {
   case FunctionDecl::TK_NonTemplate:
     break;
   case FunctionDecl::TK_FunctionTemplate:
-    Writer.AddDeclRef(D->getDescribedFunctionTemplate(), Record);
+    Record.AddDeclRef(D->getDescribedFunctionTemplate());
     break;
   case FunctionDecl::TK_MemberSpecialization: {
     MemberSpecializationInfo *MemberInfo = D->getMemberSpecializationInfo();
-    Writer.AddDeclRef(MemberInfo->getInstantiatedFrom(), Record);
+    Record.AddDeclRef(MemberInfo->getInstantiatedFrom());
     Record.push_back(MemberInfo->getTemplateSpecializationKind());
-    Writer.AddSourceLocation(MemberInfo->getPointOfInstantiation(), Record);
+    Record.AddSourceLocation(MemberInfo->getPointOfInstantiation());
     break;
   }
   case FunctionDecl::TK_FunctionTemplateSpecialization: {
@@ -557,11 +550,11 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
 
     RegisterTemplateSpecialization(FTSInfo->getTemplate(), D);
 
-    Writer.AddDeclRef(FTSInfo->getTemplate(), Record);
+    Record.AddDeclRef(FTSInfo->getTemplate());
     Record.push_back(FTSInfo->getTemplateSpecializationKind());
     
     // Template arguments.
-    Writer.AddTemplateArgumentList(FTSInfo->TemplateArguments, Record);
+    Record.AddTemplateArgumentList(FTSInfo->TemplateArguments);
     
     // Template args as written.
     Record.push_back(FTSInfo->TemplateArgumentsAsWritten != nullptr);
@@ -569,20 +562,18 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
       Record.push_back(FTSInfo->TemplateArgumentsAsWritten->NumTemplateArgs);
       for (int i=0, e = FTSInfo->TemplateArgumentsAsWritten->NumTemplateArgs;
              i!=e; ++i)
-        Writer.AddTemplateArgumentLoc((*FTSInfo->TemplateArgumentsAsWritten)[i],
-                                      Record);
-      Writer.AddSourceLocation(FTSInfo->TemplateArgumentsAsWritten->LAngleLoc,
-                               Record);
-      Writer.AddSourceLocation(FTSInfo->TemplateArgumentsAsWritten->RAngleLoc,
-                               Record);
+        Record.AddTemplateArgumentLoc(
+            (*FTSInfo->TemplateArgumentsAsWritten)[i]);
+      Record.AddSourceLocation(FTSInfo->TemplateArgumentsAsWritten->LAngleLoc);
+      Record.AddSourceLocation(FTSInfo->TemplateArgumentsAsWritten->RAngleLoc);
     }
     
-    Writer.AddSourceLocation(FTSInfo->getPointOfInstantiation(), Record);
+    Record.AddSourceLocation(FTSInfo->getPointOfInstantiation());
 
     if (D->isCanonicalDecl()) {
       // Write the template that contains the specializations set. We will
       // add a FunctionTemplateSpecializationInfo to it when reading.
-      Writer.AddDeclRef(FTSInfo->getTemplate()->getCanonicalDecl(), Record);
+      Record.AddDeclRef(FTSInfo->getTemplate()->getCanonicalDecl());
     }
     break;
   }
@@ -593,21 +584,21 @@ void ASTDeclWriter::VisitFunctionDecl(FunctionDecl *D) {
     // Templates.
     Record.push_back(DFTSInfo->getNumTemplates());
     for (int i=0, e = DFTSInfo->getNumTemplates(); i != e; ++i)
-      Writer.AddDeclRef(DFTSInfo->getTemplate(i), Record);
+      Record.AddDeclRef(DFTSInfo->getTemplate(i));
     
     // Templates args.
     Record.push_back(DFTSInfo->getNumTemplateArgs());
     for (int i=0, e = DFTSInfo->getNumTemplateArgs(); i != e; ++i)
-      Writer.AddTemplateArgumentLoc(DFTSInfo->getTemplateArg(i), Record);
-    Writer.AddSourceLocation(DFTSInfo->getLAngleLoc(), Record);
-    Writer.AddSourceLocation(DFTSInfo->getRAngleLoc(), Record);
+      Record.AddTemplateArgumentLoc(DFTSInfo->getTemplateArg(i));
+    Record.AddSourceLocation(DFTSInfo->getLAngleLoc());
+    Record.AddSourceLocation(DFTSInfo->getRAngleLoc());
     break;
   }
   }
 
   Record.push_back(D->param_size());
   for (auto P : D->params())
-    Writer.AddDeclRef(P, Record);
+    Record.AddDeclRef(P);
   Code = serialization::DECL_FUNCTION;
 }
 
@@ -619,9 +610,9 @@ void ASTDeclWriter::VisitObjCMethodDecl(ObjCMethodDecl *D) {
                       D->getSelfDecl() != nullptr || D->getCmdDecl() != nullptr;
   Record.push_back(HasBodyStuff);
   if (HasBodyStuff) {
-    Writer.AddStmt(D->getBody());
-    Writer.AddDeclRef(D->getSelfDecl(), Record);
-    Writer.AddDeclRef(D->getCmdDecl(), Record);
+    Record.AddStmt(D->getBody());
+    Record.AddDeclRef(D->getSelfDecl());
+    Record.AddDeclRef(D->getCmdDecl());
   }
   Record.push_back(D->isInstanceMethod());
   Record.push_back(D->isVariadic());
@@ -634,7 +625,7 @@ void ASTDeclWriter::VisitObjCMethodDecl(ObjCMethodDecl *D) {
   Record.push_back(D->HasRedeclaration);
   if (D->HasRedeclaration) {
     assert(Context.getObjCMethodRedeclaration(D));
-    Writer.AddDeclRef(Context.getObjCMethodRedeclaration(D), Record);
+    Record.AddDeclRef(Context.getObjCMethodRedeclaration(D));
   }
 
   // FIXME: stable encoding for @required/@optional
@@ -642,19 +633,19 @@ void ASTDeclWriter::VisitObjCMethodDecl(ObjCMethodDecl *D) {
   // FIXME: stable encoding for in/out/inout/bycopy/byref/oneway/nullability
   Record.push_back(D->getObjCDeclQualifier());
   Record.push_back(D->hasRelatedResultType());
-  Writer.AddTypeRef(D->getReturnType(), Record);
-  Writer.AddTypeSourceInfo(D->getReturnTypeSourceInfo(), Record);
-  Writer.AddSourceLocation(D->getLocEnd(), Record);
+  Record.AddTypeRef(D->getReturnType());
+  Record.AddTypeSourceInfo(D->getReturnTypeSourceInfo());
+  Record.AddSourceLocation(D->getLocEnd());
   Record.push_back(D->param_size());
   for (const auto *P : D->params())
-    Writer.AddDeclRef(P, Record);
+    Record.AddDeclRef(P);
 
   Record.push_back(D->SelLocsKind);
   unsigned NumStoredSelLocs = D->getNumStoredSelLocs();
   SourceLocation *SelLocs = D->getStoredSelLocs();
   Record.push_back(NumStoredSelLocs);
   for (unsigned i = 0; i != NumStoredSelLocs; ++i)
-    Writer.AddSourceLocation(SelLocs[i], Record);
+    Record.AddSourceLocation(SelLocs[i]);
 
   Code = serialization::DECL_OBJC_METHOD;
 }
@@ -663,23 +654,23 @@ void ASTDeclWriter::VisitObjCTypeParamDecl(ObjCTypeParamDecl *D) {
   VisitTypedefNameDecl(D);
   Record.push_back(D->Variance);
   Record.push_back(D->Index);
-  Writer.AddSourceLocation(D->VarianceLoc, Record);
-  Writer.AddSourceLocation(D->ColonLoc, Record);
+  Record.AddSourceLocation(D->VarianceLoc);
+  Record.AddSourceLocation(D->ColonLoc);
 
   Code = serialization::DECL_OBJC_TYPE_PARAM;
 }
 
 void ASTDeclWriter::VisitObjCContainerDecl(ObjCContainerDecl *D) {
   VisitNamedDecl(D);
-  Writer.AddSourceLocation(D->getAtStartLoc(), Record);
-  Writer.AddSourceRange(D->getAtEndRange(), Record);
+  Record.AddSourceLocation(D->getAtStartLoc());
+  Record.AddSourceRange(D->getAtEndRange());
   // Abstract class (no need to define a stable serialization::DECL code).
 }
 
 void ASTDeclWriter::VisitObjCInterfaceDecl(ObjCInterfaceDecl *D) {
   VisitRedeclarable(D);
   VisitObjCContainerDecl(D);
-  Writer.AddTypeRef(QualType(D->getTypeForDecl(), 0), Record);
+  Record.AddTypeRef(QualType(D->getTypeForDecl(), 0));
   AddObjCTypeParamList(D->TypeParamList);
 
   Record.push_back(D->isThisDeclarationADefinition());
@@ -687,16 +678,16 @@ void ASTDeclWriter::VisitObjCInterfaceDecl(ObjCInterfaceDecl *D) {
     // Write the DefinitionData
     ObjCInterfaceDecl::DefinitionData &Data = D->data();
     
-    Writer.AddTypeSourceInfo(D->getSuperClassTInfo(), Record);
-    Writer.AddSourceLocation(D->getEndOfDefinitionLoc(), Record);
+    Record.AddTypeSourceInfo(D->getSuperClassTInfo());
+    Record.AddSourceLocation(D->getEndOfDefinitionLoc());
     Record.push_back(Data.HasDesignatedInitializers);
 
     // Write out the protocols that are directly referenced by the @interface.
     Record.push_back(Data.ReferencedProtocols.size());
     for (const auto *P : D->protocols())
-      Writer.AddDeclRef(P, Record);
+      Record.AddDeclRef(P);
     for (const auto &PL : D->protocol_locs())
-      Writer.AddSourceLocation(PL, Record);
+      Record.AddSourceLocation(PL);
     
     // Write out the protocols that are transitively referenced.
     Record.push_back(Data.AllReferencedProtocols.size());
@@ -704,7 +695,7 @@ void ASTDeclWriter::VisitObjCInterfaceDecl(ObjCInterfaceDecl *D) {
               P = Data.AllReferencedProtocols.begin(),
            PEnd = Data.AllReferencedProtocols.end();
          P != PEnd; ++P)
-      Writer.AddDeclRef(*P, Record);
+      Record.AddDeclRef(*P);
 
     
     if (ObjCCategoryDecl *Cat = D->getCategoryListRaw()) {
@@ -749,9 +740,9 @@ void ASTDeclWriter::VisitObjCProtocolDecl(ObjCProtocolDecl *D) {
   if (D->isThisDeclarationADefinition()) {
     Record.push_back(D->protocol_size());
     for (const auto *I : D->protocols())
-      Writer.AddDeclRef(I, Record);
+      Record.AddDeclRef(I);
     for (const auto &PL : D->protocol_locs())
-      Writer.AddSourceLocation(PL, Record);
+      Record.AddSourceLocation(PL);
   }
   
   Code = serialization::DECL_OBJC_PROTOCOL;
@@ -764,80 +755,80 @@ void ASTDeclWriter::VisitObjCAtDefsFieldDecl(ObjCAtDefsFieldDecl *D) {
 
 void ASTDeclWriter::VisitObjCCategoryDecl(ObjCCategoryDecl *D) {
   VisitObjCContainerDecl(D);
-  Writer.AddSourceLocation(D->getCategoryNameLoc(), Record);
-  Writer.AddSourceLocation(D->getIvarLBraceLoc(), Record);
-  Writer.AddSourceLocation(D->getIvarRBraceLoc(), Record);
-  Writer.AddDeclRef(D->getClassInterface(), Record);
+  Record.AddSourceLocation(D->getCategoryNameLoc());
+  Record.AddSourceLocation(D->getIvarLBraceLoc());
+  Record.AddSourceLocation(D->getIvarRBraceLoc());
+  Record.AddDeclRef(D->getClassInterface());
   AddObjCTypeParamList(D->TypeParamList);
   Record.push_back(D->protocol_size());
   for (const auto *I : D->protocols())
-    Writer.AddDeclRef(I, Record);
+    Record.AddDeclRef(I);
   for (const auto &PL : D->protocol_locs())
-    Writer.AddSourceLocation(PL, Record);
+    Record.AddSourceLocation(PL);
   Code = serialization::DECL_OBJC_CATEGORY;
 }
 
 void ASTDeclWriter::VisitObjCCompatibleAliasDecl(ObjCCompatibleAliasDecl *D) {
   VisitNamedDecl(D);
-  Writer.AddDeclRef(D->getClassInterface(), Record);
+  Record.AddDeclRef(D->getClassInterface());
   Code = serialization::DECL_OBJC_COMPATIBLE_ALIAS;
 }
 
 void ASTDeclWriter::VisitObjCPropertyDecl(ObjCPropertyDecl *D) {
   VisitNamedDecl(D);
-  Writer.AddSourceLocation(D->getAtLoc(), Record);
-  Writer.AddSourceLocation(D->getLParenLoc(), Record);
-  Writer.AddTypeRef(D->getType(), Record);
-  Writer.AddTypeSourceInfo(D->getTypeSourceInfo(), Record);
+  Record.AddSourceLocation(D->getAtLoc());
+  Record.AddSourceLocation(D->getLParenLoc());
+  Record.AddTypeRef(D->getType());
+  Record.AddTypeSourceInfo(D->getTypeSourceInfo());
   // FIXME: stable encoding
   Record.push_back((unsigned)D->getPropertyAttributes());
   Record.push_back((unsigned)D->getPropertyAttributesAsWritten());
   // FIXME: stable encoding
   Record.push_back((unsigned)D->getPropertyImplementation());
-  Writer.AddDeclarationName(D->getGetterName(), Record);
-  Writer.AddDeclarationName(D->getSetterName(), Record);
-  Writer.AddDeclRef(D->getGetterMethodDecl(), Record);
-  Writer.AddDeclRef(D->getSetterMethodDecl(), Record);
-  Writer.AddDeclRef(D->getPropertyIvarDecl(), Record);
+  Record.AddDeclarationName(D->getGetterName());
+  Record.AddDeclarationName(D->getSetterName());
+  Record.AddDeclRef(D->getGetterMethodDecl());
+  Record.AddDeclRef(D->getSetterMethodDecl());
+  Record.AddDeclRef(D->getPropertyIvarDecl());
   Code = serialization::DECL_OBJC_PROPERTY;
 }
 
 void ASTDeclWriter::VisitObjCImplDecl(ObjCImplDecl *D) {
   VisitObjCContainerDecl(D);
-  Writer.AddDeclRef(D->getClassInterface(), Record);
+  Record.AddDeclRef(D->getClassInterface());
   // Abstract class (no need to define a stable serialization::DECL code).
 }
 
 void ASTDeclWriter::VisitObjCCategoryImplDecl(ObjCCategoryImplDecl *D) {
   VisitObjCImplDecl(D);
-  Writer.AddIdentifierRef(D->getIdentifier(), Record);
-  Writer.AddSourceLocation(D->getCategoryNameLoc(), Record);
+  Record.AddIdentifierRef(D->getIdentifier());
+  Record.AddSourceLocation(D->getCategoryNameLoc());
   Code = serialization::DECL_OBJC_CATEGORY_IMPL;
 }
 
 void ASTDeclWriter::VisitObjCImplementationDecl(ObjCImplementationDecl *D) {
   VisitObjCImplDecl(D);
-  Writer.AddDeclRef(D->getSuperClass(), Record);
-  Writer.AddSourceLocation(D->getSuperClassLoc(), Record);
-  Writer.AddSourceLocation(D->getIvarLBraceLoc(), Record);
-  Writer.AddSourceLocation(D->getIvarRBraceLoc(), Record);
+  Record.AddDeclRef(D->getSuperClass());
+  Record.AddSourceLocation(D->getSuperClassLoc());
+  Record.AddSourceLocation(D->getIvarLBraceLoc());
+  Record.AddSourceLocation(D->getIvarRBraceLoc());
   Record.push_back(D->hasNonZeroConstructors());
   Record.push_back(D->hasDestructors());
   Record.push_back(D->NumIvarInitializers);
   if (D->NumIvarInitializers)
-    Writer.AddCXXCtorInitializersRef(
-        llvm::makeArrayRef(D->init_begin(), D->init_end()), Record);
+    Record.AddCXXCtorInitializers(
+        llvm::makeArrayRef(D->init_begin(), D->init_end()));
   Code = serialization::DECL_OBJC_IMPLEMENTATION;
 }
 
 void ASTDeclWriter::VisitObjCPropertyImplDecl(ObjCPropertyImplDecl *D) {
   VisitDecl(D);
-  Writer.AddSourceLocation(D->getLocStart(), Record);
-  Writer.AddDeclRef(D->getPropertyDecl(), Record);
-  Writer.AddDeclRef(D->getPropertyIvarDecl(), Record);
-  Writer.AddSourceLocation(D->getPropertyIvarDeclLoc(), Record);
-  Writer.AddStmt(D->getGetterCXXConstructor());
-  Writer.AddStmt(D->getSetterCXXAssignment());
+  Record.AddSourceLocation(D->getLocStart());
+  Record.AddDeclRef(D->getPropertyDecl());
+  Record.AddDeclRef(D->getPropertyIvarDecl());
+  Record.AddSourceLocation(D->getPropertyIvarDeclLoc());
+  Record.AddStmt(D->getGetterCXXConstructor());
+  Record.AddStmt(D->getSetterCXXAssignment());
   Code = serialization::DECL_OBJC_PROPERTY_IMPL;
 }
 
@@ -849,15 +840,14 @@ void ASTDeclWriter::VisitFieldDecl(FieldDecl *D) {
     Record.push_back(0);
   } else if (D->InitStorage.getInt() == FieldDecl::ISK_CapturedVLAType) {
     Record.push_back(D->InitStorage.getInt() + 1);
-    Writer.AddTypeRef(
-        QualType(static_cast<Type *>(D->InitStorage.getPointer()), 0),
-        Record);
+    Record.AddTypeRef(
+        QualType(static_cast<Type *>(D->InitStorage.getPointer()), 0));
   } else {
     Record.push_back(D->InitStorage.getInt() + 1);
-    Writer.AddStmt(static_cast<Expr *>(D->InitStorage.getPointer()));
+    Record.AddStmt(static_cast<Expr *>(D->InitStorage.getPointer()));
   }
   if (!D->getDeclName())
-    Writer.AddDeclRef(Context.getInstantiatedFromUnnamedFieldDecl(D), Record);
+    Record.AddDeclRef(Context.getInstantiatedFromUnnamedFieldDecl(D));
 
   if (D->getDeclContext() == D->getLexicalDeclContext() &&
       !D->hasAttrs() &&
@@ -880,8 +870,8 @@ void ASTDeclWriter::VisitFieldDecl(FieldDecl *D) {
 
 void ASTDeclWriter::VisitMSPropertyDecl(MSPropertyDecl *D) {
   VisitDeclaratorDecl(D);
-  Writer.AddIdentifierRef(D->getGetterId(), Record);
-  Writer.AddIdentifierRef(D->getSetterId(), Record);
+  Record.AddIdentifierRef(D->getGetterId());
+  Record.AddIdentifierRef(D->getSetterId());
   Code = serialization::DECL_MS_PROPERTY;
 }
 
@@ -890,7 +880,7 @@ void ASTDeclWriter::VisitIndirectFieldDecl(IndirectFieldDecl *D) {
   Record.push_back(D->getChainingSize());
 
   for (const auto *P : D->chain())
-    Writer.AddDeclRef(P, Record);
+    Record.AddDeclRef(P);
   Code = serialization::DECL_INDIRECTFIELD;
 }
 
@@ -913,7 +903,7 @@ void ASTDeclWriter::VisitVarDecl(VarDecl *D) {
 
   if (D->getInit()) {
     Record.push_back(!D->isInitKnownICE() ? 1 : (D->isInitICE() ? 3 : 2));
-    Writer.AddStmt(D->getInit());
+    Record.AddStmt(D->getInit());
   } else {
     Record.push_back(0);
   }
@@ -923,13 +913,13 @@ void ASTDeclWriter::VisitVarDecl(VarDecl *D) {
   };
   if (VarTemplateDecl *TemplD = D->getDescribedVarTemplate()) {
     Record.push_back(VarTemplate);
-    Writer.AddDeclRef(TemplD, Record);
+    Record.AddDeclRef(TemplD);
   } else if (MemberSpecializationInfo *SpecInfo
                = D->getMemberSpecializationInfo()) {
     Record.push_back(StaticDataMemberSpecialization);
-    Writer.AddDeclRef(SpecInfo->getInstantiatedFrom(), Record);
+    Record.AddDeclRef(SpecInfo->getInstantiatedFrom());
     Record.push_back(SpecInfo->getTemplateSpecializationKind());
-    Writer.AddSourceLocation(SpecInfo->getPointOfInstantiation(), Record);
+    Record.AddSourceLocation(SpecInfo->getPointOfInstantiation());
   } else {
     Record.push_back(VarNotTemplate);
   }
@@ -975,7 +965,7 @@ void ASTDeclWriter::VisitParmVarDecl(ParmVarDecl *D) {
   Record.push_back(D->hasInheritedDefaultArg());
   Record.push_back(D->hasUninstantiatedDefaultArg());
   if (D->hasUninstantiatedDefaultArg())
-    Writer.AddStmt(D->getUninstantiatedDefaultArg());
+    Record.AddStmt(D->getUninstantiatedDefaultArg());
   Code = serialization::DECL_PARM_VAR;
 
   assert(!D->isARCPseudoStrong()); // can be true of ImplicitParamDecl
@@ -1014,8 +1004,8 @@ void ASTDeclWriter::VisitParmVarDecl(ParmVarDecl *D) {
 
 void ASTDeclWriter::VisitFileScopeAsmDecl(FileScopeAsmDecl *D) {
   VisitDecl(D);
-  Writer.AddStmt(D->getAsmString());
-  Writer.AddSourceLocation(D->getRParenLoc(), Record);
+  Record.AddStmt(D->getAsmString());
+  Record.AddSourceLocation(D->getRParenLoc());
   Code = serialization::DECL_FILE_SCOPE_ASM;
 }
 
@@ -1026,19 +1016,19 @@ void ASTDeclWriter::VisitEmptyDecl(EmptyDecl *D) {
 
 void ASTDeclWriter::VisitBlockDecl(BlockDecl *D) {
   VisitDecl(D);
-  Writer.AddStmt(D->getBody());
-  Writer.AddTypeSourceInfo(D->getSignatureAsWritten(), Record);
+  Record.AddStmt(D->getBody());
+  Record.AddTypeSourceInfo(D->getSignatureAsWritten());
   Record.push_back(D->param_size());
   for (FunctionDecl::param_iterator P = D->param_begin(), PEnd = D->param_end();
        P != PEnd; ++P)
-    Writer.AddDeclRef(*P, Record);
+    Record.AddDeclRef(*P);
   Record.push_back(D->isVariadic());
   Record.push_back(D->blockMissingReturnType());
   Record.push_back(D->isConversionFromLambda());
   Record.push_back(D->capturesCXXThis());
   Record.push_back(D->getNumCaptures());
   for (const auto &capture : D->captures()) {
-    Writer.AddDeclRef(capture.getVariable(), Record);
+    Record.AddDeclRef(capture.getVariable());
 
     unsigned flags = 0;
     if (capture.isByRef()) flags |= 1;
@@ -1046,7 +1036,7 @@ void ASTDeclWriter::VisitBlockDecl(BlockDecl *D) {
     if (capture.hasCopyExpr()) flags |= 4;
     Record.push_back(flags);
 
-    if (capture.hasCopyExpr()) Writer.AddStmt(capture.getCopyExpr());
+    if (capture.hasCopyExpr()) Record.AddStmt(capture.getCopyExpr());
   }
 
   Code = serialization::DECL_BLOCK;
@@ -1059,21 +1049,21 @@ void ASTDeclWriter::VisitCapturedDecl(CapturedDecl *CD) {
   Record.push_back(CD->isNothrow() ? 1 : 0);
   // Body is stored by VisitCapturedStmt.
   for (unsigned I = 0; I < CD->getNumParams(); ++I)
-    Writer.AddDeclRef(CD->getParam(I), Record);
+    Record.AddDeclRef(CD->getParam(I));
   Code = serialization::DECL_CAPTURED;
 }
 
 void ASTDeclWriter::VisitLinkageSpecDecl(LinkageSpecDecl *D) {
   VisitDecl(D);
   Record.push_back(D->getLanguage());
-  Writer.AddSourceLocation(D->getExternLoc(), Record);
-  Writer.AddSourceLocation(D->getRBraceLoc(), Record);
+  Record.AddSourceLocation(D->getExternLoc());
+  Record.AddSourceLocation(D->getRBraceLoc());
   Code = serialization::DECL_LINKAGE_SPEC;
 }
 
 void ASTDeclWriter::VisitLabelDecl(LabelDecl *D) {
   VisitNamedDecl(D);
-  Writer.AddSourceLocation(D->getLocStart(), Record);
+  Record.AddSourceLocation(D->getLocStart());
   Code = serialization::DECL_LABEL;
 }
 
@@ -1082,11 +1072,11 @@ void ASTDeclWriter::VisitNamespaceDecl(NamespaceDecl *D) {
   VisitRedeclarable(D);
   VisitNamedDecl(D);
   Record.push_back(D->isInline());
-  Writer.AddSourceLocation(D->getLocStart(), Record);
-  Writer.AddSourceLocation(D->getRBraceLoc(), Record);
+  Record.AddSourceLocation(D->getLocStart());
+  Record.AddSourceLocation(D->getRBraceLoc());
 
   if (D->isOriginalNamespace())
-    Writer.AddDeclRef(D->getAnonymousNamespace(), Record);
+    Record.AddDeclRef(D->getAnonymousNamespace());
   Code = serialization::DECL_NAMESPACE;
 
   if (Writer.hasChain() && D->isAnonymousNamespace() && 
@@ -1107,56 +1097,56 @@ void ASTDeclWriter::VisitNamespaceDecl(NamespaceDecl *D) {
 void ASTDeclWriter::VisitNamespaceAliasDecl(NamespaceAliasDecl *D) {
   VisitRedeclarable(D);
   VisitNamedDecl(D);
-  Writer.AddSourceLocation(D->getNamespaceLoc(), Record);
-  Writer.AddSourceLocation(D->getTargetNameLoc(), Record);
-  Writer.AddNestedNameSpecifierLoc(D->getQualifierLoc(), Record);
-  Writer.AddDeclRef(D->getNamespace(), Record);
+  Record.AddSourceLocation(D->getNamespaceLoc());
+  Record.AddSourceLocation(D->getTargetNameLoc());
+  Record.AddNestedNameSpecifierLoc(D->getQualifierLoc());
+  Record.AddDeclRef(D->getNamespace());
   Code = serialization::DECL_NAMESPACE_ALIAS;
 }
 
 void ASTDeclWriter::VisitUsingDecl(UsingDecl *D) {
   VisitNamedDecl(D);
-  Writer.AddSourceLocation(D->getUsingLoc(), Record);
-  Writer.AddNestedNameSpecifierLoc(D->getQualifierLoc(), Record);
-  Writer.AddDeclarationNameLoc(D->DNLoc, D->getDeclName(), Record);
-  Writer.AddDeclRef(D->FirstUsingShadow.getPointer(), Record);
+  Record.AddSourceLocation(D->getUsingLoc());
+  Record.AddNestedNameSpecifierLoc(D->getQualifierLoc());
+  Record.AddDeclarationNameLoc(D->DNLoc, D->getDeclName());
+  Record.AddDeclRef(D->FirstUsingShadow.getPointer());
   Record.push_back(D->hasTypename());
-  Writer.AddDeclRef(Context.getInstantiatedFromUsingDecl(D), Record);
+  Record.AddDeclRef(Context.getInstantiatedFromUsingDecl(D));
   Code = serialization::DECL_USING;
 }
 
 void ASTDeclWriter::VisitUsingShadowDecl(UsingShadowDecl *D) {
   VisitRedeclarable(D);
   VisitNamedDecl(D);
-  Writer.AddDeclRef(D->getTargetDecl(), Record);
-  Writer.AddDeclRef(D->UsingOrNextShadow, Record);
-  Writer.AddDeclRef(Context.getInstantiatedFromUsingShadowDecl(D), Record);
+  Record.AddDeclRef(D->getTargetDecl());
+  Record.AddDeclRef(D->UsingOrNextShadow);
+  Record.AddDeclRef(Context.getInstantiatedFromUsingShadowDecl(D));
   Code = serialization::DECL_USING_SHADOW;
 }
 
 void ASTDeclWriter::VisitUsingDirectiveDecl(UsingDirectiveDecl *D) {
   VisitNamedDecl(D);
-  Writer.AddSourceLocation(D->getUsingLoc(), Record);
-  Writer.AddSourceLocation(D->getNamespaceKeyLocation(), Record);
-  Writer.AddNestedNameSpecifierLoc(D->getQualifierLoc(), Record);
-  Writer.AddDeclRef(D->getNominatedNamespace(), Record);
-  Writer.AddDeclRef(dyn_cast<Decl>(D->getCommonAncestor()), Record);
+  Record.AddSourceLocation(D->getUsingLoc());
+  Record.AddSourceLocation(D->getNamespaceKeyLocation());
+  Record.AddNestedNameSpecifierLoc(D->getQualifierLoc());
+  Record.AddDeclRef(D->getNominatedNamespace());
+  Record.AddDeclRef(dyn_cast<Decl>(D->getCommonAncestor()));
   Code = serialization::DECL_USING_DIRECTIVE;
 }
 
 void ASTDeclWriter::VisitUnresolvedUsingValueDecl(UnresolvedUsingValueDecl *D) {
   VisitValueDecl(D);
-  Writer.AddSourceLocation(D->getUsingLoc(), Record);
-  Writer.AddNestedNameSpecifierLoc(D->getQualifierLoc(), Record);
-  Writer.AddDeclarationNameLoc(D->DNLoc, D->getDeclName(), Record);
+  Record.AddSourceLocation(D->getUsingLoc());
+  Record.AddNestedNameSpecifierLoc(D->getQualifierLoc());
+  Record.AddDeclarationNameLoc(D->DNLoc, D->getDeclName());
   Code = serialization::DECL_UNRESOLVED_USING_VALUE;
 }
 
 void ASTDeclWriter::VisitUnresolvedUsingTypenameDecl(
                                                UnresolvedUsingTypenameDecl *D) {
   VisitTypeDecl(D);
-  Writer.AddSourceLocation(D->getTypenameLoc(), Record);
-  Writer.AddNestedNameSpecifierLoc(D->getQualifierLoc(), Record);
+  Record.AddSourceLocation(D->getTypenameLoc());
+  Record.AddNestedNameSpecifierLoc(D->getQualifierLoc());
   Code = serialization::DECL_UNRESOLVED_USING_TYPENAME;
 }
 
@@ -1168,25 +1158,25 @@ void ASTDeclWriter::VisitCXXRecordDecl(CXXRecordDecl *D) {
   };
   if (ClassTemplateDecl *TemplD = D->getDescribedClassTemplate()) {
     Record.push_back(CXXRecTemplate);
-    Writer.AddDeclRef(TemplD, Record);
+    Record.AddDeclRef(TemplD);
   } else if (MemberSpecializationInfo *MSInfo
                = D->getMemberSpecializationInfo()) {
     Record.push_back(CXXRecMemberSpecialization);
-    Writer.AddDeclRef(MSInfo->getInstantiatedFrom(), Record);
+    Record.AddDeclRef(MSInfo->getInstantiatedFrom());
     Record.push_back(MSInfo->getTemplateSpecializationKind());
-    Writer.AddSourceLocation(MSInfo->getPointOfInstantiation(), Record);
+    Record.AddSourceLocation(MSInfo->getPointOfInstantiation());
   } else {
     Record.push_back(CXXRecNotTemplate);
   }
 
   Record.push_back(D->isThisDeclarationADefinition());
   if (D->isThisDeclarationADefinition())
-    Writer.AddCXXDefinitionData(D, Record);
+    Record.AddCXXDefinitionData(D);
 
   // Store (what we currently believe to be) the key function to avoid
   // deserializing every method so we can compute it.
   if (D->IsCompleteDefinition)
-    Writer.AddDeclRef(Context.getCurrentKeyFunction(D), Record);
+    Record.AddDeclRef(Context.getCurrentKeyFunction(D));
 
   Code = serialization::DECL_CXX_RECORD;
 }
@@ -1198,7 +1188,7 @@ void ASTDeclWriter::VisitCXXMethodDecl(CXXMethodDecl *D) {
     for (CXXMethodDecl::method_iterator
            I = D->begin_overridden_methods(), E = D->end_overridden_methods();
            I != E; ++I)
-      Writer.AddDeclRef(*I, Record);
+      Record.AddDeclRef(*I);
   } else {
     // We only need to record overridden methods once for the canonical decl.
     Record.push_back(0);
@@ -1221,7 +1211,7 @@ void ASTDeclWriter::VisitCXXMethodDecl(CXXMethodDecl *D) {
 void ASTDeclWriter::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
   VisitCXXMethodDecl(D);
 
-  Writer.AddDeclRef(D->getInheritedConstructor(), Record);
+  Record.AddDeclRef(D->getInheritedConstructor());
   Record.push_back(D->IsExplicitSpecified);
 
   Code = serialization::DECL_CXX_CONSTRUCTOR;
@@ -1230,7 +1220,7 @@ void ASTDeclWriter::VisitCXXConstructorDecl(CXXConstructorDecl *D) {
 void ASTDeclWriter::VisitCXXDestructorDecl(CXXDestructorDecl *D) {
   VisitCXXMethodDecl(D);
 
-  Writer.AddDeclRef(D->getOperatorDelete(), Record);
+  Record.AddDeclRef(D->getOperatorDelete());
 
   Code = serialization::DECL_CXX_DESTRUCTOR;
 }
@@ -1247,11 +1237,11 @@ void ASTDeclWriter::VisitImportDecl(ImportDecl *D) {
   ArrayRef<SourceLocation> IdentifierLocs = D->getIdentifierLocs();
   Record.push_back(!IdentifierLocs.empty());
   if (IdentifierLocs.empty()) {
-    Writer.AddSourceLocation(D->getLocEnd(), Record);
+    Record.AddSourceLocation(D->getLocEnd());
     Record.push_back(1);
   } else {
     for (unsigned I = 0, N = IdentifierLocs.size(); I != N; ++I)
-      Writer.AddSourceLocation(IdentifierLocs[I], Record);
+      Record.AddSourceLocation(IdentifierLocs[I]);
     Record.push_back(IdentifierLocs.size());
   }
   // Note: the number of source locations must always be the last element in
@@ -1261,7 +1251,7 @@ void ASTDeclWriter::VisitImportDecl(ImportDecl *D) {
 
 void ASTDeclWriter::VisitAccessSpecDecl(AccessSpecDecl *D) {
   VisitDecl(D);
-  Writer.AddSourceLocation(D->getColonLoc(), Record);
+  Record.AddSourceLocation(D->getColonLoc());
   Code = serialization::DECL_ACCESS_SPEC;
 }
 
@@ -1273,15 +1263,14 @@ void ASTDeclWriter::VisitFriendDecl(FriendDecl *D) {
   bool hasFriendDecl = D->Friend.is<NamedDecl*>();
   Record.push_back(hasFriendDecl);
   if (hasFriendDecl)
-    Writer.AddDeclRef(D->getFriendDecl(), Record);
+    Record.AddDeclRef(D->getFriendDecl());
   else
-    Writer.AddTypeSourceInfo(D->getFriendType(), Record);
+    Record.AddTypeSourceInfo(D->getFriendType());
   for (unsigned i = 0; i < D->NumTPLists; ++i)
-    Writer.AddTemplateParameterList(D->getFriendTypeTemplateParameterList(i),
-                                    Record);
-  Writer.AddDeclRef(D->getNextFriend(), Record);
+    Record.AddTemplateParameterList(D->getFriendTypeTemplateParameterList(i));
+  Record.AddDeclRef(D->getNextFriend());
   Record.push_back(D->UnsupportedFriend);
-  Writer.AddSourceLocation(D->FriendLoc, Record);
+  Record.AddSourceLocation(D->FriendLoc);
   Code = serialization::DECL_FRIEND;
 }
 
@@ -1289,21 +1278,21 @@ void ASTDeclWriter::VisitFriendTemplateDecl(FriendTemplateDecl *D) {
   VisitDecl(D);
   Record.push_back(D->getNumTemplateParameters());
   for (unsigned i = 0, e = D->getNumTemplateParameters(); i != e; ++i)
-    Writer.AddTemplateParameterList(D->getTemplateParameterList(i), Record);
+    Record.AddTemplateParameterList(D->getTemplateParameterList(i));
   Record.push_back(D->getFriendDecl() != nullptr);
   if (D->getFriendDecl())
-    Writer.AddDeclRef(D->getFriendDecl(), Record);
+    Record.AddDeclRef(D->getFriendDecl());
   else
-    Writer.AddTypeSourceInfo(D->getFriendType(), Record);
-  Writer.AddSourceLocation(D->getFriendLoc(), Record);
+    Record.AddTypeSourceInfo(D->getFriendType());
+  Record.AddSourceLocation(D->getFriendLoc());
   Code = serialization::DECL_FRIEND_TEMPLATE;
 }
 
 void ASTDeclWriter::VisitTemplateDecl(TemplateDecl *D) {
   VisitNamedDecl(D);
 
-  Writer.AddDeclRef(D->getTemplatedDecl(), Record);
-  Writer.AddTemplateParameterList(D->getTemplateParameters(), Record);
+  Record.AddDeclRef(D->getTemplatedDecl());
+  Record.AddTemplateParameterList(D->getTemplateParameters());
 }
 
 void ASTDeclWriter::VisitRedeclarableTemplateDecl(RedeclarableTemplateDecl *D) {
@@ -1313,7 +1302,7 @@ void ASTDeclWriter::VisitRedeclarableTemplateDecl(RedeclarableTemplateDecl *D) {
   // getCommonPtr() can be used while this is still initializing.
   if (D->isFirstDecl()) {
     // This declaration owns the 'common' pointer, so serialize that data now.
-    Writer.AddDeclRef(D->getInstantiatedFromMemberTemplate(), Record);
+    Record.AddDeclRef(D->getInstantiatedFromMemberTemplate());
     if (D->getInstantiatedFromMemberTemplate())
       Record.push_back(D->isMemberSpecialization());
   }
@@ -1340,28 +1329,27 @@ void ASTDeclWriter::VisitClassTemplateSpecializationDecl(
                      ClassTemplatePartialSpecializationDecl *> InstFrom
     = D->getSpecializedTemplateOrPartial();
   if (Decl *InstFromD = InstFrom.dyn_cast<ClassTemplateDecl *>()) {
-    Writer.AddDeclRef(InstFromD, Record);
+    Record.AddDeclRef(InstFromD);
   } else {
-    Writer.AddDeclRef(InstFrom.get<ClassTemplatePartialSpecializationDecl *>(),
-                      Record);
-    Writer.AddTemplateArgumentList(&D->getTemplateInstantiationArgs(), Record);
+    Record.AddDeclRef(InstFrom.get<ClassTemplatePartialSpecializationDecl *>());
+    Record.AddTemplateArgumentList(&D->getTemplateInstantiationArgs());
   }
 
-  Writer.AddTemplateArgumentList(&D->getTemplateArgs(), Record);
-  Writer.AddSourceLocation(D->getPointOfInstantiation(), Record);
+  Record.AddTemplateArgumentList(&D->getTemplateArgs());
+  Record.AddSourceLocation(D->getPointOfInstantiation());
   Record.push_back(D->getSpecializationKind());
   Record.push_back(D->isCanonicalDecl());
 
   if (D->isCanonicalDecl()) {
     // When reading, we'll add it to the folding set of the following template. 
-    Writer.AddDeclRef(D->getSpecializedTemplate()->getCanonicalDecl(), Record);
+    Record.AddDeclRef(D->getSpecializedTemplate()->getCanonicalDecl());
   }
 
   // Explicit info.
-  Writer.AddTypeSourceInfo(D->getTypeAsWritten(), Record);
+  Record.AddTypeSourceInfo(D->getTypeAsWritten());
   if (D->getTypeAsWritten()) {
-    Writer.AddSourceLocation(D->getExternLoc(), Record);
-    Writer.AddSourceLocation(D->getTemplateKeywordLoc(), Record);
+    Record.AddSourceLocation(D->getExternLoc());
+    Record.AddSourceLocation(D->getTemplateKeywordLoc());
   }
 
   Code = serialization::DECL_CLASS_TEMPLATE_SPECIALIZATION;
@@ -1371,12 +1359,12 @@ void ASTDeclWriter::VisitClassTemplatePartialSpecializationDecl(
                                     ClassTemplatePartialSpecializationDecl *D) {
   VisitClassTemplateSpecializationDecl(D);
 
-  Writer.AddTemplateParameterList(D->getTemplateParameters(), Record);
-  Writer.AddASTTemplateArgumentListInfo(D->getTemplateArgsAsWritten(), Record);
+  Record.AddTemplateParameterList(D->getTemplateParameters());
+  Record.AddASTTemplateArgumentListInfo(D->getTemplateArgsAsWritten());
 
   // These are read/set from/to the first declaration.
   if (D->getPreviousDecl() == nullptr) {
-    Writer.AddDeclRef(D->getInstantiatedFromMember(), Record);
+    Record.AddDeclRef(D->getInstantiatedFromMember());
     Record.push_back(D->isMemberSpecialization());
   }
 
@@ -1400,28 +1388,27 @@ void ASTDeclWriter::VisitVarTemplateSpecializationDecl(
   llvm::PointerUnion<VarTemplateDecl *, VarTemplatePartialSpecializationDecl *>
   InstFrom = D->getSpecializedTemplateOrPartial();
   if (Decl *InstFromD = InstFrom.dyn_cast<VarTemplateDecl *>()) {
-    Writer.AddDeclRef(InstFromD, Record);
+    Record.AddDeclRef(InstFromD);
   } else {
-    Writer.AddDeclRef(InstFrom.get<VarTemplatePartialSpecializationDecl *>(),
-                      Record);
-    Writer.AddTemplateArgumentList(&D->getTemplateInstantiationArgs(), Record);
+    Record.AddDeclRef(InstFrom.get<VarTemplatePartialSpecializationDecl *>());
+    Record.AddTemplateArgumentList(&D->getTemplateInstantiationArgs());
   }
 
   // Explicit info.
-  Writer.AddTypeSourceInfo(D->getTypeAsWritten(), Record);
+  Record.AddTypeSourceInfo(D->getTypeAsWritten());
   if (D->getTypeAsWritten()) {
-    Writer.AddSourceLocation(D->getExternLoc(), Record);
-    Writer.AddSourceLocation(D->getTemplateKeywordLoc(), Record);
+    Record.AddSourceLocation(D->getExternLoc());
+    Record.AddSourceLocation(D->getTemplateKeywordLoc());
   }
 
-  Writer.AddTemplateArgumentList(&D->getTemplateArgs(), Record);
-  Writer.AddSourceLocation(D->getPointOfInstantiation(), Record);
+  Record.AddTemplateArgumentList(&D->getTemplateArgs());
+  Record.AddSourceLocation(D->getPointOfInstantiation());
   Record.push_back(D->getSpecializationKind());
   Record.push_back(D->isCanonicalDecl());
 
   if (D->isCanonicalDecl()) {
     // When reading, we'll add it to the folding set of the following template.
-    Writer.AddDeclRef(D->getSpecializedTemplate()->getCanonicalDecl(), Record);
+    Record.AddDeclRef(D->getSpecializedTemplate()->getCanonicalDecl());
   }
 
   Code = serialization::DECL_VAR_TEMPLATE_SPECIALIZATION;
@@ -1431,12 +1418,12 @@ void ASTDeclWriter::VisitVarTemplatePartialSpecializationDecl(
     VarTemplatePartialSpecializationDecl *D) {
   VisitVarTemplateSpecializationDecl(D);
 
-  Writer.AddTemplateParameterList(D->getTemplateParameters(), Record);
-  Writer.AddASTTemplateArgumentListInfo(D->getTemplateArgsAsWritten(), Record);
+  Record.AddTemplateParameterList(D->getTemplateParameters());
+  Record.AddASTTemplateArgumentListInfo(D->getTemplateArgsAsWritten());
 
   // These are read/set from/to the first declaration.
   if (D->getPreviousDecl() == nullptr) {
-    Writer.AddDeclRef(D->getInstantiatedFromMember(), Record);
+    Record.AddDeclRef(D->getInstantiatedFromMember());
     Record.push_back(D->isMemberSpecialization());
   }
 
@@ -1446,7 +1433,7 @@ void ASTDeclWriter::VisitVarTemplatePartialSpecializationDecl(
 void ASTDeclWriter::VisitClassScopeFunctionSpecializationDecl(
                                     ClassScopeFunctionSpecializationDecl *D) {
   VisitDecl(D);
-  Writer.AddDeclRef(D->getSpecialization(), Record);
+  Record.AddDeclRef(D->getSpecialization());
   Code = serialization::DECL_CLASS_SCOPE_FUNCTION_SPECIALIZATION;
 }
 
@@ -1468,7 +1455,7 @@ void ASTDeclWriter::VisitTemplateTypeParmDecl(TemplateTypeParmDecl *D) {
                         !D->defaultArgumentWasInherited();
   Record.push_back(OwnsDefaultArg);
   if (OwnsDefaultArg)
-    Writer.AddTypeSourceInfo(D->getDefaultArgumentInfo(), Record);
+    Record.AddTypeSourceInfo(D->getDefaultArgumentInfo());
 
   Code = serialization::DECL_TEMPLATE_TYPE_PARM;
 }
@@ -1487,8 +1474,8 @@ void ASTDeclWriter::VisitNonTypeTemplateParmDecl(NonTypeTemplateParmDecl *D) {
   
   if (D->isExpandedParameterPack()) {
     for (unsigned I = 0, N = D->getNumExpansionTypes(); I != N; ++I) {
-      Writer.AddTypeRef(D->getExpansionType(I), Record);
-      Writer.AddTypeSourceInfo(D->getExpansionTypeSourceInfo(I), Record);
+      Record.AddTypeRef(D->getExpansionType(I));
+      Record.AddTypeSourceInfo(D->getExpansionTypeSourceInfo(I));
     }
       
     Code = serialization::DECL_EXPANDED_NON_TYPE_TEMPLATE_PARM_PACK;
@@ -1499,7 +1486,7 @@ void ASTDeclWriter::VisitNonTypeTemplateParmDecl(NonTypeTemplateParmDecl *D) {
                           !D->defaultArgumentWasInherited();
     Record.push_back(OwnsDefaultArg);
     if (OwnsDefaultArg)
-      Writer.AddStmt(D->getDefaultArgument());
+      Record.AddStmt(D->getDefaultArgument());
     Code = serialization::DECL_NON_TYPE_TEMPLATE_PARM;
   }
 }
@@ -1519,8 +1506,7 @@ void ASTDeclWriter::VisitTemplateTemplateParmDecl(TemplateTemplateParmDecl *D) {
   if (D->isExpandedParameterPack()) {
     for (unsigned I = 0, N = D->getNumExpansionTemplateParameters();
          I != N; ++I)
-      Writer.AddTemplateParameterList(D->getExpansionTemplateParameters(I),
-                                      Record);
+      Record.AddTemplateParameterList(D->getExpansionTemplateParameters(I));
     Code = serialization::DECL_EXPANDED_TEMPLATE_TEMPLATE_PARM_PACK;
   } else {
     // Rest of TemplateTemplateParmDecl.
@@ -1529,7 +1515,7 @@ void ASTDeclWriter::VisitTemplateTemplateParmDecl(TemplateTemplateParmDecl *D) {
                           !D->defaultArgumentWasInherited();
     Record.push_back(OwnsDefaultArg);
     if (OwnsDefaultArg)
-      Writer.AddTemplateArgumentLoc(D->getDefaultArgument(), Record);
+      Record.AddTemplateArgumentLoc(D->getDefaultArgument());
     Code = serialization::DECL_TEMPLATE_TEMPLATE_PARM;
   }
 }
@@ -1541,28 +1527,17 @@ void ASTDeclWriter::VisitTypeAliasTemplateDecl(TypeAliasTemplateDecl *D) {
 
 void ASTDeclWriter::VisitStaticAssertDecl(StaticAssertDecl *D) {
   VisitDecl(D);
-  Writer.AddStmt(D->getAssertExpr());
+  Record.AddStmt(D->getAssertExpr());
   Record.push_back(D->isFailed());
-  Writer.AddStmt(D->getMessage());
-  Writer.AddSourceLocation(D->getRParenLoc(), Record);
+  Record.AddStmt(D->getMessage());
+  Record.AddSourceLocation(D->getRParenLoc());
   Code = serialization::DECL_STATIC_ASSERT;
 }
 
 /// \brief Emit the DeclContext part of a declaration context decl.
-///
-/// \param LexicalOffset the offset at which the DECL_CONTEXT_LEXICAL
-/// block for this declaration context is stored. May be 0 to indicate
-/// that there are no declarations stored within this context.
-///
-/// \param VisibleOffset the offset at which the DECL_CONTEXT_VISIBLE
-/// block for this declaration context is stored. May be 0 to indicate
-/// that there are no declarations visible from this context. Note
-/// that this value will not be emitted for non-primary declaration
-/// contexts.
-void ASTDeclWriter::VisitDeclContext(DeclContext *DC, uint64_t LexicalOffset,
-                                     uint64_t VisibleOffset) {
-  AddLocalOffset(LexicalOffset);
-  AddLocalOffset(VisibleOffset);
+void ASTDeclWriter::VisitDeclContext(DeclContext *DC) {
+  Record.AddOffset(Writer.WriteDeclContextLexicalBlock(Context, DC));
+  Record.AddOffset(Writer.WriteDeclContextVisibleBlock(Context, DC));
 }
 
 const Decl *ASTWriter::getFirstLocalDecl(const Decl *D) {
@@ -1601,7 +1576,7 @@ void ASTDeclWriter::VisitRedeclarable(Redeclarable<T> *D) {
     assert(isRedeclarableDeclKind(DAsT->getKind()) &&
            "Not considered redeclarable?");
 
-    Writer.AddDeclRef(First, Record);
+    Record.AddDeclRef(First);
 
     // Write out a list of local redeclarations of this declaration if it's the
     // first local declaration in the chain.
@@ -1619,24 +1594,22 @@ void ASTDeclWriter::VisitRedeclarable(Redeclarable<T> *D) {
 
       // Collect the set of local redeclarations of this declaration, from
       // newest to oldest.
-      RecordData LocalRedecls;
+      ASTWriter::RecordData LocalRedecls;
+      ASTRecordWriter LocalRedeclWriter(Record, LocalRedecls);
       for (const Decl *Prev = FirstLocal->getMostRecentDecl();
            Prev != FirstLocal; Prev = Prev->getPreviousDecl())
         if (!Prev->isFromASTFile())
-          Writer.AddDeclRef(Prev, LocalRedecls);
+          LocalRedeclWriter.AddDeclRef(Prev);
 
       // If we have any redecls, write them now as a separate record preceding
       // the declaration itself.
       if (LocalRedecls.empty())
         Record.push_back(0);
-      else {
-        auto Start = Writer.Stream.GetCurrentBitNo();
-        Writer.Stream.EmitRecord(LOCAL_REDECLARATIONS, LocalRedecls);
-        AddLocalOffset(Start);
-      }
+      else
+        Record.AddOffset(LocalRedeclWriter.Emit(LOCAL_REDECLARATIONS));
     } else {
       Record.push_back(0);
-      Writer.AddDeclRef(FirstLocal, Record);
+      Record.AddDeclRef(FirstLocal);
     }
 
     // Make sure that we serialize both the previous and the most-recent 
@@ -1657,16 +1630,16 @@ void ASTDeclWriter::VisitOMPThreadPrivateDecl(OMPThreadPrivateDecl *D) {
   Record.push_back(D->varlist_size());
   VisitDecl(D);
   for (auto *I : D->varlists())
-    Writer.AddStmt(I);
+    Record.AddStmt(I);
   Code = serialization::DECL_OMP_THREADPRIVATE;
 }
 
 void ASTDeclWriter::VisitOMPDeclareReductionDecl(OMPDeclareReductionDecl *D) {
   VisitValueDecl(D);
-  Writer.AddSourceLocation(D->getLocStart(), Record);
-  Writer.AddStmt(D->getCombiner());
-  Writer.AddStmt(D->getInitializer());
-  Writer.AddDeclRef(D->getPrevDeclInScope(), Record);
+  Record.AddSourceLocation(D->getLocStart());
+  Record.AddStmt(D->getCombiner());
+  Record.AddStmt(D->getInitializer());
+  Record.AddDeclRef(D->getPrevDeclInScope());
   Code = serialization::DECL_OMP_DECLARE_REDUCTION;
 }
 
@@ -2129,8 +2102,10 @@ static bool isRequiredDecl(const Decl *D, ASTContext &Context,
   // An ObjCMethodDecl is never considered as "required" because its
   // implementation container always is.
 
-  // File scoped assembly or obj-c implementation must be seen.
-  if (isa<FileScopeAsmDecl>(D) || isa<ObjCImplDecl>(D))
+  // File scoped assembly or obj-c or OMP declare target implementation must be
+  // seen.
+  if (isa<FileScopeAsmDecl>(D) || isa<ObjCImplDecl>(D) ||
+      D->hasAttr<OMPDeclareTargetDeclAttr>())
     return true;
 
   // ImportDecl is used by codegen to determine the set of imported modules to
@@ -2143,12 +2118,6 @@ static bool isRequiredDecl(const Decl *D, ASTContext &Context,
 }
 
 void ASTWriter::WriteDecl(ASTContext &Context, Decl *D) {
-  // Switch case IDs are per Decl.
-  ClearSwitchCaseIDs();
-
-  RecordData Record;
-  ASTDeclWriter W(*this, Context, Record);
-
   // Determine the ID for this declaration.
   serialization::DeclID ID;
   assert(!D->isFromASTFile() && "should not be emitting imported decl");
@@ -2159,51 +2128,33 @@ void ASTWriter::WriteDecl(ASTContext &Context, Decl *D) {
   ID = IDR;
 
   assert(ID >= FirstDeclID && "invalid decl ID");
-
-  // If this declaration is also a DeclContext, write blocks for the
-  // declarations that lexically stored inside its context and those
-  // declarations that are visible from its context. These blocks
-  // are written before the declaration itself so that we can put
-  // their offsets into the record for the declaration.
-  uint64_t LexicalOffset = 0;
-  uint64_t VisibleOffset = 0;
-  DeclContext *DC = dyn_cast<DeclContext>(D);
-  if (DC) {
-    LexicalOffset = WriteDeclContextLexicalBlock(Context, DC);
-    VisibleOffset = WriteDeclContextVisibleBlock(Context, DC);
-  }
   
-  // Build a record for this declaration
-  Record.clear();
-  W.Code = (serialization::DeclCode)0;
-  W.AbbrevToUse = 0;
-  W.Visit(D);
-  if (DC) W.VisitDeclContext(DC, LexicalOffset, VisibleOffset);
+  RecordData Record;
+  ASTDeclWriter W(*this, Context, Record);
 
-  unsigned Index = ID - FirstDeclID;
+  // Build a record for this declaration
+  W.Visit(D);
+
+  // Emit this declaration to the bitstream.
+  uint64_t Offset = W.Emit(D);
 
   // Record the offset for this declaration
   SourceLocation Loc = D->getLocation();
+  unsigned Index = ID - FirstDeclID;
   if (DeclOffsets.size() == Index)
-    DeclOffsets.push_back(DeclOffset(Loc, Stream.GetCurrentBitNo()));
+    DeclOffsets.push_back(DeclOffset(Loc, Offset));
   else if (DeclOffsets.size() < Index) {
+    // FIXME: Can/should this happen?
     DeclOffsets.resize(Index+1);
     DeclOffsets[Index].setLocation(Loc);
-    DeclOffsets[Index].BitOffset = Stream.GetCurrentBitNo();
+    DeclOffsets[Index].BitOffset = Offset;
+  } else {
+    llvm_unreachable("declarations should be emitted in ID order");
   }
 
   SourceManager &SM = Context.getSourceManager();
   if (Loc.isValid() && SM.isLocalSourceLocation(Loc))
     associateDeclWithFile(D, ID);
-
-  if (!W.Code)
-    llvm::report_fatal_error(StringRef("unexpected declaration kind '") +
-                            D->getDeclKindName() + "'");
-  Stream.EmitRecord(W.Code, Record, W.AbbrevToUse);
-
-  // Flush any expressions, base specifiers, and ctor initializers that
-  // were written as part of this declaration.
-  FlushPendingAfterDecl();
 
   // Note declarations that should be deserialized eagerly so that we can add
   // them to a record in the AST file later.
@@ -2211,10 +2162,16 @@ void ASTWriter::WriteDecl(ASTContext &Context, Decl *D) {
     EagerlyDeserializedDecls.push_back(ID);
 }
 
-void ASTWriter::AddFunctionDefinition(const FunctionDecl *FD,
-                                      RecordData &Record) {
-  ClearSwitchCaseIDs();
+void ASTRecordWriter::AddFunctionDefinition(const FunctionDecl *FD) {
+  // Switch case IDs are per function body.
+  Writer->ClearSwitchCaseIDs();
 
-  ASTDeclWriter W(*this, FD->getASTContext(), Record);
-  W.AddFunctionDefinition(FD);
+  assert(FD->doesThisDeclarationHaveABody());
+  if (auto *CD = dyn_cast<CXXConstructorDecl>(FD)) {
+    Record->push_back(CD->getNumCtorInitializers());
+    if (CD->getNumCtorInitializers())
+      AddCXXCtorInitializers(
+          llvm::makeArrayRef(CD->init_begin(), CD->init_end()));
+  }
+  AddStmt(FD->getBody());
 }

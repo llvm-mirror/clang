@@ -11,7 +11,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "clang/Basic/CharInfo.h"
 #include "clang/Frontend/Utils.h"
+#include "clang/Lex/Preprocessor.h"
 #include "clang/Serialization/ASTReader.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/iterator_range.h"
@@ -22,45 +24,33 @@
 using namespace clang;
 
 namespace {
-/// Private implementation for ModuleDependencyCollector
+/// Private implementations for ModuleDependencyCollector
 class ModuleDependencyListener : public ASTReaderListener {
   ModuleDependencyCollector &Collector;
-  llvm::StringMap<std::string> SymLinkMap;
-
-  bool getRealPath(StringRef SrcPath, SmallVectorImpl<char> &Result);
-  std::error_code copyToRoot(StringRef Src);
 public:
   ModuleDependencyListener(ModuleDependencyCollector &Collector)
       : Collector(Collector) {}
   bool needsInputFileVisitation() override { return true; }
   bool needsSystemInputFileVisitation() override { return true; }
   bool visitInputFile(StringRef Filename, bool IsSystem, bool IsOverridden,
-                      bool IsExplicitModule) override;
-};
-}
-
-void ModuleDependencyCollector::attachToASTReader(ASTReader &R) {
-  R.addListener(llvm::make_unique<ModuleDependencyListener>(*this));
-}
-
-void ModuleDependencyCollector::writeFileMap() {
-  if (Seen.empty())
-    return;
-
-  SmallString<256> Dest = getDest();
-  llvm::sys::path::append(Dest, "vfs.yaml");
-
-  // Default to use relative overlay directories in the VFS yaml file. This
-  // allows crash reproducer scripts to work across machines.
-  VFSWriter.setOverlayDir(getDest());
-
-  std::error_code EC;
-  llvm::raw_fd_ostream OS(Dest, EC, llvm::sys::fs::F_Text);
-  if (EC) {
-    setHasErrors();
-    return;
+                      bool IsExplicitModule) override {
+    Collector.addFile(Filename);
+    return true;
   }
-  VFSWriter.write(OS);
+};
+
+struct ModuleDependencyMMCallbacks : public ModuleMapCallbacks {
+  ModuleDependencyCollector &Collector;
+  ModuleDependencyMMCallbacks(ModuleDependencyCollector &Collector)
+      : Collector(Collector) {}
+
+  void moduleMapAddHeader(const FileEntry &File) override {
+    StringRef HeaderPath = File.getName();
+    if (llvm::sys::path::is_absolute(HeaderPath))
+      Collector.addFile(HeaderPath);
+  }
+};
+
 }
 
 // TODO: move this to Support/Path.h and check for HAVE_REALPATH?
@@ -81,8 +71,64 @@ static bool real_path(StringRef SrcPath, SmallVectorImpl<char> &RealPath) {
 #endif
 }
 
-bool ModuleDependencyListener::getRealPath(StringRef SrcPath,
-                                           SmallVectorImpl<char> &Result) {
+void ModuleDependencyCollector::attachToASTReader(ASTReader &R) {
+  R.addListener(llvm::make_unique<ModuleDependencyListener>(*this));
+}
+
+void ModuleDependencyCollector::attachToPreprocessor(Preprocessor &PP) {
+  PP.getHeaderSearchInfo().getModuleMap().addModuleMapCallbacks(
+      llvm::make_unique<ModuleDependencyMMCallbacks>(*this));
+}
+
+static bool isCaseSensitivePath(StringRef Path) {
+  SmallString<256> TmpDest = Path, UpperDest, RealDest;
+  // Remove component traversals, links, etc.
+  if (!real_path(Path, TmpDest))
+    return true; // Current default value in vfs.yaml
+  Path = TmpDest;
+
+  // Change path to all upper case and ask for its real path, if the latter
+  // exists and is equal to Path, it's not case sensitive. Default to case
+  // sensitive in the absense of realpath, since this is what the VFSWriter
+  // already expects when sensitivity isn't setup.
+  for (auto &C : Path)
+    UpperDest.push_back(toUppercase(C));
+  if (real_path(UpperDest, RealDest) && Path.equals(RealDest))
+    return false;
+  return true;
+}
+
+void ModuleDependencyCollector::writeFileMap() {
+  if (Seen.empty())
+    return;
+
+  StringRef VFSDir = getDest();
+
+  // Default to use relative overlay directories in the VFS yaml file. This
+  // allows crash reproducer scripts to work across machines.
+  VFSWriter.setOverlayDir(VFSDir);
+
+  // Explicitly set case sensitivity for the YAML writer. For that, find out
+  // the sensitivity at the path where the headers all collected to.
+  VFSWriter.setCaseSensitivity(isCaseSensitivePath(VFSDir));
+
+  // Do not rely on real path names when executing the crash reproducer scripts
+  // since we only want to actually use the files we have on the VFS cache.
+  VFSWriter.setUseExternalNames(false);
+
+  std::error_code EC;
+  SmallString<256> YAMLPath = VFSDir;
+  llvm::sys::path::append(YAMLPath, "vfs.yaml");
+  llvm::raw_fd_ostream OS(YAMLPath, EC, llvm::sys::fs::F_Text);
+  if (EC) {
+    HasErrors = true;
+    return;
+  }
+  VFSWriter.write(OS);
+}
+
+bool ModuleDependencyCollector::getRealPath(StringRef SrcPath,
+                                            SmallVectorImpl<char> &Result) {
   using namespace llvm::sys;
   SmallString<256> RealPath;
   StringRef FileName = path::filename(SrcPath);
@@ -105,7 +151,7 @@ bool ModuleDependencyListener::getRealPath(StringRef SrcPath,
   return true;
 }
 
-std::error_code ModuleDependencyListener::copyToRoot(StringRef Src) {
+std::error_code ModuleDependencyCollector::copyToRoot(StringRef Src) {
   using namespace llvm::sys;
 
   // We need an absolute path to append to the root.
@@ -131,7 +177,7 @@ std::error_code ModuleDependencyListener::copyToRoot(StringRef Src) {
                              !StringRef(CanonicalPath).equals(RealPath);
 
   // Build the destination path.
-  SmallString<256> Dest = Collector.getDest();
+  SmallString<256> Dest = getDest();
   path::append(Dest, path::relative_path(HasRemovedSymlinkComponent ? RealPath
                                                              : CanonicalPath));
 
@@ -145,18 +191,15 @@ std::error_code ModuleDependencyListener::copyToRoot(StringRef Src) {
 
   // Use the canonical path under the root for the file mapping. Also create
   // an additional entry for the real path.
-  Collector.addFileMapping(CanonicalPath, Dest);
+  addFileMapping(CanonicalPath, Dest);
   if (HasRemovedSymlinkComponent)
-    Collector.addFileMapping(RealPath, Dest);
+    addFileMapping(RealPath, Dest);
 
   return std::error_code();
 }
 
-bool ModuleDependencyListener::visitInputFile(StringRef Filename, bool IsSystem,
-                                              bool IsOverridden,
-                                              bool IsExplicitModule) {
-  if (Collector.insertSeen(Filename))
+void ModuleDependencyCollector::addFile(StringRef Filename) {
+  if (insertSeen(Filename))
     if (copyToRoot(Filename))
-      Collector.setHasErrors();
-  return true;
+      HasErrors = true;
 }

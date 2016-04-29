@@ -16,7 +16,6 @@
 #define LLVM_CLANG_FORMAT_FORMAT_H
 
 #include "clang/Basic/LangOptions.h"
-#include "clang/Basic/VirtualFileSystem.h"
 #include "clang/Tooling/Core/Replacement.h"
 #include "llvm/ADT/ArrayRef.h"
 #include <system_error>
@@ -26,6 +25,10 @@ namespace clang {
 class Lexer;
 class SourceManager;
 class DiagnosticConsumer;
+
+namespace vfs {
+class FileSystem;
+}
 
 namespace format {
 
@@ -600,6 +603,8 @@ struct FormatStyle {
     UT_Never,
     /// Use tabs only for indentation.
     UT_ForIndentation,
+    /// Use tabs only for line continuation and indentation.
+    UT_ForContinuationAndIndentation,
     /// Use tabs whenever we need to fill whitespace that spans at least from
     /// one tab stop to the next one.
     UT_Always
@@ -766,21 +771,11 @@ tooling::Replacements formatReplacements(StringRef Code,
                                          const tooling::Replacements &Replaces,
                                          const FormatStyle &Style);
 
-/// \brief In addition to applying all replacements in \p Replaces to \p Code,
-/// this function also reformats the changed code after applying replacements.
-///
-/// \pre Replacements must be for the same file and conflict-free.
-///
-/// Replacement applications happen independently of the success of
-/// other applications.
-///
-/// \returns the changed code with all replacements applied and formatted, if
-/// successful. An empty string otherwise.
-///
-/// See also "include/clang/Tooling/Core/Replacements.h".
-std::string applyAllReplacementsAndFormat(StringRef Code,
-                                          const tooling::Replacements &Replaces,
-                                          const FormatStyle &Style);
+/// \brief Returns the replacements corresponding to applying \p Replaces and
+/// cleaning up the code after that.
+tooling::Replacements
+cleanupAroundReplacements(StringRef Code, const tooling::Replacements &Replaces,
+                          const FormatStyle &Style);
 
 /// \brief Reformats the given \p Ranges in the file \p ID.
 ///
@@ -806,6 +801,22 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
                                ArrayRef<tooling::Range> Ranges,
                                StringRef FileName = "<stdin>",
                                bool *IncompleteFormat = nullptr);
+
+/// \brief Clean up any erroneous/redundant code in the given \p Ranges in the
+/// file \p ID.
+///
+/// Returns the ``Replacements`` that clean up all \p Ranges in the file \p ID.
+tooling::Replacements cleanup(const FormatStyle &Style,
+                              SourceManager &SourceMgr, FileID ID,
+                              ArrayRef<CharSourceRange> Ranges);
+
+/// \brief Clean up any erroneous/redundant code in the given \p Ranges in \p
+/// Code.
+///
+/// Otherwise identical to the cleanup() function using a file ID.
+tooling::Replacements cleanup(const FormatStyle &Style, StringRef Code,
+                              ArrayRef<tooling::Range> Ranges,
+                              StringRef FileName = "<stdin>");
 
 /// \brief Returns the ``LangOpts`` that the formatter expects you to set.
 ///

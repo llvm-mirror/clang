@@ -154,17 +154,9 @@ public:
                                Address Ptr, QualType ElementType,
                                const CXXDestructorDecl *Dtor) override;
 
-  /// Itanium says that an _Unwind_Exception has to be "double-word"
-  /// aligned (and thus the end of it is also so-aligned), meaning 16
-  /// bytes.  Of course, that was written for the actual Itanium,
-  /// which is a 64-bit platform.  Classically, the ABI doesn't really
-  /// specify the alignment on other platforms, but in practice
-  /// libUnwind declares the struct with __attribute__((aligned)), so
-  /// we assume that alignment here.  (It's generally 16 bytes, but
-  /// some targets overwrite it.)
   CharUnits getAlignmentOfExnObject() {
-    auto align = CGM.getContext().getTargetDefaultAlignForAttributeAligned();
-    return CGM.getContext().toCharUnitsFromBits(align);
+    unsigned Align = CGM.getContext().getTargetInfo().getExnObjectAlignment();
+    return CGM.getContext().toCharUnitsFromBits(Align);
   }
 
   void emitRethrow(CodeGenFunction &CGF, bool isNoReturn) override;
@@ -2007,7 +1999,7 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
   //
   // In LLVM, we do this by marking the load Acquire.
   if (threadsafe)
-    LI->setAtomic(llvm::Acquire);
+    LI->setAtomic(llvm::AtomicOrdering::Acquire);
 
   // For ARM, we should only check the first bit, rather than the entire byte:
   //
@@ -2544,18 +2536,9 @@ static bool TypeInfoIsInStandardLibrary(const BuiltinType *Ty) {
     case BuiltinType::UInt128:
       return true;
 
-    case BuiltinType::OCLImage1d:
-    case BuiltinType::OCLImage1dArray:
-    case BuiltinType::OCLImage1dBuffer:
-    case BuiltinType::OCLImage2d:
-    case BuiltinType::OCLImage2dArray:
-    case BuiltinType::OCLImage2dDepth:
-    case BuiltinType::OCLImage2dArrayDepth:
-    case BuiltinType::OCLImage2dMSAA:
-    case BuiltinType::OCLImage2dArrayMSAA:
-    case BuiltinType::OCLImage2dMSAADepth:
-    case BuiltinType::OCLImage2dArrayMSAADepth:
-    case BuiltinType::OCLImage3d:
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+    case BuiltinType::Id:
+#include "clang/Basic/OpenCLImageTypes.def"
     case BuiltinType::OCLSampler:
     case BuiltinType::OCLEvent:
     case BuiltinType::OCLClkEvent:

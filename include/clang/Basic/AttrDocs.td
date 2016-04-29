@@ -494,6 +494,15 @@ Query for this feature with ``__has_attribute(objc_method_family)``.
   }];
 }
 
+def NoDebugDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+The ``nodebug`` attribute allows you to suppress debugging information for a
+function, or for a variable declared with static storage duration, such as
+globals, class static data members, and static locals.
+  }];
+}
+
 def NoDuplicateDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
@@ -609,6 +618,13 @@ can only be placed before an @protocol or @interface declaration:
   @interface Message
   @end
         
+    }];
+}
+
+def ObjCRuntimeVisibleDocs : Documentation {
+    let Category = DocCatFunction;
+    let Content = [{
+This attribute specifies that the Objective-C class to which it applies is visible to the Objective-C runtime but not to the linker. Classes annotated with this attribute cannot be subclassed and cannot have categories defined for them.
     }];
 }
 
@@ -1773,6 +1789,17 @@ cannot point to the private address space.
   }];
 }
 
+def OpenCLNoSVMDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+OpenCL 2.0 supports the optional ``__attribute__((nosvm))`` qualifier for
+pointer variable. It informs the compiler that the pointer does not refer
+to a shared virtual memory region. See OpenCL v2.0 s6.7.2 for details.
+
+Since it is not widely used and has been removed from OpenCL 2.1, it is ignored
+by Clang.
+  }];
+}
 def NullabilityDocs : DocumentationCategory<"Nullability Attributes"> {
   let Content = [{
 Whether a particular pointer may be "null" is an important concern when working with pointers in the C family of languages. The various nullability attributes indicate whether a particular pointer can be null or not, which makes APIs more expressive and can help static analysis tools identify bugs involving null pointers. Clang supports several kinds of nullability attributes: the ``nonnull`` and ``returns_nonnull`` attributes indicate which function or method parameters and result types can never be null, while nullability type qualifiers indicate which pointer types can be null (``_Nullable``) or cannot be null (``_Nonnull``). 
@@ -1885,6 +1912,58 @@ def NoAliasDocs : Documentation {
 The ``noalias`` attribute indicates that the only memory accesses inside
 function are loads and stores from objects pointed to by its pointer-typed
 arguments, with arbitrary offsets.
+  }];
+}
+
+def OMPDeclareSimdDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "#pragma omp declare simd";
+  let Content = [{
+The `declare simd` construct can be applied to a function to enable the creation
+of one or more versions that can process multiple arguments using SIMD
+instructions from a single invocation in a SIMD loop. The `declare simd`
+directive is a declarative directive. There may be multiple `declare simd`
+directives for a function. The use of a `declare simd` construct on a function
+enables the creation of SIMD versions of the associated function that can be
+used to process multiple arguments from a single invocation from a SIMD loop
+concurrently.
+The syntax of the `declare simd` construct is as follows:
+
+  .. code-block:: c
+
+  #pragma omp declare simd [clause[[,] clause] ...] new-line
+  [#pragma omp declare simd [clause[[,] clause] ...] new-line]
+  [...]
+  function definition or declaration
+
+where clause is one of the following:
+
+  .. code-block:: c
+
+  simdlen(length)
+  linear(argument-list[:constant-linear-step])
+  aligned(argument-list[:alignment])
+  uniform(argument-list)
+  inbranch
+  notinbranch
+
+  }];
+}
+
+def OMPDeclareTargetDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "#pragma omp declare target";
+  let Content = [{
+The `declare target` directive specifies that variables and functions are mapped
+to a device for OpenMP offload mechanism.
+
+The syntax of the declare target directive is as follows:
+
+  .. code-block:: c
+
+  #pragma omp declare target new-line
+  declarations-definition-seq
+  #pragma omp end declare target new-line
   }];
 }
 
@@ -2286,5 +2365,18 @@ emitting the warning; the second one enables the compiler to provide a Fix-It
 to replace the deprecated name with a new name. Otherwise, when spelled as
 `[[gnu::deprecated]] or [[deprecated]]`, the attribute can have one optional
 string argument which is the message to display when emitting the warning.
+  }];
+}
+
+def IFuncDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+``__attribute__((ifunc("resolver")))`` is used to mark that the address of a declaration should be resolved at runtime by calling a resolver function.
+
+The symbol name of the resolver function is given in quotes.  A function with this name (after mangling) must be defined in the current translation unit; it may be ``static``.  The resolver function should take no arguments and return a pointer.
+
+The ``ifunc`` attribute may only be used on a function declaration.  A function declaration with an ``ifunc`` attribute is considered to be a definition of the declared entity.  The entity must not have weak linkage; for example, in C++, it cannot be applied to a declaration if a definition at that location would be considered inline.
+
+Not all targets support this attribute.  ELF targets support this attribute when using binutils v2.20.1 or higher and glibc v2.11.1 or higher.  Non-ELF targets currently do not support this attribute.
   }];
 }

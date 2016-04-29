@@ -1002,7 +1002,8 @@ private:
         Current.Type = TT_CastRParen;
       if (Current.MatchingParen && Current.Next &&
           !Current.Next->isBinaryOperator() &&
-          !Current.Next->isOneOf(tok::semi, tok::colon, tok::l_brace))
+          !Current.Next->isOneOf(tok::semi, tok::colon, tok::l_brace,
+                                 tok::period, tok::arrow, tok::coloncolon))
         if (FormatToken *BeforeParen = Current.MatchingParen->Previous)
           if (BeforeParen->is(tok::identifier) &&
               BeforeParen->TokenText == BeforeParen->TokenText.upper() &&
@@ -1172,9 +1173,9 @@ private:
     if (!LeftOfParens)
       return false;
 
-    // If the following token is an identifier, this is a cast. All cases where
-    // this can be something else are handled above.
-    if (Tok.Next->is(tok::identifier))
+    // If the following token is an identifier or 'this', this is a cast. All
+    // cases where this can be something else are handled above.
+    if (Tok.Next->isOneOf(tok::identifier, tok::kw_this))
       return true;
 
     if (!Tok.Next->Next)
@@ -1552,7 +1553,8 @@ void TokenAnnotator::annotate(AnnotatedLine &Line) {
 
 // This function heuristically determines whether 'Current' starts the name of a
 // function declaration.
-static bool isFunctionDeclarationName(const FormatToken &Current) {
+static bool isFunctionDeclarationName(const FormatToken &Current,
+                                      const AnnotatedLine &Line) {
   auto skipOperatorName = [](const FormatToken* Next) -> const FormatToken* {
     for (; Next; Next = Next->Next) {
       if (Next->is(TT_OverloadedOperatorLParen))
@@ -1572,6 +1574,7 @@ static bool isFunctionDeclarationName(const FormatToken &Current) {
     return nullptr;
   };
 
+  // Find parentheses of parameter list.
   const FormatToken *Next = Current.Next;
   if (Current.is(tok::kw_operator)) {
     if (Current.Previous && Current.Previous->is(tok::coloncolon))
@@ -1601,14 +1604,22 @@ static bool isFunctionDeclarationName(const FormatToken &Current) {
     }
   }
 
-  if (!Next || !Next->is(tok::l_paren))
+  // Check whether parameter list can be long to a function declaration.
+  if (!Next || !Next->is(tok::l_paren) || !Next->MatchingParen)
     return false;
+  // If the lines ends with "{", this is likely an function definition.
+  if (Line.Last->is(tok::l_brace))
+    return true;
   if (Next->Next == Next->MatchingParen)
+    return true; // Empty parentheses.
+  // If there is an &/&& after the r_paren, this is likely a function.
+  if (Next->MatchingParen->Next &&
+      Next->MatchingParen->Next->is(TT_PointerOrReference))
     return true;
   for (const FormatToken *Tok = Next->Next; Tok && Tok != Next->MatchingParen;
        Tok = Tok->Next) {
     if (Tok->is(tok::kw_const) || Tok->isSimpleTypeSpecifier() ||
-        Tok->isOneOf(TT_PointerOrReference, TT_StartOfName))
+        Tok->isOneOf(TT_PointerOrReference, TT_StartOfName, tok::ellipsis))
       return true;
     if (Tok->isOneOf(tok::l_brace, tok::string_literal, TT_ObjCMethodExpr) ||
         Tok->Tok.isLiteral())
@@ -1654,7 +1665,7 @@ void TokenAnnotator::calculateFormattingInformation(AnnotatedLine &Line) {
   FormatToken *Current = Line.First->Next;
   bool InFunctionDecl = Line.MightBeFunctionDecl;
   while (Current) {
-    if (isFunctionDeclarationName(*Current))
+    if (isFunctionDeclarationName(*Current, Line))
       Current->Type = TT_FunctionDeclarationName;
     if (Current->is(TT_LineComment)) {
       if (Current->Previous->BlockKind == BK_BracedInit &&
@@ -2067,6 +2078,9 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
   } else if (Style.Language == FormatStyle::LK_JavaScript) {
     if (Left.is(TT_JsFatArrow))
       return true;
+    if (Right.is(tok::star) &&
+        Left.isOneOf(Keywords.kw_function, Keywords.kw_yield))
+      return false;
     if (Left.isOneOf(Keywords.kw_let, Keywords.kw_var, Keywords.kw_in,
                      Keywords.kw_of) &&
         (!Left.Previous || !Left.Previous->is(tok::period)))

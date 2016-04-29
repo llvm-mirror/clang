@@ -59,6 +59,11 @@ namespace clang {
       return LocalOffset ? Offset - LocalOffset : 0;
     }
 
+    uint64_t ReadGlobalOffset(ModuleFile &F, const RecordData &R, unsigned &I) {
+      uint64_t Local = ReadLocalOffset(R, I);
+      return Local ? Reader.getGlobalBitOffset(F, Local) : 0;
+    }
+
     SourceLocation ReadSourceLocation(const RecordData &R, unsigned &I) {
       return Reader.ReadSourceLocation(F, R, I);
     }
@@ -472,8 +477,7 @@ void ASTDeclReader::Visit(Decl *D) {
       if (auto *CD = dyn_cast<CXXConstructorDecl>(FD)) {
         CD->NumCtorInitializers = Record[Idx++];
         if (CD->NumCtorInitializers)
-          CD->CtorInitializers =
-              Reader.ReadCXXCtorInitializersRef(F, Record, Idx);
+          CD->CtorInitializers = ReadGlobalOffset(F, Record, Idx);
       }
       Reader.PendingBodies[FD] = GetCurrentCursorOffset();
       HasPendingBody = true;
@@ -1137,7 +1141,7 @@ void ASTDeclReader::VisitObjCImplementationDecl(ObjCImplementationDecl *D) {
   D->setHasDestructors(Record[Idx++]);
   D->NumIvarInitializers = Record[Idx++];
   if (D->NumIvarInitializers)
-    D->IvarInitializers = Reader.ReadCXXCtorInitializersRef(F, Record, Idx);
+    D->IvarInitializers = ReadGlobalOffset(F, Record, Idx);
 }
 
 void ASTDeclReader::VisitObjCPropertyImplDecl(ObjCPropertyImplDecl *D) {
@@ -1475,10 +1479,10 @@ void ASTDeclReader::ReadCXXDefinitionData(
 
   Data.NumBases = Record[Idx++];
   if (Data.NumBases)
-    Data.Bases = Reader.readCXXBaseSpecifiers(F, Record, Idx);
+    Data.Bases = ReadGlobalOffset(F, Record, Idx);
   Data.NumVBases = Record[Idx++];
   if (Data.NumVBases)
-    Data.VBases = Reader.readCXXBaseSpecifiers(F, Record, Idx);
+    Data.VBases = ReadGlobalOffset(F, Record, Idx);
   
   Reader.ReadUnresolvedSet(F, Data.Conversions, Record, Idx);
   Reader.ReadUnresolvedSet(F, Data.VisibleConversions, Record, Idx);
@@ -3436,20 +3440,6 @@ Decl *ASTReader::ReadDeclRecord(DeclID ID) {
 }
 
 void ASTReader::loadDeclUpdateRecords(serialization::DeclID ID, Decl *D) {
-  // Load the pending visible updates for this decl context, if it has any.
-  auto I = PendingVisibleUpdates.find(ID);
-  if (I != PendingVisibleUpdates.end()) {
-    auto VisibleUpdates = std::move(I->second);
-    PendingVisibleUpdates.erase(I);
-
-    auto *DC = cast<DeclContext>(D)->getPrimaryContext();
-    for (const PendingVisibleUpdate &Update : VisibleUpdates)
-      Lookups[DC].Table.add(
-          Update.Mod, Update.Data,
-          reader::ASTDeclContextNameLookupTrait(*this, *Update.Mod));
-    DC->setHasExternalVisibleStorage(true);
-  }
-
   // The declaration may have been modified by files later in the chain.
   // If this is the case, read the record containing the updates from each file
   // and pass it to ASTDeclReader to make the modifications.
@@ -3484,6 +3474,20 @@ void ASTReader::loadDeclUpdateRecords(serialization::DeclID ID, Decl *D) {
         WasInteresting = true;
       }
     }
+  }
+
+  // Load the pending visible updates for this decl context, if it has any.
+  auto I = PendingVisibleUpdates.find(ID);
+  if (I != PendingVisibleUpdates.end()) {
+    auto VisibleUpdates = std::move(I->second);
+    PendingVisibleUpdates.erase(I);
+
+    auto *DC = cast<DeclContext>(D)->getPrimaryContext();
+    for (const PendingVisibleUpdate &Update : VisibleUpdates)
+      Lookups[DC].Table.add(
+          Update.Mod, Update.Data,
+          reader::ASTDeclContextNameLookupTrait(*this, *Update.Mod));
+    DC->setHasExternalVisibleStorage(true);
   }
 }
 
@@ -3745,8 +3749,7 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
       if (auto *CD = dyn_cast<CXXConstructorDecl>(FD)) {
         CD->NumCtorInitializers = Record[Idx++];
         if (CD->NumCtorInitializers)
-          CD->CtorInitializers =
-              Reader.ReadCXXCtorInitializersRef(F, Record, Idx);
+          CD->CtorInitializers = ReadGlobalOffset(F, Record, Idx);
       }
       // Store the offset of the body so we can lazily load it later.
       Reader.PendingBodies[FD] = GetCurrentCursorOffset();
@@ -3757,14 +3760,14 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
 
     case UPD_CXX_INSTANTIATED_CLASS_DEFINITION: {
       auto *RD = cast<CXXRecordDecl>(D);
-      auto *OldDD = RD->DefinitionData.getNotUpdated();
+      auto *OldDD = RD->getCanonicalDecl()->DefinitionData.getNotUpdated();
       bool HadRealDefinition =
           OldDD && (OldDD->Definition != RD ||
                     !Reader.PendingFakeDefinitionData.count(OldDD));
       ReadCXXRecordDefinition(RD, /*Update*/true);
 
       // Visible update is handled separately.
-      uint64_t LexicalOffset = Record[Idx++];
+      uint64_t LexicalOffset = ReadLocalOffset(Record, Idx);
       if (!HadRealDefinition && LexicalOffset) {
         Reader.ReadLexicalDeclContextStorage(ModuleFile, ModuleFile.DeclsCursor,
                                              LexicalOffset, RD);
@@ -3876,6 +3879,11 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
 
     case UPD_DECL_MARKED_OPENMP_THREADPRIVATE:
       D->addAttr(OMPThreadPrivateDeclAttr::CreateImplicit(
+          Reader.Context, ReadSourceRange(Record, Idx)));
+      break;
+
+    case UPD_DECL_MARKED_OPENMP_DECLARETARGET:
+      D->addAttr(OMPDeclareTargetDeclAttr::CreateImplicit(
           Reader.Context, ReadSourceRange(Record, Idx)));
       break;
 

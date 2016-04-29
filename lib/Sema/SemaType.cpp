@@ -11,7 +11,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Sema/SemaInternal.h"
 #include "TypeLocBuilder.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
@@ -22,7 +21,6 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/TypeLoc.h"
 #include "clang/AST/TypeLocVisitor.h"
-#include "clang/Lex/Preprocessor.h"
 #include "clang/Basic/PartialDiagnostic.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
@@ -30,9 +28,11 @@
 #include "clang/Sema/DelayedDiagnostic.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/ScopeInfo.h"
+#include "clang/Sema/SemaInternal.h"
 #include "clang/Sema/Template.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 
 using namespace clang;
@@ -734,6 +734,7 @@ static void diagnoseAndRemoveTypeQualifiers(Sema &S, const DeclSpec &DS,
   // it; they probably didn't mean to specify a redundant qualifier.
   typedef std::pair<DeclSpec::TQ, SourceLocation> QualLoc;
   for (QualLoc Qual : {QualLoc(DeclSpec::TQ_const, DS.getConstSpecLoc()),
+                       QualLoc(DeclSpec::TQ_restrict, DS.getRestrictSpecLoc()),
                        QualLoc(DeclSpec::TQ_volatile, DS.getVolatileSpecLoc()),
                        QualLoc(DeclSpec::TQ_atomic, DS.getAtomicSpecLoc())}) {
     if (!(RemoveTQs & Qual.first))
@@ -748,6 +749,47 @@ static void diagnoseAndRemoveTypeQualifiers(Sema &S, const DeclSpec &DS,
 
     TypeQuals &= ~Qual.first;
   }
+}
+
+/// Return true if this is omitted block return type. Also check type
+/// attributes and type qualifiers when returning true.
+static bool checkOmittedBlockReturnType(Sema &S, Declarator &declarator,
+                                        QualType Result) {
+  if (!isOmittedBlockReturnType(declarator))
+    return false;
+
+  // Warn if we see type attributes for omitted return type on a block literal.
+  AttributeList *&attrs =
+      declarator.getMutableDeclSpec().getAttributes().getListRef();
+  AttributeList *prev = nullptr;
+  for (AttributeList *cur = attrs; cur; cur = cur->getNext()) {
+    AttributeList &attr = *cur;
+    // Skip attributes that were marked to be invalid or non-type
+    // attributes.
+    if (attr.isInvalid() || !attr.isTypeAttr()) {
+      prev = cur;
+      continue;
+    }
+    S.Diag(attr.getLoc(),
+           diag::warn_block_literal_attributes_on_omitted_return_type)
+        << attr.getName();
+    // Remove cur from the list.
+    if (prev) {
+      prev->setNext(cur->getNext());
+      prev = cur;
+    } else {
+      attrs = cur->getNext();
+    }
+  }
+
+  // Warn if we see type qualifiers for omitted return type on a block literal.
+  const DeclSpec &DS = declarator.getDeclSpec();
+  unsigned TypeQuals = DS.getTypeQualifiers();
+  diagnoseAndRemoveTypeQualifiers(S, DS, TypeQuals, Result, (unsigned)-1,
+      diag::warn_block_literal_qualifiers_on_omitted_return_type);
+  declarator.getMutableDeclSpec().ClearTypeQualifiers();
+
+  return true;
 }
 
 /// Apply Objective-C type arguments to the given type.
@@ -1178,6 +1220,21 @@ TypeResult Sema::actOnObjCTypeArgsAndProtocolQualifiers(
   return CreateParsedType(Result, ResultTInfo);
 }
 
+static StringRef getImageAccessAttrStr(AttributeList *attrs) {
+  if (attrs) {
+
+    AttributeList *Next;
+    do {
+      AttributeList &Attr = *attrs;
+      Next = Attr.getNext();
+      if (Attr.getKind() == AttributeList::AT_OpenCLAccess) {
+        return Attr.getName()->getName();
+      }
+    } while (Next);
+  }
+  return "";
+}
+
 /// \brief Convert the specified declspec to the appropriate type
 /// object.
 /// \param state Specifies the declarator containing the declaration specifier
@@ -1251,7 +1308,8 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
       Result = Context.getAutoDeductType();
       break;
     } else if (declarator.getContext() == Declarator::LambdaExprContext ||
-               isOmittedBlockReturnType(declarator)) {
+               checkOmittedBlockReturnType(S, declarator,
+                                           Context.DependentTy)) {
       Result = Context.DependentTy;
       break;
     }
@@ -1362,6 +1420,7 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
     }
     break;
   case DeclSpec::TST_bool: Result = Context.BoolTy; break; // _Bool or bool
+    break;
   case DeclSpec::TST_decimal32:    // _Decimal32
   case DeclSpec::TST_decimal64:    // _Decimal64
   case DeclSpec::TST_decimal128:   // _Decimal128
@@ -1430,9 +1489,18 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
           declarator.setInvalidType(true);
         }
       } else if (!S.getOpenCLOptions().cl_khr_gl_msaa_sharing &&
-                 (Result->isImage2dMSAAT() || Result->isImage2dArrayMSAAT() ||
-                  Result->isImage2dArrayMSAATDepth() ||
-                  Result->isImage2dMSAATDepth())) {
+                 (Result->isOCLImage2dArrayMSAADepthROType() ||
+                  Result->isOCLImage2dArrayMSAADepthWOType() ||
+                  Result->isOCLImage2dArrayMSAADepthRWType() ||
+                  Result->isOCLImage2dArrayMSAAROType() ||
+                  Result->isOCLImage2dArrayMSAARWType() ||
+                  Result->isOCLImage2dArrayMSAAWOType() ||
+                  Result->isOCLImage2dMSAADepthROType() ||
+                  Result->isOCLImage2dMSAADepthRWType() ||
+                  Result->isOCLImage2dMSAADepthWOType() ||
+                  Result->isOCLImage2dMSAAROType() ||
+                  Result->isOCLImage2dMSAARWType() ||
+                  Result->isOCLImage2dMSAAWOType())) {
         S.Diag(DS.getTypeSpecTypeLoc(), diag::err_type_requires_extension)
             << Result << "cl_khr_gl_msaa_sharing";
         declarator.setInvalidType(true);
@@ -1545,6 +1613,16 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
       declarator.setInvalidType(true);
     }
     break;
+
+#define GENERIC_IMAGE_TYPE(ImgType, Id) \
+  case DeclSpec::TST_##ImgType##_t: \
+    Result = llvm::StringSwitch<QualType>( \
+                 getImageAccessAttrStr(DS.getAttributes().getList())) \
+                 .Cases("write_only", "__write_only", Context.Id##WOTy) \
+                 .Cases("read_write", "__read_write", Context.Id##RWTy) \
+                 .Default(Context.Id##ROTy); \
+    break;
+#include "clang/Basic/OpenCLImageTypes.def"
 
   case DeclSpec::TST_error:
     Result = Context.IntTy;

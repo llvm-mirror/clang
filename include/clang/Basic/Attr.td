@@ -239,6 +239,7 @@ def MicrosoftExt : LangOpt<"MicrosoftExt">;
 def Borland : LangOpt<"Borland">;
 def CUDA : LangOpt<"CUDA">;
 def COnly : LangOpt<"CPlusPlus", 1>;
+def OpenCL : LangOpt<"OpenCL">;
 
 // Defines targets for target-specific attributes. The list of strings should
 // specify architectures for which the target applies, based off the ArchType
@@ -719,6 +720,14 @@ def OpenCLGenericAddressSpace : TypeAttr {
   let Documentation = [OpenCLAddressSpaceGenericDocs];
 }
 
+def OpenCLNoSVM : Attr {
+  let Spellings = [GNU<"nosvm">];
+  let Subjects = SubjectList<[Var]>;
+  let Documentation = [OpenCLNoSVMDocs];
+  let LangOpts = [OpenCL];
+  let ASTNode = 0;
+}
+
 def Deprecated : InheritableAttr {
   let Spellings = [GCC<"deprecated">, Declspec<"deprecated">,
                    CXX11<"","deprecated", 201309>];
@@ -846,6 +855,13 @@ def IBOutletCollection : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def IFunc : Attr {
+  let Spellings = [GCC<"ifunc">];
+  let Args = [StringArgument<"Resolver">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [IFuncDocs];
+}
+
 def Restrict : InheritableAttr {
   let Spellings = [Declspec<"restrict">, GCC<"malloc">];
   let Subjects = SubjectList<[Function]>;
@@ -957,7 +973,7 @@ def NoCommon : InheritableAttr {
 
 def NoDebug : InheritableAttr {
   let Spellings = [GCC<"nodebug">];
-  let Documentation = [Undocumented];
+  let Documentation = [NoDebugDocs];
 }
 
 def NoDuplicate : InheritableAttr {
@@ -1230,6 +1246,12 @@ def ObjCRuntimeName : Attr {
   let Subjects = SubjectList<[ObjCInterface, ObjCProtocol], ErrorDiag>;
   let Args = [StringArgument<"MetadataName">];
   let Documentation = [ObjCRuntimeNameDocs];
+}
+
+def ObjCRuntimeVisible : Attr {
+  let Spellings = [GNU<"objc_runtime_visible">];
+  let Subjects = SubjectList<[ObjCInterface], ErrorDiag>;
+  let Documentation = [ObjCRuntimeVisibleDocs];
 }
 
 def ObjCBoxable : Attr {
@@ -2242,6 +2264,82 @@ def OMPCaptureNoInit : InheritableAttr {
   let Spellings = [];
   let SemaHandler = 0;
   let Documentation = [Undocumented];
+}
+
+def OMPDeclareSimdDecl : Attr {
+  let Spellings = [Pragma<"omp", "declare simd">];
+  let Subjects = SubjectList<[Function]>;
+  let SemaHandler = 0;
+  let HasCustomParsing = 1;
+  let Documentation = [OMPDeclareSimdDocs];
+  let Args = [
+    EnumArgument<"BranchState", "BranchStateTy",
+                 [ "", "inbranch", "notinbranch" ],
+                 [ "BS_Undefined", "BS_Inbranch", "BS_Notinbranch" ]>,
+    ExprArgument<"Simdlen">, VariadicExprArgument<"Uniforms">,
+    VariadicExprArgument<"Aligneds">, VariadicExprArgument<"Alignments">,
+    VariadicExprArgument<"Linears">, VariadicUnsignedArgument<"Modifiers">,
+    VariadicExprArgument<"Steps">
+  ];
+  let AdditionalMembers = [{
+    void printPrettyPragma(raw_ostream & OS, const PrintingPolicy &Policy)
+        const {
+      if (getBranchState() != BS_Undefined)
+        OS << ConvertBranchStateTyToStr(getBranchState()) << " ";
+      if (auto *E = getSimdlen()) {
+        OS << "simdlen(";
+        E->printPretty(OS, nullptr, Policy);
+        OS << ") ";
+      }
+      if (uniforms_size() > 0) {
+        OS << "uniform";
+        StringRef Sep = "(";
+        for (auto *E : uniforms()) {
+          OS << Sep;
+          E->printPretty(OS, nullptr, Policy);
+          Sep = ", ";
+        }
+        OS << ") ";
+      }
+      alignments_iterator NI = alignments_begin();
+      for (auto *E : aligneds()) {
+        OS << "aligned(";
+        E->printPretty(OS, nullptr, Policy);
+        if (*NI) {
+          OS << ": ";
+          (*NI)->printPretty(OS, nullptr, Policy);
+        }
+        OS << ") ";
+        ++NI;
+      }
+      steps_iterator I = steps_begin();
+      modifiers_iterator MI = modifiers_begin();
+      for (auto *E : linears()) {
+        OS << "linear(";
+        if (*MI != OMPC_LINEAR_unknown)
+          OS << getOpenMPSimpleClauseTypeName(OMPC_linear, *MI) << "(";
+        E->printPretty(OS, nullptr, Policy);
+        if (*MI != OMPC_LINEAR_unknown)
+          OS << ")";
+        if (*I) {
+          OS << ": ";
+          (*I)->printPretty(OS, nullptr, Policy);
+        }
+        OS << ") ";
+        ++I;
+        ++MI;
+      }
+    }
+  }];
+}
+
+def OMPDeclareTargetDecl : Attr {
+  let Spellings = [Pragma<"omp", "declare target">];
+  let SemaHandler = 0;
+  let Documentation = [OMPDeclareTargetDocs];
+  let AdditionalMembers = [{
+    void printPrettyPragma(raw_ostream &OS, const PrintingPolicy &Policy) const {}
+  }];
 }
 
 def InternalLinkage : InheritableAttr {

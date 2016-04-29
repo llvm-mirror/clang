@@ -98,6 +98,9 @@ private:
     return PerFunctionPasses;
   }
 
+  /// Set LLVM command line options passed through -backend-option.
+  void setCommandLineOpts();
+
   void CreatePasses(ModuleSummaryIndex *ModuleSummary);
 
   /// Generates the TargetMachine.
@@ -243,6 +246,17 @@ static void addDataFlowSanitizerPass(const PassManagerBuilder &Builder,
       static_cast<const PassManagerBuilderWrapper&>(Builder);
   const LangOptions &LangOpts = BuilderWrapper.getLangOpts();
   PM.add(createDataFlowSanitizerPass(LangOpts.SanitizerBlacklistFiles));
+}
+
+static void addEfficiencySanitizerPass(const PassManagerBuilder &Builder,
+                                       legacy::PassManagerBase &PM) {
+  const PassManagerBuilderWrapper &BuilderWrapper =
+      static_cast<const PassManagerBuilderWrapper&>(Builder);
+  const LangOptions &LangOpts = BuilderWrapper.getLangOpts();
+  EfficiencySanitizerOptions Opts;
+  if (LangOpts.Sanitize.has(SanitizerKind::EfficiencyCacheFrag))
+    Opts.ToolType = EfficiencySanitizerOptions::ESAN_CacheFrag;
+  PM.add(createEfficiencySanitizerPass(Opts));
 }
 
 static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
@@ -404,6 +418,13 @@ void EmitAssemblyHelper::CreatePasses(ModuleSummaryIndex *ModuleSummary) {
                            addDataFlowSanitizerPass);
   }
 
+  if (LangOpts.Sanitize.hasOneOf(SanitizerKind::Efficiency)) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
+                           addEfficiencySanitizerPass);
+    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                           addEfficiencySanitizerPass);
+  }
+
   // Set up the per-function pass manager.
   legacy::FunctionPassManager *FPM = getPerFunctionPasses();
   if (CodeGenOpts.VerifyModule)
@@ -436,7 +457,7 @@ void EmitAssemblyHelper::CreatePasses(ModuleSummaryIndex *ModuleSummary) {
     InstrProfOptions Options;
     Options.NoRedZone = CodeGenOpts.DisableRedZone;
     Options.InstrProfileOutput = CodeGenOpts.InstrProfileOutput;
-    MPM->add(createInstrProfilingPass(Options));
+    MPM->add(createInstrProfilingLegacyPass(Options));
   }
   if (CodeGenOpts.hasProfileIRInstr()) {
     if (!CodeGenOpts.InstrProfileOutput.empty())
@@ -451,6 +472,24 @@ void EmitAssemblyHelper::CreatePasses(ModuleSummaryIndex *ModuleSummary) {
     MPM->add(createSampleProfileLoaderPass(CodeGenOpts.SampleProfileFile));
 
   PMBuilder.populateModulePassManager(*MPM);
+}
+
+void EmitAssemblyHelper::setCommandLineOpts() {
+  SmallVector<const char *, 16> BackendArgs;
+  BackendArgs.push_back("clang"); // Fake program name.
+  if (!CodeGenOpts.DebugPass.empty()) {
+    BackendArgs.push_back("-debug-pass");
+    BackendArgs.push_back(CodeGenOpts.DebugPass.c_str());
+  }
+  if (!CodeGenOpts.LimitFloatPrecision.empty()) {
+    BackendArgs.push_back("-limit-float-precision");
+    BackendArgs.push_back(CodeGenOpts.LimitFloatPrecision.c_str());
+  }
+  for (const std::string &BackendOption : CodeGenOpts.BackendOptions)
+    BackendArgs.push_back(BackendOption.c_str());
+  BackendArgs.push_back(nullptr);
+  llvm::cl::ParseCommandLineOptions(BackendArgs.size() - 1,
+                                    BackendArgs.data());
 }
 
 TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
@@ -474,22 +513,6 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
       .Default(~0u);
   assert(CodeModel != ~0u && "invalid code model!");
   llvm::CodeModel::Model CM = static_cast<llvm::CodeModel::Model>(CodeModel);
-
-  SmallVector<const char *, 16> BackendArgs;
-  BackendArgs.push_back("clang"); // Fake program name.
-  if (!CodeGenOpts.DebugPass.empty()) {
-    BackendArgs.push_back("-debug-pass");
-    BackendArgs.push_back(CodeGenOpts.DebugPass.c_str());
-  }
-  if (!CodeGenOpts.LimitFloatPrecision.empty()) {
-    BackendArgs.push_back("-limit-float-precision");
-    BackendArgs.push_back(CodeGenOpts.LimitFloatPrecision.c_str());
-  }
-  for (const std::string &BackendOption : CodeGenOpts.BackendOptions)
-    BackendArgs.push_back(BackendOption.c_str());
-  BackendArgs.push_back(nullptr);
-  llvm::cl::ParseCommandLineOptions(BackendArgs.size() - 1,
-                                    BackendArgs.data());
 
   std::string FeaturesStr =
       llvm::join(TargetOpts.Features.begin(), TargetOpts.Features.end(), ",");
@@ -552,7 +575,7 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   Options.CompressDebugSections = CodeGenOpts.CompressDebugSections;
 
   // Set EABI version.
-  Options.EABIVersion = llvm::StringSwitch<llvm::EABI>(CodeGenOpts.EABIVersion)
+  Options.EABIVersion = llvm::StringSwitch<llvm::EABI>(TargetOpts.EABIVersion)
                             .Case("4", llvm::EABI::EABI4)
                             .Case("5", llvm::EABI::EABI5)
                             .Case("gnu", llvm::EABI::GNU)
@@ -629,6 +652,8 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
                                       raw_pwrite_stream *OS) {
   TimeRegion Region(llvm::TimePassesIsEnabled ? &CodeGenerationTime : nullptr);
 
+  setCommandLineOpts();
+
   bool UsesCodeGen = (Action != Backend_EmitNothing &&
                       Action != Backend_EmitBC &&
                       Action != Backend_EmitLL);
@@ -668,7 +693,8 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
 
   case Backend_EmitBC:
     getPerModulePasses()->add(createBitcodeWriterPass(
-        *OS, CodeGenOpts.EmitLLVMUseLists, CodeGenOpts.EmitSummaryIndex));
+        *OS, CodeGenOpts.EmitLLVMUseLists, CodeGenOpts.EmitSummaryIndex,
+        CodeGenOpts.EmitSummaryIndex));
     break;
 
   case Backend_EmitLL:

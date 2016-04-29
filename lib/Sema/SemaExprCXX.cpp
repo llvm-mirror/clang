@@ -2245,14 +2245,13 @@ void Sema::DeclareGlobalNewDelete() {
 
   QualType VoidPtr = Context.getPointerType(Context.VoidTy);
   QualType SizeT = Context.getSizeType();
-  bool AssumeSaneOperatorNew = getLangOpts().AssumeSaneOperatorNew;
 
   DeclareGlobalAllocationFunction(
       Context.DeclarationNames.getCXXOperatorName(OO_New),
-      VoidPtr, SizeT, QualType(), AssumeSaneOperatorNew);
+      VoidPtr, SizeT, QualType());
   DeclareGlobalAllocationFunction(
       Context.DeclarationNames.getCXXOperatorName(OO_Array_New),
-      VoidPtr, SizeT, QualType(), AssumeSaneOperatorNew);
+      VoidPtr, SizeT, QualType());
   DeclareGlobalAllocationFunction(
       Context.DeclarationNames.getCXXOperatorName(OO_Delete),
       Context.VoidTy, VoidPtr);
@@ -2273,8 +2272,7 @@ void Sema::DeclareGlobalNewDelete() {
 /// allocation function if it doesn't already exist.
 void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
                                            QualType Return,
-                                           QualType Param1, QualType Param2,
-                                           bool AddRestrictAttr) {
+                                           QualType Param1, QualType Param2) {
   DeclContext *GlobalCtx = Context.getTranslationUnitDecl();
   unsigned NumParams = Param2.isNull() ? 1 : 2;
 
@@ -2297,9 +2295,6 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
         // FIXME: Do we need to check for default arguments here?
         if (InitialParam1Type == Param1 &&
             (NumParams == 1 || InitialParam2Type == Param2)) {
-          if (AddRestrictAttr && !Func->hasAttr<RestrictAttr>())
-            Func->addAttr(RestrictAttr::CreateImplicit(
-                Context, RestrictAttr::GNU_malloc));
           // Make the function visible to name lookup, even if we found it in
           // an unimported module. It either is an implicitly-declared global
           // allocation function, or is suppressing that function.
@@ -2341,10 +2336,6 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
   // Implicit sized deallocation functions always have default visibility.
   Alloc->addAttr(VisibilityAttr::CreateImplicit(Context,
                                                 VisibilityAttr::Default));
-
-  if (AddRestrictAttr)
-    Alloc->addAttr(
-        RestrictAttr::CreateImplicit(Context, RestrictAttr::GNU_malloc));
 
   ParmVarDecl *ParamDecls[2];
   for (unsigned I = 0; I != NumParams; ++I) {
@@ -2397,7 +2388,7 @@ FunctionDecl *Sema::FindUsualDeallocationFunction(SourceLocation StartLoc,
            "found an unexpected usual deallocation function");
   }
 
-  if (getLangOpts().CUDA && getLangOpts().CUDATargetOverloads)
+  if (getLangOpts().CUDA)
     EraseUnwantedCUDAMatches(dyn_cast<FunctionDecl>(CurContext), Matches);
 
   assert(Matches.size() == 1 &&
@@ -2431,7 +2422,7 @@ bool Sema::FindDeallocationFunction(SourceLocation StartLoc, CXXRecordDecl *RD,
       Matches.push_back(F.getPair());
   }
 
-  if (getLangOpts().CUDA && getLangOpts().CUDATargetOverloads)
+  if (getLangOpts().CUDA)
     EraseUnwantedCUDAMatches(dyn_cast<FunctionDecl>(CurContext), Matches);
 
   // There's exactly one suitable operator;  pick it.
@@ -3049,7 +3040,8 @@ Sema::IsStringLiteralToNonConstPointerConversion(Expr *From, QualType ToType) {
               return (ToPointeeType->getKind() == BuiltinType::Char_U ||
                       ToPointeeType->getKind() == BuiltinType::Char_S);
             case StringLiteral::Wide:
-              return ToPointeeType->isWideCharType();
+              return Context.typesAreCompatible(Context.getWideCharType(),
+                                                QualType(ToPointeeType, 0));
           }
         }
       }
@@ -4803,7 +4795,7 @@ QualType Sema::CheckPointerToMemberOperands(ExprResult &LHS, ExprResult &RHS,
   return Result;
 }
 
-/// \brief Try to convert a type to another according to C++0x 5.16p3.
+/// \brief Try to convert a type to another according to C++11 5.16p3.
 ///
 /// This is part of the parameter validation for the ? operator. If either
 /// value operand is a class type, the two operands are attempted to be
@@ -4819,17 +4811,21 @@ static bool TryClassUnification(Sema &Self, Expr *From, Expr *To,
 
   InitializationKind Kind = InitializationKind::CreateCopy(To->getLocStart(),
                                                            SourceLocation());
-  // C++0x 5.16p3
+  // C++11 5.16p3
   //   The process for determining whether an operand expression E1 of type T1
   //   can be converted to match an operand expression E2 of type T2 is defined
   //   as follows:
-  //   -- If E2 is an lvalue:
-  bool ToIsLvalue = To->isLValue();
-  if (ToIsLvalue) {
-    //   E1 can be converted to match E2 if E1 can be implicitly converted to
-    //   type "lvalue reference to T2", subject to the constraint that in the
-    //   conversion the reference must bind directly to E1.
-    QualType T = Self.Context.getLValueReferenceType(ToType);
+  //   -- If E2 is an lvalue: E1 can be converted to match E2 if E1 can be
+  //      implicitly converted to type "lvalue reference to T2", subject to the
+  //      constraint that in the conversion the reference must bind directly to
+  //      an lvalue.
+  //   -- If E2 is an xvalue: E1 can be converted to match E2 if E1 can be
+  //      implicitly conveted to the type "rvalue reference to R2", subject to
+  //      the constraint that the reference must bind directly.
+  if (To->isLValue() || To->isXValue()) {
+    QualType T = To->isLValue() ? Self.Context.getLValueReferenceType(ToType)
+                                : Self.Context.getRValueReferenceType(ToType);
+
     InitializedEntity Entity = InitializedEntity::InitializeTemporary(T);
 
     InitializationSequence InitSeq(Self, Entity, Kind, From);

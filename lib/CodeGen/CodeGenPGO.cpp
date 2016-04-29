@@ -43,6 +43,8 @@ void CodeGenPGO::setFuncName(StringRef Name,
 
 void CodeGenPGO::setFuncName(llvm::Function *Fn) {
   setFuncName(Fn->getName(), Fn->getLinkage());
+  // Create PGOFuncName meta data.
+  llvm::createPGOFuncNameMetadata(*Fn, FuncName);
 }
 
 namespace {
@@ -755,12 +757,15 @@ void CodeGenPGO::valueProfile(CGBuilderTy &Builder, uint32_t ValueKind,
   if (!ValuePtr || !ValueSite || !Builder.GetInsertBlock())
     return;
 
+  if (isa<llvm::Constant>(ValuePtr))
+    return;
+
   bool InstrumentValueSites = CGM.getCodeGenOpts().hasProfileClangInstr();
   if (InstrumentValueSites && RegionCounterMap) {
-    llvm::LLVMContext &Ctx = CGM.getLLVMContext();
-    auto *I8PtrTy = llvm::Type::getInt8PtrTy(Ctx);
+    auto BuilderInsertPoint = Builder.saveIP();
+    Builder.SetInsertPoint(ValueSite);
     llvm::Value *Args[5] = {
-        llvm::ConstantExpr::getBitCast(FuncNameVar, I8PtrTy),
+        llvm::ConstantExpr::getBitCast(FuncNameVar, Builder.getInt8PtrTy()),
         Builder.getInt64(FunctionHash),
         Builder.CreatePtrToInt(ValuePtr, Builder.getInt64Ty()),
         Builder.getInt32(ValueKind),
@@ -768,6 +773,7 @@ void CodeGenPGO::valueProfile(CGBuilderTy &Builder, uint32_t ValueKind,
     };
     Builder.CreateCall(
         CGM.getIntrinsic(llvm::Intrinsic::instrprof_value_profile), Args);
+    Builder.restoreIP(BuilderInsertPoint);
     return;
   }
 

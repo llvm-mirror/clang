@@ -834,7 +834,7 @@ class RedirectingFileSystem : public vfs::FileSystem {
   /// \brief Whether to perform case-sensitive comparisons.
   ///
   /// Currently, case-insensitive matching only works correctly with ASCII.
-  bool CaseSensitive;
+  bool CaseSensitive = true;
 
   /// IsRelativeOverlay marks whether a IsExternalContentsPrefixDir path must
   /// be prefixed in every 'external-contents' when reading from YAML files.
@@ -842,7 +842,7 @@ class RedirectingFileSystem : public vfs::FileSystem {
 
   /// \brief Whether to use to use the value of 'external-contents' for the
   /// names of files.  This global value is overridable on a per-file basis.
-  bool UseExternalNames;
+  bool UseExternalNames = true;
   /// @}
 
   /// Virtual file paths and external files could be canonicalized without "..",
@@ -859,7 +859,7 @@ class RedirectingFileSystem : public vfs::FileSystem {
 
 private:
   RedirectingFileSystem(IntrusiveRefCntPtr<FileSystem> ExternalFS)
-      : ExternalFS(ExternalFS), CaseSensitive(true), UseExternalNames(true) {}
+      : ExternalFS(ExternalFS) {}
 
   /// \brief Looks up \p Path in \c Roots.
   ErrorOr<Entry *> lookupPath(const Twine &Path);
@@ -1358,16 +1358,21 @@ RedirectingFileSystem::lookupPath(sys::path::const_iterator Start,
     ++Start;
 #endif
 
-  if (CaseSensitive ? !Start->equals(From->getName())
-                    : !Start->equals_lower(From->getName()))
-    // failure to match
-    return make_error_code(llvm::errc::no_such_file_or_directory);
+  StringRef FromName = From->getName();
 
-  ++Start;
+  // Forward the search to the next component in case this is an empty one.
+  if (!FromName.empty()) {
+    if (CaseSensitive ? !Start->equals(FromName)
+                      : !Start->equals_lower(FromName))
+      // failure to match
+      return make_error_code(llvm::errc::no_such_file_or_directory);
 
-  if (Start == End) {
-    // Match!
-    return From;
+    ++Start;
+
+    if (Start == End) {
+      // Match!
+      return From;
+    }
   }
 
   auto *DE = dyn_cast<RedirectingDirectoryEntry>(From);
@@ -1499,8 +1504,9 @@ class JSONWriter {
 
 public:
   JSONWriter(llvm::raw_ostream &OS) : OS(OS) {}
-  void write(ArrayRef<YAMLVFSEntry> Entries, Optional<bool> IsCaseSensitive,
-             Optional<bool> IsOverlayRelative, StringRef OverlayDir);
+  void write(ArrayRef<YAMLVFSEntry> Entries, Optional<bool> UseExternalNames,
+             Optional<bool> IsCaseSensitive, Optional<bool> IsOverlayRelative,
+             StringRef OverlayDir);
 };
 }
 
@@ -1553,6 +1559,7 @@ void JSONWriter::writeEntry(StringRef VPath, StringRef RPath) {
 }
 
 void JSONWriter::write(ArrayRef<YAMLVFSEntry> Entries,
+                       Optional<bool> UseExternalNames,
                        Optional<bool> IsCaseSensitive,
                        Optional<bool> IsOverlayRelative,
                        StringRef OverlayDir) {
@@ -1563,6 +1570,9 @@ void JSONWriter::write(ArrayRef<YAMLVFSEntry> Entries,
   if (IsCaseSensitive.hasValue())
     OS << "  'case-sensitive': '"
        << (IsCaseSensitive.getValue() ? "true" : "false") << "',\n";
+  if (UseExternalNames.hasValue())
+    OS << "  'use-external-names': '"
+       << (UseExternalNames.getValue() ? "true" : "false") << "',\n";
   bool UseOverlayRelative = false;
   if (IsOverlayRelative.hasValue()) {
     UseOverlayRelative = IsOverlayRelative.getValue();
@@ -1624,8 +1634,8 @@ void YAMLVFSWriter::write(llvm::raw_ostream &OS) {
     return LHS.VPath < RHS.VPath;
   });
 
-  JSONWriter(OS).write(Mappings, IsCaseSensitive, IsOverlayRelative,
-                       OverlayDir);
+  JSONWriter(OS).write(Mappings, UseExternalNames, IsCaseSensitive,
+                       IsOverlayRelative, OverlayDir);
 }
 
 VFSFromYamlDirIterImpl::VFSFromYamlDirIterImpl(

@@ -55,6 +55,7 @@ OpenMPClauseKind clang::getOpenMPClauseKind(StringRef Str) {
   return llvm::StringSwitch<OpenMPClauseKind>(Str)
 #define OPENMP_CLAUSE(Name, Class) .Case(#Name, OMPC_##Name)
 #include "clang/Basic/OpenMPKinds.def"
+      .Case("uniform", OMPC_uniform)
       .Default(OMPC_unknown);
 }
 
@@ -67,6 +68,8 @@ const char *clang::getOpenMPClauseName(OpenMPClauseKind Kind) {
   case OMPC_##Name:                                                            \
     return #Name;
 #include "clang/Basic/OpenMPKinds.def"
+  case OMPC_uniform:
+    return "uniform";
   case OMPC_threadprivate:
     return "threadprivate or thread local";
   }
@@ -158,6 +161,7 @@ unsigned clang::getOpenMPSimpleClauseType(OpenMPClauseKind Kind,
   case OMPC_nogroup:
   case OMPC_num_tasks:
   case OMPC_hint:
+  case OMPC_uniform:
     break;
   }
   llvm_unreachable("Invalid OpenMP simple clause kind");
@@ -292,6 +296,7 @@ const char *clang::getOpenMPSimpleClauseTypeName(OpenMPClauseKind Kind,
   case OMPC_nogroup:
   case OMPC_num_tasks:
   case OMPC_hint:
+  case OMPC_uniform:
     break;
   }
   llvm_unreachable("Invalid OpenMP simple clause kind");
@@ -485,6 +490,8 @@ bool clang::isAllowedClauseForDirective(OpenMPDirectiveKind DKind,
       break;
     }
     break;
+  case OMPD_declare_simd:
+    break;
   case OMPD_cancel:
     switch (CKind) {
 #define OPENMP_CANCEL_CLAUSE(Name)                                             \
@@ -545,6 +552,8 @@ bool clang::isAllowedClauseForDirective(OpenMPDirectiveKind DKind,
       break;
     }
     break;
+  case OMPD_declare_target:
+  case OMPD_end_declare_target:
   case OMPD_unknown:
   case OMPD_threadprivate:
   case OMPD_section:
@@ -623,3 +632,6 @@ bool clang::isOpenMPThreadPrivate(OpenMPClauseKind Kind) {
   return Kind == OMPC_threadprivate || Kind == OMPC_copyin;
 }
 
+bool clang::isOpenMPTaskingDirective(OpenMPDirectiveKind Kind) {
+  return Kind == OMPD_task || isOpenMPTaskLoopDirective(Kind);
+}

@@ -3354,6 +3354,7 @@ static bool EvaluateCond(EvalInfo &Info, const VarDecl *CondDecl,
   return EvaluateAsBooleanCondition(Cond, Result, Info);
 }
 
+namespace {
 /// \brief A location where the result (returned value) of evaluating a
 /// statement should be stored.
 struct StmtResult {
@@ -3362,6 +3363,7 @@ struct StmtResult {
   /// The location containing the result, if any (used to support RVO).
   const LValue *Slot;
 };
+}
 
 static EvalStmtResult EvaluateStmt(StmtResult &Result, EvalInfo &Info,
                                    const Stmt *S,
@@ -6299,18 +6301,9 @@ static int EvaluateBuiltinClassifyType(const CallExpr *E,
     case BuiltinType::ObjCId:
     case BuiltinType::ObjCClass:
     case BuiltinType::ObjCSel:
-    case BuiltinType::OCLImage1d:
-    case BuiltinType::OCLImage1dArray:
-    case BuiltinType::OCLImage2d:
-    case BuiltinType::OCLImage2dArray:
-    case BuiltinType::OCLImage1dBuffer:
-    case BuiltinType::OCLImage2dDepth:
-    case BuiltinType::OCLImage2dArrayDepth:
-    case BuiltinType::OCLImage2dMSAA:
-    case BuiltinType::OCLImage2dArrayMSAA:
-    case BuiltinType::OCLImage2dMSAADepth:
-    case BuiltinType::OCLImage2dArrayMSAADepth:
-    case BuiltinType::OCLImage3d:
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+    case BuiltinType::Id:
+#include "clang/Basic/OpenCLImageTypes.def"
     case BuiltinType::OCLSampler:
     case BuiltinType::OCLEvent:
     case BuiltinType::OCLClkEvent:
@@ -9031,6 +9024,20 @@ bool Expr::EvaluateAsInt(APSInt &Result, const ASTContext &Ctx,
     return false;
 
   Result = ExprResult.Val.getInt();
+  return true;
+}
+
+bool Expr::EvaluateAsFloat(APFloat &Result, const ASTContext &Ctx,
+                           SideEffectsKind AllowSideEffects) const {
+  if (!getType()->isRealFloatingType())
+    return false;
+
+  EvalResult ExprResult;
+  if (!EvaluateAsRValue(ExprResult, Ctx) || !ExprResult.Val.isFloat() ||
+      hasUnacceptableSideEffect(ExprResult, AllowSideEffects))
+    return false;
+
+  Result = ExprResult.Val.getFloat();
   return true;
 }
 

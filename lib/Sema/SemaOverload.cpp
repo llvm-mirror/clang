@@ -992,7 +992,7 @@ Sema::CheckOverload(Scope *S, FunctionDecl *New, const LookupResult &Old,
 }
 
 bool Sema::IsOverload(FunctionDecl *New, FunctionDecl *Old,
-                      bool UseUsingDeclRules) {
+                      bool UseMemberUsingDeclRules, bool ConsiderCudaAttrs) {
   // C++ [basic.start.main]p2: This function shall not be overloaded.
   if (New->isMain())
     return false;
@@ -1048,7 +1048,7 @@ bool Sema::IsOverload(FunctionDecl *New, FunctionDecl *Old,
   //
   // However, we don't consider either of these when deciding whether
   // a member introduced by a shadow declaration is hidden.
-  if (!UseUsingDeclRules && NewTemplate &&
+  if (!UseMemberUsingDeclRules && NewTemplate &&
       (!TemplateParameterListsAreEqual(NewTemplate->getTemplateParameters(),
                                        OldTemplate->getTemplateParameters(),
                                        false, TPL_TemplateMatch) ||
@@ -1068,7 +1068,7 @@ bool Sema::IsOverload(FunctionDecl *New, FunctionDecl *Old,
   if (OldMethod && NewMethod &&
       !OldMethod->isStatic() && !NewMethod->isStatic()) {
     if (OldMethod->getRefQualifier() != NewMethod->getRefQualifier()) {
-      if (!UseUsingDeclRules &&
+      if (!UseMemberUsingDeclRules &&
           (OldMethod->getRefQualifier() == RQ_None ||
            NewMethod->getRefQualifier() == RQ_None)) {
         // C++0x [over.load]p2:
@@ -1125,7 +1125,7 @@ bool Sema::IsOverload(FunctionDecl *New, FunctionDecl *Old,
       return true;
   }
 
-  if (getLangOpts().CUDA && getLangOpts().CUDATargetOverloads) {
+  if (getLangOpts().CUDA && ConsiderCudaAttrs) {
     CUDAFunctionTarget NewTarget = IdentifyCUDATarget(New),
                        OldTarget = IdentifyCUDATarget(Old);
     if (NewTarget == CFT_InvalidTarget || NewTarget == CFT_Global)
@@ -1828,8 +1828,7 @@ bool Sema::IsIntegralPromotion(Expr *From, QualType FromType, QualType ToType) {
         (FromType->isSignedIntegerType() ||
          // We can promote any unsigned integer type whose size is
          // less than int to an int.
-         (!FromType->isSignedIntegerType() &&
-          Context.getTypeSize(FromType) < Context.getTypeSize(ToType)))) {
+         Context.getTypeSize(FromType) < Context.getTypeSize(ToType))) {
       return To->getKind() == BuiltinType::Int;
     }
 
@@ -5856,12 +5855,12 @@ Sema::AddOverloadCandidate(FunctionDecl *Function,
   }
 }
 
-ObjCMethodDecl *Sema::SelectBestMethod(Selector Sel, MultiExprArg Args,
-                                       bool IsInstance) {
-  SmallVector<ObjCMethodDecl*, 4> Methods;
-  if (!CollectMultipleMethodsInGlobalPool(Sel, Methods, IsInstance))
+ObjCMethodDecl *
+Sema::SelectBestMethod(Selector Sel, MultiExprArg Args, bool IsInstance,
+                       SmallVectorImpl<ObjCMethodDecl *> &Methods) {
+  if (Methods.size() <= 1)
     return nullptr;
-    
+
   for (unsigned b = 0, e = Methods.size(); b < e; b++) {
     bool Match = true;
     ObjCMethodDecl *Method = Methods[b];
@@ -8639,8 +8638,7 @@ bool clang::isBetterOverloadCandidate(Sema &S, const OverloadCandidate &Cand1,
        Cand2.Function->hasAttr<EnableIfAttr>()))
     return hasBetterEnableIfAttrs(S, Cand1.Function, Cand2.Function);
 
-  if (S.getLangOpts().CUDA && S.getLangOpts().CUDATargetOverloads &&
-      Cand1.Function && Cand2.Function) {
+  if (S.getLangOpts().CUDA && Cand1.Function && Cand2.Function) {
     FunctionDecl *Caller = dyn_cast<FunctionDecl>(S.CurContext);
     return S.IdentifyCUDAPreference(Caller, Cand1.Function) >
            S.IdentifyCUDAPreference(Caller, Cand2.Function);
@@ -8745,7 +8743,7 @@ OverloadCandidateSet::BestViableFunction(Sema &S, SourceLocation Loc,
   // only on their host/device attributes. Specifically, if one
   // candidate call is WrongSide and the other is SameSide, we ignore
   // the WrongSide candidate.
-  if (S.getLangOpts().CUDA && S.getLangOpts().CUDATargetOverloads) {
+  if (S.getLangOpts().CUDA) {
     const FunctionDecl *Caller = dyn_cast<FunctionDecl>(S.CurContext);
     bool ContainsSameSideCandidate =
         llvm::any_of(Candidates, [&](OverloadCandidate *Cand) {
@@ -9326,11 +9324,8 @@ static void DiagnoseArityMismatch(Sema &S, OverloadCandidate *Cand,
 }
 
 static TemplateDecl *getDescribedTemplate(Decl *Templated) {
-  if (FunctionDecl *FD = dyn_cast<FunctionDecl>(Templated))
-    return FD->getDescribedFunctionTemplate();
-  else if (CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(Templated))
-    return RD->getDescribedClassTemplate();
-
+  if (TemplateDecl *TD = Templated->getDescribedTemplate())
+    return TD;
   llvm_unreachable("Unsupported: Getting the described template declaration"
                    " for bad deduction diagnosis");
 }
@@ -10299,8 +10294,7 @@ public:
       }
     }
 
-    if (S.getLangOpts().CUDA && S.getLangOpts().CUDATargetOverloads &&
-        Matches.size() > 1)
+    if (S.getLangOpts().CUDA && Matches.size() > 1)
       EliminateSuboptimalCudaMatches();
   }
 

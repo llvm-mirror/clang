@@ -2299,7 +2299,7 @@ static void checkNewAttributesAfterDef(Sema &S, Decl *New, const Decl *Old) {
   for (unsigned I = 0, E = NewAttributes.size(); I != E;) {
     const Attr *NewAttribute = NewAttributes[I];
 
-    if (isa<AliasAttr>(NewAttribute)) {
+    if (isa<AliasAttr>(NewAttribute) || isa<IFuncAttr>(NewAttribute)) {
       if (FunctionDecl *FD = dyn_cast<FunctionDecl>(New)) {
         Sema::SkipBodyInfo SkipBody;
         S.CheckForFunctionRedefinition(FD, cast<FunctionDecl>(Def), &SkipBody);
@@ -5052,6 +5052,9 @@ NamedDecl *Sema::HandleDeclarator(Scope *S, Declarator &D,
       CurContext->addHiddenDecl(New);
   }
 
+  if (isInOpenMPDeclareTargetContext())
+    checkDeclIsAllowedInOpenMPTarget(nullptr, New);
+
   return New;
 }
 
@@ -5461,7 +5464,7 @@ static void checkAttributesAfterMerging(Sema &S, NamedDecl &ND) {
       if (const auto *Attr = VD->getAttr<AliasAttr>()) {
         assert(VD->isThisDeclarationADefinition() &&
                !VD->isExternallyVisible() && "Broken AliasAttr handled late!");
-        S.Diag(Attr->getLocation(), diag::err_alias_is_definition) << VD;
+        S.Diag(Attr->getLocation(), diag::err_alias_is_definition) << VD << 0;
         VD->dropAttr<AliasAttr>();
       }
     }
@@ -5648,10 +5651,9 @@ static bool isIncompleteDeclExternC(Sema &S, const T *D) {
     if (!D->isInExternCContext() || D->template hasAttr<OverloadableAttr>())
       return false;
 
-    // So do CUDA's host/device attributes if overloading is enabled.
-    if (S.getLangOpts().CUDA && S.getLangOpts().CUDATargetOverloads &&
-        (D->template hasAttr<CUDADeviceAttr>() ||
-         D->template hasAttr<CUDAHostAttr>()))
+    // So do CUDA's host/device attributes.
+    if (S.getLangOpts().CUDA && (D->template hasAttr<CUDADeviceAttr>() ||
+                                 D->template hasAttr<CUDAHostAttr>()))
       return false;
   }
   return D->isExternC();
@@ -6282,6 +6284,25 @@ Sema::ActOnVariableDeclarator(Scope *S, Declarator &D, DeclContext *DC,
 
     if (!IsVariableTemplateSpecialization)
       D.setRedeclaration(CheckVariableDeclaration(NewVD, Previous));
+
+    // C++ Concepts TS [dcl.spec.concept]p7: A program shall not declare [...]
+    // an explicit specialization (14.8.3) or a partial specialization of a
+    // concept definition.
+    if (IsVariableTemplateSpecialization &&
+        !D.getDeclSpec().isConceptSpecified() && !Previous.empty() &&
+        Previous.isSingleResult()) {
+      NamedDecl *PreviousDecl = Previous.getFoundDecl();
+      if (VarTemplateDecl *VarTmpl = dyn_cast<VarTemplateDecl>(PreviousDecl)) {
+        if (VarTmpl->isConcept()) {
+          Diag(NewVD->getLocation(), diag::err_concept_specialized)
+              << 1                            /*variable*/
+              << (IsPartialSpecialization ? 2 /*partially specialized*/
+                                          : 1 /*explicitly specialized*/);
+          Diag(VarTmpl->getLocation(), diag::note_previous_declaration);
+          NewVD->setInvalidDecl();
+        }
+      }
+    }
 
     if (NewTemplate) {
       VarTemplateDecl *PrevVarTemplate =
@@ -7821,6 +7842,8 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
       if (isFunctionTemplateSpecialization) {
         Diag(D.getDeclSpec().getConceptSpecLoc(),
              diag::err_concept_specified_specialization) << 1;
+        NewFD->setInvalidDecl(true);
+        return NewFD;
       }
     }
 
@@ -8009,6 +8032,9 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
 
   // Handle attributes.
   ProcessDeclAttributes(S, NewFD, D);
+
+  if (getLangOpts().CUDA)
+    maybeAddCUDAHostDeviceAttrs(S, NewFD, Previous);
 
   if (getLangOpts().OpenCL) {
     // OpenCL v1.1 s6.5: Using an address space qualifier in a function return
@@ -8604,6 +8630,14 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
           NewTemplateDecl->getInstantiatedFromMemberTemplate()) {
         NewTemplateDecl->setMemberSpecialization();
         assert(OldTemplateDecl->isMemberSpecialization());
+        // Explicit specializations of a member template do not inherit deleted
+        // status from the parent member template that they are specializing.
+        if (OldTemplateDecl->getTemplatedDecl()->isDeleted()) {
+          FunctionDecl *const OldTemplatedDecl =
+              OldTemplateDecl->getTemplatedDecl();
+          assert(OldTemplatedDecl->getCanonicalDecl() == OldTemplatedDecl);
+          OldTemplatedDecl->setDeletedAsWritten(false);
+        }
       }
       
     } else {
@@ -10876,8 +10910,8 @@ Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Declarator &D,
   return ActOnStartOfFunctionDef(FnBodyScope, DP, SkipBody);
 }
 
-void Sema::ActOnFinishInlineMethodDef(CXXMethodDecl *D) {
-  Consumer.HandleInlineMethodDefinition(D);
+void Sema::ActOnFinishInlineFunctionDef(FunctionDecl *D) {
+  Consumer.HandleInlineFunctionDefinition(D);
 }
 
 static bool ShouldWarnAboutMissingPrototype(const FunctionDecl *FD, 
@@ -11667,12 +11701,11 @@ void Sema::AddKnownFunctionAttributes(FunctionDecl *FD) {
       FD->addAttr(NoThrowAttr::CreateImplicit(Context, FD->getLocation()));
     if (Context.BuiltinInfo.isConst(BuiltinID) && !FD->hasAttr<ConstAttr>())
       FD->addAttr(ConstAttr::CreateImplicit(Context, FD->getLocation()));
-    if (getLangOpts().CUDA && getLangOpts().CUDATargetOverloads &&
-        Context.BuiltinInfo.isTSBuiltin(BuiltinID) &&
+    if (getLangOpts().CUDA && Context.BuiltinInfo.isTSBuiltin(BuiltinID) &&
         !FD->hasAttr<CUDADeviceAttr>() && !FD->hasAttr<CUDAHostAttr>()) {
-      // Assign appropriate attribute depending on CUDA compilation
-      // mode and the target builtin belongs to. E.g. during host
-      // compilation, aux builtins are __device__, the rest are __host__.
+      // Add the appropriate attribute, depending on the CUDA compilation mode
+      // and which target the builtin belongs to. For example, during host
+      // compilation, aux builtins are __device__, while the rest are __host__.
       if (getLangOpts().CUDAIsDevice !=
           Context.BuiltinInfo.isAuxBuiltinID(BuiltinID))
         FD->addAttr(CUDADeviceAttr::CreateImplicit(Context, FD->getLocation()));

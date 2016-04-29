@@ -35,6 +35,7 @@ enum OpenMPClauseKind {
   OMPC_##Name,
 #include "clang/Basic/OpenMPKinds.def"
   OMPC_threadprivate,
+  OMPC_uniform,
   OMPC_unknown
 };
 
@@ -202,6 +203,9 @@ bool isOpenMPPrivate(OpenMPClauseKind Kind);
 /// \return true - the clause is a threadprivate clause, otherwise - false.
 bool isOpenMPThreadPrivate(OpenMPClauseKind Kind);
 
+/// Checks if the specified directive kind is one of tasking directives - task,
+/// taskloop or taksloop simd.
+bool isOpenMPTaskingDirective(OpenMPDirectiveKind Kind);
 }
 
 #endif

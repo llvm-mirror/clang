@@ -92,7 +92,7 @@ public:
   }
 
   bool VisitObjCMethodDecl(const ObjCMethodDecl *D) {
-    if (D->getDeclContext() != LexicalDC)
+    if (isa<ObjCImplDecl>(LexicalDC) && !D->isThisDeclarationADefinition())
       DataConsumer.handleSynthesizedObjCMethod(D, DeclLoc, LexicalDC);
     else
       DataConsumer.handleObjCMethod(D);
@@ -191,22 +191,28 @@ bool CXIndexDataConsumer::handleDeclOccurence(const Decl *D,
                                       cast<Decl>(ASTNode.ContainerDC),
                                       getCXTU());
     } else {
-      const NamedDecl *CursorD = dyn_cast_or_null<NamedDecl>(ASTNode.OrigD);
-      if (!CursorD)
-        CursorD = ND;
-      Cursor = getRefCursor(CursorD, Loc);
+      if (ASTNode.OrigD) {
+        if (auto *OrigND = dyn_cast<NamedDecl>(ASTNode.OrigD))
+          Cursor = getRefCursor(OrigND, Loc);
+        else
+          Cursor = MakeCXCursor(ASTNode.OrigD, CXTU);
+      } else {
+        Cursor = getRefCursor(ND, Loc);
+      }
     }
     handleReference(ND, Loc, Cursor,
                     dyn_cast_or_null<NamedDecl>(ASTNode.Parent),
                     ASTNode.ContainerDC, ASTNode.OrigE, Kind);
 
   } else {
-    const DeclContext *DC = nullptr;
-    for (const auto &SymRel : Relations) {
-      if (SymRel.Roles & (unsigned)SymbolRole::RelationChildOf)
-        DC = dyn_cast<DeclContext>(SymRel.RelatedSymbol);
+    const DeclContext *LexicalDC = ASTNode.ContainerDC;
+    if (!LexicalDC) {
+      for (const auto &SymRel : Relations) {
+        if (SymRel.Roles & (unsigned)SymbolRole::RelationChildOf)
+          LexicalDC = dyn_cast<DeclContext>(SymRel.RelatedSymbol);
+      }
     }
-    IndexingDeclVisitor(*this, Loc, DC).Visit(ASTNode.OrigD);
+    IndexingDeclVisitor(*this, Loc, LexicalDC).Visit(ASTNode.OrigD);
   }
 
   return !shouldAbort();
@@ -816,7 +822,7 @@ bool CXIndexDataConsumer::handleSynthesizedObjCMethod(const ObjCMethodDecl *D,
                                                  const DeclContext *LexicalDC) {
   DeclInfo DInfo(/*isRedeclaration=*/true, /*isDefinition=*/true,
                  /*isContainer=*/false);
-  return handleDecl(D, Loc, getCursor(D), DInfo, LexicalDC, LexicalDC);
+  return handleDecl(D, Loc, getCursor(D), DInfo, LexicalDC, D->getDeclContext());
 }
 
 bool CXIndexDataConsumer::handleObjCProperty(const ObjCPropertyDecl *D) {
@@ -1128,7 +1134,7 @@ void CXIndexDataConsumer::translateLoc(SourceLocation Loc,
 
 static CXIdxEntityKind getEntityKindFromSymbolKind(SymbolKind K, SymbolLanguage L);
 static CXIdxEntityCXXTemplateKind
-getEntityKindFromSymbolCXXTemplateKind(SymbolCXXTemplateKind K);
+getEntityKindFromSymbolSubKinds(SymbolSubKindSet K);
 static CXIdxEntityLanguage getEntityLangFromSymbolLang(SymbolLanguage L);
 
 void CXIndexDataConsumer::getEntityInfo(const NamedDecl *D,
@@ -1144,8 +1150,7 @@ void CXIndexDataConsumer::getEntityInfo(const NamedDecl *D,
 
   SymbolInfo SymInfo = getSymbolInfo(D);
   EntityInfo.kind = getEntityKindFromSymbolKind(SymInfo.Kind, SymInfo.Lang);
-  EntityInfo.templateKind =
-    getEntityKindFromSymbolCXXTemplateKind(SymInfo.TemplateKind);
+  EntityInfo.templateKind = getEntityKindFromSymbolSubKinds(SymInfo.SubKinds);
   EntityInfo.lang = getEntityLangFromSymbolLang(SymInfo.Lang);
 
   if (D->hasAttrs()) {
@@ -1285,16 +1290,14 @@ static CXIdxEntityKind getEntityKindFromSymbolKind(SymbolKind K, SymbolLanguage 
 }
 
 static CXIdxEntityCXXTemplateKind
-getEntityKindFromSymbolCXXTemplateKind(SymbolCXXTemplateKind K) {
-  switch (K) {
-  case SymbolCXXTemplateKind::NonTemplate: return CXIdxEntity_NonTemplate;
-  case SymbolCXXTemplateKind::Template: return CXIdxEntity_Template;
-  case SymbolCXXTemplateKind::TemplatePartialSpecialization:
+getEntityKindFromSymbolSubKinds(SymbolSubKindSet K) {
+  if (K & (unsigned)SymbolSubKind::TemplatePartialSpecialization)
     return CXIdxEntity_TemplatePartialSpecialization;
-  case SymbolCXXTemplateKind::TemplateSpecialization:
+  if (K & (unsigned)SymbolSubKind::TemplateSpecialization)
     return CXIdxEntity_TemplateSpecialization;
-  }
-  llvm_unreachable("invalid template kind");
+  if (K & (unsigned)SymbolSubKind::Generic)
+    return CXIdxEntity_Template;
+  return CXIdxEntity_NonTemplate;
 }
 
 static CXIdxEntityLanguage getEntityLangFromSymbolLang(SymbolLanguage L) {
