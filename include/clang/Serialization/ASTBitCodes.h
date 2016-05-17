@@ -175,6 +175,12 @@ namespace clang {
         : Begin(R.getBegin().getRawEncoding()),
           End(R.getEnd().getRawEncoding()),
           BitOffset(BitOffset) { }
+      SourceLocation getBegin() const {
+        return SourceLocation::getFromRawEncoding(Begin);
+      }
+      SourceLocation getEnd() const {
+        return SourceLocation::getFromRawEncoding(End);
+      }
     };
 
     /// \brief Source range/offset of a preprocessed entity.
@@ -190,6 +196,9 @@ namespace clang {
           BitOffset(BitOffset) { }
       void setLocation(SourceLocation L) {
         Loc = L.getRawEncoding();
+      }
+      SourceLocation getLocation() const {
+        return SourceLocation::getFromRawEncoding(Loc);
       }
     };
 
@@ -468,12 +477,7 @@ namespace clang {
       /// \brief Record code for pending implicit instantiations.
       PENDING_IMPLICIT_INSTANTIATIONS = 26,
 
-      /// \brief Record code for a decl replacement block.
-      ///
-      /// If a declaration is modified after having been deserialized, and then
-      /// written to a dependent AST file, its ID and offset must be added to
-      /// the replacement block.
-      DECL_REPLACEMENTS = 27,
+      // ID 27 used to be for a list of replacement decls.
 
       /// \brief Record code for an update to a decl context's lookup table.
       ///
@@ -484,13 +488,10 @@ namespace clang {
       /// that were modified after being deserialized and need updates.
       DECL_UPDATE_OFFSETS = 29,
 
-      /// \brief Record of updates for a declaration that was modified after
-      /// being deserialized.
-      DECL_UPDATES = 30,
+      // ID 30 used to be a decl update record. These are now in the DECLTYPES
+      // block.
       
-      /// \brief Record code for the table of offsets to CXXBaseSpecifier
-      /// sets.
-      CXX_BASE_SPECIFIER_OFFSETS = 31,
+      // ID 31 used to be a list of offsets to DECL_CXX_BASE_SPECIFIERS records.
 
       /// \brief Record code for \#pragma diagnostic mappings.
       DIAG_PRAGMA_MAPPINGS = 32,
@@ -570,9 +571,7 @@ namespace clang {
       /// \brief Record code for potentially unused local typedef names.
       UNUSED_LOCAL_TYPEDEF_NAME_CANDIDATES = 52,
 
-      /// \brief Record code for the table of offsets to CXXCtorInitializers
-      /// lists.
-      CXX_CTOR_INITIALIZERS_OFFSETS = 53,
+      // ID 53 used to be a table of constructor initializer records.
 
       /// \brief Delete expressions that will be analyzed later.
       DELETE_EXPRS_TO_ANALYZE = 54,
@@ -781,44 +780,24 @@ namespace clang {
       PREDEF_TYPE_PSEUDO_OBJECT = 35,
       /// \brief The placeholder type for builtin functions.
       PREDEF_TYPE_BUILTIN_FN = 36,
-      /// \brief OpenCL 1d image type.
-      PREDEF_TYPE_IMAGE1D_ID    = 37,
-      /// \brief OpenCL 1d image array type.
-      PREDEF_TYPE_IMAGE1D_ARR_ID = 38,
-      /// \brief OpenCL 1d image buffer type.
-      PREDEF_TYPE_IMAGE1D_BUFF_ID = 39,
-      /// \brief OpenCL 2d image type.
-      PREDEF_TYPE_IMAGE2D_ID    = 40,
-      /// \brief OpenCL 2d image array type.
-      PREDEF_TYPE_IMAGE2D_ARR_ID = 41,
-      /// \brief OpenCL 2d image depth type.
-      PREDEF_TYPE_IMAGE2D_DEP_ID = 42,
-      /// \brief OpenCL 2d image array depth type.
-      PREDEF_TYPE_IMAGE2D_ARR_DEP_ID = 43,
-      /// \brief OpenCL 2d image MSAA type.
-      PREDEF_TYPE_IMAGE2D_MSAA_ID = 44,
-      /// \brief OpenCL 2d image array MSAA type.
-      PREDEF_TYPE_IMAGE2D_ARR_MSAA_ID = 45,
-      /// \brief OpenCL 2d image MSAA depth type.
-      PREDEF_TYPE_IMAGE2D_MSAA_DEP_ID = 46,
-      /// \brief OpenCL 2d image array MSAA depth type.
-      PREDEF_TYPE_IMAGE2D_ARR_MSAA_DEPTH_ID = 47,
-      /// \brief OpenCL 3d image type.
-      PREDEF_TYPE_IMAGE3D_ID    = 48,
       /// \brief OpenCL event type.
-      PREDEF_TYPE_EVENT_ID      = 49,
+      PREDEF_TYPE_EVENT_ID      = 37,
       /// \brief OpenCL clk event type.
-      PREDEF_TYPE_CLK_EVENT_ID  = 50,
+      PREDEF_TYPE_CLK_EVENT_ID  = 38,
       /// \brief OpenCL sampler type.
-      PREDEF_TYPE_SAMPLER_ID    = 51,
+      PREDEF_TYPE_SAMPLER_ID    = 39,
       /// \brief OpenCL queue type.
-      PREDEF_TYPE_QUEUE_ID      = 52,
+      PREDEF_TYPE_QUEUE_ID      = 40,
       /// \brief OpenCL ndrange type.
-      PREDEF_TYPE_NDRANGE_ID    = 53,
+      PREDEF_TYPE_NDRANGE_ID    = 41,
       /// \brief OpenCL reserve_id type.
-      PREDEF_TYPE_RESERVE_ID_ID = 54,
+      PREDEF_TYPE_RESERVE_ID_ID = 42,
       /// \brief The placeholder type for OpenMP array section.
-      PREDEF_TYPE_OMP_ARRAY_SECTION = 55
+      PREDEF_TYPE_OMP_ARRAY_SECTION = 43,
+      /// \brief OpenCL image types with auto numeration
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+      PREDEF_TYPE_##Id##_ID,
+#include "clang/Basic/OpenCLImageTypes.def"
     };
 
     /// \brief The number of predefined type IDs that are reserved for
@@ -833,7 +812,7 @@ namespace clang {
     /// These constants describe the type records that can occur within a
     /// block identified by DECLTYPES_BLOCK_ID in the AST file. Each
     /// constant describes a record for a specific type class in the
-    /// AST.
+    /// AST. Note that DeclCode values share this code space.
     enum TypeCode {
       /// \brief An ExtQualType record.
       TYPE_EXT_QUAL                 = 1,
@@ -1010,15 +989,20 @@ namespace clang {
     /// \c PredefinedDeclIDs type and the PREDEF_DECL_*_ID constants.
     const unsigned int NUM_PREDEF_DECL_IDS = 16;
 
+    /// \brief Record of updates for a declaration that was modified after
+    /// being deserialized. This can occur within DECLTYPES_BLOCK_ID.
+    const unsigned int DECL_UPDATES = 49;
+
     /// \brief Record code for a list of local redeclarations of a declaration.
+    /// This can occur within DECLTYPES_BLOCK_ID.
     const unsigned int LOCAL_REDECLARATIONS = 50;
     
     /// \brief Record codes for each kind of declaration.
     ///
     /// These constants describe the declaration records that can occur within
-    /// a declarations block (identified by DECLS_BLOCK_ID). Each
+    /// a declarations block (identified by DECLTYPES_BLOCK_ID). Each
     /// constant describes a record for a specific declaration class
-    /// in the AST.
+    /// in the AST. Note that TypeCode values share this code space.
     enum DeclCode {
       /// \brief A TypedefDecl record.
       DECL_TYPEDEF = 51,

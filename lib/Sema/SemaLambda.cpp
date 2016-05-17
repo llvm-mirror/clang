@@ -355,7 +355,8 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                                            SourceRange IntroducerRange,
                                            TypeSourceInfo *MethodTypeInfo,
                                            SourceLocation EndLoc,
-                                           ArrayRef<ParmVarDecl *> Params) {
+                                           ArrayRef<ParmVarDecl *> Params,
+                                           const bool IsConstexprSpecified) {
   QualType MethodType = MethodTypeInfo->getType();
   TemplateParameterList *TemplateParams = 
             getGenericLambdaTemplateParameterList(getCurLambda(), *this);
@@ -392,7 +393,7 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                             MethodType, MethodTypeInfo,
                             SC_None,
                             /*isInline=*/true,
-                            /*isConstExpr=*/false,
+                            IsConstexprSpecified,
                             EndLoc);
   Method->setAccess(AS_public);
   
@@ -809,19 +810,14 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
   bool KnownDependent = false;
   LambdaScopeInfo *const LSI = getCurLambda();
   assert(LSI && "LambdaScopeInfo should be on stack!");
-  TemplateParameterList *TemplateParams = 
-            getGenericLambdaTemplateParameterList(LSI, *this);
 
-  if (Scope *TmplScope = CurScope->getTemplateParamParent()) {
-    // Since we have our own TemplateParams, so check if an outer scope
-    // has template params, only then are we in a dependent scope.
-    if (TemplateParams)  {
-      TmplScope = TmplScope->getParent();
-      TmplScope = TmplScope ? TmplScope->getTemplateParamParent() : nullptr;
-    }
-    if (TmplScope && !TmplScope->decl_empty())
+  // The lambda-expression's closure type might be dependent even if its
+  // semantic context isn't, if it appears within a default argument of a
+  // function template.
+  if (Scope *TmplScope = CurScope->getTemplateParamParent())
+    if (!TmplScope->decl_empty())
       KnownDependent = true;
-  }
+
   // Determine the signature of the call operator.
   TypeSourceInfo *MethodTyInfo;
   bool ExplicitParams = true;
@@ -884,8 +880,9 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
   CXXRecordDecl *Class = createLambdaClosureType(Intro.Range, MethodTyInfo,
                                                  KnownDependent, Intro.Default);
 
-  CXXMethodDecl *Method = startLambdaDefinition(Class, Intro.Range,
-                                                MethodTyInfo, EndLoc, Params);
+  CXXMethodDecl *Method =
+      startLambdaDefinition(Class, Intro.Range, MethodTyInfo, EndLoc, Params,
+                            ParamInfo.getDeclSpec().isConstexprSpecified());
   if (ExplicitParams)
     CheckCXXDefaultArguments(Method);
   
@@ -924,7 +921,12 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
     = Intro.Default == LCD_None? Intro.Range.getBegin() : Intro.DefaultLoc;
   for (auto C = Intro.Captures.begin(), E = Intro.Captures.end(); C != E;
        PrevCaptureLoc = C->Loc, ++C) {
-    if (C->Kind == LCK_This) {
+    if (C->Kind == LCK_This || C->Kind == LCK_StarThis) {
+      if (C->Kind == LCK_StarThis) 
+        Diag(C->Loc, !getLangOpts().CPlusPlus1z
+                             ? diag::ext_star_this_lambda_capture_cxx1z
+                             : diag::warn_cxx14_compat_star_this_lambda_capture);
+
       // C++11 [expr.prim.lambda]p8:
       //   An identifier or this shall not appear more than once in a 
       //   lambda-capture.
@@ -936,10 +938,12 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
         continue;
       }
 
-      // C++11 [expr.prim.lambda]p8:
-      //   If a lambda-capture includes a capture-default that is =, the 
-      //   lambda-capture shall not contain this [...].
-      if (Intro.Default == LCD_ByCopy) {
+      // C++1z [expr.prim.lambda]p8:
+      //  If a lambda-capture includes a capture-default that is =, each
+      //  simple-capture of that lambda-capture shall be of the form "&
+      //  identifier" or "* this". [ Note: The form [&,this] is redundant but
+      //  accepted for compatibility with ISO C++14. --end note ]
+      if (Intro.Default == LCD_ByCopy && C->Kind != LCK_StarThis) {
         Diag(C->Loc, diag::err_this_capture_with_copy_default)
             << FixItHint::CreateRemoval(
                 SourceRange(getLocForEndOfToken(PrevCaptureLoc), C->Loc));
@@ -955,7 +959,9 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
         continue;
       }
       
-      CheckCXXThisCapture(C->Loc, /*Explicit=*/true);
+      CheckCXXThisCapture(C->Loc, /*Explicit=*/true, /*BuildAndDiagnose*/ true,
+                          /*FunctionScopeIndexToStopAtPtr*/ nullptr,
+                          C->Kind == LCK_StarThis);
       continue;
     }
 
@@ -1529,10 +1535,9 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
       // Handle 'this' capture.
       if (From.isThisCapture()) {
         Captures.push_back(
-            LambdaCapture(From.getLocation(), IsImplicit, LCK_This));
-        CaptureInits.push_back(new (Context) CXXThisExpr(From.getLocation(),
-                                                         getCurrentThisType(),
-                                                         /*isImplicit=*/true));
+            LambdaCapture(From.getLocation(), IsImplicit,
+                          From.isCopyCapture() ? LCK_StarThis : LCK_This));
+        CaptureInits.push_back(From.getInitExpr());
         ArrayIndexStarts.push_back(ArrayIndexVars.size());
         continue;
       }
@@ -1597,6 +1602,17 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
                                           CaptureInits, ArrayIndexVars, 
                                           ArrayIndexStarts, EndLoc,
                                           ContainsUnexpandedParameterPack);
+  // If the lambda expression's call operator is not explicitly marked constexpr
+  // and we are not in a dependent context, analyze the call operator to infer
+  // its constexpr-ness, supressing diagnostics while doing so.
+  if (getLangOpts().CPlusPlus1z && !CallOperator->isInvalidDecl() &&
+      !CallOperator->isConstexpr() &&
+      !Class->getDeclContext()->isDependentContext()) {
+    TentativeAnalysisScope DiagnosticScopeGuard(*this);
+    CallOperator->setConstexpr(
+        CheckConstexprFunctionDecl(CallOperator) &&
+        CheckConstexprFunctionBody(CallOperator, CallOperator->getBody()));
+  }
 
   if (!CurContext->isDependentContext()) {
     switch (ExprEvalContexts.back().Context) {

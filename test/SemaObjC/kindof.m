@@ -24,7 +24,8 @@ __attribute__((objc_root_class))
 - (NSObject *)retain;
 @end
 
-@interface NSString : NSObject <NSCopying>
+@interface NSString : NSObject <NSCopying> // expected-note{{receiver is instance of class declared here}}
+- (void)compare:(NSString *)string;
 - (NSString *)stringByAppendingString:(NSString *)string;
 + (instancetype)string;
 @end
@@ -246,7 +247,7 @@ void message_kindof_object(__kindof NSString *kindof_NSString) {
   [kindof_NSString retain]; // in superclass
   [kindof_NSString stringByAppendingString:0]; // in class
   [kindof_NSString appendString:0]; // in subclass
-  [kindof_NSString numberByAddingNumber: 0]; // FIXME: in unrelated class
+  [kindof_NSString numberByAddingNumber: 0]; // expected-warning{{instance method '-numberByAddingNumber:' not found (return type defaults to 'id')}}
   [kindof_NSString randomMethod]; // in protocol
 }
 
@@ -261,6 +262,44 @@ void message_kindof_qualified_class(
   [kindof_NSCopying classCopy]; // in protocol
   [kindof_NSCopying string]; // in some class
   [kindof_NSCopying randomClassMethod]; // in unrelated protocol
+}
+
+// Make sure we don't emit warning about multiple methods found.
+typedef int NSInteger;
+@interface Foo : NSObject
+- (NSString*)test;
+@end
+@interface Bar : NSObject
+- (NSInteger)test;
+@end
+void test(__kindof Bar *kBar) {
+    [kBar test];
+}
+
+// Make sure we don't emit warning about no method found.
+typedef signed char BOOL;
+@interface A : NSObject
+@property (readonly, getter=isActive) BOOL active;
+@end
+@interface B : NSObject
+@property (getter=isActive, readonly) BOOL active;
+@end
+void foo() {
+  __kindof B *NSApp;
+  if ([NSApp isActive]) {
+  }
+}
+
+typedef const struct CGPath *CGPathRef;
+@interface C : NSObject
+@property (copy) NSString *path;
+@end
+@interface D : NSObject
+@property CGPathRef path __attribute__((availability(macosx,unavailable)));
+@end
+// Make sure we choose "NSString *path" for [s1 path].
+void bar(id s1, id s2) {
+  return [[s1 path] compare:[s2 path]];
 }
 
 // ---------------------------------------------------------------------------

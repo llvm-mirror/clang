@@ -356,7 +356,17 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
       Previous.isOneOf(tok::l_paren, TT_TemplateOpener, tok::l_square) &&
       State.Column > getNewLineColumn(State) &&
       (!Previous.Previous ||
-       !Previous.Previous->isOneOf(tok::kw_for, tok::kw_while, tok::kw_switch)))
+       !Previous.Previous->isOneOf(tok::kw_for, tok::kw_while,
+                                   tok::kw_switch)) &&
+      // Don't do this for simple (no expressions) one-argument function calls
+      // as that feels like needlessly wasting whitespace, e.g.:
+      //
+      //   caaaaaaaaaaaall(
+      //       caaaaaaaaaaaall(
+      //           caaaaaaaaaaaall(
+      //               caaaaaaaaaaaaaaaaaaaaaaall(aaaaaaaaaaaaaa, aaaaaaaaa))));
+      Current.FakeLParens.size() > 0 &&
+      Current.FakeLParens.back() > prec::Unknown)
     State.Stack.back().NoLineBreak = true;
 
   if (Style.AlignAfterOpenBracket != FormatStyle::BAS_DontAlign &&
@@ -469,7 +479,7 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
   // is common and should be formatted like a free-standing function.
   if (Style.Language != FormatStyle::LK_JavaScript ||
       Current.NestingLevel != 0 || !PreviousNonComment->is(tok::equal) ||
-      !Current.is(Keywords.kw_function))
+      !Current.isOneOf(Keywords.kw_async, Keywords.kw_function))
     State.Stack.back().NestedBlockIndent = State.Column;
 
   if (NextNonComment->isMemberAccess()) {

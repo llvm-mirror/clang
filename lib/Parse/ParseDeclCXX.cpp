@@ -1103,6 +1103,15 @@ bool Parser::isValidAfterTypeSpecifier(bool CouldBeBitfield) {
     return true;
   case tok::colon:
     return CouldBeBitfield;     // enum E { ... }   :         2;
+  // Microsoft compatibility
+  case tok::kw___cdecl:         // struct foo {...} __cdecl      x;
+  case tok::kw___fastcall:      // struct foo {...} __fastcall   x;
+  case tok::kw___stdcall:       // struct foo {...} __stdcall    x;
+  case tok::kw___thiscall:      // struct foo {...} __thiscall   x;
+  case tok::kw___vectorcall:    // struct foo {...} __vectorcall x;
+    // We will diagnose these calling-convention specifiers on non-function
+    // declarations later, so claim they are valid after a type specifier.
+    return getLangOpts().MicrosoftExt;
   // Type qualifiers
   case tok::kw_const:           // struct foo {...} const     x;
   case tok::kw_volatile:        // struct foo {...} volatile  x;
@@ -1394,7 +1403,7 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
       // Strip off the last template parameter list if it was empty, since
       // we've removed its template argument list.
       if (TemplateParams && TemplateInfo.LastParameterListWasEmpty) {
-        if (TemplateParams && TemplateParams->size() > 1) {
+        if (TemplateParams->size() > 1) {
           TemplateParams->pop_back();
         } else {
           TemplateParams = nullptr;
@@ -2910,7 +2919,8 @@ Parser::DeclGroupPtrTy Parser::ParseCXXClassMemberDeclarationWithPragmas(
   }
 
   if (Tok.is(tok::annot_pragma_openmp))
-    return ParseOpenMPDeclarativeDirective(AS);
+    return ParseOpenMPDeclarativeDirectiveWithExtDecl(AS, AccessAttrs, TagType,
+                                                      TagDecl);
 
   // Parse all the comma separated declarators.
   return ParseCXXClassMemberDeclaration(AS, AccessAttrs.getList());

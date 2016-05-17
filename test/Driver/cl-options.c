@@ -82,6 +82,12 @@
 // RUN: %clang_cl /I myincludedir -### -- %s 2>&1 | FileCheck -check-prefix=SLASH_I %s
 // SLASH_I: "-I" "myincludedir"
 
+// RUN: %clang_cl /imsvcmyincludedir -### -- %s 2>&1 | FileCheck -check-prefix=SLASH_imsvc %s
+// RUN: %clang_cl /imsvc myincludedir -### -- %s 2>&1 | FileCheck -check-prefix=SLASH_imsvc %s
+// Clang's resource header directory should be first:
+// SLASH_imsvc: "-internal-isystem" "{{[^"]*}}lib{{(64)?/|\\\\}}clang{{[^"]*}}include"
+// SLASH_imsvc: "-internal-isystem" "myincludedir"
+
 // RUN: %clang_cl /J -### -- %s 2>&1 | FileCheck -check-prefix=J %s
 // J: -fno-signed-char
 
@@ -123,13 +129,13 @@
 // PR24003: -momit-leaf-frame-pointer
 // PR24003: -Os
 
-// RUN: %clang_cl --target=i686-pc-win32 /Oy- /O2 -### -- %s 2>&1 | FileCheck -check-prefix=Oy_2 %s
+// RUN: %clang_cl --target=i686-pc-win32 -Werror /Oy- /O2 -### -- %s 2>&1 | FileCheck -check-prefix=Oy_2 %s
 // Oy_2: -momit-leaf-frame-pointer
 // Oy_2: -O2
 
-// RUN: %clang_cl /Zs /Oy -- %s 2>&1
+// RUN: %clang_cl /Zs -Werror /Oy -- %s 2>&1
 
-// RUN: %clang_cl --target=i686-pc-win32 /Oy- -### -- %s 2>&1 | FileCheck -check-prefix=Oy_ %s
+// RUN: %clang_cl --target=i686-pc-win32 -Werror /Oy- -### -- %s 2>&1 | FileCheck -check-prefix=Oy_ %s
 // Oy_: -mdisable-fp-elim
 
 // RUN: %clang_cl /Qvec -### -- %s 2>&1 | FileCheck -check-prefix=Qvec %s
@@ -247,8 +253,10 @@
 // RUN:    /bigobj \
 // RUN:    /cgthreads4 \
 // RUN:    /cgthreads8 \
+// RUN:    /d2FastFail \
 // RUN:    /d2Zi+ \
 // RUN:    /errorReport:foo \
+// RUN:    /FC \
 // RUN:    /Fdfoo \
 // RUN:    /FS \
 // RUN:    /Gd \
@@ -394,6 +402,10 @@
 // Z7: "-gcodeview"
 // Z7: "-debug-info-kind=limited"
 
+// RUN: %clang_cl -gline-tables-only /Z7 /c -### -- %s 2>&1 | FileCheck -check-prefix=Z7GMLT %s
+// Z7GMLT: "-gcodeview"
+// Z7GMLT: "-debug-info-kind=line-tables-only"
+
 // RUN: %clang_cl /c -### -- %s 2>&1 | FileCheck -check-prefix=BreproDefault %s
 // BreproDefault: "-mincremental-linker-compatible"
 
@@ -446,7 +458,6 @@
 // RUN:     -fno-ms-compatibility \
 // RUN:     -fms-extensions \
 // RUN:     -fno-ms-extensions \
-// RUN:     -isystem=some/path \
 // RUN:     -mllvm -disable-llvm-optzns \
 // RUN:     -Wunused-variable \
 // RUN:     -fmacro-backtrace-limit=0 \

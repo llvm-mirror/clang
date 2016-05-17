@@ -387,7 +387,7 @@ def err_pp_expected_comma_in_arg_list : Error<
 def err_pp_duplicate_name_in_arg_list : Error<
   "duplicate macro parameter name %0">;
 def err_pp_stringize_not_parameter : Error<
-  "'#' is not followed by a macro parameter">;
+  "'%select{#|#@}0' is not followed by a macro parameter">;
 def err_pp_malformed_ident : Error<"invalid #ident directive">;
 def err_pp_unterminated_conditional : Error<
   "unterminated conditional directive">;
@@ -401,6 +401,7 @@ def err_pp_expected_rparen : Error<"expected ')' in preprocessor expression">;
 def err_pp_expected_eol : Error<
   "expected end of line in preprocessor expression">;
 def err_pp_expected_after : Error<"missing %1 after %0">;
+def err_pp_nested_paren : Error<"nested parentheses not permitted in %0">;
 def err_pp_colon_without_question : Error<"':' without preceding '?'">;
 def err_pp_division_by_zero : Error<
   "division by zero in preprocessor expression">;
@@ -408,6 +409,8 @@ def err_pp_remainder_by_zero : Error<
   "remainder by zero in preprocessor expression">;
 def err_pp_expr_bad_token_binop : Error<
   "token is not a valid binary operator in a preprocessor subexpression">;
+def err_pp_expr_bad_token_lparen : Error<
+  "function-like macro %0 is not defined">;
 def err_pp_expr_bad_token_start_expr : Error<
   "invalid token at start of a preprocessor expression">;
 def err_pp_invalid_poison : Error<"can only poison identifier tokens">;
@@ -416,8 +419,6 @@ def err_pp_used_poisoned_id : Error<"attempt to use a poisoned identifier">;
 def err_feature_check_malformed : Error<
   "builtin feature check macro requires a parenthesized identifier">;
 
-def err_warning_check_malformed : Error<
-  "builtin warning check macro requires a parenthesized string">;
 def warn_has_warning_invalid_option :
    ExtWarn<"__has_warning expected option name (e.g. \"-Wundef\")">,
    InGroup<MalformedWarningCheck>;

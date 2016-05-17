@@ -408,6 +408,39 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
   if (LangOpts.ObjC1)
     Builder.defineMacro("__OBJC__");
 
+  // OpenCL v1.0/1.1 s6.9, v1.2/2.0 s6.10: Preprocessor Directives and Macros.
+  if (LangOpts.OpenCL) {
+    // OpenCL v1.0 and v1.1 do not have a predefined macro to indicate the
+    // language standard with which the program is compiled. __OPENCL_VERSION__
+    // is for the OpenCL version supported by the OpenCL device, which is not
+    // necessarily the language standard with which the program is compiled.
+    // A shared OpenCL header file requires a macro to indicate the language
+    // standard. As a workaround, __OPENCL_C_VERSION__ is defined for
+    // OpenCL v1.0 and v1.1.
+    switch (LangOpts.OpenCLVersion) {
+    case 100:
+      Builder.defineMacro("__OPENCL_C_VERSION__", "100");
+      break;
+    case 110:
+      Builder.defineMacro("__OPENCL_C_VERSION__", "110");
+      break;
+    case 120:
+      Builder.defineMacro("__OPENCL_C_VERSION__", "120");
+      break;
+    case 200:
+      Builder.defineMacro("__OPENCL_C_VERSION__", "200");
+      break;
+    default:
+      llvm_unreachable("Unsupported OpenCL version");
+    }
+    Builder.defineMacro("CL_VERSION_1_0", "100");
+    Builder.defineMacro("CL_VERSION_1_1", "110");
+    Builder.defineMacro("CL_VERSION_1_2", "120");
+    Builder.defineMacro("CL_VERSION_2_0", "200");
+
+    if (LangOpts.FastRelaxedMath)
+      Builder.defineMacro("__FAST_RELAXED_MATH__");
+  }
   // Not "standard" per se, but available even with the -undef flag.
   if (LangOpts.AsmPreprocessor)
     Builder.defineMacro("__ASSEMBLER__");
@@ -811,7 +844,7 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
     // FIXME: This is target-dependent.
     Builder.defineMacro("__GCC_ATOMIC_TEST_AND_SET_TRUEVAL", "1");
 
-    // Used by libstdc++ to implement ATOMIC_<foo>_LOCK_FREE.
+    // Used by libc++ and libstdc++ to implement ATOMIC_<foo>_LOCK_FREE.
     unsigned InlineWidthBits = TI.getMaxAtomicInlineWidth();
 #define DEFINE_LOCK_FREE_MACRO(TYPE, Type) \
     Builder.defineMacro("__GCC_ATOMIC_" #TYPE "_LOCK_FREE", \
@@ -972,6 +1005,10 @@ void clang::InitializePreprocessor(
                          PP.getDiagnostics());
   }
 
+  // Exit the command line and go back to <built-in> (2 is LC_LEAVE).
+  if (!PP.getLangOpts().AsmPreprocessor)
+    Builder.append("# 1 \"<built-in>\" 2");
+
   // If -imacros are specified, include them now.  These are processed before
   // any -include directives.
   for (unsigned i = 0, e = InitOpts.MacroIncludes.size(); i != e; ++i)
@@ -989,10 +1026,6 @@ void clang::InitializePreprocessor(
     const std::string &Path = InitOpts.Includes[i];
     AddImplicitInclude(Builder, Path);
   }
-
-  // Exit the command line and go back to <built-in> (2 is LC_LEAVE).
-  if (!PP.getLangOpts().AsmPreprocessor)
-    Builder.append("# 1 \"<built-in>\" 2");
 
   // Instruct the preprocessor to skip the preamble.
   PP.setSkipMainFilePreamble(InitOpts.PrecompiledPreambleBytes.first,

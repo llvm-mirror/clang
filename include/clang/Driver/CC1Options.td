@@ -367,6 +367,8 @@ def code_completion_brief_comments : Flag<["-"], "code-completion-brief-comments
   HelpText<"Include brief documentation comments in code-completion results.">;
 def disable_free : Flag<["-"], "disable-free">,
   HelpText<"Disable freeing of memory on exit">;
+def discard_value_names : Flag<["-"], "discard-value-names">,
+  HelpText<"Discard value names in LLVM IR">;
 def load : Separate<["-"], "load">, MetaVarName<"<dsopath>">,
   HelpText<"Load the named plugin (dynamic shared object)">;
 def plugin : Separate<["-"], "plugin">, MetaVarName<"<name>">,
@@ -601,6 +603,8 @@ def fno_rtti_data : Flag<["-"], "fno-rtti-data">,
   HelpText<"Control emission of RTTI data">;
 def fnative_half_type: Flag<["-"], "fnative-half-type">,
   HelpText<"Use the native half type for __fp16 instead of promoting to float">;
+def fnative_half_arguments_and_returns : Flag<["-"], "fnative-half-arguments-and-returns">,
+  HelpText<"Use the native __fp16 type for arguments and returns (and skip ABI-specific lowering)">;
 def fallow_half_arguments_and_returns : Flag<["-"], "fallow-half-arguments-and-returns">,
   HelpText<"Allow function arguments and returns of type half">;
 
@@ -683,18 +687,12 @@ def cl_denorms_are_zero : Flag<["-"], "cl-denorms-are-zero">,
 
 def fcuda_is_device : Flag<["-"], "fcuda-is-device">,
   HelpText<"Generate code for CUDA device">;
-def fcuda_allow_host_calls_from_host_device : Flag<["-"],
-    "fcuda-allow-host-calls-from-host-device">,
-  HelpText<"Allow host device functions to call host functions">;
-def fcuda_disable_target_call_checks : Flag<["-"],
-    "fcuda-disable-target-call-checks">,
-  HelpText<"Disable all cross-target (host, device, etc.) call checks in CUDA">;
 def fcuda_include_gpubinary : Separate<["-"], "fcuda-include-gpubinary">,
   HelpText<"Incorporate CUDA device-side binary into host object file.">;
-def fcuda_target_overloads : Flag<["-"], "fcuda-target-overloads">,
-  HelpText<"Enable function overloads based on CUDA target attributes.">;
 def fcuda_allow_variadic_functions : Flag<["-"], "fcuda-allow-variadic-functions">,
   HelpText<"Allow variadic functions in CUDA device code.">;
+def fno_cuda_host_device_constexpr : Flag<["-"], "fno-cuda-host-device-constexpr">,
+  HelpText<"Don't treat unattributed constexpr functions as __host__ __device__.">;
 
 //===----------------------------------------------------------------------===//
 // OpenMP Options
@@ -702,7 +700,7 @@ def fcuda_allow_variadic_functions : Flag<["-"], "fcuda-allow-variadic-functions
 
 def fopenmp_is_device : Flag<["-"], "fopenmp-is-device">,
   HelpText<"Generate code only for an OpenMP target device.">;
-def omp_host_ir_file_path : Separate<["-"], "omp-host-ir-file-path">,
+def fomp_host_ir_file_path : Separate<["-"], "fomp-host-ir-file-path">,
   HelpText<"Path to the IR file produced by the frontend for the host.">;
   
 } // let Flags = [CC1Option]

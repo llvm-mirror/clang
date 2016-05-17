@@ -2162,6 +2162,9 @@
 // ARM-NETBSD:#define __arm 1
 // ARM-NETBSD:#define __arm__ 1
 
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=arm-none-eabi < /dev/null | FileCheck -match-full-lines -check-prefix ARM-NONE-EABI %s
+// ARM-NONE-EABI: #define __ELF__ 1
+
 // RUN: %clang -target arm-apple-darwin-eabi -arch armv7s -x c -E -dM %s -o - | FileCheck -match-full-lines --check-prefix=ARM-DARWIN-NO-EABI %s
 // RUN: %clang -target arm-apple-darwin-eabi -arch armv6m -x c -E -dM %s -o - | FileCheck -match-full-lines --check-prefix=ARM-DARWIN-EABI %s
 // RUN: %clang -target arm-apple-darwin-eabi -arch armv7m -x c -E -dM %s -o - | FileCheck -match-full-lines --check-prefix=ARM-DARWIN-EABI %s
@@ -8413,6 +8416,9 @@
 //
 // RUN: %clang_cc1 -triple arm-linux-androideabi -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix ANDROID %s
 // ANDROID:#define __ANDROID__ 1
+//
+// RUN: %clang_cc1 -triple lanai-unknown-unknown -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix LANAI %s
+// LANAI: #define __lanai__ 1
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-unknown-freebsd < /dev/null | FileCheck -match-full-lines -check-prefix PPC64-FREEBSD %s
 // PPC64-FREEBSD-NOT: #define __LONG_DOUBLE_128__ 1

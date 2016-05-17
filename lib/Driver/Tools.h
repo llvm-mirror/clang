@@ -82,6 +82,8 @@ private:
                         llvm::opt::ArgStringList &CmdArgs) const;
   void AddHexagonTargetArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const;
+  void AddLanaiTargetArgs(const llvm::opt::ArgList &Args,
+                          llvm::opt::ArgStringList &CmdArgs) const;
   void AddWebAssemblyTargetArgs(const llvm::opt::ArgList &Args,
                                 llvm::opt::ArgStringList &CmdArgs) const;
 
@@ -240,7 +242,7 @@ namespace amdgpu {
 
 class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
-  Linker(const ToolChain &TC) : GnuTool("amdgpu::Linker", "ld.lld", TC) {}
+  Linker(const ToolChain &TC) : GnuTool("amdgpu::Linker", "amdphdrs", TC) {}
   bool isLinkJob() const override { return true; }
   bool hasIntegratedCPP() const override { return false; }
   void ConstructJob(Compilation &C, const JobAction &JA,

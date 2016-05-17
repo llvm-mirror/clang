@@ -42,6 +42,9 @@
 
 #if defined(__CUDA__) && defined(__clang__)
 
+// Include some forward declares that must come before cmath.
+#include <__clang_cuda_math_forward_declares.h>
+
 // Include some standard headers to avoid CUDA headers including them
 // while some required macros (like __THROW) are in a weird state.
 #include <cmath>
@@ -186,8 +189,21 @@ static inline __device__ void __brkpt(int __c) { __brkpt(); }
 // we have to include it and it will in turn include .hpp
 #include "sm_30_intrinsics.h"
 #include "sm_32_intrinsics.hpp"
+
 #undef __MATH_FUNCTIONS_HPP__
+
+// math_functions.hpp defines ::signbit as a __host__ __device__ function.  This
+// conflicts with libstdc++'s constexpr ::signbit, so we have to rename
+// math_function.hpp's ::signbit.  It's guarded by #undef signbit, but that's
+// conditional on __GNUC__.  :)
+#pragma push_macro("signbit")
+#pragma push_macro("__GNUC__")
+#undef __GNUC__
+#define signbit __ignored_cuda_signbit
 #include "math_functions.hpp"
+#pragma pop_macro("__GNUC__")
+#pragma pop_macro("signbit")
+
 #pragma pop_macro("__host__")
 
 #include "texture_indirect_functions.h"
@@ -199,17 +215,6 @@ static inline __device__ void __brkpt(int __c) { __brkpt(); }
 // Set up compiler macros expected to be seen during compilation.
 #undef __CUDABE__
 #define __CUDACC__
-#define __NVCC__
-
-#if defined(__CUDA_ARCH__)
-// We need to emit IR declaration for non-existing __nvvm_reflect() to
-// let backend know that it should be treated as const nothrow
-// function which is what NVVMReflect pass expects to see.
-extern "C" __device__ __attribute__((const)) int __nvvm_reflect(const void *);
-static __device__ __attribute__((used)) int __nvvm_reflect_anchor() {
-  return __nvvm_reflect("NONE");
-}
-#endif
 
 extern "C" {
 // Device-side CUDA system calls.

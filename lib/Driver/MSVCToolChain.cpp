@@ -527,6 +527,10 @@ void MSVCToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
                                   "include");
   }
 
+  // Add %INCLUDE%-like directories from the -imsvc flag.
+  for (const auto &Path : DriverArgs.getAllArgValues(options::OPT__SLASH_imsvc))
+    addSystemInclude(DriverArgs, CC1Args, Path);
+
   if (DriverArgs.hasArg(options::OPT_nostdlibinc))
     return;
 
@@ -702,6 +706,12 @@ static void TranslateOptArg(Arg *A, llvm::opt::DerivedArgList &DAL,
         else
           DAL.AddFlagArg(
               A, Opts.getOption(options::OPT_fno_omit_frame_pointer));
+      } else {
+        // Don't warn about /Oy- in 64-bit builds (where
+        // SupportsForcingFramePointer is false).  The flag having no effect
+        // there is a compiler-internal optimization, and people shouldn't have
+        // to special-case their build files for 64-bit clang-cl.
+        A->claim();
       }
       break;
     }

@@ -208,23 +208,9 @@ void Sema::Initialize() {
 
   // Initialize predefined OpenCL types.
   if (getLangOpts().OpenCL) {
-    addImplicitTypedef("image1d_t", Context.OCLImage1dTy);
-    addImplicitTypedef("image1d_array_t", Context.OCLImage1dArrayTy);
-    addImplicitTypedef("image1d_buffer_t", Context.OCLImage1dBufferTy);
-    addImplicitTypedef("image2d_t", Context.OCLImage2dTy);
-    addImplicitTypedef("image2d_array_t", Context.OCLImage2dArrayTy);
-    addImplicitTypedef("image3d_t", Context.OCLImage3dTy);
     addImplicitTypedef("sampler_t", Context.OCLSamplerTy);
     addImplicitTypedef("event_t", Context.OCLEventTy);
     if (getLangOpts().OpenCLVersion >= 200) {
-      addImplicitTypedef("image2d_depth_t", Context.OCLImage2dDepthTy);
-      addImplicitTypedef("image2d_array_depth_t",
-                         Context.OCLImage2dArrayDepthTy);
-      addImplicitTypedef("image2d_msaa_t", Context.OCLImage2dMSAATy);
-      addImplicitTypedef("image2d_array_msaa_t", Context.OCLImage2dArrayMSAATy);
-      addImplicitTypedef("image2d_msaa_depth_t", Context.OCLImage2dMSAADepthTy);
-      addImplicitTypedef("image2d_array_msaa_depth_t",
-                         Context.OCLImage2dArrayMSAADepthTy);
       addImplicitTypedef("clk_event_t", Context.OCLClkEventTy);
       addImplicitTypedef("queue_t", Context.OCLQueueTy);
       addImplicitTypedef("ndrange_t", Context.OCLNDRangeTy);
@@ -478,10 +464,8 @@ static bool ShouldRemoveFromUnused(Sema *SemaRef, const DeclaratorDecl *D) {
 /// Obtains a sorted list of functions that are undefined but ODR-used.
 void Sema::getUndefinedButUsed(
     SmallVectorImpl<std::pair<NamedDecl *, SourceLocation> > &Undefined) {
-  for (llvm::DenseMap<NamedDecl *, SourceLocation>::iterator
-         I = UndefinedButUsed.begin(), E = UndefinedButUsed.end();
-       I != E; ++I) {
-    NamedDecl *ND = I->first;
+  for (const auto &UndefinedUse : UndefinedButUsed) {
+    NamedDecl *ND = UndefinedUse.first;
 
     // Ignore attributes that have become invalid.
     if (ND->isInvalidDecl()) continue;
@@ -502,24 +486,8 @@ void Sema::getUndefinedButUsed(
         continue;
     }
 
-    Undefined.push_back(std::make_pair(ND, I->second));
+    Undefined.push_back(std::make_pair(ND, UndefinedUse.second));
   }
-
-  // Sort (in order of use site) so that we're not dependent on the iteration
-  // order through an llvm::DenseMap.
-  SourceManager &SM = Context.getSourceManager();
-  std::sort(Undefined.begin(), Undefined.end(),
-            [&SM](const std::pair<NamedDecl *, SourceLocation> &l,
-                  const std::pair<NamedDecl *, SourceLocation> &r) {
-    if (l.second.isValid() && !r.second.isValid())
-      return true;
-    if (!l.second.isValid() && r.second.isValid())
-      return false;
-    if (l.second != r.second)
-      return SM.isBeforeInTranslationUnit(l.second, r.second);
-    return SM.isBeforeInTranslationUnit(l.first->getLocation(),
-                                        r.first->getLocation());
-  });
 }
 
 /// checkUndefinedButUsed - Check for undefined objects with internal linkage
@@ -554,6 +522,8 @@ static void checkUndefinedButUsed(Sema &S) {
     if (I->second.isValid())
       S.Diag(I->second, diag::note_used_here);
   }
+
+  S.UndefinedButUsed.clear();
 }
 
 void Sema::LoadExternalWeakUndeclaredIdentifiers() {
@@ -749,6 +719,12 @@ void Sema::ActOnEndOfTranslationUnit() {
       !Diags.isIgnored(diag::warn_delegating_ctor_cycle, SourceLocation()))
     CheckDelegatingCtorCycles();
 
+  if (!Diags.hasErrorOccurred()) {
+    if (ExternalSource)
+      ExternalSource->ReadUndefinedButUsed(UndefinedButUsed);
+    checkUndefinedButUsed(*this);
+  }
+
   if (TUKind == TU_Module) {
     // If we are building a module, resolve all of the exported declarations
     // now.
@@ -881,10 +857,6 @@ void Sema::ActOnEndOfTranslationUnit() {
         }
       }
     }
-
-    if (ExternalSource)
-      ExternalSource->ReadUndefinedButUsed(UndefinedButUsed);
-    checkUndefinedButUsed(*this);
 
     emitAndClearUnusedLocalTypedefWarnings();
   }
@@ -1271,8 +1243,7 @@ void ExternalSemaSource::ReadKnownNamespaces(
 }
 
 void ExternalSemaSource::ReadUndefinedButUsed(
-                       llvm::DenseMap<NamedDecl *, SourceLocation> &Undefined) {
-}
+    llvm::MapVector<NamedDecl *, SourceLocation> &Undefined) {}
 
 void ExternalSemaSource::ReadMismatchingDeleteExpressions(llvm::MapVector<
     FieldDecl *, llvm::SmallVector<std::pair<SourceLocation, bool>, 4>> &) {}

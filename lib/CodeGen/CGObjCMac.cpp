@@ -244,9 +244,8 @@ public:
     Params.push_back(Ctx.getPointerDiffType()->getCanonicalTypeUnqualified());
     Params.push_back(Ctx.BoolTy);
     llvm::FunctionType *FTy =
-        Types.GetFunctionType(Types.arrangeLLVMFunctionInfo(
-            IdType, false, false, Params, FunctionType::ExtInfo(),
-            RequiredArgs::All));
+        Types.GetFunctionType(
+          Types.arrangeBuiltinFunctionDeclaration(IdType, Params));
     return CGM.CreateRuntimeFunction(FTy, "objc_getProperty");
   }
 
@@ -264,9 +263,8 @@ public:
     Params.push_back(Ctx.BoolTy);
     Params.push_back(Ctx.BoolTy);
     llvm::FunctionType *FTy =
-        Types.GetFunctionType(Types.arrangeLLVMFunctionInfo(
-            Ctx.VoidTy, false, false, Params, FunctionType::ExtInfo(),
-            RequiredArgs::All));
+        Types.GetFunctionType(
+          Types.arrangeBuiltinFunctionDeclaration(Ctx.VoidTy, Params));
     return CGM.CreateRuntimeFunction(FTy, "objc_setProperty");
   }
 
@@ -290,9 +288,8 @@ public:
     Params.push_back(IdType);
     Params.push_back(Ctx.getPointerDiffType()->getCanonicalTypeUnqualified());
     llvm::FunctionType *FTy =
-        Types.GetFunctionType(Types.arrangeLLVMFunctionInfo(
-            Ctx.VoidTy, false, false, Params, FunctionType::ExtInfo(),
-            RequiredArgs::All));
+        Types.GetFunctionType(
+          Types.arrangeBuiltinFunctionDeclaration(Ctx.VoidTy, Params));
     const char *name;
     if (atomic && copy)
       name = "objc_setProperty_atomic_copy";
@@ -317,9 +314,8 @@ public:
     Params.push_back(Ctx.BoolTy);
     Params.push_back(Ctx.BoolTy);
     llvm::FunctionType *FTy =
-        Types.GetFunctionType(Types.arrangeLLVMFunctionInfo(
-            Ctx.VoidTy, false, false, Params, FunctionType::ExtInfo(),
-            RequiredArgs::All));
+        Types.GetFunctionType(
+          Types.arrangeBuiltinFunctionDeclaration(Ctx.VoidTy, Params));
     return CGM.CreateRuntimeFunction(FTy, "objc_copyStruct");
   }
   
@@ -336,10 +332,8 @@ public:
     Params.push_back(Ctx.VoidPtrTy);
     Params.push_back(Ctx.VoidPtrTy);
     llvm::FunctionType *FTy =
-      Types.GetFunctionType(Types.arrangeLLVMFunctionInfo(Ctx.VoidTy, false, false,
-                                                          Params,
-                                                          FunctionType::ExtInfo(),
-                                                          RequiredArgs::All));
+        Types.GetFunctionType(
+          Types.arrangeBuiltinFunctionDeclaration(Ctx.VoidTy, Params));
     return CGM.CreateRuntimeFunction(FTy, "objc_copyCppObjectAtomic");
   }
   
@@ -350,10 +344,23 @@ public:
     SmallVector<CanQualType,1> Params;
     Params.push_back(Ctx.getCanonicalParamType(Ctx.getObjCIdType()));
     llvm::FunctionType *FTy =
-        Types.GetFunctionType(Types.arrangeLLVMFunctionInfo(
-            Ctx.VoidTy, false, false, Params, FunctionType::ExtInfo(),
-            RequiredArgs::All));
+        Types.GetFunctionType(
+          Types.arrangeBuiltinFunctionDeclaration(Ctx.VoidTy, Params));
     return CGM.CreateRuntimeFunction(FTy, "objc_enumerationMutation");
+  }
+
+  llvm::Constant *getLookUpClassFn() {
+    CodeGen::CodeGenTypes &Types = CGM.getTypes();
+    ASTContext &Ctx = CGM.getContext();
+    // Class objc_lookUpClass (const char *)
+    SmallVector<CanQualType,1> Params;
+    Params.push_back(
+      Ctx.getCanonicalType(Ctx.getPointerType(Ctx.CharTy.withConst())));
+    llvm::FunctionType *FTy =
+        Types.GetFunctionType(Types.arrangeBuiltinFunctionDeclaration(
+                                Ctx.getCanonicalType(Ctx.getObjCClassType()),
+                                Params));
+    return CGM.CreateRuntimeFunction(FTy, "objc_lookUpClass");
   }
 
   /// GcReadWeakFn -- LLVM objc_read_weak (id *src) function.
@@ -987,6 +994,12 @@ protected:
   /// description, creating an empty one if it has not been
   /// defined. The return value has type ProtocolPtrTy.
   llvm::Constant *GetProtocolRef(const ObjCProtocolDecl *PD);
+
+  /// Return a reference to the given Class using runtime calls rather than
+  /// by a symbol reference.
+  llvm::Value *EmitClassRefViaRuntime(CodeGenFunction &CGF,
+                                      const ObjCInterfaceDecl *ID,
+                                      ObjCCommonTypesHelper &ObjCTypes);
 
 public:
   /// CreateMetadataVar - Create a global variable with internal
@@ -2680,6 +2693,25 @@ llvm::Constant *CGObjCCommonMac::GetProtocolRef(const ObjCProtocolDecl *PD) {
   return GetOrEmitProtocolRef(PD);
 }
 
+llvm::Value *CGObjCCommonMac::EmitClassRefViaRuntime(
+               CodeGenFunction &CGF,
+               const ObjCInterfaceDecl *ID,
+               ObjCCommonTypesHelper &ObjCTypes) {
+  llvm::Constant *lookUpClassFn = ObjCTypes.getLookUpClassFn();
+
+  llvm::Value *className =
+      CGF.CGM.GetAddrOfConstantCString(ID->getObjCRuntimeNameAsString())
+        .getPointer();
+  ASTContext &ctx = CGF.CGM.getContext();
+  className =
+      CGF.Builder.CreateBitCast(className,
+                                CGF.ConvertType(
+                                  ctx.getPointerType(ctx.CharTy.withConst())));
+  llvm::CallInst *call = CGF.Builder.CreateCall(lookUpClassFn, className);
+  call->setDoesNotThrow();
+  return call;
+}
+
 /*
 // Objective-C 1.0 extensions
 struct _objc_protocol {
@@ -2921,6 +2953,15 @@ llvm::Constant *CGObjCCommonMac::EmitPropertyList(Twine Name,
                                        const ObjCContainerDecl *OCD,
                                        const ObjCCommonTypesHelper &ObjCTypes,
                                        bool IsClassProperty) {
+  if (IsClassProperty) {
+    // Make this entry NULL for OS X with deployment target < 10.11, for iOS
+    // with deployment target < 9.0.
+    const llvm::Triple &Triple = CGM.getTarget().getTriple();
+    if ((Triple.isMacOSX() && Triple.isMacOSXVersionLT(10, 11)) ||
+        (Triple.isiOS() && Triple.isOSVersionLT(9)))
+      return llvm::Constant::getNullValue(ObjCTypes.PropertyListPtrTy);
+  }
+
   SmallVector<llvm::Constant *, 16> Properties;
   llvm::SmallPtrSet<const IdentifierInfo*, 16> PropertySet;
 
@@ -4640,6 +4681,11 @@ llvm::Value *CGObjCMac::EmitClassRefFromId(CodeGenFunction &CGF,
 
 llvm::Value *CGObjCMac::EmitClassRef(CodeGenFunction &CGF,
                                      const ObjCInterfaceDecl *ID) {
+  // If the class has the objc_runtime_visible attribute, we need to
+  // use the Objective-C runtime to get the class.
+  if (ID->hasAttr<ObjCRuntimeVisibleAttr>())
+    return EmitClassRefViaRuntime(CGF, ID, ObjCTypes);
+
   return EmitClassRefFromId(CGF, ID->getIdentifier());
 }
 
@@ -6881,6 +6927,11 @@ llvm::Value *CGObjCNonFragileABIMac::EmitClassRefFromId(CodeGenFunction &CGF,
 
 llvm::Value *CGObjCNonFragileABIMac::EmitClassRef(CodeGenFunction &CGF,
                                                   const ObjCInterfaceDecl *ID) {
+  // If the class has the objc_runtime_visible attribute, we need to
+  // use the Objective-C runtime to get the class.
+  if (ID->hasAttr<ObjCRuntimeVisibleAttr>())
+    return EmitClassRefViaRuntime(CGF, ID, ObjCTypes);
+
   return EmitClassRefFromId(CGF, ID->getIdentifier(), ID->isWeakImported(), ID);
 }
 

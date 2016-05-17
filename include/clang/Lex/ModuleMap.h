@@ -50,6 +50,11 @@ public:
   /// \param IsSystem Whether this is a module map from a system include path.
   virtual void moduleMapFileRead(SourceLocation FileStart,
                                  const FileEntry &File, bool IsSystem) {}
+
+  /// \brief Called when a header is added during module map parsing.
+  ///
+  /// \param File The header file itself.
+  virtual void moduleMapAddHeader(const FileEntry &File) {}
 };
   
 class ModuleMap {
@@ -313,12 +318,18 @@ public:
   ///
   /// \param RequestingModule The module including a file.
   ///
+  /// \param RequestingModuleIsModuleInterface \c true if the inclusion is in
+  ///        the interface of RequestingModule, \c false if it's in the
+  ///        implementation of RequestingModule. Value is ignored and
+  ///        meaningless if RequestingModule is nullptr.
+  ///
   /// \param FilenameLoc The location of the inclusion's filename.
   ///
   /// \param Filename The included filename as written.
   ///
   /// \param File The included file.
   void diagnoseHeaderInclusion(Module *RequestingModule,
+                               bool RequestingModuleIsModuleInterface,
                                SourceLocation FilenameLoc, StringRef Filename,
                                const FileEntry *File);
 

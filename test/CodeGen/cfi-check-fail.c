@@ -1,4 +1,5 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-linux -O0 -fsanitize=cfi-icall -fsanitize-cfi-cross-dso \
+// RUN: %clang_cc1 -triple x86_64-unknown-linux -O0 -fsanitize-cfi-cross-dso \
+// RUN:     -fsanitize=cfi-icall,cfi-nvcall,cfi-vcall,cfi-unrelated-cast,cfi-derived-cast \
 // RUN:     -fsanitize-trap=cfi-icall,cfi-nvcall -fsanitize-recover=cfi-vcall,cfi-unrelated-cast \
 // RUN:     -emit-llvm -o - %s | FileCheck %s
 
@@ -6,7 +7,7 @@ void caller(void (*f)()) {
   f();
 }
 
-// CHECK: define weak_odr hidden void @__cfi_check_fail(i8*, i8*) {
+// CHECK: define weak_odr hidden void @__cfi_check_fail(i8*, i8*)
 // CHECK: store i8* %0, i8** %[[ALLOCA0:.*]], align 8
 // CHECK: store i8* %1, i8** %[[ALLOCA1:.*]], align 8
 // CHECK: %[[DATA:.*]] = load i8*, i8** %[[ALLOCA0]], align 8

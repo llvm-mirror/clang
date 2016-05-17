@@ -909,16 +909,19 @@ public:
   std::string getAsString(const PrintingPolicy &Policy) const;
 
   void print(raw_ostream &OS, const PrintingPolicy &Policy,
-             const Twine &PlaceHolder = Twine()) const {
-    print(split(), OS, Policy, PlaceHolder);
+             const Twine &PlaceHolder = Twine(),
+             unsigned Indentation = 0) const {
+    print(split(), OS, Policy, PlaceHolder, Indentation);
   }
   static void print(SplitQualType split, raw_ostream &OS,
-                    const PrintingPolicy &policy, const Twine &PlaceHolder) {
-    return print(split.Ty, split.Quals, OS, policy, PlaceHolder);
+                    const PrintingPolicy &policy, const Twine &PlaceHolder,
+                    unsigned Indentation = 0) {
+    return print(split.Ty, split.Quals, OS, policy, PlaceHolder, Indentation);
   }
   static void print(const Type *ty, Qualifiers qs,
                     raw_ostream &OS, const PrintingPolicy &policy,
-                    const Twine &PlaceHolder);
+                    const Twine &PlaceHolder,
+                    unsigned Indentation = 0);
 
   void getAsStringInternal(std::string &Str,
                            const PrintingPolicy &Policy) const {
@@ -936,21 +939,24 @@ public:
     const QualType &T;
     const PrintingPolicy &Policy;
     const Twine &PlaceHolder;
+    unsigned Indentation;
   public:
     StreamedQualTypeHelper(const QualType &T, const PrintingPolicy &Policy,
-                           const Twine &PlaceHolder)
-      : T(T), Policy(Policy), PlaceHolder(PlaceHolder) { }
+                           const Twine &PlaceHolder, unsigned Indentation)
+      : T(T), Policy(Policy), PlaceHolder(PlaceHolder),
+        Indentation(Indentation) { }
 
     friend raw_ostream &operator<<(raw_ostream &OS,
                                    const StreamedQualTypeHelper &SQT) {
-      SQT.T.print(OS, SQT.Policy, SQT.PlaceHolder);
+      SQT.T.print(OS, SQT.Policy, SQT.PlaceHolder, SQT.Indentation);
       return OS;
     }
   };
 
   StreamedQualTypeHelper stream(const PrintingPolicy &Policy,
-                                const Twine &PlaceHolder = Twine()) const {
-    return StreamedQualTypeHelper(*this, Policy, PlaceHolder);
+                                const Twine &PlaceHolder = Twine(),
+                                unsigned Indentation = 0) const {
+    return StreamedQualTypeHelper(*this, Policy, PlaceHolder, Indentation);
   }
 
   void dump(const char *s) const;
@@ -1699,18 +1705,9 @@ public:
   bool isNullPtrType() const;                   // C++0x nullptr_t
   bool isAtomicType() const;                    // C11 _Atomic()
 
-  bool isImage1dT() const;               // OpenCL image1d_t
-  bool isImage1dArrayT() const;          // OpenCL image1d_array_t
-  bool isImage1dBufferT() const;         // OpenCL image1d_buffer_t
-  bool isImage2dT() const;               // OpenCL image2d_t
-  bool isImage2dArrayT() const;          // OpenCL image2d_array_t
-  bool isImage2dDepthT() const;          // OpenCL image_2d_depth_t
-  bool isImage2dArrayDepthT() const;     // OpenCL image_2d_array_depth_t
-  bool isImage2dMSAAT() const;           // OpenCL image_2d_msaa_t
-  bool isImage2dArrayMSAAT() const;      // OpenCL image_2d_array_msaa_t
-  bool isImage2dMSAATDepth() const;      // OpenCL image_2d_msaa_depth_t
-  bool isImage2dArrayMSAATDepth() const; // OpenCL image_2d_array_msaa_depth_t
-  bool isImage3dT() const;               // OpenCL image3d_t
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+  bool is##Id##Type() const;
+#include "clang/Basic/OpenCLImageTypes.def"
 
   bool isImageType() const;                     // Any OpenCL image type
 
@@ -2011,6 +2008,10 @@ template <> inline const Class##Type *Type::castAs() const { \
 class BuiltinType : public Type {
 public:
   enum Kind {
+// OpenCL image types
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) Id,
+#include "clang/Basic/OpenCLImageTypes.def"
+// All other builtin types
 #define BUILTIN_TYPE(Id, SingletonId) Id,
 #define LAST_BUILTIN_TYPE(Id) LastKind = Id
 #include "clang/AST/BuiltinTypes.def"
@@ -3627,6 +3628,28 @@ public:
   }
 };
 
+/// \brief Internal representation of canonical, dependent
+/// __underlying_type(type) types.
+///
+/// This class is used internally by the ASTContext to manage
+/// canonical, dependent types, only. Clients will only see instances
+/// of this class via UnaryTransformType nodes.
+class DependentUnaryTransformType : public UnaryTransformType,
+                                    public llvm::FoldingSetNode {
+public:
+  DependentUnaryTransformType(const ASTContext &C, QualType BaseType,
+                              UTTKind UKind);
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    Profile(ID, getBaseType(), getUTTKind());
+  }
+
+  static void Profile(llvm::FoldingSetNodeID &ID, QualType BaseType,
+                      UTTKind UKind) {
+    ID.AddPointer(BaseType.getAsOpaquePtr());
+    ID.AddInteger((unsigned)UKind);
+  }
+};
+
 class TagType : public Type {
   /// Stores the TagDecl associated with this type. The decl may point to any
   /// TagDecl that declares the entity.
@@ -3740,6 +3763,8 @@ public:
     attr_inteloclbicc,
     attr_ms_abi,
     attr_sysv_abi,
+    attr_preserve_most,
+    attr_preserve_all,
     attr_ptr32,
     attr_ptr64,
     attr_sptr,
@@ -4253,6 +4278,8 @@ class InjectedClassNameType : public Type {
   friend class ASTReader; // FIXME: ASTContext::getInjectedClassNameType is not
                           // currently suitable for AST reading, too much
                           // interdependencies.
+  friend class ASTNodeImporter;
+
   InjectedClassNameType(CXXRecordDecl *D, QualType TST)
     : Type(InjectedClassName, QualType(), /*Dependent=*/true,
            /*InstantiationDependent=*/true,
@@ -5527,53 +5554,11 @@ inline bool Type::isObjCBuiltinType() const {
   return isObjCIdType() || isObjCClassType() || isObjCSelType();
 }
 
-inline bool Type::isImage1dT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage1d);
-}
-
-inline bool Type::isImage1dArrayT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage1dArray);
-}
-
-inline bool Type::isImage1dBufferT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage1dBuffer);
-}
-
-inline bool Type::isImage2dT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage2d);
-}
-
-inline bool Type::isImage2dArrayT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage2dArray);
-}
-
-inline bool Type::isImage2dDepthT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage2dDepth);
-}
-
-inline bool Type::isImage2dArrayDepthT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage2dArrayDepth);
-}
-
-inline bool Type::isImage2dMSAAT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage2dMSAA);
-}
-
-inline bool Type::isImage2dArrayMSAAT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage2dArrayMSAA);
-}
-
-inline bool Type::isImage2dMSAATDepth() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage2dMSAADepth);
-}
-
-inline bool Type::isImage2dArrayMSAATDepth() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage2dArrayMSAADepth);
-}
-
-inline bool Type::isImage3dT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLImage3d);
-}
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+  inline bool Type::is##Id##Type() const { \
+    return isSpecificBuiltinType(BuiltinType::Id); \
+  }
+#include "clang/Basic/OpenCLImageTypes.def"
 
 inline bool Type::isSamplerT() const {
   return isSpecificBuiltinType(BuiltinType::OCLSampler);
@@ -5600,11 +5585,10 @@ inline bool Type::isReserveIDT() const {
 }
 
 inline bool Type::isImageType() const {
-  return isImage3dT() || isImage2dT() || isImage2dArrayT() ||
-         isImage2dDepthT() || isImage2dArrayDepthT() || isImage2dMSAAT() ||
-         isImage2dArrayMSAAT() || isImage2dMSAATDepth() ||
-         isImage2dArrayMSAATDepth() || isImage1dT() || isImage1dArrayT() ||
-         isImage1dBufferT();
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) is##Id##Type() ||
+  return
+#include "clang/Basic/OpenCLImageTypes.def"
+      0; // end boolean or operation
 }
 
 inline bool Type::isPipeType() const {

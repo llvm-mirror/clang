@@ -171,7 +171,7 @@ static const Decl *adjustTemplateImplicitInstantiation(const Decl *D) {
   return nullptr;
 }
 
-static bool isDeclADefinition(const Decl *D, ASTContext &Ctx) {
+static bool isDeclADefinition(const Decl *D, const DeclContext *ContainerDC, ASTContext &Ctx) {
   if (auto VD = dyn_cast<VarDecl>(D))
     return VD->isThisDeclarationADefinition(Ctx);
 
@@ -182,7 +182,7 @@ static bool isDeclADefinition(const Decl *D, ASTContext &Ctx) {
     return TD->isThisDeclarationADefinition();
 
   if (auto MD = dyn_cast<ObjCMethodDecl>(D))
-    return MD->isThisDeclarationADefinition();
+    return MD->isThisDeclarationADefinition() || isa<ObjCImplDecl>(ContainerDC);
 
   if (isa<TypedefNameDecl>(D) ||
       isa<EnumConstantDecl>(D) ||
@@ -284,20 +284,23 @@ bool IndexingContext::handleDeclOccurrence(const Decl *D, SourceLocation Loc,
 
   if (IsRef)
     Roles |= (unsigned)SymbolRole::Reference;
-  else if (isDeclADefinition(D, *Ctx))
+  else if (isDeclADefinition(D, ContainerDC, *Ctx))
     Roles |= (unsigned)SymbolRole::Definition;
   else
     Roles |= (unsigned)SymbolRole::Declaration;
 
   D = getCanonicalDecl(D);
-  if (D->isImplicit() && !isa<ObjCMethodDecl>(D)) {
+  if (D->isImplicit() && !isa<ObjCMethodDecl>(D) &&
+      !(isa<FunctionDecl>(D) && cast<FunctionDecl>(D)->getBuiltinID())) {
     // operator new declarations will link to the implicit one as canonical.
     return true;
   }
   Parent = adjustParent(Parent);
   if (Parent)
     Parent = getCanonicalDecl(Parent);
-  assert((!Parent || !Parent->isImplicit() || isa<FunctionDecl>(Parent) ||
+  assert((!Parent || !Parent->isImplicit() ||
+          (isa<FunctionDecl>(Parent) &&
+           cast<FunctionDecl>(Parent)->getBuiltinID()) ||
           isa<ObjCInterfaceDecl>(Parent) || isa<ObjCMethodDecl>(Parent)) &&
          "unexpected implicit parent!");
 

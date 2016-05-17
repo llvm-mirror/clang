@@ -1411,7 +1411,10 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
   }
   case CK_AddressSpaceConversion: {
     Value *Src = Visit(const_cast<Expr*>(E));
-    return Builder.CreateAddrSpaceCast(Src, ConvertType(DestTy));
+    // Since target may map different address spaces in AST to the same address
+    // space, an address space conversion may end up as a bitcast.
+    return Builder.CreatePointerBitCastOrAddrSpaceCast(Src,
+                                                       ConvertType(DestTy));
   }
   case CK_AtomicToNonAtomic:
   case CK_NonAtomicToAtomic:
@@ -1652,13 +1655,14 @@ ScalarExprEmitter::EmitScalarPrePostIncDec(const UnaryOperator *E, LValue LV,
       llvm::Value *True = CGF.EmitToMemory(Builder.getTrue(), type);
       if (isPre) {
         Builder.CreateStore(True, LV.getAddress(), LV.isVolatileQualified())
-          ->setAtomic(llvm::SequentiallyConsistent);
+          ->setAtomic(llvm::AtomicOrdering::SequentiallyConsistent);
         return Builder.getTrue();
       }
       // For atomic bool increment, we just store true and return it for
       // preincrement, do an atomic swap with true for postincrement
-        return Builder.CreateAtomicRMW(llvm::AtomicRMWInst::Xchg,
-            LV.getPointer(), True, llvm::SequentiallyConsistent);
+      return Builder.CreateAtomicRMW(
+          llvm::AtomicRMWInst::Xchg, LV.getPointer(), True,
+          llvm::AtomicOrdering::SequentiallyConsistent);
     }
     // Special case for atomic increment / decrement on integers, emit
     // atomicrmw instructions.  We skip this if we want to be doing overflow
@@ -1675,7 +1679,7 @@ ScalarExprEmitter::EmitScalarPrePostIncDec(const UnaryOperator *E, LValue LV,
       llvm::Value *amt = CGF.EmitToMemory(
           llvm::ConstantInt::get(ConvertType(type), 1, true), type);
       llvm::Value *old = Builder.CreateAtomicRMW(aop,
-          LV.getPointer(), amt, llvm::SequentiallyConsistent);
+          LV.getPointer(), amt, llvm::AtomicOrdering::SequentiallyConsistent);
       return isPre ? Builder.CreateBinOp(op, old, amt) : old;
     }
     value = EmitLoadOfLValue(LV, E->getExprLoc());
@@ -2157,7 +2161,7 @@ LValue ScalarExprEmitter::EmitCompoundAssignLValue(
                                  E->getExprLoc()),
             LHSTy);
         Builder.CreateAtomicRMW(aop, LHSLV.getPointer(), amt,
-            llvm::SequentiallyConsistent);
+            llvm::AtomicOrdering::SequentiallyConsistent);
         return LHSLV;
       }
     }

@@ -1090,20 +1090,10 @@ void ASTContext::InitBuiltinTypes(const TargetInfo &Target,
   InitBuiltinType(ObjCBuiltinClassTy, BuiltinType::ObjCClass);
   InitBuiltinType(ObjCBuiltinSelTy, BuiltinType::ObjCSel);
 
-  if (LangOpts.OpenCL) { 
-    InitBuiltinType(OCLImage1dTy, BuiltinType::OCLImage1d);
-    InitBuiltinType(OCLImage1dArrayTy, BuiltinType::OCLImage1dArray);
-    InitBuiltinType(OCLImage1dBufferTy, BuiltinType::OCLImage1dBuffer);
-    InitBuiltinType(OCLImage2dTy, BuiltinType::OCLImage2d);
-    InitBuiltinType(OCLImage2dArrayTy, BuiltinType::OCLImage2dArray);
-    InitBuiltinType(OCLImage2dDepthTy, BuiltinType::OCLImage2dDepth);
-    InitBuiltinType(OCLImage2dArrayDepthTy, BuiltinType::OCLImage2dArrayDepth);
-    InitBuiltinType(OCLImage2dMSAATy, BuiltinType::OCLImage2dMSAA);
-    InitBuiltinType(OCLImage2dArrayMSAATy, BuiltinType::OCLImage2dArrayMSAA);
-    InitBuiltinType(OCLImage2dMSAADepthTy, BuiltinType::OCLImage2dMSAADepth);
-    InitBuiltinType(OCLImage2dArrayMSAADepthTy,
-                    BuiltinType::OCLImage2dArrayMSAADepth);
-    InitBuiltinType(OCLImage3dTy, BuiltinType::OCLImage3d);
+  if (LangOpts.OpenCL) {
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+    InitBuiltinType(SingletonId, BuiltinType::Id);
+#include "clang/Basic/OpenCLImageTypes.def"
 
     InitBuiltinType(OCLSamplerTy, BuiltinType::OCLSampler);
     InitBuiltinType(OCLEventTy, BuiltinType::OCLEvent);
@@ -1681,18 +1671,10 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
     case BuiltinType::OCLQueue:
     case BuiltinType::OCLNDRange:
     case BuiltinType::OCLReserveID:
-    case BuiltinType::OCLImage1d:
-    case BuiltinType::OCLImage1dArray:
-    case BuiltinType::OCLImage1dBuffer:
-    case BuiltinType::OCLImage2d:
-    case BuiltinType::OCLImage2dArray:
-    case BuiltinType::OCLImage2dDepth:
-    case BuiltinType::OCLImage2dArrayDepth:
-    case BuiltinType::OCLImage2dMSAA:
-    case BuiltinType::OCLImage2dArrayMSAA:
-    case BuiltinType::OCLImage2dMSAADepth:
-    case BuiltinType::OCLImage2dArrayMSAADepth:
-    case BuiltinType::OCLImage3d:
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+    case BuiltinType::Id:
+#include "clang/Basic/OpenCLImageTypes.def"
+
       // Currently these types are pointers to opaque types.
       Width = Target->getPointerWidth(0);
       Align = Target->getPointerAlign(0);
@@ -4020,13 +4002,35 @@ QualType ASTContext::getUnaryTransformType(QualType BaseType,
                                            QualType UnderlyingType,
                                            UnaryTransformType::UTTKind Kind)
     const {
-  UnaryTransformType *Ty =
-    new (*this, TypeAlignment) UnaryTransformType (BaseType, UnderlyingType, 
-                                                   Kind,
-                                 UnderlyingType->isDependentType() ?
-                                 QualType() : getCanonicalType(UnderlyingType));
-  Types.push_back(Ty);
-  return QualType(Ty, 0);
+  UnaryTransformType *ut = nullptr;
+
+  if (BaseType->isDependentType()) {
+    // Look in the folding set for an existing type.
+    llvm::FoldingSetNodeID ID;
+    DependentUnaryTransformType::Profile(ID, getCanonicalType(BaseType), Kind);
+
+    void *InsertPos = nullptr;
+    DependentUnaryTransformType *Canon
+      = DependentUnaryTransformTypes.FindNodeOrInsertPos(ID, InsertPos);
+
+    if (!Canon) {
+      // Build a new, canonical __underlying_type(type) type.
+      Canon = new (*this, TypeAlignment)
+             DependentUnaryTransformType(*this, getCanonicalType(BaseType),
+                                         Kind);
+      DependentUnaryTransformTypes.InsertNode(Canon, InsertPos);
+    }
+    ut = new (*this, TypeAlignment) UnaryTransformType (BaseType,
+                                                        QualType(), Kind,
+                                                        QualType(Canon, 0));
+  } else {
+    QualType CanonType = getCanonicalType(UnderlyingType);
+    ut = new (*this, TypeAlignment) UnaryTransformType (BaseType,
+                                                        UnderlyingType, Kind,
+                                                        CanonType);
+  }
+  Types.push_back(ut);
+  return QualType(ut, 0);
 }
 
 /// getAutoType - Return the uniqued reference to the 'auto' type which has been
@@ -5495,18 +5499,9 @@ static char getObjCEncodingForPrimitiveKind(const ASTContext *C,
       llvm_unreachable("@encoding ObjC primitive type");
 
     // OpenCL and placeholder types don't need @encodings.
-    case BuiltinType::OCLImage1d:
-    case BuiltinType::OCLImage1dArray:
-    case BuiltinType::OCLImage1dBuffer:
-    case BuiltinType::OCLImage2d:
-    case BuiltinType::OCLImage2dArray:
-    case BuiltinType::OCLImage2dDepth:
-    case BuiltinType::OCLImage2dArrayDepth:
-    case BuiltinType::OCLImage2dMSAA:
-    case BuiltinType::OCLImage2dArrayMSAA:
-    case BuiltinType::OCLImage2dMSAADepth:
-    case BuiltinType::OCLImage2dArrayMSAADepth:
-    case BuiltinType::OCLImage3d:
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+    case BuiltinType::Id:
+#include "clang/Basic/OpenCLImageTypes.def"
     case BuiltinType::OCLEvent:
     case BuiltinType::OCLClkEvent:
     case BuiltinType::OCLQueue:
@@ -6389,6 +6384,7 @@ CreateAAPCSABIBuiltinVaListDecl(const ASTContext *Context) {
 
   // };
   VaListDecl->completeDefinition();
+  Context->VaListTagDecl = VaListDecl;
 
   // typedef struct __va_list __builtin_va_list;
   QualType T = Context->getRecordType(VaListDecl);
@@ -7621,6 +7617,15 @@ QualType ASTContext::mergeTypes(QualType LHS, QualType RHS,
   Qualifiers LQuals = LHSCan.getLocalQualifiers();
   Qualifiers RQuals = RHSCan.getLocalQualifiers();
   if (LQuals != RQuals) {
+    if (getLangOpts().OpenCL) {
+      if (LHS.getUnqualifiedType() != RHS.getUnqualifiedType() ||
+          LQuals.getCVRQualifiers() != RQuals.getCVRQualifiers())
+        return QualType();
+      if (LQuals.isAddressSpaceSupersetOf(RQuals))
+        return LHS;
+      if (RQuals.isAddressSpaceSupersetOf(LQuals))
+        return RHS;
+    }
     // If any of these qualifiers are different, we have a type
     // mismatch.
     if (LQuals.getCVRQualifiers() != RQuals.getCVRQualifiers() ||
@@ -8505,6 +8510,9 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
       return false;
   } else if (isa<PragmaCommentDecl>(D))
     return true;
+  else if (isa<OMPThreadPrivateDecl>(D) ||
+           D->hasAttr<OMPDeclareTargetDeclAttr>())
+    return true;
   else if (isa<PragmaDetectMismatchDecl>(D))
     return true;
   else if (isa<OMPThreadPrivateDecl>(D))
@@ -8684,8 +8692,7 @@ void ASTContext::setManglingNumber(const NamedDecl *ND, unsigned Number) {
 }
 
 unsigned ASTContext::getManglingNumber(const NamedDecl *ND) const {
-  llvm::DenseMap<const NamedDecl *, unsigned>::const_iterator I =
-    MangleNumbers.find(ND);
+  auto I = MangleNumbers.find(ND);
   return I != MangleNumbers.end() ? I->second : 1;
 }
 
@@ -8695,8 +8702,7 @@ void ASTContext::setStaticLocalNumber(const VarDecl *VD, unsigned Number) {
 }
 
 unsigned ASTContext::getStaticLocalNumber(const VarDecl *VD) const {
-  llvm::DenseMap<const VarDecl *, unsigned>::const_iterator I =
-      StaticLocalNumbers.find(VD);
+  auto I = StaticLocalNumbers.find(VD);
   return I != StaticLocalNumbers.end() ? I->second : 1;
 }
 

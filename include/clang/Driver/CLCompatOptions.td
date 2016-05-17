@@ -45,8 +45,8 @@ class CLCompileJoinedOrSeparate<string name> : Option<["/", "-"], name,
   KIND_JOINED_OR_SEPARATE>, Group<cl_compile_Group>,
   Flags<[CLOption, DriverOption]>;
 
-class CLRemainingArgs<string name> : Option<["/", "-"], name,
-  KIND_REMAINING_ARGS>, Group<cl_Group>, Flags<[CLOption, DriverOption]>;
+class CLRemainingArgsJoined<string name> : Option<["/", "-"], name,
+  KIND_REMAINING_ARGS_JOINED>, Group<cl_Group>, Flags<[CLOption, DriverOption]>;
 
 // Aliases:
 // (We don't put any of these in cl_compile_Group as the options they alias are
@@ -98,6 +98,7 @@ def _SLASH_I : CLJoinedOrSeparate<"I">,
 def _SLASH_J : CLFlag<"J">, HelpText<"Make char type unsigned">,
   Alias<funsigned_char>;
 def _SLASH_O0 : CLFlag<"O0">, Alias<O0>;
+// /Oy- is handled by the /O option because /Oy- only has an effect on 32-bit.
 def _SLASH_O : CLJoined<"O">, HelpText<"Optimization level">;
 def _SLASH_Ob0 : CLFlag<"Ob0">, HelpText<"Disable inlining">,
   Alias<fno_inline>;
@@ -209,9 +210,12 @@ def _SLASH_GX : CLFlag<"GX">,
   HelpText<"Enable exception handling">;
 def _SLASH_GX_ : CLFlag<"GX-">,
   HelpText<"Enable exception handling">;
+def _SLASH_imsvc : CLJoinedOrSeparate<"imsvc">,
+  HelpText<"Add directory to system include search path, as if part of %INCLUDE%">,
+  MetaVarName<"<dir>">;
 def _SLASH_LD : CLFlag<"LD">, HelpText<"Create DLL">;
 def _SLASH_LDd : CLFlag<"LDd">, HelpText<"Create debug DLL">;
-def _SLASH_link : CLRemainingArgs<"link">,
+def _SLASH_link : CLRemainingArgsJoined<"link">,
   HelpText<"Forward options to the linker">, MetaVarName<"<options>">;
 def _SLASH_MD : Option<["/", "-"], "MD", KIND_FLAG>, Group<_SLASH_M_Group>,
   Flags<[CLOption, DriverOption]>, HelpText<"Use DLL run-time">;
@@ -269,9 +273,11 @@ def _SLASH_Fp : CLJoined<"Fp">,
 def _SLASH_analyze_ : CLIgnoredFlag<"analyze-">;
 def _SLASH_bigobj : CLIgnoredFlag<"bigobj">;
 def _SLASH_cgthreads : CLIgnoredJoined<"cgthreads">;
+def _SLASH_d2FastFail : CLIgnoredFlag<"d2FastFail">;
 def _SLASH_d2Zi_PLUS : CLIgnoredFlag<"d2Zi+">;
 def _SLASH_errorReport : CLIgnoredJoined<"errorReport">;
 def _SLASH_Fd : CLIgnoredJoined<"Fd">;
+def _SLASH_FC : CLIgnoredFlag<"FC">;
 def _SLASH_FS : CLIgnoredFlag<"FS">, HelpText<"Force synchronous PDB writes">;
 def _SLASH_Gd : CLIgnoredFlag<"Gd">;
 def _SLASH_GF : CLIgnoredFlag<"GF">;
@@ -303,7 +309,6 @@ def _SLASH_clr : CLJoined<"clr">;
 def _SLASH_doc : CLJoined<"doc">;
 def _SLASH_FA_joined : CLJoined<"FA">;
 def _SLASH_favor : CLJoined<"favor">;
-def _SLASH_FC : CLFlag<"FC">;
 def _SLASH_F : CLFlag<"F">;
 def _SLASH_Fm : CLJoined<"Fm">;
 def _SLASH_Fr : CLJoined<"Fr">;

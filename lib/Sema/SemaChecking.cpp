@@ -36,6 +36,8 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Support/Format.h"
+#include "llvm/Support/Locale.h"
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/raw_ostream.h"
 #include <limits>
@@ -323,10 +325,12 @@ static bool checkOpenCLPipePacketType(Sema &S, CallExpr *Call, unsigned Idx) {
   const PointerType *ArgTy = ArgIdx->getType()->getAs<PointerType>();
   // The Idx argument should be a pointer and the type of the pointer and
   // the type of pipe element should also be the same.
-  if (!ArgTy || S.Context.hasSameType(EltTy, ArgTy->getPointeeType())) {
+  if (!ArgTy ||
+      !S.Context.hasSameType(
+          EltTy, ArgTy->getPointeeType()->getCanonicalTypeInternal())) {
     S.Diag(Call->getLocStart(), diag::err_opencl_builtin_pipe_invalid_arg)
         << Call->getDirectCallee() << S.Context.getPointerType(EltTy)
-        << ArgIdx->getSourceRange();
+        << ArgIdx->getType() << ArgIdx->getSourceRange();
     return true;
   }
   return false;
@@ -359,7 +363,7 @@ static bool SemaBuiltinRWPipe(Sema &S, CallExpr *Call) {
     if (!Call->getArg(1)->getType()->isReserveIDT()) {
       S.Diag(Call->getLocStart(), diag::err_opencl_builtin_pipe_invalid_arg)
           << Call->getDirectCallee() << S.Context.OCLReserveIDTy
-          << Call->getArg(1)->getSourceRange();
+          << Call->getArg(1)->getType() << Call->getArg(1)->getSourceRange();
       return true;
     }
 
@@ -369,7 +373,7 @@ static bool SemaBuiltinRWPipe(Sema &S, CallExpr *Call) {
         !Arg2->getType()->isUnsignedIntegerType()) {
       S.Diag(Call->getLocStart(), diag::err_opencl_builtin_pipe_invalid_arg)
           << Call->getDirectCallee() << S.Context.UnsignedIntTy
-          << Arg2->getSourceRange();
+          << Arg2->getType() << Arg2->getSourceRange();
       return true;
     }
 
@@ -403,7 +407,7 @@ static bool SemaBuiltinReserveRWPipe(Sema &S, CallExpr *Call) {
       !Call->getArg(1)->getType()->isUnsignedIntegerType()) {
     S.Diag(Call->getLocStart(), diag::err_opencl_builtin_pipe_invalid_arg)
         << Call->getDirectCallee() << S.Context.UnsignedIntTy
-        << Call->getArg(1)->getSourceRange();
+        << Call->getArg(1)->getType() << Call->getArg(1)->getSourceRange();
     return true;
   }
 
@@ -426,7 +430,7 @@ static bool SemaBuiltinCommitRWPipe(Sema &S, CallExpr *Call) {
   if (!Call->getArg(1)->getType()->isReserveIDT()) {
     S.Diag(Call->getLocStart(), diag::err_opencl_builtin_pipe_invalid_arg)
         << Call->getDirectCallee() << S.Context.OCLReserveIDTy
-        << Call->getArg(1)->getSourceRange();
+        << Call->getArg(1)->getType() << Call->getArg(1)->getSourceRange();
     return true;
   }
 
@@ -1151,7 +1155,7 @@ bool Sema::CheckAArch64BuiltinFunctionCall(unsigned BuiltinID,
 
   if (BuiltinID == AArch64::BI__builtin_arm_rsr64 ||
       BuiltinID == AArch64::BI__builtin_arm_wsr64)
-    return SemaBuiltinARMSpecialReg(BuiltinID, TheCall, 0, 5, false);
+    return SemaBuiltinARMSpecialReg(BuiltinID, TheCall, 0, 5, true);
 
   if (BuiltinID == AArch64::BI__builtin_arm_rsr ||
       BuiltinID == AArch64::BI__builtin_arm_rsrp ||
@@ -1787,10 +1791,10 @@ bool Sema::CheckOtherCall(CallExpr *TheCall, const FunctionProtoType *Proto) {
 }
 
 static bool isValidOrderingForOp(int64_t Ordering, AtomicExpr::AtomicOp Op) {
-  if (Ordering < AtomicExpr::AO_ABI_memory_order_relaxed ||
-      Ordering > AtomicExpr::AO_ABI_memory_order_seq_cst)
+  if (!llvm::isValidAtomicOrderingCABI(Ordering))
     return false;
 
+  auto OrderingCABI = (llvm::AtomicOrderingCABI)Ordering;
   switch (Op) {
   case AtomicExpr::AO__c11_atomic_init:
     llvm_unreachable("There is no ordering argument for an init");
@@ -1798,15 +1802,15 @@ static bool isValidOrderingForOp(int64_t Ordering, AtomicExpr::AtomicOp Op) {
   case AtomicExpr::AO__c11_atomic_load:
   case AtomicExpr::AO__atomic_load_n:
   case AtomicExpr::AO__atomic_load:
-    return Ordering != AtomicExpr::AO_ABI_memory_order_release &&
-           Ordering != AtomicExpr::AO_ABI_memory_order_acq_rel;
+    return OrderingCABI != llvm::AtomicOrderingCABI::release &&
+           OrderingCABI != llvm::AtomicOrderingCABI::acq_rel;
 
   case AtomicExpr::AO__c11_atomic_store:
   case AtomicExpr::AO__atomic_store:
   case AtomicExpr::AO__atomic_store_n:
-    return Ordering != AtomicExpr::AO_ABI_memory_order_consume &&
-           Ordering != AtomicExpr::AO_ABI_memory_order_acquire &&
-           Ordering != AtomicExpr::AO_ABI_memory_order_acq_rel;
+    return OrderingCABI != llvm::AtomicOrderingCABI::consume &&
+           OrderingCABI != llvm::AtomicOrderingCABI::acquire &&
+           OrderingCABI != llvm::AtomicOrderingCABI::acq_rel;
 
   default:
     return true;
@@ -1825,6 +1829,8 @@ ExprResult Sema::SemaAtomicOpsOverloaded(ExprResult TheCallResult,
     // C    __c11_atomic_load(A *, int)
     Load,
     // void __atomic_load(A *, CP, int)
+    LoadCopy,
+    // void __atomic_store(A *, CP, int)
     Copy,
     // C    __c11_atomic_add(A *, M, int)
     Arithmetic,
@@ -1837,8 +1843,8 @@ ExprResult Sema::SemaAtomicOpsOverloaded(ExprResult TheCallResult,
     // bool __atomic_compare_exchange(A *, C *, CP, bool, int, int)
     GNUCmpXchg
   } Form = Init;
-  const unsigned NumArgs[] = { 2, 2, 3, 3, 3, 4, 5, 6 };
-  const unsigned NumVals[] = { 1, 0, 1, 1, 1, 2, 2, 3 };
+  const unsigned NumArgs[] = { 2, 2, 3, 3, 3, 3, 4, 5, 6 };
+  const unsigned NumVals[] = { 1, 0, 1, 1, 1, 1, 2, 2, 3 };
   // where:
   //   C is an appropriate type,
   //   A is volatile _Atomic(C) for __c11 builtins and is C for GNU builtins,
@@ -1868,8 +1874,11 @@ ExprResult Sema::SemaAtomicOpsOverloaded(ExprResult TheCallResult,
     Form = Load;
     break;
 
-  case AtomicExpr::AO__c11_atomic_store:
   case AtomicExpr::AO__atomic_load:
+    Form = LoadCopy;
+    break;
+
+  case AtomicExpr::AO__c11_atomic_store:
   case AtomicExpr::AO__atomic_store:
   case AtomicExpr::AO__atomic_store_n:
     Form = Copy;
@@ -1956,7 +1965,7 @@ ExprResult Sema::SemaAtomicOpsOverloaded(ExprResult TheCallResult,
       return ExprError();
     }
     ValType = AtomTy->getAs<AtomicType>()->getValueType();
-  } else if (Form != Load && Op != AtomicExpr::AO__atomic_load) {
+  } else if (Form != Load && Form != LoadCopy) {
     if (ValType.isConstQualified()) {
       Diag(DRE->getLocStart(), diag::err_atomic_op_needs_non_const_pointer)
         << Ptr->getType() << Ptr->getSourceRange();
@@ -2017,10 +2026,11 @@ ExprResult Sema::SemaAtomicOpsOverloaded(ExprResult TheCallResult,
 
   // atomic_fetch_or takes a pointer to a volatile 'A'.  We shouldn't let the
   // volatile-ness of the pointee-type inject itself into the result or the
-  // other operands.
+  // other operands. Similarly atomic_load can take a pointer to a const 'A'.
   ValType.removeLocalVolatile();
+  ValType.removeLocalConst();
   QualType ResultType = ValType;
-  if (Form == Copy || Form == GNUXchg || Form == Init)
+  if (Form == Copy || Form == LoadCopy || Form == GNUXchg || Form == Init)
     ResultType = Context.VoidTy;
   else if (Form == C11CmpXchg || Form == GNUCmpXchg)
     ResultType = Context.BoolTy;
@@ -2030,10 +2040,6 @@ ExprResult Sema::SemaAtomicOpsOverloaded(ExprResult TheCallResult,
   QualType ByValType = ValType; // 'CP'
   if (!IsC11 && !IsN)
     ByValType = Ptr->getType();
-
-  // FIXME: __atomic_load allows the first argument to be a a pointer to const
-  // but not the second argument. We need to manually remove possible const
-  // qualifiers.
 
   // The first argument --- the pointer --- has a fixed type; we
   // deduce the types of the rest of the arguments accordingly.  Walk
@@ -2101,6 +2107,7 @@ ExprResult Sema::SemaAtomicOpsOverloaded(ExprResult TheCallResult,
   case Load:
     SubExprs.push_back(TheCall->getArg(1)); // Order
     break;
+  case LoadCopy:
   case Copy:
   case Arithmetic:
   case Xchg:
@@ -2695,6 +2702,7 @@ bool Sema::SemaBuiltinVAStartImpl(CallExpr *TheCall) {
   // block.
   QualType Type;
   SourceLocation ParamLoc;
+  bool IsCRegister = false;
 
   if (const DeclRefExpr *DR = dyn_cast<DeclRefExpr>(Arg)) {
     if (const ParmVarDecl *PV = dyn_cast<ParmVarDecl>(DR->getDecl())) {
@@ -2711,15 +2719,21 @@ bool Sema::SemaBuiltinVAStartImpl(CallExpr *TheCall) {
 
       Type = PV->getType();
       ParamLoc = PV->getLocation();
+      IsCRegister =
+          PV->getStorageClass() == SC_Register && !getLangOpts().CPlusPlus;
     }
   }
 
   if (!SecondArgIsLastNamedArgument)
     Diag(TheCall->getArg(1)->getLocStart(),
-         diag::warn_second_parameter_of_va_start_not_last_named_argument);
-  else if (Type->isReferenceType()) {
-    Diag(Arg->getLocStart(),
-         diag::warn_va_start_of_reference_type_is_undefined);
+         diag::warn_second_arg_of_va_start_not_last_named_param);
+  else if (IsCRegister || Type->isReferenceType() ||
+           Type->isPromotableIntegerType() ||
+           Type->isSpecificBuiltinType(BuiltinType::Float)) {
+    unsigned Reason = 0;
+    if (Type->isReferenceType())  Reason = 1;
+    else if (IsCRegister)         Reason = 2;
+    Diag(Arg->getLocStart(), diag::warn_va_start_type_is_undefined) << Reason;
     Diag(ParamLoc, diag::note_parameter_type) << Type;
   }
 
@@ -3621,20 +3635,33 @@ bool Sema::CheckFormatArguments(ArrayRef<const Expr *> Args,
   // format is either NSString or CFString. This is a hack to prevent
   // diag when using the NSLocalizedString and CFCopyLocalizedString macros
   // which are usually used in place of NS and CF string literals.
-  if (Type == FST_NSString &&
-      SourceMgr.isInSystemMacro(Args[format_idx]->getLocStart()))
+  SourceLocation FormatLoc = Args[format_idx]->getLocStart();
+  if (Type == FST_NSString && SourceMgr.isInSystemMacro(FormatLoc))
     return false;
 
   // If there are no arguments specified, warn with -Wformat-security, otherwise
   // warn only with -Wformat-nonliteral.
-  if (Args.size() == firstDataArg)
-    Diag(Args[format_idx]->getLocStart(),
-         diag::warn_format_nonliteral_noargs)
+  if (Args.size() == firstDataArg) {
+    Diag(FormatLoc, diag::warn_format_nonliteral_noargs)
       << OrigFormatExpr->getSourceRange();
-  else
-    Diag(Args[format_idx]->getLocStart(),
-         diag::warn_format_nonliteral)
-           << OrigFormatExpr->getSourceRange();
+    switch (Type) {
+    default:
+      break;
+    case FST_Kprintf:
+    case FST_FreeBSDKPrintf:
+    case FST_Printf:
+      Diag(FormatLoc, diag::note_format_security_fixit)
+        << FixItHint::CreateInsertion(FormatLoc, "\"%s\", ");
+      break;
+    case FST_NSString:
+      Diag(FormatLoc, diag::note_format_security_fixit)
+        << FixItHint::CreateInsertion(FormatLoc, "@\"%@\", ");
+      break;
+    }
+  } else {
+    Diag(FormatLoc, diag::warn_format_nonliteral)
+      << OrigFormatExpr->getSourceRange();
+  }
   return false;
 }
 
@@ -3963,12 +3990,41 @@ CheckFormatHandler::HandleInvalidConversionSpecifier(unsigned argIndex,
     // gibberish when trying to match arguments.
     keepGoing = false;
   }
-  
-  EmitFormatDiagnostic(S.PDiag(diag::warn_format_invalid_conversion)
-                         << StringRef(csStart, csLen),
-                       Loc, /*IsStringLocation*/true,
-                       getSpecifierRange(startSpec, specifierLen));
-  
+
+  StringRef Specifier(csStart, csLen);
+
+  // If the specifier in non-printable, it could be the first byte of a UTF-8
+  // sequence. In that case, print the UTF-8 code point. If not, print the byte
+  // hex value.
+  std::string CodePointStr;
+  if (!llvm::sys::locale::isPrint(*csStart)) {
+    UTF32 CodePoint;
+    const UTF8 **B = reinterpret_cast<const UTF8 **>(&csStart);
+    const UTF8 *E =
+        reinterpret_cast<const UTF8 *>(csStart + csLen);
+    ConversionResult Result =
+        llvm::convertUTF8Sequence(B, E, &CodePoint, strictConversion);
+
+    if (Result != conversionOK) {
+      unsigned char FirstChar = *csStart;
+      CodePoint = (UTF32)FirstChar;
+    }
+
+    llvm::raw_string_ostream OS(CodePointStr);
+    if (CodePoint < 256)
+      OS << "\\x" << llvm::format("%02x", CodePoint);
+    else if (CodePoint <= 0xFFFF)
+      OS << "\\u" << llvm::format("%04x", CodePoint);
+    else
+      OS << "\\U" << llvm::format("%08x", CodePoint);
+    OS.flush();
+    Specifier = CodePointStr;
+  }
+
+  EmitFormatDiagnostic(
+      S.PDiag(diag::warn_format_invalid_conversion) << Specifier, Loc,
+      /*IsStringLocation*/ true, getSpecifierRange(startSpec, specifierLen));
+
   return keepGoing;
 }
 
@@ -5562,7 +5618,7 @@ static const CXXRecordDecl *getContainedDynamicClass(QualType T,
 
   const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
   RD = RD ? RD->getDefinition() : nullptr;
-  if (!RD)
+  if (!RD || RD->isInvalidDecl())
     return nullptr;
 
   if (RD->isDynamicClass())
@@ -7333,19 +7389,70 @@ void DiagnoseImpCast(Sema &S, Expr *E, QualType T, SourceLocation CContext,
   DiagnoseImpCast(S, E, E->getType(), T, CContext, diag, pruneControlFlow);
 }
 
-/// Diagnose an implicit cast from a literal expression. Does not warn when the
-/// cast wouldn't lose information.
-void DiagnoseFloatingLiteralImpCast(Sema &S, FloatingLiteral *FL, QualType T,
-                                    SourceLocation CContext) {
-  // Try to convert the literal exactly to an integer. If we can, don't warn.
+
+/// Diagnose an implicit cast from a floating point value to an integer value.
+void DiagnoseFloatingImpCast(Sema &S, Expr *E, QualType T,
+
+                             SourceLocation CContext) {
+  const bool IsBool = T->isSpecificBuiltinType(BuiltinType::Bool);
+  const bool PruneWarnings = !S.ActiveTemplateInstantiations.empty();
+
+  Expr *InnerE = E->IgnoreParenImpCasts();
+  // We also want to warn on, e.g., "int i = -1.234"
+  if (UnaryOperator *UOp = dyn_cast<UnaryOperator>(InnerE))
+    if (UOp->getOpcode() == UO_Minus || UOp->getOpcode() == UO_Plus)
+      InnerE = UOp->getSubExpr()->IgnoreParenImpCasts();
+
+  const bool IsLiteral =
+      isa<FloatingLiteral>(E) || isa<FloatingLiteral>(InnerE);
+
+  llvm::APFloat Value(0.0);
+  bool IsConstant =
+    E->EvaluateAsFloat(Value, S.Context, Expr::SE_AllowSideEffects);
+  if (!IsConstant) {
+    return DiagnoseImpCast(S, E, T, CContext,
+                           diag::warn_impcast_float_integer, PruneWarnings);
+  }
+
   bool isExact = false;
-  const llvm::APFloat &Value = FL->getValue();
+
   llvm::APSInt IntegerValue(S.Context.getIntWidth(T),
                             T->hasUnsignedIntegerRepresentation());
-  if (Value.convertToInteger(IntegerValue,
-                             llvm::APFloat::rmTowardZero, &isExact)
-      == llvm::APFloat::opOK && isExact)
-    return;
+  if (Value.convertToInteger(IntegerValue, llvm::APFloat::rmTowardZero,
+                             &isExact) == llvm::APFloat::opOK &&
+      isExact) {
+    if (IsLiteral) return;
+    return DiagnoseImpCast(S, E, T, CContext, diag::warn_impcast_float_integer,
+                           PruneWarnings);
+  }
+
+  unsigned DiagID = 0;
+  if (IsLiteral) {
+    // Warn on floating point literal to integer.
+    DiagID = diag::warn_impcast_literal_float_to_integer;
+  } else if (IntegerValue == 0) {
+    if (Value.isZero()) {  // Skip -0.0 to 0 conversion.
+      return DiagnoseImpCast(S, E, T, CContext,
+                             diag::warn_impcast_float_integer, PruneWarnings);
+    }
+    // Warn on non-zero to zero conversion.
+    DiagID = diag::warn_impcast_float_to_integer_zero;
+  } else {
+    if (IntegerValue.isUnsigned()) {
+      if (!IntegerValue.isMaxValue()) {
+        return DiagnoseImpCast(S, E, T, CContext,
+                               diag::warn_impcast_float_integer, PruneWarnings);
+      }
+    } else {  // IntegerValue.isSigned()
+      if (!IntegerValue.isMaxSignedValue() &&
+          !IntegerValue.isMinSignedValue()) {
+        return DiagnoseImpCast(S, E, T, CContext,
+                               diag::warn_impcast_float_integer, PruneWarnings);
+      }
+    }
+    // Warn on evaluatable floating point expression to integer conversion.
+    DiagID = diag::warn_impcast_float_to_integer;
+  }
 
   // FIXME: Force the precision of the source value down so we don't print
   // digits which are usually useless (we don't really care here if we
@@ -7358,14 +7465,22 @@ void DiagnoseFloatingLiteralImpCast(Sema &S, FloatingLiteral *FL, QualType T,
   Value.toString(PrettySourceValue, precision);
 
   SmallString<16> PrettyTargetValue;
-  if (T->isSpecificBuiltinType(BuiltinType::Bool))
+  if (IsBool)
     PrettyTargetValue = Value.isZero() ? "false" : "true";
   else
     IntegerValue.toString(PrettyTargetValue);
 
-  S.Diag(FL->getExprLoc(), diag::warn_impcast_literal_float_to_integer)
-    << FL->getType() << T.getUnqualifiedType() << PrettySourceValue
-    << PrettyTargetValue << FL->getSourceRange() << SourceRange(CContext);
+  if (PruneWarnings) {
+    S.DiagRuntimeBehavior(E->getExprLoc(), E,
+                          S.PDiag(DiagID)
+                              << E->getType() << T.getUnqualifiedType()
+                              << PrettySourceValue << PrettyTargetValue
+                              << E->getSourceRange() << SourceRange(CContext));
+  } else {
+    S.Diag(E->getExprLoc(), DiagID)
+        << E->getType() << T.getUnqualifiedType() << PrettySourceValue
+        << PrettyTargetValue << E->getSourceRange() << SourceRange(CContext);
+  }
 }
 
 std::string PrettyPrintInRange(const llvm::APSInt &Value, IntRange Range) {
@@ -7699,22 +7814,12 @@ void CheckImplicitConversion(Sema &S, Expr *E, QualType T,
       return;
     }
 
-    // If the target is integral, always warn.    
+    // If the target is integral, always warn.
     if (TargetBT && TargetBT->isInteger()) {
       if (S.SourceMgr.isInSystemMacro(CC))
         return;
-      
-      Expr *InnerE = E->IgnoreParenImpCasts();
-      // We also want to warn on, e.g., "int i = -1.234"
-      if (UnaryOperator *UOp = dyn_cast<UnaryOperator>(InnerE))
-        if (UOp->getOpcode() == UO_Minus || UOp->getOpcode() == UO_Plus)
-          InnerE = UOp->getSubExpr()->IgnoreParenImpCasts();
 
-      if (FloatingLiteral *FL = dyn_cast<FloatingLiteral>(InnerE)) {
-        DiagnoseFloatingLiteralImpCast(S, FL, T, CC);
-      } else {
-        DiagnoseImpCast(S, E, T, CC, diag::warn_impcast_float_integer);
-      }
+      DiagnoseFloatingImpCast(S, E, T, CC);
     }
 
     // Detect the case where a call result is converted from floating-point to

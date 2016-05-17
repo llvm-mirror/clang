@@ -117,9 +117,11 @@ int main() {
   P(bswap32, (N));
   P(bswap64, (N));
 
+  // CHECK: @llvm.bitreverse.i8
   // CHECK: @llvm.bitreverse.i16
   // CHECK: @llvm.bitreverse.i32
   // CHECK: @llvm.bitreverse.i64
+  P(bitreverse8, (N));
   P(bitreverse16, (N));
   P(bitreverse32, (N));
   P(bitreverse64, (N));
@@ -215,10 +217,8 @@ void test_float_builtins(float F, double D, long double LD) {
   // CHECK:  select i1 %[[ISINF]], i32 %[[SIGN]], i32 0
 
   res = __builtin_isfinite(F);
-  // CHECK: fcmp oeq float 
   // CHECK: call float @llvm.fabs.f32(float
-  // CHECK: fcmp une float {{.*}}, 0x7FF0000000000000
-  // CHECK: and i1 
+  // CHECK: fcmp one float {{.*}}, 0x7FF0000000000000
 
   res = __builtin_isnormal(F);
   // CHECK: fcmp oeq float

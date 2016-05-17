@@ -2581,30 +2581,10 @@ StringRef BuiltinType::getName(const PrintingPolicy &Policy) const {
     return "Class";
   case ObjCSel:
     return "SEL";
-  case OCLImage1d:
-    return "image1d_t";
-  case OCLImage1dArray:
-    return "image1d_array_t";
-  case OCLImage1dBuffer:
-    return "image1d_buffer_t";
-  case OCLImage2d:
-    return "image2d_t";
-  case OCLImage2dArray:
-    return "image2d_array_t";
-  case OCLImage2dDepth:
-    return "image2d_depth_t";
-  case OCLImage2dArrayDepth:
-    return "image2d_array_depth_t";
-  case OCLImage2dMSAA:
-    return "image2d_msaa_t";
-  case OCLImage2dArrayMSAA:
-    return "image2d_array_msaa_t";
-  case OCLImage2dMSAADepth:
-    return "image2d_msaa_depth_t";
-  case OCLImage2dArrayMSAADepth:
-    return "image2d_array_msaa_depth_t";
-  case OCLImage3d:
-    return "image3d_t";
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+  case Id: \
+    return "__" #Access " " #ImgType "_t";
+#include "clang/Basic/OpenCLImageTypes.def"
   case OCLSampler:
     return "sampler_t";
   case OCLEvent:
@@ -2656,6 +2636,8 @@ StringRef FunctionType::getNameForCallConv(CallingConv CC) {
   case CC_SpirFunction: return "spir_function";
   case CC_SpirKernel: return "spir_kernel";
   case CC_Swift: return "swiftcall";
+  case CC_PreserveMost: return "preserve_most";
+  case CC_PreserveAll: return "preserve_all";
   }
 
   llvm_unreachable("Invalid calling convention.");
@@ -2933,6 +2915,24 @@ void DependentDecltypeType::Profile(llvm::FoldingSetNodeID &ID,
   E->Profile(ID, Context, true);
 }
 
+UnaryTransformType::UnaryTransformType(QualType BaseType,
+                                       QualType UnderlyingType,
+                                       UTTKind UKind,
+                                       QualType CanonicalType)
+  : Type(UnaryTransform, CanonicalType, BaseType->isDependentType(),
+         BaseType->isInstantiationDependentType(),
+         BaseType->isVariablyModifiedType(),
+         BaseType->containsUnexpandedParameterPack())
+  , BaseType(BaseType), UnderlyingType(UnderlyingType), UKind(UKind)
+{}
+
+DependentUnaryTransformType::DependentUnaryTransformType(const ASTContext &C,
+                                                         QualType BaseType,
+                                                         UTTKind UKind)
+   : UnaryTransformType(BaseType, C.DependentTy, UKind, QualType())
+{}
+
+
 TagType::TagType(TypeClass TC, const TagDecl *D, QualType can)
   : Type(TC, can, D->isDependentType(), 
          /*InstantiationDependent=*/D->isDependentType(),
@@ -2948,17 +2948,6 @@ static TagDecl *getInterestingTagDecl(TagDecl *decl) {
   // If there's no definition (not even in progress), return what we have.
   return decl;
 }
-
-UnaryTransformType::UnaryTransformType(QualType BaseType,
-                                       QualType UnderlyingType,
-                                       UTTKind UKind,
-                                       QualType CanonicalType)
-  : Type(UnaryTransform, CanonicalType, UnderlyingType->isDependentType(),
-         UnderlyingType->isInstantiationDependentType(),
-         UnderlyingType->isVariablyModifiedType(),
-         BaseType->containsUnexpandedParameterPack())
-  , BaseType(BaseType), UnderlyingType(UnderlyingType), UKind(UKind)
-{}
 
 TagDecl *TagType::getDecl() const {
   return getInterestingTagDecl(decl);
@@ -2999,6 +2988,8 @@ bool AttributedType::isQualifier() const {
   case AttributedType::attr_swiftcall:
   case AttributedType::attr_vectorcall:
   case AttributedType::attr_inteloclbicc:
+  case AttributedType::attr_preserve_most:
+  case AttributedType::attr_preserve_all:
   case AttributedType::attr_ms_abi:
   case AttributedType::attr_sysv_abi:
   case AttributedType::attr_ptr32:
@@ -3056,6 +3047,8 @@ bool AttributedType::isCallingConv() const {
   case attr_ms_abi:
   case attr_sysv_abi:
   case attr_inteloclbicc:
+  case attr_preserve_most:
+  case attr_preserve_all:
     return true;
   }
   llvm_unreachable("invalid attr kind");
@@ -3565,18 +3558,9 @@ bool Type::canHaveNullability() const {
     case BuiltinType::ObjCId:
     case BuiltinType::ObjCClass:
     case BuiltinType::ObjCSel:
-    case BuiltinType::OCLImage1d:
-    case BuiltinType::OCLImage1dArray:
-    case BuiltinType::OCLImage1dBuffer:
-    case BuiltinType::OCLImage2d:
-    case BuiltinType::OCLImage2dArray:
-    case BuiltinType::OCLImage2dDepth:
-    case BuiltinType::OCLImage2dArrayDepth:
-    case BuiltinType::OCLImage2dMSAA:
-    case BuiltinType::OCLImage2dArrayMSAA:
-    case BuiltinType::OCLImage2dMSAADepth:
-    case BuiltinType::OCLImage2dArrayMSAADepth:
-    case BuiltinType::OCLImage3d:
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+    case BuiltinType::Id:
+#include "clang/Basic/OpenCLImageTypes.def"
     case BuiltinType::OCLSampler:
     case BuiltinType::OCLEvent:
     case BuiltinType::OCLClkEvent:

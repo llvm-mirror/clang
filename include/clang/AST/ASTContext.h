@@ -36,6 +36,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/Support/Allocator.h"
@@ -128,6 +129,8 @@ class ASTContext : public RefCountedBase<ASTContext> {
   llvm::FoldingSet<PackExpansionType> PackExpansionTypes;
   mutable llvm::FoldingSet<ObjCObjectTypeImpl> ObjCObjectTypes;
   mutable llvm::FoldingSet<ObjCObjectPointerType> ObjCObjectPointerTypes;
+  mutable llvm::FoldingSet<DependentUnaryTransformType>
+    DependentUnaryTransformTypes;
   mutable llvm::FoldingSet<AutoType> AutoTypes;
   mutable llvm::FoldingSet<AtomicType> AtomicTypes;
   llvm::FoldingSet<AttributedType> AttributedTypes;
@@ -393,8 +396,8 @@ private:
 
   /// \brief Side-table of mangling numbers for declarations which rarely
   /// need them (like static local vars).
-  llvm::DenseMap<const NamedDecl *, unsigned> MangleNumbers;
-  llvm::DenseMap<const VarDecl *, unsigned> StaticLocalNumbers;
+  llvm::MapVector<const NamedDecl *, unsigned> MangleNumbers;
+  llvm::MapVector<const VarDecl *, unsigned> StaticLocalNumbers;
 
   /// \brief Mapping that stores parameterIndex values for ParmVarDecls when
   /// that value exceeds the bitfield size of ParmVarDeclBits.ParameterIndex.
@@ -899,11 +902,9 @@ public:
   CanQualType PseudoObjectTy, ARCUnbridgedCastTy;
   CanQualType ObjCBuiltinIdTy, ObjCBuiltinClassTy, ObjCBuiltinSelTy;
   CanQualType ObjCBuiltinBoolTy;
-  CanQualType OCLImage1dTy, OCLImage1dArrayTy, OCLImage1dBufferTy;
-  CanQualType OCLImage2dTy, OCLImage2dArrayTy, OCLImage2dDepthTy;
-  CanQualType OCLImage2dArrayDepthTy, OCLImage2dMSAATy, OCLImage2dArrayMSAATy;
-  CanQualType OCLImage2dMSAADepthTy, OCLImage2dArrayMSAADepthTy;
-  CanQualType OCLImage3dTy;
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+  CanQualType SingletonId;
+#include "clang/Basic/OpenCLImageTypes.def"
   CanQualType OCLSamplerTy, OCLEventTy, OCLClkEventTy;
   CanQualType OCLQueueTy, OCLNDRangeTy, OCLReserveIDTy;
   CanQualType OMPArraySectionTy;

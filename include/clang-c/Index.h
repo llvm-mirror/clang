@@ -2971,6 +2971,8 @@ enum CXCallingConv {
   CXCallingConv_X86_64SysV = 11,
   CXCallingConv_X86VectorCall = 12,
   CXCallingConv_Swift = 13,
+  CXCallingConv_PreserveMost = 14,
+  CXCallingConv_PreserveAll = 15,
 
   CXCallingConv_Invalid = 100,
   CXCallingConv_Unexposed = 200
@@ -4072,9 +4074,34 @@ CXFile clang_Module_getTopLevelHeader(CXTranslationUnit,
  */
 
 /**
+ * \brief Determine if a C++ constructor is a converting constructor.
+ */
+CINDEX_LINKAGE unsigned clang_CXXConstructor_isConvertingConstructor(CXCursor C);
+
+/**
+ * \brief Determine if a C++ constructor is a copy constructor.
+ */
+CINDEX_LINKAGE unsigned clang_CXXConstructor_isCopyConstructor(CXCursor C);
+
+/**
+ * \brief Determine if a C++ constructor is the default constructor.
+ */
+CINDEX_LINKAGE unsigned clang_CXXConstructor_isDefaultConstructor(CXCursor C);
+
+/**
+ * \brief Determine if a C++ constructor is a move constructor.
+ */
+CINDEX_LINKAGE unsigned clang_CXXConstructor_isMoveConstructor(CXCursor C);
+
+/**
  * \brief Determine if a C++ field is declared 'mutable'.
  */
 CINDEX_LINKAGE unsigned clang_CXXField_isMutable(CXCursor C);
+
+/**
+ * \brief Determine if a C++ method is declared '= default'.
+ */
+CINDEX_LINKAGE unsigned clang_CXXMethod_isDefaulted(CXCursor C);
 
 /**
  * \brief Determine if a C++ member function or member function template is
@@ -4956,7 +4983,7 @@ CINDEX_LINKAGE unsigned clang_defaultCodeCompleteOptions(void);
  * Note that the column should point just after the syntactic construct that
  * initiated code completion, and not in the middle of a lexical token.
  *
- * \param unsaved_files the Tiles that have not yet been saved to disk
+ * \param unsaved_files the Files that have not yet been saved to disk
  * but may be required for parsing or code completion, including the
  * contents of those files.  The contents and name of these files (as
  * specified by CXUnsavedFile) are copied when necessary, so the

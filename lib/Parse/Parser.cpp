@@ -492,6 +492,7 @@ void Parser::Initialize() {
   Ident_obsoleted = nullptr;
   Ident_unavailable = nullptr;
   Ident_strict = nullptr;
+  Ident_replacement = nullptr;
 
   Ident__except = nullptr;
 
@@ -658,8 +659,10 @@ Parser::ParseExternalDeclaration(ParsedAttributesWithRange &attrs,
   case tok::annot_pragma_opencl_extension:
     HandlePragmaOpenCLExtension();
     return nullptr;
-  case tok::annot_pragma_openmp:
-    return ParseOpenMPDeclarativeDirective(/*AS=*/AS_none);
+  case tok::annot_pragma_openmp: {
+    AccessSpecifier AS = AS_none;
+    return ParseOpenMPDeclarativeDirectiveWithExtDecl(AS, attrs);
+  }
   case tok::annot_pragma_ms_pointers_to_members:
     HandlePragmaMSPointersToMembers();
     return nullptr;

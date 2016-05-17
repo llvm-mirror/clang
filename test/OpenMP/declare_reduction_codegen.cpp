@@ -1,6 +1,6 @@
-// RUN: %clang_cc1 -verify -fopenmp -x c++ -emit-llvm %s -triple %itanium_abi_triple -fexceptions -fcxx-exceptions -o - -femit-all-decls | FileCheck %s
-// RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -triple %itanium_abi_triple -fexceptions -fcxx-exceptions -emit-pch -o %t %s -femit-all-decls
-// RUN: %clang_cc1 -fopenmp -x c++ -triple %itanium_abi_triple -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - -femit-all-decls | FileCheck --check-prefix=CHECK-LOAD %s
+// RUN: %clang_cc1 -verify -fopenmp -x c++ -emit-llvm %s -triple %itanium_abi_triple -fexceptions -fcxx-exceptions -o - -femit-all-decls -disable-llvm-optzns | FileCheck %s
+// RUN: %clang_cc1 -fopenmp -x c++ -std=c++11 -triple %itanium_abi_triple -fexceptions -fcxx-exceptions -emit-pch -o %t %s -femit-all-decls -disable-llvm-optzns
+// RUN: %clang_cc1 -fopenmp -x c++ -triple %itanium_abi_triple -fexceptions -fcxx-exceptions -std=c++11 -include-pch %t -verify %s -emit-llvm -o - -femit-all-decls -disable-llvm-optzns | FileCheck --check-prefix=CHECK-LOAD %s
 // expected-no-diagnostics
 
 #ifndef HEADER
@@ -42,6 +42,7 @@
 template <class T>
 struct SSS {
   T a;
+  SSS() : a() {}
 #pragma omp declare reduction(fun : T : omp_out ^= omp_in) initializer(omp_priv = 24 + omp_orig)
 };
 
@@ -59,8 +60,8 @@ SSS<int> d;
 // CHECK-NEXT: ret void
 // CHECK-NEXT: }
 
-// CHECK: define void [[INIT:@[^(]+]]([[SSS_INT]]*
-// CHECK-LOAD: define void [[INIT:@[^(]+]]([[SSS_INT]]*
+// CHECK: define {{.*}}void [[INIT:@[^(]+]]([[SSS_INT]]*
+// CHECK-LOAD: define {{.*}}void [[INIT:@[^(]+]]([[SSS_INT]]*
 void init(SSS<int> &lhs, SSS<int> &rhs) {}
 
 #pragma omp declare reduction(fun : SSS < int > : omp_out = omp_in) initializer(init(omp_priv, omp_orig))
@@ -69,7 +70,7 @@ void init(SSS<int> &lhs, SSS<int> &rhs) {}
 // CHECK-NEXT: ret void
 // CHECK-NEXT: }
 // CHECK: define internal {{.*}}void @{{[^(]+}}([[SSS_INT]]* noalias, [[SSS_INT]]* noalias)
-// CHECK: call void [[INIT]](
+// CHECK: call {{.*}}void [[INIT]](
 // CHECK-NEXT: ret void
 // CHECK-NEXT: }
 
@@ -78,7 +79,7 @@ void init(SSS<int> &lhs, SSS<int> &rhs) {}
 // CHECK-LOAD-NEXT: ret void
 // CHECK-LOAD-NEXT: }
 // CHECK-LOAD: define internal {{.*}}void @{{[^(]+}}([[SSS_INT]]* noalias, [[SSS_INT]]* noalias)
-// CHECK-LOAD: call void [[INIT]](
+// CHECK-LOAD: call {{.*}}void [[INIT]](
 // CHECK-LOAD-NEXT: ret void
 // CHECK-LOAD-NEXT: }
 
@@ -95,18 +96,29 @@ T foo(T a) {
 int main() {
   int i = 0;
   SSS<int> sss;
-  // TODO: Add support for scoped reduction identifiers
-  //  #pragma omp parallel reduction(SSS<int>::fun : i)
-  // TODO-CHECK: #pragma omp parallel reduction(SSS<int>::fun: i)
+#pragma omp parallel reduction(SSS < int > ::fun : i)
   {
     i += 1;
   }
-  // #pragma omp parallel reduction(::fun:sss)
-  // TODO-CHECK: #pragma omp parallel reduction(::fun: sss)
+#pragma omp parallel reduction(::fun : sss)
   {
   }
+#pragma omp declare reduction(fun : SSS < int > : init(omp_out, omp_in))
+#pragma omp parallel reduction(fun : sss)
+  {
+  }
+  // CHECK: call {{.*}}void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+  // CHECK: call {{.*}}void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call(
+  // CHECK: call {{.*}}void (%ident_t*, i32, void (i32*, i32*, ...)*, ...) @__kmpc_fork_call({{[^@]*}} @{{[^@]*}}[[REGION:@[^ ]+]]
+  // CHECK-LABEL: foo
   return foo(15);
 }
+
+// CHECK: define internal {{.*}}void [[REGION]](
+// CHECK: [[SSS_PRIV:%.+]] = alloca %struct.SSS,
+// CHECK: invoke {{.*}} @_ZN3SSSIiEC1Ev(%struct.SSS* [[SSS_PRIV]])
+// CHECK-NOT: {{call |invoke }}
+// CHECK: call {{.*}}i32 @__kmpc_reduce_nowait(
 
 // CHECK-LABEL: i32 @{{.+}}foo{{[^(].+}}(i32
 // CHECK-LOAD-LABEL: i32 @{{.+}}foo{{[^(].+}}(i32

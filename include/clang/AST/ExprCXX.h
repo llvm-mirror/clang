@@ -778,22 +778,23 @@ public:
 class CXXUuidofExpr : public Expr {
 private:
   llvm::PointerUnion<Stmt *, TypeSourceInfo *> Operand;
+  StringRef UuidStr;
   SourceRange Range;
 
 public:
-  CXXUuidofExpr(QualType Ty, TypeSourceInfo *Operand, SourceRange R)
-    : Expr(CXXUuidofExprClass, Ty, VK_LValue, OK_Ordinary,
-           false, Operand->getType()->isDependentType(),
-           Operand->getType()->isInstantiationDependentType(),
-           Operand->getType()->containsUnexpandedParameterPack()),
-      Operand(Operand), Range(R) { }
+  CXXUuidofExpr(QualType Ty, TypeSourceInfo *Operand, StringRef UuidStr,
+                SourceRange R)
+      : Expr(CXXUuidofExprClass, Ty, VK_LValue, OK_Ordinary, false,
+             Operand->getType()->isDependentType(),
+             Operand->getType()->isInstantiationDependentType(),
+             Operand->getType()->containsUnexpandedParameterPack()),
+        Operand(Operand), UuidStr(UuidStr), Range(R) {}
 
-  CXXUuidofExpr(QualType Ty, Expr *Operand, SourceRange R)
-    : Expr(CXXUuidofExprClass, Ty, VK_LValue, OK_Ordinary,
-           false, Operand->isTypeDependent(),
-           Operand->isInstantiationDependent(),
-           Operand->containsUnexpandedParameterPack()),
-      Operand(Operand), Range(R) { }
+  CXXUuidofExpr(QualType Ty, Expr *Operand, StringRef UuidStr, SourceRange R)
+      : Expr(CXXUuidofExprClass, Ty, VK_LValue, OK_Ordinary, false,
+             Operand->isTypeDependent(), Operand->isInstantiationDependent(),
+             Operand->containsUnexpandedParameterPack()),
+        Operand(Operand), UuidStr(UuidStr), Range(R) {}
 
   CXXUuidofExpr(EmptyShell Empty, bool isExpr)
     : Expr(CXXUuidofExprClass, Empty) {
@@ -830,7 +831,8 @@ public:
     Operand = E;
   }
 
-  StringRef getUuidAsStringRef(ASTContext &Context) const;
+  void setUuidStr(StringRef US) { UuidStr = US; }
+  StringRef getUuidStr() const { return UuidStr; }
 
   SourceLocation getLocStart() const LLVM_READONLY { return Range.getBegin(); }
   SourceLocation getLocEnd() const LLVM_READONLY { return Range.getEnd(); }
@@ -840,11 +842,6 @@ public:
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CXXUuidofExprClass;
   }
-
-  /// Grabs __declspec(uuid()) off a type, or returns 0 if we cannot resolve to
-  /// a single GUID.
-  static const UuidAttr *GetUuidAttrOfType(QualType QT,
-                                           bool *HasMultipleGUIDsPtr = nullptr);
 
   // Iterators
   child_range children() {
