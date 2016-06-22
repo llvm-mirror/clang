@@ -3585,6 +3585,10 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
     Pattern = PatternDecl->getBody(PatternDecl);
   }
 
+  // FIXME: Check that the definition is visible before trying to instantiate
+  // it. This requires us to track the instantiation stack in order to know
+  // which definitions should be visible.
+
   if (!Pattern && !PatternDecl->isDefaulted()) {
     if (DefinitionRequired) {
       if (Function->getPrimaryTemplate())
@@ -3645,6 +3649,8 @@ void Sema::InstantiateFunctionDefinition(SourceLocation PointOfInstantiation,
   InstantiatingTemplate Inst(*this, PointOfInstantiation, Function);
   if (Inst.isInvalid())
     return;
+  PrettyDeclStackTraceEntry CrashInfo(*this, Function, SourceLocation(),
+                                      "instantiating function definition");
 
   // Copy the inner loc start from the pattern.
   Function->setInnerLocStart(PatternDecl->getInnerLocStart());
@@ -3907,9 +3913,14 @@ void Sema::InstantiateVariableInitializer(
       PushExpressionEvaluationContext(Sema::PotentiallyEvaluated, OldVar);
 
     // Instantiate the initializer.
-    ExprResult Init =
-        SubstInitializer(OldVar->getInit(), TemplateArgs,
-                         OldVar->getInitStyle() == VarDecl::CallInit);
+    ExprResult Init;
+
+    {
+      ContextRAII SwitchContext(*this, Var->getDeclContext());
+      Init = SubstInitializer(OldVar->getInit(), TemplateArgs,
+                              OldVar->getInitStyle() == VarDecl::CallInit);
+    }
+
     if (!Init.isInvalid()) {
       bool TypeMayContainAuto = true;
       Expr *InitExpr = Init.get();
@@ -4024,6 +4035,8 @@ void Sema::InstantiateVariableDefinition(SourceLocation PointOfInstantiation,
       InstantiatingTemplate Inst(*this, PointOfInstantiation, Var);
       if (Inst.isInvalid())
         return;
+      PrettyDeclStackTraceEntry CrashInfo(*this, Var, SourceLocation(),
+                                          "instantiating variable initializer");
 
       // If we're performing recursive template instantiation, create our own
       // queue of pending implicit instantiations that we will instantiate
@@ -4072,6 +4085,10 @@ void Sema::InstantiateVariableDefinition(SourceLocation PointOfInstantiation,
     assert(PatternDecl->isStaticDataMember() && "not a static data member?");
     Def = PatternDecl->getOutOfLineDefinition();
   }
+
+  // FIXME: Check that the definition is visible before trying to instantiate
+  // it. This requires us to track the instantiation stack in order to know
+  // which definitions should be visible.
 
   // If we don't have a definition of the variable template, we won't perform
   // any instantiation. Rather, we rely on the user to instantiate this
@@ -4147,6 +4164,8 @@ void Sema::InstantiateVariableDefinition(SourceLocation PointOfInstantiation,
   InstantiatingTemplate Inst(*this, PointOfInstantiation, Var);
   if (Inst.isInvalid())
     return;
+  PrettyDeclStackTraceEntry CrashInfo(*this, Var, SourceLocation(),
+                                      "instantiating variable definition");
 
   // If we're performing recursive template instantiation, create our own
   // queue of pending implicit instantiations that we will instantiate later,
@@ -4868,8 +4887,6 @@ void Sema::PerformPendingInstantiations(bool LocalOnly) {
 
     // Instantiate function definitions
     if (FunctionDecl *Function = dyn_cast<FunctionDecl>(Inst.first)) {
-      PrettyDeclStackTraceEntry CrashInfo(*this, Function, SourceLocation(),
-                                          "instantiating function definition");
       bool DefinitionRequired = Function->getTemplateSpecializationKind() ==
                                 TSK_ExplicitInstantiationDefinition;
       InstantiateFunctionDefinition(/*FIXME:*/Inst.second, Function, true,

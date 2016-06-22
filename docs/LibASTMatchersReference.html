@@ -410,7 +410,7 @@ decl(hasDeclContext(translationUnitDecl()))
 
 Given
   typedef int X;
-   using Y = int;
+  using Y = int;
 typeAliasDecl()
   matches "using Y = int", but not "typedef int X"
 </pre></td></tr>
@@ -421,7 +421,7 @@ typeAliasDecl()
 
 Given
   typedef int X;
-   using Y = int;
+  using Y = int;
 typedefDecl()
   matches "typedef int X", but not "using Y = int"
 </pre></td></tr>
@@ -432,7 +432,7 @@ typedefDecl()
 
 Given
   typedef int X;
-   using Y = int;
+  using Y = int;
 typedefNameDecl()
   matches "typedef int X" and "using Y = int"
 </pre></td></tr>
@@ -644,7 +644,8 @@ Not matching Hex-encoded chars (e.g. 0x1234, which is a IntegerLiteral),
 though.
 
 Example matches 'a', L'a'
-  char ch = 'a'; wchar_t chw = L'a';
+  char ch = 'a';
+  wchar_t chw = L'a';
 </pre></td></tr>
 
 
@@ -652,7 +653,8 @@ Example matches 'a', L'a'
 <tr><td colspan="4" class="doc" id="compoundLiteralExpr0"><pre>Matches compound (i.e. non-scalar) literals
 
 Example match: {1}, (1, 2)
-  int array[4] = {1}; vector int myvec = (vector int)(1, 2);
+  int array[4] = {1};
+  vector int myvec = (vector int)(1, 2);
 </pre></td></tr>
 
 
@@ -1217,7 +1219,8 @@ Example match: ({ int X = 4; X; })
 <tr><td colspan="4" class="doc" id="stringLiteral0"><pre>Matches string literals (also matches wide string literals).
 
 Example matches "abcd", L"abcd"
-  char *s = "abcd"; wchar_t *ws = L"abcd"
+  char *s = "abcd";
+  wchar_t *ws = L"abcd";
 </pre></td></tr>
 
 
@@ -1270,6 +1273,21 @@ unaryExprOrTypeTraitExpr()
 Example matches !a
   !a || b
 </pre></td></tr>
+
+
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Stmt.html">Stmt</a>&gt;</td><td class="name" onclick="toggle('unresolvedLookupExpr0')"><a name="unresolvedLookupExpr0Anchor">unresolvedLookupExpr</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1UnresolvedLookupExpr.html">UnresolvedLookupExpr</a>&gt;...</td></tr>
+<tr><td colspan="4" class="doc" id="unresolvedLookupExpr0"><pre>Matches reference to a name that can be looked up during parsing
+but could not be resolved to a specific declaration.
+
+Given
+  template&lt;typename T&gt;
+  T foo() { T a; return a; }
+  template&lt;typename T&gt;
+  void bar() {
+    foo&lt;T&gt;();
+  }
+unresolvedLookupExpr()
+  matches foo&lt;T&gt;() </pre></td></tr>
 
 
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Stmt.html">Stmt</a>&gt;</td><td class="name" onclick="toggle('userDefinedLiteral0')"><a name="userDefinedLiteral0Anchor">userDefinedLiteral</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1UserDefinedLiteral.html">UserDefinedLiteral</a>&gt;...</td></tr>
@@ -2156,6 +2174,15 @@ Example matches f(0, 0) (matcher = callExpr(argumentCountIs(2)))
 </pre></td></tr>
 
 
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1CastExpr.html">CastExpr</a>&gt;</td><td class="name" onclick="toggle('hasCastKind0')"><a name="hasCastKind0Anchor">hasCastKind</a></td><td>CastKind Kind</td></tr>
+<tr><td colspan="4" class="doc" id="hasCastKind0"><pre>Matches casts that has a given cast kind.
+
+Example: matches the implicit cast around 0
+(matcher = castExpr(hasCastKind(CK_NullToPointer)))
+  int *p = 0;
+</pre></td></tr>
+
+
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1CharacterLiteral.html">CharacterLiteral</a>&gt;</td><td class="name" onclick="toggle('equals3')"><a name="equals3Anchor">equals</a></td><td>ValueT  Value</td></tr>
 <tr><td colspan="4" class="doc" id="equals3"><pre>Matches literals that are equal to the given value.
 
@@ -2191,14 +2218,19 @@ compoundStmt(statementCountIs(0)))
 
 
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1ConstantArrayType.html">ConstantArrayType</a>&gt;</td><td class="name" onclick="toggle('hasSize0')"><a name="hasSize0Anchor">hasSize</a></td><td>unsigned N</td></tr>
-<tr><td colspan="4" class="doc" id="hasSize0"><pre>Matches ConstantArrayType nodes that have the specified size.
+<tr><td colspan="4" class="doc" id="hasSize0"><pre>Matches nodes that have the specified size.
 
 Given
   int a[42];
   int b[2 * 21];
   int c[41], d[43];
+  char *s = "abcd";
+  wchar_t *ws = L"abcd";
+  char *w = "a";
 constantArrayType(hasSize(42))
   matches "int a[42]" and "int b[2 * 21]"
+stringLiteral(hasSize(4))
+  matches "abcd", L"abcd"
 </pre></td></tr>
 
 
@@ -2235,6 +2267,13 @@ compoundStmt(
     forEachDescendant(declRefExpr(to(decl(equalsBoundNode("d"))))))
 will trigger a match for each combination of variable declaration
 and reference to that variable declaration within a compound statement.
+</pre></td></tr>
+
+
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Decl.html">Decl</a>&gt;</td><td class="name" onclick="toggle('equalsNode0')"><a name="equalsNode0Anchor">equalsNode</a></td><td>const Decl* Other</td></tr>
+<tr><td colspan="4" class="doc" id="equalsNode0"><pre>Matches if a node equals another node.
+
+Decl has pointer identity in the AST.
 </pre></td></tr>
 
 
@@ -2364,6 +2403,23 @@ Usable as: Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Chara
 </pre></td></tr>
 
 
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1FunctionDecl.html">FunctionDecl</a>&gt;</td><td class="name" onclick="toggle('hasDynamicExceptionSpec0')"><a name="hasDynamicExceptionSpec0Anchor">hasDynamicExceptionSpec</a></td><td></td></tr>
+<tr><td colspan="4" class="doc" id="hasDynamicExceptionSpec0"><pre>Matches functions that have a dynamic exception specification.
+
+Given:
+  void f();
+  void g() noexcept;
+  void h() noexcept(true);
+  void i() noexcept(false);
+  void j() throw();
+  void k() throw(int);
+  void l() throw(...);
+functionDecl(hasDynamicExceptionSpec()) and
+  functionProtoType(hasDynamicExceptionSpec())
+  match the declarations of j, k, and l, but not f, g, h, or i.
+</pre></td></tr>
+
+
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1FunctionDecl.html">FunctionDecl</a>&gt;</td><td class="name" onclick="toggle('hasOverloadedOperatorName0')"><a name="hasOverloadedOperatorName0Anchor">hasOverloadedOperatorName</a></td><td>StringRef Name</td></tr>
 <tr><td colspan="4" class="doc" id="hasOverloadedOperatorName0"><pre>Matches overloaded operator names.
 
@@ -2485,8 +2541,8 @@ Given:
   void h() throw();
   void i() throw(int);
   void j() noexcept(false);
-functionDecl(isNoThrow())
-  matches the declarations of g, and h, but not f, i or j.
+functionDecl(isNoThrow()) and functionProtoType(isNoThrow())
+  match the declarations of g, and h, but not f, i or j.
 </pre></td></tr>
 
 
@@ -2539,6 +2595,37 @@ functionProtoType(parameterCountIs(2))
   matches void h(int i, int j)
 functionProtoType(parameterCountIs(3))
   matches void k(int x, int y, int z, ...);
+</pre></td></tr>
+
+
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1FunctionProtoType.html">FunctionProtoType</a>&gt;</td><td class="name" onclick="toggle('hasDynamicExceptionSpec1')"><a name="hasDynamicExceptionSpec1Anchor">hasDynamicExceptionSpec</a></td><td></td></tr>
+<tr><td colspan="4" class="doc" id="hasDynamicExceptionSpec1"><pre>Matches functions that have a dynamic exception specification.
+
+Given:
+  void f();
+  void g() noexcept;
+  void h() noexcept(true);
+  void i() noexcept(false);
+  void j() throw();
+  void k() throw(int);
+  void l() throw(...);
+functionDecl(hasDynamicExceptionSpec()) and
+  functionProtoType(hasDynamicExceptionSpec())
+  match the declarations of j, k, and l, but not f, g, h, or i.
+</pre></td></tr>
+
+
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1FunctionProtoType.html">FunctionProtoType</a>&gt;</td><td class="name" onclick="toggle('isNoThrow1')"><a name="isNoThrow1Anchor">isNoThrow</a></td><td></td></tr>
+<tr><td colspan="4" class="doc" id="isNoThrow1"><pre>Matches functions that have a non-throwing exception specification.
+
+Given:
+  void f();
+  void g() noexcept;
+  void h() throw();
+  void i() throw(int);
+  void j() noexcept(false);
+functionDecl(isNoThrow()) and functionProtoType(isNoThrow())
+  match the declarations of g, and h, but not f, i or j.
 </pre></td></tr>
 
 
@@ -2898,6 +2985,13 @@ and reference to that variable declaration within a compound statement.
 </pre></td></tr>
 
 
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Stmt.html">Stmt</a>&gt;</td><td class="name" onclick="toggle('equalsNode1')"><a name="equalsNode1Anchor">equalsNode</a></td><td>const Stmt* Other</td></tr>
+<tr><td colspan="4" class="doc" id="equalsNode1"><pre>Matches if a node equals another node.
+
+Stmt has pointer identity in the AST.
+</pre></td></tr>
+
+
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Stmt.html">Stmt</a>&gt;</td><td class="name" onclick="toggle('isExpansionInFileMatching1')"><a name="isExpansionInFileMatching1Anchor">isExpansionInFileMatching</a></td><td>std::string RegExp</td></tr>
 <tr><td colspan="4" class="doc" id="isExpansionInFileMatching1"><pre>Matches AST nodes that were expanded within files whose name is
 partially matching a given regex.
@@ -2938,6 +3032,23 @@ SystemHeader.h:
   class Y {};
 
 Usable as: Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Decl.html">Decl</a>&gt;, Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Stmt.html">Stmt</a>&gt;, Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1TypeLoc.html">TypeLoc</a>&gt;
+</pre></td></tr>
+
+
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1StringLiteral.html">StringLiteral</a>&gt;</td><td class="name" onclick="toggle('hasSize1')"><a name="hasSize1Anchor">hasSize</a></td><td>unsigned N</td></tr>
+<tr><td colspan="4" class="doc" id="hasSize1"><pre>Matches nodes that have the specified size.
+
+Given
+  int a[42];
+  int b[2 * 21];
+  int c[41], d[43];
+  char *s = "abcd";
+  wchar_t *ws = L"abcd";
+  char *w = "a";
+constantArrayType(hasSize(42))
+  matches "int a[42]" and "int b[2 * 21]"
+stringLiteral(hasSize(4))
+  matches "abcd", L"abcd"
 </pre></td></tr>
 
 
@@ -3069,6 +3180,13 @@ compoundStmt(
     forEachDescendant(declRefExpr(to(decl(equalsBoundNode("d"))))))
 will trigger a match for each combination of variable declaration
 and reference to that variable declaration within a compound statement.
+</pre></td></tr>
+
+
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Type.html">Type</a>&gt;</td><td class="name" onclick="toggle('equalsNode2')"><a name="equalsNode2Anchor">equalsNode</a></td><td>const Type* Other</td></tr>
+<tr><td colspan="4" class="doc" id="equalsNode2"><pre>Matches if a node equals another node.
+
+Type has pointer identity in the AST.
 </pre></td></tr>
 
 
@@ -3286,6 +3404,16 @@ expr(nullPointerConstant())
 </pre></td></tr>
 
 
+<tr><td>Matcher&lt;internal::Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1NamedDecl.html">NamedDecl</a>&gt;&gt;</td><td class="name" onclick="toggle('hasAnyName0')"><a name="hasAnyName0Anchor">hasAnyName</a></td><td>StringRef, ..., StringRef</td></tr>
+<tr><td colspan="4" class="doc" id="hasAnyName0"><pre>Matches NamedDecl nodes that have any of the specified names.
+
+This matcher is only provided as a performance optimization of hasName.
+    hasAnyName(a, b, c)
+ is equivalent to, but faster than
+    anyOf(hasName(a), hasName(b), hasName(c))
+</pre></td></tr>
+
+
 <tr><td>Matcher&lt;internal::Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Stmt.html">Stmt</a>&gt;&gt;</td><td class="name" onclick="toggle('isInTemplateInstantiation0')"><a name="isInTemplateInstantiation0Anchor">isInTemplateInstantiation</a></td><td></td></tr>
 <tr><td colspan="4" class="doc" id="isInTemplateInstantiation0"><pre>Matches statements inside of a template instantiation.
 
@@ -3425,6 +3553,10 @@ Example matches X, Y
 ChildT must be an AST base type.
 
 Usable as: Any Matcher
+Note that has is direct matcher, so it also matches things like implicit
+casts and paren casts. If you are matching with expr then you should
+probably consider using ignoringParenImpCasts like:
+has(ignoringParenImpCasts(expr())).
 </pre></td></tr>
 
 
@@ -3440,9 +3572,9 @@ Usable as: Any Matcher
 </pre></td></tr>
 
 
-<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1AbstractConditionalOperator.html">AbstractConditionalOperator</a>&gt;</td><td class="name" onclick="toggle('hasCondition4')"><a name="hasCondition4Anchor">hasCondition</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Expr.html">Expr</a>&gt; InnerMatcher</td></tr>
-<tr><td colspan="4" class="doc" id="hasCondition4"><pre>Matches the condition expression of an if statement, for loop,
-or conditional operator.
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1AbstractConditionalOperator.html">AbstractConditionalOperator</a>&gt;</td><td class="name" onclick="toggle('hasCondition5')"><a name="hasCondition5Anchor">hasCondition</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Expr.html">Expr</a>&gt; InnerMatcher</td></tr>
+<tr><td colspan="4" class="doc" id="hasCondition5"><pre>Matches the condition expression of an if statement, for loop,
+switch statement or conditional operator.
 
 Example matches true (matcher = hasCondition(cxxBoolLiteral(equals(true))))
   if (true) {}
@@ -4197,7 +4329,7 @@ with compoundStmt()
 
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1DoStmt.html">DoStmt</a>&gt;</td><td class="name" onclick="toggle('hasCondition3')"><a name="hasCondition3Anchor">hasCondition</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Expr.html">Expr</a>&gt; InnerMatcher</td></tr>
 <tr><td colspan="4" class="doc" id="hasCondition3"><pre>Matches the condition expression of an if statement, for loop,
-or conditional operator.
+switch statement or conditional operator.
 
 Example matches true (matcher = hasCondition(cxxBoolLiteral(equals(true))))
   if (true) {}
@@ -4380,7 +4512,7 @@ with compoundStmt()
 
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1ForStmt.html">ForStmt</a>&gt;</td><td class="name" onclick="toggle('hasCondition1')"><a name="hasCondition1Anchor">hasCondition</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Expr.html">Expr</a>&gt; InnerMatcher</td></tr>
 <tr><td colspan="4" class="doc" id="hasCondition1"><pre>Matches the condition expression of an if statement, for loop,
-or conditional operator.
+switch statement or conditional operator.
 
 Example matches true (matcher = hasCondition(cxxBoolLiteral(equals(true))))
   if (true) {}
@@ -4458,7 +4590,7 @@ cxxMethodDecl(returns(asString("int")))
 
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1IfStmt.html">IfStmt</a>&gt;</td><td class="name" onclick="toggle('hasCondition0')"><a name="hasCondition0Anchor">hasCondition</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Expr.html">Expr</a>&gt; InnerMatcher</td></tr>
 <tr><td colspan="4" class="doc" id="hasCondition0"><pre>Matches the condition expression of an if statement, for loop,
-or conditional operator.
+switch statement or conditional operator.
 
 Example matches true (matcher = hasCondition(cxxBoolLiteral(equals(true))))
   if (true) {}
@@ -4801,6 +4933,17 @@ Usable as: Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1CallE
 </pre></td></tr>
 
 
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1QualType.html">QualType</a>&gt;</td><td class="name" onclick="toggle('ignoringParens0')"><a name="ignoringParens0Anchor">ignoringParens</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1QualType.html">QualType</a>&gt; InnerMatcher</td></tr>
+<tr><td colspan="4" class="doc" id="ignoringParens0"><pre>Matches types that match InnerMatcher after any parens are stripped.
+
+Given
+  void (*fp)(void);
+The matcher
+  varDecl(hasType(pointerType(pointee(ignoringParens(functionType())))))
+would match the declaration for fp.
+</pre></td></tr>
+
+
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1QualType.html">QualType</a>&gt;</td><td class="name" onclick="toggle('pointsTo1')"><a name="pointsTo1Anchor">pointsTo</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Decl.html">Decl</a>&gt; InnerMatcher</td></tr>
 <tr><td colspan="4" class="doc" id="pointsTo1"><pre>Overloaded to match the pointee type's declaration.
 </pre></td></tr>
@@ -4923,6 +5066,20 @@ alignof.
 </pre></td></tr>
 
 
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Stmt.html">Stmt</a>&gt;</td><td class="name" onclick="toggle('forFunction0')"><a name="forFunction0Anchor">forFunction</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1FunctionDecl.html">FunctionDecl</a>&gt; InnerMatcher</td></tr>
+<tr><td colspan="4" class="doc" id="forFunction0"><pre>Matches declaration of the function the statemenet belongs to
+
+Given:
+F&amp; operator=(const F&amp; o) {
+  std::copy_if(o.begin(), o.end(), begin(), [](V v) { return v &gt; 0; });
+  return *this;
+}
+returnStmt(forFunction(hasName("operator=")))
+  matches 'return *this'
+  but does match 'return &gt; 0'
+</pre></td></tr>
+
+
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Stmt.html">Stmt</a>&gt;</td><td class="name" onclick="toggle('sizeOfExpr0')"><a name="sizeOfExpr0Anchor">sizeOfExpr</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1UnaryExprOrTypeTraitExpr.html">UnaryExprOrTypeTraitExpr</a>&gt;  InnerMatcher</td></tr>
 <tr><td colspan="4" class="doc" id="sizeOfExpr0"><pre>Same as unaryExprOrTypeTraitExpr, but only matching
 sizeof.
@@ -4939,6 +5096,15 @@ switchStmt(forEachSwitchCase(caseStmt().bind("c"))).bind("s")
   matches four times, with "c" binding each of "case 1:", "case 2:",
 "case 3:" and "case 4:", and "s" respectively binding "switch (1)",
 "switch (1)", "switch (2)" and "switch (2)".
+</pre></td></tr>
+
+
+<tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1SwitchStmt.html">SwitchStmt</a>&gt;</td><td class="name" onclick="toggle('hasCondition4')"><a name="hasCondition4Anchor">hasCondition</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Expr.html">Expr</a>&gt; InnerMatcher</td></tr>
+<tr><td colspan="4" class="doc" id="hasCondition4"><pre>Matches the condition expression of an if statement, for loop,
+switch statement or conditional operator.
+
+Example matches true (matcher = hasCondition(cxxBoolLiteral(equals(true))))
+  if (true) {}
 </pre></td></tr>
 
 
@@ -5275,7 +5441,7 @@ with compoundStmt()
 
 <tr><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1WhileStmt.html">WhileStmt</a>&gt;</td><td class="name" onclick="toggle('hasCondition2')"><a name="hasCondition2Anchor">hasCondition</a></td><td>Matcher&lt;<a href="http://clang.llvm.org/doxygen/classclang_1_1Expr.html">Expr</a>&gt; InnerMatcher</td></tr>
 <tr><td colspan="4" class="doc" id="hasCondition2"><pre>Matches the condition expression of an if statement, for loop,
-or conditional operator.
+switch statement or conditional operator.
 
 Example matches true (matcher = hasCondition(cxxBoolLiteral(equals(true))))
   if (true) {}

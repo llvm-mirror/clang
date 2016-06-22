@@ -21,7 +21,6 @@
 #include "clang/AST/ExprObjC.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Sema/DeclSpec.h"
-#include "clang/Sema/ExternalSemaSource.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/ScopeInfo.h"
@@ -1500,6 +1499,7 @@ void Sema::actOnObjCTypeArgsOrProtocolQualifiers(
       SourceLocation starLoc = getLocForEndOfToken(loc);
       ParsedAttributes parsedAttrs(attrFactory);
       D.AddTypeInfo(DeclaratorChunk::getPointer(/*typeQuals=*/0, starLoc,
+                                                SourceLocation(),
                                                 SourceLocation(),
                                                 SourceLocation(),
                                                 SourceLocation(),
@@ -3303,6 +3303,12 @@ void Sema::addMethodToGlobalList(ObjCMethodList *List,
 void Sema::ReadMethodPool(Selector Sel) {
   assert(ExternalSource && "We need an external AST source");
   ExternalSource->ReadMethodPool(Sel);
+}
+
+void Sema::updateOutOfDateSelector(Selector Sel) {
+  if (!ExternalSource)
+    return;
+  ExternalSource->updateOutOfDateSelector(Sel);
 }
 
 void Sema::AddMethodToGlobalPool(ObjCMethodDecl *Method, bool impl,

@@ -143,6 +143,8 @@ def mno_exec_stack : Flag<["-"], "mnoexecstack">,
   HelpText<"Mark the file as not needing an executable stack">;
 def massembler_fatal_warnings : Flag<["-"], "massembler-fatal-warnings">,
   HelpText<"Make assembler warnings fatal">;
+def mrelax_relocations : Flag<["--"], "mrelax-relocations">,
+    HelpText<"Use relaxable elf relocations">;
 def compress_debug_sections : Flag<["-"], "compress-debug-sections">,
     HelpText<"Compress DWARF debug sections using zlib">;
 def msave_temp_labels : Flag<["-"], "msave-temp-labels">,
@@ -282,6 +284,9 @@ def fprofile_instrument_path_EQ : Joined<["-"], "fprofile-instrument-path=">,
 def fprofile_instrument_use_path_EQ :
     Joined<["-"], "fprofile-instrument-use-path=">,
     HelpText<"Specify the profile path in PGO use compilation">;
+def flto_visibility_public_std:
+    Flag<["-"], "flto-visibility-public-std">,
+    HelpText<"Use public LTO visibility for classes in std and stdext namespaces">;
 
 //===----------------------------------------------------------------------===//
 // Dependency Output Options
@@ -522,8 +527,6 @@ def fblocks_runtime_optional : Flag<["-"], "fblocks-runtime-optional">,
   HelpText<"Weakly link in the blocks runtime">;
 def fexternc_nounwind : Flag<["-"], "fexternc-nounwind">,
   HelpText<"Assume all functions with C linkage do not unwind">;
-def fsjlj_exceptions : Flag<["-"], "fsjlj-exceptions">,
-  HelpText<"Use SjLj style exceptions">;
 def split_dwarf_file : Separate<["-"], "split-dwarf-file">,
   HelpText<"File name to use for split dwarf debug info output">;
 def fno_wchar : Flag<["-"], "fno-wchar">,
@@ -607,6 +610,10 @@ def fnative_half_arguments_and_returns : Flag<["-"], "fnative-half-arguments-and
   HelpText<"Use the native __fp16 type for arguments and returns (and skip ABI-specific lowering)">;
 def fallow_half_arguments_and_returns : Flag<["-"], "fallow-half-arguments-and-returns">,
   HelpText<"Allow function arguments and returns of type half">;
+def fdefault_calling_conv_EQ : Joined<["-"], "fdefault-calling-conv=">,
+  HelpText<"Set default MS calling convention">;
+def finclude_default_header : Flag<["-"], "finclude-default-header">,
+  HelpText<"Include the default header file for OpenCL">;
 
 // C++ TSes.
 def fcoroutines : Flag<["-"], "fcoroutines">,

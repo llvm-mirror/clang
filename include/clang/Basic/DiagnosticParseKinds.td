@@ -926,6 +926,10 @@ def warn_pragma_expected_enable_disable : Warning<
   "expected 'enable' or 'disable' - ignoring">, InGroup<IgnoredPragmas>;
 def warn_pragma_unknown_extension : Warning<
   "unknown OpenCL extension %0 - ignoring">, InGroup<IgnoredPragmas>;
+def warn_pragma_unsupported_extension : Warning<
+  "unsupported OpenCL extension %0 - ignoring">, InGroup<IgnoredPragmas>;
+def warn_pragma_extension_is_core : Warning<
+  "OpenCL extension %0 is core feature or supported optional core feature - ignoring">, InGroup<DiagGroup<"pedantic-core-features">>, DefaultIgnore;
 
 // OpenCL errors.
 def err_opencl_taking_function_address_parser : Error<
@@ -967,16 +971,18 @@ def err_omp_declare_simd_inbranch_notinbranch : Error<
   "unexpected '%0' clause, '%1' is specified already">;
 def err_expected_end_declare_target : Error<
   "expected '#pragma omp end declare target'">;
+def err_omp_declare_target_unexpected_clause: Error<
+  "unexpected '%0' clause, only 'to' or 'link' clauses expected">;
 
 // Pragma loop support.
 def err_pragma_loop_missing_argument : Error<
   "missing argument; expected %select{an integer value|"
-  "'enable', %select{'assume_safety'|'full'}1 or 'disable'}0">;
+  "'enable'%select{|, 'full'}1%select{|, 'assume_safety'}2 or 'disable'}0">;
 def err_pragma_loop_invalid_option : Error<
   "%select{invalid|missing}0 option%select{ %1|}0; expected vectorize, "
-  "vectorize_width, interleave, interleave_count, unroll, or unroll_count">;
+  "vectorize_width, interleave, interleave_count, unroll, unroll_count, or distribute">;
 def err_pragma_invalid_keyword : Error<
-  "invalid argument; expected 'enable', %select{'assume_safety'|'full'}0 or 'disable'">;
+  "invalid argument; expected 'enable'%select{|, 'full'}0%select{|, 'assume_safety'}1 or 'disable'">;
 
 // Pragma unroll support.
 def warn_pragma_unroll_cuda_value_in_parens : Warning<

@@ -503,72 +503,6 @@ static const Type *isSingleElementStruct(QualType T, ASTContext &Context) {
   return Found;
 }
 
-static bool is32Or64BitBasicType(QualType Ty, ASTContext &Context) {
-  // Treat complex types as the element type.
-  if (const ComplexType *CTy = Ty->getAs<ComplexType>())
-    Ty = CTy->getElementType();
-
-  // Check for a type which we know has a simple scalar argument-passing
-  // convention without any padding.  (We're specifically looking for 32
-  // and 64-bit integer and integer-equivalents, float, and double.)
-  if (!Ty->getAs<BuiltinType>() && !Ty->hasPointerRepresentation() &&
-      !Ty->isEnumeralType() && !Ty->isBlockPointerType())
-    return false;
-
-  uint64_t Size = Context.getTypeSize(Ty);
-  return Size == 32 || Size == 64;
-}
-
-/// canExpandIndirectArgument - Test whether an argument type which is to be
-/// passed indirectly (on the stack) would have the equivalent layout if it was
-/// expanded into separate arguments. If so, we prefer to do the latter to avoid
-/// inhibiting optimizations.
-///
-// FIXME: This predicate is missing many cases, currently it just follows
-// llvm-gcc (checks that all fields are 32-bit or 64-bit primitive types). We
-// should probably make this smarter, or better yet make the LLVM backend
-// capable of handling it.
-static bool canExpandIndirectArgument(QualType Ty, ASTContext &Context) {
-  // We can only expand structure types.
-  const RecordType *RT = Ty->getAs<RecordType>();
-  if (!RT)
-    return false;
-
-  // We can only expand (C) structures.
-  //
-  // FIXME: This needs to be generalized to handle classes as well.
-  const RecordDecl *RD = RT->getDecl();
-  if (!RD->isStruct())
-    return false;
-
-  // We try to expand CLike CXXRecordDecl.
-  if (const CXXRecordDecl *CXXRD = dyn_cast<CXXRecordDecl>(RD)) {
-    if (!CXXRD->isCLike())
-      return false;
-  }
-
-  uint64_t Size = 0;
-
-  for (const auto *FD : RD->fields()) {
-    if (!is32Or64BitBasicType(FD->getType(), Context))
-      return false;
-
-    // FIXME: Reject bit-fields wholesale; there are two problems, we don't know
-    // how to expand them yet, and the predicate for telling if a bitfield still
-    // counts as "basic" is more complicated than what we were doing previously.
-    if (FD->isBitField())
-      return false;
-
-    Size += Context.getTypeSize(FD->getType());
-  }
-
-  // Make sure there are not any holes in the struct.
-  if (Size != Context.getTypeSize(Ty))
-    return false;
-
-  return true;
-}
-
 namespace {
 Address EmitVAArgInstr(CodeGenFunction &CGF, Address VAListAddr, QualType Ty,
                        const ABIArgInfo &AI) {
@@ -585,10 +519,10 @@ Address EmitVAArgInstr(CodeGenFunction &CGF, Address VAListAddr, QualType Ty,
 
   if (AI.isIndirect()) {
     assert(!AI.getPaddingType() &&
-           "Unepxected PaddingType seen in arginfo in generic VAArg emitter!");
+           "Unexpected PaddingType seen in arginfo in generic VAArg emitter!");
     assert(
         !AI.getIndirectRealign() &&
-        "Unepxected IndirectRealign seen in arginfo in generic VAArg emitter!");
+        "Unexpected IndirectRealign seen in arginfo in generic VAArg emitter!");
 
     auto TyInfo = CGF.getContext().getTypeInfoInChars(Ty);
     CharUnits TyAlignForABI = TyInfo.second;
@@ -603,13 +537,13 @@ Address EmitVAArgInstr(CodeGenFunction &CGF, Address VAListAddr, QualType Ty,
            "Unexpected ArgInfo Kind in generic VAArg emitter!");
 
     assert(!AI.getInReg() &&
-           "Unepxected InReg seen in arginfo in generic VAArg emitter!");
+           "Unexpected InReg seen in arginfo in generic VAArg emitter!");
     assert(!AI.getPaddingType() &&
-           "Unepxected PaddingType seen in arginfo in generic VAArg emitter!");
+           "Unexpected PaddingType seen in arginfo in generic VAArg emitter!");
     assert(!AI.getDirectOffset() &&
-           "Unepxected DirectOffset seen in arginfo in generic VAArg emitter!");
+           "Unexpected DirectOffset seen in arginfo in generic VAArg emitter!");
     assert(!AI.getCoerceToType() &&
-           "Unepxected CoerceToType seen in arginfo in generic VAArg emitter!");
+           "Unexpected CoerceToType seen in arginfo in generic VAArg emitter!");
 
     Address Temp = CGF.CreateMemTemp(Ty, "varet");
     Val = CGF.Builder.CreateVAArg(VAListAddr.getPointer(), CGF.ConvertType(Ty));
@@ -699,7 +633,7 @@ private:
   ABIArgInfo classifyArgumentType(QualType Ty) const;
 
   // DefaultABIInfo's classifyReturnType and classifyArgumentType are
-  // non-virtual, but computeInfo and EmitVAArg is virtual, so we
+  // non-virtual, but computeInfo and EmitVAArg are virtual, so we
   // overload them.
   void computeInfo(CGFunctionInfo &FI) const override {
     if (!getCXXABI().classifyReturnType(FI))
@@ -959,6 +893,8 @@ class X86_32ABIInfo : public SwiftABIInfo {
                                 bool &NeedsPadding) const;
   bool shouldPrimitiveUseInReg(QualType Ty, CCState &State) const;
 
+  bool canExpandIndirectArgument(QualType Ty) const;
+
   /// \brief Rewrite the function info so that all memory arguments use
   /// inalloca.
   void rewriteWithInAlloca(CGFunctionInfo &FI) const;
@@ -1179,6 +1115,72 @@ bool X86_32ABIInfo::shouldReturnTypeInRegister(QualType Ty,
   return true;
 }
 
+static bool is32Or64BitBasicType(QualType Ty, ASTContext &Context) {
+  // Treat complex types as the element type.
+  if (const ComplexType *CTy = Ty->getAs<ComplexType>())
+    Ty = CTy->getElementType();
+
+  // Check for a type which we know has a simple scalar argument-passing
+  // convention without any padding.  (We're specifically looking for 32
+  // and 64-bit integer and integer-equivalents, float, and double.)
+  if (!Ty->getAs<BuiltinType>() && !Ty->hasPointerRepresentation() &&
+      !Ty->isEnumeralType() && !Ty->isBlockPointerType())
+    return false;
+
+  uint64_t Size = Context.getTypeSize(Ty);
+  return Size == 32 || Size == 64;
+}
+
+/// Test whether an argument type which is to be passed indirectly (on the
+/// stack) would have the equivalent layout if it was expanded into separate
+/// arguments. If so, we prefer to do the latter to avoid inhibiting
+/// optimizations.
+bool X86_32ABIInfo::canExpandIndirectArgument(QualType Ty) const {
+  // We can only expand structure types.
+  const RecordType *RT = Ty->getAs<RecordType>();
+  if (!RT)
+    return false;
+  const RecordDecl *RD = RT->getDecl();
+  if (const CXXRecordDecl *CXXRD = dyn_cast<CXXRecordDecl>(RD)) {
+    if (!IsWin32StructABI ) {
+      // On non-Windows, we have to conservatively match our old bitcode
+      // prototypes in order to be ABI-compatible at the bitcode level.
+      if (!CXXRD->isCLike())
+        return false;
+    } else {
+      // Don't do this for dynamic classes.
+      if (CXXRD->isDynamicClass())
+        return false;
+      // Don't do this if there are any non-empty bases.
+      for (const CXXBaseSpecifier &Base : CXXRD->bases()) {
+        if (!isEmptyRecord(getContext(), Base.getType(), /*AllowArrays=*/true))
+          return false;
+      }
+    }
+  }
+
+  uint64_t Size = 0;
+
+  for (const auto *FD : RD->fields()) {
+    // Scalar arguments on the stack get 4 byte alignment on x86. If the
+    // argument is smaller than 32-bits, expanding the struct will create
+    // alignment padding.
+    if (!is32Or64BitBasicType(FD->getType(), getContext()))
+      return false;
+
+    // FIXME: Reject bit-fields wholesale; there are two problems, we don't know
+    // how to expand them yet, and the predicate for telling if a bitfield still
+    // counts as "basic" is more complicated than what we were doing previously.
+    if (FD->isBitField())
+      return false;
+
+    Size += getContext().getTypeSize(FD->getType());
+  }
+
+  // We can do this if there was no alignment padding.
+  return Size == getContext().getTypeSize(Ty);
+}
+
 ABIArgInfo X86_32ABIInfo::getIndirectReturnResult(QualType RetTy, CCState &State) const {
   // If the return value is indirect, then the hidden argument is consuming one
   // integer register.
@@ -1395,6 +1397,12 @@ bool X86_32ABIInfo::updateFreeRegs(QualType Ty, CCState &State) const {
 bool X86_32ABIInfo::shouldAggregateUseDirect(QualType Ty, CCState &State, 
                                              bool &InReg,
                                              bool &NeedsPadding) const {
+  // On Windows, aggregates other than HFAs are never passed in registers, and
+  // they do not consume register slots. Homogenous floating-point aggregates
+  // (HFAs) have already been dealt with at this point.
+  if (IsWin32StructABI && isAggregateTypeForABI(Ty))
+    return false;
+
   NeedsPadding = false;
   InReg = !IsMCUABI;
 
@@ -1468,23 +1476,19 @@ ABIArgInfo X86_32ABIInfo::classifyArgumentType(QualType Ty,
   }
 
   if (isAggregateTypeForABI(Ty)) {
-    if (RT) {
-      // Structs are always byval on win32, regardless of what they contain.
-      if (IsWin32StructABI)
-        return getIndirectResult(Ty, true, State);
+    // Structures with flexible arrays are always indirect.
+    // FIXME: This should not be byval!
+    if (RT && RT->getDecl()->hasFlexibleArrayMember())
+      return getIndirectResult(Ty, true, State);
 
-      // Structures with flexible arrays are always indirect.
-      if (RT->getDecl()->hasFlexibleArrayMember())
-        return getIndirectResult(Ty, true, State);
-    }
-
-    // Ignore empty structs/unions.
-    if (isEmptyRecord(getContext(), Ty, true))
+    // Ignore empty structs/unions on non-Windows.
+    if (!IsWin32StructABI && isEmptyRecord(getContext(), Ty, true))
       return ABIArgInfo::getIgnore();
 
     llvm::LLVMContext &LLVMContext = getVMContext();
     llvm::IntegerType *Int32 = llvm::Type::getInt32Ty(LLVMContext);
-    bool NeedsPadding, InReg;
+    bool NeedsPadding = false;
+    bool InReg;
     if (shouldAggregateUseDirect(Ty, State, InReg, NeedsPadding)) {
       unsigned SizeInRegs = (getContext().getTypeSize(Ty) + 31) / 32;
       SmallVector<llvm::Type*, 3> Elements(SizeInRegs, Int32);
@@ -1502,9 +1506,8 @@ ABIArgInfo X86_32ABIInfo::classifyArgumentType(QualType Ty,
     // optimizations.
     // Don't do this for the MCU if there are still free integer registers
     // (see X86_64 ABI for full explanation).
-    if (getContext().getTypeSize(Ty) <= 4*32 &&
-        canExpandIndirectArgument(Ty, getContext()) &&
-        (!IsMCUABI || State.FreeRegs == 0))
+    if (getContext().getTypeSize(Ty) <= 4 * 32 &&
+        (!IsMCUABI || State.FreeRegs == 0) && canExpandIndirectArgument(Ty))
       return ABIArgInfo::getExpandWithPadding(
           State.CC == llvm::CallingConv::X86_FastCall ||
               State.CC == llvm::CallingConv::X86_VectorCall,
@@ -1624,10 +1627,13 @@ static bool isArgInAlloca(const ABIArgInfo &Info) {
     return false;
   case ABIArgInfo::Direct:
   case ABIArgInfo::Extend:
-  case ABIArgInfo::Expand:
-  case ABIArgInfo::CoerceAndExpand:
     if (Info.getInReg())
       return false;
+    return true;
+  case ABIArgInfo::Expand:
+  case ABIArgInfo::CoerceAndExpand:
+    // These are aggregate types which are never passed in registers when
+    // inalloca is involved.
     return true;
   }
   llvm_unreachable("invalid enum");
@@ -4607,8 +4613,8 @@ bool AArch64ABIInfo::isIllegalVectorType(QualType Ty) const {
     // Check whether VT is legal.
     unsigned NumElements = VT->getNumElements();
     uint64_t Size = getContext().getTypeSize(VT);
-    // NumElements should be power of 2 between 1 and 16.
-    if ((NumElements & (NumElements - 1)) != 0 || NumElements > 16)
+    // NumElements should be power of 2.
+    if (!llvm::isPowerOf2_32(NumElements))
       return true;
     return Size != 64 && (Size != 128 || NumElements == 1);
   }
@@ -5713,12 +5719,12 @@ void NVPTXTargetCodeGenInfo::addNVVMMetadata(llvm::Function *F, StringRef Name,
 
 namespace {
 
-class SystemZABIInfo : public ABIInfo {
+class SystemZABIInfo : public SwiftABIInfo {
   bool HasVector;
 
 public:
   SystemZABIInfo(CodeGenTypes &CGT, bool HV)
-    : ABIInfo(CGT), HasVector(HV) {}
+    : SwiftABIInfo(CGT), HasVector(HV) {}
 
   bool isPromotableIntegerType(QualType Ty) const;
   bool isCompoundType(QualType Ty) const;
@@ -5738,6 +5744,12 @@ public:
 
   Address EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
                     QualType Ty) const override;
+
+  bool shouldPassIndirectlyForSwift(CharUnits totalSize,
+                                    ArrayRef<llvm::Type*> scalars,
+                                    bool asReturnValue) const override {
+    return occupiesMoreThan(CGT, scalars, /*total*/ 4);
+  }
 };
 
 class SystemZTargetCodeGenInfo : public TargetCodeGenInfo {
@@ -6831,6 +6843,49 @@ void AMDGPUTargetCodeGenInfo::setTargetAttributes(
 
 
 //===----------------------------------------------------------------------===//
+// SPARC v8 ABI Implementation.
+// Based on the SPARC Compliance Definition version 2.4.1.
+//
+// Ensures that complex values are passed in registers.
+//
+namespace {
+class SparcV8ABIInfo : public DefaultABIInfo {
+public:
+  SparcV8ABIInfo(CodeGenTypes &CGT) : DefaultABIInfo(CGT) {}
+
+private:
+  ABIArgInfo classifyReturnType(QualType RetTy) const;
+  void computeInfo(CGFunctionInfo &FI) const override;
+};
+} // end anonymous namespace
+
+
+ABIArgInfo
+SparcV8ABIInfo::classifyReturnType(QualType Ty) const {
+  if (Ty->isAnyComplexType()) {
+    return ABIArgInfo::getDirect();
+  }
+  else {
+    return DefaultABIInfo::classifyReturnType(Ty);
+  }
+}
+
+void SparcV8ABIInfo::computeInfo(CGFunctionInfo &FI) const {
+
+  FI.getReturnInfo() = classifyReturnType(FI.getReturnType());
+  for (auto &Arg : FI.arguments())
+    Arg.info = classifyArgumentType(Arg.type);
+}
+
+namespace {
+class SparcV8TargetCodeGenInfo : public TargetCodeGenInfo {
+public:
+  SparcV8TargetCodeGenInfo(CodeGenTypes &CGT)
+    : TargetCodeGenInfo(new SparcV8ABIInfo(CGT)) {}
+};
+} // end anonymous namespace
+
+//===----------------------------------------------------------------------===//
 // SPARC v9 ABI Implementation.
 // Based on the SPARC Compliance Definition version 2.4.1.
 //
@@ -7806,7 +7861,7 @@ const llvm::Triple &CodeGenModule::getTriple() const {
 }
 
 bool CodeGenModule::supportsCOMDAT() const {
-  return !getTriple().isOSBinFormatMachO();
+  return getTriple().supportsCOMDAT();
 }
 
 const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
@@ -7866,7 +7921,8 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
       Kind = ARMABIInfo::AAPCS16_VFP;
     else if (CodeGenOpts.FloatABI == "hard" ||
              (CodeGenOpts.FloatABI != "soft" &&
-              Triple.getEnvironment() == llvm::Triple::GNUEABIHF))
+              (Triple.getEnvironment() == llvm::Triple::GNUEABIHF ||
+               Triple.getEnvironment() == llvm::Triple::EABIHF)))
       Kind = ARMABIInfo::AAPCS_VFP;
 
     return SetCGInfo(new ARMTargetCodeGenInfo(Types, Kind));
@@ -7952,6 +8008,8 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
     return SetCGInfo(new AMDGPUTargetCodeGenInfo(Types));
   case llvm::Triple::amdgcn:
     return SetCGInfo(new AMDGPUTargetCodeGenInfo(Types));
+  case llvm::Triple::sparc:
+    return SetCGInfo(new SparcV8TargetCodeGenInfo(Types));
   case llvm::Triple::sparcv9:
     return SetCGInfo(new SparcV9TargetCodeGenInfo(Types));
   case llvm::Triple::xcore:

@@ -173,6 +173,8 @@ namespace clang {
           return;
       }
 
+      EmbedBitcode(getModule(), CodeGenOpts, llvm::MemoryBufferRef());
+
       EmitBackendOutput(Diags, CodeGenOpts, TargetOpts, LangOpts,
                         C.getTargetInfo().getDataLayout(),
                         getModule(), Action, AsmOutStream);
@@ -413,9 +415,10 @@ BackendConsumer::StackSizeDiagHandler(const llvm::DiagnosticInfoStackSize &D) {
     return false;
 
   if (const Decl *ND = Gen->GetDeclForMangledName(D.getFunction().getName())) {
+    // FIXME: Shouldn't need to truncate to uint32_t
     Diags.Report(ND->getASTContext().getFullLoc(ND->getLocation()),
                  diag::warn_fe_frame_larger_than)
-        << D.getStackSize() << Decl::castToDeclContext(ND);
+      << static_cast<uint32_t>(D.getStackSize()) << Decl::castToDeclContext(ND);
     return true;
   }
 
@@ -454,7 +457,7 @@ const FullSourceLoc BackendConsumer::getBestLocationFromDebugLoc(
     // we could not translate this location. This can happen in the
     // case of #line directives.
     Diags.Report(Loc, diag::note_fe_backend_invalid_loc)
-        << Filename << Line;
+        << Filename << Line << Column;
 
   return Loc;
 }
@@ -831,9 +834,13 @@ void CodeGenAction::ExecuteAction() {
       TheModule->setTargetTriple(TargetOpts.Triple);
     }
 
+    EmbedBitcode(TheModule.get(), CI.getCodeGenOpts(),
+                 MainFile->getMemBufferRef());
+
     LLVMContext &Ctx = TheModule->getContext();
     Ctx.setInlineAsmDiagnosticHandler(BitcodeInlineAsmDiagHandler,
                                       &CI.getDiagnostics());
+
     EmitBackendOutput(CI.getDiagnostics(), CI.getCodeGenOpts(), TargetOpts,
                       CI.getLangOpts(), CI.getTarget().getDataLayout(),
                       TheModule.get(), BA, OS);

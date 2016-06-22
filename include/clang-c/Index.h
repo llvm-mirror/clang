@@ -32,7 +32,7 @@
  * compatible, thus CINDEX_VERSION_MAJOR is expected to remain stable.
  */
 #define CINDEX_VERSION_MAJOR 0
-#define CINDEX_VERSION_MINOR 34
+#define CINDEX_VERSION_MINOR 35
 
 #define CINDEX_VERSION_ENCODE(major, minor) ( \
       ((major) * 10000)                       \
@@ -1932,7 +1932,7 @@ enum CXCursorKind {
    */
   CXCursor_CXXDeleteExpr                 = 135,
 
-  /** \brief A unary expression.
+  /** \brief A unary expression. (noexcept, sizeof, or other traits)
    */
   CXCursor_UnaryExpr                     = 136,
 
@@ -2281,7 +2281,7 @@ enum CXCursorKind {
    */
   CXCursor_OMPTaskLoopSimdDirective      = 259,
 
-   /** \brief OpenMP distribute directive.
+  /** \brief OpenMP distribute directive.
    */
   CXCursor_OMPDistributeDirective        = 260,
 
@@ -2301,7 +2301,11 @@ enum CXCursorKind {
    */
   CXCursor_OMPTargetParallelForDirective = 264,
 
-  CXCursor_LastStmt                   = CXCursor_OMPTargetParallelForDirective,
+  /** \brief OpenMP target update directive.
+   */
+  CXCursor_OMPTargetUpdateDirective      = 265,
+
+  CXCursor_LastStmt                      = CXCursor_OMPTargetUpdateDirective,
 
   /**
    * \brief Cursor that represents the translation unit itself.
@@ -2355,8 +2359,12 @@ enum CXCursorKind {
    */
   CXCursor_ModuleImportDecl              = 600,
   CXCursor_TypeAliasTemplateDecl         = 601,
+  /**
+   * \brief A static_assert or _Static_assert node
+   */
+  CXCursor_StaticAssert                  = 602,
   CXCursor_FirstExtraDecl                = CXCursor_ModuleImportDecl,
-  CXCursor_LastExtraDecl                 = CXCursor_TypeAliasTemplateDecl,
+  CXCursor_LastExtraDecl                 = CXCursor_StaticAssert,
 
   /**
    * \brief A code completion overload candidate.
@@ -2929,6 +2937,7 @@ enum CXTypeKind {
   CXType_ObjCId = 27,
   CXType_ObjCClass = 28,
   CXType_ObjCSel = 29,
+  CXType_Float128 = 30,
   CXType_FirstBuiltin = CXType_Void,
   CXType_LastBuiltin  = CXType_ObjCSel,
 
@@ -2950,7 +2959,14 @@ enum CXTypeKind {
   CXType_VariableArray = 115,
   CXType_DependentSizedArray = 116,
   CXType_MemberPointer = 117,
-  CXType_Auto = 118
+  CXType_Auto = 118,
+
+  /**
+   * \brief Represents a type that was referred to using an elaborated type keyword.
+   *
+   * E.g., struct S, or via a qualified name, e.g., N::M::type, or both.
+   */
+  CXType_Elaborated = 119
 };
 
 /**
@@ -3338,6 +3354,13 @@ CINDEX_LINKAGE CXType clang_getArrayElementType(CXType T);
  * If a non-array type is passed in, -1 is returned.
  */
 CINDEX_LINKAGE long long clang_getArraySize(CXType T);
+
+/**
+ * \brief Retrieve the type named by the qualified-id.
+ *
+ * If a non-elaborated type is passed in, an invalid type is returned.
+ */
+CINDEX_LINKAGE CXType clang_Type_getNamedType(CXType T);
 
 /**
  * \brief List the possible error codes for \c clang_Type_getSizeOf,
@@ -3892,7 +3915,8 @@ typedef enum {
   CXObjCPropertyAttr_atomic    = 0x100,
   CXObjCPropertyAttr_weak      = 0x200,
   CXObjCPropertyAttr_strong    = 0x400,
-  CXObjCPropertyAttr_unsafe_unretained = 0x800
+  CXObjCPropertyAttr_unsafe_unretained = 0x800,
+  CXObjCPropertyAttr_class = 0x1000
 } CXObjCPropertyAttrKind;
 
 /**
@@ -5286,7 +5310,7 @@ enum CXVisitorResult {
   CXVisit_Continue
 };
 
-typedef struct {
+typedef struct CXCursorAndRangeVisitor {
   void *context;
   enum CXVisitorResult (*visit)(void *context, CXCursor, CXSourceRange);
 } CXCursorAndRangeVisitor;

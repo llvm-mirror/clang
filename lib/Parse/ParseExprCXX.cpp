@@ -739,8 +739,11 @@ ExprResult Parser::TryParseLambdaExpression() {
          && Tok.is(tok::l_square)
          && "Not at the start of a possible lambda expression.");
 
-  const Token Next = NextToken(), After = GetLookAheadToken(2);
+  const Token Next = NextToken();
+  if (Next.is(tok::eof)) // Nothing else to lookup here...
+    return ExprEmpty();
 
+  const Token After = GetLookAheadToken(2);
   // If lookahead indicates this is a lambda...
   if (Next.is(tok::r_square) ||     // []
       Next.is(tok::equal) ||        // [=
@@ -1927,6 +1930,9 @@ void Parser::ParseCXXSimpleTypeSpecifier(DeclSpec &DS) {
     break;
   case tok::kw_double:
     DS.SetTypeSpecType(DeclSpec::TST_double, Loc, PrevSpec, DiagID, Policy);
+    break;
+  case tok::kw___float128:
+    DS.SetTypeSpecType(DeclSpec::TST_float128, Loc, PrevSpec, DiagID, Policy);
     break;
   case tok::kw_wchar_t:
     DS.SetTypeSpecType(DeclSpec::TST_wchar, Loc, PrevSpec, DiagID, Policy);

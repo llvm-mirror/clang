@@ -39,6 +39,7 @@ enum : SanitizerMask {
   TrappingSupported =
       (Undefined & ~Vptr) | UnsignedIntegerOverflow | LocalBounds | CFI,
   TrappingDefault = CFI,
+  CFIClasses = CFIVCall | CFINVCall | CFIDerivedCast | CFIUnrelatedCast,
 };
 
 enum CoverageFeature {
@@ -158,11 +159,10 @@ static SanitizerMask parseSanitizeTrapArgs(const Driver &D,
 }
 
 bool SanitizerArgs::needsUbsanRt() const {
-  return (Sanitizers.Mask & NeedsUbsanRt & ~TrapSanitizers.Mask) &&
-         !Sanitizers.has(Address) &&
-         !Sanitizers.has(Memory) &&
-         !Sanitizers.has(Thread) &&
-         !CfiCrossDso;
+  return ((Sanitizers.Mask & NeedsUbsanRt & ~TrapSanitizers.Mask) ||
+          CoverageFeatures) &&
+         !Sanitizers.has(Address) && !Sanitizers.has(Memory) &&
+         !Sanitizers.has(Thread) && !Sanitizers.has(DataFlow) && !CfiCrossDso;
 }
 
 bool SanitizerArgs::needsCfiRt() const {
@@ -339,11 +339,13 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   for (const auto *Arg : Args) {
     const char *DeprecatedReplacement = nullptr;
     if (Arg->getOption().matches(options::OPT_fsanitize_recover)) {
-      DeprecatedReplacement = "-fsanitize-recover=undefined,integer";
+      DeprecatedReplacement =
+          "-fsanitize-recover=undefined,integer' or '-fsanitize-recover=all";
       RecoverableKinds |= expandSanitizerGroups(LegacyFsanitizeRecoverMask);
       Arg->claim();
     } else if (Arg->getOption().matches(options::OPT_fno_sanitize_recover)) {
-      DeprecatedReplacement = "-fno-sanitize-recover=undefined,integer";
+      DeprecatedReplacement = "-fno-sanitize-recover=undefined,integer' or "
+                              "'-fno-sanitize-recover=all";
       RecoverableKinds &= ~expandSanitizerGroups(LegacyFsanitizeRecoverMask);
       Arg->claim();
     } else if (Arg->getOption().matches(options::OPT_fsanitize_recover_EQ)) {
@@ -482,10 +484,10 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
         continue;
       }
       CoverageFeatures |= parseCoverageFeatures(D, Arg);
-      // If there is trace-pc, allow it w/o any of the sanitizers.
-      // Otherwise, require that one of the supported sanitizers is present.
-      if ((CoverageFeatures & CoverageTracePC) ||
-          (AllAddedKinds & SupportsCoverage)) {
+
+      // Disable coverage and not claim the flags if there is at least one
+      // non-supporting sanitizer.
+      if (!(AllAddedKinds & ~setGroupBits(SupportsCoverage))) {
         Arg->claim();
       } else {
         CoverageFeatures = 0;
@@ -556,6 +558,14 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     }
   }
 
+  AsanUseAfterScope =
+      Args.hasArg(options::OPT_fsanitize_address_use_after_scope);
+  if (AsanUseAfterScope && !(AllAddedKinds & Address)) {
+    D.Diag(clang::diag::err_drv_argument_only_allowed_with)
+        << "-fsanitize-address-use-after-scope"
+        << "-fsanitize=address";
+  }
+
   // Parse -link-cxx-sanitizer flag.
   LinkCXXRuntimes =
       Args.hasArg(options::OPT_fsanitize_link_cxx_runtime) || D.CCCIsCXX();
@@ -612,6 +622,28 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
       CmdArgs.push_back(Args.MakeArgString(F.second));
   }
 
+  if (TC.getTriple().isOSWindows() && needsUbsanRt()) {
+    // Instruct the code generator to embed linker directives in the object file
+    // that cause the required runtime libraries to be linked.
+    CmdArgs.push_back(Args.MakeArgString(
+        "--dependent-lib=" + TC.getCompilerRT(Args, "ubsan_standalone")));
+    if (types::isCXX(InputType))
+      CmdArgs.push_back(Args.MakeArgString(
+          "--dependent-lib=" + TC.getCompilerRT(Args, "ubsan_standalone_cxx")));
+  }
+  if (TC.getTriple().isOSWindows() && needsStatsRt()) {
+    CmdArgs.push_back(Args.MakeArgString("--dependent-lib=" +
+                                         TC.getCompilerRT(Args, "stats_client")));
+
+    // The main executable must export the stats runtime.
+    // FIXME: Only exporting from the main executable (e.g. based on whether the
+    // translation unit defines main()) would save a little space, but having
+    // multiple copies of the runtime shouldn't hurt.
+    CmdArgs.push_back(Args.MakeArgString("--dependent-lib=" +
+                                         TC.getCompilerRT(Args, "stats")));
+    addIncludeLinkerOption(TC, Args, CmdArgs, "__sanitizer_stats_register");
+  }
+
   if (Sanitizers.empty())
     return;
   CmdArgs.push_back(Args.MakeArgString("-fsanitize=" + toString(Sanitizers)));
@@ -652,6 +684,9 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-address-field-padding=" +
                                          llvm::utostr(AsanFieldPadding)));
 
+  if (AsanUseAfterScope)
+    CmdArgs.push_back(Args.MakeArgString("-fsanitize-address-use-after-scope"));
+
   // MSan: Workaround for PR16386.
   // ASan: This is mainly to help LSan with cases such as
   // https://code.google.com/p/address-sanitizer/issues/detail?id=373
@@ -660,26 +695,14 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
   if (Sanitizers.has(Memory) || Sanitizers.has(Address))
     CmdArgs.push_back(Args.MakeArgString("-fno-assume-sane-operator-new"));
 
-  if (TC.getTriple().isOSWindows() && needsUbsanRt()) {
-    // Instruct the code generator to embed linker directives in the object file
-    // that cause the required runtime libraries to be linked.
-    CmdArgs.push_back(Args.MakeArgString(
-        "--dependent-lib=" + TC.getCompilerRT(Args, "ubsan_standalone")));
-    if (types::isCXX(InputType))
-      CmdArgs.push_back(Args.MakeArgString(
-          "--dependent-lib=" + TC.getCompilerRT(Args, "ubsan_standalone_cxx")));
-  }
-  if (TC.getTriple().isOSWindows() && needsStatsRt()) {
-    CmdArgs.push_back(Args.MakeArgString("--dependent-lib=" +
-                                         TC.getCompilerRT(Args, "stats_client")));
-
-    // The main executable must export the stats runtime.
-    // FIXME: Only exporting from the main executable (e.g. based on whether the
-    // translation unit defines main()) would save a little space, but having
-    // multiple copies of the runtime shouldn't hurt.
-    CmdArgs.push_back(Args.MakeArgString("--dependent-lib=" +
-                                         TC.getCompilerRT(Args, "stats")));
-    addIncludeLinkerOption(TC, Args, CmdArgs, "__sanitizer_stats_register");
+  // Require -fvisibility= flag on non-Windows when compiling if vptr CFI is
+  // enabled.
+  if (Sanitizers.hasOneOf(CFIClasses) && !TC.getTriple().isOSWindows() &&
+      !Args.hasArg(options::OPT_fvisibility_EQ)) {
+    TC.getDriver().Diag(clang::diag::err_drv_argument_only_allowed_with)
+        << lastArgumentForMask(TC.getDriver(), Args,
+                               Sanitizers.Mask & CFIClasses)
+        << "-fvisibility=";
   }
 }
 

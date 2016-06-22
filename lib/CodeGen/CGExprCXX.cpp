@@ -54,7 +54,7 @@ commonEmitCXXMemberOrOperatorCall(CodeGenFunction &CGF, const CXXMethodDecl *MD,
   }
 
   const FunctionProtoType *FPT = MD->getType()->castAs<FunctionProtoType>();
-  RequiredArgs required = RequiredArgs::forPrototypePlus(FPT, Args.size());
+  RequiredArgs required = RequiredArgs::forPrototypePlus(FPT, Args.size(), MD);
 
   // And the rest of the call args.
   if (CE) {
@@ -274,7 +274,7 @@ RValue CodeGenFunction::EmitCXXMemberOrOperatorMemberCallExpr(
 
   if (MD->isVirtual()) {
     This = CGM.getCXXABI().adjustThisArgumentForVirtualFunctionCall(
-        *this, MD, This, UseVirtualCall);
+        *this, CalleeDecl, This, UseVirtualCall);
   }
 
   return EmitCXXMemberOrOperatorCall(MD, Callee, ReturnValue, This.getPointer(),
@@ -324,10 +324,11 @@ CodeGenFunction::EmitCXXMemberPointerCallExpr(const CXXMemberCallExpr *E,
   // Push the this ptr.
   Args.add(RValue::get(ThisPtrForCall), ThisType);
 
-  RequiredArgs required = RequiredArgs::forPrototypePlus(FPT, 1);
-  
+  RequiredArgs required =
+      RequiredArgs::forPrototypePlus(FPT, 1, /*FD=*/nullptr);
+
   // And the rest of the call args
-  EmitCallArgs(Args, FPT, E->arguments(), E->getDirectCallee());
+  EmitCallArgs(Args, FPT, E->arguments());
   return EmitCall(CGM.getTypes().arrangeCXXMethodCall(Args, FPT, required),
                   Callee, ReturnValue, Args);
 }
@@ -370,6 +371,9 @@ static void EmitNullBaseClassInitialization(CodeGenFunction &CGF,
   std::vector<CharUnits> VBPtrOffsets =
       CGF.CGM.getCXXABI().getVBPtrOffsets(Base);
   for (CharUnits VBPtrOffset : VBPtrOffsets) {
+    // Stop before we hit any virtual base pointers located in virtual bases.
+    if (VBPtrOffset >= NVSize)
+      break;
     std::pair<CharUnits, CharUnits> LastStore = Stores.pop_back_val();
     CharUnits LastStoreOffset = LastStore.first;
     CharUnits LastStoreSize = LastStore.second;
@@ -472,8 +476,8 @@ CodeGenFunction::EmitCXXConstructExpr(const CXXConstructExpr *E,
     }
   }
   
-  if (const ConstantArrayType *arrayType 
-        = getContext().getAsConstantArrayType(E->getType())) {
+  if (const ArrayType *arrayType
+        = getContext().getAsArrayType(E->getType())) {
     EmitCXXAggrConstructorCall(CD, arrayType, Dest.getAddress(), E);
   } else {
     CXXCtorType Type = Ctor_Complete;

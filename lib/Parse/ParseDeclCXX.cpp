@@ -1100,6 +1100,13 @@ bool Parser::isValidAfterTypeSpecifier(bool CouldBeBitfield) {
   // FIXME: we should emit semantic diagnostic when declaration
   // attribute is in type attribute position.
   case tok::kw___attribute:     // struct foo __attribute__((used)) x;
+  case tok::annot_pragma_pack:  // struct foo {...} _Pragma(pack(pop));
+  // struct foo {...} _Pragma(section(...));
+  case tok::annot_pragma_ms_pragma:
+  // struct foo {...} _Pragma(vtordisp(pop));
+  case tok::annot_pragma_ms_vtordisp:
+  // struct foo {...} _Pragma(pointers_to_members(...));
+  case tok::annot_pragma_ms_pointers_to_members:
     return true;
   case tok::colon:
     return CouldBeBitfield;     // enum E { ... }   :         2;
@@ -1269,6 +1276,7 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
       Tok.isOneOf(tok::kw___is_abstract,
                   tok::kw___is_arithmetic,
                   tok::kw___is_array,
+                  tok::kw___is_assignable,
                   tok::kw___is_base_of,
                   tok::kw___is_class,
                   tok::kw___is_complete_type,
@@ -1670,7 +1678,7 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
           // template specialization.
           FakedParamLists.push_back(Actions.ActOnTemplateParameterList(
               0, SourceLocation(), TemplateInfo.TemplateLoc, LAngleLoc, None,
-              LAngleLoc));
+              LAngleLoc, nullptr));
           TemplateParams = &FakedParamLists;
         }
       }

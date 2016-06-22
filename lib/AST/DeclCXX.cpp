@@ -53,6 +53,7 @@ CXXRecordDecl::DefinitionData::DefinitionData(CXXRecordDecl *D)
       HasPublicFields(false), HasMutableFields(false), HasVariantMembers(false),
       HasOnlyCMembers(true), HasInClassInitializer(false),
       HasUninitializedReferenceMember(false), HasUninitializedFields(false),
+      HasInheritedConstructor(false), HasInheritedAssignment(false),
       NeedOverloadResolutionForMoveConstructor(false),
       NeedOverloadResolutionForMoveAssignment(false),
       NeedOverloadResolutionForDestructor(false),
@@ -87,7 +88,7 @@ CXXRecordDecl::CXXRecordDecl(Kind K, TagKind TK, const ASTContext &C,
                              CXXRecordDecl *PrevDecl)
     : RecordDecl(K, TK, C, DC, StartLoc, IdLoc, Id, PrevDecl),
       DefinitionData(PrevDecl ? PrevDecl->DefinitionData
-                              : DefinitionDataPtr(this)),
+                              : nullptr),
       TemplateOrInstantiation() {}
 
 CXXRecordDecl *CXXRecordDecl::Create(const ASTContext &C, TagKind TK,
@@ -171,8 +172,6 @@ CXXRecordDecl::setBases(CXXBaseSpecifier const * const *Bases,
     CXXRecordDecl *BaseClassDecl
       = cast<CXXRecordDecl>(BaseType->getAs<RecordType>()->getDecl());
 
-    // A class with a non-empty base class is not empty.
-    // FIXME: Standard ref?
     if (!BaseClassDecl->isEmpty()) {
       if (!data().Empty) {
         // C++0x [class]p7:
@@ -186,6 +185,9 @@ CXXRecordDecl::setBases(CXXBaseSpecifier const * const *Bases,
         data().IsStandardLayout = false;
       }
 
+      // C++14 [meta.unary.prop]p4:
+      //   T is a class type [...] with [...] no base class B for which
+      //   is_empty<B>::value is false.
       data().Empty = false;
       data().HasNoNonEmptyBases = false;
     }
@@ -237,9 +239,9 @@ CXXRecordDecl::setBases(CXXBaseSpecifier const * const *Bases,
       if (SeenVBaseTypes.insert(C.getCanonicalType(BaseType)).second)
         VBases.push_back(Base);
 
-      // C++11 [meta.unary.prop] is_empty:
-      //    T is a class type, but not a union type, with ... no virtual base
-      //    classes
+      // C++14 [meta.unary.prop] is_empty:
+      //   T is a class type, but not a union type, with ... no virtual base
+      //   classes
       data().Empty = false;
 
       // C++1z [dcl.init.agg]p1:
@@ -457,8 +459,8 @@ void CXXRecordDecl::addedMember(Decl *D) {
       //   A POD-struct is an aggregate class...
       data().PlainOldData = false;
       
-      // Virtual functions make the class non-empty.
-      // FIXME: Standard ref?
+      // C++14 [meta.unary.prop]p4:
+      //   T is a class type [...] with [...] no virtual member functions...
       data().Empty = false;
 
       // C++ [class.virtual]p1:
@@ -937,7 +939,9 @@ void CXXRecordDecl::addedMember(Decl *D) {
     if (!data().HasNoNonEmptyBases)
       data().IsStandardLayout = false;
 
-    // If this is not a zero-length bit-field, then the class is not empty.
+    // C++14 [meta.unary.prop]p4:
+    //   T is a class type [...] with [...] no non-static data members other
+    //   than bit-fields of length 0...
     if (data().Empty) {
       if (!Field->isBitField() ||
           (!Field->getBitWidth()->isTypeDependent() &&
@@ -954,6 +958,15 @@ void CXXRecordDecl::addedMember(Decl *D) {
       ASTContext &Ctx = getASTContext();
       data().Conversions.get(Ctx).addDecl(Ctx, Shadow, Shadow->getAccess());
     }
+  }
+
+  if (UsingDecl *Using = dyn_cast<UsingDecl>(D)) {
+    if (Using->getDeclName().getNameKind() ==
+        DeclarationName::CXXConstructorName)
+      data().HasInheritedConstructor = true;
+
+    if (Using->getDeclName().getCXXOverloadedOperator() == OO_Equal)
+      data().HasInheritedAssignment = true;
   }
 }
 
@@ -1633,7 +1646,7 @@ QualType CXXMethodDecl::getThisType(ASTContext &C) const {
 
   QualType ClassTy = C.getTypeDeclType(getParent());
   ClassTy = C.getQualifiedType(ClassTy,
-                               Qualifiers::fromCVRMask(getTypeQualifiers()));
+                               Qualifiers::fromCVRUMask(getTypeQualifiers()));
   return C.getPointerType(ClassTy);
 }
 

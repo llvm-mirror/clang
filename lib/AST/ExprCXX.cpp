@@ -750,7 +750,8 @@ SourceLocation CXXTemporaryObjectExpr::getLocEnd() const {
 
 CXXConstructExpr *CXXConstructExpr::Create(const ASTContext &C, QualType T,
                                            SourceLocation Loc,
-                                           CXXConstructorDecl *D, bool Elidable,
+                                           CXXConstructorDecl *Ctor,
+                                           bool Elidable,
                                            ArrayRef<Expr*> Args,
                                            bool HadMultipleCandidates,
                                            bool ListInitialization,
@@ -758,8 +759,8 @@ CXXConstructExpr *CXXConstructExpr::Create(const ASTContext &C, QualType T,
                                            bool ZeroInitialization,
                                            ConstructionKind ConstructKind,
                                            SourceRange ParenOrBraceRange) {
-  return new (C) CXXConstructExpr(C, CXXConstructExprClass, T, Loc, D, 
-                                  Elidable, Args,
+  return new (C) CXXConstructExpr(C, CXXConstructExprClass, T, Loc,
+                                  Ctor, Elidable, Args,
                                   HadMultipleCandidates, ListInitialization,
                                   StdInitListInitialization,
                                   ZeroInitialization, ConstructKind,
@@ -768,8 +769,9 @@ CXXConstructExpr *CXXConstructExpr::Create(const ASTContext &C, QualType T,
 
 CXXConstructExpr::CXXConstructExpr(const ASTContext &C, StmtClass SC,
                                    QualType T, SourceLocation Loc,
-                                   CXXConstructorDecl *D, bool elidable,
-                                   ArrayRef<Expr*> args,
+                                   CXXConstructorDecl *Ctor,
+                                   bool Elidable,
+                                   ArrayRef<Expr*> Args,
                                    bool HadMultipleCandidates,
                                    bool ListInitialization,
                                    bool StdInitListInitialization,
@@ -780,39 +782,36 @@ CXXConstructExpr::CXXConstructExpr(const ASTContext &C, StmtClass SC,
          T->isDependentType(), T->isDependentType(),
          T->isInstantiationDependentType(),
          T->containsUnexpandedParameterPack()),
-    Constructor(D), Loc(Loc), ParenOrBraceRange(ParenOrBraceRange),
-    NumArgs(args.size()),
-    Elidable(elidable), HadMultipleCandidates(HadMultipleCandidates),
+    Constructor(Ctor), Loc(Loc), ParenOrBraceRange(ParenOrBraceRange),
+    NumArgs(Args.size()),
+    Elidable(Elidable), HadMultipleCandidates(HadMultipleCandidates),
     ListInitialization(ListInitialization),
     StdInitListInitialization(StdInitListInitialization),
     ZeroInitialization(ZeroInitialization),
     ConstructKind(ConstructKind), Args(nullptr)
 {
   if (NumArgs) {
-    Args = new (C) Stmt*[args.size()];
+    this->Args = new (C) Stmt*[Args.size()];
     
-    for (unsigned i = 0; i != args.size(); ++i) {
-      assert(args[i] && "NULL argument in CXXConstructExpr");
+    for (unsigned i = 0; i != Args.size(); ++i) {
+      assert(Args[i] && "NULL argument in CXXConstructExpr");
 
-      if (args[i]->isValueDependent())
+      if (Args[i]->isValueDependent())
         ExprBits.ValueDependent = true;
-      if (args[i]->isInstantiationDependent())
+      if (Args[i]->isInstantiationDependent())
         ExprBits.InstantiationDependent = true;
-      if (args[i]->containsUnexpandedParameterPack())
+      if (Args[i]->containsUnexpandedParameterPack())
         ExprBits.ContainsUnexpandedParameterPack = true;
   
-      Args[i] = args[i];
+      this->Args[i] = Args[i];
     }
   }
 }
 
-LambdaCapture::OpaqueCapturedEntity LambdaCapture::ThisSentinel;
-LambdaCapture::OpaqueCapturedEntity LambdaCapture::VLASentinel;
-
 LambdaCapture::LambdaCapture(SourceLocation Loc, bool Implicit,
                              LambdaCaptureKind Kind, VarDecl *Var,
                              SourceLocation EllipsisLoc)
-  : CapturedEntityAndBits(Var, 0), Loc(Loc), EllipsisLoc(EllipsisLoc)
+  : DeclAndBits(Var, 0), Loc(Loc), EllipsisLoc(EllipsisLoc)
 {
   unsigned Bits = 0;
   if (Implicit)
@@ -824,7 +823,7 @@ LambdaCapture::LambdaCapture(SourceLocation Loc, bool Implicit,
     // Fall through
   case LCK_This:
     assert(!Var && "'this' capture cannot have a variable!");
-    CapturedEntityAndBits.setPointer(&ThisSentinel);
+    Bits |= Capture_This;
     break;
 
   case LCK_ByCopy:
@@ -835,19 +834,16 @@ LambdaCapture::LambdaCapture(SourceLocation Loc, bool Implicit,
     break;
   case LCK_VLAType:
     assert(!Var && "VLA type capture cannot have a variable!");
-    CapturedEntityAndBits.setPointer(&VLASentinel);
     break;
   }
-  CapturedEntityAndBits.setInt(Bits);
+  DeclAndBits.setInt(Bits);
 }
 
 LambdaCaptureKind LambdaCapture::getCaptureKind() const {
-  void *Ptr = CapturedEntityAndBits.getPointer();
-  if (Ptr == &VLASentinel)
+  if (capturesVLAType())
     return LCK_VLAType;
-  const unsigned Bits = CapturedEntityAndBits.getInt();
-  bool CapByCopy = Bits & Capture_ByCopy;
-  if (Ptr == &ThisSentinel)
+  bool CapByCopy = DeclAndBits.getInt() & Capture_ByCopy;
+  if (capturesThis())
     return CapByCopy ? LCK_StarThis : LCK_This;
   return CapByCopy ? LCK_ByCopy : LCK_ByRef;
 }

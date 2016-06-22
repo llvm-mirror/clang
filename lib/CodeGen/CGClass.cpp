@@ -1915,7 +1915,7 @@ void CodeGenFunction::EnterDtorCleanups(const CXXDestructorDecl *DD,
 /// \param zeroInitialize true if each element should be
 ///   zero-initialized before it is constructed
 void CodeGenFunction::EmitCXXAggrConstructorCall(
-    const CXXConstructorDecl *ctor, const ConstantArrayType *arrayType,
+    const CXXConstructorDecl *ctor, const ArrayType *arrayType,
     Address arrayBegin, const CXXConstructExpr *E, bool zeroInitialize) {
   QualType elementType;
   llvm::Value *numElements =
@@ -2489,7 +2489,7 @@ void CodeGenFunction::EmitBitSetCodeForVCall(const CXXRecordDecl *RD,
                                              llvm::Value *VTable,
                                              SourceLocation Loc) {
   if (CGM.getCodeGenOpts().WholeProgramVTables &&
-      !CGM.IsBitSetBlacklistedRecord(RD)) {
+      CGM.HasHiddenLTOVisibility(RD)) {
     llvm::Metadata *MD =
         CGM.CreateMetadataIdentifierForType(QualType(RD->getTypeForDecl(), 0));
     llvm::Value *BitSetName =
@@ -2565,7 +2565,12 @@ void CodeGenFunction::EmitVTablePtrCheck(const CXXRecordDecl *RD,
                                          llvm::Value *VTable,
                                          CFITypeCheckKind TCK,
                                          SourceLocation Loc) {
-  if (CGM.IsBitSetBlacklistedRecord(RD))
+  if (!CGM.getCodeGenOpts().SanitizeCfiCrossDso &&
+      !CGM.HasHiddenLTOVisibility(RD))
+    return;
+
+  std::string TypeName = RD->getQualifiedNameAsString();
+  if (getContext().getSanitizerBlacklist().isBlacklistedType(TypeName))
     return;
 
   SanitizerScope SanScope(this);

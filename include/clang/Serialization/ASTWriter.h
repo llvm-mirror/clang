@@ -565,6 +565,17 @@ public:
   /// decl.
   const Decl *getFirstLocalDecl(const Decl *D);
 
+  /// \brief Is this a local declaration (that is, one that will be written to
+  /// our AST file)? This is the case for declarations that are neither imported
+  /// from another AST file nor predefined.
+  bool IsLocalDecl(const Decl *D) {
+    if (D->isFromASTFile())
+      return false;
+    auto I = DeclIDs.find(D);
+    return (I == DeclIDs.end() ||
+            I->second >= serialization::NUM_PREDEF_DECL_IDS);
+  };
+
   /// \brief Emit a reference to a declaration.
   void AddDeclRef(const Decl *D, RecordDataImpl &Record);
 
@@ -671,7 +682,8 @@ private:
                                     const ObjCInterfaceDecl *IFD) override;
   void DeclarationMarkedUsed(const Decl *D) override;
   void DeclarationMarkedOpenMPThreadPrivate(const Decl *D) override;
-  void DeclarationMarkedOpenMPDeclareTarget(const Decl *D) override;
+  void DeclarationMarkedOpenMPDeclareTarget(const Decl *D,
+                                            const Attr *Attr) override;
   void RedefinedHiddenDefinition(const NamedDecl *D, Module *M) override;
   void AddedAttributeToRecord(const Attr *Attr,
                               const RecordDecl *Record) override;

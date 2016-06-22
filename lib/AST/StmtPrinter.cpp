@@ -912,6 +912,22 @@ void OMPClausePrinter::VisitOMPMapClause(OMPMapClause *Node) {
   }
 }
 
+void OMPClausePrinter::VisitOMPToClause(OMPToClause *Node) {
+  if (!Node->varlist_empty()) {
+    OS << "to";
+    VisitOMPClauseList(Node, '(');
+    OS << ")";
+  }
+}
+
+void OMPClausePrinter::VisitOMPFromClause(OMPFromClause *Node) {
+  if (!Node->varlist_empty()) {
+    OS << "from";
+    VisitOMPClauseList(Node, '(');
+    OS << ")";
+  }
+}
+
 void OMPClausePrinter::VisitOMPDistScheduleClause(OMPDistScheduleClause *Node) {
   OS << "dist_schedule(" << getOpenMPSimpleClauseTypeName(
                            OMPC_dist_schedule, Node->getDistScheduleKind());
@@ -1131,6 +1147,12 @@ void StmtPrinter::VisitOMPDistributeDirective(OMPDistributeDirective *Node) {
   PrintOMPExecutableDirective(Node);
 }
 
+void StmtPrinter::VisitOMPTargetUpdateDirective(
+    OMPTargetUpdateDirective *Node) {
+  Indent() << "#pragma omp target update ";
+  PrintOMPExecutableDirective(Node);
+}
+
 //===----------------------------------------------------------------------===//
 //  Expr printing methods.
 //===----------------------------------------------------------------------===//
@@ -1310,6 +1332,7 @@ static void PrintFloatingLiteral(raw_ostream &OS, FloatingLiteral *Node,
   case BuiltinType::Double:     break; // no suffix.
   case BuiltinType::Float:      OS << 'F'; break;
   case BuiltinType::LongDouble: OS << 'L'; break;
+  case BuiltinType::Float128:   OS << 'Q'; break;
   }
 }
 
@@ -1396,9 +1419,9 @@ void StmtPrinter::VisitUnaryExprOrTypeTraitExpr(UnaryExprOrTypeTraitExpr *Node){
     OS << "sizeof";
     break;
   case UETT_AlignOf:
-    if (Policy.LangOpts.CPlusPlus)
+    if (Policy.Alignof)
       OS << "alignof";
-    else if (Policy.LangOpts.C11)
+    else if (Policy.UnderscoreAlignof)
       OS << "_Alignof";
     else
       OS << "__alignof";
@@ -1668,7 +1691,7 @@ void StmtPrinter::VisitNoInitExpr(NoInitExpr *Node) {
 }
 
 void StmtPrinter::VisitImplicitValueInitExpr(ImplicitValueInitExpr *Node) {
-  if (Policy.LangOpts.CPlusPlus) {
+  if (Node->getType()->getAsCXXRecordDecl()) {
     OS << "/*implicit*/";
     Node->getType().print(OS, Policy);
     OS << "()";

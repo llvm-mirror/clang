@@ -37,6 +37,7 @@ class Value;
 namespace clang {
 class Expr;
 class GlobalDecl;
+class OMPDependClause;
 class OMPExecutableDirective;
 class OMPLoopDirective;
 class VarDecl;
@@ -85,6 +86,23 @@ public:
         PrePostAction(nullptr) {}
   void setAction(PrePostActionTy &Action) const { PrePostAction = &Action; }
   void operator()(CodeGenFunction &CGF) const;
+};
+
+struct OMPTaskDataTy final {
+  SmallVector<const Expr *, 4> PrivateVars;
+  SmallVector<const Expr *, 4> PrivateCopies;
+  SmallVector<const Expr *, 4> FirstprivateVars;
+  SmallVector<const Expr *, 4> FirstprivateCopies;
+  SmallVector<const Expr *, 4> FirstprivateInits;
+  SmallVector<const Expr *, 4> LastprivateVars;
+  SmallVector<const Expr *, 4> LastprivateCopies;
+  SmallVector<std::pair<OpenMPDependClauseKind, const Expr *>, 4> Dependences;
+  llvm::PointerIntPair<llvm::Value *, 1, bool> Final;
+  llvm::PointerIntPair<llvm::Value *, 1, bool> Schedule;
+  llvm::PointerIntPair<llvm::Value *, 1, bool> Priority;
+  unsigned NumberOfParts = 0;
+  bool Tied = true;
+  bool Nogroup = false;
 };
 
 class CGOpenMPRuntime {
@@ -184,6 +202,12 @@ private:
   ///    } flags;
   /// } kmp_depend_info_t;
   QualType KmpDependInfoTy;
+  /// struct kmp_dim {  // loop bounds info casted to kmp_int64
+  ///  kmp_int64 lo; // lower
+  ///  kmp_int64 up; // upper
+  ///  kmp_int64 st; // stride
+  /// };
+  QualType KmpDimTy;
   /// \brief Type struct __tgt_offload_entry{
   ///   void      *addr;       // Pointer to the offload entry info.
   ///                          // (function or global)
@@ -433,12 +457,13 @@ private:
   ///
   llvm::Value *getCriticalRegionLock(StringRef CriticalName);
 
-  struct TaskDataTy {
-    llvm::Value *NewTask;
-    llvm::Value *TaskEntry;
-    llvm::Value *NewTaskNewTaskTTy;
+  struct TaskResultTy {
+    llvm::Value *NewTask = nullptr;
+    llvm::Value *TaskEntry = nullptr;
+    llvm::Value *NewTaskNewTaskTTy = nullptr;
     LValue TDBase;
-    RecordDecl *KmpTaskTQTyRD;
+    RecordDecl *KmpTaskTQTyRD = nullptr;
+    llvm::Value *TaskDupFn = nullptr;
   };
   /// Emit task region for the task directive. The task region is emitted in
   /// several steps:
@@ -455,39 +480,17 @@ private:
   /// 3. Copy a pointer to destructions function to field destructions of the
   /// resulting structure kmp_task_t.
   /// \param D Current task directive.
-  /// \param Tied true if the task is tied (the task is tied to the thread that
-  /// can suspend its task region), false - untied (the task is not tied to any
-  /// thread).
-  /// \param Final Contains either constant bool value, or llvm::Value * of i1
-  /// type for final clause. If the value is true, the task forces all of its
-  /// child tasks to become final and included tasks.
-  /// \param NumberOfParts Number of parts in untied tasks.
   /// \param TaskFunction An LLVM function with type void (*)(i32 /*gtid*/, i32
   /// /*part_id*/, captured_struct */*__context*/);
   /// \param SharedsTy A type which contains references the shared variables.
   /// \param Shareds Context with the list of shared variables from the \p
   /// TaskFunction.
-  /// \param PrivateVars List of references to private variables for the task
-  /// directive.
-  /// \param PrivateCopies List of private copies for each private variable in
-  /// \p PrivateVars.
-  /// \param FirstprivateVars List of references to private variables for the
-  /// task directive.
-  /// \param FirstprivateCopies List of private copies for each private variable
-  /// in \p FirstprivateVars.
-  /// \param FirstprivateInits List of references to auto generated variables
-  /// used for initialization of a single array element. Used if firstprivate
-  /// variable is of array type.
-  TaskDataTy emitTaskInit(CodeGenFunction &CGF, SourceLocation Loc,
-                          const OMPExecutableDirective &D, bool Tied,
-                          llvm::PointerIntPair<llvm::Value *, 1, bool> Final,
-                          unsigned NumberOfParts, llvm::Value *TaskFunction,
-                          QualType SharedsTy, Address Shareds,
-                          ArrayRef<const Expr *> PrivateVars,
-                          ArrayRef<const Expr *> PrivateCopies,
-                          ArrayRef<const Expr *> FirstprivateVars,
-                          ArrayRef<const Expr *> FirstprivateCopies,
-                          ArrayRef<const Expr *> FirstprivateInits);
+  /// \param Data Additional data for task generation like tiednsee, final
+  /// state, list of privates etc.
+  TaskResultTy emitTaskInit(CodeGenFunction &CGF, SourceLocation Loc,
+                            const OMPExecutableDirective &D,
+                            llvm::Value *TaskFunction, QualType SharedsTy,
+                            Address Shareds, const OMPTaskDataTy &Data);
 
 public:
   explicit CGOpenMPRuntime(CodeGenModule &CGM);
@@ -633,9 +636,9 @@ public:
   virtual bool isDynamic(OpenMPScheduleClauseKind ScheduleKind) const;
 
   virtual void emitForDispatchInit(CodeGenFunction &CGF, SourceLocation Loc,
-                                   OpenMPScheduleClauseKind SchedKind,
-                                   unsigned IVSize, bool IVSigned,
-                                   bool Ordered, llvm::Value *UB,
+                                   const OpenMPScheduleTy &ScheduleKind,
+                                   unsigned IVSize, bool IVSigned, bool Ordered,
+                                   llvm::Value *UB,
                                    llvm::Value *Chunk = nullptr);
 
   /// \brief Call the appropriate runtime routine to initialize it before start
@@ -647,7 +650,7 @@ public:
   ///
   /// \param CGF Reference to current CodeGenFunction.
   /// \param Loc Clang source location.
-  /// \param SchedKind Schedule kind, specified by the 'schedule' clause.
+  /// \param ScheduleKind Schedule kind, specified by the 'schedule' clause.
   /// \param IVSize Size of the iteration variable in bits.
   /// \param IVSigned Sign of the interation variable.
   /// \param Ordered true if loop is ordered, false otherwise.
@@ -663,10 +666,9 @@ public:
   /// For the default (nullptr) value, the chunk 1 will be used.
   ///
   virtual void emitForStaticInit(CodeGenFunction &CGF, SourceLocation Loc,
-                                 OpenMPScheduleClauseKind SchedKind,
+                                 const OpenMPScheduleTy &ScheduleKind,
                                  unsigned IVSize, bool IVSigned, bool Ordered,
-                                 Address IL, Address LB,
-                                 Address UB, Address ST,
+                                 Address IL, Address LB, Address UB, Address ST,
                                  llvm::Value *Chunk = nullptr);
 
   ///
@@ -794,13 +796,6 @@ public:
   /// kmp_task_t *new_task), where new_task is a resulting structure from
   /// previous items.
   /// \param D Current task directive.
-  /// \param Tied true if the task is tied (the task is tied to the thread that
-  /// can suspend its task region), false - untied (the task is not tied to any
-  /// thread).
-  /// \param NumberOfParts Number of parts for untied task.
-  /// \param Final Contains either constant bool value, or llvm::Value * of i1
-  /// type for final clause. If the value is true, the task forces all of its
-  /// child tasks to become final and included tasks.
   /// \param TaskFunction An LLVM function with type void (*)(i32 /*gtid*/, i32
   /// /*part_id*/, captured_struct */*__context*/);
   /// \param SharedsTy A type which contains references the shared variables.
@@ -808,29 +803,13 @@ public:
   /// TaskFunction.
   /// \param IfCond Not a nullptr if 'if' clause was specified, nullptr
   /// otherwise.
-  /// \param PrivateVars List of references to private variables for the task
-  /// directive.
-  /// \param PrivateCopies List of private copies for each private variable in
-  /// \p PrivateVars.
-  /// \param FirstprivateVars List of references to private variables for the
-  /// task directive.
-  /// \param FirstprivateCopies List of private copies for each private variable
-  /// in \p FirstprivateVars.
-  /// \param FirstprivateInits List of references to auto generated variables
-  /// used for initialization of a single array element. Used if firstprivate
-  /// variable is of array type.
-  /// \param Dependences List of dependences for the 'task' construct, including
-  /// original expression and dependency type.
-  virtual void emitTaskCall(
-      CodeGenFunction &CGF, SourceLocation Loc, const OMPExecutableDirective &D,
-      bool Tied, llvm::PointerIntPair<llvm::Value *, 1, bool> Final,
-      unsigned NumberOfParts, llvm::Value *TaskFunction, QualType SharedsTy,
-      Address Shareds, const Expr *IfCond, ArrayRef<const Expr *> PrivateVars,
-      ArrayRef<const Expr *> PrivateCopies,
-      ArrayRef<const Expr *> FirstprivateVars,
-      ArrayRef<const Expr *> FirstprivateCopies,
-      ArrayRef<const Expr *> FirstprivateInits,
-      ArrayRef<std::pair<OpenMPDependClauseKind, const Expr *>> Dependences);
+  /// \param Data Additional data for task generation like tiednsee, final
+  /// state, list of privates etc.
+  virtual void emitTaskCall(CodeGenFunction &CGF, SourceLocation Loc,
+                            const OMPExecutableDirective &D,
+                            llvm::Value *TaskFunction, QualType SharedsTy,
+                            Address Shareds, const Expr *IfCond,
+                            const OMPTaskDataTy &Data);
 
   /// Emit task region for the taskloop directive. The taskloop region is
   /// emitted in several steps:
@@ -852,14 +831,6 @@ public:
   /// is a resulting structure from
   /// previous items.
   /// \param D Current task directive.
-  /// \param Tied true if the task is tied (the task is tied to the thread that
-  /// can suspend its task region), false - untied (the task is not tied to any
-  /// thread).
-  /// \param Final Contains either constant bool value, or llvm::Value * of i1
-  /// type for final clause. If the value is true, the task forces all of its
-  /// child tasks to become final and included tasks.
-  /// \param Nogroup true if nogroup clause was specified, false otherwise.
-  /// \param NumberOfParts Number of parts in untied taskloops.
   /// \param TaskFunction An LLVM function with type void (*)(i32 /*gtid*/, i32
   /// /*part_id*/, captured_struct */*__context*/);
   /// \param SharedsTy A type which contains references the shared variables.
@@ -867,26 +838,12 @@ public:
   /// TaskFunction.
   /// \param IfCond Not a nullptr if 'if' clause was specified, nullptr
   /// otherwise.
-  /// \param PrivateVars List of references to private variables for the task
-  /// directive.
-  /// \param PrivateCopies List of private copies for each private variable in
-  /// \p PrivateVars.
-  /// \param FirstprivateVars List of references to private variables for the
-  /// task directive.
-  /// \param FirstprivateCopies List of private copies for each private variable
-  /// in \p FirstprivateVars.
-  /// \param FirstprivateInits List of references to auto generated variables
-  /// used for initialization of a single array element. Used if firstprivate
-  /// variable is of array type.
+  /// \param Data Additional data for task generation like tiednsee, final
+  /// state, list of privates etc.
   virtual void emitTaskLoopCall(
       CodeGenFunction &CGF, SourceLocation Loc, const OMPLoopDirective &D,
-      bool Tied, llvm::PointerIntPair<llvm::Value *, 1, bool> Final,
-      bool Nogroup, unsigned NumberOfParts, llvm::Value *TaskFunction,
-      QualType SharedsTy, Address Shareds, const Expr *IfCond,
-      ArrayRef<const Expr *> PrivateVars, ArrayRef<const Expr *> PrivateCopies,
-      ArrayRef<const Expr *> FirstprivateVars,
-      ArrayRef<const Expr *> FirstprivateCopies,
-      ArrayRef<const Expr *> FirstprivateInits);
+      llvm::Value *TaskFunction, QualType SharedsTy, Address Shareds,
+      const Expr *IfCond, const OMPTaskDataTy &Data);
 
   /// \brief Emit code for the directive that does not require outlining.
   ///
@@ -1039,6 +996,47 @@ public:
   /// \param ThreadLimit An integer expression of threads.
   virtual void emitNumTeamsClause(CodeGenFunction &CGF, const Expr *NumTeams,
                                   const Expr *ThreadLimit, SourceLocation Loc);
+
+  /// \brief Emit the target data mapping code associated with \a D.
+  /// \param D Directive to emit.
+  /// \param IfCond Expression evaluated in if clause associated with the target
+  /// directive, or null if no if clause is used.
+  /// \param Device Expression evaluated in device clause associated with the
+  /// target directive, or null if no device clause is used.
+  /// \param CodeGen Function that emits the enclosed region.
+  virtual void emitTargetDataCalls(CodeGenFunction &CGF,
+                                   const OMPExecutableDirective &D,
+                                   const Expr *IfCond, const Expr *Device,
+                                   const RegionCodeGenTy &CodeGen);
+
+  /// \brief Emit the data mapping/movement code associated with the directive
+  /// \a D that should be of the form 'target [{enter|exit} data | update]'.
+  /// \param D Directive to emit.
+  /// \param IfCond Expression evaluated in if clause associated with the target
+  /// directive, or null if no if clause is used.
+  /// \param Device Expression evaluated in device clause associated with the
+  /// target directive, or null if no device clause is used.
+  virtual void emitTargetDataStandAloneCall(CodeGenFunction &CGF,
+                                            const OMPExecutableDirective &D,
+                                            const Expr *IfCond,
+                                            const Expr *Device);
+
+  /// Marks function \a Fn with properly mangled versions of vector functions.
+  /// \param FD Function marked as 'declare simd'.
+  /// \param Fn LLVM function that must be marked with 'declare simd'
+  /// attributes.
+  virtual void emitDeclareSimdFunction(const FunctionDecl *FD,
+                                       llvm::Function *Fn);
+
+  /// Emit initialization for doacross loop nesting support.
+  /// \param D Loop-based construct used in doacross nesting construct.
+  virtual void emitDoacrossInit(CodeGenFunction &CGF,
+                                const OMPLoopDirective &D);
+
+  /// Emit code for doacross ordered directive with 'depend' clause.
+  /// \param C 'depend' clause with 'sink|source' dependency kind.
+  virtual void emitDoacrossOrdered(CodeGenFunction &CGF,
+                                   const OMPDependClause *C);
 };
 
 } // namespace CodeGen

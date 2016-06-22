@@ -478,6 +478,9 @@ namespace {
     /// fold (not just why it's not strictly a constant expression)?
     bool HasFoldFailureDiagnostic;
 
+    /// \brief Whether or not we're currently speculatively evaluating.
+    bool IsSpeculativelyEvaluating;
+
     enum EvaluationMode {
       /// Evaluate as a constant expression. Stop if we find that the expression
       /// is not a constant expression.
@@ -542,7 +545,8 @@ namespace {
         BottomFrame(*this, SourceLocation(), nullptr, nullptr, nullptr),
         EvaluatingDecl((const ValueDecl *)nullptr),
         EvaluatingDeclValue(nullptr), HasActiveDiagnostic(false),
-        HasFoldFailureDiagnostic(false), EvalMode(Mode) {}
+        HasFoldFailureDiagnostic(false), IsSpeculativelyEvaluating(false),
+        EvalMode(Mode) {}
 
     void setEvaluatingDecl(APValue::LValueBase Base, APValue &Value) {
       EvaluatingDecl = Base;
@@ -764,6 +768,29 @@ namespace {
       llvm_unreachable("Missed EvalMode case");
     }
 
+    /// Notes that we failed to evaluate an expression that other expressions
+    /// directly depend on, and determine if we should keep evaluating. This
+    /// should only be called if we actually intend to keep evaluating.
+    ///
+    /// Call noteSideEffect() instead if we may be able to ignore the value that
+    /// we failed to evaluate, e.g. if we failed to evaluate Foo() in:
+    ///
+    /// (Foo(), 1)      // use noteSideEffect
+    /// (Foo() || true) // use noteSideEffect
+    /// Foo() + 1       // use noteFailure
+    LLVM_ATTRIBUTE_UNUSED_RESULT bool noteFailure() {
+      // Failure when evaluating some expression often means there is some
+      // subexpression whose evaluation was skipped. Therefore, (because we
+      // don't track whether we skipped an expression when unwinding after an
+      // evaluation failure) every evaluation failure that bubbles up from a
+      // subexpression implies that a side-effect has potentially happened. We
+      // skip setting the HasSideEffects flag to true until we decide to
+      // continue evaluating after that point, which happens here.
+      bool KeepGoing = keepEvaluatingAfterFailure();
+      EvalStatus.HasSideEffects |= KeepGoing;
+      return KeepGoing;
+    }
+
     bool allowInvalidBaseExpr() const {
       return EvalMode == EM_DesignatorFold;
     }
@@ -812,24 +839,52 @@ namespace {
     ~FoldOffsetRAII() { Info.EvalMode = OldMode; }
   };
 
-  /// RAII object used to suppress diagnostics and side-effects from a
-  /// speculative evaluation.
+  /// RAII object used to optionally suppress diagnostics and side-effects from
+  /// a speculative evaluation.
   class SpeculativeEvaluationRAII {
-    EvalInfo &Info;
+    /// Pair of EvalInfo, and a bit that stores whether or not we were
+    /// speculatively evaluating when we created this RAII.
+    llvm::PointerIntPair<EvalInfo *, 1, bool> InfoAndOldSpecEval;
     Expr::EvalStatus Old;
 
+    void moveFromAndCancel(SpeculativeEvaluationRAII &&Other) {
+      InfoAndOldSpecEval = Other.InfoAndOldSpecEval;
+      Old = Other.Old;
+      Other.InfoAndOldSpecEval.setPointer(nullptr);
+    }
+
+    void maybeRestoreState() {
+      EvalInfo *Info = InfoAndOldSpecEval.getPointer();
+      if (!Info)
+        return;
+
+      Info->EvalStatus = Old;
+      Info->IsSpeculativelyEvaluating = InfoAndOldSpecEval.getInt();
+    }
+
   public:
-    SpeculativeEvaluationRAII(EvalInfo &Info,
-                        SmallVectorImpl<PartialDiagnosticAt> *NewDiag = nullptr)
-      : Info(Info), Old(Info.EvalStatus) {
+    SpeculativeEvaluationRAII() = default;
+
+    SpeculativeEvaluationRAII(
+        EvalInfo &Info, SmallVectorImpl<PartialDiagnosticAt> *NewDiag = nullptr)
+        : InfoAndOldSpecEval(&Info, Info.IsSpeculativelyEvaluating),
+          Old(Info.EvalStatus) {
       Info.EvalStatus.Diag = NewDiag;
-      // If we're speculatively evaluating, we may have skipped over some
-      // evaluations and missed out a side effect.
-      Info.EvalStatus.HasSideEffects = true;
+      Info.IsSpeculativelyEvaluating = true;
     }
-    ~SpeculativeEvaluationRAII() {
-      Info.EvalStatus = Old;
+
+    SpeculativeEvaluationRAII(const SpeculativeEvaluationRAII &Other) = delete;
+    SpeculativeEvaluationRAII(SpeculativeEvaluationRAII &&Other) {
+      moveFromAndCancel(std::move(Other));
     }
+
+    SpeculativeEvaluationRAII &operator=(SpeculativeEvaluationRAII &&Other) {
+      maybeRestoreState();
+      moveFromAndCancel(std::move(Other));
+      return *this;
+    }
+
+    ~SpeculativeEvaluationRAII() { maybeRestoreState(); }
   };
 
   /// RAII object wrapping a full-expression or block scope, and handling
@@ -1969,6 +2024,11 @@ static bool HandleSizeof(EvalInfo &Info, SourceLocation Loc,
     return true;
   }
 
+  if (Type->isDependentType()) {
+    Info.Diag(Loc);
+    return false;
+  }
+
   if (!Type->isConstantSizeType()) {
     // sizeof(vla) is not a constantexpr: C99 6.5.3.4p2.
     // FIXME: Better diagnostic.
@@ -2685,7 +2745,10 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
       } else if (VD->isConstexpr()) {
         // OK, we can read this variable.
       } else if (BaseType->isIntegralOrEnumerationType()) {
-        if (!BaseType.isConstQualified()) {
+        // In OpenCL if a variable is in constant address space it is a const value.
+        if (!(BaseType.isConstQualified() ||
+              (Info.getLangOpts().OpenCL &&
+               BaseType.getAddressSpace() == LangAS::opencl_constant))) {
           if (Info.getLangOpts().CPlusPlus) {
             Info.Diag(E, diag::note_constexpr_ltor_non_const_int, 1) << VD;
             Info.Note(VD->getLocation(), diag::note_declared_at);
@@ -2706,7 +2769,11 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
         }
       } else {
         // FIXME: Allow folding of values of any literal type in all languages.
-        if (Info.getLangOpts().CPlusPlus11) {
+        if (Info.checkingPotentialConstantExpression() &&
+            VD->getType().isConstQualified() && !VD->hasDefinition(Info.Ctx)) {
+          // The definition of this variable could be constexpr. We can't
+          // access it right now, but may be able to in future.
+        } else if (Info.getLangOpts().CPlusPlus11) {
           Info.Diag(E, diag::note_constexpr_ltor_non_constexpr, 1) << VD;
           Info.Note(VD->getLocation(), diag::note_declared_at);
         } else {
@@ -2785,12 +2852,13 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
   }
 
   // In C++1y, we can't safely access any mutable state when we might be
-  // evaluating after an unmodeled side effect or an evaluation failure.
+  // evaluating after an unmodeled side effect.
   //
   // FIXME: Not all local state is mutable. Allow local constant subobjects
   // to be read here (but take care with 'mutable' fields).
-  if (Frame && Info.getLangOpts().CPlusPlus14 &&
-      (Info.EvalStatus.HasSideEffects || Info.keepEvaluatingAfterFailure()))
+  if ((Frame && Info.getLangOpts().CPlusPlus14 &&
+       Info.EvalStatus.HasSideEffects) ||
+      (AK != AK_Read && Info.IsSpeculativelyEvaluating))
     return CompleteObject();
 
   return CompleteObject(BaseVal, BaseType);
@@ -3247,7 +3315,7 @@ static const ValueDecl *HandleMemberPointerAccess(EvalInfo &Info,
   assert(BO->getOpcode() == BO_PtrMemD || BO->getOpcode() == BO_PtrMemI);
 
   if (!EvaluateObjectArgument(Info, BO->getLHS(), LV)) {
-    if (Info.keepEvaluatingAfterFailure()) {
+    if (Info.noteFailure()) {
       MemberPtr MemPtr;
       EvaluateMemberPointer(BO->getRHS(), MemPtr, Info);
     }
@@ -3543,7 +3611,7 @@ static EvalStmtResult EvaluateStmt(StmtResult &Result, EvalInfo &Info,
       // FIXME: This isn't quite right; if we're performing aggregate
       // initialization, each braced subexpression is its own full-expression.
       FullExpressionRAII Scope(Info);
-      if (!EvaluateDecl(Info, DclIt) && !Info.keepEvaluatingAfterFailure())
+      if (!EvaluateDecl(Info, DclIt) && !Info.noteFailure())
         return ESR_Failed;
     }
     return ESR_Succeeded;
@@ -3818,7 +3886,7 @@ static bool EvaluateArgs(ArrayRef<const Expr*> Args, ArgVector &ArgValues,
     if (!Evaluate(ArgValues[I - Args.begin()], Info, *I)) {
       // If we're checking for a potential constant expression, evaluate all
       // initializers even if some of them fail.
-      if (!Info.keepEvaluatingAfterFailure())
+      if (!Info.noteFailure())
         return false;
       Success = false;
     }
@@ -4010,7 +4078,7 @@ static bool HandleConstructorCall(SourceLocation CallLoc, const LValue &This,
                                                           *Value, FD))) {
       // If we're checking for a potential constant expression, evaluate all
       // initializers even if some of them fail.
-      if (!Info.keepEvaluatingAfterFailure())
+      if (!Info.noteFailure())
         return false;
       Success = false;
     }
@@ -4045,14 +4113,16 @@ private:
     assert(Info.checkingPotentialConstantExpression());
 
     // Speculatively evaluate both arms.
+    SmallVector<PartialDiagnosticAt, 8> Diag;
     {
-      SmallVector<PartialDiagnosticAt, 8> Diag;
       SpeculativeEvaluationRAII Speculate(Info, &Diag);
-
       StmtVisitorTy::Visit(E->getFalseExpr());
       if (Diag.empty())
         return;
+    }
 
+    {
+      SpeculativeEvaluationRAII Speculate(Info, &Diag);
       Diag.clear();
       StmtVisitorTy::Visit(E->getTrueExpr());
       if (Diag.empty())
@@ -4067,7 +4137,7 @@ private:
   bool HandleConditionalOperator(const ConditionalOperator *E) {
     bool BoolResult;
     if (!EvaluateAsBooleanCondition(E->getCond(), BoolResult, Info)) {
-      if (Info.checkingPotentialConstantExpression())
+      if (Info.checkingPotentialConstantExpression() && Info.noteFailure())
         CheckPotentialConstantConditional(E);
       return false;
     }
@@ -4855,7 +4925,7 @@ bool LValueExprEvaluator::VisitCompoundAssignOperator(
 
   // The overall lvalue result is the result of evaluating the LHS.
   if (!this->Visit(CAO->getLHS())) {
-    if (Info.keepEvaluatingAfterFailure())
+    if (Info.noteFailure())
       Evaluate(RHS, this->Info, CAO->getRHS());
     return false;
   }
@@ -4876,7 +4946,7 @@ bool LValueExprEvaluator::VisitBinAssign(const BinaryOperator *E) {
   APValue NewVal;
 
   if (!this->Visit(E->getLHS())) {
-    if (Info.keepEvaluatingAfterFailure())
+    if (Info.noteFailure())
       Evaluate(NewVal, this->Info, E->getRHS());
     return false;
   }
@@ -4964,7 +5034,7 @@ bool PointerExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
     std::swap(PExp, IExp);
 
   bool EvalPtrOK = EvaluatePointer(PExp, Result, Info);
-  if (!EvalPtrOK && !Info.keepEvaluatingAfterFailure())
+  if (!EvalPtrOK && !Info.noteFailure())
     return false;
 
   llvm::APSInt Offset;
@@ -5297,14 +5367,20 @@ namespace {
       Result = V;
       return true;
     }
-    bool ZeroInitialization(const Expr *E);
+    bool ZeroInitialization(const Expr *E) {
+      return ZeroInitialization(E, E->getType());
+    }
+    bool ZeroInitialization(const Expr *E, QualType T);
 
     bool VisitCallExpr(const CallExpr *E) {
       return handleCallExpr(E, Result, &This);
     }
     bool VisitCastExpr(const CastExpr *E);
     bool VisitInitListExpr(const InitListExpr *E);
-    bool VisitCXXConstructExpr(const CXXConstructExpr *E);
+    bool VisitCXXConstructExpr(const CXXConstructExpr *E) {
+      return VisitCXXConstructExpr(E, E->getType());
+    }
+    bool VisitCXXConstructExpr(const CXXConstructExpr *E, QualType T);
     bool VisitCXXStdInitializerListExpr(const CXXStdInitializerListExpr *E);
   };
 }
@@ -5359,8 +5435,8 @@ static bool HandleClassZeroInitialization(EvalInfo &Info, const Expr *E,
   return true;
 }
 
-bool RecordExprEvaluator::ZeroInitialization(const Expr *E) {
-  const RecordDecl *RD = E->getType()->castAs<RecordType>()->getDecl();
+bool RecordExprEvaluator::ZeroInitialization(const Expr *E, QualType T) {
+  const RecordDecl *RD = T->castAs<RecordType>()->getDecl();
   if (RD->isInvalidDecl()) return false;
   if (RD->isUnion()) {
     // C++11 [dcl.init]p5: If T is a (possibly cv-qualified) union type, the
@@ -5450,8 +5526,9 @@ bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
   }
 
   auto *CXXRD = dyn_cast<CXXRecordDecl>(RD);
-  Result = APValue(APValue::UninitStruct(), CXXRD ? CXXRD->getNumBases() : 0,
-                   std::distance(RD->field_begin(), RD->field_end()));
+  if (Result.isUninit())
+    Result = APValue(APValue::UninitStruct(), CXXRD ? CXXRD->getNumBases() : 0,
+                     std::distance(RD->field_begin(), RD->field_end()));
   unsigned ElementNo = 0;
   bool Success = true;
 
@@ -5467,7 +5544,7 @@ bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
 
       APValue &FieldVal = Result.getStructBase(ElementNo);
       if (!EvaluateInPlace(FieldVal, Info, Subobject, Init)) {
-        if (!Info.keepEvaluatingAfterFailure())
+        if (!Info.noteFailure())
           return false;
         Success = false;
       }
@@ -5505,7 +5582,7 @@ bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
     if (!EvaluateInPlace(FieldVal, Info, Subobject, Init) ||
         (Field->isBitField() && !truncateBitfieldValue(Info, Init,
                                                        FieldVal, Field))) {
-      if (!Info.keepEvaluatingAfterFailure())
+      if (!Info.noteFailure())
         return false;
       Success = false;
     }
@@ -5514,7 +5591,10 @@ bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
   return Success;
 }
 
-bool RecordExprEvaluator::VisitCXXConstructExpr(const CXXConstructExpr *E) {
+bool RecordExprEvaluator::VisitCXXConstructExpr(const CXXConstructExpr *E,
+                                                QualType T) {
+  // Note that E's type is not necessarily the type of our class here; we might
+  // be initializing an array element instead.
   const CXXConstructorDecl *FD = E->getConstructor();
   if (FD->isInvalidDecl() || FD->getParent()->isInvalidDecl()) return false;
 
@@ -5532,7 +5612,7 @@ bool RecordExprEvaluator::VisitCXXConstructExpr(const CXXConstructExpr *E) {
     //     lifetimes of all the base subobjects (there can be no data member
     //     subobjects in this case) per [basic.life]p1.
     // Either way, ZeroInitialization is appropriate.
-    return ZeroInitialization(E);
+    return ZeroInitialization(E, T);
   }
 
   const FunctionDecl *Definition = nullptr;
@@ -5547,7 +5627,7 @@ bool RecordExprEvaluator::VisitCXXConstructExpr(const CXXConstructExpr *E) {
           = dyn_cast<MaterializeTemporaryExpr>(E->getArg(0)))
       return Visit(ME->GetTemporaryExpr());
 
-  if (ZeroInit && !ZeroInitialization(E))
+  if (ZeroInit && !ZeroInitialization(E, T))
     return false;
 
   auto Args = llvm::makeArrayRef(E->getArgs(), E->getNumArgs());
@@ -5955,7 +6035,7 @@ bool ArrayExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
                          Info, Subobject, Init) ||
         !HandleLValueArrayAdjustment(Info, Init, Subobject,
                                      CAT->getElementType(), 1)) {
-      if (!Info.keepEvaluatingAfterFailure())
+      if (!Info.noteFailure())
         return false;
       Success = false;
     }
@@ -6011,34 +6091,8 @@ bool ArrayExprEvaluator::VisitCXXConstructExpr(const CXXConstructExpr *E,
   if (!Type->isRecordType())
     return Error(E);
 
-  const CXXConstructorDecl *FD = E->getConstructor();
-
-  bool ZeroInit = E->requiresZeroInitialization();
-  if (CheckTrivialDefaultConstructor(Info, E->getExprLoc(), FD, ZeroInit)) {
-    if (HadZeroInit)
-      return true;
-
-    // See RecordExprEvaluator::VisitCXXConstructExpr for explanation.
-    ImplicitValueInitExpr VIE(Type);
-    return EvaluateInPlace(*Value, Info, Subobject, &VIE);
-  }
-
-  const FunctionDecl *Definition = nullptr;
-  auto Body = FD->getBody(Definition);
-
-  if (!CheckConstexprFunction(Info, E->getExprLoc(), FD, Definition, Body))
-    return false;
-
-  if (ZeroInit && !HadZeroInit) {
-    ImplicitValueInitExpr VIE(Type);
-    if (!EvaluateInPlace(*Value, Info, Subobject, &VIE))
-      return false;
-  }
-
-  auto Args = llvm::makeArrayRef(E->getArgs(), E->getNumArgs());
-  return HandleConstructorCall(E->getExprLoc(), Subobject, Args,
-                               cast<CXXConstructorDecl>(Definition),
-                               Info, *Value);
+  return RecordExprEvaluator(Info, Subobject, *Value)
+             .VisitCXXConstructExpr(E, Type);
 }
 
 //===----------------------------------------------------------------------===//
@@ -7039,23 +7093,14 @@ class DataRecursiveIntBinOpEvaluator {
     Job() = default;
     Job(Job &&J)
         : E(J.E), LHSResult(J.LHSResult), Kind(J.Kind),
-          StoredInfo(J.StoredInfo), OldEvalStatus(J.OldEvalStatus) {
-      J.StoredInfo = nullptr;
-    }
+          SpecEvalRAII(std::move(J.SpecEvalRAII)) {}
 
     void startSpeculativeEval(EvalInfo &Info) {
-      OldEvalStatus = Info.EvalStatus;
-      Info.EvalStatus.Diag = nullptr;
-      StoredInfo = &Info;
+      SpecEvalRAII = SpeculativeEvaluationRAII(Info);
     }
-    ~Job() {
-      if (StoredInfo) {
-        StoredInfo->EvalStatus = OldEvalStatus;
-      }
-    }
+
   private:
-    EvalInfo *StoredInfo = nullptr; // non-null if status changed.
-    Expr::EvalStatus OldEvalStatus;
+    SpeculativeEvaluationRAII SpecEvalRAII;
   };
 
   SmallVector<Job, 16> Queue;
@@ -7075,7 +7120,9 @@ public:
   static bool shouldEnqueue(const BinaryOperator *E) {
     return E->getOpcode() == BO_Comma ||
            E->isLogicalOp() ||
-           (E->getLHS()->getType()->isIntegralOrEnumerationType() &&
+           (E->isRValue() &&
+            E->getType()->isIntegralOrEnumerationType() &&
+            E->getLHS()->getType()->isIntegralOrEnumerationType() &&
             E->getRHS()->getType()->isIntegralOrEnumerationType());
   }
 
@@ -7157,7 +7204,7 @@ bool DataRecursiveIntBinOpEvaluator::
       LHSResult.Failed = true;
 
       // Since we weren't able to evaluate the left hand side, it
-      // must have had side effects.
+      // might have had side effects.
       if (!Info.noteSideEffect())
         return false;
 
@@ -7173,7 +7220,7 @@ bool DataRecursiveIntBinOpEvaluator::
   assert(E->getLHS()->getType()->isIntegralOrEnumerationType() &&
          E->getRHS()->getType()->isIntegralOrEnumerationType());
 
-  if (LHSResult.Failed && !Info.keepEvaluatingAfterFailure())
+  if (LHSResult.Failed && !Info.noteFailure())
     return false; // Ignore RHS;
 
   return true;
@@ -7325,10 +7372,34 @@ void DataRecursiveIntBinOpEvaluator::process(EvalResult &Result) {
   llvm_unreachable("Invalid Job::Kind!");
 }
 
+namespace {
+/// Used when we determine that we should fail, but can keep evaluating prior to
+/// noting that we had a failure.
+class DelayedNoteFailureRAII {
+  EvalInfo &Info;
+  bool NoteFailure;
+
+public:
+  DelayedNoteFailureRAII(EvalInfo &Info, bool NoteFailure = true)
+      : Info(Info), NoteFailure(NoteFailure) {}
+  ~DelayedNoteFailureRAII() {
+    if (NoteFailure) {
+      bool ContinueAfterFailure = Info.noteFailure();
+      (void)ContinueAfterFailure;
+      assert(ContinueAfterFailure &&
+             "Shouldn't have kept evaluating on failure.");
+    }
+  }
+};
+}
+
 bool IntExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
+  // We don't call noteFailure immediately because the assignment happens after
+  // we evaluate LHS and RHS.
   if (!Info.keepEvaluatingAfterFailure() && E->isAssignmentOp())
     return Error(E);
 
+  DelayedNoteFailureRAII MaybeNoteFailureLater(Info, E->isAssignmentOp());
   if (DataRecursiveIntBinOpEvaluator::shouldEnqueue(E))
     return DataRecursiveIntBinOpEvaluator(*this, Result).Traverse(E);
 
@@ -7351,7 +7422,7 @@ bool IntExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
     } else {
       LHSOK = EvaluateComplex(E->getLHS(), LHS, Info);
     }
-    if (!LHSOK && !Info.keepEvaluatingAfterFailure())
+    if (!LHSOK && !Info.noteFailure())
       return false;
 
     if (E->getRHS()->getType()->isRealFloatingType()) {
@@ -7399,7 +7470,7 @@ bool IntExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
     APFloat RHS(0.0), LHS(0.0);
 
     bool LHSOK = EvaluateFloat(E->getRHS(), RHS, Info);
-    if (!LHSOK && !Info.keepEvaluatingAfterFailure())
+    if (!LHSOK && !Info.noteFailure())
       return false;
 
     if (!EvaluateFloat(E->getLHS(), LHS, Info) || !LHSOK)
@@ -7433,7 +7504,7 @@ bool IntExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
       LValue LHSValue, RHSValue;
 
       bool LHSOK = EvaluatePointer(E->getLHS(), LHSValue, Info);
-      if (!LHSOK && !Info.keepEvaluatingAfterFailure())
+      if (!LHSOK && !Info.noteFailure())
         return false;
 
       if (!EvaluatePointer(E->getRHS(), RHSValue, Info) || !LHSOK)
@@ -7650,7 +7721,7 @@ bool IntExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
     MemberPtr LHSValue, RHSValue;
 
     bool LHSOK = EvaluateMemberPointer(E->getLHS(), LHSValue, Info);
-    if (!LHSOK && Info.keepEvaluatingAfterFailure())
+    if (!LHSOK && !Info.noteFailure())
       return false;
 
     if (!EvaluateMemberPointer(E->getRHS(), RHSValue, Info) || !LHSOK)
@@ -8222,7 +8293,7 @@ bool FloatExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
 
   APFloat RHS(0.0);
   bool LHSOK = EvaluateFloat(E->getLHS(), Result, Info);
-  if (!LHSOK && !Info.keepEvaluatingAfterFailure())
+  if (!LHSOK && !Info.noteFailure())
     return false;
   return EvaluateFloat(E->getRHS(), RHS, Info) && LHSOK &&
          handleFloatFloatBinOp(Info, E, Result, E->getOpcode(), RHS);
@@ -8499,7 +8570,7 @@ bool ComplexExprEvaluator::VisitBinaryOperator(const BinaryOperator *E) {
   } else {
     LHSOK = Visit(E->getLHS());
   }
-  if (!LHSOK && !Info.keepEvaluatingAfterFailure())
+  if (!LHSOK && !Info.noteFailure())
     return false;
 
   ComplexValue RHS;

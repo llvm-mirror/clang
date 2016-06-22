@@ -25,10 +25,10 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/SmallVector.h"
+#include <utility>
 
 using namespace clang;
 using namespace ento;
-using llvm::APInt;
 using llvm::APSInt;
 
 namespace {
@@ -38,7 +38,7 @@ struct MallocOverflowCheck {
   APSInt maxVal;
 
   MallocOverflowCheck(const BinaryOperator *m, const Expr *v, APSInt val)
-      : mulop(m), variable(v), maxVal(val) {}
+      : mulop(m), variable(v), maxVal(std::move(val)) {}
 };
 
 class MallocOverflowSecurityChecker : public Checker<check::ASTCodeBody> {

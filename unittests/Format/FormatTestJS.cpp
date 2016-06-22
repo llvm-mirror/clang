@@ -62,6 +62,11 @@ protected:
   }
 };
 
+TEST_F(FormatTestJS, BlockComments) {
+  verifyFormat("/* aaaaaaaaaaaaa */ aaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
+               "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa);");
+}
+
 TEST_F(FormatTestJS, UnderstandsJavaScriptOperators) {
   verifyFormat("a == = b;");
   verifyFormat("a != = b;");
@@ -125,6 +130,7 @@ TEST_F(FormatTestJS, ReservedWords) {
   verifyFormat("x.class.struct = 1;");
   verifyFormat("x.case = 1;");
   verifyFormat("x.interface = 1;");
+  verifyFormat("x.for = 1;");
   verifyFormat("x.of() = 1;");
   verifyFormat("x.in() = 1;");
   verifyFormat("x.let() = 1;");
@@ -148,6 +154,7 @@ TEST_F(FormatTestJS, CppKeywords) {
 
 TEST_F(FormatTestJS, ES6DestructuringAssignment) {
   verifyFormat("var [a, b, c] = [1, 2, 3];");
+  verifyFormat("const [a, b, c] = [1, 2, 3];");
   verifyFormat("let [a, b, c] = [1, 2, 3];");
   verifyFormat("var {a, b} = {a: 1, b: 2};");
   verifyFormat("let {a, b} = {a: 1, b: 2};");
@@ -308,6 +315,15 @@ TEST_F(FormatTestJS, GoogModules) {
       "    goog.module.get('my.long.module.name.followedBy.MyLongClassName');");
 }
 
+TEST_F(FormatTestJS, FormatsNamespaces) {
+  verifyFormat("namespace Foo {\n"
+               "  export let x = 1;\n"
+               "}\n");
+  verifyFormat("declare namespace Foo {\n"
+               "  export let x: number;\n"
+               "}\n");
+}
+
 TEST_F(FormatTestJS, FormatsFreestandingFunctions) {
   verifyFormat("function outer1(a, b) {\n"
                "  function inner1(a, b) { return a; }\n"
@@ -352,6 +368,10 @@ TEST_F(FormatTestJS, AsyncFunctions) {
   verifyFormat("class X {\n"
                "  async asyncMethod() { return fetch(1); }\n"
                "}");
+  verifyFormat("function initialize() {\n"
+               "  // Comment.\n"
+               "  return async.then();\n"
+               "}\n");
 }
 
 TEST_F(FormatTestJS, ArrayLiterals) {
@@ -892,6 +912,8 @@ TEST_F(FormatTestJS, UnionIntersectionTypes) {
   verifyFormat("let x: Foo<A|B> = new Foo<A|B>();");
   verifyFormat("function(x: A|B): C&D {}");
   verifyFormat("function(x: A|B = A | B): C&D {}");
+  verifyFormat("function x(path: number|string) {}");
+  verifyFormat("function x(): string|number {}");
 }
 
 TEST_F(FormatTestJS, ClassDeclarations) {
@@ -925,6 +947,11 @@ TEST_F(FormatTestJS, ClassDeclarations) {
                "      'c': 1,\n"
                "    },\n"
                "  };\n"
+               "}");
+  verifyFormat("@Component({\n"
+               "  moduleId: module.id,\n"
+               "})\n"
+               "class SessionListComponent implements OnDestroy, OnInit {\n"
                "}");
 }
 
@@ -994,11 +1021,11 @@ TEST_F(FormatTestJS, Modules) {
   verifyFormat("import SomeThing from 'some/module.js';");
   verifyFormat("import {X, Y} from 'some/module.js';");
   verifyFormat("import a, {X, Y} from 'some/module.js';");
-  verifyFormat("import {VeryLongImportsAreAnnoying, VeryLongImportsAreAnnoying,"
-               " VeryLongImportsAreAnnoying, VeryLongImportsAreAnnoying"
-               "} from 'some/module.js';");
   verifyFormat("import {X, Y,} from 'some/module.js';");
   verifyFormat("import {X as myLocalX, Y as myLocalY} from 'some/module.js';");
+  // Ensure Automatic Semicolon Insertion does not break on "as\n".
+  verifyFormat("import {X as myX} from 'm';", "import {X as\n"
+                                              " myX} from 'm';");
   verifyFormat("import * as lib from 'some/module.js';");
   verifyFormat("var x = {import: 1};\nx.import = 2;");
 
@@ -1062,6 +1089,30 @@ TEST_F(FormatTestJS, Modules) {
                "}");
 }
 
+TEST_F(FormatTestJS, ImportWrapping) {
+  verifyFormat("import {VeryLongImportsAreAnnoying, VeryLongImportsAreAnnoying,"
+               " VeryLongImportsAreAnnoying, VeryLongImportsAreAnnoying"
+               "} from 'some/module.js';");
+  FormatStyle Style = getGoogleJSStyleWithColumns(80);
+  Style.JavaScriptWrapImports = true;
+  verifyFormat("import {\n"
+               "  VeryLongImportsAreAnnoying,\n"
+               "  VeryLongImportsAreAnnoying,\n"
+               "  VeryLongImportsAreAnnoying,\n"
+               "} from 'some/module.js';",
+               Style);
+  verifyFormat("import {\n"
+               "  A,\n"
+               "  A,\n"
+               "} from 'some/module.js';",
+               Style);
+  verifyFormat("export {\n"
+               "  A,\n"
+               "  A,\n"
+               "} from 'some/module.js';",
+               Style);
+}
+
 TEST_F(FormatTestJS, TemplateStrings) {
   // Keeps any whitespace/indentation within the template string.
   verifyFormat("var x = `hello\n"
@@ -1076,6 +1127,8 @@ TEST_F(FormatTestJS, TemplateStrings) {
                getGoogleJSStyleWithColumns(34)); // Barely doesn't fit.
   verifyFormat("var x = `hello ${world}` >= some();",
                getGoogleJSStyleWithColumns(35)); // Barely fits.
+  verifyFormat("var x = `hellö ${wörld}` >= söme();",
+               getGoogleJSStyleWithColumns(35)); // Fits due to UTF-8.
   verifyFormat("var x = `hello\n"
             "  ${world}` >=\n"
             "    some();",
@@ -1097,6 +1150,13 @@ TEST_F(FormatTestJS, TemplateStrings) {
                getGoogleJSStyleWithColumns(13));
   verifyFormat("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
                "    `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`);");
+  // Repro for an obscure width-miscounting issue with template strings.
+  verifyFormat(
+      "someLongVariable =\n"
+      "    "
+      "`${logPrefix[11]}/${logPrefix[12]}/${logPrefix[13]}${logPrefix[14]}`;",
+      "someLongVariable = "
+      "`${logPrefix[11]}/${logPrefix[12]}/${logPrefix[13]}${logPrefix[14]}`;");
 
   // Make sure template strings get a proper ColumnWidth assigned, even if they
   // are first token in line.
@@ -1145,6 +1205,10 @@ TEST_F(FormatTestJS, TemplateStrings) {
 TEST_F(FormatTestJS, CastSyntax) {
   verifyFormat("var x = <type>foo;");
   verifyFormat("var x = foo as type;");
+  verifyFormat("foo = <Bar[]>[\n"
+               "  1,  //\n"
+               "  2\n"
+               "];");
 }
 
 TEST_F(FormatTestJS, TypeArguments) {
@@ -1236,6 +1300,14 @@ TEST_F(FormatTestJS, RequoteStringsSingle) {
   // Code below fits into 15 chars *after* removing the \ escape.
   verifyFormat("var x = 'fo\"o';", "var x = \"fo\\\"o\";",
                getGoogleJSStyleWithColumns(15));
+  verifyFormat("// clang-format off\n"
+               "let x = \"double\";\n"
+               "// clang-format on\n"
+               "let x = 'single';\n",
+               "// clang-format off\n"
+               "let x = \"double\";\n"
+               "// clang-format on\n"
+               "let x = \"single\";\n");
 }
 
 TEST_F(FormatTestJS, RequoteStringsDouble) {
@@ -1251,6 +1323,22 @@ TEST_F(FormatTestJS, RequoteStringsLeave) {
   LeaveQuotes.JavaScriptQuotes = FormatStyle::JSQS_Leave;
   verifyFormat("var x = \"foo\";", LeaveQuotes);
   verifyFormat("var x = 'foo';", LeaveQuotes);
+}
+
+TEST_F(FormatTestJS, SupportShebangLines) {
+  verifyFormat("#!/usr/bin/env node\n"
+               "var x = hello();",
+               "#!/usr/bin/env node\n"
+               "var x   =  hello();");
+}
+
+TEST_F(FormatTestJS, NonNullAssertionOperator) {
+  verifyFormat("let x = foo!.bar();\n");
+  verifyFormat("let x = foo ? bar! : baz;\n");
+  verifyFormat("let x = !foo;\n");
+  verifyFormat("let x = foo[0]!;\n");
+  verifyFormat("let x = (foo)!;\n");
+  verifyFormat("let x = {foo: 1}!;\n");
 }
 
 } // end namespace tooling

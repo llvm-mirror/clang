@@ -77,6 +77,8 @@ def _SLASH_GR : CLFlag<"GR">, HelpText<"Enable emission of RTTI data">;
 def _SLASH_GR_ : CLFlag<"GR-">, HelpText<"Disable emission of RTTI data">;
 def _SLASH_GF_ : CLFlag<"GF-">, HelpText<"Disable string pooling">,
   Alias<fwritable_strings>;
+def _SLASH_GS : CLFlag<"GS">, HelpText<"Enable buffer security check">;
+def _SLASH_GS_ : CLFlag<"GS-">, HelpText<"Disable buffer security check">;
 def _SLASH_Gs : CLJoined<"Gs">, HelpText<"Set stack probe size">,
   Alias<mstack_probe_size>;
 def _SLASH_Gy : CLFlag<"Gy">, HelpText<"Put each function in its own section">,
@@ -100,8 +102,6 @@ def _SLASH_J : CLFlag<"J">, HelpText<"Make char type unsigned">,
 def _SLASH_O0 : CLFlag<"O0">, Alias<O0>;
 // /Oy- is handled by the /O option because /Oy- only has an effect on 32-bit.
 def _SLASH_O : CLJoined<"O">, HelpText<"Optimization level">;
-def _SLASH_Ob0 : CLFlag<"Ob0">, HelpText<"Disable inlining">,
-  Alias<fno_inline>;
 def _SLASH_Od : CLFlag<"Od">, HelpText<"Disable optimization">, Alias<O0>;
 def _SLASH_Oi : CLFlag<"Oi">, HelpText<"Enable use of builtin functions">,
   Alias<fbuiltin>;
@@ -268,6 +268,15 @@ def _SLASH_Y_ : CLFlag<"Y-">,
 def _SLASH_Fp : CLJoined<"Fp">,
   HelpText<"Set pch filename (with /Yc and /Yu)">, MetaVarName<"<filename>">;
 
+def _SLASH_Gd : CLFlag<"Gd">,
+  HelpText<"Set __cdecl as a default calling convention">;
+def _SLASH_Gr : CLFlag<"Gr">,
+  HelpText<"Set __fastcall as a default calling convention">;
+def _SLASH_Gz : CLFlag<"Gz">,
+  HelpText<"Set __stdcall as a default calling convention">;
+def _SLASH_Gv : CLFlag<"Gv">,
+  HelpText<"Set __vectorcall as a default calling convention">;
+
 // Ignored:
 
 def _SLASH_analyze_ : CLIgnoredFlag<"analyze-">;
@@ -279,13 +288,10 @@ def _SLASH_errorReport : CLIgnoredJoined<"errorReport">;
 def _SLASH_Fd : CLIgnoredJoined<"Fd">;
 def _SLASH_FC : CLIgnoredFlag<"FC">;
 def _SLASH_FS : CLIgnoredFlag<"FS">, HelpText<"Force synchronous PDB writes">;
-def _SLASH_Gd : CLIgnoredFlag<"Gd">;
 def _SLASH_GF : CLIgnoredFlag<"GF">;
-def _SLASH_GS_ : CLIgnoredFlag<"GS-">;
 def _SLASH_kernel_ : CLIgnoredFlag<"kernel-">;
 def _SLASH_nologo : CLIgnoredFlag<"nologo">;
 def _SLASH_Ob1 : CLIgnoredFlag<"Ob1">;
-def _SLASH_Ob2 : CLIgnoredFlag<"Ob2">;
 def _SLASH_Og : CLIgnoredFlag<"Og">;
 def _SLASH_openmp_ : CLIgnoredFlag<"openmp-">;
 def _SLASH_RTC : CLIgnoredJoined<"RTC">;
@@ -324,12 +330,8 @@ def _SLASH_GL : CLFlag<"GL">;
 def _SLASH_GL_ : CLFlag<"GL-">;
 def _SLASH_Gm : CLFlag<"Gm">;
 def _SLASH_Gm_ : CLFlag<"Gm-">;
-def _SLASH_Gr : CLFlag<"Gr">;
-def _SLASH_GS : CLFlag<"GS">;
 def _SLASH_GT : CLFlag<"GT">;
 def _SLASH_Guard : CLJoined<"guard:">;
-def _SLASH_Gv : CLFlag<"Gv">;
-def _SLASH_Gz : CLFlag<"Gz">;
 def _SLASH_GZ : CLFlag<"GZ">;
 def _SLASH_H : CLFlag<"H">;
 def _SLASH_homeparams : CLFlag<"homeparams">;

@@ -1187,6 +1187,8 @@ static bool HasFeature(const Preprocessor &PP, StringRef Feature) {
       // FIXME: Should this be __has_feature or __has_extension?
       //.Case("raw_invocation_type", LangOpts.CPlusPlus)
       // Type traits
+      // N.B. Additional type traits should not be added to the following list.
+      // Instead, they should be detected by has_extension.
       .Case("has_nothrow_assign", LangOpts.CPlusPlus)
       .Case("has_nothrow_copy", LangOpts.CPlusPlus)
       .Case("has_nothrow_constructor", LangOpts.CPlusPlus)
@@ -1207,7 +1209,7 @@ static bool HasFeature(const Preprocessor &PP, StringRef Feature) {
       .Case("is_standard_layout", LangOpts.CPlusPlus)
       .Case("is_pod", LangOpts.CPlusPlus)
       .Case("is_polymorphic", LangOpts.CPlusPlus)
-      .Case("is_sealed", LangOpts.MicrosoftExt)
+      .Case("is_sealed", LangOpts.CPlusPlus && LangOpts.MicrosoftExt)
       .Case("is_trivial", LangOpts.CPlusPlus)
       .Case("is_trivially_assignable", LangOpts.CPlusPlus)
       .Case("is_trivially_constructible", LangOpts.CPlusPlus)

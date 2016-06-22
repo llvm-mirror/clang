@@ -22,10 +22,6 @@
 namespace clang {
 namespace ast_matchers {
 
-using clang::tooling::newFrontendActionFactory;
-using clang::tooling::runToolOnCodeWithArgs;
-using clang::tooling::FrontendActionFactory;
-
 typedef std::vector<std::string> StringVector;
 
 void getLangArgs(Language Lang, StringVector &Args) {
@@ -225,20 +221,14 @@ TEST(ImportExpr, ImportCXXThisExpr) {
 
 TEST(ImportExpr, ImportAtomicExpr) {
   MatchVerifier<Decl> Verifier;
-  EXPECT_TRUE(
-        testImport(
-          "void declToImport() { int *ptr; __atomic_load_n(ptr, 1); }",
-          Lang_CXX, "", Lang_CXX, Verifier,
-          functionDecl(
-            hasBody(
-              compoundStmt(
-                has(
-                  atomicExpr(
-                    has(declRefExpr(
-                          hasDeclaration(varDecl(hasName("ptr"))),
-                          hasType(asString("int *")))),
-                    has(integerLiteral(equals(1), hasType(asString("int"))))
-                    )))))));
+  EXPECT_TRUE(testImport(
+      "void declToImport() { int *ptr; __atomic_load_n(ptr, 1); }", Lang_CXX,
+      "", Lang_CXX, Verifier,
+      functionDecl(hasBody(compoundStmt(has(atomicExpr(
+          has(ignoringParenImpCasts(
+              declRefExpr(hasDeclaration(varDecl(hasName("ptr"))),
+                          hasType(asString("int *"))))),
+          has(integerLiteral(equals(1), hasType(asString("int")))))))))));
 }
 
 TEST(ImportExpr, ImportLabelDeclAndAddrLabelExpr) {
