@@ -38,4 +38,10 @@
 /* Linker version detected at compile time. */
 #cmakedefine HOST_LINK_VERSION "${HOST_LINK_VERSION}"
 
+/* pass --build-id to ld */
+#cmakedefine ENABLE_LINKER_BUILD_ID
+
+/* enable x86 relax relocations by default */
+#cmakedefine01 ENABLE_X86_RELAX_RELOCATIONS
+
 #endif

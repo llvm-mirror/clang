@@ -325,9 +325,10 @@ class OMPLoopDirective : public OMPExecutableDirective {
     EnsureUpperBoundOffset = 13,
     NextLowerBoundOffset = 14,
     NextUpperBoundOffset = 15,
+    NumIterationsOffset = 16,
     // Offset to the end (and start of the following counters/updates/finals
     // arrays) for worksharing loop directives.
-    WorksharingEnd = 16,
+    WorksharingEnd = 17,
   };
 
   /// \brief Get the counters storage.
@@ -475,6 +476,13 @@ protected:
            "expected worksharing loop directive");
     *std::next(child_begin(), NextUpperBoundOffset) = NUB;
   }
+  void setNumIterations(Expr *NI) {
+    assert((isOpenMPWorksharingDirective(getDirectiveKind()) ||
+            isOpenMPTaskLoopDirective(getDirectiveKind()) ||
+            isOpenMPDistributeDirective(getDirectiveKind())) &&
+           "expected worksharing loop directive");
+    *std::next(child_begin(), NumIterationsOffset) = NI;
+  }
   void setCounters(ArrayRef<Expr *> A);
   void setPrivateCounters(ArrayRef<Expr *> A);
   void setInits(ArrayRef<Expr *> A);
@@ -553,6 +561,7 @@ public:
       EUB = nullptr;
       NLB = nullptr;
       NUB = nullptr;
+      NumIterations = nullptr;
       Counters.resize(Size);
       PrivateCounters.resize(Size);
       Inits.resize(Size);
@@ -659,6 +668,14 @@ public:
            "expected worksharing loop directive");
     return const_cast<Expr *>(reinterpret_cast<const Expr *>(
         *std::next(child_begin(), NextUpperBoundOffset)));
+  }
+  Expr *getNumIterations() const {
+    assert((isOpenMPWorksharingDirective(getDirectiveKind()) ||
+            isOpenMPTaskLoopDirective(getDirectiveKind()) ||
+            isOpenMPDistributeDirective(getDirectiveKind())) &&
+           "expected worksharing loop directive");
+    return const_cast<Expr *>(reinterpret_cast<const Expr *>(
+        *std::next(child_begin(), NumIterationsOffset)));
   }
   const Stmt *getBody() const {
     // This relies on the loop form is already checked by Sema.
@@ -2671,7 +2688,7 @@ public:
   /// \param Clauses List of clauses.
   /// \param AssociatedStmt Statement, associated with the directive.
   /// \param Exprs Helper expressions for CodeGen.
-    ///
+  ///
   static OMPDistributeDirective *
   Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation EndLoc,
          unsigned CollapsedNum, ArrayRef<OMPClause *> Clauses,
@@ -2690,6 +2707,65 @@ public:
 
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == OMPDistributeDirectiveClass;
+  }
+};
+
+/// \brief This represents '#pragma omp target update' directive.
+///
+/// \code
+/// #pragma omp target update to(a) from(b) device(1)
+/// \endcode
+/// In this example directive '#pragma omp target update' has clause 'to' with
+/// argument 'a', clause 'from' with argument 'b' and clause 'device' with
+/// argument '1'.
+///
+class OMPTargetUpdateDirective : public OMPExecutableDirective {
+  friend class ASTStmtReader;
+  /// \brief Build directive with the given start and end location.
+  ///
+  /// \param StartLoc Starting location of the directive kind.
+  /// \param EndLoc Ending Location of the directive.
+  /// \param NumClauses The number of clauses.
+  ///
+  OMPTargetUpdateDirective(SourceLocation StartLoc, SourceLocation EndLoc,
+                           unsigned NumClauses)
+      : OMPExecutableDirective(this, OMPTargetUpdateDirectiveClass,
+                               OMPD_target_update, StartLoc, EndLoc, NumClauses,
+                               0) {}
+
+  /// \brief Build an empty directive.
+  ///
+  /// \param NumClauses Number of clauses.
+  ///
+  explicit OMPTargetUpdateDirective(unsigned NumClauses)
+      : OMPExecutableDirective(this, OMPTargetUpdateDirectiveClass,
+                               OMPD_target_update, SourceLocation(),
+                               SourceLocation(), NumClauses, 0) {}
+
+public:
+  /// \brief Creates directive with a list of \a Clauses.
+  ///
+  /// \param C AST context.
+  /// \param StartLoc Starting location of the directive kind.
+  /// \param EndLoc Ending Location of the directive.
+  /// \param Clauses List of clauses.
+  ///
+  static OMPTargetUpdateDirective *Create(const ASTContext &C,
+                                          SourceLocation StartLoc,
+                                          SourceLocation EndLoc,
+                                          ArrayRef<OMPClause *> Clauses);
+
+  /// \brief Creates an empty directive with the place for \a NumClauses
+  /// clauses.
+  ///
+  /// \param C AST context.
+  /// \param NumClauses The number of clauses.
+  ///
+  static OMPTargetUpdateDirective *CreateEmpty(const ASTContext &C,
+                                               unsigned NumClauses, EmptyShell);
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == OMPTargetUpdateDirectiveClass;
   }
 };
 

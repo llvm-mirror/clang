@@ -64,7 +64,7 @@ static bool startsNextParameter(const FormatToken &Current,
 
 ContinuationIndenter::ContinuationIndenter(const FormatStyle &Style,
                                            const AdditionalKeywords &Keywords,
-                                           SourceManager &SourceMgr,
+                                           const SourceManager &SourceMgr,
                                            WhitespaceManager &Whitespaces,
                                            encoding::Encoding Encoding,
                                            bool BinPackInconclusiveFunctions)
@@ -476,10 +476,13 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
   //     // code
   //   }
   //
-  // is common and should be formatted like a free-standing function.
-  if (Style.Language != FormatStyle::LK_JavaScript ||
-      Current.NestingLevel != 0 || !PreviousNonComment->is(tok::equal) ||
-      !Current.isOneOf(Keywords.kw_async, Keywords.kw_function))
+  // is common and should be formatted like a free-standing function. The same
+  // goes for wrapping before the lambda return type arrow.
+  if (!Current.is(TT_LambdaArrow) &&
+      (Style.Language != FormatStyle::LK_JavaScript ||
+       Current.NestingLevel != 0 || !PreviousNonComment ||
+       !PreviousNonComment->is(tok::equal) ||
+       !Current.isOneOf(Keywords.kw_async, Keywords.kw_function)))
     State.Stack.back().NestedBlockIndent = State.Column;
 
   if (NextNonComment->isMemberAccess()) {
@@ -1045,6 +1048,9 @@ void ContinuationIndenter::moveStateToNewBlock(LineState &State) {
 
 unsigned ContinuationIndenter::addMultilineToken(const FormatToken &Current,
                                                  LineState &State) {
+  if (!Current.IsMultiline)
+    return 0;
+
   // Break before further function parameters on all levels.
   for (unsigned i = 0, e = State.Stack.size(); i != e; ++i)
     State.Stack[i].BreakBeforeParameter = true;
@@ -1124,10 +1130,10 @@ unsigned ContinuationIndenter::breakProtrudingToken(const FormatToken &Current,
     } else {
       return 0;
     }
-  } else if (Current.is(TT_BlockComment) && Current.isTrailingComment()) {
-    if (!Style.ReflowComments ||
+  } else if (Current.is(TT_BlockComment)) {
+    if (!Current.isTrailingComment() || !Style.ReflowComments ||
         CommentPragmasRegex.match(Current.TokenText.substr(2)))
-      return 0;
+      return addMultilineToken(Current, State);
     Token.reset(new BreakableBlockComment(
         Current, State.Line->Level, StartColumn, Current.OriginalColumn,
         !Current.Previous, State.Line->InPPDirective, Encoding, Style));

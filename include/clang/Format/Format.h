@@ -431,6 +431,23 @@ struct FormatStyle {
   /// type.
   bool IndentWrappedFunctionNames;
 
+  /// \brief Quotation styles for JavaScript strings. Does not affect template
+  /// strings.
+  enum JavaScriptQuoteStyle {
+    /// Leave string quotes as they are.
+    JSQS_Leave,
+    /// Always use single quotes.
+    JSQS_Single,
+    /// Always use double quotes.
+    JSQS_Double
+  };
+
+  /// \brief The JavaScriptQuoteStyle to use for JavaScript strings.
+  JavaScriptQuoteStyle JavaScriptQuotes;
+
+  /// \brief Whether to wrap JavaScript import/export statements.
+  bool JavaScriptWrapImports;
+
   /// \brief If true, empty lines at the start of blocks are kept.
   bool KeepEmptyLinesAtTheStartOfBlocks;
 
@@ -613,20 +630,6 @@ struct FormatStyle {
   /// \brief The way to use tab characters in the resulting file.
   UseTabStyle UseTab;
 
-  /// \brief Quotation styles for JavaScript strings. Does not affect template
-  /// strings.
-  enum JavaScriptQuoteStyle {
-    /// Leave string quotes as they are.
-    JSQS_Leave,
-    /// Always use single quotes.
-    JSQS_Single,
-    /// Always use double quotes.
-    JSQS_Double
-  };
-
-  /// \brief The JavaScriptQuoteStyle to use for JavaScript strings.
-  JavaScriptQuoteStyle JavaScriptQuotes;
-
   bool operator==(const FormatStyle &R) const {
     return AccessModifierOffset == R.AccessModifierOffset &&
            AlignAfterOpenBracket == R.AlignAfterOpenBracket &&
@@ -675,6 +678,8 @@ struct FormatStyle {
            IndentCaseLabels == R.IndentCaseLabels &&
            IndentWidth == R.IndentWidth && Language == R.Language &&
            IndentWrappedFunctionNames == R.IndentWrappedFunctionNames &&
+           JavaScriptQuotes == R.JavaScriptQuotes &&
+           JavaScriptWrapImports == R.JavaScriptWrapImports &&
            KeepEmptyLinesAtTheStartOfBlocks ==
                R.KeepEmptyLinesAtTheStartOfBlocks &&
            MacroBlockBegin == R.MacroBlockBegin &&
@@ -703,8 +708,7 @@ struct FormatStyle {
            SpacesInParentheses == R.SpacesInParentheses &&
            SpacesInSquareBrackets == R.SpacesInSquareBrackets &&
            Standard == R.Standard && TabWidth == R.TabWidth &&
-           UseTab == R.UseTab &&
-           JavaScriptQuotes == R.JavaScriptQuotes;
+           UseTab == R.UseTab;
   }
 };
 
@@ -773,6 +777,8 @@ tooling::Replacements formatReplacements(StringRef Code,
 
 /// \brief Returns the replacements corresponding to applying \p Replaces and
 /// cleaning up the code after that.
+/// This also inserts a C++ #include directive into the correct block if the
+/// replacement corresponding to the header insertion has offset UINT_MAX.
 tooling::Replacements
 cleanupAroundReplacements(StringRef Code, const tooling::Replacements &Replaces,
                           const FormatStyle &Style);
@@ -851,6 +857,22 @@ extern const char *StyleOptionHelpDescription;
 /// determined, the default is LLVM Style (see ``getLLVMStyle()``).
 FormatStyle getStyle(StringRef StyleName, StringRef FileName,
                      StringRef FallbackStyle, vfs::FileSystem *FS = nullptr);
+
+// \brief Returns a string representation of ``Language``.
+inline StringRef getLanguageName(FormatStyle::LanguageKind Language) {
+  switch (Language) {
+  case FormatStyle::LK_Cpp:
+    return "C++";
+  case FormatStyle::LK_Java:
+    return "Java";
+  case FormatStyle::LK_JavaScript:
+    return "JavaScript";
+  case FormatStyle::LK_Proto:
+    return "Proto";
+  default:
+    return "Unknown";
+  }
+}
 
 } // end namespace format
 } // end namespace clang

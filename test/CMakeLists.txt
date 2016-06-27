@@ -26,10 +26,16 @@ endif ()
 
 list(APPEND CLANG_TEST_DEPS
   clang clang-headers
-  clang-check clang-format
+  clang-format
   c-index-test diagtool
   clang-tblgen
   )
+  
+if(CLANG_ENABLE_STATIC_ANALYZER)
+  list(APPEND CLANG_TEST_DEPS
+    clang-check
+    )
+endif()
 
 if (CLANG_ENABLE_ARCMT)
   list(APPEND CLANG_TEST_DEPS
@@ -62,14 +68,16 @@ if( NOT CLANG_BUILT_STANDALONE )
     FileCheck count not
     llc
     llvm-bcanalyzer
-    llvm-lto
     llvm-objdump
     llvm-profdata
     llvm-readobj
     llvm-symbolizer
-    LTO
     opt
     )
+
+  if(TARGET llvm-lto)
+    list(APPEND CLANG_TEST_DEPS llvm-lto)
+  endif()
 endif()
 
 add_custom_target(clang-test-depends DEPENDS ${CLANG_TEST_DEPS})

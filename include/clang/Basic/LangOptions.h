@@ -65,6 +65,14 @@ public:
     PPTMK_FullGeneralityVirtualInheritance
   };
 
+  enum DefaultCallingConvention {
+    DCC_None,
+    DCC_CDecl,
+    DCC_FastCall,
+    DCC_StdCall,
+    DCC_VectorCall
+  };
+
   enum AddrSpaceMapMangling { ASMM_Target, ASMM_On, ASMM_Off };
 
   enum MSVCMajorVersion {
@@ -158,18 +166,6 @@ public:
 
   FPOptions(const LangOptions &LangOpts) :
     fp_contract(LangOpts.DefaultFPContract) {}
-};
-
-/// \brief OpenCL volatile options
-class OpenCLOptions {
-public:
-#define OPENCLEXT(nm)  unsigned nm : 1;
-#include "clang/Basic/OpenCLExtensions.def"
-
-  OpenCLOptions() {
-#define OPENCLEXT(nm)   nm = 0;
-#include "clang/Basic/OpenCLExtensions.def"
-  }
 };
 
 /// \brief Describes the kind of translation unit being processed.

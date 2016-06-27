@@ -27,6 +27,7 @@
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/PreprocessingRecord.h"
 #include "clang/Sema/ExternalSemaSource.h"
+#include "clang/Sema/IdentifierResolver.h"
 #include "clang/Serialization/ASTBitCodes.h"
 #include "clang/Serialization/ContinuousRangeMap.h"
 #include "clang/Serialization/Module.h"
@@ -390,6 +391,11 @@ private:
   /// \brief The module manager which manages modules and their dependencies
   ModuleManager ModuleMgr;
 
+  /// \brief A dummy identifier resolver used to merge TU-scope declarations in
+  /// C, for the cases where we don't have a Sema object to provide a real
+  /// identifier resolver.
+  IdentifierResolver DummyIdResolver;
+
   /// A mapping from extension block names to module file extensions.
   llvm::StringMap<IntrusiveRefCntPtr<ModuleFileExtension>> ModuleFileExtensions;
 
@@ -652,6 +658,10 @@ private:
   /// \brief The generation number of the last time we loaded data from the
   /// global method pool for this selector.
   llvm::DenseMap<Selector, unsigned> SelectorGeneration;
+
+  /// Whether a selector is out of date. We mark a selector as out of date
+  /// if we load another module after the method pool entry was pulled in.
+  llvm::DenseMap<Selector, bool> SelectorOutOfDate;
 
   struct PendingMacroInfo {
     ModuleFile *M;
@@ -1781,6 +1791,10 @@ public:
   /// selector.
   void ReadMethodPool(Selector Sel) override;
 
+  /// Load the contents of the global method pool for a given
+  /// selector if necessary.
+  void updateOutOfDateSelector(Selector Sel) override;
+
   /// \brief Load the set of namespaces that are known to the external source,
   /// which will be used during typo correction.
   void ReadKnownNamespaces(
@@ -2091,6 +2105,11 @@ public:
   /// translation unit in which the precompiled header is being
   /// imported.
   Sema *getSema() { return SemaObj; }
+
+  /// \brief Get the identifier resolver used for name lookup / updates
+  /// in the translation unit scope. We have one of these even if we don't
+  /// have a Sema object.
+  IdentifierResolver &getIdResolver();
 
   /// \brief Retrieve the identifier table associated with the
   /// preprocessor.

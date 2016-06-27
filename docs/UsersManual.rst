@@ -711,16 +711,19 @@ also allows you to push and pop the current warning state. This is
 particularly useful when writing a header file that will be compiled by
 other people, because you don't know what warning flags they build with.
 
-In the below example :option:`-Wmultichar` is ignored for only a single line of
-code, after which the diagnostics return to whatever state had previously
+In the below example :option:`-Wextra-tokens` is ignored for only a single line
+of code, after which the diagnostics return to whatever state had previously
 existed.
 
 .. code-block:: c
 
-  #pragma clang diagnostic push
-  #pragma clang diagnostic ignored "-Wmultichar"
+  #if foo
+  #endif foo // warning: extra tokens at end of #endif directive
 
-  char b = 'df'; // no warning.
+  #pragma clang diagnostic ignored "-Wextra-tokens"
+
+  #if foo
+  #endif foo // no warning
 
   #pragma clang diagnostic pop
 
@@ -772,11 +775,13 @@ the pragma onwards within the same file.
 
 .. code-block:: c
 
-  char a = 'xy'; // warning
+  #if foo
+  #endif foo // warning: extra tokens at end of #endif directive
 
   #pragma clang system_header
 
-  char b = 'ab'; // no warning
+  #if foo
+  #endif foo // no warning
 
 The :option:`--system-header-prefix=` and :option:`--no-system-header-prefix=`
 command-line arguments can be used to override whether subsets of an include
@@ -986,6 +991,8 @@ are listed below.
 
 **-f[no-]sanitize-recover=check1,check2,...**
 
+**-f[no-]sanitize-recover=all**
+
    Controls which checks enabled by ``-fsanitize=`` flag are non-fatal.
    If the check is fatal, program will halt after the first error
    of this kind is detected and error report is printed.
@@ -1053,20 +1060,24 @@ are listed below.
    the behavior of sanitizers in the ``cfi`` group to allow checking
    of cross-DSO virtual and indirect calls.
 
+.. option:: -ffast-math
+
+   Enable fast-math mode. This defines the ``__FAST_MATH__`` preprocessor
+   macro, and lets the compiler make aggressive, potentially-lossy assumptions
+   about floating-point math.  These include:
+
+   * Floating-point math obeys regular algebraic rules for real numbers (e.g.
+     ``+`` and ``*`` are associative, ``x/y == x * (1/y)``, and
+     ``(a + b) * c == a * c + b * c``),
+   * operands to floating-point operations are not equal to ``NaN`` and
+     ``Inf``, and
+   * ``+0`` and ``-0`` are interchangeable.
+
 .. option:: -fwhole-program-vtables
 
    Enable whole-program vtable optimizations, such as single-implementation
-   devirtualization and virtual constant propagation. Requires ``-flto``.
-
-   By default, the compiler will assume that all type hierarchies are
-   closed except those in the ``std`` namespace, the ``stdext`` namespace
-   and classes with the ``__declspec(uuid())`` attribute.
-
-.. option:: -fwhole-program-vtables-blacklist=path
-
-   Allows the user to specify the path to a list of additional classes to
-   blacklist from whole-program vtable optimizations. This list is in the
-   :ref:`CFI blacklist <cfi-blacklist>` format.
+   devirtualization and virtual constant propagation, for classes with
+   :doc:`hidden LTO visibility <LTOVisibility>`. Requires ``-flto``.
 
 .. option:: -fno-assume-sane-operator-new
 
@@ -1133,6 +1144,16 @@ are listed below.
 
    This option restricts the generated code to use general registers
    only. This only applies to the AArch64 architecture.
+
+.. option:: -mcompact-branches=[values]
+
+   Control the usage of compact branches for MIPSR6.
+
+   Valid values are: ``never``, ``optimal`` and ``always``.
+   The default value is ``optimal`` which generates compact branches
+   when a delay slot cannot be filled. ``never`` disables the usage of
+   compact branches and ``always`` generates compact branches whenever
+   possible.
 
 **-f[no-]max-type-align=[number]**
    Instruct the code generator to not enforce a higher alignment than the given

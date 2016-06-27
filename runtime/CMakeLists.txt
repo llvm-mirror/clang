@@ -34,13 +34,6 @@ if(NOT EXISTS ${COMPILER_RT_SRC_ROOT})
 endif()
 
 if(LLVM_BUILD_EXTERNAL_COMPILER_RT AND EXISTS ${COMPILER_RT_SRC_ROOT}/)
-  if(CMAKE_VERSION VERSION_GREATER 3.3.20150708)
-    set(cmake_3_4_USES_TERMINAL_OPTIONS
-      USES_TERMINAL_CONFIGURE 1
-      USES_TERMINAL_BUILD 1
-      USES_TERMINAL_INSTALL 1
-      )
-  endif()
 
   # Add compiler-rt as an external project.
   set(COMPILER_RT_PREFIX ${CMAKE_BINARY_DIR}/projects/compiler-rt)
@@ -82,11 +75,13 @@ if(LLVM_BUILD_EXTERNAL_COMPILER_RT AND EXISTS ${COMPILER_RT_SRC_ROOT}/)
                -DCOMPILER_RT_INSTALL_PATH:STRING=lib${LLVM_LIBDIR_SUFFIX}/clang/${CLANG_VERSION}
                -DCOMPILER_RT_INCLUDE_TESTS=${LLVM_INCLUDE_TESTS}
                -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
-               -Dcmake_3_2_USES_TERMINAL=${cmake_3_2_USES_TERMINAL}
+               -DLLVM_LIBDIR_SUFFIX=${LLVM_LIBDIR_SUFFIX}
                ${COMPILER_RT_PASSTHROUGH_VARIABLES}
     INSTALL_COMMAND ""
     STEP_TARGETS configure build
-    ${cmake_3_4_USES_TERMINAL_OPTIONS}
+    USES_TERMINAL_CONFIGURE 1
+    USES_TERMINAL_BUILD 1
+    USES_TERMINAL_INSTALL 1
     )
 
   get_ext_project_build_command(run_clean_compiler_rt clean)
@@ -135,7 +130,7 @@ if(LLVM_BUILD_EXTERNAL_COMPILER_RT AND EXISTS ${COMPILER_RT_SRC_ROOT}/)
         DEPENDS compiler-rt-build ${COMPILER_RT_TEST_DEPENDENCIES}
         WORKING_DIRECTORY ${BINARY_DIR}
         VERBATIM
-        ${cmake_3_2_USES_TERMINAL}
+        USES_TERMINAL
         )
     endforeach()
 
@@ -148,16 +143,3 @@ if(LLVM_BUILD_EXTERNAL_COMPILER_RT AND EXISTS ${COMPILER_RT_SRC_ROOT}/)
       VERBATIM)
   endif()
 endif()
-
-set(src "${CMAKE_CURRENT_SOURCE_DIR}/vtables_blacklist.txt")
-set(dst "${LLVM_LIBRARY_OUTPUT_INTDIR}/clang/${CLANG_VERSION}/vtables_blacklist.txt")
-add_custom_command(OUTPUT ${dst}
-                   DEPENDS ${src}
-                   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${src} ${dst}
-                   COMMENT "Copying vtables blacklist")
-add_custom_target(vtables_blacklist DEPENDS ${dst})
-set_target_properties(vtables_blacklist PROPERTIES FOLDER "Misc")
-if(TARGET clang)
-  add_dependencies(clang vtables_blacklist)
-endif()
-install(FILES ${src} DESTINATION lib${LLVM_LIBDIR_SUFFIX}/clang/${CLANG_VERSION})

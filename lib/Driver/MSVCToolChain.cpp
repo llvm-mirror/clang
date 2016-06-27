@@ -19,6 +19,7 @@
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
+#include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Process.h"
@@ -71,6 +72,11 @@ bool MSVCToolChain::IsUnwindTablesDefault() const {
   // Emit unwind tables by default on Win64. All non-x86_32 Windows platforms
   // such as ARM and PPC actually require unwind tables, but LLVM doesn't know
   // how to generate them yet.
+
+  // Don't emit unwind tables by default for MachO targets.
+  if (getTriple().isOSBinFormatMachO())
+    return false;
+
   return getArch() == llvm::Triple::x86_64;
 }
 
@@ -402,7 +408,10 @@ bool MSVCToolChain::getVisualStudioBinariesFolder(const char *clangProgramPath,
 
         SmallString<128> FilePath(PathSegment);
         llvm::sys::path::append(FilePath, "cl.exe");
-        if (llvm::sys::fs::can_execute(FilePath.c_str()) &&
+        // Checking if cl.exe exists is a small optimization over calling
+        // can_execute, which really only checks for existence but will also do
+        // extra checks for cl.exe.exe.  These add up when walking a long path.
+        if (llvm::sys::fs::exists(FilePath.c_str()) &&
             !llvm::sys::fs::equivalent(FilePath.c_str(), clangProgramPath)) {
           // If we found it on the PATH, use it exactly as is with no
           // modifications.
@@ -450,6 +459,45 @@ bool MSVCToolChain::getVisualStudioBinariesFolder(const char *clangProgramPath,
   }
   path = BinDir.str();
   return true;
+}
+
+VersionTuple MSVCToolChain::getMSVCVersionFromExe() const {
+  VersionTuple Version;
+#ifdef USE_WIN32
+  std::string BinPath;
+  if (!getVisualStudioBinariesFolder("", BinPath))
+    return Version;
+  SmallString<128> ClExe(BinPath);
+  llvm::sys::path::append(ClExe, "cl.exe");
+
+  std::wstring ClExeWide;
+  if (!llvm::ConvertUTF8toWide(ClExe.c_str(), ClExeWide))
+    return Version;
+
+  const DWORD VersionSize = ::GetFileVersionInfoSizeW(ClExeWide.c_str(),
+                                                      nullptr);
+  if (VersionSize == 0)
+    return Version;
+
+  SmallVector<uint8_t, 4 * 1024> VersionBlock(VersionSize);
+  if (!::GetFileVersionInfoW(ClExeWide.c_str(), 0, VersionSize,
+                             VersionBlock.data()))
+    return Version;
+
+  VS_FIXEDFILEINFO *FileInfo = nullptr;
+  UINT FileInfoSize = 0;
+  if (!::VerQueryValueW(VersionBlock.data(), L"\\",
+                        reinterpret_cast<LPVOID *>(&FileInfo), &FileInfoSize) ||
+      FileInfoSize < sizeof(*FileInfo))
+    return Version;
+
+  const unsigned Major = (FileInfo->dwFileVersionMS >> 16) & 0xFFFF;
+  const unsigned Minor = (FileInfo->dwFileVersionMS      ) & 0xFFFF;
+  const unsigned Micro = (FileInfo->dwFileVersionLS >> 16) & 0xFFFF;
+
+  Version = VersionTuple(Major, Minor, Micro);
+#endif
+  return Version;
 }
 
 // Get Visual Studio installation directory.
@@ -613,7 +661,7 @@ MSVCToolChain::ComputeEffectiveClangTriple(const ArgList &Args,
       ToolChain::ComputeEffectiveClangTriple(Args, InputType);
   llvm::Triple Triple(TripleStr);
   VersionTuple MSVT =
-      tools::visualstudio::getMSVCVersion(/*D=*/nullptr, Triple, Args,
+      tools::visualstudio::getMSVCVersion(/*D=*/nullptr, *this, Triple, Args,
                                           /*IsWindowsMSVC=*/true);
   if (MSVT.empty())
     return TripleStr;
@@ -674,8 +722,20 @@ static void TranslateOptArg(Arg *A, llvm::opt::DerivedArgList &DAL,
       }
       break;
     case 'b':
-      if (I + 1 != E && isdigit(OptStr[I + 1]))
+      if (I + 1 != E && isdigit(OptStr[I + 1])) {
+        switch (OptStr[I + 1]) {
+        case '0':
+          DAL.AddFlagArg(A, Opts.getOption(options::OPT_fno_inline));
+          break;
+        case '1':
+          // TODO: Inline calls to 'inline functions' only.
+          break;
+        case '2':
+          DAL.AddFlagArg(A, Opts.getOption(options::OPT_finline_functions));
+          break;
+        }
         ++I;
+      }
       break;
     case 'g':
       break;
@@ -759,7 +819,12 @@ MSVCToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
       continue;
     StringRef OptStr = A->getValue();
     for (size_t I = 0, E = OptStr.size(); I != E; ++I) {
-      const char &OptChar = *(OptStr.data() + I);
+      char OptChar = OptStr[I];
+      char PrevChar = I > 0 ? OptStr[I - 1] : '0';
+      if (PrevChar == 'b') {
+        // OptChar does not expand; it's an argument to the previous char.
+        continue;
+      }
       if (OptChar == '1' || OptChar == '2' || OptChar == 'x' || OptChar == 'd')
         ExpandChar = OptStr.data() + I;
     }

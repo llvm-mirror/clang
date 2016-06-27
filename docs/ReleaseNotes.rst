@@ -47,7 +47,10 @@ sections with improvements to Clang's support for those languages.
 Major New Features
 ------------------
 
-- Feature1...
+- Clang will no longer passes --build-id by default to the linker. In modern
+  linkers that is a relatively expensive option. It can be passed explicitly
+  with -Wl,--build-id. To have clang always pass it, build clang with
+  -DENABLE_LINKER_BUILD_ID.
 
 Improvements to Clang's diagnostics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -91,10 +94,60 @@ C11 Feature Support
 C++ Language Changes in Clang
 -----------------------------
 
-- ...
+- Clang now enforces the rule that a *using-declaration* cannot name an enumerator of a
+  scoped enumeration.
 
-C++11 Feature Support
+  .. code-block:: c++
+
+    namespace Foo { enum class E { e }; }
+    namespace Bar {
+      using Foo::E::e; // error
+      constexpr auto e = Foo::E::e; // ok
+    }
+
+- Clang now enforces the rule that an enumerator of an unscoped enumeration declared at
+  class scope can only be named by a *using-declaration* in a derived class.
+
+  .. code-block:: c++
+
+    class Foo { enum E { e }; }
+    using Foo::e; // error
+    static constexpr auto e = Foo::e; // ok
+
+...
+
+C++1z Feature Support
 ^^^^^^^^^^^^^^^^^^^^^
+
+Clang's experimental support for the upcoming C++1z standard can be enabled with ``-std=c++1z``.
+Changes to C++1z features since Clang 3.8:
+
+- The ``[[fallthrough]]``, ``[[nodiscard]]``, and ``[[maybe_unused]]`` attributes are
+  supported in C++11 onwards, and are largely synonymous with Clang's existing attributes
+  ``[[clang::fallthrough]]``, ``[[gnu::warn_unused_result]]``, and ``[[gnu::unused]]``.
+  Use ``-Wimplicit-fallthrough`` to warn on unannotated fallthrough within ``switch``
+  statements.
+
+- In C++1z mode, aggregate initialization can be performed for classes with base classes:
+
+  .. code-block:: c++
+
+    struct A { int n; };
+    struct B : A { int x, y; };
+    B b = { 1, 2, 3 }; // b.n == 1, b.x == 2, b.y == 3
+
+- The range in a range-based ``for`` statement can have different types for its ``begin``
+  and ``end`` iterators. This is permitted as an extension in C++11 onwards.
+
+- Lambda-expressions can explicitly capture ``*this`` (to capture the surrounding object
+  by copy). This is permitted as an extension in C++11 onwards.
+
+- Objects of enumeration type can be direct-list-initialized from a value of the underlying
+  type. ``E{n}`` is equivalent to ``E(n)``, except that it implies a check for a narrowing
+  conversion.
+
+- Unary *fold-expression*\s over an empty pack are now rejected for all operators
+  other than ``&&``, ``||``, and ``,``.
 
 ...
 
@@ -108,6 +161,21 @@ OpenCL C Language Changes in Clang
 
 ...
 
+OpenMP Support in Clang
+----------------------------------
+
+Added support for all non-offloading features from OpenMP 4.5, including using
+data members in private clauses of non-static member functions. Additionally,
+data members can be used as loop control variables in loop-based directives.
+
+Currently Clang supports OpenMP 3.1 and all non-offloading features of
+OpenMP 4.0/4.5. Offloading features are under development. Clang defines macro
+_OPENMP and sets it to OpenMP 3.1 (in accordance with OpenMP standard) by
+default. User may change this value using ``-fopenmp-version=[31|40|45]`` option.
+
+The codegen for OpenMP constructs was significantly improved to produce much
+more stable and faster code.
+
 Internal API Changes
 --------------------
 
@@ -120,11 +188,13 @@ this section should help get you past the largest hurdles of upgrading.
 AST Matchers
 ------------
 
-- hasAnyArgument: Matcher no longer ignores parentheses and implicit casts on
-  the argument before applying the inner matcher. The fix was done to allow for
-  greater control by the user. In all existing checkers that use this matcher
-  all instances of code ``hasAnyArgument(<inner matcher>)`` must be changed to
-  ``hasAnyArgument(ignoringParenImpCasts(<inner matcher>))``.
+- has and hasAnyArgument: Matchers no longer ignores parentheses and implicit
+  casts on the argument before applying the inner matcher. The fix was done to
+  allow for greater control by the user. In all existing checkers that use this
+  matcher all instances of code ``hasAnyArgument(<inner matcher>)`` or
+  ``has(<inner matcher>)`` must be changed to
+  ``hasAnyArgument(ignoringParenImpCasts(<inner matcher>))`` or
+  ``has(ignoringParenImpCasts(<inner matcher>))``.
 
 ...
 

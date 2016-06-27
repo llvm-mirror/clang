@@ -31,7 +31,9 @@ Using Clang as a Compiler
    SanitizerStats
    SanitizerSpecialCaseList
    ControlFlowIntegrity
+   LTOVisibility
    SafeStack
+   SourceBasedCodeCoverage
    Modules
    MSVCCompatibility
    CommandGuide/index

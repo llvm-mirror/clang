@@ -145,7 +145,7 @@ struct FormatToken {
   /// \brief Whether the token text contains newlines (escaped or not).
   bool IsMultiline = false;
 
-  /// \brief Indicates that this is the first token.
+  /// \brief Indicates that this is the first token of the file.
   bool IsFirst = false;
 
   /// \brief Whether there must be a line break before this token.
@@ -297,6 +297,20 @@ struct FormatToken {
   }
   template <typename T> bool isNot(T Kind) const { return !is(Kind); }
 
+  /// \c true if this token starts a sequence with the given tokens in order,
+  /// following the ``Next`` pointers, ignoring comments.
+  template <typename A, typename... Ts>
+  bool startsSequence(A K1, Ts... Tokens) const {
+    return startsSequenceInternal(K1, Tokens...);
+  }
+
+  /// \c true if this token ends a sequence with the given tokens in order,
+  /// following the ``Previous`` pointers, ignoring comments.
+  template <typename A, typename... Ts>
+  bool endsSequence(A K1, Ts... Tokens) const {
+    return endsSequenceInternal(K1, Tokens...);
+  }
+
   bool isStringLiteral() const { return tok::isStringLiteral(Tok.getKind()); }
 
   bool isObjCAtKeyword(tok::ObjCKeywordKind Kind) const {
@@ -429,6 +443,34 @@ private:
   // Disallow copying.
   FormatToken(const FormatToken &) = delete;
   void operator=(const FormatToken &) = delete;
+
+  template <typename A, typename... Ts>
+  bool startsSequenceInternal(A K1, Ts... Tokens) const {
+    if (is(tok::comment) && Next)
+      return Next->startsSequenceInternal(K1, Tokens...);
+    return is(K1) && Next && Next->startsSequenceInternal(Tokens...);
+  }
+
+  template <typename A>
+  bool startsSequenceInternal(A K1) const {
+    if (is(tok::comment) && Next)
+      return Next->startsSequenceInternal(K1);
+    return is(K1);
+  }
+
+  template <typename A, typename... Ts>
+  bool endsSequenceInternal(A K1) const {
+    if (is(tok::comment) && Previous)
+      return Previous->endsSequenceInternal(K1);
+    return is(K1);
+  }
+
+  template <typename A, typename... Ts>
+  bool endsSequenceInternal(A K1, Ts... Tokens) const {
+    if (is(tok::comment) && Previous)
+      return Previous->endsSequenceInternal(K1, Tokens...);
+    return is(K1) && Previous && Previous->endsSequenceInternal(Tokens...);
+  }
 };
 
 class ContinuationIndenter;
@@ -535,6 +577,7 @@ struct AdditionalKeywords {
     kw_NS_ENUM = &IdentTable.get("NS_ENUM");
     kw_NS_OPTIONS = &IdentTable.get("NS_OPTIONS");
 
+    kw_as = &IdentTable.get("as");
     kw_async = &IdentTable.get("async");
     kw_await = &IdentTable.get("await");
     kw_finally = &IdentTable.get("finally");
@@ -585,6 +628,7 @@ struct AdditionalKeywords {
   IdentifierInfo *kw___except;
 
   // JavaScript keywords.
+  IdentifierInfo *kw_as;
   IdentifierInfo *kw_async;
   IdentifierInfo *kw_await;
   IdentifierInfo *kw_finally;
