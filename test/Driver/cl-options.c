@@ -113,6 +113,10 @@
 // Ob2-NOT: warning: argument unused during compilation: '/O2'
 // Ob2: -finline-functions
 
+// RUN: %clang_cl /Ob1 -### -- %s 2>&1 | FileCheck -check-prefix=Ob1 %s
+// RUN: %clang_cl /Odb1 -### -- %s 2>&1 | FileCheck -check-prefix=Ob1 %s
+// Ob1: -finline-hint-functions
+
 // RUN: %clang_cl /Od -### -- %s 2>&1 | FileCheck -check-prefix=Od %s
 // Od: -O0
 
@@ -280,7 +284,6 @@
 // RUN:    /GS- \
 // RUN:    /kernel- \
 // RUN:    /nologo \
-// RUN:    /Ob1 \
 // RUN:    /openmp- \
 // RUN:    /RTC1 \
 // RUN:    /sdl \
@@ -417,7 +420,7 @@
 // Z7: "-gcodeview"
 // Z7: "-debug-info-kind=limited"
 
-// RUN: %clang_cl -gline-tables-only /Z7 /c -### -- %s 2>&1 | FileCheck -check-prefix=Z7GMLT %s
+// RUN: %clang_cl /Zd /c -### -- %s 2>&1 | FileCheck -check-prefix=Z7GMLT %s
 // Z7GMLT: "-gcodeview"
 // Z7GMLT: "-debug-info-kind=line-tables-only"
 
@@ -448,6 +451,12 @@
 
 // RUN: %clang_cl -fmsc-version=1900 -TP -### -- %s 2>&1 | FileCheck -check-prefix=CXX14 %s
 // CXX14: -std=c++14
+
+// RUN: %clang_cl -fmsc-version=1900 -TP -std:c++14 -### -- %s 2>&1 | FileCheck -check-prefix=STDCXX14 %s
+// STDCXX14: -std=c++14
+
+// RUN: %clang_cl -fmsc-version=1900 -TP -std:c++latest -### -- %s 2>&1 | FileCheck -check-prefix=STDCXXLATEST %s
+// STDCXXLATEST: -std=c++1z
 
 // RUN: env CL="/Gy" %clang_cl -### -- %s 2>&1 | FileCheck -check-prefix=ENV-CL %s
 // ENV-CL: "-ffunction-sections"

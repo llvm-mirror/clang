@@ -68,6 +68,7 @@ if( NOT CLANG_BUILT_STANDALONE )
     FileCheck count not
     llc
     llvm-bcanalyzer
+    llvm-nm
     llvm-objdump
     llvm-profdata
     llvm-readobj
@@ -91,6 +92,11 @@ add_lit_testsuite(check-clang "Running the Clang regression tests"
   ARGS ${CLANG_TEST_EXTRA_ARGS}
   )
 set_target_properties(check-clang PROPERTIES FOLDER "Clang tests")
+
+add_lit_testsuites(CLANG ${CMAKE_CURRENT_SOURCE_DIR}
+  PARAMS ${CLANG_TEST_PARAMS}
+  DEPENDS ${CLANG_TEST_DEPS}
+)
 
 # Add a legacy target spelling: clang-test
 add_custom_target(clang-test)

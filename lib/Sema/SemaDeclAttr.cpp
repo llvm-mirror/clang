@@ -4713,10 +4713,6 @@ static void handleAbiTagAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   D->addAttr(::new (S.Context)
              AbiTagAttr(Attr.getRange(), S.Context, Tags.data(), Tags.size(),
                         Attr.getAttributeSpellingListIndex()));
-
-  // FIXME: remove this warning as soon as mangled part is ready.
-  S.Diag(Attr.getRange().getBegin(), diag::warn_attribute_ignored)
-        << Attr.getName();
 }
 
 static void handleARMInterruptAttr(Sema &S, Decl *D,
@@ -5913,9 +5909,12 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   case AttributeList::AT_TypeTagForDatatype:
     handleTypeTagForDatatypeAttr(S, D, Attr);
     break;
-
   case AttributeList::AT_RenderScriptKernel:
     handleSimpleAttribute<RenderScriptKernelAttr>(S, D, Attr);
+    break;
+  // XRay attributes.
+  case AttributeList::AT_XRayInstrument:
+    handleSimpleAttribute<XRayInstrumentAttr>(S, D, Attr);
     break;
   }
 }

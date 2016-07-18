@@ -98,8 +98,9 @@ class ObjCDeallocChecker
                      check::PointerEscape,
                      check::PreStmt<ReturnStmt>> {
 
-  mutable IdentifierInfo *NSObjectII, *SenTestCaseII, *Block_releaseII,
-                         *CIFilterII;
+  mutable IdentifierInfo *NSObjectII, *SenTestCaseII, *XCTestCaseII,
+      *Block_releaseII, *CIFilterII;
+
   mutable Selector DeallocSel, ReleaseSel;
 
   std::unique_ptr<BugType> MissingReleaseBugType;
@@ -314,15 +315,7 @@ void ObjCDeallocChecker::checkBeginFunction(
 /// Returns nullptr if the instance symbol cannot be found.
 const ObjCIvarRegion *
 ObjCDeallocChecker::getIvarRegionForIvarSymbol(SymbolRef IvarSym) const {
-  const MemRegion *RegionLoadedFrom = nullptr;
-  if (auto *DerivedSym = dyn_cast<SymbolDerived>(IvarSym))
-    RegionLoadedFrom = DerivedSym->getRegion();
-  else if (auto *RegionSym = dyn_cast<SymbolRegionValue>(IvarSym))
-    RegionLoadedFrom = RegionSym->getRegion();
-  else
-    return nullptr;
-
-  return dyn_cast<ObjCIvarRegion>(RegionLoadedFrom);
+  return dyn_cast_or_null<ObjCIvarRegion>(IvarSym->getOriginRegion());
 }
 
 /// Given a symbol for an ivar, return a symbol for the instance containing
@@ -760,9 +753,9 @@ bool ObjCDeallocChecker::diagnoseMistakenDealloc(SymbolRef DeallocedValue,
   return true;
 }
 
-ObjCDeallocChecker::
-    ObjCDeallocChecker()
-    : NSObjectII(nullptr), SenTestCaseII(nullptr), CIFilterII(nullptr) {
+ObjCDeallocChecker::ObjCDeallocChecker()
+    : NSObjectII(nullptr), SenTestCaseII(nullptr), XCTestCaseII(nullptr),
+      CIFilterII(nullptr) {
 
   MissingReleaseBugType.reset(
       new BugType(this, "Missing ivar release (leak)",
@@ -784,6 +777,7 @@ void ObjCDeallocChecker::initIdentifierInfoAndSelectors(
 
   NSObjectII = &Ctx.Idents.get("NSObject");
   SenTestCaseII = &Ctx.Idents.get("SenTestCase");
+  XCTestCaseII = &Ctx.Idents.get("XCTestCase");
   Block_releaseII = &Ctx.Idents.get("_Block_release");
   CIFilterII = &Ctx.Idents.get("CIFilter");
 
@@ -1023,11 +1017,11 @@ bool ObjCDeallocChecker::classHasSeparateTeardown(
     if (II == NSObjectII)
       return false;
 
-    // FIXME: For now, ignore classes that subclass SenTestCase, as these don't
-    // need to implement -dealloc.  They implement tear down in another way,
-    // which we should try and catch later.
+    // FIXME: For now, ignore classes that subclass SenTestCase and XCTestCase,
+    // as these don't need to implement -dealloc.  They implement tear down in
+    // another way, which we should try and catch later.
     //  http://llvm.org/bugs/show_bug.cgi?id=3187
-    if (II == SenTestCaseII)
+    if (II == XCTestCaseII || II == SenTestCaseII)
       return true;
   }
 

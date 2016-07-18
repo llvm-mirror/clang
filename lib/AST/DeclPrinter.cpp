@@ -132,6 +132,8 @@ static QualType GetBaseType(QualType T) {
       BaseType = VTy->getElementType();
     else if (const ReferenceType *RTy = BaseType->getAs<ReferenceType>())
       BaseType = RTy->getPointeeType();
+    else if (const AutoType *ATy = BaseType->getAs<AutoType>())
+      BaseType = ATy->getDeducedType();
     else
       llvm_unreachable("Unknown declarator!");
   }
@@ -713,6 +715,11 @@ void DeclPrinter::VisitLabelDecl(LabelDecl *D) {
 
 void DeclPrinter::VisitVarDecl(VarDecl *D) {
   prettyPrintPragmas(D);
+
+  QualType T = D->getTypeSourceInfo()
+    ? D->getTypeSourceInfo()->getType()
+    : D->getASTContext().getUnqualifiedObjCPointerType(D->getType());
+
   if (!Policy.SuppressSpecifiers) {
     StorageClass SC = D->getStorageClass();
     if (SC != SC_None)
@@ -734,11 +741,13 @@ void DeclPrinter::VisitVarDecl(VarDecl *D) {
 
     if (D->isModulePrivate())
       Out << "__module_private__ ";
+
+    if (D->isConstexpr()) {
+      Out << "constexpr ";
+      T.removeLocalConst();
+    }
   }
 
-  QualType T = D->getTypeSourceInfo()
-    ? D->getTypeSourceInfo()->getType()
-    : D->getASTContext().getUnqualifiedObjCPointerType(D->getType());
   printDeclType(T, D->getName());
   Expr *Init = D->getInit();
   if (!Policy.SuppressInitializers && Init) {
@@ -1055,7 +1064,7 @@ void DeclPrinter::VisitObjCMethodDecl(ObjCMethodDecl *OMD) {
 
   std::string name = OMD->getSelector().getAsString();
   std::string::size_type pos, lastPos = 0;
-  for (const auto *PI : OMD->params()) {
+  for (const auto *PI : OMD->parameters()) {
     // FIXME: selector is missing here!
     pos = name.find_first_of(':', lastPos);
     Out << " " << name.substr(lastPos, pos - lastPos) << ':';

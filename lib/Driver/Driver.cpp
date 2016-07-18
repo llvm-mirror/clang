@@ -23,6 +23,7 @@
 #include "clang/Driver/ToolChain.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -280,9 +281,8 @@ DerivedArgList *Driver::TranslateInputArgs(const InputArgList &Args) const {
   }
 
   // Enforce -static if -miamcu is present.
-  if (Arg *Ar = Args.getLastArg(options::OPT_miamcu, options::OPT_mno_iamcu))
-    if (Ar->getOption().matches(options::OPT_miamcu))
-      DAL->AddFlagArg(0, Opts->getOption(options::OPT_static));
+  if (Args.hasFlag(options::OPT_miamcu, options::OPT_mno_iamcu, false))
+    DAL->AddFlagArg(0, Opts->getOption(options::OPT_static));
 
 // Add a default value of -mlinker-version=, if one was given and the user
 // didn't specify one.
@@ -376,24 +376,22 @@ static llvm::Triple computeTargetTriple(const Driver &D,
   }
 
   // Handle -miamcu flag.
-  if (Arg *Ar = Args.getLastArg(options::OPT_miamcu, options::OPT_mno_iamcu)) {
-    if (Ar->getOption().matches(options::OPT_miamcu)) {
-      if (Target.get32BitArchVariant().getArch() != llvm::Triple::x86)
-        D.Diag(diag::err_drv_unsupported_opt_for_target) << "-miamcu"
-                                                         << Target.str();
+  if (Args.hasFlag(options::OPT_miamcu, options::OPT_mno_iamcu, false)) {
+    if (Target.get32BitArchVariant().getArch() != llvm::Triple::x86)
+      D.Diag(diag::err_drv_unsupported_opt_for_target) << "-miamcu"
+                                                       << Target.str();
 
-      if (A && !A->getOption().matches(options::OPT_m32))
-        D.Diag(diag::err_drv_argument_not_allowed_with)
-            << "-miamcu" << A->getBaseArg().getAsString(Args);
+    if (A && !A->getOption().matches(options::OPT_m32))
+      D.Diag(diag::err_drv_argument_not_allowed_with)
+          << "-miamcu" << A->getBaseArg().getAsString(Args);
 
-      Target.setArch(llvm::Triple::x86);
-      Target.setArchName("i586");
-      Target.setEnvironment(llvm::Triple::UnknownEnvironment);
-      Target.setEnvironmentName("");
-      Target.setOS(llvm::Triple::ELFIAMCU);
-      Target.setVendor(llvm::Triple::UnknownVendor);
-      Target.setVendorName("intel");
-    }
+    Target.setArch(llvm::Triple::x86);
+    Target.setArchName("i586");
+    Target.setEnvironment(llvm::Triple::UnknownEnvironment);
+    Target.setEnvironmentName("");
+    Target.setOS(llvm::Triple::ELFIAMCU);
+    Target.setVendor(llvm::Triple::UnknownVendor);
+    Target.setVendorName("intel");
   }
 
   return Target;
@@ -1025,9 +1023,10 @@ static unsigned PrintActions1(const Compilation &C, Action *A,
     os << '"' << BIA->getArchName() << '"' << ", {"
        << PrintActions1(C, *BIA->input_begin(), Ids) << "}";
   } else if (CudaDeviceAction *CDA = dyn_cast<CudaDeviceAction>(A)) {
-    os << '"'
-       << (CDA->getGpuArchName() ? CDA->getGpuArchName() : "(multiple archs)")
-       << '"' << ", {" << PrintActions1(C, *CDA->input_begin(), Ids) << "}";
+    CudaArch Arch = CDA->getGpuArch();
+    if (Arch != CudaArch::UNKNOWN)
+      os << "'" << CudaArchToString(Arch) << "', ";
+    os << "{" << PrintActions1(C, *CDA->input_begin(), Ids) << "}";
   } else {
     const ActionList *AL;
     if (CudaHostAction *CHA = dyn_cast<CudaHostAction>(A)) {
@@ -1383,24 +1382,25 @@ static Action *buildCudaActions(Compilation &C, DerivedArgList &Args,
     return C.MakeAction<CudaHostAction>(HostAction, ActionList());
 
   // Collect all cuda_gpu_arch parameters, removing duplicates.
-  SmallVector<const char *, 4> GpuArchList;
-  llvm::StringSet<> GpuArchNames;
+  SmallVector<CudaArch, 4> GpuArchList;
+  llvm::SmallSet<CudaArch, 4> GpuArchs;
   for (Arg *A : Args) {
     if (!A->getOption().matches(options::OPT_cuda_gpu_arch_EQ))
       continue;
     A->claim();
 
-    const auto& Arch = A->getValue();
-    if (!CudaDeviceAction::IsValidGpuArchName(Arch))
-      C.getDriver().Diag(clang::diag::err_drv_cuda_bad_gpu_arch) << Arch;
-    else if (GpuArchNames.insert(Arch).second)
+    const auto &ArchStr = A->getValue();
+    CudaArch Arch = StringToCudaArch(ArchStr);
+    if (Arch == CudaArch::UNKNOWN)
+      C.getDriver().Diag(clang::diag::err_drv_cuda_bad_gpu_arch) << ArchStr;
+    else if (GpuArchs.insert(Arch).second)
       GpuArchList.push_back(Arch);
   }
 
   // Default to sm_20 which is the lowest common denominator for supported GPUs.
   // sm_20 code should work correctly, if suboptimally, on all newer GPUs.
   if (GpuArchList.empty())
-    GpuArchList.push_back("sm_20");
+    GpuArchList.push_back(CudaArch::SM_20);
 
   // Replicate inputs for each GPU architecture.
   Driver::InputList CudaDeviceInputs;
@@ -1466,7 +1466,7 @@ static Action *buildCudaActions(Compilation &C, DerivedArgList &Args,
   }
   auto FatbinAction = C.MakeAction<CudaDeviceAction>(
       C.MakeAction<LinkJobAction>(DeviceActions, types::TY_CUDA_FATBIN),
-      /* GpuArchName = */ nullptr,
+      CudaArch::UNKNOWN,
       /* AtTopLevel = */ false);
   // Return a new host action that incorporates original host action and all
   // device actions.
@@ -2050,8 +2050,8 @@ InputInfo Driver::BuildJobsForActionNoCache(
     // Call BuildJobsForAction() again, now with correct device parameters.
     InputInfo II = BuildJobsForAction(
         C, *CDA->input_begin(), C.getSingleOffloadToolChain<Action::OFK_Cuda>(),
-        CDA->getGpuArchName(), CDA->isAtTopLevel(), /*MultipleArchs=*/true,
-        LinkingOutput, CachedResults);
+        CudaArchToString(CDA->getGpuArch()), CDA->isAtTopLevel(),
+        /*MultipleArchs=*/true, LinkingOutput, CachedResults);
     // Currently II's Action is *CDA->input_begin().  Set it to CDA instead, so
     // that one can retrieve II's GPU arch.
     II.setAction(A);
