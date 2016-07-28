@@ -529,6 +529,14 @@ void OMPClauseProfiler::VisitOMPToClause(const OMPToClause *C) {
 void OMPClauseProfiler::VisitOMPFromClause(const OMPFromClause *C) {
   VisitOMPClauseList(C);
 }
+void OMPClauseProfiler::VisitOMPUseDevicePtrClause(
+    const OMPUseDevicePtrClause *C) {
+  VisitOMPClauseList(C);
+}
+void OMPClauseProfiler::VisitOMPIsDevicePtrClause(
+    const OMPIsDevicePtrClause *C) {
+  VisitOMPClauseList(C);
+}
 }
 
 void
@@ -697,6 +705,26 @@ void OMPClauseProfiler::VisitOMPDefaultmapClause(const OMPDefaultmapClause *) {}
 void StmtProfiler::VisitOMPTargetUpdateDirective(
     const OMPTargetUpdateDirective *S) {
   VisitOMPExecutableDirective(S);
+}
+
+void StmtProfiler::VisitOMPDistributeParallelForDirective(
+    const OMPDistributeParallelForDirective *S) {
+  VisitOMPLoopDirective(S);
+}
+
+void StmtProfiler::VisitOMPDistributeParallelForSimdDirective(
+    const OMPDistributeParallelForSimdDirective *S) {
+  VisitOMPLoopDirective(S);
+}
+
+void StmtProfiler::VisitOMPDistributeSimdDirective(
+    const OMPDistributeSimdDirective *S) {
+  VisitOMPLoopDirective(S);
+}
+
+void StmtProfiler::VisitOMPTargetParallelForSimdDirective(
+    const OMPTargetParallelForSimdDirective *S) {
+  VisitOMPLoopDirective(S);
 }
 
 void StmtProfiler::VisitExpr(const Expr *S) {
@@ -898,22 +926,20 @@ void StmtProfiler::VisitInitListExpr(const InitListExpr *S) {
 void StmtProfiler::VisitDesignatedInitExpr(const DesignatedInitExpr *S) {
   VisitExpr(S);
   ID.AddBoolean(S->usesGNUSyntax());
-  for (DesignatedInitExpr::const_designators_iterator D =
-         S->designators_begin(), DEnd = S->designators_end();
-       D != DEnd; ++D) {
-    if (D->isFieldDesignator()) {
+  for (const DesignatedInitExpr::Designator &D : S->designators()) {
+    if (D.isFieldDesignator()) {
       ID.AddInteger(0);
-      VisitName(D->getFieldName());
+      VisitName(D.getFieldName());
       continue;
     }
 
-    if (D->isArrayDesignator()) {
+    if (D.isArrayDesignator()) {
       ID.AddInteger(1);
     } else {
-      assert(D->isArrayRangeDesignator());
+      assert(D.isArrayRangeDesignator());
       ID.AddInteger(2);
     }
-    ID.AddInteger(D->getFirstExprIndex());
+    ID.AddInteger(D.getFirstExprIndex());
   }
 }
 
@@ -1282,6 +1308,12 @@ void StmtProfiler::VisitCXXConstructExpr(const CXXConstructExpr *S) {
   VisitExpr(S);
   VisitDecl(S->getConstructor());
   ID.AddBoolean(S->isElidable());
+}
+
+void StmtProfiler::VisitCXXInheritedCtorInitExpr(
+    const CXXInheritedCtorInitExpr *S) {
+  VisitExpr(S);
+  VisitDecl(S->getConstructor());
 }
 
 void StmtProfiler::VisitCXXFunctionalCastExpr(const CXXFunctionalCastExpr *S) {

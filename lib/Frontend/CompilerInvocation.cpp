@@ -41,6 +41,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/Support/ScopedPrinter.h"
 #include <atomic>
 #include <memory>
 #include <sys/stat.h>
@@ -442,10 +443,15 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   // -fno-inline-functions overrides OptimizationLevel > 1.
   Opts.NoInline = Args.hasArg(OPT_fno_inline);
   if (Arg* InlineArg = Args.getLastArg(options::OPT_finline_functions,
+                                       options::OPT_finline_hint_functions,
                                        options::OPT_fno_inline_functions)) {
-    Opts.setInlining(
-      InlineArg->getOption().matches(options::OPT_finline_functions) ?
-        CodeGenOptions::NormalInlining : CodeGenOptions::OnlyAlwaysInlining);
+    const Option& InlineOpt = InlineArg->getOption();
+    if (InlineOpt.matches(options::OPT_finline_functions))
+      Opts.setInlining(CodeGenOptions::NormalInlining);
+    else if (InlineOpt.matches(options::OPT_finline_hint_functions))
+      Opts.setInlining(CodeGenOptions::OnlyHintInlining);
+    else
+      Opts.setInlining(CodeGenOptions::OnlyAlwaysInlining);
   }
 
   if (Arg *A = Args.getLastArg(OPT_fveclib)) {
@@ -558,7 +564,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
                        Args.hasArg(OPT_cl_unsafe_math_optimizations) ||
                        Args.hasArg(OPT_cl_finite_math_only) ||
                        Args.hasArg(OPT_cl_fast_relaxed_math));
-  Opts.NoSignedZeros = Args.hasArg(OPT_fno_signed_zeros);
+  Opts.NoSignedZeros = (Args.hasArg(OPT_fno_signed_zeros) ||
+                        Args.hasArg(OPT_cl_no_signed_zeros));
   Opts.ReciprocalMath = Args.hasArg(OPT_freciprocal_math);
   Opts.NoZeroInitializedInBSS = Args.hasArg(OPT_mno_zero_initialized_in_bss);
   Opts.BackendOptions = Args.getAllArgValues(OPT_backend_option);
@@ -680,6 +687,9 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   }
 
   Opts.InstrumentFunctions = Args.hasArg(OPT_finstrument_functions);
+  Opts.XRayInstrumentFunctions = Args.hasArg(OPT_fxray_instrument);
+  Opts.XRayInstructionThreshold =
+      getLastArgIntValue(Args, OPT_fxray_instruction_threshold_, 200, Diags);
   Opts.InstrumentForProfiling = Args.hasArg(OPT_pg);
   Opts.EmitOpenCLArgMetadata = Args.hasArg(OPT_cl_kernel_arg_info);
   Opts.CompressDebugSections = Args.hasArg(OPT_compress_debug_sections);
@@ -1190,6 +1200,7 @@ static InputKind ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
   Opts.ModuleFiles = Args.getAllArgValues(OPT_fmodule_file);
   Opts.ModulesEmbedFiles = Args.getAllArgValues(OPT_fmodules_embed_file_EQ);
   Opts.ModulesEmbedAllFiles = Args.hasArg(OPT_fmodules_embed_all_files);
+  Opts.IncludeTimestamps = !Args.hasArg(OPT_fno_pch_timestamp);
 
   Opts.CodeCompleteOpts.IncludeMacros
     = Args.hasArg(OPT_code_completion_macros);
@@ -1451,10 +1462,10 @@ static void ParseHeaderSearchArgs(HeaderSearchOptions &Opts, ArgList &Args) {
 }
 
 bool isOpenCL(LangStandard::Kind LangStd) {
-  return LangStd == LangStandard::lang_opencl
-    || LangStd == LangStandard::lang_opencl11
-    || LangStd == LangStandard::lang_opencl12
-    || LangStd == LangStandard::lang_opencl20;
+  return LangStd == LangStandard::lang_opencl ||
+         LangStd == LangStandard::lang_opencl11 ||
+         LangStd == LangStandard::lang_opencl12 ||
+         LangStd == LangStandard::lang_opencl20;
 }
 
 void CompilerInvocation::setLangDefaults(LangOptions &Opts, InputKind IK,
@@ -1670,6 +1681,18 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
 
   llvm::Triple T(TargetOpts.Triple);
   CompilerInvocation::setLangDefaults(Opts, IK, T, PPOpts, LangStd);
+
+  // -cl-strict-aliasing needs to emit diagnostic in the case where CL > 1.0.
+  // This option should be deprecated for CL > 1.0 because
+  // this option was added for compatibility with OpenCL 1.0.
+  if (Args.getLastArg(OPT_cl_strict_aliasing)
+       && Opts.OpenCLVersion > 100) {
+    std::string VerSpec = llvm::to_string(Opts.OpenCLVersion / 100) +
+                          std::string(".") +
+                          llvm::to_string((Opts.OpenCLVersion % 100) / 10);
+    Diags.Report(diag::warn_option_invalid_ocl_version)
+      << VerSpec << Args.getLastArg(OPT_cl_strict_aliasing)->getAsString(Args);
+  }
 
   // We abuse '-f[no-]gnu-keywords' to force overriding all GNU-extension
   // keywords. This behavior is provided by GCC's poorly named '-fasm' flag,
@@ -1899,7 +1922,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.MaxTypeAlign = getLastArgIntValue(Args, OPT_fmax_type_align_EQ, 0, Diags);
   Opts.AlignDouble = Args.hasArg(OPT_malign_double);
   Opts.PICLevel = getLastArgIntValue(Args, OPT_pic_level, 0, Diags);
-  Opts.PIELevel = getLastArgIntValue(Args, OPT_pie_level, 0, Diags);
+  Opts.PIE = Args.hasArg(OPT_pic_is_pie);
   Opts.Static = Args.hasArg(OPT_static_define);
   Opts.DumpRecordLayoutsSimple = Args.hasArg(OPT_fdump_record_layouts_simple);
   Opts.DumpRecordLayouts = Opts.DumpRecordLayoutsSimple
@@ -2057,7 +2080,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   }
 
   // Get the OpenMP target triples if any.
-  if (Arg *A = Args.getLastArg(options::OPT_fomptargets_EQ)) {
+  if (Arg *A = Args.getLastArg(options::OPT_fopenmp_targets_EQ)) {
 
     for (unsigned i = 0; i < A->getNumValues(); ++i) {
       llvm::Triple TT(A->getValue(i));
@@ -2071,7 +2094,7 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
 
   // Get OpenMP host file path if any and report if a non existent file is
   // found
-  if (Arg *A = Args.getLastArg(options::OPT_fomp_host_ir_file_path)) {
+  if (Arg *A = Args.getLastArg(options::OPT_fopenmp_host_ir_file_path)) {
     Opts.OMPHostIRFile = A->getValue();
     if (!llvm::sys::fs::exists(Opts.OMPHostIRFile))
       Diags.Report(clang::diag::err_drv_omp_host_ir_file_not_found)
@@ -2334,7 +2357,7 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
     // PIClevel and PIELevel are needed during code generation and this should be
     // set regardless of the input type.
     LangOpts.PICLevel = getLastArgIntValue(Args, OPT_pic_level, 0, Diags);
-    LangOpts.PIELevel = getLastArgIntValue(Args, OPT_pie_level, 0, Diags);
+    LangOpts.PIE = Args.hasArg(OPT_pic_is_pie);
     parseSanitizerKinds("-fsanitize=", Args.getAllArgValues(OPT_fsanitize_EQ),
                         Diags, LangOpts.Sanitize);
   } else {
@@ -2372,59 +2395,6 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
   ParsePreprocessorOutputArgs(Res.getPreprocessorOutputOpts(), Args,
                               Res.getFrontendOpts().ProgramAction);
   return Success;
-}
-
-namespace {
-
-  class ModuleSignature {
-    SmallVector<uint64_t, 16> Data;
-    unsigned CurBit;
-    uint64_t CurValue;
-
-  public:
-    ModuleSignature() : CurBit(0), CurValue(0) { }
-
-    void add(uint64_t Value, unsigned Bits);
-    void add(StringRef Value);
-    void flush();
-
-    llvm::APInt getAsInteger() const;
-  };
-}
-
-void ModuleSignature::add(uint64_t Value, unsigned int NumBits) {
-  CurValue |= Value << CurBit;
-  if (CurBit + NumBits < 64) {
-    CurBit += NumBits;
-    return;
-  }
-
-  // Add the current word.
-  Data.push_back(CurValue);
-
-  if (CurBit)
-    CurValue = Value >> (64-CurBit);
-  else
-    CurValue = 0;
-  CurBit = (CurBit+NumBits) & 63;
-}
-
-void ModuleSignature::flush() {
-  if (CurBit == 0)
-    return;
-
-  Data.push_back(CurValue);
-  CurBit = 0;
-  CurValue = 0;
-}
-
-void ModuleSignature::add(StringRef Value) {
-  for (auto &c : Value)
-    add(c, 8);
-}
-
-llvm::APInt ModuleSignature::getAsInteger() const {
-  return llvm::APInt(Data.size() * 64, Data);
 }
 
 std::string CompilerInvocation::getModuleHash() const {

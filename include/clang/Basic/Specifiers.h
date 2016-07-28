@@ -85,7 +85,7 @@ namespace clang {
     /*DeclSpec::TST*/ unsigned Type  : 5;
     /*DeclSpec::TSS*/ unsigned Sign  : 2;
     /*DeclSpec::TSW*/ unsigned Width : 2;
-    bool ModeAttr : 1;
+    unsigned ModeAttr : 1;
   };  
 
   /// \brief A C++ access specifier (public, private, protected), plus the
@@ -241,7 +241,7 @@ namespace clang {
     CC_AAPCS_VFP,   // __attribute__((pcs("aapcs-vfp")))
     CC_IntelOclBicc, // __attribute__((intel_ocl_bicc))
     CC_SpirFunction, // default for OpenCL functions on SPIR target
-    CC_SpirKernel,   // inferred for OpenCL kernels on SPIR target
+    CC_OpenCLKernel, // inferred for OpenCL kernels
     CC_Swift,        // __attribute__((swiftcall))
     CC_PreserveMost, // __attribute__((preserve_most))
     CC_PreserveAll,  // __attribute__((preserve_all))
@@ -257,7 +257,7 @@ namespace clang {
     case CC_X86Pascal:
     case CC_X86VectorCall:
     case CC_SpirFunction:
-    case CC_SpirKernel:
+    case CC_OpenCLKernel:
     case CC_Swift:
       return false;
     default:

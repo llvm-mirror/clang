@@ -12,12 +12,13 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/Builtins.h"
+#include "clang/Basic/Cuda.h"
 #include "clang/Basic/Diagnostic.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/MacroBuilder.h"
 #include "clang/Basic/TargetBuiltins.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
 #include "clang/Basic/Version.h"
 #include "llvm/ADT/APFloat.h"
@@ -141,7 +142,7 @@ static void getDarwinDefines(MacroBuilder &Builder, const LangOptions &Opts,
   unsigned Maj, Min, Rev;
   if (Triple.isMacOSX()) {
     Triple.getMacOSXVersion(Maj, Min, Rev);
-    PlatformName = "macosx";
+    PlatformName = "macos";
   } else {
     Triple.getOSVersion(Maj, Min, Rev);
     PlatformName = llvm::Triple::getOSTypeName(Triple.getOS());
@@ -734,6 +735,13 @@ protected:
 
       if (Opts.CPlusPlus11 && Opts.isCompatibleWithMSVC(LangOptions::MSVC2015))
         Builder.defineMacro("_HAS_CHAR16_T_LANGUAGE_SUPPORT", Twine(1));
+
+      if (Opts.isCompatibleWithMSVC(LangOptions::MSVC2015)) {
+        if (Opts.CPlusPlus1z)
+          Builder.defineMacro("_MSVC_LANG", "201403L");
+        else if (Opts.CPlusPlus14)
+          Builder.defineMacro("_MSVC_LANG", "201402L");
+      }
     }
 
     if (Opts.MicrosoftExt) {
@@ -1687,19 +1695,7 @@ static const unsigned NVPTXAddrSpaceMap[] = {
 class NVPTXTargetInfo : public TargetInfo {
   static const char *const GCCRegNames[];
   static const Builtin::Info BuiltinInfo[];
-
-  // The GPU profiles supported by the NVPTX backend
-  enum GPUKind {
-    GK_NONE,
-    GK_SM20,
-    GK_SM21,
-    GK_SM30,
-    GK_SM35,
-    GK_SM37,
-    GK_SM50,
-    GK_SM52,
-    GK_SM53,
-  } GPU;
+  CudaArch GPU;
 
 public:
   NVPTXTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
@@ -1712,8 +1708,7 @@ public:
     // Define available target features
     // These must be defined in sorted order!
     NoAsmVariants = true;
-    // Set the default GPU to sm20
-    GPU = GK_SM20;
+    GPU = CudaArch::SM_20;
 
     // If possible, get a TargetInfo for our host triple, so we can match its
     // types.
@@ -1780,35 +1775,38 @@ public:
     Builder.defineMacro("__NVPTX__");
     if (Opts.CUDAIsDevice) {
       // Set __CUDA_ARCH__ for the GPU specified.
-      std::string CUDAArchCode;
-      switch (GPU) {
-      case GK_SM20:
-        CUDAArchCode = "200";
-        break;
-      case GK_SM21:
-        CUDAArchCode = "210";
-        break;
-      case GK_SM30:
-        CUDAArchCode = "300";
-        break;
-      case GK_SM35:
-        CUDAArchCode = "350";
-        break;
-      case GK_SM37:
-        CUDAArchCode = "370";
-        break;
-      case GK_SM50:
-        CUDAArchCode = "500";
-        break;
-      case GK_SM52:
-        CUDAArchCode = "520";
-        break;
-      case GK_SM53:
-        CUDAArchCode = "530";
-        break;
-      default:
-        llvm_unreachable("Unhandled target CPU");
-      }
+      std::string CUDAArchCode = [this] {
+        switch (GPU) {
+        case CudaArch::UNKNOWN:
+          assert(false && "No GPU arch when compiling CUDA device code.");
+          return "";
+        case CudaArch::SM_20:
+          return "200";
+        case CudaArch::SM_21:
+          return "210";
+        case CudaArch::SM_30:
+          return "300";
+        case CudaArch::SM_32:
+          return "320";
+        case CudaArch::SM_35:
+          return "350";
+        case CudaArch::SM_37:
+          return "370";
+        case CudaArch::SM_50:
+          return "500";
+        case CudaArch::SM_52:
+          return "520";
+        case CudaArch::SM_53:
+          return "530";
+        case CudaArch::SM_60:
+          return "600";
+        case CudaArch::SM_61:
+          return "610";
+        case CudaArch::SM_62:
+          return "620";
+        }
+        llvm_unreachable("unhandled CudaArch");
+      }();
       Builder.defineMacro("__CUDA_ARCH__", CUDAArchCode);
     }
   }
@@ -1849,18 +1847,8 @@ public:
     return TargetInfo::CharPtrBuiltinVaList;
   }
   bool setCPU(const std::string &Name) override {
-    GPU = llvm::StringSwitch<GPUKind>(Name)
-              .Case("sm_20", GK_SM20)
-              .Case("sm_21", GK_SM21)
-              .Case("sm_30", GK_SM30)
-              .Case("sm_35", GK_SM35)
-              .Case("sm_37", GK_SM37)
-              .Case("sm_50", GK_SM50)
-              .Case("sm_52", GK_SM52)
-              .Case("sm_53", GK_SM53)
-              .Default(GK_NONE);
-
-    return GPU != GK_NONE;
+    GPU = StringToCudaArch(Name);
+    return GPU != CudaArch::UNKNOWN;
   }
   void setSupportedOpenCLOpts() override {
     auto &Opts = getSupportedOpenCLOpts();
@@ -2128,6 +2116,16 @@ public:
       Opts.cl_khr_int64_base_atomics = 1;
       Opts.cl_khr_int64_extended_atomics = 1;
       Opts.cl_khr_3d_image_writes = 1;
+    }
+  }
+
+  CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
+    switch (CC) {
+      default:
+        return CCCR_Warning;
+      case CC_C:
+      case CC_OpenCLKernel:
+        return CCCR_OK;
     }
   }
 };
@@ -4876,6 +4874,8 @@ public:
       case llvm::Triple::Android:
       case llvm::Triple::GNUEABI:
       case llvm::Triple::GNUEABIHF:
+      case llvm::Triple::MuslEABI:
+      case llvm::Triple::MuslEABIHF:
         setABI("aapcs-linux");
         break;
       case llvm::Triple::EABIHF:
@@ -5722,6 +5722,7 @@ public:
                         .Case("cortex-a73", true)
                         .Case("cyclone", true)
                         .Case("kryo", true)
+                        .Case("vulcan", true)
                         .Default(false);
     return CPUKnown;
   }
@@ -5994,7 +5995,7 @@ class AArch64leTargetInfo : public AArch64TargetInfo {
     if (getTriple().isOSBinFormatMachO())
       resetDataLayout("e-m:o-i64:64-i128:128-n32:64-S128");
     else
-      resetDataLayout("e-m:e-i64:64-i128:128-n32:64-S128");
+      resetDataLayout("e-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128");
   }
 
 public:
@@ -6012,7 +6013,7 @@ public:
 class AArch64beTargetInfo : public AArch64TargetInfo {
   void setDataLayout() override {
     assert(!getTriple().isOSBinFormatMachO());
-    resetDataLayout("E-m:e-i64:64-i128:128-n32:64-S128");
+    resetDataLayout("E-m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128");
   }
 
 public:
@@ -6459,7 +6460,15 @@ public:
     CK_NIAGARA3,
     CK_NIAGARA4,
     CK_MYRIAD2_1,
-    CK_MYRIAD2_2
+    CK_MYRIAD2_2,
+    CK_LEON2,
+    CK_LEON2_AT697E,
+    CK_LEON2_AT697F,
+    CK_LEON3,
+    CK_LEON3_UT699,
+    CK_LEON3_GR712RC,
+    CK_LEON4,
+    CK_LEON4_GR740
   } CPU = CK_GENERIC;
 
   enum CPUGeneration {
@@ -6480,6 +6489,14 @@ public:
     case CK_TSC701:
     case CK_MYRIAD2_1:
     case CK_MYRIAD2_2:
+    case CK_LEON2:
+    case CK_LEON2_AT697E:
+    case CK_LEON2_AT697F:
+    case CK_LEON3:
+    case CK_LEON3_UT699:
+    case CK_LEON3_GR712RC:
+    case CK_LEON4:
+    case CK_LEON4_GR740:
       return CG_V8;
     case CK_V9:
     case CK_ULTRASPARC:
@@ -6513,6 +6530,14 @@ public:
         .Case("myriad2", CK_MYRIAD2_1)
         .Case("myriad2.1", CK_MYRIAD2_1)
         .Case("myriad2.2", CK_MYRIAD2_2)
+        .Case("leon2", CK_LEON2)
+        .Case("at697e", CK_LEON2_AT697E)
+        .Case("at697f", CK_LEON2_AT697F)
+        .Case("leon3", CK_LEON3)
+        .Case("ut699", CK_LEON3_UT699)
+        .Case("gr712rc", CK_LEON3_GR712RC)
+        .Case("leon4", CK_LEON4)
+        .Case("gr740", CK_LEON4_GR740)
         .Default(CK_GENERIC);
   }
 
@@ -6592,6 +6617,7 @@ public:
       PtrDiffType = SignedLong;
       break;
     }
+    MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 64;
   }
 
   void getTargetDefines(const LangOptions &Opts,
@@ -7916,8 +7942,8 @@ public:
   }
 
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override {
-    return (CC == CC_SpirFunction || CC == CC_SpirKernel) ? CCCR_OK
-                                                          : CCCR_Warning;
+    return (CC == CC_SpirFunction || CC == CC_OpenCLKernel) ? CCCR_OK
+                                                            : CCCR_Warning;
   }
 
   CallingConv getDefaultCallingConv(CallingConvMethodType MT) const override {
@@ -8050,6 +8076,42 @@ public:
     return true;
   }
 };
+
+// 32-bit RenderScript is armv7 with width and align of 'long' set to 8-bytes
+class RenderScript32TargetInfo : public ARMleTargetInfo {
+public:
+  RenderScript32TargetInfo(const llvm::Triple &Triple,
+                           const TargetOptions &Opts)
+      : ARMleTargetInfo(llvm::Triple("armv7", Triple.getVendorName(),
+                                     Triple.getOSName(),
+                                     Triple.getEnvironmentName()),
+                        Opts) {
+    LongWidth = LongAlign = 64;
+  }
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
+    Builder.defineMacro("__RENDERSCRIPT__");
+    ARMleTargetInfo::getTargetDefines(Opts, Builder);
+  }
+};
+
+// 64-bit RenderScript is aarch64
+class RenderScript64TargetInfo : public AArch64leTargetInfo {
+public:
+  RenderScript64TargetInfo(const llvm::Triple &Triple,
+                           const TargetOptions &Opts)
+      : AArch64leTargetInfo(llvm::Triple("aarch64", Triple.getVendorName(),
+                                         Triple.getOSName(),
+                                         Triple.getEnvironmentName()),
+                            Opts) {}
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override {
+    Builder.defineMacro("__RENDERSCRIPT__");
+    AArch64leTargetInfo::getTargetDefines(Opts, Builder);
+  }
+};
+
 } // end anonymous namespace
 
 //===----------------------------------------------------------------------===//
@@ -8478,6 +8540,11 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
     if (!(Triple == llvm::Triple("wasm64-unknown-unknown")))
       return nullptr;
     return new WebAssemblyOSTargetInfo<WebAssembly64TargetInfo>(Triple, Opts);
+
+  case llvm::Triple::renderscript32:
+    return new LinuxTargetInfo<RenderScript32TargetInfo>(Triple, Opts);
+  case llvm::Triple::renderscript64:
+    return new LinuxTargetInfo<RenderScript64TargetInfo>(Triple, Opts);
   }
 }
 

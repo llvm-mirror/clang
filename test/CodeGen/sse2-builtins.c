@@ -701,6 +701,14 @@ __m128i test_mm_loadu_si128(__m128i const* A) {
   return _mm_loadu_si128(A);
 }
 
+__m128i test_mm_loadu_si64(void const* A) {
+  // CHECK-LABEL: test_mm_loadu_si64
+  // CHECK: load i64, i64* %{{.*}}, align 1{{$}}
+  // CHECK: insertelement <2 x i64> undef, i64 %{{.*}}, i32 0
+  // CHECK: insertelement <2 x i64> %{{.*}}, i64 0, i32 1
+  return _mm_loadu_si64(A);
+}
+
 __m128i test_mm_madd_epi16(__m128i A, __m128i B) {
   // CHECK-LABEL: test_mm_madd_epi16
   // CHECK: call <4 x i32> @llvm.x86.sse2.pmadd.wd(<8 x i16> %{{.*}}, <8 x i16> %{{.*}})
@@ -1157,6 +1165,12 @@ __m128i test_mm_slli_si128(__m128i A) {
   return _mm_slli_si128(A, 5);
 }
 
+__m128i test_mm_slli_si128_2(__m128i A) {
+  // CHECK-LABEL: test_mm_slli_si128_2
+  // CHECK: shufflevector <16 x i8> %{{.*}}, <16 x i8> %{{.*}}, <16 x i32> <i32 0, i32 1, i32 2, i32 3, i32 4, i32 5, i32 6, i32 7, i32 8, i32 9, i32 10, i32 11, i32 12, i32 13, i32 14, i32 15>
+  return _mm_slli_si128(A, 17);
+}
+
 __m128d test_mm_sqrt_pd(__m128d A) {
   // CHECK-LABEL: test_mm_sqrt_pd
   // CHECK: call <2 x double> @llvm.x86.sse2.sqrt.pd(<2 x double> %{{.*}})
@@ -1237,6 +1251,12 @@ __m128i test_mm_srli_si128(__m128i A) {
   // CHECK-LABEL: test_mm_srli_si128
   // CHECK: shufflevector <16 x i8> %{{.*}}, <16 x i8> %{{.*}}, <16 x i32> <i32 5, i32 6, i32 7, i32 8, i32 9, i32 10, i32 11, i32 12, i32 13, i32 14, i32 15, i32 16, i32 17, i32 18, i32 19, i32 20>
   return _mm_srli_si128(A, 5);
+}
+
+__m128i test_mm_srli_si128_2(__m128i A) {
+  // CHECK-LABEL: test_mm_srli_si128_2
+  // CHECK: shufflevector <16 x i8> %{{.*}}, <16 x i8> %{{.*}}, <16 x i32> <i32 16, i32 17, i32 18, i32 19, i32 20, i32 21, i32 22, i32 23, i32 24, i32 25, i32 26, i32 27, i32 28, i32 29, i32 30, i32 31>
+  return _mm_srli_si128(A, 17);
 }
 
 void test_mm_store_pd(double* A, __m128d B) {

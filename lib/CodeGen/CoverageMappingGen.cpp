@@ -172,6 +172,10 @@ public:
       if (!Visited.insert(File).second)
         continue;
 
+      // Do not map FileID's associated with system headers.
+      if (SM.isInSystemHeader(SM.getSpellingLoc(Loc)))
+        continue;
+
       unsigned Depth = 0;
       for (SourceLocation Parent = getIncludeOrExpansionLoc(Loc);
            Parent.isValid(); Parent = getIncludeOrExpansionLoc(Parent))
@@ -200,12 +204,6 @@ public:
     if (Mapping != FileIDMapping.end())
       return Mapping->second.first;
     return None;
-  }
-
-  /// \brief Return true if the given clang's file id has a corresponding
-  /// coverage file id.
-  bool hasExistingCoverageFileID(FileID File) const {
-    return FileIDMapping.count(File);
   }
 
   /// \brief Gather all the regions that were skipped by the preprocessor
@@ -256,6 +254,10 @@ public:
 
       SourceLocation LocStart = Region.getStartLoc();
       assert(SM.getFileID(LocStart).isValid() && "region in invalid file");
+
+      // Ignore regions from system headers.
+      if (SM.isInSystemHeader(SM.getSpellingLoc(LocStart)))
+        continue;
 
       auto CovFileID = getCoverageFileID(LocStart);
       // Ignore regions that don't have a file, such as builtin macros.
@@ -385,10 +387,6 @@ struct CounterCoverageMappingBuilder
 
   Counter addCounters(Counter C1, Counter C2, Counter C3) {
     return addCounters(addCounters(C1, C2), C3);
-  }
-
-  Counter addCounters(Counter C1, Counter C2, Counter C3, Counter C4) {
-    return addCounters(addCounters(C1, C2, C3), C4);
   }
 
   /// \brief Return the region counter for the given statement.
@@ -867,7 +865,12 @@ struct CounterCoverageMappingBuilder
 
   void VisitCXXTryStmt(const CXXTryStmt *S) {
     extendRegion(S);
-    Visit(S->getTryBlock());
+    // Handle macros that generate the "try" but not the rest.
+    extendRegion(S->getTryBlock());
+
+    Counter ParentCount = getRegion().getCounter();
+    propagateCounts(ParentCount, S->getTryBlock());
+
     for (unsigned I = 0, E = S->getNumHandlers(); I < E; ++I)
       Visit(S->getHandler(I));
 
@@ -1008,27 +1011,35 @@ void CoverageMappingModuleGen::emit() {
 
   // Create the filenames and merge them with coverage mappings
   llvm::SmallVector<std::string, 16> FilenameStrs;
+  llvm::SmallVector<StringRef, 16> FilenameRefs;
   FilenameStrs.resize(FileEntries.size());
+  FilenameRefs.resize(FileEntries.size());
   for (const auto &Entry : FileEntries) {
     llvm::SmallString<256> Path(Entry.first->getName());
     llvm::sys::fs::make_absolute(Path);
 
     auto I = Entry.second;
     FilenameStrs[I] = std::string(Path.begin(), Path.end());
+    FilenameRefs[I] = FilenameStrs[I];
   }
 
-  size_t FilenamesSize;
-  size_t CoverageMappingSize;
-  llvm::Expected<std::string> CoverageDataOrErr = encodeFilenamesAndRawMappings(
-      FilenameStrs, CoverageMappings, FilenamesSize, CoverageMappingSize);
-  if (llvm::Error E = CoverageDataOrErr.takeError()) {
-    llvm::handleAllErrors(std::move(E), [](llvm::ErrorInfoBase &EI) {
-      llvm::report_fatal_error(EI.message());
-    });
+  std::string FilenamesAndCoverageMappings;
+  llvm::raw_string_ostream OS(FilenamesAndCoverageMappings);
+  CoverageFilenamesSectionWriter(FilenameRefs).write(OS);
+  std::string RawCoverageMappings =
+      llvm::join(CoverageMappings.begin(), CoverageMappings.end(), "");
+  OS << RawCoverageMappings;
+  size_t CoverageMappingSize = RawCoverageMappings.size();
+  size_t FilenamesSize = OS.str().size() - CoverageMappingSize;
+  // Append extra zeroes if necessary to ensure that the size of the filenames
+  // and coverage mappings is a multiple of 8.
+  if (size_t Rem = OS.str().size() % 8) {
+    CoverageMappingSize += 8 - Rem;
+    for (size_t I = 0, S = 8 - Rem; I < S; ++I)
+      OS << '\0';
   }
-  std::string CoverageData = std::move(CoverageDataOrErr.get());
   auto *FilenamesAndMappingsVal =
-      llvm::ConstantDataArray::getString(Ctx, CoverageData, false);
+      llvm::ConstantDataArray::getString(Ctx, OS.str(), false);
 
   // Create the deferred function records array
   auto RecordsTy =

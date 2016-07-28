@@ -249,8 +249,10 @@ bool applyAllReplacements(const std::vector<Replacement> &Replaces,
   return Result;
 }
 
-std::string applyAllReplacements(StringRef Code, const Replacements &Replaces) {
-  if (Replaces.empty()) return Code;
+llvm::Expected<std::string> applyAllReplacements(StringRef Code,
+                                                const Replacements &Replaces) {
+  if (Replaces.empty())
+    return Code.str();
 
   IntrusiveRefCntPtr<vfs::InMemoryFileSystem> InMemoryFileSystem(
       new vfs::InMemoryFileSystem);
@@ -269,12 +271,38 @@ std::string applyAllReplacements(StringRef Code, const Replacements &Replaces) {
     Replacement Replace("<stdin>", I->getOffset(), I->getLength(),
                         I->getReplacementText());
     if (!Replace.apply(Rewrite))
-      return "";
+      return llvm::make_error<llvm::StringError>(
+          "Failed to apply replacement: " + Replace.toString(),
+          llvm::inconvertibleErrorCode());
   }
   std::string Result;
   llvm::raw_string_ostream OS(Result);
   Rewrite.getEditBuffer(ID).write(OS);
   OS.flush();
+  return Result;
+}
+
+// Merge and sort overlapping ranges in \p Ranges.
+static std::vector<Range> mergeAndSortRanges(std::vector<Range> Ranges) {
+  std::sort(Ranges.begin(), Ranges.end(),
+            [](const Range &LHS, const Range &RHS) {
+              if (LHS.getOffset() != RHS.getOffset())
+                return LHS.getOffset() < RHS.getOffset();
+              return LHS.getLength() < RHS.getLength();
+            });
+  std::vector<Range> Result;
+  for (const auto &R : Ranges) {
+    if (Result.empty() ||
+        Result.back().getOffset() + Result.back().getLength() < R.getOffset()) {
+      Result.push_back(R);
+    } else {
+      unsigned NewEnd =
+          std::max(Result.back().getOffset() + Result.back().getLength(),
+                   R.getOffset() + R.getLength());
+      Result[Result.size() - 1] =
+          Range(Result.back().getOffset(), NewEnd - Result.back().getOffset());
+    }
+  }
   return Result;
 }
 
@@ -287,7 +315,20 @@ std::vector<Range> calculateChangedRanges(const Replacements &Replaces) {
     Shift += Length - R.getLength();
     ChangedRanges.push_back(Range(Offset, Length));
   }
-  return ChangedRanges;
+  return mergeAndSortRanges(ChangedRanges);
+}
+
+std::vector<Range>
+calculateRangesAfterReplacements(const Replacements &Replaces,
+                                 const std::vector<Range> &Ranges) {
+  auto MergedRanges = mergeAndSortRanges(Ranges);
+  tooling::Replacements FakeReplaces;
+  for (const auto &R : MergedRanges)
+    FakeReplaces.insert(Replacement(Replaces.begin()->getFilePath(),
+                                    R.getOffset(), R.getLength(),
+                                    std::string(R.getLength(), ' ')));
+  tooling::Replacements NewReplaces = mergeReplacements(FakeReplaces, Replaces);
+  return calculateChangedRanges(NewReplaces);
 }
 
 namespace {
@@ -434,4 +475,3 @@ Replacements mergeReplacements(const Replacements &First,
 
 } // end namespace tooling
 } // end namespace clang
-

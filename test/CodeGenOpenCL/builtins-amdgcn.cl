@@ -253,6 +253,14 @@ void test_cubema(global float* out, float a, float b, float c) {
   *out = __builtin_amdgcn_cubema(a, b, c);
 }
 
+// CHECK-LABEL: @test_read_exec(
+// CHECK: call i64 @llvm.read_register.i64(metadata ![[EXEC:[0-9]+]]) #[[READ_EXEC_ATTRS:[0-9]+]]
+void test_read_exec(global ulong* out) {
+  *out = __builtin_amdgcn_read_exec();
+}
+
+// CHECK: declare i64 @llvm.read_register.i64(metadata) #[[NOUNWIND_READONLY:[0-9]+]]
+
 // Legacy intrinsics with AMDGPU prefix
 
 // CHECK-LABEL: @test_legacy_rsq_f32
@@ -282,3 +290,50 @@ void test_legacy_ldexp_f64(global double* out, double a, int b)
 {
   *out = __builtin_amdgpu_ldexp(a, b);
 }
+
+// CHECK-LABEL: @test_kernarg_segment_ptr
+// CHECK: call i8 addrspace(2)* @llvm.amdgcn.kernarg.segment.ptr()
+void test_kernarg_segment_ptr(__attribute__((address_space(2))) unsigned char ** out)
+{
+  *out = __builtin_amdgcn_kernarg_segment_ptr();
+}
+
+// CHECK-LABEL: @test_implicitarg_ptr
+// CHECK: call i8 addrspace(2)* @llvm.amdgcn.implicitarg.ptr()
+void test_implicitarg_ptr(__attribute__((address_space(2))) unsigned char ** out)
+{
+  *out = __builtin_amdgcn_implicitarg_ptr();
+}
+
+// CHECK-LABEL: @test_get_group_id(
+// CHECK: tail call i32 @llvm.amdgcn.workgroup.id.x()
+// CHECK: tail call i32 @llvm.amdgcn.workgroup.id.y()
+// CHECK: tail call i32 @llvm.amdgcn.workgroup.id.z()
+void test_get_group_id(int d, global int *out)
+{
+	switch (d) {
+	case 0: *out = __builtin_amdgcn_workgroup_id_x(); break;
+	case 1: *out = __builtin_amdgcn_workgroup_id_y(); break;
+	case 2: *out = __builtin_amdgcn_workgroup_id_z(); break;
+	default: *out = 0;
+	}
+}
+
+// CHECK-LABEL: @test_get_local_id(
+// CHECK: tail call i32 @llvm.amdgcn.workitem.id.x(), !range [[WI_RANGE:![0-9]*]]
+// CHECK: tail call i32 @llvm.amdgcn.workitem.id.y(), !range [[WI_RANGE]]
+// CHECK: tail call i32 @llvm.amdgcn.workitem.id.z(), !range [[WI_RANGE]]
+void test_get_local_id(int d, global int *out)
+{
+	switch (d) {
+	case 0: *out = __builtin_amdgcn_workitem_id_x(); break;
+	case 1: *out = __builtin_amdgcn_workitem_id_y(); break;
+	case 2: *out = __builtin_amdgcn_workitem_id_z(); break;
+	default: *out = 0;
+	}
+}
+
+// CHECK-DAG: [[WI_RANGE]] = !{i32 0, i32 1024}
+// CHECK-DAG: attributes #[[NOUNWIND_READONLY:[0-9]+]] = { nounwind readonly }
+// CHECK-DAG: attributes #[[READ_EXEC_ATTRS]] = { convergent }
+// CHECK-DAG: ![[EXEC]] = !{!"exec"}

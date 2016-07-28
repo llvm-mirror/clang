@@ -633,9 +633,8 @@ ASTContext::getCanonicalTemplateTemplateParmDecl(
                                                 NTTP->getPosition(), nullptr,
                                                 T,
                                                 TInfo,
-                                                ExpandedTypes.data(),
-                                                ExpandedTypes.size(),
-                                                ExpandedTInfos.data());
+                                                ExpandedTypes,
+                                                ExpandedTInfos);
       } else {
         Param = NonTypeTemplateParmDecl::Create(*this, getTranslationUnitDecl(),
                                                 SourceLocation(),
@@ -742,8 +741,8 @@ ASTContext::ASTContext(LangOptions &LOpts, SourceManager &SM,
       sigjmp_bufDecl(nullptr), ucontext_tDecl(nullptr),
       BlockDescriptorType(nullptr), BlockDescriptorExtendedType(nullptr),
       cudaConfigureCallDecl(nullptr), FirstLocalImport(), LastLocalImport(),
-      ExternCContext(nullptr), MakeIntegerSeqDecl(nullptr), SourceMgr(SM),
-      LangOpts(LOpts),
+      ExternCContext(nullptr), MakeIntegerSeqDecl(nullptr),
+      TypePackElementDecl(nullptr), SourceMgr(SM), LangOpts(LOpts),
       SanitizerBL(new SanitizerBlacklist(LangOpts.SanitizerBlacklistFiles, SM)),
       AddrSpaceMap(nullptr), Target(nullptr), AuxTarget(nullptr),
       PrintingPolicy(LOpts), Idents(idents), Selectors(sels),
@@ -926,6 +925,14 @@ ASTContext::getMakeIntegerSeqDecl() const {
     MakeIntegerSeqDecl = buildBuiltinTemplateDecl(BTK__make_integer_seq,
                                                   getMakeIntegerSeqName());
   return MakeIntegerSeqDecl;
+}
+
+BuiltinTemplateDecl *
+ASTContext::getTypePackElementDecl() const {
+  if (!TypePackElementDecl)
+    TypePackElementDecl = buildBuiltinTemplateDecl(BTK__type_pack_element,
+                                                   getTypePackElementName());
+  return TypePackElementDecl;
 }
 
 RecordDecl *ASTContext::buildImplicitRecord(StringRef Name,
@@ -1254,32 +1261,35 @@ void ASTContext::setInstantiatedFromUnnamedFieldDecl(FieldDecl *Inst,
 
 ASTContext::overridden_cxx_method_iterator
 ASTContext::overridden_methods_begin(const CXXMethodDecl *Method) const {
-  llvm::DenseMap<const CXXMethodDecl *, CXXMethodVector>::const_iterator Pos
-    = OverriddenMethods.find(Method->getCanonicalDecl());
+  llvm::DenseMap<const CXXMethodDecl *, CXXMethodVector>::const_iterator Pos =
+      OverriddenMethods.find(Method->getCanonicalDecl());
   if (Pos == OverriddenMethods.end())
     return nullptr;
-
   return Pos->second.begin();
 }
 
 ASTContext::overridden_cxx_method_iterator
 ASTContext::overridden_methods_end(const CXXMethodDecl *Method) const {
-  llvm::DenseMap<const CXXMethodDecl *, CXXMethodVector>::const_iterator Pos
-    = OverriddenMethods.find(Method->getCanonicalDecl());
+  llvm::DenseMap<const CXXMethodDecl *, CXXMethodVector>::const_iterator Pos =
+      OverriddenMethods.find(Method->getCanonicalDecl());
   if (Pos == OverriddenMethods.end())
     return nullptr;
-
   return Pos->second.end();
 }
 
 unsigned
 ASTContext::overridden_methods_size(const CXXMethodDecl *Method) const {
-  llvm::DenseMap<const CXXMethodDecl *, CXXMethodVector>::const_iterator Pos
-    = OverriddenMethods.find(Method->getCanonicalDecl());
+  llvm::DenseMap<const CXXMethodDecl *, CXXMethodVector>::const_iterator Pos =
+      OverriddenMethods.find(Method->getCanonicalDecl());
   if (Pos == OverriddenMethods.end())
     return 0;
-
   return Pos->second.size();
+}
+
+ASTContext::overridden_method_range
+ASTContext::overridden_methods(const CXXMethodDecl *Method) const {
+  return overridden_method_range(overridden_methods_begin(Method),
+                                 overridden_methods_end(Method));
 }
 
 void ASTContext::addOverriddenMethod(const CXXMethodDecl *Method, 
@@ -3383,23 +3393,19 @@ ASTContext::getTemplateSpecializationType(TemplateName Template,
                                           QualType Underlying) const {
   assert(!Template.getAsDependentTemplateName() && 
          "No dependent template names here!");
-  
-  unsigned NumArgs = Args.size();
 
   SmallVector<TemplateArgument, 4> ArgVec;
-  ArgVec.reserve(NumArgs);
-  for (unsigned i = 0; i != NumArgs; ++i)
-    ArgVec.push_back(Args[i].getArgument());
+  ArgVec.reserve(Args.size());
+  for (const TemplateArgumentLoc &Arg : Args.arguments())
+    ArgVec.push_back(Arg.getArgument());
 
-  return getTemplateSpecializationType(Template, ArgVec.data(), NumArgs,
-                                       Underlying);
+  return getTemplateSpecializationType(Template, ArgVec, Underlying);
 }
 
 #ifndef NDEBUG
-static bool hasAnyPackExpansions(const TemplateArgument *Args,
-                                 unsigned NumArgs) {
-  for (unsigned I = 0; I != NumArgs; ++I)
-    if (Args[I].isPackExpansion())
+static bool hasAnyPackExpansions(ArrayRef<TemplateArgument> Args) {
+  for (const TemplateArgument &Arg : Args)
+    if (Arg.isPackExpansion())
       return true;
   
   return true;
@@ -3408,8 +3414,7 @@ static bool hasAnyPackExpansions(const TemplateArgument *Args,
 
 QualType
 ASTContext::getTemplateSpecializationType(TemplateName Template,
-                                          const TemplateArgument *Args,
-                                          unsigned NumArgs,
+                                          ArrayRef<TemplateArgument> Args,
                                           QualType Underlying) const {
   assert(!Template.getAsDependentTemplateName() && 
          "No dependent template names here!");
@@ -3426,32 +3431,29 @@ ASTContext::getTemplateSpecializationType(TemplateName Template,
   else {
     // We can get here with an alias template when the specialization contains
     // a pack expansion that does not match up with a parameter pack.
-    assert((!IsTypeAlias || hasAnyPackExpansions(Args, NumArgs)) &&
+    assert((!IsTypeAlias || hasAnyPackExpansions(Args)) &&
            "Caller must compute aliased type");
     IsTypeAlias = false;
-    CanonType = getCanonicalTemplateSpecializationType(Template, Args,
-                                                       NumArgs);
+    CanonType = getCanonicalTemplateSpecializationType(Template, Args);
   }
 
   // Allocate the (non-canonical) template specialization type, but don't
   // try to unique it: these types typically have location information that
   // we don't unique and don't want to lose.
   void *Mem = Allocate(sizeof(TemplateSpecializationType) +
-                       sizeof(TemplateArgument) * NumArgs +
+                       sizeof(TemplateArgument) * Args.size() +
                        (IsTypeAlias? sizeof(QualType) : 0),
                        TypeAlignment);
   TemplateSpecializationType *Spec
-    = new (Mem) TemplateSpecializationType(Template, Args, NumArgs, CanonType,
+    = new (Mem) TemplateSpecializationType(Template, Args, CanonType,
                                          IsTypeAlias ? Underlying : QualType());
 
   Types.push_back(Spec);
   return QualType(Spec, 0);
 }
 
-QualType
-ASTContext::getCanonicalTemplateSpecializationType(TemplateName Template,
-                                                   const TemplateArgument *Args,
-                                                   unsigned NumArgs) const {
+QualType ASTContext::getCanonicalTemplateSpecializationType(
+    TemplateName Template, ArrayRef<TemplateArgument> Args) const {
   assert(!Template.getAsDependentTemplateName() && 
          "No dependent template names here!");
 
@@ -3462,15 +3464,16 @@ ASTContext::getCanonicalTemplateSpecializationType(TemplateName Template,
   // Build the canonical template specialization type.
   TemplateName CanonTemplate = getCanonicalTemplateName(Template);
   SmallVector<TemplateArgument, 4> CanonArgs;
+  unsigned NumArgs = Args.size();
   CanonArgs.reserve(NumArgs);
-  for (unsigned I = 0; I != NumArgs; ++I)
-    CanonArgs.push_back(getCanonicalTemplateArgument(Args[I]));
+  for (const TemplateArgument &Arg : Args)
+    CanonArgs.push_back(getCanonicalTemplateArgument(Arg));
 
   // Determine whether this canonical template specialization type already
   // exists.
   llvm::FoldingSetNodeID ID;
   TemplateSpecializationType::Profile(ID, CanonTemplate,
-                                      CanonArgs.data(), NumArgs, *this);
+                                      CanonArgs, *this);
 
   void *InsertPos = nullptr;
   TemplateSpecializationType *Spec
@@ -3482,7 +3485,7 @@ ASTContext::getCanonicalTemplateSpecializationType(TemplateName Template,
                           sizeof(TemplateArgument) * NumArgs),
                          TypeAlignment);
     Spec = new (Mem) TemplateSpecializationType(CanonTemplate,
-                                                CanonArgs.data(), NumArgs,
+                                                CanonArgs,
                                                 QualType(), QualType());
     Types.push_back(Spec);
     TemplateSpecializationTypes.InsertNode(Spec, InsertPos);
@@ -3582,9 +3585,7 @@ ASTContext::getDependentTemplateSpecializationType(
   SmallVector<TemplateArgument, 16> ArgCopy;
   for (unsigned I = 0, E = Args.size(); I != E; ++I)
     ArgCopy.push_back(Args[I].getArgument());
-  return getDependentTemplateSpecializationType(Keyword, NNS, Name,
-                                                ArgCopy.size(),
-                                                ArgCopy.data());
+  return getDependentTemplateSpecializationType(Keyword, NNS, Name, ArgCopy);
 }
 
 QualType
@@ -3592,14 +3593,13 @@ ASTContext::getDependentTemplateSpecializationType(
                                  ElaboratedTypeKeyword Keyword,
                                  NestedNameSpecifier *NNS,
                                  const IdentifierInfo *Name,
-                                 unsigned NumArgs,
-                                 const TemplateArgument *Args) const {
+                                 ArrayRef<TemplateArgument> Args) const {
   assert((!NNS || NNS->isDependent()) && 
          "nested-name-specifier must be dependent");
 
   llvm::FoldingSetNodeID ID;
   DependentTemplateSpecializationType::Profile(ID, *this, Keyword, NNS,
-                                               Name, NumArgs, Args);
+                                               Name, Args);
 
   void *InsertPos = nullptr;
   DependentTemplateSpecializationType *T
@@ -3613,6 +3613,7 @@ ASTContext::getDependentTemplateSpecializationType(
   if (Keyword == ETK_None) CanonKeyword = ETK_Typename;
 
   bool AnyNonCanonArgs = false;
+  unsigned NumArgs = Args.size();
   SmallVector<TemplateArgument, 16> CanonArgs(NumArgs);
   for (unsigned I = 0; I != NumArgs; ++I) {
     CanonArgs[I] = getCanonicalTemplateArgument(Args[I]);
@@ -3623,8 +3624,8 @@ ASTContext::getDependentTemplateSpecializationType(
   QualType Canon;
   if (AnyNonCanonArgs || CanonNNS != NNS || CanonKeyword != Keyword) {
     Canon = getDependentTemplateSpecializationType(CanonKeyword, CanonNNS,
-                                                   Name, NumArgs,
-                                                   CanonArgs.data());
+                                                   Name,
+                                                   CanonArgs);
 
     // Find the insert position again.
     DependentTemplateSpecializationTypes.FindNodeOrInsertPos(ID, InsertPos);
@@ -3634,7 +3635,7 @@ ASTContext::getDependentTemplateSpecializationType(
                         sizeof(TemplateArgument) * NumArgs),
                        TypeAlignment);
   T = new (Mem) DependentTemplateSpecializationType(Keyword, NNS,
-                                                    Name, NumArgs, Args, Canon);
+                                                    Name, Args, Canon);
   Types.push_back(T);
   DependentTemplateSpecializationTypes.InsertNode(T, InsertPos);
   return QualType(T, 0);
@@ -5138,6 +5139,27 @@ bool ASTContext::isMSStaticDataMemberInlineDefinition(const VarDecl *VD) const {
          !VD->getFirstDecl()->isOutOfLine() && VD->getFirstDecl()->hasInit();
 }
 
+ASTContext::InlineVariableDefinitionKind
+ASTContext::getInlineVariableDefinitionKind(const VarDecl *VD) const {
+  if (!VD->isInline())
+    return InlineVariableDefinitionKind::None;
+
+  // In almost all cases, it's a weak definition.
+  auto *First = VD->getFirstDecl();
+  if (!First->isConstexpr() || First->isInlineSpecified() ||
+      !VD->isStaticDataMember())
+    return InlineVariableDefinitionKind::Weak;
+
+  // If there's a file-context declaration in this translation unit, it's a
+  // non-discardable definition.
+  for (auto *D : VD->redecls())
+    if (D->getLexicalDeclContext()->isFileContext())
+      return InlineVariableDefinitionKind::Strong;
+
+  // If we've not seen one yet, we don't know.
+  return InlineVariableDefinitionKind::WeakUnknown;
+}
+
 static inline 
 std::string charUnitsToString(const CharUnits &CU) {
   return llvm::itostr(CU.getQuantity());
@@ -5164,7 +5186,7 @@ std::string ASTContext::getObjCEncodingForBlock(const BlockExpr *Expr) const {
   SourceLocation Loc;
   CharUnits PtrSize = getTypeSizeInChars(VoidPtrTy);
   CharUnits ParmOffset = PtrSize;
-  for (auto PI : Decl->params()) {
+  for (auto PI : Decl->parameters()) {
     QualType PType = PI->getType();
     CharUnits sz = getObjCEncodingTypeSize(PType);
     if (sz.isZero())
@@ -5179,7 +5201,7 @@ std::string ASTContext::getObjCEncodingForBlock(const BlockExpr *Expr) const {
   
   // Argument types.
   ParmOffset = PtrSize;
-  for (auto PVDecl : Decl->params()) {
+  for (auto PVDecl : Decl->parameters()) {
     QualType PType = PVDecl->getOriginalType(); 
     if (const ArrayType *AT =
           dyn_cast<ArrayType>(PType->getCanonicalTypeInternal())) {
@@ -5207,7 +5229,7 @@ bool ASTContext::getObjCEncodingForFunctionDecl(const FunctionDecl *Decl,
   getObjCEncodingForType(Decl->getReturnType(), S);
   CharUnits ParmOffset;
   // Compute size of all parameters.
-  for (auto PI : Decl->params()) {
+  for (auto PI : Decl->parameters()) {
     QualType PType = PI->getType();
     CharUnits sz = getObjCEncodingTypeSize(PType);
     if (sz.isZero())
@@ -5221,7 +5243,7 @@ bool ASTContext::getObjCEncodingForFunctionDecl(const FunctionDecl *Decl,
   ParmOffset = CharUnits::Zero();
 
   // Argument types.
-  for (auto PVDecl : Decl->params()) {
+  for (auto PVDecl : Decl->parameters()) {
     QualType PType = PVDecl->getOriginalType();
     if (const ArrayType *AT =
           dyn_cast<ArrayType>(PType->getCanonicalTypeInternal())) {
@@ -5725,8 +5747,7 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
         const TemplateArgumentList &TemplateArgs = Spec->getTemplateArgs();
         llvm::raw_string_ostream OS(S);
         TemplateSpecializationType::PrintTemplateArgumentList(OS,
-                                            TemplateArgs.data(),
-                                            TemplateArgs.size(),
+                                            TemplateArgs.asArray(),
                                             (*this).getPrintingPolicy());
       }
     } else {
@@ -8486,15 +8507,31 @@ static GVALinkage basicGVALinkageForVariable(const ASTContext &Context,
   if (Context.isMSStaticDataMemberInlineDefinition(VD))
     return GVA_DiscardableODR;
 
+  // Most non-template variables have strong linkage; inline variables are
+  // linkonce_odr or (occasionally, for compatibility) weak_odr.
+  GVALinkage StrongLinkage;
+  switch (Context.getInlineVariableDefinitionKind(VD)) {
+  case ASTContext::InlineVariableDefinitionKind::None:
+    StrongLinkage = GVA_StrongExternal;
+    break;
+  case ASTContext::InlineVariableDefinitionKind::Weak:
+  case ASTContext::InlineVariableDefinitionKind::WeakUnknown:
+    StrongLinkage = GVA_DiscardableODR;
+    break;
+  case ASTContext::InlineVariableDefinitionKind::Strong:
+    StrongLinkage = GVA_StrongODR;
+    break;
+  }
+
   switch (VD->getTemplateSpecializationKind()) {
   case TSK_Undeclared:
-    return GVA_StrongExternal;
+    return StrongLinkage;
 
   case TSK_ExplicitSpecialization:
     return Context.getTargetInfo().getCXXABI().isMicrosoft() &&
                    VD->isStaticDataMember()
                ? GVA_StrongODR
-               : GVA_StrongExternal;
+               : StrongLinkage;
 
   case TSK_ExplicitInstantiationDefinition:
     return GVA_StrongODR;
