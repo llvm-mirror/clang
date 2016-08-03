@@ -727,6 +727,11 @@ void StmtProfiler::VisitOMPTargetParallelForSimdDirective(
   VisitOMPLoopDirective(S);
 }
 
+void StmtProfiler::VisitOMPTargetSimdDirective(
+    const OMPTargetSimdDirective *S) {
+  VisitOMPLoopDirective(S);
+}
+
 void StmtProfiler::VisitExpr(const Expr *S) {
   VisitStmt(S);
 }
@@ -1630,6 +1635,11 @@ void StmtProfiler::VisitObjCIndirectCopyRestoreExpr(
 void StmtProfiler::VisitObjCBridgedCastExpr(const ObjCBridgedCastExpr *S) {
   VisitExplicitCastExpr(S);
   ID.AddBoolean(S->getBridgeKind());
+}
+
+void StmtProfiler::VisitObjCAvailabilityCheckExpr(
+    const ObjCAvailabilityCheckExpr *S) {
+  VisitExpr(S);
 }
 
 void StmtProfiler::VisitDecl(const Decl *D) {

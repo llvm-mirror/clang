@@ -365,6 +365,26 @@ def warn_modifying_shadowing_decl :
           "field of %1">,
   InGroup<ShadowFieldInConstructorModified>, DefaultIgnore;
 
+// C++ decomposition declarations
+def err_decomp_decl_context : Error<
+  "decomposition declaration not permitted in this context">;
+def warn_cxx14_compat_decomp_decl : Warning<
+  "decomposition declarations are incompatible with "
+  "C++ standards before C++1z">, DefaultIgnore, InGroup<CXXPre1zCompat>;
+def ext_decomp_decl : ExtWarn<
+  "decomposition declarations are a C++1z extension">, InGroup<CXX1z>;
+def err_decomp_decl_spec : Error<
+  "decomposition declaration cannot be declared "
+  "%plural{1:'%1'|:with '%1' specifiers}0">;
+def err_decomp_decl_type : Error<
+  "decomposition declaration cannot be declared with type %0; "
+  "declared type must be 'auto' or reference to 'auto'">;
+def err_decomp_decl_parens : Error<
+  "decomposition declaration cannot be declared with parentheses">;
+def err_decomp_decl_template : Error<
+  "decomposition declaration template not supported">;
+def err_decomp_decl_not_alone : Error<
+  "decomposition declaration must be the only declaration in its group">;
 
 // C++ using declarations
 def err_using_requires_qualname : Error<
@@ -1756,6 +1776,9 @@ def warn_cxx98_compat_auto_type_specifier : Warning<
 def err_auto_variable_cannot_appear_in_own_initializer : Error<
   "variable %0 declared with %select{'auto'|'decltype(auto)'|'__auto_type'}1 "
   "type cannot appear in its own initializer">;
+def err_binding_cannot_appear_in_own_initializer : Error<
+  "binding %0 cannot appear in the initializer of its own "
+  "decomposition declaration">;
 def err_illegal_decl_array_of_auto : Error<
   "'%0' declared as array of %1">;
 def err_new_array_of_auto : Error<
@@ -2503,7 +2526,9 @@ def err_ifunc_resolver_params : Error<
   "ifunc resolver function must have no parameters">;
 def warn_attribute_wrong_decl_type : Warning<
   "%0 attribute only applies to %select{functions|unions|"
-  "variables and functions|functions and methods|parameters|"
+  "variables and functions|"
+  "functions, variables, and Objective-C interfaces|"
+  "functions and methods|parameters|"
   "functions, methods and blocks|functions, methods, and classes|"
   "functions, methods, and parameters|classes|enums|variables|methods|"
   "fields and global variables|structs|parameters and typedefs|variables and typedefs|"
@@ -2511,7 +2536,9 @@ def warn_attribute_wrong_decl_type : Warning<
   "types and namespaces|Objective-C interfaces|methods and properties|"
   "struct or union|struct, union or class|types|"
   "Objective-C instance methods|init methods of interface or class extension declarations|"
-  "variables, functions and classes|Objective-C protocols|"
+  "variables, functions and classes|"
+  "functions, variables, classes, and Objective-C interfaces|"
+  "Objective-C protocols|"
   "functions and global variables|structs, unions, and typedefs|structs and typedefs|"
   "interface or protocol declarations|kernel functions|non-K&R-style functions|"
   "variables, enums, fields and typedefs|functions, methods, enums, and classes|"
@@ -2594,6 +2621,9 @@ def note_overridden_method : Note<
   "overridden method is here">;
 def note_protocol_method : Note<
   "protocol method is here">;
+
+def warn_available_using_star_case : Warning<
+  "using '*' case here, platform %0 is not accounted for">, InGroup<UnguardedAvailability>;
 
 // Thread Safety Attributes
 def warn_invalid_capability_name : Warning<
@@ -6344,6 +6374,24 @@ def ext_typecheck_convert_incompatible_pointer : ExtWarn<
   "; remove *|"
   "; remove &}3">,
   InGroup<IncompatiblePointerTypes>;
+def ext_typecheck_convert_incompatible_function_pointer : ExtWarn<
+  "incompatible function pointer types "
+  "%select{%diff{assigning to $ from $|assigning to different types}0,1"
+  "|%diff{passing $ to parameter of type $|"
+  "passing to parameter of different type}0,1"
+  "|%diff{returning $ from a function with result type $|"
+  "returning from function with different return type}0,1"
+  "|%diff{converting $ to type $|converting between types}0,1"
+  "|%diff{initializing $ with an expression of type $|"
+  "initializing with expression of different type}0,1"
+  "|%diff{sending $ to parameter of type $|"
+  "sending to parameter of different type}0,1"
+  "|%diff{casting $ to type $|casting between types}0,1}2"
+  "%select{|; dereference with *|"
+  "; take the address with &|"
+  "; remove *|"
+  "; remove &}3">,
+  InGroup<IncompatibleFunctionPointerTypes>;
 def ext_typecheck_convert_discards_qualifiers : ExtWarn<
   "%select{%diff{assigning to $ from $|assigning to different types}0,1"
   "|%diff{passing $ to parameter of type $|"
@@ -7866,6 +7914,10 @@ def err_event_t_addr_space_qual : Error<
   "the event_t type can only be used with __private address space qualifier">;
 def err_expected_kernel_void_return_type : Error<
   "kernel must have void return type">;
+def err_sampler_initializer_not_integer : Error<
+  "sampler_t initialization requires 32-bit integer, not %0">;
+def warn_sampler_initializer_invalid_bits : Warning<
+  "sampler initializer has invalid %0 bits">, InGroup<SpirCompat>, DefaultIgnore;
 def err_sampler_argument_required : Error<
   "sampler_t variable required - got %0">;
 def err_wrong_sampler_addressspace: Error<
@@ -7955,6 +8007,11 @@ def err_opencl_enqueue_kernel_blocks_non_local_void_args : Error<
   "blocks used in device side enqueue are expected to have parameters of type 'local void*'">;
 def err_opencl_enqueue_kernel_blocks_no_args : Error<
   "blocks in this form of device side enqueue call are expected to have have no parameters">;
+
+// OpenCL v2.2 s2.1.2.3 - Vector Component Access
+def ext_opencl_ext_vector_type_rgba_selector: ExtWarn<
+  "vector component name '%0' is an OpenCL version 2.2 feature">,
+  InGroup<OpenCLUnsupportedRGBA>;
 } // end of sema category
 
 let CategoryName = "OpenMP Issue" in {
@@ -8235,8 +8292,10 @@ def warn_omp_section_is_char : Warning<"array section %select{lower bound|length
   InGroup<CharSubscript>, DefaultIgnore;
 def err_omp_section_incomplete_type : Error<
   "section of pointer to incomplete type %0">;
-def err_omp_section_negative : Error<
-  "section %select{lower bound|length}0 is evaluated to a negative value %1">;
+def err_omp_section_not_subset_of_array : Error<
+  "array section must be a subset of the original array">;
+def err_omp_section_length_negative : Error<
+  "section length is evaluated to a negative value %0">;
 def err_omp_section_length_undefined : Error<
   "section length is unspecified and cannot be inferred because subscripted value is %select{not an array|an array of unknown bound}0">;
 def err_omp_wrong_linear_modifier : Error<
@@ -8317,8 +8376,8 @@ def err_omp_schedule_nonmonotonic_ordered : Error<
   "'schedule' clause with 'nonmonotonic' modifier cannot be specified if an 'ordered' clause is specified">;
 def err_omp_ordered_simd : Error<
   "'ordered' clause with a parameter can not be specified in '#pragma omp %0' directive">;
-def err_omp_variable_in_map_and_dsa : Error<
-  "%0 variable cannot be in a map clause in '#pragma omp %1' directive">;
+def err_omp_variable_in_given_clause_and_dsa : Error<
+  "%0 variable cannot be in a %1 clause in '#pragma omp %2' directive">;
 def err_omp_param_or_this_in_clause : Error<
   "expected reference to one of the parameters of function %0%select{| or 'this'}1">;
 def err_omp_expected_uniform_param : Error<
@@ -8334,6 +8393,9 @@ def err_omp_argument_type_isdeviceptr : Error <
 def warn_omp_nesting_simd : Warning<
   "OpenMP only allows an ordered construct with the simd clause nested in a simd construct">,
   InGroup<SourceUsesOpenMP>;
+def err_omp_orphaned_device_directive : Error<
+  "orphaned 'omp %0' directives are prohibited"
+  "; perhaps you forget to enclose the directive into a %select{|||target |teams }1region?">;
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {
@@ -8589,5 +8651,9 @@ def warn_block_literal_attributes_on_omitted_return_type : Warning<
 def warn_block_literal_qualifiers_on_omitted_return_type : Warning<
   "'%0' qualifier on omitted return type %1 has no effect">,
   InGroup<IgnoredQualifiers>;
+
+def ext_warn_gnu_final : ExtWarn<
+  "__final is a GNU extension, consider using C++11 final">,
+  InGroup<GccCompat>;
 
 } // end of sema component.

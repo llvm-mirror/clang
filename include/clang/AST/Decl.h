@@ -789,7 +789,7 @@ public:
 
 protected:
   // A pointer union of Stmt * and EvaluatedStmt *. When an EvaluatedStmt, we
-  // have allocated the auxilliary struct of information there.
+  // have allocated the auxiliary struct of information there.
   //
   // TODO: It is a bit unfortunate to use a PointerUnion inside the VarDecl for
   // this as *many* VarDecls are ParmVarDecls that don't have default
@@ -2781,7 +2781,7 @@ protected:
   /// the TU.
   unsigned IsCompleteDefinitionRequired : 1;
 private:
-  SourceLocation RBraceLoc;
+  SourceRange BraceRange;
 
   // A struct representing syntactic qualifier info,
   // to be used for the (uncommon) case of out-of-line declarations.
@@ -2843,8 +2843,8 @@ public:
   using redeclarable_base::getMostRecentDecl;
   using redeclarable_base::isFirstDecl;
 
-  SourceLocation getRBraceLoc() const { return RBraceLoc; }
-  void setRBraceLoc(SourceLocation L) { RBraceLoc = L; }
+  SourceRange getBraceRange() const { return BraceRange; }
+  void setBraceRange(SourceRange R) { BraceRange = R; }
 
   /// getInnerLocStart - Return SourceLocation representing start of source
   /// range ignoring outer template declarations.

@@ -77,6 +77,8 @@ def MPI : Package<"mpi">, InPackage<OptIn>;
 def LLVM : Package<"llvm">;
 def Debug : Package<"debug">;
 
+def CloneDetectionAlpha : Package<"clone">, InPackage<Alpha>, Hidden;
+
 //===----------------------------------------------------------------------===//
 // Core Checkers.
 //===----------------------------------------------------------------------===//
@@ -246,6 +248,10 @@ def NewDeleteChecker : Checker<"NewDelete">,
 def NewDeleteLeaksChecker : Checker<"NewDeleteLeaks">,
   HelpText<"Check for memory leaks. Traces memory managed by new/delete.">,
   DescFile<"MallocChecker.cpp">;
+
+def CXXSelfAssignmentChecker : Checker<"SelfAssignment">,
+  HelpText<"Checks C++ copy and move assignment operators for self assignment">,
+  DescFile<"CXXSelfAssignmentChecker.cpp">;
 
 } // end: "cplusplus"
 
@@ -657,3 +663,17 @@ def BugHashDumper : Checker<"DumpBugHash">,
   DescFile<"DebugCheckers.cpp">;
 
 } // end "debug"
+
+
+//===----------------------------------------------------------------------===//
+// Clone Detection
+//===----------------------------------------------------------------------===//
+
+let ParentPackage = CloneDetectionAlpha in {
+
+def CloneChecker : Checker<"CloneChecker">,
+  HelpText<"Reports similar pieces of code.">,
+  DescFile<"CloneChecker.cpp">;
+
+} // end "clone"
+

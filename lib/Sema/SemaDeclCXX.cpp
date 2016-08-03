@@ -11,7 +11,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Sema/SemaInternal.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTLambda.h"
@@ -36,6 +35,7 @@
 #include "clang/Sema/ParsedTemplate.h"
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/ScopeInfo.h"
+#include "clang/Sema/SemaInternal.h"
 #include "clang/Sema/Template.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
@@ -2192,7 +2192,8 @@ Sema::ActOnCXXMemberDeclarator(Scope *S, AccessSpecifier AS, Declarator &D,
     } else {
       Member = HandleField(S, cast<CXXRecordDecl>(CurContext), Loc, D,
                                 BitWidth, InitStyle, AS);
-      assert(Member && "HandleField never returns null");
+      if (!Member)
+        return nullptr;
     }
   } else {
     Member = HandleDeclarator(S, D, TemplateParameterLists);
@@ -8885,9 +8886,7 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
     NewND = NewTD;
   }
 
-  if (!Redeclaration)
-    PushOnScopeChains(NewND, S);
-
+  PushOnScopeChains(NewND, S);
   ActOnDocumentableDecl(NewND);
   return NewND;
 }

@@ -67,6 +67,7 @@ class CGDebugInfo {
 #define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
   llvm::DIType *SingletonId = nullptr;
 #include "clang/Basic/OpenCLImageTypes.def"
+  llvm::DIType *OCLSamplerDITy = nullptr;
   llvm::DIType *OCLEventDITy = nullptr;
   llvm::DIType *OCLClkEventDITy = nullptr;
   llvm::DIType *OCLQueueDITy = nullptr;
@@ -254,6 +255,8 @@ class CGDebugInfo {
                                 llvm::DIFile *F,
                                 SmallVectorImpl<llvm::Metadata *> &E,
                                 llvm::DIType *RecordTy, const RecordDecl *RD);
+  void CollectRecordNestedRecord(const RecordDecl *RD,
+                                 SmallVectorImpl<llvm::Metadata *> &E);
   void CollectRecordFields(const RecordDecl *Decl, llvm::DIFile *F,
                            SmallVectorImpl<llvm::Metadata *> &E,
                            llvm::DICompositeType *RecordTy);

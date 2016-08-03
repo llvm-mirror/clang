@@ -516,7 +516,8 @@ def fno_coverage_mapping : Flag<["-"], "fno-coverage-mapping">,
     Group<f_Group>, Flags<[DriverOption]>,
     HelpText<"Disable code coverage analysis">;
 def fprofile_generate : Flag<["-"], "fprofile-generate">,
-    Alias<fprofile_instr_generate>;
+    Group<f_Group>, Flags<[DriverOption]>,
+    HelpText<"Generate instrumented code to collect execution counts into default.profraw (overridden by LLVM_PROFILE_FILE env var)">;
 def fprofile_generate_EQ : Joined<["-"], "fprofile-generate=">,
     Group<f_Group>, Flags<[DriverOption]>, MetaVarName<"<directory>">,
     HelpText<"Generate instrumented code to collect execution counts into <directory>/default.profraw (overridden by LLVM_PROFILE_FILE env var)">;
@@ -529,7 +530,8 @@ def fno_profile_instr_generate : Flag<["-"], "fno-profile-instr-generate">,
     Group<f_Group>, Flags<[DriverOption]>,
     HelpText<"Disable generation of profile instrumentation.">;
 def fno_profile_generate : Flag<["-"], "fno-profile-generate">,
-    Alias<fno_profile_instr_generate>;
+    Group<f_Group>, Flags<[DriverOption]>,
+    HelpText<"Disable generation of profile instrumentation.">;
 def fno_profile_instr_use : Flag<["-"], "fno-profile-instr-use">,
     Group<f_Group>, Flags<[DriverOption]>,
     HelpText<"Disable using instrumentation data for profile-guided optimization">;
@@ -855,6 +857,9 @@ def fmodules_validate_once_per_build_session : Flag<["-"], "fmodules-validate-on
   Group<i_Group>, Flags<[CC1Option]>,
   HelpText<"Don't verify input files for the modules if the module has been "
            "successfully validated or loaded during this build session">;
+def fmodules_disable_diagnostic_validation : Flag<["-"], "fmodules-disable-diagnostic-validation">,
+  Group<i_Group>, Flags<[CC1Option]>,
+  HelpText<"Disable validation of the diagnostic options when loading the module">;
 def fmodules_validate_system_headers : Flag<["-"], "fmodules-validate-system-headers">,
   Group<i_Group>, Flags<[CC1Option]>,
   HelpText<"Validate the system headers that a module depends on when loading the module">;
@@ -1084,6 +1089,9 @@ def fpie : Flag<["-"], "fpie">, Group<f_Group>;
 def fno_pie : Flag<["-"], "fno-pie">, Group<f_Group>;
 def fplugin_EQ : Joined<["-"], "fplugin=">, Group<f_Group>, Flags<[DriverOption]>, MetaVarName<"<dsopath>">,
   HelpText<"Load the named plugin (dynamic shared object)">;
+def fpreserve_as_comments : Flag<["-"], "fpreserve-as-comments">, Group<f_Group>;
+def fno_preserve_as_comments : Flag<["-"], "fno-preserve-as-comments">, Group<f_Group>, Flags<[CC1Option]>,
+  HelpText<"Do not preserve comments in inline assembly">;
 def fprofile_arcs : Flag<["-"], "fprofile-arcs">, Group<f_Group>;
 def fno_profile_arcs : Flag<["-"], "fno-profile-arcs">, Group<f_Group>;
 def framework : Separate<["-"], "framework">, Flags<[LinkerInput]>;
@@ -1244,7 +1252,7 @@ def fdebug_prefix_map_EQ
 def g_Flag : Flag<["-"], "g">, Group<g_Group>,
   HelpText<"Generate source-level debug information">;
 def gline_tables_only : Flag<["-"], "gline-tables-only">, Group<gN_Group>,
-  HelpText<"Emit debug line number tables only">;
+  Flags<[CoreOption]>, HelpText<"Emit debug line number tables only">;
 def gmlt : Flag<["-"], "gmlt">, Alias<gline_tables_only>;
 def g0 : Flag<["-"], "g0">, Group<gN_Group>;
 def g1 : Flag<["-"], "g1">, Group<gN_Group>, Alias<gline_tables_only>;
@@ -1372,6 +1380,7 @@ def mwatchsimulator_version_min_EQ : Joined<["-"], "mwatchsimulator-version-min=
 def march_EQ : Joined<["-"], "march=">, Group<m_Group>;
 def masm_EQ : Joined<["-"], "masm=">, Group<m_Group>, Flags<[DriverOption]>;
 def mcmodel_EQ : Joined<["-"], "mcmodel=">, Group<m_Group>;
+def mimplicit_it_EQ : Joined<["-"], "mimplicit-it=">, Group<m_Group>;
 def mconstant_cfstrings : Flag<["-"], "mconstant-cfstrings">, Group<clang_ignored_m_Group>;
 def mconsole : Joined<["-"], "mconsole">, Group<m_Group>, Flags<[DriverOption]>;
 def mwindows : Joined<["-"], "mwindows">, Group<m_Group>, Flags<[DriverOption]>;

@@ -96,6 +96,7 @@ def DeprecatedAttributes : DiagGroup<"deprecated-attributes">;
 def DeprecatedDeclarations : DiagGroup<"deprecated-declarations">;
 def UnavailableDeclarations : DiagGroup<"unavailable-declarations">;
 def PartialAvailability : DiagGroup<"partial-availability">;
+def UnguardedAvailability : DiagGroup<"unguarded-availability">;
 def DeprecatedImplementations :DiagGroup<"deprecated-implementations">;
 def DeprecatedIncrementBool : DiagGroup<"deprecated-increment-bool">;
 def DeprecatedRegister : DiagGroup<"deprecated-register">;
@@ -224,9 +225,12 @@ def GNUIncludeNext : DiagGroup<"gnu-include-next">;
 def IncompatibleMSStruct : DiagGroup<"incompatible-ms-struct">;
 def IncompatiblePointerTypesDiscardsQualifiers 
   : DiagGroup<"incompatible-pointer-types-discards-qualifiers">;
+def IncompatibleFunctionPointerTypes
+  : DiagGroup<"incompatible-function-pointer-types">;
 def IncompatiblePointerTypes
   : DiagGroup<"incompatible-pointer-types",
-    [IncompatiblePointerTypesDiscardsQualifiers]>;
+    [IncompatiblePointerTypesDiscardsQualifiers,
+     IncompatibleFunctionPointerTypes]>;
 def IncompleteUmbrella : DiagGroup<"incomplete-umbrella">;
 def NonModularIncludeInFrameworkModule
   : DiagGroup<"non-modular-include-in-framework-module">;
@@ -312,6 +316,7 @@ def ObjCRootClass : DiagGroup<"objc-root-class">;
 def ObjCPointerIntrospectPerformSelector : DiagGroup<"deprecated-objc-pointer-introspection-performSelector">;
 def ObjCPointerIntrospect : DiagGroup<"deprecated-objc-pointer-introspection", [ObjCPointerIntrospectPerformSelector]>;
 def ObjCMultipleMethodNames : DiagGroup<"objc-multiple-method-names">;
+def OpenCLUnsupportedRGBA: DiagGroup<"opencl-unsupported-rgba">;
 def DeprecatedObjCIsaUsage : DiagGroup<"deprecated-objc-isa-usage">;
 def ExplicitInitializeCall : DiagGroup<"explicit-initialize-call">;
 def Packed : DiagGroup<"packed">;
@@ -871,3 +876,7 @@ def InvalidOrNonExistentDirectory : DiagGroup<"invalid-or-nonexistent-directory"
 def OptionIgnored : DiagGroup<"option-ignored">;
 
 def UnknownArgument : DiagGroup<"unknown-argument">;
+
+// A warning group for warnings about code that clang accepts when
+// compiling OpenCL C/C++ but which is not compatible with the SPIR spec.
+def SpirCompat : DiagGroup<"spir-compat">;

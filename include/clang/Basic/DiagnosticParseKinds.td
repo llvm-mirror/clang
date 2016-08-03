@@ -355,6 +355,10 @@ def err_expected_end_of_enumerator : Error<
 def err_expected_coloncolon_after_super : Error<
   "expected '::' after '__super'">;
 
+def ext_decomp_decl_empty : ExtWarn<
+  "ISO C++1z does not allow a decomposition group to be empty">,
+  InGroup<DiagGroup<"empty-decomposition">>;
+
 /// Objective-C parser diagnostics
 def err_expected_minus_or_plus : Error<
   "method type specifier must start with '-' or '+'">;
@@ -822,6 +826,21 @@ def err_availability_redundant : Error<
 def warn_availability_and_unavailable : Warning<
   "'unavailable' availability overrides all other availability information">,
   InGroup<Availability>;
+
+// @available(...)
+def err_avail_query_expected_condition : Error<
+  "expected an availability condition here">;
+def err_avail_query_expected_platform_name : Error<
+  "expected a platform name here">;
+
+def err_avail_query_unrecognized_platform_name : Error<
+  "unrecognized platform name %0">;
+def err_availability_query_wildcard_required: Error<
+  "must handle potential future platforms with '*'">;
+def err_availability_query_repeated_platform: Error<
+  "version for '%0' already specified">;
+def err_availability_query_repeated_star : Error<
+  "'*' query has already been specified">;
 
 // Type safety attributes
 def err_type_safety_unknown_flag : Error<

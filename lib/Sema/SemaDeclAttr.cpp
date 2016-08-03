@@ -11,9 +11,9 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Sema/SemaInternal.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/ASTMutationListener.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/DeclCXX.h"
 #include "clang/AST/DeclObjC.h"
@@ -21,7 +21,6 @@
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/Mangle.h"
-#include "clang/AST/ASTMutationListener.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
@@ -31,6 +30,7 @@
 #include "clang/Sema/Initialization.h"
 #include "clang/Sema/Lookup.h"
 #include "clang/Sema/Scope.h"
+#include "clang/Sema/SemaInternal.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -6483,4 +6483,27 @@ void Sema::EmitAvailabilityWarning(AvailabilityDiagnostic AD,
   Decl *Ctx = cast<Decl>(getCurLexicalContext());
   DoEmitAvailabilityWarning(*this, AD, Ctx, D, Message, Loc, UnknownObjCClass,
                             ObjCProperty, ObjCPropertyAccess);
+}
+
+VersionTuple Sema::getVersionForDecl(const Decl *D) const {
+  assert(D && "Expected a declaration here!");
+
+  VersionTuple DeclVersion;
+  if (const auto *AA = getAttrForPlatform(getASTContext(), D))
+    DeclVersion = AA->getIntroduced();
+
+  const ObjCInterfaceDecl *Interface = nullptr;
+
+  if (const auto *MD = dyn_cast<ObjCMethodDecl>(D))
+    Interface = MD->getClassInterface();
+  else if (const auto *ID = dyn_cast<ObjCImplementationDecl>(D))
+    Interface = ID->getClassInterface();
+
+  if (Interface) {
+    if (const auto *AA = getAttrForPlatform(getASTContext(), Interface))
+      if (AA->getIntroduced() > DeclVersion)
+        DeclVersion = AA->getIntroduced();
+  }
+
+  return DeclVersion;
 }

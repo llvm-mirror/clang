@@ -6619,6 +6619,26 @@ static Value *EmitX86MaskedLoad(CodeGenFunction &CGF,
   return CGF.Builder.CreateMaskedLoad(Ops[0], Align, MaskVec, Ops[1]);
 }
 
+static Value *EmitX86SubVectorBroadcast(CodeGenFunction &CGF,
+                                        SmallVectorImpl<Value *> &Ops,
+                                        llvm::Type *DstTy,
+                                        unsigned SrcSizeInBits,
+                                        unsigned Align) {
+  // Load the subvector.
+  Ops[0] = CGF.Builder.CreateAlignedLoad(Ops[0], Align);
+
+  // Create broadcast mask.
+  unsigned NumDstElts = DstTy->getVectorNumElements();
+  unsigned NumSrcElts = SrcSizeInBits / DstTy->getScalarSizeInBits();
+
+  SmallVector<uint32_t, 8> Mask;
+  for (unsigned i = 0; i != NumDstElts; i += NumSrcElts)
+    for (unsigned j = 0; j != NumSrcElts; ++j)
+      Mask.push_back(j);
+
+  return CGF.Builder.CreateShuffleVector(Ops[0], Ops[0], Mask, "subvecbcst");
+}
+
 static Value *EmitX86Select(CodeGenFunction &CGF,
                             Value *Mask, Value *Op0, Value *Op1) {
 
@@ -6995,6 +7015,13 @@ Value *CodeGenFunction::EmitX86BuiltinExpr(unsigned BuiltinID,
       getContext().getTypeAlignInChars(E->getArg(1)->getType()).getQuantity();
     return EmitX86MaskedLoad(*this, Ops, Align);
   }
+
+  case X86::BI__builtin_ia32_vbroadcastf128_pd256:
+  case X86::BI__builtin_ia32_vbroadcastf128_ps256: {
+    llvm::Type *DstTy = ConvertType(E->getType());
+    return EmitX86SubVectorBroadcast(*this, Ops, DstTy, 128, 16);
+  }
+
   case X86::BI__builtin_ia32_storehps:
   case X86::BI__builtin_ia32_storelps: {
     llvm::Type *PtrTy = llvm::PointerType::getUnqual(Int64Ty);
@@ -7659,6 +7686,8 @@ Value *CodeGenFunction::EmitAMDGPUBuiltinExpr(unsigned BuiltinID,
   case AMDGPU::BI__builtin_amdgcn_fract:
   case AMDGPU::BI__builtin_amdgcn_fractf:
     return emitUnaryBuiltin(*this, E, Intrinsic::amdgcn_fract);
+  case AMDGPU::BI__builtin_amdgcn_lerp:
+    return emitTernaryBuiltin(*this, E, Intrinsic::amdgcn_lerp);
   case AMDGPU::BI__builtin_amdgcn_class:
   case AMDGPU::BI__builtin_amdgcn_classf:
     return emitFPIntBuiltin(*this, E, Intrinsic::amdgcn_class);
@@ -7669,19 +7698,6 @@ Value *CodeGenFunction::EmitAMDGPUBuiltinExpr(unsigned BuiltinID,
     CI->setConvergent();
     return CI;
   }
-  // Legacy amdgpu prefix
-  case AMDGPU::BI__builtin_amdgpu_rsq:
-  case AMDGPU::BI__builtin_amdgpu_rsqf: {
-    if (getTarget().getTriple().getArch() == Triple::amdgcn)
-      return emitUnaryBuiltin(*this, E, Intrinsic::amdgcn_rsq);
-    return emitUnaryBuiltin(*this, E, Intrinsic::r600_rsq);
-  }
-  case AMDGPU::BI__builtin_amdgpu_ldexp:
-  case AMDGPU::BI__builtin_amdgpu_ldexpf: {
-    if (getTarget().getTriple().getArch() == Triple::amdgcn)
-      return emitFPIntBuiltin(*this, E, Intrinsic::amdgcn_ldexp);
-    return emitFPIntBuiltin(*this, E, Intrinsic::AMDGPU_ldexp);
-  }
 
   // amdgcn workitem
   case AMDGPU::BI__builtin_amdgcn_workitem_id_x:
@@ -7691,7 +7707,10 @@ Value *CodeGenFunction::EmitAMDGPUBuiltinExpr(unsigned BuiltinID,
   case AMDGPU::BI__builtin_amdgcn_workitem_id_z:
     return emitRangedBuiltin(*this, Intrinsic::amdgcn_workitem_id_z, 0, 1024);
 
-  // r600 workitem
+  // r600 intrinsics
+  case AMDGPU::BI__builtin_r600_recipsqrt_ieee:
+  case AMDGPU::BI__builtin_r600_recipsqrt_ieeef:
+    return emitUnaryBuiltin(*this, E, Intrinsic::r600_recipsqrt_ieee);
   case AMDGPU::BI__builtin_r600_read_tidig_x:
     return emitRangedBuiltin(*this, Intrinsic::r600_read_tidig_x, 0, 1024);
   case AMDGPU::BI__builtin_r600_read_tidig_y:

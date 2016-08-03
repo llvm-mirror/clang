@@ -57,8 +57,7 @@ private:
                                const Driver &D, const llvm::opt::ArgList &Args,
                                llvm::opt::ArgStringList &CmdArgs,
                                const InputInfo &Output,
-                               const InputInfoList &Inputs,
-                               const ToolChain *AuxToolChain) const;
+                               const InputInfoList &Inputs) const;
 
   void AddAArch64TargetArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const;
@@ -126,6 +125,8 @@ public:
       : Tool("clang::as", "clang integrated assembler", TC, RF_Full) {}
   void AddMIPSTargetArgs(const llvm::opt::ArgList &Args,
                          llvm::opt::ArgStringList &CmdArgs) const;
+  void AddX86TargetArgs(const llvm::opt::ArgList &Args,
+                        llvm::opt::ArgStringList &CmdArgs) const;
   bool hasGoodDiagnostics() const override { return true; }
   bool hasIntegratedAssembler() const override { return false; }
   bool hasIntegratedCPP() const override { return false; }

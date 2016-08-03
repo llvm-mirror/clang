@@ -11,7 +11,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "clang/Sema/SemaInternal.h"
 #include "TreeTransform.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
@@ -42,6 +41,7 @@
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/SemaFixItUtils.h"
+#include "clang/Sema/SemaInternal.h"
 #include "clang/Sema/Template.h"
 #include "llvm/Support/ConvertUTF.h"
 using namespace clang;
@@ -107,9 +107,14 @@ static AvailabilityResult
 DiagnoseAvailabilityOfDecl(Sema &S, NamedDecl *D, SourceLocation Loc,
                            const ObjCInterfaceDecl *UnknownObjCClass,
                            bool ObjCPropertyAccess) {
-  // See if this declaration is unavailable or deprecated.
+  VersionTuple ContextVersion;
+  if (const DeclContext *DC = S.getCurObjCLexicalContext())
+    ContextVersion = S.getVersionForDecl(cast<Decl>(DC));
+
+  // See if this declaration is unavailable, deprecated, or partial in the
+  // current context.
   std::string Message;
-  AvailabilityResult Result = D->getAvailability(&Message);
+  AvailabilityResult Result = D->getAvailability(&Message, ContextVersion);
 
   // For typedefs, if the typedef declaration appears available look
   // to the underlying type to see if it is more restrictive.
@@ -117,7 +122,7 @@ DiagnoseAvailabilityOfDecl(Sema &S, NamedDecl *D, SourceLocation Loc,
     if (Result == AR_Available) {
       if (const TagType *TT = TD->getUnderlyingType()->getAs<TagType>()) {
         D = TT->getDecl();
-        Result = D->getAvailability(&Message);
+        Result = D->getAvailability(&Message, ContextVersion);
         continue;
       }
     }
@@ -128,7 +133,7 @@ DiagnoseAvailabilityOfDecl(Sema &S, NamedDecl *D, SourceLocation Loc,
   if (ObjCInterfaceDecl *IDecl = dyn_cast<ObjCInterfaceDecl>(D)) {
     if (IDecl->getDefinition()) {
       D = IDecl->getDefinition();
-      Result = D->getAvailability(&Message);
+      Result = D->getAvailability(&Message, ContextVersion);
     }
   }
 
@@ -136,7 +141,7 @@ DiagnoseAvailabilityOfDecl(Sema &S, NamedDecl *D, SourceLocation Loc,
     if (Result == AR_Available) {
       const DeclContext *DC = ECD->getDeclContext();
       if (const EnumDecl *TheEnumDecl = dyn_cast<EnumDecl>(DC))
-        Result = TheEnumDecl->getAvailability(&Message);
+        Result = TheEnumDecl->getAvailability(&Message, ContextVersion);
     }
 
   const ObjCPropertyDecl *ObjCPDecl = nullptr;
@@ -144,7 +149,8 @@ DiagnoseAvailabilityOfDecl(Sema &S, NamedDecl *D, SourceLocation Loc,
       Result == AR_NotYetIntroduced) {
     if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(D)) {
       if (const ObjCPropertyDecl *PD = MD->findPropertyDecl()) {
-        AvailabilityResult PDeclResult = PD->getAvailability(nullptr);
+        AvailabilityResult PDeclResult =
+            PD->getAvailability(nullptr, ContextVersion);
         if (PDeclResult == Result)
           ObjCPDecl = PD;
       }
@@ -198,7 +204,7 @@ DiagnoseAvailabilityOfDecl(Sema &S, NamedDecl *D, SourceLocation Loc,
       break;
 
     }
-    return Result;
+  return Result;
 }
 
 /// \brief Emit a note explaining that this function is deleted.
@@ -340,10 +346,15 @@ bool Sema::DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
 
   // See if this is an auto-typed variable whose initializer we are parsing.
   if (ParsingInitForAutoVars.count(D)) {
-    const AutoType *AT = cast<VarDecl>(D)->getType()->getContainedAutoType();
+    if (isa<BindingDecl>(D)) {
+      Diag(Loc, diag::err_binding_cannot_appear_in_own_initializer)
+        << D->getDeclName();
+    } else {
+      const AutoType *AT = cast<VarDecl>(D)->getType()->getContainedAutoType();
 
-    Diag(Loc, diag::err_auto_variable_cannot_appear_in_own_initializer)
-      << D->getDeclName() << (unsigned)AT->getKeyword();
+      Diag(Loc, diag::err_auto_variable_cannot_appear_in_own_initializer)
+        << D->getDeclName() << (unsigned)AT->getKeyword();
+    }
     return true;
   }
 
@@ -2939,6 +2950,8 @@ ExprResult Sema::BuildDeclarationNameExpr(
     case Decl::Var:
     case Decl::VarTemplateSpecialization:
     case Decl::VarTemplatePartialSpecialization:
+    case Decl::Decomposition:
+    case Decl::Binding:
     case Decl::OMPCapturedExpr:
       // In C, "extern void blah;" is valid and is an r-value.
       if (!getLangOpts().CPlusPlus &&
@@ -4304,14 +4317,13 @@ ExprResult Sema::ActOnOMPArraySectionExpr(Expr *Base, SourceLocation LBLoc,
                           diag::err_omp_section_incomplete_type, Base))
     return ExprError();
 
-  if (LowerBound) {
+  if (LowerBound && !OriginalTy->isAnyPointerType()) {
     llvm::APSInt LowerBoundValue;
     if (LowerBound->EvaluateAsInt(LowerBoundValue, Context)) {
-      // OpenMP 4.0, [2.4 Array Sections]
-      // The lower-bound and length must evaluate to non-negative integers.
+      // OpenMP 4.5, [2.4 Array Sections]
+      // The array section must be a subset of the original array.
       if (LowerBoundValue.isNegative()) {
-        Diag(LowerBound->getExprLoc(), diag::err_omp_section_negative)
-            << 0 << LowerBoundValue.toString(/*Radix=*/10, /*Signed=*/true)
+        Diag(LowerBound->getExprLoc(), diag::err_omp_section_not_subset_of_array)
             << LowerBound->getSourceRange();
         return ExprError();
       }
@@ -4321,11 +4333,11 @@ ExprResult Sema::ActOnOMPArraySectionExpr(Expr *Base, SourceLocation LBLoc,
   if (Length) {
     llvm::APSInt LengthValue;
     if (Length->EvaluateAsInt(LengthValue, Context)) {
-      // OpenMP 4.0, [2.4 Array Sections]
-      // The lower-bound and length must evaluate to non-negative integers.
+      // OpenMP 4.5, [2.4 Array Sections]
+      // The length must evaluate to non-negative integers.
       if (LengthValue.isNegative()) {
-        Diag(Length->getExprLoc(), diag::err_omp_section_negative)
-            << 1 << LengthValue.toString(/*Radix=*/10, /*Signed=*/true)
+        Diag(Length->getExprLoc(), diag::err_omp_section_length_negative)
+            << LengthValue.toString(/*Radix=*/10, /*Signed=*/true)
             << Length->getSourceRange();
         return ExprError();
       }
@@ -4333,7 +4345,7 @@ ExprResult Sema::ActOnOMPArraySectionExpr(Expr *Base, SourceLocation LBLoc,
   } else if (ColonLoc.isValid() &&
              (OriginalTy.isNull() || (!OriginalTy->isConstantArrayType() &&
                                       !OriginalTy->isVariableArrayType()))) {
-    // OpenMP 4.0, [2.4 Array Sections]
+    // OpenMP 4.5, [2.4 Array Sections]
     // When the size of the array dimension is not known, the length must be
     // specified explicitly.
     Diag(ColonLoc, diag::err_omp_section_length_undefined)
@@ -5052,7 +5064,11 @@ static FunctionDecl *rewriteBuiltinFunctionDecl(Sema *Sema, ASTContext &Context,
   for (QualType ParamType : FT->param_types()) {
 
     // Convert array arguments to pointer to simplify type lookup.
-    Expr *Arg = Sema->DefaultFunctionArrayLvalueConversion(ArgExprs[i++]).get();
+    ExprResult ArgRes =
+        Sema->DefaultFunctionArrayLvalueConversion(ArgExprs[i++]);
+    if (ArgRes.isInvalid())
+      return nullptr;
+    Expr *Arg = ArgRes.get();
     QualType ArgType = Arg->getType();
     if (!ParamType->isPointerType() ||
         ParamType.getQualifiers().hasAddressSpace() ||
@@ -7002,6 +7018,55 @@ static void DiagnoseConditionalPrecedence(Sema &Self,
     SourceRange(CondRHS->getLocStart(), RHSExpr->getLocEnd()));
 }
 
+/// Compute the nullability of a conditional expression.
+static QualType computeConditionalNullability(QualType ResTy, bool IsBin,
+                                              QualType LHSTy, QualType RHSTy,
+                                              ASTContext &Ctx) {
+  if (!ResTy->isAnyPointerType())
+    return ResTy;
+
+  auto GetNullability = [&Ctx](QualType Ty) {
+    Optional<NullabilityKind> Kind = Ty->getNullability(Ctx);
+    if (Kind)
+      return *Kind;
+    return NullabilityKind::Unspecified;
+  };
+
+  auto LHSKind = GetNullability(LHSTy), RHSKind = GetNullability(RHSTy);
+  NullabilityKind MergedKind;
+
+  // Compute nullability of a binary conditional expression.
+  if (IsBin) {
+    if (LHSKind == NullabilityKind::NonNull)
+      MergedKind = NullabilityKind::NonNull;
+    else
+      MergedKind = RHSKind;
+  // Compute nullability of a normal conditional expression.
+  } else {
+    if (LHSKind == NullabilityKind::Nullable ||
+        RHSKind == NullabilityKind::Nullable)
+      MergedKind = NullabilityKind::Nullable;
+    else if (LHSKind == NullabilityKind::NonNull)
+      MergedKind = RHSKind;
+    else if (RHSKind == NullabilityKind::NonNull)
+      MergedKind = LHSKind;
+    else
+      MergedKind = NullabilityKind::Unspecified;
+  }
+
+  // Return if ResTy already has the correct nullability.
+  if (GetNullability(ResTy) == MergedKind)
+    return ResTy;
+
+  // Strip all nullability from ResTy.
+  while (ResTy->getNullability(Ctx))
+    ResTy = ResTy.getSingleStepDesugaredType(Ctx);
+
+  // Create a new AttributedType with the new nullability kind.
+  auto NewAttr = AttributedType::getNullabilityAttrKind(MergedKind);
+  return Ctx.getAttributedType(NewAttr, ResTy, ResTy);
+}
+
 /// ActOnConditionalOp - Parse a ?: operation.  Note that 'LHS' may be null
 /// in the case of a the GNU conditional expr extension.
 ExprResult Sema::ActOnConditionalOp(SourceLocation QuestionLoc,
@@ -7069,6 +7134,7 @@ ExprResult Sema::ActOnConditionalOp(SourceLocation QuestionLoc,
     LHSExpr = CondExpr = opaqueValue;
   }
 
+  QualType LHSTy = LHSExpr->getType(), RHSTy = RHSExpr->getType();
   ExprValueKind VK = VK_RValue;
   ExprObjectKind OK = OK_Ordinary;
   ExprResult Cond = CondExpr, LHS = LHSExpr, RHS = RHSExpr;
@@ -7082,6 +7148,9 @@ ExprResult Sema::ActOnConditionalOp(SourceLocation QuestionLoc,
                                 RHS.get());
 
   CheckBoolLikeConversion(Cond.get(), QuestionLoc);
+
+  result = computeConditionalNullability(result, commonExpr, LHSTy, RHSTy,
+                                         Context);
 
   if (!commonExpr)
     return new (Context)
@@ -7596,6 +7665,11 @@ Sema::CheckAssignmentConstraints(QualType LHSType, ExprResult &RHS,
       Kind = CK_NoOp;
       return Compatible;
     }
+  }
+
+  if (LHSType->isSamplerT() && RHSType->isIntegerType()) {
+    Kind = CK_IntToOCLSampler;
+    return Compatible;
   }
 
   return Incompatible;
@@ -12423,10 +12497,14 @@ bool Sema::DiagnoseAssignmentResult(AssignConvertType ConvTy,
     MayHaveConvFixit = true;
     break;
   case IncompatiblePointer:
-      DiagKind =
-        (Action == AA_Passing_CFAudited ?
-          diag::err_arc_typecheck_convert_incompatible_pointer :
-          diag::ext_typecheck_convert_incompatible_pointer);
+    if (Action == AA_Passing_CFAudited)
+      DiagKind = diag::err_arc_typecheck_convert_incompatible_pointer;
+    else if (SrcType->isFunctionPointerType() &&
+             DstType->isFunctionPointerType())
+      DiagKind = diag::ext_typecheck_convert_incompatible_function_pointer;
+    else
+      DiagKind = diag::ext_typecheck_convert_incompatible_pointer;
+
     CheckInferredResultType = DstType->isObjCObjectPointerType() &&
       SrcType->isObjCObjectPointerType();
     if (Hint.isNull() && !CheckInferredResultType) {
@@ -15082,4 +15160,28 @@ Sema::ActOnObjCBoolLiteral(SourceLocation OpLoc, tok::TokenKind Kind) {
     BoolT = Context.getBOOLType();
   return new (Context)
       ObjCBoolLiteralExpr(Kind == tok::kw___objc_yes, BoolT, OpLoc);
+}
+
+ExprResult Sema::ActOnObjCAvailabilityCheckExpr(
+    llvm::ArrayRef<AvailabilitySpec> AvailSpecs, SourceLocation AtLoc,
+    SourceLocation RParen) {
+
+  StringRef Platform = getASTContext().getTargetInfo().getPlatformName();
+
+  auto Spec = std::find_if(AvailSpecs.begin(), AvailSpecs.end(),
+                           [&](const AvailabilitySpec &Spec) {
+                             return Spec.getPlatform() == Platform;
+                           });
+
+  VersionTuple Version;
+  if (Spec != AvailSpecs.end())
+    Version = Spec->getVersion();
+  else
+    // This is the '*' case in @available. We should diagnose this; the
+    // programmer should explicitly account for this case if they target this
+    // platform.
+    Diag(AtLoc, diag::warn_available_using_star_case) << RParen << Platform;
+
+  return new (Context)
+      ObjCAvailabilityCheckExpr(Version, AtLoc, RParen, Context.BoolTy);
 }

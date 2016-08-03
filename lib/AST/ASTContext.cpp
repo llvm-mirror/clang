@@ -34,7 +34,6 @@
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/TargetInfo.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Support/Capacity.h"
@@ -652,6 +651,10 @@ ASTContext::getCanonicalTemplateTemplateParmDecl(
                                            cast<TemplateTemplateParmDecl>(*P)));
   }
 
+  assert(!TTP->getRequiresClause() &&
+         "Unexpected requires-clause on template template-parameter");
+  LLVM_CONSTEXPR Expr *const CanonRequiresClause = nullptr;
+
   TemplateTemplateParmDecl *CanonTTP
     = TemplateTemplateParmDecl::Create(*this, getTranslationUnitDecl(), 
                                        SourceLocation(), TTP->getDepth(),
@@ -661,7 +664,8 @@ ASTContext::getCanonicalTemplateTemplateParmDecl(
                          TemplateParameterList::Create(*this, SourceLocation(),
                                                        SourceLocation(),
                                                        CanonParams,
-                                                       SourceLocation()));
+                                                       SourceLocation(),
+                                                       CanonRequiresClause));
 
   // Get the new insert position for the node we care about.
   Canonical = CanonTemplateTemplateParms.FindNodeOrInsertPos(ID, InsertPos);
@@ -788,6 +792,9 @@ ASTContext::~ASTContext() {
        MaterializedTemporaryValues)
     MTVPair.second->~APValue();
 
+  for (const auto &Value : ModuleInitializers)
+    Value.second->~PerModuleInitializers();
+
   llvm::DeleteContainerSeconds(MangleNumberingContexts);
 }
 
@@ -900,6 +907,67 @@ void ASTContext::deduplicateMergedDefinitonsFor(NamedDecl *ND) {
     if (!Found.insert(M).second)
       M = nullptr;
   Merged.erase(std::remove(Merged.begin(), Merged.end(), nullptr), Merged.end());
+}
+
+void ASTContext::PerModuleInitializers::resolve(ASTContext &Ctx) {
+  if (LazyInitializers.empty())
+    return;
+
+  auto *Source = Ctx.getExternalSource();
+  assert(Source && "lazy initializers but no external source");
+
+  auto LazyInits = std::move(LazyInitializers);
+  LazyInitializers.clear();
+
+  for (auto ID : LazyInits)
+    Initializers.push_back(Source->GetExternalDecl(ID));
+
+  assert(LazyInitializers.empty() &&
+         "GetExternalDecl for lazy module initializer added more inits");
+}
+
+void ASTContext::addModuleInitializer(Module *M, Decl *D) {
+  // One special case: if we add a module initializer that imports another
+  // module, and that module's only initializer is an ImportDecl, simplify.
+  if (auto *ID = dyn_cast<ImportDecl>(D)) {
+    auto It = ModuleInitializers.find(ID->getImportedModule());
+
+    // Maybe the ImportDecl does nothing at all. (Common case.)
+    if (It == ModuleInitializers.end())
+      return;
+
+    // Maybe the ImportDecl only imports another ImportDecl.
+    auto &Imported = *It->second;
+    if (Imported.Initializers.size() + Imported.LazyInitializers.size() == 1) {
+      Imported.resolve(*this);
+      auto *OnlyDecl = Imported.Initializers.front();
+      if (isa<ImportDecl>(OnlyDecl))
+        D = OnlyDecl;
+    }
+  }
+
+  auto *&Inits = ModuleInitializers[M];
+  if (!Inits)
+    Inits = new (*this) PerModuleInitializers;
+  Inits->Initializers.push_back(D);
+}
+
+void ASTContext::addLazyModuleInitializers(Module *M, ArrayRef<uint32_t> IDs) {
+  auto *&Inits = ModuleInitializers[M];
+  if (!Inits)
+    Inits = new (*this) PerModuleInitializers;
+  Inits->LazyInitializers.insert(Inits->LazyInitializers.end(),
+                                 IDs.begin(), IDs.end());
+}
+
+ArrayRef<Decl*> ASTContext::getModuleInitializers(Module *M) {
+  auto It = ModuleInitializers.find(M);
+  if (It == ModuleInitializers.end()) 
+    return None;
+
+  auto *Inits = It->second;
+  Inits->resolve(*this);
+  return Inits->Initializers;
 }
 
 ExternCContextDecl *ASTContext::getExternCContextDecl() const {
@@ -1671,11 +1739,12 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
       Width = Target->getPointerWidth(0); 
       Align = Target->getPointerAlign(0);
       break;
-    case BuiltinType::OCLSampler:
-      // Samplers are modeled as integers.
-      Width = Target->getIntWidth();
-      Align = Target->getIntAlign();
+    case BuiltinType::OCLSampler: {
+      auto AS = getTargetAddressSpace(LangAS::opencl_constant);
+      Width = Target->getPointerWidth(AS);
+      Align = Target->getPointerAlign(AS);
       break;
+    }
     case BuiltinType::OCLEvent:
     case BuiltinType::OCLClkEvent:
     case BuiltinType::OCLQueue:
@@ -8576,6 +8645,8 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
     return !D->getDeclContext()->isDependentContext();
   else if (isa<OMPDeclareReductionDecl>(D))
     return !D->getDeclContext()->isDependentContext();
+  else if (isa<ImportDecl>(D))
+    return true;
   else
     return false;
 

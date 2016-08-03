@@ -43,7 +43,6 @@
 #include "clang/Basic/Version.h"
 #include "clang/Frontend/CodeGenOptions.h"
 #include "clang/Sema/SemaDiagnostic.h"
-#include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/CallingConv.h"
@@ -2385,8 +2384,13 @@ void CodeGenModule::maybeSetTrivialComdat(const Decl &D,
 /// Pass IsTentative as true if you want to create a tentative definition.
 void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
                                             bool IsTentative) {
-  llvm::Constant *Init = nullptr;
+  // OpenCL global variables of sampler type are translated to function calls,
+  // therefore no need to be translated.
   QualType ASTTy = D->getType();
+  if (getLangOpts().OpenCL && ASTTy->isSamplerT())
+    return;
+
+  llvm::Constant *Init = nullptr;
   CXXRecordDecl *RD = ASTTy->getBaseElementTypeUnsafe()->getAsCXXRecordDecl();
   bool NeedsGlobalCtor = false;
   bool NeedsGlobalDtor = RD && !RD->hasTrivialDestructor();
@@ -3205,7 +3209,7 @@ CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
 
   // The struct.
   C = llvm::ConstantStruct::get(STy, Fields);
-  GV = new llvm::GlobalVariable(getModule(), C->getType(), true,
+  GV = new llvm::GlobalVariable(getModule(), C->getType(), /*isConstant=*/false,
                                 llvm::GlobalVariable::PrivateLinkage, C,
                                 "_unnamed_cfstring_");
   GV->setAlignment(Alignment.getQuantity());
@@ -3762,6 +3766,7 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
     break;
 
   case Decl::Var:
+  case Decl::Decomposition:
     // Skip variable templates
     if (cast<VarDecl>(D)->getDescribedVarTemplate())
       return;
@@ -3911,13 +3916,19 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
   case Decl::Import: {
     auto *Import = cast<ImportDecl>(D);
 
-    // Ignore import declarations that come from imported modules.
-    if (Import->getImportedOwningModule())
+    // If we've already imported this module, we're done.
+    if (!ImportedModules.insert(Import->getImportedModule()))
       break;
-    if (CGDebugInfo *DI = getModuleDebugInfo())
-      DI->EmitImportDecl(*Import);
 
-    ImportedModules.insert(Import->getImportedModule());
+    // Emit debug information for direct imports.
+    if (!Import->getImportedOwningModule()) {
+      if (CGDebugInfo *DI = getModuleDebugInfo())
+        DI->EmitImportDecl(*Import);
+    }
+
+    // Emit the module initializers.
+    for (auto *D : Context.getModuleInitializers(Import->getImportedModule()))
+      EmitTopLevelDecl(D);
     break;
   }
 
@@ -4310,4 +4321,14 @@ llvm::SanitizerStatReport &CodeGenModule::getSanStats() {
     SanStats = llvm::make_unique<llvm::SanitizerStatReport>(&getModule());
 
   return *SanStats;
+}
+llvm::Value *
+CodeGenModule::createOpenCLIntToSamplerConversion(const Expr *E,
+                                                  CodeGenFunction &CGF) {
+  llvm::Constant *C = EmitConstantExpr(E, E->getType(), &CGF);
+  auto SamplerT = getOpenCLRuntime().getSamplerType();
+  auto FTy = llvm::FunctionType::get(SamplerT, {C->getType()}, false);
+  return CGF.Builder.CreateCall(CreateRuntimeFunction(FTy,
+                                "__translate_sampler_initializer"),
+                                {C});
 }
