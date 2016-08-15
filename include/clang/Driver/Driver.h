@@ -17,16 +17,14 @@
 #include "clang/Driver/Util.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/Triple.h"
-#include "llvm/Support/Path.h" // FIXME: Kill when CompilationInfo lands.
 
 #include <list>
 #include <map>
-#include <memory>
-#include <set>
 #include <string>
 
 namespace llvm {
+class Triple;
+
 namespace opt {
   class Arg;
   class ArgList;
@@ -132,9 +130,6 @@ public:
   /// If the standard library is used
   bool UseStdLib;
 
-  /// Default target triple.
-  std::string DefaultTargetTriple;
-
   /// Driver title to use with help.
   std::string DriverTitle;
 
@@ -183,6 +178,9 @@ public:
   unsigned CCGenDiagnostics : 1;
 
 private:
+  /// Default target triple.
+  std::string DefaultTargetTriple;
+
   /// Name to use when invoking gcc/g++.
   std::string CCCGenericGCCName;
 
@@ -394,12 +392,13 @@ public:
   /// BuildJobsForAction - Construct the jobs to perform for the action \p A and
   /// return an InputInfo for the result of running \p A.  Will only construct
   /// jobs for a given (Action, ToolChain, BoundArch) tuple once.
-  InputInfo BuildJobsForAction(Compilation &C, const Action *A,
-                               const ToolChain *TC, const char *BoundArch,
-                               bool AtTopLevel, bool MultipleArchs,
-                               const char *LinkingOutput,
-                               std::map<std::pair<const Action *, std::string>,
-                                        InputInfo> &CachedResults) const;
+  InputInfo
+  BuildJobsForAction(Compilation &C, const Action *A, const ToolChain *TC,
+                     const char *BoundArch, bool AtTopLevel, bool MultipleArchs,
+                     const char *LinkingOutput,
+                     std::map<std::pair<const Action *, std::string>, InputInfo>
+                         &CachedResults,
+                     bool BuildForOffloadDevice) const;
 
   /// Returns the default name for linked images (e.g., "a.out").
   const char *getDefaultImageName() const;
@@ -415,12 +414,11 @@ public:
   /// \param BoundArch - The bound architecture. 
   /// \param AtTopLevel - Whether this is a "top-level" action.
   /// \param MultipleArchs - Whether multiple -arch options were supplied.
-  const char *GetNamedOutputPath(Compilation &C,
-                                 const JobAction &JA,
-                                 const char *BaseInput,
-                                 const char *BoundArch,
-                                 bool AtTopLevel,
-                                 bool MultipleArchs) const;
+  /// \param NormalizedTriple - The normalized triple of the relevant target.
+  const char *GetNamedOutputPath(Compilation &C, const JobAction &JA,
+                                 const char *BaseInput, const char *BoundArch,
+                                 bool AtTopLevel, bool MultipleArchs,
+                                 StringRef NormalizedTriple) const;
 
   /// GetTemporaryPath - Return the pathname of a temporary file to use 
   /// as part of compilation; the file will have the given prefix and suffix.
@@ -467,7 +465,8 @@ private:
       const char *BoundArch, bool AtTopLevel, bool MultipleArchs,
       const char *LinkingOutput,
       std::map<std::pair<const Action *, std::string>, InputInfo>
-          &CachedResults) const;
+          &CachedResults,
+      bool BuildForOffloadDevice) const;
 
 public:
   /// GetReleaseVersion - Parse (([0-9]+)(.([0-9]+)(.([0-9]+)?))?)? and

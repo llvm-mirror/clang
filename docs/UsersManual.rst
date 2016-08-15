@@ -543,15 +543,15 @@ vectorize a loop body.
 Clang offers a family of flags which the optimizers can use to emit
 a diagnostic in three cases:
 
-1. When the pass makes a transformation (:option:`-Rpass`).
+1. When the pass makes a transformation (`-Rpass`).
 
-2. When the pass fails to make a transformation (:option:`-Rpass-missed`).
+2. When the pass fails to make a transformation (`-Rpass-missed`).
 
 3. When the pass determines whether or not to make a transformation
-   (:option:`-Rpass-analysis`).
+   (`-Rpass-analysis`).
 
-NOTE: Although the discussion below focuses on :option:`-Rpass`, the exact
-same options apply to :option:`-Rpass-missed` and :option:`-Rpass-analysis`.
+NOTE: Although the discussion below focuses on `-Rpass`, the exact
+same options apply to `-Rpass-missed` and `-Rpass-analysis`.
 
 Since there are dozens of passes inside the compiler, each of these flags
 take a regular expression that identifies the name of the pass which should
@@ -567,7 +567,7 @@ compile the code with:
 
 Note that remarks from the inliner are identified with `[-Rpass=inline]`.
 To request a report from every optimization pass, you should use
-:option:`-Rpass=.*` (in fact, you can use any valid POSIX regular
+`-Rpass=.*` (in fact, you can use any valid POSIX regular
 expression). However, do not expect a report from every transformation
 made by the compiler. Optimization remarks do not really make sense
 outside of the major transformations (e.g., inlining, vectorization,
@@ -585,7 +585,7 @@ Current limitations
 2. Some source locations are not displayed correctly. The front end has
    a more detailed source location tracking than the locations included
    in the debug info (e.g., the front end can locate code inside macro
-   expansions). However, the locations used by :option:`-Rpass` are
+   expansions). However, the locations used by `-Rpass` are
    translated from debug annotations. That translation can be lossy,
    which results in some remarks having no location information.
 
@@ -783,7 +783,7 @@ the pragma onwards within the same file.
   #if foo
   #endif foo // no warning
 
-The :option:`--system-header-prefix=` and :option:`--no-system-header-prefix=`
+The `--system-header-prefix=` and `--no-system-header-prefix=`
 command-line arguments can be used to override whether subsets of an include
 path are treated as system headers. When the name in a ``#include`` directive
 is found within a header search path and starts with a system prefix, the
@@ -852,7 +852,7 @@ Generating a PCH File
 ^^^^^^^^^^^^^^^^^^^^^
 
 To generate a PCH file using Clang, one invokes Clang with the
-:option:`-x <language>-header` option. This mirrors the interface in GCC
+`-x <language>-header` option. This mirrors the interface in GCC
 for generating PCH files:
 
 .. code-block:: console
@@ -915,7 +915,7 @@ location.
 Building a relocatable precompiled header requires two additional
 arguments. First, pass the ``--relocatable-pch`` flag to indicate that
 the resulting PCH file should be relocatable. Second, pass
-:option:`-isysroot /path/to/build`, which makes all includes for your library
+`-isysroot /path/to/build`, which makes all includes for your library
 relative to the build directory. For example:
 
 .. code-block:: console
@@ -925,9 +925,9 @@ relative to the build directory. For example:
 When loading the relocatable PCH file, the various headers used in the
 PCH file are found from the system header root. For example, ``mylib.h``
 can be found in ``/usr/include/mylib.h``. If the headers are installed
-in some other system root, the :option:`-isysroot` option can be used provide
+in some other system root, the `-isysroot` option can be used provide
 a different system root from which the headers will be based. For
-example, :option:`-isysroot /Developer/SDKs/MacOSX10.4u.sdk` will look for
+example, `-isysroot /Developer/SDKs/MacOSX10.4u.sdk` will look for
 ``mylib.h`` in ``/Developer/SDKs/MacOSX10.4u.sdk/usr/include/mylib.h``.
 
 Relocatable precompiled headers are intended to be used in a limited
@@ -1470,8 +1470,13 @@ instrumentation:
 
 2. Run the instrumented executable with inputs that reflect the typical usage.
    By default, the profile data will be written to a ``default.profraw`` file
-   in the current directory. You can override that default by setting the
-   ``LLVM_PROFILE_FILE`` environment variable to specify an alternate file.
+   in the current directory. You can override that default by using option
+   ``-fprofile-instr-generate=`` or by setting the ``LLVM_PROFILE_FILE`` 
+   environment variable to specify an alternate file. If non-default file name
+   is specified by both the environment variable and the command line option,
+   the environment variable takes precedence. The file name pattern specified
+   can include different modifiers: ``%p``, ``%h``, and ``%m``.
+
    Any instance of ``%p`` in that file name will be replaced by the process
    ID, so that you can easily distinguish the profile output from multiple
    runs.
@@ -1479,6 +1484,33 @@ instrumentation:
    .. code-block:: console
 
      $ LLVM_PROFILE_FILE="code-%p.profraw" ./code
+
+   The modifier ``%h`` can be used in scenarios where the same instrumented
+   binary is run in multiple different host machines dumping profile data
+   to a shared network based storage. The ``%h`` specifier will be substituted
+   with the hostname so that profiles collected from different hosts do not
+   clobber each other.
+
+   While the use of ``%p`` specifier can reduce the likelihood for the profiles
+   dumped from different processes to clobber each other, such clobbering can still
+   happen because of the ``pid`` re-use by the OS. Another side-effect of using
+   ``%p`` is that the storage requirement for raw profile data files is greatly
+   increased.  To avoid issues like this, the ``%m`` specifier can used in the profile
+   name.  When this specifier is used, the profiler runtime will substitute ``%m``
+   with a unique integer identifier associated with the instrumented binary. Additionally,
+   multiple raw profiles dumped from different processes that share a file system (can be
+   on different hosts) will be automatically merged by the profiler runtime during the
+   dumping. If the program links in multiple instrumented shared libraries, each library
+   will dump the profile data into its own profile data file (with its unique integer
+   id embedded in the profile name). Note that the merging enabled by ``%m`` is for raw
+   profile data generated by profiler runtime. The resulting merged "raw" profile data
+   file still needs to be converted to a different format expected by the compiler (
+   see step 3 below).
+
+   .. code-block:: console
+
+     $ LLVM_PROFILE_FILE="code-%m.profraw" ./code
+
 
 3. Combine profiles from multiple runs and convert the "raw" profile format to
    the input expected by clang. Use the ``merge`` command of the
@@ -1502,37 +1534,43 @@ instrumentation:
    profile. As you make changes to your code, clang may no longer be able to
    use the profile data. It will warn you when this happens.
 
-Profile generation and use can also be controlled by the GCC-compatible flags
-``-fprofile-generate`` and ``-fprofile-use``. Although these flags are
-semantically equivalent to their GCC counterparts, they *do not* handle
-GCC-compatible profiles. They are only meant to implement GCC's semantics
-with respect to profile creation and use.
+Profile generation using an alternative instrumentation method can be
+controlled by the GCC-compatible flags ``-fprofile-generate`` and
+``-fprofile-use``. Although these flags are semantically equivalent to
+their GCC counterparts, they *do not* handle GCC-compatible profiles.
+They are only meant to implement GCC's semantics with respect to
+profile creation and use.
 
 .. option:: -fprofile-generate[=<dirname>]
 
-  Without any other arguments, ``-fprofile-generate`` behaves identically to
-  ``-fprofile-instr-generate``. When given a directory name, it generates the
-  profile file ``default.profraw`` in the directory named ``dirname``. If
-  ``dirname`` does not exist, it will be created at runtime. The environment
-  variable ``LLVM_PROFILE_FILE`` can be used to override the directory and
-  filename for the profile file at runtime. For example,
+  The ``-fprofile-generate`` and ``-fprofile-generate=`` flags will use
+  an alterantive instrumentation method for profile generation. When
+  given a directory name, it generates the profile file
+  ``default_%m.profraw`` in the directory named ``dirname`` if specified.
+  If ``dirname`` does not exist, it will be created at runtime. ``%m`` specifier
+  will be substibuted with a unique id documented in step 2 above. In other words,
+  with ``-fprofile-generate[=<dirname>]`` option, the "raw" profile data automatic
+  merging is turned on by default, so there will no longer any risk of profile
+  clobbering from different running processes.  For example,
 
   .. code-block:: console
 
     $ clang++ -O2 -fprofile-generate=yyy/zzz code.cc -o code
 
   When ``code`` is executed, the profile will be written to the file
-  ``yyy/zzz/default.profraw``. This can be altered at runtime via the
-  ``LLVM_PROFILE_FILE`` environment variable:
+  ``yyy/zzz/default_xxxx.profraw``.
 
-  .. code-block:: console
+  To generate the profile data file with the compiler readable format, the 
+  ``llvm-profdata`` tool can be used with the profile directory as the input:
 
-    $ LLVM_PROFILE_FILE=/tmp/myprofile/code.profraw ./code
+   .. code-block:: console
 
-  The above invocation will produce the profile file
-  ``/tmp/myprofile/code.profraw`` instead of ``yyy/zzz/default.profraw``.
-  Notice that ``LLVM_PROFILE_FILE`` overrides the directory *and* the file
-  name for the profile file.
+     $ llvm-profdata merge -output=code.profdata yyy/zzz/
+
+ If the user wants to turn off the auto-merging feature, or simply override the
+ the profile dumping path specified at command line, the environment variable
+ ``LLVM_PROFILE_FILE`` can still be used to override
+ the directory and filename for the profile file at runtime.
 
 .. option:: -fprofile-use[=<pathname>]
 
@@ -1872,8 +1910,8 @@ directives, ``depend`` clause for ``#pragma omp task`` directive (except for
 array sections), ``#pragma omp cancel`` and ``#pragma omp cancellation point``
 directives, and ``#pragma omp taskgroup`` directive.
 
-Use :option:`-fopenmp` to enable OpenMP. Support for OpenMP can be disabled with
-:option:`-fno-openmp`.
+Use `-fopenmp` to enable OpenMP. Support for OpenMP can be disabled with
+`-fno-openmp`.
 
 Controlling implementation limits
 ---------------------------------
@@ -1882,7 +1920,7 @@ Controlling implementation limits
 
  Controls code generation for OpenMP threadprivate variables. In presence of
  this option all threadprivate variables are generated the same way as thread
- local variables, using TLS support. If :option:`-fno-openmp-use-tls`
+ local variables, using TLS support. If `-fno-openmp-use-tls`
  is provided or target does not support TLS, code generation for threadprivate
  variables relies on OpenMP runtime library.
 
@@ -1906,7 +1944,7 @@ On ``x86_64-mingw32``, passing i128(by value) is incompatible with the
 Microsoft x64 calling convention. You might need to tweak
 ``WinX86_64ABIInfo::classify()`` in lib/CodeGen/TargetInfo.cpp.
 
-For the X86 target, clang supports the :option:`-m16` command line
+For the X86 target, clang supports the `-m16` command line
 argument which enables 16-bit code output. This is broadly similar to
 using ``asm(".code16gcc")`` with the GNU toolchain. The generated code
 and the ABI remains 32-bit but the assembler emits instructions
@@ -2080,16 +2118,26 @@ Execute ``clang-cl /?`` to see a list of supported options:
       /fp:fast
       /fp:precise
       /fp:strict
+      /Fp<filename>          Set pch filename (with /Yc and /Yu)
       /GA                    Assume thread-local variables are defined in the executable
+      /Gd                    Set __cdecl as a default calling convention
       /GF-                   Disable string pooling
       /GR-                   Disable emission of RTTI data
       /GR                    Enable emission of RTTI data
+      /Gr                    Set __fastcall as a default calling convention
+      /GS-                   Disable buffer security check
+      /GS                    Enable buffer security check
       /Gs<value>             Set stack probe size
+      /Gv                    Set __vectorcall as a default calling convention
       /Gw-                   Don't put each data item in its own section
       /Gw                    Put each data item in its own section
+      /GX-                   Enable exception handling
+      /GX                    Enable exception handling
       /Gy-                   Don't put each function in its own section
       /Gy                    Put each function in its own section
+      /Gz                    Set __stdcall as a default calling convention
       /help                  Display available options
+      /imsvc <dir>           Add directory to system include search path, as if part of %INCLUDE%
       /I <dir>               Add directory to include search path
       /J                     Make char type unsigned
       /LDd                   Create debug DLL
@@ -2099,7 +2147,6 @@ Execute ``clang-cl /?`` to see a list of supported options:
       /MD                    Use DLL run-time
       /MTd                   Use static debug run-time
       /MT                    Use static run-time
-      /Ob0                   Disable inlining
       /Od                    Disable optimization
       /Oi-                   Disable use of builtin functions
       /Oi                    Enable use of builtin functions
@@ -2111,6 +2158,7 @@ Execute ``clang-cl /?`` to see a list of supported options:
       /Qvec-                 Disable the loop vectorization passes
       /Qvec                  Enable the loop vectorization passes
       /showIncludes          Print info about included files to stderr
+      /std:<value>           Language standard to compile for
       /TC                    Treat all source files as C
       /Tc <filename>         Specify a C source file
       /TP                    Treat all source files as C++
@@ -2133,6 +2181,9 @@ Execute ``clang-cl /?`` to see a list of supported options:
       /WX-                   Do not treat warnings as errors
       /WX                    Treat warnings as errors
       /w                     Disable all warnings
+      /Y-                    Disable precompiled headers, overrides /Yc and /Yu
+      /Yc<filename>          Generate a pch file for all code up to and including <filename>
+      /Yu<filename>          Load a pch file and use it instead of all code up to and including <filename>
       /Z7                    Enable CodeView debug information in object files
       /Zc:sizedDealloc-      Disable C++14 sized global deallocation functions
       /Zc:sizedDealloc       Enable C++14 sized global deallocation functions
@@ -2141,6 +2192,7 @@ Execute ``clang-cl /?`` to see a list of supported options:
       /Zc:threadSafeInit     Enable thread-safe initialization of static variables
       /Zc:trigraphs-         Disable trigraphs (default)
       /Zc:trigraphs          Enable trigraphs
+      /Zd                    Emit debug line number tables only
       /Zi                    Alias for /Z7. Does not produce PDBs.
       /Zl                    Don't mention any default libraries in the object file
       /Zp                    Set the default maximum struct packing alignment to 1
@@ -2177,6 +2229,8 @@ Execute ``clang-cl /?`` to see a list of supported options:
       -fsanitize=<check>      Turn on runtime checks for various forms of undefined or suspicious
                               behavior. See user manual for available checks
       -gcodeview              Generate CodeView debug information
+      -gline-tables-only      Emit debug line number tables only
+      -miamcu                 Use Intel MCU ABI
       -mllvm <value>          Additional arguments to forward to LLVM's option processing
       -Qunused-arguments      Don't emit warning for unused driver arguments
       -R<remark>              Enable the specified remark

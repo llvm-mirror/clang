@@ -16,7 +16,6 @@
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Multilib.h"
 #include "clang/Driver/ToolChain.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/Support/Compiler.h"
@@ -313,9 +312,6 @@ public:
   /// @name ToolChain Implementation
   /// {
 
-  std::string ComputeEffectiveClangTriple(const llvm::opt::ArgList &Args,
-                                          types::ID InputType) const override;
-
   types::ID LookupTypeForExtension(const char *Ext) const override;
 
   bool HasNativeLLVMSupport() const override;
@@ -572,6 +568,8 @@ public:
 
   /// @name Apple ToolChain Implementation
   /// {
+
+  RuntimeLibType GetRuntimeLibType(const llvm::opt::ArgList &Args) const override;
 
   void AddLinkRuntimeLibArgs(const llvm::opt::ArgList &Args,
                              llvm::opt::ArgStringList &CmdArgs) const override;

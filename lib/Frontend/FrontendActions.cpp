@@ -11,19 +11,18 @@
 #include "clang/AST/ASTConsumer.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Frontend/ASTConsumers.h"
-#include "clang/Frontend/ASTUnit.h"
 #include "clang/Frontend/CompilerInstance.h"
 #include "clang/Frontend/FrontendDiagnostic.h"
 #include "clang/Frontend/MultiplexConsumer.h"
 #include "clang/Frontend/Utils.h"
 #include "clang/Lex/HeaderSearch.h"
-#include "clang/Lex/Pragma.h"
 #include "clang/Lex/Preprocessor.h"
-#include "clang/Parse/Parser.h"
+#include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Serialization/ASTReader.h"
 #include "clang/Serialization/ASTWriter.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 #include <memory>
 #include <system_error>
@@ -48,8 +47,9 @@ void InitOnlyAction::ExecuteAction() {
 
 std::unique_ptr<ASTConsumer>
 ASTPrintAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
-  if (raw_ostream *OS = CI.createDefaultOutputFile(false, InFile))
-    return CreateASTPrinter(OS, CI.getFrontendOpts().ASTDumpFilter);
+  if (std::unique_ptr<raw_ostream> OS =
+          CI.createDefaultOutputFile(false, InFile))
+    return CreateASTPrinter(std::move(OS), CI.getFrontendOpts().ASTDumpFilter);
   return nullptr;
 }
 
@@ -80,7 +80,7 @@ std::unique_ptr<ASTConsumer>
 GeneratePCHAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   std::string Sysroot;
   std::string OutputFile;
-  raw_pwrite_stream *OS =
+  std::unique_ptr<raw_pwrite_stream> OS =
       ComputeASTConsumerArguments(CI, InFile, Sysroot, OutputFile);
   if (!OS)
     return nullptr;
@@ -97,14 +97,16 @@ GeneratePCHAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
                         /*IncludeTimestamps*/
                           +CI.getFrontendOpts().IncludeTimestamps));
   Consumers.push_back(CI.getPCHContainerWriter().CreatePCHContainerGenerator(
-      CI, InFile, OutputFile, OS, Buffer));
+      CI, InFile, OutputFile, std::move(OS), Buffer));
 
   return llvm::make_unique<MultiplexConsumer>(std::move(Consumers));
 }
 
-raw_pwrite_stream *GeneratePCHAction::ComputeASTConsumerArguments(
-    CompilerInstance &CI, StringRef InFile, std::string &Sysroot,
-    std::string &OutputFile) {
+std::unique_ptr<raw_pwrite_stream>
+GeneratePCHAction::ComputeASTConsumerArguments(CompilerInstance &CI,
+                                               StringRef InFile,
+                                               std::string &Sysroot,
+                                               std::string &OutputFile) {
   Sysroot = CI.getHeaderSearchOpts().Sysroot;
   if (CI.getFrontendOpts().RelocatablePCH && Sysroot.empty()) {
     CI.getDiagnostics().Report(diag::err_relocatable_without_isysroot);
@@ -114,7 +116,7 @@ raw_pwrite_stream *GeneratePCHAction::ComputeASTConsumerArguments(
   // We use createOutputFile here because this is exposed via libclang, and we
   // must disable the RemoveFileOnSignal behavior.
   // We use a temporary to avoid race conditions.
-  raw_pwrite_stream *OS =
+  std::unique_ptr<raw_pwrite_stream> OS =
       CI.createOutputFile(CI.getFrontendOpts().OutputFile, /*Binary=*/true,
                           /*RemoveFileOnSignal=*/false, InFile,
                           /*Extension=*/"", /*useTemporary=*/true);
@@ -130,7 +132,7 @@ GenerateModuleAction::CreateASTConsumer(CompilerInstance &CI,
                                         StringRef InFile) {
   std::string Sysroot;
   std::string OutputFile;
-  raw_pwrite_stream *OS =
+  std::unique_ptr<raw_pwrite_stream> OS =
       ComputeASTConsumerArguments(CI, InFile, Sysroot, OutputFile);
   if (!OS)
     return nullptr;
@@ -145,7 +147,7 @@ GenerateModuleAction::CreateASTConsumer(CompilerInstance &CI,
                         /*IncludeTimestamps=*/
                           +CI.getFrontendOpts().BuildingImplicitModule));
   Consumers.push_back(CI.getPCHContainerWriter().CreatePCHContainerGenerator(
-      CI, InFile, OutputFile, OS, Buffer));
+      CI, InFile, OutputFile, std::move(OS), Buffer));
   return llvm::make_unique<MultiplexConsumer>(std::move(Consumers));
 }
 
@@ -378,9 +380,11 @@ bool GenerateModuleAction::BeginSourceFileAction(CompilerInstance &CI,
   return true;
 }
 
-raw_pwrite_stream *GenerateModuleAction::ComputeASTConsumerArguments(
-    CompilerInstance &CI, StringRef InFile, std::string &Sysroot,
-    std::string &OutputFile) {
+std::unique_ptr<raw_pwrite_stream>
+GenerateModuleAction::ComputeASTConsumerArguments(CompilerInstance &CI,
+                                                  StringRef InFile,
+                                                  std::string &Sysroot,
+                                                  std::string &OutputFile) {
   // If no output file was provided, figure out where this module would go
   // in the module cache.
   if (CI.getFrontendOpts().OutputFile.empty()) {
@@ -393,7 +397,7 @@ raw_pwrite_stream *GenerateModuleAction::ComputeASTConsumerArguments(
   // We use createOutputFile here because this is exposed via libclang, and we
   // must disable the RemoveFileOnSignal behavior.
   // We use a temporary to avoid race conditions.
-  raw_pwrite_stream *OS =
+  std::unique_ptr<raw_pwrite_stream> OS =
       CI.createOutputFile(CI.getFrontendOpts().OutputFile, /*Binary=*/true,
                           /*RemoveFileOnSignal=*/false, InFile,
                           /*Extension=*/"", /*useTemporary=*/true,
@@ -604,11 +608,15 @@ void DumpModuleInfoAction::ExecuteAction() {
   llvm::raw_ostream &Out = OutFile.get()? *OutFile.get() : llvm::outs();
 
   Out << "Information for module file '" << getCurrentFile() << "':\n";
+  Preprocessor &PP = getCompilerInstance().getPreprocessor();
   DumpModuleInfoListener Listener(Out);
+  HeaderSearchOptions &HSOpts =
+      PP.getHeaderSearchInfo().getHeaderSearchOpts();
   ASTReader::readASTFileControlBlock(
       getCurrentFile(), getCompilerInstance().getFileManager(),
       getCompilerInstance().getPCHContainerReader(),
-      /*FindModuleFileExtensions=*/true, Listener);
+      /*FindModuleFileExtensions=*/true, Listener,
+      HSOpts.ModulesValidateDiagnosticOptions);
 }
 
 //===----------------------------------------------------------------------===//
@@ -647,11 +655,12 @@ void DumpTokensAction::ExecuteAction() {
 
 void GeneratePTHAction::ExecuteAction() {
   CompilerInstance &CI = getCompilerInstance();
-  raw_pwrite_stream *OS = CI.createDefaultOutputFile(true, getCurrentFile());
+  std::unique_ptr<raw_pwrite_stream> OS =
+      CI.createDefaultOutputFile(true, getCurrentFile());
   if (!OS)
     return;
 
-  CacheTokens(CI.getPreprocessor(), OS);
+  CacheTokens(CI.getPreprocessor(), OS.get());
 }
 
 void PreprocessOnlyAction::ExecuteAction() {
@@ -712,10 +721,11 @@ void PrintPreprocessedAction::ExecuteAction() {
     }
   }
 
-  raw_ostream *OS = CI.createDefaultOutputFile(BinaryMode, getCurrentFile());
+  std::unique_ptr<raw_ostream> OS =
+      CI.createDefaultOutputFile(BinaryMode, getCurrentFile());
   if (!OS) return;
 
-  DoPrintPreprocessedInput(CI.getPreprocessor(), OS,
+  DoPrintPreprocessedInput(CI.getPreprocessor(), OS.get(),
                            CI.getPreprocessorOutputOpts());
 }
 

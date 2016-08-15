@@ -15,6 +15,7 @@
 
 #include "CGOpenCLRuntime.h"
 #include "CodeGenFunction.h"
+#include "TargetInfo.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/GlobalValue.h"
 #include <assert.h>
@@ -35,7 +36,7 @@ llvm::Type *CGOpenCLRuntime::convertOpenCLSpecificType(const Type *T) {
 
   llvm::LLVMContext& Ctx = CGM.getLLVMContext();
   uint32_t ImgAddrSpc =
-    CGM.getContext().getTargetAddressSpace(LangAS::opencl_global);
+    CGM.getTargetCodeGenInfo().getOpenCLImageAddrSpace(CGM);
   switch (cast<BuiltinType>(T)->getKind()) {
   default: 
     llvm_unreachable("Unexpected opencl builtin type!");
@@ -47,7 +48,7 @@ llvm::Type *CGOpenCLRuntime::convertOpenCLSpecificType(const Type *T) {
         ImgAddrSpc);
 #include "clang/Basic/OpenCLImageTypes.def"
   case BuiltinType::OCLSampler:
-    return llvm::IntegerType::get(Ctx, 32);
+    return getSamplerType();
   case BuiltinType::OCLEvent:
     return llvm::PointerType::get(llvm::StructType::create(
                            Ctx, "opencl.event_t"), 0);
@@ -75,4 +76,13 @@ llvm::Type *CGOpenCLRuntime::getPipeType() {
   }
 
   return PipeTy;
+}
+
+llvm::PointerType *CGOpenCLRuntime::getSamplerType() {
+  if (!SamplerTy)
+    SamplerTy = llvm::PointerType::get(llvm::StructType::create(
+      CGM.getLLVMContext(), "opencl.sampler_t"),
+      CGM.getContext().getTargetAddressSpace(
+      LangAS::opencl_constant));
+  return SamplerTy;
 }
