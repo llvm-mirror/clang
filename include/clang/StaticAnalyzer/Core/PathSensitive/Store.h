@@ -51,7 +51,7 @@ public:
   virtual ~StoreManager() {}
 
   /// Return the value bound to specified location in a given state.
-  /// \param[in] store The analysis state.
+  /// \param[in] store The current Store.
   /// \param[in] loc The symbolic memory location.
   /// \param[in] T An optional type that provides a hint indicating the
   ///   expected type of the returned value.  This is used if the value is
@@ -60,7 +60,7 @@ public:
   virtual SVal getBinding(Store store, Loc loc, QualType T = QualType()) = 0;
 
   /// Return a state with the specified value bound to the given location.
-  /// \param[in] store The analysis state.
+  /// \param[in] store The current Store.
   /// \param[in] loc The symbolic memory location.
   /// \param[in] val The value to bind to location \c loc.
   /// \return A pointer to a ProgramState object that contains the same
