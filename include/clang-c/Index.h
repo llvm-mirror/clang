@@ -3544,6 +3544,11 @@ CINDEX_LINKAGE unsigned clang_Cursor_isBitField(CXCursor C);
  *   CX_CXXBaseSpecifier is virtual.
  */
 CINDEX_LINKAGE unsigned clang_isVirtualBase(CXCursor);
+
+/**
+* \brief Returns 1 if the class specified by the cursor is an abstract class
+*/
+CINDEX_LINKAGE unsigned clang_isAbstract(CXCursor);
     
 /**
  * \brief Represents the C++ access control level to a base class for a
