@@ -1,3 +1,4 @@
+from __future__ import print_function
 import BaseHTTPServer
 import SimpleHTTPServer
 import os
@@ -96,20 +97,20 @@ class ReporterThread(threading.Thread):
         result = None
         try:
             if self.server.options.debug:
-                print >>sys.stderr, "%s: SERVER: submitting bug."%(sys.argv[0],)
+                print(>>sys.stderr, "%s: SERVER: submitting bug." % (sys.argv[0],))
             self.status = self.reporter.fileReport(self.report, self.parameters)
             self.success = True
             time.sleep(3)
             if self.server.options.debug:
-                print >>sys.stderr, "%s: SERVER: submission complete."%(sys.argv[0],)
-        except Reporter.ReportFailure,e:
+                print(>>sys.stderr, "%s: SERVER: submission complete." % (sys.argv[0],))
+        except Reporter.ReportFailure as e:
             self.status = e.value
-        except Exception,e:
+        except Exception as e:
             s = StringIO.StringIO()
             import traceback
-            print >>s,'<b>Unhandled Exception</b><br><pre>'
+            print(>>s, '<b>Unhandled Exception</b><br><pre>')
             traceback.print_exc(e,file=s)
-            print >>s,'</pre>'
+            print(>>s, '</pre>')
             self.status = s.getvalue()
 
 class ScanViewServer(BaseHTTPServer.HTTPServer):
@@ -155,16 +156,16 @@ class ScanViewServer(BaseHTTPServer.HTTPServer):
     def halt(self):
         self.halted = True
         if self.options.debug:
-            print >>sys.stderr, "%s: SERVER: halting." % (sys.argv[0],)
+            print(>>sys.stderr, "%s: SERVER: halting." % (sys.argv[0],))
 
     def serve_forever(self):
         while not self.halted:
             if self.options.debug > 1:
-                print >>sys.stderr, "%s: SERVER: waiting..." % (sys.argv[0],)
+                print(>>sys.stderr, "%s: SERVER: waiting..." % (sys.argv[0],))
             try:
                 self.handle_request()
-            except OSError,e:
-                print 'OSError',e.errno
+            except OSError as e:
+                print('OSError', e.errno)
 
     def finish_request(self, request, client_address):
         if self.options.autoReload:
@@ -177,7 +178,7 @@ class ScanViewServer(BaseHTTPServer.HTTPServer):
         info = sys.exc_info()
         if info and isinstance(info[1], socket.error):
             if self.options.debug > 1:
-                print >>sys.stderr, "%s: SERVER: ignored socket error." % (sys.argv[0],)
+                print(>>sys.stderr, "%s: SERVER: ignored socket error." % (sys.argv[0],))
             return
         BaseHTTPServer.HTTPServer.handle_error(self, request, client_address)
 
@@ -207,13 +208,13 @@ class ScanViewRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
     def do_HEAD(self):
         try:
             SimpleHTTPServer.SimpleHTTPRequestHandler.do_HEAD(self)
-        except Exception,e:
+        except Exception as e:
             self.handle_exception(e)
             
     def do_GET(self):
         try:
             SimpleHTTPServer.SimpleHTTPRequestHandler.do_GET(self)
-        except Exception,e:
+        except Exception as e:
             self.handle_exception(e)
             
     def do_POST(self):
@@ -230,7 +231,7 @@ class ScanViewRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             if f:
                 self.copyfile(f, self.wfile)
                 f.close()
-        except Exception,e:
+        except Exception as e:
             self.handle_exception(e)            
 
     def log_message(self, format, *args):
@@ -264,7 +265,7 @@ class ScanViewRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
     def handle_exception(self, exc):
         import traceback
         s = StringIO.StringIO()
-        print >>s, "INTERNAL ERROR\n"
+        print(>>s, "INTERNAL ERROR\n")
         traceback.print_exc(exc, s)
         f = self.send_string(s.getvalue(), 'text/plain')
         if f:
@@ -308,8 +309,8 @@ class ScanViewRequestHandler(SimpleHTTPServer.SimpleHTTPRequestHandler):
             name = '%s_%s'%(reporter.getName(),o.getName())
             if name not in self.fields:
                 return (False, 
-                        'Missing field "%s" for %s report method.'%(name,
-                                                                    reporter.getName()))
+                        'Missing field "%s" for %s report method.' % (name,
+                                                                      reporter.getName()))
             parameters[o.getName()] = self.get_scalar_field(name)
 
         # Update config defaults.
@@ -410,8 +411,8 @@ Submit</h3>
 
         import startfile
         if self.server.options.debug:
-            print >>sys.stderr, '%s: SERVER: opening "%s"'%(sys.argv[0],
-                                                            file)
+            print(>>sys.stderr, '%s: SERVER: opening "%s"' % (sys.argv[0],
+                                                              file))
 
         status = startfile.open(file)
         if status:
@@ -501,7 +502,7 @@ Line: %s
         # report is None is used for crashes
         try:
             c = self.get_report_context(report)
-        except ValueError, e:
+        except ValueError as e:
             return self.send_error(400, e.message)
 
         title = c.title
@@ -690,8 +691,8 @@ File Bug</h3>
         path = posixpath.join(self.server.root, relpath)
 
         if self.server.options.debug > 1:
-            print >>sys.stderr, '%s: SERVER: sending path "%s"'%(sys.argv[0],
-                                                                 path)
+            print(>>sys.stderr, '%s: SERVER: sending path "%s"'%(sys.argv[0],
+                                                                 path))
         return self.send_path(path)
 
     def send_404(self):

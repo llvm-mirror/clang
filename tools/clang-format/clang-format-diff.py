@@ -21,7 +21,7 @@ Example usage for git/svn users:
   svn diff --diff-cmd=diff -x-U0 | clang-format-diff.py -i
 
 """
-
+from __future__ import print_function
 import argparse
 import difflib
 import re
@@ -91,7 +91,7 @@ def main():
   # Reformat files containing changes in place.
   for filename, lines in lines_by_file.iteritems():
     if args.i and args.verbose:
-      print 'Formatting', filename
+      print('Formatting', filename)
     command = [args.binary, filename]
     if args.i:
       command.append('-i')

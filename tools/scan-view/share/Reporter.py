@@ -209,7 +209,6 @@ class RadarReporter:
         script = os.path.join(os.path.dirname(__file__),'../share/scan-view/FileRadar.scpt')
         args = ['osascript', script, component, componentVersion, classification, personID, report.title,
                 report.description, diagnosis, config] + map(os.path.abspath, report.files)
-#        print >>sys.stderr, args
         try:
           p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except:
