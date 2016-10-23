@@ -90,9 +90,10 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
       MacroArgCache(nullptr), Record(nullptr), MIChainHead(nullptr),
       DeserialMIChainHead(nullptr) {
   OwnsHeaderSearch = OwnsHeaders;
-  
+
   CounterValue = 0; // __COUNTER__ starts at 0.
-  
+  TopExpandingMacroToken = nullptr;
+
   // Clear stats.
   NumDirectives = NumDefined = NumUndefined = NumPragma = 0;
   NumIf = NumElse = NumEndif = 0;

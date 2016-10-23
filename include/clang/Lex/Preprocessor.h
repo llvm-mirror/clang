@@ -567,7 +567,6 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   /// reused for quick allocation.
   MacroArgs *MacroArgCache;
   friend class MacroArgs;
-
   /// For each IdentifierInfo used in a \#pragma push_macro directive,
   /// we keep a MacroInfo stack used to restore the previous macro value.
   llvm::DenseMap<IdentifierInfo*, std::vector<MacroInfo*> > PragmaPushMacroInfo;
@@ -657,8 +656,13 @@ public:
                IdentifierInfoLookup *IILookup = nullptr,
                bool OwnsHeaderSearch = false,
                TranslationUnitKind TUKind = TU_Complete);
-
   ~Preprocessor();
+
+  // If we are currently expanding some macro, it points to a top-level macro
+  // token that is currently being expanded.
+  // It is used to compute proper __LINE__ information when expansion depth
+  // is greater than one set up with --macro-exploc-depth
+  Token *TopExpandingMacroToken;
 
   /// \brief Initialize the preprocessor using information about the target.
   ///
@@ -1545,7 +1549,6 @@ private:
   llvm::DenseMap<IdentifierInfo*,unsigned> PoisonReasons;
 
 public:
-
   /// \brief Specifies the reason for poisoning an identifier.
   ///
   /// If that identifier is accessed while poisoned, then this reason will be

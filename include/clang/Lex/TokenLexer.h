@@ -21,7 +21,6 @@ namespace clang {
   class Preprocessor;
   class Token;
   class MacroArgs;
-
 /// TokenLexer - This implements a lexer that returns tokens from a macro body
 /// or token stream instead of lexing from a character buffer.  This is used for
 /// macro expansion and _Pragma handling, for example.

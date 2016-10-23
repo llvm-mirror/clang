@@ -2493,7 +2493,7 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
              II->isStr("__unsafe_unretained") ||
              II->isStr("__autoreleasing");
     };
-   if (getLangOpts().ObjC1 &&
+    if (getLangOpts().ObjC1 &&
         SourceMgr.getFileID(OtherMI->getDefinitionLoc())
           == getPredefinesFileID() &&
         isObjCProtectedMacro(MacroNameTok.getIdentifierInfo())) {

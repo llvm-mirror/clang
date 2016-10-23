@@ -17,9 +17,14 @@
 #include "clang/Lex/MacroArgs.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/PreprocessorOptions.h"
+#include "clang/Lex/Token.h"
 #include "llvm/ADT/SmallString.h"
 
 using namespace clang;
+
+static Token MacroExpansionRoot;
+static unsigned CurrentDepth = 0;
 
 /// Create a TokenLexer for the specified macro with the specified actual
 /// arguments.  Note that this ctor takes ownership of the ActualArgs pointer.
@@ -30,9 +35,17 @@ void TokenLexer::Init(Token &Tok, SourceLocation ELEnd, MacroInfo *MI,
   destroy();
 
   Macro = MI;
+  if (MI && PP.getPreprocessorOpts().MacroExplocDepthLimit != -1) {
+    CurrentDepth++;
+    if (!PP.TopExpandingMacroToken) {
+      assert(CurrentDepth == 1);
+      MacroExpansionRoot = Tok;
+      PP.TopExpandingMacroToken = &MacroExpansionRoot;
+    }
+  }
+
   ActualArgs = Actuals;
   CurToken = 0;
-
   ExpandLocStart = Tok.getLocation();
   ExpandLocEnd = ELEnd;
   AtStartOfLine = Tok.isAtStartOfLine();
@@ -47,7 +60,7 @@ void TokenLexer::Init(Token &Tok, SourceLocation ELEnd, MacroInfo *MI,
   SourceManager &SM = PP.getSourceManager();
   MacroStartSLocOffset = SM.getNextLocalOffset();
 
-  if (NumTokens > 0) {
+  if (NumTokens > 0 && (CurrentDepth <= PP.getPreprocessorOpts().MacroExplocDepthLimit)) {
     assert(Tokens[0].getLocation().isValid());
     assert((Tokens[0].getLocation().isFileID() || Tokens[0].is(tok::comment)) &&
            "Macro defined in macro?");
@@ -63,6 +76,9 @@ void TokenLexer::Init(Token &Tok, SourceLocation ELEnd, MacroInfo *MI,
                                                 ExpandLocStart,
                                                 ExpandLocEnd,
                                                 MacroDefLength);
+  } else {
+    MacroDefLength = 0;
+    MacroDefStart = SourceLocation();
   }
 
   // If this is a function-like macro, expand the arguments and change
@@ -172,7 +188,6 @@ bool TokenLexer::MaybeRemoveCommaBeforeVaArgs(
 /// return preexpanded tokens from Tokens.
 void TokenLexer::ExpandFunctionArguments() {
   SmallVector<Token, 128> ResultToks;
-
   // Loop through 'Tokens', expanding them into ResultToks.  Keep
   // track of whether we change anything.  If not, no need to keep them.  If so,
   // we install the newly expanded sequence as the new 'Tokens' list.
@@ -190,10 +205,14 @@ void TokenLexer::ExpandFunctionArguments() {
       int ArgNo = Macro->getArgumentNum(Tokens[i+1].getIdentifierInfo());
       assert(ArgNo != -1 && "Token following # is not an argument?");
 
-      SourceLocation ExpansionLocStart =
-          getExpansionLocForMacroDefLoc(CurTok.getLocation());
-      SourceLocation ExpansionLocEnd =
-          getExpansionLocForMacroDefLoc(Tokens[i+1].getLocation());
+      SourceLocation ExpansionLocStart = CurTok.getLocation();
+      SourceLocation ExpansionLocEnd = Tokens[i + 1].getLocation();
+      if (CurrentDepth <= PP.getPreprocessorOpts().MacroExplocDepthLimit) {
+        ExpansionLocStart =
+                getExpansionLocForMacroDefLoc(CurTok.getLocation());
+        ExpansionLocEnd =
+                getExpansionLocForMacroDefLoc(Tokens[i + 1].getLocation());
+      }
 
       Token Res;
       if (CurTok.is(tok::hash))  // Stringify
@@ -241,7 +260,6 @@ void TokenLexer::ExpandFunctionArguments() {
         NextTokGetsSpace = false;
       } else if (PasteBefore && !NonEmptyPasteBefore)
         ResultToks.back().clearFlag(Token::LeadingSpace);
-
       continue;
     }
 
@@ -295,7 +313,7 @@ void TokenLexer::ExpandFunctionArguments() {
             Tok.setKind(tok::unknown);
         }
 
-        if(ExpandLocStart.isValid()) {
+        if(ExpandLocStart.isValid() && (CurrentDepth <= PP.getPreprocessorOpts().MacroExplocDepthLimit)) {
           updateLocForMacroArgTokens(CurTok.getLocation(),
                                      ResultToks.begin()+FirstResult,
                                      ResultToks.end());
@@ -329,18 +347,21 @@ void TokenLexer::ExpandFunctionArguments() {
         PP.Diag(ResultToks.pop_back_val().getLocation(), diag::ext_paste_comma);
       }
 
+      size_t FirstResult = ResultToks.size();
       ResultToks.append(ArgToks, ArgToks+NumToks);
 
       // If the '##' came from expanding an argument, turn it into 'unknown'
       // to avoid pasting.
-      for (unsigned i = ResultToks.size() - NumToks, e = ResultToks.size();
+      for (unsigned i = FirstResult, e = ResultToks.size();
              i != e; ++i) {
         Token &Tok = ResultToks[i];
-        if (Tok.is(tok::hashhash))
+        if (Tok.is(tok::hashhash)) {
+          if (i+1 == e || i == 0)
           Tok.setKind(tok::unknown);
+        }
       }
 
-      if (ExpandLocStart.isValid()) {
+      if (ExpandLocStart.isValid() && (CurrentDepth <= PP.getPreprocessorOpts().MacroExplocDepthLimit)) {
         updateLocForMacroArgTokens(CurTok.getLocation(),
                                    ResultToks.end()-NumToks, ResultToks.end());
       }
@@ -356,7 +377,7 @@ void TokenLexer::ExpandFunctionArguments() {
       // case, we do not want the extra whitespace to be added.  For example,
       // we want ". ## foo" -> ".foo" not ". foo".
       if (NextTokGetsSpace)
-        ResultToks[ResultToks.size()-NumToks].setFlag(Token::LeadingSpace);
+        ResultToks[ResultToks.size() - NumToks].setFlag(Token::LeadingSpace);
 
       NextTokGetsSpace = false;
       continue;
@@ -421,7 +442,16 @@ bool TokenLexer::Lex(Token &Tok) {
   if (isAtEnd()) {
     // If this is a macro (not a token stream), mark the macro enabled now
     // that it is no longer being expanded.
-    if (Macro) Macro->EnableMacro();
+
+    if (Macro) {
+      if (CurrentDepth != 0) {
+        CurrentDepth--;
+        if (CurrentDepth == 0) {
+          PP.TopExpandingMacroToken = nullptr;
+        }
+      }
+      Macro->EnableMacro();
+    }
 
     Tok.startToken();
     Tok.setFlagValue(Token::StartOfLine , AtStartOfLine);
@@ -439,7 +469,6 @@ bool TokenLexer::Lex(Token &Tok) {
 
   // Get the next token to return.
   Tok = Tokens[CurToken++];
-
   bool TokenIsFromPaste = false;
 
   // If this token is followed by a token paste (##) operator, paste the tokens!
@@ -464,7 +493,8 @@ bool TokenLexer::Lex(Token &Tok) {
   // diagnostics for the expanded token should appear as if they came from
   // ExpansionLoc.  Pull this information together into a new SourceLocation
   // that captures all of this.
-  if (ExpandLocStart.isValid() &&   // Don't do this for token streams.
+  if ((CurrentDepth <= PP.getPreprocessorOpts().MacroExplocDepthLimit)
+      && ExpandLocStart.isValid() &&   // Don't do this for token streams.
       // Check that the token's location was not already set properly.
       SM.isBeforeInSLocAddrSpace(Tok.getLocation(), MacroStartSLocOffset)) {
     SourceLocation instLoc;
@@ -499,8 +529,8 @@ bool TokenLexer::Lex(Token &Tok) {
     // Change the kind of this identifier to the appropriate token kind, e.g.
     // turning "for" into a keyword.
     IdentifierInfo *II = Tok.getIdentifierInfo();
-    Tok.setKind(II->getTokenID());
 
+    Tok.setKind(II->getTokenID());
     // If this identifier was poisoned and from a paste, emit an error.  This
     // won't be handled by Preprocessor::HandleIdentifier because this is coming
     // from a macro expansion.
@@ -511,7 +541,6 @@ bool TokenLexer::Lex(Token &Tok) {
     if (!DisableMacroExpansion && II->isHandleIdentifierCase())
       return PP.HandleIdentifier(Tok);
   }
-
   // Otherwise, return a normal token.
   return true;
 }
@@ -675,18 +704,25 @@ bool TokenLexer::PasteTokens(Token &Tok) {
   // expanded from the full ## expression. Pull this information together into
   // a new SourceLocation that captures all of this.
   SourceManager &SM = PP.getSourceManager();
-  if (StartLoc.isFileID())
-    StartLoc = getExpansionLocForMacroDefLoc(StartLoc);
-  if (EndLoc.isFileID())
-    EndLoc = getExpansionLocForMacroDefLoc(EndLoc);
-  FileID MacroFID = SM.getFileID(MacroExpansionStart);
-  while (SM.getFileID(StartLoc) != MacroFID)
-    StartLoc = SM.getImmediateExpansionRange(StartLoc).first;
-  while (SM.getFileID(EndLoc) != MacroFID)
-    EndLoc = SM.getImmediateExpansionRange(EndLoc).second;
-    
-  Tok.setLocation(SM.createExpansionLoc(Tok.getLocation(), StartLoc, EndLoc,
-                                        Tok.getLength()));
+  if (CurrentDepth <= PP.getPreprocessorOpts().MacroExplocDepthLimit) {
+    if (StartLoc.isFileID())
+      StartLoc = getExpansionLocForMacroDefLoc(StartLoc);
+    if (EndLoc.isFileID())
+      EndLoc = getExpansionLocForMacroDefLoc(EndLoc);
+
+    FileID MacroFID = SM.getFileID(MacroExpansionStart);
+    while (SM.getFileID(StartLoc) != MacroFID) {
+      StartLoc = SM.getImmediateExpansionRange(StartLoc).first;
+    }
+
+    while (SM.getFileID(EndLoc) != MacroFID)
+      EndLoc = SM.getImmediateExpansionRange(EndLoc).second;
+
+    Tok.setLocation(SM.createExpansionLoc(Tok.getLocation(), StartLoc, EndLoc,
+                                          Tok.getLength()));
+  } else {
+    Tok.setLocation(Tokens[CurToken - 1].getLocation());
+  }
 
   // Now that we got the result token, it will be subject to expansion.  Since
   // token pasting re-lexes the result token in raw mode, identifier information

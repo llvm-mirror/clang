@@ -440,7 +440,6 @@ bool Preprocessor::isNextPPTokenLParen() {
 bool Preprocessor::HandleMacroExpandedIdentifier(Token &Identifier,
                                                  const MacroDefinition &M) {
   MacroInfo *MI = M.getMacroInfo();
-
   // If this is a macro expansion in the "#if !defined(x)" line for the file,
   // then the macro could expand to different things in other contexts, we need
   // to disable the optimization in this case.
@@ -751,6 +750,7 @@ MacroArgs *Preprocessor::ReadFunctionLikeMacroArgs(Token &MacroName,
 
   unsigned NumActuals = 0;
   while (Tok.isNot(tok::r_paren)) {
+
     if (ContainsCodeCompletionTok && Tok.isOneOf(tok::eof, tok::eod))
       break;
 
@@ -1586,7 +1586,8 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
     // C99 6.10.8: "__LINE__: The presumed line number (within the current
     // source file) of the current source line (an integer constant)".  This can
     // be affected by #line.
-    SourceLocation Loc = Tok.getLocation();
+    SourceLocation Loc = (TopExpandingMacroToken) ?
+                         TopExpandingMacroToken->getLocation() : Tok.getLocation();
 
     // Advance to the location of the first _, this might not be the first byte
     // of the token if it starts with an escaped newline.

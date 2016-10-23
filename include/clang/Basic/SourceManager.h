@@ -409,7 +409,7 @@ namespace SrcMgr {
     }
 
     const ExpansionInfo &getExpansion() const {
-      assert(isExpansion() && "Not a macro expansion SLocEntry!");
+      //assert(isExpansion() && "Not a macro expansion SLocEntry!");
       return Expansion;
     }
 

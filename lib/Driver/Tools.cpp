@@ -3952,7 +3952,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   //
   // FIXME: Implement custom jobs for internal actions.
   CmdArgs.push_back("-cc1");
-
   // Add the "effective" target triple.
   CmdArgs.push_back("-triple");
   CmdArgs.push_back(Args.MakeArgString(TripleStr));
@@ -4743,6 +4742,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     DebugInfoKind = codegenoptions::LimitedDebugInfo;
     CmdArgs.push_back("-dwarf-ext-refs");
     CmdArgs.push_back("-fmodule-format=obj");
+  }
+
+  if (Args.hasArg(options::OPT_max_macro_exploc_depth_EQ)) {
+    const Arg * a = Args.getLastArg(options::OPT_max_macro_exploc_depth_EQ);
+    StringRef depthVal = a->getValue();
+    CmdArgs.push_back(Args.MakeArgString("--max-macro-exploc-depth=" + depthVal));
   }
 
   // -gsplit-dwarf should turn on -g and enable the backend dwarf
@@ -6745,7 +6750,6 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
                            const ArgList &Args,
                            const char *LinkingOutput) const {
   ArgStringList CmdArgs;
-
   assert(Inputs.size() == 1 && "Unexpected number of inputs.");
   const InputInfo &Input = Inputs[0];
 

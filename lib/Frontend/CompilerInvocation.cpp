@@ -2224,6 +2224,11 @@ static void ParsePreprocessorArgs(PreprocessorOptions &Opts, ArgList &Args,
                                   FileManager &FileMgr,
                                   DiagnosticsEngine &Diags) {
   using namespace options;
+  if (const Arg *A = Args.getLastArg(OPT_max_macro_exploc_depth_EQ)) {
+    StringRef Value(A->getValue());
+    Opts.MacroExplocDepthLimit =  static_cast<unsigned>(std::stoul(Value.str()));
+  }
+
   Opts.ImplicitPCHInclude = Args.getLastArgValue(OPT_include_pch);
   Opts.ImplicitPTHInclude = Args.getLastArgValue(OPT_include_pth);
   if (const Arg *A = Args.getLastArg(OPT_token_cache))
