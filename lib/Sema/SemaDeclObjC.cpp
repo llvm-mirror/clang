@@ -2353,7 +2353,7 @@ static bool CheckMethodOverrideParam(Sema &S,
   }
   if (S.Context.hasSameUnqualifiedType(ImplTy, IfaceTy))
     return true;
-  
+
   if (!Warn)
     return false;
   unsigned DiagID = 
@@ -2741,7 +2741,7 @@ void Sema::MatchAllMethodDeclarations(const SelectorSet &InsMap,
     } else {
       ObjCMethodDecl *ImpMethodDecl =
         IMPDecl->getInstanceMethod(I->getSelector());
-      assert(CDecl->getInstanceMethod(I->getSelector()) &&
+      assert(CDecl->getInstanceMethod(I->getSelector(), true/*AllowHidden*/) &&
              "Expected to find the method through lookup as well");
       // ImpMethodDecl may be null as in a @dynamic property.
       if (ImpMethodDecl) {
@@ -2767,7 +2767,7 @@ void Sema::MatchAllMethodDeclarations(const SelectorSet &InsMap,
     } else {
       ObjCMethodDecl *ImpMethodDecl =
         IMPDecl->getClassMethod(I->getSelector());
-      assert(CDecl->getClassMethod(I->getSelector()) &&
+      assert(CDecl->getClassMethod(I->getSelector(), true/*AllowHidden*/) &&
              "Expected to find the method through lookup as well");
       // ImpMethodDecl may be null as in a @dynamic property.
       if (ImpMethodDecl) {
@@ -3217,7 +3217,7 @@ void Sema::addMethodToGlobalList(ObjCMethodList *List,
   ObjCMethodList *ListWithSameDeclaration = nullptr;
   for (; List; Previous = List, List = List->getNext()) {
     // If we are building a module, keep all of the methods.
-    if (getLangOpts().CompilingModule)
+    if (getLangOpts().isCompilingModule())
       continue;
 
     bool SameDeclaration = MatchTwoMethodDeclarations(Method,
@@ -3853,6 +3853,18 @@ Decl *Sema::ActOnAtEnd(Scope *S, SourceRange AtEnd, ArrayRef<Decl *> allMethods,
         Diag(IDecl->getLocation(), diag::err_objc_root_class_subclass);
       }
 
+      if (const ObjCInterfaceDecl *Super = IDecl->getSuperClass()) {
+        // An interface can subclass another interface with a
+        // objc_subclassing_restricted attribute when it has that attribute as
+        // well (because of interfaces imported from Swift). Therefore we have
+        // to check if we can subclass in the implementation as well.
+        if (IDecl->hasAttr<ObjCSubclassingRestrictedAttr>() &&
+            Super->hasAttr<ObjCSubclassingRestrictedAttr>()) {
+          Diag(IC->getLocation(), diag::err_restricted_superclass_mismatch);
+          Diag(Super->getLocation(), diag::note_class_declared);
+        }
+      }
+
       if (LangOpts.ObjCRuntime.isNonFragile()) {
         while (IDecl->getSuperClass()) {
           DiagnoseDuplicateIvars(IDecl, IDecl->getSuperClass());
@@ -3871,6 +3883,14 @@ Decl *Sema::ActOnAtEnd(Scope *S, SourceRange AtEnd, ArrayRef<Decl *> allMethods,
       if (ObjCCategoryDecl *Cat
             = IDecl->FindCategoryDeclaration(CatImplClass->getIdentifier())) {
         ImplMethodsVsClassMethods(S, CatImplClass, Cat);
+      }
+    }
+  } else if (const auto *IntfDecl = dyn_cast<ObjCInterfaceDecl>(ClassDecl)) {
+    if (const ObjCInterfaceDecl *Super = IntfDecl->getSuperClass()) {
+      if (!IntfDecl->hasAttr<ObjCSubclassingRestrictedAttr>() &&
+          Super->hasAttr<ObjCSubclassingRestrictedAttr>()) {
+        Diag(IntfDecl->getLocation(), diag::err_restricted_superclass_mismatch);
+        Diag(Super->getLocation(), diag::note_class_declared);
       }
     }
   }

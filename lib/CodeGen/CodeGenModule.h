@@ -420,6 +420,10 @@ private:
   /// \brief The complete set of modules that has been imported.
   llvm::SetVector<clang::Module *> ImportedModules;
 
+  /// \brief The set of modules for which the module initializers
+  /// have been emitted.
+  llvm::SmallPtrSet<clang::Module *, 16> EmittedModuleInitializers;
+
   /// \brief A vector of metadata strings.
   SmallVector<llvm::Metadata *, 16> LinkerOptionsMetadata;
 
@@ -610,7 +614,7 @@ public:
     return TheModule.getDataLayout();
   }
   const TargetInfo &getTarget() const { return Target; }
-  const llvm::Triple &getTriple() const;
+  const llvm::Triple &getTriple() const { return Target.getTriple(); }
   bool supportsCOMDAT() const;
   void maybeSetTrivialComdat(const Decl &D, llvm::GlobalObject &GO);
 
@@ -769,7 +773,7 @@ public:
   llvm::Type *getGenericBlockLiteralType();
 
   /// Gets the address of a block which requires no captures.
-  llvm::Constant *GetAddrOfGlobalBlock(const BlockExpr *BE, const char *);
+  llvm::Constant *GetAddrOfGlobalBlock(const BlockExpr *BE, StringRef Name);
   
   /// Return a pointer to a constant CFString object for the given string.
   ConstantAddress GetAddrOfConstantCFString(const StringLiteral *Literal);
@@ -828,8 +832,8 @@ public:
 
   /// Given a builtin id for a function like "__builtin_fabsf", return a
   /// Function* for "fabsf".
-  llvm::Value *getBuiltinLibFunction(const FunctionDecl *FD,
-                                     unsigned BuiltinID);
+  llvm::Constant *getBuiltinLibFunction(const FunctionDecl *FD,
+                                        unsigned BuiltinID);
 
   llvm::Function *getIntrinsic(unsigned IID, ArrayRef<llvm::Type*> Tys = None);
 
@@ -1178,7 +1182,7 @@ private:
   
   // C++ related functions.
 
-  void EmitNamespace(const NamespaceDecl *D);
+  void EmitDeclContext(const DeclContext *DC);
   void EmitLinkageSpec(const LinkageSpecDecl *D);
   void CompleteDIClassType(const CXXMethodDecl* D);
 
@@ -1205,10 +1209,10 @@ private:
                      llvm::Constant *AssociatedData = nullptr);
   void AddGlobalDtor(llvm::Function *Dtor, int Priority = 65535);
 
-  /// Generates a global array of functions and priorities using the given list
-  /// and name. This array will have appending linkage and is suitable for use
-  /// as a LLVM constructor or destructor array.
-  void EmitCtorList(const CtorList &Fns, const char *GlobalName);
+  /// EmitCtorList - Generates a global array of functions and priorities using
+  /// the given list and name. This array will have appending linkage and is
+  /// suitable for use as a LLVM constructor or destructor array. Clears Fns.
+  void EmitCtorList(CtorList &Fns, const char *GlobalName);
 
   /// Emit any needed decls for which code generation was deferred.
   void EmitDeferred();

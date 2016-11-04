@@ -125,6 +125,7 @@ typedef internal::Matcher<QualType> TypeMatcher;
 typedef internal::Matcher<TypeLoc> TypeLocMatcher;
 typedef internal::Matcher<NestedNameSpecifier> NestedNameSpecifierMatcher;
 typedef internal::Matcher<NestedNameSpecifierLoc> NestedNameSpecifierLocMatcher;
+typedef internal::Matcher<CXXCtorInitializer> CXXCtorInitializerMatcher;
 /// @}
 
 /// \brief Matches any node.
@@ -2449,16 +2450,18 @@ const internal::VariadicOperatorMatcherFunc<1, 1> unless = {
 /// - for CallExpr, the declaration of the callee
 /// - for MemberExpr, the declaration of the referenced member
 /// - for CXXConstructExpr, the declaration of the constructor
+/// - for CXXNewExpr, the declaration of the operator new
 ///
 /// Also usable as Matcher<T> for any T supporting the getDecl() member
 /// function. e.g. various subtypes of clang::Type and various expressions.
 ///
-/// Usable as: Matcher<CallExpr>, Matcher<CXXConstructExpr>,
-///   Matcher<DeclRefExpr>, Matcher<EnumType>, Matcher<InjectedClassNameType>,
-///   Matcher<LabelStmt>, Matcher<AddrLabelExpr>, Matcher<MemberExpr>,
-///   Matcher<QualType>, Matcher<RecordType>, Matcher<TagType>,
-///   Matcher<TemplateSpecializationType>, Matcher<TemplateTypeParmType>,
-///   Matcher<TypedefType>, Matcher<UnresolvedUsingType>
+/// Usable as: Matcher<AddrLabelExpr>, Matcher<CallExpr>,
+///   Matcher<CXXConstructExpr>, Matcher<CXXNewExpr>, Matcher<DeclRefExpr>,
+///   Matcher<EnumType>, Matcher<InjectedClassNameType>, Matcher<LabelStmt>,
+///   Matcher<MemberExpr>, Matcher<QualType>, Matcher<RecordType>,
+///   Matcher<TagType>, Matcher<TemplateSpecializationType>,
+///   Matcher<TemplateTypeParmType>, Matcher<TypedefType>,
+///   Matcher<UnresolvedUsingType>
 inline internal::PolymorphicMatcherWithParam1<
     internal::HasDeclarationMatcher, internal::Matcher<Decl>,
     void(internal::HasDeclarationSupportedTypes)>
@@ -2466,6 +2469,25 @@ hasDeclaration(const internal::Matcher<Decl> &InnerMatcher) {
   return internal::PolymorphicMatcherWithParam1<
       internal::HasDeclarationMatcher, internal::Matcher<Decl>,
       void(internal::HasDeclarationSupportedTypes)>(InnerMatcher);
+}
+
+/// \brief Matches a \c NamedDecl whose underlying declaration matches the given
+/// matcher.
+///
+/// Given
+/// \code
+///   namespace N { template<class T> void f(T t); }
+///   template <class T> void g() { using N::f; f(T()); }
+/// \endcode
+/// \c unresolvedLookupExpr(hasAnyDeclaration(
+///     namedDecl(hasUnderlyingDecl(hasName("::N::f")))))
+///   matches the use of \c f in \c g() .
+AST_MATCHER_P(NamedDecl, hasUnderlyingDecl, internal::Matcher<NamedDecl>,
+              InnerMatcher) {
+  const NamedDecl *UnderlyingDecl = Node.getUnderlyingDecl();
+
+  return UnderlyingDecl != nullptr &&
+         InnerMatcher.matches(*UnderlyingDecl, Finder, Builder);
 }
 
 /// \brief Matches on the implicit object argument of a member call expression.
@@ -2823,6 +2845,27 @@ AST_MATCHER_P(DeclRefExpr, throughUsingDecl,
   return false;
 }
 
+/// \brief Matches an \c OverloadExpr if any of the declarations in the set of
+/// overloads matches the given matcher.
+///
+/// Given
+/// \code
+///   template <typename T> void foo(T);
+///   template <typename T> void bar(T);
+///   template <typename T> void baz(T t) {
+///     foo(t);
+///     bar(t);
+///   }
+/// \endcode
+/// unresolvedLookupExpr(hasAnyDeclaration(
+///     functionTemplateDecl(hasName("foo"))))
+///   matches \c foo in \c foo(t); but not \c bar in \c bar(t);
+AST_MATCHER_P(OverloadExpr, hasAnyDeclaration, internal::Matcher<Decl>,
+              InnerMatcher) {
+  return matchesFirstInPointerRange(InnerMatcher, Node.decls_begin(),
+                                    Node.decls_end(), Finder, Builder);
+}
+
 /// \brief Matches the Decl of a DeclStmt which has a single declaration.
 ///
 /// Given
@@ -2902,9 +2945,9 @@ AST_MATCHER(VarDecl, hasAutomaticStorageDuration) {
 }
 
 /// \brief Matches a variable declaration that has static storage duration.
+/// It includes the variable declared at namespace scope and those declared
+/// with "static" and "extern" storage class specifiers.
 ///
-/// Example matches y and a, but not x or z.
-/// (matcher = varDecl(hasStaticStorageDuration())
 /// \code
 /// void f() {
 ///   int x;
@@ -2912,6 +2955,10 @@ AST_MATCHER(VarDecl, hasAutomaticStorageDuration) {
 ///   thread_local int z;
 /// }
 /// int a;
+/// static int b;
+/// extern int c;
+/// varDecl(hasStaticStorageDuration())
+///   matches the function declaration y, a, b and c.
 /// \endcode
 AST_MATCHER(VarDecl, hasStaticStorageDuration) {
   return Node.getStorageDuration() == SD_Static;
@@ -3342,8 +3389,29 @@ AST_MATCHER_P(FunctionDecl, returns,
 /// \endcode
 /// functionDecl(isExternC())
 ///   matches the declaration of f and g, but not the declaration h
-AST_MATCHER(FunctionDecl, isExternC) {
+AST_POLYMORPHIC_MATCHER(isExternC, AST_POLYMORPHIC_SUPPORTED_TYPES(FunctionDecl,
+                                                                   VarDecl)) {
   return Node.isExternC();
+}
+
+/// \brief Matches variable/function declarations that have "static" storage
+/// class specifier ("static" keyword) written in the source.
+///
+/// Given:
+/// \code
+///   static void f() {}
+///   static int i = 0;
+///   extern int j;
+///   int k;
+/// \endcode
+/// functionDecl(isStaticStorageClass())
+///   matches the function declaration f.
+/// varDecl(isStaticStorageClass())
+///   matches the variable declaration i.
+AST_POLYMORPHIC_MATCHER(isStaticStorageClass,
+                        AST_POLYMORPHIC_SUPPORTED_TYPES(FunctionDecl,
+                                                        VarDecl)) {
+  return Node.getStorageClass() == SC_Static;
 }
 
 /// \brief Matches deleted function declarations.
@@ -4120,7 +4188,7 @@ AST_MATCHER(QualType, isInteger) {
 ///   void b(unsigned long);
 ///   void c(double);
 /// \endcode
-/// functionDecl(hasAnyParameter(hasType(isInteger())))
+/// functionDecl(hasAnyParameter(hasType(isUnsignedInteger())))
 /// matches "b(unsigned long)", but not "a(int)" and "c(double)".
 AST_MATCHER(QualType, isUnsignedInteger) {
     return Node->isUnsignedIntegerType();
@@ -4134,7 +4202,7 @@ AST_MATCHER(QualType, isUnsignedInteger) {
 ///   void b(unsigned long);
 ///   void c(double);
 /// \endcode
-/// functionDecl(hasAnyParameter(hasType(isInteger())))
+/// functionDecl(hasAnyParameter(hasType(isSignedInteger())))
 /// matches "a(int)", but not "b(unsigned long)" and "c(double)".
 AST_MATCHER(QualType, isSignedInteger) {
     return Node->isSignedIntegerType();
@@ -5433,6 +5501,30 @@ AST_MATCHER_P(Stmt, forFunction, internal::Matcher<FunctionDecl>,
     }
   }
   return false;
+}
+
+/// \brief Matches a declaration that has external formal linkage.
+///
+/// Example matches only z (matcher = varDecl(hasExternalFormalLinkage()))
+/// \code
+/// void f() {
+///   int x;
+///   static int y;
+/// }
+/// int z;
+/// \endcode
+///
+/// Example matches f() because it has external formal linkage despite being
+/// unique to the translation unit as though it has internal likage
+/// (matcher = functionDecl(hasExternalFormalLinkage()))
+///
+/// \code
+/// namespace {
+/// void f() {}
+/// }
+/// \endcode
+AST_MATCHER(NamedDecl, hasExternalFormalLinkage) {
+  return Node.hasExternalFormalLinkage();
 }
 
 } // end namespace ast_matchers

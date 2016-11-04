@@ -4,6 +4,7 @@
 #pragma OPENCL EXTENSION cl_khr_fp64 : enable
 
 typedef unsigned long ulong;
+typedef unsigned int uint;
 
 // CHECK-LABEL: @test_div_scale_f64
 // CHECK: call { double, i1 } @llvm.amdgcn.div.scale.f64(double %a, double %b, i1 true)
@@ -199,6 +200,55 @@ void test_lerp(global int* out, int a, int b, int c)
   *out = __builtin_amdgcn_lerp(a, b, c);
 }
 
+// CHECK-LABEL: @test_sicmp_i32
+// CHECK: call i64 @llvm.amdgcn.icmp.i32(i32 %a, i32 %b, i32 32)
+void test_sicmp_i32(global ulong* out, int a, int b)
+{
+  *out = __builtin_amdgcn_sicmp(a, b, 32);
+}
+
+// CHECK-LABEL: @test_uicmp_i32
+// CHECK: call i64 @llvm.amdgcn.icmp.i32(i32 %a, i32 %b, i32 32)
+void test_uicmp_i32(global ulong* out, uint a, uint b)
+{
+  *out = __builtin_amdgcn_uicmp(a, b, 32);
+}
+
+// CHECK-LABEL: @test_sicmp_i64
+// CHECK: call i64 @llvm.amdgcn.icmp.i64(i64 %a, i64 %b, i32 38)
+void test_sicmp_i64(global ulong* out, long a, long b)
+{
+  *out = __builtin_amdgcn_sicmpl(a, b, 39-1);
+}
+
+// CHECK-LABEL: @test_uicmp_i64
+// CHECK: call i64 @llvm.amdgcn.icmp.i64(i64 %a, i64 %b, i32 35)
+void test_uicmp_i64(global ulong* out, ulong a, ulong b)
+{
+  *out = __builtin_amdgcn_uicmpl(a, b, 30+5);
+}
+
+// CHECK-LABEL: @test_ds_swizzle
+// CHECK: call i32 @llvm.amdgcn.ds.swizzle(i32 %a, i32 32)
+void test_ds_swizzle(global int* out, int a)
+{
+  *out = __builtin_amdgcn_ds_swizzle(a, 32);
+}
+
+// CHECK-LABEL: @test_fcmp_f32
+// CHECK: call i64 @llvm.amdgcn.fcmp.f32(float %a, float %b, i32 5)
+void test_fcmp_f32(global ulong* out, float a, float b)
+{
+  *out = __builtin_amdgcn_fcmpf(a, b, 5);
+}
+
+// CHECK-LABEL: @test_fcmp_f64
+// CHECK: call i64 @llvm.amdgcn.fcmp.f64(double %a, double %b, i32 6)
+void test_fcmp_f64(global ulong* out, double a, double b)
+{
+  *out = __builtin_amdgcn_fcmp(a, b, 3+3);
+}
+
 // CHECK-LABEL: @test_class_f32
 // CHECK: call i1 @llvm.amdgcn.class.f32
 void test_class_f32(global float* out, float a, int b)
@@ -234,6 +284,24 @@ void test_s_sleep()
 {
   __builtin_amdgcn_s_sleep(1);
   __builtin_amdgcn_s_sleep(15);
+}
+
+// CHECK-LABEL: @test_s_incperflevel
+// CHECK: call void @llvm.amdgcn.s.incperflevel(i32 1)
+// CHECK: call void @llvm.amdgcn.s.incperflevel(i32 15)
+void test_s_incperflevel()
+{
+  __builtin_amdgcn_s_incperflevel(1);
+  __builtin_amdgcn_s_incperflevel(15);
+}
+
+// CHECK-LABEL: @test_s_decperflevel
+// CHECK: call void @llvm.amdgcn.s.decperflevel(i32 1)
+// CHECK: call void @llvm.amdgcn.s.decperflevel(i32 15)
+void test_s_decperflevel()
+{
+  __builtin_amdgcn_s_decperflevel(1);
+  __builtin_amdgcn_s_decperflevel(15);
 }
 
 // CHECK-LABEL: @test_cubeid(

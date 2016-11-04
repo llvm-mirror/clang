@@ -626,7 +626,7 @@ static bool isObjCTypeParamDependent(QualType Type) {
       : public RecursiveASTVisitor<IsObjCTypeParamDependentTypeVisitor> {
   public:
     IsObjCTypeParamDependentTypeVisitor() : Result(false) {}
-    bool VisitTypedefType(const TypedefType *Type) {
+    bool VisitObjCTypeParamType(const ObjCTypeParamType *Type) {
       if (isa<ObjCTypeParamDecl>(Type->getDecl())) {
         Result = true;
         return false;
@@ -909,12 +909,7 @@ PathDiagnosticPiece *DynamicTypePropagation::GenericsBugVisitor::VisitNode(
     return nullptr;
 
   // Retrieve the associated statement.
-  const Stmt *S = nullptr;
-  ProgramPoint ProgLoc = N->getLocation();
-  if (Optional<StmtPoint> SP = ProgLoc.getAs<StmtPoint>()) {
-    S = SP->getStmt();
-  }
-
+  const Stmt *S = PathDiagnosticLocation::getStmt(N);
   if (!S)
     return nullptr;
 

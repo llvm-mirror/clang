@@ -65,7 +65,7 @@ void ExprEngine::performTrivialCopy(NodeBuilder &Bldr, ExplodedNode *Pred,
   if (Optional<Loc> L = V.getAs<Loc>())
     V = Pred->getState()->getSVal(*L);
   else
-    assert(V.isUnknown());
+    assert(V.isUnknownOrUndef());
 
   const Expr *CallExpr = Call.getOriginExpr();
   evalBind(Dst, CallExpr, Pred, ThisVal, V, true);
@@ -578,9 +578,9 @@ void ExprEngine::VisitLambdaExpr(const LambdaExpr *LE, ExplodedNode *Pred,
   const MemRegion *R = svalBuilder.getRegionManager().getCXXTempObjectRegion(
       LE, LocCtxt);
   SVal V = loc::MemRegionVal(R);
-  
+
   ProgramStateRef State = Pred->getState();
-  
+
   // If we created a new MemRegion for the lambda, we should explicitly bind
   // the captures.
   CXXRecordDecl::field_iterator CurField = LE->getLambdaClass()->field_begin();

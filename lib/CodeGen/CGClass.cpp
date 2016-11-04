@@ -2181,10 +2181,12 @@ void CodeGenFunction::EmitCXXConstructorCall(const CXXConstructorDecl *D,
       *this, D, Type, ForVirtualBase, Delegating, Args);
 
   // Emit the call.
-  llvm::Value *Callee = CGM.getAddrOfCXXStructor(D, getFromCtorType(Type));
+  llvm::Constant *CalleePtr =
+    CGM.getAddrOfCXXStructor(D, getFromCtorType(Type));
   const CGFunctionInfo &Info =
-      CGM.getTypes().arrangeCXXConstructorCall(Args, D, Type, ExtraArgs);
-  EmitCall(Info, Callee, ReturnValueSlot(), Args, D);
+    CGM.getTypes().arrangeCXXConstructorCall(Args, D, Type, ExtraArgs);
+  CGCallee Callee = CGCallee::forDirect(CalleePtr, D);
+  EmitCall(Info, Callee, ReturnValueSlot(), Args);
 
   // Generate vtable assumptions if we're constructing a complete object
   // with a vtable.  We don't do this for base subobjects for two reasons:
@@ -2873,6 +2875,11 @@ CodeGenFunction::CanDevirtualizeMemberFunctionCall(const Expr *Base,
   if (getLangOpts().AppleKext)
     return false;
 
+  // If the member function is marked 'final', we know that it can't be
+  // overridden and can therefore devirtualize it.
+  if (MD->hasAttr<FinalAttr>())
+    return true;
+
   // If the most derived class is marked final, we know that no subclass can
   // override this member function and so we can devirtualize it. For example:
   //
@@ -2883,14 +2890,17 @@ CodeGenFunction::CanDevirtualizeMemberFunctionCall(const Expr *Base,
   //   b->f();
   // }
   //
-  const CXXRecordDecl *MostDerivedClassDecl = Base->getBestDynamicClassType();
-  if (MostDerivedClassDecl->hasAttr<FinalAttr>())
-    return true;
+  if (const CXXRecordDecl *BestDynamicDecl = Base->getBestDynamicClassType()) {
+    if (BestDynamicDecl->hasAttr<FinalAttr>())
+      return true;
 
-  // If the member function is marked 'final', we know that it can't be
-  // overridden and can therefore devirtualize it.
-  if (MD->hasAttr<FinalAttr>())
-    return true;
+    // There may be a method corresponding to MD in a derived class. If that
+    // method is marked final, we can devirtualize it.
+    const CXXMethodDecl *DevirtualizedMethod =
+        MD->getCorrespondingMethodInClass(BestDynamicDecl);
+    if (DevirtualizedMethod->hasAttr<FinalAttr>())
+      return true;
+  }
 
   // Similarly, if the class itself is marked 'final' it can't be overridden
   // and we can therefore devirtualize the member function call.
@@ -2936,7 +2946,7 @@ void CodeGenFunction::EmitForwardingCallToLambda(
   // Get the address of the call operator.
   const CGFunctionInfo &calleeFnInfo =
     CGM.getTypes().arrangeCXXMethodDeclaration(callOperator);
-  llvm::Value *callee =
+  llvm::Constant *calleePtr =
     CGM.GetAddrOfFunction(GlobalDecl(callOperator),
                           CGM.getTypes().GetFunctionType(calleeFnInfo));
 
@@ -2955,8 +2965,8 @@ void CodeGenFunction::EmitForwardingCallToLambda(
   // variadic arguments.
 
   // Now emit our call.
-  RValue RV = EmitCall(calleeFnInfo, callee, returnSlot,
-                       callArgs, callOperator);
+  auto callee = CGCallee::forDirect(calleePtr, callOperator);
+  RValue RV = EmitCall(calleeFnInfo, callee, returnSlot, callArgs);
 
   // If necessary, copy the returned value into the slot.
   if (!resultType->isVoidType() && returnSlot.isNull())

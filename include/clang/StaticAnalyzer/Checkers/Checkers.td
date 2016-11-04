@@ -43,6 +43,9 @@ def Nullability : Package<"nullability">;
 def Cplusplus : Package<"cplusplus">;
 def CplusplusAlpha : Package<"cplusplus">, InPackage<Alpha>, Hidden;
 
+def Valist : Package<"valist">;
+def ValistAlpha : Package<"valist">, InPackage<Alpha>, Hidden;
+
 def DeadCode : Package<"deadcode">;
 def DeadCodeAlpha : Package<"deadcode">, InPackage<Alpha>, Hidden;
 
@@ -132,6 +135,10 @@ def CastSizeChecker : Checker<"CastSize">,
 def CastToStructChecker : Checker<"CastToStruct">,
   HelpText<"Check for cast from non-struct pointer to struct pointer">,
   DescFile<"CastToStructChecker.cpp">;
+
+def ConversionChecker : Checker<"Conversion">,
+  HelpText<"Loss of sign/precision in implicit conversions">,
+  DescFile<"ConversionChecker.cpp">;
 
 def IdenticalExprChecker : Checker<"IdenticalExpr">,
   HelpText<"Warn about unintended use of identical expressions in operators">,
@@ -263,6 +270,27 @@ def VirtualCallChecker : Checker<"VirtualCall">,
 
 } // end: "alpha.cplusplus"
 
+
+//===----------------------------------------------------------------------===//
+// Valist checkers.
+//===----------------------------------------------------------------------===//
+
+let ParentPackage = ValistAlpha in {
+
+def UninitializedChecker : Checker<"Uninitialized">,
+  HelpText<"Check for usages of uninitialized (or already released) va_lists.">,
+  DescFile<"ValistChecker.cpp">;
+
+def UnterminatedChecker : Checker<"Unterminated">,
+  HelpText<"Check for va_lists which are not released by a va_end call.">,
+  DescFile<"ValistChecker.cpp">;
+
+def CopyToSelfChecker : Checker<"CopyToSelf">,
+  HelpText<"Check for va_lists which are copied onto itself.">,
+  DescFile<"ValistChecker.cpp">;
+
+} // end : "alpha.valist"
+
 //===----------------------------------------------------------------------===//
 // Deadcode checkers.
 //===----------------------------------------------------------------------===//
@@ -388,6 +416,10 @@ def VforkChecker : Checker<"Vfork">,
   HelpText<"Check for proper usage of vfork">,
   DescFile<"VforkChecker.cpp">;
 
+def StdCLibraryFunctionsChecker : Checker<"StdCLibraryFunctions">,
+  HelpText<"Improve modeling of the C standard library functions">,
+  DescFile<"StdLibraryFunctionsChecker.cpp">;
+
 } // end "unix"
 
 let ParentPackage = UnixAlpha in {
@@ -407,6 +439,10 @@ def StreamChecker : Checker<"Stream">,
 def SimpleStreamChecker : Checker<"SimpleStream">,
   HelpText<"Check for misuses of stream APIs">,
   DescFile<"SimpleStreamChecker.cpp">;
+
+def BlockInCriticalSectionChecker : Checker<"BlockInCriticalSection">,
+  HelpText<"Check for calls to blocking functions inside a critical section">,
+  DescFile<"BlockInCriticalSectionChecker.cpp">;
 
 } // end "alpha.unix"
 
@@ -441,6 +477,11 @@ def CStringNotNullTerm : Checker<"NotNullTerminated">,
 //===----------------------------------------------------------------------===//
 
 let ParentPackage = OSX in {
+
+def NumberObjectConversionChecker : Checker<"NumberObjectConversion">,
+  InPackage<OSX>,
+  HelpText<"Check for erroneous conversions of objects representing numbers into numbers">,
+  DescFile<"NumberObjectConversionChecker.cpp">;
 
 def MacOSXAPIChecker : Checker<"API">,
   InPackage<OSX>,
@@ -545,8 +586,8 @@ def DirectIvarAssignmentForAnnotatedFunctions : Checker<"DirectIvarAssignmentFor
 
 let ParentPackage = CoreFoundation in {
 
-def CFNumberCreateChecker : Checker<"CFNumber">,
-  HelpText<"Check for proper uses of CFNumberCreate">,
+def CFNumberChecker : Checker<"CFNumber">,
+  HelpText<"Check for proper uses of CFNumber APIs">,
   DescFile<"BasicObjCFoundationChecks.cpp">;
 
 def CFRetainReleaseChecker : Checker<"CFRetainRelease">,
@@ -605,6 +646,10 @@ def LLVMConventionsChecker : Checker<"Conventions">,
 //===----------------------------------------------------------------------===//
 
 let ParentPackage = Debug in {
+
+def AnalysisOrderChecker : Checker<"AnalysisOrder">,
+  HelpText<"Print callbacks that are called during analysis in order">,
+  DescFile<"AnalysisOrder.cpp">;
 
 def DominatorsTreeDumper : Checker<"DumpDominators">,
   HelpText<"Print the dominance tree for a given CFG">,

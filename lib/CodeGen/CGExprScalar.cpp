@@ -787,7 +787,7 @@ Value *ScalarExprEmitter::EmitScalarConversion(Value *Src, QualType SrcType,
   // Handle pointer conversions next: pointers can only be converted to/from
   // other pointers and integers. Check for pointer types in terms of LLVM, as
   // some native types (like Obj-C id) may map to a pointer type.
-  if (isa<llvm::PointerType>(DstTy)) {
+  if (auto DstPT = dyn_cast<llvm::PointerType>(DstTy)) {
     // The source value may be an integer, or a pointer.
     if (isa<llvm::PointerType>(SrcTy))
       return Builder.CreateBitCast(Src, DstTy, "conv");
@@ -795,7 +795,7 @@ Value *ScalarExprEmitter::EmitScalarConversion(Value *Src, QualType SrcType,
     assert(SrcType->isIntegerType() && "Not ptr->ptr or int->ptr conversion?");
     // First, convert to the correct width so that we control the kind of
     // extension.
-    llvm::Type *MiddleTy = CGF.IntPtrTy;
+    llvm::Type *MiddleTy = CGF.CGM.getDataLayout().getIntPtrType(DstPT);
     bool InputSigned = SrcType->isSignedIntegerOrEnumerationType();
     llvm::Value* IntResult =
         Builder.CreateIntCast(Src, MiddleTy, InputSigned, "conv");
@@ -1510,12 +1510,13 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
 
     // First, convert to the correct width so that we control the kind of
     // extension.
-    llvm::Type *MiddleTy = CGF.IntPtrTy;
+    auto DestLLVMTy = ConvertType(DestTy);
+    llvm::Type *MiddleTy = CGF.CGM.getDataLayout().getIntPtrType(DestLLVMTy);
     bool InputSigned = E->getType()->isSignedIntegerOrEnumerationType();
     llvm::Value* IntResult =
       Builder.CreateIntCast(Src, MiddleTy, InputSigned, "conv");
 
-    return Builder.CreateIntToPtr(IntResult, ConvertType(DestTy));
+    return Builder.CreateIntToPtr(IntResult, DestLLVMTy);
   }
   case CK_PointerToIntegral:
     assert(!DestTy->isBooleanType() && "bool should use PointerToBool");
@@ -2276,8 +2277,13 @@ Value *ScalarExprEmitter::EmitDiv(const BinOpInfo &Ops) {
 
   if (Ops.LHS->getType()->isFPOrFPVectorTy()) {
     llvm::Value *Val = Builder.CreateFDiv(Ops.LHS, Ops.RHS, "div");
-    if (CGF.getLangOpts().OpenCL) {
-      // OpenCL 1.1 7.4: minimum accuracy of single precision / is 2.5ulp
+    if (CGF.getLangOpts().OpenCL &&
+        !CGF.CGM.getCodeGenOpts().CorrectlyRoundedDivSqrt) {
+      // OpenCL v1.1 s7.4: minimum accuracy of single precision / is 2.5ulp
+      // OpenCL v1.2 s5.6.4.2: The -cl-fp32-correctly-rounded-divide-sqrt
+      // build option allows an application to specify that single precision
+      // floating-point divide (x/y and 1/x) and sqrt used in the program
+      // source are correctly rounded.
       llvm::Type *ValTy = Val->getType();
       if (ValTy->isFloatTy() ||
           (isa<llvm::VectorType>(ValTy) &&
@@ -2366,9 +2372,8 @@ Value *ScalarExprEmitter::EmitOverflowCheckedBinOp(const BinOpInfo &Ops) {
 
   // Branch in case of overflow.
   llvm::BasicBlock *initialBB = Builder.GetInsertBlock();
-  llvm::Function::iterator insertPt = initialBB->getIterator();
-  llvm::BasicBlock *continueBB = CGF.createBasicBlock("nooverflow", CGF.CurFn,
-                                                      &*std::next(insertPt));
+  llvm::BasicBlock *continueBB =
+      CGF.createBasicBlock("nooverflow", CGF.CurFn, initialBB->getNextNode());
   llvm::BasicBlock *overflowBB = CGF.createBasicBlock("overflow", CGF.CurFn);
 
   Builder.CreateCondBr(overflow, overflowBB, continueBB);
@@ -2432,11 +2437,13 @@ static Value *emitPointerArithmetic(CodeGenFunction &CGF,
   }
 
   unsigned width = cast<llvm::IntegerType>(index->getType())->getBitWidth();
-  if (width != CGF.PointerWidthInBits) {
+  auto &DL = CGF.CGM.getDataLayout();
+  auto PtrTy = cast<llvm::PointerType>(pointer->getType());
+  if (width != DL.getTypeSizeInBits(PtrTy)) {
     // Zero-extend or sign-extend the pointer value according to
     // whether the index is signed or not.
     bool isSigned = indexOperand->getType()->isSignedIntegerOrEnumerationType();
-    index = CGF.Builder.CreateIntCast(index, CGF.PtrDiffTy, isSigned,
+    index = CGF.Builder.CreateIntCast(index, DL.getIntPtrType(PtrTy), isSigned,
                                       "idx.ext");
   }
 
@@ -2709,7 +2716,8 @@ Value *ScalarExprEmitter::EmitShl(const BinOpInfo &Ops) {
     RHS = Builder.CreateIntCast(RHS, Ops.LHS->getType(), false, "sh_prom");
 
   bool SanitizeBase = CGF.SanOpts.has(SanitizerKind::ShiftBase) &&
-                      Ops.Ty->hasSignedIntegerRepresentation();
+                      Ops.Ty->hasSignedIntegerRepresentation() &&
+                      !CGF.getLangOpts().isSignedOverflowDefined();
   bool SanitizeExponent = CGF.SanOpts.has(SanitizerKind::ShiftExponent);
   // OpenCL 6.3j: shift values are effectively % word size of LHS.
   if (CGF.getLangOpts().OpenCL)
@@ -3399,6 +3407,52 @@ static Value *ConvertVec3AndVec4(CGBuilderTy &Builder, CodeGenFunction &CGF,
   return Builder.CreateShuffleVector(Src, UnV, Mask);
 }
 
+// Create cast instructions for converting LLVM value \p Src to LLVM type \p
+// DstTy. \p Src has the same size as \p DstTy. Both are single value types
+// but could be scalar or vectors of different lengths, and either can be
+// pointer.
+// There are 4 cases:
+// 1. non-pointer -> non-pointer  : needs 1 bitcast
+// 2. pointer -> pointer          : needs 1 bitcast or addrspacecast
+// 3. pointer -> non-pointer
+//   a) pointer -> intptr_t       : needs 1 ptrtoint
+//   b) pointer -> non-intptr_t   : needs 1 ptrtoint then 1 bitcast
+// 4. non-pointer -> pointer
+//   a) intptr_t -> pointer       : needs 1 inttoptr
+//   b) non-intptr_t -> pointer   : needs 1 bitcast then 1 inttoptr
+// Note: for cases 3b and 4b two casts are required since LLVM casts do not
+// allow casting directly between pointer types and non-integer non-pointer
+// types.
+static Value *createCastsForTypeOfSameSize(CGBuilderTy &Builder,
+                                           const llvm::DataLayout &DL,
+                                           Value *Src, llvm::Type *DstTy,
+                                           StringRef Name = "") {
+  auto SrcTy = Src->getType();
+
+  // Case 1.
+  if (!SrcTy->isPointerTy() && !DstTy->isPointerTy())
+    return Builder.CreateBitCast(Src, DstTy, Name);
+
+  // Case 2.
+  if (SrcTy->isPointerTy() && DstTy->isPointerTy())
+    return Builder.CreatePointerBitCastOrAddrSpaceCast(Src, DstTy, Name);
+
+  // Case 3.
+  if (SrcTy->isPointerTy() && !DstTy->isPointerTy()) {
+    // Case 3b.
+    if (!DstTy->isIntegerTy())
+      Src = Builder.CreatePtrToInt(Src, DL.getIntPtrType(SrcTy));
+    // Cases 3a and 3b.
+    return Builder.CreateBitOrPointerCast(Src, DstTy, Name);
+  }
+
+  // Case 4b.
+  if (!SrcTy->isIntegerTy())
+    Src = Builder.CreateBitCast(Src, DL.getIntPtrType(DstTy));
+  // Cases 4a and 4b.
+  return Builder.CreateIntToPtr(Src, DstTy, Name);
+}
+
 Value *ScalarExprEmitter::VisitAsTypeExpr(AsTypeExpr *E) {
   Value *Src  = CGF.EmitScalarExpr(E->getSrcExpr());
   llvm::Type *DstTy = ConvertType(E->getType());
@@ -3413,7 +3467,8 @@ Value *ScalarExprEmitter::VisitAsTypeExpr(AsTypeExpr *E) {
   // vector to get a vec4, then a bitcast if the target type is different.
   if (NumElementsSrc == 3 && NumElementsDst != 3) {
     Src = ConvertVec3AndVec4(Builder, CGF, Src, 4);
-    Src = Builder.CreateBitCast(Src, DstTy);
+    Src = createCastsForTypeOfSameSize(Builder, CGF.CGM.getDataLayout(), Src,
+                                       DstTy);
     Src->setName("astype");
     return Src;
   }
@@ -3423,13 +3478,15 @@ Value *ScalarExprEmitter::VisitAsTypeExpr(AsTypeExpr *E) {
   // get a vec3.
   if (NumElementsSrc != 3 && NumElementsDst == 3) {
     auto Vec4Ty = llvm::VectorType::get(DstTy->getVectorElementType(), 4);
-    Src = Builder.CreateBitCast(Src, Vec4Ty);
+    Src = createCastsForTypeOfSameSize(Builder, CGF.CGM.getDataLayout(), Src,
+                                       Vec4Ty);
     Src = ConvertVec3AndVec4(Builder, CGF, Src, 3);
     Src->setName("astype");
     return Src;
   }
 
-  return Builder.CreateBitCast(Src, DstTy, "astype");
+  return Src = createCastsForTypeOfSameSize(Builder, CGF.CGM.getDataLayout(),
+                                            Src, DstTy, "astype");
 }
 
 Value *ScalarExprEmitter::VisitAtomicExpr(AtomicExpr *E) {

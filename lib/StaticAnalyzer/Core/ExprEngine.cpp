@@ -847,6 +847,8 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::OMPDistributeSimdDirectiveClass:
     case Stmt::OMPTargetParallelForSimdDirectiveClass:
     case Stmt::OMPTargetSimdDirectiveClass:
+    case Stmt::OMPTeamsDistributeDirectiveClass:
+    case Stmt::OMPTeamsDistributeSimdDirectiveClass:
       llvm_unreachable("Stmt should not be in analyzer evaluation loop");
 
     case Stmt::ObjCSubscriptRefExprClass:
@@ -1211,16 +1213,8 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::ObjCBridgedCastExprClass: {
       Bldr.takeNodes(Pred);
       const CastExpr *C = cast<CastExpr>(S);
-      // Handle the previsit checks.
-      ExplodedNodeSet dstPrevisit;
-      getCheckerManager().runCheckersForPreStmt(dstPrevisit, Pred, C, *this);
-
-      // Handle the expression itself.
       ExplodedNodeSet dstExpr;
-      for (ExplodedNodeSet::iterator i = dstPrevisit.begin(),
-                                     e = dstPrevisit.end(); i != e ; ++i) {
-        VisitCast(C, C->getSubExpr(), *i, dstExpr);
-      }
+      VisitCast(C, C->getSubExpr(), Pred, dstExpr);
 
       // Handle the postvisit checks.
       getCheckerManager().runCheckersForPostStmt(Dst, dstExpr, C, *this);
@@ -1773,7 +1767,8 @@ void ExprEngine::processBeginOfFunction(NodeBuilderContext &BC,
 /// ProcessEndPath - Called by CoreEngine.  Used to generate end-of-path
 ///  nodes when the control reaches the end of a function.
 void ExprEngine::processEndOfFunction(NodeBuilderContext& BC,
-                                      ExplodedNode *Pred) {
+                                      ExplodedNode *Pred,
+                                      const ReturnStmt *RS) {
   // FIXME: Assert that stackFrameDoesNotContainInitializedTemporaries(*Pred)).
   // We currently cannot enable this assert, as lifetime extended temporaries
   // are not modelled correctly.
@@ -1795,7 +1790,7 @@ void ExprEngine::processEndOfFunction(NodeBuilderContext& BC,
     getCheckerManager().runCheckersForEndFunction(BC, Dst, Pred, *this);
   }
 
-  Engine.enqueueEndOfFunction(Dst);
+  Engine.enqueueEndOfFunction(Dst, RS);
 }
 
 /// ProcessSwitch - Called by CoreEngine.  Used to generate successor
@@ -1975,24 +1970,26 @@ void ExprEngine::VisitLvalArraySubscriptExpr(const ArraySubscriptExpr *A,
   const Expr *Base = A->getBase()->IgnoreParens();
   const Expr *Idx  = A->getIdx()->IgnoreParens();
 
-  ExplodedNodeSet checkerPreStmt;
-  getCheckerManager().runCheckersForPreStmt(checkerPreStmt, Pred, A, *this);
+  ExplodedNodeSet CheckerPreStmt;
+  getCheckerManager().runCheckersForPreStmt(CheckerPreStmt, Pred, A, *this);
 
-  StmtNodeBuilder Bldr(checkerPreStmt, Dst, *currBldrCtx);
+  ExplodedNodeSet EvalSet;
+  StmtNodeBuilder Bldr(CheckerPreStmt, EvalSet, *currBldrCtx);
   assert(A->isGLValue() ||
           (!AMgr.getLangOpts().CPlusPlus &&
            A->getType().isCForbiddenLValueType()));
 
-  for (ExplodedNodeSet::iterator it = checkerPreStmt.begin(),
-                                 ei = checkerPreStmt.end(); it != ei; ++it) {
-    const LocationContext *LCtx = (*it)->getLocationContext();
-    ProgramStateRef state = (*it)->getState();
+  for (auto *Node : CheckerPreStmt) {
+    const LocationContext *LCtx = Node->getLocationContext();
+    ProgramStateRef state = Node->getState();
     SVal V = state->getLValue(A->getType(),
                               state->getSVal(Idx, LCtx),
                               state->getSVal(Base, LCtx));
-    Bldr.generateNode(A, *it, state->BindExpr(A, LCtx, V), nullptr,
+    Bldr.generateNode(A, Node, state->BindExpr(A, LCtx, V), nullptr,
                       ProgramPoint::PostLValueKind);
   }
+
+  getCheckerManager().runCheckersForPostStmt(Dst, EvalSet, A, *this);
 }
 
 /// VisitMemberExpr - Transfer function for member expressions.
@@ -2051,7 +2048,7 @@ void ExprEngine::VisitMemberExpr(const MemberExpr *M, ExplodedNode *Pred,
         if (!M->isGLValue()) {
           assert(M->getType()->isArrayType());
           const ImplicitCastExpr *PE =
-            dyn_cast<ImplicitCastExpr>((*I)->getParentMap().getParent(M));
+            dyn_cast<ImplicitCastExpr>((*I)->getParentMap().getParentIgnoreParens(M));
           if (!PE || PE->getCastKind() != CK_ArrayToPointerDecay) {
             llvm_unreachable("should always be wrapped in ArrayToPointerDecay");
           }

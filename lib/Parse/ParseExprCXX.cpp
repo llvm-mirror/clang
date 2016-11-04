@@ -427,13 +427,13 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
     //   namespace-name '::'
     //   nested-name-specifier identifier '::'
     Token Next = NextToken();
-    
+    Sema::NestedNameSpecInfo IdInfo(&II, Tok.getLocation(), Next.getLocation(),
+                                    ObjectType);
+
     // If we get foo:bar, this is almost certainly a typo for foo::bar.  Recover
     // and emit a fixit hint for it.
     if (Next.is(tok::colon) && !ColonIsSacred) {
-      if (Actions.IsInvalidUnlessNestedName(getCurScope(), SS, II, 
-                                            Tok.getLocation(), 
-                                            Next.getLocation(), ObjectType,
+      if (Actions.IsInvalidUnlessNestedName(getCurScope(), SS, IdInfo,
                                             EnteringContext) &&
           // If the token after the colon isn't an identifier, it's still an
           // error, but they probably meant something else strange so don't
@@ -459,8 +459,7 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
 
     if (Next.is(tok::coloncolon)) {
       if (CheckForDestructor && GetLookAheadToken(2).is(tok::tilde) &&
-          !Actions.isNonTypeNestedNameSpecifier(
-              getCurScope(), SS, Tok.getLocation(), II, ObjectType)) {
+          !Actions.isNonTypeNestedNameSpecifier(getCurScope(), SS, IdInfo)) {
         *MayBePseudoDestructor = true;
         return false;
       }
@@ -496,8 +495,8 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
 
       bool IsCorrectedToColon = false;
       bool *CorrectionFlagPtr = ColonIsSacred ? &IsCorrectedToColon : nullptr;
-      if (Actions.ActOnCXXNestedNameSpecifier(getCurScope(), II, IdLoc, CCLoc,
-                                              ObjectType, EnteringContext, SS,
+      if (Actions.ActOnCXXNestedNameSpecifier(getCurScope(), IdInfo,
+                                              EnteringContext, SS,
                                               false, CorrectionFlagPtr)) {
         // Identifier is not recognized as a nested name, but we can have
         // mistyped '::' instead of ':'.
@@ -1125,7 +1124,27 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   DeclSpec DS(AttrFactory);
   Declarator D(DS, Declarator::LambdaExprContext);
   TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
-  Actions.PushLambdaScope();    
+  Actions.PushLambdaScope();
+
+  ParsedAttributes Attr(AttrFactory);
+  SourceLocation DeclLoc = Tok.getLocation();
+  if (getLangOpts().CUDA) {
+    // In CUDA code, GNU attributes are allowed to appear immediately after the
+    // "[...]", even if there is no "(...)" before the lambda body.
+    MaybeParseGNUAttributes(D);
+  }
+
+  // Helper to emit a warning if we see a CUDA host/device/global attribute
+  // after '(...)'. nvcc doesn't accept this.
+  auto WarnIfHasCUDATargetAttr = [&] {
+    if (getLangOpts().CUDA)
+      for (auto *A = Attr.getList(); A != nullptr; A = A->getNext())
+        if (A->getKind() == AttributeList::AT_CUDADevice ||
+            A->getKind() == AttributeList::AT_CUDAHost ||
+            A->getKind() == AttributeList::AT_CUDAGlobal)
+          Diag(A->getLoc(), diag::warn_cuda_attr_lambda_position)
+              << A->getName()->getName();
+  };
 
   TypeResult TrailingReturnType;
   if (Tok.is(tok::l_paren)) {
@@ -1134,13 +1153,11 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                               Scope::FunctionDeclarationScope |
                               Scope::DeclScope);
 
-    SourceLocation DeclEndLoc;
     BalancedDelimiterTracker T(*this, tok::l_paren);
     T.consumeOpen();
     SourceLocation LParenLoc = T.getOpenLocation();
 
     // Parse parameter-declaration-clause.
-    ParsedAttributes Attr(AttrFactory);
     SmallVector<DeclaratorChunk::ParamInfo, 16> ParamInfo;
     SourceLocation EllipsisLoc;
     
@@ -1154,7 +1171,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     }
     T.consumeClose();
     SourceLocation RParenLoc = T.getCloseLocation();
-    DeclEndLoc = RParenLoc;
+    SourceLocation DeclEndLoc = RParenLoc;
 
     // GNU-style attributes must be parsed before the mutable specifier to be
     // compatible with GCC.
@@ -1205,6 +1222,8 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
 
     PrototypeScope.Exit();
 
+    WarnIfHasCUDATargetAttr();
+
     SourceLocation NoLoc;
     D.AddTypeInfo(DeclaratorChunk::getFunction(/*hasProto=*/true,
                                            /*isAmbiguous=*/false,
@@ -1246,12 +1265,10 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     Diag(Tok, diag::err_lambda_missing_parens)
       << TokKind
       << FixItHint::CreateInsertion(Tok.getLocation(), "() ");
-    SourceLocation DeclLoc = Tok.getLocation();
     SourceLocation DeclEndLoc = DeclLoc;
 
     // GNU-style attributes must be parsed before the mutable specifier to be
     // compatible with GCC.
-    ParsedAttributes Attr(AttrFactory);
     MaybeParseGNUAttributes(Attr, &DeclEndLoc);
 
     // Parse 'mutable', if it's there.
@@ -1271,6 +1288,8 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
       if (Range.getEnd().isValid())
         DeclEndLoc = Range.getEnd();
     }
+
+    WarnIfHasCUDATargetAttr();
 
     SourceLocation NoLoc;
     D.AddTypeInfo(DeclaratorChunk::getFunction(/*hasProto=*/true,
@@ -1298,7 +1317,6 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
                                                TrailingReturnType),
                   Attr, DeclEndLoc);
   }
-  
 
   // FIXME: Rename BlockScope -> ClosureScope if we decide to continue using
   // it.
@@ -1769,6 +1787,10 @@ Sema::ConditionResult Parser::ParseCXXCondition(StmtResult *InitStmt,
   }
 
   case ConditionOrInitStatement::InitStmtDecl: {
+    Diag(Tok.getLocation(), getLangOpts().CPlusPlus1z
+                                ? diag::warn_cxx14_compat_init_statement
+                                : diag::ext_init_statement)
+        << (CK == Sema::ConditionKind::Switch);
     SourceLocation DeclStart = Tok.getLocation(), DeclEnd;
     DeclGroupPtrTy DG = ParseSimpleDeclaration(
         Declarator::InitStmtContext, DeclEnd, attrs, /*RequireSemi=*/true);

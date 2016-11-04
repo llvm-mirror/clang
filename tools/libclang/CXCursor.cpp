@@ -653,6 +653,12 @@ CXCursor cxcursor::MakeCXCursor(const Stmt *S, const Decl *Parent,
   case Stmt::OMPTargetSimdDirectiveClass:
     K = CXCursor_OMPTargetSimdDirective;
     break;
+  case Stmt::OMPTeamsDistributeDirectiveClass:
+    K = CXCursor_OMPTeamsDistributeDirective;
+    break;
+  case Stmt::OMPTeamsDistributeSimdDirectiveClass:
+    K = CXCursor_OMPTeamsDistributeSimdDirective;
+    break;
   }
 
   CXCursor C = { K, 0, { Parent, S, TU } };

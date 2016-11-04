@@ -2050,8 +2050,7 @@ CFGBlock *CFGBuilder::VisitDeclStmt(DeclStmt *DS) {
                                        E = DS->decl_rend();
        I != E; ++I) {
     // Get the alignment of the new DeclStmt, padding out to >=8 bytes.
-    unsigned A = llvm::AlignOf<DeclStmt>::Alignment < 8
-               ? 8 : llvm::AlignOf<DeclStmt>::Alignment;
+    unsigned A = alignof(DeclStmt) < 8 ? 8 : alignof(DeclStmt);
 
     // Allocate the DeclStmt using the BumpPtrAllocator.  It will get
     // automatically freed with the CFG.
@@ -2983,20 +2982,19 @@ CFGBlock *CFGBuilder::VisitDoStmt(DoStmt *D) {
         return nullptr;
     }
 
-    if (!KnownVal.isFalse()) {
-      // Add an intermediate block between the BodyBlock and the
-      // ExitConditionBlock to represent the "loop back" transition.  Create an
-      // empty block to represent the transition block for looping back to the
-      // head of the loop.
-      // FIXME: Can we do this more efficiently without adding another block?
-      Block = nullptr;
-      Succ = BodyBlock;
-      CFGBlock *LoopBackBlock = createBlock();
-      LoopBackBlock->setLoopTarget(D);
+    // Add an intermediate block between the BodyBlock and the
+    // ExitConditionBlock to represent the "loop back" transition.  Create an
+    // empty block to represent the transition block for looping back to the
+    // head of the loop.
+    // FIXME: Can we do this more efficiently without adding another block?
+    Block = nullptr;
+    Succ = BodyBlock;
+    CFGBlock *LoopBackBlock = createBlock();
+    LoopBackBlock->setLoopTarget(D);
 
+    if (!KnownVal.isFalse())
       // Add the loop body entry as a successor to the condition.
       addSuccessor(ExitConditionBlock, LoopBackBlock);
-    }
     else
       addSuccessor(ExitConditionBlock, nullptr);
   }
@@ -3902,7 +3900,17 @@ CFGImplicitDtor::getDestructorDecl(ASTContext &astContext) const {
     case CFGElement::AutomaticObjectDtor: {
       const VarDecl *var = castAs<CFGAutomaticObjDtor>().getVarDecl();
       QualType ty = var->getType();
-      ty = ty.getNonReferenceType();
+
+      // FIXME: See CFGBuilder::addLocalScopeForVarDecl.
+      //
+      // Lifetime-extending constructs are handled here. This works for a single
+      // temporary in an initializer expression.
+      if (ty->isReferenceType()) {
+        if (const Expr *Init = var->getInit()) {
+          ty = getReferenceInitTemporaryType(astContext, Init);
+        }
+      }
+
       while (const ArrayType *arrayType = astContext.getAsArrayType(ty)) {
         ty = arrayType->getElementType();
       }

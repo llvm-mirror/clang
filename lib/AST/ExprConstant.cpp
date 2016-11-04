@@ -310,14 +310,8 @@ namespace {
     /// Parent - The caller of this stack frame.
     CallStackFrame *Caller;
 
-    /// CallLoc - The location of the call expression for this call.
-    SourceLocation CallLoc;
-
     /// Callee - The function which was called.
     const FunctionDecl *Callee;
-
-    /// Index - The call index of this call.
-    unsigned Index;
 
     /// This - The binding for the this pointer in this call, if any.
     const LValue *This;
@@ -332,6 +326,12 @@ namespace {
     typedef MapTy::const_iterator temp_iterator;
     /// Temporaries - Temporary lvalues materialized within this stack frame.
     MapTy Temporaries;
+
+    /// CallLoc - The location of the call expression for this call.
+    SourceLocation CallLoc;
+
+    /// Index - The call index of this call.
+    unsigned Index;
 
     CallStackFrame(EvalInfo &Info, SourceLocation CallLoc,
                    const FunctionDecl *Callee, const LValue *This,
@@ -787,7 +787,7 @@ namespace {
     /// (Foo(), 1)      // use noteSideEffect
     /// (Foo() || true) // use noteSideEffect
     /// Foo() + 1       // use noteFailure
-    LLVM_ATTRIBUTE_UNUSED_RESULT bool noteFailure() {
+    LLVM_NODISCARD bool noteFailure() {
       // Failure when evaluating some expression often means there is some
       // subexpression whose evaluation was skipped. Therefore, (because we
       // don't track whether we skipped an expression when unwinding after an
@@ -961,8 +961,8 @@ void SubobjectDesignator::diagnosePointerArithmetic(EvalInfo &Info,
 CallStackFrame::CallStackFrame(EvalInfo &Info, SourceLocation CallLoc,
                                const FunctionDecl *Callee, const LValue *This,
                                APValue *Arguments)
-    : Info(Info), Caller(Info.CurrentCall), CallLoc(CallLoc), Callee(Callee),
-      Index(Info.NextCallIndex++), This(This), Arguments(Arguments) {
+    : Info(Info), Caller(Info.CurrentCall), Callee(Callee), This(This),
+      Arguments(Arguments), CallLoc(CallLoc), Index(Info.NextCallIndex++) {
   Info.CurrentCall = this;
   ++Info.CallStackDepth;
 }
@@ -3400,37 +3400,50 @@ enum EvalStmtResult {
 };
 }
 
-static bool EvaluateDecl(EvalInfo &Info, const Decl *D) {
-  if (const VarDecl *VD = dyn_cast<VarDecl>(D)) {
-    // We don't need to evaluate the initializer for a static local.
-    if (!VD->hasLocalStorage())
-      return true;
+static bool EvaluateVarDecl(EvalInfo &Info, const VarDecl *VD) {
+  // We don't need to evaluate the initializer for a static local.
+  if (!VD->hasLocalStorage())
+    return true;
 
-    LValue Result;
-    Result.set(VD, Info.CurrentCall->Index);
-    APValue &Val = Info.CurrentCall->createTemporary(VD, true);
+  LValue Result;
+  Result.set(VD, Info.CurrentCall->Index);
+  APValue &Val = Info.CurrentCall->createTemporary(VD, true);
 
-    const Expr *InitE = VD->getInit();
-    if (!InitE) {
-      Info.FFDiag(D->getLocStart(), diag::note_constexpr_uninitialized)
-        << false << VD->getType();
-      Val = APValue();
-      return false;
-    }
+  const Expr *InitE = VD->getInit();
+  if (!InitE) {
+    Info.FFDiag(VD->getLocStart(), diag::note_constexpr_uninitialized)
+      << false << VD->getType();
+    Val = APValue();
+    return false;
+  }
 
-    if (InitE->isValueDependent())
-      return false;
+  if (InitE->isValueDependent())
+    return false;
 
-    if (!EvaluateInPlace(Val, Info, Result, InitE)) {
-      // Wipe out any partially-computed value, to allow tracking that this
-      // evaluation failed.
-      Val = APValue();
-      return false;
-    }
+  if (!EvaluateInPlace(Val, Info, Result, InitE)) {
+    // Wipe out any partially-computed value, to allow tracking that this
+    // evaluation failed.
+    Val = APValue();
+    return false;
   }
 
   return true;
 }
+
+static bool EvaluateDecl(EvalInfo &Info, const Decl *D) {
+  bool OK = true;
+
+  if (const VarDecl *VD = dyn_cast<VarDecl>(D))
+    OK &= EvaluateVarDecl(Info, VD);
+
+  if (const DecompositionDecl *DD = dyn_cast<DecompositionDecl>(D))
+    for (auto *BD : DD->bindings())
+      if (auto *VD = BD->getHoldingVar())
+        OK &= EvaluateDecl(Info, VD);
+
+  return OK;
+}
+
 
 /// Evaluate a condition (either a variable declaration or an expression).
 static bool EvaluateCond(EvalInfo &Info, const VarDecl *CondDecl,
@@ -4785,6 +4798,8 @@ bool LValueExprEvaluator::VisitDeclRefExpr(const DeclRefExpr *E) {
     return Success(FD);
   if (const VarDecl *VD = dyn_cast<VarDecl>(E->getDecl()))
     return VisitVarDecl(E, VD);
+  if (const BindingDecl *BD = dyn_cast<BindingDecl>(E->getDecl()))
+    return Visit(BD->getBinding());
   return Error(E);
 }
 
@@ -5279,8 +5294,8 @@ bool PointerExprEvaluator::VisitCallExpr(const CallExpr *E) {
 
       if (BaseAlignment < Align) {
         Result.Designator.setInvalid();
-	// FIXME: Quantities here cast to integers because the plural modifier
-	// does not work on APSInts yet.
+        // FIXME: Quantities here cast to integers because the plural modifier
+        // does not work on APSInts yet.
         CCEDiag(E->getArg(0),
                 diag::note_constexpr_baa_insufficient_alignment) << 0
           << (int) BaseAlignment.getQuantity()
@@ -6811,14 +6826,21 @@ static bool tryEvaluateBuiltinObjectSize(const Expr *E, unsigned Type,
   // struct Foo *F = (struct Foo *)malloc(sizeof(struct Foo) + strlen(Bar));
   // strcpy(&F->c[0], Bar);
   //
-  // So, if we see that we're examining a 1-length (or 0-length) array at the
-  // end of a struct with an unknown base, we give up instead of breaking code
-  // that behaves this way. Note that we only do this when Type=1, because
-  // Type=3 is a lower bound, so answering conservatively is fine.
+  // So, if we see that we're examining an array at the end of a struct with an
+  // unknown base, we give up instead of breaking code that behaves this way.
+  // Note that we only do this when Type=1, because Type=3 is a lower bound, so
+  // answering conservatively is fine.
+  //
+  // We used to be a bit more aggressive here; we'd only be conservative if the
+  // array at the end was flexible, or if it had 0 or 1 elements. This broke
+  // some common standard library extensions (PR30346), but was otherwise
+  // seemingly fine. It may be useful to reintroduce this behavior with some
+  // sort of whitelist. OTOH, it seems that GCC is always conservative with the
+  // last element in structs (if it's an array), so our current behavior is more
+  // compatible than a whitelisting approach would be.
   if (End.InvalidBase && SubobjectOnly && Type == 1 &&
       End.Designator.Entries.size() == End.Designator.MostDerivedPathLength &&
       End.Designator.MostDerivedIsArrayElement &&
-      End.Designator.MostDerivedArraySize < 2 &&
       isDesignatorAtObjectEnd(Info.Ctx, End))
     return false;
 
@@ -7177,9 +7199,7 @@ class DataRecursiveIntBinOpEvaluator {
     enum { AnyExprKind, BinOpKind, BinOpVisitedLHSKind } Kind;
 
     Job() = default;
-    Job(Job &&J)
-        : E(J.E), LHSResult(J.LHSResult), Kind(J.Kind),
-          SpecEvalRAII(std::move(J.SpecEvalRAII)) {}
+    Job(Job &&) = default;
 
     void startSpeculativeEval(EvalInfo &Info) {
       SpecEvalRAII = SpeculativeEvaluationRAII(Info);

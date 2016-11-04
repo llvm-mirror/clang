@@ -183,7 +183,7 @@ def ext_hex_constant_invalid : Extension<
 def ext_hex_literal_invalid : Extension<
   "hexadecimal floating literals are a C++1z feature">, InGroup<CXX1z>;
 def warn_cxx1z_hex_literal : Warning<
-  "hexidecimal floating literals are incompatible with "
+  "hexadecimal floating literals are incompatible with "
   "C++ standards before C++1z">,
   InGroup<CXXPre1zCompatPedantic>, DefaultIgnore;
 def ext_binary_literal : Extension<
@@ -659,10 +659,10 @@ def warn_use_of_private_header_outside_module : Warning<
 def err_undeclared_use_of_module : Error<
   "module %0 does not depend on a module exporting '%1'">;
 def warn_non_modular_include_in_framework_module : Warning<
-  "include of non-modular header inside framework module '%0'">,
+  "include of non-modular header inside framework module '%0': '%1'">,
   InGroup<NonModularIncludeInFrameworkModule>, DefaultIgnore;
 def warn_non_modular_include_in_module : Warning<
-  "include of non-modular header inside module '%0'">,
+  "include of non-modular header inside module '%0': '%1'">,
   InGroup<NonModularIncludeInModule>, DefaultIgnore;
 def warn_module_conflict : Warning<
   "module '%0' conflicts with already-imported module '%1': %2">, 

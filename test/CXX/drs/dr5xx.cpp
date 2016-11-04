@@ -8,6 +8,12 @@
 // with -verify.
 __extension__ typedef __SIZE_TYPE__ size_t;
 void *operator new(size_t); // expected-error 0-1{{missing exception spec}} expected-note{{candidate}}
+#if __cplusplus > 201402L
+namespace std {
+  enum class align_val_t : size_t {};
+}
+void *operator new(size_t, std::align_val_t); // expected-note{{candidate}}
+#endif
 
 namespace dr500 { // dr500: dup 372
   class D;
@@ -857,14 +863,13 @@ namespace dr580 { // dr580: partial
 
 // dr582: na
 
-namespace dr583 { // dr583: no
+namespace dr583 { // dr583: 4.0
   // see n3624
   int *p;
-  // FIXME: These are all ill-formed.
-  bool b1 = p < 0;
-  bool b2 = p > 0;
-  bool b3 = p <= 0;
-  bool b4 = p >= 0;
+  bool b1 = p < 0; // expected-error {{ordered comparison between pointer and zero}}
+  bool b2 = p > 0; // expected-error {{ordered comparison between pointer and zero}}
+  bool b3 = p <= 0; // expected-error {{ordered comparison between pointer and zero}}
+  bool b4 = p >= 0; // expected-error {{ordered comparison between pointer and zero}}
 }
 
 // dr584: na

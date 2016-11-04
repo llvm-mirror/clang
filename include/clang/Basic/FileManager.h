@@ -38,11 +38,10 @@ class FileSystemStatCache;
 /// \brief Cached information about one directory (either on disk or in
 /// the virtual file system).
 class DirectoryEntry {
-  const char *Name;   // Name of the directory.
+  StringRef Name; // Name of the directory.
   friend class FileManager;
 public:
-  DirectoryEntry() : Name(nullptr) {}
-  const char *getName() const { return Name; }
+  StringRef getName() const { return Name; }
 };
 
 /// \brief Cached information about one file (either on disk
@@ -51,7 +50,7 @@ public:
 /// If the 'File' member is valid, then this FileEntry has an open file
 /// descriptor for the file.
 class FileEntry {
-  const char *Name;           // Name of the file.
+  StringRef Name;             // Name of the file.
   std::string RealPathName;   // Real path to the file; could be empty.
   off_t Size;                 // File size in bytes.
   time_t ModTime;             // Modification time of file.
@@ -66,6 +65,7 @@ class FileEntry {
   mutable std::unique_ptr<vfs::File> File;
   friend class FileManager;
 
+  FileEntry(const FileEntry &) = delete;
   void operator=(const FileEntry &) = delete;
 
 public:
@@ -73,16 +73,7 @@ public:
       : UniqueID(0, 0), IsNamedPipe(false), InPCH(false), IsValid(false)
   {}
 
-  // FIXME: this is here to allow putting FileEntry in std::map.  Once we have
-  // emplace, we shouldn't need a copy constructor anymore.
-  /// Intentionally does not copy fields that are not set in an uninitialized
-  /// \c FileEntry.
-  FileEntry(const FileEntry &FE) : UniqueID(FE.UniqueID),
-      IsNamedPipe(FE.IsNamedPipe), InPCH(FE.InPCH), IsValid(FE.IsValid) {
-    assert(!isValid() && "Cannot copy an initialized FileEntry");
-  }
-
-  const char *getName() const { return Name; }
+  StringRef getName() const { return Name; }
   StringRef tryGetRealPathName() const { return RealPathName; }
   bool isValid() const { return IsValid; }
   off_t getSize() const { return Size; }
@@ -165,7 +156,7 @@ class FileManager : public RefCountedBase<FileManager> {
   // Caching.
   std::unique_ptr<FileSystemStatCache> StatCache;
 
-  bool getStatValue(const char *Path, FileData &Data, bool isFile,
+  bool getStatValue(StringRef Path, FileData &Data, bool isFile,
                     std::unique_ptr<vfs::File> *F);
 
   /// Add all ancestors of the given path (pointing to either a file

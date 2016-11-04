@@ -402,7 +402,7 @@ DeclRefExpr *DeclRefExpr::Create(const ASTContext &Context,
           HasTemplateKWAndArgsInfo ? 1 : 0,
           TemplateArgs ? TemplateArgs->size() : 0);
 
-  void *Mem = Context.Allocate(Size, llvm::alignOf<DeclRefExpr>());
+  void *Mem = Context.Allocate(Size, alignof(DeclRefExpr));
   return new (Mem) DeclRefExpr(Context, QualifierLoc, TemplateKWLoc, D,
                                RefersToEnclosingVariableOrCapture,
                                NameInfo, FoundD, TemplateArgs, T, VK);
@@ -419,7 +419,7 @@ DeclRefExpr *DeclRefExpr::CreateEmpty(const ASTContext &Context,
                        ASTTemplateKWAndArgsInfo, TemplateArgumentLoc>(
           HasQualifier ? 1 : 0, HasFoundDecl ? 1 : 0, HasTemplateKWAndArgsInfo,
           NumTemplateArgs);
-  void *Mem = Context.Allocate(Size, llvm::alignOf<DeclRefExpr>());
+  void *Mem = Context.Allocate(Size, alignof(DeclRefExpr));
   return new (Mem) DeclRefExpr(EmptyShell());
 }
 
@@ -543,6 +543,7 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
       case CC_X86FastCall: POut << "__fastcall "; break;
       case CC_X86ThisCall: POut << "__thiscall "; break;
       case CC_X86VectorCall: POut << "__vectorcall "; break;
+      case CC_X86RegCall: POut << "__regcall "; break;
       // Only bother printing the conventions that MSVC knows about.
       default: break;
       }
@@ -831,9 +832,9 @@ StringLiteral *StringLiteral::Create(const ASTContext &C, StringRef Str,
 
   // Allocate enough space for the StringLiteral plus an array of locations for
   // any concatenated string tokens.
-  void *Mem = C.Allocate(sizeof(StringLiteral)+
-                         sizeof(SourceLocation)*(NumStrs-1),
-                         llvm::alignOf<StringLiteral>());
+  void *Mem =
+      C.Allocate(sizeof(StringLiteral) + sizeof(SourceLocation) * (NumStrs - 1),
+                 alignof(StringLiteral));
   StringLiteral *SL = new (Mem) StringLiteral(Ty);
 
   // OPTIMIZE: could allocate this appended to the StringLiteral.
@@ -849,9 +850,9 @@ StringLiteral *StringLiteral::Create(const ASTContext &C, StringRef Str,
 
 StringLiteral *StringLiteral::CreateEmpty(const ASTContext &C,
                                           unsigned NumStrs) {
-  void *Mem = C.Allocate(sizeof(StringLiteral)+
-                         sizeof(SourceLocation)*(NumStrs-1),
-                         llvm::alignOf<StringLiteral>());
+  void *Mem =
+      C.Allocate(sizeof(StringLiteral) + sizeof(SourceLocation) * (NumStrs - 1),
+                 alignof(StringLiteral));
   StringLiteral *SL = new (Mem) StringLiteral(QualType());
   SL->CharByteWidth = 0;
   SL->Length = 0;
@@ -1181,8 +1182,16 @@ void CallExpr::updateDependenciesFromArg(Expr *Arg) {
     ExprBits.ContainsUnexpandedParameterPack = true;
 }
 
+FunctionDecl *CallExpr::getDirectCallee() {
+  return dyn_cast_or_null<FunctionDecl>(getCalleeDecl());
+}
+
 Decl *CallExpr::getCalleeDecl() {
-  Expr *CEE = getCallee()->IgnoreParenImpCasts();
+  return getCallee()->getReferencedDeclOfCallee();
+}
+
+Decl *Expr::getReferencedDeclOfCallee() {
+  Expr *CEE = IgnoreParenImpCasts();
     
   while (SubstNonTypeTemplateParmExpr *NTTP
                                 = dyn_cast<SubstNonTypeTemplateParmExpr>(CEE)) {
@@ -1203,10 +1212,6 @@ Decl *CallExpr::getCalleeDecl() {
     return ME->getMemberDecl();
 
   return nullptr;
-}
-
-FunctionDecl *CallExpr::getDirectCallee() {
-  return dyn_cast_or_null<FunctionDecl>(getCalleeDecl());
 }
 
 /// setNumArgs - This changes the number of arguments present in this call.
@@ -1416,7 +1421,7 @@ MemberExpr *MemberExpr::Create(
                                             HasTemplateKWAndArgsInfo ? 1 : 0,
                                             targs ? targs->size() : 0);
 
-  void *Mem = C.Allocate(Size, llvm::alignOf<MemberExpr>());
+  void *Mem = C.Allocate(Size, alignof(MemberExpr));
   MemberExpr *E = new (Mem)
       MemberExpr(base, isarrow, OperatorLoc, memberdecl, nameinfo, ty, vk, ok);
 
@@ -3308,10 +3313,15 @@ FieldDecl *Expr::getSourceBitField() {
       if (Ivar->isBitField())
         return Ivar;
 
-  if (DeclRefExpr *DeclRef = dyn_cast<DeclRefExpr>(E))
+  if (DeclRefExpr *DeclRef = dyn_cast<DeclRefExpr>(E)) {
     if (FieldDecl *Field = dyn_cast<FieldDecl>(DeclRef->getDecl()))
       if (Field->isBitField())
         return Field;
+
+    if (BindingDecl *BD = dyn_cast<BindingDecl>(DeclRef->getDecl()))
+      if (Expr *E = BD->getBinding())
+        return E->getSourceBitField();
+  }
 
   if (BinaryOperator *BinOp = dyn_cast<BinaryOperator>(E)) {
     if (BinOp->isAssignmentOp() && BinOp->getLHS())
@@ -3329,6 +3339,7 @@ FieldDecl *Expr::getSourceBitField() {
 }
 
 bool Expr::refersToVectorElement() const {
+  // FIXME: Why do we not just look at the ObjectKind here?
   const Expr *E = this->IgnoreParens();
   
   while (const ImplicitCastExpr *ICE = dyn_cast<ImplicitCastExpr>(E)) {
@@ -3344,6 +3355,11 @@ bool Expr::refersToVectorElement() const {
 
   if (isa<ExtVectorElementExpr>(E))
     return true;
+
+  if (auto *DRE = dyn_cast<DeclRefExpr>(E))
+    if (auto *BD = dyn_cast<BindingDecl>(DRE->getDecl()))
+      if (auto *E = BD->getBinding())
+        return E->refersToVectorElement();
 
   return false;
 }
@@ -3593,7 +3609,7 @@ DesignatedInitExpr::Create(const ASTContext &C,
                            SourceLocation ColonOrEqualLoc,
                            bool UsesColonSyntax, Expr *Init) {
   void *Mem = C.Allocate(totalSizeToAlloc<Stmt *>(IndexExprs.size() + 1),
-                         llvm::alignOf<DesignatedInitExpr>());
+                         alignof(DesignatedInitExpr));
   return new (Mem) DesignatedInitExpr(C, C.VoidTy, Designators,
                                       ColonOrEqualLoc, UsesColonSyntax,
                                       IndexExprs, Init);
@@ -3602,7 +3618,7 @@ DesignatedInitExpr::Create(const ASTContext &C,
 DesignatedInitExpr *DesignatedInitExpr::CreateEmpty(const ASTContext &C,
                                                     unsigned NumIndexExprs) {
   void *Mem = C.Allocate(totalSizeToAlloc<Stmt *>(NumIndexExprs + 1),
-                         llvm::alignOf<DesignatedInitExpr>());
+                         alignof(DesignatedInitExpr));
   return new (Mem) DesignatedInitExpr(NumIndexExprs + 1);
 }
 
@@ -3742,7 +3758,7 @@ PseudoObjectExpr *PseudoObjectExpr::Create(const ASTContext &Context,
                                            unsigned numSemanticExprs) {
   void *buffer =
       Context.Allocate(totalSizeToAlloc<Expr *>(1 + numSemanticExprs),
-                       llvm::alignOf<PseudoObjectExpr>());
+                       alignof(PseudoObjectExpr));
   return new(buffer) PseudoObjectExpr(sh, numSemanticExprs);
 }
 
@@ -3770,7 +3786,7 @@ PseudoObjectExpr *PseudoObjectExpr::Create(const ASTContext &C, Expr *syntax,
   }
 
   void *buffer = C.Allocate(totalSizeToAlloc<Expr *>(semantics.size() + 1),
-                            llvm::alignOf<PseudoObjectExpr>());
+                            alignof(PseudoObjectExpr));
   return new(buffer) PseudoObjectExpr(type, VK, syntax, semantics,
                                       resultIndex);
 }

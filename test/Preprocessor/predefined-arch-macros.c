@@ -1865,6 +1865,12 @@
 //
 // CHECK_PPC_POWER8_VECTOR_M64: #define __POWER8_VECTOR__ 1
 //
+// RUN: %clang -mpower9-vector -E -dM %s -o - 2>&1 \
+// RUN:     -target powerpc64-unknown-linux \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_PPC_POWER9_VECTOR_M64
+//
+// CHECK_PPC_POWER9_VECTOR_M64: #define __POWER9_VECTOR__ 1
+//
 // RUN: %clang -mcrypto -E -dM %s -o - 2>&1 \
 // RUN:     -target powerpc64-unknown-linux \
 // RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_PPC_CRYPTO_M64
@@ -1961,6 +1967,9 @@
 // CHECK_SYSTEMZ_Z10: #define __zarch__ 1
 //
 // RUN: %clang -march=zEC12 -E -dM %s -o - 2>&1 \
+// RUN:     -target s390x-unknown-linux \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_SYSTEMZ_ZEC12
+// RUN: %clang -march=arch10 -E -dM %s -o - 2>&1 \
 // RUN:     -target s390x-unknown-linux \
 // RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_SYSTEMZ_ZEC12
 //

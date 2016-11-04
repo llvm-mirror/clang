@@ -1386,9 +1386,10 @@ CGObjCGNU::GenerateMessageSendSuper(CodeGenFunction &CGF,
           llvm::Type::getInt1Ty(VMContext), IsClassMessage))};
   llvm::MDNode *node = llvm::MDNode::get(VMContext, impMD);
 
+  CGCallee callee(CGCalleeInfo(), imp);
+
   llvm::Instruction *call;
-  RValue msgRet = CGF.EmitCall(MSI.CallInfo, imp, Return, ActualArgs,
-                               CGCalleeInfo(), &call);
+  RValue msgRet = CGF.EmitCall(MSI.CallInfo, callee, Return, ActualArgs, &call);
   call->setMetadata(msgSendMDKind, node);
   return msgRet;
 }
@@ -1500,8 +1501,8 @@ CGObjCGNU::GenerateMessageSend(CodeGenFunction &CGF,
   imp = EnforceType(Builder, imp, MSI.MessengerType);
 
   llvm::Instruction *call;
-  RValue msgRet = CGF.EmitCall(MSI.CallInfo, imp, Return, ActualArgs,
-                               CGCalleeInfo(), &call);
+  CGCallee callee(CGCalleeInfo(), imp);
+  RValue msgRet = CGF.EmitCall(MSI.CallInfo, callee, Return, ActualArgs, &call);
   call->setMetadata(msgSendMDKind, node);
 
 
@@ -2582,7 +2583,7 @@ llvm::Function *CGObjCGNU::ModuleInitFunction() {
   SourceManager &SM = CGM.getContext().getSourceManager();
   const FileEntry *mainFile = SM.getFileEntryForID(SM.getMainFileID());
   std::string path =
-    std::string(mainFile->getDir()->getName()) + '/' + mainFile->getName();
+      (Twine(mainFile->getDir()->getName()) + "/" + mainFile->getName()).str();
   Elements.push_back(MakeConstantString(path, ".objc_source_file_name"));
   Elements.push_back(SymTab);
 
@@ -2646,8 +2647,7 @@ llvm::Function *CGObjCGNU::ModuleInitFunction() {
     for (std::vector<ClassAliasPair>::iterator iter = ClassAliases.begin();
        iter != ClassAliases.end(); ++iter) {
        llvm::Constant *TheClass =
-         TheModule.getGlobalVariable(("_OBJC_CLASS_" + iter->first).c_str(),
-            true);
+          TheModule.getGlobalVariable("_OBJC_CLASS_" + iter->first, true);
        if (TheClass) {
          TheClass = llvm::ConstantExpr::getBitCast(TheClass, PtrTy);
          Builder.CreateCall(RegisterAlias,

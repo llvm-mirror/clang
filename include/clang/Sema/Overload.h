@@ -62,7 +62,7 @@ namespace clang {
     ICK_Lvalue_To_Rvalue,      ///< Lvalue-to-rvalue conversion (C++ 4.1)
     ICK_Array_To_Pointer,      ///< Array-to-pointer conversion (C++ 4.2)
     ICK_Function_To_Pointer,   ///< Function-to-pointer (C++ 4.3)
-    ICK_NoReturn_Adjustment,   ///< Removal of noreturn from a type (Clang)
+    ICK_Function_Conversion,   ///< Function pointer conversion (C++17 4.13)
     ICK_Qualification,         ///< Qualification conversions (C++ 4.4)
     ICK_Integral_Promotion,    ///< Integral promotions (C++ 4.5)
     ICK_Floating_Promotion,    ///< Floating point promotions (C++ 4.6)
@@ -84,6 +84,8 @@ namespace clang {
     ICK_Writeback_Conversion,  ///< Objective-C ARC writeback conversion
     ICK_Zero_Event_Conversion, ///< Zero constant to event (OpenCL1.2 6.12.10)
     ICK_C_Only_Conversion,     ///< Conversions allowed in C, but not C++
+    ICK_Incompatible_Pointer_Conversion, ///< C-only conversion between pointers
+                                         ///  with incompatible types
     ICK_Num_Conversion_Kinds,  ///< The number of conversion kinds
   };
 
@@ -97,8 +99,10 @@ namespace clang {
     ICR_Conversion,              ///< Conversion
     ICR_Complex_Real_Conversion, ///< Complex <-> Real conversion
     ICR_Writeback_Conversion,    ///< ObjC ARC writeback conversion
-    ICR_C_Conversion             ///< Conversion only allowed in the C standard.
+    ICR_C_Conversion,            ///< Conversion only allowed in the C standard.
                                  ///  (e.g. void* to char*)
+    ICR_C_Conversion_Extension   ///< Conversion not allowed by the C standard,
+                                 ///  but that we accept as an extension anyway.
   };
 
   ImplicitConversionRank GetConversionRank(ImplicitConversionKind Kind);
@@ -141,7 +145,8 @@ namespace clang {
     /// pointer-to-member conversion, or boolean conversion.
     ImplicitConversionKind Second : 8;
 
-    /// Third - The third conversion can be a qualification conversion.
+    /// Third - The third conversion can be a qualification conversion
+    /// or a function conversion.
     ImplicitConversionKind Third : 8;
 
     /// \brief Whether this is the deprecated conversion of a
@@ -723,8 +728,9 @@ namespace clang {
     CandidateSetKind Kind;
 
     unsigned NumInlineSequences;
-    llvm::AlignedCharArray<llvm::AlignOf<ImplicitConversionSequence>::Alignment,
-                           16 * sizeof(ImplicitConversionSequence)> InlineSpace;
+    llvm::AlignedCharArray<alignof(ImplicitConversionSequence),
+                           16 * sizeof(ImplicitConversionSequence)>
+        InlineSpace;
 
     OverloadCandidateSet(const OverloadCandidateSet &) = delete;
     void operator=(const OverloadCandidateSet &) = delete;
@@ -791,7 +797,9 @@ namespace clang {
                         OverloadCandidateDisplayKind OCD,
                         ArrayRef<Expr *> Args,
                         StringRef Opc = "",
-                        SourceLocation Loc = SourceLocation());
+                        SourceLocation Loc = SourceLocation(),
+                        llvm::function_ref<bool(OverloadCandidate&)> Filter =
+                          [](OverloadCandidate&) { return true; });
   };
 
   bool isBetterOverloadCandidate(Sema &S,

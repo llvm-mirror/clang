@@ -1171,8 +1171,9 @@ RetainSummaryManager::getFunctionSummary(const FunctionDecl *FD) {
         break;
       }
 
-      // For CoreGraphics ('CG') types.
-      if (cocoa::isRefType(RetTy, "CG", FName)) {
+      // For CoreGraphics ('CG') and CoreVideo ('CV') types.
+      if (cocoa::isRefType(RetTy, "CG", FName) ||
+          cocoa::isRefType(RetTy, "CV", FName)) {
         if (isRetain(FD, FName))
           S = getUnarySummary(FT, cfretain);
         else
@@ -2417,12 +2418,7 @@ CFRefLeakReport::CFRefLeakReport(CFRefBug &D, const LangOptions &LOpts,
   // FIXME: This will crash the analyzer if an allocation comes from an
   // implicit call (ex: a destructor call).
   // (Currently there are no such allocations in Cocoa, though.)
-  const Stmt *AllocStmt = nullptr;
-  ProgramPoint P = AllocNode->getLocation();
-  if (Optional<CallExitEnd> Exit = P.getAs<CallExitEnd>())
-    AllocStmt = Exit->getCalleeContext()->getCallSite();
-  else
-    AllocStmt = P.castAs<PostStmt>().getStmt();
+  const Stmt *AllocStmt = PathDiagnosticLocation::getStmt(AllocNode);
   assert(AllocStmt && "Cannot find allocation statement");
 
   PathDiagnosticLocation AllocLocation =
@@ -3372,12 +3368,13 @@ bool RetainCountChecker::evalCall(const CallExpr *CE, CheckerContext &C) const {
     // Handle: id NSMakeCollectable(CFTypeRef)
     canEval = II->isStr("NSMakeCollectable");
   } else if (ResultTy->isPointerType()) {
-    // Handle: (CF|CG)Retain
+    // Handle: (CF|CG|CV)Retain
     //         CFAutorelease
     //         CFMakeCollectable
     // It's okay to be a little sloppy here (CGMakeCollectable doesn't exist).
     if (cocoa::isRefType(ResultTy, "CF", FName) ||
-        cocoa::isRefType(ResultTy, "CG", FName)) {
+        cocoa::isRefType(ResultTy, "CG", FName) ||
+        cocoa::isRefType(ResultTy, "CV", FName)) {
       canEval = isRetain(FD, FName) || isAutorelease(FD, FName) ||
                 isMakeCollectable(FD, FName);
     }
@@ -3866,7 +3863,7 @@ void RetainCountChecker::checkEndFunction(CheckerContext &Ctx) const {
   // Don't process anything within synthesized bodies.
   const LocationContext *LCtx = Pred->getLocationContext();
   if (LCtx->getAnalysisDeclContext()->isBodyAutosynthesized()) {
-    assert(LCtx->getParent());
+    assert(!LCtx->inTopFrame()); 
     return;
   }
 

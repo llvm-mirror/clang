@@ -12,24 +12,41 @@
 ///
 //===----------------------------------------------------------------------===//
 
+#include "clang/Basic/CharInfo.h"
 #include "clang/Basic/FileManager.h"
+#include "clang/Basic/IdentifierTable.h"
+#include "clang/Basic/LangOptions.h"
+#include "clang/Basic/Module.h"
+#include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Basic/TokenKinds.h"
 #include "clang/Lex/CodeCompletionHandler.h"
 #include "clang/Lex/HeaderSearch.h"
-#include "clang/Lex/HeaderSearchOptions.h"
 #include "clang/Lex/LexDiagnostic.h"
 #include "clang/Lex/LiteralSupport.h"
 #include "clang/Lex/MacroInfo.h"
 #include "clang/Lex/ModuleLoader.h"
+#include "clang/Lex/ModuleMap.h"
+#include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Pragma.h"
 #include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/PTHLexer.h"
+#include "clang/Lex/Token.h"
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallString.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/ADT/iterator_range.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/Support/AlignOf.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/SaveAndRestore.h"
+#include <algorithm>
+#include <cassert>
+#include <cstring>
+#include <new>
+#include <string>
+#include <utility>
 
 using namespace clang;
 
@@ -52,7 +69,7 @@ MacroInfo *Preprocessor::AllocateMacroInfo(SourceLocation L) {
 
 MacroInfo *Preprocessor::AllocateDeserializedMacroInfo(SourceLocation L,
                                                        unsigned SubModuleID) {
-  static_assert(llvm::AlignOf<MacroInfo>::Alignment >= sizeof(SubModuleID),
+  static_assert(alignof(MacroInfo) >= sizeof(SubModuleID),
                 "alignment for MacroInfo is less than the ID");
   DeserializedMacroInfoChain *MIChain =
       BP.Allocate<DeserializedMacroInfoChain>();
@@ -267,7 +284,7 @@ bool Preprocessor::CheckMacroName(Token &MacroNameTok, MacroUse isDefineUndef,
   if (ShadowFlag)
     *ShadowFlag = false;
   if (!SourceMgr.isInSystemHeader(MacroNameLoc) &&
-      (strcmp(SourceMgr.getBufferName(MacroNameLoc), "<built-in>") != 0)) {
+      (SourceMgr.getBufferName(MacroNameLoc) != "<built-in>")) {
     MacroDiag D = MD_NoWarn;
     if (isDefineUndef == MU_Define) {
       D = shouldWarnOnMacroDef(*this, II);
@@ -381,7 +398,7 @@ void Preprocessor::SkipExcludedConditionalBlock(SourceLocation IfTokenLoc,
   // disabling warnings, etc.
   CurPPLexer->LexingRawMode = true;
   Token Tok;
-  while (1) {
+  while (true) {
     CurLexer->Lex(Tok);
 
     if (Tok.is(tok::code_completion)) {
@@ -454,7 +471,7 @@ void Preprocessor::SkipExcludedConditionalBlock(SourceLocation IfTokenLoc,
       Directive = RI;
     } else {
       std::string DirectiveStr = getSpelling(Tok);
-      unsigned IdLen = DirectiveStr.size();
+      size_t IdLen = DirectiveStr.size();
       if (IdLen >= 20) {
         CurPPLexer->ParsingPreprocessorDirective = false;
         // Restore comment saving mode.
@@ -577,7 +594,7 @@ void Preprocessor::SkipExcludedConditionalBlock(SourceLocation IfTokenLoc,
 }
 
 void Preprocessor::PTHSkipExcludedConditionalBlock() {
-  while (1) {
+  while (true) {
     assert(CurPTHLexer);
     assert(CurPTHLexer->LexingRawMode == false);
 
@@ -784,8 +801,7 @@ const FileEntry *Preprocessor::LookupFile(
     // headers included by quoted include directives.
     // See: http://msdn.microsoft.com/en-us/library/36k2cdd4.aspx
     if (LangOpts.MSVCCompat && !isAngled) {
-      for (unsigned i = 0, e = IncludeMacroStack.size(); i != e; ++i) {
-        IncludeStackInfo &ISEntry = IncludeMacroStack[e - i - 1];
+      for (IncludeStackInfo &ISEntry : llvm::reverse(IncludeMacroStack)) {
         if (IsFileLexer(ISEntry))
           if ((FileEnt = ISEntry.ThePPLexer->getFileEntry()))
             Includers.push_back(std::make_pair(FileEnt, FileEnt->getDir()));
@@ -848,8 +864,7 @@ const FileEntry *Preprocessor::LookupFile(
     }
   }
 
-  for (unsigned i = 0, e = IncludeMacroStack.size(); i != e; ++i) {
-    IncludeStackInfo &ISEntry = IncludeMacroStack[e-i-1];
+  for (IncludeStackInfo &ISEntry : llvm::reverse(IncludeMacroStack)) {
     if (IsFileLexer(ISEntry)) {
       if ((CurFileEnt = ISEntry.ThePPLexer->getFileEntry())) {
         if ((FE = HeaderInfo.LookupSubframeworkHeader(
@@ -997,11 +1012,11 @@ void Preprocessor::HandleDirective(Token &Result) {
     case tok::pp_define:
       return HandleDefineDirective(Result, ImmediatelyAfterTopLevelIfndef);
     case tok::pp_undef:
-      return HandleUndefDirective(Result);
+      return HandleUndefDirective();
 
     // C99 6.10.4 - Line Control.
     case tok::pp_line:
-      return HandleLineDirective(Result);
+      return HandleLineDirective();
 
     // C99 6.10.5 - Error Directive.
     case tok::pp_error:
@@ -1038,7 +1053,7 @@ void Preprocessor::HandleDirective(Token &Result) {
 
     case tok::pp___private_macro:
       if (getLangOpts().Modules)
-        return HandleMacroPrivateDirective(Result);
+        return HandleMacroPrivateDirective();
       break;
     }
     break;
@@ -1136,7 +1151,7 @@ static bool GetLineValue(Token &DigitTok, unsigned &Val,
 ///   # line digit-sequence
 ///   # line digit-sequence "s-char-sequence"
 /// \endverbatim
-void Preprocessor::HandleLineDirective(Token &Tok) {
+void Preprocessor::HandleLineDirective() {
   // Read the line # and string argument.  Per C99 6.10.4p5, these tokens are
   // expanded.
   Token DigitTok;
@@ -1441,7 +1456,7 @@ void Preprocessor::HandleMacroPublicDirective(Token &Tok) {
 }
 
 /// \brief Handle a #private directive.
-void Preprocessor::HandleMacroPrivateDirective(Token &Tok) {
+void Preprocessor::HandleMacroPrivateDirective() {
   Token MacroNameTok;
   ReadMacroName(MacroNameTok, MU_Undef);
 
@@ -1550,7 +1565,7 @@ bool Preprocessor::ConcatenateIncludeName(SmallString<128> &FilenameBuffer,
       FilenameBuffer.push_back(' ');
 
     // Get the spelling of the token, directly into FilenameBuffer if possible.
-    unsigned PreAppendSize = FilenameBuffer.size();
+    size_t PreAppendSize = FilenameBuffer.size();
     FilenameBuffer.resize(PreAppendSize+CurTok.getLength());
 
     const char *BufPtr = &FilenameBuffer[PreAppendSize];
@@ -1601,7 +1616,7 @@ static void diagnoseAutoModuleImport(
   assert(PP.getLangOpts().ObjC2 && "no import syntax available");
 
   SmallString<128> PathString;
-  for (unsigned I = 0, N = Path.size(); I != N; ++I) {
+  for (size_t I = 0, N = Path.size(); I != N; ++I) {
     if (I)
       PathString += '.';
     PathString += Path[I].first->getName();
@@ -1830,7 +1845,8 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
 
       // If the file is still not found, just go with the vanilla diagnostic
       if (!File)
-        Diag(FilenameTok, diag::err_pp_file_not_found) << Filename;
+        Diag(FilenameTok, diag::err_pp_file_not_found) << Filename
+                                                       << FilenameRange;
     }
   }
 
@@ -1854,8 +1870,8 @@ void Preprocessor::HandleIncludeDirective(SourceLocation HashLoc,
         !SuggestedModule.getModule()
              ->getTopLevelModule()
              ->HasIncompatibleModuleFile) {
-      clang::Module::Requirement Requirement;
-      clang::Module::UnresolvedHeaderDirective MissingHeader;
+      Module::Requirement Requirement;
+      Module::UnresolvedHeaderDirective MissingHeader;
       Module *M = SuggestedModule.getModule();
       // Identify the cause.
       (void)M->isAvailable(getLangOpts(), getTargetInfo(), Requirement,
@@ -2042,7 +2058,11 @@ void Preprocessor::HandleIncludeNextDirective(SourceLocation HashLoc,
   // diagnostic.
   const DirectoryLookup *Lookup = CurDirLookup;
   const FileEntry *LookupFromFile = nullptr;
-  if (isInPrimaryFile()) {
+  if (isInPrimaryFile() && LangOpts.IsHeaderFile) {
+    // If the main file is a header, then it's either for PCH/AST generation,
+    // or libclang opened it. Either way, handle it as a normal include below
+    // and do not complain about include_next.
+  } else if (isInPrimaryFile()) {
     Lookup = nullptr;
     Diag(IncludeNextTok, diag::pp_include_next_in_primary);
   } else if (CurSubmodule) {
@@ -2097,7 +2117,7 @@ void Preprocessor::HandleIncludeMacrosDirective(SourceLocation HashLoc,
   // This directive should only occur in the predefines buffer.  If not, emit an
   // error and reject it.
   SourceLocation Loc = IncludeMacrosTok.getLocation();
-  if (strcmp(SourceMgr.getBufferName(Loc), "<built-in>") != 0) {
+  if (SourceMgr.getBufferName(Loc) != "<built-in>") {
     Diag(IncludeMacrosTok.getLocation(),
          diag::pp_include_macros_out_of_predefines);
     DiscardUntilEndOfDirective();
@@ -2126,7 +2146,7 @@ void Preprocessor::HandleIncludeMacrosDirective(SourceLocation HashLoc,
 bool Preprocessor::ReadMacroDefinitionArgList(MacroInfo *MI, Token &Tok) {
   SmallVector<IdentifierInfo*, 32> Arguments;
 
-  while (1) {
+  while (true) {
     LexUnexpandedToken(Tok);
     switch (Tok.getKind()) {
     case tok::r_paren:
@@ -2535,7 +2555,7 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
 
 /// HandleUndefDirective - Implements \#undef.
 ///
-void Preprocessor::HandleUndefDirective(Token &UndefTok) {
+void Preprocessor::HandleUndefDirective() {
   ++NumUndefined;
 
   Token MacroNameTok;
