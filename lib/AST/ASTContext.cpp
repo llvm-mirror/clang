@@ -653,7 +653,7 @@ ASTContext::getCanonicalTemplateTemplateParmDecl(
 
   assert(!TTP->getRequiresClause() &&
          "Unexpected requires-clause on template template-parameter");
-  LLVM_CONSTEXPR Expr *const CanonRequiresClause = nullptr;
+  Expr *const CanonRequiresClause = nullptr;
 
   TemplateTemplateParmDecl *CanonTTP
     = TemplateTemplateParmDecl::Create(*this, getTranslationUnitDecl(), 
@@ -794,8 +794,6 @@ ASTContext::~ASTContext() {
 
   for (const auto &Value : ModuleInitializers)
     Value.second->~PerModuleInitializers();
-
-  llvm::DeleteContainerSeconds(MangleNumberingContexts);
 }
 
 void ASTContext::ReleaseParentMapEntries() {
@@ -1572,6 +1570,30 @@ bool ASTContext::isAlignmentRequired(QualType T) const {
   return isAlignmentRequired(T.getTypePtr());
 }
 
+unsigned ASTContext::getTypeAlignIfKnown(QualType T) const {
+  // An alignment on a typedef overrides anything else.
+  if (auto *TT = T->getAs<TypedefType>())
+    if (unsigned Align = TT->getDecl()->getMaxAlignment())
+      return Align;
+
+  // If we have an (array of) complete type, we're done.
+  T = getBaseElementType(T);
+  if (!T->isIncompleteType())
+    return getTypeAlign(T);
+
+  // If we had an array type, its element type might be a typedef
+  // type with an alignment attribute.
+  if (auto *TT = T->getAs<TypedefType>())
+    if (unsigned Align = TT->getDecl()->getMaxAlignment())
+      return Align;
+
+  // Otherwise, see if the declaration of the type had an attribute.
+  if (auto *TT = T->getAs<TagType>())
+    return TT->getDecl()->getMaxAlignment();
+
+  return 0;
+}
+
 TypeInfo ASTContext::getTypeInfo(const Type *T) const {
   TypeInfoMap::iterator I = MemoizedTypeInfo.find(T);
   if (I != MemoizedTypeInfo.end())
@@ -1750,14 +1772,18 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
     case BuiltinType::OCLQueue:
     case BuiltinType::OCLNDRange:
     case BuiltinType::OCLReserveID:
-#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
-    case BuiltinType::Id:
-#include "clang/Basic/OpenCLImageTypes.def"
-
       // Currently these types are pointers to opaque types.
       Width = Target->getPointerWidth(0);
       Align = Target->getPointerAlign(0);
       break;
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) \
+    case BuiltinType::Id:
+#include "clang/Basic/OpenCLImageTypes.def"
+      {
+        auto AS = getTargetAddressSpace(Target->getOpenCLImageAddrSpace());
+        Width = Target->getPointerWidth(AS);
+        Align = Target->getPointerAlign(AS);
+      }
     }
     break;
   case Type::ObjCObjectPointer:
@@ -1855,6 +1881,9 @@ TypeInfo ASTContext::getTypeInfoImpl(const Type *T) const {
 
   case Type::Paren:
     return getTypeInfo(cast<ParenType>(T)->getInnerType().getTypePtr());
+
+  case Type::ObjCTypeParam:
+    return getTypeInfo(cast<ObjCTypeParamType>(T)->desugar().getTypePtr());
 
   case Type::Typedef: {
     const TypedefNameDecl *Typedef = cast<TypedefType>(T)->getDecl();
@@ -3108,46 +3137,160 @@ ASTContext::getCanonicalFunctionResultType(QualType ResultType) const {
   return CanResultType;
 }
 
-QualType
-ASTContext::getFunctionType(QualType ResultTy, ArrayRef<QualType> ArgArray,
-                            const FunctionProtoType::ExtProtoInfo &EPI) const {
+static bool isCanonicalExceptionSpecification(
+    const FunctionProtoType::ExceptionSpecInfo &ESI, bool NoexceptInType) {
+  if (ESI.Type == EST_None)
+    return true;
+  if (!NoexceptInType)
+    return false;
+
+  // C++17 onwards: exception specification is part of the type, as a simple
+  // boolean "can this function type throw".
+  if (ESI.Type == EST_BasicNoexcept)
+    return true;
+
+  // A dynamic exception specification is canonical if it only contains pack
+  // expansions (so we can't tell whether it's non-throwing) and all its
+  // contained types are canonical.
+  if (ESI.Type == EST_Dynamic) {
+    bool AnyPackExpansions = false;
+    for (QualType ET : ESI.Exceptions) {
+      if (!ET.isCanonical())
+        return false;
+      if (ET->getAs<PackExpansionType>())
+        AnyPackExpansions = true;
+    }
+    return AnyPackExpansions;
+  }
+
+  // A noexcept(expr) specification is (possibly) canonical if expr is
+  // value-dependent.
+  if (ESI.Type == EST_ComputedNoexcept)
+    return ESI.NoexceptExpr && ESI.NoexceptExpr->isValueDependent();
+
+  return false;
+}
+
+QualType ASTContext::getFunctionTypeInternal(
+    QualType ResultTy, ArrayRef<QualType> ArgArray,
+    const FunctionProtoType::ExtProtoInfo &EPI, bool OnlyWantCanonical) const {
   size_t NumArgs = ArgArray.size();
 
   // Unique functions, to guarantee there is only one function of a particular
   // structure.
   llvm::FoldingSetNodeID ID;
   FunctionProtoType::Profile(ID, ResultTy, ArgArray.begin(), NumArgs, EPI,
-                             *this);
+                             *this, true);
+
+  QualType Canonical;
+  bool Unique = false;
 
   void *InsertPos = nullptr;
-  if (FunctionProtoType *FTP =
-        FunctionProtoTypes.FindNodeOrInsertPos(ID, InsertPos))
-    return QualType(FTP, 0);
+  if (FunctionProtoType *FPT =
+        FunctionProtoTypes.FindNodeOrInsertPos(ID, InsertPos)) {
+    QualType Existing = QualType(FPT, 0);
+
+    // If we find a pre-existing equivalent FunctionProtoType, we can just reuse
+    // it so long as our exception specification doesn't contain a dependent
+    // noexcept expression, or we're just looking for a canonical type.
+    // Otherwise, we're going to need to create a type
+    // sugar node to hold the concrete expression.
+    if (OnlyWantCanonical || EPI.ExceptionSpec.Type != EST_ComputedNoexcept ||
+        EPI.ExceptionSpec.NoexceptExpr == FPT->getNoexceptExpr())
+      return Existing;
+
+    // We need a new type sugar node for this one, to hold the new noexcept
+    // expression. We do no canonicalization here, but that's OK since we don't
+    // expect to see the same noexcept expression much more than once.
+    Canonical = getCanonicalType(Existing);
+    Unique = true;
+  }
+
+  bool NoexceptInType = getLangOpts().CPlusPlus1z;
+  bool IsCanonicalExceptionSpec =
+      isCanonicalExceptionSpecification(EPI.ExceptionSpec, NoexceptInType);
 
   // Determine whether the type being created is already canonical or not.
-  bool isCanonical =
-    EPI.ExceptionSpec.Type == EST_None && isCanonicalResultType(ResultTy) &&
-    !EPI.HasTrailingReturn;
+  bool isCanonical = !Unique && IsCanonicalExceptionSpec &&
+                     isCanonicalResultType(ResultTy) && !EPI.HasTrailingReturn;
   for (unsigned i = 0; i != NumArgs && isCanonical; ++i)
     if (!ArgArray[i].isCanonicalAsParam())
       isCanonical = false;
 
-  // If this type isn't canonical, get the canonical version of it.
-  // The exception spec is not part of the canonical type.
-  QualType Canonical;
-  if (!isCanonical) {
+  if (OnlyWantCanonical)
+    assert(isCanonical &&
+           "given non-canonical parameters constructing canonical type");
+
+  // If this type isn't canonical, get the canonical version of it if we don't
+  // already have it. The exception spec is only partially part of the
+  // canonical type, and only in C++17 onwards.
+  if (!isCanonical && Canonical.isNull()) {
     SmallVector<QualType, 16> CanonicalArgs;
     CanonicalArgs.reserve(NumArgs);
     for (unsigned i = 0; i != NumArgs; ++i)
       CanonicalArgs.push_back(getCanonicalParamType(ArgArray[i]));
 
+    llvm::SmallVector<QualType, 8> ExceptionTypeStorage;
     FunctionProtoType::ExtProtoInfo CanonicalEPI = EPI;
     CanonicalEPI.HasTrailingReturn = false;
-    CanonicalEPI.ExceptionSpec = FunctionProtoType::ExceptionSpecInfo();
+
+    if (IsCanonicalExceptionSpec) {
+      // Exception spec is already OK.
+    } else if (NoexceptInType) {
+      switch (EPI.ExceptionSpec.Type) {
+      case EST_Unparsed: case EST_Unevaluated: case EST_Uninstantiated:
+        // We don't know yet. It shouldn't matter what we pick here; no-one
+        // should ever look at this.
+        LLVM_FALLTHROUGH;
+      case EST_None: case EST_MSAny:
+        CanonicalEPI.ExceptionSpec.Type = EST_None;
+        break;
+
+        // A dynamic exception specification is almost always "not noexcept",
+        // with the exception that a pack expansion might expand to no types.
+      case EST_Dynamic: {
+        bool AnyPacks = false;
+        for (QualType ET : EPI.ExceptionSpec.Exceptions) {
+          if (ET->getAs<PackExpansionType>())
+            AnyPacks = true;
+          ExceptionTypeStorage.push_back(getCanonicalType(ET));
+        }
+        if (!AnyPacks)
+          CanonicalEPI.ExceptionSpec.Type = EST_None;
+        else {
+          CanonicalEPI.ExceptionSpec.Type = EST_Dynamic;
+          CanonicalEPI.ExceptionSpec.Exceptions = ExceptionTypeStorage;
+        }
+        break;
+      }
+
+      case EST_DynamicNone: case EST_BasicNoexcept:
+        CanonicalEPI.ExceptionSpec.Type = EST_BasicNoexcept;
+        break;
+
+      case EST_ComputedNoexcept:
+        llvm::APSInt Value(1);
+        auto *E = CanonicalEPI.ExceptionSpec.NoexceptExpr;
+        if (!E || !E->isIntegerConstantExpr(Value, *this, nullptr,
+                                            /*IsEvaluated*/false)) {
+          // This noexcept specification is invalid.
+          // FIXME: Should this be able to happen?
+          CanonicalEPI.ExceptionSpec.Type = EST_None;
+          break;
+        }
+
+        CanonicalEPI.ExceptionSpec.Type =
+            Value.getBoolValue() ? EST_BasicNoexcept : EST_None;
+        break;
+      }
+    } else {
+      CanonicalEPI.ExceptionSpec = FunctionProtoType::ExceptionSpecInfo();
+    }
 
     // Adjust the canonical function result type.
     CanQualType CanResultTy = getCanonicalFunctionResultType(ResultTy);
-    Canonical = getFunctionType(CanResultTy, CanonicalArgs, CanonicalEPI);
+    Canonical =
+        getFunctionTypeInternal(CanResultTy, CanonicalArgs, CanonicalEPI, true);
 
     // Get the new insert position for the node we care about.
     FunctionProtoType *NewIP =
@@ -3190,7 +3333,8 @@ ASTContext::getFunctionType(QualType ResultTy, ArrayRef<QualType> ArgArray,
   FunctionProtoType::ExtProtoInfo newEPI = EPI;
   new (FTP) FunctionProtoType(ResultTy, ArgArray, Canonical, newEPI);
   Types.push_back(FTP);
-  FunctionProtoTypes.InsertNode(FTP, InsertPos);
+  if (!Unique)
+    FunctionProtoTypes.InsertNode(FTP, InsertPos);
   return QualType(FTP, 0);
 }
 
@@ -3865,6 +4009,116 @@ QualType ASTContext::getObjCObjectType(
   Types.push_back(T);
   ObjCObjectTypes.InsertNode(T, InsertPos);
   return QualType(T, 0);
+}
+
+/// Apply Objective-C protocol qualifiers to the given type.
+/// If this is for the canonical type of a type parameter, we can apply
+/// protocol qualifiers on the ObjCObjectPointerType.
+QualType
+ASTContext::applyObjCProtocolQualifiers(QualType type,
+                  ArrayRef<ObjCProtocolDecl *> protocols, bool &hasError,
+                  bool allowOnPointerType) const {
+  hasError = false;
+
+  if (const ObjCTypeParamType *objT =
+      dyn_cast<ObjCTypeParamType>(type.getTypePtr())) {
+    return getObjCTypeParamType(objT->getDecl(), protocols);
+  }
+
+  // Apply protocol qualifiers to ObjCObjectPointerType.
+  if (allowOnPointerType) {
+    if (const ObjCObjectPointerType *objPtr =
+        dyn_cast<ObjCObjectPointerType>(type.getTypePtr())) {
+      const ObjCObjectType *objT = objPtr->getObjectType();
+      // Merge protocol lists and construct ObjCObjectType.
+      SmallVector<ObjCProtocolDecl*, 8> protocolsVec;
+      protocolsVec.append(objT->qual_begin(),
+                          objT->qual_end());
+      protocolsVec.append(protocols.begin(), protocols.end());
+      ArrayRef<ObjCProtocolDecl *> protocols = protocolsVec;
+      type = getObjCObjectType(
+             objT->getBaseType(),
+             objT->getTypeArgsAsWritten(),
+             protocols,
+             objT->isKindOfTypeAsWritten());
+      return getObjCObjectPointerType(type);
+    }
+  }
+
+  // Apply protocol qualifiers to ObjCObjectType.
+  if (const ObjCObjectType *objT = dyn_cast<ObjCObjectType>(type.getTypePtr())){
+    // FIXME: Check for protocols to which the class type is already
+    // known to conform.
+
+    return getObjCObjectType(objT->getBaseType(),
+                             objT->getTypeArgsAsWritten(),
+                             protocols,
+                             objT->isKindOfTypeAsWritten());
+  }
+
+  // If the canonical type is ObjCObjectType, ...
+  if (type->isObjCObjectType()) {
+    // Silently overwrite any existing protocol qualifiers.
+    // TODO: determine whether that's the right thing to do.
+
+    // FIXME: Check for protocols to which the class type is already
+    // known to conform.
+    return getObjCObjectType(type, { }, protocols, false);
+  }
+
+  // id<protocol-list>
+  if (type->isObjCIdType()) {
+    const ObjCObjectPointerType *objPtr = type->castAs<ObjCObjectPointerType>();
+    type = getObjCObjectType(ObjCBuiltinIdTy, { }, protocols,
+                                 objPtr->isKindOfType());
+    return getObjCObjectPointerType(type);
+  }
+
+  // Class<protocol-list>
+  if (type->isObjCClassType()) {
+    const ObjCObjectPointerType *objPtr = type->castAs<ObjCObjectPointerType>();
+    type = getObjCObjectType(ObjCBuiltinClassTy, { }, protocols,
+                                 objPtr->isKindOfType());
+    return getObjCObjectPointerType(type);
+  }
+
+  hasError = true;
+  return type;
+}
+
+QualType
+ASTContext::getObjCTypeParamType(const ObjCTypeParamDecl *Decl,
+                           ArrayRef<ObjCProtocolDecl *> protocols,
+                           QualType Canonical) const {
+  // Look in the folding set for an existing type.
+  llvm::FoldingSetNodeID ID;
+  ObjCTypeParamType::Profile(ID, Decl, protocols);
+  void *InsertPos = nullptr;
+  if (ObjCTypeParamType *TypeParam =
+      ObjCTypeParamTypes.FindNodeOrInsertPos(ID, InsertPos))
+    return QualType(TypeParam, 0);
+
+  if (Canonical.isNull()) {
+    // We canonicalize to the underlying type.
+    Canonical = getCanonicalType(Decl->getUnderlyingType());
+    if (!protocols.empty()) {
+      // Apply the protocol qualifers.
+      bool hasError;
+      Canonical = applyObjCProtocolQualifiers(Canonical, protocols, hasError,
+          true/*allowOnPointerType*/);
+      assert(!hasError && "Error when apply protocol qualifier to bound type");
+    }
+  }
+
+  unsigned size = sizeof(ObjCTypeParamType);
+  size += protocols.size() * sizeof(ObjCProtocolDecl *);
+  void *mem = Allocate(size, TypeAlignment);
+  ObjCTypeParamType *newType = new (mem)
+    ObjCTypeParamType(Decl, Canonical, protocols);
+
+  Types.push_back(newType);
+  ObjCTypeParamTypes.InsertNode(newType, InsertPos);
+  return QualType(newType, 0);
 }
 
 /// ObjCObjectAdoptsQTypeProtocols - Checks that protocols in IC's
@@ -5902,18 +6156,20 @@ void ASTContext::getObjCEncodingForTypeImpl(QualType T, std::string& S,
     ObjCInterfaceDecl *OI = T->castAs<ObjCObjectType>()->getInterface();
     S += '{';
     S += OI->getObjCRuntimeNameAsString();
-    S += '=';
-    SmallVector<const ObjCIvarDecl*, 32> Ivars;
-    DeepCollectObjCIvars(OI, true, Ivars);
-    for (unsigned i = 0, e = Ivars.size(); i != e; ++i) {
-      const FieldDecl *Field = cast<FieldDecl>(Ivars[i]);
-      if (Field->isBitField())
-        getObjCEncodingForTypeImpl(Field->getType(), S, false, true, Field);
-      else
-        getObjCEncodingForTypeImpl(Field->getType(), S, false, true, FD,
-                                   false, false, false, false, false,
-                                   EncodePointerToObjCTypedef,
-                                   NotEncodedT);
+    if (ExpandStructures) {
+      S += '=';
+      SmallVector<const ObjCIvarDecl*, 32> Ivars;
+      DeepCollectObjCIvars(OI, true, Ivars);
+      for (unsigned i = 0, e = Ivars.size(); i != e; ++i) {
+        const FieldDecl *Field = cast<FieldDecl>(Ivars[i]);
+        if (Field->isBitField())
+          getObjCEncodingForTypeImpl(Field->getType(), S, false, true, Field);
+        else
+          getObjCEncodingForTypeImpl(Field->getType(), S, false, true, FD,
+                                     false, false, false, false, false,
+                                     EncodePointerToObjCTypedef,
+                                     NotEncodedT);
+      }
     }
     S += '}';
     return;
@@ -6438,9 +6694,8 @@ CreateX86_64ABIBuiltinVaListDecl(const ASTContext *Context) {
 static TypedefDecl *CreatePNaClABIBuiltinVaListDecl(const ASTContext *Context) {
   // typedef int __builtin_va_list[4];
   llvm::APInt Size(Context->getTypeSize(Context->getSizeType()), 4);
-  QualType IntArrayType
-    = Context->getConstantArrayType(Context->IntTy,
-				    Size, ArrayType::Normal, 0);
+  QualType IntArrayType =
+      Context->getConstantArrayType(Context->IntTy, Size, ArrayType::Normal, 0);
   return Context->buildImplicitTypedef(IntArrayType, "__builtin_va_list");
 }
 
@@ -6636,7 +6891,7 @@ ASTContext::getQualifiedTemplateName(NestedNameSpecifier *NNS,
   QualifiedTemplateName *QTN =
     QualifiedTemplateNames.FindNodeOrInsertPos(ID, InsertPos);
   if (!QTN) {
-    QTN = new (*this, llvm::alignOf<QualifiedTemplateName>())
+    QTN = new (*this, alignof(QualifiedTemplateName))
         QualifiedTemplateName(NNS, TemplateKeyword, Template);
     QualifiedTemplateNames.InsertNode(QTN, InsertPos);
   }
@@ -6664,11 +6919,11 @@ ASTContext::getDependentTemplateName(NestedNameSpecifier *NNS,
 
   NestedNameSpecifier *CanonNNS = getCanonicalNestedNameSpecifier(NNS);
   if (CanonNNS == NNS) {
-    QTN = new (*this, llvm::alignOf<DependentTemplateName>())
+    QTN = new (*this, alignof(DependentTemplateName))
         DependentTemplateName(NNS, Name);
   } else {
     TemplateName Canon = getDependentTemplateName(CanonNNS, Name);
-    QTN = new (*this, llvm::alignOf<DependentTemplateName>())
+    QTN = new (*this, alignof(DependentTemplateName))
         DependentTemplateName(NNS, Name, Canon);
     DependentTemplateName *CheckQTN =
       DependentTemplateNames.FindNodeOrInsertPos(ID, InsertPos);
@@ -6700,13 +6955,13 @@ ASTContext::getDependentTemplateName(NestedNameSpecifier *NNS,
   
   NestedNameSpecifier *CanonNNS = getCanonicalNestedNameSpecifier(NNS);
   if (CanonNNS == NNS) {
-    QTN = new (*this, llvm::alignOf<DependentTemplateName>())
+    QTN = new (*this, alignof(DependentTemplateName))
         DependentTemplateName(NNS, Operator);
   } else {
     TemplateName Canon = getDependentTemplateName(CanonNNS, Operator);
-    QTN = new (*this, llvm::alignOf<DependentTemplateName>())
+    QTN = new (*this, alignof(DependentTemplateName))
         DependentTemplateName(NNS, Operator, Canon);
-    
+
     DependentTemplateName *CheckQTN
       = DependentTemplateNames.FindNodeOrInsertPos(ID, InsertPos);
     assert(!CheckQTN && "Dependent template name canonicalization broken");
@@ -8461,6 +8716,9 @@ QualType ASTContext::GetBuiltinType(unsigned Id,
   FunctionProtoType::ExtProtoInfo EPI;
   EPI.ExtInfo = EI;
   EPI.Variadic = Variadic;
+  if (getLangOpts().CPlusPlus && BuiltinInfo.isNoThrow(Id))
+    EPI.ExceptionSpec.Type =
+        getLangOpts().CPlusPlus11 ? EST_BasicNoexcept : EST_DynamicNone;
 
   return getFunctionType(ResType, ArgTypes, EPI);
 }
@@ -8684,15 +8942,10 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
       }
     }
 
-    GVALinkage Linkage = GetGVALinkageForFunction(FD);
-
     // static, static inline, always_inline, and extern inline functions can
     // always be deferred.  Normal inline functions can be deferred in C99/C++.
     // Implicit template instantiations can also be deferred in C++.
-    if (Linkage == GVA_Internal || Linkage == GVA_AvailableExternally ||
-        Linkage == GVA_DiscardableODR)
-      return false;
-    return true;
+    return !isDiscardableGVALinkage(GetGVALinkageForFunction(FD));
   }
   
   const VarDecl *VD = cast<VarDecl>(D);
@@ -8703,9 +8956,7 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
     return false;
 
   // Variables that can be needed in other TUs are required.
-  GVALinkage L = GetGVALinkageForVariable(VD);
-  if (L != GVA_Internal && L != GVA_AvailableExternally &&
-      L != GVA_DiscardableODR)
+  if (!isDiscardableGVALinkage(GetGVALinkageForVariable(VD)))
     return true;
 
   // Variables that have destruction with side-effects are required.
@@ -8716,6 +8967,14 @@ bool ASTContext::DeclMustBeEmitted(const Decl *D) {
   if (VD->getInit() && VD->getInit()->HasSideEffects(*this) &&
       !VD->evaluateValue())
     return true;
+
+  // Likewise, variables with tuple-like bindings are required if their
+  // bindings have side-effects.
+  if (auto *DD = dyn_cast<DecompositionDecl>(VD))
+    for (auto *BD : DD->bindings())
+      if (auto *BindingVD = BD->getHoldingVar())
+        if (DeclMustBeEmitted(BindingVD))
+          return true;
 
   return false;
 }
@@ -8856,13 +9115,14 @@ unsigned ASTContext::getStaticLocalNumber(const VarDecl *VD) const {
 MangleNumberingContext &
 ASTContext::getManglingNumberContext(const DeclContext *DC) {
   assert(LangOpts.CPlusPlus);  // We don't need mangling numbers for plain C.
-  MangleNumberingContext *&MCtx = MangleNumberingContexts[DC];
+  std::unique_ptr<MangleNumberingContext> &MCtx = MangleNumberingContexts[DC];
   if (!MCtx)
     MCtx = createMangleNumberingContext();
   return *MCtx;
 }
 
-MangleNumberingContext *ASTContext::createMangleNumberingContext() const {
+std::unique_ptr<MangleNumberingContext>
+ASTContext::createMangleNumberingContext() const {
   return ABI->createMangleNumberingContext();
 }
 

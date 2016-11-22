@@ -299,7 +299,13 @@ namespace {
         OS << "\" << get" << getUpperName()
            << "()->getNameInfo().getAsString() << \"";
       } else if (type == "IdentifierInfo *") {
-        OS << "\" << get" << getUpperName() << "()->getName() << \"";
+        OS << "\";\n";
+        if (isOptional())
+          OS << "    if (get" << getUpperName() << "()) ";
+        else
+          OS << "    ";
+        OS << "OS << get" << getUpperName() << "()->getName();\n";
+        OS << "    OS << \"";
       } else if (type == "TypeSourceInfo *") {
         OS << "\" << get" << getUpperName() << "().getAsString() << \"";
       } else {
@@ -1312,6 +1318,9 @@ writePrettyPrintFunction(Record &R,
     } else if (Variety == "Declspec") {
       Prefix = " __declspec(";
       Suffix = ")";
+    } else if (Variety == "Microsoft") {
+      Prefix = "[";
+      Suffix = "]";
     } else if (Variety == "Keyword") {
       Prefix = " ";
       Suffix = "";
@@ -2295,7 +2304,7 @@ void EmitClangAttrHasAttrImpl(RecordKeeper &Records, raw_ostream &OS) {
   // Separate all of the attributes out into four group: generic, C++11, GNU,
   // and declspecs. Then generate a big switch statement for each of them.
   std::vector<Record *> Attrs = Records.getAllDerivedDefinitions("Attr");
-  std::vector<Record *> Declspec, GNU, Pragma;
+  std::vector<Record *> Declspec, Microsoft, GNU, Pragma;
   std::map<std::string, std::vector<Record *>> CXX;
 
   // Walk over the list of all attributes, and split them out based on the
@@ -2308,6 +2317,8 @@ void EmitClangAttrHasAttrImpl(RecordKeeper &Records, raw_ostream &OS) {
         GNU.push_back(R);
       else if (Variety == "Declspec")
         Declspec.push_back(R);
+      else if (Variety == "Microsoft")
+        Microsoft.push_back(R);
       else if (Variety == "CXX11")
         CXX[SI.nameSpace()].push_back(R);
       else if (Variety == "Pragma")
@@ -2323,6 +2334,9 @@ void EmitClangAttrHasAttrImpl(RecordKeeper &Records, raw_ostream &OS) {
   OS << "case AttrSyntax::Declspec:\n";
   OS << "  return llvm::StringSwitch<int>(Name)\n";
   GenerateHasAttrSpellingStringSwitch(Declspec, OS, "Declspec");
+  OS << "case AttrSyntax::Microsoft:\n";
+  OS << "  return llvm::StringSwitch<int>(Name)\n";
+  GenerateHasAttrSpellingStringSwitch(Microsoft, OS, "Microsoft");
   OS << "case AttrSyntax::Pragma:\n";
   OS << "  return llvm::StringSwitch<int>(Name)\n";
   GenerateHasAttrSpellingStringSwitch(Pragma, OS, "Pragma");
@@ -2361,8 +2375,9 @@ void EmitClangAttrSpellingListIndex(RecordKeeper &Records, raw_ostream &OS) {
                 .Case("GNU", 0)
                 .Case("CXX11", 1)
                 .Case("Declspec", 2)
-                .Case("Keyword", 3)
-                .Case("Pragma", 4)
+                .Case("Microsoft", 3)
+                .Case("Keyword", 4)
+                .Case("Pragma", 5)
                 .Default(0)
          << " && Scope == \"" << Spellings[I].nameSpace() << "\")\n"
          << "        return " << I << ";\n";
@@ -2790,8 +2805,10 @@ static std::string GenerateLangOptRequirements(const Record &R,
   std::string FnName = "check", Test;
   for (auto I = LangOpts.begin(), E = LangOpts.end(); I != E; ++I) {
     std::string Part = (*I)->getValueAsString("Name");
-    if ((*I)->getValueAsBit("Negated"))
+    if ((*I)->getValueAsBit("Negated")) {
+      FnName += "Not";
       Test += "!";
+    }
     Test += "S.LangOpts." + Part;
     if (I + 1 != E)
       Test += " || ";
@@ -2982,7 +2999,8 @@ void EmitClangAttrParsedAttrKinds(RecordKeeper &Records, raw_ostream &OS) {
   emitSourceFileHeader("Attribute name matcher", OS);
 
   std::vector<Record *> Attrs = Records.getAllDerivedDefinitions("Attr");
-  std::vector<StringMatcher::StringPair> GNU, Declspec, CXX11, Keywords, Pragma;
+  std::vector<StringMatcher::StringPair> GNU, Declspec, Microsoft, CXX11,
+      Keywords, Pragma;
   std::set<std::string> Seen;
   for (const auto *A : Attrs) {
     const Record &Attr = *A;
@@ -3024,6 +3042,8 @@ void EmitClangAttrParsedAttrKinds(RecordKeeper &Records, raw_ostream &OS) {
           Matches = &GNU;
         else if (Variety == "Declspec")
           Matches = &Declspec;
+        else if (Variety == "Microsoft")
+          Matches = &Microsoft;
         else if (Variety == "Keyword")
           Matches = &Keywords;
         else if (Variety == "Pragma")
@@ -3048,6 +3068,8 @@ void EmitClangAttrParsedAttrKinds(RecordKeeper &Records, raw_ostream &OS) {
   StringMatcher("Name", GNU, OS).Emit();
   OS << "  } else if (AttributeList::AS_Declspec == Syntax) {\n";
   StringMatcher("Name", Declspec, OS).Emit();
+  OS << "  } else if (AttributeList::AS_Microsoft == Syntax) {\n";
+  StringMatcher("Name", Microsoft, OS).Emit();
   OS << "  } else if (AttributeList::AS_CXX11 == Syntax) {\n";
   StringMatcher("Name", CXX11, OS).Emit();
   OS << "  } else if (AttributeList::AS_Keyword == Syntax || ";
@@ -3131,8 +3153,9 @@ enum SpellingKind {
   GNU = 1 << 0,
   CXX11 = 1 << 1,
   Declspec = 1 << 2,
-  Keyword = 1 << 3,
-  Pragma = 1 << 4
+  Microsoft = 1 << 3,
+  Keyword = 1 << 4,
+  Pragma = 1 << 5
 };
 
 static void WriteDocumentation(const DocumentationData &Doc,
@@ -3180,6 +3203,7 @@ static void WriteDocumentation(const DocumentationData &Doc,
                             .Case("GNU", GNU)
                             .Case("CXX11", CXX11)
                             .Case("Declspec", Declspec)
+                            .Case("Microsoft", Microsoft)
                             .Case("Keyword", Keyword)
                             .Case("Pragma", Pragma);
 

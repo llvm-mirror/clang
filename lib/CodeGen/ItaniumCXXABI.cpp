@@ -45,6 +45,8 @@ class ItaniumCXXABI : public CodeGen::CGCXXABI {
 protected:
   bool UseARMMethodPtrABI;
   bool UseARMGuardVarABI;
+  bool Use32BitVTableOffsetABI;
+  bool UseQualifiedFunctionTypeInfoABI;
 
   ItaniumMangleContext &getMangleContext() {
     return cast<ItaniumMangleContext>(CodeGen::CGCXXABI::getMangleContext());
@@ -55,7 +57,9 @@ public:
                 bool UseARMMethodPtrABI = false,
                 bool UseARMGuardVarABI = false) :
     CGCXXABI(CGM), UseARMMethodPtrABI(UseARMMethodPtrABI),
-    UseARMGuardVarABI(UseARMGuardVarABI) { }
+    UseARMGuardVarABI(UseARMGuardVarABI),
+    Use32BitVTableOffsetABI(false),
+    UseQualifiedFunctionTypeInfoABI(CGM.getCodeGenOpts().QualifiedFunctionTypeInfo) { }
 
   bool classifyReturnType(CGFunctionInfo &FI) const override;
 
@@ -112,7 +116,7 @@ public:
 
   llvm::Type *ConvertMemberPointerType(const MemberPointerType *MPT) override;
 
-  llvm::Value *
+  CGCallee
     EmitLoadOfMemberFunctionPointer(CodeGenFunction &CGF,
                                     const Expr *E,
                                     Address This,
@@ -168,8 +172,8 @@ public:
   emitTerminateForUnexpectedException(CodeGenFunction &CGF,
                                       llvm::Value *Exn) override;
 
-  void EmitFundamentalRTTIDescriptor(QualType Type);
-  void EmitFundamentalRTTIDescriptors();
+  void EmitFundamentalRTTIDescriptor(QualType Type, bool DLLExport);
+  void EmitFundamentalRTTIDescriptors(bool DLLExport);
   llvm::Constant *getAddrOfRTTIDescriptor(QualType Ty) override;
   CatchTypeInfo
   getAddrOfCXXCatchHandlerType(QualType Ty,
@@ -261,9 +265,9 @@ public:
   llvm::GlobalVariable *getAddrOfVTable(const CXXRecordDecl *RD,
                                         CharUnits VPtrOffset) override;
 
-  llvm::Value *getVirtualFunctionPointer(CodeGenFunction &CGF, GlobalDecl GD,
-                                         Address This, llvm::Type *Ty,
-                                         SourceLocation Loc) override;
+  CGCallee getVirtualFunctionPointer(CodeGenFunction &CGF, GlobalDecl GD,
+                                     Address This, llvm::Type *Ty,
+                                     SourceLocation Loc) override;
 
   llvm::Value *EmitVirtualDestructorCall(CodeGenFunction &CGF,
                                          const CXXDestructorDecl *Dtor,
@@ -425,7 +429,9 @@ public:
 
 class iOS64CXXABI : public ARMCXXABI {
 public:
-  iOS64CXXABI(CodeGen::CodeGenModule &CGM) : ARMCXXABI(CGM) {}
+  iOS64CXXABI(CodeGen::CodeGenModule &CGM) : ARMCXXABI(CGM) {
+    Use32BitVTableOffsetABI = true;
+  }
 
   // ARM64 libraries are prepared for non-unique RTTI.
   bool shouldRTTIBeUnique() const override { return false; }
@@ -516,7 +522,7 @@ ItaniumCXXABI::ConvertMemberPointerType(const MemberPointerType *MPT) {
 ///
 /// If the member is non-virtual, memptr.ptr is the address of
 /// the function to call.
-llvm::Value *ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
+CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     CodeGenFunction &CGF, const Expr *E, Address ThisAddr,
     llvm::Value *&ThisPtrForCall,
     llvm::Value *MemFnPtr, const MemberPointerType *MPT) {
@@ -579,9 +585,15 @@ llvm::Value *ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     CGF.GetVTablePtr(Address(This, VTablePtrAlign), VTableTy, RD);
 
   // Apply the offset.
+  // On ARM64, to reserve extra space in virtual member function pointers,
+  // we only pay attention to the low 32 bits of the offset.
   llvm::Value *VTableOffset = FnAsInt;
   if (!UseARMMethodPtrABI)
     VTableOffset = Builder.CreateSub(VTableOffset, ptrdiff_1);
+  if (Use32BitVTableOffsetABI) {
+    VTableOffset = Builder.CreateTrunc(VTableOffset, CGF.Int32Ty);
+    VTableOffset = Builder.CreateZExt(VTableOffset, CGM.PtrDiffTy);
+  }
   VTable = Builder.CreateGEP(VTable, VTableOffset);
 
   // Load the virtual function to call.
@@ -599,9 +611,11 @@ llvm::Value *ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
   
   // We're done.
   CGF.EmitBlock(FnEnd);
-  llvm::PHINode *Callee = Builder.CreatePHI(FTy->getPointerTo(), 2);
-  Callee->addIncoming(VirtualFn, FnVirtual);
-  Callee->addIncoming(NonVirtualFn, FnNonVirtual);
+  llvm::PHINode *CalleePtr = Builder.CreatePHI(FTy->getPointerTo(), 2);
+  CalleePtr->addIncoming(VirtualFn, FnVirtual);
+  CalleePtr->addIncoming(NonVirtualFn, FnNonVirtual);
+
+  CGCallee Callee(FPT, CalleePtr);
   return Callee;
 }
 
@@ -1438,15 +1452,18 @@ void ItaniumCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
   llvm::Value *VTT = CGF.GetVTTParameter(GD, ForVirtualBase, Delegating);
   QualType VTTTy = getContext().getPointerType(getContext().VoidPtrTy);
 
-  llvm::Value *Callee = nullptr;
-  if (getContext().getLangOpts().AppleKext)
+  CGCallee Callee;
+  if (getContext().getLangOpts().AppleKext &&
+      Type != Dtor_Base && DD->isVirtual())
     Callee = CGF.BuildAppleKextVirtualDestructorCall(DD, Type, DD->getParent());
-
-  if (!Callee)
-    Callee = CGM.getAddrOfCXXStructor(DD, getFromDtorType(Type));
+  else
+    Callee =
+      CGCallee::forDirect(CGM.getAddrOfCXXStructor(DD, getFromDtorType(Type)),
+                          DD);
 
   CGF.EmitCXXMemberOrOperatorCall(DD, Callee, ReturnValueSlot(),
-                                  This.getPointer(), VTT, VTTTy, nullptr);
+                                  This.getPointer(), VTT, VTTTy,
+                                  nullptr, nullptr);
 }
 
 void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
@@ -1462,9 +1479,7 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
       CGM.GetAddrOfRTTIDescriptor(CGM.getContext().getTagDeclType(RD));
 
   // Create and set the initializer.
-  llvm::Constant *Init = CGVT.CreateVTableInitializer(
-      RD, VTLayout.vtable_component_begin(), VTLayout.getNumVTableComponents(),
-      VTLayout.vtable_thunk_begin(), VTLayout.getNumVTableThunks(), RTTI);
+  llvm::Constant *Init = CGVT.CreateVTableInitializer(VTLayout, RTTI);
   VTable->setInitializer(Init);
 
   // Set the correct linkage.
@@ -1491,7 +1506,7 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
       isa<NamespaceDecl>(DC) && cast<NamespaceDecl>(DC)->getIdentifier() &&
       cast<NamespaceDecl>(DC)->getIdentifier()->isStr("__cxxabiv1") &&
       DC->getParent()->isTranslationUnit())
-    EmitFundamentalRTTIDescriptors();
+    EmitFundamentalRTTIDescriptors(RD->hasAttr<DLLExportAttr>());
 
   if (!VTable->isDeclarationForLinker())
     CGM.EmitVTableTypeMetadata(VTable, VTLayout);
@@ -1575,7 +1590,7 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
 
   ItaniumVTableContext &VTContext = CGM.getItaniumVTableContext();
   llvm::ArrayType *ArrayType = llvm::ArrayType::get(
-      CGM.Int8PtrTy, VTContext.getVTableLayout(RD).getNumVTableComponents());
+      CGM.Int8PtrTy, VTContext.getVTableLayout(RD).vtable_components().size());
 
   VTable = CGM.CreateOrReplaceCXXRuntimeVariable(
       Name, ArrayType, llvm::GlobalValue::ExternalLinkage);
@@ -1589,19 +1604,20 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
   return VTable;
 }
 
-llvm::Value *ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
-                                                      GlobalDecl GD,
-                                                      Address This,
-                                                      llvm::Type *Ty,
-                                                      SourceLocation Loc) {
+CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
+                                                  GlobalDecl GD,
+                                                  Address This,
+                                                  llvm::Type *Ty,
+                                                  SourceLocation Loc) {
   GD = GD.getCanonicalDecl();
   Ty = Ty->getPointerTo()->getPointerTo();
   auto *MethodDecl = cast<CXXMethodDecl>(GD.getDecl());
   llvm::Value *VTable = CGF.GetVTablePtr(This, Ty, MethodDecl->getParent());
 
   uint64_t VTableIndex = CGM.getItaniumVTableContext().getMethodVTableIndex(GD);
+  llvm::Value *VFunc;
   if (CGF.ShouldEmitVTableTypeCheckedLoad(MethodDecl->getParent())) {
-    return CGF.EmitVTableTypeCheckedLoad(
+    VFunc = CGF.EmitVTableTypeCheckedLoad(
         MethodDecl->getParent(), VTable,
         VTableIndex * CGM.getContext().getTargetInfo().getPointerWidth(0) / 8);
   } else {
@@ -1609,8 +1625,26 @@ llvm::Value *ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
 
     llvm::Value *VFuncPtr =
         CGF.Builder.CreateConstInBoundsGEP1_64(VTable, VTableIndex, "vfn");
-    return CGF.Builder.CreateAlignedLoad(VFuncPtr, CGF.getPointerAlign());
+    auto *VFuncLoad =
+        CGF.Builder.CreateAlignedLoad(VFuncPtr, CGF.getPointerAlign());
+
+    // Add !invariant.load md to virtual function load to indicate that
+    // function didn't change inside vtable.
+    // It's safe to add it without -fstrict-vtable-pointers, but it would not
+    // help in devirtualization because it will only matter if we will have 2
+    // the same virtual function loads from the same vtable load, which won't
+    // happen without enabled devirtualization with -fstrict-vtable-pointers.
+    if (CGM.getCodeGenOpts().OptimizationLevel > 0 &&
+        CGM.getCodeGenOpts().StrictVTablePointers)
+      VFuncLoad->setMetadata(
+          llvm::LLVMContext::MD_invariant_load,
+          llvm::MDNode::get(CGM.getLLVMContext(),
+                            llvm::ArrayRef<llvm::Metadata *>()));
+    VFunc = VFuncLoad;
   }
+
+  CGCallee Callee(MethodDecl, VFunc);
+  return Callee;
 }
 
 llvm::Value *ItaniumCXXABI::EmitVirtualDestructorCall(
@@ -1622,13 +1656,13 @@ llvm::Value *ItaniumCXXABI::EmitVirtualDestructorCall(
   const CGFunctionInfo *FInfo = &CGM.getTypes().arrangeCXXStructorDeclaration(
       Dtor, getFromDtorType(DtorType));
   llvm::Type *Ty = CGF.CGM.getTypes().GetFunctionType(*FInfo);
-  llvm::Value *Callee =
+  CGCallee Callee =
       getVirtualFunctionPointer(CGF, GlobalDecl(Dtor, DtorType), This, Ty,
                                 CE ? CE->getLocStart() : SourceLocation());
 
   CGF.EmitCXXMemberOrOperatorCall(Dtor, Callee, ReturnValueSlot(),
                                   This.getPointer(), /*ImplicitParam=*/nullptr,
-                                  QualType(), CE);
+                                  QualType(), CE, nullptr);
   return nullptr;
 }
 
@@ -2346,8 +2380,7 @@ LValue ItaniumCXXABI::EmitThreadLocalVarDeclLValue(CodeGenFunction &CGF,
   llvm::Function *Wrapper = getOrCreateThreadLocalWrapper(VD, Val);
 
   llvm::CallInst *CallVal = CGF.Builder.CreateCall(Wrapper);
-  if (isThreadWrapperReplaceable(VD, CGF.CGM))
-    CallVal->setCallingConv(llvm::CallingConv::CXX_FAST_TLS);
+  CallVal->setCallingConv(Wrapper->getCallingConv());
 
   LValue LV;
   if (VD->getType()->isReferenceType())
@@ -2396,6 +2429,9 @@ class ItaniumRTTIBuilder {
   /// descriptor of the given type.
   llvm::Constant *GetAddrOfExternalRTTIDescriptor(QualType Ty);
 
+  /// Determine whether FnTy should be emitted as a qualified function type.
+  bool EmitAsQualifiedFunctionType(const FunctionType *FnTy);
+
   /// BuildVTablePointer - Build the vtable pointer for the given type.
   void BuildVTablePointer(const Type *Ty);
 
@@ -2407,6 +2443,10 @@ class ItaniumRTTIBuilder {
   /// classes with bases that do not satisfy the abi::__si_class_type_info
   /// constraints, according ti the Itanium C++ ABI, 2.9.5p5c.
   void BuildVMIClassTypeInfo(const CXXRecordDecl *RD);
+
+  /// Build an abi::__qualified_function_type_info struct, used for function
+  /// types with various kinds of qualifiers.
+  void BuildQualifiedFunctionTypeInfo(const FunctionType *FnTy);
 
   /// BuildPointerTypeInfo - Build an abi::__pointer_type_info struct, used
   /// for pointer types.
@@ -2423,6 +2463,27 @@ class ItaniumRTTIBuilder {
 public:
   ItaniumRTTIBuilder(const ItaniumCXXABI &ABI)
       : CGM(ABI.CGM), VMContext(CGM.getModule().getContext()), CXXABI(ABI) {}
+
+  // Function type info flags.
+  enum {
+    /// Qualifiers for 'this' pointer of member function type.
+    //@{
+    QFTI_Const = 0x1,
+    QFTI_Volatile = 0x2,
+    QFTI_Restrict = 0x4,
+    QFTI_LValRef = 0x8,
+    QFTI_RValRef = 0x10,
+    //@}
+
+    /// Noexcept function qualifier (C++17 onwards).
+    QFTI_Noexcept = 0x20,
+
+    // Transaction-safe function qualifier (Transactional Memory TS).
+    //QFTI_TxSafe = 0x40,
+
+    /// Noreturn function type qualifier (GNU/Clang extension).
+    QFTI_Noreturn = 0x80
+  };
 
   // Pointer type info flags.
   enum {
@@ -2464,7 +2525,9 @@ public:
   /// BuildTypeInfo - Build the RTTI type info struct for the given type.
   ///
   /// \param Force - true to force the creation of this RTTI value
-  llvm::Constant *BuildTypeInfo(QualType Ty, bool Force = false);
+  /// \param DLLExport - true to mark the RTTI value as DLLExport
+  llvm::Constant *BuildTypeInfo(QualType Ty, bool Force = false,
+                                bool DLLExport = false);
 };
 }
 
@@ -2773,8 +2836,12 @@ void ItaniumRTTIBuilder::BuildVTablePointer(const Type *Ty) {
 
   case Type::FunctionNoProto:
   case Type::FunctionProto:
-    // abi::__function_type_info.
-    VTableName = "_ZTVN10__cxxabiv120__function_type_infoE";
+    if (EmitAsQualifiedFunctionType(cast<FunctionType>(Ty)))
+      // abi::__qualified_function_type_info.
+      VTableName = "_ZTVN10__cxxabiv130__qualified_function_type_infoE";
+    else
+      // abi::__function_type_info.
+      VTableName = "_ZTVN10__cxxabiv120__function_type_infoE";
     break;
 
   case Type::Enum:
@@ -2896,7 +2963,8 @@ static llvm::GlobalVariable::LinkageTypes getTypeInfoLinkage(CodeGenModule &CGM,
   llvm_unreachable("Invalid linkage!");
 }
 
-llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force) {
+llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force,
+                                                  bool DLLExport) {
   // We want to operate on the canonical type.
   Ty = Ty.getCanonicalType();
 
@@ -2987,10 +3055,15 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force) {
     break;
 
   case Type::FunctionNoProto:
-  case Type::FunctionProto:
+  case Type::FunctionProto: {
+    auto *FnTy = cast<FunctionType>(Ty);
     // Itanium C++ ABI 2.9.5p5:
     // abi::__function_type_info adds no data members to std::type_info.
+    if (EmitAsQualifiedFunctionType(FnTy))
+      // abi::__qualified_type_info adds a base function type and qualifiers.
+      BuildQualifiedFunctionTypeInfo(FnTy);
     break;
+  }
 
   case Type::Enum:
     // Itanium C++ ABI 2.9.5p5:
@@ -3081,6 +3154,8 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty, bool Force) {
     llvmVisibility = CodeGenModule::GetLLVMVisibility(Ty->getVisibility());
   TypeName->setVisibility(llvmVisibility);
   GV->setVisibility(llvmVisibility);
+  if (DLLExport)
+    GV->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
 
   return llvm::ConstantExpr::getBitCast(GV, CGM.Int8PtrTy);
 }
@@ -3218,9 +3293,6 @@ void ItaniumRTTIBuilder::BuildVMIClassTypeInfo(const CXXRecordDecl *RD) {
   if (!RD->getNumBases())
     return;
 
-  llvm::Type *LongLTy =
-    CGM.getTypes().ConvertType(CGM.getContext().LongTy);
-
   // Now add the base class descriptions.
 
   // Itanium C++ ABI 2.9.5p6c:
@@ -3238,6 +3310,19 @@ void ItaniumRTTIBuilder::BuildVMIClassTypeInfo(const CXXRecordDecl *RD) {
   //       __offset_shift = 8
   //     };
   //   };
+
+  // If we're in mingw and 'long' isn't wide enough for a pointer, use 'long
+  // long' instead of 'long' for __offset_flags. libstdc++abi uses long long on
+  // LLP64 platforms.
+  // FIXME: Consider updating libc++abi to match, and extend this logic to all
+  // LLP64 platforms.
+  QualType OffsetFlagsTy = CGM.getContext().LongTy;
+  const TargetInfo &TI = CGM.getContext().getTargetInfo();
+  if (TI.getTriple().isOSCygMing() && TI.getPointerWidth(0) > TI.getLongWidth())
+    OffsetFlagsTy = CGM.getContext().LongLongTy;
+  llvm::Type *OffsetFlagsLTy =
+      CGM.getTypes().ConvertType(OffsetFlagsTy);
+
   for (const auto &Base : RD->bases()) {
     // The __base_type member points to the RTTI for the base type.
     Fields.push_back(ItaniumRTTIBuilder(CXXABI).BuildTypeInfo(Base.getType()));
@@ -3269,8 +3354,74 @@ void ItaniumRTTIBuilder::BuildVMIClassTypeInfo(const CXXRecordDecl *RD) {
     if (Base.getAccessSpecifier() == AS_public)
       OffsetFlags |= BCTI_Public;
 
-    Fields.push_back(llvm::ConstantInt::get(LongLTy, OffsetFlags));
+    Fields.push_back(llvm::ConstantInt::get(OffsetFlagsLTy, OffsetFlags));
   }
+}
+
+bool ItaniumRTTIBuilder::EmitAsQualifiedFunctionType(const FunctionType *FnTy) {
+  if (!CXXABI.UseQualifiedFunctionTypeInfoABI)
+    return false;
+
+  auto *FPT = dyn_cast<FunctionProtoType>(FnTy);
+  if (!FPT)
+    return false;
+  return FPT->getTypeQuals() || FPT->getRefQualifier() != RQ_None ||
+         FPT->isNothrow(CXXABI.getContext()) || FPT->getNoReturnAttr();
+}
+
+void ItaniumRTTIBuilder::BuildQualifiedFunctionTypeInfo(
+    const FunctionType *FnTy) {
+  unsigned int Qualifiers = 0;
+
+  auto ExtInfo = FnTy->getExtInfo();
+  if (ExtInfo.getNoReturn()) {
+    Qualifiers |= QFTI_Noreturn;
+    ExtInfo = ExtInfo.withNoReturn(false);
+  }
+
+  QualType BaseType;
+  if (auto *FPT = dyn_cast<FunctionProtoType>(FnTy)) {
+    auto EPI = FPT->getExtProtoInfo();
+    EPI.ExtInfo = ExtInfo;
+
+    if (EPI.TypeQuals & Qualifiers::Const)
+      Qualifiers |= QFTI_Const;
+    if (EPI.TypeQuals & Qualifiers::Volatile)
+      Qualifiers |= QFTI_Volatile;
+    if (EPI.TypeQuals & Qualifiers::Restrict)
+      Qualifiers |= QFTI_Restrict;
+    EPI.TypeQuals = 0;
+
+    if (EPI.RefQualifier == RQ_LValue)
+      Qualifiers |= QFTI_LValRef;
+    else if (EPI.RefQualifier == RQ_RValue)
+      Qualifiers |= QFTI_RValRef;
+    EPI.RefQualifier = RQ_None;
+
+    if (EPI.ExceptionSpec.Type == EST_BasicNoexcept)
+      Qualifiers |= QFTI_Noexcept;
+    else
+      assert(EPI.ExceptionSpec.Type == EST_None &&
+             "unexpected canonical non-dependent exception spec");
+    EPI.ExceptionSpec.Type = EST_None;
+
+    BaseType = CXXABI.getContext().getFunctionType(FPT->getReturnType(),
+                                                   FPT->getParamTypes(), EPI);
+  } else {
+    BaseType =
+        QualType(CXXABI.getContext().adjustFunctionType(FnTy, ExtInfo), 0);
+  }
+
+  assert(Qualifiers && "should not have created qualified type info");
+
+  // __base_type is a pointer to the std::type_info derivation for the
+  // unqualified version of the function type.
+  Fields.push_back(ItaniumRTTIBuilder(CXXABI).BuildTypeInfo(BaseType));
+
+  // __qualifiers is a flag word describing the qualifiers of the function type.
+  llvm::Type *UnsignedIntLTy =
+    CGM.getTypes().ConvertType(CGM.getContext().UnsignedIntTy);
+  Fields.push_back(llvm::ConstantInt::get(UnsignedIntLTy, Qualifiers));
 }
 
 /// BuildPointerTypeInfo - Build an abi::__pointer_type_info struct,
@@ -3352,15 +3503,18 @@ llvm::Constant *ItaniumCXXABI::getAddrOfRTTIDescriptor(QualType Ty) {
   return ItaniumRTTIBuilder(*this).BuildTypeInfo(Ty);
 }
 
-void ItaniumCXXABI::EmitFundamentalRTTIDescriptor(QualType Type) {
+void ItaniumCXXABI::EmitFundamentalRTTIDescriptor(QualType Type,
+                                                  bool DLLExport) {
   QualType PointerType = getContext().getPointerType(Type);
   QualType PointerTypeConst = getContext().getPointerType(Type.withConst());
-  ItaniumRTTIBuilder(*this).BuildTypeInfo(Type, true);
-  ItaniumRTTIBuilder(*this).BuildTypeInfo(PointerType, true);
-  ItaniumRTTIBuilder(*this).BuildTypeInfo(PointerTypeConst, true);
+  ItaniumRTTIBuilder(*this).BuildTypeInfo(Type, /*Force=*/true, DLLExport);
+  ItaniumRTTIBuilder(*this).BuildTypeInfo(PointerType, /*Force=*/true,
+                                          DLLExport);
+  ItaniumRTTIBuilder(*this).BuildTypeInfo(PointerTypeConst, /*Force=*/true,
+                                          DLLExport);
 }
 
-void ItaniumCXXABI::EmitFundamentalRTTIDescriptors() {
+void ItaniumCXXABI::EmitFundamentalRTTIDescriptors(bool DLLExport) {
   // Types added here must also be added to TypeInfoIsInStandardLibrary.
   QualType FundamentalTypes[] = {
       getContext().VoidTy,             getContext().NullPtrTy,
@@ -3377,7 +3531,7 @@ void ItaniumCXXABI::EmitFundamentalRTTIDescriptors() {
       getContext().Char16Ty,           getContext().Char32Ty
   };
   for (const QualType &FundamentalType : FundamentalTypes)
-    EmitFundamentalRTTIDescriptor(FundamentalType);
+    EmitFundamentalRTTIDescriptor(FundamentalType, DLLExport);
 }
 
 /// What sort of uniqueness rules should we use for the RTTI for the

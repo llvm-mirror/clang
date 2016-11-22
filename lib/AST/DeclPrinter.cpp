@@ -337,10 +337,9 @@ void DeclPrinter::VisitDeclContext(DeclContext *DC, bool Indent) {
     const char *Terminator = nullptr;
     if (isa<OMPThreadPrivateDecl>(*D) || isa<OMPDeclareReductionDecl>(*D))
       Terminator = nullptr;
-    else if (isa<FunctionDecl>(*D) &&
-             cast<FunctionDecl>(*D)->isThisDeclarationADefinition())
+    else if (isa<FunctionDecl>(*D) && cast<FunctionDecl>(*D)->hasBody())
       Terminator = nullptr;
-    else if (isa<ObjCMethodDecl>(*D) && cast<ObjCMethodDecl>(*D)->getBody())
+    else if (isa<ObjCMethodDecl>(*D) && cast<ObjCMethodDecl>(*D)->hasBody())
       Terminator = nullptr;
     else if (isa<NamespaceDecl>(*D) || isa<LinkageSpecDecl>(*D) ||
              isa<ObjCImplementationDecl>(*D) ||
@@ -984,7 +983,7 @@ void DeclPrinter::VisitClassTemplateDecl(ClassTemplateDecl *D) {
     for (auto *I : D->specializations()) {
       PrintTemplateParameters(Params, &I->getTemplateArgs());
       Visit(I);
-      Out << '\n';
+      Out << ";\n";
     }
   }
 
@@ -1346,6 +1345,17 @@ void DeclPrinter::VisitUsingDecl(UsingDecl *D) {
   if (D->hasTypename())
     Out << "typename ";
   D->getQualifier()->print(Out, Policy);
+
+  // Use the correct record name when the using declaration is used for
+  // inheriting constructors.
+  for (const auto *Shadow : D->shadows()) {
+    if (const auto *ConstructorShadow =
+            dyn_cast<ConstructorUsingShadowDecl>(Shadow)) {
+      assert(Shadow->getDeclContext() == ConstructorShadow->getDeclContext());
+      Out << *ConstructorShadow->getNominatedBaseClass();
+      return;
+    }
+  }
   Out << *D;
 }
 

@@ -50,6 +50,15 @@
 // fpstrict-NOT: -menable-unsafe-fp-math
 // fpstrict-NOT: -ffast-math
 
+// RUN: %clang_cl /Z7 -gcolumn-info -### -- %s 2>&1 | FileCheck -check-prefix=gcolumn %s
+// gcolumn: -dwarf-column-info
+
+// RUN: %clang_cl /Z7 -gno-column-info -### -- %s 2>&1 | FileCheck -check-prefix=gnocolumn %s
+// gnocolumn-NOT: -dwarf-column-info
+
+// RUN: %clang_cl /Z7 -### -- %s 2>&1 | FileCheck -check-prefix=gdefcolumn %s
+// gdefcolumn-NOT: -dwarf-column-info
+
 // RUN: %clang_cl /GA -### -- %s 2>&1 | FileCheck -check-prefix=GA %s
 // GA: -ftls-model=local-exec
 
@@ -171,9 +180,23 @@
 // RUN: %clang_cl /EP /showIncludes -### -- %s 2>&1 | FileCheck -check-prefix=showIncludes_E %s
 // showIncludes_E: warning: argument unused during compilation: '--show-includes'
 
+// /source-charset: should warn on everything except UTF-8.
+// RUN: %clang_cl /source-charset:utf-16 -### -- %s 2>&1 | FileCheck -check-prefix=source-charset-utf-16 %s
+// source-charset-utf-16: invalid value 'utf-16'
+
+// /execution-charset: should warn on everything except UTF-8.
+// RUN: %clang_cl /execution-charset:utf-16 -### -- %s 2>&1 | FileCheck -check-prefix=execution-charset-utf-16 %s
+// execution-charset-utf-16: invalid value 'utf-16'
+//
 // RUN: %clang_cl /Umymacro -### -- %s 2>&1 | FileCheck -check-prefix=U %s
 // RUN: %clang_cl /U mymacro -### -- %s 2>&1 | FileCheck -check-prefix=U %s
 // U: "-U" "mymacro"
+
+// RUN: %clang_cl /validate-charset -### -- %s 2>&1 | FileCheck -check-prefix=validate-charset %s
+// validate-charset: -Winvalid-source-encoding
+
+// RUN: %clang_cl /validate-charset- -### -- %s 2>&1 | FileCheck -check-prefix=validate-charset_ %s
+// validate-charset_: -Wno-invalid-source-encoding
 
 // RUN: %clang_cl /vd2 -### -- %s 2>&1 | FileCheck -check-prefix=VD2 %s
 // VD2: -vtordisp-mode=2
@@ -276,6 +299,7 @@
 // RUN:    /d2FastFail \
 // RUN:    /d2Zi+ \
 // RUN:    /errorReport:foo \
+// RUN:    /execution-charset:utf-8 \
 // RUN:    /FC \
 // RUN:    /Fdfoo \
 // RUN:    /FS \
@@ -288,6 +312,8 @@
 // RUN:    /RTC1 \
 // RUN:    /sdl \
 // RUN:    /sdl- \
+// RUN:    /source-charset:utf-8 \
+// RUN:    /utf-8 \
 // RUN:    /vmg \
 // RUN:    /volatile:iso \
 // RUN:    /w12345 \
@@ -325,7 +351,6 @@
 // RUN:     /FAs \
 // RUN:     /FAu \
 // RUN:     /favor:blend \
-// RUN:     /FC \
 // RUN:     /Fifoo \
 // RUN:     /Fmfoo \
 // RUN:     /FpDebug\main.pch \
@@ -424,14 +449,18 @@
 // Z7GMLT: "-gcodeview"
 // Z7GMLT: "-debug-info-kind=line-tables-only"
 
+// RUN: %clang_cl -gline-tables-only /c -### -- %s 2>&1 | FileCheck -check-prefix=ZGMLT %s
+// ZGMLT: "-gcodeview"
+// ZGMLT: "-debug-info-kind=line-tables-only"
+
 // RUN: %clang_cl /c -### -- %s 2>&1 | FileCheck -check-prefix=BreproDefault %s
 // BreproDefault: "-mincremental-linker-compatible"
 
 // RUN: %clang_cl /Brepro- /Brepro /c '-###' -- %s 2>&1 | FileCheck -check-prefix=Brepro %s
-// Brepro: "-mincremental-linker-compatible"
+// Brepro-NOT: "-mincremental-linker-compatible"
 
 // RUN: %clang_cl /Brepro /Brepro- /c '-###' -- %s 2>&1 | FileCheck -check-prefix=Brepro_ %s
-// Brepro_-NOT: "-mincremental-linker-compatible"
+// Brepro_: "-mincremental-linker-compatible"
 
 // This test was super sneaky: "/Z7" means "line-tables", but "-gdwarf" occurs
 // later on the command line, so it should win. Interestingly the cc1 arguments
@@ -464,6 +493,8 @@
 // RUN: env CL="/Gy" _CL_="/Gy- -- %s" %clang_cl -### 2>&1 | FileCheck -check-prefix=ENV-_CL_ %s
 // ENV-_CL_-NOT: "-ffunction-sections"
 
+// RUN: env CL="%s" _CL_="%s" not %clang --rsp-quoting=windows -c
+
 // Accept "core" clang options.
 // (/Zs is for syntax-only, -Werror makes it fail hard on unknown options)
 // RUN: %clang_cl \
@@ -473,6 +504,7 @@
 // RUN:     -fdiagnostics-color \
 // RUN:     -fno-diagnostics-color \
 // RUN:     -fdiagnostics-parseable-fixits \
+// RUN:     -fdiagnostics-absolute-paths \
 // RUN:     -ferror-limit=10 \
 // RUN:     -fmsc-version=1800 \
 // RUN:     -fno-strict-aliasing \
@@ -483,9 +515,13 @@
 // RUN:     -fms-extensions \
 // RUN:     -fno-ms-extensions \
 // RUN:     -mllvm -disable-llvm-optzns \
-// RUN:     -resource-dir \
+// RUN:     -resource-dir asdf \
+// RUN:     -resource-dir=asdf \
 // RUN:     -Wunused-variable \
 // RUN:     -fmacro-backtrace-limit=0 \
+// RUN:     -fstandalone-debug \
+// RUN:     -flimit-debug-info \
+// RUN:     -flto \
 // RUN:     -Werror /Zs -- %s 2>&1
 
 

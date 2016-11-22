@@ -571,7 +571,7 @@ class CXXRecordDecl : public RecordDecl {
     /// actual DeclContext does not suffice. This is used for lambdas that
     /// occur within default arguments of function parameters within the class
     /// or within a data member initializer.
-    Decl *ContextDecl;
+    LazyDeclPtr ContextDecl;
     
     /// \brief The list of captures, both explicit and implicit, for this 
     /// lambda.
@@ -1147,6 +1147,12 @@ public:
   /// \note This does NOT include a check for union-ness.
   bool isEmpty() const { return data().Empty; }
 
+  /// \brief Determine whether this class has direct non-static data members.
+  bool hasDirectFields() const {
+    auto &D = data();
+    return D.HasPublicFields || D.HasProtectedFields || D.HasPrivateFields;
+  }
+
   /// Whether this class is polymorphic (C++ [class.virtual]),
   /// which means that the class contains or inherits a virtual function.
   bool isPolymorphic() const { return data().Polymorphic; }
@@ -1667,10 +1673,7 @@ public:
   /// the declaration in which the lambda occurs, e.g., the function parameter 
   /// or the non-static data member. Otherwise, it returns NULL to imply that
   /// the declaration context suffices.
-  Decl *getLambdaContextDecl() const {
-    assert(isLambda() && "Not a lambda closure type!");
-    return getLambdaData().ContextDecl;    
-  }
+  Decl *getLambdaContextDecl() const;
   
   /// \brief Set the mangling number and context declaration for a lambda
   /// class.
@@ -2954,11 +2957,10 @@ class ConstructorUsingShadowDecl final : public UsingShadowDecl {
             dyn_cast<ConstructorUsingShadowDecl>(Target)),
         ConstructedBaseClassShadowDecl(NominatedBaseClassShadowDecl),
         IsVirtual(TargetInVirtualBase) {
-    // If we found a constructor for a non-virtual base class, but it chains to
-    // a constructor for a virtual base, we should directly call the virtual
-    // base constructor instead.
+    // If we found a constructor that chains to a constructor for a virtual
+    // base, we should directly call that virtual base constructor instead.
     // FIXME: This logic belongs in Sema.
-    if (!TargetInVirtualBase && NominatedBaseClassShadowDecl &&
+    if (NominatedBaseClassShadowDecl &&
         NominatedBaseClassShadowDecl->constructsVirtualBase()) {
       ConstructedBaseClassShadowDecl =
           NominatedBaseClassShadowDecl->ConstructedBaseClassShadowDecl;
@@ -3398,6 +3400,10 @@ public:
   /// decomposition declaration, and when the initializer is type-dependent.
   Expr *getBinding() const { return Binding; }
 
+  /// Get the variable (if any) that holds the value of evaluating the binding.
+  /// Only present for user-defined bindings for tuple-like types.
+  VarDecl *getHoldingVar() const;
+
   /// Set the binding for this BindingDecl, along with its declared type (which
   /// should be a possibly-cv-qualified form of the type of the binding, or a
   /// reference to such a type).
@@ -3408,6 +3414,8 @@ public:
 
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == Decl::Binding; }
+
+  friend class ASTDeclReader;
 };
 
 /// A decomposition declaration. For instance, given:
@@ -3451,10 +3459,13 @@ public:
     return llvm::makeArrayRef(getTrailingObjects<BindingDecl *>(), NumBindings);
   }
 
+  void printName(raw_ostream &os) const override;
+
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == Decomposition; }
 
   friend TrailingObjects;
+  friend class ASTDeclReader;
 };
 
 /// An instance of this class represents the declaration of a property

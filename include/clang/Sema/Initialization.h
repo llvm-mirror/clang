@@ -84,7 +84,10 @@ public:
     EK_RelatedResult,
     /// \brief The entity being initialized is a function parameter; function
     /// is member of group of audited CF APIs.
-    EK_Parameter_CF_Audited
+    EK_Parameter_CF_Audited,
+    /// \brief The entity being initialized is a structured binding of a
+    /// decomposition declaration.
+    EK_Binding,
 
     // Note: err_init_conversion_failed in DiagnosticSemaKinds.td uses this
     // enum as an index for its first %select.  When modifying this list,
@@ -126,9 +129,9 @@ private:
   };
 
   union {
-    /// \brief When Kind == EK_Variable, or EK_Member, the VarDecl or
-    /// FieldDecl, respectively.
-    DeclaratorDecl *VariableOrMember;
+    /// \brief When Kind == EK_Variable, EK_Member or EK_Binding, the VarDecl,
+    /// FieldDecl or BindingDecl, respectively.
+    ValueDecl *VariableOrMember;
     
     /// \brief When Kind == EK_RelatedResult, the ObjectiveC method where
     /// result type was implicitly changed to accommodate ARC semantics.
@@ -160,8 +163,8 @@ private:
   InitializedEntity() : ManglingNumber(0) {}
 
   /// \brief Create the initialization entity for a variable.
-  InitializedEntity(VarDecl *Var)
-    : Kind(EK_Variable), Parent(nullptr), Type(Var->getType()),
+  InitializedEntity(VarDecl *Var, EntityKind EK = EK_Variable)
+    : Kind(EK), Parent(nullptr), Type(Var->getType()),
       ManglingNumber(0), VariableOrMember(Var) { }
   
   /// \brief Create the initialization entity for the result of a
@@ -314,6 +317,11 @@ public:
     return InitializedEntity(Context, Index, Parent);
   }
 
+  /// \brief Create the initialization entity for a structured binding.
+  static InitializedEntity InitializeBinding(VarDecl *Binding) {
+    return InitializedEntity(Binding, EK_Binding);
+  }
+
   /// \brief Create the initialization entity for a lambda capture.
   static InitializedEntity InitializeLambdaCapture(IdentifierInfo *VarID,
                                                    QualType FieldType,
@@ -355,7 +363,7 @@ public:
 
   /// \brief Retrieve the variable, parameter, or field being
   /// initialized.
-  DeclaratorDecl *getDecl() const;
+  ValueDecl *getDecl() const;
   
   /// \brief Retrieve the ObjectiveC method being initialized.
   ObjCMethodDecl *getMethodDecl() const { return MethodDecl; }
@@ -385,6 +393,12 @@ public:
   bool isInheritedVirtualBase() const {
     assert(getKind() == EK_Base && "Not a base specifier");
     return Base & 0x1;
+  }
+
+  /// \brief Determine whether this is an array new with an unknown bound.
+  bool isVariableLengthArrayNew() const {
+    return getKind() == EK_New && dyn_cast_or_null<IncompleteArrayType>(
+                                      getType()->getAsArrayTypeUnsafe());
   }
 
   /// \brief Determine the location of the 'return' keyword when initializing

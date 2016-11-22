@@ -80,8 +80,8 @@ static int skipArgs(const char *Flag, bool HaveCrashVFS) {
   return 0;
 }
 
-void Command::printArg(raw_ostream &OS, const char *Arg, bool Quote) {
-  const bool Escape = std::strpbrk(Arg, "\"\\$");
+void Command::printArg(raw_ostream &OS, StringRef Arg, bool Quote) {
+  const bool Escape = Arg.find_first_of("\"\\$") != StringRef::npos;
 
   if (!Quote && !Escape) {
     OS << Arg;
@@ -90,7 +90,7 @@ void Command::printArg(raw_ostream &OS, const char *Arg, bool Quote) {
 
   // Quote and escape. This isn't really complete, but good enough.
   OS << '"';
-  while (const char c = *Arg++) {
+  for (const char c : Arg) {
     if (c == '"' || c == '\\' || c == '$')
       OS << '\\';
     OS << c;
@@ -182,7 +182,7 @@ void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
         // Replace the input file name with the crashinfo's file name.
         OS << ' ';
         StringRef ShortName = llvm::sys::path::filename(CrashInfo->Filename);
-        printArg(OS, ShortName.str().c_str(), Quote);
+        printArg(OS, ShortName.str(), Quote);
         continue;
       }
     }
@@ -195,7 +195,7 @@ void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
     OS << ' ';
     printArg(OS, "-ivfsoverlay", Quote);
     OS << ' ';
-    printArg(OS, CrashInfo->VFSPath.str().c_str(), Quote);
+    printArg(OS, CrashInfo->VFSPath.str(), Quote);
 
     // Insert -fmodules-cache-path and use the relative module directory
     // <name>.cache/vfs/modules where we already dumped the modules.
@@ -207,7 +207,7 @@ void Command::Print(raw_ostream &OS, const char *Terminator, bool Quote,
     ModCachePath.append(RelModCacheDir.c_str());
 
     OS << ' ';
-    printArg(OS, ModCachePath.c_str(), Quote);
+    printArg(OS, ModCachePath, Quote);
   }
 
   if (ResponseFile != nullptr) {

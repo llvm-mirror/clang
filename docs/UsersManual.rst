@@ -2,6 +2,8 @@
 Clang Compiler User's Manual
 ============================
 
+.. include:: <isonum.txt>
+
 .. contents::
    :local:
 
@@ -22,6 +24,10 @@ options, etc. If you are interested in using Clang to build a tool that
 processes code, please see :doc:`InternalsManual`. If you are interested in the
 `Clang Static Analyzer <http://clang-analyzer.llvm.org>`_, please see its web
 page.
+
+Clang is one component in a complete toolchain for C family languages.
+A separate document describes the other pieces necessary to
+:doc:`assemble a complete toolchain <Toolchain>`.
 
 Clang is designed to support the C family of programming languages,
 which includes :ref:`C <c>`, :ref:`Objective-C <objc>`, :ref:`C++ <cxx>`, and
@@ -105,6 +111,8 @@ Options to Control Error and Warning Messages
 .. option:: -Wfoo
 
   Enable warning "foo".
+  See the :doc:`diagnostics reference <DiagnosticsReference>` for a complete
+  list of the warning flags that can be specified in this way.
 
 .. option:: -Wno-foo
 
@@ -312,6 +320,28 @@ output format of the diagnostics that it generates.
    This category can be used by clients that want to group diagnostics
    by category, so it should be a high level category. We want dozens
    of these, not hundreds or thousands of them.
+
+.. _opt_fdiagnostics-show-hotness:
+
+**-f[no-]diagnostics-show-hotness**
+   Enable profile hotness information in diagnostic line.
+
+   This option, which defaults to off, controls whether Clang prints the
+   profile hotness associated with a diagnostics in the presence of
+   profile-guided optimization information.  This is currently supported with
+   optimization remarks (see :ref:`Options to Emit Optimization Reports
+   <rpass>`).  The hotness information allows users to focus on the hot
+   optimization remarks that are likely to be more relevant for run-time
+   performance.
+
+   For example, in this output, the block containing the callsite of `foo` was
+   executed 3000 times according to the profile data:
+
+   ::
+
+         s.c:7:10: remark: foo inlined into bar (hotness: 3000) [-Rpass-analysis=inline]
+           sum += foo(x, x - 2);
+                  ^
 
 .. _opt_fdiagnostics-fixit-info:
 
@@ -531,6 +561,8 @@ control the crash diagnostics.
 The -fno-crash-diagnostics flag can be helpful for speeding the process
 of generating a delta reduced test case.
 
+.. _rpass:
+
 Options to Emit Optimization Reports
 ------------------------------------
 
@@ -573,6 +605,10 @@ made by the compiler. Optimization remarks do not really make sense
 outside of the major transformations (e.g., inlining, vectorization,
 loop optimizations) and not every optimization pass supports this
 feature.
+
+Note that when using profile-guided optimization information, profile hotness
+information can be included in the remarks (see
+:ref:`-fdiagnostics-show-hotness <opt_fdiagnostics-show-hotness>`).
 
 Current limitations
 ^^^^^^^^^^^^^^^^^^^
@@ -1072,6 +1108,15 @@ are listed below.
    * operands to floating-point operations are not equal to ``NaN`` and
      ``Inf``, and
    * ``+0`` and ``-0`` are interchangeable.
+
+.. option:: -fdenormal-fp-math=[values]
+
+   Select which denormal numbers the code is permitted to require.
+
+   Valid values are: ``ieee``, ``preserve-sign``, and ``positive-zero``,
+   which correspond to IEEE 754 denormal numbers, the sign of a
+   flushed-to-zero number is preserved in the sign of 0, denormals are
+   flushed to positive zero, respectively.
 
 .. option:: -fwhole-program-vtables
 
@@ -1650,7 +1695,7 @@ features. You can "tune" the debug info for one of several different debuggers.
 
 .. option:: -ggdb, -glldb, -gsce
 
-  Tune the debug info for the ``gdb``, ``lldb``, or Sony Computer Entertainment
+  Tune the debug info for the ``gdb``, ``lldb``, or Sony PlayStation\ |reg|
   debugger, respectively. Each of these options implies **-g**. (Therefore, if
   you want both **-gline-tables-only** and debugger tuning, the tuning option
   must come first.)

@@ -43,11 +43,25 @@ bool Sema::isLibstdcxxEagerExceptionSpecHack(const Declarator &D) {
   auto *RD = dyn_cast<CXXRecordDecl>(CurContext);
 
   // All the problem cases are member functions named "swap" within class
-  // templates declared directly within namespace std.
-  if (!RD || RD->getEnclosingNamespaceContext() != getStdNamespace() ||
-      !RD->getIdentifier() || !RD->getDescribedClassTemplate() ||
+  // templates declared directly within namespace std or std::__debug or
+  // std::__profile.
+  if (!RD || !RD->getIdentifier() || !RD->getDescribedClassTemplate() ||
       !D.getIdentifier() || !D.getIdentifier()->isStr("swap"))
     return false;
+
+  auto *ND = dyn_cast<NamespaceDecl>(RD->getDeclContext());
+  if (!ND)
+    return false;
+
+  bool IsInStd = ND->isStdNamespace();
+  if (!IsInStd) {
+    // This isn't a direct member of namespace std, but it might still be
+    // libstdc++'s std::__debug::array or std::__profile::array.
+    IdentifierInfo *II = ND->getIdentifier();
+    if (!II || !(II->isStr("__debug") || II->isStr("__profile")) ||
+        !ND->isInStdNamespace())
+      return false;
+  }
 
   // Only apply this hack within a system header.
   if (!Context.getSourceManager().isInSystemHeader(D.getLocStart()))
@@ -55,10 +69,10 @@ bool Sema::isLibstdcxxEagerExceptionSpecHack(const Declarator &D) {
 
   return llvm::StringSwitch<bool>(RD->getIdentifier()->getName())
       .Case("array", true)
-      .Case("pair", true)
-      .Case("priority_queue", true)
-      .Case("stack", true)
-      .Case("queue", true)
+      .Case("pair", IsInStd)
+      .Case("priority_queue", IsInStd)
+      .Case("stack", IsInStd)
+      .Case("queue", IsInStd)
       .Default(false);
 }
 
@@ -129,6 +143,11 @@ bool Sema::CheckSpecifiedExceptionType(QualType &T, SourceRange Range) {
 /// to member to a function with an exception specification. This means that
 /// it is invalid to add another level of indirection.
 bool Sema::CheckDistantExceptionSpec(QualType T) {
+  // C++17 removes this rule in favor of putting exception specifications into
+  // the type system.
+  if (getLangOpts().CPlusPlus1z)
+    return false;
+
   if (const PointerType *PT = T->getAs<PointerType>())
     T = PT->getPointeeType();
   else if (const MemberPointerType *PT = T->getAs<MemberPointerType>())
@@ -234,7 +253,7 @@ bool Sema::CheckEquivalentExceptionSpec(FunctionDecl *Old, FunctionDecl *New) {
     //   If a declaration of a function has an implicit
     //   exception-specification, other declarations of the function shall
     //   not specify an exception-specification.
-    if (getLangOpts().CPlusPlus11 &&
+    if (getLangOpts().CPlusPlus11 && getLangOpts().CXXExceptions &&
         hasImplicitExceptionSpec(Old) != hasImplicitExceptionSpec(New)) {
       Diag(New->getLocation(), diag::ext_implicit_exception_spec_mismatch)
         << hasImplicitExceptionSpec(Old);
@@ -395,7 +414,7 @@ bool Sema::CheckEquivalentExceptionSpec(
 /// a problem. If \c true is returned, either a diagnostic has already been
 /// produced or \c *MissingExceptionSpecification is set to \c true.
 bool Sema::CheckEquivalentExceptionSpec(const PartialDiagnostic &DiagID,
-                                        const PartialDiagnostic & NoteID,
+                                        const PartialDiagnostic &NoteID,
                                         const FunctionProtoType *Old,
                                         SourceLocation OldLoc,
                                         const FunctionProtoType *New,
@@ -586,10 +605,13 @@ bool Sema::CheckEquivalentExceptionSpec(const PartialDiagnostic &DiagID,
 /// CheckExceptionSpecSubset - Check whether the second function type's
 /// exception specification is a subset (or equivalent) of the first function
 /// type. This is used by override and pointer assignment checks.
-bool Sema::CheckExceptionSpecSubset(
-    const PartialDiagnostic &DiagID, const PartialDiagnostic & NoteID,
-    const FunctionProtoType *Superset, SourceLocation SuperLoc,
-    const FunctionProtoType *Subset, SourceLocation SubLoc) {
+bool Sema::CheckExceptionSpecSubset(const PartialDiagnostic &DiagID,
+                                    const PartialDiagnostic &NestedDiagID,
+                                    const PartialDiagnostic &NoteID,
+                                    const FunctionProtoType *Superset,
+                                    SourceLocation SuperLoc,
+                                    const FunctionProtoType *Subset,
+                                    SourceLocation SubLoc) {
 
   // Just auto-succeed under -fno-exceptions.
   if (!getLangOpts().CXXExceptions)
@@ -613,7 +635,8 @@ bool Sema::CheckExceptionSpecSubset(
 
   // If superset contains everything, we're done.
   if (SuperEST == EST_None || SuperEST == EST_MSAny)
-    return CheckParamExceptionSpec(NoteID, Superset, SuperLoc, Subset, SubLoc);
+    return CheckParamExceptionSpec(NestedDiagID, NoteID, Superset, SuperLoc,
+                                   Subset, SubLoc);
 
   // If there are dependent noexcept specs, assume everything is fine. Unlike
   // with the equivalency check, this is safe in this case, because we don't
@@ -628,7 +651,8 @@ bool Sema::CheckExceptionSpecSubset(
 
   // Another case of the superset containing everything.
   if (SuperNR == FunctionProtoType::NR_Throw)
-    return CheckParamExceptionSpec(NoteID, Superset, SuperLoc, Subset, SubLoc);
+    return CheckParamExceptionSpec(NestedDiagID, NoteID, Superset, SuperLoc,
+                                   Subset, SubLoc);
 
   ExceptionSpecificationType SubEST = Subset->getExceptionSpecType();
 
@@ -659,7 +683,8 @@ bool Sema::CheckExceptionSpecSubset(
 
   // If the subset contains nothing, we're done.
   if (SubEST == EST_DynamicNone || SubNR == FunctionProtoType::NR_Nothrow)
-    return CheckParamExceptionSpec(NoteID, Superset, SuperLoc, Subset, SubLoc);
+    return CheckParamExceptionSpec(NestedDiagID, NoteID, Superset, SuperLoc,
+                                   Subset, SubLoc);
 
   // Otherwise, if the superset contains nothing, we've failed.
   if (SuperEST == EST_DynamicNone || SuperNR == FunctionProtoType::NR_Nothrow) {
@@ -751,14 +776,15 @@ bool Sema::CheckExceptionSpecSubset(
     }
   }
   // We've run half the gauntlet.
-  return CheckParamExceptionSpec(NoteID, Superset, SuperLoc, Subset, SubLoc);
+  return CheckParamExceptionSpec(NestedDiagID, NoteID, Superset, SuperLoc,
+                                 Subset, SubLoc);
 }
 
-static bool CheckSpecForTypesEquivalent(Sema &S,
-    const PartialDiagnostic &DiagID, const PartialDiagnostic & NoteID,
-    QualType Target, SourceLocation TargetLoc,
-    QualType Source, SourceLocation SourceLoc)
-{
+static bool
+CheckSpecForTypesEquivalent(Sema &S, const PartialDiagnostic &DiagID,
+                            const PartialDiagnostic &NoteID, QualType Target,
+                            SourceLocation TargetLoc, QualType Source,
+                            SourceLocation SourceLoc) {
   const FunctionProtoType *TFunc = GetUnderlyingFunction(Target);
   if (!TFunc)
     return false;
@@ -775,13 +801,16 @@ static bool CheckSpecForTypesEquivalent(Sema &S,
 /// assignment and override compatibility check. We do not check the parameters
 /// of parameter function pointers recursively, as no sane programmer would
 /// even be able to write such a function type.
-bool Sema::CheckParamExceptionSpec(const PartialDiagnostic &NoteID,
+bool Sema::CheckParamExceptionSpec(const PartialDiagnostic &DiagID,
+                                   const PartialDiagnostic &NoteID,
                                    const FunctionProtoType *Target,
                                    SourceLocation TargetLoc,
                                    const FunctionProtoType *Source,
                                    SourceLocation SourceLoc) {
+  auto RetDiag = DiagID;
+  RetDiag << 0;
   if (CheckSpecForTypesEquivalent(
-          *this, PDiag(diag::err_deep_exception_specs_differ) << 0, PDiag(),
+          *this, RetDiag, PDiag(),
           Target->getReturnType(), TargetLoc, Source->getReturnType(),
           SourceLoc))
     return true;
@@ -791,8 +820,10 @@ bool Sema::CheckParamExceptionSpec(const PartialDiagnostic &NoteID,
   assert(Target->getNumParams() == Source->getNumParams() &&
          "Functions have different argument counts.");
   for (unsigned i = 0, E = Target->getNumParams(); i != E; ++i) {
+    auto ParamDiag = DiagID;
+    ParamDiag << 1;
     if (CheckSpecForTypesEquivalent(
-            *this, PDiag(diag::err_deep_exception_specs_differ) << 1, PDiag(),
+            *this, ParamDiag, PDiag(),
             Target->getParamType(i), TargetLoc, Source->getParamType(i),
             SourceLoc))
       return true;
@@ -812,6 +843,16 @@ bool Sema::CheckExceptionSpecCompatibility(Expr *From, QualType ToType) {
   if (!FromFunc || FromFunc->hasDependentExceptionSpec())
     return false;
 
+  unsigned DiagID = diag::err_incompatible_exception_specs;
+  unsigned NestedDiagID = diag::err_deep_exception_specs_differ;
+  // This is not an error in C++17 onwards, unless the noexceptness doesn't
+  // match, but in that case we have a full-on type mismatch, not just a
+  // type sugar mismatch.
+  if (getLangOpts().CPlusPlus1z) {
+    DiagID = diag::warn_incompatible_exception_specs;
+    NestedDiagID = diag::warn_deep_exception_specs_differ;
+  }
+
   // Now we've got the correct types on both sides, check their compatibility.
   // This means that the source of the conversion can only throw a subset of
   // the exceptions of the target, and any exception specs on arguments or
@@ -824,10 +865,10 @@ bool Sema::CheckExceptionSpecCompatibility(Expr *From, QualType ToType) {
   //     void (*q)(void (*) throw(int)) = p;
   //   }
   // ... because it might be instantiated with T=int.
-  return CheckExceptionSpecSubset(PDiag(diag::err_incompatible_exception_specs),
-                                  PDiag(), ToFunc, 
-                                  From->getSourceRange().getBegin(),
-                                  FromFunc, SourceLocation());
+  return CheckExceptionSpecSubset(PDiag(DiagID), PDiag(NestedDiagID), PDiag(),
+                                  ToFunc, From->getSourceRange().getBegin(),
+                                  FromFunc, SourceLocation()) &&
+         !getLangOpts().CPlusPlus1z;
 }
 
 bool Sema::CheckOverridingFunctionExceptionSpec(const CXXMethodDecl *New,
@@ -861,6 +902,7 @@ bool Sema::CheckOverridingFunctionExceptionSpec(const CXXMethodDecl *New,
   if (getLangOpts().MicrosoftExt)
     DiagID = diag::ext_override_exception_spec;
   return CheckExceptionSpecSubset(PDiag(DiagID),
+                                  PDiag(diag::err_deep_exception_specs_differ),
                                   PDiag(diag::note_overridden_virtual_function),
                                   Old->getType()->getAs<FunctionProtoType>(),
                                   Old->getLocation(),
@@ -883,8 +925,13 @@ static CanThrowResult canCalleeThrow(Sema &S, const Expr *E, const Decl *D) {
 
   // See if we can get a function type from the decl somehow.
   const ValueDecl *VD = dyn_cast<ValueDecl>(D);
-  if (!VD) // If we have no clue what we're calling, assume the worst.
+  if (!VD) {
+    // In C++17, we may have a canonical exception specification. If so, use it.
+    if (auto *FT = E->getType().getCanonicalType()->getAs<FunctionProtoType>())
+      return FT->isNothrow(S.Context) ? CT_Cannot : CT_Can;
+    // If we have no clue what we're calling, assume the worst.
     return CT_Can;
+  }
 
   // As an extension, we assume that __attribute__((nothrow)) functions don't
   // throw.

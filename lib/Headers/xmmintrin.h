@@ -1727,7 +1727,6 @@ _mm_loadr_ps(const float *__p)
 /// This intrinsic has no corresponding instruction.
 ///
 /// \returns A 128-bit vector of [4 x float] containing undefined values.
-
 static __inline__ __m128 __DEFAULT_FN_ATTRS
 _mm_undefined_ps(void)
 {
@@ -1915,8 +1914,8 @@ _mm_store_ss(float *__p, __m128 __a)
   ((struct __mm_store_ss_struct*)__p)->__u = __a[0];
 }
 
-/// \brief Stores float values from a 128-bit vector of [4 x float] to an
-///    unaligned memory location.
+/// \brief Stores a 128-bit vector of [4 x float] to an unaligned memory
+///    location.
 ///
 /// \headerfile <x86intrin.h>
 ///
@@ -1936,19 +1935,18 @@ _mm_storeu_ps(float *__p, __m128 __a)
   ((struct __storeu_ps*)__p)->__v = __a;
 }
 
-/// \brief Stores the lower 32 bits of a 128-bit vector of [4 x float] into
-///    four contiguous elements in an aligned memory location.
+/// \brief Stores a 128-bit vector of [4 x float] into an aligned memory
+///    location.
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to \c VMOVAPS / MOVAPS + \c shuffling
-///    instruction.
+/// This intrinsic corresponds to the \c VMOVAPS / MOVAPS instruction.
 ///
 /// \param __p
-///    A pointer to a 128-bit memory location.
+///    A pointer to a 128-bit memory location. The address of the memory
+///    location has to be 16-byte aligned.
 /// \param __a
-///    A 128-bit vector of [4 x float] whose lower 32 bits are stored to each
-///    of the four contiguous elements pointed by __p.
+///    A 128-bit vector of [4 x float] containing the values to be stored.
 static __inline__ void __DEFAULT_FN_ATTRS
 _mm_store_ps(float *__p, __m128 __a)
 {
@@ -1975,18 +1973,19 @@ _mm_store1_ps(float *__p, __m128 __a)
   _mm_store_ps(__p, __a);
 }
 
-/// \brief Stores float values from a 128-bit vector of [4 x float] to an
-///    aligned memory location.
+/// \brief Stores the lower 32 bits of a 128-bit vector of [4 x float] into
+///    four contiguous elements in an aligned memory location.
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the \c VMOVAPS / MOVAPS instruction.
+/// This intrinsic corresponds to \c VMOVAPS / MOVAPS + \c shuffling
+///    instruction.
 ///
 /// \param __p
-///    A pointer to a 128-bit memory location. The address of the memory
-///    location has to be 128-bit aligned.
+///    A pointer to a 128-bit memory location.
 /// \param __a
-///    A 128-bit vector of [4 x float] containing the values to be stored.
+///    A 128-bit vector of [4 x float] whose lower 32 bits are stored to each
+///    of the four contiguous elements pointed by __p.
 static __inline__ void __DEFAULT_FN_ATTRS
 _mm_store_ps1(float *__p, __m128 __a)
 {
@@ -2094,11 +2093,10 @@ _mm_stream_ps(float *__p, __m128 __a)
 ///
 /// This intrinsic corresponds to the \c SFENCE instruction.
 ///
-static __inline__ void __DEFAULT_FN_ATTRS
-_mm_sfence(void)
-{
-  __builtin_ia32_sfence();
-}
+#if defined(__cplusplus)
+extern "C"
+#endif
+void _mm_sfence(void);
 
 /// \brief Extracts 16-bit element from a 64-bit vector of [4 x i16] and
 ///    returns it, as specified by the immediate integer operand.
@@ -2376,6 +2374,10 @@ _mm_sad_pu8(__m64 __a, __m64 __b)
   return (__m64)__builtin_ia32_psadbw((__v8qi)__a, (__v8qi)__b);
 }
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 /// \brief Returns the contents of the MXCSR register as a 32-bit unsigned
 ///    integer value. There are several groups of macros associated with this
 ///    intrinsic, including:
@@ -2408,11 +2410,7 @@ _mm_sad_pu8(__m64 __a, __m64 __b)
 ///
 /// \returns A 32-bit unsigned integer containing the contents of the MXCSR
 ///    register.
-static __inline__ unsigned int __DEFAULT_FN_ATTRS
-_mm_getcsr(void)
-{
-  return __builtin_ia32_stmxcsr();
-}
+unsigned int _mm_getcsr(void);
 
 /// \brief Sets the MXCSR register with the 32-bit unsigned integer value. There
 ///    are several groups of macros associated with this intrinsic, including:
@@ -2450,11 +2448,11 @@ _mm_getcsr(void)
 ///
 /// \param __i
 ///    A 32-bit unsigned integer value to be written to the MXCSR register.
-static __inline__ void __DEFAULT_FN_ATTRS
-_mm_setcsr(unsigned int __i)
-{
-  __builtin_ia32_ldmxcsr(__i);
-}
+void _mm_setcsr(unsigned int);
+
+#if defined(__cplusplus)
+} // extern "C"
+#endif
 
 /// \brief Selects 4 float values from the 128-bit operands of [4 x float], as
 ///    specified by the immediate value operand.

@@ -161,6 +161,22 @@ struct PragmaMSRuntimeChecksHandler : public EmptyPragmaHandler {
   PragmaMSRuntimeChecksHandler() : EmptyPragmaHandler("runtime_checks") {}
 };
 
+struct PragmaMSIntrinsicHandler : public PragmaHandler {
+  PragmaMSIntrinsicHandler() : PragmaHandler("intrinsic") {}
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &FirstToken) override;
+};
+
+struct PragmaForceCUDAHostDeviceHandler : public PragmaHandler {
+  PragmaForceCUDAHostDeviceHandler(Sema &Actions)
+      : PragmaHandler("force_cuda_host_device"), Actions(Actions) {}
+  void HandlePragma(Preprocessor &PP, PragmaIntroducerKind Introducer,
+                    Token &FirstToken) override;
+
+private:
+  Sema &Actions;
+};
+
 }  // end namespace
 
 void Parser::initializePragmaHandlers() {
@@ -229,6 +245,14 @@ void Parser::initializePragmaHandlers() {
     PP.AddPragmaHandler(MSSection.get());
     MSRuntimeChecks.reset(new PragmaMSRuntimeChecksHandler());
     PP.AddPragmaHandler(MSRuntimeChecks.get());
+    MSIntrinsic.reset(new PragmaMSIntrinsicHandler());
+    PP.AddPragmaHandler(MSIntrinsic.get());
+  }
+
+  if (getLangOpts().CUDA) {
+    CUDAForceHostDeviceHandler.reset(
+        new PragmaForceCUDAHostDeviceHandler(Actions));
+    PP.AddPragmaHandler("clang", CUDAForceHostDeviceHandler.get());
   }
 
   OptimizeHandler.reset(new PragmaOptimizeHandler(Actions));
@@ -297,6 +321,13 @@ void Parser::resetPragmaHandlers() {
     MSSection.reset();
     PP.RemovePragmaHandler(MSRuntimeChecks.get());
     MSRuntimeChecks.reset();
+    PP.RemovePragmaHandler(MSIntrinsic.get());
+    MSIntrinsic.reset();
+  }
+
+  if (getLangOpts().CUDA) {
+    PP.RemovePragmaHandler("clang", CUDAForceHostDeviceHandler.get());
+    CUDAForceHostDeviceHandler.reset();
   }
 
   PP.RemovePragmaHandler("STDC", FPContractHandler.get());
@@ -2126,4 +2157,77 @@ void PragmaUnrollHintHandler::HandlePragma(Preprocessor &PP,
   TokenArray[0].setAnnotationValue(static_cast<void *>(Info));
   PP.EnterTokenStream(std::move(TokenArray), 1,
                       /*DisableMacroExpansion=*/false);
+}
+
+/// \brief Handle the Microsoft \#pragma intrinsic extension.
+///
+/// The syntax is:
+/// \code
+///  #pragma intrinsic(memset)
+///  #pragma intrinsic(strlen, memcpy)
+/// \endcode
+///
+/// Pragma intrisic tells the compiler to use a builtin version of the
+/// function. Clang does it anyway, so the pragma doesn't really do anything.
+/// Anyway, we emit a warning if the function specified in \#pragma intrinsic
+/// isn't an intrinsic in clang and suggest to include intrin.h.
+void PragmaMSIntrinsicHandler::HandlePragma(Preprocessor &PP,
+                                            PragmaIntroducerKind Introducer,
+                                            Token &Tok) {
+  PP.Lex(Tok);
+
+  if (Tok.isNot(tok::l_paren)) {
+    PP.Diag(Tok.getLocation(), diag::warn_pragma_expected_lparen)
+        << "intrinsic";
+    return;
+  }
+  PP.Lex(Tok);
+
+  bool SuggestIntrinH = !PP.isMacroDefined("__INTRIN_H");
+
+  while (Tok.is(tok::identifier)) {
+    IdentifierInfo *II = Tok.getIdentifierInfo();
+    if (!II->getBuiltinID())
+      PP.Diag(Tok.getLocation(), diag::warn_pragma_intrinsic_builtin)
+          << II << SuggestIntrinH;
+
+    PP.Lex(Tok);
+    if (Tok.isNot(tok::comma))
+      break;
+    PP.Lex(Tok);
+  }
+
+  if (Tok.isNot(tok::r_paren)) {
+    PP.Diag(Tok.getLocation(), diag::warn_pragma_expected_rparen)
+        << "intrinsic";
+    return;
+  }
+  PP.Lex(Tok);
+
+  if (Tok.isNot(tok::eod))
+    PP.Diag(Tok.getLocation(), diag::warn_pragma_extra_tokens_at_eol)
+        << "intrinsic";
+}
+void PragmaForceCUDAHostDeviceHandler::HandlePragma(
+    Preprocessor &PP, PragmaIntroducerKind Introducer, Token &Tok) {
+  Token FirstTok = Tok;
+
+  PP.Lex(Tok);
+  IdentifierInfo *Info = Tok.getIdentifierInfo();
+  if (!Info || (!Info->isStr("begin") && !Info->isStr("end"))) {
+    PP.Diag(FirstTok.getLocation(),
+            diag::warn_pragma_force_cuda_host_device_bad_arg);
+    return;
+  }
+
+  if (Info->isStr("begin"))
+    Actions.PushForceCUDAHostDevice();
+  else if (!Actions.PopForceCUDAHostDevice())
+    PP.Diag(FirstTok.getLocation(),
+            diag::err_pragma_cannot_end_force_cuda_host_device);
+
+  PP.Lex(Tok);
+  if (!Tok.is(tok::eod))
+    PP.Diag(FirstTok.getLocation(),
+            diag::warn_pragma_force_cuda_host_device_bad_arg);
 }

@@ -481,9 +481,12 @@ public:
   /// \param ModuleMapPath A path that when combined with \c ModuleName
   /// uniquely identifies this module. See Module::ModuleMap.
   ///
+  /// \param UsePrebuiltPath Whether we should use the prebuilt module path.
+  ///
   /// \returns The name of the module file that corresponds to this module,
   /// or an empty string if this module does not correspond to any module file.
-  std::string getModuleFileName(StringRef ModuleName, StringRef ModuleMapPath);
+  std::string getModuleFileName(StringRef ModuleName, StringRef ModuleMapPath,
+                                bool UsePrebuiltPath);
 
   /// \brief Lookup a module Search for a module with the given name.
   ///
@@ -520,8 +523,10 @@ public:
   /// \brief Retrieve the module that corresponds to the given file, if any.
   ///
   /// \param File The header that we wish to map to a module.
-  ModuleMap::KnownHeader findModuleForHeader(const FileEntry *File) const;
-  
+  /// \param AllowTextual Whether we want to find textual headers too.
+  ModuleMap::KnownHeader findModuleForHeader(const FileEntry *File,
+                                             bool AllowTextual = false) const;
+
   /// \brief Read the contents of the given module map file.
   ///
   /// \param File The module map file.

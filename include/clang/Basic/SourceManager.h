@@ -44,7 +44,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/PointerIntPair.h"
-#include "llvm/Support/AlignOf.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -226,7 +225,7 @@ namespace SrcMgr {
 
   // Assert that the \c ContentCache objects will always be 8-byte aligned so
   // that we can pack 3 bits of integer into pointers to such objects.
-  static_assert(llvm::AlignOf<ContentCache>::Alignment >= 8,
+  static_assert(alignof(ContentCache) >= 8,
                 "ContentCache must be 8-byte aligned.");
 
   /// \brief Information about a FileID, basically just the logical file
@@ -693,7 +692,8 @@ class SourceManager : public RefCountedBase<SourceManager> {
   /// source location.
   typedef std::map<unsigned, SourceLocation> MacroArgsMap;
 
-  mutable llvm::DenseMap<FileID, MacroArgsMap *> MacroArgsCacheMap;
+  mutable llvm::DenseMap<FileID, std::unique_ptr<MacroArgsMap>>
+      MacroArgsCacheMap;
 
   /// \brief The stack of modules being built, which is used to detect
   /// cycles in the module dependency graph as modules are being built, as
@@ -1291,7 +1291,7 @@ public:
   ///
   /// Note that this name does not respect \#line directives.  Use
   /// getPresumedLoc for normal clients.
-  const char *getBufferName(SourceLocation Loc, bool *Invalid = nullptr) const;
+  StringRef getBufferName(SourceLocation Loc, bool *Invalid = nullptr) const;
 
   /// \brief Return the file characteristic of the specified source
   /// location, indicating whether this is a normal file, a system
@@ -1357,7 +1357,7 @@ public:
   }
 
   /// \brief Returns whether \p Loc is expanded from a macro in a system header.
-  bool isInSystemMacro(SourceLocation loc) {
+  bool isInSystemMacro(SourceLocation loc) const {
     return loc.isMacroID() && isInSystemHeader(getSpellingLoc(loc));
   }
 
@@ -1672,7 +1672,7 @@ private:
   std::pair<FileID, unsigned>
   getDecomposedSpellingLocSlowCase(const SrcMgr::SLocEntry *E,
                                    unsigned Offset) const;
-  void computeMacroArgsCache(MacroArgsMap *&MacroArgsCache, FileID FID) const;
+  void computeMacroArgsCache(MacroArgsMap &MacroArgsCache, FileID FID) const;
   void associateFileChunkWithMacroArgExp(MacroArgsMap &MacroArgsCache,
                                          FileID FID,
                                          SourceLocation SpellLoc,

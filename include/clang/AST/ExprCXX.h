@@ -76,6 +76,19 @@ public:
   /// expression refers to.
   OverloadedOperatorKind getOperator() const { return Operator; }
 
+  static bool isAssignmentOp(OverloadedOperatorKind Opc) {
+    return Opc == OO_Equal || Opc == OO_StarEqual ||
+           Opc == OO_SlashEqual || Opc == OO_PercentEqual ||
+           Opc == OO_PlusEqual || Opc == OO_MinusEqual ||
+           Opc == OO_LessLessEqual || Opc == OO_GreaterGreaterEqual ||
+           Opc == OO_AmpEqual || Opc == OO_CaretEqual ||
+           Opc == OO_PipeEqual;
+  }
+  bool isAssignmentOp() const { return isAssignmentOp(getOperator()); }
+
+  /// \brief Is this written as an infix binary operator?
+  bool isInfixBinaryOp() const;
+
   /// \brief Returns the location of the operator symbol in the expression.
   ///
   /// When \c getOperator()==OO_Call, this is the location of the right
@@ -1828,11 +1841,13 @@ class CXXNewExpr : public Expr {
   unsigned GlobalNew : 1;
   /// Do we allocate an array? If so, the first SubExpr is the size expression.
   unsigned Array : 1;
+  /// Should the alignment be passed to the allocation function?
+  unsigned PassAlignment : 1;
   /// If this is an array allocation, does the usual deallocation
   /// function for the allocated type want to know the allocated size?
   unsigned UsualArrayDeleteWantsSize : 1;
   /// The number of placement new arguments.
-  unsigned NumPlacementArgs : 13;
+  unsigned NumPlacementArgs : 26;
   /// What kind of initializer do we have? Could be none, parens, or braces.
   /// In storage, we distinguish between "none, and no initializer expr", and
   /// "none, but an implicit initializer expr".
@@ -1848,8 +1863,8 @@ public:
   };
 
   CXXNewExpr(const ASTContext &C, bool globalNew, FunctionDecl *operatorNew,
-             FunctionDecl *operatorDelete, bool usualArrayDeleteWantsSize,
-             ArrayRef<Expr*> placementArgs,
+             FunctionDecl *operatorDelete, bool PassAlignment,
+             bool usualArrayDeleteWantsSize, ArrayRef<Expr*> placementArgs,
              SourceRange typeIdParens, Expr *arraySize,
              InitializationStyle initializationStyle, Expr *initializer,
              QualType ty, TypeSourceInfo *AllocatedTypeInfo,
@@ -1937,8 +1952,14 @@ public:
   }
 
   /// \brief Returns the CXXConstructExpr from this new-expression, or null.
-  const CXXConstructExpr* getConstructExpr() const {
+  const CXXConstructExpr *getConstructExpr() const {
     return dyn_cast_or_null<CXXConstructExpr>(getInitializer());
+  }
+
+  /// Indicates whether the required alignment should be implicitly passed to
+  /// the allocation function.
+  bool passAlignment() const {
+    return PassAlignment;
   }
 
   /// Answers whether the usual array deallocation function for the
@@ -4011,6 +4032,12 @@ public:
     // within a default initializer.
     if (isa<FieldDecl>(ExtendingDecl))
       return SD_Automatic;
+    // FIXME: This only works because storage class specifiers are not allowed
+    // on decomposition declarations.
+    if (isa<BindingDecl>(ExtendingDecl))
+      return ExtendingDecl->getDeclContext()->isFunctionOrMethod()
+                 ? SD_Automatic
+                 : SD_Static;
     return cast<VarDecl>(ExtendingDecl)->getStorageDuration();
   }
 

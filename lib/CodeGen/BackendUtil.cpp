@@ -29,9 +29,11 @@
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/LTO/LTOBackend.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Object/ModuleSummaryIndexObjectFile.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/Timer.h"
@@ -39,7 +41,9 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Target/TargetSubtargetInfo.h"
+#include "llvm/Transforms/Coroutines.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/ObjCARC.h"
@@ -74,8 +78,7 @@ private:
   /// Set LLVM command line options passed through -backend-option.
   void setCommandLineOpts();
 
-  void CreatePasses(legacy::PassManager &MPM, legacy::FunctionPassManager &FPM,
-                    ModuleSummaryIndex *ModuleSummary);
+  void CreatePasses(legacy::PassManager &MPM, legacy::FunctionPassManager &FPM);
 
   /// Generates the TargetMachine.
   /// Leaves TM unchanged if it is unable to create the target machine.
@@ -147,17 +150,6 @@ static void addAddDiscriminatorsPass(const PassManagerBuilder &Builder,
   PM.add(createAddDiscriminatorsPass());
 }
 
-static void addCleanupPassesForSampleProfiler(
-    const PassManagerBuilder &Builder, legacy::PassManagerBase &PM) {
-  // instcombine is needed before sample profile annotation because it converts
-  // certain function calls to be inlinable. simplifycfg and sroa are needed
-  // before instcombine for necessary preparation. E.g. load store is eliminated
-  // properly so that instcombine will not introduce unecessary liverange.
-  PM.add(createCFGSimplificationPass());
-  PM.add(createSROAPass());
-  PM.add(createInstructionCombiningPass());
-}
-
 static void addBoundsCheckingPass(const PassManagerBuilder &Builder,
                                   legacy::PassManagerBase &PM) {
   PM.add(createBoundsCheckingPass());
@@ -174,8 +166,11 @@ static void addSanitizerCoveragePass(const PassManagerBuilder &Builder,
   Opts.IndirectCalls = CGOpts.SanitizeCoverageIndirectCalls;
   Opts.TraceBB = CGOpts.SanitizeCoverageTraceBB;
   Opts.TraceCmp = CGOpts.SanitizeCoverageTraceCmp;
+  Opts.TraceDiv = CGOpts.SanitizeCoverageTraceDiv;
+  Opts.TraceGep = CGOpts.SanitizeCoverageTraceGep;
   Opts.Use8bitCounters = CGOpts.SanitizeCoverage8bitCounters;
   Opts.TracePC = CGOpts.SanitizeCoverageTracePC;
+  Opts.TracePCGuard = CGOpts.SanitizeCoverageTracePCGuard;
   PM.add(createSanitizerCoverageModulePass(Opts));
 }
 
@@ -284,8 +279,7 @@ static void addSymbolRewriterPass(const CodeGenOptions &Opts,
 }
 
 void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
-                                      legacy::FunctionPassManager &FPM,
-                                      ModuleSummaryIndex *ModuleSummary) {
+                                      legacy::FunctionPassManager &FPM) {
   if (CodeGenOpts.DisableLLVMPasses)
     return;
 
@@ -318,9 +312,9 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
     // Respect always_inline.
     if (OptLevel == 0)
       // Do not insert lifetime intrinsics at -O0.
-      PMBuilder.Inliner = createAlwaysInlinerPass(false);
+      PMBuilder.Inliner = createAlwaysInlinerLegacyPass(false);
     else
-      PMBuilder.Inliner = createAlwaysInlinerPass();
+      PMBuilder.Inliner = createAlwaysInlinerLegacyPass();
     break;
   }
 
@@ -335,14 +329,6 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   PMBuilder.PrepareForThinLTO = CodeGenOpts.EmitSummaryIndex;
   PMBuilder.PrepareForLTO = CodeGenOpts.PrepareForLTO;
   PMBuilder.RerollLoops = CodeGenOpts.RerollLoops;
-
-  // If we are performing a ThinLTO importing compile, invoke the LTO
-  // pipeline and pass down the in-memory module summary index.
-  if (ModuleSummary) {
-    PMBuilder.ModuleSummary = ModuleSummary;
-    PMBuilder.populateThinLTOPassManager(MPM);
-    return;
-  }
 
   // Add target-specific passes that need to run as early as possible.
   if (TM)
@@ -416,6 +402,9 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
                            addDataFlowSanitizerPass);
   }
 
+  if (LangOpts.CoroutinesTS)
+    addCoroutinePassesToExtensionPoints(PMBuilder);
+
   if (LangOpts.Sanitize.hasOneOf(SanitizerKind::Efficiency)) {
     PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
                            addEfficiencySanitizerPass);
@@ -468,8 +457,6 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   if (!CodeGenOpts.SampleProfileFile.empty()) {
     MPM.add(createPruneEHPass());
     MPM.add(createSampleProfileLoaderPass(CodeGenOpts.SampleProfileFile));
-    PMBuilder.addExtension(PassManagerBuilder::EP_EarlyAsPossible,
-                           addCleanupPassesForSampleProfiler);
   }
 
   PMBuilder.populateFunctionPassManager(FPM);
@@ -525,6 +512,12 @@ void EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
     RM = llvm::Reloc::Static;
   } else if (CodeGenOpts.RelocationModel == "pic") {
     RM = llvm::Reloc::PIC_;
+  } else if (CodeGenOpts.RelocationModel == "ropi") {
+    RM = llvm::Reloc::ROPI;
+  } else if (CodeGenOpts.RelocationModel == "rwpi") {
+    RM = llvm::Reloc::RWPI;
+  } else if (CodeGenOpts.RelocationModel == "ropi-rwpi") {
+    RM = llvm::Reloc::ROPI_RWPI;
   } else {
     assert(CodeGenOpts.RelocationModel == "dynamic-no-pic" &&
            "Invalid PIC model!");
@@ -539,9 +532,6 @@ void EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   }
 
   llvm::TargetOptions Options;
-
-  if (!TargetOpts.Reciprocals.empty())
-    Options.Reciprocals = TargetRecip(TargetOpts.Reciprocals);
 
   Options.ThreadModel =
     llvm::StringSwitch<llvm::ThreadModel::Model>(CodeGenOpts.ThreadModel)
@@ -605,6 +595,8 @@ void EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   Options.MCOptions.MCNoExecStack = CodeGenOpts.NoExecStack;
   Options.MCOptions.MCIncrementalLinkerCompatible =
       CodeGenOpts.IncrementalLinkerCompatible;
+  Options.MCOptions.MCPIECopyRelocations =
+      CodeGenOpts.PIECopyRelocations;
   Options.MCOptions.MCFatalWarnings = CodeGenOpts.FatalWarnings;
   Options.MCOptions.AsmVerbose = CodeGenOpts.AsmVerbose;
   Options.MCOptions.PreserveAsmComments = CodeGenOpts.PreserveAsmComments;
@@ -664,26 +656,6 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
   if (TM)
     TheModule->setDataLayout(TM->createDataLayout());
 
-  // If we are performing a ThinLTO importing compile, load the function
-  // index into memory and pass it into CreatePasses, which will add it
-  // to the PassManagerBuilder and invoke LTO passes.
-  std::unique_ptr<ModuleSummaryIndex> ModuleSummary;
-  if (!CodeGenOpts.ThinLTOIndexFile.empty()) {
-    ErrorOr<std::unique_ptr<ModuleSummaryIndex>> IndexOrErr =
-        llvm::getModuleSummaryIndexForFile(
-            CodeGenOpts.ThinLTOIndexFile, [&](const DiagnosticInfo &DI) {
-              TheModule->getContext().diagnose(DI);
-            });
-    if (std::error_code EC = IndexOrErr.getError()) {
-      std::string Error = EC.message();
-      errs() << "Error loading index file '" << CodeGenOpts.ThinLTOIndexFile
-             << "': " << Error << "\n";
-      return;
-    }
-    ModuleSummary = std::move(IndexOrErr.get());
-    assert(ModuleSummary && "Expected non-empty module summary index");
-  }
-
   legacy::PassManager PerModulePasses;
   PerModulePasses.add(
       createTargetTransformInfoWrapperPass(getTargetIRAnalysis()));
@@ -692,7 +664,7 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
   PerFunctionPasses.add(
       createTargetTransformInfoWrapperPass(getTargetIRAnalysis()));
 
-  CreatePasses(PerModulePasses, PerFunctionPasses, ModuleSummary.get());
+  CreatePasses(PerModulePasses, PerFunctionPasses);
 
   legacy::PassManager CodeGenPasses;
   CodeGenPasses.add(
@@ -745,12 +717,71 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
   }
 }
 
+static void runThinLTOBackend(const CodeGenOptions &CGOpts, Module *M,
+                              std::unique_ptr<raw_pwrite_stream> OS) {
+  // If we are performing a ThinLTO importing compile, load the function index
+  // into memory and pass it into thinBackend, which will run the function
+  // importer and invoke LTO passes.
+  ErrorOr<std::unique_ptr<ModuleSummaryIndex>> IndexOrErr =
+      llvm::getModuleSummaryIndexForFile(
+          CGOpts.ThinLTOIndexFile,
+          [&](const DiagnosticInfo &DI) { M->getContext().diagnose(DI); });
+  if (std::error_code EC = IndexOrErr.getError()) {
+    std::string Error = EC.message();
+    errs() << "Error loading index file '" << CGOpts.ThinLTOIndexFile
+           << "': " << Error << "\n";
+    return;
+  }
+  std::unique_ptr<ModuleSummaryIndex> CombinedIndex = std::move(*IndexOrErr);
+
+  StringMap<std::map<GlobalValue::GUID, GlobalValueSummary *>>
+      ModuleToDefinedGVSummaries;
+  CombinedIndex->collectDefinedGVSummariesPerModule(ModuleToDefinedGVSummaries);
+
+  // FIXME: We could simply import the modules mentioned in the combined index
+  // here.
+  FunctionImporter::ImportMapTy ImportList;
+  ComputeCrossModuleImportForModule(M->getModuleIdentifier(), *CombinedIndex,
+                                    ImportList);
+
+  std::vector<std::unique_ptr<llvm::MemoryBuffer>> OwnedImports;
+  MapVector<llvm::StringRef, llvm::MemoryBufferRef> ModuleMap;
+
+  for (auto &I : ImportList) {
+    ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> MBOrErr =
+        llvm::MemoryBuffer::getFile(I.first());
+    if (!MBOrErr) {
+      errs() << "Error loading imported file '" << I.first()
+             << "': " << MBOrErr.getError().message() << "\n";
+      return;
+    }
+    ModuleMap[I.first()] = (*MBOrErr)->getMemBufferRef();
+    OwnedImports.push_back(std::move(*MBOrErr));
+  }
+  auto AddStream = [&](size_t Task) {
+    return llvm::make_unique<lto::NativeObjectStream>(std::move(OS));
+  };
+  lto::Config Conf;
+  if (Error E = thinBackend(
+          Conf, 0, AddStream, *M, *CombinedIndex, ImportList,
+          ModuleToDefinedGVSummaries[M->getModuleIdentifier()], ModuleMap)) {
+    handleAllErrors(std::move(E), [&](ErrorInfoBase &EIB) {
+      errs() << "Error running ThinLTO backend: " << EIB.message() << '\n';
+    });
+  }
+}
+
 void clang::EmitBackendOutput(DiagnosticsEngine &Diags,
                               const CodeGenOptions &CGOpts,
                               const clang::TargetOptions &TOpts,
                               const LangOptions &LOpts, const llvm::DataLayout &TDesc,
                               Module *M, BackendAction Action,
                               std::unique_ptr<raw_pwrite_stream> OS) {
+  if (!CGOpts.ThinLTOIndexFile.empty()) {
+    runThinLTOBackend(CGOpts, M, std::move(OS));
+    return;
+  }
+
   EmitAssemblyHelper AsmHelper(Diags, CGOpts, TOpts, LOpts, M);
 
   AsmHelper.EmitAssembly(Action, std::move(OS));

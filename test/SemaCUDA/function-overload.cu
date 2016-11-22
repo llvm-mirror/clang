@@ -170,11 +170,23 @@ __host__ __device__ void hostdevicef() {
   DeviceReturnTy ret_d = d();
   DeviceFnPtr fp_cd = cd;
   DeviceReturnTy ret_cd = cd();
+#if !defined(__CUDA_ARCH__)
+  // expected-error@-5 {{reference to __device__ function 'd' in __host__ __device__ function}}
+  // expected-error@-5 {{reference to __device__ function 'd' in __host__ __device__ function}}
+  // expected-error@-5 {{reference to __device__ function 'cd' in __host__ __device__ function}}
+  // expected-error@-5 {{reference to __device__ function 'cd' in __host__ __device__ function}}
+#endif
 
   HostFnPtr fp_h = h;
   HostReturnTy ret_h = h();
   HostFnPtr fp_ch = ch;
   HostReturnTy ret_ch = ch();
+#if defined(__CUDA_ARCH__)
+  // expected-error@-5 {{reference to __host__ function 'h' in __host__ __device__ function}}
+  // expected-error@-5 {{reference to __host__ function 'h' in __host__ __device__ function}}
+  // expected-error@-5 {{reference to __host__ function 'ch' in __host__ __device__ function}}
+  // expected-error@-5 {{reference to __host__ function 'ch' in __host__ __device__ function}}
+#endif
 
   CurrentFnPtr fp_dh = dh;
   CurrentReturnTy ret_dh = dh();
@@ -185,14 +197,18 @@ __host__ __device__ void hostdevicef() {
 #if defined(__CUDA_ARCH__)
   // expected-error@-2 {{reference to __global__ function 'g' in __host__ __device__ function}}
 #endif
+
   g();
-  g<<<0,0>>>();
-#if !defined(__CUDA_ARCH__)
-  // expected-error@-3 {{call to global function g not configured}}
+#if defined (__CUDA_ARCH__)
+  // expected-error@-2 {{reference to __global__ function 'g' in __host__ __device__ function}}
 #else
-  // expected-error@-5 {{no matching function for call to 'g'}}
-  // expected-error@-5 {{reference to __global__ function 'g' in __host__ __device__ function}}
-#endif  // __CUDA_ARCH__
+  // expected-error@-4 {{call to global function g not configured}}
+#endif
+
+  g<<<0,0>>>();
+#if defined(__CUDA_ARCH__)
+  // expected-error@-2 {{reference to __global__ function 'g' in __host__ __device__ function}}
+#endif
 }
 
 // Test for address of overloaded function resolution in the global context.
@@ -210,42 +226,9 @@ struct d_h {
   __host__ ~d_h() {} // expected-error {{destructor cannot be redeclared}}
 };
 
-// H/D overloading is OK
-struct d_dh {
-  __device__ ~d_dh() {}
-  __host__ ~d_dh() {}
-};
-
 // HD is OK
 struct d_hd {
   __host__ __device__ ~d_hd() {}
-};
-
-// Mixing H/D and HD is not allowed.
-struct d_dhhd {
-  __device__ ~d_dhhd() {}
-  __host__ ~d_dhhd() {} // expected-note {{previous declaration is here}}
-  __host__ __device__ ~d_dhhd() {} // expected-error {{destructor cannot be redeclared}}
-};
-
-struct d_hhd {
-  __host__ ~d_hhd() {} // expected-note {{previous declaration is here}}
-  __host__ __device__ ~d_hhd() {} // expected-error {{destructor cannot be redeclared}}
-};
-
-struct d_hdh {
-  __host__ __device__ ~d_hdh() {} // expected-note {{previous declaration is here}}
-  __host__ ~d_hdh() {} // expected-error {{destructor cannot be redeclared}}
-};
-
-struct d_dhd {
-  __device__ ~d_dhd() {} // expected-note {{previous declaration is here}}
-  __host__ __device__ ~d_dhd() {} // expected-error {{destructor cannot be redeclared}}
-};
-
-struct d_hdd {
-  __host__ __device__ ~d_hdd() {} // expected-note {{previous declaration is here}}
-  __device__ ~d_hdd() {} // expected-error {{destructor cannot be redeclared}}
 };
 
 // Test overloading of member functions
@@ -341,7 +324,11 @@ __device__ void test_device_calls_template_fn() {
 
 // If we have a mix of HD and H-only or D-only candidates in the overload set,
 // normal C++ overload resolution rules apply first.
-template <typename T> TemplateReturnTy template_vs_hd_function(T arg) {
+template <typename T> TemplateReturnTy template_vs_hd_function(T arg)
+#ifdef __CUDA_ARCH__
+//expected-note@-2 {{declared here}}
+#endif
+{
   return TemplateReturnTy();
 }
 __host__ __device__ HostDeviceReturnTy template_vs_hd_function(float arg) {
@@ -351,6 +338,9 @@ __host__ __device__ HostDeviceReturnTy template_vs_hd_function(float arg) {
 __host__ __device__ void test_host_device_calls_hd_template() {
   HostDeviceReturnTy ret1 = template_vs_hd_function(1.0f);
   TemplateReturnTy ret2 = template_vs_hd_function(1);
+#ifdef __CUDA_ARCH__
+  // expected-error@-2 {{reference to __host__ function 'template_vs_hd_function<int>' in __host__ __device__ function}}
+#endif
 }
 
 __host__ void test_host_calls_hd_template() {
@@ -370,12 +360,39 @@ __device__ void test_device_calls_hd_template() {
 // side of compilation.
 __device__ DeviceReturnTy device_only_function(int arg) { return DeviceReturnTy(); }
 __device__ DeviceReturnTy2 device_only_function(float arg) { return DeviceReturnTy2(); }
+#ifndef __CUDA_ARCH__
+  // expected-note@-3 {{'device_only_function' declared here}}
+  // expected-note@-3 {{'device_only_function' declared here}}
+#endif
 __host__ HostReturnTy host_only_function(int arg) { return HostReturnTy(); }
 __host__ HostReturnTy2 host_only_function(float arg) { return HostReturnTy2(); }
+#ifdef __CUDA_ARCH__
+  // expected-note@-3 {{'host_only_function' declared here}}
+  // expected-note@-3 {{'host_only_function' declared here}}
+#endif
 
 __host__ __device__ void test_host_device_single_side_overloading() {
   DeviceReturnTy ret1 = device_only_function(1);
   DeviceReturnTy2 ret2 = device_only_function(1.0f);
+#ifndef __CUDA_ARCH__
+  // expected-error@-3 {{reference to __device__ function 'device_only_function' in __host__ __device__ function}}
+  // expected-error@-3 {{reference to __device__ function 'device_only_function' in __host__ __device__ function}}
+#endif
   HostReturnTy ret3 = host_only_function(1);
   HostReturnTy2 ret4 = host_only_function(1.0f);
+#ifdef __CUDA_ARCH__
+  // expected-error@-3 {{reference to __host__ function 'host_only_function' in __host__ __device__ function}}
+  // expected-error@-3 {{reference to __host__ function 'host_only_function' in __host__ __device__ function}}
+#endif
+}
+
+// Verify that we allow overloading function templates.
+template <typename T> __host__ T template_overload(const T &a) { return a; };
+template <typename T> __device__ T template_overload(const T &a) { return a; };
+
+__host__ void test_host_template_overload() {
+  template_overload(1); // OK. Attribute-based overloading picks __host__ variant.
+}
+__device__ void test_device_template_overload() {
+  template_overload(1); // OK. Attribute-based overloading picks __device__ variant.
 }

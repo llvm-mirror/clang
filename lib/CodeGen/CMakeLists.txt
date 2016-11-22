@@ -3,11 +3,13 @@ set(LLVM_LINK_COMPONENTS
   BitReader
   BitWriter
   Core
+  Coroutines
   Coverage
   IPO
   IRReader
   InstCombine
   Instrumentation
+  LTO
   Linker
   MC
   ObjCARCOpts
@@ -41,6 +43,7 @@ add_clang_library(clangCodeGen
   CGCall.cpp
   CGClass.cpp
   CGCleanup.cpp
+  CGCoroutine.cpp
   CGDebugInfo.cpp
   CGDecl.cpp
   CGDeclCXX.cpp
@@ -79,12 +82,15 @@ add_clang_library(clangCodeGen
   SanitizerMetadata.cpp
   SwiftCallingConv.cpp
   TargetInfo.cpp
+  VarBypassDetector.cpp
 
   DEPENDS
   ${codegen_deps}
 
   LINK_LIBS
+  clangAnalysis
   clangAST
+  clangAnalysis
   clangBasic
   clangFrontend
   clangLex

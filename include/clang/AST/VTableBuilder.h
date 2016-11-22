@@ -218,12 +218,6 @@ private:
 class VTableLayout {
 public:
   typedef std::pair<uint64_t, ThunkInfo> VTableThunkTy;
-
-  typedef const VTableComponent *vtable_component_iterator;
-  typedef const VTableThunkTy *vtable_thunk_iterator;
-  typedef llvm::iterator_range<vtable_component_iterator>
-      vtable_component_range;
-
   typedef llvm::DenseMap<BaseSubobject, uint64_t> AddressPointsMapTy;
 
 private:
@@ -248,31 +242,12 @@ public:
                bool IsMicrosoftABI);
   ~VTableLayout();
 
-  uint64_t getNumVTableComponents() const {
-    return NumVTableComponents;
+  ArrayRef<VTableComponent> vtable_components() const {
+    return {VTableComponents.get(), size_t(NumVTableComponents)};
   }
 
-  vtable_component_range vtable_components() const {
-    return vtable_component_range(vtable_component_begin(),
-                                  vtable_component_end());
-  }
-
-  vtable_component_iterator vtable_component_begin() const {
-    return VTableComponents.get();
-  }
-
-  vtable_component_iterator vtable_component_end() const {
-    return VTableComponents.get() + NumVTableComponents;
-  }
-
-  uint64_t getNumVTableThunks() const { return NumVTableThunks; }
-
-  vtable_thunk_iterator vtable_thunk_begin() const {
-    return VTableThunks.get();
-  }
-
-  vtable_thunk_iterator vtable_thunk_end() const {
-    return VTableThunks.get() + NumVTableThunks;
+  ArrayRef<VTableThunkTy> vtable_thunks() const {
+    return {VTableThunks.get(), size_t(NumVTableThunks)};
   }
 
   uint64_t getAddressPoint(BaseSubobject Base) const {
@@ -338,8 +313,9 @@ private:
   typedef llvm::DenseMap<GlobalDecl, int64_t> MethodVTableIndicesTy;
   MethodVTableIndicesTy MethodVTableIndices;
 
-  typedef llvm::DenseMap<const CXXRecordDecl *, const VTableLayout *>
-    VTableLayoutMapTy;
+  typedef llvm::DenseMap<const CXXRecordDecl *,
+                         std::unique_ptr<const VTableLayout>>
+      VTableLayoutMapTy;
   VTableLayoutMapTy VTableLayouts;
 
   typedef std::pair<const CXXRecordDecl *,
@@ -366,11 +342,9 @@ public:
     return *VTableLayouts[RD];
   }
 
-  VTableLayout *
-  createConstructionVTableLayout(const CXXRecordDecl *MostDerivedClass,
-                                 CharUnits MostDerivedClassOffset,
-                                 bool MostDerivedClassIsVirtual,
-                                 const CXXRecordDecl *LayoutClass);
+  std::unique_ptr<VTableLayout> createConstructionVTableLayout(
+      const CXXRecordDecl *MostDerivedClass, CharUnits MostDerivedClassOffset,
+      bool MostDerivedClassIsVirtual, const CXXRecordDecl *LayoutClass);
 
   /// \brief Locate a virtual function in the vtable.
   ///
@@ -443,14 +417,12 @@ struct VPtrInfo {
   }
 };
 
-typedef SmallVector<VPtrInfo *, 2> VPtrInfoVector;
+typedef SmallVector<std::unique_ptr<VPtrInfo>, 2> VPtrInfoVector;
 
 /// All virtual base related information about a given record decl.  Includes
 /// information on all virtual base tables and the path components that are used
 /// to mangle them.
 struct VirtualBaseInfo {
-  ~VirtualBaseInfo() { llvm::DeleteContainerPointers(VBPtrPaths); }
-
   /// A map from virtual base to vbtable index for doing a conversion from the
   /// the derived class to the a base.
   llvm::DenseMap<const CXXRecordDecl *, unsigned> VBTableIndices;
@@ -503,15 +475,17 @@ private:
     MethodVFTableLocationsTy;
   MethodVFTableLocationsTy MethodVFTableLocations;
 
-  typedef llvm::DenseMap<const CXXRecordDecl *, VPtrInfoVector *>
-    VFPtrLocationsMapTy;
+  typedef llvm::DenseMap<const CXXRecordDecl *, VPtrInfoVector>
+      VFPtrLocationsMapTy;
   VFPtrLocationsMapTy VFPtrLocations;
 
   typedef std::pair<const CXXRecordDecl *, CharUnits> VFTableIdTy;
-  typedef llvm::DenseMap<VFTableIdTy, const VTableLayout *> VFTableLayoutMapTy;
+  typedef llvm::DenseMap<VFTableIdTy, std::unique_ptr<const VTableLayout>>
+      VFTableLayoutMapTy;
   VFTableLayoutMapTy VFTableLayouts;
 
-  llvm::DenseMap<const CXXRecordDecl *, VirtualBaseInfo *> VBaseInfo;
+  llvm::DenseMap<const CXXRecordDecl *, std::unique_ptr<VirtualBaseInfo>>
+      VBaseInfo;
 
   void enumerateVFPtrs(const CXXRecordDecl *ForClass, VPtrInfoVector &Result);
 
@@ -521,7 +495,7 @@ private:
                            const MethodVFTableLocationsTy &NewMethods,
                            raw_ostream &);
 
-  const VirtualBaseInfo *
+  const VirtualBaseInfo &
   computeVBTableRelatedInformation(const CXXRecordDecl *RD);
 
   void computeVTablePaths(bool ForVBTables, const CXXRecordDecl *RD,

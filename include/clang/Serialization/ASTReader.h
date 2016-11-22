@@ -284,6 +284,21 @@ private:
   void Error(const char *Msg);
 };
 
+/// \brief ASTReaderListenter implementation to set SuggestedPredefines of
+/// ASTReader which is required to use a pch file. This is the replacement
+/// of PCHValidator or SimplePCHValidator when using a pch file without
+/// validating it.
+class SimpleASTReaderListener : public ASTReaderListener {
+  Preprocessor &PP;
+
+public:
+  SimpleASTReaderListener(Preprocessor &PP)
+    : PP(PP) {}
+
+  bool ReadPreprocessorOptions(const PreprocessorOptions &PPOpts, bool Complain,
+                               std::string &SuggestedPredefines) override;
+};
+
 namespace serialization {
 
 class ReadMethodPoolVisitor;
@@ -756,6 +771,10 @@ private:
   ///
   /// Sema tracks these to emit warnings.
   SmallVector<uint64_t, 16> UnusedLocalTypedefNameCandidates;
+
+  /// \brief Our current depth in #pragma cuda force_host_device begin/end
+  /// macros.
+  unsigned ForceCUDAHostDeviceDepth = 0;
 
   /// \brief The IDs of the declarations Sema stores directly.
   ///
@@ -1405,6 +1424,10 @@ public:
   /// \brief Make the names within this set of hidden names visible.
   void makeNamesVisible(const HiddenNames &Names, Module *Owner);
 
+  /// \brief Note that MergedDef is a redefinition of the canonical definition
+  /// Def, so Def should be visible whenever MergedDef is.
+  void mergeDefinitionVisibility(NamedDecl *Def, NamedDecl *MergedDef);
+
   /// \brief Take the AST callbacks listener.
   std::unique_ptr<ASTReaderListener> takeListener() {
     return std::move(Listener);
@@ -1854,8 +1877,8 @@ public:
                                            SourceLocation> > &Pending) override;
 
   void ReadLateParsedTemplates(
-      llvm::MapVector<const FunctionDecl *, LateParsedTemplate *> &LPTMap)
-      override;
+      llvm::MapVector<const FunctionDecl *, std::unique_ptr<LateParsedTemplate>>
+          &LPTMap) override;
 
   /// \brief Load a selector from disk, registering its ID if it exists.
   void LoadSelector(Selector Sel);

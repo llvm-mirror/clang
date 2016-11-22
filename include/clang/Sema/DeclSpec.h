@@ -380,7 +380,8 @@ private:
   SourceRange Range;
 
   SourceLocation StorageClassSpecLoc, ThreadStorageClassSpecLoc;
-  SourceLocation TSWLoc, TSCLoc, TSSLoc, TSTLoc, AltiVecLoc;
+  SourceRange TSWRange;
+  SourceLocation TSCLoc, TSSLoc, TSTLoc, AltiVecLoc;
   /// TSTNameLoc - If TypeSpecType is any of class, enum, struct, union,
   /// typename, then this is the location of the named type (if present);
   /// otherwise, it is the same as TSTLoc. Hence, the pair TSTLoc and
@@ -503,7 +504,8 @@ public:
   SourceLocation getLocStart() const LLVM_READONLY { return Range.getBegin(); }
   SourceLocation getLocEnd() const LLVM_READONLY { return Range.getEnd(); }
 
-  SourceLocation getTypeSpecWidthLoc() const { return TSWLoc; }
+  SourceLocation getTypeSpecWidthLoc() const { return TSWRange.getBegin(); }
+  SourceRange getTypeSpecWidthRange() const { return TSWRange; }
   SourceLocation getTypeSpecComplexLoc() const { return TSCLoc; }
   SourceLocation getTypeSpecSignLoc() const { return TSSLoc; }
   SourceLocation getTypeSpecTypeLoc() const { return TSTLoc; }
@@ -1417,15 +1419,12 @@ struct DeclaratorChunk {
     unsigned TypeQuals : 5;
     // CXXScopeSpec has a constructor, so it can't be a direct member.
     // So we need some pointer-aligned storage and a bit of trickery.
-    union {
-      void *Aligner;
-      char Mem[sizeof(CXXScopeSpec)];
-    } ScopeMem;
+    alignas(CXXScopeSpec) char ScopeMem[sizeof(CXXScopeSpec)];
     CXXScopeSpec &Scope() {
-      return *reinterpret_cast<CXXScopeSpec*>(ScopeMem.Mem);
+      return *reinterpret_cast<CXXScopeSpec *>(ScopeMem);
     }
     const CXXScopeSpec &Scope() const {
-      return *reinterpret_cast<const CXXScopeSpec*>(ScopeMem.Mem);
+      return *reinterpret_cast<const CXXScopeSpec *>(ScopeMem);
     }
     void destroy() {
       Scope().~CXXScopeSpec();
@@ -1580,7 +1579,7 @@ struct DeclaratorChunk {
     I.EndLoc        = Loc;
     I.Mem.TypeQuals = TypeQuals;
     I.Mem.AttrList  = nullptr;
-    new (I.Mem.ScopeMem.Mem) CXXScopeSpec(SS);
+    new (I.Mem.ScopeMem) CXXScopeSpec(SS);
     return I;
   }
 

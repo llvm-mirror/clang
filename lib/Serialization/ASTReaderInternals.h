@@ -110,17 +110,6 @@ public:
 
 struct DeclContextLookupTable {
   MultiOnDiskHashTable<ASTDeclContextNameLookupTrait> Table;
-
-  // These look redundant, but don't remove them -- they work around MSVC 2013's
-  // inability to synthesize move operations. Without them, the
-  // MultiOnDiskHashTable will be copied (despite being move-only!).
-  DeclContextLookupTable() : Table() {}
-  DeclContextLookupTable(DeclContextLookupTable &&O)
-      : Table(std::move(O.Table)) {}
-  DeclContextLookupTable &operator=(DeclContextLookupTable &&O) {
-    Table = std::move(O.Table);
-    return *this;
-  }
 };
 
 /// \brief Base class for the trait describing the on-disk hash table for the
@@ -257,7 +246,7 @@ public:
   struct internal_key_type {
     off_t Size;
     time_t ModTime;
-    const char *Filename;
+    StringRef Filename;
     bool Imported;
   };
   typedef const internal_key_type &internal_key_ref;

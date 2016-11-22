@@ -131,7 +131,7 @@ CXSourceLocation clang_getLocation(CXTranslationUnit TU,
   if (line == 0 || column == 0)
     return clang_getNullLocation();
   
-  LogRef Log = Logger::make(LLVM_FUNCTION_NAME);
+  LogRef Log = Logger::make(__func__);
   ASTUnit *CXXUnit = cxtu::getASTUnit(TU);
   ASTUnit::ConcurrencyCheck Check(*CXXUnit);
   const FileEntry *File = static_cast<const FileEntry *>(file);
@@ -139,16 +139,17 @@ CXSourceLocation clang_getLocation(CXTranslationUnit TU,
   if (SLoc.isInvalid()) {
     if (Log)
       *Log << llvm::format("(\"%s\", %d, %d) = invalid",
-                           File->getName(), line, column);
+                           File->getName().str().c_str(), line, column);
     return clang_getNullLocation();
   }
   
   CXSourceLocation CXLoc =
       cxloc::translateSourceLocation(CXXUnit->getASTContext(), SLoc);
   if (Log)
-    *Log << llvm::format("(\"%s\", %d, %d) = ", File->getName(), line, column)
+    *Log << llvm::format("(\"%s\", %d, %d) = ", File->getName().str().c_str(),
+                         line, column)
          << CXLoc;
-  
+
   return CXLoc;
 }
   

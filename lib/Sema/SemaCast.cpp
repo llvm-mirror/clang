@@ -256,6 +256,7 @@ Sema::BuildCXXNamedCast(SourceLocation OpLoc, tok::TokenKind Kind,
       Op.CheckConstCast();
       if (Op.SrcExpr.isInvalid())
         return ExprError();
+      DiscardMisalignedMemberAddress(DestType.getTypePtr(), E);
     }
     return Op.complete(CXXConstCastExpr::Create(Context, Op.ResultType,
                                   Op.ValueKind, Op.SrcExpr.get(), DestTInfo,
@@ -279,6 +280,7 @@ Sema::BuildCXXNamedCast(SourceLocation OpLoc, tok::TokenKind Kind,
       Op.CheckReinterpretCast();
       if (Op.SrcExpr.isInvalid())
         return ExprError();
+      DiscardMisalignedMemberAddress(DestType.getTypePtr(), E);
     }
     return Op.complete(CXXReinterpretCastExpr::Create(Context, Op.ResultType,
                                     Op.ValueKind, Op.Kind, Op.SrcExpr.get(),
@@ -291,6 +293,7 @@ Sema::BuildCXXNamedCast(SourceLocation OpLoc, tok::TokenKind Kind,
       Op.CheckStaticCast();
       if (Op.SrcExpr.isInvalid())
         return ExprError();
+      DiscardMisalignedMemberAddress(DestType.getTypePtr(), E);
     }
     
     return Op.complete(CXXStaticCastExpr::Create(Context, Op.ResultType,
@@ -980,7 +983,7 @@ static TryCastResult TryStaticCast(Sema &Self, ExprResult &SrcExpr,
   // C++11 [expr.static.cast]p3: 
   //   A glvalue of type "cv1 T1" can be cast to type "rvalue reference to cv2
   //   T2" if "cv2 T2" is reference-compatible with "cv1 T1".
-  tcr = TryLValueToRValueCast(Self, SrcExpr.get(), DestType, CStyle, Kind, 
+  tcr = TryLValueToRValueCast(Self, SrcExpr.get(), DestType, CStyle, Kind,
                               BasePath, msg);
   if (tcr != TC_NotApplicable)
     return tcr;
@@ -1131,12 +1134,12 @@ static TryCastResult TryStaticCast(Sema &Self, ExprResult &SrcExpr,
 }
 
 /// Tests whether a conversion according to N2844 is valid.
-TryCastResult
-TryLValueToRValueCast(Sema &Self, Expr *SrcExpr, QualType DestType,
-                      bool CStyle, CastKind &Kind, CXXCastPath &BasePath, 
-                      unsigned &msg) {
+TryCastResult TryLValueToRValueCast(Sema &Self, Expr *SrcExpr,
+                                    QualType DestType, bool CStyle,
+                                    CastKind &Kind, CXXCastPath &BasePath,
+                                    unsigned &msg) {
   // C++11 [expr.static.cast]p3:
-  //   A glvalue of type "cv1 T1" can be cast to type "rvalue reference to 
+  //   A glvalue of type "cv1 T1" can be cast to type "rvalue reference to
   //   cv2 T2" if "cv2 T2" is reference-compatible with "cv1 T1".
   const RValueReferenceType *R = DestType->getAs<RValueReferenceType>();
   if (!R)
@@ -1157,15 +1160,18 @@ TryLValueToRValueCast(Sema &Self, Expr *SrcExpr, QualType DestType,
     FromType = FromType.getUnqualifiedType();
     ToType = ToType.getUnqualifiedType();
   }
-  
-  if (Self.CompareReferenceRelationship(SrcExpr->getLocStart(),
-                                        ToType, FromType,
-                                        DerivedToBase, ObjCConversion,
-                                        ObjCLifetimeConversion) 
-        < Sema::Ref_Compatible_With_Added_Qualification) {
-    if (CStyle)
+
+  Sema::ReferenceCompareResult RefResult = Self.CompareReferenceRelationship(
+      SrcExpr->getLocStart(), ToType, FromType, DerivedToBase, ObjCConversion,
+      ObjCLifetimeConversion);
+  if (RefResult != Sema::Ref_Compatible) {
+    if (CStyle || RefResult == Sema::Ref_Incompatible)
       return TC_NotApplicable;
-    msg = diag::err_bad_lvalue_to_rvalue_cast;
+    // Diagnose types which are reference-related but not compatible here since
+    // we can provide better diagnostics. In these cases forwarding to
+    // [expr.static.cast]p4 should never result in a well-formed cast.
+    msg = SrcExpr->isLValue() ? diag::err_bad_lvalue_to_rvalue_cast
+                              : diag::err_bad_rvalue_to_rvalue_cast;
     return TC_Failed;
   }
 

@@ -119,7 +119,7 @@ The ``carries_dependency`` attribute specifies dependency propagation into and
 out of functions.
 
 When specified on a function or Objective-C method, the ``carries_dependency``
-attribute means that the return value carries a dependency out of the function, 
+attribute means that the return value carries a dependency out of the function,
 so that the implementation need not constrain ordering upon return from that
 function. Implementations of the function and its caller may choose to preserve
 dependencies instead of emitting memory ordering instructions such as fences.
@@ -470,6 +470,12 @@ semantics:
 * A conversion from type ``T`` to a value of type ``U`` is permitted if ``T``
   and ``U`` are compatible types.  This conversion is given "conversion" rank.
 
+* If no viable candidates are otherwise available, we allow a conversion from a
+  pointer of type ``T*`` to a pointer of type ``U*``, where ``T`` and ``U`` are
+  incompatible. This conversion is ranked below all other types of conversions.
+  Please note: ``U`` lacking qualifiers that are present on ``T`` is sufficient
+  for ``T`` and ``U`` to be incompatible.
+
 The declaration of ``overloadable`` functions is restricted to function
 declarations and definitions.  Most importantly, if any function with a given
 name is given the ``overloadable`` attribute, then all function declarations
@@ -600,6 +606,33 @@ of the condition.
   }];
 }
 
+def ConvergentDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``convergent`` attribute can be placed on a function declaration. It is
+translated into the LLVM ``convergent`` attribute, which indicates that the call
+instructions of a function with this attribute cannot be made control-dependent
+on any additional values.
+
+In languages designed for SPMD/SIMT programming model, e.g. OpenCL or CUDA,
+the call instructions of a function with this attribute must be executed by
+all work items or threads in a work group or sub group.
+
+This attribute is different from ``noduplicate`` because it allows duplicating
+function calls if it can be proved that the duplicated function calls are
+not made control-dependent on any additional values, e.g., unrolling a loop
+executed by all work items.
+
+Sample usage:
+.. code-block:: c
+
+  void convfunc(void) __attribute__((convergent));
+  // Setting it as a C++11 attribute is also valid in a C++ program.
+  // void convfunc(void) [[clang::convergent]];
+
+  }];
+}
+
 def NoSplitStackDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
@@ -685,10 +718,10 @@ This attribute specifies that the Objective-C class to which it applies is visib
 def ObjCBoxableDocs : Documentation {
     let Category = DocCatFunction;
     let Content = [{
-Structs and unions marked with the ``objc_boxable`` attribute can be used 
+Structs and unions marked with the ``objc_boxable`` attribute can be used
 with the Objective-C boxed expression syntax, ``@(...)``.
 
-**Usage**: ``__attribute__((objc_boxable))``. This attribute 
+**Usage**: ``__attribute__((objc_boxable))``. This attribute
 can only be placed on a declaration of a trivially-copyable struct or union:
 
 .. code-block:: objc
@@ -829,6 +862,44 @@ When one method overrides another, the overriding method can be more widely avai
   }];
 }
 
+
+def RequireConstantInitDocs : Documentation {
+  let Category = DocCatVariable;
+  let Content = [{
+This attribute specifies that the variable to which it is attached is intended
+to have a `constant initializer <http://en.cppreference.com/w/cpp/language/constant_initialization>`_
+according to the rules of [basic.start.static]. The variable is required to
+have static or thread storage duration. If the initialization of the variable
+is not a constant initializer an error will be produced. This attribute may
+only be used in C++.
+
+Note that in C++03 strict constant expression checking is not done. Instead
+the attribute reports if Clang can emit the variable as a constant, even if it's
+not technically a 'constant initializer'. This behavior is non-portable.
+
+Static storage duration variables with constant initializers avoid hard-to-find
+bugs caused by the indeterminate order of dynamic initialization. They can also
+be safely used during dynamic initialization across translation units.
+
+This attribute acts as a compile time assertion that the requirements
+for constant initialization have been met. Since these requirements change
+between dialects and have subtle pitfalls it's important to fail fast instead
+of silently falling back on dynamic initialization.
+
+.. code-block:: c++
+
+  // -std=c++14
+  #define SAFE_STATIC [[clang::require_constant_initialization]]
+  struct T {
+    constexpr T(int) {}
+    ~T(); // non-trivial
+  };
+  SAFE_STATIC T x = {42}; // Initialization OK. Doesn't check destructor.
+  SAFE_STATIC T y = 42; // error: variable does not have a constant initializer
+  // copy initialization is not a constant expression on a non-literal type.
+  }];
+}
+
 def WarnMaybeUnusedDocs : Documentation {
   let Category = DocCatVariable;
   let Heading = "maybe_unused, unused, gnu::unused";
@@ -876,7 +947,7 @@ potentially-evaluated discarded-value expression that is not explicitly cast to
     launch_missiles();
   }
   error_info &foo();
-  void f() { foo(); } // Does not diagnose, error_info is a reference.  
+  void f() { foo(); } // Does not diagnose, error_info is a reference.
   }];
 }
 
@@ -1032,64 +1103,110 @@ the front end.
 }];
 }
 
-def DocCatAMDGPURegisterAttributes :
-  DocumentationCategory<"AMD GPU Register Attributes"> {
+def DocCatAMDGPUAttributes : DocumentationCategory<"AMD GPU Attributes">;
+
+def AMDGPUFlatWorkGroupSizeDocs : Documentation {
+  let Category = DocCatAMDGPUAttributes;
   let Content = [{
-Clang supports attributes for controlling register usage on AMD GPU
-targets. These attributes may be attached to a kernel function
-definition and is an optimization hint to the backend for the maximum
-number of registers to use. This is useful in cases where register
-limited occupancy is known to be an important factor for the
-performance for the kernel.
-
-The semantics are as follows:
-
-- The backend will attempt to limit the number of used registers to
-  the specified value, but the exact number used is not
-  guaranteed. The number used may be rounded up to satisfy the
-  allocation requirements or ABI constraints of the subtarget. For
-  example, on Southern Islands VGPRs may only be allocated in
-  increments of 4, so requesting a limit of 39 VGPRs will really
-  attempt to use up to 40. Requesting more registers than the
-  subtarget supports will truncate to the maximum allowed. The backend
-  may also use fewer registers than requested whenever possible.
-
-- 0 implies the default no limit on register usage.
-
-- Ignored on older VLIW subtargets which did not have separate scalar
-  and vector registers, R600 through Northern Islands.
-
-}];
-}
-
-
-def AMDGPUNumVGPRDocs : Documentation {
-  let Category = DocCatAMDGPURegisterAttributes;
-  let Content = [{
-Clang supports the
-``__attribute__((amdgpu_num_vgpr(<num_registers>)))`` attribute on AMD
-Southern Islands GPUs and later for controlling the number of vector
-registers. A typical value would be between 4 and 256 in increments
-of 4.
-}];
-}
-
-def AMDGPUNumSGPRDocs : Documentation {
-  let Category = DocCatAMDGPURegisterAttributes;
-  let Content = [{
+The flat work-group size is the number of work-items in the work-group size
+specified when the kernel is dispatched. It is the product of the sizes of the
+x, y, and z dimension of the work-group.
 
 Clang supports the
-``__attribute__((amdgpu_num_sgpr(<num_registers>)))`` attribute on AMD
-Southern Islands GPUs and later for controlling the number of scalar
-registers. A typical value would be between 8 and 104 in increments of
-8.
+``__attribute__((amdgpu_flat_work_group_size(<min>, <max>)))`` attribute for the
+AMDGPU target. This attribute may be attached to a kernel function definition
+and is an optimization hint.
 
-Due to common instruction constraints, an additional 2-4 SGPRs are
-typically required for internal use depending on features used. This
-value is a hint for the total number of SGPRs to use, and not the
-number of user SGPRs, so no special consideration needs to be given
-for these.
-}];
+``<min>`` parameter specifies the minimum flat work-group size, and ``<max>``
+parameter specifies the maximum flat work-group size (must be greater than
+``<min>``) to which all dispatches of the kernel will conform. Passing ``0, 0``
+as ``<min>, <max>`` implies the default behavior (``128, 256``).
+
+If specified, the AMDGPU target backend might be able to produce better machine
+code for barriers and perform scratch promotion by estimating available group
+segment size.
+
+An error will be given if:
+  - Specified values violate subtarget specifications;
+  - Specified values are not compatible with values provided through other
+    attributes.
+  }];
+}
+
+def AMDGPUWavesPerEUDocs : Documentation {
+  let Category = DocCatAMDGPUAttributes;
+  let Content = [{
+A compute unit (CU) is responsible for executing the wavefronts of a work-group.
+It is composed of one or more execution units (EU), which are responsible for
+executing the wavefronts. An EU can have enough resources to maintain the state
+of more than one executing wavefront. This allows an EU to hide latency by
+switching between wavefronts in a similar way to symmetric multithreading on a
+CPU. In order to allow the state for multiple wavefronts to fit on an EU, the
+resources used by a single wavefront have to be limited. For example, the number
+of SGPRs and VGPRs. Limiting such resources can allow greater latency hiding,
+but can result in having to spill some register state to memory.
+
+Clang supports the ``__attribute__((amdgpu_waves_per_eu(<min>[, <max>])))``
+attribute for the AMDGPU target. This attribute may be attached to a kernel
+function definition and is an optimization hint.
+
+``<min>`` parameter specifies the requested minimum number of waves per EU, and
+*optional* ``<max>`` parameter specifies the requested maximum number of waves
+per EU (must be greater than ``<min>`` if specified). If ``<max>`` is omitted,
+then there is no restriction on the maximum number of waves per EU other than
+the one dictated by the hardware for which the kernel is compiled. Passing
+``0, 0`` as ``<min>, <max>`` implies the default behavior (no limits).
+
+If specified, this attribute allows an advanced developer to tune the number of
+wavefronts that are capable of fitting within the resources of an EU. The AMDGPU
+target backend can use this information to limit resources, such as number of
+SGPRs, number of VGPRs, size of available group and private memory segments, in
+such a way that guarantees that at least ``<min>`` wavefronts and at most
+``<max>`` wavefronts are able to fit within the resources of an EU. Requesting
+more wavefronts can hide memory latency but limits available registers which
+can result in spilling. Requesting fewer wavefronts can help reduce cache
+thrashing, but can reduce memory latency hiding.
+
+This attribute controls the machine code generated by the AMDGPU target backend
+to ensure it is capable of meeting the requested values. However, when the
+kernel is executed, there may be other reasons that prevent meeting the request,
+for example, there may be wavefronts from other kernels executing on the EU.
+
+An error will be given if:
+  - Specified values violate subtarget specifications;
+  - Specified values are not compatible with values provided through other
+    attributes;
+  - The AMDGPU target backend is unable to create machine code that can meet the
+    request.
+  }];
+}
+
+def AMDGPUNumSGPRNumVGPRDocs : Documentation {
+  let Category = DocCatAMDGPUAttributes;
+  let Content = [{
+Clang supports the ``__attribute__((amdgpu_num_sgpr(<num_sgpr>)))`` and
+``__attribute__((amdgpu_num_vgpr(<num_vgpr>)))`` attributes for the AMDGPU
+target. These attributes may be attached to a kernel function definition and are
+an optimization hint.
+
+If these attributes are specified, then the AMDGPU target backend will attempt
+to limit the number of SGPRs and/or VGPRs used to the specified value(s). The
+number of used SGPRs and/or VGPRs may further be rounded up to satisfy the
+allocation requirements or constraints of the subtarget. Passing ``0`` as
+``num_sgpr`` and/or ``num_vgpr`` implies the default behavior (no limits).
+
+These attributes can be used to test the AMDGPU target backend. It is
+recommended that the ``amdgpu_waves_per_eu`` attribute be used to control
+resources such as SGPRs and VGPRs since it is aware of the limits for different
+subtargets.
+
+An error will be given if:
+  - Specified values violate subtarget specifications;
+  - Specified values are not compatible with values provided through other
+    attributes;
+  - The AMDGPU target backend is unable to create machine code that can meet the
+    request.
+  }];
 }
 
 def DocCatCallingConvs : DocumentationCategory<"Calling Conventions"> {
@@ -1166,6 +1283,18 @@ not require callee-cleanup.  See the documentation for `__fastcall`_ on MSDN.
   }];
 }
 
+def RegCallDocs : Documentation {
+  let Category = DocCatCallingConvs;
+  let Content = [{
+On x86 targets, this attribute changes the calling convention to
+`__regcall`_ convention. This convention aims to pass as many arguments
+as possible in registers. It also tries to utilize registers for the
+return value whenever it is possible.
+
+.. _`__regcall`: https://software.intel.com/en-us/node/693069
+  }];
+}
+
 def ThisCallDocs : Documentation {
   let Category = DocCatCallingConvs;
   let Content = [{
@@ -1194,7 +1323,7 @@ passed in RCX, RDX, R8, and R9 as is done for the default Windows x64 calling
 convention.
 
 On both 32-bit x86 and x86_64 targets, vector and floating point arguments are
-passed in XMM0-XMM5. Homogenous vector aggregates of up to four elements are
+passed in XMM0-XMM5. Homogeneous vector aggregates of up to four elements are
 passed in sequential SSE registers if enough are available. If AVX is enabled,
 256 bit vectors are passed in YMM0-YMM5. Any vector or aggregate type that
 cannot be passed in registers for any reason is passed by reference, which
@@ -1329,7 +1458,7 @@ def NoSanitizeMemoryDocs : Documentation {
 .. _langext-memory_sanitizer:
 
 Use ``__attribute__((no_sanitize_memory))`` on a function declaration to
-specify that checks for uninitialized memory should not be inserted 
+specify that checks for uninitialized memory should not be inserted
 (e.g. by MemorySanitizer). The function may still be instrumented by the tool
 to avoid false positives in other places.
   }];
@@ -1947,7 +2076,7 @@ by Clang.
 }
 def NullabilityDocs : DocumentationCategory<"Nullability Attributes"> {
   let Content = [{
-Whether a particular pointer may be "null" is an important concern when working with pointers in the C family of languages. The various nullability attributes indicate whether a particular pointer can be null or not, which makes APIs more expressive and can help static analysis tools identify bugs involving null pointers. Clang supports several kinds of nullability attributes: the ``nonnull`` and ``returns_nonnull`` attributes indicate which function or method parameters and result types can never be null, while nullability type qualifiers indicate which pointer types can be null (``_Nullable``) or cannot be null (``_Nonnull``). 
+Whether a particular pointer may be "null" is an important concern when working with pointers in the C family of languages. The various nullability attributes indicate whether a particular pointer can be null or not, which makes APIs more expressive and can help static analysis tools identify bugs involving null pointers. Clang supports several kinds of nullability attributes: the ``nonnull`` and ``returns_nonnull`` attributes indicate which function or method parameters and result types can never be null, while nullability type qualifiers indicate which pointer types can be null (``_Nullable``) or cannot be null (``_Nonnull``).
 
 The nullability (type) qualifiers express whether a value of a given pointer type can be null (the ``_Nullable`` qualifier), doesn't have a defined meaning for null (the ``_Nonnull`` qualifier), or for which the purpose of null is unclear (the ``_Null_unspecified`` qualifier). Because nullability qualifiers are expressed within the type system, they are more general than the ``nonnull`` and ``returns_nonnull`` attributes, allowing one to express (for example) a nullable pointer to an array of nonnull pointers. Nullability qualifiers are written to the right of the pointer to which they apply. For example:
 
@@ -2387,7 +2516,7 @@ def SwiftIndirectResultDocs : Documentation {
   let Category = DocCatVariable;
   let Content = [{
 The ``swift_indirect_result`` attribute marks a parameter of a ``swiftcall``
-function as having the special indirect-result ABI treatmenet.
+function as having the special indirect-result ABI treatment.
 
 This treatment gives the parameter the target's normal indirect-result
 ABI treatment, which may involve passing it differently from an ordinary
@@ -2557,5 +2686,31 @@ def XRayDocs : Documentation {
 Conversely, ``__attribute__((xray_never_instrument))`` or ``[[clang::xray_never_instrument]]`` will inhibit the insertion of these instrumentation points.
 
 If a function has neither of these attributes, they become subject to the XRay heuristics used to determine whether a function should be instrumented or otherwise.
+  }];
+}
+
+def TransparentUnionDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{
+This attribute can be applied to a union to change the behaviour of calls to
+functions that have an argument with a transparent union type. The compiler
+behaviour is changed in the following manner:
+
+- A value whose type is any member of the transparent union can be passed as an
+argument without the need to cast that value.
+
+- The argument is passed to the function using the calling convention of the
+first member of the transparent union. Consequently, all the members of the
+transparent union should have the same calling convention as its first member.
+
+Transparent unions are not supported in C++.
+  }];
+}
+
+def ObjCSubclassingRestrictedDocs : Documentation {
+  let Category = DocCatType;
+  let Content = [{
+This attribute can be added to an Objective-C ``@interface`` declaration to
+ensure that this class cannot be subclassed.
   }];
 }

@@ -916,6 +916,8 @@ class TemplateDiff {
       /// template argument.
       InternalIterator(const TemplateSpecializationType *TST)
           : TST(TST), Index(0), CurrentTA(nullptr), EndTA(nullptr) {
+        if (!TST) return;
+
         if (isEnd()) return;
 
         // Set to first template argument.  If not a parameter pack, done.
@@ -934,13 +936,18 @@ class TemplateDiff {
         ++(*this);
       }
 
+      /// Return true if the iterator is non-singular.
+      bool isValid() const { return TST; }
+
       /// isEnd - Returns true if the iterator is one past the end.
       bool isEnd() const {
+        assert(TST && "InternalIterator is invalid with a null TST.");
         return Index >= TST->getNumArgs();
       }
 
       /// &operator++ - Increment the iterator to the next template argument.
       InternalIterator &operator++() {
+        assert(TST && "InternalIterator is invalid with a null TST.");
         if (isEnd()) {
           return *this;
         }
@@ -976,6 +983,7 @@ class TemplateDiff {
 
       /// operator* - Returns the appropriate TemplateArgument.
       reference operator*() const {
+        assert(TST && "InternalIterator is invalid with a null TST.");
         assert(!isEnd() && "Index exceeds number of arguments.");
         if (CurrentTA == EndTA)
           return TST->getArg(Index);
@@ -985,25 +993,26 @@ class TemplateDiff {
 
       /// operator-> - Allow access to the underlying TemplateArgument.
       pointer operator->() const {
+        assert(TST && "InternalIterator is invalid with a null TST.");
         return &operator*();
       }
     };
 
-    bool UseDesugaredIterator;
     InternalIterator SugaredIterator;
     InternalIterator DesugaredIterator;
 
   public:
     TSTiterator(ASTContext &Context, const TemplateSpecializationType *TST)
-        : UseDesugaredIterator(TST->isSugared() && !TST->isTypeAlias()),
-          SugaredIterator(TST),
+        : SugaredIterator(TST),
           DesugaredIterator(
-              GetTemplateSpecializationType(Context, TST->desugar())) {}
+              (TST->isSugared() && !TST->isTypeAlias())
+                  ? GetTemplateSpecializationType(Context, TST->desugar())
+                  : nullptr) {}
 
     /// &operator++ - Increment the iterator to the next template argument.
     TSTiterator &operator++() {
       ++SugaredIterator;
-      if (UseDesugaredIterator)
+      if (DesugaredIterator.isValid())
         ++DesugaredIterator;
       return *this;
     }
@@ -1026,12 +1035,12 @@ class TemplateDiff {
     /// hasDesugaredTA - Returns true if there is another TemplateArgument
     /// available.
     bool hasDesugaredTA() const {
-      return UseDesugaredIterator && !DesugaredIterator.isEnd();
+      return DesugaredIterator.isValid() && !DesugaredIterator.isEnd();
     }
 
     /// getDesugaredTA - Returns the desugared TemplateArgument.
     reference getDesugaredTA() const {
-      assert(UseDesugaredIterator &&
+      assert(DesugaredIterator.isValid() &&
              "Desugared TemplateArgument should not be used.");
       return *DesugaredIterator;
     }

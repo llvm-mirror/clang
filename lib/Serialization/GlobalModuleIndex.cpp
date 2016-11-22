@@ -246,8 +246,7 @@ GlobalModuleIndex::readIndex(StringRef Path) {
   std::unique_ptr<llvm::MemoryBuffer> Buffer = std::move(BufferOrErr.get());
 
   /// \brief The bitstream reader from which we'll read the AST file.
-  llvm::BitstreamReader Reader((const unsigned char *)Buffer->getBufferStart(),
-                               (const unsigned char *)Buffer->getBufferEnd());
+  llvm::BitstreamReader Reader(*Buffer);
 
   /// \brief The main bitstream cursor for the main block.
   llvm::BitstreamCursor Cursor(Reader);
@@ -460,7 +459,7 @@ static void emitRecordID(unsigned ID, const char *Name,
 void
 GlobalModuleIndexBuilder::emitBlockInfoBlock(llvm::BitstreamWriter &Stream) {
   SmallVector<uint64_t, 64> Record;
-  Stream.EnterSubblock(llvm::bitc::BLOCKINFO_BLOCK_ID, 3);
+  Stream.EnterBlockInfoBlock();
 
 #define BLOCK(X) emitBlockID(X ## _ID, #X, Stream, Record)
 #define RECORD(X) emitRecordID(X, #X, Stream, Record)

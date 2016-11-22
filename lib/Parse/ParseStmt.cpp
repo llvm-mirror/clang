@@ -206,7 +206,8 @@ Retry:
   }
 
   default: {
-    if ((getLangOpts().CPlusPlus || Allowed == ACK_Any) &&
+    if ((getLangOpts().CPlusPlus || getLangOpts().MicrosoftExt ||
+         Allowed == ACK_Any) &&
         isDeclarationStatement()) {
       SourceLocation DeclStart = Tok.getLocation(), DeclEnd;
       DeclGroupPtrTy Decl = ParseDeclaration(Declarator::BlockContext,
@@ -394,6 +395,8 @@ Retry:
 StmtResult Parser::ParseExprStatement() {
   // If a case keyword is missing, this is where it should be inserted.
   Token OldToken = Tok;
+
+  ExprStatementTokLoc = Tok.getLocation();
 
   // expression[opt] ';'
   ExprResult Expr(ParseExpression());

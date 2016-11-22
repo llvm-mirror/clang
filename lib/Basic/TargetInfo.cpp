@@ -27,7 +27,7 @@ static const LangAS::Map DefaultAddrSpaceMap = { 0 };
 TargetInfo::TargetInfo(const llvm::Triple &T) : TargetOpts(), Triple(T) {
   // Set defaults.  Defaults are set for a 32-bit RISC platform, like PPC or
   // SPARC.  These should be overridden by concrete targets as needed.
-  BigEndian = true;
+  BigEndian = !T.isLittleEndian();
   TLSSupported = true;
   NoAsmVariants = false;
   HasFloat128 = false;
@@ -39,6 +39,13 @@ TargetInfo::TargetInfo(const llvm::Triple &T) : TargetOpts(), Triple(T) {
   SuitableAlign = 64;
   DefaultAlignForAttributeAligned = 128;
   MinGlobalAlign = 0;
+  // From the glibc documentation, on GNU systems, malloc guarantees 16-byte
+  // alignment on 64-bit systems and 8-byte alignment on 32-bit systems. See
+  // https://www.gnu.org/software/libc/manual/html_node/Malloc-Examples.html
+  if (T.isGNUEnvironment())
+    NewAlign = Triple.isArch64Bit() ? 128 : Triple.isArch32Bit() ? 64 : 0;
+  else
+    NewAlign = 0; // Infer from basic type alignment.
   HalfWidth = 16;
   HalfAlign = 16;
   FloatWidth = 32;
@@ -306,8 +313,9 @@ void TargetInfo::adjust(const LangOptions &Opts) {
     }
     LongDoubleWidth = LongDoubleAlign = 128;
 
-    assert(PointerWidth == 32 || PointerWidth == 64);
-    bool Is32BitArch = PointerWidth == 32;
+    unsigned MaxPointerWidth = getMaxPointerWidth();
+    assert(MaxPointerWidth == 32 || MaxPointerWidth == 64);
+    bool Is32BitArch = MaxPointerWidth == 32;
     SizeType = Is32BitArch ? UnsignedInt : UnsignedLong;
     PtrDiffType = Is32BitArch ? SignedInt : SignedLong;
     IntPtrType = Is32BitArch ? SignedInt : SignedLong;
@@ -319,6 +327,9 @@ void TargetInfo::adjust(const LangOptions &Opts) {
     FloatFormat = &llvm::APFloat::IEEEsingle;
     LongDoubleFormat = &llvm::APFloat::IEEEquad;
   }
+
+  if (Opts.NewAlignOverride)
+    NewAlign = Opts.NewAlignOverride * getCharWidth();
 }
 
 bool TargetInfo::initFeatureMap(

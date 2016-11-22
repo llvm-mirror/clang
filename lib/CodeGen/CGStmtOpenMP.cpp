@@ -188,7 +188,7 @@ static Address castValueFromUintptr(CodeGenFunction &CGF, QualType DstType,
     auto *RefVal = TmpAddr.getPointer();
     TmpAddr = CGF.CreateMemTemp(RefType, Twine(Name) + ".ref");
     auto TmpLVal = CGF.MakeAddrLValue(TmpAddr, RefType);
-    CGF.EmitScalarInit(RefVal, TmpLVal);
+    CGF.EmitStoreThroughLValue(RValue::get(RefVal), TmpLVal, /*isInit*/ true);
   }
 
   return TmpAddr;
@@ -232,8 +232,15 @@ CodeGenFunction::GenerateOpenMPCapturedStmtFunction(const CapturedStmt &S) {
       assert(I->capturesVariableArrayType());
       II = &getContext().Idents.get("vla");
     }
-    if (ArgType->isVariablyModifiedType())
-      ArgType = getContext().getVariableArrayDecayedType(ArgType);
+    if (ArgType->isVariablyModifiedType()) {
+      bool IsReference = ArgType->isLValueReferenceType();
+      ArgType =
+          getContext().getCanonicalParamType(ArgType.getNonReferenceType());
+      if (IsReference && !ArgType->isPointerType()) {
+        ArgType = getContext().getLValueReferenceType(
+            ArgType, /*SpelledAsLValue=*/false);
+      }
+    }
     Args.push_back(ImplicitParamDecl::Create(getContext(), nullptr,
                                              FD->getLocation(), II, ArgType));
     ++I;
@@ -297,8 +304,14 @@ CodeGenFunction::GenerateOpenMPCapturedStmtFunction(const CapturedStmt &S) {
       QualType VarTy = Var->getType();
       Address ArgAddr = ArgLVal.getAddress();
       if (!VarTy->isReferenceType()) {
-        ArgAddr = EmitLoadOfReference(
-            ArgAddr, ArgLVal.getType()->castAs<ReferenceType>());
+        if (ArgLVal.getType()->isLValueReferenceType()) {
+          ArgAddr = EmitLoadOfReference(
+              ArgAddr, ArgLVal.getType()->castAs<ReferenceType>());
+        } else {
+          assert(ArgLVal.getType()->isPointerType());
+          ArgAddr = EmitLoadOfPointer(
+              ArgAddr, ArgLVal.getType()->castAs<PointerType>());
+        }
       }
       setAddrOfLocalVar(
           Var, Address(ArgAddr.getPointer(), getContext().getDeclAlign(Var)));
@@ -1934,6 +1947,31 @@ void CodeGenFunction::EmitOMPTargetSimdDirective(
       });
 }
 
+void CodeGenFunction::EmitOMPTeamsDistributeDirective(
+    const OMPTeamsDistributeDirective &S) {
+  OMPLexicalScope Scope(*this, S, /*AsInlined=*/true);
+  CGM.getOpenMPRuntime().emitInlinedDirective(
+      *this, OMPD_teams_distribute,
+      [&S](CodeGenFunction &CGF, PrePostActionTy &) {
+        OMPLoopScope PreInitScope(CGF, S);
+        CGF.EmitStmt(
+            cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
+      });
+}
+
+void CodeGenFunction::EmitOMPTeamsDistributeSimdDirective(
+    const OMPTeamsDistributeSimdDirective &S) {
+  OMPLexicalScope Scope(*this, S, /*AsInlined=*/true);
+  CGM.getOpenMPRuntime().emitInlinedDirective(
+      *this, OMPD_teams_distribute_simd,
+      [&S](CodeGenFunction &CGF, PrePostActionTy &) {
+        OMPLoopScope PreInitScope(CGF, S);
+        CGF.EmitStmt(
+            cast<CapturedStmt>(S.getAssociatedStmt())->getCapturedStmt());
+      });
+}
+
+
 /// \brief Emit a helper variable and return corresponding lvalue.
 static LValue EmitOMPHelperVar(CodeGenFunction &CGF,
                                const DeclRefExpr *Helper) {
@@ -2167,7 +2205,7 @@ static LValue createSectionLVal(CodeGenFunction &CGF, QualType Ty,
                                 llvm::Value *Init = nullptr) {
   auto LVal = CGF.MakeAddrLValue(CGF.CreateMemTemp(Ty, Name), Ty);
   if (Init)
-    CGF.EmitScalarInit(Init, LVal);
+    CGF.EmitStoreThroughLValue(RValue::get(Init), LVal, /*isInit*/ true);
   return LVal;
 }
 

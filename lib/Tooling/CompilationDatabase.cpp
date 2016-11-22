@@ -32,12 +32,14 @@
 using namespace clang;
 using namespace tooling;
 
+LLVM_INSTANTIATE_REGISTRY(CompilationDatabasePluginRegistry)
+
 CompilationDatabase::~CompilationDatabase() {}
 
 std::unique_ptr<CompilationDatabase>
 CompilationDatabase::loadFromDirectory(StringRef BuildDirectory,
                                        std::string &ErrorMessage) {
-  std::stringstream ErrorStream;
+  llvm::raw_string_ostream ErrorStream(ErrorMessage);
   for (CompilationDatabasePluginRegistry::iterator
        It = CompilationDatabasePluginRegistry::begin(),
        Ie = CompilationDatabasePluginRegistry::end();
@@ -49,7 +51,6 @@ CompilationDatabase::loadFromDirectory(StringRef BuildDirectory,
       return DB;
     ErrorStream << It->getName() << ": " << DatabaseErrorMessage << "\n";
   }
-  ErrorMessage = ErrorStream.str();
   return nullptr;
 }
 

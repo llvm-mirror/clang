@@ -364,7 +364,8 @@ void UnwrappedLineParser::calculateBraceTypes(bool ExpectClassBody) {
           // We exclude + and - as they can be ObjC visibility modifiers.
           ProbablyBracedList =
               (Style.Language == FormatStyle::LK_JavaScript &&
-               NextTok->isOneOf(Keywords.kw_of, Keywords.kw_in)) ||
+               NextTok->isOneOf(Keywords.kw_of, Keywords.kw_in,
+                                Keywords.kw_as)) ||
               NextTok->isOneOf(tok::comma, tok::period, tok::colon,
                                tok::r_paren, tok::r_square, tok::l_brace,
                                tok::l_square, tok::l_paren, tok::ellipsis) ||
@@ -680,7 +681,9 @@ static bool mustBeJSIdent(const AdditionalKeywords &Keywords,
 
 static bool mustBeJSIdentOrValue(const AdditionalKeywords &Keywords,
                                  const FormatToken *FormatTok) {
-  return FormatTok->Tok.isLiteral() || mustBeJSIdent(Keywords, FormatTok);
+  return FormatTok->Tok.isLiteral() ||
+         FormatTok->isOneOf(tok::kw_true, tok::kw_false) ||
+         mustBeJSIdent(Keywords, FormatTok);
 }
 
 // isJSDeclOrStmt returns true if |FormatTok| starts a declaration or statement
@@ -724,6 +727,8 @@ void UnwrappedLineParser::readTokenWithJavaScriptASI() {
     return;
 
   bool PreviousMustBeValue = mustBeJSIdentOrValue(Keywords, Previous);
+  bool PreviousStartsTemplateExpr =
+      Previous->is(TT_TemplateString) && Previous->TokenText.endswith("${");
   if (PreviousMustBeValue && Line && Line->Tokens.size() > 1) {
     // If the token before the previous one is an '@', the previous token is an
     // annotation and can precede another identifier/value.
@@ -734,9 +739,12 @@ void UnwrappedLineParser::readTokenWithJavaScriptASI() {
   if (Next->is(tok::exclaim) && PreviousMustBeValue)
     addUnwrappedLine();
   bool NextMustBeValue = mustBeJSIdentOrValue(Keywords, Next);
-  if (NextMustBeValue && (PreviousMustBeValue ||
-                          Previous->isOneOf(tok::r_square, tok::r_paren,
-                                            tok::plusplus, tok::minusminus)))
+  bool NextEndsTemplateExpr =
+      Next->is(TT_TemplateString) && Next->TokenText.startswith("}");
+  if (NextMustBeValue && !NextEndsTemplateExpr && !PreviousStartsTemplateExpr &&
+      (PreviousMustBeValue ||
+       Previous->isOneOf(tok::r_square, tok::r_paren, tok::plusplus,
+                         tok::minusminus)))
     addUnwrappedLine();
   if (PreviousMustBeValue && isJSDeclOrStmt(Keywords, Next))
     addUnwrappedLine();
@@ -1222,9 +1230,11 @@ void UnwrappedLineParser::tryToParseJSFunction() {
   // Consume "function".
   nextToken();
 
-  // Consume * (generator function).
-  if (FormatTok->is(tok::star))
+  // Consume * (generator function). Treat it like C++'s overloaded operators.
+  if (FormatTok->is(tok::star)) {
+    FormatTok->Type = TT_OverloadedOperator;
     nextToken();
+  }
 
   // Consume function name.
   if (FormatTok->is(tok::identifier))

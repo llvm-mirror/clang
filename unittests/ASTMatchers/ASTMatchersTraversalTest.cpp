@@ -241,6 +241,27 @@ TEST(HasDeclaration, HasDeclarationOfTemplateSpecializationType) {
                         hasDeclaration(namedDecl(hasName("A"))))))));
 }
 
+TEST(HasDeclaration, HasDeclarationOfCXXNewExpr) {
+  EXPECT_TRUE(
+      matches("int *A = new int();",
+              cxxNewExpr(hasDeclaration(functionDecl(parameterCountIs(1))))));
+}
+
+TEST(HasUnderlyingDecl, Matches) {
+  EXPECT_TRUE(matches("namespace N { template <class T> void f(T t); }"
+                      "template <class T> void g() { using N::f; f(T()); }",
+                      unresolvedLookupExpr(hasAnyDeclaration(
+                          namedDecl(hasUnderlyingDecl(hasName("::N::f")))))));
+  EXPECT_TRUE(matches(
+      "namespace N { template <class T> void f(T t); }"
+      "template <class T> void g() { N::f(T()); }",
+      unresolvedLookupExpr(hasAnyDeclaration(namedDecl(hasName("::N::f"))))));
+  EXPECT_TRUE(notMatches(
+      "namespace N { template <class T> void f(T t); }"
+      "template <class T> void g() { using N::f; f(T()); }",
+      unresolvedLookupExpr(hasAnyDeclaration(namedDecl(hasName("::N::f"))))));
+}
+
 TEST(HasType, TakesQualTypeMatcherAndMatchesExpr) {
   TypeMatcher ClassX = hasDeclaration(recordDecl(hasName("X")));
   EXPECT_TRUE(
@@ -624,6 +645,89 @@ TEST(TemplateArgument, Matches) {
     "template<typename T> void f() {};"
       "void func() { f<int>(); }",
     functionDecl(hasAnyTemplateArgument(templateArgument()))));
+}
+
+TEST(TemplateTypeParmDecl, CXXMethodDecl) {
+  const char input[] =
+      "template<typename T>\n"
+      "class Class {\n"
+      "  void method();\n"
+      "};\n"
+      "template<typename U>\n"
+      "void Class<U>::method() {}\n";
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T"))));
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U"))));
+}
+
+TEST(TemplateTypeParmDecl, VarDecl) {
+  const char input[] =
+      "template<typename T>\n"
+      "class Class {\n"
+      "  static T pi;\n"
+      "};\n"
+      "template<typename U>\n"
+      "U Class<U>::pi = U(3.1415926535897932385);\n";
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T"))));
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U"))));
+}
+
+TEST(TemplateTypeParmDecl, VarTemplatePartialSpecializationDecl) {
+  const char input[] =
+      "template<typename T>\n"
+      "struct Struct {\n"
+      "  template<typename T2> static int field;\n"
+      "};\n"
+      "template<typename U>\n"
+      "template<typename U2>\n"
+      "int Struct<U>::field<char> = 123;\n";
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T"))));
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T2"))));
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U"))));
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U2"))));
+}
+
+TEST(TemplateTypeParmDecl, ClassTemplatePartialSpecializationDecl) {
+  const char input[] =
+      "template<typename T>\n"
+      "class Class {\n"
+      "  template<typename T2> struct Struct;\n"
+      "};\n"
+      "template<typename U>\n"
+      "template<typename U2>\n"
+      "struct Class<U>::Struct<int> {};\n";
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T"))));
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T2"))));
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U"))));
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U2"))));
+}
+
+TEST(TemplateTypeParmDecl, EnumDecl) {
+  const char input[] =
+      "template<typename T>\n"
+      "struct Struct {\n"
+      "  enum class Enum : T;\n"
+      "};\n"
+      "template<typename U>\n"
+      "enum class Struct<U>::Enum : U {\n"
+      "  e1,\n"
+      "  e2\n"
+      "};\n";
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T"))));
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U"))));
+}
+
+TEST(TemplateTypeParmDecl, RecordDecl) {
+  const char input[] =
+      "template<typename T>\n"
+      "class Class {\n"
+      "  struct Struct;\n"
+      "};\n"
+      "template<typename U>\n"
+      "struct Class<U>::Struct {\n"
+      "  U field;\n"
+      "};\n";
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T"))));
+  EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U"))));
 }
 
 TEST(RefersToIntegralType, Matches) {
@@ -2070,6 +2174,25 @@ TEST(Matcher, ForEachOverriden) {
                                                           2)));
   // A1::f overrides nothing.
   EXPECT_TRUE(notMatches(Code2, ForEachOverriddenInClass("A1")));
+}
+
+TEST(Matcher, HasAnyDeclaration) {
+  std::string Fragment = "void foo(int p1);"
+                         "void foo(int *p2);"
+                         "void bar(int p3);"
+                         "template <typename T> void baz(T t) { foo(t); }";
+
+  EXPECT_TRUE(
+      matches(Fragment, unresolvedLookupExpr(hasAnyDeclaration(functionDecl(
+                            hasParameter(0, parmVarDecl(hasName("p1"))))))));
+  EXPECT_TRUE(
+      matches(Fragment, unresolvedLookupExpr(hasAnyDeclaration(functionDecl(
+                            hasParameter(0, parmVarDecl(hasName("p2"))))))));
+  EXPECT_TRUE(
+      notMatches(Fragment, unresolvedLookupExpr(hasAnyDeclaration(functionDecl(
+                               hasParameter(0, parmVarDecl(hasName("p3"))))))));
+  EXPECT_TRUE(notMatches(Fragment, unresolvedLookupExpr(hasAnyDeclaration(
+                                       functionDecl(hasName("bar"))))));
 }
 
 } // namespace ast_matchers
