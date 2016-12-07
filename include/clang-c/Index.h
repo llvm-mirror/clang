@@ -32,7 +32,7 @@
  * compatible, thus CINDEX_VERSION_MAJOR is expected to remain stable.
  */
 #define CINDEX_VERSION_MAJOR 0
-#define CINDEX_VERSION_MINOR 35
+#define CINDEX_VERSION_MINOR 37
 
 #define CINDEX_VERSION_ENCODE(major, minor) ( \
       ((major) * 10000)                       \
@@ -2346,7 +2346,11 @@ enum CXCursorKind {
    */
   CXCursor_OMPTeamsDistributeSimdDirective = 272,
 
-  CXCursor_LastStmt = CXCursor_OMPTeamsDistributeSimdDirective,
+  /** \brief OpenMP teams distribute parallel for simd directive.
+   */
+  CXCursor_OMPTeamsDistributeParallelForSimdDirective = 273,
+
+  CXCursor_LastStmt = CXCursor_OMPTeamsDistributeParallelForSimdDirective,
 
   /**
    * \brief Cursor that represents the translation unit itself.
@@ -2404,8 +2408,12 @@ enum CXCursorKind {
    * \brief A static_assert or _Static_assert node
    */
   CXCursor_StaticAssert                  = 602,
+  /**
+   * \brief a friend declaration.
+   */
+  CXCursor_FriendDecl                    = 603,
   CXCursor_FirstExtraDecl                = CXCursor_ModuleImportDecl,
-  CXCursor_LastExtraDecl                 = CXCursor_StaticAssert,
+  CXCursor_LastExtraDecl                 = CXCursor_FriendDecl,
 
   /**
    * \brief A code completion overload candidate.
@@ -3512,11 +3520,8 @@ enum CXRefQualifierKind {
 };
 
 /**
- * \brief Returns the number of template arguments for given class template
- * specialization, or -1 if type \c T is not a class template specialization.
- *
- * Variadic argument packs count as only one argument, and can not be inspected
- * further.
+ * \brief Returns the number of template arguments for given template
+ * specialization, or -1 if type \c T is not a template specialization.
  */
 CINDEX_LINKAGE int clang_Type_getNumTemplateArguments(CXType T);
 
@@ -5259,6 +5264,25 @@ CINDEX_LINKAGE CXEvalResultKind clang_EvalResult_getKind(CXEvalResult E);
  * kind is Int.
  */
 CINDEX_LINKAGE int clang_EvalResult_getAsInt(CXEvalResult E);
+
+/**
+ * \brief Returns the evaluation result as a long long integer if the
+ * kind is Int. This prevents overflows that may happen if the result is
+ * returned with clang_EvalResult_getAsInt.
+ */
+CINDEX_LINKAGE long long clang_EvalResult_getAsLongLong(CXEvalResult E);
+
+/**
+ * \brief Returns a non-zero value if the kind is Int and the evaluation
+ * result resulted in an unsigned integer.
+ */
+CINDEX_LINKAGE unsigned clang_EvalResult_isUnsignedInt(CXEvalResult E);
+
+/**
+ * \brief Returns the evaluation result as an unsigned integer if
+ * the kind is Int and clang_EvalResult_isUnsignedInt is non-zero.
+ */
+CINDEX_LINKAGE unsigned long long clang_EvalResult_getAsUnsigned(CXEvalResult E);
 
 /**
  * \brief Returns the evaluation result as double if the

@@ -734,7 +734,7 @@ _mm_cmple_sd(__m128d __a, __m128d __b)
   return (__m128d)__builtin_ia32_cmplesd((__v2df)__a, (__v2df)__b);
 }
 
-/// \brief  Compares the lower double-precision floating-point values in each
+/// \brief Compares the lower double-precision floating-point values in each
 ///    of the two 128-bit floating-point vectors of [2 x double] to determine
 ///    if the value in the first parameter is greater than the corresponding
 ///    value in the second parameter. The comparison yields 0h for false,
@@ -784,7 +784,7 @@ _mm_cmpge_sd(__m128d __a, __m128d __b)
   return (__m128d) { __c[0], __a[1] };
 }
 
-/// \brief  Compares the lower double-precision floating-point values in each
+/// \brief Compares the lower double-precision floating-point values in each
 ///    of the two 128-bit floating-point vectors of [2 x double] to determine
 ///    if the value in the first parameter is "ordered" with respect to the
 ///    corresponding value in the second parameter. The comparison yields 0h for
@@ -809,7 +809,7 @@ _mm_cmpord_sd(__m128d __a, __m128d __b)
   return (__m128d)__builtin_ia32_cmpordsd((__v2df)__a, (__v2df)__b);
 }
 
-/// \brief  Compares the lower double-precision floating-point values in each
+/// \brief Compares the lower double-precision floating-point values in each
 ///    of the two 128-bit floating-point vectors of [2 x double] to determine
 ///    if the value in the first parameter is "unordered" with respect to the
 ///    corresponding value in the second parameter. The comparison yields 0h
@@ -4752,6 +4752,10 @@ _mm_castsi128_pd(__m128i __a)
   return (__m128d)__a;
 }
 
+#if defined(__cplusplus)
+extern "C" {
+#endif
+
 /// \brief Indicates that a spin loop is being executed for the purposes of
 ///    optimizing power consumption during the loop.
 ///
@@ -4759,11 +4763,11 @@ _mm_castsi128_pd(__m128i __a)
 ///
 /// This intrinsic corresponds to the \c PAUSE instruction.
 ///
-#if defined(__cplusplus)
-extern "C"
-#endif
 void _mm_pause(void);
 
+#if defined(__cplusplus)
+} // extern "C"
+#endif
 #undef __DEFAULT_FN_ATTRS
 
 #define _MM_SHUFFLE2(x, y) (((x) << 1) | (y))

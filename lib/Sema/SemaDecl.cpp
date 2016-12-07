@@ -2949,15 +2949,6 @@ bool Sema::MergeFunctionDecl(FunctionDecl *New, NamedDecl *&OldD,
     // but do not necessarily update the type of New.
     if (CheckEquivalentExceptionSpec(Old, New))
       return true;
-    // If exceptions are disabled, we might not have resolved the exception spec
-    // of one or both declarations. Do so now in C++1z, so that we can properly
-    // compare the types.
-    if (getLangOpts().CPlusPlus1z) {
-      for (QualType T : {Old->getType(), New->getType()})
-        if (auto *FPT = T->getAs<FunctionProtoType>())
-          if (isUnresolvedExceptionSpec(FPT->getExceptionSpecType()))
-            ResolveExceptionSpec(New->getLocation(), FPT);
-    }
     OldQType = Context.getCanonicalType(Old->getType());
     NewQType = Context.getCanonicalType(New->getType());
 
@@ -5651,6 +5642,9 @@ static void checkDLLAttributeRedeclaration(Sema &S, NamedDecl *OldDecl,
                                            NamedDecl *NewDecl,
                                            bool IsSpecialization,
                                            bool IsDefinition) {
+  if (OldDecl->isInvalidDecl())
+    return;
+
   if (TemplateDecl *OldTD = dyn_cast<TemplateDecl>(OldDecl)) {
     OldDecl = OldTD->getTemplatedDecl();
     if (!IsSpecialization)
@@ -5909,32 +5903,31 @@ NamedDecl *Sema::ActOnVariableDeclarator(
     return nullptr;
   }
 
-  // OpenCL v2.0 s6.9.b - Image type can only be used as a function argument.
-  // OpenCL v2.0 s6.13.16.1 - Pipe type can only be used as a function
-  // argument.
-  if (getLangOpts().OpenCL && (R->isImageType() || R->isPipeType())) {
-    Diag(D.getIdentifierLoc(),
-         diag::err_opencl_type_can_only_be_used_as_function_parameter)
-        << R;
-    D.setInvalidType();
-    return nullptr;
-  }
-
-  DeclSpec::SCS SCSpec = D.getDeclSpec().getStorageClassSpec();
-  StorageClass SC = StorageClassSpecToVarDeclStorageClass(D.getDeclSpec());
-
-  // dllimport globals without explicit storage class are treated as extern. We
-  // have to change the storage class this early to get the right DeclContext.
-  if (SC == SC_None && !DC->isRecord() &&
-      hasParsedAttr(S, D, AttributeList::AT_DLLImport) &&
-      !hasParsedAttr(S, D, AttributeList::AT_DLLExport))
-    SC = SC_Extern;
-
-  DeclContext *OriginalDC = DC;
-  bool IsLocalExternDecl = SC == SC_Extern &&
-                           adjustContextForLocalExternDecl(DC);
-
   if (getLangOpts().OpenCL) {
+    // OpenCL v2.0 s6.9.b - Image type can only be used as a function argument.
+    // OpenCL v2.0 s6.13.16.1 - Pipe type can only be used as a function
+    // argument.
+    if (R->isImageType() || R->isPipeType()) {
+      Diag(D.getIdentifierLoc(),
+           diag::err_opencl_type_can_only_be_used_as_function_parameter)
+          << R;
+      D.setInvalidType();
+      return nullptr;
+    }
+
+    // OpenCL v1.2 s6.9.r:
+    // The event type cannot be used to declare a program scope variable.
+    // OpenCL v2.0 s6.9.q:
+    // The clk_event_t and reserve_id_t types cannot be declared in program scope.
+    if (NULL == S->getParent()) {
+      if (R->isReserveIDT() || R->isClkEventT() || R->isEventT()) {
+        Diag(D.getIdentifierLoc(),
+             diag::err_invalid_type_for_program_scope_var) << R;
+        D.setInvalidType();
+        return nullptr;
+      }
+    }
+
     // OpenCL v1.0 s6.8.a.3: Pointers to functions are not allowed.
     QualType NR = R;
     while (NR->isPointerType()) {
@@ -5954,7 +5947,39 @@ NamedDecl *Sema::ActOnVariableDeclarator(
         D.setInvalidType();
       }
     }
+
+    // OpenCL v1.2 s6.9.b p4:
+    // The sampler type cannot be used with the __local and __global address
+    // space qualifiers.
+    if (R->isSamplerT() && (R.getAddressSpace() == LangAS::opencl_local ||
+      R.getAddressSpace() == LangAS::opencl_global)) {
+      Diag(D.getIdentifierLoc(), diag::err_wrong_sampler_addressspace);
+    }
+
+    // OpenCL v1.2 s6.9.r:
+    // The event type cannot be used with the __local, __constant and __global
+    // address space qualifiers.
+    if (R->isEventT()) {
+      if (R.getAddressSpace()) {
+        Diag(D.getLocStart(), diag::err_event_t_addr_space_qual);
+        D.setInvalidType();
+      }
+    }
   }
+
+  DeclSpec::SCS SCSpec = D.getDeclSpec().getStorageClassSpec();
+  StorageClass SC = StorageClassSpecToVarDeclStorageClass(D.getDeclSpec());
+
+  // dllimport globals without explicit storage class are treated as extern. We
+  // have to change the storage class this early to get the right DeclContext.
+  if (SC == SC_None && !DC->isRecord() &&
+      hasParsedAttr(S, D, AttributeList::AT_DLLImport) &&
+      !hasParsedAttr(S, D, AttributeList::AT_DLLExport))
+    SC = SC_Extern;
+
+  DeclContext *OriginalDC = DC;
+  bool IsLocalExternDecl = SC == SC_Extern &&
+                           adjustContextForLocalExternDecl(DC);
 
   if (SCSpec == DeclSpec::SCS_mutable) {
     // mutable can only appear on non-static class members, so it's always
@@ -5985,32 +6010,6 @@ NamedDecl *Sema::ActOnVariableDeclarator(
     if (SC == SC_Auto || (SC == SC_Register && !D.getAsmLabel())) {
       Diag(D.getIdentifierLoc(), diag::err_typecheck_sclass_fscope);
       D.setInvalidType();
-    }
-  }
-
-  if (getLangOpts().OpenCL) {
-    // OpenCL v1.2 s6.9.b p4:
-    // The sampler type cannot be used with the __local and __global address
-    // space qualifiers.
-    if (R->isSamplerT() && (R.getAddressSpace() == LangAS::opencl_local ||
-      R.getAddressSpace() == LangAS::opencl_global)) {
-      Diag(D.getIdentifierLoc(), diag::err_wrong_sampler_addressspace);
-    }
-
-    // OpenCL 1.2 spec, p6.9 r:
-    // The event type cannot be used to declare a program scope variable.
-    // The event type cannot be used with the __local, __constant and __global
-    // address space qualifiers.
-    if (R->isEventT()) {
-      if (S->getParent() == nullptr) {
-        Diag(D.getLocStart(), diag::err_event_t_global_var);
-        D.setInvalidType();
-      }
-
-      if (R.getAddressSpace()) {
-        Diag(D.getLocStart(), diag::err_event_t_addr_space_qual);
-        D.setInvalidType();
-      }
     }
   }
 
@@ -6582,6 +6581,17 @@ static ShadowedDeclKind computeShadowedDeclKind(const NamedDecl *ShadowedDecl,
   return OldDC->isFileContext() ? SDK_Global : SDK_Local;
 }
 
+/// Return the location of the capture if the given lambda captures the given
+/// variable \p VD, or an invalid source location otherwise.
+static SourceLocation getCaptureLocation(const LambdaScopeInfo *LSI,
+                                         const VarDecl *VD) {
+  for (const LambdaScopeInfo::Capture &Capture : LSI->Captures) {
+    if (Capture.isVariableCapture() && Capture.getVariable() == VD)
+      return Capture.getLocation();
+  }
+  return SourceLocation();
+}
+
 /// \brief Diagnose variable or built-in function shadowing.  Implements
 /// -Wshadow.
 ///
@@ -6640,6 +6650,29 @@ void Sema::CheckShadow(Scope *S, VarDecl *D, const LookupResult& R) {
 
   DeclContext *OldDC = ShadowedDecl->getDeclContext();
 
+  unsigned WarningDiag = diag::warn_decl_shadow;
+  SourceLocation CaptureLoc;
+  if (isa<VarDecl>(ShadowedDecl) && NewDC && isa<CXXMethodDecl>(NewDC)) {
+    if (const auto *RD = dyn_cast<CXXRecordDecl>(NewDC->getParent())) {
+      if (RD->isLambda() && OldDC->Encloses(NewDC->getLexicalParent())) {
+        if (RD->getLambdaCaptureDefault() == LCD_None) {
+          // Try to avoid warnings for lambdas with an explicit capture list.
+          const auto *LSI = cast<LambdaScopeInfo>(getCurFunction());
+          // Warn only when the lambda captures the shadowed decl explicitly.
+          CaptureLoc = getCaptureLocation(LSI, cast<VarDecl>(ShadowedDecl));
+          if (CaptureLoc.isInvalid())
+            WarningDiag = diag::warn_decl_shadow_uncaptured_local;
+        } else {
+          // Remember that this was shadowed so we can avoid the warning if the
+          // shadowed decl isn't captured and the warning settings allow it.
+          cast<LambdaScopeInfo>(getCurFunction())
+              ->ShadowingDecls.push_back({D, cast<VarDecl>(ShadowedDecl)});
+          return;
+        }
+      }
+    }
+  }
+
   // Only warn about certain kinds of shadowing for class members.
   if (NewDC && NewDC->isRecord()) {
     // In particular, don't warn about shadowing non-class members.
@@ -6661,8 +6694,31 @@ void Sema::CheckShadow(Scope *S, VarDecl *D, const LookupResult& R) {
   if (getSourceManager().isInSystemMacro(R.getNameLoc()))
     return;
   ShadowedDeclKind Kind = computeShadowedDeclKind(ShadowedDecl, OldDC);
-  Diag(R.getNameLoc(), diag::warn_decl_shadow) << Name << Kind << OldDC;
+  Diag(R.getNameLoc(), WarningDiag) << Name << Kind << OldDC;
+  if (!CaptureLoc.isInvalid())
+    Diag(CaptureLoc, diag::note_var_explicitly_captured_here)
+        << Name << /*explicitly*/ 1;
   Diag(ShadowedDecl->getLocation(), diag::note_previous_declaration);
+}
+
+/// Diagnose shadowing for variables shadowed in the lambda record \p LambdaRD
+/// when these variables are captured by the lambda.
+void Sema::DiagnoseShadowingLambdaDecls(const LambdaScopeInfo *LSI) {
+  for (const auto &Shadow : LSI->ShadowingDecls) {
+    const VarDecl *ShadowedDecl = Shadow.ShadowedDecl;
+    // Try to avoid the warning when the shadowed decl isn't captured.
+    SourceLocation CaptureLoc = getCaptureLocation(LSI, ShadowedDecl);
+    const DeclContext *OldDC = ShadowedDecl->getDeclContext();
+    Diag(Shadow.VD->getLocation(), CaptureLoc.isInvalid()
+                                       ? diag::warn_decl_shadow_uncaptured_local
+                                       : diag::warn_decl_shadow)
+        << Shadow.VD->getDeclName()
+        << computeShadowedDeclKind(ShadowedDecl, OldDC) << OldDC;
+    if (!CaptureLoc.isInvalid())
+      Diag(CaptureLoc, diag::note_var_explicitly_captured_here)
+          << Shadow.VD->getDeclName() << /*explicitly*/ 0;
+    Diag(ShadowedDecl->getLocation(), diag::note_previous_declaration);
+  }
 }
 
 /// \brief Check -Wshadow without the advantage of a previous lookup.
@@ -8963,9 +9019,25 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
       LookupPredefedObjCSuperType(*this, S, NewFD->getIdentifier());
       QualType T = Context.GetBuiltinType(BuiltinID, Error);
       if (!T.isNull() && !Context.hasSameType(T, NewFD->getType())) {
-        // The type of this function differs from the type of the builtin,
-        // so forget about the builtin entirely.
-        Context.BuiltinInfo.forgetBuiltin(BuiltinID, Context.Idents);
+        auto WithoutExceptionSpec = [&](QualType T) -> QualType {
+          auto *Proto = T->getAs<FunctionProtoType>();
+          if (!Proto)
+            return T;
+          return Context.getFunctionType(
+              Proto->getReturnType(), Proto->getParamTypes(),
+              Proto->getExtProtoInfo().withExceptionSpec(EST_None));
+        };
+
+        // If the type of the builtin differs only in its exception
+        // specification, that's OK.
+        // FIXME: If the types do differ in this way, it would be better to
+        // retain the 'noexcept' form of the type.
+        if (!getLangOpts().CPlusPlus1z ||
+            !Context.hasSameType(WithoutExceptionSpec(T),
+                                 WithoutExceptionSpec(NewFD->getType())))
+          // The type of this function differs from the type of the builtin,
+          // so forget about the builtin entirely.
+          Context.BuiltinInfo.forgetBuiltin(BuiltinID, Context.Idents);
       }
     }
 
@@ -9808,6 +9880,18 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
   // Perform the initialization.
   ParenListExpr *CXXDirectInit = dyn_cast<ParenListExpr>(Init);
   if (!VDecl->isInvalidDecl()) {
+    // Handle errors like: int a({0})
+    if (CXXDirectInit && CXXDirectInit->getNumExprs() == 1 &&
+        !canInitializeWithParenthesizedList(VDecl->getType()))
+      if (auto IList = dyn_cast<InitListExpr>(CXXDirectInit->getExpr(0))) {
+        Diag(VDecl->getLocation(), diag::err_list_init_in_parens)
+            << VDecl->getType() << CXXDirectInit->getSourceRange()
+            << FixItHint::CreateRemoval(CXXDirectInit->getLocStart())
+            << FixItHint::CreateRemoval(CXXDirectInit->getLocEnd());
+        Init = IList;
+        CXXDirectInit = nullptr;
+      }
+
     InitializedEntity Entity = InitializedEntity::InitializeVariable(VDecl);
     InitializationKind Kind =
         DirectInit
@@ -10112,6 +10196,18 @@ void Sema::ActOnInitializerError(Decl *D) {
 
   // Don't bother complaining about constructors or destructors,
   // though.
+}
+
+/// Checks if an object of the given type can be initialized with parenthesized
+/// init-list.
+///
+/// \param TargetType Type of object being initialized.
+///
+/// The function is used to detect wrong initializations, such as 'int({0})'.
+///
+bool Sema::canInitializeWithParenthesizedList(QualType TargetType) {
+  return TargetType->isDependentType() || TargetType->isRecordType() ||
+         TargetType->getContainedAutoType();
 }
 
 void Sema::ActOnUninitializedDecl(Decl *RealDecl,
@@ -10675,8 +10771,6 @@ Sema::FinalizeDeclaration(Decl *ThisDecl) {
 
   if (auto *DD = dyn_cast<DecompositionDecl>(ThisDecl)) {
     for (auto *BD : DD->bindings()) {
-      if (ThisDecl->isInvalidDecl())
-        BD->setInvalidDecl();
       FinalizeDeclaration(BD);
     }
   }

@@ -510,7 +510,7 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
   if (LangOpts.CPlusPlus1z) {
     Builder.defineMacro("__cpp_hex_float", "201603");
     Builder.defineMacro("__cpp_inline_variables", "201606");
-    //Builder.defineMacro("__cpp_noexcept_function_type", "201510");
+    Builder.defineMacro("__cpp_noexcept_function_type", "201510");
     Builder.defineMacro("__cpp_capture_star_this", "201603");
     Builder.defineMacro("__cpp_if_constexpr", "201606");
     Builder.defineMacro("__cpp_template_auto", "201606");
@@ -590,6 +590,9 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
       if (LangOpts.ObjCExceptions)
         Builder.defineMacro("OBJC_ZEROCOST_EXCEPTIONS");
     }
+
+    Builder.defineMacro("__OBJC_BOOL_IS_BOOL",
+                        Twine(TI.useSignedCharForObjCBool() ? "0" : "1"));
 
     if (LangOpts.getGC() != LangOptions::NonGC)
       Builder.defineMacro("__OBJC_GC__");

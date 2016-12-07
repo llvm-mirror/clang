@@ -1467,13 +1467,26 @@ namespace VLASizeof {
 }
 
 namespace CompoundLiteral {
-  // FIXME:
-  // We don't model the semantics of this correctly: the compound literal is
-  // represented as a prvalue in the AST, but actually behaves like an lvalue.
-  // We treat the compound literal as a temporary and refuse to produce a
-  // pointer to it. This is OK: we're not required to treat this as a constant
-  // in C++, and in C we model compound literals as lvalues.
-  constexpr int *p = (int*)(int[1]){0}; // expected-warning {{C99}} expected-error {{constant expression}} expected-note 2{{temporary}}
+  // Matching GCC, file-scope array compound literals initialized by constants
+  // are lifetime-extended.
+  constexpr int *p = (int*)(int[1]){3}; // expected-warning {{C99}}
+  static_assert(*p == 3, "");
+  static_assert((int[2]){1, 2}[1] == 2, ""); // expected-warning {{C99}}
+
+  // Other kinds are not.
+  struct X { int a[2]; };
+  constexpr int *n = (X){1, 2}.a; // expected-warning {{C99}} expected-warning {{temporary array}}
+  // expected-error@-1 {{constant expression}}
+  // expected-note@-2 {{pointer to subobject of temporary}}
+  // expected-note@-3 {{temporary created here}}
+
+  void f() {
+    static constexpr int *p = (int*)(int[1]){3}; // expected-warning {{C99}}
+    // expected-error@-1 {{constant expression}}
+    // expected-note@-2 {{pointer to subobject of temporary}}
+    // expected-note@-3 {{temporary created here}}
+    static_assert((int[2]){1, 2}[1] == 2, ""); // expected-warning {{C99}}
+  }
 }
 
 namespace Vector {
@@ -1862,8 +1875,8 @@ namespace ZeroSizeTypes {
 namespace BadDefaultInit {
   template<int N> struct X { static const int n = N; };
 
-  struct A {
-    int k = // expected-error {{cannot use defaulted default constructor of 'A' within the class outside of member functions because 'k' has an initializer}}
+  struct A { // expected-error {{default member initializer for 'k' needed within definition of enclosing class}}
+    int k = // expected-note {{default member initializer declared here}}
         X<A().k>::n; // expected-error {{not a constant expression}} expected-note {{implicit default constructor for 'BadDefaultInit::A' first required here}}
   };
 
@@ -2066,3 +2079,33 @@ namespace InheritedCtor {
   constexpr Z z(1);
   static_assert(z.w == 1 && z.x == 2 && z.y == 3 && z.z == 4, "");
 }
+
+
+namespace PR28366 {
+namespace ns1 {
+
+void f(char c) { //expected-note2{{declared here}}
+  struct X {
+    static constexpr char f() { //expected-error{{never produces a constant expression}}
+      return c; //expected-error{{reference to local}} expected-note{{non-const variable}}
+    }
+  };
+  int I = X::f();
+}
+
+void g() {
+  const int c = 'c';
+  static const int d = 'd';
+  struct X {
+    static constexpr int f() {
+      return c + d;
+    }
+  };
+  static_assert(X::f() == 'c' + 'd',"");
+}
+
+
+} // end ns1
+
+} //end ns PR28366
+

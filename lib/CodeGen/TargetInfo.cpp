@@ -958,6 +958,11 @@ public:
     // scalar registers.
     return occupiesMoreThan(CGT, scalars, /*total*/ 3);
   }  
+
+  bool isSwiftErrorInRegister() const override {
+    // x86-32 lowering does not support passing swifterror in a register.
+    return false;
+  }
 };
 
 class X86_32TargetCodeGenInfo : public TargetCodeGenInfo {
@@ -2012,6 +2017,9 @@ public:
                                     bool asReturnValue) const override {
     return occupiesMoreThan(CGT, scalars, /*total*/ 4);
   }  
+  bool isSwiftErrorInRegister() const override {
+    return true;
+  }
 };
 
 /// WinX86_64ABIInfo - The Windows X86_64 ABI information.
@@ -2041,6 +2049,10 @@ public:
                                     ArrayRef<llvm::Type *> scalars,
                                     bool asReturnValue) const override {
     return occupiesMoreThan(CGT, scalars, /*total*/ 4);
+  }
+
+  bool isSwiftErrorInRegister() const override {
+    return true;
   }
 
 private:
@@ -3548,15 +3560,17 @@ Address X86_64ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
     llvm::Value *RegHiAddr = TyLo->isFPOrFPVectorTy() ? GPAddr : FPAddr;
 
     // Copy the first element.
-    llvm::Value *V =
-      CGF.Builder.CreateDefaultAlignedLoad(
-                               CGF.Builder.CreateBitCast(RegLoAddr, PTyLo));
+    // FIXME: Our choice of alignment here and below is probably pessimistic.
+    llvm::Value *V = CGF.Builder.CreateAlignedLoad(
+        TyLo, CGF.Builder.CreateBitCast(RegLoAddr, PTyLo),
+        CharUnits::fromQuantity(getDataLayout().getABITypeAlignment(TyLo)));
     CGF.Builder.CreateStore(V,
                     CGF.Builder.CreateStructGEP(Tmp, 0, CharUnits::Zero()));
 
     // Copy the second element.
-    V = CGF.Builder.CreateDefaultAlignedLoad(
-                               CGF.Builder.CreateBitCast(RegHiAddr, PTyHi));
+    V = CGF.Builder.CreateAlignedLoad(
+        TyHi, CGF.Builder.CreateBitCast(RegHiAddr, PTyHi),
+        CharUnits::fromQuantity(getDataLayout().getABITypeAlignment(TyHi)));
     CharUnits Offset = CharUnits::fromQuantity(
                    getDataLayout().getStructLayout(ST)->getElementOffset(1));
     CGF.Builder.CreateStore(V, CGF.Builder.CreateStructGEP(Tmp, 1, Offset));
@@ -4626,6 +4640,9 @@ private:
                                     bool asReturnValue) const override {
     return occupiesMoreThan(CGT, scalars, /*total*/ 4);
   }
+  bool isSwiftErrorInRegister() const override {
+    return true;
+  }
 };
 
 class AArch64TargetCodeGenInfo : public TargetCodeGenInfo {
@@ -5178,6 +5195,9 @@ private:
                                     ArrayRef<llvm::Type*> scalars,
                                     bool asReturnValue) const override {
     return occupiesMoreThan(CGT, scalars, /*total*/ 4);
+  }
+  bool isSwiftErrorInRegister() const override {
+    return true;
   }
 };
 
@@ -5946,6 +5966,9 @@ public:
                                     ArrayRef<llvm::Type*> scalars,
                                     bool asReturnValue) const override {
     return occupiesMoreThan(CGT, scalars, /*total*/ 4);
+  }
+  bool isSwiftErrorInRegister() const override {
+    return true;
   }
 };
 
@@ -8251,6 +8274,7 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
   }
 
   case llvm::Triple::tce:
+  case llvm::Triple::tcele:
     return SetCGInfo(new TCETargetCodeGenInfo(Types));
 
   case llvm::Triple::x86: {

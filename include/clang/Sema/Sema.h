@@ -788,9 +788,6 @@ public:
   /// \brief will hold 'respondsToSelector:'
   Selector RespondsToSelectorSel;
 
-  /// \brief counter for internal MS Asm label names.
-  unsigned MSAsmLabelNameCounter;
-
   /// A flag to remember whether the implicit forms of operator new and delete
   /// have been declared.
   bool GlobalNewDeleteDeclared;
@@ -1228,8 +1225,10 @@ public:
   /// \brief Retrieve the current block, if any.
   sema::BlockScopeInfo *getCurBlock();
 
-  /// \brief Retrieve the current lambda scope info, if any.
-  sema::LambdaScopeInfo *getCurLambda();
+  /// Retrieve the current lambda scope info, if any.
+  /// \param IgnoreCapturedRegions true if should find the top-most lambda scope
+  /// info ignoring all inner captured regions scope infos.
+  sema::LambdaScopeInfo *getCurLambda(bool IgnoreCapturedRegions = false);
 
   /// \brief Retrieve the current generic lambda info, if any.
   sema::LambdaScopeInfo *getCurGenericLambda();
@@ -1301,7 +1300,9 @@ public:
                                  SourceLocation Loc, DeclarationName Entity);
   QualType BuildParenType(QualType T);
   QualType BuildAtomicType(QualType T, SourceLocation Loc);
-  QualType BuildPipeType(QualType T,
+  QualType BuildReadPipeType(QualType T,
+                         SourceLocation Loc);
+  QualType BuildWritePipeType(QualType T,
                          SourceLocation Loc);
 
   TypeSourceInfo *GetTypeForDeclarator(Declarator &D, Scope *S);
@@ -1329,11 +1330,7 @@ public:
   bool CheckEquivalentExceptionSpec(
       const PartialDiagnostic &DiagID, const PartialDiagnostic & NoteID,
       const FunctionProtoType *Old, SourceLocation OldLoc,
-      const FunctionProtoType *New, SourceLocation NewLoc,
-      bool *MissingExceptionSpecification = nullptr,
-      bool *MissingEmptyExceptionSpecification = nullptr,
-      bool AllowNoexceptAllMatchWithNoSpec = false,
-      bool IsOperatorNew = false);
+      const FunctionProtoType *New, SourceLocation NewLoc);
   bool CheckExceptionSpecSubset(const PartialDiagnostic &DiagID,
                                 const PartialDiagnostic &NestedDiagID,
                                 const PartialDiagnostic &NoteID,
@@ -1716,6 +1713,8 @@ public:
   /// to a shadowing declaration.
   void CheckShadowingDeclModification(Expr *E, SourceLocation Loc);
 
+  void DiagnoseShadowingLambdaDecls(const sema::LambdaScopeInfo *LSI);
+
 private:
   /// Map of current shadowing declarations to shadowed declarations. Warn if
   /// it looks like the user is trying to modify the shadowing declaration.
@@ -1792,6 +1791,8 @@ public:
                             bool TypeMayContainAuto);
   void ActOnUninitializedDecl(Decl *dcl, bool TypeMayContainAuto);
   void ActOnInitializerError(Decl *Dcl);
+  bool canInitializeWithParenthesizedList(QualType TargetType);
+
   void ActOnPureSpecifier(Decl *D, SourceLocation PureSpecLoc);
   void ActOnCXXForRangeDecl(Decl *D);
   StmtResult ActOnCXXForRangeIdentifier(Scope *S, SourceLocation IdentLoc,
@@ -3120,10 +3121,14 @@ public:
   /// method) or an Objective-C property attribute, rather than as an
   /// underscored type specifier.
   ///
+  /// \param allowArrayTypes Whether to accept nullability specifiers on an
+  /// array type (e.g., because it will decay to a pointer).
+  ///
   /// \returns true if nullability cannot be applied, false otherwise.
   bool checkNullabilityTypeSpecifier(QualType &type, NullabilityKind nullability,
                                      SourceLocation nullabilityLoc,
-                                     bool isContextSensitive);
+                                     bool isContextSensitive,
+                                     bool allowArrayTypes);
 
   /// \brief Stmt attributes - this routine is the top level dispatcher.
   StmtResult ProcessStmtAttributes(Stmt *Stmt, AttributeList *Attrs,
@@ -4395,6 +4400,12 @@ public:
                         unsigned ConstructKind, SourceRange ParenRange);
 
   ExprResult BuildCXXDefaultInitExpr(SourceLocation Loc, FieldDecl *Field);
+
+
+  /// Instantiate or parse a C++ default argument expression as necessary.
+  /// Return true on error.
+  bool CheckCXXDefaultArgExpr(SourceLocation CallLoc, FunctionDecl *FD,
+                              ParmVarDecl *Param);
 
   /// BuildCXXDefaultArgExpr - Creates a CXXDefaultArgExpr, instantiating
   /// the default expr if needed.
@@ -6504,7 +6515,12 @@ public:
   // C++ Template Argument Deduction (C++ [temp.deduct])
   //===--------------------------------------------------------------------===//
 
-  QualType adjustCCAndNoReturn(QualType ArgFunctionType, QualType FunctionType);
+  /// Adjust the type \p ArgFunctionType to match the calling convention,
+  /// noreturn, and optionally the exception specification of \p FunctionType.
+  /// Deduction often wants to ignore these properties when matching function
+  /// types.
+  QualType adjustCCAndNoReturn(QualType ArgFunctionType, QualType FunctionType,
+                               bool AdjustExceptionSpec = false);
 
   /// \brief Describes the result of template argument deduction.
   ///
@@ -6613,7 +6629,7 @@ public:
                           QualType ArgFunctionType,
                           FunctionDecl *&Specialization,
                           sema::TemplateDeductionInfo &Info,
-                          bool InOverloadResolution = false);
+                          bool IsAddressOfFunction = false);
 
   TemplateDeductionResult
   DeduceTemplateArguments(FunctionTemplateDecl *FunctionTemplate,
@@ -6626,7 +6642,7 @@ public:
                           TemplateArgumentListInfo *ExplicitTemplateArgs,
                           FunctionDecl *&Specialization,
                           sema::TemplateDeductionInfo &Info,
-                          bool InOverloadResolution = false);
+                          bool IsAddressOfFunction = false);
 
   /// \brief Substitute Replacement for \p auto in \p TypeWithAuto
   QualType SubstAutoType(QualType TypeWithAuto, QualType Replacement);
@@ -7470,6 +7486,7 @@ public:
                                        SourceRange SuperTypeArgsRange);
   
   void ActOnTypedefedProtocols(SmallVectorImpl<Decl *> &ProtocolRefs,
+                               SmallVectorImpl<SourceLocation> &ProtocolLocs,
                                IdentifierInfo *SuperName,
                                SourceLocation SuperLoc);
 
@@ -8371,6 +8388,12 @@ public:
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
       SourceLocation EndLoc,
       llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+  /// Called on well-formed '\#pragma omp teams distribute parallel for simd'
+  /// after parsing of the associated statement.
+  StmtResult ActOnOpenMPTeamsDistributeParallelForSimdDirective(
+      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
+      SourceLocation EndLoc,
+      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
 
   /// Checks correctness of linear modifiers.
   bool CheckOpenMPLinearModifier(OpenMPLinearClauseKind LinKind,
@@ -8691,6 +8714,11 @@ public:
   // do not have a prototype. Integer promotions are performed on each
   // argument, and arguments that have type float are promoted to double.
   ExprResult DefaultArgumentPromotion(Expr *E);
+
+  /// If \p E is a prvalue denoting an unmaterialized temporary, materialize
+  /// it as an xvalue. In C++98, the result will still be a prvalue, because
+  /// we don't have xvalues there.
+  ExprResult TemporaryMaterializationConversion(Expr *E);
 
   // Used for emitting the right warning by DefaultVariadicArgumentPromotion
   enum VariadicCallType {
@@ -9987,7 +10015,7 @@ public:
   /// local diagnostics like in reference binding.
   void RefersToMemberWithReducedAlignment(
       Expr *E,
-      std::function<void(Expr *, RecordDecl *, ValueDecl *, CharUnits)> Action);
+      std::function<void(Expr *, RecordDecl *, FieldDecl *, CharUnits)> Action);
 };
 
 /// \brief RAII object that enters a new expression evaluation context.

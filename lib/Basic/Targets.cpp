@@ -465,6 +465,8 @@ protected:
       Triple.getEnvironmentVersion(Maj, Min, Rev);
       this->PlatformName = "android";
       this->PlatformMinVersion = VersionTuple(Maj, Min, Rev);
+      if (Maj)
+        Builder.defineMacro("__ANDROID_API__", Twine(Maj));
     }
     if (Opts.POSIXThreads)
       Builder.defineMacro("_REENTRANT");
@@ -3351,6 +3353,12 @@ void X86TargetInfo::setFeatureEnabledImpl(llvm::StringMap<bool> &Features,
              Name == "avx512vbmi" || Name == "avx512ifma") {
     if (Enabled)
       setSSELevel(Features, AVX512F, Enabled);
+    // Enable BWI instruction if VBMI is being enabled.
+    if (Name == "avx512vbmi" && Enabled)
+      Features["avx512bw"] = true;
+    // Also disable VBMI if BWI is being disabled.
+    if (Name == "avx512bw" && !Enabled)
+      Features["avx512vbmi"] = false;
   } else if (Name == "fma") {
     if (Enabled)
       setSSELevel(Features, AVX, Enabled);
@@ -6797,7 +6805,10 @@ public:
       PtrDiffType = SignedLong;
       break;
     }
-    MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 64;
+    // Up to 32 bits are lock-free atomic, but we're willing to do atomic ops
+    // on up to 64 bits.
+    MaxAtomicPromoteWidth = 64;
+    MaxAtomicInlineWidth = 32;
   }
 
   void getTargetDefines(const LangOptions &Opts,
@@ -7199,8 +7210,11 @@ public:
     FloatFormat = &llvm::APFloat::IEEEsingle;
     DoubleFormat = &llvm::APFloat::IEEEsingle;
     LongDoubleFormat = &llvm::APFloat::IEEEsingle;
-    resetDataLayout("E-p:32:32-i8:8:32-i16:16:32-i64:32"
-                    "-f64:32-v64:32-v128:32-a:0:32-n32");
+    resetDataLayout("E-p:32:32:32-i1:8:8-i8:8:32-"
+                    "i16:16:32-i32:32:32-i64:32:32-"
+                    "f32:32:32-f64:32:32-v64:32:32-"
+                    "v128:32:32-v256:32:32-v512:32:32-"
+                    "v1024:32:32-a0:0:32-n32");
     AddrSpaceMap = &TCEOpenCLAddrSpaceMap;
     UseAddrSpaceMapMangling = true;
   }
@@ -7226,6 +7240,31 @@ public:
   ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const override {
     return None;
   }
+};
+
+class TCELETargetInfo : public TCETargetInfo {
+public:
+  TCELETargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
+      : TCETargetInfo(Triple, Opts) {
+    BigEndian = false;
+
+    resetDataLayout("e-p:32:32:32-i1:8:8-i8:8:32-"
+                    "i16:16:32-i32:32:32-i64:32:32-"
+                    "f32:32:32-f64:32:32-v64:32:32-"
+                    "v128:32:32-v256:32:32-v512:32:32-"
+                    "v1024:32:32-a0:0:32-n32");
+
+  }
+
+  virtual void getTargetDefines(const LangOptions &Opts,
+                                MacroBuilder &Builder) const {
+    DefineStd(Builder, "tcele", Opts);
+    Builder.defineMacro("__TCE__");
+    Builder.defineMacro("__TCE_V1__");
+    Builder.defineMacro("__TCELE__");
+    Builder.defineMacro("__TCELE_V1__");
+  }
+
 };
 
 class BPFTargetInfo : public TargetInfo {
@@ -8615,6 +8654,9 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
 
   case llvm::Triple::tce:
     return new TCETargetInfo(Triple, Opts);
+
+  case llvm::Triple::tcele:
+    return new TCELETargetInfo(Triple, Opts);
 
   case llvm::Triple::x86:
     if (Triple.isOSDarwin())

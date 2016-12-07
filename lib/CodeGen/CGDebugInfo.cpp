@@ -2416,10 +2416,16 @@ static QualType UnwrapTypeForDebugInfo(QualType T, const ASTContext &C) {
     case Type::SubstTemplateTypeParm:
       T = cast<SubstTemplateTypeParmType>(T)->getReplacementType();
       break;
-    case Type::Auto:
+    case Type::Auto: {
       QualType DT = cast<AutoType>(T)->getDeducedType();
       assert(!DT.isNull() && "Undeduced types shouldn't reach here.");
       T = DT;
+      break;
+    }
+    case Type::Adjusted:
+    case Type::Decayed:
+      // Decayed and adjusted types use the adjusted type in LLVM and DWARF.
+      T = cast<AdjustedType>(T)->getAdjustedType();
       break;
     }
 
@@ -2540,11 +2546,6 @@ llvm::DIType *CGDebugInfo::CreateTypeNode(QualType Ty, llvm::DIFile *Unit) {
     return CreateType(cast<ComplexType>(Ty));
   case Type::Pointer:
     return CreateType(cast<PointerType>(Ty), Unit);
-  case Type::Adjusted:
-  case Type::Decayed:
-    // Decayed and adjusted types use the adjusted type in LLVM and DWARF.
-    return CreateType(
-        cast<PointerType>(cast<AdjustedType>(Ty)->getAdjustedType()), Unit);
   case Type::BlockPointer:
     return CreateType(cast<BlockPointerType>(Ty), Unit);
   case Type::Typedef:
@@ -2580,6 +2581,8 @@ llvm::DIType *CGDebugInfo::CreateTypeNode(QualType Ty, llvm::DIFile *Unit) {
 
   case Type::Auto:
   case Type::Attributed:
+  case Type::Adjusted:
+  case Type::Decayed:
   case Type::Elaborated:
   case Type::Paren:
   case Type::SubstTemplateTypeParm:
@@ -3032,9 +3035,8 @@ void CGDebugInfo::EmitFunctionStart(GlobalDecl GD, SourceLocation Loc,
 
   if (!HasDecl || D->isImplicit()) {
     Flags |= llvm::DINode::FlagArtificial;
-    // Artificial functions without a location should not silently reuse CurLoc.
-    if (Loc.isInvalid())
-      CurLoc = SourceLocation();
+    // Artificial functions should not silently reuse CurLoc.
+    CurLoc = SourceLocation();
   }
   unsigned LineNo = getLineNumber(Loc);
   unsigned ScopeLine = getLineNumber(ScopeLoc);
@@ -3675,6 +3677,13 @@ void CGDebugInfo::EmitGlobalVariable(llvm::GlobalVariable *Var,
   assert(DebugKind >= codegenoptions::LimitedDebugInfo);
   if (D->hasAttr<NoDebugAttr>())
     return;
+
+  // If we already created a DIGlobalVariable for this declaration, just attach
+  // it to the llvm::GlobalVariable.
+  auto Cached = DeclCache.find(D->getCanonicalDecl());
+  if (Cached != DeclCache.end())
+    return Var->addDebugInfo(cast<llvm::DIGlobalVariable>(Cached->second));
+
   // Create global variable debug descriptor.
   llvm::DIFile *Unit = nullptr;
   llvm::DIScope *DContext = nullptr;
@@ -3848,8 +3857,8 @@ CGDebugInfo::getOrCreateNameSpace(const NamespaceDecl *NSDecl) {
   unsigned LineNo = getLineNumber(NSDecl->getLocation());
   llvm::DIFile *FileD = getOrCreateFile(NSDecl->getLocation());
   llvm::DIScope *Context = getDeclContextDescriptor(NSDecl);
-  llvm::DINamespace *NS =
-      DBuilder.createNameSpace(Context, NSDecl->getName(), FileD, LineNo);
+  llvm::DINamespace *NS = DBuilder.createNameSpace(
+      Context, NSDecl->getName(), FileD, LineNo, NSDecl->isInline());
   NameSpaceCache[NSDecl].reset(NS);
   return NS;
 }
@@ -3917,4 +3926,13 @@ void CGDebugInfo::EmitExplicitCastType(QualType Ty) {
   if (auto *DieTy = getOrCreateType(Ty, getOrCreateMainFile()))
     // Don't ignore in case of explicit cast where it is referenced indirectly.
     DBuilder.retainType(DieTy);
+}
+
+llvm::DebugLoc CGDebugInfo::SourceLocToDebugLoc(SourceLocation Loc) {
+  if (LexicalBlockStack.empty())
+    return llvm::DebugLoc();
+
+  llvm::MDNode *Scope = LexicalBlockStack.back();
+  return llvm::DebugLoc::get(
+          getLineNumber(Loc), getColumnNumber(Loc), Scope);
 }

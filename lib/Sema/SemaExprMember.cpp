@@ -969,6 +969,15 @@ Sema::BuildMemberReferenceExpr(Expr *BaseExpr, QualType BaseExprType,
     BaseType = BaseType->castAs<PointerType>()->getPointeeType();
   }
   R.setBaseObjectType(BaseType);
+
+  // C++1z [expr.ref]p2:
+  //   For the first option (dot) the first expression shall be a glvalue [...]
+  if (!IsArrow && BaseExpr->isRValue()) {
+    ExprResult Converted = TemporaryMaterializationConversion(BaseExpr);
+    if (Converted.isInvalid())
+      return ExprError();
+    BaseExpr = Converted.get();
+  }
   
   LambdaScopeInfo *const CurLSI = getCurLambda();
   // If this is an implicit member reference and the overloaded
@@ -1394,10 +1403,17 @@ static ExprResult LookupMemberExpr(Sema &S, LookupResult &R,
 
         // Figure out the class that declares the ivar.
         assert(!ClassDeclared);
+
         Decl *D = cast<Decl>(IV->getDeclContext());
-        if (ObjCCategoryDecl *CAT = dyn_cast<ObjCCategoryDecl>(D))
-          D = CAT->getClassInterface();
-        ClassDeclared = cast<ObjCInterfaceDecl>(D);
+        if (auto *Category = dyn_cast<ObjCCategoryDecl>(D))
+          D = Category->getClassInterface();
+
+        if (auto *Implementation = dyn_cast<ObjCImplementationDecl>(D))
+          ClassDeclared = Implementation->getClassInterface();
+        else if (auto *Interface = dyn_cast<ObjCInterfaceDecl>(D))
+          ClassDeclared = Interface;
+
+        assert(ClassDeclared && "cannot query interface");
       } else {
         if (IsArrow &&
             IDecl->FindPropertyDeclaration(
@@ -1449,11 +1465,11 @@ static ExprResult LookupMemberExpr(Sema &S, LookupResult &R,
         if (IV->getAccessControl() == ObjCIvarDecl::Private) {
           if (!declaresSameEntity(ClassDeclared, IDecl) ||
               !declaresSameEntity(ClassOfMethodDecl, ClassDeclared))
-            S.Diag(MemberLoc, diag::error_private_ivar_access)
+            S.Diag(MemberLoc, diag::err_private_ivar_access)
               << IV->getDeclName();
         } else if (!IDecl->isSuperClassOf(ClassOfMethodDecl))
           // @protected
-          S.Diag(MemberLoc, diag::error_protected_ivar_access)
+          S.Diag(MemberLoc, diag::err_protected_ivar_access)
               << IV->getDeclName();
       }
     }
@@ -1466,7 +1482,7 @@ static ExprResult LookupMemberExpr(Sema &S, LookupResult &R,
       
       if (DeclRefExpr *DE = dyn_cast<DeclRefExpr>(BaseExp))
         if (DE->getType().getObjCLifetime() == Qualifiers::OCL_Weak) {
-          S.Diag(DE->getLocation(), diag::error_arc_weak_ivar_access);
+          S.Diag(DE->getLocation(), diag::err_arc_weak_ivar_access);
           warn = false;
         }
     }

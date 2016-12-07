@@ -516,6 +516,7 @@ ASTTypeWriter::VisitAtomicType(const AtomicType *T) {
 void
 ASTTypeWriter::VisitPipeType(const PipeType *T) {
   Record.AddTypeRef(T->getElementType());
+  Record.push_back(T->isReadOnly());
   Code = TYPE_PIPE;
 }
 

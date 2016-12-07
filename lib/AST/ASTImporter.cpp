@@ -39,6 +39,7 @@ namespace clang {
 
     // Importing types
     QualType VisitType(const Type *T);
+    QualType VisitAtomicType(const AtomicType *T);
     QualType VisitBuiltinType(const BuiltinType *T);
     QualType VisitDecayedType(const DecayedType *T);
     QualType VisitComplexType(const ComplexType *T);
@@ -1598,6 +1599,14 @@ QualType ASTNodeImporter::VisitType(const Type *T) {
   Importer.FromDiag(SourceLocation(), diag::err_unsupported_ast_node)
     << T->getTypeClassName();
   return QualType();
+}
+
+QualType ASTNodeImporter::VisitAtomicType(const AtomicType *T){
+  QualType UnderlyingType = Importer.Import(T->getValueType());
+  if(UnderlyingType.isNull())
+    return QualType();
+
+  return Importer.getToContext().getAtomicType(UnderlyingType);
 }
 
 QualType ASTNodeImporter::VisitBuiltinType(const BuiltinType *T) {
@@ -6943,10 +6952,10 @@ SourceLocation ASTImporter::Import(SourceLocation FromLoc) {
 
   SourceManager &FromSM = FromContext.getSourceManager();
   
-  // For now, map everything down to its spelling location, so that we
+  // For now, map everything down to its file location, so that we
   // don't have to import macro expansions.
   // FIXME: Import macro expansions!
-  FromLoc = FromSM.getSpellingLoc(FromLoc);
+  FromLoc = FromSM.getFileLoc(FromLoc);
   std::pair<FileID, unsigned> Decomposed = FromSM.getDecomposedLoc(FromLoc);
   SourceManager &ToSM = ToContext.getSourceManager();
   FileID ToFileID = Import(Decomposed.first);
