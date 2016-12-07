@@ -246,6 +246,20 @@ private:
   void generatePrefixedToolNames(StringRef Tool, const ToolChain &TC,
                                  SmallVectorImpl<std::string> &Names) const;
 
+  /// \brief Find the appropriate .crash diagonostic file for the child crash
+  /// under this driver and copy it out to a temporary destination with the
+  /// other reproducer related files (.sh, .cache, etc). If not found, suggest a
+  /// directory for the user to look at.
+  ///
+  /// \param ReproCrashFilename The file path to copy the .crash to.
+  /// \param CrashDiagDir       The suggested directory for the user to look at
+  ///                           in case the search or copy fails.
+  ///
+  /// \returns If the .crash is found and successfully copied return true,
+  /// otherwise false and return the suggested directory in \p CrashDiagDir.
+  bool getCrashDiagnosticFile(StringRef ReproCrashFilename,
+                              SmallString<128> &CrashDiagDir);
+
 public:
   Driver(StringRef ClangExecutable, StringRef DefaultTargetTriple,
          DiagnosticsEngine &Diags,
@@ -289,8 +303,14 @@ public:
   bool isSaveTempsEnabled() const { return SaveTemps != SaveTempsNone; }
   bool isSaveTempsObj() const { return SaveTemps == SaveTempsObj; }
 
-  bool embedBitcodeEnabled() const { return BitcodeEmbed == EmbedBitcode; }
-  bool embedBitcodeMarkerOnly() const { return BitcodeEmbed == EmbedMarker; }
+  bool embedBitcodeEnabled() const { return BitcodeEmbed != EmbedNone; }
+  bool embedBitcodeInObject() const {
+    // LTO has no object file output so ignore embed bitcode option in LTO.
+    return (BitcodeEmbed == EmbedBitcode) && !isUsingLTO();
+  }
+  bool embedBitcodeMarkerOnly() const {
+    return (BitcodeEmbed == EmbedMarker) && !isUsingLTO();
+  }
 
   /// Compute the desired OpenMP runtime from the flags provided.
   OpenMPRuntimeKind getOpenMPRuntime(const llvm::opt::ArgList &Args) const;

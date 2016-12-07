@@ -902,12 +902,11 @@ CXString clang_getDeclObjCTypeEncoding(CXCursor C) {
   std::string encoding;
 
   if (const ObjCMethodDecl *OMD = dyn_cast<ObjCMethodDecl>(D))  {
-    if (Ctx.getObjCEncodingForMethodDecl(OMD, encoding))
-      return cxstring::createRef("?");
+    encoding = Ctx.getObjCEncodingForMethodDecl(OMD);
   } else if (const ObjCPropertyDecl *OPD = dyn_cast<ObjCPropertyDecl>(D))
-    Ctx.getObjCEncodingForPropertyDecl(OPD, nullptr, encoding);
+    encoding = Ctx.getObjCEncodingForPropertyDecl(OPD, nullptr);
   else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D))
-    Ctx.getObjCEncodingForFunctionDecl(FD, encoding);
+    encoding = Ctx.getObjCEncodingForFunctionDecl(FD);
   else {
     QualType Ty;
     if (const TypeDecl *TD = dyn_cast<TypeDecl>(D))
@@ -925,31 +924,26 @@ int clang_Type_getNumTemplateArguments(CXType CT) {
   QualType T = GetQualType(CT);
   if (T.isNull())
     return -1;
-  const CXXRecordDecl *RecordDecl = T->getAsCXXRecordDecl();
-  if (!RecordDecl)
+  const TemplateSpecializationType *Specialization =
+    T->getAs<TemplateSpecializationType>();
+  if (!Specialization)
     return -1;
-  const ClassTemplateSpecializationDecl *TemplateDecl =
-      dyn_cast<ClassTemplateSpecializationDecl>(RecordDecl);
-  if (!TemplateDecl)
-    return -1;
-  return TemplateDecl->getTemplateArgs().size();
+  return Specialization->template_arguments().size();
 }
 
 CXType clang_Type_getTemplateArgumentAsType(CXType CT, unsigned i) {
   QualType T = GetQualType(CT);
   if (T.isNull())
     return MakeCXType(QualType(), GetTU(CT));
-  const CXXRecordDecl *RecordDecl = T->getAsCXXRecordDecl();
-  if (!RecordDecl)
+
+  const TemplateSpecializationType *Specialization =
+    T->getAs<TemplateSpecializationType>();
+  if (!Specialization)
     return MakeCXType(QualType(), GetTU(CT));
-  const ClassTemplateSpecializationDecl *TemplateDecl =
-      dyn_cast<ClassTemplateSpecializationDecl>(RecordDecl);
-  if (!TemplateDecl)
-    return MakeCXType(QualType(), GetTU(CT));
-  const TemplateArgumentList &TA = TemplateDecl->getTemplateArgs();
+  auto TA = Specialization->template_arguments();
   if (TA.size() <= i)
     return MakeCXType(QualType(), GetTU(CT));
-  const TemplateArgument &A = TA.get(i);
+  const TemplateArgument &A = TA[i];
   if (A.getKind() != TemplateArgument::Type)
     return MakeCXType(QualType(), GetTU(CT));
   return MakeCXType(A.getAsType(), GetTU(CT));

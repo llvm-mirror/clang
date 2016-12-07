@@ -1059,7 +1059,8 @@ public:
   QualType RebuildAtomicType(QualType ValueType, SourceLocation KWLoc);
 
   /// \brief Build a new pipe type given its value type.
-  QualType RebuildPipeType(QualType ValueType, SourceLocation KWLoc);
+  QualType RebuildPipeType(QualType ValueType, SourceLocation KWLoc,
+                           bool isReadPipe);
 
   /// \brief Build a new template name given a nested name specifier, a flag
   /// indicating whether the "template" keyword was provided, and the template
@@ -5483,7 +5484,9 @@ QualType TreeTransform<Derived>::TransformPipeType(TypeLocBuilder &TLB,
 
   QualType Result = TL.getType();
   if (getDerived().AlwaysRebuild() || ValueType != TL.getValueLoc().getType()) {
-    Result = getDerived().RebuildPipeType(ValueType, TL.getKWLoc());
+    const PipeType *PT = Result->getAs<PipeType>();
+    bool isReadPipe = PT->isReadOnly();
+    Result = getDerived().RebuildPipeType(ValueType, TL.getKWLoc(), isReadPipe);
     if (Result.isNull())
       return QualType();
   }
@@ -7696,6 +7699,18 @@ StmtResult TreeTransform<Derived>::TransformOMPTeamsDistributeSimdDirective(
   getDerived().getSema().EndOpenMPDSABlock(Res.get());
   return Res;
 }
+
+template <typename Derived>
+StmtResult TreeTransform<Derived>::TransformOMPTeamsDistributeParallelForSimdDirective(
+    OMPTeamsDistributeParallelForSimdDirective *D) {
+  DeclarationNameInfo DirName;
+  getDerived().getSema().StartOpenMPDSABlock(
+      OMPD_teams_distribute_parallel_for_simd, DirName, nullptr, D->getLocStart());
+  StmtResult Res = getDerived().TransformOMPExecutableDirective(D);
+  getDerived().getSema().EndOpenMPDSABlock(Res.get());
+  return Res;
+}
+
 
 //===----------------------------------------------------------------------===//
 // OpenMP clause transformation
@@ -11839,8 +11854,10 @@ QualType TreeTransform<Derived>::RebuildAtomicType(QualType ValueType,
 
 template<typename Derived>
 QualType TreeTransform<Derived>::RebuildPipeType(QualType ValueType,
-                                                   SourceLocation KWLoc) {
-  return SemaRef.BuildPipeType(ValueType, KWLoc);
+                                                 SourceLocation KWLoc,
+                                                 bool isReadPipe) {
+  return isReadPipe ? SemaRef.BuildReadPipeType(ValueType, KWLoc)
+                    : SemaRef.BuildWritePipeType(ValueType, KWLoc);
 }
 
 template<typename Derived>

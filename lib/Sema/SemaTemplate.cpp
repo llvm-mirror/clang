@@ -2990,12 +2990,10 @@ Sema::CheckVarTemplateId(VarTemplateDecl *Template, SourceLocation TemplateLoc,
         << Decl;
 
     // Print the matching partial specializations.
-    for (SmallVector<MatchResult, 4>::iterator P = Matched.begin(),
-                                               PEnd = Matched.end();
-         P != PEnd; ++P)
-      Diag(P->Partial->getLocation(), diag::note_partial_spec_match)
-          << getTemplateArgumentBindingsText(
-                 P->Partial->getTemplateParameters(), *P->Args);
+    for (MatchResult P : Matched)
+      Diag(P.Partial->getLocation(), diag::note_partial_spec_match)
+          << getTemplateArgumentBindingsText(P.Partial->getTemplateParameters(),
+                                             *P.Args);
     return true;
   }
 
@@ -7674,7 +7672,8 @@ Sema::ActOnExplicitInstantiation(Scope *S,
       Def->setTemplateSpecializationKind(TSK);
 
       if (!getDLLAttr(Def) && getDLLAttr(Specialization) &&
-          Context.getTargetInfo().getCXXABI().isMicrosoft()) {
+          (Context.getTargetInfo().getCXXABI().isMicrosoft() ||
+           Context.getTargetInfo().getTriple().isWindowsItaniumEnvironment())) {
         // In the MS ABI, an explicit instantiation definition can add a dll
         // attribute to a template with a previous instantiation declaration.
         // MinGW doesn't allow this.
@@ -8076,7 +8075,8 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
     NamedDecl *Prev = *P;
     if (!HasExplicitTemplateArgs) {
       if (CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(Prev)) {
-        QualType Adjusted = adjustCCAndNoReturn(R, Method->getType());
+        QualType Adjusted = adjustCCAndNoReturn(R, Method->getType(),
+                                                /*AdjustExceptionSpec*/true);
         if (Context.hasSameUnqualifiedType(Method->getType(), Adjusted)) {
           Matches.clear();
 

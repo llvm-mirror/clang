@@ -14,6 +14,7 @@
 #include "clang/Basic/VirtualFileSystem.h"
 #include "clang/Config/config.h" // for GCC_INSTALL_PREFIX
 #include "clang/Driver/Compilation.h"
+#include "clang/Driver/Distro.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Options.h"
@@ -52,7 +53,8 @@ MachO::MachO(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
 
 /// Darwin - Darwin tool chain for i386 and x86_64.
 Darwin::Darwin(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
-    : MachO(D, Triple, Args), TargetInitialized(false) {}
+    : MachO(D, Triple, Args), TargetInitialized(false),
+      CudaInstallation(D, Triple, Args) {}
 
 types::ID MachO::LookupTypeForExtension(StringRef Ext) const {
   types::ID Ty = types::lookupTypeForExtension(Ext);
@@ -97,6 +99,11 @@ bool Darwin::hasBlocksRuntime() const {
     assert(isTargetMacOS() && "unexpected darwin target");
     return !isMacosxVersionLT(10, 6);
   }
+}
+
+void Darwin::AddCudaIncludeArgs(const ArgList &DriverArgs,
+                                ArgStringList &CC1Args) const {
+  CudaInstallation.AddCudaIncludeArgs(DriverArgs, CC1Args);
 }
 
 // This is just a MachO name translation routine and there's no
@@ -1296,6 +1303,10 @@ SanitizerMask Darwin::getSupportedSanitizers() const {
   return Res;
 }
 
+void Darwin::printVerboseInfo(raw_ostream &OS) const {
+  CudaInstallation.print(OS);
+}
+
 /// Generic_GCC - A tool chain using the 'gcc' command to perform
 /// all subcommands; this relies on gcc translating the majority of
 /// command line options.
@@ -1811,10 +1822,10 @@ static CudaVersion ParseCudaVersionFile(llvm::StringRef V) {
   return CudaVersion::UNKNOWN;
 }
 
-// \brief -- try common CUDA installation paths looking for files we need for
-// CUDA compilation.
-void Generic_GCC::CudaInstallationDetector::init(
-    const llvm::Triple &TargetTriple, const llvm::opt::ArgList &Args) {
+CudaInstallationDetector::CudaInstallationDetector(
+    const Driver &D, const llvm::Triple &TargetTriple,
+    const llvm::opt::ArgList &Args)
+    : D(D) {
   SmallVector<std::string, 4> CudaPathCandidates;
 
   if (Args.hasArg(options::OPT_cuda_path_EQ))
@@ -1835,11 +1846,23 @@ void Generic_GCC::CudaInstallationDetector::init(
     BinPath = CudaPath + "/bin";
     IncludePath = InstallPath + "/include";
     LibDevicePath = InstallPath + "/nvvm/libdevice";
-    LibPath = InstallPath + (TargetTriple.isArch64Bit() ? "/lib64" : "/lib");
 
     auto &FS = D.getVFS();
-    if (!(FS.exists(IncludePath) && FS.exists(BinPath) && FS.exists(LibPath) &&
+    if (!(FS.exists(IncludePath) && FS.exists(BinPath) &&
           FS.exists(LibDevicePath)))
+      continue;
+
+    // On Linux, we have both lib and lib64 directories, and we need to choose
+    // based on our triple.  On MacOS, we have only a lib directory.
+    //
+    // It's sufficient for our purposes to be flexible: If both lib and lib64
+    // exist, we choose whichever one matches our triple.  Otherwise, if only
+    // lib exists, we use it.
+    if (TargetTriple.isArch64Bit() && FS.exists(InstallPath + "/lib64"))
+      LibPath = InstallPath + "/lib64";
+    else if (FS.exists(InstallPath + "/lib"))
+      LibPath = InstallPath + "/lib";
+    else
       continue;
 
     llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> VersionFile =
@@ -1898,7 +1921,33 @@ void Generic_GCC::CudaInstallationDetector::init(
   }
 }
 
-void Generic_GCC::CudaInstallationDetector::CheckCudaVersionSupportsArch(
+void CudaInstallationDetector::AddCudaIncludeArgs(
+    const ArgList &DriverArgs, ArgStringList &CC1Args) const {
+  if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
+    // Add cuda_wrappers/* to our system include path.  This lets us wrap
+    // standard library headers.
+    SmallString<128> P(D.ResourceDir);
+    llvm::sys::path::append(P, "include");
+    llvm::sys::path::append(P, "cuda_wrappers");
+    CC1Args.push_back("-internal-isystem");
+    CC1Args.push_back(DriverArgs.MakeArgString(P));
+  }
+
+  if (DriverArgs.hasArg(options::OPT_nocudainc))
+    return;
+
+  if (!isValid()) {
+    D.Diag(diag::err_drv_no_cuda_installation);
+    return;
+  }
+
+  CC1Args.push_back("-internal-isystem");
+  CC1Args.push_back(DriverArgs.MakeArgString(getIncludePath()));
+  CC1Args.push_back("-include");
+  CC1Args.push_back("__clang_cuda_runtime_wrapper.h");
+}
+
+void CudaInstallationDetector::CheckCudaVersionSupportsArch(
     CudaArch Arch) const {
   if (Arch == CudaArch::UNKNOWN || Version == CudaVersion::UNKNOWN ||
       ArchsWithVersionTooLowErrors.count(Arch) > 0)
@@ -1913,7 +1962,7 @@ void Generic_GCC::CudaInstallationDetector::CheckCudaVersionSupportsArch(
   }
 }
 
-void Generic_GCC::CudaInstallationDetector::print(raw_ostream &OS) const {
+void CudaInstallationDetector::print(raw_ostream &OS) const {
   if (isValid())
     OS << "Found CUDA installation: " << InstallPath << ", version "
        << CudaVersionToString(Version) << "\n";
@@ -2756,7 +2805,8 @@ void Generic_GCC::GCCInstallationDetector::ScanLibDirForGCCTriple(
 
 Generic_GCC::Generic_GCC(const Driver &D, const llvm::Triple &Triple,
                          const ArgList &Args)
-    : ToolChain(D, Triple, Args), GCCInstallation(D), CudaInstallation(D) {
+    : ToolChain(D, Triple, Args), GCCInstallation(D),
+      CudaInstallation(D, Triple, Args) {
   getProgramPaths().push_back(getDriver().getInstalledDir());
   if (getDriver().getInstalledDir() != getDriver().Dir)
     getProgramPaths().push_back(getDriver().Dir);
@@ -3435,6 +3485,13 @@ bool TCEToolChain::isPIEDefault() const { return false; }
 
 bool TCEToolChain::isPICDefaultForced() const { return false; }
 
+TCELEToolChain::TCELEToolChain(const Driver &D, const llvm::Triple& Triple,
+                               const ArgList &Args)
+  : TCEToolChain(D, Triple, Args) {
+}
+
+TCELEToolChain::~TCELEToolChain() {}
+
 // CloudABI - CloudABI tool chain which can call ld(1) directly.
 
 CloudABI::CloudABI(const Driver &D, const llvm::Triple &Triple,
@@ -3829,169 +3886,6 @@ void Solaris::AddClangCXXStdlibIncludeArgs(const ArgList &DriverArgs,
   }
 }
 
-/// Distribution (very bare-bones at the moment).
-
-enum Distro {
-  // NB: Releases of a particular Linux distro should be kept together
-  // in this enum, because some tests are done by integer comparison against
-  // the first and last known member in the family, e.g. IsRedHat().
-  ArchLinux,
-  DebianLenny,
-  DebianSqueeze,
-  DebianWheezy,
-  DebianJessie,
-  DebianStretch,
-  Exherbo,
-  RHEL5,
-  RHEL6,
-  RHEL7,
-  Fedora,
-  OpenSUSE,
-  UbuntuHardy,
-  UbuntuIntrepid,
-  UbuntuJaunty,
-  UbuntuKarmic,
-  UbuntuLucid,
-  UbuntuMaverick,
-  UbuntuNatty,
-  UbuntuOneiric,
-  UbuntuPrecise,
-  UbuntuQuantal,
-  UbuntuRaring,
-  UbuntuSaucy,
-  UbuntuTrusty,
-  UbuntuUtopic,
-  UbuntuVivid,
-  UbuntuWily,
-  UbuntuXenial,
-  UbuntuYakkety,
-  UnknownDistro
-};
-
-static bool IsRedhat(enum Distro Distro) {
-  return Distro == Fedora || (Distro >= RHEL5 && Distro <= RHEL7);
-}
-
-static bool IsOpenSUSE(enum Distro Distro) { return Distro == OpenSUSE; }
-
-static bool IsDebian(enum Distro Distro) {
-  return Distro >= DebianLenny && Distro <= DebianStretch;
-}
-
-static bool IsUbuntu(enum Distro Distro) {
-  return Distro >= UbuntuHardy && Distro <= UbuntuYakkety;
-}
-
-static Distro DetectDistro(vfs::FileSystem &VFS) {
-  llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> File =
-      VFS.getBufferForFile("/etc/lsb-release");
-  if (File) {
-    StringRef Data = File.get()->getBuffer();
-    SmallVector<StringRef, 16> Lines;
-    Data.split(Lines, "\n");
-    Distro Version = UnknownDistro;
-    for (StringRef Line : Lines)
-      if (Version == UnknownDistro && Line.startswith("DISTRIB_CODENAME="))
-        Version = llvm::StringSwitch<Distro>(Line.substr(17))
-                      .Case("hardy", UbuntuHardy)
-                      .Case("intrepid", UbuntuIntrepid)
-                      .Case("jaunty", UbuntuJaunty)
-                      .Case("karmic", UbuntuKarmic)
-                      .Case("lucid", UbuntuLucid)
-                      .Case("maverick", UbuntuMaverick)
-                      .Case("natty", UbuntuNatty)
-                      .Case("oneiric", UbuntuOneiric)
-                      .Case("precise", UbuntuPrecise)
-                      .Case("quantal", UbuntuQuantal)
-                      .Case("raring", UbuntuRaring)
-                      .Case("saucy", UbuntuSaucy)
-                      .Case("trusty", UbuntuTrusty)
-                      .Case("utopic", UbuntuUtopic)
-                      .Case("vivid", UbuntuVivid)
-                      .Case("wily", UbuntuWily)
-                      .Case("xenial", UbuntuXenial)
-                      .Case("yakkety", UbuntuYakkety)
-                      .Default(UnknownDistro);
-    if (Version != UnknownDistro)
-      return Version;
-  }
-
-  File = VFS.getBufferForFile("/etc/redhat-release");
-  if (File) {
-    StringRef Data = File.get()->getBuffer();
-    if (Data.startswith("Fedora release"))
-      return Fedora;
-    if (Data.startswith("Red Hat Enterprise Linux") ||
-        Data.startswith("CentOS") ||
-        Data.startswith("Scientific Linux")) {
-      if (Data.find("release 7") != StringRef::npos)
-        return RHEL7;
-      else if (Data.find("release 6") != StringRef::npos)
-        return RHEL6;
-      else if (Data.find("release 5") != StringRef::npos)
-        return RHEL5;
-    }
-    return UnknownDistro;
-  }
-
-  File = VFS.getBufferForFile("/etc/debian_version");
-  if (File) {
-    StringRef Data = File.get()->getBuffer();
-    // Contents: < major.minor > or < codename/sid >
-    int MajorVersion;
-    if (!Data.split('.').first.getAsInteger(10, MajorVersion)) {
-      switch (MajorVersion) {
-      case 5:
-        return DebianLenny;
-      case 6:
-        return DebianSqueeze;
-      case 7:
-        return DebianWheezy;
-      case 8:
-        return DebianJessie;
-      case 9:
-        return DebianStretch;
-      default:
-        return UnknownDistro;
-      }
-    }
-    return llvm::StringSwitch<Distro>(Data.split("\n").first)
-        .Case("squeeze/sid", DebianSqueeze)
-        .Case("wheezy/sid", DebianWheezy)
-        .Case("jessie/sid", DebianJessie)
-        .Case("stretch/sid", DebianStretch)
-        .Default(UnknownDistro);
-  }
-
-  File = VFS.getBufferForFile("/etc/SuSE-release");
-  if (File) {
-    StringRef Data = File.get()->getBuffer();
-    SmallVector<StringRef, 8> Lines;
-    Data.split(Lines, "\n");
-    for (const StringRef& Line : Lines) {
-      if (!Line.trim().startswith("VERSION"))
-        continue;
-      std::pair<StringRef, StringRef> SplitLine = Line.split('=');
-      int Version;
-      // OpenSUSE/SLES 10 and older are not supported and not compatible
-      // with our rules, so just treat them as UnknownDistro.
-      if (!SplitLine.second.trim().getAsInteger(10, Version) &&
-          Version > 10)
-        return OpenSUSE;
-      return UnknownDistro;
-    }
-    return UnknownDistro;
-  }
-
-  if (VFS.exists("/etc/exherbo-release"))
-    return Exherbo;
-
-  if (VFS.exists("/etc/arch-release"))
-    return ArchLinux;
-
-  return UnknownDistro;
-}
-
 /// \brief Get our best guess at the multiarch triple for a target.
 ///
 /// Debian-based systems are starting to use a multiarch setup where they use
@@ -4153,7 +4047,6 @@ static void addMultilibsFilePaths(const Driver &D, const MultilibSet &Multilibs,
 Linux::Linux(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
     : Generic_ELF(D, Triple, Args) {
   GCCInstallation.init(Triple, Args);
-  CudaInstallation.init(Triple, Args);
   Multilibs = GCCInstallation.getMultilibs();
   llvm::Triple::ArchType Arch = Triple.getArch();
   std::string SysRoot = computeSysRoot();
@@ -4171,9 +4064,9 @@ Linux::Linux(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
                          GCCInstallation.getTriple().str() + "/bin")
                        .str());
 
-  Distro Distro = DetectDistro(D.getVFS());
+  Distro Distro(D.getVFS());
 
-  if (IsOpenSUSE(Distro) || IsUbuntu(Distro)) {
+  if (Distro.IsOpenSUSE() || Distro.IsUbuntu()) {
     ExtraOpts.push_back("-z");
     ExtraOpts.push_back("relro");
   }
@@ -4193,23 +4086,23 @@ Linux::Linux(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
   // ABI requires a mapping between the GOT and the symbol table.
   // Android loader does not support .gnu.hash.
   if (!IsMips && !IsAndroid) {
-    if (IsRedhat(Distro) || IsOpenSUSE(Distro) ||
-        (IsUbuntu(Distro) && Distro >= UbuntuMaverick))
+    if (Distro.IsRedhat() || Distro.IsOpenSUSE() ||
+        (Distro.IsUbuntu() && Distro >= Distro::UbuntuMaverick))
       ExtraOpts.push_back("--hash-style=gnu");
 
-    if (IsDebian(Distro) || IsOpenSUSE(Distro) || Distro == UbuntuLucid ||
-        Distro == UbuntuJaunty || Distro == UbuntuKarmic)
+    if (Distro.IsDebian() || Distro.IsOpenSUSE() || Distro == Distro::UbuntuLucid ||
+        Distro == Distro::UbuntuJaunty || Distro == Distro::UbuntuKarmic)
       ExtraOpts.push_back("--hash-style=both");
   }
 
-  if (IsRedhat(Distro) && Distro != RHEL5 && Distro != RHEL6)
+  if (Distro.IsRedhat() && Distro != Distro::RHEL5 && Distro != Distro::RHEL6)
     ExtraOpts.push_back("--no-add-needed");
 
 #ifdef ENABLE_LINKER_BUILD_ID
   ExtraOpts.push_back("--build-id");
 #endif
 
-  if (IsOpenSUSE(Distro))
+  if (Distro.IsOpenSUSE())
     ExtraOpts.push_back("--enable-new-dtags");
 
   // The selection of paths to try here is designed to match the patterns which
@@ -4375,7 +4268,7 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
   const llvm::Triple::ArchType Arch = getArch();
   const llvm::Triple &Triple = getTriple();
 
-  const enum Distro Distro = DetectDistro(getDriver().getVFS());
+  const Distro Distro(getDriver().getVFS());
 
   if (Triple.isAndroid())
     return Triple.isArch64Bit() ? "/system/bin/linker64" : "/system/bin/linker";
@@ -4493,8 +4386,8 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
   }
   }
 
-  if (Distro == Exherbo && (Triple.getVendor() == llvm::Triple::UnknownVendor ||
-                            Triple.getVendor() == llvm::Triple::PC))
+  if (Distro == Distro::Exherbo && (Triple.getVendor() == llvm::Triple::UnknownVendor ||
+                                    Triple.getVendor() == llvm::Triple::PC))
     return "/usr/" + Triple.str() + "/lib/" + Loader;
   return "/" + LibDir + "/" + Loader;
 }
@@ -4758,26 +4651,7 @@ void Linux::addLibStdCxxIncludePaths(const llvm::opt::ArgList &DriverArgs,
 
 void Linux::AddCudaIncludeArgs(const ArgList &DriverArgs,
                                ArgStringList &CC1Args) const {
-  if (!DriverArgs.hasArg(options::OPT_nobuiltininc)) {
-    // Add cuda_wrappers/* to our system include path.  This lets us wrap
-    // standard library headers.
-    SmallString<128> P(getDriver().ResourceDir);
-    llvm::sys::path::append(P, "include");
-    llvm::sys::path::append(P, "cuda_wrappers");
-    addSystemInclude(DriverArgs, CC1Args, P);
-  }
-
-  if (DriverArgs.hasArg(options::OPT_nocudainc))
-    return;
-
-  if (!CudaInstallation.isValid()) {
-    getDriver().Diag(diag::err_drv_no_cuda_installation);
-    return;
-  }
-
-  addSystemInclude(DriverArgs, CC1Args, CudaInstallation.getIncludePath());
-  CC1Args.push_back("-include");
-  CC1Args.push_back("__clang_cuda_runtime_wrapper.h");
+  CudaInstallation.AddCudaIncludeArgs(DriverArgs, CC1Args);
 }
 
 void Linux::AddIAMCUIncludeArgs(const ArgList &DriverArgs,
@@ -4959,16 +4833,18 @@ Tool *DragonFly::buildLinker() const {
 /// together object files from the assembler into a single blob.
 
 CudaToolChain::CudaToolChain(const Driver &D, const llvm::Triple &Triple,
-                             const ArgList &Args)
-    : Linux(D, Triple, Args) {
+                             const ToolChain &HostTC, const ArgList &Args)
+    : ToolChain(D, Triple, Args), HostTC(HostTC),
+      CudaInstallation(D, Triple, Args) {
   if (CudaInstallation.isValid())
     getProgramPaths().push_back(CudaInstallation.getBinPath());
 }
 
-void
-CudaToolChain::addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
-                                     llvm::opt::ArgStringList &CC1Args) const {
-  Linux::addClangTargetOptions(DriverArgs, CC1Args);
+void CudaToolChain::addClangTargetOptions(
+    const llvm::opt::ArgList &DriverArgs,
+    llvm::opt::ArgStringList &CC1Args) const {
+  HostTC.addClangTargetOptions(DriverArgs, CC1Args);
+
   CC1Args.push_back("-fcuda-is-device");
 
   if (DriverArgs.hasFlag(options::OPT_fcuda_flush_denormals_to_zero,
@@ -5010,13 +4886,18 @@ void CudaToolChain::AddCudaIncludeArgs(const ArgList &DriverArgs,
     assert(!Arch.empty() && "Must have an explicit GPU arch.");
     CudaInstallation.CheckCudaVersionSupportsArch(StringToCudaArch(Arch));
   }
-  Linux::AddCudaIncludeArgs(DriverArgs, CC1Args);
+  CudaInstallation.AddCudaIncludeArgs(DriverArgs, CC1Args);
 }
 
 llvm::opt::DerivedArgList *
 CudaToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
-                             StringRef BoundArch, Action::OffloadKind) const {
-  DerivedArgList *DAL = new DerivedArgList(Args.getBaseArgs());
+                             StringRef BoundArch,
+                             Action::OffloadKind DeviceOffloadKind) const {
+  DerivedArgList *DAL =
+      HostTC.TranslateArgs(Args, BoundArch, DeviceOffloadKind);
+  if (!DAL)
+    DAL = new DerivedArgList(Args.getBaseArgs());
+
   const OptTable &Opts = getDriver().getOpts();
 
   for (Arg *A : Args) {
@@ -5066,6 +4947,39 @@ Tool *CudaToolChain::buildAssembler() const {
 
 Tool *CudaToolChain::buildLinker() const {
   return new tools::NVPTX::Linker(*this);
+}
+
+void CudaToolChain::addClangWarningOptions(ArgStringList &CC1Args) const {
+  HostTC.addClangWarningOptions(CC1Args);
+}
+
+ToolChain::CXXStdlibType
+CudaToolChain::GetCXXStdlibType(const ArgList &Args) const {
+  return HostTC.GetCXXStdlibType(Args);
+}
+
+void CudaToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
+                                              ArgStringList &CC1Args) const {
+  HostTC.AddClangSystemIncludeArgs(DriverArgs, CC1Args);
+}
+
+void CudaToolChain::AddClangCXXStdlibIncludeArgs(const ArgList &Args,
+                                                 ArgStringList &CC1Args) const {
+  HostTC.AddClangCXXStdlibIncludeArgs(Args, CC1Args);
+}
+
+void CudaToolChain::AddIAMCUIncludeArgs(const ArgList &Args,
+                                        ArgStringList &CC1Args) const {
+  HostTC.AddIAMCUIncludeArgs(Args, CC1Args);
+}
+
+SanitizerMask CudaToolChain::getSupportedSanitizers() const {
+  // The CudaToolChain only supports address sanitization in the sense that it
+  // allows ASAN arguments on the command line. It must not error out on these
+  // command line arguments because the host code compilation supports them.
+  // However, it doesn't actually do any address sanitization for device code;
+  // instead, it just ignores any ASAN command line arguments it sees.
+  return SanitizerKind::Address;
 }
 
 /// XCore tool chain

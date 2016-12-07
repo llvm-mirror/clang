@@ -357,6 +357,9 @@ def warn_decl_shadow :
           "static data member of %2|"
           "field of %2}1">,
   InGroup<Shadow>, DefaultIgnore;
+def warn_decl_shadow_uncaptured_local :
+  Warning<warn_decl_shadow.Text>,
+  InGroup<ShadowUncapturedLocal>, DefaultIgnore;
 def warn_ctor_parm_shadows_field:
   Warning<"constructor parameter %0 shadows the field %1 of %2">,
   InGroup<ShadowFieldInConstructor>, DefaultIgnore;
@@ -643,6 +646,8 @@ def warn_main_one_arg : Warning<"only one parameter on 'main' declaration">,
 def err_main_arg_wrong : Error<"%select{first|second|third|fourth}0 "
     "parameter of 'main' (%select{argument count|argument array|environment|"
     "platform-specific data}0) must be of type %1">;
+def warn_main_returns_bool_literal : Warning<"bool literal returned from "
+    "'main'">, InGroup<Main>;
 def err_main_global_variable :
     Error<"main cannot be declared as global variable">;
 def warn_main_redefined : Warning<"variable named 'main' with external linkage "
@@ -739,7 +744,9 @@ def err_recursive_superclass : Error<
   "trying to recursively use %0 as superclass of %1">;
 def err_conflicting_aliasing_type : Error<"conflicting types for alias %0">;
 def warn_undef_interface : Warning<"cannot find interface declaration for %0">;
-def warn_duplicate_protocol_def : Warning<"duplicate protocol definition of %0 is ignored">;
+def warn_duplicate_protocol_def : Warning<
+  "duplicate protocol definition of %0 is ignored">,
+  InGroup<DiagGroup<"duplicate-protocol">>;
 def err_protocol_has_circular_dependency : Error<
   "protocol has circular dependency">;
 def err_undeclared_protocol : Error<"cannot find protocol declaration for %0">;
@@ -1299,6 +1306,8 @@ def err_mismatched_exception_spec : Error<
   "exception specification in declaration does not match previous declaration">;
 def ext_mismatched_exception_spec : ExtWarn<err_mismatched_exception_spec.Text>,
   InGroup<MicrosoftExceptionSpec>;
+def warn_mismatched_exception_spec_no_exceptions : ExtWarn<err_mismatched_exception_spec.Text>,
+  InGroup<DiagGroup<"exception-spec-no-exceptions">>;
 def err_override_exception_spec : Error<
   "exception specification of overriding function is more lax than "
   "base version">;
@@ -1775,6 +1784,8 @@ def note_uninit_fixit_remove_cond : Note<
   "remove the %select{'%1' if its condition|condition if it}0 "
   "is always %select{false|true}2">;
 def err_init_incomplete_type : Error<"initialization of incomplete type %0">;
+def err_list_init_in_parens : Error<"list-initializer for non-class type %0 "
+  "must not be parenthesized">;
 
 def warn_unsequenced_mod_mod : Warning<
   "multiple unsequenced modifications to %0">, InGroup<Unsequenced>;
@@ -2594,6 +2605,7 @@ def warn_attribute_wrong_decl_type : Warning<
   "functions"
   "|unions"
   "|variables and functions"
+  "|functions and global variables"
   "|functions, variables, and Objective-C interfaces"
   "|functions and methods"
   "|parameters"
@@ -2624,7 +2636,7 @@ def warn_attribute_wrong_decl_type : Warning<
   "|functions, variables, classes, and Objective-C interfaces"
   "|Objective-C protocols"
   "|variables with static or thread storage duration"
-  "|functions and global variables"
+  "|functions, methods, properties, and global variables"
   "|structs, unions, and typedefs"
   "|structs and typedefs"
   "|interface or protocol declarations"
@@ -3012,6 +3024,10 @@ def warn_int_to_void_pointer_cast : Warning<
   "cast to %1 from smaller integer type %0">,
   InGroup<IntToVoidPointerCast>;
 
+def warn_no_underlying_type_specified_for_enum_bitfield : Warning<
+  "enums in the Microsoft ABI are signed integers by default; consider giving "
+  "the enum %0 an unsigned underlying type to make this code portable">,
+  InGroup<SignedEnumBitfield>, DefaultIgnore;
 def warn_attribute_packed_for_bitfield : Warning<
   "'packed' attribute was ignored on bit-fields with single-byte alignment "
   "in older versions of GCC and Clang">,
@@ -6230,6 +6246,8 @@ let CategoryName = "Lambda Issue" in {
   def note_lambda_to_block_conv : Note<
     "implicit capture of lambda object due to conversion to block pointer "
     "here">;
+  def note_var_explicitly_captured_here : Note<"variable %0 is"
+    "%select{| explicitly}1 captured here">;
 
   // C++14 lambda init-captures.
   def warn_cxx11_compat_init_capture : Warning<
@@ -7085,12 +7103,11 @@ def err_in_class_initializer_literal_type : Error<
   "'constexpr' specifier">;
 def err_in_class_initializer_non_constant : Error<
   "in-class initializer for static data member is not a constant expression">;
-def err_in_class_initializer_not_yet_parsed
-    : Error<"cannot use defaulted default constructor of %0 within the class "
-            "outside of member functions because %1 has an initializer">;
-def err_in_class_initializer_not_yet_parsed_outer_class
-    : Error<"cannot use defaulted default constructor of %0 within "
-            "%1 outside of member functions because %2 has an initializer">;
+def err_in_class_initializer_not_yet_parsed : Error<
+  "default member initializer for %1 needed within definition of enclosing "
+  "class %0 outside of member functions">;
+def note_in_class_initializer_not_yet_parsed : Note<
+  "default member initializer declared here">;
 def err_in_class_initializer_cycle
     : Error<"default member initializer for %0 uses itself">;
 def err_exception_spec_cycle
@@ -8017,6 +8034,9 @@ def err_unsupported_unknown_any_call : Error<
 def err_unknown_any_addrof : Error<
   "the address of a declaration with unknown type "
   "can only be cast to a pointer type">;
+def err_unknown_any_addrof_call : Error<
+  "address-of operator cannot be applied to a call to a function with "
+  "unknown return type">;
 def err_unknown_any_var_function_type : Error<
   "variable %0 with unknown type cannot be given a function type">;
 def err_unknown_any_function : Error<
@@ -8057,8 +8077,6 @@ def note_within_field_of_type : Note<
   "within field of type %0 declared here">;
 def note_illegal_field_declared_here : Note<
   "field of illegal %select{type|pointer type}0 %1 declared here">;
-def err_event_t_global_var : Error<
-  "the event_t type cannot be used to declare a program scope variable">;
 def err_opencl_type_struct_or_union_field : Error<
   "the %0 type cannot be used to declare a structure or union field">;
 def err_event_t_addr_space_qual : Error<
@@ -8153,7 +8171,7 @@ def err_opencl_enqueue_kernel_expected_type : Error<
 def err_opencl_enqueue_kernel_local_size_args : Error<
   "mismatch in number of block parameters and local size arguments passed">;
 def err_opencl_enqueue_kernel_invalid_local_size_type : Error<
-  "local memory sizes need to be specified as uint">;
+  "illegal call to enqueue_kernel, parameter needs to be specified as integer type">;
 def err_opencl_enqueue_kernel_blocks_non_local_void_args : Error<
   "blocks used in device side enqueue are expected to have parameters of type 'local void*'">;
 def err_opencl_enqueue_kernel_blocks_no_args : Error<
@@ -8571,6 +8589,8 @@ def note_related_result_type_inferred : Note<
 def note_related_result_type_explicit : Note<
   "%select{overridden|current}0 method is explicitly declared 'instancetype'"
   "%select{| and is expected to return an instance of its class type}0">;
+def err_invalid_type_for_program_scope_var : Error<
+  "the %0 type cannot be used to declare a program scope variable">;
 
 }
 
@@ -8725,6 +8745,15 @@ def warn_nullability_missing : Warning<
   "%select{pointer|block pointer|member pointer}0 is missing a nullability "
   "type specifier (_Nonnull, _Nullable, or _Null_unspecified)">,
   InGroup<NullabilityCompleteness>;
+def warn_nullability_missing_array : Warning<
+  "array parameter is missing a nullability type specifier (_Nonnull, "
+  "_Nullable, or _Null_unspecified)">,
+  InGroup<NullabilityCompletenessOnArrays>;
+
+def warn_nullability_inferred_on_nested_type : Warning<
+  "inferring '_Nonnull' for pointer type within %select{array|reference}0 is "
+  "deprecated">,
+  InGroup<NullabilityInferredOnNestedType>;
 
 def err_objc_type_arg_explicit_nullability : Error<
   "type argument %0 cannot explicitly specify nullability">;

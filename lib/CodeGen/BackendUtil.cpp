@@ -20,7 +20,8 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
-#include "llvm/Bitcode/ReaderWriter.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
+#include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/SchedulerRegistry.h"
 #include "llvm/IR/DataLayout.h"
@@ -101,7 +102,7 @@ public:
                      const clang::TargetOptions &TOpts,
                      const LangOptions &LOpts, Module *M)
       : Diags(_Diags), CodeGenOpts(CGOpts), TargetOpts(TOpts), LangOpts(LOpts),
-        TheModule(M), CodeGenerationTime("Code Generation Time") {}
+        TheModule(M), CodeGenerationTime("codegen", "Code Generation Time") {}
 
   ~EmitAssemblyHelper() {
     if (CodeGenOpts.DisableFree)
@@ -200,7 +201,9 @@ static void addMemorySanitizerPass(const PassManagerBuilder &Builder,
   const PassManagerBuilderWrapper &BuilderWrapper =
       static_cast<const PassManagerBuilderWrapper&>(Builder);
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
-  PM.add(createMemorySanitizerPass(CGOpts.SanitizeMemoryTrackOrigins));
+  int TrackOrigins = CGOpts.SanitizeMemoryTrackOrigins;
+  bool Recover = CGOpts.SanitizeRecover.has(SanitizerKind::Memory);
+  PM.add(createMemorySanitizerPass(TrackOrigins, Recover));
 
   // MemorySanitizer inserts complex instrumentation that mostly follows
   // the logic of the original code, but operates on "shadow" values.
@@ -295,9 +298,13 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
 
   PassManagerBuilderWrapper PMBuilder(CodeGenOpts, LangOpts);
 
-  // Figure out TargetLibraryInfo.
+  // Figure out TargetLibraryInfo.  This needs to be added to MPM and FPM
+  // manually (and not via PMBuilder), since some passes (eg. InstrProfiling)
+  // are inserted before PMBuilder ones - they'd get the default-constructed
+  // TLI with an unknown target otherwise.
   Triple TargetTriple(TheModule->getTargetTriple());
-  PMBuilder.LibraryInfo = createTLII(TargetTriple, CodeGenOpts);
+  std::unique_ptr<TargetLibraryInfoImpl> TLII(
+      createTLII(TargetTriple, CodeGenOpts));
 
   switch (Inlining) {
   case CodeGenOptions::NoInlining:
@@ -329,6 +336,8 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   PMBuilder.PrepareForThinLTO = CodeGenOpts.EmitSummaryIndex;
   PMBuilder.PrepareForLTO = CodeGenOpts.PrepareForLTO;
   PMBuilder.RerollLoops = CodeGenOpts.RerollLoops;
+
+  MPM.add(new TargetLibraryInfoWrapperPass(*TLII));
 
   // Add target-specific passes that need to run as early as possible.
   if (TM)
@@ -413,6 +422,7 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   }
 
   // Set up the per-function pass manager.
+  FPM.add(new TargetLibraryInfoWrapperPass(*TLII));
   if (CodeGenOpts.VerifyModule)
     FPM.add(createVerifierPass());
 
@@ -722,14 +732,12 @@ static void runThinLTOBackend(const CodeGenOptions &CGOpts, Module *M,
   // If we are performing a ThinLTO importing compile, load the function index
   // into memory and pass it into thinBackend, which will run the function
   // importer and invoke LTO passes.
-  ErrorOr<std::unique_ptr<ModuleSummaryIndex>> IndexOrErr =
-      llvm::getModuleSummaryIndexForFile(
-          CGOpts.ThinLTOIndexFile,
-          [&](const DiagnosticInfo &DI) { M->getContext().diagnose(DI); });
-  if (std::error_code EC = IndexOrErr.getError()) {
-    std::string Error = EC.message();
-    errs() << "Error loading index file '" << CGOpts.ThinLTOIndexFile
-           << "': " << Error << "\n";
+  Expected<std::unique_ptr<ModuleSummaryIndex>> IndexOrErr =
+      llvm::getModuleSummaryIndexForFile(CGOpts.ThinLTOIndexFile);
+  if (!IndexOrErr) {
+    logAllUnhandledErrors(IndexOrErr.takeError(), errs(),
+                          "Error loading index file '" +
+                              CGOpts.ThinLTOIndexFile + "': ");
     return;
   }
   std::unique_ptr<ModuleSummaryIndex> CombinedIndex = std::move(*IndexOrErr);

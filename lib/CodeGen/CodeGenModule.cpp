@@ -24,6 +24,7 @@
 #include "CodeGenFunction.h"
 #include "CodeGenPGO.h"
 #include "CodeGenTBAA.h"
+#include "ConstantBuilder.h"
 #include "CoverageMappingGen.h"
 #include "TargetInfo.h"
 #include "clang/AST/ASTContext.h"
@@ -731,6 +732,8 @@ void CodeGenModule::AddGlobalDtor(llvm::Function *Dtor, int Priority) {
 }
 
 void CodeGenModule::EmitCtorList(CtorList &Fns, const char *GlobalName) {
+  if (Fns.empty()) return;
+
   // Ctor function type is void()*.
   llvm::FunctionType* CtorFTy = llvm::FunctionType::get(VoidTy, false);
   llvm::Type *CtorPFTy = llvm::PointerType::getUnqual(CtorFTy);
@@ -740,24 +743,28 @@ void CodeGenModule::EmitCtorList(CtorList &Fns, const char *GlobalName) {
       Int32Ty, llvm::PointerType::getUnqual(CtorFTy), VoidPtrTy, nullptr);
 
   // Construct the constructor and destructor arrays.
-  SmallVector<llvm::Constant *, 8> Ctors;
+  ConstantInitBuilder builder(*this);
+  auto ctors = builder.beginArray(CtorStructTy);
   for (const auto &I : Fns) {
-    llvm::Constant *S[] = {
-        llvm::ConstantInt::get(Int32Ty, I.Priority, false),
-        llvm::ConstantExpr::getBitCast(I.Initializer, CtorPFTy),
-        (I.AssociatedData
-             ? llvm::ConstantExpr::getBitCast(I.AssociatedData, VoidPtrTy)
-             : llvm::Constant::getNullValue(VoidPtrTy))};
-    Ctors.push_back(llvm::ConstantStruct::get(CtorStructTy, S));
+    auto ctor = ctors.beginStruct(CtorStructTy);
+    ctor.addInt(Int32Ty, I.Priority);
+    ctor.add(llvm::ConstantExpr::getBitCast(I.Initializer, CtorPFTy));
+    if (I.AssociatedData)
+      ctor.add(llvm::ConstantExpr::getBitCast(I.AssociatedData, VoidPtrTy));
+    else
+      ctor.addNullPointer(VoidPtrTy);
+    ctor.finishAndAddTo(ctors);
   }
 
-  if (!Ctors.empty()) {
-    llvm::ArrayType *AT = llvm::ArrayType::get(CtorStructTy, Ctors.size());
-    new llvm::GlobalVariable(TheModule, AT, false,
-                             llvm::GlobalValue::AppendingLinkage,
-                             llvm::ConstantArray::get(AT, Ctors),
-                             GlobalName);
-  }
+  auto list =
+    ctors.finishAndCreateGlobal(GlobalName, getPointerAlign(),
+                                /*constant*/ false,
+                                llvm::GlobalValue::AppendingLinkage);
+
+  // The LTO linker doesn't seem to like it when we set an alignment
+  // on appending variables.  Take it off as a workaround.
+  list->setAlignment(0);
+
   Fns.clear();
 }
 
@@ -811,14 +818,7 @@ llvm::ConstantInt *CodeGenModule::CreateCrossDsoCfiTypeId(llvm::Metadata *MD) {
   llvm::MDString *MDS = dyn_cast<llvm::MDString>(MD);
   if (!MDS) return nullptr;
 
-  llvm::MD5 md5;
-  llvm::MD5::MD5Result result;
-  md5.update(MDS->getString());
-  md5.final(result);
-  uint64_t id = 0;
-  for (int i = 0; i < 8; ++i)
-    id |= static_cast<uint64_t>(result[i]) << (i * 8);
-  return llvm::ConstantInt::get(Int64Ty, id);
+  return llvm::ConstantInt::get(Int64Ty, llvm::MD5Hash(MDS->getString()));
 }
 
 void CodeGenModule::setFunctionDefinitionAttributes(const FunctionDecl *D,
@@ -1296,7 +1296,7 @@ void CodeGenModule::EmitDeferred() {
     // might had been created for another decl with the same mangled name but
     // different type.
     llvm::GlobalValue *GV = dyn_cast<llvm::GlobalValue>(
-        GetAddrOfGlobal(D, /*IsForDefinition=*/true));
+        GetAddrOfGlobal(D, ForDefinition));
 
     // In case of different address spaces, we may still get a cast, even with
     // IsForDefinition equal to true. Query mangled names table to get
@@ -1864,7 +1864,7 @@ CodeGenModule::GetOrCreateLLVMFunction(StringRef MangledName,
                                        GlobalDecl GD, bool ForVTable,
                                        bool DontDefer, bool IsThunk,
                                        llvm::AttributeSet ExtraAttrs,
-                                       bool IsForDefinition) {
+                                       ForDefinition_t IsForDefinition) {
   const Decl *D = GD.getDecl();
 
   // Lookup the entry, lazily creating it if necessary.
@@ -2024,7 +2024,7 @@ llvm::Constant *CodeGenModule::GetAddrOfFunction(GlobalDecl GD,
                                                  llvm::Type *Ty,
                                                  bool ForVTable,
                                                  bool DontDefer,
-                                                 bool IsForDefinition) {
+                                              ForDefinition_t IsForDefinition) {
   // If there was no specific requested type, just convert it now.
   if (!Ty) {
     const auto *FD = cast<FunctionDecl>(GD.getDecl());
@@ -2103,7 +2103,7 @@ llvm::Constant *
 CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName,
                                      llvm::PointerType *Ty,
                                      const VarDecl *D,
-                                     bool IsForDefinition) {
+                                     ForDefinition_t IsForDefinition) {
   // Lookup the entry, lazily creating it if necessary.
   llvm::GlobalValue *Entry = GetGlobalValue(MangledName);
   if (Entry) {
@@ -2218,7 +2218,7 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName,
 
 llvm::Constant *
 CodeGenModule::GetAddrOfGlobal(GlobalDecl GD,
-                               bool IsForDefinition) {
+                               ForDefinition_t IsForDefinition) {
   if (isa<CXXConstructorDecl>(GD.getDecl()))
     return getAddrOfCXXStructor(cast<CXXConstructorDecl>(GD.getDecl()),
                                 getFromCtorType(GD.getCtorType()),
@@ -2295,7 +2295,7 @@ CodeGenModule::CreateOrReplaceCXXRuntimeVariable(StringRef Name,
 /// variable with the same mangled name but some other type.
 llvm::Constant *CodeGenModule::GetAddrOfGlobalVar(const VarDecl *D,
                                                   llvm::Type *Ty,
-                                                  bool IsForDefinition) {
+                                           ForDefinition_t IsForDefinition) {
   assert(D->hasGlobalStorage() && "Not a global variable");
   QualType ASTTy = D->getType();
   if (!Ty)
@@ -2485,7 +2485,7 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
 
   llvm::Type* InitType = Init->getType();
   llvm::Constant *Entry =
-      GetAddrOfGlobalVar(D, InitType, /*IsForDefinition=*/!IsTentative);
+      GetAddrOfGlobalVar(D, InitType, ForDefinition_t(!IsTentative));
 
   // Strip off a bitcast if we got one back.
   if (auto *CE = dyn_cast<llvm::ConstantExpr>(Entry)) {
@@ -2518,7 +2518,7 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
 
     // Make a new global with the correct type, this is now guaranteed to work.
     GV = cast<llvm::GlobalVariable>(
-        GetAddrOfGlobalVar(D, InitType, /*IsForDefinition=*/!IsTentative));
+        GetAddrOfGlobalVar(D, InitType, ForDefinition_t(!IsTentative)));
 
     // Replace all uses of the old global with the new global
     llvm::Constant *NewPtrForOldDecl =
@@ -2922,7 +2922,7 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
   if (!GV || (GV->getType()->getElementType() != Ty))
     GV = cast<llvm::GlobalValue>(GetAddrOfFunction(GD, Ty, /*ForVTable=*/false,
                                                    /*DontDefer=*/true,
-                                                   /*IsForDefinition=*/true));
+                                                   ForDefinition));
 
   // Already emitted.
   if (!GV->isDeclaration())
@@ -3131,14 +3131,6 @@ GetConstantCFStringEntry(llvm::StringMap<llvm::GlobalVariable *> &Map,
                          nullptr)).first;
 }
 
-static llvm::StringMapEntry<llvm::GlobalVariable *> &
-GetConstantStringEntry(llvm::StringMap<llvm::GlobalVariable *> &Map,
-                       const StringLiteral *Literal, unsigned &StringLength) {
-  StringRef String = Literal->getString();
-  StringLength = String.size();
-  return *Map.insert(std::make_pair(String, nullptr)).first;
-}
-
 ConstantAddress
 CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
   unsigned StringLength = 0;
@@ -3190,15 +3182,14 @@ CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
 
   auto *STy = cast<llvm::StructType>(getTypes().ConvertType(CFTy));
 
-  llvm::Constant *Fields[4];
+  ConstantInitBuilder Builder(*this);
+  auto Fields = Builder.beginStruct(STy);
 
   // Class pointer.
-  Fields[0] = cast<llvm::ConstantExpr>(CFConstantStringClassRef);
+  Fields.add(cast<llvm::ConstantExpr>(CFConstantStringClassRef));
 
   // Flags.
-  llvm::Type *Ty = getTypes().ConvertType(getContext().UnsignedIntTy);
-  Fields[1] = isUTF16 ? llvm::ConstantInt::get(Ty, 0x07d0)
-                      : llvm::ConstantInt::get(Ty, 0x07C8);
+  Fields.addInt(IntTy, isUTF16 ? 0x07d0 : 0x07C8);
 
   // String pointer.
   llvm::Constant *C = nullptr;
@@ -3232,25 +3223,24 @@ CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
                            : "__TEXT,__cstring,cstring_literals");
 
   // String.
-  Fields[2] =
+  llvm::Constant *Str =
       llvm::ConstantExpr::getGetElementPtr(GV->getValueType(), GV, Zeros);
 
   if (isUTF16)
     // Cast the UTF16 string to the correct type.
-    Fields[2] = llvm::ConstantExpr::getBitCast(Fields[2], Int8PtrTy);
+    Str = llvm::ConstantExpr::getBitCast(Str, Int8PtrTy);
+  Fields.add(Str);
 
   // String length.
-  Ty = getTypes().ConvertType(getContext().LongTy);
-  Fields[3] = llvm::ConstantInt::get(Ty, StringLength);
+  auto Ty = getTypes().ConvertType(getContext().LongTy);
+  Fields.addInt(cast<llvm::IntegerType>(Ty), StringLength);
 
   CharUnits Alignment = getPointerAlign();
 
   // The struct.
-  C = llvm::ConstantStruct::get(STy, Fields);
-  GV = new llvm::GlobalVariable(getModule(), C->getType(), /*isConstant=*/false,
-                                llvm::GlobalVariable::PrivateLinkage, C,
-                                "_unnamed_cfstring_");
-  GV->setAlignment(Alignment.getQuantity());
+  GV = Fields.finishAndCreateGlobal("_unnamed_cfstring_", Alignment,
+                                    /*isConstant=*/false,
+                                    llvm::GlobalVariable::PrivateLinkage);
   switch (getTriple().getObjectFormat()) {
   case llvm::Triple::UnknownObjectFormat:
     llvm_unreachable("unknown file format");
@@ -3262,124 +3252,6 @@ CodeGenModule::GetAddrOfConstantCFString(const StringLiteral *Literal) {
     GV->setSection("__DATA,__cfstring");
     break;
   }
-  Entry.second = GV;
-
-  return ConstantAddress(GV, Alignment);
-}
-
-ConstantAddress
-CodeGenModule::GetAddrOfConstantString(const StringLiteral *Literal) {
-  unsigned StringLength = 0;
-  llvm::StringMapEntry<llvm::GlobalVariable *> &Entry =
-      GetConstantStringEntry(CFConstantStringMap, Literal, StringLength);
-
-  if (auto *C = Entry.second)
-    return ConstantAddress(C, CharUnits::fromQuantity(C->getAlignment()));
-  
-  llvm::Constant *Zero = llvm::Constant::getNullValue(Int32Ty);
-  llvm::Constant *Zeros[] = { Zero, Zero };
-  llvm::Value *V;
-  // If we don't already have it, get _NSConstantStringClassReference.
-  if (!ConstantStringClassRef) {
-    std::string StringClass(getLangOpts().ObjCConstantStringClass);
-    llvm::Type *Ty = getTypes().ConvertType(getContext().IntTy);
-    llvm::Constant *GV;
-    if (LangOpts.ObjCRuntime.isNonFragile()) {
-      std::string str = 
-        StringClass.empty() ? "OBJC_CLASS_$_NSConstantString" 
-                            : "OBJC_CLASS_$_" + StringClass;
-      GV = getObjCRuntime().GetClassGlobal(str);
-      // Make sure the result is of the correct type.
-      llvm::Type *PTy = llvm::PointerType::getUnqual(Ty);
-      V = llvm::ConstantExpr::getBitCast(GV, PTy);
-      ConstantStringClassRef = V;
-    } else {
-      std::string str =
-        StringClass.empty() ? "_NSConstantStringClassReference"
-                            : "_" + StringClass + "ClassReference";
-      llvm::Type *PTy = llvm::ArrayType::get(Ty, 0);
-      GV = CreateRuntimeVariable(PTy, str);
-      // Decay array -> ptr
-      V = llvm::ConstantExpr::getGetElementPtr(PTy, GV, Zeros);
-      ConstantStringClassRef = V;
-    }
-  } else
-    V = ConstantStringClassRef;
-
-  if (!NSConstantStringType) {
-    // Construct the type for a constant NSString.
-    RecordDecl *D = Context.buildImplicitRecord("__builtin_NSString");
-    D->startDefinition();
-      
-    QualType FieldTypes[3];
-    
-    // const int *isa;
-    FieldTypes[0] = Context.getPointerType(Context.IntTy.withConst());
-    // const char *str;
-    FieldTypes[1] = Context.getPointerType(Context.CharTy.withConst());
-    // unsigned int length;
-    FieldTypes[2] = Context.UnsignedIntTy;
-    
-    // Create fields
-    for (unsigned i = 0; i < 3; ++i) {
-      FieldDecl *Field = FieldDecl::Create(Context, D,
-                                           SourceLocation(),
-                                           SourceLocation(), nullptr,
-                                           FieldTypes[i], /*TInfo=*/nullptr,
-                                           /*BitWidth=*/nullptr,
-                                           /*Mutable=*/false,
-                                           ICIS_NoInit);
-      Field->setAccess(AS_public);
-      D->addDecl(Field);
-    }
-    
-    D->completeDefinition();
-    QualType NSTy = Context.getTagDeclType(D);
-    NSConstantStringType = cast<llvm::StructType>(getTypes().ConvertType(NSTy));
-  }
-  
-  llvm::Constant *Fields[3];
-  
-  // Class pointer.
-  Fields[0] = cast<llvm::ConstantExpr>(V);
-  
-  // String pointer.
-  llvm::Constant *C =
-      llvm::ConstantDataArray::getString(VMContext, Entry.first());
-
-  llvm::GlobalValue::LinkageTypes Linkage;
-  bool isConstant;
-  Linkage = llvm::GlobalValue::PrivateLinkage;
-  isConstant = !LangOpts.WritableStrings;
-
-  auto *GV = new llvm::GlobalVariable(getModule(), C->getType(), isConstant,
-                                      Linkage, C, ".str");
-  GV->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
-  // Don't enforce the target's minimum global alignment, since the only use
-  // of the string is via this class initializer.
-  CharUnits Align = getContext().getTypeAlignInChars(getContext().CharTy);
-  GV->setAlignment(Align.getQuantity());
-  Fields[1] =
-      llvm::ConstantExpr::getGetElementPtr(GV->getValueType(), GV, Zeros);
-
-  // String length.
-  llvm::Type *Ty = getTypes().ConvertType(getContext().UnsignedIntTy);
-  Fields[2] = llvm::ConstantInt::get(Ty, StringLength);
-  
-  // The struct.
-  CharUnits Alignment = getPointerAlign();
-  C = llvm::ConstantStruct::get(NSConstantStringType, Fields);
-  GV = new llvm::GlobalVariable(getModule(), C->getType(), true,
-                                llvm::GlobalVariable::PrivateLinkage, C,
-                                "_unnamed_nsstring_");
-  GV->setAlignment(Alignment.getQuantity());
-  const char *NSStringSection = "__OBJC,__cstring_object,regular,no_dead_strip";
-  const char *NSStringNonFragileABISection =
-      "__DATA,__objc_stringobj,regular,no_dead_strip";
-  // FIXME. Fix section.
-  GV->setSection(LangOpts.ObjCRuntime.isNonFragile()
-                     ? NSStringNonFragileABISection
-                     : NSStringSection);
   Entry.second = GV;
 
   return ConstantAddress(GV, Alignment);

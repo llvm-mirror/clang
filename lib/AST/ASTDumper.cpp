@@ -545,6 +545,8 @@ namespace  {
       dumpDecl(Node->getLambdaClass());
     }
     void VisitSizeOfPackExpr(const SizeOfPackExpr *Node);
+    void
+    VisitCXXDependentScopeMemberExpr(const CXXDependentScopeMemberExpr *Node);
 
     // ObjC
     void VisitObjCAtCatchStmt(const ObjCAtCatchStmt *Node);
@@ -1135,8 +1137,15 @@ void ASTDumper::VisitFunctionDecl(const FunctionDecl *D) {
 
   if (D->isPure())
     OS << " pure";
-  else if (D->isDeletedAsWritten())
+  if (D->isDefaulted()) {
+    OS << " default";
+    if (D->isDeleted())
+      OS << "_delete";
+  }
+  if (D->isDeletedAsWritten())
     OS << " delete";
+  if (D->isTrivial())
+    OS << " trivial";
 
   if (const FunctionProtoType *FPT = D->getType()->getAs<FunctionProtoType>()) {
     FunctionProtoType::ExtProtoInfo EPI = FPT->getExtProtoInfo();
@@ -2194,6 +2203,11 @@ void ASTDumper::VisitSizeOfPackExpr(const SizeOfPackExpr *Node) {
       dumpTemplateArgument(A);
 }
 
+void ASTDumper::VisitCXXDependentScopeMemberExpr(
+    const CXXDependentScopeMemberExpr *Node) {
+  VisitExpr(Node);
+  OS << " " << (Node->isArrow() ? "->" : ".") << Node->getMember();
+}
 
 //===----------------------------------------------------------------------===//
 // Obj-C Expressions

@@ -277,8 +277,11 @@ def ModuleFileExtension : DiagGroup<"module-file-extension">;
 def NewlineEOF : DiagGroup<"newline-eof">;
 def Nullability : DiagGroup<"nullability">;
 def NullabilityDeclSpec : DiagGroup<"nullability-declspec">;
+def NullabilityInferredOnNestedType : DiagGroup<"nullability-inferred-on-nested-type">;
 def NullableToNonNullConversion : DiagGroup<"nullable-to-nonnull-conversion">;
-def NullabilityCompleteness : DiagGroup<"nullability-completeness">;
+def NullabilityCompletenessOnArrays : DiagGroup<"nullability-completeness-on-arrays">;
+def NullabilityCompleteness : DiagGroup<"nullability-completeness",
+                                        [NullabilityCompletenessOnArrays]>;
 def NullArithmetic : DiagGroup<"null-arithmetic">;
 def NullCharacter : DiagGroup<"null-character">;
 def NullDereference : DiagGroup<"null-dereference">;
@@ -348,12 +351,14 @@ def ShadowFieldInConstructorModified : DiagGroup<"shadow-field-in-constructor-mo
 def ShadowFieldInConstructor : DiagGroup<"shadow-field-in-constructor",
                                          [ShadowFieldInConstructorModified]>;
 def ShadowIvar : DiagGroup<"shadow-ivar">;
+def ShadowUncapturedLocal : DiagGroup<"shadow-uncaptured-local">;
 
 // -Wshadow-all is a catch-all for all shadowing. -Wshadow is just the
 // shadowing that we think is unsafe.
 def Shadow : DiagGroup<"shadow", [ShadowFieldInConstructorModified,
                                   ShadowIvar]>;
-def ShadowAll : DiagGroup<"shadow-all", [Shadow, ShadowFieldInConstructor]>;
+def ShadowAll : DiagGroup<"shadow-all", [Shadow, ShadowFieldInConstructor,
+                                         ShadowUncapturedLocal]>;
 
 def Shorten64To32 : DiagGroup<"shorten-64-to-32">;
 def : DiagGroup<"sign-promo">;
@@ -538,6 +543,7 @@ def GCCWriteStrings : DiagGroup<"write-strings" , [WritableStrings]>;
 def CharSubscript : DiagGroup<"char-subscripts">;
 def LargeByValueCopy : DiagGroup<"large-by-value-copy">;
 def DuplicateArgDecl : DiagGroup<"duplicate-method-arg">;
+def SignedEnumBitfield : DiagGroup<"signed-enum-bitfield">;
 
 // Unreachable code warning groups.
 //

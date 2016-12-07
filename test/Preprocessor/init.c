@@ -205,6 +205,12 @@
 // O1:#define __OPTIMIZE__ 1
 //
 //
+// RUN: %clang_cc1 -Og -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix Og %s
+//
+// Og-NOT:#define __OPTIMIZE_SIZE__
+// Og	:#define __OPTIMIZE__ 1
+//
+//
 // RUN: %clang_cc1 -Os -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix Os %s
 //
 // Os:#define __OPTIMIZE_SIZE__ 1
@@ -6913,6 +6919,7 @@
 // SPARC:#define __FLT_MIN_EXP__ (-125)
 // SPARC:#define __FLT_MIN__ 1.17549435e-38F
 // SPARC:#define __FLT_RADIX__ 2
+// SPARC:#define __GCC_ATOMIC_LLONG_LOCK_FREE 1
 // SPARC:#define __INT16_C_SUFFIX__
 // SPARC:#define __INT16_FMTd__ "hd"
 // SPARC:#define __INT16_FMTi__ "hi"
@@ -8496,6 +8503,7 @@
 // NORTTI:#define __STDC__ 1
 //
 // RUN: %clang_cc1 -triple arm-linux-androideabi -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix ANDROID %s
+// ANDROID-NOT:#define __ANDROID_API__
 // ANDROID:#define __ANDROID__ 1
 //
 // RUN: %clang_cc1 -x c++ -triple i686-linux-android -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix I386-ANDROID-CXX %s
@@ -8503,6 +8511,10 @@
 //
 // RUN: %clang_cc1 -x c++ -triple x86_64-linux-android -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix X86_64-ANDROID-CXX %s
 // X86_64-ANDROID-CXX:#define __STDCPP_DEFAULT_NEW_ALIGNMENT__ 16UL
+//
+// RUN: %clang_cc1 -triple arm-linux-androideabi20 -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix ANDROID20 %s
+// ANDROID20:#define __ANDROID_API__ 20
+// ANDROID20:#define __ANDROID__ 1
 //
 // RUN: %clang_cc1 -triple lanai-unknown-unknown -E -dM < /dev/null | FileCheck -match-full-lines -check-prefix LANAI %s
 // LANAI: #define __lanai__ 1

@@ -429,6 +429,8 @@ def fno_cuda_approx_transcendentals : Flag<["-"], "fno-cuda-approx-transcendenta
 def dA : Flag<["-"], "dA">, Group<d_Group>;
 def dD : Flag<["-"], "dD">, Group<d_Group>, Flags<[CC1Option]>,
   HelpText<"Print macro definitions in -E mode in addition to normal output">;
+def dI : Flag<["-"], "dI">, Group<d_Group>, Flags<[CC1Option]>,
+  HelpText<"Print include directives in -E mode in addition to normal output">;
 def dM : Flag<["-"], "dM">, Group<d_Group>, Flags<[CC1Option]>,
   HelpText<"Print macro definitions in -E mode instead of normal output">;
 def dead__strip : Flag<["-"], "dead_strip">;
@@ -508,15 +510,15 @@ def fprofile_sample_use_EQ : Joined<["-"], "fprofile-sample-use=">,
 def fauto_profile_EQ : Joined<["-"], "fauto-profile=">,
     Alias<fprofile_sample_use_EQ>;
 def fprofile_instr_generate : Flag<["-"], "fprofile-instr-generate">,
-    Group<f_Group>, Flags<[DriverOption]>,
+    Group<f_Group>, Flags<[CoreOption]>,
     HelpText<"Generate instrumented code to collect execution counts into default.profraw file (overriden by '=' form of option or LLVM_PROFILE_FILE env var)">;
 def fprofile_instr_generate_EQ : Joined<["-"], "fprofile-instr-generate=">,
-    Group<f_Group>, Flags<[DriverOption]>, MetaVarName<"<file>">,
+    Group<f_Group>, Flags<[CoreOption]>, MetaVarName<"<file>">,
     HelpText<"Generate instrumented code to collect execution counts into <file> (overridden by LLVM_PROFILE_FILE env var)">;
 def fprofile_instr_use : Flag<["-"], "fprofile-instr-use">, Group<f_Group>,
-    Flags<[DriverOption]>;
+    Flags<[CoreOption]>;
 def fprofile_instr_use_EQ : Joined<["-"], "fprofile-instr-use=">,
-    Group<f_Group>, Flags<[DriverOption]>,
+    Group<f_Group>, Flags<[CoreOption]>,
     HelpText<"Use instrumentation data for profile-guided optimization">;
 def fcoverage_mapping : Flag<["-"], "fcoverage-mapping">,
     Group<f_Group>, Flags<[CC1Option]>,
@@ -728,6 +730,24 @@ def fsanitize_stats : Flag<["-"], "fsanitize-stats">,
 def fno_sanitize_stats : Flag<["-"], "fno-sanitize-stats">,
                                  Group<f_clang_Group>, Flags<[CC1Option]>,
                                  HelpText<"Disable sanitizer statistics gathering.">;
+def fsanitize_thread_memory_access : Flag<["-"], "fsanitize-thread-memory-access">,
+                                     Group<f_clang_Group>,
+                                     HelpText<"Enable memory access instrumentation in ThreadSanitizer (default)">;
+def fno_sanitize_thread_memory_access : Flag<["-"], "fno-sanitize-thread-memory-access">,
+                                        Group<f_clang_Group>,
+                                        HelpText<"Disable memory access instrumentation in ThreadSanitizer">;
+def fsanitize_thread_func_entry_exit : Flag<["-"], "fsanitize-thread-func-entry-exit">,
+                                       Group<f_clang_Group>,
+                                       HelpText<"Enable function entry/exit instrumentation in ThreadSanitizer (default)">;
+def fno_sanitize_thread_func_entry_exit : Flag<["-"], "fno-sanitize-thread-func-entry-exit">,
+                                          Group<f_clang_Group>,
+                                          HelpText<"Disable function entry/exit instrumentation in ThreadSanitizer">;
+def fsanitize_thread_atomics : Flag<["-"], "fsanitize-thread-atomics">,
+                               Group<f_clang_Group>,
+                               HelpText<"Enable atomic operations instrumentation in ThreadSanitizer (default)">;
+def fno_sanitize_thread_atomics : Flag<["-"], "fno-sanitize-thread-atomics">,
+                                  Group<f_clang_Group>,
+                                  HelpText<"Disable atomic operations instrumentation in ThreadSanitizer">;
 def fsanitize_undefined_strip_path_components_EQ : Joined<["-"], "fsanitize-undefined-strip-path-components=">,
   Group<f_clang_Group>, Flags<[CC1Option]>, MetaVarName<"<number>">,
   HelpText<"Strip (or keep only, if negative) a given number of path components "
@@ -1593,6 +1613,8 @@ def ffixed_x18 : Flag<["-"], "ffixed-x18">, Group<m_aarch64_Features_Group>,
 
 def msimd128 : Flag<["-"], "msimd128">, Group<m_wasm_Features_Group>;
 def mno_simd128 : Flag<["-"], "mno-simd128">, Group<m_wasm_Features_Group>;
+def mdirect : Flag<["-"], "mdirect">, Group<m_wasm_Features_Group>;
+def mno_direct : Flag<["-"], "mno-direct">, Group<m_wasm_Features_Group>;
 
 def mamdgpu_debugger_abi : Joined<["-"], "mamdgpu-debugger-abi=">,
   Flags<[HelpHidden]>,

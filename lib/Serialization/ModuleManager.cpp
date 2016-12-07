@@ -102,7 +102,7 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
       // A cached stat value would be fine as well.
       if (!FileMgr.getNoncachedStatValue(TimestampFilename, Status))
         ModuleEntry->InputFilesValidationTimestamp =
-            Status.getLastModificationTime().toEpochTime();
+            llvm::sys::toTimeT(Status.getLastModificationTime());
     }
 
     // Load the contents of the module
@@ -135,15 +135,14 @@ ModuleManager::addModule(StringRef FileName, ModuleKind Type,
     }
 
     // Initialize the stream.
-    PCHContainerRdr.ExtractPCH(ModuleEntry->Buffer->getMemBufferRef(),
-                               ModuleEntry->StreamFile);
+    ModuleEntry->Data = PCHContainerRdr.ExtractPCH(*ModuleEntry->Buffer);
   }
 
   if (ExpectedSignature) {
     // If we've not read the control block yet, read the signature eagerly now
     // so that we can check it.
     if (!ModuleEntry->Signature)
-      ModuleEntry->Signature = ReadSignature(ModuleEntry->StreamFile);
+      ModuleEntry->Signature = ReadSignature(ModuleEntry->Data);
 
     if (ModuleEntry->Signature != ExpectedSignature) {
       ErrorStr = ModuleEntry->Signature ? "signature mismatch"
