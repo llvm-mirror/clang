@@ -1908,10 +1908,6 @@ public:
   /// \brief The parser has left a submodule.
   void ActOnModuleEnd(SourceLocation DirectiveLoc, Module *Mod);
 
-  /// \brief Check if module import may be found in the current context,
-  /// emit error if not.
-  void diagnoseMisplacedModuleImport(Module *M, SourceLocation ImportLoc);
-
   /// \brief Create an implicit import of the given module at the given
   /// source location, for error recovery, if possible.
   ///
@@ -6572,7 +6568,9 @@ public:
     /// not be resolved to a suitable function.
     TDK_FailedOverloadResolution,
     /// \brief Deduction failed; that's all we know.
-    TDK_MiscellaneousDeductionFailure
+    TDK_MiscellaneousDeductionFailure,
+    /// \brief CUDA Target attributes do not match.
+    TDK_CUDATargetMismatch
   };
 
   TemplateDeductionResult
@@ -8394,6 +8392,12 @@ public:
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
       SourceLocation EndLoc,
       llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+  /// Called on well-formed '\#pragma omp teams distribute parallel for'
+  /// after parsing of the associated statement.
+  StmtResult ActOnOpenMPTeamsDistributeParallelForDirective(
+      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
+      SourceLocation EndLoc,
+      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
 
   /// Checks correctness of linear modifiers.
   bool CheckOpenMPLinearModifier(OpenMPLinearClauseKind LinKind,
@@ -9422,7 +9426,9 @@ public:
   ///
   /// Use this rather than examining the function's attributes yourself -- you
   /// will get it wrong.  Returns CFT_Host if D is null.
-  CUDAFunctionTarget IdentifyCUDATarget(const FunctionDecl *D);
+  CUDAFunctionTarget IdentifyCUDATarget(const FunctionDecl *D,
+                                        bool IgnoreImplicitHDAttr = false);
+  CUDAFunctionTarget IdentifyCUDATarget(const AttributeList *Attr);
 
   /// Gets the CUDA target for the current context.
   CUDAFunctionTarget CurrentCUDATarget() {
@@ -9520,6 +9526,13 @@ public:
   /// (E.2.3.1 in CUDA 7.5 Programming guide).
   bool isEmptyCudaConstructor(SourceLocation Loc, CXXConstructorDecl *CD);
   bool isEmptyCudaDestructor(SourceLocation Loc, CXXDestructorDecl *CD);
+
+  /// Check whether NewFD is a valid overload for CUDA. Emits
+  /// diagnostics and invalidates NewFD if not.
+  void checkCUDATargetOverload(FunctionDecl *NewFD,
+                               const LookupResult &Previous);
+  /// Copies target attributes from the template TD to the function FD.
+  void inheritCUDATargetAttrs(FunctionDecl *FD, const FunctionTemplateDecl &TD);
 
   /// \name Code completion
   //@{
@@ -9659,6 +9672,9 @@ public:
                                           bool AtParameterName,
                                           ParsedType ReturnType,
                                           ArrayRef<IdentifierInfo *> SelIdents);
+  void CodeCompleteObjCClassPropertyRefExpr(Scope *S, IdentifierInfo &ClassName,
+                                            SourceLocation ClassNameLoc,
+                                            bool IsBaseExprStatement);
   void CodeCompletePreprocessorDirective(bool InConditional);
   void CodeCompleteInPreprocessorConditionalExclusion(Scope *S);
   void CodeCompletePreprocessorMacroName(bool IsDefinition);
@@ -9799,8 +9815,9 @@ private:
                             llvm::SmallBitVector &CheckedVarArgs);
 
   void CheckAbsoluteValueFunction(const CallExpr *Call,
-                                  const FunctionDecl *FDecl,
-                                  IdentifierInfo *FnInfo);
+                                  const FunctionDecl *FDecl);
+
+  void CheckMaxUnsignedZero(const CallExpr *Call, const FunctionDecl *FDecl);
 
   void CheckMemaccessArguments(const CallExpr *Call,
                                unsigned BId,

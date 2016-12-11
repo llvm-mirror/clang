@@ -8305,9 +8305,6 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
   // Handle attributes.
   ProcessDeclAttributes(S, NewFD, D);
 
-  if (getLangOpts().CUDA)
-    maybeAddCUDAHostDeviceAttrs(NewFD, Previous);
-
   if (getLangOpts().OpenCL) {
     // OpenCL v1.1 s6.5: Using an address space qualifier in a function return
     // type declaration will generate a compilation error.
@@ -8409,6 +8406,15 @@ Sema::ActOnFunctionDeclarator(Scope *S, Declarator &D, DeclContext *DC,
       TemplateArgs.setLAngleLoc(D.getIdentifierLoc());
       TemplateArgs.setRAngleLoc(D.getIdentifierLoc());
     }
+
+    // We do not add HD attributes to specializations here because
+    // they may have different constexpr-ness compared to their
+    // templates and, after maybeAddCUDAHostDeviceAttrs() is applied,
+    // may end up with different effective targets. Instead, a
+    // specialization inherits its target attributes from its template
+    // in the CheckFunctionTemplateSpecialization() call below.
+    if (getLangOpts().CUDA & !isFunctionTemplateSpecialization)
+      maybeAddCUDAHostDeviceAttrs(NewFD, Previous);
 
     // If it's a friend (and only if it's a friend), it's possible
     // that either the specialized function type or the specialized
@@ -9090,6 +9096,9 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
              diag::warn_cxx1z_compat_exception_spec_in_signature)
             << NewFD;
     }
+
+    if (!Redeclaration && LangOpts.CUDA)
+      checkCUDATargetOverload(NewFD, Previous);
   }
   return Redeclaration;
 }
@@ -11877,6 +11886,21 @@ Decl *Sema::ActOnFinishFunctionBody(Decl *dcl, Stmt *Body,
                 << PossibleZeroParamPrototype
                 << FixItHint::CreateInsertion(FTL.getRParenLoc(), "void");
         }
+      }
+
+      // GNU warning -Wstrict-prototypes
+      //   Warn if K&R function is defined without a previous declaration.
+      //   This warning is issued only if the definition itself does not provide
+      //   a prototype. Only K&R definitions do not provide a prototype.
+      //   An empty list in a function declarator that is part of a definition
+      //   of that function specifies that the function has no parameters
+      //   (C99 6.7.5.3p14)
+      if (!FD->hasWrittenPrototype() && FD->getNumParams() > 0 &&
+          !LangOpts.CPlusPlus) {
+        TypeSourceInfo *TI = FD->getTypeSourceInfo();
+        TypeLoc TL = TI->getTypeLoc();
+        FunctionTypeLoc FTL = TL.castAs<FunctionTypeLoc>();
+        Diag(FTL.getLParenLoc(), diag::warn_strict_prototypes) << 1;
       }
     }
 
@@ -15439,10 +15463,6 @@ static void checkModuleImportContext(Sema &S, Module *M,
   }
 }
 
-void Sema::diagnoseMisplacedModuleImport(Module *M, SourceLocation ImportLoc) {
-  return checkModuleImportContext(*this, M, ImportLoc, CurContext);
-}
-
 Sema::DeclGroupPtrTy Sema::ActOnModuleDecl(SourceLocation ModuleLoc,
                                            ModuleDeclKind MDK,
                                            ModuleIdPath Path) {
@@ -15610,7 +15630,7 @@ void Sema::BuildModuleInclude(SourceLocation DirectiveLoc, Module *Mod) {
 }
 
 void Sema::ActOnModuleBegin(SourceLocation DirectiveLoc, Module *Mod) {
-  checkModuleImportContext(*this, Mod, DirectiveLoc, CurContext);
+  checkModuleImportContext(*this, Mod, DirectiveLoc, CurContext, true);
 
   ModuleScopes.push_back({});
   ModuleScopes.back().Module = Mod;
@@ -15621,8 +15641,6 @@ void Sema::ActOnModuleBegin(SourceLocation DirectiveLoc, Module *Mod) {
 }
 
 void Sema::ActOnModuleEnd(SourceLocation EofLoc, Module *Mod) {
-  checkModuleImportContext(*this, Mod, EofLoc, CurContext);
-
   if (getLangOpts().ModulesLocalVisibility) {
     VisibleModules = std::move(ModuleScopes.back().OuterVisibleModules);
     // Leaving a module hides namespace names, so our visible namespace cache

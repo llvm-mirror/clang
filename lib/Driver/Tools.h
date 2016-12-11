@@ -17,6 +17,7 @@
 #include "clang/Driver/Util.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Option/Option.h"
+#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/Compiler.h"
 
 namespace clang {
@@ -100,6 +101,12 @@ private:
   visualstudio::Compiler *getCLFallback() const;
 
   mutable std::unique_ptr<visualstudio::Compiler> CLFallback;
+
+  mutable std::unique_ptr<llvm::raw_fd_ostream> CompilationDatabase = nullptr;
+  void DumpCompilationDatabase(Compilation &C, StringRef Filename,
+                               StringRef Target,
+                               const InputInfo &Output, const InputInfo &Input,
+                               const llvm::opt::ArgList &Args) const;
 
 public:
   // CAUTION! The first constructor argument ("clang") is not arbitrary,
@@ -718,10 +725,6 @@ public:
 
 /// Visual studio tools.
 namespace visualstudio {
-VersionTuple getMSVCVersion(const Driver *D, const ToolChain &TC,
-                            const llvm::Triple &Triple,
-                            const llvm::opt::ArgList &Args, bool IsWindowsMSVC);
-
 class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
 public:
   Linker(const ToolChain &TC)

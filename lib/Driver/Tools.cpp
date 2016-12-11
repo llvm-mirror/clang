@@ -40,9 +40,9 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
-#include "llvm/Support/raw_ostream.h"
 #include "llvm/Support/ScopedPrinter.h"
 #include "llvm/Support/TargetParser.h"
+#include "llvm/Support/YAMLParser.h"
 
 #ifdef LLVM_ON_UNIX
 #include <unistd.h> // For getuid().
@@ -3116,6 +3116,24 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
                  Value.startswith("-mhwdiv") || Value.startswith("-march")) {
         // Do nothing, we'll validate it later.
       } else if (Value == "-defsym") {
+          if (A->getNumValues() != 2) {
+            D.Diag(diag::err_drv_defsym_invalid_format) << Value;
+            break;
+          }
+          const char *S = A->getValue(1);
+          auto Pair = StringRef(S).split('=');
+          auto Sym = Pair.first;
+          auto SVal = Pair.second;
+
+          if (Sym.empty() || SVal.empty()) {
+            D.Diag(diag::err_drv_defsym_invalid_format) << S;
+            break;
+          }
+          int64_t IVal;
+          if (SVal.getAsInteger(0, IVal)) {
+            D.Diag(diag::err_drv_defsym_invalid_symval) << SVal;
+            break;
+          }
           CmdArgs.push_back(Value.data());
           TakeNextArg = true;
       } else {
@@ -3534,19 +3552,6 @@ static void addDashXForInput(const ArgList &Args, const InputInfo &Input,
     CmdArgs.push_back(types::getTypeName(Input.getType()));
 }
 
-static VersionTuple getMSCompatibilityVersion(unsigned Version) {
-  if (Version < 100)
-    return VersionTuple(Version);
-
-  if (Version < 10000)
-    return VersionTuple(Version / 100, Version % 100);
-
-  unsigned Build = 0, Factor = 1;
-  for (; Version > 10000; Version = Version / 10, Factor = Factor * 10)
-    Build = Build + (Version % 10) * Factor;
-  return VersionTuple(Version / 100, Version % 100, Build);
-}
-
 // Claim options we don't want to warn if they are unused. We do this for
 // options that build systems might add but are unused when assembling or only
 // running the preprocessor for example.
@@ -3588,60 +3593,6 @@ static void appendUserToPath(SmallVectorImpl<char> &Result) {
   std::string UID = "9999";
 #endif
   Result.append(UID.begin(), UID.end());
-}
-
-VersionTuple visualstudio::getMSVCVersion(const Driver *D, const ToolChain &TC,
-                                          const llvm::Triple &Triple,
-                                          const llvm::opt::ArgList &Args,
-                                          bool IsWindowsMSVC) {
-  if (Args.hasFlag(options::OPT_fms_extensions, options::OPT_fno_ms_extensions,
-                   IsWindowsMSVC) ||
-      Args.hasArg(options::OPT_fmsc_version) ||
-      Args.hasArg(options::OPT_fms_compatibility_version)) {
-    const Arg *MSCVersion = Args.getLastArg(options::OPT_fmsc_version);
-    const Arg *MSCompatibilityVersion =
-        Args.getLastArg(options::OPT_fms_compatibility_version);
-
-    if (MSCVersion && MSCompatibilityVersion) {
-      if (D)
-        D->Diag(diag::err_drv_argument_not_allowed_with)
-            << MSCVersion->getAsString(Args)
-            << MSCompatibilityVersion->getAsString(Args);
-      return VersionTuple();
-    }
-
-    if (MSCompatibilityVersion) {
-      VersionTuple MSVT;
-      if (MSVT.tryParse(MSCompatibilityVersion->getValue()) && D)
-        D->Diag(diag::err_drv_invalid_value)
-            << MSCompatibilityVersion->getAsString(Args)
-            << MSCompatibilityVersion->getValue();
-      return MSVT;
-    }
-
-    if (MSCVersion) {
-      unsigned Version = 0;
-      if (StringRef(MSCVersion->getValue()).getAsInteger(10, Version) && D)
-        D->Diag(diag::err_drv_invalid_value) << MSCVersion->getAsString(Args)
-                                             << MSCVersion->getValue();
-      return getMSCompatibilityVersion(Version);
-    }
-
-    unsigned Major, Minor, Micro;
-    Triple.getEnvironmentVersion(Major, Minor, Micro);
-    if (Major || Minor || Micro)
-      return VersionTuple(Major, Minor, Micro);
-
-    if (IsWindowsMSVC) {
-      VersionTuple MSVT = TC.getMSVCVersionFromExe();
-      if (!MSVT.empty())
-        return MSVT;
-
-      // FIXME: Consider bumping this to 19 (MSVC2015) soon.
-      return VersionTuple(18);
-    }
-  }
-  return VersionTuple();
 }
 
 static Arg *getLastProfileUseArg(const ArgList &Args) {
@@ -4012,6 +3963,65 @@ static void AddAssemblerKPIC(const ToolChain &ToolChain, const ArgList &Args,
     CmdArgs.push_back("-KPIC");
 }
 
+void Clang::DumpCompilationDatabase(Compilation &C, StringRef Filename,
+                                    StringRef Target, const InputInfo &Output,
+                                    const InputInfo &Input, const ArgList &Args) const {
+  // If this is a dry run, do not create the compilation database file.
+  if (C.getArgs().hasArg(options::OPT__HASH_HASH_HASH))
+    return;
+
+  using llvm::yaml::escape;
+  const Driver &D = getToolChain().getDriver();
+
+  if (!CompilationDatabase) {
+    std::error_code EC;
+    auto File = llvm::make_unique<llvm::raw_fd_ostream>(Filename, EC, llvm::sys::fs::F_Text);
+    if (EC) {
+      D.Diag(clang::diag::err_drv_compilationdatabase) << Filename
+                                                       << EC.message();
+      return;
+    }
+    CompilationDatabase = std::move(File);
+  }
+  auto &CDB = *CompilationDatabase;
+  SmallString<128> Buf;
+  if (llvm::sys::fs::current_path(Buf))
+    Buf = ".";
+  CDB << "{ \"directory\": \"" << escape(Buf) << "\"";
+  CDB << ", \"file\": \"" << escape(Input.getFilename()) << "\"";
+  CDB << ", \"output\": \"" << escape(Output.getFilename()) << "\"";
+  CDB << ", \"arguments\": [\"" << escape(D.ClangExecutable) << "\"";
+  Buf = "-x";
+  Buf += types::getTypeName(Input.getType());
+  CDB << ", \"" << escape(Buf) << "\"";
+  if (!D.SysRoot.empty() && !Args.hasArg(options::OPT__sysroot_EQ)) {
+    Buf = "--sysroot=";
+    Buf += D.SysRoot;
+    CDB << ", \"" << escape(Buf) << "\"";
+  }
+  CDB << ", \"" << escape(Input.getFilename()) << "\"";
+  for (auto &A: Args) {
+    auto &O = A->getOption();
+    // Skip language selection, which is positional.
+    if (O.getID() == options::OPT_x)
+      continue;
+    // Skip writing dependency output and the compilation database itself.
+    if (O.getGroup().isValid() && O.getGroup().getID() == options::OPT_M_Group)
+      continue;
+    // Skip inputs.
+    if (O.getKind() == Option::InputClass)
+      continue;
+    // All other arguments are quoted and appended.
+    ArgStringList ASL;
+    A->render(Args, ASL);
+    for (auto &it: ASL)
+      CDB << ", \"" << escape(it) << "\"";
+  }
+  Buf = "--target=";
+  Buf += Target;
+  CDB << ", \"" << escape(Buf) << "\"]},\n";
+}
+
 void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                          const InputInfo &Output, const InputInfoList &Inputs,
                          const ArgList &Args, const char *LinkingOutput) const {
@@ -4055,6 +4065,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // Add the "effective" target triple.
   CmdArgs.push_back("-triple");
   CmdArgs.push_back(Args.MakeArgString(TripleStr));
+
+  if (const Arg *MJ = Args.getLastArg(options::OPT_MJ)) {
+    DumpCompilationDatabase(C, MJ->getValue(), TripleStr, Output, Input, Args);
+    Args.ClaimAllArgs(options::OPT_MJ);
+  }
 
   if (IsCuda) {
     // We have to pass the triple of the host if compiling for a CUDA device and
@@ -5264,9 +5279,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_ftlsmodel_EQ);
 
   // -fhosted is default.
+  bool IsHosted = true;
   if (Args.hasFlag(options::OPT_ffreestanding, options::OPT_fhosted, false) ||
-      KernelOrKext)
+      KernelOrKext) {
     CmdArgs.push_back("-ffreestanding");
+    IsHosted = false;
+  }
 
   // Forward -f (flag) options which we can pass directly.
   Args.AddLastArg(CmdArgs, options::OPT_femit_all_decls);
@@ -5399,6 +5417,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   } else {
     StackProtectorLevel =
         getToolChain().GetDefaultStackProtectorLevel(KernelOrKext);
+    // Only use a default stack protector on Darwin in case -ffreestanding
+    // is not specified.
+    if (Triple.isOSDarwin() && !IsHosted)
+      StackProtectorLevel = 0;
   }
   if (StackProtectorLevel) {
     CmdArgs.push_back("-stack-protector");
@@ -5785,9 +5807,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                                  options::OPT_fno_ms_extensions, true))))
     CmdArgs.push_back("-fms-compatibility");
 
-  // -fms-compatibility-version=18.00 is default.
-  VersionTuple MSVT = visualstudio::getMSVCVersion(
-      &D, getToolChain(), getToolChain().getTriple(), Args, IsWindowsMSVC);
+  VersionTuple MSVT =
+      getToolChain().computeMSVCVersion(&getToolChain().getDriver(), Args);
   if (!MSVT.empty())
     CmdArgs.push_back(
         Args.MakeArgString("-fms-compatibility-version=" + MSVT.getAsString()));
@@ -5923,31 +5944,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (rewriteKind != RK_None)
     CmdArgs.push_back("-fno-objc-infer-related-result-type");
 
-  // Handle -fobjc-gc and -fobjc-gc-only. They are exclusive, and -fobjc-gc-only
-  // takes precedence.
-  const Arg *GCArg = Args.getLastArg(options::OPT_fobjc_gc_only);
-  if (!GCArg)
-    GCArg = Args.getLastArg(options::OPT_fobjc_gc);
-  if (GCArg) {
-    if (ARC) {
-      D.Diag(diag::err_drv_objc_gc_arr) << GCArg->getAsString(Args);
-    } else if (getToolChain().SupportsObjCGC()) {
-      GCArg->render(Args, CmdArgs);
-    } else {
-      // FIXME: We should move this to a hard error.
-      D.Diag(diag::warn_drv_objc_gc_unsupported) << GCArg->getAsString(Args);
-    }
-  }
-
   // Pass down -fobjc-weak or -fno-objc-weak if present.
   if (types::isObjC(InputType)) {
     auto WeakArg = Args.getLastArg(options::OPT_fobjc_weak,
                                    options::OPT_fno_objc_weak);
     if (!WeakArg) {
       // nothing to do
-    } else if (GCArg) {
-      if (WeakArg->getOption().matches(options::OPT_fobjc_weak))
-        D.Diag(diag::err_objc_weak_with_gc);
     } else if (!objcRuntime.allowsWeak()) {
       if (WeakArg->getOption().matches(options::OPT_fobjc_weak))
         D.Diag(diag::err_objc_weak_unsupported);

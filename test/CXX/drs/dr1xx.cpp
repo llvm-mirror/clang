@@ -239,6 +239,7 @@ namespace dr125 {
 }
 
 namespace dr126 { // dr126: no
+#if __cplusplus <= 201402L
   struct C {};
   struct D : C {};
   struct E : private C { friend class A; friend class B; };
@@ -311,12 +312,15 @@ namespace dr126 { // dr126: no
     virtual void y() throw(int*); // ok
     virtual void z() throw(long); // expected-error {{more lax}}
   };
+#else
+  void f() throw(int); // expected-error {{ISO C++1z does not allow}} expected-note {{use 'noexcept}}
+#endif
 }
 
 namespace dr127 { // dr127: yes
   __extension__ typedef __decltype(sizeof(0)) size_t;
   template<typename T> struct A {
-    A() throw(int);
+    A() { throw 0; }
     void *operator new(size_t, const char * = 0);
     void operator delete(void *, const char *) { T::error; } // expected-error 2{{no members}}
     void operator delete(void *) { T::error; }
@@ -576,11 +580,18 @@ namespace dr151 { // dr151: yes
 
 namespace dr152 { // dr152: yes
   struct A {
-    A(); // expected-note {{not viable}}
+    A(); // expected-note 0-2{{not viable}}
     explicit A(const A&);
   };
-  A a1 = A(); // expected-error {{no matching constructor}}
+  A a1 = A();
+#if __cplusplus <= 201402L
+  // expected-error@-2 {{no matching constructor}}
+#endif
   A a2((A()));
+
+  A &f();
+  A a3 = f(); // expected-error {{no matching constructor}}
+  A a4(f());
 }
 
 // dr153: na
@@ -823,11 +834,20 @@ namespace dr176 { // dr176: yes
 namespace dr177 { // dr177: yes
   struct B {};
   struct A {
-    A(A &); // expected-note {{not viable: expects an l-value}}
-    A(const B &); // expected-note {{not viable: no known conversion from 'dr177::A' to}}
+    A(A &); // expected-note 0-1{{not viable: expects an l-value}}
+    A(const B &); // expected-note 0-1{{not viable: no known conversion from 'dr177::A' to}}
   };
   B b;
-  A a = b; // expected-error {{no viable constructor copying variable}}
+  A a = b;
+#if __cplusplus <= 201402L
+  // expected-error@-2 {{no viable constructor copying variable}}
+#endif
+
+  struct C { C(C&); }; // expected-note {{not viable: no known conversion from 'dr177::D' to 'dr177::C &'}}
+  struct D : C {};
+  struct E { operator D(); };
+  E e;
+  C c = e; // expected-error {{no viable constructor copying variable of type 'dr177::D'}}
 }
 
 namespace dr178 { // dr178: yes
