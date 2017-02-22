@@ -5469,6 +5469,14 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   const SanitizerArgs &Sanitize = getToolChain().getSanitizerArgs();
   Sanitize.addArgs(getToolChain(), Args, CmdArgs, InputType);
 
+  // We may have to constrain some compilation options to be on when
+  // -fcheckvfunc
+  if (Args.hasFlag(options::OPT_fcheck_vfunc, 
+                   options::OPT_fno_check_vfunc, false)) {
+    // do something here
+    
+  }
+
   // Report an error for -faltivec on anything other than PowerPC.
   if (const Arg *A = Args.getLastArg(options::OPT_faltivec)) {
     const llvm::Triple::ArchType Arch = getToolChain().getArch();
