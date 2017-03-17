@@ -1744,7 +1744,6 @@ public:
   bool isEventT() const;                        // OpenCL event_t
   bool isClkEventT() const;                     // OpenCL clk_event_t
   bool isQueueT() const;                        // OpenCL queue_t
-  bool isNDRangeT() const;                      // OpenCL ndrange_t
   bool isReserveIDT() const;                    // OpenCL reserve_id_t
 
   bool isPipeType() const;                      // OpenCL pipe type
@@ -1785,7 +1784,8 @@ public:
   }
 
   /// \brief Determine whether this type is an undeduced type, meaning that
-  /// it somehow involves a C++11 'auto' type which has not yet been deduced.
+  /// it somehow involves a C++11 'auto' type or similar which has not yet been
+  /// deduced.
   bool isUndeducedType() const;
 
   /// \brief Whether this type is a variably-modified type (C99 6.7.5).
@@ -1862,10 +1862,22 @@ public:
   /// not refer to a CXXRecordDecl, returns NULL.
   const CXXRecordDecl *getPointeeCXXRecordDecl() const;
 
+  /// Get the DeducedType whose type will be deduced for a variable with
+  /// an initializer of this type. This looks through declarators like pointer
+  /// types, but not through decltype or typedefs.
+  DeducedType *getContainedDeducedType() const;
+
   /// Get the AutoType whose type will be deduced for a variable with
   /// an initializer of this type. This looks through declarators like pointer
   /// types, but not through decltype or typedefs.
-  AutoType *getContainedAutoType() const;
+  AutoType *getContainedAutoType() const {
+    return dyn_cast_or_null<AutoType>(getContainedDeducedType());
+  }
+
+  /// Determine whether this type was written with a leading 'auto'
+  /// corresponding to a trailing return type (possibly for a nested
+  /// function type within a pointer to function type or similar).
+  bool hasAutoForTrailingReturnType() const;
 
   /// Member-template getAs<specific type>'.  Look through sugar for
   /// an instance of \<specific type>.   This scheme will eventually
@@ -1874,6 +1886,13 @@ public:
   /// There are some specializations of this member template listed
   /// immediately following this class.
   template <typename T> const T *getAs() const;
+
+  /// Member-template getAsAdjusted<specific type>. Look through specific kinds
+  /// of sugar (parens, attributes, etc) for an instance of \<specific type>.
+  /// This is used when you need to walk over sugar nodes that represent some
+  /// kind of type adjustment from a type that was written as a \<specific type>
+  /// to another type that is still canonically a \<specific type>.
+  template <typename T> const T *getAsAdjusted() const;
 
   /// A variant of getAs<> for array types which silently discards
   /// qualifiers from the outermost type.
@@ -3097,9 +3116,11 @@ public:
   class ExtParameterInfo {
     enum {
       ABIMask         = 0x0F,
-      IsConsumed      = 0x10
+      IsConsumed      = 0x10,
+      HasPassObjSize  = 0x20,
     };
     unsigned char Data;
+
   public:
     ExtParameterInfo() : Data(0) {}
 
@@ -3126,6 +3147,15 @@ public:
         copy.Data &= ~IsConsumed;
       }
       return copy;
+    }
+
+    bool hasPassObjectSize() const {
+      return Data & HasPassObjSize;
+    }
+    ExtParameterInfo withHasPassObjectSize() const {
+      ExtParameterInfo Copy = *this;
+      Copy.Data |= HasPassObjSize;
+      return Copy;
     }
 
     unsigned char getOpaqueValue() const { return Data; }
@@ -3827,13 +3857,13 @@ private:
 
   friend class ASTContext; // creates these
 
-  AttributedType(QualType canon, Kind attrKind,
-                 QualType modified, QualType equivalent)
-    : Type(Attributed, canon, canon->isDependentType(),
-           canon->isInstantiationDependentType(),
-           canon->isVariablyModifiedType(),
-           canon->containsUnexpandedParameterPack()),
-      ModifiedType(modified), EquivalentType(equivalent) {
+  AttributedType(QualType canon, Kind attrKind, QualType modified,
+                 QualType equivalent)
+      : Type(Attributed, canon, equivalent->isDependentType(),
+             equivalent->isInstantiationDependentType(),
+             equivalent->isVariablyModifiedType(),
+             equivalent->containsUnexpandedParameterPack()),
+        ModifiedType(modified), EquivalentType(equivalent) {
     AttributedTypeBits.AttrKind = attrKind;
   }
 
@@ -4089,21 +4119,60 @@ public:
   }
 };
 
-/// \brief Represents a C++11 auto or C++14 decltype(auto) type.
+/// \brief Common base class for placeholders for types that get replaced by
+/// placeholder type deduction: C++11 auto, C++14 decltype(auto), C++17 deduced
+/// class template types, and (eventually) constrained type names from the C++
+/// Concepts TS.
 ///
 /// These types are usually a placeholder for a deduced type. However, before
-/// the initializer is attached, or if the initializer is type-dependent, there
-/// is no deduced type and an auto type is canonical. In the latter case, it is
-/// also a dependent type.
-class AutoType : public Type, public llvm::FoldingSetNode {
-  AutoType(QualType DeducedType, AutoTypeKeyword Keyword, bool IsDependent)
-    : Type(Auto, DeducedType.isNull() ? QualType(this, 0) : DeducedType,
-           /*Dependent=*/IsDependent, /*InstantiationDependent=*/IsDependent,
-           /*VariablyModified=*/false,
-           /*ContainsParameterPack=*/DeducedType.isNull()
-               ? false : DeducedType->containsUnexpandedParameterPack()) {
-    assert((DeducedType.isNull() || !IsDependent) &&
-           "auto deduced to dependent type");
+/// the initializer is attached, or (usually) if the initializer is
+/// type-dependent, there is no deduced type and the type is canonical. In
+/// the latter case, it is also a dependent type.
+class DeducedType : public Type {
+protected:
+  DeducedType(TypeClass TC, QualType DeducedAsType, bool IsDependent,
+              bool IsInstantiationDependent, bool ContainsParameterPack)
+      : Type(TC,
+             // FIXME: Retain the sugared deduced type?
+             DeducedAsType.isNull() ? QualType(this, 0)
+                                    : DeducedAsType.getCanonicalType(),
+             IsDependent, IsInstantiationDependent,
+             /*VariablyModified=*/false, ContainsParameterPack) {
+    if (!DeducedAsType.isNull()) {
+      if (DeducedAsType->isDependentType())
+        setDependent();
+      if (DeducedAsType->isInstantiationDependentType())
+        setInstantiationDependent();
+      if (DeducedAsType->containsUnexpandedParameterPack())
+        setContainsUnexpandedParameterPack();
+    }
+  }
+
+public:
+  bool isSugared() const { return !isCanonicalUnqualified(); }
+  QualType desugar() const { return getCanonicalTypeInternal(); }
+
+  /// \brief Get the type deduced for this placeholder type, or null if it's
+  /// either not been deduced or was deduced to a dependent type.
+  QualType getDeducedType() const {
+    return !isCanonicalUnqualified() ? getCanonicalTypeInternal() : QualType();
+  }
+  bool isDeduced() const {
+    return !isCanonicalUnqualified() || isDependentType();
+  }
+
+  static bool classof(const Type *T) {
+    return T->getTypeClass() == Auto ||
+           T->getTypeClass() == DeducedTemplateSpecialization;
+  }
+};
+
+/// \brief Represents a C++11 auto or C++14 decltype(auto) type.
+class AutoType : public DeducedType, public llvm::FoldingSetNode {
+  AutoType(QualType DeducedAsType, AutoTypeKeyword Keyword,
+           bool IsDeducedAsDependent)
+      : DeducedType(Auto, DeducedAsType, IsDeducedAsDependent,
+                    IsDeducedAsDependent, /*ContainsPack=*/false) {
     AutoTypeBits.Keyword = (unsigned)Keyword;
   }
 
@@ -4115,18 +4184,6 @@ public:
   }
   AutoTypeKeyword getKeyword() const {
     return (AutoTypeKeyword)AutoTypeBits.Keyword;
-  }
-
-  bool isSugared() const { return !isCanonicalUnqualified(); }
-  QualType desugar() const { return getCanonicalTypeInternal(); }
-
-  /// \brief Get the type deduced for this auto type, or null if it's either
-  /// not been deduced or was deduced to a dependent type.
-  QualType getDeducedType() const {
-    return !isCanonicalUnqualified() ? getCanonicalTypeInternal() : QualType();
-  }
-  bool isDeduced() const {
-    return !isCanonicalUnqualified() || isDependentType();
   }
 
   void Profile(llvm::FoldingSetNodeID &ID) {
@@ -4142,6 +4199,43 @@ public:
 
   static bool classof(const Type *T) {
     return T->getTypeClass() == Auto;
+  }
+};
+
+/// \brief Represents a C++17 deduced template specialization type.
+class DeducedTemplateSpecializationType : public DeducedType,
+                                          public llvm::FoldingSetNode {
+  /// The name of the template whose arguments will be deduced.
+  TemplateName Template;
+
+  DeducedTemplateSpecializationType(TemplateName Template,
+                                    QualType DeducedAsType,
+                                    bool IsDeducedAsDependent)
+      : DeducedType(DeducedTemplateSpecialization, DeducedAsType,
+                    IsDeducedAsDependent || Template.isDependent(),
+                    IsDeducedAsDependent || Template.isInstantiationDependent(),
+                    Template.containsUnexpandedParameterPack()),
+        Template(Template) {}
+
+  friend class ASTContext;  // ASTContext creates these
+
+public:
+  /// Retrieve the name of the template that we are deducing.
+  TemplateName getTemplateName() const { return Template;}
+
+  void Profile(llvm::FoldingSetNodeID &ID) {
+    Profile(ID, getTemplateName(), getDeducedType(), isDependentType());
+  }
+
+  static void Profile(llvm::FoldingSetNodeID &ID, TemplateName Template,
+                      QualType Deduced, bool IsDependent) {
+    Template.Profile(ID);
+    ID.AddPointer(Deduced.getAsOpaquePtr());
+    ID.AddBoolean(IsDependent);
+  }
+
+  static bool classof(const Type *T) {
+    return T->getTypeClass() == DeducedTemplateSpecialization;
   }
 };
 
@@ -4340,6 +4434,9 @@ public:
   QualType getInjectedSpecializationType() const { return InjectedType; }
   const TemplateSpecializationType *getInjectedTST() const {
     return cast<TemplateSpecializationType>(InjectedType.getTypePtr());
+  }
+  TemplateName getTemplateName() const {
+    return getInjectedTST()->getTemplateName();
   }
 
   CXXRecordDecl *getDecl() const;
@@ -5714,10 +5811,6 @@ inline bool Type::isQueueT() const {
   return isSpecificBuiltinType(BuiltinType::OCLQueue);
 }
 
-inline bool Type::isNDRangeT() const {
-  return isSpecificBuiltinType(BuiltinType::OCLNDRange);
-}
-
 inline bool Type::isReserveIDT() const {
   return isSpecificBuiltinType(BuiltinType::OCLReserveID);
 }
@@ -5735,7 +5828,7 @@ inline bool Type::isPipeType() const {
 
 inline bool Type::isOpenCLSpecificType() const {
   return isSamplerT() || isEventT() || isImageType() || isClkEventT() ||
-         isQueueT() || isNDRangeT() || isReserveIDT() || isPipeType();
+         isQueueT() || isReserveIDT() || isPipeType();
 }
 
 inline bool Type::isTemplateTypeParmType() const {
@@ -5845,8 +5938,8 @@ inline bool Type::isBooleanType() const {
 }
 
 inline bool Type::isUndeducedType() const {
-  const AutoType *AT = getContainedAutoType();
-  return AT && !AT->isDeduced();
+  auto *DT = getContainedDeducedType();
+  return DT && !DT->isDeduced();
 }
 
 /// \brief Determines whether this is a type for which one can define
@@ -5926,6 +6019,38 @@ template <typename T> const T *Type::getAs() const {
   // If this is a typedef for the type, strip the typedef off without
   // losing all typedef information.
   return cast<T>(getUnqualifiedDesugaredType());
+}
+
+template <typename T> const T *Type::getAsAdjusted() const {
+  static_assert(!TypeIsArrayType<T>::value, "ArrayType cannot be used with getAsAdjusted!");
+
+  // If this is directly a T type, return it.
+  if (const T *Ty = dyn_cast<T>(this))
+    return Ty;
+
+  // If the canonical form of this type isn't the right kind, reject it.
+  if (!isa<T>(CanonicalType))
+    return nullptr;
+
+  // Strip off type adjustments that do not modify the underlying nature of the
+  // type.
+  const Type *Ty = this;
+  while (Ty) {
+    if (const auto *A = dyn_cast<AttributedType>(Ty))
+      Ty = A->getModifiedType().getTypePtr();
+    else if (const auto *E = dyn_cast<ElaboratedType>(Ty))
+      Ty = E->desugar().getTypePtr();
+    else if (const auto *P = dyn_cast<ParenType>(Ty))
+      Ty = P->desugar().getTypePtr();
+    else if (const auto *A = dyn_cast<AdjustedType>(Ty))
+      Ty = A->desugar().getTypePtr();
+    else
+      break;
+  }
+
+  // Just because the canonical type is correct does not mean we can use cast<>,
+  // since we may not have stripped off all the sugar down to the base type.
+  return dyn_cast<T>(Ty);
 }
 
 inline const ArrayType *Type::getAsArrayTypeUnsafe() const {

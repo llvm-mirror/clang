@@ -14,7 +14,7 @@
 #include "CGCXXABI.h"
 #include "CodeGenFunction.h"
 #include "CodeGenModule.h"
-#include "ConstantBuilder.h"
+#include "clang/CodeGen/ConstantInitBuilder.h"
 #include "clang/AST/CXXInheritance.h"
 #include "clang/AST/RecordLayout.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
@@ -284,6 +284,9 @@ void CodeGenFunction::EmitCallAndReturnForThunk(llvm::Constant *CalleePtr,
   if (isa<CXXDestructorDecl>(MD))
     CGM.getCXXABI().adjustCallArgsForDestructorThunk(*this, CurGD, CallArgs);
 
+#ifndef NDEBUG
+  unsigned PrefixArgs = CallArgs.size() - 1;
+#endif
   // Add the rest of the arguments.
   for (const ParmVarDecl *PD : MD->parameters())
     EmitDelegateCallArg(CallArgs, PD, SourceLocation());
@@ -292,7 +295,7 @@ void CodeGenFunction::EmitCallAndReturnForThunk(llvm::Constant *CalleePtr,
 
 #ifndef NDEBUG
   const CGFunctionInfo &CallFnInfo = CGM.getTypes().arrangeCXXMethodCall(
-      CallArgs, FPT, RequiredArgs::forPrototypePlus(FPT, 1, MD));
+      CallArgs, FPT, RequiredArgs::forPrototypePlus(FPT, 1, MD), PrefixArgs);
   assert(CallFnInfo.getRegParm() == CurFnInfo->getRegParm() &&
          CallFnInfo.isNoReturn() == CurFnInfo->isNoReturn() &&
          CallFnInfo.getCallingConvention() == CurFnInfo->getCallingConvention());
@@ -637,12 +640,27 @@ void CodeGenVTables::addVTableComponent(
   llvm_unreachable("Unexpected vtable component kind");
 }
 
-void CodeGenVTables::createVTableInitializer(ConstantArrayBuilder &builder,
+llvm::Type *CodeGenVTables::getVTableType(const VTableLayout &layout) {
+  SmallVector<llvm::Type *, 4> tys;
+  for (unsigned i = 0, e = layout.getNumVTables(); i != e; ++i) {
+    tys.push_back(llvm::ArrayType::get(CGM.Int8PtrTy, layout.getVTableSize(i)));
+  }
+
+  return llvm::StructType::get(CGM.getLLVMContext(), tys);
+}
+
+void CodeGenVTables::createVTableInitializer(ConstantStructBuilder &builder,
                                              const VTableLayout &layout,
                                              llvm::Constant *rtti) {
   unsigned nextVTableThunkIndex = 0;
-  for (unsigned i = 0, e = layout.vtable_components().size(); i != e; ++i) {
-    addVTableComponent(builder, layout, i, rtti, nextVTableThunkIndex);
+  for (unsigned i = 0, e = layout.getNumVTables(); i != e; ++i) {
+    auto vtableElem = builder.beginArray(CGM.Int8PtrTy);
+    size_t thisIndex = layout.getVTableOffset(i);
+    size_t nextIndex = thisIndex + layout.getVTableSize(i);
+    for (unsigned i = thisIndex; i != nextIndex; ++i) {
+      addVTableComponent(vtableElem, layout, i, rtti, nextVTableThunkIndex);
+    }
+    vtableElem.finishAndAddTo(builder);
   }
 }
 
@@ -670,8 +688,7 @@ CodeGenVTables::GenerateConstructionVTable(const CXXRecordDecl *RD,
                            Base.getBase(), Out);
   StringRef Name = OutName.str();
 
-  llvm::ArrayType *ArrayType =
-      llvm::ArrayType::get(CGM.Int8PtrTy, VTLayout->vtable_components().size());
+  llvm::Type *VTType = getVTableType(*VTLayout);
 
   // Construction vtable symbols are not part of the Itanium ABI, so we cannot
   // guarantee that they actually will be available externally. Instead, when
@@ -683,7 +700,7 @@ CodeGenVTables::GenerateConstructionVTable(const CXXRecordDecl *RD,
 
   // Create the variable that will hold the construction vtable.
   llvm::GlobalVariable *VTable =
-    CGM.CreateOrReplaceCXXRuntimeVariable(Name, ArrayType, Linkage);
+    CGM.CreateOrReplaceCXXRuntimeVariable(Name, VTType, Linkage);
   CGM.setGlobalVisibility(VTable, RD);
 
   // V-tables are always unnamed_addr.
@@ -694,7 +711,7 @@ CodeGenVTables::GenerateConstructionVTable(const CXXRecordDecl *RD,
 
   // Create and set the initializer.
   ConstantInitBuilder builder(CGM);
-  auto components = builder.beginArray(CGM.Int8PtrTy);
+  auto components = builder.beginStruct();
   createVTableInitializer(components, *VTLayout, RTTI);
   components.finishAndSetAsInitializer(VTable);
 
@@ -730,9 +747,10 @@ CodeGenModule::getVTableLinkage(const CXXRecordDecl *RD) {
     switch (keyFunction->getTemplateSpecializationKind()) {
       case TSK_Undeclared:
       case TSK_ExplicitSpecialization:
-        assert((def || CodeGenOpts.OptimizationLevel > 0) &&
-               "Shouldn't query vtable linkage without key function or "
-               "optimizations");
+        assert((def || CodeGenOpts.OptimizationLevel > 0 ||
+                CodeGenOpts.getDebugInfo() != codegenoptions::NoDebugInfo) &&
+               "Shouldn't query vtable linkage without key function, "
+               "optimizations, or debug info");
         if (!def && CodeGenOpts.OptimizationLevel > 0)
           return llvm::GlobalVariable::AvailableExternallyLinkage;
 
@@ -928,7 +946,7 @@ bool CodeGenModule::HasHiddenLTOVisibility(const CXXRecordDecl *RD) {
 
 void CodeGenModule::EmitVTableTypeMetadata(llvm::GlobalVariable *VTable,
                                            const VTableLayout &VTLayout) {
-  if (!getCodeGenOpts().PrepareForLTO)
+  if (!getCodeGenOpts().LTOUnit)
     return;
 
   CharUnits PointerWidth =
@@ -938,7 +956,10 @@ void CodeGenModule::EmitVTableTypeMetadata(llvm::GlobalVariable *VTable,
   std::vector<BSEntry> BitsetEntries;
   // Create a bit set entry for each address point.
   for (auto &&AP : VTLayout.getAddressPoints())
-    BitsetEntries.push_back(std::make_pair(AP.first.getBase(), AP.second));
+    BitsetEntries.push_back(
+        std::make_pair(AP.first.getBase(),
+                       VTLayout.getVTableOffset(AP.second.VTableIndex) +
+                           AP.second.AddressPointIndex));
 
   // Sort the bit set entries for determinism.
   std::sort(BitsetEntries.begin(), BitsetEntries.end(),

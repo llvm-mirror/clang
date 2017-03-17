@@ -562,8 +562,7 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
       FT = dyn_cast<FunctionProtoType>(AFT);
 
     if (IT == FuncSig) {
-      assert(FT && "We must have a written prototype in this case.");
-      switch (FT->getCallConv()) {
+      switch (AFT->getCallConv()) {
       case CC_C: POut << "__cdecl "; break;
       case CC_X86StdCall: POut << "__stdcall "; break;
       case CC_X86FastCall: POut << "__fastcall "; break;
@@ -587,12 +586,15 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
       if (FT->isVariadic()) {
         if (FD->getNumParams()) POut << ", ";
         POut << "...";
+      } else if ((IT == FuncSig || !Context.getLangOpts().CPlusPlus) &&
+                 !Decl->getNumParams()) {
+        POut << "void";
       }
     }
     POut << ")";
 
     if (const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(FD)) {
-      const FunctionType *FT = MD->getType()->castAs<FunctionType>();
+      assert(FT && "We must have a written prototype in this case.");
       if (FT->isConst())
         POut << " const";
       if (FT->isVolatile())
@@ -782,33 +784,33 @@ FloatingLiteral::Create(const ASTContext &C, EmptyShell Empty) {
 const llvm::fltSemantics &FloatingLiteral::getSemantics() const {
   switch(FloatingLiteralBits.Semantics) {
   case IEEEhalf:
-    return llvm::APFloat::IEEEhalf;
+    return llvm::APFloat::IEEEhalf();
   case IEEEsingle:
-    return llvm::APFloat::IEEEsingle;
+    return llvm::APFloat::IEEEsingle();
   case IEEEdouble:
-    return llvm::APFloat::IEEEdouble;
+    return llvm::APFloat::IEEEdouble();
   case x87DoubleExtended:
-    return llvm::APFloat::x87DoubleExtended;
+    return llvm::APFloat::x87DoubleExtended();
   case IEEEquad:
-    return llvm::APFloat::IEEEquad;
+    return llvm::APFloat::IEEEquad();
   case PPCDoubleDouble:
-    return llvm::APFloat::PPCDoubleDouble;
+    return llvm::APFloat::PPCDoubleDouble();
   }
   llvm_unreachable("Unrecognised floating semantics");
 }
 
 void FloatingLiteral::setSemantics(const llvm::fltSemantics &Sem) {
-  if (&Sem == &llvm::APFloat::IEEEhalf)
+  if (&Sem == &llvm::APFloat::IEEEhalf())
     FloatingLiteralBits.Semantics = IEEEhalf;
-  else if (&Sem == &llvm::APFloat::IEEEsingle)
+  else if (&Sem == &llvm::APFloat::IEEEsingle())
     FloatingLiteralBits.Semantics = IEEEsingle;
-  else if (&Sem == &llvm::APFloat::IEEEdouble)
+  else if (&Sem == &llvm::APFloat::IEEEdouble())
     FloatingLiteralBits.Semantics = IEEEdouble;
-  else if (&Sem == &llvm::APFloat::x87DoubleExtended)
+  else if (&Sem == &llvm::APFloat::x87DoubleExtended())
     FloatingLiteralBits.Semantics = x87DoubleExtended;
-  else if (&Sem == &llvm::APFloat::IEEEquad)
+  else if (&Sem == &llvm::APFloat::IEEEquad())
     FloatingLiteralBits.Semantics = IEEEquad;
-  else if (&Sem == &llvm::APFloat::PPCDoubleDouble)
+  else if (&Sem == &llvm::APFloat::PPCDoubleDouble())
     FloatingLiteralBits.Semantics = PPCDoubleDouble;
   else
     llvm_unreachable("Unknown floating semantics");
@@ -820,7 +822,7 @@ void FloatingLiteral::setSemantics(const llvm::fltSemantics &Sem) {
 double FloatingLiteral::getValueAsApproximateDouble() const {
   llvm::APFloat V = getValue();
   bool ignored;
-  V.convert(llvm::APFloat::IEEEdouble, llvm::APFloat::rmNearestTiesToEven,
+  V.convert(llvm::APFloat::IEEEdouble(), llvm::APFloat::rmNearestTiesToEven,
             &ignored);
   return V.convertToDouble();
 }
@@ -1569,8 +1571,9 @@ bool CastExpr::CastConsistency() const {
     goto CheckNoBasePath;
 
   case CK_AddressSpaceConversion:
-    assert(getType()->isPointerType());
-    assert(getSubExpr()->getType()->isPointerType());
+    assert(getType()->isPointerType() || getType()->isBlockPointerType());
+    assert(getSubExpr()->getType()->isPointerType() ||
+           getSubExpr()->getType()->isBlockPointerType());
     assert(getType()->getPointeeType().getAddressSpace() !=
            getSubExpr()->getType()->getPointeeType().getAddressSpace());
   // These should not have an inheritance path.
@@ -1603,6 +1606,7 @@ bool CastExpr::CastConsistency() const {
   case CK_ARCReclaimReturnedObject:
   case CK_ARCExtendBlockObject:
   case CK_ZeroToOCLEvent:
+  case CK_ZeroToOCLQueue:
   case CK_IntToOCLSampler:
     assert(!getType()->isBooleanType() && "unheralded conversion to bool");
     goto CheckNoBasePath;
@@ -1876,6 +1880,11 @@ bool InitListExpr::isTransparent() const {
   // Otherwise, we're sugar if and only if we have exactly one initializer that
   // is of the same type.
   if (getNumInits() != 1 || !getInit(0))
+    return false;
+
+  // Don't confuse aggregate initialization of a struct X { X &x; }; with a
+  // transparent struct copy.
+  if (!getInit(0)->isRValue() && getType()->isRecordType())
     return false;
 
   return getType().getCanonicalType() ==
@@ -2899,6 +2908,7 @@ bool Expr::HasSideEffects(const ASTContext &Ctx,
   case UnaryExprOrTypeTraitExprClass:
   case AddrLabelExprClass:
   case GNUNullExprClass:
+  case ArrayInitIndexExprClass:
   case NoInitExprClass:
   case CXXBoolLiteralExprClass:
   case CXXNullPtrLiteralExprClass:
@@ -2948,6 +2958,7 @@ bool Expr::HasSideEffects(const ASTContext &Ctx,
   case CXXNewExprClass:
   case CXXDeleteExprClass:
   case CoawaitExprClass:
+  case DependentCoawaitExprClass:
   case CoyieldExprClass:
     // These always have a side-effect.
     return true;
@@ -2975,6 +2986,7 @@ bool Expr::HasSideEffects(const ASTContext &Ctx,
   case ExtVectorElementExprClass:
   case DesignatedInitExprClass:
   case DesignatedInitUpdateExprClass:
+  case ArrayInitLoopExprClass:
   case ParenListExprClass:
   case CXXPseudoDestructorExprClass:
   case CXXStdInitializerListExprClass:

@@ -66,6 +66,7 @@
 #include <memory>
 #include <new>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -167,6 +168,8 @@ class ASTContext : public RefCountedBase<ASTContext> {
   mutable llvm::FoldingSet<DependentUnaryTransformType>
     DependentUnaryTransformTypes;
   mutable llvm::FoldingSet<AutoType> AutoTypes;
+  mutable llvm::FoldingSet<DeducedTemplateSpecializationType>
+    DeducedTemplateSpecializationTypes;
   mutable llvm::FoldingSet<AtomicType> AtomicTypes;
   llvm::FoldingSet<AttributedType> AttributedTypes;
   mutable llvm::FoldingSet<PipeType> PipeTypes;
@@ -398,11 +401,11 @@ private:
   llvm::DenseMap<const VarDecl *, TemplateOrSpecializationInfo>
   TemplateOrInstantiation;
 
-  /// \brief Keeps track of the declaration from which a UsingDecl was
+  /// \brief Keeps track of the declaration from which a using declaration was
   /// created during instantiation.
   ///
-  /// The source declaration is always a UsingDecl, an UnresolvedUsingValueDecl,
-  /// or an UnresolvedUsingTypenameDecl.
+  /// The source and target declarations are always a UsingDecl, an
+  /// UnresolvedUsingValueDecl, or an UnresolvedUsingTypenameDecl.
   ///
   /// For example:
   /// \code
@@ -421,7 +424,7 @@ private:
   ///
   /// This mapping will contain an entry that maps from the UsingDecl in
   /// B<int> to the UnresolvedUsingDecl in B<T>.
-  llvm::DenseMap<UsingDecl *, NamedDecl *> InstantiatedFromUsingDecl;
+  llvm::DenseMap<NamedDecl *, NamedDecl *> InstantiatedFromUsingDecl;
 
   llvm::DenseMap<UsingShadowDecl*, UsingShadowDecl*>
     InstantiatedFromUsingShadowDecl;
@@ -849,11 +852,11 @@ public:
   /// \brief If the given using decl \p Inst is an instantiation of a
   /// (possibly unresolved) using decl from a template instantiation,
   /// return it.
-  NamedDecl *getInstantiatedFromUsingDecl(UsingDecl *Inst);
+  NamedDecl *getInstantiatedFromUsingDecl(NamedDecl *Inst);
 
   /// \brief Remember that the using decl \p Inst is an instantiation
   /// of the using decl \p Pattern of a class template.
-  void setInstantiatedFromUsingDecl(UsingDecl *Inst, NamedDecl *Pattern);
+  void setInstantiatedFromUsingDecl(NamedDecl *Inst, NamedDecl *Pattern);
 
   void setInstantiatedFromUsingShadowDecl(UsingShadowDecl *Inst,
                                           UsingShadowDecl *Pattern);
@@ -973,7 +976,7 @@ public:
   CanQualType SingletonId;
 #include "clang/Basic/OpenCLImageTypes.def"
   CanQualType OCLSamplerTy, OCLEventTy, OCLClkEventTy;
-  CanQualType OCLQueueTy, OCLNDRangeTy, OCLReserveIDTy;
+  CanQualType OCLQueueTy, OCLReserveIDTy;
   CanQualType OMPArraySectionTy;
 
   // Types for deductions in C++0x [stmt.ranged]'s desugaring. Built on demand.
@@ -1108,6 +1111,10 @@ public:
 
   /// \brief Change the result type of a function type once it is deduced.
   void adjustDeducedFunctionResultType(FunctionDecl *FD, QualType ResultType);
+
+  /// \brief Determine whether two function types are the same, ignoring
+  /// exception specifications in cases where they're part of the type.
+  bool hasSameFunctionTypeIgnoringExceptionSpec(QualType T, QualType U);
 
   /// \brief Change the exception specification on a function once it is
   /// delay-parsed, instantiated, or computed.
@@ -1351,6 +1358,14 @@ public:
       ElaboratedTypeKeyword Keyword, NestedNameSpecifier *NNS,
       const IdentifierInfo *Name, ArrayRef<TemplateArgument> Args) const;
 
+  TemplateArgument getInjectedTemplateArg(NamedDecl *ParamDecl);
+
+  /// Get a template argument list with one argument per template parameter
+  /// in a template parameter list, such as for the injected class name of
+  /// a class template.
+  void getInjectedTemplateArgs(const TemplateParameterList *Params,
+                               SmallVectorImpl<TemplateArgument> &Args);
+
   QualType getPackExpansionType(QualType Pattern,
                                 Optional<unsigned> NumExpansions);
 
@@ -1401,6 +1416,11 @@ public:
 
   /// \brief C++11 deduction pattern for 'auto &&' type.
   QualType getAutoRRefDeductType() const;
+
+  /// \brief C++1z deduced class template specialization type.
+  QualType getDeducedTemplateSpecializationType(TemplateName Template,
+                                                QualType DeducedType,
+                                                bool IsDependent) const;
 
   /// \brief Return the unique reference to the type for the specified TagDecl
   /// (struct/union/class/enum) decl.
@@ -2295,6 +2315,10 @@ public:
       return (*AddrSpaceMap)[AS - LangAS::Offset];
   }
 
+  /// Get target-dependent integer value for null pointer which is used for
+  /// constant folding.
+  uint64_t getTargetNullPointerValue(QualType QT) const;
+
   bool addressSpaceMapManglingFor(unsigned AS) const {
     return AddrSpaceMapMangling || 
            AS < LangAS::Offset || 
@@ -2464,6 +2488,16 @@ public:
   /// when it is called.
   void AddDeallocation(void (*Callback)(void*), void *Data);
 
+  /// If T isn't trivially destructible, calls AddDeallocation to register it
+  /// for destruction.
+  template <typename T>
+  void addDestruction(T *Ptr) {
+    if (!std::is_trivially_destructible<T>::value) {
+      auto DestroyPtr = [](void *V) { static_cast<T *>(V)->~T(); };
+      AddDeallocation(DestroyPtr, Ptr);
+    }
+  }
+
   GVALinkage GetGVALinkageForFunction(const FunctionDecl *FD) const;
   GVALinkage GetGVALinkageForVariable(const VarDecl *VD);
 
@@ -2473,7 +2507,7 @@ public:
   ///
   /// \returns true if the function/var must be CodeGen'ed/deserialized even if
   /// it is not used.
-  bool DeclMustBeEmitted(const Decl *D);
+  bool DeclMustBeEmitted(const Decl *D, bool ForModularCodegen = false);
 
   const CXXConstructorDecl *
   getCopyConstructorForExceptionObject(CXXRecordDecl *RD);

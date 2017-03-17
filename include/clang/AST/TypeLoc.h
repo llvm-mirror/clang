@@ -70,6 +70,13 @@ public:
     return t;
   }
 
+  /// \brief Convert to the specified TypeLoc type, returning a null TypeLoc if
+  /// this TypeLock is not of the desired type. It will consider type
+  /// adjustments from a type that wad written as a T to another type that is
+  /// still canonically a T (ignores parens, attributes, elaborated types, etc).
+  template <typename T>
+  T getAsAdjusted() const;
+
   /// The kinds of TypeLocs.  Equivalent to the Type::TypeClass enum,
   /// except it also defines a Qualified enum that corresponds to the
   /// QualifiedLoc class.
@@ -1351,6 +1358,19 @@ class FunctionTypeLoc : public ConcreteTypeLoc<UnqualTypeLoc,
                                                FunctionTypeLoc,
                                                FunctionType,
                                                FunctionLocInfo> {
+  bool hasExceptionSpec() const {
+    if (auto *FPT = dyn_cast<FunctionProtoType>(getTypePtr())) {
+      return FPT->hasExceptionSpec();
+    }
+    return false;
+  }
+
+  SourceRange *getExceptionSpecRangePtr() const {
+    assert(hasExceptionSpec() && "No exception spec range");
+    // After the Info comes the ParmVarDecl array, and after that comes the
+    // exception specification information.
+    return (SourceRange *)(getParmArray() + getNumParams());
+  }
 public:
   SourceLocation getLocalRangeBegin() const {
     return getLocalData()->LocalRangeBegin;
@@ -1382,6 +1402,16 @@ public:
 
   SourceRange getParensRange() const {
     return SourceRange(getLParenLoc(), getRParenLoc());
+  }
+
+  SourceRange getExceptionSpecRange() const {
+    if (hasExceptionSpec())
+      return *getExceptionSpecRangePtr();
+    return SourceRange();
+  }
+  void setExceptionSpecRange(SourceRange R) {
+    if (hasExceptionSpec())
+      *getExceptionSpecRangePtr() = R;
   }
 
   ArrayRef<ParmVarDecl *> getParams() const {
@@ -1416,12 +1446,15 @@ public:
     setLocalRangeEnd(Loc);
     for (unsigned i = 0, e = getNumParams(); i != e; ++i)
       setParam(i, nullptr);
+    if (hasExceptionSpec())
+      setExceptionSpecRange(Loc);
   }
 
   /// \brief Returns the size of the type source info data block that is
   /// specific to this type.
   unsigned getExtraLocalDataSize() const {
-    return getNumParams() * sizeof(ParmVarDecl *);
+    unsigned ExceptSpecSize = hasExceptionSpec() ? sizeof(SourceRange) : 0;
+    return (getNumParams() * sizeof(ParmVarDecl *)) + ExceptSpecSize;
   }
 
   unsigned getExtraLocalDataAlignment() const { return alignof(ParmVarDecl *); }
@@ -1801,9 +1834,25 @@ public:
   }
 };
 
-class AutoTypeLoc : public InheritingConcreteTypeLoc<TypeSpecTypeLoc,
-                                                        AutoTypeLoc,
-                                                        AutoType> {
+class DeducedTypeLoc
+    : public InheritingConcreteTypeLoc<TypeSpecTypeLoc, DeducedTypeLoc,
+                                       DeducedType> {};
+
+class AutoTypeLoc
+    : public InheritingConcreteTypeLoc<DeducedTypeLoc, AutoTypeLoc, AutoType> {
+};
+
+class DeducedTemplateSpecializationTypeLoc
+    : public InheritingConcreteTypeLoc<DeducedTypeLoc,
+                                       DeducedTemplateSpecializationTypeLoc,
+                                       DeducedTemplateSpecializationType> {
+public:
+  SourceLocation getTemplateNameLoc() const {
+    return getNameLoc();
+  }
+  void setTemplateNameLoc(SourceLocation Loc) {
+    setNameLoc(Loc);
+  }
 };
 
 struct ElaboratedLocInfo {
@@ -2146,6 +2195,24 @@ public:
 
   QualType getInnerType() const { return this->getTypePtr()->getElementType(); }
 };
+
+template <typename T>
+inline T TypeLoc::getAsAdjusted() const {
+  TypeLoc Cur = *this;
+  while (!T::isKind(Cur)) {
+    if (auto PTL = Cur.getAs<ParenTypeLoc>())
+      Cur = PTL.getInnerLoc();
+    else if (auto ATL = Cur.getAs<AttributedTypeLoc>())
+      Cur = ATL.getModifiedLoc();
+    else if (auto ETL = Cur.getAs<ElaboratedTypeLoc>())
+      Cur = ETL.getNamedTypeLoc();
+    else if (auto ATL = Cur.getAs<AdjustedTypeLoc>())
+      Cur = ATL.getOriginalLoc();
+    else
+      break;
+  }
+  return Cur.getAs<T>();
+}
 }
 
 #endif

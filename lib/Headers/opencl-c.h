@@ -16,6 +16,12 @@
 #endif //cl_khr_depth_images
 #endif //__OPENCL_C_VERSION__ >= CL_VERSION_2_0
 
+#if __OPENCL_C_VERSION__ < CL_VERSION_2_0
+#ifdef cl_khr_3d_image_writes
+#pragma OPENCL EXTENSION cl_khr_3d_image_writes : enable
+#endif //cl_khr_3d_image_writes
+#endif //__OPENCL_C_VERSION__ < CL_VERSION_2_0
+
 #define __ovld __attribute__((overloadable))
 #define __conv __attribute__((convergent))
 
@@ -15490,6 +15496,10 @@ int printf(__constant const char* st, ...);
 #define CLK_FILTER_NEAREST              0x10
 #define CLK_FILTER_LINEAR               0x20
 
+#ifdef cl_khr_gl_msaa_sharing
+#pragma OPENCL EXTENSION cl_khr_gl_msaa_sharing : enable
+#endif //cl_khr_gl_msaa_sharing
+
 /**
  * Use the coordinate (coord.xy) to do an element lookup in
  * the 2D image object specified by image.
@@ -15991,9 +16001,11 @@ void __ovld write_imagef(write_only image1d_array_t image_array, int2 coord, flo
 void __ovld write_imagei(write_only image1d_array_t image_array, int2 coord, int4 color);
 void __ovld write_imageui(write_only image1d_array_t image_array, int2 coord, uint4 color);
 
+#ifdef cl_khr_3d_image_writes
 void __ovld write_imagef(write_only image3d_t image, int4 coord, float4 color);
 void __ovld write_imagei(write_only image3d_t image, int4 coord, int4 color);
 void __ovld write_imageui(write_only image3d_t image, int4 coord, uint4 color);
+#endif
 
 #ifdef cl_khr_depth_images
 void __ovld write_imagef(write_only image2d_depth_t image, int2 coord, float color);
@@ -16021,16 +16033,20 @@ void __ovld write_imageui(write_only image2d_array_t image_array, int4 coord, in
 void __ovld write_imagef(write_only image2d_depth_t image, int2 coord, int lod, float color);
 void __ovld write_imagef(write_only image2d_array_depth_t image, int4 coord, int lod, float color);
 
+#ifdef cl_khr_3d_image_writes
 void __ovld write_imagef(write_only image3d_t image, int4 coord, int lod, float4 color);
 void __ovld write_imagei(write_only image3d_t image, int4 coord, int lod, int4 color);
 void __ovld write_imageui(write_only image3d_t image, int4 coord, int lod, uint4 color);
+#endif
 #endif //cl_khr_mipmap_image
 
 // Image write functions for half4 type
 #ifdef cl_khr_fp16
 void __ovld write_imageh(write_only image1d_t image, int coord, half4 color);
 void __ovld write_imageh(write_only image2d_t image, int2 coord, half4 color);
+#ifdef cl_khr_3d_image_writes
 void __ovld write_imageh(write_only image3d_t image, int4 coord, half4 color);
+#endif
 void __ovld write_imageh(write_only image1d_array_t image, int2 coord, half4 color);
 void __ovld write_imageh(write_only image2d_array_t image, int4 coord, half4 color);
 void __ovld write_imageh(write_only image1d_buffer_t image, int coord, half4 color);
@@ -16058,9 +16074,11 @@ void __ovld write_imagef(read_write image1d_array_t image_array, int2 coord, flo
 void __ovld write_imagei(read_write image1d_array_t image_array, int2 coord, int4 color);
 void __ovld write_imageui(read_write image1d_array_t image_array, int2 coord, uint4 color);
 
+#ifdef cl_khr_3d_image_writes
 void __ovld write_imagef(read_write image3d_t image, int4 coord, float4 color);
 void __ovld write_imagei(read_write image3d_t image, int4 coord, int4 color);
 void __ovld write_imageui(read_write image3d_t image, int4 coord, uint4 color);
+#endif
 
 #ifdef cl_khr_depth_images
 void __ovld write_imagef(read_write image2d_depth_t image, int2 coord, float color);
@@ -16087,16 +16105,20 @@ void __ovld write_imageui(read_write image2d_array_t image_array, int4 coord, in
 void __ovld write_imagef(read_write image2d_depth_t image, int2 coord, int lod, float color);
 void __ovld write_imagef(read_write image2d_array_depth_t image, int4 coord, int lod, float color);
 
+#ifdef cl_khr_3d_image_writes
 void __ovld write_imagef(read_write image3d_t image, int4 coord, int lod, float4 color);
 void __ovld write_imagei(read_write image3d_t image, int4 coord, int lod, int4 color);
 void __ovld write_imageui(read_write image3d_t image, int4 coord, int lod, uint4 color);
+#endif
 #endif //cl_khr_mipmap_image
 
 // Image write functions for half4 type
 #ifdef cl_khr_fp16
 void __ovld write_imageh(read_write image1d_t image, int coord, half4 color);
 void __ovld write_imageh(read_write image2d_t image, int2 coord, half4 color);
+#ifdef cl_khr_3d_image_writes
 void __ovld write_imageh(read_write image3d_t image, int4 coord, half4 color);
+#endif
 void __ovld write_imageh(read_write image1d_array_t image, int2 coord, half4 color);
 void __ovld write_imageh(read_write image2d_array_t image, int4 coord, half4 color);
 void __ovld write_imageh(read_write image1d_buffer_t image, int coord, half4 color);
@@ -16114,7 +16136,9 @@ void __ovld write_imageh(read_write image1d_buffer_t image, int coord, half4 col
 int __ovld __cnfn get_image_width(read_only image1d_t image);
 int __ovld __cnfn get_image_width(read_only image1d_buffer_t image);
 int __ovld __cnfn get_image_width(read_only image2d_t image);
+#ifdef cl_khr_3d_image_writes
 int __ovld __cnfn get_image_width(read_only image3d_t image);
+#endif
 int __ovld __cnfn get_image_width(read_only image1d_array_t image);
 int __ovld __cnfn get_image_width(read_only image2d_array_t image);
 #ifdef cl_khr_depth_images
@@ -16131,7 +16155,9 @@ int __ovld __cnfn get_image_width(read_only image2d_array_msaa_depth_t image);
 int __ovld __cnfn get_image_width(write_only image1d_t image);
 int __ovld __cnfn get_image_width(write_only image1d_buffer_t image);
 int __ovld __cnfn get_image_width(write_only image2d_t image);
+#ifdef cl_khr_3d_image_writes
 int __ovld __cnfn get_image_width(write_only image3d_t image);
+#endif
 int __ovld __cnfn get_image_width(write_only image1d_array_t image);
 int __ovld __cnfn get_image_width(write_only image2d_array_t image);
 #ifdef cl_khr_depth_images
@@ -16182,7 +16208,9 @@ int __ovld __cnfn get_image_height(read_only image2d_array_msaa_depth_t image);
 #endif //cl_khr_gl_msaa_sharing
 
 int __ovld __cnfn get_image_height(write_only image2d_t image);
+#ifdef cl_khr_3d_image_writes
 int __ovld __cnfn get_image_height(write_only image3d_t image);
+#endif
 int __ovld __cnfn get_image_height(write_only image2d_array_t image);
 #ifdef cl_khr_depth_images
 int __ovld __cnfn get_image_height(write_only image2d_depth_t image);
@@ -16216,7 +16244,9 @@ int __ovld __cnfn get_image_height(read_write image2d_array_msaa_depth_t image);
  */
 int __ovld __cnfn get_image_depth(read_only image3d_t image);
 
+#ifdef cl_khr_3d_image_writes
 int __ovld __cnfn get_image_depth(write_only image3d_t image);
+#endif
 
 #if __OPENCL_C_VERSION__ >= CL_VERSION_2_0
 int __ovld __cnfn get_image_depth(read_write image3d_t image);
@@ -16234,7 +16264,9 @@ int __ovld get_image_num_mip_levels(read_only image3d_t image);
 
 int __ovld get_image_num_mip_levels(write_only image1d_t image);
 int __ovld get_image_num_mip_levels(write_only image2d_t image);
+#ifdef cl_khr_3d_image_writes
 int __ovld get_image_num_mip_levels(write_only image3d_t image);
+#endif
 
 #if __OPENCL_C_VERSION__ >= CL_VERSION_2_0
 int __ovld get_image_num_mip_levels(read_write image1d_t image);
@@ -16320,7 +16352,9 @@ int __ovld __cnfn get_image_channel_data_type(read_only image2d_array_msaa_depth
 int __ovld __cnfn get_image_channel_data_type(write_only image1d_t image);
 int __ovld __cnfn get_image_channel_data_type(write_only image1d_buffer_t image);
 int __ovld __cnfn get_image_channel_data_type(write_only image2d_t image);
+#ifdef cl_khr_3d_image_writes
 int __ovld __cnfn get_image_channel_data_type(write_only image3d_t image);
+#endif
 int __ovld __cnfn get_image_channel_data_type(write_only image1d_array_t image);
 int __ovld __cnfn get_image_channel_data_type(write_only image2d_array_t image);
 #ifdef cl_khr_depth_images
@@ -16414,7 +16448,9 @@ int __ovld __cnfn get_image_channel_order(read_only image2d_array_msaa_depth_t i
 int __ovld __cnfn get_image_channel_order(write_only image1d_t image);
 int __ovld __cnfn get_image_channel_order(write_only image1d_buffer_t image);
 int __ovld __cnfn get_image_channel_order(write_only image2d_t image);
+#ifdef cl_khr_3d_image_writes
 int __ovld __cnfn get_image_channel_order(write_only image3d_t image);
+#endif
 int __ovld __cnfn get_image_channel_order(write_only image1d_array_t image);
 int __ovld __cnfn get_image_channel_order(write_only image2d_array_t image);
 #ifdef cl_khr_depth_images
@@ -16500,7 +16536,9 @@ int2 __ovld __cnfn get_image_dim(read_write image2d_array_msaa_depth_t image);
  * component and the w component is 0.
  */
 int4 __ovld __cnfn get_image_dim(read_only image3d_t image);
+#ifdef cl_khr_3d_image_writes
 int4 __ovld __cnfn get_image_dim(write_only image3d_t image);
+#endif
 #if __OPENCL_C_VERSION__ >= CL_VERSION_2_0
 int4 __ovld __cnfn get_image_dim(read_write image3d_t image);
 #endif //__OPENCL_C_VERSION__ >= CL_VERSION_2_0
@@ -16710,16 +16748,12 @@ typedef int clk_profiling_info;
 
 #define MAX_WORK_DIM        3
 
-// ToDo: Remove definition of ndrange_t in Clang as an opaque type and add back
-// the following ndrange_t definition.
-#if 0
 typedef struct {
     unsigned int workDimension;
     size_t globalWorkOffset[MAX_WORK_DIM];
     size_t globalWorkSize[MAX_WORK_DIM];
     size_t localWorkSize[MAX_WORK_DIM];
 } ndrange_t;
-#endif
 
 ndrange_t __ovld ndrange_1D(size_t);
 ndrange_t __ovld ndrange_1D(size_t, size_t);

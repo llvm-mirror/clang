@@ -24,17 +24,17 @@ namespace std {
   }
 } // end namespace std
 // CHECK-ELIDE-NOTREE: no matching function for call to 'f'
-// CHECK-ELIDE-NOTREE: candidate function not viable: no known conversion from 'vector<std::basic_string>' to 'vector<versa_string>' for 1st argument
+// CHECK-ELIDE-NOTREE: candidate function not viable: no known conversion from 'vector<std::string>' to 'vector<string>' for 1st argument
 // CHECK-NOELIDE-NOTREE: no matching function for call to 'f'
-// CHECK-NOELIDE-NOTREE: candidate function not viable: no known conversion from 'vector<std::basic_string>' to 'vector<versa_string>' for 1st argument
+// CHECK-NOELIDE-NOTREE: candidate function not viable: no known conversion from 'vector<std::string>' to 'vector<string>' for 1st argument
 // CHECK-ELIDE-TREE: no matching function for call to 'f'
 // CHECK-ELIDE-TREE: candidate function not viable: no known conversion from argument type to parameter type for 1st argument
 // CHECK-ELIDE-TREE:   vector<
-// CHECK-ELIDE-TREE:     [std::basic_string != versa_string]>
+// CHECK-ELIDE-TREE:     [std::string != string]>
 // CHECK-NOELIDE-TREE: no matching function for call to 'f'
 // CHECK-NOELIDE-TREE: candidate function not viable: no known conversion from argument type to parameter type for 1st argument
 // CHECK-NOELIDE-TREE:   vector<
-// CHECK-NOELIDE-TREE:     [std::basic_string != versa_string]>
+// CHECK-NOELIDE-TREE:     [std::string != string]>
 
 template <int... A>
 class I1{};
@@ -1265,7 +1265,7 @@ void test() {
   foo<BoolT<true>>(X);
 }
 // CHECK-ELIDE-NOTREE: no matching function for call to 'foo'
-// CHECK-ELIDE-NOTREE: candidate function [with T = BoolArgumentBitExtended::BoolT<true>] not viable: no known conversion from 'BoolT<false>' to 'BoolT<true>' for 1st argument
+// CHECK-ELIDE-NOTREE: candidate function not viable: no known conversion from 'BoolT<false>' to 'BoolT<true>' for 1st argument
 }
 
 namespace DifferentIntegralTypes {
@@ -1401,7 +1401,7 @@ void run() {
   f(1, integral_constant<bool, true>{});
 }
 // CHECK-ELIDE-NOTREE: error: no matching function for call to 'f'
-// CHECK-ELIDE-NOTREE: note: candidate function [with T = int] not viable: no known conversion from 'integral_constant<[...], true>' to 'integral_constant<[...], false>' for 2nd argument
+// CHECK-ELIDE-NOTREE: note: candidate function not viable: no known conversion from 'integral_constant<[...], true>' to 'integral_constant<[...], false>' for 2nd argument
 }
 
 namespace ZeroArgs {
@@ -1454,7 +1454,7 @@ void run() {
   D<X::X1>(VectorType<X::X2>());
 }
 // CHECK-ELIDE-NOTREE: error: no matching function for call to 'D'
-// CHECK-ELIDE-NOTREE: note: candidate function [with x = TypeAlias::X::X1] not viable: no known conversion from 'VectorType<X::X2>' to 'const VectorType<(TypeAlias::X)0>' for 1st argument
+// CHECK-ELIDE-NOTREE: note: candidate function not viable: no known conversion from 'VectorType<X::X2>' to 'const VectorType<(TypeAlias::X)0>' for 1st argument
 }
 
 namespace TypeAlias2 {

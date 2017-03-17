@@ -97,6 +97,10 @@ EHPersonality::GNU_CPlusPlus_SEH = { "__gxx_personality_seh0", nullptr };
 const EHPersonality
 EHPersonality::GNU_ObjC = {"__gnu_objc_personality_v0", "objc_exception_throw"};
 const EHPersonality
+EHPersonality::GNU_ObjC_SJLJ = {"__gnu_objc_personality_sj0", "objc_exception_throw"};
+const EHPersonality
+EHPersonality::GNU_ObjC_SEH = {"__gnu_objc_personality_seh0", "objc_exception_throw"};
+const EHPersonality
 EHPersonality::GNU_ObjCXX = { "__gnustep_objcxx_personality_v0", nullptr };
 const EHPersonality
 EHPersonality::GNUstep_ObjC = { "__gnustep_objc_personality_v0", nullptr };
@@ -137,6 +141,10 @@ static const EHPersonality &getObjCPersonality(const llvm::Triple &T,
     // fallthrough
   case ObjCRuntime::GCC:
   case ObjCRuntime::ObjFW:
+    if (L.SjLjExceptions)
+      return EHPersonality::GNU_ObjC_SJLJ;
+    else if (useLibGCCSEHPersonality(T))
+      return EHPersonality::GNU_ObjC_SEH;
     return EHPersonality::GNU_ObjC;
   }
   llvm_unreachable("bad runtime kind");
@@ -221,10 +229,9 @@ const EHPersonality &EHPersonality::get(CodeGenFunction &CGF) {
 
 static llvm::Constant *getPersonalityFn(CodeGenModule &CGM,
                                         const EHPersonality &Personality) {
-  llvm::Constant *Fn =
-    CGM.CreateRuntimeFunction(llvm::FunctionType::get(CGM.Int32Ty, true),
-                              Personality.PersonalityFn);
-  return Fn;
+  return CGM.CreateRuntimeFunction(llvm::FunctionType::get(CGM.Int32Ty, true),
+                                   Personality.PersonalityFn,
+                                   llvm::AttributeSet(), /*Local=*/true);
 }
 
 static llvm::Constant *getOpaquePersonalityFn(CodeGenModule &CGM,
@@ -1659,23 +1666,12 @@ void CodeGenFunction::startOutlinedSEHHelper(CodeGenFunction &ParentCGF,
 
   QualType RetTy = IsFilter ? getContext().LongTy : getContext().VoidTy;
 
-  llvm::Function *ParentFn = ParentCGF.CurFn;
   const CGFunctionInfo &FnInfo =
     CGM.getTypes().arrangeBuiltinFunctionDeclaration(RetTy, Args);
 
   llvm::FunctionType *FnTy = CGM.getTypes().GetFunctionType(FnInfo);
   llvm::Function *Fn = llvm::Function::Create(
       FnTy, llvm::GlobalValue::InternalLinkage, Name.str(), &CGM.getModule());
-  // The filter is either in the same comdat as the function, or it's internal.
-  if (llvm::Comdat *C = ParentFn->getComdat()) {
-    Fn->setComdat(C);
-  } else if (ParentFn->hasWeakLinkage() || ParentFn->hasLinkOnceLinkage()) {
-    llvm::Comdat *C = CGM.getModule().getOrInsertComdat(ParentFn->getName());
-    ParentFn->setComdat(C);
-    Fn->setComdat(C);
-  } else {
-    Fn->setLinkage(llvm::GlobalValue::InternalLinkage);
-  }
 
   IsOutlinedSEHHelper = true;
 

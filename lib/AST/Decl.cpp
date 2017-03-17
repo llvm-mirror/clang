@@ -1414,6 +1414,11 @@ void NamedDecl::printQualifiedName(raw_ostream &OS,
                                    const PrintingPolicy &P) const {
   const DeclContext *Ctx = getDeclContext();
 
+  // For ObjC methods, look through categories and use the interface as context.
+  if (auto *MD = dyn_cast<ObjCMethodDecl>(this))
+    if (auto *ID = MD->getClassInterface())
+      Ctx = ID;
+
   if (Ctx->isFunctionOrMethod()) {
     printName(OS);
     return;
@@ -2143,13 +2148,6 @@ APValue *VarDecl::evaluateValue() const {
   return evaluateValue(Notes);
 }
 
-namespace {
-// Destroy an APValue that was allocated in an ASTContext.
-void DestroyAPValue(void* UntypedValue) {
-  static_cast<APValue*>(UntypedValue)->~APValue();
-}
-} // namespace
-
 APValue *VarDecl::evaluateValue(
     SmallVectorImpl<PartialDiagnosticAt> &Notes) const {
   EvaluatedStmt *Eval = ensureEvaluatedStmt();
@@ -2181,7 +2179,7 @@ APValue *VarDecl::evaluateValue(
   if (!Result)
     Eval->Evaluated = APValue();
   else if (Eval->Evaluated.needsCleanup())
-    getASTContext().AddDeallocation(DestroyAPValue, &Eval->Evaluated);
+    getASTContext().addDestruction(&Eval->Evaluated);
 
   Eval->IsEvaluating = false;
   Eval->WasEvaluated = true;
@@ -2510,7 +2508,7 @@ bool FunctionDecl::isVariadic() const {
 
 bool FunctionDecl::hasBody(const FunctionDecl *&Definition) const {
   for (auto I : redecls()) {
-    if (I->Body || I->IsLateTemplateParsed) {
+    if (I->doesThisDeclarationHaveABody()) {
       Definition = I;
       return true;
     }
@@ -2840,28 +2838,6 @@ void FunctionDecl::setParams(ASTContext &C,
   }
 }
 
-void FunctionDecl::setDeclsInPrototypeScope(ArrayRef<NamedDecl *> NewDecls) {
-  assert(DeclsInPrototypeScope.empty() && "Already has prototype decls!");
-
-  if (!NewDecls.empty()) {
-    NamedDecl **A = new (getASTContext()) NamedDecl*[NewDecls.size()];
-    std::copy(NewDecls.begin(), NewDecls.end(), A);
-    DeclsInPrototypeScope = llvm::makeArrayRef(A, NewDecls.size());
-    // Move declarations introduced in prototype to the function context.
-    for (auto I : NewDecls) {
-      DeclContext *DC = I->getDeclContext();
-      // Forward-declared reference to an enumeration is not added to
-      // declaration scope, so skip declaration that is absent from its
-      // declaration contexts.
-      if (DC->containsDecl(I)) {
-          DC->removeDecl(I);
-          I->setDeclContext(this);
-          addDecl(I);
-      }
-    }
-  }
-}
-
 /// getMinRequiredArguments - Returns the minimum number of arguments
 /// needed to call this function. This may be fewer than the number of
 /// function parameters, if some of the parameters have default
@@ -3010,6 +2986,18 @@ SourceRange FunctionDecl::getReturnTypeSourceRange() const {
     return SourceRange();
 
   return RTRange;
+}
+
+SourceRange FunctionDecl::getExceptionSpecSourceRange() const {
+  const TypeSourceInfo *TSI = getTypeSourceInfo();
+  if (!TSI)
+    return SourceRange();
+  FunctionTypeLoc FTL =
+    TSI->getTypeLoc().IgnoreParens().getAs<FunctionTypeLoc>();
+  if (!FTL)
+    return SourceRange();
+
+  return FTL.getExceptionSpecRange();
 }
 
 const Attr *FunctionDecl::getUnusedResultAttr() const {

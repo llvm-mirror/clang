@@ -228,10 +228,8 @@ void Sema::EraseUnwantedCUDAMatches(
       [&](const Pair &M1, const Pair &M2) { return GetCFP(M1) < GetCFP(M2); }));
 
   // Erase all functions with lower priority.
-  Matches.erase(
-      llvm::remove_if(
-          Matches, [&](const Pair &Match) { return GetCFP(Match) < BestCFP; }),
-      Matches.end());
+  llvm::erase_if(Matches,
+                 [&](const Pair &Match) { return GetCFP(Match) < BestCFP; });
 }
 
 /// When an implicitly-declared special member has to invoke more than one
@@ -297,7 +295,7 @@ bool Sema::inferCUDATargetForImplicitSpecialMember(CXXRecordDecl *ClassDecl,
     }
 
     CXXRecordDecl *BaseClassDecl = cast<CXXRecordDecl>(BaseType->getDecl());
-    Sema::SpecialMemberOverloadResult *SMOR =
+    Sema::SpecialMemberOverloadResult SMOR =
         LookupSpecialMember(BaseClassDecl, CSM,
                             /* ConstArg */ ConstRHS,
                             /* VolatileArg */ false,
@@ -305,11 +303,10 @@ bool Sema::inferCUDATargetForImplicitSpecialMember(CXXRecordDecl *ClassDecl,
                             /* ConstThis */ false,
                             /* VolatileThis */ false);
 
-    if (!SMOR || !SMOR->getMethod()) {
+    if (!SMOR.getMethod())
       continue;
-    }
 
-    CUDAFunctionTarget BaseMethodTarget = IdentifyCUDATarget(SMOR->getMethod());
+    CUDAFunctionTarget BaseMethodTarget = IdentifyCUDATarget(SMOR.getMethod());
     if (!InferredTarget.hasValue()) {
       InferredTarget = BaseMethodTarget;
     } else {
@@ -341,7 +338,7 @@ bool Sema::inferCUDATargetForImplicitSpecialMember(CXXRecordDecl *ClassDecl,
     }
 
     CXXRecordDecl *FieldRecDecl = cast<CXXRecordDecl>(FieldType->getDecl());
-    Sema::SpecialMemberOverloadResult *SMOR =
+    Sema::SpecialMemberOverloadResult SMOR =
         LookupSpecialMember(FieldRecDecl, CSM,
                             /* ConstArg */ ConstRHS && !F->isMutable(),
                             /* VolatileArg */ false,
@@ -349,12 +346,11 @@ bool Sema::inferCUDATargetForImplicitSpecialMember(CXXRecordDecl *ClassDecl,
                             /* ConstThis */ false,
                             /* VolatileThis */ false);
 
-    if (!SMOR || !SMOR->getMethod()) {
+    if (!SMOR.getMethod())
       continue;
-    }
 
     CUDAFunctionTarget FieldMethodTarget =
-        IdentifyCUDATarget(SMOR->getMethod());
+        IdentifyCUDATarget(SMOR.getMethod());
     if (!InferredTarget.hasValue()) {
       InferredTarget = FieldMethodTarget;
     } else {

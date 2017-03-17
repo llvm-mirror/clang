@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.RetainCount,osx.cocoa.Dealloc,debug.ExprInspection -analyzer-store=region -verify -Wno-objc-root-class %s
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.RetainCount,osx.cocoa.Dealloc,debug.ExprInspection -analyzer-store=region -verify -Wno-objc-root-class -fobjc-arc %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,osx.cocoa.RetainCount,osx.cocoa.Dealloc,debug.ExprInspection -analyzer-store=region -verify -Wno-objc-root-class %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,osx.cocoa.RetainCount,osx.cocoa.Dealloc,debug.ExprInspection -analyzer-store=region -verify -Wno-objc-root-class -fobjc-arc %s
 
 void clang_analyzer_eval(int);
 
@@ -312,6 +312,32 @@ void testConsistencyAssign(Person *p) {
 
 -(int)someProp {
   return 22;
+}
+@end
+
+__attribute__((objc_root_class))
+@interface ClassWithPrivatePropertyInClassExtensionWithProtocolShadowingCategory
+@end
+
+@protocol HasStuff
+@property (nonatomic, readonly) int stuffProperty;
+@end
+
+@interface ClassWithPrivatePropertyInClassExtensionWithProtocolShadowingCategory (Private)
+@property (nonatomic, readonly) int stuffProperty;
+@end
+
+@interface ClassWithPrivatePropertyInClassExtensionWithProtocolShadowingCategory (Internal) <HasStuff>
+@end
+
+@interface ClassWithPrivatePropertyInClassExtensionWithProtocolShadowingCategory() <HasStuff>
+@end
+
+@implementation ClassWithPrivatePropertyInClassExtensionWithProtocolShadowingCategory
+@synthesize stuffProperty = _stuffProperty;
+
+-(void)foo {
+  (void)self.stuffProperty;
 }
 @end
 

@@ -37,7 +37,9 @@ add_clang_library(clangStaticAnalyzerCheckers
   ExprInspectionChecker.cpp
   FixedAddressChecker.cpp
   GenericTaintChecker.cpp
+  GTestChecker.cpp
   IdenticalExprChecker.cpp
+  IteratorPastEndChecker.cpp
   IvarInvalidationChecker.cpp
   LLVMConventionsChecker.cpp
   LocalizationChecker.cpp
@@ -59,6 +61,7 @@ add_clang_library(clangStaticAnalyzerCheckers
   ObjCContainersASTChecker.cpp
   ObjCContainersChecker.cpp
   ObjCMissingSuperCallChecker.cpp
+  ObjCPropertyChecker.cpp
   ObjCSelfInitChecker.cpp
   ObjCSuperDeallocChecker.cpp
   ObjCUnusedIVarsChecker.cpp

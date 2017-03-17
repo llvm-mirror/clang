@@ -1,0 +1,10 @@
+RUN: rm -rf %t
+REQUIRES: x86-registered-target
+
+RUN: %clang_cc1 -triple=x86_64-linux-gnu -fmodules-codegen -x c++ -fmodules -emit-module -fmodule-name=foo %S/Inputs/codegen/foo.modulemap -o %t/foo.pcm
+
+RUN: %clang_cc1 -triple x86_64-linux-gnu -emit-llvm -o - %t/foo.pcm | FileCheck %s
+
+CHECK: $_Z2f1PKcz = comdat any
+CHECK: define weak_odr void @_Z2f1PKcz(i8* %fmt, ...) #{{[0-9]+}} comdat
+CHECK:   call void @llvm.va_start(i8* %{{[a-zA-Z0-9]*}})

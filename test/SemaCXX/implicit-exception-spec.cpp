@@ -16,34 +16,32 @@ namespace InClassInitializers {
   // Noexcept::Noexcept is not declared constexpr, therefore noexcept(Noexcept())
   // is false.
   bool ThrowSomething() noexcept(false);
-  struct ConstExpr { // expected-error {{default member initializer for 'b' needed}}
-    bool b = noexcept(ConstExpr()) && ThrowSomething(); // expected-note {{declared here}}
-  // expected-note@-1 {{implicit default constructor for 'InClassInitializers::ConstExpr' first required here}}
+  struct ConstExpr {
+    bool b = // expected-note {{declared here}}
+      noexcept(ConstExpr()) && ThrowSomething(); // expected-error {{default member initializer for 'b' needed}}
   };
 
   // Much more obviously broken: we can't parse the initializer without already
   // knowing whether it produces a noexcept expression.
-  struct TemplateArg { // expected-error {{default member initializer for 'n' needed}}
-    int n = ExceptionIf<noexcept(TemplateArg())>::f(); // expected-note {{declared here}}
-    // expected-note@-1 {{implicit default constructor for 'InClassInitializers::TemplateArg' first required here}}
+  struct TemplateArg {
+    int n = // expected-note {{declared here}}
+      ExceptionIf<noexcept(TemplateArg())>::f(); // expected-error {{default member initializer for 'n' needed}}
   };
 
   // And within a nested class.
-  struct Nested { // expected-note {{implicit default constructor for 'InClassInitializers::Nested::Inner' first required here}}
-    struct Inner { // expected-error {{default member initializer for 'n' needed}}
+  struct Nested {
+    struct Inner {
       int n = // expected-note {{declared here}}
-        ExceptionIf<noexcept(Nested())>::f(); // expected-note {{implicit default constructor for 'InClassInitializers::Nested' first required here}}
-    } inner;
+        ExceptionIf<noexcept(Nested())>::f();
+    } inner; // expected-error {{default member initializer for 'n' needed}}
   };
 
-  struct Nested2 { // expected-error {{implicit default constructor for 'InClassInitializers::Nested2' must explicitly initialize the member 'inner' which does not have a default constructor}}
+  struct Nested2 {
     struct Inner;
-    int n = Inner().n; // expected-note {{implicit default constructor for 'InClassInitializers::Nested2::Inner' first required here}}
-    struct Inner { // expected-error {{initializer for 'n' needed}} expected-note {{declared here}}
-      // expected-note@+1 {{declared here}}
-      int n = ExceptionIf<noexcept(Nested2())>::f();
-      // expected-note@-1 {{implicit default constructor for 'InClassInitializers::Nested2' first required here}}
-    } inner; // expected-note {{member is declared here}}
+    int n = Inner().n; // expected-error {{initializer for 'n' needed}}
+    struct Inner {
+      int n = ExceptionIf<noexcept(Nested2())>::f(); // expected-note {{declared here}}
+    } inner;
   };
 }
 
@@ -93,4 +91,62 @@ namespace ImplicitDtorExceptionSpec {
       } f;
     } e;
   };
+}
+
+struct nothrow_t {} nothrow;
+void *operator new(decltype(sizeof(0)), nothrow_t) noexcept;
+
+namespace PotentiallyConstructed {
+  template<bool NE> struct A {
+    A() noexcept(NE);
+    A(const A&) noexcept(NE);
+    A(A&&) noexcept(NE);
+    A &operator=(const A&) noexcept(NE);
+    A &operator=(A&&) noexcept(NE);
+    ~A() noexcept(NE);
+  };
+
+  template<bool NE> struct B : virtual A<NE> {};
+
+  template<bool NE> struct C : virtual A<NE> {
+    virtual void f() = 0; // expected-note 2{{unimplemented}}
+  };
+
+  template<bool NE> struct D final : C<NE> {
+    void f();
+  };
+
+  template<typename T, bool A, bool B, bool C, bool D, bool E, bool F> void check() {
+    T *p = nullptr;
+    T &a = *p;
+    static_assert(noexcept(a = a) == D, "");
+    static_assert(noexcept(a = static_cast<T&&>(a)) == E, "");
+    static_assert(noexcept(delete &a) == F, ""); // expected-warning 2{{abstract}}
+
+    // These are last because the first failure here causes instantiation to bail out.
+    static_assert(noexcept(new (nothrow) T()) == A, ""); // expected-error 2{{abstract}}
+    static_assert(noexcept(new (nothrow) T(a)) == B, "");
+    static_assert(noexcept(new (nothrow) T(static_cast<T&&>(a))) == C, "");
+  }
+
+  template void check<A<false>, 0, 0, 0, 0, 0, 0>();
+  template void check<A<true >, 1, 1, 1, 1, 1, 1>();
+  template void check<B<false>, 0, 0, 0, 0, 0, 0>();
+  template void check<B<true >, 1, 1, 1, 1, 1, 1>();
+  template void check<C<false>, 1, 1, 1, 0, 0, 0>(); // expected-note {{instantiation}}
+  template void check<C<true >, 1, 1, 1, 1, 1, 1>(); // expected-note {{instantiation}}
+  template void check<D<false>, 0, 0, 0, 0, 0, 0>();
+  template void check<D<true >, 1, 1, 1, 1, 1, 1>();
+
+  // ... the above trick doesn't work for this case...
+  struct Cfalse : virtual A<false> {
+    virtual void f() = 0;
+
+    Cfalse() noexcept;
+    Cfalse(const Cfalse&) noexcept;
+    Cfalse(Cfalse&&) noexcept;
+  };
+  Cfalse::Cfalse() noexcept = default;
+  Cfalse::Cfalse(const Cfalse&) noexcept = default;
+  Cfalse::Cfalse(Cfalse&&) noexcept = default;
 }

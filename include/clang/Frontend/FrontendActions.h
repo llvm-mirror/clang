@@ -80,6 +80,8 @@ protected:
 
   bool hasASTFileSupport() const override { return false; }
 
+  bool shouldEraseOutputFiles() override;
+
 public:
   /// \brief Compute the AST consumer arguments that will be used to
   /// create the PCHGenerator instance returned by CreateASTConsumer.
@@ -88,6 +90,8 @@ public:
   static std::unique_ptr<raw_pwrite_stream>
   ComputeASTConsumerArguments(CompilerInstance &CI, StringRef InFile,
                               std::string &Sysroot, std::string &OutputFile);
+
+  bool BeginSourceFileAction(CompilerInstance &CI, StringRef Filename) override;
 };
 
 class GenerateModuleAction : public ASTFrontendAction {

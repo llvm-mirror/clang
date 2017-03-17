@@ -161,7 +161,7 @@ public:
   directory_iterator &increment(std::error_code &EC) {
     assert(Impl && "attempting to increment past end");
     EC = Impl->increment();
-    if (EC || !Impl->CurrentEntry.isStatusKnown())
+    if (!Impl->CurrentEntry.isStatusKnown())
       Impl.reset(); // Normalize the end iterator to Impl == nullptr.
     return *this;
   }
@@ -361,6 +361,16 @@ struct YAMLVFSEntry {
   std::string VPath;
   std::string RPath;
 };
+
+/// \brief Collect all pairs of <virtual path, real path> entries from the
+/// \p YAMLFilePath. This is used by the module dependency collector to forward
+/// the entries into the reproducer output VFS YAML file.
+void collectVFSFromYAML(
+    std::unique_ptr<llvm::MemoryBuffer> Buffer,
+    llvm::SourceMgr::DiagHandlerTy DiagHandler, StringRef YAMLFilePath,
+    SmallVectorImpl<YAMLVFSEntry> &CollectedEntries,
+    void *DiagContext = nullptr,
+    IntrusiveRefCntPtr<FileSystem> ExternalFS = getRealFileSystem());
 
 class YAMLVFSWriter {
   std::vector<YAMLVFSEntry> Mappings;

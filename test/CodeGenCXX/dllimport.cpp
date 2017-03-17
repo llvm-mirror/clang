@@ -2,8 +2,8 @@
 // RUN: %clang_cc1 -triple x86_64-windows-msvc -fno-rtti -fno-threadsafe-statics -fms-extensions -emit-llvm -std=c++1y -O0 -o - %s -DMSABI -w | FileCheck --check-prefix=MSC --check-prefix=M64 %s
 // RUN: %clang_cc1 -triple i686-windows-gnu    -fno-rtti -fno-threadsafe-statics -fms-extensions -emit-llvm -std=c++1y -O0 -o - %s         -w | FileCheck --check-prefix=GNU --check-prefix=G32 %s
 // RUN: %clang_cc1 -triple x86_64-windows-gnu  -fno-rtti -fno-threadsafe-statics -fms-extensions -emit-llvm -std=c++1y -O0 -o - %s         -w | FileCheck --check-prefix=GNU --check-prefix=G64 %s
-// RUN: %clang_cc1 -triple i686-windows-msvc   -fno-rtti -fno-threadsafe-statics -fms-extensions -fms-compatibility-version=18.00 -emit-llvm -std=c++1y -O1 -disable-llvm-optzns -o - %s -DMSABI -w | FileCheck --check-prefix=MO1 --check-prefix=M18 %s
-// RUN: %clang_cc1 -triple i686-windows-msvc   -fno-rtti -fno-threadsafe-statics -fms-extensions -fms-compatibility-version=19.00 -emit-llvm -std=c++1y -O1 -disable-llvm-optzns -o - %s -DMSABI -w | FileCheck --check-prefix=MO1 --check-prefix=M19 %s
+// RUN: %clang_cc1 -triple i686-windows-msvc   -fno-rtti -fno-threadsafe-statics -fms-extensions -fms-compatibility-version=18.00 -emit-llvm -std=c++1y -O1 -disable-llvm-passes -o - %s -DMSABI -w | FileCheck --check-prefix=MO1 --check-prefix=M18 %s
+// RUN: %clang_cc1 -triple i686-windows-msvc   -fno-rtti -fno-threadsafe-statics -fms-extensions -fms-compatibility-version=19.00 -emit-llvm -std=c++1y -O1 -disable-llvm-passes -o - %s -DMSABI -w | FileCheck --check-prefix=MO1 --check-prefix=M19 %s
 // RUN: %clang_cc1 -triple i686-windows-gnu    -fno-rtti -fno-threadsafe-statics -fms-extensions -emit-llvm -std=c++1y -O1 -o - %s         -w | FileCheck --check-prefix=GO1 %s
 
 // CHECK-NOT doesn't play nice with CHECK-DAG, so use separate run lines.
@@ -26,6 +26,7 @@ struct ExplicitSpec_NotImported {};
 #define USEVARTYPE(type, var) type UNIQ(use)() { return var; }
 #define USEVAR(var) USEVARTYPE(int, var)
 #define USE(func) void UNIQ(use)() { func(); }
+#define USE1(func) void UNIQ(use)() { func(nullptr); }
 #define USEMEMFUNC(class, func) void (class::*UNIQ(use)())() { return &class::func; }
 #define USESTATICMEMFUNC(class, func) void (*UNIQ(use)())() { return &class::func; }
 #define USECLASS(class) void UNIQ(USE)() { class x; }
@@ -316,10 +317,13 @@ namespace ns { __declspec(dllimport) void externalFunc(); }
 USE(ns::externalFunc)
 
 // A dllimport function referencing non-imported vars or functions must not be available_externally.
+
 __declspec(dllimport) int ImportedVar;
 int NonImportedVar;
 __declspec(dllimport) int ImportedFunc();
 int NonImportedFunc();
+struct ClassWithNonImportedMethod { int f(); };
+
 __declspec(dllimport) inline int ReferencingImportedVar() { return ImportedVar; }
 // MO1-DAG: define available_externally dllimport i32 @"\01?ReferencingImportedVar@@YAHXZ"
 __declspec(dllimport) inline int ReferencingNonImportedVar() { return NonImportedVar; }
@@ -328,10 +332,16 @@ __declspec(dllimport) inline int ReferencingImportedFunc() { return ImportedFunc
 // MO1-DAG: define available_externally dllimport i32 @"\01?ReferencingImportedFunc@@YAHXZ"
 __declspec(dllimport) inline int ReferencingNonImportedFunc() { return NonImportedFunc(); }
 // MO1-DAG: declare dllimport i32 @"\01?ReferencingNonImportedFunc@@YAHXZ"()
+__declspec(dllimport) inline int ReferencingNonImportedMethod(ClassWithNonImportedMethod *x) { return x->f(); }
+// MO1-DAG: declare dllimport i32 @"\01?ReferencingNonImportedMethod
+__declspec(dllimport) inline int ReferencingClassMemberPtr(int (ClassWithNonImportedMethod::*p)(), ClassWithNonImportedMethod *x) { return (x->*p)(); }
+// MO1-DAG: define available_externally dllimport i32 @"\01?ReferencingClassMemberPtr@@YAHP8ClassWithNonImportedMethod@@AEHXZPAU1@@Z"
 USE(ReferencingImportedVar)
 USE(ReferencingNonImportedVar)
 USE(ReferencingImportedFunc)
 USE(ReferencingNonImportedFunc)
+USE1(ReferencingNonImportedMethod)
+void UNIQ(use)() { ReferencingClassMemberPtr(&ClassWithNonImportedMethod::f, nullptr); }
 // References to operator new and delete count too, despite not being DeclRefExprs.
 __declspec(dllimport) inline int *ReferencingNonImportedNew() { return new int[2]; }
 // MO1-DAG: declare dllimport i32* @"\01?ReferencingNonImportedNew@@YAPAHXZ"
@@ -348,7 +358,7 @@ __declspec(dllimport) inline int *ReferencingImportedDelete() { delete (int*)nul
 USE(ReferencingImportedNew)
 USE(ReferencingImportedDelete)
 struct ClassWithDtor { ~ClassWithDtor() {} };
-struct __declspec(dllimport) ClassWithNonDllImportField { ClassWithDtor t; };
+struct __declspec(dllimport) ClassWithNonDllImportField { using X = ClassWithDtor; X t[2]; };
 struct __declspec(dllimport) ClassWithNonDllImportBase : public ClassWithDtor { };
 USECLASS(ClassWithNonDllImportField);
 USECLASS(ClassWithNonDllImportBase);
@@ -358,6 +368,13 @@ struct ClassWithCtor { ClassWithCtor() {} };
 struct __declspec(dllimport) ClassWithNonDllImportFieldWithCtor { ClassWithCtor t; };
 USECLASS(ClassWithNonDllImportFieldWithCtor);
 // MO1-DAG: declare dllimport x86_thiscallcc %struct.ClassWithNonDllImportFieldWithCtor* @"\01??0ClassWithNonDllImportFieldWithCtor@@QAE@XZ"(%struct.ClassWithNonDllImportFieldWithCtor* returned)
+struct ClassWithImplicitDtor { __declspec(dllimport) ClassWithImplicitDtor(); ClassWithDtor member; };
+__declspec(dllimport) inline void ReferencingDtorThroughDefinition() { ClassWithImplicitDtor x; };
+USE(ReferencingDtorThroughDefinition)
+// MO1-DAG: declare dllimport void @"\01?ReferencingDtorThroughDefinition@@YAXXZ"()
+__declspec(dllimport) inline void ReferencingDtorThroughTemporary() { ClassWithImplicitDtor(); };
+USE(ReferencingDtorThroughTemporary)
+// MO1-DAG: declare dllimport void @"\01?ReferencingDtorThroughTemporary@@YAXXZ"()
 
 // A dllimport function with a TLS variable must not be available_externally.
 __declspec(dllimport) inline void FunctionWithTLSVar() { static __thread int x = 42; }
@@ -395,17 +412,17 @@ USE(inlineFuncTmpl1<ImplicitInst_Imported>)
 template<typename T> inline void __attribute__((dllimport)) inlineFuncTmpl2() {}
 USE(inlineFuncTmpl2<ImplicitInst_Imported>)
 
-// MSC-DAG: declare dllimport void @"\01??$inlineFuncTmplDecl@UImplicitInst_Imported@@@@YAXXZ"()
+// MSC-DAG: define linkonce_odr void @"\01??$inlineFuncTmplDecl@UImplicitInst_Imported@@@@YAXXZ"()
 // GNU-DAG: define linkonce_odr void @_Z18inlineFuncTmplDeclI21ImplicitInst_ImportedEvv()
-// MO1-DAG: define available_externally dllimport void @"\01??$inlineFuncTmplDecl@UImplicitInst_Imported@@@@YAXXZ"()
+// MO1-DAG: define linkonce_odr void @"\01??$inlineFuncTmplDecl@UImplicitInst_Imported@@@@YAXXZ"()
 // GO1-DAG: define linkonce_odr void @_Z18inlineFuncTmplDeclI21ImplicitInst_ImportedEvv()
 template<typename T> __declspec(dllimport) inline void inlineFuncTmplDecl();
 template<typename T>                              void inlineFuncTmplDecl() {}
 USE(inlineFuncTmplDecl<ImplicitInst_Imported>)
 
-// MSC-DAG: declare dllimport void @"\01??$inlineFuncTmplDef@UImplicitInst_Imported@@@@YAXXZ"()
+// MSC-DAG: define linkonce_odr void @"\01??$inlineFuncTmplDef@UImplicitInst_Imported@@@@YAXXZ"()
 // GNU-DAG: define linkonce_odr void @_Z17inlineFuncTmplDefI21ImplicitInst_ImportedEvv()
-// MO1-DAG: define available_externally dllimport void @"\01??$inlineFuncTmplDef@UImplicitInst_Imported@@@@YAXXZ"()
+// MO1-DAG: define linkonce_odr void @"\01??$inlineFuncTmplDef@UImplicitInst_Imported@@@@YAXXZ"()
 // GO1-DAG: define linkonce_odr void @_Z17inlineFuncTmplDefI21ImplicitInst_ImportedEvv()
 template<typename T> __declspec(dllimport) void inlineFuncTmplDef();
 template<typename T>                inline void inlineFuncTmplDef() {}
@@ -439,7 +456,7 @@ USE(funcTmplRedecl3<ImplicitInst_NotImported>)
 // GNU-DAG: declare             void @_Z15funcTmplFriend2I24ImplicitInst_NotImportedEvv()
 // MSC-DAG: define linkonce_odr void @"\01??$funcTmplFriend3@UImplicitInst_NotImported@@@@YAXXZ"()
 // GNU-DAG: define linkonce_odr void @_Z15funcTmplFriend3I24ImplicitInst_NotImportedEvv()
-// MSC-DAG: declare dllimport   void @"\01??$funcTmplFriend4@UImplicitInst_Imported@@@@YAXXZ"()
+// MSC-DAG: define linkonce_odr void @"\01??$funcTmplFriend4@UImplicitInst_Imported@@@@YAXXZ"()
 // GNU-DAG: define linkonce_odr void @_Z15funcTmplFriend4I21ImplicitInst_ImportedEvv()
 struct FuncTmplFriend {
   template<typename T> friend __declspec(dllimport) void funcTmplFriend1();
@@ -631,15 +648,15 @@ USEMEMFUNC(V, foo)
 struct __declspec(dllimport) W { virtual void foo() {} };
 USECLASS(W)
 // vftable:
-// MO1-DAG: @"\01??_SW@@6B@" = linkonce_odr unnamed_addr constant [1 x i8*] [i8* bitcast (void (%struct.W*)* @"\01?foo@W@@UAEXXZ" to i8*)]
-// GO1-DAG: @_ZTV1W = available_externally dllimport unnamed_addr constant [3 x i8*] [i8* null, i8* null, i8* bitcast (void (%struct.W*)* @_ZN1W3fooEv to i8*)]
+// MO1-DAG: @"\01??_SW@@6B@" = linkonce_odr unnamed_addr constant { [1 x i8*] } { [1 x i8*] [i8* bitcast (void (%struct.W*)* @"\01?foo@W@@UAEXXZ" to i8*)] }
+// GO1-DAG: @_ZTV1W = available_externally dllimport unnamed_addr constant { [3 x i8*] } { [3 x i8*] [i8* null, i8* null, i8* bitcast (void (%struct.W*)* @_ZN1W3fooEv to i8*)] }
 
 struct __declspec(dllimport) KeyFuncClass {
   constexpr KeyFuncClass() {}
   virtual void foo();
 };
 extern constexpr KeyFuncClass keyFuncClassVar = {};
-// G32-DAG: @_ZTV12KeyFuncClass = external dllimport unnamed_addr constant [3 x i8*]
+// G32-DAG: @_ZTV12KeyFuncClass = external dllimport unnamed_addr constant { [3 x i8*] }
 
 struct __declspec(dllimport) X : public virtual W {};
 USECLASS(X)
@@ -745,7 +762,7 @@ namespace PR21355 {
   // S::~S is a key function, so we would ordinarily emit a strong definition for
   // the vtable. However, S is imported, so the vtable should be too.
 
-  // GNU-DAG: @_ZTVN7PR213551SE = available_externally dllimport unnamed_addr constant [4 x i8*]
+  // GNU-DAG: @_ZTVN7PR213551SE = available_externally dllimport unnamed_addr constant { [4 x i8*] }
 }
 
 namespace PR21366 {
@@ -767,7 +784,7 @@ namespace PR27319 {
   };
   extern template struct __declspec(dllimport) A<int>;
   void f() { new A<int>(); }
-  // MO1-DAG: @"\01??_S?$A@H@PR27319@@6B@" = linkonce_odr unnamed_addr constant [1 x i8*]
+  // MO1-DAG: @"\01??_S?$A@H@PR27319@@6B@" = linkonce_odr unnamed_addr constant { [1 x i8*] }
 }
 
 // MS ignores DLL attributes on partial specializations.

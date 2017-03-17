@@ -333,7 +333,7 @@ namespace dr27 { // dr27: yes
   E &m = true ? n : n;
 }
 
-// dr28: na
+// dr28: na lib
 
 namespace dr29 { // dr29: 3.4
   void dr29_f0(); // expected-note {{here}}
@@ -1032,7 +1032,7 @@ namespace dr91 { // dr91: yes
   int k = f(U());
 }
 
-namespace dr92 { // dr92: 4.0 c++17
+namespace dr92 { // dr92: 4 c++17
   void f() throw(int, float); // expected-error 0-1{{ISO C++1z does not allow}} expected-note 0-1{{use 'noexcept}}
   void (*p)() throw(int) = &f; // expected-error 0-1{{ISO C++1z does not allow}} expected-note 0-1{{use 'noexcept}}
 #if __cplusplus <= 201402L

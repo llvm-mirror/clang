@@ -101,39 +101,64 @@ CodeGenTypes::arrangeFreeFunctionType(CanQual<FunctionNoProtoType> FTNP) {
                                  FTNP->getExtInfo(), {}, RequiredArgs(0));
 }
 
+static void addExtParameterInfosForCall(
+         llvm::SmallVectorImpl<FunctionProtoType::ExtParameterInfo> &paramInfos,
+                                        const FunctionProtoType *proto,
+                                        unsigned prefixArgs,
+                                        unsigned totalArgs) {
+  assert(proto->hasExtParameterInfos());
+  assert(paramInfos.size() <= prefixArgs);
+  assert(proto->getNumParams() + prefixArgs <= totalArgs);
+
+  paramInfos.reserve(totalArgs);
+
+  // Add default infos for any prefix args that don't already have infos.
+  paramInfos.resize(prefixArgs);
+
+  // Add infos for the prototype.
+  for (const auto &ParamInfo : proto->getExtParameterInfos()) {
+    paramInfos.push_back(ParamInfo);
+    // pass_object_size params have no parameter info.
+    if (ParamInfo.hasPassObjectSize())
+      paramInfos.emplace_back();
+  }
+
+  assert(paramInfos.size() <= totalArgs &&
+         "Did we forget to insert pass_object_size args?");
+  // Add default infos for the variadic and/or suffix arguments.
+  paramInfos.resize(totalArgs);
+}
+
 /// Adds the formal paramaters in FPT to the given prefix. If any parameter in
 /// FPT has pass_object_size attrs, then we'll add parameters for those, too.
 static void appendParameterTypes(const CodeGenTypes &CGT,
                                  SmallVectorImpl<CanQualType> &prefix,
               SmallVectorImpl<FunctionProtoType::ExtParameterInfo> &paramInfos,
-                                 CanQual<FunctionProtoType> FPT,
-                                 const FunctionDecl *FD) {
-  // Fill out paramInfos.
-  if (FPT->hasExtParameterInfos() || !paramInfos.empty()) {
-    assert(paramInfos.size() <= prefix.size());
-    auto protoParamInfos = FPT->getExtParameterInfos();
-    paramInfos.reserve(prefix.size() + protoParamInfos.size());
-    paramInfos.resize(prefix.size());
-    paramInfos.append(protoParamInfos.begin(), protoParamInfos.end());
-  }
-
-  // Fast path: unknown target.
-  if (FD == nullptr) {
+                                 CanQual<FunctionProtoType> FPT) {
+  // Fast path: don't touch param info if we don't need to.
+  if (!FPT->hasExtParameterInfos()) {
+    assert(paramInfos.empty() &&
+           "We have paramInfos, but the prototype doesn't?");
     prefix.append(FPT->param_type_begin(), FPT->param_type_end());
     return;
   }
 
-  // In the vast majority cases, we'll have precisely FPT->getNumParams()
+  unsigned PrefixSize = prefix.size();
+  // In the vast majority of cases, we'll have precisely FPT->getNumParams()
   // parameters; the only thing that can change this is the presence of
   // pass_object_size. So, we preallocate for the common case.
   prefix.reserve(prefix.size() + FPT->getNumParams());
 
-  assert(FD->getNumParams() == FPT->getNumParams());
+  auto ExtInfos = FPT->getExtParameterInfos();
+  assert(ExtInfos.size() == FPT->getNumParams());
   for (unsigned I = 0, E = FPT->getNumParams(); I != E; ++I) {
     prefix.push_back(FPT->getParamType(I));
-    if (FD->getParamDecl(I)->hasAttr<PassObjectSizeAttr>())
+    if (ExtInfos[I].hasPassObjectSize())
       prefix.push_back(CGT.getContext().getSizeType());
   }
+
+  addExtParameterInfosForCall(paramInfos, FPT.getTypePtr(), PrefixSize,
+                              prefix.size());
 }
 
 /// Arrange the LLVM function layout for a value of the given function
@@ -147,7 +172,7 @@ arrangeLLVMFunctionInfo(CodeGenTypes &CGT, bool instanceMethod,
   RequiredArgs Required =
       RequiredArgs::forPrototypePlus(FTP, prefix.size(), FD);
   // FIXME: Kill copy.
-  appendParameterTypes(CGT, prefix, paramInfos, FTP, FD);
+  appendParameterTypes(CGT, prefix, paramInfos, FTP);
   CanQualType resultType = FTP->getReturnType().getUnqualifiedType();
 
   return CGT.arrangeLLVMFunctionInfo(resultType, instanceMethod,
@@ -286,9 +311,19 @@ CodeGenTypes::arrangeCXXStructorDeclaration(const CXXMethodDecl *MD,
 
   // Add the formal parameters.
   if (PassParams)
-    appendParameterTypes(*this, argTypes, paramInfos, FTP, MD);
+    appendParameterTypes(*this, argTypes, paramInfos, FTP);
 
-  TheCXXABI.buildStructorSignature(MD, Type, argTypes);
+  CGCXXABI::AddedStructorArgs AddedArgs =
+      TheCXXABI.buildStructorSignature(MD, Type, argTypes);
+  if (!paramInfos.empty()) {
+    // Note: prefix implies after the first param.
+    if (AddedArgs.Prefix)
+      paramInfos.insert(paramInfos.begin() + 1, AddedArgs.Prefix,
+                        FunctionProtoType::ExtParameterInfo{});
+    if (AddedArgs.Suffix)
+      paramInfos.append(AddedArgs.Suffix,
+                        FunctionProtoType::ExtParameterInfo{});
+  }
 
   RequiredArgs required =
       (PassParams && MD->isVariadic() ? RequiredArgs(argTypes.size())
@@ -321,26 +356,6 @@ getArgTypesForDeclaration(ASTContext &ctx, const FunctionArgList &args) {
   return argTypes;
 }
 
-static void addExtParameterInfosForCall(
-         llvm::SmallVectorImpl<FunctionProtoType::ExtParameterInfo> &paramInfos,
-                                        const FunctionProtoType *proto,
-                                        unsigned prefixArgs,
-                                        unsigned totalArgs) {
-  assert(proto->hasExtParameterInfos());
-  assert(paramInfos.size() <= prefixArgs);
-  assert(proto->getNumParams() + prefixArgs <= totalArgs);
-
-  // Add default infos for any prefix args that don't already have infos.
-  paramInfos.resize(prefixArgs);
-
-  // Add infos for the prototype.
-  auto protoInfos = proto->getExtParameterInfos();
-  paramInfos.append(protoInfos.begin(), protoInfos.end());
-
-  // Add default infos for the variadic arguments.
-  paramInfos.resize(totalArgs);
-}
-
 static llvm::SmallVector<FunctionProtoType::ExtParameterInfo, 16>
 getExtParameterInfosForCall(const FunctionProtoType *proto,
                             unsigned prefixArgs, unsigned totalArgs) {
@@ -352,18 +367,31 @@ getExtParameterInfosForCall(const FunctionProtoType *proto,
 }
 
 /// Arrange a call to a C++ method, passing the given arguments.
+///
+/// ExtraPrefixArgs is the number of ABI-specific args passed after the `this`
+/// parameter.
+/// ExtraSuffixArgs is the number of ABI-specific args passed at the end of
+/// args.
+/// PassProtoArgs indicates whether `args` has args for the parameters in the
+/// given CXXConstructorDecl.
 const CGFunctionInfo &
 CodeGenTypes::arrangeCXXConstructorCall(const CallArgList &args,
                                         const CXXConstructorDecl *D,
                                         CXXCtorType CtorKind,
-                                        unsigned ExtraArgs) {
+                                        unsigned ExtraPrefixArgs,
+                                        unsigned ExtraSuffixArgs,
+                                        bool PassProtoArgs) {
   // FIXME: Kill copy.
   SmallVector<CanQualType, 16> ArgTypes;
   for (const auto &Arg : args)
     ArgTypes.push_back(Context.getCanonicalParamType(Arg.Ty));
 
+  // +1 for implicit this, which should always be args[0].
+  unsigned TotalPrefixArgs = 1 + ExtraPrefixArgs;
+
   CanQual<FunctionProtoType> FPT = GetFormalType(D);
-  RequiredArgs Required = RequiredArgs::forPrototypePlus(FPT, 1 + ExtraArgs, D);
+  RequiredArgs Required =
+      RequiredArgs::forPrototypePlus(FPT, TotalPrefixArgs + ExtraSuffixArgs, D);
   GlobalDecl GD(D, CtorKind);
   CanQualType ResultType = TheCXXABI.HasThisReturn(GD)
                                ? ArgTypes.front()
@@ -372,8 +400,14 @@ CodeGenTypes::arrangeCXXConstructorCall(const CallArgList &args,
                                      : Context.VoidTy;
 
   FunctionType::ExtInfo Info = FPT->getExtInfo();
-  auto ParamInfos = getExtParameterInfosForCall(FPT.getTypePtr(), 1 + ExtraArgs,
-                                                ArgTypes.size());
+  llvm::SmallVector<FunctionProtoType::ExtParameterInfo, 16> ParamInfos;
+  // If the prototype args are elided, we should only have ABI-specific args,
+  // which never have param info.
+  if (PassProtoArgs && FPT->hasExtParameterInfos()) {
+    // ABI-specific suffix arguments are treated the same as variadic arguments.
+    addExtParameterInfosForCall(ParamInfos, FPT.getTypePtr(), TotalPrefixArgs,
+                                ArgTypes.size());
+  }
   return arrangeLLVMFunctionInfo(ResultType, /*instanceMethod=*/true,
                                  /*chainCall=*/false, ArgTypes, Info,
                                  ParamInfos, Required);
@@ -393,15 +427,13 @@ CodeGenTypes::arrangeFunctionDeclaration(const FunctionDecl *FD) {
 
   // When declaring a function without a prototype, always use a
   // non-variadic type.
-  if (isa<FunctionNoProtoType>(FTy)) {
-    CanQual<FunctionNoProtoType> noProto = FTy.getAs<FunctionNoProtoType>();
+  if (CanQual<FunctionNoProtoType> noProto = FTy.getAs<FunctionNoProtoType>()) {
     return arrangeLLVMFunctionInfo(
         noProto->getReturnType(), /*instanceMethod=*/false,
         /*chainCall=*/false, None, noProto->getExtInfo(), {},RequiredArgs::All);
   }
 
-  assert(isa<FunctionProtoType>(FTy));
-  return arrangeFreeFunctionType(FTy.getAs<FunctionProtoType>(), FD);
+  return arrangeFreeFunctionType(FTy.castAs<FunctionProtoType>(), FD);
 }
 
 /// Arrange the argument and result information for the declaration or
@@ -619,15 +651,20 @@ CodeGenTypes::arrangeBuiltinFunctionDeclaration(CanQualType resultType,
 }
 
 /// Arrange a call to a C++ method, passing the given arguments.
+///
+/// numPrefixArgs is the number of ABI-specific prefix arguments we have. It
+/// does not count `this`.
 const CGFunctionInfo &
 CodeGenTypes::arrangeCXXMethodCall(const CallArgList &args,
                                    const FunctionProtoType *proto,
-                                   RequiredArgs required) {
-  unsigned numRequiredArgs =
-    (proto->isVariadic() ? required.getNumRequiredArgs() : args.size());
-  unsigned numPrefixArgs = numRequiredArgs - proto->getNumParams();
+                                   RequiredArgs required,
+                                   unsigned numPrefixArgs) {
+  assert(numPrefixArgs + 1 <= args.size() &&
+         "Emitting a call with less args than the required prefix?");
+  // Add one to account for `this`. It's a bit awkward here, but we don't count
+  // `this` in similar places elsewhere.
   auto paramInfos =
-    getExtParameterInfosForCall(proto, numPrefixArgs, args.size());
+    getExtParameterInfosForCall(proto, numPrefixArgs + 1, args.size());
 
   // FIXME: Kill copy.
   auto argTypes = getArgTypesForCall(Context, args);
@@ -1622,15 +1659,113 @@ static void AddAttributesFromFunctionProtoType(ASTContext &Ctx,
     FuncAttrs.addAttribute(llvm::Attribute::NoUnwind);
 }
 
+void CodeGenModule::ConstructDefaultFnAttrList(StringRef Name, bool HasOptnone,
+                                               bool AttrOnCallSite,
+                                               llvm::AttrBuilder &FuncAttrs) {
+  // OptimizeNoneAttr takes precedence over -Os or -Oz. No warning needed.
+  if (!HasOptnone) {
+    if (CodeGenOpts.OptimizeSize)
+      FuncAttrs.addAttribute(llvm::Attribute::OptimizeForSize);
+    if (CodeGenOpts.OptimizeSize == 2)
+      FuncAttrs.addAttribute(llvm::Attribute::MinSize);
+  }
+
+  if (CodeGenOpts.DisableRedZone)
+    FuncAttrs.addAttribute(llvm::Attribute::NoRedZone);
+  if (CodeGenOpts.NoImplicitFloat)
+    FuncAttrs.addAttribute(llvm::Attribute::NoImplicitFloat);
+
+  if (AttrOnCallSite) {
+    // Attributes that should go on the call site only.
+    if (!CodeGenOpts.SimplifyLibCalls ||
+        CodeGenOpts.isNoBuiltinFunc(Name.data()))
+      FuncAttrs.addAttribute(llvm::Attribute::NoBuiltin);
+    if (!CodeGenOpts.TrapFuncName.empty())
+      FuncAttrs.addAttribute("trap-func-name", CodeGenOpts.TrapFuncName);
+  } else {
+    // Attributes that should go on the function, but not the call site.
+    if (!CodeGenOpts.DisableFPElim) {
+      FuncAttrs.addAttribute("no-frame-pointer-elim", "false");
+    } else if (CodeGenOpts.OmitLeafFramePointer) {
+      FuncAttrs.addAttribute("no-frame-pointer-elim", "false");
+      FuncAttrs.addAttribute("no-frame-pointer-elim-non-leaf");
+    } else {
+      FuncAttrs.addAttribute("no-frame-pointer-elim", "true");
+      FuncAttrs.addAttribute("no-frame-pointer-elim-non-leaf");
+    }
+
+    FuncAttrs.addAttribute("less-precise-fpmad",
+                           llvm::toStringRef(CodeGenOpts.LessPreciseFPMAD));
+
+    if (!CodeGenOpts.FPDenormalMode.empty())
+      FuncAttrs.addAttribute("denormal-fp-math", CodeGenOpts.FPDenormalMode);
+
+    FuncAttrs.addAttribute("no-trapping-math",
+                           llvm::toStringRef(CodeGenOpts.NoTrappingMath));
+
+    // TODO: Are these all needed?
+    // unsafe/inf/nan/nsz are handled by instruction-level FastMathFlags.
+    FuncAttrs.addAttribute("no-infs-fp-math",
+                           llvm::toStringRef(CodeGenOpts.NoInfsFPMath));
+    FuncAttrs.addAttribute("no-nans-fp-math",
+                           llvm::toStringRef(CodeGenOpts.NoNaNsFPMath));
+    FuncAttrs.addAttribute("unsafe-fp-math",
+                           llvm::toStringRef(CodeGenOpts.UnsafeFPMath));
+    FuncAttrs.addAttribute("use-soft-float",
+                           llvm::toStringRef(CodeGenOpts.SoftFloat));
+    FuncAttrs.addAttribute("stack-protector-buffer-size",
+                           llvm::utostr(CodeGenOpts.SSPBufferSize));
+    FuncAttrs.addAttribute("no-signed-zeros-fp-math",
+                           llvm::toStringRef(CodeGenOpts.NoSignedZeros));
+    FuncAttrs.addAttribute(
+        "correctly-rounded-divide-sqrt-fp-math",
+        llvm::toStringRef(CodeGenOpts.CorrectlyRoundedDivSqrt));
+
+    // TODO: Reciprocal estimate codegen options should apply to instructions?
+    std::vector<std::string> &Recips = getTarget().getTargetOpts().Reciprocals;
+    if (!Recips.empty())
+      FuncAttrs.addAttribute("reciprocal-estimates",
+                             llvm::join(Recips.begin(), Recips.end(), ","));
+
+    if (CodeGenOpts.StackRealignment)
+      FuncAttrs.addAttribute("stackrealign");
+    if (CodeGenOpts.Backchain)
+      FuncAttrs.addAttribute("backchain");
+  }
+
+  if (getLangOpts().CUDA && getLangOpts().CUDAIsDevice) {
+    // Conservatively, mark all functions and calls in CUDA as convergent
+    // (meaning, they may call an intrinsically convergent op, such as
+    // __syncthreads(), and so can't have certain optimizations applied around
+    // them).  LLVM will remove this attribute where it safely can.
+    FuncAttrs.addAttribute(llvm::Attribute::Convergent);
+
+    // Exceptions aren't supported in CUDA device code.
+    FuncAttrs.addAttribute(llvm::Attribute::NoUnwind);
+
+    // Respect -fcuda-flush-denormals-to-zero.
+    if (getLangOpts().CUDADeviceFlushDenormalsToZero)
+      FuncAttrs.addAttribute("nvptx-f32ftz", "true");
+  }
+}
+
+void CodeGenModule::AddDefaultFnAttrs(llvm::Function &F) {
+  llvm::AttrBuilder FuncAttrs;
+  ConstructDefaultFnAttrList(F.getName(),
+                             F.hasFnAttribute(llvm::Attribute::OptimizeNone),
+                             /* AttrOnCallsite = */ false, FuncAttrs);
+  llvm::AttributeSet AS = llvm::AttributeSet::get(
+      getLLVMContext(), llvm::AttributeSet::FunctionIndex, FuncAttrs);
+  F.addAttributes(llvm::AttributeSet::FunctionIndex, AS);
+}
+
 void CodeGenModule::ConstructAttributeList(
     StringRef Name, const CGFunctionInfo &FI, CGCalleeInfo CalleeInfo,
     AttributeListType &PAL, unsigned &CallingConv, bool AttrOnCallSite) {
   llvm::AttrBuilder FuncAttrs;
   llvm::AttrBuilder RetAttrs;
-  bool HasOptnone = false;
 
   CallingConv = FI.getEffectiveCallingConvention();
-
   if (FI.isNoReturn())
     FuncAttrs.addAttribute(llvm::Attribute::NoReturn);
 
@@ -1641,7 +1776,7 @@ void CodeGenModule::ConstructAttributeList(
 
   const Decl *TargetDecl = CalleeInfo.getCalleeDecl();
 
-  bool HasAnyX86InterruptAttr = false;
+  bool HasOptnone = false;
   // FIXME: handle sseregparm someday...
   if (TargetDecl) {
     if (TargetDecl->hasAttr<ReturnsTwiceAttr>())
@@ -1681,90 +1816,30 @@ void CodeGenModule::ConstructAttributeList(
     if (TargetDecl->hasAttr<ReturnsNonNullAttr>())
       RetAttrs.addAttribute(llvm::Attribute::NonNull);
 
-    HasAnyX86InterruptAttr = TargetDecl->hasAttr<AnyX86InterruptAttr>();
     HasOptnone = TargetDecl->hasAttr<OptimizeNoneAttr>();
+    if (auto *AllocSize = TargetDecl->getAttr<AllocSizeAttr>()) {
+      Optional<unsigned> NumElemsParam;
+      // alloc_size args are base-1, 0 means not present.
+      if (unsigned N = AllocSize->getNumElemsParam())
+        NumElemsParam = N - 1;
+      FuncAttrs.addAllocSizeAttr(AllocSize->getElemSizeParam() - 1,
+                                 NumElemsParam);
+    }
   }
 
-  // OptimizeNoneAttr takes precedence over -Os or -Oz. No warning needed.
-  if (!HasOptnone) {
-    if (CodeGenOpts.OptimizeSize)
-      FuncAttrs.addAttribute(llvm::Attribute::OptimizeForSize);
-    if (CodeGenOpts.OptimizeSize == 2)
-      FuncAttrs.addAttribute(llvm::Attribute::MinSize);
-  }
+  ConstructDefaultFnAttrList(Name, HasOptnone, AttrOnCallSite, FuncAttrs);
 
-  if (CodeGenOpts.DisableRedZone)
-    FuncAttrs.addAttribute(llvm::Attribute::NoRedZone);
-  if (CodeGenOpts.NoImplicitFloat)
-    FuncAttrs.addAttribute(llvm::Attribute::NoImplicitFloat);
   if (CodeGenOpts.EnableSegmentedStacks &&
       !(TargetDecl && TargetDecl->hasAttr<NoSplitStackAttr>()))
     FuncAttrs.addAttribute("split-stack");
 
-  if (AttrOnCallSite) {
-    // Attributes that should go on the call site only.
-    if (!CodeGenOpts.SimplifyLibCalls ||
-        CodeGenOpts.isNoBuiltinFunc(Name.data()))
-      FuncAttrs.addAttribute(llvm::Attribute::NoBuiltin);
-    if (!CodeGenOpts.TrapFuncName.empty())
-      FuncAttrs.addAttribute("trap-func-name", CodeGenOpts.TrapFuncName);
-  } else {
-    // Attributes that should go on the function, but not the call site.
-    if (!CodeGenOpts.DisableFPElim) {
-      FuncAttrs.addAttribute("no-frame-pointer-elim", "false");
-    } else if (CodeGenOpts.OmitLeafFramePointer) {
-      FuncAttrs.addAttribute("no-frame-pointer-elim", "false");
-      FuncAttrs.addAttribute("no-frame-pointer-elim-non-leaf");
-    } else {
-      FuncAttrs.addAttribute("no-frame-pointer-elim", "true");
-      FuncAttrs.addAttribute("no-frame-pointer-elim-non-leaf");
-    }
-
+  if (!AttrOnCallSite) {
     bool DisableTailCalls =
-        CodeGenOpts.DisableTailCalls || HasAnyX86InterruptAttr ||
-        (TargetDecl && TargetDecl->hasAttr<DisableTailCallsAttr>());
-    FuncAttrs.addAttribute(
-        "disable-tail-calls",
-        llvm::toStringRef(DisableTailCalls));
-
-    FuncAttrs.addAttribute("less-precise-fpmad",
-                           llvm::toStringRef(CodeGenOpts.LessPreciseFPMAD));
-
-    if (!CodeGenOpts.FPDenormalMode.empty())
-      FuncAttrs.addAttribute("denormal-fp-math",
-                             CodeGenOpts.FPDenormalMode);
-
-    FuncAttrs.addAttribute("no-trapping-math",
-                           llvm::toStringRef(CodeGenOpts.NoTrappingMath));
-
-    // TODO: Are these all needed?
-    // unsafe/inf/nan/nsz are handled by instruction-level FastMathFlags.
-    FuncAttrs.addAttribute("no-infs-fp-math",
-                           llvm::toStringRef(CodeGenOpts.NoInfsFPMath));
-    FuncAttrs.addAttribute("no-nans-fp-math",
-                           llvm::toStringRef(CodeGenOpts.NoNaNsFPMath));
-    FuncAttrs.addAttribute("unsafe-fp-math",
-                           llvm::toStringRef(CodeGenOpts.UnsafeFPMath));
-    FuncAttrs.addAttribute("use-soft-float",
-                           llvm::toStringRef(CodeGenOpts.SoftFloat));
-    FuncAttrs.addAttribute("stack-protector-buffer-size",
-                           llvm::utostr(CodeGenOpts.SSPBufferSize));
-    FuncAttrs.addAttribute("no-signed-zeros-fp-math",
-                           llvm::toStringRef(CodeGenOpts.NoSignedZeros));
-    FuncAttrs.addAttribute(
-        "correctly-rounded-divide-sqrt-fp-math",
-        llvm::toStringRef(CodeGenOpts.CorrectlyRoundedDivSqrt));
-
-    // TODO: Reciprocal estimate codegen options should apply to instructions?
-    std::vector<std::string> &Recips = getTarget().getTargetOpts().Reciprocals;
-    if (!Recips.empty())
-      FuncAttrs.addAttribute("reciprocal-estimates",
-                             llvm::join(Recips.begin(), Recips.end(), ","));
-
-    if (CodeGenOpts.StackRealignment)
-      FuncAttrs.addAttribute("stackrealign");
-    if (CodeGenOpts.Backchain)
-      FuncAttrs.addAttribute("backchain");
+        CodeGenOpts.DisableTailCalls ||
+        (TargetDecl && (TargetDecl->hasAttr<DisableTailCallsAttr>() ||
+                        TargetDecl->hasAttr<AnyX86InterruptAttr>()));
+    FuncAttrs.addAttribute("disable-tail-calls",
+                           llvm::toStringRef(DisableTailCalls));
 
     // Add target-cpu and target-features attributes to functions. If
     // we have a decl for the function and it has a target attribute then
@@ -1811,21 +1886,6 @@ void CodeGenModule::ConstructAttributeList(
             llvm::join(Features.begin(), Features.end(), ","));
       }
     }
-  }
-
-  if (getLangOpts().CUDA && getLangOpts().CUDAIsDevice) {
-    // Conservatively, mark all functions and calls in CUDA as convergent
-    // (meaning, they may call an intrinsically convergent op, such as
-    // __syncthreads(), and so can't have certain optimizations applied around
-    // them).  LLVM will remove this attribute where it safely can.
-    FuncAttrs.addAttribute(llvm::Attribute::Convergent);
-
-    // Exceptions aren't supported in CUDA device code.
-    FuncAttrs.addAttribute(llvm::Attribute::NoUnwind);
-
-    // Respect -fcuda-flush-denormals-to-zero.
-    if (getLangOpts().CUDADeviceFlushDenormalsToZero)
-      FuncAttrs.addAttribute("nvptx-f32ftz", "true");
   }
 
   ClangToLLVMArgMapping IRFunctionArgs(getContext(), FI);
@@ -2852,19 +2912,7 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
 
   llvm::Instruction *Ret;
   if (RV) {
-    if (CurCodeDecl && SanOpts.has(SanitizerKind::ReturnsNonnullAttribute)) {
-      if (auto RetNNAttr = CurCodeDecl->getAttr<ReturnsNonNullAttr>()) {
-        SanitizerScope SanScope(this);
-        llvm::Value *Cond = Builder.CreateICmpNE(
-            RV, llvm::Constant::getNullValue(RV->getType()));
-        llvm::Constant *StaticData[] = {
-            EmitCheckSourceLocation(EndLoc),
-            EmitCheckSourceLocation(RetNNAttr->getLocation()),
-        };
-        EmitCheck(std::make_pair(Cond, SanitizerKind::ReturnsNonnullAttribute),
-                  "nonnull_return", StaticData, None);
-      }
-    }
+    EmitReturnValueCheck(RV, EndLoc);
     Ret = Builder.CreateRet(RV);
   } else {
     Ret = Builder.CreateRetVoid();
@@ -2872,6 +2920,62 @@ void CodeGenFunction::EmitFunctionEpilog(const CGFunctionInfo &FI,
 
   if (RetDbgLoc)
     Ret->setDebugLoc(std::move(RetDbgLoc));
+}
+
+void CodeGenFunction::EmitReturnValueCheck(llvm::Value *RV,
+                                           SourceLocation EndLoc) {
+  // A current decl may not be available when emitting vtable thunks.
+  if (!CurCodeDecl)
+    return;
+
+  ReturnsNonNullAttr *RetNNAttr = nullptr;
+  if (SanOpts.has(SanitizerKind::ReturnsNonnullAttribute))
+    RetNNAttr = CurCodeDecl->getAttr<ReturnsNonNullAttr>();
+
+  if (!RetNNAttr && !requiresReturnValueNullabilityCheck())
+    return;
+
+  // Prefer the returns_nonnull attribute if it's present.
+  SourceLocation AttrLoc;
+  SanitizerMask CheckKind;
+  if (RetNNAttr) {
+    assert(!requiresReturnValueNullabilityCheck() &&
+           "Cannot check nullability and the nonnull attribute");
+    AttrLoc = RetNNAttr->getLocation();
+    CheckKind = SanitizerKind::ReturnsNonnullAttribute;
+  } else {
+    // FIXME: The runtime shouldn't refer to the 'returns_nonnull' attribute.
+    if (auto *DD = dyn_cast<DeclaratorDecl>(CurCodeDecl))
+      if (auto *TSI = DD->getTypeSourceInfo())
+        if (auto FTL = TSI->getTypeLoc().castAs<FunctionTypeLoc>())
+          AttrLoc = FTL.getReturnLoc().findNullabilityLoc();
+    CheckKind = SanitizerKind::NullabilityReturn;
+  }
+
+  SanitizerScope SanScope(this);
+
+  llvm::BasicBlock *Check = nullptr;
+  llvm::BasicBlock *NoCheck = nullptr;
+  if (requiresReturnValueNullabilityCheck()) {
+    // Before doing the nullability check, make sure that the preconditions for
+    // the check are met.
+    Check = createBasicBlock("nullcheck");
+    NoCheck = createBasicBlock("no.nullcheck");
+    Builder.CreateCondBr(RetValNullabilityPrecondition, Check, NoCheck);
+    EmitBlock(Check);
+  }
+
+  // Now do the null check. If the returns_nonnull attribute is present, this
+  // is done unconditionally.
+  llvm::Value *Cond = Builder.CreateIsNotNull(RV);
+  llvm::Constant *StaticData[] = {
+      EmitCheckSourceLocation(EndLoc), EmitCheckSourceLocation(AttrLoc),
+  };
+  EmitCheck(std::make_pair(Cond, CheckKind), SanitizerHandler::NonnullReturn,
+            StaticData, None);
+
+  if (requiresReturnValueNullabilityCheck())
+    EmitBlock(NoCheck);
 }
 
 static bool isInAllocaArgument(CGCXXABI &ABI, QualType type) {
@@ -3182,49 +3286,60 @@ void CallArgList::freeArgumentMemory(CodeGenFunction &CGF) const {
 
 void CodeGenFunction::EmitNonNullArgCheck(RValue RV, QualType ArgType,
                                           SourceLocation ArgLoc,
-                                          const FunctionDecl *FD,
+                                          AbstractCallee AC,
                                           unsigned ParmNum) {
-  if (!SanOpts.has(SanitizerKind::NonnullAttribute) || !FD)
+  if (!AC.getDecl() || !(SanOpts.has(SanitizerKind::NonnullAttribute) ||
+                         SanOpts.has(SanitizerKind::NullabilityArg)))
     return;
-  auto PVD = ParmNum < FD->getNumParams() ? FD->getParamDecl(ParmNum) : nullptr;
+
+  // The param decl may be missing in a variadic function.
+  auto PVD = ParmNum < AC.getNumParams() ? AC.getParamDecl(ParmNum) : nullptr;
   unsigned ArgNo = PVD ? PVD->getFunctionScopeIndex() : ParmNum;
-  auto NNAttr = getNonNullAttr(FD, PVD, ArgType, ArgNo);
-  if (!NNAttr)
+
+  // Prefer the nonnull attribute if it's present. 
+  const NonNullAttr *NNAttr = nullptr;
+  if (SanOpts.has(SanitizerKind::NonnullAttribute))
+    NNAttr = getNonNullAttr(AC.getDecl(), PVD, ArgType, ArgNo);
+
+  bool CanCheckNullability = false;
+  if (SanOpts.has(SanitizerKind::NullabilityArg) && !NNAttr && PVD) {
+    auto Nullability = PVD->getType()->getNullability(getContext());
+    CanCheckNullability = Nullability &&
+                          *Nullability == NullabilityKind::NonNull &&
+                          PVD->getTypeSourceInfo();
+  }
+
+  if (!NNAttr && !CanCheckNullability)
     return;
+
+  SourceLocation AttrLoc;
+  SanitizerMask CheckKind;
+  if (NNAttr) {
+    AttrLoc = NNAttr->getLocation();
+    CheckKind = SanitizerKind::NonnullAttribute;
+  } else {
+    AttrLoc = PVD->getTypeSourceInfo()->getTypeLoc().findNullabilityLoc();
+    CheckKind = SanitizerKind::NullabilityArg;
+  }
+
   SanitizerScope SanScope(this);
   assert(RV.isScalar());
   llvm::Value *V = RV.getScalarVal();
   llvm::Value *Cond =
       Builder.CreateICmpNE(V, llvm::Constant::getNullValue(V->getType()));
   llvm::Constant *StaticData[] = {
-      EmitCheckSourceLocation(ArgLoc),
-      EmitCheckSourceLocation(NNAttr->getLocation()),
+      EmitCheckSourceLocation(ArgLoc), EmitCheckSourceLocation(AttrLoc),
       llvm::ConstantInt::get(Int32Ty, ArgNo + 1),
   };
-  EmitCheck(std::make_pair(Cond, SanitizerKind::NonnullAttribute),
-                "nonnull_arg", StaticData, None);
+  EmitCheck(std::make_pair(Cond, CheckKind), SanitizerHandler::NonnullArg,
+            StaticData, None);
 }
 
 void CodeGenFunction::EmitCallArgs(
     CallArgList &Args, ArrayRef<QualType> ArgTypes,
     llvm::iterator_range<CallExpr::const_arg_iterator> ArgRange,
-    const FunctionDecl *CalleeDecl, unsigned ParamsToSkip,
-    EvaluationOrder Order) {
+    AbstractCallee AC, unsigned ParamsToSkip, EvaluationOrder Order) {
   assert((int)ArgTypes.size() == (ArgRange.end() - ArgRange.begin()));
-
-  auto MaybeEmitImplicitObjectSize = [&](unsigned I, const Expr *Arg) {
-    if (CalleeDecl == nullptr || I >= CalleeDecl->getNumParams())
-      return;
-    auto *PS = CalleeDecl->getParamDecl(I)->getAttr<PassObjectSizeAttr>();
-    if (PS == nullptr)
-      return;
-
-    const auto &Context = getContext();
-    auto SizeTy = Context.getSizeType();
-    auto T = Builder.getIntNTy(Context.getTypeSize(SizeTy));
-    llvm::Value *V = evaluateOrEmitBuiltinObjectSize(Arg, PS->getType(), T);
-    Args.add(RValue::get(V), SizeTy);
-  };
 
   // We *have* to evaluate arguments from right to left in the MS C++ ABI,
   // because arguments are destroyed left to right in the callee. As a special
@@ -3235,6 +3350,27 @@ void CodeGenFunction::EmitCallArgs(
       CGM.getTarget().getCXXABI().areArgsDestroyedLeftToRightInCallee()
           ? Order == EvaluationOrder::ForceLeftToRight
           : Order != EvaluationOrder::ForceRightToLeft;
+
+  auto MaybeEmitImplicitObjectSize = [&](unsigned I, const Expr *Arg,
+                                         RValue EmittedArg) {
+    if (!AC.hasFunctionDecl() || I >= AC.getNumParams())
+      return;
+    auto *PS = AC.getParamDecl(I)->getAttr<PassObjectSizeAttr>();
+    if (PS == nullptr)
+      return;
+
+    const auto &Context = getContext();
+    auto SizeTy = Context.getSizeType();
+    auto T = Builder.getIntNTy(Context.getTypeSize(SizeTy));
+    assert(EmittedArg.getScalarVal() && "We emitted nothing for the arg?");
+    llvm::Value *V = evaluateOrEmitBuiltinObjectSize(Arg, PS->getType(), T,
+                                                     EmittedArg.getScalarVal());
+    Args.add(RValue::get(V), SizeTy);
+    // If we're emitting args in reverse, be sure to do so with
+    // pass_object_size, as well.
+    if (!LeftToRight)
+      std::swap(Args.back(), *(&Args.back() - 1));
+  };
 
   // Insert a stack save if we're going to need any inalloca args.
   bool HasInAllocaArgs = false;
@@ -3253,11 +3389,20 @@ void CodeGenFunction::EmitCallArgs(
   for (unsigned I = 0, E = ArgTypes.size(); I != E; ++I) {
     unsigned Idx = LeftToRight ? I : E - I - 1;
     CallExpr::const_arg_iterator Arg = ArgRange.begin() + Idx;
-    if (!LeftToRight) MaybeEmitImplicitObjectSize(Idx, *Arg);
+    unsigned InitialArgSize = Args.size();
     EmitCallArg(Args, *Arg, ArgTypes[Idx]);
-    EmitNonNullArgCheck(Args.back().RV, ArgTypes[Idx], (*Arg)->getExprLoc(),
-                        CalleeDecl, ParamsToSkip + Idx);
-    if (LeftToRight) MaybeEmitImplicitObjectSize(Idx, *Arg);
+    // In particular, we depend on it being the last arg in Args, and the
+    // objectsize bits depend on there only being one arg if !LeftToRight.
+    assert(InitialArgSize + 1 == Args.size() &&
+           "The code below depends on only adding one arg per EmitCallArg");
+    (void)InitialArgSize;
+    RValue RVArg = Args.back().RV;
+    EmitNonNullArgCheck(RVArg, ArgTypes[Idx], (*Arg)->getExprLoc(), AC,
+                        ParamsToSkip + Idx);
+    // @llvm.objectsize should never have side-effects and shouldn't need
+    // destruction/cleanups, so we can safely "emit" it after its arg,
+    // regardless of right-to-leftness
+    MaybeEmitImplicitObjectSize(Idx, *Arg, RVArg);
   }
 
   if (!LeftToRight) {

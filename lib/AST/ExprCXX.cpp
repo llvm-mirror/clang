@@ -734,23 +734,23 @@ CXXBindTemporaryExpr *CXXBindTemporaryExpr::Create(const ASTContext &C,
 
 CXXTemporaryObjectExpr::CXXTemporaryObjectExpr(const ASTContext &C,
                                                CXXConstructorDecl *Cons,
-                                               TypeSourceInfo *Type,
+                                               QualType Type,
+                                               TypeSourceInfo *TSI,
                                                ArrayRef<Expr*> Args,
                                                SourceRange ParenOrBraceRange,
                                                bool HadMultipleCandidates,
                                                bool ListInitialization,
                                                bool StdInitListInitialization,
                                                bool ZeroInitialization)
-  : CXXConstructExpr(C, CXXTemporaryObjectExprClass, 
-                     Type->getType().getNonReferenceType(), 
-                     Type->getTypeLoc().getBeginLoc(),
+  : CXXConstructExpr(C, CXXTemporaryObjectExprClass, Type,
+                     TSI->getTypeLoc().getBeginLoc(),
                      Cons, false, Args,
                      HadMultipleCandidates,
                      ListInitialization,
                      StdInitListInitialization,
                      ZeroInitialization,
                      CXXConstructExpr::CK_Complete, ParenOrBraceRange),
-    Type(Type) {
+    Type(TSI) {
 }
 
 SourceLocation CXXTemporaryObjectExpr::getLocStart() const {
@@ -869,8 +869,6 @@ LambdaExpr::LambdaExpr(QualType T, SourceRange IntroducerRange,
                        SourceLocation CaptureDefaultLoc,
                        ArrayRef<LambdaCapture> Captures, bool ExplicitParams,
                        bool ExplicitResultType, ArrayRef<Expr *> CaptureInits,
-                       ArrayRef<VarDecl *> ArrayIndexVars,
-                       ArrayRef<unsigned> ArrayIndexStarts,
                        SourceLocation ClosingBrace,
                        bool ContainsUnexpandedParameterPack)
     : Expr(LambdaExprClass, T, VK_RValue, OK_Ordinary, T->isDependentType(),
@@ -907,17 +905,6 @@ LambdaExpr::LambdaExpr(QualType T, SourceRange IntroducerRange,
   
   // Copy the body of the lambda.
   *Stored++ = getCallOperator()->getBody();
-
-  // Copy the array index variables, if any.
-  HasArrayIndexVars = !ArrayIndexVars.empty();
-  if (HasArrayIndexVars) {
-    assert(ArrayIndexStarts.size() == NumCaptures);
-    memcpy(getArrayIndexVars(), ArrayIndexVars.data(),
-           sizeof(VarDecl *) * ArrayIndexVars.size());
-    memcpy(getArrayIndexStarts(), ArrayIndexStarts.data(), 
-           sizeof(unsigned) * Captures.size());
-    getArrayIndexStarts()[Captures.size()] = ArrayIndexVars.size();
-  }
 }
 
 LambdaExpr *LambdaExpr::Create(
@@ -925,31 +912,24 @@ LambdaExpr *LambdaExpr::Create(
     SourceRange IntroducerRange, LambdaCaptureDefault CaptureDefault,
     SourceLocation CaptureDefaultLoc, ArrayRef<LambdaCapture> Captures,
     bool ExplicitParams, bool ExplicitResultType, ArrayRef<Expr *> CaptureInits,
-    ArrayRef<VarDecl *> ArrayIndexVars, ArrayRef<unsigned> ArrayIndexStarts,
     SourceLocation ClosingBrace, bool ContainsUnexpandedParameterPack) {
   // Determine the type of the expression (i.e., the type of the
   // function object we're creating).
   QualType T = Context.getTypeDeclType(Class);
 
-  unsigned Size = totalSizeToAlloc<Stmt *, unsigned, VarDecl *>(
-      Captures.size() + 1, ArrayIndexVars.empty() ? 0 : Captures.size() + 1,
-      ArrayIndexVars.size());
+  unsigned Size = totalSizeToAlloc<Stmt *>(Captures.size() + 1);
   void *Mem = Context.Allocate(Size);
-  return new (Mem) LambdaExpr(T, IntroducerRange,
-                              CaptureDefault, CaptureDefaultLoc, Captures,
-                              ExplicitParams, ExplicitResultType,
-                              CaptureInits, ArrayIndexVars, ArrayIndexStarts,
-                              ClosingBrace, ContainsUnexpandedParameterPack);
+  return new (Mem)
+      LambdaExpr(T, IntroducerRange, CaptureDefault, CaptureDefaultLoc,
+                 Captures, ExplicitParams, ExplicitResultType, CaptureInits,
+                 ClosingBrace, ContainsUnexpandedParameterPack);
 }
 
 LambdaExpr *LambdaExpr::CreateDeserialized(const ASTContext &C,
-                                           unsigned NumCaptures,
-                                           unsigned NumArrayIndexVars) {
-  unsigned Size = totalSizeToAlloc<Stmt *, unsigned, VarDecl *>(
-      NumCaptures + 1, NumArrayIndexVars ? NumCaptures + 1 : 0,
-      NumArrayIndexVars);
+                                           unsigned NumCaptures) {
+  unsigned Size = totalSizeToAlloc<Stmt *>(NumCaptures + 1);
   void *Mem = C.Allocate(Size);
-  return new (Mem) LambdaExpr(EmptyShell(), NumCaptures, NumArrayIndexVars > 0);
+  return new (Mem) LambdaExpr(EmptyShell(), NumCaptures);
 }
 
 bool LambdaExpr::isInitCapture(const LambdaCapture *C) const {
@@ -993,19 +973,6 @@ LambdaExpr::capture_iterator LambdaExpr::implicit_capture_end() const {
 
 LambdaExpr::capture_range LambdaExpr::implicit_captures() const {
   return capture_range(implicit_capture_begin(), implicit_capture_end());
-}
-
-ArrayRef<VarDecl *>
-LambdaExpr::getCaptureInitIndexVars(const_capture_init_iterator Iter) const {
-  assert(HasArrayIndexVars && "No array index-var data?");
-  
-  unsigned Index = Iter - capture_init_begin();
-  assert(Index < getLambdaClass()->getLambdaData().NumCaptures &&
-         "Capture index out-of-range");
-  VarDecl *const *IndexVars = getArrayIndexVars();
-  const unsigned *IndexStarts = getArrayIndexStarts();
-  return llvm::makeArrayRef(IndexVars + IndexStarts[Index],
-                            IndexVars + IndexStarts[Index + 1]);
 }
 
 CXXRecordDecl *LambdaExpr::getLambdaClass() const {

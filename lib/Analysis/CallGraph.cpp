@@ -55,13 +55,14 @@ public:
   void addCalledDecl(Decl *D) {
     if (G->includeInGraph(D)) {
       CallGraphNode *CalleeNode = G->getOrInsertNode(D);
-      CallerNode->addCallee(CalleeNode, G);
+      CallerNode->addCallee(CalleeNode);
     }
   }
 
   void VisitCallExpr(CallExpr *CE) {
     if (Decl *D = getDeclFromCall(CE))
       addCalledDecl(D);
+    VisitChildren(CE);
   }
 
   // Adds may-call edges for the ObjC message sends.
@@ -154,7 +155,7 @@ CallGraphNode *CallGraph::getOrInsertNode(Decl *F) {
   Node = llvm::make_unique<CallGraphNode>(F);
   // Make Root node a parent of all functions to make sure all are reachable.
   if (F)
-    Root->addCallee(Node.get(), this);
+    Root->addCallee(Node.get());
   return Node.get();
 }
 

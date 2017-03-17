@@ -1470,7 +1470,8 @@ class CXXTemporaryObjectExpr : public CXXConstructExpr {
 public:
   CXXTemporaryObjectExpr(const ASTContext &C,
                          CXXConstructorDecl *Cons,
-                         TypeSourceInfo *Type,
+                         QualType Type,
+                         TypeSourceInfo *TSI,
                          ArrayRef<Expr *> Args,
                          SourceRange ParenOrBraceRange,
                          bool HadMultipleCandidates,
@@ -1513,9 +1514,8 @@ public:
 /// C++1y introduces a new form of "capture" called an init-capture that
 /// includes an initializing expression (rather than capturing a variable),
 /// and which can never occur implicitly.
-class LambdaExpr final
-    : public Expr,
-      private llvm::TrailingObjects<LambdaExpr, Stmt *, unsigned, VarDecl *> {
+class LambdaExpr final : public Expr,
+                         private llvm::TrailingObjects<LambdaExpr, Stmt *> {
   /// \brief The source range that covers the lambda introducer ([...]).
   SourceRange IntroducerRange;
 
@@ -1536,10 +1536,6 @@ class LambdaExpr final
   /// \brief Whether this lambda had the result type explicitly specified.
   unsigned ExplicitResultType : 1;
   
-  /// \brief Whether there are any array index variables stored at the end of
-  /// this lambda expression.
-  unsigned HasArrayIndexVars : 1;
-  
   /// \brief The location of the closing brace ('}') that completes
   /// the lambda.
   /// 
@@ -1550,49 +1546,25 @@ class LambdaExpr final
   /// module file just to determine the source range.
   SourceLocation ClosingBrace;
 
-  size_t numTrailingObjects(OverloadToken<Stmt *>) const {
-    return NumCaptures + 1;
-  }
-
-  size_t numTrailingObjects(OverloadToken<unsigned>) const {
-    return HasArrayIndexVars ? NumCaptures + 1 : 0;
-  }
-
   /// \brief Construct a lambda expression.
   LambdaExpr(QualType T, SourceRange IntroducerRange,
              LambdaCaptureDefault CaptureDefault,
              SourceLocation CaptureDefaultLoc, ArrayRef<LambdaCapture> Captures,
              bool ExplicitParams, bool ExplicitResultType,
-             ArrayRef<Expr *> CaptureInits, ArrayRef<VarDecl *> ArrayIndexVars,
-             ArrayRef<unsigned> ArrayIndexStarts, SourceLocation ClosingBrace,
+             ArrayRef<Expr *> CaptureInits, SourceLocation ClosingBrace,
              bool ContainsUnexpandedParameterPack);
 
   /// \brief Construct an empty lambda expression.
-  LambdaExpr(EmptyShell Empty, unsigned NumCaptures, bool HasArrayIndexVars)
+  LambdaExpr(EmptyShell Empty, unsigned NumCaptures)
     : Expr(LambdaExprClass, Empty),
       NumCaptures(NumCaptures), CaptureDefault(LCD_None), ExplicitParams(false),
-      ExplicitResultType(false), HasArrayIndexVars(true) { 
+      ExplicitResultType(false) { 
     getStoredStmts()[NumCaptures] = nullptr;
   }
 
   Stmt **getStoredStmts() { return getTrailingObjects<Stmt *>(); }
 
   Stmt *const *getStoredStmts() const { return getTrailingObjects<Stmt *>(); }
-
-  /// \brief Retrieve the mapping from captures to the first array index
-  /// variable.
-  unsigned *getArrayIndexStarts() { return getTrailingObjects<unsigned>(); }
-
-  const unsigned *getArrayIndexStarts() const {
-    return getTrailingObjects<unsigned>();
-  }
-
-  /// \brief Retrieve the complete set of array-index variables.
-  VarDecl **getArrayIndexVars() { return getTrailingObjects<VarDecl *>(); }
-
-  VarDecl *const *getArrayIndexVars() const {
-    return getTrailingObjects<VarDecl *>();
-  }
 
 public:
   /// \brief Construct a new lambda expression.
@@ -1601,15 +1573,12 @@ public:
          LambdaCaptureDefault CaptureDefault, SourceLocation CaptureDefaultLoc,
          ArrayRef<LambdaCapture> Captures, bool ExplicitParams,
          bool ExplicitResultType, ArrayRef<Expr *> CaptureInits,
-         ArrayRef<VarDecl *> ArrayIndexVars,
-         ArrayRef<unsigned> ArrayIndexStarts, SourceLocation ClosingBrace,
-         bool ContainsUnexpandedParameterPack);
+         SourceLocation ClosingBrace, bool ContainsUnexpandedParameterPack);
 
   /// \brief Construct a new lambda expression that will be deserialized from
   /// an external source.
   static LambdaExpr *CreateDeserialized(const ASTContext &C,
-                                        unsigned NumCaptures,
-                                        unsigned NumArrayIndexVars);
+                                        unsigned NumCaptures);
 
   /// \brief Determine the default capture kind for this lambda.
   LambdaCaptureDefault getCaptureDefault() const {
@@ -1707,14 +1676,6 @@ public:
   const_capture_init_iterator capture_init_end() const {
     return capture_init_begin() + NumCaptures;
   }
-
-  /// \brief Retrieve the set of index variables used in the capture
-  /// initializer of an array captured by copy.
-  ///
-  /// \param Iter The iterator that points at the capture initializer for
-  /// which we are extracting the corresponding index variables.
-  ArrayRef<VarDecl *>
-  getCaptureInitIndexVars(const_capture_init_iterator Iter) const;
 
   /// \brief Retrieve the source range covering the lambda introducer,
   /// which contains the explicit capture list surrounded by square
@@ -4162,16 +4123,18 @@ class CoroutineSuspendExpr : public Expr {
 
   enum SubExpr { Common, Ready, Suspend, Resume, Count };
   Stmt *SubExprs[SubExpr::Count];
+  OpaqueValueExpr *OpaqueValue = nullptr;
 
   friend class ASTStmtReader;
 public:
   CoroutineSuspendExpr(StmtClass SC, SourceLocation KeywordLoc, Expr *Common,
-                       Expr *Ready, Expr *Suspend, Expr *Resume)
+                       Expr *Ready, Expr *Suspend, Expr *Resume,
+                       OpaqueValueExpr *OpaqueValue)
       : Expr(SC, Resume->getType(), Resume->getValueKind(),
              Resume->getObjectKind(), Resume->isTypeDependent(),
              Resume->isValueDependent(), Common->isInstantiationDependent(),
              Common->containsUnexpandedParameterPack()),
-        KeywordLoc(KeywordLoc) {
+        KeywordLoc(KeywordLoc), OpaqueValue(OpaqueValue) {
     SubExprs[SubExpr::Common] = Common;
     SubExprs[SubExpr::Ready] = Ready;
     SubExprs[SubExpr::Suspend] = Suspend;
@@ -4200,6 +4163,8 @@ public:
   Expr *getCommonExpr() const {
     return static_cast<Expr*>(SubExprs[SubExpr::Common]);
   }
+  /// \brief getOpaqueValue - Return the opaque value placeholder.
+  OpaqueValueExpr *getOpaqueValue() const { return OpaqueValue; }
 
   Expr *getReadyExpr() const {
     return static_cast<Expr*>(SubExprs[SubExpr::Ready]);
@@ -4233,11 +4198,17 @@ class CoawaitExpr : public CoroutineSuspendExpr {
   friend class ASTStmtReader;
 public:
   CoawaitExpr(SourceLocation CoawaitLoc, Expr *Operand, Expr *Ready,
-              Expr *Suspend, Expr *Resume)
+              Expr *Suspend, Expr *Resume, OpaqueValueExpr *OpaqueValue,
+              bool IsImplicit = false)
       : CoroutineSuspendExpr(CoawaitExprClass, CoawaitLoc, Operand, Ready,
-                             Suspend, Resume) {}
-  CoawaitExpr(SourceLocation CoawaitLoc, QualType Ty, Expr *Operand)
-      : CoroutineSuspendExpr(CoawaitExprClass, CoawaitLoc, Ty, Operand) {}
+                             Suspend, Resume, OpaqueValue) {
+    CoawaitBits.IsImplicit = IsImplicit;
+  }
+  CoawaitExpr(SourceLocation CoawaitLoc, QualType Ty, Expr *Operand,
+              bool IsImplicit = false)
+      : CoroutineSuspendExpr(CoawaitExprClass, CoawaitLoc, Ty, Operand) {
+    CoawaitBits.IsImplicit = IsImplicit;
+  }
   CoawaitExpr(EmptyShell Empty)
       : CoroutineSuspendExpr(CoawaitExprClass, Empty) {}
 
@@ -4246,8 +4217,56 @@ public:
     return getCommonExpr();
   }
 
+  bool isImplicit() const { return CoawaitBits.IsImplicit; }
+  void setIsImplicit(bool value = true) { CoawaitBits.IsImplicit = value; }
+
   static bool classof(const Stmt *T) {
     return T->getStmtClass() == CoawaitExprClass;
+  }
+};
+
+/// \brief Represents a 'co_await' expression while the type of the promise
+/// is dependent.
+class DependentCoawaitExpr : public Expr {
+  SourceLocation KeywordLoc;
+  Stmt *SubExprs[2];
+
+  friend class ASTStmtReader;
+
+public:
+  DependentCoawaitExpr(SourceLocation KeywordLoc, QualType Ty, Expr *Op,
+                       UnresolvedLookupExpr *OpCoawait)
+      : Expr(DependentCoawaitExprClass, Ty, VK_RValue, OK_Ordinary,
+             /*TypeDependent*/ true, /*ValueDependent*/ true,
+             /*InstantiationDependent*/ true,
+             Op->containsUnexpandedParameterPack()),
+        KeywordLoc(KeywordLoc) {
+    // NOTE: A co_await expression is dependent on the coroutines promise
+    // type and may be dependent even when the `Op` expression is not.
+    assert(Ty->isDependentType() &&
+           "wrong constructor for non-dependent co_await/co_yield expression");
+    SubExprs[0] = Op;
+    SubExprs[1] = OpCoawait;
+  }
+
+  DependentCoawaitExpr(EmptyShell Empty)
+      : Expr(DependentCoawaitExprClass, Empty) {}
+
+  Expr *getOperand() const { return cast<Expr>(SubExprs[0]); }
+  UnresolvedLookupExpr *getOperatorCoawaitLookup() const {
+    return cast<UnresolvedLookupExpr>(SubExprs[1]);
+  }
+  SourceLocation getKeywordLoc() const { return KeywordLoc; }
+
+  SourceLocation getLocStart() const LLVM_READONLY { return KeywordLoc; }
+  SourceLocation getLocEnd() const LLVM_READONLY {
+    return getOperand()->getLocEnd();
+  }
+
+  child_range children() { return child_range(SubExprs, SubExprs + 2); }
+
+  static bool classof(const Stmt *T) {
+    return T->getStmtClass() == DependentCoawaitExprClass;
   }
 };
 
@@ -4256,9 +4275,9 @@ class CoyieldExpr : public CoroutineSuspendExpr {
   friend class ASTStmtReader;
 public:
   CoyieldExpr(SourceLocation CoyieldLoc, Expr *Operand, Expr *Ready,
-              Expr *Suspend, Expr *Resume)
+              Expr *Suspend, Expr *Resume, OpaqueValueExpr *OpaqueValue)
       : CoroutineSuspendExpr(CoyieldExprClass, CoyieldLoc, Operand, Ready,
-                             Suspend, Resume) {}
+                             Suspend, Resume, OpaqueValue) {}
   CoyieldExpr(SourceLocation CoyieldLoc, QualType Ty, Expr *Operand)
       : CoroutineSuspendExpr(CoyieldExprClass, CoyieldLoc, Ty, Operand) {}
   CoyieldExpr(EmptyShell Empty)

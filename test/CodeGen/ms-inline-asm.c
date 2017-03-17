@@ -55,9 +55,15 @@ void t7() {
     }
   }
   __asm {}
+  __asm {
+    ;
+    ; label
+    mov eax, ebx
+  }
 // CHECK: t7
 // CHECK: call void asm sideeffect inteldialect "int $$0x2cU", "~{dirflag},~{fpsr},~{flags}"()
 // CHECK: call void asm sideeffect inteldialect "", "~{dirflag},~{fpsr},~{flags}"()
+// CHECK: call void asm sideeffect inteldialect "mov eax, ebx", "~{eax},~{dirflag},~{fpsr},~{flags}"()
 }
 
 int t8() {
@@ -642,6 +648,14 @@ void label6(){
   // CHECK-LABEL: define void @label6
   // CHECK: call void asm sideeffect inteldialect "jmp {{.*}}__MSASMLABEL_.${:uid}__label\0A\09{{.*}}__MSASMLABEL_.${:uid}__label:", "~{dirflag},~{fpsr},~{flags}"()
 }
+
+// Don't include mxcsr in the clobber list.
+void mxcsr() {
+  char buf[4096];
+  __asm fxrstor buf
+}
+// CHECK-LABEL: define void @mxcsr
+// CHECK: call void asm sideeffect inteldialect "fxrstor byte ptr $0", "=*m,~{dirflag},~{fpsr},~{flags}"
 
 typedef union _LARGE_INTEGER {
   struct {

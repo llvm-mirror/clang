@@ -42,6 +42,7 @@ class DiagnosticsEngine;
 class LangOptions;
 class CodeGenOptions;
 class MacroBuilder;
+class QualType;
 class SourceLocation;
 class SourceManager;
 
@@ -298,6 +299,12 @@ public:
   /// \brief Return the maximum width of pointers on this target.
   virtual uint64_t getMaxPointerWidth() const {
     return PointerWidth;
+  }
+
+  /// \brief Get integer value for null pointer.
+  /// \param AddrSpace address space of pointee in source language.
+  virtual uint64_t getNullPointerValue(unsigned AddrSpace) const {
+    return 0;
   }
 
   /// \brief Return the size of '_Bool' and C++ 'bool' for this target, in bits.
@@ -598,8 +605,16 @@ public:
 
   /// \brief Returns the "normalized" GCC register name.
   ///
-  /// For example, on x86 it will return "ax" when "eax" is passed in.
-  StringRef getNormalizedGCCRegisterName(StringRef Name) const;
+  /// ReturnCannonical true will return the register name without any additions
+  /// such as "{}" or "%" in it's canonical form, for example:
+  /// ReturnCanonical = true and Name = "rax", will return "ax".
+  StringRef getNormalizedGCCRegisterName(StringRef Name,
+                                         bool ReturnCanonical = false) const;
+ 
+  virtual StringRef getConstraintRegister(const StringRef &Constraint,
+                                          const StringRef &Expression) const {
+    return "";
+  }
 
   struct ConstraintInfo {
     enum {
@@ -998,7 +1013,7 @@ public:
   /// \brief Set supported OpenCL extensions as written on command line
   virtual void setOpenCLExtensionOpts() {
     for (const auto &Ext : getTargetOpts().OpenCLExtensionsAsWritten) {
-      getTargetOpts().SupportedOpenCLOptions.set(Ext);
+      getTargetOpts().SupportedOpenCLOptions.support(Ext);
     }
   }
 
@@ -1015,6 +1030,21 @@ public:
   /// \brief Get OpenCL image type address space.
   virtual LangAS::ID getOpenCLImageAddrSpace() const {
     return LangAS::opencl_global;
+  }
+
+  /// \returns Target specific vtbl ptr address space.
+  virtual unsigned getVtblPtrAddressSpace() const {
+    return 0;
+  }
+
+  /// \returns If a target requires an address within a target specific address
+  /// space \p AddressSpace to be converted in order to be used, then return the
+  /// corresponding target specific DWARF address space.
+  ///
+  /// \returns Otherwise return None and no conversion will be emitted in the
+  /// DWARF.
+  virtual Optional<unsigned> getDWARFAddressSpace(unsigned AddressSpace) const {
+    return None;
   }
 
   /// \brief Check the target is valid after it is fully initialized.

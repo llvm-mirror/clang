@@ -774,6 +774,11 @@ bool RecursiveASTVisitor<Derived>::TraverseDeclarationNameInfo(
       TRY_TO(TraverseTypeLoc(TSInfo->getTypeLoc()));
     break;
 
+  case DeclarationName::CXXDeductionGuideName:
+    TRY_TO(TraverseTemplateName(
+        TemplateName(NameInfo.getName().getCXXDeductionGuideTemplate())));
+    break;
+
   case DeclarationName::Identifier:
   case DeclarationName::ObjCZeroArgSelector:
   case DeclarationName::ObjCOneArgSelector:
@@ -885,16 +890,6 @@ bool RecursiveASTVisitor<Derived>::TraverseConstructorInitializer(
 
   if (Init->isWritten() || getDerived().shouldVisitImplicitCode())
     TRY_TO(TraverseStmt(Init->getInit()));
-
-  if (getDerived().shouldVisitImplicitCode())
-    // The braces for this one-line loop are required for MSVC2013.  It
-    // refuses to compile
-    //     for (int i : int_vec)
-    //       do {} while(false);
-    // without braces on the for loop.
-    for (VarDecl *VD : Init->getArrayIndices()) {
-      TRY_TO(TraverseDecl(VD));
-    }
 
   return true;
 }
@@ -1018,6 +1013,10 @@ DEF_TRAVERSE_TYPE(UnaryTransformType, {
 })
 
 DEF_TRAVERSE_TYPE(AutoType, { TRY_TO(TraverseType(T->getDeducedType())); })
+DEF_TRAVERSE_TYPE(DeducedTemplateSpecializationType, {
+  TRY_TO(TraverseTemplateName(T->getTemplateName()));
+  TRY_TO(TraverseType(T->getDeducedType()));
+})
 
 DEF_TRAVERSE_TYPE(RecordType, {})
 DEF_TRAVERSE_TYPE(EnumType, {})
@@ -1239,6 +1238,11 @@ DEF_TRAVERSE_TYPELOC(UnaryTransformType, {
 })
 
 DEF_TRAVERSE_TYPELOC(AutoType, {
+  TRY_TO(TraverseType(TL.getTypePtr()->getDeducedType()));
+})
+
+DEF_TRAVERSE_TYPELOC(DeducedTemplateSpecializationType, {
+  TRY_TO(TraverseTemplateName(TL.getTypePtr()->getTemplateName()));
   TRY_TO(TraverseType(TL.getTypePtr()->getDeducedType()));
 })
 
@@ -1514,6 +1518,8 @@ DEF_TRAVERSE_DECL(UsingDecl, {
   TRY_TO(TraverseNestedNameSpecifierLoc(D->getQualifierLoc()));
   TRY_TO(TraverseDeclarationNameInfo(D->getNameInfo()));
 })
+
+DEF_TRAVERSE_DECL(UsingPackDecl, {})
 
 DEF_TRAVERSE_DECL(UsingDirectiveDecl, {
   TRY_TO(TraverseNestedNameSpecifierLoc(D->getQualifierLoc()));
@@ -1934,6 +1940,13 @@ bool RecursiveASTVisitor<Derived>::TraverseFunctionHelper(FunctionDecl *D) {
 }
 
 DEF_TRAVERSE_DECL(FunctionDecl, {
+  // We skip decls_begin/decls_end, which are already covered by
+  // TraverseFunctionHelper().
+  ShouldVisitChildren = false;
+  ReturnValue = TraverseFunctionHelper(D);
+})
+
+DEF_TRAVERSE_DECL(CXXDeductionGuideDecl, {
   // We skip decls_begin/decls_end, which are already covered by
   // TraverseFunctionHelper().
   ShouldVisitChildren = false;
@@ -2399,6 +2412,13 @@ DEF_TRAVERSE_STMT(ExtVectorElementExpr, {})
 DEF_TRAVERSE_STMT(GNUNullExpr, {})
 DEF_TRAVERSE_STMT(ImplicitValueInitExpr, {})
 DEF_TRAVERSE_STMT(NoInitExpr, {})
+DEF_TRAVERSE_STMT(ArrayInitLoopExpr, {
+  // FIXME: The source expression of the OVE should be listed as
+  // a child of the ArrayInitLoopExpr.
+  if (OpaqueValueExpr *OVE = S->getCommonExpr())
+    TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(OVE->getSourceExpr());
+})
+DEF_TRAVERSE_STMT(ArrayInitIndexExpr, {})
 DEF_TRAVERSE_STMT(ObjCBoolLiteralExpr, {})
 
 DEF_TRAVERSE_STMT(ObjCEncodeExpr, {
@@ -2491,6 +2511,12 @@ DEF_TRAVERSE_STMT(CoreturnStmt, {
   }
 })
 DEF_TRAVERSE_STMT(CoawaitExpr, {
+  if (!getDerived().shouldVisitImplicitCode()) {
+    TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(S->getOperand());
+    ShouldVisitChildren = false;
+  }
+})
+DEF_TRAVERSE_STMT(DependentCoawaitExpr, {
   if (!getDerived().shouldVisitImplicitCode()) {
     TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(S->getOperand());
     ShouldVisitChildren = false;
@@ -2661,6 +2687,21 @@ DEF_TRAVERSE_STMT(OMPTeamsDistributeParallelForSimdDirective,
 DEF_TRAVERSE_STMT(OMPTeamsDistributeParallelForDirective,
                   { TRY_TO(TraverseOMPExecutableDirective(S)); })
 
+DEF_TRAVERSE_STMT(OMPTargetTeamsDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
+DEF_TRAVERSE_STMT(OMPTargetTeamsDistributeDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
+DEF_TRAVERSE_STMT(OMPTargetTeamsDistributeParallelForDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
+DEF_TRAVERSE_STMT(OMPTargetTeamsDistributeParallelForSimdDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
+DEF_TRAVERSE_STMT(OMPTargetTeamsDistributeSimdDirective,
+                  { TRY_TO(TraverseOMPExecutableDirective(S)); })
+
 // OpenMP clauses.
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::TraverseOMPClause(OMPClause *C) {
@@ -2697,6 +2738,7 @@ bool RecursiveASTVisitor<Derived>::VisitOMPClauseWithPostUpdate(
 
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPIfClause(OMPIfClause *C) {
+  TRY_TO(VisitOMPClauseWithPreInit(C));
   TRY_TO(TraverseStmt(C->getCondition()));
   return true;
 }
@@ -2710,6 +2752,7 @@ bool RecursiveASTVisitor<Derived>::VisitOMPFinalClause(OMPFinalClause *C) {
 template <typename Derived>
 bool
 RecursiveASTVisitor<Derived>::VisitOMPNumThreadsClause(OMPNumThreadsClause *C) {
+  TRY_TO(VisitOMPClauseWithPreInit(C));
   TRY_TO(TraverseStmt(C->getNumThreads()));
   return true;
 }
@@ -2979,6 +3022,7 @@ bool RecursiveASTVisitor<Derived>::VisitOMPMapClause(OMPMapClause *C) {
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPNumTeamsClause(
     OMPNumTeamsClause *C) {
+  TRY_TO(VisitOMPClauseWithPreInit(C));
   TRY_TO(TraverseStmt(C->getNumTeams()));
   return true;
 }
@@ -2986,6 +3030,7 @@ bool RecursiveASTVisitor<Derived>::VisitOMPNumTeamsClause(
 template <typename Derived>
 bool RecursiveASTVisitor<Derived>::VisitOMPThreadLimitClause(
     OMPThreadLimitClause *C) {
+  TRY_TO(VisitOMPClauseWithPreInit(C));
   TRY_TO(TraverseStmt(C->getThreadLimit()));
   return true;
 }

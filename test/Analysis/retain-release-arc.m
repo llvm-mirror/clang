@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -analyze -analyzer-checker=core,osx.coreFoundation.CFRetainRelease,osx.cocoa.ClassRelease,osx.cocoa.RetainCount -fobjc-arc -fblocks -verify -Wno-objc-root-class %s -analyzer-output=text
-// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -analyze -analyzer-checker=core,osx.coreFoundation.CFRetainRelease,osx.cocoa.ClassRelease,osx.cocoa.RetainCount -fblocks -verify -Wno-objc-root-class %s -analyzer-output=text
+// RUN: %clang_analyze_cc1 -triple x86_64-apple-darwin10 -analyzer-checker=core,osx.coreFoundation.CFRetainRelease,osx.cocoa.ClassRelease,osx.cocoa.RetainCount -fobjc-arc -fblocks -verify -Wno-objc-root-class %s -analyzer-output=text
+// RUN: %clang_analyze_cc1 -triple x86_64-apple-darwin10 -analyzer-checker=core,osx.coreFoundation.CFRetainRelease,osx.cocoa.ClassRelease,osx.cocoa.RetainCount -fblocks -verify -Wno-objc-root-class %s -analyzer-output=text
 
 typedef __typeof(sizeof(int)) size_t;
 
@@ -90,7 +90,7 @@ void _dispatch_object_validate(dispatch_object_t object);
   CFErrorRef error;
   CFDictionaryRef testDict = CFPropertyListCreateWithData(kCFAllocatorDefault, (__bridge CFDataRef)plistData, 0, 0, &error);
 #if HAS_ARC
-      // expected-note@-2 {{Call to function 'CFPropertyListCreateWithData' returns a Core Foundation object with a +1 retain count}}
+      // expected-note@-2 {{Call to function 'CFPropertyListCreateWithData' returns a Core Foundation object of type CFPropertyListRef with a +1 retain count}}
 #endif
   return (__bridge NSDictionary *)testDict;
 #if HAS_ARC

@@ -8,8 +8,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Driver/ToolChain.h"
-#include "Tools.h"
+#include "ToolChains/CommonArgs.h"
+#include "ToolChains/Arch/ARM.h"
+#include "ToolChains/Clang.h"
 #include "clang/Basic/ObjCRuntime.h"
+#include "clang/Basic/VirtualFileSystem.h"
 #include "clang/Config/config.h"
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Driver.h"
@@ -74,6 +77,10 @@ ToolChain::ToolChain(const Driver &D, const llvm::Triple &T,
     if (!isThreadModelSupported(A->getValue()))
       D.Diag(diag::err_drv_invalid_thread_model_for_target)
           << A->getValue() << A->getAsString(Args);
+
+  std::string CandidateLibPath = getArchSpecificLibPath();
+  if (getVFS().exists(CandidateLibPath))
+    getFilePaths().push_back(CandidateLibPath);
 }
 
 ToolChain::~ToolChain() {
@@ -320,6 +327,14 @@ const char *ToolChain::getCompilerRTArgString(const llvm::opt::ArgList &Args,
   return Args.MakeArgString(getCompilerRT(Args, Component, Shared));
 }
 
+std::string ToolChain::getArchSpecificLibPath() const {
+  SmallString<128> Path(getDriver().ResourceDir);
+  StringRef OSLibName = getTriple().isOSFreeBSD() ? "freebsd" : getOS();
+  llvm::sys::path::append(Path, "lib", OSLibName,
+                          llvm::Triple::getArchTypeName(getArch()));
+  return Path.str();
+}
+
 bool ToolChain::needsProfileRT(const ArgList &Args) {
   if (Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
                    false) ||
@@ -351,33 +366,31 @@ std::string ToolChain::GetProgramPath(const char *Name) const {
 }
 
 std::string ToolChain::GetLinkerPath() const {
-  if (Arg *A = Args.getLastArg(options::OPT_fuse_ld_EQ)) {
-    StringRef UseLinker = A->getValue();
+  const Arg* A = Args.getLastArg(options::OPT_fuse_ld_EQ);
+  StringRef UseLinker = A ? A->getValue() : CLANG_DEFAULT_LINKER;
 
-    if (llvm::sys::path::is_absolute(UseLinker)) {
-      // If we're passed -fuse-ld= with what looks like an absolute path,
-      // don't attempt to second-guess that.
-      if (llvm::sys::fs::exists(UseLinker))
-        return UseLinker;
-    } else {
-      // If we're passed -fuse-ld= with no argument, or with the argument ld,
-      // then use whatever the default system linker is.
-      if (UseLinker.empty() || UseLinker == "ld")
-        return GetProgramPath("ld");
+  if (llvm::sys::path::is_absolute(UseLinker)) {
+    // If we're passed what looks like an absolute path, don't attempt to
+    // second-guess that.
+    if (llvm::sys::fs::exists(UseLinker))
+      return UseLinker;
+  } else if (UseLinker.empty() || UseLinker == "ld") {
+    // If we're passed -fuse-ld= with no argument, or with the argument ld,
+    // then use whatever the default system linker is.
+    return GetProgramPath(getDefaultLinker());
+  } else {
+    llvm::SmallString<8> LinkerName("ld.");
+    LinkerName.append(UseLinker);
 
-      llvm::SmallString<8> LinkerName("ld.");
-      LinkerName.append(UseLinker);
-
-      std::string LinkerPath(GetProgramPath(LinkerName.c_str()));
-      if (llvm::sys::fs::exists(LinkerPath))
-        return LinkerPath;
-    }
-
-    getDriver().Diag(diag::err_drv_invalid_linker_name) << A->getAsString(Args);
-    return "";
+    std::string LinkerPath(GetProgramPath(LinkerName.c_str()));
+    if (llvm::sys::fs::exists(LinkerPath))
+      return LinkerPath;
   }
 
-  return GetProgramPath(DefaultLinker);
+  if (A)
+    getDriver().Diag(diag::err_drv_invalid_linker_name) << A->getAsString(Args);
+
+  return GetProgramPath(getDefaultLinker());
 }
 
 types::ID ToolChain::LookupTypeForExtension(StringRef Ext) const {
@@ -542,7 +555,7 @@ ToolChain::RuntimeLibType ToolChain::GetRuntimeLibType(
   const Arg* A = Args.getLastArg(options::OPT_rtlib_EQ);
   StringRef LibName = A ? A->getValue() : CLANG_DEFAULT_RTLIB;
 
-  // "platform" is only used in tests to override CLANG_DEFAULT_RTLIB
+  // Only use "platform" in tests to override CLANG_DEFAULT_RTLIB!
   if (LibName == "compiler-rt")
     return ToolChain::RLT_CompilerRT;
   else if (LibName == "libgcc")
@@ -556,43 +569,22 @@ ToolChain::RuntimeLibType ToolChain::GetRuntimeLibType(
   return GetDefaultRuntimeLibType();
 }
 
-static bool ParseCXXStdlibType(const StringRef& Name,
-                               ToolChain::CXXStdlibType& Type) {
-  if (Name == "libc++")
-    Type = ToolChain::CST_Libcxx;
-  else if (Name == "libstdc++")
-    Type = ToolChain::CST_Libstdcxx;
-  else
-    return false;
-
-  return true;
-}
-
 ToolChain::CXXStdlibType ToolChain::GetCXXStdlibType(const ArgList &Args) const{
-  ToolChain::CXXStdlibType Type;
-  bool HasValidType = false;
-  bool ForcePlatformDefault = false;
-
   const Arg *A = Args.getLastArg(options::OPT_stdlib_EQ);
-  if (A) {
-    StringRef Value = A->getValue();
-    HasValidType = ParseCXXStdlibType(Value, Type);
+  StringRef LibName = A ? A->getValue() : CLANG_DEFAULT_CXX_STDLIB;
 
-    // Only use in tests to override CLANG_DEFAULT_CXX_STDLIB!
-    if (Value == "platform")
-      ForcePlatformDefault = true;
-    else if (!HasValidType)
-      getDriver().Diag(diag::err_drv_invalid_stdlib_name)
-        << A->getAsString(Args);
-  }
+  // Only use "platform" in tests to override CLANG_DEFAULT_CXX_STDLIB!
+  if (LibName == "libc++")
+    return ToolChain::CST_Libcxx;
+  else if (LibName == "libstdc++")
+    return ToolChain::CST_Libstdcxx;
+  else if (LibName == "platform")
+    return GetDefaultCXXStdlibType();
 
-  // If no argument was provided or its value was invalid, look for the
-  // default unless forced or configured to take the platform default.
-  if (!HasValidType && (ForcePlatformDefault ||
-      !ParseCXXStdlibType(CLANG_DEFAULT_CXX_STDLIB, Type)))
-    Type = GetDefaultCXXStdlibType();
+  if (A)
+    getDriver().Diag(diag::err_drv_invalid_stdlib_name) << A->getAsString(Args);
 
-  return Type;
+  return GetDefaultCXXStdlibType();
 }
 
 /// \brief Utility function to add a system include directory to CC1 arguments.
@@ -705,7 +697,8 @@ SanitizerMask ToolChain::getSupportedSanitizers() const {
   // platform dependent.
   using namespace SanitizerKind;
   SanitizerMask Res = (Undefined & ~Vptr & ~Function) | (CFI & ~CFIICall) |
-                      CFICastStrict | UnsignedIntegerOverflow | LocalBounds;
+                      CFICastStrict | UnsignedIntegerOverflow | Nullability |
+                      LocalBounds;
   if (getTriple().getArch() == llvm::Triple::x86 ||
       getTriple().getArch() == llvm::Triple::x86_64 ||
       getTriple().getArch() == llvm::Triple::arm ||

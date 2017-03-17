@@ -1,6 +1,6 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -verify -w -std=c++03 %s
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -verify -w -std=c++11 %s
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -DTEMPORARY_DTORS -verify -w -analyzer-config cfg-temporary-dtors=true %s -std=c++11
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,debug.ExprInspection -verify -w -std=c++03 %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,debug.ExprInspection -verify -w -std=c++11 %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,debug.ExprInspection -DTEMPORARY_DTORS -verify -w -analyzer-config cfg-temporary-dtors=true %s -std=c++11
 
 extern bool clang_analyzer_eval(bool);
 extern bool clang_analyzer_warnIfReached();
@@ -413,6 +413,32 @@ namespace destructors {
       value ? DefaultParam(42) : DefaultParam(42);
     }
   }
+#else // !TEMPORARY_DTORS
+
+// Test for fallback logic that conservatively stops exploration after
+// executing a temporary constructor for a class with a no-return destructor
+// when temporary destructors are not enabled in the CFG.
+
+  struct CtorWithNoReturnDtor {
+    CtorWithNoReturnDtor() = default;
+
+    ~CtorWithNoReturnDtor() __attribute__((noreturn));
+  };
+
+  void testDefaultContructorWithNoReturnDtor() {
+    CtorWithNoReturnDtor();
+    clang_analyzer_warnIfReached();  // no-warning
+  }
+
+  void testLifeExtensionWithNoReturnDtor() {
+    const CtorWithNoReturnDtor &c = CtorWithNoReturnDtor();
+
+    // This represents an (expected) loss of coverage, since the destructor
+    // of the lifetime-exended temporary is executed at at the end of
+    // scope.
+    clang_analyzer_warnIfReached();  // no-warning
+  }
+
 #endif // TEMPORARY_DTORS
 }
 
@@ -465,5 +491,15 @@ namespace PR16629 {
     int x;
     callSet(A(&x));
     clang_analyzer_eval(x == 47); // expected-warning{{TRUE}}
+  }
+}
+
+namespace PR32088 {
+  void testReturnFromStmtExprInitializer() {
+    // We shouldn't try to destroy the object pointed to by `obj' upon return.
+    const NonTrivial &obj = ({
+      return; // no-crash
+      NonTrivial(42);
+    });
   }
 }

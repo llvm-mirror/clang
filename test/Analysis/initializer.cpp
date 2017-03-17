@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-config c++-inlining=constructors -std=c++11 -verify %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-config c++-inlining=constructors -std=c++11 -verify %s
 
 void clang_analyzer_eval(bool);
 
@@ -197,3 +197,10 @@ namespace ReferenceInitialization {
   }
 
 };
+
+namespace PR31592 {
+struct C {
+   C() : f("}") { } // no-crash
+   const char(&f)[2];
+};
+}
