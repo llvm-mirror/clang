@@ -61,6 +61,7 @@ class CGDebugInfo {
   ModuleMap *ClangModuleMap = nullptr;
   ExternalASTSource::ASTSourceDescriptor PCHDescriptor;
   SourceLocation CurLoc;
+  llvm::MDNode *CurInlinedAt = nullptr;
   llvm::DIType *VTablePtrType = nullptr;
   llvm::DIType *ClassTy = nullptr;
   llvm::DICompositeType *ObjTy = nullptr;
@@ -292,6 +293,15 @@ class CGDebugInfo {
   /// Create a new lexical block node and push it on the stack.
   void CreateLexicalBlock(SourceLocation Loc);
 
+  /// If target-specific LLVM \p AddressSpace directly maps to target-specific
+  /// DWARF address space, appends extended dereferencing mechanism to complex
+  /// expression \p Expr. Otherwise, does nothing.
+  ///
+  /// Extended dereferencing mechanism is has the following format:
+  ///     DW_OP_constu <DWARF Address Space> DW_OP_swap DW_OP_xderef
+  void AppendAddressSpaceXDeref(unsigned AddressSpace,
+                                SmallVectorImpl<int64_t> &Expr) const;
+
 public:
   CGDebugInfo(CodeGenModule &CGM);
   ~CGDebugInfo();
@@ -320,6 +330,17 @@ public:
   /// ignored.
   void setLocation(SourceLocation Loc);
 
+  /// Return the current source location. This does not necessarily correspond
+  /// to the IRBuilder's current DebugLoc.
+  SourceLocation getLocation() const { return CurLoc; }
+
+  /// Update the current inline scope. All subsequent calls to \p EmitLocation
+  /// will create a location with this inlinedAt field.
+  void setInlinedAt(llvm::MDNode *InlinedAt) { CurInlinedAt = InlinedAt; }
+
+  /// \return the current inline scope.
+  llvm::MDNode *getInlinedAt() const { return CurInlinedAt; }
+
   // Converts a SourceLocation to a DebugLoc
   llvm::DebugLoc SourceLocToDebugLoc(SourceLocation Loc);
 
@@ -335,6 +356,11 @@ public:
   void EmitFunctionStart(GlobalDecl GD, SourceLocation Loc,
                          SourceLocation ScopeLoc, QualType FnType,
                          llvm::Function *Fn, CGBuilderTy &Builder);
+
+  /// Start a new scope for an inlined function.
+  void EmitInlineFunctionStart(CGBuilderTy &Builder, GlobalDecl GD);
+  /// End an inlined function scope.
+  void EmitInlineFunctionEnd(CGBuilderTy &Builder);
 
   /// Emit debug info for a function declaration.
   void EmitFunctionDecl(GlobalDecl GD, SourceLocation Loc, QualType FnType);
@@ -409,9 +435,20 @@ public:
   void completeType(const RecordDecl *RD);
   void completeRequiredType(const RecordDecl *RD);
   void completeClassData(const RecordDecl *RD);
+  void completeClass(const RecordDecl *RD);
 
   void completeTemplateDefinition(const ClassTemplateSpecializationDecl &SD);
 
+  /// Create debug info for a macro defined by a #define directive or a macro
+  /// undefined by a #undef directive.
+  llvm::DIMacro *CreateMacro(llvm::DIMacroFile *Parent, unsigned MType,
+                             SourceLocation LineLoc, StringRef Name,
+                             StringRef Value);
+
+  /// Create debug info for a file referenced by an #include directive.
+  llvm::DIMacroFile *CreateTempMacroFile(llvm::DIMacroFile *Parent,
+                                         SourceLocation LineLoc,
+                                         SourceLocation FileLoc);
 private:
   /// Emit call to llvm.dbg.declare for a variable declaration.
   void EmitDeclare(const VarDecl *decl, llvm::Value *AI,
@@ -441,6 +478,10 @@ private:
 
   /// Remap a given path with the current debug prefix map
   std::string remapDIPath(StringRef) const;
+
+  /// Compute the file checksum debug info for input file ID.
+  llvm::DIFile::ChecksumKind computeChecksum(FileID FID,
+                                             SmallString<32> &Checksum) const;
 
   /// Get the file debug info descriptor for the input location.
   llvm::DIFile *getOrCreateFile(SourceLocation Loc);
@@ -487,23 +528,30 @@ private:
   llvm::DIDerivedType *
   getOrCreateStaticDataMemberDeclarationOrNull(const VarDecl *D);
 
-  /// Create a subprogram describing the forward declaration
-  /// represented in the given FunctionDecl.
-  llvm::DISubprogram *getFunctionForwardDeclaration(const FunctionDecl *FD);
+  /// Helper that either creates a forward declaration or a stub.
+  llvm::DISubprogram *getFunctionFwdDeclOrStub(GlobalDecl GD, bool Stub);
 
-  /// Create a global variable describing the forward decalration
+  /// Create a subprogram describing the forward declaration
+  /// represented in the given FunctionDecl wrapped in a GlobalDecl.
+  llvm::DISubprogram *getFunctionForwardDeclaration(GlobalDecl GD);
+
+  /// Create a DISubprogram describing the function
+  /// represented in the given FunctionDecl wrapped in a GlobalDecl.
+  llvm::DISubprogram *getFunctionStub(GlobalDecl GD);
+
+  /// Create a global variable describing the forward declaration
   /// represented in the given VarDecl.
   llvm::DIGlobalVariable *
   getGlobalVariableForwardDeclaration(const VarDecl *VD);
 
-  /// \brief Return a global variable that represents one of the
-  /// collection of global variables created for an anonmyous union.
+  /// Return a global variable that represents one of the collection of global
+  /// variables created for an anonmyous union.
   ///
   /// Recursively collect all of the member fields of a global
   /// anonymous decl and create static variables for them. The first
   /// time this is called it needs to be on a union and then from
   /// there we can have additional unnamed fields.
-  llvm::DIGlobalVariable *
+  llvm::DIGlobalVariableExpression *
   CollectAnonRecordDecls(const RecordDecl *RD, llvm::DIFile *Unit,
                          unsigned LineNo, StringRef LinkageName,
                          llvm::GlobalVariable *Var, llvm::DIScope *DContext);
@@ -616,6 +664,20 @@ public:
     return ApplyDebugLocation(CGF, true, SourceLocation());
   }
 
+};
+
+/// A scoped helper to set the current debug location to an inlined location.
+class ApplyInlineDebugLocation {
+  SourceLocation SavedLocation;
+  CodeGenFunction *CGF;
+
+public:
+  /// Set up the CodeGenFunction's DebugInfo to produce inline locations for the
+  /// function \p InlinedFn. The current debug location becomes the inlined call
+  /// site of the inlined function.
+  ApplyInlineDebugLocation(CodeGenFunction &CGF, GlobalDecl InlinedFn);
+  /// Restore everything back to the orginial state.
+  ~ApplyInlineDebugLocation();
 };
 
 } // namespace CodeGen

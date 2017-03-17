@@ -129,6 +129,7 @@ static Cl::Kinds ClassifyInternal(ASTContext &Ctx, const Expr *E) {
   case Expr::UnresolvedLookupExprClass:
   case Expr::UnresolvedMemberExprClass:
   case Expr::TypoExprClass:
+  case Expr::DependentCoawaitExprClass:
   case Expr::CXXDependentScopeMemberExprClass:
   case Expr::DependentScopeDeclRefExprClass:
     // ObjC instance variables are lvalues
@@ -185,6 +186,8 @@ static Cl::Kinds ClassifyInternal(ASTContext &Ctx, const Expr *E) {
   case Expr::ObjCIndirectCopyRestoreExprClass:
   case Expr::AtomicExprClass:
   case Expr::CXXFoldExprClass:
+  case Expr::ArrayInitLoopExprClass:
+  case Expr::ArrayInitIndexExprClass:
   case Expr::NoInitExprClass:
   case Expr::DesignatedInitUpdateExprClass:
   case Expr::CoyieldExprClass:

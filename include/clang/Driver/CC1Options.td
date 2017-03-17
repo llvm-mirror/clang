@@ -136,6 +136,8 @@ def migrator_no_finalize_removal : Flag<["-"], "no-finalize-removal">,
 let Flags = [CC1Option, CC1AsOption, NoDriverOption] in {
 
 def debug_info_kind_EQ : Joined<["-"], "debug-info-kind=">;
+def debug_info_macro : Flag<["-"], "debug-info-macro">,
+  HelpText<"Emit macro debug information">;
 def dwarf_version_EQ : Joined<["-"], "dwarf-version=">;
 def debugger_tuning_EQ : Joined<["-"], "debugger-tuning=">;
 def fdebug_compilation_dir : Separate<["-"], "fdebug-compilation-dir">,
@@ -160,13 +162,16 @@ def fno_math_builtin : Flag<["-"], "fno-math-builtin">,
   HelpText<"Disable implicit builtin knowledge of math functions">;
 }
 
-def disable_llvm_optzns : Flag<["-"], "disable-llvm-optzns">,
-  HelpText<"Don't run LLVM optimization passes">;
 def disable_llvm_verifier : Flag<["-"], "disable-llvm-verifier">,
   HelpText<"Don't run the LLVM IR verifier pass">;
 def disable_llvm_passes : Flag<["-"], "disable-llvm-passes">,
   HelpText<"Use together with -emit-llvm to get pristine LLVM IR from the "
            "frontend by not running any LLVM passes at all">;
+def disable_llvm_optzns : Flag<["-"], "disable-llvm-optzns">,
+  Alias<disable_llvm_passes>;
+def disable_lifetimemarkers : Flag<["-"], "disable-lifetime-markers">,
+  HelpText<"Disable lifetime-markers emission even when optimizations are "
+           "enabled">;
 def disable_red_zone : Flag<["-"], "disable-red-zone">,
   HelpText<"Do not emit code that uses the red zone.">;
 def dwarf_column_info : Flag<["-"], "dwarf-column-info">,
@@ -304,6 +309,9 @@ def fprofile_instrument_use_path_EQ :
 def flto_visibility_public_std:
     Flag<["-"], "flto-visibility-public-std">,
     HelpText<"Use public LTO visibility for classes in std and stdext namespaces">;
+def flto_unit: Flag<["-"], "flto-unit">,
+    HelpText<"Emit IR to support LTO unit features (CFI, whole program vtable opt)">;
+def fno_lto_unit: Flag<["-"], "fno-lto-unit">;
 
 //===----------------------------------------------------------------------===//
 // Dependency Output Options
@@ -426,6 +434,10 @@ def fmodules_local_submodule_visibility :
   Flag<["-"], "fmodules-local-submodule-visibility">,
   HelpText<"Enforce name visibility rules across submodules of the same "
            "top-level module.">;
+def fmodule_codegen :
+  Flag<["-"], "fmodules-codegen">,
+  HelpText<"Generate code for uses of this module that assumes an explicit "
+           "object file will be built for the module">;
 def fmodule_format_EQ : Joined<["-"], "fmodule-format=">,
   HelpText<"Select the container format for clang modules and PCH. "
            "Supported options are 'raw' and 'obj'.">;
@@ -463,6 +475,8 @@ def ast_list : Flag<["-"], "ast-list">,
   HelpText<"Build ASTs and print the list of declaration node qualified names">;
 def ast_dump : Flag<["-"], "ast-dump">,
   HelpText<"Build ASTs and then debug dump them">;
+def ast_dump_all : Flag<["-"], "ast-dump-all">,
+  HelpText<"Build ASTs and then debug dump them, forcing deserialization">;
 def ast_dump_lookups : Flag<["-"], "ast-dump-lookups">,
   HelpText<"Build ASTs and then debug dump their name lookup tables">;
 def ast_view : Flag<["-"], "ast-view">,
@@ -576,6 +590,8 @@ def pic_is_pie : Flag<["-"], "pic-is-pie">,
   HelpText<"File is for a position independent executable">;
 def fno_validate_pch : Flag<["-"], "fno-validate-pch">,
   HelpText<"Disable validation of precompiled headers">;
+def fallow_pch_with_errors : Flag<["-"], "fallow-pch-with-compiler-errors">,
+  HelpText<"Accept a PCH file that was created with compiler errors">;
 def dump_deserialized_pch_decls : Flag<["-"], "dump-deserialized-decls">,
   HelpText<"Dump declarations that are deserialized from PCH, for testing">;
 def error_on_deserialized_pch_decl : Separate<["-"], "error-on-deserialized-decl">,
@@ -655,6 +671,8 @@ def nostdsysteminc : Flag<["-"], "nostdsysteminc">,
   HelpText<"Disable standard system #include directories">;
 def fdisable_module_hash : Flag<["-"], "fdisable-module-hash">,
   HelpText<"Disable the module hash">;
+def fmodules_hash_content : Flag<["-"], "fmodules-hash-content">,
+  HelpText<"Enable hashing the content of a module file">;
 def c_isystem : JoinedOrSeparate<["-"], "c-isystem">, MetaVarName<"<directory>">,
   HelpText<"Add directory to the C SYSTEM include search path">;
 def objc_isystem : JoinedOrSeparate<["-"], "objc-isystem">,

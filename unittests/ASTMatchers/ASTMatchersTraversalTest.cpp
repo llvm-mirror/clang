@@ -222,9 +222,12 @@ TEST(HasDeclaration, HasDeclarationOfEnumType) {
 }
 
 TEST(HasDeclaration, HasGetDeclTraitTest) {
-  EXPECT_TRUE(internal::has_getDecl<TypedefType>::value);
-  EXPECT_TRUE(internal::has_getDecl<RecordType>::value);
-  EXPECT_FALSE(internal::has_getDecl<TemplateSpecializationType>::value);
+  static_assert(internal::has_getDecl<TypedefType>::value,
+                "Expected TypedefType to have a getDecl.");
+  static_assert(internal::has_getDecl<RecordType>::value,
+                "Expected RecordType to have a getDecl.");
+  static_assert(!internal::has_getDecl<TemplateSpecializationType>::value,
+                "Expected TemplateSpecializationType to *not* have a getDecl.");
 }
 
 TEST(HasDeclaration, HasDeclarationOfTypeWithDecl) {
@@ -688,7 +691,7 @@ TEST(TemplateTypeParmDecl, VarTemplatePartialSpecializationDecl) {
       "};\n"
       "template<typename U>\n"
       "template<typename U2>\n"
-      "int Struct<U>::field<char> = 123;\n";
+      "int Struct<U>::field<U2*> = 123;\n";
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T"))));
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T2"))));
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U"))));
@@ -703,7 +706,7 @@ TEST(TemplateTypeParmDecl, ClassTemplatePartialSpecializationDecl) {
       "};\n"
       "template<typename U>\n"
       "template<typename U2>\n"
-      "struct Class<U>::Struct<int> {};\n";
+      "struct Class<U>::Struct<U2*> {};\n";
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T"))));
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("T2"))));
   EXPECT_TRUE(matches(input, templateTypeParmDecl(hasName("U"))));
@@ -2202,6 +2205,23 @@ TEST(Matcher, HasAnyDeclaration) {
                                hasParameter(0, parmVarDecl(hasName("p3"))))))));
   EXPECT_TRUE(notMatches(Fragment, unresolvedLookupExpr(hasAnyDeclaration(
                                        functionDecl(hasName("bar"))))));
+}
+
+TEST(SubstTemplateTypeParmType, HasReplacementType)
+{
+  std::string Fragment = "template<typename T>"
+                         "double F(T t);"
+                         "int i;"
+                         "double j = F(i);";
+  EXPECT_TRUE(matches(Fragment, substTemplateTypeParmType(hasReplacementType(
+                                    qualType(asString("int"))))));
+  EXPECT_TRUE(notMatches(Fragment, substTemplateTypeParmType(hasReplacementType(
+                                       qualType(asString("double"))))));
+  EXPECT_TRUE(
+      notMatches("template<int N>"
+                 "double F();"
+                 "double j = F<5>();",
+                 substTemplateTypeParmType(hasReplacementType(qualType()))));
 }
 
 } // namespace ast_matchers

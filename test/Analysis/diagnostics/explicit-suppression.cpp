@@ -1,5 +1,6 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -analyzer-config suppress-c++-stdlib=false -verify %s
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,debug.ExprInspection -analyzer-config suppress-c++-stdlib=true -DSUPPRESSED=1 -verify %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,debug.ExprInspection -analyzer-config suppress-c++-stdlib=false -verify %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,debug.ExprInspection -analyzer-config suppress-c++-stdlib=true -DSUPPRESSED=1 -verify %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,debug.ExprInspection -DSUPPRESSED=1 -verify %s
 
 #ifdef SUPPRESSED
 // expected-no-diagnostics
@@ -18,6 +19,6 @@ class C {
 void testCopyNull(C *I, C *E) {
   std::copy(I, E, (C *)0);
 #ifndef SUPPRESSED
-  // expected-warning@../Inputs/system-header-simulator-cxx.h:166 {{Called C++ object pointer is null}}
+  // expected-warning@../Inputs/system-header-simulator-cxx.h:191 {{Called C++ object pointer is null}}
 #endif
 }

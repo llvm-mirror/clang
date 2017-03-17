@@ -26,27 +26,43 @@ class TypeIndexer : public RecursiveASTVisitor<TypeIndexer> {
 
 public:
   TypeIndexer(IndexingContext &indexCtx, const NamedDecl *parent,
-              const DeclContext *DC, bool isBase)
+              const DeclContext *DC, bool isBase, bool isIBType)
     : IndexCtx(indexCtx), Parent(parent), ParentDC(DC), IsBase(isBase) {
     if (IsBase) {
       assert(Parent);
       Relations.emplace_back((unsigned)SymbolRole::RelationBaseOf, Parent);
     }
+    if (isIBType) {
+      assert(Parent);
+      Relations.emplace_back((unsigned)SymbolRole::RelationIBTypeOf, Parent);
+    }
   }
   
   bool shouldWalkTypesOfTypeLocs() const { return false; }
-
-  bool VisitTypedefTypeLoc(TypedefTypeLoc TL) {
-    return IndexCtx.handleReference(TL.getTypedefNameDecl(), TL.getNameLoc(),
-                                    Parent, ParentDC, SymbolRoleSet(),
-                                    Relations);
-  }
 
 #define TRY_TO(CALL_EXPR)                                                      \
   do {                                                                         \
     if (!CALL_EXPR)                                                            \
       return false;                                                            \
   } while (0)
+
+  bool VisitTypedefTypeLoc(TypedefTypeLoc TL) {
+    if (IsBase) {
+      SourceLocation Loc = TL.getNameLoc();
+      TRY_TO(IndexCtx.handleReference(TL.getTypedefNameDecl(), Loc,
+                                      Parent, ParentDC, SymbolRoleSet()));
+      if (auto *CD = TL.getType()->getAsCXXRecordDecl()) {
+        TRY_TO(IndexCtx.handleReference(CD, Loc, Parent, ParentDC,
+                                        (unsigned)SymbolRole::Implicit,
+                                        Relations));
+      }
+    } else {
+      TRY_TO(IndexCtx.handleReference(TL.getTypedefNameDecl(), TL.getNameLoc(),
+                                      Parent, ParentDC, SymbolRoleSet(),
+                                      Relations));
+    }
+    return true;
+  }
 
   bool traverseParamVarHelper(ParmVarDecl *D) {
     TRY_TO(TraverseNestedNameSpecifierLoc(D->getQualifierLoc()));
@@ -93,13 +109,13 @@ public:
 
   bool VisitObjCInterfaceTypeLoc(ObjCInterfaceTypeLoc TL) {
     return IndexCtx.handleReference(TL.getIFaceDecl(), TL.getNameLoc(),
-                                    Parent, ParentDC, SymbolRoleSet());
+                                    Parent, ParentDC, SymbolRoleSet(), Relations);
   }
 
   bool VisitObjCObjectTypeLoc(ObjCObjectTypeLoc TL) {
     for (unsigned i = 0, e = TL.getNumProtocols(); i != e; ++i) {
       IndexCtx.handleReference(TL.getProtocol(i), TL.getProtocolLoc(i),
-                               Parent, ParentDC, SymbolRoleSet());
+                               Parent, ParentDC, SymbolRoleSet(), Relations);
     }
     return true;
   }
@@ -130,23 +146,25 @@ public:
 void IndexingContext::indexTypeSourceInfo(TypeSourceInfo *TInfo,
                                           const NamedDecl *Parent,
                                           const DeclContext *DC,
-                                          bool isBase) {
+                                          bool isBase,
+                                          bool isIBType) {
   if (!TInfo || TInfo->getTypeLoc().isNull())
     return;
   
-  indexTypeLoc(TInfo->getTypeLoc(), Parent, DC, isBase);
+  indexTypeLoc(TInfo->getTypeLoc(), Parent, DC, isBase, isIBType);
 }
 
 void IndexingContext::indexTypeLoc(TypeLoc TL,
                                    const NamedDecl *Parent,
                                    const DeclContext *DC,
-                                   bool isBase) {
+                                   bool isBase,
+                                   bool isIBType) {
   if (TL.isNull())
     return;
 
   if (!DC)
     DC = Parent->getLexicalDeclContext();
-  TypeIndexer(*this, Parent, DC, isBase).TraverseTypeLoc(TL);
+  TypeIndexer(*this, Parent, DC, isBase, isIBType).TraverseTypeLoc(TL);
 }
 
 void IndexingContext::indexNestedNameSpecifierLoc(NestedNameSpecifierLoc NNS,
@@ -185,7 +203,7 @@ void IndexingContext::indexNestedNameSpecifierLoc(NestedNameSpecifierLoc NNS,
 }
 
 void IndexingContext::indexTagDecl(const TagDecl *D) {
-  if (!shouldIndexFunctionLocalSymbols() && isFunctionLocalDecl(D))
+  if (!shouldIndexFunctionLocalSymbols() && isFunctionLocalSymbol(D))
     return;
 
   if (handleDecl(D)) {

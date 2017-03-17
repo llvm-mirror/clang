@@ -198,7 +198,11 @@ public:
   ComplexPairTy VisitExprWithCleanups(ExprWithCleanups *E) {
     CGF.enterFullExpression(E);
     CodeGenFunction::RunCleanupsScope Scope(CGF);
-    return Visit(E->getSubExpr());
+    ComplexPairTy Vals = Visit(E->getSubExpr());
+    // Defend against dominance problems caused by jumps out of expression
+    // evaluation through the shared cleanup block.
+    Scope.ForceCleanup({&Vals.first, &Vals.second});
+    return Vals;
   }
   ComplexPairTy VisitCXXScalarValueInitExpr(CXXScalarValueInitExpr *E) {
     assert(E->getType()->isAnyComplexType() && "Expected complex type!");
@@ -480,6 +484,7 @@ ComplexPairTy ComplexExprEmitter::EmitCast(CastKind CK, Expr *Op,
   case CK_CopyAndAutoreleaseBlockObject:
   case CK_BuiltinFnToFnPtr:
   case CK_ZeroToOCLEvent:
+  case CK_ZeroToOCLQueue:
   case CK_AddressSpaceConversion:
   case CK_IntToOCLSampler:
     llvm_unreachable("invalid cast kind for complex value");

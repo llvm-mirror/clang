@@ -196,9 +196,12 @@ Parser::ParseSingleDeclarationAfterTemplate(
   ParsedAttributesWithRange prefixAttrs(AttrFactory);
   MaybeParseCXX11Attributes(prefixAttrs);
 
-  if (Tok.is(tok::kw_using))
-    return ParseUsingDirectiveOrDeclaration(Context, TemplateInfo, DeclEnd,
-                                            prefixAttrs);
+  if (Tok.is(tok::kw_using)) {
+    // FIXME: We should return the DeclGroup to the caller.
+    ParseUsingDirectiveOrDeclaration(Context, TemplateInfo, DeclEnd,
+                                     prefixAttrs);
+    return nullptr;
+  }
 
   // Parse the declaration specifiers, stealing any diagnostics from
   // the template parameters.
@@ -997,13 +1000,13 @@ bool Parser::AnnotateTemplateIdToken(TemplateTy Template, TemplateNameKind TNK,
 
   // Build the annotation token.
   if (TNK == TNK_Type_template && AllowTypeAnnotation) {
-    TypeResult Type
-      = Actions.ActOnTemplateIdType(SS, TemplateKWLoc,
-                                    Template, TemplateNameLoc,
-                                    LAngleLoc, TemplateArgsPtr, RAngleLoc);
+    TypeResult Type = Actions.ActOnTemplateIdType(
+        SS, TemplateKWLoc, Template, TemplateName.Identifier,
+        TemplateNameLoc, LAngleLoc, TemplateArgsPtr, RAngleLoc);
     if (Type.isInvalid()) {
-      // If we failed to parse the template ID but skipped ahead to a >, we're not
-      // going to be able to form a token annotation.  Eat the '>' if present.
+      // If we failed to parse the template ID but skipped ahead to a >, we're
+      // not going to be able to form a token annotation.  Eat the '>' if
+      // present.
       TryConsumeToken(tok::greater);
       return true;
     }
@@ -1061,7 +1064,12 @@ bool Parser::AnnotateTemplateIdToken(TemplateTy Template, TemplateNameKind TNK,
 /// If there was a failure when forming the type from the template-id,
 /// a type annotation token will still be created, but will have a
 /// NULL type pointer to signify an error.
-void Parser::AnnotateTemplateIdTokenAsType() {
+///
+/// \param IsClassName Is this template-id appearing in a context where we
+/// know it names a class, such as in an elaborated-type-specifier or
+/// base-specifier? ('typename' and 'template' are unneeded and disallowed
+/// in those contexts.)
+void Parser::AnnotateTemplateIdTokenAsType(bool IsClassName) {
   assert(Tok.is(tok::annot_template_id) && "Requires template-id tokens");
 
   TemplateIdAnnotation *TemplateId = takeTemplateIdAnnotation(Tok);
@@ -1076,10 +1084,13 @@ void Parser::AnnotateTemplateIdTokenAsType() {
     = Actions.ActOnTemplateIdType(TemplateId->SS,
                                   TemplateId->TemplateKWLoc,
                                   TemplateId->Template,
+                                  TemplateId->Name,
                                   TemplateId->TemplateNameLoc,
                                   TemplateId->LAngleLoc,
                                   TemplateArgsPtr,
-                                  TemplateId->RAngleLoc);
+                                  TemplateId->RAngleLoc,
+                                  /*IsCtorOrDtorName*/false,
+                                  IsClassName);
   // Create the new "type" annotation token.
   Tok.setKind(tok::annot_typename);
   setTypeAnnotation(Tok, Type.isInvalid() ? nullptr : Type.get());

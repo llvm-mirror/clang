@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.NilArg,osx.cocoa.RetainCount -analyzer-output=text -analyzer-config suppress-null-return-paths=false -fblocks -verify %s
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,osx.cocoa.NilArg,osx.cocoa.RetainCount -analyzer-output=plist-multi-file -analyzer-config suppress-null-return-paths=false -analyzer-config path-diagnostics-alternate=false -fblocks %s -o %t.plist
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,osx.cocoa.NilArg,osx.cocoa.RetainCount -analyzer-output=text -analyzer-config suppress-null-return-paths=false -fblocks -verify %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,osx.cocoa.NilArg,osx.cocoa.RetainCount -analyzer-output=plist-multi-file -analyzer-config suppress-null-return-paths=false -analyzer-config path-diagnostics-alternate=false -fblocks %s -o %t.plist
 // RUN: FileCheck --input-file=%t.plist %s
 
 typedef struct dispatch_queue_s *dispatch_queue_t;
@@ -160,7 +160,7 @@ id testAutoreleaseTakesEffectInDispatch() {
   dispatch_once(&token, ^{});
 
   id x = [[[[NSObject alloc] init] autorelease] autorelease];
-  // expected-note@-1 {{Method returns an Objective-C object with a +1 retain count}}
+  // expected-note@-1 {{Method returns an instance of NSObject with a +1 retain count}}
   // expected-note@-2 {{Object autoreleased}}
   // expected-note@-3 {{Object autoreleased}}
 
@@ -1840,9 +1840,9 @@ void testNullDereferenceInDispatch() {
 // CHECK-NEXT:      </array>
 // CHECK-NEXT:      <key>depth</key><integer>0</integer>
 // CHECK-NEXT:      <key>extended_message</key>
-// CHECK-NEXT:      <string>Method returns an Objective-C object with a +1 retain count</string>
+// CHECK-NEXT:      <string>Method returns an instance of NSObject with a +1 retain count</string>
 // CHECK-NEXT:      <key>message</key>
-// CHECK-NEXT:      <string>Method returns an Objective-C object with a +1 retain count</string>
+// CHECK-NEXT:      <string>Method returns an instance of NSObject with a +1 retain count</string>
 // CHECK-NEXT:     </dict>
 // CHECK-NEXT:     <dict>
 // CHECK-NEXT:      <key>kind</key><string>control</string>

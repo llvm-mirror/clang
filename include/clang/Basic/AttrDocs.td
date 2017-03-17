@@ -206,6 +206,44 @@ to enforce the provided alignment assumption.
   }];
 }
 
+def AllocSizeDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``alloc_size`` attribute can be placed on functions that return pointers in
+order to hint to the compiler how many bytes of memory will be available at the
+returned poiner. ``alloc_size`` takes one or two arguments.
+
+- ``alloc_size(N)`` implies that argument number N equals the number of
+  available bytes at the returned pointer.
+- ``alloc_size(N, M)`` implies that the product of argument number N and
+  argument number M equals the number of available bytes at the returned
+  pointer.
+
+Argument numbers are 1-based.
+
+An example of how to use ``alloc_size``
+
+.. code-block:: c
+
+  void *my_malloc(int a) __attribute__((alloc_size(1)));
+  void *my_calloc(int a, int b) __attribute__((alloc_size(1, 2)));
+
+  int main() {
+    void *const p = my_malloc(100);
+    assert(__builtin_object_size(p, 0) == 100);
+    void *const a = my_calloc(20, 5);
+    assert(__builtin_object_size(a, 0) == 100);
+  }
+
+.. Note:: This attribute works differently in clang than it does in GCC.
+  Specifically, clang will only trace ``const`` pointers (as above); we give up
+  on pointers that are not marked as ``const``. In the vast majority of cases,
+  this is unimportant, because LLVM has support for the ``alloc_size``
+  attribute. However, this may cause mildly unintuitive behavior when used with
+  other attributes, such as ``enable_if``.
+  }];
+}
+
 def EnableIfDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
@@ -337,6 +375,66 @@ This is because, in ``bar``, ``foo`` is resolved prior to template
 instantiation, so the value for ``I`` isn't known (thus, both ``enable_if``
 conditions for ``foo`` fail). However, in ``baz``, ``foo`` is resolved during
 template instantiation, so the value for ``T::number`` is known.
+  }];
+}
+
+def DiagnoseIfDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``diagnose_if`` attribute can be placed on function declarations to emit
+warnings or errors at compile-time if calls to the attributed function meet
+certain user-defined criteria. For example:
+
+.. code-block:: c
+
+  void abs(int a)
+    __attribute__((diagnose_if(a >= 0, "Redundant abs call", "warning")));
+  void must_abs(int a)
+    __attribute__((diagnose_if(a >= 0, "Redundant abs call", "error")));
+
+  int val = abs(1); // warning: Redundant abs call
+  int val2 = must_abs(1); // error: Redundant abs call
+  int val3 = abs(val);
+  int val4 = must_abs(val); // Because run-time checks are not emitted for
+                            // diagnose_if attributes, this executes without
+                            // issue.
+
+
+``diagnose_if`` is closely related to ``enable_if``, with a few key differences:
+
+* Overload resolution is not aware of ``diagnose_if`` attributes: they're
+  considered only after we select the best candidate from a given candidate set.
+* Function declarations that differ only in their ``diagnose_if`` attributes are
+  considered to be redeclarations of the same function (not overloads).
+* If the condition provided to ``diagnose_if`` cannot be evaluated, no
+  diagnostic will be emitted.
+
+Otherwise, ``diagnose_if`` is essentially the logical negation of ``enable_if``.
+
+As a result of bullet number two, ``diagnose_if`` attributes will stack on the
+same function. For example:
+
+.. code-block:: c
+
+  int foo() __attribute__((diagnose_if(1, "diag1", "warning")));
+  int foo() __attribute__((diagnose_if(1, "diag2", "warning")));
+
+  int bar = foo(); // warning: diag1
+                   // warning: diag2
+  int (*fooptr)(void) = foo; // warning: diag1
+                             // warning: diag2
+
+  constexpr int supportsAPILevel(int N) { return N < 5; }
+  int baz(int a)
+    __attribute__((diagnose_if(!supportsAPILevel(10),
+                               "Upgrade to API level 10 to use baz", "error")));
+  int baz(int a)
+    __attribute__((diagnose_if(!a, "0 is not recommended.", "warning")));
+
+  int (*bazptr)(int) = baz; // error: Upgrade to API level 10 to use baz
+  int v = baz(0); // error: Upgrade to API level 10 to use baz
+
+Query for this feature with ``__has_attribute(diagnose_if)``.
   }];
 }
 
@@ -862,6 +960,63 @@ When one method overrides another, the overriding method can be more widely avai
   }];
 }
 
+def ExternalSourceSymbolDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``external_source_symbol`` attribute specifies that a declaration originates
+from an external source and describes the nature of that source.
+
+The fact that Clang is capable of recognizing declarations that were defined
+externally can be used to provide better tooling support for mixed-language
+projects or projects that rely on auto-generated code. For instance, an IDE that
+uses Clang and that supports mixed-language projects can use this attribute to
+provide a correct 'jump-to-definition' feature. For a concrete example,
+consider a protocol that's defined in a Swift file:
+
+.. code-block:: swift
+
+  @objc public protocol SwiftProtocol {
+    func method()
+  }
+
+This protocol can be used from Objective-C code by including a header file that
+was generated by the Swift compiler. The declarations in that header can use
+the ``external_source_symbol`` attribute to make Clang aware of the fact
+that ``SwiftProtocol`` actually originates from a Swift module:
+
+.. code-block:: objc
+
+  __attribute__((external_source_symbol(language="Swift",defined_in="module")))
+  @protocol SwiftProtocol
+  @required
+  - (void) method;
+  @end
+
+Consequently, when 'jump-to-definition' is performed at a location that
+references ``SwiftProtocol``, the IDE can jump to the original definition in
+the Swift source file rather than jumping to the Objective-C declaration in the
+auto-generated header file.
+
+The ``external_source_symbol`` attribute is a comma-separated list that includes
+clauses that describe the origin and the nature of the particular declaration.
+Those clauses can be:
+
+language=\ *string-literal*
+  The name of the source language in which this declaration was defined.
+
+defined_in=\ *string-literal*
+  The name of the source container in which the declaration was defined. The
+  exact definition of source container is language-specific, e.g. Swift's
+  source containers are modules, so ``defined_in`` should specify the Swift
+  module name.
+
+generated_declaration
+  This declaration was automatically generated by some tool.
+
+The clauses can be specified in any order. The clauses that are listed above are
+all optional, but the attribute has to have at least one clause.
+  }];
+}
 
 def RequireConstantInitDocs : Documentation {
   let Category = DocCatVariable;
@@ -1082,6 +1237,33 @@ The semantics are as follows:
   interrupt level specified. If no mask is specified the interrupt mask
   defaults to "eic".
   }];
+}
+
+def AVRInterruptDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Clang supports the GNU style ``__attribute__((interrupt))`` attribute on
+AVR targets. This attribute may be attached to a function definition and instructs
+the backend to generate appropriate function entry/exit code so that it can be used
+directly as an interrupt service routine.
+
+On the AVR, the hardware globally disables interrupts when an interrupt is executed.
+The first instruction of an interrupt handler declared with this attribute is a SEI
+instruction to re-enable interrupts. See also the signal attribute that
+does not insert a SEI instruction.
+  }];
+}
+
+def AVRSignalDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+Clang supports the GNU style ``__attribute__((signal))`` attribute on
+AVR targets. This attribute may be attached to a function definition and instructs
+the backend to generate appropriate function entry/exit code so that it can be used
+directly as an interrupt service routine.
+
+Interrupt handler functions defined with the signal attribute do not re-enable interrupts.
+}];
 }
 
 def TargetDocs : Documentation {
@@ -2679,13 +2861,15 @@ See the RenderScript_ documentation for more information.
 
 def XRayDocs : Documentation {
   let Category = DocCatFunction;
-  let Heading = "xray_always_instrument (clang::xray_always_instrument), xray_never_instrument (clang::xray_never_instrument)";
+  let Heading = "xray_always_instrument (clang::xray_always_instrument), xray_never_instrument (clang::xray_never_instrument), xray_log_args (clang::xray_log_args)";
   let Content = [{
 ``__attribute__((xray_always_instrument))`` or ``[[clang::xray_always_instrument]]`` is used to mark member functions (in C++), methods (in Objective C), and free functions (in C, C++, and Objective C) to be instrumented with XRay. This will cause the function to always have space at the beginning and exit points to allow for runtime patching.
 
 Conversely, ``__attribute__((xray_never_instrument))`` or ``[[clang::xray_never_instrument]]`` will inhibit the insertion of these instrumentation points.
 
 If a function has neither of these attributes, they become subject to the XRay heuristics used to determine whether a function should be instrumented or otherwise.
+
+``__attribute__((xray_log_args(N)))`` or ``[[clang::xray_log_args(N)]]`` is used to preserve N function arguments for the logging function.  Currently, only N==1 is supported.
   }];
 }
 

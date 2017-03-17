@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple i686-linux -Wno-string-plus-int -Wno-pointer-arith -Wno-zero-length-array -fsyntax-only -fcxx-exceptions -verify -std=c++11 -pedantic %s -Wno-comment -Wno-tautological-pointer-compare -Wno-bool-conversion
+// RUN: %clang_cc1 -triple x86_64-linux -Wno-string-plus-int -Wno-pointer-arith -Wno-zero-length-array -fsyntax-only -fcxx-exceptions -verify -std=c++11 -pedantic %s -Wno-comment -Wno-tautological-pointer-compare -Wno-bool-conversion
 
 namespace StaticAssertFoldTest {
 
@@ -386,6 +386,18 @@ namespace FakeInitList {
   constexpr init_list_2_init_list_3_ints ils = { { { { 1, 2, 3 } }, { { 4, 5, 6 } } } };
 }
 
+namespace ConstAddedByReference {
+  const int &r = (0);
+  constexpr int n = r;
+
+  struct A { constexpr operator int() const { return 0; }};
+  struct B { constexpr operator const int() const { return 0; }};
+  const int &ra = A();
+  const int &rb = B();
+  constexpr int na = ra;
+  constexpr int nb = rb;
+}
+
 }
 
 constexpr int strcmp_ce(const char *p, const char *q) {
@@ -553,6 +565,21 @@ struct ArrayRVal {
   ArrayElem elems[10];
 };
 static_assert(ArrayRVal().elems[3].f() == 0, "");
+
+namespace CopyCtor {
+  struct A {
+    constexpr A() {}
+    constexpr A(const A &) {}
+  };
+  struct B {
+    A a;
+    int arr[10];
+  };
+  constexpr B b{{}, {1, 2, 3, 4, 5}};
+  constexpr B c = b;
+  static_assert(c.arr[2] == 3, "");
+  static_assert(c.arr[7] == 0, "");
+}
 
 constexpr int selfref[2][2][2] = {
   selfref[1][1][1] + 1, selfref[0][0][0] + 1,
@@ -1156,7 +1183,7 @@ constexpr int m1b = const_cast<const int&>(n1); // expected-error {{constant exp
 constexpr int m2b = const_cast<const int&>(n2); // expected-error {{constant expression}} expected-note {{read of volatile object 'n2'}}
 
 struct T { int n; };
-const T t = { 42 }; // expected-note {{declared here}}
+const T t = { 42 };
 
 constexpr int f(volatile int &&r) {
   return r; // expected-note {{read of volatile-qualified type 'volatile int'}}
@@ -1168,7 +1195,7 @@ struct S {
   int j : f(0); // expected-error {{constant expression}} expected-note {{in call to 'f(0)'}}
   int k : g(0); // expected-error {{constant expression}} expected-note {{temporary created here}} expected-note {{in call to 'g(0)'}}
   int l : n3; // expected-error {{constant expression}} expected-note {{read of non-const variable}}
-  int m : t.n; // expected-error {{constant expression}} expected-note {{read of non-constexpr variable}}
+  int m : t.n; // expected-warning{{width of bit-field 'm' (42 bits)}} expected-warning{{expression is not an integral constant expression}} expected-note{{read of non-constexpr variable 't' is not allowed}}
 };
 
 }
@@ -1253,6 +1280,15 @@ namespace Atomic {
     constexpr TestVar testVar{-1};
     static_assert(testVar.value == -1, "");
   }
+
+  namespace PR32034 {
+    struct A {};
+    struct B { _Atomic(A) a; };
+    constexpr int n = (B(), B(), 0);
+
+    struct C { constexpr C() {} void *self = this; };
+    constexpr _Atomic(C) c = C();
+  }
 }
 
 namespace InstantiateCaseStmt {
@@ -1276,7 +1312,7 @@ namespace ConvertedConstantExpr {
     eo = (m +
           n // expected-error {{not a constant expression}}
           ),
-    eq = reinterpret_cast<int>((int*)0) // expected-error {{not a constant expression}} expected-note {{reinterpret_cast}}
+    eq = reinterpret_cast<long>((int*)0) // expected-error {{not a constant expression}} expected-note {{reinterpret_cast}}
   };
 }
 
@@ -1393,8 +1429,8 @@ namespace Fold {
   // otherwise a constant expression.
   #define fold(x) (__builtin_constant_p(x) ? (x) : (x))
 
-  constexpr int n = (int)(char*)123; // expected-error {{constant expression}} expected-note {{reinterpret_cast}}
-  constexpr int m = fold((int)(char*)123); // ok
+  constexpr int n = (long)(char*)123; // expected-error {{constant expression}} expected-note {{reinterpret_cast}}
+  constexpr int m = fold((long)(char*)123); // ok
   static_assert(m == 123, "");
 
   #undef fold
@@ -1698,7 +1734,7 @@ namespace AfterError {
   constexpr int error() { // expected-error {{no return statement}}
     return foobar; // expected-error {{undeclared identifier}}
   }
-  constexpr int k = error(); // expected-error {{must be initialized by a constant expression}}
+  constexpr int k = error();
 }
 
 namespace std {
@@ -1875,9 +1911,9 @@ namespace ZeroSizeTypes {
 namespace BadDefaultInit {
   template<int N> struct X { static const int n = N; };
 
-  struct A { // expected-error {{default member initializer for 'k' needed within definition of enclosing class}}
+  struct A {
     int k = // expected-note {{default member initializer declared here}}
-        X<A().k>::n; // expected-error {{not a constant expression}} expected-note {{implicit default constructor for 'BadDefaultInit::A' first required here}}
+        X<A().k>::n; // expected-error {{default member initializer for 'k' needed within definition of enclosing class}}
   };
 
   // FIXME: The "constexpr constructor must initialize all members" diagnostic
@@ -2003,7 +2039,7 @@ namespace PR21786 {
 
 namespace PR21859 {
   constexpr int Fun() { return; } // expected-error {{non-void constexpr function 'Fun' should return a value}}
-  constexpr int Var = Fun(); // expected-error {{constexpr variable 'Var' must be initialized by a constant expression}}
+  constexpr int Var = Fun();
 }
 
 struct InvalidRedef {
@@ -2109,3 +2145,17 @@ void g() {
 
 } //end ns PR28366
 
+namespace PointerArithmeticOverflow {
+  int n;
+  int a[1];
+  constexpr int *b = &n + 1 + (long)-1;
+  constexpr int *c = &n + 1 + (unsigned long)-1; // expected-error {{constant expression}} expected-note {{cannot refer to element 1844}}
+  constexpr int *d = &n + 1 - (unsigned long)1;
+  constexpr int *e = a + 1 + (long)-1;
+  constexpr int *f = a + 1 + (unsigned long)-1; // expected-error {{constant expression}} expected-note {{cannot refer to element 1844}}
+  constexpr int *g = a + 1 - (unsigned long)1;
+
+  constexpr int *p = (&n + 1) + (unsigned __int128)-1; // expected-error {{constant expression}} expected-note {{cannot refer to element 3402}}
+  constexpr int *q = (&n + 1) - (unsigned __int128)-1; // expected-error {{constant expression}} expected-note {{cannot refer to element -3402}}
+  constexpr int *r = &(&n + 1)[(unsigned __int128)-1]; // expected-error {{constant expression}} expected-note {{cannot refer to element 3402}}
+}

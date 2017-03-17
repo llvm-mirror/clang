@@ -536,3 +536,35 @@ void PR30346() {
   // CHECK: store i32 14
   gi = __builtin_object_size(sa->sa_data, 3);
 }
+
+extern char incomplete_char_array[];
+// CHECK-LABEL: @incomplete_and_function_types
+int incomplete_and_function_types() {
+  // CHECK: call i64 @llvm.objectsize.i64.p0i8
+  gi = __builtin_object_size(incomplete_char_array, 0);
+  // CHECK: call i64 @llvm.objectsize.i64.p0i8
+  gi = __builtin_object_size(incomplete_char_array, 1);
+  // CHECK: call i64 @llvm.objectsize.i64.p0i8
+  gi = __builtin_object_size(incomplete_char_array, 2);
+  // CHECK: store i32 0
+  gi = __builtin_object_size(incomplete_char_array, 3);
+}
+
+// Flips between the pointer and lvalue evaluator a lot.
+void deeply_nested() {
+  struct {
+    struct {
+      struct {
+        struct {
+          int e[2];
+          char f; // Inhibit our writing-off-the-end check
+        } d[2];
+      } c[2];
+    } b[2];
+  } *a;
+
+  // CHECK: store i32 4
+  gi = __builtin_object_size(&a->b[1].c[1].d[1].e[1], 1);
+  // CHECK: store i32 4
+  gi = __builtin_object_size(&a->b[1].c[1].d[1].e[1], 3);
+}

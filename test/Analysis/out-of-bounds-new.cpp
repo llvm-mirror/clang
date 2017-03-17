@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -std=c++11 -Wno-array-bounds -analyze -analyzer-checker=unix,core,alpha.security.ArrayBoundV2 -verify %s
+// RUN: %clang_analyze_cc1 -std=c++11 -Wno-array-bounds -analyzer-checker=unix,core,alpha.security.ArrayBoundV2 -verify %s
 
 // Tests doing an out-of-bounds access after the end of an array using:
 // - constant integer index
@@ -147,4 +147,10 @@ void test_non_array(int x) {
 void test_dynamic_size(int s) {
   int *buf = new int[s];
   buf[0] = 1; // no-warning
+}
+//Tests complex arithmetic
+//in new expression
+void test_dynamic_size2(unsigned m,unsigned n){
+  unsigned *U = nullptr;
+  U = new unsigned[m + n + 1];
 }

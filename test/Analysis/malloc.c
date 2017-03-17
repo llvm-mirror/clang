@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,alpha.deadcode.UnreachableCode,alpha.core.CastSize,unix.Malloc,debug.ExprInspection -analyzer-store=region -verify %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=core,alpha.deadcode.UnreachableCode,alpha.core.CastSize,unix.Malloc,debug.ExprInspection -analyzer-store=region -verify %s
 
 #include "Inputs/system-header-simulator.h"
 
@@ -1762,6 +1762,17 @@ void testConstEscapeThroughAnotherField() {
   s.p = malloc(sizeof(int));
   constEscape(&(s.x)); // could free s->p!
 } // no-warning
+
+// PR15623
+int testNoCheckerDataPropogationFromLogicalOpOperandToOpResult(void) {
+   char *param = malloc(10);
+   char *value = malloc(10);
+   int ok = (param && value);
+   free(param);
+   free(value);
+   // Previously we ended up with 'Use of memory after it is freed' on return.
+   return ok; // no warning
+}
 
 // ----------------------------------------------------------------------------
 // False negatives.

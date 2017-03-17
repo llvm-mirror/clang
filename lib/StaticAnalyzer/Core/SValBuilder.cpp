@@ -36,8 +36,11 @@ DefinedOrUnknownSVal SValBuilder::makeZeroVal(QualType type) {
   if (type->isIntegralOrEnumerationType())
     return makeIntVal(0, type);
 
+  if (type->isArrayType() || type->isRecordType() || type->isVectorType() ||
+      type->isAnyComplexType())
+    return makeCompoundVal(type, BasicVals.getEmptySValList());
+
   // FIXME: Handle floats.
-  // FIXME: Handle structs.
   return UnknownVal();
 }
 
@@ -212,6 +215,22 @@ SValBuilder::getDerivedRegionValueSymbolVal(SymbolRef parentSymbol,
     return loc::MemRegionVal(MemMgr.getSymbolicRegion(sym));
 
   return nonloc::SymbolVal(sym);
+}
+
+DefinedSVal SValBuilder::getMemberPointer(const DeclaratorDecl* DD) {
+  assert(!DD || isa<CXXMethodDecl>(DD) || isa<FieldDecl>(DD));
+
+  if (auto *MD = dyn_cast_or_null<CXXMethodDecl>(DD)) {
+    // Sema treats pointers to static member functions as have function pointer
+    // type, so return a function pointer for the method.
+    // We don't need to play a similar trick for static member fields
+    // because these are represented as plain VarDecls and not FieldDecls
+    // in the AST.
+    if (MD->isStatic())
+      return getFunctionPointer(MD);
+  }
+
+  return nonloc::PointerToMember(DD);
 }
 
 DefinedSVal SValBuilder::getFunctionPointer(const FunctionDecl *func) {

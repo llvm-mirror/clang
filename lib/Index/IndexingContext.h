@@ -58,7 +58,6 @@ public:
     return false;
   }
 
-  static bool isFunctionLocalDecl(const Decl *D);
   static bool isTemplateImplicitInstantiation(const Decl *D);
 
   bool handleDecl(const Decl *D, SymbolRoleSet Roles = SymbolRoleSet(),
@@ -85,11 +84,13 @@ public:
 
   void indexTypeSourceInfo(TypeSourceInfo *TInfo, const NamedDecl *Parent,
                            const DeclContext *DC = nullptr,
-                           bool isBase = false);
+                           bool isBase = false,
+                           bool isIBType = false);
 
   void indexTypeLoc(TypeLoc TL, const NamedDecl *Parent,
                     const DeclContext *DC = nullptr,
-                    bool isBase = false);
+                    bool isBase = false,
+                    bool isIBType = false);
 
   void indexNestedNameSpecifierLoc(NestedNameSpecifierLoc NNS,
                                    const NamedDecl *Parent,

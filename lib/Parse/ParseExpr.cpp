@@ -198,7 +198,7 @@ ExprResult Parser::ParseConstantExpression(TypeCastState isTypeCast) {
   //   An expression is potentially evaluated unless it appears where an
   //   integral constant expression is required (see 5.19) [...].
   // C++98 and C++11 have no such rule, but this is only a defect in C++98.
-  EnterExpressionEvaluationContext Unevaluated(Actions,
+  EnterExpressionEvaluationContext ConstantEvaluated(Actions,
                                                Sema::ConstantEvaluated);
 
   ExprResult LHS(ParseCastExpression(false, false, isTypeCast));
@@ -885,7 +885,13 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
          // Allow the base to be 'super' if in an objc-method.
          (&II == Ident_super && getCurScope()->isInObjcMethodScope()))) {
       ConsumeToken();
-      
+
+      if (Tok.is(tok::code_completion) && &II != Ident_super) {
+        Actions.CodeCompleteObjCClassPropertyRefExpr(
+            getCurScope(), II, ILoc, ExprStatementTokLoc == ILoc);
+        cutOffParsing();
+        return ExprError();
+      }
       // Allow either an identifier or the keyword 'class' (in C++).
       if (Tok.isNot(tok::identifier) && 
           !(getLangOpts().CPlusPlus && Tok.is(tok::kw_class))) {
@@ -1646,9 +1652,10 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
 
       if (Tok.is(tok::code_completion)) {
         // Code completion for a member access expression.
-        Actions.CodeCompleteMemberReferenceExpr(
-            getCurScope(), LHS.get(), OpLoc, OpKind == tok::arrow,
-            ExprStatementTokLoc == LHS.get()->getLocStart());
+        if (Expr *Base = LHS.get())
+          Actions.CodeCompleteMemberReferenceExpr(
+              getCurScope(), Base, OpLoc, OpKind == tok::arrow,
+              ExprStatementTokLoc == Base->getLocStart());
 
         cutOffParsing();
         return ExprError();
@@ -1686,6 +1693,7 @@ Parser::ParsePostfixExpressionSuffix(ExprResult LHS) {
                                     /*AllowDestructorName=*/true,
                                     /*AllowConstructorName=*/
                                       getLangOpts().MicrosoftExt, 
+                                    /*AllowDeductionGuide=*/false,
                                     ObjectType, TemplateKWLoc, Name)) {
         (void)Actions.CorrectDelayedTyposInExpr(LHS);
         LHS = ExprError();
@@ -2401,7 +2409,7 @@ Parser::ParseParenExpression(ParenParseOption &ExprType, bool stopIfCastExpr,
       // fold-expressions, we'll need to allow multiple ArgExprs here.
       if (ArgExprs.size() == 1 && isFoldOperator(Tok.getKind()) &&
           NextToken().is(tok::ellipsis))
-        return ParseFoldExpression(Result, T);
+        return ParseFoldExpression(ArgExprs[0], T);
 
       ExprType = SimpleExpr;
       Result = Actions.ActOnParenListExpr(OpenLoc, Tok.getLocation(),
@@ -2745,6 +2753,7 @@ void Parser::ParseBlockId(SourceLocation CaretLoc) {
 
   // Parse the block-declarator.
   Declarator DeclaratorInfo(DS, Declarator::BlockLiteralContext);
+  DeclaratorInfo.setFunctionDefinitionKind(FDK_Definition);
   ParseDeclarator(DeclaratorInfo);
 
   MaybeParseGNUAttributes(DeclaratorInfo);
@@ -2783,6 +2792,7 @@ ExprResult Parser::ParseBlockLiteralExpression() {
   // Parse the return type if present.
   DeclSpec DS(AttrFactory);
   Declarator ParamInfo(DS, Declarator::BlockLiteralContext);
+  ParamInfo.setFunctionDefinitionKind(FDK_Definition);
   // FIXME: Since the return type isn't actually parsed, it can't be used to
   // fill ParamInfo with an initial valid range, so do it manually.
   ParamInfo.SetSourceRange(SourceRange(Tok.getLocation(), Tok.getLocation()));
@@ -2836,6 +2846,7 @@ ExprResult Parser::ParseBlockLiteralExpression() {
                                              /*NumExceptions=*/0,
                                              /*NoexceptExpr=*/nullptr,
                                              /*ExceptionSpecTokens=*/nullptr,
+                                             /*DeclsInPrototype=*/None,
                                              CaretLoc, CaretLoc,
                                              ParamInfo),
                           attrs, CaretLoc);

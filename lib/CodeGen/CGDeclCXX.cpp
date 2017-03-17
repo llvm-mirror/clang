@@ -237,7 +237,8 @@ void CodeGenFunction::registerGlobalDtorWithAtExit(const VarDecl &VD,
     llvm::FunctionType::get(IntTy, dtorStub->getType(), false);
 
   llvm::Constant *atexit =
-    CGM.CreateRuntimeFunction(atexitTy, "atexit");
+      CGM.CreateRuntimeFunction(atexitTy, "atexit", llvm::AttributeSet(),
+                                /*Local=*/true);
   if (llvm::Function *atexitFn = dyn_cast<llvm::Function>(atexit))
     atexitFn->setDoesNotThrow();
 
@@ -352,9 +353,6 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
 
   if (D->getTLSKind()) {
     // FIXME: Should we support init_priority for thread_local?
-    // FIXME: Ideally, initialization of instantiated thread_local static data
-    // members of class templates should not trigger initialization of other
-    // entities in the TU.
     // FIXME: We only need to register one __cxa_thread_atexit function for the
     // entire TU.
     CXXThreadLocalInits.push_back(Fn);

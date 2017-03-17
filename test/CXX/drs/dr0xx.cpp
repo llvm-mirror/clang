@@ -276,9 +276,9 @@ namespace dr23 { // dr23: yes
 
 namespace dr25 { // dr25: yes
   struct A {
-    void f() throw(int);
+    void f() throw(int); // expected-error 0-1{{ISO C++1z does not allow}} expected-note 0-1{{use 'noexcept}}
   };
-  void (A::*f)() throw (int);
+  void (A::*f)() throw (int); // expected-error 0-1{{ISO C++1z does not allow}} expected-note 0-1{{use 'noexcept}}
   void (A::*g)() throw () = f;
 #if __cplusplus <= 201402L
   // expected-error@-2 {{is not superset of source}}
@@ -286,7 +286,7 @@ namespace dr25 { // dr25: yes
   // expected-error@-4 {{different exception specifications}}
 #endif
   void (A::*g2)() throw () = 0;
-  void (A::*h)() throw (int, char) = f;
+  void (A::*h)() throw (int, char) = f; // expected-error 0-1{{ISO C++1z does not allow}} expected-note 0-1{{use 'noexcept}}
   void (A::*i)() throw () = &A::f;
 #if __cplusplus <= 201402L
   // expected-error@-2 {{is not superset of source}}
@@ -294,7 +294,7 @@ namespace dr25 { // dr25: yes
   // expected-error@-4 {{different exception specifications}}
 #endif
   void (A::*i2)() throw () = 0;
-  void (A::*j)() throw (int, char) = &A::f;
+  void (A::*j)() throw (int, char) = &A::f; // expected-error 0-1{{ISO C++1z does not allow}} expected-note 0-1{{use 'noexcept}}
   void x() {
     g2 = f;
 #if __cplusplus <= 201402L
@@ -333,7 +333,7 @@ namespace dr27 { // dr27: yes
   E &m = true ? n : n;
 }
 
-// dr28: na
+// dr28: na lib
 
 namespace dr29 { // dr29: 3.4
   void dr29_f0(); // expected-note {{here}}
@@ -1032,15 +1032,15 @@ namespace dr91 { // dr91: yes
   int k = f(U());
 }
 
-namespace dr92 { // dr92: 4.0 c++17
-  void f() throw(int, float);
-  void (*p)() throw(int) = &f;
+namespace dr92 { // dr92: 4 c++17
+  void f() throw(int, float); // expected-error 0-1{{ISO C++1z does not allow}} expected-note 0-1{{use 'noexcept}}
+  void (*p)() throw(int) = &f; // expected-error 0-1{{ISO C++1z does not allow}} expected-note 0-1{{use 'noexcept}}
 #if __cplusplus <= 201402L
   // expected-error@-2 {{target exception specification is not superset of source}}
 #else
   // expected-warning@-4 {{target exception specification is not superset of source}}
 #endif
-  void (*q)() throw(int);
+  void (*q)() throw(int); // expected-error 0-1{{ISO C++1z does not allow}} expected-note 0-1{{use 'noexcept}}
   void (**pp)() throw() = &q;
 #if __cplusplus <= 201402L
   // expected-error@-2 {{exception specifications are not allowed}}
@@ -1064,7 +1064,7 @@ namespace dr92 { // dr92: 4.0 c++17
   // expected-error@-2 {{not implicitly convertible}}
 #endif
 
-  template<void() throw(int)> struct Y {};
+  template<void() throw(int)> struct Y {}; // expected-error 0-1{{ISO C++1z does not allow}} expected-note 0-1{{use 'noexcept}}
   Y<&h> yp; // ok
 }
 

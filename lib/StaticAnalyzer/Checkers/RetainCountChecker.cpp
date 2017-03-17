@@ -740,7 +740,7 @@ public:
      ObjCAllocRetE(gcenabled
                     ? RetEffect::MakeGCNotOwned()
                     : (usesARC ? RetEffect::MakeNotOwned(RetEffect::ObjC)
-                               : RetEffect::MakeOwned(RetEffect::ObjC, true))),
+                               : RetEffect::MakeOwned(RetEffect::ObjC))),
      ObjCInitRetE(gcenabled
                     ? RetEffect::MakeGCNotOwned()
                     : (usesARC ? RetEffect::MakeNotOwned(RetEffect::ObjC)
@@ -953,7 +953,10 @@ void RetainSummaryManager::updateSummaryForCall(const RetainSummary *&S,
       if (IdentifierInfo *Name = FC->getDecl()->getIdentifier()) {
         // When the CGBitmapContext is deallocated, the callback here will free
         // the associated data buffer.
-        if (Name->isStr("CGBitmapContextCreateWithData"))
+        // The callback in dispatch_data_create frees the buffer, but not
+        // the data object.
+        if (Name->isStr("CGBitmapContextCreateWithData") ||
+            Name->isStr("dispatch_data_create"))
           RE = S->getRetEffect();
       }
     }
@@ -1086,7 +1089,7 @@ RetainSummaryManager::getFunctionSummary(const FunctionDecl *FD) {
                FName == "IOOpenFirmwarePathMatching") {
       // Part of <rdar://problem/6961230>. (IOKit)
       // This should be addressed using a API table.
-      S = getPersistentSummary(RetEffect::MakeOwned(RetEffect::CF, true),
+      S = getPersistentSummary(RetEffect::MakeOwned(RetEffect::CF),
                                DoNothing, DoNothing);
     } else if (FName == "IOServiceGetMatchingService" ||
                FName == "IOServiceGetMatchingServices") {
@@ -1116,7 +1119,7 @@ RetainSummaryManager::getFunctionSummary(const FunctionDecl *FD) {
       // passed to CGBitmapContextCreateWithData is released via
       // a callback and doing full IPA to make sure this is done correctly.
       ScratchArgs = AF.add(ScratchArgs, 8, StopTracking);
-      S = getPersistentSummary(RetEffect::MakeOwned(RetEffect::CF, true),
+      S = getPersistentSummary(RetEffect::MakeOwned(RetEffect::CF),
                                DoNothing, DoNothing);
     } else if (FName == "CVPixelBufferCreateWithPlanarBytes") {
       // FIXES: <rdar://problem/7283567>
@@ -1292,7 +1295,7 @@ const RetainSummary *
 RetainSummaryManager::getCFSummaryCreateRule(const FunctionDecl *FD) {
   assert (ScratchArgs.isEmpty());
 
-  return getPersistentSummary(RetEffect::MakeOwned(RetEffect::CF, true));
+  return getPersistentSummary(RetEffect::MakeOwned(RetEffect::CF));
 }
 
 const RetainSummary *
@@ -1322,7 +1325,7 @@ RetainSummaryManager::getRetEffectFromAnnotations(QualType RetTy,
   }
 
   if (D->hasAttr<CFReturnsRetainedAttr>())
-    return RetEffect::MakeOwned(RetEffect::CF, true);
+    return RetEffect::MakeOwned(RetEffect::CF);
 
   if (D->hasAttr<CFReturnsNotRetainedAttr>())
     return RetEffect::MakeNotOwned(RetEffect::CF);
@@ -1435,7 +1438,7 @@ RetainSummaryManager::getStandardMethodSummary(const ObjCMethodDecl *MD,
           case OMF_new:
           case OMF_copy:
           case OMF_mutableCopy:
-            ResultEff = RetEffect::MakeOwned(RetEffect::CF, true);
+            ResultEff = RetEffect::MakeOwned(RetEffect::CF);
             break;
           default:
             ResultEff = RetEffect::MakeNotOwned(RetEffect::CF);
@@ -1457,7 +1460,7 @@ RetainSummaryManager::getStandardMethodSummary(const ObjCMethodDecl *MD,
       if (cocoa::isCocoaObjectRef(RetTy))
         ResultEff = ObjCAllocRetE;
       else if (coreFoundation::isCFObjectRef(RetTy))
-        ResultEff = RetEffect::MakeOwned(RetEffect::CF, true);
+        ResultEff = RetEffect::MakeOwned(RetEffect::CF);
       break;
     case OMF_autorelease:
       ReceiverEff = Autorelease;
@@ -1588,7 +1591,7 @@ void RetainSummaryManager::InitializeMethodSummaries() {
   // The next methods are allocators.
   const RetainSummary *AllocSumm = getPersistentSummary(ObjCAllocRetE);
   const RetainSummary *CFAllocSumm =
-    getPersistentSummary(RetEffect::MakeOwned(RetEffect::CF, true));
+    getPersistentSummary(RetEffect::MakeOwned(RetEffect::CF));
 
   // Create the "retain" selector.
   RetEffect NoRet = RetEffect::MakeNoRet();
@@ -1770,10 +1773,10 @@ namespace {
       ID.AddPointer(Sym);
     }
 
-    PathDiagnosticPiece *VisitNode(const ExplodedNode *N,
-                                   const ExplodedNode *PrevN,
-                                   BugReporterContext &BRC,
-                                   BugReport &BR) override;
+    std::shared_ptr<PathDiagnosticPiece> VisitNode(const ExplodedNode *N,
+                                                   const ExplodedNode *PrevN,
+                                                   BugReporterContext &BRC,
+                                                   BugReport &BR) override;
 
     std::unique_ptr<PathDiagnosticPiece> getEndPath(BugReporterContext &BRC,
                                                     const ExplodedNode *N,
@@ -1896,10 +1899,9 @@ static bool isSynthesizedAccessor(const StackFrameContext *SFC) {
   return SFC->getAnalysisDeclContext()->isBodyAutosynthesized();
 }
 
-PathDiagnosticPiece *CFRefReportVisitor::VisitNode(const ExplodedNode *N,
-                                                   const ExplodedNode *PrevN,
-                                                   BugReporterContext &BRC,
-                                                   BugReport &BR) {
+std::shared_ptr<PathDiagnosticPiece>
+CFRefReportVisitor::VisitNode(const ExplodedNode *N, const ExplodedNode *PrevN,
+                              BugReporterContext &BRC, BugReport &BR) {
   // FIXME: We will eventually need to handle non-statement-based events
   // (__attribute__((cleanup))).
   if (!N->getLocation().getAs<StmtPoint>())
@@ -1987,11 +1989,23 @@ PathDiagnosticPiece *CFRefReportVisitor::VisitNode(const ExplodedNode *N,
       }
 
       if (CurrV.getObjKind() == RetEffect::CF) {
-        os << " returns a Core Foundation object with a ";
+        if (Sym->getType().isNull()) {
+          os << " returns a Core Foundation object with a ";
+        } else {
+          os << " returns a Core Foundation object of type "
+             << Sym->getType().getAsString() << " with a ";
+        }
       }
       else {
         assert (CurrV.getObjKind() == RetEffect::ObjC);
-        os << " returns an Objective-C object with a ";
+        QualType T = Sym->getType();
+        if (T.isNull() || !isa<ObjCObjectPointerType>(T)) {
+          os << " returns an Objective-C object with a ";
+        } else {
+          const ObjCObjectPointerType *PT = cast<ObjCObjectPointerType>(T);
+          os << " returns an instance of "
+             << PT->getPointeeType().getAsString() << " with a ";
+        }
       }
 
       if (CurrV.isOwned()) {
@@ -2011,7 +2025,7 @@ PathDiagnosticPiece *CFRefReportVisitor::VisitNode(const ExplodedNode *N,
 
     PathDiagnosticLocation Pos(S, BRC.getSourceManager(),
                                   N->getLocationContext());
-    return new PathDiagnosticEventPiece(Pos, os.str());
+    return std::make_shared<PathDiagnosticEventPiece>(Pos, os.str());
   }
 
   // Gather up the effects that were performed on the object at this
@@ -2188,7 +2202,7 @@ PathDiagnosticPiece *CFRefReportVisitor::VisitNode(const ExplodedNode *N,
   const Stmt *S = N->getLocation().castAs<StmtPoint>().getStmt();
   PathDiagnosticLocation Pos(S, BRC.getSourceManager(),
                                 N->getLocationContext());
-  PathDiagnosticPiece *P = new PathDiagnosticEventPiece(Pos, os.str());
+  auto P = std::make_shared<PathDiagnosticEventPiece>(Pos, os.str());
 
   // Add the range by scanning the children of the statement for any bindings
   // to Sym.
@@ -2199,7 +2213,7 @@ PathDiagnosticPiece *CFRefReportVisitor::VisitNode(const ExplodedNode *N,
         break;
       }
 
-  return P;
+  return std::move(P);
 }
 
 namespace {
@@ -2647,6 +2661,7 @@ public:
                      const InvalidatedSymbols *invalidated,
                      ArrayRef<const MemRegion *> ExplicitRegions,
                      ArrayRef<const MemRegion *> Regions,
+                     const LocationContext* LCtx,
                      const CallEvent *Call) const;
 
   void checkPreStmt(const ReturnStmt *S, CheckerContext &C) const;
@@ -3076,7 +3091,6 @@ void RetainCountChecker::checkSummary(const RetainSummary &Summ,
       // No work necessary.
       break;
 
-    case RetEffect::OwnedAllocatedSymbol:
     case RetEffect::OwnedSymbol: {
       SymbolRef Sym = CallOrMsg.getReturnValue().getAsSymbol();
       if (!Sym)
@@ -3634,7 +3648,7 @@ void RetainCountChecker::checkBind(SVal loc, SVal val, const Stmt *S,
       // same state.
       SVal StoredVal = state->getSVal(regionLoc->getRegion());
       if (StoredVal != val)
-        escapes = (state == (state->bindLoc(*regionLoc, val)));
+        escapes = (state == (state->bindLoc(*regionLoc, val, C.getLocationContext())));
     }
     if (!escapes) {
       // Case 4: We do not currently model what happens when a symbol is
@@ -3701,10 +3715,11 @@ ProgramStateRef RetainCountChecker::evalAssume(ProgramStateRef state,
 
 ProgramStateRef
 RetainCountChecker::checkRegionChanges(ProgramStateRef state,
-                                    const InvalidatedSymbols *invalidated,
-                                    ArrayRef<const MemRegion *> ExplicitRegions,
-                                    ArrayRef<const MemRegion *> Regions,
-                                    const CallEvent *Call) const {
+                                       const InvalidatedSymbols *invalidated,
+                                       ArrayRef<const MemRegion *> ExplicitRegions,
+                                       ArrayRef<const MemRegion *> Regions,
+                                       const LocationContext *LCtx,
+                                       const CallEvent *Call) const {
   if (!invalidated)
     return state;
 

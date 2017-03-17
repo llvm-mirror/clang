@@ -145,7 +145,7 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
     EmitCoroutineBody(cast<CoroutineBodyStmt>(*S));
     break;
   case Stmt::CoreturnStmtClass:
-    CGM.ErrorUnsupported(S, "coroutine");
+    EmitCoreturnStmt(cast<CoreturnStmt>(*S));
     break;
   case Stmt::CapturedStmtClass: {
     const CapturedStmt *CS = cast<CapturedStmt>(S);
@@ -310,6 +310,29 @@ void CodeGenFunction::EmitStmt(const Stmt *S) {
   case Stmt::OMPTeamsDistributeParallelForSimdDirectiveClass:
     EmitOMPTeamsDistributeParallelForSimdDirective(
         cast<OMPTeamsDistributeParallelForSimdDirective>(*S));
+    break;
+  case Stmt::OMPTeamsDistributeParallelForDirectiveClass:
+    EmitOMPTeamsDistributeParallelForDirective(
+        cast<OMPTeamsDistributeParallelForDirective>(*S));
+    break;
+  case Stmt::OMPTargetTeamsDirectiveClass:
+    EmitOMPTargetTeamsDirective(cast<OMPTargetTeamsDirective>(*S));
+    break;
+  case Stmt::OMPTargetTeamsDistributeDirectiveClass:
+    EmitOMPTargetTeamsDistributeDirective(
+        cast<OMPTargetTeamsDistributeDirective>(*S));
+    break;
+  case Stmt::OMPTargetTeamsDistributeParallelForDirectiveClass:
+    EmitOMPTargetTeamsDistributeParallelForDirective(
+        cast<OMPTargetTeamsDistributeParallelForDirective>(*S));
+    break;
+  case Stmt::OMPTargetTeamsDistributeParallelForSimdDirectiveClass:
+    EmitOMPTargetTeamsDistributeParallelForSimdDirective(
+        cast<OMPTargetTeamsDistributeParallelForSimdDirective>(*S));
+    break;
+  case Stmt::OMPTargetTeamsDistributeSimdDirectiveClass:
+    EmitOMPTargetTeamsDistributeSimdDirective(
+        cast<OMPTargetTeamsDistributeSimdDirective>(*S));
     break;
   }
 }
@@ -2202,7 +2225,7 @@ LValue CodeGenFunction::InitCapturedStruct(const CapturedStmt &S) {
       auto VAT = CurField->getCapturedVLAType();
       EmitStoreThroughLValue(RValue::get(VLASizeMap[VAT->getSizeExpr()]), LV);
     } else {
-      EmitInitializerForField(*CurField, LV, *I, None);
+      EmitInitializerForField(*CurField, LV, *I);
     }
   }
 

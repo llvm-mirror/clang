@@ -1,9 +1,12 @@
 // RUN: %clang_cc1 -emit-llvm -triple i686-pc-linux-gnu -std=c++1y -o - %s | FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-NO-OPT
-// RUN: %clang_cc1 -emit-llvm -triple i686-pc-linux-gnu -std=c++1y -O3 -disable-llvm-optzns -o - %s | FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-OPT
+// RUN: %clang_cc1 -emit-llvm -triple i686-pc-linux-gnu -std=c++1y -O3 -disable-llvm-passes -o - %s | FileCheck %s --check-prefix=CHECK --check-prefix=CHECK-OPT
 // RUN: %clang_cc1 -emit-llvm -triple i686-pc-win32 -std=c++1y -o - %s | FileCheck %s --check-prefix=CHECK-MS
 
 // This check logically is attached to 'template int S<int>::i;' below.
 // CHECK: @_ZN1SIiE1iE = weak_odr global i32
+
+// This check is logically attached to 'template int ExportedStaticLocal::f<int>()' below.
+// CHECK-OPT: @_ZZN19ExportedStaticLocal1fIiEEvvE1i = linkonce_odr global
 
 template<typename T, typename U, typename Result>
 struct plus {
@@ -153,3 +156,17 @@ template <typename T> void S<T>::f() {}
 template <typename T> void S<T>::g() {}
 template <typename T> int S<T>::i;
 template <typename T> void S<T>::S2::h() {}
+
+namespace ExportedStaticLocal {
+void sink(int&);
+template <typename T>
+inline void f() {
+  static int i;
+  sink(i);
+}
+// See the check line at the top of the file.
+extern template void f<int>();
+void use() {
+  f<int>();
+}
+}

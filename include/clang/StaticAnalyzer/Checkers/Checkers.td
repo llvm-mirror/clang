@@ -42,9 +42,9 @@ def Nullability : Package<"nullability">;
 
 def Cplusplus : Package<"cplusplus">;
 def CplusplusAlpha : Package<"cplusplus">, InPackage<Alpha>, Hidden;
+def CplusplusOptIn : Package<"cplusplus">, InPackage<OptIn>;
 
 def Valist : Package<"valist">;
-def ValistAlpha : Package<"valist">, InPackage<Alpha>, Hidden;
 
 def DeadCode : Package<"deadcode">;
 def DeadCodeAlpha : Package<"deadcode">, InPackage<Alpha>, Hidden;
@@ -78,6 +78,13 @@ def LocalizabilityOptIn : Package<"localizability">, InPackage<CocoaOptIn>;
 def MPI : Package<"mpi">, InPackage<OptIn>;
 
 def LLVM : Package<"llvm">;
+
+// The APIModeling package is for checkers that model APIs and don't perform
+// any diagnostics. These checkers are always turned on; this package is
+// intended for API modeling that is not controlled by the the target triple.
+def APIModeling : Package<"apiModeling">, Hidden;
+def GoogleAPIModeling : Package<"google">, InPackage<APIModeling>;
+
 def Debug : Package<"debug">;
 
 def CloneDetectionAlpha : Package<"clone">, InPackage<Alpha>, Hidden;
@@ -262,11 +269,19 @@ def CXXSelfAssignmentChecker : Checker<"SelfAssignment">,
 
 } // end: "cplusplus"
 
-let ParentPackage = CplusplusAlpha in {
+let ParentPackage = CplusplusOptIn in {
 
 def VirtualCallChecker : Checker<"VirtualCall">,
   HelpText<"Check virtual function calls during construction or destruction">,
   DescFile<"VirtualCallChecker.cpp">;
+
+} // end: "optin.cplusplus"
+
+let ParentPackage = CplusplusAlpha in {
+
+def IteratorPastEndChecker : Checker<"IteratorPastEnd">,
+  HelpText<"Check iterators used past end">,
+  DescFile<"IteratorPastEndChecker.cpp">;
 
 } // end: "alpha.cplusplus"
 
@@ -275,7 +290,7 @@ def VirtualCallChecker : Checker<"VirtualCall">,
 // Valist checkers.
 //===----------------------------------------------------------------------===//
 
-let ParentPackage = ValistAlpha in {
+let ParentPackage = Valist in {
 
 def UninitializedChecker : Checker<"Uninitialized">,
   HelpText<"Check for usages of uninitialized (or already released) va_lists.">,
@@ -289,7 +304,7 @@ def CopyToSelfChecker : Checker<"CopyToSelf">,
   HelpText<"Check for va_lists which are copied onto itself.">,
   DescFile<"ValistChecker.cpp">;
 
-} // end : "alpha.valist"
+} // end : "valist"
 
 //===----------------------------------------------------------------------===//
 // Deadcode checkers.
@@ -479,19 +494,20 @@ def CStringNotNullTerm : Checker<"NotNullTerminated">,
 let ParentPackage = OSX in {
 
 def NumberObjectConversionChecker : Checker<"NumberObjectConversion">,
-  InPackage<OSX>,
   HelpText<"Check for erroneous conversions of objects representing numbers into numbers">,
   DescFile<"NumberObjectConversionChecker.cpp">;
 
 def MacOSXAPIChecker : Checker<"API">,
-  InPackage<OSX>,
   HelpText<"Check for proper uses of various Apple APIs">,
   DescFile<"MacOSXAPIChecker.cpp">;
 
 def MacOSKeychainAPIChecker : Checker<"SecKeychainAPI">,
-  InPackage<OSX>,
   HelpText<"Check for proper uses of Secure Keychain APIs">,
   DescFile<"MacOSKeychainAPIChecker.cpp">;
+
+def ObjCPropertyChecker : Checker<"ObjCProperty">,
+  HelpText<"Check for proper uses of Objective-C properties">,
+  DescFile<"ObjCPropertyChecker.cpp">;
 
 } // end "osx"
 
@@ -640,6 +656,17 @@ def LLVMConventionsChecker : Checker<"Conventions">,
   InPackage<LLVM>,
   HelpText<"Check code for LLVM codebase conventions">,
   DescFile<"LLVMConventionsChecker.cpp">;
+
+
+
+//===----------------------------------------------------------------------===//
+// Checkers modeling Google APIs.
+//===----------------------------------------------------------------------===//
+
+def GTestChecker : Checker<"GTest">,
+  InPackage<GoogleAPIModeling>,
+  HelpText<"Model gtest assertion APIs">,
+  DescFile<"GTestChecker.cpp">;
 
 //===----------------------------------------------------------------------===//
 // Debugging checkers (for analyzer development).

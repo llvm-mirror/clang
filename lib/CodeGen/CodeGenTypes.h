@@ -303,11 +303,14 @@ public:
   const CGFunctionInfo &arrangeCXXConstructorCall(const CallArgList &Args,
                                                   const CXXConstructorDecl *D,
                                                   CXXCtorType CtorKind,
-                                                  unsigned ExtraArgs);
+                                                  unsigned ExtraPrefixArgs,
+                                                  unsigned ExtraSuffixArgs,
+                                                  bool PassProtoArgs = true);
 
   const CGFunctionInfo &arrangeCXXMethodCall(const CallArgList &args,
                                              const FunctionProtoType *type,
-                                             RequiredArgs required);
+                                             RequiredArgs required,
+                                             unsigned numPrefixArgs);
   const CGFunctionInfo &arrangeMSMemberPointerThunk(const CXXMethodDecl *MD);
   const CGFunctionInfo &arrangeMSCtorClosure(const CXXConstructorDecl *CD,
                                                  CXXCtorType CT);
@@ -351,6 +354,10 @@ public:  // These are internal details of CGT that shouldn't be used externally.
   /// IsZeroInitializable - Return whether a type can be
   /// zero-initialized (in the C++ sense) with an LLVM zeroinitializer.
   bool isZeroInitializable(QualType T);
+
+  /// Check if the pointer type can be zero-initialized (in the C++ sense)
+  /// with an LLVM zeroinitializer.
+  bool isPointerZeroInitializable(QualType T);
 
   /// IsZeroInitializable - Return whether a record type can be
   /// zero-initialized (in the C++ sense) with an LLVM zeroinitializer.

@@ -702,7 +702,7 @@ BUILTIN(__atomic_is_lock_free, "izvCD*", "n")
 #undef ATOMIC_BUILTIN
 
 // Non-overloaded atomic builtins.
-BUILTIN(__sync_synchronize, "v.", "n")
+BUILTIN(__sync_synchronize, "v", "n")
 // GCC does not support these, they are a Clang extension.
 BUILTIN(__sync_fetch_and_min, "iiD*i", "n")
 BUILTIN(__sync_fetch_and_max, "iiD*i", "n")
@@ -773,6 +773,7 @@ LANGBUILTIN(_rotr,   "UiUii",     "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_lrotr,  "ULiULii",   "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(_rotr64, "ULLiULLii", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__va_start,       "vc**.", "nt", ALL_MS_LANGUAGES)
+LANGBUILTIN(__fastfail, "vUi",    "nr", ALL_MS_LANGUAGES)
 
 // Microsoft library builtins.
 LIBBUILTIN(_setjmpex, "iJ", "fj",   "setjmpex.h", ALL_MS_LANGUAGES)
@@ -813,7 +814,7 @@ LIBBUILTIN(fprintf, "iP*cC*.",    "fp:1:", "stdio.h", ALL_LANGUAGES)
 LIBBUILTIN(snprintf, "ic*zcC*.",  "fp:2:", "stdio.h", ALL_LANGUAGES)
 LIBBUILTIN(sprintf, "ic*cC*.",    "fp:1:", "stdio.h", ALL_LANGUAGES)
 LIBBUILTIN(vprintf, "icC*a",      "fP:0:", "stdio.h", ALL_LANGUAGES)
-LIBBUILTIN(vfprintf, "i.",        "fP:1:", "stdio.h", ALL_LANGUAGES)
+LIBBUILTIN(vfprintf, "iP*cC*a",   "fP:1:", "stdio.h", ALL_LANGUAGES)
 LIBBUILTIN(vsnprintf, "ic*zcC*a", "fP:2:", "stdio.h", ALL_LANGUAGES)
 LIBBUILTIN(vsprintf, "ic*cC*a",   "fP:1:", "stdio.h", ALL_LANGUAGES)
 LIBBUILTIN(scanf, "icC*R.",       "fs:0:", "stdio.h", ALL_LANGUAGES)
@@ -1086,9 +1087,11 @@ LIBBUILTIN(ilogb, "id", "fne", "math.h", ALL_LANGUAGES)
 LIBBUILTIN(ilogbf, "if", "fne", "math.h", ALL_LANGUAGES)
 LIBBUILTIN(ilogbl, "iLd", "fne", "math.h", ALL_LANGUAGES)
 
-LIBBUILTIN(lgamma, "dd", "fne", "math.h", ALL_LANGUAGES)
-LIBBUILTIN(lgammaf, "ff", "fne", "math.h", ALL_LANGUAGES)
-LIBBUILTIN(lgammal, "LdLd", "fne", "math.h", ALL_LANGUAGES)
+// POSIX math.h declares a global, signgam, that lgamma writes to, so these
+// shouldn't have "e" or "c" attributes
+LIBBUILTIN(lgamma, "dd", "fn", "math.h", ALL_LANGUAGES)
+LIBBUILTIN(lgammaf, "ff", "fn", "math.h", ALL_LANGUAGES)
+LIBBUILTIN(lgammal, "LdLd", "fn", "math.h", ALL_LANGUAGES)
 
 LIBBUILTIN(llrint, "LLid", "fne", "math.h", ALL_LANGUAGES)
 LIBBUILTIN(llrintf, "LLif", "fne", "math.h", ALL_LANGUAGES)
@@ -1339,6 +1342,7 @@ BUILTIN(__builtin_smulll_overflow, "bSLLiCSLLiCSLLi*", "n")
 BUILTIN(__builtin_addressof, "v*v&", "nct")
 BUILTIN(__builtin_operator_new, "v*z", "c")
 BUILTIN(__builtin_operator_delete, "vv*", "n")
+BUILTIN(__builtin_char_memchr, "c*cC*iz", "n")
 
 // Safestack builtins
 BUILTIN(__builtin___get_unsafe_stack_start, "v*", "Fn")
@@ -1361,7 +1365,7 @@ BUILTIN(__builtin_coro_free, "v*v*", "n")
 BUILTIN(__builtin_coro_id, "v*Iiv*v*v*", "n")
 BUILTIN(__builtin_coro_alloc, "b", "n")
 BUILTIN(__builtin_coro_begin, "v*v*", "n")
-BUILTIN(__builtin_coro_end, "vv*Ib", "n")
+BUILTIN(__builtin_coro_end, "bv*Ib", "n")
 BUILTIN(__builtin_coro_suspend, "cIb", "n")
 BUILTIN(__builtin_coro_param, "bv*v*", "n")
 // OpenCL v2.0 s6.13.16, s9.17.3.5 - Pipe functions.

@@ -714,6 +714,19 @@ TEST_F(CleanUpReplacementsTest, IfNDefWithNoDefine) {
   EXPECT_EQ(Expected, apply(Code, Replaces));
 }
 
+TEST_F(CleanUpReplacementsTest, FakeHeaderGuard) {
+  std::string Code = "// comment \n"
+                     "#ifndef X\n"
+                     "#define 1\n";
+  std::string Expected = "// comment \n"
+                         "#include <vector>\n"
+                         "#ifndef X\n"
+                         "#define 1\n";
+  tooling::Replacements Replaces =
+      toReplacements({createInsertion("#include <vector>")});
+  EXPECT_EQ(Expected, apply(Code, Replaces));
+}
+
 TEST_F(CleanUpReplacementsTest, HeaderGuardWithComment) {
   std::string Code = "// comment \n"
                      "#ifndef X // comment\n"
@@ -913,6 +926,30 @@ TEST_F(CleanUpReplacementsTest, CanInsertAfterComment) {
                          "#include \"c.h\"\n";
   tooling::Replacements Replaces =
       toReplacements({createInsertion("#include \"c.h\"")});
+  EXPECT_EQ(Expected, apply(Code, Replaces));
+}
+
+TEST_F(CleanUpReplacementsTest, LongCommentsInTheBeginningOfFile) {
+  std::string Code = "// Loooooooooooooooooooooooooong comment\n"
+                     "// Loooooooooooooooooooooooooong comment\n"
+                     "// Loooooooooooooooooooooooooong comment\n"
+                     "#include <string>\n"
+                     "#include <vector>\n"
+                     "\n"
+                     "#include \"a.h\"\n"
+                     "#include \"b.h\"\n";
+  std::string Expected = "// Loooooooooooooooooooooooooong comment\n"
+                         "// Loooooooooooooooooooooooooong comment\n"
+                         "// Loooooooooooooooooooooooooong comment\n"
+                         "#include <string>\n"
+                         "#include <vector>\n"
+                         "\n"
+                         "#include \"a.h\"\n"
+                         "#include \"b.h\"\n"
+                         "#include \"third.h\"\n";
+  tooling::Replacements Replaces =
+      toReplacements({createInsertion("#include \"third.h\"")});
+  Style = format::getGoogleStyle(format::FormatStyle::LanguageKind::LK_Cpp);
   EXPECT_EQ(Expected, apply(Code, Replaces));
 }
 

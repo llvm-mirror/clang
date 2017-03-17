@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -emit-llvm -fblocks -fobjc-arc -fobjc-runtime-has-weak -O2 -disable-llvm-optzns -o - %s | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-apple-darwin10 -emit-llvm -fblocks -fobjc-arc -fobjc-runtime-has-weak -O2 -disable-llvm-passes -o - %s | FileCheck %s
 // RUN: %clang_cc1 -triple x86_64-apple-darwin10 -emit-llvm -fblocks -fobjc-arc -fobjc-runtime-has-weak -o - %s | FileCheck -check-prefix=CHECK-UNOPT %s
 
 // This shouldn't crash.
@@ -666,6 +666,41 @@ void test18(id x) {
 // CHECK-UNOPT-NEXT: call void @objc_storeStrong(i8** [[T2]], i8* null)
 // CHECK-UNOPT-NEXT: ret void
 }
+
+// Ensure that we don't emit helper code in copy/dispose routines for variables
+// that are const-captured.
+void testUnsafeUnretainedLifetimeInCopyAndDestroyHelpers(id x, id y) {
+  id __unsafe_unretained unsafeObject = x;
+  (^ { testUnsafeUnretainedLifetimeInCopyAndDestroyHelpers(x, unsafeObject); })();
+}
+
+// CHECK-LABEL: testUnsafeUnretainedLifetimeInCopyAndDestroyHelpers_block_invoke
+// CHECK-UNOPT-LABEL: testUnsafeUnretainedLifetimeInCopyAndDestroyHelpers_block_invoke
+
+// CHECK-UNOPT: @__copy_helper_block
+// CHECK-UNOPT: alloca
+// CHECK-UNOPT-NEXT: alloca
+// CHECK-UNOPT-NEXT: store
+// CHECK-UNOPT-NEXT: store
+// CHECK-UNOPT-NEXT: load
+// CHECK-UNOPT-NEXT: bitcast
+// CHECK-UNOPT-NEXT: load
+// CHECK-UNOPT-NEXT: bitcast
+// CHECK-UNOPT-NEXT: getelementptr
+// CHECK-UNOPT-NEXT: getelementptr
+// CHECK-UNOPT-NEXT: load
+// CHECK-UNOPT-NEXT: store
+// CHECK-UNOPT-NEXT: call void @objc_storeStrong
+// CHECK-UNOPT-NEXT: ret
+
+// CHECK-UNOPT: @__destroy_helper_block
+// CHECK-UNOPT: alloca
+// CHECK-UNOPT-NEXT: store
+// CHECK-UNOPT-NEXT: load
+// CHECK-UNOPT-NEXT: bitcast
+// CHECK-UNOPT-NEXT: getelementptr
+// CHECK-UNOPT-NEXT: call void @objc_storeStrong
+// CHECK-UNOPT-NEXT: ret
 
 // rdar://13588325
 void test19_sink(void (^)(int));
