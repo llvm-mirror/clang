@@ -15,7 +15,7 @@
 // CXX1Z:#define __GXX_EXPERIMENTAL_CXX0X__ 1
 // CXX1Z:#define __GXX_RTTI 1
 // CXX1Z:#define __GXX_WEAK__ 1
-// CXX1Z:#define __cplusplus 201406L
+// CXX1Z:#define __cplusplus 201703L
 // CXX1Z:#define __private_extern__ extern
 //
 //
@@ -115,7 +115,7 @@
 //
 // GXX1Z:#define __GNUG__ {{.*}}
 // GXX1Z:#define __GXX_WEAK__ 1
-// GXX1Z:#define __cplusplus 201406L
+// GXX1Z:#define __cplusplus 201703L
 // GXX1Z:#define __private_extern__ extern
 //
 //
@@ -6922,7 +6922,10 @@
 // PPC-DARWIN:#define __WINT_WIDTH__ 32
 // PPC-DARWIN:#define __powerpc__ 1
 // PPC-DARWIN:#define __ppc__ 1
-//
+
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=powerpc64-apple-darwin8 < /dev/null | FileCheck -match-full-lines -check-prefix PPC64-DARWIN %s
+// PPC64-DARWIN:#define __STRUCT_PARM_ALIGN__ 16
+
 // RUN: %clang_cc1 -x cl -E -dM -ffreestanding -triple=amdgcn < /dev/null | FileCheck -match-full-lines -check-prefix AMDGCN --check-prefix AMDGPU %s
 // RUN: %clang_cc1 -x cl -E -dM -ffreestanding -triple=r600 -target-cpu caicos < /dev/null | FileCheck -match-full-lines --check-prefix AMDGPU %s
 //

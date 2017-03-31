@@ -98,9 +98,28 @@ public:
     if (MethodLoc.isInvalid())
       MethodLoc = D->getLocation();
 
+    SourceLocation AttrLoc;
+
+    // check for (getter=/setter=)
+    if (AssociatedProp) {
+      bool isGetter = !D->param_size();
+      AttrLoc = isGetter ?
+        AssociatedProp->getGetterNameLoc():
+        AssociatedProp->getSetterNameLoc();
+    }
+
     SymbolRoleSet Roles = (SymbolRoleSet)SymbolRole::Dynamic;
-    if (D->isImplicit())
-      Roles |= (SymbolRoleSet)SymbolRole::Implicit;
+    if (D->isImplicit()) {
+      if (AttrLoc.isValid()) {
+        MethodLoc = AttrLoc;
+      } else {
+        Roles |= (SymbolRoleSet)SymbolRole::Implicit;
+      }
+    } else if (AttrLoc.isValid()) {
+      IndexCtx.handleReference(D, AttrLoc, cast<NamedDecl>(D->getDeclContext()),
+                               D->getDeclContext(), 0);
+    }
+
     if (!IndexCtx.handleDecl(D, MethodLoc, Roles, Relations))
       return false;
     IndexCtx.indexTypeSourceInfo(D->getReturnTypeSourceInfo(), D);
@@ -139,6 +158,9 @@ public:
     handleDeclarator(D);
 
     if (const CXXConstructorDecl *Ctor = dyn_cast<CXXConstructorDecl>(D)) {
+      IndexCtx.handleReference(Ctor->getParent(), Ctor->getLocation(),
+                               Ctor->getParent(), Ctor->getDeclContext());
+
       // Constructor initializers.
       for (const auto *Init : Ctor->inits()) {
         if (Init->isWritten()) {
@@ -148,6 +170,12 @@ public:
                                      (unsigned)SymbolRole::Write);
           IndexCtx.indexBody(Init->getInit(), D, D);
         }
+      }
+    } else if (const CXXDestructorDecl *Dtor = dyn_cast<CXXDestructorDecl>(D)) {
+      if (auto TypeNameInfo = Dtor->getNameInfo().getNamedTypeInfo()) {
+        IndexCtx.handleReference(Dtor->getParent(),
+                                 TypeNameInfo->getTypeLoc().getLocStart(),
+                                 Dtor->getParent(), Dtor->getDeclContext());
       }
     }
 
@@ -203,8 +231,9 @@ public:
   }
 
   bool VisitTypedefNameDecl(const TypedefNameDecl *D) {
-    if (!IndexCtx.handleDecl(D))
-      return false;
+    if (!D->isTransparentTag())
+      if (!IndexCtx.handleDecl(D))
+        return false;
     IndexCtx.indexTypeSourceInfo(D->getTypeSourceInfo(), D);
     return true;
   }

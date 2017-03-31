@@ -10102,18 +10102,6 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init, bool DirectInit) {
   // Perform the initialization.
   ParenListExpr *CXXDirectInit = dyn_cast<ParenListExpr>(Init);
   if (!VDecl->isInvalidDecl()) {
-    // Handle errors like: int a({0})
-    if (CXXDirectInit && CXXDirectInit->getNumExprs() == 1 &&
-        !canInitializeWithParenthesizedList(VDecl->getType()))
-      if (auto IList = dyn_cast<InitListExpr>(CXXDirectInit->getExpr(0))) {
-        Diag(VDecl->getLocation(), diag::err_list_init_in_parens)
-            << VDecl->getType() << CXXDirectInit->getSourceRange()
-            << FixItHint::CreateRemoval(CXXDirectInit->getLocStart())
-            << FixItHint::CreateRemoval(CXXDirectInit->getLocEnd());
-        Init = IList;
-        CXXDirectInit = nullptr;
-      }
-
     InitializedEntity Entity = InitializedEntity::InitializeVariable(VDecl);
     InitializationKind Kind = InitializationKind::CreateForInit(
         VDecl->getLocation(), DirectInit, Init);
@@ -10411,18 +10399,6 @@ void Sema::ActOnInitializerError(Decl *D) {
 
   // Don't bother complaining about constructors or destructors,
   // though.
-}
-
-/// Checks if an object of the given type can be initialized with parenthesized
-/// init-list.
-///
-/// \param TargetType Type of object being initialized.
-///
-/// The function is used to detect wrong initializations, such as 'int({0})'.
-///
-bool Sema::canInitializeWithParenthesizedList(QualType TargetType) {
-  return TargetType->isDependentType() || TargetType->isRecordType() ||
-         TargetType->getContainedAutoType();
 }
 
 void Sema::ActOnUninitializedDecl(Decl *RealDecl) {
@@ -15358,7 +15334,7 @@ static void CheckForDuplicateEnumValues(Sema &S, ArrayRef<Decl *> Elements,
 
 bool Sema::IsValueInFlagEnum(const EnumDecl *ED, const llvm::APInt &Val,
                              bool AllowMask) const {
-  assert(ED->hasAttr<FlagEnumAttr>() && "looking for value in non-flag enum");
+  assert(ED->isClosedFlag() && "looking for value in non-flag or open enum");
   assert(ED->isCompleteDefinition() && "expected enum definition");
 
   auto R = FlagBitsCache.insert(std::make_pair(ED, llvm::APInt()));
@@ -15603,7 +15579,7 @@ void Sema::ActOnEnumBody(SourceLocation EnumLoc, SourceRange BraceRange,
 
   CheckForDuplicateEnumValues(*this, Elements, Enum, EnumType);
 
-  if (Enum->hasAttr<FlagEnumAttr>()) {
+  if (Enum->isClosedFlag()) {
     for (Decl *D : Elements) {
       EnumConstantDecl *ECD = cast_or_null<EnumConstantDecl>(D);
       if (!ECD) continue;  // Already issued a diagnostic.
