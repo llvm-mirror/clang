@@ -183,6 +183,8 @@ class Parser : public CodeCompletionHandler {
   std::unique_ptr<PragmaHandler> LoopHintHandler;
   std::unique_ptr<PragmaHandler> UnrollHintHandler;
   std::unique_ptr<PragmaHandler> NoUnrollHintHandler;
+  std::unique_ptr<PragmaHandler> FPHandler;
+  std::unique_ptr<PragmaHandler> AttributePragmaHandler;
 
   std::unique_ptr<CommentHandler> CommentSemaHandler;
 
@@ -549,6 +551,10 @@ private:
   void HandlePragmaFPContract();
 
   /// \brief Handle the annotation token produced for
+  /// #pragma clang fp ...
+  void HandlePragmaFP();
+
+  /// \brief Handle the annotation token produced for
   /// #pragma OPENCL EXTENSION...
   void HandlePragmaOpenCLExtension();
 
@@ -559,6 +565,12 @@ private:
   /// \brief Handle the annotation token produced for
   /// #pragma clang loop and #pragma unroll.
   bool HandlePragmaLoopHint(LoopHint &Hint);
+
+  bool ParsePragmaAttributeSubjectMatchRuleSet(
+      attr::ParsedSubjectMatchRuleSet &SubjectMatchRules,
+      SourceLocation &AnyLoc, SourceLocation &LastMatchRuleEndLoc);
+
+  void HandlePragmaAttribute();
 
   /// GetLookAheadToken - This peeks ahead N tokens and returns that token
   /// without consuming any tokens.  LookAhead(0) returns 'Tok', LookAhead(1)
@@ -794,6 +806,14 @@ private:
 
   /// \brief Consume any extra semi-colons until the end of the line.
   void ConsumeExtraSemi(ExtraSemiKind Kind, unsigned TST = TST_unspecified);
+
+  /// Return false if the next token is an identifier. An 'expected identifier'
+  /// error is emitted otherwise.
+  ///
+  /// The parser tries to recover from the error by checking if the next token
+  /// is a C++ keyword when parsing Objective-C++. Return false if the recovery
+  /// was successful.
+  bool expectIdentifier();
 
 public:
   //===--------------------------------------------------------------------===//
@@ -1449,10 +1469,12 @@ private:
   ExprResult ParseCastExpression(bool isUnaryExpression,
                                  bool isAddressOfOperand,
                                  bool &NotCastExpr,
-                                 TypeCastState isTypeCast);
+                                 TypeCastState isTypeCast,
+                                 bool isVectorLiteral = false);
   ExprResult ParseCastExpression(bool isUnaryExpression,
                                  bool isAddressOfOperand = false,
-                                 TypeCastState isTypeCast = NotTypeCast);
+                                 TypeCastState isTypeCast = NotTypeCast,
+                                 bool isVectorLiteral = false);
 
   /// Returns true if the next token cannot start an expression.
   bool isNotExpressionStart();

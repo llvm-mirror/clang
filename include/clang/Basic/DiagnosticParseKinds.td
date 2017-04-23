@@ -436,6 +436,13 @@ def err_declaration_does_not_declare_param : Error<
   "declaration does not declare a parameter">;
 def err_no_matching_param : Error<"parameter named %0 is missing">;
 
+/// Objective-C++ parser diagnostics
+def err_expected_token_instead_of_objcxx_keyword : Error<
+  "expected %0; %1 is a keyword in Objective-C++">;
+def err_expected_member_name_or_semi_objcxx_keyword : Error<
+  "expected member name or ';' after declaration specifiers; "
+  "%0 is a keyword in Objective-C++">;
+
 /// C++ parser diagnostics
 def err_invalid_operator_on_type : Error<
   "cannot use %select{dot|arrow}0 operator on a type">;
@@ -972,6 +979,43 @@ def err_pragma_optimize_invalid_argument : Error<
   "expected 'on' or 'off'">;
 def err_pragma_optimize_extra_argument : Error<
   "unexpected extra argument '%0' to '#pragma clang optimize'">;
+// - #pragma clang attribute
+def err_pragma_attribute_expected_push_pop : Error<
+  "expected 'push' or 'pop' after '#pragma clang attribute'">;
+def err_pragma_attribute_invalid_argument : Error<
+  "unexpected argument '%0' to '#pragma clang attribute'; "
+  "expected 'push' or 'pop'">;
+def err_pragma_attribute_expected_attribute : Error<
+  "expected an attribute after '('">;
+def err_pragma_attribute_expected_attribute_name : Error<
+  "expected identifier that represents an attribute name">;
+def err_pragma_attribute_extra_tokens_after_attribute : Error<
+  "extra tokens after attribute in a '#pragma clang attribute push'">;
+def err_pragma_attribute_unsupported_attribute : Error<
+  "attribute %0 is not supported by '#pragma clang attribute'">;
+def err_pragma_attribute_multiple_attributes : Error<
+  "more than one attribute specified in '#pragma clang attribute push'">;
+def err_pragma_attribute_expected_attribute_syntax : Error<
+  "expected an attribute that is specified using the GNU, C++11 or '__declspec'"
+  " syntax">;
+def note_pragma_attribute_use_attribute_kw : Note<"use the GNU '__attribute__' "
+  "syntax">;
+def err_pragma_attribute_invalid_subject_set_specifier : Error<
+  "expected attribute subject set specifier 'apply_to'">;
+def err_pragma_attribute_expected_subject_identifier : Error<
+  "expected an identifier that corresponds to an attribute subject rule">;
+def err_pragma_attribute_unknown_subject_rule : Error<
+  "unknown attribute subject rule '%0'">;
+def err_pragma_attribute_expected_subject_sub_identifier : Error<
+  "expected an identifier that corresponds to an attribute subject matcher "
+  "sub-rule; '%0' matcher %select{does not support sub-rules|supports the "
+  "following sub-rules: %2|}1">;
+def err_pragma_attribute_unknown_subject_sub_rule : Error<
+  "%select{invalid use of|unknown}2 attribute subject matcher sub-rule '%0'; "
+  "'%1' matcher %select{does not support sub-rules|supports the following "
+  "sub-rules: %3}2">;
+def err_pragma_attribute_duplicate_subject : Error<
+  "duplicate attribute subject matcher '%0'">;
 
 def err_opencl_unroll_hint_on_non_loop : Error<
   "OpenCL only supports 'opencl_unroll_hint' attribute on for, while, and do statements">;
@@ -1040,6 +1084,16 @@ def err_pragma_loop_missing_argument : Error<
 def err_pragma_loop_invalid_option : Error<
   "%select{invalid|missing}0 option%select{ %1|}0; expected vectorize, "
   "vectorize_width, interleave, interleave_count, unroll, unroll_count, or distribute">;
+
+def err_pragma_fp_invalid_option : Error<
+  "%select{invalid|missing}0 option%select{ %1|}0; expected contract">;
+def err_pragma_fp_invalid_argument : Error<
+  "unexpected argument '%0' to '#pragma clang fp %1'; "
+  "expected 'on', 'fast' or 'off'">;
+def err_pragma_fp_scope : Error<
+  "'#pragma clang fp' can only appear at file scope or at the start of a "
+  "compound statement">;
+
 def err_pragma_invalid_keyword : Error<
   "invalid argument; expected 'enable'%select{|, 'full'}0%select{|, 'assume_safety'}1 or 'disable'">;
 

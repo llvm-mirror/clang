@@ -37,26 +37,6 @@ public:
     return false;
   }
 };
-
-/// \brief RAIIObject to destroy the contents of a SmallVector of
-/// TemplateIdAnnotation pointers and clear the vector.
-class DestroyTemplateIdAnnotationsRAIIObj {
-  SmallVectorImpl<TemplateIdAnnotation *> &Container;
-
-public:
-  DestroyTemplateIdAnnotationsRAIIObj(
-      SmallVectorImpl<TemplateIdAnnotation *> &Container)
-      : Container(Container) {}
-
-  ~DestroyTemplateIdAnnotationsRAIIObj() {
-    for (SmallVectorImpl<TemplateIdAnnotation *>::iterator I =
-             Container.begin(),
-                                                           E = Container.end();
-         I != E; ++I)
-      (*I)->Destroy();
-    Container.clear();
-  }
-};
 } // end anonymous namespace
 
 IdentifierInfo *Parser::getSEHExceptKeyword() {
@@ -229,6 +209,21 @@ void Parser::ConsumeExtraSemi(ExtraSemiKind Kind, unsigned TST) {
     // A single semicolon is valid after a member function definition.
     Diag(StartLoc, diag::warn_extra_semi_after_mem_fn_def)
       << FixItHint::CreateRemoval(SourceRange(StartLoc, EndLoc));
+}
+
+bool Parser::expectIdentifier() {
+  if (Tok.is(tok::identifier))
+    return false;
+  if (const auto *II = Tok.getIdentifierInfo()) {
+    if (II->isCPlusPlusKeyword(getLangOpts())) {
+      Diag(Tok, diag::err_expected_token_instead_of_objcxx_keyword)
+          << tok::identifier << Tok.getIdentifierInfo();
+      // Objective-C++: Recover by treating this keyword as a valid identifier.
+      return false;
+    }
+  }
+  Diag(Tok, diag::err_expected) << tok::identifier;
+  return true;
 }
 
 //===----------------------------------------------------------------------===//
@@ -607,6 +602,10 @@ bool Parser::ParseTopLevelDecl(DeclGroupPtrTy &Result) {
     ConsumeToken();
     return false;
 
+  case tok::annot_pragma_attribute:
+    HandlePragmaAttribute();
+    return false;
+
   case tok::eof:
     // Late template parsing can begin.
     if (getLangOpts().DelayedTemplateParsing)
@@ -690,6 +689,9 @@ Parser::ParseExternalDeclaration(ParsedAttributesWithRange &attrs,
   case tok::annot_pragma_fp_contract:
     HandlePragmaFPContract();
     return nullptr;
+  case tok::annot_pragma_fp:
+    HandlePragmaFP();
+    break;
   case tok::annot_pragma_opencl_extension:
     HandlePragmaOpenCLExtension();
     return nullptr;
@@ -849,6 +851,10 @@ Parser::ParseExternalDeclaration(ParsedAttributesWithRange &attrs,
 
   default:
   dont_know:
+    if (Tok.isEditorPlaceholder()) {
+      ConsumeToken();
+      return nullptr;
+    }
     // We can't tell whether this is a function-definition or declaration yet.
     return ParseDeclarationOrFunctionDefinition(attrs, DS);
   }
@@ -1677,6 +1683,8 @@ bool Parser::TryAnnotateTypeOrScopeToken() {
           return false;
         }
       }
+      if (Tok.isEditorPlaceholder())
+        return true;
 
       Diag(Tok.getLocation(), diag::err_expected_qualified_after_typename);
       return true;

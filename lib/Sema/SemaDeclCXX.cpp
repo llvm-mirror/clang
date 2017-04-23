@@ -467,7 +467,7 @@ bool Sema::MergeCXXFunctionDecl(FunctionDecl *New, FunctionDecl *Old,
       // If only one of these is a local function declaration, then they are
       // declared in different scopes, even though isDeclInScope may think
       // they're in the same scope. (If both are local, the scope check is
-      // sufficent, and if neither is local, then they are in the same scope.)
+      // sufficient, and if neither is local, then they are in the same scope.)
       continue;
     }
 
@@ -981,7 +981,8 @@ namespace { enum class IsTupleLike { TupleLike, NotTupleLike, Error }; }
 
 static IsTupleLike isTupleLike(Sema &S, SourceLocation Loc, QualType T,
                                llvm::APSInt &Size) {
-  EnterExpressionEvaluationContext ContextRAII(S, Sema::ConstantEvaluated);
+  EnterExpressionEvaluationContext ContextRAII(
+      S, Sema::ExpressionEvaluationContext::ConstantEvaluated);
 
   DeclarationName Value = S.PP.getIdentifierInfo("value");
   LookupResult R(S, Value, Loc, Sema::LookupOrdinaryName);
@@ -4399,11 +4400,8 @@ BuildImplicitMemberInitializer(Sema &SemaRef, CXXConstructorDecl *Constructor,
     }
   }
   
-  if (SemaRef.getLangOpts().ObjCAutoRefCount &&
-      FieldBaseElementType->isObjCRetainableType() &&
-      FieldBaseElementType.getObjCLifetime() != Qualifiers::OCL_None &&
-      FieldBaseElementType.getObjCLifetime() != Qualifiers::OCL_ExplicitNone) {
-    // ARC:
+  if (FieldBaseElementType.hasNonTrivialObjCLifetime()) {
+    // ARC and Weak:
     //   Default-initialize Objective-C pointers to NULL.
     CXXMemberInit
       = new (SemaRef.Context) CXXCtorInitializer(SemaRef.Context, Field, 
@@ -5455,7 +5453,7 @@ static void ReferenceDllExportedMethods(Sema &S, CXXRecordDecl *Class) {
         // Synthesize and instantiate non-trivial implicit methods, explicitly
         // defaulted methods, and the copy and move assignment operators. The
         // latter are exported even if they are trivial, because the address of
-        // an operator can be taken and should compare equal accross libraries.
+        // an operator can be taken and should compare equal across libraries.
         DiagnosticErrorTrap Trap(S.Diags);
         S.MarkFunctionReferenced(Class->getLocation(), MD);
         if (Trap.hasErrorOccurred()) {
@@ -7148,8 +7146,7 @@ static bool checkTrivialClassMembers(Sema &S, CXXRecordDecl *RD,
     //   [...] nontrivally ownership-qualified types are [...] not trivially
     //   default constructible, copy constructible, move constructible, copy
     //   assignable, move assignable, or destructible [...]
-    if (S.getLangOpts().ObjCAutoRefCount &&
-        FieldType.hasNonTrivialObjCLifetime()) {
+    if (FieldType.hasNonTrivialObjCLifetime()) {
       if (Diagnose)
         S.Diag(FI->getLocation(), diag::note_nontrivial_objc_ownership)
           << RD << FieldType.getObjCLifetime();
@@ -8448,6 +8445,7 @@ Decl *Sema::ActOnStartNamespaceDef(Scope *NamespcScope,
     Namespc->setInvalidDecl();
   
   ProcessDeclAttributeList(DeclRegionScope, Namespc, AttrList);
+  AddPragmaAttributes(DeclRegionScope, Namespc);
 
   // FIXME: Should we be merging attributes?
   if (const VisibilityAttr *Attr = Namespc->getAttr<VisibilityAttr>())
@@ -9934,6 +9932,7 @@ Decl *Sema::ActOnAliasDeclaration(Scope *S,
     NewTD->setInvalidDecl();
 
   ProcessDeclAttributeList(S, NewTD, AttrList);
+  AddPragmaAttributes(S, NewTD);
 
   CheckTypedefForVariablyModifiedType(S, NewTD);
   Invalid |= NewTD->isInvalidDecl();
@@ -11111,7 +11110,7 @@ buildSingleCopyAssignRecursively(Sema &S, SourceLocation Loc, QualType T,
     = new (S.Context) BinaryOperator(IterationVarRefRVal.build(S, Loc),
                      IntegerLiteral::Create(S.Context, Upper, SizeType, Loc),
                                      BO_NE, S.Context.BoolTy,
-                                     VK_RValue, OK_Ordinary, Loc, false);
+                                     VK_RValue, OK_Ordinary, Loc, FPOptions());
 
   // Create the pre-increment of the iteration variable.
   Expr *Increment
@@ -12243,7 +12242,7 @@ void Sema::DefineImplicitLambdaToBlockPointerConversion(
   // Set the body of the conversion function.
   Stmt *ReturnS = Return.get();
   Conv->setBody(new (Context) CompoundStmt(Context, ReturnS,
-                                           Conv->getLocation(), 
+                                           Conv->getLocation(),
                                            Conv->getLocation()));
   
   // We're done; notify the mutation listener, if any.
@@ -13121,7 +13120,8 @@ VarDecl *Sema::BuildExceptionDeclaration(Scope *S,
   if (!Invalid && !ExDeclType->isDependentType()) {
     if (const RecordType *recordType = ExDeclType->getAs<RecordType>()) {
       // Insulate this from anything else we might currently be parsing.
-      EnterExpressionEvaluationContext scope(*this, PotentiallyEvaluated);
+      EnterExpressionEvaluationContext scope(
+          *this, ExpressionEvaluationContext::PotentiallyEvaluated);
 
       // C++ [except.handle]p16:
       //   The object declared in an exception-declaration or, if the
@@ -14205,7 +14205,8 @@ void Sema::ActOnCXXEnterDeclInitializer(Scope *S, Decl *D) {
   // new expression evaluation context that is associated with this static
   // data member.
   if (isStaticDataMember(D))
-    PushExpressionEvaluationContext(PotentiallyEvaluated, D);
+    PushExpressionEvaluationContext(
+        ExpressionEvaluationContext::PotentiallyEvaluated, D);
 }
 
 /// ActOnCXXExitDeclInitializer - Invoked after we are finished parsing an

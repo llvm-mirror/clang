@@ -1,4 +1,6 @@
-// RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -fcoroutines-ts -std=c++14 -emit-llvm %s -o - -disable-llvm-passes | FileCheck %s
+// RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -fcoroutines-ts -std=c++14 \
+// RUN:    -Wno-coroutine-missing-unhandled-exception -emit-llvm %s -o - -disable-llvm-passes \
+// RUN:   | FileCheck %s
 
 namespace std {
 namespace experimental {
@@ -19,8 +21,19 @@ struct coroutine_handle<void> {
   coroutine_handle(coroutine_handle<PromiseType>) {}
 };
 
-}
-}
+} // end namespace experimental
+
+struct nothrow_t {};
+constexpr nothrow_t nothrow = {};
+
+} // end namespace std
+
+// Required when get_return_object_on_allocation_failure() is defined by
+// the promise.
+using SizeT = decltype(sizeof(int));
+void* operator new(SizeT __sz, const std::nothrow_t&) noexcept;
+void  operator delete(void* __p, const std::nothrow_t&) noexcept;
+
 
 struct suspend_always {
   bool await_ready() { return false; }
@@ -40,7 +53,7 @@ struct std::experimental::coroutine_traits<void, global_new_delete_tag> {
   };
 };
 
-// CHECK-LABEL: f0( 
+// CHECK-LABEL: f0(
 extern "C" void f0(global_new_delete_tag) {
   // CHECK: %[[ID:.+]] = call token @llvm.coro.id(i32 16
   // CHECK: %[[SIZE:.+]] = call i64 @llvm.coro.size.i64()
@@ -65,7 +78,7 @@ struct std::experimental::coroutine_traits<void, promise_new_tag> {
   };
 };
 
-// CHECK-LABEL: f1( 
+// CHECK-LABEL: f1(
 extern "C" void f1(promise_new_tag ) {
   // CHECK: %[[ID:.+]] = call token @llvm.coro.id(i32 16
   // CHECK: %[[SIZE:.+]] = call i64 @llvm.coro.size.i64()
@@ -90,7 +103,7 @@ struct std::experimental::coroutine_traits<void, promise_delete_tag> {
   };
 };
 
-// CHECK-LABEL: f2( 
+// CHECK-LABEL: f2(
 extern "C" void f2(promise_delete_tag) {
   // CHECK: %[[ID:.+]] = call token @llvm.coro.id(i32 16
   // CHECK: %[[SIZE:.+]] = call i64 @llvm.coro.size.i64()
@@ -125,5 +138,32 @@ extern "C" void f3(promise_sized_delete_tag) {
   // CHECK: %[[MEM:.+]] = call i8* @llvm.coro.free(token %[[ID]], i8* %[[FRAME]])
   // CHECK: %[[SIZE2:.+]] = call i64 @llvm.coro.size.i64()
   // CHECK: call void @_ZNSt12experimental16coroutine_traitsIJv24promise_sized_delete_tagEE12promise_typedlEPvm(i8* %[[MEM]], i64 %[[SIZE2]])
+  co_return;
+}
+
+struct promise_on_alloc_failure_tag {};
+
+template<>
+struct std::experimental::coroutine_traits<int, promise_on_alloc_failure_tag> {
+  struct promise_type {
+    int get_return_object() { return 0; }
+    suspend_always initial_suspend() { return {}; }
+    suspend_always final_suspend() { return {}; }
+    void return_void() {}
+    static int get_return_object_on_allocation_failure() { return -1; }
+  };
+};
+
+// CHECK-LABEL: f4(
+extern "C" int f4(promise_on_alloc_failure_tag) {
+  // CHECK: %[[ID:.+]] = call token @llvm.coro.id(i32 16
+  // CHECK: %[[SIZE:.+]] = call i64 @llvm.coro.size.i64()
+  // CHECK: %[[MEM:.+]] = call i8* @_ZnwmRKSt9nothrow_t(i64 %[[SIZE]], %"struct.std::nothrow_t"* dereferenceable(1) @_ZStL7nothrow)
+  // CHECK: %[[OK:.+]] = icmp ne i8* %[[MEM]], null
+  // CHECK: br i1 %[[OK]], label %[[OKBB:.+]], label %[[ERRBB:.+]]
+
+  // CHECK: [[ERRBB]]:
+  // CHECK: %[[RETVAL:.+]] = call i32 @_ZNSt12experimental16coroutine_traitsIJi28promise_on_alloc_failure_tagEE12promise_type39get_return_object_on_allocation_failureEv(
+  // CHECK: ret i32 %[[RETVAL]]
   co_return;
 }

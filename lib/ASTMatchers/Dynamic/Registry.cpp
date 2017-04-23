@@ -296,6 +296,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(isCatchAll);
   REGISTER_MATCHER(isClass);
   REGISTER_MATCHER(isConst);
+  REGISTER_MATCHER(isConstexpr);
   REGISTER_MATCHER(isConstQualified);
   REGISTER_MATCHER(isCopyAssignmentOperator);
   REGISTER_MATCHER(isCopyConstructor);
@@ -330,6 +331,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(isPublic);
   REGISTER_MATCHER(isPure);
   REGISTER_MATCHER(isSignedInteger);
+  REGISTER_MATCHER(isStaticStorageClass);
   REGISTER_MATCHER(isStruct);
   REGISTER_MATCHER(isTemplateInstantiation);
   REGISTER_MATCHER(isUnion);
@@ -417,6 +419,7 @@ RegistryMaps::RegistryMaps() {
   REGISTER_MATCHER(typedefNameDecl);
   REGISTER_MATCHER(typedefType);
   REGISTER_MATCHER(typeAliasDecl);
+  REGISTER_MATCHER(typeAliasTemplateDecl);
   REGISTER_MATCHER(typeLoc);
   REGISTER_MATCHER(unaryExprOrTypeTraitExpr);
   REGISTER_MATCHER(unaryOperator);

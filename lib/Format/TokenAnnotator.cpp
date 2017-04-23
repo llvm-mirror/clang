@@ -311,13 +311,13 @@ private:
     // In C++, this can happen either in array of templates (foo<int>[10])
     // or when array is a nested template type (unique_ptr<type1<type2>[]>).
     bool CppArrayTemplates =
-        Style.IsCpp() && Parent &&
+        Style.isCpp() && Parent &&
         Parent->is(TT_TemplateCloser) &&
         (Contexts.back().CanBeExpression || Contexts.back().IsExpression ||
          Contexts.back().InTemplateArgument);
 
     bool StartsObjCMethodExpr =
-        !CppArrayTemplates && Style.IsCpp() &&
+        !CppArrayTemplates && Style.isCpp() &&
         Contexts.back().CanBeExpression && Left->isNot(TT_LambdaLSquare) &&
         CurrentToken->isNot(tok::l_brace) &&
         (!Parent ||
@@ -435,7 +435,7 @@ private:
         if (CurrentToken->isOneOf(tok::colon, tok::l_brace)) {
           FormatToken *Previous = CurrentToken->getPreviousNonComment();
           if (((CurrentToken->is(tok::colon) &&
-                (!Contexts.back().ColonIsDictLiteral || !Style.IsCpp())) ||
+                (!Contexts.back().ColonIsDictLiteral || !Style.isCpp())) ||
                Style.Language == FormatStyle::LK_Proto) &&
               (Previous->Tok.getIdentifierInfo() ||
                Previous->is(tok::string_literal)))
@@ -796,10 +796,11 @@ private:
     while (CurrentToken) {
       FormatToken *Tok = CurrentToken;
       next();
-      if (Tok->isOneOf(Keywords.kw___has_include,
-                       Keywords.kw___has_include_next)) {
+      if (Tok->is(tok::l_paren))
+        parseParens();
+      else if (Tok->isOneOf(Keywords.kw___has_include,
+                       Keywords.kw___has_include_next))
         parseHasInclude();
-      }
     }
     return Type;
   }
@@ -907,7 +908,7 @@ private:
                                TT_FunctionLBrace, TT_ImplicitStringLiteral,
                                TT_InlineASMBrace, TT_JsFatArrow, TT_LambdaArrow,
                                TT_OverloadedOperator, TT_RegexLiteral,
-                               TT_TemplateString))
+                               TT_TemplateString, TT_ObjCStringLiteral))
       CurrentToken->Type = TT_Unknown;
     CurrentToken->Role.reset();
     CurrentToken->MatchingParen = nullptr;
@@ -1120,21 +1121,17 @@ private:
           }
         }
     } else if (Current.is(tok::at) && Current.Next) {
-      if (Current.Next->isStringLiteral()) {
-        Current.Type = TT_ObjCStringLiteral;
-      } else {
-        switch (Current.Next->Tok.getObjCKeywordID()) {
-        case tok::objc_interface:
-        case tok::objc_implementation:
-        case tok::objc_protocol:
-          Current.Type = TT_ObjCDecl;
-          break;
-        case tok::objc_property:
-          Current.Type = TT_ObjCProperty;
-          break;
-        default:
-          break;
-        }
+      switch (Current.Next->Tok.getObjCKeywordID()) {
+      case tok::objc_interface:
+      case tok::objc_implementation:
+      case tok::objc_protocol:
+        Current.Type = TT_ObjCDecl;
+        break;
+      case tok::objc_property:
+        Current.Type = TT_ObjCProperty;
+        break;
+      default:
+        break;
       }
     } else if (Current.is(tok::period)) {
       FormatToken *PreviousNoComment = Current.getPreviousNonComment();
@@ -1220,7 +1217,7 @@ private:
   /// \brief Determine whether ')' is ending a cast.
   bool rParenEndsCast(const FormatToken &Tok) {
     // C-style casts are only used in C++ and Java.
-    if (!Style.IsCpp() && Style.Language != FormatStyle::LK_Java)
+    if (!Style.isCpp() && Style.Language != FormatStyle::LK_Java)
       return false;
 
     // Empty parens aren't casts and there are no casts at the end of the line.
@@ -2233,7 +2230,7 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
   const FormatToken &Left = *Right.Previous;
   if (Right.Tok.getIdentifierInfo() && Left.Tok.getIdentifierInfo())
     return true; // Never ever merge two identifiers.
-  if (Style.IsCpp()) {
+  if (Style.isCpp()) {
     if (Left.is(tok::kw_operator))
       return Right.is(tok::coloncolon);
   } else if (Style.Language == FormatStyle::LK_Proto) {
@@ -2270,8 +2267,12 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
     if (Right.is(tok::l_paren) && Line.MustBeDeclaration &&
         Left.Tok.getIdentifierInfo())
       return false;
-    if (Left.isOneOf(Keywords.kw_let, Keywords.kw_var, Keywords.kw_in,
-                     Keywords.kw_of, tok::kw_const) &&
+    if ((Left.isOneOf(Keywords.kw_let, Keywords.kw_var, Keywords.kw_in,
+                      tok::kw_const) ||
+         // "of" is only a keyword if it appears after another identifier
+         // (e.g. as "const x of y" in a for loop).
+         (Left.is(Keywords.kw_of) && Left.Previous &&
+          Left.Previous->Tok.getIdentifierInfo())) &&
         (!Left.Previous || !Left.Previous->is(tok::period)))
       return true;
     if (Left.isOneOf(tok::kw_for, Keywords.kw_as) && Left.Previous &&
@@ -2453,8 +2454,7 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
   } else if (Style.Language == FormatStyle::LK_Cpp ||
              Style.Language == FormatStyle::LK_ObjC ||
              Style.Language == FormatStyle::LK_Proto) {
-    if (Left.isStringLiteral() &&
-        (Right.isStringLiteral() || Right.is(TT_ObjCStringLiteral)))
+    if (Left.isStringLiteral() && Right.isStringLiteral())
       return true;
   }
 

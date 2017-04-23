@@ -91,7 +91,7 @@ Driver::Driver(StringRef ClangExecutable, StringRef DefaultTargetTriple,
       CCCPrintBindings(false), CCPrintHeaders(false), CCLogDiagnostics(false),
       CCGenDiagnostics(false), DefaultTargetTriple(DefaultTargetTriple),
       CCCGenericGCCName(""), CheckInputsExist(true), CCCUsePCH(true),
-      SuppressMissingInputWarning(false) {
+      GenReproducer(false), SuppressMissingInputWarning(false) {
 
   // Provide a sane fallback if no VFS is specified.
   if (!this->VFS)
@@ -620,6 +620,9 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
     CCCGenericGCCName = A->getValue();
   CCCUsePCH =
       Args.hasFlag(options::OPT_ccc_pch_is_pch, options::OPT_ccc_pch_is_pth);
+  GenReproducer = Args.hasFlag(options::OPT_gen_reproducer,
+                               options::OPT_fno_crash_diagnostics,
+                               !!::getenv("FORCE_CLANG_DIAGNOSTICS_CRASH"));
   // FIXME: DefaultTargetTriple is used by the target-prefixed calls to as/ld
   // and getToolChain is const.
   if (IsCLMode()) {
@@ -1168,6 +1171,11 @@ bool Driver::HandleImmediateArgs(const Compilation &C) {
 
   if (C.getArgs().hasArg(options::OPT_v))
     TC.printVerboseInfo(llvm::errs());
+
+  if (C.getArgs().hasArg(options::OPT_print_resource_dir)) {
+    llvm::outs() << ResourceDir << '\n';
+    return false;
+  }
 
   if (C.getArgs().hasArg(options::OPT_print_search_dirs)) {
     llvm::outs() << "programs: =";

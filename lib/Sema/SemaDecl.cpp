@@ -628,6 +628,9 @@ void Sema::DiagnoseUnknownTypeName(IdentifierInfo *&II,
                                    CXXScopeSpec *SS,
                                    ParsedType &SuggestedType,
                                    bool AllowClassTemplates) {
+  // Don't report typename errors for editor placeholders.
+  if (II->isEditorPlaceholder())
+    return;
   // We don't have anything to suggest (yet).
   SuggestedType = nullptr;
 
@@ -2154,7 +2157,9 @@ void Sema::MergeTypedefNameDecl(Scope *S, TypedefNameDecl *New,
   // -Wtypedef-redefinition.  If either the original or the redefinition is
   // in a system header, don't emit this for compatibility with GCC.
   if (getDiagnostics().getSuppressSystemWarnings() &&
-      (Context.getSourceManager().isInSystemHeader(Old->getLocation()) ||
+      // Some standard types are defined implicitly in Clang (e.g. OpenCL).
+      (Old->isImplicit() ||
+       Context.getSourceManager().isInSystemHeader(Old->getLocation()) ||
        Context.getSourceManager().isInSystemHeader(New->getLocation())))
     return;
 
@@ -5530,6 +5535,10 @@ Sema::CheckTypedefForVariablyModifiedType(Scope *S, TypedefNameDecl *NewTD) {
 NamedDecl*
 Sema::ActOnTypedefNameDecl(Scope *S, DeclContext *DC, TypedefNameDecl *NewTD,
                            LookupResult &Previous, bool &Redeclaration) {
+
+  // Find the shadowed declaration before filtering for scope.
+  NamedDecl *ShadowedDecl = getShadowedDeclaration(NewTD, Previous);
+
   // Merge the decl with the existing one if appropriate. If the decl is
   // in an outer scope, it isn't the same thing.
   FilterLookupForScope(Previous, DC, S, /*ConsiderLinkage*/false,
@@ -5539,6 +5548,9 @@ Sema::ActOnTypedefNameDecl(Scope *S, DeclContext *DC, TypedefNameDecl *NewTD,
     Redeclaration = true;
     MergeTypedefNameDecl(S, NewTD, Previous);
   }
+
+  if (ShadowedDecl && !Redeclaration)
+    CheckShadow(NewTD, ShadowedDecl, Previous);
 
   // If this is the C FILE type, notify the AST context.
   if (IdentifierInfo *II = NewTD->getIdentifier())
@@ -6671,13 +6683,25 @@ NamedDecl *Sema::ActOnVariableDeclarator(
 }
 
 /// Enum describing the %select options in diag::warn_decl_shadow.
-enum ShadowedDeclKind { SDK_Local, SDK_Global, SDK_StaticMember, SDK_Field };
+enum ShadowedDeclKind {
+  SDK_Local,
+  SDK_Global,
+  SDK_StaticMember,
+  SDK_Field,
+  SDK_Typedef,
+  SDK_Using
+};
 
 /// Determine what kind of declaration we're shadowing.
 static ShadowedDeclKind computeShadowedDeclKind(const NamedDecl *ShadowedDecl,
                                                 const DeclContext *OldDC) {
-  if (isa<RecordDecl>(OldDC))
+  if (isa<TypeAliasDecl>(ShadowedDecl))
+    return SDK_Using;
+  else if (isa<TypedefDecl>(ShadowedDecl))
+    return SDK_Typedef;
+  else if (isa<RecordDecl>(OldDC))
     return isa<FieldDecl>(ShadowedDecl) ? SDK_Field : SDK_StaticMember;
+
   return OldDC->isFileContext() ? SDK_Global : SDK_Local;
 }
 
@@ -6692,26 +6716,46 @@ static SourceLocation getCaptureLocation(const LambdaScopeInfo *LSI,
   return SourceLocation();
 }
 
+static bool shouldWarnIfShadowedDecl(const DiagnosticsEngine &Diags,
+                                     const LookupResult &R) {
+  // Only diagnose if we're shadowing an unambiguous field or variable.
+  if (R.getResultKind() != LookupResult::Found)
+    return false;
+
+  // Return false if warning is ignored.
+  return !Diags.isIgnored(diag::warn_decl_shadow, R.getNameLoc());
+}
+
 /// \brief Return the declaration shadowed by the given variable \p D, or null
 /// if it doesn't shadow any declaration or shadowing warnings are disabled.
 NamedDecl *Sema::getShadowedDeclaration(const VarDecl *D,
                                         const LookupResult &R) {
-  // Return if warning is ignored.
-  if (Diags.isIgnored(diag::warn_decl_shadow, R.getNameLoc()))
+  if (!shouldWarnIfShadowedDecl(Diags, R))
     return nullptr;
 
   // Don't diagnose declarations at file scope.
   if (D->hasGlobalStorage())
     return nullptr;
 
-  // Only diagnose if we're shadowing an unambiguous field or variable.
-  if (R.getResultKind() != LookupResult::Found)
-    return nullptr;
-
   NamedDecl *ShadowedDecl = R.getFoundDecl();
   return isa<VarDecl>(ShadowedDecl) || isa<FieldDecl>(ShadowedDecl)
              ? ShadowedDecl
              : nullptr;
+}
+
+/// \brief Return the declaration shadowed by the given typedef \p D, or null
+/// if it doesn't shadow any declaration or shadowing warnings are disabled.
+NamedDecl *Sema::getShadowedDeclaration(const TypedefNameDecl *D,
+                                        const LookupResult &R) {
+  // Don't warn if typedef declaration is part of a class
+  if (D->getDeclContext()->isRecord())
+    return nullptr;
+  
+  if (!shouldWarnIfShadowedDecl(Diags, R))
+    return nullptr;
+
+  NamedDecl *ShadowedDecl = R.getFoundDecl();
+  return isa<TypedefNameDecl>(ShadowedDecl) ? ShadowedDecl : nullptr;
 }
 
 /// \brief Diagnose variable or built-in function shadowing.  Implements
@@ -6723,7 +6767,7 @@ NamedDecl *Sema::getShadowedDeclaration(const VarDecl *D,
 /// \param ShadowedDecl the declaration that is shadowed by the given variable
 /// \param R the lookup of the name
 ///
-void Sema::CheckShadow(VarDecl *D, NamedDecl *ShadowedDecl,
+void Sema::CheckShadow(NamedDecl *D, NamedDecl *ShadowedDecl,
                        const LookupResult &R) {
   DeclContext *NewDC = D->getDeclContext();
 
@@ -6735,13 +6779,13 @@ void Sema::CheckShadow(VarDecl *D, NamedDecl *ShadowedDecl,
 
     // Fields shadowed by constructor parameters are a special case. Usually
     // the constructor initializes the field with the parameter.
-    if (isa<CXXConstructorDecl>(NewDC) && isa<ParmVarDecl>(D)) {
-      // Remember that this was shadowed so we can either warn about its
-      // modification or its existence depending on warning settings.
-      D = D->getCanonicalDecl();
-      ShadowingDecls.insert({D, FD});
-      return;
-    }
+    if (isa<CXXConstructorDecl>(NewDC))
+      if (const auto PVD = dyn_cast<ParmVarDecl>(D)) {
+        // Remember that this was shadowed so we can either warn about its
+        // modification or its existence depending on warning settings.
+        ShadowingDecls.insert({PVD->getCanonicalDecl(), FD});
+        return;
+      }
   }
 
   if (VarDecl *shadowedVar = dyn_cast<VarDecl>(ShadowedDecl))
@@ -6759,7 +6803,8 @@ void Sema::CheckShadow(VarDecl *D, NamedDecl *ShadowedDecl,
 
   unsigned WarningDiag = diag::warn_decl_shadow;
   SourceLocation CaptureLoc;
-  if (isa<VarDecl>(ShadowedDecl) && NewDC && isa<CXXMethodDecl>(NewDC)) {
+  if (isa<VarDecl>(D) && isa<VarDecl>(ShadowedDecl) && NewDC &&
+      isa<CXXMethodDecl>(NewDC)) {
     if (const auto *RD = dyn_cast<CXXRecordDecl>(NewDC->getParent())) {
       if (RD->isLambda() && OldDC->Encloses(NewDC->getLexicalParent())) {
         if (RD->getLambdaCaptureDefault() == LCD_None) {
@@ -6773,7 +6818,8 @@ void Sema::CheckShadow(VarDecl *D, NamedDecl *ShadowedDecl,
           // Remember that this was shadowed so we can avoid the warning if the
           // shadowed decl isn't captured and the warning settings allow it.
           cast<LambdaScopeInfo>(getCurFunction())
-              ->ShadowingDecls.push_back({D, cast<VarDecl>(ShadowedDecl)});
+              ->ShadowingDecls.push_back(
+                  {cast<VarDecl>(D), cast<VarDecl>(ShadowedDecl)});
           return;
         }
       }
@@ -8995,14 +9041,10 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
         // with that name must be marked "overloadable".
         Diag(NewFD->getLocation(), diag::err_attribute_overloadable_missing)
           << Redeclaration << NewFD;
-        NamedDecl *OverloadedDecl = nullptr;
-        if (Redeclaration)
-          OverloadedDecl = OldDecl;
-        else if (!Previous.empty())
-          OverloadedDecl = Previous.getRepresentativeDecl();
-        if (OverloadedDecl)
-          Diag(OverloadedDecl->getLocation(),
-               diag::note_attribute_overloadable_prev_overload);
+        NamedDecl *OverloadedDecl =
+            Redeclaration ? OldDecl : Previous.getRepresentativeDecl();
+        Diag(OverloadedDecl->getLocation(),
+             diag::note_attribute_overloadable_prev_overload);
         NewFD->addAttr(OverloadableAttr::CreateImplicit(Context));
       }
     }
@@ -9504,7 +9546,7 @@ namespace {
       InitFieldIndex.pop_back();
     }
 
-    // Returns true if MemberExpr is checked and no futher checking is needed.
+    // Returns true if MemberExpr is checked and no further checking is needed.
     // Returns false if additional checking is required.
     bool CheckInitListMemberExpr(MemberExpr *E, bool CheckReference) {
       llvm::SmallVector<FieldDecl*, 4> Fields;
@@ -10167,7 +10209,8 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init, bool DirectInit) {
     // we do not warn to warn spuriously when 'x' and 'y' are on separate
     // paths through the function. This should be revisited if
     // -Wrepeated-use-of-weak is made flow-sensitive.
-    if (VDecl->getType().getObjCLifetime() == Qualifiers::OCL_Strong &&
+    if ((VDecl->getType().getObjCLifetime() == Qualifiers::OCL_Strong ||
+         VDecl->getType().isNonWeakInMRRWithObjCWeak(Context)) &&
         !Diags.isIgnored(diag::warn_arc_repeated_use_of_weak,
                          Init->getLocStart()))
       getCurFunction()->markSafeWeakUse(Init);
@@ -10231,7 +10274,7 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init, bool DirectInit) {
     // C++11 [class.static.data]p3:
     //   If a non-volatile non-inline const static data member is of integral
     //   or enumeration type, its declaration in the class definition can
-    //   specify a brace-or-equal-initializer in which every initalizer-clause
+    //   specify a brace-or-equal-initializer in which every initializer-clause
     //   that is an assignment-expression is a constant expression. A static
     //   data member of literal type can be declared in the class definition
     //   with the constexpr specifier; if so, its declaration shall specify a
@@ -10849,7 +10892,8 @@ void Sema::CheckCompleteVariableDeclaration(VarDecl *var) {
     // Regardless, we don't want to ignore array nesting when
     // constructing this copy.
     if (type->isStructureOrClassType()) {
-      EnterExpressionEvaluationContext scope(*this, PotentiallyEvaluated);
+      EnterExpressionEvaluationContext scope(
+          *this, ExpressionEvaluationContext::PotentiallyEvaluated);
       SourceLocation poi = var->getLocation();
       Expr *varRef =new (Context) DeclRefExpr(var, false, type, VK_LValue, poi);
       ExprResult result
@@ -13633,6 +13677,7 @@ CreateNewDecl:
 
   if (Attr)
     ProcessDeclAttributeList(S, New, Attr);
+  AddPragmaAttributes(S, New);
 
   // If this has an identifier, add it to the scope stack.
   if (TUK == TUK_Friend) {
@@ -13756,10 +13801,8 @@ void Sema::ActOnTagFinishDefinition(Scope *S, Decl *TagD,
       RD->completeDefinition();
   }
 
-  if (auto *RD = dyn_cast<CXXRecordDecl>(Tag)) {
+  if (isa<CXXRecordDecl>(Tag)) {
     FieldCollector->FinishClass();
-    if (Context.getLangOpts().Modules)
-      RD->computeODRHash();
   }
 
   // Exit this scope of this tag's definition.
@@ -14467,7 +14510,7 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
   // Verify that all the fields are okay.
   SmallVector<FieldDecl*, 32> RecFields;
 
-  bool ARCErrReported = false;
+  bool ObjCFieldLifetimeErrReported = false;
   for (ArrayRef<Decl *>::iterator i = Fields.begin(), end = Fields.end();
        i != end; ++i) {
     FieldDecl *FD = cast<FieldDecl>(*i);
@@ -14602,16 +14645,16 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
         << FixItHint::CreateInsertion(FD->getLocation(), "*");
       QualType T = Context.getObjCObjectPointerType(FD->getType());
       FD->setType(T);
-    } else if (getLangOpts().ObjCAutoRefCount && Record && !ARCErrReported &&
+    } else if (getLangOpts().allowsNonTrivialObjCLifetimeQualifiers() &&
+               Record && !ObjCFieldLifetimeErrReported &&
                (!getLangOpts().CPlusPlus || Record->isUnion())) {
-      // It's an error in ARC if a field has lifetime.
+      // It's an error in ARC or Weak if a field has lifetime.
       // We don't want to report this in a system header, though,
       // so we just make the field unavailable.
       // FIXME: that's really not sufficient; we need to make the type
       // itself invalid to, say, initialize or copy.
       QualType T = FD->getType();
-      Qualifiers::ObjCLifetime lifetime = T.getObjCLifetime();
-      if (lifetime && lifetime != Qualifiers::OCL_ExplicitNone) {
+      if (T.hasNonTrivialObjCLifetime()) {
         SourceLocation loc = FD->getLocation();
         if (getSourceManager().isInSystemHeader(loc)) {
           if (!FD->hasAttr<UnavailableAttr>()) {
@@ -14622,7 +14665,7 @@ void Sema::ActOnFields(Scope *S, SourceLocation RecLoc, Decl *EnclosingDecl,
           Diag(FD->getLocation(), diag::err_arc_objc_object_in_tag)
             << T->isBlockPointerType() << Record->getTagKind();
         }
-        ARCErrReported = true;
+        ObjCFieldLifetimeErrReported = true;
       }
     } else if (getLangOpts().ObjC1 &&
                getLangOpts().getGC() != LangOptions::NonGC &&
@@ -15146,6 +15189,7 @@ Decl *Sema::ActOnEnumConstant(Scope *S, Decl *theEnumDecl, Decl *lastEnumConst,
 
   // Process attributes.
   if (Attr) ProcessDeclAttributeList(S, New, Attr);
+  AddPragmaAttributes(S, New);
 
   // Register this decl in the current scope stack.
   New->setAccess(TheEnumDecl->getAccess());

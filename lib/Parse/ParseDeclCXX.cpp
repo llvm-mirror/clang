@@ -935,8 +935,9 @@ SourceLocation Parser::ParseDecltypeSpecifier(DeclSpec &DS) {
 
       // C++11 [dcl.type.simple]p4:
       //   The operand of the decltype specifier is an unevaluated operand.
-      EnterExpressionEvaluationContext Unevaluated(Actions, Sema::Unevaluated,
-                                                   nullptr,/*IsDecltype=*/true);
+      EnterExpressionEvaluationContext Unevaluated(
+          Actions, Sema::ExpressionEvaluationContext::Unevaluated, nullptr,
+          /*IsDecltype=*/true);
       Result =
           Actions.CorrectDelayedTyposInExpr(ParseExpression(), [](Expr *E) {
             return E->hasPlaceholderType() ? ExprError() : E;
@@ -1405,6 +1406,7 @@ void Parser::ParseClassSpecifier(tok::TokenKind TagTokKind,
       !Tok.isAnnotation() &&
       Tok.getIdentifierInfo() &&
       Tok.isOneOf(tok::kw___is_abstract,
+                  tok::kw___is_aggregate,
                   tok::kw___is_arithmetic,
                   tok::kw___is_array,
                   tok::kw___is_assignable,
@@ -2897,9 +2899,8 @@ ExprResult Parser::ParseCXXMemberInitializer(Decl *D, bool IsFunction,
   assert(Tok.isOneOf(tok::equal, tok::l_brace)
          && "Data member initializer not starting with '=' or '{'");
 
-  EnterExpressionEvaluationContext Context(Actions, 
-                                           Sema::PotentiallyEvaluated,
-                                           D);
+  EnterExpressionEvaluationContext Context(
+      Actions, Sema::ExpressionEvaluationContext::PotentiallyEvaluated, D);
   if (TryConsumeToken(tok::equal, EqualLoc)) {
     if (Tok.is(tok::kw_delete)) {
       // In principle, an initializer of '= delete p;' is legal, but it will

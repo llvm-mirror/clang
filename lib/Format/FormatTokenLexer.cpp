@@ -64,6 +64,8 @@ void FormatTokenLexer::tryMergePreviousTokens() {
     return;
   if (tryMergeLessLess())
     return;
+  if (tryMergeNSStringLiteral())
+    return;
 
   if (Style.Language == FormatStyle::LK_JavaScript) {
     static const tok::TokenKind JSIdentity[] = {tok::equalequal, tok::equal};
@@ -82,6 +84,35 @@ void FormatTokenLexer::tryMergePreviousTokens() {
     if (tryMergeTokens(JSRightArrow, TT_JsFatArrow))
       return;
   }
+
+  if (Style.Language == FormatStyle::LK_Java) {
+    static const tok::TokenKind JavaRightLogicalShift[] = {tok::greater,
+                                                           tok::greater,
+                                                           tok::greater};
+    static const tok::TokenKind JavaRightLogicalShiftAssign[] = {tok::greater,
+                                                                 tok::greater,
+                                                                 tok::greaterequal};
+    if (tryMergeTokens(JavaRightLogicalShift, TT_BinaryOperator))
+      return;
+    if (tryMergeTokens(JavaRightLogicalShiftAssign, TT_BinaryOperator))
+      return;
+  }
+}
+
+bool FormatTokenLexer::tryMergeNSStringLiteral() {
+  if (Tokens.size() < 2)
+    return false;
+  auto &At = *(Tokens.end() - 2);
+  auto &String = *(Tokens.end() - 1);
+  if (!At->is(tok::at) || !String->is(tok::string_literal))
+    return false;
+  At->Tok.setKind(tok::string_literal);
+  At->TokenText = StringRef(At->TokenText.begin(),
+                            String->TokenText.end() - At->TokenText.begin());
+  At->ColumnWidth += String->ColumnWidth;
+  At->Type = TT_ObjCStringLiteral;
+  Tokens.erase(Tokens.end() - 1);
+  return true;
 }
 
 bool FormatTokenLexer::tryMergeLessLess() {
@@ -436,6 +467,9 @@ FormatToken *FormatTokenLexer::getNextToken() {
       if (pos >= 0 && Text[pos] == '\r')
         --pos;
       // See whether there is an odd number of '\' before this.
+      // FIXME: This is wrong. A '\' followed by a newline is always removed,
+      // regardless of whether there is another '\' before it.
+      // FIXME: Newlines can also be escaped by a '?' '?' '/' trigraph.
       unsigned count = 0;
       for (; pos >= 0; --pos, ++count)
         if (Text[pos] != '\\')
@@ -560,7 +594,7 @@ FormatToken *FormatTokenLexer::getNextToken() {
     Column = FormatTok->LastLineColumnWidth;
   }
 
-  if (Style.IsCpp()) {
+  if (Style.isCpp()) {
     if (!(Tokens.size() > 0 && Tokens.back()->Tok.getIdentifierInfo() &&
           Tokens.back()->Tok.getIdentifierInfo()->getPPKeywordID() ==
               tok::pp_define) &&

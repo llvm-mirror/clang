@@ -950,6 +950,7 @@ static void warnBracedScalarInit(Sema &S, const InitializedEntity &Entity,
   case InitializedEntity::EK_Base:
   case InitializedEntity::EK_Delegating:
   case InitializedEntity::EK_BlockElement:
+  case InitializedEntity::EK_LambdaToBlockConversionBlockElement:
   case InitializedEntity::EK_Binding:
     llvm_unreachable("unexpected braced scalar init");
   }
@@ -2269,15 +2270,17 @@ InitListChecker::CheckDesignatedInitializer(const InitializedEntity &Entity,
           assert(StructuredList->getNumInits() == 1
                  && "A union should never have more than one initializer!");
 
-          // We're about to throw away an initializer, emit warning.
-          SemaRef.Diag(D->getFieldLoc(),
-                       diag::warn_initializer_overrides)
-            << D->getSourceRange();
           Expr *ExistingInit = StructuredList->getInit(0);
-          SemaRef.Diag(ExistingInit->getLocStart(),
-                       diag::note_previous_initializer)
-            << /*FIXME:has side effects=*/0
-            << ExistingInit->getSourceRange();
+          if (ExistingInit) {
+            // We're about to throw away an initializer, emit warning.
+            SemaRef.Diag(D->getFieldLoc(),
+                         diag::warn_initializer_overrides)
+              << D->getSourceRange();
+            SemaRef.Diag(ExistingInit->getLocStart(),
+                         diag::note_previous_initializer)
+              << /*FIXME:has side effects=*/0
+              << ExistingInit->getSourceRange();
+          }
 
           // remove existing initializer
           StructuredList->resizeInits(SemaRef.Context, 0);
@@ -2934,6 +2937,7 @@ DeclarationName InitializedEntity::getName() const {
   case EK_VectorElement:
   case EK_ComplexElement:
   case EK_BlockElement:
+  case EK_LambdaToBlockConversionBlockElement:
   case EK_CompoundLiteralInit:
   case EK_RelatedResult:
     return DeclarationName();
@@ -2963,6 +2967,7 @@ ValueDecl *InitializedEntity::getDecl() const {
   case EK_VectorElement:
   case EK_ComplexElement:
   case EK_BlockElement:
+  case EK_LambdaToBlockConversionBlockElement:
   case EK_LambdaCapture:
   case EK_CompoundLiteralInit:
   case EK_RelatedResult:
@@ -2992,6 +2997,7 @@ bool InitializedEntity::allowsNRVO() const {
   case EK_VectorElement:
   case EK_ComplexElement:
   case EK_BlockElement:
+  case EK_LambdaToBlockConversionBlockElement:
   case EK_LambdaCapture:
   case EK_RelatedResult:
     break;
@@ -3025,6 +3031,9 @@ unsigned InitializedEntity::dumpImpl(raw_ostream &OS) const {
   case EK_VectorElement: OS << "VectorElement " << Index; break;
   case EK_ComplexElement: OS << "ComplexElement " << Index; break;
   case EK_BlockElement: OS << "Block"; break;
+  case EK_LambdaToBlockConversionBlockElement:
+    OS << "Block (lambda)";
+    break;
   case EK_LambdaCapture:
     OS << "LambdaCapture ";
     OS << DeclarationName(Capture.VarID);
@@ -3622,9 +3631,13 @@ static void TryConstructorInitialization(Sema &S,
   //       destination object.
   // Per DR (no number yet), this does not apply when initializing a base
   // class or delegating to another constructor from a mem-initializer.
+  // ObjC++: Lambda captured by the block in the lambda to block conversion
+  // should avoid copy elision.
   if (S.getLangOpts().CPlusPlus1z &&
       Entity.getKind() != InitializedEntity::EK_Base &&
       Entity.getKind() != InitializedEntity::EK_Delegating &&
+      Entity.getKind() !=
+          InitializedEntity::EK_LambdaToBlockConversionBlockElement &&
       UnwrappedArgs.size() == 1 && UnwrappedArgs[0]->isRValue() &&
       S.Context.hasSameUnqualifiedType(UnwrappedArgs[0]->getType(), DestType)) {
     // Convert qualifications if necessary.
@@ -5488,6 +5501,7 @@ getAssignmentAction(const InitializedEntity &Entity, bool Diagnose = false) {
   case InitializedEntity::EK_VectorElement:
   case InitializedEntity::EK_ComplexElement:
   case InitializedEntity::EK_BlockElement:
+  case InitializedEntity::EK_LambdaToBlockConversionBlockElement:
   case InitializedEntity::EK_LambdaCapture:
   case InitializedEntity::EK_CompoundLiteralInit:
     return Sema::AA_Initializing;
@@ -5511,6 +5525,7 @@ static bool shouldBindAsTemporary(const InitializedEntity &Entity) {
   case InitializedEntity::EK_ComplexElement:
   case InitializedEntity::EK_Exception:
   case InitializedEntity::EK_BlockElement:
+  case InitializedEntity::EK_LambdaToBlockConversionBlockElement:
   case InitializedEntity::EK_LambdaCapture:
   case InitializedEntity::EK_CompoundLiteralInit:
     return false;
@@ -5537,6 +5552,7 @@ static bool shouldDestroyEntity(const InitializedEntity &Entity) {
     case InitializedEntity::EK_VectorElement:
     case InitializedEntity::EK_ComplexElement:
     case InitializedEntity::EK_BlockElement:
+    case InitializedEntity::EK_LambdaToBlockConversionBlockElement:
     case InitializedEntity::EK_LambdaCapture:
       return false;
 
@@ -5584,6 +5600,7 @@ static SourceLocation getInitializationLoc(const InitializedEntity &Entity,
   case InitializedEntity::EK_VectorElement:
   case InitializedEntity::EK_ComplexElement:
   case InitializedEntity::EK_BlockElement:
+  case InitializedEntity::EK_LambdaToBlockConversionBlockElement:
   case InitializedEntity::EK_CompoundLiteralInit:
   case InitializedEntity::EK_RelatedResult:
     return Initializer->getLocStart();
@@ -6021,6 +6038,7 @@ InitializedEntityOutlivesFullExpression(const InitializedEntity &Entity) {
   case InitializedEntity::EK_ArrayElement:
   case InitializedEntity::EK_VectorElement:
   case InitializedEntity::EK_BlockElement:
+  case InitializedEntity::EK_LambdaToBlockConversionBlockElement:
   case InitializedEntity::EK_ComplexElement:
     // Could not determine what the full initialization is. Assume it might not
     // outlive the full-expression.
@@ -6109,6 +6127,7 @@ static const InitializedEntity *getEntityForTemporaryLifetimeExtension(
     return FallbackDecl;
 
   case InitializedEntity::EK_BlockElement:
+  case InitializedEntity::EK_LambdaToBlockConversionBlockElement:
   case InitializedEntity::EK_LambdaCapture:
   case InitializedEntity::EK_Exception:
   case InitializedEntity::EK_VectorElement:
@@ -6502,6 +6521,20 @@ InitializationSequence::Perform(Sema &S,
       << Init->getSourceRange();
   }
 
+  // OpenCL v2.0 s6.13.11.1. atomic variables can be initialized in global scope
+  QualType ETy = Entity.getType();
+  Qualifiers TyQualifiers = ETy.getQualifiers();
+  bool HasGlobalAS = TyQualifiers.hasAddressSpace() &&
+                     TyQualifiers.getAddressSpace() == LangAS::opencl_global;
+
+  if (S.getLangOpts().OpenCLVersion >= 200 &&
+      ETy->isAtomicType() && !HasGlobalAS &&
+      Entity.getKind() == InitializedEntity::EK_Variable && Args.size() > 0) {
+    S.Diag(Args[0]->getLocStart(), diag::err_opencl_atomic_init) << 1 <<
+    SourceRange(Entity.getDecl()->getLocStart(), Args[0]->getLocEnd());
+    return ExprError();
+  }
+
   // Diagnose cases where we initialize a pointer to an array temporary, and the
   // pointer obviously outlives the temporary.
   if (Args.size() == 1 && Args[0]->getType()->isArrayType() &&
@@ -6653,6 +6686,19 @@ InitializationSequence::Perform(Sema &S,
       if (S.CheckExceptionSpecCompatibility(CurInit.get(), DestType))
         return ExprError();
 
+      // We don't check for e.g. function pointers here, since address
+      // availability checks should only occur when the function first decays
+      // into a pointer or reference.
+      if (CurInit.get()->getType()->isFunctionProtoType()) {
+        if (auto *DRE = dyn_cast<DeclRefExpr>(CurInit.get()->IgnoreParens())) {
+          if (auto *FD = dyn_cast<FunctionDecl>(DRE->getDecl())) {
+            if (!S.checkAddressOfFunctionIsAvailable(FD, /*Complain=*/true,
+                                                     DRE->getLocStart()))
+              return ExprError();
+          }
+        }
+      }
+
       // Even though we didn't materialize a temporary, the binding may still
       // extend the lifetime of a temporary. This happens if we bind a reference
       // to the result of a cast to reference type.
@@ -6687,14 +6733,10 @@ InitializationSequence::Perform(Sema &S,
                                   /*IsInitializerList=*/false,
                                   ExtendingEntity->getDecl());
 
-      // If we're binding to an Objective-C object that has lifetime, we
-      // need cleanups. Likewise if we're extending this temporary to automatic
-      // storage duration -- we need to register its cleanup during the
-      // full-expression's cleanups.
-      if ((S.getLangOpts().ObjCAutoRefCount &&
-           MTE->getType()->isObjCLifetimeType()) ||
-          (MTE->getStorageDuration() == SD_Automatic &&
-           MTE->getType().isDestructedType()))
+      // If we're extending this temporary to automatic storage duration -- we
+      // need to register its cleanup during the full-expression's cleanups.
+      if (MTE->getStorageDuration() == SD_Automatic &&
+          MTE->getType().isDestructedType())
         S.Cleanup.setExprNeedsCleanups(true);
 
       CurInit = MTE;
@@ -7178,7 +7220,7 @@ InitializationSequence::Perform(Sema &S,
       QualType SourceType = Init->getType();
       // Case 1
       if (Entity.isParameterKind()) {
-        if (!SourceType->isSamplerT()) {
+        if (!SourceType->isSamplerT() && !SourceType->isIntegerType()) {
           S.Diag(Kind.getLocation(), diag::err_sampler_argument_required)
             << SourceType;
           break;

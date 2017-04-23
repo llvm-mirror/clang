@@ -3298,6 +3298,28 @@ ASTReader::ReadASTBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       }
       ForceCUDAHostDeviceDepth = Record[0];
       break;
+
+    case PACK_PRAGMA_OPTIONS: {
+      if (Record.size() < 3) {
+        Error("invalid pragma pack record");
+        return Failure;
+      }
+      PragmaPackCurrentValue = Record[0];
+      PragmaPackCurrentLocation = ReadSourceLocation(F, Record[1]);
+      unsigned NumStackEntries = Record[2];
+      unsigned Idx = 3;
+      // Reset the stack when importing a new module.
+      PragmaPackStack.clear();
+      for (unsigned I = 0; I < NumStackEntries; ++I) {
+        PragmaPackStackEntry Entry;
+        Entry.Value = Record[Idx++];
+        Entry.Location = ReadSourceLocation(F, Record[Idx++]);
+        PragmaPackStrings.push_back(ReadString(Record, Idx));
+        Entry.SlotLabel = PragmaPackStrings.back();
+        PragmaPackStack.push_back(Entry);
+      }
+      break;
+    }
     }
   }
 }
@@ -4812,7 +4834,6 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       bool InferExplicitSubmodules = Record[Idx++];
       bool InferExportWildcard = Record[Idx++];
       bool ConfigMacrosExhaustive = Record[Idx++];
-      bool WithCodegen = Record[Idx++];
 
       Module *ParentModule = nullptr;
       if (Parent)
@@ -4858,7 +4879,6 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       CurrentModule->InferExplicitSubmodules = InferExplicitSubmodules;
       CurrentModule->InferExportWildcard = InferExportWildcard;
       CurrentModule->ConfigMacrosExhaustive = ConfigMacrosExhaustive;
-      CurrentModule->WithCodegen = WithCodegen;
       if (DeserializationListener)
         DeserializationListener->ModuleRead(GlobalID, CurrentModule);
 
@@ -5505,35 +5525,60 @@ void ASTReader::ReadPragmaDiagnosticMappings(DiagnosticsEngine &Diag) {
              "Invalid data, not enough diag/map pairs");
       while (Size--) {
         unsigned DiagID = Record[Idx++];
-        diag::Severity Map = (diag::Severity)Record[Idx++];
-        DiagnosticMapping Mapping = Diag.makeUserMapping(Map, Loc);
-        if (Mapping.isPragma() || IncludeNonPragmaStates)
-          NewState->setMapping(DiagID, Mapping);
+        unsigned SeverityAndUpgradedFromWarning = Record[Idx++];
+        bool WasUpgradedFromWarning =
+            DiagnosticMapping::deserializeUpgradedFromWarning(
+                SeverityAndUpgradedFromWarning);
+        DiagnosticMapping NewMapping =
+            Diag.makeUserMapping(DiagnosticMapping::deserializeSeverity(
+                                     SeverityAndUpgradedFromWarning),
+                                 Loc);
+        if (!NewMapping.isPragma() && !IncludeNonPragmaStates)
+          continue;
+
+        DiagnosticMapping &Mapping = NewState->getOrAddMapping(DiagID);
+
+        // If this mapping was specified as a warning but the severity was
+        // upgraded due to diagnostic settings, simulate the current diagnostic
+        // settings (and use a warning).
+        if (WasUpgradedFromWarning && !Mapping.isErrorOrFatal()) {
+          Mapping = Diag.makeUserMapping(diag::Severity::Warning, Loc);
+          continue;
+        }
+
+        // Use the deserialized mapping verbatim.
+        Mapping = NewMapping;
+        Mapping.setUpgradedFromWarning(WasUpgradedFromWarning);
       }
       return NewState;
     };
 
-    auto *FirstState = ReadDiagState(
-        F.isModule() ? DiagState() : *Diag.DiagStatesByLoc.CurDiagState,
-        SourceLocation(), F.isModule());
-    SourceLocation CurStateLoc =
-        ReadSourceLocation(F, F.PragmaDiagMappings[Idx++]);
-    auto *CurState = ReadDiagState(*FirstState, CurStateLoc, false);
+    // Read the first state.
+    DiagState *FirstState;
+    if (F.Kind == MK_ImplicitModule) {
+      // Implicitly-built modules are reused with different diagnostic
+      // settings.  Use the initial diagnostic state from Diag to simulate this
+      // compilation's diagnostic settings.
+      FirstState = Diag.DiagStatesByLoc.FirstDiagState;
+      DiagStates.push_back(FirstState);
 
-    if (!F.isModule()) {
-      Diag.DiagStatesByLoc.CurDiagState = CurState;
-      Diag.DiagStatesByLoc.CurDiagStateLoc = CurStateLoc;
-
-      // Preserve the property that the imaginary root file describes the
-      // current state.
-      auto &T = Diag.DiagStatesByLoc.Files[FileID()].StateTransitions;
-      if (T.empty())
-        T.push_back({CurState, 0});
-      else
-        T[0].State = CurState;
+      // Skip the initial diagnostic state from the serialized module.
+      assert(Record[0] == 0 &&
+             "Invalid data, unexpected backref in initial state");
+      Idx = 2 + Record[1] * 2;
+      assert(Idx < Record.size() &&
+             "Invalid data, not enough state change pairs in initial state");
+    } else {
+      FirstState = ReadDiagState(
+          F.isModule() ? DiagState() : *Diag.DiagStatesByLoc.CurDiagState,
+          SourceLocation(), F.isModule());
     }
 
-    while (Idx < Record.size()) {
+    // Read the state transitions.
+    unsigned NumLocations = Record[Idx++];
+    while (NumLocations--) {
+      assert(Idx < Record.size() &&
+             "Invalid data, missing pragma diagnostic states");
       SourceLocation Loc = ReadSourceLocation(F, Record[Idx++]);
       auto IDAndOffset = SourceMgr.getDecomposedLoc(Loc);
       assert(IDAndOffset.second == 0 && "not a start location for a FileID");
@@ -5551,6 +5596,26 @@ void ASTReader::ReadPragmaDiagnosticMappings(DiagnosticsEngine &Diag) {
             ReadDiagState(*FirstState, Loc.getLocWithOffset(Offset), false);
         F.StateTransitions.push_back({State, Offset});
       }
+    }
+
+    // Read the final state.
+    assert(Idx < Record.size() &&
+           "Invalid data, missing final pragma diagnostic state");
+    SourceLocation CurStateLoc =
+        ReadSourceLocation(F, F.PragmaDiagMappings[Idx++]);
+    auto *CurState = ReadDiagState(*FirstState, CurStateLoc, false);
+
+    if (!F.isModule()) {
+      Diag.DiagStatesByLoc.CurDiagState = CurState;
+      Diag.DiagStatesByLoc.CurDiagStateLoc = CurStateLoc;
+
+      // Preserve the property that the imaginary root file describes the
+      // current state.
+      auto &T = Diag.DiagStatesByLoc.Files[FileID()].StateTransitions;
+      if (T.empty())
+        T.push_back({CurState, 0});
+      else
+        T[0].State = CurState;
     }
 
     // Don't try to read these mappings again.
@@ -7169,31 +7234,6 @@ static void PassObjCImplDeclToConsumer(ObjCImplDecl *ImplD,
   Consumer->HandleInterestingDecl(DeclGroupRef(ImplD));
 }
 
-void ASTReader::PassInterestingDeclsToConsumer() {
-  assert(Consumer);
-
-  if (PassingDeclsToConsumer)
-    return;
-
-  // Guard variable to avoid recursively redoing the process of passing
-  // decls to consumer.
-  SaveAndRestore<bool> GuardPassingDeclsToConsumer(PassingDeclsToConsumer,
-                                                   true);
-
-  // Ensure that we've loaded all potentially-interesting declarations
-  // that need to be eagerly loaded.
-  for (auto ID : EagerlyDeserializedDecls)
-    GetDecl(ID);
-  EagerlyDeserializedDecls.clear();
-
-  while (!InterestingDecls.empty()) {
-    Decl *D = InterestingDecls.front();
-    InterestingDecls.pop_front();
-
-    PassInterestingDeclToConsumer(D);
-  }
-}
-
 void ASTReader::PassInterestingDeclToConsumer(Decl *D) {
   if (ObjCImplDecl *ImplD = dyn_cast<ObjCImplDecl>(D))
     PassObjCImplDeclToConsumer(ImplD, Consumer);
@@ -7378,7 +7418,7 @@ void ASTReader::InitializeSema(Sema &S) {
   // FIXME: What happens if these are changed by a module import?
   if (!FPPragmaOptions.empty()) {
     assert(FPPragmaOptions.size() == 1 && "Wrong number of FP_PRAGMA_OPTIONS");
-    SemaObj->FPFeatures.fp_contract = FPPragmaOptions[0];
+    SemaObj->FPFeatures = FPOptions(FPPragmaOptions[0]);
   }
 
   SemaObj->OpenCLFeatures.copy(OpenCLExtensions);
@@ -7419,6 +7459,34 @@ void ASTReader::UpdateSema() {
         PointersToMembersPragmaLocation);
   }
   SemaObj->ForceCUDAHostDeviceDepth = ForceCUDAHostDeviceDepth;
+
+  if (PragmaPackCurrentValue) {
+    // The bottom of the stack might have a default value. It must be adjusted
+    // to the current value to ensure that the packing state is preserved after
+    // popping entries that were included/imported from a PCH/module.
+    bool DropFirst = false;
+    if (!PragmaPackStack.empty() &&
+        PragmaPackStack.front().Location.isInvalid()) {
+      assert(PragmaPackStack.front().Value == SemaObj->PackStack.DefaultValue &&
+             "Expected a default alignment value");
+      SemaObj->PackStack.Stack.emplace_back(
+          PragmaPackStack.front().SlotLabel, SemaObj->PackStack.CurrentValue,
+          SemaObj->PackStack.CurrentPragmaLocation);
+      DropFirst = true;
+    }
+    for (const auto &Entry :
+         llvm::makeArrayRef(PragmaPackStack).drop_front(DropFirst ? 1 : 0))
+      SemaObj->PackStack.Stack.emplace_back(Entry.SlotLabel, Entry.Value,
+                                            Entry.Location);
+    if (PragmaPackCurrentLocation.isInvalid()) {
+      assert(*PragmaPackCurrentValue == SemaObj->PackStack.DefaultValue &&
+             "Expected a default alignment value");
+      // Keep the current values.
+    } else {
+      SemaObj->PackStack.CurrentValue = *PragmaPackCurrentValue;
+      SemaObj->PackStack.CurrentPragmaLocation = PragmaPackCurrentLocation;
+    }
+  }
 }
 
 IdentifierInfo *ASTReader::get(StringRef Name) {
@@ -8099,16 +8167,11 @@ ASTReader::getSourceDescriptor(unsigned ID) {
   return None;
 }
 
-ExternalASTSource::ExtKind ASTReader::hasExternalDefinitions(unsigned ID) {
-  const Module *M = getSubmodule(ID);
-  if (!M || !M->WithCodegen)
+ExternalASTSource::ExtKind ASTReader::hasExternalDefinitions(const Decl *FD) {
+  auto I = BodySource.find(FD);
+  if (I == BodySource.end())
     return EK_ReplyHazy;
-
-  ModuleFile *MF = ModuleMgr.lookup(M->getASTFile());
-  assert(MF); // ?
-  if (MF->Kind == ModuleKind::MK_MainFile)
-    return EK_Never;
-  return EK_Always;
+  return I->second ? EK_Never : EK_Always;
 }
 
 Selector ASTReader::getLocalSelector(ModuleFile &M, unsigned LocalID) {
@@ -8942,9 +9005,9 @@ void ASTReader::finishPendingActions() {
       // FIXME: Check for =delete/=default?
       // FIXME: Complain about ODR violations here?
       const FunctionDecl *Defn = nullptr;
-      if (!getContext().getLangOpts().Modules || !FD->hasBody(Defn))
+      if (!getContext().getLangOpts().Modules || !FD->hasBody(Defn)) {
         FD->setLazyBody(PB->second);
-      else
+      } else
         mergeDefinitionVisibility(const_cast<FunctionDecl*>(Defn), FD);
       continue;
     }

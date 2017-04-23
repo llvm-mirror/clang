@@ -27,6 +27,7 @@
 #include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Options.h"
 #include "clang/Driver/SanitizerArgs.h"
+#include "clang/Driver/XRayArgs.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/CodeGen.h"
@@ -648,8 +649,24 @@ static void addDashXForInput(const ArgList &Args, const InputInfo &Input,
   CmdArgs.push_back("-x");
   if (Args.hasArg(options::OPT_rewrite_objc))
     CmdArgs.push_back(types::getTypeName(types::TY_PP_ObjCXX));
-  else
-    CmdArgs.push_back(types::getTypeName(Input.getType()));
+  else {
+    // Map the driver type to the frontend type. This is mostly an identity
+    // mapping, except that the distinction between module interface units
+    // and other source files does not exist at the frontend layer.
+    const char *ClangType;
+    switch (Input.getType()) {
+    case types::TY_CXXModule:
+      ClangType = "c++";
+      break;
+    case types::TY_PP_CXXModule:
+      ClangType = "c++-cpp-output";
+      break;
+    default:
+      ClangType = types::getTypeName(Input.getType());
+      break;
+    }
+    CmdArgs.push_back(ClangType);
+  }
 }
 
 static void appendUserToPath(SmallVectorImpl<char> &Result) {
@@ -2289,6 +2306,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (!Args.hasFlag(options::OPT_fstrict_return, options::OPT_fno_strict_return,
                     true))
     CmdArgs.push_back("-fno-strict-return");
+  if (Args.hasFlag(options::OPT_fallow_editor_placeholders,
+                   options::OPT_fno_allow_editor_placeholders, false))
+    CmdArgs.push_back("-fallow-editor-placeholders");
   if (Args.hasFlag(options::OPT_fstrict_vtable_pointers,
                    options::OPT_fno_strict_vtable_pointers,
                    false))
@@ -2728,7 +2748,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     DwarfVersion = getToolChain().GetDefaultDwarfVersion();
   }
 
-  // We ignore flags -gstrict-dwarf and -grecord-gcc-switches for now.
+  // We ignore flag -gstrict-dwarf for now.
+  // And we handle flag -grecord-gcc-switches later with DwarfDebugFlags.
   Args.ClaimAllArgs(options::OPT_g_flags_Group);
 
   // Column info is included by default for everything except PS4 and CodeView.
@@ -2816,37 +2837,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fno-unique-section-names");
 
   Args.AddAllArgs(CmdArgs, options::OPT_finstrument_functions);
-
-  if (Args.hasFlag(options::OPT_fxray_instrument,
-                   options::OPT_fnoxray_instrument, false)) {
-    const char *const XRayInstrumentOption = "-fxray-instrument";
-    if (Triple.getOS() == llvm::Triple::Linux)
-      switch (Triple.getArch()) {
-      case llvm::Triple::x86_64:
-      case llvm::Triple::arm:
-      case llvm::Triple::aarch64:
-      case llvm::Triple::ppc64le:
-      case llvm::Triple::mips:
-      case llvm::Triple::mipsel:
-      case llvm::Triple::mips64:
-      case llvm::Triple::mips64el:
-        // Supported.
-        break;
-      default:
-        D.Diag(diag::err_drv_clang_unsupported)
-            << (std::string(XRayInstrumentOption) + " on " + Triple.str());
-      }
-    else
-      D.Diag(diag::err_drv_clang_unsupported)
-          << (std::string(XRayInstrumentOption) + " on non-Linux target OS");
-    CmdArgs.push_back(XRayInstrumentOption);
-    if (const Arg *A =
-            Args.getLastArg(options::OPT_fxray_instruction_threshold_,
-                            options::OPT_fxray_instruction_threshold_EQ)) {
-      CmdArgs.push_back("-fxray-instruction-threshold");
-      CmdArgs.push_back(A->getValue());
-    }
-  }
 
   addPGOAndCoverageFlags(C, D, Output, Args, CmdArgs);
 
@@ -3236,6 +3226,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   const SanitizerArgs &Sanitize = getToolChain().getSanitizerArgs();
   Sanitize.addArgs(getToolChain(), Args, CmdArgs, InputType);
+
+  const XRayArgs &XRay = getToolChain().getXRayArgs();
+  XRay.addArgs(getToolChain(), Args, CmdArgs, InputType);
 
   if (getToolChain().SupportsProfiling())
     Args.AddLastArg(CmdArgs, options::OPT_pg);
@@ -4321,7 +4314,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   // Optionally embed the -cc1 level arguments into the debug info, for build
   // analysis.
-  if (getToolChain().UseDwarfDebugFlags()) {
+  // Also record command line arguments into the debug info if
+  // -grecord-gcc-switches options is set on.
+  // By default, -gno-record-gcc-switches is set on and no recording.
+  if (getToolChain().UseDwarfDebugFlags() ||
+      Args.hasFlag(options::OPT_grecord_gcc_switches,
+                   options::OPT_gno_record_gcc_switches, false)) {
     ArgStringList OriginalArgs;
     for (const auto &Arg : Args)
       Arg->render(Args, OriginalArgs);
@@ -5016,6 +5014,19 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
   case llvm::Triple::x86:
   case llvm::Triple::x86_64:
     AddX86TargetArgs(Args, CmdArgs);
+    break;
+
+  case llvm::Triple::arm:
+  case llvm::Triple::armeb:
+  case llvm::Triple::thumb:
+  case llvm::Triple::thumbeb:
+    // This isn't in AddARMTargetArgs because we want to do this for assembly
+    // only, not C/C++.
+    if (Args.hasFlag(options::OPT_mdefault_build_attributes,
+                     options::OPT_mno_default_build_attributes, true)) {
+        CmdArgs.push_back("-mllvm");
+        CmdArgs.push_back("-arm-add-build-attributes");
+    }
     break;
   }
 

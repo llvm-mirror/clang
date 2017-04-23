@@ -73,8 +73,9 @@ CXXRecordDecl::DefinitionData::DefinitionData(CXXRecordDecl *D)
       ImplicitCopyAssignmentHasConstParam(true),
       HasDeclaredCopyConstructorWithConstParam(false),
       HasDeclaredCopyAssignmentWithConstParam(false), IsLambda(false),
-      IsParsingBaseSpecifiers(false), ODRHash(0), NumBases(0), NumVBases(0),
-      Bases(), VBases(), Definition(D), FirstFriend() {}
+      IsParsingBaseSpecifiers(false), HasODRHash(false), ODRHash(0),
+      NumBases(0), NumVBases(0), Bases(), VBases(), Definition(D),
+      FirstFriend() {}
 
 CXXBaseSpecifier *CXXRecordDecl::DefinitionData::getBasesSlowCase() const {
   return Bases.get(Definition->getASTContext().getExternalSource());
@@ -381,15 +382,22 @@ CXXRecordDecl::setBases(CXXBaseSpecifier const * const *Bases,
   data().IsParsingBaseSpecifiers = false;
 }
 
-void CXXRecordDecl::computeODRHash() {
-  if (!DefinitionData)
-    return;
+unsigned CXXRecordDecl::getODRHash() const {
+  assert(hasDefinition() && "ODRHash only for records with definitions");
 
+  // Previously calculated hash is stored in DefinitionData.
+  if (DefinitionData->HasODRHash)
+    return DefinitionData->ODRHash;
+
+  // Only calculate hash on first call of getODRHash per record.
   ODRHash Hash;
-  Hash.AddCXXRecordDecl(this);
-
+  Hash.AddCXXRecordDecl(getDefinition());
+  DefinitionData->HasODRHash = true;
   DefinitionData->ODRHash = Hash.CalculateHash();
+
+  return DefinitionData->ODRHash;
 }
+
 
 void CXXRecordDecl::addedClassSubobject(CXXRecordDecl *Subobj) {
   // C++11 [class.copy]p11:
@@ -722,9 +730,7 @@ void CXXRecordDecl::addedMember(Decl *D) {
     ASTContext &Context = getASTContext();
     QualType T = Context.getBaseElementType(Field->getType());
     if (T->isObjCRetainableType() || T.isObjCGCStrong()) {
-      if (!Context.getLangOpts().ObjCAutoRefCount) {
-        setHasObjectMember(true);
-      } else if (T.getObjCLifetime() != Qualifiers::OCL_ExplicitNone) {
+      if (T.hasNonTrivialObjCLifetime()) {
         // Objective-C Automatic Reference Counting:
         //   If a class has a non-static data member of Objective-C pointer
         //   type (or array thereof), it is a non-POD type and its
@@ -736,6 +742,8 @@ void CXXRecordDecl::addedMember(Decl *D) {
         Data.PlainOldData = false;
         Data.HasTrivialSpecialMembers = 0;
         Data.HasIrrelevantDestructor = false;
+      } else if (!Context.getLangOpts().ObjCAutoRefCount) {
+        setHasObjectMember(true);
       }
     } else if (!T.isCXX98PODType(Context))
       data().PlainOldData = false;

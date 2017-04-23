@@ -4917,7 +4917,7 @@ ABIArgInfo AArch64ABIInfo::classifyArgumentType(QualType Ty) const {
       return coerceToIntArray(Ty, getContext(), getVMContext());
     }
     unsigned Alignment = getContext().getTypeAlign(Ty);
-    Size = 64 * ((Size + 63) / 64); // round up to multiple of 8 bytes
+    Size = llvm::alignTo(Size, 64); // round up to multiple of 8 bytes
 
     // We use a pair of i64 for 16-byte aggregate with 8-byte alignment.
     // For aggregates with 16-byte alignment, we use i128.
@@ -4967,7 +4967,7 @@ ABIArgInfo AArch64ABIInfo::classifyReturnType(QualType RetTy) const {
       return coerceToIntArray(RetTy, getContext(), getVMContext());
     }
     unsigned Alignment = getContext().getTypeAlign(RetTy);
-    Size = 64 * ((Size + 63) / 64); // round up to multiple of 8 bytes
+    Size = llvm::alignTo(Size, 64); // round up to multiple of 8 bytes
 
     // We use a pair of i64 for 16-byte aggregate with 8-byte alignment.
     // For aggregates with 16-byte alignment, we use i128.
@@ -7302,9 +7302,14 @@ void AMDGPUTargetCodeGenInfo::setTargetAttributes(
 
   llvm::Function *F = cast<llvm::Function>(GV);
 
-  if (const auto *Attr = FD->getAttr<AMDGPUFlatWorkGroupSizeAttr>()) {
-    unsigned Min = Attr->getMin();
-    unsigned Max = Attr->getMax();
+  const auto *ReqdWGS = M.getLangOpts().OpenCL ?
+    FD->getAttr<ReqdWorkGroupSizeAttr>() : nullptr;
+  const auto *FlatWGS = FD->getAttr<AMDGPUFlatWorkGroupSizeAttr>();
+  if (ReqdWGS || FlatWGS) {
+    unsigned Min = FlatWGS ? FlatWGS->getMin() : 0;
+    unsigned Max = FlatWGS ? FlatWGS->getMax() : 0;
+    if (ReqdWGS && Min == 0 && Max == 0)
+      Min = Max = ReqdWGS->getXDim() * ReqdWGS->getYDim() * ReqdWGS->getZDim();
 
     if (Min != 0) {
       assert(Min <= Max && "Min must be less than or equal Max");

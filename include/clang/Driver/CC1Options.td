@@ -436,10 +436,14 @@ def fmodules_local_submodule_visibility :
   Flag<["-"], "fmodules-local-submodule-visibility">,
   HelpText<"Enforce name visibility rules across submodules of the same "
            "top-level module.">;
-def fmodule_codegen :
+def fmodules_codegen :
   Flag<["-"], "fmodules-codegen">,
   HelpText<"Generate code for uses of this module that assumes an explicit "
            "object file will be built for the module">;
+def fmodules_debuginfo :
+  Flag<["-"], "fmodules-debuginfo">,
+  HelpText<"Generate debug info for types in an object file built from this "
+           "module and do not generate them elsewhere">;
 def fmodule_format_EQ : Joined<["-"], "fmodule-format=">,
   HelpText<"Select the container format for clang modules and PCH. "
            "Supported options are 'raw' and 'obj'.">;
@@ -658,6 +662,8 @@ def fdefault_calling_conv_EQ : Joined<["-"], "fdefault-calling-conv=">,
   HelpText<"Set default MS calling convention">;
 def finclude_default_header : Flag<["-"], "finclude-default-header">,
   HelpText<"Include the default header file for OpenCL">;
+def fpreserve_vec3_type : Flag<["-"], "fpreserve-vec3-type">,
+  HelpText<"Preserve 3-component vector type">;
 
 // FIXME: Remove these entirely once functionality/tests have been excised.
 def fobjc_gc_only : Flag<["-"], "fobjc-gc-only">, Group<f_Group>,

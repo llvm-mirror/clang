@@ -2627,7 +2627,6 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // InferExplicit...
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // InferExportWild...
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // ConfigMacrosExh...
-  Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 1)); // WithCodegen
   Abbrev->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Blob)); // Name
   unsigned DefinitionAbbrev = Stream.EmitAbbrev(std::move(Abbrev));
 
@@ -2726,8 +2725,7 @@ void ASTWriter::WriteSubmodules(Module *WritingModule) {
                                          Mod->InferSubmodules,
                                          Mod->InferExplicitSubmodules,
                                          Mod->InferExportWildcard,
-                                         Mod->ConfigMacrosExhaustive,
-                                         Context->getLangOpts().ModularCodegen && WritingModule};
+                                         Mod->ConfigMacrosExhaustive};
       Stream.EmitRecordWithBlob(DefinitionAbbrev, Record, Mod->Name);
     }
 
@@ -2881,7 +2879,7 @@ void ASTWriter::WritePragmaDiagnosticMappings(const DiagnosticsEngine &Diag,
       for (const auto &I : *State) {
         if (I.second.isPragma() || IncludeNonPragmaStates) {
           Record.push_back(I.first);
-          Record.push_back((unsigned)I.second.getSeverity());
+          Record.push_back(I.second.serializeBits());
         }
       }
       // Update the placeholder.
@@ -2890,13 +2888,18 @@ void ASTWriter::WritePragmaDiagnosticMappings(const DiagnosticsEngine &Diag,
   };
 
   AddDiagState(Diag.DiagStatesByLoc.FirstDiagState, isModule);
-  AddSourceLocation(Diag.DiagStatesByLoc.CurDiagStateLoc, Record);
-  AddDiagState(Diag.DiagStatesByLoc.CurDiagState, false);
 
+  // Reserve a spot for the number of locations with state transitions.
+  auto NumLocationsIdx = Record.size();
+  Record.emplace_back();
+
+  // Emit the state transitions.
+  unsigned NumLocations = 0;
   for (auto &FileIDAndFile : Diag.DiagStatesByLoc.Files) {
     if (!FileIDAndFile.first.isValid() ||
         !FileIDAndFile.second.HasLocalTransitions)
       continue;
+    ++NumLocations;
     AddSourceLocation(Diag.SourceMgr->getLocForStartOfFile(FileIDAndFile.first),
                       Record);
     Record.push_back(FileIDAndFile.second.StateTransitions.size());
@@ -2906,8 +2909,19 @@ void ASTWriter::WritePragmaDiagnosticMappings(const DiagnosticsEngine &Diag,
     }
   }
 
-  if (!Record.empty())
-    Stream.EmitRecord(DIAG_PRAGMA_MAPPINGS, Record);
+  // Backpatch the number of locations.
+  Record[NumLocationsIdx] = NumLocations;
+
+  // Emit CurDiagStateLoc.  Do it last in order to match source order.
+  //
+  // This also protects against a hypothetical corner case with simulating
+  // -Werror settings for implicit modules in the ASTReader, where reading
+  // CurDiagState out of context could change whether warning pragmas are
+  // treated as errors.
+  AddSourceLocation(Diag.DiagStatesByLoc.CurDiagStateLoc, Record);
+  AddDiagState(Diag.DiagStatesByLoc.CurDiagState, false);
+
+  Stream.EmitRecord(DIAG_PRAGMA_MAPPINGS, Record);
 }
 
 //===----------------------------------------------------------------------===//
@@ -4015,7 +4029,7 @@ void ASTWriter::WriteDeclContextVisibleUpdate(const DeclContext *DC) {
 
 /// \brief Write an FP_PRAGMA_OPTIONS block for the given FPOptions.
 void ASTWriter::WriteFPPragmaOptions(const FPOptions &Opts) {
-  RecordData::value_type Record[] = {Opts.fp_contract};
+  RecordData::value_type Record[] = {Opts.getInt()};
   Stream.EmitRecord(FP_PRAGMA_OPTIONS, Record);
 }
 
@@ -4168,6 +4182,25 @@ void ASTWriter::WriteMSPointersToMembersPragmaOptions(Sema &SemaRef) {
   Record.push_back(SemaRef.MSPointerToMemberRepresentationMethod);
   AddSourceLocation(SemaRef.ImplicitMSInheritanceAttrLoc, Record);
   Stream.EmitRecord(POINTERS_TO_MEMBERS_PRAGMA_OPTIONS, Record);
+}
+
+/// \brief Write the state of 'pragma pack' at the end of the module.
+void ASTWriter::WritePackPragmaOptions(Sema &SemaRef) {
+  // Don't serialize pragma pack state for modules, since it should only take
+  // effect on a per-submodule basis.
+  if (WritingModule)
+    return;
+
+  RecordData Record;
+  Record.push_back(SemaRef.PackStack.CurrentValue);
+  AddSourceLocation(SemaRef.PackStack.CurrentPragmaLocation, Record);
+  Record.push_back(SemaRef.PackStack.Stack.size());
+  for (const auto &StackEntry : SemaRef.PackStack.Stack) {
+    Record.push_back(StackEntry.Value);
+    AddSourceLocation(StackEntry.PragmaLocation, Record);
+    AddString(StackEntry.StackSlotLabel, Record);
+  }
+  Stream.EmitRecord(PACK_PRAGMA_OPTIONS, Record);
 }
 
 void ASTWriter::WriteModuleFileExtension(Sema &SemaRef,
@@ -4754,7 +4787,7 @@ ASTFileSignature ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
   if (!EagerlyDeserializedDecls.empty())
     Stream.EmitRecord(EAGERLY_DESERIALIZED_DECLS, EagerlyDeserializedDecls);
 
-  if (Context.getLangOpts().ModularCodegen)
+  if (!ModularCodegenDecls.empty())
     Stream.EmitRecord(MODULAR_CODEGEN_DECLS, ModularCodegenDecls);
 
   // Write the record containing tentative definitions.
@@ -4860,6 +4893,7 @@ ASTFileSignature ASTWriter::WriteASTCore(Sema &SemaRef, StringRef isysroot,
     WriteMSStructPragmaOptions(SemaRef);
     WriteMSPointersToMembersPragmaOptions(SemaRef);
   }
+  WritePackPragmaOptions(SemaRef);
 
   // Some simple statistics
   RecordData::value_type Record[] = {
@@ -5756,7 +5790,15 @@ void ASTRecordWriter::AddCXXDefinitionData(const CXXRecordDecl *D) {
   Record->push_back(Data.ImplicitCopyAssignmentHasConstParam);
   Record->push_back(Data.HasDeclaredCopyConstructorWithConstParam);
   Record->push_back(Data.HasDeclaredCopyAssignmentWithConstParam);
-  Record->push_back(Data.ODRHash);
+
+  // getODRHash will compute the ODRHash if it has not been previously computed.
+  Record->push_back(D->getODRHash());
+  bool ModulesDebugInfo = Writer->Context->getLangOpts().ModulesDebugInfo &&
+                          Writer->WritingModule && !D->isDependentType();
+  Record->push_back(ModulesDebugInfo);
+  if (ModulesDebugInfo)
+    Writer->ModularCodegenDecls.push_back(Writer->GetDeclRef(D));
+
   // IsLambda bit is already saved.
 
   Record->push_back(Data.NumBases);

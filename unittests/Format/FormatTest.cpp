@@ -4090,9 +4090,9 @@ TEST_F(FormatTest, AlwaysBreakBeforeMultilineStrings) {
                    "c\";",
                    Break));
 
-  // Exempt ObjC strings for now.
-  EXPECT_EQ("NSString *const kString = @\"aaaa\"\n"
-            "                          @\"bbbb\";",
+  EXPECT_EQ("NSString *const kString =\n"
+            "    @\"aaaa\"\n"
+            "    @\"bbbb\";",
             format("NSString *const kString = @\"aaaa\"\n"
                    "@\"bbbb\";",
                    Break));
@@ -6460,6 +6460,7 @@ TEST_F(FormatTest, BreaksWideAndNSStringLiterals) {
   EXPECT_EQ("@\"NSString \"\n"
             "@\"literal\";",
             format("@\"NSString literal\";", getGoogleStyleWithColumns(19)));
+  verifyFormat(R"(NSString *s = @"那那那那";)", getLLVMStyleWithColumns(26));
 
   // This input makes clang-format try to split the incomplete unicode escape
   // sequence, which used to lead to a crasher.
@@ -8301,7 +8302,14 @@ TEST_F(FormatTest, AllmanBraceBreaking) {
   // .. or dict literals.
   verifyFormat("void f()\n"
                "{\n"
-               "  [object someMethod:@{ @\"a\" : @\"b\" }];\n"
+               "  // ...\n"
+               "  [object someMethod:@{@\"a\" : @\"b\"}];\n"
+               "}",
+               AllmanBraceStyle);
+  verifyFormat("void f()\n"
+               "{\n"
+               "  // ...\n"
+               "  [object someMethod:@{a : @\"b\"}];\n"
                "}",
                AllmanBraceStyle);
   verifyFormat("int f()\n"
@@ -10193,6 +10201,19 @@ TEST_F(ReplacementTest, SortIncludesAfterReplacement) {
   auto Result = applyAllReplacements(Code, *FormattedReplaces);
   EXPECT_TRUE(static_cast<bool>(Result));
   EXPECT_EQ(Expected, *Result);
+}
+
+TEST_F(FormatTest, UTF8CharacterLiteralCpp03) {
+  format::FormatStyle Style = format::getLLVMStyle();
+  Style.Standard = FormatStyle::LS_Cpp03;
+  // cpp03 recognize this string as identifier u8 and literal character 'a'
+  EXPECT_EQ("auto c = u8 'a';", format("auto c = u8'a';", Style));
+}
+
+TEST_F(FormatTest, UTF8CharacterLiteralCpp11) {
+  // u8'a' is a C++17 feature, utf8 literal character, LS_Cpp11 covers
+  // all modes, including C++11, C++14 and C++17
+  EXPECT_EQ("auto c = u8'a';", format("auto c = u8'a';"));
 }
 
 } // end namespace

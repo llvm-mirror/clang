@@ -2992,7 +2992,7 @@ Stmt *RewriteObjC::SynthMessageExpr(ObjCMessageExpr *Exp,
     BinaryOperator *lessThanExpr = 
       new (Context) BinaryOperator(sizeofExpr, limit, BO_LE, Context->IntTy,
                                    VK_RValue, OK_Ordinary, SourceLocation(),
-                                   false);
+                                   FPOptions());
     // (sizeof(returnType) <= 8 ? objc_msgSend(...) : objc_msgSend_stret(...))
     ConditionalOperator *CondExpr =
       new (Context) ConditionalOperator(lessThanExpr,
@@ -4261,7 +4261,7 @@ void RewriteObjC::RewriteByRefVar(VarDecl *ND) {
     }
     ByrefType += "};\n";
     unsigned nameSize = Name.size();
-    // for block or function pointer declaration. Name is aleady
+    // for block or function pointer declaration. Name is already
     // part of the declaration.
     if (Ty->isBlockPointerType() || Ty->isFunctionPointerType())
       nameSize = 1;

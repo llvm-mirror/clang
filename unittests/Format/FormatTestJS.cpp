@@ -132,6 +132,8 @@ TEST_F(FormatTestJS, ReservedWords) {
   verifyFormat("x.interface = 1;");
   verifyFormat("x.for = 1;");
   verifyFormat("x.of() = 1;");
+  verifyFormat("of(null);");
+  verifyFormat("import {of} from 'x';");
   verifyFormat("x.in() = 1;");
   verifyFormat("x.let() = 1;");
   verifyFormat("x.var() = 1;");
@@ -167,6 +169,8 @@ TEST_F(FormatTestJS, ReservedWordsMethods) {
 TEST_F(FormatTestJS, CppKeywords) {
   // Make sure we don't mess stuff up because of C++ keywords.
   verifyFormat("return operator && (aa);");
+  // .. or QT ones.
+  verifyFormat("slots: Slot[];");
 }
 
 TEST_F(FormatTestJS, ES6DestructuringAssignment) {

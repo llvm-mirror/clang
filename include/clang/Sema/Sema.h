@@ -437,6 +437,20 @@ public:
   /// VisContext - Manages the stack for \#pragma GCC visibility.
   void *VisContext; // Really a "PragmaVisStack*"
 
+  /// \brief This represents the stack of attributes that were pushed by
+  /// \#pragma clang attribute.
+  struct PragmaAttributeEntry {
+    SourceLocation Loc;
+    AttributeList *Attribute;
+    SmallVector<attr::SubjectMatchRule, 4> MatchRules;
+    bool IsUsed;
+  };
+  SmallVector<PragmaAttributeEntry, 2> PragmaAttributeStack;
+
+  /// \brief The declaration that is currently receiving an attribute from the
+  /// #pragma attribute stack.
+  const Decl *PragmaAttributeCurrentTargetDecl;
+
   /// \brief This represents the last location of a "#pragma clang optimize off"
   /// directive if such a directive has not been closed by an "on" yet. If
   /// optimizations are currently "on", this is set to an invalid location.
@@ -681,7 +695,8 @@ public:
       : S(S), SavedContext(S, DC)
     {
       S.PushFunctionScope();
-      S.PushExpressionEvaluationContext(Sema::PotentiallyEvaluated);
+      S.PushExpressionEvaluationContext(
+          Sema::ExpressionEvaluationContext::PotentiallyEvaluated);
     }
 
     ~SynthesizedFunctionScope() {
@@ -802,7 +817,7 @@ public:
 
   /// \brief Describes how the expressions currently being parsed are
   /// evaluated at run-time, if at all.
-  enum ExpressionEvaluationContext {
+  enum class ExpressionEvaluationContext {
     /// \brief The current expression and its subexpressions occur within an
     /// unevaluated operand (C++11 [expr]p7), such as the subexpression of
     /// \c sizeof, where the type of the expression may be significant but
@@ -908,8 +923,12 @@ public:
     MangleNumberingContext &getMangleNumberingContext(ASTContext &Ctx);
 
     bool isUnevaluated() const {
-      return Context == Unevaluated || Context == UnevaluatedAbstract ||
-             Context == UnevaluatedList;
+      return Context == ExpressionEvaluationContext::Unevaluated ||
+             Context == ExpressionEvaluationContext::UnevaluatedAbstract ||
+             Context == ExpressionEvaluationContext::UnevaluatedList;
+    }
+    bool isConstantEvaluated() const {
+      return Context == ExpressionEvaluationContext::ConstantEvaluated;
     }
   };
 
@@ -1065,14 +1084,12 @@ public:
   /// statements.
   class FPContractStateRAII {
   public:
-    FPContractStateRAII(Sema& S)
-      : S(S), OldFPContractState(S.FPFeatures.fp_contract) {}
-    ~FPContractStateRAII() {
-      S.FPFeatures.fp_contract = OldFPContractState;
-    }
+    FPContractStateRAII(Sema &S) : S(S), OldFPFeaturesState(S.FPFeatures) {}
+    ~FPContractStateRAII() { S.FPFeatures = OldFPFeaturesState; }
+
   private:
     Sema& S;
-    bool OldFPContractState : 1;
+    FPOptions OldFPFeaturesState;
   };
 
   void addImplicitTypedef(StringRef Name, QualType T);
@@ -1735,8 +1752,11 @@ public:
 
   static bool adjustContextForLocalExternDecl(DeclContext *&DC);
   void DiagnoseFunctionSpecifiers(const DeclSpec &DS);
+  NamedDecl *getShadowedDeclaration(const TypedefNameDecl *D,
+                                    const LookupResult &R);
   NamedDecl *getShadowedDeclaration(const VarDecl *D, const LookupResult &R);
-  void CheckShadow(VarDecl *D, NamedDecl *ShadowedDecl, const LookupResult &R);
+  void CheckShadow(NamedDecl *D, NamedDecl *ShadowedDecl,
+                   const LookupResult &R);
   void CheckShadow(Scope *S, VarDecl *D);
 
   /// Warn if 'E', which is an expression that is about to be modified, refers
@@ -2990,9 +3010,6 @@ public:
   void LookupOverloadedOperatorName(OverloadedOperatorKind Op, Scope *S,
                                     QualType T1, QualType T2,
                                     UnresolvedSetImpl &Functions);
-  void addOverloadedOperatorToUnresolvedSet(UnresolvedSetImpl &Functions,
-                                            DeclAccessPair Operator,
-                                            QualType T1, QualType T2);
 
   LabelDecl *LookupOrCreateLabel(IdentifierInfo *II, SourceLocation IdentLoc,
                                  SourceLocation GnuLabelLoc = SourceLocation());
@@ -4986,7 +5003,7 @@ public:
                             ArrayRef<TypeSourceInfo *> Args,
                             SourceLocation RParenLoc);
 
-  /// ActOnArrayTypeTrait - Parsed one of the bianry type trait support
+  /// ActOnArrayTypeTrait - Parsed one of the binary type trait support
   /// pseudo-functions.
   ExprResult ActOnArrayTypeTrait(ArrayTypeTrait ATT,
                                  SourceLocation KWLoc,
@@ -7203,8 +7220,12 @@ public:
       PrintInstantiationStack();
       LastEmittedCodeSynthesisContextDepth = CodeSynthesisContexts.size();
     }
+    if (PragmaAttributeCurrentTargetDecl)
+      PrintPragmaAttributeInstantiationPoint();
   }
   void PrintInstantiationStack();
+
+  void PrintPragmaAttributeInstantiationPoint();
 
   /// \brief Determines whether we are currently in a context where
   /// template argument substitution failures are not considered
@@ -8114,8 +8135,9 @@ public:
                             SourceLocation AliasNameLoc);
 
   /// ActOnPragmaFPContract - Called on well formed
-  /// \#pragma {STDC,OPENCL} FP_CONTRACT
-  void ActOnPragmaFPContract(tok::OnOffSwitch OOS);
+  /// \#pragma {STDC,OPENCL} FP_CONTRACT and
+  /// \#pragma clang fp contract
+  void ActOnPragmaFPContract(LangOptions::FPContractModeKind FPC);
 
   /// AddAlignmentAttributesForRecord - Adds any needed alignment attributes to
   /// a the record decl, to handle '\#pragma pack' and '\#pragma options align'.
@@ -8148,6 +8170,20 @@ public:
   /// the appropriate attribute.
   void AddCFAuditedAttribute(Decl *D);
 
+  /// \brief Called on well-formed '\#pragma clang attribute push'.
+  void ActOnPragmaAttributePush(AttributeList &Attribute,
+                                SourceLocation PragmaLoc,
+                                attr::ParsedSubjectMatchRuleSet Rules);
+
+  /// \brief Called on well-formed '\#pragma clang attribute pop'.
+  void ActOnPragmaAttributePop(SourceLocation PragmaLoc);
+
+  /// \brief Adds the attributes that have been specified using the
+  /// '\#pragma clang attribute push' directives to the given declaration.
+  void AddPragmaAttributes(Scope *S, Decl *D);
+
+  void DiagnoseUnterminatedPragmaAttribute();
+
   /// \brief Called on well formed \#pragma clang optimize.
   void ActOnPragmaOptimize(bool On, SourceLocation PragmaLoc);
 
@@ -8177,6 +8213,11 @@ public:
   /// declaration.
   void AddAssumeAlignedAttr(SourceRange AttrRange, Decl *D, Expr *E, Expr *OE,
                             unsigned SpellingListIndex);
+
+  /// AddAllocAlignAttr - Adds an alloc_align attribute to a particular
+  /// declaration.
+  void AddAllocAlignAttr(SourceRange AttrRange, Decl *D, Expr *ParamExpr,
+                         unsigned SpellingListIndex);
 
   /// AddAlignValueAttr - Adds an align_value attribute to a particular
   /// declaration.
@@ -9348,14 +9389,14 @@ public:
   enum ARCConversionResult { ACR_okay, ACR_unbridged, ACR_error };
 
   /// \brief Checks for invalid conversions and casts between
-  /// retainable pointers and other pointer kinds.
-  ARCConversionResult CheckObjCARCConversion(SourceRange castRange,
-                                             QualType castType, Expr *&op,
-                                             CheckedConversionKind CCK,
-                                             bool Diagnose = true,
-                                             bool DiagnoseCFAudited = false,
-                                             BinaryOperatorKind Opc = BO_PtrMemD
-                                             );
+  /// retainable pointers and other pointer kinds for ARC and Weak.
+  ARCConversionResult CheckObjCConversion(SourceRange castRange,
+                                          QualType castType, Expr *&op,
+                                          CheckedConversionKind CCK,
+                                          bool Diagnose = true,
+                                          bool DiagnoseCFAudited = false,
+                                          BinaryOperatorKind Opc = BO_PtrMemD
+                                          );
 
   Expr *stripARCUnbridgedCast(Expr *e);
   void diagnoseARCUnbridgedCast(Expr *e);
@@ -10312,6 +10353,7 @@ class EnterExpressionEvaluationContext {
   bool Entered = true;
 
 public:
+
   EnterExpressionEvaluationContext(Sema &Actions,
                                    Sema::ExpressionEvaluationContext NewContext,
                                    Decl *LambdaContextDecl = nullptr,
@@ -10342,8 +10384,8 @@ public:
     // a context.
     if (ShouldEnter && Actions.isUnevaluatedContext() &&
         Actions.getLangOpts().CPlusPlus11) {
-      Actions.PushExpressionEvaluationContext(Sema::UnevaluatedList, nullptr,
-                                              false);
+      Actions.PushExpressionEvaluationContext(
+          Sema::ExpressionEvaluationContext::UnevaluatedList, nullptr, false);
       Entered = true;
     }
   }

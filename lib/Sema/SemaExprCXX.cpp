@@ -2048,9 +2048,10 @@ bool Sema::CheckAllocatedType(QualType AllocType, SourceLocation Loc,
   else if (AllocType->isVariablyModifiedType())
     return Diag(Loc, diag::err_variably_modified_new_type)
              << AllocType;
-  else if (unsigned AddressSpace = AllocType.getAddressSpace())
+  else if (AllocType.getAddressSpace())
     return Diag(Loc, diag::err_address_space_qualified_new)
-      << AllocType.getUnqualifiedType() << AddressSpace;
+      << AllocType.getUnqualifiedType()
+      << AllocType.getQualifiers().getAddressSpaceAttributePrintValue();
   else if (getLangOpts().ObjCAutoRefCount) {
     if (const ArrayType *AT = Context.getAsArrayType(AllocType)) {
       QualType BaseAllocType = Context.getBaseElementType(AT);
@@ -3117,10 +3118,11 @@ Sema::ActOnCXXDelete(SourceLocation StartLoc, bool UseGlobal,
     QualType Pointee = Type->getAs<PointerType>()->getPointeeType();
     QualType PointeeElem = Context.getBaseElementType(Pointee);
 
-    if (unsigned AddressSpace = Pointee.getAddressSpace())
+    if (Pointee.getAddressSpace())
       return Diag(Ex.get()->getLocStart(),
                   diag::err_address_space_qualified_delete)
-               << Pointee.getUnqualifiedType() << AddressSpace;
+               << Pointee.getUnqualifiedType()
+               << Pointee.getQualifiers().getAddressSpaceAttributePrintValue();
 
     CXXRecordDecl *PointeeRD = nullptr;
     if (Pointee->isVoidType() && !isSFINAEContext()) {
@@ -3726,10 +3728,9 @@ Sema::PerformImplicitConversion(Expr *From, QualType ToType,
       if (From->getType()->isObjCObjectPointerType() &&
           ToType->isObjCObjectPointerType())
         EmitRelatedResultTypeNote(From);
-    }
-    else if (getLangOpts().ObjCAutoRefCount &&
-             !CheckObjCARCUnavailableWeakConversion(ToType,
-                                                    From->getType())) {
+    } else if (getLangOpts().allowsNonTrivialObjCLifetimeQualifiers() &&
+               !CheckObjCARCUnavailableWeakConversion(ToType,
+                                                      From->getType())) {
       if (Action == AA_Initializing)
         Diag(From->getLocStart(),
              diag::err_arc_weak_unavailable_assign);
@@ -3752,8 +3753,8 @@ Sema::PerformImplicitConversion(Expr *From, QualType ToType,
       (void) PrepareCastToObjCObjectPointer(E);
       From = E.get();
     }
-    if (getLangOpts().ObjCAutoRefCount)
-      CheckObjCARCConversion(SourceRange(), ToType, From, CCK);
+    if (getLangOpts().allowsNonTrivialObjCLifetimeQualifiers())
+      CheckObjCConversion(SourceRange(), ToType, From, CCK);
     From = ImpCastExprToType(From, ToType, Kind, VK_RValue, &BasePath, CCK)
              .get();
     break;
@@ -4056,6 +4057,7 @@ static bool CheckUnaryTypeTraitTypeCompleteness(Sema &S, TypeTrait UTT,
 
   // C++0x [meta.unary.prop] Table 49 requires the following traits to be
   // applied to a complete type.
+  case UTT_IsAggregate:
   case UTT_IsTrivial:
   case UTT_IsTriviallyCopyable:
   case UTT_IsStandardLayout:
@@ -4230,6 +4232,12 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
     if (const CXXRecordDecl *RD = T->getAsCXXRecordDecl())
       return !RD->isUnion() && RD->isAbstract();
     return false;
+  case UTT_IsAggregate:
+    // Report vector extensions and complex types as aggregates because they
+    // support aggregate initialization. GCC mirrors this behavior for vectors
+    // but not _Complex.
+    return T->isAggregateType() || T->isVectorType() || T->isExtVectorType() ||
+           T->isAnyComplexType();
   // __is_interface_class only returns true when CL is invoked in /CLR mode and
   // even then only when it is used with the 'interface struct ...' syntax
   // Clang doesn't support /CLR which makes this type trait moot.
@@ -4518,25 +4526,6 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
   }
 }
 
-/// \brief Determine whether T has a non-trivial Objective-C lifetime in
-/// ARC mode.
-static bool hasNontrivialObjCLifetime(QualType T) {
-  switch (T.getObjCLifetime()) {
-  case Qualifiers::OCL_ExplicitNone:
-    return false;
-
-  case Qualifiers::OCL_Strong:
-  case Qualifiers::OCL_Weak:
-  case Qualifiers::OCL_Autoreleasing:
-    return true;
-
-  case Qualifiers::OCL_None:
-    return T->isObjCLifetimeType();
-  }
-
-  llvm_unreachable("Unknown ObjC lifetime qualifier");
-}
-
 static bool EvaluateBinaryTypeTrait(Sema &Self, TypeTrait BTT, QualType LhsT,
                                     QualType RhsT, SourceLocation KeyLoc);
 
@@ -4609,7 +4598,8 @@ static bool evaluateTypeTrait(Sema &S, TypeTrait Kind, SourceLocation KWLoc,
 
     // Perform the initialization in an unevaluated context within a SFINAE
     // trap at translation unit scope.
-    EnterExpressionEvaluationContext Unevaluated(S, Sema::Unevaluated);
+    EnterExpressionEvaluationContext Unevaluated(
+        S, Sema::ExpressionEvaluationContext::Unevaluated);
     Sema::SFINAETrap SFINAE(S, /*AccessCheckingSFINAE=*/true);
     Sema::ContextRAII TUContext(S, S.Context.getTranslationUnitDecl());
     InitializedEntity To(InitializedEntity::InitializeTemporary(Args[0]));
@@ -4630,10 +4620,9 @@ static bool evaluateTypeTrait(Sema &S, TypeTrait Kind, SourceLocation KWLoc,
       return S.canThrow(Result.get()) == CT_Cannot;
 
     if (Kind == clang::TT_IsTriviallyConstructible) {
-      // Under Objective-C ARC, if the destination has non-trivial Objective-C
-      // lifetime, this is a non-trivial construction.
-      if (S.getLangOpts().ObjCAutoRefCount &&
-          hasNontrivialObjCLifetime(T.getNonReferenceType()))
+      // Under Objective-C ARC and Weak, if the destination has non-trivial
+      // Objective-C lifetime, this is a non-trivial construction.
+      if (T.getNonReferenceType().hasNonTrivialObjCLifetime())
         return false;
 
       // The initialization succeeded; now make sure there are no non-trivial
@@ -4786,7 +4775,8 @@ static bool EvaluateBinaryTypeTrait(Sema &Self, TypeTrait BTT, QualType LhsT,
 
     // Perform the initialization in an unevaluated context within a SFINAE
     // trap at translation unit scope.
-    EnterExpressionEvaluationContext Unevaluated(Self, Sema::Unevaluated);
+    EnterExpressionEvaluationContext Unevaluated(
+        Self, Sema::ExpressionEvaluationContext::Unevaluated);
     Sema::SFINAETrap SFINAE(Self, /*AccessCheckingSFINAE=*/true);
     Sema::ContextRAII TUContext(Self, Self.Context.getTranslationUnitDecl());
     InitializationSequence Init(Self, To, Kind, FromPtr);
@@ -4837,7 +4827,8 @@ static bool EvaluateBinaryTypeTrait(Sema &Self, TypeTrait BTT, QualType LhsT,
 
     // Attempt the assignment in an unevaluated context within a SFINAE
     // trap at translation unit scope.
-    EnterExpressionEvaluationContext Unevaluated(Self, Sema::Unevaluated);
+    EnterExpressionEvaluationContext Unevaluated(
+        Self, Sema::ExpressionEvaluationContext::Unevaluated);
     Sema::SFINAETrap SFINAE(Self, /*AccessCheckingSFINAE=*/true);
     Sema::ContextRAII TUContext(Self, Self.Context.getTranslationUnitDecl());
     ExprResult Result = Self.BuildBinOp(/*S=*/nullptr, KeyLoc, BO_Assign, &Lhs,
@@ -4852,10 +4843,9 @@ static bool EvaluateBinaryTypeTrait(Sema &Self, TypeTrait BTT, QualType LhsT,
       return Self.canThrow(Result.get()) == CT_Cannot;
 
     if (BTT == BTT_IsTriviallyAssignable) {
-      // Under Objective-C ARC, if the destination has non-trivial Objective-C
-      // lifetime, this is a non-trivial assignment.
-      if (Self.getLangOpts().ObjCAutoRefCount &&
-          hasNontrivialObjCLifetime(LhsT.getNonReferenceType()))
+      // Under Objective-C ARC and Weak, if the destination has non-trivial
+      // Objective-C lifetime, this is a non-trivial assignment.
+      if (LhsT.getNonReferenceType().hasNonTrivialObjCLifetime())
         return false;
 
       return !Result.get()->hasNonTrivialCall(Self.Context);
@@ -5990,9 +5980,21 @@ ExprResult Sema::MaybeBindToTemporary(Expr *E) {
       } else if (ObjCBoxedExpr *BoxedExpr = dyn_cast<ObjCBoxedExpr>(E)) {
         D = BoxedExpr->getBoxingMethod();
       } else if (ObjCArrayLiteral *ArrayLit = dyn_cast<ObjCArrayLiteral>(E)) {
+        // Don't do reclaims if we're using the zero-element array
+        // constant.
+        if (ArrayLit->getNumElements() == 0 &&
+            Context.getLangOpts().ObjCRuntime.hasEmptyCollections())
+          return E;
+
         D = ArrayLit->getArrayWithObjectsMethod();
       } else if (ObjCDictionaryLiteral *DictLit
                                         = dyn_cast<ObjCDictionaryLiteral>(E)) {
+        // Don't do reclaims if we're using the zero-element dictionary
+        // constant.
+        if (DictLit->getNumElements() == 0 &&
+            Context.getLangOpts().ObjCRuntime.hasEmptyCollections())
+          return E;
+
         D = DictLit->getDictWithObjectsMethod();
       }
 
@@ -6159,7 +6161,7 @@ ExprResult Sema::ActOnDecltypeExpression(Expr *E) {
         return E;
       return new (Context) BinaryOperator(
           BO->getLHS(), RHS.get(), BO_Comma, BO->getType(), BO->getValueKind(),
-          BO->getObjectKind(), BO->getOperatorLoc(), BO->isFPContractable());
+          BO->getObjectKind(), BO->getOperatorLoc(), BO->getFPFeatures());
     }
   }
 
@@ -6748,7 +6750,8 @@ ExprResult Sema::BuildCXXMemberCallExpr(Expr *E, NamedDecl *FoundDecl,
       // follows the normal lifetime rules for block literals instead of being
       // autoreleased.
       DiagnosticErrorTrap Trap(Diags);
-      PushExpressionEvaluationContext(PotentiallyEvaluated);
+      PushExpressionEvaluationContext(
+          ExpressionEvaluationContext::PotentiallyEvaluated);
       ExprResult Exp = BuildBlockForLambdaConversion(E->getExprLoc(),
                                                      E->getExprLoc(),
                                                      Method, E);

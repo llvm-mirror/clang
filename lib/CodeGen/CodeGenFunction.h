@@ -1986,7 +1986,7 @@ public:
   /// pointer to a char.
   Address EmitMSVAListRef(const Expr *E);
 
-  /// EmitAnyExprToTemp - Similary to EmitAnyExpr(), however, the result will
+  /// EmitAnyExprToTemp - Similarly to EmitAnyExpr(), however, the result will
   /// always be accessible even if no aggregate location is provided.
   RValue EmitAnyExprToTemp(const Expr *E);
 
@@ -2077,9 +2077,8 @@ public:
   llvm::BlockAddress *GetAddrOfLabel(const LabelDecl *L);
   llvm::BasicBlock *GetIndirectGotoBlock();
 
-  /// Check if \p E is a reference, or a C++ "this" pointer wrapped in value-
-  /// preserving casts.
-  static bool IsDeclRefOrWrappedCXXThis(const Expr *E);
+  /// Check if \p E is a C++ "this" pointer wrapped in value-preserving casts.
+  static bool IsWrappedCXXThis(const Expr *E);
 
   /// EmitNullInitialization - Generate code to set a value of the given type to
   /// null, If the type contains data member pointers, they will be initialized
@@ -2465,6 +2464,12 @@ public:
   PeepholeProtection protectFromPeepholes(RValue rvalue);
   void unprotectFromPeepholes(PeepholeProtection protection);
 
+  void EmitAlignmentAssumption(llvm::Value *PtrValue, llvm::Value *Alignment,
+                               llvm::Value *OffsetValue = nullptr) {
+    Builder.CreateAlignmentAssumption(CGM.getDataLayout(), PtrValue, Alignment,
+                                      OffsetValue);
+  }
+
   //===--------------------------------------------------------------------===//
   //                             Statement Emission
   //===--------------------------------------------------------------------===//
@@ -2528,6 +2533,12 @@ public:
 
   void EmitCoroutineBody(const CoroutineBodyStmt &S);
   void EmitCoreturnStmt(const CoreturnStmt &S);
+  RValue EmitCoawaitExpr(const CoawaitExpr &E,
+                         AggValueSlot aggSlot = AggValueSlot::ignored(),
+                         bool ignoreResult = false);
+  RValue EmitCoyieldExpr(const CoyieldExpr &E,
+                         AggValueSlot aggSlot = AggValueSlot::ignored(),
+                         bool ignoreResult = false);
   RValue EmitCoroutineIntrinsic(const CallExpr *E, unsigned int IID);
 
   void EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock = false);
@@ -3511,6 +3522,9 @@ public:
   /// \brief Emit a call to trap or debugtrap and attach function attribute
   /// "trap-func-name" if specified.
   llvm::CallInst *EmitTrapCall(llvm::Intrinsic::ID IntrID);
+
+  /// \brief Emit a stub for the cross-DSO CFI check function.
+  void EmitCfiCheckStub();
 
   /// \brief Emit a cross-DSO CFI failure handling function.
   void EmitCfiCheckFail();

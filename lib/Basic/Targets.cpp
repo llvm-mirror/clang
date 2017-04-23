@@ -907,6 +907,7 @@ public:
     : TargetInfo(Triple), HasAltivec(false), HasVSX(false), HasP8Vector(false),
       HasP8Crypto(false), HasDirectMove(false), HasQPX(false), HasHTM(false),
       HasBPERMD(false), HasExtDiv(false), HasP9Vector(false) {
+    SuitableAlign = 128;
     SimdDefaultAlign = 128;
     LongDoubleWidth = LongDoubleAlign = 128;
     LongDoubleFormat = &llvm::APFloat::PPCDoubleDouble();
@@ -1236,13 +1237,21 @@ void PPCTargetInfo::getTargetDefines(const LangOptions &Opts,
   if (ABI == "elfv2")
     Builder.defineMacro("_CALL_ELF", "2");
 
+  // This typically is only for a new enough linker (bfd >= 2.16.2 or gold), but
+  // our suppport post-dates this and it should work on all 64-bit ppc linux
+  // platforms. It is guaranteed to work on all elfv2 platforms.
+  if (getTriple().getOS() == llvm::Triple::Linux && PointerWidth == 64)
+    Builder.defineMacro("_CALL_LINUX", "1");
+
   // Subtarget options.
   Builder.defineMacro("__NATURAL_ALIGNMENT__");
   Builder.defineMacro("__REGISTER_PREFIX__", "");
 
   // FIXME: Should be controlled by command line option.
-  if (LongDoubleWidth == 128)
+  if (LongDoubleWidth == 128) {
     Builder.defineMacro("__LONG_DOUBLE_128__");
+    Builder.defineMacro("__LONGDOUBLE128");
+  }
 
   // Define this for elfv2 (64-bit only) or 64-bit darwin.
   if (ABI == "elfv2" ||
@@ -1250,68 +1259,78 @@ void PPCTargetInfo::getTargetDefines(const LangOptions &Opts,
     Builder.defineMacro("__STRUCT_PARM_ALIGN__", "16");
 
   // CPU identification.
-  ArchDefineTypes defs = (ArchDefineTypes)llvm::StringSwitch<int>(CPU)
-    .Case("440",   ArchDefineName)
-    .Case("450",   ArchDefineName | ArchDefine440)
-    .Case("601",   ArchDefineName)
-    .Case("602",   ArchDefineName | ArchDefinePpcgr)
-    .Case("603",   ArchDefineName | ArchDefinePpcgr)
-    .Case("603e",  ArchDefineName | ArchDefine603 | ArchDefinePpcgr)
-    .Case("603ev", ArchDefineName | ArchDefine603 | ArchDefinePpcgr)
-    .Case("604",   ArchDefineName | ArchDefinePpcgr)
-    .Case("604e",  ArchDefineName | ArchDefine604 | ArchDefinePpcgr)
-    .Case("620",   ArchDefineName | ArchDefinePpcgr)
-    .Case("630",   ArchDefineName | ArchDefinePpcgr)
-    .Case("7400",  ArchDefineName | ArchDefinePpcgr)
-    .Case("7450",  ArchDefineName | ArchDefinePpcgr)
-    .Case("750",   ArchDefineName | ArchDefinePpcgr)
-    .Case("970",   ArchDefineName | ArchDefinePwr4 | ArchDefinePpcgr
-                     | ArchDefinePpcsq)
-    .Case("a2",    ArchDefineA2)
-    .Case("a2q",   ArchDefineName | ArchDefineA2 | ArchDefineA2q)
-    .Case("pwr3",  ArchDefinePpcgr)
-    .Case("pwr4",  ArchDefineName | ArchDefinePpcgr | ArchDefinePpcsq)
-    .Case("pwr5",  ArchDefineName | ArchDefinePwr4 | ArchDefinePpcgr
-                     | ArchDefinePpcsq)
-    .Case("pwr5x", ArchDefineName | ArchDefinePwr5 | ArchDefinePwr4
-                     | ArchDefinePpcgr | ArchDefinePpcsq)
-    .Case("pwr6",  ArchDefineName | ArchDefinePwr5x | ArchDefinePwr5
-                     | ArchDefinePwr4 | ArchDefinePpcgr | ArchDefinePpcsq)
-    .Case("pwr6x", ArchDefineName | ArchDefinePwr6 | ArchDefinePwr5x
-                     | ArchDefinePwr5 | ArchDefinePwr4 | ArchDefinePpcgr
-                     | ArchDefinePpcsq)
-    .Case("pwr7",  ArchDefineName | ArchDefinePwr6x | ArchDefinePwr6
-                     | ArchDefinePwr5x | ArchDefinePwr5 | ArchDefinePwr4
-                     | ArchDefinePpcgr | ArchDefinePpcsq)
-    .Case("pwr8",  ArchDefineName | ArchDefinePwr7 | ArchDefinePwr6x
-                     | ArchDefinePwr6 | ArchDefinePwr5x | ArchDefinePwr5
-                     | ArchDefinePwr4 | ArchDefinePpcgr | ArchDefinePpcsq)
-    .Case("pwr9",  ArchDefineName | ArchDefinePwr8 | ArchDefinePwr7
-                     | ArchDefinePwr6x | ArchDefinePwr6 | ArchDefinePwr5x
-                     | ArchDefinePwr5 | ArchDefinePwr4 | ArchDefinePpcgr
-                     | ArchDefinePpcsq)
-    .Case("power3",  ArchDefinePpcgr)
-    .Case("power4",  ArchDefinePwr4 | ArchDefinePpcgr | ArchDefinePpcsq)
-    .Case("power5",  ArchDefinePwr5 | ArchDefinePwr4 | ArchDefinePpcgr
-                       | ArchDefinePpcsq)
-    .Case("power5x", ArchDefinePwr5x | ArchDefinePwr5 | ArchDefinePwr4
-                       | ArchDefinePpcgr | ArchDefinePpcsq)
-    .Case("power6",  ArchDefinePwr6 | ArchDefinePwr5x | ArchDefinePwr5
-                       | ArchDefinePwr4 | ArchDefinePpcgr | ArchDefinePpcsq)
-    .Case("power6x", ArchDefinePwr6x | ArchDefinePwr6 | ArchDefinePwr5x
-                       | ArchDefinePwr5 | ArchDefinePwr4 | ArchDefinePpcgr
-                       | ArchDefinePpcsq)
-    .Case("power7",  ArchDefinePwr7 | ArchDefinePwr6x | ArchDefinePwr6
-                       | ArchDefinePwr5x | ArchDefinePwr5 | ArchDefinePwr4
-                       | ArchDefinePpcgr | ArchDefinePpcsq)
-    .Case("power8",  ArchDefinePwr8 | ArchDefinePwr7 | ArchDefinePwr6x
-                       | ArchDefinePwr6 | ArchDefinePwr5x | ArchDefinePwr5
-                       | ArchDefinePwr4 | ArchDefinePpcgr | ArchDefinePpcsq)
-    .Case("power9",  ArchDefinePwr9 | ArchDefinePwr8 | ArchDefinePwr7
-                       | ArchDefinePwr6x | ArchDefinePwr6 | ArchDefinePwr5x
-                       | ArchDefinePwr5 | ArchDefinePwr4 | ArchDefinePpcgr
-                       | ArchDefinePpcsq)
-    .Default(ArchDefineNone);
+  ArchDefineTypes defs =
+      (ArchDefineTypes)llvm::StringSwitch<int>(CPU)
+          .Case("440", ArchDefineName)
+          .Case("450", ArchDefineName | ArchDefine440)
+          .Case("601", ArchDefineName)
+          .Case("602", ArchDefineName | ArchDefinePpcgr)
+          .Case("603", ArchDefineName | ArchDefinePpcgr)
+          .Case("603e", ArchDefineName | ArchDefine603 | ArchDefinePpcgr)
+          .Case("603ev", ArchDefineName | ArchDefine603 | ArchDefinePpcgr)
+          .Case("604", ArchDefineName | ArchDefinePpcgr)
+          .Case("604e", ArchDefineName | ArchDefine604 | ArchDefinePpcgr)
+          .Case("620", ArchDefineName | ArchDefinePpcgr)
+          .Case("630", ArchDefineName | ArchDefinePpcgr)
+          .Case("7400", ArchDefineName | ArchDefinePpcgr)
+          .Case("7450", ArchDefineName | ArchDefinePpcgr)
+          .Case("750", ArchDefineName | ArchDefinePpcgr)
+          .Case("970", ArchDefineName | ArchDefinePwr4 | ArchDefinePpcgr |
+                           ArchDefinePpcsq)
+          .Case("a2", ArchDefineA2)
+          .Case("a2q", ArchDefineName | ArchDefineA2 | ArchDefineA2q)
+          .Case("pwr3", ArchDefinePpcgr)
+          .Case("pwr4", ArchDefineName | ArchDefinePpcgr | ArchDefinePpcsq)
+          .Case("pwr5", ArchDefineName | ArchDefinePwr4 | ArchDefinePpcgr |
+                            ArchDefinePpcsq)
+          .Case("pwr5x", ArchDefineName | ArchDefinePwr5 | ArchDefinePwr4 |
+                             ArchDefinePpcgr | ArchDefinePpcsq)
+          .Case("pwr6", ArchDefineName | ArchDefinePwr5x | ArchDefinePwr5 |
+                            ArchDefinePwr4 | ArchDefinePpcgr | ArchDefinePpcsq)
+          .Case("pwr6x", ArchDefineName | ArchDefinePwr6 | ArchDefinePwr5x |
+                             ArchDefinePwr5 | ArchDefinePwr4 | ArchDefinePpcgr |
+                             ArchDefinePpcsq)
+          .Case("pwr7", ArchDefineName | ArchDefinePwr6x | ArchDefinePwr6 |
+                            ArchDefinePwr5x | ArchDefinePwr5 | ArchDefinePwr4 |
+                            ArchDefinePpcgr | ArchDefinePpcsq)
+          .Case("pwr8", ArchDefineName | ArchDefinePwr7 | ArchDefinePwr6x |
+                            ArchDefinePwr6 | ArchDefinePwr5x | ArchDefinePwr5 |
+                            ArchDefinePwr4 | ArchDefinePpcgr | ArchDefinePpcsq)
+          .Case("pwr9", ArchDefineName | ArchDefinePwr8 | ArchDefinePwr7 |
+                            ArchDefinePwr6x | ArchDefinePwr6 | ArchDefinePwr5x |
+                            ArchDefinePwr5 | ArchDefinePwr4 | ArchDefinePpcgr |
+                            ArchDefinePpcsq)
+          .Case("power3", ArchDefinePpcgr)
+          .Case("power4", ArchDefinePwr4 | ArchDefinePpcgr | ArchDefinePpcsq)
+          .Case("power5", ArchDefinePwr5 | ArchDefinePwr4 | ArchDefinePpcgr |
+                              ArchDefinePpcsq)
+          .Case("power5x", ArchDefinePwr5x | ArchDefinePwr5 | ArchDefinePwr4 |
+                               ArchDefinePpcgr | ArchDefinePpcsq)
+          .Case("power6", ArchDefinePwr6 | ArchDefinePwr5x | ArchDefinePwr5 |
+                              ArchDefinePwr4 | ArchDefinePpcgr |
+                              ArchDefinePpcsq)
+          .Case("power6x", ArchDefinePwr6x | ArchDefinePwr6 | ArchDefinePwr5x |
+                               ArchDefinePwr5 | ArchDefinePwr4 |
+                               ArchDefinePpcgr | ArchDefinePpcsq)
+          .Case("power7", ArchDefinePwr7 | ArchDefinePwr6x | ArchDefinePwr6 |
+                              ArchDefinePwr5x | ArchDefinePwr5 |
+                              ArchDefinePwr4 | ArchDefinePpcgr |
+                              ArchDefinePpcsq)
+          .Case("power8", ArchDefinePwr8 | ArchDefinePwr7 | ArchDefinePwr6x |
+                              ArchDefinePwr6 | ArchDefinePwr5x |
+                              ArchDefinePwr5 | ArchDefinePwr4 |
+                              ArchDefinePpcgr | ArchDefinePpcsq)
+          .Case("power9", ArchDefinePwr9 | ArchDefinePwr8 | ArchDefinePwr7 |
+                              ArchDefinePwr6x | ArchDefinePwr6 |
+                              ArchDefinePwr5x | ArchDefinePwr5 |
+                              ArchDefinePwr4 | ArchDefinePpcgr |
+                              ArchDefinePpcsq)
+          // powerpc64le automatically defaults to at least power8.
+          .Case("ppc64le", ArchDefinePwr8 | ArchDefinePwr7 | ArchDefinePwr6x |
+                               ArchDefinePwr6 | ArchDefinePwr5x |
+                               ArchDefinePwr5 | ArchDefinePwr4 |
+                               ArchDefinePpcgr | ArchDefinePpcsq)
+          .Default(ArchDefineNone);
 
   if (defs & ArchDefineName)
     Builder.defineMacro(Twine("_ARCH_", StringRef(CPU).upper()));
@@ -1378,6 +1397,9 @@ void PPCTargetInfo::getTargetDefines(const LangOptions &Opts,
   if (PointerWidth == 64)
     Builder.defineMacro("__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8");
 
+  // We have support for the bswap intrinsics so we can define this.
+  Builder.defineMacro("__HAVE_BSWAP__", "1");
+
   // FIXME: The following are not yet generated here by Clang, but are
   //        generated by GCC:
   //
@@ -1390,8 +1412,6 @@ void PPCTargetInfo::getTargetDefines(const LangOptions &Opts,
   //   __RSQRTEF__
   //   _SOFT_DOUBLE_
   //   __NO_LWSYNC__
-  //   __HAVE_BSWAP__
-  //   __LONGDOUBLE128
   //   __CMODEL_MEDIUM__
   //   __CMODEL_LARGE__
   //   _CALL_SYSV
@@ -1528,28 +1548,30 @@ bool PPCTargetInfo::hasFeature(StringRef Feature) const {
 
 void PPCTargetInfo::setFeatureEnabled(llvm::StringMap<bool> &Features,
                                       StringRef Name, bool Enabled) const {
-  // If we're enabling direct-move or power8-vector go ahead and enable vsx
-  // as well. Do the inverse if we're disabling vsx. We'll diagnose any user
-  // incompatible options.
   if (Enabled) {
-    if (Name == "direct-move" ||
-        Name == "power8-vector" ||
-        Name == "float128" ||
-        Name == "power9-vector") {
-      // power9-vector is really a superset of power8-vector so encode that.
-      Features[Name] = Features["vsx"] = true;
-      if (Name == "power9-vector")
-        Features["power8-vector"] = true;
-    } else {
-      Features[Name] = true;
-    }
+    // If we're enabling any of the vsx based features then enable vsx and
+    // altivec. We'll diagnose any problems later.
+    bool FeatureHasVSX = llvm::StringSwitch<bool>(Name)
+                             .Case("vsx", true)
+                             .Case("direct-move", true)
+                             .Case("power8-vector", true)
+                             .Case("power9-vector", true)
+                             .Case("float128", true)
+                             .Default(false);
+    if (FeatureHasVSX)
+      Features["vsx"] = Features["altivec"] = true;
+    if (Name == "power9-vector")
+      Features["power8-vector"] = true;
+    Features[Name] = true;
   } else {
-    if (Name == "vsx") {
-      Features[Name] = Features["direct-move"] = Features["power8-vector"] =
+    // If we're disabling altivec or vsx go ahead and disable all of the vsx
+    // features.
+    if ((Name == "altivec") || (Name == "vsx"))
+      Features["vsx"] = Features["direct-move"] = Features["power8-vector"] =
           Features["float128"] = Features["power9-vector"] = false;
-    } else {
-      Features[Name] = false;
-    }
+    if (Name == "power8-vector")
+      Features["power9-vector"] = false;
+    Features[Name] = false;
   }
 }
 
@@ -1740,7 +1762,6 @@ public:
     BoolWidth = BoolAlign = 32; //XXX support -mone-byte-bool?
     PtrDiffType = SignedInt; // for http://llvm.org/bugs/show_bug.cgi?id=15726
     LongLongAlign = 32;
-    SuitableAlign = 128;
     resetDataLayout("E-m:o-p:32:32-f64:32:64-n32");
   }
   BuiltinVaListKind getBuiltinVaListKind() const override {
@@ -1753,12 +1774,12 @@ public:
   DarwinPPC64TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : DarwinTargetInfo<PPC64TargetInfo>(Triple, Opts) {
     HasAlignMac68kSupport = true;
-    SuitableAlign = 128;
     resetDataLayout("E-m:o-i64:64-n32:64");
   }
 };
 
 static const unsigned NVPTXAddrSpaceMap[] = {
+    0, // Default
     1, // opencl_global
     3, // opencl_local
     4, // opencl_constant
@@ -2012,14 +2033,25 @@ ArrayRef<const char *> NVPTXTargetInfo::getGCCRegNames() const {
   return llvm::makeArrayRef(GCCRegNames);
 }
 
-static const unsigned AMDGPUAddrSpaceMap[] = {
-  1,    // opencl_global
-  3,    // opencl_local
-  2,    // opencl_constant
-  4,    // opencl_generic
-  1,    // cuda_device
-  2,    // cuda_constant
-  3     // cuda_shared
+static const LangAS::Map AMDGPUPrivateIsZeroMap = {
+    4,  // Default
+    1,  // opencl_global
+    3,  // opencl_local
+    2,  // opencl_constant
+    4,  // opencl_generic
+    1,  // cuda_device
+    2,  // cuda_constant
+    3   // cuda_shared
+};
+static const LangAS::Map AMDGPUGenericIsZeroMap = {
+    0,  // Default
+    1,  // opencl_global
+    3,  // opencl_local
+    2,  // opencl_constant
+    0,  // opencl_generic
+    1,  // cuda_device
+    2,  // cuda_constant
+    3   // cuda_shared
 };
 
 // If you edit the description strings, make sure you update
@@ -2029,14 +2061,38 @@ static const char *const DataLayoutStringR600 =
   "e-p:32:32-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128"
   "-v192:256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64";
 
-static const char *const DataLayoutStringSI =
+static const char *const DataLayoutStringSIPrivateIsZero =
   "e-p:32:32-p1:64:64-p2:64:64-p3:32:32-p4:64:64-p5:32:32"
   "-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128"
   "-v192:256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64";
 
+static const char *const DataLayoutStringSIGenericIsZero =
+  "e-p:64:64-p1:64:64-p2:64:64-p3:32:32-p4:32:32-p5:32:32"
+  "-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128"
+  "-v192:256-v256:256-v512:512-v1024:1024-v2048:2048-n32:64-A5";
+
 class AMDGPUTargetInfo final : public TargetInfo {
   static const Builtin::Info BuiltinInfo[];
   static const char * const GCCRegNames[];
+
+  struct AddrSpace {
+    unsigned Generic, Global, Local, Constant, Private;
+    AddrSpace(bool IsGenericZero_ = false){
+      if (IsGenericZero_) {
+        Generic   = 0;
+        Global    = 1;
+        Local     = 3;
+        Constant  = 2;
+        Private   = 5;
+      } else {
+        Generic   = 4;
+        Global    = 1;
+        Local     = 3;
+        Constant  = 2;
+        Private   = 0;
+      }
+    }
+  };
 
   /// \brief The GPU profiles supported by the AMDGPU target.
   enum GPUKind {
@@ -2058,12 +2114,20 @@ class AMDGPUTargetInfo final : public TargetInfo {
   bool hasFP64:1;
   bool hasFMAF:1;
   bool hasLDEXPF:1;
-  bool hasFullSpeedFP32Denorms:1;
+  const AddrSpace AS;
+
+  static bool hasFullSpeedFMAF32(StringRef GPUName) {
+    return parseAMDGCNName(GPUName) >= GK_GFX9;
+  }
 
   static bool isAMDGCN(const llvm::Triple &TT) {
     return TT.getArch() == llvm::Triple::amdgcn;
   }
 
+  static bool isGenericZero(const llvm::Triple &TT) {
+    return TT.getEnvironmentName() == "amdgiz" ||
+        TT.getEnvironmentName() == "amdgizcl";
+  }
 public:
   AMDGPUTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
     : TargetInfo(Triple) ,
@@ -2071,17 +2135,21 @@ public:
       hasFP64(false),
       hasFMAF(false),
       hasLDEXPF(false),
-      hasFullSpeedFP32Denorms(false){
+      AS(isGenericZero(Triple)){
     if (getTriple().getArch() == llvm::Triple::amdgcn) {
       hasFP64 = true;
       hasFMAF = true;
       hasLDEXPF = true;
     }
-
+    auto IsGenericZero = isGenericZero(Triple);
     resetDataLayout(getTriple().getArch() == llvm::Triple::amdgcn ?
-                    DataLayoutStringSI : DataLayoutStringR600);
+                    (IsGenericZero ? DataLayoutStringSIGenericIsZero :
+                        DataLayoutStringSIPrivateIsZero)
+                    : DataLayoutStringR600);
+    assert(DataLayout->getAllocaAddrSpace() == AS.Private);
 
-    AddrSpaceMap = &AMDGPUAddrSpaceMap;
+    AddrSpaceMap = IsGenericZero ? &AMDGPUGenericIsZeroMap :
+        &AMDGPUPrivateIsZeroMap;
     UseAddrSpaceMapMangling = true;
   }
 
@@ -2089,14 +2157,10 @@ public:
     if (GPU <= GK_CAYMAN)
       return 32;
 
-    switch(AddrSpace) {
-      default:
-        return 64;
-      case 0:
-      case 3:
-      case 5:
-        return 32;
+    if (AddrSpace == AS.Private || AddrSpace == AS.Local) {
+      return 32;
     }
+    return 64;
   }
 
   uint64_t getMaxPointerWidth() const override {
@@ -2140,7 +2204,8 @@ public:
         hasFP64Denormals = true;
     }
     if (!hasFP32Denormals)
-      TargetOpts.Features.push_back((Twine(hasFullSpeedFP32Denorms &&
+      TargetOpts.Features.push_back(
+          (Twine(hasFullSpeedFMAF32(TargetOpts.CPU) &&
           !CGOpts.FlushDenorm ? '+' : '-') + Twine("fp32-denormals")).str());
     // Always do not flush fp64 or fp16 denorms.
     if (!hasFP64Denormals && hasFP64)
@@ -2289,12 +2354,13 @@ public:
   /// DWARF.
   Optional<unsigned> getDWARFAddressSpace(
       unsigned AddressSpace) const override {
-    switch (AddressSpace) {
-    case 0: // LLVM Private.
-      return 1; // DWARF Private.
-    case 3: // LLVM Local.
-      return 2; // DWARF Local.
-    default:
+    const unsigned DWARF_Private = 1;
+    const unsigned DWARF_Local   = 2;
+    if (AddressSpace == AS.Private) {
+      return DWARF_Private;
+    } else if (AddressSpace == AS.Local) {
+      return DWARF_Local;
+    } else {
       return None;
     }
   }
@@ -3137,6 +3203,7 @@ bool X86TargetInfo::initFeatureMap(
     setFeatureEnabledImpl(Features, "mpx", true);
     setFeatureEnabledImpl(Features, "sgx", true);
     setFeatureEnabledImpl(Features, "clflushopt", true);
+    setFeatureEnabledImpl(Features, "rtm", true);
     LLVM_FALLTHROUGH;
   case CK_Broadwell:
     setFeatureEnabledImpl(Features, "rdseed", true);
@@ -3147,7 +3214,6 @@ bool X86TargetInfo::initFeatureMap(
     setFeatureEnabledImpl(Features, "lzcnt", true);
     setFeatureEnabledImpl(Features, "bmi", true);
     setFeatureEnabledImpl(Features, "bmi2", true);
-    setFeatureEnabledImpl(Features, "rtm", true);
     setFeatureEnabledImpl(Features, "fma", true);
     setFeatureEnabledImpl(Features, "movbe", true);
     LLVM_FALLTHROUGH;
@@ -5401,8 +5467,10 @@ public:
     Builder.defineMacro("__arm__");
     // For bare-metal none-eabi.
     if (getTriple().getOS() == llvm::Triple::UnknownOS &&
-        getTriple().getEnvironment() == llvm::Triple::EABI)
+        (getTriple().getEnvironment() == llvm::Triple::EABI ||
+         getTriple().getEnvironment() == llvm::Triple::EABIHF))
       Builder.defineMacro("__ELF__");
+
 
     // Target properties.
     Builder.defineMacro("__REGISTER_PREFIX__", "");
@@ -6052,6 +6120,11 @@ public:
                         MacroBuilder &Builder) const override {
     // Target identification.
     Builder.defineMacro("__aarch64__");
+    // For bare-metal none-eabi.
+    if (getTriple().getOS() == llvm::Triple::UnknownOS &&
+        (getTriple().getEnvironment() == llvm::Triple::EABI ||
+         getTriple().getEnvironment() == llvm::Triple::EABIHF))
+      Builder.defineMacro("__ELF__");
 
     // Target properties.
     Builder.defineMacro("_LP64");
@@ -7351,6 +7424,7 @@ ArrayRef<const char *> MSP430TargetInfo::getGCCRegNames() const {
 // publicly available in http://tce.cs.tut.fi
 
 static const unsigned TCEOpenCLAddrSpaceMap[] = {
+    0, // Default
     3, // opencl_global
     4, // opencl_local
     5, // opencl_constant
@@ -8317,6 +8391,7 @@ const Builtin::Info Le64TargetInfo::BuiltinInfo[] = {
 };
 
 static const unsigned SPIRAddrSpaceMap[] = {
+    0, // Default
     1, // opencl_global
     3, // opencl_local
     2, // opencl_constant

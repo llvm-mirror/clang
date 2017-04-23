@@ -838,7 +838,7 @@ protected:
 
     /// Describes the kind of default argument for this parameter. By default
     /// this is none. If this is normal, then the default argument is stored in
-    /// the \c VarDecl initalizer expression unless we were unble to parse
+    /// the \c VarDecl initializer expression unless we were unable to parse
     /// (even an invalid) expression for the default argument.
     unsigned DefaultArgKind : 2;
 
@@ -2082,10 +2082,7 @@ public:
   const Attr *getUnusedResultAttr() const;
 
   /// \brief Returns true if this function or its return type has the
-  /// warn_unused_result attribute. If the return type has the attribute and
-  /// this function is a method of the return type's class, then false will be
-  /// returned to avoid spurious warnings on member methods such as assignment
-  /// operators.
+  /// warn_unused_result attribute.
   bool hasUnusedResultAttr() const { return getUnusedResultAttr() != nullptr; }
 
   /// \brief Returns the storage class as written in the source. For the

@@ -91,7 +91,6 @@ ModuleMap::ModuleMap(SourceManager &SourceMgr, DiagnosticsEngine &Diags,
       HeaderInfo(HeaderInfo), BuiltinIncludeDir(nullptr),
       SourceModule(nullptr), NumCreatedModules(0) {
   MMapLangOpts.LineComment = true;
-  MMapLangOpts.ModularCodegen = LangOpts.ModularCodegen;
 }
 
 ModuleMap::~ModuleMap() {
@@ -2003,9 +2002,8 @@ void ModuleMapParser::parseUmbrellaDirDecl(SourceLocation UmbrellaLoc) {
   }
   
   if (!Dir) {
-    Diags.Report(DirNameLoc, diag::err_mmap_umbrella_dir_not_found)
+    Diags.Report(DirNameLoc, diag::warn_mmap_umbrella_dir_not_found)
       << DirName;
-    HadError = true;
     return;
   }
 

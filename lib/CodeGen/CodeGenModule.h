@@ -28,6 +28,7 @@
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/Module.h"
 #include "clang/Basic/SanitizerBlacklist.h"
+#include "clang/Basic/XRayLists.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -1019,11 +1020,12 @@ public:
   /// \param CalleeInfo - The callee information these attributes are being
   /// constructed for. If valid, the attributes applied to this decl may
   /// contribute to the function attributes and calling convention.
-  /// \param PAL [out] - On return, the attribute list to use.
+  /// \param Attrs [out] - On return, the attribute list to use.
   /// \param CallingConv [out] - On return, the LLVM calling convention to use.
   void ConstructAttributeList(StringRef Name, const CGFunctionInfo &Info,
-                              CGCalleeInfo CalleeInfo, AttributeListType &PAL,
-                              unsigned &CallingConv, bool AttrOnCallSite);
+                              CGCalleeInfo CalleeInfo,
+                              llvm::AttributeList &Attrs, unsigned &CallingConv,
+                              bool AttrOnCallSite);
 
   /// Adds attributes to F according to our CodeGenOptions and LangOptions, as
   /// though we had emitted it ourselves.  We remove any attributes on F that
@@ -1125,6 +1127,12 @@ public:
                               QualType Ty,
                               StringRef Category = StringRef()) const;
 
+  /// Imbue XRay attributes to a function, applying the always/never attribute
+  /// lists in the process. Returns true if we did imbue attributes this way,
+  /// false otherwise.
+  bool imbueXRayAttrs(llvm::Function *Fn, SourceLocation Loc,
+                      StringRef Category = StringRef()) const;
+
   SanitizerMetadata *getSanitizerMetadata() {
     return SanitizerMD.get();
   }
@@ -1198,7 +1206,7 @@ public:
   void AddVTableTypeMetadata(llvm::GlobalVariable *VTable, CharUnits Offset,
                              const CXXRecordDecl *RD);
 
-  /// \breif Get the declaration of std::terminate for the platform.
+  /// \brief Get the declaration of std::terminate for the platform.
   llvm::Constant *getTerminateFn();
 
   llvm::SanitizerStatReport &getSanStats();

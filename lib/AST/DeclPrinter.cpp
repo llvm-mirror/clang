@@ -478,6 +478,11 @@ void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
 
   if (D->isFunctionTemplateSpecialization())
     Out << "template<> ";
+  else if (!D->getDescribedFunctionTemplate()) {
+    for (unsigned I = 0, NumTemplateParams = D->getNumTemplateParameterLists();
+         I < NumTemplateParams; ++I)
+      printTemplateParameters(D->getTemplateParameterList(I));
+  }
 
   CXXConstructorDecl *CDecl = dyn_cast<CXXConstructorDecl>(D);
   CXXConversionDecl *ConversionDecl = dyn_cast<CXXConversionDecl>(D);
@@ -504,7 +509,14 @@ void DeclPrinter::VisitFunctionDecl(FunctionDecl *D) {
 
   PrintingPolicy SubPolicy(Policy);
   SubPolicy.SuppressSpecifiers = false;
-  std::string Proto = D->getNameInfo().getAsString();
+  std::string Proto;
+  if (!Policy.SuppressScope) {
+    if (const NestedNameSpecifier *NS = D->getQualifier()) {
+      llvm::raw_string_ostream OS(Proto);
+      NS->print(OS, Policy);
+    }
+  }
+  Proto += D->getNameInfo().getAsString();
   if (GuideDecl)
     Proto = GuideDecl->getDeducedTemplate()->getDeclName().getAsString();
   if (const TemplateArgumentList *TArgs = D->getTemplateSpecializationArgs()) {
@@ -1048,6 +1060,12 @@ void DeclPrinter::VisitTemplateDecl(const TemplateDecl *D) {
 
 void DeclPrinter::VisitFunctionTemplateDecl(FunctionTemplateDecl *D) {
   prettyPrintPragmas(D->getTemplatedDecl());
+  // Print any leading template parameter lists.
+  if (const FunctionDecl *FD = D->getTemplatedDecl()) {
+    for (unsigned I = 0, NumTemplateParams = FD->getNumTemplateParameterLists();
+         I < NumTemplateParams; ++I)
+      printTemplateParameters(FD->getTemplateParameterList(I));
+  }
   VisitRedeclarableTemplateDecl(D);
 
   // Never print "instantiations" for deduction guides (they don't really
