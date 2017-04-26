@@ -42,6 +42,7 @@
 #include "clang/Sema/Scope.h"
 #include "clang/Sema/ScopeInfo.h"
 #include "clang/Sema/Template.h"
+#include "clang/Sema/Lambdalab.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/Triple.h"
 #include <algorithm>
@@ -367,6 +368,7 @@ ParsedType Sema::getTypeName(const IdentifierInfo &II, SourceLocation NameLoc,
   case LookupResult::FoundOverloaded:
   case LookupResult::FoundUnresolvedValue:
     Result.suppressDiagnostics();
+    lambdalab::UnresolvedVarRecorder::recordType({Result.getLookupName().getAsString(),Result.getNameLoc()});
     return ParsedType();
 
   case LookupResult::Ambiguous:
@@ -13027,6 +13029,9 @@ FieldDecl *Sema::HandleField(Scope *S, RecordDecl *Record,
   } else
     Record->addDecl(NewFD);
 
+  if (NewFD->getASTContext().DependentTy == NewFD->getType()) {
+    lambdalab::UnresolvedVarRecorder::addFeildDecl(NewFD);
+  }
   return NewFD;
 }
 
@@ -13050,13 +13055,14 @@ FieldDecl *Sema::CheckFieldDecl(DeclarationName Name, QualType T,
                                 Declarator *D) {
   IdentifierInfo *II = Name.getAsIdentifierInfo();
   bool InvalidDecl = false;
-  if (D) InvalidDecl = D->isInvalidType();
+  //if (D) InvalidDecl = D->isInvalidType();
 
   // If we receive a broken type, recover by assuming 'int' and
   // marking this declaration as invalid.
   if (T.isNull()) {
     InvalidDecl = true;
-    T = Context.IntTy;
+    //T = Context.IntTy;
+    T = Context.DependentTy;
   }
 
   QualType EltTy = Context.getBaseElementType(T);

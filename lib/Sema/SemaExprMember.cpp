@@ -884,6 +884,8 @@ static MemberExpr *BuildMemberExpr(
   MemberExpr *E = MemberExpr::Create(
       C, Base, isArrow, OpLoc, SS.getWithLocInContext(C), TemplateKWLoc, Member,
       FoundDecl, MemberNameInfo, TemplateArgs, Ty, VK, OK);
+  if(Ty == C.DependentTy)
+  	E->setTypeDependent(true);
   SemaRef.MarkMemberReferenced(E);
   return E;
 }

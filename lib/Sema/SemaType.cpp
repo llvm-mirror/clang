@@ -1540,8 +1540,9 @@ static QualType ConvertDeclSpecToType(TypeProcessingState &state) {
     break;
 
   case DeclSpec::TST_error:
-    Result = Context.IntTy;
-    declarator.setInvalidType(true);
+    //Result = Context.IntTy;
+    //declarator.setInvalidType(true);
+    Result = Context.DependentTy;
     break;
   }
 
