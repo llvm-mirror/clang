@@ -24,10 +24,10 @@ protected:
     DEBUG(llvm::errs() << "---\n");
     DEBUG(llvm::errs() << Code << "\n\n");
     std::vector<tooling::Range> Ranges(1, tooling::Range(Offset, Length));
-    bool IncompleteFormat = false;
+    FormattingAttemptStatus Status;
     tooling::Replacements Replaces =
-        reformat(Style, Code, Ranges, "<stdin>", &IncompleteFormat);
-    EXPECT_FALSE(IncompleteFormat);
+        reformat(Style, Code, Ranges, "<stdin>", &Status);
+    EXPECT_TRUE(Status.FormatComplete);
     auto Result = applyAllReplacements(Code, Replaces);
     EXPECT_TRUE(static_cast<bool>(Result));
     DEBUG(llvm::errs() << "\n" << *Result << "\n\n");
@@ -318,6 +318,25 @@ TEST_F(FormatTestJS, MethodsInObjectLiterals) {
                "};");
 }
 
+TEST_F(FormatTestJS, GettersSettersVisibilityKeywords) {
+  // Don't break after "protected"
+  verifyFormat("class X {\n"
+               "  protected get getter():\n"
+               "      number {\n"
+               "    return 1;\n"
+               "  }\n"
+               "}",
+               getGoogleJSStyleWithColumns(12));
+  // Don't break after "get"
+  verifyFormat("class X {\n"
+               "  protected get someReallyLongGetterName():\n"
+               "      number {\n"
+               "    return 1;\n"
+               "  }\n"
+               "}",
+               getGoogleJSStyleWithColumns(40));
+}
+
 TEST_F(FormatTestJS, SpacesInContainerLiterals) {
   verifyFormat("var arr = [1, 2, 3];");
   verifyFormat("f({a: 1, b: 2, c: 3});");
@@ -466,6 +485,20 @@ TEST_F(FormatTestJS, AsyncFunctions) {
                "  let x = 1;\n"
                "  return fetch(x);\n"
                "}");
+  verifyFormat("async function f() {\n"
+               "  return 1;\n"
+               "}\n"
+               "\n"
+               "function a() {\n"
+               "  return 1;\n"
+               "}\n",
+               "  async   function f() {\n"
+               "   return 1;\n"
+               "}\n"
+               "\n"
+               "   function a() {\n"
+               "  return   1;\n"
+               "}  \n");
   verifyFormat("async function* f() {\n"
                "  yield fetch(x);\n"
                "}");
@@ -473,6 +506,9 @@ TEST_F(FormatTestJS, AsyncFunctions) {
                "  return fetch(x);\n"
                "}");
   verifyFormat("let x = async () => f();");
+  verifyFormat("let x = async function() {\n"
+               "  f();\n"
+               "};");
   verifyFormat("let x = async();");
   verifyFormat("class X {\n"
                "  async asyncMethod() {\n"
@@ -1220,6 +1256,9 @@ TEST_F(FormatTestJS, MetadataAnnotations) {
                "}");
   verifyFormat("class X {}\n"
                "class Y {}");
+  verifyFormat("class X {\n"
+               "  @property() private isReply = false;\n"
+               "}\n");
 }
 
 TEST_F(FormatTestJS, TypeAliases) {
