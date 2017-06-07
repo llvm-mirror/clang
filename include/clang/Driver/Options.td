@@ -152,7 +152,7 @@ class InternalDriverOpt : Group<internal_driver_Group>,
   Flags<[DriverOption, HelpHidden]>;
 def driver_mode : Joined<["--"], "driver-mode=">, Group<internal_driver_Group>,
   Flags<[CoreOption, DriverOption, HelpHidden]>,
-  HelpText<"Set the driver mode to either 'gcc', 'g++', 'cpp', or 'cl'">;
+  HelpText<"Set the driver mode to either 'gcc', 'g++', 'cpp', 'cl', or 'fortran'">;
 def rsp_quoting : Joined<["--"], "rsp-quoting=">, Group<internal_driver_Group>,
   Flags<[CoreOption, DriverOption, HelpHidden]>,
   HelpText<"Set the rsp quoting to either 'posix', or 'windows'">;
@@ -2329,8 +2329,10 @@ def gfortran_Group : OptionGroup<"gfortran Group">;
 // Generic gfortran options.
 def A_DASH : Joined<["-"], "A-">, Group<gfortran_Group>;
 def J : JoinedOrSeparate<["-"], "J">, Flags<[RenderJoined]>, Group<gfortran_Group>;
-def cpp : Flag<["-"], "cpp">, Group<gfortran_Group>;
-def nocpp : Flag<["-"], "nocpp">, Group<gfortran_Group>;
+def cpp : Flag<["-"], "cpp">, Group<gfortran_Group>,
+  HelpText<"Preprocess Fortran files">;
+def nocpp : Flag<["-"], "nocpp">, Group<gfortran_Group>,
+  HelpText<"Don't preprocess Fortran files">;
 def static_libgfortran : Flag<["-"], "static-libgfortran">, Group<gfortran_Group>;
 
 // "f" options with values for gfortran.
@@ -2356,7 +2358,10 @@ defm aggressive_function_elimination : BooleanFFlag<"aggressive-function-elimina
 defm align_commons : BooleanFFlag<"align-commons">, Group<gfortran_Group>;
 defm all_intrinsics : BooleanFFlag<"all-intrinsics">, Group<gfortran_Group>;
 defm automatic : BooleanFFlag<"automatic">, Group<gfortran_Group>;
-defm backslash : BooleanFFlag<"backslash">, Group<gfortran_Group>;
+def fbackslash: Flag<["-"], "fbackslash">, Group<gfortran_Group>,
+  HelpText<"Treat backslash as C-style escape character">;
+def fnobackslash: Flag<["-"], "fno-backslash">, Group<gfortran_Group>,
+  HelpText<"Treat backslash like any other character in character strings">;
 defm backtrace : BooleanFFlag<"backtrace">, Group<gfortran_Group>;
 defm bounds_check : BooleanFFlag<"bounds-check">, Group<gfortran_Group>;
 defm check_array_temporaries : BooleanFFlag<"check-array-temporaries">, Group<gfortran_Group>;
@@ -2364,8 +2369,10 @@ defm cray_pointer : BooleanFFlag<"cray-pointer">, Group<gfortran_Group>;
 defm d_lines_as_code : BooleanFFlag<"d-lines-as-code">, Group<gfortran_Group>;
 defm d_lines_as_comments : BooleanFFlag<"d-lines-as-comments">, Group<gfortran_Group>;
 defm default_double_8 : BooleanFFlag<"default-double-8">, Group<gfortran_Group>;
-defm default_integer_8 : BooleanFFlag<"default-integer-8">, Group<gfortran_Group>;
-defm default_real_8 : BooleanFFlag<"default-real-8">, Group<gfortran_Group>;
+defm default_integer_8 : BooleanFFlag<"default-integer-8">, Group<gfortran_Group>,
+  HelpText<"Treat INTEGER and LOGICAL as INTEGER*8 and LOGICAL*8">;
+defm default_real_8 : BooleanFFlag<"default-real-8">, Group<gfortran_Group>,
+  HelpText<"Treat REAL as REAL*8">;
 defm dollar_ok : BooleanFFlag<"dollar-ok">, Group<gfortran_Group>;
 defm dump_fortran_optimized : BooleanFFlag<"dump-fortran-optimized">, Group<gfortran_Group>;
 defm dump_fortran_original : BooleanFFlag<"dump-fortran-original">, Group<gfortran_Group>;
@@ -2399,6 +2406,105 @@ defm stack_arrays : BooleanFFlag<"stack-arrays">, Group<gfortran_Group>;
 defm underscoring : BooleanFFlag<"underscoring">, Group<gfortran_Group>;
 defm whole_file : BooleanFFlag<"whole-file">, Group<gfortran_Group>;
 
+// Flang-specific options
+multiclass BooleanKFlag<string name> {
+  def _on : Flag<["-"], "K"#name>;
+  def _off : Flag<["-"], "Kno"#name>;
+}
+
+multiclass BooleanMFlag<string name> {
+  def _on : Flag<["-"], "M"#name>;
+  def _off : Flag<["-"], "Mno"#name>;
+}
+
+// Define a group for Fortran source format
+def fortran_format_Group : OptionGroup<"Fortran format Group">, Group<gfortran_Group>;
+def Mfixed : Flag<["-"], "Mfixed">, Group<fortran_format_Group>,
+  HelpText<"Force fixed-form format Fortran">;
+defm Mfree: BooleanMFlag<"free">, Group<fortran_format_Group>,
+  HelpText<"Enable or disable free-form format for Fortran">;
+defm Mfreeform: BooleanMFlag<"freeform">, Group<fortran_format_Group>,
+  HelpText<"Enable or disable free-form format for Fortran">;
+
+def Mipa: Joined<["-"], "Mipa">, Group<gfortran_Group>;
+def Mstackarrays: Joined<["-"], "Mstack_arrays">, Group<gfortran_Group>;
+def pc: JoinedOrSeparate<["-"], "pc">, Group<gfortran_Group>;
+def Mfprelaxed: Joined<["-"], "Mfprelaxed">, Group<gfortran_Group>;
+def Mnofprelaxed: Joined<["-"], "Mnofprelaxed">, Group<gfortran_Group>;
+defm Mstride0: BooleanMFlag<"stride0">, Group<gfortran_Group>;
+defm Mrecursive: BooleanMFlag<"recursive">, Group<gfortran_Group>;
+defm Mreentrant: BooleanMFlag<"reentrant">, Group<gfortran_Group>;
+defm Mbounds: BooleanMFlag<"bounds">, Group<gfortran_Group>;
+defm Mdaz: BooleanMFlag<"daz">, Group<gfortran_Group>,
+  HelpText<"Treat denormalized numbers as zero">;
+defm Kieee : BooleanKFlag<"ieee">, Group<gfortran_Group>,
+  HelpText<"Enable or disable IEEE division">;
+def Mextend : Flag<["-"], "Mextend">, Group<gfortran_Group>,
+  HelpText<"Allow lines up to 132 characters in Fortran sources">;
+def Mpreprocess : Flag<["-"], "Mpreprocess">, Group<gfortran_Group>,
+  HelpText<"Preprocess Fortran files">;
+def Mstandard: Flag<["-"], "Mstandard">, Group<gfortran_Group>,
+  HelpText<"Check Fortran standard conformance">;
+def Mchkptr: Flag<["-"], "Mchkptr">, Group<gfortran_Group>;
+def Minline: Flag<["-"], "Minline">, Group<gfortran_Group>;
+def fma: Flag<["-"], "fma">, Group<gfortran_Group>,
+  HelpText<"Enable generation of FMA instructions">;
+def nofma: Flag<["-"], "nofma">, Group<gfortran_Group>,
+  HelpText<"Disable generation of FMA instructions">;
+defm Mfma: BooleanMFlag<"fma">, Group<gfortran_Group>,
+  HelpText<"Enable generation of FMA instructions">;
+def mp: Flag<["-"], "mp">, Group<gfortran_Group>,
+  HelpText<"Enable OpenMP">;
+def nomp: Flag<["-"], "nomp">, Group<gfortran_Group>,
+  HelpText<"Do not link with OpenMP library libomp">;
+def pgf90libs: Flag<["-"], "pgf90libs">, Group<gfortran_Group>;
+defm Mflushz: BooleanMFlag<"flushz">, Group<gfortran_Group>,
+  HelpText<"Set SSE to flush-to-zero mode">;
+defm Msave: BooleanMFlag<"save">, Group<gfortran_Group>,
+  HelpText<"Assume all Fortran variables have SAVE attribute">;
+defm Mcache_align: BooleanMFlag<"cache_align">, Group<gfortran_Group>,
+  HelpText<"Align large objects on cache-line boundaries">;
+def ModuleDir : Separate<["-"], "module">, Group<gfortran_Group>,
+  HelpText<"Fortran module path">;
+def Minform_EQ : Joined<["-"], "Minform=">,
+  HelpText<"Set error level of messages to display">;
+def Mallocatable_EQ : Joined<["-"], "Mallocatable=">,
+  HelpText<"Select semantics for assignments to allocatables (F03 or F95)">;
+def Mbyteswapio: Flag<["-"], "Mbyteswapio">, Group<gfortran_Group>,
+  HelpText<"Swap byte-order for unformatted input/output">;
+def byteswapio: Flag<["-"], "byteswapio">, Group<gfortran_Group>,
+  HelpText<"Swap byte-order for unformatted input/output">;
+def Mbackslash: Flag<["-"], "Mbackslash">, Group<gfortran_Group>, Alias<fnobackslash>,
+  HelpText<"Treat backslash like any other character in character strings">;
+def Mnobackslash: Flag<["-"], "Mnobackslash">, Group<gfortran_Group>, Alias<fbackslash>,
+  HelpText<"Treat backslash as C-style escape character">;
+def staticFlangLibs: Flag<["-"], "static-flang-libs">, Group<gfortran_Group>,
+  HelpText<"Link using static Flang libraries">;
+def noFlangLibs: Flag<["-"], "no-flang-libs">, Group<gfortran_Group>,
+  HelpText<"Do not link against Flang libraries">;
+def r8: Flag<["-"], "r8">, Group<gfortran_Group>,
+  Alias<default_real_8_f>,
+  HelpText<"Treat REAL as REAL*8">;
+def i8: Flag<["-"], "i8">, Group<gfortran_Group>,
+  Alias<default_integer_8_f>,
+  HelpText<"Treat INTEGER and LOGICAL as INTEGER*8 and LOGICAL*8">;
+def no_fortran_main: Flag<["-"], "fno-fortran-main">, Group<gfortran_Group>,
+  HelpText<"Don't link in Fortran main">;
+def : Flag<["-"], "Mnomain">, Group<gfortran_Group>,
+  Alias<no_fortran_main>;
+
+// Flang internal debug options
+def Mx_EQ : Joined<["-"], "Mx,">, Group<gfortran_Group>;
+def My_EQ : Joined<["-"], "My,">, Group<gfortran_Group>;
+def Hx_EQ : Joined<["-"], "Hx,">, Group<gfortran_Group>;
+def Hy_EQ : Joined<["-"], "Hy,">, Group<gfortran_Group>;
+def Wm_EQ : Joined<["-"], "Wm,">, Group<gfortran_Group>;
+
+def Mq_EQ : Joined<["-"], "Mq,">, Group<gfortran_Group>;
+def Hq_EQ : Joined<["-"], "Hq,">, Group<gfortran_Group>;
+def Mqq_EQ : Joined<["-"], "Mqq,">, Group<gfortran_Group>;
+def Hqq_EQ : Joined<["-"], "Hqq,">, Group<gfortran_Group>;
+def Wh_EQ : Joined<["-"], "Wh,">, Group<gfortran_Group>;
 
 include "CC1Options.td"
 

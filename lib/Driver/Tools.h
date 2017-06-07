@@ -125,6 +125,24 @@ public:
                     const char *LinkingOutput) const override;
 };
 
+/// \brief Flang Fortran frontend
+class LLVM_LIBRARY_VISIBILITY FlangFrontend : public Tool {
+public:
+  FlangFrontend(const ToolChain &TC)
+      : Tool("flang:frontend",
+             "Fortran frontend to LLVM", TC,
+             RF_Full) {}
+
+  bool hasGoodDiagnostics() const override { return true; }
+  bool hasIntegratedAssembler() const override { return false; }
+  bool hasIntegratedCPP() const override { return false; }
+
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
+
 /// \brief Clang integrated assembler tool.
 class LLVM_LIBRARY_VISIBILITY ClangAs : public Tool {
 public:
