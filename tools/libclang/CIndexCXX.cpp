@@ -28,6 +28,16 @@ unsigned clang_isVirtualBase(CXCursor C) {
   return B->isVirtual();
 }
 
+
+unsigned clang_isAbstract(CXCursor C) {
+	if (C.kind != CXCursor_ClassDecl && C.kind != CXCursor_StructDecl)
+		return 0;
+
+	const CXXRecordDecl *R = static_cast<const CXXRecordDecl*>(C.data[0]);
+	return R->isAbstract();
+}
+
+
 enum CX_CXXAccessSpecifier clang_getCXXAccessSpecifier(CXCursor C) {
   AccessSpecifier spec = AS_none;
 
