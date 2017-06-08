@@ -42,6 +42,7 @@ to format C/C++/Obj-C code.
                                 -style=file, but can not find the .clang-format
                                 file to use.
                                 Use -fallback-style=none to skip formatting.
+                                Use -fallback-style=fail to exit with an error.
     -i                        - Inplace edit <file>s, if specified.
     -length=<uint>            - Format a range of this length (in bytes).
                                 Multiple ranges can be formatted by specifying

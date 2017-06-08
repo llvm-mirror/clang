@@ -10361,7 +10361,12 @@ TEST(FormatStyle, GetStyleOfFile) {
   ASSERT_TRUE((bool)Style2);
   ASSERT_EQ(*Style2, getNoStyle());
 
-  // Test 2.3: format if config is found with no based style while fallback is
+  // Test 2.3: no format on 'fail' fallback style.
+  Style2 = getStyle("file", "/b/test.cpp", "fail", "", &FS);
+  ASSERT_FALSE((bool)Style2);
+  llvm::consumeError(Style2.takeError());
+
+  // Test 2.4: format if config is found with no based style while fallback is
   // 'none'.
   ASSERT_TRUE(FS.addFile("/b/.clang-format", 0,
                          llvm::MemoryBuffer::getMemBuffer("IndentWidth: 2")));
@@ -10369,7 +10374,7 @@ TEST(FormatStyle, GetStyleOfFile) {
   ASSERT_TRUE((bool)Style2);
   ASSERT_EQ(*Style2, getLLVMStyle());
 
-  // Test 2.4: format if yaml with no based style, while fallback is 'none'.
+  // Test 2.5: format if yaml with no based style, while fallback is 'none'.
   Style2 = getStyle("{}", "a.h", "none", "", &FS);
   ASSERT_TRUE((bool)Style2);
   ASSERT_EQ(*Style2, getLLVMStyle());
