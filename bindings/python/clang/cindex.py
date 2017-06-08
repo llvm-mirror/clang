@@ -1555,6 +1555,16 @@ class Cursor(Structure):
         return AccessSpecifier.from_id(self._access_specifier)
 
     @property
+    def cursor_result_type(self):
+        """
+        Retrieve the return Type (if any) of the entity pointed at by the cursor.
+        """
+        if not hasattr(self, '_cursor_result_type'):
+            self._cursor_result_type = conf.lib.clang_getCursorResultType(self)
+
+        return self._cursor_result_type
+
+    @property
     def type(self):
         """
         Retrieve the Type (if any) of the entity pointed at by the cursor.
@@ -3408,6 +3418,11 @@ functionList = [
    [Cursor],
    Cursor,
    Cursor.from_result),
+
+  ("clang_getCursorResultType",
+   [Cursor],
+   Type,
+   Type.from_result),
 
   ("clang_getCursorReferenceNameRange",
    [Cursor, c_uint, c_uint],
