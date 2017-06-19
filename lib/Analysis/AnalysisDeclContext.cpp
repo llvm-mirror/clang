@@ -95,8 +95,8 @@ Stmt *AnalysisDeclContext::getBody(bool &IsAutosynthesized) const {
     if (auto *CoroBody = dyn_cast_or_null<CoroutineBodyStmt>(Body))
       Body = CoroBody->getBody();
     if (Manager && Manager->synthesizeBodies()) {
-      Stmt *SynthesizedBody =
-          getBodyFarm(getASTContext(), Manager->Injector.get()).getBody(FD);
+BodyFarm bf = BodyFarm(getASTContext(), Manager->Injector.get());
+bf.getBody(FD)
       if (SynthesizedBody) {
         Body = SynthesizedBody;
         IsAutosynthesized = true;
@@ -107,8 +107,8 @@ Stmt *AnalysisDeclContext::getBody(bool &IsAutosynthesized) const {
   else if (const ObjCMethodDecl *MD = dyn_cast<ObjCMethodDecl>(D)) {
     Stmt *Body = MD->getBody();
     if (Manager && Manager->synthesizeBodies()) {
-      Stmt *SynthesizedBody =
-          getBodyFarm(getASTContext(), Manager->Injector.get()).getBody(MD);
+BodyFarm bf = BodyFarm(getASTContext(), Manager->Injector.get());
+bf.getBody(FD)
       if (SynthesizedBody) {
         Body = SynthesizedBody;
         IsAutosynthesized = true;
