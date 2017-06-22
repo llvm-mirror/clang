@@ -36,7 +36,7 @@ struct CodeGenTypeCache {
   /// i8, i16, i32, and i64
   llvm::IntegerType *Int8Ty, *Int16Ty, *Int32Ty, *Int64Ty;
   /// float, double
-  llvm::Type *FloatTy, *DoubleTy;
+  llvm::Type *HalfTy, *FloatTy, *DoubleTy;
 
   /// int
   llvm::IntegerType *IntTy;
@@ -94,6 +94,8 @@ struct CodeGenTypeCache {
     unsigned char SizeAlignInBytes;
   };
 
+  unsigned ASTAllocaAddressSpace;
+
   CharUnits getSizeSize() const {
     return CharUnits::fromQuantity(SizeSizeInBytes);
   }
@@ -111,6 +113,8 @@ struct CodeGenTypeCache {
   llvm::CallingConv::ID getRuntimeCC() const { return RuntimeCC; }
   llvm::CallingConv::ID BuiltinCC;
   llvm::CallingConv::ID getBuiltinCC() const { return BuiltinCC; }
+
+  unsigned getASTAllocaAddressSpace() const { return ASTAllocaAddressSpace; }
 };
 
 }  // end namespace CodeGen

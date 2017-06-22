@@ -75,7 +75,7 @@ void *Decl::operator new(std::size_t Size, const ASTContext &Ctx,
   assert(!Parent || &Parent->getParentASTContext() == &Ctx);
   // With local visibility enabled, we track the owning module even for local
   // declarations.
-  if (Ctx.getLangOpts().ModulesLocalVisibility) {
+  if (Ctx.getLangOpts().trackLocalOwningModule()) {
     // Ensure required alignment of the resulting object by adding extra
     // padding at the start if required.
     size_t ExtraAlign =
@@ -83,7 +83,9 @@ void *Decl::operator new(std::size_t Size, const ASTContext &Ctx,
     char *Buffer = reinterpret_cast<char *>(
         ::operator new(ExtraAlign + sizeof(Module *) + Size + Extra, Ctx));
     Buffer += ExtraAlign;
-    return new (Buffer) Module*(nullptr) + 1;
+    auto *ParentModule =
+        Parent ? cast<Decl>(Parent)->getOwningModule() : nullptr;
+    return new (Buffer) Module*(ParentModule) + 1;
   }
   return ::operator new(Size + Extra, Ctx);
 }
@@ -94,7 +96,7 @@ Module *Decl::getOwningModuleSlow() const {
 }
 
 bool Decl::hasLocalOwningModuleStorage() const {
-  return getASTContext().getLangOpts().ModulesLocalVisibility;
+  return getASTContext().getLangOpts().trackLocalOwningModule();
 }
 
 const char *Decl::getDeclKindName() const {
@@ -272,7 +274,17 @@ void Decl::setLexicalDeclContext(DeclContext *DC) {
   } else {
     getMultipleDC()->LexicalDC = DC;
   }
-  Hidden = cast<Decl>(DC)->Hidden;
+
+  // FIXME: We shouldn't be changing the lexical context of declarations
+  // imported from AST files.
+  if (!isFromASTFile()) {
+    Hidden = cast<Decl>(DC)->Hidden && hasLocalOwningModuleStorage();
+    if (Hidden)
+      setLocalOwningModule(cast<Decl>(DC)->getOwningModule());
+  }
+
+  assert((!Hidden || getOwningModule()) &&
+         "hidden declaration has no owning module");
 }
 
 void Decl::setDeclContextsImpl(DeclContext *SemaDC, DeclContext *LexicalDC,
@@ -403,6 +415,27 @@ bool Decl::isExported() const {
   return false;
 }
 
+ExternalSourceSymbolAttr *Decl::getExternalSourceSymbolAttr() const {
+  const Decl *Definition = nullptr;
+  if (auto ID = dyn_cast<ObjCInterfaceDecl>(this)) {
+    Definition = ID->getDefinition();
+  } else if (auto PD = dyn_cast<ObjCProtocolDecl>(this)) {
+    Definition = PD->getDefinition();
+  } else if (auto TD = dyn_cast<TagDecl>(this)) {
+    Definition = TD->getDefinition();
+  }
+  if (!Definition)
+    Definition = this;
+
+  if (auto *attr = Definition->getAttr<ExternalSourceSymbolAttr>())
+    return attr;
+  if (auto *dcd = dyn_cast<Decl>(getDeclContext())) {
+    return dcd->getAttr<ExternalSourceSymbolAttr>();
+  }
+
+  return nullptr;
+}
+
 bool Decl::hasDefiningAttr() const {
   return hasAttr<AliasAttr>() || hasAttr<IFuncAttr>();
 }
@@ -415,8 +448,8 @@ const Attr *Decl::getDefiningAttr() const {
   return nullptr;
 }
 
-StringRef getRealizedPlatform(const AvailabilityAttr *A,
-                              const ASTContext &Context) {
+static StringRef getRealizedPlatform(const AvailabilityAttr *A,
+                                     const ASTContext &Context) {
   // Check if this is an App Extension "platform", and if so chop off
   // the suffix for matching with the actual platform.
   StringRef RealizedPlatform = A->getPlatform()->getName();
@@ -1319,7 +1352,7 @@ void DeclContext::removeDecl(Decl *D) {
     // Remove only decls that have a name
     if (!ND->getDeclName()) return;
 
-    auto *DC = this;
+    auto *DC = D->getDeclContext();
     do {
       StoredDeclsMap *Map = DC->getPrimaryContext()->LookupPtr;
       if (Map) {

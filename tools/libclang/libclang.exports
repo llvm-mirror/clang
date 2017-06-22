@@ -35,6 +35,7 @@ clang_Cursor_getReceiverType
 clang_Cursor_isAnonymous
 clang_Cursor_isBitField
 clang_Cursor_isDynamicCall
+clang_Cursor_isExternalSymbol
 clang_Cursor_isNull
 clang_Cursor_isObjCOptional
 clang_Cursor_isVariadic
@@ -146,6 +147,7 @@ clang_findReferencesInFile
 clang_findReferencesInFileWithBlock
 clang_formatDiagnostic
 clang_free
+clang_getAddressSpace
 clang_getAllSkippedRanges
 clang_getArgType
 clang_getArrayElementType
@@ -258,6 +260,7 @@ clang_getTypeDeclaration
 clang_getTypeKindSpelling
 clang_getTypeSpelling
 clang_getTypedefDeclUnderlyingType
+clang_getTypedefName
 clang_hashCursor
 clang_indexLoc_getCXSourceLocation
 clang_indexLoc_getFileLocation
@@ -304,6 +307,7 @@ clang_remap_getFilenames
 clang_remap_getNumFiles
 clang_reparseTranslationUnit
 clang_saveTranslationUnit
+clang_suspendTranslationUnit
 clang_sortCodeCompletionResults
 clang_toggleCrashRecovery
 clang_tokenize

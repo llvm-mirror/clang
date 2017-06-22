@@ -46,6 +46,8 @@ class InclusionRewriter : public PPCallbacks {
   std::map<unsigned, IncludedFile> FileIncludes;
   /// Tracks where inclusions that import modules are found.
   std::map<unsigned, const Module *> ModuleIncludes;
+  /// Tracks where inclusions that enter modules (in a module build) are found.
+  std::map<unsigned, const Module *> ModuleEntryIncludes;
   /// Used transitively for building up the FileIncludes mapping over the
   /// various \c PPCallbacks callbacks.
   SourceLocation LastInclusionLocation;
@@ -57,6 +59,11 @@ public:
     PredefinesBuffer = Buf;
   }
   void detectMainFileEOL();
+  void handleModuleBegin(Token &Tok) {
+    assert(Tok.getKind() == tok::annot_module_begin);
+    ModuleEntryIncludes.insert({Tok.getLocation().getRawEncoding(),
+                                (Module *)Tok.getAnnotationValue()});
+  }
 private:
   void FileChanged(SourceLocation Loc, FileChangeReason Reason,
                    SrcMgr::CharacteristicKind FileType,
@@ -84,6 +91,7 @@ private:
                         bool &FileExists);
   const IncludedFile *FindIncludeAtLocation(SourceLocation Loc) const;
   const Module *FindModuleAtLocation(SourceLocation Loc) const;
+  const Module *FindEnteredModule(SourceLocation Loc) const;
   StringRef NextIdentifierName(Lexer &RawLex, Token &RawToken);
 };
 
@@ -132,7 +140,7 @@ void InclusionRewriter::WriteLineInfo(StringRef Filename, int Line,
 }
 
 void InclusionRewriter::WriteImplicitModuleImport(const Module *Mod) {
-  OS << "#pragma clang module import " << Mod->getFullModuleName()
+  OS << "#pragma clang module import " << Mod->getFullModuleName(true)
      << " /* clang -frewrite-includes: implicit import */" << MainEOL;
 }
 
@@ -169,7 +177,9 @@ void InclusionRewriter::FileSkipped(const FileEntry &/*SkippedFile*/,
 /// directives. It does not say whether the file has been included, but it
 /// provides more information about the directive (hash location instead
 /// of location inside the included file). It is assumed that the matching
-/// FileChanged() or FileSkipped() is called after this.
+/// FileChanged() or FileSkipped() is called after this (or neither is
+/// called if this #include results in an error or does not textually include
+/// anything).
 void InclusionRewriter::InclusionDirective(SourceLocation HashLoc,
                                            const Token &/*IncludeTok*/,
                                            StringRef /*FileName*/,
@@ -179,9 +189,6 @@ void InclusionRewriter::InclusionDirective(SourceLocation HashLoc,
                                            StringRef /*SearchPath*/,
                                            StringRef /*RelativePath*/,
                                            const Module *Imported) {
-  assert(LastInclusionLocation.isInvalid() &&
-         "Another inclusion directive was found before the previous one "
-         "was processed");
   if (Imported) {
     auto P = ModuleIncludes.insert(
         std::make_pair(HashLoc.getRawEncoding(), Imported));
@@ -207,6 +214,16 @@ const Module *
 InclusionRewriter::FindModuleAtLocation(SourceLocation Loc) const {
   const auto I = ModuleIncludes.find(Loc.getRawEncoding());
   if (I != ModuleIncludes.end())
+    return I->second;
+  return nullptr;
+}
+
+/// Simple lookup for a SourceLocation (specifically one denoting the hash in
+/// an inclusion directive) in the map of module entry information.
+const Module *
+InclusionRewriter::FindEnteredModule(SourceLocation Loc) const {
+  const auto I = ModuleEntryIncludes.find(Loc.getRawEncoding());
+  if (I != ModuleEntryIncludes.end())
     return I->second;
   return nullptr;
 }
@@ -452,8 +469,18 @@ void InclusionRewriter::Process(FileID FileId,
             if (const Module *Mod = FindModuleAtLocation(Loc))
               WriteImplicitModuleImport(Mod);
             else if (const IncludedFile *Inc = FindIncludeAtLocation(Loc)) {
+              const Module *Mod = FindEnteredModule(Loc);
+              if (Mod)
+                OS << "#pragma clang module begin "
+                   << Mod->getFullModuleName(true) << "\n";
+
               // Include and recursively process the file.
               Process(Inc->Id, Inc->FileType);
+
+              if (Mod)
+                OS << "#pragma clang module end /*"
+                   << Mod->getFullModuleName(true) << "*/\n";
+
               // Add line marker to indicate we're returning from an included
               // file.
               LineInfoExtra = " 2";
@@ -590,6 +617,8 @@ void clang::RewriteIncludesInInput(Preprocessor &PP, raw_ostream *OS,
   PP.SetMacroExpansionOnlyInDirectives();
   do {
     PP.Lex(Tok);
+    if (Tok.is(tok::annot_module_begin))
+      Rewrite->handleModuleBegin(Tok);
   } while (Tok.isNot(tok::eof));
   Rewrite->setPredefinesBuffer(SM.getBuffer(PP.getPredefinesFileID()));
   Rewrite->Process(PP.getPredefinesFileID(), SrcMgr::C_User);

@@ -21,6 +21,7 @@
 #include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/Type.h"
+#include "clang/Basic/AddressSpaces.h"
 #include "clang/Frontend/ASTUnit.h"
 
 using namespace clang;
@@ -59,6 +60,13 @@ static CXTypeKind GetBuiltinTypeKind(const BuiltinType *BT) {
     BTCASE(ObjCId);
     BTCASE(ObjCClass);
     BTCASE(ObjCSel);
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) BTCASE(Id);
+#include "clang/Basic/OpenCLImageTypes.def"
+#undef IMAGE_TYPE
+    BTCASE(OCLSampler);
+    BTCASE(OCLEvent);
+    BTCASE(OCLQueue);
+    BTCASE(OCLReserveID);
   default:
     return CXType_Unexposed;
   }
@@ -94,6 +102,7 @@ static CXTypeKind GetTypeKind(QualType T) {
     TKCASE(MemberPointer);
     TKCASE(Auto);
     TKCASE(Elaborated);
+    TKCASE(Pipe);
     default:
       return CXType_Unexposed;
   }
@@ -386,6 +395,27 @@ unsigned clang_isRestrictQualifiedType(CXType CT) {
   return T.isLocalRestrictQualified();
 }
 
+unsigned clang_getAddressSpace(CXType CT) {
+  QualType T = GetQualType(CT);
+
+  // For non language-specific address space, use separate helper function.
+  if (T.getAddressSpace() >= LangAS::FirstTargetAddressSpace) {
+    return T.getQualifiers().getAddressSpaceAttributePrintValue();
+  }
+  return T.getAddressSpace();
+}
+
+CXString clang_getTypedefName(CXType CT) {
+  QualType T = GetQualType(CT);
+  const TypedefType *TT = T->getAs<TypedefType>();
+  if (TT) {
+    TypedefNameDecl *TD = TT->getDecl();
+    if (TD)
+      return cxstring::createDup(TD->getNameAsString().c_str());
+  }
+  return cxstring::createEmpty();
+}
+
 CXType clang_getPointeeType(CXType CT) {
   QualType T = GetQualType(CT);
   const Type *TP = T.getTypePtrOrNull();
@@ -535,6 +565,14 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
     TKIND(MemberPointer);
     TKIND(Auto);
     TKIND(Elaborated);
+    TKIND(Pipe);
+#define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) TKIND(Id);
+#include "clang/Basic/OpenCLImageTypes.def"
+#undef IMAGE_TYPE
+    TKIND(OCLSampler);
+    TKIND(OCLEvent);
+    TKIND(OCLQueue);
+    TKIND(OCLReserveID);
   }
 #undef TKIND
   return cxstring::createRef(s);

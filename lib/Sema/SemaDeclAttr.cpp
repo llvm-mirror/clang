@@ -238,7 +238,7 @@ static typename std::enable_if<std::is_base_of<clang::Attr, AttrInfo>::value,
 getAttrName(const AttrInfo &Attr) {
   return &Attr;
 }
-const IdentifierInfo *getAttrName(const clang::AttributeList &Attr) {
+static const IdentifierInfo *getAttrName(const clang::AttributeList &Attr) {
   return Attr.getName();
 }
 
@@ -313,8 +313,8 @@ static bool checkAttrMutualExclusion(Sema &S, Decl *D, SourceRange Range,
 /// \returns true if IdxExpr is a valid index.
 template <typename AttrInfo>
 static bool checkFunctionOrMethodParameterIndex(
-    Sema &S, const Decl *D, const AttrInfo& Attr,
-    unsigned AttrArgNum, const Expr *IdxExpr, uint64_t &Idx) {
+    Sema &S, const Decl *D, const AttrInfo &Attr, unsigned AttrArgNum,
+    const Expr *IdxExpr, uint64_t &Idx, bool AllowImplicitThis = false) {
   assert(isFunctionOrMethodOrBlock(D));
 
   // In C++ the implicit 'this' function parameter also counts.
@@ -341,7 +341,7 @@ static bool checkFunctionOrMethodParameterIndex(
     return false;
   }
   Idx--; // Convert to zero-based.
-  if (HasImplicitThisParam) {
+  if (HasImplicitThisParam && !AllowImplicitThis) {
     if (Idx == 0) {
       S.Diag(getAttrLoc(Attr),
              diag::err_attribute_invalid_implicit_this_argument)
@@ -949,7 +949,7 @@ static bool checkFunctionConditionAttr(Sema &S, Decl *D,
     Msg = "<no message provided>";
 
   SmallVector<PartialDiagnosticAt, 8> Diags;
-  if (!Cond->isValueDependent() &&
+  if (isa<FunctionDecl>(D) && !Cond->isValueDependent() &&
       !Expr::isPotentialConstantExprUnevaluated(Cond, cast<FunctionDecl>(D),
                                                 Diags)) {
     S.Diag(Attr.getLoc(), diag::err_attr_cond_never_constant_expr)
@@ -1037,10 +1037,11 @@ static void handleDiagnoseIfAttr(Sema &S, Decl *D, const AttributeList &Attr) {
     return;
   }
 
-  auto *FD = cast<FunctionDecl>(D);
-  bool ArgDependent = ArgumentDependenceChecker(FD).referencesArgs(Cond);
+  bool ArgDependent = false;
+  if (const auto *FD = dyn_cast<FunctionDecl>(D))
+    ArgDependent = ArgumentDependenceChecker(FD).referencesArgs(Cond);
   D->addAttr(::new (S.Context) DiagnoseIfAttr(
-      Attr.getRange(), S.Context, Cond, Msg, DiagType, ArgDependent, FD,
+      Attr.getRange(), S.Context, Cond, Msg, DiagType, ArgDependent, cast<NamedDecl>(D),
       Attr.getAttributeSpellingListIndex()));
 }
 
@@ -2891,6 +2892,28 @@ static void handleWorkGroupSize(Sema &S, Decl *D,
                                        Attr.getAttributeSpellingListIndex()));
 }
 
+// Handles intel_reqd_sub_group_size.
+static void handleSubGroupSize(Sema &S, Decl *D, const AttributeList &Attr) {
+  uint32_t SGSize;
+  const Expr *E = Attr.getArgAsExpr(0);
+  if (!checkUInt32Argument(S, Attr, E, SGSize))
+    return;
+  if (SGSize == 0) {
+    S.Diag(Attr.getLoc(), diag::err_attribute_argument_is_zero)
+        << Attr.getName() << E->getSourceRange();
+    return;
+  }
+
+  OpenCLIntelReqdSubGroupSizeAttr *Existing =
+      D->getAttr<OpenCLIntelReqdSubGroupSizeAttr>();
+  if (Existing && Existing->getSubGroupSize() != SGSize)
+    S.Diag(Attr.getLoc(), diag::warn_duplicate_attribute) << Attr.getName();
+
+  D->addAttr(::new (S.Context) OpenCLIntelReqdSubGroupSizeAttr(
+      Attr.getRange(), S.Context, SGSize,
+      Attr.getAttributeSpellingListIndex()));
+}
+
 static void handleVecTypeHint(Sema &S, Decl *D, const AttributeList &Attr) {
   if (!Attr.hasParsedType()) {
     S.Diag(Attr.getLoc(), diag::err_attribute_wrong_number_arguments)
@@ -4581,14 +4604,16 @@ static void handleTypeTagForDatatypeAttr(Sema &S, Decl *D,
 static void handleXRayLogArgsAttr(Sema &S, Decl *D,
                                   const AttributeList &Attr) {
   uint64_t ArgCount;
+
   if (!checkFunctionOrMethodParameterIndex(S, D, Attr, 1, Attr.getArgAsExpr(0),
-                                           ArgCount))
+                                           ArgCount,
+                                           true /* AllowImplicitThis*/))
     return;
 
   // ArgCount isn't a parameter index [0;n), it's a count [1;n] - hence + 1.
   D->addAttr(::new (S.Context)
-             XRayLogArgsAttr(Attr.getRange(), S.Context, ++ArgCount,
-             Attr.getAttributeSpellingListIndex()));
+                 XRayLogArgsAttr(Attr.getRange(), S.Context, ++ArgCount,
+                                 Attr.getAttributeSpellingListIndex()));
 }
 
 //===----------------------------------------------------------------------===//
@@ -5056,6 +5081,15 @@ static void handleUuidAttr(Sema &S, Decl *D, const AttributeList &Attr) {
       return;
     }
   }
+
+  // FIXME: It'd be nice to also emit a fixit removing uuid(...) (and, if it's
+  // the only thing in the [] list, the [] too), and add an insertion of
+  // __declspec(uuid(...)).  But sadly, neither the SourceLocs of the commas
+  // separating attributes nor of the [ and the ] are in the AST.
+  // Cf "SourceLocations of attribute list delimiters - [[ ... , ... ]] etc"
+  // on cfe-dev.
+  if (Attr.isMicrosoftAttribute()) // Check for [uuid(...)] spelling.
+    S.Diag(Attr.getLoc(), diag::warn_atl_uuid_deprecated);
 
   UuidAttr *UA = S.mergeUuidAttr(D, Attr.getRange(),
                                  Attr.getAttributeSpellingListIndex(), StrRef);
@@ -5904,11 +5938,17 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     handleDLLAttr(S, D, Attr);
     break;
   case AttributeList::AT_Mips16:
-    handleSimpleAttributeWithExclusions<Mips16Attr, MipsInterruptAttr>(S, D,
-                                                                       Attr);
+    handleSimpleAttributeWithExclusions<Mips16Attr, MicroMipsAttr,
+                                        MipsInterruptAttr>(S, D, Attr);
     break;
   case AttributeList::AT_NoMips16:
     handleSimpleAttribute<NoMips16Attr>(S, D, Attr);
+    break;
+  case AttributeList::AT_MicroMips:
+    handleSimpleAttributeWithExclusions<MicroMipsAttr, Mips16Attr>(S, D, Attr);
+    break;
+  case AttributeList::AT_NoMicroMips:
+    handleSimpleAttribute<NoMicroMipsAttr>(S, D, Attr);
     break;
   case AttributeList::AT_AMDGPUFlatWorkGroupSize:
     handleAMDGPUFlatWorkGroupSizeAttr(S, D, Attr);
@@ -6156,6 +6196,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
   case AttributeList::AT_ReqdWorkGroupSize:
     handleWorkGroupSize<ReqdWorkGroupSizeAttr>(S, D, Attr);
+    break;
+  case AttributeList::AT_OpenCLIntelReqdSubGroupSize:
+    handleSubGroupSize(S, D, Attr);
     break;
   case AttributeList::AT_VecTypeHint:
     handleVecTypeHint(S, D, Attr);
@@ -6520,6 +6563,9 @@ void Sema::ProcessDeclAttributeList(Scope *S, Decl *D,
     } else if (Attr *A = D->getAttr<AMDGPUNumVGPRAttr>()) {
       Diag(D->getLocation(), diag::err_attribute_wrong_decl_type)
         << A << ExpectedKernelFunction;
+      D->setInvalidDecl();
+    } else if (Attr *A = D->getAttr<OpenCLIntelReqdSubGroupSizeAttr>()) {
+      Diag(D->getLocation(), diag::err_opencl_kernel_attr) << A;
       D->setInvalidDecl();
     }
   }
@@ -7104,6 +7150,69 @@ void Sema::EmitAvailabilityWarning(AvailabilityResult AR,
 
 namespace {
 
+/// Returns true if the given statement can be a body-like child of \p Parent.
+bool isBodyLikeChildStmt(const Stmt *S, const Stmt *Parent) {
+  switch (Parent->getStmtClass()) {
+  case Stmt::IfStmtClass:
+    return cast<IfStmt>(Parent)->getThen() == S ||
+           cast<IfStmt>(Parent)->getElse() == S;
+  case Stmt::WhileStmtClass:
+    return cast<WhileStmt>(Parent)->getBody() == S;
+  case Stmt::DoStmtClass:
+    return cast<DoStmt>(Parent)->getBody() == S;
+  case Stmt::ForStmtClass:
+    return cast<ForStmt>(Parent)->getBody() == S;
+  case Stmt::CXXForRangeStmtClass:
+    return cast<CXXForRangeStmt>(Parent)->getBody() == S;
+  case Stmt::ObjCForCollectionStmtClass:
+    return cast<ObjCForCollectionStmt>(Parent)->getBody() == S;
+  case Stmt::CaseStmtClass:
+  case Stmt::DefaultStmtClass:
+    return cast<SwitchCase>(Parent)->getSubStmt() == S;
+  default:
+    return false;
+  }
+}
+
+class StmtUSEFinder : public RecursiveASTVisitor<StmtUSEFinder> {
+  const Stmt *Target;
+
+public:
+  bool VisitStmt(Stmt *S) { return S != Target; }
+
+  /// Returns true if the given statement is present in the given declaration.
+  static bool isContained(const Stmt *Target, const Decl *D) {
+    StmtUSEFinder Visitor;
+    Visitor.Target = Target;
+    return !Visitor.TraverseDecl(const_cast<Decl *>(D));
+  }
+};
+
+/// Traverses the AST and finds the last statement that used a given
+/// declaration.
+class LastDeclUSEFinder : public RecursiveASTVisitor<LastDeclUSEFinder> {
+  const Decl *D;
+
+public:
+  bool VisitDeclRefExpr(DeclRefExpr *DRE) {
+    if (DRE->getDecl() == D)
+      return false;
+    return true;
+  }
+
+  static const Stmt *findLastStmtThatUsesDecl(const Decl *D,
+                                              const CompoundStmt *Scope) {
+    LastDeclUSEFinder Visitor;
+    Visitor.D = D;
+    for (auto I = Scope->body_rbegin(), E = Scope->body_rend(); I != E; ++I) {
+      const Stmt *S = *I;
+      if (!Visitor.TraverseStmt(const_cast<Stmt *>(S)))
+        return S;
+    }
+    return nullptr;
+  }
+};
+
 /// \brief This class implements -Wunguarded-availability.
 ///
 /// This is done with a traversal of the AST of a function that makes reference
@@ -7119,6 +7228,7 @@ class DiagnoseUnguardedAvailability
 
   /// Stack of potentially nested 'if (@available(...))'s.
   SmallVector<VersionTuple, 8> AvailabilityStack;
+  SmallVector<const Stmt *, 16> StmtStack;
 
   void DiagnoseDeclAvailability(NamedDecl *D, SourceRange Range);
 
@@ -7129,9 +7239,33 @@ public:
         SemaRef.Context.getTargetInfo().getPlatformMinVersion());
   }
 
+  bool TraverseDecl(Decl *D) {
+    // Avoid visiting nested functions to prevent duplicate warnings.
+    if (!D || isa<FunctionDecl>(D))
+      return true;
+    return Base::TraverseDecl(D);
+  }
+
+  bool TraverseStmt(Stmt *S) {
+    if (!S)
+      return true;
+    StmtStack.push_back(S);
+    bool Result = Base::TraverseStmt(S);
+    StmtStack.pop_back();
+    return Result;
+  }
+
   void IssueDiagnostics(Stmt *S) { TraverseStmt(S); }
 
   bool TraverseIfStmt(IfStmt *If);
+
+  bool TraverseLambdaExpr(LambdaExpr *E) { return true; }
+
+  bool VisitObjCPropertyRefExpr(ObjCPropertyRefExpr *PRE) {
+    if (PRE->isClassReceiver())
+      DiagnoseDeclAvailability(PRE->getClassReceiver(), PRE->getReceiverLocation());
+    return true;
+  }
 
   bool VisitObjCMessageExpr(ObjCMessageExpr *Msg) {
     if (ObjCMethodDecl *D = Msg->getMethodDecl())
@@ -7149,6 +7283,12 @@ public:
   bool VisitMemberExpr(MemberExpr *ME) {
     DiagnoseDeclAvailability(ME->getMemberDecl(),
                              SourceRange(ME->getLocStart(), ME->getLocEnd()));
+    return true;
+  }
+
+  bool VisitObjCAvailabilityCheckExpr(ObjCAvailabilityCheckExpr *E) {
+    SemaRef.Diag(E->getLocStart(), diag::warn_at_available_unchecked_use)
+        << (!SemaRef.getLangOpts().ObjC1);
     return true;
   }
 
@@ -7186,15 +7326,84 @@ void DiagnoseUnguardedAvailability::DiagnoseDeclAvailability(
     SemaRef.Diag(D->getLocation(), diag::note_availability_specified_here)
         << D << /* partial */ 3;
 
-    // FIXME: Replace this with a fixit diagnostic.
-    SemaRef.Diag(Range.getBegin(), diag::note_unguarded_available_silence)
-        << Range << D;
+    auto FixitDiag =
+        SemaRef.Diag(Range.getBegin(), diag::note_unguarded_available_silence)
+        << Range << D
+        << (SemaRef.getLangOpts().ObjC1 ? /*@available*/ 0
+                                        : /*__builtin_available*/ 1);
+
+    // Find the statement which should be enclosed in the if @available check.
+    if (StmtStack.empty())
+      return;
+    const Stmt *StmtOfUse = StmtStack.back();
+    const CompoundStmt *Scope = nullptr;
+    for (const Stmt *S : llvm::reverse(StmtStack)) {
+      if (const auto *CS = dyn_cast<CompoundStmt>(S)) {
+        Scope = CS;
+        break;
+      }
+      if (isBodyLikeChildStmt(StmtOfUse, S)) {
+        // The declaration won't be seen outside of the statement, so we don't
+        // have to wrap the uses of any declared variables in if (@available).
+        // Therefore we can avoid setting Scope here.
+        break;
+      }
+      StmtOfUse = S;
+    }
+    const Stmt *LastStmtOfUse = nullptr;
+    if (isa<DeclStmt>(StmtOfUse) && Scope) {
+      for (const Decl *D : cast<DeclStmt>(StmtOfUse)->decls()) {
+        if (StmtUSEFinder::isContained(StmtStack.back(), D)) {
+          LastStmtOfUse = LastDeclUSEFinder::findLastStmtThatUsesDecl(D, Scope);
+          break;
+        }
+      }
+    }
+
+    const SourceManager &SM = SemaRef.getSourceManager();
+    SourceLocation IfInsertionLoc =
+        SM.getExpansionLoc(StmtOfUse->getLocStart());
+    SourceLocation StmtEndLoc =
+        SM.getExpansionRange(
+              (LastStmtOfUse ? LastStmtOfUse : StmtOfUse)->getLocEnd())
+            .second;
+    if (SM.getFileID(IfInsertionLoc) != SM.getFileID(StmtEndLoc))
+      return;
+
+    StringRef Indentation = Lexer::getIndentationForLine(IfInsertionLoc, SM);
+    const char *ExtraIndentation = "    ";
+    std::string FixItString;
+    llvm::raw_string_ostream FixItOS(FixItString);
+    FixItOS << "if (" << (SemaRef.getLangOpts().ObjC1 ? "@available"
+                                                      : "__builtin_available")
+            << "("
+            << AvailabilityAttr::getPlatformNameSourceSpelling(
+                   SemaRef.getASTContext().getTargetInfo().getPlatformName())
+            << " " << Introduced.getAsString() << ", *)) {\n"
+            << Indentation << ExtraIndentation;
+    FixitDiag << FixItHint::CreateInsertion(IfInsertionLoc, FixItOS.str());
+    SourceLocation ElseInsertionLoc = Lexer::findLocationAfterToken(
+        StmtEndLoc, tok::semi, SM, SemaRef.getLangOpts(),
+        /*SkipTrailingWhitespaceAndNewLine=*/false);
+    if (ElseInsertionLoc.isInvalid())
+      ElseInsertionLoc =
+          Lexer::getLocForEndOfToken(StmtEndLoc, 0, SM, SemaRef.getLangOpts());
+    FixItOS.str().clear();
+    FixItOS << "\n"
+            << Indentation << "} else {\n"
+            << Indentation << ExtraIndentation
+            << "// Fallback on earlier versions\n"
+            << Indentation << "}";
+    FixitDiag << FixItHint::CreateInsertion(ElseInsertionLoc, FixItOS.str());
   }
 }
 
 bool DiagnoseUnguardedAvailability::VisitTypeLoc(TypeLoc Ty) {
   const Type *TyPtr = Ty.getTypePtr();
   SourceRange Range{Ty.getBeginLoc(), Ty.getEndLoc()};
+
+  if (Range.isInvalid())
+    return true;
 
   if (const TagType *TT = dyn_cast<TagType>(TyPtr)) {
     TagDecl *TD = TT->getDecl();

@@ -1860,12 +1860,14 @@ static void AddOrdinaryNameResults(Sema::ParserCompletionContext CCC,
 
     AddStaticAssertResult(Builder, Results, SemaRef.getLangOpts());
   }
+  LLVM_FALLTHROUGH;
 
   // Fall through (for statement expressions).
   case Sema::PCC_ForInit:
   case Sema::PCC_Condition:
     AddStorageSpecifiers(CCC, SemaRef.getLangOpts(), Results);
     // Fall through: conditions and statements can have expressions.
+    LLVM_FALLTHROUGH;
 
   case Sema::PCC_ParenthesizedExpression:
     if (SemaRef.getLangOpts().ObjCAutoRefCount &&
@@ -1895,6 +1897,7 @@ static void AddOrdinaryNameResults(Sema::ParserCompletionContext CCC,
       Results.AddResult(Result(Builder.TakeString()));      
     }
     // Fall through
+    LLVM_FALLTHROUGH;
 
   case Sema::PCC_Expression: {
     if (SemaRef.getLangOpts().CPlusPlus) {
@@ -3869,6 +3872,41 @@ static void AddObjCProperties(
   }
 }
 
+static void AddRecordMembersCompletionResults(Sema &SemaRef,
+                                              ResultBuilder &Results, Scope *S,
+                                              QualType BaseType,
+                                              RecordDecl *RD) {
+  // Indicate that we are performing a member access, and the cv-qualifiers
+  // for the base object type.
+  Results.setObjectTypeQualifiers(BaseType.getQualifiers());
+
+  // Access to a C/C++ class, struct, or union.
+  Results.allowNestedNameSpecifiers();
+  CodeCompletionDeclConsumer Consumer(Results, SemaRef.CurContext);
+  SemaRef.LookupVisibleDecls(RD, Sema::LookupMemberName, Consumer,
+                             SemaRef.CodeCompleter->includeGlobals(),
+                             /*IncludeDependentBases=*/true);
+
+  if (SemaRef.getLangOpts().CPlusPlus) {
+    if (!Results.empty()) {
+      // The "template" keyword can follow "->" or "." in the grammar.
+      // However, we only want to suggest the template keyword if something
+      // is dependent.
+      bool IsDependent = BaseType->isDependentType();
+      if (!IsDependent) {
+        for (Scope *DepScope = S; DepScope; DepScope = DepScope->getParent())
+          if (DeclContext *Ctx = DepScope->getEntity()) {
+            IsDependent = Ctx->isDependentContext();
+            break;
+          }
+      }
+
+      if (IsDependent)
+        Results.AddResult(CodeCompletionResult("template"));
+    }
+  }
+}
+
 void Sema::CodeCompleteMemberReferenceExpr(Scope *S, Expr *Base,
                                            SourceLocation OpLoc, bool IsArrow,
                                            bool IsBaseExprStatement) {
@@ -3879,8 +3917,6 @@ void Sema::CodeCompleteMemberReferenceExpr(Scope *S, Expr *Base,
   if (ConvertedBase.isInvalid())
     return;
   Base = ConvertedBase.get();
-
-  typedef CodeCompletionResult Result;
   
   QualType BaseType = Base->getType();
 
@@ -3915,34 +3951,18 @@ void Sema::CodeCompleteMemberReferenceExpr(Scope *S, Expr *Base,
                         &ResultBuilder::IsMember);
   Results.EnterNewScope();
   if (const RecordType *Record = BaseType->getAs<RecordType>()) {
-    // Indicate that we are performing a member access, and the cv-qualifiers
-    // for the base object type.
-    Results.setObjectTypeQualifiers(BaseType.getQualifiers());
-    
-    // Access to a C/C++ class, struct, or union.
-    Results.allowNestedNameSpecifiers();
-    CodeCompletionDeclConsumer Consumer(Results, CurContext);
-    LookupVisibleDecls(Record->getDecl(), LookupMemberName, Consumer,
-                       CodeCompleter->includeGlobals());
-
-    if (getLangOpts().CPlusPlus) {
-      if (!Results.empty()) {
-        // The "template" keyword can follow "->" or "." in the grammar.
-        // However, we only want to suggest the template keyword if something
-        // is dependent.
-        bool IsDependent = BaseType->isDependentType();
-        if (!IsDependent) {
-          for (Scope *DepScope = S; DepScope; DepScope = DepScope->getParent())
-            if (DeclContext *Ctx = DepScope->getEntity()) {
-              IsDependent = Ctx->isDependentContext();
-              break;
-            }
-        }
-
-        if (IsDependent)
-          Results.AddResult(Result("template"));
-      }
+    AddRecordMembersCompletionResults(*this, Results, S, BaseType,
+                                      Record->getDecl());
+  } else if (const auto *TST = BaseType->getAs<TemplateSpecializationType>()) {
+    TemplateName TN = TST->getTemplateName();
+    if (const auto *TD =
+            dyn_cast_or_null<ClassTemplateDecl>(TN.getAsTemplateDecl())) {
+      CXXRecordDecl *RD = TD->getTemplatedDecl();
+      AddRecordMembersCompletionResults(*this, Results, S, BaseType, RD);
     }
+  } else if (const auto *ICNT = BaseType->getAs<InjectedClassNameType>()) {
+    if (auto *RD = ICNT->getDecl())
+      AddRecordMembersCompletionResults(*this, Results, S, BaseType, RD);
   } else if (!IsArrow && BaseType->isObjCObjectPointerType()) {
     // Objective-C property reference.
     AddedPropertiesSet AddedProperties;
@@ -4522,8 +4542,10 @@ void Sema::CodeCompleteQualifiedId(Scope *S, CXXScopeSpec &SS,
                                    bool EnteringContext) {
   if (!SS.getScopeRep() || !CodeCompleter)
     return;
-  
-  DeclContext *Ctx = computeDeclContext(SS, EnteringContext);
+
+  // Always pretend to enter a context to ensure that a dependent type
+  // resolves to a dependent record.
+  DeclContext *Ctx = computeDeclContext(SS, /*EnteringContext=*/true);
   if (!Ctx)
     return;
 
@@ -4553,7 +4575,9 @@ void Sema::CodeCompleteQualifiedId(Scope *S, CXXScopeSpec &SS,
   Results.ExitScope();  
   
   CodeCompletionDeclConsumer Consumer(Results, CurContext);
-  LookupVisibleDecls(Ctx, LookupOrdinaryName, Consumer);
+  LookupVisibleDecls(Ctx, LookupOrdinaryName, Consumer,
+                     /*IncludeGlobalScope=*/true,
+                     /*IncludeDependentBases=*/true);
 
   HandleCodeCompleteResults(this, CodeCompleter, 
                             Results.getCompletionContext(),
@@ -7809,6 +7833,23 @@ void Sema::CodeCompleteNaturalLanguage() {
   HandleCodeCompleteResults(this, CodeCompleter,
                             CodeCompletionContext::CCC_NaturalLanguage,
                             nullptr, 0);
+}
+
+void Sema::CodeCompleteAvailabilityPlatformName() {
+  ResultBuilder Results(*this, CodeCompleter->getAllocator(),
+                        CodeCompleter->getCodeCompletionTUInfo(),
+                        CodeCompletionContext::CCC_Other);
+  Results.EnterNewScope();
+  static const char *Platforms[] = {"macOS", "iOS", "watchOS", "tvOS"};
+  for (const char *Platform : llvm::makeArrayRef(Platforms)) {
+    Results.AddResult(CodeCompletionResult(Platform));
+    Results.AddResult(CodeCompletionResult(Results.getAllocator().CopyString(
+        Twine(Platform) + "ApplicationExtension")));
+  }
+  Results.ExitScope();
+  HandleCodeCompleteResults(this, CodeCompleter,
+                            CodeCompletionContext::CCC_Other, Results.data(),
+                            Results.size());
 }
 
 void Sema::GatherGlobalCodeCompletions(CodeCompletionAllocator &Allocator,

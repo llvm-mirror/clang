@@ -81,9 +81,92 @@ void ODRHash::AddDeclarationName(DeclarationName Name) {
   }
 }
 
-void ODRHash::AddNestedNameSpecifier(const NestedNameSpecifier *NNS) {}
-void ODRHash::AddTemplateName(TemplateName Name) {}
-void ODRHash::AddTemplateArgument(TemplateArgument TA) {}
+void ODRHash::AddNestedNameSpecifier(const NestedNameSpecifier *NNS) {
+  // Unlike the other pointer handling functions, allow null pointers here.
+  if (!NNS) {
+    AddBoolean(false);
+    return;
+  }
+
+  // Skip inlined namespaces.
+  auto Kind = NNS->getKind();
+  if (Kind == NestedNameSpecifier::Namespace) {
+    if (NNS->getAsNamespace()->isInline()) {
+      return AddNestedNameSpecifier(NNS->getPrefix());
+    }
+  }
+
+  AddBoolean(true);
+
+  // Process prefix
+  AddNestedNameSpecifier(NNS->getPrefix());
+
+  ID.AddInteger(Kind);
+  switch (Kind) {
+  case NestedNameSpecifier::Identifier:
+    AddIdentifierInfo(NNS->getAsIdentifier());
+    break;
+  case NestedNameSpecifier::Namespace:
+    AddDecl(NNS->getAsNamespace());
+    break;
+  case NestedNameSpecifier::NamespaceAlias:
+    AddDecl(NNS->getAsNamespaceAlias());
+    break;
+  case NestedNameSpecifier::TypeSpec:
+  case NestedNameSpecifier::TypeSpecWithTemplate:
+    AddType(NNS->getAsType());
+    break;
+  case NestedNameSpecifier::Global:
+  case NestedNameSpecifier::Super:
+    break;
+  }
+}
+
+void ODRHash::AddTemplateName(TemplateName Name) {
+  auto Kind = Name.getKind();
+  ID.AddInteger(Kind);
+
+  switch (Kind) {
+  case TemplateName::Template:
+    AddDecl(Name.getAsTemplateDecl());
+    break;
+  // TODO: Support these cases.
+  case TemplateName::OverloadedTemplate:
+  case TemplateName::QualifiedTemplate:
+  case TemplateName::DependentTemplate:
+  case TemplateName::SubstTemplateTemplateParm:
+  case TemplateName::SubstTemplateTemplateParmPack:
+    break;
+  }
+}
+
+void ODRHash::AddTemplateArgument(TemplateArgument TA) {
+  const auto Kind = TA.getKind();
+  ID.AddInteger(Kind);
+
+  switch (Kind) {
+    case TemplateArgument::Null:
+    case TemplateArgument::Type:
+    case TemplateArgument::Declaration:
+    case TemplateArgument::NullPtr:
+    case TemplateArgument::Integral:
+      break;
+    case TemplateArgument::Template:
+    case TemplateArgument::TemplateExpansion:
+      AddTemplateName(TA.getAsTemplateOrTemplatePattern());
+      break;
+    case TemplateArgument::Expression:
+      AddStmt(TA.getAsExpr());
+      break;
+    case TemplateArgument::Pack:
+      ID.AddInteger(TA.pack_size());
+      for (auto SubTA : TA.pack_elements()) {
+        AddTemplateArgument(SubTA);
+      }
+      break;
+  }
+}
+
 void ODRHash::AddTemplateParameterList(const TemplateParameterList *TPL) {}
 
 void ODRHash::clear() {
@@ -167,6 +250,17 @@ public:
   void VisitValueDecl(const ValueDecl *D) {
     AddQualType(D->getType());
     Inherited::VisitValueDecl(D);
+  }
+
+  void VisitVarDecl(const VarDecl *D) {
+    Hash.AddBoolean(D->isStaticLocal());
+    Hash.AddBoolean(D->isConstexpr());
+    const bool HasInit = D->hasInit();
+    Hash.AddBoolean(HasInit);
+    if (HasInit) {
+      AddStmt(D->getInit());
+    }
+    Inherited::VisitVarDecl(D);
   }
 
   void VisitParmVarDecl(const ParmVarDecl *D) {
@@ -253,6 +347,7 @@ bool ODRHash::isWhitelistedDecl(const Decl *D, const CXXRecordDecl *Parent) {
     case Decl::StaticAssert:
     case Decl::TypeAlias:
     case Decl::Typedef:
+    case Decl::Var:
       return true;
   }
 }
@@ -335,6 +430,17 @@ public:
     Hash.AddQualType(T);
   }
 
+  void AddNestedNameSpecifier(const NestedNameSpecifier *NNS) {
+    Hash.AddNestedNameSpecifier(NNS);
+  }
+
+  void AddIdentifierInfo(const IdentifierInfo *II) {
+    Hash.AddBoolean(II);
+    if (II) {
+      Hash.AddIdentifierInfo(II);
+    }
+  }
+
   void VisitQualifiers(Qualifiers Quals) {
     ID.AddInteger(Quals.getAsOpaqueValue());
   }
@@ -411,8 +517,60 @@ public:
 
   void VisitTypedefType(const TypedefType *T) {
     AddDecl(T->getDecl());
-    Hash.AddQualType(T->getDecl()->getUnderlyingType());
+    AddQualType(T->getDecl()->getUnderlyingType().getCanonicalType());
     VisitType(T);
+  }
+
+  void VisitTagType(const TagType *T) {
+    AddDecl(T->getDecl());
+    VisitType(T);
+  }
+
+  void VisitRecordType(const RecordType *T) { VisitTagType(T); }
+  void VisitEnumType(const EnumType *T) { VisitTagType(T); }
+
+  void VisitTypeWithKeyword(const TypeWithKeyword *T) {
+    ID.AddInteger(T->getKeyword());
+    VisitType(T);
+  };
+
+  void VisitDependentNameType(const DependentNameType *T) {
+    AddNestedNameSpecifier(T->getQualifier());
+    AddIdentifierInfo(T->getIdentifier());
+    VisitTypeWithKeyword(T);
+  }
+
+  void VisitDependentTemplateSpecializationType(
+      const DependentTemplateSpecializationType *T) {
+    AddIdentifierInfo(T->getIdentifier());
+    AddNestedNameSpecifier(T->getQualifier());
+    ID.AddInteger(T->getNumArgs());
+    for (const auto &TA : T->template_arguments()) {
+      Hash.AddTemplateArgument(TA);
+    }
+    VisitTypeWithKeyword(T);
+  }
+
+  void VisitElaboratedType(const ElaboratedType *T) {
+    AddNestedNameSpecifier(T->getQualifier());
+    AddQualType(T->getNamedType());
+    VisitTypeWithKeyword(T);
+  }
+
+  void VisitTemplateSpecializationType(const TemplateSpecializationType *T) {
+    ID.AddInteger(T->getNumArgs());
+    for (const auto &TA : T->template_arguments()) {
+      Hash.AddTemplateArgument(TA);
+    }
+    Hash.AddTemplateName(T->getTemplateName());
+    VisitType(T);
+  }
+
+  void VisitTemplateTypeParmType(const TemplateTypeParmType *T) {
+    ID.AddInteger(T->getDepth());
+    ID.AddInteger(T->getIndex());
+    Hash.AddBoolean(T->isParameterPack());
+    AddDecl(T->getDecl());
   }
 };
 

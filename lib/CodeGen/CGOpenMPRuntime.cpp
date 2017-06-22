@@ -720,7 +720,7 @@ LValue CGOpenMPTaskOutlinedRegionInfo::getThreadIDVariableLValue(
     CodeGenFunction &CGF) {
   return CGF.MakeAddrLValue(CGF.GetAddrOfLocalVar(getThreadIDVariable()),
                             getThreadIDVariable()->getType(),
-                            AlignmentSource::Decl);
+                            LValueBaseInfo(AlignmentSource::Decl, false));
 }
 
 CGOpenMPRuntime::CGOpenMPRuntime(CodeGenModule &CGM)
@@ -728,7 +728,7 @@ CGOpenMPRuntime::CGOpenMPRuntime(CodeGenModule &CGM)
   IdentTy = llvm::StructType::create(
       "ident_t", CGM.Int32Ty /* reserved_1 */, CGM.Int32Ty /* flags */,
       CGM.Int32Ty /* reserved_2 */, CGM.Int32Ty /* reserved_3 */,
-      CGM.Int8PtrTy /* psource */, nullptr);
+      CGM.Int8PtrTy /* psource */);
   KmpCriticalNameTy = llvm::ArrayType::get(CGM.Int32Ty, /*NumElements*/ 8);
 
   loadOffloadInfoMetadata();
@@ -747,9 +747,9 @@ emitCombinerOrInitializer(CodeGenModule &CGM, QualType Ty,
   QualType PtrTy = C.getPointerType(Ty).withRestrict();
   FunctionArgList Args;
   ImplicitParamDecl OmpOutParm(C, /*DC=*/nullptr, Out->getLocation(),
-                               /*Id=*/nullptr, PtrTy);
+                               /*Id=*/nullptr, PtrTy, ImplicitParamDecl::Other);
   ImplicitParamDecl OmpInParm(C, /*DC=*/nullptr, In->getLocation(),
-                              /*Id=*/nullptr, PtrTy);
+                              /*Id=*/nullptr, PtrTy, ImplicitParamDecl::Other);
   Args.push_back(&OmpOutParm);
   Args.push_back(&OmpInParm);
   auto &FnInfo =
@@ -760,6 +760,7 @@ emitCombinerOrInitializer(CodeGenModule &CGM, QualType Ty,
       IsCombiner ? ".omp_combiner." : ".omp_initializer.", &CGM.getModule());
   CGM.SetInternalFunctionAttributes(/*D=*/nullptr, Fn, FnInfo);
   Fn->removeFnAttr(llvm::Attribute::NoInline);
+  Fn->removeFnAttr(llvm::Attribute::OptimizeNone);
   Fn->addFnAttr(llvm::Attribute::AlwaysInline);
   CodeGenFunction CGF(CGM);
   // Map "T omp_in;" variable to "*omp_in_parm" value in all expressions.
@@ -1807,8 +1808,8 @@ llvm::Function *CGOpenMPRuntime::emitThreadPrivateVarDefinition(
       // threadprivate copy of the variable VD
       CodeGenFunction CtorCGF(CGM);
       FunctionArgList Args;
-      ImplicitParamDecl Dst(CGM.getContext(), /*DC=*/nullptr, SourceLocation(),
-                            /*Id=*/nullptr, CGM.getContext().VoidPtrTy);
+      ImplicitParamDecl Dst(CGM.getContext(), CGM.getContext().VoidPtrTy,
+                            ImplicitParamDecl::Other);
       Args.push_back(&Dst);
 
       auto &FI = CGM.getTypes().arrangeBuiltinFunctionDeclaration(
@@ -1838,8 +1839,8 @@ llvm::Function *CGOpenMPRuntime::emitThreadPrivateVarDefinition(
       // of the variable VD
       CodeGenFunction DtorCGF(CGM);
       FunctionArgList Args;
-      ImplicitParamDecl Dst(CGM.getContext(), /*DC=*/nullptr, SourceLocation(),
-                            /*Id=*/nullptr, CGM.getContext().VoidPtrTy);
+      ImplicitParamDecl Dst(CGM.getContext(), CGM.getContext().VoidPtrTy,
+                            ImplicitParamDecl::Other);
       Args.push_back(&Dst);
 
       auto &FI = CGM.getTypes().arrangeBuiltinFunctionDeclaration(
@@ -2190,10 +2191,8 @@ static llvm::Value *emitCopyprivateCopyFunction(
   auto &C = CGM.getContext();
   // void copy_func(void *LHSArg, void *RHSArg);
   FunctionArgList Args;
-  ImplicitParamDecl LHSArg(C, /*DC=*/nullptr, SourceLocation(), /*Id=*/nullptr,
-                           C.VoidPtrTy);
-  ImplicitParamDecl RHSArg(C, /*DC=*/nullptr, SourceLocation(), /*Id=*/nullptr,
-                           C.VoidPtrTy);
+  ImplicitParamDecl LHSArg(C, C.VoidPtrTy, ImplicitParamDecl::Other);
+  ImplicitParamDecl RHSArg(C, C.VoidPtrTy, ImplicitParamDecl::Other);
   Args.push_back(&LHSArg);
   Args.push_back(&RHSArg);
   auto &CGFI = CGM.getTypes().arrangeBuiltinFunctionDeclaration(C.VoidTy, Args);
@@ -2784,8 +2783,7 @@ createOffloadingBinaryDescriptorFunction(CodeGenModule &CGM, StringRef Name,
                                          const RegionCodeGenTy &Codegen) {
   auto &C = CGM.getContext();
   FunctionArgList Args;
-  ImplicitParamDecl DummyPtr(C, /*DC=*/nullptr, SourceLocation(),
-                             /*Id=*/nullptr, C.VoidPtrTy);
+  ImplicitParamDecl DummyPtr(C, C.VoidPtrTy, ImplicitParamDecl::Other);
   Args.push_back(&DummyPtr);
 
   CodeGenFunction CGF(CGM);
@@ -2888,7 +2886,7 @@ CGOpenMPRuntime::createOffloadingBinaryDescriptorRegistration() {
   // descriptor, so we can reuse the logic that emits Ctors and Dtors.
   auto *IdentInfo = &C.Idents.get(".omp_offloading.reg_unreg_var");
   ImplicitParamDecl RegUnregVar(C, C.getTranslationUnitDecl(), SourceLocation(),
-                                IdentInfo, C.CharTy);
+                                IdentInfo, C.CharTy, ImplicitParamDecl::Other);
 
   auto *UnRegFn = createOffloadingBinaryDescriptorFunction(
       CGM, ".omp_offloading.descriptor_unreg",
@@ -2903,6 +2901,19 @@ CGOpenMPRuntime::createOffloadingBinaryDescriptorRegistration() {
                              Desc);
         CGM.getCXXABI().registerGlobalDtor(CGF, RegUnregVar, UnRegFn, Desc);
       });
+  if (CGM.supportsCOMDAT()) {
+    // It is sufficient to call registration function only once, so create a
+    // COMDAT group for registration/unregistration functions and associated
+    // data. That would reduce startup time and code size. Registration
+    // function serves as a COMDAT group key.
+    auto ComdatKey = M.getOrInsertComdat(RegFn->getName());
+    RegFn->setLinkage(llvm::GlobalValue::LinkOnceAnyLinkage);
+    RegFn->setVisibility(llvm::GlobalValue::HiddenVisibility);
+    RegFn->setComdat(ComdatKey);
+    UnRegFn->setComdat(ComdatKey);
+    DeviceImages->setComdat(ComdatKey);
+    Desc->setComdat(ComdatKey);
+  }
   return RegFn;
 }
 
@@ -3305,10 +3316,11 @@ emitProxyTaskFunction(CodeGenModule &CGM, SourceLocation Loc,
                       llvm::Value *TaskPrivatesMap) {
   auto &C = CGM.getContext();
   FunctionArgList Args;
-  ImplicitParamDecl GtidArg(C, /*DC=*/nullptr, Loc, /*Id=*/nullptr, KmpInt32Ty);
-  ImplicitParamDecl TaskTypeArg(C, /*DC=*/nullptr, Loc,
-                                /*Id=*/nullptr,
-                                KmpTaskTWithPrivatesPtrQTy.withRestrict());
+  ImplicitParamDecl GtidArg(C, /*DC=*/nullptr, Loc, /*Id=*/nullptr, KmpInt32Ty,
+                            ImplicitParamDecl::Other);
+  ImplicitParamDecl TaskTypeArg(C, /*DC=*/nullptr, Loc, /*Id=*/nullptr,
+                                KmpTaskTWithPrivatesPtrQTy.withRestrict(),
+                                ImplicitParamDecl::Other);
   Args.push_back(&GtidArg);
   Args.push_back(&TaskTypeArg);
   auto &TaskEntryFnInfo =
@@ -3399,10 +3411,11 @@ static llvm::Value *emitDestructorsFunction(CodeGenModule &CGM,
                                             QualType KmpTaskTWithPrivatesQTy) {
   auto &C = CGM.getContext();
   FunctionArgList Args;
-  ImplicitParamDecl GtidArg(C, /*DC=*/nullptr, Loc, /*Id=*/nullptr, KmpInt32Ty);
-  ImplicitParamDecl TaskTypeArg(C, /*DC=*/nullptr, Loc,
-                                /*Id=*/nullptr,
-                                KmpTaskTWithPrivatesPtrQTy.withRestrict());
+  ImplicitParamDecl GtidArg(C, /*DC=*/nullptr, Loc, /*Id=*/nullptr, KmpInt32Ty,
+                            ImplicitParamDecl::Other);
+  ImplicitParamDecl TaskTypeArg(C, /*DC=*/nullptr, Loc, /*Id=*/nullptr,
+                                KmpTaskTWithPrivatesPtrQTy.withRestrict(),
+                                ImplicitParamDecl::Other);
   Args.push_back(&GtidArg);
   Args.push_back(&TaskTypeArg);
   FunctionType::ExtInfo Info;
@@ -3458,36 +3471,40 @@ emitTaskPrivateMappingFunction(CodeGenModule &CGM, SourceLocation Loc,
   FunctionArgList Args;
   ImplicitParamDecl TaskPrivatesArg(
       C, /*DC=*/nullptr, Loc, /*Id=*/nullptr,
-      C.getPointerType(PrivatesQTy).withConst().withRestrict());
+      C.getPointerType(PrivatesQTy).withConst().withRestrict(),
+      ImplicitParamDecl::Other);
   Args.push_back(&TaskPrivatesArg);
   llvm::DenseMap<const VarDecl *, unsigned> PrivateVarsPos;
   unsigned Counter = 1;
   for (auto *E: PrivateVars) {
     Args.push_back(ImplicitParamDecl::Create(
-        C, /*DC=*/nullptr, Loc,
-        /*Id=*/nullptr, C.getPointerType(C.getPointerType(E->getType()))
-                            .withConst()
-                            .withRestrict()));
+        C, /*DC=*/nullptr, Loc, /*Id=*/nullptr,
+        C.getPointerType(C.getPointerType(E->getType()))
+            .withConst()
+            .withRestrict(),
+        ImplicitParamDecl::Other));
     auto *VD = cast<VarDecl>(cast<DeclRefExpr>(E)->getDecl());
     PrivateVarsPos[VD] = Counter;
     ++Counter;
   }
   for (auto *E : FirstprivateVars) {
     Args.push_back(ImplicitParamDecl::Create(
-        C, /*DC=*/nullptr, Loc,
-        /*Id=*/nullptr, C.getPointerType(C.getPointerType(E->getType()))
-                            .withConst()
-                            .withRestrict()));
+        C, /*DC=*/nullptr, Loc, /*Id=*/nullptr,
+        C.getPointerType(C.getPointerType(E->getType()))
+            .withConst()
+            .withRestrict(),
+        ImplicitParamDecl::Other));
     auto *VD = cast<VarDecl>(cast<DeclRefExpr>(E)->getDecl());
     PrivateVarsPos[VD] = Counter;
     ++Counter;
   }
   for (auto *E: LastprivateVars) {
     Args.push_back(ImplicitParamDecl::Create(
-        C, /*DC=*/nullptr, Loc,
-        /*Id=*/nullptr, C.getPointerType(C.getPointerType(E->getType()))
-                            .withConst()
-                            .withRestrict()));
+        C, /*DC=*/nullptr, Loc, /*Id=*/nullptr,
+        C.getPointerType(C.getPointerType(E->getType()))
+            .withConst()
+            .withRestrict(),
+        ImplicitParamDecl::Other));
     auto *VD = cast<VarDecl>(cast<DeclRefExpr>(E)->getDecl());
     PrivateVarsPos[VD] = Counter;
     ++Counter;
@@ -3502,6 +3519,7 @@ emitTaskPrivateMappingFunction(CodeGenModule &CGM, SourceLocation Loc,
   CGM.SetInternalFunctionAttributes(/*D=*/nullptr, TaskPrivatesMap,
                                     TaskPrivatesMapFnInfo);
   TaskPrivatesMap->removeFnAttr(llvm::Attribute::NoInline);
+  TaskPrivatesMap->removeFnAttr(llvm::Attribute::OptimizeNone);
   TaskPrivatesMap->addFnAttr(llvm::Attribute::AlwaysInline);
   CodeGenFunction CGF(CGM);
   CGF.disableDebugInfo();
@@ -3565,7 +3583,9 @@ static void emitPrivatesInit(CodeGenFunction &CGF,
         auto SharedRefLValue = CGF.EmitLValueForField(SrcBase, SharedField);
         SharedRefLValue = CGF.MakeAddrLValue(
             Address(SharedRefLValue.getPointer(), C.getDeclAlign(OriginalVD)),
-            SharedRefLValue.getType(), AlignmentSource::Decl);
+            SharedRefLValue.getType(),
+            LValueBaseInfo(AlignmentSource::Decl,
+                           SharedRefLValue.getBaseInfo().getMayAlias()));
         QualType Type = OriginalVD->getType();
         if (Type->isArrayType()) {
           // Initialize firstprivate array.
@@ -3644,12 +3664,14 @@ emitTaskDupFunction(CodeGenModule &CGM, SourceLocation Loc,
                     ArrayRef<PrivateDataTy> Privates, bool WithLastIter) {
   auto &C = CGM.getContext();
   FunctionArgList Args;
-  ImplicitParamDecl DstArg(C, /*DC=*/nullptr, Loc,
-                           /*Id=*/nullptr, KmpTaskTWithPrivatesPtrQTy);
-  ImplicitParamDecl SrcArg(C, /*DC=*/nullptr, Loc,
-                           /*Id=*/nullptr, KmpTaskTWithPrivatesPtrQTy);
-  ImplicitParamDecl LastprivArg(C, /*DC=*/nullptr, Loc,
-                                /*Id=*/nullptr, C.IntTy);
+  ImplicitParamDecl DstArg(C, /*DC=*/nullptr, Loc, /*Id=*/nullptr,
+                           KmpTaskTWithPrivatesPtrQTy,
+                           ImplicitParamDecl::Other);
+  ImplicitParamDecl SrcArg(C, /*DC=*/nullptr, Loc, /*Id=*/nullptr,
+                           KmpTaskTWithPrivatesPtrQTy,
+                           ImplicitParamDecl::Other);
+  ImplicitParamDecl LastprivArg(C, /*DC=*/nullptr, Loc, /*Id=*/nullptr, C.IntTy,
+                                ImplicitParamDecl::Other);
   Args.push_back(&DstArg);
   Args.push_back(&SrcArg);
   Args.push_back(&LastprivArg);
@@ -4261,10 +4283,8 @@ llvm::Value *CGOpenMPRuntime::emitReductionFunction(
 
   // void reduction_func(void *LHSArg, void *RHSArg);
   FunctionArgList Args;
-  ImplicitParamDecl LHSArg(C, /*DC=*/nullptr, SourceLocation(), /*Id=*/nullptr,
-                           C.VoidPtrTy);
-  ImplicitParamDecl RHSArg(C, /*DC=*/nullptr, SourceLocation(), /*Id=*/nullptr,
-                           C.VoidPtrTy);
+  ImplicitParamDecl LHSArg(C, C.VoidPtrTy, ImplicitParamDecl::Other);
+  ImplicitParamDecl RHSArg(C, C.VoidPtrTy, ImplicitParamDecl::Other);
   Args.push_back(&LHSArg);
   Args.push_back(&RHSArg);
   auto &CGFI = CGM.getTypes().arrangeBuiltinFunctionDeclaration(C.VoidTy, Args);
@@ -6307,7 +6327,7 @@ bool CGOpenMPRuntime::emitTargetGlobalVariable(GlobalDecl GD) {
     }
   }
 
-  // If we are in target mode we do not emit any global (declare target is not
+  // If we are in target mode, we do not emit any global (declare target is not
   // implemented yet). Therefore we signal that GD was processed in this case.
   return true;
 }

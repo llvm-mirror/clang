@@ -51,8 +51,7 @@ DominatingValue<RValue>::saved_type::save(CodeGenFunction &CGF, RValue rv) {
   if (rv.isComplex()) {
     CodeGenFunction::ComplexPairTy V = rv.getComplexVal();
     llvm::Type *ComplexTy =
-      llvm::StructType::get(V.first->getType(), V.second->getType(),
-                            (void*) nullptr);
+        llvm::StructType::get(V.first->getType(), V.second->getType());
     Address addr = CGF.CreateDefaultAlignTempAlloca(ComplexTy, "saved-complex");
     CGF.Builder.CreateStore(V.first,
                             CGF.Builder.CreateStructGEP(addr, 0, CharUnits()));
@@ -449,6 +448,13 @@ void CodeGenFunction::PopCleanupBlocks(
     auto *Inst = dyn_cast_or_null<llvm::Instruction>(*ReloadedValue);
     if (!Inst)
       continue;
+
+    // Don't spill static allocas, they dominate all cleanups. These are created
+    // by binding a reference to a local variable or temporary.
+    auto *AI = dyn_cast<llvm::AllocaInst>(Inst);
+    if (AI && AI->isStaticAlloca())
+      continue;
+
     Address Tmp =
         CreateDefaultAlignTempAlloca(Inst->getType(), "tmp.exprcleanup");
 

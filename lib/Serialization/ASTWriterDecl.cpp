@@ -299,7 +299,7 @@ void ASTDeclWriter::VisitDecl(Decl *D) {
   Record.push_back(D->isTopLevelDeclInObjCContainer());
   Record.push_back(D->getAccess());
   Record.push_back(D->isModulePrivate());
-  Record.push_back(Writer.inferSubmoduleIDFromLocation(D->getLocation()));
+  Record.push_back(Writer.getSubmoduleID(D->getOwningModule()));
 
   // If this declaration injected a name into a context different from its
   // lexical context, and that context is an imported namespace, we need to
@@ -915,6 +915,10 @@ void ASTDeclWriter::VisitVarDecl(VarDecl *D) {
     Record.push_back(D->isConstexpr());
     Record.push_back(D->isInitCapture());
     Record.push_back(D->isPreviousDeclInSameBlockScope());
+    if (const auto *IPD = dyn_cast<ImplicitParamDecl>(D))
+      Record.push_back(static_cast<unsigned>(IPD->getParameterKind()));
+    else
+      Record.push_back(0);
   }
   Record.push_back(D->getLinkageInternal());
 
@@ -1989,6 +1993,7 @@ void ASTWriter::WriteDeclAbbrevs() {
   Abv->Add(BitCodeAbbrevOp(0));                         // isConstexpr
   Abv->Add(BitCodeAbbrevOp(0));                         // isInitCapture
   Abv->Add(BitCodeAbbrevOp(0));                         // isPrevDeclInSameScope
+  Abv->Add(BitCodeAbbrevOp(0));                         // ImplicitParamKind
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 3)); // Linkage
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 2)); // IsInitICE (local)
   Abv->Add(BitCodeAbbrevOp(BitCodeAbbrevOp::Fixed, 2)); // VarKind (local enum)

@@ -98,22 +98,39 @@ struct FormatStyle {
   /// \endcode
   bool AlignConsecutiveDeclarations;
 
-  /// \brief If ``true``, aligns escaped newlines as far left as possible.
-  /// Otherwise puts them into the right-most column.
-  /// \code
-  ///   true:
-  ///   #define A   \
-  ///     int aaaa; \
-  ///     int b;    \
-  ///     int dddddddddd;
-  ///
-  ///   false:
-  ///   #define A                                                                      \
-  ///     int aaaa;                                                                    \
-  ///     int b;                                                                       \
-  ///     int dddddddddd;
-  /// \endcode
-  bool AlignEscapedNewlinesLeft;
+  /// \brief Different styles for aligning escaped newlines.
+  enum EscapedNewlineAlignmentStyle {
+    /// \brief Don't align escaped newlines.
+    /// \code
+    ///   #define A \
+    ///     int aaaa; \
+    ///     int b; \
+    ///     int dddddddddd;
+    /// \endcode
+    ENAS_DontAlign,
+    /// \brief Align escaped newlines as far left as possible.
+    /// \code
+    ///   true:
+    ///   #define A   \
+    ///     int aaaa; \
+    ///     int b;    \
+    ///     int dddddddddd;
+    ///
+    ///   false:
+    /// \endcode
+    ENAS_Left,
+    /// \brief Align escaped newlines in the right-most column.
+    /// \code
+    ///   #define A                                                                      \
+    ///     int aaaa;                                                                    \
+    ///     int b;                                                                       \
+    ///     int dddddddddd;
+    /// \endcode
+    ENAS_Right,
+  };
+
+  /// \brief Options for aligning backslashes in escaped newlines.
+  EscapedNewlineAlignmentStyle AlignEscapedNewlines;
 
   /// \brief If ``true``, horizontally align operands of binary and ternary
   /// expressions.
@@ -671,6 +688,18 @@ struct FormatStyle {
     bool BeforeElse;
     /// \brief Indent the wrapped braces themselves.
     bool IndentBraces;
+    /// \brief If ``false``, empty function body can be put on a single line.
+    /// This option is used only if the opening brace of the function has
+    /// already been wrapped, i.e. the `AfterFunction` brace wrapping mode is
+    /// set, and the function could/should not be put on a single line (as per
+    /// `AllowShortFunctionsOnASingleLine` and constructor formatting options).
+    /// \code
+    ///   int f()   vs.   inf f()
+    ///   {}              {
+    ///                   }
+    /// \endcode
+    ///
+    bool SplitEmptyFunctionBody;
   };
 
   /// \brief Control of individual brace wrapping cases.
@@ -693,16 +722,35 @@ struct FormatStyle {
   /// \endcode
   bool BreakBeforeTernaryOperators;
 
-  /// \brief Always break constructor initializers before commas and align
-  /// the commas with the colon.
-  /// \code
-  ///    true:                                  false:
-  ///    SomeClass::Constructor()       vs.     SomeClass::Constructor() : a(a),
-  ///        : a(a)                                                   b(b),
-  ///        , b(b)                                                   c(c) {}
-  ///        , c(c) {}
-  /// \endcode
-  bool BreakConstructorInitializersBeforeComma;
+  /// \brief Different ways to break initializers.
+  enum BreakConstructorInitializersStyle
+  {
+    /// Break constructor initializers before the colon and after the commas.
+    /// \code
+    /// Constructor()
+    ///     : initializer1(),
+    ///       initializer2()
+    /// \endcode
+    BCIS_BeforeColon,
+    /// Break constructor initializers before the colon and commas, and align
+    /// the commas with the colon.
+    /// \code
+    /// Constructor()
+    ///     : initializer1()
+    ///     , initializer2()
+    /// \endcode
+    BCIS_BeforeComma,
+    /// Break constructor initializers after the colon and commas.
+    /// \code
+    /// Constructor() :
+    ///     initializer1(),
+    ///     initializer2()
+    /// \endcode
+    BCIS_AfterColon
+  };
+
+  /// \brief The constructor initializers style to use..
+  BreakConstructorInitializersStyle BreakConstructorInitializers;
 
   /// \brief Break after each annotation on a field in Java files.
   /// \code{.java}
@@ -742,6 +790,29 @@ struct FormatStyle {
   ///    };
   /// \endcode
   bool BreakBeforeInheritanceComma;
+
+  /// \brief If ``true``, consecutive namespace declarations will be on the same
+  /// line. If ``false``, each namespace is declared on a new line.
+  /// \code
+  ///   true:
+  ///   namespace Foo { namespace Bar {
+  ///   }}
+  ///
+  ///   false:
+  ///   namespace Foo {
+  ///   namespace Bar {
+  ///   }
+  ///   }
+  /// \endcode
+  ///
+  /// If it does not fit on a single line, the overflowing namespaces get
+  /// wrapped:
+  /// \code
+  ///   namespace Foo { namespace Bar {
+  ///   namespace Extra {
+  ///   }}}
+  /// \endcode
+  bool CompactNamespaces;
 
   /// \brief If the constructor initializers don't fit on a line, put each
   /// initializer on its own line.
@@ -1116,6 +1187,9 @@ struct FormatStyle {
   /// ``Foo <Protocol>`` instead of ``Foo<Protocol>``.
   bool ObjCSpaceBeforeProtocolList;
 
+  /// \brief The penalty for breaking around an assignment operator.
+  unsigned PenaltyBreakAssignment;
+
   /// \brief The penalty for breaking a function call after ``call(``.
   unsigned PenaltyBreakBeforeFirstCallParameter;
 
@@ -1347,7 +1421,7 @@ struct FormatStyle {
            AlignAfterOpenBracket == R.AlignAfterOpenBracket &&
            AlignConsecutiveAssignments == R.AlignConsecutiveAssignments &&
            AlignConsecutiveDeclarations == R.AlignConsecutiveDeclarations &&
-           AlignEscapedNewlinesLeft == R.AlignEscapedNewlinesLeft &&
+           AlignEscapedNewlines == R.AlignEscapedNewlines &&
            AlignOperands == R.AlignOperands &&
            AlignTrailingComments == R.AlignTrailingComments &&
            AllowAllParametersOfDeclarationOnNextLine ==
@@ -1370,8 +1444,8 @@ struct FormatStyle {
            BreakBeforeBinaryOperators == R.BreakBeforeBinaryOperators &&
            BreakBeforeBraces == R.BreakBeforeBraces &&
            BreakBeforeTernaryOperators == R.BreakBeforeTernaryOperators &&
-           BreakConstructorInitializersBeforeComma ==
-               R.BreakConstructorInitializersBeforeComma &&
+           BreakConstructorInitializers == R.BreakConstructorInitializers &&
+           CompactNamespaces == R.CompactNamespaces &&
            BreakAfterJavaFieldAnnotations == R.BreakAfterJavaFieldAnnotations &&
            BreakStringLiterals == R.BreakStringLiterals &&
            ColumnLimit == R.ColumnLimit && CommentPragmas == R.CommentPragmas &&
@@ -1403,6 +1477,8 @@ struct FormatStyle {
            ObjCBlockIndentWidth == R.ObjCBlockIndentWidth &&
            ObjCSpaceAfterProperty == R.ObjCSpaceAfterProperty &&
            ObjCSpaceBeforeProtocolList == R.ObjCSpaceBeforeProtocolList &&
+           PenaltyBreakAssignment ==
+               R.PenaltyBreakAssignment &&
            PenaltyBreakBeforeFirstCallParameter ==
                R.PenaltyBreakBeforeFirstCallParameter &&
            PenaltyBreakComment == R.PenaltyBreakComment &&

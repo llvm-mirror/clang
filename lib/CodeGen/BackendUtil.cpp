@@ -49,6 +49,7 @@
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/PassManagerBuilder.h"
+#include "llvm/Transforms/IPO/ThinLTOBitcodeWriter.h"
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/ObjCARC.h"
 #include "llvm/Transforms/Scalar.h"
@@ -185,6 +186,8 @@ static void addSanitizerCoveragePass(const PassManagerBuilder &Builder,
   Opts.Use8bitCounters = CGOpts.SanitizeCoverage8bitCounters;
   Opts.TracePC = CGOpts.SanitizeCoverageTracePC;
   Opts.TracePCGuard = CGOpts.SanitizeCoverageTracePCGuard;
+  Opts.NoPrune = CGOpts.SanitizeCoverageNoPrune;
+  Opts.Inline8bitCounters = CGOpts.SanitizeCoverageInline8bitCounters;
   PM.add(createSanitizerCoverageModulePass(Opts));
 }
 
@@ -193,6 +196,8 @@ static void addSanitizerCoveragePass(const PassManagerBuilder &Builder,
 // where this is not a factor). Also, on ELF this feature requires an assembler
 // extension that only works with -integrated-as at the moment.
 static bool asanUseGlobalsGC(const Triple &T, const CodeGenOptions &CGOpts) {
+  if (!CGOpts.SanitizeAddressGlobalsDeadStripping)
+    return false;
   switch (T.getObjectFormat()) {
   case Triple::MachO:
   case Triple::COFF:
@@ -405,7 +410,7 @@ static void initTargetOptions(llvm::TargetOptions &Options,
 
   Options.UseInitArray = CodeGenOpts.UseInitArray;
   Options.DisableIntegratedAS = CodeGenOpts.DisableIntegratedAS;
-  Options.CompressDebugSections = CodeGenOpts.CompressDebugSections;
+  Options.CompressDebugSections = CodeGenOpts.getCompressDebugSections();
   Options.RelaxELFRelocations = CodeGenOpts.RelaxELFRelocations;
 
   // Set EABI version.
@@ -894,6 +899,7 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
   // create that pass manager here and use it as needed below.
   legacy::PassManager CodeGenPasses;
   bool NeedCodeGen = false;
+  Optional<raw_fd_ostream> ThinLinkOS;
 
   // Append any output we need to the pass manager.
   switch (Action) {
@@ -901,9 +907,24 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
     break;
 
   case Backend_EmitBC:
-    MPM.addPass(BitcodeWriterPass(*OS, CodeGenOpts.EmitLLVMUseLists,
-                                  CodeGenOpts.EmitSummaryIndex,
-                                  CodeGenOpts.EmitSummaryIndex));
+    if (CodeGenOpts.EmitSummaryIndex) {
+      if (!CodeGenOpts.ThinLinkBitcodeFile.empty()) {
+        std::error_code EC;
+        ThinLinkOS.emplace(CodeGenOpts.ThinLinkBitcodeFile, EC,
+                           llvm::sys::fs::F_None);
+        if (EC) {
+          Diags.Report(diag::err_fe_unable_to_open_output)
+              << CodeGenOpts.ThinLinkBitcodeFile << EC.message();
+          return;
+        }
+      }
+      MPM.addPass(
+          ThinLTOBitcodeWriterPass(*OS, ThinLinkOS ? &*ThinLinkOS : nullptr));
+    } else {
+      MPM.addPass(BitcodeWriterPass(*OS, CodeGenOpts.EmitLLVMUseLists,
+                                    CodeGenOpts.EmitSummaryIndex,
+                                    CodeGenOpts.EmitSummaryIndex));
+    }
     break;
 
   case Backend_EmitLL:
@@ -943,11 +964,11 @@ Expected<BitcodeModule> clang::FindThinLTOModule(MemoryBufferRef MBRef) {
   if (!BMsOrErr)
     return BMsOrErr.takeError();
 
-  // The bitcode file may contain multiple modules, we want the one with a
-  // summary.
+  // The bitcode file may contain multiple modules, we want the one that is
+  // marked as being the ThinLTO module.
   for (BitcodeModule &BM : *BMsOrErr) {
-    Expected<bool> HasSummary = BM.hasSummary();
-    if (HasSummary && *HasSummary)
+    Expected<BitcodeLTOInfo> LTOInfo = BM.getLTOInfo();
+    if (LTOInfo && LTOInfo->IsThinLTO)
       return BM;
   }
 
@@ -974,10 +995,14 @@ static void runThinLTOBackend(ModuleSummaryIndex *CombinedIndex, Module *M,
   // via a WriteIndexesThinBackend.
   FunctionImporter::ImportMapTy ImportList;
   for (auto &GlobalList : *CombinedIndex) {
+    // Ignore entries for undefined references.
+    if (GlobalList.second.SummaryList.empty())
+      continue;
+
     auto GUID = GlobalList.first;
-    assert(GlobalList.second.size() == 1 &&
+    assert(GlobalList.second.SummaryList.size() == 1 &&
            "Expected individual combined index to have one summary per GUID");
-    auto &Summary = GlobalList.second[0];
+    auto &Summary = GlobalList.second.SummaryList[0];
     // Skip the summaries for the importing module. These are included to
     // e.g. record required linkage changes.
     if (Summary->modulePath() == M->getModuleIdentifier())
@@ -1022,6 +1047,7 @@ static void runThinLTOBackend(ModuleSummaryIndex *CombinedIndex, Module *M,
   Conf.CGOptLevel = getCGOptLevel(CGOpts);
   initTargetOptions(Conf.Options, CGOpts, TOpts, LOpts, HeaderOpts);
   Conf.SampleProfile = std::move(SampleProfile);
+  Conf.UseNewPM = CGOpts.ExperimentalNewPassManager;
   switch (Action) {
   case Backend_EmitNothing:
     Conf.PreCodeGenModuleHook = [](size_t Task, const Module &Mod) {
@@ -1066,7 +1092,8 @@ void clang::EmitBackendOutput(DiagnosticsEngine &Diags,
     // into memory and pass it into runThinLTOBackend, which will run the
     // function importer and invoke LTO passes.
     Expected<std::unique_ptr<ModuleSummaryIndex>> IndexOrErr =
-        llvm::getModuleSummaryIndexForFile(CGOpts.ThinLTOIndexFile);
+        llvm::getModuleSummaryIndexForFile(CGOpts.ThinLTOIndexFile,
+                                           /*IgnoreEmptyThinLTOIndexFile*/true);
     if (!IndexOrErr) {
       logAllUnhandledErrors(IndexOrErr.takeError(), errs(),
                             "Error loading index file '" +

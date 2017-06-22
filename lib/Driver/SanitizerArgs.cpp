@@ -31,8 +31,8 @@ enum : SanitizerMask {
   NotAllowedWithTrap = Vptr,
   RequiresPIE = DataFlow,
   NeedsUnwindTables = Address | Thread | Memory | DataFlow,
-  SupportsCoverage =
-      Address | Memory | Leak | Undefined | Integer | Nullability | DataFlow,
+  SupportsCoverage = Address | KernelAddress | Memory | Leak | Undefined |
+                     Integer | Nullability | DataFlow,
   RecoverableByDefault = Undefined | Integer | Nullability,
   Unrecoverable = Unreachable | Return,
   LegacyFsanitizeRecoverMask = Undefined | Integer,
@@ -48,13 +48,15 @@ enum CoverageFeature {
   CoverageBB = 1 << 1,
   CoverageEdge = 1 << 2,
   CoverageIndirCall = 1 << 3,
-  CoverageTraceBB = 1 << 4,
+  CoverageTraceBB = 1 << 4,  // Deprecated.
   CoverageTraceCmp = 1 << 5,
   CoverageTraceDiv = 1 << 6,
   CoverageTraceGep = 1 << 7,
-  Coverage8bitCounters = 1 << 8,
+  Coverage8bitCounters = 1 << 8,  // Deprecated.
   CoverageTracePC = 1 << 9,
   CoverageTracePCGuard = 1 << 10,
+  CoverageInline8bitCounters = 1 << 12,
+  CoverageNoPrune = 1 << 11,
 };
 
 /// Parse a -fsanitize= or -fno-sanitize= argument's values, diagnosing any
@@ -529,7 +531,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   }
 
   // trace-pc w/o func/bb/edge implies edge.
-  if ((CoverageFeatures & (CoverageTracePC | CoverageTracePCGuard)) &&
+  if ((CoverageFeatures &
+       (CoverageTracePC | CoverageTracePCGuard | CoverageInline8bitCounters)) &&
       !(CoverageFeatures & InsertionPointTypes))
     CoverageFeatures |= CoverageEdge;
 
@@ -562,12 +565,18 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
       }
     }
 
-    if (Arg *A = Args.getLastArg(
-            options::OPT_fsanitize_address_use_after_scope,
-            options::OPT_fno_sanitize_address_use_after_scope)) {
-      AsanUseAfterScope = A->getOption().getID() ==
-                          options::OPT_fsanitize_address_use_after_scope;
-    }
+    AsanUseAfterScope = Args.hasFlag(
+        options::OPT_fsanitize_address_use_after_scope,
+        options::OPT_fno_sanitize_address_use_after_scope, AsanUseAfterScope);
+
+    // As a workaround for a bug in gold 2.26 and earlier, dead stripping of
+    // globals in ASan is disabled by default on ELF targets.
+    // See https://sourceware.org/bugzilla/show_bug.cgi?id=19002
+    AsanGlobalsDeadStripping =
+        !TC.getTriple().isOSBinFormatELF() ||
+        Args.hasArg(options::OPT_fsanitize_address_globals_dead_stripping);
+  } else {
+    AsanUseAfterScope = false;
   }
 
   // Parse -link-cxx-sanitizer flag.
@@ -629,10 +638,12 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
     std::make_pair(CoverageTraceGep, "-fsanitize-coverage-trace-gep"),
     std::make_pair(Coverage8bitCounters, "-fsanitize-coverage-8bit-counters"),
     std::make_pair(CoverageTracePC, "-fsanitize-coverage-trace-pc"),
-    std::make_pair(CoverageTracePCGuard, "-fsanitize-coverage-trace-pc-guard")};
+    std::make_pair(CoverageTracePCGuard, "-fsanitize-coverage-trace-pc-guard"),
+    std::make_pair(CoverageInline8bitCounters, "-fsanitize-coverage-inline-8bit-counters"),
+    std::make_pair(CoverageNoPrune, "-fsanitize-coverage-no-prune")};
   for (auto F : CoverageFlags) {
     if (CoverageFeatures & F.first)
-      CmdArgs.push_back(Args.MakeArgString(F.second));
+      CmdArgs.push_back(F.second);
   }
 
   if (TC.getTriple().isOSWindows() && needsUbsanRt()) {
@@ -685,7 +696,7 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
                                          llvm::utostr(MsanTrackOrigins)));
 
   if (MsanUseAfterDtor)
-    CmdArgs.push_back(Args.MakeArgString("-fsanitize-memory-use-after-dtor"));
+    CmdArgs.push_back("-fsanitize-memory-use-after-dtor");
 
   // FIXME: Pass these parameters as function attributes, not as -llvm flags.
   if (!TsanMemoryAccess) {
@@ -704,17 +715,20 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
   }
 
   if (CfiCrossDso)
-    CmdArgs.push_back(Args.MakeArgString("-fsanitize-cfi-cross-dso"));
+    CmdArgs.push_back("-fsanitize-cfi-cross-dso");
 
   if (Stats)
-    CmdArgs.push_back(Args.MakeArgString("-fsanitize-stats"));
+    CmdArgs.push_back("-fsanitize-stats");
 
   if (AsanFieldPadding)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-address-field-padding=" +
                                          llvm::utostr(AsanFieldPadding)));
 
   if (AsanUseAfterScope)
-    CmdArgs.push_back(Args.MakeArgString("-fsanitize-address-use-after-scope"));
+    CmdArgs.push_back("-fsanitize-address-use-after-scope");
+
+  if (AsanGlobalsDeadStripping)
+    CmdArgs.push_back("-fsanitize-address-globals-dead-stripping");
 
   // MSan: Workaround for PR16386.
   // ASan: This is mainly to help LSan with cases such as
@@ -722,7 +736,7 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
   // We can't make this conditional on -fsanitize=leak, as that flag shouldn't
   // affect compilation.
   if (Sanitizers.has(Memory) || Sanitizers.has(Address))
-    CmdArgs.push_back(Args.MakeArgString("-fno-assume-sane-operator-new"));
+    CmdArgs.push_back("-fno-assume-sane-operator-new");
 
   // Require -fvisibility= flag on non-Windows when compiling if vptr CFI is
   // enabled.
@@ -786,6 +800,8 @@ int parseCoverageFeatures(const Driver &D, const llvm::opt::Arg *A) {
         .Case("8bit-counters", Coverage8bitCounters)
         .Case("trace-pc", CoverageTracePC)
         .Case("trace-pc-guard", CoverageTracePCGuard)
+        .Case("no-prune", CoverageNoPrune)
+        .Case("inline-8bit-counters", CoverageInline8bitCounters)
         .Default(0);
     if (F == 0)
       D.Diag(clang::diag::err_drv_unsupported_option_argument)

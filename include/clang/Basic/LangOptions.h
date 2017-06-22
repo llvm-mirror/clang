@@ -58,6 +58,7 @@ public:
     SOB_Trapping    // -ftrapv
   };
 
+  // FIXME: Unify with TUKind.
   enum CompilingModuleKind {
     CMK_None,           ///< Not compiling a module interface at all.
     CMK_ModuleMap,      ///< Compiling a module from a module map.
@@ -164,6 +165,11 @@ public:
   /// Are we compiling a module interface (.cppm or module map)?
   bool isCompilingModule() const {
     return getCompilingModule() != CMK_None;
+  }
+
+  /// Do we need to track the owning module for a local declaration?
+  bool trackLocalOwningModule() const {
+    return isCompilingModule() || ModulesLocalVisibility || ModulesTS;
   }
 
   bool isSignedOverflowDefined() const {

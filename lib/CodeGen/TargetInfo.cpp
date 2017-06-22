@@ -398,7 +398,17 @@ TargetCodeGenInfo::getDependentLibraryOption(llvm::StringRef Lib,
 }
 
 unsigned TargetCodeGenInfo::getOpenCLKernelCallingConv() const {
-  return llvm::CallingConv::C;
+  // OpenCL kernels are called via an explicit runtime API with arguments
+  // set with clSetKernelArg(), not as normal sub-functions.
+  // Return SPIR_KERNEL by default as the kernel calling convention to
+  // ensure the fingerprint is fixed such way that each OpenCL argument
+  // gets one matching argument in the produced kernel function argument
+  // list to enable feasible implementation of clSetKernelArg() with
+  // aggregates etc. In case we would use the default C calling conv here,
+  // clSetKernelArg() might break depending on the target-specific
+  // conventions; different targets might split structs passed as values
+  // to multiple function arguments etc.
+  return llvm::CallingConv::SPIR_KERNEL;
 }
 
 llvm::Constant *TargetCodeGenInfo::getNullPointer(const CodeGen::CodeGenModule &CGM,
@@ -407,12 +417,11 @@ llvm::Constant *TargetCodeGenInfo::getNullPointer(const CodeGen::CodeGenModule &
 }
 
 llvm::Value *TargetCodeGenInfo::performAddrSpaceCast(
-    CodeGen::CodeGenFunction &CGF, llvm::Value *Src, QualType SrcTy,
-    QualType DestTy) const {
+    CodeGen::CodeGenFunction &CGF, llvm::Value *Src, unsigned SrcAddr,
+    unsigned DestAddr, llvm::Type *DestTy, bool isNonNull) const {
   // Since target may map different address spaces in AST to the same address
   // space, an address space conversion may end up as a bitcast.
-  return CGF.Builder.CreatePointerBitCastOrAddrSpaceCast(Src,
-             CGF.ConvertType(DestTy));
+  return CGF.Builder.CreatePointerBitCastOrAddrSpaceCast(Src, DestTy);
 }
 
 static bool isEmptyRecord(ASTContext &Context, QualType T, bool AllowArrays);
@@ -3159,8 +3168,7 @@ GetX86_64ByValArgumentPair(llvm::Type *Lo, llvm::Type *Hi,
     }
   }
 
-  llvm::StructType *Result = llvm::StructType::get(Lo, Hi, nullptr);
-
+  llvm::StructType *Result = llvm::StructType::get(Lo, Hi);
 
   // Verify that the second element is at an 8-byte offset.
   assert(TD.getStructLayout(Result)->getElementOffset(1) == 8 &&
@@ -3235,8 +3243,7 @@ classifyReturnType(QualType RetTy) const {
   case ComplexX87:
     assert(Hi == ComplexX87 && "Unexpected ComplexX87 classification.");
     ResType = llvm::StructType::get(llvm::Type::getX86_FP80Ty(getVMContext()),
-                                    llvm::Type::getX86_FP80Ty(getVMContext()),
-                                    nullptr);
+                                    llvm::Type::getX86_FP80Ty(getVMContext()));
     break;
   }
 
@@ -3732,7 +3739,7 @@ Address X86_64ABIInfo::EmitVAArg(CodeGenFunction &CGF, Address VAListAddr,
       CGF.Builder.CreateConstInBoundsByteGEP(RegAddrLo,
                                              CharUnits::fromQuantity(16));
     llvm::Type *DoubleTy = CGF.DoubleTy;
-    llvm::StructType *ST = llvm::StructType::get(DoubleTy, DoubleTy, nullptr);
+    llvm::StructType *ST = llvm::StructType::get(DoubleTy, DoubleTy);
     llvm::Value *V;
     Address Tmp = CGF.CreateMemTemp(Ty);
     Tmp = CGF.Builder.CreateElementBitCast(Tmp, ST);
@@ -4637,7 +4644,7 @@ PPC64_SVR4_ABIInfo::classifyReturnType(QualType RetTy) const {
       llvm::Type *CoerceTy;
       if (Bits > GPRBits) {
         CoerceTy = llvm::IntegerType::get(getVMContext(), GPRBits);
-        CoerceTy = llvm::StructType::get(CoerceTy, CoerceTy, nullptr);
+        CoerceTy = llvm::StructType::get(CoerceTy, CoerceTy);
       } else
         CoerceTy =
             llvm::IntegerType::get(getVMContext(), llvm::alignTo(Bits, 8));
@@ -4824,6 +4831,9 @@ private:
   bool isSwiftErrorInRegister() const override {
     return true;
   }
+
+  bool isLegalVectorTypeForSwift(CharUnits totalSize, llvm::Type *eltTy,
+                                 unsigned elts) const override;
 };
 
 class AArch64TargetCodeGenInfo : public TargetCodeGenInfo {
@@ -4890,10 +4900,16 @@ ABIArgInfo AArch64ABIInfo::classifyArgumentType(QualType Ty) const {
 
   // Empty records are always ignored on Darwin, but actually passed in C++ mode
   // elsewhere for GNU compatibility.
-  if (isEmptyRecord(getContext(), Ty, true)) {
+  uint64_t Size = getContext().getTypeSize(Ty);
+  bool IsEmpty = isEmptyRecord(getContext(), Ty, true);
+  if (IsEmpty || Size == 0) {
     if (!getContext().getLangOpts().CPlusPlus || isDarwinPCS())
       return ABIArgInfo::getIgnore();
 
+    // GNU C mode. The only argument that gets ignored is an empty one with size
+    // 0.
+    if (IsEmpty && Size == 0)
+      return ABIArgInfo::getIgnore();
     return ABIArgInfo::getDirect(llvm::Type::getInt8Ty(getVMContext()));
   }
 
@@ -4906,7 +4922,6 @@ ABIArgInfo AArch64ABIInfo::classifyArgumentType(QualType Ty) const {
   }
 
   // Aggregates <= 16 bytes are passed directly in registers or on the stack.
-  uint64_t Size = getContext().getTypeSize(Ty);
   if (Size <= 128) {
     // On RenderScript, coerce Aggregates <= 16 bytes to an integer array of
     // same size and alignment.
@@ -4946,7 +4961,8 @@ ABIArgInfo AArch64ABIInfo::classifyReturnType(QualType RetTy) const {
                 : ABIArgInfo::getDirect());
   }
 
-  if (isEmptyRecord(getContext(), RetTy, true))
+  uint64_t Size = getContext().getTypeSize(RetTy);
+  if (isEmptyRecord(getContext(), RetTy, true) || Size == 0)
     return ABIArgInfo::getIgnore();
 
   const Type *Base = nullptr;
@@ -4956,7 +4972,6 @@ ABIArgInfo AArch64ABIInfo::classifyReturnType(QualType RetTy) const {
     return ABIArgInfo::getDirect();
 
   // Aggregates <= 16 bytes are returned directly in registers or on the stack.
-  uint64_t Size = getContext().getTypeSize(RetTy);
   if (Size <= 128) {
     // On RenderScript, coerce Aggregates <= 16 bytes to an integer array of
     // same size and alignment.
@@ -4990,6 +5005,17 @@ bool AArch64ABIInfo::isIllegalVectorType(QualType Ty) const {
     return Size != 64 && (Size != 128 || NumElements == 1);
   }
   return false;
+}
+
+bool AArch64ABIInfo::isLegalVectorTypeForSwift(CharUnits totalSize,
+                                               llvm::Type *eltTy,
+                                               unsigned elts) const {
+  if (!llvm::isPowerOf2_32(elts))
+    return false;
+  if (totalSize.getQuantity() != 8 &&
+      (totalSize.getQuantity() != 16 || elts == 1))
+    return false;
+  return true;
 }
 
 bool AArch64ABIInfo::isHomogeneousAggregateBaseType(QualType Ty) const {
@@ -5380,6 +5406,8 @@ private:
   bool isSwiftErrorInRegister() const override {
     return true;
   }
+  bool isLegalVectorTypeForSwift(CharUnits totalSize, llvm::Type *eltTy,
+                                 unsigned elts) const override;
 };
 
 class ARMTargetCodeGenInfo : public TargetCodeGenInfo {
@@ -5890,6 +5918,20 @@ bool ARMABIInfo::isIllegalVectorType(QualType Ty) const {
     }
   }
   return false;
+}
+
+bool ARMABIInfo::isLegalVectorTypeForSwift(CharUnits vectorSize,
+                                           llvm::Type *eltTy,
+                                           unsigned numElts) const {
+  if (!llvm::isPowerOf2_32(numElts))
+    return false;
+  unsigned size = getDataLayout().getTypeStoreSizeInBits(eltTy);
+  if (size > 64)
+    return false;
+  if (vectorSize.getQuantity() != 8 &&
+      (vectorSize.getQuantity() != 16 || numElts == 1))
+    return false;
+  return true;
 }
 
 bool ARMABIInfo::isHomogeneousAggregateBaseType(QualType Ty) const {
@@ -6555,6 +6597,11 @@ public:
       Fn->addFnAttr("nomips16");
     }
 
+    if (FD->hasAttr<MicroMipsAttr>())
+      Fn->addFnAttr("micromips");
+    else if (FD->hasAttr<NoMicroMipsAttr>())
+      Fn->addFnAttr("nomicromips");
+
     const MipsInterruptAttr *Attr = FD->getAttr<MipsInterruptAttr>();
     if (!Attr)
       return;
@@ -6689,6 +6736,14 @@ MipsABIInfo::classifyArgumentType(QualType Ty, uint64_t &Offset) const {
       Offset = OrigOffset + MinABIStackAlignInBytes;
       return getNaturalAlignIndirect(Ty, RAA == CGCXXABI::RAA_DirectInMemory);
     }
+
+    // Use indirect if the aggregate cannot fit into registers for
+    // passing arguments according to the ABI
+    unsigned Threshold = IsO32 ? 16 : 64;
+
+    if(getContext().getTypeSizeInChars(Ty) > CharUnits::fromQuantity(Threshold))
+      return ABIArgInfo::getIndirect(CharUnits::fromQuantity(Align), true,
+                                     getContext().getTypeAlign(Ty) / 8 > Align);
 
     // If we have reached here, aggregates are passed directly by coercing to
     // another structure type. Padding is inserted if the offset of the
@@ -7032,12 +7087,12 @@ ABIArgInfo HexagonABIInfo::classifyArgumentType(QualType Ty) const {
             ABIArgInfo::getExtend() : ABIArgInfo::getDirect());
   }
 
+  if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, getCXXABI()))
+    return getNaturalAlignIndirect(Ty, RAA == CGCXXABI::RAA_DirectInMemory);
+
   // Ignore empty records.
   if (isEmptyRecord(getContext(), Ty, true))
     return ABIArgInfo::getIgnore();
-
-  if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, getCXXABI()))
-    return getNaturalAlignIndirect(Ty, RAA == CGCXXABI::RAA_DirectInMemory);
 
   uint64_t Size = getContext().getTypeSize(Ty);
   if (Size > 64)
@@ -7281,10 +7336,13 @@ public:
 
   llvm::Constant *getNullPointer(const CodeGen::CodeGenModule &CGM,
       llvm::PointerType *T, QualType QT) const override;
+
+  unsigned getASTAllocaAddressSpace() const override {
+    return LangAS::FirstTargetAddressSpace +
+           getABIInfo().getDataLayout().getAllocaAddrSpace();
+  }
 };
 }
-
-static void appendOpenCLVersionMD (CodeGen::CodeGenModule &CGM);
 
 void AMDGPUTargetCodeGenInfo::setTargetAttributes(
     const Decl *D,
@@ -7342,8 +7400,6 @@ void AMDGPUTargetCodeGenInfo::setTargetAttributes(
     if (NumVGPR != 0)
       F->addFnAttr("amdgpu-num-vgpr", llvm::utostr(NumVGPR));
   }
-
-  appendOpenCLVersionMD(M);
 }
 
 unsigned AMDGPUTargetCodeGenInfo::getOpenCLKernelCallingConv() const {
@@ -8014,45 +8070,18 @@ class SPIRTargetCodeGenInfo : public TargetCodeGenInfo {
 public:
   SPIRTargetCodeGenInfo(CodeGen::CodeGenTypes &CGT)
     : TargetCodeGenInfo(new DefaultABIInfo(CGT)) {}
-  void emitTargetMD(const Decl *D, llvm::GlobalValue *GV,
-                    CodeGen::CodeGenModule &M) const override;
   unsigned getOpenCLKernelCallingConv() const override;
 };
+
 } // End anonymous namespace.
 
-/// Emit SPIR specific metadata: OpenCL and SPIR version.
-void SPIRTargetCodeGenInfo::emitTargetMD(const Decl *D, llvm::GlobalValue *GV,
-                                         CodeGen::CodeGenModule &CGM) const {
-  llvm::LLVMContext &Ctx = CGM.getModule().getContext();
-  llvm::Type *Int32Ty = llvm::Type::getInt32Ty(Ctx);
-  llvm::Module &M = CGM.getModule();
-  // SPIR v2.0 s2.12 - The SPIR version used by the module is stored in the
-  // opencl.spir.version named metadata.
-  llvm::Metadata *SPIRVerElts[] = {
-      llvm::ConstantAsMetadata::get(
-          llvm::ConstantInt::get(Int32Ty, CGM.getLangOpts().OpenCLVersion / 100)),
-      llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-          Int32Ty, (CGM.getLangOpts().OpenCLVersion / 100 > 1) ? 0 : 2))};
-  llvm::NamedMDNode *SPIRVerMD =
-      M.getOrInsertNamedMetadata("opencl.spir.version");
-  SPIRVerMD->addOperand(llvm::MDNode::get(Ctx, SPIRVerElts));
-  appendOpenCLVersionMD(CGM);
+namespace clang {
+namespace CodeGen {
+void computeSPIRKernelABIInfo(CodeGenModule &CGM, CGFunctionInfo &FI) {
+  DefaultABIInfo SPIRABI(CGM.getTypes());
+  SPIRABI.computeInfo(FI);
 }
-
-static void appendOpenCLVersionMD(CodeGen::CodeGenModule &CGM) {
-  llvm::LLVMContext &Ctx = CGM.getModule().getContext();
-  llvm::Type *Int32Ty = llvm::Type::getInt32Ty(Ctx);
-  llvm::Module &M = CGM.getModule();
-  // SPIR v2.0 s2.13 - The OpenCL version used by the module is stored in the
-  // opencl.ocl.version named metadata node.
-  llvm::Metadata *OCLVerElts[] = {
-      llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-          Int32Ty, CGM.getLangOpts().OpenCLVersion / 100)),
-      llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
-          Int32Ty, (CGM.getLangOpts().OpenCLVersion % 100) / 10))};
-  llvm::NamedMDNode *OCLVerMD =
-      M.getOrInsertNamedMetadata("opencl.ocl.version");
-  OCLVerMD->addOperand(llvm::MDNode::get(Ctx, OCLVerElts));
+}
 }
 
 unsigned SPIRTargetCodeGenInfo::getOpenCLKernelCallingConv() const {

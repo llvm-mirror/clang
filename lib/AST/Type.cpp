@@ -1344,7 +1344,7 @@ Optional<ArrayRef<QualType>> Type::getObjCSubstitutions(
   } else if (getAs<BlockPointerType>()) {
     ASTContext &ctx = dc->getParentASTContext();
     objectType = ctx.getObjCObjectType(ctx.ObjCBuiltinIdTy, { }, { })
-                   ->castAs<ObjCObjectType>();;
+                   ->castAs<ObjCObjectType>();
   } else {
     objectType = getAs<ObjCObjectType>();
   }
@@ -2114,16 +2114,13 @@ bool QualType::isTriviallyCopyableType(const ASTContext &Context) const {
   if (hasNonTrivialObjCLifetime())
     return false;
 
-  // C++11 [basic.types]p9
+  // C++11 [basic.types]p9 - See Core 2094
   //   Scalar types, trivially copyable class types, arrays of such types, and
-  //   non-volatile const-qualified versions of these types are collectively
+  //   cv-qualified versions of these types are collectively
   //   called trivially copyable types.
 
   QualType CanonicalType = getCanonicalType();
   if (CanonicalType->isDependentType())
-    return false;
-
-  if (CanonicalType.isVolatileQualified())
     return false;
 
   // Return false for incomplete types after skipping any incomplete array types
@@ -3534,7 +3531,7 @@ Optional<NullabilityKind> Type::getNullability(const ASTContext &context) const 
   } while (true);
 }
 
-bool Type::canHaveNullability() const {
+bool Type::canHaveNullability(bool ResultIfUnknown) const {
   QualType type = getCanonicalTypeInternal();
   
   switch (type->getTypeClass()) {
@@ -3562,7 +3559,8 @@ bool Type::canHaveNullability() const {
   case Type::SubstTemplateTypeParmPack:
   case Type::DependentName:
   case Type::DependentTemplateSpecialization:
-    return true;
+  case Type::Auto:
+    return ResultIfUnknown;
 
   // Dependent template specializations can instantiate to pointer
   // types unless they're known to be specializations of a class
@@ -3574,12 +3572,7 @@ bool Type::canHaveNullability() const {
       if (isa<ClassTemplateDecl>(templateDecl))
         return false;
     }
-    return true;
-
-  // auto is considered dependent when it isn't deduced.
-  case Type::Auto:
-  case Type::DeducedTemplateSpecialization:
-    return !cast<DeducedType>(type.getTypePtr())->isDeduced();
+    return ResultIfUnknown;
 
   case Type::Builtin:
     switch (cast<BuiltinType>(type.getTypePtr())->getKind()) {
@@ -3598,7 +3591,7 @@ bool Type::canHaveNullability() const {
     case BuiltinType::PseudoObject:
     case BuiltinType::UnknownAny:
     case BuiltinType::ARCUnbridgedCast:
-      return true;
+      return ResultIfUnknown;
 
     case BuiltinType::Void:
     case BuiltinType::ObjCId:
@@ -3617,6 +3610,7 @@ bool Type::canHaveNullability() const {
     case BuiltinType::OMPArraySection:
       return false;
     }
+    llvm_unreachable("unknown builtin type");
 
   // Non-pointer types.
   case Type::Complex:
@@ -3632,6 +3626,7 @@ bool Type::canHaveNullability() const {
   case Type::FunctionProto:
   case Type::FunctionNoProto:
   case Type::Record:
+  case Type::DeducedTemplateSpecialization:
   case Type::Enum:
   case Type::InjectedClassName:
   case Type::PackExpansion:

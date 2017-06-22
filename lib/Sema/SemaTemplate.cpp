@@ -455,6 +455,85 @@ void Sema::LookupTemplateName(LookupResult &Found,
   }
 }
 
+void Sema::diagnoseExprIntendedAsTemplateName(Scope *S, ExprResult TemplateName,
+                                              SourceLocation Less,
+                                              SourceLocation Greater) {
+  if (TemplateName.isInvalid())
+    return;
+
+  DeclarationNameInfo NameInfo;
+  CXXScopeSpec SS;
+  LookupNameKind LookupKind;
+
+  DeclContext *LookupCtx = nullptr;
+  NamedDecl *Found = nullptr;
+
+  // Figure out what name we looked up.
+  if (auto *ME = dyn_cast<MemberExpr>(TemplateName.get())) {
+    NameInfo = ME->getMemberNameInfo();
+    SS.Adopt(ME->getQualifierLoc());
+    LookupKind = LookupMemberName;
+    LookupCtx = ME->getBase()->getType()->getAsCXXRecordDecl();
+    Found = ME->getMemberDecl();
+  } else {
+    auto *DRE = cast<DeclRefExpr>(TemplateName.get());
+    NameInfo = DRE->getNameInfo();
+    SS.Adopt(DRE->getQualifierLoc());
+    LookupKind = LookupOrdinaryName;
+    Found = DRE->getFoundDecl();
+  }
+
+  // Try to correct the name by looking for templates and C++ named casts.
+  struct TemplateCandidateFilter : CorrectionCandidateCallback {
+    TemplateCandidateFilter() {
+      WantTypeSpecifiers = false;
+      WantExpressionKeywords = false;
+      WantRemainingKeywords = false;
+      WantCXXNamedCasts = true;
+    };
+    bool ValidateCandidate(const TypoCorrection &Candidate) override {
+      if (auto *ND = Candidate.getCorrectionDecl())
+        return isAcceptableTemplateName(ND->getASTContext(), ND, true);
+      return Candidate.isKeyword();
+    }
+  };
+
+  DeclarationName Name = NameInfo.getName();
+  if (TypoCorrection Corrected =
+          CorrectTypo(NameInfo, LookupKind, S, &SS,
+                      llvm::make_unique<TemplateCandidateFilter>(),
+                      CTK_ErrorRecovery, LookupCtx)) {
+    auto *ND = Corrected.getFoundDecl();
+    if (ND)
+      ND = isAcceptableTemplateName(Context, ND,
+                                    /*AllowFunctionTemplates*/ true);
+    if (ND || Corrected.isKeyword()) {
+      if (LookupCtx) {
+        std::string CorrectedStr(Corrected.getAsString(getLangOpts()));
+        bool DroppedSpecifier = Corrected.WillReplaceSpecifier() &&
+                                Name.getAsString() == CorrectedStr;
+        diagnoseTypo(Corrected,
+                     PDiag(diag::err_non_template_in_member_template_id_suggest)
+                         << Name << LookupCtx << DroppedSpecifier
+                         << SS.getRange(), false);
+      } else {
+        diagnoseTypo(Corrected,
+                     PDiag(diag::err_non_template_in_template_id_suggest)
+                         << Name, false);
+      }
+      if (Found)
+        Diag(Found->getLocation(),
+             diag::note_non_template_in_template_id_found);
+      return;
+    }
+  }
+
+  Diag(NameInfo.getLoc(), diag::err_non_template_in_template_id)
+    << Name << SourceRange(Less, Greater);
+  if (Found)
+    Diag(Found->getLocation(), diag::note_non_template_in_template_id_found);
+}
+
 /// ActOnDependentIdExpression - Handle a dependent id-expression that
 /// was just parsed.  This is only possible with an explicit scope
 /// specifier naming a dependent type.
@@ -1251,8 +1330,8 @@ Sema::CheckClassTemplate(Scope *S, unsigned TagSpec, TagUseKind TUK,
           auto *Tmpl = cast<CXXRecordDecl>(Hidden)->getDescribedClassTemplate();
           assert(Tmpl && "original definition of a class template is not a "
                          "class template?");
-          makeMergedDefinitionVisible(Hidden, KWLoc);
-          makeMergedDefinitionVisible(Tmpl, KWLoc);
+          makeMergedDefinitionVisible(Hidden);
+          makeMergedDefinitionVisible(Tmpl);
           return Def;
         }
 
@@ -3941,6 +4020,7 @@ bool Sema::CheckTemplateTypeArgument(TemplateTypeParmDecl *Param,
       }
     }
     // fallthrough
+    LLVM_FALLTHROUGH;
   }
   default: {
     // We have a template type parameter but the template argument
@@ -7352,7 +7432,7 @@ Sema::ActOnClassTemplateSpecialization(Scope *S, unsigned TagSpec,
     NamedDecl *Hidden = nullptr;
     if (Def && SkipBody && !hasVisibleDefinition(Def, &Hidden)) {
       SkipBody->ShouldSkip = true;
-      makeMergedDefinitionVisible(Hidden, KWLoc);
+      makeMergedDefinitionVisible(Hidden);
       // From here on out, treat this as just a redeclaration.
       TUK = TUK_Declaration;
     } else if (Def) {
@@ -7515,6 +7595,7 @@ Sema::CheckSpecializationInstantiationRedecl(SourceLocation NewLoc,
         return false;
       }
       // Fall through
+      LLVM_FALLTHROUGH;
 
     case TSK_ExplicitInstantiationDeclaration:
     case TSK_ExplicitInstantiationDefinition:
@@ -7541,6 +7622,7 @@ Sema::CheckSpecializationInstantiationRedecl(SourceLocation NewLoc,
 
       return true;
     }
+    llvm_unreachable("The switch over PrevTSK must be exhaustive.");
 
   case TSK_ExplicitInstantiationDeclaration:
     switch (PrevTSK) {
@@ -7822,9 +7904,13 @@ bool Sema::CheckFunctionTemplateSpecialization(
   TemplateSpecializationKind TSK = SpecInfo->getTemplateSpecializationKind();
   if (TSK == TSK_Undeclared || TSK == TSK_ImplicitInstantiation) {
     Specialization->setLocation(FD->getLocation());
+    Specialization->setLexicalDeclContext(FD->getLexicalDeclContext());
     // C++11 [dcl.constexpr]p1: An explicit specialization of a constexpr
     // function can differ from the template declaration with respect to
     // the constexpr specifier.
+    // FIXME: We need an update record for this AST mutation.
+    // FIXME: What if there are multiple such prior declarations (for instance,
+    // from different modules)?
     Specialization->setConstexpr(FD->isConstexpr());
   }
 
@@ -7872,11 +7958,14 @@ bool Sema::CheckFunctionTemplateSpecialization(
     // flag to not-deleted, so that we can inherit that information from 'FD'.
     if (Specialization->isDeleted() && !SpecInfo->isExplicitSpecialization() &&
         !Specialization->getCanonicalDecl()->isReferenced()) {
+      // FIXME: This assert will not hold in the presence of modules.
       assert(
           Specialization->getCanonicalDecl() == Specialization &&
           "This must be the only existing declaration of this specialization");
+      // FIXME: We need an update record for this AST mutation.
       Specialization->setDeletedAsWritten(false);
     }
+    // FIXME: We need an update record for this AST mutation.
     SpecInfo->setTemplateSpecializationKind(TSK_ExplicitSpecialization);
     MarkUnusedFileScopedDecl(Specialization);
   }
@@ -7987,8 +8076,11 @@ Sema::CheckMemberSpecialization(NamedDecl *Member, LookupResult &Previous) {
     return false;
   }
 
-  // If this is a friend, just bail out here before we start turning
-  // things into explicit specializations.
+  // A member specialization in a friend declaration isn't really declaring
+  // an explicit specialization, just identifying a specific (possibly implicit)
+  // specialization. Don't change the template specialization kind.
+  //
+  // FIXME: Is this really valid? Other compilers reject.
   if (Member->getFriendObjectKind() != Decl::FOK_None) {
     // Preserve instantiation information.
     if (InstantiatedFrom && isa<CXXMethodDecl>(Member)) {
@@ -8038,66 +8130,36 @@ Sema::CheckMemberSpecialization(NamedDecl *Member, LookupResult &Previous) {
                                        false))
     return true;
 
-  // Note that this is an explicit instantiation of a member.
-  // the original declaration to note that it is an explicit specialization
-  // (if it was previously an implicit instantiation). This latter step
-  // makes bookkeeping easier.
-  if (isa<FunctionDecl>(Member)) {
+  // Note that this member specialization is an "instantiation of" the
+  // corresponding member of the original template.
+  if (auto *MemberFunction = dyn_cast<FunctionDecl>(Member)) {
     FunctionDecl *InstantiationFunction = cast<FunctionDecl>(Instantiation);
     if (InstantiationFunction->getTemplateSpecializationKind() ==
           TSK_ImplicitInstantiation) {
-      InstantiationFunction->setTemplateSpecializationKind(
-                                                  TSK_ExplicitSpecialization);
-      InstantiationFunction->setLocation(Member->getLocation());
       // Explicit specializations of member functions of class templates do not
       // inherit '=delete' from the member function they are specializing.
       if (InstantiationFunction->isDeleted()) {
+        // FIXME: This assert will not hold in the presence of modules.
         assert(InstantiationFunction->getCanonicalDecl() ==
                InstantiationFunction);
+        // FIXME: We need an update record for this AST mutation.
         InstantiationFunction->setDeletedAsWritten(false);
       }
     }
 
-    cast<FunctionDecl>(Member)->setInstantiationOfMemberFunction(
-                                        cast<CXXMethodDecl>(InstantiatedFrom),
-                                                  TSK_ExplicitSpecialization);
-    MarkUnusedFileScopedDecl(InstantiationFunction);
-  } else if (isa<VarDecl>(Member)) {
-    VarDecl *InstantiationVar = cast<VarDecl>(Instantiation);
-    if (InstantiationVar->getTemplateSpecializationKind() ==
-          TSK_ImplicitInstantiation) {
-      InstantiationVar->setTemplateSpecializationKind(
-                                                  TSK_ExplicitSpecialization);
-      InstantiationVar->setLocation(Member->getLocation());
-    }
-
-    cast<VarDecl>(Member)->setInstantiationOfStaticDataMember(
+    MemberFunction->setInstantiationOfMemberFunction(
+        cast<CXXMethodDecl>(InstantiatedFrom), TSK_ExplicitSpecialization);
+  } else if (auto *MemberVar = dyn_cast<VarDecl>(Member)) {
+    MemberVar->setInstantiationOfStaticDataMember(
         cast<VarDecl>(InstantiatedFrom), TSK_ExplicitSpecialization);
-    MarkUnusedFileScopedDecl(InstantiationVar);
-  } else if (isa<CXXRecordDecl>(Member)) {
-    CXXRecordDecl *InstantiationClass = cast<CXXRecordDecl>(Instantiation);
-    if (InstantiationClass->getTemplateSpecializationKind() ==
-          TSK_ImplicitInstantiation) {
-      InstantiationClass->setTemplateSpecializationKind(
-                                                   TSK_ExplicitSpecialization);
-      InstantiationClass->setLocation(Member->getLocation());
-    }
-
-    cast<CXXRecordDecl>(Member)->setInstantiationOfMemberClass(
-                                        cast<CXXRecordDecl>(InstantiatedFrom),
-                                                   TSK_ExplicitSpecialization);
-  } else {
-    assert(isa<EnumDecl>(Member) && "Only member enums remain");
-    EnumDecl *InstantiationEnum = cast<EnumDecl>(Instantiation);
-    if (InstantiationEnum->getTemplateSpecializationKind() ==
-          TSK_ImplicitInstantiation) {
-      InstantiationEnum->setTemplateSpecializationKind(
-                                                   TSK_ExplicitSpecialization);
-      InstantiationEnum->setLocation(Member->getLocation());
-    }
-
-    cast<EnumDecl>(Member)->setInstantiationOfMemberEnum(
+  } else if (auto *MemberClass = dyn_cast<CXXRecordDecl>(Member)) {
+    MemberClass->setInstantiationOfMemberClass(
+        cast<CXXRecordDecl>(InstantiatedFrom), TSK_ExplicitSpecialization);
+  } else if (auto *MemberEnum = dyn_cast<EnumDecl>(Member)) {
+    MemberEnum->setInstantiationOfMemberEnum(
         cast<EnumDecl>(InstantiatedFrom), TSK_ExplicitSpecialization);
+  } else {
+    llvm_unreachable("unknown member specialization kind");
   }
 
   // Save the caller the trouble of having to figure out which declaration
@@ -8105,6 +8167,43 @@ Sema::CheckMemberSpecialization(NamedDecl *Member, LookupResult &Previous) {
   Previous.clear();
   Previous.addDecl(FoundInstantiation);
   return false;
+}
+
+/// Complete the explicit specialization of a member of a class template by
+/// updating the instantiated member to be marked as an explicit specialization.
+///
+/// \param OrigD The member declaration instantiated from the template.
+/// \param Loc The location of the explicit specialization of the member.
+template<typename DeclT>
+static void completeMemberSpecializationImpl(Sema &S, DeclT *OrigD,
+                                             SourceLocation Loc) {
+  if (OrigD->getTemplateSpecializationKind() != TSK_ImplicitInstantiation)
+    return;
+
+  // FIXME: Inform AST mutation listeners of this AST mutation.
+  // FIXME: If there are multiple in-class declarations of the member (from
+  // multiple modules, or a declaration and later definition of a member type),
+  // should we update all of them?
+  OrigD->setTemplateSpecializationKind(TSK_ExplicitSpecialization);
+  OrigD->setLocation(Loc);
+}
+
+void Sema::CompleteMemberSpecialization(NamedDecl *Member,
+                                        LookupResult &Previous) {
+  NamedDecl *Instantiation = cast<NamedDecl>(Member->getCanonicalDecl());
+  if (Instantiation == Member)
+    return;
+
+  if (auto *Function = dyn_cast<CXXMethodDecl>(Instantiation))
+    completeMemberSpecializationImpl(*this, Function, Member->getLocation());
+  else if (auto *Var = dyn_cast<VarDecl>(Instantiation))
+    completeMemberSpecializationImpl(*this, Var, Member->getLocation());
+  else if (auto *Record = dyn_cast<CXXRecordDecl>(Instantiation))
+    completeMemberSpecializationImpl(*this, Record, Member->getLocation());
+  else if (auto *Enum = dyn_cast<EnumDecl>(Instantiation))
+    completeMemberSpecializationImpl(*this, Enum, Member->getLocation());
+  else
+    llvm_unreachable("unknown member specialization kind");
 }
 
 /// \brief Check the scope of an explicit instantiation.
@@ -8859,7 +8958,8 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
   //   A member function [...] of a class template can be explicitly
   //  instantiated from the member definition associated with its class
   //  template.
-  UnresolvedSet<8> Matches;
+  UnresolvedSet<8> TemplateMatches;
+  FunctionDecl *NonTemplateMatch = nullptr;
   AttributeList *Attr = D.getDeclSpec().getAttributes().getList();
   TemplateSpecCandidateSet FailedCandidates(D.getIdentifierLoc());
   for (LookupResult::iterator P = Previous.begin(), PEnd = Previous.end();
@@ -8870,11 +8970,13 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
         QualType Adjusted = adjustCCAndNoReturn(R, Method->getType(),
                                                 /*AdjustExceptionSpec*/true);
         if (Context.hasSameUnqualifiedType(Method->getType(), Adjusted)) {
-          Matches.clear();
-
-          Matches.addDecl(Method, P.getAccess());
-          if (Method->getTemplateSpecializationKind() == TSK_Undeclared)
-            break;
+          if (Method->getPrimaryTemplate()) {
+            TemplateMatches.addDecl(Method, P.getAccess());
+          } else {
+            // FIXME: Can this assert ever happen?  Needs a test.
+            assert(!NonTemplateMatch && "Multiple NonTemplateMatches");
+            NonTemplateMatch = Method;
+          }
         }
       }
     }
@@ -8913,22 +9015,25 @@ DeclResult Sema::ActOnExplicitInstantiation(Scope *S,
       continue;
     }
 
-    Matches.addDecl(Specialization, P.getAccess());
+    TemplateMatches.addDecl(Specialization, P.getAccess());
   }
 
-  // Find the most specialized function template specialization.
-  UnresolvedSetIterator Result = getMostSpecialized(
-      Matches.begin(), Matches.end(), FailedCandidates,
-      D.getIdentifierLoc(),
-      PDiag(diag::err_explicit_instantiation_not_known) << Name,
-      PDiag(diag::err_explicit_instantiation_ambiguous) << Name,
-      PDiag(diag::note_explicit_instantiation_candidate));
+  FunctionDecl *Specialization = NonTemplateMatch;
+  if (!Specialization) {
+    // Find the most specialized function template specialization.
+    UnresolvedSetIterator Result = getMostSpecialized(
+        TemplateMatches.begin(), TemplateMatches.end(), FailedCandidates,
+        D.getIdentifierLoc(),
+        PDiag(diag::err_explicit_instantiation_not_known) << Name,
+        PDiag(diag::err_explicit_instantiation_ambiguous) << Name,
+        PDiag(diag::note_explicit_instantiation_candidate));
 
-  if (Result == Matches.end())
-    return true;
+    if (Result == TemplateMatches.end())
+      return true;
 
-  // Ignore access control bits, we don't need them for redeclaration checking.
-  FunctionDecl *Specialization = cast<FunctionDecl>(*Result);
+    // Ignore access control bits, we don't need them for redeclaration checking.
+    Specialization = cast<FunctionDecl>(*Result);
+  }
 
   // C++11 [except.spec]p4
   // In an explicit instantiation an exception-specification may be specified,
@@ -9283,6 +9388,7 @@ Sema::CheckTypenameType(ElaboratedTypeKeyword Keyword,
   }
   // Fall through to create a dependent typename type, from which we can recover
   // better.
+  LLVM_FALLTHROUGH;
 
   case LookupResult::NotFoundInCurrentInstantiation:
     // Okay, it's a member of an unknown instantiation.
@@ -9651,7 +9757,7 @@ private:
       IsHiddenExplicitSpecialization =
           Spec->getMemberSpecializationInfo()
               ? !S.hasVisibleMemberSpecialization(Spec, &Modules)
-              : !S.hasVisibleDeclaration(Spec);
+              : !S.hasVisibleExplicitSpecialization(Spec, &Modules);
     } else {
       checkInstantiated(Spec);
     }

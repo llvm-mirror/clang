@@ -120,6 +120,7 @@ enum TypeEvaluationKind {
   SANITIZER_CHECK(NonnullArg, nonnull_arg, 0)                                  \
   SANITIZER_CHECK(NonnullReturn, nonnull_return, 0)                            \
   SANITIZER_CHECK(OutOfBounds, out_of_bounds, 0)                               \
+  SANITIZER_CHECK(PointerOverflow, pointer_overflow, 0)                        \
   SANITIZER_CHECK(ShiftOutOfBounds, shift_out_of_bounds, 0)                    \
   SANITIZER_CHECK(SubOverflow, sub_overflow, 0)                                \
   SANITIZER_CHECK(TypeMismatch, type_mismatch, 1)                              \
@@ -1413,16 +1414,8 @@ private:
   /// True if we need emit the life-time markers.
   const bool ShouldEmitLifetimeMarkers;
 
-  /// Add a kernel metadata node to the named metadata node 'opencl.kernels'.
-  /// In the kernel metadata node, reference the kernel function and metadata 
-  /// nodes for its optional attribute qualifiers (OpenCL 1.1 6.7.2):
-  /// - A node for the vec_type_hint(<type>) qualifier contains string
-  ///   "vec_type_hint", an undefined value of the <type> data type,
-  ///   and a Boolean that is true if the <type> is integer and signed.
-  /// - A node for the work_group_size_hint(X,Y,Z) qualifier contains string 
-  ///   "work_group_size_hint", and three 32-bit integers X, Y and Z.
-  /// - A node for the reqd_work_group_size(X,Y,Z) qualifier contains string 
-  ///   "reqd_work_group_size", and three 32-bit integers X, Y and Z.
+  /// Add OpenCL kernel arg metadata and the kernel attribute meatadata to
+  /// the function metadata.
   void EmitOpenCLKernelMetadata(const FunctionDecl *FD, 
                                 llvm::Function *Fn);
 
@@ -1894,40 +1887,65 @@ public:
   //===--------------------------------------------------------------------===//
 
   LValue MakeAddrLValue(Address Addr, QualType T,
-                        AlignmentSource AlignSource = AlignmentSource::Type) {
-    return LValue::MakeAddr(Addr, T, getContext(), AlignSource,
+                        LValueBaseInfo BaseInfo =
+                            LValueBaseInfo(AlignmentSource::Type)) {
+    return LValue::MakeAddr(Addr, T, getContext(), BaseInfo,
                             CGM.getTBAAInfo(T));
   }
 
   LValue MakeAddrLValue(llvm::Value *V, QualType T, CharUnits Alignment,
-                        AlignmentSource AlignSource = AlignmentSource::Type) {
+                        LValueBaseInfo BaseInfo =
+                            LValueBaseInfo(AlignmentSource::Type)) {
     return LValue::MakeAddr(Address(V, Alignment), T, getContext(),
-                            AlignSource, CGM.getTBAAInfo(T));
+                            BaseInfo, CGM.getTBAAInfo(T));
   }
 
   LValue MakeNaturalAlignPointeeAddrLValue(llvm::Value *V, QualType T);
   LValue MakeNaturalAlignAddrLValue(llvm::Value *V, QualType T);
   CharUnits getNaturalTypeAlignment(QualType T,
-                                    AlignmentSource *Source = nullptr,
+                                    LValueBaseInfo *BaseInfo = nullptr,
                                     bool forPointeeType = false);
   CharUnits getNaturalPointeeTypeAlignment(QualType T,
-                                           AlignmentSource *Source = nullptr);
+                                           LValueBaseInfo *BaseInfo = nullptr);
 
   Address EmitLoadOfReference(Address Ref, const ReferenceType *RefTy,
-                              AlignmentSource *Source = nullptr);
+                              LValueBaseInfo *BaseInfo = nullptr);
   LValue EmitLoadOfReferenceLValue(Address Ref, const ReferenceType *RefTy);
 
   Address EmitLoadOfPointer(Address Ptr, const PointerType *PtrTy,
-                            AlignmentSource *Source = nullptr);
+                            LValueBaseInfo *BaseInfo = nullptr);
   LValue EmitLoadOfPointerLValue(Address Ptr, const PointerType *PtrTy);
 
-  /// CreateTempAlloca - This creates a alloca and inserts it into the entry
-  /// block. The caller is responsible for setting an appropriate alignment on
+  /// CreateTempAlloca - This creates an alloca and inserts it into the entry
+  /// block if \p ArraySize is nullptr, otherwise inserts it at the current
+  /// insertion point of the builder. The caller is responsible for setting an
+  /// appropriate alignment on
   /// the alloca.
-  llvm::AllocaInst *CreateTempAlloca(llvm::Type *Ty,
-                                     const Twine &Name = "tmp");
+  ///
+  /// \p ArraySize is the number of array elements to be allocated if it
+  ///    is not nullptr.
+  ///
+  /// LangAS::Default is the address space of pointers to local variables and
+  /// temporaries, as exposed in the source language. In certain
+  /// configurations, this is not the same as the alloca address space, and a
+  /// cast is needed to lift the pointer from the alloca AS into
+  /// LangAS::Default. This can happen when the target uses a restricted
+  /// address space for the stack but the source language requires
+  /// LangAS::Default to be a generic address space. The latter condition is
+  /// common for most programming languages; OpenCL is an exception in that
+  /// LangAS::Default is the private address space, which naturally maps
+  /// to the stack.
+  ///
+  /// Because the address of a temporary is often exposed to the program in
+  /// various ways, this function will perform the cast by default. The cast
+  /// may be avoided by passing false as \p CastToDefaultAddrSpace; this is
+  /// more efficient if the caller knows that the address will not be exposed.
+  llvm::AllocaInst *CreateTempAlloca(llvm::Type *Ty, const Twine &Name = "tmp",
+                                     llvm::Value *ArraySize = nullptr);
   Address CreateTempAlloca(llvm::Type *Ty, CharUnits align,
-                           const Twine &Name = "tmp");
+                           const Twine &Name = "tmp",
+                           llvm::Value *ArraySize = nullptr,
+                           bool CastToDefaultAddrSpace = true);
 
   /// CreateDefaultAlignedTempAlloca - This creates an alloca with the
   /// default ABI alignment of the given LLVM type.
@@ -1962,9 +1980,12 @@ public:
   Address CreateIRTemp(QualType T, const Twine &Name = "tmp");
 
   /// CreateMemTemp - Create a temporary memory object of the given type, with
-  /// appropriate alignment.
-  Address CreateMemTemp(QualType T, const Twine &Name = "tmp");
-  Address CreateMemTemp(QualType T, CharUnits Align, const Twine &Name = "tmp");
+  /// appropriate alignment. Cast it to the default address space if
+  /// \p CastToDefaultAddrSpace is true.
+  Address CreateMemTemp(QualType T, const Twine &Name = "tmp",
+                        bool CastToDefaultAddrSpace = true);
+  Address CreateMemTemp(QualType T, CharUnits Align, const Twine &Name = "tmp",
+                        bool CastToDefaultAddrSpace = true);
 
   /// CreateAggTemp - Create a temporary memory object for the given
   /// aggregate type.
@@ -2555,9 +2576,11 @@ public:
   RValue EmitCoawaitExpr(const CoawaitExpr &E,
                          AggValueSlot aggSlot = AggValueSlot::ignored(),
                          bool ignoreResult = false);
+  LValue EmitCoawaitLValue(const CoawaitExpr *E);
   RValue EmitCoyieldExpr(const CoyieldExpr &E,
                          AggValueSlot aggSlot = AggValueSlot::ignored(),
                          bool ignoreResult = false);
+  LValue EmitCoyieldLValue(const CoyieldExpr *E);
   RValue EmitCoroutineIntrinsic(const CallExpr *E, unsigned int IID);
 
   void EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock = false);
@@ -3000,8 +3023,8 @@ public:
   /// the LLVM value representation.
   llvm::Value *EmitLoadOfScalar(Address Addr, bool Volatile, QualType Ty,
                                 SourceLocation Loc,
-                                AlignmentSource AlignSource =
-                                  AlignmentSource::Type,
+                                LValueBaseInfo BaseInfo =
+                                    LValueBaseInfo(AlignmentSource::Type),
                                 llvm::MDNode *TBAAInfo = nullptr,
                                 QualType TBAABaseTy = QualType(),
                                 uint64_t TBAAOffset = 0,
@@ -3018,7 +3041,8 @@ public:
   /// the LLVM value representation.
   void EmitStoreOfScalar(llvm::Value *Value, Address Addr,
                          bool Volatile, QualType Ty,
-                         AlignmentSource AlignSource = AlignmentSource::Type,
+                         LValueBaseInfo BaseInfo =
+                             LValueBaseInfo(AlignmentSource::Type),
                          llvm::MDNode *TBAAInfo = nullptr, bool isInit = false,
                          QualType TBAABaseTy = QualType(),
                          uint64_t TBAAOffset = 0, bool isNontemporal = false);
@@ -3091,7 +3115,7 @@ public:
   RValue EmitRValueForField(LValue LV, const FieldDecl *FD, SourceLocation Loc);
 
   Address EmitArrayToPointerDecay(const Expr *Array,
-                                  AlignmentSource *AlignSource = nullptr);
+                                  LValueBaseInfo *BaseInfo = nullptr);
 
   class ConstantEmission {
     llvm::PointerIntPair<llvm::Constant*, 1, bool> ValueAndIsReference;
@@ -3232,7 +3256,7 @@ public:
   Address EmitCXXMemberDataPointerAddress(const Expr *E, Address base,
                                           llvm::Value *memberPtr,
                                           const MemberPointerType *memberPtrType,
-                                          AlignmentSource *AlignSource = nullptr);
+                                          LValueBaseInfo *BaseInfo = nullptr);
   RValue EmitCXXMemberPointerCallExpr(const CXXMemberCallExpr *E,
                                       ReturnValueSlot ReturnValue);
 
@@ -3556,6 +3580,15 @@ public:
   /// nonnull, if \p LHS is marked _Nonnull.
   void EmitNullabilityCheck(LValue LHS, llvm::Value *RHS, SourceLocation Loc);
 
+  /// Same as IRBuilder::CreateInBoundsGEP, but additionally emits a check to
+  /// detect undefined behavior when the pointer overflow sanitizer is enabled.
+  /// \p SignedIndices indicates whether any of the GEP indices are signed.
+  llvm::Value *EmitCheckedInBoundsGEP(llvm::Value *Ptr,
+                                      ArrayRef<llvm::Value *> IdxList,
+                                      bool SignedIndices,
+                                      SourceLocation Loc,
+                                      const Twine &Name = "");
+
   /// \brief Emit a description of a type in a format suitable for passing to
   /// a runtime sanitizer handler.
   llvm::Constant *EmitCheckTypeDescriptor(QualType T);
@@ -3751,29 +3784,25 @@ public:
                     unsigned ParamsToSkip = 0,
                     EvaluationOrder Order = EvaluationOrder::Default);
 
-  /// EmitPointerWithAlignment - Given an expression with a pointer
-  /// type, emit the value and compute our best estimate of the
-  /// alignment of the pointee.
+  /// EmitPointerWithAlignment - Given an expression with a pointer type,
+  /// emit the value and compute our best estimate of the alignment of the
+  /// pointee.
   ///
-  /// Note that this function will conservatively fall back on the type
-  /// when it doesn't 
+  /// \param BaseInfo - If non-null, this will be initialized with
+  /// information about the source of the alignment and the may-alias
+  /// attribute.  Note that this function will conservatively fall back on
+  /// the type when it doesn't recognize the expression and may-alias will
+  /// be set to false.
   ///
-  /// \param Source - If non-null, this will be initialized with
-  ///   information about the source of the alignment.  Note that this
-  ///   function will conservatively fall back on the type when it
-  ///   doesn't recognize the expression, which means that sometimes
-  ///   
-  ///   a worst-case One
-  ///   reasonable way to use this information is when there's a
-  ///   language guarantee that the pointer must be aligned to some
-  ///   stricter value, and we're simply trying to ensure that
-  ///   sufficiently obvious uses of under-aligned objects don't get
-  ///   miscompiled; for example, a placement new into the address of
-  ///   a local variable.  In such a case, it's quite reasonable to
-  ///   just ignore the returned alignment when it isn't from an
-  ///   explicit source.
+  /// One reasonable way to use this information is when there's a language
+  /// guarantee that the pointer must be aligned to some stricter value, and
+  /// we're simply trying to ensure that sufficiently obvious uses of under-
+  /// aligned objects don't get miscompiled; for example, a placement new
+  /// into the address of a local variable.  In such a case, it's quite
+  /// reasonable to just ignore the returned alignment when it isn't from an
+  /// explicit source.
   Address EmitPointerWithAlignment(const Expr *Addr,
-                                   AlignmentSource *Source = nullptr);
+                                   LValueBaseInfo *BaseInfo = nullptr);
 
   void EmitSanitizerStatReport(llvm::SanitizerStatKind SSK);
 

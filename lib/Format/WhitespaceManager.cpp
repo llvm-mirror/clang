@@ -100,18 +100,56 @@ void WhitespaceManager::calculateLineBreakInformation() {
   Changes[0].PreviousEndOfTokenColumn = 0;
   Change *LastOutsideTokenChange = &Changes[0];
   for (unsigned i = 1, e = Changes.size(); i != e; ++i) {
-    unsigned OriginalWhitespaceStart =
-        SourceMgr.getFileOffset(Changes[i].OriginalWhitespaceRange.getBegin());
-    unsigned PreviousOriginalWhitespaceEnd = SourceMgr.getFileOffset(
-        Changes[i - 1].OriginalWhitespaceRange.getEnd());
-    Changes[i - 1].TokenLength = OriginalWhitespaceStart -
-                                 PreviousOriginalWhitespaceEnd +
-                                 Changes[i].PreviousLinePostfix.size() +
-                                 Changes[i - 1].CurrentLinePrefix.size();
+    SourceLocation OriginalWhitespaceStart =
+        Changes[i].OriginalWhitespaceRange.getBegin();
+    SourceLocation PreviousOriginalWhitespaceEnd =
+        Changes[i - 1].OriginalWhitespaceRange.getEnd();
+    unsigned OriginalWhitespaceStartOffset =
+        SourceMgr.getFileOffset(OriginalWhitespaceStart);
+    unsigned PreviousOriginalWhitespaceEndOffset =
+        SourceMgr.getFileOffset(PreviousOriginalWhitespaceEnd);
+    assert(PreviousOriginalWhitespaceEndOffset <=
+           OriginalWhitespaceStartOffset);
+    const char *const PreviousOriginalWhitespaceEndData =
+        SourceMgr.getCharacterData(PreviousOriginalWhitespaceEnd);
+    StringRef Text(PreviousOriginalWhitespaceEndData,
+                   SourceMgr.getCharacterData(OriginalWhitespaceStart) -
+                       PreviousOriginalWhitespaceEndData);
+    // Usually consecutive changes would occur in consecutive tokens. This is
+    // not the case however when analyzing some preprocessor runs of the
+    // annotated lines. For example, in this code:
+    //
+    // #if A // line 1
+    // int i = 1;
+    // #else B // line 2
+    // int i = 2;
+    // #endif // line 3
+    //
+    // one of the runs will produce the sequence of lines marked with line 1, 2
+    // and 3. So the two consecutive whitespace changes just before '// line 2'
+    // and before '#endif // line 3' span multiple lines and tokens:
+    //
+    // #else B{change X}[// line 2
+    // int i = 2;
+    // ]{change Y}#endif // line 3
+    //
+    // For this reason, if the text between consecutive changes spans multiple
+    // newlines, the token length must be adjusted to the end of the original
+    // line of the token.
+    auto NewlinePos = Text.find_first_of('\n');
+    if (NewlinePos == StringRef::npos) {
+      Changes[i - 1].TokenLength = OriginalWhitespaceStartOffset -
+                                   PreviousOriginalWhitespaceEndOffset +
+                                   Changes[i].PreviousLinePostfix.size() +
+                                   Changes[i - 1].CurrentLinePrefix.size();
+    } else {
+      Changes[i - 1].TokenLength =
+          NewlinePos + Changes[i - 1].CurrentLinePrefix.size();
+    }
 
     // If there are multiple changes in this token, sum up all the changes until
     // the end of the line.
-    if (Changes[i - 1].IsInsideToken)
+    if (Changes[i - 1].IsInsideToken && Changes[i - 1].NewlinesBefore == 0)
       LastOutsideTokenChange->TokenLength +=
           Changes[i - 1].TokenLength + Changes[i - 1].Spaces;
     else
@@ -434,7 +472,9 @@ void WhitespaceManager::alignTrailingComments() {
       continue;
 
     unsigned ChangeMinColumn = Changes[i].StartOfTokenColumn;
-    unsigned ChangeMaxColumn = Style.ColumnLimit - Changes[i].TokenLength;
+    unsigned ChangeMaxColumn = Style.ColumnLimit >= Changes[i].TokenLength
+                                   ? Style.ColumnLimit - Changes[i].TokenLength
+                                   : ChangeMinColumn;
 
     // If we don't create a replacement for this change, we have to consider
     // it to be immovable.
@@ -517,8 +557,11 @@ void WhitespaceManager::alignTrailingComments(unsigned Start, unsigned End,
 }
 
 void WhitespaceManager::alignEscapedNewlines() {
-  unsigned MaxEndOfLine =
-      Style.AlignEscapedNewlinesLeft ? 0 : Style.ColumnLimit;
+  if (Style.AlignEscapedNewlines == FormatStyle::ENAS_DontAlign)
+    return;
+
+  bool AlignLeft = Style.AlignEscapedNewlines == FormatStyle::ENAS_Left;
+  unsigned MaxEndOfLine = AlignLeft ? 0 : Style.ColumnLimit;
   unsigned StartOfMacro = 0;
   for (unsigned i = 1, e = Changes.size(); i < e; ++i) {
     Change &C = Changes[i];
@@ -527,7 +570,7 @@ void WhitespaceManager::alignEscapedNewlines() {
         MaxEndOfLine = std::max(C.PreviousEndOfTokenColumn + 2, MaxEndOfLine);
       } else {
         alignEscapedNewlines(StartOfMacro + 1, i, MaxEndOfLine);
-        MaxEndOfLine = Style.AlignEscapedNewlinesLeft ? 0 : Style.ColumnLimit;
+        MaxEndOfLine = AlignLeft ? 0 : Style.ColumnLimit;
         StartOfMacro = i;
       }
     }
@@ -602,7 +645,7 @@ void WhitespaceManager::appendNewlineText(std::string &Text, unsigned Newlines,
                                           unsigned EscapedNewlineColumn) {
   if (Newlines > 0) {
     unsigned Offset =
-        std::min<int>(EscapedNewlineColumn - 1, PreviousEndOfTokenColumn);
+        std::min<int>(EscapedNewlineColumn - 2, PreviousEndOfTokenColumn);
     for (unsigned i = 0; i < Newlines; ++i) {
       Text.append(EscapedNewlineColumn - Offset - 1, ' ');
       Text.append(UseCRLF ? "\\\r\n" : "\\\n");

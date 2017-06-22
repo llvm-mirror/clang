@@ -7,6 +7,7 @@ set(files
   avx2intrin.h
   avx512bwintrin.h
   avx512cdintrin.h
+  avx512vpopcntdqintrin.h
   avx512dqintrin.h
   avx512erintrin.h
   avx512fintrin.h
@@ -45,6 +46,7 @@ set(files
   inttypes.h
   iso646.h
   limits.h
+  lwpintrin.h
   lzcntintrin.h
   mm3dnow.h
   mmintrin.h

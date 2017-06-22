@@ -178,7 +178,7 @@ private:
                  const MemRegion *Region, BugReporter &BR,
                  const Stmt *ValueExpr = nullptr) const {
     if (!BT)
-      BT.reset(new BugType(this, "Nullability", "Memory error"));
+      BT.reset(new BugType(this, "Nullability", categories::MemoryError));
 
     auto R = llvm::make_unique<BugReport>(*BT, Msg, N);
     if (Region) {
@@ -326,7 +326,7 @@ NullabilityChecker::NullabilityBugVisitor::VisitNode(const ExplodedNode *N,
 
   // Retrieve the associated statement.
   const Stmt *S = TrackedNullab->getNullabilitySource();
-  if (!S) {
+  if (!S || S->getLocStart().isInvalid()) {
     S = PathDiagnosticLocation::getStmt(N);
   }
 

@@ -117,25 +117,27 @@ CodeGenFunction::~CodeGenFunction() {
 }
 
 CharUnits CodeGenFunction::getNaturalPointeeTypeAlignment(QualType T,
-                                                     AlignmentSource *Source) {
-  return getNaturalTypeAlignment(T->getPointeeType(), Source,
+                                                    LValueBaseInfo *BaseInfo) {
+  return getNaturalTypeAlignment(T->getPointeeType(), BaseInfo,
                                  /*forPointee*/ true);
 }
 
 CharUnits CodeGenFunction::getNaturalTypeAlignment(QualType T,
-                                                   AlignmentSource *Source,
+                                                   LValueBaseInfo *BaseInfo,
                                                    bool forPointeeType) {
   // Honor alignment typedef attributes even on incomplete types.
   // We also honor them straight for C++ class types, even as pointees;
   // there's an expressivity gap here.
   if (auto TT = T->getAs<TypedefType>()) {
     if (auto Align = TT->getDecl()->getMaxAlignment()) {
-      if (Source) *Source = AlignmentSource::AttributedType;
+      if (BaseInfo)
+        *BaseInfo = LValueBaseInfo(AlignmentSource::AttributedType, false);
       return getContext().toCharUnitsFromBits(Align);
     }
   }
 
-  if (Source) *Source = AlignmentSource::Type;
+  if (BaseInfo)
+    *BaseInfo = LValueBaseInfo(AlignmentSource::Type, false);
 
   CharUnits Alignment;
   if (T->isIncompleteType()) {
@@ -165,9 +167,9 @@ CharUnits CodeGenFunction::getNaturalTypeAlignment(QualType T,
 }
 
 LValue CodeGenFunction::MakeNaturalAlignAddrLValue(llvm::Value *V, QualType T) {
-  AlignmentSource AlignSource;
-  CharUnits Alignment = getNaturalTypeAlignment(T, &AlignSource);
-  return LValue::MakeAddr(Address(V, Alignment), T, getContext(), AlignSource,
+  LValueBaseInfo BaseInfo;
+  CharUnits Alignment = getNaturalTypeAlignment(T, &BaseInfo);
+  return LValue::MakeAddr(Address(V, Alignment), T, getContext(), BaseInfo,
                           CGM.getTBAAInfo(T));
 }
 
@@ -175,9 +177,9 @@ LValue CodeGenFunction::MakeNaturalAlignAddrLValue(llvm::Value *V, QualType T) {
 /// construct an l-value with the natural pointee alignment of T.
 LValue
 CodeGenFunction::MakeNaturalAlignPointeeAddrLValue(llvm::Value *V, QualType T) {
-  AlignmentSource AlignSource;
-  CharUnits Align = getNaturalTypeAlignment(T, &AlignSource, /*pointee*/ true);
-  return MakeAddrLValue(Address(V, Align), T, AlignSource);
+  LValueBaseInfo BaseInfo;
+  CharUnits Align = getNaturalTypeAlignment(T, &BaseInfo, /*pointee*/ true);
+  return MakeAddrLValue(Address(V, Align), T, BaseInfo);
 }
 
 
@@ -346,7 +348,7 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
 
   // Emit debug descriptor for function end.
   if (CGDebugInfo *DI = getDebugInfo())
-    DI->EmitFunctionEnd(Builder);
+    DI->EmitFunctionEnd(Builder, CurFn);
 
   // Reset the debug location to that of the simple 'return' expression, if any
   // rather than that of the end of the function's scope '}'.
@@ -658,34 +660,42 @@ void CodeGenFunction::EmitOpenCLKernelMetadata(const FunctionDecl *FD,
   GenOpenCLArgMetadata(FD, Fn, CGM, Context, Builder, getContext());
 
   if (const VecTypeHintAttr *A = FD->getAttr<VecTypeHintAttr>()) {
-    QualType hintQTy = A->getTypeHint();
-    const ExtVectorType *hintEltQTy = hintQTy->getAs<ExtVectorType>();
-    bool isSignedInteger =
-        hintQTy->isSignedIntegerType() ||
-        (hintEltQTy && hintEltQTy->getElementType()->isSignedIntegerType());
-    llvm::Metadata *attrMDArgs[] = {
+    QualType HintQTy = A->getTypeHint();
+    const ExtVectorType *HintEltQTy = HintQTy->getAs<ExtVectorType>();
+    bool IsSignedInteger =
+        HintQTy->isSignedIntegerType() ||
+        (HintEltQTy && HintEltQTy->getElementType()->isSignedIntegerType());
+    llvm::Metadata *AttrMDArgs[] = {
         llvm::ConstantAsMetadata::get(llvm::UndefValue::get(
             CGM.getTypes().ConvertType(A->getTypeHint()))),
         llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(
             llvm::IntegerType::get(Context, 32),
-            llvm::APInt(32, (uint64_t)(isSignedInteger ? 1 : 0))))};
-    Fn->setMetadata("vec_type_hint", llvm::MDNode::get(Context, attrMDArgs));
+            llvm::APInt(32, (uint64_t)(IsSignedInteger ? 1 : 0))))};
+    Fn->setMetadata("vec_type_hint", llvm::MDNode::get(Context, AttrMDArgs));
   }
 
   if (const WorkGroupSizeHintAttr *A = FD->getAttr<WorkGroupSizeHintAttr>()) {
-    llvm::Metadata *attrMDArgs[] = {
+    llvm::Metadata *AttrMDArgs[] = {
         llvm::ConstantAsMetadata::get(Builder.getInt32(A->getXDim())),
         llvm::ConstantAsMetadata::get(Builder.getInt32(A->getYDim())),
         llvm::ConstantAsMetadata::get(Builder.getInt32(A->getZDim()))};
-    Fn->setMetadata("work_group_size_hint", llvm::MDNode::get(Context, attrMDArgs));
+    Fn->setMetadata("work_group_size_hint", llvm::MDNode::get(Context, AttrMDArgs));
   }
 
   if (const ReqdWorkGroupSizeAttr *A = FD->getAttr<ReqdWorkGroupSizeAttr>()) {
-    llvm::Metadata *attrMDArgs[] = {
+    llvm::Metadata *AttrMDArgs[] = {
         llvm::ConstantAsMetadata::get(Builder.getInt32(A->getXDim())),
         llvm::ConstantAsMetadata::get(Builder.getInt32(A->getYDim())),
         llvm::ConstantAsMetadata::get(Builder.getInt32(A->getZDim()))};
-    Fn->setMetadata("reqd_work_group_size", llvm::MDNode::get(Context, attrMDArgs));
+    Fn->setMetadata("reqd_work_group_size", llvm::MDNode::get(Context, AttrMDArgs));
+  }
+
+  if (const OpenCLIntelReqdSubGroupSizeAttr *A =
+          FD->getAttr<OpenCLIntelReqdSubGroupSizeAttr>()) {
+    llvm::Metadata *AttrMDArgs[] = {
+        llvm::ConstantAsMetadata::get(Builder.getInt32(A->getSubGroupSize()))};
+    Fn->setMetadata("intel_reqd_sub_group_size",
+                    llvm::MDNode::get(Context, AttrMDArgs));
   }
 }
 
@@ -877,8 +887,10 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
   if (CGM.getCodeGenOpts().InstrumentForProfiling) {
     if (CGM.getCodeGenOpts().CallFEntry)
       Fn->addFnAttr("fentry-call", "true");
-    else
-      Fn->addFnAttr("counting-function", getTarget().getMCountName());
+    else {
+      if (!CurFuncDecl || !CurFuncDecl->hasAttr<NoInstrumentFunctionAttr>())
+        Fn->addFnAttr("counting-function", getTarget().getMCountName());
+    }
   }
 
   if (RetTy->isVoidType()) {
@@ -1073,10 +1085,9 @@ QualType CodeGenFunction::BuildFunctionArgList(GlobalDecl GD,
       if (!Param->hasAttr<PassObjectSizeAttr>())
         continue;
 
-      IdentifierInfo *NoID = nullptr;
       auto *Implicit = ImplicitParamDecl::Create(
-          getContext(), Param->getDeclContext(), Param->getLocation(), NoID,
-          getContext().getSizeType());
+          getContext(), Param->getDeclContext(), Param->getLocation(),
+          /*Id=*/nullptr, getContext().getSizeType(), ImplicitParamDecl::Other);
       SizeArguments[Param] = Implicit;
       Args.push_back(Implicit);
     }

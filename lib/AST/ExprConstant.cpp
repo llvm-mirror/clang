@@ -736,6 +736,7 @@ namespace {
             if (!HasFoldFailureDiagnostic)
               break;
             // We've already failed to fold something. Keep that diagnostic.
+            LLVM_FALLTHROUGH;
           case EM_ConstantExpression:
           case EM_PotentialConstantExpression:
           case EM_ConstantExpressionUnevaluated:
@@ -1230,8 +1231,7 @@ namespace {
       IsNullPtr = V.isNullPointer();
     }
 
-    void set(APValue::LValueBase B, unsigned I = 0, bool BInvalid = false,
-             bool IsNullPtr_ = false, uint64_t Offset_ = 0) {
+    void set(APValue::LValueBase B, unsigned I = 0, bool BInvalid = false) {
 #ifndef NDEBUG
       // We only allow a few types of invalid bases. Enforce that here.
       if (BInvalid) {
@@ -1242,11 +1242,20 @@ namespace {
 #endif
 
       Base = B;
-      Offset = CharUnits::fromQuantity(Offset_);
+      Offset = CharUnits::fromQuantity(0);
       InvalidBase = BInvalid;
       CallIndex = I;
       Designator = SubobjectDesignator(getType(B));
-      IsNullPtr = IsNullPtr_;
+      IsNullPtr = false;
+    }
+
+    void setNull(QualType PointerTy, uint64_t TargetVal) {
+      Base = (Expr *)nullptr;
+      Offset = CharUnits::fromQuantity(TargetVal);
+      InvalidBase = false;
+      CallIndex = 0;
+      Designator = SubobjectDesignator(PointerTy->getPointeeType());
+      IsNullPtr = true;
     }
 
     void setInvalid(APValue::LValueBase B, unsigned I = 0) {
@@ -5471,8 +5480,8 @@ public:
     return true;
   }
   bool ZeroInitialization(const Expr *E) {
-    auto Offset = Info.Ctx.getTargetNullPointerValue(E->getType());
-    Result.set((Expr*)nullptr, 0, false, true, Offset);
+    auto TargetVal = Info.Ctx.getTargetNullPointerValue(E->getType());
+    Result.setNull(E->getType(), TargetVal);
     return true;
   }
 
@@ -10343,6 +10352,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
     }
 
     // OffsetOf falls through here.
+    LLVM_FALLTHROUGH;
   }
   case Expr::OffsetOfExprClass: {
     // Note that per C99, offsetof must be an ICE. And AFAIK, using
@@ -10445,6 +10455,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
       return Worst(LHSResult, RHSResult);
     }
     }
+    LLVM_FALLTHROUGH;
   }
   case Expr::ImplicitCastExprClass:
   case Expr::CStyleCastExprClass:

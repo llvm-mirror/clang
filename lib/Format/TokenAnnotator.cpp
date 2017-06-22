@@ -135,13 +135,17 @@ private:
     if (Left->is(TT_OverloadedOperatorLParen)) {
       Contexts.back().IsExpression = false;
     } else if (Style.Language == FormatStyle::LK_JavaScript &&
-               Line.startsWith(Keywords.kw_type, tok::identifier)) {
+               (Line.startsWith(Keywords.kw_type, tok::identifier) ||
+                Line.startsWith(tok::kw_export, Keywords.kw_type,
+                                tok::identifier))) {
       // type X = (...);
+      // export type X = (...);
       Contexts.back().IsExpression = false;
     } else if (Left->Previous &&
         (Left->Previous->isOneOf(tok::kw_static_assert, tok::kw_decltype,
                                  tok::kw_if, tok::kw_while, tok::l_paren,
                                  tok::comma) ||
+         Left->Previous->endsSequence(tok::kw_constexpr, tok::kw_if) ||
          Left->Previous->is(TT_BinaryOperator))) {
       // static_assert, if and while usually contain expressions.
       Contexts.back().IsExpression = true;
@@ -336,6 +340,9 @@ private:
                  Contexts.back().ContextKind == tok::l_brace &&
                  Parent->isOneOf(tok::l_brace, tok::comma)) {
         Left->Type = TT_JsComputedPropertyName;
+      } else if (Style.isCpp() && Contexts.back().ContextKind == tok::l_brace &&
+                 Parent && Parent->isOneOf(tok::l_brace, tok::comma)) {
+        Left->Type = TT_DesignatedInitializerLSquare;
       } else if (CurrentToken->is(tok::r_square) && Parent &&
                  Parent->is(TT_TemplateCloser)) {
         Left->Type = TT_ArraySubscriptLSquare;
@@ -388,7 +395,8 @@ private:
       if (CurrentToken->isOneOf(tok::r_paren, tok::r_brace))
         return false;
       if (CurrentToken->is(tok::colon)) {
-        if (Left->is(TT_ArraySubscriptLSquare)) {
+        if (Left->isOneOf(TT_ArraySubscriptLSquare,
+                          TT_DesignatedInitializerLSquare)) {
           Left->Type = TT_ObjCMethodExpr;
           StartsObjCMethodExpr = true;
           Contexts.back().ColonIsObjCMethodExpr = true;
@@ -569,6 +577,8 @@ private:
       break;
     case tok::kw_if:
     case tok::kw_while:
+      if (Tok->is(tok::kw_if) && CurrentToken && CurrentToken->is(tok::kw_constexpr))
+        next();
       if (CurrentToken && CurrentToken->is(tok::l_paren)) {
         next();
         if (!parseParens(/*LookForDecls=*/true))
@@ -576,9 +586,13 @@ private:
       }
       break;
     case tok::kw_for:
-      if (Style.Language == FormatStyle::LK_JavaScript && Tok->Previous &&
-          Tok->Previous->is(tok::period))
-        break;
+      if (Style.Language == FormatStyle::LK_JavaScript) {
+        if (Tok->Previous && Tok->Previous->is(tok::period))
+          break;
+        // JS' for await ( ...
+        if (CurrentToken && CurrentToken->is(Keywords.kw_await))
+          next();
+      }
       Contexts.back().ColonIsForRangeExpr = true;
       next();
       if (!parseParens())
@@ -700,9 +714,12 @@ private:
 
   void parseIncludeDirective() {
     if (CurrentToken && CurrentToken->is(tok::less)) {
-      next();
-      while (CurrentToken) {
-        if (CurrentToken->isNot(tok::comment) || CurrentToken->Next)
+     next();
+     while (CurrentToken) {
+        // Mark tokens up to the trailing line comments as implicit string
+        // literals.
+        if (CurrentToken->isNot(tok::comment) &&
+            !CurrentToken->TokenText.startswith("//"))
           CurrentToken->Type = TT_ImplicitStringLiteral;
         next();
       }
@@ -972,9 +989,12 @@ private:
   void modifyContext(const FormatToken &Current) {
     if (Current.getPrecedence() == prec::Assignment &&
         !Line.First->isOneOf(tok::kw_template, tok::kw_using, tok::kw_return) &&
-        // Type aliases use `type X = ...;` in TypeScript.
+        // Type aliases use `type X = ...;` in TypeScript and can be exported
+        // using `export type ...`.
         !(Style.Language == FormatStyle::LK_JavaScript &&
-          Line.startsWith(Keywords.kw_type, tok::identifier)) &&
+          (Line.startsWith(Keywords.kw_type, tok::identifier) ||
+           Line.startsWith(tok::kw_export, Keywords.kw_type,
+                           tok::identifier))) &&
         (!Current.Previous || Current.Previous->isNot(tok::kw_operator))) {
       Contexts.back().IsExpression = true;
       if (!Line.startsWith(TT_UnaryOperator)) {
@@ -1034,8 +1054,9 @@ private:
     if (Style.Language == FormatStyle::LK_JavaScript) {
       if (Current.is(tok::exclaim)) {
         if (Current.Previous &&
-            (Current.Previous->isOneOf(tok::identifier, tok::r_paren,
-                                       tok::r_square, tok::r_brace) ||
+            (Current.Previous->isOneOf(tok::identifier, tok::kw_namespace,
+                                       tok::r_paren, tok::r_square,
+                                       tok::r_brace) ||
              Current.Previous->Tok.isLiteral())) {
           Current.Type = TT_JsNonNullAssertion;
           return;
@@ -1958,7 +1979,8 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
     if (Right.is(TT_LambdaLSquare) && Left.is(tok::equal))
       return 35;
     if (!Right.isOneOf(TT_ObjCMethodExpr, TT_LambdaLSquare,
-                       TT_ArrayInitializerLSquare))
+                       TT_ArrayInitializerLSquare,
+                       TT_DesignatedInitializerLSquare))
       return 500;
   }
 
@@ -1988,7 +2010,7 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
   if (Left.is(tok::comment))
     return 1000;
 
-  if (Left.isOneOf(TT_RangeBasedForLoopColon, TT_InheritanceColon))
+  if (Left.isOneOf(TT_RangeBasedForLoopColon, TT_InheritanceColon, TT_CtorInitializerColon))
     return 2;
 
   if (Right.isMemberAccess()) {
@@ -2046,7 +2068,8 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
       Style.AlignAfterOpenBracket != FormatStyle::BAS_DontAlign)
     return 100;
   if (Left.is(tok::l_paren) && Left.Previous &&
-      Left.Previous->isOneOf(tok::kw_if, tok::kw_for))
+      (Left.Previous->isOneOf(tok::kw_if, tok::kw_for)
+       || Left.Previous->endsSequence(tok::kw_constexpr, tok::kw_if)))
     return 1000;
   if (Left.is(tok::equal) && InFunctionDecl)
     return 110;
@@ -2085,9 +2108,10 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
   if (Left.is(TT_ConditionalExpr))
     return prec::Conditional;
   prec::Level Level = Left.getPrecedence();
-  if (Level != prec::Unknown)
-    return Level;
-  Level = Right.getPrecedence();
+  if (Level == prec::Unknown)
+    Level = Right.getPrecedence();
+  if (Level == prec::Assignment)
+    return Style.PenaltyBreakAssignment;
   if (Level != prec::Unknown)
     return Level;
 
@@ -2177,7 +2201,8 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
             (Style.SpacesInSquareBrackets &&
              Right.MatchingParen->is(TT_ArraySubscriptLSquare)));
   if (Right.is(tok::l_square) &&
-      !Right.isOneOf(TT_ObjCMethodExpr, TT_LambdaLSquare) &&
+      !Right.isOneOf(TT_ObjCMethodExpr, TT_LambdaLSquare,
+                     TT_DesignatedInitializerLSquare) &&
       !Left.isOneOf(tok::numeric_constant, TT_DictLiteral))
     return false;
   if (Left.is(tok::l_brace) && Right.is(tok::r_brace))
@@ -2196,6 +2221,7 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
             (Left.isOneOf(tok::kw_if, tok::pp_elif, tok::kw_for, tok::kw_while,
                           tok::kw_switch, tok::kw_case, TT_ForEachMacro,
                           TT_ObjCForIn) ||
+             Left.endsSequence(tok::kw_constexpr, tok::kw_if) ||
              (Left.isOneOf(tok::kw_try, Keywords.kw___except, tok::kw_catch,
                            tok::kw_new, tok::kw_delete) &&
               (!Left.Previous || Left.Previous->isNot(tok::period))))) ||
@@ -2247,6 +2273,10 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
       return true;
   } else if (Style.Language == FormatStyle::LK_JavaScript) {
     if (Left.is(TT_JsFatArrow))
+      return true;
+    // for await ( ...
+    if (Right.is(tok::l_paren) && Left.is(Keywords.kw_await) &&
+        Left.Previous && Left.Previous->is(tok::kw_for))
       return true;
     if (Left.is(Keywords.kw_async) && Right.is(tok::l_paren) &&
         Right.MatchingParen) {
@@ -2372,8 +2402,9 @@ bool TokenAnnotator::spaceRequiredBefore(const AnnotatedLine &Line,
   if (Left.is(tok::greater) && Right.is(tok::greater))
     return Right.is(TT_TemplateCloser) && Left.is(TT_TemplateCloser) &&
            (Style.Standard != FormatStyle::LS_Cpp11 || Style.SpacesInAngles);
-  if (Right.isOneOf(tok::arrow, tok::period, tok::arrowstar, tok::periodstar) ||
-      Left.isOneOf(tok::arrow, tok::period, tok::arrowstar, tok::periodstar))
+  if (Right.isOneOf(tok::arrow, tok::arrowstar, tok::periodstar) ||
+      Left.isOneOf(tok::arrow, tok::period, tok::arrowstar, tok::periodstar) ||
+      (Right.is(tok::period) && Right.isNot(TT_DesignatedInitializerPeriod)))
     return false;
   if (!Style.SpaceBeforeAssignmentOperators &&
       Right.getPrecedence() == prec::Assignment)
@@ -2462,20 +2493,27 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
       return true;
   }
 
-  // If the last token before a '}' is a comma or a trailing comment, the
-  // intention is to insert a line break after it in order to make shuffling
-  // around entries easier.
-  const FormatToken *BeforeClosingBrace = nullptr;
-  if (Left.isOneOf(tok::l_brace, TT_ArrayInitializerLSquare) &&
-      Left.BlockKind != BK_Block && Left.MatchingParen)
-    BeforeClosingBrace = Left.MatchingParen->Previous;
-  else if (Right.MatchingParen &&
-           Right.MatchingParen->isOneOf(tok::l_brace,
-                                        TT_ArrayInitializerLSquare))
-    BeforeClosingBrace = &Left;
-  if (BeforeClosingBrace && (BeforeClosingBrace->is(tok::comma) ||
-                             BeforeClosingBrace->isTrailingComment()))
-    return true;
+  // If the last token before a '}', ']', or ')' is a comma or a trailing
+  // comment, the intention is to insert a line break after it in order to make
+  // shuffling around entries easier. Import statements, especially in
+  // JavaScript, can be an exception to this rule.
+  if (Style.JavaScriptWrapImports || Line.Type != LT_ImportStatement) {
+    const FormatToken *BeforeClosingBrace = nullptr;
+    if ((Left.isOneOf(tok::l_brace, TT_ArrayInitializerLSquare) ||
+         (Style.Language == FormatStyle::LK_JavaScript &&
+          Left.is(tok::l_paren))) &&
+        Left.BlockKind != BK_Block && Left.MatchingParen)
+      BeforeClosingBrace = Left.MatchingParen->Previous;
+    else if (Right.MatchingParen &&
+             (Right.MatchingParen->isOneOf(tok::l_brace,
+                                           TT_ArrayInitializerLSquare) ||
+              (Style.Language == FormatStyle::LK_JavaScript &&
+               Right.MatchingParen->is(tok::l_paren))))
+      BeforeClosingBrace = &Left;
+    if (BeforeClosingBrace && (BeforeClosingBrace->is(tok::comma) ||
+                               BeforeClosingBrace->isTrailingComment()))
+      return true;
+  }
 
   if (Right.is(tok::comment))
     return Left.BlockKind != BK_BracedInit &&
@@ -2494,8 +2532,12 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
       Right.Previous->MatchingParen->NestingLevel == 0 &&
       Style.AlwaysBreakTemplateDeclarations)
     return true;
-  if ((Right.isOneOf(TT_CtorInitializerComma, TT_CtorInitializerColon)) &&
-      Style.BreakConstructorInitializersBeforeComma &&
+  if (Right.is(TT_CtorInitializerComma) &&
+      Style.BreakConstructorInitializers == FormatStyle::BCIS_BeforeComma &&
+      !Style.ConstructorInitializerAllOnOneLineOrOnePerLine)
+    return true;
+  if (Right.is(TT_CtorInitializerColon) &&
+      Style.BreakConstructorInitializers == FormatStyle::BCIS_BeforeComma &&
       !Style.ConstructorInitializerAllOnOneLineOrOnePerLine)
     return true;
   // Break only if we have multiple inheritance.
@@ -2550,7 +2592,7 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
             Keywords.kw_interface, Keywords.kw_type, tok::kw_static,
             tok::kw_public, tok::kw_private, tok::kw_protected,
             Keywords.kw_abstract, Keywords.kw_get, Keywords.kw_set))
-      return false; // Otherwise a semicolon is inserted.
+      return false; // Otherwise automatic semicolon insertion would trigger.
     if (Left.is(TT_JsFatArrow) && Right.is(tok::l_brace))
       return false;
     if (Left.is(TT_JsTypeColon))
@@ -2605,7 +2647,10 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
     // The first comment in a braced lists is always interpreted as belonging to
     // the first list element. Otherwise, it should be placed outside of the
     // list.
-    return Left.BlockKind == BK_BracedInit;
+    return Left.BlockKind == BK_BracedInit ||
+           (Left.is(TT_CtorInitializerColon) &&
+            Style.BreakConstructorInitializers ==
+                FormatStyle::BCIS_AfterColon);
   if (Left.is(tok::question) && Right.is(tok::colon))
     return false;
   if (Right.is(TT_ConditionalExpr) || Right.is(tok::question))
@@ -2678,11 +2723,15 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
   if (Right.is(tok::identifier) && Right.Next && Right.Next->is(TT_DictLiteral))
     return true;
 
+  if (Left.is(TT_CtorInitializerColon))
+    return Style.BreakConstructorInitializers == FormatStyle::BCIS_AfterColon;
+  if (Right.is(TT_CtorInitializerColon))
+    return Style.BreakConstructorInitializers != FormatStyle::BCIS_AfterColon;
   if (Left.is(TT_CtorInitializerComma) &&
-      Style.BreakConstructorInitializersBeforeComma)
+      Style.BreakConstructorInitializers == FormatStyle::BCIS_BeforeComma)
     return false;
   if (Right.is(TT_CtorInitializerComma) &&
-      Style.BreakConstructorInitializersBeforeComma)
+      Style.BreakConstructorInitializers == FormatStyle::BCIS_BeforeComma)
     return true;
   if (Left.is(TT_InheritanceComma) && Style.BreakBeforeInheritanceComma)
     return false;

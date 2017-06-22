@@ -22,6 +22,7 @@
 #include "ToolChains/FreeBSD.h"
 #include "ToolChains/Fuchsia.h"
 #include "ToolChains/Gnu.h"
+#include "ToolChains/BareMetal.h"
 #include "ToolChains/Haiku.h"
 #include "ToolChains/Hexagon.h"
 #include "ToolChains/Lanai.h"
@@ -67,6 +68,7 @@
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
+#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 #include <map>
 #include <memory>
@@ -598,6 +600,8 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
   bool CCCPrintPhases;
 
   InputArgList Args = ParseArgStrings(ArgList.slice(1));
+  if (Diags.hasErrorOccurred())
+    return nullptr;
 
   // Silence driver warnings if requested
   Diags.setIgnoreAllWarnings(Args.hasArg(options::OPT_w));
@@ -1158,6 +1162,10 @@ bool Driver::HandleImmediateArgs(const Compilation &C) {
   if (C.getArgs().hasArg(options::OPT__version)) {
     // Follow gcc behavior and use stdout for --version and stderr for -v.
     PrintVersion(C, llvm::outs());
+
+    // Print registered targets.
+    llvm::outs() << '\n';
+    llvm::TargetRegistry::printRegisteredTargetsForVersion(llvm::outs());
     return false;
   }
 
@@ -1213,6 +1221,31 @@ bool Driver::HandleImmediateArgs(const Compilation &C) {
 
   if (Arg *A = C.getArgs().getLastArg(options::OPT_print_prog_name_EQ)) {
     llvm::outs() << GetProgramPath(A->getValue(), TC) << "\n";
+    return false;
+  }
+
+  if (Arg *A = C.getArgs().getLastArg(options::OPT_autocomplete)) {
+    // Print out all options that start with a given argument. This is used for
+    // shell autocompletion.
+    StringRef PassedFlags = A->getValue();
+    std::vector<std::string> SuggestedCompletions;
+
+    if (PassedFlags.find(',') == StringRef::npos) {
+      // If the flag is in the form of "--autocomplete=-foo",
+      // we were requested to print out all option names that start with "-foo".
+      // For example, "--autocomplete=-fsyn" is expanded to "-fsyntax-only".
+      SuggestedCompletions = Opts->findByPrefix(PassedFlags);
+    } else {
+      // If the flag is in the form of "--autocomplete=foo,bar", we were
+      // requested to print out all option values for "-foo" that start with
+      // "bar". For example,
+      // "--autocomplete=-stdlib=,l" is expanded to "libc++" and "libstdc++".
+      StringRef Option, Arg;
+      std::tie(Option, Arg) = PassedFlags.split(',');
+      SuggestedCompletions = Opts->suggestValueCompletions(Option, Arg);
+    }
+
+    llvm::outs() << llvm::join(SuggestedCompletions, " ") << '\n';
     return false;
   }
 
@@ -2657,6 +2690,8 @@ Action *Driver::ConstructPhaseAction(Compilation &C, const ArgList &Args,
       OutputTy = Input->getType();
       if (!Args.hasFlag(options::OPT_frewrite_includes,
                         options::OPT_fno_rewrite_includes, false) &&
+          !Args.hasFlag(options::OPT_frewrite_imports,
+                        options::OPT_fno_rewrite_imports, false) &&
           !CCGenDiagnostics)
         OutputTy = types::getPreprocessedType(OutputTy);
       assert(OutputTy != types::TY_INVALID &&
@@ -3819,6 +3854,8 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
         if (Target.getVendor() == llvm::Triple::Myriad)
           TC = llvm::make_unique<toolchains::MyriadToolChain>(*this, Target,
                                                               Args);
+        else if (toolchains::BareMetal::handlesTarget(Target))
+          TC = llvm::make_unique<toolchains::BareMetal>(*this, Target, Args);
         else if (Target.isOSBinFormatELF())
           TC = llvm::make_unique<toolchains::Generic_ELF>(*this, Target, Args);
         else if (Target.isOSBinFormatMachO())

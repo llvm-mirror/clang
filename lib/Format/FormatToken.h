@@ -39,6 +39,7 @@ namespace format {
   TYPE(ConflictStart) \
   TYPE(CtorInitializerColon) \
   TYPE(CtorInitializerComma) \
+  TYPE(DesignatedInitializerLSquare) \
   TYPE(DesignatedInitializerPeriod) \
   TYPE(DictLiteral) \
   TYPE(ForEachMacro) \
@@ -53,6 +54,8 @@ namespace format {
   TYPE(InlineASMColon) \
   TYPE(JavaAnnotation) \
   TYPE(JsComputedPropertyName) \
+  TYPE(JsExponentiation) \
+  TYPE(JsExponentiationEqual) \
   TYPE(JsFatArrow) \
   TYPE(JsNonNullAssertion) \
   TYPE(JsTypeColon) \
