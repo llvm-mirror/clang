@@ -12,6 +12,7 @@ clang_CXXMethod_isConst
 clang_CXXMethod_isPureVirtual
 clang_CXXMethod_isStatic
 clang_CXXMethod_isVirtual
+clang_EnumDecl_isScoped
 clang_Cursor_getArgument
 clang_Cursor_getNumTemplateArguments
 clang_Cursor_getTemplateArgumentKind
@@ -175,6 +176,7 @@ clang_getCursorCompletionString
 clang_getCursorDefinition
 clang_getCursorDisplayName
 clang_getCursorExtent
+clang_getCursorExceptionSpecificationType
 clang_getCursorKind
 clang_getCursorKindSpelling
 clang_getCursorLanguage
@@ -210,6 +212,7 @@ clang_getElementType
 clang_getEnumConstantDeclUnsignedValue
 clang_getEnumConstantDeclValue
 clang_getEnumDeclIntegerType
+clang_getExceptionSpecificationType
 clang_getFieldDeclBitWidth
 clang_getExpansionLocation
 clang_getFile

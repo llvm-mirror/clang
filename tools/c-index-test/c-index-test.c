@@ -804,10 +804,43 @@ static void PrintCursor(CXCursor Cursor, const char *CommentSchemaFile) {
       printf(" (const)");
     if (clang_CXXMethod_isPureVirtual(Cursor))
       printf(" (pure)");
+    if (clang_EnumDecl_isScoped(Cursor))
+      printf(" (scoped)");
     if (clang_Cursor_isVariadic(Cursor))
       printf(" (variadic)");
     if (clang_Cursor_isObjCOptional(Cursor))
       printf(" (@optional)");
+
+    switch (clang_getCursorExceptionSpecificationType(Cursor))
+    {
+      case CXCursor_ExceptionSpecificationKind_None:
+        break;
+
+      case CXCursor_ExceptionSpecificationKind_DynamicNone:
+        printf(" (noexcept dynamic none)");
+        break;
+
+      case CXCursor_ExceptionSpecificationKind_Dynamic:
+        printf(" (noexcept dynamic)");
+        break;
+
+      case CXCursor_ExceptionSpecificationKind_MSAny:
+        printf(" (noexcept dynamic any)");
+        break;
+
+      case CXCursor_ExceptionSpecificationKind_BasicNoexcept:
+        printf(" (noexcept)");
+        break;
+
+      case CXCursor_ExceptionSpecificationKind_ComputedNoexcept:
+        printf(" (computed-noexcept)");
+        break;
+
+      case CXCursor_ExceptionSpecificationKind_Unevaluated:
+      case CXCursor_ExceptionSpecificationKind_Uninstantiated:
+      case CXCursor_ExceptionSpecificationKind_Unparsed:
+        break;
+    }
 
     {
       CXString language;

@@ -517,6 +517,20 @@ S14 s14;
 // expected-error@second.h:* {{'Method::S14' has different definitions in different modules; first difference is definition in module 'SecondModule' found method 'A' with 1st parameter of type 'int *' decayed from 'int [3]'}}
 // expected-note@first.h:* {{but in 'FirstModule' found method 'A' with 1st parameter of type 'int *' decayed from 'int [2]'}}
 #endif
+
+#if defined(FIRST)
+struct S15 {
+  int A() { return 0; }
+};
+#elif defined(SECOND)
+struct S15 {
+  long A() { return 0; }
+};
+#else
+S15 s15;
+// expected-error@first.h:* {{'Method::S15::A' from module 'FirstModule' is not present in definition of 'Method::S15' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'A' does not match}}
+#endif
 }  // namespace Method
 
 // Naive parsing of AST can lead to cycles in processing.  Ensure
@@ -968,6 +982,24 @@ S9 s9;
 // expected-error@second.h:* {{'NestedNamespaceSpecifier::S9' has different definitions in different modules; first difference is definition in module 'SecondModule' found field 'x' with type 'P9::I' (aka 'int')}}
 // expected-note@first.h:* {{but in 'FirstModule' found field 'x' with type 'O9::I' (aka 'int')}}
 #endif
+
+namespace N10 {
+#if defined(FIRST)
+inline namespace A { struct X {}; }
+struct S10 {
+  A::X x;
+};
+#elif defined(SECOND)
+inline namespace B { struct X {}; }
+struct S10 {
+  B::X x;
+};
+#else
+S10 s10;
+// expected-error@second.h:* {{'NestedNamespaceSpecifier::N10::S10::x' from module 'SecondModule' is not present in definition of 'NestedNamespaceSpecifier::N10::S10' in module 'FirstModule'}}
+// expected-note@first.h:* {{declaration of 'x' does not match}}
+#endif
+}
 }
 
 namespace TemplateSpecializationType {
@@ -1069,6 +1101,40 @@ struct S4 {
 S4 s4;
 // expected-error@first.h:* {{'TemplateArgument::S4::x' from module 'FirstModule' is not present in definition of 'TemplateArgument::S4' in module 'SecondModule'}}
 // expected-note@second.h:* {{declaration of 'x' does not match}}
+#endif
+
+#if defined(FIRST)
+template <class T> struct U5 {};
+struct S5 {
+  U5<int> x;
+};
+#elif defined(SECOND)
+template <class T> struct U5 {};
+struct S5 {
+  U5<short> x;
+};
+#else
+S5 s5;
+// expected-error@first.h:* {{'TemplateArgument::S5::x' from module 'FirstModule' is not present in definition of 'TemplateArgument::S5' in module 'SecondModule'}}
+// expected-note@second.h:* {{declaration of 'x' does not match}}
+#endif
+
+#if defined(FIRST)
+template <class T> struct U6 {};
+struct S6 {
+  U6<int> x;
+  U6<short> y;
+};
+#elif defined(SECOND)
+template <class T> struct U6 {};
+struct S6 {
+  U6<short> y;
+  U6<int> x;
+};
+#else
+S6 s6;
+// expected-error@second.h:* {{'TemplateArgument::S6' has different definitions in different modules; first difference is definition in module 'SecondModule' found field 'y'}}
+// expected-note@first.h:* {{but in 'FirstModule' found field 'x'}}
 #endif
 }
 
@@ -1287,6 +1353,84 @@ Bravo<char> golf;
 #endif
 }
 
+namespace Friend {
+#if defined(FIRST)
+struct T1 {};
+struct S1 {
+  friend class T1;
+};
+#elif defined(SECOND)
+struct T1 {};
+struct S1 {
+  friend T1;
+};
+#else
+S1 s1;
+// expected-error@second.h:* {{'Friend::S1' has different definitions in different modules; first difference is definition in module 'SecondModule' found friend 'Friend::T1'}}
+// expected-note@first.h:* {{but in 'FirstModule' found friend 'class T1'}}
+#endif
+
+#if defined(FIRST)
+struct T2 {};
+struct S2 {
+  friend class T2;
+};
+#elif defined(SECOND)
+struct T2 {};
+struct S2 {
+  friend struct T2;
+};
+#else
+S2 s2;
+// expected-error@second.h:* {{'Friend::S2' has different definitions in different modules; first difference is definition in module 'SecondModule' found friend 'struct T2'}}
+// expected-note@first.h:* {{but in 'FirstModule' found friend 'class T2'}}
+#endif
+
+#if defined(FIRST)
+struct T3 {};
+struct S3 {
+  friend const T3;
+};
+#elif defined(SECOND)
+struct T3 {};
+struct S3 {
+  friend T3;
+};
+#else
+S3 s3;
+// expected-error@second.h:* {{'Friend::S3' has different definitions in different modules; first difference is definition in module 'SecondModule' found friend 'Friend::T3'}}
+// expected-note@first.h:* {{but in 'FirstModule' found friend 'const Friend::T3'}}
+#endif
+
+#if defined(FIRST)
+struct T4 {};
+struct S4 {
+  friend T4;
+};
+#elif defined(SECOND)
+struct S4 {
+  friend void T4();
+};
+#else
+S4 s4;
+// expected-error@second.h:* {{'Friend::S4' has different definitions in different modules; first difference is definition in module 'SecondModule' found friend function}}
+// expected-note@first.h:* {{but in 'FirstModule' found friend class}}
+#endif
+
+#if defined(FIRST)
+struct S5 {
+  friend void T5a();
+};
+#elif defined(SECOND)
+struct S5 {
+  friend void T5b();
+};
+#else
+S5 s5;
+// expected-error@second.h:* {{'Friend::S5' has different definitions in different modules; first difference is definition in module 'SecondModule' found friend function 'T5b'}}
+// expected-note@first.h:* {{but in 'FirstModule' found friend function 'T5a'}}
+#endif
+}
 // Interesting cases that should not cause errors.  struct S should not error
 // while struct T should error at the access specifier mismatch at the end.
 namespace AllDecls {
@@ -1761,6 +1905,22 @@ struct S2 {
 };
 #else
 S2 s2;
+#endif
+
+#if defined(FIRST)
+using A3 = const int;
+using B3 = volatile A3;
+struct S3 {
+  B3 x = 1;
+};
+#elif defined(SECOND)
+using A3 = volatile const int;
+using B3 = A3;
+struct S3 {
+  B3 x = 1;
+};
+#else
+S3 s3;
 #endif
 }
 

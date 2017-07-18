@@ -413,3 +413,53 @@ void classReceivers() {
   (void)ClassReceivers.implicit;
 // CHECK: [[@LINE-1]]:9 | class/ObjC | ClassReceivers | c:objc(cs)ClassReceivers | _OBJC_CLASS_$_ClassReceivers | Ref,RelCont | rel: 1
 }
+
+@interface ImplicitProperties
+
+- (int)implicit;
+- (void)setImplicit:(int)x;
+
++ (int)classImplicit;
++ (void)setClassImplicit:(int)y;
+
+@end
+
+void testImplicitProperties(ImplicitProperties *c) {
+  c.implicit = 0;
+// CHECK: [[@LINE-1]]:5 | instance-method/ObjC | setImplicit: | c:objc(cs)ImplicitProperties(im)setImplicit: | -[ImplicitProperties setImplicit:] | Ref,Call,Dyn,RelRec,RelCall,RelCont | rel: 2
+// CHECK-NEXT: RelCall,RelCont | testImplicitProperties | c:@F@testImplicitProperties
+  c.implicit;
+// CHECK: [[@LINE-1]]:5 | instance-method/ObjC | implicit | c:objc(cs)ImplicitProperties(im)implicit | -[ImplicitProperties implicit] | Ref,Call,Dyn,RelRec,RelCall,RelCont | rel: 2
+// CHECK-NEXT: RelCall,RelCont | testImplicitProperties | c:@F@testImplicitProperties
+  ImplicitProperties.classImplicit = 1;
+// CHECK: [[@LINE-1]]:22 | class-method/ObjC | setClassImplicit: | c:objc(cs)ImplicitProperties(cm)setClassImplicit: | +[ImplicitProperties setClassImplicit:] | Ref,Call,RelCall,RelCont | rel: 1
+// CHECK-NEXT: RelCall,RelCont | testImplicitProperties | c:@F@testImplicitProperties
+  ImplicitProperties.classImplicit;
+// CHECK: [[@LINE-1]]:22 | class-method/ObjC | classImplicit | c:objc(cs)ImplicitProperties(cm)classImplicit | +[ImplicitProperties classImplicit] | Ref,Call,RelCall,RelCont | rel: 1
+// CHECK-NEXT: RelCall,RelCont | testImplicitProperties | c:@F@testImplicitProperties
+}
+
+@interface EmptySelectors
+
+- (int):(int)_; // CHECK: [[@LINE]]:8 | instance-method/ObjC | : | c:objc(cs)EmptySelectors(im): | -[EmptySelectors :]
+- (void)test: (int)x :(int)y; // CHECK: [[@LINE]]:9 | instance-method/ObjC | test:: | c:objc(cs)EmptySelectors(im)test:: | -[EmptySelectors test::]
+- (void):(int)_ :(int)m:(int)z; // CHECK: [[@LINE]]:9 | instance-method/ObjC | ::: | c:objc(cs)EmptySelectors(im)::: | -[EmptySelectors :::]
+
+@end
+
+@implementation EmptySelectors
+
+- (int):(int)_ { // CHECK: [[@LINE]]:8 | instance-method/ObjC | : | c:objc(cs)EmptySelectors(im): | -[EmptySelectors :]
+  [self :2]; // CHECK: [[@LINE]]:9 | instance-method/ObjC | : | c:objc(cs)EmptySelectors(im): | -[EmptySelectors :]
+  return 0;
+}
+
+- (void)test: (int)x :(int)y { // CHECK: [[@LINE]]:9 | instance-method/ObjC | test:: | c:objc(cs)EmptySelectors(im)test:: | -[EmptySelectors test::]
+}
+
+- (void) :(int)_ :(int)m :(int)z { // CHECK: [[@LINE]]:10 | instance-method/ObjC | ::: | c:objc(cs)EmptySelectors(im)::: | -[EmptySelectors :::]
+  [self test:0:1]; // CHECK: [[@LINE]]:9 | instance-method/ObjC | test:: | c:objc(cs)EmptySelectors(im)test:: | -[EmptySelectors test::]
+  [self: 0: 1: 2]; // CHECK: [[@LINE]]:8 | instance-method/ObjC | ::: | c:objc(cs)EmptySelectors(im)::: | -[EmptySelectors :::]
+}
+
+@end

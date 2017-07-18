@@ -56,12 +56,24 @@ static bool startsNextParameter(const FormatToken &Current,
   if (Current.is(TT_CtorInitializerComma) &&
       Style.BreakConstructorInitializers == FormatStyle::BCIS_BeforeComma)
     return true;
+  if (Style.Language == FormatStyle::LK_Proto && Current.is(TT_SelectorName))
+    return true;
   return Previous.is(tok::comma) && !Current.isTrailingComment() &&
          ((Previous.isNot(TT_CtorInitializerComma) ||
            Style.BreakConstructorInitializers !=
                FormatStyle::BCIS_BeforeComma) &&
           (Previous.isNot(TT_InheritanceComma) ||
            !Style.BreakBeforeInheritanceComma));
+}
+
+static bool opensProtoMessageField(const FormatToken &LessTok,
+                                   const FormatStyle &Style) {
+  if (LessTok.isNot(tok::less))
+    return false;
+  return Style.Language == FormatStyle::LK_TextProto ||
+         (Style.Language == FormatStyle::LK_Proto &&
+          (LessTok.NestingLevel > 0 ||
+           (LessTok.Previous && LessTok.Previous->is(tok::equal))));
 }
 
 ContinuationIndenter::ContinuationIndenter(const FormatStyle &Style,
@@ -91,6 +103,13 @@ LineState ContinuationIndenter::getInitialState(unsigned FirstIndent,
   State.StartOfLineLevel = 0;
   State.LowestLevelOnLine = 0;
   State.IgnoreStackForComparison = false;
+
+  if (Style.Language == FormatStyle::LK_TextProto) {
+    // We need this in order to deal with the bin packing of text fields at
+    // global scope.
+    State.Stack.back().AvoidBinPacking = true;
+    State.Stack.back().BreakBeforeParameter = true;
+  }
 
   // The first token has already been indented and thus consumed.
   moveStateToNextToken(State, DryRun, /*Newline=*/false);
@@ -174,7 +193,8 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
     return true;
   if (((Previous.is(TT_DictLiteral) && Previous.is(tok::l_brace)) ||
        (Previous.is(TT_ArrayInitializerLSquare) &&
-        Previous.ParameterCount > 1)) &&
+        Previous.ParameterCount > 1) ||
+       opensProtoMessageField(Previous, Style)) &&
       Style.ColumnLimit > 0 &&
       getLengthToMatchingParen(Previous) + State.Column - 1 >
           getColumnLimit(State))
@@ -641,6 +661,7 @@ unsigned ContinuationIndenter::addTokenOnNewLine(LineState &State,
   // before the corresponding } or ].
   if (PreviousNonComment &&
       (PreviousNonComment->isOneOf(tok::l_brace, TT_ArrayInitializerLSquare) ||
+       opensProtoMessageField(*PreviousNonComment, Style) ||
        (PreviousNonComment->is(TT_TemplateString) &&
         PreviousNonComment->opensScope())))
     State.Stack.back().BreakBeforeClosingBrace = true;
@@ -682,7 +703,11 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
   if (NextNonComment->is(tok::l_brace) && NextNonComment->BlockKind == BK_Block)
     return Current.NestingLevel == 0 ? State.FirstIndent
                                      : State.Stack.back().Indent;
-  if (Current.isOneOf(tok::r_brace, tok::r_square) && State.Stack.size() > 1) {
+  if ((Current.isOneOf(tok::r_brace, tok::r_square) ||
+       (Current.is(tok::greater) &&
+        (Style.Language == FormatStyle::LK_Proto ||
+         Style.Language == FormatStyle::LK_TextProto))) &&
+      State.Stack.size() > 1) {
     if (Current.closesBlockOrBlockTypeList(Style))
       return State.Stack[State.Stack.size() - 2].NestedBlockIndent;
     if (Current.MatchingParen &&
@@ -1035,7 +1060,8 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
   bool BreakBeforeParameter = false;
   unsigned NestedBlockIndent = std::max(State.Stack.back().StartOfFunctionCall,
                                         State.Stack.back().NestedBlockIndent);
-  if (Current.isOneOf(tok::l_brace, TT_ArrayInitializerLSquare)) {
+  if (Current.isOneOf(tok::l_brace, TT_ArrayInitializerLSquare) ||
+      opensProtoMessageField(Current, Style)) {
     if (Current.opensBlockOrBlockTypeList(Style)) {
       NewIndent = Style.IndentWidth +
                   std::min(State.Column, State.Stack.back().NestedBlockIndent);
@@ -1047,12 +1073,14 @@ void ContinuationIndenter::moveStatePastScopeOpener(LineState &State,
                        Current.MatchingParen->Previous &&
                        Current.MatchingParen->Previous->is(tok::comma);
     AvoidBinPacking =
-        (Current.is(TT_ArrayInitializerLSquare) && EndsInComma) ||
-        Current.is(TT_DictLiteral) ||
-        Style.Language == FormatStyle::LK_Proto || !Style.BinPackArguments ||
+        EndsInComma || Current.is(TT_DictLiteral) ||
+        Style.Language == FormatStyle::LK_Proto ||
+        Style.Language == FormatStyle::LK_TextProto ||
+        !Style.BinPackArguments ||
         (NextNoComment &&
          NextNoComment->isOneOf(TT_DesignatedInitializerPeriod,
                                 TT_DesignatedInitializerLSquare));
+    BreakBeforeParameter = EndsInComma;
     if (Current.ParameterCount > 1)
       NestedBlockIndent = std::max(NestedBlockIndent, State.Column + 1);
   } else {

@@ -286,7 +286,10 @@ void UnwrappedLineParser::parseFile() {
       !Line->InPPDirective && Style.Language != FormatStyle::LK_JavaScript;
   ScopedDeclarationState DeclarationState(*Line, DeclarationScopeStack,
                                           MustBeDeclaration);
-  parseLevel(/*HasOpeningBrace=*/false);
+  if (Style.Language == FormatStyle::LK_TextProto)
+    parseBracedList();
+  else
+    parseLevel(/*HasOpeningBrace=*/false);
   // Make sure to format the remaining tokens.
   flushComments(true);
   addUnwrappedLine();
@@ -832,6 +835,7 @@ void UnwrappedLineParser::parseStructuralElement() {
   case tok::at:
     nextToken();
     if (FormatTok->Tok.is(tok::l_brace)) {
+      nextToken();
       parseBracedList();
       break;
     }
@@ -996,8 +1000,10 @@ void UnwrappedLineParser::parseStructuralElement() {
     switch (FormatTok->Tok.getKind()) {
     case tok::at:
       nextToken();
-      if (FormatTok->Tok.is(tok::l_brace))
+      if (FormatTok->Tok.is(tok::l_brace)) {
+        nextToken();
         parseBracedList();
+      }
       break;
     case tok::kw_enum:
       // Ignore if this is part of "template <enum ...".
@@ -1177,7 +1183,13 @@ void UnwrappedLineParser::parseStructuralElement() {
 
       nextToken();
       if (FormatTok->Tok.is(tok::l_brace)) {
+        nextToken();
         parseBracedList();
+      } else if (Style.Language == FormatStyle::LK_Proto &&
+               FormatTok->Tok.is(tok::less)) {
+        nextToken();
+        parseBracedList(/*ContinueOnSemicolons=*/false,
+                        /*ClosingBraceKind=*/tok::greater);
       }
       break;
     case tok::l_square:
@@ -1342,13 +1354,14 @@ bool UnwrappedLineParser::tryToParseBracedList() {
   assert(FormatTok->BlockKind != BK_Unknown);
   if (FormatTok->BlockKind == BK_Block)
     return false;
+  nextToken();
   parseBracedList();
   return true;
 }
 
-bool UnwrappedLineParser::parseBracedList(bool ContinueOnSemicolons) {
+bool UnwrappedLineParser::parseBracedList(bool ContinueOnSemicolons,
+                                          tok::TokenKind ClosingBraceKind) {
   bool HasError = false;
-  nextToken();
 
   // FIXME: Once we have an expression parser in the UnwrappedLineParser,
   // replace this by using parseAssigmentExpression() inside.
@@ -1375,6 +1388,10 @@ bool UnwrappedLineParser::parseBracedList(bool ContinueOnSemicolons) {
         parseChildBlock();
       }
     }
+    if (FormatTok->Tok.getKind() == ClosingBraceKind) {
+      nextToken();
+      return !HasError;
+    }
     switch (FormatTok->Tok.getKind()) {
     case tok::caret:
       nextToken();
@@ -1399,11 +1416,9 @@ bool UnwrappedLineParser::parseBracedList(bool ContinueOnSemicolons) {
       // Assume there are no blocks inside a braced init list apart
       // from the ones we explicitly parse out (like lambdas).
       FormatTok->BlockKind = BK_BracedInit;
+      nextToken();
       parseBracedList();
       break;
-    case tok::r_brace:
-      nextToken();
-      return !HasError;
     case tok::semi:
       // JavaScript (or more precisely TypeScript) can have semicolons in braced
       // lists (in so-called TypeMemberLists). Thus, the semicolon cannot be
@@ -1454,8 +1469,10 @@ void UnwrappedLineParser::parseParens() {
       break;
     case tok::at:
       nextToken();
-      if (FormatTok->Tok.is(tok::l_brace))
+      if (FormatTok->Tok.is(tok::l_brace)) {
+        nextToken();
         parseBracedList();
+      }
       break;
     case tok::kw_class:
       if (Style.Language == FormatStyle::LK_JavaScript)
@@ -1503,8 +1520,10 @@ void UnwrappedLineParser::parseSquare() {
     }
     case tok::at:
       nextToken();
-      if (FormatTok->Tok.is(tok::l_brace))
+      if (FormatTok->Tok.is(tok::l_brace)) {
+        nextToken();
         parseBracedList();
+      }
       break;
     default:
       nextToken();
@@ -1831,6 +1850,7 @@ bool UnwrappedLineParser::parseEnum() {
   }
 
   // Parse enum body.
+  nextToken();
   bool HasError = !parseBracedList(/*ContinueOnSemicolons=*/true);
   if (HasError) {
     if (FormatTok->is(tok::semi))
@@ -1865,6 +1885,7 @@ void UnwrappedLineParser::parseJavaEnumBody() {
   FormatTok = Tokens->setPosition(StoredPosition);
 
   if (IsSimple) {
+    nextToken();
     parseBracedList();
     addUnwrappedLine();
     return;
@@ -2076,6 +2097,7 @@ void UnwrappedLineParser::parseJavaScriptEs6ImportExport() {
     }
     if (FormatTok->is(tok::l_brace)) {
       FormatTok->BlockKind = BK_Block;
+      nextToken();
       parseBracedList();
     } else {
       nextToken();

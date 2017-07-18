@@ -35,6 +35,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
+#include "llvm/Support/TargetParser.h"
 #include "llvm/Support/YAMLParser.h"
 
 #ifdef LLVM_ON_UNIX
@@ -127,6 +128,13 @@ forAllAssociatedToolChains(Compilation &C, const JobAction &JA,
   if (JA.isHostOffloading(Action::OFK_Cuda))
     Work(*C.getSingleOffloadToolChain<Action::OFK_Cuda>());
   else if (JA.isDeviceOffloading(Action::OFK_Cuda))
+    Work(*C.getSingleOffloadToolChain<Action::OFK_Host>());
+
+  if (JA.isHostOffloading(Action::OFK_OpenMP)) {
+    auto TCs = C.getOffloadToolChains<Action::OFK_OpenMP>();
+    for (auto II = TCs.first, IE = TCs.second; II != IE; ++II)
+      Work(*II->second);
+  } else if (JA.isDeviceOffloading(Action::OFK_OpenMP))
     Work(*C.getSingleOffloadToolChain<Action::OFK_Host>());
 
   //
@@ -781,15 +789,14 @@ static void addPGOAndCoverageFlags(Compilation &C, const Driver &D,
     CmdArgs.push_back("-femit-coverage-data");
 
   if (Args.hasFlag(options::OPT_fcoverage_mapping,
-                   options::OPT_fno_coverage_mapping, false) &&
-      !ProfileGenerateArg)
-    D.Diag(clang::diag::err_drv_argument_only_allowed_with)
-        << "-fcoverage-mapping"
-        << "-fprofile-instr-generate";
+                   options::OPT_fno_coverage_mapping, false)) {
+    if (!ProfileGenerateArg)
+      D.Diag(clang::diag::err_drv_argument_only_allowed_with)
+          << "-fcoverage-mapping"
+          << "-fprofile-instr-generate";
 
-  if (Args.hasFlag(options::OPT_fcoverage_mapping,
-                   options::OPT_fno_coverage_mapping, false))
     CmdArgs.push_back("-fcoverage-mapping");
+  }
 
   if (C.getArgs().hasArg(options::OPT_c) ||
       C.getArgs().hasArg(options::OPT_S)) {
@@ -907,6 +914,37 @@ static void RenderDebugEnablingArgs(const ArgList &Args, ArgStringList &CmdArgs,
     break;
   default:
     break;
+  }
+}
+
+static void RenderDebugInfoCompressionArgs(const ArgList &Args,
+                                           ArgStringList &CmdArgs,
+                                           const Driver &D) {
+  const Arg *A = Args.getLastArg(options::OPT_gz, options::OPT_gz_EQ);
+  if (!A)
+    return;
+
+  if (A->getOption().getID() == options::OPT_gz) {
+    if (llvm::zlib::isAvailable())
+      CmdArgs.push_back("-compress-debug-sections");
+    else
+      D.Diag(diag::warn_debug_compression_unavailable);
+    return;
+  }
+
+  StringRef Value = A->getValue();
+  if (Value == "none") {
+    CmdArgs.push_back("-compress-debug-sections=none");
+  } else if (Value == "zlib" || Value == "zlib-gnu") {
+    if (llvm::zlib::isAvailable()) {
+      CmdArgs.push_back(
+          Args.MakeArgString("-compress-debug-sections=" + Twine(Value)));
+    } else {
+      D.Diag(diag::warn_debug_compression_unavailable);
+    }
+  } else {
+    D.Diag(diag::err_drv_unsupported_option_argument)
+        << A->getOption().getName() << Value;
   }
 }
 
@@ -1278,43 +1316,13 @@ void Clang::AddARMTargetArgs(const llvm::Triple &Triple, const ArgList &Args,
   // FIXME: Support -meabi.
   // FIXME: Parts of this are duplicated in the backend, unify this somehow.
   const char *ABIName = nullptr;
-  if (Arg *A = Args.getLastArg(options::OPT_mabi_EQ)) {
+  if (Arg *A = Args.getLastArg(options::OPT_mabi_EQ))
     ABIName = A->getValue();
-  } else if (Triple.isOSBinFormatMachO()) {
-    if (arm::useAAPCSForMachO(Triple)) {
-      ABIName = "aapcs";
-    } else if (Triple.isWatchABI()) {
-      ABIName = "aapcs16";
-    } else {
-      ABIName = "apcs-gnu";
-    }
-  } else if (Triple.isOSWindows()) {
-    // FIXME: this is invalid for WindowsCE
-    ABIName = "aapcs";
-  } else {
-    // Select the default based on the platform.
-    switch (Triple.getEnvironment()) {
-    case llvm::Triple::Android:
-    case llvm::Triple::GNUEABI:
-    case llvm::Triple::GNUEABIHF:
-    case llvm::Triple::MuslEABI:
-    case llvm::Triple::MuslEABIHF:
-      ABIName = "aapcs-linux";
-      break;
-    case llvm::Triple::EABIHF:
-    case llvm::Triple::EABI:
-      ABIName = "aapcs";
-      break;
-    default:
-      if (Triple.getOS() == llvm::Triple::NetBSD)
-        ABIName = "apcs-gnu";
-      else if (Triple.getOS() == llvm::Triple::OpenBSD)
-        ABIName = "aapcs-linux";
-      else
-        ABIName = "aapcs";
-      break;
-    }
+  else {
+    std::string CPU = getCPUName(Args, Triple, /*FromAs*/ false);
+    ABIName = llvm::ARM::computeDefaultTargetABI(Triple, CPU).data();
   }
+
   CmdArgs.push_back("-target-abi");
   CmdArgs.push_back(ABIName);
 
@@ -1747,10 +1755,6 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
   // arg after parsing the '-I' arg.
   bool TakeNextArg = false;
 
-  // When using an integrated assembler, translate -Wa, and -Xassembler
-  // options.
-  bool CompressDebugSections = false;
-
   bool UseRelaxRelocations = ENABLE_X86_RELAX_RELOCATIONS;
   const char *MipsTargetFeature = nullptr;
   for (const Arg *A :
@@ -1825,12 +1829,11 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
         CmdArgs.push_back("-massembler-fatal-warnings");
       } else if (Value == "--noexecstack") {
         CmdArgs.push_back("-mnoexecstack");
-      } else if (Value == "-compress-debug-sections" ||
-                 Value == "--compress-debug-sections") {
-        CompressDebugSections = true;
-      } else if (Value == "-nocompress-debug-sections" ||
+      } else if (Value.startswith("-compress-debug-sections") ||
+                 Value.startswith("--compress-debug-sections") ||
+                 Value == "-nocompress-debug-sections" ||
                  Value == "--nocompress-debug-sections") {
-        CompressDebugSections = false;
+        CmdArgs.push_back(Value.data());
       } else if (Value == "-mrelax-relocations=yes" ||
                  Value == "--mrelax-relocations=yes") {
         UseRelaxRelocations = true;
@@ -1882,12 +1885,6 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
             << A->getOption().getName() << Value;
       }
     }
-  }
-  if (CompressDebugSections) {
-    if (llvm::zlib::isAvailable())
-      CmdArgs.push_back("-compress-debug-sections");
-    else
-      D.Diag(diag::warn_debug_compression_unavailable);
   }
   if (UseRelaxRelocations)
     CmdArgs.push_back("--mrelax-relocations");
@@ -1969,6 +1966,16 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                              ->getTriple()
                              .normalize();
 
+    CmdArgs.push_back("-aux-triple");
+    CmdArgs.push_back(Args.MakeArgString(NormalizedTriple));
+  }
+
+  if (IsOpenMPDevice) {
+    // We have to pass the triple of the host if compiling for an OpenMP device.
+    std::string NormalizedTriple =
+        C.getSingleOffloadToolChain<Action::OFK_Host>()
+            ->getTriple()
+            .normalize();
     CmdArgs.push_back("-aux-triple");
     CmdArgs.push_back(Args.MakeArgString(NormalizedTriple));
   }
@@ -2063,10 +2070,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     if (D.isUsingLTO()) {
       Args.AddLastArg(CmdArgs, options::OPT_flto, options::OPT_flto_EQ);
 
-      // The Darwin linker currently uses the legacy LTO API, which does not
-      // support LTO unit features (CFI, whole program vtable opt) under
-      // ThinLTO.
-      if (!getToolChain().getTriple().isOSDarwin() ||
+      // The Darwin and PS4 linkers currently use the legacy LTO API, which
+      // does not support LTO unit features (CFI, whole program vtable opt)
+      // under ThinLTO.
+      if (!(getToolChain().getTriple().isOSDarwin() ||
+            getToolChain().getTriple().isPS4()) ||
           D.getLTOMode() == LTOK_Full)
         CmdArgs.push_back("-flto-unit");
     }
@@ -2537,7 +2545,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                    AsynchronousUnwindTables))
     CmdArgs.push_back("-munwind-tables");
 
-  getToolChain().addClangTargetOptions(Args, CmdArgs);
+  getToolChain().addClangTargetOptions(Args, CmdArgs,
+                                       JA.getOffloadingDeviceKind());
 
   if (Arg *A = Args.getLastArg(options::OPT_flimited_precision_EQ)) {
     CmdArgs.push_back("-mlimit-float-precision");
@@ -2824,6 +2833,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-generate-type-units");
   }
 
+  RenderDebugInfoCompressionArgs(Args, CmdArgs, D);
+
   bool UseSeparateSections = isUseSeparateSections(Triple);
 
   if (Args.hasFlag(options::OPT_ffunction_sections,
@@ -2962,6 +2973,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   for (const Arg *A :
        Args.filtered(options::OPT_clang_ignored_gcc_optimization_f_Group)) {
     D.Diag(diag::warn_ignored_gcc_optimization) << A->getAsString(Args);
+    A->claim();
+  }
+
+  for (const Arg *A :
+       Args.filtered(options::OPT_clang_ignored_legacy_options_Group)) {
+    D.Diag(diag::warn_ignored_clang_option) << A->getAsString(Args);
     A->claim();
   }
 
@@ -4034,6 +4051,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                    options::OPT_fno_diagnostics_show_hotness, false))
     CmdArgs.push_back("-fdiagnostics-show-hotness");
 
+  if (const Arg *A =
+          Args.getLastArg(options::OPT_fdiagnostics_hotness_threshold_EQ)) {
+    std::string Opt = std::string("-fdiagnostics-hotness-threshold=") + A->getValue();
+    CmdArgs.push_back(Args.MakeArgString(Opt));
+  }
+
   if (const Arg *A = Args.getLastArg(options::OPT_fdiagnostics_format_EQ)) {
     CmdArgs.push_back("-fdiagnostics-format");
     CmdArgs.push_back(A->getValue());
@@ -4117,11 +4140,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (Args.hasFlag(options::OPT_fslp_vectorize, SLPVectAliasOption,
                    options::OPT_fno_slp_vectorize, EnableSLPVec))
     CmdArgs.push_back("-vectorize-slp");
-
-  // -fno-slp-vectorize-aggressive is default.
-  if (Args.hasFlag(options::OPT_fslp_vectorize_aggressive,
-                   options::OPT_fno_slp_vectorize_aggressive, false))
-    CmdArgs.push_back("-vectorize-slp-aggressive");
 
   if (Arg *A = Args.getLastArg(options::OPT_fshow_overloads_EQ))
     A->render(Args, CmdArgs);
@@ -4391,10 +4409,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // device declarations can be identified. Also, -fopenmp-is-device is passed
   // along to tell the frontend that it is generating code for a device, so that
   // only the relevant declarations are emitted.
-  if (IsOpenMPDevice && Inputs.size() == 2) {
+  if (IsOpenMPDevice) {
     CmdArgs.push_back("-fopenmp-is-device");
-    CmdArgs.push_back("-fopenmp-host-ir-file-path");
-    CmdArgs.push_back(Args.MakeArgString(Inputs.back().getFilename()));
+    if (Inputs.size() == 2) {
+      CmdArgs.push_back("-fopenmp-host-ir-file-path");
+      CmdArgs.push_back(Args.MakeArgString(Inputs.back().getFilename()));
+    }
   }
 
   // For all the host OpenMP offloading compile jobs we need to pass the targets
@@ -4927,6 +4947,7 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
 
   const llvm::Triple &Triple = getToolChain().getEffectiveTriple();
   const std::string &TripleStr = Triple.getTriple();
+  const auto &D = getToolChain().getDriver();
 
   // Don't warn about "clang -w -c foo.s"
   Args.ClaimAllArgs(options::OPT_w);
@@ -5014,6 +5035,8 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
   }
   RenderDebugEnablingArgs(Args, CmdArgs, DebugInfoKind, DwarfVersion,
                           llvm::DebuggerKind::Default);
+  RenderDebugInfoCompressionArgs(Args, CmdArgs, D);
+
 
   // Handle -fPIC et al -- the relocation-model affects the assembler
   // for some targets.

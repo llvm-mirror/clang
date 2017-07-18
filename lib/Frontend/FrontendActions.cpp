@@ -163,6 +163,16 @@ GenerateModuleAction::CreateASTConsumer(CompilerInstance &CI,
   return llvm::make_unique<MultiplexConsumer>(std::move(Consumers));
 }
 
+bool GenerateModuleFromModuleMapAction::BeginSourceFileAction(
+    CompilerInstance &CI) {
+  if (!CI.getLangOpts().Modules) {
+    CI.getDiagnostics().Report(diag::err_module_build_requires_fmodules);
+    return false;
+  }
+
+  return GenerateModuleAction::BeginSourceFileAction(CI);
+}
+
 std::unique_ptr<raw_pwrite_stream>
 GenerateModuleFromModuleMapAction::CreateOutputFile(CompilerInstance &CI,
                                                     StringRef InFile) {
@@ -230,7 +240,7 @@ void VerifyPCHAction::ExecuteAction() {
   bool Preamble = CI.getPreprocessorOpts().PrecompiledPreambleBytes.first != 0;
   const std::string &Sysroot = CI.getHeaderSearchOpts().Sysroot;
   std::unique_ptr<ASTReader> Reader(new ASTReader(
-      CI.getPreprocessor(), CI.getASTContext(), CI.getPCHContainerReader(),
+      CI.getPreprocessor(), &CI.getASTContext(), CI.getPCHContainerReader(),
       CI.getFrontendOpts().ModuleFileExtensions,
       Sysroot.empty() ? "" : Sysroot.c_str(),
       /*DisableValidation*/ false,

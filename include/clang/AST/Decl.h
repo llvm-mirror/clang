@@ -1874,7 +1874,7 @@ public:
   ///
   bool isThisDeclarationADefinition() const {
     return IsDeleted || IsDefaulted || Body || IsLateTemplateParsed ||
-      hasDefiningAttr();
+      WillHaveBody || hasDefiningAttr();
   }
 
   /// doesThisDeclarationHaveABody - Returns whether this specific
@@ -2019,7 +2019,10 @@ public:
   /// These functions have special behavior under C++1y [expr.new]:
   ///    An implementation is allowed to omit a call to a replaceable global
   ///    allocation function. [...]
-  bool isReplaceableGlobalAllocationFunction() const;
+  ///
+  /// If this function is an aligned allocation/deallocation function, return
+  /// true through IsAligned.
+  bool isReplaceableGlobalAllocationFunction(bool *IsAligned = nullptr) const;
 
   /// Compute the language linkage.
   LanguageLinkage getLanguageLinkage() const;
