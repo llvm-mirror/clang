@@ -2521,9 +2521,9 @@ void ASTWriter::WritePreprocessor(const Preprocessor &PP, bool IsModule) {
       Record.push_back(MI->isC99Varargs());
       Record.push_back(MI->isGNUVarargs());
       Record.push_back(MI->hasCommaPasting());
-      Record.push_back(MI->getNumArgs());
-      for (const IdentifierInfo *Arg : MI->args())
-        AddIdentifierRef(Arg, Record);
+      Record.push_back(MI->getNumParams());
+      for (const IdentifierInfo *Param : MI->params())
+        AddIdentifierRef(Param, Record);
     }
 
     // If we have a detailed preprocessing record, record the macro definition
@@ -4295,6 +4295,7 @@ void ASTWriter::WritePackPragmaOptions(Sema &SemaRef) {
   for (const auto &StackEntry : SemaRef.PackStack.Stack) {
     Record.push_back(StackEntry.Value);
     AddSourceLocation(StackEntry.PragmaLocation, Record);
+    AddSourceLocation(StackEntry.PragmaPushLocation, Record);
     AddString(StackEntry.StackSlotLabel, Record);
   }
   Stream.EmitRecord(PACK_PRAGMA_OPTIONS, Record);

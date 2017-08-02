@@ -452,6 +452,21 @@ void UnwrappedLineParser::calculateBraceTypes(bool ExpectClassBody) {
   FormatTok = Tokens->setPosition(StoredPosition);
 }
 
+template <class T>
+static inline void hash_combine(std::size_t &seed, const T &v) {
+  std::hash<T> hasher;
+  seed ^= hasher(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+}
+
+size_t UnwrappedLineParser::computePPHash() const {
+  size_t h = 0;
+  for (const auto &i : PPStack) {
+    hash_combine(h, size_t(i.Kind));
+    hash_combine(h, i.Line);
+  }
+  return h;
+}
+
 void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel,
                                      bool MunchSemi) {
   assert(FormatTok->isOneOf(tok::l_brace, TT_MacroBlockBegin) &&
@@ -459,16 +474,21 @@ void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel,
   const bool MacroBlock = FormatTok->is(TT_MacroBlockBegin);
   FormatTok->BlockKind = BK_Block;
 
+  size_t PPStartHash = computePPHash();
+
   unsigned InitialLevel = Line->Level;
-  nextToken();
+  nextToken(/*LevelDifference=*/AddLevel ? 1 : 0);
 
   if (MacroBlock && FormatTok->is(tok::l_paren))
     parseParens();
 
+  size_t NbPreprocessorDirectives =
+      CurrentLines == &Lines ? PreprocessorDirectives.size() : 0;
   addUnwrappedLine();
-  size_t OpeningLineIndex = CurrentLines->empty()
-                                ? (UnwrappedLine::kInvalidIndex)
-                                : (CurrentLines->size() - 1);
+  size_t OpeningLineIndex =
+      CurrentLines->empty()
+          ? (UnwrappedLine::kInvalidIndex)
+          : (CurrentLines->size() - 1 - NbPreprocessorDirectives);
 
   ScopedDeclarationState DeclarationState(*Line, DeclarationScopeStack,
                                           MustBeDeclaration);
@@ -486,7 +506,10 @@ void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel,
     return;
   }
 
-  nextToken(); // Munch the closing brace.
+  size_t PPEndHash = computePPHash();
+
+  // Munch the closing brace.
+  nextToken(/*LevelDifference=*/AddLevel ? -1 : 0);
 
   if (MacroBlock && FormatTok->is(tok::l_paren))
     parseParens();
@@ -494,11 +517,14 @@ void UnwrappedLineParser::parseBlock(bool MustBeDeclaration, bool AddLevel,
   if (MunchSemi && FormatTok->Tok.is(tok::semi))
     nextToken();
   Line->Level = InitialLevel;
-  Line->MatchingOpeningBlockLineIndex = OpeningLineIndex;
-  if (OpeningLineIndex != UnwrappedLine::kInvalidIndex) {
-    // Update the opening line to add the forward reference as well
-    (*CurrentLines)[OpeningLineIndex].MatchingOpeningBlockLineIndex =
-            CurrentLines->size() - 1;
+
+  if (PPStartHash == PPEndHash) {
+    Line->MatchingOpeningBlockLineIndex = OpeningLineIndex;
+    if (OpeningLineIndex != UnwrappedLine::kInvalidIndex) {
+      // Update the opening line to add the forward reference as well
+      (*CurrentLines)[OpeningLineIndex].MatchingOpeningBlockLineIndex =
+          CurrentLines->size() - 1;
+    }
   }
 }
 
@@ -606,10 +632,15 @@ void UnwrappedLineParser::parsePPDirective() {
 }
 
 void UnwrappedLineParser::conditionalCompilationCondition(bool Unreachable) {
-  if (Unreachable || (!PPStack.empty() && PPStack.back() == PP_Unreachable))
-    PPStack.push_back(PP_Unreachable);
+  size_t Line = CurrentLines->size();
+  if (CurrentLines == &PreprocessorDirectives)
+    Line += Lines.size();
+
+  if (Unreachable ||
+      (!PPStack.empty() && PPStack.back().Kind == PP_Unreachable))
+    PPStack.push_back({PP_Unreachable, Line});
   else
-    PPStack.push_back(PP_Conditional);
+    PPStack.push_back({PP_Conditional, Line});
 }
 
 void UnwrappedLineParser::conditionalCompilationStart(bool Unreachable) {
@@ -747,7 +778,7 @@ static bool mustBeJSIdent(const AdditionalKeywords &Keywords,
               Keywords.kw_let, Keywords.kw_var, tok::kw_const,
               Keywords.kw_abstract, Keywords.kw_extends, Keywords.kw_implements,
               Keywords.kw_instanceof, Keywords.kw_interface,
-              Keywords.kw_throws));
+              Keywords.kw_throws, Keywords.kw_from));
 }
 
 static bool mustBeJSIdentOrValue(const AdditionalKeywords &Keywords,
@@ -2287,13 +2318,13 @@ void UnwrappedLineParser::flushComments(bool NewlineBeforeNext) {
   CommentsBeforeNextToken.clear();
 }
 
-void UnwrappedLineParser::nextToken() {
+void UnwrappedLineParser::nextToken(int LevelDifference) {
   if (eof())
     return;
   flushComments(isOnNewLine(*FormatTok));
   pushToken(FormatTok);
   if (Style.Language != FormatStyle::LK_JavaScript)
-    readToken();
+    readToken(LevelDifference);
   else
     readTokenWithJavaScriptASI();
 }
@@ -2362,7 +2393,7 @@ void UnwrappedLineParser::distributeComments(
   }
 }
 
-void UnwrappedLineParser::readToken() {
+void UnwrappedLineParser::readToken(int LevelDifference) {
   SmallVector<FormatToken *, 1> Comments;
   do {
     FormatTok = Tokens->getNextToken();
@@ -2375,6 +2406,10 @@ void UnwrappedLineParser::readToken() {
       // directives only after that unwrapped line was finished later.
       bool SwitchToPreprocessorLines = !Line->Tokens.empty();
       ScopedLineState BlockState(*this, SwitchToPreprocessorLines);
+      assert((LevelDifference >= 0 ||
+              static_cast<unsigned>(-LevelDifference) <= Line->Level) &&
+             "LevelDifference makes Line->Level negative");
+      Line->Level += LevelDifference;
       // Comments stored before the preprocessor directive need to be output
       // before the preprocessor directive, at the same level as the
       // preprocessor directive, as we consider them to apply to the directive.
@@ -2395,7 +2430,7 @@ void UnwrappedLineParser::readToken() {
       FormatTok->MustBreakBefore = true;
     }
 
-    if (!PPStack.empty() && (PPStack.back() == PP_Unreachable) &&
+    if (!PPStack.empty() && (PPStack.back().Kind == PP_Unreachable) &&
         !Line->InPPDirective) {
       continue;
     }

@@ -111,6 +111,7 @@ enum TypeEvaluationKind {
   SANITIZER_CHECK(DynamicTypeCacheMiss, dynamic_type_cache_miss, 0)            \
   SANITIZER_CHECK(FloatCastOverflow, float_cast_overflow, 0)                   \
   SANITIZER_CHECK(FunctionTypeMismatch, function_type_mismatch, 0)             \
+  SANITIZER_CHECK(InvalidBuiltin, invalid_builtin, 0)                          \
   SANITIZER_CHECK(LoadInvalidValue, load_invalid_value, 0)                     \
   SANITIZER_CHECK(MissingReturn, missing_return, 0)                            \
   SANITIZER_CHECK(MulOverflow, mul_overflow, 0)                                \
@@ -1116,7 +1117,7 @@ private:
         auto IP = CGF.Builder.saveAndClearIP();
         CGF.EmitBlock(Stack.back().ExitBlock.getBlock());
         CodeGen(CGF);
-        CGF.EmitBranchThroughCleanup(Stack.back().ContBlock);
+        CGF.EmitBranch(Stack.back().ContBlock.getBlock());
         CGF.Builder.restoreIP(IP);
         Stack.back().HasBeenEmitted = true;
       }
@@ -3496,6 +3497,14 @@ public:
   void EmitCXXGuardedInit(const VarDecl &D, llvm::GlobalVariable *DeclPtr,
                           bool PerformInit);
 
+  enum class GuardKind { VariableGuard, TlsGuard };
+
+  /// Emit a branch to select whether or not to perform guarded initialization.
+  void EmitCXXGuardedInitBranch(llvm::Value *NeedsInit,
+                                llvm::BasicBlock *InitBlock,
+                                llvm::BasicBlock *NoInitBlock,
+                                GuardKind Kind, const VarDecl *D);
+
   /// GenerateCXXGlobalInitFunc - Generates code for initializing global
   /// variables.
   void GenerateCXXGlobalInitFunc(llvm::Function *Fn,
@@ -3604,6 +3613,17 @@ public:
                                       bool IsSubtraction,
                                       SourceLocation Loc,
                                       const Twine &Name = "");
+
+  /// Specifies which type of sanitizer check to apply when handling a
+  /// particular builtin.
+  enum BuiltinCheckKind {
+    BCK_CTZPassedZero,
+    BCK_CLZPassedZero,
+  };
+
+  /// Emits an argument for a call to a builtin. If the builtin sanitizer is
+  /// enabled, a runtime check specified by \p Kind is also emitted.
+  llvm::Value *EmitCheckedArgForBuiltin(const Expr *E, BuiltinCheckKind Kind);
 
   /// \brief Emit a description of a type in a format suitable for passing to
   /// a runtime sanitizer handler.

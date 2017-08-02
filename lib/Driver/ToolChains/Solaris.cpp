@@ -100,7 +100,7 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   AddLinkerInputs(getToolChain(), Inputs, Args, CmdArgs, JA);
 
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
-    if (getToolChain().getDriver().CCCIsCXX())
+    if (getToolChain().ShouldLinkCXXStdlib(Args))
       getToolChain().AddCXXStdlibLibArgs(Args, CmdArgs);
     CmdArgs.push_back("-lgcc_s");
     CmdArgs.push_back("-lc");
@@ -126,7 +126,7 @@ void solaris::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
 Solaris::Solaris(const Driver &D, const llvm::Triple &Triple,
                  const ArgList &Args)
-    : Generic_GCC(D, Triple, Args) {
+    : Generic_ELF(D, Triple, Args) {
 
   GCCInstallation.init(Triple, Args);
 

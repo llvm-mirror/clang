@@ -20,18 +20,21 @@ _clang()
     cur="${COMP_WORDS[$cword]}"
   fi
 
-  # bash always separates '=' as a token even if there's no space before/after '='.
-  # On the other hand, '=' is just a regular character for clang options that
-  # contain '='. For example, "-stdlib=" is defined as is, instead of "-stdlib" and "=".
-  # So, we need to partially undo bash tokenization here for integrity.
   w1="${COMP_WORDS[$cword - 1]}"
   if [[ $cword > 1 ]]; then
     w2="${COMP_WORDS[$cword - 2]}"
+  fi
+
   # Clang want to know if -cc1 or -Xclang option is specified or not, because we don't want to show
   # cc1 options otherwise.
   if [[ "${COMP_WORDS[1]}" == "-cc1" || "$w1" == "-Xclang" ]]; then
     arg="#"
   fi
+
+  # bash always separates '=' as a token even if there's no space before/after '='.
+  # On the other hand, '=' is just a regular character for clang options that
+  # contain '='. For example, "-stdlib=" is defined as is, instead of "-stdlib" and "=".
+  # So, we need to partially undo bash tokenization here for integrity.
   if [[ "$cur" == -* ]]; then
     # -foo<tab>
     arg="$arg$cur"
@@ -54,7 +57,7 @@ _clang()
 
   # expand ~ to $HOME
   eval local path=${COMP_WORDS[0]}
-  flags=$( "$path" --autocomplete="$arg" 2>/dev/null )
+  flags=$( "$path" --autocomplete="$arg" 2>/dev/null | sed -e 's/\t.*//' )
   # If clang is old that it does not support --autocomplete,
   # fall back to the filename completion.
   if [[ "$?" != 0 ]]; then
@@ -62,10 +65,14 @@ _clang()
     return
   fi
 
-  if [[ "$cur" == '=' ]]; then
-    COMPREPLY=( $( compgen -W "$flags" -- "") )
-  elif [[ "$flags" == "" || "$arg" == "" ]]; then
+  # When clang does not emit any possible autocompletion, or user pushed tab after " ",
+  # just autocomplete files.
+  if [[ "$flags" == "$(echo -e '\n')" || "$arg" == "" ]]; then
+    # If -foo=<tab> and there was no possible values, autocomplete files.
+    [[ "$cur" == '=' || "$cur" == -*= ]] && cur=""
     _clang_filedir
+  elif [[ "$cur" == '=' ]]; then
+    COMPREPLY=( $( compgen -W "$flags" -- "") )
   else
     # Bash automatically appends a space after '=' by default.
     # Disable it so that it works nicely for options in the form of -foo=bar.

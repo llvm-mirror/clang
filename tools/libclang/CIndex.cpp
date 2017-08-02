@@ -2264,6 +2264,42 @@ void OMPClauseEnqueue::VisitOMPReductionClause(const OMPReductionClause *C) {
     Visitor->AddStmt(E);
   }
 }
+void OMPClauseEnqueue::VisitOMPTaskReductionClause(
+    const OMPTaskReductionClause *C) {
+  VisitOMPClauseList(C);
+  VisitOMPClauseWithPostUpdate(C);
+  for (auto *E : C->privates()) {
+    Visitor->AddStmt(E);
+  }
+  for (auto *E : C->lhs_exprs()) {
+    Visitor->AddStmt(E);
+  }
+  for (auto *E : C->rhs_exprs()) {
+    Visitor->AddStmt(E);
+  }
+  for (auto *E : C->reduction_ops()) {
+    Visitor->AddStmt(E);
+  }
+}
+void OMPClauseEnqueue::VisitOMPInReductionClause(
+    const OMPInReductionClause *C) {
+  VisitOMPClauseList(C);
+  VisitOMPClauseWithPostUpdate(C);
+  for (auto *E : C->privates()) {
+    Visitor->AddStmt(E);
+  }
+  for (auto *E : C->lhs_exprs()) {
+    Visitor->AddStmt(E);
+  }
+  for (auto *E : C->rhs_exprs()) {
+    Visitor->AddStmt(E);
+  }
+  for (auto *E : C->reduction_ops()) {
+    Visitor->AddStmt(E);
+  }
+  for (auto *E : C->taskgroup_descriptors())
+    Visitor->AddStmt(E);
+}
 void OMPClauseEnqueue::VisitOMPLinearClause(const OMPLinearClause *C) {
   VisitOMPClauseList(C);
   VisitOMPClauseWithPostUpdate(C);
@@ -2721,6 +2757,8 @@ void EnqueueVisitor::VisitOMPTaskwaitDirective(const OMPTaskwaitDirective *D) {
 void EnqueueVisitor::VisitOMPTaskgroupDirective(
     const OMPTaskgroupDirective *D) {
   VisitOMPExecutableDirective(D);
+  if (const Expr *E = D->getReductionRef())
+    VisitStmt(E);
 }
 
 void EnqueueVisitor::VisitOMPFlushDirective(const OMPFlushDirective *D) {
@@ -8195,7 +8233,7 @@ cxindex::checkForMacroInMacroDefinition(const MacroInfo *MI, const Token &Tok,
     return nullptr;
 
   // Check that the identifier is not one of the macro arguments.
-  if (std::find(MI->arg_begin(), MI->arg_end(), &II) != MI->arg_end())
+  if (std::find(MI->param_begin(), MI->param_end(), &II) != MI->param_end())
     return nullptr;
 
   MacroDirective *InnerMD = PP.getLocalMacroDirectiveHistory(&II);

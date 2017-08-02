@@ -278,7 +278,8 @@ void netbsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (!Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
     addOpenMPRuntime(CmdArgs, getToolChain(), Args);
     if (D.CCCIsCXX()) {
-      getToolChain().AddCXXStdlibLibArgs(Args, CmdArgs);
+      if (getToolChain().ShouldLinkCXXStdlib(Args))
+        getToolChain().AddCXXStdlibLibArgs(Args, CmdArgs);
       CmdArgs.push_back("-lm");
     }
     if (NeedsSanitizerDeps)
@@ -324,7 +325,7 @@ void netbsd::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
 NetBSD::NetBSD(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
     : Generic_ELF(D, Triple, Args) {
-  if (getDriver().UseStdLib) {
+  if (!Args.hasArg(options::OPT_nostdlib)) {
     // When targeting a 32-bit platform, try the special directory used on
     // 64-bit hosts, and only fall back to the main library directory if that
     // doesn't work.

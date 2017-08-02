@@ -67,7 +67,7 @@ void TokenLexer::Init(Token &Tok, SourceLocation ELEnd, MacroInfo *MI,
 
   // If this is a function-like macro, expand the arguments and change
   // Tokens to point to the expanded tokens.
-  if (Macro->isFunctionLike() && Macro->getNumArgs())
+  if (Macro->isFunctionLike() && Macro->getNumParams())
     ExpandFunctionArguments();
 
   // Mark the macro as currently disabled, so that it is not recursively
@@ -122,7 +122,7 @@ bool TokenLexer::MaybeRemoveCommaBeforeVaArgs(
     SmallVectorImpl<Token> &ResultToks, bool HasPasteOperator, MacroInfo *Macro,
     unsigned MacroArgNo, Preprocessor &PP) {
   // Is the macro argument __VA_ARGS__?
-  if (!Macro->isVariadic() || MacroArgNo != Macro->getNumArgs()-1)
+  if (!Macro->isVariadic() || MacroArgNo != Macro->getNumParams()-1)
     return false;
 
   // In Microsoft-compatibility mode, a comma is removed in the expansion
@@ -137,7 +137,7 @@ bool TokenLexer::MaybeRemoveCommaBeforeVaArgs(
   // with GNU extensions, it is removed regardless of named arguments.
   // Microsoft also appears to support this extension, unofficially.
   if (PP.getLangOpts().C99 && !PP.getLangOpts().GNUMode
-        && Macro->getNumArgs() < 2)
+        && Macro->getNumParams() < 2)
     return false;
 
   // Is a comma available to be removed?
@@ -178,28 +178,28 @@ void TokenLexer::ExpandFunctionArguments() {
   // we install the newly expanded sequence as the new 'Tokens' list.
   bool MadeChange = false;
 
-  for (unsigned i = 0, e = NumTokens; i != e; ++i) {
+  for (unsigned I = 0, E = NumTokens; I != E; ++I) {
     // If we found the stringify operator, get the argument stringified.  The
     // preprocessor already verified that the following token is a macro name
     // when the #define was parsed.
-    const Token &CurTok = Tokens[i];
+    const Token &CurTok = Tokens[I];
     // We don't want a space for the next token after a paste
     // operator.  In valid code, the token will get smooshed onto the
     // preceding one anyway. In assembler-with-cpp mode, invalid
     // pastes are allowed through: in this case, we do not want the
     // extra whitespace to be added.  For example, we want ". ## foo"
     // -> ".foo" not ". foo".
-    if (i != 0 && !Tokens[i-1].is(tok::hashhash) && CurTok.hasLeadingSpace())
+    if (I != 0 && !Tokens[I-1].is(tok::hashhash) && CurTok.hasLeadingSpace())
       NextTokGetsSpace = true;
 
     if (CurTok.isOneOf(tok::hash, tok::hashat)) {
-      int ArgNo = Macro->getArgumentNum(Tokens[i+1].getIdentifierInfo());
+      int ArgNo = Macro->getParameterNum(Tokens[I+1].getIdentifierInfo());
       assert(ArgNo != -1 && "Token following # is not an argument?");
 
       SourceLocation ExpansionLocStart =
           getExpansionLocForMacroDefLoc(CurTok.getLocation());
       SourceLocation ExpansionLocEnd =
-          getExpansionLocForMacroDefLoc(Tokens[i+1].getLocation());
+          getExpansionLocForMacroDefLoc(Tokens[I+1].getLocation());
 
       Token Res;
       if (CurTok.is(tok::hash))  // Stringify
@@ -222,7 +222,7 @@ void TokenLexer::ExpandFunctionArguments() {
 
       ResultToks.push_back(Res);
       MadeChange = true;
-      ++i;  // Skip arg name.
+      ++I;  // Skip arg name.
       NextTokGetsSpace = false;
       continue;
     }
@@ -230,14 +230,14 @@ void TokenLexer::ExpandFunctionArguments() {
     // Find out if there is a paste (##) operator before or after the token.
     bool NonEmptyPasteBefore =
       !ResultToks.empty() && ResultToks.back().is(tok::hashhash);
-    bool PasteBefore = i != 0 && Tokens[i-1].is(tok::hashhash);
-    bool PasteAfter = i+1 != e && Tokens[i+1].is(tok::hashhash);
+    bool PasteBefore = I != 0 && Tokens[I-1].is(tok::hashhash);
+    bool PasteAfter = I+1 != E && Tokens[I+1].is(tok::hashhash);
     assert(!NonEmptyPasteBefore || PasteBefore);
 
     // Otherwise, if this is not an argument token, just add the token to the
     // output buffer.
     IdentifierInfo *II = CurTok.getIdentifierInfo();
-    int ArgNo = II ? Macro->getArgumentNum(II) : -1;
+    int ArgNo = II ? Macro->getParameterNum(II) : -1;
     if (ArgNo == -1) {
       // This isn't an argument, just add it.
       ResultToks.push_back(CurTok);
@@ -330,7 +330,7 @@ void TokenLexer::ExpandFunctionArguments() {
       // expansion.
       if (NonEmptyPasteBefore && ResultToks.size() >= 2 &&
           ResultToks[ResultToks.size()-2].is(tok::comma) &&
-          (unsigned)ArgNo == Macro->getNumArgs()-1 &&
+          (unsigned)ArgNo == Macro->getNumParams()-1 &&
           Macro->isVariadic()) {
         VaArgsPseudoPaste = true;
         // Remove the paste operator, report use of the extension.
@@ -374,7 +374,7 @@ void TokenLexer::ExpandFunctionArguments() {
     if (PasteAfter) {
       // Discard the argument token and skip (don't copy to the expansion
       // buffer) the paste operator after it.
-      ++i;
+      ++I;
       continue;
     }
 

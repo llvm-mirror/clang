@@ -11,6 +11,7 @@
 #include "Linux.h"
 #include "Arch/ARM.h"
 #include "Arch/Mips.h"
+#include "Arch/PPC.h"
 #include "Arch/Sparc.h"
 #include "Arch/SystemZ.h"
 #include "CommonArgs.h"
@@ -560,13 +561,15 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (D.CCCIsCXX() &&
       !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
-    bool OnlyLibstdcxxStatic = Args.hasArg(options::OPT_static_libstdcxx) &&
-                               !Args.hasArg(options::OPT_static);
-    if (OnlyLibstdcxxStatic)
-      CmdArgs.push_back("-Bstatic");
-    ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
-    if (OnlyLibstdcxxStatic)
-      CmdArgs.push_back("-Bdynamic");
+    if (ToolChain.ShouldLinkCXXStdlib(Args)) {
+      bool OnlyLibstdcxxStatic = Args.hasArg(options::OPT_static_libstdcxx) &&
+                                 !Args.hasArg(options::OPT_static);
+      if (OnlyLibstdcxxStatic)
+        CmdArgs.push_back("-Bstatic");
+      ToolChain.AddCXXStdlibLibArgs(Args, CmdArgs);
+      if (OnlyLibstdcxxStatic)
+        CmdArgs.push_back("-Bdynamic");
+    }
     CmdArgs.push_back("-lm");
   }
   // Silence warnings when linking C code with a C++ '-stdlib' argument.
@@ -693,22 +696,28 @@ void tools::gnutools::Assembler::ConstructJob(Compilation &C,
     else
       CmdArgs.push_back("--64");
     break;
-  case llvm::Triple::ppc:
+  case llvm::Triple::ppc: {
     CmdArgs.push_back("-a32");
     CmdArgs.push_back("-mppc");
-    CmdArgs.push_back("-many");
+    CmdArgs.push_back(
+      ppc::getPPCAsmModeForCPU(getCPUName(Args, getToolChain().getTriple())));
     break;
-  case llvm::Triple::ppc64:
+  }
+  case llvm::Triple::ppc64: {
     CmdArgs.push_back("-a64");
     CmdArgs.push_back("-mppc64");
-    CmdArgs.push_back("-many");
+    CmdArgs.push_back(
+      ppc::getPPCAsmModeForCPU(getCPUName(Args, getToolChain().getTriple())));
     break;
-  case llvm::Triple::ppc64le:
+  }
+  case llvm::Triple::ppc64le: {
     CmdArgs.push_back("-a64");
     CmdArgs.push_back("-mppc64");
-    CmdArgs.push_back("-many");
     CmdArgs.push_back("-mlittle-endian");
+    CmdArgs.push_back(
+      ppc::getPPCAsmModeForCPU(getCPUName(Args, getToolChain().getTriple())));
     break;
+  }
   case llvm::Triple::sparc:
   case llvm::Triple::sparcel: {
     CmdArgs.push_back("-32");
@@ -1482,7 +1491,7 @@ static void findAndroidArmMultilibs(const Driver &D,
   bool IsV7SubArch = TargetTriple.getSubArch() == llvm::Triple::ARMSubArch_v7;
   bool IsThumbMode = IsThumbArch ||
       Args.hasFlag(options::OPT_mthumb, options::OPT_mno_thumb, false) ||
-      (IsArmArch && llvm::ARM::parseArchISA(Arch) == llvm::ARM::IK_THUMB);
+      (IsArmArch && llvm::ARM::parseArchISA(Arch) == llvm::ARM::ISAKind::THUMB);
   bool IsArmV7Mode = (IsArmArch || IsThumbArch) &&
       (llvm::ARM::parseArchVersion(Arch) == 7 ||
        (IsArmArch && Arch == "" && IsV7SubArch));
@@ -2471,7 +2480,8 @@ void Generic_ELF::addClangTargetOptions(const ArgList &DriverArgs,
        (!V.isOlderThan(4, 7, 0) || getTriple().isAndroid())) ||
       getTriple().getOS() == llvm::Triple::NaCl ||
       (getTriple().getVendor() == llvm::Triple::MipsTechnologies &&
-       !getTriple().hasEnvironment());
+       !getTriple().hasEnvironment()) ||
+      getTriple().getOS() == llvm::Triple::Solaris;
 
   if (DriverArgs.hasFlag(options::OPT_fuse_init_array,
                          options::OPT_fno_use_init_array, UseInitArrayDefault))

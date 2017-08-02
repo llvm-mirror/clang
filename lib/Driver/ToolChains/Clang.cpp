@@ -1462,6 +1462,54 @@ void Clang::AddMIPSTargetArgs(const ArgList &Args,
     A->claim();
   }
 
+  Arg *GPOpt = Args.getLastArg(options::OPT_mgpopt, options::OPT_mno_gpopt);
+  Arg *ABICalls =
+      Args.getLastArg(options::OPT_mabicalls, options::OPT_mno_abicalls);
+
+  // -mabicalls is the default for many MIPS environments, even with -fno-pic.
+  // -mgpopt is the default for static, -fno-pic environments but these two
+  // options conflict. We want to be certain that -mno-abicalls -mgpopt is
+  // the only case where -mllvm -mgpopt is passed.
+  // NOTE: We need a warning here or in the backend to warn when -mgpopt is
+  //       passed explicitly when compiling something with -mabicalls
+  //       (implictly) in affect. Currently the warning is in the backend.
+  bool NoABICalls =
+      ABICalls && ABICalls->getOption().matches(options::OPT_mno_abicalls);
+  bool WantGPOpt = GPOpt && GPOpt->getOption().matches(options::OPT_mgpopt);
+  // We quietly ignore -mno-gpopt as the backend defaults to -mno-gpopt.
+  if (NoABICalls && (!GPOpt || WantGPOpt)) {
+    CmdArgs.push_back("-mllvm");
+    CmdArgs.push_back("-mgpopt");
+
+    Arg *LocalSData = Args.getLastArg(options::OPT_mlocal_sdata,
+                                      options::OPT_mno_local_sdata);
+    Arg *ExternSData = Args.getLastArg(options::OPT_mextern_sdata,
+                                      options::OPT_mno_extern_sdata);
+    if (LocalSData) {
+      CmdArgs.push_back("-mllvm");
+      if (LocalSData->getOption().matches(options::OPT_mlocal_sdata)) {
+        CmdArgs.push_back("-mlocal-sdata=1");
+      } else {
+        CmdArgs.push_back("-mlocal-sdata=0");
+      }
+      LocalSData->claim();
+    }
+
+    if (ExternSData) {
+      CmdArgs.push_back("-mllvm");
+      if (ExternSData->getOption().matches(options::OPT_mextern_sdata)) {
+        CmdArgs.push_back("-mextern-sdata=1");
+      } else {
+        CmdArgs.push_back("-mextern-sdata=0");
+      }
+      ExternSData->claim();
+    }
+  } else if ((!ABICalls || (!NoABICalls && ABICalls)) && WantGPOpt)
+    D.Diag(diag::warn_drv_unsupported_gpopt) << (ABICalls ? 0 : 1);
+
+  if (GPOpt)
+    GPOpt->claim();
+
   if (Arg *A = Args.getLastArg(options::OPT_mcompact_branches_EQ)) {
     StringRef Val = StringRef(A->getValue());
     if (mips::hasCompactBranches(CPUName)) {
@@ -3201,9 +3249,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_femit_all_decls);
   Args.AddLastArg(CmdArgs, options::OPT_fheinous_gnu_extensions);
   Args.AddLastArg(CmdArgs, options::OPT_fno_operator_names);
-  // Emulated TLS is enabled by default on Android, and can be enabled manually
-  // with -femulated-tls.
-  bool EmulatedTLSDefault = Triple.isAndroid() || Triple.isWindowsCygwinEnvironment();
+  // Emulated TLS is enabled by default on Android and OpenBSD, and can be enabled
+  // manually with -femulated-tls.
+  bool EmulatedTLSDefault = Triple.isAndroid() || Triple.isOSOpenBSD() ||
+                            Triple.isWindowsCygwinEnvironment();
   if (Args.hasFlag(options::OPT_femulated_tls, options::OPT_fno_emulated_tls,
                    EmulatedTLSDefault))
     CmdArgs.push_back("-femulated-tls");

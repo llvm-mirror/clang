@@ -825,6 +825,7 @@ private:
   struct PragmaPackStackEntry {
     unsigned Value;
     SourceLocation Location;
+    SourceLocation PushLocation;
     StringRef SlotLabel;
   };
   llvm::SmallVector<PragmaPackStackEntry, 2> PragmaPackStack;
@@ -866,9 +867,6 @@ private:
   /// any other non-module AST file.
   SmallVector<ImportedSubmodule, 2> ImportedModules;
   //@}
-
-  /// \brief The directory that the PCH we are reading is stored in.
-  std::string CurrentDir;
 
   /// \brief The system include root to be used when loading the
   /// precompiled header.

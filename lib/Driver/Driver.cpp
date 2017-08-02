@@ -12,7 +12,6 @@
 #include "ToolChains/AMDGPU.h"
 #include "ToolChains/AVR.h"
 #include "ToolChains/Ananas.h"
-#include "ToolChains/Bitrig.h"
 #include "ToolChains/Clang.h"
 #include "ToolChains/CloudABI.h"
 #include "ToolChains/Contiki.h"
@@ -88,7 +87,7 @@ Driver::Driver(StringRef ClangExecutable, StringRef DefaultTargetTriple,
     : Opts(createDriverOptTable()), Diags(Diags), VFS(std::move(VFS)),
       Mode(GCCMode), SaveTemps(SaveTempsNone), BitcodeEmbed(EmbedNone),
       LTOMode(LTOK_None), ClangExecutable(ClangExecutable),
-      SysRoot(DEFAULT_SYSROOT), UseStdLib(true),
+      SysRoot(DEFAULT_SYSROOT), 
       DriverTitle("clang LLVM compiler"), CCPrintOptionsFilename(nullptr),
       CCPrintHeadersFilename(nullptr), CCLogDiagnosticsFilename(nullptr),
       CCCPrintBindings(false), CCPrintHeaders(false), CCLogDiagnostics(false),
@@ -679,8 +678,6 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
     SysRoot = A->getValue();
   if (const Arg *A = Args.getLastArg(options::OPT__dyld_prefix_EQ))
     DyldPrefix = A->getValue();
-  if (Args.hasArg(options::OPT_nostdlib))
-    UseStdLib = false;
 
   if (const Arg *A = Args.getLastArg(options::OPT_resource_dir))
     ResourceDir = A->getValue();
@@ -1127,7 +1124,8 @@ void Driver::PrintHelp(bool ShowHidden) const {
     ExcludedFlagsBitmask |= HelpHidden;
 
   getOpts().PrintHelp(llvm::outs(), Name.c_str(), DriverTitle.c_str(),
-                      IncludedFlagsBitmask, ExcludedFlagsBitmask);
+                      IncludedFlagsBitmask, ExcludedFlagsBitmask,
+                      /*ShowAllAliases=*/false);
 }
 
 void Driver::PrintVersion(const Compilation &C, raw_ostream &OS) const {
@@ -1275,6 +1273,13 @@ bool Driver::HandleImmediateArgs(const Compilation &C) {
       // we were requested to print out all option names that start with "-foo".
       // For example, "--autocomplete=-fsyn" is expanded to "-fsyntax-only".
       SuggestedCompletions = Opts->findByPrefix(PassedFlags, DisableFlags);
+
+      // We have to query the -W flags manually as they're not in the OptTable.
+      // TODO: Find a good way to add them to OptTable instead and them remove
+      // this code.
+      for (StringRef S : DiagnosticIDs::getDiagnosticFlags())
+        if (S.startswith(PassedFlags))
+          SuggestedCompletions.push_back(S);
     } else {
       // If the flag is in the form of "--autocomplete=foo,bar", we were
       // requested to print out all option values for "-foo" that start with
@@ -1292,7 +1297,7 @@ bool Driver::HandleImmediateArgs(const Compilation &C) {
     std::sort(SuggestedCompletions.begin(), SuggestedCompletions.end(),
               [](StringRef A, StringRef B) { return A.compare_lower(B) < 0; });
 
-    llvm::outs() << llvm::join(SuggestedCompletions, " ") << '\n';
+    llvm::outs() << llvm::join(SuggestedCompletions, "\n") << '\n';
     return false;
   }
 
@@ -3807,9 +3812,6 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
       break;
     case llvm::Triple::OpenBSD:
       TC = llvm::make_unique<toolchains::OpenBSD>(*this, Target, Args);
-      break;
-    case llvm::Triple::Bitrig:
-      TC = llvm::make_unique<toolchains::Bitrig>(*this, Target, Args);
       break;
     case llvm::Triple::NetBSD:
       TC = llvm::make_unique<toolchains::NetBSD>(*this, Target, Args);

@@ -55,8 +55,9 @@ enum CoverageFeature {
   Coverage8bitCounters = 1 << 8,  // Deprecated.
   CoverageTracePC = 1 << 9,
   CoverageTracePCGuard = 1 << 10,
-  CoverageInline8bitCounters = 1 << 12,
   CoverageNoPrune = 1 << 11,
+  CoverageInline8bitCounters = 1 << 12,
+  CoveragePCTable = 1 << 13,
 };
 
 /// Parse a -fsanitize= or -fno-sanitize= argument's values, diagnosing any
@@ -306,6 +307,13 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     Kinds &= ~Vptr;
   }
 
+  // Disable -fsanitize=vptr if -fsanitize=null is not enabled (the vptr
+  // instrumentation is broken without run-time null checks).
+  if ((Kinds & Vptr) && !(Kinds & Null)) {
+    Kinds &= ~Vptr;
+    D.Diag(diag::warn_drv_disabling_vptr_no_null_check);
+  }
+
   // Check that LTO is enabled if we need it.
   if ((Kinds & NeedsLTO) && !D.isUsingLTO()) {
     D.Diag(diag::err_drv_argument_only_allowed_with)
@@ -504,7 +512,7 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
 
       // Disable coverage and not claim the flags if there is at least one
       // non-supporting sanitizer.
-      if (!(AllAddedKinds & ~setGroupBits(SupportsCoverage))) {
+      if (!(AllAddedKinds & ~AllRemove & ~setGroupBits(SupportsCoverage))) {
         Arg->claim();
       } else {
         CoverageFeatures = 0;
@@ -656,6 +664,7 @@ void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
     std::make_pair(CoverageTracePC, "-fsanitize-coverage-trace-pc"),
     std::make_pair(CoverageTracePCGuard, "-fsanitize-coverage-trace-pc-guard"),
     std::make_pair(CoverageInline8bitCounters, "-fsanitize-coverage-inline-8bit-counters"),
+    std::make_pair(CoveragePCTable, "-fsanitize-coverage-pc-table"),
     std::make_pair(CoverageNoPrune, "-fsanitize-coverage-no-prune")};
   for (auto F : CoverageFlags) {
     if (CoverageFeatures & F.first)
@@ -818,6 +827,7 @@ int parseCoverageFeatures(const Driver &D, const llvm::opt::Arg *A) {
         .Case("trace-pc-guard", CoverageTracePCGuard)
         .Case("no-prune", CoverageNoPrune)
         .Case("inline-8bit-counters", CoverageInline8bitCounters)
+        .Case("pc-table", CoveragePCTable)
         .Default(0);
     if (F == 0)
       D.Diag(clang::diag::err_drv_unsupported_option_argument)

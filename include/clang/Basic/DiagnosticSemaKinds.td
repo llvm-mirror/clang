@@ -712,6 +712,19 @@ def err_pragma_options_align_mac68k_target_unsupported : Error<
 def warn_pragma_pack_invalid_alignment : Warning<
   "expected #pragma pack parameter to be '1', '2', '4', '8', or '16'">,
   InGroup<IgnoredPragmas>;
+def warn_pragma_pack_non_default_at_include : Warning<
+  "non-default #pragma pack value changes the alignment of struct or union "
+  "members in the included file">, InGroup<PragmaPackSuspiciousInclude>,
+  DefaultIgnore;
+def warn_pragma_pack_modified_after_include : Warning<
+  "the current #pragma pack aligment value is modified in the included "
+  "file">, InGroup<PragmaPack>;
+def warn_pragma_pack_no_pop_eof : Warning<"unterminated "
+  "'#pragma pack (push, ...)' at end of file">, InGroup<PragmaPack>;
+def note_pragma_pack_here : Note<
+  "previous '#pragma pack' directive that modifies alignment is here">;
+def note_pragma_pack_pop_instead_reset : Note<
+  "did you intend to use '#pragma pack (pop)' instead of '#pragma pack()'?">;
 // Follow the Microsoft implementation.
 def warn_pragma_pack_show : Warning<"value of #pragma pack(show) == %0">;
 def warn_pragma_pack_pop_identifer_and_alignment : Warning<
@@ -2387,8 +2400,9 @@ def err_attribute_requires_positive_integer : Error<
 def err_attribute_requires_opencl_version : Error<
   "%0 attribute requires OpenCL version %1%select{| or above}2">;
 def warn_unsupported_target_attribute
-    : Warning<"Ignoring unsupported '%0' in the target attribute string">,
-    InGroup<IgnoredAttributes>;
+    : Warning<"ignoring %select{unsupported|duplicate}0"
+              "%select{| architecture}1 '%2' in the target attribute string">,
+      InGroup<IgnoredAttributes>;
 def err_attribute_unsupported
     : Error<"%0 attribute is not supported for this target">;
 // The err_*_attribute_argument_not_int are separate because they're used by
@@ -6420,8 +6434,8 @@ def warn_overaligned_type : Warning<
   "guarantees %2 bytes">,
   InGroup<OveralignedType>, DefaultIgnore;
 def warn_aligned_allocation_unavailable :Warning<
-  "aligned %select{allocation|deallocation}0 function of type '%1' possibly "
-  "unavailable on %2">, InGroup<AlignedAllocationUnavailable>, DefaultError;
+  "aligned %select{allocation|deallocation}0 function of type '%1' is only "
+  "available on %2 %3 or newer">, InGroup<AlignedAllocationUnavailable>, DefaultError;
 def note_silence_unligned_allocation_unavailable : Note<
   "if you supply your own aligned allocation functions, use "
   "-Wno-aligned-allocation-unavailable to silence this diagnostic">;
@@ -8113,10 +8127,10 @@ def err_systemz_invalid_tabort_code : Error<
   "invalid transaction abort code">;
 def err_64_bit_builtin_32_bit_tgt : Error<
   "this builtin is only available on 64-bit targets">;
+def err_builtin_x64_aarch64_only : Error<
+  "this builtin is only available on x86-64 and aarch64 targets">;
 def err_ppc_builtin_only_on_pwr7 : Error<
   "this builtin is only valid on POWER7 or later CPUs">;
-def err_x86_builtin_64_only : Error<
-  "this builtin is only available on x86-64 targets">;
 def err_x86_builtin_invalid_rounding : Error<
   "invalid rounding argument">;
 def err_x86_builtin_invalid_scale : Error<
@@ -8518,6 +8532,8 @@ def err_omp_expected_var_name_member_expr : Error<
   "expected variable name%select{| or data member of current class}0">;
 def err_omp_expected_var_name_member_expr_or_array_item : Error<
   "expected variable name%select{|, data member of current class}0, array element or array section">;
+def err_omp_expected_addressable_lvalue_or_array_item : Error<
+  "expected addressable lvalue expression, array element or array section">;
 def err_omp_expected_named_var_member_or_array_expression: Error<
   "expected expression containing only member accesses and/or array sections based on named variables">;
 def err_omp_bit_fields_forbidden_in_clause : Error<
@@ -8655,11 +8671,11 @@ def err_omp_unknown_reduction_identifier : Error<
 def err_omp_not_resolved_reduction_identifier : Error<
   "unable to resolve declare reduction construct for type %0">;
 def err_omp_reduction_ref_type_arg : Error<
-  "argument of OpenMP clause 'reduction' must reference the same object in all threads">;
+  "argument of OpenMP clause '%0' must reference the same object in all threads">;
 def err_omp_clause_not_arithmetic_type_arg : Error<
-  "arguments of OpenMP clause 'reduction' for 'min' or 'max' must be of %select{scalar|arithmetic}0 type">;
+  "arguments of OpenMP clause '%0' for 'min' or 'max' must be of %select{scalar|arithmetic}1 type">;
 def err_omp_clause_floating_type_arg : Error<
-  "arguments of OpenMP clause 'reduction' with bitwise operators cannot be of floating type">;
+  "arguments of OpenMP clause '%0' with bitwise operators cannot be of floating type">;
 def err_omp_once_referenced : Error<
   "variable can appear only once in OpenMP '%0' clause">;
 def err_omp_once_referenced_in_target_update : Error<
@@ -8670,6 +8686,12 @@ def err_omp_reduction_in_task : Error<
   "reduction variables may not be accessed in an explicit task">;
 def err_omp_reduction_id_not_compatible : Error<
   "list item of type %0 is not valid for specified reduction operation: unable to provide default initialization value">;
+def err_omp_in_reduction_not_task_reduction : Error<
+  "in_reduction variable must appear in a task_reduction clause">;
+def err_omp_reduction_identifier_mismatch : Error<
+  "in_reduction variable must have the same reduction operation as in a task_reduction clause">;
+def note_omp_previous_reduction_identifier : Note<
+  "previously marked as task_reduction with different reduction operation">;
 def err_omp_prohibited_region : Error<
   "region cannot be%select{| closely}0 nested inside '%1' region"
   "%select{|; perhaps you forget to enclose 'omp %3' directive into a parallel region?|"
@@ -8821,12 +8843,6 @@ def note_omp_critical_hint_here : Note<
   "%select{|previous }0'hint' clause with value '%1'">;
 def note_omp_critical_no_hint : Note<
   "%select{|previous }0directive with no 'hint' clause specified">;
-def err_omp_firstprivate_distribute_private_teams : Error<
-  "private variable in '#pragma omp teams' cannot be firstprivate in '#pragma omp distribute'">;
-def err_omp_firstprivate_and_lastprivate_in_distribute : Error<
-  "lastprivate variable cannot be firstprivate in '#pragma omp distribute'">;
-def err_omp_firstprivate_distribute_in_teams_reduction : Error<
-  "reduction variable in '#pragma omp teams' cannot be firstprivate in '#pragma omp distribute'">;
 def err_omp_depend_clause_thread_simd : Error<
   "'depend' clauses cannot be mixed with '%0' clause">;
 def err_omp_depend_sink_expected_loop_iteration : Error<

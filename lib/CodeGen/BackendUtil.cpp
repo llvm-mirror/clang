@@ -189,6 +189,7 @@ static void addSanitizerCoveragePass(const PassManagerBuilder &Builder,
   Opts.TracePCGuard = CGOpts.SanitizeCoverageTracePCGuard;
   Opts.NoPrune = CGOpts.SanitizeCoverageNoPrune;
   Opts.Inline8bitCounters = CGOpts.SanitizeCoverageInline8bitCounters;
+  Opts.PCTable = CGOpts.SanitizeCoveragePCTable;
   PM.add(createSanitizerCoverageModulePass(Opts));
 }
 
@@ -840,28 +841,27 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
     return;
   TheModule->setDataLayout(TM->createDataLayout());
 
-  PGOOptions PGOOpt;
+  Optional<PGOOptions> PGOOpt;
 
-  // -fprofile-generate.
-  PGOOpt.RunProfileGen = CodeGenOpts.hasProfileIRInstr();
-  if (PGOOpt.RunProfileGen)
-    PGOOpt.ProfileGenFile = CodeGenOpts.InstrProfileOutput.empty() ?
-      DefaultProfileGenName : CodeGenOpts.InstrProfileOutput;
+  if (CodeGenOpts.hasProfileIRInstr())
+    // -fprofile-generate.
+    PGOOpt = PGOOptions(CodeGenOpts.InstrProfileOutput.empty()
+                            ? DefaultProfileGenName
+                            : CodeGenOpts.InstrProfileOutput,
+                        "", "", true, CodeGenOpts.DebugInfoForProfiling);
+  else if (CodeGenOpts.hasProfileIRUse())
+    // -fprofile-use.
+    PGOOpt = PGOOptions("", CodeGenOpts.ProfileInstrumentUsePath, "", false,
+                        CodeGenOpts.DebugInfoForProfiling);
+  else if (!CodeGenOpts.SampleProfileFile.empty())
+    // -fprofile-sample-use
+    PGOOpt = PGOOptions("", "", CodeGenOpts.SampleProfileFile, false,
+                        CodeGenOpts.DebugInfoForProfiling);
+  else if (CodeGenOpts.DebugInfoForProfiling)
+    // -fdebug-info-for-profiling
+    PGOOpt = PGOOptions("", "", "", false, true);
 
-  // -fprofile-use.
-  if (CodeGenOpts.hasProfileIRUse())
-    PGOOpt.ProfileUseFile = CodeGenOpts.ProfileInstrumentUsePath;
-
-  if (!CodeGenOpts.SampleProfileFile.empty())
-    PGOOpt.SampleProfileFile = CodeGenOpts.SampleProfileFile;
-
-  // Only pass a PGO options struct if -fprofile-generate or
-  // -fprofile-use were passed on the cmdline.
-  PassBuilder PB(TM.get(),
-    (PGOOpt.RunProfileGen ||
-      !PGOOpt.ProfileUseFile.empty() ||
-      !PGOOpt.SampleProfileFile.empty()) ?
-        Optional<PGOOptions>(PGOOpt) : None);
+  PassBuilder PB(TM.get(), PGOOpt);
 
   LoopAnalysisManager LAM;
   FunctionAnalysisManager FAM;
@@ -870,6 +870,14 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
 
   // Register the AA manager first so that our version is the one used.
   FAM.registerPass([&] { return PB.buildDefaultAAPipeline(); });
+
+  // Register the target library analysis directly and give it a customized
+  // preset TLI.
+  Triple TargetTriple(TheModule->getTargetTriple());
+  std::unique_ptr<TargetLibraryInfoImpl> TLII(
+      createTLII(TargetTriple, CodeGenOpts));
+  FAM.registerPass([&] { return TargetLibraryAnalysis(*TLII); });
+  MAM.registerPass([&] { return TargetLibraryAnalysis(*TLII); });
 
   // Register all the basic analyses with the managers.
   PB.registerModuleAnalyses(MAM);

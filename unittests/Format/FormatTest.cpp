@@ -333,6 +333,16 @@ TEST_F(FormatTest, RecognizesBinaryOperatorKeywords) {
   verifyFormat("x = (a) xor (b);");
 }
 
+TEST_F(FormatTest, RecognizesUnaryOperatorKeywords) {
+  verifyFormat("x = compl(a);");
+  verifyFormat("x = not(a);");
+  verifyFormat("x = bitand(a);");
+  // Unary operator must not be merged with the next identifier
+  verifyFormat("x = compl a;");
+  verifyFormat("x = not a;");
+  verifyFormat("x = bitand a;");
+}
+
 //===----------------------------------------------------------------------===//
 // Tests for control statements.
 //===----------------------------------------------------------------------===//
@@ -896,6 +906,77 @@ TEST_F(FormatTest, ShortCaseLabels) {
                "default: y = 1; break;\n"
                "}",
                Style);
+  verifyFormat("switch (a) {\n"
+               "case 0: return; // comment\n"
+               "case 1: break;  // comment\n"
+               "case 2: return;\n"
+               "// comment\n"
+               "case 3: return;\n"
+               "// comment 1\n"
+               "// comment 2\n"
+               "// comment 3\n"
+               "case 4: break; /* comment */\n"
+               "case 5:\n"
+               "  // comment\n"
+               "  break;\n"
+               "case 6: /* comment */ x = 1; break;\n"
+               "case 7: x = /* comment */ 1; break;\n"
+               "case 8:\n"
+               "  x = 1; /* comment */\n"
+               "  break;\n"
+               "case 9:\n"
+               "  break; // comment line 1\n"
+               "         // comment line 2\n"
+               "}",
+               Style);
+  EXPECT_EQ("switch (a) {\n"
+            "case 1:\n"
+            "  x = 8;\n"
+            "  // fall through\n"
+            "case 2: x = 8;\n"
+            "// comment\n"
+            "case 3:\n"
+            "  return; /* comment line 1\n"
+            "           * comment line 2 */\n"
+            "case 4: i = 8;\n"
+            "// something else\n"
+            "#if FOO\n"
+            "case 5: break;\n"
+            "#endif\n"
+            "}",
+            format("switch (a) {\n"
+                   "case 1: x = 8;\n"
+                   "  // fall through\n"
+                   "case 2:\n"
+                   "  x = 8;\n"
+                   "// comment\n"
+                   "case 3:\n"
+                   "  return; /* comment line 1\n"
+                   "           * comment line 2 */\n"
+                   "case 4:\n"
+                   "  i = 8;\n"
+                   "// something else\n"
+                   "#if FOO\n"
+                   "case 5: break;\n"
+                   "#endif\n"
+                   "}",
+                   Style));
+  EXPECT_EQ("switch (a) {\n" "case 0:\n"
+            "  return; // long long long long long long long long long long long long comment\n"
+            "          // line\n" "}",
+            format("switch (a) {\n"
+                   "case 0: return; // long long long long long long long long long long long long comment line\n"
+                   "}",
+                   Style));
+  EXPECT_EQ("switch (a) {\n"
+            "case 0:\n"
+            "  return; /* long long long long long long long long long long long long comment\n"
+            "             line */\n"
+            "}",
+            format("switch (a) {\n"
+                   "case 0: return; /* long long long long long long long long long long long long comment line */\n"
+                   "}",
+                   Style));
   verifyFormat("switch (a) {\n"
                "#if FOO\n"
                "case 0: return 0;\n"
@@ -5340,6 +5421,7 @@ TEST_F(FormatTest, UnderstandsUsesOfStarAndAmp) {
   verifyFormat("x = *a(x) = *a(y);", Left);
   verifyFormat("for (;; *a = b) {\n}", Left);
   verifyFormat("return *this += 1;", Left);
+  verifyFormat("throw *x;", Left);
 
   verifyIndependentOfContext("a = *(x + y);");
   verifyIndependentOfContext("a = &(x + y);");

@@ -33,6 +33,7 @@
 #include "clang/Lex/PreprocessorOptions.h"
 #include "clang/Lex/PTHLexer.h"
 #include "clang/Lex/Token.h"
+#include "clang/Lex/VariadicMacroSupport.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
@@ -220,26 +221,18 @@ bool Preprocessor::CheckMacroName(Token &MacroNameTok, MacroUse isDefineUndef,
     return Diag(MacroNameTok, diag::err_pp_missing_macro_name);
 
   IdentifierInfo *II = MacroNameTok.getIdentifierInfo();
-  if (!II) {
-    bool Invalid = false;
-    std::string Spelling = getSpelling(MacroNameTok, &Invalid);
-    if (Invalid)
-      return Diag(MacroNameTok, diag::err_pp_macro_not_identifier);
-    II = getIdentifierInfo(Spelling);
+  if (!II)
+    return Diag(MacroNameTok, diag::err_pp_macro_not_identifier);
 
-    if (!II->isCPlusPlusOperatorKeyword())
-      return Diag(MacroNameTok, diag::err_pp_macro_not_identifier);
-
+  if (II->isCPlusPlusOperatorKeyword()) {
     // C++ 2.5p2: Alternative tokens behave the same as its primary token
     // except for their spellings.
     Diag(MacroNameTok, getLangOpts().MicrosoftExt
                            ? diag::ext_pp_operator_used_as_macro_name
                            : diag::err_pp_operator_used_as_macro_name)
         << II << MacroNameTok.getKind();
-
     // Allow #defining |and| and friends for Microsoft compatibility or
     // recovery when legacy C headers are included in C++.
-    MacroNameTok.setIdentifierInfo(II);
   }
 
   if ((isDefineUndef != MU_Other) && II->getPPKeywordID() == tok::pp_defined) {
@@ -2143,11 +2136,11 @@ void Preprocessor::HandleIncludeMacrosDirective(SourceLocation HashLoc,
 // Preprocessor Macro Directive Handling.
 //===----------------------------------------------------------------------===//
 
-/// ReadMacroDefinitionArgList - The ( starting an argument list of a macro
+/// ReadMacroParameterList - The ( starting an argument list of a macro
 /// definition has just been read.  Lex the rest of the arguments and the
 /// closing ), updating MI with what we learn.  Return true if an error occurs
 /// parsing the arg list.
-bool Preprocessor::ReadMacroDefinitionArgList(MacroInfo *MI, Token &Tok) {
+bool Preprocessor::ReadMacroParameterList(MacroInfo *MI, Token &Tok) {
   SmallVector<IdentifierInfo*, 32> Arguments;
 
   while (true) {
@@ -2181,7 +2174,7 @@ bool Preprocessor::ReadMacroDefinitionArgList(MacroInfo *MI, Token &Tok) {
       // Add the __VA_ARGS__ identifier as an argument.
       Arguments.push_back(Ident__VA_ARGS__);
       MI->setIsC99Varargs();
-      MI->setArgumentList(Arguments, BP);
+      MI->setParameterList(Arguments, BP);
       return false;
     case tok::eod:  // #define X(
       Diag(Tok, diag::err_pp_missing_rparen_in_macro_def);
@@ -2215,7 +2208,7 @@ bool Preprocessor::ReadMacroDefinitionArgList(MacroInfo *MI, Token &Tok) {
         Diag(Tok, diag::err_pp_expected_comma_in_arg_list);
         return true;
       case tok::r_paren: // #define X(A)
-        MI->setArgumentList(Arguments, BP);
+        MI->setParameterList(Arguments, BP);
         return false;
       case tok::comma:  // #define X(A,
         break;
@@ -2231,7 +2224,7 @@ bool Preprocessor::ReadMacroDefinitionArgList(MacroInfo *MI, Token &Tok) {
         }
 
         MI->setIsGNUVarargs();
-        MI->setArgumentList(Arguments, BP);
+        MI->setParameterList(Arguments, BP);
         return false;
       }
     }
@@ -2280,31 +2273,27 @@ static bool isConfigurationPattern(Token &MacroName, MacroInfo *MI,
          MI->getNumTokens() == 0;
 }
 
-/// HandleDefineDirective - Implements \#define.  This consumes the entire macro
-/// line then lets the caller lex the next real token.
-void Preprocessor::HandleDefineDirective(Token &DefineTok,
-                                         bool ImmediatelyAfterHeaderGuard) {
-  ++NumDefined;
+// ReadOptionalMacroParameterListAndBody - This consumes all (i.e. the
+// entire line) of the macro's tokens and adds them to MacroInfo, and while
+// doing so performs certain validity checks including (but not limited to):
+//   - # (stringization) is followed by a macro parameter
+//
+//  Returns a nullptr if an invalid sequence of tokens is encountered or returns
+//  a pointer to a MacroInfo object.
 
-  Token MacroNameTok;
-  bool MacroShadowsKeyword;
-  ReadMacroName(MacroNameTok, MU_Define, &MacroShadowsKeyword);
-
-  // Error reading macro name?  If so, diagnostic already issued.
-  if (MacroNameTok.is(tok::eod))
-    return;
+MacroInfo *Preprocessor::ReadOptionalMacroParameterListAndBody(
+    const Token &MacroNameTok, const bool ImmediatelyAfterHeaderGuard) {
 
   Token LastTok = MacroNameTok;
-
-  // If we are supposed to keep comments in #defines, reenable comment saving
-  // mode.
-  if (CurLexer) CurLexer->SetCommentRetentionState(KeepMacroComments);
-
   // Create the new macro.
-  MacroInfo *MI = AllocateMacroInfo(MacroNameTok.getLocation());
+  MacroInfo *const MI = AllocateMacroInfo(MacroNameTok.getLocation());
 
   Token Tok;
   LexUnexpandedToken(Tok);
+
+  // Used to un-poison and then re-poison identifiers of the __VA_ARGS__ ilk
+  // within their appropriate context.
+  VariadicMacroScopeGuard VariadicMacroScopeGuard(*this);
 
   // If this is a function-like macro definition, parse the argument list,
   // marking each of the identifiers as being used as macro arguments.  Also,
@@ -2323,21 +2312,21 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
   } else if (Tok.is(tok::l_paren)) {
     // This is a function-like macro definition.  Read the argument list.
     MI->setIsFunctionLike();
-    if (ReadMacroDefinitionArgList(MI, LastTok)) {
+    if (ReadMacroParameterList(MI, LastTok)) {
       // Throw away the rest of the line.
       if (CurPPLexer->ParsingPreprocessorDirective)
         DiscardUntilEndOfDirective();
-      return;
+      return nullptr;
     }
 
-    // If this is a definition of a variadic C99 function-like macro, not using
-    // the GNU named varargs extension, enabled __VA_ARGS__.
+    // If this is a definition of an ISO C/C++ variadic function-like macro (not
+    // using the GNU named varargs extension) inform our variadic scope guard
+    // which un-poisons and re-poisons certain identifiers (e.g. __VA_ARGS__)
+    // allowed only within the definition of a variadic macro.
 
-    // "Poison" __VA_ARGS__, which can only appear in the expansion of a macro.
-    // This gets unpoisoned where it is allowed.
-    assert(Ident__VA_ARGS__->isPoisoned() && "__VA_ARGS__ should be poisoned!");
-    if (MI->isC99Varargs())
-      Ident__VA_ARGS__->setIsPoisoned(false);
+    if (MI->isC99Varargs()) {
+      VariadicMacroScopeGuard.enterScope();
+    }
 
     // Read the first token after the arg list for down below.
     LexUnexpandedToken(Tok);
@@ -2434,7 +2423,7 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
 
       // Check for a valid macro arg identifier.
       if (Tok.getIdentifierInfo() == nullptr ||
-          MI->getArgumentNum(Tok.getIdentifierInfo()) == -1) {
+          MI->getParameterNum(Tok.getIdentifierInfo()) == -1) {
 
         // If this is assembler-with-cpp mode, we accept random gibberish after
         // the '#' because '#' is often a comment character.  However, change
@@ -2447,10 +2436,7 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
         } else {
           Diag(Tok, diag::err_pp_stringize_not_parameter)
             << LastTok.is(tok::hashat);
-
-          // Disable __VA_ARGS__ again.
-          Ident__VA_ARGS__->setIsPoisoned(true);
-          return;
+          return nullptr;
         }
       }
 
@@ -2463,15 +2449,36 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
       LexUnexpandedToken(Tok);
     }
   }
+  MI->setDefinitionEndLoc(LastTok.getLocation());
+  return MI;
+}
+/// HandleDefineDirective - Implements \#define.  This consumes the entire macro
+/// line then lets the caller lex the next real token.
+void Preprocessor::HandleDefineDirective(
+    Token &DefineTok, const bool ImmediatelyAfterHeaderGuard) {
+  ++NumDefined;
+
+  Token MacroNameTok;
+  bool MacroShadowsKeyword;
+  ReadMacroName(MacroNameTok, MU_Define, &MacroShadowsKeyword);
+
+  // Error reading macro name?  If so, diagnostic already issued.
+  if (MacroNameTok.is(tok::eod))
+    return;
+
+  // If we are supposed to keep comments in #defines, reenable comment saving
+  // mode.
+  if (CurLexer) CurLexer->SetCommentRetentionState(KeepMacroComments);
+
+  MacroInfo *const MI = ReadOptionalMacroParameterListAndBody(
+      MacroNameTok, ImmediatelyAfterHeaderGuard);
+  
+  if (!MI) return;
 
   if (MacroShadowsKeyword &&
       !isConfigurationPattern(MacroNameTok, MI, getLangOpts())) {
     Diag(MacroNameTok, diag::warn_pp_macro_hides_keyword);
-  }
-
-  // Disable __VA_ARGS__ again.
-  Ident__VA_ARGS__->setIsPoisoned(true);
-
+  }  
   // Check that there is no paste (##) operator at the beginning or end of the
   // replacement list.
   unsigned NumTokens = MI->getNumTokens();
@@ -2486,7 +2493,7 @@ void Preprocessor::HandleDefineDirective(Token &DefineTok,
     }
   }
 
-  MI->setDefinitionEndLoc(LastTok.getLocation());
+  
 
   // Finally, if this identifier already had a macro defined for it, verify that
   // the macro bodies are identical, and issue diagnostics if they are not.
