@@ -524,7 +524,7 @@ void Driver::CreateOffloadingDeviceToolChains(Compilation &C,
     auto &CudaTC = ToolChains[CudaTriple.str() + "/" + HostTriple.str()];
     if (!CudaTC) {
       CudaTC = llvm::make_unique<toolchains::CudaToolChain>(
-          *this, CudaTriple, *HostTC, C.getInputArgs());
+          *this, CudaTriple, *HostTC, C.getInputArgs(), Action::OFK_Cuda);
     }
     C.addOffloadDeviceToolChain(CudaTC.get(), Action::OFK_Cuda);
   }
@@ -582,7 +582,7 @@ void Driver::CreateOffloadingDeviceToolChains(Compilation &C,
                   ToolChains[TT.str() + "/" + HostTC->getTriple().str()];
               if (!CudaTC)
                 CudaTC = llvm::make_unique<toolchains::CudaToolChain>(
-                    *this, TT, *HostTC, C.getInputArgs());
+                    *this, TT, *HostTC, C.getInputArgs(), Action::OFK_OpenMP);
               TC = CudaTC.get();
             } else
               TC = &getToolChain(C.getInputArgs(), TT);
@@ -1191,10 +1191,6 @@ bool Driver::HandleImmediateArgs(const Compilation &C) {
   if (C.getArgs().hasArg(options::OPT__version)) {
     // Follow gcc behavior and use stdout for --version and stderr for -v.
     PrintVersion(C, llvm::outs());
-
-    // Print registered targets.
-    llvm::outs() << '\n';
-    llvm::TargetRegistry::printRegisteredTargetsForVersion(llvm::outs());
     return false;
   }
 

@@ -459,6 +459,10 @@ def Xcuda_fatbinary : Separate<["-"], "Xcuda-fatbinary">,
   HelpText<"Pass <arg> to fatbinary invocation">, MetaVarName<"<arg>">;
 def Xcuda_ptxas : Separate<["-"], "Xcuda-ptxas">,
   HelpText<"Pass <arg> to the ptxas assembler">, MetaVarName<"<arg>">;
+def Xopenmp_target : Separate<["-"], "Xopenmp-target">,
+  HelpText<"Pass <arg> to the target offloading toolchain.">, MetaVarName<"<arg>">;
+def Xopenmp_target_EQ : JoinedAndSeparate<["-"], "Xopenmp-target=">,
+  HelpText<"Pass <arg> to the specified target offloading toolchain. The triple that identifies the toolchain must be provided after the equals sign.">, MetaVarName<"<arg>">;
 def z : Separate<["-"], "z">, Flags<[LinkerInput, RenderAsInput]>,
   HelpText<"Pass -z <arg> to the linker">, MetaVarName<"<arg>">,
   Group<Link_Group>;
@@ -2019,10 +2023,6 @@ def mdspr2 : Flag<["-"], "mdspr2">, Group<m_Group>;
 def mno_dspr2 : Flag<["-"], "mno-dspr2">, Group<m_Group>;
 def msingle_float : Flag<["-"], "msingle-float">, Group<m_Group>;
 def mdouble_float : Flag<["-"], "mdouble-float">, Group<m_Group>;
-def mmadd4 : Flag<["-"], "mmadd4">, Group<m_Group>,
-  HelpText<"Enable the generation of 4-operand madd.s, madd.d and related instructions.">;
-def mno_madd4 : Flag<["-"], "mno-madd4">, Group<m_Group>,
-  HelpText<"Disable the generation of 4-operand madd.s, madd.d and related instructions.">;
 def mmsa : Flag<["-"], "mmsa">, Group<m_Group>,
   HelpText<"Enable MSA ASE (MIPS only)">;
 def mno_msa : Flag<["-"], "mno-msa">, Group<m_Group>,
@@ -2051,6 +2051,12 @@ def mextern_sdata : Flag<["-"], "mextern-sdata">, Group<m_Group>,
 def mno_extern_sdata : Flag<["-"], "mno-extern-sdata">, Group<m_Group>,
   HelpText<"Do not assume that externally defined data is in the small data if"
            " it meets the -G <size> threshold (MIPS)">;
+def membedded_data : Flag<["-"], "membedded-data">, Group<m_Group>,
+  HelpText<"Place constants in the .rodata section instead of the .sdata "
+           "section even if they meet the -G <size> threshold (MIPS)">;
+def mno_embedded_data : Flag<["-"], "mno-embedded-data">, Group<m_Group>,
+  HelpText<"Do not place constants in the .rodata section instead of the "
+           ".sdata if they meet the -G <size> threshold (MIPS)">;
 def mnan_EQ : Joined<["-"], "mnan=">, Group<m_Group>;
 def mabicalls : Flag<["-"], "mabicalls">, Group<m_Group>,
   HelpText<"Enable SVR4-style position-independent code (Mips only)">;
