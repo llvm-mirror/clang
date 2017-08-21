@@ -22,6 +22,8 @@ if(CLANG_ENABLE_STATIC_ANALYZER)
   add_clang_subdirectory(clang-check)
   add_clang_subdirectory(scan-build)
   add_clang_subdirectory(scan-view)
+  add_clang_subdirectory(clang-func-mapping)
+  add_clang_subdirectory(clang-cmdline-arch-extractor)
 endif()
 
 # We support checking out the clang-tools-extra repository into the 'extra'

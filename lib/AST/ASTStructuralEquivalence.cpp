@@ -32,6 +32,8 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
 static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
                                      Decl *D1, Decl *D2);
 static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
+                                     FriendDecl *D1, FriendDecl *D2);
+static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
                                      const TemplateArgument &Arg1,
                                      const TemplateArgument &Arg2);
 
@@ -877,6 +879,11 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
   if (!D1 || !D2)
     return true;
 
+  // TODO: avoid this case to happen. For now, if the definition is not
+  // done yet, we will not compare for equality and assume that they are equal.
+  if (D1->isBeingDefined() || D2->isBeingDefined())
+    return true;
+
   if (CXXRecordDecl *D1CXX = dyn_cast<CXXRecordDecl>(D1)) {
     if (CXXRecordDecl *D2CXX = dyn_cast<CXXRecordDecl>(D2)) {
       if (D1CXX->hasExternalLexicalStorage() &&
@@ -928,6 +935,37 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
           }
           return false;
         }
+      }
+
+      // Check the friends for consistency.
+      CXXRecordDecl::friend_iterator Friend2 = D2CXX->friend_begin(),
+              Friend2End = D2CXX->friend_end();
+      for (CXXRecordDecl::friend_iterator Friend1 = D1CXX->friend_begin(),
+                   Friend1End = D1CXX->friend_end();
+           Friend1 != Friend1End; ++Friend1, ++Friend2) {
+        if (Friend2 == Friend2End) {
+          if (Context.Complain) {
+            Context.Diag2(D2->getLocation(),
+                          diag::warn_odr_tag_type_inconsistent)
+                    << Context.ToCtx.getTypeDeclType(D2CXX);
+            Context.Diag1((*Friend1)->getFriendLoc(), diag::note_odr_friend);
+            Context.Diag2(D2->getLocation(), diag::note_odr_missing_friend);
+          }
+          return false;
+        }
+
+        if (!IsStructurallyEquivalent(Context, *Friend1, *Friend2))
+          return false;
+      }
+
+      if (Friend2 != Friend2End) {
+        if (Context.Complain) {
+          Context.Diag2(D2->getLocation(), diag::warn_odr_tag_type_inconsistent)
+                  << Context.ToCtx.getTypeDeclType(D2);
+          Context.Diag2((*Friend2)->getFriendLoc(), diag::note_odr_friend);
+          Context.Diag1(D1->getLocation(), diag::note_odr_missing_friend);
+        }
+        return false;
       }
     } else if (D1CXX->getNumBases() > 0) {
       if (Context.Complain) {
@@ -1151,6 +1189,30 @@ static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
                                           D2->getTemplatedDecl());
 }
 
+static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
+                                     FriendDecl *D1, FriendDecl *D2) {
+  if (D1->getFriendType() && D2->getFriendType()) {
+    if (!::IsStructurallyEquivalent(Context,
+                                    D1->getFriendType()->getType(),
+                                    D2->getFriendType()->getType()))
+      return false;
+  } else if (D1->getFriendDecl() && D2->getFriendDecl()) {
+    if (!::IsStructurallyEquivalent(Context, D1->getFriendDecl(),
+                                    D2->getFriendDecl()))
+      return false;
+  }
+
+  return true;
+}
+
+static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
+                                     FunctionDecl *D1, FunctionDecl *D2) {
+  if (!::IsStructurallyEquivalent(Context, D1->getType(), D2->getType()))
+    return false;
+
+  return true;
+}
+
 /// Determine structural equivalence of two declarations.
 static bool IsStructurallyEquivalent(StructuralEquivalenceContext &Context,
                                      Decl *D1, Decl *D2) {
@@ -1219,6 +1281,10 @@ StructuralEquivalenceContext::findUntaggedStructOrUnionIndex(RecordDecl *Anon) {
     // If the field looks like this:
     // struct { ... } A;
     QualType FieldType = F->getType();
+    // In case of nested structs.
+    while (const auto *ElabType = dyn_cast<ElaboratedType>(FieldType)) {
+      FieldType = ElabType->getNamedType();
+    }
     if (const auto *RecType = dyn_cast<RecordType>(FieldType)) {
       const RecordDecl *RecDecl = RecType->getDecl();
       if (RecDecl->getDeclContext() == Owner && !RecDecl->getIdentifier()) {
@@ -1344,6 +1410,27 @@ bool StructuralEquivalenceContext::Finish() {
       } else {
         // Kind mismatch.
         Equivalent = false;
+      }
+    } else if (FunctionDecl *FD1 = dyn_cast<FunctionDecl>(D1)) {
+      if (FunctionDecl *FD2 = dyn_cast<FunctionDecl>(D2)) {
+        if (!::IsStructurallyEquivalent(FD1->getIdentifier(),
+                                        FD2->getIdentifier()))
+          Equivalent = false;
+        if (!::IsStructurallyEquivalent(*this, FD1, FD2))
+          Equivalent = false;
+      } else {
+        // Kind mismatch.
+        Equivalent = false;
+      }
+    } else if (FriendDecl *FrD1 = dyn_cast<FriendDecl>(D1)) {
+      if (FriendDecl *FrD2 = dyn_cast<FriendDecl>(D2)) {
+        if (FrD1->getFriendType() && FrD2->getFriendType()) {
+          if (!::IsStructurallyEquivalent(*this, FrD1, FrD2))
+            Equivalent = false;
+        } else {
+          // Kind mismatch.
+          Equivalent = false;
+        }
       }
     }
 

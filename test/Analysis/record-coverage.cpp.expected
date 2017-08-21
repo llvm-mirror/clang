@@ -1,0 +1,9 @@
+// CHECK:      -:4:int main() {
+// CHECK-NEXT: 1:5:  int i = 2;
+// CHECK-NEXT: 1:6:  ++i;
+// CHECK-NEXT: 1:7:  if (i != 0) {
+// CHECK-NEXT: 1:8:    ++i;
+// CHECK-NEXT: -:9:  } else {
+// CHECK-NEXT: #####:10:    --i;
+// CHECK-NEXT: -:11:  }
+// CHECK-NEXT: -:12:}

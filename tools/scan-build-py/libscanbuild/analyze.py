@@ -163,6 +163,7 @@ def analyze_compiler_wrapper_impl(result, execution):
     compilation = split_command(execution.cmd)
     if compilation is None:
         return
+    logging.info('execute compiler: %s', " ".join(execution.cmd))
     # collect the needed parameters from environment, crash when missing
     parameters = {
         'clang': os.getenv('ANALYZE_BUILD_CLANG'),
@@ -383,7 +384,7 @@ def run_analyzer(opts, continuation=report_failure):
 
     def target():
         """ Creates output file name for reports. """
-        if opts['output_format'] in {'plist', 'plist-html'}:
+        if opts['output_format'] in {'plist', 'plist-html', 'plist-multi-file'}:
             (handle, name) = tempfile.mkstemp(prefix='report-',
                                               suffix='.plist',
                                               dir=opts['output_dir'])

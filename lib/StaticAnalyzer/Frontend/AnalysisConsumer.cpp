@@ -22,7 +22,9 @@
 #include "clang/Analysis/CallGraph.h"
 #include "clang/Analysis/CodeInjector.h"
 #include "clang/Basic/SourceManager.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/CompilerInstance.h"
+#include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/StaticAnalyzer/Checkers/LocalCheckers.h"
 #include "clang/StaticAnalyzer/Core/AnalyzerOptions.h"
@@ -33,6 +35,7 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/AnalysisManager.h"
 #include "clang/StaticAnalyzer/Core/PathSensitive/ExprEngine.h"
 #include "clang/StaticAnalyzer/Frontend/CheckerRegistration.h"
+#include "clang/Tooling/CrossTranslationUnit.h"
 #include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Support/FileSystem.h"
@@ -40,9 +43,14 @@
 #include "llvm/Support/Program.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cassert>
 #include <memory>
 #include <queue>
 #include <utility>
+#include <fstream>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
 
 using namespace clang;
 using namespace ento;
@@ -168,6 +176,7 @@ public:
   AnalyzerOptionsRef Opts;
   ArrayRef<std::string> Plugins;
   CodeInjector *Injector;
+  tooling::CrossTranslationUnit CTU;
 
   /// \brief Stores the declarations from the local translation unit.
   /// Note, we pre-compute the local declarations at parse time as an
@@ -192,12 +201,12 @@ public:
   /// translation unit.
   FunctionSummariesTy FunctionSummaries;
 
-  AnalysisConsumer(const Preprocessor &pp, const std::string &outdir,
-                   AnalyzerOptionsRef opts, ArrayRef<std::string> plugins,
-                   CodeInjector *injector)
+  AnalysisConsumer(CompilerInstance &CI, const Preprocessor &pp,
+                   const std::string &outdir, AnalyzerOptionsRef opts,
+                   ArrayRef<std::string> plugins, CodeInjector *injector)
       : RecVisitorMode(0), RecVisitorBR(nullptr), Ctx(nullptr), PP(pp),
         OutDir(outdir), Opts(std::move(opts)), Plugins(plugins),
-        Injector(injector) {
+        Injector(injector), CTU(CI) {
     DigestAnalyzerOptions();
     if (Opts->PrintStats) {
       llvm::EnableStatistics(false);
@@ -415,6 +424,18 @@ void AnalysisConsumer::storeTopLevelDecls(DeclGroupRef DG) {
   }
 }
 
+void lockedWrite(const std::string &fileName, const std::string &content) {
+  if (content.empty()) 
+    return;
+  int fd = open(fileName.c_str(), O_CREAT|O_WRONLY|O_APPEND, 0666);
+  flock(fd, LOCK_EX);
+  ssize_t written = write(fd, content.c_str(), content.length());
+  assert(written == content.length());
+  (void)written;
+  flock(fd, LOCK_UN);
+  close(fd);
+}
+
 static bool shouldSkipFunction(const Decl *D,
                                const SetOfConstDecls &Visited,
                                const SetOfConstDecls &VisitedAsTopLevel) {
@@ -430,6 +451,7 @@ static bool shouldSkipFunction(const Decl *D,
   //   Count naming convention errors more aggressively.
   if (isa<ObjCMethodDecl>(D))
     return false;
+
   // We also want to reanalyze all C++ copy and move assignment operators to
   // separately check the two cases where 'this' aliases with the parameter and
   // where it may not. (cplusplus.SelfAssignmentChecker)
@@ -475,6 +497,7 @@ void AnalysisConsumer::HandleDeclsCallGraph(const unsigned LocalTUDeclsSize) {
   // often.
   SetOfConstDecls Visited;
   SetOfConstDecls VisitedAsTopLevel;
+
   llvm::ReversePostOrderTraversal<clang::CallGraph*> RPOT(&CG);
   for (llvm::ReversePostOrderTraversal<clang::CallGraph*>::rpo_iterator
          I = RPOT.begin(), E = RPOT.end(); I != E; ++I) {
@@ -489,7 +512,7 @@ void AnalysisConsumer::HandleDeclsCallGraph(const unsigned LocalTUDeclsSize) {
 
     // Skip the functions which have been processed already or previously
     // inlined.
-    if (shouldSkipFunction(D, Visited, VisitedAsTopLevel))
+    if (shouldSkipFunction(D->getCanonicalDecl(), Visited, VisitedAsTopLevel))
       continue;
 
     // Analyze the function.
@@ -704,7 +727,8 @@ void AnalysisConsumer::ActionExprEngine(Decl *D, bool ObjCGCEnabled,
   if (!Mgr->getAnalysisDeclContext(D)->getAnalysis<RelaxedLiveVariables>())
     return;
 
-  ExprEngine Eng(*Mgr, ObjCGCEnabled, VisitedCallees, &FunctionSummaries,IMode);
+  ExprEngine Eng(CTU, *Mgr, ObjCGCEnabled, VisitedCallees, &FunctionSummaries,
+                 IMode);
 
   // Set the graph auditor.
   std::unique_ptr<ExplodedNode::Auditor> Auditor;
@@ -716,7 +740,6 @@ void AnalysisConsumer::ActionExprEngine(Decl *D, bool ObjCGCEnabled,
   // Execute the worklist algorithm.
   Eng.ExecuteWorkList(Mgr->getAnalysisDeclContextManager().getStackFrame(D),
                       Mgr->options.getMaxNodesPerTopLevelFunction());
-
   // Release the auditor (if any) so that it doesn't monitor the graph
   // created BugReporter.
   ExplodedNode::SetAuditor(nullptr);
@@ -762,7 +785,7 @@ ento::CreateAnalysisConsumer(CompilerInstance &CI) {
   bool hasModelPath = analyzerOpts->Config.count("model-path") > 0;
 
   return llvm::make_unique<AnalysisConsumer>(
-      CI.getPreprocessor(), CI.getFrontendOpts().OutputFile, analyzerOpts,
+      CI, CI.getPreprocessor(), CI.getFrontendOpts().OutputFile, analyzerOpts,
       CI.getFrontendOpts().Plugins,
       hasModelPath ? new ModelInjector(CI) : nullptr);
 }

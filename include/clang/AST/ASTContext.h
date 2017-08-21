@@ -78,7 +78,6 @@ struct fltSemantics;
 } // end namespace llvm
 
 namespace clang {
-
 class ASTMutationListener;
 class ASTRecordLayout;
 class AtomicExpr;

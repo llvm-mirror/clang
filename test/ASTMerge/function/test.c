@@ -1,7 +1,7 @@
 // RUN: %clang_cc1 -emit-pch -o %t.1.ast %S/Inputs/function1.c
 // RUN: %clang_cc1 -emit-pch -o %t.2.ast %S/Inputs/function2.c
-// RUN: not %clang_cc1 -ast-merge %t.1.ast -ast-merge %t.2.ast -fsyntax-only %s 2>&1 | FileCheck %s
-// RUN: %clang_cc1 -ast-merge %t.1.ast -ast-merge %t.2.ast -fsyntax-only -verify %s
+// RUN: not %clang_cc1 -Werror -ast-merge %t.1.ast -ast-merge %t.2.ast -fsyntax-only %s 2>&1 | FileCheck %s
+// RUN: %clang_cc1 -Werror -ast-merge %t.1.ast -ast-merge %t.2.ast -fsyntax-only -verify %s
 
 // CHECK: function2.c:3:6: error: external function 'f1' declared with incompatible types in different translation units ('void (Int, double)' (aka 'void (int, double)') vs. 'void (int, float)')
 // CHECK: function1.c:2:6: note: declared here with type 'void (int, float)'
