@@ -1454,7 +1454,7 @@ of the other two, consult the ``ProfileData`` library in in LLVM's source tree
       offsetB[.discriminator]: fnB:num_of_total_samples
        offsetB1[.discriminator]: number_of_samples [fn11:num fn12:num ... ]
 
-This is a nested tree in which the identation represents the nesting level
+This is a nested tree in which the indentation represents the nesting level
 of the inline stack. There are no blank lines in the file. And the spacing
 within a single line is fixed. Additional spaces will result in an error
 while reading the file.
