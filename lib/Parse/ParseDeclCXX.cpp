@@ -605,7 +605,7 @@ bool Parser::ParseUsingDeclarator(unsigned Context, UsingDeclarator &D) {
 
   if (TryConsumeToken(tok::ellipsis, D.EllipsisLoc))
     Diag(Tok.getLocation(), getLangOpts().CPlusPlus1z ?
-         diag::warn_cxx1z_compat_using_declaration_pack :
+         diag::warn_cxx17_compat_using_declaration_pack :
          diag::ext_using_declaration_pack);
 
   return false;
@@ -723,7 +723,7 @@ Parser::ParseUsingDeclaration(unsigned Context,
 
   if (DeclsInGroup.size() > 1)
     Diag(Tok.getLocation(), getLangOpts().CPlusPlus1z ?
-         diag::warn_cxx1z_compat_multi_using_declaration :
+         diag::warn_cxx17_compat_multi_using_declaration :
          diag::ext_multi_using_declaration);
 
   // Eat ';'.
@@ -2720,10 +2720,7 @@ Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
     InClassInitStyle HasInClassInit = ICIS_NoInit;
     bool HasStaticInitializer = false;
     if (Tok.isOneOf(tok::equal, tok::l_brace) && PureSpecLoc.isInvalid()) {
-      if (BitfieldSize.get()) {
-        Diag(Tok, diag::err_bitfield_member_init);
-        SkipUntil(tok::comma, StopAtSemi | StopBeforeMatch);
-      } else if (DeclaratorInfo.isDeclarationOfFunction()) {
+      if (DeclaratorInfo.isDeclarationOfFunction()) {
         // It's a pure-specifier.
         if (!TryConsumePureSpecifier(/*AllowFunctionDefinition*/ false))
           // Parse it as an expression so that Sema can diagnose it.
@@ -2734,6 +2731,10 @@ Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
                      DeclSpec::SCS_typedef &&
                  !DS.isFriendSpecified()) {
         // It's a default member initializer.
+        if (BitfieldSize.get())
+          Diag(Tok, getLangOpts().CPlusPlus2a
+                        ? diag::warn_cxx17_compat_bitfield_member_init
+                        : diag::ext_bitfield_member_init);
         HasInClassInit = Tok.is(tok::equal) ? ICIS_CopyInit : ICIS_ListInit;
       } else {
         HasStaticInitializer = true;

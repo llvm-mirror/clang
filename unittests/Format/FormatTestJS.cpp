@@ -158,6 +158,53 @@ TEST_F(FormatTestJS, JSDocComments) {
                    "var x = 1;\n"
                    "}",
                    getGoogleJSStyleWithColumns(20)));
+
+  // Don't break the first line of a single line short jsdoc comment pragma.
+  EXPECT_EQ("/** @returns j */",
+            format("/** @returns j */",
+                   getGoogleJSStyleWithColumns(20)));
+
+  // Break a single line long jsdoc comment pragma.
+  EXPECT_EQ("/**\n"
+            " * @returns {string} jsdoc line 12\n"
+            " */",
+            format("/** @returns {string} jsdoc line 12 */",
+                   getGoogleJSStyleWithColumns(20)));
+
+  EXPECT_EQ("/**\n"
+            " * @returns {string} jsdoc line 12\n"
+            " */",
+            format("/** @returns {string} jsdoc line 12  */",
+                   getGoogleJSStyleWithColumns(20)));
+
+  EXPECT_EQ("/**\n"
+            " * @returns {string} jsdoc line 12\n"
+            " */",
+            format("/** @returns {string} jsdoc line 12*/",
+                   getGoogleJSStyleWithColumns(20)));
+
+  // Fix a multiline jsdoc comment ending in a comment pragma.
+  EXPECT_EQ("/**\n"
+            " * line 1\n"
+            " * line 2\n"
+            " * @returns {string} jsdoc line 12\n"
+            " */",
+            format("/** line 1\n"
+                   " * line 2\n"
+                   " * @returns {string} jsdoc line 12 */",
+                   getGoogleJSStyleWithColumns(20)));
+
+  EXPECT_EQ("/**\n"
+            " * line 1\n"
+            " * line 2\n"
+            " *\n"
+            " * @returns j\n"
+            " */",
+            format("/** line 1\n"
+                   " * line 2\n"
+                   " *\n"
+                   " * @returns j */",
+                   getGoogleJSStyleWithColumns(20)));
 }
 
 TEST_F(FormatTestJS, UnderstandsJavaScriptOperators) {
@@ -224,14 +271,21 @@ TEST_F(FormatTestJS, ReservedWords) {
   verifyFormat("x.case = 1;");
   verifyFormat("x.interface = 1;");
   verifyFormat("x.for = 1;");
-  verifyFormat("x.of() = 1;");
+  verifyFormat("x.of();");
   verifyFormat("of(null);");
   verifyFormat("import {of} from 'x';");
-  verifyFormat("x.in() = 1;");
-  verifyFormat("x.let() = 1;");
-  verifyFormat("x.var() = 1;");
-  verifyFormat("x.for() = 1;");
-  verifyFormat("x.as() = 1;");
+  verifyFormat("x.in();");
+  verifyFormat("x.let();");
+  verifyFormat("x.var();");
+  verifyFormat("x.for();");
+  verifyFormat("x.as();");
+  verifyFormat("x.instanceof();");
+  verifyFormat("x.switch();");
+  verifyFormat("x.case();");
+  verifyFormat("x.delete();");
+  verifyFormat("x.throw();");
+  verifyFormat("x.throws();");
+  verifyFormat("x.if();");
   verifyFormat("x = {\n"
                "  a: 12,\n"
                "  interface: 1,\n"
@@ -1059,6 +1113,10 @@ TEST_F(FormatTestJS, WrapRespectsAutomaticSemicolonInsertion) {
                "  readonly ratherLongField = 1;\n"
                "}",
                getGoogleJSStyleWithColumns(20));
+  verifyFormat("const x = (5 + 9)\n"
+               "const y = 3\n",
+               "const x = (   5 +    9)\n"
+               "const y = 3\n");
 }
 
 TEST_F(FormatTestJS, AutomaticSemicolonInsertionHeuristic) {
@@ -1177,7 +1235,6 @@ TEST_F(FormatTestJS, TryCatch) {
   // But, of course, "catch" is a perfectly fine function name in JavaScript.
   verifyFormat("someObject.catch();");
   verifyFormat("someObject.new();");
-  verifyFormat("someObject.delete();");
 }
 
 TEST_F(FormatTestJS, StringLiteralConcatenation) {
@@ -1363,6 +1420,18 @@ TEST_F(FormatTestJS, UnionIntersectionTypes) {
                "};");
 }
 
+TEST_F(FormatTestJS, UnionIntersectionTypesInObjectType) {
+  verifyFormat("let x: {x: number|null} = {x: number | null};");
+  verifyFormat("let nested: {x: {y: number|null}};");
+  verifyFormat("let mixed: {x: [number|null, {w: number}]};");
+  verifyFormat("class X {\n"
+               "  contructor(x: {\n"
+               "    a: a|null,\n"
+               "    b: b|null,\n"
+               "  }) {}\n"
+               "}");
+}
+
 TEST_F(FormatTestJS, ClassDeclarations) {
   verifyFormat("class C {\n  x: string = 12;\n}");
   verifyFormat("class C {\n  x(): string => 12;\n}");
@@ -1492,6 +1561,10 @@ TEST_F(FormatTestJS, TypeAliases) {
                "  y: number\n"
                "};\n"
                "class C {}");
+  verifyFormat("export type X = {\n"
+               "  a: string,\n"
+               "  b?: string,\n"
+               "};\n");
 }
 
 TEST_F(FormatTestJS, TypeInterfaceLineWrapping) {
@@ -1720,32 +1793,28 @@ TEST_F(FormatTestJS, TemplateStrings) {
   verifyFormat("var x = someFunction(`${})`)  //\n"
                "            .oooooooooooooooooon();");
   verifyFormat("var x = someFunction(`${aaaa}${\n"
-               "                               aaaaa(  //\n"
-               "                                   aaaaa)\n"
-               "                             })`);");
+               "    aaaaa(  //\n"
+               "        aaaaa)})`);");
 }
 
 TEST_F(FormatTestJS, TemplateStringMultiLineExpression) {
   verifyFormat("var f = `aaaaaaaaaaaaaaaaaa: ${\n"
-               "                               aaaaa +  //\n"
-               "                               bbbb\n"
-               "                             }`;",
+               "    aaaaa +  //\n"
+               "    bbbb}`;",
                "var f = `aaaaaaaaaaaaaaaaaa: ${aaaaa +  //\n"
                "                               bbbb}`;");
   verifyFormat("var f = `\n"
                "  aaaaaaaaaaaaaaaaaa: ${\n"
-               "                        aaaaa +  //\n"
-               "                        bbbb\n"
-               "                      }`;",
+               "    aaaaa +  //\n"
+               "    bbbb}`;",
                "var f  =  `\n"
                "  aaaaaaaaaaaaaaaaaa: ${   aaaaa  +  //\n"
                "                        bbbb }`;");
   verifyFormat("var f = `\n"
                "  aaaaaaaaaaaaaaaaaa: ${\n"
-               "                        someFunction(\n"
-               "                            aaaaa +  //\n"
-               "                            bbbb)\n"
-               "                      }`;",
+               "    someFunction(\n"
+               "        aaaaa +  //\n"
+               "        bbbb)}`;",
                "var f  =  `\n"
                "  aaaaaaaaaaaaaaaaaa: ${someFunction (\n"
                "                            aaaaa  +   //\n"
@@ -1754,9 +1823,9 @@ TEST_F(FormatTestJS, TemplateStringMultiLineExpression) {
   // It might be preferable to wrap before "someFunction".
   verifyFormat("var f = `\n"
                "  aaaaaaaaaaaaaaaaaa: ${someFunction({\n"
-               "                          aaaa: aaaaa,\n"
-               "                          bbbb: bbbbb,\n"
-               "                        })}`;",
+               "  aaaa: aaaaa,\n"
+               "  bbbb: bbbbb,\n"
+               "})}`;",
                "var f  =  `\n"
                "  aaaaaaaaaaaaaaaaaa: ${someFunction ({\n"
                "                          aaaa:  aaaaa,\n"
@@ -2072,6 +2141,28 @@ TEST_F(FormatTestJS, NestedLiterals) {
                "        3,\n"
                "    ],\n"
                "};", FourSpaces);
+}
+
+TEST_F(FormatTestJS, BackslashesInComments) {
+  verifyFormat("// hello \\\n"
+               "if (x) foo();\n",
+               "// hello \\\n"
+               "     if ( x) \n"
+               "   foo();\n");
+  verifyFormat("/* ignore \\\n"
+               " */\n"
+               "if (x) foo();\n",
+               "/* ignore \\\n"
+               " */\n"
+               " if (  x) foo();\n");
+  verifyFormat("// st \\ art\\\n"
+               "// comment"
+               "// continue \\\n"
+               "formatMe();\n",
+               "// st \\ art\\\n"
+               "// comment"
+               "// continue \\\n"
+               "formatMe( );\n");
 }
 
 } // end namespace tooling

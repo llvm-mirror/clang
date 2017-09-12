@@ -320,6 +320,8 @@ std::string tools::getCPUName(const ArgList &Args, const llvm::Triple &T,
     return TargetCPUName;
   }
 
+  case llvm::Triple::bpfel:
+  case llvm::Triple::bpfeb:
   case llvm::Triple::sparc:
   case llvm::Triple::sparcel:
   case llvm::Triple::sparcv9:
@@ -376,8 +378,20 @@ void tools::AddGoldPlugin(const ToolChain &ToolChain, const ArgList &Args,
   // as gold requires -plugin to come before any -plugin-opt that -Wl might
   // forward.
   CmdArgs.push_back("-plugin");
-  std::string Plugin =
-      ToolChain.getDriver().Dir + "/../lib" CLANG_LIBDIR_SUFFIX "/LLVMgold.so";
+
+#if defined(LLVM_ON_WIN32)
+  const char *Suffix = ".dll";
+#elif defined(__APPLE__)
+  const char *Suffix = ".dylib";
+#else
+  const char *Suffix = ".so";
+#endif
+
+  SmallString<1024> Plugin;
+  llvm::sys::path::native(Twine(ToolChain.getDriver().Dir) +
+                              "/../lib" CLANG_LIBDIR_SUFFIX "/LLVMgold" +
+                              Suffix,
+                          Plugin);
   CmdArgs.push_back(Args.MakeArgString(Plugin));
 
   // Try to pass driver level flags relevant to LTO code generation down to
@@ -541,6 +555,7 @@ collectSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
   if (SanArgs.needsAsanRt() && SanArgs.needsSharedAsanRt()) {
     SharedRuntimes.push_back("asan");
   }
+
   // The stats_client library is also statically linked into DSOs.
   if (SanArgs.needsStatsRt())
     StaticRuntimes.push_back("stats_client");
@@ -574,9 +589,13 @@ collectSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
       StaticRuntimes.push_back("tsan_cxx");
   }
   if (SanArgs.needsUbsanRt()) {
-    StaticRuntimes.push_back("ubsan_standalone");
-    if (SanArgs.linkCXXRuntimes())
-      StaticRuntimes.push_back("ubsan_standalone_cxx");
+    if (SanArgs.requiresMinimalRuntime()) {
+      StaticRuntimes.push_back("ubsan_minimal");
+    } else {
+      StaticRuntimes.push_back("ubsan_standalone");
+      if (SanArgs.linkCXXRuntimes())
+        StaticRuntimes.push_back("ubsan_standalone_cxx");
+    }
   }
   if (SanArgs.needsSafeStackRt()) {
     NonWholeStaticRuntimes.push_back("safestack");
@@ -597,19 +616,6 @@ collectSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
     StaticRuntimes.push_back("esan");
 }
 
-static void addLibFuzzerRuntime(const ToolChain &TC,
-                                const ArgList &Args,
-                                ArgStringList &CmdArgs) {
-  StringRef ParentDir =
-      llvm::sys::path::parent_path(TC.getDriver().InstalledDir);
-  SmallString<128> P(ParentDir);
-  llvm::sys::path::append(P, "lib", "libLLVMFuzzer.a");
-  CmdArgs.push_back(Args.MakeArgString(P));
-  if (!Args.hasArg(clang::driver::options::OPT_nostdlibxx))
-    TC.AddCXXStdlibLibArgs(Args, CmdArgs);
-}
-
-
 // Should be called before we add system libraries (C++ ABI, libstdc++/libc++,
 // C runtime, etc). Returns true if sanitizer system deps need to be linked in.
 bool tools::addSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
@@ -619,10 +625,14 @@ bool tools::addSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
   collectSanitizerRuntimes(TC, Args, SharedRuntimes, StaticRuntimes,
                            NonWholeStaticRuntimes, HelperStaticRuntimes,
                            RequiredSymbols);
+
   // Inject libfuzzer dependencies.
   if (TC.getSanitizerArgs().needsFuzzer()
       && !Args.hasArg(options::OPT_shared)) {
-    addLibFuzzerRuntime(TC, Args, CmdArgs);
+
+    addSanitizerRuntime(TC, Args, CmdArgs, "fuzzer", false, true);
+    if (!Args.hasArg(clang::driver::options::OPT_nostdlibxx))
+      TC.AddCXXStdlibLibArgs(Args, CmdArgs);
   }
 
   for (auto RT : SharedRuntimes)

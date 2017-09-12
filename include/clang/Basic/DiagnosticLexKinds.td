@@ -71,6 +71,8 @@ def ext_token_used : Extension<"extension used">,
 
 def warn_cxx11_keyword : Warning<"'%0' is a keyword in C++11">,
   InGroup<CXX11Compat>, DefaultIgnore;
+def warn_cxx2a_keyword : Warning<"'%0' is a keyword in C++2a">,
+  InGroup<CXX2aCompat>, DefaultIgnore;
 
 def ext_unterminated_char_or_string : ExtWarn<
   "missing terminating %select{'|'\"'}0 character">, InGroup<InvalidPPToken>;
@@ -173,19 +175,17 @@ def warn_char_constant_too_large : Warning<
 def err_multichar_utf_character_literal : Error<
   "Unicode character literals may not contain multiple characters">;
 def err_exponent_has_no_digits : Error<"exponent has no digits">;
-def ext_imaginary_constant : Extension<
-  "imaginary constants are a GNU extension">, InGroup<GNUImaginaryConstant>;
 def err_hex_constant_requires : Error<
   "hexadecimal floating %select{constant|literal}0 requires "
   "%select{an exponent|a significand}1">;
 def ext_hex_constant_invalid : Extension<
   "hexadecimal floating constants are a C99 feature">, InGroup<C99>;
 def ext_hex_literal_invalid : Extension<
-  "hexadecimal floating literals are a C++1z feature">, InGroup<CXX1z>;
-def warn_cxx1z_hex_literal : Warning<
+  "hexadecimal floating literals are a C++17 feature">, InGroup<CXX17>;
+def warn_cxx17_hex_literal : Warning<
   "hexadecimal floating literals are incompatible with "
-  "C++ standards before C++1z">,
-  InGroup<CXXPre1zCompatPedantic>, DefaultIgnore;
+  "C++ standards before C++17">,
+  InGroup<CXXPre17CompatPedantic>, DefaultIgnore;
 def ext_binary_literal : Extension<
   "binary integer literals are a GNU extension">, InGroup<GNUBinaryLiteral>;
 def ext_binary_literal_cxx14 : Extension<
@@ -208,8 +208,8 @@ def warn_cxx98_compat_unicode_literal : Warning<
   "unicode literals are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
 def warn_cxx14_compat_u8_character_literal : Warning<
-  "unicode literals are incompatible with C++ standards before C++1z">,
-  InGroup<CXXPre1zCompat>, DefaultIgnore;
+  "unicode literals are incompatible with C++ standards before C++17">,
+  InGroup<CXXPre17Compat>, DefaultIgnore;
 def warn_cxx11_compat_user_defined_literal : Warning<
   "identifier after literal will be treated as a user-defined literal suffix "
   "in C++11">, InGroup<CXX11Compat>, DefaultIgnore;

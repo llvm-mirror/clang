@@ -498,6 +498,8 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     Builder.defineMacro("__cpp_ref_qualifiers", "200710");
     Builder.defineMacro("__cpp_alias_templates", "200704");
   }
+  if (LangOpts.ThreadsafeStatics)
+    Builder.defineMacro("__cpp_threadsafe_static_init", "200806");
 
   // C++14 features.
   if (LangOpts.CPlusPlus14) {
@@ -520,6 +522,7 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     Builder.defineMacro("__cpp_noexcept_function_type", "201510");
     Builder.defineMacro("__cpp_capture_star_this", "201603");
     Builder.defineMacro("__cpp_if_constexpr", "201606");
+    Builder.defineMacro("__cpp_deduction_guides", "201611");
     Builder.defineMacro("__cpp_template_auto", "201606");
     Builder.defineMacro("__cpp_namespace_attributes", "201411");
     Builder.defineMacro("__cpp_enumerator_attributes", "201411");
@@ -529,8 +532,6 @@ static void InitializeCPlusPlusFeatureTestMacros(const LangOptions &LangOpts,
     Builder.defineMacro("__cpp_structured_bindings", "201606");
     Builder.defineMacro("__cpp_nontype_template_args", "201411");
     Builder.defineMacro("__cpp_fold_expressions", "201603");
-    // FIXME: This is not yet listed in SD-6.
-    Builder.defineMacro("__cpp_deduction_guides", "201611");
   }
   if (LangOpts.AlignedAllocation)
     Builder.defineMacro("__cpp_aligned_new", "201606");
@@ -577,11 +578,13 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   Builder.defineMacro("__ATOMIC_SEQ_CST", "5");
 
   // Define macros for the OpenCL memory scope.
-  // The values should match clang SyncScope enum.
-  assert(static_cast<unsigned>(SyncScope::OpenCLWorkGroup) == 1 &&
-         static_cast<unsigned>(SyncScope::OpenCLDevice) == 2 &&
-         static_cast<unsigned>(SyncScope::OpenCLAllSVMDevices) == 3 &&
-         static_cast<unsigned>(SyncScope::OpenCLSubGroup) == 4);
+  // The values should match AtomicScopeOpenCLModel::ID enum.
+  static_assert(
+      static_cast<unsigned>(AtomicScopeOpenCLModel::WorkGroup) == 1 &&
+          static_cast<unsigned>(AtomicScopeOpenCLModel::Device) == 2 &&
+          static_cast<unsigned>(AtomicScopeOpenCLModel::AllSVMDevices) == 3 &&
+          static_cast<unsigned>(AtomicScopeOpenCLModel::SubGroup) == 4,
+      "Invalid OpenCL memory scope enum definition");
   Builder.defineMacro("__OPENCL_MEMORY_SCOPE_WORK_ITEM", "0");
   Builder.defineMacro("__OPENCL_MEMORY_SCOPE_WORK_GROUP", "1");
   Builder.defineMacro("__OPENCL_MEMORY_SCOPE_DEVICE", "2");

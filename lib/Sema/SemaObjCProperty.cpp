@@ -872,7 +872,7 @@ SelectPropertyForSynthesisFromProtocols(Sema &S, SourceLocation AtLoc,
   }
 
   QualType RHSType = S.Context.getCanonicalType(Property->getType());
-  unsigned OriginalAttributes = Property->getPropertyAttributes();
+  unsigned OriginalAttributes = Property->getPropertyAttributesAsWritten();
   enum MismatchKind {
     IncompatibleType = 0,
     HasNoExpectedAttribute,
@@ -890,7 +890,7 @@ SelectPropertyForSynthesisFromProtocols(Sema &S, SourceLocation AtLoc,
   SmallVector<MismatchingProperty, 4> Mismatches;
   for (ObjCPropertyDecl *Prop : Properties) {
     // Verify the property attributes.
-    unsigned Attr = Prop->getPropertyAttributes();
+    unsigned Attr = Prop->getPropertyAttributesAsWritten();
     if (Attr != OriginalAttributes) {
       auto Diag = [&](bool OriginalHasAttribute, StringRef AttributeName) {
         MismatchKind Kind = OriginalHasAttribute ? HasNoExpectedAttribute
@@ -1895,7 +1895,7 @@ void Sema::DefaultSynthesizeProperties(Scope *S, ObjCImplDecl *IMPDecl,
                             /* property = */ Prop->getIdentifier(),
                             /* ivar = */ Prop->getDefaultSynthIvarName(Context),
                             Prop->getLocation(), Prop->getQueryKind()));
-    if (PIDecl) {
+    if (PIDecl && !Prop->isUnavailable()) {
       Diag(Prop->getLocation(), diag::warn_missing_explicit_synthesis);
       Diag(IMPDecl->getLocation(), diag::note_while_in_implementation);
     }

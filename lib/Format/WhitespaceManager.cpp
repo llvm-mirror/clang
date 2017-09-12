@@ -246,12 +246,12 @@ AlignTokenSequence(unsigned Start, unsigned End, unsigned Column, F &&Matches,
 
   for (unsigned i = Start; i != End; ++i) {
     if (ScopeStack.size() != 0 &&
-        Changes[i].nestingAndIndentLevel() <
-            Changes[ScopeStack.back()].nestingAndIndentLevel())
+        Changes[i].indentAndNestingLevel() <
+            Changes[ScopeStack.back()].indentAndNestingLevel())
       ScopeStack.pop_back();
 
-    if (i != Start && Changes[i].nestingAndIndentLevel() >
-                          Changes[i - 1].nestingAndIndentLevel())
+    if (i != Start && Changes[i].indentAndNestingLevel() >
+                          Changes[i - 1].indentAndNestingLevel())
       ScopeStack.push_back(i);
 
     bool InsideNestedScope = ScopeStack.size() != 0;
@@ -327,8 +327,8 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
 
   // Measure the scope level (i.e. depth of (), [], {}) of the first token, and
   // abort when we hit any token in a higher scope than the starting one.
-  auto NestingAndIndentLevel = StartAt < Changes.size()
-                                   ? Changes[StartAt].nestingAndIndentLevel()
+  auto IndentAndNestingLevel = StartAt < Changes.size()
+                                   ? Changes[StartAt].indentAndNestingLevel()
                                    : std::pair<unsigned, unsigned>(0, 0);
 
   // Keep track of the number of commas before the matching tokens, we will only
@@ -359,7 +359,7 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
 
   unsigned i = StartAt;
   for (unsigned e = Changes.size(); i != e; ++i) {
-    if (Changes[i].nestingAndIndentLevel() < NestingAndIndentLevel)
+    if (Changes[i].indentAndNestingLevel() < IndentAndNestingLevel)
       break;
 
     if (Changes[i].NewlinesBefore != 0) {
@@ -375,7 +375,7 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
 
     if (Changes[i].Tok->is(tok::comma)) {
       ++CommasBeforeMatch;
-    } else if (Changes[i].nestingAndIndentLevel() > NestingAndIndentLevel) {
+    } else if (Changes[i].indentAndNestingLevel() > IndentAndNestingLevel) {
       // Call AlignTokens recursively, skipping over this scope block.
       unsigned StoppedAt = AlignTokens(Style, Matches, Changes, i);
       i = StoppedAt - 1;
@@ -472,9 +472,14 @@ void WhitespaceManager::alignTrailingComments() {
       continue;
 
     unsigned ChangeMinColumn = Changes[i].StartOfTokenColumn;
-    unsigned ChangeMaxColumn = Style.ColumnLimit >= Changes[i].TokenLength
-                                   ? Style.ColumnLimit - Changes[i].TokenLength
-                                   : ChangeMinColumn;
+    unsigned ChangeMaxColumn;
+
+    if (Style.ColumnLimit == 0)
+      ChangeMaxColumn = UINT_MAX;
+    else if (Style.ColumnLimit >= Changes[i].TokenLength)
+      ChangeMaxColumn = Style.ColumnLimit - Changes[i].TokenLength;
+    else
+      ChangeMaxColumn = ChangeMinColumn;
 
     // If we don't create a replacement for this change, we have to consider
     // it to be immovable.
@@ -603,8 +608,9 @@ void WhitespaceManager::generateChanges() {
     if (C.CreateReplacement) {
       std::string ReplacementText = C.PreviousLinePostfix;
       if (C.ContinuesPPDirective)
-        appendNewlineText(ReplacementText, C.NewlinesBefore,
-                          C.PreviousEndOfTokenColumn, C.EscapedNewlineColumn);
+        appendEscapedNewlineText(ReplacementText, C.NewlinesBefore,
+                                 C.PreviousEndOfTokenColumn,
+                                 C.EscapedNewlineColumn);
       else
         appendNewlineText(ReplacementText, C.NewlinesBefore);
       appendIndentText(ReplacementText, C.Tok->IndentLevel,
@@ -640,16 +646,17 @@ void WhitespaceManager::appendNewlineText(std::string &Text,
     Text.append(UseCRLF ? "\r\n" : "\n");
 }
 
-void WhitespaceManager::appendNewlineText(std::string &Text, unsigned Newlines,
-                                          unsigned PreviousEndOfTokenColumn,
-                                          unsigned EscapedNewlineColumn) {
+void WhitespaceManager::appendEscapedNewlineText(std::string &Text,
+                                                 unsigned Newlines,
+                                                 unsigned PreviousEndOfTokenColumn,
+                                                 unsigned EscapedNewlineColumn) {
   if (Newlines > 0) {
-    unsigned Offset =
-        std::min<int>(EscapedNewlineColumn - 2, PreviousEndOfTokenColumn);
+    unsigned Spaces =
+        std::max<int>(1, EscapedNewlineColumn - PreviousEndOfTokenColumn - 1);
     for (unsigned i = 0; i < Newlines; ++i) {
-      Text.append(EscapedNewlineColumn - Offset - 1, ' ');
+      Text.append(Spaces, ' ');
       Text.append(UseCRLF ? "\\\r\n" : "\\\n");
-      Offset = 0;
+      Spaces = std::max<int>(0, EscapedNewlineColumn - 1);
     }
   }
 }

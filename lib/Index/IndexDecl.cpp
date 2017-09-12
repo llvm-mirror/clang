@@ -267,6 +267,10 @@ public:
                                  TypeNameInfo->getTypeLoc().getLocStart(),
                                  Dtor->getParent(), Dtor->getDeclContext());
       }
+    } else if (const auto *Guide = dyn_cast<CXXDeductionGuideDecl>(D)) {
+      IndexCtx.handleReference(Guide->getDeducedTemplate()->getTemplatedDecl(),
+                               Guide->getLocation(), Guide,
+                               Guide->getDeclContext());
     }
     // Template specialization arguments.
     if (const ASTTemplateArgumentListInfo *TemplateArgInfo =
@@ -605,6 +609,24 @@ public:
                                     D->getLocation(), Parent,
                                     D->getLexicalDeclContext(),
                                     SymbolRoleSet());
+  }
+
+  bool VisitUnresolvedUsingValueDecl(const UnresolvedUsingValueDecl *D) {
+    TRY_DECL(D, IndexCtx.handleDecl(D));
+    const DeclContext *DC = D->getDeclContext()->getRedeclContext();
+    const NamedDecl *Parent = dyn_cast<NamedDecl>(DC);
+    IndexCtx.indexNestedNameSpecifierLoc(D->getQualifierLoc(), Parent,
+                                         D->getLexicalDeclContext());
+    return true;
+  }
+
+  bool VisitUnresolvedUsingTypenameDecl(const UnresolvedUsingTypenameDecl *D) {
+    TRY_DECL(D, IndexCtx.handleDecl(D));
+    const DeclContext *DC = D->getDeclContext()->getRedeclContext();
+    const NamedDecl *Parent = dyn_cast<NamedDecl>(DC);
+    IndexCtx.indexNestedNameSpecifierLoc(D->getQualifierLoc(), Parent,
+                                         D->getLexicalDeclContext());
+    return true;
   }
 
   bool VisitClassTemplateSpecializationDecl(const

@@ -10,6 +10,11 @@
 // RUN:   | FileCheck --check-prefix=CHECK-MNOABICALLS %s
 // CHECK-MNOABICALLS: "-target-feature" "+noabicalls"
 //
+// -mno-abicalls non-PIC N64
+// RUN: %clang -target mips64-linux-gnu -### -c -fno-PIC %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-MNOABICALLS-N64NPIC %s
+// CHECK-MNOABICALLS-N64NPIC: "-target-feature" "+noabicalls"
+//
 // -mgpopt
 // RUN: %clang -target mips-linux-gnu -### -c %s -mno-gpopt -mgpopt -Wno-unsupported-gpopt 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-MGPOPT-DEF-ABICALLS %s
@@ -79,6 +84,24 @@
 // RUN: %clang -target mips-linux-gnu -### -c %s -mno-abicalls -mgpopt 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-MEMBEDDEDDATADEF %s
 // CHECK-MEMBEDDEDDATADEF-NOT: "-mllvm" "-membedded-data"
+//
+// MIPS64 + N64: -fno-pic -> -mno-abicalls -mgpopt
+// RUN: %clang -target mips64-mti-elf -mabi=64 -### -c %s -fno-pic 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-N64-GPOPT %s
+// CHECK-N64-GPOPT: "-target-feature" "+noabicalls"
+// CHECK-N64-GPOPT: "-mllvm" "-mgpopt"
+//
+// MIPS64 + N64: -fno-pic -mno-gpopt
+// RUN: %clang -target mips64-mti-elf -mabi=64 -### -c %s -fno-pic -mno-gpopt 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-N64-MNO-GPOPT %s
+// CHECK-N64-MNO-GPOPT: "-target-feature" "+noabicalls"
+// CHECK-N64-MNO-GPOPT-NOT: "-mllvm" "-mgpopt"
+//
+// MIPS64 + N64: -mgpopt (-fpic is implicit)
+// RUN: %clang -target mips64-mti-linux-gnu -mabi=64 -### -c %s -mgpopt 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-N64-PIC-GPOPT %s
+// CHECK-N64-PIC-GPOPT-NOT: "-mllvm" "-mgpopt"
+// CHECK-N64-PIC-GPOPT: ignoring '-mgpopt' option as it cannot be used with the implicit usage of -mabicalls
 //
 // -mips16
 // RUN: %clang -target mips-linux-gnu -### -c %s \
@@ -197,6 +220,31 @@
 // RUN:     -mnan=2008 -mnan=legacy 2>&1 \
 // RUN:   | FileCheck --check-prefix=CHECK-NANLEGACY %s
 // CHECK-NANLEGACY: "-target-feature" "-nan2008"
+//
+// -mabs=2008 on pre R2
+// RUN: %clang -target mips-linux-gnu -march=mips32 -### -c %s \
+// RUN:     -mabs=2008 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-ABSLEGACY %s
+//
+// -mabs=2008
+// RUN: %clang -target mips-linux-gnu -march=mips32r3 -### -c %s \
+// RUN:     -mabs=2008 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-ABS2008 %s
+//
+// -mabs=legacy
+// RUN: %clang -target mips-linux-gnu -march=mips32r3 -### -c %s \
+// RUN:     -mabs=legacy 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-ABSLEGACY %s
+//
+// -mabs=legacy on R6
+// RUN: %clang -target mips-linux-gnu -march=mips32r6 -### -c %s \
+// RUN:     -mabs=legacy 2>&1 \
+// RUN:   | FileCheck --check-prefix=CHECK-ABS2008 %s
+//
+// CHECK-ABSLEGACY: "-target-feature" "-abs2008"
+// CHECK-ABSLEGACY-NOT: "-target-feature" "+abs2008"
+// CHECK-ABS2008: "-target-feature" "+abs2008"
+// CHECK-ABS2008-NOT: "-target-feature" "-abs2008"
 //
 // -mcompact-branches=never
 // RUN: %clang -target mips-linux-gnu -march=mips32r6 -### -c %s \
@@ -331,11 +379,15 @@
 // CHECK-IMG-SINGLEFLOAT-FPXX: "-target-feature" "+fpxx"
 
 // -mlong-call
-// RUN: %clang -target mips-img-linux-gnu -### -c %s -mlong-calls 2>&1 \
+// RUN: %clang -target mips-img-linux-gnu -### -c %s \
+// RUN:        -mno-abicalls -mlong-calls 2>&1 \
 // RUN:   | FileCheck --check-prefix=LONG-CALLS-ON %s
-// RUN: %clang -target mips-img-linux-gnu -### -c %s -mno-long-calls 2>&1 \
+// RUN: %clang -target mips-img-linux-gnu -### -c %s \
+// RUN:        -mno-abicalls -mno-long-calls 2>&1 \
 // RUN:   | FileCheck --check-prefix=LONG-CALLS-OFF %s
 // RUN: %clang -target mips-img-linux-gnu -### -c %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=LONG-CALLS-DEF %s
+// RUN: %clang -target mips-img-linux-gnu -### -c %s -mlong-calls 2>&1 \
 // RUN:   | FileCheck --check-prefix=LONG-CALLS-DEF %s
 // LONG-CALLS-ON: "-target-feature" "+long-calls"
 // LONG-CALLS-OFF: "-target-feature" "-long-calls"

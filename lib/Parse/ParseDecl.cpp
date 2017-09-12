@@ -912,13 +912,18 @@ void Parser::ParseAvailabilityAttribute(IdentifierInfo &Availability,
     return;
   }
   IdentifierLoc *Platform = ParseIdentifierLoc();
-  // Canonicalize platform name from "macosx" to "macos".
-  if (Platform->Ident && Platform->Ident->getName() == "macosx")
-    Platform->Ident = PP.getIdentifierInfo("macos");
-  // Canonicalize platform name from "macosx_app_extension" to
-  // "macos_app_extension".
-  if (Platform->Ident && Platform->Ident->getName() == "macosx_app_extension")
-    Platform->Ident = PP.getIdentifierInfo("macos_app_extension");
+  if (const IdentifierInfo *const Ident = Platform->Ident) {
+    // Canonicalize platform name from "macosx" to "macos".
+    if (Ident->getName() == "macosx")
+      Platform->Ident = PP.getIdentifierInfo("macos");
+    // Canonicalize platform name from "macosx_app_extension" to
+    // "macos_app_extension".
+    else if (Ident->getName() == "macosx_app_extension")
+      Platform->Ident = PP.getIdentifierInfo("macos_app_extension");
+    else
+      Platform->Ident = PP.getIdentifierInfo(
+          AvailabilityAttr::canonicalizePlatformName(Ident->getName()));
+  }
 
   // Parse the ',' following the platform name.
   if (ExpectAndConsume(tok::comma)) {
@@ -1388,7 +1393,9 @@ void Parser::ParseLexedAttribute(LateParsedAttribute &LA,
 
       // If the Decl is on a function, add function parameters to the scope.
       bool HasFunScope = EnterScope && D->isFunctionOrFunctionTemplate();
-      ParseScope FnScope(this, Scope::FnScope|Scope::DeclScope, HasFunScope);
+      ParseScope FnScope(
+          this, Scope::FnScope | Scope::DeclScope | Scope::CompoundStmtScope,
+          HasFunScope);
       if (HasFunScope)
         Actions.ActOnReenterFunctionContext(Actions.CurScope, D);
 

@@ -540,6 +540,8 @@ void Preprocessor::EnterMainSourceFile() {
 void Preprocessor::replayPreambleConditionalStack() {
   // Restore the conditional stack from the preamble, if there is one.
   if (PreambleConditionalStack.isReplaying()) {
+    assert(CurPPLexer &&
+           "CurPPLexer is null when calling replayPreambleConditionalStack.");
     CurPPLexer->setConditionalLevels(PreambleConditionalStack.getStack());
     PreambleConditionalStack.doneReplaying();
   }
@@ -630,6 +632,8 @@ static diag::kind getFutureCompatDiagKind(const IdentifierInfo &II,
     return llvm::StringSwitch<diag::kind>(II.getName())
 #define CXX11_KEYWORD(NAME, FLAGS)                                             \
         .Case(#NAME, diag::warn_cxx11_keyword)
+#define CXX2A_KEYWORD(NAME, FLAGS)                                             \
+        .Case(#NAME, diag::warn_cxx2a_keyword)
 #include "clang/Basic/TokenKinds.def"
         ;
 

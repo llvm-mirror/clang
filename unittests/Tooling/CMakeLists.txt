@@ -11,11 +11,13 @@ if (MSVC)
 endif()
 
 add_clang_unittest(ToolingTests
+  ASTSelectionTest.cpp
   CastExprTest.cpp
   CommentHandlerTest.cpp
   CompilationDatabaseTest.cpp
   DiagnosticsYamlTest.cpp
   FixItTest.cpp
+  LexicallyOrderedRecursiveASTVisitorTest.cpp
   LookupTest.cpp
   QualTypeNamesTest.cpp
   RecursiveASTVisitorTest.cpp
@@ -23,6 +25,7 @@ add_clang_unittest(ToolingTests
   RecursiveASTVisitorTestDeclVisitor.cpp
   RecursiveASTVisitorTestExprVisitor.cpp
   RecursiveASTVisitorTestTypeLocVisitor.cpp
+  RefactoringActionRulesTest.cpp
   RefactoringCallbacksTest.cpp
   RefactoringTest.cpp
   ReplacementsYamlTest.cpp

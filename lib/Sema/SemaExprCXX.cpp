@@ -1378,9 +1378,6 @@ Sema::BuildCXXTypeConstructExpr(TypeSourceInfo *TInfo,
 /// \brief Determine whether the given function is a non-placement
 /// deallocation function.
 static bool isNonPlacementDeallocationFunction(Sema &S, FunctionDecl *FD) {
-  if (FD->isInvalidDecl())
-    return false;
-
   if (CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(FD))
     return Method->isUsualDeallocationFunction();
 
@@ -3287,7 +3284,7 @@ void Sema::CheckVirtualDtorCall(CXXDestructorDecl *dtor, SourceLocation Loc,
                                 bool IsDelete, bool CallCanBeVirtual,
                                 bool WarnOnNonAbstractTypes,
                                 SourceLocation DtorLoc) {
-  if (!dtor || dtor->isVirtual() || !CallCanBeVirtual)
+  if (!dtor || dtor->isVirtual() || !CallCanBeVirtual || isUnevaluatedContext())
     return;
 
   // C++ [expr.delete]p3:
@@ -3300,6 +3297,12 @@ void Sema::CheckVirtualDtorCall(CXXDestructorDecl *dtor, SourceLocation Loc,
   const CXXRecordDecl *PointeeRD = dtor->getParent();
   // Note: a final class cannot be derived from, no issue there
   if (!PointeeRD->isPolymorphic() || PointeeRD->hasAttr<FinalAttr>())
+    return;
+
+  // If the superclass is in a system header, there's nothing that can be done.
+  // The `delete` (where we emit the warning) can be in a system header,
+  // what matters for this warning is where the deleted type is defined.
+  if (getSourceManager().isInSystemHeader(PointeeRD->getLocation()))
     return;
 
   QualType ClassType = dtor->getThisType(Context)->getPointeeType();
@@ -5178,9 +5181,16 @@ QualType Sema::CheckPointerToMemberOperands(ExprResult &LHS, ExprResult &RHS,
       break;
 
     case RQ_LValue:
-      if (!isIndirect && !LHS.get()->Classify(Context).isLValue())
-        Diag(Loc, diag::err_pointer_to_member_oper_value_classify)
-          << RHSType << 1 << LHS.get()->getSourceRange();
+      if (!isIndirect && !LHS.get()->Classify(Context).isLValue()) {
+        // C++2a allows functions with ref-qualifier & if they are also 'const'.
+        if (Proto->isConst())
+          Diag(Loc, getLangOpts().CPlusPlus2a
+                        ? diag::warn_cxx17_compat_pointer_to_const_ref_member_on_rvalue
+                        : diag::ext_pointer_to_const_ref_member_on_rvalue);
+        else
+          Diag(Loc, diag::err_pointer_to_member_oper_value_classify)
+              << RHSType << 1 << LHS.get()->getSourceRange();
+      }
       break;
 
     case RQ_RValue:

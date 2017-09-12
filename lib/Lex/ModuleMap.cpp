@@ -256,8 +256,7 @@ ModuleMap::ModuleMap(SourceManager &SourceMgr, DiagnosticsEngine &Diags,
                      const LangOptions &LangOpts, const TargetInfo *Target,
                      HeaderSearch &HeaderInfo)
     : SourceMgr(SourceMgr), Diags(Diags), LangOpts(LangOpts), Target(Target),
-      HeaderInfo(HeaderInfo), BuiltinIncludeDir(nullptr),
-      SourceModule(nullptr), NumCreatedModules(0) {
+      HeaderInfo(HeaderInfo) {
   MMapLangOpts.LineComment = true;
 }
 
@@ -746,8 +745,18 @@ std::pair<Module *, bool> ModuleMap::findOrCreateModule(StringRef Name,
   return std::make_pair(Result, true);
 }
 
+Module *ModuleMap::createGlobalModuleForInterfaceUnit(SourceLocation Loc) {
+  assert(!PendingGlobalModule && "created multiple global modules");
+  PendingGlobalModule.reset(
+      new Module("<global>", Loc, nullptr, /*IsFramework*/ false,
+                 /*IsExplicit*/ true, NumCreatedModules++));
+  PendingGlobalModule->Kind = Module::GlobalModuleFragment;
+  return PendingGlobalModule.get();
+}
+
 Module *ModuleMap::createModuleForInterfaceUnit(SourceLocation Loc,
-                                                StringRef Name) {
+                                                StringRef Name,
+                                                Module *GlobalModule) {
   assert(LangOpts.CurrentModule == Name && "module name mismatch");
   assert(!Modules[Name] && "redefining existing module");
 
@@ -756,6 +765,12 @@ Module *ModuleMap::createModuleForInterfaceUnit(SourceLocation Loc,
                  /*IsExplicit*/ false, NumCreatedModules++);
   Result->Kind = Module::ModuleInterfaceUnit;
   Modules[Name] = SourceModule = Result;
+
+  // Reparent the current global module fragment as a submodule of this module.
+  assert(GlobalModule == PendingGlobalModule.get() &&
+         "unexpected global module");
+  GlobalModule->setParent(Result);
+  PendingGlobalModule.release(); // now owned by parent
 
   // Mark the main source file as being within the newly-created module so that
   // declarations and macros are properly visibility-restricted to it.

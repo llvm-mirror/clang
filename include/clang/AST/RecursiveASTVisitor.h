@@ -83,7 +83,7 @@ namespace clang {
       return false;                                                            \
   } while (false)
 
-/// \brief A class that does preordor or postorder
+/// \brief A class that does preorder or postorder
 /// depth-first traversal on the entire Clang AST and visits each node.
 ///
 /// This class performs three distinct tasks:
@@ -267,6 +267,12 @@ public:
   bool TraverseTemplateArguments(const TemplateArgument *Args,
                                  unsigned NumArgs);
 
+  /// \brief Recursively visit a base specifier. This can be overridden by a
+  /// subclass.
+  ///
+  /// \returns false if the visitation was terminated early, true otherwise.
+  bool TraverseCXXBaseSpecifier(const CXXBaseSpecifier &Base);
+
   /// \brief Recursively visit a constructor initializer.  This
   /// automatically dispatches to another visitor for the initializer
   /// expression, but not for the name of the initializer, so may
@@ -308,6 +314,8 @@ public:
 #undef ATTR_VISITOR_DECLS_ONLY
 
 // ---- Methods on Stmts ----
+
+  Stmt::child_range getStmtChildren(Stmt *S) { return S->children(); }
 
 private:
   template<typename T, typename U>
@@ -491,6 +499,8 @@ public:
   bool Visit##CLASS##Decl(CLASS##Decl *D) { return true; }
 #include "clang/AST/DeclNodes.inc"
 
+  bool canIgnoreChildDeclWhileTraversingDeclContext(const Decl *Child);
+
 private:
   // These are helper methods used by more than one Traverse* method.
   bool TraverseTemplateParameterListHelper(TemplateParameterList *TPL);
@@ -527,6 +537,7 @@ private:
 
   bool dataTraverseNode(Stmt *S, DataRecursionQueue *Queue);
   bool PostVisitStmt(Stmt *S);
+  bool shouldTraverseTemplateArgumentsBeforeDecl() const { return false; }
 };
 
 template <typename Derived>
@@ -1339,14 +1350,20 @@ DEF_TRAVERSE_TYPELOC(PipeType, { TRY_TO(TraverseTypeLoc(TL.getValueLoc())); })
 // than those.
 
 template <typename Derived>
+bool RecursiveASTVisitor<Derived>::canIgnoreChildDeclWhileTraversingDeclContext(
+    const Decl *Child) {
+  // BlockDecls and CapturedDecls are traversed through BlockExprs and
+  // CapturedStmts respectively.
+  return isa<BlockDecl>(Child) || isa<CapturedDecl>(Child);
+}
+
+template <typename Derived>
 bool RecursiveASTVisitor<Derived>::TraverseDeclContextHelper(DeclContext *DC) {
   if (!DC)
     return true;
 
   for (auto *Child : DC->decls()) {
-    // BlockDecls and CapturedDecls are traversed through BlockExprs and
-    // CapturedStmts respectively.
-    if (!isa<BlockDecl>(Child) && !isa<CapturedDecl>(Child))
+    if (!canIgnoreChildDeclWhileTraversingDeclContext(Child))
       TRY_TO(TraverseDecl(Child));
   }
 
@@ -1674,8 +1691,13 @@ bool RecursiveASTVisitor<Derived>::TraverseTemplateInstantiations(
 // template declarations.
 #define DEF_TRAVERSE_TMPL_DECL(TMPLDECLKIND)                                   \
   DEF_TRAVERSE_DECL(TMPLDECLKIND##TemplateDecl, {                              \
-    TRY_TO(TraverseDecl(D->getTemplatedDecl()));                               \
-    TRY_TO(TraverseTemplateParameterListHelper(D->getTemplateParameters()));   \
+    if (getDerived().shouldTraverseTemplateArgumentsBeforeDecl()) {            \
+      TRY_TO(TraverseTemplateParameterListHelper(D->getTemplateParameters())); \
+      TRY_TO(TraverseDecl(D->getTemplatedDecl()));                             \
+    } else {                                                                   \
+      TRY_TO(TraverseDecl(D->getTemplatedDecl()));                             \
+      TRY_TO(TraverseTemplateParameterListHelper(D->getTemplateParameters())); \
+    }                                                                          \
                                                                                \
     /* By default, we do not traverse the instantiations of                    \
        class templates since they do not appear in the user code. The          \
@@ -1769,12 +1791,19 @@ bool RecursiveASTVisitor<Derived>::TraverseRecordHelper(RecordDecl *D) {
 }
 
 template <typename Derived>
+bool RecursiveASTVisitor<Derived>::TraverseCXXBaseSpecifier(
+    const CXXBaseSpecifier &Base) {
+  TRY_TO(TraverseTypeLoc(Base.getTypeSourceInfo()->getTypeLoc()));
+  return true;
+}
+
+template <typename Derived>
 bool RecursiveASTVisitor<Derived>::TraverseCXXRecordHelper(CXXRecordDecl *D) {
   if (!TraverseRecordHelper(D))
     return false;
   if (D->isCompleteDefinition()) {
     for (const auto &I : D->bases()) {
-      TRY_TO(TraverseTypeLoc(I.getTypeSourceInfo()->getTypeLoc()));
+      TRY_TO(TraverseCXXBaseSpecifier(I));
     }
     // We don't traverse the friends or the conversions, as they are
     // already in decls_begin()/decls_end().
@@ -2057,7 +2086,7 @@ DEF_TRAVERSE_DECL(ParmVarDecl, {
       TRY_TO(WalkUpFrom##STMT(S));                                             \
     { CODE; }                                                                  \
     if (ShouldVisitChildren) {                                                 \
-      for (Stmt *SubStmt : S->children()) {                                    \
+      for (Stmt * SubStmt : getDerived().getStmtChildren(S)) {                 \
         TRY_TO_TRAVERSE_OR_ENQUEUE_STMT(SubStmt);                              \
       }                                                                        \
     }                                                                          \

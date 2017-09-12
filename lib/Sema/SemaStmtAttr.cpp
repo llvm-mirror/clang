@@ -47,7 +47,7 @@ static Attr *handleFallThroughAttr(Sema &S, Stmt *St, const AttributeList &A,
   // about using it as an extension.
   if (!S.getLangOpts().CPlusPlus1z && A.isCXX11Attribute() &&
       !A.getScopeName())
-    S.Diag(A.getLoc(), diag::ext_cxx1z_attr) << A.getName();
+    S.Diag(A.getLoc(), diag::ext_cxx17_attr) << A.getName();
 
   FnScope->setHasFallthroughStmt();
   return ::new (S.Context) auto(Attr);
@@ -100,16 +100,15 @@ static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const AttributeList &A,
     return nullptr;
   }
 
-  LoopHintAttr::Spelling Spelling;
+  LoopHintAttr::Spelling Spelling =
+      LoopHintAttr::Spelling(A.getAttributeSpellingListIndex());
   LoopHintAttr::OptionType Option;
   LoopHintAttr::LoopHintState State;
   if (PragmaNoUnroll) {
     // #pragma nounroll
-    Spelling = LoopHintAttr::Pragma_nounroll;
     Option = LoopHintAttr::Unroll;
     State = LoopHintAttr::Disable;
   } else if (PragmaUnroll) {
-    Spelling = LoopHintAttr::Pragma_unroll;
     if (ValueExpr) {
       // #pragma unroll N
       Option = LoopHintAttr::UnrollCount;
@@ -121,7 +120,6 @@ static Attr *handleLoopHintAttr(Sema &S, Stmt *St, const AttributeList &A,
     }
   } else {
     // #pragma clang loop ...
-    Spelling = LoopHintAttr::Pragma_clang_loop;
     assert(OptionLoc && OptionLoc->Ident &&
            "Attribute must have valid option info.");
     Option = llvm::StringSwitch<LoopHintAttr::OptionType>(

@@ -119,9 +119,8 @@ Driver::Driver(StringRef ClangExecutable, StringRef DefaultTargetTriple,
 
 void Driver::ParseDriverMode(StringRef ProgramName,
                              ArrayRef<const char *> Args) {
-  auto Default = ToolChain::getTargetAndModeFromProgramName(ProgramName);
-  StringRef DefaultMode(Default.second);
-  setDriverModeFromOption(DefaultMode);
+  ClangNameParts = ToolChain::getTargetAndModeFromProgramName(ProgramName);
+  setDriverModeFromOption(ClangNameParts.DriverMode);
 
   for (const char *ArgPtr : Args) {
     // Ingore nullptrs, they are response file's EOL markers
@@ -579,7 +578,7 @@ void Driver::CreateOffloadingDeviceToolChains(Compilation &C,
                   C.getSingleOffloadToolChain<Action::OFK_Host>();
               assert(HostTC && "Host toolchain should be always defined.");
               auto &CudaTC =
-                  ToolChains[TT.str() + "/" + HostTC->getTriple().str()];
+                  ToolChains[TT.str() + "/" + HostTC->getTriple().normalize()];
               if (!CudaTC)
                 CudaTC = llvm::make_unique<toolchains::CudaToolChain>(
                     *this, TT, *HostTC, C.getInputArgs(), Action::OFK_OpenMP);
@@ -664,6 +663,7 @@ Compilation *Driver::BuildCompilation(ArrayRef<const char *> ArgList) {
     T.setOS(llvm::Triple::Win32);
     T.setVendor(llvm::Triple::PC);
     T.setEnvironment(llvm::Triple::MSVC);
+    T.setObjectFormat(llvm::Triple::COFF);
     DefaultTargetTriple = T.str();
   }
   if (const Arg *A = Args.getLastArg(options::OPT_target))
@@ -1157,6 +1157,54 @@ static void PrintDiagnosticCategories(raw_ostream &OS) {
     OS << i << ',' << DiagnosticIDs::getCategoryNameFromID(i) << '\n';
 }
 
+void Driver::handleAutocompletions(StringRef PassedFlags) const {
+  // Print out all options that start with a given argument. This is used for
+  // shell autocompletion.
+  std::vector<std::string> SuggestedCompletions;
+
+  unsigned short DisableFlags =
+      options::NoDriverOption | options::Unsupported | options::Ignored;
+  // We want to show cc1-only options only when clang is invoked as "clang
+  // -cc1". When clang is invoked as "clang -cc1", we add "#" to the beginning
+  // of an --autocomplete  option so that the clang driver can distinguish
+  // whether it is requested to show cc1-only options or not.
+  if (PassedFlags.size() > 0 && PassedFlags[0] == '#') {
+    DisableFlags &= ~options::NoDriverOption;
+    PassedFlags = PassedFlags.substr(1);
+  }
+
+  if (PassedFlags.find(',') == StringRef::npos) {
+    // If the flag is in the form of "--autocomplete=-foo",
+    // we were requested to print out all option names that start with "-foo".
+    // For example, "--autocomplete=-fsyn" is expanded to "-fsyntax-only".
+    SuggestedCompletions = Opts->findByPrefix(PassedFlags, DisableFlags);
+
+    // We have to query the -W flags manually as they're not in the OptTable.
+    // TODO: Find a good way to add them to OptTable instead and them remove
+    // this code.
+    for (StringRef S : DiagnosticIDs::getDiagnosticFlags())
+      if (S.startswith(PassedFlags))
+        SuggestedCompletions.push_back(S);
+  } else {
+    // If the flag is in the form of "--autocomplete=foo,bar", we were
+    // requested to print out all option values for "-foo" that start with
+    // "bar". For example,
+    // "--autocomplete=-stdlib=,l" is expanded to "libc++" and "libstdc++".
+    StringRef Option, Arg;
+    std::tie(Option, Arg) = PassedFlags.split(',');
+    SuggestedCompletions = Opts->suggestValueCompletions(Option, Arg);
+  }
+
+  // Sort the autocomplete candidates so that shells print them out in a
+  // deterministic order. We could sort in any way, but we chose
+  // case-insensitive sorting for consistency with the -help option
+  // which prints out options in the case-insensitive alphabetical order.
+  std::sort(SuggestedCompletions.begin(), SuggestedCompletions.end(),
+            [](StringRef A, StringRef B) { return A.compare_lower(B) < 0; });
+
+  llvm::outs() << llvm::join(SuggestedCompletions, "\n") << '\n';
+}
+
 bool Driver::HandleImmediateArgs(const Compilation &C) {
   // The order these options are handled in gcc is all over the place, but we
   // don't expect inconsistencies w.r.t. that to matter in practice.
@@ -1250,55 +1298,15 @@ bool Driver::HandleImmediateArgs(const Compilation &C) {
   }
 
   if (Arg *A = C.getArgs().getLastArg(options::OPT_autocomplete)) {
-    // Print out all options that start with a given argument. This is used for
-    // shell autocompletion.
     StringRef PassedFlags = A->getValue();
-    std::vector<std::string> SuggestedCompletions;
-
-    unsigned short DisableFlags = options::NoDriverOption | options::Unsupported | options::Ignored;
-    // We want to show cc1-only options only when clang is invoked as "clang -cc1".
-    // When clang is invoked as "clang -cc1", we add "#" to the beginning of an --autocomplete
-    // option so that the clang driver can distinguish whether it is requested to show cc1-only options or not.
-    if (PassedFlags[0] == '#') {
-      DisableFlags &= ~options::NoDriverOption;
-      PassedFlags = PassedFlags.substr(1);
-    }
-
-    if (PassedFlags.find(',') == StringRef::npos) {
-      // If the flag is in the form of "--autocomplete=-foo",
-      // we were requested to print out all option names that start with "-foo".
-      // For example, "--autocomplete=-fsyn" is expanded to "-fsyntax-only".
-      SuggestedCompletions = Opts->findByPrefix(PassedFlags, DisableFlags);
-
-      // We have to query the -W flags manually as they're not in the OptTable.
-      // TODO: Find a good way to add them to OptTable instead and them remove
-      // this code.
-      for (StringRef S : DiagnosticIDs::getDiagnosticFlags())
-        if (S.startswith(PassedFlags))
-          SuggestedCompletions.push_back(S);
-    } else {
-      // If the flag is in the form of "--autocomplete=foo,bar", we were
-      // requested to print out all option values for "-foo" that start with
-      // "bar". For example,
-      // "--autocomplete=-stdlib=,l" is expanded to "libc++" and "libstdc++".
-      StringRef Option, Arg;
-      std::tie(Option, Arg) = PassedFlags.split(',');
-      SuggestedCompletions = Opts->suggestValueCompletions(Option, Arg);
-    }
-
-    // Sort the autocomplete candidates so that shells print them out in a
-    // deterministic order. We could sort in any way, but we chose
-    // case-insensitive sorting for consistency with the -help option
-    // which prints out options in the case-insensitive alphabetical order.
-    std::sort(SuggestedCompletions.begin(), SuggestedCompletions.end(),
-              [](StringRef A, StringRef B) { return A.compare_lower(B) < 0; });
-
-    llvm::outs() << llvm::join(SuggestedCompletions, "\n") << '\n';
+    handleAutocompletions(PassedFlags);
     return false;
   }
 
   if (C.getArgs().hasArg(options::OPT_print_libgcc_file_name)) {
     ToolChain::RuntimeLibType RLT = TC.GetRuntimeLibType(C.getArgs());
+    const llvm::Triple Triple(TC.ComputeEffectiveClangTriple(C.getArgs()));
+    RegisterEffectiveTriple TripleRAII(TC, Triple);
     switch (RLT) {
     case ToolChain::RLT_CompilerRT:
       llvm::outs() << TC.getCompilerRT(C.getArgs(), "builtins") << "\n";
@@ -3224,6 +3232,12 @@ InputInfo Driver::BuildJobsForActionNoCache(
   InputInfoList OffloadDependencesInputInfo;
   bool BuildingForOffloadDevice = TargetDeviceOffloadKind != Action::OFK_None;
   if (const OffloadAction *OA = dyn_cast<OffloadAction>(A)) {
+    // The 'Darwin' toolchain is initialized only when its arguments are
+    // computed. Get the default arguments for OFK_None to ensure that
+    // initialization is performed before processing the offload action.
+    // FIXME: Remove when darwin's toolchain is initialized during construction.
+    C.getArgsForToolChain(TC, BoundArch, Action::OFK_None);
+
     // The offload action is expected to be used in four different situations.
     //
     // a) Set a toolchain/architecture/kind for a host action:
@@ -3401,7 +3415,7 @@ InputInfo Driver::BuildJobsForActionNoCache(
       // Get the unique string identifier for this dependence and cache the
       // result.
       CachedResults[{A, GetTriplePlusArchString(
-                            UI.DependentToolChain, UI.DependentBoundArch,
+                            UI.DependentToolChain, BoundArch,
                             UI.DependentOffloadKind)}] = CurI;
     }
 
@@ -3676,7 +3690,12 @@ std::string Driver::GetFilePath(StringRef Name, const ToolChain &TC) const {
       return P.str();
   }
 
-  SmallString<128> P(ResourceDir);
+  SmallString<128> R(ResourceDir);
+  llvm::sys::path::append(R, Name);
+  if (llvm::sys::fs::exists(Twine(R)))
+    return R.str();
+
+  SmallString<128> P(TC.getCompilerRTPath());
   llvm::sys::path::append(P, Name);
   if (llvm::sys::fs::exists(Twine(P)))
     return P.str();

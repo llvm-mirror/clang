@@ -153,6 +153,19 @@ CudaInstallationDetector::CudaInstallationDetector(
       }
     }
 
+    // This code prevents IsValid from being set when
+    // no libdevice has been found.
+    bool allEmpty = true;
+    std::string LibDeviceFile;
+    for (auto key : LibDeviceMap.keys()) {
+      LibDeviceFile = LibDeviceMap.lookup(key);
+      if (!LibDeviceFile.empty())
+        allEmpty = false;
+    }
+
+    if (allEmpty)
+      continue;
+
     IsValid = true;
     break;
   }
@@ -292,7 +305,10 @@ void NVPTX::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString(A));
 
   // In OpenMP we need to generate relocatable code.
-  if (JA.isOffloading(Action::OFK_OpenMP))
+  if (JA.isOffloading(Action::OFK_OpenMP) &&
+      Args.hasFlag(options::OPT_fopenmp_relocatable_target,
+                   options::OPT_fnoopenmp_relocatable_target,
+                   /*Default=*/ true))
     CmdArgs.push_back("-c");
 
   const char *Exec;
@@ -435,6 +451,9 @@ CudaToolChain::CudaToolChain(const Driver &D, const llvm::Triple &Triple,
       CudaInstallation(D, HostTC.getTriple(), Args), OK(OK) {
   if (CudaInstallation.isValid())
     getProgramPaths().push_back(CudaInstallation.getBinPath());
+  // Lookup binaries into the driver directory, this is used to
+  // discover the clang-offload-bundler executable.
+  getProgramPaths().push_back(getDriver().Dir);
 }
 
 void CudaToolChain::addClangTargetOptions(
@@ -521,10 +540,14 @@ CudaToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
     }
 
     StringRef Arch = DAL->getLastArgValue(options::OPT_march_EQ);
-    if (Arch.empty())
-      // Default compute capability for CUDA toolchain is sm_20.
+    if (Arch.empty()) {
+      // Default compute capability for CUDA toolchain is the
+      // lowest compute capability supported by the installed
+      // CUDA version.
       DAL->AddJoinedArg(nullptr,
-          Opts.getOption(options::OPT_march_EQ), "sm_20");
+          Opts.getOption(options::OPT_march_EQ),
+          CudaInstallation.getLowestExistingArch());
+    }
 
     return DAL;
   }

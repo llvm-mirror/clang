@@ -573,6 +573,33 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   if (!Opts.ProfileInstrumentUsePath.empty())
     setPGOUseInstrumentor(Opts, Opts.ProfileInstrumentUsePath);
 
+  if (Arg *A = Args.getLastArg(OPT_fclang_abi_compat_EQ)) {
+    Opts.setClangABICompat(CodeGenOptions::ClangABI::Latest);
+
+    StringRef Ver = A->getValue();
+    std::pair<StringRef, StringRef> VerParts = Ver.split('.');
+    unsigned Major, Minor = 0;
+
+    // Check the version number is valid: either 3.x (0 <= x <= 9) or
+    // y or y.0 (4 <= y <= current version).
+    if (!VerParts.first.startswith("0") &&
+        !VerParts.first.getAsInteger(10, Major) &&
+        3 <= Major && Major <= CLANG_VERSION_MAJOR &&
+        (Major == 3 ? VerParts.second.size() == 1 &&
+                      !VerParts.second.getAsInteger(10, Minor)
+                    : VerParts.first.size() == Ver.size() ||
+                      VerParts.second == "0")) {
+      // Got a valid version number.
+      if (Major == 3 && Minor <= 8)
+        Opts.setClangABICompat(CodeGenOptions::ClangABI::Ver3_8);
+      else if (Major <= 4)
+        Opts.setClangABICompat(CodeGenOptions::ClangABI::Ver4);
+    } else if (Ver != "latest") {
+      Diags.Report(diag::err_drv_invalid_value)
+          << A->getAsString(Args) << A->getValue();
+    }
+  }
+
   Opts.CoverageMapping =
       Args.hasFlag(OPT_fcoverage_mapping, OPT_fno_coverage_mapping, false);
   Opts.DumpCoverageMapping = Args.hasArg(OPT_dump_coverage_mapping);
@@ -651,6 +678,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.MergeFunctions = Args.hasArg(OPT_fmerge_functions);
 
   Opts.NoUseJumpTables = Args.hasArg(OPT_fno_jump_tables);
+
+  Opts.ProfileSampleAccurate = Args.hasArg(OPT_fprofile_sample_accurate);
 
   Opts.PrepareForLTO = Args.hasArg(OPT_flto, OPT_flto_EQ);
   Opts.EmitSummaryIndex = false;
@@ -795,10 +824,13 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.SanitizeCoverageInline8bitCounters =
       Args.hasArg(OPT_fsanitize_coverage_inline_8bit_counters);
   Opts.SanitizeCoveragePCTable = Args.hasArg(OPT_fsanitize_coverage_pc_table);
+  Opts.SanitizeCoverageStackDepth =
+      Args.hasArg(OPT_fsanitize_coverage_stack_depth);
   Opts.SanitizeMemoryTrackOrigins =
       getLastArgIntValue(Args, OPT_fsanitize_memory_track_origins_EQ, 0, Diags);
   Opts.SanitizeMemoryUseAfterDtor =
       Args.hasArg(OPT_fsanitize_memory_use_after_dtor);
+  Opts.SanitizeMinimalRuntime = Args.hasArg(OPT_fsanitize_minimal_runtime);
   Opts.SanitizeCfiCrossDso = Args.hasArg(OPT_fsanitize_cfi_cross_dso);
   Opts.SanitizeStats = Args.hasArg(OPT_fsanitize_stats);
   if (Arg *A = Args.getLastArg(OPT_fsanitize_address_use_after_scope,
@@ -977,9 +1009,12 @@ static void ParseDependencyOutputArgs(DependencyOutputOptions &Opts,
   // They won't be discovered by the regular preprocessor, so
   // we let make / ninja to know about this implicit dependency.
   Opts.ExtraDeps = Args.getAllArgValues(OPT_fdepfile_entry);
-  auto ModuleFiles = Args.getAllArgValues(OPT_fmodule_file);
-  Opts.ExtraDeps.insert(Opts.ExtraDeps.end(), ModuleFiles.begin(),
-                        ModuleFiles.end());
+  // Only the -fmodule-file=<file> form.
+  for (const Arg *A : Args.filtered(OPT_fmodule_file)) {
+    StringRef Val = A->getValue();
+    if (Val.find('=') == StringRef::npos)
+      Opts.ExtraDeps.push_back(Val);
+  }
 }
 
 static bool parseShowColorsArgs(const ArgList &Args, bool DefaultColor) {
@@ -1308,7 +1343,12 @@ static InputKind ParseFrontendArgs(FrontendOptions &Opts, ArgList &Args,
   Opts.UseGlobalModuleIndex = !Args.hasArg(OPT_fno_modules_global_index);
   Opts.GenerateGlobalModuleIndex = Opts.UseGlobalModuleIndex;
   Opts.ModuleMapFiles = Args.getAllArgValues(OPT_fmodule_map_file);
-  Opts.ModuleFiles = Args.getAllArgValues(OPT_fmodule_file);
+  // Only the -fmodule-file=<file> form.
+  for (const Arg *A : Args.filtered(OPT_fmodule_file)) {
+    StringRef Val = A->getValue();
+    if (Val.find('=') == StringRef::npos)
+      Opts.ModuleFiles.push_back(Val);
+  }
   Opts.ModulesEmbedFiles = Args.getAllArgValues(OPT_fmodules_embed_file_EQ);
   Opts.ModulesEmbedAllFiles = Args.hasArg(OPT_fmodules_embed_all_files);
   Opts.IncludeTimestamps = !Args.hasArg(OPT_fno_pch_timestamp);
@@ -1512,6 +1552,12 @@ static void ParseHeaderSearchArgs(HeaderSearchOptions &Opts, ArgList &Args,
   Opts.ModuleCachePath = P.str();
 
   Opts.ModuleUserBuildPath = Args.getLastArgValue(OPT_fmodules_user_build_path);
+  // Only the -fmodule-file=<name>=<file> form.
+  for (const Arg *A : Args.filtered(OPT_fmodule_file)) {
+    StringRef Val = A->getValue();
+    if (Val.find('=') != StringRef::npos)
+      Opts.PrebuiltModuleFiles.insert(Val.split('='));
+  }
   for (const Arg *A : Args.filtered(OPT_fprebuilt_module_path))
     Opts.AddPrebuiltModulePath(A->getValue());
   Opts.DisableModuleHash = Args.hasArg(OPT_fdisable_module_hash);

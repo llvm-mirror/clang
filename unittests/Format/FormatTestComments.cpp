@@ -2476,6 +2476,13 @@ TEST_F(FormatTestComments, AlignTrailingComments) {
                    "int k; // line longg long",
                    getLLVMStyleWithColumns(20)));
 
+  // Always align if ColumnLimit = 0
+  EXPECT_EQ("int i, j; // line 1\n"
+            "int k;    // line longg long",
+            format("int i, j; // line 1\n"
+                   "int k; // line longg long",
+                   getLLVMStyleWithColumns(0)));
+
   // Align comment line sections aligned with the next token with the next
   // token.
   EXPECT_EQ("class A {\n"
@@ -2779,6 +2786,24 @@ TEST_F(FormatTestComments, AlignsBlockCommentDecorations) {
                    "  *\n"
                    "* long */",
                    getLLVMStyleWithColumns(20)));
+}
+
+TEST_F(FormatTestComments, NoCrush_Bug34236) {
+  // This is a test case from a crasher reported in:
+  // https://bugs.llvm.org/show_bug.cgi?id=34236
+  // Temporarily disable formatting for readability.
+  // clang-format off
+  EXPECT_EQ(
+"/*                                                                */ /*\n"
+"                                                                      *       a\n"
+"                                                                      * b c\n"
+"                                                                      * d*/",
+      format(
+"/*                                                                */ /*\n"
+" *       a b\n"
+" *       c     d*/",
+          getLLVMStyleWithColumns(80)));
+  // clang-format on
 }
 } // end namespace
 } // end namespace format

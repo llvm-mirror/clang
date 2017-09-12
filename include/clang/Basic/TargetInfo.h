@@ -46,6 +46,7 @@ class MacroBuilder;
 class QualType;
 class SourceLocation;
 class SourceManager;
+class Type;
 
 namespace Builtin { struct Info; }
 
@@ -911,6 +912,10 @@ public:
   // argument.
   virtual bool validateCpuSupports(StringRef Name) const { return false; }
 
+  // \brief Validate the contents of the __builtin_cpu_is(const char*)
+  // argument.
+  virtual bool validateCpuIs(StringRef Name) const { return false; }
+
   // \brief Returns maximal number of args passed in registers.
   unsigned getRegParmMax() const {
     assert(RegParmMax < 7 && "RegParmMax value is larger than AST can handle");
@@ -1046,10 +1051,8 @@ public:
       return getTargetOpts().SupportedOpenCLOptions;
   }
 
-  /// \brief Get OpenCL image type address space.
-  virtual LangAS::ID getOpenCLImageAddrSpace() const {
-    return LangAS::opencl_global;
-  }
+  /// \brief Get address space for OpenCL type.
+  virtual LangAS::ID getOpenCLTypeAddrSpace(const Type *T) const;
 
   /// \returns Target specific vtbl ptr address space.
   virtual unsigned getVtblPtrAddressSpace() const {

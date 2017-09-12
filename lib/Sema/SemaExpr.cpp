@@ -995,7 +995,7 @@ static QualType handleComplexFloatConversion(Sema &S, ExprResult &LHS,
   return ResultType;
 }
 
-/// \brief Hande arithmetic conversion from integer to float.  Helper function
+/// \brief Handle arithmetic conversion from integer to float.  Helper function
 /// of UsualArithmeticConversions()
 static QualType handleIntToFloatConversion(Sema &S, ExprResult &FloatExpr,
                                            ExprResult &IntExpr,
@@ -1502,8 +1502,9 @@ static ExprResult BuildCookedLiteralOperatorCall(Sema &S, Scope *Scope,
 
   LookupResult R(S, OpName, UDSuffixLoc, Sema::LookupOrdinaryName);
   if (S.LookupLiteralOperator(Scope, R, llvm::makeArrayRef(ArgTy, Args.size()),
-                              /*AllowRaw*/false, /*AllowTemplate*/false,
-                              /*AllowStringTemplate*/false) == Sema::LOLR_Error)
+                              /*AllowRaw*/ false, /*AllowTemplate*/ false,
+                              /*AllowStringTemplate*/ false,
+                              /*DiagnoseMissing*/ true) == Sema::LOLR_Error)
     return ExprError();
 
   return S.BuildLiteralOperatorCall(R, OpNameInfo, Args, LitEndLoc);
@@ -1594,8 +1595,9 @@ Sema::ActOnStringLiteral(ArrayRef<Token> StringToks, Scope *UDLScope) {
 
   LookupResult R(*this, OpName, UDSuffixLoc, LookupOrdinaryName);
   switch (LookupLiteralOperator(UDLScope, R, ArgTy,
-                                /*AllowRaw*/false, /*AllowTemplate*/false,
-                                /*AllowStringTemplate*/true)) {
+                                /*AllowRaw*/ false, /*AllowTemplate*/ false,
+                                /*AllowStringTemplate*/ true,
+                                /*DiagnoseMissing*/ true)) {
 
   case LOLR_Cooked: {
     llvm::APInt Len(Context.getIntWidth(SizeType), Literal.GetNumStringChars());
@@ -1628,6 +1630,7 @@ Sema::ActOnStringLiteral(ArrayRef<Token> StringToks, Scope *UDLScope) {
   }
   case LOLR_Raw:
   case LOLR_Template:
+  case LOLR_ErrorNoDiagnostic:
     llvm_unreachable("unexpected literal operator lookup result");
   case LOLR_Error:
     return ExprError();
@@ -3250,11 +3253,15 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
     // literal or a cooked one.
     LookupResult R(*this, OpName, UDSuffixLoc, LookupOrdinaryName);
     switch (LookupLiteralOperator(UDLScope, R, CookedTy,
-                                  /*AllowRaw*/true, /*AllowTemplate*/true,
-                                  /*AllowStringTemplate*/false)) {
+                                  /*AllowRaw*/ true, /*AllowTemplate*/ true,
+                                  /*AllowStringTemplate*/ false,
+                                  /*DiagnoseMissing*/ !Literal.isImaginary)) {
+    case LOLR_ErrorNoDiagnostic:
+      // Lookup failure for imaginary constants isn't fatal, there's still the
+      // GNU extension producing _Complex types.
+      break;
     case LOLR_Error:
       return ExprError();
-
     case LOLR_Cooked: {
       Expr *Lit;
       if (Literal.isFloatingLiteral()) {
@@ -3470,10 +3477,12 @@ ExprResult Sema::ActOnNumericConstant(const Token &Tok, Scope *UDLScope) {
   }
 
   // If this is an imaginary literal, create the ImaginaryLiteral wrapper.
-  if (Literal.isImaginary)
+  if (Literal.isImaginary) {
     Res = new (Context) ImaginaryLiteral(Res,
                                         Context.getComplexType(Res->getType()));
 
+    Diag(Tok.getLocation(), diag::ext_imaginary_constant);
+  }
   return Res;
 }
 
@@ -7528,6 +7537,12 @@ Sema::CheckAssignmentConstraints(QualType LHSType, ExprResult &RHS,
   // Diagnose attempts to convert between __float128 and long double where
   // such conversions currently can't be handled.
   if (unsupportedTypeConversion(*this, LHSType, RHSType))
+    return Incompatible;
+
+  // Disallow assigning a _Complex to a real type in C++ mode since it simply
+  // discards the imaginary part.
+  if (getLangOpts().CPlusPlus && RHSType->getAs<ComplexType>() &&
+      !LHSType->getAs<ComplexType>())
     return Incompatible;
 
   // Arithmetic conversions.
@@ -14013,6 +14028,8 @@ static bool captureInCapturedRegion(CapturedRegionScopeInfo *RSI,
     Field->setImplicit(true);
     Field->setAccess(AS_private);
     RD->addDecl(Field);
+    if (S.getLangOpts().OpenMP && RSI->CapRegionKind == CR_OpenMP)
+      S.setOpenMPCaptureKind(Field, Var, RSI->OpenMPLevel);
  
     CopyExpr = new (S.Context) DeclRefExpr(Var, RefersToCapturedVariable,
                                             DeclRefType, VK_LValue, Loc);
@@ -14183,6 +14200,7 @@ bool Sema::tryCaptureVariable(
   bool IsGlobal = !Var->hasLocalStorage();
   if (IsGlobal && !(LangOpts.OpenMP && IsOpenMPCapturedDecl(Var)))
     return true;
+  Var = Var->getCanonicalDecl();
 
   // Walk up the stack to determine whether we can capture the variable,
   // performing the "simple" checks that don't depend on type. We stop when
@@ -14611,7 +14629,7 @@ static void MarkExprReferenced(Sema &SemaRef, SourceLocation Loc,
       ME->getBase(), SemaRef.getLangOpts().AppleKext);
   if (DM)
     SemaRef.MarkAnyDeclReferenced(Loc, DM, MightBeOdrUse);
-} 
+}
 
 /// \brief Perform reference-marking and odr-use handling for a DeclRefExpr.
 void Sema::MarkDeclRefReferenced(DeclRefExpr *E, const Expr *Base) {

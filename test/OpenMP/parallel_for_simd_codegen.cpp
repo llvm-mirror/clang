@@ -114,6 +114,7 @@ void simple(float *a, float *b, float *c, float *d) {
   int lin = 12;
   #pragma omp parallel for simd linear(lin : get_val()), linear(g_ptr)
 
+// CHECK: alloca i32,
 // Init linear private var.
 // CHECK: [[LIN_VAR:%.+]] = load i32*, i32** %
 // CHECK: [[LIN_LOAD:%.+]] = load i32, i32* [[LIN_VAR]]
@@ -667,7 +668,7 @@ int bar() {return 0;};
 // TERM_DEBUG-LABEL: parallel_simd
 void parallel_simd(float *a) {
 #pragma omp parallel for simd
-  // TERM_DEBUG-NOT: __kmpc_global_thread_num
+  // TERM_DEBUG:     __kmpc_global_thread_num
   // TERM_DEBUG:     invoke i32 {{.*}}bar{{.*}}()
   // TERM_DEBUG:     unwind label %[[TERM_LPAD:.+]],
   // TERM_DEBUG-NOT: __kmpc_global_thread_num

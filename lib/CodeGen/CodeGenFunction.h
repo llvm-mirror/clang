@@ -709,6 +709,7 @@ public:
                llvm::function_ref<Address()> PrivateGen) {
       assert(PerformCleanup && "adding private to dead scope");
 
+      LocalVD = LocalVD->getCanonicalDecl();
       // Only save it once.
       if (SavedLocals.count(LocalVD)) return false;
 
@@ -761,6 +762,7 @@ public:
 
     /// Checks if the global variable is captured in current function. 
     bool isGlobalVarCaptured(const VarDecl *VD) const {
+      VD = VD->getCanonicalDecl();
       return !VD->isLocalVarDeclOrParm() && CGF.LocalDeclMap.count(VD) > 0;
     }
 
@@ -2532,7 +2534,7 @@ public:
   /// This function may clear the current insertion point; callers should use
   /// EnsureInsertPoint if they wish to subsequently generate code without first
   /// calling EmitBlock, EmitBranch, or EmitStmt.
-  void EmitStmt(const Stmt *S);
+  void EmitStmt(const Stmt *S, ArrayRef<const Attr *> Attrs = None);
 
   /// EmitSimpleStmt - Try to emit a "simple" statement which does not
   /// necessarily require an insertion point or debug information; typically
@@ -2761,7 +2763,9 @@ public:
   /// and initializes them with the values according to OpenMP standard.
   ///
   /// \param D Directive (possibly) with the 'linear' clause.
-  void EmitOMPLinearClauseInit(const OMPLoopDirective &D);
+  /// \return true if at least one linear variable is found that should be
+  /// initialized with the value of the original variable, false otherwise.
+  bool EmitOMPLinearClauseInit(const OMPLoopDirective &D);
 
   typedef const llvm::function_ref<void(CodeGenFunction & /*CGF*/,
                                         llvm::Value * /*OutlinedFn*/,
@@ -3157,6 +3161,7 @@ public:
   };
 
   ConstantEmission tryEmitAsConstant(DeclRefExpr *refExpr);
+  ConstantEmission tryEmitAsConstant(const MemberExpr *ME);
 
   RValue EmitPseudoObjectRValue(const PseudoObjectExpr *e,
                                 AggValueSlot slot = AggValueSlot::ignored());
@@ -3852,6 +3857,10 @@ private:
   void AddObjCARCExceptionMetadata(llvm::Instruction *Inst);
 
   llvm::Value *GetValueForARMHint(unsigned BuiltinID);
+  llvm::Value *EmitX86CpuIs(const CallExpr *E);
+  llvm::Value *EmitX86CpuIs(StringRef CPUStr);
+  llvm::Value *EmitX86CpuSupports(const CallExpr *E);
+  llvm::Value *EmitX86CpuSupports(ArrayRef<StringRef> FeatureStrs);
 };
 
 /// Helper class with most of the code for saving a value for a

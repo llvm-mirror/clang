@@ -27,6 +27,7 @@
 #ifndef LLVM_CLANG_TOOLING_COMMONOPTIONSPARSER_H
 #define LLVM_CLANG_TOOLING_COMMONOPTIONSPARSER_H
 
+#include "clang/Tooling/ArgumentsAdjusters.h"
 #include "clang/Tooling/CompilationDatabase.h"
 #include "llvm/Support/CommandLine.h"
 
@@ -84,7 +85,7 @@ public:
   ///
   /// All options not belonging to \p Category become hidden.
   ///
-  /// I also allows calls to set the required number of positional parameters.
+  /// It also allows calls to set the required number of positional parameters.
   ///
   /// This constructor exits program in case of error.
   CommonOptionsParser(int &argc, const char **argv,
@@ -107,8 +108,29 @@ public:
 private:
   std::unique_ptr<CompilationDatabase> Compilations;
   std::vector<std::string> SourcePathList;
-  std::vector<std::string> ExtraArgsBefore;
-  std::vector<std::string> ExtraArgsAfter;
+};
+
+class ArgumentsAdjustingCompilations : public CompilationDatabase {
+public:
+  ArgumentsAdjustingCompilations(
+      std::unique_ptr<CompilationDatabase> Compilations)
+      : Compilations(std::move(Compilations)) {}
+
+  void appendArgumentsAdjuster(ArgumentsAdjuster Adjuster);
+
+  std::vector<CompileCommand>
+  getCompileCommands(StringRef FilePath) const override;
+
+  std::vector<std::string> getAllFiles() const override;
+
+  std::vector<CompileCommand> getAllCompileCommands() const override;
+
+private:
+  std::unique_ptr<CompilationDatabase> Compilations;
+  std::vector<ArgumentsAdjuster> Adjusters;
+
+  std::vector<CompileCommand>
+  adjustCommands(std::vector<CompileCommand> Commands) const;
 };
 
 }  // namespace tooling

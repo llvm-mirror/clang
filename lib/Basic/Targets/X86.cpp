@@ -1301,7 +1301,47 @@ bool X86TargetInfo::validateCpuSupports(StringRef FeatureStr) const {
       .Case("avx512pf", true)
       .Case("avx512vbmi", true)
       .Case("avx512ifma", true)
+      .Case("avx5124vnniw", true)
+      .Case("avx5124fmaps", true)
       .Case("avx512vpopcntdq", true)
+      .Default(false);
+}
+
+// We can't use a generic validation scheme for the cpus accepted here
+// versus subtarget cpus accepted in the target attribute because the
+// variables intitialized by the runtime only support the below currently
+// rather than the full range of cpus.
+bool X86TargetInfo::validateCpuIs(StringRef FeatureStr) const {
+  return llvm::StringSwitch<bool>(FeatureStr)
+      .Case("amd", true)
+      .Case("amdfam10h", true)
+      .Case("amdfam15h", true)
+      .Case("atom", true)
+      .Case("barcelona", true)
+      .Case("bdver1", true)
+      .Case("bdver2", true)
+      .Case("bdver3", true)
+      .Case("bdver4", true)
+      .Case("bonnell", true)
+      .Case("broadwell", true)
+      .Case("btver1", true)
+      .Case("btver2", true)
+      .Case("core2", true)
+      .Case("corei7", true)
+      .Case("haswell", true)
+      .Case("intel", true)
+      .Case("istanbul", true)
+      .Case("ivybridge", true)
+      .Case("knl", true)
+      .Case("nehalem", true)
+      .Case("sandybridge", true)
+      .Case("shanghai", true)
+      .Case("silvermont", true)
+      .Case("skylake", true)
+      .Case("skylake-avx512", true)
+      .Case("slm", true)
+      .Case("westmere", true)
+      .Case("znver1", true)
       .Default(false);
 }
 
@@ -1346,7 +1386,9 @@ bool X86TargetInfo::validateAsmConstraint(
     switch (*Name) {
     default:
       return false;
+    case 'z':
     case '0': // First SSE register.
+    case '2':
     case 't': // Any SSE register, when SSE2 is enabled.
     case 'i': // Any SSE register, when SSE2 and inter-unit moves enabled.
     case 'm': // Any MMX register, when inter-unit moves enabled.
@@ -1415,6 +1457,29 @@ bool X86TargetInfo::validateOperandSize(StringRef Constraint,
   case 't':
   case 'u':
     return Size <= 128;
+  case 'Y':
+    // 'Y' is the first character for several 2-character constraints.
+    switch (Constraint[1]) {
+    default:
+      return false;
+    case 'm':
+      // 'Ym' is synonymous with 'y'.
+    case 'k':
+      return Size <= 64;
+    case 'z':
+    case '0':
+      // XMM0
+      if (SSELevel >= SSE1)
+        return Size <= 128U;
+      return false;
+    case 'i':
+    case 't':
+    case '2':
+      // 'Yi','Yt','Y2' are synonymous with 'x' when SSE2 is enabled.
+      if (SSELevel < SSE2)
+        return false;
+      break;
+    }
   case 'v':
   case 'x':
     if (SSELevel >= AVX512F)
@@ -1424,24 +1489,7 @@ bool X86TargetInfo::validateOperandSize(StringRef Constraint,
       // 256-bit ymm registers can be used if target supports AVX.
       return Size <= 256U;
     return Size <= 128U;
-  case 'Y':
-    // 'Y' is the first character for several 2-character constraints.
-    switch (Constraint[1]) {
-    default:
-      break;
-    case 'm':
-      // 'Ym' is synonymous with 'y'.
-    case 'k':
-      return Size <= 64;
-    case 'i':
-    case 't':
-      // 'Yi' and 'Yt' are synonymous with 'x' when SSE2 is enabled.
-      if (SSELevel >= AVX512F)
-        return Size <= 512U;
-      else if (SSELevel >= AVX)
-        return Size <= 256U;
-      return SSELevel >= SSE2 && Size <= 128U;
-    }
+
   }
 
   return true;
@@ -1475,6 +1523,12 @@ std::string X86TargetInfo::convertConstraint(const char *&Constraint) const {
       // the return string.
       break;
     case 'k':
+    case 'm':
+    case 'i':
+    case 't':
+    case 'z':
+    case '0':
+    case '2':
       // "^" hints llvm that this is a 2 letter constraint.
       // "Constraint++" is used to promote the string iterator
       // to the next constraint.

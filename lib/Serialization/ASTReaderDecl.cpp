@@ -1219,16 +1219,17 @@ void ASTDeclReader::VisitObjCPropertyImplDecl(ObjCPropertyImplDecl *D) {
 void ASTDeclReader::VisitFieldDecl(FieldDecl *FD) {
   VisitDeclaratorDecl(FD);
   FD->Mutable = Record.readInt();
-  if (int BitWidthOrInitializer = Record.readInt()) {
-    FD->InitStorage.setInt(
-          static_cast<FieldDecl::InitStorageKind>(BitWidthOrInitializer - 1));
-    if (FD->InitStorage.getInt() == FieldDecl::ISK_CapturedVLAType) {
-      // Read captured variable length array.
-      FD->InitStorage.setPointer(Record.readType().getAsOpaquePtr());
-    } else {
-      FD->InitStorage.setPointer(Record.readExpr());
-    }
+
+  if (auto ISK = static_cast<FieldDecl::InitStorageKind>(Record.readInt())) {
+    FD->InitStorage.setInt(ISK);
+    FD->InitStorage.setPointer(ISK == FieldDecl::ISK_CapturedVLAType
+                                   ? Record.readType().getAsOpaquePtr()
+                                   : Record.readExpr());
   }
+
+  if (auto *BW = Record.readExpr())
+    FD->setBitWidth(BW);
+
   if (!FD->getDeclName()) {
     if (FieldDecl *Tmpl = ReadDeclAs<FieldDecl>())
       Reader.getContext().setInstantiatedFromUnnamedFieldDecl(FD, Tmpl);
@@ -1559,9 +1560,11 @@ void ASTDeclReader::ReadCXXDefinitionData(
   Data.HasUninitializedFields = Record.readInt();
   Data.HasInheritedConstructor = Record.readInt();
   Data.HasInheritedAssignment = Record.readInt();
+  Data.NeedOverloadResolutionForCopyConstructor = Record.readInt();
   Data.NeedOverloadResolutionForMoveConstructor = Record.readInt();
   Data.NeedOverloadResolutionForMoveAssignment = Record.readInt();
   Data.NeedOverloadResolutionForDestructor = Record.readInt();
+  Data.DefaultedCopyConstructorIsDeleted = Record.readInt();
   Data.DefaultedMoveConstructorIsDeleted = Record.readInt();
   Data.DefaultedMoveAssignmentIsDeleted = Record.readInt();
   Data.DefaultedDestructorIsDeleted = Record.readInt();
@@ -1570,6 +1573,7 @@ void ASTDeclReader::ReadCXXDefinitionData(
   Data.HasIrrelevantDestructor = Record.readInt();
   Data.HasConstexprNonCopyMoveConstructor = Record.readInt();
   Data.HasDefaultedDefaultConstructor = Record.readInt();
+  Data.CanPassInRegisters = Record.readInt();
   Data.DefaultedDefaultConstructorIsConstexpr = Record.readInt();
   Data.HasConstexprDefaultConstructor = Record.readInt();
   Data.HasNonLiteralTypeFieldsOrBases = Record.readInt();
@@ -1697,9 +1701,11 @@ void ASTDeclReader::MergeDefinitionData(
   MATCH_FIELD(HasUninitializedFields)
   MATCH_FIELD(HasInheritedConstructor)
   MATCH_FIELD(HasInheritedAssignment)
+  MATCH_FIELD(NeedOverloadResolutionForCopyConstructor)
   MATCH_FIELD(NeedOverloadResolutionForMoveConstructor)
   MATCH_FIELD(NeedOverloadResolutionForMoveAssignment)
   MATCH_FIELD(NeedOverloadResolutionForDestructor)
+  MATCH_FIELD(DefaultedCopyConstructorIsDeleted)
   MATCH_FIELD(DefaultedMoveConstructorIsDeleted)
   MATCH_FIELD(DefaultedMoveAssignmentIsDeleted)
   MATCH_FIELD(DefaultedDestructorIsDeleted)
@@ -1708,6 +1714,7 @@ void ASTDeclReader::MergeDefinitionData(
   MATCH_FIELD(HasIrrelevantDestructor)
   OR_FIELD(HasConstexprNonCopyMoveConstructor)
   OR_FIELD(HasDefaultedDefaultConstructor)
+  MATCH_FIELD(CanPassInRegisters)
   MATCH_FIELD(DefaultedDefaultConstructorIsConstexpr)
   OR_FIELD(HasConstexprDefaultConstructor)
   MATCH_FIELD(HasNonLiteralTypeFieldsOrBases)

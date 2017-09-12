@@ -44,6 +44,10 @@ CodeGenTypes::~CodeGenTypes() {
     delete &*I++;
 }
 
+const CodeGenOptions &CodeGenTypes::getCodeGenOpts() const {
+  return CGM.getCodeGenOpts();
+}
+
 void CodeGenTypes::addRecordTypeName(const RecordDecl *RD,
                                      llvm::StructType *Ty,
                                      StringRef suffix) {
@@ -635,7 +639,7 @@ llvm::Type *CodeGenTypes::ConvertType(QualType T) {
     break;
   }
   case Type::Pipe: {
-    ResultType = CGM.getOpenCLRuntime().getPipeType();
+    ResultType = CGM.getOpenCLRuntime().getPipeType(cast<PipeType>(Ty));
     break;
   }
   }
