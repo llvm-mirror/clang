@@ -2211,6 +2211,9 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
                : Style.SpacesInParentheses;
   if (Right.isOneOf(tok::semi, tok::comma))
     return false;
+  if (Right.is(TT_TemplateOpener) && !Left.is(TT_TemplateOpener) &&
+      Style.SpacesBeforeAngleBrackets)
+    return true;
   if (Right.is(tok::less) &&
       Line.Type == LT_ObjCDecl && Style.ObjCSpaceBeforeProtocolList)
     return true;
@@ -2282,6 +2285,10 @@ bool TokenAnnotator::spaceRequiredBetween(const AnnotatedLine &Line,
             (Style.SpacesInSquareBrackets &&
              Right.MatchingParen->isOneOf(TT_ArraySubscriptLSquare,
                                           TT_StructuredBindingLSquare)));
+  if (Right.is(tok::l_square) && Style.SpacesBeforeSquareBrackets &&
+      Right.isOneOf(TT_ArraySubscriptLSquare, TT_StructuredBindingLSquare) &&
+	  Right.Next && !Right.Next->is(tok::r_square))
+        return !Left.is(tok::r_square);
   if (Right.is(tok::l_square) &&
       !Right.isOneOf(TT_ObjCMethodExpr, TT_LambdaLSquare,
                      TT_DesignatedInitializerLSquare,

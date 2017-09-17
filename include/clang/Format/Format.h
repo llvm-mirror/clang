@@ -1486,6 +1486,21 @@ struct FormatStyle {
   /// \endcode
   bool SpacesInSquareBrackets;
 
+  /// \brief If ``true``, a space will be inserted before ``[`` in array
+  /// subscripts. \code
+  ///    true:                                  false:
+  ///    int a [5];                    vs.     int a[5];
+  ///    std::unique_ptr<int[]> foo() {} // Won't be affected
+  /// \endcode
+  bool SpacesBeforeSquareBrackets;
+
+  /// \brief If \c true, a space will be inserted before '<' before template
+  /// definition. \code
+  ///    true:                                  false:
+  ///    std::unique_ptr <Foo>        vs.     std::unique_ptr<Foo>
+  /// \endcode
+  bool SpacesBeforeAngleBrackets;
+
   /// \brief Supported language standards.
   enum LanguageStandard {
     /// Use C++03-compatible syntax.
@@ -1603,6 +1618,8 @@ struct FormatStyle {
            SpacesInCStyleCastParentheses == R.SpacesInCStyleCastParentheses &&
            SpacesInParentheses == R.SpacesInParentheses &&
            SpacesInSquareBrackets == R.SpacesInSquareBrackets &&
+           SpacesBeforeSquareBrackets == R.SpacesBeforeSquareBrackets &&
+           SpacesBeforeAngleBrackets == R.SpacesBeforeAngleBrackets &&
            Standard == R.Standard && TabWidth == R.TabWidth &&
            UseTab == R.UseTab;
   }
@@ -1821,6 +1838,6 @@ inline StringRef getLanguageName(FormatStyle::LanguageKind Language) {
 namespace std {
 template <>
 struct is_error_code_enum<clang::format::ParseError> : std::true_type {};
-}
+} // namespace std
 
 #endif // LLVM_CLANG_FORMAT_FORMAT_H

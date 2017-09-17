@@ -9999,6 +9999,8 @@ TEST_F(FormatTest, ParsesConfigurationBools) {
   CHECK_PARSE_BOOL(SpacesInParentheses);
   CHECK_PARSE_BOOL(SpacesInSquareBrackets);
   CHECK_PARSE_BOOL(SpacesInAngles);
+  CHECK_PARSE_BOOL(SpacesBeforeSquareBrackets);
+  CHECK_PARSE_BOOL(SpacesBeforeAngleBrackets);
   CHECK_PARSE_BOOL(SpaceInEmptyParentheses);
   CHECK_PARSE_BOOL(SpacesInContainerLiterals);
   CHECK_PARSE_BOOL(SpacesInCStyleCastParentheses);
@@ -11188,6 +11190,55 @@ TEST_F(FormatTest, SpacesInAngles) {
 
   Spaces.SpacesInAngles = false;
   verifyFormat("A<A<int>>();", Spaces);
+}
+
+TEST_F(FormatTest, SpacesBeforeAngleBrackets) {
+  FormatStyle Spaces = getLLVMStyle();
+  Spaces.SpacesBeforeAngleBrackets = true;
+
+  verifyFormat("static_cast <int>(arg);", Spaces);
+  verifyFormat("template <typename T0, typename T1> void f() {}", Spaces);
+  verifyFormat("f <int, float>();", Spaces);
+  verifyFormat("template <> g() {}", Spaces);
+  verifyFormat("template <std::vector <int>> f() {}", Spaces);
+  verifyFormat("std::function <void(int, int)> fct;", Spaces);
+  verifyFormat("void inFunction() { std::function <void(int, int)> fct; }",
+               Spaces);
+
+  Spaces.Standard = FormatStyle::LS_Cpp03;
+  Spaces.SpacesBeforeAngleBrackets = true;
+  verifyFormat("A <A <int> >();", Spaces);
+
+  Spaces.SpacesBeforeAngleBrackets = false;
+  verifyFormat("A<A<int> >();", Spaces);
+
+  Spaces.Standard = FormatStyle::LS_Cpp11;
+  Spaces.SpacesBeforeAngleBrackets = true;
+  verifyFormat("A <A <int>>();", Spaces);
+
+  Spaces.SpacesBeforeAngleBrackets = false;
+  verifyFormat("A<A<int>>();", Spaces);
+}
+
+TEST_F(FormatTest, SpacesBeforeSquareBrackets) {
+  verifyFormat("int a[5];");
+  verifyFormat("a[3] += 42;");
+
+  FormatStyle Spaces = getLLVMStyle();
+  Spaces.SpacesBeforeSquareBrackets = true;
+  // Lambdas unchanged.
+  verifyFormat("int c = []() -> int { return 2; }();\n", Spaces);
+  verifyFormat("return [i, args...] {};", Spaces);
+
+  // Not lambdas.
+  verifyFormat("int a [5];", Spaces);
+  verifyFormat("constexpr char hello[]{\"hello\"};", Spaces);
+  verifyFormat("double &operator[](int i) { return 0; }\n"
+               "int i;",
+               Spaces);
+  verifyFormat("std::unique_ptr<int[]> foo() {}", Spaces);
+  verifyFormat("int i = a [a][a]->f();", Spaces);
+  verifyFormat("int i = (*b) [a]->f();", Spaces);
 }
 
 TEST_F(FormatTest, SpaceAfterTemplateKeyword) {
