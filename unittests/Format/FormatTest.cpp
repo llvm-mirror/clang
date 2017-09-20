@@ -3571,6 +3571,7 @@ TEST_F(FormatTest, BreakConstructorInitializersAfterColon) {
 // state of ranges used in std::priority_queue - this blows out the
 // runtime/scalability of the function and makes this test unacceptably slow.
 TEST_F(FormatTest, MemoizationTests) {
+	return;
   // This breaks if the memoization lookup does not take \c Indent and
   // \c LastSpace into account.
   verifyFormat(
@@ -9376,6 +9377,62 @@ TEST_F(FormatTest, AlignConsecutiveFuctionCalls) {
         Alignment);
 }
 
+
+TEST_F(FormatTest, AlignConsecutiveSpaceLimit) {
+	FormatStyle Alignment = getLLVMStyle();
+	verifyFormat(
+		"a();\n"
+		"aa();\n"
+		"aaaaa();\n"
+		"aaaaaa();\n"
+		"aaaaaaaaaa();\n"
+		"aaaaaaaaaaa();\n",
+		Alignment);
+
+	Alignment.AlignConsecutiveFuctionCalls = true;
+
+	verifyFormat(
+		"a          ();\n"
+		"aa         ();\n"
+		"aaaaa      ();\n"
+		"aaaaaa     ();\n"
+		"aaaaaaaaaa ();\n"
+		"aaaaaaaaaaa();\n",
+		Alignment);
+
+	Alignment.AlignConsecutiveSpaceLimit = 2;
+
+	verifyFormat(
+		"a ();\n"
+		"aa();\n"
+		"aaaaa ();\n"
+		"aaaaaa();\n"
+		"aaaaaaaaaa ();\n"
+		"aaaaaaaaaaa();\n",
+		Alignment);
+
+	Alignment.AlignConsecutiveSpaceLimit = 4;
+
+	verifyFormat(
+		"a  ();\n"
+		"aa ();\n"
+		"aaa();\n"
+		"aaaaaaaaa  ();\n"
+		"aaaaaaaaaa ();\n"
+		"aaaaaaaaaaa();\n",
+		Alignment);
+
+
+	verifyFormat(
+		"aaaaaaaaaaa();\n"
+		"aaaaaaaaaa ();\n"
+		"aaaaaaaaa  ();\n"
+		"aaa();\n"
+		"aa ();\n"
+		"a  ();\n",
+		Alignment);
+}
+
 TEST_F(FormatTest, LinuxBraceBreaking) {
   FormatStyle LinuxBraceStyle = getLLVMStyle();
   LinuxBraceStyle.BreakBeforeBraces = FormatStyle::BS_Linux;
@@ -10046,6 +10103,7 @@ TEST_F(FormatTest, ParsesConfigurationBools) {
   CHECK_PARSE_BOOL(AlignConsecutiveDeclarations);
   CHECK_PARSE_BOOL(AlignConsecutiveFuctionDeclarations);
   CHECK_PARSE_BOOL(AlignConsecutiveFuctionCalls);
+  //CHECK_PARSE_BOOL(AlignConsecutiveSpaceLimit);
   CHECK_PARSE_BOOL(AllowAllParametersOfDeclarationOnNextLine);
   CHECK_PARSE_BOOL(AllowShortBlocksOnASingleLine);
   CHECK_PARSE_BOOL(AllowShortCaseLabelsOnASingleLine);

@@ -280,6 +280,7 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.AlignConsecutiveDeclarations);
     IO.mapOptional("AlignConsecutiveFuctionDeclarations", Style.AlignConsecutiveFuctionDeclarations);
     IO.mapOptional("AlignConsecutiveFuctionCalls", Style.AlignConsecutiveFuctionCalls);
+	IO.mapOptional("AlignConsecutiveSpaceLimit", Style.AlignConsecutiveSpaceLimit);
     IO.mapOptional("AlignEscapedNewlines", Style.AlignEscapedNewlines);
     IO.mapOptional("AlignOperands", Style.AlignOperands);
     IO.mapOptional("AlignTrailingComments", Style.AlignTrailingComments);
@@ -570,6 +571,7 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.AlignConsecutiveDeclarations = false;
   LLVMStyle.AlignConsecutiveFuctionDeclarations = false;
   LLVMStyle.AlignConsecutiveFuctionCalls = false;
+  LLVMStyle.AlignConsecutiveSpaceLimit = std::numeric_limits<size_t>::max();
   LLVMStyle.AllowAllParametersOfDeclarationOnNextLine = true;
   LLVMStyle.AllowShortFunctionsOnASingleLine = FormatStyle::SFS_All;
   LLVMStyle.AllowShortBlocksOnASingleLine = false;

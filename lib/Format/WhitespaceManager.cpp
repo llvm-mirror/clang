@@ -326,6 +326,7 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
   // Line number of the start and the end of the current token sequence.
   unsigned StartOfSequence = 0;
   unsigned EndOfSequence = 0;
+  unsigned MinStartOfTokenColumn = UINT_MAX; // kostya
 
   // Measure the scope level (i.e. depth of (), [], {}) of the first token, and
   // abort when we hit any token in a higher scope than the starting one.
@@ -357,6 +358,7 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
     MaxColumn = UINT_MAX;
     StartOfSequence = 0;
     EndOfSequence = 0;
+    MinStartOfTokenColumn = UINT_MAX; // kostya
   };
 
   unsigned i = StartAt;
@@ -409,6 +411,27 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
         CommasBeforeLastMatch != CommasBeforeMatch) {
       AlignCurrentSequence();
       StartOfSequence = i;
+    }
+
+    // check for space limit
+    if (MinStartOfTokenColumn < UINT_MAX) { // desc order
+      int MaxShift = MinStartOfTokenColumn - ChangeMinColumn;
+      if (MaxShift > 0 && MaxShift > Style.AlignConsecutiveSpaceLimit) {
+        // apply alignment 
+        AlignCurrentSequence();
+        // and start counting from this line
+        StartOfSequence = i;
+        MinStartOfTokenColumn = ChangeMinColumn;
+      }
+    }
+    MinStartOfTokenColumn = std::min(MinStartOfTokenColumn, ChangeMinColumn);
+    int MaxShift = ChangeMinColumn - MinStartOfTokenColumn;
+    if (MaxShift > 0 && MaxShift > Style.AlignConsecutiveSpaceLimit) {
+        // apply alignment 
+        AlignCurrentSequence();
+        // and start counting from this line
+        StartOfSequence = i;
+        MinStartOfTokenColumn = ChangeMinColumn;
     }
 
     MinColumn = std::max(MinColumn, ChangeMinColumn);

@@ -123,6 +123,19 @@ struct FormatStyle {
   /// \endcode
   bool AlignConsecutiveFuctionCalls;
 
+  /// \brief Defines limit of space count can be used for alignment (AlignConsecutive* properties).
+  ///
+  /// Defines limit of space count can be used for alignment. This will result in formattings like
+  /// \code
+  /// a  ();
+  /// aa ();
+  /// aaa();
+  /// aaaaaaaaa  ();
+  /// aaaaaaaaaa ();
+  /// aaaaaaaaaaa();
+  /// \endcode
+  size_t AlignConsecutiveSpaceLimit;
+
   /// \brief Different styles for aligning escaped newlines.
   enum EscapedNewlineAlignmentStyle {
     /// \brief Don't align escaped newlines.
@@ -1567,6 +1580,7 @@ struct FormatStyle {
            AlignConsecutiveDeclarations == R.AlignConsecutiveDeclarations &&
            AlignConsecutiveFuctionDeclarations == R.AlignConsecutiveFuctionDeclarations && 
            AlignConsecutiveFuctionCalls == R.AlignConsecutiveFuctionCalls && 
+		   AlignConsecutiveSpaceLimit == R.AlignConsecutiveSpaceLimit &&
            AlignEscapedNewlines == R.AlignEscapedNewlines &&
            AlignOperands == R.AlignOperands &&
            AlignTrailingComments == R.AlignTrailingComments &&
