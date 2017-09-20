@@ -88,6 +88,8 @@ const tooling::Replacements &WhitespaceManager::generateReplacements() {
   std::sort(Changes.begin(), Changes.end(), Change::IsBeforeInFile(SourceMgr));
   calculateLineBreakInformation();
   alignConsecutiveDeclarations();
+  AlignConsecutiveFuctionDeclarations();
+  AlignConsecutiveFuctionCalls();
   alignConsecutiveAssignments();
   alignTrailingComments();
   alignEscapedNewlines();
@@ -454,6 +456,39 @@ void WhitespaceManager::alignConsecutiveDeclarations() {
                 return C.Tok->is(TT_StartOfName) ||
                        C.Tok->is(TT_FunctionDeclarationName) ||
                        C.Tok->is(tok::kw_operator);
+              },
+              Changes, /*StartAt=*/0);
+}
+
+void WhitespaceManager::AlignConsecutiveFuctionDeclarations() {
+  if (!Style.AlignConsecutiveFuctionDeclarations)
+    return;
+
+  AlignTokens(Style,
+              [&](const Change &C) {
+                // Do not align on equal signs that are last on a line.
+                if (&C == &Changes.front())
+                  return false;
+
+                const Change &CPrev = *(&C - 1);
+                return C.Tok->is(tok::l_paren) &&
+                       CPrev.Tok->is( TT_FunctionDeclarationName);
+              },
+              Changes, /*StartAt=*/0);
+}
+
+void WhitespaceManager::AlignConsecutiveFuctionCalls() {
+  if (!Style.AlignConsecutiveFuctionCalls)
+    return;
+
+  AlignTokens(Style,
+              [&](const Change &C) {
+                // Do not align on equal signs that are last on a line.
+                if (&C == &Changes.front())
+                  return false;
+
+                const Change &CPrev = *(&C - 1);
+                return C.Tok->is(tok::l_paren) && CPrev.Tok->is(tok::identifier);
               },
               Changes, /*StartAt=*/0);
 }

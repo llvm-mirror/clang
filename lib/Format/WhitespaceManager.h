@@ -174,6 +174,12 @@ private:
   /// \brief Align consecutive declarations over all \c Changes.
   void alignConsecutiveDeclarations();
 
+  /// \brief Align consecutive function declarations over all \c Changes.
+  void AlignConsecutiveFuctionDeclarations();
+
+  /// \brief Align consecutive function calls over all \c Changes.
+  void AlignConsecutiveFuctionCalls();
+
   /// \brief Align trailing comments over all \c Changes.
   void alignTrailingComments();
 

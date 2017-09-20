@@ -98,6 +98,31 @@ struct FormatStyle {
   /// \endcode
   bool AlignConsecutiveDeclarations;
 
+  /// \brief If ``true``, aligns consecutive function declarations.
+  ///
+  /// This will align the declaration brackets of consecutive function declarations. This
+  /// will result in formattings like
+  /// \code
+  ///    class A {
+  ///	 public:
+  ///      void method();
+  ///      void m     ();
+  ///      float mm   ();
+  ///    };
+  /// \endcode
+  bool AlignConsecutiveFuctionDeclarations;
+
+  /// \brief If ``true``, aligns consecutive function calls.
+  ///
+  /// This will align the declaration brackets of consecutive function calls. This
+  /// will result in formattings like
+  /// \code
+  ///  method();\n"
+  ///  m     ();
+  ///  mm    ();
+  /// \endcode
+  bool AlignConsecutiveFuctionCalls;
+
   /// \brief Different styles for aligning escaped newlines.
   enum EscapedNewlineAlignmentStyle {
     /// \brief Don't align escaped newlines.
@@ -1540,6 +1565,8 @@ struct FormatStyle {
            AlignAfterOpenBracket == R.AlignAfterOpenBracket &&
            AlignConsecutiveAssignments == R.AlignConsecutiveAssignments &&
            AlignConsecutiveDeclarations == R.AlignConsecutiveDeclarations &&
+           AlignConsecutiveFuctionDeclarations == R.AlignConsecutiveFuctionDeclarations && 
+           AlignConsecutiveFuctionCalls == R.AlignConsecutiveFuctionCalls && 
            AlignEscapedNewlines == R.AlignEscapedNewlines &&
            AlignOperands == R.AlignOperands &&
            AlignTrailingComments == R.AlignTrailingComments &&
