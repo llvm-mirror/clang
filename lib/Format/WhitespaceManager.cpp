@@ -424,8 +424,11 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
         MinStartOfTokenColumn = ChangeMinColumn;
       }
     }
+
+	// update minimal position 
     MinStartOfTokenColumn = std::min(MinStartOfTokenColumn, ChangeMinColumn);
     int MaxShift = ChangeMinColumn - MinStartOfTokenColumn;
+	// check for space limit again for asc order
     if (MaxShift > 0 && MaxShift > Style.AlignConsecutiveSpaceLimit) {
         // apply alignment 
         AlignCurrentSequence();
