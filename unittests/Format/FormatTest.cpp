@@ -3571,7 +3571,6 @@ TEST_F(FormatTest, BreakConstructorInitializersAfterColon) {
 // state of ranges used in std::priority_queue - this blows out the
 // runtime/scalability of the function and makes this test unacceptably slow.
 TEST_F(FormatTest, MemoizationTests) {
-	return;
   // This breaks if the memoization lookup does not take \c Indent and
   // \c LastSpace into account.
   verifyFormat(
