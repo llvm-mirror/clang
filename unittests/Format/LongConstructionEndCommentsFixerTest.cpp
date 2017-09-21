@@ -79,6 +79,28 @@ TEST_F(LongConstructionEndCommentsFixerTest, AddsEndComment) {
 								"  int j;\n"
 								"}", Style));
 
+	// if-else
+	EXPECT_EQ("if (a) {\n"
+		"  int i;\n"
+		"  int j;\n"
+		"} else if (a) {\n"
+		"  int i;\n"
+		"  int j;\n"
+		"} else {\n"
+		"  int i;\n"
+		"  int j;\n"
+		"}",
+		fixOtherEndComments("if (a) {\n"
+							"  int i;\n"
+							"  int j;\n"
+							"} else if (a) {\n"
+							"  int i;\n"
+							"  int j;\n"
+							"} else {\n"
+							"  int i;\n"
+							"  int j;\n"
+							"}", Style));
+
 	// while 
     EXPECT_EQ("while (a) {\n"
             "  int i;\n"
@@ -90,24 +112,38 @@ TEST_F(LongConstructionEndCommentsFixerTest, AddsEndComment) {
 								"}", Style));
 
 
-	// while 
+	// switch 
     EXPECT_EQ(	"switch (x) {\n"
 				"case 1: {\n"
 				"  f();\n"
+				"  f();\n"
 				"  break;\n"
-				"}\n"
+				"} // case 1:\n"
 				"case 2: {\n"
+				"  f();\n"
+				"  f();\n"
 				"  break;\n"
-				"}\n"
+				"} // case 2:\n"
+				"case 3:\n"
+				"f();\n"
+				"f();\n"
+				"break;\n"
 				"} // switch (x)",
             fixOtherEndComments("switch (x) {\n"
 								"case 1: {\n"
 								"  f();\n"
+								"  f();\n"
 								"  break;\n"
 								"}\n"
 								"case 2: {\n"
+								"  f();\n"
+								"  f();\n"
 								"  break;\n"
 								"}\n"
+								"case 3:\n"
+								"f();\n"
+								"f();\n"
+								"break;\n"
 								"}", Style));
 
   // lenght

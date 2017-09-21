@@ -132,6 +132,7 @@ tooling::Replacements LongConstructionEndCommentsFixer::analyze(
 	analyze(Annotator, AnnotatedLines, Tokens, tok::kw_if, Fixes);
 	analyze(Annotator, AnnotatedLines, Tokens, tok::kw_while, Fixes);
 	analyze(Annotator, AnnotatedLines, Tokens, tok::kw_switch, Fixes);
+	analyze(Annotator, AnnotatedLines, Tokens, tok::kw_case, Fixes);
 
 	return Fixes;
 }
