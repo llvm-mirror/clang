@@ -18,6 +18,7 @@
 #include "ContinuationIndenter.h"
 #include "FormatTokenLexer.h"
 #include "NamespaceEndCommentsFixer.h"
+#include "LongConstructionEndCommentsFixer.h"
 #include "SortJavaScriptImports.h"
 #include "TokenAnalyzer.h"
 #include "TokenAnnotator.h"
@@ -358,6 +359,7 @@ template <> struct MappingTraits<FormatStyle> {
     IO.mapOptional("ExperimentalAutoDetectBinPacking",
                    Style.ExperimentalAutoDetectBinPacking);
     IO.mapOptional("FixNamespaceComments", Style.FixNamespaceComments);
+	IO.mapOptional("LongConstructionEndCommentsLenLimit", Style.LongConstructionEndCommentsLenLimit);
     IO.mapOptional("ForEachMacros", Style.ForEachMacros);
     IO.mapOptional("IncludeCategories", Style.IncludeCategories);
     IO.mapOptional("IncludeIsMainRegex", Style.IncludeIsMainRegex);
@@ -606,6 +608,7 @@ FormatStyle getLLVMStyle() {
   LLVMStyle.DerivePointerAlignment = false;
   LLVMStyle.ExperimentalAutoDetectBinPacking = false;
   LLVMStyle.FixNamespaceComments = true;
+  LLVMStyle.LongConstructionEndCommentsLenLimit = std::numeric_limits<unsigned>::max();
   LLVMStyle.ForEachMacros.push_back("foreach");
   LLVMStyle.ForEachMacros.push_back("Q_FOREACH");
   LLVMStyle.ForEachMacros.push_back("BOOST_FOREACH");
@@ -1943,6 +1946,11 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
         return NamespaceEndCommentsFixer(Env, Expanded).process();
       });
 
+	if (Style.LongConstructionEndCommentsLenLimit == std::numeric_limits<unsigned>::max())
+	  Passes.emplace_back([&](const Environment &Env) {
+		return LongConstructionEndCommentsFixer(Env, Expanded).process();
+	  });
+
     if (Style.SortUsingDeclarations)
       Passes.emplace_back([&](const Environment &Env) {
         return UsingDeclarationsSorter(Env, Expanded).process();
@@ -2013,6 +2021,15 @@ tooling::Replacements fixNamespaceEndComments(const FormatStyle &Style,
   return Fix.process();
 }
 
+tooling::Replacements fixOtherEndComments(const FormatStyle &Style,
+	StringRef Code,
+	ArrayRef<tooling::Range> Ranges,
+	StringRef FileName) {
+	std::unique_ptr<Environment> Env =
+		Environment::CreateVirtualEnvironment(Code, FileName, Ranges);
+	LongConstructionEndCommentsFixer Fix(*Env, Style);
+	return Fix.process();
+}
 tooling::Replacements sortUsingDeclarations(const FormatStyle &Style,
                                             StringRef Code,
                                             ArrayRef<tooling::Range> Ranges,

@@ -10200,6 +10200,7 @@ TEST_F(FormatTest, ParsesConfiguration) {
   CHECK_PARSE("IndentWidth: 32", IndentWidth, 32u);
   CHECK_PARSE("ContinuationIndentWidth: 11", ContinuationIndentWidth, 11u);
   CHECK_PARSE("AlignConsecutiveSpaceLimit: 42", AlignConsecutiveSpaceLimit, 42u);
+  CHECK_PARSE("LongConstructionEndCommentsLenLimit: 42", LongConstructionEndCommentsLenLimit, 42u);
   CHECK_PARSE("CommentPragmas: '// abc$'", CommentPragmas, "// abc$");
 
   Style.PointerAlignment = FormatStyle::PAS_Middle;

@@ -8,6 +8,7 @@ add_clang_library(clangFormat
   FormatToken.cpp
   FormatTokenLexer.cpp
   NamespaceEndCommentsFixer.cpp
+  LongConstructionEndCommentsFixer.cpp
   SortJavaScriptImports.cpp
   TokenAnalyzer.cpp
   TokenAnnotator.cpp

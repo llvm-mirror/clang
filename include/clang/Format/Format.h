@@ -1013,6 +1013,15 @@ struct FormatStyle {
   /// \endcode
   bool FixNamespaceComments;
 
+  /// \brief Defines limit (in number of lines). Construction longer that the limit 
+  /// should have annotated r bracket.
+  /// \code
+  ///    if (a) {                  vs.       if (a) {
+  ///      foo();                              foo();
+  ///    } // if (a)                         }
+  /// \endcode
+  unsigned LongConstructionEndCommentsLenLimit;
+
   /// \brief A vector of macros that should be interpreted as foreach loops
   /// instead of as function calls.
   ///
@@ -1629,6 +1638,7 @@ struct FormatStyle {
            ExperimentalAutoDetectBinPacking ==
                R.ExperimentalAutoDetectBinPacking &&
            FixNamespaceComments == R.FixNamespaceComments &&
+		   LongConstructionEndCommentsLenLimit == R.LongConstructionEndCommentsLenLimit &&
            ForEachMacros == R.ForEachMacros &&
            IncludeCategories == R.IncludeCategories &&
            IndentCaseLabels == R.IndentCaseLabels &&
@@ -1811,6 +1821,11 @@ tooling::Replacements fixNamespaceEndComments(const FormatStyle &Style,
                                               StringRef Code,
                                               ArrayRef<tooling::Range> Ranges,
                                               StringRef FileName = "<stdin>");
+
+tooling::Replacements fixOtherEndComments(const FormatStyle &Style,
+	StringRef Code,
+	ArrayRef<tooling::Range> Ranges,
+	StringRef FileName = "<stdin>");
 
 /// \brief Sort consecutive using declarations in the given \p Ranges in
 /// \p Code.
