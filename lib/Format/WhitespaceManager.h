@@ -119,6 +119,7 @@ public:
     // FormatToken around to query its information.
     SourceRange OriginalWhitespaceRange;
     unsigned StartOfTokenColumn;
+	unsigned ShiftApplied;
     unsigned NewlinesBefore;
     std::string PreviousLinePostfix;
     std::string CurrentLinePrefix;

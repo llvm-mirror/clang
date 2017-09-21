@@ -41,7 +41,7 @@ WhitespaceManager::Change::Change(const FormatToken &Tok,
       ContinuesPPDirective(ContinuesPPDirective), Spaces(Spaces),
       IsInsideToken(IsInsideToken), IsTrailingComment(false), TokenLength(0),
       PreviousEndOfTokenColumn(0), EscapedNewlineColumn(0),
-      StartOfBlockComment(nullptr), IndentationOffset(0) {}
+      StartOfBlockComment(nullptr), IndentationOffset(0), ShiftApplied(0) {}
 
 void WhitespaceManager::replaceWhitespace(FormatToken &Tok, unsigned Newlines,
                                           unsigned Spaces,
@@ -89,8 +89,8 @@ const tooling::Replacements &WhitespaceManager::generateReplacements() {
   calculateLineBreakInformation();
   alignConsecutiveDeclarations();
   AlignConsecutiveFuctionDeclarations();
-  AlignConsecutiveFuctionCalls();
   alignConsecutiveAssignments();
+  AlignConsecutiveFuctionCalls();
   alignTrailingComments();
   alignEscapedNewlines();
   generateChanges();
@@ -270,7 +270,14 @@ AlignTokenSequence(unsigned Start, unsigned End, unsigned Column, F &&Matches,
       FoundMatchOnLine = true;
       Shift = Column - Changes[i].StartOfTokenColumn;
       Changes[i].Spaces += Shift;
-    }
+	  Changes[i].ShiftApplied += Shift;
+    } else if (FoundMatchOnLine && !InsideNestedScope) { // reduce previously applied spaces.
+		int SpacesToReduce = std::min <int>(Shift, Changes[i].ShiftApplied);
+		Shift -= SpacesToReduce;
+		Changes[i].ShiftApplied -= SpacesToReduce;
+		Changes[i].StartOfTokenColumn -= SpacesToReduce;
+		Changes[i].Spaces -= SpacesToReduce;
+	}
 
     // This is for function parameters that are split across multiple lines,
     // as mentioned in the ScopeStack comment.
@@ -280,6 +287,7 @@ AlignTokenSequence(unsigned Start, unsigned End, unsigned Column, F &&Matches,
           (ScopeStart > Start + 1 &&
            Changes[ScopeStart - 2].Tok->is(TT_FunctionDeclarationName)))
         Changes[i].Spaces += Shift;
+	    Changes[i].ShiftApplied += Shift;
     }
 
     assert(Shift >= 0);
@@ -326,7 +334,7 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
   // Line number of the start and the end of the current token sequence.
   unsigned StartOfSequence = 0;
   unsigned EndOfSequence = 0;
-  unsigned MinStartOfTokenColumn = UINT_MAX; // kostya
+  unsigned MinStartOfTokenColumn = UINT_MAX;
 
   // Measure the scope level (i.e. depth of (), [], {}) of the first token, and
   // abort when we hit any token in a higher scope than the starting one.
@@ -358,7 +366,7 @@ static unsigned AlignTokens(const FormatStyle &Style, F &&Matches,
     MaxColumn = UINT_MAX;
     StartOfSequence = 0;
     EndOfSequence = 0;
-    MinStartOfTokenColumn = UINT_MAX; // kostya
+    MinStartOfTokenColumn = UINT_MAX;
   };
 
   unsigned i = StartAt;

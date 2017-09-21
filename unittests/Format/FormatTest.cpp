@@ -9371,9 +9371,9 @@ TEST_F(FormatTest, AlignConsecutiveFuctionCalls) {
     Alignment.AlignConsecutiveDeclarations = true;
 
     verifyFormat(
-        "int   a = method();\n"
-        "float b = m     ();\n"
-        "mm              ();\n",
+        "int   aaaa = method();\n"
+        "float b    = m     ();\n"
+        "mm                 ();\n",
         Alignment);
 }
 
