@@ -189,6 +189,13 @@ struct FormatStyle {
   /// \endcode
   bool AlignTrailingComments;
 
+  /// \brief If ``true``, commented line should be skipped. Commented line is the line starts with "//".
+  /// \code
+  /// int a = 42; // I'm just comment.\n"
+  /// //int a=42;//Don't touch me\n",
+  /// \endcode
+  bool SkipCommentedLine;
+
   /// \brief If the function declaration doesn't fit on a line,
   /// allow putting all parameters of a function declaration onto
   /// the next line even if ``BinPackParameters`` is ``false``.
@@ -1584,6 +1591,7 @@ struct FormatStyle {
            AlignEscapedNewlines == R.AlignEscapedNewlines &&
            AlignOperands == R.AlignOperands &&
            AlignTrailingComments == R.AlignTrailingComments &&
+           SkipCommentedLine == R.SkipCommentedLine &&
            AllowAllParametersOfDeclarationOnNextLine ==
                R.AllowAllParametersOfDeclarationOnNextLine &&
            AllowShortBlocksOnASingleLine == R.AllowShortBlocksOnASingleLine &&

@@ -1125,6 +1125,12 @@ void UnwrappedLineFormatter::formatFirstToken(const AnnotatedLine &Line,
       (!PreviousLine->InPPDirective || !RootToken.HasUnescapedNewline))
     Newlines = std::min(1u, Newlines);
 
+  if (Style.SkipCommentedLine) {
+	  if (RootToken.is(tok::comment) && RootToken.OriginalColumn == 0) {
+		  RootToken.Finalized = true;
+	  }
+  }
+
   Whitespaces->replaceWhitespace(RootToken, Newlines, Indent, Indent,
                                  Line.InPPDirective &&
                                      !RootToken.HasUnescapedNewline);

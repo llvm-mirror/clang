@@ -9335,6 +9335,17 @@ TEST_F(FormatTest, AlignConsecutiveFuctionDeclarations) {
         "  float mm    ();\n"
         "};",
         Alignment);
+
+	Alignment.AlignConsecutiveAssignments = true;
+	
+	verifyFormat(
+		"class A {\n"
+		"public:\n"
+		"  void  method(int a)   = 0;\n"
+		"  void  m     (float b) = 0;\n"
+		"  float mm    ()        = 0;\n"
+		"};",
+		Alignment);
 }
 
 
@@ -9376,7 +9387,6 @@ TEST_F(FormatTest, AlignConsecutiveFuctionCalls) {
         "mm                 ();\n",
         Alignment);
 }
-
 
 TEST_F(FormatTest, AlignConsecutiveSpaceLimit) {
 	FormatStyle Alignment = getLLVMStyle();
@@ -9431,6 +9441,15 @@ TEST_F(FormatTest, AlignConsecutiveSpaceLimit) {
 		"aa ();\n"
 		"a  ();\n",
 		Alignment);
+}
+
+TEST_F(FormatTest, SkipCommentedLine) {
+	FormatStyle Style = getLLVMStyle();
+	Style.SkipCommentedLine = true;
+	verifyFormat(
+		"int a = 42; // I'm just comment.\n"
+		"//int a=42;//Don't touch me\n",
+		Style);
 }
 
 TEST_F(FormatTest, LinuxBraceBreaking) {
@@ -10099,11 +10118,11 @@ TEST_F(FormatTest, ParsesConfigurationBools) {
   Style.Language = FormatStyle::LK_Cpp;
   CHECK_PARSE_BOOL(AlignOperands);
   CHECK_PARSE_BOOL(AlignTrailingComments);
+  CHECK_PARSE_BOOL(SkipCommentedLine);
   CHECK_PARSE_BOOL(AlignConsecutiveAssignments);
   CHECK_PARSE_BOOL(AlignConsecutiveDeclarations);
   CHECK_PARSE_BOOL(AlignConsecutiveFuctionDeclarations);
   CHECK_PARSE_BOOL(AlignConsecutiveFuctionCalls);
-  //CHECK_PARSE_BOOL(AlignConsecutiveSpaceLimit);
   CHECK_PARSE_BOOL(AllowAllParametersOfDeclarationOnNextLine);
   CHECK_PARSE_BOOL(AllowShortBlocksOnASingleLine);
   CHECK_PARSE_BOOL(AllowShortCaseLabelsOnASingleLine);
@@ -10181,6 +10200,7 @@ TEST_F(FormatTest, ParsesConfiguration) {
               SpacesBeforeTrailingComments, 1234u);
   CHECK_PARSE("IndentWidth: 32", IndentWidth, 32u);
   CHECK_PARSE("ContinuationIndentWidth: 11", ContinuationIndentWidth, 11u);
+  CHECK_PARSE("AlignConsecutiveSpaceLimit: 42", AlignConsecutiveSpaceLimit, 42u);
   CHECK_PARSE("CommentPragmas: '// abc$'", CommentPragmas, "// abc$");
 
   Style.PointerAlignment = FormatStyle::PAS_Middle;
