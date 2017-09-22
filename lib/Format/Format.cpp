@@ -1946,7 +1946,7 @@ tooling::Replacements reformat(const FormatStyle &Style, StringRef Code,
         return NamespaceEndCommentsFixer(Env, Expanded).process();
       });
 
-	if (Style.LongConstructionEndCommentsLenLimit == std::numeric_limits<unsigned>::max())
+	if (Style.LongConstructionEndCommentsLenLimit < std::numeric_limits<unsigned>::max())
 	  Passes.emplace_back([&](const Environment &Env) {
 		return LongConstructionEndCommentsFixer(Env, Expanded).process();
 	  });
