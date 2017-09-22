@@ -54,6 +54,11 @@ std::string computeName(const FormatToken *Tok, tok::TokenKind Kind, const Forma
   // reformat the string
   name = format(name, Style);
 
+  // truncate the string after format
+  size_t FirstEol = name.find_first_of("\n");
+  if (FirstEol != std::string::npos) {
+	  name = name.substr(0, FirstEol);
+  }
   return name;
 }
 

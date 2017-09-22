@@ -59,6 +59,19 @@ TEST_F(LongConstructionEndCommentsFixerTest, AddsEndComment) {
 
   Style.LongConstructionEndCommentsLenLimit = 1;
 
+  	EXPECT_EQ(	"if (FileNames.size() != 1 && (Offsets.empty()) && (Offsets.empty()) &&\n"
+				"  (Offsets.empty())) {\n"
+				"  errs() << \"error: -offset, -length and -lines can only be used for \"\n"
+				" \"single file.\n\";\n"
+				"  return 1; \n"
+				"} // if (FileNames.size() != 1 && (Offsets.empty()) && (Offsets.empty()) &&",
+				fixOtherEndComments("if (FileNames.size() != 1 && (Offsets.empty()) && (Offsets.empty()) &&\n"
+									"  (Offsets.empty())) {\n"
+									"  errs() << \"error: -offset, -length and -lines can only be used for \"\n"
+									" \"single file.\n\";\n"
+									"  return 1; \n"
+									"}", Style));
+
   // for 
   EXPECT_EQ("for (;;) {\n"
             "  int i;\n"
