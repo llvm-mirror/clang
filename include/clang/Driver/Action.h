@@ -59,6 +59,7 @@ public:
     AnalyzeJobClass,
     MigrateJobClass,
     CompileJobClass,
+    FortranFrontendJobClass,
     BackendJobClass,
     AssembleJobClass,
     LinkJobClass,
@@ -397,6 +398,16 @@ public:
 
   static bool classof(const Action *A) {
     return A->getKind() == MigrateJobClass;
+  }
+};
+
+class FortranFrontendJobAction : public JobAction {
+  void anchor() override;
+public:
+  FortranFrontendJobAction(Action *Input, types::ID OutputType);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == FortranFrontendJobClass;
   }
 };
 

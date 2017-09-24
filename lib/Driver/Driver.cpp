@@ -118,6 +118,7 @@ void Driver::setDriverModeFromOption(StringRef Opt) {
                          .Case("g++", GXXMode)
                          .Case("cpp", CPPMode)
                          .Case("cl", CLMode)
+                         .Case("fortran", FortranMode)
                          .Default(~0U);
 
   if (M != ~0U)
@@ -179,6 +180,10 @@ phases::ID Driver::getFinalPhase(const DerivedArgList &DAL,
       (PhaseArg = DAL.getLastArg(options::OPT_M, options::OPT_MM)) ||
       (PhaseArg = DAL.getLastArg(options::OPT__SLASH_P))) {
     FinalPhase = phases::Preprocess;
+
+    // -fsyntax-only stops Fortran compilation after FortranFrontend
+  } else if (IsFortranMode() && (PhaseArg = DAL.getLastArg(options::OPT_fsyntax_only))) {
+    FinalPhase = phases::FortranFrontend;
 
     // --precompile only runs up to precompilation.
   } else if ((PhaseArg = DAL.getLastArg(options::OPT__precompile))) {
@@ -2630,6 +2635,13 @@ Action *Driver::ConstructPhaseAction(Compilation &C, const ArgList &Args,
       OutputTy = types::TY_Nothing;
     }
     return C.MakeAction<PrecompileJobAction>(Input, OutputTy);
+  }
+  case phases::FortranFrontend: {
+    if (Args.hasArg(options::OPT_fsyntax_only))
+      return C.MakeAction<FortranFrontendJobAction>(Input,
+                                                    types::TY_Nothing);
+    return C.MakeAction<FortranFrontendJobAction>(Input,
+                                                  types::TY_LLVM_IR);
   }
   case phases::Compile: {
     if (Args.hasArg(options::OPT_fsyntax_only))
