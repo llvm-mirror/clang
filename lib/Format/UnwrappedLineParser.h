@@ -96,7 +96,7 @@ private:
   bool parseBracedList(bool ContinueOnSemicolons = false,
                        tok::TokenKind ClosingBraceKind = tok::r_brace);
   void parseParens();
-  void parseSquare();
+  void parseSquare(bool LambdaIntroducer = false);
   void parseIfThenElse();
   void parseTryCatch();
   void parseForOrWhileLoop();
@@ -129,7 +129,6 @@ private:
   // - if the token is '}' and closes a block, LevelDifference is -1.
   void nextToken(int LevelDifference = 0);
   void readToken(int LevelDifference = 0);
-  const FormatToken *getPreviousToken();
 
   // Decides which comment tokens should be added to the current line and which
   // should be added as comments before the next token.
@@ -263,8 +262,9 @@ struct UnwrappedLineNode {
   SmallVector<UnwrappedLine, 0> Children;
 };
 
-inline UnwrappedLine::UnwrappedLine() : Level(0), InPPDirective(false),
-  MustBeDeclaration(false), MatchingOpeningBlockLineIndex(kInvalidIndex) {}
+inline UnwrappedLine::UnwrappedLine()
+    : Level(0), InPPDirective(false), MustBeDeclaration(false),
+      MatchingOpeningBlockLineIndex(kInvalidIndex) {}
 
 } // end namespace format
 } // end namespace clang

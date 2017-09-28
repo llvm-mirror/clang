@@ -5123,13 +5123,18 @@ ASTReader::ReadSubmoduleBlock(ModuleFile &F, unsigned ClientLoadCapabilities) {
       break;
     }
 
-    case SUBMODULE_INITIALIZERS:
+    case SUBMODULE_INITIALIZERS: {
       if (!ContextObj)
         break;
       SmallVector<uint32_t, 16> Inits;
       for (auto &ID : Record)
         Inits.push_back(getGlobalDeclID(F, ID));
       ContextObj->addLazyModuleInitializers(CurrentModule, Inits);
+      break;
+    }
+
+    case SUBMODULE_EXPORT_AS:
+      CurrentModule->ExportAsModule = Blob.str();
       break;
     }
   }
@@ -6682,6 +6687,9 @@ QualType ASTReader::GetType(TypeID ID) {
       break;
     case PREDEF_TYPE_LONGDOUBLE_ID:
       T = Context.LongDoubleTy;
+      break;
+    case PREDEF_TYPE_FLOAT16_ID:
+      T = Context.Float16Ty;
       break;
     case PREDEF_TYPE_FLOAT128_ID:
       T = Context.Float128Ty;
@@ -8291,8 +8299,8 @@ ASTReader::getSourceDescriptor(unsigned ID) {
 }
 
 ExternalASTSource::ExtKind ASTReader::hasExternalDefinitions(const Decl *FD) {
-  auto I = BodySource.find(FD);
-  if (I == BodySource.end())
+  auto I = DefinitionSource.find(FD);
+  if (I == DefinitionSource.end())
     return EK_ReplyHazy;
   return I->second ? EK_Never : EK_Always;
 }

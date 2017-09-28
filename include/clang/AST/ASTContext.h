@@ -39,6 +39,7 @@
 #include "clang/Basic/SanitizerBlacklist.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/Specifiers.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/XRayLists.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/ArrayRef.h"
@@ -89,7 +90,6 @@ class DiagnosticsEngine;
 class Expr;
 class MangleNumberingContext;
 class MaterializeTemporaryExpr;
-class TargetInfo;
 // Decls
 class MangleContext;
 class ObjCIvarDecl;
@@ -973,6 +973,7 @@ public:
   CanQualType UnsignedLongLongTy, UnsignedInt128Ty;
   CanQualType FloatTy, DoubleTy, LongDoubleTy, Float128Ty;
   CanQualType HalfTy; // [OpenCL 6.1.1.1], ARM NEON
+  CanQualType Float16Ty; // C11 extension ISO/IEC TS 18661-3
   CanQualType FloatComplexTy, DoubleComplexTy, LongDoubleComplexTy;
   CanQualType Float128ComplexTy;
   CanQualType VoidPtrTy, NullPtrTy;
@@ -1579,6 +1580,24 @@ public:
     }
 
     return NSCopyingName;
+  }
+
+  CanQualType getNSUIntegerType() const {
+    assert(Target && "Expected target to be initialized");
+    const llvm::Triple &T = Target->getTriple();
+    // Windows is LLP64 rather than LP64
+    if (T.isOSWindows() && T.isArch64Bit())
+      return UnsignedLongLongTy;
+    return UnsignedLongTy;
+  }
+
+  CanQualType getNSIntegerType() const {
+    assert(Target && "Expected target to be initialized");
+    const llvm::Triple &T = Target->getTriple();
+    // Windows is LLP64 rather than LP64
+    if (T.isOSWindows() && T.isArch64Bit())
+      return LongLongTy;
+    return LongTy;
   }
 
   /// Retrieve the identifier 'bool'.

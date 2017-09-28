@@ -154,6 +154,12 @@ private:
 };
 } // namespace
 
+std::vector<std::string> getUSRsForDeclaration(const NamedDecl *ND,
+                                               ASTContext &Context) {
+  AdditionalUSRFinder Finder(ND, Context);
+  return Finder.Find();
+}
+
 class NamedDeclFindingConsumer : public ASTConsumer {
 public:
   NamedDeclFindingConsumer(ArrayRef<unsigned> SymbolOffsets,
@@ -198,8 +204,11 @@ private:
         return false;
       }
 
-      if (Force)
+      if (Force) {
+        SpellingNames.push_back(std::string());
+        USRList.push_back(std::vector<std::string>());
         return true;
+      }
 
       unsigned CouldNotFindSymbolNamed = Engine.getCustomDiagID(
           DiagnosticsEngine::Error, "clang-rename could not find symbol %0");

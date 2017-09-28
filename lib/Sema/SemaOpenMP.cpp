@@ -10510,9 +10510,14 @@ Sema::ActOnOpenMPDependClause(OpenMPDependClauseKind DepKind,
         if (!CurContext->isDependentContext() &&
             DSAStack->getParentOrderedRegionParam() &&
             DepCounter != DSAStack->isParentLoopControlVariable(D).first) {
-          Diag(ELoc, diag::err_omp_depend_sink_expected_loop_iteration)
-              << DSAStack->getParentLoopControlVariable(
-                     DepCounter.getZExtValue());
+          ValueDecl* VD = DSAStack->getParentLoopControlVariable(
+              DepCounter.getZExtValue());
+          if (VD) {
+            Diag(ELoc, diag::err_omp_depend_sink_expected_loop_iteration)
+                << 1 << VD;
+          } else {
+             Diag(ELoc, diag::err_omp_depend_sink_expected_loop_iteration) << 0;
+          }
           continue;
         }
         OpsOffs.push_back({RHS, OOK});
@@ -10545,8 +10550,9 @@ Sema::ActOnOpenMPDependClause(OpenMPDependClauseKind DepKind,
 
     if (!CurContext->isDependentContext() && DepKind == OMPC_DEPEND_sink &&
         TotalDepCount > VarList.size() &&
-        DSAStack->getParentOrderedRegionParam()) {
-      Diag(EndLoc, diag::err_omp_depend_sink_expected_loop_iteration)
+        DSAStack->getParentOrderedRegionParam() &&
+        DSAStack->getParentLoopControlVariable(VarList.size() + 1)) {
+      Diag(EndLoc, diag::err_omp_depend_sink_expected_loop_iteration) << 1
           << DSAStack->getParentLoopControlVariable(VarList.size() + 1);
     }
     if (DepKind != OMPC_DEPEND_source && DepKind != OMPC_DEPEND_sink &&
@@ -10574,56 +10580,12 @@ OMPClause *Sema::ActOnOpenMPDeviceClause(Expr *Device, SourceLocation StartLoc,
   return new (Context) OMPDeviceClause(ValExpr, StartLoc, LParenLoc, EndLoc);
 }
 
-static bool IsCXXRecordForMappable(Sema &SemaRef, SourceLocation Loc,
-                                   DSAStackTy *Stack, CXXRecordDecl *RD) {
-  if (!RD || RD->isInvalidDecl())
-    return true;
-
-  auto QTy = SemaRef.Context.getRecordType(RD);
-  if (RD->isDynamicClass()) {
-    SemaRef.Diag(Loc, diag::err_omp_not_mappable_type) << QTy;
-    SemaRef.Diag(RD->getLocation(), diag::note_omp_polymorphic_in_target);
-    return false;
-  }
-  auto *DC = RD;
-  bool IsCorrect = true;
-  for (auto *I : DC->decls()) {
-    if (I) {
-      if (auto *MD = dyn_cast<CXXMethodDecl>(I)) {
-        if (MD->isStatic()) {
-          SemaRef.Diag(Loc, diag::err_omp_not_mappable_type) << QTy;
-          SemaRef.Diag(MD->getLocation(),
-                       diag::note_omp_static_member_in_target);
-          IsCorrect = false;
-        }
-      } else if (auto *VD = dyn_cast<VarDecl>(I)) {
-        if (VD->isStaticDataMember()) {
-          SemaRef.Diag(Loc, diag::err_omp_not_mappable_type) << QTy;
-          SemaRef.Diag(VD->getLocation(),
-                       diag::note_omp_static_member_in_target);
-          IsCorrect = false;
-        }
-      }
-    }
-  }
-
-  for (auto &I : RD->bases()) {
-    if (!IsCXXRecordForMappable(SemaRef, I.getLocStart(), Stack,
-                                I.getType()->getAsCXXRecordDecl()))
-      IsCorrect = false;
-  }
-  return IsCorrect;
-}
-
 static bool CheckTypeMappable(SourceLocation SL, SourceRange SR, Sema &SemaRef,
                               DSAStackTy *Stack, QualType QTy) {
   NamedDecl *ND;
   if (QTy->isIncompleteType(&ND)) {
     SemaRef.Diag(SL, diag::err_incomplete_type) << QTy << SR;
     return false;
-  } else if (CXXRecordDecl *RD = dyn_cast_or_null<CXXRecordDecl>(ND)) {
-    if (!RD->isInvalidDecl() && !IsCXXRecordForMappable(SemaRef, SL, Stack, RD))
-      return false;
   }
   return true;
 }
@@ -11533,7 +11495,7 @@ void Sema::ActOnOpenMPDeclareReductionCombinerEnd(Decl *D, Expr *Combiner) {
     DRD->setInvalidDecl();
 }
 
-void Sema::ActOnOpenMPDeclareReductionInitializerStart(Scope *S, Decl *D) {
+VarDecl *Sema::ActOnOpenMPDeclareReductionInitializerStart(Scope *S, Decl *D) {
   auto *DRD = cast<OMPDeclareReductionDecl>(D);
 
   // Enter new function scope.
@@ -11572,10 +11534,11 @@ void Sema::ActOnOpenMPDeclareReductionInitializerStart(Scope *S, Decl *D) {
     DRD->addDecl(OmpPrivParm);
     DRD->addDecl(OmpOrigParm);
   }
+  return OmpPrivParm;
 }
 
-void Sema::ActOnOpenMPDeclareReductionInitializerEnd(Decl *D,
-                                                     Expr *Initializer) {
+void Sema::ActOnOpenMPDeclareReductionInitializerEnd(Decl *D, Expr *Initializer,
+                                                     VarDecl *OmpPrivParm) {
   auto *DRD = cast<OMPDeclareReductionDecl>(D);
   DiscardCleanupsInEvaluationContext();
   PopExpressionEvaluationContext();
@@ -11583,10 +11546,16 @@ void Sema::ActOnOpenMPDeclareReductionInitializerEnd(Decl *D,
   PopDeclContext();
   PopFunctionScopeInfo();
 
-  if (Initializer != nullptr)
-    DRD->setInitializer(Initializer);
-  else
+  if (Initializer != nullptr) {
+    DRD->setInitializer(Initializer, OMPDeclareReductionDecl::CallInit);
+  } else if (OmpPrivParm->hasInit()) {
+    DRD->setInitializer(OmpPrivParm->getInit(),
+                        OmpPrivParm->isDirectInit()
+                            ? OMPDeclareReductionDecl::DirectInit
+                            : OMPDeclareReductionDecl::CopyInit);
+  } else {
     DRD->setInvalidDecl();
+  }
 }
 
 Sema::DeclGroupPtrTy Sema::ActOnOpenMPDeclareReductionDirectiveEnd(

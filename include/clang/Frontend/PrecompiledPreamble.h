@@ -36,21 +36,6 @@ class CompilerInvocation;
 class DeclGroupRef;
 class PCHContainerOperations;
 
-/// A size of the preamble and a flag required by
-/// PreprocessorOptions::PrecompiledPreambleBytes.
-struct PreambleBounds {
-  PreambleBounds(unsigned Size, bool PreambleEndsAtStartOfLine)
-      : Size(Size), PreambleEndsAtStartOfLine(PreambleEndsAtStartOfLine) {}
-
-  /// \brief Size of the preamble in bytes.
-  unsigned Size;
-  /// \brief Whether the preamble ends at the start of a new line.
-  ///
-  /// Used to inform the lexer as to whether it's starting at the beginning of
-  /// a line after skipping the preamble.
-  bool PreambleEndsAtStartOfLine;
-};
-
 /// \brief Runs lexer to compute suggested preamble bounds.
 PreambleBounds ComputePreambleBounds(const LangOptions &LangOpts,
                                      llvm::MemoryBuffer *Buffer,
@@ -97,8 +82,11 @@ public:
   PrecompiledPreamble(PrecompiledPreamble &&) = default;
   PrecompiledPreamble &operator=(PrecompiledPreamble &&) = default;
 
-  /// PreambleBounds used to build the preamble
+  /// PreambleBounds used to build the preamble.
   PreambleBounds getBounds() const;
+
+  /// The temporary file path at which the preamble PCH was placed.
+  StringRef GetPCHPath() const { return PCHFile.getFilePath(); }
 
   /// Check whether PrecompiledPreamble can be reused for the new contents(\p
   /// MainFileBuffer) of the main file.

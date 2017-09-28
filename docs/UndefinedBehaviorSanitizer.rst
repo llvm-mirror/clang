@@ -87,7 +87,8 @@ Available checks are:
   -  ``-fsanitize=float-divide-by-zero``: Floating point division by
      zero.
   -  ``-fsanitize=function``: Indirect call of a function through a
-     function pointer of the wrong type (Linux, C++ and x86/x86_64 only).
+     function pointer of the wrong type (Darwin/Linux, C++ and x86/x86_64
+     only).
   -  ``-fsanitize=integer-divide-by-zero``: Integer division by zero.
   -  ``-fsanitize=nonnull-attribute``: Passing null pointer as a function
      parameter which is declared to never be null.
@@ -154,6 +155,19 @@ Volatile
 
 The ``null``, ``alignment``, ``object-size``, and ``vptr`` checks do not apply
 to pointers to types with the ``volatile`` qualifier.
+
+Minimal Runtime
+===============
+
+There is a minimal UBSan runtime available suitable for use in production
+environments. This runtime has a small attack surface. It only provides very
+basic issue logging and deduplication, and does not support ``-fsanitize=vptr``
+checking.
+
+To use the minimal runtime, add ``-fsanitize-minimal-runtime`` to the clang
+command line options. For example, if you're used to compiling with
+``-fsanitize=undefined``, you could enable the minimal runtime with
+``-fsanitize=undefined -fsanitize-minimal-runtime``.
 
 Stack traces and report symbolization
 =====================================

@@ -62,7 +62,7 @@
 #include "cuda.h"
 #if !defined(CUDA_VERSION)
 #error "cuda.h did not define CUDA_VERSION"
-#elif CUDA_VERSION < 7000 || CUDA_VERSION > 8000
+#elif CUDA_VERSION < 7000 || CUDA_VERSION > 9000
 #error "Unsupported CUDA version!"
 #endif
 
@@ -86,7 +86,11 @@
 #define __COMMON_FUNCTIONS_H__
 
 #undef __CUDACC__
+#if CUDA_VERSION < 9000
 #define __CUDABE__
+#else
+#define __CUDA_LIBDEVICE__
+#endif
 // Disables definitions of device-side runtime support stubs in
 // cuda_device_runtime_api.h
 #include "driver_types.h"
@@ -94,6 +98,7 @@
 #include "host_defines.h"
 
 #undef __CUDABE__
+#undef __CUDA_LIBDEVICE__
 #define __CUDACC__
 #include "cuda_runtime.h"
 
@@ -105,7 +110,9 @@
 #define __nvvm_memcpy(s, d, n, a) __builtin_memcpy(s, d, n)
 #define __nvvm_memset(d, c, n, a) __builtin_memset(d, c, n)
 
+#if CUDA_VERSION < 9000
 #include "crt/device_runtime.h"
+#endif
 #include "crt/host_runtime.h"
 // device_runtime.h defines __cxa_* macros that will conflict with
 // cxxabi.h.
@@ -247,7 +254,17 @@ static inline __device__ void __brkpt(int __c) { __brkpt(); }
 #pragma push_macro("__GNUC__")
 #undef __GNUC__
 #define signbit __ignored_cuda_signbit
+
+// CUDA-9 omits device-side definitions of some math functions if it sees
+// include guard from math.h wrapper from libstdc++. We have to undo the header
+// guard temporarily to get the definitions we need.
+#pragma push_macro("_GLIBCXX_MATH_H")
+#if CUDA_VERSION >= 9000
+#undef _GLIBCXX_MATH_H
+#endif
+
 #include "math_functions.hpp"
+#pragma pop_macro("_GLIBCXX_MATH_H")
 #pragma pop_macro("__GNUC__")
 #pragma pop_macro("signbit")
 
