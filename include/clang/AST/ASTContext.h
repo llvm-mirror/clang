@@ -143,6 +143,8 @@ class ASTContext : public RefCountedBase<ASTContext> {
   mutable llvm::FoldingSet<DependentSizedArrayType> DependentSizedArrayTypes;
   mutable llvm::FoldingSet<DependentSizedExtVectorType>
     DependentSizedExtVectorTypes;
+  mutable llvm::FoldingSet<DependentAddressSpaceType>
+      DependentAddressSpaceTypes;
   mutable llvm::FoldingSet<VectorType> VectorTypes;
   mutable llvm::FoldingSet<FunctionNoProtoType> FunctionNoProtoTypes;
   mutable llvm::ContextualFoldingSet<FunctionProtoType, ASTContext&>
@@ -1070,6 +1072,13 @@ public:
   /// replaced.
   QualType getAddrSpaceQualType(QualType T, unsigned AddressSpace) const;
 
+  /// \brief Remove any existing address space on the type and returns the type
+  /// with qualifiers intact (or that's the idea anyway)
+  ///
+  /// The return type should be T with all prior qualifiers minus the address
+  /// space.
+  QualType removeAddrSpaceQualType(QualType T) const;
+
   /// \brief Apply Objective-C protocol qualifiers to the given type.
   /// \param allowOnPointerType specifies if we can apply protocol
   /// qualifiers on ObjCObjectPointerType. It can be set to true when
@@ -1269,6 +1278,10 @@ public:
   QualType getDependentSizedExtVectorType(QualType VectorType,
                                           Expr *SizeExpr,
                                           SourceLocation AttrLoc) const;
+
+  QualType getDependentAddressSpaceType(QualType PointeeType,
+                                        Expr *AddrSpaceExpr,
+                                        SourceLocation AttrLoc) const;
 
   /// \brief Return a K&R style C function type like 'int()'.
   QualType getFunctionNoProtoType(QualType ResultTy,
@@ -1488,6 +1501,11 @@ public:
   /// \brief Return the unique type for "ptrdiff_t" (C99 7.17) defined in
   /// <stddef.h>. Pointer - pointer requires this (C99 6.5.6p9).
   QualType getPointerDiffType() const;
+
+  /// \brief Return the unique unsigned counterpart of "ptrdiff_t"
+  /// integer type. The standard (C11 7.21.6.1p7) refers to this type
+  /// in the definition of %tu format specifier.
+  QualType getUnsignedPointerDiffType() const;
 
   /// \brief Return the unique type for "pid_t" defined in
   /// <sys/types.h>. We need this to compute the correct type for vfork().
@@ -2413,9 +2431,30 @@ public:
 
   QualType mergeObjCGCQualifiers(QualType, QualType);
 
-  bool doFunctionTypesMatchOnExtParameterInfos(
-         const FunctionProtoType *FromFunctionType,
-         const FunctionProtoType *ToFunctionType);
+  /// This function merges the ExtParameterInfo lists of two functions. It
+  /// returns true if the lists are compatible. The merged list is returned in
+  /// NewParamInfos.
+  ///
+  /// \param FirstFnType The type of the first function.
+  ///
+  /// \param SecondFnType The type of the second function.
+  ///
+  /// \param CanUseFirst This flag is set to true if the first function's
+  /// ExtParameterInfo list can be used as the composite list of
+  /// ExtParameterInfo.
+  ///
+  /// \param CanUseSecond This flag is set to true if the second function's
+  /// ExtParameterInfo list can be used as the composite list of
+  /// ExtParameterInfo.
+  ///
+  /// \param NewParamInfos The composite list of ExtParameterInfo. The list is
+  /// empty if none of the flags are set.
+  ///
+  bool mergeExtParameterInfo(
+      const FunctionProtoType *FirstFnType,
+      const FunctionProtoType *SecondFnType,
+      bool &CanUseFirst, bool &CanUseSecond,
+      SmallVectorImpl<FunctionProtoType::ExtParameterInfo> &NewParamInfos);
 
   void ResetObjCLayout(const ObjCContainerDecl *CD);
 

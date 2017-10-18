@@ -520,7 +520,7 @@ private:
   void mangleOperatorName(DeclarationName Name, unsigned Arity);
   void mangleOperatorName(OverloadedOperatorKind OO, unsigned Arity);
   void mangleVendorQualifier(StringRef qualifier);
-  void mangleQualifiers(Qualifiers Quals);
+  void mangleQualifiers(Qualifiers Quals, const DependentAddressSpaceType *DAST = nullptr);
   void mangleRefQualifier(RefQualifierKind RefQualifier);
 
   void mangleObjCMethodName(const ObjCMethodDecl *MD);
@@ -1287,9 +1287,15 @@ void CXXNameMangler::mangleUnqualifiedName(const NamedDecl *ND,
       //
       //   void test() { extern void foo(); }
       //   static void foo();
+      //
+      // Don't bother with the L marker for names in anonymous namespaces; the
+      // 12_GLOBAL__N_1 mangling is quite sufficient there, and this better
+      // matches GCC anyway, because GCC does not treat anonymous namespaces as
+      // implying internal linkage.
       if (ND && ND->getFormalLinkage() == InternalLinkage &&
           !ND->isExternallyVisible() &&
-          getEffectiveDeclContext(ND)->isFileContext())
+          getEffectiveDeclContext(ND)->isFileContext() &&
+          !ND->isInAnonymousNamespace())
         Out << 'L';
 
       auto *FD = dyn_cast<FunctionDecl>(ND);
@@ -1691,10 +1697,15 @@ void CXXNameMangler::mangleLambda(const CXXRecordDecl *Lambda) {
   // to emit that last part of the prefix here.
   if (Decl *Context = Lambda->getLambdaContextDecl()) {
     if ((isa<VarDecl>(Context) || isa<FieldDecl>(Context)) &&
-        Context->getDeclContext()->isRecord()) {
+        !isa<ParmVarDecl>(Context)) {
+      // FIXME: 'inline auto [a, b] = []{ return ... };' does not get a
+      // reasonable mangling here.
       if (const IdentifierInfo *Name
             = cast<NamedDecl>(Context)->getIdentifier()) {
         mangleSourceName(Name);
+        const TemplateArgumentList *TemplateArgs = nullptr;
+        if (isTemplate(cast<NamedDecl>(Context), TemplateArgs))
+          mangleTemplateArgs(*TemplateArgs);
         Out << 'M';
       }
     }
@@ -1919,6 +1930,7 @@ bool CXXNameMangler::mangleUnresolvedTypeOrSimpleId(QualType Ty,
   case Type::IncompleteArray:
   case Type::VariableArray:
   case Type::DependentSizedArray:
+  case Type::DependentAddressSpace:
   case Type::DependentSizedExtVector:
   case Type::Vector:
   case Type::ExtVector:
@@ -2190,9 +2202,16 @@ CXXNameMangler::mangleOperatorName(OverloadedOperatorKind OO, unsigned Arity) {
   }
 }
 
-void CXXNameMangler::mangleQualifiers(Qualifiers Quals) {
+void CXXNameMangler::mangleQualifiers(Qualifiers Quals, const DependentAddressSpaceType *DAST) {
   // Vendor qualifiers come first and if they are order-insensitive they must
   // be emitted in reversed alphabetical order, see Itanium ABI 5.1.5.
+
+  // <type> ::= U <addrspace-expr>
+  if (DAST) {
+    Out << "U2ASI";
+    mangleExpression(DAST->getAddrSpaceExpr());
+    Out << "E";
+  }
 
   // Address space qualifiers start with an ordinary letter.
   if (Quals.hasAddressSpace()) {
@@ -2208,15 +2227,17 @@ void CXXNameMangler::mangleQualifiers(Qualifiers Quals) {
     if (Context.getASTContext().addressSpaceMapManglingFor(AS)) {
       //  <target-addrspace> ::= "AS" <address-space-number>
       unsigned TargetAS = Context.getASTContext().getTargetAddressSpace(AS);
-      ASString = "AS" + llvm::utostr(TargetAS);
+      if (TargetAS != 0)
+        ASString = "AS" + llvm::utostr(TargetAS);
     } else {
       switch (AS) {
       default: llvm_unreachable("Not a language specific address space");
-      //  <OpenCL-addrspace> ::= "CL" [ "global" | "local" | "constant |
-      //                                "generic" ]
+      //  <OpenCL-addrspace> ::= "CL" [ "global" | "local" | "constant" |
+      //                                "private"| "generic" ]
       case LangAS::opencl_global:   ASString = "CLglobal";   break;
       case LangAS::opencl_local:    ASString = "CLlocal";    break;
       case LangAS::opencl_constant: ASString = "CLconstant"; break;
+      case LangAS::opencl_private:  ASString = "CLprivate";  break;
       case LangAS::opencl_generic:  ASString = "CLgeneric";  break;
       //  <CUDA-addrspace> ::= "CU" [ "device" | "constant" | "shared" ]
       case LangAS::cuda_device:     ASString = "CUdevice";   break;
@@ -2224,7 +2245,8 @@ void CXXNameMangler::mangleQualifiers(Qualifiers Quals) {
       case LangAS::cuda_shared:     ASString = "CUshared";   break;
       }
     }
-    mangleVendorQualifier(ASString);
+    if (!ASString.empty())
+      mangleVendorQualifier(ASString);
   }
 
   // The ARC ownership qualifiers start with underscores.
@@ -2389,11 +2411,19 @@ void CXXNameMangler::mangleType(QualType T) {
     // substitution at the original type.
   }
 
-  if (quals) {
-    mangleQualifiers(quals);
-    // Recurse:  even if the qualified type isn't yet substitutable,
-    // the unqualified type might be.
-    mangleType(QualType(ty, 0));
+  if (quals || ty->isDependentAddressSpaceType()) {
+    if (const DependentAddressSpaceType *DAST = 
+        dyn_cast<DependentAddressSpaceType>(ty)) {
+      SplitQualType splitDAST = DAST->getPointeeType().split();
+      mangleQualifiers(splitDAST.Quals, DAST);
+      mangleType(QualType(splitDAST.Ty, 0));
+    } else {
+      mangleQualifiers(quals);
+
+      // Recurse:  even if the qualified type isn't yet substitutable,
+      // the unqualified type might be.
+      mangleType(QualType(ty, 0));
+    }
   } else {
     switch (ty->getTypeClass()) {
 #define ABSTRACT_TYPE(CLASS, PARENT)
@@ -2643,6 +2673,9 @@ CXXNameMangler::mangleExtParameterInfo(FunctionProtoType::ExtParameterInfo PI) {
 
   if (PI.isConsumed())
     mangleVendorQualifier("ns_consumed");
+
+  if (PI.isNoEscape())
+    mangleVendorQualifier("noescape");
 }
 
 // <type>          ::= <function-type>
@@ -3036,6 +3069,12 @@ void CXXNameMangler::mangleType(const DependentSizedExtVectorType *T) {
   mangleExpression(T->getSizeExpr());
   Out << '_';
   mangleType(T->getElementType());
+}
+
+void CXXNameMangler::mangleType(const DependentAddressSpaceType *T) {
+  SplitQualType split = T->getPointeeType().split();
+  mangleQualifiers(split.Quals, T);
+  mangleType(QualType(split.Ty, 0));
 }
 
 void CXXNameMangler::mangleType(const PackExpansionType *T) {
@@ -3589,7 +3628,6 @@ recurse:
     if (const Expr *Base = PDE->getBase())
       mangleMemberExprBase(Base, PDE->isArrow());
     NestedNameSpecifier *Qualifier = PDE->getQualifier();
-    QualType ScopeType;
     if (TypeSourceInfo *ScopeInfo = PDE->getScopeTypeInfo()) {
       if (Qualifier) {
         mangleUnresolvedPrefix(Qualifier,
@@ -4201,7 +4239,13 @@ void CXXNameMangler::mangleFunctionParam(const ParmVarDecl *parm) {
   // get mangled if used as an rvalue of a known non-class type?
   assert(!parm->getType()->isArrayType()
          && "parameter's type is still an array type?");
-  mangleQualifiers(parm->getType().getQualifiers());
+
+  if (const DependentAddressSpaceType *DAST =
+      dyn_cast<DependentAddressSpaceType>(parm->getType())) {
+    mangleQualifiers(DAST->getPointeeType().getQualifiers(), DAST);
+  } else {
+    mangleQualifiers(parm->getType().getQualifiers());
+  }
 
   // Parameter index.
   if (parmIndex != 0) {

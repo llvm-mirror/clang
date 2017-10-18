@@ -2,45 +2,10 @@
 /// Perform several driver tests for OpenMP offloading
 ///
 
-// Until this test is stabilized on all local configurations.
-// UNSUPPORTED: linux
-
 // REQUIRES: clang-driver
 // REQUIRES: x86-registered-target
 // REQUIRES: powerpc-registered-target
 // REQUIRES: nvptx-registered-target
-
-/// ###########################################################################
-
-/// Check -Xopenmp-target=powerpc64le-ibm-linux-gnu -march=pwr7 is passed when compiling for the device.
-// RUN:   %clang -### -no-canonical-prefixes -fopenmp=libomp -fopenmp-targets=powerpc64le-ibm-linux-gnu -Xopenmp-target=powerpc64le-ibm-linux-gnu -mcpu=pwr7 %s 2>&1 \
-// RUN:   | FileCheck -check-prefix=CHK-FOPENMP-EQ-TARGET %s
-
-// CHK-FOPENMP-EQ-TARGET: clang{{.*}} "-target-cpu" "pwr7"
-
-/// ###########################################################################
-
-/// Check -Xopenmp-target -march=pwr7 is passed when compiling for the device.
-// RUN:   %clang -### -no-canonical-prefixes -fopenmp=libomp -fopenmp-targets=powerpc64le-ibm-linux-gnu -Xopenmp-target -mcpu=pwr7 %s 2>&1 \
-// RUN:   | FileCheck -check-prefix=CHK-FOPENMP-TARGET %s
-
-// CHK-FOPENMP-TARGET: clang{{.*}} "-target-cpu" "pwr7"
-
-/// ###########################################################################
-
-/// Check -Xopenmp-target triggers error when multiple triples are used.
-// RUN:   %clang -### -no-canonical-prefixes -fopenmp=libomp -fopenmp-targets=powerpc64le-ibm-linux-gnu,powerpc64le-unknown-linux-gnu -Xopenmp-target -mcpu=pwr8 %s 2>&1 \
-// RUN:   | FileCheck -check-prefix=CHK-FOPENMP-TARGET-AMBIGUOUS-ERROR %s
-
-// CHK-FOPENMP-TARGET-AMBIGUOUS-ERROR: clang{{.*}} error: cannot deduce implicit triple value for -Xopenmp-target, specify triple using -Xopenmp-target=<triple>
-
-/// ###########################################################################
-
-/// Check -Xopenmp-target triggers error when an option requiring arguments is passed to it.
-// RUN:   %clang -### -no-canonical-prefixes -fopenmp=libomp -fopenmp-targets=powerpc64le-ibm-linux-gnu -Xopenmp-target -Xopenmp-target -mcpu=pwr8 %s 2>&1 \
-// RUN:   | FileCheck -check-prefix=CHK-FOPENMP-TARGET-NESTED-ERROR %s
-
-// CHK-FOPENMP-TARGET-NESTED-ERROR: clang{{.*}} error: invalid -Xopenmp-target argument: '-Xopenmp-target -Xopenmp-target', options requiring arguments are unsupported
 
 /// ###########################################################################
 
@@ -89,7 +54,7 @@
 // RUN:   %clang -### -no-canonical-prefixes -fopenmp=libomp -fopenmp-targets=nvptx64-nvidia-cuda %t1.o %t2.o 2>&1 \
 // RUN:   | FileCheck -check-prefix=CHK-TWOCUBIN %s
 
-// CHK-TWOCUBIN: nvlink"{{.*}}"openmp-offload-{{.*}}.cubin" "openmp-offload-{{.*}}.cubin"
+// CHK-TWOCUBIN: nvlink{{.*}}openmp-offload-{{.*}}.cubin" "{{.*}}openmp-offload-{{.*}}.cubin"
 
 /// ###########################################################################
 
@@ -99,7 +64,7 @@
 // RUN:   %clang -### -no-canonical-prefixes -target x86_64-apple-darwin17.0.0 -fopenmp=libomp -fopenmp-targets=nvptx64-nvidia-cuda %t1.o %t2.o 2>&1 \
 // RUN:   | FileCheck -check-prefix=CHK-TWOCUBIN-DARWIN %s
 
-// CHK-TWOCUBIN-DARWIN: nvlink"{{.*}}"openmp-offload-{{.*}}.cubin" "openmp-offload-{{.*}}.cubin"
+// CHK-TWOCUBIN-DARWIN: nvlink{{.*}}openmp-offload-{{.*}}.cubin" "{{.*}}openmp-offload-{{.*}}.cubin"
 
 /// ###########################################################################
 
@@ -125,3 +90,23 @@
 // RUN:   | FileCheck -check-prefix=CHK-PTXAS-RELO %s
 
 // CHK-PTXAS-RELO: ptxas{{.*}}" "-c"
+
+/// ###########################################################################
+
+/// Check that error is not thrown by toolchain when no cuda lib flag is used.
+/// Check that the flag is passed when -fopenmp-relocatable-target is used.
+// RUN:   %clang -### -fopenmp=libomp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target -march=sm_60 \
+// RUN:   -nocudalib -fopenmp-relocatable-target -save-temps -no-canonical-prefixes %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHK-FLAG-NOLIBDEVICE %s
+
+// CHK-FLAG-NOLIBDEVICE-NOT: error:{{.*}}sm_60
+
+/// ###########################################################################
+
+/// Check that error is not thrown by toolchain when no cuda lib device is found when using -S.
+/// Check that the flag is passed when -fopenmp-relocatable-target is used.
+// RUN:   %clang -### -S -fopenmp=libomp -fopenmp-targets=nvptx64-nvidia-cuda -Xopenmp-target -march=sm_60 \
+// RUN:   -fopenmp-relocatable-target -save-temps -no-canonical-prefixes %s 2>&1 \
+// RUN:   | FileCheck -check-prefix=CHK-NOLIBDEVICE %s
+
+// CHK-NOLIBDEVICE-NOT: error:{{.*}}sm_60

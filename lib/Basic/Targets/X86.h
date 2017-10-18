@@ -639,7 +639,6 @@ class LLVM_LIBRARY_VISIBILITY WindowsX86_32TargetInfo
 public:
   WindowsX86_32TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : WindowsTargetInfo<X86_32TargetInfo>(Triple, Opts) {
-    WCharType = UnsignedShort;
     DoubleAlign = LongLongAlign = 64;
     bool IsWinCOFF =
         getTriple().isOSWindows() && getTriple().isOSBinFormatCOFF();
@@ -700,7 +699,7 @@ class LLVM_LIBRARY_VISIBILITY CygwinX86_32TargetInfo : public X86_32TargetInfo {
 public:
   CygwinX86_32TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : X86_32TargetInfo(Triple, Opts) {
-    WCharType = UnsignedShort;
+    this->WCharType = TargetInfo::UnsignedShort;
     DoubleAlign = LongLongAlign = 64;
     resetDataLayout("e-m:x-p:32:32-i64:64-f80:32-n8:16:32-a:0:32-S32");
   }
@@ -814,7 +813,7 @@ public:
 
     // x86-64 has atomics up to 16 bytes.
     MaxAtomicPromoteWidth = 128;
-    MaxAtomicInlineWidth = 128;
+    MaxAtomicInlineWidth = 64;
   }
 
   BuiltinVaListKind getBuiltinVaListKind() const override {
@@ -872,6 +871,11 @@ public:
                                                          HasSizeMismatch);
   }
 
+  void setMaxAtomicWidth() override {
+    if (hasFeature("cx16"))
+      MaxAtomicInlineWidth = 128;
+  }
+
   ArrayRef<Builtin::Info> getTargetBuiltins() const override;
 };
 
@@ -881,7 +885,6 @@ class LLVM_LIBRARY_VISIBILITY WindowsX86_64TargetInfo
 public:
   WindowsX86_64TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : WindowsTargetInfo<X86_64TargetInfo>(Triple, Opts) {
-    WCharType = UnsignedShort;
     LongWidth = LongAlign = 32;
     DoubleAlign = LongLongAlign = 64;
     IntMaxType = SignedLongLong;
@@ -910,6 +913,8 @@ public:
     case CC_C:
     case CC_X86VectorCall:
     case CC_IntelOclBicc:
+    case CC_PreserveMost:
+    case CC_PreserveAll:
     case CC_X86_64SysV:
     case CC_Swift:
     case CC_X86RegCall:
@@ -972,8 +977,8 @@ class LLVM_LIBRARY_VISIBILITY CygwinX86_64TargetInfo : public X86_64TargetInfo {
 public:
   CygwinX86_64TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
       : X86_64TargetInfo(Triple, Opts) {
+    this->WCharType = TargetInfo::UnsignedShort;
     TLSSupported = false;
-    WCharType = UnsignedShort;
   }
 
   void getTargetDefines(const LangOptions &Opts,

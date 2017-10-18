@@ -222,6 +222,7 @@ bool TypePrinter::canPrefixQualifiers(const Type *T,
     case Type::LValueReference:
     case Type::RValueReference:
     case Type::MemberPointer:
+    case Type::DependentAddressSpace:
     case Type::DependentSizedExtVector:
     case Type::Vector:
     case Type::ExtVector:
@@ -527,6 +528,19 @@ void TypePrinter::printDependentSizedArrayAfter(
   printAfter(T->getElementType(), OS);
 }
 
+void TypePrinter::printDependentAddressSpaceBefore(
+    const DependentAddressSpaceType *T, raw_ostream &OS) {
+  printBefore(T->getPointeeType(), OS);
+}
+void TypePrinter::printDependentAddressSpaceAfter(
+    const DependentAddressSpaceType *T, raw_ostream &OS) {
+  OS << " __attribute__((address_space(";
+  if (T->getAddrSpaceExpr())
+    T->getAddrSpaceExpr()->printPretty(OS, nullptr, Policy);
+  OS << ")))";
+  printAfter(T->getPointeeType(), OS);
+}
+
 void TypePrinter::printDependentSizedExtVectorBefore(
                                           const DependentSizedExtVectorType *T, 
                                           raw_ostream &OS) { 
@@ -665,6 +679,8 @@ void TypePrinter::printFunctionProtoAfter(const FunctionProtoType *T,
 
       auto EPI = T->getExtParameterInfo(i);
       if (EPI.isConsumed()) OS << "__attribute__((ns_consumed)) ";
+      if (EPI.isNoEscape())
+        OS << "__attribute__((noescape)) ";
       auto ABI = EPI.getABI();
       if (ABI != ParameterABI::Ordinary)
         OS << "__attribute__((" << getParameterABISpelling(ABI) << ")) ";
@@ -1661,15 +1677,18 @@ void Qualifiers::print(raw_ostream &OS, const PrintingPolicy& Policy,
     addSpace = true;
   }
   if (unsigned addrspace = getAddressSpace()) {
-    if (addSpace)
-      OS << ' ';
-    addSpace = true;
-    switch (addrspace) {
+    if (addrspace != LangAS::opencl_private) {
+      if (addSpace)
+        OS << ' ';
+      addSpace = true;
+      switch (addrspace) {
       case LangAS::opencl_global:
         OS << "__global";
         break;
       case LangAS::opencl_local:
         OS << "__local";
+        break;
+      case LangAS::opencl_private:
         break;
       case LangAS::opencl_constant:
       case LangAS::cuda_constant:
@@ -1689,6 +1708,7 @@ void Qualifiers::print(raw_ostream &OS, const PrintingPolicy& Policy,
         OS << "__attribute__((address_space(";
         OS << addrspace - LangAS::FirstTargetAddressSpace;
         OS << ")))";
+      }
     }
   }
   if (Qualifiers::GC gc = getObjCGCAttr()) {

@@ -215,6 +215,7 @@ bool X86TargetInfo::initFeatureMap(
     setFeatureEnabledImpl(Features, "xsaves", true);
     setFeatureEnabledImpl(Features, "clflushopt", true);
     setFeatureEnabledImpl(Features, "mpx", true);
+    setFeatureEnabledImpl(Features, "fsgsbase", true);
     LLVM_FALLTHROUGH;
   case CK_Silvermont:
     setFeatureEnabledImpl(Features, "aes", true);
@@ -1292,6 +1293,7 @@ bool X86TargetInfo::validateCpuIs(StringRef FeatureStr) const {
       .Case("amd", true)
       .Case("amdfam10h", true)
       .Case("amdfam15h", true)
+      .Case("amdfam17h", true)
       .Case("atom", true)
       .Case("barcelona", true)
       .Case("bdver1", true)

@@ -245,13 +245,9 @@ public:
   /// TranslateOpenMPTargetArgs - Create a new derived argument list for
   /// that contains the OpenMP target specific flags passed via
   /// -Xopenmp-target -opt=val OR -Xopenmp-target=<triple> -opt=val
-  /// Translation occurs only when the \p DeviceOffloadKind is specified.
-  ///
-  /// \param DeviceOffloadKind - The device offload kind used for the
-  /// translation.
-  virtual llvm::opt::DerivedArgList *
-  TranslateOpenMPTargetArgs(const llvm::opt::DerivedArgList &Args,
-      Action::OffloadKind DeviceOffloadKind) const;
+  virtual llvm::opt::DerivedArgList *TranslateOpenMPTargetArgs(
+      const llvm::opt::DerivedArgList &Args, bool SameTripleAsHost,
+      SmallVectorImpl<llvm::opt::Arg *> &AllocatedArgs) const;
 
   /// Choose a tool to use to handle the action \p JA.
   ///

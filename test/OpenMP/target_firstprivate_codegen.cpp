@@ -37,7 +37,7 @@ struct TT{
 // CHECK-DAG:  [[MAPT2:@.+]] = private unnamed_addr constant [9 x i32] [i32 288, i32 161, i32 288, i32 161, i32 161, i32 288, i32 288, i32 161, i32 161]
 // CHECK-DAG:  [[SIZET3:@.+]] = private unnamed_addr constant [1 x i{{32|64}}] zeroinitializer
 // CHECK-DAG:  [[MAPT3:@.+]] = private unnamed_addr constant [1 x i32] [i32 32]
-// CHECK-DAG:  [[MAPT4:@.+]] = private unnamed_addr constant [5 x i32] [i32 35, i32 288, i32 288, i32 288, i32 161]
+// CHECK-DAG:  [[MAPT4:@.+]] = private unnamed_addr constant [5 x i32] [i32 547, i32 288, i32 288, i32 288, i32 161]
 // CHECK-DAG:  [[SIZET5:@.+]] = private unnamed_addr constant [3 x i{{32|64}}] [i[[SZ]] 4, i[[SZ]] 1, i[[SZ]] 40]
 // CHECK-DAG:  [[MAPT5:@.+]] = private unnamed_addr constant [3 x i32] [i32 288, i32 288, i32 161]
 // CHECK-DAG:  [[SIZET6:@.+]] = private unnamed_addr constant [2 x i{{32|64}}] [i[[SZ]] 4, i[[SZ]] 40]
@@ -68,7 +68,6 @@ int foo(int n, double *ptr) {
   // CHECK:  [[C:%.+]] = alloca [5 x [10 x double]],
   // CHECK:  [[D:%.+]] = alloca [[TT]],
   // CHECK:  [[ACAST:%.+]] = alloca i{{[0-9]+}},
-  // CHECK:  {{.+}} = alloca i{{[0-9]+}},
   // CHECK:  [[BASE_PTR_ARR:%.+]] = alloca [1 x i8*],
   // CHECK:  [[PTR_ARR:%.+]] = alloca [1 x i8*],
   // CHECK:  [[A2CAST:%.+]] = alloca i{{[0-9]+}},

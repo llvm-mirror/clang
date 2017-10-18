@@ -16,13 +16,16 @@
 namespace clang {
 namespace tooling {
 
+class RefactoringOptionVisitor;
 class RefactoringResultConsumer;
 class RefactoringRuleContext;
 
-/// A common refactoring action rule interface.
-class RefactoringActionRule {
+/// A common refactoring action rule interface that defines the 'invoke'
+/// function that performs the refactoring operation (either fully or
+/// partially).
+class RefactoringActionRuleBase {
 public:
-  virtual ~RefactoringActionRule() {}
+  virtual ~RefactoringActionRuleBase() {}
 
   /// Initiates and performs a specific refactoring action.
   ///
@@ -30,16 +33,26 @@ public:
   /// consumer to propagate the result of the refactoring action.
   virtual void invoke(RefactoringResultConsumer &Consumer,
                       RefactoringRuleContext &Context) = 0;
+};
 
+/// A refactoring action rule is a wrapper class around a specific refactoring
+/// action rule (SourceChangeRefactoringRule, etc) that, in addition to invoking
+/// the action, describes the requirements that determine when the action can be
+/// initiated.
+class RefactoringActionRule : public RefactoringActionRuleBase {
+public:
   /// Returns true when the rule has a source selection requirement that has
   /// to be fullfilled before refactoring can be performed.
   virtual bool hasSelectionRequirement() = 0;
-};
 
-/// A set of refactoring action rules that should have unique initiation
-/// requirements.
-using RefactoringActionRules =
-    std::vector<std::unique_ptr<RefactoringActionRule>>;
+  /// Traverses each refactoring option used by the rule and invokes the
+  /// \c visit callback in the consumer for each option.
+  ///
+  /// Options are visited in the order of use, e.g. if a rule has two
+  /// requirements that use options, the options from the first requirement
+  /// are visited before the options in the second requirement.
+  virtual void visitRefactoringOptions(RefactoringOptionVisitor &Visitor) = 0;
+};
 
 } // end namespace tooling
 } // end namespace clang

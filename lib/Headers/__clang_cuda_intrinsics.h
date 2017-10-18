@@ -92,8 +92,9 @@ __MAKE_SHUFFLES(__shfl_xor, __nvvm_shfl_bfly_i32, __nvvm_shfl_bfly_f32, 0x1f);
 
 #endif // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 300
 
+#if CUDA_VERSION >= 9000
+#if (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 300)
 // __shfl_sync_* variants available in CUDA-9
-#if CUDA_VERSION >= 9000 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 300)
 #pragma push_macro("__MAKE_SYNC_SHUFFLES")
 #define __MAKE_SYNC_SHUFFLES(__FnName, __IntIntrinsic, __FloatIntrinsic,       \
                              __Mask)                                           \
@@ -148,17 +149,72 @@ __MAKE_SYNC_SHUFFLES(__shfl_sync, __nvvm_shfl_sync_idx_i32,
                      __nvvm_shfl_sync_idx_f32, 0x1f);
 // We use 0 rather than 31 as our mask, because shfl.up applies to lanes >=
 // maxLane.
-__MAKE_SYNC_SHUFFLES(__shfl_sync_up, __nvvm_shfl_sync_up_i32,
+__MAKE_SYNC_SHUFFLES(__shfl_up_sync, __nvvm_shfl_sync_up_i32,
                      __nvvm_shfl_sync_up_f32, 0);
-__MAKE_SYNC_SHUFFLES(__shfl_sync_down, __nvvm_shfl_sync_down_i32,
+__MAKE_SYNC_SHUFFLES(__shfl_down_sync, __nvvm_shfl_sync_down_i32,
                      __nvvm_shfl_sync_down_f32, 0x1f);
-__MAKE_SYNC_SHUFFLES(__shfl_sync_xor, __nvvm_shfl_sync_bfly_i32,
+__MAKE_SYNC_SHUFFLES(__shfl_xor_sync, __nvvm_shfl_sync_bfly_i32,
                      __nvvm_shfl_sync_bfly_f32, 0x1f);
-
 #pragma pop_macro("__MAKE_SYNC_SHUFFLES")
 
-#endif // __CUDA_VERSION >= 9000 && (!defined(__CUDA_ARCH__) ||
-       // __CUDA_ARCH__ >= 300)
+inline __device__ void __syncwarp(unsigned int mask = 0xffffffff) {
+  return __nvvm_bar_warp_sync(mask);
+}
+
+inline __device__ void __barrier_sync(unsigned int id) {
+  __nvvm_barrier_sync(id);
+}
+
+inline __device__ void __barrier_sync_count(unsigned int id,
+                                            unsigned int count) {
+  __nvvm_barrier_sync_cnt(id, count);
+}
+
+inline __device__ int __all_sync(unsigned int mask, int pred) {
+  return __nvvm_vote_all_sync(mask, pred);
+}
+
+inline __device__ int __any_sync(unsigned int mask, int pred) {
+  return __nvvm_vote_any_sync(mask, pred);
+}
+
+inline __device__ int __uni_sync(unsigned int mask, int pred) {
+  return __nvvm_vote_uni_sync(mask, pred);
+}
+
+inline __device__ unsigned int __ballot_sync(unsigned int mask, int pred) {
+  return __nvvm_vote_ballot_sync(mask, pred);
+}
+
+inline __device__ unsigned int __activemask() { return __nvvm_vote_ballot(1); }
+
+#endif // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 300
+
+// Define __match* builtins CUDA-9 headers expect to see.
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
+inline __device__ unsigned int __match32_any_sync(unsigned int mask,
+                                                  unsigned int value) {
+  return __nvvm_match_any_sync_i32(mask, value);
+}
+
+inline __device__ unsigned long long
+__match64_any_sync(unsigned int mask, unsigned long long value) {
+  return __nvvm_match_any_sync_i64(mask, value);
+}
+
+inline __device__ unsigned int
+__match32_all_sync(unsigned int mask, unsigned int value, int *pred) {
+  return __nvvm_match_all_sync_i32p(mask, value, pred);
+}
+
+inline __device__ unsigned long long
+__match64_all_sync(unsigned int mask, unsigned long long value, int *pred) {
+  return __nvvm_match_all_sync_i64p(mask, value, pred);
+}
+#include "crt/sm_70_rt.hpp"
+
+#endif // !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
+#endif // __CUDA_VERSION >= 9000
 
 // sm_32 intrinsics: __ldg and __funnelshift_{l,lc,r,rc}.
 

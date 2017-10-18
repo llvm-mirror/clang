@@ -991,6 +991,7 @@
 // RUN:   | FileCheck %s -check-prefix=CHECK_GLM_M32
 // CHECK_GLM_M32: #define __AES__ 1
 // CHECK_GLM_M32: #define __CLFLUSHOPT__ 1
+// CHECK_GLM_M32: #define __FSGSBASE__ 1
 // CHECK_GLM_M32: #define __FXSR__ 1
 // CHECK_GLM_M32: #define __MMX__ 1
 // CHECK_GLM_M32: #define __MPX__ 1
@@ -1010,26 +1011,19 @@
 // CHECK_GLM_M32: #define __XSAVEOPT__ 1
 // CHECK_GLM_M32: #define __XSAVES__ 1
 // CHECK_GLM_M32: #define __XSAVE__ 1
-// CHECK_GLM_M32: #define __clang__ 1
 // CHECK_GLM_M32: #define __goldmont 1
 // CHECK_GLM_M32: #define __goldmont__ 1
 // CHECK_GLM_M32: #define __i386 1
 // CHECK_GLM_M32: #define __i386__ 1
-// CHECK_GLM_M32: #define __linux 1
-// CHECK_GLM_M32: #define __linux__ 1
-// CHECK_GLM_M32: #define __llvm__ 1
 // CHECK_GLM_M32: #define __tune_goldmont__ 1
-// CHECK_GLM_M32: #define __unix 1
-// CHECK_GLM_M32: #define __unix__ 1
 // CHECK_GLM_M32: #define i386 1
-// CHECK_GLM_M32: #define linux 1
-// CHECK_GLM_M32: #define unix 1
 //
 // RUN: %clang -march=goldmont -m64 -E -dM %s -o - 2>&1 \
 // RUN:     -target i386-unknown-linux \
 // RUN:   | FileCheck %s -check-prefix=CHECK_GLM_M64
 // CHECK_GLM_M64: #define __AES__ 1
 // CHECK_GLM_M64: #define __CLFLUSHOPT__ 1
+// CHECK_GLM_M64: #define __FSGSBASE__ 1
 // CHECK_GLM_M64: #define __FXSR__ 1
 // CHECK_GLM_M64: #define __MMX__ 1
 // CHECK_GLM_M64: #define __MPX__ 1
@@ -1047,19 +1041,11 @@
 // CHECK_GLM_M64: #define __XSAVEOPT__ 1
 // CHECK_GLM_M64: #define __XSAVES__ 1
 // CHECK_GLM_M64: #define __XSAVE__ 1
-// CHECK_GLM_M64: #define __gnu_linux__ 1
 // CHECK_GLM_M64: #define __goldmont 1
 // CHECK_GLM_M64: #define __goldmont__ 1
-// CHECK_GLM_M64: #define __linux 1
-// CHECK_GLM_M64: #define __linux__ 1
-// CHECK_GLM_M64: #define __llvm__ 1
 // CHECK_GLM_M64: #define __tune_goldmont__ 1
-// CHECK_GLM_M64: #define __unix 1
-// CHECK_GLM_M64: #define __unix__ 1
 // CHECK_GLM_M64: #define __x86_64 1
 // CHECK_GLM_M64: #define __x86_64__ 1
-// CHECK_GLM_M64: #define linux 1
-// CHECK_GLM_M64: #define unix 1
 //
 // RUN: %clang -march=slm -m32 -E -dM %s -o - 2>&1 \
 // RUN:     -target i386-unknown-linux \
@@ -2135,21 +2121,61 @@
 // RUN:     -target sparcel-unknown-linux \
 // RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_SPARCEL
 // RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=myriad2 2>&1 \
-// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-1 -check-prefix=CHECK_SPARCEL
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-2 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
 // RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=myriad2.1 2>&1 \
-// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-1 -check-prefix=CHECK_SPARCEL
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-1 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
 // RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=myriad2.2 2>&1 \
-// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-2 -check-prefix=CHECK_SPARCEL
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-2 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=myriad2.3 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-3 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2100 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-1 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2150 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-2 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2155 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-2 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
 // RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2450 2>&1 \
-// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-2 -check-prefix=CHECK_SPARCEL
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-2 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2455 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-2 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2x5x 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-2 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2080 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-3 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2085 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-3 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2480 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-3 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2485 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-3 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
+// RUN: %clang -E -dM %s -o - -target sparcel-myriad -mcpu=ma2x8x 2>&1 \
+// RUN:   | FileCheck -match-full-lines %s -check-prefix=CHECK_MYRIAD2-3 \
+// RUN:     -check-prefix=CHECK_SPARCEL -check-prefix=CHECK_MYRIAD2
 // CHECK_SPARCEL: #define __LITTLE_ENDIAN__ 1
+// CHECK_MYRIAD2: #define __leon__ 1
 // CHECK_MYRIAD2-1: #define __myriad2 1
 // CHECK_MYRIAD2-1: #define __myriad2__ 1
 // CHECK_MYRIAD2-2: #define __myriad2 2
 // CHECK_MYRIAD2-2: #define __myriad2__ 2
+// CHECK_MYRIAD2-3: #define __myriad2 3
+// CHECK_MYRIAD2-3: #define __myriad2__ 3
 // CHECK_SPARCEL: #define __sparc 1
 // CHECK_SPARCEL: #define __sparc__ 1
-// CHECK_MYRIAD2-1: #define __sparc_v8__ 1
+// CHECK_MYRIAD2: #define __sparc_v8__ 1
 // CHECK_SPARCEL: #define __sparcv8 1
 //
 // RUN: %clang -E -dM %s -o - 2>&1 \

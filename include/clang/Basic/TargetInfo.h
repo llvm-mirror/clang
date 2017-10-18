@@ -248,6 +248,9 @@ public:
   IntType getPtrDiffType(unsigned AddrSpace) const {
     return AddrSpace == 0 ? PtrDiffType : getPtrDiffTypeV(AddrSpace);
   }
+  IntType getUnsignedPtrDiffType(unsigned AddrSpace) const {
+    return getCorrespondingUnsignedType(getPtrDiffType(AddrSpace));
+  }
   IntType getIntPtrType() const { return IntPtrType; }
   IntType getUIntPtrType() const {
     return getCorrespondingUnsignedType(IntPtrType);
@@ -448,6 +451,9 @@ public:
   /// \brief Return the maximum width lock-free atomic operation which can be
   /// inlined given the supported features of the given target.
   unsigned getMaxAtomicInlineWidth() const { return MaxAtomicInlineWidth; }
+  /// \brief Set the maximum inline or promote width lock-free atomic operation
+  /// for the given target.
+  virtual void setMaxAtomicWidth() {}
   /// \brief Returns true if the given target supports lock-free atomic
   /// operations at the specified width and alignment.
   virtual bool hasBuiltinAtomic(uint64_t AtomicSizeInBits,

@@ -745,19 +745,19 @@ RValue CodeGenFunction::EmitAtomicExpr(AtomicExpr *E) {
   QualType MemTy = AtomicTy;
   if (const AtomicType *AT = AtomicTy->getAs<AtomicType>())
     MemTy = AT->getValueType();
-  CharUnits sizeChars, alignChars;
-  std::tie(sizeChars, alignChars) = getContext().getTypeInfoInChars(AtomicTy);
-  uint64_t Size = sizeChars.getQuantity();
-  unsigned MaxInlineWidthInBits = getTarget().getMaxAtomicInlineWidth();
-  bool UseLibcall = (sizeChars != alignChars ||
-                     getContext().toBits(sizeChars) > MaxInlineWidthInBits);
-
   llvm::Value *IsWeak = nullptr, *OrderFail = nullptr;
 
   Address Val1 = Address::invalid();
   Address Val2 = Address::invalid();
   Address Dest = Address::invalid();
-  Address Ptr(EmitScalarExpr(E->getPtr()), alignChars);
+  Address Ptr = EmitPointerWithAlignment(E->getPtr());
+
+  CharUnits sizeChars, alignChars;
+  std::tie(sizeChars, alignChars) = getContext().getTypeInfoInChars(AtomicTy);
+  uint64_t Size = sizeChars.getQuantity();
+  unsigned MaxInlineWidthInBits = getTarget().getMaxAtomicInlineWidth();
+  bool UseLibcall = ((Ptr.getAlignment() % sizeChars) != 0 ||
+                     getContext().toBits(sizeChars) > MaxInlineWidthInBits);
 
   if (E->getOp() == AtomicExpr::AO__c11_atomic_init ||
       E->getOp() == AtomicExpr::AO__opencl_atomic_init) {
@@ -1425,8 +1425,7 @@ llvm::Value *AtomicInfo::EmitAtomicLoadOp(llvm::AtomicOrdering AO,
   // Other decoration.
   if (IsVolatile)
     Load->setVolatile(true);
-  if (LVal.getTBAAInfo())
-    CGF.CGM.DecorateInstructionWithTBAA(Load, LVal.getTBAAInfo());
+  CGF.CGM.DecorateInstructionWithTBAA(Load, LVal.getTBAAInfo());
   return Load;
 }
 
@@ -1942,8 +1941,7 @@ void CodeGenFunction::EmitAtomicStore(RValue rvalue, LValue dest,
     // Other decoration.
     if (IsVolatile)
       store->setVolatile(true);
-    if (dest.getTBAAInfo())
-      CGM.DecorateInstructionWithTBAA(store, dest.getTBAAInfo());
+    CGM.DecorateInstructionWithTBAA(store, dest.getTBAAInfo());
     return;
   }
 

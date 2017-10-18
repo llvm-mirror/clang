@@ -339,6 +339,12 @@ public:
     return clang::isExternallyVisible(getLinkageInternal());
   }
 
+  /// Determine whether this declaration can be redeclared in a
+  /// different translation unit.
+  bool isExternallyDeclarable() const {
+    return isExternallyVisible() && !getOwningModuleForLinkage();
+  }
+
   /// \brief Determines the visibility of this entity.
   Visibility getVisibility() const {
     return getLinkageAndVisibility().getVisibility();
@@ -349,7 +355,14 @@ public:
 
   /// Kinds of explicit visibility.
   enum ExplicitVisibilityKind {
+    /// Do an LV computation for, ultimately, a type.
+    /// Visibility may be restricted by type visibility settings and
+    /// the visibility of template arguments.
     VisibilityForType,
+
+    /// Do an LV computation for, ultimately, a non-type declaration.
+    /// Visibility may be restricted by value visibility settings and
+    /// the visibility of template arguments.
     VisibilityForValue
   };
 
@@ -371,10 +384,6 @@ public:
   bool hasLinkageBeenComputed() const {
     return hasCachedLinkage();
   }
-
-  /// Get the module that owns this declaration for linkage purposes.
-  /// There only ever is such a module under the C++ Modules TS.
-  Module *getOwningModuleForLinkage() const;
 
   /// \brief Looks through UsingDecls and ObjCCompatibleAliasDecls for
   /// the underlying named decl.
@@ -2026,6 +2035,9 @@ public:
   /// If this function is an aligned allocation/deallocation function, return
   /// true through IsAligned.
   bool isReplaceableGlobalAllocationFunction(bool *IsAligned = nullptr) const;
+
+  /// \brief Determine whether this is a destroying operator delete.
+  bool isDestroyingOperatorDelete() const;
 
   /// Compute the language linkage.
   LanguageLinkage getLanguageLinkage() const;
