@@ -11,6 +11,7 @@
 #include "ToolChains/CommonArgs.h"
 #include "ToolChains/Arch/ARM.h"
 #include "ToolChains/Clang.h"
+#include "ToolChains/Flang.h"
 #include "clang/Basic/ObjCRuntime.h"
 #include "clang/Basic/VirtualFileSystem.h"
 #include "clang/Config/config.h"
@@ -130,6 +131,7 @@ const DriverSuffix *FindDriverSuffix(StringRef ProgName) {
       {"cpp", "--driver-mode=cpp"},
       {"cl", "--driver-mode=cl"},
       {"++", "--driver-mode=g++"},
+      {"flang", "--driver-mode=fortran"},
   };
 
   for (size_t i = 0; i < llvm::array_lengthof(DriverSuffixes); ++i)
@@ -241,6 +243,12 @@ Tool *ToolChain::getAssemble() const {
   return Assemble.get();
 }
 
+Tool *ToolChain::getFlangFrontend() const {
+  if (!FlangFrontend)
+    FlangFrontend.reset(new tools::FlangFrontend(*this));
+  return FlangFrontend.get();
+}
+
 Tool *ToolChain::getClangAs() const {
   if (!Assemble)
     Assemble.reset(new tools::ClangAs(*this));
@@ -287,6 +295,9 @@ Tool *ToolChain::getTool(Action::ActionClass AC) const {
   case Action::OffloadBundlingJobClass:
   case Action::OffloadUnbundlingJobClass:
     return getOffloadBundler();
+
+  case Action::FortranFrontendJobClass:
+    return getFlangFrontend();
   }
 
   llvm_unreachable("Invalid tool kind.");
@@ -673,6 +684,49 @@ void ToolChain::AddFilePathLibArgs(const ArgList &Args,
 void ToolChain::AddCCKextLibArgs(const ArgList &Args,
                                  ArgStringList &CmdArgs) const {
   CmdArgs.push_back("-lcc_kext");
+}
+
+void ToolChain::AddFortranStdlibLibArgs(const ArgList &Args,
+                                    ArgStringList &CmdArgs) const {
+ bool staticFlangLibs = false;
+ bool useOpenMP = false;
+
+  if (Args.hasArg(options::OPT_staticFlangLibs)) {
+    for (auto *A: Args.filtered(options::OPT_staticFlangLibs)) {
+      A->claim();
+      staticFlangLibs = true;
+    }
+  }
+
+  Arg *A = Args.getLastArg(options::OPT_mp, options::OPT_nomp,
+                           options::OPT_fopenmp, options::OPT_fno_openmp);
+  if (A &&
+      (A->getOption().matches(options::OPT_mp) ||
+       A->getOption().matches(options::OPT_fopenmp))) {
+      useOpenMP = true;
+  }
+
+  if (staticFlangLibs) {
+    CmdArgs.push_back("-Bstatic");
+  }
+  CmdArgs.push_back("-lflang");
+  CmdArgs.push_back("-lflangrti");
+  if( useOpenMP ) {
+    CmdArgs.push_back("-lomp");
+  }
+  else {
+    CmdArgs.push_back("-lompstub");
+  }
+  if( staticFlangLibs ) {
+    CmdArgs.push_back("-Bdynamic");
+  }
+
+  CmdArgs.push_back("-lm");
+  CmdArgs.push_back("-lrt");
+
+  // Allways link Fortran executables with Pthreads
+  CmdArgs.push_back("-lpthread");
+
 }
 
 bool ToolChain::AddFastMathRuntimeIfAvailable(const ArgList &Args,

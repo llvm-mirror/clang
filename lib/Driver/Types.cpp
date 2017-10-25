@@ -99,6 +99,8 @@ bool types::isAcceptedByClang(ID Id) {
 
   case TY_Asm:
   case TY_C: case TY_PP_C:
+  case TY_F_FreeForm: case TY_PP_F_FreeForm:
+  case TY_F_FixedForm: case TY_PP_F_FixedForm:
   case TY_CL:
   case TY_CUDA: case TY_PP_CUDA:
   case TY_CUDA_DEVICE:
@@ -115,6 +117,33 @@ bool types::isAcceptedByClang(ID Id) {
   case TY_LLVM_IR: case TY_LLVM_BC:
     return true;
   }
+}
+
+bool types::isFortran(ID Id) {
+  switch (Id) {
+  default:
+    return false;
+
+  case TY_F_FreeForm:
+  case TY_PP_F_FreeForm:
+  case TY_F_FixedForm:
+  case TY_PP_F_FixedForm:
+    return true;
+  }
+}
+
+bool types::isFreeFormFortran(ID Id) {
+  if (!isFortran(Id))
+    return false;
+
+  return (Id == TY_F_FreeForm || Id == TY_PP_F_FreeForm);
+}
+
+bool types::isFixedFormFortran(ID Id) {
+  if (!isFortran(Id))
+    return false;
+
+  return (Id == TY_F_FixedForm || Id == TY_PP_F_FixedForm);
 }
 
 bool types::isObjC(ID Id) {
@@ -178,8 +207,8 @@ types::ID types::lookupTypeForExtension(llvm::StringRef Ext) {
   return llvm::StringSwitch<types::ID>(Ext)
            .Case("c", TY_C)
            .Case("C", TY_CXX)
-           .Case("F", TY_Fortran)
-           .Case("f", TY_PP_Fortran)
+           .Case("F", TY_F_FixedForm)
+           .Case("f", TY_PP_F_FixedForm)
            .Case("h", TY_CHeader)
            .Case("H", TY_CXXHeader)
            .Case("i", TY_PP_C)
@@ -212,18 +241,22 @@ types::ID types::lookupTypeForExtension(llvm::StringRef Ext) {
            .Case("cui", TY_PP_CUDA)
            .Case("cxx", TY_CXX)
            .Case("CXX", TY_CXX)
-           .Case("F90", TY_Fortran)
-           .Case("f90", TY_PP_Fortran)
-           .Case("F95", TY_Fortran)
-           .Case("f95", TY_PP_Fortran)
-           .Case("for", TY_PP_Fortran)
-           .Case("FOR", TY_PP_Fortran)
-           .Case("fpp", TY_Fortran)
-           .Case("FPP", TY_Fortran)
            .Case("gch", TY_PCH)
            .Case("hpp", TY_CXXHeader)
            .Case("iim", TY_PP_CXXModule)
            .Case("lib", TY_Object)
+           .Case("for", TY_PP_F_FixedForm)
+           .Case("FOR", TY_PP_F_FixedForm)
+           .Case("fpp", TY_F_FixedForm)
+           .Case("FPP", TY_F_FixedForm)
+           .Case("f90", TY_PP_F_FreeForm)
+           .Case("f95", TY_PP_F_FreeForm)
+           .Case("f03", TY_PP_F_FreeForm)
+           .Case("f08", TY_PP_F_FreeForm)
+           .Case("F90", TY_F_FreeForm)
+           .Case("F95", TY_F_FreeForm)
+           .Case("F03", TY_F_FreeForm)
+           .Case("F08", TY_F_FreeForm)
            .Case("mii", TY_PP_ObjCXX)
            .Case("obj", TY_Object)
            .Case("pch", TY_PCH)
@@ -248,7 +281,9 @@ types::ID types::lookupTypeForTypeSpecifier(const char *Name) {
 // FIXME: Why don't we just put this list in the defs file, eh.
 void types::getCompilationPhases(ID Id, llvm::SmallVectorImpl<phases::ID> &P) {
   if (Id != TY_Object) {
-    if (getPreprocessedType(Id) != TY_INVALID) {
+    // Delegate preprocessing to the "upper" part of Fortran compiler,
+    // preprocess for other preprocessable inputs
+    if (getPreprocessedType(Id) != TY_INVALID && !isFortran(Id)) {
       P.push_back(phases::Preprocess);
     }
 
@@ -258,6 +293,9 @@ void types::getCompilationPhases(ID Id, llvm::SmallVectorImpl<phases::ID> &P) {
 
     if (!onlyPrecompileType(Id)) {
       if (!onlyAssembleType(Id)) {
+        if (isFortran(Id)) {
+          P.push_back(phases::FortranFrontend);
+        }
         P.push_back(phases::Compile);
         P.push_back(phases::Backend);
       }

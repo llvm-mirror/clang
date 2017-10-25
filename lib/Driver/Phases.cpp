@@ -17,6 +17,7 @@ const char *phases::getPhaseName(ID Id) {
   switch (Id) {
   case Preprocess: return "preprocessor";
   case Precompile: return "precompiler";
+  case FortranFrontend: return "fortran-frontend";
   case Compile: return "compiler";
   case Backend: return "backend";
   case Assemble: return "assembler";
