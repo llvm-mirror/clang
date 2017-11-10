@@ -5222,6 +5222,28 @@ def ext_flexible_array_empty_aggregate_gnu : Extension<
 def ext_flexible_array_union_gnu : Extension<
   "flexible array member %0 in a union is a GNU extension">, InGroup<GNUFlexibleArrayUnionMember>;
 
+def err_flexible_array_not_at_end : Error<
+  "flexible array member %0 with type %1 is not at the end of"
+  " %select{struct|interface|union|class|enum}2">;
+def err_objc_variable_sized_type_not_at_end : Error<
+  "field %0 with variable sized type %1 is not at the end of class">;
+def note_next_field_declaration : Note<
+  "next field declaration is here">;
+def note_next_ivar_declaration : Note<
+  "next %select{instance variable declaration|synthesized instance variable}0"
+  " is here">;
+def err_synthesize_variable_sized_ivar : Error<
+  "synthesized property with variable size type %0"
+  " requires an existing instance variable">;
+def err_flexible_array_arc_retainable : Error<
+  "ARC forbids flexible array members with retainable object type">;
+def warn_variable_sized_ivar_visibility : Warning<
+  "field %0 with variable sized type %1 is not visible to subclasses and"
+  " can conflict with their instance variables">, InGroup<ObjCFlexibleArray>;
+def warn_superclass_variable_sized_type_not_at_end : Warning<
+  "field %0 can overwrite instance variable %1 with variable sized type %2"
+  " in superclass %3">, InGroup<ObjCFlexibleArray>;
+
 let CategoryName = "ARC Semantic Issue" in {
 
 // ARC-mode diagnostics.
@@ -5938,18 +5960,18 @@ def note_typecheck_assign_const : Note<
   "member function %q1 is declared const here|"
   "%select{|nested }1data member %2 declared const here}0">;
 
-def warn_lunsigned_always_true_comparison : Warning<
-  "comparison of unsigned expression %0 is always %select{false|true}1">,
+def warn_unsigned_always_true_comparison : Warning<
+  "comparison of %select{%3|unsigned expression}0 %2 "
+  "%select{unsigned expression|%3}0 is always %select{false|true}4">,
   InGroup<TautologicalUnsignedZeroCompare>;
-def warn_runsigned_always_true_comparison : Warning<
-  "comparison of %0 unsigned expression is always %select{false|true}1">,
-  InGroup<TautologicalUnsignedZeroCompare>;
-def warn_lunsigned_enum_always_true_comparison : Warning<
-  "comparison of unsigned enum expression %0 is always %select{false|true}1">,
+def warn_unsigned_enum_always_true_comparison : Warning<
+  "comparison of %select{%3|unsigned enum expression}0 %2 "
+  "%select{unsigned enum expression|%3}0 is always %select{false|true}4">,
   InGroup<TautologicalUnsignedEnumZeroCompare>;
-def warn_runsigned_enum_always_true_comparison : Warning<
-  "comparison of %0 unsigned enum expression is always %select{false|true}1">,
-  InGroup<TautologicalUnsignedEnumZeroCompare>;
+def warn_tautological_constant_compare : Warning<
+  "comparison %select{%3|%1}0 %2 "
+  "%select{%1|%3}0 is always %select{false|true}4">,
+  InGroup<TautologicalConstantCompare>;
 
 def warn_mixed_sign_comparison : Warning<
   "comparison of integers of different signs: %0 and %1">,
@@ -7543,6 +7565,9 @@ def err_ambiguous_derived_to_base_conv : Error<
 def err_ambiguous_memptr_conv : Error<
   "ambiguous conversion from pointer to member of %select{base|derived}0 "
   "class %1 to pointer to member of %select{derived|base}0 class %2:%3">;
+def ext_ms_ambiguous_direct_base : ExtWarn<
+  "accessing inaccessible direct base %0 of %1 is a Microsoft extension">,
+  InGroup<MicrosoftInaccessibleBase>;
 
 def err_memptr_conv_via_virtual : Error<
   "conversion from pointer to member of class %0 to pointer to member "

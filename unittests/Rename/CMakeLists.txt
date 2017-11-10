@@ -7,6 +7,10 @@ include_directories(${CLANG_SOURCE_DIR})
 
 add_clang_unittest(ClangRenameTests
   RenameClassTest.cpp
+  RenameEnumTest.cpp
+  RenameAliasTest.cpp
+  RenameMemberTest.cpp
+  RenameFunctionTest.cpp
   )
 
 target_link_libraries(ClangRenameTests

@@ -139,6 +139,10 @@ def m_arm_Features_Group : OptionGroup<"<arm features group>">,
                            Group<m_Group>, DocName<"ARM">;
 def m_hexagon_Features_Group : OptionGroup<"<hexagon features group>">,
                                Group<m_Group>, DocName<"Hexagon">;
+// The features added by this group will not be added to target features.
+// These are explicitly handled.
+def m_hexagon_Features_HVX_Group : OptionGroup<"<hexagon features group>">,
+                                   Group<m_Group>, DocName<"Hexagon">;
 def m_ppc_Features_Group : OptionGroup<"<ppc features group>">,
                            Group<m_Group>, DocName<"PowerPC">;
 def m_wasm_Features_Group : OptionGroup<"<wasm features group>">,
@@ -606,6 +610,13 @@ def fastf : Flag<["-"], "fastf">, Group<f_Group>;
 def fast : Flag<["-"], "fast">, Group<f_Group>;
 def fasynchronous_unwind_tables : Flag<["-"], "fasynchronous-unwind-tables">, Group<f_Group>;
 
+def fdouble_square_bracket_attributes : Flag<[ "-" ], "fdouble-square-bracket-attributes">,
+  Group<f_Group>, Flags<[DriverOption, CC1Option]>,
+  HelpText<"Enable '[[]]' attributes in all C and C++ language modes">;
+def fno_double_square_bracket_attributes : Flag<[ "-" ], "fno-double-square-bracket-attributes">,
+  Group<f_Group>, Flags<[DriverOption, CC1Option]>,
+  HelpText<"Disable '[[]]' attributes in all C and C++ language modes">;
+
 def fautolink : Flag <["-"], "fautolink">, Group<f_Group>;
 def fno_autolink : Flag <["-"], "fno-autolink">, Group<f_Group>,
   Flags<[DriverOption, CC1Option]>,
@@ -903,6 +914,9 @@ def fno_sanitize_cfi_cross_dso : Flag<["-"], "fno-sanitize-cfi-cross-dso">,
                                  Flags<[CoreOption, DriverOption]>,
                                  Group<f_clang_Group>,
                                  HelpText<"Disable control flow integrity (CFI) checks for cross-DSO calls.">;
+def fsanitize_cfi_icall_generalize_pointers : Flag<["-"], "fsanitize-cfi-icall-generalize-pointers">,
+                                              Group<f_clang_Group>,
+                                              HelpText<"Generalize pointers in CFI indirect call type signature checks">;
 def fsanitize_stats : Flag<["-"], "fsanitize-stats">,
                               Group<f_clang_Group>,
                               HelpText<"Enable sanitizer statistics gathering.">;
@@ -1037,6 +1051,13 @@ def fxray_never_instrument :
   JoinedOrSeparate<["-"], "fxray-never-instrument=">,
   Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Filename defining the whitelist for imbuing the 'never instrument' XRay attribute.">;
+
+def ffine_grained_bitfield_accesses : Flag<["-"],
+  "ffine-grained-bitfield-accesses">, Group<f_clang_Group>, Flags<[CC1Option]>,
+  HelpText<"Use separate accesses for bitfields with legal widths and alignments.">;
+def fno_fine_grained_bitfield_accesses : Flag<["-"],
+  "fno-fine-grained-bitfield-accesses">, Group<f_clang_Group>, Flags<[CC1Option]>,
+  HelpText<"Use large-integer access for consecutive bitfield runs.">;
 
 def flat__namespace : Flag<["-"], "flat_namespace">;
 def flax_vector_conversions : Flag<["-"], "flax-vector-conversions">, Group<f_Group>;
@@ -1675,8 +1696,6 @@ def m16 : Flag<["-"], "m16">, Group<m_Group>, Flags<[DriverOption, CoreOption]>;
 def m32 : Flag<["-"], "m32">, Group<m_Group>, Flags<[DriverOption, CoreOption]>;
 def mqdsp6_compat : Flag<["-"], "mqdsp6-compat">, Group<m_Group>, Flags<[DriverOption,CC1Option]>,
   HelpText<"Enable hexagon-qdsp6 backward compatibility">;
-def m3dnowa : Flag<["-"], "m3dnowa">, Group<m_x86_Features_Group>;
-def m3dnow : Flag<["-"], "m3dnow">, Group<m_x86_Features_Group>;
 def m64 : Flag<["-"], "m64">, Group<m_Group>, Flags<[DriverOption, CoreOption]>;
 def mx32 : Flag<["-"], "mx32">, Group<m_Group>, Flags<[DriverOption, CoreOption]>;
 def mabi_EQ : Joined<["-"], "mabi=">, Group<m_Group>;
@@ -1763,13 +1782,9 @@ def mthread_model : Separate<["-"], "mthread-model">, Group<m_Group>, Flags<[CC1
 def meabi : Separate<["-"], "meabi">, Group<m_Group>, Flags<[CC1Option]>,
   HelpText<"Set EABI type, e.g. 4, 5 or gnu (default depends on triple)">, Values<"default,4,5,gnu">;
 
-def mmmx : Flag<["-"], "mmmx">, Group<m_x86_Features_Group>;
-def mno_3dnowa : Flag<["-"], "mno-3dnowa">, Group<m_x86_Features_Group>;
-def mno_3dnow : Flag<["-"], "mno-3dnow">, Group<m_x86_Features_Group>;
 def mno_constant_cfstrings : Flag<["-"], "mno-constant-cfstrings">, Group<m_Group>;
 def mno_global_merge : Flag<["-"], "mno-global-merge">, Group<m_Group>, Flags<[CC1Option]>,
   HelpText<"Disable merging of globals">;
-def mno_mmx : Flag<["-"], "mno-mmx">, Group<m_x86_Features_Group>;
 def mno_pascal_strings : Flag<["-"], "mno-pascal-strings">,
   Alias<fno_pascal_strings>;
 def mno_red_zone : Flag<["-"], "mno-red-zone">, Group<m_Group>;
@@ -1777,65 +1792,6 @@ def mno_relax_all : Flag<["-"], "mno-relax-all">, Group<m_Group>;
 def mno_rtd: Flag<["-"], "mno-rtd">, Group<m_Group>;
 def mno_soft_float : Flag<["-"], "mno-soft-float">, Group<m_Group>;
 def mno_stackrealign : Flag<["-"], "mno-stackrealign">, Group<m_Group>;
-def mno_x87 : Flag<["-"], "mno-x87">, Group<m_x86_Features_Group>;
-def mno_80387 : Flag<["-"], "mno-80387">, Alias<mno_x87>;
-def mno_sse2 : Flag<["-"], "mno-sse2">, Group<m_x86_Features_Group>;
-def mno_sse3 : Flag<["-"], "mno-sse3">, Group<m_x86_Features_Group>;
-def mno_sse4a : Flag<["-"], "mno-sse4a">, Group<m_x86_Features_Group>;
-def mno_sse4_1 : Flag<["-"], "mno-sse4.1">, Group<m_x86_Features_Group>;
-def mno_sse4_2 : Flag<["-"], "mno-sse4.2">, Group<m_x86_Features_Group>;
-// -mno-sse4 turns off sse4.1 which has the effect of turning off everything
-// later than 4.1. -msse4 turns on 4.2 which has the effect of turning on
-// everything earlier than 4.2.
-def mno_sse4 : Flag<["-"], "mno-sse4">, Alias<mno_sse4_1>;
-def mno_sse : Flag<["-"], "mno-sse">, Group<m_x86_Features_Group>;
-def mno_ssse3 : Flag<["-"], "mno-ssse3">, Group<m_x86_Features_Group>;
-def mno_aes : Flag<["-"], "mno-aes">, Group<m_x86_Features_Group>;
-def mno_avx : Flag<["-"], "mno-avx">, Group<m_x86_Features_Group>;
-def mno_avx2 : Flag<["-"], "mno-avx2">, Group<m_x86_Features_Group>;
-def mno_avx512f : Flag<["-"], "mno-avx512f">, Group<m_x86_Features_Group>;
-def mno_avx512cd : Flag<["-"], "mno-avx512cd">, Group<m_x86_Features_Group>;
-def mno_avx512vpopcntdq : Flag<["-"], "mno-avx512vpopcntdq">, Group<m_x86_Features_Group>;
-def mno_avx512er : Flag<["-"], "mno-avx512er">, Group<m_x86_Features_Group>;
-def mno_avx512pf : Flag<["-"], "mno-avx512pf">, Group<m_x86_Features_Group>;
-def mno_avx512dq : Flag<["-"], "mno-avx512dq">, Group<m_x86_Features_Group>;
-def mno_avx512bw : Flag<["-"], "mno-avx512bw">, Group<m_x86_Features_Group>;
-def mno_avx512vl : Flag<["-"], "mno-avx512vl">, Group<m_x86_Features_Group>;
-def mno_avx512vbmi : Flag<["-"], "mno-avx512vbmi">, Group<m_x86_Features_Group>;
-def mno_avx512ifma : Flag<["-"], "mno-avx512ifma">, Group<m_x86_Features_Group>;
-def mno_pclmul : Flag<["-"], "mno-pclmul">, Group<m_x86_Features_Group>;
-def mno_lzcnt : Flag<["-"], "mno-lzcnt">, Group<m_x86_Features_Group>;
-def mno_rdrnd : Flag<["-"], "mno-rdrnd">, Group<m_x86_Features_Group>;
-def mno_fsgsbase : Flag<["-"], "mno-fsgsbase">, Group<m_x86_Features_Group>;
-def mno_bmi : Flag<["-"], "mno-bmi">, Group<m_x86_Features_Group>;
-def mno_bmi2 : Flag<["-"], "mno-bmi2">, Group<m_x86_Features_Group>;
-def mno_popcnt : Flag<["-"], "mno-popcnt">, Group<m_x86_Features_Group>;
-def mno_tbm : Flag<["-"], "mno-tbm">, Group<m_x86_Features_Group>;
-def mno_lwp : Flag<["-"], "mno-lwp">, Group<m_x86_Features_Group>;
-def mno_fma4 : Flag<["-"], "mno-fma4">, Group<m_x86_Features_Group>;
-def mno_fma : Flag<["-"], "mno-fma">, Group<m_x86_Features_Group>;
-def mno_xop : Flag<["-"], "mno-xop">, Group<m_x86_Features_Group>;
-def mno_f16c : Flag<["-"], "mno-f16c">, Group<m_x86_Features_Group>;
-def mno_rtm : Flag<["-"], "mno-rtm">, Group<m_x86_Features_Group>;
-def mno_prfchw : Flag<["-"], "mno-prfchw">, Group<m_x86_Features_Group>;
-def mno_rdseed : Flag<["-"], "mno-rdseed">, Group<m_x86_Features_Group>;
-def mno_adx : Flag<["-"], "mno-adx">, Group<m_x86_Features_Group>;
-def mno_sha : Flag<["-"], "mno-sha">, Group<m_x86_Features_Group>;
-def mno_cx16 : Flag<["-"], "mno-cx16">, Group<m_x86_Features_Group>;
-def mno_fxsr : Flag<["-"], "mno-fxsr">, Group<m_x86_Features_Group>;
-def mno_xsave : Flag<["-"], "mno-xsave">, Group<m_x86_Features_Group>;
-def mno_xsaveopt : Flag<["-"], "mno-xsaveopt">, Group<m_x86_Features_Group>;
-def mno_xsavec : Flag<["-"], "mno-xsavec">, Group<m_x86_Features_Group>;
-def mno_xsaves : Flag<["-"], "mno-xsaves">, Group<m_x86_Features_Group>;
-def mno_mwaitx : Flag<["-"], "mno-mwaitx">, Group<m_x86_Features_Group>;
-def mno_clzero : Flag<["-"], "mno-clzero">, Group<m_x86_Features_Group>;
-def mno_pku : Flag<["-"], "mno-pku">, Group<m_x86_Features_Group>;
-def mno_clflushopt : Flag<["-"], "mno-clflushopt">, Group<m_x86_Features_Group>;
-def mno_clwb : Flag<["-"], "mno-clwb">, Group<m_x86_Features_Group>;
-def mno_movbe : Flag<["-"], "mno-movbe">, Group<m_x86_Features_Group>;
-def mno_mpx : Flag<["-"], "mno-mpx">, Group<m_x86_Features_Group>;
-def mno_sgx : Flag<["-"], "mno-sgx">, Group<m_x86_Features_Group>;
-def mno_prefetchwt1 : Flag<["-"], "mno-prefetchwt1">, Group<m_x86_Features_Group>;
 
 def munaligned_access : Flag<["-"], "munaligned-access">, Group<m_arm_Features_Group>,
   HelpText<"Allow memory accesses to be unaligned (AArch32/AArch64 only)">;
@@ -1981,62 +1937,6 @@ def mpie_copy_relocations : Flag<["-"], "mpie-copy-relocations">, Group<m_Group>
 def mno_pie_copy_relocations : Flag<["-"], "mno-pie-copy-relocations">, Group<m_Group>;
 def mfentry : Flag<["-"], "mfentry">, HelpText<"Insert calls to fentry at function entry (x86 only)">,
   Flags<[CC1Option]>, Group<m_Group>;
-def mx87 : Flag<["-"], "mx87">, Group<m_x86_Features_Group>;
-def m80387 : Flag<["-"], "m80387">, Alias<mx87>;
-def msse2 : Flag<["-"], "msse2">, Group<m_x86_Features_Group>;
-def msse3 : Flag<["-"], "msse3">, Group<m_x86_Features_Group>;
-def msse4a : Flag<["-"], "msse4a">, Group<m_x86_Features_Group>;
-def msse4_1 : Flag<["-"], "msse4.1">, Group<m_x86_Features_Group>;
-def msse4_2 : Flag<["-"], "msse4.2">, Group<m_x86_Features_Group>;
-def msse4 : Flag<["-"], "msse4">, Alias<msse4_2>;
-def msse : Flag<["-"], "msse">, Group<m_x86_Features_Group>;
-def mssse3 : Flag<["-"], "mssse3">, Group<m_x86_Features_Group>;
-def maes : Flag<["-"], "maes">, Group<m_x86_Features_Group>;
-def mavx : Flag<["-"], "mavx">, Group<m_x86_Features_Group>;
-def mavx2 : Flag<["-"], "mavx2">, Group<m_x86_Features_Group>;
-def mavx512f : Flag<["-"], "mavx512f">, Group<m_x86_Features_Group>;
-def mavx512cd : Flag<["-"], "mavx512cd">, Group<m_x86_Features_Group>;
-def mavx512vpopcntdq : Flag<["-"], "mavx512vpopcntdq">, Group<m_x86_Features_Group>;
-def mavx512er : Flag<["-"], "mavx512er">, Group<m_x86_Features_Group>;
-def mavx512pf : Flag<["-"], "mavx512pf">, Group<m_x86_Features_Group>;
-def mavx512dq : Flag<["-"], "mavx512dq">, Group<m_x86_Features_Group>;
-def mavx512bw : Flag<["-"], "mavx512bw">, Group<m_x86_Features_Group>;
-def mavx512vl : Flag<["-"], "mavx512vl">, Group<m_x86_Features_Group>;
-def mavx512vbmi : Flag<["-"], "mavx512vbmi">, Group<m_x86_Features_Group>;
-def mavx512ifma : Flag<["-"], "mavx512ifma">, Group<m_x86_Features_Group>;
-def mpclmul : Flag<["-"], "mpclmul">, Group<m_x86_Features_Group>;
-def mlzcnt : Flag<["-"], "mlzcnt">, Group<m_x86_Features_Group>;
-def mrdrnd : Flag<["-"], "mrdrnd">, Group<m_x86_Features_Group>;
-def mfsgsbase : Flag<["-"], "mfsgsbase">, Group<m_x86_Features_Group>;
-def mbmi : Flag<["-"], "mbmi">, Group<m_x86_Features_Group>;
-def mbmi2 : Flag<["-"], "mbmi2">, Group<m_x86_Features_Group>;
-def mpopcnt : Flag<["-"], "mpopcnt">, Group<m_x86_Features_Group>;
-def mtbm : Flag<["-"], "mtbm">, Group<m_x86_Features_Group>;
-def mlwp : Flag<["-"], "mlwp">, Group<m_x86_Features_Group>;
-def mfma4 : Flag<["-"], "mfma4">, Group<m_x86_Features_Group>;
-def mfma : Flag<["-"], "mfma">, Group<m_x86_Features_Group>;
-def mxop : Flag<["-"], "mxop">, Group<m_x86_Features_Group>;
-def mf16c : Flag<["-"], "mf16c">, Group<m_x86_Features_Group>;
-def mrtm : Flag<["-"], "mrtm">, Group<m_x86_Features_Group>;
-def mprfchw : Flag<["-"], "mprfchw">, Group<m_x86_Features_Group>;
-def mrdseed : Flag<["-"], "mrdseed">, Group<m_x86_Features_Group>;
-def mpku : Flag<["-"], "mpku">, Group<m_x86_Features_Group>;
-def madx : Flag<["-"], "madx">, Group<m_x86_Features_Group>;
-def msha : Flag<["-"], "msha">, Group<m_x86_Features_Group>;
-def mcx16 : Flag<["-"], "mcx16">, Group<m_x86_Features_Group>;
-def mfxsr : Flag<["-"], "mfxsr">, Group<m_x86_Features_Group>;
-def mxsave : Flag<["-"], "mxsave">, Group<m_x86_Features_Group>;
-def mxsaveopt : Flag<["-"], "mxsaveopt">, Group<m_x86_Features_Group>;
-def mxsavec : Flag<["-"], "mxsavec">, Group<m_x86_Features_Group>;
-def mxsaves : Flag<["-"], "mxsaves">, Group<m_x86_Features_Group>;
-def mmwaitx : Flag<["-"], "mmwaitx">, Group<m_x86_Features_Group>;
-def mclzero : Flag<["-"], "mclzero">, Group<m_x86_Features_Group>;
-def mclflushopt : Flag<["-"], "mclflushopt">, Group<m_x86_Features_Group>;
-def mclwb : Flag<["-"], "mclwb">, Group<m_x86_Features_Group>;
-def mmovbe : Flag<["-"], "mmovbe">, Group<m_x86_Features_Group>;
-def mmpx : Flag<["-"], "mmpx">, Group<m_x86_Features_Group>;
-def msgx : Flag<["-"], "msgx">, Group<m_x86_Features_Group>;
-def mprefetchwt1 : Flag<["-"], "mprefetchwt1">, Group<m_x86_Features_Group>;
 def mips16 : Flag<["-"], "mips16">, Group<m_Group>;
 def mno_mips16 : Flag<["-"], "mno-mips16">, Group<m_Group>;
 def mmicromips : Flag<["-"], "mmicromips">, Group<m_Group>;
@@ -2451,7 +2351,8 @@ def _rtlib : Separate<["--"], "rtlib">, Alias<rtlib_EQ>;
 def _serialize_diags : Separate<["-", "--"], "serialize-diagnostics">, Flags<[DriverOption]>,
   HelpText<"Serialize compiler diagnostics to a file">;
 // We give --version different semantics from -version.
-def _version : Flag<["--"], "version">,  Flags<[CC1Option]>;
+def _version : Flag<["--"], "version">, Flags<[CoreOption, CC1Option]>,
+  HelpText<"Print version information">;
 def _signed_char : Flag<["--"], "signed-char">, Alias<fsigned_char>;
 def _std : Separate<["--"], "std">, Alias<std_EQ>;
 def _stdlib : Separate<["--"], "stdlib">, Alias<stdlib_EQ>;
@@ -2481,14 +2382,151 @@ def mv60 : Flag<["-"], "mv60">, Group<m_hexagon_Features_Group>,
            Alias<mcpu_EQ>, AliasArgs<["hexagonv60"]>;
 def mv62 : Flag<["-"], "mv62">, Group<m_hexagon_Features_Group>,
            Alias<mcpu_EQ>, AliasArgs<["hexagonv62"]>;
-def mhexagon_hvx : Flag<["-"], "mhvx">, Group<m_hexagon_Features_Group>,
-    Flags<[CC1Option]>, HelpText<"Enable Hexagon Vector eXtensions">;
-def mno_hexagon_hvx : Flag<["-"], "mno-hvx">, Group<m_hexagon_Features_Group>,
-    Flags<[CC1Option]>, HelpText<"Disable Hexagon Vector eXtensions">;
-def mhexagon_hvx_double : Flag<["-"], "mhvx-double">, Group<m_hexagon_Features_Group>,
-    Flags<[CC1Option]>, HelpText<"Enable Hexagon Double Vector eXtensions">;
-def mno_hexagon_hvx_double : Flag<["-"], "mno-hvx-double">, Group<m_hexagon_Features_Group>,
-    Flags<[CC1Option]>, HelpText<"Disable Hexagon Double Vector eXtensions">;
+def mhexagon_hvx : Flag<[ "-" ], "mhvx">,
+                   Group<m_hexagon_Features_HVX_Group>,
+                   HelpText<"Enable Hexagon Vector eXtensions">;
+def mhexagon_hvx_EQ : Joined<[ "-" ], "mhvx=">,
+                     Group<m_hexagon_Features_HVX_Group>,
+                     HelpText<"Enable Hexagon Vector eXtensions">;
+def mno_hexagon_hvx : Flag<[ "-" ], "mno-hvx">,
+                      Group<m_hexagon_Features_HVX_Group>,
+                      HelpText<"Disable Hexagon Vector eXtensions">;
+def mhexagon_hvx_length_EQ : Joined<[ "-" ], "mhvx-length=">,
+                        Group<m_hexagon_Features_HVX_Group>,
+                        HelpText<"Set Hexagon Vector Length">, Values<"64B,128B">;
+// hvx-double deprecrated flag.
+def mhexagon_hvx_double : Flag<[ "-" ], "mhvx-double">,
+                          Group<m_hexagon_Features_HVX_Group>,
+                          HelpText<"Enable Hexagon Double Vector eXtensions">;
+def mno_hexagon_hvx_double
+    : Flag<[ "-" ], "mno-hvx-double">,
+      Group<m_hexagon_Features_HVX_Group>,
+      HelpText<"Disable Hexagon Double Vector eXtensions">;
+
+
+// X86 feature flags
+def mx87 : Flag<["-"], "mx87">, Group<m_x86_Features_Group>;
+def mno_x87 : Flag<["-"], "mno-x87">, Group<m_x86_Features_Group>;
+def m80387 : Flag<["-"], "m80387">, Alias<mx87>;
+def mno_80387 : Flag<["-"], "mno-80387">, Alias<mno_x87>;
+def mmmx : Flag<["-"], "mmmx">, Group<m_x86_Features_Group>;
+def mno_mmx : Flag<["-"], "mno-mmx">, Group<m_x86_Features_Group>;
+def m3dnow : Flag<["-"], "m3dnow">, Group<m_x86_Features_Group>;
+def mno_3dnow : Flag<["-"], "mno-3dnow">, Group<m_x86_Features_Group>;
+def m3dnowa : Flag<["-"], "m3dnowa">, Group<m_x86_Features_Group>;
+def mno_3dnowa : Flag<["-"], "mno-3dnowa">, Group<m_x86_Features_Group>;
+def msse : Flag<["-"], "msse">, Group<m_x86_Features_Group>;
+def mno_sse : Flag<["-"], "mno-sse">, Group<m_x86_Features_Group>;
+def msse2 : Flag<["-"], "msse2">, Group<m_x86_Features_Group>;
+def mno_sse2 : Flag<["-"], "mno-sse2">, Group<m_x86_Features_Group>;
+def msse3 : Flag<["-"], "msse3">, Group<m_x86_Features_Group>;
+def mno_sse3 : Flag<["-"], "mno-sse3">, Group<m_x86_Features_Group>;
+def mssse3 : Flag<["-"], "mssse3">, Group<m_x86_Features_Group>;
+def mno_ssse3 : Flag<["-"], "mno-ssse3">, Group<m_x86_Features_Group>;
+def msse4_1 : Flag<["-"], "msse4.1">, Group<m_x86_Features_Group>;
+def mno_sse4_1 : Flag<["-"], "mno-sse4.1">, Group<m_x86_Features_Group>;
+def msse4_2 : Flag<["-"], "msse4.2">, Group<m_x86_Features_Group>;
+def mno_sse4_2 : Flag<["-"], "mno-sse4.2">, Group<m_x86_Features_Group>;
+def msse4 : Flag<["-"], "msse4">, Alias<msse4_2>;
+// -mno-sse4 turns off sse4.1 which has the effect of turning off everything
+// later than 4.1. -msse4 turns on 4.2 which has the effect of turning on
+// everything earlier than 4.2.
+def mno_sse4 : Flag<["-"], "mno-sse4">, Alias<mno_sse4_1>;
+def msse4a : Flag<["-"], "msse4a">, Group<m_x86_Features_Group>;
+def mno_sse4a : Flag<["-"], "mno-sse4a">, Group<m_x86_Features_Group>;
+def mavx : Flag<["-"], "mavx">, Group<m_x86_Features_Group>;
+def mno_avx : Flag<["-"], "mno-avx">, Group<m_x86_Features_Group>;
+def mavx2 : Flag<["-"], "mavx2">, Group<m_x86_Features_Group>;
+def mno_avx2 : Flag<["-"], "mno-avx2">, Group<m_x86_Features_Group>;
+def mavx512f : Flag<["-"], "mavx512f">, Group<m_x86_Features_Group>;
+def mno_avx512f : Flag<["-"], "mno-avx512f">, Group<m_x86_Features_Group>;
+def mavx512bw : Flag<["-"], "mavx512bw">, Group<m_x86_Features_Group>;
+def mno_avx512bw : Flag<["-"], "mno-avx512bw">, Group<m_x86_Features_Group>;
+def mavx512cd : Flag<["-"], "mavx512cd">, Group<m_x86_Features_Group>;
+def mno_avx512cd : Flag<["-"], "mno-avx512cd">, Group<m_x86_Features_Group>;
+def mavx512dq : Flag<["-"], "mavx512dq">, Group<m_x86_Features_Group>;
+def mno_avx512dq : Flag<["-"], "mno-avx512dq">, Group<m_x86_Features_Group>;
+def mavx512er : Flag<["-"], "mavx512er">, Group<m_x86_Features_Group>;
+def mno_avx512er : Flag<["-"], "mno-avx512er">, Group<m_x86_Features_Group>;
+def mavx512ifma : Flag<["-"], "mavx512ifma">, Group<m_x86_Features_Group>;
+def mno_avx512ifma : Flag<["-"], "mno-avx512ifma">, Group<m_x86_Features_Group>;
+def mavx512pf : Flag<["-"], "mavx512pf">, Group<m_x86_Features_Group>;
+def mno_avx512pf : Flag<["-"], "mno-avx512pf">, Group<m_x86_Features_Group>;
+def mavx512vbmi : Flag<["-"], "mavx512vbmi">, Group<m_x86_Features_Group>;
+def mno_avx512vbmi : Flag<["-"], "mno-avx512vbmi">, Group<m_x86_Features_Group>;
+def mavx512vl : Flag<["-"], "mavx512vl">, Group<m_x86_Features_Group>;
+def mno_avx512vl : Flag<["-"], "mno-avx512vl">, Group<m_x86_Features_Group>;
+def mavx512vpopcntdq : Flag<["-"], "mavx512vpopcntdq">, Group<m_x86_Features_Group>;
+def mno_avx512vpopcntdq : Flag<["-"], "mno-avx512vpopcntdq">, Group<m_x86_Features_Group>;
+def madx : Flag<["-"], "madx">, Group<m_x86_Features_Group>;
+def mno_adx : Flag<["-"], "mno-adx">, Group<m_x86_Features_Group>;
+def maes : Flag<["-"], "maes">, Group<m_x86_Features_Group>;
+def mno_aes : Flag<["-"], "mno-aes">, Group<m_x86_Features_Group>;
+def mbmi : Flag<["-"], "mbmi">, Group<m_x86_Features_Group>;
+def mno_bmi : Flag<["-"], "mno-bmi">, Group<m_x86_Features_Group>;
+def mbmi2 : Flag<["-"], "mbmi2">, Group<m_x86_Features_Group>;
+def mno_bmi2 : Flag<["-"], "mno-bmi2">, Group<m_x86_Features_Group>;
+def mclflushopt : Flag<["-"], "mclflushopt">, Group<m_x86_Features_Group>;
+def mno_clflushopt : Flag<["-"], "mno-clflushopt">, Group<m_x86_Features_Group>;
+def mclwb : Flag<["-"], "mclwb">, Group<m_x86_Features_Group>;
+def mno_clwb : Flag<["-"], "mno-clwb">, Group<m_x86_Features_Group>;
+def mclzero : Flag<["-"], "mclzero">, Group<m_x86_Features_Group>;
+def mno_clzero : Flag<["-"], "mno-clzero">, Group<m_x86_Features_Group>;
+def mcx16 : Flag<["-"], "mcx16">, Group<m_x86_Features_Group>;
+def mno_cx16 : Flag<["-"], "mno-cx16">, Group<m_x86_Features_Group>;
+def mf16c : Flag<["-"], "mf16c">, Group<m_x86_Features_Group>;
+def mno_f16c : Flag<["-"], "mno-f16c">, Group<m_x86_Features_Group>;
+def mfma : Flag<["-"], "mfma">, Group<m_x86_Features_Group>;
+def mno_fma : Flag<["-"], "mno-fma">, Group<m_x86_Features_Group>;
+def mfma4 : Flag<["-"], "mfma4">, Group<m_x86_Features_Group>;
+def mno_fma4 : Flag<["-"], "mno-fma4">, Group<m_x86_Features_Group>;
+def mfsgsbase : Flag<["-"], "mfsgsbase">, Group<m_x86_Features_Group>;
+def mno_fsgsbase : Flag<["-"], "mno-fsgsbase">, Group<m_x86_Features_Group>;
+def mfxsr : Flag<["-"], "mfxsr">, Group<m_x86_Features_Group>;
+def mno_fxsr : Flag<["-"], "mno-fxsr">, Group<m_x86_Features_Group>;
+def mlwp : Flag<["-"], "mlwp">, Group<m_x86_Features_Group>;
+def mno_lwp : Flag<["-"], "mno-lwp">, Group<m_x86_Features_Group>;
+def mlzcnt : Flag<["-"], "mlzcnt">, Group<m_x86_Features_Group>;
+def mno_lzcnt : Flag<["-"], "mno-lzcnt">, Group<m_x86_Features_Group>;
+def mmovbe : Flag<["-"], "mmovbe">, Group<m_x86_Features_Group>;
+def mno_movbe : Flag<["-"], "mno-movbe">, Group<m_x86_Features_Group>;
+def mmpx : Flag<["-"], "mmpx">, Group<m_x86_Features_Group>;
+def mno_mpx : Flag<["-"], "mno-mpx">, Group<m_x86_Features_Group>;
+def mmwaitx : Flag<["-"], "mmwaitx">, Group<m_x86_Features_Group>;
+def mno_mwaitx : Flag<["-"], "mno-mwaitx">, Group<m_x86_Features_Group>;
+def mpku : Flag<["-"], "mpku">, Group<m_x86_Features_Group>;
+def mno_pku : Flag<["-"], "mno-pku">, Group<m_x86_Features_Group>;
+def mpclmul : Flag<["-"], "mpclmul">, Group<m_x86_Features_Group>;
+def mno_pclmul : Flag<["-"], "mno-pclmul">, Group<m_x86_Features_Group>;
+def mpopcnt : Flag<["-"], "mpopcnt">, Group<m_x86_Features_Group>;
+def mno_popcnt : Flag<["-"], "mno-popcnt">, Group<m_x86_Features_Group>;
+def mprefetchwt1 : Flag<["-"], "mprefetchwt1">, Group<m_x86_Features_Group>;
+def mno_prefetchwt1 : Flag<["-"], "mno-prefetchwt1">, Group<m_x86_Features_Group>;
+def mprfchw : Flag<["-"], "mprfchw">, Group<m_x86_Features_Group>;
+def mno_prfchw : Flag<["-"], "mno-prfchw">, Group<m_x86_Features_Group>;
+def mrdrnd : Flag<["-"], "mrdrnd">, Group<m_x86_Features_Group>;
+def mno_rdrnd : Flag<["-"], "mno-rdrnd">, Group<m_x86_Features_Group>;
+def mrtm : Flag<["-"], "mrtm">, Group<m_x86_Features_Group>;
+def mno_rtm : Flag<["-"], "mno-rtm">, Group<m_x86_Features_Group>;
+def mrdseed : Flag<["-"], "mrdseed">, Group<m_x86_Features_Group>;
+def mno_rdseed : Flag<["-"], "mno-rdseed">, Group<m_x86_Features_Group>;
+def msgx : Flag<["-"], "msgx">, Group<m_x86_Features_Group>;
+def mno_sgx : Flag<["-"], "mno-sgx">, Group<m_x86_Features_Group>;
+def msha : Flag<["-"], "msha">, Group<m_x86_Features_Group>;
+def mno_sha : Flag<["-"], "mno-sha">, Group<m_x86_Features_Group>;
+def mtbm : Flag<["-"], "mtbm">, Group<m_x86_Features_Group>;
+def mno_tbm : Flag<["-"], "mno-tbm">, Group<m_x86_Features_Group>;
+def mxop : Flag<["-"], "mxop">, Group<m_x86_Features_Group>;
+def mno_xop : Flag<["-"], "mno-xop">, Group<m_x86_Features_Group>;
+def mxsave : Flag<["-"], "mxsave">, Group<m_x86_Features_Group>;
+def mno_xsave : Flag<["-"], "mno-xsave">, Group<m_x86_Features_Group>;
+def mxsavec : Flag<["-"], "mxsavec">, Group<m_x86_Features_Group>;
+def mno_xsavec : Flag<["-"], "mno-xsavec">, Group<m_x86_Features_Group>;
+def mxsaveopt : Flag<["-"], "mxsaveopt">, Group<m_x86_Features_Group>;
+def mno_xsaveopt : Flag<["-"], "mno-xsaveopt">, Group<m_x86_Features_Group>;
+def mxsaves : Flag<["-"], "mxsaves">, Group<m_x86_Features_Group>;
+def mno_xsaves : Flag<["-"], "mno-xsaves">, Group<m_x86_Features_Group>;
+
 
 // These are legacy user-facing driver-level option spellings. They are always
 // aliases for options that are spelled using the more common Unix / GNU flag

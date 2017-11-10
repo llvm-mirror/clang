@@ -225,3 +225,160 @@ static void dump(const SelectedASTNode &Node, llvm::raw_ostream &OS,
 }
 
 void SelectedASTNode::dump(llvm::raw_ostream &OS) const { ::dump(*this, OS); }
+
+/// Returns true if the given node has any direct children with the following
+/// selection kind.
+///
+/// Note: The direct children also include children of direct children with the
+/// "None" selection kind.
+static bool hasAnyDirectChildrenWithKind(const SelectedASTNode &Node,
+                                         SourceSelectionKind Kind) {
+  assert(Kind != SourceSelectionKind::None && "invalid predicate!");
+  for (const auto &Child : Node.Children) {
+    if (Child.SelectionKind == Kind)
+      return true;
+    if (Child.SelectionKind == SourceSelectionKind::None)
+      return hasAnyDirectChildrenWithKind(Child, Kind);
+  }
+  return false;
+}
+
+namespace {
+struct SelectedNodeWithParents {
+  SelectedNodeWithParents(SelectedNodeWithParents &&) = default;
+  SelectedNodeWithParents &operator=(SelectedNodeWithParents &&) = default;
+  SelectedASTNode::ReferenceType Node;
+  llvm::SmallVector<SelectedASTNode::ReferenceType, 8> Parents;
+};
+} // end anonymous namespace
+
+/// Finds the set of bottom-most selected AST nodes that are in the selection
+/// tree with the specified selection kind.
+///
+/// For example, given the following selection tree:
+///
+/// FunctionDecl "f" contains-selection
+///   CompoundStmt contains-selection [#1]
+///     CallExpr inside
+///     ImplicitCastExpr inside
+///       DeclRefExpr inside
+///     IntegerLiteral inside
+///     IntegerLiteral inside
+/// FunctionDecl "f2" contains-selection
+///   CompoundStmt contains-selection [#2]
+///     CallExpr inside
+///     ImplicitCastExpr inside
+///       DeclRefExpr inside
+///     IntegerLiteral inside
+///     IntegerLiteral inside
+///
+/// This function will find references to nodes #1 and #2 when searching for the
+/// \c ContainsSelection kind.
+static void findDeepestWithKind(
+    const SelectedASTNode &ASTSelection,
+    llvm::SmallVectorImpl<SelectedNodeWithParents> &MatchingNodes,
+    SourceSelectionKind Kind,
+    llvm::SmallVectorImpl<SelectedASTNode::ReferenceType> &ParentStack) {
+  if (ASTSelection.Node.get<DeclStmt>()) {
+    // Select the entire decl stmt when any of its child declarations is the
+    // bottom-most.
+    for (const auto &Child : ASTSelection.Children) {
+      if (!hasAnyDirectChildrenWithKind(Child, Kind)) {
+        MatchingNodes.push_back(SelectedNodeWithParents{
+            std::cref(ASTSelection), {ParentStack.begin(), ParentStack.end()}});
+        return;
+      }
+    }
+  } else {
+    if (!hasAnyDirectChildrenWithKind(ASTSelection, Kind)) {
+      // This node is the bottom-most.
+      MatchingNodes.push_back(SelectedNodeWithParents{
+          std::cref(ASTSelection), {ParentStack.begin(), ParentStack.end()}});
+      return;
+    }
+  }
+  // Search in the children.
+  ParentStack.push_back(std::cref(ASTSelection));
+  for (const auto &Child : ASTSelection.Children)
+    findDeepestWithKind(Child, MatchingNodes, Kind, ParentStack);
+  ParentStack.pop_back();
+}
+
+static void findDeepestWithKind(
+    const SelectedASTNode &ASTSelection,
+    llvm::SmallVectorImpl<SelectedNodeWithParents> &MatchingNodes,
+    SourceSelectionKind Kind) {
+  llvm::SmallVector<SelectedASTNode::ReferenceType, 16> ParentStack;
+  findDeepestWithKind(ASTSelection, MatchingNodes, Kind, ParentStack);
+}
+
+Optional<CodeRangeASTSelection>
+CodeRangeASTSelection::create(SourceRange SelectionRange,
+                              const SelectedASTNode &ASTSelection) {
+  // Code range is selected when the selection range is not empty.
+  if (SelectionRange.getBegin() == SelectionRange.getEnd())
+    return None;
+  llvm::SmallVector<SelectedNodeWithParents, 4> ContainSelection;
+  findDeepestWithKind(ASTSelection, ContainSelection,
+                      SourceSelectionKind::ContainsSelection);
+  // We are looking for a selection in one body of code, so let's focus on
+  // one matching result.
+  if (ContainSelection.size() != 1)
+    return None;
+  SelectedNodeWithParents &Selected = ContainSelection[0];
+  if (!Selected.Node.get().Node.get<Stmt>())
+    return None;
+  const Stmt *CodeRangeStmt = Selected.Node.get().Node.get<Stmt>();
+  if (!isa<CompoundStmt>(CodeRangeStmt)) {
+    // FIXME (Alex L): Canonicalize.
+    return CodeRangeASTSelection(Selected.Node, Selected.Parents,
+                                 /*AreChildrenSelected=*/false);
+  }
+  // FIXME (Alex L): First selected SwitchCase means that first case statement.
+  // is selected actually
+  // (See https://github.com/apple/swift-clang & CompoundStmtRange).
+
+  // FIXME (Alex L): Tweak selection rules for compound statements, see:
+  // https://github.com/apple/swift-clang/blob/swift-4.1-branch/lib/Tooling/
+  // Refactor/ASTSlice.cpp#L513
+  // The user selected multiple statements in a compound statement.
+  Selected.Parents.push_back(Selected.Node);
+  return CodeRangeASTSelection(Selected.Node, Selected.Parents,
+                               /*AreChildrenSelected=*/true);
+}
+
+static bool isFunctionLikeDeclaration(const Decl *D) {
+  // FIXME (Alex L): Test for BlockDecl.
+  return isa<FunctionDecl>(D) || isa<ObjCMethodDecl>(D);
+}
+
+bool CodeRangeASTSelection::isInFunctionLikeBodyOfCode() const {
+  bool IsPrevCompound = false;
+  // Scan through the parents (bottom-to-top) and check if the selection is
+  // contained in a compound statement that's a body of a function/method
+  // declaration.
+  for (const auto &Parent : llvm::reverse(Parents)) {
+    const DynTypedNode &Node = Parent.get().Node;
+    if (const auto *D = Node.get<Decl>()) {
+      if (isFunctionLikeDeclaration(D))
+        return IsPrevCompound;
+      // FIXME (Alex L): We should return false on top-level decls in functions
+      // e.g. we don't want to extract:
+      // function foo() { struct X {
+      //   int m = /*selection:*/ 1 + 2 /*selection end*/; }; };
+    }
+    IsPrevCompound = Node.get<CompoundStmt>() != nullptr;
+  }
+  return false;
+}
+
+const Decl *CodeRangeASTSelection::getFunctionLikeNearestParent() const {
+  for (const auto &Parent : llvm::reverse(Parents)) {
+    const DynTypedNode &Node = Parent.get().Node;
+    if (const auto *D = Node.get<Decl>()) {
+      if (isFunctionLikeDeclaration(D))
+        return D;
+    }
+  }
+  return nullptr;
+}

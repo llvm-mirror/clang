@@ -122,7 +122,6 @@ class LLVM_LIBRARY_VISIBILITY X86TargetInfo : public TargetInfo {
     /// \name i686
     /// i686-generation processors, P6 / Pentium M microarchitecture based.
     //@{
-    CK_i686,
     CK_PentiumPro,
     CK_Pentium2,
     CK_Pentium3,
@@ -203,6 +202,10 @@ class LLVM_LIBRARY_VISIBILITY X86TargetInfo : public TargetInfo {
     /// Knights Landing processor.
     CK_KNL,
 
+    /// \name Knights Mill
+    /// Knights Mill processor.
+    CK_KNM,
+
     /// \name Lakemont
     /// Lakemont microarchitecture based processors.
     CK_Lakemont,
@@ -266,76 +269,7 @@ class LLVM_LIBRARY_VISIBILITY X86TargetInfo : public TargetInfo {
     //@}
   } CPU = CK_Generic;
 
-  bool checkCPUKind(CPUKind Kind) const {
-    // Perform any per-CPU checks necessary to determine if this CPU is
-    // acceptable.
-    // FIXME: This results in terrible diagnostics. Clang just says the CPU is
-    // invalid without explaining *why*.
-    switch (Kind) {
-    case CK_Generic:
-      // No processor selected!
-      return false;
-
-    case CK_i386:
-    case CK_i486:
-    case CK_WinChipC6:
-    case CK_WinChip2:
-    case CK_C3:
-    case CK_i586:
-    case CK_Pentium:
-    case CK_PentiumMMX:
-    case CK_i686:
-    case CK_PentiumPro:
-    case CK_Pentium2:
-    case CK_Pentium3:
-    case CK_PentiumM:
-    case CK_Yonah:
-    case CK_C3_2:
-    case CK_Pentium4:
-    case CK_Lakemont:
-    case CK_Prescott:
-    case CK_K6:
-    case CK_K6_2:
-    case CK_K6_3:
-    case CK_Athlon:
-    case CK_AthlonXP:
-    case CK_Geode:
-      // Only accept certain architectures when compiling in 32-bit mode.
-      if (getTriple().getArch() != llvm::Triple::x86)
-        return false;
-
-      LLVM_FALLTHROUGH;
-    case CK_Nocona:
-    case CK_Core2:
-    case CK_Penryn:
-    case CK_Bonnell:
-    case CK_Silvermont:
-    case CK_Goldmont:
-    case CK_Nehalem:
-    case CK_Westmere:
-    case CK_SandyBridge:
-    case CK_IvyBridge:
-    case CK_Haswell:
-    case CK_Broadwell:
-    case CK_SkylakeClient:
-    case CK_SkylakeServer:
-    case CK_Cannonlake:
-    case CK_KNL:
-    case CK_K8:
-    case CK_K8SSE3:
-    case CK_AMDFAM10:
-    case CK_BTVER1:
-    case CK_BTVER2:
-    case CK_BDVER1:
-    case CK_BDVER2:
-    case CK_BDVER3:
-    case CK_BDVER4:
-    case CK_ZNVER1:
-    case CK_x86_64:
-      return true;
-    }
-    llvm_unreachable("Unhandled CPU kind");
-  }
+  bool checkCPUKind(CPUKind Kind) const;
 
   CPUKind getCPUKind(StringRef CPU) const;
 

@@ -40,7 +40,7 @@ private:
 
   // CUDA architectures for which we have raised an error in
   // CheckCudaVersionSupportsArch.
-  mutable llvm::SmallSet<CudaArch, 4> ArchsWithVersionTooLowErrors;
+  mutable llvm::SmallSet<CudaArch, 4> ArchsWithBadVersion;
 
 public:
   CudaInstallationDetector(const Driver &D, const llvm::Triple &HostTriple,
@@ -75,17 +75,6 @@ public:
   /// \brief Get libdevice file for given architecture
   std::string getLibDeviceFile(StringRef Gpu) const {
     return LibDeviceMap.lookup(Gpu);
-  }
-  /// \brief Get lowest available compute capability
-  /// for which a libdevice library exists.
-  std::string getLowestExistingArch() const {
-    std::string LibDeviceFile;
-    for (auto key : LibDeviceMap.keys()) {
-      LibDeviceFile = LibDeviceMap.lookup(key);
-      if (!LibDeviceFile.empty())
-        return key;
-    }
-    return "sm_20";
   }
 };
 

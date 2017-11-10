@@ -77,9 +77,10 @@ Parser::DeclGroupPtrTy Parser::ParseNamespace(unsigned Context,
   ParsedAttributesWithRange attrs(AttrFactory);
   SourceLocation attrLoc;
   if (getLangOpts().CPlusPlus11 && isCXX11AttributeSpecifier()) {
-    if (!getLangOpts().CPlusPlus1z)
-      Diag(Tok.getLocation(), diag::warn_cxx14_compat_attribute)
-          << 0 /*namespace*/;
+    Diag(Tok.getLocation(), getLangOpts().CPlusPlus1z
+                                ? diag::warn_cxx14_compat_ns_enum_attribute
+                                : diag::ext_ns_enum_attribute)
+      << 0 /*namespace*/;
     attrLoc = Tok.getLocation();
     ParseCXX11Attributes(attrs);
   }
@@ -3194,6 +3195,9 @@ void Parser::ParseCXXMemberSpecification(SourceLocation RecordLoc,
   }
 
   if (Tok.is(tok::colon)) {
+    ParseScope InheritanceScope(this, getCurScope()->getFlags() |
+                                          Scope::ClassInheritanceScope);
+
     ParseBaseClause(TagDecl);
     if (!Tok.is(tok::l_brace)) {
       bool SuggestFixIt = false;
@@ -3813,7 +3817,7 @@ IdentifierInfo *Parser::TryParseCXX11AttributeIdentifier(SourceLocation &Loc) {
 }
 
 static bool IsBuiltInOrStandardCXX11Attribute(IdentifierInfo *AttrName,
-                                               IdentifierInfo *ScopeName) {
+                                              IdentifierInfo *ScopeName) {
   switch (AttributeList::getKind(AttrName, ScopeName,
                                  AttributeList::AS_CXX11)) {
   case AttributeList::AT_CarriesDependency:
@@ -3852,11 +3856,14 @@ bool Parser::ParseCXX11AttributeArgs(IdentifierInfo *AttrName,
                                      SourceLocation ScopeLoc) {
   assert(Tok.is(tok::l_paren) && "Not a C++11 attribute argument list");
   SourceLocation LParenLoc = Tok.getLocation();
+  const LangOptions &LO = getLangOpts();
+  AttributeList::Syntax Syntax =
+      LO.CPlusPlus ? AttributeList::AS_CXX11 : AttributeList::AS_C2x;
 
   // If the attribute isn't known, we will not attempt to parse any
   // arguments.
-  if (!hasAttribute(AttrSyntax::CXX, ScopeName, AttrName,
-                    getTargetInfo(), getLangOpts())) {
+  if (!hasAttribute(LO.CPlusPlus ? AttrSyntax::CXX : AttrSyntax::C, ScopeName,
+                    AttrName, getTargetInfo(), getLangOpts())) {
     // Eat the left paren, then skip to the ending right paren.
     ConsumeParen();
     SkipUntil(tok::r_paren);
@@ -3867,7 +3874,7 @@ bool Parser::ParseCXX11AttributeArgs(IdentifierInfo *AttrName,
     // GNU-scoped attributes have some special cases to handle GNU-specific
     // behaviors.
     ParseGNUAttributeArgs(AttrName, AttrNameLoc, Attrs, EndLoc, ScopeName,
-                          ScopeLoc, AttributeList::AS_CXX11, nullptr);
+                          ScopeLoc, Syntax, nullptr);
     return true;
   }
 
@@ -3876,11 +3883,11 @@ bool Parser::ParseCXX11AttributeArgs(IdentifierInfo *AttrName,
   if (ScopeName && ScopeName->getName() == "clang")
     NumArgs =
         ParseClangAttributeArgs(AttrName, AttrNameLoc, Attrs, EndLoc, ScopeName,
-                                ScopeLoc, AttributeList::AS_CXX11);
+                                ScopeLoc, Syntax);
   else
     NumArgs =
         ParseAttributeArgsCommon(AttrName, AttrNameLoc, Attrs, EndLoc,
-                                 ScopeName, ScopeLoc, AttributeList::AS_CXX11);
+                                 ScopeName, ScopeLoc, Syntax);
 
   const AttributeList *Attr = Attrs.getList();
   if (Attr && IsBuiltInOrStandardCXX11Attribute(AttrName, ScopeName)) {
@@ -3906,7 +3913,7 @@ bool Parser::ParseCXX11AttributeArgs(IdentifierInfo *AttrName,
   return true;
 }
 
-/// ParseCXX11AttributeSpecifier - Parse a C++11 attribute-specifier.
+/// ParseCXX11AttributeSpecifier - Parse a C++11 or C2x attribute-specifier.
 ///
 /// [C++11] attribute-specifier:
 ///         '[' '[' attribute-list ']' ']'
@@ -3938,8 +3945,8 @@ void Parser::ParseCXX11AttributeSpecifier(ParsedAttributes &attrs,
     return;
   }
 
-  assert(Tok.is(tok::l_square) && NextToken().is(tok::l_square)
-      && "Not a C++11 attribute list");
+  assert(Tok.is(tok::l_square) && NextToken().is(tok::l_square) &&
+         "Not a double square bracket attribute list");
 
   Diag(Tok.getLocation(), diag::warn_cxx98_compat_attribute);
 
@@ -4015,10 +4022,12 @@ void Parser::ParseCXX11AttributeSpecifier(ParsedAttributes &attrs,
                                            ScopeName, ScopeLoc);
 
     if (!AttrParsed)
-      attrs.addNew(AttrName,
-                   SourceRange(ScopeLoc.isValid() ? ScopeLoc : AttrLoc,
-                               AttrLoc),
-                   ScopeName, ScopeLoc, nullptr, 0, AttributeList::AS_CXX11);
+      attrs.addNew(
+          AttrName,
+          SourceRange(ScopeLoc.isValid() ? ScopeLoc : AttrLoc, AttrLoc),
+          ScopeName, ScopeLoc, nullptr, 0,
+          getLangOpts().CPlusPlus ? AttributeList::AS_CXX11
+                                  : AttributeList::AS_C2x);
 
     if (TryConsumeToken(tok::ellipsis))
       Diag(Tok, diag::err_cxx11_attribute_forbids_ellipsis)
@@ -4033,13 +4042,13 @@ void Parser::ParseCXX11AttributeSpecifier(ParsedAttributes &attrs,
     SkipUntil(tok::r_square);
 }
 
-/// ParseCXX11Attributes - Parse a C++11 attribute-specifier-seq.
+/// ParseCXX11Attributes - Parse a C++11 or C2x attribute-specifier-seq.
 ///
 /// attribute-specifier-seq:
 ///       attribute-specifier-seq[opt] attribute-specifier
 void Parser::ParseCXX11Attributes(ParsedAttributesWithRange &attrs,
                                   SourceLocation *endLoc) {
-  assert(getLangOpts().CPlusPlus11);
+  assert(standardAttributesAllowed());
 
   SourceLocation StartLoc = Tok.getLocation(), Loc;
   if (!endLoc)

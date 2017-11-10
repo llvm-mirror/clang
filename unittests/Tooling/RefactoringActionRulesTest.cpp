@@ -10,7 +10,9 @@
 #include "ReplacementTest.h"
 #include "RewriterTestContext.h"
 #include "clang/Tooling/Refactoring.h"
-#include "clang/Tooling/Refactoring/RefactoringActionRules.h"
+#include "clang/Tooling/Refactoring/Extract/Extract.h"
+#include "clang/Tooling/Refactoring/RefactoringAction.h"
+#include "clang/Tooling/Refactoring/RefactoringDiagnostic.h"
 #include "clang/Tooling/Refactoring/Rename/SymbolName.h"
 #include "clang/Tooling/Tooling.h"
 #include "llvm/Support/Errc.h"
@@ -61,6 +63,12 @@ TEST_F(RefactoringActionRulesTest, MyFirstRefactoringRule) {
   public:
     ReplaceAWithB(std::pair<SourceRange, int> Selection)
         : Selection(Selection) {}
+
+    static Expected<ReplaceAWithB>
+    initiate(RefactoringRuleContext &Cotnext,
+             std::pair<SourceRange, int> Selection) {
+      return ReplaceAWithB(Selection);
+    }
 
     Expected<AtomicChanges>
     createSourceReplacements(RefactoringRuleContext &Context) {
@@ -128,18 +136,23 @@ TEST_F(RefactoringActionRulesTest, MyFirstRefactoringRule) {
         createReplacements(Rule, RefContext);
 
     ASSERT_TRUE(!ErrorOrResult);
-    std::string Message;
-    llvm::handleAllErrors(
-        ErrorOrResult.takeError(),
-        [&](llvm::StringError &Error) { Message = Error.getMessage(); });
-    EXPECT_EQ(Message,
-              "refactoring action can't be initiated without a selection");
+    unsigned DiagID;
+    llvm::handleAllErrors(ErrorOrResult.takeError(),
+                          [&](DiagnosticError &Error) {
+                            DiagID = Error.getDiagnostic().second.getDiagID();
+                          });
+    EXPECT_EQ(DiagID, diag::err_refactor_no_selection);
   }
 }
 
 TEST_F(RefactoringActionRulesTest, ReturnError) {
   class ErrorRule : public SourceChangeRefactoringRule {
   public:
+    static Expected<ErrorRule> initiate(RefactoringRuleContext &,
+                                        SourceRange R) {
+      return ErrorRule(R);
+    }
+
     ErrorRule(SourceRange R) {}
     Expected<AtomicChanges> createSourceReplacements(RefactoringRuleContext &) {
       return llvm::make_error<llvm::StringError>(
@@ -190,6 +203,11 @@ TEST_F(RefactoringActionRulesTest, ReturnSymbolOccurrences) {
   public:
     FindOccurrences(SourceRange Selection) : Selection(Selection) {}
 
+    static Expected<FindOccurrences> initiate(RefactoringRuleContext &,
+                                              SourceRange Selection) {
+      return FindOccurrences(Selection);
+    }
+
     Expected<SymbolOccurrences>
     findSymbolOccurrences(RefactoringRuleContext &) override {
       SymbolOccurrences Occurrences;
@@ -216,6 +234,15 @@ TEST_F(RefactoringActionRulesTest, ReturnSymbolOccurrences) {
   EXPECT_EQ(Occurrences[0].getNameRanges().size(), 1u);
   EXPECT_EQ(Occurrences[0].getNameRanges()[0],
             SourceRange(Cursor, Cursor.getLocWithOffset(strlen("test"))));
+}
+
+TEST_F(RefactoringActionRulesTest, EditorCommandBinding) {
+  const RefactoringDescriptor &Descriptor = ExtractFunction::describe();
+  EXPECT_EQ(Descriptor.Name, "extract-function");
+  EXPECT_EQ(
+      Descriptor.Description,
+      "(WIP action; use with caution!) Extracts code into a new function");
+  EXPECT_EQ(Descriptor.Title, "Extract Function");
 }
 
 } // end anonymous namespace

@@ -309,8 +309,12 @@ static StringRef getArchNameForCompilerRTLib(const ToolChain &TC,
 
 std::string ToolChain::getCompilerRTPath() const {
   SmallString<128> Path(getDriver().ResourceDir);
-  StringRef OSLibName = Triple.isOSFreeBSD() ? "freebsd" : getOS();
-  llvm::sys::path::append(Path, "lib", OSLibName);
+  if (Triple.isOSUnknown()) {
+    llvm::sys::path::append(Path, "lib");
+  } else {
+    StringRef OSLibName = Triple.isOSFreeBSD() ? "freebsd" : getOS();
+    llvm::sys::path::append(Path, "lib", OSLibName);
+  }
   return Path.str();
 }
 
@@ -390,7 +394,11 @@ std::string ToolChain::GetLinkerPath() const {
     // then use whatever the default system linker is.
     return GetProgramPath(getDefaultLinker());
   } else {
-    llvm::SmallString<8> LinkerName("ld.");
+    llvm::SmallString<8> LinkerName;
+    if (Triple.isOSDarwin())
+      LinkerName.append("ld64.");
+    else
+      LinkerName.append("ld.");
     LinkerName.append(UseLinker);
 
     std::string LinkerPath(GetProgramPath(LinkerName.c_str()));

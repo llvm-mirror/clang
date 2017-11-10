@@ -78,10 +78,21 @@ Improvements to Clang's diagnostics
   when the signed integer is coerced to an unsigned type for the comparison.
   ``-Wsign-compare`` was adjusted not to warn in this case.
 
+- ``-Wtautological-constant-compare`` is a new warning that warns on
+  tautological comparisons between integer variable of the type ``T`` and the
+  largest/smallest possible integer constant of that same type.
+
+- For C code, ``-Wsign-compare``, ``-Wtautological-constant-compare`` and
+  ``-Wtautological-constant-out-of-range-compare`` were adjusted to use the
+  underlying datatype of ``enum``.
+
 - ``-Wnull-pointer-arithmetic`` now warns about performing pointer arithmetic
   on a null pointer. Such pointer arithmetic has an undefined behavior if the
   offset is nonzero. It also now warns about arithmetic on a null pointer
   treated as a cast from integer to pointer (GNU extension).
+
+- ``-Wzero-as-null-pointer-constant`` was adjusted not to warn on null pointer
+  constants that originate from system macros, except ``NULL`` macro.
 
 Non-comprehensive list of changes in this release
 -------------------------------------------------
@@ -94,10 +105,21 @@ Non-comprehensive list of changes in this release
   Users should generally expect this to be regularly raised to match the most
   recently released version of the Visual C++ compiler.
 
+- clang now defaults to ``.init_array`` if no gcc installation can be found.
+  If a gcc installation is found, it still prefers ``.ctors`` if the found
+  gcc is older than 4.7.0.
+
 New Compiler Flags
 ------------------
 
 - --autocomplete was implemented to obtain a list of flags and its arguments. This is used for shell autocompletion.
+
+- The ``-fdouble-square-bracket-attributes`` and corresponding
+  ``-fno-double-square-bracket-attributes`` flags were added to enable or
+  disable [[]] attributes in any language mode. Currently, only a limited
+  number of attributes are supported outside of C++ mode. See the Clang
+  attribute documentation for more information about which attributes are
+  supported for each syntax.
 
 Deprecated Compiler Flags
 -------------------------

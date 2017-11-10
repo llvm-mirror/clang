@@ -32,6 +32,7 @@ class SanitizerArgs {
   int MsanTrackOrigins = 0;
   bool MsanUseAfterDtor = false;
   bool CfiCrossDso = false;
+  bool CfiICallGeneralizePointers = false;
   int AsanFieldPadding = 0;
   bool SharedRuntime = false;
   bool AsanUseAfterScope = true;
@@ -44,6 +45,8 @@ class SanitizerArgs {
   bool TsanFuncEntryExit = true;
   bool TsanAtomics = true;
   bool MinimalRuntime = false;
+  // True if cross-dso CFI support if provided by the system (i.e. Android).
+  bool ImplicitCfiRuntime = false;
 
  public:
   /// Parses the sanitizer arguments from an argument list.

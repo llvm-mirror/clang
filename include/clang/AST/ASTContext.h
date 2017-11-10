@@ -496,7 +496,7 @@ private:
   CXXABI *createCXXABI(const TargetInfo &T);
 
   /// \brief The logical -> physical address space map.
-  const LangAS::Map *AddrSpaceMap;
+  const LangASMap *AddrSpaceMap;
 
   /// \brief Address space map mangling must be used with language specific
   /// address spaces (e.g. OpenCL/CUDA)
@@ -1070,7 +1070,7 @@ public:
   /// The resulting type has a union of the qualifiers from T and the address
   /// space. If T already has an address space specifier, it is silently
   /// replaced.
-  QualType getAddrSpaceQualType(QualType T, unsigned AddressSpace) const;
+  QualType getAddrSpaceQualType(QualType T, LangAS AddressSpace) const;
 
   /// \brief Remove any existing address space on the type and returns the type
   /// with qualifiers intact (or that's the idea anyway)
@@ -2229,7 +2229,7 @@ public:
   getCanonicalNestedNameSpecifier(NestedNameSpecifier *NNS) const;
 
   /// \brief Retrieves the default calling convention for the current target.
-  CallingConv getDefaultCallingConvention(bool isVariadic,
+  CallingConv getDefaultCallingConvention(bool IsVariadic,
                                           bool IsCXXMethod) const;
 
   /// \brief Retrieves the "canonical" template name that refers to a
@@ -2363,14 +2363,14 @@ public:
     return getTargetAddressSpace(Q.getAddressSpace());
   }
 
-  unsigned getTargetAddressSpace(unsigned AS) const;
+  unsigned getTargetAddressSpace(LangAS AS) const;
 
   /// Get target-dependent integer value for null pointer which is used for
   /// constant folding.
   uint64_t getTargetNullPointerValue(QualType QT) const;
 
-  bool addressSpaceMapManglingFor(unsigned AS) const {
-    return AddrSpaceMapMangling || AS >= LangAS::FirstTargetAddressSpace;
+  bool addressSpaceMapManglingFor(LangAS AS) const {
+    return AddrSpaceMapMangling || isTargetAddressSpace(AS);
   }
 
 private:
@@ -2779,13 +2779,13 @@ public:
 };
 
 /// \brief Utility function for constructing a nullary selector.
-static inline Selector GetNullarySelector(StringRef name, ASTContext& Ctx) {
+inline Selector GetNullarySelector(StringRef name, ASTContext &Ctx) {
   IdentifierInfo* II = &Ctx.Idents.get(name);
   return Ctx.Selectors.getSelector(0, &II);
 }
 
 /// \brief Utility function for constructing an unary selector.
-static inline Selector GetUnarySelector(StringRef name, ASTContext& Ctx) {
+inline Selector GetUnarySelector(StringRef name, ASTContext &Ctx) {
   IdentifierInfo* II = &Ctx.Idents.get(name);
   return Ctx.Selectors.getSelector(1, &II);
 }

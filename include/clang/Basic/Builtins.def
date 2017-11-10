@@ -1008,9 +1008,9 @@ LIBBUILTIN(modf, "ddd*", "fn", "math.h", ALL_LANGUAGES)
 LIBBUILTIN(modff, "fff*", "fn", "math.h", ALL_LANGUAGES)
 LIBBUILTIN(modfl, "LdLdLd*", "fn", "math.h", ALL_LANGUAGES)
 
-LIBBUILTIN(nan,  "dcC*", "fnc", "math.h", ALL_LANGUAGES)
-LIBBUILTIN(nanf, "fcC*", "fnc", "math.h", ALL_LANGUAGES)
-LIBBUILTIN(nanl, "LdcC*", "fnc", "math.h", ALL_LANGUAGES)
+LIBBUILTIN(nan,  "dcC*", "fUn", "math.h", ALL_LANGUAGES)
+LIBBUILTIN(nanf, "fcC*", "fUn", "math.h", ALL_LANGUAGES)
+LIBBUILTIN(nanl, "LdcC*", "fUn", "math.h", ALL_LANGUAGES)
 
 LIBBUILTIN(pow, "ddd", "fne", "math.h", ALL_LANGUAGES)
 LIBBUILTIN(powf, "fff", "fne", "math.h", ALL_LANGUAGES)
@@ -1433,6 +1433,9 @@ LANGBUILTIN(__builtin_load_halff, "fhC*", "nc", ALL_OCLC_LANGUAGES)
 // Builtins for os_log/os_trace
 BUILTIN(__builtin_os_log_format_buffer_size, "zcC*.", "p:0:nut")
 BUILTIN(__builtin_os_log_format, "v*v*cC*.", "p:0:nt")
+
+// OpenMP 4.0
+LANGBUILTIN(omp_is_initial_device, "i", "nc", OMP_LANG)
 
 // Builtins for XRay
 BUILTIN(__xray_customevent, "vcC*z", "")

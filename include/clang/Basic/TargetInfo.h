@@ -86,7 +86,7 @@ protected:
     *LongDoubleFormat, *Float128Format;
   unsigned char RegParmMax, SSERegParmMax;
   TargetCXXABI TheCXXABI;
-  const LangAS::Map *AddrSpaceMap;
+  const LangASMap *AddrSpaceMap;
 
   mutable StringRef PlatformName;
   mutable VersionTuple PlatformMinVersion;
@@ -322,9 +322,7 @@ public:
 
   /// \brief Get integer value for null pointer.
   /// \param AddrSpace address space of pointee in source language.
-  virtual uint64_t getNullPointerValue(unsigned AddrSpace) const {
-    return 0;
-  }
+  virtual uint64_t getNullPointerValue(LangAS AddrSpace) const { return 0; }
 
   /// \brief Return the size of '_Bool' and C++ 'bool' for this target, in bits.
   unsigned getBoolWidth() const { return BoolWidth; }
@@ -863,7 +861,7 @@ public:
 
   /// brief Determine whether this TargetInfo supports the given CPU name.
   virtual bool isValidCPUName(StringRef Name) const {
-    return false;
+    return true;
   }
 
   /// \brief Use the specified ABI.
@@ -890,7 +888,7 @@ public:
 
   /// \brief Determine whether this TargetInfo supports the given feature.
   virtual bool isValidFeatureName(StringRef Feature) const {
-    return false;
+    return true;
   }
 
   /// \brief Perform initialization based on the user configured
@@ -971,15 +969,13 @@ public:
     return nullptr;
   }
 
-  const LangAS::Map &getAddressSpaceMap() const {
-    return *AddrSpaceMap;
-  }
+  const LangASMap &getAddressSpaceMap() const { return *AddrSpaceMap; }
 
   /// \brief Return an AST address space which can be used opportunistically
   /// for constant global memory. It must be possible to convert pointers into
   /// this address space to LangAS::Default. If no such address space exists,
   /// this may return None, and such optimizations will be disabled.
-  virtual llvm::Optional<unsigned> getConstantAddressSpace() const {
+  virtual llvm::Optional<LangAS> getConstantAddressSpace() const {
     return LangAS::Default;
   }
 
@@ -1058,7 +1054,7 @@ public:
   }
 
   /// \brief Get address space for OpenCL type.
-  virtual LangAS::ID getOpenCLTypeAddrSpace(const Type *T) const;
+  virtual LangAS getOpenCLTypeAddrSpace(const Type *T) const;
 
   /// \returns Target specific vtbl ptr address space.
   virtual unsigned getVtblPtrAddressSpace() const {

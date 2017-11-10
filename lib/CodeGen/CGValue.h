@@ -149,20 +149,15 @@ static inline AlignmentSource getFieldAlignmentSource(AlignmentSource Source) {
 
 class LValueBaseInfo {
   AlignmentSource AlignSource;
-  bool MayAlias;
 
 public:
-  explicit LValueBaseInfo(AlignmentSource Source = AlignmentSource::Type,
-                 bool Alias = false)
-    : AlignSource(Source), MayAlias(Alias) {}
+  explicit LValueBaseInfo(AlignmentSource Source = AlignmentSource::Type)
+    : AlignSource(Source) {}
   AlignmentSource getAlignmentSource() const { return AlignSource; }
   void setAlignmentSource(AlignmentSource Source) { AlignSource = Source; }
-  bool getMayAlias() const { return MayAlias; }
-  void setMayAlias(bool Alias) { MayAlias = Alias; }
 
   void mergeForCast(const LValueBaseInfo &Info) {
     setAlignmentSource(Info.getAlignmentSource());
-    setMayAlias(getMayAlias() || Info.getMayAlias());
   }
 };
 
@@ -230,9 +225,8 @@ class LValue {
   Expr *BaseIvarExp;
 
 private:
-  void Initialize(QualType Type, Qualifiers Quals,
-                  CharUnits Alignment, LValueBaseInfo BaseInfo,
-                  TBAAAccessInfo TBAAInfo = TBAAAccessInfo()) {
+  void Initialize(QualType Type, Qualifiers Quals, CharUnits Alignment,
+                  LValueBaseInfo BaseInfo, TBAAAccessInfo TBAAInfo) {
     assert((!Alignment.isZero() || Type->isIncompleteType()) &&
            "initializing l-value with zero alignment!");
     this->Type = Type;
@@ -314,7 +308,7 @@ public:
   const Qualifiers &getQuals() const { return Quals; }
   Qualifiers &getQuals() { return Quals; }
 
-  unsigned getAddressSpace() const { return Quals.getAddressSpace(); }
+  LangAS getAddressSpace() const { return Quals.getAddressSpace(); }
 
   CharUnits getAlignment() const { return CharUnits::fromQuantity(Alignment); }
   void setAlignment(CharUnits A) { Alignment = A.getQuantity(); }
@@ -381,24 +375,26 @@ public:
   }
 
   static LValue MakeVectorElt(Address vecAddress, llvm::Value *Idx,
-                              QualType type, LValueBaseInfo BaseInfo) {
+                              QualType type, LValueBaseInfo BaseInfo,
+                              TBAAAccessInfo TBAAInfo) {
     LValue R;
     R.LVType = VectorElt;
     R.V = vecAddress.getPointer();
     R.VectorIdx = Idx;
     R.Initialize(type, type.getQualifiers(), vecAddress.getAlignment(),
-                 BaseInfo);
+                 BaseInfo, TBAAInfo);
     return R;
   }
 
   static LValue MakeExtVectorElt(Address vecAddress, llvm::Constant *Elts,
-                                 QualType type, LValueBaseInfo BaseInfo) {
+                                 QualType type, LValueBaseInfo BaseInfo,
+                                 TBAAAccessInfo TBAAInfo) {
     LValue R;
     R.LVType = ExtVectorElt;
     R.V = vecAddress.getPointer();
     R.VectorElts = Elts;
     R.Initialize(type, type.getQualifiers(), vecAddress.getAlignment(),
-                 BaseInfo);
+                 BaseInfo, TBAAInfo);
     return R;
   }
 
@@ -408,15 +404,15 @@ public:
   /// bit-field refers to.
   /// \param Info - The information describing how to perform the bit-field
   /// access.
-  static LValue MakeBitfield(Address Addr,
-                             const CGBitFieldInfo &Info,
-                             QualType type,
-                             LValueBaseInfo BaseInfo) {
+  static LValue MakeBitfield(Address Addr, const CGBitFieldInfo &Info,
+                             QualType type, LValueBaseInfo BaseInfo,
+                             TBAAAccessInfo TBAAInfo) {
     LValue R;
     R.LVType = BitField;
     R.V = Addr.getPointer();
     R.BitFieldInfo = &Info;
-    R.Initialize(type, type.getQualifiers(), Addr.getAlignment(), BaseInfo);
+    R.Initialize(type, type.getQualifiers(), Addr.getAlignment(), BaseInfo,
+                 TBAAInfo);
     return R;
   }
 
@@ -425,7 +421,7 @@ public:
     R.LVType = GlobalReg;
     R.V = Reg.getPointer();
     R.Initialize(type, type.getQualifiers(), Reg.getAlignment(),
-                 LValueBaseInfo(AlignmentSource::Decl, false));
+                 LValueBaseInfo(AlignmentSource::Decl), TBAAAccessInfo());
     return R;
   }
 

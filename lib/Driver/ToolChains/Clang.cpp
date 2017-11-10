@@ -334,7 +334,7 @@ static void getTargetFeatures(const ToolChain &TC, const llvm::Triple &Triple,
     x86::getX86TargetFeatures(D, Triple, Args, Features);
     break;
   case llvm::Triple::hexagon:
-    hexagon::getHexagonTargetFeatures(Args, Features);
+    hexagon::getHexagonTargetFeatures(D, Args, Features);
     break;
   case llvm::Triple::wasm32:
   case llvm::Triple::wasm64:
@@ -2622,8 +2622,13 @@ static void RenderCharacterOptions(const ArgList &Args, const llvm::Triple &T,
       CmdArgs.push_back("-fwchar-type=short");
       CmdArgs.push_back("-fno-signed-wchar");
     } else {
+      bool IsARM = T.isARM() || T.isThumb() || T.isAArch64();
       CmdArgs.push_back("-fwchar-type=int");
-      CmdArgs.push_back("-fsigned-wchar");
+      if (IsARM && !(T.isOSWindows() || T.getOS() == llvm::Triple::NetBSD ||
+                     T.getOS() == llvm::Triple::OpenBSD))
+        CmdArgs.push_back("-fno-signed-wchar");
+      else
+        CmdArgs.push_back("-fsigned-wchar");
     }
   }
 }
@@ -3365,6 +3370,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                     options::OPT_fno_optimize_sibling_calls))
     CmdArgs.push_back("-mdisable-tail-calls");
 
+  Args.AddLastArg(CmdArgs, options::OPT_ffine_grained_bitfield_accesses,
+                  options::OPT_fno_fine_grained_bitfield_accesses);
+
   // Handle segmented stacks.
   if (Args.hasArg(options::OPT_fsplit_stack))
     CmdArgs.push_back("-split-stacks");
@@ -4007,6 +4015,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fcoroutines-ts");
   }
 
+  Args.AddLastArg(CmdArgs, options::OPT_fdouble_square_bracket_attributes,
+                  options::OPT_fno_double_square_bracket_attributes);
+
   bool HaveModules = false;
   RenderModulesOptions(C, D, Args, Input, Output, CmdArgs, HaveModules);
 
@@ -4075,7 +4086,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     if (const Arg *StdArg = Args.getLastArg(options::OPT__SLASH_std)) {
       LanguageStandard = llvm::StringSwitch<StringRef>(StdArg->getValue())
                              .Case("c++14", "-std=c++14")
-                             .Case("c++latest", "-std=c++1z")
+                             .Case("c++17", "-std=c++17")
+                             .Case("c++latest", "-std=c++2a")
                              .Default("");
       if (LanguageStandard.empty())
         D.Diag(clang::diag::warn_drv_unused_argument)
@@ -4869,7 +4881,9 @@ void Clang::AddClangCLArgs(const ArgList &Args, types::ID InputType,
 
   // Both /showIncludes and /E (and /EP) write to stdout. Allowing both
   // would produce interleaved output, so ignore /showIncludes in such cases.
-  if (!Args.hasArg(options::OPT_E) && !Args.hasArg(options::OPT__SLASH_EP))
+  if ((!Args.hasArg(options::OPT_E) && !Args.hasArg(options::OPT__SLASH_EP)) ||
+      (Args.hasArg(options::OPT__SLASH_P) &&
+       Args.hasArg(options::OPT__SLASH_EP) && !Args.hasArg(options::OPT_E)))
     if (Arg *A = Args.getLastArg(options::OPT_show_includes))
       A->render(Args, CmdArgs);
 
